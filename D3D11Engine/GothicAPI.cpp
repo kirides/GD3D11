@@ -551,19 +551,23 @@ void GothicAPI::OnWorldLoaded() {
 
 	LogInfo() << "Settings sky texture for " << LoadedWorldInfo->WorldName;
 
+#ifdef BUILD_GOTHIC_2_6_fix
 	// Hard code the original games sky textures here, since we can't modify the scripts to use the ikarus bindings without
 	// installing more content like a .mod file
-	if ( LoadedWorldInfo->WorldName == "OLDWORLD" || LoadedWorldInfo->WorldName == "WORLD" ) {
-		GetSky()->SetSkyTexture( ESkyTexture::ST_OldWorld ); // Sky for gothic 2s oldworld
+	if (LoadedWorldInfo->WorldName == "OLDWORLD" || LoadedWorldInfo->WorldName == "WORLD") {
+		GetSky()->SetSkyTexture(ESkyTexture::ST_OldWorld); // Sky for gothic 2s oldworld
 		RendererState.RendererSettings.SetupOldWorldSpecificValues();
-	} else if ( LoadedWorldInfo->WorldName == "ADDONWORLD" ) {
-		GetSky()->SetSkyTexture( ESkyTexture::ST_NewWorld ); // Sky for gothic 2s addonworld
+	}
+	else if (LoadedWorldInfo->WorldName == "ADDONWORLD") {
+		GetSky()->SetSkyTexture(ESkyTexture::ST_NewWorld); // Sky for gothic 2s addonworld
 		RendererState.RendererSettings.SetupAddonWorldSpecificValues();
-	} else {
-		GetSky()->SetSkyTexture( ESkyTexture::ST_NewWorld ); // Make newworld default
+	}
+	else {
+		GetSky()->SetSkyTexture(ESkyTexture::ST_NewWorld); // Make newworld default
 		RendererState.RendererSettings.SetupNewWorldSpecificValues();
 	}
-
+#endif
+	
 	// Reset wetness
 	SceneWetness = GetRainFXWeight();
 
@@ -3500,6 +3504,14 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
 		WritePrivateProfileStringA( "Atmoshpere", "LightDirectionZ", std::to_string( aS.LightDirection.z ).c_str(), ini.c_str() );
 	}
 
+	WritePrivateProfileStringA("Atmoshpere", "SunLightColorR", std::to_string((int)(s.SunLightColor.x * 255.0f)).c_str(), ini.c_str());
+	WritePrivateProfileStringA("Atmoshpere", "SunLightColorG", std::to_string((int)(s.SunLightColor.y * 255.0f)).c_str(), ini.c_str());
+	WritePrivateProfileStringA("Atmoshpere", "SunLightColorB", std::to_string((int)(s.SunLightColor.z * 255.0f)).c_str(), ini.c_str());
+
+	WritePrivateProfileStringA("Atmoshpere", "FogColorModR", std::to_string((int)(s.FogColorMod.x * 255.0f)).c_str(), ini.c_str());
+	WritePrivateProfileStringA("Atmoshpere", "FogColorModG", std::to_string((int)(s.FogColorMod.y * 255.0f)).c_str(), ini.c_str());
+	WritePrivateProfileStringA("Atmoshpere", "FogColorModB", std::to_string((int)(s.FogColorMod.z * 255.0f)).c_str(), ini.c_str());
+
 	auto res = Engine::GraphicsEngine->GetResolution();
 	WritePrivateProfileStringA( "Display", "Width", std::to_string( res.x ).c_str(), ini.c_str() );
 	WritePrivateProfileStringA( "Display", "Height", std::to_string( res.y ).c_str(), ini.c_str() );
@@ -3602,6 +3614,18 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
 			GetPrivateProfileFloatA( "Atmoshpere", "LightDirectionZ", defaultLightDirection.z, ini.c_str() )
 		);
 	}
+	
+	s.SunLightColor = float3::FromColor(
+		GetPrivateProfileIntA("Atmoshpere", "SunLightColorR", 255, ini.c_str()),
+		GetPrivateProfileIntA("Atmoshpere", "SunLightColorG", 255, ini.c_str()),
+		GetPrivateProfileIntA("Atmoshpere", "SunLightColorB", 255, ini.c_str())
+	);
+
+	s.FogColorMod = float3::FromColor(
+		GetPrivateProfileIntA("Atmoshpere", "FogColorModR", 189, ini.c_str()),
+		GetPrivateProfileIntA("Atmoshpere", "FogColorModG", 146, ini.c_str()),
+		GetPrivateProfileIntA("Atmoshpere", "FogColorModB", 107, ini.c_str())
+	);
 
 	s.EnableShadows = GetPrivateProfileBoolA( "Shadows", "EnableShadows", defaultRendererSettings.EnableShadows, ini );
 	s.EnableSoftShadows = GetPrivateProfileBoolA( "Shadows", "EnableSoftShadows", defaultRendererSettings.EnableSoftShadows, ini );
