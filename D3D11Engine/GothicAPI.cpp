@@ -3622,6 +3622,9 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
 	WritePrivateProfileStringA( "Shadows", "PointlightShadows", std::to_string( s.EnablePointlightShadows ).c_str(), ini.c_str() );
 	WritePrivateProfileStringA( "Shadows", "EnableDynamicLighting", std::to_string(s.EnableDynamicLighting ? TRUE : FALSE).c_str(), ini.c_str());
 	WritePrivateProfileStringA( "Shadows", "SmoothCameraUpdate", std::to_string( s.SmoothShadowCameraUpdate ? TRUE : FALSE ).c_str(), ini.c_str() );
+	WritePrivateProfileStringA( "Shadows", "ShadowStrength", std::to_string(s.ShadowStrength).c_str(), ini.c_str());
+	WritePrivateProfileStringA( "Shadows", "ShadowAOStrength", std::to_string(s.ShadowAOStrength).c_str(), ini.c_str());
+	WritePrivateProfileStringA( "Shadows", "WorldAOStrength", std::to_string(s.WorldAOStrength).c_str(), ini.c_str());
 
 	WritePrivateProfileStringA( "SMAA", "Enabled", std::to_string( s.EnableSMAA ? TRUE : FALSE ).c_str(), ini.c_str() );
 	WritePrivateProfileStringA( "SMAA", "SharpenFactor", std::to_string( s.SharpenFactor ).c_str(), ini.c_str() );
@@ -3700,6 +3703,9 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
 	s.WorldShadowRangeScale = GetPrivateProfileFloatA( "Shadows", "WorldShadowRangeScale", 1.0f, ini.c_str() );
 	s.EnableDynamicLighting = GetPrivateProfileBoolA( "Shadows", "EnableDynamicLighting", defaultRendererSettings.EnableDynamicLighting, ini );
 	s.SmoothShadowCameraUpdate = GetPrivateProfileBoolA( "Shadows", "SmoothCameraUpdate", defaultRendererSettings.SmoothShadowCameraUpdate, ini.c_str() );
+	s.ShadowStrength = GetPrivateProfileFloatA("Shadows", "ShadowStrength", defaultRendererSettings.ShadowStrength, ini.c_str());
+	s.ShadowAOStrength = GetPrivateProfileFloatA("Shadows", "ShadowAOStrength", defaultRendererSettings.ShadowAOStrength, ini.c_str());
+	s.WorldAOStrength = GetPrivateProfileFloatA("Shadows", "WorldAOStrength", defaultRendererSettings.WorldAOStrength, ini.c_str());
 
 	INT2 res = {};
 	RECT desktopRect;
