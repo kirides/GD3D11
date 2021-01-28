@@ -665,6 +665,12 @@ void GothicAPI::LoadRendererWorldSettings(GothicRendererSettings& s) {
 		GetPrivateProfileFloatA( "Atmoshpere", "LightDirectionY", aS.LightDirection.y, ini.c_str() ),
 		GetPrivateProfileFloatA( "Atmoshpere", "LightDirectionZ", aS.LightDirection.z, ini.c_str() )
 	);
+
+
+	s.ShadowStrength = GetPrivateProfileFloatA("Shadows", "ShadowStrength", s.ShadowStrength, ini.c_str());
+	s.ShadowAOStrength = GetPrivateProfileFloatA("Shadows", "ShadowAOStrength", s.ShadowAOStrength, ini.c_str());
+	s.WorldAOStrength = GetPrivateProfileFloatA("Shadows", "WorldAOStrength", s.WorldAOStrength, ini.c_str());
+
 }
 
 void GothicAPI::SaveRendererWorldSettings( const GothicRendererSettings & s) {
@@ -711,6 +717,11 @@ void GothicAPI::SaveRendererWorldSettings( const GothicRendererSettings & s) {
 	WritePrivateProfileStringA( "Atmoshpere", "LightDirectionX", std::to_string( aS.LightDirection.x ).c_str(), ini.c_str() );
 	WritePrivateProfileStringA( "Atmoshpere", "LightDirectionY", std::to_string( aS.LightDirection.y ).c_str(), ini.c_str() );
 	WritePrivateProfileStringA( "Atmoshpere", "LightDirectionZ", std::to_string( aS.LightDirection.z ).c_str(), ini.c_str() );
+
+	WritePrivateProfileStringA("Shadows", "ShadowStrength", std::to_string(s.ShadowStrength).c_str(), ini.c_str());
+	WritePrivateProfileStringA("Shadows", "ShadowAOStrength", std::to_string(s.ShadowAOStrength).c_str(), ini.c_str());
+	WritePrivateProfileStringA("Shadows", "WorldAOStrength", std::to_string(s.WorldAOStrength).c_str(), ini.c_str());
+
 }
 
 /** Goes through the given zCTree and registers all found vobs */
