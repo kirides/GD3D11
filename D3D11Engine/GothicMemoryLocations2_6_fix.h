@@ -338,6 +338,11 @@ struct GothicMemoryLocations {
     struct zCVob {
         static const unsigned int Offset_WorldMatrixPtr = 0x3C;
         //static const unsigned int Offset_BoundingBoxWS = 0x40;
+
+        static const unsigned int SetCollDetStat = 0x0061CE50;
+        static const unsigned int s_ShowHelperVisuals = 0x009A37F4;
+        static const unsigned int GetClassHelperVisual = 0x006011E0;
+
         static const unsigned int GetVisual = 0x00616B20;
         static const unsigned int SetVisual = 0x006024F0;
         static const unsigned int GetPositionWorld = 0x0052DC90;
