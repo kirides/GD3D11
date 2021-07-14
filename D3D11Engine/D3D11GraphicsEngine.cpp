@@ -3348,6 +3348,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                     MeshInfo* mi = mlist[i];
 
                     if ( !tx ) {
+#ifndef BUILD_SPACER_NET
 #ifndef BUILD_SPACER
                         continue;  // Don't render meshes without texture if not in spacer
 #else
@@ -3361,6 +3362,29 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                         b.Color = itt->first.Material->GetColor();
                         PS_Diffuse->GetConstantBuffer()[2]->UpdateBuffer(&b);
                         PS_Diffuse->GetConstantBuffer()[2]->BindToPixelShader(2);*/
+#endif
+#else
+                        bool showHelpers = (*(int*)GothicMemoryLocations::zCVob::s_ShowHelperVisuals) != 0;
+
+                        if ( showHelpers ) {
+
+
+
+                            WhiteTexture->BindToPixelShader( 0 );
+                            PS_Diffuse->Apply();
+
+
+                            MaterialInfo::Buffer b;
+                            ZeroMemory( &b, sizeof( b ) );
+
+                            b.Color = itt.first.Material->GetColor();
+                            PS_Diffuse->GetConstantBuffer()[2]->UpdateBuffer( &b );
+                            PS_Diffuse->GetConstantBuffer()[2]->BindToPixelShader( 2 );
+
+                        } else {
+                            continue;
+                        }
+
 #endif
                     } else {
                         // Check for alphablending on world mesh

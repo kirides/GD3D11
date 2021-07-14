@@ -212,7 +212,7 @@ void GothicAPI::OnGameStart() {
 
 /** Called to update the world, before rendering */
 void GothicAPI::OnWorldUpdate() {
-#ifdef BUILD_SPACER
+#if defined BUILD_SPACER || defined BUILD_SPACER_NET
     zCBspBase* rootBsp = oCGame::GetGame()->_zCSession_world->GetBspTree()->GetRootNode();
     BspInfo* root = &BspLeafVobLists[rootBsp];
 
