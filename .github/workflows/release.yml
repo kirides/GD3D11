@@ -32,7 +32,7 @@ jobs:
     - name: Set tag and directory name env
       run: |
         $tagName = $Env:GITHUB_REF -replace 'refs/tags/', ''
-        $dirName = ${{matrix.output_dir}} -replace '#VERSION#', '${tagName}'
+        $dirName = "${{matrix.output_dir}}" -replace '#VERSION#', '${tagName}'
         echo "Tag: ${tagName}"
         echo "Directory: ${dirName}"
         echo "RELEASE_VERSION=${tagName}" >> $Env:GITHUB_ENV
