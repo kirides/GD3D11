@@ -16,7 +16,7 @@ jobs:
       matrix:
        include:
          - configuration: Release_AVX
-           output_dir: Gothic2-GD3D11-#VERSION#_avx
+           output_dir: Gothic2-GD3D11-#VERSION#_avx2
          - configuration: Release_G1_AVX
            output_dir: Gothic1-GD3D11-#VERSION#_avx
          - configuration: Release
