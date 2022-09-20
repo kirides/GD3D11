@@ -189,6 +189,8 @@ protected:
     std::shared_ptr<D3D11VShader> VS_ExRemapInstancedObj;
     std::shared_ptr<D3D11VShader> VS_ExSkeletal;
     std::shared_ptr<D3D11GShader> GS_Billboard;
+    
+    std::shared_ptr<D3D11PShader> PS_PortalDiffuse;
 
     std::shared_ptr<D3D11VShader> ActiveVS;
     std::shared_ptr<D3D11PShader> ActivePS;

@@ -258,6 +258,8 @@ XRESULT D3D11GraphicsEngine::Init() {
     PS_DiffuseNormalmappedAlphatest = ShaderManager->GetPShader( "PS_DiffuseNormalmappedAlphaTest" );
     PS_DiffuseAlphatest = ShaderManager->GetPShader( "PS_DiffuseAlphaTest" );
 
+    PS_PortalDiffuse = ShaderManager->GetPShader( "PS_PortalDiffuse" );
+
     TempVertexBuffer = std::make_unique<D3D11VertexBuffer>();
     TempVertexBuffer->Init(
         nullptr, DRAWVERTEXARRAY_BUFFER_SIZE, D3D11VertexBuffer::B_VERTEXBUFFER,
@@ -2613,9 +2615,10 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
             // Bind both
             GetContext()->PSSetShaderResources( 0, 3, srv );
 
-            // Get the right shader for it
             int alphaFunc = it.first.Material->GetAlphaFunc();
-            BindShaderForTexture( texture, false, alphaFunc );
+
+            //Get the right shader for it
+            BindShaderForTexture( texture, false, alphaFunc, it.first.Info->MaterialType == MaterialInfo::MT_Portal );
 
             // Check for alphablending on world mesh
             if ( lastAlphaFunc != alphaFunc ) {
@@ -2645,6 +2648,7 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
             // Draw the section-part
             DrawVertexBufferIndexedUINT( nullptr, nullptr, it.second->Indices.size(),
                 it.second->BaseIndexLocation );
+
         }
     }
 
@@ -2659,14 +2663,15 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
     // fogging
     for ( auto const& it : list ) {
         if ( it.first.Material->GetAniTexture() != nullptr ) {
-            // Draw the section-part
-            DrawVertexBufferIndexedUINT( nullptr, nullptr, it.second->Indices.size(),
-                it.second->BaseIndexLocation );
+                // Draw the section-part
+                DrawVertexBufferIndexedUINT( nullptr, nullptr, it.second->Indices.size(),
+                    it.second->BaseIndexLocation );
         }
     }
 
     return XR_SUCCESS;
 }
+
 
 XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
     if ( !Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh )
@@ -3270,7 +3275,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
     bool noNPCs, std::list<VobInfo*>* renderedVobs,
     std::list<SkeletalVobInfo*>* renderedMobs,
     std::map<MeshKey, WorldMeshInfo*, cmpMeshKey>* worldMeshCache ) {
-
+        
     // Setup renderstates
     Engine::GAPI->GetRendererState().RasterizerState.SetDefault();
     Engine::GAPI->GetRendererState().RasterizerState.CullMode =
@@ -3334,7 +3339,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
 
     std::vector<WorldMeshSectionInfo*> drawnSections;
 
-    if ( Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh ) {
+    if ( Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh) {
         // Bind wrapped mesh vertex buffers
         DrawVertexBufferIndexedUINT( Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer,
             Engine::GAPI->GetWrappedWorldMesh()->MeshIndexBuffer, 0, 0 );
@@ -3351,6 +3356,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                 // Bind texture
                 if ( meshInfoByKey->first.Material && meshInfoByKey->first.Material->GetTexture() ) {
                     // Check surface type
+
                     if ( meshInfoByKey->first.Info->MaterialType == MaterialInfo::MT_Water ) {
                         continue;
                     }
@@ -3684,7 +3690,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround( FXMVECTOR position,
                     } else {
                         for ( const auto& it : section.WorldMeshes ) {
                             // Check surface type
-                            if ( it.first.Info->MaterialType == MaterialInfo::MT_Water ) {
+                            if ( it.first.Info->MaterialType == MaterialInfo::MT_Water) {
                                 continue;
                             }
 
@@ -5541,10 +5547,11 @@ void D3D11GraphicsEngine::GetBackbufferData( byte** data, int& pixelsize ) {
     *data = d;
 }
 
-/** Binds the right shader for the given texture */
+/* Binds the right shader for the given texture */ 
 void D3D11GraphicsEngine::BindShaderForTexture( zCTexture* texture,
     bool forceAlphaTest,
-    int zMatAlphaFunc ) {
+    int zMatAlphaFunc,
+    bool isPortal) {
     auto active = ActivePS;
     auto newShader = ActivePS;
 
@@ -5552,7 +5559,10 @@ void D3D11GraphicsEngine::BindShaderForTexture( zCTexture* texture,
     bool blendBlend = zMatAlphaFunc == zMAT_ALPHA_FUNC_BLEND;
     bool linZ = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches & GSWITCH_LINEAR_DEPTH) != 0;
 
-    if ( linZ ) {
+    if ( isPortal ) {
+        newShader = PS_PortalDiffuse;
+    }
+    else if ( linZ ) {
         newShader = PS_LinDepth;
     } else if ( blendAdd || blendBlend ) {
         newShader = PS_Simple;

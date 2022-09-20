@@ -362,6 +362,13 @@ XRESULT D3D11ShaderManager::Init() {
     Shaders.back().cBufferSizes.push_back( sizeof( MaterialInfo::Buffer ) );
     Shaders.back().cBufferSizes.push_back( sizeof( PerObjectState ) );
 
+    //forest portals, doors, etc.
+    Shaders.push_back( ShaderInfo( "PS_PortalDiffuse", "PS_PortalDiffuse.hlsl", "p", makros ) );
+    Shaders.back().cBufferSizes.push_back( sizeof( GothicGraphicsState ) );
+    Shaders.back().cBufferSizes.push_back( sizeof( AtmosphereConstantBuffer ) );
+    Shaders.back().cBufferSizes.push_back( sizeof( MaterialInfo::Buffer ) );
+    Shaders.back().cBufferSizes.push_back( sizeof( PerObjectState ) );
+    
     makros.clear();
 
     m.Name = "APPLY_RAIN_EFFECTS";

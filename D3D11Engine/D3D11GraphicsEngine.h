@@ -313,7 +313,7 @@ public:
     void DrawUnderwaterEffects();
 
     /** Binds the right shader for the given texture */
-    void BindShaderForTexture( zCTexture* texture, bool forceAlphaTest = false, int zMatAlphaFunc = 0 );
+    void BindShaderForTexture( zCTexture* texture, bool forceAlphaTest = false, int zMatAlphaFunc = 0, bool isPortal = false );
 
     /** Copies the depth stencil buffer to DepthStencilBufferCopy */
     void CopyDepthStencil();

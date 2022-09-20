@@ -348,12 +348,17 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
         zCPolygon* poly = polys[i];
 
         // Check if we even need this polygon
-        if ( poly->GetPolyFlags()->GhostOccluder || poly->GetPolyFlags()->PortalPoly ) {
+        if ( poly->GetPolyFlags()->GhostOccluder ) {
             continue;
         }
 
-        //if (polygons[i]->GetNumPolyVertices() != 3)
-        //	continue;
+        //Flag portals so that we can apply a different PS shader later
+        if ( poly->GetPolyFlags()->PortalPoly && poly->GetMaterial() && poly->GetMaterial()->GetTexture() ) {
+            MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( poly->GetMaterial()->GetTexture() );
+            if ( info ) {
+                info->MaterialType = MaterialInfo::MT_Portal;
+            }
+        }
 
         // Calculate midpoint of this triange to get the section
         XMFLOAT3 avgPos;

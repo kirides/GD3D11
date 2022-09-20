@@ -84,7 +84,8 @@ struct MaterialInfo {
     enum EMaterialType {
         MT_None,
         MT_Water,
-        MT_Ocean
+        MT_Ocean,
+        MT_Portal
     };
 
     MaterialInfo() {
