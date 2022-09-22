@@ -353,10 +353,18 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
         }
 
         //Flag portals so that we can apply a different PS shader later
-        if ( poly->GetPolyFlags()->PortalPoly && poly->GetMaterial() && poly->GetMaterial()->GetTexture() ) {
-            MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( poly->GetMaterial()->GetTexture() );
-            if ( info ) {
-                info->MaterialType = MaterialInfo::MT_Portal;
+        if ( poly->GetMaterial()->GetTexture() ) {
+            std::string textureName = poly->GetMaterial()->GetTexture()->GetNameWithoutExt();
+
+            if ( poly->GetPolyFlags()->PortalPoly || textureName == "MODIALPHA01" ) {
+                if ( textureName == "OWODFLWOODGROUND" ) {
+                    continue;
+                }
+
+                MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( poly->GetMaterial()->GetTexture() );
+                if ( info ) {
+                    info->MaterialType = MaterialInfo::MT_Portal;
+                }
             }
         }
 
@@ -456,7 +464,7 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
             if ( key.Texture && key.Texture->HasAlphaChannel() && AdditionalCheckWaterFall( key.Texture ) ) { // Fix foam on waterfalls
                 // Give it alpha test since it contains alpha channel and most like is the foam
                 // Normal water surfaces shouldn't have alpha channel
-                mat->SetAlphaFunc( zMAT_ALPHA_FUNC_TEST );
+                mat->SetAlphaFunc( zMAT_ALPHA_FUNC_BLEND );
             } else {
                 // Give water surfaces a water-shader
                 MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( key.Texture );
