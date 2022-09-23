@@ -356,14 +356,18 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
         if ( poly->GetMaterial()->GetTexture() ) {
             std::string textureName = poly->GetMaterial()->GetTexture()->GetNameWithoutExt();
 
-            if ( poly->GetPolyFlags()->PortalPoly || textureName == "MODIALPHA01" ) {
+            if ( poly->GetPolyFlags()->PortalPoly ||
+                textureName == "OWODWFALL_HITSURFACE_A0" ||
+                textureName == "MODIALPHA01" ||
+                textureName == "OWODWFALL_STONE_A0" ) {
+
                 if ( textureName == "OWODFLWOODGROUND" ) {
                     continue;
-                }
-
-                MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( poly->GetMaterial()->GetTexture() );
-                if ( info ) {
-                    info->MaterialType = MaterialInfo::MT_Portal;
+                } else {
+                    MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( poly->GetMaterial()->GetTexture() );
+                    if ( info ) {
+                        info->MaterialType = MaterialInfo::MT_Portal;
+                    }
                 }
             }
         }
@@ -461,11 +465,9 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
             && !mat->HasAlphaTest() ) // Fix foam on waterfalls
         {
 #ifdef BUILD_GOTHIC_1_08k
-            if ( key.Texture && key.Texture->HasAlphaChannel() && AdditionalCheckWaterFall( key.Texture ) ) { // Fix foam on waterfalls
-                // Give it alpha test since it contains alpha channel and most like is the foam
-                // Normal water surfaces shouldn't have alpha channel
-                mat->SetAlphaFunc( zMAT_ALPHA_FUNC_BLEND );
-            } else {
+            // Give it alpha test since it contains alpha channel and most like is the foam
+            // Normal water surfaces shouldn't have alpha channel
+            if ( !(key.Texture && key.Texture->HasAlphaChannel() && AdditionalCheckWaterFall( key.Texture )) ) { // Fix foam on waterfalls
                 // Give water surfaces a water-shader
                 MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( key.Texture );
                 if ( info ) {

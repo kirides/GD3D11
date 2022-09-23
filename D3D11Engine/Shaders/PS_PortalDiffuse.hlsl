@@ -53,7 +53,7 @@ DEFERRED_PS_OUTPUT PSMain(PS_INPUT Input) : SV_TARGET
 	if (percentageFade > 1)	{percentageFade = 1.0f;}
 
 	//sample the texture we want to fade out
-	float4 color = TX_Texture0.Sample(SS_Linear, Input.vTexcoord) / 1.5;
+	float4 color = TX_Texture0.Sample(SS_Linear, Input.vTexcoord) / 2;
 	
 	//apply fade
 	DEFERRED_PS_OUTPUT output;
