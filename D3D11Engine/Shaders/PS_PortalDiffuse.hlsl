@@ -2,12 +2,7 @@
 // World/VOB-Pixelshader for G2D3D11 by Badmofo
 //--------------------------------------------------------------------------------------
 #include <DS_Defines.h>
-
-cbuffer DIST_Distance : register(b3)
-{
-	float DIST_DrawDistance;
-	float3 DIST_Pad;
-}
+#include <AtmosphericScattering.h>
 
 //--------------------------------------------------------------------------------------
 // Textures and Samplers
@@ -18,7 +13,6 @@ Texture2D	TX_Texture0 : register(t0);
 Texture2D	TX_Texture1 : register(t1);
 Texture2D	TX_Texture2 : register(t2);
 TextureCube	TX_ReflectionCube : register(t4);
-
 
 //--------------------------------------------------------------------------------------
 // Input / Output structures
@@ -52,12 +46,17 @@ DEFERRED_PS_OUTPUT PSMain(PS_INPUT Input) : SV_TARGET
 	if (percentageFade < 0) { percentageFade = 0.0f; clip(-1); }
 	if (percentageFade > 1)	{percentageFade = 1.0f;}
 
-	//sample the texture we want to fade out
-	float4 color = TX_Texture0.Sample(SS_Linear, Input.vTexcoord) / 2;
+	float darknessFactor = 1.8f;
+	//keep darkness in bounds
+	if (AC_LightPos.y <= 0.10) { darknessFactor = 4 - AC_LightPos.y; }
+	if (darknessFactor >= 8) { darknessFactor = 8; }
+
+	//sample the texture we want to fade out and apply relevant darkness factor for day / night cycle
+	float4 color = TX_Texture0.Sample(SS_Linear, Input.vTexcoord) / darknessFactor;
 	
 	//apply fade
 	DEFERRED_PS_OUTPUT output;
-	output.vDiffuse = float4(color.rgb, percentageFade);
-		
+	output.vDiffuse = float4(color.rgb, percentageFade);	
+
 	return output;
 }
