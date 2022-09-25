@@ -1,5 +1,5 @@
 //--------------------------------------------------------------------------------------
-// World/VOB-Pixelshader for G2D3D11 by Badmofo
+// World/VOB-Pixelshader for G2D3D11 by SaulMyers
 //--------------------------------------------------------------------------------------
 #include <DS_Defines.h>
 #include <AtmosphericScattering.h>
@@ -46,11 +46,11 @@ DEFERRED_PS_OUTPUT PSMain(PS_INPUT Input) : SV_TARGET
 	if (percentageFade < 0) { percentageFade = 0.0f; clip(-1); }
 	if (percentageFade > 1)	{percentageFade = 1.0f;}
 
-	float darknessFactor = 1.8f;
-	//keep darkness in bounds
-	if (AC_LightPos.y <= 0.10) { darknessFactor = 4 - AC_LightPos.y; }
-	if (darknessFactor >= 8) { darknessFactor = 8; }
-
+	//darken the portals depending on where the sun is in the sky
+	float darknessFactor = 2.0f;
+	if (AC_LightPos.y <= 0.05f) { darknessFactor += (1 - AC_LightPos.y) * 3; }
+	else if (AC_LightPos.y > 0.05f) { darknessFactor = 8.0f - (1 + AC_LightPos.y) * 3; }
+	
 	//sample the texture we want to fade out and apply relevant darkness factor for day / night cycle
 	float4 color = TX_Texture0.Sample(SS_Linear, Input.vTexcoord) / darknessFactor;
 	
