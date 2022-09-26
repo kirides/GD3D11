@@ -48,9 +48,9 @@ DEFERRED_PS_OUTPUT PSMain(PS_INPUT Input) : SV_TARGET
 
 	//darken the portals depending on where the sun is in the sky
 	float darknessFactor = 2.0f;
-	if (AC_LightPos.y <= 0.05f) { darknessFactor += (1 - AC_LightPos.y) * 3; }
-	else if (AC_LightPos.y > 0.05f) { darknessFactor = 8.0f - (1 + AC_LightPos.y) * 3; }
-	
+	if (AC_LightPos.y <= 0.05f) { darknessFactor += (1 - AC_LightPos.y) * 2.8; }
+	else if (AC_LightPos.y > 0.05f) { darknessFactor = 7.5f - (1 + AC_LightPos.y) * 3; }
+
 	//sample the texture we want to fade out and apply relevant darkness factor for day / night cycle
 	float4 color = TX_Texture0.Sample(SS_Linear, Input.vTexcoord) / darknessFactor;
 	
