@@ -135,10 +135,10 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	float sun_spot = pow(cos_spec, 500.0f) * 0.5f;
 	color.rgb += lerp(sunColor * sun_spot, float3(0.0f, 0.0f, 0.0f), step(step(0.0f, AC_LightPos.y) * Input.vDiffuse.y, 0.5f));
 
-	//darken water at night 
+	//darken / lighten water based on the day / night cycle
 	float darknessFactor = 2.0f;
-	if (AC_LightPos.y <= 0.05f) { darknessFactor += (1 - AC_LightPos.y) * 1.6; }
-	else if (AC_LightPos.y > 0.05f) { darknessFactor = 7.0f - (1 + AC_LightPos.y) * 3.2; }
+	if (AC_LightPos.y < 0.0f) { darknessFactor -= AC_LightPos.y; }
+	else if (AC_LightPos.y > 0.0f) { darknessFactor -= AC_LightPos.y; }
 
 	return float4(color / darknessFactor, 1);
 }

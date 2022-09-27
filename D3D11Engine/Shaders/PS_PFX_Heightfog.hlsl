@@ -97,10 +97,10 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 		
 	float3 color = ApplyAtmosphericScatteringGround(position, HF_FogColorMod, true);
 
-	//darken fog at night 
+	//darken / lighten fog based on the day / night cycle
 	float darknessFactor = 2.0f;
-	if (AC_LightPos.y <= 0.05f) { darknessFactor += (1 - AC_LightPos.y) * 1.6; }
-	else if (AC_LightPos.y > 0.05f) { darknessFactor = 7.0f - (1 + AC_LightPos.y) * 3.0; }
+	if (AC_LightPos.y < 0.0f) { darknessFactor -= AC_LightPos.y * 3.0f; }
+	else if (AC_LightPos.y > 0.0f) { darknessFactor -= AC_LightPos.y; }
 
 	return float4(saturate(color / darknessFactor), saturate(fog));
 }
