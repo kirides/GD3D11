@@ -448,10 +448,10 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
             && !mat->HasAlphaTest() ) // Fix foam on waterfalls
         {
 #ifdef BUILD_GOTHIC_1_08k
-            if ( key.Texture && key.Texture->HasAlphaChannel() && AdditionalCheckWaterFall( key.Texture ) ) { // Fix foam on waterfalls
-                // Give it alpha test since it contains alpha channel and most like is the foam
+            if ( key.Texture && AdditionalCheckWaterFall( key.Texture ) ) { // Fix foam on waterfalls
+                // Give it alpha blend since it contains alpha channel and most like is the foam
                 // Normal water surfaces shouldn't have alpha channel
-                mat->SetAlphaFunc( zMAT_ALPHA_FUNC_TEST );
+                mat->SetAlphaFunc( zMAT_ALPHA_FUNC_BLEND );
             } else {
                 // Give water surfaces a water-shader
                 MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( key.Texture );
