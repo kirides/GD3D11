@@ -978,21 +978,21 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
-    <Import Project="..\packages\fx11_desktop_2017.2021.12.2.2\build\native\fx11_desktop_2017.targets" Condition="Exists('..\packages\fx11_desktop_2017.2021.12.2.2\build\native\fx11_desktop_2017.targets')" />
-    <Import Project="..\packages\directxmath.2022.2.11.1\build\native\directxmath.targets" Condition="Exists('..\packages\directxmath.2022.2.11.1\build\native\directxmath.targets')" />
-    <Import Project="..\packages\Microsoft.XAudio2.Redist.1.2.8\build\native\Microsoft.XAudio2.Redist.targets" Condition="Exists('..\packages\Microsoft.XAudio2.Redist.1.2.8\build\native\Microsoft.XAudio2.Redist.targets')" />
-    <Import Project="..\packages\directxtk_desktop_2017.2022.3.24.2\build\native\directxtk_desktop_2017.targets" Condition="Exists('..\packages\directxtk_desktop_2017.2022.3.24.2\build\native\directxtk_desktop_2017.targets')" />
-    <Import Project="..\packages\directxmesh_desktop_2017.2022.3.24.1\build\native\directxmesh_desktop_2017.targets" Condition="Exists('..\packages\directxmesh_desktop_2017.2022.3.24.1\build\native\directxmesh_desktop_2017.targets')" />
+    <Import Project="..\packages\fx11_desktop_2019.2022.8.18.1\build\native\fx11_desktop_2019.targets" Condition="Exists('..\packages\fx11_desktop_2019.2022.8.18.1\build\native\fx11_desktop_2019.targets')" />
+    <Import Project="..\packages\directxmath.2022.5.18.1\build\native\directxmath.targets" Condition="Exists('..\packages\directxmath.2022.5.18.1\build\native\directxmath.targets')" />
+    <Import Project="..\packages\Microsoft.XAudio2.Redist.1.2.9\build\native\Microsoft.XAudio2.Redist.targets" Condition="Exists('..\packages\Microsoft.XAudio2.Redist.1.2.9\build\native\Microsoft.XAudio2.Redist.targets')" />
+    <Import Project="..\packages\directxtk_desktop_2019.2022.7.30.1\build\native\directxtk_desktop_2019.targets" Condition="Exists('..\packages\directxtk_desktop_2019.2022.7.30.1\build\native\directxtk_desktop_2019.targets')" />
+    <Import Project="..\packages\directxmesh_desktop_2019.2022.7.30.1\build\native\directxmesh_desktop_2019.targets" Condition="Exists('..\packages\directxmesh_desktop_2019.2022.7.30.1\build\native\directxmesh_desktop_2019.targets')" />
   </ImportGroup>
   <Target Name="EnsureNuGetPackageBuildImports" BeforeTargets="PrepareForBuild">
     <PropertyGroup>
       <ErrorText>Dieses Projekt verweist auf mindestens ein NuGet-Paket, das auf diesem Computer fehlt. Verwenden Sie die Wiederherstellung von NuGet-Paketen, um die fehlenden Dateien herunterzuladen. Weitere Informationen finden Sie unter "http://go.microsoft.com/fwlink/?LinkID=322105". Die fehlende Datei ist "{0}".</ErrorText>
     </PropertyGroup>
-    <Error Condition="!Exists('..\packages\fx11_desktop_2017.2021.12.2.2\build\native\fx11_desktop_2017.targets')" Text="$([System.String]::Format('$(ErrorText)', '..\packages\fx11_desktop_2017.2021.12.2.2\build\native\fx11_desktop_2017.targets'))" />
-    <Error Condition="!Exists('..\packages\directxmath.2022.2.11.1\build\native\directxmath.targets')" Text="$([System.String]::Format('$(ErrorText)', '..\packages\directxmath.2022.2.11.1\build\native\directxmath.targets'))" />
-    <Error Condition="!Exists('..\packages\Microsoft.XAudio2.Redist.1.2.8\build\native\Microsoft.XAudio2.Redist.targets')" Text="$([System.String]::Format('$(ErrorText)', '..\packages\Microsoft.XAudio2.Redist.1.2.8\build\native\Microsoft.XAudio2.Redist.targets'))" />
-    <Error Condition="!Exists('..\packages\directxtk_desktop_2017.2022.3.24.2\build\native\directxtk_desktop_2017.targets')" Text="$([System.String]::Format('$(ErrorText)', '..\packages\directxtk_desktop_2017.2022.3.24.2\build\native\directxtk_desktop_2017.targets'))" />
-    <Error Condition="!Exists('..\packages\directxmesh_desktop_2017.2022.3.24.1\build\native\directxmesh_desktop_2017.targets')" Text="$([System.String]::Format('$(ErrorText)', '..\packages\directxmesh_desktop_2017.2022.3.24.1\build\native\directxmesh_desktop_2017.targets'))" />
+    <Error Condition="!Exists('..\packages\fx11_desktop_2019.2022.8.18.1\build\native\fx11_desktop_2019.targets')" Text="$([System.String]::Format('$(ErrorText)', '..\packages\fx11_desktop_2019.2022.8.18.1\build\native\fx11_desktop_2019.targets'))" />
+    <Error Condition="!Exists('..\packages\directxmath.2022.5.18.1\build\native\directxmath.targets')" Text="$([System.String]::Format('$(ErrorText)', '..\packages\directxmath.2022.5.18.1\build\native\directxmath.targets'))" />
+    <Error Condition="!Exists('..\packages\Microsoft.XAudio2.Redist.1.2.9\build\native\Microsoft.XAudio2.Redist.targets')" Text="$([System.String]::Format('$(ErrorText)', '..\packages\Microsoft.XAudio2.Redist.1.2.9\build\native\Microsoft.XAudio2.Redist.targets'))" />
+    <Error Condition="!Exists('..\packages\directxtk_desktop_2019.2022.7.30.1\build\native\directxtk_desktop_2019.targets')" Text="$([System.String]::Format('$(ErrorText)', '..\packages\directxtk_desktop_2019.2022.7.30.1\build\native\directxtk_desktop_2019.targets'))" />
+    <Error Condition="!Exists('..\packages\directxmesh_desktop_2019.2022.7.30.1\build\native\directxmesh_desktop_2019.targets')" Text="$([System.String]::Format('$(ErrorText)', '..\packages\directxmesh_desktop_2019.2022.7.30.1\build\native\directxmesh_desktop_2019.targets'))" />
   </Target>
   <!-- For NuGet! This is needed because we use different configuration names than the defaults -->
   <PropertyGroup>

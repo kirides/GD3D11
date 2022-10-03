@@ -360,7 +360,7 @@ HRESULT LoadTextureArray( Microsoft::WRL::ComPtr<ID3D11Device1> pd3dDevice, Micr
         sprintf( str, "%s%.4d.dds", sTexturePrefix, i );
 
         Microsoft::WRL::ComPtr<ID3D11Resource> pRes;
-        LE( CreateDDSTextureFromFileEx( pd3dDevice.Get(), Toolbox::ToWideChar( str ).c_str(), 0, D3D11_USAGE_STAGING, 0, D3D11_CPU_ACCESS_READ | D3D11_CPU_ACCESS_WRITE, 0, false, pRes.GetAddressOf(), nullptr ) );
+        LE( CreateDDSTextureFromFileEx( pd3dDevice.Get(), Toolbox::ToWideChar( str ).c_str(), 0, D3D11_USAGE_STAGING, 0, D3D11_CPU_ACCESS_READ | D3D11_CPU_ACCESS_WRITE, 0, DDS_LOADER_DEFAULT, pRes.GetAddressOf(), nullptr ) );
         if ( pRes.Get() ) {
             Microsoft::WRL::ComPtr<ID3D11Texture2D> pTemp;
             pRes.As( &pTemp );

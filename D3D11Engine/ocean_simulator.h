@@ -15,7 +15,7 @@
 #ifndef _OCEAN_WAVE_H
 #define _OCEAN_WAVE_H
 
-#include <d3d11_1.h>
+#include <d3d11_4.h>
 
 #include "CSFFT/fft_512x512.h"
 
