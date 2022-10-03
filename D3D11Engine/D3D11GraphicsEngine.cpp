@@ -260,6 +260,8 @@ XRESULT D3D11GraphicsEngine::Init() {
 
     PS_PortalDiffuse = ShaderManager->GetPShader( "PS_PortalDiffuse" );
 
+    PS_WaterfallFoam = ShaderManager->GetPShader( "PS_WaterfallFoam" );
+
     TempVertexBuffer = std::make_unique<D3D11VertexBuffer>();
     TempVertexBuffer->Init(
         nullptr, DRAWVERTEXARRAY_BUFFER_SIZE, D3D11VertexBuffer::B_VERTEXBUFFER,
@@ -2215,6 +2217,8 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     RenderedVobs.clear();
     FrameWaterSurfaces.clear();
     FrameTransparencyMeshes.clear();
+    FrameTransparencyMeshesPortal.clear();
+    FrameTransparencyMeshesWaterfall.clear();
 
     // TODO: TODO: Hack for texture caching!
     zCTextureCacheHack::NumNotCachedTexturesInFrame = 0;
@@ -2260,6 +2264,12 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
 
     // Draw light-shafts
     DrawMeshInfoListAlphablended( FrameTransparencyMeshes );
+
+    //draw forest / door portals
+    DrawMeshInfoListAlphablended( FrameTransparencyMeshesPortal );
+
+    //draw waterfall foam
+    DrawMeshInfoListAlphablended( FrameTransparencyMeshesWaterfall );
 
     // Draw ghosts
     D3D11ENGINE_RENDER_STAGE oldStage = RenderingStage;
@@ -2618,7 +2628,7 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
             int alphaFunc = it.first.Material->GetAlphaFunc();
 
             //Get the right shader for it
-            BindShaderForTexture( texture, false, alphaFunc, it.first.Info->MaterialType == MaterialInfo::MT_Portal );
+            BindShaderForTexture( texture, false, alphaFunc, it.first.Info->MaterialType );
 
             // Check for alphablending on world mesh
             if ( lastAlphaFunc != alphaFunc ) {
@@ -2746,7 +2756,15 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
                 // Check for alphablending
                 if (worldMesh.first.Material->GetAlphaFunc() > zMAT_ALPHA_FUNC_NONE &&
                     worldMesh.first.Material->GetAlphaFunc() != zMAT_ALPHA_FUNC_TEST) {
-                    FrameTransparencyMeshes.push_back(worldMesh);
+                    if ( worldMesh.first.Info->MaterialType == MaterialInfo::MT_Portal ) {
+                        FrameTransparencyMeshesPortal.push_back( worldMesh );
+                    }
+                    else if ( worldMesh.first.Info->MaterialType == MaterialInfo::MT_WaterfallFoam ) {
+                        FrameTransparencyMeshesWaterfall.push_back( worldMesh );
+                    } 
+                else {
+                        FrameTransparencyMeshes.push_back( worldMesh );
+                    }
                 } else {
                     // Create a new pair using the animated texture
                     meshList.emplace_back( key, worldMesh.second );
@@ -5551,7 +5569,7 @@ void D3D11GraphicsEngine::GetBackbufferData( byte** data, int& pixelsize ) {
 void D3D11GraphicsEngine::BindShaderForTexture( zCTexture* texture,
     bool forceAlphaTest,
     int zMatAlphaFunc,
-    bool isPortal) {
+    MaterialInfo::EMaterialType materialInfo) {
     auto active = ActivePS;
     auto newShader = ActivePS;
 
@@ -5559,8 +5577,14 @@ void D3D11GraphicsEngine::BindShaderForTexture( zCTexture* texture,
     bool blendBlend = zMatAlphaFunc == zMAT_ALPHA_FUNC_BLEND;
     bool linZ = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches & GSWITCH_LINEAR_DEPTH) != 0;
 
-    if ( isPortal ) {
+    if ( materialInfo == MaterialInfo::MT_Portal ) {
         newShader = PS_PortalDiffuse;
+    }
+    else if ( materialInfo == MaterialInfo::MT_WaterfallFoam ) {
+        newShader = PS_WaterfallFoam;
+        //SetActivePixelShader( "PS_PFX_Alpha_Blend" );
+        //ActivePS->Apply();
+
     }
     else if ( linZ ) {
         newShader = PS_LinDepth;

@@ -354,15 +354,11 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
 
         //Flag portals so that we can apply a different PS shader later
         if ( poly->GetMaterial()->GetTexture() ) {
-            std::string textureName = poly->GetMaterial()->GetTexture()->GetNameWithoutExt();
 
-            if ( poly->GetPolyFlags()->PortalPoly ||
-                textureName == "OWODWFALL_HITSURFACE_A0" ||
-                textureName == "MODIALPHA01" ||
-                textureName == "OWODWFALL_STONE_A0" ) {
-
+            if ( poly->GetPolyFlags()->PortalPoly ) {
+                std::string textureName = poly->GetMaterial()->GetTexture()->GetNameWithoutExt();
                 if ( textureName == "OWODFLWOODGROUND" ) {
-                    continue;
+                    continue; //this is a ground texture that is sometimes re-used for visual tricks to darken tunnels, etc. We don't want to treat this as a portal.
                 } else {
                     MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( poly->GetMaterial()->GetTexture() );
                     if ( info ) {
@@ -379,11 +375,6 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
         INT2 section = GetSectionOfPos( avgPos );
         WorldMeshSectionInfo& sectionInfo = (*outSections)[section.x][section.y];
         sectionInfo.WorldCoordinates = section;
-
-        //if ( poly->GetMaterial() && poly->GetMaterial()->GetMatGroup() == zMAT_GROUP_WATER ) {
-            //sectionInfo.OceanPoints.push_back(*poly->getVertices()[0]->Position.toXMFLOAT3());
-            //continue;
-        //}
 
         XMFLOAT3& bbmin = sectionInfo.BoundingBox.Min;
         XMFLOAT3& bbmax = sectionInfo.BoundingBox.Max;
@@ -450,29 +441,31 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
         key.Texture = mat != nullptr ? mat->GetTextureSingle() : nullptr;
         key.Material = mat;
 
-        //key.Lightmap = poly->GetLightmap();
-
         if ( sectionInfo.WorldMeshes.count( key ) == 0 ) {
             key.Info = Engine::GAPI->GetMaterialInfoFrom( key.Texture );
             sectionInfo.WorldMeshes[key] = new WorldMeshInfo;
         }
         TriangleFanToList( &polyVertices[0], polyVertices.size(), &sectionInfo.WorldMeshes[key]->Vertices );
 
-        //if (mat && mat->GetTexture())
-        //	LogInfo() << "Got texture name: " << mat->GetTexture()->GetName();
-
         if ( mat && mat->GetMatGroup() == zMAT_GROUP_WATER // Check for water
-            && !mat->HasAlphaTest() ) // Fix foam on waterfalls
+            && !mat->HasAlphaTest() ) 
         {
 #ifdef BUILD_GOTHIC_1_08k
             // Give it alpha test since it contains alpha channel and most like is the foam
             // Normal water surfaces shouldn't have alpha channel
-            if ( !(key.Texture && key.Texture->HasAlphaChannel() && AdditionalCheckWaterFall( key.Texture )) ) { // Fix foam on waterfalls
+            MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( key.Texture );
+            if ( !(key.Texture && key.Texture->HasAlphaChannel() && AdditionalCheckWaterFall( key.Texture )) ) { 
                 // Give water surfaces a water-shader
-                MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( key.Texture );
                 if ( info ) {
                     info->PixelShader = "PS_Water";
                     info->MaterialType = MaterialInfo::MT_Water;
+                }
+            }
+            else {
+                //apply alpha blend to waterfall foam and flag it as water fall foam to apply shader later
+                if ( info ) {
+                    poly->GetMaterial()->SetAlphaFunc( zMAT_ALPHA_FUNC_BLEND );
+                    info->MaterialType = MaterialInfo::MT_WaterfallFoam;
                 }
             }
 #else

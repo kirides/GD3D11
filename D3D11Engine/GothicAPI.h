@@ -85,7 +85,8 @@ struct MaterialInfo {
         MT_None,
         MT_Water,
         MT_Ocean,
-        MT_Portal
+        MT_Portal,
+        MT_WaterfallFoam
     };
 
     MaterialInfo() {

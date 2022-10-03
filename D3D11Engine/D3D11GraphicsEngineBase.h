@@ -191,6 +191,7 @@ protected:
     std::shared_ptr<D3D11GShader> GS_Billboard;
     
     std::shared_ptr<D3D11PShader> PS_PortalDiffuse;
+    std::shared_ptr<D3D11PShader> PS_WaterfallFoam;
 
     std::shared_ptr<D3D11VShader> ActiveVS;
     std::shared_ptr<D3D11PShader> ActivePS;
