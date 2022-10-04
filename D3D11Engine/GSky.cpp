@@ -196,7 +196,7 @@ XRESULT GSky::RenderSky() {
             Atmosphere.LightDirection = LightDir;
         }
     }
-    XMStoreFloat3( &LightDir, XMVector3Normalize( XMLoadFloat3( &LightDir ) ) ); //XMVector3NormalizeEst leads to a flickering sun but smother moving shadows
+    XMStoreFloat3( &LightDir, XMVector3Normalize( XMLoadFloat3( &LightDir ) ) );
     //Atmosphere.SpherePosition.y = -Atmosphere.InnerRadius;
 
     Atmosphere.SpherePosition.x = 0;//Engine::GAPI->GetLoadedWorldInfo()->MidPoint.x;
@@ -283,7 +283,7 @@ float AC_getRayleighPhase( float fCos2 ) {
     return 0.75f + 0.75f * fCos2;
 }
 // Returns the near intersection point of a line and a sphere
-float AC_getNearIntersection( XMVECTOR v3Pos, XMVECTOR v3Ray, float fDistance2, float fRadius2 ) {
+float AC_getNearIntersection( FXMVECTOR v3Pos, FXMVECTOR v3Ray, float fDistance2, float fRadius2 ) {
     float B;
     XMStoreFloat( &B, XMVector3Dot( v3Pos, v3Ray ) * 2.0f );
     float C = fDistance2 - fRadius2;
@@ -291,7 +291,7 @@ float AC_getNearIntersection( XMVECTOR v3Pos, XMVECTOR v3Ray, float fDistance2, 
     return 0.5f * (-B - sqrt( fDet ));
 }
 // Returns the far intersection point of a line and a sphere
-float AC_getFarIntersection( XMVECTOR v3Pos, XMVECTOR v3Ray, float fDistance2, float fRadius2 ) {
+float AC_getFarIntersection( FXMVECTOR v3Pos, FXMVECTOR v3Ray, float fDistance2, float fRadius2 ) {
     float B;
     XMStoreFloat( &B, XMVector3Dot( v3Pos, v3Ray ) * 2.0f );
     float C = fDistance2 - fRadius2;
@@ -301,22 +301,11 @@ float AC_getFarIntersection( XMVECTOR v3Pos, XMVECTOR v3Ray, float fDistance2, f
 
 /** Returns the current sun color */
 float3 GSky::GetSunColor() {
-    XMFLOAT3 LightPos;
-    LightPos.x = AtmosphereCB.AC_LightPos.x;
-    LightPos.y = AtmosphereCB.AC_LightPos.y;
-    LightPos.z = AtmosphereCB.AC_LightPos.z;
-    FXMVECTOR wPos = (XMLoadFloat3( &LightPos ) * AtmosphereCB.AC_OuterRadius) + XMLoadFloat3( &Atmosphere.SpherePosition );
+    XMVECTORF32 LightPos = { AtmosphereCB.AC_LightPos.x, AtmosphereCB.AC_LightPos.y, AtmosphereCB.AC_LightPos.z, 0 };
+    XMVECTORF32 camPos = { AtmosphereCB.AC_CameraPos.x, AtmosphereCB.AC_CameraPos.y, AtmosphereCB.AC_CameraPos.z, 0 };
 
-    XMFLOAT3 camPos_FLOAT3;
-    camPos_FLOAT3.x = AtmosphereCB.AC_CameraPos.x;
-    camPos_FLOAT3.y = AtmosphereCB.AC_CameraPos.y;
-    camPos_FLOAT3.z = AtmosphereCB.AC_CameraPos.z;
-    FXMVECTOR camPos = XMLoadFloat3( &camPos_FLOAT3 );
-    XMFLOAT3 SpherePos_FLOAT3;
-    SpherePos_FLOAT3.x = AtmosphereCB.AC_SpherePosition.x;
-    SpherePos_FLOAT3.y = AtmosphereCB.AC_SpherePosition.y;
-    SpherePos_FLOAT3.z = AtmosphereCB.AC_SpherePosition.z;
-    FXMVECTOR vPos = wPos - XMLoadFloat3( &SpherePos_FLOAT3 );
+    FXMVECTOR wPos = (LightPos * AtmosphereCB.AC_OuterRadius) + XMLoadFloat3( &Atmosphere.SpherePosition );
+    FXMVECTOR vPos = wPos - XMVectorSet( AtmosphereCB.AC_SpherePosition.x, AtmosphereCB.AC_SpherePosition.y, AtmosphereCB.AC_SpherePosition.z, 0 );
     XMVECTOR vRay = vPos - camPos;
 
     float fFar;
@@ -335,9 +324,8 @@ float3 GSky::GetSunColor() {
     FXMVECTOR vSampleRay = vRay * fSampleLength;
     XMVECTOR vSamplePoint = camPos + vSampleRay * 0.5f;
 
-    FXMVECTOR AC_Wavelenght_XMV = XMVectorSet( AtmosphereCB.AC_Wavelength.x, AtmosphereCB.AC_Wavelength.y, AtmosphereCB.AC_Wavelength.z, 0 );
     constexpr XMVECTORF32 Four_XMV = { 4, 4, 4, 0 };
-    FXMVECTOR vInvWavelength = XMQuaternionInverse( XMVectorPow( AC_Wavelenght_XMV, Four_XMV ) );
+    FXMVECTOR vInvWavelength = XMQuaternionInverse( XMVectorPow( XMVectorSet( AtmosphereCB.AC_Wavelength.x, AtmosphereCB.AC_Wavelength.y, AtmosphereCB.AC_Wavelength.z, 0 ), Four_XMV ) );
 
     // Now loop through the sample rays
     XMVECTOR vFrontColor = XMVectorZero();
@@ -348,7 +336,7 @@ float3 GSky::GetSunColor() {
         FXMVECTOR fHeight = XMVector3Length( vSamplePoint );
         XMStoreFloat( &fHeight_float, fHeight );
         float fDepth = exp( AtmosphereCB.AC_RayleighOverScaleDepth * (AtmosphereCB.AC_InnerRadius - fHeight_float) );
-        XMStoreFloat( &fLightAngle, XMVector3Dot( XMLoadFloat3( &LightPos ), vSamplePoint ) / fHeight );
+        XMStoreFloat( &fLightAngle, XMVector3Dot( LightPos, vSamplePoint ) / fHeight );
         XMStoreFloat( &fCameraAngle, XMVector3Dot( vRay, vSamplePoint ) / fHeight );
         float fScatter = (fStartOffset + fDepth * (AC_Escale( fLightAngle, AtmosphereCB.AC_RayleighScaleDepth ) - AC_Escale( fCameraAngle, AtmosphereCB.AC_RayleighScaleDepth )));
 
@@ -363,7 +351,7 @@ float3 GSky::GetSunColor() {
     FXMVECTOR vDirection = camPos - vPos;
 
     float fCos;
-    XMStoreFloat( &fCos, XMVector3Dot( XMLoadFloat3( &LightPos ), vDirection ) / XMVector3Length( vDirection ) );
+    XMStoreFloat( &fCos, XMVector3Dot( LightPos, vDirection ) / XMVector3Length( vDirection ) );
 
     XMFLOAT3 suncolor_convert;
     float fCos2 = fCos * fCos;
