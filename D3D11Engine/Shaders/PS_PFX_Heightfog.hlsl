@@ -94,15 +94,14 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	position.y -= HF_FogHeight;
 	
 	float fog = 1.0f - ComputeVolumetricFog(position, posOriginal);
-	
-	
-	
+		
 	float3 color = ApplyAtmosphericScatteringGround(position, HF_FogColorMod, true);
-	
-	return float4(saturate(color), saturate(fog));
-	
-	//float zView = HF_ProjAB.y / (expDepth - HF_ProjAB.x);
-	
-	//return float4(HF_CameraPosition + Input.vEyeRay * zView, 1);// fog);
+
+	//darken / lighten fog based on the day / night cycle
+	float darknessFactor = 2.0f;
+	if (AC_LightPos.y < 0.0f) { darknessFactor -= AC_LightPos.y * 3.0f; }
+	else if (AC_LightPos.y > 0.0f) { darknessFactor -= AC_LightPos.y; }
+
+	return float4(saturate(color / darknessFactor), saturate(fog));
 }
 

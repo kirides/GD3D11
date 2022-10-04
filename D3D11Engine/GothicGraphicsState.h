@@ -538,6 +538,9 @@ struct GothicRendererSettings {
         ShowSkeletalVertexNormals = false;
         EnableDynamicLighting = true;
 
+        DrawG1ForestPortals = false;    //enables the textures around forests and some doors to darken them
+                                        //these are only applicable to G1, they don't appear to have been used in G2
+
         FastShadows = false;
         MaxNumFaces = 0;
         IndoorVobDrawRadius = 5000.0f;
@@ -709,6 +712,7 @@ struct GothicRendererSettings {
     bool DrawParticleEffects;
     bool DrawSky;
     bool DrawFog;
+    bool DrawG1ForestPortals;
     bool EnableHDR;
     E_HDRToneMap HDRToneMap;
     bool EnableVSync;
