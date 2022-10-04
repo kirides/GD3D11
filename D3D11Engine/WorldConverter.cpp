@@ -353,17 +353,14 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
         }
 
         //Flag portals so that we can apply a different PS shader later
-        if ( poly->GetMaterial()->GetTexture() ) {
-
-            if ( poly->GetPolyFlags()->PortalPoly ) {
-                std::string textureName = poly->GetMaterial()->GetTexture()->GetNameWithoutExt();
-                if ( textureName == "OWODFLWOODGROUND" ) {
-                    continue; //this is a ground texture that is sometimes re-used for visual tricks to darken tunnels, etc. We don't want to treat this as a portal.
-                } else {
-                    MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( poly->GetMaterial()->GetTexture() );
-                    if ( info ) {
-                        info->MaterialType = MaterialInfo::MT_Portal;
-                    }
+        if ( poly->GetPolyFlags()->PortalPoly && poly->GetMaterial()->GetTexture() ) {
+            std::string textureName = poly->GetMaterial()->GetTexture()->GetNameWithoutExt();
+            if ( textureName == "OWODFLWOODGROUND" ) {
+                continue; //this is a ground texture that is sometimes re-used for visual tricks to darken tunnels, etc. We don't want to treat this as a portal.
+            } else {
+                MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( poly->GetMaterial()->GetTexture() );
+                if ( info ) {
+                    info->MaterialType = MaterialInfo::MT_Portal;
                 }
             }
         }
@@ -451,10 +448,8 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
             && !mat->HasAlphaTest() ) 
         {
 #ifdef BUILD_GOTHIC_1_08k
-            // Give it alpha test since it contains alpha channel and most like is the foam
-            // Normal water surfaces shouldn't have alpha channel
             MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( key.Texture );
-            if ( !(key.Texture && key.Texture->HasAlphaChannel() && AdditionalCheckWaterFall( key.Texture )) ) { 
+            if ( !(AdditionalCheckWaterFall( key.Texture )) ) { 
                 // Give water surfaces a water-shader
                 if ( info ) {
                     info->PixelShader = "PS_Water";

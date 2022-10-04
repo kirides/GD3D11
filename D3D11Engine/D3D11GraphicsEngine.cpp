@@ -2266,7 +2266,9 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     DrawMeshInfoListAlphablended( FrameTransparencyMeshes );
 
     //draw forest / door portals
-    DrawMeshInfoListAlphablended( FrameTransparencyMeshesPortal );
+    if ( Engine::GAPI->GetRendererState().RendererSettings.DrawG1ForestPortals ) {
+        DrawMeshInfoListAlphablended( FrameTransparencyMeshesPortal );
+    }
 
     //draw waterfall foam
     DrawMeshInfoListAlphablended( FrameTransparencyMeshesWaterfall );
@@ -2673,15 +2675,14 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
     // fogging
     for ( auto const& it : list ) {
         if ( it.first.Material->GetAniTexture() != nullptr ) {
-                // Draw the section-part
-                DrawVertexBufferIndexedUINT( nullptr, nullptr, it.second->Indices.size(),
-                    it.second->BaseIndexLocation );
+            // Draw the section-part
+            DrawVertexBufferIndexedUINT( nullptr, nullptr, it.second->Indices.size(),
+                it.second->BaseIndexLocation );
         }
     }
 
     return XR_SUCCESS;
 }
-
 
 XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
     if ( !Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh )
@@ -2754,15 +2755,13 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
                 }
 
                 // Check for alphablending
-                if (worldMesh.first.Material->GetAlphaFunc() > zMAT_ALPHA_FUNC_NONE &&
-                    worldMesh.first.Material->GetAlphaFunc() != zMAT_ALPHA_FUNC_TEST) {
+                if ( worldMesh.first.Material->GetAlphaFunc() > zMAT_ALPHA_FUNC_NONE &&
+                    worldMesh.first.Material->GetAlphaFunc() != zMAT_ALPHA_FUNC_TEST ) {
                     if ( worldMesh.first.Info->MaterialType == MaterialInfo::MT_Portal ) {
                         FrameTransparencyMeshesPortal.push_back( worldMesh );
-                    }
-                    else if ( worldMesh.first.Info->MaterialType == MaterialInfo::MT_WaterfallFoam ) {
+                    } else if ( worldMesh.first.Info->MaterialType == MaterialInfo::MT_WaterfallFoam ) {
                         FrameTransparencyMeshesWaterfall.push_back( worldMesh );
-                    } 
-                else {
+                    } else {
                         FrameTransparencyMeshes.push_back( worldMesh );
                     }
                 } else {
@@ -3357,7 +3356,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
 
     std::vector<WorldMeshSectionInfo*> drawnSections;
 
-    if ( Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh) {
+    if ( Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh ) {
         // Bind wrapped mesh vertex buffers
         DrawVertexBufferIndexedUINT( Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer,
             Engine::GAPI->GetWrappedWorldMesh()->MeshIndexBuffer, 0, 0 );
@@ -3400,7 +3399,6 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                 DrawVertexBufferIndexedUINT( nullptr, nullptr,
                     meshInfoByKey->second->Indices.size(), meshInfoByKey->second->BaseIndexLocation );
             }
-
         } else {
             for ( auto&& itx : Engine::GAPI->GetWorldSections() ) {
                 for ( auto&& ity : itx.second ) {
@@ -3708,7 +3706,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround( FXMVECTOR position,
                     } else {
                         for ( const auto& it : section.WorldMeshes ) {
                             // Check surface type
-                            if ( it.first.Info->MaterialType == MaterialInfo::MT_Water) {
+                            if ( it.first.Info->MaterialType == MaterialInfo::MT_Water ) {
                                 continue;
                             }
 
@@ -5569,7 +5567,7 @@ void D3D11GraphicsEngine::GetBackbufferData( byte** data, int& pixelsize ) {
 void D3D11GraphicsEngine::BindShaderForTexture( zCTexture* texture,
     bool forceAlphaTest,
     int zMatAlphaFunc,
-    MaterialInfo::EMaterialType materialInfo) {
+    MaterialInfo::EMaterialType materialInfo ) {
     auto active = ActivePS;
     auto newShader = ActivePS;
 
@@ -5579,14 +5577,9 @@ void D3D11GraphicsEngine::BindShaderForTexture( zCTexture* texture,
 
     if ( materialInfo == MaterialInfo::MT_Portal ) {
         newShader = PS_PortalDiffuse;
-    }
-    else if ( materialInfo == MaterialInfo::MT_WaterfallFoam ) {
+    } else if ( materialInfo == MaterialInfo::MT_WaterfallFoam ) {
         newShader = PS_WaterfallFoam;
-        //SetActivePixelShader( "PS_PFX_Alpha_Blend" );
-        //ActivePS->Apply();
-
-    }
-    else if ( linZ ) {
+    } else if ( linZ ) {
         newShader = PS_LinDepth;
     } else if ( blendAdd || blendBlend ) {
         newShader = PS_Simple;

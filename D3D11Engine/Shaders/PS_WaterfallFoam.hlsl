@@ -1,11 +1,4 @@
-//--------------------------------------------------------------------------------------
-// Alpha Blend Buffer
-//--------------------------------------------------------------------------------------
-cbuffer AlphaBlendInfo : register(b0)
-{
-	float AB_Alpha;
-	float3 AB_Color;
-};
+#include <AtmosphericScattering.h>
 
 //--------------------------------------------------------------------------------------
 // Textures and Samplers
@@ -29,8 +22,17 @@ struct PS_INPUT
 //--------------------------------------------------------------------------------------
 float4 PSMain(PS_INPUT Input) : SV_TARGET
 {
-	float4 color = TX_Texture0.Sample(SS_Linear, Input.vTexcoord);
-	clip(color.a - 0.5f);
-	color *= float4(1.0f, 1.0f, 1.0f, 0.1f);
-	return color;
+	float4 colour = TX_Texture0.Sample(SS_Linear, Input.vTexcoord);
+
+	//darken / lighten foam based on the day / night cycle
+	float colourRGB = clamp(AC_LightPos.y+0.2f, 0.1f, 0.6f);
+	float opaqueLevel = 1 - clamp(AC_LightPos.y + 0.2f, 0.33f, 0.66f);
+	if (AC_LightPos.y <= 0.08f) {
+		colour *= float4(colourRGB, colourRGB, colourRGB+0.1f, 0.66f); //add blue tint at night
+	}
+	else if (AC_LightPos.y > 0.08f) {
+		colour *= float4(colourRGB, colourRGB, colourRGB, opaqueLevel); //adjust opaque level according to sun height
+	}	
+
+	return colour;
 }
