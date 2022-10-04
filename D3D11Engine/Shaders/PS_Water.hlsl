@@ -106,15 +106,11 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	float fresnel = min(0.5f, saturate(pow(1.0f - saturate(dot(-viewDirection, wavesFres)), 10.0f)));
 	
 	// Reflection
-	float3 reflect_vec = reflect(-viewDirection, wavesFres);
-	
+	float3 reflect_vec = reflect(-viewDirection, wavesFres);	
 	
 	// sample reflection cube
 	float3 reflection = TX_ReflectionCube.Sample(SS_Linear, reflect_vec).xyz;
 	
-	//scene *= float4(0,0,1,1);
-	
-
 	// Darken the scene, to make a wet surface
 	float f = 1-saturate(pow(1-shallowDepth, 8.0f) + clamp(pow(distortionSmall.y, 2), 0.5f, 1.0f));
 
@@ -138,6 +134,11 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	float cos_spec = clamp(dot(reflect_vecSmall, -AC_LightPos.xyz * float3(1,1,1)), 0, 1);
 	float sun_spot = pow(cos_spec, 500.0f) * 0.5f;
 	color.rgb += lerp(sunColor * sun_spot, float3(0.0f, 0.0f, 0.0f), step(step(0.0f, AC_LightPos.y) * Input.vDiffuse.y, 0.5f));
-	
-	return float4(color, 1);
+
+	//darken / lighten water based on the day / night cycle
+	float darknessFactor = 2.0f;
+	if (AC_LightPos.y < 0.0f) { darknessFactor -= AC_LightPos.y; }
+	else if (AC_LightPos.y > 0.0f) { darknessFactor -= AC_LightPos.y; }
+
+	return float4(color / darknessFactor, 1);
 }

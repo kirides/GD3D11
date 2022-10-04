@@ -3914,6 +3914,8 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "General", "CompressBackBuffer", std::to_string( s.CompressBackBuffer ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "AnimateStaticVobs", std::to_string( s.AnimateStaticVobs ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "DrawWorldSectionIntersections", std::to_string( s.DrawSectionIntersections ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "SunLightStrength", std::to_string( s.SunLightStrength ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "DrawG1ForestPortals", std::to_string( s.DrawG1ForestPortals ? TRUE : FALSE ).c_str(), ini.c_str() );
 
     /*
     * Draw-distance is saved on a per World basis using SaveRendererWorldSettings
@@ -3949,6 +3951,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Shadows", "PointlightShadows", std::to_string( s.EnablePointlightShadows ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "EnableDynamicLighting", std::to_string( s.EnableDynamicLighting ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "SmoothCameraUpdate", std::to_string( s.SmoothShadowCameraUpdate ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Shadows", "ShadowStrength", std::to_string( s.ShadowStrength ).c_str(), ini.c_str() );
 
     WritePrivateProfileStringA( "SMAA", "Enabled", std::to_string( s.EnableSMAA ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "SMAA", "SharpenFactor", std::to_string( s.SharpenFactor ).c_str(), ini.c_str() );
@@ -4009,6 +4012,8 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
     s.CompressBackBuffer = GetPrivateProfileBoolA( "General", "CompressBackBuffer", defaultRendererSettings.CompressBackBuffer, ini );
     s.AnimateStaticVobs = GetPrivateProfileBoolA( "General", "AnimateStaticVobs", defaultRendererSettings.AnimateStaticVobs, ini );
     s.DrawSectionIntersections = GetPrivateProfileBoolA( "General", "DrawWorldSectionIntersections", defaultRendererSettings.DrawSectionIntersections, ini );
+    s.SunLightStrength = GetPrivateProfileFloatA( "General", "SunLightStrength", defaultRendererSettings.SunLightStrength, ini );
+    s.DrawG1ForestPortals = GetPrivateProfileBoolA( "General", "DrawG1ForestPortals", defaultRendererSettings.DrawG1ForestPortals, ini );
 
     /*
     * Draw-distance is Loaded on a per World basis using LoadRendererWorldSettings
@@ -4034,6 +4039,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
     s.WorldShadowRangeScale = GetPrivateProfileFloatA( "Shadows", "WorldShadowRangeScale", 1.0f, ini );
     s.EnableDynamicLighting = GetPrivateProfileBoolA( "Shadows", "EnableDynamicLighting", defaultRendererSettings.EnableDynamicLighting, ini );
     s.SmoothShadowCameraUpdate = GetPrivateProfileBoolA( "Shadows", "SmoothCameraUpdate", defaultRendererSettings.SmoothShadowCameraUpdate, ini );
+    s.ShadowStrength = GetPrivateProfileFloatA( "Shadows", "ShadowStrength", defaultRendererSettings.ShadowStrength, ini );
 
     INT2 res = {};
     RECT desktopRect;

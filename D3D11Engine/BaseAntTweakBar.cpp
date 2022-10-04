@@ -250,6 +250,10 @@ XRESULT BaseAntTweakBar::Init() {
     TwAddVarRW( Bar_General, "ForceFOV", TW_TYPE_BOOLCPP, &Engine::GAPI->GetRendererState().RendererSettings.ForceFOV, nullptr );
     //TwAddVarRW(Bar_General, "Max Num Indices", TW_TYPE_INT32, &Engine::GAPI->GetRendererState().RendererSettings.MaxNumFaces, nullptr);
 
+#ifdef BUILD_GOTHIC_1_08k
+    TwAddVarRW( Bar_General, "DrawForestPortals", TW_TYPE_BOOLCPP, &Engine::GAPI->GetRendererState().RendererSettings.DrawG1ForestPortals, nullptr );
+#endif
+
     Bar_Info = TwNewBar( "FrameStats" );
     TwDefine( " FrameStats refresh=0.3" );
     TwDefine( " FrameStats position='800 0'" );

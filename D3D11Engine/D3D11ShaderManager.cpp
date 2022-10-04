@@ -275,7 +275,7 @@ XRESULT D3D11ShaderManager::Init() {
     Shaders.push_back( ShaderInfo( "PS_PFX_LumConvert", "PS_PFX_LumConvert.hlsl", "p" ) );
     Shaders.push_back( ShaderInfo( "PS_PFX_LumAdapt", "PS_PFX_LumAdapt.hlsl", "p" ) );
     Shaders.back().cBufferSizes.push_back( sizeof( LumAdaptConstantBuffer ) );
-
+        
     D3D_SHADER_MACRO m;
     std::vector<D3D_SHADER_MACRO> makros;
 
@@ -355,12 +355,15 @@ XRESULT D3D11ShaderManager::Init() {
     m.Name = "ALPHATEST";
     m.Definition = "0";
     makros.push_back( m );
-
+    
     Shaders.push_back( ShaderInfo( "PS_Diffuse", "PS_Diffuse.hlsl", "p", makros ) );
     Shaders.back().cBufferSizes.push_back( sizeof( GothicGraphicsState ) );
     Shaders.back().cBufferSizes.push_back( sizeof( AtmosphereConstantBuffer ) );
     Shaders.back().cBufferSizes.push_back( sizeof( MaterialInfo::Buffer ) );
     Shaders.back().cBufferSizes.push_back( sizeof( PerObjectState ) );
+
+    Shaders.push_back( ShaderInfo( "PS_PortalDiffuse", "PS_PortalDiffuse.hlsl", "p" ) ); //forest portals, doors, etc.
+    Shaders.push_back( ShaderInfo( "PS_WaterfallFoam", "PS_WaterfallFoam.hlsl", "p" ) );     //foam on at the base of waterfalls
 
     makros.clear();
 
