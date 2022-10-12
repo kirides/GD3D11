@@ -160,6 +160,22 @@ public:
 			lpDDSurfaceDesc2->ddpfPixelFormat.dwBBitMask = 0x000000FF;
 		}
 
+        // Check potential texture conversions
+        if ( lpDDSurfaceDesc2->ddpfPixelFormat.dwRGBBitCount == 16 ) {
+            if ( lpDDSurfaceDesc2->ddpfPixelFormat.dwRBitMask == 0x7C00
+                && lpDDSurfaceDesc2->ddpfPixelFormat.dwGBitMask == 0x3E0
+                && lpDDSurfaceDesc2->ddpfPixelFormat.dwBBitMask == 0x1F
+                && lpDDSurfaceDesc2->ddpfPixelFormat.dwRGBAlphaBitMask == 0x8000 )
+                lpDDSurfaceDesc2->ddpfPixelFormat.dwFourCC = 1;
+            else if ( lpDDSurfaceDesc2->ddpfPixelFormat.dwRBitMask == 0xF00
+                && lpDDSurfaceDesc2->ddpfPixelFormat.dwGBitMask == 0xF0
+                && lpDDSurfaceDesc2->ddpfPixelFormat.dwBBitMask == 0x0F
+                && lpDDSurfaceDesc2->ddpfPixelFormat.dwRGBAlphaBitMask == 0xF000 )
+                lpDDSurfaceDesc2->ddpfPixelFormat.dwFourCC = 2;
+            else
+                lpDDSurfaceDesc2->ddpfPixelFormat.dwFourCC = 0;
+        }
+
 		// Calculate bpp
 		int redBits = Toolbox::GetNumberOfBits( lpDDSurfaceDesc2->ddpfPixelFormat.dwRBitMask );
 		int greenBits = Toolbox::GetNumberOfBits( lpDDSurfaceDesc2->ddpfPixelFormat.dwGBitMask );

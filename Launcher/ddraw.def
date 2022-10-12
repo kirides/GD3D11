@@ -34,3 +34,4 @@ EXPORTS
 	GDX_SetWorldAOStrength		= FakeGDX_SetWorldAOStrength		@32
 	GDX_OpenMessageBox			= FakeGDX_OpenMessageBox			@33
 	GDX_Module					= FakeGDX_Module					@34
+	UpdateCustomFontMultiplier	= FakeUpdateCustomFontMultiplier	@35

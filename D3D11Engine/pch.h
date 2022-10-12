@@ -31,7 +31,7 @@ using namespace DirectX;
 
 #define ENABLE_TESSELATION 0
 
-#define VERSION_NUMBER "17.8-dev8"
+#define VERSION_NUMBER "17.8-dev9"
 __declspec(selectany) const char* VERSION_NUMBER_STR = VERSION_NUMBER;
 
 extern bool FeatureLevel10Compatibility;

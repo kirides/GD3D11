@@ -43,6 +43,8 @@ struct ddraw_dll {
     FARPROC	GDX_SetShadowAOStrength;
     FARPROC	GDX_SetWorldAOStrength;
     FARPROC	GDX_OpenMessageBox;
+
+    FARPROC	UpdateCustomFontMultiplier;
 } ddraw;
 
 __declspec(naked) void FakeAcquireDDThreadLock() { _asm { jmp[ddraw.AcquireDDThreadLock] } }
@@ -79,6 +81,9 @@ __declspec(naked) void FakeGDX_SetShadowStrength() { _asm { jmp[ddraw.GDX_SetSha
 __declspec(naked) void FakeGDX_SetShadowAOStrength() { _asm { jmp[ddraw.GDX_SetShadowAOStrength] } }
 __declspec(naked) void FakeGDX_SetWorldAOStrength() { _asm { jmp[ddraw.GDX_SetWorldAOStrength] } }
 __declspec(naked) void FakeGDX_OpenMessageBox() { _asm { jmp[ddraw.GDX_OpenMessageBox] } }
+
+__declspec(naked) void FakeUpdateCustomFontMultiplier() { _asm { jmp[ddraw.UpdateCustomFontMultiplier] } }
+
 
 extern "C" HMODULE WINAPI FakeGDX_Module() {
     return ddraw.dll;
@@ -285,6 +290,8 @@ BOOL APIENTRY DllMain( HINSTANCE hInst, DWORD reason, LPVOID ) {
         ddraw.GDX_SetShadowAOStrength = GetProcAddress( ddraw.dll, "GDX_SetShadowAOStrength" );
         ddraw.GDX_SetWorldAOStrength = GetProcAddress( ddraw.dll, "GDX_SetWorldAOStrength" );
         ddraw.GDX_OpenMessageBox = GetProcAddress( ddraw.dll, "GDX_OpenMessageBox" );
+        ddraw.UpdateCustomFontMultiplier = GetProcAddress( ddraw.dll, "UpdateCustomFontMultiplier" );
+        
     } else if ( reason == DLL_PROCESS_DETACH ) {
         FreeLibrary( ddraw.dll );
     }

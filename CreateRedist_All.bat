@@ -3,7 +3,7 @@ setlocal enableextensions enabledelayedexpansion
 
 PUSHD %~dp0
 
-SET "VERSION=17.7-dev20"
+SET "VERSION=17.8-dev9"
 
 CALL :SUB_BUILD "Gothic2-GD3D11-%VERSION%_avx2" "Release_AVX"
 CD /D %~dp0

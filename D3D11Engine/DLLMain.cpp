@@ -10,6 +10,7 @@
 #include <signal.h>
 #include "VersionCheck.h"
 #include "InstructionSet.h"
+#include "D3D11GraphicsEngine.h"
 
 #include <shlwapi.h>
 
@@ -66,6 +67,7 @@ struct ddraw_dll {
     FARPROC	GetSurfaceFromDC;
     FARPROC	RegisterSpecialCase;
     FARPROC	ReleaseDDThreadLock;
+    FARPROC	UpdateCustomFontMultiplier;
 } ddraw;
 
 HRESULT DoHookedDirectDrawCreateEx( GUID FAR* lpGuid, LPVOID* lplpDD, REFIID  iid, IUnknown FAR* pUnkOuter ) {
@@ -110,6 +112,13 @@ extern "C" void WINAPI HookedReleaseDDThreadLock() {
     // Do nothing
     LogInfo() << "ReleaseDDThreadLock called!";
 }
+
+
+extern "C" float WINAPI  UpdateCustomFontMultiplierFontRendering( float multiplier ) {
+    D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    return engine ? engine->UpdateCustomFontMultiplierFontRendering( multiplier ) : 1.0;
+}
+
 
 __declspec(naked) void FakeAcquireDDThreadLock() { _asm { jmp[ddraw.AcquireDDThreadLock] } }
 __declspec(naked) void FakeCheckFullscreen() { _asm { jmp[ddraw.CheckFullscreen] } }

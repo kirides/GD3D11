@@ -4,6 +4,7 @@
 #include "../D3D11GraphicsEngineBase.h"
 #include "../D3D11Texture.h"
 #include "../zCTexture.h"
+#include "Conversions.h"
 
 #define DebugWriteTex(x)  DebugWrite(x)
 
@@ -404,21 +405,12 @@ HRESULT MyDirectDrawSurface7::Unlock( LPRECT lpRect ) {
 
     if ( bpp == 16 ) {
         // Convert
-        unsigned char* dst = new unsigned char[EngineTexture->GetSizeInBytes( 0 )];
-        for ( unsigned int i = 0; i < EngineTexture->GetSizeInBytes( 0 ) / 4; i++ ) {
-            unsigned char temp0 = LockedData[i * 2 + 0];
-            unsigned char temp1 = LockedData[i * 2 + 1];
-            unsigned pixel_data = temp1 << 8 | temp0;
-
-            unsigned char blueComponent = (pixel_data & 0x1F);
-            unsigned char greenComponent = (pixel_data >> 6) & 0x1F;
-            unsigned char redComponent = (pixel_data >> 11) & 0x1F;
-
-            // Extract red, green and blue components from the 16 bits
-            dst[4 * i + 0] = static_cast<unsigned char>((redComponent / 32.0) * 255.0f);
-            dst[4 * i + 1] = static_cast<unsigned char>((greenComponent / 32.0) * 255.0f);
-            dst[4 * i + 2] = static_cast<unsigned char>((blueComponent / 32.0) * 255.0f);
-            dst[4 * i + 3] = 255;
+        UINT realDataSize = EngineTexture->GetSizeInBytes( 0 );
+        unsigned char* dst = new unsigned char[realDataSize];
+        switch ( OriginalSurfaceDesc.ddpfPixelFormat.dwFourCC ) {
+            case 1: Convert1555to8888( dst, LockedData, realDataSize ); break;
+            case 2: Convert4444to8888( dst, LockedData, realDataSize ); break;
+            default: Convert565to8888( dst, LockedData, realDataSize ); break;
         }
 
         if ( Engine::GAPI->GetMainThreadID() != GetCurrentThreadId() ) {

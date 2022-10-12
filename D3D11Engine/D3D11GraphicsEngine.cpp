@@ -59,6 +59,7 @@ const int NUM_MIN_FRAME_SHADOW_UPDATES =
 4;  // Minimum lights to update per frame
 const int MAX_IMPORTANT_LIGHT_UPDATES = 1;
 
+
 D3D11GraphicsEngine::D3D11GraphicsEngine() {
     DebugPointlight = nullptr;
     OutputWindow = nullptr;
@@ -86,6 +87,7 @@ D3D11GraphicsEngine::D3D11GraphicsEngine() {
         Engine::GAPI->GetRendererState().RendererSettings.LoadedResolution;
     CachedRefreshRate.Numerator = 0;
     CachedRefreshRate.Denominator = 0;
+    unionCurrentCustomFontMultiplier = 1.0;
 }
 
 D3D11GraphicsEngine::~D3D11GraphicsEngine() {
@@ -6417,10 +6419,18 @@ namespace UI::zFont {
     }
 }
 
+
+float  D3D11GraphicsEngine::UpdateCustomFontMultiplierFontRendering( float multiplier ) {
+    float res = unionCurrentCustomFontMultiplier;
+    unionCurrentCustomFontMultiplier = multiplier;
+    return res; 
+}
+
 void D3D11GraphicsEngine::DrawString( const std::string& str, float x, float y, const zFont* font, zColor& fontColor ) {
     if ( str.empty() ) return;
     if ( !font ) return;
     if ( !font->tex ) return;
+
     float UIScale = 1.0f;
     static int savedBarSize = -1;
     if ( oCGame::GetGame() ) {
@@ -6436,6 +6446,8 @@ void D3D11GraphicsEngine::DrawString( const std::string& str, float x, float y, 
     if ( tx->CacheIn( FONT_CACHE_PRIO ) != zRES_CACHED_IN ) {
         return;
     }
+    
+    UIScale *= unionCurrentCustomFontMultiplier;
 
     //
     // Backup old renderstates, BlendState can be ignored here.
