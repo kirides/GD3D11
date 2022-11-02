@@ -2316,10 +2316,12 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     Engine::GAPI->DrawParticlesSimple();
 
 #if (defined BUILD_GOTHIC_2_6_fix || defined BUILD_GOTHIC_1_08k)
-    // Calc weapon/effect trail mesh data
-    Engine::GAPI->CalcPolyStripMeshes();
-    // Draw those
-    DrawPolyStrips();
+    if ( Engine::GAPI->GetRendererState().RendererSettings.DrawWeaponTrails ) {
+        // Calc weapon/effect trail mesh data
+        Engine::GAPI->CalcPolyStripMeshes();
+        // Draw those
+        DrawPolyStrips();
+    }
 #endif
 
     // Draw debug lines

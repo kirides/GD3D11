@@ -249,6 +249,7 @@ XRESULT BaseAntTweakBar::Init() {
     TwAddVarRW( Bar_General, "FOVVert", TW_TYPE_FLOAT, &Engine::GAPI->GetRendererState().RendererSettings.FOVVert, nullptr );
     TwAddVarRW( Bar_General, "ForceFOV", TW_TYPE_BOOLCPP, &Engine::GAPI->GetRendererState().RendererSettings.ForceFOV, nullptr );
     //TwAddVarRW(Bar_General, "Max Num Indices", TW_TYPE_INT32, &Engine::GAPI->GetRendererState().RendererSettings.MaxNumFaces, nullptr);
+    TwAddVarRW( Bar_General, "DrawWeaponTrails", TW_TYPE_BOOLCPP, &Engine::GAPI->GetRendererState().RendererSettings.DrawWeaponTrails, nullptr );
 
 #ifdef BUILD_GOTHIC_1_08k
     TwAddVarRW( Bar_General, "DrawForestPortals", TW_TYPE_BOOLCPP, &Engine::GAPI->GetRendererState().RendererSettings.DrawG1ForestPortals, nullptr );

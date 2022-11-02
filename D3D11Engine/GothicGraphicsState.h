@@ -677,6 +677,8 @@ struct GothicRendererSettings {
         CompressBackBuffer = false;
         AnimateStaticVobs = true;
         RunInSpacerNet = false;
+
+        DrawWeaponTrails = true;
     }
 
     void SetupOldWorldSpecificValues() {
@@ -831,6 +833,8 @@ struct GothicRendererSettings {
     bool CompressBackBuffer;
     bool AnimateStaticVobs;
     bool RunInSpacerNet;
+
+    bool DrawWeaponTrails;
 };
 
 struct GothicRendererTiming {
