@@ -3047,6 +3047,12 @@ GInventory* GothicAPI::GetInventory() {
     return Inventory.get();
 }
 
+/** Returns the far Z */
+float GothicAPI::GetFarZ() {
+    zCSkyController_Outdoor* sc = oCGame::GetGame()->_zCSession_world->GetSkyControllerOutdoor();
+    return sc->GetFarZ();
+}
+
 /** Returns the fog-color */
 FXMVECTOR GothicAPI::GetFogColor() {
     zCSkyController_Outdoor* sc = oCGame::GetGame()->_zCSession_world->GetSkyControllerOutdoor();

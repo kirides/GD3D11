@@ -123,8 +123,8 @@ struct GothicMemoryLocations {
         static const unsigned int Init = 0x005E6A00;*/
 
         static const unsigned int GetUnderwaterFX = 0x5baaa0;
-        static const unsigned int Offset_OverrideColor = 0x558;
-        static const unsigned int Offset_OverrideFlag = 0x564;
+        static const unsigned int Offset_FarZ = 0x56C;
+        static const unsigned int Offset_Color = 0x580;
 
         static const unsigned int SetCameraLocationHint = 0x005BC7D0;
 

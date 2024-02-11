@@ -208,13 +208,22 @@ public:
 #ifndef BUILD_GOTHIC_1_08k
         return *reinterpret_cast<XMFLOAT3*>(THISPTR_OFFSET( GothicMemoryLocations::zCSkyController_Outdoor::Offset_OverrideColor ));
 #else
-        return XMFLOAT3( 0, 0, 0 );
+        zColor color = *reinterpret_cast<zColor*>THISPTR_OFFSET( GothicMemoryLocations::zCSkyController_Outdoor::Offset_Color );
+        return XMFLOAT3( color.bgra.r / 255.0f, color.bgra.g / 255.0f, color.bgra.b / 255.0f );
 #endif
     }
 
     bool GetOverrideFlag() {
 #ifndef BUILD_GOTHIC_1_08k
         return *reinterpret_cast<int*>(THISPTR_OFFSET( GothicMemoryLocations::zCSkyController_Outdoor::Offset_OverrideFlag )) != 0;
+#else
+        return 1;
+#endif
+    }
+
+    float GetFarZ() {
+#if defined(BUILD_GOTHIC_1_08k) || defined(BUILD_GOTHIC_2_6_fix)
+        return *reinterpret_cast<float*>THISPTR_OFFSET( GothicMemoryLocations::zCSkyController_Outdoor::Offset_FarZ );
 #else
         return 0;
 #endif
