@@ -59,7 +59,7 @@ XRESULT D3D11PFX_HeightFog::Render( RenderToTextureBuffer* fxbuffer ) {
 	cb.HF_WeightZFar = std::min( cb.HF_WeightZFar, atmoMax );
 	cb.HF_WeightZNear = std::min( cb.HF_WeightZNear, atmoMin );
 
-#ifndef BUILD_GOTHIC_1_08k
+#ifndef BUILD_GOTHIC_1_08k || !defined(BUILD_1_12F)
     float fogDensityFactor = 2;
     float fogDensityFactorRain = (1.0f - Engine::GAPI->GetFogOverride());
 #else
@@ -74,7 +74,7 @@ XRESULT D3D11PFX_HeightFog::Render( RenderToTextureBuffer* fxbuffer ) {
 		// Override fog color when in fog zone
 		color = Engine::GAPI->GetFogColor();
 
-#ifndef BUILD_GOTHIC_1_08k
+#ifndef BUILD_GOTHIC_1_08k || !defined(BUILD_1_12F)
 		// Make it z-Fog
 		cb.HF_HeightFalloff = Toolbox::lerp( cb.HF_HeightFalloff, 0.000001f, Engine::GAPI->GetFogOverride() );
 #endif
@@ -82,7 +82,7 @@ XRESULT D3D11PFX_HeightFog::Render( RenderToTextureBuffer* fxbuffer ) {
 		// Turn up density
 		cb.HF_GlobalDensity = Toolbox::lerp( cb.HF_GlobalDensity, cb.HF_GlobalDensity * fogDensityFactor, Engine::GAPI->GetFogOverride() );
 
-#ifndef BUILD_GOTHIC_1_08k
+#ifndef BUILD_GOTHIC_1_08k || !defined(BUILD_1_12F)
 		// Use other fog-values for fog-zones
 		float distNear = WORLD_SECTION_SIZE * ((ffar - fnear) / ffar);
 		cb.HF_WeightZNear = Toolbox::lerp( cb.HF_WeightZNear, WORLD_SECTION_SIZE * 0.09f, Engine::GAPI->GetFogOverride() );
