@@ -34,14 +34,14 @@ D3D11Effect::~D3D11Effect() {
 HRESULT LoadTextureArray( Microsoft::WRL::ComPtr<ID3D11Device1> pd3dDevice, Microsoft::WRL::ComPtr<ID3D11DeviceContext1> context, char* sTexturePrefix, int iNumTextures, ID3D11Texture2D** ppTex2D, ID3D11ShaderResourceView** ppSRV );
 
 /** Fills a vector of random raindrop data */
-void D3D11Effect::FillRandomRaindropData( std::vector<ParticleInstanceInfo>& data ) {
+void D3D11Effect::FillRandomRaindropData( std::vector<RainParticleInstanceInfo>& data ) {
     /** Base taken from Nvidias Rain-Sample **/
 
     float radius = Engine::GAPI->GetRendererState().RendererSettings.RainRadiusRange;
     float height = Engine::GAPI->GetRendererState().RendererSettings.RainHeightRange;
 
     for ( size_t i = 0; i < data.size(); i++ ) {
-        ParticleInstanceInfo raindrop;
+        RainParticleInstanceInfo raindrop;
         //use rejection sampling to generate random points inside a circle of radius 1 centered at 0, 0
         float SeedX;
         float SeedZ;
@@ -118,15 +118,15 @@ XRESULT D3D11Effect::DrawRain() {
         e->CreateVertexBuffer( &RainBufferInitial );
 
         UINT numParticles = Engine::GAPI->GetRendererState().RendererSettings.RainNumParticles;
-        std::vector<ParticleInstanceInfo> particles( numParticles );
+        std::vector<RainParticleInstanceInfo> particles( numParticles );
 
         // Fill the vector with random raindrop data
         FillRandomRaindropData( particles );
 
         // Create vertexbuffers
-        RainBufferInitial->Init( &particles[0], particles.size() * sizeof( ParticleInstanceInfo ), (D3D11VertexBuffer::EBindFlags)(D3D11VertexBuffer::B_VERTEXBUFFER), D3D11VertexBuffer::U_DEFAULT, D3D11VertexBuffer::CA_NONE, "D3D11Effect::DrawRain::RainBufferInitial" );
-        RainBufferDrawFrom->Init( &particles[0], particles.size() * sizeof( ParticleInstanceInfo ), (D3D11VertexBuffer::EBindFlags)(D3D11VertexBuffer::B_VERTEXBUFFER | D3D11VertexBuffer::B_STREAM_OUT), D3D11VertexBuffer::U_DEFAULT, D3D11VertexBuffer::CA_NONE, "D3D11Effect::DrawRain::RainBufferDrawFrom" );
-        RainBufferStreamTo->Init( &particles[0], particles.size() * sizeof( ParticleInstanceInfo ), (D3D11VertexBuffer::EBindFlags)(D3D11VertexBuffer::B_VERTEXBUFFER | D3D11VertexBuffer::B_STREAM_OUT), D3D11VertexBuffer::U_DEFAULT, D3D11VertexBuffer::CA_NONE, "D3D11Effect::DrawRain::RainBufferStreamTo" );
+        RainBufferInitial->Init( &particles[0], particles.size() * sizeof( RainParticleInstanceInfo ), (D3D11VertexBuffer::EBindFlags)(D3D11VertexBuffer::B_VERTEXBUFFER), D3D11VertexBuffer::U_DEFAULT, D3D11VertexBuffer::CA_NONE, "D3D11Effect::DrawRain::RainBufferInitial" );
+        RainBufferDrawFrom->Init( &particles[0], particles.size() * sizeof( RainParticleInstanceInfo ), (D3D11VertexBuffer::EBindFlags)(D3D11VertexBuffer::B_VERTEXBUFFER | D3D11VertexBuffer::B_STREAM_OUT), D3D11VertexBuffer::U_DEFAULT, D3D11VertexBuffer::CA_NONE, "D3D11Effect::DrawRain::RainBufferDrawFrom" );
+        RainBufferStreamTo->Init( &particles[0], particles.size() * sizeof( RainParticleInstanceInfo ), (D3D11VertexBuffer::EBindFlags)(D3D11VertexBuffer::B_VERTEXBUFFER | D3D11VertexBuffer::B_STREAM_OUT), D3D11VertexBuffer::U_DEFAULT, D3D11VertexBuffer::CA_NONE, "D3D11Effect::DrawRain::RainBufferStreamTo" );
 
         firstFrame = true;
 
@@ -146,7 +146,7 @@ XRESULT D3D11Effect::DrawRain() {
 
     firstFrame = false;
 
-    UINT stride = sizeof( ParticleInstanceInfo );
+    UINT stride = sizeof( RainParticleInstanceInfo );
     UINT offset = 0;
 
     // Bind buffer to draw from last frame
@@ -156,6 +156,7 @@ XRESULT D3D11Effect::DrawRain() {
     e->GetContext()->SOSetTargets( 1, RainBufferStreamTo->GetVertexBuffer().GetAddressOf(), &offset );
 
     // Apply shaders
+    e->GetContext()->PSSetShader( nullptr, nullptr, 0 );
     particleAdvanceVS->Apply();
     streamOutGS->Apply();
 
@@ -236,7 +237,7 @@ XRESULT D3D11Effect::DrawRain() {
     e->GetContext()->PSSetShaderResources( 0, 1, RainTextureArraySRV.GetAddressOf() );
 
     // Draw the vertexbuffer
-    e->DrawVertexBuffer( RainBufferDrawFrom, numParticles, sizeof( ParticleInstanceInfo ) );
+    e->DrawVertexBuffer( RainBufferDrawFrom, numParticles, sizeof( RainParticleInstanceInfo ) );
 
     // Reset this
     e->GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );

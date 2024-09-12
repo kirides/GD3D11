@@ -383,6 +383,8 @@ struct GothicMemoryLocations {
         static const unsigned int Offset_NumActiveAnis = 0x34;
         static const unsigned int Offset_AniChannels = 0x38;
         static const unsigned int GetVisualName = 0x0057DF60;
+        static const unsigned int GetLowestLODNumPolys = 0x00579490;
+        static const unsigned int GetLowestLODPoly = 0x005794B0;
     };
 
     struct zCModelAni {

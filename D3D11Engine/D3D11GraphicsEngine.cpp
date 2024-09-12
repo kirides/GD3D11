@@ -867,7 +867,7 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
         GetDevice().Get(), Resolution.x, Resolution.y, DXGI_FORMAT_R16G16_FLOAT );
 
     GBuffer1_Normals = std::make_unique<RenderToTextureBuffer>(
-        GetDevice().Get(), Resolution.x, Resolution.y, DXGI_FORMAT_R16G16B16A16_FLOAT );
+        GetDevice().Get(), Resolution.x, Resolution.y, DXGI_FORMAT_R8G8B8A8_SNORM );
 
     GBuffer0_Diffuse = std::make_unique<RenderToTextureBuffer>(
         GetDevice().Get(), Resolution.x, Resolution.y, DXGI_FORMAT_B8G8R8A8_UNORM );
@@ -5691,10 +5691,6 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
         }
 
         XMMATRIX mat = view * world * offset * scale;
-
-        ParticleInstanceInfo ii;
-        ii.scale = float2( 50, 50 );
-        ii.color = 0xFFFFFFFF;
 
         Engine::GAPI->SetWorldTransformXM( mat );
         SetupVS_ExPerInstanceConstantBuffer();

@@ -1,4 +1,4 @@
-#include<VS_ParticlePoint.hlsl>
+#include<VS_ParticlePointShaded.hlsl>
 
 cbuffer ParticleGSInfo : register( b2 )
 {

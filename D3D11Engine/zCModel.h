@@ -185,7 +185,23 @@ public:
                 byte unsmoothAnisFix[] = {0x75, 0x00, 0xC7, 0x44, 0x24, 0x78, 0x01, 0x00, 0x00, 0x00}; // Replaces a jnz in AdvanceAnis - Thanks to killer-m!
                 memcpy((void *)GothicMemoryLocations::zCModel::RPL_AniQuality, unsmoothAnisFix, sizeof(unsmoothAnisFix));
         #endif*/
+
+#ifdef BUILD_GOTHIC_2_6_fix
+        DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCModelGetLowestLODNumPolys), Hooked_zCModelGetLowestLODNumPolys );
+        DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCModelGetLowestLODPoly), Hooked_zCModelGetLowestLODPoly );
+#endif
     }
+
+    /** Fix particle emitter setup */
+#ifdef BUILD_GOTHIC_2_6_fix
+    static int __fastcall Hooked_zCModelGetLowestLODNumPolys( void* thisptr ) {
+        return Engine::GAPI->GetLowestLODNumPolys_SkeletalMesh( static_cast<zCModel*>(thisptr) );
+    }
+
+    static float3* __fastcall Hooked_zCModelGetLowestLODPoly( void* thisptr, void*, const int polyId, float3*& polyNormal ) {
+        return Engine::GAPI->GetLowestLODPoly_SkeletalMesh( static_cast<zCModel*>(thisptr), polyId, polyNormal );
+    }
+#endif
 
     /** Creates an array of matrices for the bone transforms */
     void __fastcall RenderNodeList( zTRenderContext& renderContext, zCArray<XMFLOAT4X4*>& boneTransforms, zCRenderLightContainer& lightContainer, int lightingMode = 0 ) {
@@ -298,7 +314,7 @@ public:
     }
 
     /** Fills a vector of (viewspace) bone-transformation matrices for this frame */
-    void GetBoneTransforms( std::vector<XMFLOAT4X4>* transforms, zCVob* vob = nullptr ) {
+    void GetBoneTransforms( std::vector<XMFLOAT4X4>* transforms ) {
         zCArray<zCModelNodeInst*>* nodeList = GetNodeList();
         if ( !nodeList )
             return;
@@ -334,7 +350,7 @@ public:
     }
 
     zCVob* GetHomeVob() {
-        return reinterpret_cast<zCVob*>(THISPTR_OFFSET( GothicMemoryLocations::zCModel::Offset_HomeVob ));
+        return *reinterpret_cast<zCVob**>(THISPTR_OFFSET( GothicMemoryLocations::zCModel::Offset_HomeVob ));
     }
 
 private:

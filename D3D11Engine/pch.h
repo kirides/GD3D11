@@ -33,7 +33,7 @@ using namespace DirectX;
 #define ENABLE_TESSELATION 0
 
 #ifndef VERSION_NUMBER
-#define VERSION_NUMBER "17.8-dev15"
+#define VERSION_NUMBER "17.8-dev16"
 #endif
 
 __declspec(selectany) const char* VERSION_NUMBER_STR = VERSION_NUMBER;
@@ -61,17 +61,13 @@ void DebugWrite_i( LPCSTR lpDebugMessage, void* thisptr );
 /** Computes the size in bytes of the given FVF */
 int ComputeFVFSize( DWORD fvf );
 
-inline unsigned short quantizeHalfFloat( float v )
-{
-    union { float f; unsigned int ui; } u = { v };
-    unsigned int ui = u.ui;
+typedef unsigned short (*ZQuantizeHalfFloat)(float input);
+typedef void (*ZQuantizeHalfFloat_X4)(float* input, unsigned short* output);
+typedef float (*ZUnquantizeHalfFloat)(unsigned short input);
+typedef void (*ZUnquantizeHalfFloat_X4)(unsigned short* input, float* output);
 
-    int s = ( ui >> 16 ) & 0x8000;
-    int em = ui & 0x7fffffff;
-
-    int h = ( em - ( 112 << 23 ) + ( 1 << 12 ) ) >> 13;
-    h = ( em < ( 113 << 23 ) ) ? 0 : h;
-    h = ( em >= ( 143 << 23 ) ) ? 0x7c00 : h;
-    h = ( em > ( 255 << 23 ) ) ? 0x7e00 : h;
-    return static_cast<unsigned short>(s | h);
-}
+extern ZQuantizeHalfFloat QuantizeHalfFloat;
+extern ZQuantizeHalfFloat_X4 QuantizeHalfFloat_X4;
+extern ZUnquantizeHalfFloat UnquantizeHalfFloat;
+extern ZUnquantizeHalfFloat_X4 UnquantizeHalfFloat_X4;
+extern ZUnquantizeHalfFloat_X4 UnquantizeHalfFloat_X8;

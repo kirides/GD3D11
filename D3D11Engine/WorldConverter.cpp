@@ -354,6 +354,10 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
 
         // Flag portals so that we can apply a different PS shader later
         if ( poly->GetPolyFlags()->PortalPoly ) {
+            continue;
+        }
+        /*
+        if ( poly->GetPolyFlags()->PortalPoly ) {
             zCMaterial* polymat = poly->GetMaterial();
             if ( zCTexture* tex = polymat->GetTextureSingle() ) {
                 std::string textureName = tex->GetNameWithoutExt();
@@ -367,6 +371,7 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
                 continue;
             }
         }
+        */
 
         // Calculate midpoint of this triange to get the section
         XMFLOAT3 avgPos;
@@ -783,11 +788,16 @@ void WorldConverter::ExtractSkeletalMeshFromVob( zCModel* model, SkeletalMeshVis
 
                 // Get index and weight
                 if ( n < 4 ) {
-                    vx.weights[n] = quantizeHalfFloat( weightEntry.Weight );
+                    alignas(16) float floats[4] = { weightEntry.VertexPosition.x, weightEntry.VertexPosition.y,
+                                                    weightEntry.VertexPosition.z, weightEntry.Weight };
+                    alignas(16) unsigned short halfs[4];
+                    QuantizeHalfFloat_X4( floats, halfs );
+
+                    vx.weights[n] = halfs[3];
                     vx.boneIndices[n] = weightEntry.NodeIndex;
-                    vx.Position[n][0] = quantizeHalfFloat( weightEntry.VertexPosition.x );
-                    vx.Position[n][1] = quantizeHalfFloat( weightEntry.VertexPosition.y );
-                    vx.Position[n][2] = quantizeHalfFloat( weightEntry.VertexPosition.z );
+                    vx.Position[n][0] = halfs[0];
+                    vx.Position[n][1] = halfs[1];
+                    vx.Position[n][2] = halfs[2];
                 }
             }
 

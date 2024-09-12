@@ -59,7 +59,6 @@ typedef int( __thiscall* oCSpawnManagerCheckRemoveNpc )(void*, oCNPC*);
 typedef void( __thiscall* oCSpawnManagerCheckInsertNpc )(void*);
 typedef void( __thiscall* zCVobSetVisual )(void*, zCVisual*);
 
-
 typedef int( __thiscall* zCTex_D3DXTEX_BuildSurfaces )(void*, int);
 typedef int( __thiscall* zCTextureLoadResourceData )(void*);
 typedef int( __thiscall* zCThreadSuspendThread )(void*);
@@ -71,6 +70,9 @@ typedef void( __thiscall* oCWorldDisableVob )(void*, zCVob*);
 typedef void( __fastcall* oCWorldRemoveFromLists )(void*, zCVob*);
 typedef int( __thiscall* zCModelPrototypeLoadModelASC )(void*, class zSTRING const&);
 typedef int( __thiscall* zCModelPrototypeReadMeshAndTreeMSB )(void*, int&, class zCFileBIN&);
+
+typedef int( __thiscall* zCModelGetLowestLODNumPolys )(void*);
+typedef float3*( __thiscall* zCModelGetLowestLODPoly )(void*, const int, float3*&);
 
 typedef DWORD( __cdecl* GetInformationManagerProc )();
 
@@ -148,6 +150,8 @@ struct HookedFunctionInfo {
 #endif
 #ifdef BUILD_GOTHIC_2_6_fix
     GenericThiscall original_zCActiveSndAutoCalcObstruction = reinterpret_cast<GenericThiscall>(GothicMemoryLocations::zCActiveSnd::AutoCalcObstruction); // Not usable - only for hooking
+    zCModelGetLowestLODNumPolys original_zCModelGetLowestLODNumPolys = reinterpret_cast<zCModelGetLowestLODNumPolys>(GothicMemoryLocations::zCModel::GetLowestLODNumPolys);
+    zCModelGetLowestLODPoly original_zCModelGetLowestLODPoly = reinterpret_cast<zCModelGetLowestLODPoly>(GothicMemoryLocations::zCModel::GetLowestLODPoly);
 #endif
     //zCModelPrototypeLoadModelASC original_zCModelPrototypeLoadModelASC = reinterpret_cast<zCModelPrototypeLoadModelASC>(GothicMemoryLocations::zCModelPrototype::LoadModelASC);
     //zCModelPrototypeReadMeshAndTreeMSB original_zCModelPrototypeReadMeshAndTreeMSB = reinterpret_cast<zCModelPrototypeReadMeshAndTreeMSB>(GothicMemoryLocations::zCModelPrototype::ReadMeshAndTreeMSB);

@@ -16,7 +16,7 @@ struct VS_INPUT
 {
 	float3 vPosition	: POSITION;
 	float4 vDiffuse		: DIFFUSE;
-    float2 vSize        : SIZE;
+    float3 vSize        : SIZE;
     unsigned int type   : TYPE;
     float3 vVelocity    : VELOCITY;
 };
@@ -25,7 +25,7 @@ struct VS_OUTPUT
 {
 	float3 vPosition		: POSITION;
 	float4 vDiffuse			: DIFFUSE;
-    float2 vSize            : SIZE;
+    float3 vSize            : SIZE;
     int    type             : TYPE;
     float3 vVelocity        : VELOCITY;
 };

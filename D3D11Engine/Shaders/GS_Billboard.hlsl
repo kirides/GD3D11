@@ -20,79 +20,61 @@ struct PS_INPUT
 void GSMain(point VS_OUTPUT input[1], inout TriangleStream<PS_INPUT> OutputStream)
 {
     float3 planeNormal = input[0].vPosition - CameraPosition;
-    //planeNormal.y = 0.0f; // For tree bilboard
     planeNormal = normalize(-planeNormal);
     
+    float3 position = input[0].vPosition;
     float3 upVector;
     float3 rightVector;
+    
+    int visIsQuadPoly = int(step(10.0, float(input[0].type)));
+    int visOrientation = input[0].type - (10 * visIsQuadPoly);
    
-    
-    
-    //input[0].vSize *= 0.5f;
-    
-    //rightVector = rightVector * 100.0f;
-    //upVector *= 100.0f;
-    
-    // Construct vertices
-    // We get the points by using the billboards right vector and the billboards height
     float3 vert[4];
-    
-    if(input[0].type == 3)
+    if (visOrientation == 2)
     {
-		// Make up/right vectors along the velocity-vector
-        float3 velYPos		= normalize(input[0].vVelocity);
-		float3 velXPos	    = normalize(cross(planeNormal, velYPos));
-          
-        //velYPos = normalize(cross(planeNormal, velXPos)); 
+        rightVector = input[0].vSize;
+        upVector = input[0].vVelocity;
+    }
+    else if (visOrientation == 3)
+    {
+        float3 velYPos = normalize(input[0].vVelocity);
+		float3 velXPos = normalize(cross(planeNormal, velYPos));
 
-        rightVector = velXPos;
-        upVector = velYPos;
-    }else if(input[0].type == 2)
-	{
-		// xz-plane
-		upVector = float3(0.0f, 0.0f, 1.0f);
-		rightVector = float3(1.0f,0.0f,0.0f); // FIXME: Maybe rotate this with the vob?
-	}else
+        rightVector = velXPos * input[0].vSize.x;
+        upVector = velYPos * input[0].vSize.y;
+    }
+    else if (visOrientation == 1)
     {
-        // Construct up and right vectors
-        upVector = float3(0.0f, 1.0f, 0.0f);
-        rightVector = normalize(cross(planeNormal, upVector));
+        float3 velYPos = normalize(input[0].vVelocity);
+        float3 velXPos = normalize(cross(planeNormal, velYPos));
+        velYPos = normalize(cross(planeNormal, velXPos));
+
+        rightVector = velXPos * input[0].vSize.x;
+        upVector = velYPos * input[0].vSize.y;
+    }
+    else
+    {
+        upVector = float3(0.0f, 1.0f, 0.0f) * input[0].vSize.y;
+        rightVector = float3(1.0f, 0.0f, 0.0f) * input[0].vSize.x;
         
-        // Construct better up-vector   
-        upVector = normalize(cross(planeNormal, rightVector)); 
+        position += float3(input[0].vSize.x * 0.5, -input[0].vSize.y * 0.5, 0.0) * float(1 - visIsQuadPoly);
     }
 	
-	if(input[0].type == 5)
-	{
-		//upVector = float3(0.0f, 1.0f, 0.0f);
-		//rightVector = float3(1.0f,0.0f,0.0f); // FIXME: Maybe rotate this with the vob?
-		
-		// Scale vectors
-		rightVector *= input[0].vSize.x;
-		upVector *= input[0].vSize.y;
-	}else
-	{
-		// Scale vectors
-		rightVector *= input[0].vSize.x;
-		upVector *= input[0].vSize.y;
-    }
-	
-    vert[0] = input[0].vPosition - rightVector - upVector; // Get bottom left vertex
-    vert[1] = input[0].vPosition + rightVector - upVector; // Get bottom right vertex
-    vert[2] = input[0].vPosition - rightVector + upVector; // Get top left vertex
-    vert[3] = input[0].vPosition + rightVector + upVector; // Get top right vertex
+    vert[0] = position - rightVector + upVector; // Get top left vertex
+    vert[1] = position + rightVector + upVector; // Get top right vertex
+    vert[2] = position - rightVector - upVector; // Get bottom left vertex
+    vert[3] = position + rightVector - upVector; // Get bottom right vertex
     
-    // Get billboards texture coordinates
     float2 texCoord[4];
     texCoord[0] = float2(0, 1);
     texCoord[1] = float2(1, 1);
     texCoord[2] = float2(0, 0);
     texCoord[3] = float2(1, 0);
     
-    // Append the two triangles to the stream
+    // Append triangles to the stream
     
     PS_INPUT outputVert = (PS_INPUT)0;
-    for(int i = 0; i < 4; i++)
+    for (int i = 0; i < 4; i++)
     {
         outputVert.vPosition = mul(float4(vert[i], 1.0f), M_ViewProj);
         outputVert.vTexcoord = texCoord[i];

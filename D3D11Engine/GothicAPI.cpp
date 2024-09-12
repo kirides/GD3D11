@@ -1853,6 +1853,126 @@ SkeletalMeshVisualInfo* GothicAPI::LoadzCModelData( oCNPC* npc ) {
     return mi;
 }
 
+int GothicAPI::GetLowestLODNumPolys_SkeletalMesh( zCModel* model ) {
+    int numPolys = 0;
+
+    SkeletalMeshVisualInfo* skeletalMesh = nullptr;
+    zCVob* homeVob = model->GetHomeVob();
+    if ( homeVob && homeVob->GetVobType() == zVOB_TYPE_NSC ) {
+        oCNPC* npc = static_cast<oCNPC*>(homeVob);
+        auto it = SkeletalMeshNpcs.find( npc );
+        if ( it != SkeletalMeshNpcs.end() ) {
+            skeletalMesh = it->second;
+        }
+    } else {
+        std::string str = model->GetVisualName();
+        if ( str.empty() ) { // Happens when the model has no skeletal-mesh
+            zSTRING mds = model->GetModelName();
+            str = mds.ToChar();
+            mds.Delete();
+        }
+
+        auto it = SkeletalMeshVisuals.find( str );
+        if ( it != SkeletalMeshVisuals.end() ) {
+            skeletalMesh = it->second;
+        }
+    }
+
+    if ( skeletalMesh ) {
+        for ( auto const& itm : skeletalMesh->SkeletalMeshes ) {
+            for ( auto& mesh : itm.second ) {
+                numPolys += static_cast<int>(mesh->Indices.size() / 3);
+            }
+        }
+    }
+    return numPolys;
+}
+
+float3* GothicAPI::GetLowestLODPoly_SkeletalMesh( zCModel* model, const int polyId, float3*& polyNormal ) {
+    static float3 returnPositions[3];
+    size_t polyIndex = static_cast<size_t>(polyId) * 3;
+    polyNormal = &float3(0.f, 1.f, 0.f);
+
+    SkeletalMeshVisualInfo* skeletalMesh = nullptr;
+    zCVob* homeVob = model->GetHomeVob();
+    if ( homeVob && homeVob->GetVobType() == zVOB_TYPE_NSC ) {
+        oCNPC* npc = static_cast<oCNPC*>(homeVob);
+        auto it = SkeletalMeshNpcs.find( npc );
+        if ( it != SkeletalMeshNpcs.end() ) {
+            skeletalMesh = it->second;
+        }
+    } else {
+        std::string str = model->GetVisualName();
+        if ( str.empty() ) { // Happens when the model has no skeletal-mesh
+            zSTRING mds = model->GetModelName();
+            str = mds.ToChar();
+            mds.Delete();
+        }
+
+        auto it = SkeletalMeshVisuals.find( str );
+        if ( it != SkeletalMeshVisuals.end() ) {
+            skeletalMesh = it->second;
+        }
+    }
+
+    if ( skeletalMesh ) {
+        for ( auto const& itm : skeletalMesh->SkeletalMeshes ) {
+            for ( auto& mesh : itm.second ) {
+                if ( polyIndex >= mesh->Indices.size() ) {
+                    polyIndex -= mesh->Indices.size();
+                } else {
+                    float fatness = model->GetModelFatness();
+                    std::vector<XMFLOAT4X4> transforms;
+                    model->GetBoneTransforms( &transforms );
+
+                    for ( int i = 0; i < 3; ++i ) {
+                        VERTEX_INDEX _polyId = mesh->Indices[polyIndex + i];
+                        ExSkelVertexStruct& _polyVert = mesh->Vertices[_polyId];
+
+                        alignas(32) float floats_0[8];
+                        alignas(32) float floats_1[8];
+                        alignas(16) unsigned short half2float_0[8] = { _polyVert.Position[0][0], _polyVert.Position[0][1], _polyVert.Position[0][2], _polyVert.weights[0],
+                                                                        _polyVert.Position[1][0], _polyVert.Position[1][1], _polyVert.Position[1][2], _polyVert.weights[1] };
+                        alignas(16) unsigned short half2float_1[8] = { _polyVert.Position[2][0], _polyVert.Position[2][1], _polyVert.Position[2][2], _polyVert.weights[2],
+                                                                        _polyVert.Position[3][0], _polyVert.Position[3][1], _polyVert.Position[3][2], _polyVert.weights[3] };
+                        UnquantizeHalfFloat_X8( half2float_0, floats_0 );
+                        UnquantizeHalfFloat_X8( half2float_1, floats_1 );
+
+                        XMVECTOR position = XMVectorZero();
+                        position += XMVectorReplicate( floats_0[3] ) * XMVector3Transform(
+                            XMVectorSet( floats_0[0], floats_0[1], floats_0[2], 1.f ),
+                            XMMatrixTranspose( XMLoadFloat4x4( &transforms[_polyVert.boneIndices[0]] ) ) );
+
+                        position += XMVectorReplicate( floats_0[7] ) * XMVector3Transform(
+                            XMVectorSet( floats_0[4], floats_0[5], floats_0[6], 1.f ),
+                            XMMatrixTranspose( XMLoadFloat4x4( &transforms[_polyVert.boneIndices[1]] ) ) );
+
+                        position += XMVectorReplicate( floats_1[3] ) * XMVector3Transform(
+                            XMVectorSet( floats_1[0], floats_1[1], floats_1[2], 1.f ),
+                            XMMatrixTranspose( XMLoadFloat4x4( &transforms[_polyVert.boneIndices[2]] ) ) );
+
+                        position += XMVectorReplicate( floats_1[7] ) * XMVector3Transform(
+                            XMVectorSet( floats_1[4], floats_1[5], floats_1[6], 1.f ),
+                            XMMatrixTranspose( XMLoadFloat4x4( &transforms[_polyVert.boneIndices[3]] ) ) );
+
+                        position += XMVectorReplicate( fatness ) * XMLoadFloat3( reinterpret_cast<const XMFLOAT3*>(&_polyVert.BindPoseNormal) ) ;
+
+                        // world matrix is applied later when particle calculate world position
+                        XMMATRIX scale = XMMatrixScalingFromVector( model->GetModelScaleXM() );
+                        XMStoreFloat3( reinterpret_cast<XMFLOAT3*>(&returnPositions[i]), XMVector3Transform( position, XMMatrixTranspose( scale ) ) );
+                    }
+                    return returnPositions;
+                }
+            }
+        }
+    }
+
+    returnPositions[0] = float3( 0.f, 0.f, 0.f );
+    returnPositions[1] = float3( 0.f, 0.f, 0.f );
+    returnPositions[2] = float3( 0.f, 0.f, 0.f );
+    return returnPositions;
+}
+
 // TODO: REMOVE THIS!
 #include "D3D11GraphicsEngine.h"
 
@@ -1916,7 +2036,7 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
 
     // Get the bone transforms
     std::vector<XMFLOAT4X4> transforms;
-    model->GetBoneTransforms( &transforms, vi->Vob );
+    model->GetBoneTransforms( &transforms );
 
     if ( updateState ) {
         // Update attachments
@@ -2148,7 +2268,7 @@ void GothicAPI::DrawSkeletalVN() {
 
             // Get the bone transforms
             std::vector<XMFLOAT4X4> transforms;
-            model->GetBoneTransforms( &transforms, vi->Vob );
+            model->GetBoneTransforms( &transforms );
 
             if ( !static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->SkeletalMeshes.empty() ) {
                 g->DrawSkeletalVertexNormals( vi, transforms, 0xFFFFFF, fatness );
@@ -2268,21 +2388,14 @@ void GothicAPI::DrawParticleFX( zCVob* source, zCParticleFX* fx, ParticleFrameDa
             // Generate instance info
             part.emplace_back();
             ParticleInstanceInfo& ii = part.back();
-            ii.scale = XMFLOAT2( p->Size.x, p->Size.y );
-            ii.drawMode = 0;
+            ii.scale = float3( p->Size.x, p->Size.y, 0.f );
 
             // Construct world matrix
-            int alignment = fx->GetEmitter()->GetVisAlignment();
-            if ( alignment == zPARTICLE_ALIGNMENT_XY ) {
-                ii.drawMode = 2;
-            } else if ( alignment == zPARTICLE_ALIGNMENT_VELOCITY || alignment == zPARTICLE_ALIGNMENT_VELOCITY_3D ) {
-                ii.drawMode = 3;
-            } // TODO: Y-Locked!
-
-            if ( !fx->GetEmitter()->GetVisIsQuadPoly() ) {
-                ii.scale.x *= 0.5f;
-                ii.scale.y *= 0.5f;
+            ii.drawMode = fx->GetEmitter()->GetVisAlignment();
+            if ( fx->GetEmitter()->GetVisIsQuadPoly() ) {
+                ii.drawMode += 10;
             }
+
             float4 color;
             color.x = p->Color.x / 255.0f;
             color.y = p->Color.y / 255.0f;
@@ -2300,17 +2413,19 @@ void GothicAPI::DrawParticleFX( zCVob* source, zCParticleFX* fx, ParticleFrameDa
             ii.color = color;
             ii.velocity = p->Vel;
 
+            if ( fx->GetEmitter()->GetVisAlignment() == 2 ) {
+                if ( zCVob* connectedVob = fx->GetConnectedVob() ) {
+                    XMFLOAT4X4* worldMatrix = connectedVob->GetWorldMatrixPtr();
+                    ii.scale = float3( worldMatrix->m[0][0] * p->Size.x, worldMatrix->m[1][0] * p->Size.x, worldMatrix->m[1][0] * p->Size.x );
+                    ii.velocity = float3( worldMatrix->m[0][2] * p->Size.y, worldMatrix->m[1][2] * p->Size.y, worldMatrix->m[1][2] * p->Size.y );
+                }
+            }
+
             fx->UpdateParticle( p );
 
             i++;
         }
     }
-    /*
-        Liker@WoG:
-11.12.2020 14:58	https://forum.worldofplayers.de/forum/threads/1546222-Yet-Another-D3D11-Renderer?p=26626374&viewfull=1#post26626374
-11.12.2020 16:19	https://forum.worldofplayers.de/forum/threads/1546222-Yet-Another-D3D11-Renderer?p=26626530&viewfull=1#post26626530
-14.12.2020 20:25	https://forum.worldofplayers.de/forum/threads/1546222-Yet-Another-D3D11-Renderer?p=26628056&viewfull=1#post26628056
-    */
 
     // Create new particles?
     fx->CreateParticlesUpdateDependencies();

@@ -7,12 +7,6 @@
 #include "zCTimer.h"
 #include "zCPolyStrip.h"
 
-enum EZParticleAlignment {
-    zPARTICLE_ALIGNMENT_VELOCITY = 1,
-    zPARTICLE_ALIGNMENT_XY = 2,
-    zPARTICLE_ALIGNMENT_VELOCITY_3D = 3,
-};
-
 class zSTRING;
 class zCPolyStrip;
 class zCMesh;

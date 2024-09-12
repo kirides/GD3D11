@@ -664,6 +664,10 @@ public:
     SkeletalMeshVisualInfo* LoadzCModelData( zCModel* model );
     SkeletalMeshVisualInfo* LoadzCModelData( oCNPC* npc );
 
+    /** Returns lowest lod of zCModel polys */
+    int GetLowestLODNumPolys_SkeletalMesh( zCModel* model );
+    float3* GetLowestLODPoly_SkeletalMesh( zCModel* model, const int polyId, float3*& polyNormal );
+
     /** Prints a message to the screen for the given amount of time */
     void PrintMessageTimed( const INT2& position, const std::string& strMessage, float time = 3000.0f, DWORD color = 0xFFFFFFFF );
 
