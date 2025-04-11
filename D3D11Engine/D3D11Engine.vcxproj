@@ -17,6 +17,10 @@
       <Configuration>Release_G1A_AVX</Configuration>
       <Platform>Win32</Platform>
     </ProjectConfiguration>
+	<ProjectConfiguration Include="Release_G1A_AVX2|Win32">
+      <Configuration>Release_G1A_AVX2</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
     <ProjectConfiguration Include="Release_G1_AVX2|Win32">
       <Configuration>Release_G1_AVX2</Configuration>
       <Platform>Win32</Platform>
