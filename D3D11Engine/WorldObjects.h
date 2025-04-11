@@ -70,35 +70,6 @@ struct cmpMeshKey {
     }
 };*/
 
-#if ENABLE_TESSELATION > 0
-struct VisualTesselationSettings {
-    VisualTesselationSettings() {
-        buffer.VT_DisplacementStrength = 0.0f;
-        buffer.VT_Roundness = 1.0f;
-        buffer.VT_TesselationFactor = 0.0f;
-        Constantbuffer = nullptr;
-    }
-
-    ~VisualTesselationSettings() {
-        delete Constantbuffer;
-    }
-
-    struct Buffer {
-        float VT_TesselationFactor;
-        float VT_Roundness;
-        float VT_DisplacementStrength;
-        float VT_Time;
-    };
-
-    /** creates/updates the constantbuffer */
-    void UpdateConstantbuffer();
-
-    D3D11ConstantBuffer* Constantbuffer;
-    std::string TesselationShader;
-    Buffer buffer;
-};
-#endif
-
 /** Holds information about a mesh, ready to be loaded into the renderer */
 struct MeshInfo {
     MeshInfo() {
@@ -106,9 +77,6 @@ struct MeshInfo {
         MeshIndexBuffer = nullptr;
         BaseIndexLocation = 0;
         MeshIndex = -1;
-#if ENABLE_TESSELATION > 0
-        MeshIndexBufferPNAEN = nullptr;
-#endif
     }
 
     virtual ~MeshInfo();
@@ -121,11 +89,6 @@ struct MeshInfo {
     std::vector<ExVertexStruct> Vertices;
     std::vector<VERTEX_INDEX> Indices;
 
-#if ENABLE_TESSELATION > 0
-    D3D11VertexBuffer* MeshIndexBufferPNAEN;
-    std::vector<VERTEX_INDEX> IndicesPNAEN;
-    std::vector<ExVertexStruct> VerticesPNAEN;
-#endif
     unsigned int BaseIndexLocation;
     unsigned int MeshIndex;
 };
@@ -134,16 +97,6 @@ struct WorldMeshInfo : public MeshInfo {
     WorldMeshInfo() {
         SaveInfo = false;
     }
-
-#if ENABLE_TESSELATION > 0
-    /** Saves the info for this visual */
-    void SaveWorldMeshInfo( const std::string& name );
-
-    /** Loads the info for this visual */
-    void LoadWorldMeshInfo( const std::string& name );
-
-    VisualTesselationSettings TesselationSettings;
-#endif
 
     /** If true we will save an info-file on next zen-resource-save */
     bool SaveInfo;
@@ -173,9 +126,6 @@ struct SkeletalMeshInfo {
         MeshVertexBuffer = nullptr;
         MeshIndexBuffer = nullptr;
         visual = nullptr;
-#if ENABLE_TESSELATION > 0
-        MeshIndexBufferPNAEN = nullptr;
-#endif
     }
 
     ~SkeletalMeshInfo();
@@ -184,11 +134,6 @@ struct SkeletalMeshInfo {
     D3D11VertexBuffer* MeshIndexBuffer;
     std::vector<ExSkelVertexStruct> Vertices;
     std::vector<VERTEX_INDEX> Indices;
-
-#if ENABLE_TESSELATION > 0
-    D3D11VertexBuffer* MeshIndexBufferPNAEN;
-    std::vector<VERTEX_INDEX> IndicesPNAEN;
-#endif
 
     /** Actual visual containing this */
     zCMeshSoftSkin* visual;
@@ -208,26 +153,7 @@ struct BaseVisualInfo {
         }
     }
 
-#if ENABLE_TESSELATION > 0
-    /** Creates PNAEN-Info for all meshes if not already there */
-    virtual void CreatePNAENInfo( bool softNormals = false ) {}
-
-    /** Removes PNAEN info from this visual */
-    virtual void ClearPNAENInfo();
-
-    /** Saves the info for this visual */
-    virtual void SaveMeshVisualInfo( const std::string& name );
-
-    /** Loads the info for this visual */
-    virtual void LoadMeshVisualInfo( const std::string& name );
-#endif
-
     std::map<zCMaterial*, std::vector<MeshInfo*>> Meshes;
-
-#if ENABLE_TESSELATION > 0
-    /** Tesselation settings for this vob */
-    VisualTesselationSettings TesselationInfo;
-#endif
 
     /** "size" of the mesh. The distance between it's bbox min and bbox max */
     float MeshSize;
@@ -268,11 +194,6 @@ struct MeshVisualInfo : public BaseVisualInfo {
     void StartNewFrame() {
         Instances.clear();
     }
-
-#if ENABLE_TESSELATION > 0
-    /** Creates PNAEN-Info for all meshes if not already there */
-    void CreatePNAENInfo( bool softNormals = false );
-#endif
 
     std::map<MeshKey, std::vector<MeshInfo*>, cmpMeshKey> MeshesByTexture;
 
@@ -319,14 +240,6 @@ struct SkeletalMeshVisualInfo : public BaseVisualInfo {
         SkeletalMeshes.clear();
         Meshes.clear();
     }
-
-#if ENABLE_TESSELATION > 0
-    /** Creates PNAEN-Info for all meshes if not already there */
-    void CreatePNAENInfo( bool softNormals = false );
-
-    /** Removes PNAEN info from this visual */
-    void ClearPNAENInfo();
-#endif
 
     /** Submeshes of this visual */
     std::map<zCMaterial*, std::vector<SkeletalMeshInfo*>> SkeletalMeshes;
@@ -518,14 +431,6 @@ struct WorldMeshSectionInfo {
 
     /** Saves this sections mesh to a file */
     void SaveSectionMeshToFile( const std::string& name );
-
-#if ENABLE_TESSELATION > 0
-    /** Saves the mesh infos for this section */
-    void SaveMeshInfos( const std::string& worldName, INT2 sectionPos );
-
-    /** Saves the mesh infos for this section */
-    void LoadMeshInfos( const std::string& worldName, INT2 sectionPos );
-#endif
 
     std::map<MeshKey, WorldMeshInfo*, cmpMeshKey> WorldMeshes;
     std::map<D3D11Texture*, std::vector<MeshInfo*>> WorldMeshesByCustomTexture;

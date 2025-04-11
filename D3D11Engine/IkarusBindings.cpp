@@ -144,4 +144,15 @@ extern "C"
         D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
         return g->GetContext().Get();
     }
+
+    /** Gets a GD3D11 version */
+    __declspec(dllexport) const char* __cdecl GDX_GetVersionString( void ) {
+        return VERSION_NUMBER;
+    }
+
+    /** Gets Renderer Settings */
+    __declspec(dllexport) GothicRendererSettings* __cdecl GDX_GetRendererSettings( unsigned int& structSize ) {
+        structSize = sizeof( Engine::GAPI->GetRendererState().RendererSettings );
+        return &Engine::GAPI->GetRendererState().RendererSettings;
+    }
 };

@@ -1,8 +1,6 @@
 #pragma once
 #include "pch.h"
 
-typedef int ScriptFn;
-
 class zSTRING;
 
 extern "C" {

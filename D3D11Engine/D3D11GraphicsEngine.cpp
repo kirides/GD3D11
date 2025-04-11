@@ -127,8 +127,10 @@ void PrintD3DFeatureLevel( D3D_FEATURE_LEVEL lvl ) {
 
 /** Called when the game created it's window */
 XRESULT D3D11GraphicsEngine::Init() {
-    HRESULT hr;
+    // Loading nvapi should tell nvidia drivers to use discrete gpu
+    LoadLibraryA( "NVAPI.DLL" );
 
+    HRESULT hr;
     LogInfo() << "Initializing Device...";
 
     // Create DXGI factory
@@ -1877,7 +1879,6 @@ XRESULT  D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
         }
     }
 
-
     if ( RenderingStage == DES_MAIN ) {
         if ( ActiveHDS ) {
             GetContext()->DSSetShader( nullptr, nullptr, 0 );
@@ -2175,7 +2176,6 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         // Disable here what we can't draw in feature level 10 compatibility
         Engine::GAPI->GetRendererState().RendererSettings.HbaoSettings.Enabled = false;
         Engine::GAPI->GetRendererState().RendererSettings.EnableSMAA = false;
-
     }
 
 #if BUILD_SPACER_NET
@@ -2843,7 +2843,6 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
                 boundInfo = info;
             }
             bound = mesh.first.Texture;
-
         }
 
 
@@ -3967,11 +3966,11 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                         }
                     }
 
-                // Draw batch
-                DrawInstanced( mi->MeshVertexBuffer, mi->MeshIndexBuffer,
-                    mi->Indices.size(), DynamicInstancingBuffer.get(),
-                    sizeof( VobInstanceInfo ), staticMeshVisual.second->Instances.size(),
-                    sizeof( ExVertexStruct ), staticMeshVisual.second->StartInstanceNum );
+                    // Draw batch
+                    DrawInstanced( mi->MeshVertexBuffer, mi->MeshIndexBuffer,
+                        mi->Indices.size(), DynamicInstancingBuffer.get(),
+                        sizeof( VobInstanceInfo ), staticMeshVisual.second->Instances.size(),
+                        sizeof( ExVertexStruct ), staticMeshVisual.second->StartInstanceNum );
                 }
             }
 

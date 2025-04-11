@@ -67,7 +67,6 @@ void MaterialInfo::WriteToFile( const std::string& name ) {
 
     // Then the data
     fwrite( &buffer, sizeof( MaterialInfo::Buffer ), 1, f );
-
     fclose( f );
 }
 
@@ -77,7 +76,6 @@ void MaterialInfo::LoadFromFile( const std::string& name ) {
 
     if ( !f )
         return;
-
 
     char ReadBuffer[sizeof( int ) + sizeof( MaterialInfo::Buffer )];
     fread( ReadBuffer, 1, sizeof( ReadBuffer ), f );
@@ -632,7 +630,6 @@ void GothicAPI::OnGeometryLoaded( zCPolygon** polys, unsigned int numPolygons ) 
     }
 #endif
     LogInfo() << "Done extracting world!";
-
 }
 
 /** Called when the game is about to load a new level */
@@ -2153,7 +2150,6 @@ void GothicAPI::DrawTransparencyVobs() {
         RendererState.BlendState.SetAlphaBlending();
         RendererState.BlendState.SetDirty();
         RendererState.DepthState.SetDefault();
-        RendererState.DepthState.DepthWriteEnabled = false;
         RendererState.DepthState.SetDirty();
     }
 
@@ -2161,6 +2157,12 @@ void GothicAPI::DrawTransparencyVobs() {
         auto const& TransVobInfo = TransparencyVobs.front();
 
         if ( TransVobInfo.skeletalVob ) {
+            // We need to do Z-prepass first
+            g->UnbindActivePS();
+            g->GetContext()->PSSetShader( nullptr, nullptr, 0 );
+            DrawSkeletalMeshVob( TransVobInfo.skeletalVob, TransVobInfo.distance );
+            RendererState.RendererInfo.FrameDrawnVobs--; // Don't calculate prepass as drawn vob
+
             // Now actually draw mesh using transparency pixel shader
             g->SetActivePixelShader( "PS_Transparency" );
         g->BindActivePixelShader();
@@ -2176,6 +2178,26 @@ void GothicAPI::DrawTransparencyVobs() {
             g->SetActiveVertexShader( "VS_Ex" );
             g->SetupVS_ExMeshDrawCall();
             TransVobInfo.normalVob->VobConstantBuffer->BindToVertexShader( 1 );
+
+            // We need to do Z-prepass first
+            g->UnbindActivePS();
+            g->GetContext()->PSSetShader( nullptr, nullptr, 0 );
+
+            for ( auto const& materialMesh : TransVobInfo.normalVob->VisualInfo->Meshes ) {
+                if ( materialMesh.first && materialMesh.first->GetTexture() ) {
+                    if ( materialMesh.first->GetTexture()->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                        materialMesh.first->GetTexture()->Bind( 0 );
+                    }
+                }
+
+                for ( auto const& meshInfo : materialMesh.second ) {
+                    g->DrawVertexBufferIndexed(
+                        meshInfo->MeshVertexBuffer,
+                        meshInfo->MeshIndexBuffer,
+                        meshInfo->Indices.size() );
+                }
+            }
+            RendererState.RendererInfo.FrameDrawnVobs--; // Don't calculate prepass as drawn vob
 
             // Now actually draw mesh using transparency pixel shader
             g->SetActivePixelShader( "PS_Transparency" );
@@ -3777,7 +3799,6 @@ void GothicAPI::LoadCustomZENResources() {
 
     // Load vegetation
     LoadVegetation( zen + ".veg" );
-
 }
 
 /** Saves resources created for this .ZEN */

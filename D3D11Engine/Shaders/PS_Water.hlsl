@@ -137,8 +137,7 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 
 	//darken / lighten water based on the day / night cycle
 	float darknessFactor = 2.0f;
-	if (AC_LightPos.y < 0.0f) { darknessFactor -= AC_LightPos.y; }
-	else if (AC_LightPos.y > 0.0f) { darknessFactor -= AC_LightPos.y; }
+	darknessFactor -= AC_LightPos.y;
 
 	return float4(color / darknessFactor, 1);
 }

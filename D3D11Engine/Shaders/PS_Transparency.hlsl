@@ -33,12 +33,12 @@ struct PS_INPUT
 //--------------------------------------------------------------------------------------
 float4 PSMain( PS_INPUT Input ) : SV_TARGET
 {
-    float2 screenUV = Input.vPosition.xy / GA_ViewportSize;
-	float3 screenColor = TX_Scene.Sample(SS_Linear, screenUV).rgb;
-	float screenLuma = 0.2126 * screenColor.r + 0.7125 * screenColor.g + 0.0722 * screenColor.b;
+	//float2 screenUV = Input.vPosition.xy / GA_ViewportSize;
+	//float3 screenColor = TX_Scene.Sample(SS_Linear, screenUV).rgb;
+	//float screenLuma = 0.2126 * screenColor.r + 0.7125 * screenColor.g + 0.0722 * screenColor.b;
 
 	float4 color = TX_Texture0.Sample(SS_Linear, Input.vTexcoord);
-	color *= float4(screenLuma, screenLuma, screenLuma, GA_Alpha);
-	return color;
+	//color *= float4(screenLuma, screenLuma, screenLuma, GA_Alpha);
+	return float4(color.rgb, color.a * GA_Alpha);
 }
 

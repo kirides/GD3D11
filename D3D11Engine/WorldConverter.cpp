@@ -885,7 +885,6 @@ void WorldConverter::ExtractSkeletalMeshFromVob( zCModel* model, SkeletalMeshVis
     }
 
     skeletalMeshInfo->VisualName = model->GetVisualName();
-
 }
 
 /** Extracts a zCProgMeshProto from a zCModel */
@@ -1043,6 +1042,7 @@ void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualIn
 
     meshInfo->Visual = model;
     meshInfo->VisualName = visualName;
+
     mds.Delete();
 }
 

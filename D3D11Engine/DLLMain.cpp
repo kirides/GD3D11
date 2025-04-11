@@ -284,13 +284,12 @@ extern "C" void WINAPI HookedReleaseDDThreadLock() {
     LogInfo() << "ReleaseDDThreadLock called!";
 }
 
-extern "C" float WINAPI  UpdateCustomFontMultiplierFontRendering( float multiplier ) {
+extern "C" float WINAPI UpdateCustomFontMultiplierFontRendering( float multiplier ) {
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     return engine ? engine->UpdateCustomFontMultiplierFontRendering( multiplier ) : 1.0;
 }
 
-
-extern "C" void WINAPI  SetCustomCloudAndNightTexture( int idxTexture, bool isNightTexture ) {
+extern "C" void WINAPI SetCustomCloudAndNightTexture( int idxTexture, bool isNightTexture ) {
     GSky* sky = Engine::GAPI->GetSky();
     WorldInfo* currentWorld = Engine::GAPI->GetLoadedWorldInfo();
     if ( sky && currentWorld ) {
