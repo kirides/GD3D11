@@ -216,13 +216,13 @@ BOOL APIENTRY DllMain( HINSTANCE hInst, DWORD reason, LPVOID ) {
             CustomGameName = CustomGameName.substr( 0, extPos );
         }
 
-        CheckLibraryExists( executablePath, "AntTweakBar.dll");
-        CheckLibraryExists( executablePath, "assimp-vc143-mt.dll" );
-        CheckLibraryExists( executablePath, "GFSDK_SSAO_D3D11.win32.dll" );
+        CheckLibraryExists( executablePath.c_str(), "AntTweakBar.dll");
+        CheckLibraryExists( executablePath.c_str(), "assimp-vc143-mt.dll" );
+        CheckLibraryExists( executablePath.c_str(), "GFSDK_SSAO_D3D11.win32.dll" );
         ddraw.dll = nullptr;
+        std::string dllPath;
         switch ( foundExecutable ) {
             case GOTHIC2A_EXECUTABLE: {
-                std::string dllPath;
                 if ( loadCustomLoadMode )
                     dllPath = dllFolder + "\\" + CustomGameName + "_";
                 else

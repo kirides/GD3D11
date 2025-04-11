@@ -339,7 +339,7 @@
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release_AVX2|Win32'">
     <LinkIncremental>false</LinkIncremental>
-    <IncludePath>$(IncludePath);include</IncludePath>
+	<IncludePath>$(IncludePath);include;include/imgui/;include/imgui/backends/</IncludePath>
     <LibraryPath>$(directxtk-LibPath);$(fx11-LibPath);lib;$(LibraryPath)</LibraryPath>
     <TargetName>ddraw</TargetName>
     <CodeAnalysisRuleSet>NativeRecommendedRules.ruleset</CodeAnalysisRuleSet>
@@ -462,7 +462,7 @@
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release_G1_AVX2|Win32'">
     <LinkIncremental>false</LinkIncremental>
-    <IncludePath>$(IncludePath);include</IncludePath>
+    <IncludePath>$(IncludePath);include;include/imgui/;include/imgui/backends/</IncludePath>
     <LibraryPath>$(directxtk-LibPath);$(fx11-LibPath);lib;$(LibraryPath)</LibraryPath>
     <TargetName>ddraw</TargetName>
   </PropertyGroup>
@@ -1956,6 +1956,8 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Launcher|Win32'">
     <LinkIncremental>false</LinkIncremental>
+	<IncludePath>$(IncludePath);include;include/imgui/;include/imgui/backends/</IncludePath>
+	<LibraryPath>$(directxtk-LibPath);$(fx11-LibPath);lib;$(LibraryPath)</LibraryPath>
     <CustomBuildAfterTargets />
     <CustomBuildBeforeTargets />
   </PropertyGroup>
