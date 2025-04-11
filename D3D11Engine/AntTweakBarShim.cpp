@@ -129,9 +129,6 @@ XRESULT AntTweakBarShim::Init() {
     static std::string versionString = std::string( VERSION_NUMBER );
     TwAddVarRO( Bar_General, "Version", TW_TYPE_STDSTRING, &versionString, VERSION_NUMBER );
 
-    static std::string versionString = std::string( VERSION_NUMBER );
-    TwAddVarRO( Bar_General, "Version", TW_TYPE_STDSTRING, &versionString, VERSION_NUMBER );
-
     TwAddButton( Bar_General, "Save ZEN-Resources", (TwButtonCallback)SaveZENResourcesCallback, this, nullptr );
     TwAddButton( Bar_General, "Load ZEN-Resources", (TwButtonCallback)LoadZENResourcesCallback, this, nullptr );
     TwAddButton( Bar_General, "Open Settings Dialog", (TwButtonCallback)OpenSettingsCallback, this, nullptr );
