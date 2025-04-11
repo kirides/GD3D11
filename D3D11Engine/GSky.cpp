@@ -216,27 +216,6 @@ void GSky::SetCustomSkyTexture_ZenGin( bool isNightTexture, zCTexture* texture, 
     }
 }
 
-/** Sets the custom sky texture */
-void GSky::SetCustomSkyTexture_ZenGin( bool isNightTexture, zCTexture* texture, bool isOldWorld ) {
-    if ( !texture ) {
-        if ( isNightTexture ) {
-            D3D11Texture* nightTex;
-            XLE( Engine::GraphicsEngine->CreateTexture( &nightTex ) );
-            NightTexture.reset( nightTex );
-            XLE( NightTexture->Init( "system\\GD3D11\\Textures\\starsh.dds" ) );
-            NightTexture_Zen = nullptr;
-        } else {
-            SetSkyTexture( isOldWorld ? ESkyTexture::ST_OldWorld : ESkyTexture::ST_NewWorld );
-            CloudTexture_Zen = nullptr;
-        }
-    } else {
-        (isNightTexture ? NightTexture_Zen : CloudTexture_Zen) = texture;
-        if ( !isNightTexture ) {
-            Atmosphere.WaveLengths = isOldWorld ? float3( 0.54f, 0.56f, 0.60f ) : float3( 0.63f, 0.57f, 0.50f );
-        }
-    }
-}
-
 void GSky::SetCustomSkyWavelengths( float X, float Y, float Z ) {
     Atmosphere.WaveLengths = float3( X, Y, Z );
 }

@@ -74,7 +74,7 @@ public:
 
     
     static void __fastcall hooked_zCWorldDisposeWorld( void* thisptr, void* vtbl ) {
-        hook_infunc
+        //hook_infunc
         if ( thisptr == Engine::GAPI->GetLoadedWorldInfo()->MainWorld )
         { 
             // Have to reset everything on dispose due to race conditions on loading
@@ -89,7 +89,7 @@ public:
         }
 
         HookedFunctions::OriginalFunctions.original_zCWorldDisposeWorld( thisptr );
-        hook_outfunc
+        //hook_outfunc
     }
    
 
