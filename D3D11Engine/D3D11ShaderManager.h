@@ -16,7 +16,7 @@ public:
     std::vector<D3D_SHADER_MACRO> shaderMakros;
 
     //Constructor
-    ShaderInfo( std::string n, std::string fn, std::string t, int l, std::vector<D3D_SHADER_MACRO>& makros = std::vector<D3D_SHADER_MACRO>() ) {
+    ShaderInfo( std::string n, std::string fn, std::string t, int l, std::vector<D3D_SHADER_MACRO> makros = std::vector<D3D_SHADER_MACRO>() ) {
         name = n;
         fileName = fn;
         type = t;
@@ -27,7 +27,7 @@ public:
     }
 
     //Constructor
-    ShaderInfo( std::string n, std::string fn, std::string t, std::vector<D3D_SHADER_MACRO>& makros = std::vector<D3D_SHADER_MACRO>() ) {
+    ShaderInfo( std::string n, std::string fn, std::string t, std::vector<D3D_SHADER_MACRO> makros = std::vector<D3D_SHADER_MACRO>() ) {
         name = n;
         fileName = fn;
         type = t;

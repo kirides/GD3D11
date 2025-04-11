@@ -9,6 +9,7 @@
 #include "zCVob.h"
 #include "zCCamera.h"
 #include "zCSkyController_Outdoor.h"
+#include "D3D11GraphicsEngineBase.h"
 
 class zCCamera;
 class zCSkyController_Outdoor;
@@ -23,7 +24,7 @@ public:
 
         DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCWorldLoadWorld), hooked_LoadWorld );
         DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCWorldVobRemovedFromWorld), hooked_zCWorldVobRemovedFromWorld );
-        //DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCWorldDisposeWorld), hooked_zCWorldDisposeWorld );
+        DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCWorldDisposeWorld), hooked_zCWorldDisposeWorld );
         DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCWorldDisposeVobs), hooked_zCWorldDisposeVobs );
 
         DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_oCWorldRemoveFromLists), hooked_oCWorldRemoveFromLists );
@@ -71,16 +72,30 @@ public:
         hook_outfunc
     }
 
-    /*
-    static void __fastcall hooked_zCWorldDisposeWorld( void* thisptr, void* unknwn ) {
-        //Engine::GAPI->ResetWorld();
+    
+    static void __fastcall hooked_zCWorldDisposeWorld( void* thisptr, void* vtbl ) {
+        //hook_infunc
+        if ( thisptr == Engine::GAPI->GetLoadedWorldInfo()->MainWorld )
+        { 
+            // Have to reset everything on dispose due to race conditions on loading
+            D3D11GraphicsEngineBase* e = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine);
+            e->SetDefaultStates();
+            Engine::GAPI->ResetWorld();
+            Engine::GAPI->ResetMaterialInfo();
+            Engine::GAPI->ResetRenderStates();
+            Engine::RefreshWorkerThreadpool(); // Make sure worker thread don't work on any point light
+
+            LogInfo() << "World was disposed, reseting pointlight ThreadPool";
+        }
+
         HookedFunctions::OriginalFunctions.original_zCWorldDisposeWorld( thisptr );
+        //hook_outfunc
     }
-    */
+   
 
     static void __fastcall hooked_zCWorldDisposeVobs( zCWorld* thisptr, void* unknwn, zCTree<zCVob>* tree ) {
         // Reset only if this is the main world, inventory worlds are handled differently
-        if ( thisptr == Engine::GAPI->GetLoadedWorldInfo()->MainWorld )
+        if ( thisptr && thisptr == Engine::GAPI->GetLoadedWorldInfo()->MainWorld )
             Engine::GAPI->ResetVobs();
 
         HookedFunctions::OriginalFunctions.original_zCWorldDisposeVobs( thisptr, tree );
@@ -118,12 +133,14 @@ public:
     // Get around C2712
     static void Do_hooked_Render( zCWorld* thisptr, zCCamera& camera ) {
         Engine::GAPI->SetTextureTestBindMode( false, "" );
+        if ( !thisptr )
+            return;
 
-        //HookedFunctions::OriginalFunctions.original_zCWorldRender(thisptr, camera);
-        if ( thisptr == Engine::GAPI->GetLoadedWorldInfo()->MainWorld ) {
+        auto MainWorld = Engine::GAPI->GetLoadedWorldInfo()->MainWorld;
+
+        if (MainWorld && thisptr == MainWorld ) { // Main world
             Engine::GAPI->OnWorldUpdate();
-
-            // Main world
+           
             if ( Engine::GAPI->GetRendererState().RendererSettings.AtmosphericScattering ) {
                 HookedFunctions::OriginalFunctions.original_zCWorldRender( thisptr, camera );
             } else {
@@ -134,7 +151,7 @@ public:
             /*zCWorld* w = (zCWorld *)thisptr;
             zCSkyController* sky = w->GetActiveSkyController();
             sky->RenderSkyPre();*/
-        } else {
+        } else { // Inventory virtual world
             // Bind matrices
             //camera.UpdateViewport();
             //camera.Activate();

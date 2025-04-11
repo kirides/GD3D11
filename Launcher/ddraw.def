@@ -36,3 +36,4 @@ EXPORTS
 	GDX_OpenMessageBox			= FakeGDX_OpenMessageBox			@33
 	GDX_Module					= FakeGDX_Module					@34
 	UpdateCustomFontMultiplier	= FakeUpdateCustomFontMultiplier	@35
+	SetCustomSkyTexture			= FakeSetCustomSkyTexture			@36

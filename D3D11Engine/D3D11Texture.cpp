@@ -135,7 +135,6 @@ XRESULT D3D11Texture::UpdateDataDeferred( void* data, int mip ) {
         return XR_FAILED;
 
     Engine::GAPI->AddStagingTexture( mip, stagingTexture, Texture.Get() );
-
     return XR_SUCCESS;
 }
 

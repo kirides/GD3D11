@@ -24,6 +24,7 @@ enum ESkyTexture {
     ST_OldWorld
 };
 
+class zCTexture;
 class zCSkyLayer;
 class zCSkyState;
 class GMesh;
@@ -48,6 +49,10 @@ public:
 
     /** Sets the current sky texture */
     void SetSkyTexture( ESkyTexture texture );
+
+    void SetCustomCloudAndNightTexture( int idx, bool isNightTexture, bool isOldWorld );
+    void SetCustomSkyTexture_ZenGin( bool isNightTexture, zCTexture* texture, bool isOldWorld );
+    void SetCustomSkyWavelengths( float X, float Y, float Z );
 
     /** Returns the skyplane */
     MeshInfo* GetSkyPlane();
@@ -94,6 +99,9 @@ protected:
 
     std::unique_ptr<D3D11Texture> CloudTexture;
     std::unique_ptr<D3D11Texture> NightTexture;
+
+    zCTexture* CloudTexture_Zen = nullptr;
+    zCTexture* NightTexture_Zen = nullptr;
 
     std::unique_ptr<D3D11VertexBuffer> SkyPlaneVertexBuffer;
     ExVertexStruct SkyPlaneVertices[6];

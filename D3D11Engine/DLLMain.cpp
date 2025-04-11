@@ -5,7 +5,7 @@
 #include "Logger.h"
 #include "Detours/detours.h"
 #include "DbgHelp.h"
-#include "BaseAntTweakBar.h"
+#include "AntTweakBarShim.h"
 #include "HookedFunctions.h"
 #include <signal.h>
 #include "VersionCheck.h"
@@ -13,6 +13,7 @@
 #include "D3D11GraphicsEngine.h"
 
 #include <shlwapi.h>
+#include "GSky.h"
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -42,7 +43,6 @@ WinMainFunc originalWinMain = reinterpret_cast<WinMainFunc>(GothicMemoryLocation
 #endif
 
 bool FeatureLevel10Compatibility = false;
-bool GMPModeActive = false;
 
 unsigned short QuantizeHalfFloat_Scalar( float input )
 {
@@ -238,6 +238,7 @@ struct ddraw_dll {
     FARPROC	RegisterSpecialCase;
     FARPROC	ReleaseDDThreadLock;
     FARPROC	UpdateCustomFontMultiplier;
+    FARPROC	SetCustomSkyTexture;
 } ddraw;
 
 HRESULT DoHookedDirectDrawCreateEx( GUID FAR* lpGuid, LPVOID* lplpDD, REFIID  iid, IUnknown FAR* pUnkOuter ) {
@@ -283,12 +284,33 @@ extern "C" void WINAPI HookedReleaseDDThreadLock() {
     LogInfo() << "ReleaseDDThreadLock called!";
 }
 
-
-extern "C" float WINAPI  UpdateCustomFontMultiplierFontRendering( float multiplier ) {
+extern "C" float WINAPI UpdateCustomFontMultiplierFontRendering( float multiplier ) {
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     return engine ? engine->UpdateCustomFontMultiplierFontRendering( multiplier ) : 1.0;
 }
 
+extern "C" void WINAPI SetCustomCloudAndNightTexture( int idxTexture, bool isNightTexture ) {
+    GSky* sky = Engine::GAPI->GetSky();
+    WorldInfo* currentWorld = Engine::GAPI->GetLoadedWorldInfo();
+    if ( sky && currentWorld ) {
+        sky->SetCustomCloudAndNightTexture( idxTexture, isNightTexture, currentWorld->WorldName == "OLDWORLD" || currentWorld->WorldName == "WORLD" );
+    }
+}
+
+extern "C" void WINAPI SetCustomSkyTexture_ZenGin( bool isNightTexture, zCTexture* texture ) {
+    GSky* sky = Engine::GAPI->GetSky();
+    WorldInfo* currentWorld = Engine::GAPI->GetLoadedWorldInfo();
+    if ( sky && currentWorld ) {
+        sky->SetCustomSkyTexture_ZenGin( isNightTexture, texture, currentWorld->WorldName == "OLDWORLD" || currentWorld->WorldName == "WORLD" );
+    }
+}
+
+extern "C" void WINAPI SetCustomSkyWavelengths( float X, float Y, float Z ) {
+    GSky* sky = Engine::GAPI->GetSky();
+    if ( sky ) {
+        sky->SetCustomSkyWavelengths( X, Y, Z );
+    }
+}
 
 __declspec(naked) void FakeAcquireDDThreadLock() { _asm { jmp[ddraw.AcquireDDThreadLock] } }
 __declspec(naked) void FakeCheckFullscreen() { _asm { jmp[ddraw.CheckFullscreen] } }
@@ -401,19 +423,24 @@ void CheckPlatformSupport() {
     }
 }
 
+inline void CheckForFreetardisms() {
+    HMODULE ntdll = GetModuleHandleA( "ntdll.dll" );
+    if ( ntdll ) 
+    {
+        Wine_GetVersion = reinterpret_cast<const char* (CDECL*)(void)>(GetProcAddress( ntdll, "wine_get_version" ));
+        Wine_GetUnderlyingOSVersion = reinterpret_cast<void (CDECL*)(const char** sysname, const char** release)>(GetProcAddress( ntdll, "wine_get_host_version" ));
+        if ( Wine_GetVersion && Wine_GetUnderlyingOSVersion )
+        {
+            const char* sysname = nullptr;
+            const char* release = nullptr;
+            Wine_GetUnderlyingOSVersion( &sysname , &release );
+            LogInfo() << "Running on " << sysname << " " << release << " through Wine " << Wine_GetVersion() << ", noice.";
+        }
+    }
+}
+
 #if defined(BUILD_GOTHIC_2_6_fix)
 int WINAPI hooked_WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nShowCmd ) {
-    if ( GetModuleHandleA( "gmp.dll" ) ) {
-        GMPModeActive = true;
-        LogInfo() << "GMP Mode Enabled";
-    }
-    // Remove automatic volume change of sounds regarding whether the camera is indoor or outdoor
-    // TODO: Implement!
-    if ( !GMPModeActive ) {
-        DetourTransactionBegin();
-        DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCActiveSndAutoCalcObstruction), HookedFunctionInfo::hooked_zCActiveSndAutoCalcObstruction );
-        DetourTransactionCommit();
-    }
     return originalWinMain( hInstance, hPrevInstance, lpCmdLine, nShowCmd );
 }
 #endif
@@ -449,6 +476,7 @@ BOOL WINAPI DllMain( HINSTANCE hInst, DWORD reason, LPVOID ) {
             // Check for right version
             VersionCheck::CheckExecutable();
             CheckPlatformSupport();
+            CheckForFreetardisms();
 
             Engine::GAPI = nullptr;
             Engine::GraphicsEngine = nullptr;

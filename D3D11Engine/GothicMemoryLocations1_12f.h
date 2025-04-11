@@ -184,7 +184,9 @@ struct GothicMemoryLocations {
 
         static const unsigned int Offset_Flags = 0xE4;
         static const unsigned int Offset_VobTree = 0x24;
+        static const unsigned int Offset_VobAlpha = 0xBC;
         static const unsigned int MASK_ShowVisual = 0x1;
+        static const unsigned int MASK_VisualAlpha = 0x4;
         static const unsigned int Offset_CameraAlignment = 0xF0;
         static const unsigned int SHIFTLR_CameraAlignment = 0x1E;
 
@@ -214,6 +216,11 @@ struct GothicMemoryLocations {
     struct zCVisual {
         static const unsigned int VTBL_GetFileExtension = 17;
         static const unsigned int Destructor = 0x005F9870;
+    };
+
+    struct oCVisualFX {
+        static const unsigned int Offset_emAdjustShpToOrigin = 0x29C;
+        static const unsigned int AdjustShapeToOrigin = 0x0049B170;
     };
 
     struct zCBspTree {
@@ -399,6 +406,7 @@ struct GothicMemoryLocations {
         static const unsigned int Call_Render_zCBspTreeRender = 0x00614E45;
         static const unsigned int Offset_SkyControllerOutdoor = 0x0D0;
         static const unsigned int DisposeVobs = 0x00616570;
+        static const unsigned int DisposeWorld = 0x00616780;
         static const unsigned int Offset_BspTree = 0x198;
         static const unsigned int RemoveVob = 0x00617690;
     };

@@ -720,6 +720,7 @@ void WorldConverter::Extract3DSMeshFromVisual( zCProgMeshProto* visual, MeshVisu
 
             vertices[idx].TexCoord.x = m->WedgeList.Get( n ).texUV.x; // This produces wrong results
             vertices[idx].TexCoord.y = m->WedgeList.Get( n ).texUV.y;
+            //vertices[idx].Color = m->Material->GetColor().dword;
             vertices[idx].Color = 0xFFFFFFFF;
             *vertices[idx].Normal.toXMFLOAT3() = (*m->WedgeList.Get( n ).normal.toXMFLOAT3());
         }
@@ -822,6 +823,7 @@ void WorldConverter::ExtractSkeletalMeshFromVob( zCModel* model, SkeletalMeshVis
                 indices.emplace_back( triangle.wedge[0] );
             }
 
+            zCMaterial* mat = s->GetSubmesh( i )->Material;
             // Get vertices
             vertices.reserve( m->WedgeList.NumInArray );
             bindPoseVertices.reserve( m->WedgeList.NumInArray );
@@ -847,9 +849,9 @@ void WorldConverter::ExtractSkeletalMeshFromVob( zCModel* model, SkeletalMeshVis
                 pvx.Normal = vx.Normal;
                 pvx.TexCoord = vx.TexCoord;
                 pvx.Color = 0xFFFFFFFF;
+                //pvx.Color = mat->GetColor().dword;
             }
 
-            zCMaterial* mat = s->GetSubmesh( i )->Material;
 
             SkeletalMeshInfo* mi = new SkeletalMeshInfo;
             mi->Vertices = vertices;
@@ -883,17 +885,6 @@ void WorldConverter::ExtractSkeletalMeshFromVob( zCModel* model, SkeletalMeshVis
     }
 
     skeletalMeshInfo->VisualName = model->GetVisualName();
-
-#if ENABLE_TESSELATION > 0
-    // Try to load saved settings for this mesh
-    skeletalMeshInfo->LoadMeshVisualInfo( skeletalMeshInfo->VisualName );
-
-    // Create additional information
-    if ( skeletalMeshInfo->TesselationInfo.buffer.VT_TesselationFactor > 0.0f
-        && Engine::GAPI->GetRendererState().RendererSettings.AllowWorldMeshTesselation ) // TODO: PNAEN for skeletals causes huge lags in the game and is barely
-                                                                                         // noticable anyways. Disable for now.
-        skeletalMeshInfo->CreatePNAENInfo( skeletalMeshInfo->TesselationInfo.buffer.VT_DisplacementStrength > 0.0f );
-#endif
 }
 
 /** Extracts a zCProgMeshProto from a zCModel */
@@ -963,6 +954,7 @@ void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualIn
                 vx.TexCoord = wedge.texUV;
                 vx.Normal = wedge.normal;
                 vx.Color = 0xFFFFFFFF;
+                //vx.Color = m->Material->GetColor().dword;
             }
 
             // Create the buffers and sort the mesh into the structure
@@ -1051,14 +1043,6 @@ void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualIn
     meshInfo->Visual = model;
     meshInfo->VisualName = visualName;
 
-#if ENABLE_TESSELATION > 0
-    // Try to load saved settings for this mesh
-    meshInfo->LoadMeshVisualInfo( meshInfo->VisualName );
-
-    // Create additional information
-    if ( meshInfo->TesselationInfo.buffer.VT_TesselationFactor > 0.0f )
-        meshInfo->CreatePNAENInfo( meshInfo->TesselationInfo.buffer.VT_DisplacementStrength > 0.0f );
-#endif
     mds.Delete();
 }
 
@@ -1179,6 +1163,7 @@ void WorldConverter::UpdateMorphMeshVisual( void* v, MeshVisualInfo* meshInfo ) 
             vx.Normal = wedge.normal;
             vx.TexCoord = wedge.texUV;
             vx.Color = 0xFFFFFFFF;
+            //vx.Color = s->Material->GetColor().dword;
         }
 
         for ( auto const& it : meshInfo->Meshes ) {
@@ -1228,8 +1213,7 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
             vx.Normal = wedge.normal;
             vx.TexCoord = wedge.texUV;
             vx.Color = 0xFFFFFFFF;
-            //if (visual->GetSubmeshes()[i].Material)
-            //	vx.Color = visual->GetSubmeshes()[i].Material->GetColor(); // Bake materialcolor into the mesh. This is ok for the most meshes.
+            //vx.Color = s->Material->GetColor().dword; // Bake materialcolor into the mesh. This is ok for the most meshes.
 
             // Check bounding box
             bbmin.x = bbmin.x > vx.Position.x ? vx.Position.x : bbmin.x;
@@ -1253,7 +1237,7 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
         mi->Vertices = vertices;
         mi->Indices = indices;
         mi->MeshIndex = i;
-
+        
         // Create the buffers
         Engine::GraphicsEngine->CreateVertexBuffer( &mi->MeshVertexBuffer );
         Engine::GraphicsEngine->CreateVertexBuffer( &mi->MeshIndexBuffer );
@@ -1336,15 +1320,6 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
 
     meshInfo->Visual = visual;
     meshInfo->VisualName = visual->GetObjectName();
-
-#if ENABLE_TESSELATION > 0
-    // Try to load saved settings for this mesh
-    meshInfo->LoadMeshVisualInfo( meshInfo->VisualName );
-
-    // Create additional information
-    if ( meshInfo->TesselationInfo.buffer.VT_TesselationFactor > 0.0f )
-        meshInfo->CreatePNAENInfo( meshInfo->TesselationInfo.buffer.VT_DisplacementStrength > 0.0f );
-#endif
 }
 
 const float eps = 0.001f;
@@ -1474,60 +1449,6 @@ void WorldConverter::GenerateVertexNormals( std::vector<ExVertexStruct>& vertice
     }
 }
 
-#if ENABLE_TESSELATION > 0
-ExVertexStruct TessTriLerpVertex( ExVertexStruct& a, ExVertexStruct& b, float w ) {
-    ExVertexStruct v;
-    FXMVECTOR XMV_w = XMVectorSet( w, w, w, 0 );
-    XMStoreFloat3( v.Position.toXMFLOAT3(), XMVectorLerpV( XMLoadFloat3( a.Position.toXMFLOAT3() ), XMLoadFloat3( b.Position.toXMFLOAT3() ), XMV_w ) );
-    XMStoreFloat3( v.Normal.toXMFLOAT3(), XMVectorLerpV( XMLoadFloat3( a.Normal.toXMFLOAT3() ), XMLoadFloat3( b.Normal.toXMFLOAT3() ), XMV_w ) );
-    XMStoreFloat2( v.TexCoord.toXMFLOAT2(), XMVectorLerpV( XMLoadFloat2( a.TexCoord.toXMFLOAT2() ), XMLoadFloat2( b.TexCoord.toXMFLOAT2() ), XMV_w ) );
-    XMStoreFloat2( v.TexCoord2.toXMFLOAT2(), XMVectorLerpV( XMLoadFloat2( a.TexCoord2.toXMFLOAT2() ), XMLoadFloat2( b.TexCoord2.toXMFLOAT2() ), XMV_w ) );
-    v.Color = a.Color;
-    return v;
-}
-
-/** Outputs 4 new triangles for 1 input triangle */
-static void TessSingleTri( ExVertexStruct* tri, std::vector<ExVertexStruct>& tesselated ) {
-    ExVertexStruct half[3];
-    half[0] = TessTriLerpVertex( tri[0], tri[1], 0.5f );
-    half[1] = TessTriLerpVertex( tri[1], tri[2], 0.5f );
-    half[2] = TessTriLerpVertex( tri[0], tri[2], 0.5f );
-
-    tesselated.emplace_back( tri[0] );
-    tesselated.emplace_back( half[0] );
-    tesselated.emplace_back( half[2] );
-
-    tesselated.emplace_back( half[0] );
-    tesselated.emplace_back( tri[1] );
-    tesselated.emplace_back( half[1] );
-
-    tesselated.emplace_back( half[2] );
-    tesselated.emplace_back( half[0] );
-    tesselated.emplace_back( half[1] );
-
-    tesselated.emplace_back( half[2] );
-    tesselated.emplace_back( half[1] );
-    tesselated.emplace_back( tri[2] );
-}
-
-/** Tesselates the given triangle and adds the values to the list */
-void WorldConverter::TesselateTriangle( ExVertexStruct* tri, std::vector<ExVertexStruct>& tesselated, int amount ) {
-    if ( amount == 0 ) {
-        tesselated.emplace_back( tri[0] );
-        tesselated.emplace_back( tri[1] );
-        tesselated.emplace_back( tri[2] );
-        return;
-    }
-
-    std::vector<ExVertexStruct> tv;
-    TessSingleTri( tri, tv );
-
-    for ( int i = 0; i < 4 * 3; i += 3 ) {
-        TesselateTriangle( &tv[i], tesselated, amount - 1 );
-    }
-}
-#endif
-
 /** Marks the edges of the mesh */
 void WorldConverter::MarkEdges( std::vector<ExVertexStruct>& vertices, std::vector<VERTEX_INDEX>& indices ) {
 
@@ -1553,7 +1474,7 @@ void WorldConverter::WrapVertexBuffers( const std::list<std::vector<ExVertexStru
     outOffsets.emplace_back( 0 );
     int off = 0;
     for ( auto const& iti : indexBuffers ) {
-        for ( auto& vi = iti->begin(); vi != iti->end(); ++vi ) {
+        for ( auto vi = iti->begin(); vi != iti->end(); ++vi ) {
             outIndices.emplace_back( *vi + vxOffsets[off] );
         }
         off++;
@@ -1649,69 +1570,6 @@ void WorldConverter::UpdateQuadMarkInfo( QuadMarkInfo* info, zCQuadMark* mark, c
     info->Position = position;
 }
 
-#if ENABLE_TESSELATION > 0
-/** Turns a MeshInfo into PNAEN */
-void WorldConverter::CreatePNAENInfoFor( MeshInfo* mesh, bool softNormals ) {
-    delete mesh->MeshIndexBufferPNAEN;
-    Engine::GraphicsEngine->CreateVertexBuffer( &mesh->MeshIndexBufferPNAEN );
-
-    delete mesh->MeshVertexBuffer;
-    Engine::GraphicsEngine->CreateVertexBuffer( &mesh->MeshVertexBuffer );
-
-    mesh->VerticesPNAEN = mesh->Vertices;
-
-    MeshModifier::ComputePNAEN18Indices( mesh->VerticesPNAEN, mesh->Indices, mesh->IndicesPNAEN, true, softNormals );
-    mesh->MeshIndexBufferPNAEN->Init( &mesh->IndicesPNAEN[0], mesh->IndicesPNAEN.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
-    mesh->MeshVertexBuffer->Init( &mesh->VerticesPNAEN[0], mesh->VerticesPNAEN.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
-}
-
-void WorldConverter::CreatePNAENInfoFor( WorldMeshInfo* mesh, bool softNormals ) {
-    delete mesh->MeshIndexBufferPNAEN;
-    Engine::GraphicsEngine->CreateVertexBuffer( &mesh->MeshIndexBufferPNAEN );
-
-    delete mesh->MeshVertexBuffer;
-    Engine::GraphicsEngine->CreateVertexBuffer( &mesh->MeshVertexBuffer );
-
-    mesh->VerticesPNAEN = mesh->Vertices;
-
-    MeshModifier::ComputePNAEN18Indices( mesh->VerticesPNAEN, mesh->Indices, mesh->IndicesPNAEN, true, softNormals );
-    mesh->MeshIndexBufferPNAEN->Init( &mesh->IndicesPNAEN[0], mesh->IndicesPNAEN.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
-    mesh->MeshVertexBuffer->Init( &mesh->VerticesPNAEN[0], mesh->VerticesPNAEN.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
-}
-
-/** Turns a MeshInfo into PNAEN */
-void WorldConverter::CreatePNAENInfoFor( SkeletalMeshInfo* mesh, MeshInfo* bindPoseMesh, bool softNormals ) {
-    delete mesh->MeshIndexBufferPNAEN;
-    Engine::GraphicsEngine->CreateVertexBuffer( &mesh->MeshIndexBufferPNAEN );
-
-    delete mesh->MeshVertexBuffer;
-    Engine::GraphicsEngine->CreateVertexBuffer( &mesh->MeshVertexBuffer );
-
-    delete bindPoseMesh->MeshIndexBufferPNAEN;
-    Engine::GraphicsEngine->CreateVertexBuffer( &bindPoseMesh->MeshIndexBufferPNAEN );
-
-    delete bindPoseMesh->MeshVertexBuffer;
-    Engine::GraphicsEngine->CreateVertexBuffer( &bindPoseMesh->MeshVertexBuffer );
-
-    bindPoseMesh->VerticesPNAEN = bindPoseMesh->Vertices;
-
-    MeshModifier::ComputePNAEN18Indices( bindPoseMesh->VerticesPNAEN, mesh->Indices, mesh->IndicesPNAEN, true, softNormals );
-    bindPoseMesh->IndicesPNAEN = mesh->IndicesPNAEN;
-
-    mesh->MeshIndexBufferPNAEN->Init( &mesh->IndicesPNAEN[0], mesh->IndicesPNAEN.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
-    bindPoseMesh->MeshIndexBufferPNAEN->Init( &bindPoseMesh->IndicesPNAEN[0], bindPoseMesh->IndicesPNAEN.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
-
-
-    for ( unsigned int i = 0; i < mesh->Vertices.size(); i++ ) {
-        // Transfer the normals, in case they changed
-        mesh->Vertices[i].Normal = bindPoseMesh->VerticesPNAEN[i].Normal;
-    }
-
-    mesh->MeshVertexBuffer->Init( &mesh->Vertices[0], mesh->Vertices.size() * sizeof( ExSkelVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
-    bindPoseMesh->MeshVertexBuffer->Init( &bindPoseMesh->VerticesPNAEN[0], bindPoseMesh->VerticesPNAEN.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
-}
-#endif
-
 /** Converts ExVertexStruct into a zCPolygon*-Attay */
 void WorldConverter::ConvertExVerticesTozCPolygons( const std::vector<ExVertexStruct>& vertices, const std::vector<VERTEX_INDEX>& indices, zCMaterial* material, std::vector<zCPolygon*>& polyArray ) {
     for ( size_t i = 0; i < indices.size(); i += 3 ) {
@@ -1751,65 +1609,3 @@ void WorldConverter::ConvertExVerticesTozCPolygons( const std::vector<ExVertexSt
     }
 }
 
-#if ENABLE_TESSELATION > 0
-/** Tesselates the given mesh the given amount of times */
-void WorldConverter::TesselateMesh( WorldMeshInfo* mesh, int amount ) {
-    // Copy old vertices so we can directly write to the vectors again
-    std::vector<ExVertexStruct> vxOld = mesh->Vertices;
-    std::vector<unsigned short> ixOld = mesh->Indices;
-
-    // Tesselate if the outcome would still be in 16-bit range
-    if ( amount > 1 && mesh->Vertices.size() + (mesh->Indices.size() / 3) < 0x0000FFFF ) {
-        std::vector<ExVertexStruct> meshTess;
-        for ( unsigned int i = 0; i < mesh->Indices.size(); i += 3 ) {
-            ExVertexStruct vx[3];
-            vx[0] = mesh->Vertices[mesh->Indices[i]];
-            vx[1] = mesh->Vertices[mesh->Indices[i + 1]];
-            vx[2] = mesh->Vertices[mesh->Indices[i + 2]];
-
-            std::vector<ExVertexStruct> triTess;
-            WorldConverter::TesselateTriangle( vx, triTess, 1 );
-
-            // Append
-            for ( unsigned int v = 0; v < triTess.size(); v++ ) {
-                meshTess.emplace_back( triTess[v] );
-            }
-        }
-
-        mesh->Vertices.clear();
-        mesh->Indices.clear();
-
-        // Index
-        WorldConverter::IndexVertices( &meshTess[0], meshTess.size(), mesh->Vertices, mesh->Indices );
-    }
-
-    MeshModifier::ComputePNAEN18Indices( mesh->Vertices, mesh->Indices, mesh->IndicesPNAEN, true, true );
-    if ( mesh->Vertices.size() >= 0xFFFF ) {
-        // Too large
-        return;
-    }
-
-
-    // Cleanup
-    delete mesh->MeshVertexBuffer;
-    delete mesh->MeshIndexBuffer;
-    delete mesh->MeshIndexBufferPNAEN;
-
-    // Recreate the buffers
-    Engine::GraphicsEngine->CreateVertexBuffer( &mesh->MeshVertexBuffer );
-    Engine::GraphicsEngine->CreateVertexBuffer( &mesh->MeshIndexBufferPNAEN );
-    Engine::GraphicsEngine->CreateVertexBuffer( &mesh->MeshIndexBuffer );
-
-    // Init and fill them
-    mesh->MeshVertexBuffer->Init( &mesh->Vertices[0], mesh->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
-    mesh->MeshIndexBufferPNAEN->Init( &mesh->IndicesPNAEN[0], mesh->IndicesPNAEN.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
-    mesh->MeshIndexBuffer->Init( &mesh->Indices[0], mesh->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
-
-    mesh->TesselationSettings.buffer.VT_TesselationFactor = 1.0f;
-    mesh->TesselationSettings.buffer.VT_DisplacementStrength = 0.5f;
-    mesh->TesselationSettings.UpdateConstantbuffer();
-
-    // Mark dirty
-    mesh->SaveInfo = true;
-}
-#endif

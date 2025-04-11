@@ -18,7 +18,7 @@ jobs:
     runs-on: windows-latest
     strategy:
       matrix:
-        configuration: [Release_AVX, Release_G1_AVX, Release, Release_G1, Spacer_NET, Launcher]
+        configuration: [Release_G1A_AVX2, Release_G1A_AVX, Release_G1A_SSE2, Release_G1_AVX, Release_G1_AVX2, Release_G1_SSE2, Release_G2A_AVX2, Release_G2A_AVX, Release_G2A_SSE2, Launcher]
 
     steps:
     - uses: actions/checkout@v4
@@ -77,10 +77,15 @@ jobs:
         Xcopy "blobs\Meshes" "${{env.RELEASE_DIR}}\GD3D11\Meshes\" /s
         Xcopy "blobs\Textures" "${{env.RELEASE_DIR}}\GD3D11\Textures\" /s
         Xcopy "blobs\libs\*" "${{env.RELEASE_DIR}}\" /s
-        copy "Release_AVX\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\g2a_avx2.dll"
-        copy "Release\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\g2a.dll"
+        copy "Release_G2A_AVX2\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\g2a_avx2.dll"
+        copy "Release_G2A_AVX\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\g2a_avx.dll"
+        copy "Release_G2A_SSE2\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\g2a.dll"
+        copy "Release_G1_AVX2\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\g1_avx2.dll"
         copy "Release_G1_AVX\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\g1_avx.dll"
-        copy "Release_G1\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\g1.dll"
+        copy "Release_G1_SSE2\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\g1.dll"
+        copy "Release_G1A_AVX2\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\g1a_avx2.dll"
+        copy "Release_G1A_AVX\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\g1a_avx.dll"
+        copy "Release_G1A_SSE2\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\g1a.dll"
         copy "Launcher\ddraw.dll" "${{env.RELEASE_DIR}}\"
     
     - name: Upload artifacts

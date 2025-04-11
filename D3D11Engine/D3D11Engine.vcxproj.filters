@@ -46,23 +46,11 @@
     <Filter Include="Engine\D3D11\PFX\Effects">
       <UniqueIdentifier>{4a636f28-ea7e-4ed1-8f13-f7e1f5e661fd}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Engine\D2D">
-      <UniqueIdentifier>{b8c0e040-3677-47c0-acb5-a22e91382a36}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="Engine\D2D\Views">
-      <UniqueIdentifier>{20881692-d4c6-45b9-a810-5f1fbbf7fedd}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="Engine\D2D\Views\Controls">
-      <UniqueIdentifier>{87f7b47e-676c-4a53-89e8-0d17d2df9586}</UniqueIdentifier>
-    </Filter>
     <Filter Include="Librarys\StackWalker">
       <UniqueIdentifier>{e45daa27-5530-477e-a17c-9778bd2dfcaf}</UniqueIdentifier>
     </Filter>
     <Filter Include="Librarys\Ocean">
       <UniqueIdentifier>{c785e8ae-b3cf-484f-a21b-448b1a0deee3}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="Engine\D2D\Views\Editor">
-      <UniqueIdentifier>{bbb9a900-54fc-4e56-9cb6-9b7d93f6b1e6}</UniqueIdentifier>
     </Filter>
     <Filter Include="Librarys\Assimp">
       <UniqueIdentifier>{9bec2d0d-0bea-4659-aeef-99300438c197}</UniqueIdentifier>
@@ -72,6 +60,12 @@
     </Filter>
     <Filter Include="Detours">
       <UniqueIdentifier>{cc76209d-e83c-4217-9632-b333a4ee7d49}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Librarys\imgui">
+      <UniqueIdentifier>{6487c5fb-b35c-4273-a991-72b239bb197a}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Librarys\imgui\backends">
+      <UniqueIdentifier>{8cc8081a-388d-459b-a0a2-74a0205801fb}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
@@ -250,11 +244,8 @@
     <ClInclude Include="GInventory.h">
       <Filter>Engine\GAPI\Objects</Filter>
     </ClInclude>
-    <ClInclude Include="BaseAntTweakBar.h">
+    <ClInclude Include="AntTweakBarShim.h">
       <Filter>Engine</Filter>
-    </ClInclude>
-    <ClInclude Include="D3D11AntTweakBar.h">
-      <Filter>Engine\D3D11</Filter>
     </ClInclude>
     <ClInclude Include="AntTweakBar.h">
       <Filter>Librarys</Filter>
@@ -310,33 +301,6 @@
     <ClInclude Include="GVegetationBox.h">
       <Filter>Engine\GAPI\Objects</Filter>
     </ClInclude>
-    <ClInclude Include="D2DView.h">
-      <Filter>Engine\D2D</Filter>
-    </ClInclude>
-    <ClInclude Include="D2DSubView.h">
-      <Filter>Engine\D2D</Filter>
-    </ClInclude>
-    <ClInclude Include="D2DEditorView.h">
-      <Filter>Engine\D2D\Views</Filter>
-    </ClInclude>
-    <ClInclude Include="SV_Border.h">
-      <Filter>Engine\D2D\Views\Controls</Filter>
-    </ClInclude>
-    <ClInclude Include="SV_Panel.h">
-      <Filter>Engine\D2D\Views\Controls</Filter>
-    </ClInclude>
-    <ClInclude Include="SV_Button.h">
-      <Filter>Engine\D2D\Views\Controls</Filter>
-    </ClInclude>
-    <ClInclude Include="SV_Checkbox.h">
-      <Filter>Engine\D2D\Views\Controls</Filter>
-    </ClInclude>
-    <ClInclude Include="SV_TabControl.h">
-      <Filter>Engine\D2D\Views\Controls</Filter>
-    </ClInclude>
-    <ClInclude Include="SV_Slider.h">
-      <Filter>Engine\D2D\Views\Controls</Filter>
-    </ClInclude>
     <ClInclude Include="StackWalker.h">
       <Filter>Librarys\StackWalker</Filter>
     </ClInclude>
@@ -354,9 +318,6 @@
     </ClInclude>
     <ClInclude Include="D3D11HDShader.h">
       <Filter>Engine\D3D11</Filter>
-    </ClInclude>
-    <ClInclude Include="SV_Label.h">
-      <Filter>Engine\D2D\Views\Controls</Filter>
     </ClInclude>
     <ClInclude Include="win32ClipboardWrapper.h">
       <Filter>Librarys</Filter>
@@ -376,12 +337,6 @@
     <ClInclude Include="BasicTimer.h">
       <Filter>Engine\GAPI</Filter>
     </ClInclude>
-    <ClInclude Include="D2DDialog.h">
-      <Filter>Engine\D2D\Views</Filter>
-    </ClInclude>
-    <ClInclude Include="D2DSettingsDialog.h">
-      <Filter>Engine\D2D\Views</Filter>
-    </ClInclude>
     <ClInclude Include="oCSpawnManager.h">
       <Filter>ZenGin\Classes</Filter>
     </ClInclude>
@@ -400,32 +355,17 @@
     <ClInclude Include="zCQuadMark.h">
       <Filter>ZenGin\Classes</Filter>
     </ClInclude>
-    <ClInclude Include="D2DVobSettingsDialog.h">
-      <Filter>Engine\D2D\Views</Filter>
-    </ClInclude>
-    <ClInclude Include="SV_GMeshInfoView.h">
-      <Filter>Engine\D2D\Views\Controls</Filter>
-    </ClInclude>
-    <ClInclude Include="SV_NamedSlider.h">
-      <Filter>Engine\D2D\Views\Controls</Filter>
-    </ClInclude>
     <ClInclude Include="VersionCheck.h">
       <Filter>DLLMain</Filter>
     </ClInclude>
     <ClInclude Include="D3D11NVHBAO.h">
       <Filter>Engine\D3D11\PFX</Filter>
     </ClInclude>
-    <ClInclude Include="D2DMessageBox.h">
-      <Filter>Engine\D2D\Views</Filter>
-    </ClInclude>
     <ClInclude Include="IkarusBindings.h">
       <Filter>Engine</Filter>
     </ClInclude>
     <ClInclude Include="zCParser.h">
       <Filter>ZenGin\Classes</Filter>
-    </ClInclude>
-    <ClInclude Include="SV_ProgressBar.h">
-      <Filter>Engine\D2D\Views\Controls</Filter>
     </ClInclude>
     <ClInclude Include="XUnzip.h">
       <Filter>Librarys</Filter>
@@ -460,17 +400,8 @@
     <ClInclude Include="GothicMemoryLocations2_6_fix_Spacer.h">
       <Filter>ZenGin</Filter>
     </ClInclude>
-    <ClInclude Include="WidgetContainer.h">
-      <Filter>Engine\D2D\Views\Editor</Filter>
-    </ClInclude>
     <ClInclude Include="EditorLinePrimitive.h">
       <Filter>Engine\GAPI</Filter>
-    </ClInclude>
-    <ClInclude Include="BaseWidget.h">
-      <Filter>Engine\D2D\Views\Editor</Filter>
-    </ClInclude>
-    <ClInclude Include="Widget_TransRot.h">
-      <Filter>Engine\D2D\Views\Editor</Filter>
     </ClInclude>
     <ClInclude Include="WorldObjects.h">
       <Filter>Engine\GAPI</Filter>
@@ -482,225 +413,6 @@
     <ClInclude Include="BaseShadowedPointLight.h" />
     <ClInclude Include="zCClassDef.h">
       <Filter>ZenGin\Classes</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\ZipArchiveIOSystem.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\XMLTools.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\Vertex.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\version.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\vector3.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\vector2.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\types.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\TinyFormatter.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\texture.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\Subdivision.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\StringUtils.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\StringComparison.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\StreamWriter.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\StreamReader.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\StandardShapes.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\SpatialSort.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\SmoothingGroups.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\SkeletonMeshBuilder.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\SGSpatialSort.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\SceneCombiner.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\scene.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\RemoveComments.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\quaternion.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\qnan.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\ProgressHandler.hpp">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\Profiler.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\postprocess.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\pbrmaterial.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\ParsingUtils.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\NullLogger.hpp">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\metadata.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\mesh.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\MemoryIOWrapper.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\matrix4x4.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\matrix3x3.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\MathFunctions.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\material.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\Macros.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\LogStream.hpp">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\Logger.hpp">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\LogAux.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\LineSplitter.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\light.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\irrXMLWrapper.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\IOSystem.hpp">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\IOStreamBuffer.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\IOStream.hpp">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\importerdesc.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\Importer.hpp">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\Hash.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\GenericProperty.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\fast_atof.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\Exceptional.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\defs.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\Defines.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\DefaultLogger.hpp">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\DefaultIOSystem.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\DefaultIOStream.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\CreateAnimMesh.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\config.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\color4.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\cimport.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\cfileio.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\cexport.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\camera.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\ByteSwapper.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\BlobIOSystem.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\Bitmap.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\BaseImporter.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\anim.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\ai_assert.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\aabb.h">
-      <Filter>Librarys\Assimp</Filter>
-    </ClInclude>
-    <ClInclude Include="include\assimp\Exporter.hpp">
-      <Filter>Librarys\Assimp</Filter>
     </ClInclude>
     <ClInclude Include="zViewTypes.h">
       <Filter>ZenGin\Classes</Filter>
@@ -736,6 +448,264 @@
     </ClInclude>
     <ClInclude Include="Detours\detver.h">
       <Filter>Detours</Filter>
+    </ClInclude>
+    <ClInclude Include="include\imgui\imconfig.h">
+      <Filter>Librarys\imgui</Filter>
+    </ClInclude>
+    <ClInclude Include="include\imgui\imgui.h">
+      <Filter>Librarys\imgui</Filter>
+    </ClInclude>
+    <ClInclude Include="include\imgui\imgui_internal.h">
+      <Filter>Librarys\imgui</Filter>
+    </ClInclude>
+    <ClInclude Include="include\imgui\imstb_rectpack.h">
+      <Filter>Librarys\imgui</Filter>
+    </ClInclude>
+    <ClInclude Include="include\imgui\imstb_textedit.h">
+      <Filter>Librarys\imgui</Filter>
+    </ClInclude>
+    <ClInclude Include="include\imgui\imstb_truetype.h">
+      <Filter>Librarys\imgui</Filter>
+    </ClInclude>
+    <ClInclude Include="include\imgui\backends\imgui_impl_dx11.h">
+      <Filter>Librarys\imgui\backends</Filter>
+    </ClInclude>
+    <ClInclude Include="include\imgui\backends\imgui_impl_win32.h">
+      <Filter>Librarys\imgui\backends</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\aabb.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\ai_assert.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\anim.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\AssertHandler.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\Base64.hpp">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\BaseImporter.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\Bitmap.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\BlobIOSystem.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\ByteSwapper.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\camera.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\cexport.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\cfileio.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\cimport.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\ColladaMetaData.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\color4.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\commonMetaData.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\CreateAnimMesh.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\DefaultIOStream.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\DefaultIOSystem.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\DefaultLogger.hpp">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\defs.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\Exceptional.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\Exporter.hpp">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\fast_atof.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\GenericProperty.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\GltfMaterial.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\Hash.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\Importer.hpp">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\importerdesc.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\IOStream.hpp">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\IOStreamBuffer.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\IOSystem.hpp">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\light.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\LineSplitter.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\LogAux.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\Logger.hpp">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\LogStream.hpp">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\material.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\MathFunctions.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\matrix3x3.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\matrix4x4.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\MemoryIOWrapper.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\mesh.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\metadata.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\NullLogger.hpp">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\ObjMaterial.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\ParsingUtils.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\pbrmaterial.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\postprocess.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\Profiler.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\ProgressHandler.hpp">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\qnan.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\quaternion.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\RemoveComments.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\scene.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\SceneCombiner.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\SGSpatialSort.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\SkeletonMeshBuilder.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\SmallVector.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\SmoothingGroups.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\SpatialSort.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\StandardShapes.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\StreamReader.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\StreamWriter.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\StringComparison.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\StringUtils.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\Subdivision.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\texture.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\TinyFormatter.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\types.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\vector2.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\vector3.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\version.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\Vertex.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\XmlParser.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\XMLTools.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="include\assimp\ZipArchiveIOSystem.h">
+      <Filter>Librarys\Assimp</Filter>
+    </ClInclude>
+    <ClInclude Include="ImGuiShim.h">
+      <Filter>Engine</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -797,11 +767,8 @@
     <ClCompile Include="GInventory.cpp">
       <Filter>Engine\GAPI\Objects</Filter>
     </ClCompile>
-    <ClCompile Include="BaseAntTweakBar.cpp">
+    <ClCompile Include="AntTweakBarShim.cpp">
       <Filter>Engine</Filter>
-    </ClCompile>
-    <ClCompile Include="D3D11AntTweakBar.cpp">
-      <Filter>Engine\D3D11</Filter>
     </ClCompile>
     <ClCompile Include="D3D11PFX_Effect.cpp">
       <Filter>Engine\D3D11\PFX\Effects</Filter>
@@ -827,44 +794,14 @@
     <ClCompile Include="GVegetationBox.cpp">
       <Filter>Engine\GAPI\Objects</Filter>
     </ClCompile>
-    <ClCompile Include="D2DView.cpp">
-      <Filter>Engine\D2D</Filter>
-    </ClCompile>
-    <ClCompile Include="D2DSubView.cpp">
-      <Filter>Engine\D2D</Filter>
-    </ClCompile>
-    <ClCompile Include="D2DEditorView.cpp">
-      <Filter>Engine\D2D\Views</Filter>
-    </ClCompile>
-    <ClCompile Include="SV_Border.cpp">
-      <Filter>Engine\D2D\Views\Controls</Filter>
-    </ClCompile>
-    <ClCompile Include="SV_Panel.cpp">
-      <Filter>Engine\D2D\Views\Controls</Filter>
-    </ClCompile>
-    <ClCompile Include="SV_Button.cpp">
-      <Filter>Engine\D2D\Views\Controls</Filter>
-    </ClCompile>
-    <ClCompile Include="SV_Checkbox.cpp">
-      <Filter>Engine\D2D\Views\Controls</Filter>
-    </ClCompile>
-    <ClCompile Include="SV_Slider.cpp">
-      <Filter>Engine\D2D\Views\Controls</Filter>
-    </ClCompile>
     <ClCompile Include="StackWalker.cpp">
       <Filter>Librarys\StackWalker</Filter>
     </ClCompile>
     <ClCompile Include="MeshModifier.cpp">
       <Filter>Engine\GAPI</Filter>
     </ClCompile>
-    <ClCompile Include="SV_TabControl.cpp">
-      <Filter>Engine\D2D\Views\Controls</Filter>
-    </ClCompile>
     <ClCompile Include="D3D11HDShader.cpp">
       <Filter>Engine\D3D11</Filter>
-    </ClCompile>
-    <ClCompile Include="SV_Label.cpp">
-      <Filter>Engine\D2D\Views\Controls</Filter>
     </ClCompile>
     <ClCompile Include="win32ClipboardWrapper.cpp">
       <Filter>Librarys</Filter>
@@ -878,23 +815,8 @@
     <ClCompile Include="ocean_simulator.cpp">
       <Filter>Librarys\Ocean</Filter>
     </ClCompile>
-    <ClCompile Include="D2DDialog.cpp">
-      <Filter>Engine\D2D\Views</Filter>
-    </ClCompile>
-    <ClCompile Include="D2DSettingsDialog.cpp">
-      <Filter>Engine\D2D\Views</Filter>
-    </ClCompile>
     <ClCompile Include="D3D11PFX_SMAA.cpp">
       <Filter>Engine\D3D11\PFX\Effects</Filter>
-    </ClCompile>
-    <ClCompile Include="D2DVobSettingsDialog.cpp">
-      <Filter>Engine\D2D\Views</Filter>
-    </ClCompile>
-    <ClCompile Include="SV_GMeshInfoView.cpp">
-      <Filter>Engine\D2D\Views\Controls</Filter>
-    </ClCompile>
-    <ClCompile Include="SV_NamedSlider.cpp">
-      <Filter>Engine\D2D\Views\Controls</Filter>
     </ClCompile>
     <ClCompile Include="VersionCheck.cpp">
       <Filter>DLLMain</Filter>
@@ -902,14 +824,8 @@
     <ClCompile Include="D3D11NVHBAO.cpp">
       <Filter>Engine\D3D11\PFX</Filter>
     </ClCompile>
-    <ClCompile Include="D2DMessageBox.cpp">
-      <Filter>Engine\D2D\Views</Filter>
-    </ClCompile>
     <ClCompile Include="IkarusBindings.cpp">
       <Filter>Engine</Filter>
-    </ClCompile>
-    <ClCompile Include="SV_ProgressBar.cpp">
-      <Filter>Engine\D2D\Views\Controls</Filter>
     </ClCompile>
     <ClCompile Include="XUnzip.cpp">
       <Filter>Librarys</Filter>
@@ -939,17 +855,8 @@
     <ClCompile Include="D3D11PointLight.cpp">
       <Filter>Engine\D3D11</Filter>
     </ClCompile>
-    <ClCompile Include="WidgetContainer.cpp">
-      <Filter>Engine\D2D\Views\Editor</Filter>
-    </ClCompile>
     <ClCompile Include="EditorLinePrimitive.cpp">
       <Filter>Engine\GAPI</Filter>
-    </ClCompile>
-    <ClCompile Include="BaseWidget.cpp">
-      <Filter>Engine\D2D\Views\Editor</Filter>
-    </ClCompile>
-    <ClCompile Include="Widget_TransRot.cpp">
-      <Filter>Engine\D2D\Views\Editor</Filter>
     </ClCompile>
     <ClCompile Include="WorldObjects.cpp">
       <Filter>Engine\GAPI</Filter>
@@ -995,37 +902,67 @@
     <ClCompile Include="Detours\modules.cpp">
       <Filter>Detours</Filter>
     </ClCompile>
+    <ClCompile Include="include\imgui\imgui.cpp">
+      <Filter>Librarys\imgui</Filter>
+    </ClCompile>
+    <ClCompile Include="include\imgui\imgui_demo.cpp">
+      <Filter>Librarys\imgui</Filter>
+    </ClCompile>
+    <ClCompile Include="include\imgui\imgui_draw.cpp">
+      <Filter>Librarys\imgui</Filter>
+    </ClCompile>
+    <ClCompile Include="include\imgui\imgui_tables.cpp">
+      <Filter>Librarys\imgui</Filter>
+    </ClCompile>
+    <ClCompile Include="include\imgui\imgui_widgets.cpp">
+      <Filter>Librarys\imgui</Filter>
+    </ClCompile>
+    <ClCompile Include="include\imgui\backends\imgui_impl_dx11.cpp">
+      <Filter>Librarys\imgui\backends</Filter>
+    </ClCompile>
+    <ClCompile Include="include\imgui\backends\imgui_impl_win32.cpp">
+      <Filter>Librarys\imgui\backends</Filter>
+    </ClCompile>
+    <ClCompile Include="ImGuiShim.cpp">
+      <Filter>Engine</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="ddraw.def">
       <Filter>DLLMain</Filter>
     </None>
     <None Include="packages.config" />
-    <None Include="include\assimp\vector3.inl">
-      <Filter>Librarys\Assimp</Filter>
-    </None>
-    <None Include="include\assimp\vector2.inl">
-      <Filter>Librarys\Assimp</Filter>
-    </None>
-    <None Include="include\assimp\SmoothingGroups.inl">
-      <Filter>Librarys\Assimp</Filter>
-    </None>
-    <None Include="include\assimp\quaternion.inl">
-      <Filter>Librarys\Assimp</Filter>
-    </None>
-    <None Include="include\assimp\matrix4x4.inl">
-      <Filter>Librarys\Assimp</Filter>
-    </None>
-    <None Include="include\assimp\matrix3x3.inl">
-      <Filter>Librarys\Assimp</Filter>
-    </None>
-    <None Include="include\assimp\material.inl">
+    <None Include="include\assimp\.editorconfig">
       <Filter>Librarys\Assimp</Filter>
     </None>
     <None Include="include\assimp\color4.inl">
       <Filter>Librarys\Assimp</Filter>
     </None>
-    <None Include="include\assimp\.editorconfig">
+    <None Include="include\assimp\material.inl">
+      <Filter>Librarys\Assimp</Filter>
+    </None>
+    <None Include="include\assimp\matrix3x3.inl">
+      <Filter>Librarys\Assimp</Filter>
+    </None>
+    <None Include="include\assimp\matrix4x4.inl">
+      <Filter>Librarys\Assimp</Filter>
+    </None>
+    <None Include="include\assimp\module.modulemap">
+      <Filter>Librarys\Assimp</Filter>
+    </None>
+    <None Include="include\assimp\quaternion.inl">
+      <Filter>Librarys\Assimp</Filter>
+    </None>
+    <None Include="include\assimp\revision.h.in">
+      <Filter>Librarys\Assimp</Filter>
+    </None>
+    <None Include="include\assimp\SmoothingGroups.inl">
+      <Filter>Librarys\Assimp</Filter>
+    </None>
+    <None Include="include\assimp\vector2.inl">
+      <Filter>Librarys\Assimp</Filter>
+    </None>
+    <None Include="include\assimp\vector3.inl">
       <Filter>Librarys\Assimp</Filter>
     </None>
   </ItemGroup>

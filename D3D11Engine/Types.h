@@ -1,6 +1,6 @@
 #pragma once
 #include <string>
-
+#include <sstream>
 #include <Windows.h>
 
 #include <DirectXMath.h>
@@ -27,10 +27,19 @@ struct INT2 {
         this->y = static_cast<int>(v.y + 0.5f);
     }
 
+    INT2( const std::string& resolution ) {
+        std::istringstream iss( resolution );
+        char separator;
+
+        if ( !(iss >> x >> separator >> y) || separator != 'x' ) {
+            x = 800;
+            y = 600;
+        }
+    }
     INT2() { x = 0; y = 0; }
 
     std::string toString() const {
-        return "(" + std::to_string( x ) + ", " + std::to_string( y ) + ")";
+        return std::to_string( x ) + "x" + std::to_string( y );
     }
 
     int x;

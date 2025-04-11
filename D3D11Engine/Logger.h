@@ -148,6 +148,8 @@ public:
     /** STL stringstream feature */
     template< typename T >
     inline Log& operator << ( const T& obj ) {
+    #pragma warning(push)
+    #pragma warning(disable: 6392)
         Message << obj;
         return *this;
     }

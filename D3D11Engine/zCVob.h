@@ -152,21 +152,41 @@ public:
         return __GetObjectName().ToChar();
     }
 
-    /** Returns the world-position of this vob */
-    XMFLOAT3 GetPositionWorld() const {
-        // Get the data right off the memory to save a function call
-        return XMFLOAT3( *reinterpret_cast<float*>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_WorldPosX )),
-            *reinterpret_cast<float*>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_WorldPosY )),
-            *reinterpret_cast<float*>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_WorldPosZ )) );
+    ///** Returns the world-position of this vob */
+    //XMFLOAT3 GetPositionWorld() const {
+    //    // Get the data right off the memory to save a function call
+    //    return XMFLOAT3( *reinterpret_cast<float*>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_WorldPosX )),
+    //        *reinterpret_cast<float*>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_WorldPosY )),
+    //        *reinterpret_cast<float*>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_WorldPosZ )) );
+    //}
+
+    ///** Returns the world-position of this vob */
+    //FXMVECTOR XM_CALLCONV GetPositionWorldXM() const {
+    //    // Get the data right off the memory to save a function call
+    //    FXMVECTOR pos = XMVectorSet( *reinterpret_cast<float*>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_WorldPosX )),
+    //        *reinterpret_cast<float*>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_WorldPosY )),
+    //        *reinterpret_cast<float*>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_WorldPosZ )), 0.f );
+    //    return pos;
+    //}
+
+    //** Returns the world-position by reading translation part of this vob's matrix */
+    XMFLOAT3 GetPositionWorld() {
+        XMFLOAT4X4* m = GetWorldMatrixPtr();
+        if ( m ) { // typically if matrix is no good, then everything here would be.
+            return XMFLOAT3( m->_14, m->_24, m->_34 ); // this one should be way faster than directx maffs
+        }
+
+        return XMFLOAT3( 0.f, 0.f, 0.f );
     }
 
-    /** Returns the world-position of this vob */
-    FXMVECTOR XM_CALLCONV GetPositionWorldXM() const {
-        // Get the data right off the memory to save a function call
-        FXMVECTOR pos = XMVectorSet( *reinterpret_cast<float*>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_WorldPosX )),
-            *reinterpret_cast<float*>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_WorldPosY )),
-            *reinterpret_cast<float*>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_WorldPosZ )), 0 );
-        return pos;
+    //** Returns the world-position by reading translation part of this vob's matrix */
+    FXMVECTOR XM_CALLCONV GetPositionWorldXM() {
+        XMFLOAT4X4* m = GetWorldMatrixPtr();
+        if ( m ) {
+            return XMVectorSet( m->_14, m->_24, m->_34, 0.f );
+        }
+
+        return XMVectorZero();
     }
 
     /** Sets this vobs position */
@@ -213,7 +233,7 @@ public:
 
     /** Returns a copy of the world matrix */
     XMMATRIX GetWorldMatrixXM() {
-        return XMLoadFloat4x4( reinterpret_cast<XMFLOAT4X4*>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_WorldMatrixPtr )) );
+        return XMLoadFloat4x4( GetWorldMatrixPtr() );
     }
 
     /** Returns the world-polygon right under this vob */
@@ -286,6 +306,17 @@ public:
     bool GetShowMainVisual() {
         unsigned int flags = *reinterpret_cast<unsigned int*>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_Flags ));
         return (flags & GothicMemoryLocations::zCVob::MASK_ShowVisual);
+    }
+
+    /** Returns whether vob is transparent */
+    bool GetVisualAlpha() {
+        unsigned int flags = *reinterpret_cast<unsigned int*>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_Flags ));
+        return (flags & GothicMemoryLocations::zCVob::MASK_VisualAlpha);
+    }
+
+    /** Vob transparency */
+    float GetVobTransparency() {
+        return *reinterpret_cast<float*>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_VobAlpha ));
     }
 
     /** Vob type */

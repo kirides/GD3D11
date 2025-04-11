@@ -1,8 +1,6 @@
 #pragma once
 #include "pch.h"
 
-typedef int ScriptFn;
-
 class zSTRING;
 
 extern "C" {
@@ -40,15 +38,4 @@ extern "C" {
     /** Sets strength of the original vertex lighting on the worldmesh for pixels which are NOT in shadow */
     __declspec(dllexport) void __cdecl GDX_SetWorldAOStrength( float strength );
 
-    /** Opens a messagebox using the UI-Framework
-        - Message: Text to display in the body of the message-box
-        - Caption: Header of the message-box
-        - Type: 0 = OK, 1 = YES/NO
-        - Callback: Script-Function ID to use as a callback.
-            - This function needs one int-parameter, which will hold the cause of the call:
-            -	D2D_MB_OK = 0,
-            -	D2D_MB_YES = 1,
-            -	D2D_MB_NO = 2
-    */
-    __declspec(dllexport) void __cdecl GDX_OpenMessageBox( zSTRING* message, zSTRING* caption, int type, ScriptFn callback );
 };

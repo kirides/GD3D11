@@ -8,8 +8,10 @@
 #include "zCMaterial.h"
 #include "zCMesh.h"
 #include "zCTimer.h"
+#include "zCTexture.h"
 #include "zCSkyController_Outdoor.h"
 #include "zCWorld.h"
+#include "corecrt_io.h"
 
 GSky::GSky() {
     Atmosphere.Kr = 0.0075f;
@@ -156,6 +158,68 @@ void GSky::SetSkyTexture( ESkyTexture texture ) {
     }
 }
 
+/** Sets the custom cloud sky texture */
+void GSky::SetCustomCloudAndNightTexture( int idx, bool isNightTexture, bool isOldWorld ) {
+    if ( idx == -1 ) {
+        if ( isNightTexture) {
+            D3D11Texture* nightTex;
+            XLE( Engine::GraphicsEngine->CreateTexture( &nightTex ) );
+            NightTexture.reset( nightTex );
+            XLE( NightTexture->Init( "system\\GD3D11\\Textures\\starsh.dds" ) );
+        } else {
+            SetSkyTexture( isOldWorld ? ESkyTexture::ST_OldWorld : ESkyTexture::ST_NewWorld );
+        }
+    } else {
+        std::string textureFile; 
+        textureFile.append( "system\\GD3D11\\Textures\\CustomSky\\" )
+            .append( isNightTexture ? "SkyNight_G" : "SkyDay_G" )
+            .append( std::to_string( isOldWorld ? 1 : 2 ) )
+            .append( "_" )
+            .append( std::to_string( idx ) )
+            .append( ".dds" );
+
+        if ( _access( textureFile.c_str(), 0 ) != -1 ) {
+            if ( isNightTexture ) {
+                D3D11Texture* nightTex;
+                XLE( Engine::GraphicsEngine->CreateTexture( &nightTex ) );
+                NightTexture.reset( nightTex );
+                XLE( NightTexture->Init( textureFile ) );
+            } else {
+                D3D11Texture* cloudTex;
+                XLE( Engine::GraphicsEngine->CreateTexture( &cloudTex ) );
+                CloudTexture.reset( cloudTex );
+                XLE( CloudTexture->Init( textureFile ) );
+                Atmosphere.WaveLengths = isOldWorld ? float3( 0.54f, 0.56f, 0.60f ) : float3( 0.63f, 0.57f, 0.50f );
+            }
+        }
+    }
+}
+
+/** Sets the custom sky texture */
+void GSky::SetCustomSkyTexture_ZenGin( bool isNightTexture, zCTexture* texture, bool isOldWorld ) {
+    if ( !texture ) {
+        if ( isNightTexture ) {
+            D3D11Texture* nightTex;
+            XLE( Engine::GraphicsEngine->CreateTexture( &nightTex ) );
+            NightTexture.reset( nightTex );
+            XLE( NightTexture->Init( "system\\GD3D11\\Textures\\starsh.dds" ) );
+            NightTexture_Zen = nullptr;
+        } else {
+            SetSkyTexture( isOldWorld ? ESkyTexture::ST_OldWorld : ESkyTexture::ST_NewWorld );
+            CloudTexture_Zen = nullptr;
+        }
+    } else {
+        (isNightTexture ? NightTexture_Zen : CloudTexture_Zen) = texture;
+        if ( !isNightTexture ) {
+            Atmosphere.WaveLengths = isOldWorld ? float3( 0.54f, 0.56f, 0.60f ) : float3( 0.63f, 0.57f, 0.50f );
+        }
+    }
+}
+
+void GSky::SetCustomSkyWavelengths( float X, float Y, float Z ) {
+    Atmosphere.WaveLengths = float3( X, Y, Z );
+}
+
 /** Returns the sky-texture for the passed daytime (0..1) */
 void GSky::GetTextureOfDaytime( float time, D3D11Texture** t1, D3D11Texture** t2, float* factor ) {
     if ( !SkyTextures.size() )
@@ -257,12 +321,26 @@ float4 GSky::GetSkylightColor() {
 }
 
 /** Returns the cloud texture */
-D3D11Texture* GSky::GetCloudTexture() {
+D3D11Texture * GSky::GetCloudTexture() {
+    if ( CloudTexture_Zen ) {
+        if ( CloudTexture_Zen->CacheIn( -1 ) == zRES_CACHED_IN ) {
+            if ( MyDirectDrawSurface7* dds7 = CloudTexture_Zen->GetSurface() ) {
+                return dds7->GetEngineTexture();
+            }
+        }
+    }
     return CloudTexture.get();
 }
 
 /** Returns the cloud texture */
 D3D11Texture* GSky::GetNightTexture() {
+    if ( NightTexture_Zen ) {
+        if ( NightTexture_Zen->CacheIn( -1 ) == zRES_CACHED_IN ) {
+            if ( MyDirectDrawSurface7* dds7 = NightTexture_Zen->GetSurface() ) {
+                return dds7->GetEngineTexture();
+            }
+        }
+    }
     return NightTexture.get();
 }
 

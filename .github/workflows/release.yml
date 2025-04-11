@@ -34,9 +34,17 @@ jobs:
       working-directory: ${{env.GITHUB_WORKSPACE}}
       run: nuget restore .
 
+    - name: Build G2 NotR AVX2
+      working-directory: ${{env.GITHUB_WORKSPACE}}
+      run: msbuild /p:Configuration=Release_G2A_AVX2 .
+
     - name: Build G2 NotR AVX
       working-directory: ${{env.GITHUB_WORKSPACE}}
-      run: msbuild /p:Configuration=Release_AVX .
+      run: msbuild /p:Configuration=Release_G2A_AVX .
+
+    - name: Build G1 AVX2
+      working-directory: ${{env.GITHUB_WORKSPACE}}
+      run: msbuild /p:Configuration=Release_G1_AVX2 .
 
     - name: Build G1 AVX
       working-directory: ${{env.GITHUB_WORKSPACE}}
@@ -44,11 +52,23 @@ jobs:
 
     - name: Build G2 NotR
       working-directory: ${{env.GITHUB_WORKSPACE}}
-      run: msbuild /p:Configuration=Release .
+      run: msbuild /p:Configuration=Release_G2A_SSE2 .
 
     - name: Build G1
       working-directory: ${{env.GITHUB_WORKSPACE}}
-      run: msbuild /p:Configuration=Release_G1 .
+      run: msbuild /p:Configuration=Release_G1_SSE2 .
+      
+      name: Build G1 Sequel AVX2
+      working-directory: ${{env.GITHUB_WORKSPACE}}
+      run: msbuild /p:Configuration=Release_G1A_AVX2 .
+
+    - name: Build G1 Sequel AVX
+      working-directory: ${{env.GITHUB_WORKSPACE}}
+      run: msbuild /p:Configuration=Release_G1A_AVX .
+      
+    - name: Build G1 Sequel
+      working-directory: ${{env.GITHUB_WORKSPACE}}
+      run: msbuild /p:Configuration=Release_G1A_SSE2 .
 
     - name: Build Launcher
       working-directory: ${{env.GITHUB_WORKSPACE}}
@@ -64,11 +84,15 @@ jobs:
         Xcopy "blobs\Meshes" "${{env.RELEASE_DIR}}\GD3D11\Meshes\" /s
         Xcopy "blobs\Textures" "${{env.RELEASE_DIR}}\GD3D11\Textures\" /s
         Xcopy "blobs\libs\*" "${{env.RELEASE_DIR}}\" /s
-        copy "Release_AVX\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\g2a_avx2.dll"
-        copy "Release\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\g2a.dll"
+        copy "Release_G2A_AVX2\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\g2a_avx2.dll"
+        copy "Release_G2A_AVX\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\g2a_avx.dll"
+        copy "Release_G2A_SSE2\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\g2a.dll"
+        copy "Release_G1_AVX2\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\g1_avx2.dll"
         copy "Release_G1_AVX\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\g1_avx.dll"
-        copy "Release_G1\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\g1.dll"
-        copy "Launcher\ddraw.dll" "${{env.RELEASE_DIR}}\"
+        copy "Release_G1_SSE2\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\g1.dll"
+        copy "Release_G1A_AVX2\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\g1a_avx2.dll"
+        copy "Release_G1A_AVX\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\g1a_avx.dll"
+        copy "Release_G1A_SSE2\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\g1a.dll"
         cd "${{env.RELEASE_DIR}}"
         7z a -tzip "..\${{env.RELEASE_DIR}}.zip" -r
 

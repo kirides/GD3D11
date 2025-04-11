@@ -44,7 +44,7 @@ static void __AddDbgFuncCall( const std::string& fn, int threadID, bool out ) {
     _functions.push_back( o + std::to_string( threadID ) + ": " + fn );
 }
 
-#ifdef PUBLIC_RELEASE
+#ifndef PUBLIC_RELEASE
 #define hook_infunc __try {
 
 #define hook_outfunc } __except (ExpFilter(GetExceptionInformation(), GetExceptionCode())){}

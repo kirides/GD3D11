@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "ImGuiShim.h"
 #include "HookedFunctions.h"
 
 #include "zCBspTree.h"
@@ -94,6 +95,9 @@ void HookedFunctionInfo::InitHooks() {
 
     LogInfo() << "Patching: Fix screen hung due to DX7 api invalidating our swapchain";
     PatchAddr( 0x0075B5A7, "\xE9\x59\x02\x00\x00\x90" );
+
+    LogInfo() << "Patching: Fix potential crash due to handlefocusloose weird behavior";
+    PatchAddr( 0x00507FA1, "\xE9\x63\x04\x00\x00\x90" );
 #else
     LogInfo() << "Patching: BroadCast fix";
     {
@@ -118,6 +122,7 @@ void HookedFunctionInfo::InitHooks() {
     LogInfo() << "Patching: Marking texture as cached-in after cache-out - fix";
     PatchAddr( 0x005CA683, "\x90\x90" );
 
+#ifndef BUILD_SPACER_NET
     LogInfo() << "Patching: Improve loading times by disabling some unnecessary features";
     PatchAddr( 0x005A4FE0, "\xC3\x90\x90" );
     PatchAddr( 0x0055848A, "\xE9\xE2\x01\x00\x00\x90" );
@@ -137,6 +142,7 @@ void HookedFunctionInfo::InitHooks() {
         PatchJMP( 0x00557276, reinterpret_cast<DWORD>(&HookedFunctionInfo::hooked_SetLightmap) );
     }
 
+#endif
     LogInfo() << "Patching: Fix using settings in freelook mode";
     PatchAddr( 0x00478FE2, "\x0F\x84\x9A\x00\x00\x00" );
 
@@ -205,6 +211,9 @@ void HookedFunctionInfo::InitHooks() {
         PatchAddr( 0x00445083, "\x0F\x84\xD6\x00\x00\x00\xEB\x4F" );
         PatchAddr( 0x00444E76, "\x74\x11\x38\x5E\x04\x75\x0C\x83\xBE\xFC\x29\x00\x00\xFF\x0F\x95\xC0\xEB\x09\x39\x9E\x8C\x00\x00\x00\x0F\x95\xC0\x83\xCF\xFF\x3A\xC3\x74\x51\x8B\xCE\xE8\x60\xB2\xFF\xFF\x38\x1D\xCC\xF2\x85\x00\x74\x42\x83\xBE\xFC\x29\x00\x00\xFF\x74\x39\x8B\x0D\xD0\xF2\x85\x00\x90\x90" );
     }
+
+    LogInfo() << "Patching: Fix potential crash due to handlefocusloose weird behavior";
+    PatchAddr( 0x004F556C, "\xE9\x83\x02\x00\x00\x90" );
 #endif
 #endif
 
@@ -340,6 +349,12 @@ void HookedFunctionInfo::InitHooks() {
         PatchAddr( 0x00448F06, "\x74\x11\x38\x5E\x04\x75\x0C\x83\xBE\xFC\x29\x00\x00\xFF\x0F\x95\xC0\xEB\x09\x39\x9E\x8C\x00\x00\x00\x0F\x95\xC0\x83\xCF\xFF\x3A\xC3\x74\x51\x8B\xCE\xE8\xE0\xB0\xFF\xFF\x38\x1D\xC4\x34\x8C\x00\x74\x42\x83\xBE\xFC\x29\x00\x00\xFF\x74\x39\x8B\x0D\xC8\x34\x8C\x00\x90\x90" );
     }
 
+    LogInfo() << "Patching: Fix potential crash due to handlefocusloose weird behavior";
+    PatchAddr( 0x00503ACB, "\xE9\x11\x09\x00\x00\x90" );
+    PatchAddr( 0x00503CA2, "\xE9\x3A\x07\x00\x00\x90" );
+    PatchAddr( 0x00503E78, "\xE9\x64\x05\x00\x00\x90" );
+    PatchAddr( 0x0050556D, "\xE9\xDE\x02\x00\x00\x90" );
+
     // HACK Workaround to fix debuglines in godmode
     LogInfo() << "Patching: Godmode Debuglines";
     // oCMagFrontier::GetDistanceNewWorld
@@ -359,7 +374,9 @@ void __fastcall HookedFunctionInfo::hooked_zCActiveSndAutoCalcObstruction( void*
 }
 
 int __cdecl HookedFunctionInfo::hooked_GetNumDevices() {
-    Engine::GraphicsEngine->OnUIEvent( BaseGraphicsEngine::EUIEvent::UI_OpenSettings );
+    Engine::ImGuiHandle->IsActive = true;
+    Engine::ImGuiHandle->SettingsVisible = true;
+    Engine::GAPI->SetEnableGothicInput( false );
     return 1;
 }
 

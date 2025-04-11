@@ -1,6 +1,6 @@
 #include "D3D11GraphicsEngineBase.h"
 
-#include "BaseAntTweakBar.h"
+#include "AntTweakBarShim.h"
 #include "D3D11LineRenderer.h"
 #include "D3D11PipelineStates.h"
 #include "D3D11PointLight.h"
@@ -32,10 +32,9 @@ D3D11GraphicsEngineBase::~D3D11GraphicsEngineBase() {
 }
 
 /** Called when the game created its window */
-XRESULT D3D11GraphicsEngineBase::SetWindow( HWND hWnd ) {
-    LogInfo() << "Creating swapchain";
-    OutputWindow = hWnd;
-
+XRESULT D3D11GraphicsEngineBase::SetWindow( HWND newhWnd ) {
+    LogInfo() << "D3D11GraphicsEngineBase - Creating swapchain";
+    OutputWindow = newhWnd;
     OnResize( Resolution );
 
     return XR_SUCCESS;

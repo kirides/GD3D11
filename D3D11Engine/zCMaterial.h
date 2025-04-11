@@ -91,8 +91,8 @@ public:
     }
 
     /** Returns the color-mod of this material */
-    DWORD GetColor() {
-        return *reinterpret_cast<DWORD*>(THISPTR_OFFSET( GothicMemoryLocations::zCMaterial::Offset_Color ));
+	zColor GetColor() {
+        return *reinterpret_cast<zColor*>(THISPTR_OFFSET( GothicMemoryLocations::zCMaterial::Offset_Color ));
     }
 
     /** Returns single texture, because not all seem to be animated and returned by GetAniTexture? */

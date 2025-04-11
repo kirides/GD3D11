@@ -518,7 +518,7 @@ struct GothicRendererSettings {
     void SetDefault() {
         SectionDrawRadius = 4;
 
-        FpsLimit = 0;
+        FpsLimit = 59;
         DrawVOBs = true;
         DrawWorldMesh = 3;
         DrawSkeletalMeshes = true;
@@ -541,23 +541,26 @@ struct GothicRendererSettings {
                                         //these are only applicable to G1, they don't appear to have been used in G2
 
         FastShadows = false;
-        MaxNumFaces = 0;
         IndoorVobDrawRadius = 5000.0f;
         OutdoorVobDrawRadius = 30000.0f;
         SkeletalMeshDrawRadius = 6000.0f;
-        VisualFXDrawRadius = 8000.0f;
+        VisualFXDrawRadius = 10000.0f;
+
+#if BUILD_SPACER_NET
+        VisualFXDrawRadius = 16000.0f;
+#endif
+
         OutdoorSmallVobDrawRadius = 10000.0f;
         SmallVobSize = 1500.0f;
 
-
-#ifdef  BUILD_SPACER_NET
+#if BUILD_SPACER_NET
         OutdoorSmallVobDrawRadius = 30000.0f;
         IndoorVobDrawRadius = 10000.0f;
         SectionDrawRadius = 8;
 #endif //  BUILD_SPACER_NET
 
 
-#ifdef BUILD_GOTHIC_1_08k
+#if defined(BUILD_GOTHIC_1_08k) || defined(BUILD_1_12F)
         SetupOldWorldSpecificValues();
 #else
         SetupNewWorldSpecificValues();
@@ -573,20 +576,11 @@ struct GothicRendererSettings {
         WireframeVobs = false;
         WireframeWorld = false;
         DrawShadowGeometry = true;
-        FixViewFrustum = false;
-        DisableWatermark = true;
+        LockViewFrustum = false;
         DisableRendering = false;
         DisableDrawcalls = false;
 
-#ifdef BUILD_SPACER
-        EnableEditorPanel = true;
-#else
-        EnableEditorPanel = false;
-#endif
         EnableSMAA = true;
-
-        TesselationFactor = 20.0f;
-        TesselationRange = 8.0f;
 
         textureMaxSize = 16384;
         ShadowMapSize = 2048;
@@ -611,11 +605,6 @@ struct GothicRendererSettings {
         SortRenderQueue = true;
         DrawThreaded = true;
 
-#if ENABLE_TESSELATION > 0
-        EnableTesselation = false;
-        AllowWorldMeshTesselation = false;
-        TesselationFrustumCulling = true;
-#endif
         EnablePointlightShadows = PLS_UPDATE_DYNAMIC;
         MinLightShadowUpdateRange = 300.0f;
         PartialDynamicShadowUpdates = true;
@@ -656,26 +645,27 @@ struct GothicRendererSettings {
         GothicUIScale = 1.0f;
         //DisableEverything();
 
-        LimitLightIntesity = false;
+        LimitLightIntensity = false;
         AllowNormalmaps = false;
 
-        AllowNumpadKeys = false;
         EnableDebugLog = true;
         EnableCustomFontRendering = true;
 
         ForceFOV = false;
-
-        ChangeWindowPreset = 0;
-        StretchWindow = true;
+        AntTweakBarGlobalFontSize = 2;
+        AntTweakBarGlobalScale = 1;
+        WindowMode = 0; //Borderless fullscreen as default
+        StretchWindow = true; //Borderless fullscreen as default
         SmoothShadowCameraUpdate = true;
-        DisplayFlip = false;
-        LowLatency = false;
+        DisplayFlip = true; //Borderless fullscreen as default
+        LowLatency = false; //Borderless fullscreen as default
         HDR_Monitor = false;
         EnableInactiveFpsLock = true;
         MTResoureceManager = false;
         CompressBackBuffer = false;
         AnimateStaticVobs = true;
         RunInSpacerNet = false;
+        BinkVideoRunning = false;
     }
 
     void SetupOldWorldSpecificValues() {
@@ -717,11 +707,6 @@ struct GothicRendererSettings {
     E_HDRToneMap HDRToneMap;
     bool EnableVSync;
     bool EnableSMAA;
-#if ENABLE_TESSELATION > 0
-    bool EnableTesselation;
-    bool AllowWorldMeshTesselation;
-    bool TesselationFrustumCulling;
-#endif
     bool FastShadows;
     bool ReplaceSunDirection;
     bool AtmosphericScattering;
@@ -733,12 +718,9 @@ struct GothicRendererSettings {
     bool EnableShadows;
     bool DrawShadowGeometry;
     bool VegetationAlphaToCoverage;
-    bool DisableWatermark;
     bool DisableRendering;
     bool DisableDrawcalls;
-    bool EnableEditorPanel;
     bool DoZPrepass;
-    bool EnableAutoupdates;
     bool EnableOcclusionCulling;
     bool SortRenderQueue;
     bool DrawThreaded;
@@ -746,8 +728,6 @@ struct GothicRendererSettings {
     float MinLightShadowUpdateRange;
     bool PartialDynamicShadowUpdates;
     bool DrawSectionIntersections;
-
-    int MaxNumFaces;
 
     float SharpenFactor;
 
@@ -773,8 +753,6 @@ struct GothicRendererSettings {
     float SunLightStrength;
     INT2 LoadedResolution;
 
-    float TesselationFactor;
-    float TesselationRange;
     float HDRLumWhite;
     float HDRMiddleGray;
     float BloomThreshold;
@@ -795,7 +773,7 @@ struct GothicRendererSettings {
 
     HBAOSettings HbaoSettings;
 
-    bool FixViewFrustum;
+    bool LockViewFrustum;
 
     float RainRadiusRange;
     float RainHeightRange;
@@ -812,10 +790,9 @@ struct GothicRendererSettings {
     bool EnableRain;
     bool EnableRainEffects;
 
-    bool LimitLightIntesity;
+    bool LimitLightIntensity;
     bool AllowNormalmaps;
 
-    bool AllowNumpadKeys;
     bool EnableDebugLog;
 
     bool EnableCustomFontRendering;
@@ -824,13 +801,16 @@ struct GothicRendererSettings {
     bool LowLatency;
     bool HDR_Monitor;
     bool StretchWindow;
-    int ChangeWindowPreset;
+    int WindowMode;
     bool SmoothShadowCameraUpdate;
     bool EnableInactiveFpsLock;
     bool MTResoureceManager;
     bool CompressBackBuffer;
     bool AnimateStaticVobs;
     bool RunInSpacerNet;
+	bool BinkVideoRunning;
+    int AntTweakBarGlobalFontSize;
+    int AntTweakBarGlobalScale;
 };
 
 struct GothicRendererTiming {

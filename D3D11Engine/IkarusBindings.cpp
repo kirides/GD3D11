@@ -5,8 +5,7 @@
 #include "BaseLineRenderer.h"
 #include "GothicAPI.h"
 
-#include "D3D11GraphicsEngine.h" // TODO: Needed for the UI-View. This should not be here!
-#include "D2DView.h"
+#include "D3D11GraphicsEngine.h"
 
 #include "zSTRING.h"
 #include "zCParser.h"
@@ -67,37 +66,93 @@ extern "C"
         Engine::GAPI->GetRendererState().RendererSettings.WorldAOStrength = strength;
     }
 
-    /** Callback for the messageboxes */
-    static void MB_Callback( ED2D_MB_ACTION action, void* userdata ) {
-        int* id = reinterpret_cast<int*>(userdata);
-
-#ifndef BUILD_SPACER
-        // Call script-callback
-        zCPARSER_CALL_FUNC( *id, action );
-#endif
-
-        delete id;
+    /** Sets bink video running variable to disable fps limiter */
+    __declspec(dllexport) void __cdecl GDX_SetBinkVideoRunning( bool running ) {
+        Engine::GAPI->GetRendererState().RendererSettings.BinkVideoRunning = running;
     }
 
-    /** Opens a messagebox using the UI-Framework
-        - Message: Text to display in the body of the message-box
-        - Caption: Header of the message-box
-        - Type: 0 = OK, 1 = YES/NO
-        - Callback: Script-Function ID to use as a callback. */
-    __declspec(dllexport) void __cdecl GDX_OpenMessageBox( zSTRING* message, zSTRING* caption, int type, int callbackID ) {
+    /** Sets atmospheric scattering */
+    __declspec(dllexport) void __cdecl GDX_SetAtmosphericScattering( bool scattering ) {
+        Engine::GAPI->GetRendererState().RendererSettings.AtmosphericScattering = scattering;
+    }
+
+    /** Sets fog range */
+    __declspec(dllexport) void __cdecl GDX_SetFogRange( int range ) {
+        Engine::GAPI->GetRendererState().RendererSettings.FogRange = range;
+    }
+
+    /** Sets global wind strength */
+    __declspec(dllexport) void __cdecl GDX_SetGlobalWindStrength( float strength ) {
+        Engine::GAPI->GetRendererState().RendererSettings.GlobalWindStrength = strength;
+    }
+
+    /** Sets rain radius range */
+    __declspec(dllexport) void __cdecl GDX_SetRainRadiusRange( float range ) {
+        Engine::GAPI->GetRendererState().RendererSettings.RainRadiusRange = range;
+    }
+
+    /** Sets rain height range */
+    __declspec(dllexport) void __cdecl GDX_SetRainHeightRange( float range ) {
+        Engine::GAPI->GetRendererState().RendererSettings.RainHeightRange = range;
+    }
+
+    /** Sets rain scene wettnes */
+    __declspec(dllexport) void __cdecl GDX_SetRainSceneWettness( float wettness ) {
+        Engine::GAPI->GetRendererState().RendererSettings.RainSceneWettness = wettness;
+    }
+
+    /** Sets rain fog density */
+    __declspec(dllexport) void __cdecl GDX_SetRainFogDensity( float density ) {
+        Engine::GAPI->GetRendererState().RendererSettings.RainFogDensity = density;
+    }
+
+    /** Sets rain sunlight strength */
+    __declspec(dllexport) void __cdecl GDX_SetRainSunLightStrength( float strength ) {
+        Engine::GAPI->GetRendererState().RendererSettings.RainSunLightStrength = strength;
+    }
+
+    /** Sets rain particles */
+    __declspec(dllexport) void __cdecl GDX_SetRainNumParticles( UINT particles ) {
+        Engine::GAPI->GetRendererState().RendererSettings.RainNumParticles = particles;
+    }
+
+    /** Sets rain velocity */
+    __declspec(dllexport) void __cdecl GDX_SetRainGlobalVelocity( float velocityX, float velocityY, float velocityZ ) {
+        Engine::GAPI->GetRendererState().RendererSettings.RainGlobalVelocity.x = velocityX;
+        Engine::GAPI->GetRendererState().RendererSettings.RainGlobalVelocity.y = velocityY;
+        Engine::GAPI->GetRendererState().RendererSettings.RainGlobalVelocity.z = velocityZ;
+    }
+
+    /** Sets rain fog color */
+    __declspec(dllexport) void __cdecl GDX_SetRainFogColor( DWORD color ) {
+        float3 _c = float3( color );
+        Engine::GAPI->GetRendererState().RendererSettings.RainFogColor = XMFLOAT3( _c.x, _c.y, _c.z );
+    }
+
+    /** Sets rain move particles */
+    __declspec(dllexport) void __cdecl GDX_SetRainMoveParticles( bool particles ) {
+        Engine::GAPI->GetRendererState().RendererSettings.RainMoveParticles = particles;
+    }
+
+    /** Sets rain use initial set */
+    __declspec(dllexport) void __cdecl GDX_SetRainUseInitialSet( bool initial ) {
+        Engine::GAPI->GetRendererState().RendererSettings.RainUseInitialSet = initial;
+    }
+
+    /** Gets a ID3D11DeviceContext1 rendering context */
+    __declspec(dllexport) ID3D11DeviceContext1* __cdecl GDX_GetDX11RenderingContext( void ) {
         D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+        return g->GetContext().Get();
+    }
 
-        // Initialize the UI-Framework. Will do nothing if already done
-        g->CreateMainUIView();
+    /** Gets a GD3D11 version */
+    __declspec(dllexport) const char* __cdecl GDX_GetVersionString( void ) {
+        return VERSION_NUMBER;
+    }
 
-        // Check again, in case it failed
-        if ( g->GetUIView() ) {
-            // Store the callback ID in memory
-            int* d = new int;
-            *d = callbackID;
-
-            // Register the messagebox
-            g->GetUIView()->AddMessageBox( caption->ToChar(), message->ToChar(), MB_Callback, d, (ED2D_MB_TYPE)type );
-        }
+    /** Gets Renderer Settings */
+    __declspec(dllexport) GothicRendererSettings* __cdecl GDX_GetRendererSettings( unsigned int& structSize ) {
+        structSize = sizeof( Engine::GAPI->GetRendererState().RendererSettings );
+        return &Engine::GAPI->GetRendererState().RendererSettings;
     }
 };

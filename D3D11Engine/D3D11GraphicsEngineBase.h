@@ -28,7 +28,7 @@ public:
     virtual XRESULT Init() PURE;
 
     /** Called when the game created its window */
-    virtual XRESULT SetWindow( HWND hWnd );
+    virtual XRESULT SetWindow( HWND newhWnd );
 
     /** Called on window resize/resolution change */
     virtual XRESULT OnResize( INT2 newSize ) PURE;
@@ -58,7 +58,7 @@ public:
     virtual XRESULT CreateShadowedPointLight( BaseShadowedPointLight** outPL, VobLightInfo* lightInfo, bool dynamic = false );
 
     /** Returns a list of available display modes */
-    virtual XRESULT GetDisplayModeList( std::vector<DisplayModeInfo>* modeList, bool includeSuperSampling = false ) PURE;
+    virtual std::vector<DisplayModeInfo> GetDisplayModeList() = 0;
 
     /** Presents the current frame to the screen */
     virtual XRESULT Present();
@@ -89,7 +89,7 @@ public:
     virtual XRESULT DrawVertexBufferFF( D3D11VertexBuffer* vb, unsigned int numVertices, unsigned int startVertex, unsigned int stride = sizeof( ExVertexStruct ) );
 
     /** Binds viewport information to the given constantbuffer slot */
-    XRESULT D3D11GraphicsEngineBase::BindViewportInformation( const std::string& shader, int slot );
+    XRESULT BindViewportInformation( const std::string& shader, int slot );
 
     /** Returns the Device/Context */
     const Microsoft::WRL::ComPtr<ID3D11Device1>& GetDevice() { return Device; }

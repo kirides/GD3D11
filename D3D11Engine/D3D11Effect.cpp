@@ -164,7 +164,7 @@ XRESULT D3D11Effect::DrawRain() {
     e->GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_POINTLIST );
 
     // Update constantbuffer for the advance-VS
-    AdvanceRainConstantBuffer acb;
+    AdvanceRainConstantBuffer acb = {};
     XMFLOAT3 LightPosition_XMFloat3;
     XMStoreFloat3( &LightPosition_XMFloat3, XMLoadFloat3( &Engine::GAPI->GetSky()->GetAtmoshpereSettings().LightDirection ) * Engine::GAPI->GetSky()->GetAtmoshpereSettings().OuterRadius + Engine::GAPI->GetCameraPositionXM() );
     acb.AR_LightPosition = LightPosition_XMFloat3;

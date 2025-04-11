@@ -4,13 +4,14 @@
 /** Global engine information */
 class BaseGraphicsEngine;
 class GothicAPI;
-class BaseAntTweakBar;
+class ImGuiShim;
+class AntTweakBarShim;
 class GGame;
 class ThreadPool;
 
 __declspec(selectany) const char* ENGINE_BASE_DIR = "system\\GD3D11\\";
 
-__declspec(selectany) const char* VERSION_STRING = "Version X" VERSION_NUMBER " (" __DATE__ ") Codename(Immortal Phoenix)";
+__declspec(selectany) const char* VERSION_STRING = "Version X" VERSION_NUMBER " (" __DATE__ ") Codename(Stockholm Syndrome)";
 
 namespace Engine {
     /** If true, we will just pass everything to the usual ddraw.dll */
@@ -23,7 +24,10 @@ namespace Engine {
     __declspec(selectany) GothicAPI* GAPI;
 
     /** Global AntTweakBar object */
-    __declspec(selectany) BaseAntTweakBar* AntTweakBar;
+    __declspec(selectany) AntTweakBarShim* AntTweakBar;
+
+	/** Global ImGui object */
+	__declspec(selectany) ImGuiShim* ImGuiHandle;
 
     /** Global rendering threadpool */
     __declspec(selectany) ThreadPool* RenderingThreadPool;

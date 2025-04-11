@@ -2,6 +2,7 @@
 #include "Detours/detours.h"
 #include "zSTRING.h"
 #include "Engine.h"
+#include "GothicAPI.h"
 #include "D3D11Texture.h"
 #include "BaseGraphicsEngine.h"
 
@@ -491,6 +492,7 @@ int __fastcall BinkPlayerOpenVideo(DWORD BinkPlayer, DWORD _EDX, zSTRING videoNa
 	{
         video->globalVolume = BinkPlayerReadGlobalVolume(zCOption);
         video->scaleVideo = BinkPlayerReadScaleVideos(zCOption);
+        Engine::GAPI->GetRendererState().RendererSettings.BinkVideoRunning = true;
 
 		// We are passing directly zSTRING so the memory will be deleted inside this function
 		reinterpret_cast<int(__thiscall*)(DWORD, zSTRING)>(GothicMemoryLocations::zCBinkPlayer::OpenVideo)(BinkPlayer, videoName);
@@ -524,6 +526,7 @@ int __fastcall BinkPlayerCloseVideo(DWORD BinkPlayer)
 		video->textureV = nullptr;
 	}
 	reinterpret_cast<void(__stdcall*)(void*)>(BinkClose)(video->vid);
+    Engine::GAPI->GetRendererState().RendererSettings.BinkVideoRunning = false;
 
 	delete video;
 	*reinterpret_cast<DWORD*>(BinkPlayer + GothicMemoryLocations::zCBinkPlayer::Offset_VideoHandle) = 0;

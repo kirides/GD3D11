@@ -28,6 +28,7 @@ void GSMain(point VS_OUTPUT input[1], inout TriangleStream<PS_INPUT> OutputStrea
     
     int visIsQuadPoly = int(step(10.0, float(input[0].type)));
     int visOrientation = input[0].type - (10 * visIsQuadPoly);
+    float sizeScale = (0.5 * float(visIsQuadPoly)) + 0.5;
    
     float3 vert[4];
     if (visOrientation == 2)
@@ -40,8 +41,8 @@ void GSMain(point VS_OUTPUT input[1], inout TriangleStream<PS_INPUT> OutputStrea
         float3 velYPos = normalize(input[0].vVelocity);
 		float3 velXPos = normalize(cross(planeNormal, velYPos));
 
-        rightVector = velXPos * input[0].vSize.x;
-        upVector = velYPos * input[0].vSize.y;
+        rightVector = velXPos * input[0].vSize.x * sizeScale;
+        upVector = velYPos * input[0].vSize.y * sizeScale;
     }
     else if (visOrientation == 1)
     {
@@ -49,13 +50,17 @@ void GSMain(point VS_OUTPUT input[1], inout TriangleStream<PS_INPUT> OutputStrea
         float3 velXPos = normalize(cross(planeNormal, velYPos));
         velYPos = normalize(cross(planeNormal, velXPos));
 
-        rightVector = velXPos * input[0].vSize.x;
-        upVector = velYPos * input[0].vSize.y;
+        rightVector = velXPos * input[0].vSize.x * sizeScale;
+        upVector = velYPos * input[0].vSize.y * sizeScale;
     }
     else
     {
-        upVector = float3(0.0f, 1.0f, 0.0f) * input[0].vSize.y;
-        rightVector = float3(1.0f, 0.0f, 0.0f) * input[0].vSize.x;
+        upVector = float3(0.0f, 1.0f, 0.0f);
+        rightVector = normalize(cross(planeNormal, upVector));
+        upVector = normalize(cross(planeNormal, rightVector));
+        
+        rightVector = rightVector * input[0].vSize.x * sizeScale;
+        upVector = upVector * input[0].vSize.y * sizeScale;
         
         position += float3(input[0].vSize.x * 0.5, -input[0].vSize.y * 0.5, 0.0) * float(1 - visIsQuadPoly);
     }

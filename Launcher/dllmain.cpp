@@ -2,7 +2,9 @@
 #include <intrin.h>
 #include <shlwapi.h>
 #include <string>
-
+#include <filesystem>
+#include <unordered_map>
+#include <queue>
 #pragma comment(lib, "shlwapi.lib")
 
 enum { GOTHIC1_EXECUTABLE = 0, GOTHIC1A_EXECUTABLE = 1, GOTHIC2_EXECUTABLE = 2, GOTHIC2A_EXECUTABLE = 3, INVALID_EXECUTABLE = -1 };
@@ -45,6 +47,7 @@ struct ddraw_dll {
     FARPROC	GDX_OpenMessageBox;
 
     FARPROC	UpdateCustomFontMultiplier;
+    FARPROC	SetCustomSkyTexture;
 } ddraw;
 
 __declspec(naked) void FakeAcquireDDThreadLock() { _asm { jmp[ddraw.AcquireDDThreadLock] } }
@@ -83,10 +86,41 @@ __declspec(naked) void FakeGDX_SetWorldAOStrength() { _asm { jmp[ddraw.GDX_SetWo
 __declspec(naked) void FakeGDX_OpenMessageBox() { _asm { jmp[ddraw.GDX_OpenMessageBox] } }
 
 __declspec(naked) void FakeUpdateCustomFontMultiplier() { _asm { jmp[ddraw.UpdateCustomFontMultiplier] } }
+__declspec(naked) void FakeSetCustomSkyTexture() { _asm { jmp[ddraw.SetCustomSkyTexture] } }
+
 bool FakeIsUsingBGRATextures() { return true; }
 
 extern "C" HMODULE WINAPI FakeGDX_Module() {
     return ddraw.dll;
+}
+
+bool CheckFileExists( const char* fileName ) {
+    if ( !std::filesystem::exists( fileName ) ) {
+        return false;
+    }
+
+    DWORD attr = GetFileAttributesA( fileName );
+    if ( attr == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND ) {
+        return false;
+    }
+    
+    return true;
+}
+
+void CheckLibraryExists( const char* filePath, const char* fileName ) {
+    if ( !CheckFileExists( (std::string( filePath ) + "\\" + fileName).c_str() ) ) {
+        MessageBoxA( nullptr, (std::string( "GD3D11 Renderer couldn't be loaded.\nUnable to load DLL '" ) + fileName + "'. The specified module could not be found.").c_str(), "Gothic GD3D11", MB_ICONERROR);
+    }
+}
+
+std::string GetPrivateProfileStringA(
+    const LPCSTR lpAppName,
+    const LPCSTR lpKeyName,
+    const std::string& lpcstrDefault,
+    const std::string& lpFileName ) {
+    char buffer[MAX_PATH];
+    GetPrivateProfileStringA( lpAppName, lpKeyName, lpcstrDefault.c_str(), buffer, MAX_PATH, lpFileName.c_str() );
+    return std::string( buffer );
 }
 
 BOOL APIENTRY DllMain( HINSTANCE hInst, DWORD reason, LPVOID ) {
@@ -163,89 +197,82 @@ BOOL APIENTRY DllMain( HINSTANCE hInst, DWORD reason, LPVOID ) {
             foundExecutable = GOTHIC1A_EXECUTABLE;
         }
 
-        char executablePath[MAX_PATH];
-        GetModuleFileNameA( GetModuleHandleA( nullptr ), executablePath, sizeof( executablePath ) );
-        PathRemoveFileSpecA( executablePath );
+        char buf_for_exe[MAX_PATH];
+        GetModuleFileNameA( GetModuleHandleA( nullptr ), buf_for_exe, sizeof( buf_for_exe ) );
+        PathRemoveFileSpecA( buf_for_exe );
+        std::string executablePath = std::string( buf_for_exe );
+        std::string rootPath = executablePath.substr( 0, executablePath.rfind( "\\" ) );
 
-        ddraw.dll = nullptr;
         bool showLoadingInfo = true;
-        switch ( foundExecutable ) {
-            case GOTHIC2A_EXECUTABLE: {
-                if ( haveAVX2 && !ddraw.dll ) {
-                    std::string dllPath = std::string( executablePath ) + "\\GD3D11\\bin\\g2a_avx2.dll";
-                    ddraw.dll = LoadLibraryA( dllPath.c_str() );
-                }
-                if ( haveAVX && !ddraw.dll ) {
-                    std::string dllPath = std::string( executablePath ) + "\\GD3D11\\bin\\g2a_avx.dll";
-                    ddraw.dll = LoadLibraryA( dllPath.c_str() );
-                }
-                if ( !ddraw.dll ) {
-                    std::string dllPath = std::string( executablePath ) + "\\GD3D11\\bin\\g2a.dll";
-                    ddraw.dll = LoadLibraryA( dllPath.c_str() );
-                }
-            }
-            break;
+        std::string dllFolder = executablePath + "\\GD3D11\\bin";
+        std::string iniHandle = executablePath + "\\GD3D11\\UserSettings.ini";
+        std::string CustomGameName = GetPrivateProfileStringA( "CustomLoadMode", "AddonName", "SpacerNET.mod", iniHandle );
+        
+        if (CustomGameName == "SpacerNET.mod") // sane default
+            WritePrivateProfileStringA( "CustomLoadMode", "AddonName", CustomGameName.c_str(), iniHandle.c_str());
 
-            case GOTHIC2_EXECUTABLE: {
-                if ( haveAVX2 && !ddraw.dll ) {
-                    std::string dllPath = std::string( executablePath ) + "\\GD3D11\\bin\\g2_avx2.dll";
-                    ddraw.dll = LoadLibraryA( dllPath.c_str() );
-                }
-                if ( haveAVX && !ddraw.dll ) {
-                    std::string dllPath = std::string( executablePath ) + "\\GD3D11\\bin\\g2_avx.dll";
-                    ddraw.dll = LoadLibraryA( dllPath.c_str() );
-                }
-                if ( !ddraw.dll ) {
-                    std::string dllPath = std::string( executablePath ) + "\\GD3D11\\bin\\g2.dll";
-                    ddraw.dll = LoadLibraryA( dllPath.c_str() );
-                }
-            }
-            break;
+        bool loadCustomLoadMode = std::filesystem::exists(rootPath + "\\Data\\" + CustomGameName);
+        std::transform( CustomGameName.begin(), CustomGameName.end(), CustomGameName.begin(), ::tolower ); // Convert to lowercase
+        
+        size_t extPos = CustomGameName.find_last_of( '.' );
+        if ( extPos != std::string::npos && (
+                CustomGameName.substr( extPos ) == ".vdf" || CustomGameName.substr( extPos ) == ".mod"
+                ) 
+           )
+        {
+            CustomGameName = CustomGameName.substr( 0, extPos );
+        }
 
-            case GOTHIC1_EXECUTABLE: {
-                if ( haveAVX2 && !ddraw.dll ) {
-                    std::string dllPath = std::string( executablePath ) + "\\GD3D11\\bin\\g1_avx2.dll";
-                    ddraw.dll = LoadLibraryA( dllPath.c_str() );
-                }
-                if ( haveAVX && !ddraw.dll ) {
-                    std::string dllPath = std::string( executablePath ) + "\\GD3D11\\bin\\g1_avx.dll";
-                    ddraw.dll = LoadLibraryA( dllPath.c_str() );
-                }
-                if ( !ddraw.dll ) {
-                    std::string dllPath = std::string( executablePath ) + "\\GD3D11\\bin\\g1.dll";
-                    ddraw.dll = LoadLibraryA( dllPath.c_str() );
-                }
-            }
-            break;
+        CheckLibraryExists( executablePath.c_str(), "AntTweakBar.dll");
+        CheckLibraryExists( executablePath.c_str(), "assimp-vc143-mt.dll" );
+        CheckLibraryExists( executablePath.c_str(), "GFSDK_SSAO_D3D11.win32.dll" );
+        std::unordered_map<int, std::string> exe2prefix =
+        {
+            {GOTHIC1_EXECUTABLE, "g1"},
+            {GOTHIC1A_EXECUTABLE, "g1a"},
+            {GOTHIC2_EXECUTABLE, "g2"},
+            {GOTHIC2A_EXECUTABLE, "g2a"},
+        };
+        ddraw.dll = nullptr;
 
-            case GOTHIC1A_EXECUTABLE: {
-                if ( haveAVX2 && !ddraw.dll ) {
-                    std::string dllPath = std::string( executablePath ) + "\\GD3D11\\bin\\g1a_avx2.dll";
-                    ddraw.dll = LoadLibraryA( dllPath.c_str() );
-                }
-                if ( haveAVX && !ddraw.dll ) {
-                    std::string dllPath = std::string( executablePath ) + "\\GD3D11\\bin\\g1a_avx.dll";
-                    ddraw.dll = LoadLibraryA( dllPath.c_str() );
-                }
-                if ( !ddraw.dll ) {
-                    std::string dllPath = std::string( executablePath ) + "\\GD3D11\\bin\\g1a.dll";
-                    ddraw.dll = LoadLibraryA( dllPath.c_str() );
-                }
-            }
-            break;
+        auto prefix = exe2prefix.find( foundExecutable );
+        if (prefix == exe2prefix.end()) {
+            MessageBoxA( nullptr, "GD3D11 Renderer doesn't work with your game version.\nIt requires report version of the game. Same as System Pack or Union.", "Gothic GD3D11", MB_ICONERROR );
+            return TRUE;
+        }
 
-            default: {
-                MessageBoxA( nullptr, "GD3D11 Renderer doesn't work with your Gothic executable.", "Gothic GD3D11", MB_ICONERROR );
-                showLoadingInfo = false;
+        if ( loadCustomLoadMode )
+            dllFolder = dllFolder + "\\" + CustomGameName + "_";
+        else
+            dllFolder = dllFolder + "\\";
+
+        std::queue<std::string> possibleDlls;
+        possibleDlls.push( "_avx2.dll" );
+        possibleDlls.push( "_avx.dll" );
+        possibleDlls.push( "_sse2.dll" );
+        possibleDlls.push( ".dll" );
+
+        std::string dllPath;
+        while ( !ddraw.dll && !possibleDlls.empty() ) {
+            auto suffix = possibleDlls.front();
+            possibleDlls.pop();
+
+            dllPath = dllFolder + prefix->second + suffix;
+            ddraw.dll = LoadLibraryA( dllPath.c_str() );
+            if ( !ddraw.dll ) {
+                OutputDebugStringA( (prefix->second + suffix + " not found").c_str() );
             }
-            break;
         }
 
         if ( !ddraw.dll ) {
             if ( showLoadingInfo ) {
-                char buffer[32];
-                sprintf_s(buffer, "0x%x", GetLastError());
-                MessageBoxA( nullptr, (std::string( "GD3D11 Renderer couldn't be loaded.\nAccess Denied(" ) + std::string( buffer ) + std::string( ")." )).c_str(), "Gothic GD3D11", MB_ICONERROR );
+                if ( !CheckFileExists( dllPath.c_str() ) ) {
+                    MessageBoxA( nullptr, ("GD3D11 Renderer couldn't be loaded.\nUnable to load DLL '" + dllPath + "'. The specified module could not be found.").c_str(), "Gothic GD3D11", MB_ICONERROR);
+                } else {
+                    char buffer[32];
+                    sprintf_s( buffer, "0x%x", GetLastError() );
+                    MessageBoxA( nullptr, (std::string( "GD3D11 Renderer couldn't be loaded.\nAccess Denied(" ) + buffer + ")." ).c_str(), "Gothic GD3D11", MB_ICONERROR );
+                }
             }
             
             char ddrawPath[MAX_PATH];
@@ -291,6 +318,7 @@ BOOL APIENTRY DllMain( HINSTANCE hInst, DWORD reason, LPVOID ) {
         ddraw.GDX_SetWorldAOStrength = GetProcAddress( ddraw.dll, "GDX_SetWorldAOStrength" );
         ddraw.GDX_OpenMessageBox = GetProcAddress( ddraw.dll, "GDX_OpenMessageBox" );
         ddraw.UpdateCustomFontMultiplier = GetProcAddress( ddraw.dll, "UpdateCustomFontMultiplier" );
+        ddraw.SetCustomSkyTexture = GetProcAddress( ddraw.dll, "SetCustomSkyTexture" );
         
     } else if ( reason == DLL_PROCESS_DETACH ) {
         FreeLibrary( ddraw.dll );

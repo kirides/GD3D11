@@ -241,9 +241,15 @@ struct VS_ExConstantBuffer_PerInstanceSkeletal {
     float3 PI_Pad1;
 };
 
-struct GhostAlphaConstantBuffer {
+struct ScreenFadeConstantBuffer {
     float GA_Alpha;
     float3 GA_Pad;
+};
+
+struct GhostAlphaConstantBuffer {
+    float2 GA_ViewportSize;
+    float GA_Alpha;
+    float GA_Pad;
 };
 
 struct GrassConstantBuffer {

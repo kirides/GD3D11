@@ -1,12 +1,9 @@
 # Known Issues
 
 ## General
+- for some reason (probably due to UIscale fuckery), changing resolution repeatedly fucks up gothic fonts
+- emitter logic is still fucked up and im too tired to investigate
+- there could still be some "blackscreen" crashing due to dangling pointers on the Gothic API
+- and more
 
-- After resizing the application with the F11 menu
-the game does not properly respond to mouse input,
-the Inventory is out of screen, ...
-    - Workaround: Apply(\*) the resolution change and restart the game.
 
-## G2
-
-- Geometry drawn with `zCRndD3D::Drawline` / `zCRndD3D::DrawlineZ` flickers

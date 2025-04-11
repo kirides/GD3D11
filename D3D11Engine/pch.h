@@ -30,16 +30,16 @@ using namespace DirectX;
 #define stdext std
 #endif
 
-#define ENABLE_TESSELATION 0
-
 #ifndef VERSION_NUMBER
-#define VERSION_NUMBER "17.8-dev16"
+#define VERSION_NUMBER "17.8-dev20"
 #endif
 
 __declspec(selectany) const char* VERSION_NUMBER_STR = VERSION_NUMBER;
 
 extern bool FeatureLevel10Compatibility;
-extern bool GMPModeActive;
+
+static const char* (CDECL* Wine_GetVersion)(void);
+static void (CDECL* Wine_GetUnderlyingOSVersion)(const char** sysname, const char** release);
 
 /** D3D7-Call logging */
 #define DebugWriteValue(value, check) if (value == check) { LogInfo() << " - " << #check; }

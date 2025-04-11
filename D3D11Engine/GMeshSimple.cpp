@@ -7,7 +7,6 @@
 #include "Engine.h"
 #include "BaseGraphicsEngine.h"
 #include "GothicAPI.h"
-
 #pragma comment(lib, "assimp-vc143-mt.lib")
 
 using namespace Assimp;

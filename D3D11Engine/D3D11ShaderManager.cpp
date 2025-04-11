@@ -95,16 +95,6 @@ XRESULT D3D11ShaderManager::Init() {
     Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerFrame ) );
     Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerInstanceNode ) );
 
-#if ENABLE_TESSELATION > 0
-    Shaders.push_back( ShaderInfo( "VS_PNAEN", "VS_PNAEN.hlsl", "v", 1 ) );
-    Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerFrame ) );
-    Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerInstance ) );
-
-    Shaders.push_back( ShaderInfo( "VS_PNAEN_Instanced", "VS_PNAEN_Instanced.hlsl", "v", 10 ) );
-    Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerFrame ) );
-    Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerInstance ) );
-#endif
-
     Shaders.push_back( ShaderInfo( "VS_Decal", "VS_Decal.hlsl", "v", 1 ) );
     Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerFrame ) );
     Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerInstance ) );
@@ -155,13 +145,6 @@ XRESULT D3D11ShaderManager::Init() {
     Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerInstanceSkeletal ) );
     Shaders.back().cBufferSizes.push_back( NUM_MAX_BONES * sizeof( XMFLOAT4X4 ) );
 
-#if ENABLE_TESSELATION > 0
-    Shaders.push_back( ShaderInfo( "VS_PNAEN_Skeletal", "VS_PNAEN_Skeletal.hlsl", "v", 3 ) );
-    Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerFrame ) );
-    Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerInstanceSkeletal ) );
-    Shaders.back().cBufferSizes.push_back( NUM_MAX_BONES * sizeof( XMFLOAT4X4 ) );
-#endif
-
     Shaders.push_back( ShaderInfo( "VS_TransformedEx", "VS_TransformedEx.hlsl", "v", 1 ) );
     Shaders.back().cBufferSizes.push_back( 2 * sizeof( float2 ) );
 
@@ -202,7 +185,7 @@ XRESULT D3D11ShaderManager::Init() {
 
     Shaders.push_back( ShaderInfo( "PS_Rain", "PS_Rain.hlsl", "p" ) );
 
-    Shaders.push_back( ShaderInfo( "PS_Ghost", "PS_Ghost.hlsl", "p" ) );
+    Shaders.push_back( ShaderInfo( "PS_Transparency", "PS_Transparency.hlsl", "p" ) );
     Shaders.back().cBufferSizes.push_back( sizeof( GhostAlphaConstantBuffer ) );
 
     Shaders.push_back( ShaderInfo( "PS_World", "PS_World.hlsl", "p" ) );
@@ -265,10 +248,10 @@ XRESULT D3D11ShaderManager::Init() {
     Shaders.back().cBufferSizes.push_back( sizeof( AtmosphereConstantBuffer ) );
 
     Shaders.push_back( ShaderInfo( "PS_PFX_Alpha_Blend", "PS_PFX_Alpha_Blend.hlsl", "p" ) );
-    Shaders.back().cBufferSizes.push_back( sizeof( GhostAlphaConstantBuffer ) );
+    Shaders.back().cBufferSizes.push_back( sizeof( ScreenFadeConstantBuffer ) );
 
     Shaders.push_back( ShaderInfo( "PS_PFX_CinemaScope", "PS_PFX_CinemaScope.hlsl", "p" ) );
-    Shaders.back().cBufferSizes.push_back( sizeof( GhostAlphaConstantBuffer ) );
+    Shaders.back().cBufferSizes.push_back( sizeof( ScreenFadeConstantBuffer ) );
     
     Shaders.push_back( ShaderInfo( "PS_PFX_Blend", "PS_PFX_Blend.hlsl", "p" ) );
     Shaders.push_back( ShaderInfo( "PS_PFX_DistanceBlur", "PS_PFX_DistanceBlur.hlsl", "p" ) );
@@ -520,18 +503,9 @@ XRESULT D3D11ShaderManager::Init() {
     Shaders.back().cBufferSizes.push_back( sizeof( PerObjectState ) );
 
     if ( !FeatureLevel10Compatibility ) {
-        // UNUSED
-        //Shaders.push_back( ShaderInfo( "DefaultTess", "DefaultTess.hlsl", "hd" ) );
-        //Shaders.back().cBufferSizes.push_back( sizeof( DefaultHullShaderConstantBuffer ) );
-
         Shaders.push_back( ShaderInfo( "OceanTess", "OceanTess.hlsl", "hd" ) );
         Shaders.back().cBufferSizes.push_back( sizeof( DefaultHullShaderConstantBuffer ) );
         Shaders.back().cBufferSizes.push_back( sizeof( OceanSettingsConstantBuffer ) );
-
-#if ENABLE_TESSELATION > 0
-        Shaders.push_back( ShaderInfo( "PNAEN_Tesselation", "PNAEN_Tesselation.hlsl", "hd" ) );
-        Shaders.back().cBufferSizes.push_back( sizeof( PNAENConstantBuffer ) );
-#endif
     }
 
     return XR_SUCCESS;

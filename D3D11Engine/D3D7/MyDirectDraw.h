@@ -248,8 +248,7 @@ public:
 	HRESULT STDMETHODCALLTYPE EnumDisplayModes( DWORD dwFlags, LPDDSURFACEDESC2 lpDDSurfaceDesc2, LPVOID lpContext, LPDDENUMMODESCALLBACK2 lpEnumModesCallback ) {
 		DebugWrite( "MyDirectDraw::EnumDisplayModes\n" );
 
-		std::vector<DisplayModeInfo> modes;
-		Engine::GraphicsEngine->GetDisplayModeList( &modes );
+		auto& modes = Engine::GraphicsEngine->GetDisplayModeList();
 
         // Gothic expects 640x480 and 800x600 resolutions to be available
         // otherwise it results in D3DXERR_CAPSNOTSUPPORTED error

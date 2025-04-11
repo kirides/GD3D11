@@ -94,6 +94,8 @@ namespace Toolbox {
     }
 
     bool CreateDirectoryRecursive( const std::string& dirName ) {
+#pragma warning(push)
+#pragma warning(disable: 4101)
         try {
             return std::filesystem::create_directories( dirName );
         } catch ( const std::exception& e ) {
@@ -102,6 +104,8 @@ namespace Toolbox {
     }
 
     bool FolderExists( const std::string& dirName_in ) {
+#pragma warning(push)
+#pragma warning(disable: 4101)
         try {
             return std::filesystem::is_directory( dirName_in );
         } catch ( const std::exception& e ) {
@@ -299,6 +303,8 @@ namespace Toolbox {
 
     /** Returns whether the given file exists */
     bool FileExists( const std::string& file ) {
+#pragma warning(push)
+#pragma warning(disable: 4101)
         try {
             return std::filesystem::exists( file );
         } catch ( const std::exception& e ) {

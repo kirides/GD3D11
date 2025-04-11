@@ -119,7 +119,7 @@ struct HookedFunctionInfo {
     zCViewPrint original_zCViewPrintChars = reinterpret_cast<zCViewPrint>(GothicMemoryLocations::zCView::PrintChars);
 #endif
     //CGameManagerExitGame original_CGameManagerExitGame = reinterpret_cast<CGameManagerExitGame>(GothicMemoryLocations::CGameManager::ExitGame);
-    //GenericThiscall original_zCWorldDisposeWorld = reinterpret_cast<GenericThiscall>(GothicMemoryLocations::zCWorld::DisposeWorld);
+    GenericThiscall original_zCWorldDisposeWorld = reinterpret_cast<GenericThiscall>(GothicMemoryLocations::zCWorld::DisposeWorld);
     zCWorldDisposeVobs original_zCWorldDisposeVobs = reinterpret_cast<zCWorldDisposeVobs>(GothicMemoryLocations::zCWorld::DisposeVobs);
     oCSpawnManagerSpawnNpc original_oCSpawnManagerSpawnNpc = reinterpret_cast<oCSpawnManagerSpawnNpc>(GothicMemoryLocations::oCSpawnManager::SpawnNpc);
     oCSpawnManagerCheckRemoveNpc original_oCSpawnManagerCheckRemoveNpc = reinterpret_cast<oCSpawnManagerCheckRemoveNpc>(GothicMemoryLocations::oCSpawnManager::CheckRemoveNpc);
