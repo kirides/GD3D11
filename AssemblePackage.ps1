@@ -1,6 +1,6 @@
 # Define paths
 $solutionPath = "Direct3D7Wrapper.sln"
-$outputFolder = "Z:/HumiliationRitual/"
+$outputFolder = ".dist"
 $binFolder = "$outputFolder/GD3D11/Bin/"
 $msBuildPath = "C:\Program Files\Microsoft Visual Studio\2022\Community\Msbuild\Current\Bin\amd64\MSBuild.exe"
 $current_date = Get-Date -Format "dd-MM-yyyy"
@@ -38,14 +38,13 @@ robocopy "$PSScriptRoot\D3D11Engine\CSFFT\" "$outputFolder\GD3D11\Shaders\CSFFT"
 $outputFile = "$PSScriptRoot\Launcher\ddraw.dll"
 Copy-Item -Path $outputFile -Destination $outputFolder -Recurse -Force
 
-# Compile all the bullshit dlls
+# Compile all the dlls
 foreach ($config in $configurations.Keys) {
-    & $msBuildPath $solutionPath /p:Configuration=$config
-    $outputFile = "$PSScriptRoot\$config\$($configurations[$config])"
-    Copy-Item -Path $outputFile -Destination $binFolder -Recurse -Force
+    # & $msBuildPath $solutionPath /p:Configuration=$config
+    $outputFile = "$PSScriptRoot\$config\ddraw.dll"
+    Copy-Item -Path $outputFile -Destination "$binFolder/$($configurations[$config])" -Recurse -Force
 }
 
 
-# pack this bitch and go
-& "C:\Program Files\7-Zip\7z.exe" -mx=9 -t7z a "GD3D11-$current_date.7z" "$outputFolder\*"
-#& "C:\Program Files\7-Zip-Zstandard\7z.exe" -mx=9 -t7z a "GD3D11-$current_date.7z" "$outputFolder\*"
+# pack this up and go
+& "C:\Program Files\7-Zip-Zstandard\7z.exe" -mx=9 -t7z a "GD3D11-$current_date.7z" "$outputFolder\*"
