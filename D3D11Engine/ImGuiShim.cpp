@@ -11,7 +11,7 @@ void ImGuiShim::Init(
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
-    io.MouseDrawCursor = true;
+    io.MouseDrawCursor = false; // don't draw two mice
     io.IniFilename = NULL;
     io.LogFilename = NULL;
     //io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard; //Not needed and it's annoying.
@@ -41,10 +41,9 @@ void ImGuiShim::Init(
     ImFontConfig config;
     config.MergeMode = false;
     //config.GlyphRanges = euroGlyphRanges;
-    char path[MAX_PATH];
-    GetCurrentDirectoryA( MAX_PATH, path );
-    std::string fontpath = std::string( path ) + "\\system\\GD3D11\\Fonts\\Lato-Semibold.ttf";
-    io.Fonts->AddFontFromFileTTF( fontpath.c_str(), 22.0f, &config );
+    const auto path = std::filesystem::current_path();
+    const auto fontpath = path / "system" / "GD3D11" / "Fonts" / "Lato-Semibold.ttf";
+    io.Fonts->AddFontFromFileTTF( fontpath.string().c_str(), 22.0f, &config);
 }
 
 
@@ -66,7 +65,7 @@ void ImGuiShim::RenderLoop()
         RenderSettingsWindow();
     //if ( DemoVisible )
     //    ImGui::ShowDemoWindow();
-    ImGui::GetIO().MouseDrawCursor = IsActive;
+    //ImGui::GetIO().MouseDrawCursor = IsActive;
     ImGui::Render();
     ImGui_ImplDX11_RenderDrawData( ImGui::GetDrawData() );
 }
@@ -88,6 +87,11 @@ void ImGuiShim::OnResize( INT2 newSize )
     } else {
         ImGui::GetIO().FontGlobalScale = 1.0f;
     }
+
+    // Get the center point of the screen, then shift the window by 50% of its size in both directions.
+    // TIP: Don't use ImGui::GetMainViewport for framebuffer sizes since GD3D11 can undersample or oversample the game.
+    // Use whatever the resolution is spit out instead.
+    ImGui::SetNextWindowPos( ImVec2( CurrentResolution.x / 2, CurrentResolution.y / 2 ), ImGuiCond_Always, ImVec2( 0.5f, 0.5f ) );
 }
 
 void ImGuiShim::RenderSettingsWindow()
@@ -96,11 +100,7 @@ void ImGuiShim::RenderSettingsWindow()
     IM_ASSERT( ImGui::GetCurrentContext() != NULL && "Missing Dear ImGui context!" );
     IMGUI_CHECKVERSION();
 
-    // Get the center point of the screen, then shift the window by 50% of its size in both directions.
-    // TIP: Don't use ImGui::GetMainViewport for framebuffer sizes since GD3D11 can undersample or oversample the game.
-    // Use whatever the resolution is spit out instead.
-    ImGui::SetNextWindowPos( ImVec2(CurrentResolution.x / 2, CurrentResolution.y / 2), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-    if ( ImGui::Begin( "Settings", false, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize ) ) {
+    if ( ImGui::Begin( "Settings", false, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize ) ) {
         ImVec2 buttonWidth( 275, 0 );
         // eh maybe i clean this later... OR I WONT
         {
@@ -162,55 +162,29 @@ void ImGuiShim::RenderSettingsWindow()
             ImGui::PushStyleVar( ImGuiStyleVar_ButtonTextAlign, ImVec2( 0.f, 0.5f ) );
             ImGui::Button( "Texture Quality", buttonWidth ); ImGui::SameLine();
             ImGui::PopStyleVar();
-            std::vector<std::string> QualityEnums = { "Potato", "Ultra Low", "Low", "Medium", "High", "Ultra High" };
-            //yep, i agree, this is retarded
-            if ( Engine::GAPI->GetRendererState().RendererSettings.textureMaxSize <= 32 ) {
-                TextureQualityState = 0;
-            } else if ( Engine::GAPI->GetRendererState().RendererSettings.textureMaxSize <= 64 ) {
-                TextureQualityState = 1;
-            } else if ( Engine::GAPI->GetRendererState().RendererSettings.textureMaxSize <= 128 ) {
-                TextureQualityState = 2;
-            } else if ( Engine::GAPI->GetRendererState().RendererSettings.textureMaxSize <= 256 ) {
-                TextureQualityState = 3;
-            } else if ( Engine::GAPI->GetRendererState().RendererSettings.textureMaxSize <= 512 ) {
-                TextureQualityState = 4;
-            } else if ( Engine::GAPI->GetRendererState().RendererSettings.textureMaxSize <= 16384 ) {
-                TextureQualityState = 5;
+            static std::vector<std::pair<std::string, int>> QualityOptions = {
+                { "Potato",32 }, 
+                { "Ultra Low", 64 }, 
+                { "Low", 128 }, 
+                { "Medium", 256 }, 
+                { "High", 512 }, 
+                { "Ultra High", 16384 },
+            };
+            for ( int i = QualityOptions.size() - 1; i >= 0; i-- ) {
+                if ( Engine::GAPI->GetRendererState().RendererSettings.textureMaxSize >= QualityOptions.at( i ).second ) {
+                    TextureQualityState = i;
+                    break;
+                }
             }
-            if ( ImGui::BeginCombo( "##TortureQuality", QualityEnums[TextureQualityState].c_str() ) ) {
+            if ( ImGui::BeginCombo( "##TextureQuality", QualityOptions[TextureQualityState].first.c_str()) ) {
 
-                for ( size_t i = 0; i < QualityEnums.size(); i++ ) {
+                for ( size_t i = 0; i < QualityOptions.size(); i++ ) {
                     bool Selected = (TextureQualityState == i);
 
-                    if ( ImGui::Selectable( QualityEnums[i].c_str(), Selected ) ) {
+                    if ( ImGui::Selectable( QualityOptions[i].first.c_str(), Selected ) ) {
                         TextureQualityState = i;
-                        switch ( TextureQualityState ) {
-                        case 0:
-                            Engine::GAPI->GetRendererState().RendererSettings.textureMaxSize = 32;
-                            Engine::GAPI->UpdateTextureMaxSize();
-                            break;
-                        case 1:
-                            Engine::GAPI->GetRendererState().RendererSettings.textureMaxSize = 64;
-                            Engine::GAPI->UpdateTextureMaxSize();
-                            break;
-                        case 2:
-                            Engine::GAPI->GetRendererState().RendererSettings.textureMaxSize = 128;
-                            Engine::GAPI->UpdateTextureMaxSize();
-                            break;
-                        case 3:
-                            Engine::GAPI->GetRendererState().RendererSettings.textureMaxSize = 256;
-                            Engine::GAPI->UpdateTextureMaxSize();
-                            break;
-                        case 4:
-                            Engine::GAPI->GetRendererState().RendererSettings.textureMaxSize = 512;
-                            Engine::GAPI->UpdateTextureMaxSize();
-                            break;
-                        default:
-                        case 5:
-                            Engine::GAPI->GetRendererState().RendererSettings.textureMaxSize = 16384;
-                            Engine::GAPI->UpdateTextureMaxSize();
-                            break;
-                        }
+                        Engine::GAPI->GetRendererState().RendererSettings.textureMaxSize = QualityOptions[i].second;
+                        Engine::GAPI->UpdateTextureMaxSize();
                     }
 
                     if ( Selected ) {
@@ -250,56 +224,28 @@ void ImGuiShim::RenderSettingsWindow()
             ImGui::PushStyleVar( ImGuiStyleVar_ButtonTextAlign, ImVec2( 0.f, 0.5f ) );
             ImGui::Button( "Shadow Quality", buttonWidth ); ImGui::SameLine();
             ImGui::PopStyleVar();
-            std::vector<std::string> kwality = { "512", "1024", "2048", "4096", "8192" };
+            std::vector<std::pair<std::string, int>> shadowResolution = { { "very low", 512 }, { "low", 1024 }, { "medium", 2048 }, { "high", 4096 }, { "very high", 8192 } };
             if ( !FeatureLevel10Compatibility ) //Not sure if imgui will work on level10 with dx11 impl, idc
-                kwality.emplace_back( "16384" );
+                shadowResolution.emplace_back(std::make_pair<std::string, int>("ultra high", 16384));
 
-            if ( Engine::GAPI->GetRendererState().RendererSettings.ShadowMapSize <= 512 ) {
-                ShadowQualityState = 0;
-            } else if ( Engine::GAPI->GetRendererState().RendererSettings.ShadowMapSize <= 1024 ) {
-                ShadowQualityState = 1;
-            } else if ( Engine::GAPI->GetRendererState().RendererSettings.ShadowMapSize <= 2048 ) {
-                ShadowQualityState = 2;
-            } else if ( Engine::GAPI->GetRendererState().RendererSettings.ShadowMapSize <= 4096 ) {
-                ShadowQualityState = 3;
-            } else if ( Engine::GAPI->GetRendererState().RendererSettings.ShadowMapSize <= 8192 ) {
-                ShadowQualityState = 4;
-            } else if ( Engine::GAPI->GetRendererState().RendererSettings.ShadowMapSize <= 16384 ) {
-                ShadowQualityState = 5;
+            for ( int i = shadowResolution.size() - 1; i >= 0; i-- ) {
+                if ( Engine::GAPI->GetRendererState().RendererSettings.ShadowMapSize >= shadowResolution.at( i ).second ) {
+                    ShadowQualityState = i;
+                    break;
+                }
             }
-            if ( ImGui::BeginCombo( "##ShadowQuality", kwality[ShadowQualityState].c_str() ) ) {
-                for ( size_t i = 0; i < kwality.size(); i++ ) {
+
+            if ( ImGui::BeginCombo( "##ShadowQuality", shadowResolution[ShadowQualityState].first.c_str()) ) {
+                for ( size_t i = 0; i < shadowResolution.size(); i++ ) {
                     bool Selected = (ShadowQualityState == i);
 
-                    if ( ImGui::Selectable( kwality[i].c_str(), Selected ) ) {
+                    if ( ImGui::Selectable( shadowResolution[i].first.c_str(), Selected ) ) {
                         ShadowQualityState = i;
-                        switch ( ShadowQualityState ) {
-                        default:
-                        case 0:
-                            Engine::GAPI->GetRendererState().RendererSettings.ShadowMapSize = 512;
-                            ReloadShaders = true;
-                            break;
-                        case 1:
-                            Engine::GAPI->GetRendererState().RendererSettings.ShadowMapSize = 1024;
-                            ReloadShaders = true;
-                            break;
-                        case 2:
-                            Engine::GAPI->GetRendererState().RendererSettings.ShadowMapSize = 2048;
-                            ReloadShaders = true;
-                            break;
-                        case 3:
-                            Engine::GAPI->GetRendererState().RendererSettings.ShadowMapSize = 4096;
-                            ReloadShaders = true;
-                            break;
-                        case 4:
-                            Engine::GAPI->GetRendererState().RendererSettings.ShadowMapSize = 8192;
-                            ReloadShaders = true;
-                            break;
-                        case 5:
-                            Engine::GAPI->GetRendererState().RendererSettings.ShadowMapSize = 16384;
-                            ReloadShaders = true;
-                            break;
-                        }
+                        Engine::GAPI->GetRendererState().RendererSettings.ShadowMapSize = shadowResolution[i].second;
+                        ReloadShaders = true;
+                    }
+                    if ( ImGui::IsItemHovered() ) {
+                        ImGui::SetTooltip( std::to_string( shadowResolution[i].second ).c_str() );
                     }
 
                     if ( Selected ) {
@@ -330,10 +276,24 @@ void ImGuiShim::RenderSettingsWindow()
                 ImGui::EndCombo();
             }
 
+            static bool fpsLimitEnabled = 0;
+            fpsLimitEnabled = Engine::GAPI->GetRendererState().RendererSettings.FpsLimit > 0;
+
             ImGui::PushStyleVar( ImGuiStyleVar_ButtonTextAlign, ImVec2( 0.f, 0.5f ) );
-            ImGui::Button( "FPS Limit", buttonWidth ); ImGui::SameLine();
+            if ( ImGui::Button( fpsLimitEnabled ? "[x] FPS Limit" : "[ ] FPS Limit", buttonWidth ) ) {
+                fpsLimitEnabled = !fpsLimitEnabled;
+                if ( !fpsLimitEnabled ) {
+                    Engine::GAPI->GetRendererState().RendererSettings.FpsLimit = 0;
+                } else {
+                    Engine::GAPI->GetRendererState().RendererSettings.FpsLimit = 60;
+                }
+            }
+            ImGui::SameLine();
             ImGui::PopStyleVar();
+
+            ImGui::BeginDisabled( !fpsLimitEnabled );
             ImGui::SliderInt( "##FPSLimit", &Engine::GAPI->GetRendererState().RendererSettings.FpsLimit, 10, 300 );
+            ImGui::EndDisabled();
 
             ImGui::PushStyleVar( ImGuiStyleVar_ButtonTextAlign, ImVec2( 0.f, 0.5f ) );
             ImGui::Button( "Object Draw Distance", buttonWidth ); ImGui::SameLine();
