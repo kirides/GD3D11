@@ -83,6 +83,7 @@ jobs:
         copy "D3D11Engine\CSFFT\*.hlsl" "${{env.RELEASE_DIR}}\GD3D11\shaders\CSFFT"
         Xcopy "blobs\Meshes" "${{env.RELEASE_DIR}}\GD3D11\Meshes\" /s
         Xcopy "blobs\Textures" "${{env.RELEASE_DIR}}\GD3D11\Textures\" /s
+        Xcopy "blobs\Fonts" "${{env.RELEASE_DIR}}\GD3D11\Fonts\" /s
         Xcopy "blobs\libs\*" "${{env.RELEASE_DIR}}\" /s
         copy "Release_G2A_AVX2\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\g2a_avx2.dll"
         copy "Release_G2A_AVX\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\g2a_avx.dll"
