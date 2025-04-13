@@ -2301,13 +2301,16 @@ void GothicAPI::DrawParticleFX( zCVob* source, zCParticleFX* fx, ParticleFrameDa
     zTParticle* pfx = fx->GetFirstParticle();
     if ( pfx ) {
         zCParticleEmitter* emitter = fx->GetEmitter();
+        if ( !emitter )
+            return;
+
         zCTexture* texture = emitter->GetVisTexture();
-        if ( !emitter || !texture )
+        if ( !texture )
             return;
 
         if ( emitter->GetVisShpType() == 5 && ParticleEffectProgMeshes.find( source ) == ParticleEffectProgMeshes.end() ) {
             AddParticleEffect( source );
-            if ( emitter->GetVisTexture()->CacheIn(0.6f) != zRES_CACHED_IN)
+            if ( texture->CacheIn(0.6f) != zRES_CACHED_IN)
                 return;
         }
 
