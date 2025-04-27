@@ -20,12 +20,6 @@
 #pragma comment(lib, "Imagehlp.lib") // Used in VersionCheck.cpp to get Gothic.exe Checksum.
 #pragma comment(lib, "shlwapi.lib")
 
-// Signal NVIDIA/AMD drivers that we want the high-performance card on laptops
-extern "C" {
-    _declspec(dllexport) DWORD NvOptimusEnablement = 0x00000001;
-    _declspec(dllexport) DWORD AmdPowerXpressRequestHighPerformance = 0x00000001;
-}
-
 ZQuantizeHalfFloat QuantizeHalfFloat;
 ZQuantizeHalfFloat_X4 QuantizeHalfFloat_X4;
 ZUnquantizeHalfFloat UnquantizeHalfFloat;
@@ -33,6 +27,7 @@ ZUnquantizeHalfFloat_X4 UnquantizeHalfFloat_X4;
 ZUnquantizeHalfFloat_X4 UnquantizeHalfFloat_X8;
 
 static HINSTANCE hLThis = 0;
+static bool comInitialized = false;
 
 typedef void (WINAPI* DirectDrawSimple)();
 typedef HRESULT( WINAPI* DirectDrawCreateEx_type )(GUID FAR*, LPVOID*, REFIID, IUnknown FAR*);
@@ -77,7 +72,7 @@ void QuantizeHalfFloats_X4_SSE2( float* input, unsigned short* output )
 
     // We need to stay in int16_t range due to signed saturation
     __m128i halfs = _mm_sub_epi32( _mm_or_si128( s, h ), _mm_set1_epi32( 32768 ) );
-    _mm_store_sd( reinterpret_cast<double*>(output), _mm_castsi128_pd( _mm_add_epi16( _mm_packs_epi32( halfs, halfs ), _mm_set1_epi16( 32768 ) ) ) );
+    _mm_store_sd( reinterpret_cast<double*>(output), _mm_castsi128_pd( _mm_add_epi16( _mm_packs_epi32( halfs, halfs ), _mm_set1_epi16( 32768u ) ) ) );
 }
 
 void QuantizeHalfFloats_X4_SSE41( float* input, unsigned short* output )
@@ -103,12 +98,12 @@ void QuantizeHalfFloats_X4_SSE41( float* input, unsigned short* output )
 #ifdef _XM_AVX_INTRINSICS_
 unsigned short QuantizeHalfFloat_F16C( float input )
 {
-    return static_cast<unsigned short>(_mm_cvtsi128_si32( _mm_cvtps_ph( _mm_set_ss( input ), _MM_FROUND_CUR_DIRECTION | _MM_FROUND_NO_EXC ) ));
+    return static_cast<unsigned short>(_mm_cvtsi128_si32( _mm_cvtps_ph( _mm_set_ss( input ), _MM_FROUND_CUR_DIRECTION ) ));
 }
 
 void QuantizeHalfFloats_X4_F16C( float* input, unsigned short* output )
 {
-    _mm_store_sd( reinterpret_cast<double*>(output), _mm_castsi128_pd( _mm_cvtps_ph( _mm_load_ps( input ), _MM_FROUND_CUR_DIRECTION | _MM_FROUND_NO_EXC ) ) );
+    _mm_store_sd( reinterpret_cast<double*>(output), _mm_castsi128_pd( _mm_cvtps_ph( _mm_load_ps( input ), _MM_FROUND_CUR_DIRECTION ) ) );
 }
 #endif
 
@@ -128,7 +123,7 @@ float UnquantizeHalfFloat_Scalar( unsigned short input )
 void UnquantizeHalfFloat_X4_SSE2( unsigned short* input, float* output )
 {
     const __m128i mask_zero = _mm_setzero_si128();
-    const __m128i mask_s = _mm_set1_epi16( 0x8000 );
+    const __m128i mask_s = _mm_set1_epi16( 0x8000u );
     const __m128i mask_m = _mm_set1_epi16( 0x03FF );
     const __m128i mask_e = _mm_set1_epi16( 0x7C00 );
     const __m128i bias_e = _mm_set1_epi32( 0x0001C000 );
@@ -155,7 +150,7 @@ void UnquantizeHalfFloat_X4_SSE2( unsigned short* input, float* output )
 void UnquantizeHalfFloat_X8_SSE2( unsigned short* input, float* output )
 {
     const __m128i mask_zero = _mm_setzero_si128();
-    const __m128i mask_s = _mm_set1_epi16( 0x8000 );
+    const __m128i mask_s = _mm_set1_epi16( 0x8000u );
     const __m128i mask_m = _mm_set1_epi16( 0x03FF );
     const __m128i mask_e = _mm_set1_epi16( 0x7C00 );
     const __m128i bias_e = _mm_set1_epi32( 0x0001C000 );
@@ -214,7 +209,7 @@ void SignalHandler( int signal ) {
 }
 
 struct ddraw_dll {
-    HMODULE dll;
+    HMODULE dll = NULL;
     FARPROC	AcquireDDThreadLock;
     FARPROC	CheckFullscreen;
     FARPROC	CompleteCreateSysmemSurface;
@@ -263,7 +258,7 @@ extern "C" HRESULT WINAPI HookedDirectDrawCreateEx( GUID FAR * lpGuid, LPVOID * 
 
     hook_outfunc
 
-        return S_OK;
+    return S_OK;
 }
 
 extern "C" void WINAPI HookedAcquireDDThreadLock() {
@@ -469,7 +464,13 @@ BOOL WINAPI DllMain( HINSTANCE hInst, DWORD reason, LPVOID ) {
             Log::Clear();
             LogInfo() << "Starting DDRAW Proxy DLL.";
 
-            if ( CoInitializeEx( NULL, COINIT::COINIT_APARTMENTTHREADED ) == S_OK ) {
+            HRESULT hr = CoInitializeEx( NULL, COINIT_APARTMENTTHREADED );
+            if ( hr == RPC_E_CHANGED_MODE ) {
+                hr = CoInitializeEx( NULL, COINIT_MULTITHREADED );
+            }
+
+            if ( hr == S_FALSE || hr == S_OK ) {
+                comInitialized = true;
                 LogInfo() << "COM initialized";
             }
 
@@ -490,13 +491,13 @@ BOOL WINAPI DllMain( HINSTANCE hInst, DWORD reason, LPVOID ) {
         }
         DetourTransactionCommit();
 
-        char infoBuf[MAX_PATH];
-        GetSystemDirectoryA( infoBuf, MAX_PATH );
+        char dllBuf[MAX_PATH];
+        GetSystemDirectoryA( dllBuf, MAX_PATH );
         // We then append \ddraw.dll, which makes the string:
         // C:\windows\system32\ddraw.dll
-        strcat_s( infoBuf, MAX_PATH, "\\ddraw.dll" );
+        strcat_s( dllBuf, MAX_PATH, "\\ddraw.dll" );
 
-        ddraw.dll = LoadLibraryA( infoBuf );
+        ddraw.dll = LoadLibraryA( dllBuf );
         if ( !ddraw.dll ) return FALSE;
 
         ddraw.AcquireDDThreadLock = GetProcAddress( ddraw.dll, "AcquireDDThreadLock" );
@@ -524,8 +525,13 @@ BOOL WINAPI DllMain( HINSTANCE hInst, DWORD reason, LPVOID ) {
     } else if ( reason == DLL_PROCESS_DETACH ) {
         Engine::OnShutDown();
 
-        CoUninitialize();
-        FreeLibrary( ddraw.dll );
+        if ( comInitialized ) {
+            comInitialized = false;
+            CoUninitialize();
+        }
+        if ( ddraw.dll ) {
+            FreeLibrary( ddraw.dll );
+        }
 
         LogInfo() << "DDRAW Proxy DLL signing off.\n";
     }

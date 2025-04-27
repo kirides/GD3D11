@@ -139,7 +139,7 @@ struct GothicPipelineKeyHasher {
     static const size_t min_buckets = (1 << 10); // minimum number of buckets, power of 2, >0
 
     static std::size_t hash_value( float value ) {
-        stdext::hash<float> hasher;
+        std::hash<float> hasher;
         return hasher( value );
     }
 

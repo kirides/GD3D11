@@ -98,7 +98,7 @@ namespace Toolbox {
 #pragma warning(disable: 4101)
         try {
             return std::filesystem::create_directories( dirName );
-        } catch ( const std::exception& e ) {
+        } catch ( const std::exception& ) {
             return false;
         }
     }
@@ -108,18 +108,18 @@ namespace Toolbox {
 #pragma warning(disable: 4101)
         try {
             return std::filesystem::is_directory( dirName_in );
-        } catch ( const std::exception& e ) {
+        } catch ( const std::exception& ) {
             return false;
         }
     }
 
     static std::size_t hash_value( float value ) {
-        stdext::hash<float> hasher;
+        std::hash<float> hasher;
         return hasher( value );
     }
 
     static std::size_t hash_value( DWORD value ) {
-        stdext::hash<DWORD> hasher;
+        std::hash<DWORD> hasher;
         return hasher( value );
     }
 
@@ -307,7 +307,7 @@ namespace Toolbox {
 #pragma warning(disable: 4101)
         try {
             return std::filesystem::exists( file );
-        } catch ( const std::exception& e ) {
+        } catch ( const std::exception& ) {
             return false;
         }
     }

@@ -17,38 +17,33 @@ public:
     }
 
     static void __fastcall Hooked_CreateQuadMark( zCQuadMark* thisptr, void* unknwn, zCPolygon* poly, const float3& position, const float2& size, struct zTEffectParams* params ) {
-        hook_infunc
-
-            if ( thisptr->GetDontRepositionConnectedVob() )
-                return; // Don't create quad-marks for particle-effects because it's kinda slow at the moment
-                        // And even for the original game using some emitters? (L'Hiver Light, Swampdragon)
+        if ( thisptr->GetDontRepositionConnectedVob() )
+            return; // Don't create quad-marks for particle-effects because it's kinda slow at the moment
+        // And even for the original game using some emitters? (L'Hiver Light, Swampdragon)
 
         HookedFunctions::OriginalFunctions.original_zCQuadMarkCreateQuadMark( thisptr, poly, position, size, params );
 
-        QuadMarkInfo* info = Engine::GAPI->GetQuadMarkInfo( thisptr );
+        hook_infunc
 
-        WorldConverter::UpdateQuadMarkInfo( info, thisptr, position );
-
-        if ( !info->Mesh )
-            Engine::GAPI->RemoveQuadMark( thisptr );
+            QuadMarkInfo* info = Engine::GAPI->GetQuadMarkInfo( thisptr );
+            WorldConverter::UpdateQuadMarkInfo( info, thisptr, position );
+            if ( !info->Mesh ) {
+                Engine::GAPI->RemoveQuadMark( thisptr );
+            }
 
         hook_outfunc
     }
 
     static void __fastcall Hooked_Constructor( void* thisptr, void* unknwn ) {
-        hook_infunc
-
-            HookedFunctions::OriginalFunctions.original_zCQuadMarkConstructor( thisptr );
-
-        hook_outfunc
+        HookedFunctions::OriginalFunctions.original_zCQuadMarkConstructor( thisptr );
     }
 
     static void __fastcall Hooked_Destructor( zCQuadMark* thisptr, void* unknwn ) {
+        HookedFunctions::OriginalFunctions.original_zCQuadMarkDestructor( thisptr );
+
         hook_infunc
 
-            HookedFunctions::OriginalFunctions.original_zCQuadMarkDestructor( thisptr );
-
-        Engine::GAPI->RemoveQuadMark( thisptr );
+            Engine::GAPI->RemoveQuadMark( thisptr );
 
         hook_outfunc
     }

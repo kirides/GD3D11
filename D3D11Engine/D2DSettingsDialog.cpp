@@ -110,16 +110,17 @@ XRESULT D2DSettingsDialog::InitControls() {
     modeSlider->SetDisplayValues( { "0", "Fullscreen Exclusive", "Fullscreen Borderless", "Fullscreen Lowlatency", "Windowed" } );
     modeSlider->SetValue( 1.0f );
 
+    InitialSettings.AllowNormalmaps = Engine::GAPI->GetRendererState().RendererSettings.AllowNormalmaps;
 	SV_Checkbox* normalmapsCheckbox = new SV_Checkbox( MainView, MainPanel );
 	normalmapsCheckbox->SetSize( D2D1::SizeF( 160, 20 ) );
     switch ( userLanguage ) {
-    case LANGUAGE_POLISH: normalmapsCheckbox->SetCaption( L"Normalmapy" ); break;
-    default: normalmapsCheckbox->SetCaption( L"Enable Normalmaps" ); break;
+    case LANGUAGE_POLISH: normalmapsCheckbox->SetCaption( L"Normalmapy [*]" ); break;
+    default: normalmapsCheckbox->SetCaption( L"Enable Normalmaps [*]" ); break;
     }
-	normalmapsCheckbox->SetDataToUpdate( &Engine::GAPI->GetRendererState().RendererSettings.AllowNormalmaps );
+	normalmapsCheckbox->SetDataToUpdate( &InitialSettings.AllowNormalmaps );
 	normalmapsCheckbox->AlignUnder( modeSlider, 10 );
 	normalmapsCheckbox->SetPosition( D2D1::Point2F( 5, normalmapsCheckbox->GetPosition().y ) );
-	normalmapsCheckbox->SetChecked( Engine::GAPI->GetRendererState().RendererSettings.AllowNormalmaps );
+	normalmapsCheckbox->SetChecked( InitialSettings.AllowNormalmaps );
 
 	SV_Checkbox* numpadCheckbox = new SV_Checkbox( MainView, MainPanel );
 	numpadCheckbox->SetSize( D2D1::SizeF( 160, 20 ) );
@@ -688,6 +689,12 @@ void D2DSettingsDialog::ApplyButtonPressed( SV_Button* sender, void* userdata ) 
         settings.EnableSoftShadows = d->InitialSettings.EnableSoftShadows;
 		Engine::GraphicsEngine->ReloadShaders();
 	}
+
+    // Check for normalmap change to purge texture cache
+    if ( d->InitialSettings.AllowNormalmaps != settings.AllowNormalmaps ) {
+        settings.AllowNormalmaps = d->InitialSettings.AllowNormalmaps;
+        Engine::GAPI->UpdateTextureMaxSize();
+    }
 
     // Check for texture quality change
     if ( d->TextureQuality != settings.textureMaxSize ) {

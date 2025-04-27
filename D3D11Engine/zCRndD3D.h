@@ -72,17 +72,16 @@ public:
         // .text:0064B260 ? DrawPoly@zCRnd_D3D@@UAEXPAVzCPolygon@@@Z proc near
 
         hook_infunc
-            //LogInfo() << "Draw Poly Return Adress: " << _ReturnAddress();		
+
             void* polyStripReturnPointer = reinterpret_cast<void*>(GothicMemoryLocations::zCPolyStrip::RenderDrawPolyReturn);
-        if ( _ReturnAddress() != polyStripReturnPointer ) {
-            HookedFunctions::OriginalFunctions.original_zCRnd_D3D_DrawPoly( thisptr, poly );
-        }
+            if ( _ReturnAddress() != polyStripReturnPointer ) {
+                HookedFunctions::OriginalFunctions.original_zCRnd_D3D_DrawPoly( thisptr, poly );
+            }
 
         hook_outfunc
     }
 
     static void __fastcall hooked_zCRndD3DDrawPolySimple( void* thisptr, void* unknwn, zCTexture* texture, zTRndSimpleVertex* zTRndSimpleVertex, int iVal ) {
-
         hook_infunc
 
             HookedFunctions::OriginalFunctions.original_zCRnd_D3D_DrawPolySimple( thisptr, texture, zTRndSimpleVertex, iVal );

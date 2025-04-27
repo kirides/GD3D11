@@ -353,7 +353,7 @@ public:
     QuadMarkInfo* GetQuadMarkInfo( zCQuadMark* mark );
 
     /** Returns all quad marks */
-    const stdext::unordered_map<zCQuadMark*, QuadMarkInfo>& GetQuadMarks();
+    const std::unordered_map<zCQuadMark*, QuadMarkInfo>& GetQuadMarks();
 
     /** Returns the loaded sections */
     std::map<int, std::map<int, WorldMeshSectionInfo>>& GetWorldSections();
@@ -427,6 +427,12 @@ public:
 
     /** Returns true, if the game was paused */
     bool IsGamePaused();
+
+    /** Checks if a game is being saved now */
+    bool IsSavingGameNow();
+
+    /** Checks if a game is being saved or loaded now */
+    bool IsInSavingLoadingState();
 
     /** Returns total time */
     float GetTotalTime();
@@ -524,6 +530,7 @@ public:
 
     /** Returns the material info associated with the given material */
     MaterialInfo* GetMaterialInfoFrom( zCTexture* tex );
+    MaterialInfo* GetMaterialInfoFrom( zCTexture* tex, const std::string& textureName );
 
     /** Adds a surface */
     void AddSurface( const std::string& name, MyDirectDrawSurface7* surface );
@@ -826,7 +833,7 @@ private:
     std::list<MyDirectDrawSurface7*> FrameLoadedTextures;
 
     /** Quad marks loaded in the world */
-    stdext::unordered_map<zCQuadMark*, QuadMarkInfo> QuadMarks;
+    std::unordered_map<zCQuadMark*, QuadMarkInfo> QuadMarks;
 
     /** Map of parameters from the .ini */
     std::map<std::string, int> ConfigIntValues;

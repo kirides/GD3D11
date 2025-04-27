@@ -2861,10 +2861,29 @@ FXMVECTOR GothicAPI::GetFogColor() {
 
 /** Returns true, if the game was paused */
 bool GothicAPI::IsGamePaused() {
-    if ( !oCGame::GetGame() )
+    oCGame* game = oCGame::GetGame();
+    if ( !game )
         return true;
 
-    return oCGame::GetGame()->GetSingleStep();
+    return game->GetSingleStep();
+}
+
+/** Checks if a game is being saved now */
+bool GothicAPI::IsSavingGameNow() {
+    oCGame* game = oCGame::GetGame();
+    if ( !game )
+        return false;
+
+    return (game->save_screen || (game->load_screen && game->inLevelChange));
+}
+
+/** Checks if a game is being saved or loaded now */
+bool GothicAPI::IsInSavingLoadingState() {
+    oCGame* game = oCGame::GetGame();
+    if ( !game )
+        return false;
+
+    return (game->save_screen || game->load_screen);
 }
 
 /** Returns true if the game is overwriting the fog color with a fog-zone */
@@ -3716,6 +3735,16 @@ MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCTexture* tex ) {
     return &MaterialInfos[tex];
 }
 
+MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCTexture* tex, const std::string& textureName ) {
+    auto it = MaterialInfos.find( tex );
+    if ( it == MaterialInfos.end() && tex ) {
+        // Make a new one and try to load it
+        MaterialInfos[tex].LoadFromFile( textureName );
+    }
+
+    return &MaterialInfos[tex];
+}
+
 /** Adds a surface */
 void GothicAPI::AddSurface( const std::string& name, MyDirectDrawSurface7* surface ) {
     SurfacesByName[name] = surface;
@@ -4445,7 +4474,7 @@ QuadMarkInfo* GothicAPI::GetQuadMarkInfo( zCQuadMark* mark ) {
 
 
 /** Returns all quad marks */
-const stdext::unordered_map<zCQuadMark*, QuadMarkInfo>& GothicAPI::GetQuadMarks() {
+const std::unordered_map<zCQuadMark*, QuadMarkInfo>& GothicAPI::GetQuadMarks() {
     return QuadMarks;
 }
 

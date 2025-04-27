@@ -34,12 +34,12 @@ public:
     }
 
     static void __fastcall hooked_oCWorldEnableVob( zCWorld* thisptr, void* unknwn, zCVob* vob, zCVob* parent ) {
+        HookedFunctions::OriginalFunctions.original_oCWorldEnableVob( thisptr, vob, parent );
+
         hook_infunc
 
-            HookedFunctions::OriginalFunctions.original_oCWorldEnableVob( thisptr, vob, parent );
-
-        // Re-Add it
-        Engine::GAPI->OnAddVob( vob, thisptr );
+            // Re-Add it
+            Engine::GAPI->OnAddVob( vob, thisptr );
 
         hook_outfunc
     }
@@ -50,16 +50,15 @@ public:
             // Remove it
             Engine::GAPI->OnRemovedVob( vob, thisptr );
 
-        HookedFunctions::OriginalFunctions.original_oCWorldDisableVob( thisptr, vob );
         hook_outfunc
+            
+        HookedFunctions::OriginalFunctions.original_oCWorldDisableVob( thisptr, vob );
     }
 
     static void __fastcall hooked_oCWorldRemoveVob( void* thisptr, void* unknwn, zCVob* vob ) {
-        hook_infunc
-            //Engine::GAPI->SetCanClearVobsByVisual(); // TODO: #8
-            HookedFunctions::OriginalFunctions.original_oCWorldRemoveVob( thisptr, vob );
+        //Engine::GAPI->SetCanClearVobsByVisual(); // TODO: #8
+        HookedFunctions::OriginalFunctions.original_oCWorldRemoveVob( thisptr, vob );
         //Engine::GAPI->SetCanClearVobsByVisual(false); // TODO: #8
-        hook_outfunc
     }
 
     static void __fastcall hooked_oCWorldRemoveFromLists( zCWorld* thisptr, zCVob* vob ) {
@@ -68,8 +67,9 @@ public:
             // Remove it
             Engine::GAPI->OnRemovedVob( vob, thisptr );
 
-        HookedFunctions::OriginalFunctions.original_oCWorldRemoveFromLists( thisptr, vob );
         hook_outfunc
+            
+        HookedFunctions::OriginalFunctions.original_oCWorldRemoveFromLists( thisptr, vob );
     }
 
     
@@ -103,11 +103,13 @@ public:
 
     static void __fastcall hooked_zCWorldVobRemovedFromWorld( zCWorld* thisptr, void* unknwn, zCVob* vob ) {
         hook_infunc
+
             // Remove it first, before it becomes invalid
             Engine::GAPI->OnRemovedVob( vob, thisptr );
 
-        HookedFunctions::OriginalFunctions.original_zCWorldVobRemovedFromWorld( thisptr, vob );
         hook_outfunc
+            
+        HookedFunctions::OriginalFunctions.original_zCWorldVobRemovedFromWorld( thisptr, vob );
     }
 
     static void __fastcall hooked_LoadWorld( zCWorld* thisptr, void* unknwn, const zSTRING& fileName, const int loadMode ) {
@@ -119,14 +121,15 @@ public:
     }
 
     static void __fastcall hooked_VobAddedToWorld( zCWorld* thisptr, void* unknwn, zCVob* vob ) {
+        HookedFunctions::OriginalFunctions.original_zCWorldVobAddedToWorld( thisptr, vob );
+
         hook_infunc
 
-            HookedFunctions::OriginalFunctions.original_zCWorldVobAddedToWorld( thisptr, vob );
+            if ( vob->GetVisual() ) {
+                //LogInfo() << vob->GetVisual()->GetFileExtension(0);
+                Engine::GAPI->OnAddVob( vob, thisptr );
+            }
 
-        if ( vob->GetVisual() ) {
-            //LogInfo() << vob->GetVisual()->GetFileExtension(0);
-            Engine::GAPI->OnAddVob( vob, thisptr );
-        }
         hook_outfunc
     }
 
@@ -167,9 +170,25 @@ public:
     }
 
     static void __fastcall hooked_Render( zCWorld* thisptr, void* unknwn, zCCamera& camera ) {
+        if ( thisptr != Engine::GAPI->GetLoadedWorldInfo()->MainWorld ) {
+            // This needs to be called to init the camera and everything for the inventory vobs
+            // The PresentPending-Guard will stop the renderer from rendering the world into one of the cells here
+            // TODO: This can be implemented better.
+            HookedFunctions::OriginalFunctions.original_zCWorldRender( thisptr, camera );
+        }
+
         hook_infunc
             Do_hooked_Render( thisptr, camera );
         hook_outfunc
+
+        if ( thisptr == Engine::GAPI->GetLoadedWorldInfo()->MainWorld ) {
+            if ( Engine::GAPI->GetRendererState().RendererSettings.AtmosphericScattering ) {
+                HookedFunctions::OriginalFunctions.original_zCWorldRender( thisptr, camera );
+            } else {
+                camera.SetFarPlane( 25000.0f );
+                HookedFunctions::OriginalFunctions.original_zCWorldRender( thisptr, camera );
+            }
+        }
     }
 
     zCTree<zCVob>* GetGlobalVobTree() {

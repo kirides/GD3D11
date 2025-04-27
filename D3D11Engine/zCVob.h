@@ -31,6 +31,7 @@ enum EVisualCamAlignType {
 class zCBspLeaf;
 class zCVisual;
 class zCWorld;
+class oCGame;
 
 class zCVob {
 public:
@@ -44,8 +45,6 @@ public:
     /** Called when this vob got it's world-matrix changed */
 #ifdef BUILD_GOTHIC_1_08k
     static void __fastcall Hooked_EndMovement( zCVob* thisptr, void* unknwn ) {
-        hook_infunc
-
         bool vobHasMoved = false;
         if ( (*reinterpret_cast<unsigned char*>(reinterpret_cast<DWORD>(thisptr) + 0xE8) & 0x03) && thisptr->GetHomeWorld() ) {
             vobHasMoved = (*reinterpret_cast<unsigned char*>(*reinterpret_cast<DWORD*>(reinterpret_cast<DWORD>(thisptr) + 0xFC) + 0x88) & 0x03);
@@ -53,8 +52,11 @@ public:
 
         HookedFunctions::OriginalFunctions.original_zCVobEndMovement( thisptr );
 
-        if ( Engine::GAPI && vobHasMoved )
+        hook_infunc
+
+            if ( vobHasMoved ) {
                 Engine::GAPI->OnVobMoved( thisptr );
+            }
 
         hook_outfunc
     }
@@ -82,22 +84,24 @@ public:
         hook_infunc
 
             // Notify the world. We are doing this here for safety so nothing possibly deleted remains in our world.
-            if ( Engine::GAPI )
-                Engine::GAPI->OnRemovedVob( thisptr, thisptr->GetHomeWorld() );
-
-        HookedFunctions::OriginalFunctions.original_zCVobDestructor( thisptr );
+            Engine::GAPI->OnRemovedVob( thisptr, thisptr->GetHomeWorld() );
 
         hook_outfunc
+
+        HookedFunctions::OriginalFunctions.original_zCVobDestructor( thisptr );
     }
 
     /** Called when this vob is about to change the visual */
     static void __fastcall Hooked_SetVisual( zCVob* thisptr, void* unknwn, zCVisual* visual ) {
+        HookedFunctions::OriginalFunctions.original_zCVobSetVisual( thisptr, visual );
+
+        if ( Engine::GAPI->IsSavingGameNow() ) {
+            return;
+        }
+
         hook_infunc
 
-            HookedFunctions::OriginalFunctions.original_zCVobSetVisual( thisptr, visual );
-
-        // Notify the world
-        if ( Engine::GAPI )
+            // Notify the world
             Engine::GAPI->OnSetVisual( thisptr );
 
         hook_outfunc
