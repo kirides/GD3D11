@@ -23,7 +23,6 @@ public:
     bool IsActive = false;
     bool SettingsVisible = false;
     //bool DemoVisible = false;
-    bool ReloadShaders = false;
     HWND OutputWindow = HWND( 0 );
     INT2 CurrentResolution = INT2( 800, 600 );
     int ResolutionState = 0;

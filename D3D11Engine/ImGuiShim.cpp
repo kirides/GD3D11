@@ -61,8 +61,9 @@ void ImGuiShim::RenderLoop()
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
-    if ( SettingsVisible )
+    if ( SettingsVisible ) {
         RenderSettingsWindow();
+    }
     //if ( DemoVisible )
     //    ImGui::ShowDemoWindow();
     //ImGui::GetIO().MouseDrawCursor = IsActive;
@@ -101,28 +102,32 @@ void ImGuiShim::RenderSettingsWindow()
     IMGUI_CHECKVERSION();
 
     if ( ImGui::Begin( "Settings", false, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize ) ) {
+        GothicRendererSettings& settings = Engine::GAPI->GetRendererState().RendererSettings;
         ImVec2 buttonWidth( 275, 0 );
         // eh maybe i clean this later... OR I WONT
         {
             ImGui::BeginGroup();
-            ImGui::Checkbox( "Vsync", &Engine::GAPI->GetRendererState().RendererSettings.EnableVSync );
-            ImGui::Checkbox( "NormalMaps", &Engine::GAPI->GetRendererState().RendererSettings.AllowNormalmaps );
-            ImGui::Checkbox( "HBAO+", &Engine::GAPI->GetRendererState().RendererSettings.HbaoSettings.Enabled );
-            ImGui::Checkbox( "Godrays", &Engine::GAPI->GetRendererState().RendererSettings.EnableGodRays );
-            ImGui::Checkbox( "SMAA", &Engine::GAPI->GetRendererState().RendererSettings.EnableSMAA );
-            ImGui::Checkbox( "HDR", &Engine::GAPI->GetRendererState().RendererSettings.EnableHDR );
-            ImGui::Checkbox( "Shadows", &Engine::GAPI->GetRendererState().RendererSettings.EnableShadows );
-            ImGui::Checkbox( "Shadow filtering", &Engine::GAPI->GetRendererState().RendererSettings.EnableSoftShadows );
-            ImGui::Checkbox( "Compress Backbuffer", &Engine::GAPI->GetRendererState().RendererSettings.CompressBackBuffer );
-            ImGui::Checkbox( "Animate Static Vobs", &Engine::GAPI->GetRendererState().RendererSettings.AnimateStaticVobs );
-            ImGui::Checkbox( "Enable Rain", &Engine::GAPI->GetRendererState().RendererSettings.EnableRain );
-            ImGui::Checkbox( "Enable Rain Effects", &Engine::GAPI->GetRendererState().RendererSettings.EnableRainEffects );
-            ImGui::Checkbox( "Limit Light Intensity", &Engine::GAPI->GetRendererState().RendererSettings.LimitLightIntensity );
-            ImGui::Checkbox( "Draw World Section Intersections", &Engine::GAPI->GetRendererState().RendererSettings.DrawSectionIntersections );
+            ImGui::Checkbox( "Vsync", &settings.EnableVSync );
+            if ( ImGui::Checkbox( "NormalMaps", &settings.AllowNormalmaps ) ) {
+                Engine::GAPI->UpdateTextureMaxSize();
+            }
+
+            ImGui::Checkbox( "HBAO+", &settings.HbaoSettings.Enabled );
+            ImGui::Checkbox( "Godrays", &settings.EnableGodRays );
+            ImGui::Checkbox( "SMAA", &settings.EnableSMAA );
+            ImGui::Checkbox( "HDR", &settings.EnableHDR );
+            ImGui::Checkbox( "Shadows", &settings.EnableShadows );
+            ImGui::Checkbox( "Shadow filtering", &settings.EnableSoftShadows );
+            ImGui::Checkbox( "Compress Backbuffer", &settings.CompressBackBuffer );
+            ImGui::Checkbox( "Animate Static Vobs", &settings.AnimateStaticVobs );
+            ImGui::Checkbox( "Enable Rain", &settings.EnableRain );
+            ImGui::Checkbox( "Enable Rain Effects", &settings.EnableRainEffects );
+            ImGui::Checkbox( "Limit Light Intensity", &settings.LimitLightIntensity );
+            ImGui::Checkbox( "Draw World Section Intersections", &settings.DrawSectionIntersections );
             if ( ImGui::IsItemHovered() )
                 ImGui::SetTooltip( "This option draws every world chunk that intersect with GD3D11 world draw distance." );
 
-            ImGui::Checkbox( "Occlusion Culling", &Engine::GAPI->GetRendererState().RendererSettings.EnableOcclusionCulling );
+            ImGui::Checkbox( "Occlusion Culling", &settings.EnableOcclusionCulling );
             if ( ImGui::IsItemHovered() )
                 ImGui::SetTooltip( "Hides objects that are not visible by camera. Doesn't work properly, turn off if you don't play on potato." );
 
@@ -151,6 +156,7 @@ void ImGuiShim::RenderSettingsWindow()
                     if ( ImGui::Selectable( Resolutions[i].c_str(), Selected ) ) {
                         ResolutionState = i;
                         Engine::GraphicsEngine->OnResize( INT2( Resolutions[i] ) );
+                        Engine::GraphicsEngine->ReloadShaders();
                     }
 
                     if ( Selected ) {
@@ -163,27 +169,27 @@ void ImGuiShim::RenderSettingsWindow()
             ImGui::Button( "Texture Quality", buttonWidth ); ImGui::SameLine();
             ImGui::PopStyleVar();
             static std::vector<std::pair<std::string, int>> QualityOptions = {
-                { "Potato",32 }, 
-                { "Ultra Low", 64 }, 
-                { "Low", 128 }, 
-                { "Medium", 256 }, 
-                { "High", 512 }, 
+                { "Potato",32 },
+                { "Ultra Low", 64 },
+                { "Low", 128 },
+                { "Medium", 256 },
+                { "High", 512 },
                 { "Ultra High", 16384 },
             };
             for ( int i = QualityOptions.size() - 1; i >= 0; i-- ) {
-                if ( Engine::GAPI->GetRendererState().RendererSettings.textureMaxSize >= QualityOptions.at( i ).second ) {
+                if ( settings.textureMaxSize >= QualityOptions.at( i ).second ) {
                     TextureQualityState = i;
                     break;
                 }
             }
-            if ( ImGui::BeginCombo( "##TextureQuality", QualityOptions[TextureQualityState].first.c_str()) ) {
+            if ( ImGui::BeginCombo( "##TextureQuality", QualityOptions[TextureQualityState].first.c_str() ) ) {
 
                 for ( size_t i = 0; i < QualityOptions.size(); i++ ) {
                     bool Selected = (TextureQualityState == i);
 
                     if ( ImGui::Selectable( QualityOptions[i].first.c_str(), Selected ) ) {
                         TextureQualityState = i;
-                        Engine::GAPI->GetRendererState().RendererSettings.textureMaxSize = QualityOptions[i].second;
+                        settings.textureMaxSize = QualityOptions[i].second;
                         Engine::GAPI->UpdateTextureMaxSize();
                     }
 
@@ -209,7 +215,7 @@ void ImGuiShim::RenderSettingsWindow()
                     bool Selected = (DisplayModeState == i);
                     if ( ImGui::Selectable( DisplayEnums[i].c_str(), Selected ) ) {
                         DisplayModeState = i;
-                        Engine::GAPI->GetRendererState().RendererSettings.WindowMode = i;
+                        settings.WindowMode = i;
                     }
                     if ( ImGui::IsItemHovered() ) {
                         ImGui::SetTooltip( "[*] You need to restart for this to take effect." );
@@ -226,23 +232,23 @@ void ImGuiShim::RenderSettingsWindow()
             ImGui::PopStyleVar();
             std::vector<std::pair<std::string, int>> shadowResolution = { { "very low", 512 }, { "low", 1024 }, { "medium", 2048 }, { "high", 4096 }, { "very high", 8192 } };
             if ( !FeatureLevel10Compatibility ) //Not sure if imgui will work on level10 with dx11 impl, idc
-                shadowResolution.emplace_back(std::make_pair<std::string, int>("ultra high", 16384));
+                shadowResolution.emplace_back( std::make_pair<std::string, int>( "ultra high", 16384 ) );
 
             for ( int i = shadowResolution.size() - 1; i >= 0; i-- ) {
-                if ( Engine::GAPI->GetRendererState().RendererSettings.ShadowMapSize >= shadowResolution.at( i ).second ) {
+                if ( settings.ShadowMapSize >= shadowResolution.at( i ).second ) {
                     ShadowQualityState = i;
                     break;
                 }
             }
 
-            if ( ImGui::BeginCombo( "##ShadowQuality", shadowResolution[ShadowQualityState].first.c_str()) ) {
+            if ( ImGui::BeginCombo( "##ShadowQuality", shadowResolution[ShadowQualityState].first.c_str() ) ) {
                 for ( size_t i = 0; i < shadowResolution.size(); i++ ) {
                     bool Selected = (ShadowQualityState == i);
 
                     if ( ImGui::Selectable( shadowResolution[i].first.c_str(), Selected ) ) {
                         ShadowQualityState = i;
-                        Engine::GAPI->GetRendererState().RendererSettings.ShadowMapSize = shadowResolution[i].second;
-                        ReloadShaders = true;
+                        settings.ShadowMapSize = shadowResolution[i].second;
+                        Engine::GraphicsEngine->ReloadShaders();
                     }
                     if ( ImGui::IsItemHovered() ) {
                         ImGui::SetTooltip( std::to_string( shadowResolution[i].second ).c_str() );
@@ -259,14 +265,14 @@ void ImGuiShim::RenderSettingsWindow()
             ImGui::Button( "Dynamic Shadows", buttonWidth ); ImGui::SameLine();
             ImGui::PopStyleVar();
             std::vector<std::string> DynamicShadowEnums = { "Off", "Static", "Dynamic Update", "Full" };
-            DynamicShadowState = static_cast<int>(Engine::GAPI->GetRendererState().RendererSettings.EnablePointlightShadows);
+            DynamicShadowState = static_cast<int>(settings.EnablePointlightShadows);
             if ( ImGui::BeginCombo( "##DynamicShadows", DynamicShadowEnums[DynamicShadowState].c_str() ) ) {
                 for ( size_t i = 0; i < DynamicShadowEnums.size(); i++ ) {
                     bool Selected = (DynamicShadowState == i);
 
                     if ( ImGui::Selectable( DynamicShadowEnums[i].c_str(), Selected ) ) {
                         DynamicShadowState = i;
-                        Engine::GAPI->GetRendererState().RendererSettings.EnablePointlightShadows = static_cast<GothicRendererSettings::EPointLightShadowMode>(i);
+                        settings.EnablePointlightShadows = static_cast<GothicRendererSettings::EPointLightShadowMode>( i );
                     }
 
                     if ( Selected ) {
@@ -277,61 +283,61 @@ void ImGuiShim::RenderSettingsWindow()
             }
 
             static bool fpsLimitEnabled = 0;
-            fpsLimitEnabled = Engine::GAPI->GetRendererState().RendererSettings.FpsLimit > 0;
+            fpsLimitEnabled = settings.FpsLimit > 0;
 
             ImGui::PushStyleVar( ImGuiStyleVar_ButtonTextAlign, ImVec2( 0.f, 0.5f ) );
             if ( ImGui::Button( fpsLimitEnabled ? "[x] FPS Limit" : "[ ] FPS Limit", buttonWidth ) ) {
                 fpsLimitEnabled = !fpsLimitEnabled;
                 if ( !fpsLimitEnabled ) {
-                    Engine::GAPI->GetRendererState().RendererSettings.FpsLimit = 0;
+                    settings.FpsLimit = 0;
                 } else {
-                    Engine::GAPI->GetRendererState().RendererSettings.FpsLimit = 60;
+                    settings.FpsLimit = 60;
                 }
             }
             ImGui::SameLine();
             ImGui::PopStyleVar();
 
             ImGui::BeginDisabled( !fpsLimitEnabled );
-            ImGui::SliderInt( "##FPSLimit", &Engine::GAPI->GetRendererState().RendererSettings.FpsLimit, 10, 300 );
+            ImGui::SliderInt( "##FPSLimit", &settings.FpsLimit, 10, 300 );
             ImGui::EndDisabled();
 
             ImGui::PushStyleVar( ImGuiStyleVar_ButtonTextAlign, ImVec2( 0.f, 0.5f ) );
             ImGui::Button( "Object Draw Distance", buttonWidth ); ImGui::SameLine();
             ImGui::PopStyleVar();
-            float objectDrawDistance = Engine::GAPI->GetRendererState().RendererSettings.OutdoorVobDrawRadius / 1000.0f;
+            float objectDrawDistance = settings.OutdoorVobDrawRadius / 1000.0f;
             if ( ImGui::SliderFloat( "##OutdoorVobDrawRadius", &objectDrawDistance, 2.f, 100.0f ) ) {
-                Engine::GAPI->GetRendererState().RendererSettings.OutdoorVobDrawRadius = static_cast<float>(objectDrawDistance * 1000.0f);
+                settings.OutdoorVobDrawRadius = static_cast<float>(objectDrawDistance * 1000.0f);
             }
 
-            float smallObjectDrawDistance = Engine::GAPI->GetRendererState().RendererSettings.OutdoorSmallVobDrawRadius / 1000.0f;
+            float smallObjectDrawDistance = settings.OutdoorSmallVobDrawRadius / 1000.0f;
             ImGui::PushStyleVar( ImGuiStyleVar_ButtonTextAlign, ImVec2( 0.f, 0.5f ) );
             ImGui::Button( "Small Object Draw Distance", buttonWidth ); ImGui::SameLine();
             ImGui::PopStyleVar();
             if ( ImGui::SliderFloat( "##OutdoorSmallVobDrawRadius", &smallObjectDrawDistance, 2.f, 100.0f ) ) {
-                Engine::GAPI->GetRendererState().RendererSettings.OutdoorSmallVobDrawRadius = static_cast<float>(smallObjectDrawDistance * 1000.0f);
+                settings.OutdoorSmallVobDrawRadius = static_cast<float>(smallObjectDrawDistance * 1000.0f);
             }
 
-            float visualFXDrawDistance = Engine::GAPI->GetRendererState().RendererSettings.VisualFXDrawRadius / 1000.0f;
+            float visualFXDrawDistance = settings.VisualFXDrawRadius / 1000.0f;
             ImGui::PushStyleVar( ImGuiStyleVar_ButtonTextAlign, ImVec2( 0.f, 0.5f ) );
             ImGui::Button( "VisualFX Draw Distance", buttonWidth ); ImGui::SameLine();
             ImGui::PopStyleVar();
             if ( ImGui::SliderFloat( "##VisualFXDrawRadius", &visualFXDrawDistance, 0.1f, 10.0f ) ) {
-                Engine::GAPI->GetRendererState().RendererSettings.VisualFXDrawRadius = static_cast<float>(visualFXDrawDistance * 1000.0f);
+                settings.VisualFXDrawRadius = static_cast<float>(visualFXDrawDistance * 1000.0f);
             }
             ImGui::PushStyleVar( ImGuiStyleVar_ButtonTextAlign, ImVec2( 0.f, 0.5f ) );
             ImGui::Button( "World Draw Distance", buttonWidth ); ImGui::SameLine();
             ImGui::PopStyleVar();
-            ImGui::SliderInt( "##SectionDrawRadius", &Engine::GAPI->GetRendererState().RendererSettings.SectionDrawRadius, 2, 20 );
+            ImGui::SliderInt( "##SectionDrawRadius", &settings.SectionDrawRadius, 2, 20 );
 
             ImGui::PushStyleVar( ImGuiStyleVar_ButtonTextAlign, ImVec2( 0.f, 0.5f ) );
             ImGui::Button( "Contrast", buttonWidth ); ImGui::SameLine();
             ImGui::PopStyleVar();
-            ImGui::SliderFloat( "##Contrast", &Engine::GAPI->GetRendererState().RendererSettings.GammaValue, 0.1f, 2.0f );
+            ImGui::SliderFloat( "##Contrast", &settings.GammaValue, 0.1f, 2.0f );
 
             ImGui::PushStyleVar( ImGuiStyleVar_ButtonTextAlign, ImVec2( 0.f, 0.5f ) );
             ImGui::Button( "Brightness", buttonWidth ); ImGui::SameLine();
             ImGui::PopStyleVar();
-            ImGui::SliderFloat( "##Brightness", &Engine::GAPI->GetRendererState().RendererSettings.BrightnessValue, 0.1f, 3.0f );
+            ImGui::SliderFloat( "##Brightness", &settings.BrightnessValue, 0.1f, 3.0f );
             ImGui::PopItemWidth();
 
             ImGui::EndGroup();
@@ -341,12 +347,8 @@ void ImGuiShim::RenderSettingsWindow()
             SettingsVisible = false;
             IsActive = false;
             Engine::GAPI->SetEnableGothicInput( true );
-            Engine::GAPI->SaveRendererWorldSettings( Engine::GAPI->GetRendererState().RendererSettings );
+            Engine::GAPI->SaveRendererWorldSettings( settings );
             Engine::GAPI->SaveMenuSettings( MENU_SETTINGS_FILE );
-            if ( ReloadShaders ) {
-                Engine::GraphicsEngine->ReloadShaders();
-                ReloadShaders = false;
-            }
         }
     }
     ImGui::End();
