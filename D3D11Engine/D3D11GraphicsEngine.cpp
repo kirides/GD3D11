@@ -205,6 +205,20 @@ XRESULT D3D11GraphicsEngine::Init() {
     DeviceDescription = deviceDescription;
     LogInfo() << "Rendering on: " << deviceDescription.c_str();
 
+    if ( adpDesc.VendorId == 0x1002 ) {
+        static const GUID IID_IDXGIVkInteropAdapter = { 0x3A6D8F2C, 0xB0E8, 0x4AB4, { 0xB4, 0xDC, 0x4F, 0xD2, 0x48, 0x91, 0xBF, 0xA5 } };
+
+        IUnknown* dxgiVKInterop = nullptr;
+        HRESULT result = DXGIAdapter2->QueryInterface( IID_IDXGIVkInteropAdapter, reinterpret_cast<void**>(&dxgiVKInterop) );
+        if ( SUCCEEDED( result ) ) {
+            dxgiVKInterop->Release();
+        } else {
+            LogWarnBox() << "You might experience random crashes when saving game due"
+                " to heavy memory overhead caused by AMD drivers.\n"
+                "It is recommended to use 32-bit DXVK on top of GD3D11.";
+        }
+    }
+
     D3D_FEATURE_LEVEL maxFeatureLevel = D3D_FEATURE_LEVEL::D3D_FEATURE_LEVEL_9_1;
     D3D_FEATURE_LEVEL featureLevels[] = {
         D3D_FEATURE_LEVEL_11_1,
@@ -894,6 +908,11 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
 XRESULT D3D11GraphicsEngine::OnBeginFrame() {
 
     Engine::GAPI->GetRendererState().RendererInfo.Timing.StartTotal();
+
+#if BUILD_SPACER_NET
+    Engine::GAPI->GetRendererState().RendererSettings.EnableInactiveFpsLock = false;
+#endif //  BUILD_SPACERNET
+
     if ( !m_isWindowActive && Engine::GAPI->GetRendererState().RendererSettings.EnableInactiveFpsLock ) {
         m_FrameLimiter->SetLimit( 20 );
         m_FrameLimiter->Start();
@@ -1046,8 +1065,8 @@ XRESULT D3D11GraphicsEngine::OnEndFrame() {
     Present();
 
     Engine::GAPI->GetRendererState().RendererInfo.Timing.StopTotal();
-    if ( !Engine::GAPI->GetRendererState().RendererSettings.BinkVideoRunning ) {
-    m_FrameLimiter->Wait();
+    if ( !Engine::GAPI->GetRendererState().RendererSettings.BinkVideoRunning && !Engine::GAPI->IsInSavingLoadingState() ) {
+        m_FrameLimiter->Wait();
     }
     return XR_SUCCESS;
 }
@@ -1244,6 +1263,9 @@ XRESULT D3D11GraphicsEngine::Present() {
     }
 
     bool vsync = Engine::GAPI->GetRendererState().RendererSettings.EnableVSync;
+    if ( Engine::GAPI->GetRendererState().RendererSettings.BinkVideoRunning || Engine::GAPI->IsInSavingLoadingState() ) {
+        vsync = false;
+    }
 
     HRESULT hr;
     if ( dxgi_1_5 ) {
@@ -5487,7 +5509,7 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
 
 /** Draws quadmarks in a simple way */
 void D3D11GraphicsEngine::DrawQuadMarks() {
-    const stdext::unordered_map<zCQuadMark*, QuadMarkInfo>& quadMarks =
+    const std::unordered_map<zCQuadMark*, QuadMarkInfo>& quadMarks =
         Engine::GAPI->GetQuadMarks();
     if ( quadMarks.empty() ) return;
 

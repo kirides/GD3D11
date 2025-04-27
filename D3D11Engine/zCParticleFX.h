@@ -134,13 +134,13 @@ public:
 
     static void __fastcall Hooked_Destructor( zCParticleFX* thisptr, void* unknwn ) {
         hook_infunc
-            // Notify the world
-            if ( Engine::GAPI )
-                Engine::GAPI->OnParticleFXDeleted( thisptr );
 
-        HookedFunctions::OriginalFunctions.original_zCParticleFXDestructor( thisptr );
+            // Notify the world
+            Engine::GAPI->OnParticleFXDeleted( thisptr );
 
         hook_outfunc
+
+        HookedFunctions::OriginalFunctions.original_zCParticleFXDestructor( thisptr );
     }
 
     static float SinEase( float value ) {

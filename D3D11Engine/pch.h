@@ -24,14 +24,8 @@
 
 using namespace DirectX;
 
-#if _MSC_VER < 1900
-;
-#else
-#define stdext std
-#endif
-
 #ifndef VERSION_NUMBER
-#define VERSION_NUMBER "17.8-dev20"
+#define VERSION_NUMBER "17.8-rev'SK2"
 #endif
 
 __declspec(selectany) const char* VERSION_NUMBER_STR = VERSION_NUMBER;

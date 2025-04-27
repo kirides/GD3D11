@@ -28,25 +28,29 @@ public:
     }
 
     static void __fastcall hooked_oCNPCInitModel( zCVob* thisptr, void* unknwn ) {
-        hook_infunc
-            HookedFunctions::OriginalFunctions.original_oCNPCInitModel( thisptr );
+        HookedFunctions::OriginalFunctions.original_oCNPCInitModel( thisptr );
 
-        if ( /*((zCVob *)thisptr)->GetVisual() || */Engine::GAPI->GetSkeletalVobByVob( thisptr ) ) {
-            // This may causes the vob to be added and removed multiple times, but makes sure we get all changes of armor
-            Engine::GAPI->OnRemovedVob( thisptr, thisptr->GetHomeWorld() );
-            Engine::GAPI->OnAddVob( thisptr, thisptr->GetHomeWorld() );
-        }
+        hook_infunc
+
+            if ( /*((zCVob *)thisptr)->GetVisual() || */Engine::GAPI->GetSkeletalVobByVob( thisptr ) ) {
+                // This may causes the vob to be added and removed multiple times, but makes sure we get all changes of armor
+                Engine::GAPI->OnRemovedVob( thisptr, thisptr->GetHomeWorld() );
+                Engine::GAPI->OnAddVob( thisptr, thisptr->GetHomeWorld() );
+            }
+
         hook_outfunc
     }
 
     /** Reads config stuff */
     static void __fastcall hooked_oCNPCEnable( zCVob* thisptr, void* unknwn, XMFLOAT3& position ) {
-        hook_infunc
-            HookedFunctions::OriginalFunctions.original_oCNPCEnable( thisptr, position );
+        HookedFunctions::OriginalFunctions.original_oCNPCEnable( thisptr, position );
 
-        // Re-Add if needed
-        Engine::GAPI->OnRemovedVob( thisptr, thisptr->GetHomeWorld() );
-        Engine::GAPI->OnAddVob( thisptr, thisptr->GetHomeWorld() );
+        hook_infunc
+
+            // Re-Add if needed
+            Engine::GAPI->OnRemovedVob( thisptr, thisptr->GetHomeWorld() );
+            Engine::GAPI->OnAddVob( thisptr, thisptr->GetHomeWorld() );
+
         hook_outfunc
     }
 
@@ -57,9 +61,9 @@ public:
             if ( !thisptr->IsAPlayer() ) // Never disable the player vob
                 Engine::GAPI->OnRemovedVob( thisptr, thisptr->GetHomeWorld() );
 
-        HookedFunctions::OriginalFunctions.original_oCNPCDisable( thisptr );
-
         hook_outfunc
+
+        HookedFunctions::OriginalFunctions.original_oCNPCDisable( thisptr );
     }
 
     void ResetPos( const XMFLOAT3& pos ) {

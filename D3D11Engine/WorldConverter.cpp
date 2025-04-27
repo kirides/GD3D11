@@ -353,10 +353,7 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
         }
 
         // Flag portals so that we can apply a different PS shader later
-        if ( poly->GetPolyFlags()->PortalPoly ) {
-            continue;
-        }
-        /*
+        zCTexture* _tex = nullptr;
         if ( poly->GetPolyFlags()->PortalPoly ) {
             zCMaterial* polymat = poly->GetMaterial();
             if ( zCTexture* tex = polymat->GetTextureSingle() ) {
@@ -364,14 +361,17 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
                 if ( textureName == "OWODFLWOODGROUND" ) {
                     continue; // this is a ground texture that is sometimes re-used for visual tricks to darken tunnels, etc. We don't want to treat this as a portal.
                 } else {
-                    MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( tex );
+                    // unsafe hack to avoid portal polys assigning material for valid normal polygons
+                    // it only work because DrawMeshInfoListAlphablended use texture from material
+                    _tex = reinterpret_cast<zCTexture*>(reinterpret_cast<DWORD>(polymat->GetTextureSingle()) + 1);
+
+                    MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( _tex, textureName );
                     info->MaterialType = MaterialInfo::MT_Portal;
                 }
             } else {
                 continue;
             }
         }
-        */
 
         // Calculate midpoint of this triange to get the section
         XMFLOAT3 avgPos;
@@ -383,8 +383,6 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
 
         XMFLOAT3& bbmin = sectionInfo.BoundingBox.Min;
         XMFLOAT3& bbmax = sectionInfo.BoundingBox.Max;
-
-        DWORD sectionColor = float4( (section.x % 2) + 0.5f, (section.x % 2) + 0.5f, 1, 1 ).ToDWORD();
 
         zCMaterial* mat = poly->GetMaterial();
         if ( poly->GetNumPolyVertices() < 3 ) {
@@ -441,9 +439,8 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
         }
 
         // Use the map to put the polygon to those using the same material
-
         MeshKey key;
-        key.Texture = mat != nullptr ? mat->GetTextureSingle() : nullptr;
+        key.Texture = _tex ? _tex : mat ? mat->GetTextureSingle() : nullptr;
         key.Material = mat;
 
         if ( sectionInfo.WorldMeshes.count( key ) == 0 ) {
@@ -526,7 +523,6 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
                 // Init and fill them
                 it.second->MeshVertexBuffer->Init( &it.second->Vertices[0], it.second->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
                 it.second->MeshIndexBuffer->Init( &it.second->Indices[0], it.second->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
-
 
                 // Remember them, to wrap then up later
                 vertexBuffers.emplace_back( &it.second->Vertices );

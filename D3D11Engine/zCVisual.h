@@ -22,12 +22,13 @@ public:
 
     static void __fastcall Hooked_Destructor( zCVisual* thisptr, void* unknwn ) {
         hook_infunc
+
             // Notify the world
-            if ( Engine::GAPI )
-                Engine::GAPI->OnVisualDeleted( thisptr );
+            Engine::GAPI->OnVisualDeleted( thisptr );
+
+        hook_outfunc
 
         HookedFunctions::OriginalFunctions.original_zCVisualDestructor( thisptr );
-        hook_outfunc
     }
 
     /** File extension this visual uses. Handy for finding out what class this is */

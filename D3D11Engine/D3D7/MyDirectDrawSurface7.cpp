@@ -457,15 +457,16 @@ HRESULT MyDirectDrawSurface7::Restore() {
 
 HRESULT MyDirectDrawSurface7::SetClipper( LPDIRECTDRAWCLIPPER lpDDClipper ) {
     DebugWriteTex( "IDirectDrawSurface7(%p)::SetClipper()" );
+
     hook_infunc
 
-    HWND hWnd;
-    lpDDClipper->GetHWnd( &hWnd );
-    Engine::GAPI->OnSetWindow( hWnd );
+        HWND hWnd;
+        lpDDClipper->GetHWnd( &hWnd );
+        Engine::GAPI->OnSetWindow( hWnd );
 
     hook_outfunc
 
-        return S_OK;
+    return S_OK;
 }
 
 HRESULT MyDirectDrawSurface7::SetColorKey( DWORD dwFlags, LPDDCOLORKEY lpDDColorKey ) {

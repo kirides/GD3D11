@@ -10,7 +10,7 @@
 enum { GOTHIC1_EXECUTABLE = 0, GOTHIC1A_EXECUTABLE = 1, GOTHIC2_EXECUTABLE = 2, GOTHIC2A_EXECUTABLE = 3, INVALID_EXECUTABLE = -1 };
 
 struct ddraw_dll {
-    HMODULE dll;
+    HMODULE dll = NULL;
     FARPROC	AcquireDDThreadLock;
     FARPROC	CheckFullscreen;
     FARPROC	CompleteCreateSysmemSurface;
@@ -321,7 +321,9 @@ BOOL APIENTRY DllMain( HINSTANCE hInst, DWORD reason, LPVOID ) {
         ddraw.SetCustomSkyTexture = GetProcAddress( ddraw.dll, "SetCustomSkyTexture" );
         
     } else if ( reason == DLL_PROCESS_DETACH ) {
-        FreeLibrary( ddraw.dll );
+        if ( ddraw.dll ) {
+            FreeLibrary( ddraw.dll );
+        }
     }
     return TRUE;
 }

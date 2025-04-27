@@ -578,13 +578,14 @@ public:
 
 	HRESULT STDMETHODCALLTYPE EndScene() {
 		DebugWrite( "MyDirect3DDevice7::EndScene" );
+
 		hook_infunc
 
 			Engine::GraphicsEngine->OnEndFrame();
 
 		hook_outfunc
-			//hook_outfunc
-			return S_OK;
+
+		return S_OK;
 	}
 
 	HRESULT STDMETHODCALLTYPE EndStateBlock( LPDWORD lpdwBlockHandle ) {
