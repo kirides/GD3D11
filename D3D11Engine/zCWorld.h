@@ -143,27 +143,7 @@ public:
 
         if (MainWorld && thisptr == MainWorld ) { // Main world
             Engine::GAPI->OnWorldUpdate();
-           
-            if ( Engine::GAPI->GetRendererState().RendererSettings.AtmosphericScattering ) {
-                HookedFunctions::OriginalFunctions.original_zCWorldRender( thisptr, camera );
-            } else {
-                camera.SetFarPlane( 25000.0f );
-                HookedFunctions::OriginalFunctions.original_zCWorldRender( thisptr, camera );
-            }
-
-            /*zCWorld* w = (zCWorld *)thisptr;
-            zCSkyController* sky = w->GetActiveSkyController();
-            sky->RenderSkyPre();*/
         } else { // Inventory virtual world
-            // Bind matrices
-            //camera.UpdateViewport();
-            //camera.Activate();
-
-            // This needs to be called to init the camera and everything for the inventory vobs
-            // The PresentPending-Guard will stop the renderer from rendering the world into one of the cells here
-            // TODO: This can be implemented better.
-            HookedFunctions::OriginalFunctions.original_zCWorldRender( thisptr, camera );
-
             // Inventory
             Engine::GAPI->DrawInventory( thisptr, camera );
         }
