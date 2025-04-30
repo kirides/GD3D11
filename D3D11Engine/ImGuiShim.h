@@ -22,6 +22,7 @@ public:
     bool Initiated = false;
     bool IsActive = false;
     bool SettingsVisible = false;
+    bool AdvancedSettingsVisible = false;
     //bool DemoVisible = false;
     HWND OutputWindow = HWND( 0 );
     INT2 CurrentResolution = INT2( 800, 600 );
@@ -33,4 +34,5 @@ public:
     std::vector<std::string> Resolutions;
 private:
     void RenderSettingsWindow();
+    void RenderAdvancedSettingsWindow();
 };

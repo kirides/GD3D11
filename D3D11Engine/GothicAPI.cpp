@@ -2955,20 +2955,22 @@ LRESULT GothicAPI::OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
 #endif
         case VK_F11:
             if ( (GetAsyncKeyState( VK_CONTROL ) & 0x8000) ) {
-                if ( Engine::ImGuiHandle->IsActive ) {
-                    Engine::ImGuiHandle->IsActive = false;
+                if ( !Engine::ImGuiHandle->AdvancedSettingsVisible ) {
                     Engine::ImGuiHandle->SettingsVisible = false;
                     SetEnableGothicInput( true );
                 }
-                Engine::AntTweakBar->SetActive( !Engine::AntTweakBar->GetActive() );
-                SetEnableGothicInput( !Engine::AntTweakBar->GetActive() );
+
+                Engine::ImGuiHandle->AdvancedSettingsVisible = !Engine::ImGuiHandle->AdvancedSettingsVisible;
+                Engine::ImGuiHandle->IsActive = Engine::ImGuiHandle->AdvancedSettingsVisible;
+                SetEnableGothicInput( !Engine::ImGuiHandle->IsActive );
             } else {
-                if ( Engine::AntTweakBar->GetActive() ) {
-                    Engine::AntTweakBar->SetActive( false );
+                if ( !Engine::ImGuiHandle->SettingsVisible ) {
+                    Engine::ImGuiHandle->AdvancedSettingsVisible = false;
                     SetEnableGothicInput( true );
                 }
-                Engine::ImGuiHandle->IsActive = !Engine::ImGuiHandle->IsActive;
+
                 Engine::ImGuiHandle->SettingsVisible = !Engine::ImGuiHandle->SettingsVisible;
+                Engine::ImGuiHandle->IsActive = Engine::ImGuiHandle->SettingsVisible;
                 SetEnableGothicInput( !Engine::ImGuiHandle->IsActive );
             }
             break;
@@ -2978,6 +2980,7 @@ LRESULT GothicAPI::OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
                     Engine::AntTweakBar->SetActive( false );
                     Engine::ImGuiHandle->IsActive = false;
                     Engine::ImGuiHandle->SettingsVisible = false;
+                    Engine::ImGuiHandle->AdvancedSettingsVisible = false;
                     SetEnableGothicInput( true );
             }
             break;
