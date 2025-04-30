@@ -2,7 +2,6 @@
 #include "Engine.h"
 #include "GothicAPI.h"
 #include "D3D11GraphicsEngine.h"
-#include "AntTweakBarShim.h"
 #include "HookExceptionFilter.h"
 #include "ThreadPool.h"
 #include "ImGuiShim.h"
@@ -31,7 +30,6 @@ namespace Engine {
         XLE( GraphicsEngine->Init() );
 
         // Create ant tweak bar with it
-        AntTweakBar = new AntTweakBarShim;
         ImGuiHandle = new ImGuiShim;
 
         // Create threadpool
@@ -63,7 +61,6 @@ namespace Engine {
         exit( 0 );
         SAFE_DELETE( Engine::ImGuiHandle );
         SAFE_DELETE( Engine::RenderingThreadPool );
-        SAFE_DELETE( Engine::AntTweakBar );
         SAFE_DELETE( Engine::GAPI );
         SAFE_DELETE( Engine::WorkerThreadPool );
         SAFE_DELETE( Engine::GraphicsEngine );

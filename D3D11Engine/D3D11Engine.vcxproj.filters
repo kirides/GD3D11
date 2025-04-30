@@ -244,12 +244,6 @@
     <ClInclude Include="GInventory.h">
       <Filter>Engine\GAPI\Objects</Filter>
     </ClInclude>
-    <ClInclude Include="AntTweakBarShim.h">
-      <Filter>Engine</Filter>
-    </ClInclude>
-    <ClInclude Include="AntTweakBar.h">
-      <Filter>Librarys</Filter>
-    </ClInclude>
     <ClInclude Include="zCInput.h">
       <Filter>ZenGin\Classes</Filter>
     </ClInclude>
@@ -766,9 +760,6 @@
     </ClCompile>
     <ClCompile Include="GInventory.cpp">
       <Filter>Engine\GAPI\Objects</Filter>
-    </ClCompile>
-    <ClCompile Include="AntTweakBarShim.cpp">
-      <Filter>Engine</Filter>
     </ClCompile>
     <ClCompile Include="D3D11PFX_Effect.cpp">
       <Filter>Engine\D3D11\PFX\Effects</Filter>

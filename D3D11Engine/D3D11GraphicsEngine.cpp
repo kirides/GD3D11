@@ -1,7 +1,6 @@
 ﻿#include "D3D11GraphicsEngine.h"
 
 #include "AlignedAllocator.h"
-#include "AntTweakBarShim.h"
 #include "D3D11Effect.h"
 #include "D3D11GShader.h"
 #include "D3D11HDShader.h"
@@ -775,7 +774,6 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
         }
 
         // Need to init AntTweakBar now that we have a working swapchain
-        XLE( Engine::AntTweakBar->Init() );
         Engine::ImGuiHandle->Init( GetActiveWindow(), GetDevice(), GetContext() );
     } else {
         LogInfo() << "Resizing swapchain  (Format: DXGI_FORMAT_B8G8R8A8_UNORM)";
@@ -898,7 +896,6 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
     SetDebugName( WorldShadowmap1->GetShaderResView().Get(), "WorldShadowmap1->ShaderResView" );
     SetDebugName( WorldShadowmap1->GetDepthStencilView().Get(), "WorldShadowmap1->DepthStencilView" );
     
-    Engine::AntTweakBar->OnResize( Resolution );
     Engine::ImGuiHandle->OnResize( Resolution );
 
     return XR_SUCCESS;
@@ -1248,7 +1245,6 @@ XRESULT D3D11GraphicsEngine::Present() {
 
     SetDefaultStates();
     UpdateRenderStates();
-    Engine::AntTweakBar->Draw();
 
     SetDefaultStates();
     UpdateRenderStates();

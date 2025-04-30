@@ -1,6 +1,5 @@
 #include "D3D11GraphicsEngineBase.h"
 
-#include "AntTweakBarShim.h"
 #include "D3D11LineRenderer.h"
 #include "D3D11PipelineStates.h"
 #include "D3D11PointLight.h"
@@ -97,9 +96,6 @@ XRESULT D3D11GraphicsEngineBase::Present() {
 
     // Draw debug-lines
     LineRenderer->Flush();
-
-    // Draw ant tweak bar
-    Engine::AntTweakBar->Draw();
 
     bool vsync = Engine::GAPI->GetRendererState().RendererSettings.EnableVSync;
     if ( dxgi_1_5 ) {

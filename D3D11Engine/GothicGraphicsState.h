@@ -652,8 +652,6 @@ struct GothicRendererSettings {
         EnableCustomFontRendering = true;
 
         ForceFOV = false;
-        AntTweakBarGlobalFontSize = 2;
-        AntTweakBarGlobalScale = 1;
         WindowMode = 0; //Borderless fullscreen as default
         StretchWindow = true; //Borderless fullscreen as default
         SmoothShadowCameraUpdate = true;
@@ -809,8 +807,6 @@ struct GothicRendererSettings {
     bool AnimateStaticVobs;
     bool RunInSpacerNet;
 	bool BinkVideoRunning;
-    int AntTweakBarGlobalFontSize;
-    int AntTweakBarGlobalScale;
 };
 
 struct GothicRendererTiming {

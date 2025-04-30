@@ -5,7 +5,6 @@
 #include "Logger.h"
 #include "Detours/detours.h"
 #include "DbgHelp.h"
-#include "AntTweakBarShim.h"
 #include "HookedFunctions.h"
 #include <signal.h>
 #include "VersionCheck.h"

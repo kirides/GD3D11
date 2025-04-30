@@ -1515,8 +1515,6 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="AlignedAllocator.h" />
-    <ClInclude Include="AntTweakBar.h" />
-    <ClInclude Include="AntTweakBarShim.h" />
     <ClInclude Include="BasePipelineStates.h" />
     <ClInclude Include="BaseLineRenderer.h" />
     <ClInclude Include="BasicTimer.h" />
@@ -1738,7 +1736,6 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="zViewTypes.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="AntTweakBarShim.cpp" />
     <ClCompile Include="BaseLineRenderer.cpp" />
     <ClCompile Include="CSFFT\fft_512x512_c2c.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">NotUsing</PrecompiledHeader>
