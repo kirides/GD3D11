@@ -645,7 +645,7 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
         ImGui::DragFloat( "FOVVert", &settings.FOVVert, 0.01f );
         ImGui::Checkbox( "ForceFOV", &settings.ForceFOV );
 #ifdef BUILD_GOTHIC_1_08k
-        ImGui::Checkbox( "DrawForestPortals", &settings.DrawG1ForestPortals, nullptr );
+        ImGui::Checkbox( "DrawForestPortals", &settings.DrawG1ForestPortals );
 #endif
 
     }
