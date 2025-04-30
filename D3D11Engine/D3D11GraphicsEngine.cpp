@@ -773,7 +773,7 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
             }
         }
 
-        // Need to init AntTweakBar now that we have a working swapchain
+        // Need to init ImGui now that we have a working swapchain
         Engine::ImGuiHandle->Init( GetActiveWindow(), GetDevice(), GetContext() );
     } else {
         LogInfo() << "Resizing swapchain  (Format: DXGI_FORMAT_B8G8R8A8_UNORM)";
