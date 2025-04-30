@@ -1,7 +1,45 @@
 #include "ImGuiShim.h"
 #include "GSky.h"
+#include <VersionHelpers.h>
+#include <ShellScalingAPI.h>
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam );
+
+int GetDpi( HWND hWnd )
+{
+    bool v81 = IsWindows8Point1OrGreater();
+    bool v10 = IsWindows10OrGreater();
+
+    if ( v81 || v10 ) {
+
+        typedef HRESULT( WINAPI* GetDpiForMonitor_t )(
+        HMONITOR, MONITOR_DPI_TYPE, UINT*, UINT*);
+
+        HMODULE hShcore = LoadLibraryW( L"Shcore.dll" );
+        if ( !hShcore ) {
+            return 96;
+        }
+        GetDpiForMonitor_t pGetDpiForMonitor = reinterpret_cast<GetDpiForMonitor_t>(GetProcAddress( hShcore, "GetDpiForMonitor" ));
+        if ( !pGetDpiForMonitor ) {
+            FreeLibrary( hShcore );
+            return 96;
+        }
+        HMONITOR hMonitor = ::MonitorFromWindow( hWnd, MONITOR_DEFAULTTONEAREST );
+        UINT xdpi, ydpi;
+        LRESULT success = pGetDpiForMonitor( hMonitor, MDT_EFFECTIVE_DPI, &xdpi, &ydpi );
+        FreeLibrary( hShcore );
+        if ( success == S_OK ) {
+            return static_cast<int>(ydpi);
+        }
+        return 96;
+    } else {
+        HDC hDC = ::GetDC( hWnd );
+        INT ydpi = ::GetDeviceCaps( hDC, LOGPIXELSY );
+        ::ReleaseDC( NULL, hDC );
+
+        return ydpi;
+    }
+}
 
 void ImGuiShim::Init(
     HWND Window,
@@ -17,9 +55,11 @@ void ImGuiShim::Init(
     io.LogFilename = NULL;
     //io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard; //Not needed and it's annoying.
     OutputWindow = Window;
+    ImGui_ImplWin32_EnableDpiAwareness();
     ImGui_ImplWin32_Init( OutputWindow );
     ImGui_ImplDX11_Init( device.Get(), context.Get() );
 
+    const auto actualDPI = GetDpi( Window );
     Initiated = true;
 
     auto& Displaylist = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetDisplayModeList();
@@ -39,12 +79,14 @@ void ImGuiShim::Init(
     //    0x201C, 0x201D, // high-9 quotation marks
     //    0,              // End of ranges
     //};
-    ImFontConfig config;
+    ImFontConfig config = { };
     config.MergeMode = false;
     //config.GlyphRanges = euroGlyphRanges;
     const auto path = std::filesystem::current_path();
     const auto fontpath = path / "system" / "GD3D11" / "Fonts" / "Lato-Semibold.ttf";
-    io.Fonts->AddFontFromFileTTF( fontpath.string().c_str(), 22.0f, &config );
+
+    auto dpiScale = actualDPI / 96.0f;
+    io.Fonts->AddFontFromFileTTF( fontpath.string().c_str(), 16.0f * dpiScale, &config );
 }
 
 
@@ -713,4 +755,3 @@ void ImGuiShim::RenderAdvancedSettingsWindow()
     RenderAdvancedColumn4( settings, Engine::GAPI );
 
 }
-
