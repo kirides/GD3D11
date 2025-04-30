@@ -86,7 +86,7 @@ void ImGuiShim::Init(
     const auto fontpath = path / "system" / "GD3D11" / "Fonts" / "Lato-Semibold.ttf";
 
     auto dpiScale = actualDPI / 96.0f;
-    io.Fonts->AddFontFromFileTTF( fontpath.string().c_str(), 16.0f * dpiScale, &config );
+    io.Fonts->AddFontFromFileTTF( fontpath.string().c_str(), 20.0f * dpiScale, &config );
 }
 
 
@@ -101,6 +101,13 @@ ImGuiShim::~ImGuiShim()
 
 void ImGuiShim::RenderLoop()
 {
+    if ( NewResolution.x != CurrentResolution.x
+        || NewResolution.y != CurrentResolution.y ) {
+        Engine::GraphicsEngine->OnResize( NewResolution );
+        Engine::GraphicsEngine->ReloadShaders();
+        CurrentResolution = NewResolution;
+    }
+
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
@@ -127,13 +134,7 @@ void ImGuiShim::OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
 void ImGuiShim::OnResize( INT2 newSize )
 {
     CurrentResolution = newSize;
-    if ( CurrentResolution.x >= 2160 ) {
-        ImGui::GetIO().FontGlobalScale = 1.30f;
-    } else if ( CurrentResolution.x < 1024 && CurrentResolution.y < 768 ) {
-        ImGui::GetIO().FontGlobalScale = 0.80f;  // Scale down for smaller resolutions
-    } else {
-        ImGui::GetIO().FontGlobalScale = 1.0f;
-    }
+    NewResolution = newSize;
 }
 
 template <typename T>
@@ -260,8 +261,7 @@ void ImGuiShim::RenderSettingsWindow()
 
                     if ( ImGui::Selectable( Resolutions[i].c_str(), isSelected ) ) {
                         ResolutionState = i;
-                        Engine::GraphicsEngine->OnResize( INT2( Resolutions[i] ) );
-                        Engine::GraphicsEngine->ReloadShaders();
+                        NewResolution = INT2( Resolutions[i] );
                     }
 
                     if ( isSelected ) {
@@ -314,13 +314,39 @@ void ImGuiShim::RenderSettingsWindow()
             ImGui::PushStyleVar( ImGuiStyleVar_ButtonTextAlign, ImVec2( 0.f, 0.5f ) );
             ImGui::Button( "Display Mode [*]", buttonWidth ); ImGui::SameLine();
             ImGui::PopStyleVar();
-            DisplayModeState = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine)->GetWindowMode();
-            if ( ImGui::BeginCombo( "##DisplayMode", DisplayEnums[DisplayModeState].c_str() ) ) {
+            auto displayModeState = settings.WindowMode;
+            if ( ImGui::BeginCombo( "##DisplayMode", DisplayEnums[displayModeState].c_str() ) ) {
                 for ( size_t i = 0; i < DisplayEnums.size(); i++ ) {
-                    bool isSelected = (DisplayModeState == i);
+                    bool isSelected = (displayModeState == i);
                     if ( ImGui::Selectable( DisplayEnums[i].c_str(), isSelected ) ) {
-                        DisplayModeState = i;
                         settings.WindowMode = i;
+                        switch ( settings.WindowMode ) {
+                            case WINDOW_MODE_FULLSCREEN_EXCLUSIVE: {
+                                settings.DisplayFlip = false;
+                                settings.LowLatency = false;
+                                settings.StretchWindow = true;
+                                break;
+                            }
+                            case WINDOW_MODE_FULLSCREEN_BORDERLESS: {
+                                settings.DisplayFlip = true;
+                                settings.LowLatency = false;
+                                settings.StretchWindow = true;
+                                break;
+                            }
+                            case WINDOW_MODE_FULLSCREEN_LOWLATENCY: {
+                                settings.DisplayFlip = true;
+                                settings.LowLatency = true;
+                                settings.StretchWindow = true;
+                                break;
+                            }
+                            case WINDOW_MODE_WINDOWED: {
+                                settings.DisplayFlip = false;
+                                settings.StretchWindow = false;
+                                settings.LowLatency = false;
+                                break;
+                            }
+                        }
+
                     }
                     if ( ImGui::IsItemHovered() ) {
                         ImGui::SetTooltip( "[*] You need to restart for this to take effect." );
