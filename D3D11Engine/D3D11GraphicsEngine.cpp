@@ -44,6 +44,7 @@
 #include "SteamOverlay.h"
 #include <d3dcompiler.h>
 #include <dxgi1_6.h>
+#include <VersionHelpers.h>
 
 namespace wrl = Microsoft::WRL;
 
@@ -133,7 +134,13 @@ XRESULT D3D11GraphicsEngine::Init() {
     LogInfo() << "Initializing Device...";
 
     // Create DXGI factory
-    hr = CreateDXGIFactory1( __uuidof(IDXGIFactory2), &DXGIFactory2 );
+    UINT factoryFlags = 0;
+#ifdef DEBUG_D3D11
+    factoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
+#endif
+    hr = IsWindows8Point1OrGreater() 
+        ? CreateDXGIFactory2( factoryFlags, __uuidof(IDXGIFactory2), &DXGIFactory2 )
+        : CreateDXGIFactory1(__uuidof(IDXGIFactory2), &DXGIFactory2 );
     if ( FAILED( hr ) ) {
         LogErrorBox() << "CreateDXGIFactory1 failed with code: " << hr << "!\n"
             "Minimum supported Operating System by GD3D11 is Windows 7 SP1 with Platform Update.";
@@ -195,10 +202,9 @@ XRESULT D3D11GraphicsEngine::Init() {
         exit( 2 );
     }
 
-    DXGIAdapter1.As( &DXGIAdapter2 );
     // Find out what we are rendering on to write it into the logfile
-    DXGI_ADAPTER_DESC2 adpDesc;
-    DXGIAdapter2->GetDesc2( &adpDesc );
+    DXGI_ADAPTER_DESC adpDesc;
+    DXGIAdapter1->GetDesc( &adpDesc );
     std::wstring wDeviceDescription( adpDesc.Description );
     std::string deviceDescription( wDeviceDescription.begin(), wDeviceDescription.end() );
     DeviceDescription = deviceDescription;
@@ -208,7 +214,7 @@ XRESULT D3D11GraphicsEngine::Init() {
         static const GUID IID_IDXGIVkInteropAdapter = { 0x3A6D8F2C, 0xB0E8, 0x4AB4, { 0xB4, 0xDC, 0x4F, 0xD2, 0x48, 0x91, 0xBF, 0xA5 } };
 
         IUnknown* dxgiVKInterop = nullptr;
-        HRESULT result = DXGIAdapter2->QueryInterface( IID_IDXGIVkInteropAdapter, reinterpret_cast<void**>(&dxgiVKInterop) );
+        HRESULT result = DXGIAdapter1->QueryInterface( IID_IDXGIVkInteropAdapter, reinterpret_cast<void**>(&dxgiVKInterop) );
         if ( SUCCEEDED( result ) ) {
             dxgiVKInterop->Release();
         } else {
@@ -235,12 +241,12 @@ XRESULT D3D11GraphicsEngine::Init() {
     flags |= D3D11_CREATE_DEVICE_DEBUG;
 #endif
 
-    hr = D3D11CreateDevice( DXGIAdapter2.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, flags, featureLevels, ARRAYSIZE( featureLevels ),
+    hr = D3D11CreateDevice( DXGIAdapter1.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, flags, featureLevels, ARRAYSIZE( featureLevels ),
         D3D11_SDK_VERSION, Device11.GetAddressOf(), &maxFeatureLevel, Context11.GetAddressOf() );
     // Assume E_INVALIDARG occurs because D3D_FEATURE_LEVEL_11_1 is not supported on current platform
     // retry with just 9.1-11.0
     if ( hr == E_INVALIDARG ) {
-        hr = D3D11CreateDevice( DXGIAdapter2.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, flags, &featureLevels[1], ARRAYSIZE( featureLevels ) - 1,
+        hr = D3D11CreateDevice( DXGIAdapter1.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, flags, &featureLevels[1], ARRAYSIZE( featureLevels ) - 1,
             D3D11_SDK_VERSION, Device11.GetAddressOf(), &maxFeatureLevel, Context11.GetAddressOf() );
     }
     if ( FAILED( hr ) ) {
@@ -329,7 +335,7 @@ XRESULT D3D11GraphicsEngine::Init() {
     SetDebugName( DynamicInstancingBuffer->GetShaderResourceView().Get(), "DynamicInstancingBuffer->ShaderResourceView" );
     SetDebugName( DynamicInstancingBuffer->GetVertexBuffer().Get(), "DynamicInstancingBuffer->VertexBuffer" );
 
-    D3D11_SAMPLER_DESC samplerDesc;
+    D3D11_SAMPLER_DESC samplerDesc = {};
     samplerDesc.Filter = D3D11_FILTER_ANISOTROPIC;
     samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
     samplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_WRAP;
@@ -536,15 +542,7 @@ DXGI_FORMAT D3D11GraphicsEngine::GetBackBufferFormat() {
 int D3D11GraphicsEngine::GetWindowMode() {
     if ( SwapChain.Get() ) {
         BOOL isFullscreen = 0;
-        if ( dxgi_1_5 ) {
-            if ( SwapChain4.Get() ) SwapChain4->GetFullscreenState( &isFullscreen, nullptr );
-        } else if ( dxgi_1_4 ) {
-            if ( SwapChain3.Get() ) SwapChain3->GetFullscreenState( &isFullscreen, nullptr );
-        } else if ( dxgi_1_3 ) {
-            if ( SwapChain2.Get() ) SwapChain2->GetFullscreenState( &isFullscreen, nullptr );
-        } else {
-            if ( SwapChain.Get() ) SwapChain->GetFullscreenState( &isFullscreen, nullptr );
-        }
+        if ( SwapChain.Get() ) SwapChain->GetFullscreenState( &isFullscreen, nullptr );
         if ( isFullscreen ) {
             return WINDOW_MODE_FULLSCREEN_EXCLUSIVE;
         }
@@ -564,19 +562,8 @@ int D3D11GraphicsEngine::GetWindowMode() {
 XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
     HRESULT hr;
 
-    if ( dxgi_1_5 ) {
-        if ( memcmp( &Resolution, &newSize, sizeof( newSize ) ) == 0 && SwapChain4.Get() )
-            return XR_SUCCESS;  // Don't resize if we don't have to
-    } else if ( dxgi_1_4 ) {
-        if ( memcmp( &Resolution, &newSize, sizeof( newSize ) ) == 0 && SwapChain3.Get() )
-            return XR_SUCCESS;  // Don't resize if we don't have to
-    } else if ( dxgi_1_3 ) {
-        if ( memcmp( &Resolution, &newSize, sizeof( newSize ) ) == 0 && SwapChain2.Get() )
-            return XR_SUCCESS;  // Don't resize if we don't have to
-    } else {
-        if ( memcmp( &Resolution, &newSize, sizeof( newSize ) ) == 0 && SwapChain.Get() )
-            return XR_SUCCESS;  // Don't resize if we don't have to
-    }
+    if ( memcmp( &Resolution, &newSize, sizeof( newSize ) ) == 0 && SwapChain.Get() )
+        return XR_SUCCESS;  // Don't resize if we don't have to
 
     Resolution = newSize;
     INT2 bbres = GetBackbufferResolution();
@@ -593,15 +580,8 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
 
 #ifndef BUILD_SPACER
     BOOL isFullscreen = 0;
-    if ( dxgi_1_5 ) {
-        if ( SwapChain4.Get() ) LE( SwapChain4->GetFullscreenState( &isFullscreen, nullptr ) );
-    } else if ( dxgi_1_4 ) {
-        if ( SwapChain3.Get() ) LE( SwapChain3->GetFullscreenState( &isFullscreen, nullptr ) );
-    } else if ( dxgi_1_3 ) {
-        if ( SwapChain2.Get() ) LE( SwapChain2->GetFullscreenState( &isFullscreen, nullptr ) );
-    } else {
-        if ( SwapChain.Get() ) LE( SwapChain->GetFullscreenState( &isFullscreen, nullptr ) );
-    }
+    if ( SwapChain.Get() ) LE( SwapChain->GetFullscreenState( &isFullscreen, nullptr ) );
+
     if ( isFullscreen ) {
         DXGI_MODE_DESC newMode = {};
         newMode.Width = newSize.x;
@@ -609,15 +589,7 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
         newMode.RefreshRate.Numerator = CachedRefreshRate.Numerator;
         newMode.RefreshRate.Denominator = CachedRefreshRate.Denominator;
         newMode.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-        if ( dxgi_1_5 ) {
-            SwapChain4->ResizeTarget( &newMode );
-        } else if ( dxgi_1_4 ) {
-            SwapChain3->ResizeTarget( &newMode );
-        } else if ( dxgi_1_3 ) {
-            SwapChain2->ResizeTarget( &newMode );
-        } else {
-            SwapChain->ResizeTarget( &newMode );
-        }
+        SwapChain->ResizeTarget( &newMode );
 
         RECT desktopRect;
         GetClientRect( GetDesktopWindow(), &desktopRect );
@@ -663,52 +635,37 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
             SetWindowLongA( OutputWindow, GWL_EXSTYLE, lExStyle );
         }
 
-        Microsoft::WRL::ComPtr<IDXGIDevice2> pDXGIDevice;
-        Microsoft::WRL::ComPtr<IDXGIDevice3> pDXGIDevice3;
-        Microsoft::WRL::ComPtr<IDXGIDevice4> pDXGIDevice4;
-        Microsoft::WRL::ComPtr<IDXGIAdapter> adapter11;
-        Microsoft::WRL::ComPtr<IDXGIAdapter2> adapter;
-        Microsoft::WRL::ComPtr<IDXGIAdapter3> adapter3;
+        Microsoft::WRL::ComPtr<IDXGIDevice> pDXGIDevice;
+        Microsoft::WRL::ComPtr<IDXGIFactory> factory;
         Microsoft::WRL::ComPtr<IDXGIFactory2> factory2;
-        Microsoft::WRL::ComPtr<IDXGIFactory4> factory4;
 
-        if ( SUCCEEDED( Device.As( &pDXGIDevice4 ) ) ) dxgi_1_5 = true;
-        else if ( SUCCEEDED( Device.As( &pDXGIDevice3 ) ) ) dxgi_1_3 = true;
-        else LE( Device.As( &pDXGIDevice ) );
+        LE( Device.As( &pDXGIDevice ) );
 
-        if ( dxgi_1_5 ) {
-            LE( pDXGIDevice4->GetAdapter( &adapter11 ) );
-            LogInfo() << "Device: DXGI 1.5";
-        } else if ( dxgi_1_3 ) {
-            LE( pDXGIDevice3->GetAdapter( &adapter11 ) );
-            LogInfo() << "Device: DXGI 1.3";
-        } else {
-            LE( pDXGIDevice->GetAdapter( &adapter11 ) );
-            LogInfo() << "Device: DXGI 1.2";
-        }
-
-        LE( adapter11.As( &adapter ) );
-        LE( adapter->GetParent( IID_PPV_ARGS( &factory2 ) ) );
-
-        if ( SUCCEEDED( factory2.As( &factory4 ) ) ) {
-            LE( adapter11.As( &adapter3 ) );
-            LE( adapter3->GetParent( IID_PPV_ARGS( &factory4 ) ) );
-            dxgi_1_4 = true;
+        if ( pDXGIDevice.Get() ) {
+            Microsoft::WRL::ComPtr<IDXGIAdapter> adapter;
+            if ( SUCCEEDED( pDXGIDevice->GetAdapter( &adapter ) ) ) {
+                LE( adapter->GetParent( IID_PPV_ARGS( &factory ) ) );
+                if ( !SUCCEEDED( adapter->GetParent( IID_PPV_ARGS( &factory2 ) ) ) ) {
+                    LogInfo() << "Could not retrieve IDXGIFactory2, fallback to IDXGIFactory";
+                }
+            }
         }
 
         DXGI_SWAP_EFFECT swapEffect = DXGI_SWAP_EFFECT::DXGI_SWAP_EFFECT_DISCARD;
 
-        DXGI_SWAP_CHAIN_DESC1 scd = {};
+        m_flipWithTearing = false;
         if ( m_swapchainflip ) {
             Microsoft::WRL::ComPtr<IDXGIFactory5> factory5;
 
-            if ( SUCCEEDED( factory2.As( &factory5 ) ) ) {
+            if ( SUCCEEDED( factory.As( &factory5 ) ) ) {
                 BOOL allowTearing = FALSE;
                 if ( factory5.Get() && SUCCEEDED( factory5->CheckFeatureSupport( DXGI_FEATURE_PRESENT_ALLOW_TEARING, &allowTearing, sizeof( allowTearing ) ) ) ) {
                     m_flipWithTearing = allowTearing != 0;
                 }
             }
-            if ( dxgi_1_4 ) {
+            Microsoft::WRL::ComPtr<IDXGIFactory4> factory4;
+
+            if ( SUCCEEDED( factory.As( &factory4 ) ) ) {
                 swapEffect = DXGI_SWAP_EFFECT::DXGI_SWAP_EFFECT_FLIP_DISCARD;
             } else {
                 swapEffect = DXGI_SWAP_EFFECT::DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
@@ -723,37 +680,72 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
 
         LogInfo() << "Creating new swapchain! (Format: DXGI_FORMAT_B8G8R8A8_UNORM)";
 
-        if ( m_swapchainflip ) {
-            scd.BufferCount = 2;
-            if ( m_flipWithTearing ) scflags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
-        } else {
-            scd.BufferCount = 1;
-        }
-
         m_lowlatency = Engine::GAPI->GetRendererState().RendererSettings.LowLatency;
-        if ( m_lowlatency && (dxgi_1_3 || dxgi_1_5) && (swapEffect > 1) ) {
+        if ( m_lowlatency 
+            && factory2.Get() /*IDXGIFactory2 means dxgi 1.3+ support */ 
+            && (swapEffect > 1) ) {
             scflags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
         } else {
             m_lowlatency = false;
         }
 
-        scd.SwapEffect = swapEffect;
-        scd.Flags = scflags;
-        scd.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-        scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT | DXGI_USAGE_SHADER_INPUT;
-        scd.SampleDesc.Count = 1;
-        scd.SampleDesc.Quality = 0;
-        scd.Height = bbres.y;
-        scd.Width = bbres.x;
+        int bufferCount = 1;
+        if ( m_swapchainflip ) {
+            bufferCount  = 2;
+            if ( m_flipWithTearing ) scflags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+        }
 
-        LE( factory2->CreateSwapChainForHwnd( GetDevice().Get(), OutputWindow, &scd, nullptr, nullptr, SwapChain.GetAddressOf() ) );
-        if ( !SwapChain.Get() ) {
-            LogError() << "Failed to create Swapchain! Program will now exit!";
-            exit( 0 );
+        SwapChain.Reset();
+        if ( factory2.Get() ) {
+            DXGI_SWAP_CHAIN_DESC1 scd = {};
+            scd.BufferCount = bufferCount;
+            scd.SwapEffect = swapEffect;
+            scd.Flags = scflags;
+            scd.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+            scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT | DXGI_USAGE_SHADER_INPUT;
+            scd.SampleDesc.Count = 1;
+            scd.SampleDesc.Quality = 0;
+            scd.Height = bbres.y;
+            scd.Width = bbres.x;
+
+            Microsoft::WRL::ComPtr<IDXGISwapChain1> swapChain1; // we don't need the "newer" swapchain, as Present() will be sufficient
+
+            LE( factory2->CreateSwapChainForHwnd( GetDevice().Get(), OutputWindow, &scd, nullptr, nullptr, swapChain1.GetAddressOf() ) );
+            if ( !swapChain1.Get() ) {
+                LogError() << "Failed to create Swapchain! Program will now exit!";
+                exit( 0 );
+            }
+
+            swapChain1.As( &SwapChain );
+        } else {
+            LogInfo() << "fallback to IDXGIFactory::CreateSwapChain";
+
+            DXGI_MODE_DESC modeDesc = {};
+            modeDesc.Height = bbres.y;
+            modeDesc.Width = bbres.x;
+            modeDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+            modeDesc.RefreshRate = CachedRefreshRate;
+
+            DXGI_SWAP_CHAIN_DESC scd = {};
+            scd.BufferCount = bufferCount;
+            scd.SwapEffect = swapEffect;
+            scd.Flags = scflags;
+            scd.BufferDesc = modeDesc;
+            scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT | DXGI_USAGE_SHADER_INPUT;
+            scd.SampleDesc.Count = 1;
+            scd.SampleDesc.Quality = 0;
+            scd.OutputWindow = OutputWindow;
+            scd.Windowed = true; // as per microsoft recommendation https://learn.microsoft.com/en-us/windows/win32/api/dxgi/ns-dxgi-dxgi_swap_chain_desc
+
+            LE( factory->CreateSwapChain( GetDevice().Get(), &scd, SwapChain.ReleaseAndGetAddressOf() ) );
+            if ( !SwapChain.Get() ) {
+                LogError() << "Failed to create Swapchain! Program will now exit!";
+                exit( 0 );
+            }
         }
 
         if ( m_swapchainflip ) {
-            LE( factory2->MakeWindowAssociation( OutputWindow, DXGI_MWA_NO_WINDOW_CHANGES ) );
+            LE( factory->MakeWindowAssociation( OutputWindow, DXGI_MWA_NO_WINDOW_CHANGES ) );
         } else {
             // Perform fullscreen transition
             // According to microsoft guide it is the best practice
@@ -761,6 +753,7 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
             // and we can have different resolution in fullscreen exclusive
             bool windowed = Engine::GAPI->HasCommandlineParameter( "ZWINDOW" ) ||
                 Engine::GAPI->GetIntParamFromConfig( "zStartupWindowed" );
+            windowed = true;
             if ( !windowed ) {
                 DXGI_MODE_DESC newMode = {};
                 newMode.Width = newSize.x;
@@ -777,71 +770,35 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
         Engine::ImGuiHandle->Init( GetActiveWindow(), GetDevice(), GetContext() );
     } else {
         LogInfo() << "Resizing swapchain  (Format: DXGI_FORMAT_B8G8R8A8_UNORM)";
-        if ( dxgi_1_5 ) {
-            //if (FAILED(SwapChain4->SetSourceSize(bbres.x, bbres.y))) { //crashes when scd.Scaling = DXGI_SCALING_STRETCH is not set;
-            if ( FAILED( SwapChain4->ResizeBuffers( 0, bbres.x, bbres.y, DXGI_FORMAT_B8G8R8A8_UNORM, scflags ) ) ) {
-                LogError() << "Failed to resize swapchain!";
-                return XR_FAILED;
-            }
-        } else if ( dxgi_1_4 ) {
-            //if (FAILED(SwapChain3->SetSourceSize(bbres.x, bbres.y))) { //crashes when scd.Scaling = DXGI_SCALING_STRETCH is not set;
-            if ( FAILED( SwapChain3->ResizeBuffers( 0, bbres.x, bbres.y, DXGI_FORMAT_B8G8R8A8_UNORM, scflags ) ) ) {
-                LogError() << "Failed to resize swapchain!";
-                return XR_FAILED;
-            }
-        } else if ( dxgi_1_3 ) {
-            //if (FAILED(SwapChain2->SetSourceSize(bbres.x, bbres.y))) { //crashes when scd.Scaling = DXGI_SCALING_STRETCH is not set;
-            if ( FAILED( SwapChain2->ResizeBuffers( 0, bbres.x, bbres.y, DXGI_FORMAT_B8G8R8A8_UNORM, scflags ) ) ) {
-                LogError() << "Failed to resize swapchain!";
-                return XR_FAILED;
-            }
-        } else if ( FAILED( SwapChain->ResizeBuffers( 0, bbres.x, bbres.y, DXGI_FORMAT_B8G8R8A8_UNORM, scflags ) ) ) {
+        if ( FAILED( SwapChain->ResizeBuffers( 0, bbres.x, bbres.y, DXGI_FORMAT_B8G8R8A8_UNORM, scflags ) ) ) {
             LogError() << "Failed to resize swapchain!";
             return XR_FAILED;
         }
     }
 
+    if ( frameLatencyWaitableObject ) {
+        CloseHandle( frameLatencyWaitableObject );
+        frameLatencyWaitableObject = nullptr;
+    }
+
+    wrl::ComPtr<IDXGISwapChain2> swapChain2;
+    if ( m_lowlatency && SUCCEEDED( SwapChain.As( &swapChain2 ) ) && swapChain2.Get() ) {
+        frameLatencyWaitableObject = swapChain2->GetFrameLatencyWaitableObject();
+        LogInfo() << "SwapChain Mode: DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT";
+    }
+
     // Successfully resized swapchain, re-get buffers
     wrl::ComPtr<ID3D11Texture2D> backbuffer;
-    if ( dxgi_1_5 ) {
-        LE( SwapChain.As( &SwapChain4 ) );
-        LogInfo() << "SwapChain: DXGI 1.5";
-        if ( m_lowlatency && !frameLatencyWaitableObject ) {
-            frameLatencyWaitableObject = SwapChain4->GetFrameLatencyWaitableObject();
-            WaitForSingleObjectEx( frameLatencyWaitableObject, INFINITE, true );
-            LogInfo() << "SwapChain Mode: DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT";
-        }
+
+    wrl::ComPtr<IDXGISwapChain3> swapChain3;
+    if ( SUCCEEDED( SwapChain.As( &swapChain3 ) ) ) {
+        LogInfo() << "SwapChain: IDXGISwapChain3";
         m_HDR = Engine::GAPI->GetRendererState().RendererSettings.HDR_Monitor;
         if ( m_HDR && m_swapchainflip ) {
-            UpdateColorSpace_SwapChain4();
+            UpdateColorSpace_SwapChain3( swapChain3.Get() );
         }
-        SwapChain4->GetBuffer( 0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(backbuffer.GetAddressOf()) );
-    } else if ( dxgi_1_4 ) {
-        LE( SwapChain.As( &SwapChain3 ) );
-        LogInfo() << "SwapChain: DXGI 1.4";
-        if ( m_lowlatency && !frameLatencyWaitableObject ) {
-            frameLatencyWaitableObject = SwapChain3->GetFrameLatencyWaitableObject();
-            WaitForSingleObjectEx( frameLatencyWaitableObject, INFINITE, true );
-            LogInfo() << "SwapChain Mode: DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT";
-        }
-        m_HDR = Engine::GAPI->GetRendererState().RendererSettings.HDR_Monitor;
-        if ( m_HDR && m_swapchainflip ) {
-            UpdateColorSpace_SwapChain3();
-        }
-        SwapChain3->GetBuffer( 0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(backbuffer.GetAddressOf()) );
-    } else if ( dxgi_1_3 ) {
-        LE( SwapChain.As( &SwapChain2 ) );
-        LogInfo() << "SwapChain: DXGI 1.3";
-        if ( m_lowlatency && !frameLatencyWaitableObject ) {
-            frameLatencyWaitableObject = SwapChain2->GetFrameLatencyWaitableObject();
-            WaitForSingleObjectEx( frameLatencyWaitableObject, INFINITE, true );
-            LogInfo() << "SwapChain Mode: DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT";
-        }
-        SwapChain2->GetBuffer( 0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(backbuffer.GetAddressOf()) );
-    } else {
-        SwapChain->GetBuffer( 0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(backbuffer.GetAddressOf()) );
-        LogInfo() << "SwapChain: DXGI 1.2";
     }
+    SwapChain->GetBuffer( 0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(backbuffer.GetAddressOf()) );
 
     // Recreate RenderTargetView
     LE( GetDevice()->CreateRenderTargetView( backbuffer.Get(), nullptr, BackbufferRTV.GetAddressOf() ) );
@@ -921,6 +878,16 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
             m_FrameLimiter->Reset();
         }
     }
+
+    if ( frameLatencyWaitableObject ) {
+        // best effor waiting.
+        WaitForSingleObjectEx(
+            frameLatencyWaitableObject,
+            1000, // 1 second timeout (shouldn't ever occur)
+            true
+        );
+    }
+
     static int oldToneMap = -1;
     if ( Engine::GAPI->GetRendererState().RendererSettings.HDRToneMap != oldToneMap ) {
         oldToneMap = Engine::GAPI->GetRendererState().RendererSettings.HDRToneMap;
@@ -1121,30 +1088,28 @@ XRESULT D3D11GraphicsEngine::FetchDisplayModeList() {
 }
 
 XRESULT D3D11GraphicsEngine::FetchDisplayModeListDXGI() {
-    if ( !DXGIAdapter2 ) {
+    if ( !DXGIAdapter1 ) {
         Resolutions.emplace_back( Resolution.x, Resolution.y );
         return XR_FAILED;
     }
 
-    Microsoft::WRL::ComPtr<IDXGIOutput> output11;
-    Microsoft::WRL::ComPtr<IDXGIOutput1> output;
+    Microsoft::WRL::ComPtr<IDXGIOutput> output;
 
-    DXGIAdapter2->EnumOutputs( 0, output11.GetAddressOf() );
-    HRESULT hr = output11.As( &output );
+    HRESULT hr = DXGIAdapter1->EnumOutputs( 0, output.GetAddressOf() );
     if ( !output.Get() || FAILED( hr ) ) {
         Resolutions.emplace_back( Resolution.x, Resolution.y );
         return XR_FAILED;
     }
 
     UINT numModes = 0;
-    hr = output->GetDisplayModeList1( DXGI_FORMAT_B8G8R8A8_UNORM, 0, &numModes, nullptr );
+    hr = output->GetDisplayModeList( DXGI_FORMAT_B8G8R8A8_UNORM, 0, &numModes, nullptr );
     if ( FAILED( hr ) || numModes == 0 ) {
         Resolutions.emplace_back( Resolution.x, Resolution.y );
         return XR_FAILED;
     }
 
-    std::unique_ptr<DXGI_MODE_DESC1[]> displayModes = std::make_unique<DXGI_MODE_DESC1[]>( numModes );
-    hr = output->GetDisplayModeList1( DXGI_FORMAT_B8G8R8A8_UNORM, 0, &numModes, displayModes.get() );
+    std::unique_ptr<DXGI_MODE_DESC[]> displayModes = std::make_unique<DXGI_MODE_DESC[]>( numModes );
+    hr = output->GetDisplayModeList( DXGI_FORMAT_B8G8R8A8_UNORM, 0, &numModes, displayModes.get() );
     if ( FAILED( hr ) ) {
         Resolutions.emplace_back( Resolution.x, Resolution.y );
         return XR_FAILED;
@@ -1158,7 +1123,7 @@ XRESULT D3D11GraphicsEngine::FetchDisplayModeListDXGI() {
     }
 
     for ( UINT i = 0; i < numModes; i++ ) 	{
-        DXGI_MODE_DESC1& displayMode = displayModes[i];
+        DXGI_MODE_DESC& displayMode = displayModes[i];
         if ( static_cast<UINT>(Resolution.x) == displayMode.Width && static_cast<UINT>(Resolution.y) == displayMode.Height ) {
             DWORD displayRefreshRate = static_cast<DWORD>(displayMode.RefreshRate.Numerator / displayMode.RefreshRate.Denominator);
             if ( currentRefreshRate >= (displayRefreshRate - 2) && currentRefreshRate <= (displayRefreshRate + 2) ) {
@@ -1264,30 +1229,10 @@ XRESULT D3D11GraphicsEngine::Present() {
     }
 
     HRESULT hr;
-    if ( dxgi_1_5 ) {
-        if ( m_flipWithTearing ) {
-            hr = SwapChain4->Present( vsync ? 1 : 0, vsync ? 0 : DXGI_PRESENT_ALLOW_TEARING );
-        } else {
-            hr = SwapChain4->Present( vsync ? 1 : 0, 0 );
-        }
-    } else if ( dxgi_1_4 ) {
-        if ( m_flipWithTearing ) {
-            hr = SwapChain3->Present( vsync ? 1 : 0, vsync ? 0 : DXGI_PRESENT_ALLOW_TEARING );
-        } else {
-            hr = SwapChain3->Present( vsync ? 1 : 0, 0 );
-        }
-    } else if ( dxgi_1_3 ) {
-        if ( m_flipWithTearing ) {
-            hr = SwapChain2->Present( vsync ? 1 : 0, vsync ? 0 : DXGI_PRESENT_ALLOW_TEARING );
-        } else {
-            hr = SwapChain2->Present( vsync ? 1 : 0, 0 );
-        }
+    if ( m_flipWithTearing ) {
+        hr = SwapChain->Present( vsync ? 1 : 0, vsync ? 0 : DXGI_PRESENT_ALLOW_TEARING );
     } else {
-        if ( m_flipWithTearing ) {
-            hr = SwapChain->Present( vsync ? 1 : 0, vsync ? 0 : DXGI_PRESENT_ALLOW_TEARING );
-        } else {
-            hr = SwapChain->Present( vsync ? 1 : 0, 0 );
-        }
+        hr = SwapChain->Present( vsync ? 1 : 0, 0 );
     }
     if ( hr == DXGI_ERROR_DEVICE_REMOVED ) {
         switch ( GetDevice()->GetDeviceRemovedReason() ) {
@@ -1323,8 +1268,6 @@ XRESULT D3D11GraphicsEngine::Present() {
         default:
             LogWarnBox() << "Device Removed! (Unknown reason)";
         }
-    } else if ( hr == S_OK && frameLatencyWaitableObject ) {
-        WaitForSingleObjectEx( frameLatencyWaitableObject, INFINITE, true );
     }
 
     PresentPending = false;
@@ -2485,14 +2428,14 @@ void D3D11GraphicsEngine::TestDrawWorldMesh() {
 }
 
 // Sets the color space for the swap chain in order to handle HDR output.
-void D3D11GraphicsEngine::UpdateColorSpace_SwapChain3()
+void D3D11GraphicsEngine::UpdateColorSpace_SwapChain3(IDXGISwapChain3* swapChain3)
 {
     DXGI_COLOR_SPACE_TYPE colorSpace = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
 
     bool isDisplayHDR10 = false;
 
     Microsoft::WRL::ComPtr<IDXGIOutput> output;
-    if ( SUCCEEDED( SwapChain3->GetContainingOutput( output.GetAddressOf() ) ) ) {
+    if ( SUCCEEDED( swapChain3->GetContainingOutput( output.GetAddressOf() ) ) ) {
         Microsoft::WRL::ComPtr<IDXGIOutput6> output6;
         if ( SUCCEEDED( output.As( &output6 ) ) ) {
             DXGI_OUTPUT_DESC1 desc;
@@ -2524,55 +2467,9 @@ void D3D11GraphicsEngine::UpdateColorSpace_SwapChain3()
     //m_colorSpace = colorSpace; //only used when access from other function required
 
     UINT colorSpaceSupport = 0;
-    if ( SUCCEEDED( SwapChain3->CheckColorSpaceSupport( colorSpace, &colorSpaceSupport ) )
+    if ( SUCCEEDED( swapChain3->CheckColorSpaceSupport( colorSpace, &colorSpaceSupport ) )
         && (colorSpaceSupport & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT) ) {
-        SwapChain3->SetColorSpace1( colorSpace );
-        LogInfo() << "Using HDR Monitor ColorSpace";
-    }
-}
-
-void D3D11GraphicsEngine::UpdateColorSpace_SwapChain4()
-{
-    DXGI_COLOR_SPACE_TYPE colorSpace = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
-
-    bool isDisplayHDR10 = false;
-
-    Microsoft::WRL::ComPtr<IDXGIOutput> output;
-    if ( SUCCEEDED( SwapChain4->GetContainingOutput( output.GetAddressOf() ) ) ) {
-        Microsoft::WRL::ComPtr<IDXGIOutput6> output6;
-        if ( SUCCEEDED( output.As( &output6 ) ) ) {
-            DXGI_OUTPUT_DESC1 desc;
-            output6->GetDesc1( &desc );
-            if ( desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 ) {
-                // Display output is HDR10.
-                isDisplayHDR10 = true;
-            }
-        }
-    }
-
-    if ( isDisplayHDR10 ) {
-        switch ( GetBackBufferFormat() ) {
-        case DXGI_FORMAT_R11G11B10_FLOAT: //origial DXGI_FORMAT_R10G10B10A2_UNORM
-            // The application creates the HDR10 signal.
-            colorSpace = DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
-            break;
-
-        case DXGI_FORMAT_R16G16B16A16_FLOAT:
-            // The system creates the HDR10 signal; application uses linear values.
-            colorSpace = DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709;
-            break;
-
-        default:
-            break;
-        }
-    }
-
-    //m_colorSpace = colorSpace; //only used when access from other function required
-
-    UINT colorSpaceSupport = 0;
-    if ( SUCCEEDED( SwapChain4->CheckColorSpaceSupport( colorSpace, &colorSpaceSupport ) )
-        && (colorSpaceSupport & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT) ) {
-        SwapChain4->SetColorSpace1( colorSpace );
+        swapChain3->SetColorSpace1( colorSpace );
         LogInfo() << "Using HDR Monitor ColorSpace";
     }
 }
