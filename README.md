@@ -19,6 +19,10 @@ The new renderer is able to utilize more of the current GPU generation's power. 
 * Custom-Built UI-Framework based on Direct2D
 * Rewritten bink player for better compatibility with bink videos
 * FPS-Limiter
+* Low-Latency borderless fullscreen
+  Frame latency on a 144Hz refresh rate with v-sync
+  * Borderless Fullscreen: ~28ms
+  * Borderless LowLatency: ~10ms
 
 ## Installation & Usage
 > **Note**: In the past there used to be separate files for Gothic 1 and Gothic 2, this has now changed since the mod will automatically detect the game.
