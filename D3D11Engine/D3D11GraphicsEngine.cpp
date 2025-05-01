@@ -753,7 +753,7 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
             // and we can have different resolution in fullscreen exclusive
             bool windowed = Engine::GAPI->HasCommandlineParameter( "ZWINDOW" ) ||
                 Engine::GAPI->GetIntParamFromConfig( "zStartupWindowed" );
-            windowed = true;
+
             if ( !windowed ) {
                 DXGI_MODE_DESC newMode = {};
                 newMode.Width = newSize.x;

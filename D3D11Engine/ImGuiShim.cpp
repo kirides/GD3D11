@@ -16,29 +16,27 @@ int GetDpi( HWND hWnd )
         HMONITOR, MONITOR_DPI_TYPE, UINT*, UINT*);
 
         HMODULE hShcore = LoadLibraryW( L"Shcore.dll" );
-        if ( !hShcore ) {
-            return 96;
-        }
-        GetDpiForMonitor_t pGetDpiForMonitor = reinterpret_cast<GetDpiForMonitor_t>(GetProcAddress( hShcore, "GetDpiForMonitor" ));
-        if ( !pGetDpiForMonitor ) {
+        if ( hShcore ) {
+            GetDpiForMonitor_t pGetDpiForMonitor = reinterpret_cast<GetDpiForMonitor_t>(GetProcAddress( hShcore, "GetDpiForMonitor" ));
+            if ( pGetDpiForMonitor ) {
+                HMONITOR hMonitor = ::MonitorFromWindow( hWnd, MONITOR_DEFAULTTONEAREST );
+                UINT xdpi, ydpi;
+                LRESULT success = pGetDpiForMonitor( hMonitor, MDT_EFFECTIVE_DPI, &xdpi, &ydpi );
+                if ( success == S_OK ) {
+                    FreeLibrary( hShcore );
+                    return static_cast<int>(ydpi);
+                }        
+            }
             FreeLibrary( hShcore );
-            return 96;
         }
-        HMONITOR hMonitor = ::MonitorFromWindow( hWnd, MONITOR_DEFAULTTONEAREST );
-        UINT xdpi, ydpi;
-        LRESULT success = pGetDpiForMonitor( hMonitor, MDT_EFFECTIVE_DPI, &xdpi, &ydpi );
-        FreeLibrary( hShcore );
-        if ( success == S_OK ) {
-            return static_cast<int>(ydpi);
-        }
-        return 96;
-    } else {
-        HDC hDC = ::GetDC( hWnd );
-        INT ydpi = ::GetDeviceCaps( hDC, LOGPIXELSY );
-        ::ReleaseDC( NULL, hDC );
-
-        return ydpi;
     }
+
+    // fallback if not available
+    HDC hDC = ::GetDC( hWnd );
+    INT ydpi = ::GetDeviceCaps( hDC, LOGPIXELSY );
+    ::ReleaseDC( NULL, hDC );
+
+    return ydpi;
 }
 
 void ImGuiShim::Init(
