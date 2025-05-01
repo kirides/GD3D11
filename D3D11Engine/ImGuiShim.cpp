@@ -55,7 +55,6 @@ void ImGuiShim::Init(
     io.LogFilename = NULL;
     //io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard; //Not needed and it's annoying.
     OutputWindow = Window;
-    ImGui_ImplWin32_EnableDpiAwareness();
     ImGui_ImplWin32_Init( OutputWindow );
     ImGui_ImplDX11_Init( device.Get(), context.Get() );
 
