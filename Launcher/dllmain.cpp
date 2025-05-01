@@ -223,7 +223,6 @@ BOOL APIENTRY DllMain( HINSTANCE hInst, DWORD reason, LPVOID ) {
             CustomGameName = CustomGameName.substr( 0, extPos );
         }
 
-        CheckLibraryExists( executablePath.c_str(), "AntTweakBar.dll");
         CheckLibraryExists( executablePath.c_str(), "assimp-vc143-mt.dll" );
         CheckLibraryExists( executablePath.c_str(), "GFSDK_SSAO_D3D11.win32.dll" );
         std::unordered_map<int, std::string> exe2prefix =

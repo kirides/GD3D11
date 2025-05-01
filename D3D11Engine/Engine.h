@@ -5,7 +5,6 @@
 class BaseGraphicsEngine;
 class GothicAPI;
 class ImGuiShim;
-class AntTweakBarShim;
 class GGame;
 class ThreadPool;
 
@@ -22,9 +21,6 @@ namespace Engine {
 
     /** Global GothicAPI object */
     __declspec(selectany) GothicAPI* GAPI;
-
-    /** Global AntTweakBar object */
-    __declspec(selectany) AntTweakBarShim* AntTweakBar;
 
 	/** Global ImGui object */
 	__declspec(selectany) ImGuiShim* ImGuiHandle;

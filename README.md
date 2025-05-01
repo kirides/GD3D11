@@ -14,6 +14,10 @@ This 2015 renderer is able to utilize more of the current GPU generation's power
 * Full DynamicLighting
 * Rewritten bink player for better compatibility with bink videos
 * FPS-Limiter
+* Low-Latency borderless fullscreen
+  Frame latency on a 144Hz refresh rate with v-sync
+  * Borderless Fullscreen: ~28ms
+  * Borderless LowLatency: ~10ms
 
 ## Bugs & Problems
 

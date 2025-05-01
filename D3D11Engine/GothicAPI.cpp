@@ -24,7 +24,6 @@
 
 #define DIRECTINPUT_VERSION 0x0700
 #include <dinput.h>
-#include "AntTweakBarShim.h"
 #include "ImGuiShim.h"
 #include "zCInput.h"
 #include "zCBspTree.h"
@@ -2955,29 +2954,31 @@ LRESULT GothicAPI::OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
 #endif
         case VK_F11:
             if ( (GetAsyncKeyState( VK_CONTROL ) & 0x8000) ) {
-                if ( Engine::ImGuiHandle->IsActive ) {
-                    Engine::ImGuiHandle->IsActive = false;
+                if ( !Engine::ImGuiHandle->AdvancedSettingsVisible ) {
                     Engine::ImGuiHandle->SettingsVisible = false;
                     SetEnableGothicInput( true );
                 }
-                Engine::AntTweakBar->SetActive( !Engine::AntTweakBar->GetActive() );
-                SetEnableGothicInput( !Engine::AntTweakBar->GetActive() );
+
+                Engine::ImGuiHandle->AdvancedSettingsVisible = !Engine::ImGuiHandle->AdvancedSettingsVisible;
+                Engine::ImGuiHandle->IsActive = Engine::ImGuiHandle->AdvancedSettingsVisible;
+                SetEnableGothicInput( !Engine::ImGuiHandle->IsActive );
             } else {
-                if ( Engine::AntTweakBar->GetActive() ) {
-                    Engine::AntTweakBar->SetActive( false );
+                if ( !Engine::ImGuiHandle->SettingsVisible ) {
+                    Engine::ImGuiHandle->AdvancedSettingsVisible = false;
                     SetEnableGothicInput( true );
                 }
-                Engine::ImGuiHandle->IsActive = !Engine::ImGuiHandle->IsActive;
+
                 Engine::ImGuiHandle->SettingsVisible = !Engine::ImGuiHandle->SettingsVisible;
+                Engine::ImGuiHandle->IsActive = Engine::ImGuiHandle->SettingsVisible;
                 SetEnableGothicInput( !Engine::ImGuiHandle->IsActive );
             }
             break;
         case VK_ESCAPE:
-            if ( Engine::AntTweakBar->GetActive() || Engine::ImGuiHandle->IsActive ) 
+            if ( Engine::ImGuiHandle->IsActive ) 
             {
-                    Engine::AntTweakBar->SetActive( false );
                     Engine::ImGuiHandle->IsActive = false;
                     Engine::ImGuiHandle->SettingsVisible = false;
+                    Engine::ImGuiHandle->AdvancedSettingsVisible = false;
                     SetEnableGothicInput( true );
             }
             break;
@@ -2994,7 +2995,6 @@ LRESULT GothicAPI::OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
     }
 
     Engine::ImGuiHandle->OnWindowMessage( hWnd, msg, wParam, lParam );
-    Engine::AntTweakBar->OnWindowMessage( hWnd, msg, wParam, lParam );
     Engine::GraphicsEngine->OnWindowMessage( hWnd, msg, wParam, lParam );
 
 #ifdef BUILD_SPACER
@@ -4089,8 +4089,6 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "General", "DrawWorldSectionIntersections", std::to_string( s.DrawSectionIntersections ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "SunLightStrength", std::to_string( s.SunLightStrength ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "DrawG1ForestPortals", std::to_string( s.DrawG1ForestPortals ? TRUE : FALSE ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "General", "AntTweakBarGlobalFontSize", std::to_string( s.AntTweakBarGlobalFontSize ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "General", "AntTweakBarGlobalScale", std::to_string( s.AntTweakBarGlobalScale ).c_str(), ini.c_str() );
 
     /*
     * Draw-distance is saved on a per World basis using SaveRendererWorldSettings
@@ -4179,8 +4177,6 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.DrawSectionIntersections = GetPrivateProfileBoolA( "General", "DrawWorldSectionIntersections", defaultRendererSettings.DrawSectionIntersections, ini );
         s.SunLightStrength = GetPrivateProfileFloatA( "General", "SunLightStrength", defaultRendererSettings.SunLightStrength, ini );
         s.DrawG1ForestPortals = GetPrivateProfileBoolA( "General", "DrawG1ForestPortals", defaultRendererSettings.DrawG1ForestPortals, ini );
-        s.AntTweakBarGlobalFontSize = GetPrivateProfileIntA( "General", "AntTweakBarGlobalFontSize", defaultRendererSettings.AntTweakBarGlobalFontSize, ini.c_str() );
-        s.AntTweakBarGlobalScale = GetPrivateProfileIntA( "General", "AntTweakBarGlobalScale", defaultRendererSettings.AntTweakBarGlobalScale, ini.c_str() );
 
         /*
         * Draw-distance is Loaded on a per World basis using LoadRendererWorldSettings

@@ -22,15 +22,17 @@ public:
     bool Initiated = false;
     bool IsActive = false;
     bool SettingsVisible = false;
+    bool AdvancedSettingsVisible = false;
     //bool DemoVisible = false;
     HWND OutputWindow = HWND( 0 );
     INT2 CurrentResolution = INT2( 800, 600 );
+    INT2 NewResolution = INT2( 800, 600 );
     int ResolutionState = 0;
     int TextureQualityState = 0;
-    int DisplayModeState = 0;
     int ShadowQualityState = 0;
     int DynamicShadowState = 0;
     std::vector<std::string> Resolutions;
 private:
     void RenderSettingsWindow();
+    void RenderAdvancedSettingsWindow();
 };

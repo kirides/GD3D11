@@ -5,7 +5,6 @@
 #include "Logger.h"
 #include "Detours/detours.h"
 #include "DbgHelp.h"
-#include "AntTweakBarShim.h"
 #include "HookedFunctions.h"
 #include <signal.h>
 #include "VersionCheck.h"
@@ -14,6 +13,7 @@
 
 #include <shlwapi.h>
 #include "GSky.h"
+#include <imgui_impl_win32.h>
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -463,6 +463,7 @@ BOOL WINAPI DllMain( HINSTANCE hInst, DWORD reason, LPVOID ) {
         if ( !Engine::PassThrough ) {
             Log::Clear();
             LogInfo() << "Starting DDRAW Proxy DLL.";
+            ImGui_ImplWin32_EnableDpiAwareness(); // enable dpi awareness
 
             HRESULT hr = CoInitializeEx( NULL, COINIT_APARTMENTTHREADED );
             if ( hr == RPC_E_CHANGED_MODE ) {

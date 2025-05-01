@@ -1,6 +1,45 @@
 #include "ImGuiShim.h"
+#include "GSky.h"
+#include <VersionHelpers.h>
+#include <ShellScalingAPI.h>
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam );
+
+int GetDpi( HWND hWnd )
+{
+    bool v81 = IsWindows8Point1OrGreater();
+    bool v10 = IsWindows10OrGreater();
+
+    if ( v81 || v10 ) {
+
+        typedef HRESULT( WINAPI* GetDpiForMonitor_t )(
+        HMONITOR, MONITOR_DPI_TYPE, UINT*, UINT*);
+
+        HMODULE hShcore = LoadLibraryW( L"Shcore.dll" );
+        if ( !hShcore ) {
+            return 96;
+        }
+        GetDpiForMonitor_t pGetDpiForMonitor = reinterpret_cast<GetDpiForMonitor_t>(GetProcAddress( hShcore, "GetDpiForMonitor" ));
+        if ( !pGetDpiForMonitor ) {
+            FreeLibrary( hShcore );
+            return 96;
+        }
+        HMONITOR hMonitor = ::MonitorFromWindow( hWnd, MONITOR_DEFAULTTONEAREST );
+        UINT xdpi, ydpi;
+        LRESULT success = pGetDpiForMonitor( hMonitor, MDT_EFFECTIVE_DPI, &xdpi, &ydpi );
+        FreeLibrary( hShcore );
+        if ( success == S_OK ) {
+            return static_cast<int>(ydpi);
+        }
+        return 96;
+    } else {
+        HDC hDC = ::GetDC( hWnd );
+        INT ydpi = ::GetDeviceCaps( hDC, LOGPIXELSY );
+        ::ReleaseDC( NULL, hDC );
+
+        return ydpi;
+    }
+}
 
 void ImGuiShim::Init(
     HWND Window,
@@ -19,6 +58,7 @@ void ImGuiShim::Init(
     ImGui_ImplWin32_Init( OutputWindow );
     ImGui_ImplDX11_Init( device.Get(), context.Get() );
 
+    const auto actualDPI = GetDpi( Window );
     Initiated = true;
 
     auto& Displaylist = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetDisplayModeList();
@@ -38,12 +78,14 @@ void ImGuiShim::Init(
     //    0x201C, 0x201D, // high-9 quotation marks
     //    0,              // End of ranges
     //};
-    ImFontConfig config;
+    ImFontConfig config = { };
     config.MergeMode = false;
     //config.GlyphRanges = euroGlyphRanges;
     const auto path = std::filesystem::current_path();
     const auto fontpath = path / "system" / "GD3D11" / "Fonts" / "Lato-Semibold.ttf";
-    io.Fonts->AddFontFromFileTTF( fontpath.string().c_str(), 22.0f, &config);
+
+    auto dpiScale = actualDPI / 96.0f;
+    io.Fonts->AddFontFromFileTTF( fontpath.string().c_str(), 20.0f * dpiScale, &config );
 }
 
 
@@ -58,11 +100,21 @@ ImGuiShim::~ImGuiShim()
 
 void ImGuiShim::RenderLoop()
 {
+    if ( NewResolution.x != CurrentResolution.x
+        || NewResolution.y != CurrentResolution.y ) {
+        Engine::GraphicsEngine->OnResize( NewResolution );
+        Engine::GraphicsEngine->ReloadShaders();
+        CurrentResolution = NewResolution;
+    }
+
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
     if ( SettingsVisible ) {
         RenderSettingsWindow();
+    }
+    if ( AdvancedSettingsVisible ) {
+        RenderAdvancedSettingsWindow();
     }
     //if ( DemoVisible )
     //    ImGui::ShowDemoWindow();
@@ -81,18 +133,66 @@ void ImGuiShim::OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
 void ImGuiShim::OnResize( INT2 newSize )
 {
     CurrentResolution = newSize;
-    if ( CurrentResolution.x >= 2160 ) {
-        ImGui::GetIO().FontGlobalScale = 1.30f;
-    } else if ( CurrentResolution.x < 1024 && CurrentResolution.y < 768 ) {
-        ImGui::GetIO().FontGlobalScale = 0.80f;  // Scale down for smaller resolutions
-    } else {
-        ImGui::GetIO().FontGlobalScale = 1.0f;
-    }
+    NewResolution = newSize;
+}
 
-    // Get the center point of the screen, then shift the window by 50% of its size in both directions.
-    // TIP: Don't use ImGui::GetMainViewport for framebuffer sizes since GD3D11 can undersample or oversample the game.
-    // Use whatever the resolution is spit out instead.
-    ImGui::SetNextWindowPos( ImVec2( CurrentResolution.x / 2, CurrentResolution.y / 2 ), ImGuiCond_Always, ImVec2( 0.5f, 0.5f ) );
+template <typename T>
+bool ImComboBoxC( const char* id, std::vector<std::pair<char*, T>>& items, T* storage, const std::function<void()>& selected ) {
+    if ( storage == nullptr || items.size() == 0 ) {
+        return ImGui::BeginCombo( id, "invalid storage" );
+    }
+    std::pair<char*, T> selectedItem = items[0];
+    for ( auto& it : items ) {
+        if ( it.second == *storage ) {
+            selectedItem = it;
+            break;
+        }
+    }
+    if ( ImGui::BeginCombo( id, selectedItem.first ) ) {
+        for ( size_t i = 0; i < items.size(); i++ ) {
+            bool isSelected = (*storage == items[i].second);
+
+            if ( ImGui::Selectable( items[i].first, isSelected ) ) {
+                *storage = items[i].second;
+                selected();
+            }
+
+            if ( isSelected ) {
+                ImGui::SetItemDefaultFocus();
+            }
+        }
+        return true;
+    }
+    return false;
+}
+
+template <typename T>
+bool ImComboBox( const char* id, std::vector<std::pair<char*, T>>& items, T* storage ) {
+    if ( storage == nullptr || items.size() == 0 ) {
+        return ImGui::BeginCombo( id, "invalid storage" );
+    }
+    std::pair<char*, T> selectedItem = items[0];
+    for ( auto& it : items ) {
+        if ( it.second == *storage ) {
+            selectedItem = it;
+            break;
+        }
+    }
+    if ( ImGui::BeginCombo( id, selectedItem.first ) ) {
+        for ( size_t i = 0; i < items.size(); i++ ) {
+            bool isSelected = (*storage == items[i].second);
+
+            if ( ImGui::Selectable( items[i].first, isSelected ) ) {
+                *storage = items[i].second;
+            }
+
+            if ( isSelected ) {
+                ImGui::SetItemDefaultFocus();
+            }
+        }
+        return true;
+    }
+    return false;
 }
 
 void ImGuiShim::RenderSettingsWindow()
@@ -101,10 +201,15 @@ void ImGuiShim::RenderSettingsWindow()
     IM_ASSERT( ImGui::GetCurrentContext() != NULL && "Missing Dear ImGui context!" );
     IMGUI_CHECKVERSION();
 
-    if ( ImGui::Begin( "Settings", false, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize ) ) {
+    auto windowSize = CurrentResolution;
+    // Get the center point of the screen, then shift the window by 50% of its size in both directions.
+    // TIP: Don't use ImGui::GetMainViewport for framebuffer sizes since GD3D11 can undersample or oversample the game.
+    // Use whatever the resolution is spit out instead.
+    ImVec2 buttonWidth( 275, 0 );
+
+    ImGui::SetNextWindowPos( ImVec2( windowSize.x / 2, windowSize.y / 2 ), ImGuiCond_Appearing, ImVec2( 0.5f, 0.5f ) );
+    if ( ImGui::Begin( "Settings", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize ) ) {
         GothicRendererSettings& settings = Engine::GAPI->GetRendererState().RendererSettings;
-        ImVec2 buttonWidth( 275, 0 );
-        // eh maybe i clean this later... OR I WONT
         {
             ImGui::BeginGroup();
             ImGui::Checkbox( "Vsync", &settings.EnableVSync );
@@ -151,15 +256,14 @@ void ImGuiShim::RenderSettingsWindow()
             ImGui::PopStyleVar();
             if ( ImGui::BeginCombo( "##Resolution", Resolutions[ResolutionState].c_str() ) ) {
                 for ( size_t i = 0; i < Resolutions.size(); i++ ) {
-                    bool Selected = (ResolutionState == i);
+                    bool isSelected = (ResolutionState == i);
 
-                    if ( ImGui::Selectable( Resolutions[i].c_str(), Selected ) ) {
+                    if ( ImGui::Selectable( Resolutions[i].c_str(), isSelected ) ) {
                         ResolutionState = i;
-                        Engine::GraphicsEngine->OnResize( INT2( Resolutions[i] ) );
-                        Engine::GraphicsEngine->ReloadShaders();
+                        NewResolution = INT2( Resolutions[i] );
                     }
 
-                    if ( Selected ) {
+                    if ( isSelected ) {
                         ImGui::SetItemDefaultFocus();
                     }
                 }
@@ -185,22 +289,22 @@ void ImGuiShim::RenderSettingsWindow()
             if ( ImGui::BeginCombo( "##TextureQuality", QualityOptions[TextureQualityState].first.c_str() ) ) {
 
                 for ( size_t i = 0; i < QualityOptions.size(); i++ ) {
-                    bool Selected = (TextureQualityState == i);
+                    bool isSelected = (TextureQualityState == i);
 
-                    if ( ImGui::Selectable( QualityOptions[i].first.c_str(), Selected ) ) {
+                    if ( ImGui::Selectable( QualityOptions[i].first.c_str(), isSelected ) ) {
                         TextureQualityState = i;
                         settings.textureMaxSize = QualityOptions[i].second;
                         Engine::GAPI->UpdateTextureMaxSize();
                     }
 
-                    if ( Selected ) {
+                    if ( isSelected ) {
                         ImGui::SetItemDefaultFocus();
                     }
                 }
                 ImGui::EndCombo();
             }
 
-            std::vector<std::string> DisplayEnums = {
+            static std::vector<std::string> DisplayEnums = {
                 "Fullscreen Borderless",
                 "Fullscreen Exclusive",
                 "Fullscreen Lowlatency",
@@ -209,18 +313,44 @@ void ImGuiShim::RenderSettingsWindow()
             ImGui::PushStyleVar( ImGuiStyleVar_ButtonTextAlign, ImVec2( 0.f, 0.5f ) );
             ImGui::Button( "Display Mode [*]", buttonWidth ); ImGui::SameLine();
             ImGui::PopStyleVar();
-            DisplayModeState = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine)->GetWindowMode();
-            if ( ImGui::BeginCombo( "##DisplayMode", DisplayEnums[DisplayModeState].c_str() ) ) {
+            auto displayModeState = settings.WindowMode;
+            if ( ImGui::BeginCombo( "##DisplayMode", DisplayEnums[displayModeState].c_str() ) ) {
                 for ( size_t i = 0; i < DisplayEnums.size(); i++ ) {
-                    bool Selected = (DisplayModeState == i);
-                    if ( ImGui::Selectable( DisplayEnums[i].c_str(), Selected ) ) {
-                        DisplayModeState = i;
+                    bool isSelected = (displayModeState == i);
+                    if ( ImGui::Selectable( DisplayEnums[i].c_str(), isSelected ) ) {
                         settings.WindowMode = i;
+                        switch ( settings.WindowMode ) {
+                            case WINDOW_MODE_FULLSCREEN_EXCLUSIVE: {
+                                settings.DisplayFlip = false;
+                                settings.LowLatency = false;
+                                settings.StretchWindow = true;
+                                break;
+                            }
+                            case WINDOW_MODE_FULLSCREEN_BORDERLESS: {
+                                settings.DisplayFlip = true;
+                                settings.LowLatency = false;
+                                settings.StretchWindow = true;
+                                break;
+                            }
+                            case WINDOW_MODE_FULLSCREEN_LOWLATENCY: {
+                                settings.DisplayFlip = true;
+                                settings.LowLatency = true;
+                                settings.StretchWindow = true;
+                                break;
+                            }
+                            case WINDOW_MODE_WINDOWED: {
+                                settings.DisplayFlip = false;
+                                settings.StretchWindow = false;
+                                settings.LowLatency = false;
+                                break;
+                            }
+                        }
+
                     }
                     if ( ImGui::IsItemHovered() ) {
                         ImGui::SetTooltip( "[*] You need to restart for this to take effect." );
                     }
-                    if ( Selected ) {
+                    if ( isSelected ) {
                         ImGui::SetItemDefaultFocus();
                     }
                 }
@@ -230,52 +360,46 @@ void ImGuiShim::RenderSettingsWindow()
             ImGui::PushStyleVar( ImGuiStyleVar_ButtonTextAlign, ImVec2( 0.f, 0.5f ) );
             ImGui::Button( "Shadow Quality", buttonWidth ); ImGui::SameLine();
             ImGui::PopStyleVar();
-            std::vector<std::pair<std::string, int>> shadowResolution = { { "very low", 512 }, { "low", 1024 }, { "medium", 2048 }, { "high", 4096 }, { "very high", 8192 } };
-            if ( !FeatureLevel10Compatibility ) //Not sure if imgui will work on level10 with dx11 impl, idc
-                shadowResolution.emplace_back( std::make_pair<std::string, int>( "ultra high", 16384 ) );
 
-            for ( int i = shadowResolution.size() - 1; i >= 0; i-- ) {
-                if ( settings.ShadowMapSize >= shadowResolution.at( i ).second ) {
-                    ShadowQualityState = i;
-                    break;
-                }
+            static std::vector<std::pair<char*, int>> shadowMapSizesMax = {
+                {"very low", 512},
+                {"low", 1024},
+                {"medium", 2048},
+                {"high", 4096},
+                {"very high", 8192},
+                {"ultra high", 16384},
+            };
+            static std::vector<std::pair<char*, int>> shadowMapSizesDxFeature10 = {
+                {"very low", 512},
+                {"low", 1024},
+                {"medium", 2048},
+                {"high", 4096},
+                {"very high", 8192},
+            };
+            std::vector<std::pair<char*, int>>& shadowMapSizes = shadowMapSizesMax;
+            if ( FeatureLevel10Compatibility ) {
+                shadowMapSizes = shadowMapSizesDxFeature10;
             }
 
-            if ( ImGui::BeginCombo( "##ShadowQuality", shadowResolution[ShadowQualityState].first.c_str() ) ) {
-                for ( size_t i = 0; i < shadowResolution.size(); i++ ) {
-                    bool Selected = (ShadowQualityState == i);
-
-                    if ( ImGui::Selectable( shadowResolution[i].first.c_str(), Selected ) ) {
-                        ShadowQualityState = i;
-                        settings.ShadowMapSize = shadowResolution[i].second;
-                        Engine::GraphicsEngine->ReloadShaders();
-                    }
-                    if ( ImGui::IsItemHovered() ) {
-                        ImGui::SetTooltip( std::to_string( shadowResolution[i].second ).c_str() );
-                    }
-
-                    if ( Selected ) {
-                        ImGui::SetItemDefaultFocus();
-                    }
-                }
+            if ( ImComboBoxC( "##ShadowQuality", shadowMapSizes, (int*)(&settings.ShadowMapSize), []() { Engine::GraphicsEngine->ReloadShaders(); } ) ) {
                 ImGui::EndCombo();
             }
 
             ImGui::PushStyleVar( ImGuiStyleVar_ButtonTextAlign, ImVec2( 0.f, 0.5f ) );
             ImGui::Button( "Dynamic Shadows", buttonWidth ); ImGui::SameLine();
             ImGui::PopStyleVar();
-            std::vector<std::string> DynamicShadowEnums = { "Off", "Static", "Dynamic Update", "Full" };
+            static std::vector<std::string> DynamicShadowEnums = { "Off", "Static", "Dynamic Update", "Full" };
             DynamicShadowState = static_cast<int>(settings.EnablePointlightShadows);
             if ( ImGui::BeginCombo( "##DynamicShadows", DynamicShadowEnums[DynamicShadowState].c_str() ) ) {
                 for ( size_t i = 0; i < DynamicShadowEnums.size(); i++ ) {
-                    bool Selected = (DynamicShadowState == i);
+                    bool isSelected = (DynamicShadowState == i);
 
-                    if ( ImGui::Selectable( DynamicShadowEnums[i].c_str(), Selected ) ) {
+                    if ( ImGui::Selectable( DynamicShadowEnums[i].c_str(), isSelected ) ) {
                         DynamicShadowState = i;
                         settings.EnablePointlightShadows = static_cast<GothicRendererSettings::EPointLightShadowMode>( i );
                     }
 
-                    if ( Selected ) {
+                    if ( isSelected ) {
                         ImGui::SetItemDefaultFocus();
                     }
                 }
@@ -355,3 +479,304 @@ void ImGuiShim::RenderSettingsWindow()
 
 }
 
+void RenderAdvancedColumn1( GothicRendererSettings& settings, GothicAPI* gapi ) {
+    if ( ImGui::Begin( "Sky", nullptr, ImGuiWindowFlags_NoCollapse ) ) {
+
+        ImGui::Checkbox( "GodRays", &settings.EnableGodRays );
+        ImGui::DragFloat( "GodRayDecay", &settings.GodRayDecay, 0.01f );
+        ImGui::DragFloat( "GodRayWeight", &settings.GodRayWeight, 0.01f );
+        ImGui::ColorEdit3( "GodRayColorMod", &settings.GodRayColorMod.x );
+        ImGui::DragFloat( "GodRayDensity", &settings.GodRayDensity, 0.01f );
+        ImGui::SeparatorText( "SkySettings" );
+        auto& atmosphereSettings = gapi->GetSky()->GetAtmoshpereSettings();
+        ImGui::DragFloat( "G", &atmosphereSettings.G, 0.01f );
+        if ( ImGui::IsItemHovered() ) {
+            ImGui::SetTooltip( "Size of the Sun" );
+        }
+        ImGui::DragFloat( "RayleightScaleDepth", &atmosphereSettings.RayleightScaleDepth, 0.01f, 0.1f );
+        ImGui::DragFloat( "ESun", &atmosphereSettings.ESun, 0.1f, 0.2f );
+        if ( ImGui::IsItemHovered() ) {
+            ImGui::SetTooltip( "Brightness of the sun" );
+        }
+        ImGui::DragFloat( "InnerRadius", &atmosphereSettings.InnerRadius, 0.01f );
+        if ( ImGui::IsItemHovered() ) {
+            ImGui::SetTooltip( "Inner Radius of the fake-planet. This must be greater than SphereOffset.y" );
+        }
+        ImGui::DragFloat( "OuterRadius", &atmosphereSettings.OuterRadius, 0.01f );
+        if ( ImGui::IsItemHovered() ) {
+            ImGui::SetTooltip( "Outer Radius of the fake-planet" );
+        }
+        ImGui::DragFloat( "Km", &atmosphereSettings.Km, 0.0001f, 0.01f );
+        ImGui::DragFloat( "Kr", &atmosphereSettings.Kr, 0.0001f, 0.01f );
+        ImGui::InputInt( "Samples", &atmosphereSettings.Samples );
+        ImGui::DragFloat3( "WaveLengths", &atmosphereSettings.WaveLengths.x, 0.01f );
+        ImGui::DragFloat( "SphereOffset.y", &atmosphereSettings.SphereOffsetY, 0.01f );
+        ImGui::Checkbox( "ReplaceSunDirection", &settings.ReplaceSunDirection );
+        if ( ImGui::IsItemHovered() ) {
+            ImGui::SetTooltip( "Outer Radius of the fake-planet" );
+        }
+
+        ImGui::BeginDisabled( !settings.ReplaceSunDirection );
+        ImGui::DragFloat3( "LightDirection", &atmosphereSettings.LightDirection.x, 0.001f );
+        if ( ImGui::IsItemHovered() ) {
+            ImGui::SetTooltip( "The direction the sun should come from. Only active when ReplaceSunDirection is active.\nAlso useful to fix the sun in one position" );
+        }
+        ImGui::EndDisabled();
+
+        ImGui::ColorEdit3( "SunLightColor", &settings.SunLightColor.x );
+        if ( ImGui::IsItemHovered() ) {
+            ImGui::SetTooltip( "Color of the sunlight" );
+        }
+        ImGui::DragFloat( "SunLightStrength", &settings.SunLightStrength, 0.01f );
+        ImGui::DragFloat( "SkyTimeScale", &atmosphereSettings.SkyTimeScale, 0.01f );
+        if ( ImGui::IsItemHovered() ) {
+            ImGui::SetTooltip( "This makes the skys time pass slower or faster" );
+        }
+    }
+    ImGui::End();
+}
+
+
+void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) {
+    if ( ImGui::Begin( "General", nullptr, ImGuiWindowFlags_NoCollapse ) ) {
+
+        ImGui::Text( "Version: " );
+        ImGui::SameLine();
+        ImGui::Text( VERSION_NUMBER );
+
+        ImGui::Checkbox( "Enable DebugLog", &settings.EnableDebugLog );
+        if ( ImGui::Button( "Save ZEN-Resources" ) ) {
+            gapi->SaveCustomZENResources();
+        }
+        if ( ImGui::Button( "Load ZEN-Resources" ) ) {
+            gapi->LoadCustomZENResources();
+        }
+        ImGui::Separator();
+        ImGui::Checkbox( "DisableRendering", &settings.DisableRendering );
+        ImGui::Checkbox( "Draw VOBs", &settings.DrawVOBs );
+        ImGui::Checkbox( "Draw Dynamic Vobs", &settings.DrawDynamicVOBs );
+        ImGui::InputInt( "Draw WorldMesh", &settings.DrawWorldMesh );
+        ImGui::Checkbox( "Draw Skeletal Meshes", &settings.DrawSkeletalMeshes );
+        ImGui::Checkbox( "Draw Mobs", &settings.DrawMobs );
+        ImGui::Checkbox( "Draw ParticleEffects", &settings.DrawParticleEffects );
+        // ImGui::Checkbox( "Draw Sky", &settings.DrawSky );
+        ImGui::Checkbox( "Draw Fog", &settings.DrawFog );
+
+        static std::vector<std::pair<char*, int>> fogRanges = { {"3", 3}, {"4", 4}, {"5", 5}, {"6", 6}, {"7", 7}, {"8", 8}, {"9", 9}, {"10", 10} };
+        if ( ImComboBox( "Fog Range", fogRanges, &settings.FogRange ) ) {
+            ImGui::EndCombo();
+        }
+
+        ImGui::Checkbox( "HDR", &settings.EnableHDR );
+
+        static std::vector<std::pair<char*, int>> hdrToneMapValues = {
+            {"ToneMap_jafEq4", 0},
+            {"Uncharted2Tonemap", 1},
+            {"ACESFilmTonemap", 2},
+            {"PerceptualQuantizerTonemap", 3},
+            {"ToneMap_Simple", 4},
+            {"ACESFittedTonemap", 5},
+        };
+
+        ImGui::BeginDisabled( !settings.EnableHDR );
+        if ( ImComboBox( "HDR ToneMap", hdrToneMapValues, (int*)(&settings.HDRToneMap) ) ) {
+            ImGui::EndCombo();
+        }
+        ImGui::EndDisabled();
+
+        ImGui::Checkbox( "SMAA", &settings.EnableSMAA );
+        ImGui::DragFloat( "Sharpen", &settings.SharpenFactor, 0.01f );
+        ImGui::Checkbox( "DynamicLighting", &settings.EnableDynamicLighting );
+
+        static std::vector<std::pair<char*, int>> pointlightShadows = {
+           {"Disabled", 0},
+           {"Static", 1},
+           {"Update Dynamic", 2},
+           {"Full", 3},
+        };
+        if ( ImComboBox( "PointlightShadows", pointlightShadows, (int*)(&settings.EnablePointlightShadows) ) ) {
+            ImGui::EndCombo();
+        }
+        // ImGui::Checkbox("FastShadows", &settings.FastShadows );	
+        ImGui::Checkbox( "DrawShadowGeometry", &settings.DrawShadowGeometry );
+        ImGui::Checkbox( "DoZPrepass", &settings.DoZPrepass );
+        ImGui::Checkbox( "VSync", &settings.EnableVSync );
+        ImGui::Checkbox( "OcclusionCulling", &settings.EnableOcclusionCulling );
+        ImGui::Checkbox( "Sort RenderQueue", &settings.SortRenderQueue );
+        ImGui::Checkbox( "Draw Threaded", &settings.DrawThreaded );
+        ImGui::Checkbox( "AtmosphericScattering", &settings.AtmosphericScattering );
+        ImGui::Checkbox( "SkeletalVertexNormals", &settings.ShowSkeletalVertexNormals );
+
+        static std::vector<std::pair<char*, int>> shadowMapSizesMax = {
+          {"512", 512},
+          {"1024", 1024},
+          {"2048", 2048},
+          {"4096", 4096},
+          {"8192", 8192},
+          {"16384", 16384},
+        };
+        static std::vector<std::pair<char*, int>> shadowMapSizesDxFeature10 = {
+         {"512", 512},
+         {"1024", 1024},
+         {"2048", 2048},
+         {"4096", 4096},
+         {"8192", 8192},
+        };
+        std::vector<std::pair<char*, int>>& shadowMapSizes = shadowMapSizesMax;
+        if ( FeatureLevel10Compatibility ) {
+            shadowMapSizes = shadowMapSizesDxFeature10;
+        }
+
+        if ( ImComboBoxC( "ShadowmapSize", shadowMapSizes, (int*)(&settings.ShadowMapSize), []() { Engine::GraphicsEngine->ReloadShaders(); } ) ) {
+            ImGui::EndCombo();
+        }
+        ImGui::DragFloat( "WorldShadowRangeScale", &settings.WorldShadowRangeScale, 0.01f );
+        ImGui::DragFloat( "ShadowStrength", &settings.ShadowStrength, 0.01f );
+        ImGui::DragFloat( "ShadowAOStrength", &settings.ShadowAOStrength, 0.01f );
+        ImGui::DragFloat( "WorldAOStrength", &settings.WorldAOStrength, 0.01f );
+        ImGui::DragFloat( "ShadowStrength", &settings.ShadowStrength, 0.01f );
+        ImGui::Checkbox( "WireframeWorld", &settings.WireframeWorld );
+        ImGui::Checkbox( "WireframeVobs", &settings.WireframeVobs );
+        // ImGui::Checkbox("Grass AlphaToCoverage", &settings.VegetationAlphaToCoverage );	
+        ImGui::DragInt( "SectionDrawRadius", &settings.SectionDrawRadius );
+        ImGui::DragFloat( "OutdoorVobDrawRadius", &settings.OutdoorVobDrawRadius, 0.01f );
+        ImGui::DragFloat( "IndoorVobDrawRadius", &settings.IndoorVobDrawRadius, 0.01f );
+        ImGui::DragFloat( "OutdoorSmallVobRadius", &settings.OutdoorSmallVobDrawRadius, 0.01f );
+        ImGui::DragFloat( "VisualFXDrawRadius", &settings.VisualFXDrawRadius, 0.01f );
+        ImGui::DragFloat( "RainRadius", &settings.RainRadiusRange, 0.01f );
+        ImGui::DragFloat( "RainHeight", &settings.RainHeightRange, 0.01f );
+        ImGui::DragInt( "NumRainParticles", (int*)&settings.RainNumParticles, 1.0f, 0, 200000 );
+        ImGui::Checkbox( "RainMoveParticles", &settings.RainMoveParticles );
+        ImGui::Checkbox( "RainUseInitialSet", &settings.RainUseInitialSet );
+        ImGui::DragFloat3( "RainGlobalVelocity", &settings.RainGlobalVelocity.x );
+        ImGui::DragFloat( "RainSceneWettness", &settings.RainSceneWettness, 0.01f );
+        ImGui::DragFloat( "RainSunLightStrength", &settings.RainSunLightStrength, 0.01f );
+        ImGui::DragFloat( "RainFogDensity", &settings.RainFogDensity, 0.01f );
+        ImGui::ColorEdit3( "RainFogColor", &settings.RainFogColor.x );
+        // TwAddVarRW("SmallVobSize", TW_TYPE_FLOAT, &settings.SmallVobSize );
+        // ImGui::Checkbox("AtmosphericScattering", &settings.AtmosphericScattering );
+        ImGui::DragFloat( "FogGlobalDensity", &settings.FogGlobalDensity, 0.01f );
+        ImGui::DragFloat( "FogHeightFalloff", &settings.FogHeightFalloff, 0.01f );
+        ImGui::DragFloat( "FogHeight", &settings.FogHeight, 0.01f );
+        ImGui::ColorEdit3( "FogColorMod", &settings.FogColorMod.x );
+        ImGui::DragFloat( "HDRLumWhite", &settings.HDRLumWhite, 0.01f );
+        ImGui::DragFloat( "HDRMiddleGray", &settings.HDRMiddleGray, 0.01f );
+        ImGui::DragFloat( "BloomThreshold", &settings.BloomThreshold, 0.01f );
+        ImGui::DragFloat( "BloomStrength", &settings.BloomStrength, 0.01f );
+        ImGui::DragFloat( "WindStrength", &settings.GlobalWindStrength, 0.01f );
+        ImGui::Checkbox( "LockViewFrustum", &settings.LockViewFrustum );
+        ImGui::DragFloat( "GothicUIScale", &settings.GothicUIScale, 0.01f );
+        ImGui::DragFloat( "FOVHoriz", &settings.FOVHoriz, 0.01f );
+        ImGui::DragFloat( "FOVVert", &settings.FOVVert, 0.01f );
+        ImGui::Checkbox( "ForceFOV", &settings.ForceFOV );
+#ifdef BUILD_GOTHIC_1_08k
+        ImGui::Checkbox( "DrawForestPortals", &settings.DrawG1ForestPortals );
+#endif
+
+    }
+    ImGui::End();
+}
+
+void RenderAdvancedColumn3( GothicRendererSettings& settings, GothicAPI* gapi ) {
+    if ( ImGui::Begin( "FrameStats", nullptr, ImGuiWindowFlags_NoCollapse ) ) {
+        auto& rendererInfo = gapi->GetRendererState().RendererInfo;
+
+        ImGui::InputInt( "FPS", &rendererInfo.FPS, 1, 100, ImGuiInputTextFlags_ReadOnly );
+        ImGui::InputInt( "StateChanges", (int*)(&rendererInfo.StateChanges), 1, 100, ImGuiInputTextFlags_ReadOnly );
+        ImGui::InputInt( "DrawnVobs", &rendererInfo.FrameDrawnVobs, 1, 100, ImGuiInputTextFlags_ReadOnly );
+        ImGui::InputInt( "DrawnTriangles", &rendererInfo.FrameDrawnTriangles, 1, 100, ImGuiInputTextFlags_ReadOnly );
+        ImGui::InputInt( "VobUpdates", &rendererInfo.FrameVobUpdates, 1, 100, ImGuiInputTextFlags_ReadOnly );
+        ImGui::InputInt( "DrawnLights", &rendererInfo.FrameDrawnLights, 1, 100, ImGuiInputTextFlags_ReadOnly );
+        ImGui::InputInt( "SectionsDrawn", &rendererInfo.FrameNumSectionsDrawn, 1, 100, ImGuiInputTextFlags_ReadOnly );
+        ImGui::InputInt( "WorldMeshDrawCalls", &rendererInfo.WorldMeshDrawCalls, 1, 100, ImGuiInputTextFlags_ReadOnly );
+        ImGui::InputFloat( "FarPlane", &rendererInfo.FarPlane, 1, 100, "%.3f", ImGuiInputTextFlags_ReadOnly );
+        ImGui::InputFloat( "NearPlane", &rendererInfo.NearPlane, 1, 100, "%.3f", ImGuiInputTextFlags_ReadOnly );
+        ImGui::InputFloat( "WorldMeshMS", &rendererInfo.Timing.WorldMeshMS, 1, 100, "%.3f", ImGuiInputTextFlags_ReadOnly );
+        ImGui::InputFloat( "VobsMS", &rendererInfo.Timing.VobsMS, 1, 100, "%.3f", ImGuiInputTextFlags_ReadOnly );
+        ImGui::InputFloat( "SkeletalMeshesMS", &rendererInfo.Timing.SkeletalMeshesMS, 1, 100, "%.3f", ImGuiInputTextFlags_ReadOnly );
+        ImGui::InputFloat( "LightingMS", &rendererInfo.Timing.LightingMS, 1, 100, "%.3f", ImGuiInputTextFlags_ReadOnly );
+        ImGui::InputFloat( "TotalMS", &rendererInfo.Timing.TotalMS, 1, 100, "%.3f", ImGuiInputTextFlags_ReadOnly );
+        ImGui::InputInt( "SC_PipelineStates", (int*)&rendererInfo.FramePipelineStates, 1, 100, ImGuiInputTextFlags_ReadOnly );
+        ImGui::InputInt( "SC_Textures", (int*)&rendererInfo.StateChangesByState[GothicRendererInfo::SC_TX], 1, 100, ImGuiInputTextFlags_ReadOnly );
+        ImGui::InputInt( "SC_ConstantBuffer", (int*)&rendererInfo.StateChangesByState[GothicRendererInfo::SC_CB], 1, 100, ImGuiInputTextFlags_ReadOnly );
+        ImGui::InputInt( "SC_GeometryShader", (int*)&rendererInfo.StateChangesByState[GothicRendererInfo::SC_GS], 1, 100, ImGuiInputTextFlags_ReadOnly );
+        ImGui::InputInt( "SC_RTVDSV", (int*)&rendererInfo.StateChangesByState[GothicRendererInfo::SC_RTVDSV], 1, 100, ImGuiInputTextFlags_ReadOnly );
+        ImGui::InputInt( "SC_DomainShader", (int*)&rendererInfo.StateChangesByState[GothicRendererInfo::SC_DS], 1, 100, ImGuiInputTextFlags_ReadOnly );
+        ImGui::InputInt( "SC_HullShader", (int*)&rendererInfo.StateChangesByState[GothicRendererInfo::SC_HS], 1, 100, ImGuiInputTextFlags_ReadOnly );
+        ImGui::InputInt( "SC_PixelShader", (int*)&rendererInfo.StateChangesByState[GothicRendererInfo::SC_PS], 1, 100, ImGuiInputTextFlags_ReadOnly );
+        ImGui::InputInt( "SC_InputLayout", (int*)&rendererInfo.StateChangesByState[GothicRendererInfo::SC_IL], 1, 100, ImGuiInputTextFlags_ReadOnly );
+        ImGui::InputInt( "SC_VertexShader", (int*)&rendererInfo.StateChangesByState[GothicRendererInfo::SC_VS], 1, 100, ImGuiInputTextFlags_ReadOnly );
+        ImGui::InputInt( "SC_IndexBuffer", (int*)&rendererInfo.StateChangesByState[GothicRendererInfo::SC_IB], 1, 100, ImGuiInputTextFlags_ReadOnly );
+        ImGui::InputInt( "SC_VertexBuffer", (int*)&rendererInfo.StateChangesByState[GothicRendererInfo::SC_VB], 1, 100, ImGuiInputTextFlags_ReadOnly );
+        ImGui::InputInt( "SC_RasterizerState", (int*)&rendererInfo.StateChangesByState[GothicRendererInfo::SC_RS], 1, 100, ImGuiInputTextFlags_ReadOnly );
+        ImGui::InputInt( "SC_DepthStencilState", (int*)&rendererInfo.StateChangesByState[GothicRendererInfo::SC_DSS], 1, 100, ImGuiInputTextFlags_ReadOnly );
+        ImGui::InputInt( "SC_SamplerState", (int*)&rendererInfo.StateChangesByState[GothicRendererInfo::SC_SMPL], 1, 100, ImGuiInputTextFlags_ReadOnly );
+        ImGui::InputInt( "SC_BlendState", (int*)&rendererInfo.StateChangesByState[GothicRendererInfo::SC_BS], 1, 100, ImGuiInputTextFlags_ReadOnly );
+
+    }
+    ImGui::End();
+}
+
+void RenderAdvancedColumn4( GothicRendererSettings& settings, GothicAPI* gapi ) {
+    if ( ImGui::Begin( "HBAO+", nullptr, ImGuiWindowFlags_NoCollapse ) ) {
+        ImGui::Checkbox( "Enable HBAO+", &settings.HbaoSettings.Enabled );
+        ImGui::DragFloat( "Radius", &settings.HbaoSettings.Radius, 0.01f );
+        ImGui::DragFloat( "MetersToViewSpaceUnits", &settings.HbaoSettings.MetersToViewSpaceUnits, 0.01f );
+        if ( ImGui::DragFloat( "PowerExponent", &settings.HbaoSettings.PowerExponent, 0.01f ) ) {
+            settings.HbaoSettings.PowerExponent = std::clamp( settings.HbaoSettings.PowerExponent, 1.0f, 4.0f );
+        }
+        if ( ImGui::DragFloat( "Bias", &settings.HbaoSettings.Bias, 0.01f ) ) {
+            settings.HbaoSettings.Bias = std::clamp( settings.HbaoSettings.Bias, 0.0f, 0.5f );
+        }
+        ImGui::Checkbox( "Enable Blur", &settings.HbaoSettings.EnableBlur );
+        static std::vector<std::pair<char*, int>> ssaoRadi = { {"2", 0}, {"4", 1} };
+        if ( ImComboBox( "SSAO radius", ssaoRadi, &settings.HbaoSettings.SsaoBlurRadius ) ) {
+            ImGui::EndCombo();
+        }
+        ImGui::DragFloat( "BlurSharpness", &settings.HbaoSettings.BlurSharpness, 0.01f );
+        static std::vector<std::pair<char*, int>> blendMode = { {"Replace", 0}, {"Multiply", 1} };
+        if ( ImComboBox( "BlendMode", blendMode, &settings.HbaoSettings.BlendMode ) ) {
+            ImGui::EndCombo();
+        }
+
+        static std::vector<std::pair<char*, int>> stepCount = { {"4", 0}, {"8", 1} };
+        if ( ImComboBox( "SSAO steps", stepCount, &settings.HbaoSettings.SsaoStepCount ) ) {
+            ImGui::EndCombo();
+        }
+    }
+    ImGui::End();
+}
+
+void ImGuiShim::RenderAdvancedSettingsWindow()
+{
+    // Autosized settings by child objects & centered
+    IM_ASSERT( ImGui::GetCurrentContext() != NULL && "Missing Dear ImGui context!" );
+    IMGUI_CHECKVERSION();
+
+    auto windowSize = CurrentResolution;
+    auto columnWidth = windowSize.x / 4;
+    auto columnOffset = 0.0f;
+    auto columnHeight = std::max( 400.0f, windowSize.y / 2.f );
+
+    GothicRendererSettings& settings = Engine::GAPI->GetRendererState().RendererSettings;
+
+    ImGui::SetNextWindowPos( ImVec2( columnOffset, 0.0f ), ImGuiCond_Appearing, ImVec2( 0, 0 ) );
+    ImGui::SetNextWindowSize( ImVec2( windowSize.x / 4, columnHeight ), ImGuiCond_Appearing );
+    RenderAdvancedColumn1( settings, Engine::GAPI );
+    columnOffset += columnWidth;
+
+    ImGui::SetNextWindowPos( ImVec2( columnOffset, 0.0f ), ImGuiCond_Appearing, ImVec2( 0, 0 ) );
+    ImGui::SetNextWindowSize( ImVec2( windowSize.x / 4, columnHeight ), ImGuiCond_Appearing );
+    RenderAdvancedColumn2( settings, Engine::GAPI );
+    columnOffset += columnWidth;
+
+    ImGui::SetNextWindowPos( ImVec2( columnOffset, 0.0f ), ImGuiCond_Appearing, ImVec2( 0, 0 ) );
+    ImGui::SetNextWindowSize( ImVec2( windowSize.x / 4, columnHeight ), ImGuiCond_Appearing );
+    RenderAdvancedColumn3( settings, Engine::GAPI );
+    columnOffset += columnWidth;
+
+    ImGui::SetNextWindowPos( ImVec2( columnOffset, 0.0f ), ImGuiCond_Appearing, ImVec2( 0, 0 ) );
+    ImGui::SetNextWindowSize( ImVec2( windowSize.x / 4, columnHeight ), ImGuiCond_Appearing );
+    RenderAdvancedColumn4( settings, Engine::GAPI );
+
+}
