@@ -193,6 +193,19 @@ bool ImComboBox( const char* id, std::vector<std::pair<char*, T>>& items, T* sto
     return false;
 }
 
+void ImText( const char * label, const ImVec2& size ) {
+    auto& col = ImGui::GetStyleColorVec4( ImGuiCol_::ImGuiCol_Button );
+
+    ImGui::PushStyleColor( ImGuiCol_::ImGuiCol_ButtonActive, col );
+    ImGui::PushStyleColor( ImGuiCol_::ImGuiCol_ButtonHovered, col );
+    ImGui::PushStyleVarX( ImGuiStyleVar_::ImGuiStyleVar_ButtonTextAlign, 0 );
+
+    ImGui::Button( label, size );
+    ImGui::PopStyleVar( 1 );
+
+    ImGui::PopStyleColor( 2 );
+}
+
 void ImGuiShim::RenderSettingsWindow()
 {
     // Autosized settings by child objects & centered
@@ -204,6 +217,7 @@ void ImGuiShim::RenderSettingsWindow()
     // TIP: Don't use ImGui::GetMainViewport for framebuffer sizes since GD3D11 can undersample or oversample the game.
     // Use whatever the resolution is spit out instead.
     ImVec2 buttonWidth( 275, 0 );
+    auto& style = ImGui::GetStyle();
 
     ImGui::SetNextWindowPos( ImVec2( windowSize.x / 2, windowSize.y / 2 ), ImGuiCond_Appearing, ImVec2( 0.5f, 0.5f ) );
     if ( ImGui::Begin( "Settings", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize ) ) {
@@ -249,9 +263,7 @@ void ImGuiShim::RenderSettingsWindow()
             if ( it != Resolutions.end() ) {
                 ResolutionState = std::distance( Resolutions.begin(), it );
             }
-            ImGui::PushStyleVar( ImGuiStyleVar_ButtonTextAlign, ImVec2( 0.f, 0.5f ) );
-            ImGui::Button( "Resolution", buttonWidth ); ImGui::SameLine();
-            ImGui::PopStyleVar();
+            ImText( "Resolution", buttonWidth ); ImGui::SameLine();
             if ( ImGui::BeginCombo( "##Resolution", Resolutions[ResolutionState].c_str() ) ) {
                 for ( size_t i = 0; i < Resolutions.size(); i++ ) {
                     bool isSelected = (ResolutionState == i);
@@ -267,9 +279,7 @@ void ImGuiShim::RenderSettingsWindow()
                 }
                 ImGui::EndCombo();
             }
-            ImGui::PushStyleVar( ImGuiStyleVar_ButtonTextAlign, ImVec2( 0.f, 0.5f ) );
-            ImGui::Button( "Texture Quality", buttonWidth ); ImGui::SameLine();
-            ImGui::PopStyleVar();
+            ImText( "Texture Quality", buttonWidth ); ImGui::SameLine();
             static std::vector<std::pair<std::string, int>> QualityOptions = {
                 { "Potato",32 },
                 { "Ultra Low", 64 },
@@ -308,9 +318,7 @@ void ImGuiShim::RenderSettingsWindow()
                 "Fullscreen Lowlatency",
                 "Windowed"
             };
-            ImGui::PushStyleVar( ImGuiStyleVar_ButtonTextAlign, ImVec2( 0.f, 0.5f ) );
-            ImGui::Button( "Display Mode [*]", buttonWidth ); ImGui::SameLine();
-            ImGui::PopStyleVar();
+            ImText( "Display Mode [*]", buttonWidth ); ImGui::SameLine();
             auto displayModeState = settings.WindowMode;
             if ( ImGui::BeginCombo( "##DisplayMode", DisplayEnums[displayModeState].c_str() ) ) {
                 for ( size_t i = 0; i < DisplayEnums.size(); i++ ) {
@@ -345,9 +353,8 @@ void ImGuiShim::RenderSettingsWindow()
                         }
 
                     }
-                    if ( ImGui::IsItemHovered() ) {
-                        ImGui::SetTooltip( "[*] You need to restart for this to take effect." );
-                    }
+                    ImGui::SetItemTooltip( "[*] You need to restart for this to take effect." );
+
                     if ( isSelected ) {
                         ImGui::SetItemDefaultFocus();
                     }
@@ -355,10 +362,8 @@ void ImGuiShim::RenderSettingsWindow()
                 ImGui::EndCombo();
             }
 
-            ImGui::PushStyleVar( ImGuiStyleVar_ButtonTextAlign, ImVec2( 0.f, 0.5f ) );
-            ImGui::Button( "Shadow Quality", buttonWidth ); ImGui::SameLine();
-            ImGui::PopStyleVar();
-
+            ImText( "Shadow Quality", buttonWidth ); ImGui::SameLine();
+            
             static std::vector<std::pair<char*, int>> shadowMapSizesMax = {
                 {"very low", 512},
                 {"low", 1024},
@@ -383,9 +388,7 @@ void ImGuiShim::RenderSettingsWindow()
                 ImGui::EndCombo();
             }
 
-            ImGui::PushStyleVar( ImGuiStyleVar_ButtonTextAlign, ImVec2( 0.f, 0.5f ) );
-            ImGui::Button( "Dynamic Shadows", buttonWidth ); ImGui::SameLine();
-            ImGui::PopStyleVar();
+            ImText( "Dynamic Shadows", buttonWidth ); ImGui::SameLine();
             static std::vector<std::string> DynamicShadowEnums = { "Off", "Static", "Dynamic Update", "Full" };
             DynamicShadowState = static_cast<int>(settings.EnablePointlightShadows);
             if ( ImGui::BeginCombo( "##DynamicShadows", DynamicShadowEnums[DynamicShadowState].c_str() ) ) {
@@ -407,9 +410,8 @@ void ImGuiShim::RenderSettingsWindow()
             static bool fpsLimitEnabled = 0;
             fpsLimitEnabled = settings.FpsLimit > 0;
 
-            ImGui::PushStyleVar( ImGuiStyleVar_ButtonTextAlign, ImVec2( 0.f, 0.5f ) );
-            if ( ImGui::Button( fpsLimitEnabled ? "[x] FPS Limit" : "[ ] FPS Limit", buttonWidth ) ) {
-                fpsLimitEnabled = !fpsLimitEnabled;
+            ImText( "FPS Limit", { buttonWidth.x - ImGui::GetFrameHeight() - style.ItemSpacing.x, buttonWidth.y }); ImGui::SameLine();
+            if ( ImGui::Checkbox( "##Enable FPS Limit", &fpsLimitEnabled )) {
                 if ( !fpsLimitEnabled ) {
                     settings.FpsLimit = 0;
                 } else {
@@ -417,48 +419,35 @@ void ImGuiShim::RenderSettingsWindow()
                 }
             }
             ImGui::SameLine();
-            ImGui::PopStyleVar();
 
             ImGui::BeginDisabled( !fpsLimitEnabled );
             ImGui::SliderInt( "##FPSLimit", &settings.FpsLimit, 10, 300 );
             ImGui::EndDisabled();
 
-            ImGui::PushStyleVar( ImGuiStyleVar_ButtonTextAlign, ImVec2( 0.f, 0.5f ) );
-            ImGui::Button( "Object Draw Distance", buttonWidth ); ImGui::SameLine();
-            ImGui::PopStyleVar();
+            ImText( "Object Draw Distance", buttonWidth ); ImGui::SameLine();
             float objectDrawDistance = settings.OutdoorVobDrawRadius / 1000.0f;
             if ( ImGui::SliderFloat( "##OutdoorVobDrawRadius", &objectDrawDistance, 2.f, 100.0f ) ) {
                 settings.OutdoorVobDrawRadius = static_cast<float>(objectDrawDistance * 1000.0f);
             }
 
             float smallObjectDrawDistance = settings.OutdoorSmallVobDrawRadius / 1000.0f;
-            ImGui::PushStyleVar( ImGuiStyleVar_ButtonTextAlign, ImVec2( 0.f, 0.5f ) );
-            ImGui::Button( "Small Object Draw Distance", buttonWidth ); ImGui::SameLine();
-            ImGui::PopStyleVar();
+            ImText( "Small Object Draw Distance", buttonWidth ); ImGui::SameLine();
             if ( ImGui::SliderFloat( "##OutdoorSmallVobDrawRadius", &smallObjectDrawDistance, 2.f, 100.0f ) ) {
                 settings.OutdoorSmallVobDrawRadius = static_cast<float>(smallObjectDrawDistance * 1000.0f);
             }
 
             float visualFXDrawDistance = settings.VisualFXDrawRadius / 1000.0f;
-            ImGui::PushStyleVar( ImGuiStyleVar_ButtonTextAlign, ImVec2( 0.f, 0.5f ) );
-            ImGui::Button( "VisualFX Draw Distance", buttonWidth ); ImGui::SameLine();
-            ImGui::PopStyleVar();
+            ImText( "VisualFX Draw Distance", buttonWidth ); ImGui::SameLine();
             if ( ImGui::SliderFloat( "##VisualFXDrawRadius", &visualFXDrawDistance, 0.1f, 10.0f ) ) {
                 settings.VisualFXDrawRadius = static_cast<float>(visualFXDrawDistance * 1000.0f);
             }
-            ImGui::PushStyleVar( ImGuiStyleVar_ButtonTextAlign, ImVec2( 0.f, 0.5f ) );
-            ImGui::Button( "World Draw Distance", buttonWidth ); ImGui::SameLine();
-            ImGui::PopStyleVar();
+            ImText( "World Draw Distance", buttonWidth ); ImGui::SameLine();
             ImGui::SliderInt( "##SectionDrawRadius", &settings.SectionDrawRadius, 2, 20 );
 
-            ImGui::PushStyleVar( ImGuiStyleVar_ButtonTextAlign, ImVec2( 0.f, 0.5f ) );
-            ImGui::Button( "Contrast", buttonWidth ); ImGui::SameLine();
-            ImGui::PopStyleVar();
+            ImText( "Contrast", buttonWidth ); ImGui::SameLine();
             ImGui::SliderFloat( "##Contrast", &settings.GammaValue, 0.1f, 2.0f );
 
-            ImGui::PushStyleVar( ImGuiStyleVar_ButtonTextAlign, ImVec2( 0.f, 0.5f ) );
-            ImGui::Button( "Brightness", buttonWidth ); ImGui::SameLine();
-            ImGui::PopStyleVar();
+            ImText( "Brightness", buttonWidth ); ImGui::SameLine();
             ImGui::SliderFloat( "##Brightness", &settings.BrightnessValue, 0.1f, 3.0f );
             ImGui::PopItemWidth();
 
@@ -488,48 +477,40 @@ void RenderAdvancedColumn1( GothicRendererSettings& settings, GothicAPI* gapi ) 
         ImGui::SeparatorText( "SkySettings" );
         auto& atmosphereSettings = gapi->GetSky()->GetAtmoshpereSettings();
         ImGui::DragFloat( "G", &atmosphereSettings.G, 0.01f );
-        if ( ImGui::IsItemHovered() ) {
-            ImGui::SetTooltip( "Size of the Sun" );
-        }
+        ImGui::SetItemTooltip( "Size of the Sun" );
+
         ImGui::DragFloat( "RayleightScaleDepth", &atmosphereSettings.RayleightScaleDepth, 0.01f, 0.1f );
         ImGui::DragFloat( "ESun", &atmosphereSettings.ESun, 0.1f, 0.2f );
-        if ( ImGui::IsItemHovered() ) {
-            ImGui::SetTooltip( "Brightness of the sun" );
-        }
+        ImGui::SetItemTooltip( "Brightness of the sun" );
+
         ImGui::DragFloat( "InnerRadius", &atmosphereSettings.InnerRadius, 0.01f );
-        if ( ImGui::IsItemHovered() ) {
-            ImGui::SetTooltip( "Inner Radius of the fake-planet. This must be greater than SphereOffset.y" );
-        }
+        ImGui::SetItemTooltip( "Inner Radius of the fake-planet. This must be greater than SphereOffset.y" );
+
         ImGui::DragFloat( "OuterRadius", &atmosphereSettings.OuterRadius, 0.01f );
-        if ( ImGui::IsItemHovered() ) {
-            ImGui::SetTooltip( "Outer Radius of the fake-planet" );
-        }
+        ImGui::SetItemTooltip( "Outer Radius of the fake-planet" );
+
         ImGui::DragFloat( "Km", &atmosphereSettings.Km, 0.0001f, 0.01f );
         ImGui::DragFloat( "Kr", &atmosphereSettings.Kr, 0.0001f, 0.01f );
         ImGui::InputInt( "Samples", &atmosphereSettings.Samples );
         ImGui::DragFloat3( "WaveLengths", &atmosphereSettings.WaveLengths.x, 0.01f );
         ImGui::DragFloat( "SphereOffset.y", &atmosphereSettings.SphereOffsetY, 0.01f );
         ImGui::Checkbox( "ReplaceSunDirection", &settings.ReplaceSunDirection );
-        if ( ImGui::IsItemHovered() ) {
-            ImGui::SetTooltip( "Outer Radius of the fake-planet" );
-        }
+        ImGui::SetItemTooltip( "Outer Radius of the fake-planet" );
+
 
         ImGui::BeginDisabled( !settings.ReplaceSunDirection );
         ImGui::DragFloat3( "LightDirection", &atmosphereSettings.LightDirection.x, 0.001f );
-        if ( ImGui::IsItemHovered() ) {
-            ImGui::SetTooltip( "The direction the sun should come from. Only active when ReplaceSunDirection is active.\nAlso useful to fix the sun in one position" );
-        }
+        ImGui::SetItemTooltip( "The direction the sun should come from. Only active when ReplaceSunDirection is active.\nAlso useful to fix the sun in one position" );
+
         ImGui::EndDisabled();
 
         ImGui::ColorEdit3( "SunLightColor", &settings.SunLightColor.x );
-        if ( ImGui::IsItemHovered() ) {
-            ImGui::SetTooltip( "Color of the sunlight" );
-        }
+        ImGui::SetItemTooltip( "Color of the sunlight" );
+
         ImGui::DragFloat( "SunLightStrength", &settings.SunLightStrength, 0.01f );
         ImGui::DragFloat( "SkyTimeScale", &atmosphereSettings.SkyTimeScale, 0.01f );
-        if ( ImGui::IsItemHovered() ) {
-            ImGui::SetTooltip( "This makes the skys time pass slower or faster" );
-        }
+        ImGui::SetItemTooltip( "This makes the skys time pass slower or faster" );
+
     }
     ImGui::End();
 }
@@ -632,7 +613,6 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
         ImGui::DragFloat( "ShadowStrength", &settings.ShadowStrength, 0.01f );
         ImGui::DragFloat( "ShadowAOStrength", &settings.ShadowAOStrength, 0.01f );
         ImGui::DragFloat( "WorldAOStrength", &settings.WorldAOStrength, 0.01f );
-        ImGui::DragFloat( "ShadowStrength", &settings.ShadowStrength, 0.01f );
         ImGui::Checkbox( "WireframeWorld", &settings.WireframeWorld );
         ImGui::Checkbox( "WireframeVobs", &settings.WireframeVobs );
         // ImGui::Checkbox("Grass AlphaToCoverage", &settings.VegetationAlphaToCoverage );	
