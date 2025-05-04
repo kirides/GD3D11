@@ -589,7 +589,11 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
         ImGui::DragFloat( "IndoorVobDrawRadius", &settings.IndoorVobDrawRadius, 1.0f, 0.0f, 0.0f, "%.0f" );
         ImGui::DragFloat( "OutdoorSmallVobRadius", &settings.OutdoorSmallVobDrawRadius, 1.0f, 0.0f, 0.0f, "%.0f" );
         ImGui::DragFloat( "SkeletalMeshDrawRadius", &settings.SkeletalMeshDrawRadius, 1.0f, 0.0f, 18000.0f, "%.0f");
+        ImGui::SetItemTooltip( "Draw distance for NPCs" );
+
         ImGui::DragFloat( "VisualFXDrawRadius", &settings.VisualFXDrawRadius, 1.0f, 0.0f, 50000.0f, "%.0f" );
+        ImGui::SetItemTooltip( "Draw distance for Special effects, like torches, spells, campfires..." );
+
         ImGui::DragFloat( "RainRadius", &settings.RainRadiusRange, 1.0f, 0.0f, 0.0f, "%.0f" );
         ImGui::DragFloat( "RainHeight", &settings.RainHeightRange, 1.0f, 0.0f, 0.0f, "%.0f" );
         ImGui::DragInt( "NumRainParticles", (int*)&settings.RainNumParticles, 1.0f, 0, 200000 );
