@@ -2984,7 +2984,19 @@ LRESULT GothicAPI::OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
                     SetEnableGothicInput( true );
             }
             break;
+        default:
+            if ( Engine::ImGuiHandle->IsActive ) {
+                // do not delegate input further if settings is open
+                Engine::ImGuiHandle->OnWindowMessage( hWnd, msg, wParam, lParam );
+                return DefWindowProc( hWnd, msg, wParam, lParam );
+            }
      }
+    case WM_KEYUP:
+        if ( Engine::ImGuiHandle->IsActive ) {
+            // do not delegate input further if settings is open
+            Engine::ImGuiHandle->OnWindowMessage( hWnd, msg, wParam, lParam );
+            return DefWindowProc( hWnd, msg, wParam, lParam );
+        }
     // Disable any painting that zengine might be doing
     case WM_PAINT:
     case WM_NCPAINT:

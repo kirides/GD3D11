@@ -701,6 +701,9 @@
     <ClInclude Include="ImGuiShim.h">
       <Filter>Engine</Filter>
     </ClInclude>
+    <ClInclude Include="zCInput_Win32.h">
+      <Filter>ZenGin\Classes</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp" />

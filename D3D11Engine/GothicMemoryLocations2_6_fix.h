@@ -277,6 +277,10 @@ struct GothicMemoryLocations {
         static const unsigned int ProcessInputEvents_Offset = 0x74;
     };
 
+    struct zCInput_Win32 {
+        static const unsigned int GetKey = 0x004d5370;
+    };
+
     struct GlobalObjects {
         static const unsigned int zCResourceManager = 0x0099AB30;
         static const unsigned int zCCamera = 0x008D7F94;
