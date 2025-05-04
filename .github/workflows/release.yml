@@ -94,6 +94,7 @@ jobs:
         copy "Release_G1A_AVX2\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\g1a_avx2.dll"
         copy "Release_G1A_AVX\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\g1a_avx.dll"
         copy "Release_G1A_SSE2\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\g1a.dll"
+        copy "Launcher\ddraw.dll" "${{env.RELEASE_DIR}}\"
         cd "${{env.RELEASE_DIR}}"
         7z a -tzip "..\${{env.RELEASE_DIR}}.zip" -r
 

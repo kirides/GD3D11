@@ -319,6 +319,7 @@ public:
     void EnsureTempVertexBufferSize( std::unique_ptr<D3D11VertexBuffer>& buffer, UINT size );
 
     float UpdateCustomFontMultiplierFontRendering( float multiplier );
+    void SetWindowMode( WindowModes mode ) override;
 
 protected:
     std::unique_ptr<FpsLimiter> m_FrameLimiter;
@@ -425,4 +426,5 @@ protected:
     int m_previousFpsLimit;
     bool m_isWindowActive;
     float unionCurrentCustomFontMultiplier;
+    bool m_recreateSwapChain;
 };

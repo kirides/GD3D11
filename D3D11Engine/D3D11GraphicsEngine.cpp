@@ -45,6 +45,7 @@
 #include <d3dcompiler.h>
 #include <dxgi1_6.h>
 #include <VersionHelpers.h>
+#include <comdef.h>
 
 namespace wrl = Microsoft::WRL;
 
@@ -89,6 +90,8 @@ D3D11GraphicsEngine::D3D11GraphicsEngine() {
     CachedRefreshRate.Numerator = 0;
     CachedRefreshRate.Denominator = 0;
     unionCurrentCustomFontMultiplier = 1.0;
+    m_currentWindowMode = (WindowModes)Engine::GAPI->GetRendererState().RendererSettings.WindowMode;
+    m_recreateSwapChain = false;
 }
 
 D3D11GraphicsEngine::~D3D11GraphicsEngine() {
@@ -153,8 +156,16 @@ XRESULT D3D11GraphicsEngine::Init() {
     if ( SUCCEEDED( hr ) ) {
         // Windows 10, version 1803 - only
         UINT adapterIndex = 0;
-        while ( DXGIFactory6->EnumAdapterByGpuPreference( adapterIndex++, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
-            IID_PPV_ARGS( DXGIAdapter1.ReleaseAndGetAddressOf() ) ) != DXGI_ERROR_NOT_FOUND ) {
+        while ( true ) {
+            hr = DXGIFactory6->EnumAdapterByGpuPreference( adapterIndex++, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
+                IID_PPV_ARGS( DXGIAdapter1.ReleaseAndGetAddressOf() ) );
+            if ( hr == DXGI_ERROR_NOT_FOUND) {
+                break;
+            }
+
+            if ( hr == E_FAIL ) {
+                break;
+            }
             DXGI_ADAPTER_DESC1 desc;
             DXGIAdapter1->GetDesc1( &desc );
 
@@ -165,10 +176,22 @@ XRESULT D3D11GraphicsEngine::Init() {
             haveAdapter = true;
             break;
         }
-    } else {
+    }
+    if (!haveAdapter ) {
         // Let's rate devices by their VRAM and vendors and hope we'll get atleast discrete GPU
         std::map<uint64_t, UINT> candidates;
-        for ( UINT adapterIndex = 0; DXGIFactory2->EnumAdapters1( adapterIndex, DXGIAdapter1.ReleaseAndGetAddressOf() ) != DXGI_ERROR_NOT_FOUND; ++adapterIndex ) {
+
+        UINT adapterIndex = 0;
+        while ( true ) {
+            hr = DXGIFactory2->EnumAdapters1( adapterIndex++, DXGIAdapter1.ReleaseAndGetAddressOf() );
+            if ( hr == DXGI_ERROR_NOT_FOUND ) {
+                break;
+            }
+
+            if ( hr == E_FAIL || DXGIAdapter1 == nullptr ) {
+                continue;
+            }
+
             DXGI_ADAPTER_DESC1 desc;
             DXGIAdapter1->GetDesc1( &desc );
 
@@ -562,7 +585,9 @@ int D3D11GraphicsEngine::GetWindowMode() {
 XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
     HRESULT hr;
 
-    if ( memcmp( &Resolution, &newSize, sizeof( newSize ) ) == 0 && SwapChain.Get() )
+    if ( memcmp( &Resolution, &newSize, sizeof( newSize ) ) == 0
+        && SwapChain.Get()
+        && !m_recreateSwapChain )
         return XR_SUCCESS;  // Don't resize if we don't have to
 
     Resolution = newSize;
@@ -595,15 +620,37 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
         GetClientRect( GetDesktopWindow(), &desktopRect );
         SetWindowPos( OutputWindow, nullptr, 0, 0, desktopRect.right, desktopRect.bottom, SWP_SHOWWINDOW );
     } else if ( Engine::GAPI->GetRendererState().RendererSettings.StretchWindow ) {
+
+        // Remove Window Border and Captions
+        LONG lStyle = GetWindowLongA( OutputWindow, GWL_STYLE );
+        lStyle &= ~(WS_CAPTION | WS_THICKFRAME | WS_MINIMIZE | WS_MAXIMIZE | WS_SYSMENU);
+        SetWindowLongA( OutputWindow, GWL_STYLE, lStyle );
+
+        LONG lExStyle = GetWindowLongA( OutputWindow, GWL_EXSTYLE );
+        lExStyle &= ~(WS_EX_DLGMODALFRAME | WS_EX_CLIENTEDGE | WS_EX_STATICEDGE);
+        SetWindowLongA( OutputWindow, GWL_EXSTYLE, lExStyle );
+
         RECT desktopRect;
         GetClientRect( GetDesktopWindow(), &desktopRect );
         SetWindowPos( OutputWindow, nullptr, 0, 0, desktopRect.right, desktopRect.bottom, SWP_SHOWWINDOW );
     } else {
+        SetWindowLongA( OutputWindow, GWL_STYLE, WS_OVERLAPPEDWINDOW );
+        SetWindowLongA( OutputWindow, GWL_EXSTYLE, WS_EX_OVERLAPPEDWINDOW );
         RECT rect;
         if ( GetWindowRect( OutputWindow, &rect ) ) {
             SetWindowPos( OutputWindow, nullptr, rect.left, rect.top, bbres.x, bbres.y, SWP_SHOWWINDOW );
         } else {
             SetWindowPos( OutputWindow, nullptr, 0, 0, bbres.x, bbres.y, SWP_SHOWWINDOW );
+        }
+
+        if ( SwapChain.Get() ) {
+            DXGI_MODE_DESC newMode = {};
+            newMode.Width = newSize.x;
+            newMode.Height = newSize.y;
+            newMode.RefreshRate.Numerator = CachedRefreshRate.Numerator;
+            newMode.RefreshRate.Denominator = CachedRefreshRate.Denominator;
+            newMode.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+            SwapChain->ResizeTarget( &newMode );
         }
     }
 #endif
@@ -617,23 +664,19 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
         scflags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
     }
 
-    if ( !SwapChain.Get() ) {
-        static std::map<DXGI_SWAP_EFFECT, std::string> swapEffectMap = {
+    if ( !SwapChain.Get() || m_recreateSwapChain ) {
+        m_recreateSwapChain = true;
+
+        if ( SwapChain.Get() ) {
+            Context.Get()->OMSetRenderTargets( 0, nullptr, nullptr );  // Unbind render target
+            Context.Get()->Flush();
+        }
+
+        std::map<DXGI_SWAP_EFFECT, std::string> swapEffectMap = {
             {DXGI_SWAP_EFFECT::DXGI_SWAP_EFFECT_DISCARD, "DXGI_SWAP_EFFECT_DISCARD"},
             {DXGI_SWAP_EFFECT::DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL, "DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL"},
             {DXGI_SWAP_EFFECT::DXGI_SWAP_EFFECT_FLIP_DISCARD, "DXGI_SWAP_EFFECT_FLIP_DISCARD"},
         };
-
-        m_swapchainflip = Engine::GAPI->GetRendererState().RendererSettings.DisplayFlip;
-        if ( m_swapchainflip ) {
-            LONG lStyle = GetWindowLongA( OutputWindow, GWL_STYLE );
-            lStyle &= ~(WS_CAPTION | WS_THICKFRAME | WS_MINIMIZE | WS_MAXIMIZE | WS_SYSMENU);
-            SetWindowLongA( OutputWindow, GWL_STYLE, lStyle );
-
-            LONG lExStyle = GetWindowLongA( OutputWindow, GWL_EXSTYLE );
-            lExStyle &= ~(WS_EX_DLGMODALFRAME | WS_EX_CLIENTEDGE | WS_EX_STATICEDGE);
-            SetWindowLongA( OutputWindow, GWL_EXSTYLE, lExStyle );
-        }
 
         Microsoft::WRL::ComPtr<IDXGIDevice> pDXGIDevice;
         Microsoft::WRL::ComPtr<IDXGIFactory> factory;
@@ -673,7 +716,7 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
         }
 
         LogInfo() << "SwapChain Mode: " << swapEffectMap.at( swapEffect );
-        swapEffectMap.clear();
+
         if ( m_swapchainflip ) {
             LogInfo() << "SwapChain: DXGI_FEATURE_PRESENT_ALLOW_TEARING = " << (m_flipWithTearing ? "Enabled" : "Disabled");
         }
@@ -710,9 +753,9 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
 
             Microsoft::WRL::ComPtr<IDXGISwapChain1> swapChain1; // we don't need the "newer" swapchain, as Present() will be sufficient
 
-            LE( factory2->CreateSwapChainForHwnd( GetDevice().Get(), OutputWindow, &scd, nullptr, nullptr, swapChain1.GetAddressOf() ) );
-            if ( !swapChain1.Get() ) {
-                LogError() << "Failed to create Swapchain! Program will now exit!";
+            hr = factory2->CreateSwapChainForHwnd( GetDevice().Get(), OutputWindow, &scd, nullptr, nullptr, swapChain1.GetAddressOf() );
+            if ( !SUCCEEDED(hr) || !swapChain1.Get() ) {
+                LogError() << "Failed to create Swapchain! Program will now exit!" << _com_error(hr).ErrorMessage();
                 exit( 0 );
             }
 
@@ -737,33 +780,33 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
             scd.OutputWindow = OutputWindow;
             scd.Windowed = true; // as per microsoft recommendation https://learn.microsoft.com/en-us/windows/win32/api/dxgi/ns-dxgi-dxgi_swap_chain_desc
 
-            LE( factory->CreateSwapChain( GetDevice().Get(), &scd, SwapChain.ReleaseAndGetAddressOf() ) );
-            if ( !SwapChain.Get() ) {
-                LogError() << "Failed to create Swapchain! Program will now exit!";
+            hr = factory->CreateSwapChain( GetDevice().Get(), &scd, SwapChain.ReleaseAndGetAddressOf() );
+            if ( !SUCCEEDED( hr ) || !SwapChain.Get() ) {
+                LogError() << "Failed to create Swapchain! Program will now exit!" << _com_error( hr ).ErrorMessage();
                 exit( 0 );
             }
         }
 
+        m_recreateSwapChain = false;
+
         if ( m_swapchainflip ) {
             LE( factory->MakeWindowAssociation( OutputWindow, DXGI_MWA_NO_WINDOW_CHANGES ) );
-        } else {
+        } 
+        if ( bool windowed = Engine::GAPI->HasCommandlineParameter( "ZWINDOW" ) ||
+                Engine::GAPI->GetIntParamFromConfig( "zStartupWindowed" ) ) {
             // Perform fullscreen transition
             // According to microsoft guide it is the best practice
             // because the swapchain is created in accordance to desktop resolution
             // and we can have different resolution in fullscreen exclusive
-            bool windowed = Engine::GAPI->HasCommandlineParameter( "ZWINDOW" ) ||
-                Engine::GAPI->GetIntParamFromConfig( "zStartupWindowed" );
 
-            if ( !windowed ) {
-                DXGI_MODE_DESC newMode = {};
-                newMode.Width = newSize.x;
-                newMode.Height = newSize.y;
-                newMode.RefreshRate.Numerator = CachedRefreshRate.Numerator;
-                newMode.RefreshRate.Denominator = CachedRefreshRate.Denominator;
-                newMode.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-                SwapChain->ResizeTarget( &newMode );
-                SwapChain->SetFullscreenState( true, nullptr );
-            }
+            DXGI_MODE_DESC newMode = {};
+            newMode.Width = newSize.x;
+            newMode.Height = newSize.y;
+            newMode.RefreshRate.Numerator = CachedRefreshRate.Numerator;
+            newMode.RefreshRate.Denominator = CachedRefreshRate.Denominator;
+            newMode.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+            SwapChain->ResizeTarget( &newMode );
+            SwapChain->SetFullscreenState( !windowed, nullptr );
         }
 
         // Need to init ImGui now that we have a working swapchain
@@ -886,6 +929,10 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
             1000, // 1 second timeout (shouldn't ever occur)
             true
         );
+    }
+
+    if ( m_recreateSwapChain ) {
+        OnResize( Resolution );
     }
 
     static int oldToneMap = -1;
@@ -5026,7 +5073,7 @@ LRESULT D3D11GraphicsEngine::OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam
 }
 
 /** Draws the ocean */
-XRESULT D3D11GraphicsEngine::DrawOcean( GOcean* ocean ) {
+XRESULT D3D11GraphicsEngine::DrawOcean( GOcean* ocean ) { 
     SetDefaultStates();
 
     // Then draw the ocean
@@ -6044,6 +6091,57 @@ float  D3D11GraphicsEngine::UpdateCustomFontMultiplierFontRendering( float multi
     return res; 
 }
 
+void D3D11GraphicsEngine::SetWindowMode( WindowModes mode ) {
+    if ( m_currentWindowMode == mode ) {
+        return;
+    }
+
+    if ( m_currentWindowMode == WindowModes::WINDOW_MODE_FULLSCREEN_EXCLUSIVE
+        || mode == WindowModes::WINDOW_MODE_FULLSCREEN_EXCLUSIVE ) {
+        // Can't change Fullscreen exclusive for now.
+        // TODO: Figure out how to make Swapchain-recreatable for such cases
+        return;
+    }
+
+    m_currentWindowMode = mode;
+    auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+    switch ( mode ) {
+    case WINDOW_MODE_FULLSCREEN_EXCLUSIVE: {
+        settings.DisplayFlip = false;
+        settings.LowLatency = false;
+        settings.StretchWindow = true;
+        break;
+    }
+    case WINDOW_MODE_FULLSCREEN_BORDERLESS: {
+        settings.DisplayFlip = true;
+        settings.LowLatency = false;
+        settings.StretchWindow = true;
+        break;
+    }
+    case WINDOW_MODE_FULLSCREEN_LOWLATENCY: {
+        settings.DisplayFlip = true;
+        settings.LowLatency = true;
+        settings.StretchWindow = true;
+        break;
+    }
+    case WINDOW_MODE_WINDOWED: {
+        // settings.DisplayFlip = false; // don't change flip mode
+        settings.StretchWindow = false;
+        settings.LowLatency = false;
+        break;
+    }
+    default:
+        return;
+    }
+
+    if ( m_recreateSwapChain ) {
+        // already want to recreate the swapchain in the next frame
+        return;
+    }
+
+    m_recreateSwapChain = true;
+}
+
 void D3D11GraphicsEngine::DrawString( const std::string& str, float x, float y, const zFont* font, zColor& fontColor ) {
     if ( !font ) return;
     if ( !font->tex ) return;
@@ -6158,3 +6256,4 @@ void D3D11GraphicsEngine::DrawString( const std::string& str, float x, float y, 
     graphicState.FF_Stages[0].ColorArg1 = copyColorArg1;
     graphicState.FF_Stages[0].ColorArg2 = copyColorArg2;
 }
+

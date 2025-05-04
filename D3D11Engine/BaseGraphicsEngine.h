@@ -206,4 +206,6 @@ public:
     virtual void DrawString( const std::string& str, float x, float y, const zFont* font, zColor& fontColor ) {};
 
     virtual XRESULT UpdateRenderStates() { return XR_SUCCESS; };
+
+    virtual void SetWindowMode( WindowModes mode ) { };
 };

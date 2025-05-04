@@ -128,6 +128,7 @@ public:
     //virtual int MeasureString(std::string str, zFont* zFont);
 
     void ResetPresentPending() { PresentPending = false; }
+    void SetWindowMode( WindowModes mode ) override { }
 
 protected:
     /** Updates the transformsCB with new values from the GAPI */
@@ -204,4 +205,5 @@ protected:
 
     /** If true, we are still waiting for a present to happen. Don't draw everything twice! */
     bool PresentPending;
+    WindowModes m_currentWindowMode;
 };
