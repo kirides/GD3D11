@@ -140,9 +140,9 @@ float GetPrivateProfileFloatA(
 ) {
     const int float_str_max = 30;
     TCHAR nFloat[float_str_max];
-    if ( GetPrivateProfileStringA( lpAppName, lpKeyName, nullptr, nFloat, float_str_max, lpFileName.c_str() ) ) {
+    if ( auto count = GetPrivateProfileStringA( lpAppName, lpKeyName, nullptr, nFloat, float_str_max, lpFileName.c_str() ) ) {
         try {
-            return std::stof( std::string( nFloat ) );
+            return std::stof( std::string( nFloat, count ) );
         } catch ( const std::exception& ) {
             return nDefault;
         }
@@ -156,8 +156,8 @@ std::string GetPrivateProfileStringA(
     const std::string& lpcstrDefault,
     const std::string& lpFileName ) {
     char buffer[MAX_PATH];
-    GetPrivateProfileStringA( lpAppName, lpKeyName, lpcstrDefault.c_str(), buffer, MAX_PATH, lpFileName.c_str() );
-    return std::string( buffer );
+    auto count = GetPrivateProfileStringA( lpAppName, lpKeyName, lpcstrDefault.c_str(), buffer, MAX_PATH, lpFileName.c_str() );
+    return std::string( buffer, count );
 }
 
 bool GetPrivateProfileBoolA(
