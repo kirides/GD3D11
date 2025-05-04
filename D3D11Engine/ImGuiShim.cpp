@@ -394,29 +394,29 @@ void ImGuiShim::RenderSettingsWindow()
 
             ImText( "Object Draw Distance", buttonWidth ); ImGui::SameLine();
             float objectDrawDistance = settings.OutdoorVobDrawRadius / 1000.0f;
-            if ( ImGui::SliderFloat( "##OutdoorVobDrawRadius", &objectDrawDistance, 2.f, 100.0f ) ) {
+            if ( ImGui::SliderFloat( "##OutdoorVobDrawRadius", &objectDrawDistance, 1.f, 100.0f, "%.0f" ) ) {
                 settings.OutdoorVobDrawRadius = static_cast<float>(objectDrawDistance * 1000.0f);
             }
 
             float smallObjectDrawDistance = settings.OutdoorSmallVobDrawRadius / 1000.0f;
             ImText( "Small Object Draw Distance", buttonWidth ); ImGui::SameLine();
-            if ( ImGui::SliderFloat( "##OutdoorSmallVobDrawRadius", &smallObjectDrawDistance, 2.f, 100.0f ) ) {
+            if ( ImGui::SliderFloat( "##OutdoorSmallVobDrawRadius", &smallObjectDrawDistance, 1.f, 100.0f, "%.0f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput) ) {
                 settings.OutdoorSmallVobDrawRadius = static_cast<float>(smallObjectDrawDistance * 1000.0f);
             }
 
             float visualFXDrawDistance = settings.VisualFXDrawRadius / 1000.0f;
             ImText( "VisualFX Draw Distance", buttonWidth ); ImGui::SameLine();
-            if ( ImGui::SliderFloat( "##VisualFXDrawRadius", &visualFXDrawDistance, 0.1f, 10.0f ) ) {
+            if ( ImGui::SliderFloat( "##VisualFXDrawRadius", &visualFXDrawDistance, 0.1f, 10.0f, "%.0f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput ) ) {
                 settings.VisualFXDrawRadius = static_cast<float>(visualFXDrawDistance * 1000.0f);
             }
             ImText( "World Draw Distance", buttonWidth ); ImGui::SameLine();
-            ImGui::SliderInt( "##SectionDrawRadius", &settings.SectionDrawRadius, 2, 20 );
+            ImGui::SliderInt( "##SectionDrawRadius", &settings.SectionDrawRadius, 1, 20, "%d", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
 
             ImText( "Contrast", buttonWidth ); ImGui::SameLine();
-            ImGui::SliderFloat( "##Contrast", &settings.GammaValue, 0.1f, 2.0f );
+            ImGui::SliderFloat( "##Contrast", &settings.GammaValue, 0.1f, 2.0f, "%.1f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
 
             ImText( "Brightness", buttonWidth ); ImGui::SameLine();
-            ImGui::SliderFloat( "##Brightness", &settings.BrightnessValue, 0.1f, 3.0f );
+            ImGui::SliderFloat( "##Brightness", &settings.BrightnessValue, 0.1f, 3.0f, "%.1f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
             ImGui::PopItemWidth();
 
             ImGui::EndGroup();
@@ -500,12 +500,29 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
         }
         ImGui::Separator();
         ImGui::Checkbox( "DisableRendering", &settings.DisableRendering );
+        ImGui::SliderInt( "SectionDrawRadius", &settings.SectionDrawRadius, 0, 20, "%d", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
+        ImGui::SliderInt( "Draw WorldMesh", &settings.DrawWorldMesh, 0, 3 );
+
         ImGui::Checkbox( "Draw VOBs", &settings.DrawVOBs );
         ImGui::Checkbox( "Draw Dynamic Vobs", &settings.DrawDynamicVOBs );
-        ImGui::InputInt( "Draw WorldMesh", &settings.DrawWorldMesh );
+        ImGui::SliderFloat( "OutdoorVobDrawRadius", &settings.OutdoorVobDrawRadius, 1.0f, 100000.0f, "%.0f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
+        ImGui::SliderFloat( "IndoorVobDrawRadius", &settings.IndoorVobDrawRadius, 1.0f, 100000.0f,  "%.0f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
+        ImGui::SliderFloat( "OutdoorSmallVobRadius", &settings.OutdoorSmallVobDrawRadius, 1.0f, 100000.0f, "%.0f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
+        
         ImGui::Checkbox( "Draw Skeletal Meshes", &settings.DrawSkeletalMeshes );
+        ImGui::BeginDisabled( !settings.DrawSkeletalMeshes );
+        ImGui::SliderFloat( "SkeletalMeshDrawRadius", &settings.SkeletalMeshDrawRadius, 0.0f, 18000.0f, "%.0f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
+        ImGui::SetItemTooltip( "Draw distance for NPCs" );
+        ImGui::EndDisabled();
+        
         ImGui::Checkbox( "Draw Mobs", &settings.DrawMobs );
+        
         ImGui::Checkbox( "Draw ParticleEffects", &settings.DrawParticleEffects );
+        ImGui::BeginDisabled( !settings.DrawParticleEffects );
+        ImGui::SliderFloat( "VisualFXDrawRadius", &settings.VisualFXDrawRadius, 0.0f, 50000.0f, "%.0f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
+        ImGui::SetItemTooltip( "Draw distance for Special effects, like torches, spells, campfires..." );
+        ImGui::EndDisabled();
+
         // ImGui::Checkbox( "Draw Sky", &settings.DrawSky );
         ImGui::Checkbox( "Draw Fog", &settings.DrawFog );
 
@@ -584,15 +601,6 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
         ImGui::Checkbox( "WireframeWorld", &settings.WireframeWorld );
         ImGui::Checkbox( "WireframeVobs", &settings.WireframeVobs );
         // ImGui::Checkbox("Grass AlphaToCoverage", &settings.VegetationAlphaToCoverage );	
-        ImGui::DragInt( "SectionDrawRadius", &settings.SectionDrawRadius, 1, 0, 100 );
-        ImGui::DragFloat( "OutdoorVobDrawRadius", &settings.OutdoorVobDrawRadius, 1.0f, 0.0f, 0.0f, "%.0f" );
-        ImGui::DragFloat( "IndoorVobDrawRadius", &settings.IndoorVobDrawRadius, 1.0f, 0.0f, 0.0f, "%.0f" );
-        ImGui::DragFloat( "OutdoorSmallVobRadius", &settings.OutdoorSmallVobDrawRadius, 1.0f, 0.0f, 0.0f, "%.0f" );
-        ImGui::DragFloat( "SkeletalMeshDrawRadius", &settings.SkeletalMeshDrawRadius, 1.0f, 0.0f, 18000.0f, "%.0f");
-        ImGui::SetItemTooltip( "Draw distance for NPCs" );
-
-        ImGui::DragFloat( "VisualFXDrawRadius", &settings.VisualFXDrawRadius, 1.0f, 0.0f, 50000.0f, "%.0f" );
-        ImGui::SetItemTooltip( "Draw distance for Special effects, like torches, spells, campfires..." );
 
         ImGui::DragFloat( "RainRadius", &settings.RainRadiusRange, 1.0f, 0.0f, 0.0f, "%.0f" );
         ImGui::DragFloat( "RainHeight", &settings.RainHeightRange, 1.0f, 0.0f, 0.0f, "%.0f" );
