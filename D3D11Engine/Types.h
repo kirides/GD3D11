@@ -42,6 +42,9 @@ struct INT2 {
         return std::to_string( x ) + "x" + std::to_string( y );
     }
 
+    bool operator==( const INT2& rhs ) { return x == rhs.x && y == rhs.y; }
+    bool operator!=( const INT2& rhs ) { return !(x == rhs.x && y == rhs.y); }
+
     int x;
     int y;
 };

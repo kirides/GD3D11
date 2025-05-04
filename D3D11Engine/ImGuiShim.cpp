@@ -60,6 +60,7 @@ void ImGuiShim::Init(
     Initiated = true;
 
     auto& Displaylist = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetDisplayModeList();
+    Resolutions.clear();
     for ( auto it = Displaylist.rbegin(); it != Displaylist.rend(); ++it ) {
         std::string s = std::to_string( (*it).Width ) + "x" + std::to_string( (*it).Height );
         Resolutions.emplace_back( s );
@@ -116,7 +117,8 @@ void ImGuiShim::RenderLoop()
     }
     //if ( DemoVisible )
     //    ImGui::ShowDemoWindow();
-    //ImGui::GetIO().MouseDrawCursor = IsActive;
+    
+    ImGui::GetIO().MouseDrawCursor = INT2( ImGui::GetMainViewport()->Size.x, ImGui::GetMainViewport()->Size.y ) != Engine::GraphicsEngine->GetResolution();
     ImGui::Render();
     ImGui_ImplDX11_RenderDrawData( ImGui::GetDrawData() );
 }
@@ -312,53 +314,19 @@ void ImGuiShim::RenderSettingsWindow()
                 ImGui::EndCombo();
             }
 
-            static std::vector<std::string> DisplayEnums = {
-                "Fullscreen Borderless",
-                "Fullscreen Exclusive",
-                "Fullscreen Lowlatency",
-                "Windowed"
-            };
             ImText( "Display Mode [*]", buttonWidth ); ImGui::SameLine();
             auto displayModeState = settings.WindowMode;
-            if ( ImGui::BeginCombo( "##DisplayMode", DisplayEnums[displayModeState].c_str() ) ) {
-                for ( size_t i = 0; i < DisplayEnums.size(); i++ ) {
-                    bool isSelected = (displayModeState == i);
-                    if ( ImGui::Selectable( DisplayEnums[i].c_str(), isSelected ) ) {
-                        settings.WindowMode = i;
-                        switch ( settings.WindowMode ) {
-                            case WINDOW_MODE_FULLSCREEN_EXCLUSIVE: {
-                                settings.DisplayFlip = false;
-                                settings.LowLatency = false;
-                                settings.StretchWindow = true;
-                                break;
-                            }
-                            case WINDOW_MODE_FULLSCREEN_BORDERLESS: {
-                                settings.DisplayFlip = true;
-                                settings.LowLatency = false;
-                                settings.StretchWindow = true;
-                                break;
-                            }
-                            case WINDOW_MODE_FULLSCREEN_LOWLATENCY: {
-                                settings.DisplayFlip = true;
-                                settings.LowLatency = true;
-                                settings.StretchWindow = true;
-                                break;
-                            }
-                            case WINDOW_MODE_WINDOWED: {
-                                settings.DisplayFlip = false;
-                                settings.StretchWindow = false;
-                                settings.LowLatency = false;
-                                break;
-                            }
-                        }
+            static std::vector<std::pair<char *, int>> DisplayEnums = {
+                { "Fullscreen Borderless", WindowModes::WINDOW_MODE_FULLSCREEN_BORDERLESS },
+                { "Fullscreen Exclusive", WindowModes::WINDOW_MODE_FULLSCREEN_EXCLUSIVE },
+                { "Fullscreen Lowlatency", WindowModes::WINDOW_MODE_FULLSCREEN_LOWLATENCY },
+                { "Windowed", WindowModes::WINDOW_MODE_WINDOWED },
+            };
 
-                    }
-                    ImGui::SetItemTooltip( "[*] You need to restart for this to take effect." );
-
-                    if ( isSelected ) {
-                        ImGui::SetItemDefaultFocus();
-                    }
-                }
+            if ( ImComboBoxC( "##DisplayMode", DisplayEnums, &settings.WindowMode, [&settings]() {
+                // selected
+                Engine::GraphicsEngine->SetWindowMode( (WindowModes)settings.WindowMode );
+                }) ) {
                 ImGui::EndCombo();
             }
 
