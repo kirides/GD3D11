@@ -241,9 +241,11 @@ XRESULT D3D11GraphicsEngine::Init() {
         if ( SUCCEEDED( result ) ) {
             dxgiVKInterop->Release();
         } else {
-            LogWarnBox() << "You might experience random crashes when saving game due"
+            // for now disable the warning and make a statement in README
+
+            /*LogWarnBox() << "You might experience random crashes when saving game due"
                 " to heavy memory overhead caused by AMD drivers.\n"
-                "It is recommended to use 32-bit DXVK on top of GD3D11.";
+                "It is recommended to use 32-bit DXVK on top of GD3D11.";*/
         }
     }
 

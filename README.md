@@ -24,6 +24,11 @@ This 2015 renderer is able to utilize more of the current GPU generation's power
 > @Shoun2137:
 > There are only bugs and problems, deal with it. This exact series of patches was made strictly for Mordan so that this _version_ would stop AC'ing internally in GD3D11. Oh, and also mainly because I play on Loonix, and this dumb D2D <-> D3D interop has abysmal performance, so I had to abort it with a clothes hanger. As of now, it's recommended to install DXVK + this GD3D11 fork, ~~as that wasn't really working due to DXVK not supporting the D2D interop on Windows~~ Saiyans added his solution to this problem on Windows, but when playing on Linux you're still out of luck.
 
+### AMD
+
+* For AMD RDNA+ graphics cards (RX 5xxx, RX 6xxx, RX 7xxx, RX 9xxx, ..)
+  installing DXVK (32-Bit, dxgi.dll & d3d11.dll) may help with Out-Of-Memory crashes.
+
 ## Building
 
 ### Latest version
