@@ -9,8 +9,6 @@ class D3D11ConstantBuffer;
 class D3D11VertexBuffer;
 class D3D11ShaderManager;
 
-static constexpr size_t NumShadowCascades = 1;
-
 enum D3D11ENGINE_RENDER_STAGE {
     DES_Z_PRE_PASS,
     DES_MAIN,
@@ -367,8 +365,7 @@ protected:
     GMesh* InverseUnitSphereMesh;
 
     /** Shadowing */
-    std::vector<std::unique_ptr<RenderToDepthStencilBuffer>> m_WorldShadowmaps;
-
+    std::unique_ptr<RenderToDepthStencilBuffer> WorldShadowmap1;
     std::vector<VobInfo*> RenderedVobs;
 
     /** Modulate Quad Marks */

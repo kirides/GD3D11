@@ -902,18 +902,12 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
 
     int s = std::min<int>( std::max<int>( Engine::GAPI->GetRendererState().RendererSettings.ShadowMapSize, 512 ), (FeatureLevel10Compatibility ? 8192 : 16384) );
 
-    for ( size_t i = 0; i < NumShadowCascades; i++ ) {
-        m_WorldShadowmaps.emplace_back( std::make_unique<RenderToDepthStencilBuffer>(
-            GetDevice().Get(), s, s, DXGI_FORMAT_R16_TYPELESS, nullptr, DXGI_FORMAT_D16_UNORM,
-            DXGI_FORMAT_R16_UNORM ) );
-        s = s >> 1;
-
-        auto& buffer = m_WorldShadowmaps.back();
-        auto name = std::string( "WorldShadowmap[" ) + std::to_string( i );
-        SetDebugName( buffer->GetTexture().Get(), name+ "]->Texture2D" );
-        SetDebugName( buffer->GetShaderResView().Get(), name+ "]->ShaderResView" );
-        SetDebugName( buffer->GetDepthStencilView().Get(), name+ "]->DepthStencilView" );
-    }
+    WorldShadowmap1 = std::make_unique<RenderToDepthStencilBuffer>(
+        GetDevice().Get(), s, s, DXGI_FORMAT_R16_TYPELESS, nullptr, DXGI_FORMAT_D16_UNORM,
+        DXGI_FORMAT_R16_UNORM );
+    SetDebugName( WorldShadowmap1->GetTexture().Get(), "WorldShadowmap1->Texture" );
+    SetDebugName( WorldShadowmap1->GetShaderResView().Get(), "WorldShadowmap1->ShaderResView" );
+    SetDebugName( WorldShadowmap1->GetDepthStencilView().Get(), "WorldShadowmap1->DepthStencilView" );
     
     Engine::ImGuiHandle->OnResize( Resolution );
 
@@ -1025,27 +1019,16 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
     // Check for shadowmap resize
     int s = Engine::GAPI->GetRendererState().RendererSettings.ShadowMapSize;
 
-    if ( m_WorldShadowmaps.front()->GetSizeX() != s ) {
-        s = std::min<int>(std::max<int>(s, 512), (FeatureLevel10Compatibility ? 8192 : 16384));
+    if ( WorldShadowmap1->GetSizeX() != s ) {
+        s = std::min<int>( std::max<int>( s, 512 ), (FeatureLevel10Compatibility ? 8192 : 16384) );
 
-        int old = m_WorldShadowmaps.front()->GetSizeX();
+        int old = WorldShadowmap1->GetSizeX();
         LogInfo() << "Shadowmapresolution changed to: " << s << "x" << s;
-
-        m_WorldShadowmaps.clear();
-
-        int iterSize = s;
-        for ( size_t i = 0; i < NumShadowCascades; i++ ) {
-            m_WorldShadowmaps.emplace_back( std::make_unique<RenderToDepthStencilBuffer>(
-                GetDevice().Get(), iterSize, iterSize, DXGI_FORMAT_R16_TYPELESS, nullptr, DXGI_FORMAT_D16_UNORM,
-                DXGI_FORMAT_R16_UNORM ) );
-            iterSize = iterSize >> 1;
-
-            auto& buffer = m_WorldShadowmaps.back();
-            auto name = std::string( "WorldShadowmap[" ) + std::to_string( i );
-            SetDebugName( buffer->GetTexture().Get(), name + "]->Texture" );
-            SetDebugName( buffer->GetShaderResView().Get(), name + "]->ShaderResView" );
-            SetDebugName( buffer->GetDepthStencilView().Get(), name + "]->DepthStencilView" );
-        }
+        WorldShadowmap1 = std::make_unique<RenderToDepthStencilBuffer>(
+            GetDevice().Get(), s, s, DXGI_FORMAT_R16_TYPELESS, nullptr, DXGI_FORMAT_D16_UNORM, DXGI_FORMAT_R16_UNORM );
+        SetDebugName( WorldShadowmap1->GetTexture().Get(), "WorldShadowmap1->Texture" );
+        SetDebugName( WorldShadowmap1->GetShaderResView().Get(), "WorldShadowmap1->ShaderResView" );
+        SetDebugName( WorldShadowmap1->GetDepthStencilView().Get(), "WorldShadowmap1->DepthStencilView" );
 
         Engine::GAPI->GetRendererState().RendererSettings.WorldShadowRangeScale =
             Toolbox::GetRecommendedWorldShadowRangeScaleForSize( s );
@@ -4544,11 +4527,10 @@ XRESULT D3D11GraphicsEngine::DrawLighting( std::vector<VobLightInfo*>& lights ) 
     static const XMVECTORF32 c_XM_Up = { { { 0, 1, 0, 0 } } };
     XMMATRIX crViewRepl = XMMatrixTranspose( XMMatrixLookAtLH( p, lookAt, c_XM_Up ) );
 
-    auto& firstShadowMap = m_WorldShadowmaps.front();
     XMMATRIX crProjRepl =
         XMMatrixTranspose( XMMatrixOrthographicLH(
-            firstShadowMap->GetSizeX() * Engine::GAPI->GetRendererState().RendererSettings.WorldShadowRangeScale,
-            firstShadowMap->GetSizeX() * Engine::GAPI->GetRendererState().RendererSettings.WorldShadowRangeScale,
+            WorldShadowmap1->GetSizeX() * Engine::GAPI->GetRendererState().RendererSettings.WorldShadowRangeScale,
+            WorldShadowmap1->GetSizeX() * Engine::GAPI->GetRendererState().RendererSettings.WorldShadowRangeScale,
             1.f,
             20000.f ) );
 
@@ -4571,7 +4553,7 @@ XRESULT D3D11GraphicsEngine::DrawLighting( std::vector<VobLightInfo*>& lights ) 
             // We need to clear shadowmap to avoid some glitches in indoor locations
             // only need to do it once :)
             if ( lastBspMode == zBSP_MODE_OUTDOOR ) {
-                GetContext()->ClearDepthStencilView( firstShadowMap->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0.0f, 0 );
+                GetContext()->ClearDepthStencilView( WorldShadowmap1->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0.0f, 0 );
                 lastBspMode = zBSP_MODE_INDOOR;
             }
         }
@@ -4795,7 +4777,7 @@ XRESULT D3D11GraphicsEngine::DrawLighting( std::vector<VobLightInfo*>& lights ) 
 
     scb.SQ_ShadowView = cr.ViewReplacement;
     scb.SQ_ShadowProj = cr.ProjectionReplacement;
-    scb.SQ_ShadowmapSize = static_cast<float>(firstShadowMap->GetSizeX());
+    scb.SQ_ShadowmapSize = static_cast<float>(WorldShadowmap1->GetSizeX());
 
     // Get rain matrix
     scb.SQ_RainView = Effects->GetRainShadowmapCameraRepl().ViewReplacement;
@@ -4832,7 +4814,7 @@ XRESULT D3D11GraphicsEngine::DrawLighting( std::vector<VobLightInfo*>& lights ) 
     ActiveVS->GetConstantBuffer()[0]->UpdateBuffer( &vscb );
     ActiveVS->GetConstantBuffer()[0]->BindToVertexShader( 0 );
 
-    firstShadowMap->BindToPixelShader( GetContext().Get(), 3 );
+    WorldShadowmap1->BindToPixelShader( GetContext().Get(), 3 );
 
     if ( Effects->GetRainShadowmap() )
         Effects->GetRainShadowmap()->BindToPixelShader( GetContext().Get(), 4 );
@@ -4934,7 +4916,7 @@ void XM_CALLCONV D3D11GraphicsEngine::RenderShadowmaps( FXMVECTOR cameraPosition
     Microsoft::WRL::ComPtr<ID3D11DepthStencilView> dsvOverwrite,
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> debugRTV ) {
     if ( !target ) {
-        target = m_WorldShadowmaps.front().get();
+        target = WorldShadowmap1.get();
     }
 
     if ( !dsvOverwrite.Get() ) dsvOverwrite = target->GetDepthStencilView().Get();
@@ -4972,7 +4954,7 @@ void XM_CALLCONV D3D11GraphicsEngine::RenderShadowmaps( FXMVECTOR cameraPosition
     Engine::GAPI->GetRendererState().BlendState.SetDirty();
 
     // Dont render shadows from the sun when it isn't on the sky
-    if ( (target != m_WorldShadowmaps.front().get() ||
+    if ( (target != WorldShadowmap1.get() ||
         Engine::GAPI->GetSky()->GetAtmoshpereSettings().LightDirection.y >
         0) &&  // Only stop rendering if the sun is down on main-shadowmap
                // TODO: Take this out of here!
