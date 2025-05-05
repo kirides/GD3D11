@@ -37,10 +37,6 @@
 
 #include "ImGuiShim.h"
 
-#if !PUBLIC_RELEASE
-#define DEBUG_D3D11
-#endif
-
 #include "SteamOverlay.h"
 #include <d3dcompiler.h>
 #include <dxgi1_6.h>
@@ -241,9 +237,11 @@ XRESULT D3D11GraphicsEngine::Init() {
         if ( SUCCEEDED( result ) ) {
             dxgiVKInterop->Release();
         } else {
-            LogWarnBox() << "You might experience random crashes when saving game due"
+            // for now disable the warning and make a statement in README
+
+            /*LogWarnBox() << "You might experience random crashes when saving game due"
                 " to heavy memory overhead caused by AMD drivers.\n"
-                "It is recommended to use 32-bit DXVK on top of GD3D11.";
+                "It is recommended to use 32-bit DXVK on top of GD3D11.";*/
         }
     }
 
@@ -291,6 +289,7 @@ XRESULT D3D11GraphicsEngine::Init() {
 
     Device11.As( &Device );
     Context11.As( &Context );
+    Context.As( &m_UserDefinedAnnotation );
 
     FeatureLevel10Compatibility = (maxFeatureLevel < D3D_FEATURE_LEVEL::D3D_FEATURE_LEVEL_11_0);
     FetchDisplayModeList();
@@ -494,6 +493,7 @@ XRESULT D3D11GraphicsEngine::Init() {
         GetDevice(), POINTLIGHT_SHADOWMAP_SIZE, POINTLIGHT_SHADOWMAP_SIZE,
         DXGI_FORMAT_B8G8R8A8_UNORM, nullptr, DXGI_FORMAT_UNKNOWN,
         DXGI_FORMAT_UNKNOWN, 1, 6 );
+    SetDebugName( DummyShadowCubemapTexture->GetTexture().Get(), "shadowcubesDummyTB");
 
     SteamOverlay::Init();
 
@@ -554,6 +554,7 @@ void D3D11GraphicsEngine::OnResetBackBuffer() {
     PfxRenderer->OnResize( Resolution );
     HDRBackBuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), Resolution.x, Resolution.y,
         (Engine::GAPI->GetRendererState().RendererSettings.CompressBackBuffer ? DXGI_FORMAT_R11G11B10_FLOAT : DXGI_FORMAT_R16G16B16A16_FLOAT) );
+    SetDebugName( HDRBackBuffer->GetTexture().Get(), "HDRBackBufferTB" );
 }
 
 /** Get BackBuffer Format */
@@ -845,15 +846,21 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
 
     // Recreate RenderTargetView
     LE( GetDevice()->CreateRenderTargetView( backbuffer.Get(), nullptr, BackbufferRTV.GetAddressOf() ) );
-   
+    SetDebugName( BackbufferRTV.Get(), "BackbufferRTV" );
+
         // Recreate DepthStencilBuffer
     DepthStencilBuffer = std::make_unique<RenderToDepthStencilBuffer>(
         GetDevice().Get(), Resolution.x, Resolution.y, DXGI_FORMAT_R32_TYPELESS, nullptr,
         DXGI_FORMAT_D32_FLOAT, DXGI_FORMAT_R32_FLOAT );
+    SetDebugName( DepthStencilBuffer->GetTexture().Get(), "DepthStencilBufferTB" );
+    SetDebugName( DepthStencilBuffer->GetShaderResView().Get(), "DepthStencilBufferSRV" );
+    SetDebugName( DepthStencilBuffer->GetDepthStencilView().Get(), "DepthStencilBufferDSV" );
 
     DepthStencilBufferCopy = std::make_unique<RenderToTextureBuffer>(
         GetDevice().Get(), Resolution.x, Resolution.y, DXGI_FORMAT_R32_TYPELESS, nullptr,
         DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32_FLOAT );
+    SetDebugName( DepthStencilBufferCopy->GetTexture().Get(), "DepthStencilBufferTB" );
+    SetDebugName( DepthStencilBufferCopy->GetShaderResView().Get(), "DepthStencilBufferSRV" );
 
     // Bind our newly created resources
     GetContext()->OMSetRenderTargets( 1, BackbufferRTV.GetAddressOf(),
@@ -878,17 +885,23 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
 
     GBuffer2_SpecIntens_SpecPower = std::make_unique<RenderToTextureBuffer>(
         GetDevice().Get(), Resolution.x, Resolution.y, DXGI_FORMAT_R16G16_FLOAT );
+    SetDebugName( GBuffer2_SpecIntens_SpecPower->GetTexture().Get(), "GBuffer2_SpecIntens_SpecPowerTex2D" );
 
     GBuffer1_Normals = std::make_unique<RenderToTextureBuffer>(
         GetDevice().Get(), Resolution.x, Resolution.y, DXGI_FORMAT_R8G8B8A8_SNORM );
+    SetDebugName( GBuffer1_Normals->GetTexture().Get(), "GBuffer1_NormalsTex2D" );
 
     GBuffer0_Diffuse = std::make_unique<RenderToTextureBuffer>(
         GetDevice().Get(), Resolution.x, Resolution.y, DXGI_FORMAT_B8G8R8A8_UNORM );
+    SetDebugName( GBuffer0_Diffuse->GetTexture().Get(), "GBuffer0_DiffuseTex2D" );
 
     HDRBackBuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), Resolution.x, Resolution.y,
         (Engine::GAPI->GetRendererState().RendererSettings.CompressBackBuffer ? DXGI_FORMAT_R11G11B10_FLOAT : DXGI_FORMAT_R16G16B16A16_FLOAT) );
 
+    SetDebugName( HDRBackBuffer->GetTexture().Get(), "HDRBackBufferTex2D" );
+
     int s = std::min<int>( std::max<int>( Engine::GAPI->GetRendererState().RendererSettings.ShadowMapSize, 512 ), (FeatureLevel10Compatibility ? 8192 : 16384) );
+
     WorldShadowmap1 = std::make_unique<RenderToDepthStencilBuffer>(
         GetDevice().Get(), s, s, DXGI_FORMAT_R16_TYPELESS, nullptr, DXGI_FORMAT_D16_UNORM,
         DXGI_FORMAT_R16_UNORM );
@@ -1007,7 +1020,7 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
     int s = Engine::GAPI->GetRendererState().RendererSettings.ShadowMapSize;
 
     if ( WorldShadowmap1->GetSizeX() != s ) {
-        s = std::min<int>(std::max<int>(s, 512), (FeatureLevel10Compatibility ? 8192 : 16384));
+        s = std::min<int>( std::max<int>( s, 512 ), (FeatureLevel10Compatibility ? 8192 : 16384) );
 
         int old = WorldShadowmap1->GetSizeX();
         LogInfo() << "Shadowmapresolution changed to: " << s << "x" << s;
@@ -2243,14 +2256,19 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
 
     if ( Engine::GAPI->GetRendererState().RendererSettings.DrawSky ) {
         // Draw back of the sky if outdoor
+        auto _ = RecordGraphicsEvent( L"Draw Sky" );
         DrawSky();
     }
 
     // Draw world
-    Engine::GAPI->DrawWorldMeshNaive();
+    {
+        auto _ = RecordGraphicsEvent( L"DrawWorldMeshNaive" );
+        Engine::GAPI->DrawWorldMeshNaive();
+    }
 
     // Draw HBAO
     if ( Engine::GAPI->GetRendererState().RendererSettings.HbaoSettings.Enabled ) {
+        auto _ = RecordGraphicsEvent( L"Draw HBAO" );
         PfxRenderer->DrawHBAO( HDRBackBuffer->GetRenderTargetView() );
         GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
     }
@@ -2258,25 +2276,36 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     // PfxRenderer->RenderDistanceBlur();
 
     // Draw water surfaces of current frame
-    DrawWaterSurfaces();
+    {
+        auto _ = RecordGraphicsEvent( L"Draw Water Surfaces" );
+        DrawWaterSurfaces();
+    }
 
     // Draw light-shafts
     DrawMeshInfoListAlphablended( FrameTransparencyMeshes );
 
     //draw forest / door portals
     if ( Engine::GAPI->GetRendererState().RendererSettings.DrawG1ForestPortals ) {
+        auto _ = RecordGraphicsEvent( L"Draw Forest/Door Portals" );
         DrawMeshInfoListAlphablended( FrameTransparencyMeshesPortal );
     }
 
     //draw waterfall foam
-    DrawMeshInfoListAlphablended( FrameTransparencyMeshesWaterfall );
+    {
+        auto _ = RecordGraphicsEvent( L"Draw Waterfall foam" );
+        DrawMeshInfoListAlphablended( FrameTransparencyMeshesWaterfall );
+    }
 
     // Draw ghosts
-    D3D11ENGINE_RENDER_STAGE oldStage = RenderingStage;
-    SetRenderingStage( DES_GHOST );
-    Engine::GAPI->DrawTransparencyVobs();
-    SetRenderingStage( oldStage );
-    Engine::GAPI->DrawSkeletalVN();
+    {
+        auto _ = RecordGraphicsEvent( L"Draw ghosts" );
+
+        D3D11ENGINE_RENDER_STAGE oldStage = RenderingStage;
+        SetRenderingStage( DES_GHOST );
+        Engine::GAPI->DrawTransparencyVobs();
+        SetRenderingStage( oldStage );
+        Engine::GAPI->DrawSkeletalVN();
+    }
 
     auto& bsptree = Engine::GAPI->GetLoadedWorldInfo()->BspTree;
     if ( bsptree )
@@ -3598,6 +3627,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround( FXMVECTOR position,
     }
 
     if ( Engine::GAPI->GetRendererState().RendererSettings.DrawVOBs ) {
+        auto _ = RecordGraphicsEvent( L"Draw VOBs" );
         // Reset instances
         const std::unordered_map<zCProgMeshProto*, MeshVisualInfo*>& staticMeshVisuals =
             Engine::GAPI->GetStaticMeshVisuals();
@@ -3701,6 +3731,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround( FXMVECTOR position,
     }
 
     if ( Engine::GAPI->GetRendererState().RendererSettings.DrawSkeletalMeshes ) {
+        auto _ = RecordGraphicsEvent( L"Draw Skeletal Meshes" );
         // Draw skeletal meshes
         for ( auto const& skeletalMeshVob : Engine::GAPI->GetSkeletalMeshVobs() ) {
             if ( !skeletalMeshVob->VisualInfo ) continue;
@@ -3976,6 +4007,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
             DrawQuadMarks();
         }
 
+        auto _ = RecordGraphicsEvent( L"Draw Lighting" );
         START_TIMING();
         // Draw lighting, since everything is drawn by now and we have the lights
         // here
@@ -4377,6 +4409,7 @@ XRESULT D3D11GraphicsEngine::DrawLighting( std::vector<VobLightInfo*>& lights ) 
 
     // Draw pointlight shadows
     if ( Engine::GAPI->GetRendererState().RendererSettings.EnablePointlightShadows > 0 ) {
+        auto _ = RecordGraphicsEvent( L"Draw Pointlight Shadows" );
         std::list<VobLightInfo*> importantUpdates;
 
         for ( auto const& light : lights ) {
@@ -4513,6 +4546,7 @@ XRESULT D3D11GraphicsEngine::DrawLighting( std::vector<VobLightInfo*>& lights ) 
     static zTBspMode lastBspMode = zBSP_MODE_OUTDOOR;
     if ( Engine::GAPI->GetLoadedWorldInfo()->BspTree )
         if ( Engine::GAPI->GetLoadedWorldInfo()->BspTree->GetBspTreeMode() == zBSP_MODE_OUTDOOR ) {
+            auto _ = RecordGraphicsEvent( L"Draw world Shadowmap" );
             RenderShadowmaps( WorldShadowCP, nullptr, true );
             lastBspMode = zBSP_MODE_OUTDOOR;
         } else if ( Engine::GAPI->GetRendererState().RendererSettings.EnableShadows ) {
@@ -4531,6 +4565,7 @@ XRESULT D3D11GraphicsEngine::DrawLighting( std::vector<VobLightInfo*>& lights ) 
 
     // Draw rainmap, if raining
     if ( Engine::GAPI->GetSceneWetness() > 0.00001f ) {
+        auto _ = RecordGraphicsEvent( L"Draw Rainmap" );
         Effects->DrawRainShadowmap();
     }
 
@@ -4586,6 +4621,7 @@ XRESULT D3D11GraphicsEngine::DrawLighting( std::vector<VobLightInfo*>& lights ) 
     DepthStencilBufferCopy->BindToPixelShader( GetContext().Get(), 2 );
 
     // Draw all lights
+    m_UserDefinedAnnotation->SetMarker( L"Draw Lights" );
     for ( auto const& light : lights ) {
         zCVobLight* vob = light->Vob;
 
@@ -4927,6 +4963,7 @@ void XM_CALLCONV D3D11GraphicsEngine::RenderShadowmaps( FXMVECTOR cameraPosition
         GetContext()->ClearDepthStencilView( dsvOverwrite.Get(), D3D11_CLEAR_DEPTH, 1.0f, 0 );
 
         // Draw the world mesh without textures
+        auto _ = RecordGraphicsEvent( L"DrawWorldAround" );
         DrawWorldAround( cameraPosition, 2, 10000.0f, cullFront, dontCull );
     } else {
         if ( Engine::GAPI->GetSky()->GetAtmoshpereSettings().LightDirection.y <= 0 ) {
@@ -4975,6 +5012,8 @@ D3D11ENGINE_RENDER_STAGE D3D11GraphicsEngine::GetRenderingStage() {
 
 /** Draws a VOB (used for inventory) */
 void D3D11GraphicsEngine::DrawVobSingle( VobInfo* vob, zCCamera& camera ) {
+    auto _ = RecordGraphicsEvent( L"DrawVobSingle(inventory)" );
+
     Engine::GAPI->SetViewTransformXM( XMLoadFloat4x4( &camera.GetTransformDX( zCCamera::ETransformType::TT_VIEW ) ) );
     GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(),
         DepthStencilBuffer->GetDepthStencilView().Get() );
@@ -5240,6 +5279,10 @@ void D3D11GraphicsEngine::GetBackbufferData( byte** data, INT2& buffersize, int&
     HRESULT hr;
     auto rt = std::make_unique<RenderToTextureBuffer>(
         GetDevice().Get(), buffersize.x, buffersize.y, DXGI_FORMAT_B8G8R8A8_UNORM );
+    SetDebugName( rt->GetTexture().Get(), "BackbufferTex2D" );
+    SetDebugName( rt->GetShaderResView().Get(), "BackbufferSRV" );
+    SetDebugName( rt->GetRenderTargetView().Get(), "BackbufferRTV");
+
     PfxRenderer->CopyTextureToRTV( HDRBackBuffer->GetShaderResView(), rt->GetRenderTargetView(), INT2( buffersize.x, buffersize.y ),
         true );
     GetContext()->Flush();

@@ -119,8 +119,8 @@ std::string GetPrivateProfileStringA(
     const std::string& lpcstrDefault,
     const std::string& lpFileName ) {
     char buffer[MAX_PATH];
-    GetPrivateProfileStringA( lpAppName, lpKeyName, lpcstrDefault.c_str(), buffer, MAX_PATH, lpFileName.c_str() );
-    return std::string( buffer );
+    auto count = GetPrivateProfileStringA( lpAppName, lpKeyName, lpcstrDefault.c_str(), buffer, MAX_PATH, lpFileName.c_str() );
+    return std::string( buffer , count );
 }
 
 BOOL APIENTRY DllMain( HINSTANCE hInst, DWORD reason, LPVOID ) {

@@ -213,6 +213,10 @@ struct GothicMemoryLocations {
         static const unsigned int ProcessInputEvents_Offset = 0x70;
     };
 
+    struct zCInput_Win32 {
+        static const unsigned int GetKey = 0;
+    };
+
     struct zCVisual {
         static const unsigned int VTBL_GetFileExtension = 17;
         static const unsigned int Destructor = 0x005F9870;

@@ -32,6 +32,7 @@
 #endif
 
 #include "StackWalker.h"
+#include "zCInput_Win32.h"
 
 bool IsRunningUnderUnion = false;
 
@@ -69,6 +70,7 @@ void HookedFunctionInfo::InitHooks() {
     zCQuadMark::Hook();
     oCNPC::Hook();
     zCSkyController_Outdoor::Hook();
+    zCInput_Win32::Hook();
     
 //G1 patches
 #ifdef BUILD_GOTHIC_1_08k

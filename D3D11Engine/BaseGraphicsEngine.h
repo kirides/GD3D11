@@ -57,6 +57,12 @@ struct ViewportInfo {
     float MaxZ;
 };
 
+class GraphicsEventRecord {
+public:
+    GraphicsEventRecord() {};
+    virtual ~GraphicsEventRecord() {};
+};
+
 /** Base graphics engine */
 class BaseGraphicsEngine {
 public:
@@ -208,4 +214,7 @@ public:
     virtual XRESULT UpdateRenderStates() { return XR_SUCCESS; };
 
     virtual void SetWindowMode( WindowModes mode ) { };
+    virtual std::unique_ptr<GraphicsEventRecord> RecordGraphicsEvent( LPCWSTR region ) {
+        return std::make_unique<GraphicsEventRecord>( );
+    }
 };

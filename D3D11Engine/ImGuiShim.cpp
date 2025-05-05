@@ -394,29 +394,29 @@ void ImGuiShim::RenderSettingsWindow()
 
             ImText( "Object Draw Distance", buttonWidth ); ImGui::SameLine();
             float objectDrawDistance = settings.OutdoorVobDrawRadius / 1000.0f;
-            if ( ImGui::SliderFloat( "##OutdoorVobDrawRadius", &objectDrawDistance, 2.f, 100.0f ) ) {
+            if ( ImGui::SliderFloat( "##OutdoorVobDrawRadius", &objectDrawDistance, 1.f, 100.0f, "%.0f" ) ) {
                 settings.OutdoorVobDrawRadius = static_cast<float>(objectDrawDistance * 1000.0f);
             }
 
             float smallObjectDrawDistance = settings.OutdoorSmallVobDrawRadius / 1000.0f;
             ImText( "Small Object Draw Distance", buttonWidth ); ImGui::SameLine();
-            if ( ImGui::SliderFloat( "##OutdoorSmallVobDrawRadius", &smallObjectDrawDistance, 2.f, 100.0f ) ) {
+            if ( ImGui::SliderFloat( "##OutdoorSmallVobDrawRadius", &smallObjectDrawDistance, 1.f, 100.0f, "%.0f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput) ) {
                 settings.OutdoorSmallVobDrawRadius = static_cast<float>(smallObjectDrawDistance * 1000.0f);
             }
 
             float visualFXDrawDistance = settings.VisualFXDrawRadius / 1000.0f;
             ImText( "VisualFX Draw Distance", buttonWidth ); ImGui::SameLine();
-            if ( ImGui::SliderFloat( "##VisualFXDrawRadius", &visualFXDrawDistance, 0.1f, 10.0f ) ) {
+            if ( ImGui::SliderFloat( "##VisualFXDrawRadius", &visualFXDrawDistance, 0.1f, 10.0f, "%.0f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput ) ) {
                 settings.VisualFXDrawRadius = static_cast<float>(visualFXDrawDistance * 1000.0f);
             }
             ImText( "World Draw Distance", buttonWidth ); ImGui::SameLine();
-            ImGui::SliderInt( "##SectionDrawRadius", &settings.SectionDrawRadius, 2, 20 );
+            ImGui::SliderInt( "##SectionDrawRadius", &settings.SectionDrawRadius, 1, 20, "%d", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
 
             ImText( "Contrast", buttonWidth ); ImGui::SameLine();
-            ImGui::SliderFloat( "##Contrast", &settings.GammaValue, 0.1f, 2.0f );
+            ImGui::SliderFloat( "##Contrast", &settings.GammaValue, 0.1f, 2.0f, "%.1f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
 
             ImText( "Brightness", buttonWidth ); ImGui::SameLine();
-            ImGui::SliderFloat( "##Brightness", &settings.BrightnessValue, 0.1f, 3.0f );
+            ImGui::SliderFloat( "##Brightness", &settings.BrightnessValue, 0.1f, 3.0f, "%.1f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
             ImGui::PopItemWidth();
 
             ImGui::EndGroup();
@@ -451,17 +451,17 @@ void RenderAdvancedColumn1( GothicRendererSettings& settings, GothicAPI* gapi ) 
         ImGui::DragFloat( "ESun", &atmosphereSettings.ESun, 0.1f, 0.2f );
         ImGui::SetItemTooltip( "Brightness of the sun" );
 
-        ImGui::DragFloat( "InnerRadius", &atmosphereSettings.InnerRadius, 0.01f );
+        ImGui::DragFloat( "InnerRadius", &atmosphereSettings.InnerRadius, 1.0f, 0.0f, 0.0f, "%.0f" );
         ImGui::SetItemTooltip( "Inner Radius of the fake-planet. This must be greater than SphereOffset.y" );
 
-        ImGui::DragFloat( "OuterRadius", &atmosphereSettings.OuterRadius, 0.01f );
+        ImGui::DragFloat( "OuterRadius", &atmosphereSettings.OuterRadius, 1.0f, 0.0f, 0.0f, "%.0f" );
         ImGui::SetItemTooltip( "Outer Radius of the fake-planet" );
 
         ImGui::DragFloat( "Km", &atmosphereSettings.Km, 0.0001f, 0.01f );
         ImGui::DragFloat( "Kr", &atmosphereSettings.Kr, 0.0001f, 0.01f );
         ImGui::InputInt( "Samples", &atmosphereSettings.Samples );
         ImGui::DragFloat3( "WaveLengths", &atmosphereSettings.WaveLengths.x, 0.01f );
-        ImGui::DragFloat( "SphereOffset.y", &atmosphereSettings.SphereOffsetY, 0.01f );
+        ImGui::DragFloat( "SphereOffset.y", &atmosphereSettings.SphereOffsetY, 1.0f, 0.0f, 0.0f, "%.0f" );
         ImGui::Checkbox( "ReplaceSunDirection", &settings.ReplaceSunDirection );
         ImGui::SetItemTooltip( "Outer Radius of the fake-planet" );
 
@@ -500,12 +500,29 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
         }
         ImGui::Separator();
         ImGui::Checkbox( "DisableRendering", &settings.DisableRendering );
+        ImGui::SliderInt( "SectionDrawRadius", &settings.SectionDrawRadius, 0, 20, "%d", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
+        ImGui::SliderInt( "Draw WorldMesh", &settings.DrawWorldMesh, 0, 3 );
+
         ImGui::Checkbox( "Draw VOBs", &settings.DrawVOBs );
         ImGui::Checkbox( "Draw Dynamic Vobs", &settings.DrawDynamicVOBs );
-        ImGui::InputInt( "Draw WorldMesh", &settings.DrawWorldMesh );
+        ImGui::SliderFloat( "OutdoorVobDrawRadius", &settings.OutdoorVobDrawRadius, 1.0f, 100000.0f, "%.0f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
+        ImGui::SliderFloat( "IndoorVobDrawRadius", &settings.IndoorVobDrawRadius, 1.0f, 100000.0f,  "%.0f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
+        ImGui::SliderFloat( "OutdoorSmallVobRadius", &settings.OutdoorSmallVobDrawRadius, 1.0f, 100000.0f, "%.0f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
+        
         ImGui::Checkbox( "Draw Skeletal Meshes", &settings.DrawSkeletalMeshes );
+        ImGui::BeginDisabled( !settings.DrawSkeletalMeshes );
+        ImGui::SliderFloat( "SkeletalMeshDrawRadius", &settings.SkeletalMeshDrawRadius, 0.0f, 18000.0f, "%.0f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
+        ImGui::SetItemTooltip( "Draw distance for NPCs" );
+        ImGui::EndDisabled();
+        
         ImGui::Checkbox( "Draw Mobs", &settings.DrawMobs );
+        
         ImGui::Checkbox( "Draw ParticleEffects", &settings.DrawParticleEffects );
+        ImGui::BeginDisabled( !settings.DrawParticleEffects );
+        ImGui::SliderFloat( "VisualFXDrawRadius", &settings.VisualFXDrawRadius, 0.0f, 50000.0f, "%.0f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
+        ImGui::SetItemTooltip( "Draw distance for Special effects, like torches, spells, campfires..." );
+        ImGui::EndDisabled();
+
         // ImGui::Checkbox( "Draw Sky", &settings.DrawSky );
         ImGui::Checkbox( "Draw Fog", &settings.DrawFog );
 
@@ -577,43 +594,39 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
         if ( ImComboBoxC( "ShadowmapSize", shadowMapSizes, (int*)(&settings.ShadowMapSize), []() { Engine::GraphicsEngine->ReloadShaders(); } ) ) {
             ImGui::EndCombo();
         }
-        ImGui::DragFloat( "WorldShadowRangeScale", &settings.WorldShadowRangeScale, 0.01f );
-        ImGui::DragFloat( "ShadowStrength", &settings.ShadowStrength, 0.01f );
-        ImGui::DragFloat( "ShadowAOStrength", &settings.ShadowAOStrength, 0.01f );
-        ImGui::DragFloat( "WorldAOStrength", &settings.WorldAOStrength, 0.01f );
+        ImGui::DragFloat( "WorldShadowRangeScale", &settings.WorldShadowRangeScale, 0.01f, 0.0f, 0.0f, "%.2f" );
+        ImGui::DragFloat( "ShadowStrength", &settings.ShadowStrength, 0.01f, 0.01f, 5.0f, "%.2f" );
+        ImGui::DragFloat( "ShadowAOStrength", &settings.ShadowAOStrength, 0.01f, -5.0f, 2.0f, "%.2f" );
+        ImGui::DragFloat( "WorldAOStrength", &settings.WorldAOStrength, 0.01f, -5.0f, 2.0f, "%.2f" );
         ImGui::Checkbox( "WireframeWorld", &settings.WireframeWorld );
         ImGui::Checkbox( "WireframeVobs", &settings.WireframeVobs );
         // ImGui::Checkbox("Grass AlphaToCoverage", &settings.VegetationAlphaToCoverage );	
-        ImGui::DragInt( "SectionDrawRadius", &settings.SectionDrawRadius );
-        ImGui::DragFloat( "OutdoorVobDrawRadius", &settings.OutdoorVobDrawRadius, 0.01f );
-        ImGui::DragFloat( "IndoorVobDrawRadius", &settings.IndoorVobDrawRadius, 0.01f );
-        ImGui::DragFloat( "OutdoorSmallVobRadius", &settings.OutdoorSmallVobDrawRadius, 0.01f );
-        ImGui::DragFloat( "VisualFXDrawRadius", &settings.VisualFXDrawRadius, 0.01f );
-        ImGui::DragFloat( "RainRadius", &settings.RainRadiusRange, 0.01f );
-        ImGui::DragFloat( "RainHeight", &settings.RainHeightRange, 0.01f );
+
+        ImGui::DragFloat( "RainRadius", &settings.RainRadiusRange, 1.0f, 0.0f, 0.0f, "%.0f" );
+        ImGui::DragFloat( "RainHeight", &settings.RainHeightRange, 1.0f, 0.0f, 0.0f, "%.0f" );
         ImGui::DragInt( "NumRainParticles", (int*)&settings.RainNumParticles, 1.0f, 0, 200000 );
         ImGui::Checkbox( "RainMoveParticles", &settings.RainMoveParticles );
         ImGui::Checkbox( "RainUseInitialSet", &settings.RainUseInitialSet );
-        ImGui::DragFloat3( "RainGlobalVelocity", &settings.RainGlobalVelocity.x );
+        ImGui::DragFloat3( "RainGlobalVelocity", &settings.RainGlobalVelocity.x, 1.0f, -5000.0f, 5000.0f, "%.0f" );
         ImGui::DragFloat( "RainSceneWettness", &settings.RainSceneWettness, 0.01f );
-        ImGui::DragFloat( "RainSunLightStrength", &settings.RainSunLightStrength, 0.01f );
-        ImGui::DragFloat( "RainFogDensity", &settings.RainFogDensity, 0.01f );
+        ImGui::DragFloat( "RainSunLightStrength", &settings.RainSunLightStrength, 0.01f, 0.0f, 0.0f, "%.2f" );
+        ImGui::DragFloat( "RainFogDensity", &settings.RainFogDensity, 0.001f );
         ImGui::ColorEdit3( "RainFogColor", &settings.RainFogColor.x );
         // TwAddVarRW("SmallVobSize", TW_TYPE_FLOAT, &settings.SmallVobSize );
         // ImGui::Checkbox("AtmosphericScattering", &settings.AtmosphericScattering );
-        ImGui::DragFloat( "FogGlobalDensity", &settings.FogGlobalDensity, 0.01f );
-        ImGui::DragFloat( "FogHeightFalloff", &settings.FogHeightFalloff, 0.01f );
-        ImGui::DragFloat( "FogHeight", &settings.FogHeight, 0.01f );
+        ImGui::DragFloat( "FogGlobalDensity", &settings.FogGlobalDensity, 0.00001f, 0, 1.0f, "%.5f" );
+        ImGui::DragFloat( "FogHeightFalloff", &settings.FogHeightFalloff, 0.00001f, 0, 1.0f, "%.5f" );
+        ImGui::DragFloat( "FogHeight", &settings.FogHeight, 1.0f, 0.0f, 0.0f, "%.0f" );
         ImGui::ColorEdit3( "FogColorMod", &settings.FogColorMod.x );
-        ImGui::DragFloat( "HDRLumWhite", &settings.HDRLumWhite, 0.01f );
-        ImGui::DragFloat( "HDRMiddleGray", &settings.HDRMiddleGray, 0.01f );
-        ImGui::DragFloat( "BloomThreshold", &settings.BloomThreshold, 0.01f );
-        ImGui::DragFloat( "BloomStrength", &settings.BloomStrength, 0.01f );
-        ImGui::DragFloat( "WindStrength", &settings.GlobalWindStrength, 0.01f );
+        ImGui::DragFloat( "HDRLumWhite", &settings.HDRLumWhite, 0.01f, 0.0f, 0.0f, "%.2f" );
+        ImGui::DragFloat( "HDRMiddleGray", &settings.HDRMiddleGray, 0.01f, 0.0f, 0.0f, "%.2f" );
+        ImGui::DragFloat( "BloomThreshold", &settings.BloomThreshold, 0.01f, 0.0f, 0.0f, "%.2f" );
+        ImGui::DragFloat( "BloomStrength", &settings.BloomStrength, 0.01f, 0.0f, 0.0f, "%.2f" );
+        ImGui::DragFloat( "WindStrength", &settings.GlobalWindStrength, 0.01f, 0.0f, 0.0f, "%.2f" );
         ImGui::Checkbox( "LockViewFrustum", &settings.LockViewFrustum );
-        ImGui::DragFloat( "GothicUIScale", &settings.GothicUIScale, 0.01f );
-        ImGui::DragFloat( "FOVHoriz", &settings.FOVHoriz, 0.01f );
-        ImGui::DragFloat( "FOVVert", &settings.FOVVert, 0.01f );
+        ImGui::DragFloat( "GothicUIScale", &settings.GothicUIScale, 0.01f, 0.01f, 20.0f, "%.2f" );
+        ImGui::DragFloat( "FOVHoriz", &settings.FOVHoriz, 1.0f, 1.0f, 360.0f, "%.0f" );
+        ImGui::DragFloat( "FOVVert", &settings.FOVVert, 1.0f, 1.0f, 360.0f, "%.0f" );
         ImGui::Checkbox( "ForceFOV", &settings.ForceFOV );
 #ifdef BUILD_GOTHIC_1_08k
         ImGui::Checkbox( "DrawForestPortals", &settings.DrawG1ForestPortals );
@@ -635,13 +648,13 @@ void RenderAdvancedColumn3( GothicRendererSettings& settings, GothicAPI* gapi ) 
         ImGui::InputInt( "DrawnLights", &rendererInfo.FrameDrawnLights, 1, 100, ImGuiInputTextFlags_ReadOnly );
         ImGui::InputInt( "SectionsDrawn", &rendererInfo.FrameNumSectionsDrawn, 1, 100, ImGuiInputTextFlags_ReadOnly );
         ImGui::InputInt( "WorldMeshDrawCalls", &rendererInfo.WorldMeshDrawCalls, 1, 100, ImGuiInputTextFlags_ReadOnly );
-        ImGui::InputFloat( "FarPlane", &rendererInfo.FarPlane, 1, 100, "%.3f", ImGuiInputTextFlags_ReadOnly );
-        ImGui::InputFloat( "NearPlane", &rendererInfo.NearPlane, 1, 100, "%.3f", ImGuiInputTextFlags_ReadOnly );
-        ImGui::InputFloat( "WorldMeshMS", &rendererInfo.Timing.WorldMeshMS, 1, 100, "%.3f", ImGuiInputTextFlags_ReadOnly );
-        ImGui::InputFloat( "VobsMS", &rendererInfo.Timing.VobsMS, 1, 100, "%.3f", ImGuiInputTextFlags_ReadOnly );
-        ImGui::InputFloat( "SkeletalMeshesMS", &rendererInfo.Timing.SkeletalMeshesMS, 1, 100, "%.3f", ImGuiInputTextFlags_ReadOnly );
-        ImGui::InputFloat( "LightingMS", &rendererInfo.Timing.LightingMS, 1, 100, "%.3f", ImGuiInputTextFlags_ReadOnly );
-        ImGui::InputFloat( "TotalMS", &rendererInfo.Timing.TotalMS, 1, 100, "%.3f", ImGuiInputTextFlags_ReadOnly );
+        ImGui::InputFloat( "FarPlane", &rendererInfo.FarPlane, 1, 100, "%.0f", ImGuiInputTextFlags_ReadOnly );
+        ImGui::InputFloat( "NearPlane", &rendererInfo.NearPlane, 1, 100, "%.0f", ImGuiInputTextFlags_ReadOnly );
+        ImGui::InputFloat( "WorldMeshMS", &rendererInfo.Timing.WorldMeshMS, 1, 100, "%.6f", ImGuiInputTextFlags_ReadOnly );
+        ImGui::InputFloat( "VobsMS", &rendererInfo.Timing.VobsMS, 1, 100, "%.6f", ImGuiInputTextFlags_ReadOnly );
+        ImGui::InputFloat( "SkeletalMeshesMS", &rendererInfo.Timing.SkeletalMeshesMS, 1, 100, "%.6f", ImGuiInputTextFlags_ReadOnly );
+        ImGui::InputFloat( "LightingMS", &rendererInfo.Timing.LightingMS, 1, 100, "%.6f", ImGuiInputTextFlags_ReadOnly );
+        ImGui::InputFloat( "TotalMS", &rendererInfo.Timing.TotalMS, 1, 100, "%.6f", ImGuiInputTextFlags_ReadOnly );
         ImGui::InputInt( "SC_PipelineStates", (int*)&rendererInfo.FramePipelineStates, 1, 100, ImGuiInputTextFlags_ReadOnly );
         ImGui::InputInt( "SC_Textures", (int*)&rendererInfo.StateChangesByState[GothicRendererInfo::SC_TX], 1, 100, ImGuiInputTextFlags_ReadOnly );
         ImGui::InputInt( "SC_ConstantBuffer", (int*)&rendererInfo.StateChangesByState[GothicRendererInfo::SC_CB], 1, 100, ImGuiInputTextFlags_ReadOnly );

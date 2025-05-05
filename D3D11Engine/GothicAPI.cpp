@@ -140,9 +140,9 @@ float GetPrivateProfileFloatA(
 ) {
     const int float_str_max = 30;
     TCHAR nFloat[float_str_max];
-    if ( GetPrivateProfileStringA( lpAppName, lpKeyName, nullptr, nFloat, float_str_max, lpFileName.c_str() ) ) {
+    if ( auto count = GetPrivateProfileStringA( lpAppName, lpKeyName, nullptr, nFloat, float_str_max, lpFileName.c_str() ) ) {
         try {
-            return std::stof( std::string( nFloat ) );
+            return std::stof( std::string( nFloat, count ) );
         } catch ( const std::exception& ) {
             return nDefault;
         }
@@ -156,8 +156,8 @@ std::string GetPrivateProfileStringA(
     const std::string& lpcstrDefault,
     const std::string& lpFileName ) {
     char buffer[MAX_PATH];
-    GetPrivateProfileStringA( lpAppName, lpKeyName, lpcstrDefault.c_str(), buffer, MAX_PATH, lpFileName.c_str() );
-    return std::string( buffer );
+    auto count = GetPrivateProfileStringA( lpAppName, lpKeyName, lpcstrDefault.c_str(), buffer, MAX_PATH, lpFileName.c_str() );
+    return std::string( buffer, count );
 }
 
 bool GetPrivateProfileBoolA(
@@ -765,6 +765,7 @@ void GothicAPI::LoadRendererWorldSettings( GothicRendererSettings& s ) {
     s.VisualFXDrawRadius = GetPrivateProfileFloatA( "General", "VisualFXDrawRadius", s.VisualFXDrawRadius, ini );
     s.OutdoorVobDrawRadius = GetPrivateProfileFloatA( "General", "OutdoorVobDrawRadius", s.OutdoorVobDrawRadius, ini );
     s.OutdoorSmallVobDrawRadius = GetPrivateProfileFloatA( "General", "OutdoorSmallVobDrawRadius", s.OutdoorSmallVobDrawRadius, ini );
+    s.SkeletalMeshDrawRadius = GetPrivateProfileFloatA( "General", "SkeletalMeshDrawRadius", s.SkeletalMeshDrawRadius, ini );
     s.SectionDrawRadius = GetPrivateProfileFloatA( "General", "SectionDrawRadius", s.SectionDrawRadius, ini );
 
     s.ReplaceSunDirection = GetPrivateProfileBoolA( "Atmoshpere", "ReplaceSunDirection", s.ReplaceSunDirection, ini );
@@ -813,6 +814,7 @@ void GothicAPI::SaveRendererWorldSettings( const GothicRendererSettings& s ) {
     WritePrivateProfileStringA( "General", "VisualFXDrawRadius", std::to_string( s.VisualFXDrawRadius ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "OutdoorVobDrawRadius", std::to_string( s.OutdoorVobDrawRadius ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "OutdoorSmallVobDrawRadius", std::to_string( s.OutdoorSmallVobDrawRadius ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "SkeletalMeshDrawRadius", std::to_string( s.SkeletalMeshDrawRadius ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "SectionDrawRadius", std::to_string( s.SectionDrawRadius ).c_str(), ini.c_str() );
 
     WritePrivateProfileStringA( "Atmoshpere", "ReplaceSunDirection", std::to_string( s.ReplaceSunDirection ? TRUE : FALSE ).c_str(), ini.c_str() );
@@ -926,9 +928,12 @@ void GothicAPI::DrawWorldMeshNaive() {
     FrameParticles.clear();
     FrameMeshInstances.clear();
 
-    START_TIMING();
-    Engine::GraphicsEngine->DrawWorldMesh();
-    STOP_TIMING( GothicRendererTiming::TT_WorldMesh );
+    {
+        auto _ = Engine::GraphicsEngine->RecordGraphicsEvent( L"Draw World Mesh" );
+        START_TIMING();
+        Engine::GraphicsEngine->DrawWorldMesh();
+        STOP_TIMING( GothicRendererTiming::TT_WorldMesh );
+    }
 
     for ( auto const& vegetationBox : VegetationBoxes ) {
         vegetationBox->RenderVegetation( GetCameraPosition() );
@@ -936,6 +941,7 @@ void GothicAPI::DrawWorldMeshNaive() {
 
     START_TIMING();
     if ( RendererState.RendererSettings.DrawSkeletalMeshes ) {
+        auto _ = Engine::GraphicsEngine->RecordGraphicsEvent( L"Draw Skeletal Meshes" );
         // Set up frustum for the camera
         RendererState.RasterizerState.SetDefault();
         RendererState.RasterizerState.SetDirty();
@@ -984,7 +990,10 @@ void GothicAPI::DrawWorldMeshNaive() {
     STOP_TIMING( GothicRendererTiming::TT_SkeletalMeshes );
 
     // Draw vobs in view
-    Engine::GraphicsEngine->DrawVOBs();
+    {
+        auto _ = Engine::GraphicsEngine->RecordGraphicsEvent( L"Draw VOBs" );
+        Engine::GraphicsEngine->DrawVOBs();
+    }
 
     //DebugDrawBSPTree();
 
@@ -2982,7 +2991,19 @@ LRESULT GothicAPI::OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
                     SetEnableGothicInput( true );
             }
             break;
+        default:
+            if ( Engine::ImGuiHandle->IsActive ) {
+                // do not delegate input further if settings is open
+                Engine::ImGuiHandle->OnWindowMessage( hWnd, msg, wParam, lParam );
+                return DefWindowProc( hWnd, msg, wParam, lParam );
+            }
      }
+    case WM_KEYUP:
+        if ( Engine::ImGuiHandle->IsActive ) {
+            // do not delegate input further if settings is open
+            Engine::ImGuiHandle->OnWindowMessage( hWnd, msg, wParam, lParam );
+            return DefWindowProc( hWnd, msg, wParam, lParam );
+        }
     // Disable any painting that zengine might be doing
     case WM_PAINT:
     case WM_NCPAINT:

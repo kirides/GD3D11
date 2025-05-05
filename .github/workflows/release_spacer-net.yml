@@ -32,21 +32,32 @@ jobs:
       working-directory: ${{env.GITHUB_WORKSPACE}}
       run: nuget restore .
 
-    - name: Build
+    - name: Build G2A
       working-directory: ${{env.GITHUB_WORKSPACE}}
-      run: msbuild /p:Configuration=Spacer_NET .
+      run: msbuild /p:Configuration=SpacerNET_G2A_SSE2 .
+
+    - name: Build G1A
+      working-directory: ${{env.GITHUB_WORKSPACE}}
+      run: msbuild /p:Configuration=SpacerNET_G1A_SSE2 .
+
+    - name: Build Launcher
+      working-directory: ${{env.GITHUB_WORKSPACE}}
+      run: msbuild /p:Configuration=Launcher .
 
     - name: Create distribution zip
       working-directory: ${{env.GITHUB_WORKSPACE}}
       run: |
-        mkdir "${{env.RELEASE_DIR}}\GD3D11\shaders\CSFFT"
+        mkdir "${{env.RELEASE_DIR}}\GD3D11\shaders\CSFFT" -Force
+        mkdir "${{env.RELEASE_DIR}}\GD3D11\Bin" -Force
         Xcopy "D3D11Engine\Shaders\*" "${{env.RELEASE_DIR}}\GD3D11\shaders" /s
         copy "D3D11Engine\CSFFT\*.hlsl" "${{env.RELEASE_DIR}}\GD3D11\shaders\CSFFT"
-        Xcopy "blobs\data" "${{env.RELEASE_DIR}}\GD3D11\data\" /s
         Xcopy "blobs\Meshes" "${{env.RELEASE_DIR}}\GD3D11\Meshes\" /s
         Xcopy "blobs\Textures" "${{env.RELEASE_DIR}}\GD3D11\Textures\" /s
+        Xcopy "blobs\Fonts" "${{env.RELEASE_DIR}}\GD3D11\Fonts\" /s
         Xcopy "blobs\libs\*" "${{env.RELEASE_DIR}}\" /s
-        copy "Spacer_NET\ddraw.dll" "${{env.RELEASE_DIR}}"
+        copy "SpacerNET_G2A_SSE2\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\SpacerNET_g2a_sse2.dll"
+        copy "SpacerNET_G1A_SSE2\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\SpacerNET_g1a_sse2.dll"
+        copy "Launcher\ddraw.dll" "${{env.RELEASE_DIR}}\"
         cd "${{env.RELEASE_DIR}}"
         7z a -tzip "..\${{env.RELEASE_DIR}}.zip" -r
 
