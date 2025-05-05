@@ -928,9 +928,12 @@ void GothicAPI::DrawWorldMeshNaive() {
     FrameParticles.clear();
     FrameMeshInstances.clear();
 
-    START_TIMING();
-    Engine::GraphicsEngine->DrawWorldMesh();
-    STOP_TIMING( GothicRendererTiming::TT_WorldMesh );
+    {
+        auto _ = Engine::GraphicsEngine->RecordGraphicsEvent( L"Draw World Mesh" );
+        START_TIMING();
+        Engine::GraphicsEngine->DrawWorldMesh();
+        STOP_TIMING( GothicRendererTiming::TT_WorldMesh );
+    }
 
     for ( auto const& vegetationBox : VegetationBoxes ) {
         vegetationBox->RenderVegetation( GetCameraPosition() );
@@ -938,6 +941,7 @@ void GothicAPI::DrawWorldMeshNaive() {
 
     START_TIMING();
     if ( RendererState.RendererSettings.DrawSkeletalMeshes ) {
+        auto _ = Engine::GraphicsEngine->RecordGraphicsEvent( L"Draw Skeletal Meshes" );
         // Set up frustum for the camera
         RendererState.RasterizerState.SetDefault();
         RendererState.RasterizerState.SetDirty();
@@ -986,7 +990,10 @@ void GothicAPI::DrawWorldMeshNaive() {
     STOP_TIMING( GothicRendererTiming::TT_SkeletalMeshes );
 
     // Draw vobs in view
-    Engine::GraphicsEngine->DrawVOBs();
+    {
+        auto _ = Engine::GraphicsEngine->RecordGraphicsEvent( L"Draw VOBs" );
+        Engine::GraphicsEngine->DrawVOBs();
+    }
 
     //DebugDrawBSPTree();
 

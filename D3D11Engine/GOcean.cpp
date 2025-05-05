@@ -72,6 +72,7 @@ void GOcean::Draw() {
         return;
 
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    auto _ = engine->RecordGraphicsEvent( L"Draw Ocean" );
 
     engine->SetDefaultStates();
     FFTOceanSimulator->updateDisplacementMap( Engine::GAPI->GetTimeSeconds() );

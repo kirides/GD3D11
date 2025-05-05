@@ -19,6 +19,42 @@ class D3D11VertexBuffer;
 class D3D11LineRenderer;
 class D3D11ConstantBuffer;
 
+class D3DGraphicsEventRecord: 
+    public GraphicsEventRecord {
+public:
+    D3DGraphicsEventRecord() = default;
+
+    D3DGraphicsEventRecord( ID3DUserDefinedAnnotation* userAnnotation, LPCWSTR region )
+        : m_Annotation( userAnnotation ),
+        m_region( region )
+    {
+        if ( m_Annotation ) {
+            m_Annotation->BeginEvent( region );
+        }
+    }
+    ~D3DGraphicsEventRecord() override {
+        if ( m_Annotation ) {
+            m_Annotation->EndEvent();
+        }
+        m_Annotation = nullptr;
+    }
+
+    D3DGraphicsEventRecord( const D3DGraphicsEventRecord& other ) = delete;
+    D3DGraphicsEventRecord& operator=( const D3DGraphicsEventRecord& ) = delete;
+
+    D3DGraphicsEventRecord( D3DGraphicsEventRecord&& other )
+        : m_region(std::move( other.m_region )),
+        m_Annotation( std::move( other.m_Annotation ) )
+    {
+        other.m_Annotation = nullptr;
+        other.m_region = nullptr;
+    }
+
+private:
+    LPCWSTR m_region;
+    ID3DUserDefinedAnnotation* m_Annotation;
+};
+
 class D3D11GraphicsEngineBase : public BaseGraphicsEngine {
 public:
     D3D11GraphicsEngineBase();
@@ -130,6 +166,10 @@ public:
     void ResetPresentPending() { PresentPending = false; }
     void SetWindowMode( WindowModes mode ) override { }
 
+    std::unique_ptr<GraphicsEventRecord> RecordGraphicsEvent( LPCWSTR region) override {
+        return std::make_unique<D3DGraphicsEventRecord>( m_UserDefinedAnnotation.Get(), region);
+    }
+
 protected:
     /** Updates the transformsCB with new values from the GAPI */
     void UpdateTransformsCB();
@@ -143,7 +183,8 @@ protected:
     Microsoft::WRL::ComPtr<ID3D11DeviceContext> Context11;
     Microsoft::WRL::ComPtr<ID3D11Device1> Device;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext1> Context;
-
+    Microsoft::WRL::ComPtr<ID3DUserDefinedAnnotation> m_UserDefinedAnnotation;
+    
     /** Swapchain and resources */
     Microsoft::WRL::ComPtr<IDXGISwapChain> SwapChain;
     std::unique_ptr<RenderToTextureBuffer> Backbuffer;
