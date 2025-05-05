@@ -38,7 +38,7 @@ jobs:
 
     - name: Build G1A
       working-directory: ${{env.GITHUB_WORKSPACE}}
-      run: msbuild /p:Configuration=SpacerNET_G1A_SSE2 .
+      run: msbuild /p:Configuration=SpacerNET_G1_SSE2 .
 
     - name: Build Launcher
       working-directory: ${{env.GITHUB_WORKSPACE}}
@@ -56,7 +56,7 @@ jobs:
         Xcopy "blobs\Fonts" "${{env.RELEASE_DIR}}\GD3D11\Fonts\" /s
         Xcopy "blobs\libs\*" "${{env.RELEASE_DIR}}\" /s
         copy "SpacerNET_G2A_SSE2\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\SpacerNET_g2a_sse2.dll"
-        copy "SpacerNET_G1A_SSE2\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\SpacerNET_g1a_sse2.dll"
+        copy "SpacerNET_G1_SSE2\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\SpacerNET_g1_sse2.dll"
         copy "Launcher\ddraw.dll" "${{env.RELEASE_DIR}}\"
         cd "${{env.RELEASE_DIR}}"
         7z a -tzip "..\${{env.RELEASE_DIR}}.zip" -r
