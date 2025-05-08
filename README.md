@@ -29,7 +29,49 @@ The new renderer is able to utilize more of the current GPU generation's power. 
 
 ## Bugs & Problems
 
-> **Note**: If you have problems with launching game after installing GD3D11 - for example getting Access Denied(0x45a), reinstall your Visual C++ Redistributable for Visual Studio 2015-2022 to latest version from Microsoft page, mod stopped working on older VCR due to some Microsoft changes in Platform Toolset.
+### Known causes of crashing
+* If you have problems with launching game after installing GD3D11 - for example getting Access Denied(0x45a), reinstall your Visual C++ Redistributable for Visual Studio 2015-2022 to latest version from Microsoft page, mod stopped working on older VCR due to some Microsoft changes in Platform Toolset.
+  https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170#latest-microsoft-visual-c-redistributable-version
+  Select the `X86` installer `vc_redist.x86.exe` or click here: https://aka.ms/vs/17/release/vc_redist.x86.exe
+
+### AMD
+
+* For AMD RDNA+ graphics cards (RX 5xxx, RX 6xxx, RX 7xxx, RX 9xxx, ..)
+  installing DXVK (32-Bit, dxgi.dll & d3d11.dll) may help with Out-Of-Memory crashes.
+
+> @Shoun2137:
+> There are only bugs and problems, deal with it. This exact series of patches was made strictly for Mordan so that this _version_ would stop AC'ing internally in GD3D11. Oh, and also mainly because I play on Loonix, and this dumb D2D <-> D3D interop has abysmal performance, so I had to abort it with a clothes hanger. As of now, it's recommended to install DXVK + this GD3D11 fork, ~~as that wasn't really working due to DXVK not supporting the D2D interop on Windows~~ Saiyans added his solution to this problem on Windows, but when playing on Linux you're still out of luck.
+
+## Running on Linux
+
+To run the renderer on a bare linux desktop, you can use the following wine prefix setup, if you do not use Proton for example.
+
+_tested on Fedora 42 with an AMD 7900 XTX graphics card_
+
+_**requires WINE to be installed**_
+
+```sh
+# Setup a new wine-prefix specifically for Gothic games
+WINEPREFIX=~/.wine-gothic WINEARCH=win32 winecfg
+# Install dependencies
+#  directmusic - fixes audio
+#  dxvk - improves compatibility
+#  vcrun2022 - is required for new builds
+WINEPREFIX=~/.wine-gothic WINEARCH=win32 winetricks -q directmusic dxvk vcrun2022
+```
+
+using `winecfg` above, add `dinput` and `ddraw` as dll overrides (native, then built-in)
+and remove `dsound` from overrides as that breaks Gothic 2.
+
+Afterwards, launch your game(s) like this
+```sh
+cd /mnt/games/gothic1/system/
+WINEPREFIX=~/.wine-gothic WINEARCH=win32 wine ./GothicMod.exe
+```
+```sh
+cd /mnt/games/gothic2/system/
+WINEPREFIX=~/.wine-gothic WINEARCH=win32 wine ./GothicStarter.exe
+``` 
 
 ## Building
 
