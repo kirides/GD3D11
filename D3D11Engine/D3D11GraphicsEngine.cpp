@@ -57,6 +57,7 @@ const int NUM_MIN_FRAME_SHADOW_UPDATES =
 4;  // Minimum lights to update per frame
 const int MAX_IMPORTANT_LIGHT_UPDATES = 1;
 
+constexpr float inv255f = (1.f / 255.f);
 
 D3D11GraphicsEngine::D3D11GraphicsEngine() {
     DebugPointlight = nullptr;
@@ -1515,10 +1516,10 @@ XRESULT D3D11GraphicsEngine::DrawScreenFade( void* c ) {
         ActiveVS->Apply();
 
         ScreenFadeConstantBuffer colorBuffer;
-        colorBuffer.GA_Alpha = cinemaScopeColor.bgra.alpha / 255.f;
-        colorBuffer.GA_Pad.x = cinemaScopeColor.bgra.r / 255.f;
-        colorBuffer.GA_Pad.y = cinemaScopeColor.bgra.g / 255.f;
-        colorBuffer.GA_Pad.z = cinemaScopeColor.bgra.b / 255.f;
+        colorBuffer.GA_Alpha = cinemaScopeColor.bgra.alpha * inv255f;
+        colorBuffer.GA_Pad.x = cinemaScopeColor.bgra.r * inv255f;
+        colorBuffer.GA_Pad.y = cinemaScopeColor.bgra.g * inv255f;
+        colorBuffer.GA_Pad.z = cinemaScopeColor.bgra.b * inv255f;
         ActivePS->GetConstantBuffer()[0]->UpdateBuffer( &colorBuffer );
         ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
 
@@ -1585,10 +1586,10 @@ XRESULT D3D11GraphicsEngine::DrawScreenFade( void* c ) {
         ActiveVS->Apply();
 
         ScreenFadeConstantBuffer colorBuffer;
-        colorBuffer.GA_Alpha = screenFadeColor.bgra.alpha / 255.f;
-        colorBuffer.GA_Pad.x = screenFadeColor.bgra.r / 255.f;
-        colorBuffer.GA_Pad.y = screenFadeColor.bgra.g / 255.f;
-        colorBuffer.GA_Pad.z = screenFadeColor.bgra.b / 255.f;
+        colorBuffer.GA_Alpha = screenFadeColor.bgra.alpha * inv255f;
+        colorBuffer.GA_Pad.x = screenFadeColor.bgra.r * inv255f;
+        colorBuffer.GA_Pad.y = screenFadeColor.bgra.g * inv255f;
+        colorBuffer.GA_Pad.z = screenFadeColor.bgra.b * inv255f;
         ActivePS->GetConstantBuffer()[0]->UpdateBuffer( &colorBuffer );
         ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
 
@@ -5391,7 +5392,7 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
 
     // Set up alpha
     if ( !lighting ) {
-        SetActivePixelShader( "PS_Simple" );
+        SetActivePixelShader( "PS_Transparency" );
         Engine::GAPI->GetRendererState().DepthState.DepthWriteEnabled = false;
         Engine::GAPI->GetRendererState().DepthState.SetDirty();
     } else {
@@ -5407,18 +5408,35 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
     int lastAlphaFunc = -1;
     for ( unsigned int i = 0; i < decals.size(); i++ ) {
         zCDecal* d = static_cast<zCDecal*>(decals[i]->GetVisual());
-
         if ( !d ) {
             continue;
         }
 
-        if ( lighting && !d->GetAlphaTestEnabled() )
+        zCMaterial* material = d->GetDecalSettings()->DecalMaterial;
+        if ( !material ) {
+            continue;
+        }
+
+        zCTexture* texture = material->GetTexture();
+        if ( !texture ) {
+            continue;
+        }
+
+        int alphaFunc = material->GetAlphaFunc();
+        if ( alphaFunc == zMAT_ALPHA_FUNC_MAT_DEFAULT ) {
+            alphaFunc = zMAT_ALPHA_FUNC_BLEND;
+            if ( !texture->HasAlphaChannel() ) {
+                alphaFunc = zMAT_ALPHA_FUNC_NONE;
+            }
+        }
+
+        if ( lighting && !(alphaFunc == zMAT_ALPHA_FUNC_NONE || alphaFunc == zMAT_ALPHA_FUNC_TEST) )
             continue;  // Only allow no alpha or alpha test
 
         if ( !lighting ) {
-            int alphaFunc = d->GetDecalSettings()->DecalMaterial->GetAlphaFunc();
             switch ( alphaFunc ) {
             case zMAT_ALPHA_FUNC_BLEND:
+            case zMAT_ALPHA_FUNC_BLEND_TEST:
                 Engine::GAPI->GetRendererState().BlendState.SetAlphaBlending();
                 break;
 
@@ -5444,7 +5462,11 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
                 lastAlphaFunc = alphaFunc;
             }
         }
-        
+
+        if ( texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
+            continue;  // Don't render not cached surfaces
+        }
+
         int alignment = decals[i]->GetAlignment();
         XMMATRIX world = decals[i]->GetWorldMatrixXM();
         XMMATRIX offset =
@@ -5476,16 +5498,15 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
         Engine::GAPI->SetWorldTransformXM( mat );
         SetupVS_ExPerInstanceConstantBuffer();
 
-        if ( zCMaterial* material = d->GetDecalSettings()->DecalMaterial ) {
-            if ( zCTexture* texture = material->GetTexture() ) {
-                if ( texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
-                    continue;  // Don't render not cached surfaces
-                }
-
-                d->GetDecalSettings()->DecalMaterial->BindTexture( 0 );
-            }
+        if ( !lighting ) {
+            GhostAlphaConstantBuffer gacb;
+            gacb.GA_ViewportSize = float2( Engine::GraphicsEngine->GetResolution().x, Engine::GraphicsEngine->GetResolution().y );
+            gacb.GA_Alpha = (material->GetColor() >> 24) * inv255f;
+            ActivePS->GetConstantBuffer()[0]->UpdateBuffer( &gacb );
+            ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
         }
 
+        texture->Bind( 0 );
         DrawVertexBufferIndexed( QuadVertexBuffer, QuadIndexBuffer, 6 );
     }
 }
