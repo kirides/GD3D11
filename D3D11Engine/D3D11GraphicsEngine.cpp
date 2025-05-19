@@ -5501,7 +5501,7 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
         if ( !lighting ) {
             GhostAlphaConstantBuffer gacb;
             gacb.GA_ViewportSize = float2( Engine::GraphicsEngine->GetResolution().x, Engine::GraphicsEngine->GetResolution().y );
-            gacb.GA_Alpha = (material->GetColor() >> 24) * inv255f;
+            gacb.GA_Alpha = (material->GetColor().dword >> 24) * inv255f;
             ActivePS->GetConstantBuffer()[0]->UpdateBuffer( &gacb );
             ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
         }
