@@ -26,7 +26,7 @@ struct PS_INPUT
 //--------------------------------------------------------------------------------------
 float4 PSMain( PS_INPUT Input ) : SV_TARGET
 {
-	float4 color = pow(TX_Texture0.Sample(SS_Linear, Input.vTexcoord), 1.0f);
+	float4 color = TX_Texture0.Sample(SS_Linear, Input.vTexcoord);
 	color *= Input.vDiffuse;
 	
 	clip(color.a - 0.6f);
