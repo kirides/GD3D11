@@ -350,6 +350,22 @@ public:
 
         return static_cast<EVisualCamAlignType>(flags);
     }
+
+    zTAnimationMode GetVisualAniMode() {
+#ifdef BUILD_GOTHIC_1_08k
+        return zVISUAL_ANIMODE_NONE;
+#else
+        return *reinterpret_cast<zTAnimationMode*>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_WindAniMode ));
+#endif
+    };
+
+    float GetVisualAniModeStrength() {
+#ifdef BUILD_GOTHIC_1_08k
+        return 0.f;
+#else
+        return *reinterpret_cast<float*>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_WindAniModeStrength ));
+#endif
+    };
     
     /** Checks the inheritance chain and casts to T* if possible. Returns nullptr otherwise */
     template<class T>
