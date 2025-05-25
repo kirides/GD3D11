@@ -727,8 +727,8 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
 
         m_lowlatency = Engine::GAPI->GetRendererState().RendererSettings.LowLatency;
         if ( m_lowlatency 
-            && factory2.Get() /*IDXGIFactory2 means dxgi 1.3+ support */ 
-            && (swapEffect > 1) ) {
+            && factory2.Get() // IDXGIFactory2 means dxgi 1.3+ support
+            && (swapEffect > 1) ) { // Doesn't work with fullscreen exclusive on D3D11
             scflags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
         } else {
             m_lowlatency = false;
@@ -835,14 +835,9 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
     // Successfully resized swapchain, re-get buffers
     wrl::ComPtr<ID3D11Texture2D> backbuffer;
 
-    wrl::ComPtr<IDXGISwapChain3> swapChain3;
-    if ( SUCCEEDED( SwapChain.As( &swapChain3 ) ) ) {
-        LogInfo() << "SwapChain: IDXGISwapChain3";
-        m_HDR = Engine::GAPI->GetRendererState().RendererSettings.HDR_Monitor;
-        if ( m_HDR && m_swapchainflip ) {
-            UpdateColorSpace_SwapChain3( swapChain3.Get() );
-        }
-    }
+    m_HDR = Engine::GAPI->GetRendererState().RendererSettings.HDR_Monitor;
+    UpdateColorSpace_SwapChain( );
+
     SwapChain->GetBuffer( 0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(backbuffer.GetAddressOf()) );
 
     // Recreate RenderTargetView
@@ -2505,21 +2500,31 @@ void D3D11GraphicsEngine::TestDrawWorldMesh() {
 }
 
 // Sets the color space for the swap chain in order to handle HDR output.
-void D3D11GraphicsEngine::UpdateColorSpace_SwapChain3(IDXGISwapChain3* swapChain3)
+void D3D11GraphicsEngine::UpdateColorSpace_SwapChain()
 {
-    DXGI_COLOR_SPACE_TYPE colorSpace = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
+    if ( !(m_HDR && m_swapchainflip) ) {
+        return; // no hdr, no work
+    }
+
+    Microsoft::WRL::ComPtr<IDXGISwapChain3> swapChain3;
+    if ( FAILED( SwapChain.As( &swapChain3 ) ) ) {
+        return;
+    }
 
     bool isDisplayHDR10 = false;
 
-    Microsoft::WRL::ComPtr<IDXGIOutput> output;
-    if ( SUCCEEDED( swapChain3->GetContainingOutput( output.GetAddressOf() ) ) ) {
-        Microsoft::WRL::ComPtr<IDXGIOutput6> output6;
-        if ( SUCCEEDED( output.As( &output6 ) ) ) {
-            DXGI_OUTPUT_DESC1 desc;
-            output6->GetDesc1( &desc );
-            if ( desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 ) {
-                // Display output is HDR10.
-                isDisplayHDR10 = true;
+    DXGI_COLOR_SPACE_TYPE colorSpace = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
+    if ( m_HDR ) {
+        Microsoft::WRL::ComPtr<IDXGIOutput> output;
+        if ( SUCCEEDED( swapChain3->GetContainingOutput( output.GetAddressOf() ) ) ) {
+            Microsoft::WRL::ComPtr<IDXGIOutput6> output6;
+            if ( SUCCEEDED( output.As( &output6 ) ) ) {
+                DXGI_OUTPUT_DESC1 desc;
+                output6->GetDesc1( &desc );
+                if ( desc.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 ) {
+                    // Display output is HDR10.
+                    isDisplayHDR10 = true;
+                }
             }
         }
     }
@@ -2540,8 +2545,6 @@ void D3D11GraphicsEngine::UpdateColorSpace_SwapChain3(IDXGISwapChain3* swapChain
             break;
         }
     }
-
-    //m_colorSpace = colorSpace; //only used when access from other function required
 
     UINT colorSpaceSupport = 0;
     if ( SUCCEEDED( swapChain3->CheckColorSpaceSupport( colorSpace, &colorSpaceSupport ) )
@@ -2851,219 +2854,6 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
     // TODO: TODO: Remove DrawWorldMeshNaive finally and put this into a proper
     // location!
     UpdateOcclusion();
-
-    return XR_SUCCESS;
-}
-
-/** Draws the world mesh */
-XRESULT D3D11GraphicsEngine::DrawWorldMeshW( bool noTextures ) {
-    if ( !Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh )
-        return XR_SUCCESS;
-
-    float3 camPos = Engine::GAPI->GetCameraPosition();
-
-    // Engine::GAPI->SetFarPlane(DEFAULT_FAR_PLANE);
-
-    INT2 camSection = WorldConverter::GetSectionOfPos( camPos );
-
-    XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
-
-    // Setup renderstates
-    Engine::GAPI->GetRendererState().RasterizerState.SetDefault();
-    Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_BACK;
-    Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
-
-    Engine::GAPI->GetRendererState().DepthState.SetDefault();
-    Engine::GAPI->GetRendererState().DepthState.SetDirty();
-
-    Engine::GAPI->ResetWorldTransform();
-    Engine::GAPI->SetViewTransformXM( view );
-
-    // Set shader
-    SetActivePixelShader( "PS_AtmosphereGround" );
-    auto nrmPS = ActivePS;
-    SetActivePixelShader( "PS_World" );
-    auto defaultPS = ActivePS;
-    SetActiveVertexShader( "VS_Ex" );
-    auto vsEx = ActiveVS;
-
-    // Set constant buffer
-    ActivePS->GetConstantBuffer()[0]->UpdateBuffer(
-        &Engine::GAPI->GetRendererState().GraphicsState );
-    ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
-
-    GSky* sky = Engine::GAPI->GetSky();
-    ActivePS->GetConstantBuffer()[1]->UpdateBuffer( &sky->GetAtmosphereCB() );
-    ActivePS->GetConstantBuffer()[1]->BindToPixelShader( 1 );
-
-    if ( Engine::GAPI->GetRendererState().RendererSettings.WireframeWorld ) {
-        Engine::GAPI->GetRendererState().RasterizerState.Wireframe = true;
-    }
-
-    // Init drawcalls
-    SetupVS_ExMeshDrawCall();
-    SetupVS_ExConstantBuffer();
-
-    ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &XMMatrixIdentity() );
-    ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( 1 );
-
-    InfiniteRangeConstantBuffer->BindToPixelShader( 3 );
-
-    int numSections = 0;
-    int sectionViewDist =
-        Engine::GAPI->GetRendererState().RendererSettings.SectionDrawRadius;
-
-    static std::vector<WorldMeshSectionInfo*> renderList; renderList.clear();
-    Engine::GAPI->CollectVisibleSections( renderList );
-
-    // Static, so we can clear the lists but leave the hashmap intact
-    static std::unordered_map<
-        zCTexture*, std::pair<MaterialInfo*, std::vector<WorldMeshInfo*>>>
-        meshesByMaterial;
-    static zCMesh* startMesh =
-        Engine::GAPI->GetLoadedWorldInfo()->BspTree->GetMesh();
-
-    if ( startMesh != Engine::GAPI->GetLoadedWorldInfo()->BspTree->GetMesh() ) {
-        meshesByMaterial.clear();  // Happens on world change
-        startMesh = Engine::GAPI->GetLoadedWorldInfo()->BspTree->GetMesh();
-    }
-
-    std::vector<MeshInfo*> WaterSurfaces;
-
-    for ( std::vector<WorldMeshSectionInfo*>::iterator itr = renderList.begin();
-        itr != renderList.end(); itr++ ) {
-        numSections++;
-        for ( std::map<MeshKey, WorldMeshInfo*>::iterator it =
-            (*itr)->WorldMeshes.begin();
-            it != (*itr)->WorldMeshes.end(); ++it ) {
-            if ( it->first.Material ) {
-                auto& p = meshesByMaterial[it->first.Material->GetTexture()];
-                p.second.emplace_back( it->second );
-
-                if ( !p.first ) {
-                    p.first = Engine::GAPI->GetMaterialInfoFrom(
-                        it->first.Material->GetTextureSingle() );
-                }
-            } else {
-                meshesByMaterial[nullptr].second.emplace_back( it->second );
-                meshesByMaterial[nullptr].first =
-                    Engine::GAPI->GetMaterialInfoFrom( nullptr );
-            }
-        }
-    }
-
-    // Bind wrapped mesh vertex buffers
-    DrawVertexBufferIndexedUINTFromMeshInfo( Engine::GAPI->GetWrappedWorldMesh() );
-
-    for ( auto&& textureInfo : meshesByMaterial ) {
-        if ( textureInfo.second.second.empty() ) continue;
-
-        if ( !textureInfo.first ) {
-            DistortionTexture->BindToPixelShader( 0 );
-        } else {
-            MaterialInfo* info = textureInfo.second.first;
-            if ( !info->Constantbuffer ) info->UpdateConstantbuffer();
-
-            // Check surface type
-            if ( info->MaterialType == MaterialInfo::MT_Water ) {
-                FrameWaterSurfaces[textureInfo.first] = textureInfo.second.second;
-                textureInfo.second.second.resize( 0 );
-                continue;
-            }
-
-            info->Constantbuffer->BindToPixelShader( 2 );
-
-            // Bind texture
-            if ( textureInfo.first->CacheIn( 0.6f ) == zRES_CACHED_IN )
-                textureInfo.first->Bind( 0 );
-            else
-                continue;
-
-            // Querry the second texture slot to see if there is a normalmap bound
-            {
-                wrl::ComPtr<ID3D11ShaderResourceView> nrmmap;
-                GetContext()->PSGetShaderResources( 1, 1, nrmmap.GetAddressOf() );
-                if ( !nrmmap.Get() ) {
-                    if ( ActivePS != defaultPS ) {
-                        ActivePS = defaultPS;
-                        ActivePS->Apply();
-                    }
-                } else {
-                    if ( ActivePS != nrmPS ) {
-                        ActivePS = nrmPS;
-                        ActivePS->Apply();
-                    }
-                }
-            }
-            // Check for overwrites
-            // TODO: This is slow, sort this!
-            if ( !info->VertexShader.empty() ) {
-                SetActiveVertexShader( info->VertexShader );
-                if ( ActiveVS ) ActiveVS->Apply();
-            } else if ( ActiveVS != vsEx ) {
-                ActiveVS = vsEx;
-                ActiveVS->Apply();
-            }
-
-            if ( ActiveHDS ) {
-                ActiveHDS = nullptr;
-
-                // Bind wrapped mesh vertex buffers
-                DrawVertexBufferIndexedUINTFromMeshInfo( Engine::GAPI->GetWrappedWorldMesh() );
-
-                GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
-                D3D11HDShader::Unbind();
-            }
-
-            if ( !info->PixelShader.empty() ) {
-                SetActivePixelShader( info->PixelShader );
-                if ( ActivePS ) ActivePS->Apply();
-
-            } else if ( ActivePS != defaultPS && ActivePS != nrmPS ) {
-                // Querry the second texture slot to see if there is a normalmap bound
-                Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> nrmmap;
-                GetContext()->PSGetShaderResources( 1, 1, nrmmap.GetAddressOf() );
-                if ( !nrmmap.Get() ) {
-                    if ( ActivePS != defaultPS ) {
-                        ActivePS = defaultPS;
-                        ActivePS->Apply();
-                    }
-                } else {
-                    if ( ActivePS != nrmPS ) {
-                        ActivePS = nrmPS;
-                        ActivePS->Apply();
-                    }
-                    nrmmap->Release();
-                }
-            }
-        }
-
-        if ( ActiveHDS ) {
-            for ( auto&& itr = textureInfo.second.second.begin(); itr != textureInfo.second.second.end(); itr++ ) {
-                DrawVertexBufferIndexed( (*itr)->MeshVertexBuffer,
-                    (*itr)->MeshIndexBuffer,
-                    (*itr)->Indices.size() );
-            }
-        } else {
-            for ( auto&& itr = textureInfo.second.second.begin(); itr != textureInfo.second.second.end(); itr++ ) {
-                // Draw from wrapped mesh
-                DrawVertexBufferIndexedUINT( nullptr, nullptr, (*itr)->Indices.size(), (*itr)->BaseIndexLocation );
-            }
-        }
-
-        Engine::GAPI->GetRendererState().RendererInfo.WorldMeshDrawCalls += textureInfo.second.second.size();
-
-        // Clear the list, leaving the memory allocated
-        textureInfo.second.second.resize( 0 );
-    }
-
-    if ( Engine::GAPI->GetRendererState().RendererSettings.WireframeWorld ) {
-        Engine::GAPI->GetRendererState().RasterizerState.Wireframe = false;
-    }
-
-    Engine::GAPI->GetRendererState().RendererInfo.FrameNumSectionsDrawn = numSections;
-    Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_FRONT;
-    Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
 
     return XR_SUCCESS;
 }
