@@ -441,6 +441,9 @@ struct GothicMemoryLocations {
         static const unsigned int Offset_GroundPoly = 0x0BC;
         static const unsigned int Offset_Type = 0xB0;
 
+        static const unsigned int Offset_WindAniMode = 0xD4;
+        static const unsigned int Offset_WindAniModeStrength = 0xD8;
+
         static const unsigned int Offset_Flags = 0x104;
         static const unsigned int Offset_VobTree = 0x24;
         static const unsigned int Offset_VobAlpha = 0xCC;

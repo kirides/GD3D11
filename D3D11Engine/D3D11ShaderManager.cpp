@@ -157,6 +157,7 @@ XRESULT D3D11ShaderManager::Init() {
 
     Shaders.push_back( ShaderInfo( "VS_ExInstancedObj", "VS_ExInstancedObj.hlsl", "v", 10 ) );
     Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerFrame ) );
+    Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_Wind ) );
 
     Shaders.push_back( ShaderInfo( "VS_ExRemapInstancedObj", "VS_ExRemapInstancedObj.hlsl", "v", 12 ) );
     Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerFrame ) );

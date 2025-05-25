@@ -6,9 +6,11 @@
 struct VobInstanceInfo {
     XMFLOAT4X4 world;
     DWORD color;
+    float windStrenth;
+    float windSpeed;
 
-    // General purpose slots
-    DWORD GP_Slot[3];
+    // General purpose slot
+    DWORD GP_Slot;
 };
 
 /** Remap-index for the static vobs */
@@ -214,6 +216,14 @@ struct VS_ExConstantBuffer_PerFrame {
     XMFLOAT4X4 View;
     XMFLOAT4X4 Projection;
     XMFLOAT4X4 ViewProj;
+};
+
+struct VS_ExConstantBuffer_Wind {
+    float3 windDir;
+    float globalTime;
+    float minHeight;
+    float maxHeight;
+    float Pad[2];
 };
 
 struct ParticlePointShadingConstantBuffer {

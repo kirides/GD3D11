@@ -3155,6 +3155,13 @@ void GothicAPI::CollectVisibleVobs( std::vector<VobInfo*>& vobs, std::vector<Vob
                 VobInstanceInfo vii;
                 vii.world = it->WorldMatrix;
                 vii.color = it->GroundColor;
+                vii.windStrenth = 0.0f;
+                vii.windSpeed = 0.0f;
+
+                zTAnimationMode aniMode = it->Vob->GetVisualAniMode();
+                if ( aniMode != zVISUAL_ANIMODE_NONE ) {
+                    ProcessVobAnimation( it->Vob, aniMode, vii );
+                }
 
                 reinterpret_cast<MeshVisualInfo*>(it->VisualInfo)->Instances.push_back( vii );
 
@@ -3320,6 +3327,56 @@ std::vector<VobInfo*>::iterator GothicAPI::MoveVobFromBspToDynamic( VobInfo* vob
     return itn;
 }
 
+static void ProcessVobAnimation( zCVob* vob, zTAnimationMode aniMode, VobInstanceInfo& vobInstance ) {
+    if ( Engine::GAPI->GetRendererState().RendererSettings.WindQuality == GothicRendererSettings::EWindQuality::WIND_QUALITY_ADVANCED ) {
+        // get rain weight
+        float rainWeight = Engine::GAPI->GetRainFXWeight();
+
+        // limit in 0..1 range
+        rainWeight = std::max<float>( 0.0f, std::min<float>( 1.0f, rainWeight ) );
+
+        // max multiplayers when rain is 1.0 (max)
+        constexpr float rainMaxStrengthMultiplier = 3.0f;
+        constexpr float rainMaxSpeedMultiplier = 1.75f;
+
+        vobInstance.windStrenth = std::max<float>( 0.1f, vob->GetVisualAniModeStrength() ) * (1.0f + rainWeight * (rainMaxStrengthMultiplier - 1.0f));
+        vobInstance.windSpeed = 1.5f * (1.0f + rainWeight * (rainMaxSpeedMultiplier - 1.0f));
+    } else if ( Engine::GAPI->GetRendererState().RendererSettings.WindQuality == GothicRendererSettings::EWindQuality::WIND_QUALITY_SIMPLE ) {
+        const uint64_t windCycleTime = 6000;
+        const uint64_t totalTime = static_cast<uint64_t>( Engine::GAPI->GetTotalTime() );
+
+        float angleTime = static_cast<float>( totalTime % windCycleTime ) / static_cast<float>( windCycleTime );
+        angleTime = angleTime * 2.f - 1.f;
+
+        float windDirX;
+        float windDirY;
+        float windDirZ;
+        float aniStrength = vob->GetVisualAniModeStrength() * 0.1f;
+        if ( aniMode == zVISUAL_ANIMODE_WIND ) {
+            // trees
+            if ( aniStrength < 0.03f ) aniStrength = 0.03f;
+
+            windDirX = 0.6f;
+            windDirY = 0.15f;
+            windDirZ = 1.f;
+        } else {
+            // grass
+            if ( aniStrength < 0.02f ) aniStrength = 0.02f;
+
+            windDirX = 0.5f;
+            windDirY = 0.15f;
+            windDirZ = 0.5f;
+        }
+
+        const float shift = vobInstance.world.m[3][0] * windDirX + vobInstance.world.m[3][1] * windDirY + vobInstance.world.m[3][2] * windDirZ;
+        const float anim = aniStrength * cos( angleTime * XM_PI + shift * 0.0001f );
+
+        vobInstance.world.m[0][2] += windDirX * anim;
+        vobInstance.world.m[1][2] += windDirY * anim;
+        vobInstance.world.m[2][2] += windDirZ * anim;
+    }
+}
+
 static void CVVH_AddNotDrawnVobToList( std::vector<VobInfo*>& target, std::vector<VobInfo*>& source, float dist ) {
     std::vector<VobInfo*> remVobs;
 
@@ -3337,6 +3394,13 @@ static void CVVH_AddNotDrawnVobToList( std::vector<VobInfo*>& target, std::vecto
                 VobInstanceInfo vii;
                 vii.world = it->WorldMatrix;
                 vii.color = it->GroundColor;
+                vii.windStrenth = 0.0f;
+                vii.windSpeed = 0.0f;
+
+                zTAnimationMode aniMode = it->Vob->GetVisualAniMode();
+                if ( aniMode != zVISUAL_ANIMODE_NONE ) {
+                    ProcessVobAnimation( it->Vob, aniMode, vii );
+                }
 
                 reinterpret_cast<MeshVisualInfo*>(it->VisualInfo)->Instances.push_back( vii );
                 target.push_back( it );
@@ -4137,6 +4201,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Display", "Rain", std::to_string( s.EnableRain ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "RainEffects", std::to_string( s.EnableRainEffects ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "LimitLightIntensity", std::to_string( s.LimitLightIntensity ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "WindQuality", std::to_string( s.WindQuality ).c_str(), ini.c_str() );
 
     WritePrivateProfileStringA( "Shadows", "EnableShadows", std::to_string( s.EnableShadows ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "EnableSoftShadows", std::to_string( s.EnableSoftShadows ? TRUE : FALSE ).c_str(), ini.c_str() );
@@ -4239,6 +4304,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.EnableRain = GetPrivateProfileBoolA( "Display", "Rain", true, ini );
         s.EnableRainEffects = GetPrivateProfileBoolA( "Display", "RainEffects", true, ini );
         s.LimitLightIntensity = GetPrivateProfileBoolA( "Display", "LimitLightIntensity", false, ini );
+        s.WindQuality = GetPrivateProfileIntA( "Display", "WindQuality", 0, ini.c_str() );
 
         s.EnableSMAA = GetPrivateProfileBoolA( "SMAA", "Enabled", false, ini );
         s.SharpenFactor = GetPrivateProfileFloatA( "SMAA", "SharpenFactor", 0.30f, ini );

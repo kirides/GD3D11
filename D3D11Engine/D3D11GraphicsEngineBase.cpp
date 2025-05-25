@@ -304,6 +304,10 @@ void D3D11GraphicsEngineBase::ConstructShaderMakroList( std::vector<D3D_SHADER_M
     m.Definition = s.EnableSoftShadows ? "1" : "0";
     list.push_back( m );
 
+    m.Name = "SHD_WIND";
+    m.Definition = s.WindQuality == GothicRendererSettings::EWindQuality::WIND_QUALITY_ADVANCED ? "1" : "0";
+    list.push_back( m );
+
     m.Name = nullptr;
     m.Definition = nullptr;
     list.push_back( m );
