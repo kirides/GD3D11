@@ -239,6 +239,19 @@ void ImGuiShim::RenderSettingsWindow()
             ImGui::Checkbox( "Shadow filtering", &settings.EnableSoftShadows );
             ImGui::Checkbox( "Compress Backbuffer", &settings.CompressBackBuffer );
             ImGui::Checkbox( "Animate Static Vobs", &settings.AnimateStaticVobs );
+
+#ifdef BUILD_GOTHIC_2_6_fix
+            ImGui::Text( "Wind effect" ); ImGui::SameLine();
+            static std::vector<std::pair<char*, int>> windEffectQuality = {
+                { "Disabled", GothicRendererSettings::EWindQuality::WIND_QUALITY_NONE },
+                { "Simple", GothicRendererSettings::EWindQuality::WIND_QUALITY_SIMPLE },
+                { "Advanced", GothicRendererSettings::EWindQuality::WIND_QUALITY_ADVANCED },
+            };
+            if ( ImComboBoxC( "##Wind effect", windEffectQuality, &settings.WindQuality, []() { Engine::GraphicsEngine->ReloadShaders(); } ) ) {
+                ImGui::EndCombo();
+            }
+#endif //BUILD_GOTHIC_2_6_fix
+
             ImGui::Checkbox( "Enable Rain", &settings.EnableRain );
             ImGui::Checkbox( "Enable Rain Effects", &settings.EnableRainEffects );
             ImGui::Checkbox( "Limit Light Intensity", &settings.LimitLightIntensity );
