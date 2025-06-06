@@ -2389,7 +2389,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_NONE;
     Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
     UpdateRenderStates();
-    GetContext()->PSSetSamplers( 0, 1, ClampSamplerState.GetAddressOf() );
+    GetContext()->PSSetSamplers( 0, 1, CubeSamplerState.GetAddressOf() );
 
     // Save screenshot if wanted
     if ( SaveScreenshotNextFrame ) {
