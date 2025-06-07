@@ -768,6 +768,23 @@ void GothicAPI::LoadRendererWorldSettings( GothicRendererSettings& s ) {
     s.SkeletalMeshDrawRadius = GetPrivateProfileFloatA( "General", "SkeletalMeshDrawRadius", s.SkeletalMeshDrawRadius, ini );
     s.SectionDrawRadius = GetPrivateProfileFloatA( "General", "SectionDrawRadius", s.SectionDrawRadius, ini );
 
+    s.RainRadiusRange = GetPrivateProfileFloatA( "General", "RainRadiusRange", s.RainRadiusRange, ini );
+    s.RainHeightRange = GetPrivateProfileFloatA( "General", "RainHeightRange", s.RainHeightRange, ini );
+    s.RainNumParticles = GetPrivateProfileIntA( "General", "RainNumParticles", s.RainNumParticles, ini.c_str() );
+    s.RainGlobalVelocity = XMFLOAT3(
+        GetPrivateProfileFloatA( "General", "RainGlobalVelocityX", s.RainGlobalVelocity.x, ini.c_str() ),
+        GetPrivateProfileFloatA( "General", "RainGlobalVelocityY", s.RainGlobalVelocity.y, ini.c_str() ),
+        GetPrivateProfileFloatA( "General", "RainGlobalVelocityZ", s.RainGlobalVelocity.z, ini.c_str() )
+    );
+    s.RainSceneWettness = GetPrivateProfileFloatA( "General", "RainSceneWettness", s.RainSceneWettness, ini );
+    s.RainSunLightStrength = GetPrivateProfileFloatA( "General", "RainSunLightStrength", s.RainSunLightStrength, ini );
+    s.RainFogColor = XMFLOAT3(
+        GetPrivateProfileIntA( "General", "RainFogColorR", static_cast<int>(s.RainFogColor.x * 255.0f), ini.c_str() ) / 255.0f,
+        GetPrivateProfileIntA( "General", "RainFogColorG", static_cast<int>(s.RainFogColor.y * 255.0f), ini.c_str() ) / 255.0f,
+        GetPrivateProfileIntA( "General", "RainFogColorB", static_cast<int>(s.RainFogColor.z * 255.0f), ini.c_str() ) / 255.0f
+    );
+    s.RainFogDensity = GetPrivateProfileFloatA( "General", "RainFogDensity", s.RainFogDensity, ini );
+
     s.ReplaceSunDirection = GetPrivateProfileBoolA( "Atmoshpere", "ReplaceSunDirection", s.ReplaceSunDirection, ini );
 
     AtmosphereSettings& aS = GetSky()->GetAtmoshpereSettings();
@@ -816,6 +833,19 @@ void GothicAPI::SaveRendererWorldSettings( const GothicRendererSettings& s ) {
     WritePrivateProfileStringA( "General", "OutdoorSmallVobDrawRadius", std::to_string( s.OutdoorSmallVobDrawRadius ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "SkeletalMeshDrawRadius", std::to_string( s.SkeletalMeshDrawRadius ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "SectionDrawRadius", std::to_string( s.SectionDrawRadius ).c_str(), ini.c_str() );
+
+    WritePrivateProfileStringA( "General", "RainRadiusRange", std::to_string( s.RainRadiusRange ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "RainHeightRange", std::to_string( s.RainHeightRange ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "RainNumParticles", std::to_string( s.RainNumParticles ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "RainGlobalVelocityX", std::to_string( s.RainGlobalVelocity.x ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "RainGlobalVelocityY", std::to_string( s.RainGlobalVelocity.y ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "RainGlobalVelocityZ", std::to_string( s.RainGlobalVelocity.z ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "RainSceneWettness", std::to_string( s.RainSceneWettness ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "RainSunLightStrength", std::to_string( s.RainSunLightStrength ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "RainFogColorR", std::to_string( static_cast<int>(s.RainFogColor.x * 255.0f) ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "RainFogColorG", std::to_string( static_cast<int>(s.RainFogColor.y * 255.0f) ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "RainFogColorB", std::to_string( static_cast<int>(s.RainFogColor.z * 255.0f) ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "RainFogDensity", std::to_string( s.RainFogDensity ).c_str(), ini.c_str() );
 
     WritePrivateProfileStringA( "Atmoshpere", "ReplaceSunDirection", std::to_string( s.ReplaceSunDirection ? TRUE : FALSE ).c_str(), ini.c_str() );
 
