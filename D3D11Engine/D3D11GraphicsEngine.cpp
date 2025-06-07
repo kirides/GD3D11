@@ -1,4 +1,8 @@
-﻿#include "D3D11GraphicsEngine.h"
+#ifndef PUBLIC_RELEASE
+#define DEBUG_D3D11
+#endif
+
+#include "D3D11GraphicsEngine.h"
 
 #include "AlignedAllocator.h"
 #include "D3D11Effect.h"
@@ -114,6 +118,8 @@ D3D11GraphicsEngine::~D3D11GraphicsEngine() {
 
 void PrintD3DFeatureLevel( D3D_FEATURE_LEVEL lvl ) {
     std::map<D3D_FEATURE_LEVEL, std::string> dxFeatureLevelsMap = {
+        {D3D_FEATURE_LEVEL::D3D_FEATURE_LEVEL_12_1, "D3D_FEATURE_LEVEL_12_1"},
+        {D3D_FEATURE_LEVEL::D3D_FEATURE_LEVEL_12_0, "D3D_FEATURE_LEVEL_12_0"},
         {D3D_FEATURE_LEVEL::D3D_FEATURE_LEVEL_11_1, "D3D_FEATURE_LEVEL_11_1"},
         {D3D_FEATURE_LEVEL::D3D_FEATURE_LEVEL_11_0, "D3D_FEATURE_LEVEL_11_0"},
         {D3D_FEATURE_LEVEL::D3D_FEATURE_LEVEL_10_1, "D3D_FEATURE_LEVEL_10_1"},
@@ -248,6 +254,8 @@ XRESULT D3D11GraphicsEngine::Init() {
 
     D3D_FEATURE_LEVEL maxFeatureLevel = D3D_FEATURE_LEVEL::D3D_FEATURE_LEVEL_9_1;
     D3D_FEATURE_LEVEL featureLevels[] = {
+        D3D_FEATURE_LEVEL_12_1,
+        D3D_FEATURE_LEVEL_12_0,
         D3D_FEATURE_LEVEL_11_1,
         D3D_FEATURE_LEVEL_11_0,
         D3D_FEATURE_LEVEL_10_1,
@@ -263,14 +271,18 @@ XRESULT D3D11GraphicsEngine::Init() {
     flags |= D3D11_CREATE_DEVICE_DEBUG;
 #endif
 
-    hr = D3D11CreateDevice( DXGIAdapter1.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, flags, featureLevels, ARRAYSIZE( featureLevels ),
-        D3D11_SDK_VERSION, Device11.GetAddressOf(), &maxFeatureLevel, Context11.GetAddressOf() );
-    // Assume E_INVALIDARG occurs because D3D_FEATURE_LEVEL_11_1 is not supported on current platform
-    // retry with just 9.1-11.0
-    if ( hr == E_INVALIDARG ) {
-        hr = D3D11CreateDevice( DXGIAdapter1.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, flags, &featureLevels[1], ARRAYSIZE( featureLevels ) - 1,
+    Microsoft::WRL::ComPtr<ID3D11Device> Device11;
+    Microsoft::WRL::ComPtr<ID3D11DeviceContext> Context11;
+    for ( int i = 0; i < sizeof( featureLevels ) / sizeof( &featureLevels[0] ); ++i ) {
+        hr = D3D11CreateDevice( DXGIAdapter1.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, flags, &featureLevels[i], 1,
             D3D11_SDK_VERSION, Device11.GetAddressOf(), &maxFeatureLevel, Context11.GetAddressOf() );
+        if ( SUCCEEDED( hr ) ) {
+            break;
+        }
+
+        maxFeatureLevel = D3D_FEATURE_LEVEL::D3D_FEATURE_LEVEL_9_1;
     }
+
     if ( FAILED( hr ) ) {
         LogErrorBox() << "D3D11CreateDevice failed with code: " << hr << "!";
         exit( 2 );
@@ -3445,8 +3457,9 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround( FXMVECTOR position,
             GetContext()->PSSetShader( nullptr, nullptr, 0 );
         }
 
+        // timer range is between 0 and 100000, for now having bugs with huge values for sin/cos
         VS_ExConstantBuffer_Wind windBuff;
-        windBuff.globalTime = Engine::GAPI->GetTotalTime();
+        windBuff.globalTime = static_cast<float>( Engine::GAPI->GetTotalTimeDW() % 100000 );
         windBuff.windDir = float3( 0.3f, 0.15f, 0.5f );
 
         if ( ActiveVS ) {
@@ -3611,8 +3624,9 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
 
+    // timer range is between 0 and 100000, for now having bugs with huge values for sin/cos
     VS_ExConstantBuffer_Wind windBuff;
-    windBuff.globalTime = Engine::GAPI->GetTotalTime();
+    windBuff.globalTime = static_cast<float>( Engine::GAPI->GetTotalTimeDW() % 100000 );
     windBuff.windDir = float3( 0.3f, 0.15f, 0.5f );
 
     if ( ActiveVS ) {

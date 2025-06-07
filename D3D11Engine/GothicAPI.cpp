@@ -376,28 +376,37 @@ int GothicAPI::GetFramesPerSecond() {
 
 /** Returns wether the camera is indoor or not */
 bool GothicAPI::IsCameraIndoor() {
-    if ( !oCGame::GetGame() || !oCGame::GetGame()->_zCSession_camVob || !oCGame::GetGame()->_zCSession_camVob->GetGroundPoly() )
+    oCGame* ogame = oCGame::GetGame();
+    if ( !ogame || !ogame->_zCSession_camVob || !ogame->_zCSession_camVob->GetGroundPoly() )
         return false;
 
-    return oCGame::GetGame()->_zCSession_camVob->GetGroundPoly()->GetLightmap() != nullptr;
+    return ogame->_zCSession_camVob->GetGroundPoly()->GetLightmap() != nullptr;
 }
 
 /** Returns total time */
 float GothicAPI::GetTotalTime() {
-    if ( zCTimer::GetTimer() )
-        return zCTimer::GetTimer()->totalTimeFloat;
+    if ( zCTimer* timer = zCTimer::GetTimer() )
+        return timer->totalTimeFloat;
 
     return 0.0f;
+}
+
+/** Returns total time DWORD */
+DWORD GothicAPI::GetTotalTimeDW() {
+    if ( zCTimer* timer = zCTimer::GetTimer() )
+        return timer->totalTime;
+
+    return 0;
 }
 
 /** Returns global time */
 float GothicAPI::GetTimeSeconds() {
 #ifdef BUILD_GOTHIC_1_08k
-    if ( zCTimer::GetTimer() )
-        return zCTimer::GetTimer()->totalTimeFloat / 1000.0f; // Gothic 1 has this in seconds
+    if ( zCTimer* timer = zCTimer::GetTimer() )
+        return timer->totalTimeFloat / 1000.0f; // Gothic 1 has this in seconds
 #else
-    if ( zCTimer::GetTimer() )
-        return zCTimer::GetTimer()->totalTimeFloatSecs;
+    if ( zCTimer* timer = zCTimer::GetTimer() )
+        return timer->totalTimeFloatSecs;
 #endif
 
     return 0.0f;
@@ -406,11 +415,11 @@ float GothicAPI::GetTimeSeconds() {
 /** Returns the current frame time */
 float GothicAPI::GetFrameTimeSec() {
 #ifdef BUILD_GOTHIC_1_08k
-    if ( zCTimer::GetTimer() )
-        return zCTimer::GetTimer()->frameTimeFloat / 1000.0f;
+    if ( zCTimer* timer = zCTimer::GetTimer() )
+        return timer->frameTimeFloat / 1000.0f;
 #else
-    if ( zCTimer::GetTimer() )
-        return zCTimer::GetTimer()->frameTimeFloatSecs;
+    if ( zCTimer* timer = zCTimer::GetTimer() )
+        return timer->frameTimeFloatSecs;
 #endif
     return -1.0f;
 }
@@ -3342,8 +3351,8 @@ static void ProcessVobAnimation( zCVob* vob, zTAnimationMode aniMode, VobInstanc
         vobInstance.windStrenth = std::max<float>( 0.1f, vob->GetVisualAniModeStrength() ) * (1.0f + rainWeight * (rainMaxStrengthMultiplier - 1.0f));
         vobInstance.windSpeed = 1.5f * (1.0f + rainWeight * (rainMaxSpeedMultiplier - 1.0f));
     } else if ( Engine::GAPI->GetRendererState().RendererSettings.WindQuality == GothicRendererSettings::EWindQuality::WIND_QUALITY_SIMPLE ) {
-        const uint64_t windCycleTime = 6000;
-        const uint64_t totalTime = static_cast<uint64_t>( Engine::GAPI->GetTotalTime() );
+        const DWORD windCycleTime = 6000;
+        const DWORD totalTime = Engine::GAPI->GetTotalTimeDW();
 
         float angleTime = static_cast<float>( totalTime % windCycleTime ) / static_cast<float>( windCycleTime );
         angleTime = angleTime * 2.f - 1.f;

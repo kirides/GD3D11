@@ -305,7 +305,11 @@ void D3D11GraphicsEngineBase::ConstructShaderMakroList( std::vector<D3D_SHADER_M
     list.push_back( m );
 
     m.Name = "SHD_WIND";
+#ifdef BUILD_GOTHIC_2_6_fix
     m.Definition = s.WindQuality == GothicRendererSettings::EWindQuality::WIND_QUALITY_ADVANCED ? "1" : "0";
+#else
+    m.Definition = "0";
+#endif
     list.push_back( m );
 
     m.Name = nullptr;
