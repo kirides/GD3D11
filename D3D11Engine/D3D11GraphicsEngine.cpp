@@ -4623,7 +4623,10 @@ XRESULT D3D11GraphicsEngine::DrawLighting( std::vector<VobLightInfo*>& lights ) 
             // TODO: fix caves in Gothic 1 being way too dark. Remove this workaround.
     #if BUILD_GOTHIC_1_08k
             // Kirides: Nah, just make it dark enough.
-            scb.SQ_ShadowStrength = 0.333f;
+            if ( Engine::GAPI->GetLoadedWorldInfo()->WorldName == "ORCTEMPEL" )
+                scb.SQ_ShadowStrength = 0.15f;
+            else
+                scb.SQ_ShadowStrength = 0.3f;
     #else
             // Turn off shadows
             scb.SQ_ShadowStrength = 0.0f;
