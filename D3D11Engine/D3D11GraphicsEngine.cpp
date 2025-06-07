@@ -4538,15 +4538,18 @@ XRESULT D3D11GraphicsEngine::DrawLighting( std::vector<VobLightInfo*>& lights ) 
     scb.SQ_WorldAOStrength = Engine::GAPI->GetRendererState().RendererSettings.WorldAOStrength;
 
     // Modify lightsettings when indoor
-    if ( Engine::GAPI->GetLoadedWorldInfo()->BspTree->GetBspTreeMode() ==
-        zBSP_MODE_INDOOR ) {
-        // TODO: fix caves in Gothic 1 being way too dark. Remove this workaround.
+    if ( auto bspTree = Engine::GAPI->GetLoadedWorldInfo()->BspTree )
+        if ( bspTree->GetBspTreeMode() == zBSP_MODE_INDOOR ) {
+            // TODO: fix caves in Gothic 1 being way too dark. Remove this workaround.
 #if BUILD_GOTHIC_1_08k
-        // Kirides: Nah, just make it dark enough.
-        scb.SQ_ShadowStrength = 0.085f;
+            // Kirides: Nah, just make it dark enough.
+            if ( Engine::GAPI->GetLoadedWorldInfo()->WorldName == "ORCTEMPEL" )
+                scb.SQ_ShadowStrength = 0.15f;
+            else
+                scb.SQ_ShadowStrength = 0.3f;
 #else
-        // Turn off shadows
-        scb.SQ_ShadowStrength = 0.0f;
+            // Turn off shadows
+            scb.SQ_ShadowStrength = 0.0f;
 #endif
 
         // Only use world AO
