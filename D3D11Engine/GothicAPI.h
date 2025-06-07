@@ -438,6 +438,9 @@ public:
     /** Returns total time */
     float GetTotalTime();
 
+    /** Returns total time DWORD */
+    DWORD GetTotalTimeDW();
+
     /** Returns the current frame time */
     float GetFrameTimeSec();
 
