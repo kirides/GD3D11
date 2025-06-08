@@ -116,10 +116,10 @@ public:
             LogInfo() << "Forcing zVidResFullscreenY";
             LogInfo() << "Forcing zVidResFullscreenBPP = 32";
             LogInfo() << "Forcing zTexMaxSize = 16384";
-            LogInfo() << "Forcing zTexCacheOutTimeMSec = 1024";
-            LogInfo() << "Forcing zTexCacheSizeMaxBytes = 2147483648";
-            LogInfo() << "Forcing zSndCacheOutTimeMSec = 1024";
-            LogInfo() << "Forcing zSndCacheSizeMaxBytes = 536870912";
+            LogInfo() << "Forcing zTexCacheOutTimeMSec = 9120000"; // G2A Engine default: 240000
+            LogInfo() << "Forcing zTexCacheSizeMaxBytes = 2147483648"; // G2A Engine default: 32 MB (not MiB)
+            LogInfo() << "Forcing zSndCacheOutTimeMSec = 10000"; // G2A Engine default: 10000
+            LogInfo() << "Forcing zSndCacheSizeMaxBytes = 536870912"; // G2A Engine default: 20 MB (not MiB)
         }
 
         if ( _stricmp( var, "zVidResFullscreenX" ) == 0 ) {
@@ -134,13 +134,12 @@ public:
             return 32;
         } else if ( _stricmp( var, "zTexMaxSize" ) == 0 ) {
             return Engine::GAPI->GetRendererState().RendererSettings.textureMaxSize;
-        } else if ( _stricmp( var, "zTexCacheOutTimeMSec" ) == 0 ) // Previous values were taken outta fucking ass
-        {
-            return 1024;
+        } else if ( _stricmp( var, "zTexCacheOutTimeMSec" ) == 0 ) { // Following values are from Marcellos L'Hiver config
+            return 9120000;
         } else if ( _stricmp( var, "zTexCacheSizeMaxBytes" ) == 0 ) {
             return 2147483648;
         } else if ( _stricmp( var, "zSndCacheOutTimeMSec" ) == 0 ) {
-            return 1024;
+            return 10000;
         } else if ( _stricmp( var, "zSndCacheSizeMaxBytes" ) == 0 ) {
             return 536870912;
         } else if ( _stricmp( var, "zVidDevice" ) == 0 ) {
@@ -156,13 +155,13 @@ public:
         // TODO: Make Option checkable
         // LogInfo() << "Reading Gothic-Config: " << var;
 
-        if ( _stricmp( var, "zTexCacheOutTimeMSec" ) == 0 ) // Previous values were taken from fucking ass
+        if ( _stricmp( var, "zTexCacheOutTimeMSec" ) == 0 ) // Following values are from Marcellos L'Hiver config
         {
-            return 1024;
+            return 9120000;
         } else if ( _stricmp( var, "zTexCacheSizeMaxBytes" ) == 0 ) {
             return 2147483648;
         } else if ( _stricmp( var, "zSndCacheOutTimeMSec" ) == 0 ) {
-            return 1024;
+            return 10000;
         } else if ( _stricmp( var, "zSndCacheSizeMaxBytes" ) == 0 ) {
             return 536870912;
         }

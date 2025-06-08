@@ -63,6 +63,10 @@ const int MAX_IMPORTANT_LIGHT_UPDATES = 1;
 
 constexpr float inv255f = (1.f / 255.f);
 
+constexpr DXGI_FORMAT vertexIndexDxgiFormat = sizeof( VERTEX_INDEX ) == sizeof( unsigned short )
+    ? DXGI_FORMAT_R16_UINT
+    : DXGI_FORMAT_R32_UINT;
+
 D3D11GraphicsEngine::D3D11GraphicsEngine() {
     DebugPointlight = nullptr;
     OutputWindow = nullptr;
@@ -1405,13 +1409,7 @@ XRESULT D3D11GraphicsEngine::DrawVertexBufferIndexed( D3D11VertexBuffer* vb,
     }
 
     if ( ib ) {
-        if ( sizeof( VERTEX_INDEX ) == sizeof( unsigned short ) ) {
-            GetContext()->IASetIndexBuffer( ib->GetVertexBuffer().Get(),
-                DXGI_FORMAT_R16_UINT, 0 );
-        } else {
-            GetContext()->IASetIndexBuffer( ib->GetVertexBuffer().Get(),
-                DXGI_FORMAT_R32_UINT, 0 );
-        }
+        GetContext()->IASetIndexBuffer( ib->GetVertexBuffer().Get(), vertexIndexDxgiFormat, 0 );
     }
 
     if ( numIndices ) {
@@ -1834,13 +1832,7 @@ XRESULT  D3D11GraphicsEngine::DrawSkeletalVertexNormals( SkeletalVobInfo* vi,
 
             }
             if ( ib ) {
-                if ( sizeof( VERTEX_INDEX ) == sizeof( unsigned short ) ) {
-                    GetContext()->IASetIndexBuffer( ib->GetVertexBuffer().Get(),
-                        DXGI_FORMAT_R16_UINT, 0 );
-                } else {
-                    GetContext()->IASetIndexBuffer( ib->GetVertexBuffer().Get(),
-                        DXGI_FORMAT_R32_UINT, 0 );
-                }
+                GetContext()->IASetIndexBuffer( ib->GetVertexBuffer().Get(), vertexIndexDxgiFormat, 0 );
             }
 
             // Draw the mesh
@@ -1941,13 +1933,7 @@ XRESULT  D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
             }
 
             if ( ib ) {
-                if ( sizeof( VERTEX_INDEX ) == sizeof( unsigned short ) ) {
-                    GetContext()->IASetIndexBuffer( ib->GetVertexBuffer().Get(),
-                        DXGI_FORMAT_R16_UINT, 0 );
-                } else {
-                    GetContext()->IASetIndexBuffer( ib->GetVertexBuffer().Get(),
-                        DXGI_FORMAT_R32_UINT, 0 );
-                }
+                GetContext()->IASetIndexBuffer( ib->GetVertexBuffer().Get(), vertexIndexDxgiFormat, 0 );
             }
 
 
@@ -2027,13 +2013,7 @@ XRESULT D3D11GraphicsEngine::DrawInstanced(
 
 
     if ( ib ) {
-        if ( sizeof( VERTEX_INDEX ) == sizeof( unsigned short ) ) {
-            GetContext()->IASetIndexBuffer( ib->GetVertexBuffer().Get(),
-                DXGI_FORMAT_R16_UINT, 0 );
-        } else {
-            GetContext()->IASetIndexBuffer( ib->GetVertexBuffer().Get(),
-                DXGI_FORMAT_R32_UINT, 0 );
-        }
+        GetContext()->IASetIndexBuffer( ib->GetVertexBuffer().Get(), vertexIndexDxgiFormat, 0 );
     }
 
     // Draw the batch
@@ -2063,13 +2043,7 @@ XRESULT D3D11GraphicsEngine::DrawInstanced(
     }
 
     if ( ib ) {
-        if ( sizeof( VERTEX_INDEX ) == sizeof( unsigned short ) ) {
-            GetContext()->IASetIndexBuffer( ib->GetVertexBuffer().Get(),
-                DXGI_FORMAT_R16_UINT, 0 );
-        } else {
-            GetContext()->IASetIndexBuffer( ib->GetVertexBuffer().Get(),
-                DXGI_FORMAT_R32_UINT, 0 );
-        }
+        GetContext()->IASetIndexBuffer( ib->GetVertexBuffer().Get(), vertexIndexDxgiFormat, 0 );
     }
 
     // Draw the batch
@@ -2401,6 +2375,8 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_NONE;
     Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
     UpdateRenderStates();
+    // CubeSampler/Wrapping is required for UI to render like in original game
+    // As UV x/y > 1 means repeat texture.
     GetContext()->PSSetSamplers( 0, 1, CubeSamplerState.GetAddressOf() );
 
     // Save screenshot if wanted
@@ -3867,6 +3843,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
     for ( auto const& alphaMesh : AlphaMeshes ) {
         const MeshKey& mk = std::get<0>( alphaMesh );
         zCTexture* tx = mk.Material->GetAniTexture();
+        if ( !tx ) continue;
 
         // Check for alphablending on world mesh
         bool blendAdd = mk.Material->GetAlphaFunc() == zMAT_ALPHA_FUNC_ADD;
@@ -3877,7 +3854,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
         MeshVisualInfo* vi = std::get<1>( alphaMesh );
         size_t instances = std::get<3>( alphaMesh );
 
-        if ( tx && tx->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+        if ( tx->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
             MyDirectDrawSurface7* surface = tx->GetSurface();
             ID3D11ShaderResourceView* srv[3];
 
