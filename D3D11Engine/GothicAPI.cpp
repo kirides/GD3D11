@@ -141,7 +141,7 @@ GothicAPI::~GothicAPI() {
 
 namespace
 {
-    float GetPrivateProfileFloatA(
+    OPT_DBG_NOINLINE float GetPrivateProfileFloatA(
         const LPCSTR lpAppName,
         const LPCSTR lpKeyName,
         const float nDefault,
@@ -285,7 +285,7 @@ namespace
     }
 
     template<typename T>
-    void WritePrivateProfileArray(
+    OPT_DBG_NOINLINE void WritePrivateProfileArray(
         const LPCSTR lpAppName,
         const LPCSTR lpKeyName, 
         T* values,
@@ -304,7 +304,7 @@ namespace
         WritePrivateProfileStringA(lpAppName, lpKeyName, ss.str().c_str(), lpFileName.c_str());
     }
 
-    void WritePrivateProfileRGB(
+    OPT_DBG_NOINLINE void WritePrivateProfileRGB(
         const LPCSTR lpAppName,
         const LPCSTR lpKeyName, 
         float3 values,
@@ -318,7 +318,7 @@ namespace
         WritePrivateProfileArray(lpAppName, lpKeyName, color, 3, lpFileName.c_str());
     }
 
-    std::string GetPrivateProfileStringA(
+    OPT_DBG_NOINLINE std::string GetPrivateProfileStringA(
         const LPCSTR lpAppName,
         const LPCSTR lpKeyName,
         const std::string& lpcstrDefault,
@@ -328,7 +328,7 @@ namespace
         return std::string( buffer, count );
     }
 
-    bool GetPrivateProfileBoolA(
+    OPT_DBG_NOINLINE bool GetPrivateProfileBoolA(
         const LPCSTR lpAppName,
         const LPCSTR lpKeyName,
         const bool nDefault,

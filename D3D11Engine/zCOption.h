@@ -116,10 +116,10 @@ public:
             LogInfo() << "Forcing zVidResFullscreenY";
             LogInfo() << "Forcing zVidResFullscreenBPP = 32";
             LogInfo() << "Forcing zTexMaxSize = 16384";
-            LogInfo() << "Forcing zTexCacheOutTimeMSec = 9120000";
-            LogInfo() << "Forcing zTexCacheSizeMaxBytes = 1000000000";
-            LogInfo() << "Forcing zSndCacheOutTimeMSec = 10000";
-            LogInfo() << "Forcing zSndCacheSizeMaxBytes = 40000000";
+            LogInfo() << "Forcing zTexCacheOutTimeMSec = 9120000"; // G2A Engine default: 240000
+            LogInfo() << "Forcing zTexCacheSizeMaxBytes = 1000000000"; // G2A Engine default: 32 MB (not MiB)
+            LogInfo() << "Forcing zSndCacheOutTimeMSec = 10000"; // G2A Engine default: 10000
+            LogInfo() << "Forcing zSndCacheSizeMaxBytes = 40000000"; // G2A Engine default: 20 MB (not MiB)
         }
 
         if ( _stricmp( var, "zVidResFullscreenX" ) == 0 ) {
