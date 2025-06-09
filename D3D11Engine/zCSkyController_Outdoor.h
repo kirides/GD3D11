@@ -204,11 +204,26 @@ public:
             ( GothicMemoryLocations::zCSkyController_Outdoor::GetUnderwaterFX )( this );
     }
 
+    zColor ChangeSaturation( zColor color, float sat )
+    {
+        float avg = (color.bgra.r + color.bgra.g + color.bgra.b) / 3.0f;
+
+        float r = avg + (color.bgra.r - avg) * (1.0f + sat);
+        float g = avg + (color.bgra.g - avg) * (1.0f + sat);
+        float b = avg + (color.bgra.b - avg) * (1.0f + sat);
+
+        r = std::min( 255.0f, std::max( 0.0f, r ) );
+        g = std::min( 255.0f, std::max( 0.0f, g ) );
+        b = std::min( 255.0f, std::max( 0.0f, b ) );
+
+        return zColor( b, g, r );
+    }
+
     XMFLOAT3 GetOverrideColor() {
 #ifndef BUILD_GOTHIC_1_08k
         return *reinterpret_cast<XMFLOAT3*>(THISPTR_OFFSET( GothicMemoryLocations::zCSkyController_Outdoor::Offset_OverrideColor ));
 #else
-        zColor color = *reinterpret_cast<zColor*>THISPTR_OFFSET( GothicMemoryLocations::zCSkyController_Outdoor::Offset_Color );
+        zColor color = ChangeSaturation( *reinterpret_cast<zColor*>THISPTR_OFFSET( GothicMemoryLocations::zCSkyController_Outdoor::Offset_Color ), 0.333f );
         return XMFLOAT3( color.bgra.r / 255.0f, color.bgra.g / 255.0f, color.bgra.b / 255.0f );
 #endif
     }
