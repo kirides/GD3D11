@@ -212,9 +212,9 @@ public:
         float g = avg + (color.bgra.g - avg) * (1.0f + sat);
         float b = avg + (color.bgra.b - avg) * (1.0f + sat);
 
-        r = std::min( 255.0f, std::max( 0.0f, r ) );
-        g = std::min( 255.0f, std::max( 0.0f, g ) );
-        b = std::min( 255.0f, std::max( 0.0f, b ) );
+        r = std::clamp( r, 0.0f, 255.0f );
+        g = std::clamp( g, 0.0f, 255.0f );
+        b = std::clamp( b, 0.0f, 255.0f );
 
         return zColor( b, g, r );
     }
@@ -223,7 +223,7 @@ public:
 #ifndef BUILD_GOTHIC_1_08k
         return *reinterpret_cast<XMFLOAT3*>(THISPTR_OFFSET( GothicMemoryLocations::zCSkyController_Outdoor::Offset_OverrideColor ));
 #else
-        zColor color = ChangeSaturation( *reinterpret_cast<zColor*>THISPTR_OFFSET( GothicMemoryLocations::zCSkyController_Outdoor::Offset_Color ), 0.333f );
+        zColor color = ChangeSaturation( *reinterpret_cast<zColor*>THISPTR_OFFSET( GothicMemoryLocations::zCSkyController_Outdoor::Offset_Color ), 0.5f );
         return XMFLOAT3( color.bgra.r / 255.0f, color.bgra.g / 255.0f, color.bgra.b / 255.0f );
 #endif
     }
