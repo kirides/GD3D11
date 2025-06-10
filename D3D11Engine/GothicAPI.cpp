@@ -262,10 +262,11 @@ namespace
         }
     }
 
+    template<typename T>
     OPT_DBG_NOINLINE void GetPrivateProfileRGB(
         const LPCSTR lpAppName,
-        const LPCSTR lpKeyName, 
-        float3& values,
+        const LPCSTR lpKeyName,
+        T& values,
         const std::string& lpFileName
     ) {
         const int defaults[3] = {
@@ -970,6 +971,15 @@ void GothicAPI::LoadRendererWorldSettings( GothicRendererSettings& s ) {
 	    s.SectionDrawRadius = GetPrivateProfileFloatA( "General", "SectionDrawRadius", s.SectionDrawRadius, ini );
     }
 
+    s.RainRadiusRange = GetPrivateProfileFloatA( "Rain", "RadiusRange", s.RainRadiusRange, ini );
+    s.RainHeightRange = GetPrivateProfileFloatA( "Rain", "HeightRange", s.RainHeightRange, ini );
+    s.RainNumParticles = GetPrivateProfileIntA( "Rain", "NumParticles", s.RainNumParticles, ini.c_str() );
+    GetPrivateProfileArray( "Rain", "GlobalVelocity", &s.RainGlobalVelocity.x, 3, &s.RainGlobalVelocity.x, ini );
+    s.RainSceneWettness = GetPrivateProfileFloatA( "Rain", "SceneWettness", s.RainSceneWettness, ini );
+    s.RainSunLightStrength = GetPrivateProfileFloatA( "Rain", "SunLightStrength", s.RainSunLightStrength, ini );
+    GetPrivateProfileRGB( "Rain", "FogColor", s.RainFogColor, ini );
+    s.RainFogDensity = GetPrivateProfileFloatA( "Rain", "FogDensity", s.RainFogDensity, ini );
+
     s.ReplaceSunDirection = GetPrivateProfileBoolA( "Atmoshpere", "ReplaceSunDirection", s.ReplaceSunDirection, ini );
 
     AtmosphereSettings& aS = GetSky()->GetAtmoshpereSettings();
@@ -1015,6 +1025,15 @@ void GothicAPI::SaveRendererWorldSettings( const GothicRendererSettings& s ) {
     WritePrivateProfileStringA( "General", "OutdoorSmallVobDrawRadius", std::to_string( s.OutdoorSmallVobDrawRadius ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "SkeletalMeshDrawRadius", std::to_string( s.SkeletalMeshDrawRadius ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "SectionDrawRadius", std::to_string( s.SectionDrawRadius ).c_str(), ini.c_str() );
+
+    WritePrivateProfileStringA( "Rain", "RadiusRange", std::to_string( s.RainRadiusRange ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Rain", "HeightRange", std::to_string( s.RainHeightRange ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Rain", "NumParticles", std::to_string( s.RainNumParticles ).c_str(), ini.c_str() );
+    WritePrivateProfileArray( "Rain", "GlobalVelocity", &s.RainGlobalVelocity.x, 3, ini.c_str() );
+    WritePrivateProfileStringA( "Rain", "SceneWettness", std::to_string( s.RainSceneWettness ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Rain", "SunLightStrength", std::to_string( s.RainSunLightStrength ).c_str(), ini.c_str() );
+    WritePrivateProfileRGB( "Rain", "FogColor", s.RainFogColor, ini.c_str() );
+    WritePrivateProfileStringA( "Rain", "FogDensity", std::to_string( s.RainFogDensity ).c_str(), ini.c_str() );
 
     WritePrivateProfileStringA( "Atmoshpere", "ReplaceSunDirection", std::to_string( s.ReplaceSunDirection ? TRUE : FALSE ).c_str(), ini.c_str() );
 
