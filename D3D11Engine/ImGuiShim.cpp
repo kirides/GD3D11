@@ -276,6 +276,11 @@ void ImGuiShim::RenderSettingsWindow()
             if ( ImComboBoxC( "##Wind effect", windEffectQuality, &settings.WindQuality, []() { Engine::GraphicsEngine->ReloadShaders(); } ) ) {
                 ImGui::EndCombo();
             }
+
+            ImGui::Text( "Wind strength" ); ImGui::SameLine();
+            ImGui::BeginDisabled( settings.WindQuality == GothicRendererSettings::EWindQuality::WIND_QUALITY_NONE );
+            ImGui::SliderFloat( "##Wind strength", &settings.GlobalWindStrength, 0.1f, 5.0f, "%.2f");
+            ImGui::EndDisabled();
 #endif //BUILD_GOTHIC_2_6_fix
 
             ImGui::Checkbox( "Enable Rain", &settings.EnableRain );
@@ -354,7 +359,7 @@ void ImGuiShim::RenderSettingsWindow()
             }
 
             ImText( "Display Mode [*]", buttonWidth ); ImGui::SameLine();
-            auto displayModeState = InterpretWindowMode(settings);
+            static auto displayModeState = InterpretWindowMode(settings);
             static std::vector<std::pair<char *, int>> DisplayEnums = {
                 { "Fullscreen Borderless", WindowModes::WINDOW_MODE_FULLSCREEN_BORDERLESS },
                 { "Fullscreen Exclusive", WindowModes::WINDOW_MODE_FULLSCREEN_EXCLUSIVE },
@@ -362,7 +367,7 @@ void ImGuiShim::RenderSettingsWindow()
                 { "Windowed", WindowModes::WINDOW_MODE_WINDOWED },
             };
 
-            if ( ImComboBoxC( "##DisplayMode", DisplayEnums, &displayModeState, [&settings, displayModeState]() {
+            if ( ImComboBoxC( "##DisplayMode", DisplayEnums, &displayModeState, [&settings]() {
                 // selected
                 settings.ChangeWindowPreset = displayModeState;
                 }) ) {
