@@ -4899,19 +4899,22 @@ void D3D11GraphicsEngine::OnUIEvent( EUIEvent uiEvent ) {
         }
         UpdateClipCursor( OutputWindow );
     } else if ( uiEvent == UI_ClosedSettings ) {
-        if ( auto hImgui = Engine::ImGuiHandle ) {
+        // Settings can be closed in multiple ways
+        if ( auto hImgui = Engine::ImGuiHandle; hImgui->IsActive ) {
             // Show settings
             hImgui->SettingsVisible = false;
             hImgui->AdvancedSettingsVisible = false;
             hImgui->IsActive = false;
-        }
-        if ( auto antBar = Engine::AntTweakBar; antBar->GetActive() ) {
-            antBar->SetActive( false );
-        }
-        // Free mouse
-        Engine::GAPI->SetEnableGothicInput( true );
 
-        // Settings can be closed in multiple ways
+            // re-enable input, this clears the key buffer!
+            Engine::GAPI->SetEnableGothicInput( true );
+        }
+        else if ( auto antBar = Engine::AntTweakBar; antBar->GetActive() ) {
+            antBar->SetActive( false );
+            // re-enable input, this clears the key buffer!
+            Engine::GAPI->SetEnableGothicInput( true );
+        }
+
         UpdateClipCursor( OutputWindow );
     } else if ( uiEvent == UI_OpenEditor ) {
         if ( UIView ) {
