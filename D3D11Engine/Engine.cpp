@@ -5,6 +5,7 @@
 #include "D3D11AntTweakBar.h"
 #include "HookExceptionFilter.h"
 #include "ThreadPool.h"
+#include "imGuiShim.h"
 
 //#define TESTING
 
@@ -26,6 +27,8 @@ namespace Engine {
             LogErrorBox() << "Failed to create GraphicsEngine! Out of memory!";
             exit( 0 );
         }
+
+        ImGuiHandle = new ImGuiShim;
 
         XLE( GraphicsEngine->Init() );
 

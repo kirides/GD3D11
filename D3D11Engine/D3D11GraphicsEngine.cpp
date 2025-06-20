@@ -44,6 +44,8 @@
 #include <d3dcompiler.h>
 #include <dxgi1_6.h>
 
+#include "ImGuiShim.h"
+
 namespace wrl = Microsoft::WRL;
 
 const int NUM_UNLOADEDTEXCOUNT_FORCE_LOAD_TEXTURES = 100;
@@ -749,6 +751,8 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
         // Need to init AntTweakBar now that we have a working swapchain
         XLE( Engine::AntTweakBar->Init() );
 
+        Engine::ImGuiHandle->Init( GetActiveWindow(), GetDevice(), GetContext() );
+
         wrl::ComPtr<IDXGISwapChain2> swapChain2;
         if ( m_lowlatency && SUCCEEDED( SwapChain.As( &swapChain2 ) ) ) {
             frameLatencyWaitableObject = swapChain2->GetFrameLatencyWaitableObject();
@@ -824,6 +828,7 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
     SetDebugName( WorldShadowmap1->GetDepthStencilView().Get(), "WorldShadowmap1->DepthStencilView" );
 
     Engine::AntTweakBar->OnResize( newSize );
+    Engine::ImGuiHandle->OnResize( newSize );
 
     return XR_SUCCESS;
 }
@@ -1195,10 +1200,15 @@ XRESULT D3D11GraphicsEngine::Present() {
     UpdateRenderStates();
     Engine::AntTweakBar->Draw();
 
-    if ( UIView ) {
+    if ( UIView || Engine::ImGuiHandle ) {
         SetDefaultStates();
         UpdateRenderStates();
-        UIView->Render( Engine::GAPI->GetFrameTimeSec() );
+        if ( UIView ) {
+            UIView->Render( Engine::GAPI->GetFrameTimeSec() );
+        }
+        if ( Engine::ImGuiHandle && Engine::ImGuiHandle->Initiated ) {
+            Engine::ImGuiHandle->RenderLoop();
+        }
     }
 
     // Don't allow presenting from different thread than mainthread
@@ -4856,17 +4866,48 @@ void D3D11GraphicsEngine::OnUIEvent( EUIEvent uiEvent ) {
     }
 
     if ( uiEvent == UI_OpenSettings ) {
-        if ( UIView ) {
+        if ( auto hImgui = Engine::ImGuiHandle ) {
             // Show settings
-            UIView->GetSettingsDialog()->SetHidden(
-                !UIView->GetSettingsDialog()->IsHidden() );
+            if ( hImgui->AdvancedSettingsVisible ) {
+                hImgui->AdvancedSettingsVisible = false;
+                hImgui->IsActive = false;
+            } else {
+                hImgui->SettingsVisible = !hImgui->SettingsVisible;
+                hImgui->IsActive = hImgui->SettingsVisible;
+            }
 
             // Free mouse
-            Engine::GAPI->SetEnableGothicInput(
-                UIView->GetSettingsDialog()->IsHidden() );
+            Engine::GAPI->SetEnableGothicInput( !hImgui->IsActive );
+        }
+        UpdateClipCursor( OutputWindow );
+    } else if ( uiEvent == UI_ToggleAdvancedSettings ) {
+        if ( auto hImgui = Engine::ImGuiHandle ) {
+            // Show settings
+            if ( hImgui->SettingsVisible ) {
+                hImgui->SettingsVisible = false;
+                hImgui->IsActive = hImgui->SettingsVisible;
+            } else {
+                hImgui->AdvancedSettingsVisible = !hImgui->AdvancedSettingsVisible;
+                hImgui->IsActive = hImgui->AdvancedSettingsVisible;
+            }
+
+            // Free mouse
+            Engine::GAPI->SetEnableGothicInput( !hImgui->IsActive );
         }
         UpdateClipCursor( OutputWindow );
     } else if ( uiEvent == UI_ClosedSettings ) {
+        if ( auto hImgui = Engine::ImGuiHandle ) {
+            // Show settings
+            hImgui->SettingsVisible = false;
+            hImgui->AdvancedSettingsVisible = false;
+            hImgui->IsActive = false;
+        }
+        if ( auto antBar = Engine::AntTweakBar; antBar->GetActive() ) {
+            antBar->SetActive( false );
+        }
+        // Free mouse
+        Engine::GAPI->SetEnableGothicInput( true );
+
         // Settings can be closed in multiple ways
         UpdateClipCursor( OutputWindow );
     } else if ( uiEvent == UI_OpenEditor ) {
@@ -4876,8 +4917,9 @@ void D3D11GraphicsEngine::OnUIEvent( EUIEvent uiEvent ) {
                 true;
 
             // Free mouse
-            Engine::GAPI->SetEnableGothicInput(
-                UIView->GetSettingsDialog()->IsHidden() );
+            if ( auto hImgui = Engine::ImGuiHandle ) {
+                Engine::GAPI->SetEnableGothicInput( !hImgui->IsActive );
+            }
         }
     }
 }
@@ -5289,7 +5331,7 @@ void D3D11GraphicsEngine::DrawUnderwaterEffects() {
 /** Returns the settings window availability */
 bool D3D11GraphicsEngine::HasSettingsWindow()
 {
-    return (UIView && UIView->GetSettingsDialog() && !UIView->GetSettingsDialog()->IsHidden());
+    return ( Engine::ImGuiHandle && Engine::ImGuiHandle->IsActive );
 }
 
 /** Creates the main UI-View */

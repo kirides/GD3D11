@@ -25,6 +25,7 @@
 #define DIRECTINPUT_VERSION 0x0700
 #include <dinput.h>
 #include "BaseAntTweakBar.h"
+#include "ImGuiShim.h"
 #include "zCInput.h"
 #include "zCBspTree.h"
 #include "BaseLineRenderer.h"
@@ -2985,27 +2986,14 @@ LRESULT GothicAPI::OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
 #endif
         case VK_F11:
             if ( ( GetAsyncKeyState( VK_CONTROL ) & 0x8000 ) && !GMPModeActive ) {
-                if ( reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine)->HasSettingsWindow() )
-                    Engine::GraphicsEngine->OnUIEvent( BaseGraphicsEngine::EUIEvent::UI_OpenSettings );
-
-                Engine::AntTweakBar->SetActive( !Engine::AntTweakBar->GetActive() );
-                SetEnableGothicInput( !Engine::AntTweakBar->GetActive() );
+                Engine::GraphicsEngine->OnUIEvent( BaseGraphicsEngine::EUIEvent::UI_ToggleAdvancedSettings );
             } else {
-                if ( Engine::AntTweakBar->GetActive() ) {
-                    Engine::AntTweakBar->SetActive( false );
-                    SetEnableGothicInput( true );
-                }
                 Engine::GraphicsEngine->OnUIEvent( BaseGraphicsEngine::EUIEvent::UI_OpenSettings );
             }
             break;
 
         case VK_ESCAPE:
-            if ( Engine::AntTweakBar->GetActive() ) {
-                Engine::AntTweakBar->SetActive( false );
-                SetEnableGothicInput( true );
-            }
-            if ( reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine)->HasSettingsWindow() )
-                Engine::GraphicsEngine->OnUIEvent( BaseGraphicsEngine::EUIEvent::UI_OpenSettings );
+            Engine::GraphicsEngine->OnUIEvent( BaseGraphicsEngine::EUIEvent::UI_ClosedSettings );
             break;
 
         case VK_NUMPAD1:
@@ -3031,6 +3019,7 @@ LRESULT GothicAPI::OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
     // This is only processed when the bar is activated, so just call this here
     Engine::AntTweakBar->OnWindowMessage( hWnd, msg, wParam, lParam );
     Engine::GraphicsEngine->OnWindowMessage( hWnd, msg, wParam, lParam );
+    Engine::ImGuiHandle->OnWindowMessage( hWnd, msg, wParam, lParam );
 
 #ifdef BUILD_SPACER
     if ( msg == WM_RBUTTONDOWN )

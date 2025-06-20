@@ -64,6 +64,7 @@ public:
         UI_OpenSettings,
         UI_OpenEditor,
         UI_ClosedSettings,
+        UI_ToggleAdvancedSettings,
     };
 
     BaseGraphicsEngine() { };

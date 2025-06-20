@@ -1,6 +1,6 @@
 #pragma once
 #include <string>
-
+#include <sstream>
 #include <Windows.h>
 
 #include <DirectXMath.h>
@@ -29,9 +29,22 @@ struct INT2 {
 
     INT2() { x = 0; y = 0; }
 
+    INT2( const std::string& resolution ) {
+        std::istringstream iss( resolution );
+        char separator;
+
+        if ( !(iss >> x >> separator >> y) || separator != 'x' ) {
+            x = 800;
+            y = 600;
+        }
+    }
+
     std::string toString() const {
         return "(" + std::to_string( x ) + ", " + std::to_string( y ) + ")";
     }
+
+    bool operator==( const INT2& rhs ) { return x == rhs.x && y == rhs.y; }
+    bool operator!=( const INT2& rhs ) { return !(x == rhs.x && y == rhs.y); }
 
     int x;
     int y;

@@ -91,9 +91,6 @@ public:
     /** Returns the main sub view */
     D2DSubView* GetMainSubView() const { return MainSubView; }
 
-    /** Returns the settings dialog */
-    D2DDialog* GetSettingsDialog() const { return SettingsDialog; }
-
     /** Returns the editor panel */
     D2DEditorView* GetEditorPanel() const { return EditorView; }
 
@@ -122,7 +119,6 @@ protected:
 
     D2DSubView* MainSubView;
     D2DEditorView* EditorView;
-    D2DDialog* SettingsDialog;
 
     /** List of message boxes */
     std::vector<D2DMessageBox*> MessageBoxes;

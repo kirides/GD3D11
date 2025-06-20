@@ -3,7 +3,6 @@
 #include "D2DSubView.h"
 #include "D2DEditorView.h"
 #include "win32ClipboardWrapper.h"
-#include "D2DSettingsDialog.h"
 #include "Engine.h"
 #include "GothicAPI.h"
 
@@ -35,7 +34,6 @@ D2DView::D2DView() {
     TextFormatBig = nullptr;
     WriteFactory = nullptr;
 
-    SettingsDialog = nullptr;
     EditorView = nullptr;
 }
 
@@ -322,9 +320,6 @@ HRESULT D2DView::InitResources() {
 
     EditorView = new D2DEditorView( this, MainSubView );
     EditorView->SetRect( D2D1::RectF( 0, 0, RenderTarget->GetSize().width, RenderTarget->GetSize().height ) );
-
-    SettingsDialog = new D2DSettingsDialog( this, MainSubView );
-    SettingsDialog->SetHidden( true );
 
     return XR_SUCCESS;
 }
