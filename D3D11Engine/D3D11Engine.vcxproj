@@ -914,6 +914,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="zCClassDef.h" />
     <ClInclude Include="zCDecal.h" />
     <ClInclude Include="zCInput.h" />
+    <ClInclude Include="zCInput_Win32.h" />
     <ClInclude Include="zCLightmap.h" />
     <ClInclude Include="zCMaterial.h" />
     <ClInclude Include="RenderToTextureBuffer.h" />

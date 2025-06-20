@@ -175,6 +175,10 @@ struct GothicMemoryLocations {
         static const unsigned int SetDeviceEnabled = 0x00662400;
     };
 
+    struct zCInput_Win32 {
+        static const unsigned int GetKey = 0;
+    };
+
     struct GlobalObjects {
         static const unsigned int zCResourceManager = 0x00B18550;
         static const unsigned int zCCamera = 0x009BDDF4;

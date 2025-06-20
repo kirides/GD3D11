@@ -22,6 +22,7 @@
 #include "zCQuadMark.h"
 #include "oCNPC.h"
 #include "zCSkyController_Outdoor.h"
+#include "zCInput_Win32.h"
 
 #include "zQuat.h"
 #include "zMat4.h"
@@ -68,6 +69,7 @@ void HookedFunctionInfo::InitHooks() {
     zCQuadMark::Hook();
     oCNPC::Hook();
     zCSkyController_Outdoor::Hook();
+    zCInput_Win32::Hook();
     
 //G1 patches
 #ifdef BUILD_GOTHIC_1_08k

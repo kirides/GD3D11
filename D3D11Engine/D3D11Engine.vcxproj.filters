@@ -755,6 +755,9 @@
     <ClInclude Include="include\imgui\backends\imgui_impl_win32.h">
       <Filter>Librarys\imgui\backends</Filter>
     </ClInclude>
+    <ClInclude Include="zCInput_Win32.h">
+      <Filter>ZenGin\Classes</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp" />

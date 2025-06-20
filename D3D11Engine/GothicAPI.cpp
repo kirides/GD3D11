@@ -3210,8 +3210,19 @@ LRESULT GothicAPI::OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
                 SpawnVegetationBoxAt( GetCameraPosition() );
             break;
         }
+        default:
+            if ( Engine::ImGuiHandle->IsActive ) {
+                // do not delegate input further if settings is open
+                Engine::ImGuiHandle->OnWindowMessage( hWnd, msg, wParam, lParam );
+                return DefWindowProc( hWnd, msg, wParam, lParam );
+            }
         break;
-
+    case WM_KEYUP:
+        if ( Engine::ImGuiHandle->IsActive ) {
+            // do not delegate input further if settings is open
+            Engine::ImGuiHandle->OnWindowMessage( hWnd, msg, wParam, lParam );
+            return DefWindowProc( hWnd, msg, wParam, lParam );
+        }
     // Disable any painting that zengine might be doing
     case WM_PAINT:
     case WM_NCPAINT:
@@ -3226,9 +3237,9 @@ LRESULT GothicAPI::OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
     }
 
     // This is only processed when the bar is activated, so just call this here
+    Engine::ImGuiHandle->OnWindowMessage( hWnd, msg, wParam, lParam );
     Engine::AntTweakBar->OnWindowMessage( hWnd, msg, wParam, lParam );
     Engine::GraphicsEngine->OnWindowMessage( hWnd, msg, wParam, lParam );
-    Engine::ImGuiHandle->OnWindowMessage( hWnd, msg, wParam, lParam );
 
 #ifdef BUILD_SPACER
     if ( msg == WM_RBUTTONDOWN )

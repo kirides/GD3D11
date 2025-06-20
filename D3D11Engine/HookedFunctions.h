@@ -76,6 +76,8 @@ typedef float3*( __thiscall* zCModelGetLowestLODPoly )(void*, const int, float3*
 
 typedef DWORD( __cdecl* GetInformationManagerProc )();
 
+typedef uint16_t( __thiscall* zCInput_Win32__GetKey )(void*, int repeat, int delayed);
+
 #ifdef BUILD_GOTHIC_1_08k
 typedef void( __thiscall* zCVobEndMovement )(void*);
 #else
@@ -153,6 +155,7 @@ struct HookedFunctionInfo {
     zCModelGetLowestLODNumPolys original_zCModelGetLowestLODNumPolys = reinterpret_cast<zCModelGetLowestLODNumPolys>(GothicMemoryLocations::zCModel::GetLowestLODNumPolys);
     zCModelGetLowestLODPoly original_zCModelGetLowestLODPoly = reinterpret_cast<zCModelGetLowestLODPoly>(GothicMemoryLocations::zCModel::GetLowestLODPoly);
 #endif
+    zCInput_Win32__GetKey original_zCInput_Win32__GetKey = reinterpret_cast<zCInput_Win32__GetKey>(GothicMemoryLocations::zCInput_Win32::GetKey);
     //zCModelPrototypeLoadModelASC original_zCModelPrototypeLoadModelASC = reinterpret_cast<zCModelPrototypeLoadModelASC>(GothicMemoryLocations::zCModelPrototype::LoadModelASC);
     //zCModelPrototypeReadMeshAndTreeMSB original_zCModelPrototypeReadMeshAndTreeMSB = reinterpret_cast<zCModelPrototypeReadMeshAndTreeMSB>(GothicMemoryLocations::zCModelPrototype::ReadMeshAndTreeMSB);
 
