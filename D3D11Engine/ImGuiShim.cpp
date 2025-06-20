@@ -48,7 +48,6 @@ void ImGuiShim::Init(
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
-    io.MouseDrawCursor = false; // don't draw two mice
     io.IniFilename = NULL;
     io.LogFilename = NULL;
     //io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard; //Not needed and it's annoying.
@@ -127,7 +126,7 @@ void ImGuiShim::RenderLoop()
 
 void ImGuiShim::OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
 {
-    if ( Initiated && Engine::ImGuiHandle && Engine::ImGuiHandle->IsActive )
+    if ( Initiated && IsActive )
         ImGui_ImplWin32_WndProcHandler( hWnd, msg, wParam, lParam );
 }
 
