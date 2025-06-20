@@ -27,7 +27,7 @@ jobs:
         configuration: [Release_AVX, Release_G1_AVX, Release, Release_G1, Spacer_NET, Launcher]
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
 
     - name: Add MSBuild to PATH
       uses: microsoft/setup-msbuild@v1
@@ -46,7 +46,7 @@ jobs:
       run: msbuild /p:Configuration=${{matrix.configuration}} .
       
     - name: Upload artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: ${{ matrix.configuration }}
         path: ${{ matrix.configuration }}/ddraw.dll
@@ -57,7 +57,7 @@ jobs:
     runs-on: windows-latest
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
 
     - name: Set tag and directory name env
       run: |
@@ -68,7 +68,7 @@ jobs:
         echo "RELEASE_VERSION=${tagName}" >> $Env:GITHUB_ENV
         echo "RELEASE_DIR=${dirName}" >> $Env:GITHUB_ENV
 
-    - uses: actions/download-artifact@v3
+    - uses: actions/download-artifact@v4
     
     - name: Display structure of downloaded files
       run: ls -R
@@ -82,6 +82,7 @@ jobs:
         copy "D3D11Engine\CSFFT\*.hlsl" "${{env.RELEASE_DIR}}\GD3D11\shaders\CSFFT"
         Xcopy "blobs\Meshes" "${{env.RELEASE_DIR}}\GD3D11\Meshes\" /s
         Xcopy "blobs\Textures" "${{env.RELEASE_DIR}}\GD3D11\Textures\" /s
+        Xcopy "blobs\Fonts" "${{env.RELEASE_DIR}}\GD3D11\Fonts\" /s
         Xcopy "blobs\libs\*" "${{env.RELEASE_DIR}}\" /s
         copy "Release_AVX\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\g2a_avx2.dll"
         copy "Release\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\g2a.dll"
@@ -90,7 +91,7 @@ jobs:
         copy "Launcher\ddraw.dll" "${{env.RELEASE_DIR}}\"
     
     - name: Upload artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: ${{ env.RELEASE_DIR }}
         path: ${{ env.RELEASE_DIR }}
@@ -111,19 +112,20 @@ jobs:
     
     - name: Delete old nightly
       if: github.ref_name == 'master'
-      uses: dev-drprasad/delete-tag-and-release@v0.2.1
-      with:
-        delete_release: true
-        tag_name: nightly
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: gh release delete nightly --yes --cleanup-tag
 
     - name: Create new nightly
-      uses: ncipollo/release-action@v1
+      if: github.ref_name == 'master'
+      # v1.16.0
+      uses: ncipollo/release-action@440c8c1cb0ed28b9f43e4d1d670870f059653174
       with:
         name: Nightly
-        generateReleaseNotes: true
-        prerelease: true
-        artifacts: "${{env.RELEASE_DIR}}.zip,{{env.RELEASE_DIR}}.zip.sha256"
         tag: nightly
+        generateReleaseNotes: true
+        allowUpdates: true
+        prerelease: true
+        draft: false
+        omitDraftDuringUpdate: false
+        removeArtifacts: true
+        artifacts: "${{env.RELEASE_DIR}}.zip,${{env.RELEASE_DIR}}.zip.sha256"
         token: ${{ secrets.GITHUB_TOKEN }}
