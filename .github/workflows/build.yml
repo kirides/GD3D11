@@ -111,6 +111,8 @@ jobs:
     - name: Delete old nightly
       if: github.ref_name == 'master'
       run: gh release delete nightly --yes --cleanup-tag
+      env:
+        GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
 
     - name: Create new nightly
       if: github.ref_name == 'master'
