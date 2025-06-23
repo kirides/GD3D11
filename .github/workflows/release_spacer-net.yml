@@ -39,12 +39,12 @@ jobs:
     - name: Create distribution zip
       working-directory: ${{env.GITHUB_WORKSPACE}}
       run: |
-        Xcopy "D3D11Engine\Shaders\*" "${{env.RELEASE_DIR}}\GD3D11\shaders" /s
-        Xcopy "blobs\data" "${{env.RELEASE_DIR}}\GD3D11\data\" /s
-        Xcopy "blobs\Meshes" "${{env.RELEASE_DIR}}\GD3D11\Meshes\" /s
-        Xcopy "blobs\Textures" "${{env.RELEASE_DIR}}\GD3D11\Textures\" /s
-        Xcopy "blobs\Fonts" "${{env.RELEASE_DIR}}\GD3D11\Fonts\" /s
-        Xcopy "blobs\libs\*" "${{env.RELEASE_DIR}}\" /s
+        Xcopy "D3D11Engine\Shaders\*" "${{env.RELEASE_DIR}}\GD3D11\shaders\" /S /Y
+        Xcopy "blobs\data" "${{env.RELEASE_DIR}}\GD3D11\data\" /S /Y
+        Xcopy "blobs\Meshes" "${{env.RELEASE_DIR}}\GD3D11\Meshes\" /S /Y
+        Xcopy "blobs\Textures" "${{env.RELEASE_DIR}}\GD3D11\Textures\" /S /Y
+        Xcopy "blobs\Fonts" "${{env.RELEASE_DIR}}\GD3D11\Fonts\" /S /Y
+        Xcopy "blobs\libs\*" "${{env.RELEASE_DIR}}\" /S /Y
         copy "Spacer_NET\ddraw.dll" "${{env.RELEASE_DIR}}"
         cd "${{env.RELEASE_DIR}}"
         7z a -tzip "..\${{env.RELEASE_DIR}}.zip" -r
