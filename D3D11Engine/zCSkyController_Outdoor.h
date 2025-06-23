@@ -216,7 +216,11 @@ public:
         g = std::clamp( g, 0.0f, 255.0f );
         b = std::clamp( b, 0.0f, 255.0f );
 
-        return zColor( b, g, r );
+        return zColor( 
+            static_cast<uint8_t>(b),
+            static_cast<uint8_t>(g),
+            static_cast<uint8_t>(r)
+        );
     }
 
     XMFLOAT3 GetOverrideColor() {
