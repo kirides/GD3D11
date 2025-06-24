@@ -58,7 +58,7 @@ jobs:
 
     - name: Create github release
       run: |
-        gh release create ${{env.RELEASE_VERSION}} -n "Generated release from GitHub Actions"
+        gh release create ${{env.RELEASE_VERSION}} --notes-from-tag
         echo "Ignore 'Validation Failed' results. Expected since only the first job that reaches this step can create the release."
         exit 0
       env:
