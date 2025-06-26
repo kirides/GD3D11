@@ -514,7 +514,6 @@ struct GothicRendererSettings {
     };
     enum EWindQuality {
         WIND_QUALITY_NONE = 0,
-        WIND_QUALITY_SIMPLE,
         WIND_QUALITY_ADVANCED,
     };
 
@@ -621,7 +620,7 @@ struct GothicRendererSettings {
         SortRenderQueue = true;
         DrawThreaded = true;
 
-        WindQuality = WIND_QUALITY_SIMPLE;
+        WindQuality = WIND_QUALITY_ADVANCED;
         EnablePointlightShadows = PLS_UPDATE_DYNAMIC;
         MinLightShadowUpdateRange = 300.0f;
         PartialDynamicShadowUpdates = true;
@@ -643,7 +642,7 @@ struct GothicRendererSettings {
         RainSceneWettness = 0.0f;
         RainSunLightStrength = 0.50f;
         RainFogColor = XMFLOAT3( 0.28f, 0.28f, 0.28f );
-        RainFogDensity = 0.00500f;
+        RainFogDensity = 0.00050f;
 
         EnableRain = true;
         EnableRainEffects = true;

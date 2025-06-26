@@ -15,6 +15,7 @@ public:
     void BindToDomainShader( int slot );
     void BindToHullShader( int slot );
     void BindToGeometryShader( int slot );
+    void BindToComputeShader( int slot );
 
     /** Binds the constantbuffer */
     Microsoft::WRL::ComPtr<ID3D11Buffer>& Get() { return Buffer; }

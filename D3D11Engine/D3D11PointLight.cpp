@@ -187,7 +187,8 @@ void D3D11PointLight::RenderCubemap( bool forceUpdate ) {
     }
 
     ViewMatricesCB->UpdateBuffer( &gcb );
-    ViewMatricesCB->BindToGeometryShader( 2 );
+    ViewMatricesCB->BindToVertexShader( 3 ); // Layered vertex shader
+    ViewMatricesCB->BindToGeometryShader( 2 ); // Cubemap geometry shader
 
     RenderFullCubemap();
 

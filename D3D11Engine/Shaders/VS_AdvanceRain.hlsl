@@ -53,29 +53,23 @@ struct VS_OUTPUT
 //--------------------------------------------------------------------------------------
 VS_OUTPUT VSMain( VS_INPUT Input )
 {
-	if(AR_MoveRainParticles)
-    {
-        //move forward
-        //Input.vPosition.xyz += Input.vVelocity.xyz/AR_FPS + AR_GlobalVelocity.xyz;
-		Input.vVelocity = Input.vVelocity.xyz/max(AR_FPS, 1) + AR_GlobalVelocity.xyz / max(AR_FPS, 1);
-		Input.vPosition.xyz += Input.vVelocity;
+    //move forward
+    //Input.vPosition.xyz += Input.vVelocity.xyz/AR_FPS + AR_GlobalVelocity.xyz;
+	Input.vVelocity = Input.vVelocity.xyz/max(AR_FPS, 1) + AR_GlobalVelocity.xyz / max(AR_FPS, 1);
+	Input.vPosition.xyz += Input.vVelocity;
 		
-        //if the particle is outside the bounds, move it to random position near the eye         
-        if(Input.vPosition.y <= AR_CameraPosition.y - AR_Height )
-        {
-			float3 seed = Input.vDiffuse.xyz;
+    //if the particle is outside the bounds, move it to random position near the eye         
+    if(Input.vPosition.y <= AR_CameraPosition.y - AR_Height )
+    {
+		float3 seed = Input.vDiffuse.xyz;
 					
-			float x = seed.x + AR_CameraPosition.x;
-			float z = seed.z + AR_CameraPosition.z;
-			float y = seed.y + AR_CameraPosition.y;
-			Input.vPosition = float3(x,y,z);
-        }
+		float x = seed.x + AR_CameraPosition.x;
+		float z = seed.z + AR_CameraPosition.z;
+		float y = seed.y + AR_CameraPosition.y;
+		Input.vPosition = float3(x,y,z);
     }
 	
-	
-	
 	VS_OUTPUT Output;
-	
 	Output.vPosition = Input.vPosition;
 	Output.vDiffuse  = Input.vDiffuse;
     Output.vSize = Input.vSize;

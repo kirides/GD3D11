@@ -145,6 +145,9 @@ public:
         fclose( f );
     }
 
+#pragma warning( push )
+#pragma warning( disable : 6392 )
+
     /** STL stringstream feature */
     template< typename T >
     inline Log& operator << ( const T& obj ) {
@@ -156,6 +159,8 @@ public:
         Message << fn;
         return *this;
     }
+
+#pragma warning( pop ) 
 
     /** Called when the object is getting destroyed, which happens immediately if simply calling the constructor of this class */
     inline void Flush() {

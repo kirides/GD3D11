@@ -2,7 +2,6 @@
 // Simple vertex shader
 //--------------------------------------------------------------------------------------
 
-
 static const int NUM_MAX_BONES = 96;
 
 cbuffer Matrices_PerFrame : register( b0 )
@@ -25,32 +24,36 @@ cbuffer BoneTransforms : register( b2 )
 	matrix BT_Transforms[NUM_MAX_BONES];
 };
 
-SamplerState SS_Linear : register( s0 );
-Texture2D TX_Texture0 : register( t0 );
+cbuffer cbPerCubeRender : register( b3 )
+{
+    matrix PCR_View[6];
+    matrix PCR_ViewProj[6];
+};
 
 //--------------------------------------------------------------------------------------
 // Input / Output structures
 //--------------------------------------------------------------------------------------
 struct VS_INPUT
 {
-	float4 vPosition[4]	: POSITION;
-	float3 vNormal		: NORMAL;
-	float3 vBindPoseNormal		: TEXCOORD0;
-	float2 vTex1		: TEXCOORD1;
+    uint instanceID : SV_InstanceID;
+	float4 vPosition[4] : POSITION;
+	float3 vNormal : NORMAL;
+	float3 vBindPoseNormal : TEXCOORD0;
+	float2 vTex1 : TEXCOORD1;
 	uint4 BoneIndices : BONEIDS;
-	float4 Weights 	: WEIGHTS;
+	float4 Weights : WEIGHTS;
 };
 
 struct VS_OUTPUT
 {
-	float3 vViewPosition	: TEXCOORD0;
-	float3 vNormalWS		: TEXCOORD1; 
-	float3 vNormalVS		: TEXCOORD2; 
-	float2 vTexcoord		: TEXCOORD3;
-	float2 vTexcoord2		: TEXCOORD4;
-	float4 vDiffuse			: TEXCOORD5;
+	float2 vTexcoord : TEXCOORD0;
+	float2 vTexcoord2 : TEXCOORD1;
+	float4 vDiffuse : TEXCOORD2;
+	float3 vNormalVS : TEXCOORD4;
+	float3 vViewPosition : TEXCOORD5;
+    float4 vPosition : SV_POSITION;
+    uint RTIndex : SV_RenderTargetArrayIndex;
 };
-
 
 //--------------------------------------------------------------------------------------
 // Vertex Shader
@@ -71,15 +74,15 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 	normal += Input.Weights.z * mul(Input.vNormal, (float3x3)BT_Transforms[Input.BoneIndices.z]);
 	normal += Input.Weights.w * mul(Input.vNormal, (float3x3)BT_Transforms[Input.BoneIndices.w]);
 	
-	float3 positionWorld = mul(float4(position + PI_ModelFatness * normal,1), M_World).xyz;
-		
+	float3 positionWorld = mul(float4(position + PI_ModelFatness * normal, 1), M_World).xyz;
+	
+    Output.RTIndex = Input.instanceID;
+    Output.vPosition = mul(float4(positionWorld, 1), PCR_ViewProj[Input.instanceID]);
+	Output.vTexcoord2 = Input.vTex1;
 	Output.vTexcoord = Input.vTex1;
-	Output.vTexcoord2 = 0;
-	Output.vNormalVS = normalize(mul(Input.vBindPoseNormal, (float3x3)mul(M_World, M_View)));
-	Output.vNormalWS = normalize(mul(Input.vBindPoseNormal, (float3x3)M_World));
-	Output.vViewPosition = mul(float4(positionWorld,1), M_View).xyz;
-	Output.vDiffuse = PI_ModelColor;//Input.vDiffuse;
+	Output.vDiffuse  = PI_ModelColor;
+    Output.vNormalVS = mul(Input.vBindPoseNormal, (float3x3)mul(M_World, PCR_View[Input.instanceID]));
+    Output.vViewPosition = mul(float4(positionWorld, 1), PCR_View[Input.instanceID]).xyz;
 	
 	return Output;
 }
-

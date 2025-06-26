@@ -175,13 +175,10 @@ protected:
     std::shared_ptr<D3D11PShader> PS_DiffuseNormalmappedAlphatestFxMap;
     std::shared_ptr<D3D11PShader> PS_DiffuseAlphatest;
     std::shared_ptr<D3D11PShader> PS_Simple;
-    std::shared_ptr<D3D11PShader> PS_SimpleAlphaTest;
     std::shared_ptr<D3D11PShader> PS_LinDepth;
     std::shared_ptr<D3D11VShader> VS_Ex;
     std::shared_ptr<D3D11VShader> VS_ExInstancedObj;
-    std::shared_ptr<D3D11VShader> VS_ExRemapInstancedObj;
     std::shared_ptr<D3D11VShader> VS_ExSkeletal;
-    std::shared_ptr<D3D11GShader> GS_Billboard;
     
     std::shared_ptr<D3D11PShader> PS_PortalDiffuse;
     std::shared_ptr<D3D11PShader> PS_WaterfallFoam;

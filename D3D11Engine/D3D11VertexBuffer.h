@@ -42,6 +42,7 @@ public:
         B_INDEXBUFFER = D3D11_BIND_INDEX_BUFFER,
         B_STREAM_OUT = D3D11_BIND_STREAM_OUTPUT,
         B_SHADER_RESOURCE = D3D11_BIND_SHADER_RESOURCE,
+        B_UNORDERED_ACCESS = D3D11_BIND_UNORDERED_ACCESS,
     };
 
     /** Creates the vertexbuffer with the given arguments */
@@ -71,12 +72,18 @@ public:
     /** Returns the SRV of this buffer, if it represents a structured buffer */
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& GetShaderResourceView();
 
+    /** Returns the UAV of this buffer */
+    Microsoft::WRL::ComPtr<ID3D11UnorderedAccessView>& GetUnorderedAccessView() { return UnorderedAccessView; }
+
 private:
     /** Vertex buffer object */
     Microsoft::WRL::ComPtr<ID3D11Buffer> VertexBuffer;
 
     /** SRV for structured access */
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> ShaderResourceView;
+
+    /** UAV for unordered access */
+    Microsoft::WRL::ComPtr<ID3D11UnorderedAccessView> UnorderedAccessView;
 
     /** Size of the buffer in bytes */
     unsigned int SizeInBytes;

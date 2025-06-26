@@ -266,14 +266,12 @@ void ImGuiShim::RenderSettingsWindow()
             ImGui::Checkbox( "Animate Static Vobs", &settings.AnimateStaticVobs );
 
 #ifdef BUILD_GOTHIC_2_6_fix
-            ImGui::Text( "Wind effect" ); ImGui::SameLine();
-            static std::vector<std::pair<char*, int>> windEffectQuality = {
-                { "Disabled", GothicRendererSettings::EWindQuality::WIND_QUALITY_NONE },
-                { "Simple", GothicRendererSettings::EWindQuality::WIND_QUALITY_SIMPLE },
-                { "Advanced", GothicRendererSettings::EWindQuality::WIND_QUALITY_ADVANCED },
-            };
-            if ( ImComboBoxC( "##Wind effect", windEffectQuality, &settings.WindQuality, []() { Engine::GraphicsEngine->ReloadShaders(); } ) ) {
-                ImGui::EndCombo();
+            bool windEffect = settings.WindQuality == GothicRendererSettings::EWindQuality::WIND_QUALITY_ADVANCED;
+            if ( ImGui::Checkbox( "Wind effect", &windEffect ) ) {
+                settings.WindQuality = windEffect
+                    ? GothicRendererSettings::EWindQuality::WIND_QUALITY_ADVANCED
+                    : GothicRendererSettings::EWindQuality::WIND_QUALITY_NONE;
+                Engine::GraphicsEngine->ReloadShaders();
             }
 
             ImGui::Text( "Wind strength" ); ImGui::SameLine();

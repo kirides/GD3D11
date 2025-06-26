@@ -185,7 +185,6 @@ XRESULT BaseAntTweakBar::Init() {
     TwDefine( " General/NumRainParticles  step=1000" );
 
     TwAddVarRW( Bar_General, "RainMoveParticles", TW_TYPE_BOOLCPP, &Engine::GAPI->GetRendererState().RendererSettings.RainMoveParticles, nullptr );
-    TwAddVarRW( Bar_General, "RainUseInitialSet", TW_TYPE_BOOLCPP, &Engine::GAPI->GetRendererState().RendererSettings.RainUseInitialSet, nullptr );
 
     TwAddVarRW( Bar_General, "RainGlobalVelocity", TW_TYPE_DIR3F, &Engine::GAPI->GetRendererState().RendererSettings.RainGlobalVelocity, nullptr );
     TwAddVarRW( Bar_General, "RainSceneWettness", TW_TYPE_FLOAT, &Engine::GAPI->GetRendererState().RendererSettings.RainSceneWettness, nullptr );

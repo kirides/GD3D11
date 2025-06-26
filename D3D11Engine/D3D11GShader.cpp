@@ -7,6 +7,8 @@
 #include "D3D11ShaderManager.h"
 #include "D3D11_Helpers.h"
 
+extern bool FeatureLevel10Compatibility;
+
 D3D11GShader::D3D11GShader() {}
 
 D3D11GShader::~D3D11GShader() {
@@ -25,7 +27,7 @@ XRESULT D3D11GShader::LoadShader( const char* geometryShader, const std::vector<
 
     if ( !createStreamOutFromVS ) {
         // Compile shaders
-        if ( FAILED( D3D11ShaderManager::CompileShaderFromFile( geometryShader, "GSMain", "gs_4_0", gsBlob.GetAddressOf(), makros ) ) ) {
+        if ( FAILED( D3D11ShaderManager::CompileShaderFromFile( geometryShader, "GSMain", (FeatureLevel10Compatibility ? "gs_4_0" : "gs_5_0"), gsBlob.GetAddressOf(), makros)) ) {
             return XR_FAILED;
         }
 
@@ -33,7 +35,7 @@ XRESULT D3D11GShader::LoadShader( const char* geometryShader, const std::vector<
         LE( engine->GetDevice()->CreateGeometryShader( gsBlob->GetBufferPointer(), gsBlob->GetBufferSize(), nullptr, GeometryShader.GetAddressOf() ) );
     } else {
         // Compile vertexshader
-        if ( FAILED( D3D11ShaderManager::CompileShaderFromFile( geometryShader, "VSMain", "vs_4_0", gsBlob.GetAddressOf(), makros ) ) ) {
+        if ( FAILED( D3D11ShaderManager::CompileShaderFromFile( geometryShader, "VSMain", (FeatureLevel10Compatibility ? "vs_4_0" : "vs_5_0"), gsBlob.GetAddressOf(), makros)) ) {
             return XR_FAILED;
         }
 
@@ -69,7 +71,7 @@ XRESULT D3D11GShader::LoadShader( const char* geometryShader, const std::vector<
 
         // Create the shader from a vertexshader
         LE( engine->GetDevice()->CreateGeometryShaderWithStreamOutput( gsBlob->GetBufferPointer(), gsBlob->GetBufferSize(), soDec, numSoDecElements, &stride, 1,
-            (FeatureLevel10Compatibility ? 0 : D3D11_SO_NO_RASTERIZED_STREAM), nullptr, GeometryShader.GetAddressOf() ) );
+            D3D11_SO_NO_RASTERIZED_STREAM, nullptr, GeometryShader.GetAddressOf() ) );
     }
 
     SetDebugName( GeometryShader.Get(), geometryShader );

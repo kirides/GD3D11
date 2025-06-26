@@ -4,6 +4,7 @@
 #include "D3D11PShader.h"
 #include "D3D11HDShader.h"
 #include "D3D11GShader.h"
+#include "D3D11CShader.h"
 #include "D3D11ConstantBuffer.h"
 #include "GothicGraphicsState.h"
 #include "ConstantBufferStructs.h"
@@ -20,6 +21,9 @@
 #endif
 
 const int NUM_MAX_BONES = 96;
+
+extern bool FeatureLevel10Compatibility;
+extern bool FeatureRTArrayIndexFromAnyShader;
 
 D3D11ShaderManager::D3D11ShaderManager() {
     ReloadShadersNextFrame = false;
@@ -83,15 +87,7 @@ XRESULT D3D11ShaderManager::Init() {
     Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerFrame ) );
     Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerInstance ) );
 
-    Shaders.push_back( ShaderInfo( "VS_ExCube", "VS_ExCube.hlsl", "v", 1 ) );
-    Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerFrame ) );
-    Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerInstance ) );
-
     Shaders.push_back( ShaderInfo( "VS_ExMode", "VS_ExNode.hlsl", "v", 1 ) );
-    Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerFrame ) );
-    Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerInstanceNode ) );
-
-    Shaders.push_back( ShaderInfo( "VS_ExNodeCube", "VS_ExNodeCube.hlsl", "v", 1 ) );
     Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerFrame ) );
     Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerInstanceNode ) );
 
@@ -105,24 +101,14 @@ XRESULT D3D11ShaderManager::Init() {
 
     Shaders.push_back( ShaderInfo( "VS_ParticlePoint", "VS_ParticlePoint.hlsl", "v", 11 ) );
     Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerFrame ) );
+    Shaders.back().cBufferSizes.push_back( sizeof( ParticleGSInfoConstantBuffer ) );
 
     Shaders.push_back( ShaderInfo( "VS_ParticlePointShaded", "VS_ParticlePointShaded.hlsl", "v", 13 ) );
     Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerFrame ) );
     Shaders.back().cBufferSizes.push_back( sizeof( ParticlePointShadingConstantBuffer ) );
-
-
-    Shaders.push_back( ShaderInfo( "VS_AdvanceRain", "VS_AdvanceRain.hlsl", "v", 13 ) );
-    Shaders.back().cBufferSizes.push_back( sizeof( AdvanceRainConstantBuffer ) );
+    Shaders.back().cBufferSizes.push_back( sizeof( ParticleGSInfoConstantBuffer ) );
 
     Shaders.push_back( ShaderInfo( "VS_ExWS", "VS_ExWS.hlsl", "v", 1 ) );
-    Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerFrame ) );
-    Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerInstance ) );
-
-    Shaders.push_back( ShaderInfo( "VS_ExDisplace", "VS_ExDisplace.hlsl", "v", 1 ) );
-    Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerFrame ) );
-    Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerInstance ) );
-
-    Shaders.push_back( ShaderInfo( "VS_Obj", "VS_Obj.hlsl", "v", 8 ) );
     Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerFrame ) );
     Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerInstance ) );
 
@@ -132,11 +118,6 @@ XRESULT D3D11ShaderManager::Init() {
     Shaders.back().cBufferSizes.push_back( NUM_MAX_BONES * sizeof( XMFLOAT4X4 ) );
 
     Shaders.push_back( ShaderInfo( "VS_ExSkeletalVN", "VS_ExSkeletalVN.hlsl", "v", 3 ) );
-    Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerFrame ) );
-    Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerInstanceSkeletal ) );
-    Shaders.back().cBufferSizes.push_back( NUM_MAX_BONES * sizeof( XMFLOAT4X4 ) );
-
-    Shaders.push_back( ShaderInfo( "VS_ExSkeletalCube", "VS_ExSkeletalCube.hlsl", "v", 3 ) );
     Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerFrame ) );
     Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerInstanceSkeletal ) );
     Shaders.back().cBufferSizes.push_back( NUM_MAX_BONES * sizeof( XMFLOAT4X4 ) );
@@ -154,9 +135,6 @@ XRESULT D3D11ShaderManager::Init() {
     Shaders.push_back( ShaderInfo( "VS_ExInstancedObj", "VS_ExInstancedObj.hlsl", "v", 10 ) );
     Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerFrame ) );
     Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_Wind ) );
-
-    Shaders.push_back( ShaderInfo( "VS_ExRemapInstancedObj", "VS_ExRemapInstancedObj.hlsl", "v", 12 ) );
-    Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerFrame ) );
 
 
     Shaders.push_back( ShaderInfo( "VS_ExInstanced", "VS_ExInstanced.hlsl", "v", 4 ) );
@@ -176,9 +154,7 @@ XRESULT D3D11ShaderManager::Init() {
     Shaders.push_back( ShaderInfo( "PS_Lines", "PS_Lines.hlsl", "p" ) );
     Shaders.push_back( ShaderInfo( "PS_LinesSel", "PS_LinesSel.hlsl", "p" ) );
 
-    //Shaders.push_back(ShaderInfo("FixedFunctionPipelineEmulationPS", "FixedFunctionPipelineEmulationPS.hlsl", "p", 1));
     Shaders.push_back( ShaderInfo( "PS_Simple", "PS_Simple.hlsl", "p" ) );
-    Shaders.push_back( ShaderInfo( "PS_SimpleAlphaTest", "PS_SimpleAlphaTest.hlsl", "p" ) );
 
     Shaders.push_back( ShaderInfo( "PS_Rain", "PS_Rain.hlsl", "p" ) );
 
@@ -202,17 +178,8 @@ XRESULT D3D11ShaderManager::Init() {
 
     Shaders.push_back( ShaderInfo( "PS_PFX_ApplyParticleDistortion", "PS_PFX_ApplyParticleDistortion.hlsl", "p" ) );
 
-    Shaders.push_back( ShaderInfo( "PS_WorldTriplanar", "PS_WorldTriplanar.hlsl", "p" ) );
-    Shaders.back().cBufferSizes.push_back( sizeof( GothicGraphicsState ) );
-    Shaders.back().cBufferSizes.push_back( sizeof( AtmosphereConstantBuffer ) );
-    Shaders.back().cBufferSizes.push_back( sizeof( MaterialInfo::Buffer ) );
-    Shaders.back().cBufferSizes.push_back( sizeof( PerObjectState ) );
-
     Shaders.push_back( ShaderInfo( "PS_Grass", "PS_Grass.hlsl", "p" ) );
     Shaders.back().cBufferSizes.push_back( sizeof( MaterialInfo::Buffer ) );
-
-    Shaders.push_back( ShaderInfo( "PS_Sky", "PS_Sky.hlsl", "p" ) );
-    Shaders.back().cBufferSizes.push_back( sizeof( SkyConstantBuffer ) );
 
     Shaders.push_back( ShaderInfo( "VS_PFX", "VS_PFX.hlsl", "v" ) );
     Shaders.back().cBufferSizes.push_back( sizeof( PFXVS_ConstantBuffer ) );
@@ -233,17 +200,12 @@ XRESULT D3D11ShaderManager::Init() {
     Shaders.push_back( ShaderInfo( "PS_PFX_UnderwaterFinal", "PS_PFX_UnderwaterFinal.hlsl", "p" ) );
     Shaders.back().cBufferSizes.push_back( sizeof( RefractionInfoConstantBuffer ) );
 
-    Shaders.push_back( ShaderInfo( "PS_Cloud", "PS_Cloud.hlsl", "p" ) );
-    Shaders.back().cBufferSizes.push_back( sizeof( CloudConstantBuffer ) );
-    Shaders.back().cBufferSizes.push_back( sizeof( AtmosphereConstantBuffer ) );
-
     Shaders.push_back( ShaderInfo( "PS_PFX_Alpha_Blend", "PS_PFX_Alpha_Blend.hlsl", "p" ) );
     Shaders.back().cBufferSizes.push_back( sizeof( ScreenFadeConstantBuffer ) );
 
     Shaders.push_back( ShaderInfo( "PS_PFX_CinemaScope", "PS_PFX_CinemaScope.hlsl", "p" ) );
     Shaders.back().cBufferSizes.push_back( sizeof( ScreenFadeConstantBuffer ) );
     
-    Shaders.push_back( ShaderInfo( "PS_PFX_Blend", "PS_PFX_Blend.hlsl", "p" ) );
     Shaders.push_back( ShaderInfo( "PS_PFX_DistanceBlur", "PS_PFX_DistanceBlur.hlsl", "p" ) );
     Shaders.push_back( ShaderInfo( "PS_PFX_LumConvert", "PS_PFX_LumConvert.hlsl", "p" ) );
     Shaders.push_back( ShaderInfo( "PS_PFX_LumAdapt", "PS_PFX_LumAdapt.hlsl", "p" ) );
@@ -251,14 +213,6 @@ XRESULT D3D11ShaderManager::Init() {
         
     D3D_SHADER_MACRO m;
     std::vector<D3D_SHADER_MACRO> makros;
-
-    m.Name = "USE_TONEMAP";
-    m.Definition = "4";
-    makros.push_back( m );
-
-    Shaders.push_back( ShaderInfo( "PS_PFX_HDR", "PS_PFX_HDR.hlsl", "p", makros ) );
-    Shaders.back().cBufferSizes.push_back( sizeof( HDRSettingsConstantBuffer ) );
-    makros.clear();
 
     Shaders.push_back( ShaderInfo( "PS_PFX_GodRayMask", "PS_PFX_GodRayMask.hlsl", "p" ) );
     Shaders.push_back( ShaderInfo( "PS_PFX_GodRayZoom", "PS_PFX_GodRayZoom.hlsl", "p" ) );
@@ -272,9 +226,6 @@ XRESULT D3D11ShaderManager::Init() {
     Shaders.back().cBufferSizes.push_back( sizeof( HDRSettingsConstantBuffer ) );
     makros.clear();
 
-    Shaders.push_back( ShaderInfo( "PS_SkyPlane", "PS_SkyPlane.hlsl", "p" ) );
-    Shaders.back().cBufferSizes.push_back( sizeof( ViewportInfoConstantBuffer ) );
-
     Shaders.push_back( ShaderInfo( "PS_AtmosphereGround", "PS_AtmosphereGround.hlsl", "p" ) );
     Shaders.back().cBufferSizes.push_back( sizeof( GothicGraphicsState ) );
     Shaders.back().cBufferSizes.push_back( sizeof( AtmosphereConstantBuffer ) );
@@ -286,9 +237,6 @@ XRESULT D3D11ShaderManager::Init() {
 
     Shaders.push_back( ShaderInfo( "PS_AtmosphereOuter", "PS_AtmosphereOuter.hlsl", "p" ) );
     Shaders.back().cBufferSizes.push_back( sizeof( AtmosphereConstantBuffer ) );
-
-    Shaders.push_back( ShaderInfo( "PS_WorldLightmapped", "PS_WorldLightmapped.hlsl", "p" ) );
-    Shaders.back().cBufferSizes.push_back( sizeof( GothicGraphicsState ) );
 
     Shaders.push_back( ShaderInfo( "PS_FixedFunctionPipe", "PS_FixedFunctionPipe.hlsl", "p" ) );
     Shaders.back().cBufferSizes.push_back( sizeof( GothicGraphicsState ) );
@@ -306,23 +254,7 @@ XRESULT D3D11ShaderManager::Init() {
     Shaders.back().cBufferSizes.push_back( sizeof( DS_ScreenQuadConstantBuffer ) );
     Shaders.back().cBufferSizes.push_back( sizeof( AtmosphereConstantBuffer ) );
 
-    Shaders.push_back( ShaderInfo( "PS_DS_SimpleSunlight", "PS_DS_SimpleSunlight.hlsl", "p" ) );
-    Shaders.back().cBufferSizes.push_back( sizeof( DS_ScreenQuadConstantBuffer ) );
-    Shaders.back().cBufferSizes.push_back( sizeof( AtmosphereConstantBuffer ) );
-
     Shaders.push_back( ShaderInfo( "GS_VertexNormals", "GS_VertexNormals.hlsl", "g" ) );
-
-    Shaders.push_back( ShaderInfo( "GS_Billboard", "GS_Billboard.hlsl", "g" ) );
-    Shaders.back().cBufferSizes.push_back( sizeof( ParticleGSInfoConstantBuffer ) );
-
-    Shaders.push_back( ShaderInfo( "GS_Raindrops", "GS_Raindrops.hlsl", "g" ) );
-    Shaders.back().cBufferSizes.push_back( sizeof( ParticleGSInfoConstantBuffer ) );
-
-    Shaders.push_back( ShaderInfo( "GS_Cubemap", "GS_Cubemap.hlsl", "g" ) );
-    Shaders.back().cBufferSizes.push_back( sizeof( CubemapGSConstantBuffer ) );
-
-    Shaders.push_back( ShaderInfo( "GS_ParticleStreamOut", "VS_AdvanceRain.hlsl", "g", 13 ) );
-    Shaders.back().cBufferSizes.push_back( sizeof( ParticleGSInfoConstantBuffer ) );
 
     m.Name = "NORMALMAPPING";
     m.Definition = "0";
@@ -446,9 +378,6 @@ XRESULT D3D11ShaderManager::Init() {
     Shaders.back().cBufferSizes.push_back( sizeof( MaterialInfo::Buffer ) );
     Shaders.back().cBufferSizes.push_back( sizeof( PerObjectState ) );
 
-
-
-
     makros.clear();
     m.Name = "RENDERMODE";
     m.Definition = "0";
@@ -475,26 +404,47 @@ XRESULT D3D11ShaderManager::Init() {
     Shaders.push_back( ShaderInfo( "PS_PFX_GammaCorrectInv", "PS_PFX_GammaCorrectInv.hlsl", "p" ) );
     Shaders.back().cBufferSizes.push_back( sizeof( GammaCorrectConstantBuffer ) );
 
+    if ( FeatureRTArrayIndexFromAnyShader ) {
+        Shaders.push_back( ShaderInfo( "VS_ExLayered", "VS_ExLayered.hlsl", "v", 1 ) );
+        Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerFrame ) );
+        Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerInstance ) );
 
-    // --- LPP
-    makros.clear();
-    m.Name = "NORMALMAPPING";
-    m.Definition = "1";
-    makros.push_back( m );
+        Shaders.push_back( ShaderInfo( "VS_ExNodeLayered", "VS_ExNodeLayered.hlsl", "v", 1 ) );
+        Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerFrame ) );
+        Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerInstanceNode ) );
 
-    m.Name = "ALPHATEST";
-    m.Definition = "1";
-    makros.push_back( m );
+        Shaders.push_back( ShaderInfo( "VS_ExSkeletalLayered", "VS_ExSkeletalLayered.hlsl", "v", 3 ) );
+        Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerFrame ) );
+        Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerInstanceSkeletal ) );
+        Shaders.back().cBufferSizes.push_back( NUM_MAX_BONES * sizeof( XMFLOAT4X4 ) );
+    } else {
+        Shaders.push_back( ShaderInfo( "GS_Cubemap", "GS_Cubemap.hlsl", "g" ) );
+        Shaders.back().cBufferSizes.push_back( sizeof( CubemapGSConstantBuffer ) );
 
-    Shaders.push_back( ShaderInfo( "PS_LPPNormalmappedAlphaTest", "PS_LPP.hlsl", "p", makros ) );
-    Shaders.back().cBufferSizes.push_back( sizeof( GothicGraphicsState ) );
-    Shaders.back().cBufferSizes.push_back( sizeof( AtmosphereConstantBuffer ) );
-    Shaders.back().cBufferSizes.push_back( sizeof( MaterialInfo::Buffer ) );
-    Shaders.back().cBufferSizes.push_back( sizeof( PerObjectState ) );
+        Shaders.push_back( ShaderInfo( "VS_ExCube", "VS_ExCube.hlsl", "v", 1 ) );
+        Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerFrame ) );
+        Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerInstance ) );
 
-    // UNUSED
-    //Shaders.push_back( ShaderInfo( "DefaultTess", "DefaultTess.hlsl", "hd" ) );
-    //Shaders.back().cBufferSizes.push_back( sizeof( DefaultHullShaderConstantBuffer ) );
+        Shaders.push_back( ShaderInfo( "VS_ExNodeCube", "VS_ExNodeCube.hlsl", "v", 1 ) );
+        Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerFrame ) );
+        Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerInstanceNode ) );
+
+        Shaders.push_back( ShaderInfo( "VS_ExSkeletalCube", "VS_ExSkeletalCube.hlsl", "v", 3 ) );
+        Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerFrame ) );
+        Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerInstanceSkeletal ) );
+        Shaders.back().cBufferSizes.push_back( NUM_MAX_BONES * sizeof( XMFLOAT4X4 ) );
+    }
+
+    if ( FeatureLevel10Compatibility ) {
+        Shaders.push_back( ShaderInfo( "GS_ParticleStreamOut", "VS_AdvanceRain.hlsl", "g", 13 ) );
+        Shaders.back().cBufferSizes.push_back( sizeof( ParticleGSInfoConstantBuffer ) );
+
+        Shaders.push_back( ShaderInfo( "VS_AdvanceRain", "VS_AdvanceRain.hlsl", "v", 13 ) );
+        Shaders.back().cBufferSizes.push_back( sizeof( AdvanceRainConstantBuffer ) );
+    } else {
+        Shaders.push_back( ShaderInfo( "CS_AdvanceRain", "CS_AdvanceRain.hlsl", "c" ) );
+        Shaders.back().cBufferSizes.push_back( sizeof( AdvanceRainConstantBuffer ) );
+    }
 
     return XR_SUCCESS;
 }
@@ -589,6 +539,35 @@ XRESULT D3D11ShaderManager::CompileShader( const ShaderInfo& si ) {
                     gs->GetConstantBuffer().push_back( new D3D11ConstantBuffer( si.cBufferSizes[j], nullptr ) );
                 }
                 UpdateGShader( si.name, gs );
+            }
+        } else if ( si.type == "c" ) {
+            // See if this is a reload
+            D3D11CShader* cs = new D3D11CShader();
+            if ( IsCShaderKnown( si.name ) ) {
+                if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog )
+                    LogInfo() << "Reloading shader: " << si.name;
+
+                if ( XR_SUCCESS != cs->LoadShader( ("system\\GD3D11\\shaders\\" + si.fileName).c_str(), si.shaderMakros ) ) {
+                    LogError() << "Failed to reload shader: " << si.fileName;
+
+                    delete cs;
+                } else {
+                    // Compilation succeeded, switch the shader
+
+                    for ( unsigned int j = 0; j < si.cBufferSizes.size(); j++ ) {
+                        cs->GetConstantBuffer().push_back( new D3D11ConstantBuffer( si.cBufferSizes[j], nullptr ) );
+                    }
+                    UpdateCShader( si.name, cs );
+                }
+            } else {
+                if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog )
+                    LogInfo() << "Loading shader: " << si.name;
+
+                XLE( cs->LoadShader( ("system\\GD3D11\\shaders\\" + si.fileName).c_str(), si.shaderMakros ) );
+                for ( unsigned int j = 0; j < si.cBufferSizes.size(); j++ ) {
+                    cs->GetConstantBuffer().push_back( new D3D11ConstantBuffer( si.cBufferSizes[j], nullptr ) );
+                }
+                UpdateCShader( si.name, cs );
             }
         }
 
@@ -718,4 +697,7 @@ std::shared_ptr<D3D11HDShader> D3D11ShaderManager::GetHDShader( const std::strin
 }
 std::shared_ptr<D3D11GShader> D3D11ShaderManager::GetGShader( const std::string& shader ) {
     return GShaders[shader];
+}
+std::shared_ptr<D3D11CShader> D3D11ShaderManager::GetCShader( const std::string& shader ) {
+    return CShaders[shader];
 }

@@ -32,6 +32,24 @@ struct GothicMemoryLocations {
         static const unsigned int RenderDrawPolyReturn = 0x005BE190;
     };
 
+    struct zCFlash {
+        static const unsigned int Destructor = 0x004CA3C0;
+        static const unsigned int SetVisualUsedBy = 0x004CA690;
+        static const unsigned int Update = 0x004CB6E0;
+
+        static const unsigned int Offset_LifeTime = 0x34;
+        static const unsigned int Offset_StartPosX = 0x50;
+        static const unsigned int Offset_StartPosY = 0x54;
+        static const unsigned int Offset_StartPosZ = 0x58;
+        static const unsigned int Offset_EndPosX = 0x5C;
+        static const unsigned int Offset_EndPosY = 0x60;
+        static const unsigned int Offset_EndPosZ = 0x64;
+        static const unsigned int Offset_BoltB = 0x4C;
+        static const unsigned int Offset_BoltA = 0x48;
+        static const unsigned int Offset_ChildrenTable = 0xB4;
+        static const unsigned int Offset_ChildrenSize = 0xBC;
+    };
+
     struct zCThread {
         static const unsigned int SuspendThread = 0x005F9370;
         static const unsigned int Offset_SuspendCount = 0x0C;

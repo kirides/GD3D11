@@ -35,7 +35,6 @@ using WinMainFunc = decltype(&WinMain);
 WinMainFunc originalWinMain = reinterpret_cast<WinMainFunc>(GothicMemoryLocations::Functions::WinMain);
 #endif
 
-bool FeatureLevel10Compatibility = false;
 bool GMPModeActive = false;
 
 unsigned short QuantizeHalfFloat_Scalar( float input )

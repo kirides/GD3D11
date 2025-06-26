@@ -72,7 +72,7 @@ public:
 
         HookedFunctions::OriginalFunctions.original_zCVobEndMovement( thisptr, transformChanged_hint );
 
-        if ( Engine::GAPI && vobHasMoved && transformChanged_hint )
+        if ( vobHasMoved && transformChanged_hint )
             Engine::GAPI->OnVobMoved( thisptr );
 
         hook_outfunc

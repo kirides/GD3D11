@@ -5,7 +5,6 @@
 #include "GothicAPI.h"
 #include <DDSTextureLoader.h>
 #include "RenderToTextureBuffer.h"
-#include <d3dcompiler.h>
 #include "D3D11_Helpers.h"
 
 D3D11Texture::D3D11Texture() {}

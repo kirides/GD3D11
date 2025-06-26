@@ -14,6 +14,7 @@ public:
 
     /** Draws GPU-Based rain */
     XRESULT DrawRain();
+    XRESULT DrawRain_CS();
 
     XRESULT LoadRainResources();
 

@@ -7,6 +7,8 @@
 #include "D3D11ShaderManager.h"
 #include "D3D11_Helpers.h"
 
+extern bool FeatureLevel10Compatibility;
+
 D3D11PShader::D3D11PShader() {}
 
 D3D11PShader::~D3D11PShader() {
@@ -26,7 +28,7 @@ XRESULT D3D11PShader::LoadShader( const char* pixelShader, const std::vector<D3D
         LogInfo() << "Compilling pixel shader: " << pixelShader;
 
     // Compile shaders
-    if ( FAILED( D3D11ShaderManager::CompileShaderFromFile( pixelShader, "PSMain", "ps_4_0", psBlob.GetAddressOf(), makros ) ) ) {
+    if ( FAILED( D3D11ShaderManager::CompileShaderFromFile( pixelShader, "PSMain", (FeatureLevel10Compatibility ? "ps_4_0" : "ps_5_0"), psBlob.GetAddressOf(), makros)) ) {
         return XR_FAILED;
     }
 

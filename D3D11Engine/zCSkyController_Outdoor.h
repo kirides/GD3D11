@@ -106,15 +106,24 @@ public:
         PatchAddr( 0x005DB0B3, "\x8B\xD0\xC1\xE2\x06\x8D\xB4\x11\xDC\x05\x00\x00\x3B\xC3\x75\x07\xE8\x00\x00\x00\x00\xEB\x14\xE8\x00\x00\x00\x00\xEB\x0D\x90" );
         PatchCall( 0x005DB0C3, reinterpret_cast<DWORD>(&zCSkyController_Outdoor::FixSunWorldPosition) );
         PatchCall( 0x005DB0CA, reinterpret_cast<DWORD>(&zCSkyController_Outdoor::FixMoonWorldPosition) );
+
+        PatchAddr( 0x006579C5, "\x90" );
+        PatchCall( 0x006579C6, reinterpret_cast<DWORD>(&zCSkyController_Outdoor::RenderThunderPolyStrip) );
 #else
         PatchAddr( 0x005BD470, "\x8B\xD0\xC1\xE2\x06\x8D\xB4\x11\xDC\x05\x00\x00\x3B\xC3\x75\x07\xE8\x00\x00\x00\x00\xEB\x14\xE8\x00\x00\x00\x00\xEB\x0D\x90" );
         PatchCall( 0x005BD480, reinterpret_cast<DWORD>(&zCSkyController_Outdoor::FixSunWorldPosition) );
         PatchCall( 0x005BD487, reinterpret_cast<DWORD>(&zCSkyController_Outdoor::FixMoonWorldPosition) );
+
+        PatchAddr( 0x00631EA5, "\x90" );
+        PatchCall( 0x00631EA6, reinterpret_cast<DWORD>(&zCSkyController_Outdoor::RenderThunderPolyStrip) );
 #endif
 #elif defined(BUILD_GOTHIC_2_6_fix)
         PatchAddr( 0x005E7860, "\x8B\xC8\xC1\xE1\x06\x8D\xB4\x29\xF4\x05\x00\x00\x8B\xCD\x85\xC0\x75\x07\xE8\x00\x00\x00\x00\xEB\x05\xE8\x00\x00\x00\x00\x33\xDB\xEB\x0E" );
         PatchCall( 0x005E7872, reinterpret_cast<DWORD>(&zCSkyController_Outdoor::FixSunWorldPosition) );
         PatchCall( 0x005E7879, reinterpret_cast<DWORD>(&zCSkyController_Outdoor::FixMoonWorldPosition) );
+
+        PatchAddr( 0x006BB643, "\x90" );
+        PatchCall( 0x006BB644, reinterpret_cast<DWORD>(&zCSkyController_Outdoor::RenderThunderPolyStrip) );
 #endif
     }
 
@@ -330,6 +339,10 @@ public:
             angle = skyTime * timeScale * XM_2PI - XM_PIDIV2;
         }
         return angle;
+    }
+
+    static void __fastcall RenderThunderPolyStrip( zCPolyStrip* _THIS ) {
+        Engine::GAPI->AddThunderPolyStrip( _THIS );
     }
 
     void SetCameraLocationHint( int hint ) {

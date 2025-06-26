@@ -70,6 +70,9 @@
     <Filter Include="Detours">
       <UniqueIdentifier>{cc76209d-e83c-4217-9632-b333a4ee7d49}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Engine\D3D11\Extensions">
+      <UniqueIdentifier>{cf502305-5a6a-4683-a3c3-c77ec64082ac}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Librarys\imgui">
       <UniqueIdentifier>{fd53c799-2719-4062-ae38-39d4fb2693bb}</UniqueIdentifier>
     </Filter>
@@ -728,6 +731,27 @@
     <ClInclude Include="Detours\detver.h">
       <Filter>Detours</Filter>
     </ClInclude>
+    <ClInclude Include="D3D11IndirectBuffer.h">
+      <Filter>Engine\D3D11</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D11NVAPI.h">
+      <Filter>Engine\D3D11\Extensions</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D11DXVK.h">
+      <Filter>Engine\D3D11\Extensions</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D11IGDEXT.h">
+      <Filter>Engine\D3D11\Extensions</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D11AGS.h">
+      <Filter>Engine\D3D11\Extensions</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D11CShader.h">
+      <Filter>Engine\D3D11</Filter>
+    </ClInclude>
+    <ClInclude Include="zCFlash.h">
+      <Filter>ZenGin\Classes</Filter>
+    </ClInclude>
     <ClInclude Include="ImGuiShim.h">
       <Filter>Engine</Filter>
     </ClInclude>
@@ -797,7 +821,7 @@
     <ClCompile Include="D3D11ConstantBuffer.cpp">
       <Filter>Engine\D3D11</Filter>
     </ClCompile>
-    <ClCompile Include="D3D11Vertexbuffer.cpp">
+    <ClCompile Include="D3D11VertexBuffer.cpp">
       <Filter>Engine\D3D11</Filter>
     </ClCompile>
     <ClCompile Include="D3D11ShaderManager.cpp">
@@ -1003,6 +1027,21 @@
     </ClCompile>
     <ClCompile Include="Detours\modules.cpp">
       <Filter>Detours</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D11IndirectBuffer.cpp">
+      <Filter>Engine\D3D11</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D11NVAPI.cpp">
+      <Filter>Engine\D3D11\Extensions</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D11IGDEXT.cpp">
+      <Filter>Engine\D3D11\Extensions</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D11AGS.cpp">
+      <Filter>Engine\D3D11\Extensions</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D11CShader.cpp">
+      <Filter>Engine\D3D11</Filter>
     </ClCompile>
     <ClCompile Include="ImGuiShim.cpp">
       <Filter>Engine</Filter>

@@ -5,9 +5,12 @@
 
 struct RenderToDepthStencilBuffer;
 
+class D3D11IndirectBuffer;
 class D3D11ConstantBuffer;
 class D3D11VertexBuffer;
 class D3D11ShaderManager;
+
+class D3D11NVAPI;
 
 enum D3D11ENGINE_RENDER_STAGE {
     DES_Z_PRE_PASS,
@@ -108,10 +111,13 @@ public:
 
     /** Draws a vertexbuffer, non-indexed */
     virtual XRESULT DrawVertexBuffer( D3D11VertexBuffer* vb, unsigned int numVertices, unsigned int stride = sizeof( ExVertexStruct ) ) override;
-
-    /** Draws a vertexbuffer, non-indexed */
     virtual XRESULT DrawVertexBufferIndexed( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int indexOffset = 0 ) override;
     virtual XRESULT DrawVertexBufferIndexedUINT( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int indexOffset ) override;
+
+    /** Draws a vertexbuffer, instanced */
+    XRESULT DrawVertexBufferInstanced( D3D11VertexBuffer* vb, unsigned int numVertices, unsigned int numInstances, unsigned int stride = sizeof( ExVertexStruct ) );
+    XRESULT DrawVertexBufferInstancedIndexed( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int numInstances, unsigned int indexOffset = 0 );
+    XRESULT DrawVertexBufferInstancedIndexedUINT( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int numInstances, unsigned int indexOffset );
 
     /** Draws a vertexbuffer, non-indexed, binding the FF-Pipe values */
     virtual XRESULT DrawVertexBufferFF( D3D11VertexBuffer* vb, unsigned int numVertices, unsigned int startVertex, unsigned int stride = sizeof( ExVertexStruct ) ) override;
@@ -136,6 +142,7 @@ public:
     /** Draws a skeletal mesh */
     XRESULT DrawSkeletalVertexNormals( SkeletalVobInfo* vi, const std::vector<XMFLOAT4X4>& transforms, float4 color, float fatness = 1.0f );
     virtual XRESULT DrawSkeletalMesh( SkeletalVobInfo* vi, const std::vector<XMFLOAT4X4>& transforms, float4 color, float fatness = 1.0f ) override;
+    XRESULT DrawSkeletalMesh_Layered( SkeletalVobInfo* vi, const std::vector<XMFLOAT4X4>& transforms, float4 color, float fatness = 1.0f );
 
     /** Draws a screen fade effects */
     virtual XRESULT DrawScreenFade( void* camera ) override;
@@ -203,6 +210,7 @@ public:
     /** ---------------- Gothic rendering functions -------------------- */
 
     /** Draws the world mesh */
+    virtual XRESULT DrawWorldMesh_Indirect( bool noTextures = false );
     virtual XRESULT DrawWorldMesh( bool noTextures = false );
 
     /** Draws a list of mesh infos */
@@ -220,6 +228,12 @@ public:
     /** Draws everything around the given position */
     void XM_CALLCONV DrawWorldAround( FXMVECTOR position, int sectionRange, float vobXZRange, bool cullFront = true, bool dontCull = false );
     void XM_CALLCONV DrawWorldAround( FXMVECTOR position,
+        float range,
+        bool cullFront = true,
+        bool indoor = false,
+        bool noNPCs = false,
+        std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::map<MeshKey, WorldMeshInfo*, cmpMeshKey>* worldMeshCache = nullptr );
+    void XM_CALLCONV DrawWorldAround_Layered( FXMVECTOR position,
         float range,
         bool cullFront = true,
         bool indoor = false,
@@ -325,8 +339,6 @@ public:
 protected:
     std::unique_ptr<FpsLimiter> m_FrameLimiter;
     int m_LastFrameLimit;
-    /** Test draw world */
-    void TestDrawWorldMesh();
 
     D3D11PointLight* DebugPointlight;
 
@@ -393,6 +405,9 @@ protected:
     /** Reflection */
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> ReflectionCube;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> ReflectionCube2;
+
+    /** World-Mesh indirect buffer */
+    std::unique_ptr<D3D11IndirectBuffer> WorldMeshIndirectBuffer;
 
     /** Constantbuffers for view-distances */
     std::unique_ptr<D3D11ConstantBuffer> InfiniteRangeConstantBuffer;

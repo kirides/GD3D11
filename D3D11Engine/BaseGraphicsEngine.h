@@ -163,6 +163,7 @@ public:
     virtual XRESULT UnbindTexture( int slot ) { return XR_SUCCESS; };
 
     /** Draws the world mesh */
+    virtual XRESULT DrawWorldMesh_Indirect( bool noTextures = false ) { return XR_SUCCESS; };
     virtual XRESULT DrawWorldMesh( bool noTextures = false ) { return XR_SUCCESS; };
 
     /** Draws the static VOBs */

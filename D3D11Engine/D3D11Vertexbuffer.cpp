@@ -35,6 +35,11 @@ XRESULT D3D11VertexBuffer::Init( void* initData, unsigned int sizeInBytes, EBind
         bufferDesc.MiscFlags |= D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
     }
 
+    // Check for unordered access
+    if ( (EBindFlags & EBindFlags::B_UNORDERED_ACCESS) != 0 ) {
+        bufferDesc.MiscFlags |= D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS;
+    }
+
     // In case we dont have data, allocate some to satisfy D3D11
     char* data = nullptr;
     if ( !initData ) {
@@ -54,6 +59,7 @@ XRESULT D3D11VertexBuffer::Init( void* initData, unsigned int sizeInBytes, EBind
         delete[] data;
         return XR_SUCCESS;
     }
+
     // Check for structured buffer again to create the SRV
     if ( (EBindFlags & EBindFlags::B_SHADER_RESOURCE) != 0 && structuredByteSize > 0 ) {
         D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
@@ -62,6 +68,18 @@ XRESULT D3D11VertexBuffer::Init( void* initData, unsigned int sizeInBytes, EBind
         srvDesc.Buffer.ElementWidth = sizeInBytes / structuredByteSize;
 
         engine->GetDevice()->CreateShaderResourceView( VertexBuffer.Get(), &srvDesc, ShaderResourceView.ReleaseAndGetAddressOf() );
+    }
+
+    // Check for unordered access again to create the UAV
+    if ( (EBindFlags & EBindFlags::B_UNORDERED_ACCESS) != 0 ) {
+        D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+        uavDesc.Format = DXGI_FORMAT_R32_TYPELESS;
+        uavDesc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
+        uavDesc.Buffer.Flags = D3D11_BUFFER_UAV_FLAG_RAW;
+        uavDesc.Buffer.FirstElement = 0;
+        uavDesc.Buffer.NumElements = sizeInBytes / structuredByteSize;
+
+        engine->GetDevice()->CreateUnorderedAccessView( VertexBuffer.Get(), &uavDesc, UnorderedAccessView.ReleaseAndGetAddressOf() );
     }
 
     SetDebugName( VertexBuffer.Get(), fileName );

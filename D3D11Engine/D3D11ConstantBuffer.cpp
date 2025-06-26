@@ -85,6 +85,11 @@ void D3D11ConstantBuffer::BindToGeometryShader( int slot ) {
     BufferDirty = false;
 }
 
+void D3D11ConstantBuffer::BindToComputeShader( int slot ) {
+    reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->CSSetConstantBuffers( slot, 1, Buffer.GetAddressOf() );
+    BufferDirty = false;
+}
+
 /** Returns whether this buffer has been updated since the last bind */
 bool D3D11ConstantBuffer::IsDirty() {
     return BufferDirty;

@@ -20,6 +20,7 @@
 #include "zCThread.h"
 #include "zCResourceManager.h"
 #include "zCQuadMark.h"
+#include "zCFlash.h"
 #include "oCNPC.h"
 #include "zCSkyController_Outdoor.h"
 #include "zCInput_Win32.h"
@@ -67,6 +68,7 @@ void HookedFunctionInfo::InitHooks() {
     //zCThread::Hook();
     //zCResourceManager::Hook();
     zCQuadMark::Hook();
+    zCFlash::Hook();
     oCNPC::Hook();
     zCSkyController_Outdoor::Hook();
     zCInput_Win32::Hook();

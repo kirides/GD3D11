@@ -12,7 +12,6 @@
 #include "GSky.h"
 #include <DDSTextureLoader.h>
 #include "RenderToTextureBuffer.h"
-#include <d3dcompiler.h>
 #include "D3D11_Helpers.h"
 
 // TODO: Remove this!
@@ -95,20 +94,21 @@ XRESULT D3D11Effect::DrawRain() {
 
     // Get shaders
     auto streamOutGS = e->GetShaderManager().GetGShader( "GS_ParticleStreamOut" );
-    auto particleGS = e->GetShaderManager().GetGShader( "GS_Raindrops" );
     auto particleAdvanceVS = e->GetShaderManager().GetVShader( "VS_AdvanceRain" );
     auto particleVS = e->GetShaderManager().GetVShader( "VS_ParticlePointShaded" );
     auto rainPS = e->GetShaderManager().GetPShader( "PS_Rain" );
 
-    UINT numParticles = Engine::GAPI->GetRendererState().RendererSettings.RainNumParticles;
+    UINT numParticles = state.RendererSettings.RainNumParticles;
 
     static float lastRadius = state.RendererSettings.RainRadiusRange;
     static float lastHeight = state.RendererSettings.RainHeightRange;
+    static UINT lastNumParticles = state.RendererSettings.RainNumParticles;
     static bool firstFrame = true;
 
     // Create resources if not already done
     if ( !RainBufferDrawFrom || lastHeight != state.RendererSettings.RainHeightRange
-        || lastRadius != state.RendererSettings.RainRadiusRange ) {
+        || lastRadius != state.RendererSettings.RainRadiusRange ||
+        lastNumParticles != state.RendererSettings.RainNumParticles ) {
         delete RainBufferDrawFrom;
         delete RainBufferStreamTo;
         delete RainBufferInitial;
@@ -117,10 +117,8 @@ XRESULT D3D11Effect::DrawRain() {
         e->CreateVertexBuffer( &RainBufferStreamTo );
         e->CreateVertexBuffer( &RainBufferInitial );
 
-        UINT numParticles = Engine::GAPI->GetRendererState().RendererSettings.RainNumParticles;
-        std::vector<RainParticleInstanceInfo> particles( numParticles );
-
         // Fill the vector with random raindrop data
+        std::vector<RainParticleInstanceInfo> particles( numParticles );
         FillRandomRaindropData( particles );
 
         // Create vertexbuffers
@@ -135,33 +133,7 @@ XRESULT D3D11Effect::DrawRain() {
 
     lastHeight = state.RendererSettings.RainHeightRange;
     lastRadius = state.RendererSettings.RainRadiusRange;
-
-    D3D11VertexBuffer* b = nullptr;
-
-    // Use initial-data if we don't have something in the stream-buffers yet
-    if ( firstFrame || state.RendererSettings.RainUseInitialSet || Engine::GAPI->IsGamePaused() )
-        b = RainBufferInitial;
-    else
-        b = RainBufferDrawFrom;
-
-    firstFrame = false;
-
-    UINT stride = sizeof( RainParticleInstanceInfo );
-    UINT offset = 0;
-
-    // Bind buffer to draw from last frame
-    e->GetContext()->IASetVertexBuffers( 0, 1, b->GetVertexBuffer().GetAddressOf(), &stride, &offset );
-
-    // Set stream target
-    e->GetContext()->SOSetTargets( 1, RainBufferStreamTo->GetVertexBuffer().GetAddressOf(), &offset );
-
-    // Apply shaders
-    e->GetContext()->PSSetShader( nullptr, nullptr, 0 );
-    particleAdvanceVS->Apply();
-    streamOutGS->Apply();
-
-    // Rendering points only
-    e->GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_POINTLIST );
+    lastNumParticles = state.RendererSettings.RainNumParticles;
 
     // Update constantbuffer for the advance-VS
     AdvanceRainConstantBuffer acb;
@@ -174,23 +146,50 @@ XRESULT D3D11Effect::DrawRain() {
     acb.AR_CameraPosition = Engine::GAPI->GetCameraPosition();
     acb.AR_GlobalVelocity = state.RendererSettings.RainGlobalVelocity;
     acb.AR_MoveRainParticles = state.RendererSettings.RainMoveParticles ? 1 : 0;
-
     particleAdvanceVS->GetConstantBuffer()[0]->UpdateBuffer( &acb );
     particleAdvanceVS->GetConstantBuffer()[0]->BindToVertexShader( 1 );
     particleAdvanceVS->GetConstantBuffer()[0]->BindToPixelShader( 1 );
 
-    e->SetDefaultStates();
-    e->UpdateRenderStates();
+    if ( firstFrame || (state.RendererSettings.RainMoveParticles && !Engine::GAPI->IsGamePaused()) ) {
+        D3D11VertexBuffer* b = nullptr;
 
-    // Advance particle system in VS and stream out the data
-    e->GetContext()->Draw( numParticles, 0 );
+        // Use initial-data if we don't have something in the stream-buffers yet
+        if ( firstFrame )
+            b = RainBufferInitial;
+        else
+            b = RainBufferDrawFrom;
 
-    // Unset streamout target
-    Microsoft::WRL::ComPtr<ID3D11Buffer> bobjStream;
-    e->GetContext()->SOSetTargets( 1, bobjStream.ReleaseAndGetAddressOf(), 0 );
+        firstFrame = false;
 
-    // Swap buffers
-    std::swap( RainBufferDrawFrom, RainBufferStreamTo );
+        UINT stride = sizeof( RainParticleInstanceInfo );
+        UINT offset = 0;
+
+        // Bind buffer to draw from last frame
+        e->GetContext()->IASetVertexBuffers( 0, 1, b->GetVertexBuffer().GetAddressOf(), &stride, &offset );
+
+        // Set stream target
+        e->GetContext()->SOSetTargets( 1, RainBufferStreamTo->GetVertexBuffer().GetAddressOf(), &offset );
+
+        // Apply shaders
+        e->GetContext()->PSSetShader( nullptr, nullptr, 0 );
+        particleAdvanceVS->Apply();
+        streamOutGS->Apply();
+
+        // Rendering points only
+        e->GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_POINTLIST );
+        e->SetDefaultStates();
+        e->UpdateRenderStates();
+
+        // Advance particle system in VS and stream out the data
+        e->GetContext()->DrawInstanced( 1, numParticles, 0, 0 );
+
+        // Unset streamout target
+        Microsoft::WRL::ComPtr<ID3D11Buffer> bobjStream;
+        e->GetContext()->SOSetTargets( 1, bobjStream.ReleaseAndGetAddressOf(), 0 );
+
+        // Swap buffers
+        std::swap( RainBufferDrawFrom, RainBufferStreamTo );
+    }
 
     // ---- Draw the rain ----
     // Set alphablending
@@ -206,12 +205,14 @@ XRESULT D3D11Effect::DrawRain() {
     state.RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_NONE;
     state.RasterizerState.SetDirty();
 
+    // Rendering instances only
+    e->GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP );
     e->UpdateRenderStates();
 
     // Apply particle shaders
+    e->GetContext()->GSSetShader( nullptr, 0, 0 );
     particleVS->Apply();
     rainPS->Apply();
-    particleGS->Apply();
 
     // Setup constantbuffers
     ParticleGSInfoConstantBuffer gcb = {};
@@ -219,8 +220,8 @@ XRESULT D3D11Effect::DrawRain() {
     gcb.PGS_RainFxWeight = Engine::GAPI->GetRainFXWeight();
     gcb.PGS_RainHeight = state.RendererSettings.RainHeightRange;
 
-    particleGS->GetConstantBuffer()[0]->UpdateBuffer( &gcb );
-    particleGS->GetConstantBuffer()[0]->BindToGeometryShader( 2 );
+    particleVS->GetConstantBuffer()[2]->UpdateBuffer( &gcb );
+    particleVS->GetConstantBuffer()[2]->BindToVertexShader( 2 );
 
     ParticlePointShadingConstantBuffer scb = {};
     scb.View = GetRainShadowmapCameraRepl().ViewReplacement;
@@ -237,11 +238,129 @@ XRESULT D3D11Effect::DrawRain() {
     e->GetContext()->PSSetShaderResources( 0, 1, RainTextureArraySRV.GetAddressOf() );
 
     // Draw the vertexbuffer
-    e->DrawVertexBuffer( RainBufferDrawFrom, numParticles, sizeof( RainParticleInstanceInfo ) );
+    reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine)->DrawVertexBufferInstanced( RainBufferDrawFrom, 4, numParticles, sizeof( RainParticleInstanceInfo ) );
 
     // Reset this
     e->GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
     e->GetContext()->GSSetShader( nullptr, 0, 0 );
+    return XR_SUCCESS;
+}
+
+XRESULT D3D11Effect::DrawRain_CS() {
+    D3D11GraphicsEngineBase* e = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine);
+    GothicRendererState& state = Engine::GAPI->GetRendererState();
+
+    // Get shaders
+    auto advanceRainCS = e->GetShaderManager().GetCShader( "CS_AdvanceRain" );
+    auto particleVS = e->GetShaderManager().GetVShader( "VS_ParticlePointShaded" );
+    auto rainPS = e->GetShaderManager().GetPShader( "PS_Rain" );
+
+    UINT numParticles = state.RendererSettings.RainNumParticles;
+
+    static float lastRadius = state.RendererSettings.RainRadiusRange;
+    static float lastHeight = state.RendererSettings.RainHeightRange;
+    static UINT lastNumParticles = state.RendererSettings.RainNumParticles;
+
+    if ( !RainBufferDrawFrom || lastHeight != state.RendererSettings.RainHeightRange
+        || lastRadius != state.RendererSettings.RainRadiusRange ||
+        (lastNumParticles + 127) / 128 != (state.RendererSettings.RainNumParticles + 127) / 128 ) {
+        delete RainBufferDrawFrom;
+
+        e->CreateVertexBuffer( &RainBufferDrawFrom );
+
+        // Fill the vector with random raindrop data
+        std::vector<RainParticleInstanceInfo> particles( ((numParticles + 127) / 128) * 128 );
+        FillRandomRaindropData( particles );
+
+        // Create vertexbuffers
+        RainBufferDrawFrom->Init( &particles[0], particles.size() * sizeof( RainParticleInstanceInfo ), (D3D11VertexBuffer::EBindFlags)(D3D11VertexBuffer::B_VERTEXBUFFER | D3D11VertexBuffer::B_UNORDERED_ACCESS), D3D11VertexBuffer::U_DEFAULT, D3D11VertexBuffer::CA_NONE, "D3D11Effect::DrawRain::RainBufferDrawFrom", sizeof( float ) );
+
+        LoadRainResources();
+    }
+
+    lastHeight = state.RendererSettings.RainHeightRange;
+    lastRadius = state.RendererSettings.RainRadiusRange;
+    lastNumParticles = state.RendererSettings.RainNumParticles;
+
+    // Update constantbuffer for the advance-CS
+    AdvanceRainConstantBuffer acb;
+    XMFLOAT3 LightPosition_XMFloat3;
+    XMStoreFloat3( &LightPosition_XMFloat3, XMLoadFloat3( &Engine::GAPI->GetSky()->GetAtmoshpereSettings().LightDirection ) * Engine::GAPI->GetSky()->GetAtmoshpereSettings().OuterRadius + Engine::GAPI->GetCameraPositionXM() );
+    acb.AR_LightPosition = LightPosition_XMFloat3;
+    acb.AR_FPS = state.RendererInfo.FPS;
+    acb.AR_Radius = state.RendererSettings.RainRadiusRange;
+    acb.AR_Height = state.RendererSettings.RainHeightRange;
+    acb.AR_CameraPosition = Engine::GAPI->GetCameraPosition();
+    acb.AR_GlobalVelocity = state.RendererSettings.RainGlobalVelocity;
+    acb.AR_MoveRainParticles = numParticles;
+
+    advanceRainCS->GetConstantBuffer()[0]->UpdateBuffer( &acb );
+    advanceRainCS->GetConstantBuffer()[0]->BindToPixelShader( 1 );
+    if ( state.RendererSettings.RainMoveParticles && !Engine::GAPI->IsGamePaused() ) {
+        advanceRainCS->Apply();
+        advanceRainCS->GetConstantBuffer()[0]->BindToComputeShader( 0 );
+
+        e->GetContext()->CSSetUnorderedAccessViews( 0, 1, RainBufferDrawFrom->GetUnorderedAccessView().GetAddressOf(), nullptr );
+        e->GetContext()->Dispatch( (numParticles + 127) / 128, 1, 1 );
+
+        // Unbind compute shader elements
+        Microsoft::WRL::ComPtr<ID3D11Buffer> emptyBuf;
+        Microsoft::WRL::ComPtr<ID3D11UnorderedAccessView> emptyUAV;
+        e->GetContext()->CSSetConstantBuffers( 0, 1, emptyBuf.GetAddressOf() );
+        e->GetContext()->CSSetUnorderedAccessViews( 0, 1, emptyUAV.GetAddressOf(), nullptr );
+        e->GetContext()->CSSetShader( nullptr, nullptr, 0 );
+    }
+
+    // ---- Draw the rain ----
+    // Set alphablending
+
+    state.BlendState.SetAlphaBlending();
+    state.BlendState.SetDirty();
+
+    // Disable depth-write
+    state.DepthState.DepthWriteEnabled = false;
+    state.DepthState.SetDirty();
+
+    // Disable culling
+    state.RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_NONE;
+    state.RasterizerState.SetDirty();
+
+    // Rendering instances only
+    e->GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP );
+    e->UpdateRenderStates();
+
+    // Apply particle shaders
+    particleVS->Apply();
+    rainPS->Apply();
+
+    // Setup constantbuffers
+    ParticleGSInfoConstantBuffer gcb = {};
+    gcb.CameraPosition = Engine::GAPI->GetCameraPosition();
+    gcb.PGS_RainFxWeight = Engine::GAPI->GetRainFXWeight();
+    gcb.PGS_RainHeight = state.RendererSettings.RainHeightRange;
+
+    particleVS->GetConstantBuffer()[2]->UpdateBuffer( &gcb );
+    particleVS->GetConstantBuffer()[2]->BindToVertexShader( 2 );
+
+    ParticlePointShadingConstantBuffer scb = {};
+    scb.View = GetRainShadowmapCameraRepl().ViewReplacement;
+    scb.Projection = GetRainShadowmapCameraRepl().ProjectionReplacement;
+    particleVS->GetConstantBuffer()[1]->UpdateBuffer( &scb );
+    particleVS->GetConstantBuffer()[1]->BindToVertexShader( 1 );
+
+    RainShadowmap->BindToVertexShader( e->GetContext().Get(), 0 );
+
+    // Bind view/proj
+    e->SetupVS_ExConstantBuffer();
+
+    // Bind droplets
+    e->GetContext()->PSSetShaderResources( 0, 1, RainTextureArraySRV.GetAddressOf() );
+
+    // Draw the vertexbuffer
+    reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine)->DrawVertexBufferInstanced( RainBufferDrawFrom, 4, numParticles, sizeof( RainParticleInstanceInfo ) );
+
+    // Reset primitive topology
+    e->GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
     return XR_SUCCESS;
 }
 
@@ -261,7 +380,7 @@ XRESULT D3D11Effect::LoadRainResources()
 
     if ( !RainShadowmap.get() ) {
         const int s = 2048;
-        RainShadowmap = std::make_unique<RenderToDepthStencilBuffer>( e->GetDevice().Get(), s, s, DXGI_FORMAT_R32_TYPELESS, nullptr, DXGI_FORMAT_D32_FLOAT, DXGI_FORMAT_R32_FLOAT );
+        RainShadowmap = std::make_unique<RenderToDepthStencilBuffer>( e->GetDevice().Get(), s, s, DXGI_FORMAT_R16_TYPELESS, nullptr, DXGI_FORMAT_D16_UNORM, DXGI_FORMAT_R16_UNORM );
         SetDebugName( RainShadowmap->GetDepthStencilView().Get(), "RainShadowmap->DepthStencilView" );
         SetDebugName( RainShadowmap->GetShaderResView().Get(), "RainShadowmap->ShaderResView" );
         SetDebugName( RainShadowmap->GetTexture().Get(), "RainShadowmap->Texture" );
@@ -352,8 +471,10 @@ HRESULT LoadTextureArray( Microsoft::WRL::ComPtr<ID3D11Device1> pd3dDevice, Micr
         LogError() << "invalid argument: ppTex2D. should not be null";
         return E_FAIL;
     }
+
     HRESULT hr = S_OK;
     D3D11_TEXTURE2D_DESC desc = {};
+    DXGI_FORMAT texFormat = DXGI_FORMAT_UNKNOWN;
 
     //	CHAR szTextureName[MAX_PATH];
     CHAR str[MAX_PATH];
@@ -361,7 +482,7 @@ HRESULT LoadTextureArray( Microsoft::WRL::ComPtr<ID3D11Device1> pd3dDevice, Micr
         sprintf( str, "%s%.4d.dds", sTexturePrefix, i );
 
         Microsoft::WRL::ComPtr<ID3D11Resource> pRes;
-        LE( CreateDDSTextureFromFileEx( pd3dDevice.Get(), Toolbox::ToWideChar( str ).c_str(), 0, D3D11_USAGE_STAGING, 0, D3D11_CPU_ACCESS_READ | D3D11_CPU_ACCESS_WRITE, 0, DDS_LOADER_DEFAULT, pRes.GetAddressOf(), nullptr ) );
+        LE( CreateDDSTextureFromFileEx( pd3dDevice.Get(), Toolbox::ToWideChar( str ).c_str(), 0, D3D11_USAGE_STAGING, 0, D3D11_CPU_ACCESS_WRITE, 0, DDS_LOADER_DEFAULT, pRes.GetAddressOf(), nullptr ) );
         if ( pRes.Get() ) {
             Microsoft::WRL::ComPtr<ID3D11Texture2D> pTemp;
             pRes.As( &pTemp );
@@ -371,10 +492,13 @@ HRESULT LoadTextureArray( Microsoft::WRL::ComPtr<ID3D11Device1> pd3dDevice, Micr
             }
             pTemp->GetDesc( &desc );
 
-            if ( DXGI_FORMAT_R8_UNORM != desc.Format )
-                return E_FAIL;
-
             if ( !(*ppTex2D) ) {
+                if ( desc.Format == DXGI_FORMAT_BC4_UNORM || desc.Format == DXGI_FORMAT_R8_UNORM ) {
+                    texFormat = desc.Format;
+                } else {
+                    return E_FAIL;
+                }
+
                 desc.Usage = D3D11_USAGE_DEFAULT;
                 desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
                 desc.CPUAccessFlags = 0;
@@ -383,6 +507,9 @@ HRESULT LoadTextureArray( Microsoft::WRL::ComPtr<ID3D11Device1> pd3dDevice, Micr
                 if ( !(*ppTex2D) )
                     return E_FAIL;
             }
+
+            if ( texFormat != desc.Format )
+                return E_FAIL;
 
             for ( UINT iMip = 0; iMip < desc.MipLevels; iMip++ ) {
                 context->CopySubresourceRegion( (*ppTex2D),
