@@ -39,6 +39,7 @@ jobs:
     - name: Create distribution zip
       working-directory: ${{env.GITHUB_WORKSPACE}}
       run: |
+        mkdir "${{env.RELEASE_DIR}}\GD3D11\Bin" -Force
         Xcopy "D3D11Engine\Shaders\*" "${{env.RELEASE_DIR}}\GD3D11\shaders\" /S /Y
         Xcopy "blobs\data" "${{env.RELEASE_DIR}}\GD3D11\data\" /S /Y
         Xcopy "blobs\Meshes" "${{env.RELEASE_DIR}}\GD3D11\Meshes\" /S /Y
