@@ -266,7 +266,7 @@ void ImGuiShim::RenderSettingsWindow()
             ImGui::Checkbox( "Animate Static Vobs", &settings.AnimateStaticVobs );
 
 #ifdef BUILD_GOTHIC_2_6_fix
-            bool windEffect = settings.WindQuality == GothicRendererSettings::EWindQuality::WIND_QUALITY_ADVANCED;
+            bool windEffect = settings.WindQuality != GothicRendererSettings::EWindQuality::WIND_QUALITY_NONE;
             if ( ImGui::Checkbox( "Wind effect", &windEffect ) ) {
                 settings.WindQuality = windEffect
                     ? GothicRendererSettings::EWindQuality::WIND_QUALITY_ADVANCED

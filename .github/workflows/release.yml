@@ -38,9 +38,17 @@ jobs:
       working-directory: ${{env.GITHUB_WORKSPACE}}
       run: msbuild /p:Configuration=Release_AVX .
 
+    - name: Build G2 NotR AVX2
+      working-directory: ${{env.GITHUB_WORKSPACE}}
+      run: msbuild /p:Configuration=Release_AVX2 .
+
     - name: Build G1 AVX
       working-directory: ${{env.GITHUB_WORKSPACE}}
       run: msbuild /p:Configuration=Release_G1_AVX .
+
+    - name: Build G1 AVX2
+      working-directory: ${{env.GITHUB_WORKSPACE}}
+      run: msbuild /p:Configuration=Release_G1_AVX2 .
 
     - name: Build G2 NotR
       working-directory: ${{env.GITHUB_WORKSPACE}}
@@ -64,10 +72,12 @@ jobs:
         Xcopy "blobs\Fonts" "${{env.RELEASE_DIR}}\GD3D11\Fonts\" /S /Y
         Xcopy "blobs\libs\*" "${{env.RELEASE_DIR}}\" /S /Y
         copy "blobs\bin\wine-d2d1.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\d2d1.dll"
-        copy "Release_AVX\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\g2a_avx.dll"
         copy "Release\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\g2a.dll"
-        copy "Release_G1_AVX\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\g1_avx.dll"
+        copy "Release_AVX\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\g2a_avx.dll"
+        copy "Release_AVX2\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\g2a_avx2.dll"
         copy "Release_G1\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\g1.dll"
+        copy "Release_G1_AVX\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\g1_avx.dll"
+        copy "Release_G1_AVX2\ddraw.dll" "${{env.RELEASE_DIR}}\GD3D11\Bin\g1_avx2.dll"
         copy "Launcher\ddraw.dll" "${{env.RELEASE_DIR}}\"
         cd "${{env.RELEASE_DIR}}"
         7z a -tzip "..\${{env.RELEASE_DIR}}.zip" -r

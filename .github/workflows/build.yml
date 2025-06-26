@@ -24,7 +24,7 @@ jobs:
     runs-on: windows-latest
     strategy:
       matrix:
-        configuration: [Release_AVX, Release_G1_AVX, Release, Release_G1, Spacer_NET, Launcher]
+        configuration: [Release_AVX, Release_AVX2, Release_G1_AVX, Release_G1_AVX2, Release, Release_G1, Spacer_NET, Launcher]
 
     steps:
     - uses: actions/checkout@v4
