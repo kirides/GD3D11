@@ -99,14 +99,15 @@ ImGuiShim::~ImGuiShim()
 
 void ImGuiShim::RenderLoop()
 {
-    if ( !IsActive ) {
-        return;
-    }
     if ( NewResolution.x != CurrentResolution.x
         || NewResolution.y != CurrentResolution.y ) {
         Engine::GraphicsEngine->OnResize( NewResolution );
         Engine::GraphicsEngine->ReloadShaders();
         CurrentResolution = NewResolution;
+    }
+
+    if ( !IsActive ) {
+        return;
     }
 
     ImGui_ImplDX11_NewFrame();
