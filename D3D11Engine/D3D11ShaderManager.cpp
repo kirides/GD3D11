@@ -214,6 +214,14 @@ XRESULT D3D11ShaderManager::Init() {
     D3D_SHADER_MACRO m;
     std::vector<D3D_SHADER_MACRO> makros;
 
+    m.Name = "USE_TONEMAP";
+    m.Definition = "4";
+    makros.push_back( m );
+
+    Shaders.push_back( ShaderInfo( "PS_PFX_HDR", "PS_PFX_HDR.hlsl", "p", makros ) );
+    Shaders.back().cBufferSizes.push_back( sizeof( HDRSettingsConstantBuffer ) );
+    makros.clear();
+
     Shaders.push_back( ShaderInfo( "PS_PFX_GodRayMask", "PS_PFX_GodRayMask.hlsl", "p" ) );
     Shaders.push_back( ShaderInfo( "PS_PFX_GodRayZoom", "PS_PFX_GodRayZoom.hlsl", "p" ) );
     Shaders.back().cBufferSizes.push_back( sizeof( GodRayZoomConstantBuffer ) );

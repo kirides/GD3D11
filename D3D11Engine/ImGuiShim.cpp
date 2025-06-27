@@ -282,6 +282,9 @@ void ImGuiShim::RenderSettingsWindow()
 
             ImGui::Checkbox( "Enable Rain", &settings.EnableRain );
             ImGui::Checkbox( "Enable Rain Effects", &settings.EnableRainEffects );
+            if ( ImGui::Checkbox( "Enable Water waves", &settings.EnableWaterAnimation ) ) {
+                Engine::GraphicsEngine->ReloadShaders();
+            }
             ImGui::Checkbox( "Limit Light Intensity", &settings.LimitLightIntesity);
             ImGui::Checkbox( "Draw World Section Intersections", &settings.DrawSectionIntersections );
             if ( ImGui::IsItemHovered() )

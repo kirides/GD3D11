@@ -18,6 +18,26 @@ enum zTAnimationMode {
     zVISUAL_ANIMODE_WIND2,
 };
 
+enum zTMat_WaveMode
+{
+    zTMode_NONE,
+    zTMode_AMBIENT_GROUND,
+    zTMode_GROUND,
+    zTMode_AMBIENT_WALL,
+    zTMode_WALL,
+    zTMode_ENV,
+    zTMode_AMBIENT_WIND,
+    zTMode_WIND
+};
+
+enum zTMat_WaveSpeed
+{
+    zTSpeed_NONE,
+    zTSpeed_SLOW,
+    zTSpeed_NORMAL,
+    zTSpeed_FAST
+};
+
 #pragma pack (push, 1)	
 struct zTBBox3D {
     XMFLOAT3	Min;

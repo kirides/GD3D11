@@ -317,6 +317,14 @@ void D3D11GraphicsEngineBase::ConstructShaderMakroList( std::vector<D3D_SHADER_M
 #endif
     list.push_back( m );
 
+    m.Name = "SHD_WATERANI";
+#ifdef BUILD_GOTHIC_2_6_fix
+    m.Definition = s.EnableWaterAnimation ? "1" : "0";
+#else
+    m.Definition = "0";
+#endif
+    list.push_back( m );
+
     m.Name = nullptr;
     m.Definition = nullptr;
     list.push_back( m );

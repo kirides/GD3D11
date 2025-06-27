@@ -170,5 +170,35 @@ public:
     XMFLOAT2 GetTexAniMapDelta() {
         return *reinterpret_cast<XMFLOAT2*>(THISPTR_OFFSET( GothicMemoryLocations::zCMaterial::Offset_TexAniMapDelta ));
     }
+
+    zTMat_WaveMode GetWaveMode() {
+#ifdef BUILD_GOTHIC_1_08k
+        return zTMode_NONE;
+#else
+        return *reinterpret_cast<zTMat_WaveMode*>(THISPTR_OFFSET( GothicMemoryLocations::zCMaterial::Offset_WaveMode ));
+#endif
+    }
+
+    float GetWaveSpeed() {
+#ifdef BUILD_GOTHIC_1_08k
+        return 1.0f;
+#else
+        zTMat_WaveSpeed waveSpeed = *reinterpret_cast<zTMat_WaveSpeed*>(THISPTR_OFFSET( GothicMemoryLocations::zCMaterial::Offset_WaveSpeed ));
+        switch ( waveSpeed ) {
+            case zTSpeed_SLOW: return 0.4f;
+            case zTSpeed_NORMAL: return 1.0f;
+            case zTSpeed_FAST: return 4.0f;
+            default: return 1.0f;
+        }
+#endif
+    }
+
+    float GetWaveMaxAmplitude() {
+#ifdef BUILD_GOTHIC_1_08k
+        return 0.0f;
+#else
+        return *reinterpret_cast<float*>(THISPTR_OFFSET( GothicMemoryLocations::zCMaterial::Offset_WaveMaxAmplitude ));
+#endif
+    }
 };
 

@@ -420,11 +420,7 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
                 t.Color = DEFAULT_LIGHTMAP_POLY_COLOR;
             } else {
                 t.TexCoord2 = float2( 0.0f, 0.0f );
-
                 if ( mat && mat->GetMatGroup() == zMAT_GROUP_WATER ) {
-                    t.Normal = float3( 0.0f, 1.0f, 0.0f ); // Get rid of ugly shadows on water
-                    // Static light generated for water sucks and we can't use it to block the sun specular lighting
-                    // so we'll limit ourselves to only block it in indoor locations
                     t.Color = 0xFFFFFFFF;
                 }
             }
@@ -434,6 +430,14 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
                     t.TexCoord2 = mat->GetTexAniMapDelta();
                 } else {
                     t.TexCoord2 = float2( 0.0f, 0.0f );
+                }
+
+                if ( mat->GetWaveMode() != zTMode_NONE ) {
+                    reinterpret_cast<BYTE*>(&t.Color)[2] = static_cast<BYTE>(mat->GetWaveMaxAmplitude() / 5.f);
+                    reinterpret_cast<BYTE*>(&t.Color)[3] = static_cast<BYTE>(mat->GetWaveSpeed() * 10.f);
+                } else {
+                    reinterpret_cast<BYTE*>(&t.Color)[2] = 0;
+                    reinterpret_cast<BYTE*>(&t.Color)[3] = 0;
                 }
             }
         }
