@@ -25,14 +25,25 @@ XRESULT D3D11Texture::Init( INT2 size, ETextureFormat format, UINT mipMapCount, 
     MipMapCount = mipMapCount;
 
     CD3D11_TEXTURE2D_DESC textureDesc(
-        static_cast<DXGI_FORMAT>(format),
+        TextureFormat,
         size.x,
         size.y,
         1,
         mipMapCount,
         D3D11_BIND_SHADER_RESOURCE, D3D11_USAGE_DEFAULT, 0, 1, 0, 0 );
 
-    LE( engine->GetDevice()->CreateTexture2D( &textureDesc, nullptr, Texture.ReleaseAndGetAddressOf() ) );
+    if ( FAILED( hr = engine->GetDevice()->CreateTexture2D( &textureDesc, nullptr, Texture.ReleaseAndGetAddressOf() ) ) ) {
+        const std::string fmtStr =
+            format == TF_R8 ? "R8" :
+            format == TF_B8G8R8A8 ? "B8G8R8A8" :
+            format == TF_B5G6R5 ? "B5G6R5" :
+            format == TF_B5G5R5A1 ? "B5G5R5A1" :
+            format == TF_B4G4R4A4 ? "B4G4R4A4" :
+            format == TF_DXT1 ? "DXT1" :
+            format == TF_DXT3 ? "DXT3" :
+            format == TF_DXT5 ? "DXT5" : std::to_string( static_cast<int>(format) );
+        LogError() << "Creating Texture with TextureFormat " << fmtStr << " failed with code : " << hr << "!";
+    }
     SetDebugName( Texture.Get(), "D3D11Texture(\"" + fileName + "\")->Texture" );
 
     D3D11_SHADER_RESOURCE_VIEW_DESC descRV = {};
