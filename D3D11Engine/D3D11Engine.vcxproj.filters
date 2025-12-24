@@ -816,6 +816,9 @@
     <ClInclude Include="ShaderCategory.h">
       <Filter>Engine</Filter>
     </ClInclude>
+    <ClInclude Include="D3D7\Conversions.h">
+      <Filter>D3D7</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp" />

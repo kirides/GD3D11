@@ -5,6 +5,7 @@
 #include "../D3D11Texture.h"
 #include "../zCTexture.h"
 #include "../D3D11_Helpers.h"
+#include "Conversions.h"
 
 #define DebugWriteTex(x)  DebugWrite(x)
 
@@ -363,11 +364,19 @@ HRESULT MyDirectDrawSurface7::Lock( LPRECT lpDestRect, LPDDSURFACEDESC2 lpDDSurf
 
     int bpp = redBits + greenBits + blueBits + alphaBits;
 
+    int divisor = 1;
+
+    const bool is16BitSupported = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetDevice()->GetFeatureLevel() >= D3D_FEATURE_LEVEL_11_1;
+    if ( bpp == 16 && !is16BitSupported ) {
+        LogInfo() << "16-bit texture format not supported, preparing for 32-bit conversion.";
+        divisor = 2;
+    }
+
     if ( bpp == 24 ) {
         // Handle movie frame,
         // don't deallocate the memory after unlock, since only the changing parts in videos will get updated
         if ( !LockedData )
-            LockedData = new unsigned char[EngineTexture->GetSizeInBytes( 0 )];
+            LockedData = new unsigned char[EngineTexture->GetSizeInBytes( 0 ) / divisor];
     } else {
         // Allocate some temporary data
         delete[] LockedData;
@@ -375,7 +384,7 @@ HRESULT MyDirectDrawSurface7::Lock( LPRECT lpDestRect, LPDDSURFACEDESC2 lpDDSurf
     }
 
     lpDDSurfaceDesc->lpSurface = LockedData;
-    lpDDSurfaceDesc->lPitch = EngineTexture->GetRowPitchBytes( 0 );
+    lpDDSurfaceDesc->lPitch = EngineTexture->GetRowPitchBytes( 0 ) / divisor;
 
     return S_OK;
 }
@@ -408,15 +417,39 @@ HRESULT MyDirectDrawSurface7::Unlock( LPRECT lpRect ) {
 
     int bpp = redBits + greenBits + blueBits + alphaBits;
 
-    // No conversion needed
-    if ( Engine::GAPI->GetMainThreadID() != GetCurrentThreadId() ) {
-        EngineTexture->UpdateDataDeferred( LockedData, 0 );
-        Engine::GAPI->AddFrameLoadedTexture( this );
-    } else {
-        EngineTexture->UpdateData( LockedData, 0 );
-        SetReady( true ); // No need to load other stuff to get this ready
-    }
+    const bool is16BitSupported = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetDevice()->GetFeatureLevel() >= D3D_FEATURE_LEVEL_11_1;
 
+    if ( bpp == 16 && !is16BitSupported) {
+        // Convert
+        UINT realDataSize = EngineTexture->GetSizeInBytes( 0 );
+        unsigned char* dst = new unsigned char[realDataSize];
+        switch ( OriginalSurfaceDesc.ddpfPixelFormat.dwFourCC ) {
+        case 1: Convert1555to8888( dst, LockedData, realDataSize ); break;
+        case 2: Convert4444to8888( dst, LockedData, realDataSize ); break;
+        default: Convert565to8888( dst, LockedData, realDataSize ); break;
+        }
+
+        if ( Engine::GAPI->GetMainThreadID() != GetCurrentThreadId() ) {
+            EngineTexture->UpdateDataDeferred( dst, 0 );
+            EngineTexture->GenerateMipMapsDeferred();
+            Engine::GAPI->AddFrameLoadedTexture( this );
+        } else {
+            EngineTexture->UpdateData( dst, 0 );
+            EngineTexture->GenerateMipMaps();
+            SetReady( true ); // No need to load other stuff to get this ready
+        }
+
+        delete[] dst;
+    } else {
+        // No conversion needed
+        if ( Engine::GAPI->GetMainThreadID() != GetCurrentThreadId() ) {
+            EngineTexture->UpdateDataDeferred( LockedData, 0 );
+            Engine::GAPI->AddFrameLoadedTexture( this );
+        } else {
+            EngineTexture->UpdateData( LockedData, 0 );
+            SetReady( true ); // No need to load other stuff to get this ready
+        }
+    }
     if ( bpp != 24 ) {
         // Clean up if not a movie frame
         delete[] LockedData;
@@ -522,6 +555,12 @@ HRESULT MyDirectDrawSurface7::SetSurfaceDesc( LPDDSURFACEDESC2 lpDDSurfaceDesc, 
     switch ( bpp ) {
     case 16:
     {
+        const bool is16BitSupported = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetDevice()->GetFeatureLevel() >= D3D_FEATURE_LEVEL_11_1;
+        if ( !is16BitSupported ) {
+            LogInfo() << "16-bit texture format not supported, converting to 32-bit format.";
+            format = D3D11Texture::ETextureFormat::TF_B8G8R8A8;
+            break;
+        }
         switch ( OriginalSurfaceDesc.ddpfPixelFormat.dwFourCC ) {
         case 1: format = D3D11Texture::ETextureFormat::TF_B5G5R5A1; break;
         case 2: format = D3D11Texture::ETextureFormat::TF_B4G4R4A4; break;

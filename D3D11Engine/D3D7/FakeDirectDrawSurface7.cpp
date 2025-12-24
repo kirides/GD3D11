@@ -3,6 +3,8 @@
 #include "../D3D11Texture.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
+#include "Conversions.h"
+#include "../D3D11GraphicsEngineBase.h"
 
 FakeDirectDrawSurface7::FakeDirectDrawSurface7() {
     RefCount = 0;
@@ -169,11 +171,26 @@ HRESULT FakeDirectDrawSurface7::Lock( LPRECT lpDestRect, LPDDSURFACEDESC2 lpDDSu
     DebugWrite( "FakeDirectDrawSurface7(%p)::Lock(%s, %s)" );
     *lpDDSurfaceDesc = OriginalDesc;
 
+    // Check for 16-bit surface. We allocate the texture as 32-bit, so we need to divide the size by two for that
+    int redBits = Toolbox::GetNumberOfBits( OriginalDesc.ddpfPixelFormat.dwRBitMask );
+    int greenBits = Toolbox::GetNumberOfBits( OriginalDesc.ddpfPixelFormat.dwGBitMask );
+    int blueBits = Toolbox::GetNumberOfBits( OriginalDesc.ddpfPixelFormat.dwBBitMask );
+    int alphaBits = Toolbox::GetNumberOfBits( OriginalDesc.ddpfPixelFormat.dwRGBAlphaBitMask );
+
+    int bpp = redBits + greenBits + blueBits + alphaBits;
+    int divisor = 1;
+
+    const bool is16BitSupported = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetDevice()->GetFeatureLevel() >= D3D_FEATURE_LEVEL_11_1;
+    if ( bpp == 16 && !is16BitSupported ) {
+        LogInfo() << "16-bit texture format not supported, preparing for 32-bit conversion.";
+        divisor = 2;
+    }
+
     // Allocate some temporary data
     delete [] Data;
-    Data = new unsigned char[Resource->GetEngineTexture()->GetSizeInBytes( MipLevel )];
+    Data = new unsigned char[Resource->GetEngineTexture()->GetSizeInBytes( MipLevel ) / divisor];
     lpDDSurfaceDesc->lpSurface = Data;
-    lpDDSurfaceDesc->lPitch = Resource->GetEngineTexture()->GetRowPitchBytes( MipLevel );
+    lpDDSurfaceDesc->lPitch = Resource->GetEngineTexture()->GetRowPitchBytes( MipLevel ) / divisor;
 
     int px = (OriginalDesc.dwWidth >> MipLevel);
     int py = (OriginalDesc.dwHeight >> MipLevel);
@@ -187,10 +204,20 @@ HRESULT FakeDirectDrawSurface7::Lock( LPRECT lpDestRect, LPDDSURFACEDESC2 lpDDSu
 HRESULT FakeDirectDrawSurface7::Unlock( LPRECT lpRect ) {
     DebugWrite( "FakeDirectDrawSurface7::Unlock" );
 
-    if ( Engine::GAPI->GetMainThreadID() != GetCurrentThreadId() ) {
-        Resource->GetEngineTexture()->UpdateDataDeferred( Data, MipLevel );
-    } else {
-        Resource->GetEngineTexture()->UpdateData( Data, MipLevel );
+    int redBits = Toolbox::GetNumberOfBits( OriginalDesc.ddpfPixelFormat.dwRBitMask );
+    int greenBits = Toolbox::GetNumberOfBits( OriginalDesc.ddpfPixelFormat.dwGBitMask );
+    int blueBits = Toolbox::GetNumberOfBits( OriginalDesc.ddpfPixelFormat.dwBBitMask );
+    int alphaBits = Toolbox::GetNumberOfBits( OriginalDesc.ddpfPixelFormat.dwRGBAlphaBitMask );
+
+    int bpp = redBits + greenBits + blueBits + alphaBits;
+    const bool is16BitSupported = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetDevice()->GetFeatureLevel() >= D3D_FEATURE_LEVEL_11_1;
+
+    if ( is16BitSupported || bpp != 16 ) {
+        if ( Engine::GAPI->GetMainThreadID() != GetCurrentThreadId() ) {
+            Resource->GetEngineTexture()->UpdateDataDeferred( Data, MipLevel );
+        } else {
+            Resource->GetEngineTexture()->UpdateData( Data, MipLevel );
+        }
     }
 
     delete [] Data;

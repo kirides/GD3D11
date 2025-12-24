@@ -844,6 +844,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="D3D11VertexBuffer.h" />
     <ClInclude Include="D3D11VShader.h" />
     <ClInclude Include="D3D11_Helpers.h" />
+    <ClInclude Include="D3D7\Conversions.h" />
     <ClInclude Include="D3D7\FakeDirectDrawSurface7.h" />
     <ClInclude Include="D3D7\MyClipper.h" />
     <ClInclude Include="D3D7\MyDirect3D7.h" />
