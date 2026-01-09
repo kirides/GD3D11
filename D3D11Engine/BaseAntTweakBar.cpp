@@ -266,10 +266,10 @@ XRESULT BaseAntTweakBar::Init() {
     //TwAddVarRO(Bar_Info, "VOBVerticesDataSize", TW_TYPE_UINT32, &Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize, nullptr);
     //TwAddVarRO(Bar_Info, "SkeletalVerticesDataSize", TW_TYPE_UINT32, &Engine::GAPI->GetRendererState().RendererInfo.SkeletalVerticesDataSize, nullptr);
 
-    TwAddVarRO( Bar_Info, "WorldMeshMS", TW_TYPE_FLOAT, &Engine::GAPI->GetRendererState().RendererInfo.Timing.WorldMeshMS, nullptr );
-    TwAddVarRO( Bar_Info, "VobsMS", TW_TYPE_FLOAT, &Engine::GAPI->GetRendererState().RendererInfo.Timing.VobsMS, nullptr );
-    TwAddVarRO( Bar_Info, "SkeletalMeshesMS", TW_TYPE_FLOAT, &Engine::GAPI->GetRendererState().RendererInfo.Timing.SkeletalMeshesMS, nullptr );
-    TwAddVarRO( Bar_Info, "LightingMS", TW_TYPE_FLOAT, &Engine::GAPI->GetRendererState().RendererInfo.Timing.LightingMS, nullptr );
+    /*TwAddVarRO( Bar_Info, "WorldMeshMS", TW_TYPE_FLOAT, &Engine::GAPI->GetRendererState().RendererInfo.Timing.timingsMs[GothicRendererTiming::TT_WorldMesh], nullptr );
+    TwAddVarRO( Bar_Info, "VobsMS", TW_TYPE_FLOAT, &Engine::GAPI->GetRendererState().RendererInfo.Timing.timingsMs[GothicRendererTiming::TT_Vobs], nullptr );
+    TwAddVarRO( Bar_Info, "SkeletalMeshesMS", TW_TYPE_FLOAT, &Engine::GAPI->GetRendererState().RendererInfo.Timing.timingsMs[GothicRendererTiming::TT_SkeletalMeshes], nullptr );
+    TwAddVarRO( Bar_Info, "LightingMS", TW_TYPE_FLOAT, &Engine::GAPI->GetRendererState().RendererInfo.Timing.timingsMs[GothicRendererTiming::TT_Lighting], nullptr );*/
     TwAddVarRO( Bar_Info, "TotalMS", TW_TYPE_FLOAT, &Engine::GAPI->GetRendererState().RendererInfo.Timing.TotalMS, nullptr );
 
     TwAddVarRO( Bar_Info, "SC_PipelineStates,", TW_TYPE_UINT32, &Engine::GAPI->GetRendererState().RendererInfo.FramePipelineStates, nullptr );

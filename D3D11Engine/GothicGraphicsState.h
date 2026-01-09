@@ -878,38 +878,6 @@ struct GothicRendererSettings {
 };
 
 struct GothicRendererTiming {
-    enum TIME_TYPE {
-        TT_WorldMesh,
-        TT_Vobs,
-        TT_Lighting,
-        TT_SkeletalMeshes
-    };
-
-    void Start() {
-        _timer.Update();
-    }
-
-    void Stop( TIME_TYPE tt ) {
-        _timer.Update();
-
-        switch ( tt ) {
-        case TT_WorldMesh:
-            WorldMeshMS = _timer.GetDelta() * 1000.0f;
-            break;
-
-        case TT_Vobs:
-            VobsMS = _timer.GetDelta() * 1000.0f;
-            break;
-
-        case TT_Lighting:
-            LightingMS = _timer.GetDelta() * 1000.0f;
-            break;
-
-        case TT_SkeletalMeshes:
-            SkeletalMeshesMS = _timer.GetDelta() * 1000.0f;
-            break;
-        }
-    }
 
     void StartTotal() {
         _totalTimer.Update();
@@ -920,15 +888,35 @@ struct GothicRendererTiming {
         TotalMS = _totalTimer.GetDelta() * 1000.0f;
     }
 
-    float WorldMeshMS;
-    float VobsMS;
-    float LightingMS;
-    float SkeletalMeshesMS;
+    void Reset() {
+        frameRecordings.clear();
+        TotalMS = 0.0f;
+    }
+
     float TotalMS;
+    std::vector<std::pair<const char*, float>> frameRecordings;
 
 private:
     BasicTimer _timer;
     BasicTimer _totalTimer;
+};
+
+class TimerScope {
+public:
+    TimerScope( const char* label, std::vector<std::pair<const char*, float>>* collection )
+        : _timer( {} ),
+        _type( label ),
+        _collection(collection) {
+        _timer.Update();
+    }
+    ~TimerScope() {
+        _timer.Update();
+        _collection->push_back( std::make_pair( _type, _timer.GetDelta() * 1000.0f ) );
+    }
+private:
+    BasicTimer _timer;
+    std::vector<std::pair<const char*, float>>* _collection;
+    const char* _type;
 };
 
 struct GothicRendererInfo {

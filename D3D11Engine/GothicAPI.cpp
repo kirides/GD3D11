@@ -1177,16 +1177,19 @@ void GothicAPI::DrawWorldMeshNaive() {
     FrameParticles.clear();
     FrameMeshInstances.clear();
 
-    START_TIMING();
-    /*
-    if ( FeatureLevel10Compatibility ) {
+    {
+        auto _ = START_TIMING( "World Mesh" );
+        auto _1 = Engine::GraphicsEngine->RecordGraphicsEvent( L"World Mesh" );
+        /*
+        if ( FeatureLevel10Compatibility ) {
+            Engine::GraphicsEngine->DrawWorldMesh();
+        } else {
+            Engine::GraphicsEngine->DrawWorldMesh_Indirect();
+        }
+        */
         Engine::GraphicsEngine->DrawWorldMesh();
-    } else {
-        Engine::GraphicsEngine->DrawWorldMesh_Indirect();
     }
-    */
-    Engine::GraphicsEngine->DrawWorldMesh();
-    STOP_TIMING( GothicRendererTiming::TT_WorldMesh );
+    
 
     for ( auto const& vegetationBox : VegetationBoxes ) {
         vegetationBox->RenderVegetation( GetCameraPosition() );
@@ -1194,12 +1197,16 @@ void GothicAPI::DrawWorldMeshNaive() {
 
     const auto cameraPosXm = GetCameraPositionXM();
 
-    START_TIMING();
     if ( RendererState.RendererSettings.DrawSkeletalMeshes ) {
+        auto _ = START_TIMING( "Animated Skeletal Meshes" );
+        auto _1 = Engine::GraphicsEngine->RecordGraphicsEvent( L"Animated Skeletal Meshes" );
+
         // Set up frustum for the camera
         RendererState.RasterizerState.SetDefault();
         RendererState.RasterizerState.SetDirty();
         zCCamera::GetCamera()->Activate();
+
+        auto drawRadius = RendererState.RendererSettings.SkeletalMeshDrawRadius;
 
         for ( const auto& vobInfo : AnimatedSkeletalVobs ) {
             // Don't render if sleeping and has skeletal meshes available
@@ -1207,7 +1214,7 @@ void GothicAPI::DrawWorldMeshNaive() {
 
             float dist;
             XMStoreFloat( &dist, XMVector3Length( vobInfo->Vob->GetPositionWorldXM() - cameraPosXm ) );
-            if ( dist > RendererState.RendererSettings.SkeletalMeshDrawRadius )
+            if ( dist > drawRadius )
                 continue; // Skip out of range
 
             const zTBBox3D bb = vobInfo->Vob->GetBBoxLocal();
@@ -1241,7 +1248,6 @@ void GothicAPI::DrawWorldMeshNaive() {
                 VNSkeletalVobs.emplace_back( vobInfo );
         }
     }
-    STOP_TIMING( GothicRendererTiming::TT_SkeletalMeshes );
 
     // Draw vobs in view
     Engine::GraphicsEngine->DrawVOBs();
@@ -3727,7 +3733,10 @@ void GothicAPI::CollectVisibleVobs( std::vector<VobInfo*>& vobs, std::vector<Vob
             // Get distance to this vob
             XMStoreFloat( &dist, XMVector3Length( camPos - it->Vob->GetPositionWorldXM() ) );
             // Draw, if in range
-            if ( it->VisualInfo && ((dist < vobIndoorDist && it->IsIndoorVob) || (dist < vobOutdoorSmallDist && it->VisualInfo->MeshSize < vobSmallSize) || (dist < vobOutdoorDist)) ) {
+            if ( it->VisualInfo && 
+                    ((dist < vobIndoorDist && it->IsIndoorVob)
+                        || (dist < vobOutdoorSmallDist && it->VisualInfo->MeshSize < vobSmallSize)
+                        || (dist < vobOutdoorDist)) ) {
 #ifdef BUILD_GOTHIC_1_08k
                 // TODO: This is sometimes nullptr, suggesting that the Vob is invalid. Why does this happen?
                 if ( !it->VobConstantBuffer ) {

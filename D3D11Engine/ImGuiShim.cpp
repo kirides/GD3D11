@@ -869,40 +869,80 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
 
 void RenderAdvancedColumn3( GothicRendererSettings& settings, GothicAPI* gapi ) {
     if ( ImGui::Begin( "FrameStats", nullptr, ImGuiWindowFlags_NoCollapse ) ) {
+        ImGui::PushID( "FrameStatsValues" );
+
         auto& rendererInfo = gapi->GetRendererState().RendererInfo;
 
-        ImGui::InputInt( "FPS", &rendererInfo.FPS, 1, 100, ImGuiInputTextFlags_ReadOnly );
-        ImGui::InputInt( "StateChanges", (int*)(&rendererInfo.StateChanges), 1, 100, ImGuiInputTextFlags_ReadOnly );
-        ImGui::InputInt( "DrawnVobs", &rendererInfo.FrameDrawnVobs, 1, 100, ImGuiInputTextFlags_ReadOnly );
-        ImGui::InputInt( "DrawnTriangles", &rendererInfo.FrameDrawnTriangles, 1, 100, ImGuiInputTextFlags_ReadOnly );
-        ImGui::InputInt( "VobUpdates", &rendererInfo.FrameVobUpdates, 1, 100, ImGuiInputTextFlags_ReadOnly );
-        ImGui::InputInt( "DrawnLights", &rendererInfo.FrameDrawnLights, 1, 100, ImGuiInputTextFlags_ReadOnly );
-        ImGui::InputInt( "SectionsDrawn", &rendererInfo.FrameNumSectionsDrawn, 1, 100, ImGuiInputTextFlags_ReadOnly );
-        ImGui::InputInt( "WorldMeshDrawCalls", &rendererInfo.WorldMeshDrawCalls, 1, 100, ImGuiInputTextFlags_ReadOnly );
-        ImGui::InputFloat( "FarPlane", &rendererInfo.FarPlane, 1, 100, "%.0f", ImGuiInputTextFlags_ReadOnly );
-        ImGui::InputFloat( "NearPlane", &rendererInfo.NearPlane, 1, 100, "%.0f" , ImGuiInputTextFlags_ReadOnly);
-        ImGui::InputFloat( "WorldMeshMS", &rendererInfo.Timing.WorldMeshMS, 1, 100, "%.6f", ImGuiInputTextFlags_ReadOnly );
-        ImGui::InputFloat( "VobsMS", &rendererInfo.Timing.VobsMS, 1, 100, "%.6f", ImGuiInputTextFlags_ReadOnly );
-        ImGui::InputFloat( "SkeletalMeshesMS", &rendererInfo.Timing.SkeletalMeshesMS, 1, 100, "%.6f", ImGuiInputTextFlags_ReadOnly );
-        ImGui::InputFloat( "LightingMS", &rendererInfo.Timing.LightingMS, 1, 100, "%.6f", ImGuiInputTextFlags_ReadOnly );
-        ImGui::InputFloat( "TotalMS", &rendererInfo.Timing.TotalMS, 1, 100, "%.6f", ImGuiInputTextFlags_ReadOnly );
-        ImGui::InputInt( "SC_PipelineStates", (int*)&rendererInfo.FramePipelineStates, 1, 100, ImGuiInputTextFlags_ReadOnly );
-        ImGui::InputInt( "SC_Textures", (int*)&rendererInfo.StateChangesByState[GothicRendererInfo::SC_TX], 1, 100, ImGuiInputTextFlags_ReadOnly );
-        ImGui::InputInt( "SC_ConstantBuffer", (int*)&rendererInfo.StateChangesByState[GothicRendererInfo::SC_CB], 1, 100, ImGuiInputTextFlags_ReadOnly );
-        ImGui::InputInt( "SC_GeometryShader", (int*)&rendererInfo.StateChangesByState[GothicRendererInfo::SC_GS], 1, 100, ImGuiInputTextFlags_ReadOnly );
-        ImGui::InputInt( "SC_RTVDSV", (int*)&rendererInfo.StateChangesByState[GothicRendererInfo::SC_RTVDSV], 1, 100, ImGuiInputTextFlags_ReadOnly );
-        ImGui::InputInt( "SC_DomainShader", (int*)&rendererInfo.StateChangesByState[GothicRendererInfo::SC_DS], 1, 100, ImGuiInputTextFlags_ReadOnly );
-        ImGui::InputInt( "SC_HullShader", (int*)&rendererInfo.StateChangesByState[GothicRendererInfo::SC_HS], 1, 100, ImGuiInputTextFlags_ReadOnly );
-        ImGui::InputInt( "SC_PixelShader", (int*)&rendererInfo.StateChangesByState[GothicRendererInfo::SC_PS], 1, 100, ImGuiInputTextFlags_ReadOnly );
-        ImGui::InputInt( "SC_InputLayout", (int*)&rendererInfo.StateChangesByState[GothicRendererInfo::SC_IL], 1, 100, ImGuiInputTextFlags_ReadOnly );
-        ImGui::InputInt( "SC_VertexShader", (int*)&rendererInfo.StateChangesByState[GothicRendererInfo::SC_VS], 1, 100, ImGuiInputTextFlags_ReadOnly );
-        ImGui::InputInt( "SC_IndexBuffer", (int*)&rendererInfo.StateChangesByState[GothicRendererInfo::SC_IB], 1, 100, ImGuiInputTextFlags_ReadOnly );
-        ImGui::InputInt( "SC_VertexBuffer", (int*)&rendererInfo.StateChangesByState[GothicRendererInfo::SC_VB], 1, 100, ImGuiInputTextFlags_ReadOnly );
-        ImGui::InputInt( "SC_RasterizerState", (int*)&rendererInfo.StateChangesByState[GothicRendererInfo::SC_RS], 1, 100, ImGuiInputTextFlags_ReadOnly );
-        ImGui::InputInt( "SC_DepthStencilState", (int*)&rendererInfo.StateChangesByState[GothicRendererInfo::SC_DSS], 1, 100, ImGuiInputTextFlags_ReadOnly );
-        ImGui::InputInt( "SC_SamplerState", (int*)&rendererInfo.StateChangesByState[GothicRendererInfo::SC_SMPL], 1, 100, ImGuiInputTextFlags_ReadOnly );
-        ImGui::InputInt( "SC_BlendState", (int*)&rendererInfo.StateChangesByState[GothicRendererInfo::SC_BS], 1, 100, ImGuiInputTextFlags_ReadOnly );
+        if ( ImGui::BeginTable( "##FrameStats", 2, ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp ) ) {
+            ImGui::TableSetupColumn( "Label", ImGuiTableColumnFlags_WidthStretch, 0.45f );
+            ImGui::TableSetupColumn( "Value", ImGuiTableColumnFlags_WidthStretch, 0.55f );
 
+            static auto addRowLabel = []( const char* label ) {
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex( 0 );
+                ImGui::TextUnformatted( label );
+                ImGui::TableSetColumnIndex( 1 );
+            };
+
+            static auto addRowText = []( const char* label, const char* text ) {
+                addRowLabel( label );
+                ImGui::TextUnformatted( text );
+            };
+
+            static auto addRowInt = []( const char* label, int value ) {
+                addRowLabel( label );
+                ImGui::Text( "%d", value );
+            };
+
+            static auto addRowUInt = []( const char* label, unsigned int value ) {
+                addRowLabel( label );
+                ImGui::Text( "%u", value );
+            };
+
+            static auto addRowFloat = []( const char* label, float value, const char* fmt ) {
+                addRowLabel( label );
+                ImGui::Text( fmt, value );
+            };
+
+            addRowInt( "FPS", rendererInfo.FPS );
+            addRowUInt( "StateChanges", rendererInfo.StateChanges );
+            addRowInt( "DrawnVobs", rendererInfo.FrameDrawnVobs );
+            addRowInt( "DrawnTriangles", rendererInfo.FrameDrawnTriangles );
+            addRowInt( "VobUpdates", rendererInfo.FrameVobUpdates );
+            addRowInt( "DrawnLights", rendererInfo.FrameDrawnLights );
+            addRowInt( "SectionsDrawn", rendererInfo.FrameNumSectionsDrawn );
+            addRowInt( "WorldMeshDrawCalls", rendererInfo.WorldMeshDrawCalls );
+            addRowFloat( "FarPlane", rendererInfo.FarPlane, "%.0f" );
+            addRowFloat( "NearPlane", rendererInfo.NearPlane, "%.0f" );
+
+            for ( auto& record : rendererInfo.Timing.frameRecordings ) {
+                addRowFloat( record.first, record.second, "%05.3f" );
+            }
+
+            rendererInfo.Timing.StopTotal();
+            addRowFloat( "TotalMS", rendererInfo.Timing.TotalMS, "%05.3f" );
+
+            addRowInt( "SC_PipelineStates", rendererInfo.FramePipelineStates );
+            addRowInt( "SC_Textures", rendererInfo.StateChangesByState[GothicRendererInfo::SC_TX] );
+            addRowInt( "SC_ConstantBuffer", rendererInfo.StateChangesByState[GothicRendererInfo::SC_CB] );
+            addRowInt( "SC_GeometryShader", rendererInfo.StateChangesByState[GothicRendererInfo::SC_GS] );
+            addRowInt( "SC_RTVDSV", rendererInfo.StateChangesByState[GothicRendererInfo::SC_RTVDSV] );
+            addRowInt( "SC_DomainShader", rendererInfo.StateChangesByState[GothicRendererInfo::SC_DS] );
+            addRowInt( "SC_HullShader", rendererInfo.StateChangesByState[GothicRendererInfo::SC_HS] );
+            addRowInt( "SC_PixelShader", rendererInfo.StateChangesByState[GothicRendererInfo::SC_PS] );
+            addRowInt( "SC_InputLayout", rendererInfo.StateChangesByState[GothicRendererInfo::SC_IL] );
+            addRowInt( "SC_VertexShader", rendererInfo.StateChangesByState[GothicRendererInfo::SC_VS] );
+            addRowInt( "SC_IndexBuffer", rendererInfo.StateChangesByState[GothicRendererInfo::SC_IB] );
+            addRowInt( "SC_VertexBuffer", rendererInfo.StateChangesByState[GothicRendererInfo::SC_VB] );
+            addRowInt( "SC_RasterizerState", rendererInfo.StateChangesByState[GothicRendererInfo::SC_RS] );
+            addRowInt( "SC_DepthStencilState", rendererInfo.StateChangesByState[GothicRendererInfo::SC_DSS] );
+            addRowInt( "SC_SamplerState", rendererInfo.StateChangesByState[GothicRendererInfo::SC_SMPL] );
+            addRowInt( "SC_BlendState", rendererInfo.StateChangesByState[GothicRendererInfo::SC_BS] );
+
+            ImGui::EndTable();
+        }
+
+        ImGui::PopID(); // FrameStatsValues
     }
     ImGui::End();
 }
