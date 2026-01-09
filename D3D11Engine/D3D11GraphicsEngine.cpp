@@ -4410,29 +4410,35 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             }
 
             bool doReset = true;
+            zCTexture* previousTx = nullptr;
             for ( auto const& itt : staticMeshVisual.second->MeshesByTexture ) {
                 std::vector<MeshInfo*>& mlist = staticMeshVisual.second->MeshesByTexture[itt.first];
                 if ( mlist.empty() ) continue;
+                
+                zCTexture* tx = itt.first.Texture;
+                bool bindTexture = previousTx != tx
+                    && tx 
+                    && (tx->HasAlphaChannel() || colorWritesEnabled);
+
+                // Check for alphablend
+                bool blendAdd =
+                    itt.first.Material->GetAlphaFunc() == zMAT_ALPHA_FUNC_ADD;
+                bool blendBlend =
+                    itt.first.Material->GetAlphaFunc() == zMAT_ALPHA_FUNC_BLEND;
+                // if one part of the mesh uses blending, all do, which means that
+                // the mesh likely is transparent and can't cast shadows
+                if ( !doReset || blendAdd || blendBlend ) {
+                    doReset = false;
+                    continue;
+                }
 
                 for ( unsigned int i = 0; i < mlist.size(); i++ ) {
-                    zCTexture* tx = itt.first.Texture;
-
-                    // Check for alphablend
-                    bool blendAdd =
-                        itt.first.Material->GetAlphaFunc() == zMAT_ALPHA_FUNC_ADD;
-                    bool blendBlend =
-                        itt.first.Material->GetAlphaFunc() == zMAT_ALPHA_FUNC_BLEND;
-                    // TODO: TODO: if one part of the mesh uses blending, all do.
-                    if ( !doReset || blendAdd || blendBlend ) {
-                        doReset = false;
-                        continue;
-                    }
-
                     // Bind texture
-                    if ( tx && (tx->HasAlphaChannel() || colorWritesEnabled) ) {
+                    if ( bindTexture ) {
                         if ( alphaRef > 0.0f && tx->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
                             tx->Bind( 0 );
                             ActivePS->Apply();
+                            previousTx = tx;
                         } else
                             continue;
                     } else {
