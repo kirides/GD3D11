@@ -158,6 +158,7 @@ struct GothicMemoryLocations {
         static const unsigned int Var_Player = 0x00AB2684;
         static const unsigned int Offset_GameView = 0x30;
         static const unsigned int Offset_SingleStep = 0x11C;
+        static const unsigned int DefineExternals_Ulfi = 0x006D4780;
     };
 
     struct oCNPC {

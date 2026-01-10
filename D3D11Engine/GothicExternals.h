@@ -10,10 +10,12 @@
  * einfache Typen (int, float, const char*) als Parameter an.
  */
 
+class zCParser;
+void DefineExternals( zCParser* parser );
+
 #ifdef __cplusplus
 extern "C" {
 #endif
-
 __declspec(dllexport) int __cdecl imgui_is_ready();
 __declspec(dllexport) void __cdecl imgui_set_next_window_pos( int virtualX, int virtualY, int cond, float pivotX, float pivotY );
 __declspec(dllexport) void __cdecl imgui_set_next_window_size( int virtualX, int virtualY, int cond );

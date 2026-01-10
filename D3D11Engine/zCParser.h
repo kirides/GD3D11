@@ -8,6 +8,12 @@
 #endif
 
 
+enum zPAR_TYPE : int {
+    zPAR_TYPE_VOID, zPAR_TYPE_FLOAT, zPAR_TYPE_INT,
+    zPAR_TYPE_STRING, zPAR_TYPE_CLASS, zPAR_TYPE_FUNC,
+    zPAR_TYPE_PROTOTYPE, zPAR_TYPE_INSTANCE
+};
+
 class zCParser {
 public:
 #ifndef zCParserSupported
@@ -16,6 +22,16 @@ public:
     static zCParser* GetParser() { return reinterpret_cast<zCParser*>(GothicMemoryLocations::GlobalObjects::zCParser); }
 #endif
 
+
+    void GetParameter( int& value ) { reinterpret_cast<void( __thiscall* )(zCParser*, int*)>(0x007a0760)(this, &value); }
+    void GetParameter( float& value ) { reinterpret_cast<void( __thiscall* )(zCParser*, float*)>(0x007a0770)(this, &value); }
+    void GetParameter( zSTRING& value ) { reinterpret_cast<void( __thiscall* )(zCParser*, zSTRING*)>(0x007a07b0)(this, &value); }
+    
+    void SetReturn( int value ) { reinterpret_cast<void( __thiscall* )(zCParser*, int)>(0x007a0960)(this, value); }
+    void SetReturn( float value ) { reinterpret_cast<void( __thiscall* )(zCParser*, float)>(0x007a09d0)(this, value); }
+    // return a pointer to an instance or nullptr
+    void SetReturn( void* value ) { reinterpret_cast<void( __thiscall* )(zCParser*, void*)>(0x007a09a0)(this, value); }
+    void SetReturn( zSTRING value ) { reinterpret_cast<void( __thiscall* )(zCParser*, zSTRING)>(0x007a0980)(this, value); }
 
     int GetIndex( const zSTRING& name )
     {
@@ -26,14 +42,22 @@ public:
 #endif
     }
 
-    void CallFunc( int symbolId, ... ) {
+    template <typename... Args>
+    void DefineExternal( zSTRING& name, int( __cdecl* fn )(void), zPAR_TYPE returnType, Args... args) {
+#ifndef zCParserSupported
+#else
+        auto zCParser_DefineExternal = reinterpret_cast<void( __cdecl* )(zCParser*, zSTRING&, int( __cdecl * fn )(void), int returnType, int paramType ...)>(0x007a0190);
+        zCParser_DefineExternal( this, name, fn, returnType, args... );
+#endif
+    }
+
+    template <typename... Args>
+    void CallFunc( int symbolId, Args... args ) {
 #ifndef zCParserSupported
 
 #else
-        va_list args;
-        va_start( args, symbolId );
-        CallFuncInternal( this, symbolId, args );
-        va_end( args );
+        const auto zCParser_CallFunc = reinterpret_cast<void( __cdecl* )(zCParser*, int, ...)>(GothicMemoryLocations::zCParser::CallFunc);
+        zCParser_CallFunc( this, symbolId, args... );
 #endif
     }
 
@@ -43,21 +67,8 @@ public:
         const int symbolId = GetIndex( name );
 
         if ( symbolId != -1 ) {
-            CallFuncInternal( this, symbolId );
+            CallFunc( symbolId );
         }
-#endif
-    }
-
-private:
-    static void CallFuncInternal( zCParser* p, int symbolId, ... ) {
-
-#ifndef zCParserSupported
-#else
-        va_list args;
-        va_start(args, symbolId);
-        const auto zCParser_CallFunc = reinterpret_cast<void(__fastcall*)(zCParser*, int, ...)>(GothicMemoryLocations::zCParser::CallFunc);
-        zCParser_CallFunc(p, symbolId, args);
-        va_end(args);
 #endif
     }
 };
