@@ -23,15 +23,50 @@ public:
 #endif
 
 
-    void GetParameter( int& value ) { reinterpret_cast<void( __thiscall* )(zCParser*, int*)>(0x007a0760)(this, &value); }
-    void GetParameter( float& value ) { reinterpret_cast<void( __thiscall* )(zCParser*, float*)>(0x007a0770)(this, &value); }
-    void GetParameter( zSTRING& value ) { reinterpret_cast<void( __thiscall* )(zCParser*, zSTRING*)>(0x007a07b0)(this, &value); }
-    
-    void SetReturn( int value ) { reinterpret_cast<void( __thiscall* )(zCParser*, int)>(0x007a0960)(this, value); }
-    void SetReturn( float value ) { reinterpret_cast<void( __thiscall* )(zCParser*, float)>(0x007a09d0)(this, value); }
-    // return a pointer to an instance or nullptr
-    void SetReturn( void* value ) { reinterpret_cast<void( __thiscall* )(zCParser*, void*)>(0x007a09a0)(this, value); }
-    void SetReturn( zSTRING value ) { reinterpret_cast<void( __thiscall* )(zCParser*, zSTRING)>(0x007a0980)(this, value); }
+    void GetParameter( int& value ) {
+#ifndef zCParserSupported
+#else
+        reinterpret_cast<void( __thiscall* )(zCParser*, int*)>(GothicMemoryLocations::zCParser::GetParameter_Int)(this, &value);
+#endif
+    }
+    void GetParameter( float& value ) {
+#ifndef zCParserSupported
+#else
+        reinterpret_cast<void( __thiscall* )(zCParser*, float*)>(GothicMemoryLocations::zCParser::GetParameter_Float)(this, &value);
+#endif
+    }
+    void GetParameter( zSTRING& value ) {
+#ifndef zCParserSupported
+#else
+        reinterpret_cast<void( __thiscall* )(zCParser*, zSTRING*)>(GothicMemoryLocations::zCParser::GetParameter_String)(this, &value);
+#endif
+    }
+
+    void SetReturn( int value ) {
+#ifndef zCParserSupported
+#else
+        reinterpret_cast<void( __thiscall* )(zCParser*, int)>(GothicMemoryLocations::zCParser::SetReturn_Int)(this, value);
+#endif
+    }
+    void SetReturn( float value ) {
+#ifndef zCParserSupported
+#else
+        reinterpret_cast<void( __thiscall* )(zCParser*, float)>(GothicMemoryLocations::zCParser::SetReturn_Float)(this, value);
+#endif
+    }
+    void SetReturn( void* value ) {
+#ifndef zCParserSupported
+#else
+        reinterpret_cast<void( __thiscall* )(zCParser*, void*)>(GothicMemoryLocations::zCParser::SetReturn_Instance)(this, value);
+#endif
+    }
+
+    void SetReturn( zSTRING& value ) {
+#ifndef zCParserSupported
+#else
+        reinterpret_cast<void( __thiscall* )(zCParser*, zSTRING)>(GothicMemoryLocations::zCParser::SetReturn_String)(this, value);
+#endif
+    }
 
     int GetIndex( const zSTRING& name )
     {
@@ -43,18 +78,17 @@ public:
     }
 
     template <typename... Args>
-    void DefineExternal( zSTRING& name, int( __cdecl* fn )(void), zPAR_TYPE returnType, Args... args) {
+    void DefineExternal( zSTRING& name, int( __cdecl* fn )(void), zPAR_TYPE returnType, Args... args ) {
 #ifndef zCParserSupported
 #else
-        auto zCParser_DefineExternal = reinterpret_cast<void( __cdecl* )(zCParser*, zSTRING&, int( __cdecl * fn )(void), int returnType, int paramType ...)>(0x007a0190);
-        zCParser_DefineExternal( this, name, fn, returnType, args... );
+        auto zCParser_DefineExternal = reinterpret_cast<void( __cdecl* )(zCParser*, zSTRING&, int( __cdecl * fn )(void), int returnType, int paramType ...)>(GothicMemoryLocations::zCParser::DefineExternal);
+        zCParser_DefineExternal( this, name, fn, (int)returnType, args... );
 #endif
     }
 
     template <typename... Args>
     void CallFunc( int symbolId, Args... args ) {
 #ifndef zCParserSupported
-
 #else
         const auto zCParser_CallFunc = reinterpret_cast<void( __cdecl* )(zCParser*, int, ...)>(GothicMemoryLocations::zCParser::CallFunc);
         zCParser_CallFunc( this, symbolId, args... );

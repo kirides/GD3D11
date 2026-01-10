@@ -328,6 +328,15 @@ struct GothicMemoryLocations {
     struct zCParser {
         static const unsigned int CallFunc = 0x7929F0;
         static const unsigned int GetIndex = 0x00793470;
+
+        static const unsigned int DefineExternal = 0x007A0190;
+        static const unsigned int GetParameter_Int = 0x007A0760;
+        static const unsigned int GetParameter_Float = 0x007A0770;
+        static const unsigned int GetParameter_String = 0x007A07B0;
+        static const unsigned int SetReturn_Int = 0x007A0960;
+        static const unsigned int SetReturn_Float = 0x007A09D0;
+        static const unsigned int SetReturn_Instance = 0x007A09A0;
+        static const unsigned int SetReturn_String = 0x007A0980;
     };
     
     struct zCMorphMesh {

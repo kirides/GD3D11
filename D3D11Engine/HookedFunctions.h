@@ -34,7 +34,7 @@ typedef void( __thiscall* oCNPCEnable )(void*, XMFLOAT3&);
 typedef void( __thiscall* zCBspTreeAddVob )(void*, zCVob*);
 typedef void( __thiscall* zCWorldLoadWorld )(void*, const zSTRING& fileName, const int loadMode);
 typedef void( __thiscall* oCGameEnterWorld )(void*, oCNPC* playerVob, int changePlayerPos, const zSTRING& startpoint);
-#ifdef BUILD_GOTHIC_2_6_fix
+#if defined(BUILD_GOTHIC_2_6_fix) || (defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F))
 typedef void( __thiscall* oCGameDefineExternals_Ulfi )(void*, zCParser* parser);
 #endif
 typedef void( __thiscall* zCWorldVobRemovedFromWorld )(void*, zCVob*);
@@ -108,7 +108,7 @@ struct HookedFunctionInfo {
     zCBspTreeAddVob original_zCBspTreeAddVob = reinterpret_cast<zCBspTreeAddVob>(GothicMemoryLocations::zCBspTree::AddVob);
     zCWorldLoadWorld original_zCWorldLoadWorld = reinterpret_cast<zCWorldLoadWorld>(GothicMemoryLocations::zCWorld::LoadWorld);
     oCGameEnterWorld original_oCGameEnterWorld = reinterpret_cast<oCGameEnterWorld>(GothicMemoryLocations::oCGame::EnterWorld);
-#ifdef BUILD_GOTHIC_2_6_fix
+#if defined(BUILD_GOTHIC_2_6_fix) || (defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F))
     oCGameDefineExternals_Ulfi original_oCGameDefineExternals_Ulfi = reinterpret_cast<oCGameDefineExternals_Ulfi>(GothicMemoryLocations::oCGame::DefineExternals_Ulfi);
 #endif
     zCWorldVobRemovedFromWorld original_zCWorldVobRemovedFromWorld = reinterpret_cast<zCWorldVobRemovedFromWorld>(GothicMemoryLocations::zCWorld::VobRemovedFromWorld);

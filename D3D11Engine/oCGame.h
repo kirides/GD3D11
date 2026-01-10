@@ -33,7 +33,7 @@ public:
     /** Hooks the functions of this Class */
     static void Hook() {
         DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_oCGameEnterWorld), hooked_EnterWorld );
-#ifdef BUILD_GOTHIC_2_6_fix
+#if defined(BUILD_GOTHIC_2_6_fix) || (defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F))
         DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_oCGameDefineExternals_Ulfi), hooked_DefineExternals_Ulfi );
 #endif
     }
@@ -44,12 +44,11 @@ public:
         Engine::GAPI->OnWorldLoaded();
     }
 
-#ifdef BUILD_GOTHIC_2_6_fix
+#if defined(BUILD_GOTHIC_2_6_fix) || (defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F))
     static void __fastcall hooked_DefineExternals_Ulfi( void* thisptr, void* unknwn, zCParser* parser ) {
         HookedFunctions::OriginalFunctions.original_oCGameDefineExternals_Ulfi( thisptr, parser );
 
         DefineExternals(parser);
-        // TODO: Add custom externals here
     }
 #endif
 

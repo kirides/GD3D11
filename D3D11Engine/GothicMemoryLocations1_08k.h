@@ -27,6 +27,15 @@ struct GothicMemoryLocations {
     struct zCParser {
         static const unsigned int CallFunc = 0x006e9690;
         static const unsigned int GetIndex = 0x006ea0c0;
+
+        static const unsigned int DefineExternal = 0x006f6840;
+        static const unsigned int GetParameter_Int = 0x006F6DF0;
+        static const unsigned int GetParameter_Float = 0x006F6E00;
+        static const unsigned int GetParameter_String = 0x006F6E40;
+        static const unsigned int SetReturn_Int = 0x006F6FB0;
+        static const unsigned int SetReturn_Float = 0x006F6FD0;
+        static const unsigned int SetReturn_Instance = 0x006F6FF0;
+        static const unsigned int SetReturn_String = 0x006F7020;
     };
 
     struct zCPolyStrip {
@@ -501,6 +510,7 @@ struct GothicMemoryLocations {
         static const unsigned int Var_Player = 0x008DBBB0;
         static const unsigned int Offset_GameView = 0x30;
         static const unsigned int Offset_SingleStep = 0x118;
+        static const unsigned int DefineExternals_Ulfi = 0x006495b0;
     };
 
     struct zCViewDraw {
