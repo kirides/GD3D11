@@ -235,14 +235,14 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
     }
 
     // Compute cascade splits
-    auto splits = ComputeCascadeSplits( nearPlane, farPlane, numCascades, 0.97f );
+    auto splits = ComputeCascadeSplits( nearPlane, farPlane, numCascades, 0.98f );
     splits[numCascades] = baseFarPlane; // Let the last cascade reach the full far plane
 
     // Get light direction
     XMVECTOR dir = XMLoadFloat3( Engine::GAPI->GetSky()->GetAtmosphereCB().AC_LightPos.toXMFLOAT3() );
 
     if ( Engine::GAPI->GetRendererState().RendererSettings.SmoothShadowCameraUpdate ) {
-        XMVECTOR scale = XMVectorReplicate( 500.f );
+        XMVECTOR scale = XMVectorReplicate( Engine::GAPI->GetRendererState().RendererSettings.SmoothShadowFrequency );
         dir = XMVectorDivide( _mm_cvtepi32_ps( _mm_cvtps_epi32( XMVectorMultiply( dir, scale ) ) ), scale );
     }
 
@@ -250,6 +250,7 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
     XMVECTOR WorldShadowCP;
     // Update position
     // Try to update only if the camera went 200 units away from the last position
+    // This prevents "shaking" when the player is strafing or moving just a tiny bit
     float len;
     XMStoreFloat( &len, XMVector3Length( oldP - cameraPositionXm ) );
     if ( (len < 64 &&
@@ -306,30 +307,30 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
 
             // Berechne View-Matrix für diese Cascade
             XMMATRIX lightView = XMMatrixLookAtLH( p, lookAt, c_XM_Up );
-
+            
             // *** TEXEL SNAPPING ***
            // Berechne die Größe eines Texels in World-Space
             float texelSize = cascadeSize / static_cast<float>(GetSizeX());
-
+            
             // Transformiere die Shadow-Kamera-Position in Light-Space
             XMVECTOR lightSpaceOrigin = XMVector3Transform( WorldShadowCP, lightView );
             XMFLOAT3 lightSpaceOriginF;
             XMStoreFloat3( &lightSpaceOriginF, lightSpaceOrigin );
-
+            
             // Snappe auf Texel-Grenzen
             lightSpaceOriginF.x = std::floor( lightSpaceOriginF.x / texelSize ) * texelSize;
             lightSpaceOriginF.y = std::floor( lightSpaceOriginF.y / texelSize ) * texelSize;
-
+            
             // Berechne den Offset und wende ihn auf die View-Matrix an
             XMVECTOR snappedOrigin = XMLoadFloat3( &lightSpaceOriginF );
             XMVECTOR originalOrigin = XMVector3Transform( WorldShadowCP, lightView );
             XMVECTOR snapOffset = snappedOrigin - originalOrigin;
-
+            
             // Erstelle Offset-Matrix
             XMFLOAT3 snapOffsetF;
             XMStoreFloat3( &snapOffsetF, snapOffset );
             XMMATRIX offsetMatrix = XMMatrixTranslation( snapOffsetF.x, snapOffsetF.y, 0.0f );
-
+            
             // Kombiniere View mit Offset
             XMMATRIX snappedLightView = XMMatrixMultiply( lightView, offsetMatrix );
 
@@ -598,6 +599,7 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
     scb.SQ_ShadowStrength = Engine::GAPI->GetRendererState().RendererSettings.ShadowStrength;
     scb.SQ_ShadowAOStrength = Engine::GAPI->GetRendererState().RendererSettings.ShadowAOStrength;
     scb.SQ_WorldAOStrength = Engine::GAPI->GetRendererState().RendererSettings.WorldAOStrength;
+    scb.SQ_ShadowSoftness = Engine::GAPI->GetRendererState().RendererSettings.ShadowSoftness;
 
     // Modify lightsettings when indoor
     if ( auto bspTree = Engine::GAPI->GetLoadedWorldInfo()->BspTree )
