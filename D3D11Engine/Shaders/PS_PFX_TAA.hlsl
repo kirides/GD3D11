@@ -1,4 +1,5 @@
 // TAA Pixel Shader - Improved with Velocity Buffer Support
+// Features: Depth discontinuity detection, edge-aware blending, variance clipping
 cbuffer TAAConstants : register(b0) {
     float4x4 InvViewProj;      // Current frame's UNJITTERED inverse view-projection
     float4x4 PrevViewProj;     // Previous frame's UNJITTERED view-projection
@@ -24,7 +25,10 @@ struct PS_INPUT
     float4 vPosition   : SV_POSITION;
 };
 
+// ============================================================================
 // Color space conversions for better blending
+// ============================================================================
+
 float3 RGB_YCoCg(float3 rgb) {
     float Y = dot(rgb, float3(0.25, 0.5, 0.25));
     float Co = dot(rgb, float3(0.5, 0.0, -0.5));
@@ -39,10 +43,21 @@ float3 YCoCg_RGB(float3 ycocg) {
     return float3(Y + Co - Cg, Y + Cg, Y - Co - Cg);
 }
 
+// Tonemap and inverse for stable blending in HDR
+float3 Tonemap(float3 color) {
+    return color / (1.0 + max(color.r, max(color.g, color.b)));
+}
+
+float3 TonemapInvert(float3 color) {
+    return color / max(1.0 - max(color.r, max(color.g, color.b)), 0.001);
+}
+
+// ============================================================================
 // Soft neighborhood clamping using clip towards center
-float3 ClipAABB(float3 aabbMin, float3 aabbMax, float3 prevSample) {
-    float3 center = 0.5 * (aabbMax + aabbMin);
-    float3 extents = 0.5 * (aabbMax - aabbMin) + 0.001;
+// ============================================================================
+
+float3 ClipAABB(float3 aabbMin, float3 aabbMax, float3 prevSample, float3 center) {
+    float3 extents = 0.5 * (aabbMax - aabbMin) + 0.0001;
     
     float3 offset = prevSample - center;
     float3 ts = abs(extents / (offset + 0.0001));
@@ -51,13 +66,64 @@ float3 ClipAABB(float3 aabbMin, float3 aabbMax, float3 prevSample) {
     return center + offset * t;
 }
 
-// Compute luminance for weighting
+// ============================================================================
+// Utility functions
+// ============================================================================
+
 float Luminance(float3 color) {
     return dot(color, float3(0.299, 0.587, 0.114));
 }
 
+// ============================================================================
+// Depth discontinuity detection
+// Detects edges where depth changes sharply (object silhouettes)
+// Returns a value 0-1 where higher values indicate stronger discontinuity
+// ============================================================================
+
+float DetectDepthDiscontinuity(float2 texCoord, float2 pixelSize, out float centerDepth) {
+    // Sample depth in a cross pattern for edge detection
+    centerDepth = TX_Texture2.SampleLevel(SS_Point, texCoord, 0).r;
+    
+    float depthLeft = TX_Texture2.SampleLevel(SS_Point, texCoord + float2(-pixelSize.x, 0), 0).r;
+    float depthRight = TX_Texture2.SampleLevel(SS_Point, texCoord + float2(pixelSize.x, 0), 0).r;
+    float depthUp = TX_Texture2.SampleLevel(SS_Point, texCoord + float2(0, -pixelSize.y), 0).r;
+    float depthDown = TX_Texture2.SampleLevel(SS_Point, texCoord + float2(0, pixelSize.y), 0).r;
+    
+    // Calculate depth gradients
+    float gradX = abs(depthRight - depthLeft);
+    float gradY = abs(depthDown - depthUp);
+    
+    // Combined gradient magnitude
+    float gradientMagnitude = sqrt(gradX * gradX + gradY * gradY);
+    
+    // Normalize by depth to make detection distance-independent
+    // In reversed-Z, larger depth = closer to camera
+    // We want the threshold to be relative to the depth
+    float depthThreshold = max(centerDepth, 0.001) * 0.05; // 5% of current depth
+    
+    // Calculate discontinuity factor
+    float discontinuity = saturate(gradientMagnitude / depthThreshold);
+    
+    // Also check for diagonal discontinuities for better corner detection
+    float depthTL = TX_Texture2.SampleLevel(SS_Point, texCoord + float2(-pixelSize.x, -pixelSize.y), 0).r;
+    float depthBR = TX_Texture2.SampleLevel(SS_Point, texCoord + float2(pixelSize.x, pixelSize.y), 0).r;
+    float depthTR = TX_Texture2.SampleLevel(SS_Point, texCoord + float2(pixelSize.x, -pixelSize.y), 0).r;
+    float depthBL = TX_Texture2.SampleLevel(SS_Point, texCoord + float2(-pixelSize.x, pixelSize.y), 0).r;
+    
+    float diagGrad1 = abs(depthBR - depthTL);
+    float diagGrad2 = abs(depthBL - depthTR);
+    float diagGradient = max(diagGrad1, diagGrad2) * 0.707; // Scale by 1/sqrt(2) for diagonal
+    
+    float diagDiscontinuity = saturate(diagGradient / depthThreshold);
+    
+    return max(discontinuity, diagDiscontinuity);
+}
+
+// ============================================================================
 // Get the closest depth in a 3x3 neighborhood (for better motion vector sampling)
 // Note: This engine uses REVERSED-Z: depth 0 = far (sky), depth 1 = near
+// ============================================================================
+
 float2 GetClosestDepthOffset(float2 texCoord, float2 pixelSize) {
     float closestDepth = 0.0;  // Start at far (0 in reversed-Z)
     float2 closestOffset = float2(0, 0);
@@ -67,7 +133,7 @@ float2 GetClosestDepthOffset(float2 texCoord, float2 pixelSize) {
         [unroll]
         for (int y = -1; y <= 1; y++) {
             float2 offset = float2(x, y) * pixelSize;
-            float depth = TX_Texture2.Sample(SS_Point, texCoord + offset).r;
+            float depth = TX_Texture2.SampleLevel(SS_Point, texCoord + offset, 0).r;
             // In reversed-Z, larger depth = closer to camera
             if (depth > closestDepth) {
                 closestDepth = depth;
@@ -79,7 +145,10 @@ float2 GetClosestDepthOffset(float2 texCoord, float2 pixelSize) {
     return closestOffset;
 }
 
+// ============================================================================
 // Catmull-Rom filtering for sharper history sampling
+// ============================================================================
+
 float3 SampleHistoryCatmullRom(float2 uv) {
     float2 texSize = Resolution;
     float2 invTexSize = 1.0 / texSize;
@@ -99,11 +168,16 @@ float3 SampleHistoryCatmullRom(float2 uv) {
     
     // Optimized bilinear samples
     float2 w12 = w1 + w2;
-    float2 offset12 = w2 / w12;
+    float2 offset12 = w2 / (w12 + 0.0001);
     
     float2 tc0 = (centerPosition - 1.0) * invTexSize;
     float2 tc3 = (centerPosition + 2.0) * invTexSize;
     float2 tc12 = (centerPosition + offset12) * invTexSize;
+    
+    // Clamp to valid UV range to prevent sampling outside texture
+    tc0 = clamp(tc0, 0.0, 1.0);
+    tc3 = clamp(tc3, 0.0, 1.0);
+    tc12 = clamp(tc12, 0.0, 1.0);
     
     // Sample using bilinear filtering
     float3 result = float3(0, 0, 0);
@@ -116,22 +190,71 @@ float3 SampleHistoryCatmullRom(float2 uv) {
     return max(result, 0.0);
 }
 
+// ============================================================================
+// Gather neighborhood statistics using 3x3 with cross weighting
+// ============================================================================
+
+void GatherNeighborhood(float2 texCoord, float2 pixelSize, 
+    out float3 m1, out float3 m2, out float3 neighborMin, out float3 neighborMax, out float3 centerColor) {
+    
+    m1 = float3(0, 0, 0);
+    m2 = float3(0, 0, 0);
+    neighborMin = float3(1e10, 1e10, 1e10);
+    neighborMax = float3(-1e10, -1e10, -1e10);
+    
+    // Weights: higher weight for cross pattern (direct neighbors)
+    static const float weights[9] = { 0.5, 1.0, 0.5, 1.0, 1.5, 1.0, 0.5, 1.0, 0.5 };
+    float totalWeight = 0.0;
+    int idx = 0;
+    
+    [unroll]
+    for (int y = -1; y <= 1; y++) {
+        [unroll]
+        for (int x = -1; x <= 1; x++) {
+            float2 offset = float2(x, y) * pixelSize;
+            float3 neighbor = TX_Texture0.SampleLevel(SS_Linear, texCoord + offset, 0).rgb;
+            float3 tonemapped = Tonemap(neighbor);
+            
+            float w = weights[idx++];
+            m1 += tonemapped * w;
+            m2 += tonemapped * tonemapped * w;
+            totalWeight += w;
+            
+            neighborMin = min(neighborMin, tonemapped);
+            neighborMax = max(neighborMax, tonemapped);
+            
+            if (x == 0 && y == 0) {
+                centerColor = neighbor;
+            }
+        }
+    }
+    
+    m1 /= totalWeight;
+    m2 /= totalWeight;
+}
+
+// ============================================================================
+// Main TAA resolve
+// ============================================================================
+
 float4 PSMain(PS_INPUT Input) : SV_TARGET {
     float2 texCoord = Input.vTexcoord;
     float2 pixelSize = 1.0 / Resolution;
     
+    // Detect depth discontinuity for edge-aware blending
+    float centerDepth;
+    float depthDiscontinuity = DetectDepthDiscontinuity(texCoord, pixelSize, centerDepth);
+    
     // Sample current frame at jitter-corrected position for sharper output
     float2 unjitteredUV = texCoord - JitterOffset;
-    float3 currentColor = TX_Texture0.Sample(SS_Linear, unjitteredUV).rgb;
-    
-    // Also sample at exact texCoord for neighborhood
-    float3 centerColor = TX_Texture0.Sample(SS_Linear, texCoord).rgb;
+    float3 currentColor = TX_Texture0.SampleLevel(SS_Linear, unjitteredUV, 0).rgb;
     
     // Find the closest depth in neighborhood for motion vector sampling
+    // This helps reduce ghosting on edges of moving objects
     float2 closestOffset = GetClosestDepthOffset(texCoord, pixelSize);
     
     // Sample velocity from velocity buffer at closest depth location
-    float2 velocity = TX_Texture3.Sample(SS_Point, texCoord + closestOffset).rg;
+    float2 velocity = TX_Texture3.SampleLevel(SS_Point, texCoord + closestOffset, 0).rg;
     
     // Scale velocity if needed
     velocity *= MotionScale;
@@ -142,102 +265,109 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET {
     // Calculate reprojected UV using velocity
     float2 prevUV = texCoord - velocity;
     
+    // Check if reprojected position is outside screen
+    bool offScreen = prevUV.x < 0.0 || prevUV.x > 1.0 || prevUV.y < 0.0 || prevUV.y > 1.0;
+    
     // Sample history with Catmull-Rom for sharper result
-    float3 historyColor = SampleHistoryCatmullRom(prevUV);
+    float3 historyColor = offScreen ? currentColor : SampleHistoryCatmullRom(prevUV);
     
-    // Collect neighborhood samples for variance clipping
-    float3 m1 = float3(0, 0, 0);  // First moment (mean)
-    float3 m2 = float3(0, 0, 0);  // Second moment
-    float3 neighborMin = float3(1e10, 1e10, 1e10);
-    float3 neighborMax = float3(-1e10, -1e10, -1e10);
-    
-    // 3x3 neighborhood sampling with cross pattern weighted more
-    static const float weights[9] = { 0.5, 1.0, 0.5, 1.0, 1.0, 1.0, 0.5, 1.0, 0.5 };
-    float totalWeight = 0.0;
-    int idx = 0;
-    
-    [unroll]
-    for (int y = -1; y <= 1; y++) {
-        [unroll]
-        for (int x = -1; x <= 1; x++) {
-            float2 offset = float2(x, y) * pixelSize;
-            float3 neighbor = TX_Texture0.Sample(SS_Linear, texCoord + offset).rgb;
-            
-            float w = weights[idx++];
-            m1 += neighbor * w;
-            m2 += neighbor * neighbor * w;
-            totalWeight += w;
-            
-            neighborMin = min(neighborMin, neighbor);
-            neighborMax = max(neighborMax, neighbor);
-        }
-    }
-    
-    m1 /= totalWeight;
-    m2 /= totalWeight;
+    // Gather neighborhood statistics
+    float3 m1, m2, neighborMin, neighborMax, centerColor;
+    GatherNeighborhood(texCoord, pixelSize, m1, m2, neighborMin, neighborMax, centerColor);
     
     // Calculate standard deviation
     float3 sigma = sqrt(max(m2 - m1 * m1, 0.0));
     
-    // Tighter clipping for high velocity - reduces ghosting on moving objects
-    // Use smaller gamma for faster rejection of invalid history
-    float velocityFactor = saturate(velocityLengthPixels * 0.15);
-    float gamma = lerp(0.75, 0.25, velocityFactor);  // Tighter clipping with motion
+    // Adaptive gamma based on velocity and depth discontinuity
+    // Tighter clipping for fast motion and at depth edges
+    float velocityFactor = saturate(velocityLengthPixels * 0.1);
+    float edgeFactor = depthDiscontinuity;
+    float combinedFactor = max(velocityFactor, edgeFactor);
     
-    // Variance-based clipping bounds
+    float gamma = lerp(1.0, 0.4, combinedFactor);
+    
+    // Variance-based clipping bounds in tonemapped space
     float3 clipMin = m1 - gamma * sigma;
     float3 clipMax = m1 + gamma * sigma;
     
-    // Also constrain to neighborhood min/max
+    // Also constrain to neighborhood min/max for robustness
     clipMin = max(clipMin, neighborMin);
     clipMax = min(clipMax, neighborMax);
     
+    // Tonemap history for stable clipping
+    float3 tonemappedHistory = Tonemap(historyColor);
+    
     // Convert to YCoCg for perceptually better clamping
-    float3 historyYCoCg = RGB_YCoCg(historyColor);
+    float3 historyYCoCg = RGB_YCoCg(tonemappedHistory);
     float3 clipMinYCoCg = RGB_YCoCg(clipMin);
     float3 clipMaxYCoCg = RGB_YCoCg(clipMax);
+    float3 centerYCoCg = RGB_YCoCg(m1);
     
     // Clip history to neighborhood bounds
-    float3 clampedHistoryYCoCg = ClipAABB(clipMinYCoCg, clipMaxYCoCg, historyYCoCg);
+    float3 clampedHistoryYCoCg = ClipAABB(clipMinYCoCg, clipMaxYCoCg, historyYCoCg, centerYCoCg);
     float3 clampedHistory = YCoCg_RGB(clampedHistoryYCoCg);
     
-    // Calculate how much history was clipped (for adaptive blending)
-    float clipDistance = length(historyColor - clampedHistory);
-    float clipAmount = saturate(clipDistance / (Luminance(m1) + 0.001));
+    // Inverse tonemap back to linear
+    clampedHistory = TonemapInvert(clampedHistory);
     
-    // Reject history if reprojected position is outside screen
-    bool offScreen = prevUV.x < 0.0 || prevUV.x > 1.0 || prevUV.y < 0.0 || prevUV.y > 1.0;
+    // Calculate how much history was clipped (for adaptive blending)
+    float clipDistance = length(tonemappedHistory - YCoCg_RGB(clampedHistoryYCoCg));
+    float clipAmount = saturate(clipDistance * 5.0);
+    
     if (offScreen) {
         clampedHistory = currentColor;
         clipAmount = 1.0;
     }
     
-    // Adaptive blend factor:
-    // - Base: BlendFactor (typically 0.05-0.1 for stable TAA)
-    // - Increase for high motion to reduce smearing
-    // - Increase when history is heavily clipped
-    float motionBlend = saturate(velocityLengthPixels * 0.04);  // More aggressive motion rejection
-    float clipBlend = clipAmount * 0.5;
+    // ========================================================================
+    // Adaptive blend factor calculation with depth discontinuity awareness
+    // ========================================================================
     
-    float adaptiveBlend = max(BlendFactor, max(motionBlend, clipBlend));
+    // Base blend factor
+    float adaptiveBlend = BlendFactor;
+    
+    // Increase blend for high motion to reduce smearing
+    float motionBlend = saturate(velocityLengthPixels * 0.025);
+    adaptiveBlend = max(adaptiveBlend, motionBlend);
+    
+    // Increase blend when history was heavily clipped
+    adaptiveBlend = max(adaptiveBlend, clipAmount * 0.35);
+    
+    // IMPORTANT: Increase blend at depth discontinuities (object edges)
+    // This reduces ghosting at silhouettes where reprojection is unreliable
+    float edgeBlend = depthDiscontinuity * 0.4;
+    adaptiveBlend = max(adaptiveBlend, edgeBlend);
     
     // For very high velocity, blend even more towards current frame
-    if (velocityLengthPixels > 4.0) {
-        adaptiveBlend = lerp(adaptiveBlend, 0.5, saturate((velocityLengthPixels - 4.0) * 0.1));
+    if (velocityLengthPixels > 8.0) {
+        adaptiveBlend = lerp(adaptiveBlend, 0.7, saturate((velocityLengthPixels - 8.0) * 0.06));
     }
     
-    adaptiveBlend = clamp(adaptiveBlend, 0.04, 1.0);
+    // Anti-flicker: reduce temporal weight on high-contrast edges
+    float lumCurrent = Luminance(Tonemap(currentColor));
+    float lumHistory = Luminance(Tonemap(clampedHistory));
+    float lumContrast = abs(lumCurrent - lumHistory) / max(max(lumCurrent, lumHistory), 0.1);
     
-    // Luminance-weighted blending to reduce flickering on high-contrast edges
-    float lumCurrent = Luminance(currentColor);
-    float lumHistory = Luminance(clampedHistory);
-    float lumDiff = abs(lumCurrent - lumHistory) / max(lumCurrent, max(lumHistory, 0.2));
+    // Only increase blend for very high contrast to avoid losing temporal stability
+    if (lumContrast > 0.6) {
+        adaptiveBlend = max(adaptiveBlend, lerp(adaptiveBlend, 0.35, saturate((lumContrast - 0.6) * 2.5)));
+    }
     
-    // Increase blend towards current when there's high luminance difference
-    adaptiveBlend = lerp(adaptiveBlend, max(adaptiveBlend, 0.25), saturate(lumDiff * 0.5));
+    // Clamp final blend factor
+    adaptiveBlend = clamp(adaptiveBlend, 0.03, 1.0);
     
-    // Final blend
-    float3 result = lerp(clampedHistory, currentColor, adaptiveBlend);
+    // ========================================================================
+    // Final blend with luminance weighting for reduced flickering
+    // ========================================================================
+    
+    // Weight by luminance for reduced flickering
+    float weightCurrent = 1.0 / (1.0 + lumCurrent);
+    float weightHistory = 1.0 / (1.0 + lumHistory);
+    
+    // Blend with luminance weighting
+    float3 result = (currentColor * weightCurrent * adaptiveBlend + 
+                     clampedHistory * weightHistory * (1.0 - adaptiveBlend)) /
+                    (weightCurrent * adaptiveBlend + weightHistory * (1.0 - adaptiveBlend) + 0.0001);
     
     return float4(result, 1.0);
 }

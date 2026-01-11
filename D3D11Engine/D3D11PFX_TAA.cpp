@@ -8,7 +8,8 @@
 #include "D3D11ConstantBuffer.h"
 #include "GothicAPI.h"
 
-// Halton sequence generator for jitter
+// Halton sequence generator for jitter - low-discrepancy sequence
+// Provides better sub-pixel coverage than random sampling
 static float Halton(int index, int base) {
     float result = 0.0f;
     float f = 1.0f / base;
@@ -34,10 +35,13 @@ D3D11PFX_TAA::D3D11PFX_TAA(D3D11PfxRenderer* rnd)
     XMStoreFloat4x4( &m_PrevViewProj, XMMatrixIdentity() );
     XMStoreFloat4x4( &m_UnjitteredViewProj, XMMatrixIdentity() );
     
-    // Generate Halton sequence (8 samples)
-    const int JITTER_SAMPLES = 8;
+    // Generate Halton sequence with 16 samples for better temporal coverage
+    // Using bases 2 and 3 provides good low-discrepancy distribution
+    const int JITTER_SAMPLES = 16;
     m_JitterSequence.resize(JITTER_SAMPLES);
     for (int i = 0; i < JITTER_SAMPLES; i++) {
+        // Center the Halton sequence around 0 (-0.5 to 0.5 range)
+        // This ensures jitter is distributed evenly around pixel center
         m_JitterSequence[i] = XMFLOAT2(
             Halton(i + 1, 2) - 0.5f,
             Halton(i + 1, 3) - 0.5f
@@ -60,6 +64,7 @@ bool D3D11PFX_TAA::Init() {
     m_VelocityConstantBuffer = std::make_unique<D3D11ConstantBuffer>(
         sizeof(VelocityBufferConstantBuffer), &vcb);
     
+    // Linear sampler for color sampling
     D3D11_SAMPLER_DESC sampDesc = {};
     sampDesc.Filter = D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT;
     sampDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
@@ -70,7 +75,8 @@ bool D3D11PFX_TAA::Init() {
     sampDesc.MaxLOD = D3D11_FLOAT32_MAX;
     engine->GetDevice()->CreateSamplerState(&sampDesc, m_samplerLinear.GetAddressOf());
 
-    sampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT; // Point filter
+    // Point sampler for depth/velocity sampling (no filtering)
+    sampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
     engine->GetDevice()->CreateSamplerState( &sampDesc, m_samplerPoint.GetAddressOf() );
 
     return true;
@@ -133,12 +139,14 @@ void D3D11PFX_TAA::AdvanceJitter() {
     XMStoreFloat4x4( &m_UnjitteredViewProj, viewProj );
     
     // Calculate new jitter in UV space (pixels / resolution)
+    // The jitter sequence is in pixel space (-0.5 to 0.5), convert to UV space
     m_CurrentJitter = XMFLOAT2(
         m_JitterSequence[m_JitterIndex].x / static_cast<float>(m_Width),
         m_JitterSequence[m_JitterIndex].y / static_cast<float>(m_Height)
     );
     
     // Apply the new jitter to the projection matrix for scene rendering
+    // The factor of 2 converts from UV space to clip space (-1 to 1)
     projF._31 += m_CurrentJitter.x * 2.0f;
     projF._32 += m_CurrentJitter.y * 2.0f;
 }
@@ -166,8 +174,7 @@ void D3D11PFX_TAA::RenderVelocityBuffer(
     XMMATRIX unjitteredViewProj = XMLoadFloat4x4( &m_UnjitteredViewProj );
     XMMATRIX invViewProj = XMMatrixInverse( nullptr, unjitteredViewProj );
     
-    // For HLSL: we use row-vector * matrix (mul(vec, mat)), so we need to transpose
-    // Actually HLSL default is column-major, and we use mul(mat, vec), so transpose for HLSL
+    // For HLSL: transpose for column-major shader consumption
     XMStoreFloat4x4(&vcb.InvViewProj, XMMatrixTranspose(invViewProj));
     
     // PrevViewProj is also stored non-transposed, transpose it for HLSL
@@ -254,7 +261,10 @@ void D3D11PFX_TAA::RenderPostFX(
     
     cb.JitterOffset = m_CurrentJitter;
     cb.Resolution = XMFLOAT2(static_cast<float>(m_Width), static_cast<float>(m_Height));
-    cb.BlendFactor = m_FirstFrame ? 1.0f : 0.1f;
+    
+    // Blend factor: lower = more history (smoother but more ghosting)
+    // 0.05 is a good starting point for stable TAA
+    cb.BlendFactor = m_FirstFrame ? 1.0f : 0.05f;
     cb.MotionScale = 1.0f;
     
     m_TAAConstantBuffer->UpdateBuffer(&cb);
@@ -299,6 +309,10 @@ void D3D11PFX_TAA::RenderPostFX(
         velSRV.Get()
     };
     context->PSSetShaderResources(0, 4, srvs);
+    
+    // Bind samplers
+    context->PSSetSamplers( 0, 1, m_samplerLinear.GetAddressOf() );
+    context->PSSetSamplers( 1, 1, m_samplerPoint.GetAddressOf() );
 
     // Draw fullscreen quad
     FxRenderer->DrawFullScreenQuad();
