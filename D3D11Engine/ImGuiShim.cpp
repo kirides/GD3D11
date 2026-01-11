@@ -773,6 +773,9 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
         {
             ImGui::Checkbox( "Fast Shadows", &settings.FastShadows );
             ImGui::SetItemTooltip( "Renders only static world meshes" );
+            ImGui::Checkbox( "Smooth shadow update", &settings.SmoothShadowCameraUpdate);
+            ImGui::DragFloat( "Smooth shadow frequency", &settings.SmoothShadowFrequency, 200.0f, 1, 20000.f, "%.0f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
+            ImGui::SetItemTooltip( "Higher values mean more frequent shadow position updates" );
 
             if ( ImComboBoxC( "ShadowmapSize", shadowMapSizes, (int*)(&settings.ShadowMapSize), []() { Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows ); } ) ) {
                 ImGui::EndCombo();
@@ -809,6 +812,8 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
             ImGui::SetItemTooltip( "Which shadow cascades should be filtered using '16xPCF'" );
 
             ImGui::DragFloat( "ShadowStrength", &settings.ShadowStrength, 0.01f, 0.01f, 5.0f, "%.2f" );
+            ImGui::DragFloat( "ShadowSoftness", &settings.ShadowSoftness, 0.05f, 0.2f, 4.0f, "%.2f" );
+            ImGui::SetItemTooltip( "PCF kernel scale (1.0=sharp default, <1.0=sharper, >1.0=softer)" );
             ImGui::DragFloat( "ShadowAOStrength", &settings.ShadowAOStrength, 0.01f, -5.0f, 2.0f, "%.2f" );
             ImGui::DragFloat( "WorldAOStrength", &settings.WorldAOStrength, 0.01f, -5.0f, 2.0f, "%.2f" );
 
@@ -875,7 +880,7 @@ void RenderAdvancedColumn3( GothicRendererSettings& settings, GothicAPI* gapi ) 
         ImGui::InputInt( "SectionsDrawn", &rendererInfo.FrameNumSectionsDrawn, 1, 100, ImGuiInputTextFlags_ReadOnly );
         ImGui::InputInt( "WorldMeshDrawCalls", &rendererInfo.WorldMeshDrawCalls, 1, 100, ImGuiInputTextFlags_ReadOnly );
         ImGui::InputFloat( "FarPlane", &rendererInfo.FarPlane, 1, 100, "%.0f", ImGuiInputTextFlags_ReadOnly );
-        ImGui::InputFloat( "NearPlane", &rendererInfo.NearPlane, 1, 100, "%.0f", ImGuiInputTextFlags_ReadOnly );
+        ImGui::InputFloat( "NearPlane", &rendererInfo.NearPlane, 1, 100, "%.0f" , ImGuiInputTextFlags_ReadOnly);
         ImGui::InputFloat( "WorldMeshMS", &rendererInfo.Timing.WorldMeshMS, 1, 100, "%.6f", ImGuiInputTextFlags_ReadOnly );
         ImGui::InputFloat( "VobsMS", &rendererInfo.Timing.VobsMS, 1, 100, "%.6f", ImGuiInputTextFlags_ReadOnly );
         ImGui::InputFloat( "SkeletalMeshesMS", &rendererInfo.Timing.SkeletalMeshesMS, 1, 100, "%.6f", ImGuiInputTextFlags_ReadOnly );

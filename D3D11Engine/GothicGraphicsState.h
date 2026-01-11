@@ -628,6 +628,7 @@ struct GothicRendererSettings {
         ShadowStrength = 0.40f;
         ShadowAOStrength = 0.50f;
         WorldAOStrength = 0.50f;
+        ShadowSoftness = 1.0f; // 1.0 = default softness, higher = softer shadows
 
         BloomStrength = 1.0f;
         GlobalWindStrength = 1.0f;
@@ -638,6 +639,7 @@ struct GothicRendererSettings {
 
         EnableOcclusionCulling = false;
         EnableSoftShadows = true;
+
         EnableShadows = true;
         EnableVSync = false;
         DoZPrepass = true;
@@ -699,6 +701,7 @@ struct GothicRendererSettings {
         ChangeWindowPreset = 0;
         StretchWindow = true;
         SmoothShadowCameraUpdate = true;
+        SmoothShadowFrequency = 500.0f;
         DisplayFlip = false;
         LowLatency = false;
         HDR_Monitor = false;
@@ -821,6 +824,7 @@ struct GothicRendererSettings {
     float ShadowStrength;
     float ShadowAOStrength;
     float WorldAOStrength;
+    float ShadowSoftness;
 
     float GodRayDecay;
     float GodRayWeight;
@@ -861,6 +865,7 @@ struct GothicRendererSettings {
     bool StretchWindow;
     int ChangeWindowPreset;
     bool SmoothShadowCameraUpdate;
+    float SmoothShadowFrequency;
     bool EnableInactiveFpsLock;
     bool MTResoureceManager;
     bool CompressBackBuffer;

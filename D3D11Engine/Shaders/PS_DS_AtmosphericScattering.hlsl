@@ -37,7 +37,7 @@ cbuffer DS_ScreenQuadConstantBuffer : register(b0)
     float SQ_ShadowStrength;
     float SQ_ShadowAOStrength;
     float SQ_WorldAOStrength;
-    float SQ_Pad;
+    float SQ_ShadowSoftness;
 };
 
 //--------------------------------------------------------------------------------------
@@ -90,6 +90,52 @@ float2 TexOffset(int u, int v)
     return float2(u * 1.0f / SQ_ShadowmapSize, v * 1.0f / SQ_ShadowmapSize);
 }
 
+//--------------------------------------------------------------------------------------
+// High-quality Poisson disk for shadow sampling
+// Rotated per-pixel for better TAA integration and reduced banding
+//--------------------------------------------------------------------------------------
+static const float2 g_PoissonDisk16[16] = {
+    float2(-0.94201624f, -0.39906216f),
+    float2( 0.94558609f, -0.76890725f),
+    float2(-0.09418410f, -0.92938870f),
+    float2( 0.34495938f,  0.29387760f),
+    float2(-0.91588581f,  0.45771432f),
+    float2(-0.81544232f, -0.87912464f),
+    float2(-0.38277543f,  0.27676845f),
+    float2( 0.97484398f,  0.75648379f),
+    float2( 0.44323325f, -0.97511554f),
+    float2( 0.53742981f, -0.47373420f),
+    float2(-0.26496911f, -0.41893023f),
+    float2( 0.79197514f,  0.19090188f),
+    float2(-0.24188840f,  0.99706507f),
+    float2(-0.81409955f,  0.91437590f),
+    float2( 0.19984126f,  0.78641367f),
+    float2( 0.14383161f, -0.14100790f)
+};
+
+// 8-tap Poisson disk for medium quality / distant cascades
+static const float2 g_PoissonDisk8[8] = {
+    float2(-0.7071f,  0.7071f),
+    float2(-0.0000f, -0.8750f),
+    float2( 0.5303f,  0.5303f),
+    float2(-0.6250f, -0.3310f),
+    float2( 0.8750f,  0.0000f),
+    float2(-0.3310f,  0.6250f),
+    float2( 0.3310f, -0.6250f),
+    float2( 0.0000f,  0.0000f)
+};
+
+// Generate per-pixel rotation for temporal stability with TAA
+float2x2 GetPoissonRotationMatrix(float2 screenPos)
+{
+    // Use interleaved gradient noise for temporally stable rotation
+    // This pattern works well with TAA as it provides good coverage over multiple frames
+    float angle = frac(52.9829189f * frac(dot(screenPos, float2(0.06711056f, 0.00583715f)))) * 6.283185307f;
+    float s, c;
+    sincos(angle, s, c);
+    return float2x2(c, -s, s, c);
+}
+
 float IsInShadow(float3 wsPosition, Texture2DArray shadowmapArray, SamplerComparisonState samplerState)
 {
     float4 vShadowSamplingPos = mul(float4(wsPosition, 1), mul(SQ_ShadowView[0], SQ_ShadowProj[0]));
@@ -136,9 +182,10 @@ float4 GetCascadeUVAndBounds(float3 wsPosition, int cascadeIndex)
 }
 
 //--------------------------------------------------------------------------------------
-// Helper: Sample shadow from a specific cascade using Texture2DArray
+// High-quality shadow sampling with configurable softness
+// Uses rotated Poisson disk for TAA-friendly results
 //--------------------------------------------------------------------------------------
-float SampleCascadeShadow(float3 wsPosition, int cascadeIndex, float vertLighting, float bias)
+float SampleCascadeShadowSoft(float3 wsPosition, int cascadeIndex, float vertLighting, float bias, float2 screenPos, float softness)
 {
     matrix viewProj = mul(SQ_ShadowView[cascadeIndex], SQ_ShadowProj[cascadeIndex]);
     float4 vShadowSamplingPos = mul(float4(wsPosition, 1), viewProj);
@@ -153,69 +200,67 @@ float SampleCascadeShadow(float3 wsPosition, int cascadeIndex, float vertLightin
     }
     
     float shadow = 1.0f;
+    float texelSize = 1.0f / SQ_ShadowmapSize;
+    
+    // Scale the filter radius based on softness setting
+    // softness of 1.0 = default, < 1.0 = sharper, > 1.0 = softer
+    float filterRadius = texelSize * softness;
     
 #if SHD_FILTER_16TAP_PCF
 #if NUM_CSM_CASCADES <= 1
-    // Single cascade, always do PCF if enabled.
-    float sum = 0;
-    float x, y;
+    // Single cascade - use high quality 16-tap rotated Poisson disk
+    float2x2 rotMat = GetPoissonRotationMatrix(screenPos);
+    float sum = 0.0f;
     
-    [unroll] for (y = -1.5; y <= 1.5; y += 1.0)
+    [unroll]
+    for (int i = 0; i < 16; i++)
     {
-        [unroll] for (x = -1.5; x <= 1.5; x += 1.0)
-        {
-            float2 offset = TexOffset(x, y);
-            // Sample from Texture2DArray using cascade index as array slice
-            sum += TX_ShadowmapArray.SampleCmpLevelZero(SS_Comp, 
-                float3(projectedTexCoords.xy + offset, (float)cascadeIndex), 
-                vShadowSamplingPos.z - bias);
-        }
+        float2 offset = mul(rotMat, g_PoissonDisk16[i]) * filterRadius;
+        sum += TX_ShadowmapArray.SampleCmpLevelZero(SS_Comp,
+            float3(projectedTexCoords.xy + offset, (float)cascadeIndex),
+            vShadowSamplingPos.z - bias);
     }
-    shadow = sum / 16.0;
+    shadow = sum / 16.0f;
 #else
-    // multiple cascades, only do PCF for lower cascades
-    if (cascadeIndex < CSM_PCF_LIMIT) {
-        float sum = 0;
-        float x, y;
-    
-        [unroll] for (y = -1.5; y <= 1.5; y += 1.0)
-        {
-            [unroll] for (x = -1.5; x <= 1.5; x += 1.0)
-            {
-                float2 offset = TexOffset(x, y);
-                // Sample from Texture2DArray using cascade index as array slice
-                sum += TX_ShadowmapArray.SampleCmpLevelZero(SS_Comp, 
-                    float3(projectedTexCoords.xy + offset, (float)cascadeIndex), 
-                    vShadowSamplingPos.z - bias);
-            }
-        }
-        shadow = sum / 16.0;
-    } else {
-        // Efficient 4-tap PCF fallback for distant cascades (rotated poisson disk)
-        // Uses bilinear PCF hardware filtering for effective 8+ sample quality
-        static const float2 poissonDisk[4] = {
-            float2(-0.94201624f, -0.39906216f),
-            float2( 0.94558609f, -0.76890725f),
-            float2(-0.09418410f, -0.92938870f),
-            float2( 0.34495938f,  0.29387760f)
-        };
+    // Multiple cascades - use quality based on cascade index
+    if (cascadeIndex < CSM_PCF_LIMIT) 
+    {
+        // High quality for close cascades - 16-tap rotated Poisson disk
+        float2x2 rotMat = GetPoissonRotationMatrix(screenPos);
+        float sum = 0.0f;
         
-        float sum = 0;
-        float texelSize = 1.0f / SQ_ShadowmapSize;
-        
-        [unroll] for (int i = 0; i < 4; i++)
+        [unroll]
+        for (int i = 0; i < 16; i++)
         {
+            float2 offset = mul(rotMat, g_PoissonDisk16[i]) * filterRadius;
             sum += TX_ShadowmapArray.SampleCmpLevelZero(SS_Comp,
-                float3(projectedTexCoords.xy + poissonDisk[i] * texelSize, (float)cascadeIndex),
+                float3(projectedTexCoords.xy + offset, (float)cascadeIndex),
                 vShadowSamplingPos.z - bias);
         }
-        shadow = sum * 0.25;
+        shadow = sum / 16.0f;
+    } 
+    else 
+    {
+        // Medium quality for distant cascades - 8-tap Poisson disk
+        // Still uses rotation for TAA stability
+        float2x2 rotMat = GetPoissonRotationMatrix(screenPos);
+        float sum = 0.0f;
+        
+        [unroll]
+        for (int i = 0; i < 8; i++)
+        {
+            float2 offset = mul(rotMat, g_PoissonDisk8[i]) * filterRadius;
+            sum += TX_ShadowmapArray.SampleCmpLevelZero(SS_Comp,
+                float3(projectedTexCoords.xy + offset, (float)cascadeIndex),
+                vShadowSamplingPos.z - bias);
+        }
+        shadow = sum / 8.0f;
     }
 #endif
 #else
-    // Sample from Texture2DArray using cascade index as array slice
+    // No PCF filtering - single sample (still uses bias)
     shadow = TX_ShadowmapArray.SampleCmpLevelZero(SS_Comp,
-        float3(projectedTexCoords.xy, (float) cascadeIndex),
+        float3(projectedTexCoords.xy, (float)cascadeIndex),
         vShadowSamplingPos.z - bias);
 #endif
     
@@ -267,10 +312,10 @@ float ComputeShadowValue(float2 uv, float3 wsPosition, Texture2D shadowmap, Samp
 }
 
 //--------------------------------------------------------------------------------------
-// CSM: Shadow-Sampling für Cascaded Shadow Maps mit verbessertem Blending
-// Uses projected coordinates to determine cascade selection and blending
+// CSM: Shadow-Sampling with soft shadows and cascade blending
+// Uses SQ_ShadowSoftness for configurable shadow edge softness
 //--------------------------------------------------------------------------------------
-float ComputeCascadedShadowValue(float3 wsPosition, float viewSpaceZ, float vertLighting, float bias)
+float ComputeCascadedShadowValueSoft(float3 wsPosition, float viewSpaceZ, float vertLighting, float bias, float2 screenPos)
 {
     // Get cascade bounds info for all cascades
     float4 cascadeInfo[NUM_CSM_CASCADES];
@@ -282,6 +327,11 @@ float ComputeCascadedShadowValue(float3 wsPosition, float viewSpaceZ, float vert
     
     float shadow = vertLighting;
     
+    // Apply distance-based softness scaling
+    // Shadows get slightly softer with distance (simulating penumbra growth)
+    float distanceFactor = saturate(abs(viewSpaceZ) / 5000.0f);
+    float softness = SQ_ShadowSoftness * (1.0f + distanceFactor * 0.5f);
+    
     // Determine which cascade to use based on projection bounds
     // Start with highest resolution cascade and fall back to lower ones
     [unroll]
@@ -289,12 +339,12 @@ float ComputeCascadedShadowValue(float3 wsPosition, float viewSpaceZ, float vert
     {
         if (cascadeInfo[c].z > 0.5f) // In bounds of this cascade
         {
-            shadow = SampleCascadeShadow(wsPosition, c, vertLighting, bias);
+            shadow = SampleCascadeShadowSoft(wsPosition, c, vertLighting, bias, screenPos, softness);
             
             // Blend with next cascade near edges (if next cascade exists and has this pixel in bounds)
             if (c < NUM_CSM_CASCADES - 1 && cascadeInfo[c].w > 0.0f && cascadeInfo[c + 1].z > 0.5f)
             {
-                float shadowNext = SampleCascadeShadow(wsPosition, c + 1, vertLighting, bias);
+                float shadowNext = SampleCascadeShadowSoft(wsPosition, c + 1, vertLighting, bias, screenPos, softness);
                 shadow = lerp(shadow, shadowNext, cascadeInfo[c].w);
             }
             break;
@@ -470,34 +520,17 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
     float3 V = normalize(-vsPosition);
 	
 #if SHD_ENABLE
-	// CSM: Benutze Cascaded Shadow Map
+	// CSM: Use soft cascaded shadow map with configurable softness
 	float shadow = 0.0f;
 	if(AC_LightPos.y > 0) // only get shadow value if it isn't night-time
 	{
 		float bias = lerp(0.00005f, 0.0001f, abs(vsPosition.z) / 1000);
-		shadow = ComputeCascadedShadowValue(wsPosition, vsPosition.z, vertLighting, bias);
+		// Use screen position for per-pixel rotation (TAA-friendly)
+		shadow = ComputeCascadedShadowValueSoft(wsPosition, vsPosition.z, vertLighting, bias, Input.vPosition.xy);
 	}
 #else
     float shadow = vertLighting;
 #endif
-    //shadow = 1.0f;
-
-	// Sunrays
-	/*float3 vsDir = normalize(vsPosition);
-	const int numSamples = 100;
-	float stepSize = 1000.0f / numSamples;
-	float shaft = 0.0f;
-	for(float r=0;r < 1000.0f;r+=stepSize)
-	{
-		float3 vsRayPos = vsDir * r;
-		float3 wsRayPos = mul(float4(vsRayPos, 1), SQ_InvView).xyz;
-		
-		float s = IsInShadow(wsRayPos, TX_ShadowmapArray, SS_Comp);
-		
-		shaft += s / numSamples;
-	}*/
-	
-	
 
 	// Compute wettness
     float specWet = 0.0f;
