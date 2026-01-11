@@ -262,9 +262,10 @@ void D3D11PFX_TAA::RenderPostFX(
     cb.JitterOffset = m_CurrentJitter;
     cb.Resolution = XMFLOAT2(static_cast<float>(m_Width), static_cast<float>(m_Height));
     
-    // Blend factor: lower = more history (smoother but more ghosting)
-    // 0.05 is a good starting point for stable TAA
-    cb.BlendFactor = m_FirstFrame ? 1.0f : 0.05f;
+    // Blend factor: higher = more current frame (sharper but more flickering)
+    // Using 0.08 as base gives good balance between stability and sharpness
+    // The shader will adaptively increase this at edges and for motion
+    cb.BlendFactor = m_FirstFrame ? 1.0f : 0.08f;
     cb.MotionScale = 1.0f;
     
     m_TAAConstantBuffer->UpdateBuffer(&cb);
