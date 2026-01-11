@@ -858,6 +858,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="Detours\detver.h" />
     <ClInclude Include="EditorLinePrimitive.h" />
     <ClInclude Include="Engine.h" />
+	<ClInclude Include="Frustum.h" />
     <ClInclude Include="GFSDK_SSAO.h" />
     <ClInclude Include="GInventory.h" />
     <ClInclude Include="GMesh.h" />
@@ -1042,13 +1043,14 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="ZenGinTypes.h" />
     <ClInclude Include="zFILE.h" />
     <ClInclude Include="zFont.h" />
+	<ClInclude Include="zCSoundSystem.h" />
     <ClInclude Include="ZipArchive.h" />
     <ClInclude Include="zMat4.h" />
     <ClInclude Include="zQuat.h" />
     <ClInclude Include="zSTRING.h" />
     <ClInclude Include="zTypes.h" />
     <ClInclude Include="zViewTypes.h" />
-    <ClCompile Include="D3D11PFX_CAS.h" />
+    <ClInclude Include="D3D11PFX_CAS.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="BaseAntTweakBar.cpp" />
@@ -1140,7 +1142,6 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="DLLMain.cpp" />
     <ClCompile Include="EditorLinePrimitive.cpp" />
     <ClCompile Include="Engine.cpp" />
-    <ClCompile Include="Frustum.h" />
     <ClCompile Include="GInventory.cpp" />
     <ClCompile Include="GMesh.cpp" />
     <ClCompile Include="GMeshSimple.cpp" />
@@ -1239,7 +1240,6 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release_G1_AVX2|Win32'">NotUsing</PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="zBinkPlayer.cpp" />
-    <ClCompile Include="zCSoundSystem.h" />
     <ClCompile Include="ZipArchive.cpp" />
   </ItemGroup>
   <ItemGroup>
