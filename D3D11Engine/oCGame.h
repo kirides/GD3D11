@@ -7,9 +7,11 @@
 #include "zCVob.h"
 #include "zCWorld.h"
 #include "zCBspTree.h"
+#include "GothicExternals.h"
 
 class zCView;
 class _zCView;
+class zCParser;
 
 enum class GOTHIC_KEY : int {
     F1 = 0x3B,
@@ -31,6 +33,9 @@ public:
     /** Hooks the functions of this Class */
     static void Hook() {
         DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_oCGameEnterWorld), hooked_EnterWorld );
+#if defined(BUILD_GOTHIC_2_6_fix) || (defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F))
+        DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_oCGameDefineExternals_Ulfi), hooked_DefineExternals_Ulfi );
+#endif
     }
 
     static void __fastcall hooked_EnterWorld( void* thisptr, void* unknwn, oCNPC* playerVob, int changePlayerPos, const zSTRING& startpoint ) {
@@ -38,6 +43,14 @@ public:
 
         Engine::GAPI->OnWorldLoaded();
     }
+
+#if defined(BUILD_GOTHIC_2_6_fix) || (defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F))
+    static void __fastcall hooked_DefineExternals_Ulfi( void* thisptr, void* unknwn, zCParser* parser ) {
+        HookedFunctions::OriginalFunctions.original_oCGameDefineExternals_Ulfi( thisptr, parser );
+
+        DefineExternals(parser);
+    }
+#endif
 
     void TestKey( GOTHIC_KEY key ) {
         reinterpret_cast<void( __fastcall* )( oCGame*, int, GOTHIC_KEY )>( GothicMemoryLocations::oCGame::TestKeys )( this, 0, key );

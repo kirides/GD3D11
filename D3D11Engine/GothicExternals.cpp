@@ -2,6 +2,8 @@
 #include "Engine.h"
 #include "ImGuiShim.h"
 #include <imgui.h>
+#include "zCParser.h"
+#include "zSTRING.h"
 
 /**
  * ImGui C-API Wrapper Implementation für Daedalus-Scripting
@@ -352,5 +354,384 @@ extern "C" __declspec(dllexport) void __cdecl imgui_table_setup_column(const cha
     }
 
     ImGui::TableSetupColumn(label, flags, _VirtualToScreenX(init_width_or_weight), user_id);
+}
+
+static int GDX_ImGui_Begin() {
+    auto parser = zCParser::GetParser();
+
+    int flags;
+    int pOpen;
+    zSTRING label;
+    parser->GetParameter(flags);
+    parser->GetParameter(pOpen);
+    parser->GetParameter(label);
+
+    int ret = imgui_begin( label.ToChar(), (int*)pOpen, flags);
+    parser->SetReturn( ret );
+    return 0;
+}
+
+// ============================================================================
+// External Wrappers for Daedalus
+// ============================================================================
+
+static int GDX_ImGui_SetNextWindowPos() {
+    auto parser = zCParser::GetParser();
+    float pivotY, pivotX;
+    int cond, virtualY, virtualX;
+    parser->GetParameter(pivotY);
+    parser->GetParameter(pivotX);
+    parser->GetParameter(cond);
+    parser->GetParameter(virtualY);
+    parser->GetParameter(virtualX);
+    imgui_set_next_window_pos(virtualX, virtualY, cond, pivotX, pivotY);
+    return 0;
+}
+
+static int GDX_ImGui_SetNextWindowSize() {
+    auto parser = zCParser::GetParser();
+    int cond, virtualY, virtualX;
+    parser->GetParameter(cond);
+    parser->GetParameter(virtualY);
+    parser->GetParameter(virtualX);
+    imgui_set_next_window_size(virtualX, virtualY, cond);
+    return 0;
+}
+
+static int GDX_ImGui_SetNextWindowBgAlpha() {
+    auto parser = zCParser::GetParser();
+    float value;
+    parser->GetParameter(value);
+    imgui_set_next_window_bg_alpha(value);
+    return 0;
+}
+
+static int GDX_ImGui_SetItemTooltip() {
+    auto parser = zCParser::GetParser();
+    zSTRING text;
+    parser->GetParameter(text);
+    imgui_set_item_tooltip(text.ToChar());
+    return 0;
+}
+
+static int GDX_ImGui_SetNextWindowCollapsed() {
+    auto parser = zCParser::GetParser();
+    int cond, boolValue;
+    parser->GetParameter(cond);
+    parser->GetParameter(boolValue);
+    imgui_set_next_window_collapsed(boolValue, cond);
+    return 0;
+}
+
+static int GDX_ImGui_BeginOverlay() {
+    auto parser = zCParser::GetParser();
+    int windowflags, pOpen;
+    zSTRING title;
+    parser->GetParameter(windowflags);
+    parser->GetParameter(pOpen);
+    parser->GetParameter(title);
+    int ret = imgui_begin_overlay(title.ToChar(), &pOpen, windowflags);
+    parser->SetReturn(ret);
+    return 0;
+}
+
+static int GDX_ImGui_End() {
+    imgui_end();
+    return 0;
+}
+
+static int GDX_ImGui_Text() {
+    auto parser = zCParser::GetParser();
+    zSTRING text;
+    parser->GetParameter(text);
+    imgui_text(text.ToChar());
+    return 0;
+}
+
+static int GDX_ImGui_TextUnformatted() {
+    auto parser = zCParser::GetParser();
+    zSTRING text;
+    parser->GetParameter(text);
+    imgui_text_unformatted(text.ToChar());
+    return 0;
+}
+
+static int GDX_ImGui_Button() {
+    auto parser = zCParser::GetParser();
+    int height, width;
+    zSTRING label;
+    parser->GetParameter(height);
+    parser->GetParameter(width);
+    parser->GetParameter(label);
+    int ret = imgui_button(label.ToChar(), width, height);
+    parser->SetReturn(ret);
+    return 0;
+}
+
+static int GDX_ImGui_Checkbox() {
+    auto parser = zCParser::GetParser();
+    int value;
+    zSTRING label;
+    parser->GetParameter(value);
+    parser->GetParameter(label);
+
+    int ret = imgui_checkbox(label.ToChar(), (int*)value);
+    parser->SetReturn(ret);
+    return 0;
+}
+
+static int GDX_ImGui_SliderFloat() {
+    auto parser = zCParser::GetParser();
+    float maxValue, minValue;
+    int value;
+    zSTRING label;
+    parser->GetParameter(maxValue);
+    parser->GetParameter(minValue);
+    parser->GetParameter(value);
+    parser->GetParameter(label);
+    int ret = imgui_slider_float(label.ToChar(), (float*)value, minValue, maxValue);
+    parser->SetReturn(ret);
+    return 0;
+}
+
+static int GDX_ImGui_InputText() {
+    auto parser = zCParser::GetParser();
+    int bufferSize;
+    int buffer;
+    zSTRING label;
+    parser->GetParameter(bufferSize);
+    parser->GetParameter(buffer);
+    parser->GetParameter(label);
+
+    int ret = imgui_input_text(label.ToChar(), (char*)buffer, bufferSize);
+    parser->SetReturn(ret);
+    return 0;
+}
+
+static int GDX_ImGui_SameLine() {
+    auto parser = zCParser::GetParser();
+    float spacing, offsetX;
+    parser->GetParameter(spacing);
+    parser->GetParameter(offsetX);
+    imgui_same_line(offsetX, spacing);
+    return 0;
+}
+
+static int GDX_ImGui_NewLine() {
+    imgui_new_line();
+    return 0;
+}
+
+static int GDX_ImGui_Separator() {
+    imgui_separator();
+    return 0;
+}
+
+static int GDX_ImGui_BeginChild() {
+    auto parser = zCParser::GetParser();
+    int border, height, width;
+    zSTRING title;
+    parser->GetParameter(border);
+    parser->GetParameter(height);
+    parser->GetParameter(width);
+    parser->GetParameter(title);
+    int ret = imgui_begin_child(title.ToChar(), width, height, border);
+    parser->SetReturn(ret);
+    return 0;
+}
+
+static int GDX_ImGui_EndChild() {
+    imgui_end_child();
+    return 0;
+}
+
+static int GDX_ImGui_CollapsingHeader() {
+    auto parser = zCParser::GetParser();
+    zSTRING label;
+    parser->GetParameter(label);
+    int ret = imgui_collapsing_header(label.ToChar());
+    parser->SetReturn(ret);
+    return 0;
+}
+
+static int GDX_ImGui_BeginMainMenuBar() {
+    auto parser = zCParser::GetParser();
+    int ret = imgui_begin_main_menu_bar();
+    parser->SetReturn(ret);
+    return 0;
+}
+
+static int GDX_ImGui_EndMainMenuBar() {
+    imgui_end_main_menu_bar();
+    return 0;
+}
+
+static int GDX_ImGui_BeginMenu() {
+    auto parser = zCParser::GetParser();
+    int enabled;
+    zSTRING label;
+    parser->GetParameter(enabled);
+    parser->GetParameter(label);
+    int ret = imgui_begin_menu(label.ToChar(), enabled);
+    parser->SetReturn(ret);
+    return 0;
+}
+
+static int GDX_ImGui_EndMenu() {
+    imgui_end_menu();
+    return 0;
+}
+
+static int GDX_ImGui_MenuItem() {
+    auto parser = zCParser::GetParser();
+    int enabled, selected;
+    zSTRING shortcut, label;
+    parser->GetParameter(enabled);
+    parser->GetParameter(selected);
+    parser->GetParameter(shortcut);
+    parser->GetParameter(label);
+    const char* shortcutPtr = shortcut.Length() > 0 ? shortcut.ToChar() : nullptr;
+    int ret = imgui_menu_item(label.ToChar(), shortcutPtr, selected, enabled);
+    parser->SetReturn(ret);
+    return 0;
+}
+
+static int GDX_ImGui_PushID() {
+    auto parser = zCParser::GetParser();
+    int id;
+    parser->GetParameter(id);
+    imgui_push_id(id);
+    return 0;
+}
+
+static int GDX_ImGui_PopID() {
+    imgui_pop_id();
+    return 0;
+}
+
+static int GDX_ImGui_IsReady() {
+    auto parser = zCParser::GetParser();
+    int ret = imgui_is_ready();
+    parser->SetReturn(ret);
+    return 0;
+}
+
+static int GDX_ImGui_GetContentRegionAvailX() {
+    auto parser = zCParser::GetParser();
+    int ret = imgui_get_content_region_avail_x();
+    parser->SetReturn(ret);
+    return 0;
+}
+
+static int GDX_ImGui_BeginTable() {
+    auto parser = zCParser::GetParser();
+    int innerWidth, outerY, outerX, tableFlags;
+    zSTRING id;
+    int count;
+    parser->GetParameter(innerWidth);
+    parser->GetParameter(outerY);
+    parser->GetParameter(outerX);
+    parser->GetParameter(tableFlags);
+    parser->GetParameter(id);
+    parser->GetParameter(count);
+    imgui_begin_table(count, id.ToChar(), tableFlags, outerX, outerY, innerWidth);
+    return 0;
+}
+
+static int GDX_ImGui_EndTable() {
+    imgui_end_table();
+    return 0;
+}
+
+static int GDX_ImGui_TableNextColumn() {
+    auto parser = zCParser::GetParser();
+    int ret = imgui_table_next_column();
+    parser->SetReturn(ret);
+    return 0;
+}
+
+static int GDX_ImGui_TableNextRow() {
+    auto parser = zCParser::GetParser();
+    int minRowHeight, rowFlags;
+    parser->GetParameter(minRowHeight);
+    parser->GetParameter(rowFlags);
+    imgui_table_next_row(rowFlags, minRowHeight);
+    return 0;
+}
+
+static int GDX_ImGui_TableSetColumnIndex() {
+    auto parser = zCParser::GetParser();
+    int index;
+    parser->GetParameter(index);
+    imgui_table_set_column_index(index);
+    return 0;
+}
+
+static int GDX_ImGui_TableSetupColumn() {
+    auto parser = zCParser::GetParser();
+    int userId, initWidthOrWeight, flags;
+    zSTRING label;
+    parser->GetParameter(userId);
+    parser->GetParameter(initWidthOrWeight);
+    parser->GetParameter(flags);
+    parser->GetParameter(label);
+    imgui_table_setup_column(label.ToChar(), flags, initWidthOrWeight, userId);
+    return 0;
+}
+
+void DefineExternals(zCParser* parser) {
+
+    // Window Management
+    parser->DefineExternal( zSTRING( "GDX_ImGui_SetNextWindowPos" ), GDX_ImGui_SetNextWindowPos, zPAR_TYPE_VOID, zPAR_TYPE_INT, zPAR_TYPE_INT, zPAR_TYPE_INT, zPAR_TYPE_FLOAT, zPAR_TYPE_FLOAT, zPAR_TYPE_VOID );
+    parser->DefineExternal( zSTRING( "GDX_ImGui_SetNextWindowSize" ), GDX_ImGui_SetNextWindowSize, zPAR_TYPE_VOID, zPAR_TYPE_INT, zPAR_TYPE_INT, zPAR_TYPE_INT, zPAR_TYPE_VOID );
+    parser->DefineExternal( zSTRING( "GDX_ImGui_SetNextWindowBgAlpha" ), GDX_ImGui_SetNextWindowBgAlpha, zPAR_TYPE_VOID, zPAR_TYPE_FLOAT, zPAR_TYPE_VOID );
+    parser->DefineExternal( zSTRING( "GDX_ImGui_SetItemTooltip" ), GDX_ImGui_SetItemTooltip, zPAR_TYPE_VOID, zPAR_TYPE_STRING, zPAR_TYPE_VOID );
+    parser->DefineExternal( zSTRING( "GDX_ImGui_SetNextWindowCollapsed" ), GDX_ImGui_SetNextWindowCollapsed, zPAR_TYPE_VOID, zPAR_TYPE_INT, zPAR_TYPE_INT, zPAR_TYPE_VOID );
+    parser->DefineExternal( zSTRING( "GDX_ImGui_Begin" ), GDX_ImGui_Begin, zPAR_TYPE_INT, zPAR_TYPE_STRING, zPAR_TYPE_INT, zPAR_TYPE_INT, zPAR_TYPE_VOID );
+    parser->DefineExternal( zSTRING( "GDX_ImGui_BeginOverlay" ), GDX_ImGui_BeginOverlay, zPAR_TYPE_INT, zPAR_TYPE_STRING, zPAR_TYPE_INT, zPAR_TYPE_INT, zPAR_TYPE_VOID );
+    parser->DefineExternal( zSTRING( "GDX_ImGui_End" ), GDX_ImGui_End, zPAR_TYPE_VOID, zPAR_TYPE_VOID );
+
+    // Text Display
+    parser->DefineExternal( zSTRING( "GDX_ImGui_Text" ), GDX_ImGui_Text, zPAR_TYPE_VOID, zPAR_TYPE_STRING, zPAR_TYPE_VOID );
+    parser->DefineExternal( zSTRING( "GDX_ImGui_TextUnformatted" ), GDX_ImGui_TextUnformatted, zPAR_TYPE_VOID, zPAR_TYPE_STRING, zPAR_TYPE_VOID );
+
+    // Buttons and Interactive Elements
+    parser->DefineExternal( zSTRING( "GDX_ImGui_Button" ), GDX_ImGui_Button, zPAR_TYPE_INT, zPAR_TYPE_STRING, zPAR_TYPE_INT, zPAR_TYPE_INT, zPAR_TYPE_VOID );
+    parser->DefineExternal( zSTRING( "GDX_ImGui_Checkbox" ), GDX_ImGui_Checkbox, zPAR_TYPE_INT, zPAR_TYPE_STRING, zPAR_TYPE_INT, zPAR_TYPE_VOID );
+    parser->DefineExternal( zSTRING( "GDX_ImGui_SliderFloat" ), GDX_ImGui_SliderFloat, zPAR_TYPE_INT, zPAR_TYPE_STRING, zPAR_TYPE_FLOAT, zPAR_TYPE_FLOAT, zPAR_TYPE_FLOAT, zPAR_TYPE_VOID );
+    parser->DefineExternal( zSTRING( "GDX_ImGui_InputText" ), GDX_ImGui_InputText, zPAR_TYPE_INT, zPAR_TYPE_STRING, zPAR_TYPE_INT, zPAR_TYPE_INT, zPAR_TYPE_VOID );
+
+    // Layout
+    parser->DefineExternal( zSTRING( "GDX_ImGui_SameLine" ), GDX_ImGui_SameLine, zPAR_TYPE_VOID, zPAR_TYPE_FLOAT, zPAR_TYPE_FLOAT, zPAR_TYPE_VOID );
+    parser->DefineExternal( zSTRING( "GDX_ImGui_NewLine" ), GDX_ImGui_NewLine, zPAR_TYPE_VOID, zPAR_TYPE_VOID );
+    parser->DefineExternal( zSTRING( "GDX_ImGui_Separator" ), GDX_ImGui_Separator, zPAR_TYPE_VOID, zPAR_TYPE_VOID );
+    parser->DefineExternal( zSTRING( "GDX_ImGui_BeginChild" ), GDX_ImGui_BeginChild, zPAR_TYPE_INT, zPAR_TYPE_STRING, zPAR_TYPE_INT, zPAR_TYPE_INT, zPAR_TYPE_INT, zPAR_TYPE_VOID );
+    parser->DefineExternal( zSTRING( "GDX_ImGui_EndChild" ), GDX_ImGui_EndChild, zPAR_TYPE_VOID, zPAR_TYPE_VOID );
+
+    // Collapsing Header
+    parser->DefineExternal( zSTRING( "GDX_ImGui_CollapsingHeader" ), GDX_ImGui_CollapsingHeader, zPAR_TYPE_INT, zPAR_TYPE_STRING, zPAR_TYPE_VOID );
+
+    // Menu Bar
+    parser->DefineExternal( zSTRING( "GDX_ImGui_BeginMainMenuBar" ), GDX_ImGui_BeginMainMenuBar, zPAR_TYPE_INT, zPAR_TYPE_VOID );
+    parser->DefineExternal( zSTRING( "GDX_ImGui_EndMainMenuBar" ), GDX_ImGui_EndMainMenuBar, zPAR_TYPE_VOID, zPAR_TYPE_VOID );
+    parser->DefineExternal( zSTRING( "GDX_ImGui_BeginMenu" ), GDX_ImGui_BeginMenu, zPAR_TYPE_INT, zPAR_TYPE_STRING, zPAR_TYPE_INT, zPAR_TYPE_VOID );
+    parser->DefineExternal( zSTRING( "GDX_ImGui_EndMenu" ), GDX_ImGui_EndMenu, zPAR_TYPE_VOID, zPAR_TYPE_VOID );
+    parser->DefineExternal( zSTRING( "GDX_ImGui_MenuItem" ), GDX_ImGui_MenuItem, zPAR_TYPE_INT, zPAR_TYPE_STRING, zPAR_TYPE_STRING, zPAR_TYPE_INT, zPAR_TYPE_INT, zPAR_TYPE_VOID );
+
+    // ID Stack
+    parser->DefineExternal( zSTRING( "GDX_ImGui_PushID" ), GDX_ImGui_PushID, zPAR_TYPE_VOID, zPAR_TYPE_INT, zPAR_TYPE_VOID );
+    parser->DefineExternal( zSTRING( "GDX_ImGui_PopID" ), GDX_ImGui_PopID, zPAR_TYPE_VOID, zPAR_TYPE_VOID );
+
+    // Utility
+    parser->DefineExternal( zSTRING( "GDX_ImGui_IsReady" ), GDX_ImGui_IsReady, zPAR_TYPE_INT, zPAR_TYPE_VOID );
+    parser->DefineExternal( zSTRING( "GDX_ImGui_GetContentRegionAvailX" ), GDX_ImGui_GetContentRegionAvailX, zPAR_TYPE_INT, zPAR_TYPE_VOID );
+
+    // Table
+    parser->DefineExternal( zSTRING( "GDX_ImGui_BeginTable" ), GDX_ImGui_BeginTable, zPAR_TYPE_VOID, zPAR_TYPE_INT, zPAR_TYPE_STRING, zPAR_TYPE_INT, zPAR_TYPE_INT, zPAR_TYPE_INT, zPAR_TYPE_INT, zPAR_TYPE_VOID );
+    parser->DefineExternal( zSTRING( "GDX_ImGui_EndTable" ), GDX_ImGui_EndTable, zPAR_TYPE_VOID, zPAR_TYPE_VOID );
+    parser->DefineExternal( zSTRING( "GDX_ImGui_TableNextColumn" ), GDX_ImGui_TableNextColumn, zPAR_TYPE_INT, zPAR_TYPE_VOID );
+    parser->DefineExternal( zSTRING( "GDX_ImGui_TableNextRow" ), GDX_ImGui_TableNextRow, zPAR_TYPE_VOID, zPAR_TYPE_INT, zPAR_TYPE_INT, zPAR_TYPE_VOID );
+    parser->DefineExternal( zSTRING( "GDX_ImGui_TableSetColumnIndex" ), GDX_ImGui_TableSetColumnIndex, zPAR_TYPE_VOID, zPAR_TYPE_INT, zPAR_TYPE_VOID );
+    parser->DefineExternal( zSTRING("GDX_ImGui_TableSetupColumn"), GDX_ImGui_TableSetupColumn, zPAR_TYPE_VOID, zPAR_TYPE_STRING, zPAR_TYPE_INT, zPAR_TYPE_INT, zPAR_TYPE_INT, zPAR_TYPE_VOID );
 }
 

@@ -158,6 +158,7 @@ struct GothicMemoryLocations {
         static const unsigned int Var_Player = 0x00AB2684;
         static const unsigned int Offset_GameView = 0x30;
         static const unsigned int Offset_SingleStep = 0x11C;
+        static const unsigned int DefineExternals_Ulfi = 0x006D4780;
     };
 
     struct oCNPC {
@@ -327,6 +328,15 @@ struct GothicMemoryLocations {
     struct zCParser {
         static const unsigned int CallFunc = 0x7929F0;
         static const unsigned int GetIndex = 0x00793470;
+
+        static const unsigned int DefineExternal = 0x007A0190;
+        static const unsigned int GetParameter_Int = 0x007A0760;
+        static const unsigned int GetParameter_Float = 0x007A0770;
+        static const unsigned int GetParameter_String = 0x007A07B0;
+        static const unsigned int SetReturn_Int = 0x007A0960;
+        static const unsigned int SetReturn_Float = 0x007A09D0;
+        static const unsigned int SetReturn_Instance = 0x007A09A0;
+        static const unsigned int SetReturn_String = 0x007A0980;
     };
     
     struct zCMorphMesh {

@@ -16,6 +16,7 @@ class oCNPC;
 class zCPolygon;
 class zCTexture;
 class zCViewDraw;
+class zCParser;
 
 template <class T>
 class zCTree;
@@ -33,6 +34,9 @@ typedef void( __thiscall* oCNPCEnable )(void*, XMFLOAT3&);
 typedef void( __thiscall* zCBspTreeAddVob )(void*, zCVob*);
 typedef void( __thiscall* zCWorldLoadWorld )(void*, const zSTRING& fileName, const int loadMode);
 typedef void( __thiscall* oCGameEnterWorld )(void*, oCNPC* playerVob, int changePlayerPos, const zSTRING& startpoint);
+#if defined(BUILD_GOTHIC_2_6_fix) || (defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F))
+typedef void( __thiscall* oCGameDefineExternals_Ulfi )(void*, zCParser* parser);
+#endif
 typedef void( __thiscall* zCWorldVobRemovedFromWorld )(void*, zCVob*);
 typedef XMFLOAT4X4( __cdecl* Alg_Rotation3DNRad )(const XMFLOAT3& axis, const float angle);
 typedef int( __cdecl* vidGetFPSRate )();
@@ -104,6 +108,9 @@ struct HookedFunctionInfo {
     zCBspTreeAddVob original_zCBspTreeAddVob = reinterpret_cast<zCBspTreeAddVob>(GothicMemoryLocations::zCBspTree::AddVob);
     zCWorldLoadWorld original_zCWorldLoadWorld = reinterpret_cast<zCWorldLoadWorld>(GothicMemoryLocations::zCWorld::LoadWorld);
     oCGameEnterWorld original_oCGameEnterWorld = reinterpret_cast<oCGameEnterWorld>(GothicMemoryLocations::oCGame::EnterWorld);
+#if defined(BUILD_GOTHIC_2_6_fix) || (defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F))
+    oCGameDefineExternals_Ulfi original_oCGameDefineExternals_Ulfi = reinterpret_cast<oCGameDefineExternals_Ulfi>(GothicMemoryLocations::oCGame::DefineExternals_Ulfi);
+#endif
     zCWorldVobRemovedFromWorld original_zCWorldVobRemovedFromWorld = reinterpret_cast<zCWorldVobRemovedFromWorld>(GothicMemoryLocations::zCWorld::VobRemovedFromWorld);
     Alg_Rotation3DNRad original_Alg_Rotation3DNRad = reinterpret_cast<Alg_Rotation3DNRad>(GothicMemoryLocations::Functions::Alg_Rotation3DNRad);
     GenericDestructor original_zCMaterialDestructor = reinterpret_cast<GenericDestructor>(GothicMemoryLocations::zCMaterial::Destructor);
