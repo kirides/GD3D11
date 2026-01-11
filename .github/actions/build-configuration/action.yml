@@ -32,10 +32,11 @@ runs:
         } else {
           $tagOrGit = "git"
         }
+        $isoDate = Get-Date -Format "yyyy-MM-dd"
         $versionString = "$tagOrGit-$shortHash"
         $outputName = [System.IO.Path]::GetFileNameWithoutExtension("${{ inputs.output-file }}")
         $outputDir = "$env:GITHUB_WORKSPACE\outputs\"
-        $Env:CL = (-join("/DVERSION_NUMBER#",'\"',$versionString,'\"'))
+        $Env:CL = (-join("/DVERSION_NUMBER#",'\"',$versionString,'\"', " /DBUILD_DATE#",'\"',$isoDate,'\"'))
         echo "CL=$Env:CL" >> $Env:GITHUB_ENV
 
         $msbuildArgs = @(

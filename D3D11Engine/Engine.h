@@ -11,7 +11,7 @@ class ThreadPool;
 
 __declspec(selectany) const char* ENGINE_BASE_DIR = "system\\GD3D11\\";
 
-__declspec(selectany) const char* VERSION_STRING = "Version " VERSION_NUMBER " (" __DATE__ ")";
+__declspec(selectany) const char* VERSION_STRING = "Version " VERSION_NUMBER " (" BUILD_DATE ")";
 
 namespace Engine {
     /** If true, we will just pass everything to the usual ddraw.dll */
