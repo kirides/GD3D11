@@ -238,12 +238,56 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
     auto splits = ComputeCascadeSplits( nearPlane, farPlane, numCascades, 0.98f );
     splits[numCascades] = baseFarPlane; // Let the last cascade reach the full far plane
 
-    // Get light direction
-    XMVECTOR dir = XMLoadFloat3( Engine::GAPI->GetSky()->GetAtmosphereCB().AC_LightPos.toXMFLOAT3() );
+    // Get current light direction from atmosphere
+    XMVECTOR currentDir = XMLoadFloat3( Engine::GAPI->GetSky()->GetAtmosphereCB().AC_LightPos.toXMFLOAT3() );
+    currentDir = XMVector3Normalize( currentDir );
 
+    // *** TEMPORAL SMOOTHING FOR LIGHT DIRECTION ***
+    // Use static variables to maintain state across frames for smooth shadow transitions
+    static XMVECTOR s_previousLightDir = currentDir;
+    static bool s_lightDirInitialized = false;
+    
+    XMVECTOR dir;
+    
     if ( Engine::GAPI->GetRendererState().RendererSettings.SmoothShadowCameraUpdate ) {
-        XMVECTOR scale = XMVectorReplicate( Engine::GAPI->GetRendererState().RendererSettings.SmoothShadowFrequency );
-        dir = XMVectorDivide( _mm_cvtepi32_ps( _mm_cvtps_epi32( XMVectorMultiply( dir, scale ) ) ), scale );
+        // Initialize on first frame
+        if ( !s_lightDirInitialized ) {
+            s_previousLightDir = currentDir;
+            s_lightDirInitialized = true;
+        }
+        
+        // Calculate interpolation factor based on SmoothShadowFrequency
+        // Higher frequency = faster updates = less smoothing
+        // Lower frequency = slower updates = more smoothing (less flickering)
+        // The frequency is inverted to get a blend factor: lower frequency = more blending
+        const float frequency = std::max( 1.0f, Engine::GAPI->GetRendererState().RendererSettings.SmoothShadowFrequency );
+        
+        // Blend factor: at frequency 500 (default), we want moderate smoothing
+        // At frequency 100, we want heavy smoothing (slow updates)
+        // At frequency 2000+, we want minimal smoothing (fast updates)
+        // Using an exponential-ish curve for better control
+        const float blendFactor = std::clamp( frequency / 10000.0f, 0.001f, 0.5f );
+        
+        // Smoothly interpolate from previous direction to current direction
+        // This creates gradual shadow movement instead of discrete jumps
+        dir = XMVectorLerp( s_previousLightDir, currentDir, blendFactor );
+        dir = XMVector3Normalize( dir );
+        
+        // Update the stored previous direction for next frame
+        s_previousLightDir = dir;
+        
+        // Additionally apply quantization for sub-texel stability
+        // This snaps the direction to discrete steps to prevent micro-flickering
+        XMVECTOR scale = XMVectorReplicate( frequency );
+        dir = XMVectorDivide( 
+            _mm_cvtepi32_ps( _mm_cvtps_epi32( XMVectorMultiply( dir, scale ) ) ), 
+            scale 
+        );
+        dir = XMVector3Normalize( dir );
+    } else {
+        dir = currentDir;
+        s_previousLightDir = currentDir;
+        s_lightDirInitialized = true;
     }
 
     static XMVECTOR oldP = XMVectorZero();
@@ -551,6 +595,7 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
 
     // Switch global light shader when raining
     if ( wetness > 0.0f && !isSnow) {
+        // Same shader, just has a DEFINE set to enable rain-related effects
         graphicsEngine->SetActivePixelShader( "PS_DS_AtmosphericScattering_Rain" );
     } else {
         graphicsEngine->SetActivePixelShader( "PS_DS_AtmosphericScattering" );
