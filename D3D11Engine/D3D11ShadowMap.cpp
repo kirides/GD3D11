@@ -296,12 +296,13 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
     // Try to update only if the camera went 200 units away from the last position
     // This prevents "shaking" when the player is strafing or moving just a tiny bit
     float len;
-    XMStoreFloat( &len, XMVector3Length( oldP - cameraPositionXm ) );
-    if ( (len < 64 &&
+    XMStoreFloat( &len, XMVector3LengthSq( oldP - cameraPositionXm ) );
+    constexpr float distSq = 32.f * 32.f;
+    if ( (len < distSq &&
         // And is on even space
         (cameraPosition.x - static_cast<int>( cameraPosition.x )) < 0.1f &&
         // but don't let it go too far
-        (cameraPosition.y - static_cast<int>(cameraPosition.y)) < 0.1f) || len < 200.0f ) {
+        (cameraPosition.y - static_cast<int>(cameraPosition.y)) < 0.1f) ) {
         WorldShadowCP = oldP;
     } else {
         oldP = cameraPositionXm;
