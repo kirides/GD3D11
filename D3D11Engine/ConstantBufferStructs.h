@@ -223,6 +223,35 @@ struct VS_ExConstantBuffer_PerInstanceSkeletal {
     float3 PI_Pad1;
 };
 
+// Maximum bones per skeleton (must match shader)
+static const int NUM_MAX_BONES = 96;
+
+// Maximum instances per batch (adjustable based on GPU memory)
+static const int MAX_SKELETAL_INSTANCES = 64;
+
+// Per-instance data for instanced skeletal rendering
+// Stored in a StructuredBuffer for GPU access
+__declspec(align(16)) struct SkeletalInstanceData {
+    XMFLOAT4X4 World;           // World transform
+    XMFLOAT4X4 PrevWorld;       // Previous World transform
+    float4 Color;               // Model color (RGBA)
+    float Fatness;              // Model fatness for vertex displacement
+    float Scale;                // Uniform scale factor
+    uint32_t BoneOffset;        // Offset into the bone transform buffer
+    uint32_t Padding;           // Alignment padding
+};
+
+// Instance data for node attachments (weapons, heads, etc.)
+// Must be 16-byte aligned for SIMD operations
+__declspec(align(16)) struct NodeAttachmentInstanceData {
+    XMFLOAT4X4 World;       // World transform (includes bone transform)
+    XMFLOAT4X4 PrevWorld;   // Previous World transform (includes bone transform)
+    float4 Color;           // Model color
+    float Fatness;          // Fatness for MMS meshes
+    float Scaling;          // Scaling for MMS meshes
+    float2 Padding;         // Alignment padding
+};
+
 struct ScreenFadeConstantBuffer {
     float GA_Alpha;
     float3 GA_Pad;

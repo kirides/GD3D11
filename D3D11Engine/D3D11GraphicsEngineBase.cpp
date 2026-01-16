@@ -11,7 +11,6 @@
 #include "zCView.h"
 
 const unsigned int DRAWVERTEXARRAY_BUFFER_SIZE = 4096 * sizeof( ExVertexStruct );
-const int NUM_MAX_BONES = 96;
 const unsigned int INSTANCING_BUFFER_SIZE = sizeof( VobInstanceInfo ) * 2048;
 
 #if defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)

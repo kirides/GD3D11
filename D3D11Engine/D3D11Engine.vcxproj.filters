@@ -806,6 +806,7 @@
     <ClInclude Include="RenderGraph.h">
       <Filter>Engine\Graph</Filter>
     </ClInclude>
+    <ClInclude Include="D3D11StructuredBuffer.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp" />

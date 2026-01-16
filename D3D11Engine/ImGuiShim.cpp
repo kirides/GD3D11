@@ -959,6 +959,7 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
 
         ImGui::Checkbox( "Draw Skeletal Meshes", &settings.DrawSkeletalMeshes );
         ImGui::BeginDisabled( !settings.DrawSkeletalMeshes );
+        ImGui::Checkbox( "Enable Experimental Batching", &UseExperimentalSkeletalBatching );
         ImGui::SliderFloat( "SkeletalMeshDrawRadius", &settings.SkeletalMeshDrawRadius, 0.0f, 18000.0f, "%.0f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
         ImGui::SetItemTooltip( "Draw distance for NPCs" );
         ImGui::EndDisabled();

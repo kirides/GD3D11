@@ -4,6 +4,8 @@
 #include "GothicAPI.h"
 #include "D3D11ShadowMap.h"
 #include "D3D11ShaderManager.h"
+#include "D3D11StructuredBuffer.h"
+#include "ConstantBufferStructs.h"
 
 struct RenderToDepthStencilBuffer;
 
@@ -28,7 +30,6 @@ const unsigned int PARTICLES_BUFFER_SIZE = 3072 * sizeof( ParticleInstanceInfo )
 const unsigned int MORPHEDMESH_SMALL_BUFFER_SIZE = 3072 * sizeof( ExVertexStruct );
 const unsigned int MORPHEDMESH_HIGH_BUFFER_SIZE = 20480 * sizeof( ExVertexStruct );
 const unsigned int HUD_BUFFER_SIZE = 6 * sizeof( ExVertexStruct );
-const int NUM_MAX_BONES = 96;
 const int unsigned INSTANCING_BUFFER_SIZE = sizeof( VobInstanceInfo ) * 2048;
 
 
@@ -361,6 +362,21 @@ public:
 
     const XMFLOAT4X4& GetPrevViewProjMatrix() const { return m_PrevViewProjMatrix; }
     void StorePrevViewProjMatrix();
+
+    // New methods for instanced skeletal rendering
+    XRESULT InitSkeletalInstancingBuffers();
+    void BuildSkeletalMeshBatches( const std::vector<SkeletalVobInfo*>& vobs );
+    XRESULT DrawSkeletalMeshBatched();
+    XRESULT DrawSkeletalMeshInstanced( SkeletalMeshBatch& batch );
+    void ClearSkeletalMeshBatches();
+
+    // Initialize node attachment instancing buffer
+    XRESULT InitNodeAttachmentInstancingBuffer();
+
+    // Draw batched node attachments
+    void DrawNodeAttachmentsBatched(
+        std::unordered_map<NodeAttachmentBatchKey, NodeAttachmentBatchData>& batches );
+
 protected:
 
     void StoreVobPreviousTransforms();
@@ -474,4 +490,12 @@ private:
     XMFLOAT4X4 m_PrevViewProjMatrix;
     
     INT2 NewResolution;
+
+    // Instanced skeletal mesh rendering buffers
+    std::unique_ptr<D3D11StructuredBuffer<SkeletalInstanceData>> SkeletalInstanceBuffer;
+    std::unique_ptr<D3D11StructuredBuffer<XMFLOAT4X4>> SkeletalBoneBuffer;
+
+    // Batched skeletal meshes for current frame
+    std::unordered_map<NodeAttachmentBatchKey, SkeletalMeshBatch> SkeletalMeshBatches;
+    std::unique_ptr<D3D11StructuredBuffer<NodeAttachmentInstanceData>> NodeAttachmentInstanceBuffer;
 };

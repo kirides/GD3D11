@@ -369,24 +369,13 @@ public:
     template<class T>
     T* As() {
         zCClassDef* classDef = reinterpret_cast<zCObject*>(this)->_GetClassDef();
-        if ( CheckInheritance( classDef, T::GetStaticClassDef() ) ) {
+        if ( zCObject::CheckInheritance( classDef, T::GetStaticClassDef() ) ) {
             return reinterpret_cast<T*>(this);
         }
         return nullptr;
     }
-protected:
-
-    bool CheckInheritance( const zCClassDef* def, const zCClassDef* target ) {
-        while ( def ) {
-            if ( def == target ) {
-                return true;
-            }
-            def = def->baseClassDef;
-        }
-        return false;
-    }
 
     zSTRING& __GetObjectName() {
-        return reinterpret_cast<zSTRING&( __fastcall* )( zCVob* )>( GothicMemoryLocations::zCObject::GetObjectName )( this );
+        return reinterpret_cast<zSTRING & (__fastcall*)(zCVob*)>(GothicMemoryLocations::zCObject::GetObjectName)(this);
     }
 };

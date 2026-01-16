@@ -453,6 +453,7 @@ struct GothicMemoryLocations {
         static const unsigned int Offset_NormalsList = 0x3C;
         static const unsigned int Offset_Submeshes = 0xA4;
         static const unsigned int Offset_NumSubmeshes = 0xA8;
+        static const unsigned int Offset_ProgId = 0xD0;
     };
 
     struct zCVob {
@@ -691,6 +692,8 @@ struct GothicMemoryLocations {
         static const unsigned int zCZoneZFogDefault = 0x009a4618;
         static const unsigned int oCZoneMusicDefault = 0x009a4938;
         static const unsigned int zCTexture = 0x0099B2F8;
+        static const unsigned int zCMorphMesh = 0x008d8c00;
+        static const unsigned int zCProgMeshProto = 0x00982b48;
     };
 
     struct oCInformationManager

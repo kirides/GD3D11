@@ -48,6 +48,7 @@
 
 // TODO: REMOVE THIS!
 #include "D3D11GraphicsEngine.h"
+#include "D3D11RenderQueue.h"
 
 #ifndef PUBLIC_RELEASE
 #define OPT_DBG_NOINLINE __declspec(noinline)
@@ -57,6 +58,8 @@
 
 // Duration how long the scene will stay wet, in MS
 const DWORD SCENE_WETNESS_DURATION_MS = 30 * 1000;
+
+bool UseExperimentalSkeletalBatching = false;
 
 // Draw ghost from back to front of our camera
 auto CompareGhostDistance = []( TransparencyVobInfo& a, TransparencyVobInfo& b ) -> bool { return a.distance < b.distance; };
@@ -1184,44 +1187,101 @@ void GothicAPI::DrawWorldMeshNaive() {
 
         auto drawRadius = RendererState.RendererSettings.SkeletalMeshDrawRadius;
 
-        for ( const auto& vobInfo : AnimatedSkeletalVobs ) {
-            // Don't render if sleeping and has skeletal meshes available
-            if ( !vobInfo->VisualInfo ) continue;
+#if defined(BUILD_1_12F)
+        // not implemented in G1 sequel
+        UseExperimentalSkeletalBatching = false;
+#endif
+        // TODO: Figure out why Batching is not working properly here
+        // The Batches constantly use wrong textures as if just before "DrawIndexed" the texture is being changed by something else
+        // this happens on the Body meshes as well as all the Node Attachments.
+        // We need this to be fixed, so that we can actually draw hundreds of animated characters with good performance.
+        if ( UseExperimentalSkeletalBatching ) {
 
-            float dist;
-            XMStoreFloat( &dist, XMVector3Length( vobInfo->Vob->GetPositionWorldXM() - cameraPosXm ) );
-            if ( dist > drawRadius )
-                continue; // Skip out of range
+            static std::vector<SkeletalVobInfo*> batchedVobs;
+            batchedVobs.clear();
 
-            zCCamera::GetCamera()->SetTransform( zCCamera::ETransformType::TT_WORLD, *vobInfo->Vob->GetWorldMatrixPtr() );
+            for ( const auto& vobInfo : AnimatedSkeletalVobs ) {
+                // Don't render if sleeping and has skeletal meshes available
+                if ( !vobInfo->VisualInfo ) continue;
 
-            //Engine::GraphicsEngine->GetLineRenderer()->AddAABBMinMax(bb.Min, bb.Max, XMFLOAT4(1, 1, 1, 1));
+                float dist;
+                XMStoreFloat( &dist, XMVector3Length( vobInfo->Vob->GetPositionWorldXM() - cameraPosXm ) );
+                if ( dist > drawRadius )
+                    continue; // Skip out of range
 
-            int clipFlags = EGothicCullFlags::CullSidesNear; // No far clip
-            if ( GetCameraBBox3DInFrustum( vobInfo->Vob, clipFlags, true ) == ZTCAM_CLIPTYPE_OUT )
-                continue;
+                zCCamera::GetCamera()->SetTransform( zCCamera::ETransformType::TT_WORLD, *vobInfo->Vob->GetWorldMatrixPtr() );
 
-            // Indoor?
-            vobInfo->IndoorVob = vobInfo->Vob->IsIndoorVob();
+                int clipFlags = EGothicCullFlags::CullSidesNear; // No far clip
+                if ( GetCameraBBox3DInFrustum( vobInfo->Vob, clipFlags, true ) == ZTCAM_CLIPTYPE_OUT )
+                    continue;
 
-            zCModel* model = static_cast<zCModel*>(vobInfo->Vob->GetVisual());
-            if ( !model )
-                continue; // Gothic fortunately sets this to 0 when it throws the model out of the cache
+                //Engine::GraphicsEngine->GetLineRenderer()->AddAABBMinMax(bb.Min, bb.Max, XMFLOAT4(1, 1, 1, 1));
 
-            // This is important, because gothic only lerps between animation when this distance is set and below ~2000
-            model->SetDistanceToCamera( dist );
+                // Indoor?
+                vobInfo->IndoorVob = vobInfo->Vob->IsIndoorVob();
 
-            // Schedule for drawing in later stage if this vob is ghost
-            if ( vobInfo->Vob->GetVisualAlpha() ) {
-                TransparencyVobs.emplace_back( dist, vobInfo->Vob->GetVobTransparency(), vobInfo, nullptr );
-                std::push_heap( TransparencyVobs.begin(), TransparencyVobs.end(), CompareGhostDistance );
-                continue;
+                zCModel* model = static_cast<zCModel*>(vobInfo->Vob->GetVisual());
+                if ( !model )
+                    continue; // Gothic fortunately sets this to 0 when it throws the model out of the cache
+
+                // This is important, because gothic only lerps between animation when this distance is set and below ~2000
+                model->SetDistanceToCamera( dist );
+
+                // Schedule for drawing in later stage if this vob is ghost
+                if ( vobInfo->Vob->GetVisualAlpha() ) {
+                    TransparencyVobs.emplace_back( dist, vobInfo->Vob->GetVobTransparency(), vobInfo, nullptr );
+                    std::push_heap( TransparencyVobs.begin(), TransparencyVobs.end(), CompareGhostDistance );
+                    continue;
+                }
+
+                batchedVobs.push_back( vobInfo );
+                if ( RendererState.RendererSettings.ShowSkeletalVertexNormals )
+                    VNSkeletalVobs.emplace_back( vobInfo );
             }
 
-            DrawSkeletalMeshVob( vobInfo, dist );
-            if( RendererState.RendererSettings.ShowSkeletalVertexNormals )
-                VNSkeletalVobs.emplace_back( vobInfo );
+            DrawSkeletalMeshVobs_Batched( batchedVobs, true, true );
+        } else {
+
+            for ( const auto& vobInfo : AnimatedSkeletalVobs ) {
+                // Don't render if sleeping and has skeletal meshes available
+                if ( !vobInfo->VisualInfo ) continue;
+
+                float dist;
+                XMStoreFloat( &dist, XMVector3Length( vobInfo->Vob->GetPositionWorldXM() - cameraPosXm ) );
+                if ( dist > drawRadius )
+                    continue; // Skip out of range
+
+                int clipFlags = EGothicCullFlags::CullSidesNear; // No far clip
+                
+                zCCamera::GetCamera()->SetTransform( zCCamera::ETransformType::TT_WORLD, *vobInfo->Vob->GetWorldMatrixPtr() );
+                if ( GetCameraBBox3DInFrustum( vobInfo->Vob, clipFlags, true ) == ZTCAM_CLIPTYPE_OUT )
+                    continue;
+                //Engine::GraphicsEngine->GetLineRenderer()->AddAABBMinMax(bb.Min, bb.Max, XMFLOAT4(1, 1, 1, 1));
+
+                // Indoor?
+                vobInfo->IndoorVob = vobInfo->Vob->IsIndoorVob();
+
+                zCModel* model = static_cast<zCModel*>(vobInfo->Vob->GetVisual());
+                if ( !model )
+                    continue; // Gothic fortunately sets this to 0 when it throws the model out of the cache
+
+                // This is important, because gothic only lerps between animation when this distance is set and below ~2000
+                model->SetDistanceToCamera( dist );
+
+                // Schedule for drawing in later stage if this vob is ghost
+                if ( vobInfo->Vob->GetVisualAlpha() ) {
+                    TransparencyVobs.emplace_back( dist, vobInfo->Vob->GetVobTransparency(), vobInfo, nullptr );
+                    std::push_heap( TransparencyVobs.begin(), TransparencyVobs.end(), CompareGhostDistance );
+                    continue;
+                }
+
+                DrawSkeletalMeshVob( vobInfo, dist );
+                if ( RendererState.RendererSettings.ShowSkeletalVertexNormals )
+                    VNSkeletalVobs.emplace_back( vobInfo );
+            }
         }
+
+        
     }
 
     // Draw vobs in view
@@ -1230,6 +1290,250 @@ void GothicAPI::DrawWorldMeshNaive() {
     //DebugDrawBSPTree();
 
     ResetWorldTransform();
+}
+
+// Add the new batched rendering method:
+void GothicAPI::DrawSkeletalMeshVobs_Batched( 
+    const std::vector<SkeletalVobInfo*>& vobs,
+    bool updateState,
+    bool drawAttachments ) {
+    D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+
+    Engine::GAPI->GetRendererState().TransformState.TransformView = zCCamera::GetCamera()->GetTransformDX( zCCamera::ETransformType::TT_VIEW );
+
+    // Build batches from animated skeletal vobs
+    g->BuildSkeletalMeshBatches( vobs );
+
+    // Draw all batches
+    g->DrawSkeletalMeshBatched();
+
+    if ( !drawAttachments ) {
+        g->ClearSkeletalMeshBatches();
+        return;
+    }
+
+    g->SetupVS_ExMeshDrawCall();
+    g->SetupVS_ExConstantBuffer();
+
+    // Collect node attachments for batched rendering
+    // Key: (Texture*, Visual*) -> ensures same texture AND same mesh geometry
+    static std::unordered_map<NodeAttachmentBatchKey, NodeAttachmentBatchData> NodeAttachmentBatches;
+    NodeAttachmentBatches.clear();
+
+    XMVECTOR playerPosXm = oCGame::GetPlayer() ? oCGame::GetPlayer()->GetPositionWorldXM() : g_XMZero;
+    
+    D3D11GraphicsEngine* engine = (D3D11GraphicsEngine*)Engine::GraphicsEngine;
+    auto isShadowPass = engine->GetRenderingStage() == DES_SHADOWMAP || engine->GetRenderingStage() == DES_SHADOWMAP_CUBE; 
+
+    static std::vector<XMFLOAT4X4> transforms;
+    for ( const auto& vi : vobs ) {
+        zCModel* model = static_cast<zCModel*>(vi->Vob->GetVisual());
+        if ( !model || !vi->VisualInfo ) continue;
+
+        //model->SetIsVisible( true );
+        if ( !vi->Vob->GetShowVisual() ) continue;
+
+        float dist;
+        XMStoreFloat( &dist, XMVector3Length( vi->Vob->GetPositionWorldXM() - playerPosXm ) );
+
+        // Calculate model color
+        float4 modelColor;
+        if ( RendererState.RendererSettings.EnableShadows ) {
+            modelColor = float4( 1, 1, 1, 1 );
+        } else {
+            if ( vi->Vob->IsIndoorVob() ) {
+                modelColor = DEFAULT_LIGHTMAP_POLY_COLOR;
+            } else if ( zCPolygon* polygon = vi->Vob->GetGroundPoly() ) {
+                static const float inv255f = 1.0f / 255.0f;
+                float3 vobPos = vi->Vob->GetPositionWorld();
+                float3 polyLightStat = polygon->GetLightStatAtPos( vobPos );
+                modelColor = float4( polyLightStat.z * inv255f, polyLightStat.y * inv255f, polyLightStat.x * inv255f, 1.f );
+            } else {
+                modelColor = float4( 1, 1, 1, 1 );
+            }
+        }
+
+        XMMATRIX scale = XMMatrixScalingFromVector( model->GetModelScaleXM() );
+        XMMATRIX world = vi->Vob->GetWorldMatrixXM() * scale;
+
+        float fatness = model->GetModelFatness();
+
+        // Get bone transforms
+        transforms.clear();
+        model->GetBoneTransforms( &transforms );
+
+        const std::vector<XMFLOAT4X4>& prevBoneTransforms = (vi->HasValidPrevTransforms && !vi->PrevBoneTransforms.empty())
+            ? vi->PrevBoneTransforms
+            : transforms;
+        const XMMATRIX prevWorldMatrix = vi->HasValidPrevTransforms 
+            ? XMLoadFloat4x4(&vi->PrevWorldMatrix) 
+            : world;
+        
+        // Update attachments
+        if ( updateState ) {
+            model->UpdateAttachedVobs();
+        }
+
+        std::map<int, std::vector<MeshVisualInfo*>>& nodeAttachments = vi->NodeAttachments;
+        zCModel* mvis = static_cast<zCModel*>( vi->Vob->GetVisual() );
+
+        for ( unsigned int i = 0; i < transforms.size(); i++ ) {
+            zCModelNodeInst* node = mvis->GetNodeList()->Array[i];
+
+            if ( !node->NodeVisual ) continue;
+
+            if ( updateState ) {
+                // Load attachment if not yet loaded
+                if ( nodeAttachments.find( i ) == nodeAttachments.end() ) {
+                    WorldConverter::ExtractNodeVisual( i, node, nodeAttachments );
+                }
+
+                // Check for changed visual
+                if ( !nodeAttachments[i].empty() && node->NodeVisual != nodeAttachments[i][0]->Visual ) {
+                    if ( !node->NodeVisual ) {
+                        delete nodeAttachments[i][0];
+                        nodeAttachments[i].clear();
+                        continue;
+                    }
+                    WorldConverter::ExtractNodeVisual( i, node, nodeAttachments );
+                }
+            }
+
+            // Skip non-hand visuals if model requests it
+            if ( model->GetDrawHandVisualsOnly() ) {
+                std::string NodeName = node->ProtoNode->NodeName.ToChar();
+#ifdef BUILD_GOTHIC_2_6_fix
+                if ( NodeName.find( "HAND" ) == std::string::npos &&
+                     (*reinterpret_cast<BYTE*>(0x57A694) != 0x90 || NodeName.find( "ARM" ) == std::string::npos) ) {
+#else
+                if ( NodeName.find( "HAND" ) == std::string::npos ) {
+#endif
+                    continue;
+                }
+            }
+
+            if ( nodeAttachments.find( i ) == nodeAttachments.end() ) continue;
+            
+            XMMATRIX curTransform = XMLoadFloat4x4( &transforms[i] );
+            XMMATRIX finalWorld = world * curTransform;
+
+            XMMATRIX prevTransform = XMLoadFloat4x4( &prevBoneTransforms[i] );
+            auto prevWorldNode = prevWorldMatrix * prevTransform; 
+
+            // Process each attachment visual
+            for ( MeshVisualInfo* mvi : nodeAttachments[i] ) {
+                if ( !mvi || !mvi->Visual ) continue;
+
+                // Update animated textures BEFORE getting the texture pointer
+                bool isMMS = strcmp( mvi->Visual->GetFileExtension( 0 ), ".MMS" ) == 0;
+                if ( updateState ) {
+                    node->TexAniState.UpdateTexList();
+                    if ( isMMS ) {
+                        zCMorphMesh* mm = reinterpret_cast<zCMorphMesh*>(mvi->Visual);
+                        mm->GetTexAniState()->UpdateTexList();
+                    }
+                }
+
+                // Handle MorphMeshes separately (can't be batched due to vertex animation)
+                if ( dist < 1000 && isMMS ) {
+                    if ( g->GetRenderingStage() == DES_MAIN || g->GetRenderingStage() == DES_GHOST ) {
+                        zCMorphMesh* mm = reinterpret_cast<zCMorphMesh*>( mvi->Visual );
+
+                        if ( updateState ) {
+                            mm->GetTexAniState()->UpdateTexList();
+                        }
+                        SetWorldViewTransform( finalWorld, GetViewMatrixXM() );
+
+                        g->SetActiveVertexShader( "VS_ExNode" );
+                        g->SetupVS_ExMeshDrawCall();
+                        g->SetupVS_ExConstantBuffer();
+
+                        VS_ExConstantBuffer_PerInstanceNode instanceInfo;
+                        instanceInfo.Color = modelColor;
+                        instanceInfo.Fatness = std::max<float>( 0.f, fatness * 0.35f );
+                        instanceInfo.Scaling = fatness * 0.02f + 1.f;
+                        XMStoreFloat4x4(&instanceInfo.World, finalWorld);
+                        XMStoreFloat4x4(&instanceInfo.PrevWorld, prevWorldNode);
+
+                        g->GetActiveVS()->GetConstantBuffer()[1]->UpdateBuffer( &instanceInfo );
+                        g->GetActiveVS()->GetConstantBuffer()[1]->BindToVertexShader( 1 );
+
+                        if ( updateState ) {
+                            mm->AdvanceAnis();
+                            mm->CalcVertexPositions();
+                        }
+                        DrawMorphMesh( mm, mvi->Meshes );
+                        continue;
+                    }
+                }
+
+                // Build instance data
+                NodeAttachmentInstanceData instData = {};
+                XMStoreFloat4x4( &instData.World, finalWorld );
+                XMStoreFloat4x4( &instData.PrevWorld, prevWorldNode );
+                instData.Color = modelColor;
+
+                if ( isMMS ) {
+                    instData.Fatness = std::max<float>( 0.f, fatness * 0.35f );
+                    instData.Scaling = fatness * 0.02f + 1.f;
+                } else {
+                    instData.Fatness = 0.f;
+                    instData.Scaling = 1.f;
+                }
+
+                NodeAttachmentBatchKey baseNodeMeshKey = 0;
+
+                if ( auto mm = mvi->Visual->As<zCMorphMesh>(); mm ) {
+                    auto progMeshPtr = mm->GetMorphMesh();
+                    if ( !progMeshPtr ) {
+                        continue; // no mesh no good.
+                    }
+
+                    mm->GetTexAniState()->UpdateTexList();
+                    auto progMeshId = progMeshPtr->GetProgId();
+                    Toolbox::hash_combine( baseNodeMeshKey, progMeshId );
+                } else if ( auto proto = mvi->Visual->As<zCProgMeshProto>(); proto ) {
+                    auto progMeshId = proto->GetProgId();
+                    Toolbox::hash_combine( baseNodeMeshKey, progMeshId );
+                } else {
+                    // broken inheritance check.
+                    continue;
+                }
+
+                // Collect into batches by (Meshlib, texture) pair
+                // This ensures same texture AND same mesh geometry for proper instancing
+                for ( auto const& itm : mvi->Meshes ) {
+                    zCMaterial* mat = itm.first;
+                    if ( !mat ) continue;
+
+                    NodeAttachmentBatchKey key = baseNodeMeshKey;
+                    // TODO: figure out how to know if we need the texture in shadow pass.
+                    Toolbox::hash_combine( key, std::string_view( mat->GetAniTexture() && mat->GetAniTexture()->__GetName().Length() ? mat->GetAniTexture()->__GetName().ToChar() : ""));
+
+                    auto& batch = NodeAttachmentBatches[key];
+
+                    // Store the first mesh encountered
+                    if ( !batch.Mesh.size() ) {
+                        batch.Mesh = itm.second;
+                        batch.vobInfo = vi;
+                        batch.node = node;
+                        batch.MeshVisualInfo = mvi;
+                        batch.Material = mat;
+                    }
+
+                    batch.Instances.push_back( instData );
+                }
+            }
+        }
+    }
+
+    // Draw all batched node attachments
+    if ( !NodeAttachmentBatches.empty() ) {
+        g->DrawNodeAttachmentsBatched( NodeAttachmentBatches );
+    }
+
+    // Clear batches for next frame
+    g->ClearSkeletalMeshBatches();
 }
 
 /** Draws particles, in a simple way */
@@ -2303,7 +2607,7 @@ void GothicAPI::UpdateCompressBackBuffer() {
 }
 
 /** Draws a skeletal mesh-vob */
-void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool updateState ) {
+void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool updateState, bool drawAttachments ) {
     // TODO: Put this into the renderer!!
     D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
 
@@ -2372,6 +2676,10 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
             // Just in case somehow we end up without skeletal meshes and they are available
             WorldConverter::ExtractSkeletalMeshFromVob( model, static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo) );
         }
+    }
+    
+    if (!drawAttachments) {
+        return;
     }
 
     if ( g->GetRenderingStage() == DES_SHADOWMAP_CUBE )
@@ -2750,271 +3058,22 @@ void GothicAPI::DrawSkeletalMeshVobs(
     const std::vector<SkeletalVobInfo*>& vis,
     bool updateState,
     bool drawAttachments ) {
-    // TODO: Put this into the renderer!!
-    D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
 
-    constexpr float distance = FLT_MAX;
-
-    struct TempVobDrawInfo {
-        SkeletalVobInfo* VobInfo;
-        zCModel* Model;
-        std::vector<XMFLOAT4X4> BoneTransforms;
-        float4 ModelColor;
-        float Fatness;
-        XMMATRIX World;
-    };
-
-    static std::vector<TempVobDrawInfo> tempVobList;
-    tempVobList.clear();
-
-    for ( SkeletalVobInfo* vi : vis ) {
-        zCModel* model = static_cast<zCModel*>(vi->Vob->GetVisual());
-        if ( !model ) {
-            continue;
-        }
-
-        model->SetIsVisible( true );
-        if ( !vi->VisualInfo )
-            continue; // Gothic fortunately sets this to 0 when it throws the model out of the cache
-        if ( !vi->Vob->GetShowVisual() )
-            continue;
-
-
-        SkeletalMeshVisualInfo* visual = static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo);
-
-        float4 modelColor;
-        if ( Engine::GAPI->GetRendererState().RendererSettings.EnableShadows ) {
-            // Let shadows do the work
-            modelColor = 0xFFFFFFFF;
-        } else {
-            if ( vi->Vob->IsIndoorVob() ) {
-                // All lightmapped polys have this color, so just use it
-                modelColor = DEFAULT_LIGHTMAP_POLY_COLOR;
-            } else {
-                // Get the color from vob position of the ground poly
-                if ( zCPolygon* polygon = vi->Vob->GetGroundPoly() ) {
-                    static const float inv255f = (1.0f / 255.0f);
-                    float3 vobPos = vi->Vob->GetPositionWorld();
-                    float3 polyLightStat = polygon->GetLightStatAtPos( vobPos );
-                    modelColor.x = polyLightStat.z * inv255f;
-                    modelColor.y = polyLightStat.y * inv255f;
-                    modelColor.z = polyLightStat.x * inv255f;
-                    modelColor.w = 1.f;
-                } else {
-                    modelColor = 0xFFFFFFFF;
-                }
-            }
-        }
-
-        XMMATRIX scale = XMMatrixScalingFromVector( model->GetModelScaleXM() );
-
-        XMMATRIX xmWorld = vi->Vob->GetWorldMatrixXM() * scale;
-        XMFLOAT4X4 world; XMStoreFloat4x4( &world, xmWorld );
-        float fatness = model->GetModelFatness();
-
-        // Get the bone transforms
-        static std::vector<XMFLOAT4X4> transforms;
-        transforms.clear();
-        model->GetBoneTransforms( &transforms );
-
-        if ( updateState ) {
-            // Update attachments
-            model->UpdateAttachedVobs();
-            model->UpdateMeshLibTexAniState();
-        }
-
-        if ( !static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->SkeletalMeshes.empty() ) {
-#ifdef BUILD_GOTHIC_2_6_fix
-            if ( !model->GetDrawHandVisualsOnly() || *reinterpret_cast<BYTE*>(0x57A694) == 0x90 ) {
-#else
-            if ( !model->GetDrawHandVisualsOnly() ) {
+#if defined(BUILD_1_12F)
+    // not implemented in G1 sequel
+    UseExperimentalSkeletalBatching = false;
 #endif
-                Engine::GraphicsEngine->DrawSkeletalMesh( vi, transforms, modelColor, world, fatness );
-            }
-            } else {
-            if ( model->GetMeshSoftSkinList()->NumInArray > 0 ) {
-                // Just in case somehow we end up without skeletal meshes and they are available
-                WorldConverter::ExtractSkeletalMeshFromVob( model, static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo) );
-            }
-        }
 
-        if ( drawAttachments ) {
-            TempVobDrawInfo info = {};
-            info.VobInfo = vi;
-            info.Model = model;
-            info.BoneTransforms = std::move( transforms );
-            info.Fatness = fatness;
-            info.ModelColor = modelColor;
-            info.World = xmWorld;
+    if ( UseExperimentalSkeletalBatching ) {
+        DrawSkeletalMeshVobs_Batched( vis, updateState, drawAttachments );
+    } else {
+        FXMVECTOR camPos = GetCameraPositionXM();
 
-            tempVobList.push_back( info );
-        }
+        for ( SkeletalVobInfo* vi : vis ) {
+            float dist;
+            XMStoreFloat( &dist, XMVector3Length( camPos - vi->Vob->GetPositionWorldXM() ) );
 
-        RendererState.RendererInfo.FrameDrawnVobs++;
-        }
-
-    if ( !drawAttachments ) {
-        return;
-    }
-
-    if ( g->GetRenderingStage() == DES_SHADOWMAP_CUBE )
-        g->SetActiveVertexShader( "VS_ExNodeCube" );
-    else
-        g->SetActiveVertexShader( "VS_ExNode" );
-
-    g->SetupVS_ExMeshDrawCall();
-    g->SetupVS_ExConstantBuffer();
-
-    for ( auto& data : tempVobList ) {
-
-        auto vi = data.VobInfo;
-        auto model = data.Model;
-        auto modelColor = data.ModelColor;
-        auto& transforms = data.BoneTransforms;
-        auto fatness = data.Fatness;
-        auto& world = data.World;
-
-        SkeletalMeshVisualInfo* visual = static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo);
-        // Set up instance info
-        VS_ExConstantBuffer_PerInstanceNode instanceInfo;
-        instanceInfo.Color = modelColor;
-
-        // Init the constantbuffer if not already done
-        if ( !vi->VobConstantBuffer )
-            vi->UpdateVobConstantBuffer();
-
-        std::map<int, std::vector<MeshVisualInfo*>>& nodeAttachments = vi->NodeAttachments;
-        for ( unsigned int i = 0; i < transforms.size(); i++ ) {
-            // Check for new visual
-            zCModel* mvis = static_cast<zCModel*>( vi->Vob->GetVisual() );
-            zCModelNodeInst* node = mvis->GetNodeList()->Array[i];
-
-            if ( !node->NodeVisual )
-                continue; // Happens when you pull your sword for example
-
-            // Check if this is loaded
-            if ( node->NodeVisual && nodeAttachments.find( i ) == nodeAttachments.end() ) {
-                // It's not, extract it
-                WorldConverter::ExtractNodeVisual( i, node, nodeAttachments );
-            }
-
-            // Check for changed visual
-            if ( nodeAttachments[i].size() && node->NodeVisual != nodeAttachments[i][0]->Visual ) {
-                // Check for deleted attachment
-                if ( !node->NodeVisual ) {
-                    // Remove attachment
-                    delete nodeAttachments[i][0];
-                    nodeAttachments[i].clear();
-
-                    LogInfo() << "Removed attachment from model " << vi->VisualInfo->VisualName;
-
-                    continue; // Go to next attachment
-                }
-                // Load the new one
-                WorldConverter::ExtractNodeVisual( i, node, nodeAttachments );
-            }
-
-            if ( model->GetDrawHandVisualsOnly() ) {
-                std::string NodeName = node->ProtoNode->NodeName.ToChar();
-#ifdef BUILD_GOTHIC_2_6_fix
-                if ( NodeName.find( "HAND" ) == std::string::npos && (*reinterpret_cast<BYTE*>(0x57A694) != 0x90 || NodeName.find( "ARM" ) == std::string::npos) ) {
-#else
-                if ( NodeName.find( "HAND" ) == std::string::npos ) {
-#endif
-                    continue;
-                }
-                }
-
-            if ( nodeAttachments.find( i ) != nodeAttachments.end() ) {
-
-                // Setup pixel shader here so that we get correct normals
-                    // Somehow BindShaderForTexture make normals to be inversed
-                if ( g->GetRenderingStage() == DES_MAIN ) {
-                    g->SetActivePixelShader( "PS_DiffuseAlphaTest" );
-                    g->BindActivePixelShader();
-                }
-
-                // Go through all attachments this node has
-                for ( MeshVisualInfo* mvi : nodeAttachments[i] ) {
-                    XMMATRIX curTransform = XMLoadFloat4x4( &transforms[i] );
-                    XMFLOAT4X4 finalWorld; XMStoreFloat4x4( &finalWorld, world* curTransform );
-
-                    if ( !mvi->Visual ) {
-                        LogWarn() << "Attachment without visual on model: " << model->GetVisualName();
-                        continue;
-                    }
-
-                    // Update animated textures
-                    bool isMMS = strcmp( mvi->Visual->GetFileExtension( 0 ), ".MMS" ) == 0;
-                    if ( updateState ) {
-                        node->TexAniState.UpdateTexList();
-                        if ( isMMS ) {
-                            zCMorphMesh* mm = reinterpret_cast<zCMorphMesh*>(mvi->Visual);
-                            mm->GetTexAniState()->UpdateTexList();
-                        }
-                    }
-
-                    if ( isMMS ) {
-                        // Only 0.35f of the fatness wanted by gothic.
-                        // They seem to compensate for that with the scaling.
-                        instanceInfo.Fatness = std::max<float>( 0.f, fatness * 0.35f );
-                        instanceInfo.Scaling = fatness * 0.02f + 1.f;
-                    } else {
-                        instanceInfo.Fatness = 0.f;
-                        instanceInfo.Scaling = 1.f;
-                    }
-
-                    auto& VShader = g->GetActiveVS();
-                    if ( distance < 1000 && isMMS ) {
-                        zCMorphMesh* mm = reinterpret_cast<zCMorphMesh*>( mvi->Visual );
-                        // Only draw this as a morphmesh when rendering the main scene or when rendering as ghost
-                        if ( g->GetRenderingStage() == DES_MAIN || g->GetRenderingStage() == DES_GHOST ) {
-                            // Update constantbuffer
-                            instanceInfo.World = finalWorld;
-                            VShader->GetConstantBuffer()[1]->UpdateBuffer( &instanceInfo );
-                            VShader->GetConstantBuffer()[1]->BindToVertexShader( 1 );
-
-                            if ( updateState ) {
-                                mm->AdvanceAnis();
-                                mm->CalcVertexPositions();
-                            }
-                            DrawMorphMesh( mm, mvi->Meshes );
-                            continue;
-                        }
-                    }
-
-                    instanceInfo.World = finalWorld;
-                    VShader->GetConstantBuffer()[1]->UpdateBuffer( &instanceInfo );
-                    VShader->GetConstantBuffer()[1]->BindToVertexShader( 1 );
-
-                    // Go through all materials registered here
-
-                    if ( g->GetRenderingStage() == DES_SHADOWMAP
-                        || g->GetRenderingStage() == DES_SHADOWMAP_CUBE ) {
-                        for ( auto const& itm : mvi->Meshes ) {
-                            // no texture binding for shadowmap
-
-                            // Go through all meshes using that material
-                            for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
-                                DrawMeshInfo( itm.first, itm.second[m] );
-                            }
-                        }
-                    } else {
-                        for ( auto const& itm : mvi->Meshes ) {
-                            zCTexture* texture;
-                            if ( itm.first && (texture = itm.first->GetAniTexture()) != nullptr ) {
-                                if ( !g->BindTextureNRFX( texture, (g->GetRenderingStage() == DES_MAIN) ) )
-                                    continue;
-                            }
-
-                            // Go through all meshes using that material
-                            for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
-                                DrawMeshInfo( itm.first, itm.second[m] );
-                            }
-                        }
-                    }
-                }
-            }
+            DrawSkeletalMeshVob( vi, dist, updateState, drawAttachments );
         }
     }
 }
@@ -3992,7 +4051,7 @@ void GothicAPI::DebugDrawBSPTree() {
     // Recursively go through the tree and draw all nodes
     DebugDrawTreeNode( root, root->BBox3D );
 }
-
+    
 /** Collects vobs using gothics BSP-Tree */
 void GothicAPI::CollectVisibleVobs( 
     std::vector<VobInfo*>& vobs,
@@ -4124,7 +4183,7 @@ void GothicAPI::CollectVisibleVobs(
         }
     }
 }
-
+    
 /** Collects visible sections from the current camera perspective */
 void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sections ) {
     const XMFLOAT3 camPos = Engine::GAPI->GetCameraPosition();
@@ -4308,7 +4367,7 @@ static void CVVH_AddNotDrawnVobToList(
         callback( ctx, it );
     }
 }
-
+    
 static void CVVH_AddNotDrawnVobToList(
     std::vector<SkeletalVobInfo*>& source,
     float dist, const RndCullContext& ctx,

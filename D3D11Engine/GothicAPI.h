@@ -63,6 +63,18 @@ enum EBspTreeCollectFlags : unsigned int {
     COLLECT_ALL_NO_MUTATE = COLLECT_ALL_MUTATE & ~COLLECT_MUTATE,
 };
 
+typedef size_t NodeAttachmentBatchKey;
+
+// Batch data for node attachments
+struct NodeAttachmentBatchData {
+    std::vector<MeshInfo*> Mesh;                       // First mesh encountered
+    std::vector<NodeAttachmentInstanceData> Instances; // All instances
+    SkeletalVobInfo* vobInfo;
+    zCModelNodeInst* node;
+    MeshVisualInfo* MeshVisualInfo;
+    zCMaterial* Material;
+};
+
 struct BspInfo {
     BspInfo() {
         NumStaticLights = 0;
@@ -211,6 +223,22 @@ class GVegetationBox;
 class zCMorphMesh;
 class zCDecal;
 
+// CPU-side batch information for skeletal mesh rendering
+struct SkeletalMeshBatch {
+    SkeletalMeshVisualInfo* VisualInfo;             // Shared visual info
+    std::vector<SkeletalVobInfo*> Vobs;             // All vobs in this batch
+    std::vector<SkeletalInstanceData> InstanceData; // Per-instance GPU data
+    std::vector<XMFLOAT4X4> AllBoneTransforms;      // All bone matrices for all instances
+    uint32_t TotalBoneCount;                        // Total bones across all instances
+
+    void Clear() {
+        Vobs.clear();
+        InstanceData.clear();
+        AllBoneTransforms.clear();
+        TotalBoneCount = 0;
+    }
+};
+
 class GothicAPI {
     friend void CVVH_AddNotDrawnVobToList( std::vector<VobInfo*>& target, std::vector<VobInfo*>& source, float dist, int clipFlags, EBspTreeCollectFlags collectFlags, zTCam_ClipType bspClip );
     friend void CVVH_AddNotDrawnVobToList( std::vector<VobLightInfo*>& target, std::vector<VobLightInfo*>& source, float dist, int clipFlags, EBspTreeCollectFlags collectFlags, zTCam_ClipType bspClip );
@@ -307,7 +335,7 @@ public:
     void DrawWorldMeshNaive();
 
     /** Draws a skeletal mesh-vob */
-    void DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool updateState = true );
+    void DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool updateState = true, bool drawAttachments = true );
 
     void DrawSkeletalMeshVob_Layered( SkeletalVobInfo* vi, float distance, bool updateState = true );
 
@@ -761,6 +789,9 @@ public:
     float GetSkyTimeScale();
     
     static void ProcessVobAnimation( zCVob* vob, zTAnimationMode aniMode, VobInstanceInfo& vobInstance );
+
+    /** Draw skeletal meshes using batching when possible */
+    void DrawSkeletalMeshVobs_Batched( const std::vector<SkeletalVobInfo*>& vobs, bool updateState, bool drawAttachments );
 
 private:
     /** Collects polygons in the given AABB */

@@ -73,10 +73,10 @@ public:
     int IsAPlayer() {
         return (this == *reinterpret_cast<oCNPC**>(GothicMemoryLocations::oCGame::Var_Player));
     }
-    zSTRING GetName( int i = 0 ) {
+    std::string GetName( int i = 0 ) {
         zSTRING str;
         reinterpret_cast<void( __fastcall* )( oCNPC*, int, zSTRING&, int )>( GothicMemoryLocations::oCNPC::GetName )( this, 0, str, i );
-        return str;
+        return std::string(str.ToChar());
     }
 #ifndef BUILD_SPACER
     bool HasFlag( oCNPCFlags flag ) {

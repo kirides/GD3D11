@@ -115,8 +115,6 @@ namespace
     };
 }
 
-const int NUM_MAX_BONES = 96;
-
 extern bool FeatureLevel10Compatibility;
 extern bool FeatureRTArrayIndexFromAnyShader;
 
@@ -207,6 +205,12 @@ XRESULT D3D11ShaderManager::Init() {
     Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerFrame ) );
     Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerInstanceNode ) );
 
+    Shaders.push_back( ShaderInfo( "VS_ExNodeInstanced", "VS_ExNodeInstanced.hlsl", "v", 1 ) );
+    Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerFrame ) );
+
+    Shaders.push_back( ShaderInfo( "VS_ExNodeInstancedCube", "VS_ExNodeInstancedCube.hlsl", "v", 1 ) );
+    Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerFrame ) );
+
     Shaders.push_back( ShaderInfo( "VS_Decal", "VS_Decal.hlsl", "v", 1 ) );
     Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerFrame ) );
     Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerInstance ) );
@@ -233,6 +237,12 @@ XRESULT D3D11ShaderManager::Init() {
     Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerInstanceSkeletal ) );
     Shaders.back().cBufferSizes.push_back( NUM_MAX_BONES * sizeof( XMFLOAT4X4 ) );
     Shaders.back().cBufferSizes.push_back( NUM_MAX_BONES * sizeof( XMFLOAT4X4 ) ); // PrevBoneTransforms for motion vectors
+
+    Shaders.push_back( ShaderInfo( "VS_ExSkeletalInstanced", "VS_ExSkeletalInstanced.hlsl", "v", 3 ) );
+    Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerFrame ) );
+
+    Shaders.push_back( ShaderInfo( "VS_ExSkeletalInstancedCube", "VS_ExSkeletalInstancedCube.hlsl", "v", 3 ) );
+    Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerFrame ) );
 
     Shaders.push_back( ShaderInfo( "VS_ExSkeletalVN", "VS_ExSkeletalVN.hlsl", "v", 3 ) );
     Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerFrame ) );

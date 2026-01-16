@@ -44,6 +44,7 @@ __declspec(selectany) const char* VERSION_NUMBER_STR = VERSION_NUMBER;
 
 extern bool FeatureLevel10Compatibility;
 extern bool GMPModeActive;
+extern bool UseExperimentalSkeletalBatching;
 
 /** D3D7-Call logging */
 #define DebugWriteValue(value, check) if (value == check) { LogInfo() << " - " << #check; }

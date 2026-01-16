@@ -457,6 +457,7 @@ struct GothicMemoryLocations {
         static const unsigned int Offset_NormalsList = 0x3C;
         static const unsigned int Offset_Submeshes = 0xA4;
         static const unsigned int Offset_NumSubmeshes = 0xA8;
+        static const unsigned int Offset_ProgId = 0xCC;
     };
 
     struct zCWorld {
@@ -633,6 +634,8 @@ struct GothicMemoryLocations {
         static const unsigned int zCTriggerList = 0x008d7f68;
         static const unsigned int zCVobStair = 0x008d7708;
         static const unsigned int zCTexture = 0x008CF110;
+        static const unsigned int zCMorphMesh = 0x00873d98;
+        static const unsigned int zCProgMeshProto = 0x008c5b48;
     };
 
     struct oCInformationManager

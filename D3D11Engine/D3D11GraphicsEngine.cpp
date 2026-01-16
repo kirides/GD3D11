@@ -46,6 +46,8 @@
 
 #include "ImGuiShim.h"
 #include "zCModel.h"
+#include "zCMorphMesh.h"
+
 #include "zCOption.h"
 #include "RenderGraph.h"
 #include "RGBuilder.h"
@@ -167,6 +169,7 @@ D3D11GraphicsEngine::D3D11GraphicsEngine() {
     CachedRefreshRate.Numerator = 0;
     CachedRefreshRate.Denominator = 0;
     unionCurrentCustomFontMultiplier = 1.0;
+    SkeletalMeshBatches = std::unordered_map<NodeAttachmentBatchKey, SkeletalMeshBatch>();
 }
 
 D3D11GraphicsEngine::~D3D11GraphicsEngine() {
@@ -669,6 +672,13 @@ XRESULT D3D11GraphicsEngine::Init() {
 
     InverseUnitSphereMesh = new GMesh;
     InverseUnitSphereMesh->LoadMesh( "system\\GD3D11\\meshes\\icoSphere.obj" );
+
+    // Add to initialization sequence:
+    if ( FAILED( InitSkeletalInstancingBuffers() ) ) {
+        LogError() << "Failed to initialize skeletal instancing buffers. Falling back to individual rendering.";
+    }
+
+    InitNodeAttachmentInstancingBuffer();
 
     // Create distance-buffers
     D3D11ConstantBuffer* infiniteRangeConstantBuffer;
@@ -2220,7 +2230,7 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
     cb2.PI_ModelColor = color;
     cb2.PI_ModelFatness = fatness;
     // Set PrevWorld for motion vectors (use current world if no previous is available)
-    cb2.PrevWorld = vi->HasValidPrevTransforms ? vi->PrevWorldMatrix : world;
+    cb2.PrevWorld = vi->HasValidPrevTransforms ? vi->PrevWorldMatrix : cb2.World;
 
     ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &cb2 );
     ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( 1 );
@@ -4627,6 +4637,478 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
     }
 }
 
+// Add near other initialization code
+
+XRESULT D3D11GraphicsEngine::InitSkeletalInstancingBuffers() {
+    // Instance data buffer - holds per-instance transforms, colors, etc.
+    SkeletalInstanceBuffer = std::make_unique<D3D11StructuredBuffer<SkeletalInstanceData>>();
+    HRESULT hr = SkeletalInstanceBuffer->Init( GetDevice().Get(), MAX_SKELETAL_INSTANCES * 4 ); // Allow some growth
+    if ( FAILED( hr ) ) {
+        LogError() << "Failed to create skeletal instance buffer";
+        return XR_FAILED;
+    }
+
+    // Bone transform buffer - holds all bone matrices for all instances
+    SkeletalBoneBuffer = std::make_unique<D3D11StructuredBuffer<XMFLOAT4X4>>();
+    hr = SkeletalBoneBuffer->Init( GetDevice().Get(), 2048 );
+    if ( FAILED( hr ) ) {
+        LogError() << "Failed to create skeletal bone buffer";
+        return XR_FAILED;
+    }
+
+    LogInfo() << "Initialized skeletal instancing buffers";
+    return XR_SUCCESS;
+}
+
+void D3D11GraphicsEngine::BuildSkeletalMeshBatches( const std::vector<SkeletalVobInfo*>& vobs ) {
+    // Clear previous batches
+    ClearSkeletalMeshBatches();
+
+    for ( SkeletalVobInfo* vi : vobs ) {
+        if ( !vi || !vi->VisualInfo || !vi->Vob ) {
+            continue;
+        }
+
+        zCModel* model = static_cast<zCModel*>(vi->Vob->GetVisual());
+        if ( !model ) {
+            continue;
+        }
+
+        // Update textures
+        model->SetIsVisible( true );
+
+        SkeletalMeshVisualInfo* visualInfo = dynamic_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo);
+
+        // Skip if no skeletal meshes (these are MOBs like chests)
+        if ( visualInfo->SkeletalMeshes.empty() ) {
+            if ( model->GetMeshSoftSkinList()->NumInArray > 0 ) {
+                // Just in case somehow we end up without skeletal meshes and they are available
+                WorldConverter::ExtractSkeletalMeshFromVob( model, visualInfo );
+            }
+
+            if ( visualInfo->SkeletalMeshes.empty() ) {
+                continue;
+            }
+        }
+
+        NodeAttachmentBatchKey batchKey = { };
+        size_t hashLen = 0;
+        static size_t largestSeenHash = 0;
+        model->UpdateMeshLibTexAniState();
+
+        if ( model->GetMeshLibList() && model->GetMeshLibList()->GetSize() ) {
+            for ( unsigned int i = 0; i < model->GetMeshLibList()->GetSize(); i++ ) {
+                auto ptr = model->GetMeshLibList()->Array[i]->MeshLibPtr;
+                Toolbox::hash_combine( batchKey, (int)ptr );
+                hashLen++;
+            }
+            if (RenderingStage != DES_SHADOWMAP ) {
+                for ( auto& [k, v] : visualInfo->SkeletalMeshes ) {
+                    Toolbox::hash_combine( batchKey, std::string_view(k->GetAniTexture()->__GetName().ToChar()) );
+                    hashLen++;
+                }
+            }
+        } else {
+            // unique draw, no batching
+            Toolbox::hash_combine( batchKey, (int)vi->Vob );
+            hashLen++;
+        }
+        if ( hashLen > largestSeenHash ) {
+            largestSeenHash = hashLen;
+        }
+        for ( size_t i = hashLen; i < largestSeenHash; ++i ) {
+            // to avoid collisions we need to make sure that shorter hashes don't collide with longer ones that have the same start
+            Toolbox::hash_combine( batchKey, i );
+        }
+
+        auto& batch = SkeletalMeshBatches[batchKey];
+        if ( !batch.Vobs.size() ) {
+            batch.VisualInfo = visualInfo;
+            batch.Vobs.reserve(25);
+        }
+        batch.Vobs.push_back( vi );
+    }
+
+    // Build instance data for each batch
+    static std::vector<XMFLOAT4X4> transforms;
+    for ( auto& [name, batch] : SkeletalMeshBatches ) {
+        if ( batch.Vobs.empty() || !batch.VisualInfo ) {
+            continue;
+        }
+
+        batch.TotalBoneCount = 0;
+        batch.InstanceData.clear();
+        batch.AllBoneTransforms.clear();
+        batch.InstanceData.reserve( batch.Vobs.size() );
+
+        for ( SkeletalVobInfo* vi : batch.Vobs ) {
+            zCModel* model = static_cast<zCModel*>(vi->Vob->GetVisual());
+            if ( !model ) {
+                continue;
+            }
+
+            // Get bone transforms
+            transforms.clear();
+            model->GetBoneTransforms( &transforms );
+
+            if ( transforms.empty() ) {
+                continue;
+            }
+
+            // Build instance data
+            SkeletalInstanceData inst = {};
+
+            // World matrix with scale
+            XMMATRIX scale = XMMatrixScalingFromVector( model->GetModelScaleXM() );
+            XMMATRIX world = vi->Vob->GetWorldMatrixXM() * scale;
+            XMStoreFloat4x4( &inst.World, world );
+            inst.PrevWorld = vi->HasValidPrevTransforms ? vi->PrevWorldMatrix : inst.World;
+
+            // Model color
+            if ( Engine::GAPI->GetRendererState().RendererSettings.EnableShadows ) {
+                inst.Color = float4( 1, 1, 1, 1 );
+            } else {
+                if ( vi->Vob->IsIndoorVob() ) {
+                    inst.Color = DEFAULT_LIGHTMAP_POLY_COLOR;
+                } else if ( zCPolygon* polygon = vi->Vob->GetGroundPoly() ) {
+                    float3 vobPos = vi->Vob->GetPositionWorld();
+                    float3 polyLightStat = polygon->GetLightStatAtPos( vobPos );
+                    inst.Color = float4( polyLightStat.z * inv255f, polyLightStat.y * inv255f, polyLightStat.x * inv255f, 1.f );
+                } else {
+                    inst.Color = float4( 1, 1, 1, 1 );
+                }
+            }
+
+            inst.Fatness = model->GetModelFatness();
+            inst.Scale = 1.0f;
+            inst.BoneOffset = batch.TotalBoneCount;
+            inst.Padding = 0;
+
+            batch.InstanceData.push_back( inst );
+
+            // Add bone transforms
+            batch.AllBoneTransforms.insert( batch.AllBoneTransforms.end(),
+                transforms.begin(), transforms.end() );
+            batch.TotalBoneCount += static_cast<uint32_t>(transforms.size());
+
+            model->SetIsVisible( true );
+
+            batch.VisualInfo = dynamic_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo);
+        }
+    }
+}
+
+XRESULT D3D11GraphicsEngine::DrawSkeletalMeshBatched() {
+    if ( SkeletalMeshBatches.empty() ) return XR_SUCCESS;
+
+    // Fix the view matrix
+    Engine::GAPI->GetViewMatrix( &Engine::GAPI->GetRendererState().TransformState.TransformView );
+
+    // Draw each batch (body meshes only)
+    for ( auto& [name, batch] : SkeletalMeshBatches ) {
+        if ( batch.Vobs.empty() || !batch.VisualInfo ) {
+            continue;
+        }
+
+        // Don't to the expensive upload if it's a single instance.
+        if ( batch.InstanceData.size() == 1 ) {
+            for ( SkeletalVobInfo* vi : batch.Vobs ) {
+                zCModel* model = static_cast<zCModel*>(vi->Vob->GetVisual());
+                if ( !model ) continue;
+                model->SetIsVisible( true );
+                if ( !vi->Vob->GetShowVisual() )
+                    continue;
+
+                // if we don't update the MeshLibTextAni the visual will have wrong textures
+                model->UpdateAttachedVobs();
+                model->UpdateMeshLibTexAniState();
+
+                if ( !vi->VobConstantBuffer ) {
+                    vi->UpdateVobConstantBuffer();
+                }
+                
+                DrawSkeletalMesh( vi, batch.AllBoneTransforms, batch.InstanceData[0].Color, batch.InstanceData[0].World, batch.InstanceData[0].Fatness );
+            }
+            continue;
+        }
+
+        // Draw batched body mesh
+        DrawSkeletalMeshInstanced( batch );
+    }
+
+
+    return XR_SUCCESS;
+}
+
+XRESULT D3D11GraphicsEngine::DrawSkeletalMeshInstanced( SkeletalMeshBatch& batch ) {
+    if ( batch.InstanceData.empty() || !batch.VisualInfo ) return XR_SUCCESS;
+
+    if ( SkeletalInstanceBuffer->GetMaxElementCount() < batch.InstanceData.size() ) {
+        auto requiredSize = Toolbox::NextPowerOfTwo( batch.InstanceData.size() );
+
+        SkeletalInstanceBuffer = std::make_unique<D3D11StructuredBuffer<SkeletalInstanceData>>();
+        HRESULT hr = SkeletalInstanceBuffer->Init( GetDevice().Get(), requiredSize );
+        if ( FAILED( hr ) ) {
+            LogError() << "Failed to create skeletal instance buffer";
+            return XR_FAILED;
+        }
+    }
+
+    // Update structured buffers
+    SkeletalInstanceBuffer->UpdateBuffer( Context.Get(), batch.InstanceData.data(),
+                                          static_cast<UINT>(batch.InstanceData.size()) );
+
+    if ( SkeletalBoneBuffer->GetMaxElementCount() < batch.AllBoneTransforms.size() ) {
+        auto requiredSize = Toolbox::NextPowerOfTwo( batch.AllBoneTransforms.size() );
+
+        SkeletalBoneBuffer = std::make_unique<D3D11StructuredBuffer<XMFLOAT4X4>>();
+        HRESULT hr = SkeletalBoneBuffer->Init( GetDevice().Get(), requiredSize );
+        if ( FAILED( hr ) ) {
+            LogError() << "Failed to create skeletal bone buffer";
+            return XR_FAILED;
+        }
+    }
+    SkeletalBoneBuffer->UpdateBuffer( Context.Get(), batch.AllBoneTransforms.data(),
+                                      static_cast<UINT>(batch.AllBoneTransforms.size()) );
+
+    // Bind structured buffers
+    SkeletalInstanceBuffer->BindToVertexShader( Context.Get(), 10 ); // t10
+    SkeletalBoneBuffer->BindToVertexShader( Context.Get(), 11 );     // t11
+
+    // Set shader based on rendering stage
+    if ( RenderingStage == DES_SHADOWMAP_CUBE ) {
+        SetActiveVertexShader( "VS_ExSkeletalInstancedCube" );
+    } else {
+        SetActiveVertexShader( "VS_ExSkeletalInstanced" );
+    }
+
+    InfiniteRangeConstantBuffer->BindToPixelShader( 3 );
+    SetupVS_ExMeshDrawCall();
+    SetupVS_ExConstantBuffer();
+
+    Context->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+
+    ActiveVS->Apply();
+
+    // Setup pixel shader
+    if ( RenderingStage != DES_GHOST ) {
+        bool linearDepth = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches & GSWITCH_LINEAR_DEPTH) != 0;
+        if ( linearDepth ) {
+            ActivePS = PS_LinDepth;
+            ActivePS->Apply();
+        } else if ( RenderingStage == DES_SHADOWMAP ) {
+            Context->PSSetShader( nullptr, nullptr, 0 );
+            ActivePS = nullptr;
+        } else {
+            ActivePS = PS_LinDepth;
+        }
+    }
+
+    if ( RenderingStage == DES_MAIN ) {
+        if ( ActiveHDS ) {
+            Context->DSSetShader( nullptr, nullptr, 0 );
+            Context->HSSetShader( nullptr, nullptr, 0 );
+            ActiveHDS = nullptr;
+        }
+    }
+
+    // Draw each submesh
+    SkeletalMeshVisualInfo* meshInfo = nullptr;
+
+    for ( auto vi : batch.Vobs ) {
+        zCModel* model = static_cast<zCModel*>(vi->Vob->GetVisual());
+
+        if ( !model || !vi->VisualInfo )
+            continue; // Gothic fortunately sets this to 0 when it throws the model out of the cache
+
+        model->SetIsVisible( true );
+        if ( !vi->Vob->GetShowVisual() )
+            continue;
+
+        // if we don't update the MeshLibTextAni the visual will have wrong textures
+        model->UpdateMeshLibTexAniState();
+        
+        meshInfo = static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo);
+        break;
+    }
+
+    for ( auto const& itm : batch.VisualInfo->SkeletalMeshes ) {
+        if ( itm.first ) {
+            zCTexture* tex;
+            if ( ActivePS && (tex = itm.first->GetAniTexture()) != nullptr ) {
+                if ( !BindTextureNRFX( tex, (RenderingStage != DES_GHOST) ) ) {
+                    continue;
+                }
+            }
+        }
+
+        for ( auto& mesh : itm.second ) {
+            D3D11VertexBuffer* vb = mesh->MeshVertexBuffer;
+            D3D11VertexBuffer* ib = mesh->MeshIndexBuffer;
+            unsigned int numIndices = static_cast<unsigned int>(mesh->Indices.size());
+
+            UINT offset = 0;
+            UINT uStride = sizeof( ExSkelVertexStruct );
+            Context->IASetVertexBuffers( 0, 1, vb->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
+            Context->IASetIndexBuffer( ib->GetVertexBuffer().Get(), VERTEX_INDEX_DXGI_FORMAT, 0 );
+
+            // Draw instanced
+            Context->DrawIndexedInstanced( numIndices, static_cast<UINT>(batch.InstanceData.size()), 0, 0, 0 );
+
+            Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
+                (numIndices / 3) * static_cast<unsigned int>(batch.InstanceData.size());
+        }
+    }
+
+    // Unbind structured buffers
+    SkeletalInstanceBuffer->UnbindFromVertexShader( Context.Get(), 10 );
+    SkeletalBoneBuffer->UnbindFromVertexShader( Context.Get(), 11 );
+
+    Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnVobs +=
+        static_cast<unsigned int>(batch.InstanceData.size());
+
+    return XR_SUCCESS;
+}
+
+void D3D11GraphicsEngine::ClearSkeletalMeshBatches() {
+    for ( auto& [name, batch] : SkeletalMeshBatches ) {
+        batch.Clear();
+    }
+    SkeletalMeshBatches.clear();
+}
+
+
+XRESULT D3D11GraphicsEngine::InitNodeAttachmentInstancingBuffer() {
+    // Instance buffer for node attachments
+    NodeAttachmentInstanceBuffer = std::make_unique<D3D11StructuredBuffer<NodeAttachmentInstanceData>>();
+    HRESULT hr = NodeAttachmentInstanceBuffer->Init( GetDevice().Get(), 64 );
+    if ( FAILED( hr ) ) {
+        LogError() << "Failed to create node attachment instance buffer";
+        return XR_FAILED;
+    }
+
+    LogInfo() << "Initialized node attachment instancing buffer";
+    return XR_SUCCESS;
+}
+
+void D3D11GraphicsEngine::DrawNodeAttachmentsBatched(
+    std::unordered_map<NodeAttachmentBatchKey, NodeAttachmentBatchData>& batches )
+{
+    if ( batches.empty() ) return;
+
+    // Set up shaders
+    if ( RenderingStage == DES_SHADOWMAP_CUBE ) {
+        SetActiveVertexShader( "VS_ExNodeInstancedCube" );
+    } else {
+        SetActiveVertexShader( "VS_ExNodeInstanced" );
+    }
+
+    SetupVS_ExMeshDrawCall();
+    SetupVS_ExConstantBuffer();
+
+    // Bind instance buffer to slot 10
+    NodeAttachmentInstanceBuffer->BindToVertexShader( Context.Get(), 10 );
+
+    ActiveVS->Apply();
+
+    // Setup pixel shader
+    if ( RenderingStage == DES_MAIN ) {
+        SetActivePixelShader( "PS_DiffuseAlphaTest" );
+        BindActivePixelShader();
+    } else if ( RenderingStage == DES_SHADOWMAP ) {
+        Context->PSSetShader( nullptr, nullptr, 0 );
+        ActivePS = nullptr;
+    }
+
+    Context->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+
+    // Draw each batch
+    for ( auto& [key, batch] : batches )
+    {
+        if ( batch.Instances.empty() || !batch.Mesh.size() ) continue;
+
+        zCModel* model = static_cast<zCModel*>(batch.vobInfo->Vob->GetVisual());
+
+        model->UpdateAttachedVobs();
+        model->UpdateMeshLibTexAniState();
+        
+        // Update instance buffer
+        UINT instanceCount = batch.Instances.size();
+
+        if ( NodeAttachmentInstanceBuffer->GetMaxElementCount() < instanceCount ) {
+            auto requiredSize = Toolbox::NextPowerOfTwo( instanceCount );
+
+            NodeAttachmentInstanceBuffer = std::make_unique<D3D11StructuredBuffer<NodeAttachmentInstanceData>>();
+            HRESULT hr = NodeAttachmentInstanceBuffer->Init( GetDevice().Get(), requiredSize );
+            if ( FAILED( hr ) ) {
+                LogError() << "Failed to create node attachment instance buffer";
+                return;
+            }
+        }
+
+        NodeAttachmentInstanceBuffer->UpdateBuffer( Context.Get(), batch.Instances.data(), instanceCount );
+
+        // WICHTIG: Hole die Textur JETZT aus dem Material, nicht aus dem gecachten Key!
+        if ( RenderingStage != DES_SHADOWMAP && RenderingStage != DES_SHADOWMAP_CUBE ) {
+            
+            // Only update textures if not drawing shadows
+            const bool isMMS = strcmp( batch.MeshVisualInfo->Visual->GetFileExtension( 0 ), ".MMS" ) == 0;
+            batch.node->TexAniState.UpdateTexList();
+            if ( isMMS ) {
+                // Important to also update the textures here
+                zCMorphMesh* mm = reinterpret_cast<zCMorphMesh*>(batch.MeshVisualInfo->Visual);
+                mm->GetTexAniState()->UpdateTexList();
+            }
+
+            if ( batch.Material ) {
+                zCTexture* texture = batch.Material->GetAniTexture();
+                if ( texture ) {
+                    if ( texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
+                        continue;  // Skip if texture not loaded
+                    }
+                    if ( !BindTextureNRFX( texture, (RenderingStage == DES_MAIN) ) ) {
+                        continue;
+                    }
+                } else {
+                    continue;  // Skip if no texture
+                }
+            } else {
+                continue;
+            }
+        }
+
+        // Set up alpha test from material
+        if ( batch.Material && batch.Material->GetAlphaFunc() == zRND_ALPHA_FUNC_TEST ) {
+            Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches |= GSWITCH_ALPHAREF;
+        } else {
+            Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches &= ~GSWITCH_ALPHAREF;
+        }
+
+        // Bind mesh buffers
+        for ( auto& mesh : batch.Mesh )
+        {
+            if ( !mesh->MeshVertexBuffer ) continue;
+
+            UINT offset = 0;
+            UINT stride = sizeof( ExVertexStruct );
+            Context->IASetVertexBuffers( 0, 1, mesh->MeshVertexBuffer->GetVertexBuffer().GetAddressOf(), &stride, &offset );
+
+            if ( mesh->MeshIndexBuffer ) {
+                Context->IASetIndexBuffer( mesh->MeshIndexBuffer->GetVertexBuffer().Get(), VERTEX_INDEX_DXGI_FORMAT, 0 );
+                Context->DrawIndexedInstanced( static_cast<UINT>(mesh->Indices.size()), instanceCount, 0, 0, 0 );
+                Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
+                    static_cast<unsigned int>(mesh->Indices.size() / 3) * instanceCount;
+            } else
+            {
+                Context->DrawInstanced( static_cast<UINT>(mesh->Vertices.size()), instanceCount, 0, 0 );
+                Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
+                    static_cast<unsigned int>(mesh->Vertices.size() / 3) * instanceCount;
+            }
+        }
+    }
+    NodeAttachmentInstanceBuffer->UnbindFromVertexShader( Context.Get(), 10 );
+}
+
 void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect(const std::vector<const WorldMeshSectionInfo*>& visibleSections)
 {
     float alphaRef = Engine::GAPI->GetRendererState().GraphicsState.FF_AlphaRef;
@@ -4921,7 +5403,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
         static thread_local std::vector<const WorldMeshSectionInfo*> visibleSections;
         visibleSections.clear();
-
+        
         for ( const auto& itx : Engine::GAPI->GetWorldSections() ) {
             for ( const auto& ity : itx.second ) {
                 float dx = static_cast<float>(itx.first - s.x);
@@ -5141,6 +5623,10 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         for ( auto const& skeletalMeshVob : Engine::GAPI->GetSkeletalMeshVobs() ) {
             if ( !skeletalMeshVob->VisualInfo ) continue;
 
+            if ( skeletalMeshVob->IndoorVob ) {
+                continue; // indoor is handled by dynamic lighting
+            }
+            
             // Ghosts shouldn't have shadows
             if ( skeletalMeshVob->Vob->GetVisualAlpha() && skeletalMeshVob->Vob->GetVobTransparency() < 0.7f ) {
                 continue;
@@ -5162,10 +5648,10 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         bool drawAttachments = true;
         if ( Engine::GAPI->GetRendererState().RendererSettings.ShadowFrustumCullingMode
             == GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_AGGRESSIVE ) {
-            drawAttachments = params.CascadeIndex <= 1; // skip attachments on higher cascades, player won't notice, hopefully
+            drawAttachments = params.CascadeIndex > 0 && !isLastCascade; // skip attachments on last cascade
         }
         // we should not need to update the skeletal meshes again, as they were updated before drawing the main scene
-        Engine::GAPI->DrawSkeletalMeshVobs( animatedSkeletalMeshVobs, false, drawAttachments );
+        Engine::GAPI->DrawSkeletalMeshVobs( animatedSkeletalMeshVobs, true, drawAttachments );
     }
 
     Engine::GAPI->GetRendererState().BlendState.ColorWritesEnabled = true;
@@ -5250,6 +5736,11 @@ void D3D11GraphicsEngine::ApplyWindProps( VS_ExConstantBuffer_Wind& windBuff ) {
 XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
     static std::vector<VobInfo*> vobs;
     static std::vector<SkeletalVobInfo*> mobs;
+    
+    if (RenderingStage == DES_MAIN) {
+        auto _ = START_TIMING( "Prepare Shadow" );
+        ShadowMaps->PrepareRender(); // calculate cameras, frusti collect any vobs needed, etc.
+    }
 
     const auto& renderSettings = Engine::GAPI->GetRendererState().RendererSettings;
 
@@ -5529,10 +6020,12 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
             // Mobs use zengine functions for binding textures so let's reset zengine texture state
             Engine::GAPI->ResetRenderStates();
 
+            Engine::GAPI->DrawSkeletalMeshVobs( mobs, true, true );
+
             static std::vector<XMFLOAT4X4> bones = {};
             for ( SkeletalVobInfo* mob : mobs ) {
-                Engine::GAPI->DrawSkeletalMeshVob( mob, FLT_MAX );
-
+                mob->VisibleInRenderPass = false;  // Reset this for the next frame
+                
                 zCModel* model = static_cast<zCModel*>(mob->Vob->GetVisual());
                 XMMATRIX scale = XMMatrixScalingFromVector( model->GetModelScaleXM() );
                 XMMATRIX world = mob->Vob->GetWorldMatrixXM() * scale;
@@ -6426,7 +6919,7 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
         if ( !lighting ) {
             GhostAlphaConstantBuffer gacb;
             gacb.GA_ViewportSize = float2( Engine::GraphicsEngine->GetResolution().x, Engine::GraphicsEngine->GetResolution().y );
-            gacb.GA_Alpha = (material->GetColor() >> 24) * inv255f;
+            gacb.GA_Alpha = static_cast<float>(material->GetColor().dword >> 24) * inv255f;
             ActivePS->GetConstantBuffer()[0]->UpdateBuffer( &gacb );
             ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
         }

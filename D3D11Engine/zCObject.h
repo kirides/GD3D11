@@ -20,6 +20,16 @@ public:
         fn(this, arg);
     }*/
 
+    static bool CheckInheritance( const zCClassDef* def, const zCClassDef* target ) {
+        while ( def ) {
+            if ( def == target ) {
+                return true;
+            }
+            def = def->baseClassDef;
+        }
+        return false;
+    }
+
     int refCtr;
     VERTEX_INDEX hashIndex;
     zCObject* hashNext;

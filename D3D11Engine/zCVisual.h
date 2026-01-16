@@ -71,6 +71,15 @@ public:
 
         return VT_OTHER;
     }
+    /** Checks the inheritance chain and casts to T* if possible. Returns nullptr otherwise */
+    template<class T>
+    T* As() {
+        zCClassDef* classDef = reinterpret_cast<zCObject*>(this)->_GetClassDef();
+        if ( zCObject::CheckInheritance( classDef, T::GetStaticClassDef() ) ) {
+            return reinterpret_cast<T*>(this);
+        }
+        return nullptr;
+    }
 
 private:
     zSTRING& __GetObjectName() {

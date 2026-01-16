@@ -54,6 +54,10 @@ public:
 class zCProgMeshProto : public zCVisual {
 public:
 
+    static const zCClassDef* GetStaticClassDef() {
+        return reinterpret_cast<const zCClassDef*>(GothicMemoryLocations::zCClassDef::zCProgMeshProto);
+    }
+
     zCArrayAdapt<float3>* GetPositionList() {
         return reinterpret_cast<zCArrayAdapt<float3>*>(THISPTR_OFFSET( GothicMemoryLocations::zCProgMeshProto::Offset_PositionList ));
     }
@@ -86,5 +90,9 @@ public:
             vx.Color = 0xFFFFFFFF;
             vertices->push_back( vx );
         }
+    }
+
+    DWORD GetProgId() {
+        return *reinterpret_cast<DWORD*>(THISPTR_OFFSET( GothicMemoryLocations::zCProgMeshProto::Offset_ProgId ));
     }
 };

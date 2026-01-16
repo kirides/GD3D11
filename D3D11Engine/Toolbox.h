@@ -13,6 +13,26 @@ struct zTBBox3D;
 struct zTPlane;
 
 namespace Toolbox {
+
+    inline UINT NextPowerOfTwo( UINT v ) {
+        if ( v == 0 ) return 1;
+        v--;
+        v |= v >> 1;
+        v |= v >> 2;
+        v |= v >> 4;
+        v |= v >> 8;
+        v |= v >> 16;
+        return v + 1;
+    }
+
+    template <typename T>
+    inline size_t hash_combine( size_t& seed, const T& v ) {
+        std::hash<T> hasher;
+        // Boost's formula: seed ^= hash(v) + 0x9e3779b9 + (seed << 6) + (seed >> 2)
+        seed ^= hasher( v ) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+        return seed;
+    }
+
     FORCEINLINE float GetRecommendedWorldShadowRangeScaleForSize( int size ) {
         constexpr int MAX_SHADOWMAP_SIZE = 16384;
         return static_cast<float>(MAX_SHADOWMAP_SIZE / size);

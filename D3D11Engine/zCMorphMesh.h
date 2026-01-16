@@ -9,6 +9,10 @@
 
 class zCMorphMesh {
 public:
+    static const zCClassDef* GetStaticClassDef() {
+        return reinterpret_cast<const zCClassDef*>(GothicMemoryLocations::zCClassDef::zCMorphMesh);
+    }
+
     zCProgMeshProto* GetMorphMesh() {
         return *reinterpret_cast<zCProgMeshProto**>(THISPTR_OFFSET( GothicMemoryLocations::zCMorphMesh::Offset_MorphMesh ));
     }
