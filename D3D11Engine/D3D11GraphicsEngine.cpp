@@ -2107,15 +2107,15 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
     }
 
     for ( auto const& itm : dynamic_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->SkeletalMeshes ) {
-        for ( auto& mesh : itm.second ) {
-            if ( zCMaterial* mat = itm.first ) {
-                zCTexture* tex;
-                if ( ActivePS && (tex = mat->GetAniTexture()) != nullptr ) {
-                    if ( !BindTextureNRFX( tex, (RenderingStage != DES_GHOST) ) ) {
-                        continue;
-                    }
+        if ( zCMaterial* mat = itm.first ) {
+            zCTexture* tex;
+            if ( ActivePS && (tex = mat->GetAniTexture()) != nullptr ) {
+                if ( !BindTextureNRFX( tex, (RenderingStage != DES_GHOST) ) ) {
+                    continue;
                 }
             }
+        }
+        for ( auto& mesh : itm.second ) {
 
             D3D11VertexBuffer* vb = mesh->MeshVertexBuffer;
             D3D11VertexBuffer* ib = mesh->MeshIndexBuffer;
@@ -4138,7 +4138,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
 void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR position,
     float sectionRange,
     bool cullFront, bool dontCull,
-    const Frustum& frustum ) {
+    const std::vector<Frustum>& frusti,
+    int cascadeIndex ) {
     // Setup renderstates
     Engine::GAPI->GetRendererState().RasterizerState.SetDefault();
     Engine::GAPI->GetRendererState().RasterizerState.CullMode =
@@ -4410,29 +4411,35 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             }
 
             bool doReset = true;
+            zCTexture* previousTx = nullptr;
             for ( auto const& itt : staticMeshVisual.second->MeshesByTexture ) {
                 std::vector<MeshInfo*>& mlist = staticMeshVisual.second->MeshesByTexture[itt.first];
                 if ( mlist.empty() ) continue;
+                
+                zCTexture* tx = itt.first.Texture;
+                bool bindTexture = previousTx != tx
+                    && tx 
+                    && (tx->HasAlphaChannel() || colorWritesEnabled);
+
+                // Check for alphablend
+                bool blendAdd =
+                    itt.first.Material->GetAlphaFunc() == zMAT_ALPHA_FUNC_ADD;
+                bool blendBlend =
+                    itt.first.Material->GetAlphaFunc() == zMAT_ALPHA_FUNC_BLEND;
+                // if one part of the mesh uses blending, all do, which means that
+                // the mesh likely is transparent and can't cast shadows
+                if ( !doReset || blendAdd || blendBlend ) {
+                    doReset = false;
+                    continue;
+                }
 
                 for ( unsigned int i = 0; i < mlist.size(); i++ ) {
-                    zCTexture* tx = itt.first.Texture;
-
-                    // Check for alphablend
-                    bool blendAdd =
-                        itt.first.Material->GetAlphaFunc() == zMAT_ALPHA_FUNC_ADD;
-                    bool blendBlend =
-                        itt.first.Material->GetAlphaFunc() == zMAT_ALPHA_FUNC_BLEND;
-                    // TODO: TODO: if one part of the mesh uses blending, all do.
-                    if ( !doReset || blendAdd || blendBlend ) {
-                        doReset = false;
-                        continue;
-                    }
-
                     // Bind texture
-                    if ( tx && (tx->HasAlphaChannel() || colorWritesEnabled) ) {
+                    if ( bindTexture ) {
                         if ( alphaRef > 0.0f && tx->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
                             tx->Bind( 0 );
                             ActivePS->Apply();
+                            previousTx = tx;
                         } else
                             continue;
                     } else {
@@ -4471,6 +4478,16 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         auto enableCulling = Engine::GAPI->GetRendererState().RendererSettings.IsShadowFrustumCullingEnabled();
 
         // Draw skeletal meshes
+
+        static std::vector<SkeletalVobInfo*> animatedSkeletalMeshVobs;
+        animatedSkeletalMeshVobs.clear();
+
+        Frustum previousCascadeFrustum;
+        auto hasPreviousFrustum = cascadeIndex > 0 && frusti.size() > static_cast<size_t>(cascadeIndex);
+        if ( hasPreviousFrustum ) {
+            previousCascadeFrustum = frusti[cascadeIndex - 1];
+        }
+
         for ( auto const& skeletalMeshVob : Engine::GAPI->GetSkeletalMeshVobs() ) {
             if ( !skeletalMeshVob->VisualInfo ) continue;
 
@@ -4494,13 +4511,20 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                 XMStoreFloat3( &center, vobPos );
                 BoundingSphere vobSphere( center, radius );
 
-                if ( !frustum.Intersects( vobSphere ) ) {
-                    continue;  // Skip if not visible in the shadow frustum
+                if ( hasPreviousFrustum && previousCascadeFrustum.Intersects( vobSphere ) ) {
+                    continue;  // Skip if already rendered in previous cascade
                 }
             }
 
-            Engine::GAPI->DrawSkeletalMeshVob( skeletalMeshVob, FLT_MAX );
+            animatedSkeletalMeshVobs.push_back( skeletalMeshVob );
         }
+        bool drawAttachments = true;
+        if ( Engine::GAPI->GetRendererState().RendererSettings.ShadowFrustumCullingMode
+            == GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_AGGRESSIVE ) {
+            drawAttachments = cascadeIndex <= 1; // skip attachments on higher cascades, player won't notice, hopefully
+        }
+        // we should not need to update the skeletal meshes again, as they were updated before drawing the main scene
+        Engine::GAPI->DrawSkeletalMeshVobs( animatedSkeletalMeshVobs, false, drawAttachments );
     }
 
     Engine::GAPI->GetRendererState().BlendState.ColorWritesEnabled = true;

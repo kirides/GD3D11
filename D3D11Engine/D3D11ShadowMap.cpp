@@ -750,6 +750,32 @@ void D3D11ShadowMap::RenderShadowmaps( const RenderShadowmapsParams& params ) {
         Engine::GAPI->GetRendererState().BlendState.ColorWritesEnabled = true;
     }
     Engine::GAPI->GetRendererState().BlendState.SetDirty();
+    
+    std::vector<Frustum> cascadeFrustums;
+
+    if ( params.CascadeCameraReplacements && params.CascadeCameraReplacements->size() ) {
+        for ( size_t i = 0; i < params.CascadeCameraReplacements->size(); i++ ) {
+            // Build frustum from the light's view/projection matrices (cascade shadow map perspective)
+            // The view/projection matrices are already set via CameraReplacement before this call
+            // We use the light-space matrices to build the frustum for proper CSM culling
+
+            if ( Engine::GAPI->GetRendererState().RendererSettings.IsShadowFrustumCullingEnabled() ) {
+                Frustum f = {};
+                const GothicRendererSettings::E_ShadowFrustumCulling cullingMode = Engine::GAPI->GetRendererState().RendererSettings.ShadowFrustumCullingMode;
+
+                // Get the cascade's view and projection matrices
+                // If CascadeCameraReplacements is provided, use it directly; otherwise fall back to current camera replacement
+                XMMATRIX lightView, lightProj;
+
+                const CameraReplacement& cr = params.CascadeCameraReplacements->at( i );
+                lightView = XMMatrixTranspose( XMLoadFloat4x4( &cr.ViewReplacement ) );
+                lightProj = XMMatrixTranspose( XMLoadFloat4x4( &cr.ProjectionReplacement ) );
+
+                f.BuildOrthographic( lightView, lightProj, 0, 0 );
+                cascadeFrustums.push_back( f );
+            }
+        }
+    }
 
     // Dont render shadows from the sun when it isn't on the sky
     if ( isNotWorldShadowMap ||
@@ -760,65 +786,11 @@ void D3D11ShadowMap::RenderShadowmaps( const RenderShadowmapsParams& params ) {
             Engine::GAPI->GetRendererState().RendererSettings.EnableShadows) ) {
         m_context->ClearDepthStencilView( dsvOverwrite.Get(), D3D11_CLEAR_DEPTH, 1.0f, 0 );
 
-        // Draw the world mesh without textures
-        const auto oldRadius = Engine::GAPI->GetRendererState().RendererSettings.OutdoorSmallVobDrawRadius;
-        const auto oldVobRadius = Engine::GAPI->GetRendererState().RendererSettings.OutdoorVobDrawRadius;
-
-        // Build frustum from the light's view/projection matrices (cascade shadow map perspective)
-        // The view/projection matrices are already set via CameraReplacement before this call
-        // We use the light-space matrices to build the frustum for proper CSM culling
-        Frustum f = {};
-
-        // Calculate expansion values based on cascade size
-        // Shadow casters behind the camera (in light direction) need to be included
-        // Expand more for larger cascades to catch distant shadow casters
-        float expandBack = 0.0f;
-        float expandSides = 0.0f;
-        if ( Engine::GAPI->GetRendererState().RendererSettings.IsShadowFrustumCullingEnabled() ) {
-            const GothicRendererSettings::E_ShadowFrustumCulling cullingMode = Engine::GAPI->GetRendererState().RendererSettings.ShadowFrustumCullingMode;
-
-            // Get the cascade's view and projection matrices
-            // If CascadeCameraReplacements is provided, use it directly; otherwise fall back to current camera replacement
-            XMMATRIX lightView, lightProj;
-
-            if ( params.CascadeCameraReplacements
-                && params.CascadeIndex >= 0
-                && params.CascadeIndex < MAX_CSM_CASCADES
-                && params.CascadeSplits.size() > 1 ) {
-                // Use the provided cascade camera replacement (already transposed for GPU, so transpose back)
-
-                const auto cullingCascadeIndex = cullingMode == GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_CONSERVATIVE 
-                    ? params.CascadeSplits.size() > 2
-                        ? params.CascadeSplits.size() - 2 // second last cascade if we have more than 1
-                        : params.CascadeIndex // not more than 2 ? then use current as thats the last
-                    : params.CascadeIndex; // Use current cascade for aggressive mode
-                const CameraReplacement& cr = params.CascadeCameraReplacements->at( cullingCascadeIndex );
-                lightView = XMMatrixTranspose( XMLoadFloat4x4( &cr.ViewReplacement ) );
-                lightProj = XMMatrixTranspose( XMLoadFloat4x4( &cr.ProjectionReplacement ) );
-            } else {
-                // Fall back to current camera replacement (already transposed, so transpose back)
-                lightView = XMMatrixTranspose( Engine::GAPI->GetViewMatrixXM() );
-                lightProj = XMMatrixTranspose( XMLoadFloat4x4( &Engine::GAPI->GetProjectionMatrix() ) );
-            }
-
-            if ( params.CascadeIndex >= 0 && params.CascadeIndex < static_cast<int>( params.CascadeSplits.size() ) - 1 ) {
-                const float cascadeSize = params.CascadeSplits[params.CascadeIndex + 1];
-
-                // When SHD_FRUSTUM_CULLING_AGGRESSIVE is used, the lightView/proj matrices are from the current cascade
-                // else when CONSERVATIVE, they are from the (second-)last cascade
-
-                const int inverseCount = (params.CascadeSplits.size() - params.CascadeIndex);
-                expandBack = cascadeSize * (0.5f * inverseCount);
-                expandSides = cascadeSize * (0.1f * inverseCount);
-            }
-            f.BuildOrthographic( lightView, lightProj, expandBack, expandSides );
-        }
+        // Draw the world mesh without textures        
 
         XMVECTOR cameraPosition = XMLoadFloat3( &params.CameraPosition );
-        graphicsEngine->DrawWorldAroundForWorldShadow( cameraPosition, 2, params.CullFront, params.DontCull, f );
+        graphicsEngine->DrawWorldAroundForWorldShadow( cameraPosition, 2, params.CullFront, params.DontCull, cascadeFrustums, params.CascadeIndex );
 
-        Engine::GAPI->GetRendererState().RendererSettings.OutdoorSmallVobDrawRadius = oldRadius;
-        Engine::GAPI->GetRendererState().RendererSettings.OutdoorVobDrawRadius = oldVobRadius;
     } else {
         if ( Engine::GAPI->GetSky()->GetAtmoshpereSettings().LightDirection.y <= 0 ) {
             m_context->ClearDepthStencilView( dsvOverwrite.Get(), D3D11_CLEAR_DEPTH, 0.0f,

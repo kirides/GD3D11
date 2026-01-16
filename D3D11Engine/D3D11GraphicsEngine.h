@@ -230,7 +230,7 @@ public:
 
     /** Draws everything around the given position */
     void XM_CALLCONV DrawWorldAroundForWorldShadow( FXMVECTOR position, float sectionRange, bool cullFront, bool dontCull,
-        const Frustum& frustum);
+        const std::vector<Frustum>& frusti, int cascadeIndex );
     void XM_CALLCONV DrawWorldAround( FXMVECTOR position,
         float range,
         bool cullFront = true,
