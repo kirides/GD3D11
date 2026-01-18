@@ -538,6 +538,16 @@ struct GothicRendererSettings {
         _SHARPEN_NUM_MODES
     };
 
+    enum E_GraphicsPreset {
+        GRAPHICS_CUSTOM,
+        GRAPHICS_VERY_LOW,
+        GRAPHICS_LOW,
+        GRAPHICS_MEDIUM,
+        GRAPHICS_HIGH,
+        GRAPHICS_VERY_HIGH,
+        GRAPHICS_ULTRA
+    };
+
     /** Sets the default values for this struct */
     void SetDefault() {
         SectionDrawRadius = 4;
@@ -712,6 +722,8 @@ struct GothicRendererSettings {
         RunInSpacerNet = false;
         BinkVideoRunning = false;
         EnableWaterAnimation = false;
+
+        GraphicsPreset = E_GraphicsPreset::GRAPHICS_CUSTOM;
     }
 
     void SetupOldWorldSpecificValues() {
@@ -875,6 +887,7 @@ struct GothicRendererSettings {
     bool EnableWaterAnimation;
     E_AntiAliasingMode AntiAliasingMode;
     E_SharpeningMode SharpeningMode;
+    E_GraphicsPreset GraphicsPreset;
 };
 
 struct GothicRendererTiming {

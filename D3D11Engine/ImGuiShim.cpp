@@ -120,10 +120,10 @@ void ImGuiShim::RenderLoop()
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
-    
+
     ImGui::GetIO().MouseDrawCursor = INT2( ImGui::GetMainViewport()->Size.x, ImGui::GetMainViewport()->Size.y ) != Engine::GraphicsEngine->GetResolution();
-    
-    static int beginFrameFn = zCParser::GetParser()->GetIndex("GDX_IMGUI_BEGINFRAME" );
+
+    static int beginFrameFn = zCParser::GetParser()->GetIndex( "GDX_IMGUI_BEGINFRAME" );
     static int endFrameFn = zCParser::GetParser()->GetIndex( "GDX_IMGUI_ENDFRAME" );
 
     static int retryFindFuncs = 0;
@@ -135,12 +135,13 @@ void ImGuiShim::RenderLoop()
 
     LibShowBlockingThisFrame = false;
     LibShowNonBlockingThisFrame = false;
-    if (beginFrameFn != -1) {
-        zCParser::GetParser()->CallFunc(beginFrameFn);
+    if ( beginFrameFn != -1 ) {
+        zCParser::GetParser()->CallFunc( beginFrameFn );
     } else {
         retryFindFuncs++;
     }
 
+    auto oldSettings = Engine::GAPI->GetRendererState().RendererSettings;
     if ( SettingsVisible ) {
         RenderSettingsWindow();
     }
@@ -152,6 +153,12 @@ void ImGuiShim::RenderLoop()
         m_EditorView->Update(ImGui::GetIO().DeltaTime);
         m_EditorView->Render();
     }
+
+    if ( memcmp( &oldSettings, &Engine::GAPI->GetRendererState().RendererSettings, sizeof( GothicRendererSettings ) ) != 0 ) {
+        if ( oldSettings.GraphicsPreset == Engine::GAPI->GetRendererState().RendererSettings.GraphicsPreset ) {
+            Engine::GAPI->GetRendererState().RendererSettings.GraphicsPreset = GothicRendererSettings::E_GraphicsPreset::GRAPHICS_CUSTOM;
+        }
+    }
     //if ( DemoVisible )
     //    ImGui::ShowDemoWindow();
 
@@ -162,9 +169,9 @@ void ImGuiShim::RenderLoop()
 
     ImGui::Render();
     ImGui_ImplDX11_RenderDrawData( ImGui::GetDrawData() );
-    
-    if (endFrameFn != -1) {
-        zCParser::GetParser()->CallFunc(endFrameFn);
+
+    if ( endFrameFn != -1 ) {
+        zCParser::GetParser()->CallFunc( endFrameFn );
     };
 }
 
@@ -362,6 +369,154 @@ int InterpretWindowMode( const GothicRendererSettings& s ) {
     return WINDOW_MODE_FULLSCREEN_BORDERLESS;
 }
 
+void ApplyGraphicsPresets( GothicRendererSettings& s ) {
+    switch ( s.GraphicsPreset ) {
+    case GothicRendererSettings::GRAPHICS_LOW:
+    {
+        s.ChangeWindowPreset = WINDOW_MODE_FULLSCREEN_BORDERLESS;
+
+        s.WorldShadowRangeScale = 0.6f;
+        s.NumShadowCascades = 2;
+        s.ShadowMapSize = 2048;
+        s.ShadowFrustumCullingMode = GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_AGGRESSIVE;
+        s.ShadowSoftness = 0.75;
+        s.SmoothShadowCameraUpdate = 1;
+        s.SmoothShadowFrequency = 500;
+
+        s.EnableDynamicLighting = false;
+
+        s.HbaoSettings.Enabled = false;
+
+        s.textureMaxSize = 512;
+        Engine::GAPI->UpdateTextureMaxSize();
+
+        s.AntiAliasingMode = GothicRendererSettings::E_AntiAliasingMode::AA_NONE;
+        s.SectionDrawRadius = 2;
+        s.VisualFXDrawRadius = 5'000;
+        s.OutdoorVobDrawRadius = 30'000;
+        s.OutdoorSmallVobDrawRadius = 10'000;
+        s.IndoorVobDrawRadius = 10'000;
+        
+        s.WindQuality = GothicRendererSettings::EWindQuality::WIND_QUALITY_NONE;
+        s.HeroAffectsObjects = 0;
+
+        s.EnableGodRays = false;
+
+        Engine::GraphicsEngine->ReloadShaders();
+    }
+    break;
+    case GothicRendererSettings::GRAPHICS_MEDIUM:
+    {
+        s.ChangeWindowPreset = WINDOW_MODE_FULLSCREEN_BORDERLESS;
+
+        s.WorldShadowRangeScale = 0.9f;
+        s.NumShadowCascades = 2;
+        s.ShadowMapSize = 2048;
+        s.ShadowFrustumCullingMode = GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_AGGRESSIVE;
+        s.ShadowSoftness = 0.75f;
+        s.SmoothShadowCameraUpdate = 1;
+        s.SmoothShadowFrequency = 2000;
+
+        s.EnableDynamicLighting = true;
+        s.EnablePointlightShadows = GothicRendererSettings::EPointLightShadowMode::PLS_STATIC_ONLY;
+
+        s.HbaoSettings.Enabled = false;
+
+        s.textureMaxSize = 512;
+        Engine::GAPI->UpdateTextureMaxSize();
+
+        s.AntiAliasingMode = GothicRendererSettings::E_AntiAliasingMode::AA_SMAA;
+        s.SectionDrawRadius = 4;
+        s.VisualFXDrawRadius = 6'000;
+        s.OutdoorVobDrawRadius = 30'000;
+        s.OutdoorSmallVobDrawRadius = 15'000;
+        s.IndoorVobDrawRadius = 15'000;
+
+        s.WindQuality = GothicRendererSettings::EWindQuality::WIND_QUALITY_ADVANCED;
+        s.HeroAffectsObjects = 1;
+
+        s.EnableGodRays = true;
+
+        Engine::GraphicsEngine->ReloadShaders();
+    }
+    break;
+    case GothicRendererSettings::GRAPHICS_HIGH:
+    {
+        s.ChangeWindowPreset = WINDOW_MODE_FULLSCREEN_LOWLATENCY;
+
+        s.WorldShadowRangeScale = 1.0f;
+        s.NumShadowCascades = 3;
+        s.ShadowMapSize = 4096;
+        s.ShadowFrustumCullingMode = GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_CONSERVATIVE;
+        s.ShadowSoftness = 1.0f;
+        s.SmoothShadowCameraUpdate = 0;
+        s.SmoothShadowFrequency = 20000;
+
+        s.EnableDynamicLighting = true;
+        s.EnablePointlightShadows = GothicRendererSettings::EPointLightShadowMode::PLS_UPDATE_DYNAMIC;
+
+        s.HbaoSettings.Enabled = true;
+        s.HbaoSettings.SsaoStepCount = 4;
+        s.HbaoSettings.SsaoBlurRadius = 4;
+
+        s.textureMaxSize = 512;
+        Engine::GAPI->UpdateTextureMaxSize();
+
+        s.AntiAliasingMode = GothicRendererSettings::E_AntiAliasingMode::AA_SMAA;
+        s.SectionDrawRadius = 4;
+        s.VisualFXDrawRadius = 8'000;
+        s.OutdoorVobDrawRadius = 50'000;
+        s.OutdoorSmallVobDrawRadius = 30'000;
+        s.IndoorVobDrawRadius = 20'000;
+
+        s.WindQuality = GothicRendererSettings::EWindQuality::WIND_QUALITY_ADVANCED;
+        s.HeroAffectsObjects = 1;
+
+        s.EnableGodRays = true;
+
+        Engine::GraphicsEngine->ReloadShaders();
+    }
+    break;
+    case GothicRendererSettings::GRAPHICS_VERY_HIGH:
+    {
+        s.ChangeWindowPreset = WINDOW_MODE_FULLSCREEN_LOWLATENCY;
+
+        s.WorldShadowRangeScale = 1.0f;
+        s.NumShadowCascades = 4;
+        s.ShadowMapSize = 8192;
+        s.ShadowFrustumCullingMode = GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_CONSERVATIVE;
+        s.ShadowSoftness = 1.0f;
+        s.SmoothShadowCameraUpdate = 0;
+        s.SmoothShadowFrequency = 20000;
+
+        s.EnableDynamicLighting = true;
+        s.EnablePointlightShadows = GothicRendererSettings::EPointLightShadowMode::PLS_FULL;
+
+        s.HbaoSettings.Enabled = true;
+        s.HbaoSettings.SsaoStepCount = 8;
+        s.HbaoSettings.SsaoBlurRadius = 4;
+
+        s.textureMaxSize = 512;
+        Engine::GAPI->UpdateTextureMaxSize();
+
+        s.AntiAliasingMode = GothicRendererSettings::E_AntiAliasingMode::AA_SMAA;
+        s.SectionDrawRadius = 5;
+        s.VisualFXDrawRadius = 10'000;
+        s.OutdoorVobDrawRadius = 50'000;
+        s.OutdoorSmallVobDrawRadius = 35'000;
+        s.IndoorVobDrawRadius = 25'000;
+
+        s.WindQuality = GothicRendererSettings::EWindQuality::WIND_QUALITY_ADVANCED;
+        s.HeroAffectsObjects = 1;
+
+        s.EnableGodRays = true;
+
+        Engine::GraphicsEngine->ReloadShaders();
+    }
+    break;
+    }
+}
+
 void ImGuiShim::RenderSettingsWindow()
 {
     // Autosized settings by child objects & centered
@@ -378,13 +533,26 @@ void ImGuiShim::RenderSettingsWindow()
     static const char* settingsLabel = "GD3D11 " VERSION_NUMBER;
 
     ImGui::SetNextWindowPos( ImVec2( windowSize.x / 2, windowSize.y / 2 ), ImGuiCond_Appearing, ImVec2( 0.5f, 0.5f ) );
-    if ( ImGui::Begin( settingsLabel, nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize) ) {
+    if ( ImGui::Begin( settingsLabel, nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize ) ) {
         GothicRendererSettings& settings = Engine::GAPI->GetRendererState().RendererSettings;
         {
             ImGui::BeginGroup();
             ImGui::Checkbox( "Vsync", &settings.EnableVSync );
             if ( ImGui::Checkbox( "NormalMaps", &settings.AllowNormalmaps ) ) {
                 Engine::GAPI->UpdateTextureMaxSize();
+            }
+
+            static std::vector<std::pair<const char*, int>> graphicsPresets = {
+                {"Custom", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_CUSTOM},
+                {"Low", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_LOW},
+                {"Medium", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_MEDIUM},
+                {"High", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_HIGH},
+                {"Very High", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_VERY_HIGH},
+            };
+            if ( ImComboBoxC( "GraphicsPreset", graphicsPresets, (int*)&settings.GraphicsPreset, [&settings]() {
+                ApplyGraphicsPresets( settings );
+                } ) ) {
+                ImGui::EndCombo();
             }
 
             ImGui::Checkbox( "HBAO+", &settings.HbaoSettings.Enabled );
@@ -397,7 +565,7 @@ void ImGuiShim::RenderSettingsWindow()
             if ( ImComboBox( "Anti Aliasing", antiAliasing, &settings.AntiAliasingMode ) ) {
                 ImGui::EndCombo();
             }
-            
+
             ImGui::Checkbox( "HDR", &settings.EnableHDR );
             if ( ImGui::Checkbox( "Shadows", &settings.EnableShadows ) ) {
                 Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows );
@@ -620,7 +788,7 @@ void ImGuiShim::RenderSettingsWindow()
             auto availableSize = ImGui::GetWindowSize();
             static const char* advancedSettingsHint = "Advanced settings: CTRL+F11 ";
             auto textSize = ImGui::CalcTextSize( advancedSettingsHint );
-            ImGui::SetCursorPos( ImVec2( (availableSize.x - textSize.x) - 15 , availableSize.y - textSize.y - 50) );
+            ImGui::SetCursorPos( ImVec2( (availableSize.x - textSize.x) - 15, availableSize.y - textSize.y - 50 ) );
             ImGui::TextUnformatted( advancedSettingsHint );
 
             ImGui::EndGroup();
@@ -810,7 +978,7 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
         {
             ImGui::Checkbox( "Fast Shadows", &settings.FastShadows );
             ImGui::SetItemTooltip( "Renders only static world meshes" );
-            ImGui::Checkbox( "Smooth shadow update", &settings.SmoothShadowCameraUpdate);
+            ImGui::Checkbox( "Smooth shadow update", &settings.SmoothShadowCameraUpdate );
             ImGui::DragFloat( "Smooth shadow frequency", &settings.SmoothShadowFrequency, 200.0f, 1, 20000.f, "%.0f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
             ImGui::SetItemTooltip( "Higher values mean more frequent shadow position updates" );
 
@@ -919,27 +1087,27 @@ void RenderAdvancedColumn3( GothicRendererSettings& settings, GothicAPI* gapi ) 
                 ImGui::TableSetColumnIndex( 0 );
                 ImGui::TextUnformatted( label );
                 ImGui::TableSetColumnIndex( 1 );
-            };
+                };
 
             static auto addRowText = []( const char* label, const char* text ) {
                 addRowLabel( label );
                 ImGui::TextUnformatted( text );
-            };
+                };
 
             static auto addRowInt = []( const char* label, int value ) {
                 addRowLabel( label );
                 ImGui::Text( "%d", value );
-            };
+                };
 
             static auto addRowUInt = []( const char* label, unsigned int value ) {
                 addRowLabel( label );
                 ImGui::Text( "%u", value );
-            };
+                };
 
             static auto addRowFloat = []( const char* label, float value, const char* fmt ) {
                 addRowLabel( label );
                 ImGui::Text( fmt, value );
-            };
+                };
 
             addRowInt( "FPS", rendererInfo.FPS );
             addRowUInt( "StateChanges", rendererInfo.StateChanges );
