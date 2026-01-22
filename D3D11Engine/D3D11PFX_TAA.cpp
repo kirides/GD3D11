@@ -245,6 +245,12 @@ void D3D11PFX_TAA::RenderPostFX(
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> oldRTV;
     Microsoft::WRL::ComPtr<ID3D11DepthStencilView> oldDSV;
     context->OMGetRenderTargets(1, oldRTV.GetAddressOf(), oldDSV.GetAddressOf());
+
+    // Get temp buffer to render into
+    RenderToTextureBuffer& tempBuffer = FxRenderer->GetTempBuffer();
+
+    // update the temp buffer with the latest backbuffer data
+    FxRenderer->CopyTextureToRTV( currentFrameSRV, tempBuffer.GetRenderTargetView(), engine->GetResolution() );
     
     // Build constant buffer
     TAAConstantBuffer cb;
@@ -276,9 +282,6 @@ void D3D11PFX_TAA::RenderPostFX(
     
     // Store current camera position for next frame
     m_PrevCameraPosition = Engine::GAPI->GetCameraPosition();
-
-    // Get temp buffer to render into
-    RenderToTextureBuffer& tempBuffer = FxRenderer->GetTempBuffer();
 
     // Set render target
     context->OMSetRenderTargets( 1, tempBuffer.GetRenderTargetView().GetAddressOf(), nullptr );

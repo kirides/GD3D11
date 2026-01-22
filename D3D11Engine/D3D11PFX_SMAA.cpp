@@ -46,6 +46,9 @@ void D3D11PFX_SMAA::RenderPostFX( const Microsoft::WRL::ComPtr<ID3D11ShaderResou
 
     RenderToTextureBuffer& TempRTV = FxRenderer->GetTempBuffer();
 
+    // update the temp buffer with the latest backbuffer data
+    FxRenderer->CopyTextureToRTV( renderTargetSRV, TempRTV.GetRenderTargetView(), engine->GetResolution() );
+
     m_Native->Render( renderTargetSRV.Get(), TempRTV.GetRenderTargetView().Get() );
 
     // Copy result back to acutal RTV

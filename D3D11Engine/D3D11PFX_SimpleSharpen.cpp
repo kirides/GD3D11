@@ -27,6 +27,12 @@ XRESULT D3D11PFX_SimpleSharpen::Apply( const Microsoft::WRL::ComPtr<ID3D11Shader
     Microsoft::WRL::ComPtr<ID3D11DepthStencilView> oldDSV;
     context->OMGetRenderTargets( 1, oldRTV.GetAddressOf(), oldDSV.GetAddressOf() );
 
+    // Get temp buffer to render into
+    RenderToTextureBuffer& tempBuffer = Renderer->GetTempBuffer();
+
+    // update the temp buffer with the latest backbuffer data
+    Renderer->CopyTextureToRTV( inputTexture, tempBuffer.GetRenderTargetView(), engine->GetResolution() );
+
     auto sharpenPS = engine->GetShaderManager().GetPShader( "PS_PFX_Sharpen" );
     sharpenPS->Apply();
 
@@ -38,8 +44,6 @@ XRESULT D3D11PFX_SimpleSharpen::Apply( const Microsoft::WRL::ComPtr<ID3D11Shader
 
     sharpenPS->GetConstantBuffer()[0]->UpdateBuffer( &gcb );
     sharpenPS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
-
-    RenderToTextureBuffer& tempBuffer = engine->GetPfxRenderer()->GetTempBuffer();
 
     // Set render target
     context->OMSetRenderTargets( 1, tempBuffer.GetRenderTargetView().GetAddressOf(), nullptr );
