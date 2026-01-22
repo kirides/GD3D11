@@ -4212,6 +4212,13 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
     UpdateRenderStates();
 
+    auto enableCulling = Engine::GAPI->GetRendererState().RendererSettings.IsShadowFrustumCullingEnabled();
+    const Frustum* previousCascadeFrustum = nullptr;
+    auto hasPreviousFrustum = cascadeIndex > 0 && frusti.size() > static_cast<size_t>(cascadeIndex);
+    if ( hasPreviousFrustum ) {
+        previousCascadeFrustum = &frusti[cascadeIndex - 1];
+    }
+
     bool colorWritesEnabled =
         Engine::GAPI->GetRendererState().BlendState.ColorWritesEnabled;
     float alphaRef = Engine::GAPI->GetRendererState().GraphicsState.FF_AlphaRef;
@@ -4385,14 +4392,14 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         for ( auto const& staticMeshVisual : staticMeshVisuals ) {
             if ( staticMeshVisual.second->Instances.empty() ) continue;
 
-            if ( (loc + staticMeshVisual.second->Instances.size()) * sizeof( VobInstanceInfo ) >= ByteWidth )
-                break;  // Should never happen
+                if ( (loc + staticMeshVisual.second->Instances.size()) * sizeof( VobInstanceInfo ) >= ByteWidth )
+                    break;  // Should never happen
 
-            staticMeshVisual.second->StartInstanceNum = loc;
-            memcpy( data + loc * sizeof( VobInstanceInfo ), &staticMeshVisual.second->Instances[0],
-                sizeof( VobInstanceInfo ) * staticMeshVisual.second->Instances.size() );
-            loc += staticMeshVisual.second->Instances.size();
-        }
+                staticMeshVisual.second->StartInstanceNum = loc;
+                memcpy( data + loc * sizeof( VobInstanceInfo ), &staticMeshVisual.second->Instances[0],
+                    sizeof( VobInstanceInfo ) * staticMeshVisual.second->Instances.size() );
+                loc += staticMeshVisual.second->Instances.size();
+            }            
         DynamicInstancingBuffer->Unmap();*/
 
         XMFLOAT3 vPlayerPosition = Engine::GAPI->GetPlayerVob() ? Engine::GAPI->GetPlayerVob()->GetPositionWorld() : XMFLOAT3( 0, 0, 0 );
@@ -4402,7 +4409,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         // Draw all vobs the player currently sees
         for ( auto const& staticMeshVisual : staticMeshVisuals ) {
             if ( staticMeshVisual.second->Instances.empty() ) continue;
-
+ 
             g_windBuffer.minHeight = staticMeshVisual.second->BBox.Min.y;
             g_windBuffer.maxHeight = staticMeshVisual.second->BBox.Max.y;
 
@@ -4482,12 +4489,6 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         static std::vector<SkeletalVobInfo*> animatedSkeletalMeshVobs;
         animatedSkeletalMeshVobs.clear();
 
-        Frustum previousCascadeFrustum;
-        auto hasPreviousFrustum = cascadeIndex > 0 && frusti.size() > static_cast<size_t>(cascadeIndex);
-        if ( hasPreviousFrustum ) {
-            previousCascadeFrustum = frusti[cascadeIndex - 1];
-        }
-
         for ( auto const& skeletalMeshVob : Engine::GAPI->GetSkeletalMeshVobs() ) {
             if ( !skeletalMeshVob->VisualInfo ) continue;
 
@@ -4511,7 +4512,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                 XMStoreFloat3( &center, vobPos );
                 BoundingSphere vobSphere( center, radius );
 
-                if ( hasPreviousFrustum && previousCascadeFrustum.Intersects( vobSphere ) ) {
+                if ( previousCascadeFrustum && previousCascadeFrustum->Contains( vobSphere ) == DirectX::ContainmentType::CONTAINS ) {
                     continue;  // Skip if already rendered in previous cascade
                 }
             }

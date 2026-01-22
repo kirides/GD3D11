@@ -85,6 +85,28 @@ public:
         return m_frustum.Intersects( sphere );
     }
 
+    // Schneller AABB-Test
+    DirectX::ContainmentType Contains( const BoundingBox& aabb ) const {
+        if ( m_useSphere ) {
+            return m_boundingSphere.Contains( aabb );
+        }
+        if ( m_useExpandedAABB ) {
+            return m_expandedAABB.Contains( aabb );
+        }
+        return m_frustum.Contains( aabb );
+    }
+
+    // Schneller Sphere-Test für VOBs
+    DirectX::ContainmentType Contains( const BoundingSphere& sphere ) const {
+        if ( m_useSphere ) {
+            return m_boundingSphere.Contains( sphere );
+        }
+        if ( m_useExpandedAABB ) {
+            return m_expandedAABB.Contains( sphere );
+        }
+        return m_frustum.Contains( sphere );
+    }
+
     // Batch-Test mit SIMD (4 Spheres gleichzeitig)
     void IntersectsBatch4(
         const XMFLOAT3* centers,
