@@ -382,6 +382,11 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
         bool initialized;
     } lastCascadeData = {};
 
+    static struct {
+        size_t frameCount;
+        std::array<CameraReplacement, MAX_CSM_CASCADES> PreviousCascadeCRs;
+    } perFrameCascadeData = {};
+
     static XMVECTOR s_previousLightDir = currentDir;
     static bool s_lightDirInitialized = false;
     
@@ -489,40 +494,60 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
     } else {
         lastBspMode = zBSP_MODE_OUTDOOR;
 
-        // *** RENDER EACH CASCADE mit korrekter Matrix ***
+        // Increment frame counter for temporal cascade updates
+        perFrameCascadeData.frameCount++;
+
         for ( size_t cascadeIdx = 0; cascadeIdx < numCascades; ++cascadeIdx ) {
             bool isLastCascade = (numCascades > 1 && cascadeIdx == numCascades - 1);
 
-            CalculateCascadeMatrices(
-                cascadeCRs[cascadeIdx],
-                splits,
-                cascadeIdx,
-                numCascades,
-                farPlane,
-                isLastCascade ? lastCascadeP : p,
-                isLastCascade ? lastCascadeLookAt : lookAt,
-                c_XM_Up,
-                isLastCascade ? lastCascadeData.Position : WorldShadowCP,
-                GetSizeX() );
+            // only update every Nth frame for higher cascades to save performance
+            bool shouldUpdateCascade = true;
+            if ( cascadeIdx == 2 ) {
+                // pre-last cascade updates every 4th frame which is 60 FPS = 15 updates per second
+                shouldUpdateCascade = (perFrameCascadeData.frameCount % 4) == 0;
+            } else if ( cascadeIdx == 3 ) {
+                // final cascade updates every 6th frame which is 60 FPS = 10 updates per second
+                shouldUpdateCascade = (perFrameCascadeData.frameCount % 6) == 0;
+            }
 
-            // Render diese Cascade using the new CascadedShadowMap
-            Engine::GAPI->SetCameraReplacementPtr( &cascadeCRs[cascadeIdx] );
+            if ( shouldUpdateCascade ) {
+                CalculateCascadeMatrices(
+                    cascadeCRs[cascadeIdx],
+                    splits,
+                    cascadeIdx,
+                    numCascades,
+                    farPlane,
+                    isLastCascade ? lastCascadeP : p,
+                    isLastCascade ? lastCascadeLookAt : lookAt,
+                    c_XM_Up,
+                    isLastCascade ? lastCascadeData.Position : WorldShadowCP,
+                    GetSizeX() );
 
-            // Build render params
-            RenderShadowmapsParams renderParams = {};
-            XMStoreFloat3( &renderParams.CameraPosition, WorldShadowCP );
-            renderParams.Target = nullptr;
-            renderParams.CullFront = true;
-            renderParams.DontCull = false;
-            renderParams.DSVOverwrite = GetCascadeDSV( static_cast<UINT>(cascadeIdx) );
-            renderParams.DebugRTV = nullptr;
-            renderParams.CascadeIndex = static_cast<int>(cascadeIdx);
-            renderParams.CascadeSplits = splits;
-            renderParams.CascadeCameraReplacements = &cascadeCRs;
+                // Store the current cascade matrix for future frames when we skip updates
+                perFrameCascadeData.PreviousCascadeCRs[cascadeIdx] = cascadeCRs[cascadeIdx];
 
-            RenderShadowmaps( renderParams );
+                // Render diese Cascade using the new CascadedShadowMap
+                Engine::GAPI->SetCameraReplacementPtr( &cascadeCRs[cascadeIdx] );
 
-            Engine::GAPI->SetCameraReplacementPtr( nullptr );
+                // Build render params
+                RenderShadowmapsParams renderParams = {};
+                XMStoreFloat3( &renderParams.CameraPosition, WorldShadowCP );
+                renderParams.Target = nullptr;
+                renderParams.CullFront = true;
+                renderParams.DontCull = false;
+                renderParams.DSVOverwrite = GetCascadeDSV( static_cast<UINT>(cascadeIdx) );
+                renderParams.DebugRTV = nullptr;
+                renderParams.CascadeIndex = static_cast<int>(cascadeIdx);
+                renderParams.CascadeSplits = splits;
+                renderParams.CascadeCameraReplacements = &cascadeCRs;
+
+                RenderShadowmaps( renderParams );
+
+                Engine::GAPI->SetCameraReplacementPtr( nullptr );
+            } else {
+                // Use the previous cascade matrix when skipping this frame's update
+                cascadeCRs[cascadeIdx] = perFrameCascadeData.PreviousCascadeCRs[cascadeIdx];
+            }
         }
     }
 
