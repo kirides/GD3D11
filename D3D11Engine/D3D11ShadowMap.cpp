@@ -170,6 +170,11 @@ static void CalculateCascadeMatrices(
     float splitRatio = splits[cascadeIdx + 1] / splits[numCascades];
     float cascadeSize = farPlane * std::sqrt( splitRatio );
     cascadeSize = std::max( cascadeSize, 500.0f );
+    
+    // Round cascade size to fixed increments to prevent floating-point variations
+    // This ensures the shadow map covers the same world-space area consistently
+    constexpr float sizeQuantization = 64.0f;
+    cascadeSize = std::ceil( cascadeSize / sizeQuantization ) * sizeQuantization;
 
     // Berechne View-Matrix für diese Cascade
     XMMATRIX lightView = XMMatrixLookAtLH( lightPos, lookAt, upDir );
@@ -177,20 +182,23 @@ static void CalculateCascadeMatrices(
     // *** TEXEL SNAPPING ***
     // Berechne die Größe eines Texels in World-Space
     float texelSize = cascadeSize / static_cast<float>(shadowMapSize);
+    
+    // Use a slightly larger texel size for snapping to reduce edge swimming
+    float snapSize = texelSize * 2.0f;
 
     // Transformiere die Shadow-Kamera-Position in Light-Space
     XMVECTOR lightSpaceOrigin = XMVector3Transform( shadowCameraPos, lightView );
     XMFLOAT3 lightSpaceOriginF;
     XMStoreFloat3( &lightSpaceOriginF, lightSpaceOrigin );
 
-    // Snappe auf Texel-Grenzen
-    lightSpaceOriginF.x = std::floor( lightSpaceOriginF.x / texelSize ) * texelSize;
-    lightSpaceOriginF.y = std::floor( lightSpaceOriginF.y / texelSize ) * texelSize;
+    // Snappe auf Texel-Grenzen (using larger snap size for stability)
+    lightSpaceOriginF.x = std::floor( lightSpaceOriginF.x / snapSize ) * snapSize;
+    lightSpaceOriginF.y = std::floor( lightSpaceOriginF.y / snapSize ) * snapSize;
 
     // Berechne den Offset und wende ihn auf die View-Matrix an
     XMVECTOR snappedOrigin = XMLoadFloat3( &lightSpaceOriginF );
     XMVECTOR originalOrigin = XMVector3Transform( shadowCameraPos, lightView );
-    XMVECTOR snapOffset = snappedOrigin - originalOrigin;
+    XMVECTOR snapOffset = XMVectorSubtract( snappedOrigin, originalOrigin );
 
     // Erstelle Offset-Matrix
     XMFLOAT3 snapOffsetF;
@@ -350,7 +358,7 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
         /* 1 */ { 1.0f, 1.0f },
         /* 2 */ { 0.85f, 3.5f },
         /* 3 */ { 0.92f, 2.7f },
-        /* 4 */ { 0.96f, 2.0f },
+        /* 4 */ { 0.98f, 1.3f },
     };
 
     ShadowMapLambda = &lambdaBiasTable[numCascades].lambda;
