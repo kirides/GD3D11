@@ -85,21 +85,35 @@ void D3D11ShadowMap::BindSampler( ID3D11DeviceContext1* context, UINT slot ) {
     if ( m_shadowmapSampler ) context->PSSetSamplers( slot, 1, m_shadowmapSampler.GetAddressOf() );
 }
 
-// Computes cascade splits using a practical interpolation between uniform and logarithmic splits.
+// Computes cascade splits using a interpolation between uniform and logarithmic splits, additionally modified by a bias factor.
 // Returns vector with (numCascades + 1) entries: [nearPlane, split1, split2, ..., farPlane]
-std::vector<float> D3D11ShadowMap::ComputeCascadeSplits( float nearPlane, float farPlane, size_t numCascades, float lambda ) {
+std::vector<float> D3D11ShadowMap::ComputeCascadeSplits( float nearPlane, float farPlane, size_t numCascades, float lambda, float bias ) {
     if ( numCascades == 0 ) return { nearPlane, farPlane };
+
     lambda = std::clamp( lambda, 0.0f, 1.0f );
-    std::vector<float> splits = {};
+
+    std::vector<float> splits;
     splits.reserve( numCascades + 1 );
     splits.push_back( nearPlane );
+
     for ( size_t i = 1; i <= numCascades; ++i ) {
-        float si = static_cast<float>(i) / static_cast<float>(numCascades);
+        // Calculate the linear fraction (0.0 to 1.0)
+        float linearFraction = static_cast<float>(i) / static_cast<float>(numCascades);
+
+        // Apply the BIAS (Power Function).
+        // If bias > 1 (e.g., 2.0), this pushes values closer to 0, making near cascades smaller.
+        float si = std::pow( linearFraction, bias );
+
+        // apply logarithmic and uniform split calculations
         float logSplit = nearPlane * std::pow( farPlane / nearPlane, si );
         float uniformSplit = nearPlane + (farPlane - nearPlane) * si;
+
+        // Interpolate
         float d = lambda * logSplit + (1.0f - lambda) * uniformSplit;
+
         splits.push_back( d );
     }
+
     return splits;
 }
 
@@ -235,7 +249,15 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
     }
 
     // Compute cascade splits
-    auto splits = ComputeCascadeSplits( nearPlane, farPlane, numCascades, 0.98f );
+    constexpr struct { float lambda; float bias; } lambdaBiasTable[] = {
+        /* 0 */ { 0, 0 },
+        /* 1 */ { 1.0f, 1.0f },
+        /* 2 */ { 0.85f, 3.5f },
+        /* 3 */ { 0.92f, 2.7f },
+        /* 4 */ { 0.96f, 2.0f },
+    };
+
+    auto splits = ComputeCascadeSplits( nearPlane, farPlane, numCascades, lambdaBiasTable[numCascades].lambda, lambdaBiasTable[numCascades].bias );
     splits[numCascades] = baseFarPlane; // Let the last cascade reach the full far plane
 
     // Get current light direction from atmosphere

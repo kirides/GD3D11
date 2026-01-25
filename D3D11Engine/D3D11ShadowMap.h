@@ -103,7 +103,7 @@ public:
     //  splits[0] == nearPlane, splits[numCascades] == farPlane
     //  For cascade i: near = splits[i], far = splits[i+1]
     //  lambda in [0,1] interpolates between logarithmic (1.0) and uniform (0.0) splits.
-    static std::vector<float> ComputeCascadeSplits( float nearPlane, float farPlane, size_t numCascades, float lambda = 0.95f );
+    static std::vector<float> ComputeCascadeSplits( float nearPlane, float farPlane, size_t numCascades, float lambda = 0.95f, float bias = 1.0f );
 
     /** Renders the shadowmaps for the sun using parameter struct */
     void RenderShadowmaps( const RenderShadowmapsParams& params );
