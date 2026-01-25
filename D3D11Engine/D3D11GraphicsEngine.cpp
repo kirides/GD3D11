@@ -5957,6 +5957,7 @@ void D3D11GraphicsEngine::CreateMainUIView() {
         wrl::ComPtr<ID3D11Texture2D> tex;
         BackbufferRTV->GetResource( reinterpret_cast<ID3D11Resource**>(tex.ReleaseAndGetAddressOf()) );
         if ( XR_SUCCESS != UIView->Init( Resolution, tex.Get() ) ) {
+            Engine::GAPI->GetRendererState().RendererSettings.EnableEditorPanel = false;
             UIView.reset();
             return;
         }
