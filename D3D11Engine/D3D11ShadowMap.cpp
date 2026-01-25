@@ -330,7 +330,10 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
     if ( !camera ) return XR_SUCCESS;
 
     const float nearPlane = std::max( 1.0f, camera->GetNearPlane() );
-    const float baseFarPlane = camera->GetFarPlane();
+    // Clamp far plane to avoid extreme shadow distances
+    // 64000 (default for worldsize 4) * 0.6 = 38400
+    // this looked good ough in testing, without many popping artifacts
+    const float baseFarPlane = std::min( camera->GetFarPlane(), 38400.0f );
 
     // WorldShadowRangeScale als Multiplikator für die Schattenreichweite
     const float shadowRangeScale = Engine::GAPI->GetRendererState().RendererSettings.WorldShadowRangeScale;
