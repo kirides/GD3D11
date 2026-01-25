@@ -26,9 +26,6 @@ const float NUM_FRAME_SHADOW_UPDATES = 2;  // Fraction of lights to update per f
 const int NUM_MIN_FRAME_SHADOW_UPDATES = 4;  // Minimum lights to update per frame
 const int MAX_IMPORTANT_LIGHT_UPDATES = 1;
 
-float* ShadowMapLambda = nullptr;
-float* ShadowMapBias = nullptr;
-
 D3D11ShadowMap::D3D11ShadowMap() {}
 
 D3D11ShadowMap::~D3D11ShadowMap() {}
@@ -358,11 +355,8 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
         /* 1 */ { 1.0f, 1.0f },
         /* 2 */ { 0.85f, 3.5f },
         /* 3 */ { 0.92f, 2.7f },
-        /* 4 */ { 0.98f, 1.3f },
+        /* 4 */ { 0.98f, 1.3f }, // Players should really want to use 4 cascades for best quality
     };
-
-    ShadowMapLambda = &lambdaBiasTable[numCascades].lambda;
-    ShadowMapBias = &lambdaBiasTable[numCascades].bias;
 
     auto splits = ComputeCascadeSplits( nearPlane, farPlane, numCascades, lambdaBiasTable[numCascades].lambda, lambdaBiasTable[numCascades].bias );
     splits[numCascades] = baseFarPlane; // Let the last cascade reach the full far plane

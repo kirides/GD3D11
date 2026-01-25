@@ -411,11 +411,6 @@ void ImGuiShim::RenderSettingsWindow()
             if ( ImGui::IsItemHovered() )
                 ImGui::SetTooltip( "Hides objects that are not visible by camera. Doesn't work properly, turn off if you don't play on potato." );
 
-            if ( ShadowMapLambda != nullptr ) {
-                ImGui::InputFloat( " Shadow map lambda", ShadowMapLambda, 0.001f, 0.1f, "%.3f" );
-                ImGui::InputFloat( " Shadow map bias", ShadowMapBias, 0.001f, 0.1f, "%.3f" );
-            }
-
             ImGui::EndGroup();
         }
 
