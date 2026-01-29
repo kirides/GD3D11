@@ -330,13 +330,10 @@ public:
     void DrawFrameParticles( std::map<zCTexture*, std::vector<ParticleInstanceInfo>>& particles, std::map<zCTexture*, ParticleRenderInfo>& info );
 
     /** Returns the UI-View */
-    D2DView* GetUIView() { return UIView.get(); }
+    D2DView* GetUIView() { return nullptr; }
 
     /** Returns the settings window availability */
     bool HasSettingsWindow();
-
-    /** Creates the main UI-View */
-    void CreateMainUIView();
 
     /** Returns a dummy cube-rendertarget used for pointlight shadowmaps */
     RenderToTextureBuffer* GetDummyCubeRT() { return ShadowMaps ? ShadowMaps->GetDummyCubeRT() : nullptr; }
@@ -404,9 +401,6 @@ protected:
 
     /** The current rendering stage */
     D3D11ENGINE_RENDER_STAGE RenderingStage;
-
-    /** The editorcontrols */
-    std::unique_ptr<D2DView> UIView;
 
     /** List of water surfaces for this frame */
     std::unordered_map<zCTexture*, std::vector<WorldMeshInfo*>> FrameWaterSurfaces;

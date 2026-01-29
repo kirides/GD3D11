@@ -3,7 +3,6 @@
 
 #include "AlignedAllocator.h"
 #include "BaseAntTweakBar.h"
-#include "D2DEditorView.h"
 #include "D2DView.h"
 #include "D3D11Effect.h"
 #include "D3D11GShader.h"
@@ -846,8 +845,6 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
     BackbufferRTV.Reset();
     DepthStencilBuffer.reset();
 
-    if ( UIView ) UIView->PrepareResize();
-
     UINT scflags = m_flipWithTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
     if ( frameLatencyWaitableObject ) {
         CloseHandle( frameLatencyWaitableObject );
@@ -979,8 +976,6 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
 
     // Recreate RenderTargetView
     LE( GetDevice()->CreateRenderTargetView( backbuffer.Get(), nullptr, BackbufferRTV.GetAddressOf() ) );
-
-    if ( UIView ) UIView->Resize( Resolution, backbuffer.Get() );
 
     // Recreate DepthStencilBuffer
     DepthStencilBuffer = std::make_unique<RenderToDepthStencilBuffer>(
@@ -1128,13 +1123,6 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
 
     Engine::GAPI->SetFrameProcessedTexturesReady();
     Engine::GAPI->LeaveResourceCriticalSection();
-
-    // Check for editorpanel
-    if ( !UIView ) {
-        if ( Engine::GAPI->GetRendererState().RendererSettings.EnableEditorPanel ) {
-            // CreateMainUIView();
-        }
-    }
 
     // Check for shadowmap resize
     int s = Engine::GAPI->GetRendererState().RendererSettings.ShadowMapSize;
@@ -1406,12 +1394,10 @@ XRESULT D3D11GraphicsEngine::Present() {
     UpdateRenderStates();
     Engine::AntTweakBar->Draw();
 
-    if ( UIView || Engine::ImGuiHandle ) {
+    if ( Engine::ImGuiHandle ) {
         SetDefaultStates();
         UpdateRenderStates();
-        if ( UIView ) {
-            UIView->Render( Engine::GAPI->GetFrameTimeSec() );
-        }
+        
         if ( Engine::ImGuiHandle && Engine::ImGuiHandle->Initiated ) {
             Engine::ImGuiHandle->RenderLoop();
         }
@@ -2520,11 +2506,6 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     OutdoorVobsConstantBuffer->UpdateBuffer( float4(
         Engine::GAPI->GetRendererState().RendererSettings.OutdoorVobDrawRadius,
         0, 0, 0 ).toPtr() );
-
-    // Update editor
-    if ( UIView ) {
-        UIView->Update( Engine::GAPI->GetFrameTimeSec() );
-    }
 
     Engine::GAPI->GetRendererState().RasterizerState.FrontCounterClockwise = false;
     Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
@@ -5449,9 +5430,6 @@ LRESULT D3D11GraphicsEngine::OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam
         case WM_ENTERIDLE: UpdateFocus( hWnd, false ); break;
         case WM_WINDOWPOSCHANGED: UpdateClipCursor( hWnd ); break;
     }
-    if ( UIView ) {
-        UIView->OnWindowMessage( hWnd, msg, wParam, lParam );
-    }
     return 0;
 }
 
@@ -5508,17 +5486,6 @@ void D3D11GraphicsEngine::OnUIEvent( EUIEvent uiEvent ) {
             Engine::ImGuiHandle->ToggleEditor();
         }
         UpdateShouldBlockGameInput();
-
-        // if ( !UIView ) {
-        //     CreateMainUIView();
-        // }
-        // if ( UIView ) {
-        //     // Show settings
-        //     Engine::GAPI->GetRendererState().RendererSettings.EnableEditorPanel =
-        //         true;
-        //
-        //     UpdateShouldBlockGameInput();
-        // }
     }
 }
 
@@ -5951,21 +5918,6 @@ bool D3D11GraphicsEngine::HasSettingsWindow()
     return ( Engine::ImGuiHandle && Engine::ImGuiHandle->GetIsActive() );
 }
 
-/** Creates the main UI-View */
-void D3D11GraphicsEngine::CreateMainUIView() {
-    if ( !UIView ) {
-        UIView = std::make_unique<D2DView>();
-
-        wrl::ComPtr<ID3D11Texture2D> tex;
-        BackbufferRTV->GetResource( reinterpret_cast<ID3D11Resource**>(tex.ReleaseAndGetAddressOf()) );
-        if ( XR_SUCCESS != UIView->Init( Resolution, tex.Get() ) ) {
-            Engine::GAPI->GetRendererState().RendererSettings.EnableEditorPanel = false;
-            UIView.reset();
-            return;
-        }
-    }
-}
-
 void D3D11GraphicsEngine::EnsureTempVertexBufferSize( std::unique_ptr<D3D11VertexBuffer>& buffer, UINT size ) {
     D3D11_BUFFER_DESC desc;
     buffer->GetVertexBuffer()->GetDesc( &desc );
@@ -6236,7 +6188,7 @@ void D3D11GraphicsEngine::DrawFrameParticles(
 
 /** Called when a vob was removed from the world */
 XRESULT D3D11GraphicsEngine::OnVobRemovedFromWorld( zCVob* vob ) {
-    if ( UIView ) UIView->GetEditorPanel()->OnVobRemovedFromWorld( vob );
+    if ( Engine::ImGuiHandle ) Engine::ImGuiHandle->OnVobRemovedFromWorld( vob );
 
     // Take out of shadowupdate queue
     for ( auto&& it = FrameShadowUpdateLights.begin(); it != FrameShadowUpdateLights.end(); ++it ) {

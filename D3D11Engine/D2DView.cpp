@@ -1,7 +1,6 @@
 #include "pch.h"
 #include "D2DView.h"
 #include "D2DSubView.h"
-#include "D2DEditorView.h"
 #include "win32ClipboardWrapper.h"
 #include "Engine.h"
 #include "GothicAPI.h"
@@ -33,8 +32,6 @@ D2DView::D2DView() {
     DefaultTextFormat = nullptr;
     TextFormatBig = nullptr;
     WriteFactory = nullptr;
-
-    EditorView = nullptr;
 }
 
 D2DView::~D2DView() {
@@ -317,16 +314,13 @@ HRESULT D2DView::InitResources() {
 
     MainSubView = new D2DSubView( this, nullptr );
     MainSubView->SetRect( D2D1::RectF( 0, 0, RenderTarget->GetSize().width, RenderTarget->GetSize().height ) );
-
-    EditorView = new D2DEditorView( this, MainSubView );
-    EditorView->SetRect( D2D1::RectF( 0, 0, RenderTarget->GetSize().width, RenderTarget->GetSize().height ) );
-
+    
     return XR_SUCCESS;
 }
 
 /** Draws the view */
 void D2DView::Render( float deltaTime ) {
-    if ( !EditorView->IsHidden() ) {
+    if ( !MainSubView->IsHidden() ) {
         RenderTarget->BeginDraw();
 
         // Draw sub-views
@@ -366,7 +360,6 @@ XRESULT D2DView::Resize( const INT2& initialResolution, ID3D11Texture2D* rendert
     }
 
     MainSubView->SetRect( D2D1::RectF( 0, 0, RenderTarget->GetSize().width, RenderTarget->GetSize().height ) );
-    EditorView->SetRect( D2D1::RectF( 0, 0, RenderTarget->GetSize().width, RenderTarget->GetSize().height ) );
 
     return XR_SUCCESS;
 }

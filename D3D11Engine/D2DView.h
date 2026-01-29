@@ -11,7 +11,6 @@ const D2D1_COLOR_F SV_DEF_DISABLED_COLOR = D2D1::ColorF( 0.3f, 0.3f, 0.6f, 0.3f 
 const float SV_DEF_SHADOW_RANGE = 19.0f;
 
 class D2DDialog;
-class D2DEditorView;
 class D2DSubView;
 
 class D2DView {
@@ -91,9 +90,6 @@ public:
     /** Returns the main sub view */
     D2DSubView* GetMainSubView() const { return MainSubView; }
 
-    /** Returns the editor panel */
-    D2DEditorView* GetEditorPanel() const { return EditorView; }
-
 protected:
     /** Create resources */
     HRESULT InitResources();
@@ -118,7 +114,6 @@ protected:
     ID2D1LinearGradientBrush* BackgroundBrush;
 
     D2DSubView* MainSubView;
-    D2DEditorView* EditorView;
 
     /** List of message boxes */
     std::vector<D2DMessageBox*> MessageBoxes;

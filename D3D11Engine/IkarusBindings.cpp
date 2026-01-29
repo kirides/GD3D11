@@ -87,9 +87,6 @@ extern "C"
     __declspec(dllexport) void __cdecl GDX_OpenMessageBox( zSTRING* message, zSTRING* caption, int type, int callbackID ) {
         D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
 
-        // Initialize the UI-Framework. Will do nothing if already done
-        g->CreateMainUIView();
-
         // Check again, in case it failed
         if ( g->GetUIView() ) {
             // Store the callback ID in memory

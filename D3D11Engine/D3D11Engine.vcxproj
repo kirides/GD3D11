@@ -800,7 +800,6 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="D3D11CascadedShadowMapBuffer.h" />
     <ClInclude Include="CGameManager.h" />
     <ClInclude Include="D2DDialog.h" />
-    <ClInclude Include="D2DEditorView.h" />
     <ClInclude Include="D2DMessageBox.h" />
     <ClInclude Include="D2DSubView.h" />
     <ClInclude Include="D2DView.h" />
@@ -1059,7 +1058,6 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="BaseWidget.cpp" />
     <ClCompile Include="D3D11CascadedShadowMapBuffer.cpp" />
     <ClCompile Include="D2DDialog.cpp" />
-    <ClCompile Include="D2DEditorView.cpp" />
     <ClCompile Include="D2DMessageBox.cpp" />
     <ClCompile Include="D2DSubView.cpp" />
     <ClCompile Include="D2DView.cpp" />
