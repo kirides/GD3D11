@@ -889,13 +889,13 @@ void D3D11ShadowMap::RenderShadowmaps( const RenderShadowmapsParams& params ) {
     
     std::vector<Frustum> cascadeFrustums;
 
-    if ( params.CascadeCameraReplacements && params.CascadeCameraReplacements->size() ) {
-        for ( size_t i = 0; i < params.CascadeCameraReplacements->size(); i++ ) {
-            // Build frustum from the light's view/projection matrices (cascade shadow map perspective)
-            // The view/projection matrices are already set via CameraReplacement before this call
-            // We use the light-space matrices to build the frustum for proper CSM culling
+    if ( Engine::GAPI->GetRendererState().RendererSettings.IsShadowFrustumCullingEnabled() ) {
+        if ( params.CascadeCameraReplacements && params.CascadeCameraReplacements->size() ) {
+            for ( size_t i = 0; i < params.CascadeCameraReplacements->size(); i++ ) {
+                // Build frustum from the light's view/projection matrices (cascade shadow map perspective)
+                // The view/projection matrices are already set via CameraReplacement before this call
+                // We use the light-space matrices to build the frustum for proper CSM culling
 
-            if ( Engine::GAPI->GetRendererState().RendererSettings.IsShadowFrustumCullingEnabled() ) {
                 Frustum f = {};
                 const GothicRendererSettings::E_ShadowFrustumCulling cullingMode = Engine::GAPI->GetRendererState().RendererSettings.ShadowFrustumCullingMode;
 
