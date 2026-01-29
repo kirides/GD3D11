@@ -497,11 +497,11 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
             // only update every Nth frame for higher cascades to save performance
             bool shouldUpdateCascade = true;
             if ( cascadeIdx == 2 ) {
-                // pre-last cascade updates every 4th frame which is 60 FPS = 15 updates per second
-                shouldUpdateCascade = (perFrameCascadeData.frameCount % 4) == 0;
+                // pre-last cascade updates every 2nd frame which is 30 FPS = 15 updates per second
+                shouldUpdateCascade = (perFrameCascadeData.frameCount % 2) == 0;
             } else if ( cascadeIdx == 3 ) {
-                // final cascade updates every 6th frame which is 60 FPS = 10 updates per second
-                shouldUpdateCascade = (perFrameCascadeData.frameCount % 6) == 0;
+                // final cascade updates every 3rd frame which is 30 FPS = 10 updates per second
+                shouldUpdateCascade = (perFrameCascadeData.frameCount % 3) == 0;
             }
 
             if ( shouldUpdateCascade ) {
