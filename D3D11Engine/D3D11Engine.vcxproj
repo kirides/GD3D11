@@ -799,12 +799,6 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="BasicTimer.h" />
     <ClInclude Include="D3D11CascadedShadowMapBuffer.h" />
     <ClInclude Include="CGameManager.h" />
-    <ClInclude Include="D2DDialog.h" />
-    <ClInclude Include="D2DEditorView.h" />
-    <ClInclude Include="D2DMessageBox.h" />
-    <ClInclude Include="D2DSubView.h" />
-    <ClInclude Include="D2DView.h" />
-    <ClInclude Include="D2DVobSettingsDialog.h" />
     <ClInclude Include="D3D11AGS.h" />
     <ClInclude Include="D3D11AntTweakBar.h" />
     <ClInclude Include="D3D11ConstantBuffer.h" />
@@ -879,6 +873,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="HookExceptionFilter.h" />
     <ClInclude Include="HookedFunctions.h" />
     <ClInclude Include="IkarusBindings.h" />
+    <ClInclude Include="ImGuiEditorView.h" />
     <ClInclude Include="ImGuiShim.h" />
     <ClInclude Include="include\assimp\aabb.h" />
     <ClInclude Include="include\assimp\ai_assert.h" />
@@ -980,17 +975,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="ShaderCategory.h" />
     <ClInclude Include="SMAA\D3D11SMAA.h" />
     <ClInclude Include="SteamOverlay.h" />
-    <ClInclude Include="SV_GMeshInfoView.h" />
     <ClInclude Include="StackWalker.h" />
-    <ClInclude Include="SV_Border.h" />
-    <ClInclude Include="SV_Button.h" />
-    <ClInclude Include="SV_Checkbox.h" />
-    <ClInclude Include="SV_Label.h" />
-    <ClInclude Include="SV_NamedSlider.h" />
-    <ClInclude Include="SV_Panel.h" />
-    <ClInclude Include="SV_ProgressBar.h" />
-    <ClInclude Include="SV_Slider.h" />
-    <ClInclude Include="SV_TabControl.h" />
     <ClInclude Include="TAAConstantBuffer.h" />
     <ClInclude Include="ThreadPool.h" />
     <ClInclude Include="VersionCheck.h" />
@@ -1057,12 +1042,6 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="BaseLineRenderer.cpp" />
     <ClCompile Include="BaseWidget.cpp" />
     <ClCompile Include="D3D11CascadedShadowMapBuffer.cpp" />
-    <ClCompile Include="D2DDialog.cpp" />
-    <ClCompile Include="D2DEditorView.cpp" />
-    <ClCompile Include="D2DMessageBox.cpp" />
-    <ClCompile Include="D2DSubView.cpp" />
-    <ClCompile Include="D2DView.cpp" />
-    <ClCompile Include="D2DVobSettingsDialog.cpp" />
     <ClCompile Include="D3D11AGS.cpp" />
     <ClCompile Include="D3D11AntTweakBar.cpp" />
     <ClCompile Include="D3D11ConstantBuffer.cpp" />
@@ -1152,6 +1131,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="GVegetationBox.cpp" />
     <ClCompile Include="HookedFunctions.cpp" />
     <ClCompile Include="IkarusBindings.cpp" />
+    <ClCompile Include="ImGuiEditorView.cpp" />
     <ClCompile Include="ImGuiShim.cpp" />
     <ClCompile Include="include\ImGuizmo\GraphEditor.cpp" />
     <ClCompile Include="include\ImGuizmo\ImCurveEdit.cpp" />
@@ -1194,17 +1174,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="BaseShadowedPointLight.cpp" />
     <ClCompile Include="SMAA\D3D11SMAA.cpp" />
     <ClCompile Include="SteamOverlay.cpp" />
-    <ClCompile Include="SV_GMeshInfoView.cpp" />
     <ClCompile Include="StackWalker.cpp" />
-    <ClCompile Include="SV_Border.cpp" />
-    <ClCompile Include="SV_Button.cpp" />
-    <ClCompile Include="SV_Checkbox.cpp" />
-    <ClCompile Include="SV_Label.cpp" />
-    <ClCompile Include="SV_NamedSlider.cpp" />
-    <ClCompile Include="SV_Panel.cpp" />
-    <ClCompile Include="SV_ProgressBar.cpp" />
-    <ClCompile Include="SV_Slider.cpp" />
-    <ClCompile Include="SV_TabControl.cpp" />
     <ClCompile Include="Toolbox.cpp" />
     <ClCompile Include="VersionCheck.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt|Win32'">NotUsing</PrecompiledHeader>

@@ -59,6 +59,7 @@ public:
 
     /** Returns the thumbnail of this texture. If this returns nullptr, you need to create one first */
     const Microsoft::WRL::ComPtr<ID3D11Texture2D>& GetThumbnail();
+    const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& GetThumbnailSRV() { return ThumbnailSRV;}
 
     /** Generates mipmaps for this texture (may be slow!) */
     XRESULT GenerateMipMaps();
@@ -80,5 +81,6 @@ private:
 
     /** Thumbnail */
     Microsoft::WRL::ComPtr<ID3D11Texture2D> Thumbnail;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> ThumbnailSRV;
 };
 

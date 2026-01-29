@@ -1,4 +1,3 @@
-#include "pch.h"
 #include "IkarusBindings.h"
 #include "Engine.h"
 #include "BaseGraphicsEngine.h"
@@ -6,7 +5,6 @@
 #include "GothicAPI.h"
 
 #include "D3D11GraphicsEngine.h" // TODO: Needed for the UI-View. This should not be here!
-#include "D2DView.h"
 
 #include "zSTRING.h"
 #include "zCParser.h"
@@ -66,19 +64,7 @@ extern "C"
     __declspec(dllexport) void __cdecl GDX_SetWorldAOStrength( float strength ) {
         Engine::GAPI->GetRendererState().RendererSettings.WorldAOStrength = strength;
     }
-
-    /** Callback for the messageboxes */
-    static void MB_Callback( ED2D_MB_ACTION action, void* userdata ) {
-        int* id = reinterpret_cast<int*>(userdata);
-
-#ifndef BUILD_SPACER
-        // Call script-callback
-        zCParser::GetParser()->CallFunc( *id, action );
-#endif
-
-        delete id;
-    }
-
+    
     /** Opens a messagebox using the UI-Framework
         - Message: Text to display in the body of the message-box
         - Caption: Header of the message-box
@@ -87,18 +73,19 @@ extern "C"
     __declspec(dllexport) void __cdecl GDX_OpenMessageBox( zSTRING* message, zSTRING* caption, int type, int callbackID ) {
         D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
 
-        // Initialize the UI-Framework. Will do nothing if already done
-        g->CreateMainUIView();
-
         // Check again, in case it failed
-        if ( g->GetUIView() ) {
-            // Store the callback ID in memory
-            int* d = new int;
-            *d = callbackID;
-
-            // Register the messagebox
-            g->GetUIView()->AddMessageBox( caption->ToChar(), message->ToChar(), MB_Callback, d, (ED2D_MB_TYPE)type );
+        // TODO: Re-Implement this on top of the new UI-System
+        
+#ifndef BUILD_SPACER
+        // Call script-callback if messagebox is being closed.
+        // For this to work, we need to store all "message boxes" in a list and check them every frame.
+        int action = 0; // 0 = OK, 1 = YES, 2 = NO
+        if (type == 1) {
+            // yes-no box
+            action = 1; // until properly implemented again
         }
+        zCParser::GetParser()->CallFunc( callbackID, action );
+#endif
     }
 
     /** Sets bink video running variable to disable fps limiter */

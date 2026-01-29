@@ -3625,23 +3625,23 @@ bool GothicAPI::TraceWorldMesh( const XMFLOAT3& origin, const XMFLOAT3& dir, XMF
 }
 
 /** Unprojects a pixel-position on the screen */
-void XM_CALLCONV GothicAPI::UnprojectXM( FXMVECTOR p, XMVECTOR& worldPos, XMVECTOR& worldDir ) {
-    auto cam = zCCamera::GetCamera();
-    XMMATRIX proj = XMMatrixTranspose( XMLoadFloat4x4( &cam->trafoProjection ) );
-    XMMATRIX invView = XMMatrixTranspose( XMLoadFloat4x4( &cam->trafoViewInv ) );
+void XM_CALLCONV GothicAPI::UnprojectXM(float2 p, XMVECTOR& worldPos, XMVECTOR& worldDir) {
+    
+    const auto res = Engine::GraphicsEngine->GetResolution();
 
-    // Convert to screenspace
-    auto res = Engine::GraphicsEngine->GetResolution();
-    XMFLOAT2 fP; XMStoreFloat2( &fP, p );
-    FXMVECTOR u = XMVectorSet(
-        (((2 * fP.x) / res.x) - 1) / proj.r[0].m128_f32[0],
-        -(((2 * fP.y) / res.y) - 1) / proj.r[1].m128_f32[1],
-        1,
-        0 );
+    XMMATRIX proj    = XMMatrixTranspose(XMLoadFloat4x4(&RendererState.TransformState.TransformProj));
+    XMMATRIX invView = XMMatrixTranspose(XMLoadFloat4x4(&zCCamera::GetCamera()->GetTransformDX( zCCamera::ETransformType::TT_VIEW_INV )));
 
-    // Transform and output
-    worldPos = XMVector3TransformCoord( u, invView );
-    worldDir = XMVector3TransformCoord( XMVector3Normalize( u ), invView );
+    const float ux = (((2.0f * p.x) / res.x) - 1.0f) / XMVectorGetX(proj.r[0]);
+    const float uy = -(((2.0f * p.y) / res.y) - 1.0f) / XMVectorGetY(proj.r[1]);
+    XMVECTOR u = XMVectorSet(ux, uy, 1.0f, 0.0f);
+
+    XMVECTOR wPos = XMVector3TransformCoord(u, invView);
+    worldPos = wPos;
+
+    XMVECTOR dir  = XMVector3Normalize(u);
+    dir = XMVector3TransformNormal(dir, invView);
+    worldDir = dir;
 }
 
 /** Unprojects the current cursor */
@@ -3649,7 +3649,7 @@ XMVECTOR GothicAPI::UnprojectCursorXM() {
     XMVECTOR mPos, mDir;
     POINT p = GetCursorPosition();
 
-    Engine::GAPI->UnprojectXM( XMVectorSet( static_cast<float>(p.x), static_cast<float>(p.y), 0, 0 ), mPos, mDir );
+    Engine::GAPI->UnprojectXM( float2(static_cast<float>(p.x), static_cast<float>(p.y)), mPos, mDir );
 
     return mDir;
 }
@@ -3869,7 +3869,7 @@ LRESULT GothicAPI::OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
             break;
 
         case VK_NUMPAD1:
-            if ( !Engine::AntTweakBar->GetActive() && !GMPModeActive && Engine::GAPI->GetRendererState().RendererSettings.AllowNumpadKeys )
+            if ( !Engine::ImGuiHandle->GetIsActive() && !GMPModeActive && Engine::GAPI->GetRendererState().RendererSettings.AllowNumpadKeys )
                 SpawnVegetationBoxAt( GetCameraPosition() );
             break;
         }
@@ -3901,7 +3901,7 @@ LRESULT GothicAPI::OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
 
     // This is only processed when the bar is activated, so just call this here
     Engine::ImGuiHandle->OnWindowMessage( hWnd, msg, wParam, lParam );
-    Engine::AntTweakBar->OnWindowMessage( hWnd, msg, wParam, lParam );
+    // Engine::AntTweakBar->OnWindowMessage( hWnd, msg, wParam, lParam );
     Engine::GraphicsEngine->OnWindowMessage( hWnd, msg, wParam, lParam );
 
 #ifdef BUILD_SPACER

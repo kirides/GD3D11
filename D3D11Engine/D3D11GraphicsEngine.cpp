@@ -3,8 +3,6 @@
 
 #include "AlignedAllocator.h"
 #include "BaseAntTweakBar.h"
-#include "D2DEditorView.h"
-#include "D2DView.h"
 #include "D3D11Effect.h"
 #include "D3D11GShader.h"
 #include "D3D11HDShader.h"
@@ -48,6 +46,13 @@
 
 #include "ImGuiShim.h"
 #include "zCModel.h"
+#include "zCOption.h"
+
+#ifdef BUILD_SPACER
+#define IS_SPACER_BUILD true
+#else
+#define IS_SPACER_BUILD false
+#endif
 
 namespace wrl = Microsoft::WRL;
 
@@ -846,8 +851,6 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
     BackbufferRTV.Reset();
     DepthStencilBuffer.reset();
 
-    if ( UIView ) UIView->PrepareResize();
-
     UINT scflags = m_flipWithTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
     if ( frameLatencyWaitableObject ) {
         CloseHandle( frameLatencyWaitableObject );
@@ -954,7 +957,7 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
         }
 
         // Need to init AntTweakBar now that we have a working swapchain
-        XLE( Engine::AntTweakBar->Init() );
+        // XLE( Engine::AntTweakBar->Init() );
 
         Engine::ImGuiHandle->Init( GetActiveWindow(), GetDevice(), GetContext() );
 
@@ -979,8 +982,6 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
 
     // Recreate RenderTargetView
     LE( GetDevice()->CreateRenderTargetView( backbuffer.Get(), nullptr, BackbufferRTV.GetAddressOf() ) );
-
-    if ( UIView ) UIView->Resize( Resolution, backbuffer.Get() );
 
     // Recreate DepthStencilBuffer
     DepthStencilBuffer = std::make_unique<RenderToDepthStencilBuffer>(
@@ -1035,7 +1036,7 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
         ShadowMaps->Resize( s );
     }
 
-    Engine::AntTweakBar->OnResize( newSize );
+    // Engine::AntTweakBar->OnResize( newSize );
     Engine::ImGuiHandle->OnResize( newSize );
 
     return XR_SUCCESS;
@@ -1128,13 +1129,6 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
 
     Engine::GAPI->SetFrameProcessedTexturesReady();
     Engine::GAPI->LeaveResourceCriticalSection();
-
-    // Check for editorpanel
-    if ( !UIView ) {
-        if ( Engine::GAPI->GetRendererState().RendererSettings.EnableEditorPanel ) {
-            CreateMainUIView();
-        }
-    }
 
     // Check for shadowmap resize
     int s = Engine::GAPI->GetRendererState().RendererSettings.ShadowMapSize;
@@ -1404,14 +1398,12 @@ XRESULT D3D11GraphicsEngine::Present() {
 
     SetDefaultStates();
     UpdateRenderStates();
-    Engine::AntTweakBar->Draw();
+    // Engine::AntTweakBar->Draw();
 
-    if ( UIView || Engine::ImGuiHandle ) {
+    if ( Engine::ImGuiHandle ) {
         SetDefaultStates();
         UpdateRenderStates();
-        if ( UIView ) {
-            UIView->Render( Engine::GAPI->GetFrameTimeSec() );
-        }
+        
         if ( Engine::ImGuiHandle && Engine::ImGuiHandle->Initiated ) {
             Engine::ImGuiHandle->RenderLoop();
         }
@@ -2520,11 +2512,6 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     OutdoorVobsConstantBuffer->UpdateBuffer( float4(
         Engine::GAPI->GetRendererState().RendererSettings.OutdoorVobDrawRadius,
         0, 0, 0 ).toPtr() );
-
-    // Update editor
-    if ( UIView ) {
-        UIView->Update( Engine::GAPI->GetFrameTimeSec() );
-    }
 
     Engine::GAPI->GetRendererState().RasterizerState.FrontCounterClockwise = false;
     Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
@@ -5266,12 +5253,11 @@ XRESULT D3D11GraphicsEngine::OnKeyDown( unsigned int key ) {
         }
         break;
     case VK_F1:
-        if ( !UIView && !Engine::GAPI->GetRendererState().RendererSettings.EnableEditorPanel ) {
-            // If the ui-view hasn't been created yet and the editorpanel is
-            // disabled, enable it here
-            Engine::GAPI->GetRendererState().RendererSettings.EnableEditorPanel =
-                true;
-            CreateMainUIView();
+        if (zCOption::GetOptions()->IsParameter("XEnableEditorPanel") || IS_SPACER_BUILD) {
+            if (Engine::ImGuiHandle) {
+                Engine::ImGuiHandle->ToggleEditor();
+            }
+            UpdateShouldBlockGameInput();
         }
         break;
     default:
@@ -5452,9 +5438,6 @@ LRESULT D3D11GraphicsEngine::OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam
         case WM_ENTERIDLE: UpdateFocus( hWnd, false ); break;
         case WM_WINDOWPOSCHANGED: UpdateClipCursor( hWnd ); break;
     }
-    if ( UIView ) {
-        UIView->OnWindowMessage( hWnd, msg, wParam, lParam );
-    }
     return 0;
 }
 
@@ -5500,23 +5483,17 @@ void D3D11GraphicsEngine::OnUIEvent( EUIEvent uiEvent ) {
             hImgui->SettingsVisible = false;
             hImgui->AdvancedSettingsVisible = false;
         }
-        else if ( auto antBar = Engine::AntTweakBar; antBar->GetActive() ) {
-            antBar->SetActive( false );
-        }
+        // else if ( auto antBar = Engine::AntTweakBar; antBar->GetActive() ) {
+        //     antBar->SetActive( false );
+        // }
         UpdateShouldBlockGameInput();
 
         UpdateClipCursor( OutputWindow );
     } else if ( uiEvent == UI_OpenEditor ) {
-        if ( !UIView ) {
-            CreateMainUIView();
+        if (Engine::ImGuiHandle) {
+            Engine::ImGuiHandle->ToggleEditor();
         }
-        if ( UIView ) {
-            // Show settings
-            Engine::GAPI->GetRendererState().RendererSettings.EnableEditorPanel =
-                true;
-
-            UpdateShouldBlockGameInput();
-        }
+        UpdateShouldBlockGameInput();
     }
 }
 
@@ -5949,21 +5926,6 @@ bool D3D11GraphicsEngine::HasSettingsWindow()
     return ( Engine::ImGuiHandle && Engine::ImGuiHandle->GetIsActive() );
 }
 
-/** Creates the main UI-View */
-void D3D11GraphicsEngine::CreateMainUIView() {
-    if ( !UIView ) {
-        UIView = std::make_unique<D2DView>();
-
-        wrl::ComPtr<ID3D11Texture2D> tex;
-        BackbufferRTV->GetResource( reinterpret_cast<ID3D11Resource**>(tex.ReleaseAndGetAddressOf()) );
-        if ( XR_SUCCESS != UIView->Init( Resolution, tex.Get() ) ) {
-            Engine::GAPI->GetRendererState().RendererSettings.EnableEditorPanel = false;
-            UIView.reset();
-            return;
-        }
-    }
-}
-
 void D3D11GraphicsEngine::EnsureTempVertexBufferSize( std::unique_ptr<D3D11VertexBuffer>& buffer, UINT size ) {
     D3D11_BUFFER_DESC desc;
     buffer->GetVertexBuffer()->GetDesc( &desc );
@@ -6234,7 +6196,7 @@ void D3D11GraphicsEngine::DrawFrameParticles(
 
 /** Called when a vob was removed from the world */
 XRESULT D3D11GraphicsEngine::OnVobRemovedFromWorld( zCVob* vob ) {
-    if ( UIView ) UIView->GetEditorPanel()->OnVobRemovedFromWorld( vob );
+    if ( Engine::ImGuiHandle ) Engine::ImGuiHandle->OnVobRemovedFromWorld( vob );
 
     // Take out of shadowupdate queue
     for ( auto&& it = FrameShadowUpdateLights.begin(); it != FrameShadowUpdateLights.end(); ++it ) {

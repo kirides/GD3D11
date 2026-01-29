@@ -3,6 +3,7 @@
 #include <VersionHelpers.h>
 #include <ShellScalingAPI.h>
 
+#include "ImGuiEditorView.h"
 #include "zCParser.h"
 
 #if defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)
@@ -93,6 +94,8 @@ void ImGuiShim::Init(
 
     auto dpiScale = actualDPI / 96.0f;
     io.Fonts->AddFontFromFileTTF( fontpath.string().c_str(), 20.0f * dpiScale, &config );
+    
+    m_EditorView = std::make_unique<ImGuiEditorView>();
 }
 
 
@@ -144,6 +147,11 @@ void ImGuiShim::RenderLoop()
     if ( AdvancedSettingsVisible ) {
         RenderAdvancedSettingsWindow();
     }
+
+    if (m_EditorView->GetIsEnabled()) {
+        m_EditorView->Update(ImGui::GetIO().DeltaTime);
+        m_EditorView->Render();
+    }
     //if ( DemoVisible )
     //    ImGui::ShowDemoWindow();
 
@@ -160,11 +168,39 @@ void ImGuiShim::RenderLoop()
     };
 }
 
+bool ImGuiShim::GetIsActive() {
+    return Initiated && (
+        SettingsVisible
+        || AdvancedSettingsVisible 
+        || (m_EditorView->GetIsEnabled())
+        || LibShowBlockingThisFrame
+        || LibShowNonBlockingThisFrame
+    );
+}
+
+bool ImGuiShim::GetBlockGameInput()
+{
+    if ( !GetIsActive() ) {
+        return false;
+    }
+    if ( SettingsVisible
+        || AdvancedSettingsVisible
+        || (m_EditorView->GetBlockGameInput())
+        || LibShowBlockingThisFrame ) {
+        return true;
+        }
+    return false;
+}
 
 LRESULT ImGuiShim::OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
 {
     if ( Initiated && GetIsActive() )
+    {
+        if (m_EditorView->GetIsEnabled()) {
+            m_EditorView->OnWindowMessage( hWnd, msg, wParam, lParam );
+        }
         return ImGui_ImplWin32_WndProcHandler( hWnd, msg, wParam, lParam );
+    }
     return 0;
 }
 
