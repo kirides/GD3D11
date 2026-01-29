@@ -879,6 +879,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="HookExceptionFilter.h" />
     <ClInclude Include="HookedFunctions.h" />
     <ClInclude Include="IkarusBindings.h" />
+    <ClInclude Include="ImGuiEditorView.h" />
     <ClInclude Include="ImGuiShim.h" />
     <ClInclude Include="include\assimp\aabb.h" />
     <ClInclude Include="include\assimp\ai_assert.h" />
@@ -1152,6 +1153,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="GVegetationBox.cpp" />
     <ClCompile Include="HookedFunctions.cpp" />
     <ClCompile Include="IkarusBindings.cpp" />
+    <ClCompile Include="ImGuiEditorView.cpp" />
     <ClCompile Include="ImGuiShim.cpp" />
     <ClCompile Include="include\ImGuizmo\GraphEditor.cpp" />
     <ClCompile Include="include\ImGuizmo\ImCurveEdit.cpp" />

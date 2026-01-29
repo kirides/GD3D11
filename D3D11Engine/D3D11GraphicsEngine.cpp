@@ -1132,7 +1132,7 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
     // Check for editorpanel
     if ( !UIView ) {
         if ( Engine::GAPI->GetRendererState().RendererSettings.EnableEditorPanel ) {
-            CreateMainUIView();
+            // CreateMainUIView();
         }
     }
 
@@ -5266,13 +5266,10 @@ XRESULT D3D11GraphicsEngine::OnKeyDown( unsigned int key ) {
         }
         break;
     case VK_F1:
-        if ( !UIView && !Engine::GAPI->GetRendererState().RendererSettings.EnableEditorPanel ) {
-            // If the ui-view hasn't been created yet and the editorpanel is
-            // disabled, enable it here
-            Engine::GAPI->GetRendererState().RendererSettings.EnableEditorPanel =
-                true;
-            CreateMainUIView();
+        if (Engine::ImGuiHandle) {
+            Engine::ImGuiHandle->ToggleEditor();
         }
+        UpdateShouldBlockGameInput();
         break;
     default:
         break;
@@ -5507,16 +5504,21 @@ void D3D11GraphicsEngine::OnUIEvent( EUIEvent uiEvent ) {
 
         UpdateClipCursor( OutputWindow );
     } else if ( uiEvent == UI_OpenEditor ) {
-        if ( !UIView ) {
-            CreateMainUIView();
+        if (Engine::ImGuiHandle) {
+            Engine::ImGuiHandle->ToggleEditor();
         }
-        if ( UIView ) {
-            // Show settings
-            Engine::GAPI->GetRendererState().RendererSettings.EnableEditorPanel =
-                true;
+        UpdateShouldBlockGameInput();
 
-            UpdateShouldBlockGameInput();
-        }
+        // if ( !UIView ) {
+        //     CreateMainUIView();
+        // }
+        // if ( UIView ) {
+        //     // Show settings
+        //     Engine::GAPI->GetRendererState().RendererSettings.EnableEditorPanel =
+        //         true;
+        //
+        //     UpdateShouldBlockGameInput();
+        // }
     }
 }
 

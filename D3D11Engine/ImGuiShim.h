@@ -10,6 +10,7 @@
 #include <imgui_impl_dx11.h>
 #include <ImGuizmo/ImGuizmo.h>
 
+#include "ImGuiEditorView.h"
 
 class ImGuiShim {
 public:
@@ -36,32 +37,20 @@ public:
     int DynamicShadowState = 0;
     std::vector<std::string> Resolutions;
 
-    bool GetIsActive() {
-        return Initiated && (
-            SettingsVisible
-            || AdvancedSettingsVisible 
-            || LibShowBlockingThisFrame
-            || LibShowNonBlockingThisFrame
-        );
-    }
+    bool GetIsActive();
 
-    bool GetBlockGameInput() {
-        if ( !GetIsActive() ) {
-            return false;
-        }
-        if ( SettingsVisible
-            || AdvancedSettingsVisible
-            || LibShowBlockingThisFrame ) {
-            return true;
-        }
-        return false;
-    }
+    bool GetBlockGameInput();
     // helper function to prevent calling this too often if other places already called it.
     void UpdateBlockGameInput() {
         m_lastFrameBlockGameInput = GetBlockGameInput();
+    }
+    
+    void ToggleEditor() {
+        m_EditorView->SetIsEnabled(!m_EditorView->GetIsEnabled());
     }
 private:
     void RenderSettingsWindow();
     void RenderAdvancedSettingsWindow();
     bool m_lastFrameBlockGameInput = false;
+    std::unique_ptr<ImGuiEditorView> m_EditorView;
 };
