@@ -10,6 +10,8 @@ extern bool haveWindAnimations;
 #endif
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam );
+extern float* ShadowMapLambda;
+extern float* ShadowMapBias;
 
 int GetDpi( HWND hWnd )
 {
@@ -408,7 +410,6 @@ void ImGuiShim::RenderSettingsWindow()
             ImGui::Checkbox( "Occlusion Culling", &settings.EnableOcclusionCulling );
             if ( ImGui::IsItemHovered() )
                 ImGui::SetTooltip( "Hides objects that are not visible by camera. Doesn't work properly, turn off if you don't play on potato." );
-
 
             ImGui::EndGroup();
         }

@@ -117,6 +117,104 @@ std::vector<float> D3D11ShadowMap::ComputeCascadeSplits( float nearPlane, float 
     return splits;
 }
 
+void CalculateTemporalInterpolatedPosition(
+    const XMVECTOR currentDir,
+    XMVECTOR& previousDir,
+    XMVECTOR& outDir,
+    float frequency) {
+    // Calculate interpolation factor based on SmoothShadowFrequency
+        // Higher frequency = faster updates = less smoothing
+        // Lower frequency = slower updates = more smoothing (less flickering)
+        // The frequency is inverted to get a blend factor: lower frequency = more blending
+
+    // Blend factor: at frequency 500 (default), we want moderate smoothing
+    // At frequency 100, we want heavy smoothing (slow updates)
+    // At frequency 2000+, we want minimal smoothing (fast updates)
+    // Using an exponential-ish curve for better control
+    const float blendFactor = std::clamp( frequency / 10000.0f, 0.001f, 0.5f );
+
+    // Smoothly interpolate from previous direction to current direction
+    // This creates gradual shadow movement instead of discrete jumps
+    XMVECTOR dir = XMVectorLerp( previousDir, currentDir, blendFactor );
+    dir = XMVector3Normalize( dir );
+
+    // Update the stored previous direction for next frame
+    previousDir = dir;
+
+    // Additionally apply quantization for sub-texel stability
+    // This snaps the direction to discrete steps to prevent micro-flickering
+    XMVECTOR scale = XMVectorReplicate( frequency );
+    dir = XMVectorDivide(
+        _mm_cvtepi32_ps( _mm_cvtps_epi32( XMVectorMultiply( dir, scale ) ) ),
+        scale
+    );
+    outDir = XMVector3Normalize( dir );
+}
+
+static void CalculateCascadeMatrices(
+    CameraReplacement& outCR,
+    const std::vector<float>& splits,
+    size_t cascadeIdx,
+    size_t numCascades,
+    float farPlane,
+    FXMVECTOR lightPos,
+    FXMVECTOR lookAt,
+    FXMVECTOR upDir,
+    GXMVECTOR shadowCameraPos,
+    UINT shadowMapSize )
+{
+    // Cascade-spezifische Größe basierend auf Split-Verhältnis
+    float splitRatio = splits[cascadeIdx + 1] / splits[numCascades];
+    float cascadeSize = farPlane * std::sqrt( splitRatio );
+    cascadeSize = std::max( cascadeSize, 500.0f );
+    
+    // Round cascade size to fixed increments to prevent floating-point variations
+    // This ensures the shadow map covers the same world-space area consistently
+    constexpr float sizeQuantization = 64.0f;
+    cascadeSize = std::ceil( cascadeSize / sizeQuantization ) * sizeQuantization;
+
+    // Berechne View-Matrix für diese Cascade
+    XMMATRIX lightView = XMMatrixLookAtLH( lightPos, lookAt, upDir );
+
+    // *** TEXEL SNAPPING ***
+    // Berechne die Größe eines Texels in World-Space
+    float texelSize = cascadeSize / static_cast<float>(shadowMapSize);
+    
+    // Use a slightly larger texel size for snapping to reduce edge swimming
+    float snapSize = texelSize * 2.0f;
+
+    // Transformiere die Shadow-Kamera-Position in Light-Space
+    XMVECTOR lightSpaceOrigin = XMVector3Transform( shadowCameraPos, lightView );
+    XMFLOAT3 lightSpaceOriginF;
+    XMStoreFloat3( &lightSpaceOriginF, lightSpaceOrigin );
+
+    // Snappe auf Texel-Grenzen (using larger snap size for stability)
+    lightSpaceOriginF.x = std::floor( lightSpaceOriginF.x / snapSize ) * snapSize;
+    lightSpaceOriginF.y = std::floor( lightSpaceOriginF.y / snapSize ) * snapSize;
+
+    // Berechne den Offset und wende ihn auf die View-Matrix an
+    XMVECTOR snappedOrigin = XMLoadFloat3( &lightSpaceOriginF );
+    XMVECTOR originalOrigin = XMVector3Transform( shadowCameraPos, lightView );
+    XMVECTOR snapOffset = XMVectorSubtract( snappedOrigin, originalOrigin );
+
+    // Erstelle Offset-Matrix
+    XMFLOAT3 snapOffsetF;
+    XMStoreFloat3( &snapOffsetF, snapOffset );
+    XMMATRIX offsetMatrix = XMMatrixTranslation( snapOffsetF.x, snapOffsetF.y, 0.0f );
+
+    // Kombiniere View mit Offset
+    XMMATRIX snappedLightView = XMMatrixMultiply( lightView, offsetMatrix );
+
+    const XMMATRIX crViewRepl = XMMatrixTranspose( snappedLightView );
+    const XMMATRIX crProjRepl = XMMatrixTranspose( XMMatrixOrthographicLH(
+        cascadeSize, cascadeSize, 1.0f, 20000.f ) );
+
+    XMStoreFloat4x4( &outCR.ViewReplacement, crViewRepl );
+    XMStoreFloat4x4( &outCR.ProjectionReplacement, crProjRepl );
+    XMStoreFloat3( &outCR.PositionReplacement, lightPos );
+    XMStoreFloat3( &outCR.LookAtReplacement, lookAt );
+}
+
 XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
     auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     auto _ = graphicsEngine->RecordGraphicsEvent( L"DrawLighting" );
@@ -237,7 +335,10 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
     if ( !camera ) return XR_SUCCESS;
 
     const float nearPlane = std::max( 1.0f, camera->GetNearPlane() );
-    const float baseFarPlane = camera->GetFarPlane();
+    // Clamp far plane to avoid extreme shadow distances
+    // 64000 (default for worldsize 4) * 0.6 = 38400
+    // this looked good ough in testing, without many popping artifacts
+    const float baseFarPlane = std::min( camera->GetFarPlane(), 38400.0f );
 
     // WorldShadowRangeScale als Multiplikator für die Schattenreichweite
     const float shadowRangeScale = Engine::GAPI->GetRendererState().RendererSettings.WorldShadowRangeScale;
@@ -249,12 +350,12 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
     }
 
     // Compute cascade splits
-    constexpr struct { float lambda; float bias; } lambdaBiasTable[] = {
+    static struct { float lambda; float bias; } lambdaBiasTable[] = {
         /* 0 */ { 0, 0 },
         /* 1 */ { 1.0f, 1.0f },
         /* 2 */ { 0.85f, 3.5f },
         /* 3 */ { 0.92f, 2.7f },
-        /* 4 */ { 0.96f, 2.0f },
+        /* 4 */ { 0.98f, 1.3f }, // Players should really want to use 4 cascades for best quality
     };
 
     auto splits = ComputeCascadeSplits( nearPlane, farPlane, numCascades, lambdaBiasTable[numCascades].lambda, lambdaBiasTable[numCascades].bias );
@@ -266,6 +367,20 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
 
     // *** TEMPORAL SMOOTHING FOR LIGHT DIRECTION ***
     // Use static variables to maintain state across frames for smooth shadow transitions
+
+    static struct alignas(16) {
+        XMVECTOR PreviousLightDir;
+        XMVECTOR OldPosition;
+        XMVECTOR LightDir;
+        XMVECTOR Position;
+        bool initialized;
+    } lastCascadeData = {};
+
+    static struct {
+        size_t frameCount;
+        std::array<CameraReplacement, MAX_CSM_CASCADES> PreviousCascadeCRs;
+    } perFrameCascadeData = {};
+
     static XMVECTOR s_previousLightDir = currentDir;
     static bool s_lightDirInitialized = false;
     
@@ -278,39 +393,27 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
             s_lightDirInitialized = true;
         }
         
-        // Calculate interpolation factor based on SmoothShadowFrequency
-        // Higher frequency = faster updates = less smoothing
-        // Lower frequency = slower updates = more smoothing (less flickering)
-        // The frequency is inverted to get a blend factor: lower frequency = more blending
-        const float frequency = std::max( 1.0f, Engine::GAPI->GetRendererState().RendererSettings.SmoothShadowFrequency );
-        
-        // Blend factor: at frequency 500 (default), we want moderate smoothing
-        // At frequency 100, we want heavy smoothing (slow updates)
-        // At frequency 2000+, we want minimal smoothing (fast updates)
-        // Using an exponential-ish curve for better control
-        const float blendFactor = std::clamp( frequency / 10000.0f, 0.001f, 0.5f );
-        
-        // Smoothly interpolate from previous direction to current direction
-        // This creates gradual shadow movement instead of discrete jumps
-        dir = XMVectorLerp( s_previousLightDir, currentDir, blendFactor );
-        dir = XMVector3Normalize( dir );
-        
-        // Update the stored previous direction for next frame
-        s_previousLightDir = dir;
-        
-        // Additionally apply quantization for sub-texel stability
-        // This snaps the direction to discrete steps to prevent micro-flickering
-        XMVECTOR scale = XMVectorReplicate( frequency );
-        dir = XMVectorDivide( 
-            _mm_cvtepi32_ps( _mm_cvtps_epi32( XMVectorMultiply( dir, scale ) ) ), 
-            scale 
-        );
-        dir = XMVector3Normalize( dir );
+        CalculateTemporalInterpolatedPosition(
+            currentDir,
+            s_previousLightDir,
+            dir,
+            std::max( 1.0f, Engine::GAPI->GetRendererState().RendererSettings.SmoothShadowFrequency ));
     } else {
         dir = currentDir;
         s_previousLightDir = currentDir;
         s_lightDirInitialized = true;
     }
+
+    if ( !lastCascadeData.initialized ) {
+        lastCascadeData.PreviousLightDir = currentDir;
+        lastCascadeData.initialized = true;
+    }
+
+    CalculateTemporalInterpolatedPosition(
+        currentDir,
+        lastCascadeData.PreviousLightDir,
+        lastCascadeData.LightDir,
+        500.0f);
 
     static XMVECTOR oldP = XMVectorZero();
     XMVECTOR WorldShadowCP;
@@ -319,16 +422,21 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
     // This prevents "shaking" when the player is strafing or moving just a tiny bit
     float len;
     XMStoreFloat( &len, XMVector3LengthSq( oldP - cameraPositionXm ) );
-    constexpr float distSq = 32.f * 32.f;
-    if ( (len < distSq &&
-        // And is on even space
-        (cameraPosition.x - static_cast<int>( cameraPosition.x )) < 0.1f &&
-        // but don't let it go too far
-        (cameraPosition.y - static_cast<int>(cameraPosition.y)) < 0.1f) ) {
+    constexpr float distSq = 64.f * 64.f;
+    if ( (len < distSq )) {
         WorldShadowCP = oldP;
     } else {
         oldP = cameraPositionXm;
         WorldShadowCP = oldP;
+    }
+
+    XMStoreFloat( &len, XMVector3LengthSq( lastCascadeData.OldPosition - cameraPositionXm ) );
+    // for the last cascade, we snap greater distances to avoid shimmering when moving
+    if ( (len < (160.f * 160.f)) ) {
+        lastCascadeData.Position = lastCascadeData.OldPosition;
+    } else {
+        lastCascadeData.OldPosition = cameraPositionXm;
+        lastCascadeData.Position = cameraPositionXm;
     }
 
     // Indoor check
@@ -341,6 +449,10 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
 
     const FXMVECTOR p = WorldShadowCP + dir * 10000.0f;
     const FXMVECTOR lookAt = WorldShadowCP;
+
+    const XMVECTOR lastCascadeP = lastCascadeData.Position + lastCascadeData.LightDir * 10000.0f;
+    const XMVECTOR lastCascadeLookAt = lastCascadeData.Position;
+
     static const XMVECTORF32 c_XM_Up = { { { 0, 1, 0, 0 } } };
 
     if ( !isOutdoor ) {
@@ -356,78 +468,80 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
 
         // Setze Default für Indoor
         for ( size_t i = 0; i < numCascades; ++i ) {
-            XMStoreFloat4x4( &cascadeCRs[i].ViewReplacement, XMMatrixTranspose( XMMatrixLookAtLH( p, lookAt, c_XM_Up ) ) );
-            XMStoreFloat4x4( &cascadeCRs[i].ProjectionReplacement, XMMatrixTranspose( XMMatrixOrthographicLH(
-                farPlane, farPlane, 1.0f, 20000.f ) ) );
-            XMStoreFloat3( &cascadeCRs[i].PositionReplacement, p );
-            XMStoreFloat3( &cascadeCRs[i].LookAtReplacement, lookAt );
+            if ( numCascades > 1 && i == numCascades -1 ) {
+                const auto p = lastCascadeP;
+                const auto lookAt = lastCascadeLookAt;
+
+                XMStoreFloat4x4( &cascadeCRs[i].ViewReplacement, XMMatrixTranspose( XMMatrixLookAtLH( p, lookAt, c_XM_Up ) ) );
+                XMStoreFloat4x4( &cascadeCRs[i].ProjectionReplacement, XMMatrixTranspose( XMMatrixOrthographicLH(
+                    farPlane, farPlane, 1.0f, 20000.f ) ) );
+                XMStoreFloat3( &cascadeCRs[i].PositionReplacement, p );
+                XMStoreFloat3( &cascadeCRs[i].LookAtReplacement, lookAt );
+            } else {
+                XMStoreFloat4x4( &cascadeCRs[i].ViewReplacement, XMMatrixTranspose( XMMatrixLookAtLH( p, lookAt, c_XM_Up ) ) );
+                XMStoreFloat4x4( &cascadeCRs[i].ProjectionReplacement, XMMatrixTranspose( XMMatrixOrthographicLH(
+                    farPlane, farPlane, 1.0f, 20000.f ) ) );
+                XMStoreFloat3( &cascadeCRs[i].PositionReplacement, p );
+                XMStoreFloat3( &cascadeCRs[i].LookAtReplacement, lookAt );
+            }
         }
     } else {
         lastBspMode = zBSP_MODE_OUTDOOR;
 
-        // *** RENDER EACH CASCADE mit korrekter Matrix ***
+        // Increment frame counter for temporal cascade updates
+        perFrameCascadeData.frameCount++;
+
         for ( size_t cascadeIdx = 0; cascadeIdx < numCascades; ++cascadeIdx ) {
-            // Cascade-spezifische Größe basierend auf Split-Verhältnis
-            float splitRatio = splits[cascadeIdx + 1] / splits[numCascades];
-            float cascadeSize = farPlane * std::sqrt( splitRatio );
-            cascadeSize = std::max( cascadeSize, 500.0f );
+            bool isLastCascade = (numCascades > 1 && cascadeIdx == numCascades - 1);
 
-            // Berechne View-Matrix für diese Cascade
-            XMMATRIX lightView = XMMatrixLookAtLH( p, lookAt, c_XM_Up );
-            
-            // *** TEXEL SNAPPING ***
-           // Berechne die Größe eines Texels in World-Space
-            float texelSize = cascadeSize / static_cast<float>(GetSizeX());
-            
-            // Transformiere die Shadow-Kamera-Position in Light-Space
-            XMVECTOR lightSpaceOrigin = XMVector3Transform( WorldShadowCP, lightView );
-            XMFLOAT3 lightSpaceOriginF;
-            XMStoreFloat3( &lightSpaceOriginF, lightSpaceOrigin );
-            
-            // Snappe auf Texel-Grenzen
-            lightSpaceOriginF.x = std::floor( lightSpaceOriginF.x / texelSize ) * texelSize;
-            lightSpaceOriginF.y = std::floor( lightSpaceOriginF.y / texelSize ) * texelSize;
-            
-            // Berechne den Offset und wende ihn auf die View-Matrix an
-            XMVECTOR snappedOrigin = XMLoadFloat3( &lightSpaceOriginF );
-            XMVECTOR originalOrigin = XMVector3Transform( WorldShadowCP, lightView );
-            XMVECTOR snapOffset = snappedOrigin - originalOrigin;
-            
-            // Erstelle Offset-Matrix
-            XMFLOAT3 snapOffsetF;
-            XMStoreFloat3( &snapOffsetF, snapOffset );
-            XMMATRIX offsetMatrix = XMMatrixTranslation( snapOffsetF.x, snapOffsetF.y, 0.0f );
-            
-            // Kombiniere View mit Offset
-            XMMATRIX snappedLightView = XMMatrixMultiply( lightView, offsetMatrix );
+            // only update every Nth frame for higher cascades to save performance
+            bool shouldUpdateCascade = true;
+            if ( cascadeIdx == 2 ) {
+                // pre-last cascade updates every 2nd frame which is 30 FPS = 15 updates per second
+                shouldUpdateCascade = (perFrameCascadeData.frameCount % 2) == 0;
+            } else if ( cascadeIdx == 3 ) {
+                // final cascade updates every 3rd frame which is 30 FPS = 10 updates per second
+                shouldUpdateCascade = (perFrameCascadeData.frameCount % 3) == 0;
+            }
 
-            const XMMATRIX crViewRepl = XMMatrixTranspose( snappedLightView );
-            const XMMATRIX crProjRepl = XMMatrixTranspose( XMMatrixOrthographicLH(
-                cascadeSize, cascadeSize, 1.0f, 20000.f ) );
+            if ( shouldUpdateCascade ) {
+                CalculateCascadeMatrices(
+                    cascadeCRs[cascadeIdx],
+                    splits,
+                    cascadeIdx,
+                    numCascades,
+                    farPlane,
+                    isLastCascade ? lastCascadeP : p,
+                    isLastCascade ? lastCascadeLookAt : lookAt,
+                    c_XM_Up,
+                    isLastCascade ? lastCascadeData.Position : WorldShadowCP,
+                    GetSizeX() );
 
-            XMStoreFloat4x4( &cascadeCRs[cascadeIdx].ViewReplacement, crViewRepl );
-            XMStoreFloat4x4( &cascadeCRs[cascadeIdx].ProjectionReplacement, crProjRepl );
-            XMStoreFloat3( &cascadeCRs[cascadeIdx].PositionReplacement, p );
-            XMStoreFloat3( &cascadeCRs[cascadeIdx].LookAtReplacement, lookAt );
+                // Store the current cascade matrix for future frames when we skip updates
+                perFrameCascadeData.PreviousCascadeCRs[cascadeIdx] = cascadeCRs[cascadeIdx];
 
-            // Render diese Cascade using the new CascadedShadowMap
-            Engine::GAPI->SetCameraReplacementPtr( &cascadeCRs[cascadeIdx] );
+                // Render diese Cascade using the new CascadedShadowMap
+                Engine::GAPI->SetCameraReplacementPtr( &cascadeCRs[cascadeIdx] );
 
-            // Build render params
-            RenderShadowmapsParams renderParams = {};
-            XMStoreFloat3( &renderParams.CameraPosition, WorldShadowCP );
-            renderParams.Target = nullptr;
-            renderParams.CullFront = true;
-            renderParams.DontCull = false;
-            renderParams.DSVOverwrite = GetCascadeDSV( static_cast<UINT>(cascadeIdx) );
-            renderParams.DebugRTV = nullptr;
-            renderParams.CascadeIndex = static_cast<int>(cascadeIdx);
-            renderParams.CascadeSplits = splits;
-            renderParams.CascadeCameraReplacements = &cascadeCRs;
+                // Build render params
+                RenderShadowmapsParams renderParams = {};
+                XMStoreFloat3( &renderParams.CameraPosition, WorldShadowCP );
+                renderParams.Target = nullptr;
+                renderParams.CullFront = true;
+                renderParams.DontCull = false;
+                renderParams.DSVOverwrite = GetCascadeDSV( static_cast<UINT>(cascadeIdx) );
+                renderParams.DebugRTV = nullptr;
+                renderParams.CascadeIndex = static_cast<int>(cascadeIdx);
+                renderParams.CascadeSplits = splits;
+                renderParams.CascadeCameraReplacements = &cascadeCRs;
 
-            RenderShadowmaps( renderParams );
+                RenderShadowmaps( renderParams );
 
-            Engine::GAPI->SetCameraReplacementPtr( nullptr );
+                Engine::GAPI->SetCameraReplacementPtr( nullptr );
+            } else {
+                // Use the previous cascade matrix when skipping this frame's update
+                cascadeCRs[cascadeIdx] = perFrameCascadeData.PreviousCascadeCRs[cascadeIdx];
+            }
         }
     }
 
