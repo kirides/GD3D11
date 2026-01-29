@@ -338,6 +338,19 @@ XRESULT D2DEditorView::InitControls() {
 	return XR_SUCCESS;
 }
 
+XMFLOAT3 GetCameraPosition() {
+    if (oCGame::GetGame() && oCGame::GetGame()->_zCSession_camVob)
+    {
+        return oCGame::GetGame()->_zCSession_camVob->GetPositionWorld();
+    }
+    return XMFLOAT3(0, 0, 0);
+}
+
+XMVECTOR GetCameraPositionXM() {
+    auto position = GetCameraPosition();
+    return XMLoadFloat3(&position);
+}
+
 /** Draws this sub-view */
 void D2DEditorView::Draw( const D2D1_RECT_F& clientRectAbs, float deltaTime ) {
 	// If the editor is not open, dont draw it. Slide it in otherwise.
@@ -376,6 +389,11 @@ void D2DEditorView::Draw( const D2D1_RECT_F& clientRectAbs, float deltaTime ) {
 	MainPanel->SetPosition( p );
 
 
+    XMFLOAT3 wDir; XMStoreFloat3( &wDir, Engine::GAPI->UnprojectCursorXM() );
+    XMFLOAT3 hit;
+    XMFLOAT3 hitTri[3];
+    auto hasHit = Engine::GAPI->TraceWorldMesh( GetCameraPosition(), wDir, hit, nullptr, hitTri );
+    
 	// Draw subviews
 	if ( IsEnabled || MainPanel->GetPosition().x + 40.0f > -MainPanel->GetSize().width ) {
 		// Draw mode-text
@@ -388,8 +406,10 @@ void D2DEditorView::Draw( const D2D1_RECT_F& clientRectAbs, float deltaTime ) {
 				L"Mousewheel - Scale\n"
 				L"F1 - Close editor\n"
 				L"Shift-Click - Place Hero\n"
-				L"Pos: " + Toolbox::ToWideChar( float3( Engine::GAPI->GetCameraPosition() ).toString() ) +
+				L"Pos: " + Toolbox::ToWideChar( float3( GetCameraPosition() ).toString() ) +
 				L"\nTime: " + std::to_wstring( oCGame::GetGame()->_zCSession_world->GetSkyControllerOutdoor()->GetMasterTime() ) +
+				L"\nHas Hit: " + std::to_wstring( hasHit ) +
+				L"\nHit Pos: " + std::to_wstring( hit.x ) + L" x " + std::to_wstring( hit.y ) + L" x " + std::to_wstring( hit.z ) +
 				L"\nWetness: " + std::to_wstring( Engine::GAPI->GetSceneWetness() );
 			break;
 
@@ -424,6 +444,21 @@ void D2DEditorView::Update( float deltaTime ) {
 	if ( !IsEnabled || Engine::AntTweakBar->GetActive() )
 		return;
 
+    Keys[VK_LSHIFT] = (GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0;
+    Keys[VK_RSHIFT] = (GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0;
+    Keys[VK_SHIFT] = (GetAsyncKeyState(VK_SHIFT)  & 0x8000) != 0;
+    Keys[VK_SHIFT] = Keys[VK_SHIFT] || Keys[VK_LSHIFT] || Keys[VK_RSHIFT];
+    
+    Keys[VK_LCONTROL] = (GetAsyncKeyState(VK_LCONTROL) & 0x8000) != 0;
+    Keys[VK_RCONTROL] = (GetAsyncKeyState(VK_RCONTROL) & 0x8000) != 0;
+    Keys[VK_CONTROL]  = (GetAsyncKeyState(VK_CONTROL)  & 0x8000) != 0;
+    Keys[VK_CONTROL]  = Keys[VK_CONTROL] || Keys[VK_LCONTROL] || Keys[VK_RCONTROL];
+
+    Keys[VK_LMENU]    = (GetAsyncKeyState(VK_LMENU)    & 0x8000) != 0;
+    Keys[VK_RMENU]    = (GetAsyncKeyState(VK_RMENU)    & 0x8000) != 0;
+    Keys[VK_MENU]     = (GetAsyncKeyState(VK_MENU)     & 0x8000) != 0;
+    Keys[VK_MENU]     = Keys[VK_MENU] || Keys[VK_LMENU] || Keys[VK_RMENU];
+    
 	Widgets->Render();
 
 	if ( Selection.SelectedMesh ) {
@@ -462,9 +497,9 @@ void D2DEditorView::DoVegetationRemove() {
 	XMFLOAT3 hitTri[3];
 
 	float removeRange = 250.0f * (1.0f + MMWDelta * 0.01f);
-
+    
 	if ( Selection.SelectedVegetationBox ) {
-		if ( Engine::GAPI->TraceWorldMesh( Engine::GAPI->GetCameraPosition(), *(XMFLOAT3*) & wDir, hit, nullptr, hitTri ) ) {
+		if ( Engine::GAPI->TraceWorldMesh( GetCameraPosition(), wDir, hit, nullptr, hitTri ) ) {
 			XMFLOAT4 c;
 
 			// Do this when only Mouse1 and CTRL are pressed
@@ -501,7 +536,7 @@ void D2DEditorView::DoVegetationPlacement() {
 		rtp = &TracedTexture;
 
 	// Trace the worldmesh from the cursor
-	if ( Engine::GAPI->TraceWorldMesh( Engine::GAPI->GetCameraPosition(), *(XMFLOAT3*) & wDir, hit, rtp, hitTri ) ) {
+	if ( Engine::GAPI->TraceWorldMesh( GetCameraPosition(), wDir, hit, rtp, hitTri ) ) {
 		// Update the position if successful
 		DraggedBoxCenter = hit;
 
@@ -553,25 +588,25 @@ void D2DEditorView::DoSelection() {
 	TracedMaterial = nullptr;
 
 	// Trace mesh-less vegetationboxes
-	TracedVegetationBox = TraceVegetationBoxes( Engine::GAPI->GetCameraPosition(), *(XMFLOAT3*) & wDir );
+	TracedVegetationBox = TraceVegetationBoxes( GetCameraPosition(), wDir );
 	if ( TracedVegetationBox ) {
 		TracedVegetationBox->VisualizeGrass( XMFLOAT4( 1, 1, 1, 1 ) );
 		return;
 	}
 
 	// Trace vobs
-	tVob = Engine::GAPI->TraceStaticMeshVobsBB( Engine::GAPI->GetCameraPosition(), *(XMFLOAT3*) & wDir, hitVob, &hitMaterialVob );
-	tSkelVob = Engine::GAPI->TraceSkeletalMeshVobsBB( Engine::GAPI->GetCameraPosition(), *(XMFLOAT3*) & wDir, hitSkel );
+	tVob = Engine::GAPI->TraceStaticMeshVobsBB( GetCameraPosition(), wDir, hitVob, &hitMaterialVob );
+	tSkelVob = Engine::GAPI->TraceSkeletalMeshVobsBB( GetCameraPosition(), wDir, hitSkel );
 
 	// Trace the worldmesh from the cursor
-	Engine::GAPI->TraceWorldMesh( Engine::GAPI->GetCameraPosition(), *(XMFLOAT3*) & wDir, hitWorld, &TracedTexture, hitTri, &hitMesh, &hitMaterial );
+	Engine::GAPI->TraceWorldMesh( GetCameraPosition(), wDir, hitWorld, &TracedTexture, hitTri, &hitMesh, &hitMaterial );
 
 	float lenVob;
-	XMStoreFloat( &lenVob, XMVector3Length( Engine::GAPI->GetCameraPositionXM() - XMLoadFloat3( &hitVob ) ) );
+	XMStoreFloat( &lenVob, XMVector3Length( GetCameraPositionXM() - XMLoadFloat3( &hitVob ) ) );
 	float lenSkel;
-	XMStoreFloat( &lenSkel, XMVector3Length( Engine::GAPI->GetCameraPositionXM() - XMLoadFloat3( &hitSkel ) ) );
+	XMStoreFloat( &lenSkel, XMVector3Length( GetCameraPositionXM() - XMLoadFloat3( &hitSkel ) ) );
 	float lenWorld;
-	XMStoreFloat( &lenWorld, XMVector3Length( Engine::GAPI->GetCameraPositionXM() - XMLoadFloat3( &hitWorld ) ) );
+	XMStoreFloat( &lenWorld, XMVector3Length( GetCameraPositionXM() - XMLoadFloat3( &hitWorld ) ) );
 
 	// Check world hit
 	if ( lenWorld < lenVob && lenWorld < lenSkel ) {
@@ -1083,7 +1118,7 @@ bool D2DEditorView::OnWindowMessage( HWND hWnd, unsigned int msg, WPARAM wParam,
 			}
 			break;
 		}
-		break;
+	    break;
 
 	case WM_SYSKEYUP:
 	case WM_KEYUP:

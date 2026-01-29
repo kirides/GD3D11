@@ -3625,23 +3625,29 @@ bool GothicAPI::TraceWorldMesh( const XMFLOAT3& origin, const XMFLOAT3& dir, XMF
 }
 
 /** Unprojects a pixel-position on the screen */
-void XM_CALLCONV GothicAPI::UnprojectXM( FXMVECTOR p, XMVECTOR& worldPos, XMVECTOR& worldDir ) {
+void XM_CALLCONV GothicAPI::UnprojectXM(FXMVECTOR p, XMVECTOR& worldPos, XMVECTOR& worldDir) {
     auto cam = zCCamera::GetCamera();
-    XMMATRIX proj = XMMatrixTranspose( XMLoadFloat4x4( &cam->trafoProjection ) );
-    XMMATRIX invView = XMMatrixTranspose( XMLoadFloat4x4( &cam->trafoViewInv ) );
+    XMMATRIX proj    = XMMatrixTranspose(XMLoadFloat4x4(&cam->trafoProjection));
+    XMMATRIX invProj = XMMatrixInverse(nullptr, proj);
+    XMMATRIX invView = XMMatrixTranspose(XMLoadFloat4x4(&cam->trafoViewInv));
 
-    // Convert to screenspace
     auto res = Engine::GraphicsEngine->GetResolution();
-    XMFLOAT2 fP; XMStoreFloat2( &fP, p );
-    FXMVECTOR u = XMVectorSet(
-        (((2 * fP.x) / res.x) - 1) / proj.r[0].m128_f32[0],
-        -(((2 * fP.y) / res.y) - 1) / proj.r[1].m128_f32[1],
-        1,
-        0 );
+    XMFLOAT2 fp; XMStoreFloat2(&fp, p);
 
-    // Transform and output
-    worldPos = XMVector3TransformCoord( u, invView );
-    worldDir = XMVector3TransformCoord( XMVector3Normalize( u ), invView );
+    XMVECTOR ndc = XMVectorSet(
+        (2.0f * fp.x / res.x) - 1.0f,
+        -((2.0f * fp.y / res.y) - 1.0f),
+        1.0f,
+        1.0f);
+
+    XMVECTOR viewSpace = XMVector4Transform(ndc, invProj);
+    viewSpace = XMVectorScale(viewSpace, 1.0f / XMVectorGetW(viewSpace));
+
+    XMVECTOR camPos = XMVector3TransformCoord(g_XMZero, invView);
+    XMVECTOR world  = XMVector3TransformCoord(viewSpace, invView);
+
+    worldPos = camPos;
+    worldDir = XMVector3Normalize(world - camPos);
 }
 
 /** Unprojects the current cursor */
