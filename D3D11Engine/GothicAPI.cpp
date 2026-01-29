@@ -3625,29 +3625,23 @@ bool GothicAPI::TraceWorldMesh( const XMFLOAT3& origin, const XMFLOAT3& dir, XMF
 }
 
 /** Unprojects a pixel-position on the screen */
-void XM_CALLCONV GothicAPI::UnprojectXM(FXMVECTOR p, XMVECTOR& worldPos, XMVECTOR& worldDir) {
-    auto cam = zCCamera::GetCamera();
-    XMMATRIX proj    = XMMatrixTranspose(XMLoadFloat4x4(&cam->trafoProjection));
-    XMMATRIX invProj = XMMatrixInverse(nullptr, proj);
-    XMMATRIX invView = XMMatrixTranspose(XMLoadFloat4x4(&cam->trafoViewInv));
+void XM_CALLCONV GothicAPI::UnprojectXM(float2 p, XMVECTOR& worldPos, XMVECTOR& worldDir) {
+    
+    const auto res = Engine::GraphicsEngine->GetResolution();
 
-    auto res = Engine::GraphicsEngine->GetResolution();
-    XMFLOAT2 fp; XMStoreFloat2(&fp, p);
+    XMMATRIX proj    = XMMatrixTranspose(XMLoadFloat4x4(&RendererState.TransformState.TransformProj));
+    XMMATRIX invView = XMMatrixTranspose(XMLoadFloat4x4(&zCCamera::GetCamera()->GetTransformDX( zCCamera::ETransformType::TT_VIEW_INV )));
 
-    XMVECTOR ndc = XMVectorSet(
-        (2.0f * fp.x / res.x) - 1.0f,
-        -((2.0f * fp.y / res.y) - 1.0f),
-        1.0f,
-        1.0f);
+    const float ux = (((2.0f * p.x) / res.x) - 1.0f) / XMVectorGetX(proj.r[0]);
+    const float uy = -(((2.0f * p.y) / res.y) - 1.0f) / XMVectorGetY(proj.r[1]);
+    XMVECTOR u = XMVectorSet(ux, uy, 1.0f, 0.0f);
 
-    XMVECTOR viewSpace = XMVector4Transform(ndc, invProj);
-    viewSpace = XMVectorScale(viewSpace, 1.0f / XMVectorGetW(viewSpace));
+    XMVECTOR wPos = XMVector3TransformCoord(u, invView);
+    worldPos = wPos;
 
-    XMVECTOR camPos = XMVector3TransformCoord(g_XMZero, invView);
-    XMVECTOR world  = XMVector3TransformCoord(viewSpace, invView);
-
-    worldPos = camPos;
-    worldDir = XMVector3Normalize(world - camPos);
+    XMVECTOR dir  = XMVector3Normalize(u);
+    dir = XMVector3TransformNormal(dir, invView);
+    worldDir = dir;
 }
 
 /** Unprojects the current cursor */
@@ -3655,7 +3649,7 @@ XMVECTOR GothicAPI::UnprojectCursorXM() {
     XMVECTOR mPos, mDir;
     POINT p = GetCursorPosition();
 
-    Engine::GAPI->UnprojectXM( XMVectorSet( static_cast<float>(p.x), static_cast<float>(p.y), 0, 0 ), mPos, mDir );
+    Engine::GAPI->UnprojectXM( float2(static_cast<float>(p.x), static_cast<float>(p.y)), mPos, mDir );
 
     return mDir;
 }

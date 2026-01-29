@@ -789,11 +789,16 @@ void D2DEditorView::OnMouseClick( int button ) {
 		SelectionTabControl->SetActiveTab( "Selection/Texture" ); // Default
 
 		if ( Keys[VK_SHIFT] ) {
-			LogInfo() << "Setting player position to: " << float3( TracedPosition ).toString();
-			XMFLOAT3 pos;
-			constexpr XMVECTORF32 c_XM_0_500_0_0 = { { { 0, 500, 0, 0 } } };
-			XMStoreFloat3( &pos, XMLoadFloat3( &TracedPosition ) + c_XM_0_500_0_0 );
-			Engine::GAPI->SetPlayerPosition( pos );
+		    XMFLOAT3 wDir; XMStoreFloat3( &wDir, Engine::GAPI->UnprojectCursorXM() );
+		    XMFLOAT3 hit;
+		    XMFLOAT3 hitTri[3];
+		    auto hasHit = Engine::GAPI->TraceWorldMesh( GetCameraPosition(), wDir, hit, nullptr, hitTri );
+            if (hasHit) {
+			    XMFLOAT3 pos = hit;
+			    LogInfo() << "Setting player position to: " << float3( pos ).toString();
+                pos.y += 500.0f; // Spawn above ground to avoid getting stuck in terrain
+			    Engine::GAPI->SetPlayerPosition( pos );
+            }
 		} else if ( Mode == EM_PLACE_VEGETATION ) {
 			// Place the currently dragged vegetationbox
 			PlaceDraggedVegetationBox();

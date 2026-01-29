@@ -397,7 +397,7 @@ public:
     XMFLOAT4X4& GetProjectionMatrix();
 
     /** Unprojects a pixel-position on the screen */
-    void XM_CALLCONV UnprojectXM( FXMVECTOR p, XMVECTOR& worldPos, XMVECTOR& worldDir );
+    void XM_CALLCONV UnprojectXM(float2 p, XMVECTOR& worldPos, XMVECTOR& worldDir);
 
     /** Unprojects the current cursor, returns it's direction in world-space */
     XMVECTOR XM_CALLCONV UnprojectCursorXM();
