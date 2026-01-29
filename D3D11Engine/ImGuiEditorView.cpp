@@ -888,6 +888,24 @@ bool ImGuiEditorView::OnWindowMessage(HWND hWnd, unsigned int msg, WPARAM wParam
 
     switch (msg) {
     case WM_KEYDOWN:
+        if (wParam == VK_ESCAPE) {
+            // Clear selection on ESC
+            Selection.Reset();
+            Selection.SelectedMesh = nullptr;
+            Widgets->ClearSelection();
+            TracedTexture = "";
+            SelectedSomething = false;
+            SelectedTriangle[0] = {0,0,0};
+            SelectedTriangle[1] = {0,0,0};
+            SelectedTriangle[2] = {0,0,0};
+            TracedPosition = {0,0,0};
+            TracedMesh = nullptr;
+            TracedVegetationBox = nullptr;
+            TracedMaterial = nullptr;
+            TracedVobInfo = nullptr;
+            TracedSkeletalVobInfo = nullptr;
+            SetEditorMode(EM_IDLE);
+        }
         if (wParam == VK_DELETE) {
             OnDelete();
         } else if (wParam == VK_SPACE) {

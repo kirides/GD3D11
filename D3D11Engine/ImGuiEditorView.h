@@ -3,6 +3,7 @@
 #include "Engine.h"
 #include <imgui.h>
 
+#include "D3D11GraphicsEngine.h"
 #include "oCGame.h"
 
 class GVegetationBox;
@@ -76,7 +77,7 @@ public:
             // Enable free-cam, the easy way
             oCGame::GetGame()->TestKey(GOTHIC_KEY::F6);
 
-            Engine::GAPI->SetEnableGothicInput(false);
+            D3D11GraphicsEngine::UpdateShouldBlockGameInput();
             ResetEditorCamera();
 
             // Reset the selection, so it doesn't crash on levelchange
@@ -85,7 +86,7 @@ public:
             // Disable free-cam, the easy way
             oCGame::GetGame()->TestKey(GOTHIC_KEY::F4);
 
-            Engine::GAPI->SetEnableGothicInput(true);
+            D3D11GraphicsEngine::UpdateShouldBlockGameInput();
         }
     }
 

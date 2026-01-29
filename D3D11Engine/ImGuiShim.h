@@ -49,6 +49,8 @@ public:
         m_EditorView->SetIsEnabled(!m_EditorView->GetIsEnabled());
     }
     
+    bool GetIsEditorVisible() { return m_EditorView->GetIsEnabled(); }
+    
     void OnVobRemovedFromWorld(zCVob* vob) { m_EditorView->OnVobRemovedFromWorld(vob); } 
 private:
     void RenderSettingsWindow();

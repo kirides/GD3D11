@@ -5444,7 +5444,7 @@ LRESULT D3D11GraphicsEngine::OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam
 void D3D11GraphicsEngine::UpdateShouldBlockGameInput( ) {
     if ( auto hImgui = Engine::ImGuiHandle ) {
         auto oldIsActive = hImgui->IsActive;
-        hImgui->IsActive = hImgui->SettingsVisible || hImgui->AdvancedSettingsVisible || hImgui->LibShowBlockingThisFrame;
+        hImgui->IsActive = hImgui->SettingsVisible || hImgui->GetIsEditorVisible() || hImgui->AdvancedSettingsVisible || hImgui->LibShowBlockingThisFrame;
         hImgui->UpdateBlockGameInput();
 
         if ( oldIsActive != hImgui->IsActive ) {
