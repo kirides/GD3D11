@@ -375,15 +375,16 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
     {
         s.ChangeWindowPreset = WINDOW_MODE_FULLSCREEN_BORDERLESS;
 
-        s.WorldShadowRangeScale = 0.6f;
+        s.WorldShadowRangeScale = 1.0f;
         s.NumShadowCascades = 2;
-        s.ShadowMapSize = 2048;
+        s.ShadowMapSize = 1024;
         s.ShadowFrustumCullingMode = GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_AGGRESSIVE;
-        s.ShadowSoftness = 0.75;
-        s.SmoothShadowCameraUpdate = 1;
+        s.ShadowSoftness = 0.85f;
+        s.SmoothShadowCameraUpdate = true;
         s.SmoothShadowFrequency = 500;
 
         s.EnableDynamicLighting = false;
+        s.EnablePointlightShadows = GothicRendererSettings::EPointLightShadowMode::PLS_DISABLED;
 
         s.HbaoSettings.Enabled = false;
 
@@ -409,13 +410,13 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
     {
         s.ChangeWindowPreset = WINDOW_MODE_FULLSCREEN_BORDERLESS;
 
-        s.WorldShadowRangeScale = 0.9f;
-        s.NumShadowCascades = 2;
+        s.WorldShadowRangeScale = 1.0f;
+        s.NumShadowCascades = 3;
         s.ShadowMapSize = 2048;
-        s.ShadowFrustumCullingMode = GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_AGGRESSIVE;
-        s.ShadowSoftness = 0.75f;
-        s.SmoothShadowCameraUpdate = 1;
-        s.SmoothShadowFrequency = 2000;
+        s.ShadowFrustumCullingMode = GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_CONSERVATIVE;
+        s.ShadowSoftness = 0.85f;
+        s.SmoothShadowCameraUpdate = true;
+        s.SmoothShadowFrequency = 1000;
 
         s.EnableDynamicLighting = true;
         s.EnablePointlightShadows = GothicRendererSettings::EPointLightShadowMode::PLS_STATIC_ONLY;
@@ -432,7 +433,7 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.OutdoorSmallVobDrawRadius = 15'000;
         s.IndoorVobDrawRadius = 15'000;
 
-        s.WindQuality = GothicRendererSettings::EWindQuality::WIND_QUALITY_ADVANCED;
+        s.WindQuality = GothicRendererSettings::EWindQuality::WIND_QUALITY_NONE;
         s.HeroAffectsObjects = 1;
 
         s.EnableGodRays = true;
@@ -449,7 +450,7 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.ShadowMapSize = 4096;
         s.ShadowFrustumCullingMode = GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_CONSERVATIVE;
         s.ShadowSoftness = 1.0f;
-        s.SmoothShadowCameraUpdate = 0;
+        s.SmoothShadowCameraUpdate = false;
         s.SmoothShadowFrequency = 20000;
 
         s.EnableDynamicLighting = true;
@@ -483,10 +484,10 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
 
         s.WorldShadowRangeScale = 1.0f;
         s.NumShadowCascades = 4;
-        s.ShadowMapSize = 8192;
+        s.ShadowMapSize = 4096;
         s.ShadowFrustumCullingMode = GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_CONSERVATIVE;
         s.ShadowSoftness = 1.0f;
-        s.SmoothShadowCameraUpdate = 0;
+        s.SmoothShadowCameraUpdate = false;
         s.SmoothShadowFrequency = 20000;
 
         s.EnableDynamicLighting = true;
