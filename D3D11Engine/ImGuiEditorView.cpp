@@ -171,8 +171,7 @@ void ImGuiEditorView::RenderMainPanel() {
 
         // Save/Load buttons
         if (ImGui::Button("Save Level", ImVec2(125, 30))) {
-            // Engine::GAPI->SaveCustomZENResources();
-            // Show message via ImGui
+            Engine::GAPI->SaveCustomZENResources();
         }
         ImGui::SameLine();
         if (ImGui::Button("Load Level", ImVec2(125, 30))) {
@@ -186,10 +185,8 @@ void ImGuiEditorView::RenderMainPanel() {
 
 void ImGuiEditorView::RenderVegetationTab() {
     if (ImGui::Button("Place Volume", ImVec2(125, 30))) {
-        if (Mode == EM_IDLE) {
-            MMWDelta = 0;
-            SetEditorMode(EM_PLACE_VEGETATION);
-        }
+        MMWDelta = 0;
+        SetEditorMode(EM_PLACE_VEGETATION);
     }
     ImGui::SameLine();
     if (ImGui::Button("Fill Selection", ImVec2(125, 30))) {
@@ -386,9 +383,9 @@ void ImGuiEditorView::Update(float deltaTime) {
             DoVegetationPlacement();
         } else if (Mode == EM_SELECT_POLY || Mode == EM_IDLE) {
             DoSelection();
-        } else if (Mode == EM_REMOVE_VEGETATION) {
-            DoVegetationRemove();
         }
+    } else if (Mode == EM_REMOVE_VEGETATION) {
+        DoVegetationRemove();
     } else if (!ctrlHeld) {
         // Clicked and moving - editor movement
         DoEditorMovement();
@@ -406,10 +403,6 @@ void ImGuiEditorView::DoVegetationRemove() {
     bool leftDown = io.MouseDown[0];
     bool rightDown = io.MouseDown[1];
     bool ctrlHeld = io.KeyCtrl;
-
-    Engine::GAPI->PrintMessageTimed(INT2(1000, 1000), "leftDown:" + std::to_string(leftDown));
-    Engine::GAPI->PrintMessageTimed(INT2(1000, 1000), "rightDown:" + std::to_string(rightDown));
-    Engine::GAPI->PrintMessageTimed(INT2(1000, 1000), "ctrlHeld:" + std::to_string(ctrlHeld));
     
     if (Selection.SelectedVegetationBox) {
         if (Engine::GAPI->TraceWorldMesh(GetCameraPosition(), wDir, hit, nullptr, hitTri)) {
@@ -423,6 +416,7 @@ void ImGuiEditorView::DoVegetationRemove() {
                 if (Selection.SelectedVegetationBox->IsEmpty()) {
                     Engine::GAPI->RemoveVegetationBox(Selection.SelectedVegetationBox);
                     Selection.SelectedVegetationBox = nullptr;
+                    DoSelection();
                 }
 
                 c = XMFLOAT4(1, 0, 0, 1);
@@ -504,7 +498,9 @@ void ImGuiEditorView::DoSelection() {
     SkeletalVobInfo* tSkelVob = Engine::GAPI->TraceSkeletalMeshVobsBB(GetCameraPosition(), wDir, hitSkel);
 
     // Trace the worldmesh from the cursor
-    Engine::GAPI->TraceWorldMesh(GetCameraPosition(), wDir, hitWorld, &TracedTexture, hitTri, &hitMesh, &hitMaterial);
+    if (!Engine::GAPI->TraceWorldMesh(GetCameraPosition(), wDir, hitWorld, &TracedTexture, hitTri, &hitMesh, &hitMaterial)) {
+        return;
+    }
 
     float lenVob;
     XMStoreFloat(&lenVob, XMVector3Length(GetCameraPositionXM() - XMLoadFloat3(&hitVob)));
