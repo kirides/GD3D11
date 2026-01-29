@@ -39,7 +39,6 @@ class D3D11PfxRenderer;
 class D3D11LineRenderer;
 class zCVobLight;
 class zCVob;
-class D2DView;
 struct VobLightInfo;
 class GMesh;
 class D3D11HDShader;
@@ -328,9 +327,6 @@ public:
 
     /** Draws particle effects */
     void DrawFrameParticles( std::map<zCTexture*, std::vector<ParticleInstanceInfo>>& particles, std::map<zCTexture*, ParticleRenderInfo>& info );
-
-    /** Returns the UI-View */
-    D2DView* GetUIView() { return nullptr; }
 
     /** Returns the settings window availability */
     bool HasSettingsWindow();

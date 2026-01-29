@@ -3,7 +3,6 @@
 
 #include "AlignedAllocator.h"
 #include "BaseAntTweakBar.h"
-#include "D2DView.h"
 #include "D3D11Effect.h"
 #include "D3D11GShader.h"
 #include "D3D11HDShader.h"
