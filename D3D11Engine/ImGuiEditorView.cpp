@@ -141,10 +141,10 @@ void ImGuiEditorView::RenderMainPanel() {
         // Help text
         ImGui::TextWrapped(
             "Controls:\n"
-            "Mouse 1 - Move\n"
-            "Mouse 2 - Look\n"
-            "Mouse 1+2 - Pan\n"
-            "Mousewheel - Scale\n"
+            "LMB - Move Forward/Strafe\n"
+            "RMB - Look Around\n"
+            "MMB/LMB+RMB - Pan\n"
+            "Mousewheel - Zoom\n"
             "F1 - Close editor\n"
             "Shift-Click - Place Hero"
         );
@@ -629,7 +629,7 @@ void ImGuiEditorView::OnMouseClick(int button) {
             if (hasHit) {
                 XMFLOAT3 pos = hit;
                 LogInfo() << "Setting player position to: " << float3(pos).toString();
-                pos.y += 500.0f; // Spawn above ground to avoid getting stuck in terrain
+                pos.y += 370.0f; // Spawn above ground to avoid getting stuck in terrain
                 Engine::GAPI->SetPlayerPosition(pos);
             }
         } else if (Mode == EM_PLACE_VEGETATION) {
@@ -739,10 +739,29 @@ void ImGuiEditorView::ResetEditorCamera() {
 
     // Save current camera-matrix
     CStartWorld = *oCGame::GetGame()->_zCSession_camVob->GetWorldMatrixPtr();
-    constexpr XMVECTORF32 c_XM_1000 = { { { 1, 0, 0, 0 } } };
-    XMVECTOR dir = XMVector3Transform(c_XM_1000, XMLoadFloat4x4(&CStartWorld));
-    CYaw = asinf(-XMVectorGetZ(dir) / XMVectorGetX(XMVector3Length(dir))) + XM_PIDIV2;
-    CPitch = 0;
+    
+    // Extract yaw and pitch from the camera's current orientation
+    // The world matrix is transposed, so we need to handle it accordingly
+    XMMATRIX worldMat = XMMatrixTranspose(XMLoadFloat4x4(&CStartWorld));
+    
+    // Extract forward direction (third column in row-major, or third row in column-major)
+    XMFLOAT4X4 worldFloat;
+    XMStoreFloat4x4(&worldFloat, worldMat);
+    
+    // Forward vector is typically the Z-axis of the rotation part
+    XMFLOAT3 forward(worldFloat._31, worldFloat._32, worldFloat._33);
+    
+    // Calculate yaw from the forward vector (angle in XZ plane)
+    CYaw = atan2f(forward.x, forward.z);
+    
+    // Calculate pitch (angle from horizontal)
+    float horizontalLength = sqrtf(forward.x * forward.x + forward.z * forward.z);
+    CPitch = atan2f(-forward.y, horizontalLength);
+    
+    // Clamp pitch
+    const float maxPitch = XM_PIDIV2 - 0.01f;
+    if (CPitch > maxPitch) CPitch = maxPitch;
+    if (CPitch < -maxPitch) CPitch = -maxPitch;
 }
 
 void ImGuiEditorView::DoEditorMovement() {
@@ -753,42 +772,76 @@ void ImGuiEditorView::DoEditorMovement() {
     
     bool leftDown = io.MouseDown[0];
     bool rightDown = io.MouseDown[1];
+    bool middleDown = io.MouseDown[2];
 
     // Move the camera-vob
     zCVob* cVob = oCGame::GetGame()->_zCSession_camVob;
     XMFLOAT4X4* m = cVob->GetWorldMatrixPtr();
 
-    float rSpeed = 0.005f;
-    float mSpeed = 15.0f;
+    float rSpeed = 0.003f;
+    float mSpeed = 10.0f;
 
-    XMFLOAT3 position = Engine::GAPI->GetCameraPosition();
+    XMFLOAT3 position = GetCameraPosition();
 
-    if (!leftDown && rightDown) { // Rightclick -> Rotate only
+    // Clamp pitch to avoid gimbal lock (-89 to +89 degrees)
+    auto clampPitch = [this]() {
+        const float maxPitch = XM_PIDIV2 - 0.01f;
+        if (CPitch > maxPitch) CPitch = maxPitch;
+        if (CPitch < -maxPitch) CPitch = -maxPitch;
+    };
+
+    // Calculate camera direction vectors based on current yaw and pitch
+    // Forward vector in camera space
+    XMVECTOR forward = XMVectorSet(
+        cosf(CPitch) * sinf(CYaw),
+        -sinf(CPitch),
+        cosf(CPitch) * cosf(CYaw),
+        0.0f
+    );
+    forward = XMVector3Normalize(forward);
+
+    // Right vector (perpendicular to forward on XZ plane)
+    XMVECTOR right = XMVectorSet(cosf(CYaw), 0.0f, -sinf(CYaw), 0.0f);
+    right = XMVector3Normalize(right);
+
+    // Up vector (cross product of right and forward)
+    XMVECTOR up = XMVector3Cross(forward, right);
+    up = XMVector3Normalize(up);
+
+    // Blender-style navigation:
+    // Right mouse button: Rotate/Look around (FPS-style)
+    // Middle mouse button OR Left+Right: Pan (move sideways and up/down)
+    // Left mouse button: Move forward/backward and strafe
+    // Mouse wheel: Zoom (move forward/backward)
+
+    if (rightDown && !leftDown && !middleDown) {
+        // Right-click only: Rotate camera (look around)
+        CYaw += mouseDelta.x * rSpeed;
         CPitch += mouseDelta.y * rSpeed;
-        CYaw += mouseDelta.x * rSpeed;
+        clampPitch();
 
-    } else if (leftDown && !rightDown) { // Leftclick -> Rotate yaw and move xz
-        XMFLOAT2 fwd2d = XMFLOAT2(sinf(CYaw), cosf(CYaw));
+    } else if (middleDown || (leftDown && rightDown)) {
+        // Middle mouse or both buttons: Pan (move in camera-local X/Y plane)
+        XMFLOAT3 movement;
+        XMStoreFloat3(&movement, (right * -mouseDelta.x + up * mouseDelta.y) * mSpeed);
+        position.x += movement.x;
+        position.y += movement.y;
+        position.z += movement.z;
 
-        position.x += fwd2d.x * -mouseDelta.y * mSpeed;
-        position.z += fwd2d.y * -mouseDelta.y * mSpeed;
-
-        // Rotate yaw only
-        CYaw += mouseDelta.x * rSpeed;
-    } else if (leftDown && rightDown) { // Both, move sideways
-        FXMVECTOR fwd = XMVectorSet(sinf(CYaw), 0.0f, cosf(CYaw), 0);
-
-        constexpr XMVECTORF32 up = { { { 0, 1, 0, 0 } } };
-        FXMVECTOR side = XMVector3Cross(fwd, up);
-
-        XMFLOAT3 position_add;
-        XMStoreFloat3(&position_add, ((side * -mouseDelta.x) + (up * -mouseDelta.y)) * mSpeed);
-        position.x += position_add.x;
-        position.y += position_add.y;
-        position.z += position_add.z;
+    } else if (leftDown && !rightDown && !middleDown) {
+        // Left-click only: Move forward/backward with Y, strafe with X
+        XMFLOAT3 movement;
+        XMStoreFloat3(&movement, (forward * -mouseDelta.y + right * -mouseDelta.x) * mSpeed);
+        position.x += movement.x;
+        position.y += movement.y;
+        position.z += movement.z;
     }
 
-    XMMATRIX world = XMMatrixTranslation(position.x, position.y, position.z);
+    // Build world matrix with rotation and translation
+    // The rotation is the inverse of the view rotation (camera looks along -Z in view space)
+    XMMATRIX rotationMatrix = XMMatrixRotationRollPitchYaw(CPitch, CYaw, 0.0f);
+    XMMATRIX translationMatrix = XMMatrixTranslation(position.x, position.y, position.z);
+    XMMATRIX world = rotationMatrix * translationMatrix;
 
     XMStoreFloat4x4(&*m, XMMatrixTranspose(world));
 
@@ -957,6 +1010,40 @@ bool ImGuiEditorView::OnWindowMessage(HWND hWnd, unsigned int msg, WPARAM wParam
                 // Adjust size of grassblades if not in removing-mode
                 if (Mode == EM_IDLE) {
                     Selection.SelectedVegetationBox->ApplyUniformScaling(delta < 0 ? 0.9f : 1.1f);
+                }
+            } else {
+                // Zoom camera forward/backward
+                float zoomSpeed = io.KeyShift ? 50.0f : 20.0f;
+                float zoomAmount = delta * zoomSpeed;
+                
+                zCVob* cVob = oCGame::GetGame()->_zCSession_camVob;
+                if (cVob) {
+                    XMFLOAT3 position = GetCameraPosition();
+                    
+                    // Calculate forward vector from current yaw/pitch
+                    XMVECTOR forward = XMVectorSet(
+                        cosf(CPitch) * sinf(CYaw),
+                        -sinf(CPitch),
+                        cosf(CPitch) * cosf(CYaw),
+                        0.0f
+                    );
+                    forward = XMVector3Normalize(forward);
+                    
+                    XMFLOAT3 movement;
+                    XMStoreFloat3(&movement, forward * zoomAmount);
+                    position.x += movement.x;
+                    position.y += movement.y;
+                    position.z += movement.z;
+                    
+                    // Update camera position
+                    XMFLOAT4X4* m = cVob->GetWorldMatrixPtr();
+                    XMMATRIX rotationMatrix = XMMatrixRotationRollPitchYaw(CPitch, CYaw, 0.0f);
+                    XMMATRIX translationMatrix = XMMatrixTranslation(position.x, position.y, position.z);
+                    XMMATRIX world = rotationMatrix * translationMatrix;
+                    XMStoreFloat4x4(&*m, XMMatrixTranspose(world));
+                    
+                    zCCamera::GetCamera()->Activate();
+                    Engine::GAPI->SetViewTransformXM(Engine::GAPI->GetViewMatrixXM());
                 }
             }
         }
