@@ -46,6 +46,13 @@
 
 #include "ImGuiShim.h"
 #include "zCModel.h"
+#include "zCOption.h"
+
+#ifdef BUILD_SPACER
+#define IS_SPACER_BUILD true
+#else
+#define IS_SPACER_BUILD false
+#endif
 
 namespace wrl = Microsoft::WRL;
 
@@ -5246,10 +5253,12 @@ XRESULT D3D11GraphicsEngine::OnKeyDown( unsigned int key ) {
         }
         break;
     case VK_F1:
-        if (Engine::ImGuiHandle) {
-            Engine::ImGuiHandle->ToggleEditor();
+        if (zCOption::GetOptions()->IsParameter("XEnableEditorPanel") || IS_SPACER_BUILD) {
+            if (Engine::ImGuiHandle) {
+                Engine::ImGuiHandle->ToggleEditor();
+            }
+            UpdateShouldBlockGameInput();
         }
-        UpdateShouldBlockGameInput();
         break;
     default:
         break;

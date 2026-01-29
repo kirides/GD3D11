@@ -884,43 +884,6 @@ bool ImGuiEditorView::OnWindowMessage(HWND hWnd, unsigned int msg, WPARAM wParam
     // if (Engine::AntTweakBar->GetActive())
     //     return true;
 
-    bool enableEditorPanel = zCOption::GetOptions()->IsParameter("XEnableEditorPanel");
-
-#if !defined(PUBLIC_RELEASE)
-    enableEditorPanel = true;
-#endif
-
-    // Always allow opening/closing the editor
-#ifdef BUILD_SPACER
-    if (msg == WM_KEYDOWN && (wParam == VK_F1 || wParam == 'O') && !zCOption::GetOptions()->IsParameter("XNoDevMenu"))
-#else
-    if (msg == WM_KEYDOWN && (wParam == VK_F1))
-#endif
-    {
-        if (!enableEditorPanel)
-            return false;
-
-        // IsEnabled = !IsEnabled;
-        // Engine::GAPI->GetRendererState().RendererSettings.DisableWatermark = false;
-        //
-        // if (IsEnabled) {
-        //     // Enable free-cam, the easy way
-        //     oCGame::GetGame()->TestKey(GOTHIC_KEY::F6);
-        //
-        //     Engine::GAPI->SetEnableGothicInput(false);
-        //     ResetEditorCamera();
-        //
-        //     // Reset the selection, so it doesn't crash on levelchange
-        //     Selection.Reset();
-        // } else {
-        //     // Disable free-cam, the easy way
-        //     oCGame::GetGame()->TestKey(GOTHIC_KEY::F4);
-        //
-        //     Engine::GAPI->SetEnableGothicInput(true);
-        // }
-        return false;
-    }
-
     // Don't process any messages when disabled
     if (!IsEnabled)
         return true;
