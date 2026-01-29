@@ -697,19 +697,22 @@ void ImGuiEditorView::UpdateSelectionPanel() {
     // Update selection panel
     if (Selection.SelectedMaterial && Selection.SelectedMaterial->GetTexture()) {
         // Select preferred texture for the texture settings
-        Engine::AntTweakBar->SetPreferredTextureForSettings(Selection.SelectedMaterial->GetTexture()->GetNameWithoutExt());
+        // Engine::AntTweakBar->SetPreferredTextureForSettings(Selection.SelectedMaterial->GetTexture()->GetNameWithoutExt());
 
         // Update thumbnail
         MyDirectDrawSurface7* surface = Engine::GAPI->GetSurface(Selection.SelectedMaterial->GetTexture()->GetNameWithoutExt());
 
         if (surface) {
-            auto& thumb = (surface->GetEngineTexture())->GetShaderResourceView();
+            auto& thumb = surface->GetEngineTexture()->GetThumbnailSRV();
             if (!thumb.Get()) {
                 XLE((surface->GetEngineTexture())->CreateThumbnail());
-                auto& thumb2 = (surface->GetEngineTexture())->GetShaderResourceView();
-                SelectedImageThumbnail = thumb2;
+                SelectedImageThumbnail = nullptr;
+                if (surface->GetEngineTexture()->GetThumbnailSRV().Get()) {
+                    auto& thumb2 = surface->GetEngineTexture()->GetThumbnailSRV();
+                    SelectedImageThumbnail = thumb2;
+                }
             } else {
-                SelectedImageThumbnail = thumb;
+                SelectedImageThumbnail = surface->GetEngineTexture()->GetShaderResourceView();
             }
         }
 

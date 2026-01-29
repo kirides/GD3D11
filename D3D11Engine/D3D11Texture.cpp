@@ -260,6 +260,7 @@ XRESULT D3D11Texture::CreateThumbnail() {
         1,
         D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE, D3D11_USAGE_DEFAULT, 0, 1, 0, 0 );
 
+    ThumbnailSRV.Reset();
     LE( engine->GetDevice()->CreateTexture2D( &textureDesc, nullptr, Thumbnail.ReleaseAndGetAddressOf() ) );
 
     // Create temporary RTV
@@ -282,6 +283,14 @@ XRESULT D3D11Texture::CreateThumbnail() {
     engine->DrawQuad( INT2( 0, 0 ), INT2( 256, 256 ) );
 
     engine->GetContext()->OMSetRenderTargets( 2, oldRTV, oldDSV.Get() );
+    
+    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.Format = textureDesc.Format; // Anpassen an dein Texturformat
+    srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Texture2D.MipLevels = 1;
+    srvDesc.Texture2D.MostDetailedMip = 0;
+    
+    engine->GetDevice()->CreateShaderResourceView(Thumbnail.Get(), &srvDesc, ThumbnailSRV.GetAddressOf());
 
     return XR_SUCCESS;
 }
