@@ -950,7 +950,7 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
         }
 
         // Need to init AntTweakBar now that we have a working swapchain
-        XLE( Engine::AntTweakBar->Init() );
+        // XLE( Engine::AntTweakBar->Init() );
 
         Engine::ImGuiHandle->Init( GetActiveWindow(), GetDevice(), GetContext() );
 
@@ -1029,7 +1029,7 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
         ShadowMaps->Resize( s );
     }
 
-    Engine::AntTweakBar->OnResize( newSize );
+    // Engine::AntTweakBar->OnResize( newSize );
     Engine::ImGuiHandle->OnResize( newSize );
 
     return XR_SUCCESS;
@@ -1391,7 +1391,7 @@ XRESULT D3D11GraphicsEngine::Present() {
 
     SetDefaultStates();
     UpdateRenderStates();
-    Engine::AntTweakBar->Draw();
+    // Engine::AntTweakBar->Draw();
 
     if ( Engine::ImGuiHandle ) {
         SetDefaultStates();
@@ -5474,9 +5474,9 @@ void D3D11GraphicsEngine::OnUIEvent( EUIEvent uiEvent ) {
             hImgui->SettingsVisible = false;
             hImgui->AdvancedSettingsVisible = false;
         }
-        else if ( auto antBar = Engine::AntTweakBar; antBar->GetActive() ) {
-            antBar->SetActive( false );
-        }
+        // else if ( auto antBar = Engine::AntTweakBar; antBar->GetActive() ) {
+        //     antBar->SetActive( false );
+        // }
         UpdateShouldBlockGameInput();
 
         UpdateClipCursor( OutputWindow );

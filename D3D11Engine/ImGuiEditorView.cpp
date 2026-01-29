@@ -356,7 +356,7 @@ void ImGuiEditorView::RenderVobSettingsDialog() {
 }
 
 void ImGuiEditorView::Update(float deltaTime) {
-    if (!IsEnabled || Engine::AntTweakBar->GetActive())
+    if (!IsEnabled/* || Engine::AntTweakBar->GetActive()*/)
         return;
 
     Widgets->Render();
@@ -828,8 +828,8 @@ GVegetationBox* ImGuiEditorView::PlaceDraggedVegetationBox() {
 
 bool ImGuiEditorView::OnWindowMessage(HWND hWnd, unsigned int msg, WPARAM wParam, LPARAM lParam) {
     // Don't do anything if the AntTweakBar is open
-    if (Engine::AntTweakBar->GetActive())
-        return true;
+    // if (Engine::AntTweakBar->GetActive())
+    //     return true;
 
     bool enableEditorPanel = zCOption::GetOptions()->IsParameter("XEnableEditorPanel");
 

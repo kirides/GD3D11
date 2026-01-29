@@ -104,7 +104,7 @@ XRESULT D3D11GraphicsEngineBase::Present() {
     LineRenderer->Flush();
 
     // Draw ant tweak bar
-    Engine::AntTweakBar->Draw();
+    // Engine::AntTweakBar->Draw();
 
     bool vsync = Engine::GAPI->GetRendererState().RendererSettings.EnableVSync;
     if ( SwapChain->Present( vsync ? 1 : 0, 0 ) == DXGI_ERROR_DEVICE_REMOVED ) {

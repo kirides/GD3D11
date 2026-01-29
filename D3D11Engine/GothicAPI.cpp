@@ -3869,7 +3869,7 @@ LRESULT GothicAPI::OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
             break;
 
         case VK_NUMPAD1:
-            if ( !Engine::AntTweakBar->GetActive() && !GMPModeActive && Engine::GAPI->GetRendererState().RendererSettings.AllowNumpadKeys )
+            if ( !Engine::ImGuiHandle->GetIsActive() && !GMPModeActive && Engine::GAPI->GetRendererState().RendererSettings.AllowNumpadKeys )
                 SpawnVegetationBoxAt( GetCameraPosition() );
             break;
         }
@@ -3901,7 +3901,7 @@ LRESULT GothicAPI::OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
 
     // This is only processed when the bar is activated, so just call this here
     Engine::ImGuiHandle->OnWindowMessage( hWnd, msg, wParam, lParam );
-    Engine::AntTweakBar->OnWindowMessage( hWnd, msg, wParam, lParam );
+    // Engine::AntTweakBar->OnWindowMessage( hWnd, msg, wParam, lParam );
     Engine::GraphicsEngine->OnWindowMessage( hWnd, msg, wParam, lParam );
 
 #ifdef BUILD_SPACER
