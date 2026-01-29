@@ -9,13 +9,9 @@
 #include "oCGame.h"
 #include "zCVob.h"
 #include "zCCamera.h"
-#include "MeshModifier.h"
-#include "BaseAntTweakBar.h"
 #include "D3D7\MyDirectDrawSurface7.h"
 #include "D3D11Texture.h"
-#include "zCOption.h"
 #include "zCModel.h"
-#include "Widget_TransRot.h"
 #include "WidgetContainer.h"
 #include "WorldConverter.h"
 

@@ -1,4 +1,3 @@
-#include "pch.h"
 #include "IkarusBindings.h"
 #include "Engine.h"
 #include "BaseGraphicsEngine.h"
