@@ -5253,7 +5253,8 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
     if ( s.ChangeWindowPreset ) {
         WritePrivateProfileStringA( "General", "ChangeToMode", "0", ini.c_str() );
         switch ( s.ChangeWindowPreset ) {
-            case WINDOW_MODE_FULLSCREEN_EXCLUSIVE: {
+            case WINDOW_MODE_FULLSCREEN_EXCLUSIVE:
+            {
                 s.DisplayFlip = false;
                 s.StretchWindow = true;
                 zSTRING section( "VIDEO" ); zSTRING defValue( "0" );
@@ -5282,7 +5283,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
                 break;
             }
             case WINDOW_MODE_WINDOWED: {
-                s.DisplayFlip = false;
+                s.DisplayFlip = true;
                 s.StretchWindow = false;
                 zSTRING section( "VIDEO" ); zSTRING defValue( "1" );
                 zCOption::GetOptions()->WriteString( section, "zStartupWindowed", defValue );

@@ -257,6 +257,39 @@ bool ImComboBoxC( const char* id, const std::vector<std::pair<const char*, T>>& 
 }
 
 template <typename T>
+bool ImComboBoxCT( const char* id, const std::vector<std::tuple<const char*, T, const char*>>& items, T* storage, const std::function<void()>& selected ) {
+    if ( storage == nullptr || items.size() == 0 ) {
+        return ImGui::BeginCombo( id, "invalid storage" );
+    }
+    auto selectedItem = items[0];
+    for ( auto& it : items ) {
+        if ( std::get<1>( it ) == *storage ) {
+            selectedItem = it;
+            break;
+        }
+    }
+    if ( ImGui::BeginCombo( id, std::get<0>( selectedItem )) ) {
+        for ( size_t i = 0; i < items.size(); i++ ) {
+            bool isSelected = (*storage == std::get<1>( items[i] ));
+
+            if ( ImGui::Selectable( std::get<0>( items[i] ), isSelected ) ) {
+                *storage = std::get<1>( items[i] );
+                selected();
+            }
+            if ( std::get<2>(items[i]) ) {
+                ImGui::SetItemTooltip( std::get<2>( items[i] ) );
+            }
+
+            if ( isSelected ) {
+                ImGui::SetItemDefaultFocus();
+            }
+        }
+        return true;
+    }
+    return false;
+}
+
+template <typename T>
 bool ImComboBox( const char* id, const std::vector<std::pair<const char*, T>>& items, T* storage ) {
     if ( storage == nullptr || items.size() == 0 ) {
         return ImGui::BeginCombo( id, "invalid storage" );
@@ -351,23 +384,6 @@ bool ImGuizmoDirectionEdit( const char* label, XMFLOAT3& direction, float widget
     ImGui::PopID();
 
     return modified;
-}
-
-int InterpretWindowMode( const GothicRendererSettings& s ) {
-
-    if ( s.DisplayFlip && s.LowLatency && s.StretchWindow ) {
-        return WINDOW_MODE_FULLSCREEN_LOWLATENCY;
-    }
-    if ( s.DisplayFlip && !s.LowLatency && s.StretchWindow ) {
-        return WINDOW_MODE_FULLSCREEN_BORDERLESS;
-    }
-    if ( !s.DisplayFlip && s.StretchWindow ) {
-        return WINDOW_MODE_FULLSCREEN_EXCLUSIVE;
-    }
-    if ( !s.DisplayFlip && !s.StretchWindow ) {
-        return WINDOW_MODE_WINDOWED;
-    }
-    return WINDOW_MODE_FULLSCREEN_BORDERLESS;
 }
 
 void ApplyGraphicsPresets( GothicRendererSettings& s ) {
@@ -558,6 +574,8 @@ void ImGuiShim::RenderSettingsWindow()
             }
 
             ImGui::Checkbox( "HBAO+", &settings.HbaoSettings.Enabled );
+            ImGui::SetItemTooltip( "Enable Screen-Space ambient occlusion." );
+
             ImGui::Checkbox( "Godrays", &settings.EnableGodRays );
             static std::vector<std::pair<const char*, GothicRendererSettings::E_AntiAliasingMode>> antiAliasing = {
                 {"Disabled", GothicRendererSettings::E_AntiAliasingMode::AA_NONE},
@@ -591,16 +609,19 @@ void ImGuiShim::RenderSettingsWindow()
                         : GothicRendererSettings::EWindQuality::WIND_QUALITY_NONE;
                     Engine::GraphicsEngine->ReloadShaders( ShaderCategory::Other );
                 }
+                ImGui::SetItemTooltip( "Enables trees, grass and wheats to wave with the wind" );
 
                 ImGui::Text( "Wind strength" ); ImGui::SameLine();
+
                 ImGui::BeginDisabled( settings.WindQuality == GothicRendererSettings::EWindQuality::WIND_QUALITY_NONE );
                 ImGui::SliderFloat( "##Wind strength", &settings.GlobalWindStrength, 0.1f, 5.0f, "%.2f" );
                 ImGui::EndDisabled();
             }
 
-            if ( ImGui::Checkbox( "Hero affects objects[*]", &settings.HeroAffectsObjects ) ) {
+            if ( ImGui::Checkbox( "Hero affects objects", &settings.HeroAffectsObjects ) ) {
                 Engine::GraphicsEngine->ReloadShaders( ShaderCategory::Other );
             }
+            ImGui::SetItemTooltip( "Grass and wheats may move when the player runs through it." );
 #endif //BUILD_GOTHIC_2_6_fix
 
             ImGui::Checkbox( "Enable Rain", &settings.EnableRain );
@@ -610,12 +631,10 @@ void ImGuiShim::RenderSettingsWindow()
             }
             ImGui::Checkbox( "Limit Light Intensity", &settings.LimitLightIntesity );
             ImGui::Checkbox( "Draw World Section Intersections", &settings.DrawSectionIntersections );
-            if ( ImGui::IsItemHovered() )
-                ImGui::SetTooltip( "This option draws every world chunk that intersect with GD3D11 world draw distance." );
+            ImGui::SetItemTooltip( "This option draws every world chunk that intersect with GD3D11 world draw distance." );
 
             ImGui::Checkbox( "Occlusion Culling", &settings.EnableOcclusionCulling );
-            if ( ImGui::IsItemHovered() )
-                ImGui::SetTooltip( "Hides objects that are not visible by camera. Doesn't work properly, turn off if you don't play on potato." );
+            ImGui::SetItemTooltip( "Hides objects that are not visible by camera. Doesn't work properly, turn off if you don't play on potato." );
 
             ImGui::EndGroup();
         }
@@ -674,21 +693,23 @@ void ImGuiShim::RenderSettingsWindow()
                 ImGui::EndCombo();
             }
 
-            ImText( "Display Mode [*]", buttonWidth ); ImGui::SameLine();
+            ImText( "Display Mode [*]", buttonWidth );
+            ImGui::SetItemTooltip("some changes may require a restart");
+            ImGui::SameLine();
+
             static auto displayModeState = InterpretWindowMode( settings );
-            static std::vector<std::pair<const char*, int>> DisplayEnums = {
-                { "Fullscreen Borderless", WindowModes::WINDOW_MODE_FULLSCREEN_BORDERLESS },
-                { "Fullscreen Exclusive", WindowModes::WINDOW_MODE_FULLSCREEN_EXCLUSIVE },
-                { "Fullscreen Lowlatency", WindowModes::WINDOW_MODE_FULLSCREEN_LOWLATENCY },
-                { "Windowed", WindowModes::WINDOW_MODE_WINDOWED },
+            static std::vector<std::tuple<const char*, WindowModes, const char*>> DisplayEnums = {
+                { "Fullscreen Borderless", WindowModes::WINDOW_MODE_FULLSCREEN_BORDERLESS, nullptr },
+                { "Fullscreen Lowlatency [*]", WindowModes::WINDOW_MODE_FULLSCREEN_LOWLATENCY, "switching requires restarting the game"},
+                { "Fullscreen Exclusive [*]", WindowModes::WINDOW_MODE_FULLSCREEN_EXCLUSIVE, "switching requires restarting the game"},
+                { "Windowed", WindowModes::WINDOW_MODE_WINDOWED, nullptr},
             };
             
-            if ( ImComboBoxC( "##DisplayMode", DisplayEnums, &displayModeState, [&settings] {
+            if ( ImComboBoxCT( "##DisplayMode", DisplayEnums, &displayModeState, [&settings] {
                 // selected
                 settings.ChangeWindowPreset = displayModeState;
                 } ) ) {
                 ImGui::EndCombo();
-                ImGui::SetItemTooltip("Using Lowlatency without vsync, may cause visible stutters.");
             }
 
             ImText( "Shadow Quality", buttonWidth ); ImGui::SameLine();

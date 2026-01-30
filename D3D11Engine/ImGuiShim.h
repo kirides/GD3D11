@@ -48,6 +48,23 @@ public:
     bool GetIsEditorVisible() { return m_EditorView->GetIsEnabled(); }
     
     void OnVobRemovedFromWorld(zCVob* vob) { m_EditorView->OnVobRemovedFromWorld(vob); } 
+
+    static WindowModes InterpretWindowMode( const GothicRendererSettings& s ) {
+
+        if ( s.DisplayFlip && s.LowLatency && s.StretchWindow ) {
+            return WINDOW_MODE_FULLSCREEN_LOWLATENCY;
+        }
+        if ( s.DisplayFlip && !s.LowLatency && s.StretchWindow ) {
+            return WINDOW_MODE_FULLSCREEN_BORDERLESS;
+        }
+        if ( !s.DisplayFlip && s.StretchWindow ) {
+            return WINDOW_MODE_FULLSCREEN_EXCLUSIVE;
+        }
+        if ( s.DisplayFlip && !s.StretchWindow ) {
+            return WINDOW_MODE_WINDOWED;
+        }
+        return WINDOW_MODE_FULLSCREEN_BORDERLESS;
+    }
 private:
     void RenderSettingsWindow();
     void RenderAdvancedSettingsWindow();

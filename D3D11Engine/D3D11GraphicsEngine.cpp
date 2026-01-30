@@ -91,6 +91,49 @@ static std::unique_ptr<D3D11AGS> agsDevice;
 
 extern bool userHaveAMDGPU;
 
+namespace
+{    
+    void ApplyWindowMode(GothicRendererSettings& s) {
+        // Only used for runtime changes, changes from/to exclusive fullscreen are not supported
+        switch ( s.ChangeWindowPreset ) {
+            case WINDOW_MODE_FULLSCREEN_EXCLUSIVE:
+                // Fullscreen Exclusive is not supported for runtime changes!
+            case WINDOW_MODE_FULLSCREEN_BORDERLESS: {
+                s.DisplayFlip = true;
+                s.LowLatency = false;
+                s.StretchWindow = true;
+                break;
+            }
+            case WINDOW_MODE_FULLSCREEN_LOWLATENCY: {
+                s.DisplayFlip = true;
+                s.LowLatency = true;
+                s.StretchWindow = true;
+                break;
+            }
+            case WINDOW_MODE_WINDOWED: {
+                s.DisplayFlip = true;
+                s.StretchWindow = false;
+                break;
+            }
+        }
+    }
+    
+    void PrintD3DFeatureLevel( D3D_FEATURE_LEVEL lvl ) {
+        std::map<D3D_FEATURE_LEVEL, std::string> dxFeatureLevelsMap = {
+            {D3D_FEATURE_LEVEL::D3D_FEATURE_LEVEL_12_1, "D3D_FEATURE_LEVEL_12_1"},
+            {D3D_FEATURE_LEVEL::D3D_FEATURE_LEVEL_12_0, "D3D_FEATURE_LEVEL_12_0"},
+            {D3D_FEATURE_LEVEL::D3D_FEATURE_LEVEL_11_1, "D3D_FEATURE_LEVEL_11_1"},
+            {D3D_FEATURE_LEVEL::D3D_FEATURE_LEVEL_11_0, "D3D_FEATURE_LEVEL_11_0"},
+            {D3D_FEATURE_LEVEL::D3D_FEATURE_LEVEL_10_1, "D3D_FEATURE_LEVEL_10_1"},
+            {D3D_FEATURE_LEVEL::D3D_FEATURE_LEVEL_10_0, "D3D_FEATURE_LEVEL_10_0"},
+            {D3D_FEATURE_LEVEL::D3D_FEATURE_LEVEL_9_3 , "D3D_FEATURE_LEVEL_9_3" },
+            {D3D_FEATURE_LEVEL::D3D_FEATURE_LEVEL_9_2 , "D3D_FEATURE_LEVEL_9_2" },
+            {D3D_FEATURE_LEVEL::D3D_FEATURE_LEVEL_9_1 , "D3D_FEATURE_LEVEL_9_1" },
+        };
+        LogInfo() << "D3D_FEATURE_LEVEL: " << dxFeatureLevelsMap.at( lvl );
+    }
+}
+
 D3D11GraphicsEngine::D3D11GraphicsEngine() {
     DebugPointlight = nullptr;
     OutputWindow = nullptr;
@@ -149,21 +192,6 @@ D3D11GraphicsEngine::~D3D11GraphicsEngine() {
     }
 
     // MemTrackerFinalReport();
-}
-
-void PrintD3DFeatureLevel( D3D_FEATURE_LEVEL lvl ) {
-    std::map<D3D_FEATURE_LEVEL, std::string> dxFeatureLevelsMap = {
-        {D3D_FEATURE_LEVEL::D3D_FEATURE_LEVEL_12_1, "D3D_FEATURE_LEVEL_12_1"},
-        {D3D_FEATURE_LEVEL::D3D_FEATURE_LEVEL_12_0, "D3D_FEATURE_LEVEL_12_0"},
-        {D3D_FEATURE_LEVEL::D3D_FEATURE_LEVEL_11_1, "D3D_FEATURE_LEVEL_11_1"},
-        {D3D_FEATURE_LEVEL::D3D_FEATURE_LEVEL_11_0, "D3D_FEATURE_LEVEL_11_0"},
-        {D3D_FEATURE_LEVEL::D3D_FEATURE_LEVEL_10_1, "D3D_FEATURE_LEVEL_10_1"},
-        {D3D_FEATURE_LEVEL::D3D_FEATURE_LEVEL_10_0, "D3D_FEATURE_LEVEL_10_0"},
-        {D3D_FEATURE_LEVEL::D3D_FEATURE_LEVEL_9_3 , "D3D_FEATURE_LEVEL_9_3" },
-        {D3D_FEATURE_LEVEL::D3D_FEATURE_LEVEL_9_2 , "D3D_FEATURE_LEVEL_9_2" },
-        {D3D_FEATURE_LEVEL::D3D_FEATURE_LEVEL_9_1 , "D3D_FEATURE_LEVEL_9_1" },
-    };
-    LogInfo() << "D3D_FEATURE_LEVEL: " << dxFeatureLevelsMap.at( lvl );
 }
 
 void __cdecl Stub_DrawMultiIndexedInstancedIndirect(
@@ -733,8 +761,8 @@ XRESULT D3D11GraphicsEngine::SetWindow( HWND hWnd ) {
 
             ShowWindow( hWnd, SW_RESTORE );
             AttachThreadInput( dwCurID, dwMyID, TRUE );
-            SetWindowPos( hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE );
-            SetWindowPos( hWnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE );
+            SetWindowPos( hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_SHOWWINDOW );
+            SetWindowPos( hWnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_SHOWWINDOW );
             SetForegroundWindow( hWnd );
             AttachThreadInput( dwCurID, dwMyID, FALSE );
             SetFocus( hWnd );
@@ -889,6 +917,7 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
     }
 
     static UINT lastSwapchainFlags = scflags;
+
     if ( !SwapChain.Get() ) {
         static std::map<DXGI_SWAP_EFFECT, std::string> swapEffectMap = {
             {DXGI_SWAP_EFFECT::DXGI_SWAP_EFFECT_DISCARD, "DXGI_SWAP_EFFECT_DISCARD"},
@@ -898,13 +927,7 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
 
         m_swapchainflip = Engine::GAPI->GetRendererState().RendererSettings.DisplayFlip;
         if ( m_swapchainflip ) {
-            LONG lStyle = GetWindowLongA( OutputWindow, GWL_STYLE );
-            lStyle &= ~(WS_CAPTION | WS_THICKFRAME | WS_MINIMIZE | WS_MAXIMIZE | WS_SYSMENU);
-            SetWindowLongA( OutputWindow, GWL_STYLE, lStyle );
-
-            LONG lExStyle = GetWindowLongA( OutputWindow, GWL_EXSTYLE );
-            lExStyle &= ~(WS_EX_DLGMODALFRAME | WS_EX_CLIENTEDGE | WS_EX_STATICEDGE);
-            SetWindowLongA( OutputWindow, GWL_EXSTYLE, lExStyle );
+            ApplyWindowStyle(OutputWindow, WindowModes::WINDOW_MODE_FULLSCREEN_BORDERLESS);
         }
 
         DXGI_SWAP_CHAIN_DESC1 scd = {};
@@ -927,7 +950,6 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
         }
 
         LogInfo() << "SwapChain Mode: " << swapEffectMap.at( swapEffect );
-        swapEffectMap.clear();
         if ( m_swapchainflip ) {
             LogInfo() << "SwapChain: DXGI_FEATURE_PRESENT_ALLOW_TEARING = " << (m_flipWithTearing ? "Enabled" : "Disabled");
         }
@@ -945,6 +967,8 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
         m_lowlatency = Engine::GAPI->GetRendererState().RendererSettings.LowLatency;
         if ( FAILED( Device.As( &pDXGIDevice3 ) ) // DXGI 1.3 required
             || swapEffect == DXGI_SWAP_EFFECT::DXGI_SWAP_EFFECT_DISCARD ) { // Doesn't work with fullscreen exclusive on D3D11
+            LogWarn() << "DXGI 1.3 not supported! HR: " << std::hex << hr;
+
             m_lowlatency = false;
         }
 
@@ -964,7 +988,7 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
 
         hr = DXGIFactory2->CreateSwapChainForHwnd( GetDevice().Get(), OutputWindow, &scd, nullptr, nullptr, SwapChain.GetAddressOf() );
         if ( FAILED( hr ) ) {
-            LogError() << "Failed to create Swapchain! Program will now exit!";
+            LogError() << "Failed to create Swapchain! Program will now exit! HR: " << std::hex << hr;
             exit( 0 );
         }
 
@@ -992,7 +1016,7 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
         // Need to init AntTweakBar now that we have a working swapchain
         // XLE( Engine::AntTweakBar->Init() );
 
-        Engine::ImGuiHandle->Init( GetActiveWindow(), GetDevice(), GetContext() );
+        Engine::ImGuiHandle->Init( OutputWindow, GetDevice(), GetContext() );
 
         wrl::ComPtr<IDXGISwapChain2> swapChain2;
         if ( m_lowlatency && SUCCEEDED( SwapChain.As( &swapChain2 ) ) ) {
@@ -1078,8 +1102,29 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
 
 /** Called when the game wants to render a new frame */
 XRESULT D3D11GraphicsEngine::OnBeginFrame() {
+    static WindowModes lastWindowMode = ImGuiShim::InterpretWindowMode(Engine::GAPI->GetRendererState().RendererSettings);
+    WindowModes currentWindowMode = (WindowModes)Engine::GAPI->GetRendererState().RendererSettings.ChangeWindowPreset;
+    
     if (NewResolution != Resolution) {
         OnResize(NewResolution);
+    } else if ( currentWindowMode && lastWindowMode != currentWindowMode) {
+        // only allow changing to display-flip modes, prevent change from flip to exclusive and vice versa
+        if ( Engine::GAPI->GetRendererState().RendererSettings.DisplayFlip && currentWindowMode == WindowModes::WINDOW_MODE_FULLSCREEN_EXCLUSIVE ) {
+            lastWindowMode = currentWindowMode;
+            // do nothing, prevent change
+            // user will have to restart game to switch from flip to exclusive fullscreen
+        } else if ( !Engine::GAPI->GetRendererState().RendererSettings.DisplayFlip && currentWindowMode != WindowModes::WINDOW_MODE_FULLSCREEN_EXCLUSIVE ) {
+            lastWindowMode = currentWindowMode;
+            // do nothing, prevent change
+            // user will have to restart game to switch from exclusive to flip
+        } else {
+            ApplyWindowMode( Engine::GAPI->GetRendererState().RendererSettings );
+
+            lastWindowMode = currentWindowMode;
+            auto oldResolution = Resolution;
+            Resolution = INT2( 0, 0 ); // force resize
+            OnResize( oldResolution );
+        }
     }
     
     Engine::GAPI->GetRendererState().RendererInfo.Timing.StartTotal();
