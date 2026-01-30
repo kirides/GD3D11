@@ -70,7 +70,10 @@ public:
     };
 
     BaseGraphicsEngine() { };
-    virtual ~BaseGraphicsEngine() { };
+    virtual ~BaseGraphicsEngine() { }
+    
+    /* Trigger resize on next frame */
+    virtual XRESULT TriggerResize(INT2 resolution) = 0;
 
     /** Called after the fake-DDraw-Device got created */
     virtual XRESULT Init() = 0;

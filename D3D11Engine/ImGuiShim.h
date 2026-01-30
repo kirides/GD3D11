@@ -30,12 +30,8 @@ public:
     //bool DemoVisible = false;
     HWND OutputWindow = HWND( 0 );
     INT2 CurrentResolution = INT2( 800, 600 );
-    INT2 NewResolution = INT2( 800, 600 );
     int ResolutionState = 0;
-    int TextureQualityState = 0;
-    int ShadowQualityState = 0;
-    int DynamicShadowState = 0;
-    std::vector<std::string> Resolutions;
+    std::vector<std::pair<INT2,std::string>> Resolutions;
 
     bool GetIsActive();
 

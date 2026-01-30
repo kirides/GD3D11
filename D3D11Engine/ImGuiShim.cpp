@@ -14,6 +14,15 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler( HWND hWnd, UINT ms
 extern float* ShadowMapLambda;
 extern float* ShadowMapBias;
 
+enum class TX_QUALITY : uint16_t {
+    VeryLow = 128,
+    Low = 256,
+    Medium = 512,
+    High = 1024,
+    VeryHigh = 2048,
+    MAX = 16384,
+};
+
 int GetDpi( HWND hWnd )
 {
     bool v81 = IsWindows8Point1OrGreater();
@@ -72,7 +81,7 @@ void ImGuiShim::Init(
     Resolutions.clear();
     for ( auto it = modes.rbegin(); it != modes.rend(); ++it ) {
         std::string s = std::to_string( (*it).Width ) + "x" + std::to_string( (*it).Height );
-        Resolutions.emplace_back( s );
+        Resolutions.emplace_back( std::make_pair(INT2((*it).Width, (*it).Height), s) );
     }
 
     //static const ImWchar euroGlyphRanges[] = {
@@ -110,18 +119,11 @@ ImGuiShim::~ImGuiShim()
 
 void ImGuiShim::RenderLoop()
 {
-    if ( NewResolution.x != CurrentResolution.x
-        || NewResolution.y != CurrentResolution.y ) {
-        Engine::GraphicsEngine->OnResize( NewResolution );
-        Engine::GraphicsEngine->ReloadShaders();
-        CurrentResolution = NewResolution;
-    }
-
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
 
-    ImGui::GetIO().MouseDrawCursor = INT2( ImGui::GetMainViewport()->Size.x, ImGui::GetMainViewport()->Size.y ) != Engine::GraphicsEngine->GetResolution();
+    ImGui::GetIO().MouseDrawCursor = GetIsActive() && INT2( ImGui::GetMainViewport()->Size.x, ImGui::GetMainViewport()->Size.y ) != Engine::GraphicsEngine->GetResolution();
 
     static int beginFrameFn = zCParser::GetParser()->GetIndex( "GDX_IMGUI_BEGINFRAME" );
     static int endFrameFn = zCParser::GetParser()->GetIndex( "GDX_IMGUI_ENDFRAME" );
@@ -214,19 +216,18 @@ LRESULT ImGuiShim::OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
 void ImGuiShim::OnResize( INT2 newSize )
 {
     CurrentResolution = newSize;
-    NewResolution = newSize;
 
     std::vector<DisplayModeInfo> modes;
     Engine::GraphicsEngine->GetDisplayModeList( &modes );
     Resolutions.clear();
     for ( auto it = modes.rbegin(); it != modes.rend(); ++it ) {
         std::string s = std::to_string( (*it).Width ) + "x" + std::to_string( (*it).Height );
-        Resolutions.emplace_back( s );
+        Resolutions.emplace_back( std::make_pair(INT2((*it).Width, (*it).Height), s) );
     }
 }
 
 template <typename T>
-bool ImComboBoxC( const char* id, std::vector<std::pair<const char*, T>>& items, T* storage, const std::function<void()>& selected ) {
+bool ImComboBoxC( const char* id, const std::vector<std::pair<const char*, T>>& items, T* storage, const std::function<void()>& selected ) {
     if ( storage == nullptr || items.size() == 0 ) {
         return ImGui::BeginCombo( id, "invalid storage" );
     }
@@ -256,7 +257,7 @@ bool ImComboBoxC( const char* id, std::vector<std::pair<const char*, T>>& items,
 }
 
 template <typename T>
-bool ImComboBox( const char* id, std::vector<std::pair<const char*, T>>& items, T* storage ) {
+bool ImComboBox( const char* id, const std::vector<std::pair<const char*, T>>& items, T* storage ) {
     if ( storage == nullptr || items.size() == 0 ) {
         return ImGui::BeginCombo( id, "invalid storage" );
     }
@@ -388,8 +389,7 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
 
         s.HbaoSettings.Enabled = false;
 
-        s.textureMaxSize = 512;
-        Engine::GAPI->UpdateTextureMaxSize();
+        s.textureMaxSize = static_cast<int>(TX_QUALITY::Medium);
 
         s.AntiAliasingMode = GothicRendererSettings::E_AntiAliasingMode::AA_NONE;
         s.SectionDrawRadius = 2;
@@ -402,8 +402,6 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.HeroAffectsObjects = 0;
 
         s.EnableGodRays = false;
-
-        Engine::GraphicsEngine->ReloadShaders();
     }
     break;
     case GothicRendererSettings::GRAPHICS_MEDIUM:
@@ -423,8 +421,7 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
 
         s.HbaoSettings.Enabled = false;
 
-        s.textureMaxSize = 512;
-        Engine::GAPI->UpdateTextureMaxSize();
+        s.textureMaxSize = static_cast<int>(TX_QUALITY::Medium);
 
         s.AntiAliasingMode = GothicRendererSettings::E_AntiAliasingMode::AA_SMAA;
         s.SectionDrawRadius = 4;
@@ -437,13 +434,11 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.HeroAffectsObjects = 1;
 
         s.EnableGodRays = true;
-
-        Engine::GraphicsEngine->ReloadShaders();
     }
     break;
     case GothicRendererSettings::GRAPHICS_HIGH:
     {
-        s.ChangeWindowPreset = WINDOW_MODE_FULLSCREEN_LOWLATENCY;
+        s.ChangeWindowPreset = WINDOW_MODE_FULLSCREEN_BORDERLESS;
 
         s.WorldShadowRangeScale = 1.0f;
         s.NumShadowCascades = 3;
@@ -460,8 +455,7 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.HbaoSettings.SsaoStepCount = 4;
         s.HbaoSettings.SsaoBlurRadius = 4;
 
-        s.textureMaxSize = 512;
-        Engine::GAPI->UpdateTextureMaxSize();
+        s.textureMaxSize = static_cast<int>(TX_QUALITY::High);
 
         s.AntiAliasingMode = GothicRendererSettings::E_AntiAliasingMode::AA_SMAA;
         s.SectionDrawRadius = 4;
@@ -474,13 +468,11 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.HeroAffectsObjects = 1;
 
         s.EnableGodRays = true;
-
-        Engine::GraphicsEngine->ReloadShaders();
     }
     break;
     case GothicRendererSettings::GRAPHICS_VERY_HIGH:
     {
-        s.ChangeWindowPreset = WINDOW_MODE_FULLSCREEN_LOWLATENCY;
+        s.ChangeWindowPreset = WINDOW_MODE_FULLSCREEN_BORDERLESS;
 
         s.WorldShadowRangeScale = 1.0f;
         s.NumShadowCascades = 4;
@@ -497,8 +489,7 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.HbaoSettings.SsaoStepCount = 8;
         s.HbaoSettings.SsaoBlurRadius = 4;
 
-        s.textureMaxSize = 512;
-        Engine::GAPI->UpdateTextureMaxSize();
+        s.textureMaxSize = static_cast<int>(TX_QUALITY::VeryHigh);
 
         s.AntiAliasingMode = GothicRendererSettings::E_AntiAliasingMode::AA_SMAA;
         s.SectionDrawRadius = 5;
@@ -511,11 +502,14 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.HeroAffectsObjects = 1;
 
         s.EnableGodRays = true;
-
-        Engine::GraphicsEngine->ReloadShaders();
     }
     break;
+    default:
+        return;
     }
+
+    Engine::GAPI->UpdateTextureMaxSize();
+    Engine::GraphicsEngine->ReloadShaders();
 }
 
 void ImGuiShim::RenderSettingsWindow()
@@ -536,24 +530,31 @@ void ImGuiShim::RenderSettingsWindow()
     ImGui::SetNextWindowPos( ImVec2( windowSize.x / 2, windowSize.y / 2 ), ImGuiCond_Appearing, ImVec2( 0.5f, 0.5f ) );
     if ( ImGui::Begin( settingsLabel, nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize ) ) {
         GothicRendererSettings& settings = Engine::GAPI->GetRendererState().RendererSettings;
+        
+        static std::vector<std::pair<const char*, int>> graphicsPresets = {
+            {"Custom", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_CUSTOM},
+            {"Low", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_LOW},
+            {"Medium", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_MEDIUM},
+            {"High", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_HIGH},
+            {"Very High", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_VERY_HIGH},
+        };
+
+        ImGui::TextUnformatted("Graphics Preset"); ImGui::SameLine();
+        
+        ImGui::PushItemWidth( 250 );
+        if ( ImComboBoxC( "##GraphicsPreset", graphicsPresets, (int*)&settings.GraphicsPreset, [&settings]() {
+            ApplyGraphicsPresets( settings );
+            } ) ) {
+            ImGui::EndCombo();
+        }
+        ImGui::PopItemWidth();
+        ImGui::Separator();
+        
         {
             ImGui::BeginGroup();
             ImGui::Checkbox( "Vsync", &settings.EnableVSync );
             if ( ImGui::Checkbox( "NormalMaps", &settings.AllowNormalmaps ) ) {
                 Engine::GAPI->UpdateTextureMaxSize();
-            }
-
-            static std::vector<std::pair<const char*, int>> graphicsPresets = {
-                {"Custom", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_CUSTOM},
-                {"Low", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_LOW},
-                {"Medium", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_MEDIUM},
-                {"High", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_HIGH},
-                {"Very High", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_VERY_HIGH},
-            };
-            if ( ImComboBoxC( "GraphicsPreset", graphicsPresets, (int*)&settings.GraphicsPreset, [&settings]() {
-                ApplyGraphicsPresets( settings );
-                } ) ) {
-                ImGui::EndCombo();
             }
 
             ImGui::Checkbox( "HBAO+", &settings.HbaoSettings.Enabled );
@@ -625,19 +626,20 @@ void ImGuiShim::RenderSettingsWindow()
             ImGui::BeginGroup();
             ImGui::PushItemWidth( 250 );
 
-            std::string currRes = CurrentResolution.toString();
-            auto it = std::find( Resolutions.begin(), Resolutions.end(), currRes );
-            if ( it != Resolutions.end() ) {
-                ResolutionState = std::distance( Resolutions.begin(), it );
+            for (int i = 0; i < Resolutions.size(); ++i){
+                if (Resolutions[i].first == CurrentResolution) {
+                    ResolutionState = i;
+                    break;
+                }
             }
+
             ImText( "Resolution", buttonWidth ); ImGui::SameLine();
-            if ( ImGui::BeginCombo( "##Resolution", Resolutions[ResolutionState].c_str() ) ) {
+            if ( ImGui::BeginCombo( "##Resolution", Resolutions[ResolutionState].second.c_str() ) ) {
                 for ( size_t i = 0; i < Resolutions.size(); i++ ) {
                     bool isSelected = (ResolutionState == i);
 
-                    if ( ImGui::Selectable( Resolutions[i].c_str(), isSelected ) ) {
-                        ResolutionState = i;
-                        NewResolution = INT2( Resolutions[i] );
+                    if ( ImGui::Selectable( Resolutions[i].second.c_str(), isSelected ) ) {
+                        Engine::GraphicsEngine->TriggerResize(Resolutions[i].first);
                     }
 
                     if ( isSelected ) {
@@ -647,35 +649,28 @@ void ImGuiShim::RenderSettingsWindow()
                 ImGui::EndCombo();
             }
             ImText( "Texture Quality", buttonWidth ); ImGui::SameLine();
-            static std::vector<std::pair<std::string, int>> QualityOptions = {
-                { "Potato",32 },
-                { "Ultra Low", 64 },
-                { "Low", 128 },
-                { "Medium", 256 },
-                { "High", 512 },
-                { "Ultra High", 16384 },
+            static std::vector<std::pair<const char*, int>> QualityOptions = {
+                { "Very Low", static_cast<int>(TX_QUALITY::VeryLow) },
+                { "Low", static_cast<int>(TX_QUALITY::Low) },
+                { "Medium", static_cast<int>(TX_QUALITY::Medium) },
+                { "High", static_cast<int>(TX_QUALITY::High) },
+                { "Very High", static_cast<int>(TX_QUALITY::VeryHigh) },
+                { "Extreme", static_cast<int>(TX_QUALITY::MAX) }, // TODO: this should depend on the GPU capabilities like in the original game
             };
-            for ( int i = QualityOptions.size() - 1; i >= 0; i-- ) {
-                if ( settings.textureMaxSize >= QualityOptions.at( i ).second ) {
-                    TextureQualityState = i;
-                    break;
-                }
+            
+            if (settings.textureMaxSize > QualityOptions.back().second) {
+                settings.textureMaxSize = QualityOptions.back().second;
+                Engine::GAPI->UpdateTextureMaxSize();
             }
-            if ( ImGui::BeginCombo( "##TextureQuality", QualityOptions[TextureQualityState].first.c_str() ) ) {
+            if (settings.textureMaxSize < QualityOptions.front().second) {
+                settings.textureMaxSize = QualityOptions.front().second;
+                Engine::GAPI->UpdateTextureMaxSize();
+            }
 
-                for ( size_t i = 0; i < QualityOptions.size(); i++ ) {
-                    bool isSelected = (TextureQualityState == i);
-
-                    if ( ImGui::Selectable( QualityOptions[i].first.c_str(), isSelected ) ) {
-                        TextureQualityState = i;
-                        settings.textureMaxSize = QualityOptions[i].second;
-                        Engine::GAPI->UpdateTextureMaxSize();
-                    }
-
-                    if ( isSelected ) {
-                        ImGui::SetItemDefaultFocus();
-                    }
-                }
+            if (ImComboBoxC("##TextureQuality", QualityOptions, &settings.textureMaxSize, []{
+                Engine::GAPI->UpdateTextureMaxSize();
+            } ))
+            {
                 ImGui::EndCombo();
             }
 
@@ -687,17 +682,18 @@ void ImGuiShim::RenderSettingsWindow()
                 { "Fullscreen Lowlatency", WindowModes::WINDOW_MODE_FULLSCREEN_LOWLATENCY },
                 { "Windowed", WindowModes::WINDOW_MODE_WINDOWED },
             };
-
-            if ( ImComboBoxC( "##DisplayMode", DisplayEnums, &displayModeState, [&settings]() {
+            
+            if ( ImComboBoxC( "##DisplayMode", DisplayEnums, &displayModeState, [&settings] {
                 // selected
                 settings.ChangeWindowPreset = displayModeState;
                 } ) ) {
                 ImGui::EndCombo();
+                ImGui::SetItemTooltip("Using Lowlatency without vsync, may cause visible stutters.");
             }
 
             ImText( "Shadow Quality", buttonWidth ); ImGui::SameLine();
 
-            static std::vector<std::pair<const char*, int>> shadowMapSizesMax = {
+            const static std::vector<std::pair<const char*, int>> shadowMapSizesMax = {
                 {"very low", 512},
                 {"low", 1024},
                 {"medium", 2048},
@@ -705,38 +701,34 @@ void ImGuiShim::RenderSettingsWindow()
                 {"very high", 8192},
                 {"ultra high", 16384},
             };
-            static std::vector<std::pair<const char*, int>> shadowMapSizesDxFeature10 = {
+            const static std::vector<std::pair<const char*, int>> shadowMapSizesDxFeature10 = {
                 {"very low", 512},
                 {"low", 1024},
                 {"medium", 2048},
                 {"high", 4096},
                 {"very high", 8192},
             };
-            std::vector<std::pair<const char*, int>>& shadowMapSizes = shadowMapSizesMax;
-            if ( FeatureLevel10Compatibility ) {
-                shadowMapSizes = shadowMapSizesDxFeature10;
-            }
+            const std::vector<std::pair<const char*, int>>& shadowMapSizes = FeatureLevel10Compatibility
+                ? shadowMapSizesDxFeature10
+                : shadowMapSizesMax;
 
-            if ( ImComboBoxC( "##ShadowQuality", shadowMapSizes, (int*)(&settings.ShadowMapSize), []() { Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows ); } ) ) {
+            if ( ImComboBoxC( "##ShadowQuality", shadowMapSizes, &settings.ShadowMapSize, []{
+                Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows );
+            } ) ) {
                 ImGui::EndCombo();
             }
 
             ImText( "Dynamic Shadows", buttonWidth ); ImGui::SameLine();
-            static std::vector<std::string> DynamicShadowEnums = { "Off", "Static", "Dynamic Update", "Full" };
-            DynamicShadowState = static_cast<int>(settings.EnablePointlightShadows);
-            if ( ImGui::BeginCombo( "##DynamicShadows", DynamicShadowEnums[DynamicShadowState].c_str() ) ) {
-                for ( size_t i = 0; i < DynamicShadowEnums.size(); i++ ) {
-                    bool isSelected = (DynamicShadowState == i);
-
-                    if ( ImGui::Selectable( DynamicShadowEnums[i].c_str(), isSelected ) ) {
-                        DynamicShadowState = i;
-                        settings.EnablePointlightShadows = static_cast<GothicRendererSettings::EPointLightShadowMode>( i );
-                    }
-
-                    if ( isSelected ) {
-                        ImGui::SetItemDefaultFocus();
-                    }
-                }
+            
+            const static std::vector<std::pair<const char*, int>> dynamicShadowValues = {
+                { "Off", GothicRendererSettings::EPointLightShadowMode::PLS_DISABLED },
+                { "Static", GothicRendererSettings::EPointLightShadowMode::PLS_STATIC_ONLY },
+                { "Dynamic Update", GothicRendererSettings::EPointLightShadowMode::PLS_UPDATE_DYNAMIC },
+                { "Full", GothicRendererSettings::EPointLightShadowMode::PLS_FULL },
+            };
+            
+            static_assert(sizeof(settings.EnablePointlightShadows) == sizeof(int), "can't reinterpret cast enum to int");
+            if ( ImComboBox( "##DynamicShadows", dynamicShadowValues, reinterpret_cast<int*>(&settings.EnablePointlightShadows) ) ) {
                 ImGui::EndCombo();
             }
 
@@ -795,7 +787,7 @@ void ImGuiShim::RenderSettingsWindow()
             ImGui::EndGroup();
         }
 
-        if ( ImGui::Button( "OK", ImVec2( ImGui::GetContentRegionAvail().x, 30.f ) ) ) {
+        if ( ImGui::Button( "Save Settings", ImVec2( ImGui::GetContentRegionAvail().x, 30.f ) ) ) {
             Engine::GraphicsEngine->OnUIEvent( BaseGraphicsEngine::UI_ClosedSettings );
             Engine::GAPI->SaveRendererWorldSettings( settings );
             Engine::GAPI->SaveMenuSettings( MENU_SETTINGS_FILE );
