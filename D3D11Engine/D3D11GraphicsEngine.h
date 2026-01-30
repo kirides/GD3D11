@@ -72,6 +72,11 @@ public:
 
     /** Called when the game wants to render a new frame */
     virtual XRESULT OnBeginFrame() override;
+    
+    virtual XRESULT TriggerResize( INT2 resolution ) override {
+        NewResolution = resolution;
+        return XR_SUCCESS;
+    }
 
     /** Called when the game ended it's frame */
     virtual XRESULT OnEndFrame() override;
@@ -460,4 +465,6 @@ private:
 
     std::unique_ptr<RenderToTextureBuffer> VelocityBuffer;
     XMFLOAT4X4 m_PrevViewProjMatrix;
+    
+    INT2 NewResolution;
 };

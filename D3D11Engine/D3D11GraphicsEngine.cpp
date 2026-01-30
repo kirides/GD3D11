@@ -777,6 +777,27 @@ DXGI_FORMAT D3D11GraphicsEngine::GetBackBufferFormat() {
     return (Engine::GAPI->GetRendererState().RendererSettings.CompressBackBuffer ? DXGI_FORMAT_R11G11B10_FLOAT : DXGI_FORMAT_R16G16B16A16_FLOAT);
 }
 
+void ApplyWindowStyle(HWND window, WindowModes windowMode) {
+    if (windowMode == WindowModes::WINDOW_MODE_WINDOWED) {
+        // Standard window styles for a Win32 window in windowed mode
+        LONG style = WS_OVERLAPPEDWINDOW | WS_VISIBLE;
+        style &= ~(WS_MAXIMIZEBOX | WS_THICKFRAME); // no maximize and no resizing
+        SetWindowLong(window, GWL_STYLE, style);
+
+        LONG exStyle = WS_EX_APPWINDOW;
+        SetWindowLong(window, GWL_EXSTYLE, exStyle);
+    } else {
+        // Remove frame border for fullscreen modes
+        LONG style = GetWindowLong(window, GWL_STYLE);
+        style &= ~(WS_CAPTION | WS_THICKFRAME);
+        SetWindowLong(window, GWL_STYLE, style);
+
+        LONG exStyle = GetWindowLong(window, GWL_EXSTYLE);
+        exStyle &= ~(WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE | WS_EX_CLIENTEDGE | WS_EX_STATICEDGE);
+        SetWindowLong(window, GWL_EXSTYLE, exStyle);
+    }
+}
+
 /** Get Window Mode */
 int D3D11GraphicsEngine::GetWindowMode() {
     if ( SwapChain.Get() ) {
@@ -805,6 +826,8 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
         return XR_SUCCESS;  // Don't resize if we don't have to
 
     Resolution = newSize;
+    NewResolution = newSize;
+
     INT2 bbres = GetBackbufferResolution();
     
     zCView::SetWindowMode(
@@ -836,13 +859,21 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
     } else if ( Engine::GAPI->GetRendererState().RendererSettings.StretchWindow ) {
         RECT desktopRect;
         GetClientRect( GetDesktopWindow(), &desktopRect );
-        SetWindowPos( OutputWindow, nullptr, 0, 0, desktopRect.right, desktopRect.bottom, SWP_SHOWWINDOW );
+        ApplyWindowStyle(OutputWindow, WindowModes::WINDOW_MODE_FULLSCREEN_BORDERLESS);
+        SetWindowPos( OutputWindow, nullptr, 0, 0, desktopRect.right, desktopRect.bottom, 
+                      SWP_SHOWWINDOW | SWP_FRAMECHANGED );
     } else {
+        RECT desktopRect;
+        GetClientRect( GetDesktopWindow(), &desktopRect );
+
+        auto isFullScreenWindow = bbres.x == desktopRect.right && bbres.y == desktopRect.bottom;
+        ApplyWindowStyle(OutputWindow, isFullScreenWindow ? WindowModes::WINDOW_MODE_FULLSCREEN_BORDERLESS : WindowModes::WINDOW_MODE_WINDOWED);
+        
         RECT rect;
-        if ( GetWindowRect( OutputWindow, &rect ) ) {
-            SetWindowPos( OutputWindow, nullptr, rect.left, rect.top, bbres.x, bbres.y, SWP_SHOWWINDOW );
+        if ( GetWindowRect( OutputWindow, &rect ) && !isFullScreenWindow ) {
+            SetWindowPos( OutputWindow, nullptr, rect.left, rect.top, bbres.x, bbres.y, SWP_SHOWWINDOW | SWP_FRAMECHANGED );
         } else {
-            SetWindowPos( OutputWindow, nullptr, 0, 0, bbres.x, bbres.y, SWP_SHOWWINDOW );
+            SetWindowPos( OutputWindow, nullptr, 0, 0, bbres.x, bbres.y, SWP_SHOWWINDOW | SWP_FRAMECHANGED );
         }
     }
 #endif
@@ -857,6 +888,7 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
         frameLatencyWaitableObject = nullptr;
     }
 
+    static UINT lastSwapchainFlags = scflags;
     if ( !SwapChain.Get() ) {
         static std::map<DXGI_SWAP_EFFECT, std::string> swapEffectMap = {
             {DXGI_SWAP_EFFECT::DXGI_SWAP_EFFECT_DISCARD, "DXGI_SWAP_EFFECT_DISCARD"},
@@ -920,6 +952,7 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
             scflags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
         }
 
+        lastSwapchainFlags = scflags;
         scd.SwapEffect = swapEffect;
         scd.Flags = scflags;
         scd.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -968,8 +1001,9 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
         }
     } else {
         LogInfo() << "Resizing swapchain  (Format: DXGI_FORMAT_B8G8R8A8_UNORM)";
-        if ( FAILED( SwapChain->ResizeBuffers( 0, bbres.x, bbres.y, DXGI_FORMAT_B8G8R8A8_UNORM, scflags ) ) ) {
-            LogError() << "Failed to resize swapchain!";
+        hr =SwapChain->ResizeBuffers( 0, bbres.x, bbres.y, DXGI_FORMAT_B8G8R8A8_UNORM, lastSwapchainFlags );
+        if ( FAILED( hr ) ) {
+            LogError() << "Failed to resize swapchain! HRESULT: " << std::hex << hr;
             return XR_FAILED;
         }
     }
@@ -1044,6 +1078,10 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
 
 /** Called when the game wants to render a new frame */
 XRESULT D3D11GraphicsEngine::OnBeginFrame() {
+    if (NewResolution != Resolution) {
+        OnResize(NewResolution);
+    }
+    
     Engine::GAPI->GetRendererState().RendererInfo.Timing.StartTotal();
 
 #ifdef BUILD_SPACER_NET

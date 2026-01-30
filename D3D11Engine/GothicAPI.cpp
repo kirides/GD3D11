@@ -980,6 +980,7 @@ void GothicAPI::LoadRendererWorldSettings( GothicRendererSettings& s ) {
 
     GetPrivateProfileRGB("Atmoshpere", "FogColorMod", s.FogColorMod, ini);
 
+	s.GraphicsPreset = (GothicRendererSettings::E_GraphicsPreset)GetPrivateProfileIntA( "General", "GraphicsPreset", s.GraphicsPreset, ini.c_str() );
     if ( !GMPModeActive ) {
 	    s.VisualFXDrawRadius = GetPrivateProfileFloatA( "General", "VisualFXDrawRadius", s.VisualFXDrawRadius, ini );
 	    s.OutdoorVobDrawRadius = GetPrivateProfileFloatA( "General", "OutdoorVobDrawRadius", s.OutdoorVobDrawRadius, ini );
@@ -1038,6 +1039,7 @@ void GothicAPI::SaveRendererWorldSettings( const GothicRendererSettings& s ) {
     WritePrivateProfileRGB("Atmoshpere", "SunLightColor", s.SunLightColor, ini.c_str() );
     WritePrivateProfileRGB("Atmoshpere", "FogColorMod", s.FogColorMod, ini.c_str() );
 
+    WritePrivateProfileStringA( "General", "GraphicsPreset", std::to_string( (int)s.GraphicsPreset ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "VisualFXDrawRadius", std::to_string( s.VisualFXDrawRadius ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "OutdoorVobDrawRadius", std::to_string( s.OutdoorVobDrawRadius ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "OutdoorSmallVobDrawRadius", std::to_string( s.OutdoorSmallVobDrawRadius ).c_str(), ini.c_str() );

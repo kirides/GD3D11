@@ -33,6 +33,7 @@ public:
 
     /** Called on window resize/resolution change */
     virtual XRESULT OnResize( INT2 newSize ) PURE;
+    virtual XRESULT TriggerResize( INT2 resolution ) PURE;
 
     /** Called when the game wants to render a new frame */
     virtual XRESULT OnBeginFrame() PURE;
