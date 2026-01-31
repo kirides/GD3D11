@@ -102,7 +102,7 @@ XRESULT D3D11PFX_GodRays::Render( RenderToTextureBuffer* fxbuffer ) {
 	Engine::GAPI->GetRendererState().BlendState.SetAdditiveBlending();
 	Engine::GAPI->GetRendererState().BlendState.SetDirty();
 
-    FxRenderer->CopyTextureToRTV( FxRenderer->GetTempBufferDS4_2().GetShaderResView(), oldRTV, INT2( engine->GetResolution().x, engine->GetResolution().y ) );
+    FxRenderer->CopyTextureToRTV( FxRenderer->GetTempBufferDS4_2().GetShaderResView(), oldRTV, engine->GetResolution() );
 
 	vp.Width = static_cast<float>(engine->GetResolution().x);
 	vp.Height = static_cast<float>(engine->GetResolution().y);

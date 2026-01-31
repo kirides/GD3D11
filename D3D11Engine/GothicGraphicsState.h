@@ -696,6 +696,8 @@ struct GothicRendererSettings {
         // Match the resolution with the current desktop resolution
         LoadedResolution = INT2( desktopRect.right, desktopRect.bottom );
 
+        ResolutionScalePercent = 100;
+
         GothicUIScale = 1.0f;
         //DisableEverything();
 
@@ -822,6 +824,7 @@ struct GothicRendererSettings {
     float3 SunLightColor;
     float SunLightStrength;
     INT2 LoadedResolution;
+    int ResolutionScalePercent;
 
     float TesselationFactor;
     float TesselationRange;

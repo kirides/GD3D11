@@ -415,6 +415,7 @@ protected:
     /** List of waterfall worldmeshes we have to render using alphablending */
     std::vector<std::pair<MeshKey, MeshInfo*>> FrameTransparencyMeshesWaterfall;
 
+    INT2 m_scaledResolution;
 
 public:
     /** Lighting */

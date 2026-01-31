@@ -5,6 +5,7 @@
 
 #include "ImGuiEditorView.h"
 #include "zCParser.h"
+#include <sstream>
 
 #if defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)
 extern bool haveWindAnimations;
@@ -652,7 +653,18 @@ void ImGuiShim::RenderSettingsWindow()
                 }
             }
 
-            ImText( "Resolution", buttonWidth ); ImGui::SameLine();
+            static std::string resolutionLabel = "Resolution";
+
+            if ( settings.ResolutionScalePercent != 100 ) {
+                std::stringstream ss;
+                ss << "Resolution (scaled to: " << (CurrentResolution.x * settings.ResolutionScalePercent / 100)
+                    << " x "
+                    << (CurrentResolution.y * settings.ResolutionScalePercent / 100)
+                    << ")";
+                resolutionLabel = ss.str();
+            }
+
+            ImText( settings.ResolutionScalePercent != 100 ? resolutionLabel.c_str() : "Resolution", buttonWidth ); ImGui::SameLine();
             if ( ImGui::BeginCombo( "##Resolution", Resolutions[ResolutionState].second.c_str() ) ) {
                 for ( size_t i = 0; i < Resolutions.size(); i++ ) {
                     bool isSelected = (ResolutionState == i);
@@ -667,6 +679,18 @@ void ImGuiShim::RenderSettingsWindow()
                 }
                 ImGui::EndCombo();
             }
+
+            ImText( "Resolution Scale", buttonWidth ); ImGui::SameLine();
+            static float previousResolutionScale = static_cast<float>(settings.ResolutionScalePercent);
+            if ( ImGui::SliderFloat( "##ResolutionScalePercent", &previousResolutionScale, 25.0f, 200.0f, "%.0f%%" ) ) {
+                previousResolutionScale = std::clamp( previousResolutionScale, 25.0f, 200.0f );
+                settings.ResolutionScalePercent = static_cast<int>(previousResolutionScale);
+            }
+            ImGui::SetItemTooltip("Effective resolution: %d x %d",
+                CurrentResolution.x * settings.ResolutionScalePercent / 100,
+                CurrentResolution.y * settings.ResolutionScalePercent / 100
+            );
+
             ImText( "Texture Quality", buttonWidth ); ImGui::SameLine();
             static std::vector<std::pair<const char*, int>> QualityOptions = {
                 { "Very Low", static_cast<int>(TX_QUALITY::VeryLow) },

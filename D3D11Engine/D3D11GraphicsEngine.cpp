@@ -157,7 +157,7 @@ D3D11GraphicsEngine::D3D11GraphicsEngine() {
     m_isWindowActive = false;
 
     // Match the resolution with the current desktop resolution
-    Resolution =
+    Resolution = m_scaledResolution = 
         Engine::GAPI->GetRendererState().RendererSettings.LoadedResolution;
     CachedRefreshRate.Numerator = 0;
     CachedRefreshRate.Denominator = 0;
@@ -795,8 +795,9 @@ XRESULT D3D11GraphicsEngine::SetWindow( HWND hWnd ) {
 
 /** Reset BackBuffer */
 void D3D11GraphicsEngine::OnResetBackBuffer() {
-    PfxRenderer->OnResize( Resolution );
-    HDRBackBuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), Resolution.x, Resolution.y,
+    auto res = GetResolution();
+    PfxRenderer->OnResize( res );
+    HDRBackBuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), res.x, res.y,
         (Engine::GAPI->GetRendererState().RendererSettings.CompressBackBuffer ? DXGI_FORMAT_R11G11B10_FLOAT : DXGI_FORMAT_R16G16B16A16_FLOAT) );
 }
 
@@ -858,14 +859,28 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
 
     INT2 bbres = GetBackbufferResolution();
     
+    auto ResolutionScalePercent = Engine::GAPI->GetRendererState().RendererSettings.ResolutionScalePercent;
+    if ( ResolutionScalePercent != 100 ) {
+        float scale = static_cast<float>(ResolutionScalePercent / 100.0f);
+        m_scaledResolution = INT2{
+        static_cast<INT>(static_cast<float>(newSize.x) * scale),
+        static_cast<INT>(static_cast<float>(newSize.y) * scale)
+        };
+    } else {
+        m_scaledResolution = newSize;
+    }
+
+    // TODO: Also always set/reset if player changes from Gothics UI, as settings a resolution from gothics settings breaks this.
     zCView::SetWindowMode(
         Resolution.x,
         Resolution.y,
         32 );
+
     zCView::SetVirtualMode(
-        static_cast<int>(Resolution.x / Engine::GAPI->GetRendererState().RendererSettings.GothicUIScale),
-        static_cast<int>(Resolution.y / Engine::GAPI->GetRendererState().RendererSettings.GothicUIScale),
+        static_cast<int>(Resolution.x),
+        static_cast<int>(Resolution.y),
         32 );
+
     zCViewDraw::GetScreen().SetVirtualSize( POINT{ 8192, 8192 } );
 
 #ifndef BUILD_SPACER
@@ -1043,47 +1058,31 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
 
     // Recreate DepthStencilBuffer
     DepthStencilBuffer = std::make_unique<RenderToDepthStencilBuffer>(
-        GetDevice().Get(), Resolution.x, Resolution.y, DXGI_FORMAT_R32_TYPELESS, nullptr,
+        GetDevice().Get(), m_scaledResolution.x, m_scaledResolution.y, DXGI_FORMAT_R32_TYPELESS, nullptr,
         DXGI_FORMAT_D32_FLOAT, DXGI_FORMAT_R32_FLOAT );
 
     DepthStencilBufferCopy = std::make_unique<RenderToTextureBuffer>(
-        GetDevice().Get(), Resolution.x, Resolution.y, DXGI_FORMAT_R32_TYPELESS, nullptr,
+        GetDevice().Get(), m_scaledResolution.x, m_scaledResolution.y, DXGI_FORMAT_R32_TYPELESS, nullptr,
         DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32_FLOAT );
-
-    // Bind our newly created resources
-    GetContext()->OMSetRenderTargets( 1, BackbufferRTV.GetAddressOf(),
-        DepthStencilBuffer->GetDepthStencilView().Get() );
-
-    // Set the viewport
-    D3D11_VIEWPORT viewport = {};
-
-    viewport.TopLeftX = 0;
-    viewport.TopLeftY = 0;
-    viewport.Width = static_cast<float>(bbres.x);
-    viewport.Height = static_cast<float>(bbres.y);
-    viewport.MinDepth = 0.0f;
-    viewport.MaxDepth = 1.0f;
-
-    GetContext()->RSSetViewports( 1, &viewport );
 
     // Create PFX-Renderer
     if ( !PfxRenderer ) PfxRenderer = std::make_unique<D3D11PfxRenderer>();
 
-    PfxRenderer->OnResize( Resolution );
+    PfxRenderer->OnResize( m_scaledResolution );
 
     GBuffer2_SpecIntens_SpecPower = std::make_unique<RenderToTextureBuffer>(
-        GetDevice().Get(), Resolution.x, Resolution.y, DXGI_FORMAT_R16G16_FLOAT );
+        GetDevice().Get(), m_scaledResolution.x, m_scaledResolution.y, DXGI_FORMAT_R16G16_FLOAT );
 
     GBuffer1_Normals = std::make_unique<RenderToTextureBuffer>(
-        GetDevice().Get(), Resolution.x, Resolution.y, DXGI_FORMAT_R8G8B8A8_SNORM );
+        GetDevice().Get(), m_scaledResolution.x, m_scaledResolution.y, DXGI_FORMAT_R8G8B8A8_SNORM );
 
     GBuffer0_Diffuse = std::make_unique<RenderToTextureBuffer>(
-        GetDevice().Get(), Resolution.x, Resolution.y, DXGI_FORMAT_B8G8R8A8_UNORM );
+        GetDevice().Get(), m_scaledResolution.x, m_scaledResolution.y, DXGI_FORMAT_B8G8R8A8_UNORM );
 
-    VelocityBuffer = std::make_unique<RenderToTextureBuffer>( 
-        GetDevice().Get(), Resolution.x, Resolution.y, DXGI_FORMAT_R16G16_FLOAT );
+    VelocityBuffer = std::make_unique<RenderToTextureBuffer>(
+        GetDevice().Get(), m_scaledResolution.x, m_scaledResolution.y, DXGI_FORMAT_R16G16_FLOAT );
 
-    HDRBackBuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), Resolution.x, Resolution.y,
+    HDRBackBuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), m_scaledResolution.x, m_scaledResolution.y,
         (Engine::GAPI->GetRendererState().RendererSettings.CompressBackBuffer ? DXGI_FORMAT_R11G11B10_FLOAT : DXGI_FORMAT_R16G16B16A16_FLOAT) );
 
     int s = std::min<int>( std::max<int>( Engine::GAPI->GetRendererState().RendererSettings.ShadowMapSize, 512 ), (FeatureLevel10Compatibility ? 8192 : 16384) );
@@ -1093,6 +1092,22 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
     } else {
         ShadowMaps->Resize( s );
     }
+
+    // Bind our newly created resources
+    GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(),
+        DepthStencilBuffer->GetDepthStencilView().Get() );
+
+    // Set the viewport
+    D3D11_VIEWPORT viewport = {};
+
+    viewport.TopLeftX = 0;
+    viewport.TopLeftY = 0;
+    viewport.Width = static_cast<float>(m_scaledResolution.x);
+    viewport.Height = static_cast<float>(m_scaledResolution.y);
+    viewport.MinDepth = 0.0f;
+    viewport.MaxDepth = 1.0f;
+
+    GetContext()->RSSetViewports( 1, &viewport );
 
     // Engine::AntTweakBar->OnResize( newSize );
     Engine::ImGuiHandle->OnResize( newSize );
@@ -1104,6 +1119,8 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
 XRESULT D3D11GraphicsEngine::OnBeginFrame() {
     static WindowModes lastWindowMode = ImGuiShim::InterpretWindowMode(Engine::GAPI->GetRendererState().RendererSettings);
     WindowModes currentWindowMode = (WindowModes)Engine::GAPI->GetRendererState().RendererSettings.ChangeWindowPreset;
+
+    static int s_oldResolutionScalePercent = Engine::GAPI->GetRendererState().RendererSettings.ResolutionScalePercent;
     
     if (NewResolution != Resolution) {
         OnResize(NewResolution);
@@ -1125,6 +1142,11 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
             Resolution = INT2( 0, 0 ); // force resize
             OnResize( oldResolution );
         }
+    } else if ( Engine::GAPI->GetRendererState().RendererSettings.ResolutionScalePercent != s_oldResolutionScalePercent ) {
+        s_oldResolutionScalePercent = Engine::GAPI->GetRendererState().RendererSettings.ResolutionScalePercent;
+        auto oldResolution = Resolution;
+        Resolution = INT2( 0, 0 ); // force resize
+        OnResize( oldResolution );
     }
     
     Engine::GAPI->GetRendererState().RendererInfo.Timing.StartTotal();
@@ -1178,10 +1200,6 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
     }
 
     static bool s_firstFrame = true;
-    if ( s_firstFrame ) {
-    }
-
-    s_firstFrame = false;
 
     SteamOverlay::Update();
 #ifdef BUILD_1_12F
@@ -1226,16 +1244,6 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
         Engine::GAPI->GetRendererState().RendererSettings.ShadowMapSize = s;
     }
 
-    // Force the mode
-    static float lastUIScale = 0.f;
-    if ( lastUIScale != Engine::GAPI->GetRendererState().RendererSettings.GothicUIScale || 1.f != Engine::GAPI->GetRendererState().RendererSettings.GothicUIScale ) {
-        lastUIScale = Engine::GAPI->GetRendererState().RendererSettings.GothicUIScale;
-        zCView::SetVirtualMode(
-            static_cast<int>(Resolution.x / lastUIScale),
-            static_cast<int>(Resolution.y / lastUIScale),
-            32 );
-    }
-
     // Notify the shader manager
     ShaderManager->OnFrameStart();
 
@@ -1246,8 +1254,18 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
     UpdateRenderStates();
     GetContext()->PSSetSamplers( 0, 1, ClampSamplerState.GetAddressOf() );
 
-    // Bind HDR Back Buffer
-    GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(), nullptr );
+    // Bind the backbuffer, as otherwise Gothic can't render its initial menu UI
+
+    D3D11_VIEWPORT vp;
+    vp.TopLeftX = 0.0f;
+    vp.TopLeftY = 0.0f;
+    vp.MinDepth = 0.0f;
+    vp.MaxDepth = 1.0f;
+    vp.Width = static_cast<float>(GetBackbufferResolution().x);
+    vp.Height = static_cast<float>(GetBackbufferResolution().y);
+
+    GetContext()->RSSetViewports( 1, &vp );
+    GetContext()->OMSetRenderTargets( 1, BackbufferRTV.GetAddressOf(), nullptr );
 
     // Reset Render States for HUD
     Engine::GAPI->ResetRenderStates();
@@ -1270,6 +1288,8 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
     PS_DiffuseAlphatest = ShaderManager->GetPShader( "PS_DiffuseAlphaTest" );
     PS_Simple = ShaderManager->GetPShader( "PS_Simple" );
     PS_LinDepth = ShaderManager->GetPShader( "PS_LinDepth" );
+
+    s_firstFrame = false;
     return XR_SUCCESS;
 }
 
@@ -1456,6 +1476,7 @@ XRESULT D3D11GraphicsEngine::Present() {
     vp.Height = static_cast<float>(GetBackbufferResolution().y);
 
     GetContext()->RSSetViewports( 1, &vp );
+    /*
     // Copy HDR scene to backbuffer
 
     SetDefaultStates();
@@ -1477,6 +1498,7 @@ XRESULT D3D11GraphicsEngine::Present() {
 
     // GetContext()->ClearState();
 
+    */
     GetContext()->OMSetRenderTargets( 1, BackbufferRTV.GetAddressOf(), nullptr );
 
     SetDefaultStates();
@@ -2567,8 +2589,8 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     vp.TopLeftY = 0.0f;
     vp.MinDepth = 0.0f;
     vp.MaxDepth = 1.0f;
-    vp.Width = static_cast<float>(GetResolution().x);
-    vp.Height = static_cast<float>(GetResolution().y);
+    vp.Width = GetResolution().x;
+    vp.Height = GetResolution().y;
 
     GetContext()->RSSetViewports( 1, &vp );
 
@@ -2717,6 +2739,8 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     // Draw those
     {
         auto _ = RecordGraphicsEvent( L"DrawPolyStrips" );
+        // For some reasons the viewport gets messed up, so set it again
+        SetViewport( ViewportInfo( 0, 0, GetResolution().x, GetResolution().y));
         DrawPolyStrips();
     }
 #endif
@@ -2777,8 +2801,8 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     vp.TopLeftY = 0.0f;
     vp.MinDepth = 0.0f;
     vp.MaxDepth = 1.0f;
-    vp.Width = static_cast<float>(GetBackbufferResolution().x);
-    vp.Height = static_cast<float>(GetBackbufferResolution().y);
+    vp.Width = GetResolution().x;
+    vp.Height = GetResolution().y;
 
     GetContext()->RSSetViewports( 1, &vp );
 
@@ -2797,6 +2821,41 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         D3D11_CLEAR_DEPTH, 0, 0 );
     GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(),
         nullptr );
+
+    // Before returning to gothics UI, set render target to backbuffer
+    {
+        D3D11_VIEWPORT vp;
+        vp.TopLeftX = 0.0f;
+        vp.TopLeftY = 0.0f;
+        vp.MinDepth = 0.0f;
+        vp.MaxDepth = 1.0f;
+        vp.Width = static_cast<float>(GetBackbufferResolution().x);
+        vp.Height = static_cast<float>(GetBackbufferResolution().y);
+
+        GetContext()->RSSetViewports( 1, &vp );
+        // Copy HDR scene to backbuffer
+
+        SetDefaultStates();
+
+        SetActivePixelShader( "PS_PFX_GammaCorrectInv" );
+
+        ActivePS->Apply();
+
+        GammaCorrectConstantBuffer gcb;
+        gcb.G_Gamma = Engine::GAPI->GetGammaValue();
+        gcb.G_Brightness = Engine::GAPI->GetBrightnessValue();
+        gcb.G_TextureSize = GetResolution();
+        gcb.G_SharpenStrength = Engine::GAPI->GetRendererState().RendererSettings.SharpenFactor;
+
+        ActivePS->GetConstantBuffer()[0]->UpdateBuffer( &gcb );
+        ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+
+        PfxRenderer->CopyTextureToRTV( HDRBackBuffer->GetShaderResView(), BackbufferRTV, INT2( 0, 0 ), true );
+
+        // GetContext()->ClearState();
+
+        GetContext()->OMSetRenderTargets( 1, BackbufferRTV.GetAddressOf(), nullptr );
+    }
 
     // Disable culling for ui rendering(Sprite from LeGo needs it since it use CCW instead of CW order)
     SetDefaultStates();
@@ -3547,6 +3606,8 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
 
     // Bind depth to the shader
     DepthStencilBufferCopy->BindToPixelShader( GetContext().Get(), 2 );
+
+    auto Resolution = GetResolution();
 
     // Fill refraction info CB and bind it
     RefractionInfoConstantBuffer ricb;
@@ -5171,23 +5232,10 @@ XRESULT D3D11GraphicsEngine::DrawPolyStrips( bool noTextures ) {
 }
 
 /** Returns the current size of the backbuffer */
-INT2 D3D11GraphicsEngine::GetResolution() { return Resolution; }
+INT2 D3D11GraphicsEngine::GetResolution() { return m_scaledResolution; }
 
 /** Returns the actual resolution of the backbuffer (not supersampled) */
-INT2 D3D11GraphicsEngine::GetBackbufferResolution() {
-    return Resolution;
-
-    // TODO: TODO: Oversampling
-    /*
-    // Get desktop rect
-    RECT desktop;
-    GetClientRect(GetDesktopWindow(), &desktop);
-
-    if (Resolution.x > desktop.right || Resolution.y > desktop.bottom)
-            return INT2(desktop.right, desktop.bottom);
-
-    return Resolution;*/
-}
+INT2 D3D11GraphicsEngine::GetBackbufferResolution() { return Resolution; }
 
 /** Sets up the default rendering state */
 void D3D11GraphicsEngine::SetDefaultStates( bool force ) {
@@ -5985,6 +6033,7 @@ void D3D11GraphicsEngine::DrawUnderwaterEffects() {
     SetDefaultStates();
     UpdateRenderStates();
 
+    auto Resolution = GetResolution();
     RefractionInfoConstantBuffer ricb;
     ricb.RI_Projection = Engine::GAPI->GetProjectionMatrix();
     ricb.RI_ViewportSize = float2( Resolution.x, Resolution.y );
@@ -6129,6 +6178,7 @@ void D3D11GraphicsEngine::DrawFrameParticles(
     if ( particles.empty() ) return;
     SetDefaultStates();
 
+    auto Resolution = GetResolution();
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
     Engine::GAPI->SetViewTransformXM( view );  // Update view transform
 
@@ -6338,7 +6388,7 @@ void D3D11GraphicsEngine::SaveScreenshot() {
         if ( !Toolbox::CreateDirectoryRecursive( "system\\Screenshots" ) )
             return;
     }
-
+    auto Resolution = GetResolution();
     // Buffer for scaling down the image
     auto rt = std::make_unique<RenderToTextureBuffer>(
         GetDevice().Get(), Resolution.x, Resolution.y, DXGI_FORMAT_B8G8R8A8_UNORM );
