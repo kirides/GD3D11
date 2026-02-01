@@ -48,9 +48,7 @@ public:
 
         auto _ = Engine::GraphicsEngine->RecordGraphicsEvent( L"Draw Inventory World" );
 
-        hook_infunc
-            HookedFunctions::OriginalFunctions.original_ContainerDraw();
-        hook_outfunc
+        HookedFunctions::OriginalFunctions.original_ContainerDraw();
 
         isDrawingContainers = false;
     }
