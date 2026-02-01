@@ -2778,6 +2778,10 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         && Engine::GAPI->GetRendererState().RendererSettings.ResolutionScalePercent >= 100
         ) {
 
+        // TODO: Apply sharpening to the final backbuffer copy if downsampling/SSAA is used
+        // But for that we need to modify the Pfx usages to allow different input/output RTVs
+        // currently the HDRBackbuffer is hardcoded everywhere
+
         switch ( Engine::GAPI->GetRendererState().RendererSettings.SharpeningMode ) {
         case GothicRendererSettings::SHARPEN_SIMPLE:
             if ( !FeatureLevel10Compatibility ) {
