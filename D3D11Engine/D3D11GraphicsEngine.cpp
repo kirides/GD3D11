@@ -797,8 +797,11 @@ XRESULT D3D11GraphicsEngine::SetWindow( HWND hWnd ) {
 void D3D11GraphicsEngine::OnResetBackBuffer() {
     auto res = GetResolution();
     PfxRenderer->OnResize( res );
-    HDRBackBuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), res.x, res.y,
+    HDRBackBuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), res.x, res.y, 
         (Engine::GAPI->GetRendererState().RendererSettings.CompressBackBuffer ? DXGI_FORMAT_R11G11B10_FLOAT : DXGI_FORMAT_R16G16B16A16_FLOAT) );
+
+    res = GetBackbufferResolution();
+    Backbuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), res.x, res.y, DXGI_FORMAT_B8G8R8A8_UNORM );
 }
 
 /** Get BackBuffer Format */
@@ -1065,6 +1068,10 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
         GetDevice().Get(), m_scaledResolution.x, m_scaledResolution.y, DXGI_FORMAT_R32_TYPELESS, nullptr,
         DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32_FLOAT );
 
+    m_NativeSizeDepthStencil = std::make_unique<RenderToDepthStencilBuffer>(
+        GetDevice().Get(), Resolution.x, Resolution.y, DXGI_FORMAT_R32_TYPELESS, nullptr,
+        DXGI_FORMAT_D32_FLOAT, DXGI_FORMAT_R32_FLOAT );
+
     // Create PFX-Renderer
     if ( !PfxRenderer ) PfxRenderer = std::make_unique<D3D11PfxRenderer>();
 
@@ -1084,6 +1091,9 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
 
     HDRBackBuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), m_scaledResolution.x, m_scaledResolution.y,
         (Engine::GAPI->GetRendererState().RendererSettings.CompressBackBuffer ? DXGI_FORMAT_R11G11B10_FLOAT : DXGI_FORMAT_R16G16B16A16_FLOAT) );
+
+    // actual native-resolution backbuffer for UI and copy operations !!
+    Backbuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), Resolution.x, Resolution.y, DXGI_FORMAT_B8G8R8A8_UNORM );
 
     int s = std::min<int>( std::max<int>( Engine::GAPI->GetRendererState().RendererSettings.ShadowMapSize, 512 ), (FeatureLevel10Compatibility ? 8192 : 16384) );
     if ( !ShadowMaps ) {
@@ -1265,7 +1275,7 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
     vp.Height = static_cast<float>(GetBackbufferResolution().y);
 
     GetContext()->RSSetViewports( 1, &vp );
-    GetContext()->OMSetRenderTargets( 1, BackbufferRTV.GetAddressOf(), nullptr );
+    GetContext()->OMSetRenderTargets( 1, Backbuffer->GetRenderTargetView().GetAddressOf(), nullptr);
 
     // Reset Render States for HUD
     Engine::GAPI->ResetRenderStates();
@@ -1311,13 +1321,14 @@ XRESULT D3D11GraphicsEngine::OnEndFrame() {
 /** Called when the game wants to clear the bound rendertarget */
 XRESULT D3D11GraphicsEngine::Clear( const float4& color ) {
     const Microsoft::WRL::ComPtr<ID3D11DeviceContext1>& context = GetContext();
-    context->ClearDepthStencilView( DepthStencilBuffer->GetDepthStencilView().Get(),
-        D3D11_CLEAR_DEPTH, 0, 0 );
+    context->ClearDepthStencilView( DepthStencilBuffer->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
+    context->ClearDepthStencilView( m_NativeSizeDepthStencil->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
 
     context->ClearRenderTargetView( GBuffer0_Diffuse->GetRenderTargetView().Get(), reinterpret_cast<const float*>(&color) );
     context->ClearRenderTargetView( GBuffer1_Normals->GetRenderTargetView().Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )) );
     context->ClearRenderTargetView( GBuffer2_SpecIntens_SpecPower->GetRenderTargetView().Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )) );
     context->ClearRenderTargetView( HDRBackBuffer->GetRenderTargetView().Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )) );
+    context->ClearRenderTargetView( Backbuffer->GetRenderTargetView().Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )) );
     
     // remove motion information
     context->ClearRenderTargetView( VelocityBuffer->GetRenderTargetView().Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )) );
@@ -1477,33 +1488,15 @@ XRESULT D3D11GraphicsEngine::Present() {
     vp.Height = static_cast<float>(GetBackbufferResolution().y);
 
     GetContext()->RSSetViewports( 1, &vp );
-    /*
-    // Copy HDR scene to backbuffer
-
-    SetDefaultStates();
-
-    SetActivePixelShader( "PS_PFX_GammaCorrectInv" );
-
-    ActivePS->Apply();
-
-    GammaCorrectConstantBuffer gcb;
-    gcb.G_Gamma = Engine::GAPI->GetGammaValue();
-    gcb.G_Brightness = Engine::GAPI->GetBrightnessValue();
-    gcb.G_TextureSize = GetResolution();
-    gcb.G_SharpenStrength = Engine::GAPI->GetRendererState().RendererSettings.SharpenFactor;
-
-    ActivePS->GetConstantBuffer()[0]->UpdateBuffer( &gcb );
-    ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
-
-    PfxRenderer->CopyTextureToRTV( HDRBackBuffer->GetShaderResView(), BackbufferRTV, INT2( 0, 0 ), true );
-
-    // GetContext()->ClearState();
-
-    */
-    GetContext()->OMSetRenderTargets( 1, BackbufferRTV.GetAddressOf(), nullptr );
 
     SetDefaultStates();
     UpdateRenderStates();
+    {
+        auto _ = RecordGraphicsEvent( L"Blit onto Swapchain" );
+        PfxRenderer->CopyTextureToRTV( Backbuffer->GetShaderResView(), BackbufferRTV );
+        GetContext()->OMSetRenderTargets( 1, BackbufferRTV.GetAddressOf(), nullptr );
+    }
+
     // Engine::AntTweakBar->Draw();
 
     if ( Engine::ImGuiHandle ) {
@@ -2798,10 +2791,9 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
 
     // Clear here to get a working depthbuffer but no interferences with world
     // geometry for gothic UI-Rendering
-    GetContext()->ClearDepthStencilView( DepthStencilBuffer->GetDepthStencilView().Get(),
-        D3D11_CLEAR_DEPTH, 0, 0 );
-    GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(),
-        nullptr );
+    GetContext()->ClearDepthStencilView( DepthStencilBuffer->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
+    GetContext()->ClearDepthStencilView( m_NativeSizeDepthStencil->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
+    GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(), nullptr );
 
     // Before returning to gothics UI, set render target to backbuffer
     {
@@ -2835,7 +2827,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             auto sharpenFactor = Engine::GAPI->GetRendererState().RendererSettings.SharpenFactor;
             PfxRenderer->GetFSR1()->Apply(
                 temp->GetShaderResView(),
-                BackbufferRTV,
+                Backbuffer->GetRenderTargetView(),
                 GetResolution(),
                 GetBackbufferResolution(),
                 sharpenFactor > 0.001f,
@@ -2869,11 +2861,11 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                     break;
                 }
 
-                auto _ = RecordGraphicsEvent( L"Blit onto Swapchain" );
-                PfxRenderer->CopyTextureToRTV( tempNativeBuffer->GetShaderResView(), BackbufferRTV, GetBackbufferResolution() );
+                auto _ = RecordGraphicsEvent( L"Blit onto native-size backbuffer" );
+                PfxRenderer->CopyTextureToRTV( tempNativeBuffer->GetShaderResView(), Backbuffer->GetRenderTargetView(), GetBackbufferResolution() );
             } else {
-                auto _ = RecordGraphicsEvent( L"Tonemap into Swapchain" );
-                PfxRenderer->CopyTextureToRTV( HDRBackBuffer->GetShaderResView(), BackbufferRTV, GetBackbufferResolution(), true );
+                auto _ = RecordGraphicsEvent( L"Tonemap into native-size backbuffer" );
+                PfxRenderer->CopyTextureToRTV( HDRBackBuffer->GetShaderResView(), Backbuffer->GetRenderTargetView(), GetBackbufferResolution(), true );
             }
 
         }
@@ -2890,7 +2882,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
 
         // GetContext()->ClearState();
 
-        GetContext()->OMSetRenderTargets( 1, BackbufferRTV.GetAddressOf(), nullptr );
+        GetContext()->OMSetRenderTargets( 1, Backbuffer->GetRenderTargetView().GetAddressOf(), nullptr );
     }
 
     // Disable culling for ui rendering(Sprite from LeGo needs it since it use CCW instead of CW order)
@@ -5515,8 +5507,8 @@ D3D11ENGINE_RENDER_STAGE D3D11GraphicsEngine::GetRenderingStage() {
 /** Draws a VOB (used for inventory) */
 void D3D11GraphicsEngine::DrawVobSingle( VobInfo* vob, zCCamera& camera ) {
     Engine::GAPI->SetViewTransformXM( XMLoadFloat4x4( &camera.GetTransformDX( zCCamera::ETransformType::TT_VIEW ) ) );
-    GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(),
-        DepthStencilBuffer->GetDepthStencilView().Get() );
+    // TODO: Does this even need a depth stencil? we clear the previous one anyways
+    GetContext()->OMSetRenderTargets( 1, Backbuffer->GetRenderTargetView().GetAddressOf(), m_NativeSizeDepthStencil->GetDepthStencilView().Get() );
 
     // Set backface culling
     Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_BACK;
@@ -5552,7 +5544,7 @@ void D3D11GraphicsEngine::DrawVobSingle( VobInfo* vob, zCCamera& camera ) {
         }
     }
 
-    GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(), nullptr );
+    GetContext()->OMSetRenderTargets( 1, Backbuffer->GetRenderTargetView().GetAddressOf(), nullptr );
 
     // Disable culling again
     Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_NONE;

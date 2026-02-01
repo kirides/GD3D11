@@ -465,6 +465,7 @@ private:
     float unionCurrentCustomFontMultiplier;
 
     std::unique_ptr<RenderToTextureBuffer> VelocityBuffer;
+    std::unique_ptr<RenderToDepthStencilBuffer> m_NativeSizeDepthStencil;
     XMFLOAT4X4 m_PrevViewProjMatrix;
     
     INT2 NewResolution;

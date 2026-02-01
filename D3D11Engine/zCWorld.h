@@ -18,6 +18,11 @@ class zCWorld {
 public:
     /** Hooks the functions of this Class */
     static void Hook() {
+
+        if ( HookedFunctions::OriginalFunctions.original_ContainerDraw ) {
+            DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_ContainerDraw), hooked_ContainerDraw );
+        }
+
         DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCWorldRender), hooked_Render );
         DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCWorldVobAddedToWorld), hooked_VobAddedToWorld );
 
@@ -35,6 +40,19 @@ public:
         DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCWorldCompileWorld), hooked_zCWorldCompileWorld );
         DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCWorldGenerateStaticWorldLighting), hooked_zCWorldGenerateStaticWorldLighting );
 #endif
+    }
+
+    inline static bool isDrawingContainers = false;
+    static void __stdcall hooked_ContainerDraw() {
+        isDrawingContainers = true;
+
+        auto _ = Engine::GraphicsEngine->RecordGraphicsEvent( L"Draw Inventory World" );
+
+        hook_infunc
+            HookedFunctions::OriginalFunctions.original_ContainerDraw();
+        hook_outfunc
+
+        isDrawingContainers = false;
     }
 
     static void __fastcall hooked_oCWorldEnableVob( zCWorld* thisptr, void* unknwn, zCVob* vob, zCVob* parent ) {
