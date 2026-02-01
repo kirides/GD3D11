@@ -2765,8 +2765,16 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         PfxRenderer->RenderHDR();
     }
 
-    // TODO: Sharpening and SMAA should happen AFTER upscaling
-    if ( Engine::GAPI->GetRendererState().RendererSettings.SharpenFactor > 0.0f 
+    // SMAA should be applied before any sharpening
+    if ( Engine::GAPI->GetRendererState().RendererSettings.AntiAliasingMode
+        == GothicRendererSettings::AA_SMAA ) {
+        // actually we could do TAA + SMAA
+        auto _ = RecordGraphicsEvent( L"RenderSMAA" );
+        PfxRenderer->RenderSMAA();
+        GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
+    }
+
+    if ( Engine::GAPI->GetRendererState().RendererSettings.SharpenFactor > 0.0f
         && Engine::GAPI->GetRendererState().RendererSettings.ResolutionScalePercent >= 100
         ) {
 
@@ -2787,14 +2795,6 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             }
             break;
         }
-    }
-
-    if ( Engine::GAPI->GetRendererState().RendererSettings.AntiAliasingMode
-        == GothicRendererSettings::AA_SMAA ) {
-        // actually we could do TAA + SMAA
-        auto _ = RecordGraphicsEvent( L"RenderSMAA" );
-        PfxRenderer->RenderSMAA();
-        GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
     }
 
     PresentPending = true;
