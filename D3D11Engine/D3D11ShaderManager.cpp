@@ -564,6 +564,16 @@ XRESULT D3D11ShaderManager::Init() {
     casInfo.cBufferSizes.push_back( sizeof( CASConstantBuffer ) );
     Shaders.push_back( casInfo );
 
+    // FSR1 EASU (Edge Adaptive Spatial Upsampling) Shader
+    ShaderInfo fsr1EasuInfo( "PS_PFX_FSR1_EASU", "PS_PFX_FSR1_EASU.hlsl", "p", makros );
+    fsr1EasuInfo.cBufferSizes.push_back( sizeof( FSR1EASUConstantBuffer ) );
+    Shaders.push_back( fsr1EasuInfo );
+
+    // FSR1 RCAS (Robust Contrast Adaptive Sharpening) Shader
+    ShaderInfo fsr1RcasInfo( "PS_PFX_FSR1_RCAS", "PS_PFX_FSR1_RCAS.hlsl", "p", makros );
+    fsr1RcasInfo.cBufferSizes.push_back( sizeof( FSR1RCASConstantBuffer ) );
+    Shaders.push_back( fsr1RcasInfo );
+
     if ( !FeatureLevel10Compatibility ) {
         Shaders.push_back( ShaderInfo( "CS_AdvanceRain", "CS_AdvanceRain.hlsl", "c" ) );
         Shaders.back().cBufferSizes.push_back( sizeof( AdvanceRainConstantBuffer ) );

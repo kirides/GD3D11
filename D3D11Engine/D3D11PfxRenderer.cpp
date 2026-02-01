@@ -15,6 +15,7 @@
 #include "D3D11PFX_GodRays.h"
 #include "D3D11PFX_TAA.h"
 #include "D3D11PFX_SimpleSharpen.h"
+#include "D3D11PFX_FSR1.h"
 
 D3D11PfxRenderer::D3D11PfxRenderer() {
     FX_Blur = std::make_unique<D3D11PFX_Blur>( this );
@@ -35,6 +36,7 @@ D3D11PfxRenderer::D3D11PfxRenderer() {
 
     PFX_CAS = std::make_unique<D3D11PFX_CAS>( this );
     PFX_SimpleSharpen = std::make_unique<D3D11PFX_SimpleSharpen>( this );
+    PFX_FSR1 = std::make_unique<D3D11PFX_FSR1>( this );
 }
 
 D3D11PfxRenderer::~D3D11PfxRenderer() {

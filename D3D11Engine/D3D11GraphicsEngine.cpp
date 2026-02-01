@@ -2765,7 +2765,10 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         PfxRenderer->RenderHDR();
     }
 
-    if ( Engine::GAPI->GetRendererState().RendererSettings.SharpenFactor > 0.0f ) {
+    // TODO: Sharpening and SMAA should happen AFTER upscaling
+    if ( Engine::GAPI->GetRendererState().RendererSettings.SharpenFactor > 0.0f 
+        && Engine::GAPI->GetRendererState().RendererSettings.ResolutionScalePercent >= 100
+        ) {
 
         switch ( Engine::GAPI->GetRendererState().RendererSettings.SharpeningMode ) {
         case GothicRendererSettings::SHARPEN_SIMPLE:
@@ -2824,15 +2827,6 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
 
     // Before returning to gothics UI, set render target to backbuffer
     {
-        D3D11_VIEWPORT vp;
-        vp.TopLeftX = 0.0f;
-        vp.TopLeftY = 0.0f;
-        vp.MinDepth = 0.0f;
-        vp.MaxDepth = 1.0f;
-        vp.Width = static_cast<float>(GetBackbufferResolution().x);
-        vp.Height = static_cast<float>(GetBackbufferResolution().y);
-
-        GetContext()->RSSetViewports( 1, &vp );
         // Copy HDR scene to backbuffer
 
         SetDefaultStates();
@@ -2850,7 +2844,38 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         ActivePS->GetConstantBuffer()[0]->UpdateBuffer( &gcb );
         ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
 
-        PfxRenderer->CopyTextureToRTV( HDRBackBuffer->GetShaderResView(), BackbufferRTV, INT2( 0, 0 ), true );
+        if ( Engine::GAPI->GetRendererState().RendererSettings.ResolutionScalePercent < 100 
+            && Engine::GAPI->GetRendererState().RendererSettings.Upscaler == GothicRendererSettings::E_Upscaler::UPSCALER_FSR_1 ) {
+            
+            auto _ = RecordGraphicsEvent( L"FSR 1" );
+            auto& temp = PfxRenderer->GetTempBuffer();
+
+            // Get the gamma corrected scene into a temp buffer
+            PfxRenderer->CopyTextureToRTV( HDRBackBuffer->GetShaderResView(), temp.GetRenderTargetView(), INT2(0, 0), true);
+
+            // Now upscale it to backbuffer with sharpening
+            auto sharpenFactor = Engine::GAPI->GetRendererState().RendererSettings.SharpenFactor;
+            PfxRenderer->GetFSR1()->Apply(
+                temp.GetShaderResView(),
+                BackbufferRTV,
+                GetResolution(),
+                GetBackbufferResolution(),
+                sharpenFactor > 0.001f,
+                1.0f - sharpenFactor );
+        } else {
+            // apply gamma correction directly to backbuffer
+            PfxRenderer->CopyTextureToRTV( HDRBackBuffer->GetShaderResView(), BackbufferRTV, GetBackbufferResolution(), true );
+        }
+
+        D3D11_VIEWPORT vp;
+        vp.TopLeftX = 0.0f;
+        vp.TopLeftY = 0.0f;
+        vp.MinDepth = 0.0f;
+        vp.MaxDepth = 1.0f;
+        vp.Width = static_cast<float>(GetBackbufferResolution().x);
+        vp.Height = static_cast<float>(GetBackbufferResolution().y);
+
+        GetContext()->RSSetViewports( 1, &vp );
 
         // GetContext()->ClearState();
 

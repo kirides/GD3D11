@@ -657,7 +657,7 @@ void ImGuiShim::RenderSettingsWindow()
 
             if ( settings.ResolutionScalePercent != 100 ) {
                 std::stringstream ss;
-                ss << "Resolution (scaled to: " << (CurrentResolution.x * settings.ResolutionScalePercent / 100)
+                ss << "Resolution (scaled: " << (CurrentResolution.x * settings.ResolutionScalePercent / 100)
                     << " x "
                     << (CurrentResolution.y * settings.ResolutionScalePercent / 100)
                     << ")";
@@ -690,6 +690,27 @@ void ImGuiShim::RenderSettingsWindow()
                 CurrentResolution.x * settings.ResolutionScalePercent / 100,
                 CurrentResolution.y * settings.ResolutionScalePercent / 100
             );
+
+            ImGui::BeginDisabled( settings.ResolutionScalePercent >= 100 );
+            {
+                ImText( "Upscaler", buttonWidth ); ImGui::SameLine();
+                static std::vector<std::pair<const char*, GothicRendererSettings::E_Upscaler>> upscalers = {
+                    { "Simple", GothicRendererSettings::E_Upscaler::UPSCALER_DEFAULT },
+                    { "FSR 1", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_1 },
+                };
+                if ( ImComboBox( "##Upscaler", upscalers, &settings.Upscaler ) ) {
+                    ImGui::EndCombo();
+                }
+                if ( settings.Upscaler ) {
+                    ImText( "Upscaler sharpening", buttonWidth ); ImGui::SameLine();
+                    if ( ImGui::SliderFloat( "##Upscale sharpening", &settings.SharpenFactor, 0.0f, 1.0f, "%.3f%" ) ) {
+                        settings.SharpenFactor = std::clamp( settings.SharpenFactor, 0.0f, 1.0f );
+                    }
+                }
+
+                ImGui::EndDisabled();
+            }
+
 
             ImText( "Texture Quality", buttonWidth ); ImGui::SameLine();
             static std::vector<std::pair<const char*, int>> QualityOptions = {

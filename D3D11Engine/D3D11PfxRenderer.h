@@ -2,6 +2,7 @@
 #include "pch.h"
 #include "D3D11PFX_TAA.h"
 #include "D3D11PFX_CAS.h"
+#include "D3D11PFX_FSR1.h"
 
 
 struct RenderToTextureBuffer;
@@ -63,6 +64,7 @@ public:
 
     D3D11PFX_TAA* GetTAAEffect() { return FX_TAA.get(); }
     D3D11PFX_CAS* GetCAS() { return PFX_CAS.get(); }
+    D3D11PFX_FSR1* GetFSR1() { return PFX_FSR1.get(); }
 private:
     /** Temporary buffer in the same size/format as the backbuffer */
     std::unique_ptr<RenderToTextureBuffer> TempBuffer;
@@ -86,5 +88,6 @@ private:
 
     std::unique_ptr<D3D11PFX_CAS> PFX_CAS;
     std::unique_ptr<D3D11PFX_SimpleSharpen> PFX_SimpleSharpen;
+    std::unique_ptr<D3D11PFX_FSR1> PFX_FSR1;
 };
 

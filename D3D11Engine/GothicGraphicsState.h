@@ -548,6 +548,12 @@ struct GothicRendererSettings {
         GRAPHICS_ULTRA
     };
 
+    enum E_Upscaler {
+        UPSCALER_DEFAULT = 0,
+        UPSCALER_FSR_1 = 1,
+        _UPSCALER_NUM_MODES
+    };
+
     /** Sets the default values for this struct */
     void SetDefault() {
         SectionDrawRadius = 4;
@@ -697,6 +703,7 @@ struct GothicRendererSettings {
         LoadedResolution = INT2( desktopRect.right, desktopRect.bottom );
 
         ResolutionScalePercent = 100;
+        Upscaler = E_Upscaler::UPSCALER_FSR_1;
 
         GothicUIScale = 1.0f;
         //DisableEverything();
@@ -825,6 +832,7 @@ struct GothicRendererSettings {
     float SunLightStrength;
     INT2 LoadedResolution;
     int ResolutionScalePercent;
+    E_Upscaler Upscaler;
 
     float TesselationFactor;
     float TesselationRange;
