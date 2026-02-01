@@ -43,13 +43,13 @@ XRESULT D3D11NVHBAO::Render( Microsoft::WRL::ComPtr<ID3D11RenderTargetView> pOut
 
     GFSDK_SSAO_InputData_D3D11 Input;
     Input.DepthData.DepthTextureType = GFSDK_SSAO_HARDWARE_DEPTHS;
-    Input.DepthData.pFullResDepthTextureSRV = engine->GetDepthBuffer()->GetShaderResView().Get();
+    Input.DepthData.pFullResDepthTextureSRV = engine->GetDepthBuffer()->GetShaderResView();
     Input.DepthData.ProjectionMatrix.Data = GFSDK_SSAO_Float4x4( reinterpret_cast<float*>(&Engine::GAPI->GetProjectionMatrix()) );
     Input.DepthData.ProjectionMatrix.Layout = GFSDK_SSAO_COLUMN_MAJOR_ORDER;
     Input.DepthData.MetersToViewSpaceUnits = settings.MetersToViewSpaceUnits;
 
     Input.NormalData.Enable = true;
-    Input.NormalData.pFullResNormalTextureSRV = engine->GetGBuffer1().GetShaderResView().Get();
+    Input.NormalData.pFullResNormalTextureSRV = engine->GetGBuffer1().GetShaderResView();
     Input.NormalData.WorldToViewMatrix.Data = GFSDK_SSAO_Float4x4( reinterpret_cast<float*>(&XMMatrixIdentity()) ); // We already have them in view-space
     Input.NormalData.WorldToViewMatrix.Layout = GFSDK_SSAO_COLUMN_MAJOR_ORDER;
 
@@ -65,7 +65,7 @@ XRESULT D3D11NVHBAO::Render( Microsoft::WRL::ComPtr<ID3D11RenderTargetView> pOut
 
     GFSDK_SSAO_Output_D3D11 Output;
     Output.Blend.Mode = GFSDK_SSAO_BlendMode( settings.BlendMode );
-    Output.pRenderTargetView = pOutputColorRTV.Get();
+    Output.pRenderTargetView = pOutputColorRTV;
 
     GFSDK_SSAO_Status status;
     status = AOContext->RenderAO( engine->GetContext().Get(), Input, Params, Output );

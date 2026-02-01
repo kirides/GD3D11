@@ -57,14 +57,8 @@ public:
     /** Sets the RCAS sharpness value (0.0 = maximum sharpness, higher values = less sharp) */
     void SetSharpness( float sharpness );
 
-    /** Gets the intermediate buffer for EASU output when using RCAS */
-    RenderToTextureBuffer* GetIntermediateBuffer() { return IntermediateBuffer.get(); }
-
 private:
     D3D11PfxRenderer* Renderer;
-    
-    // Intermediate buffer for EASU output when using RCAS
-    std::unique_ptr<RenderToTextureBuffer> IntermediateBuffer;
     
     // Sampler state for FSR1 (point sampling required for Gather operations)
     Microsoft::WRL::ComPtr<ID3D11SamplerState> PointSampler;

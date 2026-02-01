@@ -978,6 +978,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="SteamOverlay.h" />
     <ClInclude Include="StackWalker.h" />
     <ClInclude Include="TAAConstantBuffer.h" />
+    <ClInclude Include="TexturePool.h" />
     <ClInclude Include="ThreadPool.h" />
     <ClInclude Include="VersionCheck.h" />
     <ClInclude Include="WidgetContainer.h" />

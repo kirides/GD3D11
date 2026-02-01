@@ -247,10 +247,10 @@ void D3D11PFX_TAA::RenderPostFX(
     context->OMGetRenderTargets(1, oldRTV.GetAddressOf(), oldDSV.GetAddressOf());
 
     // Get temp buffer to render into
-    RenderToTextureBuffer& tempBuffer = FxRenderer->GetTempBuffer();
+    auto tempBuffer = FxRenderer->GetTempBuffer();
 
     // update the temp buffer with the latest backbuffer data
-    FxRenderer->CopyTextureToRTV( currentFrameSRV, tempBuffer.GetRenderTargetView(), engine->GetResolution() );
+    FxRenderer->CopyTextureToRTV( currentFrameSRV, tempBuffer->GetRenderTargetView(), engine->GetResolution() );
     
     // Build constant buffer
     TAAConstantBuffer cb;
@@ -284,7 +284,7 @@ void D3D11PFX_TAA::RenderPostFX(
     m_PrevCameraPosition = Engine::GAPI->GetCameraPosition();
 
     // Set render target
-    context->OMSetRenderTargets( 1, tempBuffer.GetRenderTargetView().GetAddressOf(), nullptr );
+    context->OMSetRenderTargets( 1, tempBuffer->GetRenderTargetView().GetAddressOf(), nullptr );
 
     // Bind shaders
     engine->GetShaderManager().GetVShader("VS_PFX")->Apply();
@@ -323,14 +323,14 @@ void D3D11PFX_TAA::RenderPostFX(
     
     // Copy output to history buffer for next frame
     context->CopyResource(m_HistoryBuffer->GetTexture().Get(), 
-                          tempBuffer.GetTexture().Get());
+                          tempBuffer->GetTexture().Get());
 
     // Cleanup shader resources
     ID3D11ShaderResourceView* nullSRVs[4] = { nullptr, nullptr, nullptr, nullptr };
     context->PSSetShaderResources( 0, 4, nullSRVs );
 
     // Copy result back to the original render target
-    FxRenderer->CopyTextureToRTV( tempBuffer.GetShaderResView(), oldRTV );
+    FxRenderer->CopyTextureToRTV( tempBuffer->GetShaderResView(), oldRTV );
 
     // Restore original render targets
     context->OMSetRenderTargets(1, oldRTV.GetAddressOf(), oldDSV.Get());

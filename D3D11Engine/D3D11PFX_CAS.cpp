@@ -22,8 +22,8 @@ void D3D11PFX_CAS::SetSharpness( float sharpness ) {
     Sharpness = std::clamp( sharpness, 0.0f, 1.0f );
 }
 
-XRESULT D3D11PFX_CAS::Apply( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& inputTexture,
-        const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& outputTexture ) {
+XRESULT D3D11PFX_CAS::Apply( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& inputTexture, INT2 inputSize,
+        const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& outputTexture, INT2 outputSize, RenderToTextureBuffer& intermediateBuffer ) {
     D3D11GraphicsEngine* engine = (D3D11GraphicsEngine*)Engine::GraphicsEngine;
     auto context = engine->GetContext();
 
@@ -35,10 +35,10 @@ XRESULT D3D11PFX_CAS::Apply( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceVi
     Microsoft::WRL::ComPtr<ID3D11DepthStencilView> oldDSV;
     context->OMGetRenderTargets( 1, oldRTV.GetAddressOf(), oldDSV.GetAddressOf() );
 
-    RenderToTextureBuffer& tempBuffer = Renderer->GetTempBuffer();
+    RenderToTextureBuffer& tempBuffer = intermediateBuffer;
 
     // update the temp buffer with the latest backbuffer data
-    Renderer->CopyTextureToRTV( inputTexture, tempBuffer.GetRenderTargetView(), engine->GetResolution() );
+    Renderer->CopyTextureToRTV( inputTexture, tempBuffer.GetRenderTargetView(), outputSize );
 
     // Get shader
     auto casPS = engine->GetShaderManager().GetPShader( "PS_PFX_CAS" );
@@ -50,9 +50,6 @@ XRESULT D3D11PFX_CAS::Apply( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceVi
 
     // Setup CAS constants
     CASConstantBuffer cb;
-
-    // Get texture dimensions
-    INT2 inputSize = engine->GetResolution();
 
     // CasSetup: inputSize == outputSize for sharpening-only mode
     ffxCasSetup(
@@ -69,6 +66,12 @@ XRESULT D3D11PFX_CAS::Apply( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceVi
     casPS->GetConstantBuffer()[0]->UpdateBuffer( &cb );
     casPS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
 
+    D3D11_VIEWPORT oldVP;
+    UINT n = 1;
+    context->RSGetViewports( &n, &oldVP );
+
+    engine->SetViewport( ViewportInfo( 0, 0, outputSize.x, outputSize.y ) );
+
     // Set render target
     context->OMSetRenderTargets( 1, tempBuffer.GetRenderTargetView().GetAddressOf(), nullptr );
 
@@ -79,7 +82,7 @@ XRESULT D3D11PFX_CAS::Apply( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceVi
     Renderer->DrawFullScreenQuad();
 
     // Copy result to output render target
-    Renderer->CopyTextureToRTV( tempBuffer.GetShaderResView(), oldRTV );
+    Renderer->CopyTextureToRTV( tempBuffer.GetShaderResView(), outputTexture );
 
     // unbind resources
     static ID3D11ShaderResourceView* nullSRV[1] = { nullptr };
@@ -87,6 +90,8 @@ XRESULT D3D11PFX_CAS::Apply( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceVi
 
     // restore old render targets
     context->OMSetRenderTargets( 1, oldRTV.GetAddressOf(), oldDSV.Get() );
+
+    context->RSSetViewports( 1, &oldVP );
 
     return XR_SUCCESS;
 }

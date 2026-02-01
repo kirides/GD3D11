@@ -1304,6 +1304,7 @@ XRESULT D3D11GraphicsEngine::OnEndFrame() {
     }
     RenderedVobs.clear();
     Engine::GAPI->GetRendererState().RendererInfo.Timing.Reset();
+    GetPfxRenderer()->OnEndFrame();
     return XR_SUCCESS;
 }
 
@@ -2589,8 +2590,8 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     vp.TopLeftY = 0.0f;
     vp.MinDepth = 0.0f;
     vp.MaxDepth = 1.0f;
-    vp.Width = GetResolution().x;
-    vp.Height = GetResolution().y;
+    vp.Width = static_cast<float>(GetResolution().x);
+    vp.Height = static_cast<float>(GetResolution().y);
 
     GetContext()->RSSetViewports( 1, &vp );
 
@@ -2774,33 +2775,6 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
     }
 
-    if ( Engine::GAPI->GetRendererState().RendererSettings.SharpenFactor > 0.0f
-        && Engine::GAPI->GetRendererState().RendererSettings.ResolutionScalePercent >= 100
-        ) {
-
-        // TODO: Apply sharpening to the final backbuffer copy if downsampling/SSAA is used
-        // But for that we need to modify the Pfx usages to allow different input/output RTVs
-        // currently the HDRBackbuffer is hardcoded everywhere
-
-        switch ( Engine::GAPI->GetRendererState().RendererSettings.SharpeningMode ) {
-        case GothicRendererSettings::SHARPEN_SIMPLE:
-            if ( !FeatureLevel10Compatibility ) {
-                auto _ = RecordGraphicsEvent( L"ApplySimpleSharpen" );
-                PfxRenderer->RenderSimpleSharpen();
-                GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
-            }
-            break;
-
-        case GothicRendererSettings::SHARPEN_CAS:
-            if ( !FeatureLevel10Compatibility ) {
-                auto _ = RecordGraphicsEvent( L"ApplyCAS" );
-                PfxRenderer->RenderCAS();
-                GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
-            }
-            break;
-        }
-    }
-
     PresentPending = true;
 
     // Set viewport for gothics rendering
@@ -2808,8 +2782,8 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     vp.TopLeftY = 0.0f;
     vp.MinDepth = 0.0f;
     vp.MaxDepth = 1.0f;
-    vp.Width = GetResolution().x;
-    vp.Height = GetResolution().y;
+    vp.Width = static_cast<float>(GetResolution().x);
+    vp.Height = static_cast<float>(GetResolution().y);
 
     GetContext()->RSSetViewports( 1, &vp );
 
@@ -2852,23 +2826,56 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             && Engine::GAPI->GetRendererState().RendererSettings.Upscaler == GothicRendererSettings::E_Upscaler::UPSCALER_FSR_1 ) {
             
             auto _ = RecordGraphicsEvent( L"FSR 1" );
-            auto& temp = PfxRenderer->GetTempBuffer();
+            auto temp = PfxRenderer->GetTempBuffer();
 
             // Get the gamma corrected scene into a temp buffer
-            PfxRenderer->CopyTextureToRTV( HDRBackBuffer->GetShaderResView(), temp.GetRenderTargetView(), INT2(0, 0), true);
+            PfxRenderer->CopyTextureToRTV( HDRBackBuffer->GetShaderResView(), temp->GetRenderTargetView(), INT2(0, 0), true);
 
             // Now upscale it to backbuffer with sharpening
             auto sharpenFactor = Engine::GAPI->GetRendererState().RendererSettings.SharpenFactor;
             PfxRenderer->GetFSR1()->Apply(
-                temp.GetShaderResView(),
+                temp->GetShaderResView(),
                 BackbufferRTV,
                 GetResolution(),
                 GetBackbufferResolution(),
                 sharpenFactor > 0.001f,
                 1.0f - sharpenFactor );
         } else {
-            // apply gamma correction directly to backbuffer
-            PfxRenderer->CopyTextureToRTV( HDRBackBuffer->GetShaderResView(), BackbufferRTV, GetBackbufferResolution(), true );
+
+            if ( Engine::GAPI->GetRendererState().RendererSettings.SharpeningMode
+                && Engine::GAPI->GetRendererState().RendererSettings.SharpenFactor > 0.0f) {
+                auto tempNativeBuffer = GetPfxRenderer()->GetBackbufferTempBuffer();
+
+                {
+                    auto _ = RecordGraphicsEvent( L"Tonemap into SDR buffer" );
+                    PfxRenderer->CopyTextureToRTV( HDRBackBuffer->GetShaderResView(), tempNativeBuffer->GetRenderTargetView(), GetBackbufferResolution(), true);
+                }
+
+                switch ( Engine::GAPI->GetRendererState().RendererSettings.SharpeningMode ) {
+                case GothicRendererSettings::SHARPEN_SIMPLE:
+                    if ( !FeatureLevel10Compatibility ) {
+                        auto _ = RecordGraphicsEvent( L"ApplySimpleSharpen" );
+                        PfxRenderer->RenderSimpleSharpen( tempNativeBuffer->GetShaderResView(), GetBackbufferResolution(), tempNativeBuffer->GetRenderTargetView(), GetBackbufferResolution(), *GetPfxRenderer()->GetBackbufferTempBuffer());
+                        GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
+                    }
+                    break;
+
+                case GothicRendererSettings::SHARPEN_CAS:
+                    if ( !FeatureLevel10Compatibility ) {
+                        auto _ = RecordGraphicsEvent( L"ApplyCAS" );
+                        PfxRenderer->RenderCAS( tempNativeBuffer->GetShaderResView(), GetBackbufferResolution(), tempNativeBuffer->GetRenderTargetView(), GetBackbufferResolution(), *GetPfxRenderer()->GetBackbufferTempBuffer());
+                        GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
+                    }
+                    break;
+                }
+
+                auto _ = RecordGraphicsEvent( L"Blit onto Swapchain" );
+                PfxRenderer->CopyTextureToRTV( tempNativeBuffer->GetShaderResView(), BackbufferRTV, GetBackbufferResolution() );
+            } else {
+                auto _ = RecordGraphicsEvent( L"Tonemap into Swapchain" );
+                PfxRenderer->CopyTextureToRTV( HDRBackBuffer->GetShaderResView(), BackbufferRTV, GetBackbufferResolution(), true );
+            }
+
         }
 
         D3D11_VIEWPORT vp;
@@ -3570,10 +3577,12 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
 
     SetDefaultStates();
 
+    auto tempBuffer = PfxRenderer->GetTempBuffer();
+
     // Copy backbuffer
     PfxRenderer->CopyTextureToRTV(
         HDRBackBuffer->GetShaderResView(),
-        PfxRenderer->GetTempBuffer().GetRenderTargetView() );
+        tempBuffer->GetRenderTargetView() );
     CopyDepthStencil();
 
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
@@ -3631,7 +3640,7 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
 
     // Bind copied backbuffer
     GetContext()->PSSetShaderResources(
-        5, 1, PfxRenderer->GetTempBuffer().GetShaderResView().GetAddressOf() );
+        5, 1, tempBuffer->GetShaderResView().GetAddressOf() );
 
     // Bind depth to the shader
     DepthStencilBufferCopy->BindToPixelShader( GetContext().Get(), 2 );
@@ -6343,16 +6352,17 @@ void D3D11GraphicsEngine::DrawFrameParticles(
     GBuffer1_Normals->BindToPixelShader( Context.Get(), 2 );
 
     // Copy scene behind the particle systems
+    auto tempBuffer = PfxRenderer->GetTempBuffer();
     PfxRenderer->CopyTextureToRTV(
         HDRBackBuffer->GetShaderResView(),
-        PfxRenderer->GetTempBuffer().GetRenderTargetView() );
+        tempBuffer->GetRenderTargetView() );
 
     SetActivePixelShader( "PS_PFX_ApplyParticleDistortion" );
     ActivePS->Apply();
 
     // Copy it back, putting distortion behind it
     PfxRenderer->CopyTextureToRTV(
-        PfxRenderer->GetTempBuffer().GetShaderResView(),
+        tempBuffer->GetShaderResView(),
         HDRBackBuffer->GetRenderTargetView(), INT2( 0, 0 ), true );
 }
 

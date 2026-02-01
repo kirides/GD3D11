@@ -59,17 +59,6 @@ bool D3D11PFX_FSR1::Init() {
 void D3D11PFX_FSR1::OnResize( const INT2& inputSize, const INT2& outputSize ) {
     // Only recreate intermediate buffer if output size changed
     if ( CurrentOutputSize.x != outputSize.x || CurrentOutputSize.y != outputSize.y ) {
-        D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
-        
-        // Create intermediate buffer at output resolution for EASU result
-        // This is used when RCAS is enabled
-        IntermediateBuffer = std::make_unique<RenderToTextureBuffer>(
-            engine->GetDevice(),
-            outputSize.x,
-            outputSize.y,
-            // our swapchain format is always BGRA8_UNORM
-            DXGI_FORMAT_B8G8R8A8_UNORM );
-
         CurrentOutputSize = outputSize;
     }
     
@@ -235,14 +224,17 @@ XRESULT D3D11PFX_FSR1::Apply(
     // Ensure intermediate buffer is sized correctly
     OnResize( inputSize, outputSize );
 
-    if ( enableRCAS && IntermediateBuffer ) {
+    if ( enableRCAS ) {
+        // TODO: this assumes that the backbuffer is always the correct size as outputSize
+        auto tempBuffer = Renderer->GetBackbufferTempBuffer();
+
         // Two-pass: EASU to intermediate buffer, then RCAS to final output
-        XRESULT result = ApplyEASU( input, IntermediateBuffer->GetRenderTargetView(), inputSize, outputSize );
+        XRESULT result = ApplyEASU( input, tempBuffer->GetRenderTargetView(), inputSize, outputSize );
         if ( result != XR_SUCCESS ) {
             return result;
         }
 
-        return ApplyRCAS( IntermediateBuffer->GetShaderResView(), output, sharpness );
+        return ApplyRCAS( tempBuffer->GetShaderResView(), output, sharpness );
     } else {
         // Single-pass: EASU directly to output
         return ApplyEASU( input, output, inputSize, outputSize );

@@ -788,6 +788,7 @@
     <ClInclude Include="D3D11PFX_FSR1.h">
       <Filter>Engine\D3D11\PFX\Effects</Filter>
     </ClInclude>
+    <ClInclude Include="TexturePool.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp" />
