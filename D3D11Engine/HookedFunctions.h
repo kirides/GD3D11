@@ -93,7 +93,7 @@ typedef void( __thiscall* zCVobEndMovement )(void*);
 typedef void( __thiscall* zCVobEndMovement )(void*, int);
 #endif
 
-typedef void( __stdcall* oCItemContainer__Container_Draw )();
+typedef void( __cdecl* oCItemContainer__Container_Draw )();
 
 struct zTRndSurfaceDesc;
 struct HookedFunctionInfo {

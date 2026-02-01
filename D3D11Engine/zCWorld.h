@@ -43,7 +43,7 @@ public:
     }
 
     inline static bool isDrawingContainers = false;
-    static void __stdcall hooked_ContainerDraw() {
+    static void __cdecl hooked_ContainerDraw() {
         isDrawingContainers = true;
 
         auto _ = Engine::GraphicsEngine->RecordGraphicsEvent( L"Draw Inventory World" );
