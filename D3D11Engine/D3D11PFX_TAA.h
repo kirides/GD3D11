@@ -6,6 +6,7 @@
 struct RenderToTextureBuffer;
 
 // TAA Constant buffer structure
+#pragma pack (push, 1)
 struct TAAConstantBuffer {
     XMFLOAT4X4 InvViewProj;
     XMFLOAT4X4 PrevViewProj;
@@ -25,6 +26,7 @@ struct VelocityBufferConstantBuffer {
     XMFLOAT2 Resolution;
     XMFLOAT2 Padding;
 };
+#pragma pack (pop)
 
 class D3D11PFX_TAA : public D3D11PFX_Effect {
 public:

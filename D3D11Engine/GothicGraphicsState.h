@@ -456,6 +456,7 @@ struct GothicTransformInfo {
         XMStoreFloat4x4( &TransformWorld, idMatrix );
         XMStoreFloat4x4( &TransformView, idMatrix );
         XMStoreFloat4x4( &TransformProj, idMatrix );
+        inFrame = false;
     }
 
     /** This is actually world * view. Gothic never sets the view matrix */
@@ -466,6 +467,8 @@ struct GothicTransformInfo {
 
     /** Projectionmatrix */
     XMFLOAT4X4 TransformProj;
+    XMFLOAT4X4 TransformProjUnjittered;
+    bool inFrame;
 };
 
 struct HBAOSettings {

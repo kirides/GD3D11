@@ -3706,7 +3706,7 @@ void GothicAPI::GetInverseViewMatrixXM( XMFLOAT4X4* invView ) {
     *invView = zCCamera::GetCamera()->GetTransformDX( zCCamera::ETransformType::TT_VIEW_INV );
 }
 
-/** Returns the projection-matrix */
+/** Returns the projection-matrix in Column-Major format, with reversed depth buffer */
 XMFLOAT4X4& GothicAPI::GetProjectionMatrix() {
     if ( CameraReplacementPtr ) {
         return CameraReplacementPtr->ProjectionReplacement;
