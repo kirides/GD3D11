@@ -698,6 +698,10 @@ struct GothicMemoryLocations {
         static const unsigned int IsDoneOffset = 0x2C;
     };
 
+    struct oCItemContainer {
+        static const unsigned int s_Container_Draw = 0x00704b90;
+    };
+
     class VobTypes // vftables
     {
     public:

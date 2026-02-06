@@ -552,6 +552,7 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
 
     // Draw rainmap, if raining
     if ( Engine::GAPI->GetSceneWetness() > 0.00001f ) {
+        auto _ = graphicsEngine->RecordGraphicsEvent( L"Rain Shadowmap" );
         graphicsEngine->Effects->DrawRainShadowmap();
     }
 

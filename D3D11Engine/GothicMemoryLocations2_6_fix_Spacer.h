@@ -470,4 +470,8 @@ struct GothicMemoryLocations {
         static const unsigned int oCNpc = 0x009A7978;
         static const unsigned int zCTexture = 0x00B18D18;
     };
+
+    struct oCItemContainer {
+        static const unsigned int s_Container_Draw = 0;
+    };
 };

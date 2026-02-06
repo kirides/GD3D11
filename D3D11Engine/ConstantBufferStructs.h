@@ -310,4 +310,15 @@ struct CASConstantBuffer {
     FfxUInt32x4 const0;  // CasSetup output
     FfxUInt32x4 const1;  // CasSetup output
 };
+
+struct FSR1EASUConstantBuffer {
+    uint32_t Const0[4];  // FsrEasuCon output
+    uint32_t Const1[4];  // FsrEasuCon output
+    uint32_t Const2[4];  // FsrEasuCon output
+    uint32_t Const3[4];  // FsrEasuCon output
+};
+
+struct FSR1RCASConstantBuffer {
+    uint32_t RCASConst[4];  // FsrRcasCon output (only first element used)
+};
 #pragma pack (pop)

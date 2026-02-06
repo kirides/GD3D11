@@ -2,7 +2,8 @@
 #include "pch.h"
 #include "D3D11PFX_TAA.h"
 #include "D3D11PFX_CAS.h"
-
+#include "D3D11PFX_FSR1.h"
+#include "TexturePool.h"
 
 struct RenderToTextureBuffer;
 class D3D11PFX_Blur;
@@ -38,8 +39,8 @@ public:
     XRESULT RenderSMAA();
 
     XRESULT RenderTAA();
-    XRESULT RenderCAS();
-    XRESULT RenderSimpleSharpen();
+    XRESULT RenderCAS( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& input, INT2 inputSize, const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& output, INT2 outputSize, RenderToTextureBuffer& intermediateBuffer );
+    XRESULT RenderSimpleSharpen( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& input, INT2 inputSize, const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& output, INT2 outputSize, RenderToTextureBuffer& intermediateBuffer );
 
     /** Renders the godrays-Effect */
     XRESULT RenderGodRays();
@@ -57,20 +58,18 @@ public:
     XRESULT DrawHBAO( const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& rtv );
 
     /** Accessors */
-    RenderToTextureBuffer& GetTempBuffer() { return *TempBuffer; }
-    RenderToTextureBuffer& GetTempBufferDS4_1() { return *TempBufferDS4_1; }
-    RenderToTextureBuffer& GetTempBufferDS4_2() { return *TempBufferDS4_2; }
+    TextureHandle GetTempBuffer();
+    TextureHandle GetBackbufferTempBuffer();
+    TextureHandle GetTempBufferDS4();
 
     D3D11PFX_TAA* GetTAAEffect() { return FX_TAA.get(); }
     D3D11PFX_CAS* GetCAS() { return PFX_CAS.get(); }
+    D3D11PFX_FSR1* GetFSR1() { return PFX_FSR1.get(); }
+
+    void OnEndFrame() {
+        m_texturePool->GiveTick();
+    }
 private:
-    /** Temporary buffer in the same size/format as the backbuffer */
-    std::unique_ptr<RenderToTextureBuffer> TempBuffer;
-
-    /** Temporary buffer with the resolution divided by 4 */
-    std::unique_ptr<RenderToTextureBuffer> TempBufferDS4_1;
-    std::unique_ptr<RenderToTextureBuffer> TempBufferDS4_2;
-
     /** Blur effect referenced here because it's often needed by PFX */
     std::unique_ptr<D3D11PFX_Blur> FX_Blur;
     std::unique_ptr<D3D11PFX_HeightFog> FX_HeightFog;
@@ -86,5 +85,7 @@ private:
 
     std::unique_ptr<D3D11PFX_CAS> PFX_CAS;
     std::unique_ptr<D3D11PFX_SimpleSharpen> PFX_SimpleSharpen;
+    std::unique_ptr<D3D11PFX_FSR1> PFX_FSR1;
+    std::unique_ptr<TexturePool> m_texturePool;
 };
 

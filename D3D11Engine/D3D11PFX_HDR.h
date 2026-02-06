@@ -16,7 +16,7 @@ protected:
     RenderToTextureBuffer* CalcLuminance();
 
     /** Blurs the backbuffer and puts the result into TempBufferDS4_1*/
-    void CreateBloom( RenderToTextureBuffer* lum );
+    void CreateBloom( RenderToTextureBuffer* lum, RenderToTextureBuffer* bloomTempBuffer );
 
     RenderToTextureBuffer* LumBuffer1;
     RenderToTextureBuffer* LumBuffer2;

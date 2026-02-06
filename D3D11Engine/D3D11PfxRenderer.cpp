@@ -15,8 +15,12 @@
 #include "D3D11PFX_GodRays.h"
 #include "D3D11PFX_TAA.h"
 #include "D3D11PFX_SimpleSharpen.h"
+#include "D3D11PFX_FSR1.h"
 
 D3D11PfxRenderer::D3D11PfxRenderer() {
+
+    m_texturePool = std::make_unique<TexturePool>( reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine)->GetDevice().Get() );
+
     FX_Blur = std::make_unique<D3D11PFX_Blur>( this );
     FX_HeightFog = std::make_unique<D3D11PFX_HeightFog>( this );
     //FX_DistanceBlur = new D3D11PFX_DistanceBlur(this);
@@ -35,6 +39,7 @@ D3D11PfxRenderer::D3D11PfxRenderer() {
 
     PFX_CAS = std::make_unique<D3D11PFX_CAS>( this );
     PFX_SimpleSharpen = std::make_unique<D3D11PFX_SimpleSharpen>( this );
+    PFX_FSR1 = std::make_unique<D3D11PFX_FSR1>( this );
 }
 
 D3D11PfxRenderer::~D3D11PfxRenderer() {
@@ -90,20 +95,28 @@ XRESULT D3D11PfxRenderer::RenderTAA() {
     return XR_SUCCESS;
 }
 
-XRESULT D3D11PfxRenderer::RenderCAS() {
+XRESULT D3D11PfxRenderer::RenderCAS( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& input, INT2 inputSize, const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& output, INT2 outputSize, RenderToTextureBuffer& intermediateBuffer ) {
     auto* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
 
     PFX_CAS->SetSharpness( Engine::GAPI->GetRendererState().RendererSettings.SharpenFactor );
-    PFX_CAS->Apply( engine->GetHDRBackBuffer().GetShaderResView(),
-        engine->GetHDRBackBuffer().GetRenderTargetView() );
+    PFX_CAS->Apply(
+        input ? input : engine->GetHDRBackBuffer().GetShaderResView(),
+        input ? inputSize : engine->GetResolution(),
+        output ? output : engine->GetHDRBackBuffer().GetRenderTargetView(),
+        output ? outputSize : engine->GetResolution(),
+        intermediateBuffer );
     return XR_SUCCESS;
 }
 
-XRESULT D3D11PfxRenderer::RenderSimpleSharpen() {
+XRESULT D3D11PfxRenderer::RenderSimpleSharpen( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& input, INT2 inputSize, const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& output, INT2 outputSize, RenderToTextureBuffer& intermediateBuffer ) {
     auto* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
 
-    PFX_SimpleSharpen->Apply( engine->GetHDRBackBuffer().GetShaderResView(),
-        engine->GetHDRBackBuffer().GetRenderTargetView() );
+    PFX_SimpleSharpen->Apply(
+        input ? input : engine->GetHDRBackBuffer().GetShaderResView(),
+        input ? inputSize : engine->GetResolution(),
+        output ? output : engine->GetHDRBackBuffer().GetRenderTargetView(),
+        output ? outputSize : engine->GetResolution(),
+        intermediateBuffer);
     return XR_SUCCESS;
 }
 
@@ -187,12 +200,7 @@ XRESULT D3D11PfxRenderer::CopyTextureToRTV( const Microsoft::WRL::ComPtr<ID3D11S
 XRESULT D3D11PfxRenderer::OnResize( const INT2& newResolution ) {
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
 
-    // Create temp-buffer
-    DXGI_FORMAT bbufferFormat = engine->GetBackBufferFormat();
-    TempBuffer.reset( new RenderToTextureBuffer( engine->GetDevice(), newResolution.x, newResolution.y, bbufferFormat, nullptr ) );
-    TempBufferDS4_1.reset( new RenderToTextureBuffer( engine->GetDevice(), newResolution.x / 4, newResolution.y / 4, bbufferFormat, nullptr ) );
-    TempBufferDS4_2.reset( new RenderToTextureBuffer( engine->GetDevice(), newResolution.x / 4, newResolution.y / 4, bbufferFormat, nullptr ) );
-
+    m_texturePool->Clear(); // textures will be created on demand
     if ( !FeatureLevel10Compatibility ) {
         FX_SMAA->OnResize( newResolution );
         FX_TAA->OnResize( newResolution );
@@ -204,4 +212,30 @@ XRESULT D3D11PfxRenderer::OnResize( const INT2& newResolution ) {
 /** Draws the HBAO-Effect to the given buffer */
 XRESULT D3D11PfxRenderer::DrawHBAO( const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& rtv ) {
     return NvHBAO->Render( rtv.Get() );
+}
+
+TextureHandle D3D11PfxRenderer::GetTempBuffer()
+{
+    D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    DXGI_FORMAT bbufferFormat = engine->GetBackBufferFormat(); // actually intermediate backbuffer format -> HDRBackbuffer
+    auto res = engine->GetResolution();
+
+    return m_texturePool->Acquire( TexturePool::Description{res.x, res.y, bbufferFormat });
+}
+
+TextureHandle D3D11PfxRenderer::GetBackbufferTempBuffer()
+{
+    D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    auto res = engine->GetBackbufferResolution();
+
+    return m_texturePool->Acquire( TexturePool::Description{ res.x, res.y, DXGI_FORMAT_B8G8R8A8_UNORM } );
+}
+
+TextureHandle D3D11PfxRenderer::GetTempBufferDS4()
+{
+    D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    DXGI_FORMAT bbufferFormat = engine->GetBackBufferFormat(); // actually intermediate backbuffer format -> HDRBackbuffer
+    auto res = engine->GetResolution();
+
+    return m_texturePool->Acquire( TexturePool::Description{ res.x / 4, res.y / 4, bbufferFormat } );
 }

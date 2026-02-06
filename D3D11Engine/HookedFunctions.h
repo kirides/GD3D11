@@ -92,6 +92,9 @@ typedef void( __thiscall* zCVobEndMovement )(void*);
 #else
 typedef void( __thiscall* zCVobEndMovement )(void*, int);
 #endif
+
+typedef void( __cdecl* oCItemContainer__Container_Draw )();
+
 struct zTRndSurfaceDesc;
 struct HookedFunctionInfo {
 
@@ -100,6 +103,7 @@ struct HookedFunctionInfo {
 
     zCBspTreeLoadBIN original_zCBspTreeLoadBIN = reinterpret_cast<zCBspTreeLoadBIN>(GothicMemoryLocations::zCBspTree::LoadBIN);
     zCWorldRender original_zCWorldRender = reinterpret_cast<zCWorldRender>(GothicMemoryLocations::zCWorld::Render);
+    oCItemContainer__Container_Draw original_ContainerDraw = reinterpret_cast<oCItemContainer__Container_Draw>(GothicMemoryLocations::oCItemContainer::s_Container_Draw);
     zCWorldVobAddedToWorld original_zCWorldVobAddedToWorld = reinterpret_cast<zCWorldVobAddedToWorld>(GothicMemoryLocations::zCWorld::VobAddedToWorld);
 #ifdef BUILD_SPACER_NET
     zCWorldCompileWorld original_zCWorldCompileWorld = reinterpret_cast<zCWorldCompileWorld>(GothicMemoryLocations::zCWorld::CompileWorld);

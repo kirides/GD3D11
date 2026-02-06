@@ -821,6 +821,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="D3D11PFX_Blur.h" />
     <ClInclude Include="D3D11PFX_DistanceBlur.h" />
     <ClInclude Include="D3D11PFX_Effect.h" />
+    <ClInclude Include="D3D11PFX_FSR1.h" />
     <ClInclude Include="D3D11PFX_GodRays.h" />
     <ClInclude Include="D3D11PFX_HDR.h" />
     <ClInclude Include="D3D11PFX_HeightFog.h" />
@@ -852,7 +853,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="Detours\detver.h" />
     <ClInclude Include="EditorLinePrimitive.h" />
     <ClInclude Include="Engine.h" />
-	<ClInclude Include="Frustum.h" />
+    <ClInclude Include="Frustum.h" />
     <ClInclude Include="GFSDK_SSAO.h" />
     <ClInclude Include="GInventory.h" />
     <ClInclude Include="GMesh.h" />
@@ -977,6 +978,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="SteamOverlay.h" />
     <ClInclude Include="StackWalker.h" />
     <ClInclude Include="TAAConstantBuffer.h" />
+    <ClInclude Include="TexturePool.h" />
     <ClInclude Include="ThreadPool.h" />
     <ClInclude Include="VersionCheck.h" />
     <ClInclude Include="WidgetContainer.h" />
@@ -1028,7 +1030,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="ZenGinTypes.h" />
     <ClInclude Include="zFILE.h" />
     <ClInclude Include="zFont.h" />
-	<ClInclude Include="zCSoundSystem.h" />
+    <ClInclude Include="zCSoundSystem.h" />
     <ClInclude Include="ZipArchive.h" />
     <ClInclude Include="zMat4.h" />
     <ClInclude Include="zQuat.h" />
@@ -1063,6 +1065,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="D3D11PFX_CAS.cpp" />
     <ClCompile Include="D3D11PFX_DistanceBlur.cpp" />
     <ClCompile Include="D3D11PFX_Effect.cpp" />
+    <ClCompile Include="D3D11PFX_FSR1.cpp" />
     <ClCompile Include="D3D11PFX_GodRays.cpp" />
     <ClCompile Include="D3D11PFX_HDR.cpp" />
     <ClCompile Include="D3D11PFX_HeightFog.cpp" />
@@ -1237,6 +1240,14 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
   </ItemGroup>
   <ItemGroup>
     <None Include="Shaders\PS_PFX_Velocity.hlsl">
+      <FileType>Document</FileType>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Shaders\PS_PFX_FSR1_EASU.hlsl">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Shaders\PS_PFX_FSR1_RCAS.hlsl">
       <FileType>Document</FileType>
     </None>
   </ItemGroup>

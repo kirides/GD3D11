@@ -49,6 +49,9 @@ public:
 
     void Activate() {
         reinterpret_cast<void( __fastcall* )( zCCamera* )>( GothicMemoryLocations::zCCamera::Activate )( this );
+
+        // TODO: actually set the RndD3d viewport and not use this ugly ass workaround
+        Engine::GraphicsEngine->SetViewport( ViewportInfo( 0, 0, Engine::GraphicsEngine->GetResolution().x, Engine::GraphicsEngine->GetResolution().y, 0.0f, 1.0f ) );
     }
 
     void SetFOV( float azi, float elev ) {

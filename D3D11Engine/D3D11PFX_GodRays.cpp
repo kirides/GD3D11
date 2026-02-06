@@ -72,37 +72,40 @@ XRESULT D3D11PFX_GodRays::Render( RenderToTextureBuffer* fxbuffer ) {
 	maskPS->Apply();
 	vs->Apply();
 
+    auto tempBuffer = FxRenderer->GetTempBufferDS4();
+    auto tempBuffer2 = FxRenderer->GetTempBufferDS4();
+
 	// Draw downscaled mask
-	engine->GetContext()->OMSetRenderTargets( 1, FxRenderer->GetTempBufferDS4_1().GetRenderTargetView().GetAddressOf(), nullptr );
+	engine->GetContext()->OMSetRenderTargets( 1, tempBuffer->GetRenderTargetView().GetAddressOf(), nullptr );
 
-	engine->GetHDRBackBuffer().BindToPixelShader( engine->GetContext().Get(), 0 );
-	engine->GetGBuffer1().BindToPixelShader( engine->GetContext().Get(), 1 );
+    engine->GetHDRBackBuffer().BindToPixelShader( engine->GetContext().Get(), 0 );
+    engine->GetGBuffer1().BindToPixelShader( engine->GetContext().Get(), 1 );
 
-	D3D11_VIEWPORT vp = {};
-	vp.TopLeftX = 0.0f;
-	vp.TopLeftY = 0.0f;
-	vp.MinDepth = 0.0f;
-	vp.MaxDepth = 1.0f;
-	vp.Width = static_cast<float>(FxRenderer->GetTempBufferDS4_1().GetSizeX());
-	vp.Height = static_cast<float>(FxRenderer->GetTempBufferDS4_1().GetSizeY());
+    D3D11_VIEWPORT vp = {};
+    vp.TopLeftX = 0.0f;
+    vp.TopLeftY = 0.0f;
+    vp.MinDepth = 0.0f;
+    vp.MaxDepth = 1.0f;
+    vp.Width = static_cast<float>(tempBuffer->GetSizeX());
+    vp.Height = static_cast<float>(tempBuffer->GetSizeY());
 
-	engine->GetContext()->RSSetViewports( 1, &vp );
+    engine->GetContext()->RSSetViewports( 1, &vp );
 
-	FxRenderer->DrawFullScreenQuad();
+    FxRenderer->DrawFullScreenQuad();
 
-	// Zoom
-	zoomPS->Apply();
+    // Zoom
+    zoomPS->Apply();
 
-	zoomPS->GetConstantBuffer()[0]->UpdateBuffer( &gcb );
-	zoomPS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+    zoomPS->GetConstantBuffer()[0]->UpdateBuffer( &gcb );
+    zoomPS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
 
-    FxRenderer->CopyTextureToRTV( FxRenderer->GetTempBufferDS4_1().GetShaderResView(), FxRenderer->GetTempBufferDS4_2().GetRenderTargetView(), INT2( 0, 0 ), true );
+    FxRenderer->CopyTextureToRTV( tempBuffer->GetShaderResView(), tempBuffer2->GetRenderTargetView(), INT2( 0, 0 ), true );
 
-	// Upscale and blend
-	Engine::GAPI->GetRendererState().BlendState.SetAdditiveBlending();
-	Engine::GAPI->GetRendererState().BlendState.SetDirty();
+    // Upscale and blend
+    Engine::GAPI->GetRendererState().BlendState.SetAdditiveBlending();
+    Engine::GAPI->GetRendererState().BlendState.SetDirty();
 
-    FxRenderer->CopyTextureToRTV( FxRenderer->GetTempBufferDS4_2().GetShaderResView(), oldRTV, INT2( engine->GetResolution().x, engine->GetResolution().y ) );
+    FxRenderer->CopyTextureToRTV( tempBuffer2->GetShaderResView(), oldRTV, engine->GetResolution() );
 
 	vp.Width = static_cast<float>(engine->GetResolution().x);
 	vp.Height = static_cast<float>(engine->GetResolution().y);
