@@ -73,6 +73,7 @@ void HookedFunctionInfo::InitHooks() {
     oCNPC::Hook();
     zCSkyController_Outdoor::Hook();
     zCInput_Win32::Hook();
+    zCCamera::Hook();
     
 //G1 patches
 #ifdef BUILD_GOTHIC_1_08k

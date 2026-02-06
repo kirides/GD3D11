@@ -7,10 +7,8 @@
 #include "zCTree.h"
 #include "zCCamera.h"
 #include "zCVob.h"
-#include "zCCamera.h"
 #include "zCSkyController_Outdoor.h"
 
-class zCCamera;
 class zCSkyController_Outdoor;
 class zCSkyController;
 
@@ -189,6 +187,7 @@ public:
         hook_outfunc
 
         if ( thisptr == Engine::GAPI->GetLoadedWorldInfo()->MainWorld ) {
+            Engine::GAPI->GetRendererState().RendererInfo.IsRenderingWorld = true;
             if ( Engine::GAPI->GetRendererState().RendererSettings.AtmosphericScattering ) {
                 HookedFunctions::OriginalFunctions.original_zCWorldRender( thisptr, camera );
             } else {

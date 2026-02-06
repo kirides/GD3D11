@@ -92,11 +92,19 @@ void D3D11PFX_TAA::OnResize(const INT2& size) {
     DXGI_FORMAT format = engine->GetBackBufferFormat();
     m_HistoryBuffer = std::make_unique<RenderToTextureBuffer>(
         engine->GetDevice().Get(), size.x, size.y, format);
+
+    SetDebugName( m_HistoryBuffer->GetTexture().Get(), "TAA_HistoryBuffer" );
+    SetDebugName( m_HistoryBuffer->GetRenderTargetView().Get(), "TAA_HistoryBuffer_RTV" );
+    SetDebugName( m_HistoryBuffer->GetShaderResView().Get(), "TAA_HistoryBuffer_SRV" );
     
     // Create velocity buffer (RG16F for 2D motion vectors)
     // Using R16G16_FLOAT for high precision motion vectors
     m_VelocityBuffer = std::make_unique<RenderToTextureBuffer>(
         engine->GetDevice().Get(), size.x, size.y, DXGI_FORMAT_R16G16_FLOAT);
+
+    SetDebugName( m_VelocityBuffer->GetTexture().Get(), "TAA_VelocityBuffer" );
+    SetDebugName( m_VelocityBuffer->GetRenderTargetView().Get(), "TAA_VelocityBuffer_RTV" );
+    SetDebugName( m_VelocityBuffer->GetShaderResView().Get(), "TAA_VelocityBuffer_SRV" );
     
     // Reset state on resize
     m_FirstFrame = true;

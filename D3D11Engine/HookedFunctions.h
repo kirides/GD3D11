@@ -94,6 +94,8 @@ typedef void( __thiscall* zCVobEndMovement )(void*, int);
 #endif
 
 typedef void( __cdecl* oCItemContainer__Container_Draw )();
+typedef void( __thiscall* zCCamera__Activate )(void*);
+typedef void( __thiscall* zCCamera__UpdateViewport )(void*);
 
 struct zTRndSurfaceDesc;
 struct HookedFunctionInfo {
@@ -139,6 +141,8 @@ struct HookedFunctionInfo {
     zCViewBlitText original_zCViewBlitText = reinterpret_cast<zCViewBlitText>(GothicMemoryLocations::zCView::BlitText);
     zCViewPrint original_zCViewPrint = reinterpret_cast<zCViewPrint>(GothicMemoryLocations::zCView::Print);
     zCViewPrint original_zCViewPrintChars = reinterpret_cast<zCViewPrint>(GothicMemoryLocations::zCView::PrintChars);
+    zCCamera__Activate original_zCCamera__Activate = reinterpret_cast<zCCamera__Activate>(GothicMemoryLocations::zCCamera::Activate);
+    zCCamera__UpdateViewport original_zCCamera__UpdateViewport = reinterpret_cast<zCCamera__UpdateViewport>(GothicMemoryLocations::zCCamera::UpdateViewport);
 #endif
     //CGameManagerExitGame original_CGameManagerExitGame = reinterpret_cast<CGameManagerExitGame>(GothicMemoryLocations::CGameManager::ExitGame);
     //GenericThiscall original_zCWorldDisposeWorld = reinterpret_cast<GenericThiscall>(GothicMemoryLocations::zCWorld::DisposeWorld);

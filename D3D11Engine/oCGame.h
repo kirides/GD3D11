@@ -83,10 +83,10 @@ public:
     } oTGameDialogView;
 
     int _vtbl;
-    int _zCSession_csMan;        //zCCSManager*
+    void* _zCSession_csMan;        //zCCSManager*
     zCWorld* _zCSession_world;        //zCWorld*
-    int _zCSession_camera;       //zCCamera*
-    int _zCSession_aiCam;        //zCAICamera*
+    void* _zCSession_camera;       //zCCamera*
+    void* _zCSession_aiCam;        //zCAICamera*
     zCVob* _zCSession_camVob;       //zCVob *
     zCView* _zCSession_viewport;     //zCView*
 
@@ -98,7 +98,7 @@ public:
     zCView* array_view[GAME_VIEW_MAX];
     int array_view_visible[GAME_VIEW_MAX];
     int array_view_enabled[GAME_VIEW_MAX];
-    int savegameManager;
+    void* savegameManager;
     zCView* game_text;
     zCView* load_screen;
     zCView* save_screen;

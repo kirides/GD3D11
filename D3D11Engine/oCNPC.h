@@ -71,7 +71,7 @@ public:
     }
 
     int IsAPlayer() {
-        return (this == oCGame::GetPlayer());
+        return (this == *reinterpret_cast<oCNPC**>(GothicMemoryLocations::oCGame::Var_Player));
     }
     zSTRING GetName( int i = 0 ) {
         zSTRING str;

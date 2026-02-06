@@ -799,9 +799,13 @@ void D3D11GraphicsEngine::OnResetBackBuffer() {
     PfxRenderer->OnResize( res );
     HDRBackBuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), res.x, res.y, 
         (Engine::GAPI->GetRendererState().RendererSettings.CompressBackBuffer ? DXGI_FORMAT_R11G11B10_FLOAT : DXGI_FORMAT_R16G16B16A16_FLOAT) );
+    SetDebugName( HDRBackBuffer->GetShaderResView().Get(), "Backbuffer->ShaderResourceView" );
+    SetDebugName( HDRBackBuffer->GetRenderTargetView().Get(), "Backbuffer->RenderTargetView" );
 
     res = GetBackbufferResolution();
     Backbuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), res.x, res.y, DXGI_FORMAT_B8G8R8A8_UNORM );
+    SetDebugName( Backbuffer->GetShaderResView().Get(), "Backbuffer->ShaderResourceView" );
+    SetDebugName( Backbuffer->GetRenderTargetView().Get(), "Backbuffer->RenderTargetView" );
 }
 
 /** Get BackBuffer Format */
@@ -1083,20 +1087,44 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
     GBuffer2_SpecIntens_SpecPower = std::make_unique<RenderToTextureBuffer>(
         GetDevice().Get(), m_scaledResolution.x, m_scaledResolution.y, DXGI_FORMAT_R16G16_FLOAT );
 
+    SetDebugName( GBuffer2_SpecIntens_SpecPower->GetTexture().Get(), "GBuffer2_SpecIntens_SpecPower->TEX" );
+    SetDebugName( GBuffer2_SpecIntens_SpecPower->GetShaderResView().Get(), "GBuffer2_SpecIntens_SpecPower->SRV" );
+    SetDebugName( GBuffer2_SpecIntens_SpecPower->GetRenderTargetView().Get(), "GBuffer2_SpecIntens_SpecPower->RTV" );
+
     GBuffer1_Normals = std::make_unique<RenderToTextureBuffer>(
         GetDevice().Get(), m_scaledResolution.x, m_scaledResolution.y, DXGI_FORMAT_R8G8B8A8_SNORM );
+
+    SetDebugName( GBuffer1_Normals->GetTexture().Get(), "GBuffer1_Normals->TEX" );
+    SetDebugName( GBuffer1_Normals->GetShaderResView().Get(), "GBuffer1_Normals->SRV" );
+    SetDebugName( GBuffer1_Normals->GetRenderTargetView().Get(), "GBuffer1_Normals->RTV" );
 
     GBuffer0_Diffuse = std::make_unique<RenderToTextureBuffer>(
         GetDevice().Get(), m_scaledResolution.x, m_scaledResolution.y, DXGI_FORMAT_B8G8R8A8_UNORM );
 
+    SetDebugName( GBuffer0_Diffuse->GetTexture().Get(), "GBuffer0_Diffuse->TEX" );
+    SetDebugName( GBuffer0_Diffuse->GetShaderResView().Get(), "GBuffer0_Diffuse->SRV" );
+    SetDebugName( GBuffer0_Diffuse->GetRenderTargetView().Get(), "GBuffer0_Diffuse->RTV" );
+
     VelocityBuffer = std::make_unique<RenderToTextureBuffer>(
         GetDevice().Get(), m_scaledResolution.x, m_scaledResolution.y, DXGI_FORMAT_R16G16_FLOAT );
+
+    SetDebugName( VelocityBuffer->GetTexture().Get(), "VelocityBuffer->TEX" );
+    SetDebugName( VelocityBuffer->GetShaderResView().Get(), "VelocityBuffer->SRV" );
+    SetDebugName( VelocityBuffer->GetRenderTargetView().Get(), "VelocityBuffer->RTV" );
 
     HDRBackBuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), m_scaledResolution.x, m_scaledResolution.y,
         (Engine::GAPI->GetRendererState().RendererSettings.CompressBackBuffer ? DXGI_FORMAT_R11G11B10_FLOAT : DXGI_FORMAT_R16G16B16A16_FLOAT) );
 
+    SetDebugName( HDRBackBuffer->GetTexture().Get(), "HDRBackBuffer->TEX" );
+    SetDebugName( HDRBackBuffer->GetShaderResView().Get(), "HDRBackBuffer->SRV" );
+    SetDebugName( HDRBackBuffer->GetRenderTargetView().Get(), "HDRBackBuffer->RTV" );
+
     // actual native-resolution backbuffer for UI and copy operations !!
     Backbuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), Resolution.x, Resolution.y, DXGI_FORMAT_B8G8R8A8_UNORM );
+
+    SetDebugName( Backbuffer->GetTexture().Get(), "Backbuffer->TEX" );
+    SetDebugName( Backbuffer->GetShaderResView().Get(), "Backbuffer->SRV" );
+    SetDebugName( Backbuffer->GetRenderTargetView().Get(), "Backbuffer->RTV" );
 
     int s = std::min<int>( std::max<int>( Engine::GAPI->GetRendererState().RendererSettings.ShadowMapSize, 512 ), (FeatureLevel10Compatibility ? 8192 : 16384) );
     if ( !ShadowMaps ) {
@@ -2531,6 +2559,16 @@ XRESULT D3D11GraphicsEngine::UpdateRenderStates() {
     return XR_SUCCESS;
 }
 
+namespace {
+    // Used to notify the zEngine that we changed the viewport
+    // used at the start of world rendering and when transitioning to HUD rendering to update the viewport of the zEngine's camera
+    void UpdateZEngineViewport() {
+        if ( auto game = oCGame::GetGame(); game && game->_zCSession_camera ) {
+            ((zCCamera*)game->_zCSession_camera)->UpdateViewport();
+        }
+    }
+}
+
 /** Called when we started to render the world */
 XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     SetDefaultStates();
@@ -2540,6 +2578,21 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
 
     // return XR_SUCCESS;
     if ( PresentPending ) return XR_SUCCESS;
+
+    Engine::GAPI->GetRendererState().RendererInfo.IsRenderingWorld = true;
+
+    D3D11_VIEWPORT vp;
+    vp.TopLeftX = 0.0f;
+    vp.TopLeftY = 0.0f;
+    vp.MinDepth = 0.0f;
+    vp.MaxDepth = 1.0f;
+    vp.Width = static_cast<float>(GetResolution().x);
+    vp.Height = static_cast<float>(GetResolution().y);
+
+    GetContext()->RSSetViewports( 1, &vp );
+    UpdateZEngineViewport();
+
+    GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(), nullptr );
 
     // If TAA is enabled, advance jitter and apply to projection
     if ( Engine::GAPI->GetRendererState().RendererSettings.AntiAliasingMode ==
@@ -2580,16 +2633,6 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
 
     Engine::GAPI->SetFarPlane(
         Engine::GAPI->GetRendererState().RendererSettings.SectionDrawRadius * WORLD_SECTION_SIZE );
-
-    D3D11_VIEWPORT vp;
-    vp.TopLeftX = 0.0f;
-    vp.TopLeftY = 0.0f;
-    vp.MinDepth = 0.0f;
-    vp.MaxDepth = 1.0f;
-    vp.Width = static_cast<float>(GetResolution().x);
-    vp.Height = static_cast<float>(GetResolution().y);
-
-    GetContext()->RSSetViewports( 1, &vp );
 
     Clear( float4( Engine::GAPI->GetRendererState().GraphicsState.FF_FogColor, 0.0f ) );
 
@@ -2873,6 +2916,10 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
 
         }
 
+        // Below this, we assume UI/HUD rendering
+        Engine::GAPI->GetRendererState().RendererInfo.IsRenderingWorld = false;
+
+
         D3D11_VIEWPORT vp;
         vp.TopLeftX = 0.0f;
         vp.TopLeftY = 0.0f;
@@ -2882,8 +2929,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         vp.Height = static_cast<float>(GetBackbufferResolution().y);
 
         GetContext()->RSSetViewports( 1, &vp );
-
-        // GetContext()->ClearState();
+        UpdateZEngineViewport();
 
         GetContext()->OMSetRenderTargets( 1, Backbuffer->GetRenderTargetView().GetAddressOf(), nullptr );
     }
@@ -5298,17 +5344,17 @@ XRESULT D3D11GraphicsEngine::DrawSky() {
         Engine::GAPI->GetRendererState().DepthState.SetDirty();
         UpdateRenderStates();
 
-        #if defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)
+#if defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)
         // Draw sky first
-        reinterpret_cast<void( __fastcall* )( zCSkyController_Outdoor* )>( 0x5C0900 )( Engine::GAPI->GetLoadedWorldInfo()->MainWorld->GetSkyControllerOutdoor() );
+        reinterpret_cast<void( __fastcall* )(zCSkyController_Outdoor*)>(0x5C0900)(Engine::GAPI->GetLoadedWorldInfo()->MainWorld->GetSkyControllerOutdoor());
 
         // Draw barrier second
-        reinterpret_cast<void( __fastcall* )( zCSkyController_Outdoor* )>( 0x632140 )( Engine::GAPI->GetLoadedWorldInfo()->MainWorld->GetSkyControllerOutdoor() );
-        #else
+        reinterpret_cast<void( __fastcall* )(zCSkyController_Outdoor*)>(0x632140)(Engine::GAPI->GetLoadedWorldInfo()->MainWorld->GetSkyControllerOutdoor());
+#else
         Engine::GAPI->GetLoadedWorldInfo()
             ->MainWorld->GetSkyControllerOutdoor()
             ->RenderSkyPre();
-        #endif
+#endif
         Engine::GAPI->SetFarPlane(
             Engine::GAPI->GetRendererState().RendererSettings.SectionDrawRadius *
             WORLD_SECTION_SIZE );
