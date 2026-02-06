@@ -862,12 +862,15 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
 
     INT2 bbres = GetBackbufferResolution();
     
-    auto ResolutionScalePercent = Engine::GAPI->GetRendererState().RendererSettings.ResolutionScalePercent;
-    if ( ResolutionScalePercent != 100 ) {
-        float scale = static_cast<float>(ResolutionScalePercent / 100.0f);
+    auto resolutionScalePct = Engine::GAPI->GetRendererState().RendererSettings.ResolutionScalePercent;
+    if ( resolutionScalePct != 100 ) {
+        resolutionScalePct = std::clamp( resolutionScalePct, 25, 200 );
+        Engine::GAPI->GetRendererState().RendererSettings.ResolutionScalePercent = resolutionScalePct;
+
+        float scale = static_cast<float>(resolutionScalePct / 100.0f);
         m_scaledResolution = INT2{
-        static_cast<INT>(static_cast<float>(newSize.x) * scale),
-        static_cast<INT>(static_cast<float>(newSize.y) * scale)
+            static_cast<INT>(static_cast<float>(newSize.x) * scale),
+            static_cast<INT>(static_cast<float>(newSize.y) * scale)
         };
     } else {
         m_scaledResolution = newSize;
@@ -1153,10 +1156,10 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
             OnResize( oldResolution );
         }
     } else if ( Engine::GAPI->GetRendererState().RendererSettings.ResolutionScalePercent != s_oldResolutionScalePercent ) {
-        s_oldResolutionScalePercent = Engine::GAPI->GetRendererState().RendererSettings.ResolutionScalePercent;
         auto oldResolution = Resolution;
         Resolution = INT2( 0, 0 ); // force resize
         OnResize( oldResolution );
+        s_oldResolutionScalePercent = Engine::GAPI->GetRendererState().RendererSettings.ResolutionScalePercent;
     }
     
     Engine::GAPI->GetRendererState().RendererInfo.Timing.StartTotal();
