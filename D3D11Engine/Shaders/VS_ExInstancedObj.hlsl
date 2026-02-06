@@ -2,22 +2,22 @@
 // Simple vertex shader
 //--------------------------------------------------------------------------------------
 
+#include "Globals_VS_ExConstants.h"
+
 cbuffer Matrices_PerFrame : register( b0 )
 {
-	matrix M_View;
-	matrix M_Proj;
-	matrix M_ViewProj;
+	VS_ExConstantBuffer_PerFrame frame;
 };
 
 cbuffer WindParams : register(b1)
 {
      float3 windDir;
-	 float globalTime;
-	 float minHeight;
-	 float maxHeight;
-	 float2 padding0;
-	 float3 playerPos;
-	 float padding1;
+     float globalTime;
+     float minHeight;
+     float maxHeight;
+     float2 padding0;
+     float3 playerPos;
+     float padding1;
 };
 
 //--------------------------------------------------------------------------------------
@@ -25,25 +25,28 @@ cbuffer WindParams : register(b1)
 //--------------------------------------------------------------------------------------
 struct VS_INPUT
 {
-	float3 vPosition	: POSITION;
-	float3 vNormal		: NORMAL;
-	float2 vTex1		: TEXCOORD0;
-	float2 vTex2		: TEXCOORD1;
-	float4 vDiffuse		: DIFFUSE;
-	float4x4 InstanceWorldMatrix : INSTANCE_WORLD_MATRIX;
+    float3 vPosition    : POSITION;
+    float3 vNormal      : NORMAL;
+    float2 vTex1        : TEXCOORD0;
+    float2 vTex2        : TEXCOORD1;
+    float4 vDiffuse     : DIFFUSE;
+    float4x4 InstanceWorldMatrix : INSTANCE_WORLD_MATRIX;
+    float4x4 InstancePrevWorldMatrix : INSTANCE_PREV_WORLD_MATRIX;
     float4 InstanceColor : INSTANCE_COLOR;
     float2 InstanceWind : INSTANCE_WINDFLUENCE;
 };
 
 struct VS_OUTPUT
 {
-	float2 vTexcoord		: TEXCOORD0;
-	float2 vTexcoord2		: TEXCOORD1;
-	float4 vDiffuse			: TEXCOORD2;
-	float3 vNormalVS		: TEXCOORD4;
-	float3 vViewPosition	: TEXCOORD5;
-	
-	float4 vPosition		: SV_POSITION;
+    float2 vTexcoord        : TEXCOORD0;
+    float2 vTexcoord2       : TEXCOORD1;
+    float4 vDiffuse         : TEXCOORD2;
+    float3 vNormalVS        : TEXCOORD4;
+    float3 vViewPosition    : TEXCOORD5;
+    float4 vCurrClipPos     : TEXCOORD6;  // Current clip position for velocity
+    float4 vPrevClipPos     : TEXCOORD7;  // Previous clip position for velocity
+    
+    float4 vPosition        : SV_POSITION;
 };
 
 #if SHD_WIND
@@ -64,7 +67,7 @@ float GetInstancePhaseOffset(float4x4 objMatrix)
 
 float3 ApplyTreeWind(float3 vertexPos, float3 direction, float heightNorm, float timeSec, float4x4 instMatrix, float windStrength)
 {
-	// Calculate if vertex should be affected (1 if heightNorm >= trunkStiffness, 0 otherwise)
+    // Calculate if vertex should be affected (1 if heightNorm >= trunkStiffness, 0 otherwise)
     float shouldAffect = saturate(sign(heightNorm - trunkStiffness + 0.0001f));
     
     float instancePhase = GetInstancePhaseOffset(instMatrix) * PI_2;
@@ -84,8 +87,8 @@ float3 ApplyTreeWind(float3 vertexPos, float3 direction, float heightNorm, float
     
     // Height amplitude
     float topSmoothing = smoothstep(0.7, 0.9, adjustedHeight);
-	
-	// Combine waves
+    
+    // Combine waves
     float combinedWave = (mainWave + secondaryWave * 0.5) * (1.0 - topSmoothing * 0.3) + inertiaEffect * topSmoothing;
     
     // Chaotical motion
@@ -144,24 +147,24 @@ float3 CalculatePlayerInfluence(
 VS_OUTPUT VSMain( VS_INPUT Input )
 {
     VS_OUTPUT Output;
-			
-	// Base vertex position (local)
+            
+    // Base vertex position (local)
     float3 position = Input.vPosition;
 
 #if SHD_INFLUENCE
-	
+    
     if (Input.InstanceWind.y > 0)
     {
-		// HERO MOVING BUSHES SHADER
-		position += CalculatePlayerInfluence(playerPos, position, minHeight, maxHeight, Input.InstanceWorldMatrix);
+        // HERO MOVING BUSHES SHADER
+        position += CalculatePlayerInfluence(playerPos, position, minHeight, maxHeight, Input.InstanceWorldMatrix);
     }
 #endif
-	
+    
 #if SHD_WIND
-	
+    
     if (Input.InstanceWind.x > 0)
     {
-		// WIND SHADER
+        // WIND SHADER
         // Protect 0 height
         float heightRange = max(maxHeight - minHeight, 0.001);
         float vertexHeightNorm = saturate((Input.vPosition.y - minHeight) / heightRange);
@@ -177,16 +180,24 @@ VS_OUTPUT VSMain( VS_INPUT Input )
         );
     }
 #endif
-	
+    
     // Common processing for both cases
     float3 worldPos = mul(float4(position, 1.0), Input.InstanceWorldMatrix).xyz;
+    
+    // Calculate previous world position for motion vectors
+    float3 prevWorldPos = mul(float4(position, 1.0), Input.InstancePrevWorldMatrix).xyz;
 
-    Output.vPosition = mul(float4(worldPos, 1.0), M_ViewProj);
+    Output.vPosition = mul(float4(worldPos, 1.0), frame.M_ViewProj);
     Output.vTexcoord = Input.vTex1;
     Output.vTexcoord2 = Input.vTex2;
     Output.vDiffuse = Input.InstanceColor;
-    Output.vNormalVS = mul(Input.vNormal, mul((float3x3)Input.InstanceWorldMatrix, (float3x3)M_View));
-    Output.vViewPosition = mul(float4(worldPos, 1.0), M_View);
+    Output.vNormalVS = mul(Input.vNormal, mul((float3x3)Input.InstanceWorldMatrix, (float3x3)frame.M_View));
+    Output.vViewPosition = mul(float4(worldPos, 1.0), frame.M_View);
+    
+    // Store clip positions for velocity calculation in pixel shader
+    // Use UNJITTERED matrices for correct velocity (jitter would cause incorrect motion)
+    Output.vCurrClipPos = mul(float4(worldPos, 1.0), frame.M_UnjitteredViewProj);
+    Output.vPrevClipPos = mul(float4(prevWorldPos, 1.0), frame.M_PrevViewProj);
     
     return Output;
 }

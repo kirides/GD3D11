@@ -305,16 +305,11 @@ void D3D11PFX_TAA::RenderPostFX(
     // t1: History buffer
     // t2: Depth buffer
     // t3: Velocity buffer
-    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> velSRV = velocitySRV;
-    if (!velSRV && m_VelocityBuffer) {
-        velSRV = m_VelocityBuffer->GetShaderResView();
-    }
-    
     ID3D11ShaderResourceView* srvs[4] = {
         currentFrameSRV.Get(),
         m_FirstFrame ? currentFrameSRV.Get() : m_HistoryBuffer->GetShaderResView().Get(),
         depthSRV.Get(),
-        velSRV.Get()
+        velocitySRV.Get()
     };
     context->PSSetShaderResources(0, 4, srvs);
     

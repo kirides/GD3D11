@@ -52,5 +52,10 @@ DEFERRED_PS_OUTPUT PSMain( PS_INPUT Input ) : SV_TARGET
 	output.vNrm.w = 1.0f;
 	
 	output.vSI_SP.xy = 0;
+	
+	// Grass has no individual object velocity (wind animation not tracked)
+	// Camera motion will be handled by depth-based velocity pass
+	output.vVelocity = float2(0, 0);
+	
 	return output;
 }

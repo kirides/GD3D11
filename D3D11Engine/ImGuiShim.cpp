@@ -14,6 +14,8 @@ extern bool haveWindAnimations;
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam );
 extern float* ShadowMapLambda;
 extern float* ShadowMapBias;
+extern bool FeatureTAAUsePerObjectVelocity;
+extern bool DBG_DisplayVelocity;
 
 enum class TX_QUALITY : uint16_t {
     VeryLow = 128,
@@ -1130,6 +1132,12 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
         ImGui::Checkbox( "DrawForestPortals", &settings.DrawG1ForestPortals );
 #endif
 
+        ImGui::SeparatorText("Debug");
+        ImGui::Spacing();
+        
+        ImGui::SeparatorText("TAA");
+        ImGui::Checkbox("Use per Object Velocity", &FeatureTAAUsePerObjectVelocity);
+        ImGui::Checkbox("Display Velocity", &DBG_DisplayVelocity);
     }
     ImGui::End();
 }

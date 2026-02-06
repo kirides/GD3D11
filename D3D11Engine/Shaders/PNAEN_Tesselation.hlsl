@@ -95,6 +95,8 @@ struct DS_Output
 	float4 vDiffuse			: TEXCOORD2;
 	float3 vNormalVS		: TEXCOORD4;
 	float3 vViewPosition	: TEXCOORD5;
+	float4 vCurrClipPos     : TEXCOORD6;
+	float4 vPrevClipPos     : TEXCOORD7;
 	float4 vPosition		: SV_POSITION;
 }; 
  

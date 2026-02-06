@@ -267,6 +267,7 @@ struct VobInfo : public BaseVobInfo {
         IsIndoorVob = false;
         VisibleInRenderPass = false;
         VobSection = nullptr;
+        HasValidPrevMatrix = false;
     }
 
     ~VobInfo() {
@@ -358,6 +359,7 @@ struct SkeletalVobInfo : public BaseVobInfo {
         IndoorVob = false;
         VisibleInRenderPass = false;
         VobConstantBuffer = nullptr;
+        HasValidPrevTransforms = false;
     }
 
     ~SkeletalVobInfo() {

@@ -2405,7 +2405,7 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
     if ( g->GetRenderingStage() == DES_SHADOWMAP_CUBE )
         g->SetActiveVertexShader( "VS_ExNodeCube" );
     else
-        g->SetActiveVertexShader( "VS_ExMode" );
+        g->SetActiveVertexShader( "VS_ExNode" );
 
     // Set up instance info
     VS_ExConstantBuffer_PerInstanceNode instanceInfo;
@@ -2418,6 +2418,13 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
     g->SetupVS_ExMeshDrawCall();
     g->SetupVS_ExConstantBuffer();
 
+    const std::vector<XMFLOAT4X4>& prevBoneTransforms = (vi->HasValidPrevTransforms && !vi->PrevBoneTransforms.empty())
+        ? vi->PrevBoneTransforms
+        : transforms;
+    const XMMATRIX prevWorldMatrix = vi->HasValidPrevTransforms 
+        ? XMLoadFloat4x4(&vi->PrevWorldMatrix) 
+        : world; // TODO: don't depend so much on global state, always use local state
+    
     std::map<int, std::vector<MeshVisualInfo*>>& nodeAttachments = vi->NodeAttachments;
     for ( unsigned int i = 0; i < transforms.size(); i++ ) {
         // Check for new visual
@@ -2466,6 +2473,9 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
                 XMMATRIX curTransform = XMLoadFloat4x4( &transforms[i] );
                 SetWorldViewTransform( world * curTransform, view );
 
+                XMMATRIX prevTransform = XMLoadFloat4x4( &prevBoneTransforms[i] );
+                auto prevWorldNode = prevWorldMatrix * prevTransform; 
+                
                 if ( !mvi->Visual ) {
                     LogWarn() << "Attachment without visual on model: " << model->GetVisualName();
                     continue;
@@ -2505,6 +2515,7 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
                     if ( g->GetRenderingStage() == DES_MAIN || g->GetRenderingStage() == DES_GHOST ) {
                         // Update constantbuffer
                         instanceInfo.World = RendererState.TransformState.TransformWorld;
+                        XMStoreFloat4x4(&instanceInfo.PrevWorld, prevWorldNode);
                         VShader->GetConstantBuffer()[1]->UpdateBuffer( &instanceInfo );
                         VShader->GetConstantBuffer()[1]->BindToVertexShader( 1 );
 
@@ -2518,6 +2529,7 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
                 }
 
                 instanceInfo.World = RendererState.TransformState.TransformWorld;
+                XMStoreFloat4x4(&instanceInfo.PrevWorld, prevWorldNode);
                 VShader->GetConstantBuffer()[1]->UpdateBuffer( &instanceInfo );
                 VShader->GetConstantBuffer()[1]->BindToVertexShader( 1 );
 
@@ -2883,7 +2895,7 @@ void GothicAPI::DrawSkeletalMeshVobs(
     if ( g->GetRenderingStage() == DES_SHADOWMAP_CUBE )
         g->SetActiveVertexShader( "VS_ExNodeCube" );
     else
-        g->SetActiveVertexShader( "VS_ExMode" );
+        g->SetActiveVertexShader( "VS_ExNode" );
 
     g->SetupVS_ExMeshDrawCall();
     g->SetupVS_ExConstantBuffer();
@@ -4037,8 +4049,9 @@ void GothicAPI::CollectVisibleVobs( std::vector<VobInfo*>& vobs, std::vector<Vob
                     continue;
                 }
 
-                VobInstanceInfo vii;
+                VobInstanceInfo vii = {};
                 vii.world = it->WorldMatrix;
+                vii.prevWorld = it->HasValidPrevMatrix ? it->PrevWorldMatrix : it->WorldMatrix;
                 vii.color = it->GroundColor;
                 vii.windStrenth = 0.0f;
                 vii.canBeAffectedByPlayer = 0;
@@ -4237,8 +4250,9 @@ static void CVVH_AddNotDrawnVobToList( std::vector<VobInfo*>& target, std::vecto
                     continue;
                 }
 
-                VobInstanceInfo vii;
+                VobInstanceInfo vii = {};
                 vii.world = it->WorldMatrix;
+                vii.prevWorld = it->HasValidPrevMatrix ? it->PrevWorldMatrix : it->WorldMatrix;
                 vii.color = it->GroundColor;
                 vii.windStrenth = 0.0f;
                 vii.canBeAffectedByPlayer = 0;
@@ -4706,6 +4720,10 @@ std::list<SkeletalVobInfo*>& GothicAPI::GetAnimatedSkeletalMeshVobs() {
     return AnimatedSkeletalVobs;
 }
 
+std::list<VobInfo*>& GothicAPI::GetDynamicallyAddedVobs() {
+    return DynamicallyAddedVobs;
+}
+    
 /** Returns a texture from the given surface */
 zCTexture* GothicAPI::GetTextureBySurface( MyDirectDrawSurface7* surface ) {
     for ( auto const& it : LoadedMaterials ) {

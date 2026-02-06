@@ -1,11 +1,11 @@
 #define TRI_SAMPLE_LEVEL 0
 #include <Triplanar.h>
 
+#include "Globals_VS_ExConstants.h"
+
 cbuffer Matrices_PerFrame : register( b0 )
 {
-	matrix M_View;
-	matrix M_Proj;
-	matrix M_ViewProj;	
+	VS_ExConstantBuffer_PerFrame frame;
 };
 
 cbuffer OceanSettings : register( b1 )
@@ -124,13 +124,13 @@ PS_INPUT DSMain(ConstantOutputType input, float3 uvwCoord : SV_DomainLocation, c
 	output.vNormalVS = normalVS;*/
 		
 	//Output.vPosition = float4(Input.vPosition, 1);
-	output.vPosition = mul( float4(worldPosition,1), M_ViewProj);
+	output.vPosition = mul( float4(worldPosition,1), frame.M_ViewProj);
 	output.vTexcoord2 = texCoord2;
 	output.vTexcoord = texCoord;
 	output.vDiffuse  = float4(worldPosition,1);
 	output.vNormalWS = normalWS;
 	output.vNormalVS = normalVS;
-	//output.vViewPosition = mul(float4(worldPosition,1), M_View).xyz;
+	//output.vViewPosition = mul(float4(worldPosition,1), frame.M_View).xyz;
 	output.vWorldPosition = worldPosition;
 	
     return output;

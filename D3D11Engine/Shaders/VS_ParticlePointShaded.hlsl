@@ -2,11 +2,11 @@
 // Simple vertex shader
 //--------------------------------------------------------------------------------------
 
+#include "Globals_VS_ExConstants.h"
+
 cbuffer Matrices_PerFrame : register( b0 )
 {
-	matrix M_View;
-	matrix M_Proj;
-	matrix M_ViewProj;	
+	VS_ExConstantBuffer_PerFrame frame;
 };
 
 cbuffer ParticlePointShadingConstantBuffer : register( b1 )
@@ -112,7 +112,7 @@ VS_OUTPUT VSMain( VS_INPUT Input )
     position += upVector * vu[Input.vertexID];
     
     VS_OUTPUT Output = (VS_OUTPUT)0;
-    Output.vPosition = mul(float4(position, 1.0f), M_ViewProj);
+    Output.vPosition = mul(float4(position, 1.0f), frame.M_ViewProj);
     Output.vTexcoord = float2(tu[Input.vertexID], tv[Input.vertexID]);
     Output.type = staticInfo.drawMode;
     Output.vDiffuse = float4(0, 0, 0, brightness);

@@ -73,6 +73,8 @@ constexpr DXGI_FORMAT VERTEX_INDEX_DXGI_FORMAT = sizeof( VERTEX_INDEX ) == sizeo
 bool NativeSupport16BitTextures = false;
 bool FeatureLevel10Compatibility = false;
 bool FeatureRTArrayIndexFromAnyShader = false;
+bool FeatureTAAUsePerObjectVelocity = true;
+bool DBG_DisplayVelocity = false;
 
 VS_ExConstantBuffer_Wind g_windBuffer;
 
@@ -155,6 +157,9 @@ D3D11GraphicsEngine::D3D11GraphicsEngine() {
     m_HDR = false;
     m_lowlatency = false;
     m_isWindowActive = false;
+
+    // Initialize previous view-proj matrix to identity for motion vectors
+    XMStoreFloat4x4( &m_PrevViewProjMatrix, XMMatrixIdentity() );
 
     // Match the resolution with the current desktop resolution
     Resolution = m_scaledResolution = 
@@ -1539,6 +1544,23 @@ XRESULT D3D11GraphicsEngine::Present() {
         ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
 
         PfxRenderer->CopyTextureToRTV( Backbuffer->GetShaderResView(), BackbufferRTV, {}, true );
+        
+        static int show_velocity = 0;
+        if (DBG_DisplayVelocity) {
+            GetPfxRenderer()->CopyTextureToRTV(
+                FeatureTAAUsePerObjectVelocity
+                    ? VelocityBuffer->GetShaderResView()
+                    : GetPfxRenderer()->GetTAAEffect() 
+                        ? GetPfxRenderer()->GetTAAEffect()->GetVelocityBufferSRV()
+                        : nullptr, 
+                BackbufferRTV, 
+                GetBackbufferResolution());
+        } else if (show_velocity == 2 && GetPfxRenderer()->GetTAAEffect()) {
+            GetPfxRenderer()->CopyTextureToRTV(
+                GetPfxRenderer()->GetTAAEffect()->GetVelocityBufferSRV(),
+                BackbufferRTV, GetBackbufferResolution());
+        }
+        
         GetContext()->OMSetRenderTargets( 1, BackbufferRTV.GetAddressOf(), nullptr );
     }
 
@@ -2203,6 +2225,8 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
     cb2.World = world;
     cb2.PI_ModelColor = color;
     cb2.PI_ModelFatness = fatness;
+    // Set PrevWorld for motion vectors (use current world if no previous is available)
+    cb2.PrevWorld = vi->HasValidPrevTransforms ? vi->PrevWorldMatrix : world;
 
     ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &cb2 );
     ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( 1 );
@@ -2210,6 +2234,15 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
     // Copy bones
     ActiveVS->GetConstantBuffer()[2]->UpdateBuffer( &transforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( transforms.size(), NUM_MAX_BONES ) );
     ActiveVS->GetConstantBuffer()[2]->BindToVertexShader( 2 );
+
+    // Copy previous frame bone transforms for motion vectors (only for main scene rendering, not shadow maps)
+    if ( GetRenderingStage() != DES_SHADOWMAP_CUBE && GetRenderingStage() != DES_SHADOWMAP ) {
+        const std::vector<XMFLOAT4X4>& prevTransforms = (vi->HasValidPrevTransforms && !vi->PrevBoneTransforms.empty()) 
+            ? vi->PrevBoneTransforms 
+            : transforms;
+        ActiveVS->GetConstantBuffer()[3]->UpdateBuffer( &prevTransforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( prevTransforms.size(), NUM_MAX_BONES ) );
+        ActiveVS->GetConstantBuffer()[3]->BindToVertexShader( 3 );
+    }
 
     if ( transforms.size() >= NUM_MAX_BONES ) {
         LogWarn() << "SkeletalMesh has more than "
@@ -2291,6 +2324,7 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh_Layered( SkeletalVobInfo* vi,
     cb2.World = world;
     cb2.PI_ModelColor = color;
     cb2.PI_ModelFatness = fatness;
+    // Note: PrevWorld not used in layered rendering (shadow maps don't need motion vectors)
 
     ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &cb2 );
     ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( 1 );
@@ -2298,6 +2332,9 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh_Layered( SkeletalVobInfo* vi,
     // Copy bones
     ActiveVS->GetConstantBuffer()[2]->UpdateBuffer( &transforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( transforms.size(), NUM_MAX_BONES ) );
     ActiveVS->GetConstantBuffer()[2]->BindToVertexShader( 2 );
+
+    // Note: Slot b3 is used for cbPerCubeRender in VS_ExSkeletalLayered, not PrevBoneTransforms
+    // Motion vectors are not needed for shadow map rendering
 
     if ( transforms.size() >= NUM_MAX_BONES ) {
         LogWarn() << "SkeletalMesh has more than "
@@ -2642,8 +2679,9 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     ID3D11RenderTargetView* rtvs[] = {
         GBuffer0_Diffuse->GetRenderTargetView().Get(),
         GBuffer1_Normals->GetRenderTargetView().Get(),
-        GBuffer2_SpecIntens_SpecPower->GetRenderTargetView().Get() };
-    GetContext()->OMSetRenderTargets( 3, rtvs, DepthStencilBuffer->GetDepthStencilView().Get() );
+        GBuffer2_SpecIntens_SpecPower->GetRenderTargetView().Get(),
+        VelocityBuffer->GetRenderTargetView().Get() };
+    GetContext()->OMSetRenderTargets( 4, rtvs, DepthStencilBuffer->GetDepthStencilView().Get() );
 
     Engine::GAPI->SetFarPlane(
         Engine::GAPI->GetRendererState().RendererSettings.SectionDrawRadius * WORLD_SECTION_SIZE );
@@ -2810,7 +2848,9 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         == GothicRendererSettings::AA_TAA ) {
         // TAA before any HDR stuff
         auto _ = RecordGraphicsEvent( L"RenderTAA" );
-        PfxRenderer->RenderTAA();
+        PfxRenderer->RenderTAA( FeatureTAAUsePerObjectVelocity
+            ? VelocityBuffer->GetShaderResView()
+            : nullptr );
         GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
     }
 
@@ -2967,6 +3007,15 @@ void D3D11GraphicsEngine::SetupVS_ExConstantBuffer() {
     cb.View = view;
     cb.Projection = proj;
     XMStoreFloat4x4( &cb.ViewProj, XMMatrixMultiply( XMLoadFloat4x4( &proj ), XMLoadFloat4x4( &view ) ) );
+    cb.PrevViewProj = m_PrevViewProjMatrix;
+    
+    // Get unjittered ViewProj for velocity calculation
+    if ( PfxRenderer && PfxRenderer->GetTAAEffect() ) {
+        cb.UnjitteredViewProj = PfxRenderer->GetTAAEffect()->GetUnjitteredViewProj();
+    } else {
+        // If TAA not active, ViewProj is already unjittered
+        cb.UnjitteredViewProj = cb.ViewProj;
+    }
 
     ActiveVS->GetConstantBuffer()[0]->UpdateBuffer( &cb );
     ActiveVS->GetConstantBuffer()[0]->BindToVertexShader( 0 );
@@ -6723,19 +6772,24 @@ void D3D11GraphicsEngine::DrawString( const std::string& str, float x, float y, 
 }
 
 void D3D11GraphicsEngine::StorePrevViewProjMatrix() {
-
-    XMFLOAT4X4& projF = Engine::GAPI->GetProjectionMatrix(); // column-major
-    XMFLOAT4X4 viewF; Engine::GAPI->GetViewMatrix( &viewF ); // returns column-major
-    XMMATRIX view = XMMatrixTranspose( Engine::GAPI->GetViewMatrixXM() ); // returns column-major
-    XMMATRIX proj = XMLoadFloat4x4( &projF );
-    XMMATRIX viewProj = XMMatrixMultiply( view, proj );
-    XMStoreFloat4x4( &m_PrevViewProjMatrix, viewProj ); // store row-major view proj
+    // Store UNJITTERED view-projection matrix for motion vectors
+    // This is crucial: both current and previous ViewProj must be unjittered
+    // for correct velocity calculation
+    if ( PfxRenderer && PfxRenderer->GetTAAEffect() ) {
+        m_PrevViewProjMatrix = PfxRenderer->GetTAAEffect()->GetUnjitteredViewProj();
+    } else {
+        // Fallback if TAA is not active
+        XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
+        auto projF = Engine::GAPI->GetProjectionMatrix();
+        // Remove any jitter that might be in the projection
+        projF._13 = 0;
+        projF._23 = 0;
+        XMMATRIX viewProj = XMMatrixMultiply( XMLoadFloat4x4( &projF ), view );
+        XMStoreFloat4x4( &m_PrevViewProjMatrix, viewProj );
+    }
 }
 
 void D3D11GraphicsEngine::StoreVobPreviousTransforms() {
-    // TODO: Implement per-object motion vectors
-    return;
-
     if ( !zCCamera::GetCamera() ) {
         return; // only do this if we actually are in-game
     }
@@ -6747,11 +6801,21 @@ void D3D11GraphicsEngine::StoreVobPreviousTransforms() {
 
     // Store transforms for skeletal meshes
     for ( SkeletalVobInfo* skelVob : Engine::GAPI->GetAnimatedSkeletalMeshVobs() ) {
-        skelVob->Vob->GetWorldMatrix( &skelVob->PrevWorldMatrix );
         zCModel* model = static_cast<zCModel*>(skelVob->Vob->GetVisual());
-        std::vector<XMFLOAT4X4> transforms;
-        model->GetBoneTransforms( &transforms );
-        skelVob->StorePreviousTransforms( transforms );
+        if ( model ) {
+            // Store world matrix with scale (same as in DrawSkeletalMeshVob)
+            XMMATRIX scale = XMMatrixScalingFromVector( model->GetModelScaleXM() );
+            XMMATRIX world = skelVob->Vob->GetWorldMatrixXM() * scale;
+            XMStoreFloat4x4( &skelVob->PrevWorldMatrix, world );
+            
+            std::vector<XMFLOAT4X4> transforms;
+            model->GetBoneTransforms( &transforms );
+            skelVob->StorePreviousTransforms( transforms );
+        }
+    }
+    
+    for (auto dynVob : Engine::GAPI->GetDynamicallyAddedVobs()) {
+        dynVob->StorePreviousTransform();
     }
 
     // Store view-projection matrix

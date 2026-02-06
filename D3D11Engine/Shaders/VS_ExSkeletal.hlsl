@@ -4,16 +4,17 @@
 
 static const int NUM_MAX_BONES = 96;
 
+#include "Globals_VS_ExConstants.h"
+
 cbuffer Matrices_PerFrame : register( b0 )
 {
-	matrix M_View;
-	matrix M_Proj;
-	matrix M_ViewProj;	
+	VS_ExConstantBuffer_PerFrame frame;
 };
 
 cbuffer Matrices_PerInstances : register( b1 )
 {
 	matrix M_World;
+	matrix M_PrevWorld; // Helper for rigid motion of skeletal mesh
 	float4 PI_ModelColor;
 	float PI_ModelFatness;
 	float3 PI_Pad1;
@@ -22,6 +23,11 @@ cbuffer Matrices_PerInstances : register( b1 )
 cbuffer BoneTransforms : register( b2 )
 {
 	matrix BT_Transforms[NUM_MAX_BONES];
+};
+
+cbuffer PrevBoneTransforms : register( b3 )
+{
+	matrix BT_PrevTransforms[NUM_MAX_BONES];
 };
 
 //--------------------------------------------------------------------------------------
@@ -44,6 +50,8 @@ struct VS_OUTPUT
 	float4 vDiffuse			: TEXCOORD2;
 	float3 vNormalVS		: TEXCOORD4;
 	float3 vViewPosition	: TEXCOORD5;
+	float4 vCurrClipPos     : TEXCOORD6;
+	float4 vPrevClipPos     : TEXCOORD7;
 	float4 vPosition		: SV_POSITION;
 };
 
@@ -60,21 +68,35 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 	position += Input.Weights.z * mul(float4(Input.vPosition[2].xyz, 1), BT_Transforms[Input.BoneIndices.z]).xyz;
 	position += Input.Weights.w * mul(float4(Input.vPosition[3].xyz, 1), BT_Transforms[Input.BoneIndices.w]).xyz;
 	
+	// Previous position calculation
+	float3 prevPosition = float3(0, 0, 0);
+	prevPosition += Input.Weights.x * mul(float4(Input.vPosition[0].xyz, 1), BT_PrevTransforms[Input.BoneIndices.x]).xyz;
+	prevPosition += Input.Weights.y * mul(float4(Input.vPosition[1].xyz, 1), BT_PrevTransforms[Input.BoneIndices.y]).xyz;
+	prevPosition += Input.Weights.z * mul(float4(Input.vPosition[2].xyz, 1), BT_PrevTransforms[Input.BoneIndices.z]).xyz;
+	prevPosition += Input.Weights.w * mul(float4(Input.vPosition[3].xyz, 1), BT_PrevTransforms[Input.BoneIndices.w]).xyz;
+
 	float3 normal = float3(0, 0, 0);
 	normal += Input.Weights.x * mul(Input.vNormal, (float3x3)BT_Transforms[Input.BoneIndices.x]);
 	normal += Input.Weights.y * mul(Input.vNormal, (float3x3)BT_Transforms[Input.BoneIndices.y]);
 	normal += Input.Weights.z * mul(Input.vNormal, (float3x3)BT_Transforms[Input.BoneIndices.z]);
 	normal += Input.Weights.w * mul(Input.vNormal, (float3x3)BT_Transforms[Input.BoneIndices.w]);
 	
+	// Apply fatness and world transform
 	float3 positionWorld = mul(float4(position + PI_ModelFatness * normal,1), M_World).xyz;
+	float3 prevPositionWorld = mul(float4(prevPosition + PI_ModelFatness * normal, 1), M_PrevWorld).xyz;
 	
 	//Output.vPosition = float4(Input.vPosition, 1);
-	Output.vPosition = mul(float4(positionWorld,1), M_ViewProj);
+	Output.vPosition = mul(float4(positionWorld,1), frame.M_ViewProj);
 	Output.vTexcoord2 = Input.vTex1;
 	Output.vTexcoord = Input.vTex1;
 	Output.vDiffuse  = PI_ModelColor;
-	Output.vNormalVS = mul(Input.vBindPoseNormal, (float3x3)mul(M_World, M_View));
-	Output.vViewPosition = mul(float4(positionWorld,1),M_View).xyz;
+	Output.vNormalVS = mul(Input.vBindPoseNormal, (float3x3)mul(M_World, frame.M_View));
+	Output.vViewPosition = mul(float4(positionWorld,1), frame.M_View).xyz;
+
+	// Motion Vectors - use UNJITTERED matrices for correct velocity
+	Output.vCurrClipPos = mul(float4(positionWorld, 1.0), frame.M_UnjitteredViewProj);
+	Output.vPrevClipPos = mul(float4(prevPositionWorld, 1.0), frame.M_PrevViewProj);
+	
 	//Output.vWorldPosition = positionWorld;
 	
 	return Output;

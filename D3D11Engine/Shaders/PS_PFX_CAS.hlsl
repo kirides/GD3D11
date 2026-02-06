@@ -31,8 +31,9 @@ void casInput(inout FfxFloat32 r, inout FfxFloat32 g, inout FfxFloat32 b)
 
 struct PS_INPUT
 {
-    float4 Position : SV_POSITION;
-    float2 TexCoord : TEXCOORD0;
+	float2 TexCoord		: TEXCOORD0;
+	float3 vEyeRay		: TEXCOORD1;
+	float4 Position		: SV_POSITION;
 };
 
 float4 PSMain(PS_INPUT input) : SV_TARGET

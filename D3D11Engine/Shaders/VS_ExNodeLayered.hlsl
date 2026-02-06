@@ -2,20 +2,16 @@
 // Simple vertex shader
 //--------------------------------------------------------------------------------------
 
+#include "Globals_VS_ExConstants.h"
+
 cbuffer Matrices_PerFrame : register( b0 )
 {
-	matrix M_View;
-	matrix M_Proj;
-	matrix M_ViewProj;	
+	VS_ExConstantBuffer_PerFrame frame;
 };
 
 cbuffer Matrices_PerInstances : register( b1 )
 {
-	matrix M_World;
-	float4 M_Color;
-	float M_Fatness;
-	float M_Scaling;
-	float2 M_Pad1;
+	VS_ExConstantBuffer_PerInstanceNode cbInstance;
 };
 
 cbuffer cbPerCubeRender : register( b3 )
@@ -55,14 +51,14 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 {
 	VS_OUTPUT Output;
 	
-	float3 positionWorld = mul(float4((Input.vPosition + M_Fatness * Input.vNormal) * M_Scaling, 1), M_World).xyz;
+	float3 positionWorld = mul(float4((Input.vPosition + cbInstance.M_Fatness * Input.vNormal) * cbInstance.M_Scaling, 1), cbInstance.M_World).xyz;
 	
     Output.RTIndex = Input.instanceID;
     Output.vPosition = mul(float4(positionWorld, 1), PCR_ViewProj[Input.instanceID]);
 	Output.vTexcoord2 = Input.vTex2;
 	Output.vTexcoord = Input.vTex1;
-	Output.vDiffuse  = M_Color;
-    Output.vNormalVS = mul(Input.vNormal, (float3x3)mul(M_World, PCR_View[Input.instanceID]));
+	Output.vDiffuse  = cbInstance.M_Color;
+    Output.vNormalVS = mul(Input.vNormal, (float3x3)mul(cbInstance.M_World, PCR_View[Input.instanceID]));
     Output.vViewPosition = mul(float4(positionWorld, 1), PCR_View[Input.instanceID]);
 	
 	return Output;

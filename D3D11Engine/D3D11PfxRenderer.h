@@ -38,7 +38,7 @@ public:
     /** Renders the SMAA-Effect */
     XRESULT RenderSMAA();
 
-    XRESULT RenderTAA();
+    XRESULT RenderTAA(const ComPtr<ID3D11ShaderResourceView>& velocityBuffer);
     XRESULT RenderCAS( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& input, INT2 inputSize, const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& output, INT2 outputSize, RenderToTextureBuffer& intermediateBuffer );
     XRESULT RenderSimpleSharpen( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& input, INT2 inputSize, const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& output, INT2 outputSize, RenderToTextureBuffer& intermediateBuffer );
 

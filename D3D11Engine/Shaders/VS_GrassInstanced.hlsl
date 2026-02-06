@@ -2,11 +2,11 @@
 // Simple vertex shader
 //--------------------------------------------------------------------------------------
 
+#include "Globals_VS_ExConstants.h"
+
 cbuffer Matrices_PerFrame : register( b0 )
 {
-	matrix M_View;
-	matrix M_Proj;
-	matrix M_ViewProj;	
+	VS_ExConstantBuffer_PerFrame frame;
 };
 
 cbuffer GrassCB : register( b1 )
@@ -53,7 +53,7 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 	wpos.xz += sin(G_Time * 3.0f + wind) * 1.55f * Input.vPosition.y * G_WindStrength;
 	wpos.xz += sin(G_Time * 5.0f + wind) * 1.2f * Input.vPosition.y * G_WindStrength;
 	
-	Output.vPosition = mul( float4(wpos,1), M_ViewProj);
+	Output.vPosition = mul( float4(wpos,1), frame.M_ViewProj);
 	Output.vTexcoord = Input.vTex1;
 	Output.vNormalVS = G_NormalVS;
 	Output.vWorldPosition = wpos;
