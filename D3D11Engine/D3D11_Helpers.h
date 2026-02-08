@@ -31,6 +31,14 @@ inline void SetDebugName( _In_  ID3D11DeviceChild* resource, const std::string& 
 #endif
 }
 
+inline void SetDebugName( _In_  ID3D11DeviceChild* resource, const char* debugName ) {
+#if defined(_DEBUG) || defined(PROFILE)|| defined(DEBUG_D3D11)
+    if ( !resource ) return;
+    HRESULT nameSet = resource->SetPrivateData( WKPDID_D3DDebugObjectName, strlen(debugName), debugName );
+    if ( FAILED( nameSet ) ) LogError() << "Failed to set debug name";
+#endif
+}
+
 inline void SetDebugName( _In_  IDXGIObject* resource, const std::string& debugName ) {
 #if defined(_DEBUG) || defined(PROFILE)|| defined(DEBUG_D3D11)
     if ( !resource ) return;

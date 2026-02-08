@@ -964,6 +964,7 @@ struct GothicRendererInfo {
         FramePipelineStates = 0;
 
         StateChanges = 0;
+        IsRenderingWorld = false;
         memset( StateChangesByState, 0, sizeof( StateChangesByState ) );
     }
 
@@ -1004,6 +1005,7 @@ struct GothicRendererInfo {
 
     unsigned int VOBVerticesDataSize;
     unsigned int SkeletalVerticesDataSize;
+    bool IsRenderingWorld;
 };
 
 /** This handles more device specific settings */

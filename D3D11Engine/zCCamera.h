@@ -1,10 +1,11 @@
 #pragma once
 #include "pch.h"
+#include "zTypes.h"
 #include "HookedFunctions.h"
 #include "Engine.h"
 #include "GothicAPI.h"
 #include "BaseGraphicsEngine.h"
-#include "zTypes.h"
+#include "zViewTypes.h"
 
 
 class zCCamera {
@@ -17,6 +18,11 @@ public:
         TT_WORLDVIEW_INV,
         TT_VIEW_INV
     };
+
+    static void Hook() {
+        DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCCamera__Activate), Activate_Hook );
+        DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCCamera__UpdateViewport), UpdateViewport_Hook );
+    }
 
     static bool IsFreeLookActive() {
 #ifdef BUILD_GOTHIC_2_6_fix
@@ -47,11 +53,45 @@ public:
         SetTransform( type, m );
     }
 
-    void Activate() {
-        reinterpret_cast<void( __fastcall* )( zCCamera* )>( GothicMemoryLocations::zCCamera::Activate )( this );
+    // transposes the given projection matrix and stores it in the camera.
+    void UpdateProjection(const XMFLOAT4X4& proj ) {
+        XMStoreFloat4x4( &trafoProjection, XMMatrixTranspose( XMLoadFloat4x4( &proj ) ) );
+    }
 
-        // TODO: actually set the RndD3d viewport and not use this ugly ass workaround
-        Engine::GraphicsEngine->SetViewport( ViewportInfo( 0, 0, Engine::GraphicsEngine->GetResolution().x, Engine::GraphicsEngine->GetResolution().y, 0.0f, 1.0f ) );
+    static void __fastcall UpdateViewport_Hook( zCCamera* _this, void* pUnknown ) {
+        // make the session camera aware of our viewport
+        if ( auto view = (_zCView*)_this->targetView; view && view->viewID == 1 ) {
+            // Modify the engines Viewport to match our current active backbuffer size
+            auto res = Engine::GAPI->GetRendererState().RendererInfo.IsRenderingWorld
+                ? Engine::GraphicsEngine->GetResolution()
+                : Engine::GraphicsEngine->GetBackbufferResolution();
+
+            view->pposx = 0;
+            view->pposy = 0;
+            view->psizex = res.x;
+            view->psizey = res.y;
+
+            // NOTE: we could do a lot more here, like actually doing stuff like CalcChildsPos/Size etc.
+            // but for now this is enough to make sure the session camera viewport is always correct and
+            // matches the backbuffer size, which is the main issue with the viewport being messed up after Activate is called
+        }
+        HookedFunctions::OriginalFunctions.original_zCCamera__UpdateViewport( _this );
+    }
+
+    static void __fastcall Activate_Hook( zCCamera* _this, void* pUnknown) {
+        HookedFunctions::OriginalFunctions.original_zCCamera__Activate( _this );
+
+        if ( auto view = (_zCView*)_this->targetView; view && view->viewID == 1 ) {
+            // HACK: override the viewport for the session camera if this is the main viewport
+            // Activate changes the viewport and does some clamping which breaks our viewport,
+            // even though the viewport zCView has the correct values
+            // we just assume the values are correct and set the viewport again after the original Activate is done
+            Engine::GraphicsEngine->SetViewport( ViewportInfo( view->pposx, view->pposy, view->psizex, view->psizey ) );
+        }
+    }
+
+    void Activate() {
+        Activate_Hook( this, nullptr );
     }
 
     void SetFOV( float azi, float elev ) {
@@ -65,7 +105,7 @@ public:
     }
 
     void UpdateViewport() {
-        reinterpret_cast<void( __fastcall* )( zCCamera* )>( GothicMemoryLocations::zCCamera::UpdateViewport )( this );
+        UpdateViewport_Hook( this, nullptr );
     }
 
     zTCam_ClipType BBox3DInFrustum( const zTBBox3D& box ) {

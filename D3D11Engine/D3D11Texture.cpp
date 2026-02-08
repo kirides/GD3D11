@@ -131,6 +131,8 @@ XRESULT D3D11Texture::UpdateData( void* data, int mip ) {
     if ( FAILED( result ) )
         return XR_FAILED;
 
+    SetDebugName( stagingTexture.Get(), "D3D11Texture->UpdateData->stagingTexture" );
+
     engine->GetContext()->CopySubresourceRegion( Texture.Get(), mip, 0, 0, 0, stagingTexture.Get(), 0, nullptr );
     return XR_SUCCESS;
 }
@@ -170,6 +172,7 @@ XRESULT D3D11Texture::UpdateDataDeferred( void* data, int mip ) {
     HRESULT result = engine->GetDevice()->CreateTexture2D( &stagingTextureDesc, &stagingTextureData, &stagingTexture );
     if ( FAILED( result ) )
         return XR_FAILED;
+    SetDebugName( stagingTexture, "D3D11Texture->UpdateDataDeferred->stagingTexture" );
 
     Engine::GAPI->AddStagingTexture( mip, stagingTexture, Texture.Get() );
     return XR_SUCCESS;

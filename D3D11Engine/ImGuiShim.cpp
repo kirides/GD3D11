@@ -1045,7 +1045,9 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
                 ImGui::EndCombo();
             }
             ImGui::DragFloat( "WorldShadowRangeScale", &settings.WorldShadowRangeScale, 0.01f, 0.00f, 10.0f, "%.2f" );
-            if ( ImGui::InputInt( "Shadow Cascade count", &settings.NumShadowCascades, 1, 1 ) ) {
+            
+            settings.NumShadowCascades = std::clamp( settings.NumShadowCascades, 1, MAX_CSM_CASCADES );
+            if ( ImGui::SliderInt( "Shadow Cascade count", &settings.NumShadowCascades, 1, MAX_CSM_CASCADES, "%d", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput) ) {
                 settings.NumShadowCascades = std::clamp( settings.NumShadowCascades, 1, MAX_CSM_CASCADES );
                 Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows );
             }
@@ -1069,7 +1071,8 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
             }
 
             ImGui::SetItemTooltip( "Higher values can produce better shadows (Impact: High)" );
-            if ( ImGui::InputInt( "Soft shadow limit", &settings.ShadowCascadePCFLimit, 1, 1 ) ) {
+            settings.ShadowCascadePCFLimit = std::clamp( settings.ShadowCascadePCFLimit, 1, settings.NumShadowCascades );
+            if ( ImGui::SliderInt( "Soft shadow limit", &settings.ShadowCascadePCFLimit, 1, settings.NumShadowCascades, "%d", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput ) ) {
                 settings.ShadowCascadePCFLimit = std::clamp( settings.ShadowCascadePCFLimit, 1, settings.NumShadowCascades );
                 Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows );
             }

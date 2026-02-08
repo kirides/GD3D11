@@ -2,7 +2,6 @@
 // Definitions copied from g2ext, Union (c) 2018 Union team, and World of Gothic
 
 #include "zTypes.h"
-#include "oCGame.h"
 #include "zFont.h"
 enum zTRnd_AlphaBlendFunc;
 class zFont;
@@ -146,6 +145,11 @@ public:
     zCViewText* _zCView::CreateText( int x, int y, const zSTRING& str ) {
         return reinterpret_cast<zCViewText*( __fastcall* )( _zCView*, int, int, int, const zSTRING& )>
             ( GothicMemoryLocations::zCView::CreateText )( this, 0, x, y, str );
+    }
+
+    static void SetVirtualMode( int x, int y, int bpp ) {
+        reinterpret_cast<void( __cdecl* )(int, int, int, void*)>
+            (GothicMemoryLocations::zCView::SetMode)(x, y, bpp, nullptr);
     }
 };
 

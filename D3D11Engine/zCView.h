@@ -2,7 +2,6 @@
 #include "pch.h"
 #include "zTypes.h"
 #include "HookedFunctions.h"
-#include "oCGame.h"
 #include "zViewTypes.h"
 
 
@@ -47,8 +46,7 @@ public:
     }
 
     static void SetVirtualMode( int x, int y, int bpp ) {
-        reinterpret_cast<void(__cdecl*)( int, int, int, void* )>
-            ( GothicMemoryLocations::zCView::SetMode )( x, y, bpp, nullptr );
+        _zCView::SetVirtualMode( x, y, bpp );
     }
 
 #if (defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)) || defined(BUILD_GOTHIC_2_6_fix)
