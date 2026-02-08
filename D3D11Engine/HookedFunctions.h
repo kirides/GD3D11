@@ -141,9 +141,9 @@ struct HookedFunctionInfo {
     zCViewBlitText original_zCViewBlitText = reinterpret_cast<zCViewBlitText>(GothicMemoryLocations::zCView::BlitText);
     zCViewPrint original_zCViewPrint = reinterpret_cast<zCViewPrint>(GothicMemoryLocations::zCView::Print);
     zCViewPrint original_zCViewPrintChars = reinterpret_cast<zCViewPrint>(GothicMemoryLocations::zCView::PrintChars);
+#endif
     zCCamera__Activate original_zCCamera__Activate = reinterpret_cast<zCCamera__Activate>(GothicMemoryLocations::zCCamera::Activate);
     zCCamera__UpdateViewport original_zCCamera__UpdateViewport = reinterpret_cast<zCCamera__UpdateViewport>(GothicMemoryLocations::zCCamera::UpdateViewport);
-#endif
     //CGameManagerExitGame original_CGameManagerExitGame = reinterpret_cast<CGameManagerExitGame>(GothicMemoryLocations::CGameManager::ExitGame);
     //GenericThiscall original_zCWorldDisposeWorld = reinterpret_cast<GenericThiscall>(GothicMemoryLocations::zCWorld::DisposeWorld);
     zCWorldDisposeVobs original_zCWorldDisposeVobs = reinterpret_cast<zCWorldDisposeVobs>(GothicMemoryLocations::zCWorld::DisposeVobs);
