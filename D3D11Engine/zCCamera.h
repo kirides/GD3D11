@@ -4,7 +4,7 @@
 #include "HookedFunctions.h"
 #include "Engine.h"
 #include "GothicAPI.h"
-#include "D3D11GraphicsEngineBase.h"
+#include "BaseGraphicsEngine.h"
 #include "zViewTypes.h"
 
 
@@ -53,6 +53,7 @@ public:
         SetTransform( type, m );
     }
 
+    // transposes the given projection matrix and stores it in the camera.
     void UpdateProjection(const XMFLOAT4X4& proj ) {
         XMStoreFloat4x4( &trafoProjection, XMMatrixTranspose( XMLoadFloat4x4( &proj ) ) );
     }
@@ -69,6 +70,10 @@ public:
             view->pposy = 0;
             view->psizex = res.x;
             view->psizey = res.y;
+
+            // NOTE: we could do a lot more here, like actually doing stuff like CalcChildsPos/Size etc.
+            // but for now this is enough to make sure the session camera viewport is always correct and
+            // matches the backbuffer size, which is the main issue with the viewport being messed up after Activate is called
         }
         HookedFunctions::OriginalFunctions.original_zCCamera__UpdateViewport( _this );
     }
