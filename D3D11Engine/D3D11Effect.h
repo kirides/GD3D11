@@ -38,6 +38,8 @@ protected:
 
     Microsoft::WRL::ComPtr<ID3D11Texture2D> RainTextureArray;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> RainTextureArraySRV;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> SnowTextureArray;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> SnowTextureArraySRV;
     std::unique_ptr<RenderToDepthStencilBuffer> RainShadowmap;
     CameraReplacement RainShadowmapCameraRepl;
 

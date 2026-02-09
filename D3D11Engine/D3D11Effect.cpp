@@ -18,7 +18,7 @@
 #include "D3D11GraphicsEngine.h"
 #include "oCGame.h"
 
-constexpr float snowSpeedFactor = 0.25f;
+constexpr float snowSpeedFactor = 0.15f;
 
 D3D11Effect::D3D11Effect() {
     RainBufferDrawFrom = nullptr;
@@ -107,7 +107,9 @@ XRESULT D3D11Effect::DrawRain() {
 
     auto rainPS = e->GetShaderManager().GetPShader( isSnow ? "PS_Rain_Snow" : "PS_Rain" );
 
-    UINT numParticles = state.RendererSettings.RainNumParticles;
+    // artificially increase the number of particles for snow, to make it look better.
+    // Snowflakes are bigger and slower than raindrops, so we can get away with less particles for rain, but for snow we need more to make it look good.
+    UINT numParticles = state.RendererSettings.RainNumParticles * (isSnow ? 2 : 1);
 
     static float lastRadius = state.RendererSettings.RainRadiusRange;
     static float lastHeight = state.RendererSettings.RainHeightRange;
@@ -253,7 +255,9 @@ XRESULT D3D11Effect::DrawRain() {
     e->SetupVS_ExConstantBuffer();
 
     // Bind droplets
-    e->GetContext()->PSSetShaderResources( 0, 1, RainTextureArraySRV.GetAddressOf() );
+    e->GetContext()->PSSetShaderResources( 0, 1, isSnow
+        ? SnowTextureArraySRV.GetAddressOf()
+        : RainTextureArraySRV.GetAddressOf() );
 
     // Draw the vertexbuffer
     reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine)->DrawVertexBufferInstanced( RainBufferDrawFrom, 4, numParticles, sizeof( RainParticleInstanceInfo ) );
@@ -279,7 +283,9 @@ XRESULT D3D11Effect::DrawRain_CS() {
     
     auto rainPS = e->GetShaderManager().GetPShader( isSnow ? "PS_Rain_Snow" : "PS_Rain" );
 
-    UINT numParticles = state.RendererSettings.RainNumParticles;
+    // artificially increase the number of particles for snow, to make it look better.
+    // Snowflakes are bigger and slower than raindrops, so we can get away with less particles for rain, but for snow we need more to make it look good.
+    UINT numParticles = state.RendererSettings.RainNumParticles * (isSnow ? 2 : 1);
 
     static float lastRadius = state.RendererSettings.RainRadiusRange;
     static float lastHeight = state.RendererSettings.RainHeightRange;
@@ -387,7 +393,9 @@ XRESULT D3D11Effect::DrawRain_CS() {
     e->SetupVS_ExConstantBuffer();
 
     // Bind droplets
-    e->GetContext()->PSSetShaderResources( 0, 1, RainTextureArraySRV.GetAddressOf() );
+    e->GetContext()->PSSetShaderResources( 0, 1, isSnow
+        ? SnowTextureArraySRV.GetAddressOf()
+        : RainTextureArraySRV.GetAddressOf() );
 
     // Draw the vertexbuffer
     reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine)->DrawVertexBufferInstanced( RainBufferDrawFrom, 4, numParticles, sizeof( RainParticleInstanceInfo ) );
@@ -409,6 +417,16 @@ XRESULT D3D11Effect::LoadRainResources()
         LE( LoadTextureArray( e->GetDevice().Get(), e->GetContext().Get(), "system\\GD3D11\\Textures\\Raindrops\\cv0_vPositive_", 370, &RainTextureArray, &RainTextureArraySRV ) );
         t.Update();
         LogInfo() << "Loading rain drops took " << static_cast<int>(t.GetDelta() * 1000.0f) << "ms";
+    }
+
+    if ( !SnowTextureArray.Get() ) {
+        HRESULT hr = S_OK;
+        // Load textures...
+        LogInfo() << "Loading snow flake textures";
+        BASIC_TIMING( t );
+        LE( LoadTextureArray( e->GetDevice().Get(), e->GetContext().Get(), "system\\GD3D11\\Textures\\Snowflakes\\Snow_", 256, &SnowTextureArray, &SnowTextureArraySRV ) );
+        t.Update();
+        LogInfo() << "Loading snow flakes took " << static_cast<int>(t.GetDelta() * 1000.0f) << "ms";
     }
 
     if ( !RainShadowmap.get() ) {
