@@ -24,23 +24,29 @@ cbuffer AdvanceRainConstantBuffer : register( b1 )
 	float3 AR_Pad1;
 };
 
+struct RainParticleStatic
+{
+	float3 seed;
+	float randomBrightness;
+	int drawMode;
+};
+
+StructuredBuffer<RainParticleStatic> StaticData : register( t1 );
+
 //--------------------------------------------------------------------------------------
 // Input / Output structures
 //--------------------------------------------------------------------------------------
 struct VS_INPUT
 {
 	float3 vPosition	: POSITION;
-	float4 vDiffuse		: DIFFUSE;
-    unsigned int type   : TYPE;
-    float3 vVelocity    : VELOCITY;
+	float3 vVelocity    : VELOCITY;
+	uint instanceID     : SV_InstanceID;
 };
 
 struct VS_OUTPUT
 {
 	float3 vPosition		: POSITION;
-	float4 vDiffuse			: DIFFUSE;
-    int    type             : TYPE;
-    float3 vVelocity        : VELOCITY;
+	float3 vVelocity        : VELOCITY;
     
 };
 
@@ -59,7 +65,7 @@ VS_OUTPUT VSMain( VS_INPUT Input )
     //if the particle is outside the bounds, move it to random position near the eye         
     if(Input.vPosition.y <= AR_CameraPosition.y - AR_Height )
     {
-		float3 seed = Input.vDiffuse.xyz;
+		float3 seed = StaticData[Input.instanceID].seed;
 					
 		float x = seed.x + AR_CameraPosition.x;
 		float z = seed.z + AR_CameraPosition.z;
@@ -69,8 +75,6 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 	
 	VS_OUTPUT Output;
 	Output.vPosition = Input.vPosition;
-	Output.vDiffuse  = Input.vDiffuse;
     Output.vVelocity = Input.vVelocity;
-    Output.type = Input.type;
 	return Output;
 }

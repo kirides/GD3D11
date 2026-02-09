@@ -68,6 +68,7 @@ XRESULT D3D11VertexBuffer::Init( void* initData, unsigned int sizeInBytes, EBind
         srvDesc.Buffer.ElementWidth = sizeInBytes / structuredByteSize;
 
         engine->GetDevice()->CreateShaderResourceView( VertexBuffer.Get(), &srvDesc, ShaderResourceView.ReleaseAndGetAddressOf() );
+        SetDebugName( ShaderResourceView.Get(), fileName+"_SRV");
     }
 
     // Check for unordered access again to create the UAV
@@ -80,6 +81,7 @@ XRESULT D3D11VertexBuffer::Init( void* initData, unsigned int sizeInBytes, EBind
         uavDesc.Buffer.NumElements = sizeInBytes / structuredByteSize;
 
         engine->GetDevice()->CreateUnorderedAccessView( VertexBuffer.Get(), &uavDesc, UnorderedAccessView.ReleaseAndGetAddressOf() );
+        SetDebugName( UnorderedAccessView.Get(), fileName + "_UAV" );
     }
 
     SetDebugName( VertexBuffer.Get(), fileName );

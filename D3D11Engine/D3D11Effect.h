@@ -28,10 +28,11 @@ public:
     RenderToDepthStencilBuffer* GetRainShadowmap() { return RainShadowmap.get(); }
 protected:
 
-    /** Fills a vector of random raindrop data */
-    void FillRandomRaindropData( std::vector<RainParticleInstanceInfo>& data );
+    /** Fills vectors of random raindrop data, split into mutable and immutable parts */
+    void FillRandomRaindropData( std::vector<RainParticleDynamic>& dynamicData, std::vector<RainParticleStatic>& staticData );
 
     /** Rain */
+    D3D11VertexBuffer* RainBufferStatic;
     D3D11VertexBuffer* RainBufferInitial;
     D3D11VertexBuffer* RainBufferDrawFrom;
     D3D11VertexBuffer* RainBufferStreamTo;

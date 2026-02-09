@@ -26,12 +26,14 @@ namespace {
 }
 
 D3D11Effect::D3D11Effect() {
+    RainBufferStatic = nullptr;
     RainBufferDrawFrom = nullptr;
     RainBufferStreamTo = nullptr;
     RainBufferInitial = nullptr;
 }
 
 D3D11Effect::~D3D11Effect() {
+    delete RainBufferStatic;
     delete RainBufferInitial;
     delete RainBufferDrawFrom;
     delete RainBufferStreamTo;
@@ -40,15 +42,14 @@ D3D11Effect::~D3D11Effect() {
 /** Loads a texturearray. Use like the following: Put path and prefix as parameter. The files must then be called name_xxxx.dds */
 HRESULT LoadTextureArray( Microsoft::WRL::ComPtr<ID3D11Device1> pd3dDevice, Microsoft::WRL::ComPtr<ID3D11DeviceContext1> context, char* sTexturePrefix, int iNumTextures, ID3D11Texture2D** ppTex2D, ID3D11ShaderResourceView** ppSRV );
 
-/** Fills a vector of random raindrop data */
-void D3D11Effect::FillRandomRaindropData( std::vector<RainParticleInstanceInfo>& data ) {
+/** Fills vectors of random raindrop data, split into mutable and immutable parts */
+void D3D11Effect::FillRandomRaindropData( std::vector<RainParticleDynamic>& dynamicData, std::vector<RainParticleStatic>& staticData ) {
     /** Base taken from Nvidias Rain-Sample **/
 
     float radius = Engine::GAPI->GetRendererState().RendererSettings.RainRadiusRange;
     float height = Engine::GAPI->GetRendererState().RendererSettings.RainHeightRange;
 
-    for ( size_t i = 0; i < data.size(); i++ ) {
-        RainParticleInstanceInfo raindrop;
+    for ( size_t i = 0; i < dynamicData.size(); i++ ) {
         //use rejection sampling to generate random points inside a circle of radius 1 centered at 0, 0
         float SeedX;
         float SeedZ;
@@ -63,32 +64,27 @@ void D3D11Effect::FillRandomRaindropData( std::vector<RainParticleInstanceInfo>&
         SeedX *= radius;
         SeedZ *= radius;
         float SeedY = Toolbox::frand() * height;
-        //raindrop.seed = XMFLOAT3(SeedX,SeedY,SeedZ); 
 
         //add some random speed to the particles, to prevent all the particles from following exactly the same trajectory
         //additionally, random speeds in the vertical direction ensure that temporal aliasing is minimized
         float SpeedX = 40.0f * (Toolbox::frand() / 20.0f);
         float SpeedZ = 40.0f * (Toolbox::frand() / 20.0f);
         float SpeedY = 40.0f * (Toolbox::frand() / 10.0f);
-        raindrop.velocity = XMFLOAT3( SpeedX, SpeedY, SpeedZ );
 
-        //move the rain particles to a random positions in a cylinder above the camera
-        raindrop.position = float3( SeedX + Engine::GAPI->GetCameraPosition().x, SeedY + Engine::GAPI->GetCameraPosition().y, SeedZ + Engine::GAPI->GetCameraPosition().z );
+        // Mutable data
+        RainParticleDynamic& dynamic = dynamicData[i];
+        dynamic.position = float3( SeedX + Engine::GAPI->GetCameraPosition().x, SeedY + Engine::GAPI->GetCameraPosition().y, SeedZ + Engine::GAPI->GetCameraPosition().z );
+        dynamic.velocity = XMFLOAT3( SpeedX, SpeedY, SpeedZ );
+
+        // Immutable data
+        RainParticleStatic& immutable = staticData[i];
+        immutable.seed = float3( SeedX, SeedY, SeedZ );
+        immutable.randomBrightness = Toolbox::frand();
 
         //get an integer between 1 and 8 inclusive to decide which of the 8 types of rain textures the particle will use
-        short* s = reinterpret_cast<short*>(&raindrop.drawMode);
+        short* s = reinterpret_cast<short*>(&immutable.drawMode);
         s[0] = static_cast<short>( floor( Toolbox::frand() * 8 + 1 ) );
         s[1] = static_cast<short>( floor( Toolbox::frand() * 0xFFFF ) ); // Just a random number
-
-        //this number is used to randomly increase the brightness of some rain particles
-        float intensity = 1.0f;
-        float randomIncrease = Toolbox::frand();
-        if ( randomIncrease > 0.8f )
-            intensity += randomIncrease;
-
-        raindrop.color = float4( SeedX, SeedY, SeedZ, randomIncrease );
-
-        data[i] = raindrop;
     }
 }
 
@@ -122,22 +118,28 @@ XRESULT D3D11Effect::DrawRain() {
     if ( !RainBufferDrawFrom || lastHeight != state.RendererSettings.RainHeightRange
         || lastRadius != state.RendererSettings.RainRadiusRange ||
         lastNumParticles != numParticles ) {
+        delete RainBufferStatic;
         delete RainBufferDrawFrom;
         delete RainBufferStreamTo;
         delete RainBufferInitial;
 
+        e->CreateVertexBuffer( &RainBufferStatic );
         e->CreateVertexBuffer( &RainBufferDrawFrom );
         e->CreateVertexBuffer( &RainBufferStreamTo );
         e->CreateVertexBuffer( &RainBufferInitial );
 
-        // Fill the vector with random raindrop data
-        std::vector<RainParticleInstanceInfo> particles( numParticles );
-        FillRandomRaindropData( particles );
+        // Fill the vectors with random raindrop data
+        std::vector<RainParticleDynamic> dynamicParticles( numParticles );
+        std::vector<RainParticleStatic> staticParticles( numParticles );
+        FillRandomRaindropData( dynamicParticles, staticParticles );
 
-        // Create vertexbuffers
-        RainBufferInitial->Init( &particles[0], particles.size() * sizeof( RainParticleInstanceInfo ), (D3D11VertexBuffer::EBindFlags)(D3D11VertexBuffer::B_VERTEXBUFFER), D3D11VertexBuffer::U_DEFAULT, D3D11VertexBuffer::CA_NONE, "D3D11Effect::DrawRain::RainBufferInitial" );
-        RainBufferDrawFrom->Init( &particles[0], particles.size() * sizeof( RainParticleInstanceInfo ), (D3D11VertexBuffer::EBindFlags)(D3D11VertexBuffer::B_VERTEXBUFFER | D3D11VertexBuffer::B_STREAM_OUT), D3D11VertexBuffer::U_DEFAULT, D3D11VertexBuffer::CA_NONE, "D3D11Effect::DrawRain::RainBufferDrawFrom" );
-        RainBufferStreamTo->Init( &particles[0], particles.size() * sizeof( RainParticleInstanceInfo ), (D3D11VertexBuffer::EBindFlags)(D3D11VertexBuffer::B_VERTEXBUFFER | D3D11VertexBuffer::B_STREAM_OUT), D3D11VertexBuffer::U_DEFAULT, D3D11VertexBuffer::CA_NONE, "D3D11Effect::DrawRain::RainBufferStreamTo" );
+        // Create immutable structured buffer (SRV only, for StructuredBuffer<> access in shaders)
+        RainBufferStatic->Init( &staticParticles[0], staticParticles.size() * sizeof( RainParticleStatic ), D3D11VertexBuffer::B_SHADER_RESOURCE, D3D11VertexBuffer::U_IMMUTABLE, D3D11VertexBuffer::CA_NONE, "D3D11Effect::DrawRain::RainBufferStatic", sizeof( RainParticleStatic ) );
+
+        // Create mutable vertexbuffers (position + velocity only)
+        RainBufferInitial->Init( &dynamicParticles[0], dynamicParticles.size() * sizeof( RainParticleDynamic ), (D3D11VertexBuffer::EBindFlags)(D3D11VertexBuffer::B_VERTEXBUFFER), D3D11VertexBuffer::U_DEFAULT, D3D11VertexBuffer::CA_NONE, "D3D11Effect::DrawRain::RainBufferInitial" );
+        RainBufferDrawFrom->Init( &dynamicParticles[0], dynamicParticles.size() * sizeof( RainParticleDynamic ), (D3D11VertexBuffer::EBindFlags)(D3D11VertexBuffer::B_VERTEXBUFFER | D3D11VertexBuffer::B_STREAM_OUT), D3D11VertexBuffer::U_DEFAULT, D3D11VertexBuffer::CA_NONE, "D3D11Effect::DrawRain::RainBufferDrawFrom" );
+        RainBufferStreamTo->Init( &dynamicParticles[0], dynamicParticles.size() * sizeof( RainParticleDynamic ), (D3D11VertexBuffer::EBindFlags)(D3D11VertexBuffer::B_VERTEXBUFFER | D3D11VertexBuffer::B_STREAM_OUT), D3D11VertexBuffer::U_DEFAULT, D3D11VertexBuffer::CA_NONE, "D3D11Effect::DrawRain::RainBufferStreamTo" );
 
         firstFrame = true;
 
@@ -163,7 +165,7 @@ XRESULT D3D11Effect::DrawRain() {
     acb.AR_Radius = state.RendererSettings.RainRadiusRange;
     acb.AR_Height = state.RendererSettings.RainHeightRange;
     acb.AR_CameraPosition = Engine::GAPI->GetCameraPosition();
-    acb.AR_GlobalVelocity = isSnow;
+    acb.AR_GlobalVelocity = velocity;
     acb.AR_MoveRainParticles = state.RendererSettings.RainMoveParticles ? 1 : 0;
     particleAdvanceVS->GetConstantBuffer()[0]->UpdateBuffer( &acb );
     particleAdvanceVS->GetConstantBuffer()[0]->BindToVertexShader( 1 );
@@ -180,11 +182,14 @@ XRESULT D3D11Effect::DrawRain() {
 
         firstFrame = false;
 
-        UINT stride = sizeof( RainParticleInstanceInfo );
+        UINT stride = sizeof( RainParticleDynamic );
         UINT offset = 0;
 
         // Bind buffer to draw from last frame
         e->GetContext()->IASetVertexBuffers( 0, 1, b->GetVertexBuffer().GetAddressOf(), &stride, &offset );
+
+        // Bind immutable particle data as StructuredBuffer SRV for the advance VS
+        e->GetContext()->VSSetShaderResources( 1, 1, RainBufferStatic->GetShaderResourceView().GetAddressOf() );
 
         // Set stream target
         e->GetContext()->SOSetTargets( 1, RainBufferStreamTo->GetVertexBuffer().GetAddressOf(), &offset );
@@ -251,6 +256,9 @@ XRESULT D3D11Effect::DrawRain() {
 
     RainShadowmap->BindToVertexShader( e->GetContext().Get(), 0 );
 
+    // Bind immutable particle data as StructuredBuffer SRV
+    e->GetContext()->VSSetShaderResources( 1, 1, RainBufferStatic->GetShaderResourceView().GetAddressOf() );
+
     // Bind the shadow comparison sampler to the vertex shader at slot 2 (SS_Comp in shader)
     e->GetContext()->VSSetSamplers( 2, 1, m_RainDropShadowSamplerState.GetAddressOf() );
 
@@ -263,7 +271,12 @@ XRESULT D3D11Effect::DrawRain() {
         : RainTextureArraySRV.GetAddressOf() );
 
     // Draw the vertexbuffer
-    reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine)->DrawVertexBufferInstanced( RainBufferDrawFrom, 4, numParticles, sizeof( RainParticleInstanceInfo ) );
+    {
+        UINT stride = sizeof( RainParticleDynamic );
+        UINT offset = 0;
+        e->GetContext()->IASetVertexBuffers( 0, 1, RainBufferDrawFrom->GetVertexBuffer().GetAddressOf(), &stride, &offset );
+        e->GetContext()->DrawInstanced( 4, numParticles, 0, 0 );
+    }
 
     // Reset this
     e->GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
@@ -297,16 +310,24 @@ XRESULT D3D11Effect::DrawRain_CS() {
     if ( !RainBufferDrawFrom || lastHeight != state.RendererSettings.RainHeightRange
         || lastRadius != state.RendererSettings.RainRadiusRange ||
         (lastNumParticles + 127) / 128 != (numParticles + 127) / 128 ) {
+        delete RainBufferStatic;
         delete RainBufferDrawFrom;
 
+        e->CreateVertexBuffer( &RainBufferStatic );
         e->CreateVertexBuffer( &RainBufferDrawFrom );
 
-        // Fill the vector with random raindrop data
-        std::vector<RainParticleInstanceInfo> particles( ((numParticles + 127) / 128) * 128 );
-        FillRandomRaindropData( particles );
+        UINT alignedCount = ((numParticles + 127) / 128) * 128;
 
-        // Create vertexbuffers
-        RainBufferDrawFrom->Init( &particles[0], particles.size() * sizeof( RainParticleInstanceInfo ), (D3D11VertexBuffer::EBindFlags)(D3D11VertexBuffer::B_VERTEXBUFFER | D3D11VertexBuffer::B_UNORDERED_ACCESS), D3D11VertexBuffer::U_DEFAULT, D3D11VertexBuffer::CA_NONE, "D3D11Effect::DrawRain::RainBufferDrawFrom", sizeof( float ) );
+        // Fill the vectors with random raindrop data
+        std::vector<RainParticleDynamic> dynamicParticles( alignedCount );
+        std::vector<RainParticleStatic> staticParticles( alignedCount );
+        FillRandomRaindropData( dynamicParticles, staticParticles );
+
+        // Create immutable structured buffer (SRV only, for StructuredBuffer<> access in shaders)
+        RainBufferStatic->Init( &staticParticles[0], staticParticles.size() * sizeof( RainParticleStatic ), D3D11VertexBuffer::B_SHADER_RESOURCE, D3D11VertexBuffer::U_DEFAULT, D3D11VertexBuffer::CA_NONE, "D3D11Effect::DrawRain_CS::RainBufferStatic", sizeof( RainParticleStatic ) );
+
+        // Create mutable vertexbuffer (position + velocity, with UAV for compute shader access)
+        RainBufferDrawFrom->Init( &dynamicParticles[0], dynamicParticles.size() * sizeof( RainParticleDynamic ), (D3D11VertexBuffer::EBindFlags)(D3D11VertexBuffer::B_VERTEXBUFFER | D3D11VertexBuffer::B_UNORDERED_ACCESS), D3D11VertexBuffer::U_DEFAULT, D3D11VertexBuffer::CA_NONE, "D3D11Effect::DrawRain_CS::RainBufferDrawFrom", sizeof( float ) );
 
         LoadRainResources();
     }
@@ -339,13 +360,16 @@ XRESULT D3D11Effect::DrawRain_CS() {
         advanceRainCS->Apply();
         advanceRainCS->GetConstantBuffer()[0]->BindToComputeShader( 0 );
 
+        e->GetContext()->CSSetShaderResources( 0, 1, RainBufferStatic->GetShaderResourceView().GetAddressOf() );
         e->GetContext()->CSSetUnorderedAccessViews( 0, 1, RainBufferDrawFrom->GetUnorderedAccessView().GetAddressOf(), nullptr );
         e->GetContext()->Dispatch( (numParticles + 127) / 128, 1, 1 );
 
         // Unbind compute shader elements
         Microsoft::WRL::ComPtr<ID3D11Buffer> emptyBuf;
         Microsoft::WRL::ComPtr<ID3D11UnorderedAccessView> emptyUAV;
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> emptySRV;
         e->GetContext()->CSSetConstantBuffers( 0, 1, emptyBuf.GetAddressOf() );
+        e->GetContext()->CSSetShaderResources( 0, 1, emptySRV.GetAddressOf() );
         e->GetContext()->CSSetUnorderedAccessViews( 0, 1, emptyUAV.GetAddressOf(), nullptr );
         e->GetContext()->CSSetShader( nullptr, nullptr, 0 );
     }
@@ -390,6 +414,9 @@ XRESULT D3D11Effect::DrawRain_CS() {
 
     RainShadowmap->BindToVertexShader( e->GetContext().Get(), 0 );
 
+    // Bind immutable particle data as StructuredBuffer SRV
+    e->GetContext()->VSSetShaderResources( 1, 1, RainBufferStatic->GetShaderResourceView().GetAddressOf() );
+
     // Bind the shadow comparison sampler to the vertex shader at slot 2 (SS_Comp in shader)
     e->GetContext()->VSSetSamplers( 2, 1, m_RainDropShadowSamplerState.GetAddressOf() );
 
@@ -402,7 +429,12 @@ XRESULT D3D11Effect::DrawRain_CS() {
         : RainTextureArraySRV.GetAddressOf() );
 
     // Draw the vertexbuffer
-    reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine)->DrawVertexBufferInstanced( RainBufferDrawFrom, 4, numParticles, sizeof( RainParticleInstanceInfo ) );
+    {
+        UINT stride = sizeof( RainParticleDynamic );
+        UINT offset = 0;
+        e->GetContext()->IASetVertexBuffers( 0, 1, RainBufferDrawFrom->GetVertexBuffer().GetAddressOf(), &stride, &offset );
+        e->GetContext()->DrawInstanced( 4, numParticles, 0, 0 );
+    }
 
     // Reset primitive topology
     e->GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
