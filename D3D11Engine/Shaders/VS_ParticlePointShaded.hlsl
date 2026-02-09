@@ -20,8 +20,18 @@ cbuffer ParticleGSInfo : register( b2 )
     float3 CameraPosition;
     float PGS_RainFxWeight;
     float PGS_RainHeight;
-    float3 PGS_Pad;
+    float PGS_Pad;
+    float2 PGS_RainScale;
 };
+
+struct RainParticleStatic
+{
+	float3 seed;
+	float randomBrightness;
+	int drawMode;
+};
+
+StructuredBuffer<RainParticleStatic> StaticData : register( t1 );
 
 //--------------------------------------------------------------------------------------
 // Input / Output structures
@@ -29,11 +39,9 @@ cbuffer ParticleGSInfo : register( b2 )
 struct VS_INPUT
 {
     uint vertexID : SV_VertexID;
+    uint instanceID : SV_InstanceID;
 	float3 vPosition : POSITION;
-	float4 vDiffuse : DIFFUSE;
-    float2 vSize : SIZE;
-    unsigned int type : TYPE;
-    float3 vVelocity : VELOCITY;
+	float3 vVelocity : VELOCITY;
 };
 
 struct VS_OUTPUT
@@ -74,6 +82,8 @@ static const float vu[4] = { -1.0, -1.0,  1.0, 1.0 };
 
 VS_OUTPUT VSMain( VS_INPUT Input )
 {
+	RainParticleStatic staticInfo = StaticData[Input.instanceID];
+
 	// Check if we even have to render this raindrop
     float wet = IsWet(Input.vPosition.xyz, TX_RainShadowmap, SS_Comp, mul(AR_RainView, AR_RainProj));
 	
@@ -91,11 +101,11 @@ VS_OUTPUT VSMain( VS_INPUT Input )
     upVector = normalize(cross(planeNormal, rightVector));
     
 	// Scale vectors
-    rightVector *= Input.vSize.x;
-    upVector *= Input.vSize.y;
+    rightVector *= PGS_RainScale.x;
+    upVector *= PGS_RainScale.y;
     
 	// Scale intensity
-    Input.vDiffuse.a *= wet;
+    float brightness = staticInfo.randomBrightness * wet;
     
     float3 position = Input.vPosition;
     position += rightVector * vr[Input.vertexID];
@@ -104,12 +114,12 @@ VS_OUTPUT VSMain( VS_INPUT Input )
     VS_OUTPUT Output = (VS_OUTPUT)0;
     Output.vPosition = mul(float4(position, 1.0f), M_ViewProj);
     Output.vTexcoord = float2(tu[Input.vertexID], tv[Input.vertexID]);
-    Output.type = Input.type;
-    Output.vDiffuse = Input.vDiffuse;
+    Output.type = staticInfo.drawMode;
+    Output.vDiffuse = float4(0, 0, 0, brightness);
     Output.vNormal = planeNormal;
     Output.vWorldPosition = position;
     
-    float rand = (Input.type >> 16 & 0xFFFF);
+    float rand = (staticInfo.drawMode >> 16 & 0xFFFF);
     if (rand > pow(PGS_RainFxWeight, 3.0f) * 0xFFFF)
         Output.vPosition = float4(0.0f, 0.0f, 0.0f, -1.0f);
     

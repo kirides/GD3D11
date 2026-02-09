@@ -36,12 +36,17 @@ struct ParticleInstanceInfo {
     float3 velocity;
 };
 
-struct RainParticleInstanceInfo {
+/** Mutable per-particle data, updated every frame by the advance CS/VS. */
+struct RainParticleDynamic {
     float3 position;
-    float4 color;
-    float2 scale;
-    int drawMode; // 0 = billboard, 1 = y-locked billboard, 2 = y-plane, 3 = velo aligned
     float3 velocity;
+};
+
+/** Immutable per-particle data, set once at initialization. Bound as StructuredBuffer SRV. */
+struct RainParticleStatic {
+    float3 seed;
+    float randomBrightness;
+    int drawMode;
 };
 
 struct MeshKey {
