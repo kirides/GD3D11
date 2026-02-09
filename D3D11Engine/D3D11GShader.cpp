@@ -46,7 +46,6 @@ XRESULT D3D11GShader::LoadShader( const char* geometryShader, const std::vector<
         struct output11 {
             float4 vDiffuse;
             float3 vPosition;
-            float2 vSize;
             float3 vVelocity;
             int type;
         };
@@ -55,7 +54,6 @@ XRESULT D3D11GShader::LoadShader( const char* geometryShader, const std::vector<
         {
             { 0, "POSITION", 0, 0, 3, 0},
             { 0, "DIFFUSE", 0, 0, 4, 0},
-            { 0, "SIZE", 0, 0, 2, 0},
             { 0, "TYPE", 0, 0, 1, 0},
             { 0, "VELOCITY", 0, 0, 3, 0},
         };

@@ -22,9 +22,9 @@ void CSMain( uint3 dispatchThreadID : SV_DispatchThreadID )
     if (dispatchThreadID.x >= AR_MoveRainParticles)
         return;
 	
-    uint vertexOffset = dispatchThreadID.x * 52;
+    uint vertexOffset = dispatchThreadID.x * 44;
     float3 vertexPosition = asfloat(buf.Load3(vertexOffset));
-    float3 vertexVelocity = asfloat(buf.Load3(vertexOffset + 40));
+    float3 vertexVelocity = asfloat(buf.Load3(vertexOffset + 32));
 	
     vertexVelocity = vertexVelocity.xyz / max(AR_FPS, 1) + AR_GlobalVelocity.xyz / max(AR_FPS, 1);
     vertexPosition.xyz += vertexVelocity;
@@ -38,5 +38,5 @@ void CSMain( uint3 dispatchThreadID : SV_DispatchThreadID )
     }
 	
     buf.Store3(vertexOffset, asuint(vertexPosition));
-    buf.Store3(vertexOffset + 40, asuint(vertexVelocity));
+    buf.Store3(vertexOffset + 32, asuint(vertexVelocity));
 }

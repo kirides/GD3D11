@@ -20,7 +20,8 @@ cbuffer ParticleGSInfo : register( b2 )
     float3 CameraPosition;
     float PGS_RainFxWeight;
     float PGS_RainHeight;
-    float3 PGS_Pad;
+    float PGS_Pad;
+    float2 PGS_RainScale;
 };
 
 //--------------------------------------------------------------------------------------
@@ -31,7 +32,6 @@ struct VS_INPUT
     uint vertexID : SV_VertexID;
 	float3 vPosition : POSITION;
 	float4 vDiffuse : DIFFUSE;
-    float2 vSize : SIZE;
     unsigned int type : TYPE;
     float3 vVelocity : VELOCITY;
 };
@@ -91,8 +91,8 @@ VS_OUTPUT VSMain( VS_INPUT Input )
     upVector = normalize(cross(planeNormal, rightVector));
     
 	// Scale vectors
-    rightVector *= Input.vSize.x;
-    upVector *= Input.vSize.y;
+    rightVector *= PGS_RainScale.x;
+    upVector *= PGS_RainScale.y;
     
 	// Scale intensity
     Input.vDiffuse.a *= wet;

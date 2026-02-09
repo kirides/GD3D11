@@ -20,6 +20,11 @@
 
 constexpr float snowSpeedFactor = 0.15f;
 
+namespace {
+    const float2 snowScale( 3.0f, 3.0f );
+    const float2 rainScale( 30.0f / 10.0f, 30.0f / 2.0f );
+}
+
 D3D11Effect::D3D11Effect() {
     RainBufferDrawFrom = nullptr;
     RainBufferStreamTo = nullptr;
@@ -83,9 +88,6 @@ void D3D11Effect::FillRandomRaindropData( std::vector<RainParticleInstanceInfo>&
 
         raindrop.color = float4( SeedX, SeedY, SeedZ, randomIncrease );
 
-        float height = 30.0f;
-        raindrop.scale = float2( height / 10.0f, height / 2.0f );
-
         data[i] = raindrop;
     }
 }
@@ -109,7 +111,7 @@ XRESULT D3D11Effect::DrawRain() {
 
     // artificially increase the number of particles for snow, to make it look better.
     // Snowflakes are bigger and slower than raindrops, so we can get away with less particles for rain, but for snow we need more to make it look good.
-    UINT numParticles = state.RendererSettings.RainNumParticles * (isSnow ? 2 : 1);
+    UINT numParticles = state.RendererSettings.RainNumParticles;
 
     static float lastRadius = state.RendererSettings.RainRadiusRange;
     static float lastHeight = state.RendererSettings.RainHeightRange;
@@ -236,6 +238,7 @@ XRESULT D3D11Effect::DrawRain() {
     gcb.CameraPosition = Engine::GAPI->GetCameraPosition();
     gcb.PGS_RainFxWeight = Engine::GAPI->GetRainFXWeight();
     gcb.PGS_RainHeight = state.RendererSettings.RainHeightRange;
+    gcb.PGS_RainScale = isSnow ? snowScale : rainScale;
 
     particleVS->GetConstantBuffer()[2]->UpdateBuffer( &gcb );
     particleVS->GetConstantBuffer()[2]->BindToVertexShader( 2 );
@@ -285,7 +288,7 @@ XRESULT D3D11Effect::DrawRain_CS() {
 
     // artificially increase the number of particles for snow, to make it look better.
     // Snowflakes are bigger and slower than raindrops, so we can get away with less particles for rain, but for snow we need more to make it look good.
-    UINT numParticles = state.RendererSettings.RainNumParticles * (isSnow ? 2 : 1);
+    UINT numParticles = state.RendererSettings.RainNumParticles;
 
     static float lastRadius = state.RendererSettings.RainRadiusRange;
     static float lastHeight = state.RendererSettings.RainHeightRange;
@@ -374,6 +377,7 @@ XRESULT D3D11Effect::DrawRain_CS() {
     gcb.CameraPosition = Engine::GAPI->GetCameraPosition();
     gcb.PGS_RainFxWeight = Engine::GAPI->GetRainFXWeight();
     gcb.PGS_RainHeight = state.RendererSettings.RainHeightRange;
+    gcb.PGS_RainScale = isSnow ? snowScale : rainScale;
 
     particleVS->GetConstantBuffer()[2]->UpdateBuffer( &gcb );
     particleVS->GetConstantBuffer()[2]->BindToVertexShader( 2 );
