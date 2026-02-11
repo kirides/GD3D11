@@ -31,7 +31,10 @@ struct PS_INPUT
 float4 PSMain( PS_INPUT Input ) : SV_TARGET
 {
 	float4 color = TX_Texture0.Sample(SS_Linear, Input.vTexcoord);
-
-	return saturate(pow(color.rgba * G_Brightness, G_Gamma));
+	
+	float3 linearColor = color.rgb * G_Brightness;
+	float3 correctedColor = pow(linearColor, G_Gamma);
+	
+	return saturate(float4(correctedColor, color.a));
 }
 
