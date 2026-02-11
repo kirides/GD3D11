@@ -37,10 +37,13 @@ struct SkyConstantBuffer {
 struct GammaCorrectConstantBuffer {
     float G_Gamma;
     float G_Brightness;
-    float2 G_TextureSize;
+    float2 G_pad;
+};
 
+struct PfxSharpenConstantBuffer {
+    float2 G_TextureSize;
     float G_SharpenStrength;
-    float3 G_pad1;
+    float G_pad;
 };
 
 struct BlurConstantBuffer {

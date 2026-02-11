@@ -38,9 +38,7 @@ XRESULT D3D11PFX_SimpleSharpen::Apply( const Microsoft::WRL::ComPtr<ID3D11Shader
     auto sharpenPS = engine->GetShaderManager().GetPShader( "PS_PFX_Sharpen" );
     sharpenPS->Apply();
 
-    GammaCorrectConstantBuffer gcb;
-    gcb.G_Gamma = Engine::GAPI->GetGammaValue();
-    gcb.G_Brightness = Engine::GAPI->GetBrightnessValue();
+    PfxSharpenConstantBuffer gcb;
     gcb.G_TextureSize = inputSize;
     gcb.G_SharpenStrength = Engine::GAPI->GetRendererState().RendererSettings.SharpenFactor;
 

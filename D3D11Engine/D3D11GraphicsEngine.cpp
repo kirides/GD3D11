@@ -1524,7 +1524,20 @@ XRESULT D3D11GraphicsEngine::Present() {
     UpdateRenderStates();
     {
         auto _ = RecordGraphicsEvent( L"Blit onto Swapchain" );
-        PfxRenderer->CopyTextureToRTV( Backbuffer->GetShaderResView(), BackbufferRTV );
+
+        SetActivePixelShader( "PS_PFX_GammaCorrectInv" );
+
+        ActivePS->Apply();
+
+        // apply gamma and brightness at the end of processing the image
+        GammaCorrectConstantBuffer gcb;
+        gcb.G_Gamma = Engine::GAPI->GetGammaValue();
+        gcb.G_Brightness = Engine::GAPI->GetBrightnessValue();
+
+        ActivePS->GetConstantBuffer()[0]->UpdateBuffer( &gcb );
+        ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+
+        PfxRenderer->CopyTextureToRTV( Backbuffer->GetShaderResView(), BackbufferRTV, {}, true );
         GetContext()->OMSetRenderTargets( 1, BackbufferRTV.GetAddressOf(), nullptr );
     }
 
@@ -2847,32 +2860,15 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
 
         SetDefaultStates();
 
-        SetActivePixelShader( "PS_PFX_GammaCorrectInv" );
-
-        ActivePS->Apply();
-
-        GammaCorrectConstantBuffer gcb;
-        gcb.G_Gamma = Engine::GAPI->GetGammaValue();
-        gcb.G_Brightness = Engine::GAPI->GetBrightnessValue();
-        gcb.G_TextureSize = GetResolution();
-        gcb.G_SharpenStrength = Engine::GAPI->GetRendererState().RendererSettings.SharpenFactor;
-
-        ActivePS->GetConstantBuffer()[0]->UpdateBuffer( &gcb );
-        ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
-
         if ( Engine::GAPI->GetRendererState().RendererSettings.ResolutionScalePercent < 100 
             && Engine::GAPI->GetRendererState().RendererSettings.Upscaler == GothicRendererSettings::E_Upscaler::UPSCALER_FSR_1 ) {
             
             auto _ = RecordGraphicsEvent( L"FSR 1" );
-            auto temp = PfxRenderer->GetTempBuffer();
-
-            // Get the gamma corrected scene into a temp buffer
-            PfxRenderer->CopyTextureToRTV( HDRBackBuffer->GetShaderResView(), temp->GetRenderTargetView(), INT2(0, 0), true);
 
             // Now upscale it to backbuffer with sharpening
             auto sharpenFactor = Engine::GAPI->GetRendererState().RendererSettings.SharpenFactor;
             PfxRenderer->GetFSR1()->Apply(
-                temp->GetShaderResView(),
+                HDRBackBuffer->GetShaderResView(),
                 Backbuffer->GetRenderTargetView(),
                 GetResolution(),
                 GetBackbufferResolution(),
@@ -2882,18 +2878,17 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
 
             if ( Engine::GAPI->GetRendererState().RendererSettings.SharpeningMode
                 && Engine::GAPI->GetRendererState().RendererSettings.SharpenFactor > 0.0f) {
-                auto tempNativeBuffer = GetPfxRenderer()->GetBackbufferTempBuffer();
 
                 {
-                    auto _ = RecordGraphicsEvent( L"Tonemap into SDR buffer" );
-                    PfxRenderer->CopyTextureToRTV( HDRBackBuffer->GetShaderResView(), tempNativeBuffer->GetRenderTargetView(), GetBackbufferResolution(), true);
+                    auto _ = RecordGraphicsEvent( L"Copy into native-size backbuffer" );
+                    PfxRenderer->CopyTextureToRTV( HDRBackBuffer->GetShaderResView(), Backbuffer->GetRenderTargetView(), GetBackbufferResolution() );
                 }
 
                 switch ( Engine::GAPI->GetRendererState().RendererSettings.SharpeningMode ) {
                 case GothicRendererSettings::SHARPEN_SIMPLE:
                     if ( !FeatureLevel10Compatibility ) {
                         auto _ = RecordGraphicsEvent( L"ApplySimpleSharpen" );
-                        PfxRenderer->RenderSimpleSharpen( tempNativeBuffer->GetShaderResView(), GetBackbufferResolution(), tempNativeBuffer->GetRenderTargetView(), GetBackbufferResolution(), *GetPfxRenderer()->GetBackbufferTempBuffer());
+                        PfxRenderer->RenderSimpleSharpen( Backbuffer->GetShaderResView(), GetBackbufferResolution(), Backbuffer->GetRenderTargetView(), GetBackbufferResolution(), *GetPfxRenderer()->GetBackbufferTempBuffer());
                         GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
                     }
                     break;
@@ -2901,19 +2896,16 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                 case GothicRendererSettings::SHARPEN_CAS:
                     if ( !FeatureLevel10Compatibility ) {
                         auto _ = RecordGraphicsEvent( L"ApplyCAS" );
-                        PfxRenderer->RenderCAS( tempNativeBuffer->GetShaderResView(), GetBackbufferResolution(), tempNativeBuffer->GetRenderTargetView(), GetBackbufferResolution(), *GetPfxRenderer()->GetBackbufferTempBuffer());
+                        PfxRenderer->RenderCAS( Backbuffer->GetShaderResView(), GetBackbufferResolution(), Backbuffer->GetRenderTargetView(), GetBackbufferResolution(), *GetPfxRenderer()->GetBackbufferTempBuffer());
                         GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
                     }
                     break;
                 }
 
-                auto _ = RecordGraphicsEvent( L"Blit onto native-size backbuffer" );
-                PfxRenderer->CopyTextureToRTV( tempNativeBuffer->GetShaderResView(), Backbuffer->GetRenderTargetView(), GetBackbufferResolution() );
             } else {
-                auto _ = RecordGraphicsEvent( L"Tonemap into native-size backbuffer" );
-                PfxRenderer->CopyTextureToRTV( HDRBackBuffer->GetShaderResView(), Backbuffer->GetRenderTargetView(), GetBackbufferResolution(), true );
+                auto _ = RecordGraphicsEvent( L"Copy into native-size backbuffer" );
+                PfxRenderer->CopyTextureToRTV( HDRBackBuffer->GetShaderResView(), Backbuffer->GetRenderTargetView(), GetBackbufferResolution() );
             }
-
         }
 
         // Below this, we assume UI/HUD rendering
@@ -5725,8 +5717,6 @@ void D3D11GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& 
     GammaCorrectConstantBuffer gcb;
     gcb.G_Gamma = Engine::GAPI->GetGammaValue();
     gcb.G_Brightness = Engine::GAPI->GetBrightnessValue();
-    gcb.G_TextureSize = buffersize;
-    gcb.G_SharpenStrength = Engine::GAPI->GetRendererState().RendererSettings.SharpenFactor;
 
     ActivePS->GetConstantBuffer()[0]->UpdateBuffer( &gcb );
     ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
