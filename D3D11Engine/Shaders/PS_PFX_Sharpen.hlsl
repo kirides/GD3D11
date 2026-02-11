@@ -10,14 +10,11 @@ SamplerState SS_samMirror : register( s1 );
 Texture2D	TX_Texture0 : register( t0 );
 Texture2D	TX_Depth : register( t1 );
 
-cbuffer GammaCorrectConstantBuffer : register( b0 )
+cbuffer PfxSharpenConstantBuffer : register( b0 )
 {
-	float G_Gamma;
-	float G_Brightness;
 	float2 G_TextureSize;
-	
 	float G_SharpenStrength;
-	float3 G_pad1;
+	float G_pad1;
 }
 
 //--------------------------------------------------------------------------------------
