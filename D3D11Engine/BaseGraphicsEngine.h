@@ -23,11 +23,6 @@ struct DisplayModeInfo {
     DWORD Width;
 };
 
-enum RenderStage {
-    STAGE_DRAW_WORLD = 0,
-    STAGE_DRAW_SKELETAL = 1,
-};
-
 enum WindowModes {
     WINDOW_MODE_FULLSCREEN_EXCLUSIVE = 1,
     WINDOW_MODE_FULLSCREEN_BORDERLESS = 2,

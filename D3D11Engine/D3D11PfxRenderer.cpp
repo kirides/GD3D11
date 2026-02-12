@@ -209,7 +209,6 @@ XRESULT D3D11PfxRenderer::CopyTextureToRTV( const Microsoft::WRL::ComPtr<ID3D11S
 
 /** Called on resize */
 XRESULT D3D11PfxRenderer::OnResize( const INT2& newResolution ) {
-    D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
 
     m_texturePool->Clear(); // textures will be created on demand
     if ( !FeatureLevel10Compatibility ) {
@@ -239,7 +238,7 @@ TextureHandle D3D11PfxRenderer::GetBackbufferTempBuffer()
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     auto res = engine->GetBackbufferResolution();
 
-    return m_texturePool->Acquire( TexturePool::Description{ res.x, res.y, DXGI_FORMAT_B8G8R8A8_UNORM } );
+    return m_texturePool->Acquire( TexturePool::Description{ res.x, res.y, DXGI_FORMAT_ENGINE_SWAPCHAIN  } );
 }
 
 TextureHandle D3D11PfxRenderer::GetTempBufferDS4()

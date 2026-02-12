@@ -62,7 +62,7 @@ public:
         // make the session camera aware of our viewport
         if ( auto view = (_zCView*)_this->targetView; view && view->viewID == 1 ) {
             // Modify the engines Viewport to match our current active backbuffer size
-            auto res = Engine::GAPI->GetRendererState().RendererInfo.IsRenderingWorld
+            auto res = Engine::GAPI->GetRendererState().RendererInfo.IsRenderStageDx11()
                 ? Engine::GraphicsEngine->GetResolution()
                 : Engine::GraphicsEngine->GetBackbufferResolution();
 

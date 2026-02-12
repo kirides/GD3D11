@@ -13,6 +13,16 @@ const int GSWITCH_LIGHING = 4;
 const int GSWITCH_REFLECTIONS = 8;
 const int GSWITCH_LINEAR_DEPTH = 16;
 
+enum RenderStage {
+    STAGE_DRAW_UNKNOWN = 0,
+    _STAGE_DRAW_DX11_START,
+    STAGE_DRAW_WORLD,
+    STAGE_DRAW_SKELETAL,
+    _STAGE_DRAW_DX11_END,
+    STAGE_DRAW_HUD,
+    STAGE_DRAW_PRESENT = 0xFFFF,
+};
+
 /** A single fixed function stage */
 struct FixedFunctionStage {
     enum EColorOp {
@@ -456,7 +466,6 @@ struct GothicTransformInfo {
         XMStoreFloat4x4( &TransformWorld, idMatrix );
         XMStoreFloat4x4( &TransformView, idMatrix );
         XMStoreFloat4x4( &TransformProj, idMatrix );
-        inFrame = false;
     }
 
     /** This is actually world * view. Gothic never sets the view matrix */
@@ -468,7 +477,6 @@ struct GothicTransformInfo {
     /** Projectionmatrix */
     XMFLOAT4X4 TransformProj;
     XMFLOAT4X4 TransformProjUnjittered;
-    bool inFrame;
 };
 
 struct HBAOSettings {
@@ -967,8 +975,8 @@ struct GothicRendererInfo {
         FramePipelineStates = 0;
 
         StateChanges = 0;
-        IsRenderingWorld = false;
         memset( StateChangesByState, 0, sizeof( StateChangesByState ) );
+        RenderStage = STAGE_DRAW_UNKNOWN;
     }
 
     enum EStateChange {
@@ -1008,7 +1016,11 @@ struct GothicRendererInfo {
 
     unsigned int VOBVerticesDataSize;
     unsigned int SkeletalVerticesDataSize;
-    bool IsRenderingWorld;
+    RenderStage RenderStage;
+    
+    bool IsRenderStageDx11() const {
+        return RenderStage > _STAGE_DRAW_DX11_START && RenderStage < _STAGE_DRAW_DX11_END;
+    }
 };
 
 /** This handles more device specific settings */

@@ -256,7 +256,7 @@ XRESULT D3D11Texture::CreateThumbnail() {
 
     // Create texture
     CD3D11_TEXTURE2D_DESC textureDesc(
-        DXGI_FORMAT_B8G8R8A8_UNORM,
+        DXGI_FORMAT_ENGINE_DEFAULT,
         256,
         256,
         1,
@@ -311,7 +311,7 @@ XRESULT D3D11Texture::GenerateMipMaps() {
     D3D11GraphicsEngineBase* engine = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine);
 
     std::unique_ptr<RenderToTextureBuffer> b = std::make_unique<RenderToTextureBuffer>( engine->GetDevice().Get(), TextureSize.x, TextureSize.y,
-        DXGI_FORMAT_B8G8R8A8_UNORM, nullptr, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, MipMapCount );
+        DXGI_FORMAT_ENGINE_DEFAULT, nullptr, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, MipMapCount );
 
     // Copy the main image
     engine->GetContext()->CopySubresourceRegion( b->GetTexture().Get(), 0, 0, 0, 0, Texture.Get(), 0, nullptr );

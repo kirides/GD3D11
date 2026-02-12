@@ -797,20 +797,19 @@ XRESULT D3D11GraphicsEngine::SetWindow( HWND hWnd ) {
 void D3D11GraphicsEngine::OnResetBackBuffer() {
     auto res = GetResolution();
     PfxRenderer->OnResize( res );
-    HDRBackBuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), res.x, res.y, 
-        (Engine::GAPI->GetRendererState().RendererSettings.CompressBackBuffer ? DXGI_FORMAT_R11G11B10_FLOAT : DXGI_FORMAT_R16G16B16A16_FLOAT) );
+    HDRBackBuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), res.x, res.y, GetBackBufferFormat());
     SetDebugName( HDRBackBuffer->GetShaderResView().Get(), "Backbuffer->ShaderResourceView" );
     SetDebugName( HDRBackBuffer->GetRenderTargetView().Get(), "Backbuffer->RenderTargetView" );
 
     res = GetBackbufferResolution();
-    Backbuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), res.x, res.y, DXGI_FORMAT_B8G8R8A8_UNORM );
+    Backbuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), res.x, res.y, DXGI_FORMAT_ENGINE_SWAPCHAIN );
     SetDebugName( Backbuffer->GetShaderResView().Get(), "Backbuffer->ShaderResourceView" );
     SetDebugName( Backbuffer->GetRenderTargetView().Get(), "Backbuffer->RenderTargetView" );
 }
 
 /** Get BackBuffer Format */
 DXGI_FORMAT D3D11GraphicsEngine::GetBackBufferFormat() {
-    return (Engine::GAPI->GetRendererState().RendererSettings.CompressBackBuffer ? DXGI_FORMAT_R11G11B10_FLOAT : DXGI_FORMAT_R16G16B16A16_FLOAT);
+    return Engine::GAPI->GetRendererState().RendererSettings.CompressBackBuffer ? DXGI_FORMAT_R11G11B10_FLOAT : DXGI_FORMAT_R16G16B16A16_FLOAT;
 }
 
 void ApplyWindowStyle(HWND window, WindowModes windowMode) {
@@ -903,7 +902,7 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
         newMode.Height = newSize.y;
         newMode.RefreshRate.Numerator = CachedRefreshRate.Numerator;
         newMode.RefreshRate.Denominator = CachedRefreshRate.Denominator;
-        newMode.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        newMode.Format = DXGI_FORMAT_ENGINE_SWAPCHAIN ;
         SwapChain->ResizeTarget( &newMode );
 
         RECT desktopRect;
@@ -979,7 +978,7 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
             LogInfo() << "SwapChain: DXGI_FEATURE_PRESENT_ALLOW_TEARING = " << (m_flipWithTearing ? "Enabled" : "Disabled");
         }
 
-        LogInfo() << "Creating new swapchain! (Format: DXGI_FORMAT_B8G8R8A8_UNORM)";
+        LogInfo() << "Creating new swapchain! (Format: " << DXGI_FORMAT_ENGINE_SWAPCHAIN << " )";
 
         if ( m_swapchainflip ) {
             scd.BufferCount = 2;
@@ -1004,7 +1003,7 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
         lastSwapchainFlags = scflags;
         scd.SwapEffect = swapEffect;
         scd.Flags = scflags;
-        scd.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        scd.Format = DXGI_FORMAT_ENGINE_SWAPCHAIN ;
         scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT | DXGI_USAGE_SHADER_INPUT;
         scd.SampleDesc.Count = 1;
         scd.SampleDesc.Quality = 0;
@@ -1032,7 +1031,7 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
                 newMode.Height = newSize.y;
                 newMode.RefreshRate.Numerator = CachedRefreshRate.Numerator;
                 newMode.RefreshRate.Denominator = CachedRefreshRate.Denominator;
-                newMode.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+                newMode.Format = DXGI_FORMAT_ENGINE_SWAPCHAIN ;
                 SwapChain->ResizeTarget( &newMode );
                 SwapChain->SetFullscreenState( true, nullptr );
             }
@@ -1049,8 +1048,8 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
             WaitForSingleObjectEx( frameLatencyWaitableObject, INFINITE, true );
         }
     } else {
-        LogInfo() << "Resizing swapchain  (Format: DXGI_FORMAT_B8G8R8A8_UNORM)";
-        hr =SwapChain->ResizeBuffers( 0, bbres.x, bbres.y, DXGI_FORMAT_B8G8R8A8_UNORM, lastSwapchainFlags );
+        LogInfo() << "Resizing swapchain  (Format: DXGI_FORMAT_SWAPCHAIN )";
+        hr =SwapChain->ResizeBuffers( 0, bbres.x, bbres.y, DXGI_FORMAT_ENGINE_SWAPCHAIN , lastSwapchainFlags );
         if ( FAILED( hr ) ) {
             LogError() << "Failed to resize swapchain! HRESULT: " << std::hex << hr;
             return XR_FAILED;
@@ -1099,7 +1098,7 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
     SetDebugName( GBuffer1_Normals->GetRenderTargetView().Get(), "GBuffer1_Normals->RTV" );
 
     GBuffer0_Diffuse = std::make_unique<RenderToTextureBuffer>(
-        GetDevice().Get(), m_scaledResolution.x, m_scaledResolution.y, DXGI_FORMAT_B8G8R8A8_UNORM );
+        GetDevice().Get(), m_scaledResolution.x, m_scaledResolution.y, DXGI_FORMAT_ENGINE_SWAPCHAIN  );
 
     SetDebugName( GBuffer0_Diffuse->GetTexture().Get(), "GBuffer0_Diffuse->TEX" );
     SetDebugName( GBuffer0_Diffuse->GetShaderResView().Get(), "GBuffer0_Diffuse->SRV" );
@@ -1112,15 +1111,14 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
     SetDebugName( VelocityBuffer->GetShaderResView().Get(), "VelocityBuffer->SRV" );
     SetDebugName( VelocityBuffer->GetRenderTargetView().Get(), "VelocityBuffer->RTV" );
 
-    HDRBackBuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), m_scaledResolution.x, m_scaledResolution.y,
-        (Engine::GAPI->GetRendererState().RendererSettings.CompressBackBuffer ? DXGI_FORMAT_R11G11B10_FLOAT : DXGI_FORMAT_R16G16B16A16_FLOAT) );
+    HDRBackBuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), m_scaledResolution.x, m_scaledResolution.y, GetBackBufferFormat() );
 
     SetDebugName( HDRBackBuffer->GetTexture().Get(), "HDRBackBuffer->TEX" );
     SetDebugName( HDRBackBuffer->GetShaderResView().Get(), "HDRBackBuffer->SRV" );
     SetDebugName( HDRBackBuffer->GetRenderTargetView().Get(), "HDRBackBuffer->RTV" );
 
     // actual native-resolution backbuffer for UI and copy operations !!
-    Backbuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), Resolution.x, Resolution.y, DXGI_FORMAT_B8G8R8A8_UNORM );
+    Backbuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), Resolution.x, Resolution.y, DXGI_FORMAT_ENGINE_SWAPCHAIN );
 
     SetDebugName( Backbuffer->GetTexture().Get(), "Backbuffer->TEX" );
     SetDebugName( Backbuffer->GetShaderResView().Get(), "Backbuffer->SRV" );
@@ -1163,7 +1161,7 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
 
     static int s_oldResolutionScalePercent = Engine::GAPI->GetRendererState().RendererSettings.ResolutionScalePercent;
     
-    Engine::GAPI->GetRendererState().TransformState.inFrame = false;
+    Engine::GAPI->GetRendererState().RendererInfo.RenderStage = STAGE_DRAW_UNKNOWN;
 
     if (NewResolution != Resolution) {
         OnResize(NewResolution);
@@ -1338,7 +1336,7 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
 
 /** Called when the game ended it's frame */
 XRESULT D3D11GraphicsEngine::OnEndFrame() {
-    Engine::GAPI->GetRendererState().TransformState.inFrame = false;
+    Engine::GAPI->GetRendererState().RendererInfo.RenderStage = STAGE_DRAW_PRESENT;
     StoreVobPreviousTransforms(); // used for motion vectors
     Present();
 
@@ -1424,14 +1422,14 @@ XRESULT D3D11GraphicsEngine::FetchDisplayModeListDXGI() {
     }
 
     UINT numModes = 0;
-    hr = output->GetDisplayModeList1( DXGI_FORMAT_B8G8R8A8_UNORM, 0, &numModes, nullptr );
+    hr = output->GetDisplayModeList1( DXGI_FORMAT_ENGINE_SWAPCHAIN , 0, &numModes, nullptr );
     if ( FAILED( hr ) || numModes == 0 ) {
         CachedDisplayModes.emplace_back( Resolution.x, Resolution.y );
         return XR_FAILED;
     }
 
     std::unique_ptr<DXGI_MODE_DESC1[]> displayModes = std::make_unique<DXGI_MODE_DESC1[]>( numModes );
-    hr = output->GetDisplayModeList1( DXGI_FORMAT_B8G8R8A8_UNORM, 0, &numModes, displayModes.get() );
+    hr = output->GetDisplayModeList1( DXGI_FORMAT_ENGINE_SWAPCHAIN , 0, &numModes, displayModes.get() );
     if ( FAILED( hr ) ) {
         CachedDisplayModes.emplace_back( Resolution.x, Resolution.y );
         return XR_FAILED;
@@ -2595,7 +2593,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     // return XR_SUCCESS;
     if ( PresentPending ) return XR_SUCCESS;
 
-    Engine::GAPI->GetRendererState().RendererInfo.IsRenderingWorld = true;
+    Engine::GAPI->GetRendererState().RendererInfo.RenderStage = STAGE_DRAW_WORLD;
 
     D3D11_VIEWPORT vp;
     vp.TopLeftX = 0.0f;
@@ -2913,8 +2911,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         }
 
         // Below this, we assume UI/HUD rendering
-        Engine::GAPI->GetRendererState().RendererInfo.IsRenderingWorld = false;
-
+        Engine::GAPI->GetRendererState().RendererInfo.RenderStage = STAGE_DRAW_HUD;
 
         D3D11_VIEWPORT vp;
         vp.TopLeftX = 0.0f;
@@ -5727,7 +5724,7 @@ void D3D11GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& 
 
     HRESULT hr;
     auto rt = std::make_unique<RenderToTextureBuffer>(
-        GetDevice().Get(), buffersize.x, buffersize.y, DXGI_FORMAT_B8G8R8A8_UNORM );
+        GetDevice().Get(), buffersize.x, buffersize.y, DXGI_FORMAT_ENGINE_SWAPCHAIN  );
     PfxRenderer->CopyTextureToRTV( HDRBackBuffer->GetShaderResView(), rt->GetRenderTargetView(), buffersize, true );
     GetContext()->Flush();
 
@@ -5735,7 +5732,7 @@ void D3D11GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& 
     texDesc.ArraySize = 1;
     texDesc.BindFlags = 0;
     texDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-    texDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    texDesc.Format = DXGI_FORMAT_ENGINE_SWAPCHAIN ;
     texDesc.Width = buffersize.x;
     texDesc.Height = buffersize.y;
     texDesc.MipLevels = 1;
@@ -6465,7 +6462,7 @@ void D3D11GraphicsEngine::SaveScreenshot() {
     auto Resolution = GetResolution();
     // Buffer for scaling down the image
     auto rt = std::make_unique<RenderToTextureBuffer>(
-        GetDevice().Get(), Resolution.x, Resolution.y, DXGI_FORMAT_B8G8R8A8_UNORM );
+        GetDevice().Get(), Resolution.x, Resolution.y, DXGI_FORMAT_ENGINE_SWAPCHAIN  );
 
     // Downscale to 256x256
     PfxRenderer->CopyTextureToRTV( HDRBackBuffer->GetShaderResView(), rt->GetRenderTargetView() );
@@ -6474,7 +6471,7 @@ void D3D11GraphicsEngine::SaveScreenshot() {
     texDesc.ArraySize = 1;
     texDesc.BindFlags = 0;
     texDesc.CPUAccessFlags = 0;
-    texDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    texDesc.Format = DXGI_FORMAT_ENGINE_SWAPCHAIN ;
     texDesc.Width = Resolution.x;   // must be same as backbuffer
     texDesc.Height = Resolution.y;  // must be same as backbuffer
     texDesc.MipLevels = 1;

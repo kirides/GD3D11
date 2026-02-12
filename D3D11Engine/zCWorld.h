@@ -187,7 +187,7 @@ public:
         hook_outfunc
 
         if ( thisptr == Engine::GAPI->GetLoadedWorldInfo()->MainWorld ) {
-            Engine::GAPI->GetRendererState().RendererInfo.IsRenderingWorld = true;
+            Engine::GAPI->GetRendererState().RendererInfo.RenderStage = STAGE_DRAW_UNKNOWN;
             if ( Engine::GAPI->GetRendererState().RendererSettings.AtmosphericScattering ) {
                 HookedFunctions::OriginalFunctions.original_zCWorldRender( thisptr, camera );
             } else {

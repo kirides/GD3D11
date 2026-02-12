@@ -38,19 +38,19 @@ __declspec(selectany) std::string LOGFILE;
 
 #else
 
-#define XLE(x) { XRESULT xr = (x); if (xr != XRESULT::XR_SUCCESS){ LogError() << ##x << " failed with code: " << xr << " (" + Toolbox::MakeErrorString(xr) + ")";}}
+#define XLE(x) { XRESULT xr = (x); if (xr != XRESULT::XR_SUCCESS){ LogError() << ##x << " failed with code: " << std::hex << xr << " (" + Toolbox::MakeErrorString(xr) + ")";}}
 
 /** Checks for errors and logs them, HRESULT hr needs to be declared */
-#define LE(x) { hr = (x); if (FAILED(hr)){LogError() << "failed with code: " << hr << "!"; }/*else{ LogInfo() << L#x << L" Succeeded."; }*/ }
+#define LE(x) { hr = (x); if (FAILED(hr)){LogError() << "failed with code: " << std::hex << hr << "!"; }/*else{ LogInfo() << L#x << L" Succeeded."; }*/ }
 
 /** Returns hr if failed (HRESULT-function, hr needs to be declared)*/
-#define LE_R(x) { hr = (x); if (FAILED(hr)){LogError() << "failed with code: " << hr << "!"; return hr;} }
+#define LE_R(x) { hr = (x); if (FAILED(hr)){LogError() << "failed with code: " << std::hex << hr << "!"; return hr;} }
 
 /** Returns nothing if failed (void-function)*/
-#define LE_RV(x) { hr = (x); if (FAILED(hr)){LogError() << "failed with code: " << hr << "!"; return;} }
+#define LE_RV(x) { hr = (x); if (FAILED(hr)){LogError() << "failed with code: " << std::hex << hr << "!"; return;} }
 
 /** Returns false if failed (bool-function) */
-#define LE_RB(x) { hr = (x); if (FAILED(hr)){LogError() << "failed with code: " << hr << "!"; return false;} }
+#define LE_RB(x) { hr = (x); if (FAILED(hr)){LogError() << "failed with code: " << std::hex << hr << "!"; return false;} }
 
 #define ErrorBox(Msg) MessageBoxA(nullptr,Msg,"GD3D11: Error!",MB_OK|MB_ICONERROR|MB_TOPMOST)
 #define InfoBox(Msg) MessageBoxA(nullptr,Msg,"GD3D11: Info!",MB_OK|MB_ICONASTERISK|MB_TOPMOST)
