@@ -60,24 +60,20 @@ float2 ProjectToPreviousFrame(float3 worldPos) {
 float2 CalculateVelocity(float2 texCoord, float depth) {
     // Skip sky pixels (depth = 0 in reversed-Z means far plane/sky)
     if (depth < 0.0001) {
-        // For sky, just use the jitter difference as velocity
-        return JitterOffset - PrevJitterOffset;
+        return float2(0.0, 0.0);
     }
-    
+
     // Remove current jitter from UV to get the unjittered sample position
-    float2 unjitteredUV = texCoord - JitterOffset;
-    
+    float2 currentUV = texCoord - JitterOffset;
+
     // Reconstruct world position at this pixel
-    float3 worldPos = ReconstructWorldPosition(unjitteredUV, depth);
-    
-    // Project to previous frame
+    float3 worldPos = ReconstructWorldPosition(currentUV, depth);
+
+    // Project to previous frame (unjittered)
     float2 prevUV = ProjectToPreviousFrame(worldPos);
-    
-    // Add previous frame's jitter offset back
-    prevUV += PrevJitterOffset;
-    
-    // Calculate velocity (current UV - previous UV)
-    return texCoord - prevUV;
+
+    // Calculate velocity in unjittered space
+    return currentUV - prevUV;
 }
 
 // 3x3 velocity dilation kernel

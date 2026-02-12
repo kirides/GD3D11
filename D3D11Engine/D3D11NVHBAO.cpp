@@ -50,7 +50,8 @@ XRESULT D3D11NVHBAO::Render( Microsoft::WRL::ComPtr<ID3D11RenderTargetView> pOut
 
     Input.NormalData.Enable = true;
     Input.NormalData.pFullResNormalTextureSRV = engine->GetGBuffer1().GetShaderResView();
-    Input.NormalData.WorldToViewMatrix.Data = GFSDK_SSAO_Float4x4( reinterpret_cast<float*>(&XMMatrixIdentity()) ); // We already have them in view-space
+    auto identity = XMMatrixIdentity();
+    Input.NormalData.WorldToViewMatrix.Data = GFSDK_SSAO_Float4x4( reinterpret_cast<float*>(&identity) ); // We already have them in view-space
     Input.NormalData.WorldToViewMatrix.Layout = GFSDK_SSAO_COLUMN_MAJOR_ORDER;
 
     GFSDK_SSAO_Parameters Params;
@@ -69,8 +70,9 @@ XRESULT D3D11NVHBAO::Render( Microsoft::WRL::ComPtr<ID3D11RenderTargetView> pOut
 
     GFSDK_SSAO_Status status;
     status = AOContext->RenderAO( engine->GetContext().Get(), Input, Params, Output );
+
     if ( status != GFSDK_SSAO_OK ) {
-        LogError() << "Failed to render Nvidia HBAO+!";
+        LogError() << "Failed to render Nvidia HBAO+! Result: " << status;
         return XR_FAILED;
     }
 

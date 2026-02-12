@@ -392,8 +392,15 @@ public:
 			break;
 
 		case D3DTRANSFORMSTATE_PROJECTION:
-			XMMATRIX matrixProj = XMLoadFloat4x4( reinterpret_cast<XMFLOAT4X4*>(lpD3DMatrix) );
+            if ( state.TransformState.inFrame ) {
+                // stop the game from constantly resetting the projection matrix
+                // as we may have modified it for TAA. Only allow this once at the start of a frame.
+                return S_OK;
+            }
+            state.TransformState.inFrame = true;
+            XMMATRIX matrixProj = XMLoadFloat4x4( reinterpret_cast<XMFLOAT4X4*>(lpD3DMatrix) );
 			XMStoreFloat4x4( &state.TransformState.TransformProj, XMMatrixTranspose( matrixProj ) );
+            state.TransformState.TransformProjUnjittered = state.TransformState.TransformProj;
 			break;
 		}
 

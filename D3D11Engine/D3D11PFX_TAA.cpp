@@ -34,10 +34,8 @@ D3D11PFX_TAA::D3D11PFX_TAA(D3D11PfxRenderer* rnd)
     m_PrevCameraPosition = XMFLOAT3(0, 0, 0);
     XMStoreFloat4x4( &m_PrevViewProj, XMMatrixIdentity() );
     XMStoreFloat4x4( &m_UnjitteredViewProj, XMMatrixIdentity() );
-    
-    // Generate Halton sequence with 16 samples for better temporal coverage
-    // Using bases 2 and 3 provides good low-discrepancy distribution
-    const int JITTER_SAMPLES = 16;
+
+    const int JITTER_SAMPLES = 8;
     m_JitterSequence.resize(JITTER_SAMPLES);
     for (int i = 0; i < JITTER_SAMPLES; i++) {
         // Center the Halton sequence around 0 (-0.5 to 0.5 range)
@@ -114,11 +112,6 @@ void D3D11PFX_TAA::OnResize(const INT2& size) {
 }
 
 void D3D11PFX_TAA::OnDisabled() {
-    // Remove any residual jitter from projection matrix when TAA is disabled
-    XMFLOAT4X4& projF = Engine::GAPI->GetProjectionMatrix();
-    projF._31 -= m_CurrentJitter.x * 2.0f;
-    projF._32 -= m_CurrentJitter.y * 2.0f;
-
     m_CurrentJitter = XMFLOAT2( 0, 0 );
     m_PreviousJitter = XMFLOAT2( 0, 0 );
     m_FirstFrame = true;
@@ -131,37 +124,43 @@ void D3D11PFX_TAA::AdvanceJitter() {
     // Advance to next jitter sample
     m_JitterIndex = (m_JitterIndex + 1) % m_JitterSequence.size();
 
-    // Get the current projection matrix from the renderer state
-    XMFLOAT4X4& projF = Engine::GAPI->GetProjectionMatrix();
+    XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
+    Engine::GAPI->SetViewTransformXM( view );
+
+    auto projF = Engine::GAPI->GetProjectionMatrix();
     
-    // Remove the previous jitter from the projection matrix to get the unjittered version
-    projF._31 -= m_PreviousJitter.x * 2.0f;
-    projF._32 -= m_PreviousJitter.y * 2.0f;
+    // Remove the jitter applied in the previous frame.
+    // just safety, as zEngine always resets Projection on frame start
+    projF._13 = 0;
+    projF._23 = 0;
     
-    // Store the unjittered view-projection for use in the velocity/resolve pass
-    // Note: Gothic stores matrices in row-major order, so we multiply view * proj
-    XMMATRIX view = XMLoadFloat4x4( &Engine::GAPI->GetRendererState().TransformState.TransformView );
-    XMMATRIX proj = XMLoadFloat4x4( &projF );
-    XMMATRIX viewProj = XMMatrixMultiply( view, proj );
-    // Store WITHOUT transpose - we'll handle the conversion in the shader setup
+    XMMATRIX viewProj = XMMatrixMultiply( XMLoadFloat4x4( &projF ), view );
+    
+    // row-major view proj
     XMStoreFloat4x4( &m_UnjitteredViewProj, viewProj );
-    
-    // Calculate new jitter in UV space (pixels / resolution)
-    // The jitter sequence is in pixel space (-0.5 to 0.5), convert to UV space
+
     m_CurrentJitter = XMFLOAT2(
         m_JitterSequence[m_JitterIndex].x / static_cast<float>(m_Width),
         m_JitterSequence[m_JitterIndex].y / static_cast<float>(m_Height)
     );
+
+    //m_CurrentJitter = XMFLOAT2( 0.5f, 0 ); // Disable jitter for testing
+    // m_CurrentJitter = XMFLOAT2( 0.0f, 0 ); // Disable jitter for testing
     
     // Apply the new jitter to the projection matrix for scene rendering
     // The factor of 2 converts from UV space to clip space (-1 to 1)
-    projF._31 += m_CurrentJitter.x * 2.0f;
-    projF._32 += m_CurrentJitter.y * 2.0f;
+    projF._13 = m_CurrentJitter.x * 2.0f;
+    projF._23 = -m_CurrentJitter.y * 2.0f;
+
+    Engine::GAPI->GetRendererState().TransformState.TransformProj = projF;
 }
 
 void D3D11PFX_TAA::RenderVelocityBuffer(
     const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& depthSRV) {
     
+    // depthSRV is using reverse-z where far plane is 0.0 and near plane is 1.0
+    // where most "near" items are in the range of 0.05 to 0.2, and all far items are lower.
+
     auto* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     auto& context = engine->GetContext();
     
@@ -178,16 +177,15 @@ void D3D11PFX_TAA::RenderVelocityBuffer(
     VelocityBufferConstantBuffer vcb;
     
     // Get the UNJITTERED inverse view-projection
-    // m_UnjitteredViewProj is stored in row-major (non-transposed)
+    // m_UnjitteredViewProj is stored in column-major
     XMMATRIX unjitteredViewProj = XMLoadFloat4x4( &m_UnjitteredViewProj );
     XMMATRIX invViewProj = XMMatrixInverse( nullptr, unjitteredViewProj );
     
-    // For HLSL: transpose for column-major shader consumption
-    XMStoreFloat4x4(&vcb.InvViewProj, XMMatrixTranspose(invViewProj));
+    XMStoreFloat4x4(&vcb.InvViewProj, invViewProj );
     
-    // PrevViewProj is also stored non-transposed, transpose it for HLSL
+    // PrevViewProj is also stored Column-major
     XMMATRIX prevViewProj = XMLoadFloat4x4( &m_PrevViewProj );
-    XMStoreFloat4x4(&vcb.PrevViewProj, XMMatrixTranspose(prevViewProj));
+    XMStoreFloat4x4( &vcb.PrevViewProj, prevViewProj );
     
     vcb.JitterOffset = m_CurrentJitter;
     vcb.PrevJitterOffset = m_PreviousJitter;
@@ -267,27 +265,25 @@ void D3D11PFX_TAA::RenderPostFX(
     XMMATRIX unjitteredViewProj = XMLoadFloat4x4( &m_UnjitteredViewProj );
     XMMATRIX invViewProj = XMMatrixInverse( nullptr, unjitteredViewProj );
     
-    XMStoreFloat4x4(&cb.InvViewProj, XMMatrixTranspose(invViewProj));
-    
+    XMStoreFloat4x4( &cb.InvViewProj, invViewProj );
+
     // PrevViewProj transpose for HLSL
     XMMATRIX prevViewProj = XMLoadFloat4x4( &m_PrevViewProj );
-    XMStoreFloat4x4(&cb.PrevViewProj, XMMatrixTranspose(prevViewProj));
-    
+    XMStoreFloat4x4( &cb.PrevViewProj, prevViewProj );
+
     cb.JitterOffset = m_CurrentJitter;
     cb.Resolution = XMFLOAT2(static_cast<float>(m_Width), static_cast<float>(m_Height));
-    
-    // Blend factor: higher = more current frame (sharper but more flickering)
-    // Using 0.08 as base gives good balance between stability and sharpness
-    // The shader will adaptively increase this at edges and for motion
+
     cb.BlendFactor = m_FirstFrame ? 1.0f : 0.08f;
+
+
     cb.MotionScale = 1.0f;
     
     m_TAAConstantBuffer->UpdateBuffer(&cb);
     m_TAAConstantBuffer->BindToPixelShader(0);
     
-    // Store current unjittered viewproj for next frame (already non-transposed)
     m_PrevViewProj = m_UnjitteredViewProj;
-    
+
     // Store current camera position for next frame
     m_PrevCameraPosition = Engine::GAPI->GetCameraPosition();
 

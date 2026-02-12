@@ -1163,6 +1163,8 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
 
     static int s_oldResolutionScalePercent = Engine::GAPI->GetRendererState().RendererSettings.ResolutionScalePercent;
     
+    Engine::GAPI->GetRendererState().TransformState.inFrame = false;
+
     if (NewResolution != Resolution) {
         OnResize(NewResolution);
     } else if ( currentWindowMode && lastWindowMode != currentWindowMode) {
@@ -1336,6 +1338,7 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
 
 /** Called when the game ended it's frame */
 XRESULT D3D11GraphicsEngine::OnEndFrame() {
+    Engine::GAPI->GetRendererState().TransformState.inFrame = false;
     StoreVobPreviousTransforms(); // used for motion vectors
     Present();
 
@@ -2845,14 +2848,15 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         DrawUnderwaterEffects();
     }
 
+    // Clear here to get a working depthbuffer but no interferences with world
+    // geometry for gothic UI-Rendering
+    GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(), nullptr );
+
     // Store the current depth state to the copy buffer before clear
     CopyDepthStencil();
 
-    // Clear here to get a working depthbuffer but no interferences with world
-    // geometry for gothic UI-Rendering
     GetContext()->ClearDepthStencilView( DepthStencilBuffer->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
     GetContext()->ClearDepthStencilView( m_NativeSizeDepthStencil->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
-    GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(), nullptr );
 
     // Before returning to gothics UI, set render target to backbuffer
     {
@@ -6722,10 +6726,13 @@ void D3D11GraphicsEngine::DrawString( const std::string& str, float x, float y, 
 }
 
 void D3D11GraphicsEngine::StorePrevViewProjMatrix() {
-    XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
-    XMMATRIX proj = XMLoadFloat4x4( &Engine::GAPI->GetProjectionMatrix() );
+
+    XMFLOAT4X4& projF = Engine::GAPI->GetProjectionMatrix(); // column-major
+    XMFLOAT4X4 viewF; Engine::GAPI->GetViewMatrix( &viewF ); // returns column-major
+    XMMATRIX view = XMMatrixTranspose( Engine::GAPI->GetViewMatrixXM() ); // returns column-major
+    XMMATRIX proj = XMLoadFloat4x4( &projF );
     XMMATRIX viewProj = XMMatrixMultiply( view, proj );
-    XMStoreFloat4x4( &m_PrevViewProjMatrix, XMMatrixTranspose( viewProj ) );
+    XMStoreFloat4x4( &m_PrevViewProjMatrix, viewProj ); // store row-major view proj
 }
 
 void D3D11GraphicsEngine::StoreVobPreviousTransforms() {

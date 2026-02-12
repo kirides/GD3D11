@@ -1,6 +1,4 @@
-// TAA Pixel Shader - Improved with Velocity Buffer Support
-// Features: Depth discontinuity detection, edge-aware blending, variance clipping,
-//           alpha-edge detection, integrated sharpening
+// TAA Pixel Shader
 cbuffer TAAConstants : register(b0) {
     float4x4 InvViewProj;      // Current frame's UNJITTERED inverse view-projection
     float4x4 PrevViewProj;     // Previous frame's UNJITTERED view-projection
@@ -73,86 +71,6 @@ float3 ClipAABB(float3 aabbMin, float3 aabbMax, float3 prevSample, float3 center
 
 float Luminance(float3 color) {
     return dot(color, float3(0.299, 0.587, 0.114));
-}
-
-// ============================================================================
-// Depth discontinuity detection
-// Detects edges where depth changes sharply (object silhouettes)
-// Returns a value 0-1 where higher values indicate stronger discontinuity
-// ============================================================================
-
-float DetectDepthDiscontinuity(float2 texCoord, float2 pixelSize, out float centerDepth) {
-    // Sample depth in a cross pattern for edge detection
-    centerDepth = TX_Texture2.SampleLevel(SS_Point, texCoord, 0).r;
-    
-    float depthLeft = TX_Texture2.SampleLevel(SS_Point, texCoord + float2(-pixelSize.x, 0), 0).r;
-    float depthRight = TX_Texture2.SampleLevel(SS_Point, texCoord + float2(pixelSize.x, 0), 0).r;
-    float depthUp = TX_Texture2.SampleLevel(SS_Point, texCoord + float2(0, -pixelSize.y), 0).r;
-    float depthDown = TX_Texture2.SampleLevel(SS_Point, texCoord + float2(0, pixelSize.y), 0).r;
-    
-    // Calculate depth gradients
-    float gradX = abs(depthRight - depthLeft);
-    float gradY = abs(depthDown - depthUp);
-    
-    // Combined gradient magnitude
-    float gradientMagnitude = sqrt(gradX * gradX + gradY * gradY);
-    
-    // Normalize by depth to make detection distance-independent
-    // In reversed-Z, larger depth = closer to camera
-    // We want the threshold to be relative to the depth
-    float depthThreshold = max(centerDepth, 0.001) * 0.05; // 5% of current depth
-    
-    // Calculate discontinuity factor
-    float discontinuity = saturate(gradientMagnitude / depthThreshold);
-    
-    // Also check for diagonal discontinuities for better corner detection
-    float depthTL = TX_Texture2.SampleLevel(SS_Point, texCoord + float2(-pixelSize.x, -pixelSize.y), 0).r;
-    float depthBR = TX_Texture2.SampleLevel(SS_Point, texCoord + float2(pixelSize.x, pixelSize.y), 0).r;
-    float depthTR = TX_Texture2.SampleLevel(SS_Point, texCoord + float2(pixelSize.x, -pixelSize.y), 0).r;
-    float depthBL = TX_Texture2.SampleLevel(SS_Point, texCoord + float2(-pixelSize.x, pixelSize.y), 0).r;
-    
-    float diagGrad1 = abs(depthBR - depthTL);
-    float diagGrad2 = abs(depthBL - depthTR);
-    float diagGradient = max(diagGrad1, diagGrad2) * 0.707; // Scale by 1/sqrt(2) for diagonal
-    
-    float diagDiscontinuity = saturate(diagGradient / depthThreshold);
-    
-    return max(discontinuity, diagDiscontinuity);
-}
-
-// ============================================================================
-// Detect high-frequency color edges (alpha-tested geometry like vegetation)
-// These areas need special handling to prevent thickening
-// ============================================================================
-
-float DetectColorEdge(float2 texCoord, float2 pixelSize) {
-    // Sample luminance in cross pattern
-    float3 center = TX_Texture0.SampleLevel(SS_Point, texCoord, 0).rgb;
-    float3 left = TX_Texture0.SampleLevel(SS_Point, texCoord + float2(-pixelSize.x, 0), 0).rgb;
-    float3 right = TX_Texture0.SampleLevel(SS_Point, texCoord + float2(pixelSize.x, 0), 0).rgb;
-    float3 up = TX_Texture0.SampleLevel(SS_Point, texCoord + float2(0, -pixelSize.y), 0).rgb;
-    float3 down = TX_Texture0.SampleLevel(SS_Point, texCoord + float2(0, pixelSize.y), 0).rgb;
-    
-    float lumCenter = Luminance(center);
-    float lumLeft = Luminance(left);
-    float lumRight = Luminance(right);
-    float lumUp = Luminance(up);
-    float lumDown = Luminance(down);
-    
-    // Calculate luminance gradients
-    float gradX = abs(lumRight - lumLeft);
-    float gradY = abs(lumDown - lumUp);
-    float gradient = sqrt(gradX * gradX + gradY * gradY);
-    
-    // Vegetation/alpha edges typically have high luminance contrast
-    // (bright leaves against dark background or sky)
-    float maxLum = max(max(max(lumLeft, lumRight), max(lumUp, lumDown)), lumCenter);
-    float minLum = min(min(min(lumLeft, lumRight), min(lumUp, lumDown)), lumCenter);
-    float contrast = (maxLum - minLum) / (maxLum + 0.01);
-    
-    // Combine gradient and contrast for edge detection
-    // High values indicate likely alpha-tested geometry edges
-    return saturate(gradient * 2.0 + contrast * 0.5);
 }
 
 // ============================================================================
@@ -270,26 +188,6 @@ void GatherNeighborhood(float2 texCoord, float2 pixelSize,
 }
 
 // ============================================================================
-// TAA-integrated sharpening to counteract temporal blur
-// Uses a modified unsharp mask that's edge-aware
-// ============================================================================
-
-float3 ApplyTAASharpening(float3 color, float2 texCoord, float2 pixelSize, float strength) {
-    // Sample neighbors for sharpening
-    float3 left = TX_Texture0.SampleLevel(SS_Linear, texCoord + float2(-pixelSize.x, 0), 0).rgb;
-    float3 right = TX_Texture0.SampleLevel(SS_Linear, texCoord + float2(pixelSize.x, 0), 0).rgb;
-    float3 up = TX_Texture0.SampleLevel(SS_Linear, texCoord + float2(0, -pixelSize.y), 0).rgb;
-    float3 down = TX_Texture0.SampleLevel(SS_Linear, texCoord + float2(0, pixelSize.y), 0).rgb;
-    
-    // Simple sharpening kernel: center - average of neighbors
-    float3 blur = (left + right + up + down) * 0.25;
-    float3 sharpened = color + (color - blur) * strength;
-    
-    // Prevent negative values and excessive brightening
-    return max(sharpened, 0.0);
-}
-
-// ============================================================================
 // Main TAA resolve
 // ============================================================================
 
@@ -297,19 +195,9 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET {
     float2 texCoord = Input.vTexcoord;
     float2 pixelSize = 1.0 / Resolution;
     
-    // Detect depth discontinuity for edge-aware blending
-    float centerDepth;
-    float depthDiscontinuity = DetectDepthDiscontinuity(texCoord, pixelSize, centerDepth);
-    
-    // Detect color edges (helps identify alpha-tested geometry like vegetation)
-    float colorEdge = DetectColorEdge(texCoord, pixelSize);
-    
-    // Combined edge factor - both depth and color discontinuities
-    float edgeFactor = max(depthDiscontinuity, colorEdge * 0.7);
-    
-    // Sample current frame at jitter-corrected position for sharper output
-    float2 unjitteredUV = texCoord - JitterOffset;
-    float3 currentColor = TX_Texture0.SampleLevel(SS_Linear, unjitteredUV, 0).rgb;
+    // Sample current frame DIRECTLY. Do not unjitter texture coordinates.
+	// Resampling with an offset causes aliasing and vibration on foliage.
+	float3 currentColor = TX_Texture0.SampleLevel(SS_Linear, texCoord, 0).rgb;
     
     // Find the closest depth in neighborhood for motion vector sampling
     // This helps reduce ghosting on edges of moving objects
@@ -340,13 +228,10 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET {
     // Calculate standard deviation
     float3 sigma = sqrt(max(m2 - m1 * m1, 0.0));
     
-    // Adaptive gamma based on velocity, depth discontinuity, and color edges
+    // Adaptive gamma based on velocity
     // Tighter clipping for fast motion and at all types of edges
     float velocityFactor = saturate(velocityLengthPixels * 0.1);
-    float combinedFactor = max(velocityFactor, edgeFactor);
-    
-    // For vegetation/alpha edges, use even tighter clipping to prevent thickening
-    float gamma = lerp(1.0, 0.3, combinedFactor);
+    float gamma = lerp(1.0, 0.75, velocityFactor);   
     
     // Variance-based clipping bounds in tonemapped space
     float3 clipMin = m1 - gamma * sigma;
@@ -395,16 +280,6 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET {
     // Increase blend when history was heavily clipped
     adaptiveBlend = max(adaptiveBlend, clipAmount * 0.35);
     
-    // IMPORTANT: Increase blend at depth discontinuities (object edges)
-    // This reduces ghosting at silhouettes where reprojection is unreliable
-    float edgeBlend = depthDiscontinuity * 0.5;
-    adaptiveBlend = max(adaptiveBlend, edgeBlend);
-    
-    // IMPORTANT: Increase blend at color edges (vegetation/alpha geometry)
-    // This prevents temporal accumulation from making thin geometry appear thicker
-    float alphaEdgeBlend = colorEdge * 0.6;
-    adaptiveBlend = max(adaptiveBlend, alphaEdgeBlend);
-    
     // For very high velocity, blend even more towards current frame
     if (velocityLengthPixels > 8.0) {
         adaptiveBlend = lerp(adaptiveBlend, 0.7, saturate((velocityLengthPixels - 8.0) * 0.06));
@@ -435,16 +310,6 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET {
     float3 result = (currentColor * weightCurrent * adaptiveBlend + 
                      clampedHistory * weightHistory * (1.0 - adaptiveBlend)) /
                     (weightCurrent * adaptiveBlend + weightHistory * (1.0 - adaptiveBlend) + 0.0001);
-    
-    // ========================================================================
-    // Apply subtle integrated sharpening to counteract TAA blur
-    // The sharpening is adaptive: stronger in non-edge areas, subtle at edges
-    // ========================================================================
-    
-    // Sharpen amount: reduce at edges to prevent artifacts, increase in flat areas
-    // Base sharpening of 0.15 is subtle but helps with clarity
-    float sharpenStrength = lerp(0.15, 0.05, edgeFactor);
-    result = ApplyTAASharpening(result, texCoord, pixelSize, sharpenStrength);
-    
+
     return float4(result, 1.0);
 }
