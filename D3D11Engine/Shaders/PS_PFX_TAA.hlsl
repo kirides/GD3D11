@@ -280,16 +280,6 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET {
     // Increase blend when history was heavily clipped
     adaptiveBlend = max(adaptiveBlend, clipAmount * 0.35);
     
-    // IMPORTANT: Increase blend at depth discontinuities (object edges)
-    // This reduces ghosting at silhouettes where reprojection is unreliable
-    // float edgeBlend = depthDiscontinuity * 0.5;
-    // adaptiveBlend = max(adaptiveBlend, edgeBlend);
-    //
-    // // IMPORTANT: Increase blend at color edges (vegetation/alpha geometry)
-    // // This prevents temporal accumulation from making thin geometry appear thicker
-    // float alphaEdgeBlend = colorEdge * 0.6;
-    // adaptiveBlend = max(adaptiveBlend, alphaEdgeBlend);
-    
     // For very high velocity, blend even more towards current frame
     if (velocityLengthPixels > 8.0) {
         adaptiveBlend = lerp(adaptiveBlend, 0.7, saturate((velocityLengthPixels - 8.0) * 0.06));
