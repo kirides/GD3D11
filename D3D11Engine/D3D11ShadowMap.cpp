@@ -519,6 +519,15 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
                     c_XM_Up,
                     isLastCascade ? lastCascadeData.Position : WorldShadowCP,
                     GetSizeX() );
+            
+            // Get the cascade's view and projection matrices
+            // If CascadeCameraReplacements is provided, use it directly; otherwise fall back to current camera replacement
+            Frustum f;
+            CameraReplacement& cr = cascadeCRs[cascadeIdx];
+            auto lightView = XMMatrixTranspose( XMLoadFloat4x4( &cr.ViewReplacement ) );
+            auto lightProj = XMMatrixTranspose( XMLoadFloat4x4( &cr.ProjectionReplacement ) );
+            f.BuildOrthographic( lightView, lightProj, 0, 0 );
+            cr.frustum = f;
         }
 
         for ( size_t cascadeIdx = 0; cascadeIdx < numCascades; ++cascadeIdx ) {
@@ -907,20 +916,9 @@ void D3D11ShadowMap::RenderShadowmaps( const RenderShadowmapsParams& params ) {
                 // Build frustum from the light's view/projection matrices (cascade shadow map perspective)
                 // The view/projection matrices are already set via CameraReplacement before this call
                 // We use the light-space matrices to build the frustum for proper CSM culling
-
-                Frustum f = {};
-                const GothicRendererSettings::E_ShadowFrustumCulling cullingMode = Engine::GAPI->GetRendererState().RendererSettings.ShadowFrustumCullingMode;
-
-                // Get the cascade's view and projection matrices
-                // If CascadeCameraReplacements is provided, use it directly; otherwise fall back to current camera replacement
-                XMMATRIX lightView, lightProj;
-
                 const CameraReplacement& cr = params.CascadeCameraReplacements->at( i );
-                lightView = XMMatrixTranspose( XMLoadFloat4x4( &cr.ViewReplacement ) );
-                lightProj = XMMatrixTranspose( XMLoadFloat4x4( &cr.ProjectionReplacement ) );
-
-                f.BuildOrthographic( lightView, lightProj, 0, 0 );
-                cascadeFrustums.push_back( f );
+                
+                cascadeFrustums.push_back( cr.frustum );
             }
         }
     }

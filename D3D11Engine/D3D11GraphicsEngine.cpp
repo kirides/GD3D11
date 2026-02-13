@@ -4621,6 +4621,30 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         }
     }
 
+    static std::vector<VobInfo*> vobs = {};
+    static std::vector<VobLightInfo*> lights = {};
+    static std::vector<SkeletalVobInfo*> mobs = {};
+    vobs.clear();
+    lights.clear();
+    mobs.clear();
+    
+    if ( Engine::GAPI->GetRendererState().RendererSettings.DrawVOBs ||
+    Engine::GAPI->GetRendererState().RendererSettings.EnableDynamicLighting ) {
+        Engine::GAPI->CollectVisibleVobs( vobs, lights, mobs );
+    }
+    
+    for ( auto& it : vobs) {
+        it->VisibleInRenderPass = false;  // Reset this for the next frame
+    }
+    
+    for ( auto& it : lights) {
+        it->VisibleInRenderPass = false;  // Reset this for the next frame
+    }
+    
+    for ( auto& it : mobs) {
+        it->VisibleInRenderPass = false;  // Reset this for the next frame
+    }
+    
     if ( Engine::GAPI->GetRendererState().RendererSettings.DrawVOBs ) {
         auto _ = START_TIMING( "Static Mesh Visuals");
         auto _1 = RecordGraphicsEvent( L"DrawVOBs" );
@@ -4629,16 +4653,36 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         const std::unordered_map<zCProgMeshProto*, MeshVisualInfo*>& staticMeshVisuals =
             Engine::GAPI->GetStaticMeshVisuals();
 
-        for ( auto const& it : RenderedVobs ) {
-            if ( !it->IsIndoorVob ) {
-                //VobInstanceInfo vii;
-                //vii.world = it->WorldMatrix;
-                //static_cast<MeshVisualInfo*>(it->VisualInfo)->Instances.emplace_back( vii );
+        size_t ByteWidth = DynamicInstancingBuffer->GetSizeInBytes();
 
-                // We don't need vob world matrix because the data is already in buffer
-                static_cast<MeshVisualInfo*>(it->VisualInfo)->Instances.emplace_back();
-            }
+        if ( ByteWidth < sizeof( VobInstanceInfo ) * vobs.size() ) {
+            if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog )
+                LogInfo() << "Instancing buffer too small (" << ByteWidth
+                << "), need " << sizeof( VobInstanceInfo ) * vobs.size()
+                << " bytes. Recreating buffer.";
+
+            // Buffer too small, recreate it
+            DynamicInstancingBuffer->Init(
+                nullptr, sizeof( VobInstanceInfo ) * vobs.size(),
+                D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_DYNAMIC,
+                D3D11VertexBuffer::CA_WRITE );
+
+            SetDebugName( DynamicInstancingBuffer->GetShaderResourceView().Get(), "DynamicInstancingBuffer->ShaderResourceView" );
+            SetDebugName( DynamicInstancingBuffer->GetVertexBuffer().Get(), "DynamicInstancingBuffer->VertexBuffer" );
         }
+
+        byte* data;
+        UINT size;
+        UINT loc = 0;
+        DynamicInstancingBuffer->Map( D3D11VertexBuffer::M_WRITE_DISCARD,
+            reinterpret_cast<void**>(&data), &size );
+        for ( auto const& staticMeshVisual : staticMeshVisuals ) {
+            staticMeshVisual.second->StartInstanceNum = loc;
+            memcpy( data + loc * sizeof( VobInstanceInfo ), &staticMeshVisual.second->Instances[0],
+                sizeof( VobInstanceInfo ) * staticMeshVisual.second->Instances.size() );
+            loc += staticMeshVisual.second->Instances.size();
+        }
+        DynamicInstancingBuffer->Unmap();
 
         // Apply instancing shader
         SetActiveVertexShader( "VS_ExInstancedObj" );
@@ -4654,26 +4698,6 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         if ( ActiveVS ) {
             ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( 1 );
         }
-
-        // Static meshes should already be in buffer from main stage rendering
-        /*size_t ByteWidth = DynamicInstancingBuffer->GetSizeInBytes();
-        byte* data;
-        UINT size;
-        UINT loc = 0;
-        DynamicInstancingBuffer->Map( D3D11VertexBuffer::M_WRITE_DISCARD,
-            reinterpret_cast<void**>(&data), &size );
-        for ( auto const& staticMeshVisual : staticMeshVisuals ) {
-            if ( staticMeshVisual.second->Instances.empty() ) continue;
-
-                if ( (loc + staticMeshVisual.second->Instances.size()) * sizeof( VobInstanceInfo ) >= ByteWidth )
-                    break;  // Should never happen
-
-                staticMeshVisual.second->StartInstanceNum = loc;
-                memcpy( data + loc * sizeof( VobInstanceInfo ), &staticMeshVisual.second->Instances[0],
-                    sizeof( VobInstanceInfo ) * staticMeshVisual.second->Instances.size() );
-                loc += staticMeshVisual.second->Instances.size();
-            }            
-        DynamicInstancingBuffer->Unmap();*/
 
         XMFLOAT3 vPlayerPosition = Engine::GAPI->GetPlayerVob() ? Engine::GAPI->GetPlayerVob()->GetPositionWorld() : XMFLOAT3( 0, 0, 0 );
         g_windBuffer.playerPos = float3( vPlayerPosition.x, vPlayerPosition.y, vPlayerPosition.z );

@@ -1225,7 +1225,7 @@ void GothicAPI::DrawWorldMeshNaive() {
             //Engine::GraphicsEngine->GetLineRenderer()->AddAABBMinMax(bb.Min, bb.Max, XMFLOAT4(1, 1, 1, 1));
 
             int clipFlags = 15; // No far clip
-            if ( zCCamera::GetCamera()->BBox3DInFrustum( bb, clipFlags ) == ZTCAM_CLIPTYPE_OUT )
+            if ( GetCameraBBox3DInFrustum( bb, clipFlags ) == ZTCAM_CLIPTYPE_OUT )
                 continue;
 
             // Indoor?
@@ -1498,7 +1498,7 @@ void GothicAPI::GetVisibleParticleEffectsList( std::vector<zCVob*>& pfxList ) {
                 continue;
 
             int flags = 15; // Frustum check, no farplane
-            if ( zCCamera::GetCamera()->BBox3DInFrustum( it->GetBBox(), flags ) == ZTCAM_CLIPTYPE_OUT ) {
+            if ( GetCameraBBox3DInFrustum( it->GetBBox(), flags ) == ZTCAM_CLIPTYPE_OUT ) {
                 continue;
             }
 
@@ -1525,7 +1525,7 @@ void GothicAPI::GetVisibleDecalList( std::vector<zCVob*>& decals ) {
             continue;
 
         int flags = 15; // Frustum check, no farplane
-        if ( zCCamera::GetCamera()->BBox3DInFrustum( it->GetBBox(), flags ) == ZTCAM_CLIPTYPE_OUT ) {
+        if ( GetCameraBBox3DInFrustum( it->GetBBox(), flags ) == ZTCAM_CLIPTYPE_OUT ) {
             continue;
         }
 
@@ -3689,6 +3689,28 @@ FXMVECTOR GothicAPI::GetCameraPositionXM() {
     return oCGame::GetGame()->_zCSession_camVob->GetPositionWorldXM();
 }
 
+zTCam_ClipType GothicAPI::GetCameraBBox3DInFrustum( const zTBBox3D& box, int& clipFlags ) {
+    if ( !oCGame::GetGame()->_zCSession_camVob )
+        return zTCam_ClipType::ZTCAM_CLIPTYPE_IN;
+
+    if ( CameraReplacementPtr ) {
+        BoundingBox bb;
+        BoundingBox::CreateFromPoints(bb, XMLoadFloat3(&box.Min), XMLoadFloat3(&box.Max));
+
+        auto result = CameraReplacementPtr->frustum.Contains(bb);
+        if ( result == ContainmentType::DISJOINT )
+            return zTCam_ClipType::ZTCAM_CLIPTYPE_OUT;
+        if ( result == ContainmentType::INTERSECTS )
+            return zTCam_ClipType::ZTCAM_CLIPTYPE_CROSSING;
+        return zTCam_ClipType::ZTCAM_CLIPTYPE_IN;
+    }
+    if (auto cam = zCCamera::GetCamera(); cam) {
+        return cam->BBox3DInFrustum(box, clipFlags);
+    }
+    
+    return zTCam_ClipType::ZTCAM_CLIPTYPE_IN;
+}
+
 
 /** Returns the view matrix */
 void GothicAPI::GetViewMatrix( XMFLOAT4X4* view ) {
@@ -3940,7 +3962,7 @@ void GothicAPI::DebugDrawTreeNode( zCBspBase* base, zTBBox3D boxCell, int clipFl
             nodeYMax = std::max( nodeYMax, base->BBox3D.Max.y );
             nodeBox.Max.y = nodeYMax;
 
-            zTCam_ClipType nodeClip = zCCamera::GetCamera()->BBox3DInFrustum( nodeBox, clipFlags );
+            zTCam_ClipType nodeClip = GetCameraBBox3DInFrustum( nodeBox, clipFlags );
 
             if ( nodeClip == ZTCAM_CLIPTYPE_OUT )
                 return; // Nothig to see here. Discard this node and the subtree
@@ -3949,7 +3971,7 @@ void GothicAPI::DebugDrawTreeNode( zCBspBase* base, zTBBox3D boxCell, int clipFl
         if ( base->IsLeaf() ) {
             // Check if this leaf is inside the frustum
             if ( clipFlags > 0 ) {
-                if ( zCCamera::GetCamera()->BBox3DInFrustum( base->BBox3D, clipFlags ) == ZTCAM_CLIPTYPE_OUT )
+                if ( GetCameraBBox3DInFrustum( base->BBox3D, clipFlags ) == ZTCAM_CLIPTYPE_OUT )
                     return;
             }
 
@@ -4006,7 +4028,7 @@ void GothicAPI::CollectVisibleVobs( std::vector<VobInfo*>& vobs, std::vector<Vob
 
     zCBspBase* rootBsp = tree->GetRootNode();
     BspInfo* root = &BspLeafVobLists[rootBsp];
-    if ( zCCamera::GetCamera() ) {
+    if ( !CameraReplacementPtr && zCCamera::GetCamera() ) {
         zCCamera::GetCamera()->Activate();
     }
 
@@ -4094,7 +4116,7 @@ void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sect
                 float dist = Toolbox::ComputePointAABBDistance( camPos, section.BoundingBox.Min, section.BoundingBox.Max );
                 if ( dist < sectionViewDist ) {
                     int flags = 15; // Frustum check, no farplane
-                    if ( zCCamera::GetCamera()->BBox3DInFrustum( section.BoundingBox, flags ) == ZTCAM_CLIPTYPE_OUT )
+                    if ( GetCameraBBox3DInFrustum( section.BoundingBox, flags ) == ZTCAM_CLIPTYPE_OUT )
                         continue;
 
                     sections.push_back( &section );
@@ -4115,7 +4137,7 @@ void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sect
                 // Simple range-check
                 if ( abs( ity.first - camSection.y ) < sectionViewDist ) {
                     int flags = 15; // Frustum check, no farplane
-                    if ( zCCamera::GetCamera()->BBox3DInFrustum( section.BoundingBox, flags ) == ZTCAM_CLIPTYPE_OUT )
+                    if ( GetCameraBBox3DInFrustum( section.BoundingBox, flags ) == ZTCAM_CLIPTYPE_OUT )
                         continue;
 
                     sections.push_back( &section );
@@ -4311,7 +4333,7 @@ void GothicAPI::CollectVisibleVobsHelper( BspInfo* base, zTBBox3D boxCell, int c
     const float vobSmallSize = Engine::GAPI->GetRendererState().RendererSettings.SmallVobSize;
     const float visualFXDrawRadius = Engine::GAPI->GetRendererState().RendererSettings.VisualFXDrawRadius;
     const XMFLOAT3 camPos = Engine::GAPI->GetCameraPosition();
-    const FXMVECTOR cameraPosition = Engine::GAPI->GetCameraPositionXM();
+    const FXMVECTOR cameraPosition = XMLoadFloat3(&camPos);
 
     while ( base->OriginalNode ) {
         // Check for occlusion-culling
@@ -4331,7 +4353,7 @@ void GothicAPI::CollectVisibleVobsHelper( BspInfo* base, zTBBox3D boxCell, int c
             if ( dist < vobOutdoorDist ) {
                 zTCam_ClipType nodeClip;
                 if ( !Engine::GAPI->GetRendererState().RendererSettings.EnableOcclusionCulling ) {
-                    nodeClip = zCCamera::GetCamera()->BBox3DInFrustum( nodeBox, clipFlags );
+                    nodeClip = GetCameraBBox3DInFrustum( nodeBox, clipFlags );
                 } else {
                     nodeClip = static_cast<zTCam_ClipType>(base->OcclusionInfo.LastCameraClipType); // If we are using occlusion-clipping, this test has already been done
                 }

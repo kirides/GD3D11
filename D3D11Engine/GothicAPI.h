@@ -1,4 +1,5 @@
 #pragma once
+#include "Frustum.h"
 #include "pch.h"
 #include "GothicGraphicsState.h"
 #include "WorldConverter.h"
@@ -75,6 +76,8 @@ struct CameraReplacement {
     XMFLOAT4X4 ProjectionReplacement;
     XMFLOAT3 PositionReplacement;
     XMFLOAT3 LookAtReplacement;
+    
+    Frustum frustum;
 };
 
 /** Version of this struct */
@@ -386,6 +389,7 @@ public:
     /** Returns the current cameraposition */
     XMFLOAT3 GetCameraPosition();
     FXMVECTOR XM_CALLCONV GetCameraPositionXM();
+    zTCam_ClipType GetCameraBBox3DInFrustum(const zTBBox3D& box, int& clipFlags);
 
     /** Returns the view matrix */
     void GetViewMatrix( XMFLOAT4X4* view );

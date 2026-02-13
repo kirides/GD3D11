@@ -229,10 +229,17 @@ void D3D11PointLight::RenderFullCubemap() {
 /** Renders the scene with the given view-proj-matrices */
 void D3D11PointLight::RenderCubemapFace( const XMFLOAT4X4& view, const XMFLOAT4X4& proj, UINT faceIdx ) {
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine); // TODO: Remove and use newer system!
+    auto lightPos = LightInfo->Vob->GetPositionWorldXM();
+    float range = LightInfo->Vob->GetLightRange() * 1.1f;
+    
     CameraReplacement cr;
-    XMStoreFloat3( &cr.PositionReplacement, LightInfo->Vob->GetPositionWorldXM() );
+    XMStoreFloat3( &cr.PositionReplacement, lightPos );
     cr.ProjectionReplacement = proj;
     cr.ViewReplacement = view;
+
+    Frustum f;
+    f.BuildCubemapFace( lightPos, range, faceIdx );
+    cr.frustum = f;
 
     // Replace gothics camera
     Engine::GAPI->SetCameraReplacementPtr( &cr );
@@ -244,8 +251,6 @@ void D3D11PointLight::RenderCubemapFace( const XMFLOAT4X4& view, const XMFLOAT4X
     // TODO: Only for the player himself, because his shadows look ugly when using a torch
     //bool oldDrawSkel = Engine::GAPI->GetRendererState().RendererSettings.DrawSkeletalMeshes;
     //Engine::GAPI->GetRendererState().RendererSettings.DrawSkeletalMeshes = false;
-
-    float range = LightInfo->Vob->GetLightRange() * 1.1f;
 
     // Draw cubemap face
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> debugRTV = engine->GetDummyCubeRT() != nullptr ? engine->GetDummyCubeRT()->GetRTVCubemapFace( faceIdx ) : nullptr;

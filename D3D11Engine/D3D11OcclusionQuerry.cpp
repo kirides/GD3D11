@@ -56,7 +56,7 @@ void D3D11OcclusionQuerry::DoOcclusionForBSP( BspInfo* root ) {
 
     // Check last frustum-culling state
     int clipFlags = 63;
-    int fstate = zCCamera::GetCamera()->BBox3DInFrustum( root->OriginalNode->BBox3D, clipFlags );
+    int fstate = Engine::GAPI->GetCameraBBox3DInFrustum( root->OriginalNode->BBox3D, clipFlags );
 
     // If this node wasn't inside the frustum last frame, but got inside it this frame, just draw it
     // to reduce the popping in dialogs where the camera switches heavily between targets
