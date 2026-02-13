@@ -744,6 +744,8 @@ struct GothicRendererSettings {
         EnableWaterAnimation = false;
 
         GraphicsPreset = E_GraphicsPreset::GRAPHICS_CUSTOM;
+        
+        DebugSettings = {};
     }
 
     void SetupOldWorldSpecificValues() {
@@ -910,6 +912,13 @@ struct GothicRendererSettings {
     E_AntiAliasingMode AntiAliasingMode;
     E_SharpeningMode SharpeningMode;
     E_GraphicsPreset GraphicsPreset;
+    
+    struct {
+        struct {
+            bool DepthMotionVectors;
+            bool DisplayVelocity;
+        } TAA;
+    } DebugSettings;
 };
 
 struct GothicRendererTiming {

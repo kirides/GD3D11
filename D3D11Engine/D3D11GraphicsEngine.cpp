@@ -73,8 +73,6 @@ constexpr DXGI_FORMAT VERTEX_INDEX_DXGI_FORMAT = sizeof( VERTEX_INDEX ) == sizeo
 bool NativeSupport16BitTextures = false;
 bool FeatureLevel10Compatibility = false;
 bool FeatureRTArrayIndexFromAnyShader = false;
-bool FeatureTAAUsePerObjectVelocity = true;
-bool DBG_DisplayVelocity = false;
 
 VS_ExConstantBuffer_Wind g_windBuffer;
 
@@ -1161,52 +1159,53 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
 
 /** Called when the game wants to render a new frame */
 XRESULT D3D11GraphicsEngine::OnBeginFrame() {
-    static WindowModes lastWindowMode = ImGuiShim::InterpretWindowMode(Engine::GAPI->GetRendererState().RendererSettings);
-    WindowModes currentWindowMode = (WindowModes)Engine::GAPI->GetRendererState().RendererSettings.ChangeWindowPreset;
+    auto& rendererState = Engine::GAPI->GetRendererState();
+    static WindowModes lastWindowMode = ImGuiShim::InterpretWindowMode(rendererState.RendererSettings);
+    WindowModes currentWindowMode = (WindowModes)rendererState.RendererSettings.ChangeWindowPreset;
 
-    static int s_oldResolutionScalePercent = Engine::GAPI->GetRendererState().RendererSettings.ResolutionScalePercent;
+    static int s_oldResolutionScalePercent = rendererState.RendererSettings.ResolutionScalePercent;
     
-    Engine::GAPI->GetRendererState().RendererInfo.RenderStage = STAGE_DRAW_UNKNOWN;
+    rendererState.RendererInfo.RenderStage = STAGE_DRAW_UNKNOWN;
 
     if (NewResolution != Resolution) {
         OnResize(NewResolution);
     } else if ( currentWindowMode && lastWindowMode != currentWindowMode) {
         // only allow changing to display-flip modes, prevent change from flip to exclusive and vice versa
-        if ( Engine::GAPI->GetRendererState().RendererSettings.DisplayFlip && currentWindowMode == WindowModes::WINDOW_MODE_FULLSCREEN_EXCLUSIVE ) {
+        if ( rendererState.RendererSettings.DisplayFlip && currentWindowMode == WindowModes::WINDOW_MODE_FULLSCREEN_EXCLUSIVE ) {
             lastWindowMode = currentWindowMode;
             // do nothing, prevent change
             // user will have to restart game to switch from flip to exclusive fullscreen
-        } else if ( !Engine::GAPI->GetRendererState().RendererSettings.DisplayFlip && currentWindowMode != WindowModes::WINDOW_MODE_FULLSCREEN_EXCLUSIVE ) {
+        } else if ( !rendererState.RendererSettings.DisplayFlip && currentWindowMode != WindowModes::WINDOW_MODE_FULLSCREEN_EXCLUSIVE ) {
             lastWindowMode = currentWindowMode;
             // do nothing, prevent change
             // user will have to restart game to switch from exclusive to flip
         } else {
-            ApplyWindowMode( Engine::GAPI->GetRendererState().RendererSettings );
+            ApplyWindowMode( rendererState.RendererSettings );
 
             lastWindowMode = currentWindowMode;
             auto oldResolution = Resolution;
             Resolution = INT2( 0, 0 ); // force resize
             OnResize( oldResolution );
         }
-    } else if ( Engine::GAPI->GetRendererState().RendererSettings.ResolutionScalePercent != s_oldResolutionScalePercent ) {
+    } else if ( rendererState.RendererSettings.ResolutionScalePercent != s_oldResolutionScalePercent ) {
         auto oldResolution = Resolution;
         Resolution = INT2( 0, 0 ); // force resize
         OnResize( oldResolution );
-        s_oldResolutionScalePercent = Engine::GAPI->GetRendererState().RendererSettings.ResolutionScalePercent;
+        s_oldResolutionScalePercent = rendererState.RendererSettings.ResolutionScalePercent;
     }
     
-    Engine::GAPI->GetRendererState().RendererInfo.Timing.StartTotal();
+    rendererState.RendererInfo.Timing.StartTotal();
 
 #ifdef BUILD_SPACER_NET
-    Engine::GAPI->GetRendererState().RendererSettings.EnableInactiveFpsLock = false;
+    rendererState.RendererSettings.EnableInactiveFpsLock = false;
 #endif //  BUILD_SPACERNET
 
-    if ( !m_isWindowActive && Engine::GAPI->GetRendererState().RendererSettings.EnableInactiveFpsLock ) {
+    if ( !m_isWindowActive && rendererState.RendererSettings.EnableInactiveFpsLock ) {
         m_FrameLimiter->SetLimit( 20 );
         m_FrameLimiter->Start();
     } else {
-        if ( Engine::GAPI->GetRendererState().RendererSettings.FpsLimit != 0 ) {
-            m_FrameLimiter->SetLimit( Engine::GAPI->GetRendererState().RendererSettings.FpsLimit );
+        if ( rendererState.RendererSettings.FpsLimit != 0 ) {
+            m_FrameLimiter->SetLimit( rendererState.RendererSettings.FpsLimit );
             m_FrameLimiter->Start();
         } else {
             m_FrameLimiter->Reset();
@@ -1214,8 +1213,8 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
     }
 
     static int oldToneMap = -1;
-    if ( Engine::GAPI->GetRendererState().RendererSettings.HDRToneMap != oldToneMap ) {
-        oldToneMap = Engine::GAPI->GetRendererState().RendererSettings.HDRToneMap;
+    if ( rendererState.RendererSettings.HDRToneMap != oldToneMap ) {
+        oldToneMap = rendererState.RendererSettings.HDRToneMap;
         std::vector<D3D_SHADER_MACRO> makros;
 
         D3D_SHADER_MACRO m;
@@ -1233,7 +1232,7 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
         } else {
             m.Definition = "4";
             oldToneMap = 4;
-            Engine::GAPI->GetRendererState().RendererSettings.HDRToneMap = GothicRendererSettings::E_HDRToneMap::ToneMap_Simple;
+            rendererState.RendererSettings.HDRToneMap = GothicRendererSettings::E_HDRToneMap::ToneMap_Simple;
         }
         makros.push_back( m );
 
@@ -1278,7 +1277,7 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
     Engine::GAPI->LeaveResourceCriticalSection();
 
     // Check for shadowmap resize
-    int s = Engine::GAPI->GetRendererState().RendererSettings.ShadowMapSize;
+    int s = rendererState.RendererSettings.ShadowMapSize;
 
     if ( ShadowMaps && ShadowMaps->GetSizeX() != s ) {
         s = std::min<int>(std::max<int>(s, 512), (FeatureLevel10Compatibility ? 8192 : 16384));
@@ -1287,7 +1286,7 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
         LogInfo() << "Shadowmapresolution changed to: " << s << "x" << s;
         ShadowMaps->Resize( s );
 
-        Engine::GAPI->GetRendererState().RendererSettings.ShadowMapSize = s;
+        rendererState.RendererSettings.ShadowMapSize = s;
     }
 
     // Notify the shader manager
@@ -1295,8 +1294,8 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
 
     // Disable culling for ui rendering(Sprite from LeGo needs it since it use CCW instead of CW order)
     SetDefaultStates();
-    Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_NONE;
-    Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
+    rendererState.RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_NONE;
+    rendererState.RasterizerState.SetDirty();
     UpdateRenderStates();
     GetContext()->PSSetSamplers( 0, 1, ClampSamplerState.GetAddressOf() );
 
@@ -1319,7 +1318,7 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
     SetActivePixelShader( "PS_Simple" );
     SetActiveVertexShader( "VS_Ex" );
 
-    if ( Engine::GAPI->GetRendererState().RendererSettings.AllowNormalmaps ) {
+    if ( rendererState.RendererSettings.AllowNormalmaps ) {
         PS_DiffuseNormalmappedFxMap = ShaderManager->GetPShader( "PS_DiffuseNormalmappedFxMap" );
         PS_DiffuseNormalmappedAlphatestFxMap = ShaderManager->GetPShader( "PS_DiffuseNormalmappedAlphaTestFxMap" );
         PS_DiffuseNormalmapped = ShaderManager->GetPShader( "PS_DiffuseNormalmapped" );
@@ -1341,16 +1340,17 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
 
 /** Called when the game ended it's frame */
 XRESULT D3D11GraphicsEngine::OnEndFrame() {
-    Engine::GAPI->GetRendererState().RendererInfo.RenderStage = STAGE_DRAW_PRESENT;
+    auto& renderInfo = Engine::GAPI->GetRendererState().RendererInfo;
+    renderInfo.RenderStage = STAGE_DRAW_PRESENT;
     StoreVobPreviousTransforms(); // used for motion vectors
     Present();
 
-    Engine::GAPI->GetRendererState().RendererInfo.Timing.StopTotal();
+    renderInfo.Timing.StopTotal();
     if ( !Engine::GAPI->GetRendererState().RendererSettings.BinkVideoRunning && !Engine::GAPI->IsInSavingLoadingState() ) {
         m_FrameLimiter->Wait();
     }
     RenderedVobs.clear();
-    Engine::GAPI->GetRendererState().RendererInfo.Timing.Reset();
+    renderInfo.Timing.Reset();
     GetPfxRenderer()->OnEndFrame();
     return XR_SUCCESS;
 }
@@ -1516,6 +1516,8 @@ D3D11GraphicsEngine::GetDisplayModeList( std::vector<DisplayModeInfo>* modeList,
 
 /** Presents the current frame to the screen */
 XRESULT D3D11GraphicsEngine::Present() {
+    const auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+    
     D3D11_VIEWPORT vp;
     vp.TopLeftX = 0.0f;
     vp.TopLeftY = 0.0f;
@@ -1546,9 +1548,9 @@ XRESULT D3D11GraphicsEngine::Present() {
         PfxRenderer->CopyTextureToRTV( Backbuffer->GetShaderResView(), BackbufferRTV, {}, true );
         
         static int show_velocity = 0;
-        if (DBG_DisplayVelocity) {
+        if (settings.DebugSettings.TAA.DisplayVelocity) {
             GetPfxRenderer()->CopyTextureToRTV(
-                FeatureTAAUsePerObjectVelocity
+            !settings.DebugSettings.TAA.DepthMotionVectors
                     ? VelocityBuffer->GetShaderResView()
                     : GetPfxRenderer()->GetTAAEffect() 
                         ? GetPfxRenderer()->GetTAAEffect()->GetVelocityBufferSRV()
@@ -1586,8 +1588,8 @@ XRESULT D3D11GraphicsEngine::Present() {
         return XR_SUCCESS;
     }
 
-    bool vsync = Engine::GAPI->GetRendererState().RendererSettings.EnableVSync;
-    if ( Engine::GAPI->GetRendererState().RendererSettings.BinkVideoRunning || Engine::GAPI->IsInSavingLoadingState() ) {
+    bool vsync = settings.EnableVSync;
+    if ( settings.BinkVideoRunning || Engine::GAPI->IsInSavingLoadingState() ) {
         vsync = false;
     }
 
@@ -2623,14 +2625,16 @@ namespace {
 /** Called when we started to render the world */
 XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     SetDefaultStates();
+    
+    auto& rendererState = Engine::GAPI->GetRendererState();
 
-    if ( Engine::GAPI->GetRendererState().RendererSettings.DisableRendering )
+    if ( rendererState.RendererSettings.DisableRendering )
         return XR_SUCCESS;
 
     // return XR_SUCCESS;
     if ( PresentPending ) return XR_SUCCESS;
 
-    Engine::GAPI->GetRendererState().RendererInfo.RenderStage = STAGE_DRAW_WORLD;
+    rendererState.RendererInfo.RenderStage = STAGE_DRAW_WORLD;
 
     D3D11_VIEWPORT vp;
     vp.TopLeftX = 0.0f;
@@ -2646,7 +2650,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(), nullptr );
 
     // If TAA is enabled, advance jitter and apply to projection
-    if ( Engine::GAPI->GetRendererState().RendererSettings.AntiAliasingMode ==
+    if ( rendererState.RendererSettings.AntiAliasingMode ==
         GothicRendererSettings::AA_TAA ) {
         if ( PfxRenderer && PfxRenderer->GetTAAEffect() ) {
             PfxRenderer->GetTAAEffect()->AdvanceJitter();
@@ -2663,17 +2667,17 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
 
     if ( FeatureLevel10Compatibility ) {
         // Disable here what we can't draw in feature level 10 compatibility
-        Engine::GAPI->GetRendererState().RendererSettings.HbaoSettings.Enabled = false;
-        Engine::GAPI->GetRendererState().RendererSettings.AntiAliasingMode = GothicRendererSettings::E_AntiAliasingMode::AA_NONE;
+        rendererState.RendererSettings.HbaoSettings.Enabled = false;
+        rendererState.RendererSettings.AntiAliasingMode = GothicRendererSettings::E_AntiAliasingMode::AA_NONE;
     }
 
 #if BUILD_SPACER_NET
     bool bDrawVobsGlobal = zCVob::GetDrawVobs();
 
-    Engine::GAPI->GetRendererState().RendererSettings.DrawVOBs = bDrawVobsGlobal;
-    Engine::GAPI->GetRendererState().RendererSettings.DrawMobs = bDrawVobsGlobal;
-    Engine::GAPI->GetRendererState().RendererSettings.DrawParticleEffects = bDrawVobsGlobal;
-    Engine::GAPI->GetRendererState().RendererSettings.DrawSkeletalMeshes = bDrawVobsGlobal;
+    rendererState.RendererSettings.DrawVOBs = bDrawVobsGlobal;
+    rendererState.RendererSettings.DrawMobs = bDrawVobsGlobal;
+    rendererState.RendererSettings.DrawParticleEffects = bDrawVobsGlobal;
+    rendererState.RendererSettings.DrawSkeletalMeshes = bDrawVobsGlobal;
 #endif 
 
     ID3D11RenderTargetView* rtvs[] = {
@@ -2684,9 +2688,9 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     GetContext()->OMSetRenderTargets( 4, rtvs, DepthStencilBuffer->GetDepthStencilView().Get() );
 
     Engine::GAPI->SetFarPlane(
-        Engine::GAPI->GetRendererState().RendererSettings.SectionDrawRadius * WORLD_SECTION_SIZE );
+        rendererState.RendererSettings.SectionDrawRadius * WORLD_SECTION_SIZE );
 
-    Clear( float4( Engine::GAPI->GetRendererState().GraphicsState.FF_FogColor, 0.0f ) );
+    Clear( float4( rendererState.GraphicsState.FF_FogColor, 0.0f ) );
 
     // Clear textures from the last frame
     RenderedVobs.clear();
@@ -2704,16 +2708,16 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     // Update view distances
     InfiniteRangeConstantBuffer->UpdateBuffer( float4( FLT_MAX, 0, 0, 0 ).toPtr() );
     OutdoorSmallVobsConstantBuffer->UpdateBuffer(
-        float4( Engine::GAPI->GetRendererState().RendererSettings.OutdoorSmallVobDrawRadius,
+        float4( rendererState.RendererSettings.OutdoorSmallVobDrawRadius,
             0, 0, 0 ).toPtr() );
     OutdoorVobsConstantBuffer->UpdateBuffer( float4(
-        Engine::GAPI->GetRendererState().RendererSettings.OutdoorVobDrawRadius,
+        rendererState.RendererSettings.OutdoorVobDrawRadius,
         0, 0, 0 ).toPtr() );
 
-    Engine::GAPI->GetRendererState().RasterizerState.FrontCounterClockwise = false;
-    Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
+    rendererState.RasterizerState.FrontCounterClockwise = false;
+    rendererState.RasterizerState.SetDirty();
 
-    if ( Engine::GAPI->GetRendererState().RendererSettings.DrawSky ) {
+    if ( rendererState.RendererSettings.DrawSky ) {
         auto _ = RecordGraphicsEvent( L"Draw Sky" );
         // Draw back of the sky if outdoor
         DrawSky();
@@ -2726,7 +2730,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     }
 
     // Draw HBAO
-    if ( Engine::GAPI->GetRendererState().RendererSettings.HbaoSettings.Enabled ) {
+    if ( rendererState.RendererSettings.HbaoSettings.Enabled ) {
         auto _ = RecordGraphicsEvent( L"Draw HBAO" );
         PfxRenderer->DrawHBAO( HDRBackBuffer->GetRenderTargetView() );
         GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
@@ -2747,7 +2751,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     }
 
     //draw forest / door portals
-    if ( Engine::GAPI->GetRendererState().RendererSettings.DrawG1ForestPortals ) {
+    if ( rendererState.RendererSettings.DrawG1ForestPortals ) {
         auto _ = RecordGraphicsEvent( L"DrawForestPortals" );
         DrawMeshInfoListAlphablended( FrameTransparencyMeshesPortal );
     }
@@ -2768,7 +2772,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         Engine::GAPI->DrawSkeletalVN();
     }
 
-    if ( Engine::GAPI->GetRendererState().RendererSettings.DrawFog &&
+    if ( rendererState.RendererSettings.DrawFog &&
         Engine::GAPI->GetLoadedWorldInfo()->BspTree->GetBspTreeMode() ==
         zBSP_MODE_OUTDOOR ) {
 
@@ -2778,7 +2782,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
 
     // Draw rain
     if ( Engine::GAPI->GetRainFXWeight() > 0.0f ) {
-        if ( FeatureLevel10Compatibility || Engine::GAPI->GetRendererState().RendererSettings.DrawRainThroughTransformFeedback ) {
+        if ( FeatureLevel10Compatibility || rendererState.RendererSettings.DrawRainThroughTransformFeedback ) {
             auto _ = RecordGraphicsEvent( L"DrawRain" );
             Effects->DrawRain();
         } else {
@@ -2792,7 +2796,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
 
     // Draw unlit decals 
     // TODO: Only get them once!
-    if ( Engine::GAPI->GetRendererState().RendererSettings.DrawParticleEffects ) {
+    if ( rendererState.RendererSettings.DrawParticleEffects ) {
         auto _ = RecordGraphicsEvent( L"DrawParticleEffects" );
         std::vector<zCVob*> decals;
         zCCamera::GetCamera()->Activate();
@@ -2809,7 +2813,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
 
     // TODO: TODO: GodRays need the GBuffer1 from the scene, but Particles need to
     // clear it!
-    if ( Engine::GAPI->GetRendererState().RendererSettings.EnableGodRays &&
+    if ( rendererState.RendererSettings.EnableGodRays &&
         Engine::GAPI->GetLoadedWorldInfo()->BspTree->GetBspTreeMode() ==
         zBSP_MODE_OUTDOOR ) {
 
@@ -2844,23 +2848,23 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         LineRenderer->FlushScreenSpace();
     }
 
-    if ( Engine::GAPI->GetRendererState().RendererSettings.AntiAliasingMode 
+    if ( rendererState.RendererSettings.AntiAliasingMode 
         == GothicRendererSettings::AA_TAA ) {
         // TAA before any HDR stuff
         auto _ = RecordGraphicsEvent( L"RenderTAA" );
-        PfxRenderer->RenderTAA( FeatureTAAUsePerObjectVelocity
-            ? VelocityBuffer->GetShaderResView()
-            : nullptr );
+        PfxRenderer->RenderTAA( rendererState.RendererSettings.DebugSettings.TAA.DepthMotionVectors
+            ? nullptr
+            : VelocityBuffer->GetShaderResView() );
         GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
     }
 
-    if ( Engine::GAPI->GetRendererState().RendererSettings.EnableHDR ) {
+    if ( rendererState.RendererSettings.EnableHDR ) {
         auto _ = RecordGraphicsEvent( L"RenderHDR" );
         PfxRenderer->RenderHDR();
     }
 
     // SMAA should be applied before any sharpening
-    if ( Engine::GAPI->GetRendererState().RendererSettings.AntiAliasingMode
+    if ( rendererState.RendererSettings.AntiAliasingMode
         == GothicRendererSettings::AA_SMAA ) {
         // actually we could do TAA + SMAA
         auto _ = RecordGraphicsEvent( L"RenderSMAA" );
@@ -2902,13 +2906,13 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
 
         SetDefaultStates();
 
-        if ( Engine::GAPI->GetRendererState().RendererSettings.ResolutionScalePercent < 100 
-            && Engine::GAPI->GetRendererState().RendererSettings.Upscaler == GothicRendererSettings::E_Upscaler::UPSCALER_FSR_1 ) {
+        if ( rendererState.RendererSettings.ResolutionScalePercent < 100 
+            && rendererState.RendererSettings.Upscaler == GothicRendererSettings::E_Upscaler::UPSCALER_FSR_1 ) {
             
             auto _ = RecordGraphicsEvent( L"FSR 1" );
 
             // Now upscale it to backbuffer with sharpening
-            auto sharpenFactor = Engine::GAPI->GetRendererState().RendererSettings.SharpenFactor;
+            auto sharpenFactor = rendererState.RendererSettings.SharpenFactor;
             PfxRenderer->GetFSR1()->Apply(
                 HDRBackBuffer->GetShaderResView(),
                 Backbuffer->GetRenderTargetView(),
@@ -2918,15 +2922,15 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                 1.0f - sharpenFactor );
         } else {
 
-            if ( Engine::GAPI->GetRendererState().RendererSettings.SharpeningMode
-                && Engine::GAPI->GetRendererState().RendererSettings.SharpenFactor > 0.0f) {
+            if ( rendererState.RendererSettings.SharpeningMode
+                && rendererState.RendererSettings.SharpenFactor > 0.0f) {
 
                 {
                     auto _ = RecordGraphicsEvent( L"Copy into native-size backbuffer" );
                     PfxRenderer->CopyTextureToRTV( HDRBackBuffer->GetShaderResView(), Backbuffer->GetRenderTargetView(), GetBackbufferResolution() );
                 }
 
-                switch ( Engine::GAPI->GetRendererState().RendererSettings.SharpeningMode ) {
+                switch ( rendererState.RendererSettings.SharpeningMode ) {
                 case GothicRendererSettings::SHARPEN_SIMPLE:
                     if ( !FeatureLevel10Compatibility ) {
                         auto _ = RecordGraphicsEvent( L"ApplySimpleSharpen" );
@@ -2951,7 +2955,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         }
 
         // Below this, we assume UI/HUD rendering
-        Engine::GAPI->GetRendererState().RendererInfo.RenderStage = STAGE_DRAW_HUD;
+        rendererState.RendererInfo.RenderStage = STAGE_DRAW_HUD;
 
         D3D11_VIEWPORT vp;
         vp.TopLeftX = 0.0f;
@@ -2969,8 +2973,8 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
 
     // Disable culling for ui rendering(Sprite from LeGo needs it since it use CCW instead of CW order)
     SetDefaultStates();
-    Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_NONE;
-    Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
+    rendererState.RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_NONE;
+    rendererState.RasterizerState.SetDirty();
     UpdateRenderStates();
     GetContext()->PSSetSamplers( 0, 1, ClampSamplerState.GetAddressOf() );
 
