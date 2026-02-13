@@ -330,4 +330,11 @@ struct FSR1EASUConstantBuffer {
 struct FSR1RCASConstantBuffer {
     uint32_t RCASConst[4];  // FsrRcasCon output (only first element used)
 };
+
+struct VelocityDebugConstantBuffer {
+    float Amplification;    // Multiplier for velocity values (e.g., 10-100)
+    float ShowMagnitude;    // 0 = show direction as RG, 1 = show magnitude as grayscale
+    float AbsoluteMode;     // 0 = signed (-1 to 1), 1 = absolute values
+    float Padding;
+};
 #pragma pack (pop)

@@ -1514,6 +1514,30 @@ D3D11GraphicsEngine::GetDisplayModeList( std::vector<DisplayModeInfo>* modeList,
     return XR_SUCCESS;
 }
 
+void RenderVelocity(D3D11GraphicsEngine* engine,
+    const GothicRendererSettings& settings,
+    const ComPtr<ID3D11RenderTargetView>& rtv)
+{
+    auto ps = engine->GetShaderManager().GetPShader("PS_PFX_VelocityDebug");
+    
+    VelocityDebugConstantBuffer cb = {};
+    cb.Amplification = 100;
+
+    ps->GetConstantBuffer()[0]->UpdateBuffer( &cb );
+    ps->GetConstantBuffer()[0]->BindToPixelShader(0);
+    ps->Apply();
+    
+    engine->GetPfxRenderer()->CopyTextureToRTV(
+        !settings.DebugSettings.TAA.DepthMotionVectors
+                ? engine->GetVelocityBuffer()->GetShaderResView()
+                : engine->GetPfxRenderer()->GetTAAEffect() 
+                    ? engine->GetPfxRenderer()->GetTAAEffect()->GetVelocityBufferSRV()
+                    : nullptr, 
+            rtv, 
+            engine->GetBackbufferResolution(),
+            /* useCustomPS: */ true);
+}
+
 /** Presents the current frame to the screen */
 XRESULT D3D11GraphicsEngine::Present() {
     const auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
@@ -1549,14 +1573,7 @@ XRESULT D3D11GraphicsEngine::Present() {
         
         static int show_velocity = 0;
         if (settings.DebugSettings.TAA.DisplayVelocity) {
-            GetPfxRenderer()->CopyTextureToRTV(
-            !settings.DebugSettings.TAA.DepthMotionVectors
-                    ? VelocityBuffer->GetShaderResView()
-                    : GetPfxRenderer()->GetTAAEffect() 
-                        ? GetPfxRenderer()->GetTAAEffect()->GetVelocityBufferSRV()
-                        : nullptr, 
-                BackbufferRTV, 
-                GetBackbufferResolution());
+            RenderVelocity(this, settings, BackbufferRTV);
         } else if (show_velocity == 2 && GetPfxRenderer()->GetTAAEffect()) {
             GetPfxRenderer()->CopyTextureToRTV(
                 GetPfxRenderer()->GetTAAEffect()->GetVelocityBufferSRV(),

@@ -300,6 +300,8 @@ XRESULT D3D11ShaderManager::Init() {
 
     Shaders.push_back( ShaderInfo( "PS_PFX_Simple", "PS_PFX_Simple.hlsl", "p" ) );
 
+    Shaders.push_back( ShaderInfo( "PS_PFX_VelocityDebug", "PS_PFX_VelocityDebug.hlsl", "p" ) );
+    Shaders.back().cBufferSizes.push_back( sizeof( VelocityDebugConstantBuffer ) );
 
     Shaders.push_back( ShaderInfo( "PS_PFX_GaussBlur", "PS_PFX_GaussBlur.hlsl", "p" ) );
     Shaders.back().cBufferSizes.push_back( sizeof( BlurConstantBuffer ) );

@@ -32,6 +32,8 @@ struct VS_OUTPUT
 	float2 vTexcoord		: TEXCOORD0;
 	float3 vNormalVS		: TEXCOORD1;
 	float3 vWorldPosition	: TEXCOORD2;
+	float4 vCurrClipPos     : TEXCOORD3;  // Current clip position for velocity
+	float4 vPrevClipPos     : TEXCOORD4;  // Previous clip position for velocity
 	float4 vPosition		: SV_POSITION;
 };
 
@@ -57,6 +59,11 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 	Output.vTexcoord = Input.vTex1;
 	Output.vNormalVS = G_NormalVS;
 	Output.vWorldPosition = wpos;
+
+	// Motion Vectors - grass uses static world position for velocity
+	// Wind animation is not tracked per-frame, so we output zero velocity
+	Output.vCurrClipPos = mul(float4(wpos, 1.0), frame.M_UnjitteredViewProj);
+	Output.vPrevClipPos = mul(float4(wpos, 1.0), frame.M_PrevViewProj);
 
 	return Output;
 }
