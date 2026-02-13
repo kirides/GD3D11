@@ -467,7 +467,7 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
         }
 
         // Setze Default für Indoor
-        for ( size_t i = 0; i < numCascades; ++i ) {
+        for ( int i = 0; i < numCascades; ++i ) {
             if ( numCascades > 1 && i == numCascades -1 ) {
                 const auto p = lastCascadeP;
                 const auto lookAt = lastCascadeLookAt;
@@ -493,7 +493,7 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
 
 
         bool updateCascades[MAX_CSM_CASCADES] = {};
-        for ( size_t cascadeIdx = 0; cascadeIdx < numCascades; ++cascadeIdx ) {
+        for ( int cascadeIdx = 0; cascadeIdx < numCascades; ++cascadeIdx ) {
             // pre-calculate all cascade matrices, to be able to frustum-cull anything that is not in this or the next cascade.
 
             bool isLastCascade = (numCascades > 1 && cascadeIdx == numCascades - 1);
@@ -526,11 +526,14 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
             CameraReplacement& cr = cascadeCRs[cascadeIdx];
             auto lightView = XMMatrixTranspose( XMLoadFloat4x4( &cr.ViewReplacement ) );
             auto lightProj = XMMatrixTranspose( XMLoadFloat4x4( &cr.ProjectionReplacement ) );
-            f.BuildOrthographic( lightView, lightProj, 0, 0 );
+            f.BuildOrthographic( lightView, lightProj, 
+                Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendBack, 
+                Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendFront,
+                Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendSide);
             cr.frustum = f;
         }
 
-        for ( size_t cascadeIdx = 0; cascadeIdx < numCascades; ++cascadeIdx ) {
+        for ( int cascadeIdx = 0; cascadeIdx < numCascades; ++cascadeIdx ) {
             bool isLastCascade = (numCascades > 1 && cascadeIdx == numCascades - 1);
 
             // only update every Nth frame for higher cascades to save performance

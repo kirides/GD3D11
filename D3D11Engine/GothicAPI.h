@@ -177,10 +177,10 @@ struct TransparencyVobInfo {
 };
 
 class GothicAPI {
-    friend static void ProcessVobAnimation( zCVob* vob, zTAnimationMode aniMode, VobInstanceInfo& vobInstance );
-    friend void CVVH_AddNotDrawnVobToList( std::vector<VobInfo*>& target, std::vector<VobInfo*>& source, float dist );
-    friend void CVVH_AddNotDrawnVobToList( std::vector<VobLightInfo*>& target, std::vector<VobLightInfo*>& source, float dist );
-    friend void CVVH_AddNotDrawnVobToList( std::vector<SkeletalVobInfo*>& target, std::vector<SkeletalVobInfo*>& source, float dist );
+    friend void ProcessVobAnimation( zCVob* vob, zTAnimationMode aniMode, VobInstanceInfo& vobInstance );
+    friend void CVVH_AddNotDrawnVobToList( std::vector<VobInfo*>& target, std::vector<VobInfo*>& source, float dist, int clipFlags );
+    friend void CVVH_AddNotDrawnVobToList( std::vector<VobLightInfo*>& target, std::vector<VobLightInfo*>& source, float dist, int clipFlags );
+    friend void CVVH_AddNotDrawnVobToList( std::vector<SkeletalVobInfo*>& target, std::vector<SkeletalVobInfo*>& source, float dist, int clipFlags );
 
 public:
     GothicAPI();
@@ -389,7 +389,7 @@ public:
     /** Returns the current cameraposition */
     XMFLOAT3 GetCameraPosition();
     FXMVECTOR XM_CALLCONV GetCameraPositionXM();
-    zTCam_ClipType GetCameraBBox3DInFrustum(const zTBBox3D& box, int& clipFlags);
+    zTCam_ClipType GetCameraBBox3DInFrustum(const zTBBox3D& box, int clipFlags);
 
     /** Returns the view matrix */
     void GetViewMatrix( XMFLOAT4X4* view );

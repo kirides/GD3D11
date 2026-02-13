@@ -3689,15 +3689,17 @@ FXMVECTOR GothicAPI::GetCameraPositionXM() {
     return oCGame::GetGame()->_zCSession_camVob->GetPositionWorldXM();
 }
 
-zTCam_ClipType GothicAPI::GetCameraBBox3DInFrustum( const zTBBox3D& box, int& clipFlags ) {
+zTCam_ClipType GothicAPI::GetCameraBBox3DInFrustum( const zTBBox3D& box, int clipFlags ) {
     if ( !oCGame::GetGame()->_zCSession_camVob )
         return zTCam_ClipType::ZTCAM_CLIPTYPE_IN;
 
     if ( CameraReplacementPtr ) {
         BoundingBox bb;
         BoundingBox::CreateFromPoints(bb, XMLoadFloat3(&box.Min), XMLoadFloat3(&box.Max));
+        BoundingSphere sphere;
+        BoundingSphere::CreateFromBoundingBox(sphere, bb);
 
-        auto result = CameraReplacementPtr->frustum.Contains(bb);
+        auto result = CameraReplacementPtr->frustum.Contains(sphere, clipFlags);
         if ( result == ContainmentType::DISJOINT )
             return zTCam_ClipType::ZTCAM_CLIPTYPE_OUT;
         if ( result == ContainmentType::INTERSECTS )
@@ -4256,7 +4258,7 @@ static void ProcessVobAnimation( zCVob* vob, zTAnimationMode aniMode, VobInstanc
     }
 }
 
-static void CVVH_AddNotDrawnVobToList( std::vector<VobInfo*>& target, std::vector<VobInfo*>& source, float dist ) {
+static void CVVH_AddNotDrawnVobToList( std::vector<VobInfo*>& target, std::vector<VobInfo*>& source, float dist, int clipFlags  ) {
     std::vector<VobInfo*> remVobs;
 
     const auto& camPos = Engine::GAPI->GetCameraPositionXM();
@@ -4266,6 +4268,12 @@ static void CVVH_AddNotDrawnVobToList( std::vector<VobInfo*>& target, std::vecto
             float vd;
             XMStoreFloat( &vd, XMVector3Length( camPos - XMLoadFloat3( &it->LastRenderPosition ) ) );
             if ( vd < dist && it->Vob->GetShowVisual() ) {
+                int clipFl = clipFlags;
+                if (Engine::GAPI->GetCameraBBox3DInFrustum( it->Vob->GetBBox(), clipFlags ) ==  zTCam_ClipType::ZTCAM_CLIPTYPE_OUT
+                    && (!Engine::GAPI->CameraReplacementPtr || zCCamera::GetCamera()->BBox3DInFrustum(it->Vob->GetBBox(), clipFl ) ==  zTCam_ClipType::ZTCAM_CLIPTYPE_OUT)) {
+                    continue;
+                }
+                
                 if ( it->Vob->GetVisualAlpha() ) {
                     Engine::GAPI->TransparencyVobs.emplace_back( vd, it->Vob->GetVobTransparency(), nullptr, it );
                     std::push_heap( Engine::GAPI->TransparencyVobs.begin(), Engine::GAPI->TransparencyVobs.end(), CompareGhostDistance );
@@ -4293,7 +4301,7 @@ static void CVVH_AddNotDrawnVobToList( std::vector<VobInfo*>& target, std::vecto
     }
 }
 
-static void CVVH_AddNotDrawnVobToList( std::vector<VobLightInfo*>& target, std::vector<VobLightInfo*>& source, float dist ) {
+static void CVVH_AddNotDrawnVobToList( std::vector<VobLightInfo*>& target, std::vector<VobLightInfo*>& source, float dist, int clipFlags  ) {
     float veclength;
 
     const auto& camPos = Engine::GAPI->GetCameraPositionXM();
@@ -4309,7 +4317,7 @@ static void CVVH_AddNotDrawnVobToList( std::vector<VobLightInfo*>& target, std::
     }
 }
 
-static void CVVH_AddNotDrawnVobToList( std::vector<SkeletalVobInfo*>& target, std::vector<SkeletalVobInfo*>& source, float dist ) {
+static void CVVH_AddNotDrawnVobToList( std::vector<SkeletalVobInfo*>& target, std::vector<SkeletalVobInfo*>& source, float dist, int clipFlags ) {
     float vd;
 
     const auto& camPos = Engine::GAPI->GetCameraPositionXM();
@@ -4318,6 +4326,12 @@ static void CVVH_AddNotDrawnVobToList( std::vector<SkeletalVobInfo*>& target, st
         if ( !it->VisibleInRenderPass ) {
             XMStoreFloat( &vd, XMVector3Length( camPos - it->Vob->GetPositionWorldXM() ) );
             if ( vd < dist && it->Vob->GetShowVisual() ) {
+                int clipFl = clipFlags;
+                if (Engine::GAPI->GetCameraBBox3DInFrustum( it->Vob->GetBBox(), clipFlags ) ==  zTCam_ClipType::ZTCAM_CLIPTYPE_OUT
+                    && (!Engine::GAPI->CameraReplacementPtr || zCCamera::GetCamera()->BBox3DInFrustum(it->Vob->GetBBox(), clipFl ) ==  zTCam_ClipType::ZTCAM_CLIPTYPE_OUT)) {
+                    continue;
+                }
+                
                 target.push_back( it );
                 it->VisibleInRenderPass = true;
             }
@@ -4384,22 +4398,22 @@ void GothicAPI::CollectVisibleVobsHelper( BspInfo* base, zTBBox3D boxCell, int c
            
                 if ( Engine::GAPI->GetRendererState().RendererSettings.DrawVOBs ) {
                     if ( dist < vobIndoorDist ) {
-                        CVVH_AddNotDrawnVobToList( vobs, listA, vobIndoorDist );
+                        CVVH_AddNotDrawnVobToList( vobs, listA, vobIndoorDist, clipFlags );
                     }
 
                     if ( dist < vobOutdoorSmallDist ) {
-                        CVVH_AddNotDrawnVobToList( vobs, listB, vobOutdoorSmallDist );
+                        CVVH_AddNotDrawnVobToList( vobs, listB, vobOutdoorSmallDist, clipFlags );
                     }
 
                     if ( dist < vobOutdoorDist ) {
-                        CVVH_AddNotDrawnVobToList( vobs, listC, vobOutdoorDist );
+                        CVVH_AddNotDrawnVobToList( vobs, listC, vobOutdoorDist, clipFlags );
                     }
                 }
 
                 
 
                 if ( Engine::GAPI->GetRendererState().RendererSettings.DrawMobs && dist < vobOutdoorSmallDist ) {
-                    CVVH_AddNotDrawnVobToList( mobs, listD, vobOutdoorDist );
+                    CVVH_AddNotDrawnVobToList( mobs, listD, vobOutdoorDist, clipFlags );
                 }
 
                 if ( RendererState.RendererSettings.EnableDynamicLighting && dist < visualFXDrawRadius ) {

@@ -1139,6 +1139,13 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
                 ImGui::Checkbox("Display Velocity", &settings.DebugSettings.TAA.DisplayVelocity);
                 ImGui::EndTabItem();
             }
+
+            if (ImGui::BeginTabItem("Shadow Debug", nullptr, ImGuiTabItemFlags_::ImGuiTabItemFlags_NoReorder)) {
+                ImGui::SliderFloat("Extend Back", &settings.DebugSettings.ShadowCascades.ExtendBack, -10000, 50000, "%.0f");
+                ImGui::SliderFloat("Extend Front", &settings.DebugSettings.ShadowCascades.ExtendFront, -10000, 50000, "%.0f");
+                ImGui::SliderFloat("Extend Side", &settings.DebugSettings.ShadowCascades.ExtendSide, -10000, 20000, "%.0f");
+                ImGui::EndTabItem();
+            }
  
             ImGui::EndTabBar();
         }

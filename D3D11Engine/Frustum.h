@@ -8,14 +8,17 @@ using namespace DirectX;
 
 class Frustum {
 public:
-    // Für orthografische Projektion (Sonnen-Shadowmap)
+    // FÃ¼r orthografische Projektion (Sonnen-Shadowmap)
     // shadowCasterExpansion: Extra distance to expand the frustum to include shadow casters
     //                        behind/beside the camera that may cast shadows into the view
-    void BuildOrthographic( FXMMATRIX view, FXMMATRIX proj, 
+    void BuildOrthographic( 
+        CXMMATRIX view,
+        CXMMATRIX proj, 
         float expandBack = 0.0f,
+        float expandFront = 0.0f,
         float expandSides = 0.0f) {
+        
         // Erstelle Frustum aus View-Projection Matrix
-        XMMATRIX viewProj = XMMatrixMultiply( view, proj );
         BoundingFrustum::CreateFromMatrix( m_frustum, proj );
 
         // Transformiere in World-Space
@@ -24,7 +27,7 @@ public:
 
         // If expansion is requested, convert to an expanded bounding box instead
         // This ensures shadow casters outside the direct view are still rendered
-        if ( expandBack > 0.0f || expandBack < 0.0f || expandSides > 0.0f ) {
+        if ( expandBack > 0.0f || expandBack < 0.0f || expandFront > 0.0f || expandSides > 0.0f ) {
             // Get the AABB of the frustum
             BoundingBox frustumAABB;
             BoundingBox::CreateFromPoints( frustumAABB,
@@ -38,7 +41,7 @@ public:
             m_expandedAABB.Extents = XMFLOAT3(
                 frustumAABB.Extents.x + expandSides,
                 frustumAABB.Extents.y + expandSides,
-                frustumAABB.Extents.z + expandSides
+                frustumAABB.Extents.z + expandFront
             );
 
             // Also shift the center backwards (in light direction) to catch casters behind
@@ -55,12 +58,30 @@ public:
         m_useSphere = false;
     }
 
-    // Für Pointlight Cubemap (6 Frustums)
+    // FÃ¼r perspektivische Projektion (normale Kamera)
+    void BuildPerspective( FXMMATRIX view, FXMMATRIX proj ) {
+        
+        // Erstelle Frustum aus Projection Matrix
+        BoundingFrustum::CreateFromMatrix( m_frustum, proj );
+
+        // Transformiere in World-Space
+        XMMATRIX invView = XMMatrixInverse( nullptr, view );
+        m_frustum.Transform( m_frustum, invView );
+        
+        m_useSphere = false;
+        m_useExpandedAABB = false;
+    }
+
+    // FÃ¼r Pointlight Cubemap (6 Frustums)
     void BuildCubemapFace( FXMVECTOR position, float range, UINT faceIndex ) {
         // Cubemap-Frustum ist effektiv eine Sphere
         XMStoreFloat3( &m_boundingSphere.Center, position );
+        
+        // For infinite depth, use a very large radius
         m_boundingSphere.Radius = range;
+
         m_useSphere = true;
+        m_useExpandedAABB = false;
     }
 
     // Schneller AABB-Test
@@ -74,7 +95,7 @@ public:
         return m_frustum.Intersects( aabb );
     }
 
-    // Schneller Sphere-Test für VOBs
+    // Schneller Sphere-Test fÃ¼r VOBs
     bool Intersects( const BoundingSphere& sphere ) const {
         if ( m_useSphere ) {
             return m_boundingSphere.Intersects( sphere );
@@ -96,8 +117,8 @@ public:
         return m_frustum.Contains( aabb );
     }
 
-    // Schneller Sphere-Test für VOBs
-    DirectX::ContainmentType Contains( const BoundingSphere& sphere ) const {
+    // Schneller Sphere-Test fÃ¼r VOBs
+    DirectX::ContainmentType Contains( const BoundingSphere& sphere ) const {        
         if ( m_useSphere ) {
             return m_boundingSphere.Contains( sphere );
         }
@@ -106,45 +127,108 @@ public:
         }
         return m_frustum.Contains( sphere );
     }
+    
+    ContainmentType Contains(const BoundingSphere& sh, int flags) const noexcept
+    {
+        // Load origin and orientation of the frustum.
+        XMVECTOR vOrigin = XMLoadFloat3(&m_frustum.Origin);
+        XMVECTOR vOrientation = XMLoadFloat4(&m_frustum.Orientation);
 
-    // Batch-Test mit SIMD (4 Spheres gleichzeitig)
-    void IntersectsBatch4(
-        const XMFLOAT3* centers,
-        const float* radii,
-        bool* results ) const {
+        // Create 6 planes (do it inline to encourage use of registers)
+        XMVECTOR NearPlane = {}, FarPlane = {};
+        if (flags != 15) {
+            // No need to compute if we won't match against them
+            NearPlane = XMVectorSet(0.0f, 0.0f, -1.0f, m_frustum.Near);
+            NearPlane = DirectX::MathInternal::XMPlaneTransform(NearPlane, vOrientation, vOrigin);
+            NearPlane = XMPlaneNormalize(NearPlane);
 
-        XMVECTOR c0 = XMLoadFloat3( &centers[0] );
-        XMVECTOR c1 = XMLoadFloat3( &centers[1] );
-        XMVECTOR c2 = XMLoadFloat3( &centers[2] );
-        XMVECTOR c3 = XMLoadFloat3( &centers[3] );
+            FarPlane = XMVectorSet(0.0f, 0.0f, 1.0f, -m_frustum.Far);
+            FarPlane = DirectX::MathInternal::XMPlaneTransform(FarPlane, vOrientation, vOrigin);
+            FarPlane = XMPlaneNormalize(FarPlane);
+        } else {
+            NearPlane = XMVectorSet(0.0f, 0.0f, 0.0f, 0.0f);
+            FarPlane = XMVectorSet(0.0f, 0.0f, 0.0f, 0.0f);
+        }
 
-        XMVECTOR sphereCenter = XMLoadFloat3( &m_boundingSphere.Center );
-        XMVECTOR sphereRadiusSq = XMVectorReplicate(
-            m_boundingSphere.Radius * m_boundingSphere.Radius );
+        XMVECTOR RightPlane = XMVectorSet(1.0f, 0.0f, -m_frustum.RightSlope, 0.0f);
+        RightPlane = DirectX::MathInternal::XMPlaneTransform(RightPlane, vOrientation, vOrigin);
+        RightPlane = XMPlaneNormalize(RightPlane);
 
-        // Distanz² für alle 4 gleichzeitig
-        XMVECTOR d0 = XMVector3LengthSq( XMVectorSubtract( c0, sphereCenter ) );
-        XMVECTOR d1 = XMVector3LengthSq( XMVectorSubtract( c1, sphereCenter ) );
-        XMVECTOR d2 = XMVector3LengthSq( XMVectorSubtract( c2, sphereCenter ) );
-        XMVECTOR d3 = XMVector3LengthSq( XMVectorSubtract( c3, sphereCenter ) );
+        XMVECTOR LeftPlane = XMVectorSet(-1.0f, 0.0f, m_frustum.LeftSlope, 0.0f);
+        LeftPlane = DirectX::MathInternal::XMPlaneTransform(LeftPlane, vOrientation, vOrigin);
+        LeftPlane = XMPlaneNormalize(LeftPlane);
 
-        // Kombinierte Radien²
-        XMVECTOR r0 = XMVectorReplicate( radii[0] + m_boundingSphere.Radius );
-        XMVECTOR r1 = XMVectorReplicate( radii[1] + m_boundingSphere.Radius );
-        XMVECTOR r2 = XMVectorReplicate( radii[2] + m_boundingSphere.Radius );
-        XMVECTOR r3 = XMVectorReplicate( radii[3] + m_boundingSphere.Radius );
+        XMVECTOR TopPlane = XMVectorSet(0.0f, 1.0f, -m_frustum.TopSlope, 0.0f);
+        TopPlane = DirectX::MathInternal::XMPlaneTransform(TopPlane, vOrientation, vOrigin);
+        TopPlane = XMPlaneNormalize(TopPlane);
 
-        r0 = XMVectorMultiply( r0, r0 );
-        r1 = XMVectorMultiply( r1, r1 );
-        r2 = XMVectorMultiply( r2, r2 );
-        r3 = XMVectorMultiply( r3, r3 );
+        XMVECTOR BottomPlane = XMVectorSet(0.0f, -1.0f, m_frustum.BottomSlope, 0.0f);
+        BottomPlane = DirectX::MathInternal::XMPlaneTransform(BottomPlane, vOrientation, vOrigin);
+        BottomPlane = XMPlaneNormalize(BottomPlane);
 
-        results[0] = XMVector3LessOrEqual( d0, r0 );
-        results[1] = XMVector3LessOrEqual( d1, r1 );
-        results[2] = XMVector3LessOrEqual( d2, r2 );
-        results[3] = XMVector3LessOrEqual( d3, r3 );
+        return ContainedBy(
+        sh,
+        flags,
+        LeftPlane, RightPlane, BottomPlane, TopPlane, NearPlane, FarPlane);
     }
 
+private:
+    // Small utility copied from original DXMath code, to not clip on Far/Near, like original camera does for clip 15
+    ContainmentType XM_CALLCONV ContainedBy(const BoundingSphere& sh,
+        int flags,
+        FXMVECTOR Plane0, FXMVECTOR Plane1, 
+        FXMVECTOR Plane2, GXMVECTOR Plane3,
+        HXMVECTOR Plane4, HXMVECTOR Plane5) const noexcept
+    {
+        // Load the sphere.
+        XMVECTOR vCenter = XMLoadFloat3(&sh.Center);
+        XMVECTOR vRadius = XMVectorReplicatePtr(&sh.Radius);
+
+        // Set w of the center to one so we can dot4 with a plane.
+        vCenter = XMVectorInsert<0, 0, 0, 0, 1>(vCenter, XMVectorSplatOne());
+
+        XMVECTOR Outside, Inside, AnyOutside = {}, AllInside = {};
+
+        // Test against each plane.
+        DirectX::MathInternal::FastIntersectSpherePlane(vCenter, vRadius, Plane0, Outside, Inside);
+        AnyOutside = Outside;
+        AllInside = Inside;
+
+        DirectX::MathInternal::FastIntersectSpherePlane(vCenter, vRadius, Plane1, Outside, Inside);
+        AnyOutside = XMVectorOrInt(AnyOutside, Outside);
+        AllInside = XMVectorAndInt(AllInside, Inside);
+
+        DirectX::MathInternal::FastIntersectSpherePlane(vCenter, vRadius, Plane2, Outside, Inside);
+        AnyOutside = XMVectorOrInt(AnyOutside, Outside);
+        AllInside = XMVectorAndInt(AllInside, Inside);
+
+        DirectX::MathInternal::FastIntersectSpherePlane(vCenter, vRadius, Plane3, Outside, Inside);
+        AnyOutside = XMVectorOrInt(AnyOutside, Outside);
+        AllInside = XMVectorAndInt(AllInside, Inside);
+
+        if (flags != 15) {
+            // TODO: replicate sign-bits math to correctly identify the planes to check
+            DirectX::MathInternal::FastIntersectSpherePlane(vCenter, vRadius, Plane4, Outside, Inside);
+            AnyOutside = XMVectorOrInt(AnyOutside, Outside);
+            AllInside = XMVectorAndInt(AllInside, Inside);
+
+            DirectX::MathInternal::FastIntersectSpherePlane(vCenter, vRadius, Plane5, Outside, Inside);
+            AnyOutside = XMVectorOrInt(AnyOutside, Outside);
+            AllInside = XMVectorAndInt(AllInside, Inside);
+        }
+
+        // If the sphere is outside any plane it is outside.
+        if (XMVector4EqualInt(AnyOutside, XMVectorTrueInt()))
+            return DISJOINT;
+
+        // If the sphere is inside all planes it is inside.
+        if (XMVector4EqualInt(AllInside, XMVectorTrueInt()))
+            return CONTAINS;
+
+        // The sphere is not inside all planes or outside a plane, it may intersect.
+        return INTERSECTS;
+    }
+    
 private:
     // Helper to get frustum corners for AABB creation
     std::array<XMFLOAT3, 8> GetFrustumCorners() const {

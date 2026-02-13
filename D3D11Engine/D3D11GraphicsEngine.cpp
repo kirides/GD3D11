@@ -4628,6 +4628,11 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
     lights.clear();
     mobs.clear();
     
+    // clear any residue of main render pass
+    for ( auto const& staticMeshVisual : Engine::GAPI->GetStaticMeshVisuals() ) {
+        staticMeshVisual.second->StartNewFrame();
+    }
+    
     if ( Engine::GAPI->GetRendererState().RendererSettings.DrawVOBs ||
     Engine::GAPI->GetRendererState().RendererSettings.EnableDynamicLighting ) {
         Engine::GAPI->CollectVisibleVobs( vobs, lights, mobs );
@@ -4785,7 +4790,9 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
         static std::vector<SkeletalVobInfo*> animatedSkeletalMeshVobs;
         animatedSkeletalMeshVobs.clear();
-
+        
+        auto& currentFrustum = frusti[cascadeIndex];
+        auto gameCamera = ((zCCamera*)oCGame::GetGame()->_zCSession_camera);
         for ( auto const& skeletalMeshVob : Engine::GAPI->GetSkeletalMeshVobs() ) {
             if ( !skeletalMeshVob->VisualInfo ) continue;
 
@@ -4804,13 +4811,16 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             if ( enableCulling ) {
                 // Frustum culling using a bounding sphere
                 // Use the mesh size as radius, centered at the vob position
-                float radius = skeletalMeshVob->VisualInfo->MeshSize * 0.5f;
-                XMFLOAT3 center;
-                XMStoreFloat3( &center, vobPos );
-                BoundingSphere vobSphere( center, radius );
-
-                if ( previousCascadeFrustum && previousCascadeFrustum->Contains( vobSphere ) == DirectX::ContainmentType::CONTAINS ) {
-                    continue;  // Skip if already rendered in previous cascade
+                auto box = skeletalMeshVob->Vob->GetBBox();
+                BoundingBox bb;
+                BoundingBox::CreateFromPoints(bb, XMLoadFloat3(&box.Min), XMLoadFloat3(&box.Max));
+                BoundingSphere sphere;
+                BoundingSphere::CreateFromBoundingBox(sphere, bb);
+                int clipFlags = 15;
+                if ( currentFrustum.Contains( sphere ) == DirectX::ContainmentType::DISJOINT 
+                    && gameCamera->BBox3DInFrustum(box, clipFlags) == zTCam_ClipType::ZTCAM_CLIPTYPE_OUT) {
+                    // Not hitting our frustum and not the active view.
+                    continue;
                 }
             }
 

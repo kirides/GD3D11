@@ -918,6 +918,11 @@ struct GothicRendererSettings {
             bool DepthMotionVectors;
             bool DisplayVelocity;
         } TAA;
+        struct {
+            float ExtendBack;
+            float ExtendFront;
+            float ExtendSide;
+        } ShadowCascades;
     } DebugSettings;
 };
 
