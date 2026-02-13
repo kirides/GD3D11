@@ -231,7 +231,7 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET {
     // Adaptive gamma based on velocity
     // Tighter clipping for fast motion and at all types of edges
     float velocityFactor = saturate(velocityLengthPixels * 0.1);
-    float gamma = lerp(1.0, 0.75, velocityFactor);   
+    float gamma = lerp(1.5, 0.75, velocityFactor);   
     
     // Variance-based clipping bounds in tonemapped space
     float3 clipMin = m1 - gamma * sigma;
@@ -292,7 +292,7 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET {
     
     // Only increase blend for very high contrast to avoid losing temporal stability
     if (lumContrast > 0.5) {
-        adaptiveBlend = max(adaptiveBlend, lerp(adaptiveBlend, 0.4, saturate((lumContrast - 0.5) * 2.0)));
+        // adaptiveBlend = max(adaptiveBlend, lerp(adaptiveBlend, 0.4, saturate((lumContrast - 0.5) * 2.0)));
     }
     
     // Clamp final blend factor
