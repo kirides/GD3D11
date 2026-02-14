@@ -3694,10 +3694,8 @@ zTCam_ClipType GothicAPI::GetCameraBBox3DInFrustum( const zTBBox3D& box, int cli
     if ( CameraReplacementPtr ) {
         BoundingBox bb;
         BoundingBox::CreateFromPoints(bb, XMLoadFloat3(&box.Min), XMLoadFloat3(&box.Max));
-        BoundingSphere sphere;
-        BoundingSphere::CreateFromBoundingBox(sphere, bb);
 
-        auto result = CameraReplacementPtr->frustum.Contains(sphere, static_cast<EGothicCullFlags>(clipFlags));
+        auto result = CameraReplacementPtr->frustum.Contains(bb, static_cast<EGothicCullFlags>(clipFlags));
         if ( result == ContainmentType::DISJOINT )
             return zTCam_ClipType::ZTCAM_CLIPTYPE_OUT;
         if ( result == ContainmentType::INTERSECTS )

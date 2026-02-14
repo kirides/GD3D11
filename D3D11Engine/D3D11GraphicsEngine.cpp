@@ -4811,10 +4811,9 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                 auto box = skeletalMeshVob->Vob->GetBBox();
                 BoundingBox bb;
                 BoundingBox::CreateFromPoints(bb, XMLoadFloat3(&box.Min), XMLoadFloat3(&box.Max));
-                BoundingSphere sphere;
-                BoundingSphere::CreateFromBoundingBox(sphere, bb);
+
                 int clipFlags = EGothicCullFlags::CullAll;
-                if ( currentFrustum.Contains( sphere ) == DirectX::ContainmentType::DISJOINT 
+                if ( currentFrustum.Contains( bb ) == DirectX::ContainmentType::DISJOINT 
                     && gameCamera->BBox3DInFrustum(box, clipFlags) == zTCam_ClipType::ZTCAM_CLIPTYPE_OUT) {
                     // Not hitting our frustum and not the active view.
                     continue;
