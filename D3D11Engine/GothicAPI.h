@@ -389,7 +389,7 @@ public:
     /** Returns the current cameraposition */
     XMFLOAT3 GetCameraPosition();
     FXMVECTOR XM_CALLCONV GetCameraPositionXM();
-    zTCam_ClipType GetCameraBBox3DInFrustum(const zTBBox3D& box, int clipFlags);
+    zTCam_ClipType GetCameraBBox3DInFrustum(const zTBBox3D& box, int clipFlags = EGothicCullFlags::CullAll);
 
     /** Returns the view matrix */
     void GetViewMatrix( XMFLOAT4X4* view );
@@ -491,7 +491,8 @@ public:
     std::vector<VobInfo*>::iterator MoveVobFromBspToDynamic( VobInfo* vob, std::vector<VobInfo*>* source );
 
     /** Collects vobs using gothics BSP-Tree */
-    void CollectVisibleVobs( std::vector<VobInfo*>& vobs, std::vector<VobLightInfo*>& lights, std::vector<SkeletalVobInfo*>& mobs );
+    void CollectVisibleVobs(std::vector<VobInfo*>& vobs, std::vector<VobLightInfo*>& lights, std::vector<SkeletalVobInfo*>& mobs, EGothicCullFlags
+                            cullFlags = EGothicCullFlags::CullAll);
 
     /** Collects visible sections from the current camera perspective */
     void CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sections );

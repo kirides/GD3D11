@@ -6,6 +6,21 @@
 
 using namespace DirectX;
 
+enum EGothicCullFlags : unsigned char {
+    CullNone = 0,
+    CullLeftPlane = 1 << 0,
+    CullRightPlane = 1 << 1,
+    CullBottomPlane = 1 << 2,
+    CullTopPlane = 1 << 3,
+    CullNearPlane = 1 << 4,
+    CullFarPlane = 1 << 5,
+    
+    CullSides = CullLeftPlane | CullRightPlane | CullBottomPlane | CullTopPlane,
+    CullSidesNear = CullSides | CullNearPlane,
+    
+    CullAll = CullSides | CullNearPlane | CullFarPlane,
+};
+
 class Frustum {
 public:
     // Für orthografische Projektion (Sonnen-Shadowmap)
@@ -128,43 +143,50 @@ public:
         return m_frustum.Contains( sphere );
     }
     
-    ContainmentType Contains(const BoundingSphere& sh, int flags) const noexcept
-    {
+    ContainmentType Contains(const BoundingSphere& sh, EGothicCullFlags flags) const noexcept {
+        if (!flags) {
+            // Cull against nothing? Then just say its somewhere.
+            return ContainmentType::INTERSECTS;
+        }
+        
         // Load origin and orientation of the frustum.
         XMVECTOR vOrigin = XMLoadFloat3(&m_frustum.Origin);
         XMVECTOR vOrientation = XMLoadFloat4(&m_frustum.Orientation);
 
         // Create 6 planes (do it inline to encourage use of registers)
-        XMVECTOR NearPlane = {}, FarPlane = {};
-        if (flags != 15) {
-            // No need to compute if we won't match against them
+        XMVECTOR NearPlane = {}, FarPlane = {}, LeftPlane = {}, RightPlane = {}, BottomPlane = {}, TopPlane = {};
+        
+        // TODO: Create the planes before hand and store them in world space, to avoid transforming them every time. This is what the original camera does as well.
+        if (flags & EGothicCullFlags::CullLeftPlane) {
+            LeftPlane = XMVectorSet(-1.0f, 0.0f, m_frustum.LeftSlope, 0.0f);
+            LeftPlane = DirectX::MathInternal::XMPlaneTransform(LeftPlane, vOrientation, vOrigin);
+            LeftPlane = XMPlaneNormalize(LeftPlane);
+        }
+        if (flags & EGothicCullFlags::CullRightPlane) {
+            RightPlane = XMVectorSet(1.0f, 0.0f, -m_frustum.RightSlope, 0.0f);
+            RightPlane = DirectX::MathInternal::XMPlaneTransform(RightPlane, vOrientation, vOrigin);
+            RightPlane = XMPlaneNormalize(RightPlane);
+        }
+        if (flags & EGothicCullFlags::CullBottomPlane) {
+            BottomPlane = XMVectorSet(0.0f, -1.0f, m_frustum.BottomSlope, 0.0f);
+            BottomPlane = DirectX::MathInternal::XMPlaneTransform(BottomPlane, vOrientation, vOrigin);
+            BottomPlane = XMPlaneNormalize(BottomPlane);
+        }
+        if (flags & EGothicCullFlags::CullTopPlane) {
+            TopPlane = XMVectorSet(0.0f, 1.0f, -m_frustum.TopSlope, 0.0f);
+            TopPlane = DirectX::MathInternal::XMPlaneTransform(TopPlane, vOrientation, vOrigin);
+            TopPlane = XMPlaneNormalize(TopPlane);
+        }
+        if (flags & EGothicCullFlags::CullNearPlane) {
             NearPlane = XMVectorSet(0.0f, 0.0f, -1.0f, m_frustum.Near);
             NearPlane = DirectX::MathInternal::XMPlaneTransform(NearPlane, vOrientation, vOrigin);
             NearPlane = XMPlaneNormalize(NearPlane);
-
+        }
+        if (flags & EGothicCullFlags::CullFarPlane) {
             FarPlane = XMVectorSet(0.0f, 0.0f, 1.0f, -m_frustum.Far);
             FarPlane = DirectX::MathInternal::XMPlaneTransform(FarPlane, vOrientation, vOrigin);
             FarPlane = XMPlaneNormalize(FarPlane);
-        } else {
-            NearPlane = XMVectorSet(0.0f, 0.0f, 0.0f, 0.0f);
-            FarPlane = XMVectorSet(0.0f, 0.0f, 0.0f, 0.0f);
         }
-
-        XMVECTOR RightPlane = XMVectorSet(1.0f, 0.0f, -m_frustum.RightSlope, 0.0f);
-        RightPlane = DirectX::MathInternal::XMPlaneTransform(RightPlane, vOrientation, vOrigin);
-        RightPlane = XMPlaneNormalize(RightPlane);
-
-        XMVECTOR LeftPlane = XMVectorSet(-1.0f, 0.0f, m_frustum.LeftSlope, 0.0f);
-        LeftPlane = DirectX::MathInternal::XMPlaneTransform(LeftPlane, vOrientation, vOrigin);
-        LeftPlane = XMPlaneNormalize(LeftPlane);
-
-        XMVECTOR TopPlane = XMVectorSet(0.0f, 1.0f, -m_frustum.TopSlope, 0.0f);
-        TopPlane = DirectX::MathInternal::XMPlaneTransform(TopPlane, vOrientation, vOrigin);
-        TopPlane = XMPlaneNormalize(TopPlane);
-
-        XMVECTOR BottomPlane = XMVectorSet(0.0f, -1.0f, m_frustum.BottomSlope, 0.0f);
-        BottomPlane = DirectX::MathInternal::XMPlaneTransform(BottomPlane, vOrientation, vOrigin);
-        BottomPlane = XMPlaneNormalize(BottomPlane);
 
         return ContainedBy(
         sh,
@@ -175,10 +197,10 @@ public:
 private:
     // Small utility copied from original DXMath code, to not clip on Far/Near, like original camera does for clip 15
     ContainmentType XM_CALLCONV ContainedBy(const BoundingSphere& sh,
-        int flags,
-        FXMVECTOR Plane0, FXMVECTOR Plane1, 
-        FXMVECTOR Plane2, GXMVECTOR Plane3,
-        HXMVECTOR Plane4, HXMVECTOR Plane5) const noexcept
+        EGothicCullFlags flags,
+        FXMVECTOR LeftPlane, FXMVECTOR RightPlane, 
+        FXMVECTOR BottomPlane, GXMVECTOR TopPlane,
+        HXMVECTOR NearPlane, HXMVECTOR FarPlane) const noexcept
     {
         // Load the sphere.
         XMVECTOR vCenter = XMLoadFloat3(&sh.Center);
@@ -190,29 +212,33 @@ private:
         XMVECTOR Outside, Inside, AnyOutside = {}, AllInside = {};
 
         // Test against each plane.
-        DirectX::MathInternal::FastIntersectSpherePlane(vCenter, vRadius, Plane0, Outside, Inside);
-        AnyOutside = Outside;
-        AllInside = Inside;
-
-        DirectX::MathInternal::FastIntersectSpherePlane(vCenter, vRadius, Plane1, Outside, Inside);
-        AnyOutside = XMVectorOrInt(AnyOutside, Outside);
-        AllInside = XMVectorAndInt(AllInside, Inside);
-
-        DirectX::MathInternal::FastIntersectSpherePlane(vCenter, vRadius, Plane2, Outside, Inside);
-        AnyOutside = XMVectorOrInt(AnyOutside, Outside);
-        AllInside = XMVectorAndInt(AllInside, Inside);
-
-        DirectX::MathInternal::FastIntersectSpherePlane(vCenter, vRadius, Plane3, Outside, Inside);
-        AnyOutside = XMVectorOrInt(AnyOutside, Outside);
-        AllInside = XMVectorAndInt(AllInside, Inside);
-
-        if (flags != 15) {
-            // TODO: replicate sign-bits math to correctly identify the planes to check
-            DirectX::MathInternal::FastIntersectSpherePlane(vCenter, vRadius, Plane4, Outside, Inside);
+        if (flags & EGothicCullFlags::CullLeftPlane) {
+            DirectX::MathInternal::FastIntersectSpherePlane(vCenter, vRadius, LeftPlane, Outside, Inside);
+            AnyOutside = Outside;
+            AllInside = Inside;
+        }
+        if (flags & EGothicCullFlags::CullRightPlane) {
+            DirectX::MathInternal::FastIntersectSpherePlane(vCenter, vRadius, RightPlane, Outside, Inside);
             AnyOutside = XMVectorOrInt(AnyOutside, Outside);
             AllInside = XMVectorAndInt(AllInside, Inside);
-
-            DirectX::MathInternal::FastIntersectSpherePlane(vCenter, vRadius, Plane5, Outside, Inside);
+        }
+        if (flags & EGothicCullFlags::CullBottomPlane) {
+            DirectX::MathInternal::FastIntersectSpherePlane(vCenter, vRadius, BottomPlane, Outside, Inside);
+            AnyOutside = XMVectorOrInt(AnyOutside, Outside);
+            AllInside = XMVectorAndInt(AllInside, Inside);
+        }
+        if (flags & EGothicCullFlags::CullTopPlane) {
+            DirectX::MathInternal::FastIntersectSpherePlane(vCenter, vRadius, TopPlane, Outside, Inside);
+            AnyOutside = XMVectorOrInt(AnyOutside, Outside);
+            AllInside = XMVectorAndInt(AllInside, Inside);
+        }
+        if (flags & EGothicCullFlags::CullNearPlane) {
+            DirectX::MathInternal::FastIntersectSpherePlane(vCenter, vRadius, NearPlane, Outside, Inside);
+            AnyOutside = XMVectorOrInt(AnyOutside, Outside);
+            AllInside = XMVectorAndInt(AllInside, Inside);
+        }
+        if (flags & EGothicCullFlags::CullFarPlane) {
+            DirectX::MathInternal::FastIntersectSpherePlane(vCenter, vRadius, FarPlane, Outside, Inside);
             AnyOutside = XMVectorOrInt(AnyOutside, Outside);
             AllInside = XMVectorAndInt(AllInside, Inside);
         }

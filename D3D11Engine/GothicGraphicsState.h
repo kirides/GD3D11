@@ -746,6 +746,8 @@ struct GothicRendererSettings {
         GraphicsPreset = E_GraphicsPreset::GRAPHICS_CUSTOM;
         
         DebugSettings = {};
+        DebugSettings.Culling.CullBspSections = true;
+        DebugSettings.Culling.CullVobs = true;
     }
 
     void SetupOldWorldSpecificValues() {
@@ -923,6 +925,10 @@ struct GothicRendererSettings {
             float ExtendFront;
             float ExtendSide;
         } ShadowCascades;
+        struct {
+            bool CullVobs;
+            bool CullBspSections;
+        } Culling;
     } DebugSettings;
 };
 

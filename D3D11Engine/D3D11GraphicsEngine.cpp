@@ -4633,24 +4633,21 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         staticMeshVisual.second->StartNewFrame();
     }
     
-    if ( Engine::GAPI->GetRendererState().RendererSettings.DrawVOBs ||
-    Engine::GAPI->GetRendererState().RendererSettings.EnableDynamicLighting ) {
-        Engine::GAPI->CollectVisibleVobs( vobs, lights, mobs );
-    }
-    
-    for ( auto& it : vobs) {
-        it->VisibleInRenderPass = false;  // Reset this for the next frame
-    }
-    
-    for ( auto& it : lights) {
-        it->VisibleInRenderPass = false;  // Reset this for the next frame
-    }
-    
-    for ( auto& it : mobs) {
-        it->VisibleInRenderPass = false;  // Reset this for the next frame
-    }
     
     if ( Engine::GAPI->GetRendererState().RendererSettings.DrawVOBs ) {
+        Engine::GAPI->CollectVisibleVobs( vobs, lights, mobs );
+        
+        for ( auto& it : vobs) { 
+            it->VisibleInRenderPass = false;  // Reset this for the next frame
+        }
+        
+        for ( auto& it : lights) {
+            it->VisibleInRenderPass = false;  // Reset this for the next frame
+        }
+        
+        for ( auto& it : mobs) {
+            it->VisibleInRenderPass = false;  // Reset this for the next frame
+        }
         auto _ = START_TIMING( "Static Mesh Visuals");
         auto _1 = RecordGraphicsEvent( L"DrawVOBs" );
 
@@ -4816,7 +4813,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                 BoundingBox::CreateFromPoints(bb, XMLoadFloat3(&box.Min), XMLoadFloat3(&box.Max));
                 BoundingSphere sphere;
                 BoundingSphere::CreateFromBoundingBox(sphere, bb);
-                int clipFlags = 15;
+                int clipFlags = EGothicCullFlags::CullAll;
                 if ( currentFrustum.Contains( sphere ) == DirectX::ContainmentType::DISJOINT 
                     && gameCamera->BBox3DInFrustum(box, clipFlags) == zTCam_ClipType::ZTCAM_CLIPTYPE_OUT) {
                     // Not hitting our frustum and not the active view.

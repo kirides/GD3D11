@@ -1130,7 +1130,8 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
         ImGui::Checkbox( "DrawForestPortals", &settings.DrawG1ForestPortals );
 #endif
 
-        if (ImGui::BeginTabBar("Debug")) {
+        ImGui::SeparatorText("Debugging");
+        if (ImGui::BeginTabBar("#DebugTabs")) {
             ImGui::SetItemTooltip("Here be dragons!");
 
             if (ImGui::BeginTabItem("TAA Debug", nullptr, ImGuiTabItemFlags_::ImGuiTabItemFlags_NoReorder)) {
@@ -1140,10 +1141,16 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
                 ImGui::EndTabItem();
             }
 
-            if (ImGui::BeginTabItem("Shadow Debug", nullptr, ImGuiTabItemFlags_::ImGuiTabItemFlags_NoReorder)) {
+            if (ImGui::BeginTabItem("Shadows", nullptr, ImGuiTabItemFlags_::ImGuiTabItemFlags_NoReorder)) {
                 ImGui::SliderFloat("Extend Back", &settings.DebugSettings.ShadowCascades.ExtendBack, -10000, 50000, "%.0f");
                 ImGui::SliderFloat("Extend Front", &settings.DebugSettings.ShadowCascades.ExtendFront, -10000, 50000, "%.0f");
                 ImGui::SliderFloat("Extend Side", &settings.DebugSettings.ShadowCascades.ExtendSide, -10000, 20000, "%.0f");
+                ImGui::EndTabItem();
+            }
+            
+            if (ImGui::BeginTabItem("Culling", nullptr, ImGuiTabItemFlags_::ImGuiTabItemFlags_NoReorder)) {
+                ImGui::Checkbox("BSP Nodes", &settings.DebugSettings.Culling.CullBspSections );
+                ImGui::Checkbox("Vobs", &settings.DebugSettings.Culling.CullVobs );
                 ImGui::EndTabItem();
             }
  
