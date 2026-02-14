@@ -5137,9 +5137,19 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
             // Mobs use zengine functions for binding textures so let's reset zengine texture state
             Engine::GAPI->ResetRenderStates();
 
+            static std::vector<XMFLOAT4X4> bones = {};
             for ( SkeletalVobInfo* mob : mobs ) {
                 Engine::GAPI->DrawSkeletalMeshVob( mob, FLT_MAX );
                 mob->VisibleInRenderPass = false;  // Reset this for the next frame
+                
+                zCModel* model = static_cast<zCModel*>(mob->Vob->GetVisual());
+                XMMATRIX scale = XMMatrixScalingFromVector( model->GetModelScaleXM() );
+                XMMATRIX world = mob->Vob->GetWorldMatrixXM() * scale;
+                XMStoreFloat4x4( &mob->PrevWorldMatrix, world );
+                
+                model->GetBoneTransforms(&bones);
+                mob->StorePreviousTransforms(bones);
+                bones.clear();
             }
         }
 
@@ -6821,6 +6831,7 @@ void D3D11GraphicsEngine::StoreVobPreviousTransforms() {
     }
 
     // Store transforms for skeletal meshes
+    static std::vector<XMFLOAT4X4> transforms;
     for ( SkeletalVobInfo* skelVob : Engine::GAPI->GetAnimatedSkeletalMeshVobs() ) {
         zCModel* model = static_cast<zCModel*>(skelVob->Vob->GetVisual());
         if ( model ) {
@@ -6828,8 +6839,8 @@ void D3D11GraphicsEngine::StoreVobPreviousTransforms() {
             XMMATRIX scale = XMMatrixScalingFromVector( model->GetModelScaleXM() );
             XMMATRIX world = skelVob->Vob->GetWorldMatrixXM() * scale;
             XMStoreFloat4x4( &skelVob->PrevWorldMatrix, world );
-            
-            std::vector<XMFLOAT4X4> transforms;
+
+            transforms.clear();
             model->GetBoneTransforms( &transforms );
             skelVob->StorePreviousTransforms( transforms );
         }

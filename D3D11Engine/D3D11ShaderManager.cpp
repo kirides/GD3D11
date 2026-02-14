@@ -140,10 +140,12 @@ HRESULT D3D11ShaderManager::CompileShaderFromFile( const CHAR* szFileName, LPCST
     // Setting this flag improves the shader debugging experience, but still allows 
     // the shaders to be optimized and to run exactly the way they will run in 
     // the release configuration of this program.
-    dwShaderFlags |= D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION | D3DCOMPILE_DEBUG_NAME_FOR_SOURCE;
+    dwShaderFlags |= D3DCOMPILE_DEBUG 
+    // | D3DCOMPILE_SKIP_OPTIMIZATION | D3DCOMPILE_DEBUG_NAME_FOR_SOURCE // Very expensive, only use to debug shaders
+    ;
 #else
-    dwShaderFlags |= D3DCOMPILE_OPTIMIZATION_LEVEL3;
 #endif
+    dwShaderFlags |= D3DCOMPILE_OPTIMIZATION_LEVEL3;
 
     // Construct makros
     std::vector<D3D_SHADER_MACRO> m;
