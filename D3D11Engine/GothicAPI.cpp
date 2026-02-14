@@ -1375,16 +1375,15 @@ void GothicAPI::CalcFlashMeshes() {
     if ( !RendererState.RendererSettings.DrawParticleEffects || (FlashVisuals.empty() && FrameThunderPolyStrips.empty()) ) {
         return;
     }
+    
+    auto vVfxRangeSq = XMVectorReplicate(RendererState.RendererSettings.VisualFXDrawRadius * RendererState.RendererSettings.VisualFXDrawRadius);
 
     FXMVECTOR camPos = GetCameraPositionXM();
     static std::vector<zCPolyStrip*> polyStrips; polyStrips.clear();
     for ( auto it = FlashVisuals.begin(); it != FlashVisuals.end();) {
         zCFlash* flash = it->first;
-        float dist1, dist2;
-        XMStoreFloat( &dist1, XMVector3Length( flash->GetStartPositionWorld() - camPos ) );
-        XMStoreFloat( &dist2, XMVector3Length( flash->GetEndPositionWorld() - camPos ) );
-        if ( dist1 > RendererState.RendererSettings.VisualFXDrawRadius &&
-            dist2 > RendererState.RendererSettings.VisualFXDrawRadius )
+        if ( XMVector3Greater(XMVector3LengthSq( flash->GetStartPositionWorld() - camPos ), vVfxRangeSq) &&
+            XMVector3Greater(XMVector3LengthSq( flash->GetEndPositionWorld() - camPos ), vVfxRangeSq) )
             continue;
 
         if ( flash->RenderFlash( polyStrips ) ) {
@@ -4314,15 +4313,16 @@ static void CVVH_AddNotDrawnVobToList( std::vector<VobLightInfo*>& target, std::
 }
 
 static void CVVH_AddNotDrawnVobToList( std::vector<SkeletalVobInfo*>& target, std::vector<SkeletalVobInfo*>& source, float dist, int clipFlags ) {
-    float vd;
-
     const auto& camPos = Engine::GAPI->GetCameraPositionXM();
     auto cullingEnabled = Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.Culling.CullVobs;
+    auto vDistSq = XMVectorReplicate(dist * dist);
 
     for ( auto const& it : source ) {
         if ( !it->VisibleInRenderPass ) {
-            XMStoreFloat( &vd, XMVector3Length( camPos - it->Vob->GetPositionWorldXM() ) );
-            if ( vd < dist && it->Vob->GetShowVisual() ) {
+            if ( XMVector3Greater(XMVector3LengthSq( camPos - it->Vob->GetPositionWorldXM() ), vDistSq) ) {
+                continue;
+            }
+            if ( it->Vob->GetShowVisual() ) {
                 int clipFl = clipFlags;
                 if (cullingEnabled
                     && Engine::GAPI->GetCameraBBox3DInFrustum( it->Vob->GetBBox(), clipFlags ) ==  zTCam_ClipType::ZTCAM_CLIPTYPE_OUT
