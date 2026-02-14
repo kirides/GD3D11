@@ -1175,6 +1175,9 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
       <PrecompiledHeaderFile Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt_G1|Win32'">pch.h</PrecompiledHeaderFile>
     </ClCompile>
     <ClCompile Include="BaseShadowedPointLight.cpp" />
+    <None Include="Shaders\PS_Grass.hlsl" />
+    <None Include="Shaders\VS_GrassInstanced.hlsl" />
+    <None Include="Shaders\PS_PFX_VelocityDebug.hlsl" />
     <ClCompile Include="SMAA\D3D11SMAA.cpp" />
     <ClCompile Include="SteamOverlay.cpp" />
     <ClCompile Include="StackWalker.cpp" />

@@ -2,11 +2,11 @@
 // Simple vertex shader
 //--------------------------------------------------------------------------------------
 
+#include "Globals_VS_ExConstants.h"
+
 cbuffer Matrices_PerFrame : register( b0 )
 {
-	matrix M_View;
-	matrix M_Proj;
-	matrix M_ViewProj;	
+	VS_ExConstantBuffer_PerFrame frame;
 };
 
 cbuffer GrassCB : register( b1 )
@@ -32,6 +32,8 @@ struct VS_OUTPUT
 	float2 vTexcoord		: TEXCOORD0;
 	float3 vNormalVS		: TEXCOORD1;
 	float3 vWorldPosition	: TEXCOORD2;
+	float4 vCurrClipPos     : TEXCOORD3;  // Current clip position for velocity
+	float4 vPrevClipPos     : TEXCOORD4;  // Previous clip position for velocity
 	float4 vPosition		: SV_POSITION;
 };
 
@@ -53,10 +55,15 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 	wpos.xz += sin(G_Time * 3.0f + wind) * 1.55f * Input.vPosition.y * G_WindStrength;
 	wpos.xz += sin(G_Time * 5.0f + wind) * 1.2f * Input.vPosition.y * G_WindStrength;
 	
-	Output.vPosition = mul( float4(wpos,1), M_ViewProj);
+	Output.vPosition = mul( float4(wpos,1), frame.M_ViewProj);
 	Output.vTexcoord = Input.vTex1;
 	Output.vNormalVS = G_NormalVS;
 	Output.vWorldPosition = wpos;
+
+	// Motion Vectors - grass uses static world position for velocity
+	// Wind animation is not tracked per-frame, so we output zero velocity
+	Output.vCurrClipPos = mul(float4(wpos, 1.0), frame.M_UnjitteredViewProj);
+	Output.vPrevClipPos = mul(float4(wpos, 1.0), frame.M_PrevViewProj);
 
 	return Output;
 }

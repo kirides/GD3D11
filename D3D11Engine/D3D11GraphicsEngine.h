@@ -427,6 +427,9 @@ private:
     /** World-Mesh indirect buffer */
     std::unique_ptr<D3D11IndirectBuffer> WorldMeshIndirectBuffer;
 
+    /** Buffer for previous bone transforms */
+    std::unique_ptr<D3D11ConstantBuffer> PrevBoneTransformsBuffer;
+
     /** Constantbuffers for view-distances */
     std::unique_ptr<D3D11ConstantBuffer> InfiniteRangeConstantBuffer;
     std::unique_ptr<D3D11ConstantBuffer> OutdoorSmallVobsConstantBuffer;

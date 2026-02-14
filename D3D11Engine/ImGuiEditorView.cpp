@@ -980,15 +980,16 @@ bool ImGuiEditorView::OnWindowMessage(HWND hWnd, unsigned int msg, WPARAM wParam
 
     case WM_MOUSEWHEEL:
         if (!io.WantCaptureMouse) {
-            int delta = (int)(GET_WHEEL_DELTA_WPARAM(wParam) * 0.1f);
-            MMWDelta += static_cast<float>(delta);
+            float delta = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) * 0.1f;
+            MMWDelta += delta;
 
             if (Selection.SelectedVegetationBox) {
                 // Adjust size of grassblades if not in removing-mode
                 if (Mode == EM_IDLE) {
                     Selection.SelectedVegetationBox->ApplyUniformScaling(delta < 0 ? 0.9f : 1.1f);
                 }
-            } else {
+            } else if (!io.KeyCtrl) {
+                // no editor movement if we hold CTRL
                 // Zoom camera forward/backward
                 float zoomSpeed = io.KeyShift ? 50.0f : 20.0f;
                 float zoomAmount = delta * zoomSpeed;

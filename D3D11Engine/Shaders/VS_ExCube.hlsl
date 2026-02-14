@@ -2,11 +2,11 @@
 // Simple vertex shader
 //--------------------------------------------------------------------------------------
 
+#include "Globals_VS_ExConstants.h"
+
 cbuffer Matrices_PerFrame : register( b0 )
 {
-	matrix M_View;
-	matrix M_Proj;
-	matrix M_ViewProj;	
+	VS_ExConstantBuffer_PerFrame frame;
 };
 
 cbuffer Matrices_PerInstances : register( b1 )

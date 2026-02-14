@@ -2,11 +2,11 @@
 // Simple vertex shader
 //--------------------------------------------------------------------------------------
 
+#include "Globals_VS_ExConstants.h"
+
 cbuffer Matrices_PerFrame : register( b0 )
 {
-	matrix M_View;
-	matrix M_Proj;
-	matrix M_ViewProj;	
+	VS_ExConstantBuffer_PerFrame frame;
 };
 
 cbuffer Matrices_PerInstances : register( b1 )
@@ -37,7 +37,7 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 {
 	VS_OUTPUT Output;
 	
-	Output.vPosition = mul( float4(Input.vPosition.xyz,1), mul(M_World, M_ViewProj) );
+	Output.vPosition = mul( float4(Input.vPosition.xyz,1), mul(M_World, frame.M_ViewProj) );
 	Output.vDiffuse  = Input.vDiffuse;
 		
 	Output.vPosition.z *= Input.vPosition.w;

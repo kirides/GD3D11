@@ -42,8 +42,33 @@ struct PS_INPUT
 	float4 vDiffuse			: TEXCOORD2;
 	float3 vNormalVS		: TEXCOORD4;
 	float3 vViewPosition	: TEXCOORD5;
+	float4 vCurrClipPos     : TEXCOORD6;  // Current clip position for velocity (from instanced VS)
+	float4 vPrevClipPos     : TEXCOORD7;  // Previous clip position for velocity (from instanced VS)
 	float4 vPosition		: SV_POSITION;
 };
+
+// Calculate screen-space velocity from clip positions
+float2 CalculateVelocity(float4 currClipPos, float4 prevClipPos)
+{
+	// Handle edge case where clip positions are invalid (w == 0)
+	if (currClipPos.w == 0.0 || prevClipPos.w == 0.0)
+		return float2(0, 0);
+	
+	// Perspective divide to get NDC [-1,1]
+	float2 currNDC = currClipPos.xy / currClipPos.w;
+	float2 prevNDC = prevClipPos.xy / prevClipPos.w;
+	
+	// Convert NDC to UV space [0,1]
+	// Note: Y is flipped between NDC (Y+ up) and UV (Y+ down)
+	float2 currUV = float2(currNDC.x * 0.5 + 0.5, 1.0 - (currNDC.y * 0.5 + 0.5));
+	float2 prevUV = float2(prevNDC.x * 0.5 + 0.5, 1.0 - (prevNDC.y * 0.5 + 0.5));
+	
+	// Velocity = current - previous (where the pixel came from)
+	// This matches the depth-based velocity calculation
+	float2 velocity = currUV - prevUV;
+	
+	return velocity;
+}
 
 //--------------------------------------------------------------------------------------
 // Pixel Shader
@@ -84,6 +109,12 @@ DEFERRED_PS_OUTPUT PSMain( PS_INPUT Input ) : SV_TARGET
 	
 	output.vSI_SP.x = MI_SpecularIntensity * fx.r;
 	output.vSI_SP.y = MI_SpecularPower * fx.g;
+	
+	// Calculate velocity for motion vectors
+	// For instanced objects (VOBs, skeletal meshes), vCurrClipPos/vPrevClipPos come from VS
+	// For world mesh, these will be (0,0,0,0) resulting in zero velocity (camera motion handled by depth-based pass)
+	output.vVelocity = CalculateVelocity(Input.vCurrClipPos, Input.vPrevClipPos);
+	
 	return output;
 }
 

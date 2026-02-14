@@ -1130,6 +1130,18 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
         ImGui::Checkbox( "DrawForestPortals", &settings.DrawG1ForestPortals );
 #endif
 
+        if (ImGui::BeginTabBar("Debug")) {
+            ImGui::SetItemTooltip("Here be dragons!");
+
+            if (ImGui::BeginTabItem("TAA Debug", nullptr, ImGuiTabItemFlags_::ImGuiTabItemFlags_NoReorder)) {
+                ImGui::Checkbox("Use Depth based Velocity", &settings.DebugSettings.TAA.DepthMotionVectors);
+                ImGui::SetItemTooltip("Instead of per-Object");
+                ImGui::Checkbox("Display Velocity", &settings.DebugSettings.TAA.DisplayVelocity);
+                ImGui::EndTabItem();
+            }
+ 
+            ImGui::EndTabBar();
+        }
     }
     ImGui::End();
 }

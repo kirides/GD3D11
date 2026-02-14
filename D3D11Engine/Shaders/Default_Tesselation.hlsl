@@ -1,8 +1,8 @@
+#include "Globals_VS_ExConstants.h"
+
 cbuffer Matrices_PerFrame : register( b0 )
 {
-	matrix M_View;
-	matrix M_Proj;
-	matrix M_ViewProj;	
+	VS_ExConstantBuffer_PerFrame frame;
 };
 
 cbuffer cbObjectTessSettings : register( b1 ) 
@@ -67,9 +67,9 @@ ConstantOutputType TessPatchConstantFunction(InputPatch<VS_OUTPUT, 3> inputPatch
 	float factor = 40.0f;
   
 	float3 viewPosition[3];
-	viewPosition[0] = mul(float4(inputPatch[0].vWorldPosition, 1), M_View);
-	viewPosition[1] = mul(float4(inputPatch[1].vWorldPosition, 1), M_View);
-	viewPosition[2] = mul(float4(inputPatch[2].vWorldPosition, 1), M_View);
+	viewPosition[0] = mul(float4(inputPatch[0].vWorldPosition, 1), frame.M_View);
+	viewPosition[1] = mul(float4(inputPatch[1].vWorldPosition, 1), frame.M_View);
+	viewPosition[2] = mul(float4(inputPatch[2].vWorldPosition, 1), frame.M_View);
 	
 	float far = 12000.0f;
 	float tessPow = 1 / 6.0f;
@@ -159,13 +159,13 @@ PS_INPUT DSMain(ConstantOutputType input, float3 uvwCoord : SV_DomainLocation, c
 	output.vNormalVS = normalVS;*/
 		
 	//Output.vPosition = float4(Input.vPosition, 1);
-	output.vPosition = mul( float4(worldPosition,1), M_ViewProj);
+	output.vPosition = mul( float4(worldPosition,1), frame.M_ViewProj);
 	output.vTexcoord2 = texCoord2;
 	output.vTexcoord = texCoord;
 	output.vDiffuse  = diffuse;
 	output.vNormalWS = normalWS;
 	output.vNormalVS = normalVS;
-	output.vViewPosition = mul(float4(worldPosition,1), M_View).xyz;
+	output.vViewPosition = mul(float4(worldPosition,1), frame.M_View).xyz;
 	output.vWorldPosition = worldPosition;
 	
     return output;

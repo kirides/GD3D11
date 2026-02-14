@@ -381,6 +381,7 @@ public:
     /** Returns the loaded skeletal mesh vobs */
     std::list<SkeletalVobInfo*>& GetSkeletalMeshVobs();
     std::list<SkeletalVobInfo*>& GetAnimatedSkeletalMeshVobs();
+    std::list<VobInfo*>& GetDynamicallyAddedVobs();
 
     /** Returns the current cameraposition */
     XMFLOAT3 GetCameraPosition();

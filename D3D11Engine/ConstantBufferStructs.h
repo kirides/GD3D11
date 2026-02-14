@@ -8,6 +8,7 @@
 /** Actual instance data for a vob */
 struct VobInstanceInfo {
     XMFLOAT4X4 world;
+    XMFLOAT4X4 prevWorld;  // Previous frame's world matrix for motion vectors
     DWORD color;
     float windStrenth;
     float canBeAffectedByPlayer;
@@ -140,7 +141,7 @@ struct DS_ScreenQuadConstantBuffer {
 
     float4 SQ_LightColor;
     
-    // CSM: Cascade 0 (für Kompatibilität mit bestehenden Shadern)
+    // CSM: Cascade 0 (fï¿½r Kompatibilitï¿½t mit bestehenden Shadern)
     XMFLOAT4X4 SQ_ShadowView[MAX_CSM_CASCADES];
     XMFLOAT4X4 SQ_ShadowProj[MAX_CSM_CASCADES];
 
@@ -178,7 +179,9 @@ struct AdvanceRainConstantBuffer {
 struct VS_ExConstantBuffer_PerFrame {
     XMFLOAT4X4 View;
     XMFLOAT4X4 Projection;
-    XMFLOAT4X4 ViewProj;
+    XMFLOAT4X4 ViewProj;           // Jittered for rendering
+    XMFLOAT4X4 PrevViewProj;       // Previous frame's unjittered view-projection for motion vectors
+    XMFLOAT4X4 UnjitteredViewProj; // Current frame's unjittered view-projection for motion vectors
 };
 
 struct VS_ExConstantBuffer_Wind {
@@ -205,6 +208,7 @@ struct VS_ExConstantBuffer_PerInstance {
 
 struct VS_ExConstantBuffer_PerInstanceNode {
     XMFLOAT4X4 World;
+    XMFLOAT4X4 PrevWorld; // Added for motion vectors
     float4 Color;
     float Fatness;
     float Scaling;
@@ -213,6 +217,7 @@ struct VS_ExConstantBuffer_PerInstanceNode {
 
 struct VS_ExConstantBuffer_PerInstanceSkeletal {
     XMFLOAT4X4 World;
+    XMFLOAT4X4 PrevWorld; // Added for motion vectors
     float4 PI_ModelColor;
     float PI_ModelFatness;
     float3 PI_Pad1;
@@ -324,5 +329,12 @@ struct FSR1EASUConstantBuffer {
 
 struct FSR1RCASConstantBuffer {
     uint32_t RCASConst[4];  // FsrRcasCon output (only first element used)
+};
+
+struct VelocityDebugConstantBuffer {
+    float Amplification;    // Multiplier for velocity values (e.g., 10-100)
+    float ShowMagnitude;    // 0 = show direction as RG, 1 = show magnitude as grayscale
+    float AbsoluteMode;     // 0 = signed (-1 to 1), 1 = absolute values
+    float Padding;
 };
 #pragma pack (pop)

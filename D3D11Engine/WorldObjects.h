@@ -267,6 +267,7 @@ struct VobInfo : public BaseVobInfo {
         IsIndoorVob = false;
         VisibleInRenderPass = false;
         VobSection = nullptr;
+        HasValidPrevMatrix = false;
     }
 
     ~VobInfo() {
@@ -358,6 +359,7 @@ struct SkeletalVobInfo : public BaseVobInfo {
         IndoorVob = false;
         VisibleInRenderPass = false;
         VobConstantBuffer = nullptr;
+        HasValidPrevTransforms = false;
     }
 
     ~SkeletalVobInfo() {
@@ -377,6 +379,7 @@ struct SkeletalVobInfo : public BaseVobInfo {
 
     void StorePreviousTransforms( const std::vector<XMFLOAT4X4>& currentTransforms ) {
         PrevBoneTransforms = currentTransforms;
+        // PrevWorldMatrix = WorldMatrix; // can't be trusted yet, as Instanced drawing doesn't set it.
         HasValidPrevTransforms = true;
     }
 

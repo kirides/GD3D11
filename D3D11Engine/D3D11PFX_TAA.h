@@ -63,6 +63,9 @@ public:
 
     void OnDisabled();
 
+    /** Gets the current frame's unjittered view-projection matrix */
+    const XMFLOAT4X4& GetUnjitteredViewProj() const { return m_UnjitteredViewProj; }
+
 private:
     // History buffer (previous frame's AA'd result)
     std::unique_ptr<RenderToTextureBuffer> m_HistoryBuffer;

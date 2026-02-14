@@ -80,7 +80,7 @@ XRESULT D3D11PfxRenderer::RenderSMAA() {
 }
 
 /** Renders the TAA-Effect */
-XRESULT D3D11PfxRenderer::RenderTAA() {
+XRESULT D3D11PfxRenderer::RenderTAA(const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& velocityBuffer) {
     auto* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     auto& context = engine->GetContext();
 
@@ -92,13 +92,15 @@ XRESULT D3D11PfxRenderer::RenderTAA() {
     context->OMSetRenderTargets( 1, currentRTV.GetAddressOf(), nullptr );  // DSV = nullptr!
 
     // First, generate the velocity buffer from depth
-    FX_TAA->RenderVelocityBuffer(engine->GetDepthBuffer()->GetShaderResView());
+    if (!velocityBuffer.Get()) {
+        FX_TAA->RenderVelocityBuffer(engine->GetDepthBuffer()->GetShaderResView());
+    }
     
     // Then render TAA using the velocity buffer
     FX_TAA->RenderPostFX(
         engine->GetHDRBackBuffer().GetShaderResView(),
         engine->GetDepthBuffer()->GetShaderResView(),
-        FX_TAA->GetVelocityBufferSRV()
+        velocityBuffer.Get() ? velocityBuffer : FX_TAA->GetVelocityBufferSRV()
     );
 
     // Stelle den DSV wieder her falls nötig
