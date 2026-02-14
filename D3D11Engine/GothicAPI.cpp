@@ -1496,7 +1496,7 @@ void GothicAPI::GetVisibleParticleEffectsList( std::vector<zCVob*>& pfxList ) {
             if ( dist > RendererState.RendererSettings.VisualFXDrawRadius )
                 continue;
 
-            if ( GetCameraBBox3DInFrustum( it->GetBBox(), EGothicCullFlags::CullSidesNear ) == ZTCAM_CLIPTYPE_OUT ) {
+            if ( GetCameraBBox3DInFrustum( it->GetBBox(), EGothicCullFlags::CullSides ) == ZTCAM_CLIPTYPE_OUT ) {
                 continue;
             }
 
@@ -1522,7 +1522,7 @@ void GothicAPI::GetVisibleDecalList( std::vector<zCVob*>& decals ) {
         if ( dist > RendererState.RendererSettings.VisualFXDrawRadius )
             continue;
 
-        if ( GetCameraBBox3DInFrustum( it->GetBBox(), EGothicCullFlags::CullSidesNear ) == ZTCAM_CLIPTYPE_OUT ) {
+        if ( GetCameraBBox3DInFrustum( it->GetBBox(), EGothicCullFlags::CullSides ) == ZTCAM_CLIPTYPE_OUT ) {
             continue;
         }
 
@@ -3691,8 +3691,7 @@ zTCam_ClipType GothicAPI::GetCameraBBox3DInFrustum( const zTBBox3D& box, int cli
         return zTCam_ClipType::ZTCAM_CLIPTYPE_IN;
 
     if ( CameraReplacementPtr ) {
-        BoundingBox bb;
-        BoundingBox::CreateFromPoints(bb, XMLoadFloat3(&box.Min), XMLoadFloat3(&box.Max));
+        BoundingBox bb = Frustum::BBoxFromzTBBox3D(box);
 
         auto result = CameraReplacementPtr->frustum.Contains(bb, static_cast<EGothicCullFlags>(clipFlags));
         if ( result == ContainmentType::DISJOINT )
@@ -4113,7 +4112,7 @@ void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sect
 
                 float dist = Toolbox::ComputePointAABBDistance( camPos, section.BoundingBox.Min, section.BoundingBox.Max );
                 if ( dist < sectionViewDist ) {
-                    if ( cullingEnabled && GetCameraBBox3DInFrustum( section.BoundingBox, EGothicCullFlags::CullSidesNear ) == ZTCAM_CLIPTYPE_OUT )
+                    if ( cullingEnabled && GetCameraBBox3DInFrustum( section.BoundingBox, EGothicCullFlags::CullSides ) == ZTCAM_CLIPTYPE_OUT )
                         continue;
 
                     sections.push_back( &section );
@@ -4133,7 +4132,7 @@ void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sect
 
                 // Simple range-check
                 if ( abs( ity.first - camSection.y ) < sectionViewDist ) {
-                    if ( cullingEnabled && GetCameraBBox3DInFrustum( section.BoundingBox, EGothicCullFlags::CullSidesNear ) == ZTCAM_CLIPTYPE_OUT )
+                    if ( cullingEnabled && GetCameraBBox3DInFrustum( section.BoundingBox, EGothicCullFlags::CullSides ) == ZTCAM_CLIPTYPE_OUT )
                         continue;
 
                     sections.push_back( &section );

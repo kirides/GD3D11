@@ -205,6 +205,9 @@ static void CalculateCascadeMatrices(
     // Kombiniere View mit Offset
     XMMATRIX snappedLightView = XMMatrixMultiply( lightView, offsetMatrix );
 
+    float halfSize = cascadeSize * 0.5f;
+    float cullingMargin = texelSize * 2.0f;
+    
     const XMMATRIX crViewRepl = XMMatrixTranspose( snappedLightView );
     const XMMATRIX crProjRepl = XMMatrixTranspose( XMMatrixOrthographicLH(
         cascadeSize, cascadeSize, 1.0f, 20000.f ) );
@@ -213,6 +216,15 @@ static void CalculateCascadeMatrices(
     XMStoreFloat4x4( &outCR.ProjectionReplacement, crProjRepl );
     XMStoreFloat3( &outCR.PositionReplacement, lightPos );
     XMStoreFloat3( &outCR.LookAtReplacement, lookAt );
+    
+    outCR.frustum.BuildOrthographic( snappedLightView,
+        cascadeSize + cullingMargin, 
+        cascadeSize + cullingMargin, 
+        1.0f, 
+        20000.f, 
+        Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendBack, 
+        Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendFront,
+        Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendSide);
 }
 
 XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
@@ -519,18 +531,6 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
                     c_XM_Up,
                     isLastCascade ? lastCascadeData.Position : WorldShadowCP,
                     GetSizeX() );
-            
-            // Get the cascade's view and projection matrices
-            // If CascadeCameraReplacements is provided, use it directly; otherwise fall back to current camera replacement
-            Frustum f;
-            CameraReplacement& cr = cascadeCRs[cascadeIdx];
-            auto lightView = XMMatrixTranspose( XMLoadFloat4x4( &cr.ViewReplacement ) );
-            auto lightProj = XMMatrixTranspose( XMLoadFloat4x4( &cr.ProjectionReplacement ) );
-            f.BuildOrthographic( lightView, lightProj, 
-                Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendBack, 
-                Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendFront,
-                Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendSide);
-            cr.frustum = f;
         }
 
         for ( int cascadeIdx = 0; cascadeIdx < numCascades; ++cascadeIdx ) {

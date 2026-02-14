@@ -4625,7 +4625,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
     
     
     if ( Engine::GAPI->GetRendererState().RendererSettings.DrawVOBs ) {
-        Engine::GAPI->CollectVisibleVobs( vobs, lights, mobs );
+        Engine::GAPI->CollectVisibleVobs( vobs, lights, mobs, EGothicCullFlags::CullSidesNear );
         
         for ( auto& it : vobs) { 
             it->VisibleInRenderPass = false;  // Reset this for the next frame
@@ -4797,11 +4797,10 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                 // Frustum culling using a bounding sphere
                 // Use the mesh size as radius, centered at the vob position
                 auto box = skeletalMeshVob->Vob->GetBBox();
-                BoundingBox bb;
-                BoundingBox::CreateFromPoints(bb, XMLoadFloat3(&box.Min), XMLoadFloat3(&box.Max));
+                BoundingBox bb = Frustum::BBoxFromzTBBox3D(box);
 
-                int clipFlags = EGothicCullFlags::CullAll;
-                if ( currentFrustum.Contains( bb ) == DirectX::ContainmentType::DISJOINT 
+                int clipFlags = EGothicCullFlags::CullSides;
+                if ( currentFrustum.Contains( bb, EGothicCullFlags::CullSides ) == DirectX::ContainmentType::DISJOINT 
                     && gameCamera->BBox3DInFrustum(box, clipFlags) == zTCam_ClipType::ZTCAM_CLIPTYPE_OUT) {
                     // Not hitting our frustum and not the active view.
                     continue;

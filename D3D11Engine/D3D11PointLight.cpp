@@ -236,7 +236,6 @@ void D3D11PointLight::RenderCubemapFace( const XMFLOAT4X4& view, const XMFLOAT4X
     XMStoreFloat3( &cr.PositionReplacement, lightPos );
     cr.ProjectionReplacement = proj;
     cr.ViewReplacement = view;
-
     Frustum f;
     f.BuildCubemapFace( lightPos, range, faceIdx );
     cr.frustum = f;
