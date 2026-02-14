@@ -491,10 +491,13 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
         // Increment frame counter for temporal cascade updates
         perFrameCascadeData.frameCount++;
 
+
+        bool updateCascades[MAX_CSM_CASCADES] = {};
         for ( size_t cascadeIdx = 0; cascadeIdx < numCascades; ++cascadeIdx ) {
+            // pre-calculate all cascade matrices, to be able to frustum-cull anything that is not in this or the next cascade.
+
             bool isLastCascade = (numCascades > 1 && cascadeIdx == numCascades - 1);
 
-            // only update every Nth frame for higher cascades to save performance
             bool shouldUpdateCascade = true;
             if ( cascadeIdx == 2 ) {
                 // pre-last cascade updates every 2nd frame which is 30 FPS = 15 updates per second
@@ -503,9 +506,9 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
                 // final cascade updates every 3rd frame which is 30 FPS = 10 updates per second
                 shouldUpdateCascade = (perFrameCascadeData.frameCount % 3) == 0;
             }
+            updateCascades[cascadeIdx] = shouldUpdateCascade;
 
-            if ( shouldUpdateCascade ) {
-                CalculateCascadeMatrices(
+            CalculateCascadeMatrices(
                     cascadeCRs[cascadeIdx],
                     splits,
                     cascadeIdx,
@@ -516,7 +519,15 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
                     c_XM_Up,
                     isLastCascade ? lastCascadeData.Position : WorldShadowCP,
                     GetSizeX() );
+        }
 
+        for ( size_t cascadeIdx = 0; cascadeIdx < numCascades; ++cascadeIdx ) {
+            bool isLastCascade = (numCascades > 1 && cascadeIdx == numCascades - 1);
+
+            // only update every Nth frame for higher cascades to save performance
+            bool shouldUpdateCascade = updateCascades[cascadeIdx];
+
+            if ( shouldUpdateCascade ) {
                 // Store the current cascade matrix for future frames when we skip updates
                 perFrameCascadeData.PreviousCascadeCRs[cascadeIdx] = cascadeCRs[cascadeIdx];
 
