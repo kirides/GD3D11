@@ -18,6 +18,19 @@ class zCModelPrototype;
 struct ScreenSpaceLine;
 struct LineVertex;
 
+enum EBspTreeCollectFlags : unsigned int {
+    COLLECT_VOBS = 1 << 0,
+    COLLECT_LIGHTS = 1 << 1,
+    COLLECT_MOBS = 1 << 2,
+    COLLECT_INDOOR_VOBS = 1 << 3,
+
+    COLLECT_ALL_VOBS = COLLECT_VOBS | COLLECT_INDOOR_VOBS,
+    
+    COLLECT_MUTATE = 1 << 30,
+    COLLECT_ALL_MUTATE = 0xFFFFFFFF,
+    COLLECT_ALL_NO_MUTATE = COLLECT_ALL_MUTATE & ~COLLECT_MUTATE,
+};
+
 struct BspInfo {
     BspInfo() {
         NumStaticLights = 0;
@@ -177,9 +190,9 @@ struct TransparencyVobInfo {
 };
 
 class GothicAPI {
-    friend void CVVH_AddNotDrawnVobToList( std::vector<VobInfo*>& target, std::vector<VobInfo*>& source, float dist, int clipFlags );
-    friend void CVVH_AddNotDrawnVobToList( std::vector<VobLightInfo*>& target, std::vector<VobLightInfo*>& source, float dist, int clipFlags );
-    friend void CVVH_AddNotDrawnVobToList( std::vector<SkeletalVobInfo*>& target, std::vector<SkeletalVobInfo*>& source, float dist, int clipFlags );
+    friend void CVVH_AddNotDrawnVobToList( std::vector<VobInfo*>& target, std::vector<VobInfo*>& source, float dist, int clipFlags, EBspTreeCollectFlags collectFlags );
+    friend void CVVH_AddNotDrawnVobToList( std::vector<VobLightInfo*>& target, std::vector<VobLightInfo*>& source, float dist, int clipFlags, EBspTreeCollectFlags collectFlags );
+    friend void CVVH_AddNotDrawnVobToList( std::vector<SkeletalVobInfo*>& target, std::vector<SkeletalVobInfo*>& source, float dist, int clipFlags, EBspTreeCollectFlags collectFlags );
 
 public:
     GothicAPI();
@@ -490,8 +503,12 @@ public:
     std::vector<VobInfo*>::iterator MoveVobFromBspToDynamic( VobInfo* vob, std::vector<VobInfo*>* source );
 
     /** Collects vobs using gothics BSP-Tree */
-    void CollectVisibleVobs(std::vector<VobInfo*>& vobs, std::vector<VobLightInfo*>& lights, std::vector<SkeletalVobInfo*>& mobs, EGothicCullFlags
-                            cullFlags = EGothicCullFlags::CullAll);
+    void CollectVisibleVobs(
+        std::vector<VobInfo*>& vobs,
+        std::vector<VobLightInfo*>& lights,
+        std::vector<SkeletalVobInfo*>& mobs,
+        EGothicCullFlags cullFlags = EGothicCullFlags::CullAll,
+        EBspTreeCollectFlags collectFlags = EBspTreeCollectFlags::COLLECT_ALL_MUTATE);
 
     /** Collects visible sections from the current camera perspective */
     void CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sections );
@@ -708,6 +725,8 @@ public:
 
     /** Get sky timescale variable */
     float GetSkyTimeScale();
+    
+    static void ProcessVobAnimation( zCVob* vob, zTAnimationMode aniMode, VobInstanceInfo& vobInstance );
 
 private:
     /** Collects polygons in the given AABB */
@@ -720,7 +739,7 @@ private:
     void BuildBspVobMapCacheHelper( zCBspBase* base );
 
     /** Recursive helper function to draw collect the vobs */
-    void CollectVisibleVobsHelper( BspInfo* base, zTBBox3D boxCell, int clipFlags, std::vector<VobInfo*>& vobs, std::vector<VobLightInfo*>& lights, std::vector<SkeletalVobInfo*>& mobs );
+    void CollectVisibleVobsHelper( BspInfo* base, zTBBox3D boxCell, int clipFlags, EBspTreeCollectFlags collectFlags, std::vector<VobInfo*>& vobs, std::vector<VobLightInfo*>& lights, std::vector<SkeletalVobInfo*>& mobs );
 
     /** Applys the suppressed textures */
     void ApplySuppressedSectionTextures();

@@ -4614,35 +4614,41 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
     static std::vector<VobLightInfo*> lights = {};
     static std::vector<SkeletalVobInfo*> mobs = {};
     vobs.clear();
-    lights.clear();
-    mobs.clear();
-    
-    // clear any residue of main render pass
-    for ( auto const& staticMeshVisual : Engine::GAPI->GetStaticMeshVisuals() ) {
-        staticMeshVisual.second->StartNewFrame();
-    }
     
     
     if ( Engine::GAPI->GetRendererState().RendererSettings.DrawVOBs ) {
-        Engine::GAPI->CollectVisibleVobs( vobs, lights, mobs, EGothicCullFlags::CullSidesNear );
+        Engine::GAPI->CollectVisibleVobs( vobs, lights, mobs, EGothicCullFlags::CullSidesNear, EBspTreeCollectFlags::COLLECT_VOBS );
+        
+        // clear any residue of main render pass
+        const std::unordered_map<zCProgMeshProto*, MeshVisualInfo*>& staticMeshVisuals = Engine::GAPI->GetStaticMeshVisuals();
+        for ( auto const& staticMeshVisual : staticMeshVisuals ) {
+            staticMeshVisual.second->StartNewFrame();
+        }
         
         for ( auto& it : vobs) { 
-            it->VisibleInRenderPass = false;  // Reset this for the next frame
+            // because we collect without COLLECT_MUTATE enabled
+            // we don't need to reset this
+            // it->VisibleInRenderPass = false;
+            
+            // But also because of that, we need to add the instances ourselves
+            VobInstanceInfo vii = {};
+            vii.world = it->WorldMatrix;
+            vii.prevWorld = it->HasValidPrevMatrix ? it->PrevWorldMatrix : it->WorldMatrix;
+            vii.color = it->GroundColor;
+            vii.windStrenth = 0.0f;
+            vii.canBeAffectedByPlayer = 0;
+
+            zTAnimationMode aniMode = it->Vob->GetVisualAniMode();
+            if ( aniMode != zVISUAL_ANIMODE_NONE ) {
+                vii.canBeAffectedByPlayer = (!it->Vob->GetDynColl() ? 1.0f : 0.0f);
+                GothicAPI::ProcessVobAnimation( it->Vob, aniMode, vii );
+            }
+
+            reinterpret_cast<MeshVisualInfo*>(it->VisualInfo)->Instances.push_back( vii );
         }
-        
-        for ( auto& it : lights) {
-            it->VisibleInRenderPass = false;  // Reset this for the next frame
-        }
-        
-        for ( auto& it : mobs) {
-            it->VisibleInRenderPass = false;  // Reset this for the next frame
-        }
+
         auto _ = START_TIMING( "Static Mesh Visuals");
         auto _1 = RecordGraphicsEvent( L"DrawVOBs" );
-
-        // Reset instances
-        const std::unordered_map<zCProgMeshProto*, MeshVisualInfo*>& staticMeshVisuals =
-            Engine::GAPI->GetStaticMeshVisuals();
 
         size_t ByteWidth = DynamicInstancingBuffer->GetSizeInBytes();
 
