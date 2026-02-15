@@ -1049,6 +1049,8 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
             settings.NumShadowCascades = std::clamp( settings.NumShadowCascades, 1, MAX_CSM_CASCADES );
             if ( ImGui::SliderInt( "Shadow Cascade count", &settings.NumShadowCascades, 1, MAX_CSM_CASCADES, "%d", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput) ) {
                 settings.NumShadowCascades = std::clamp( settings.NumShadowCascades, 1, MAX_CSM_CASCADES );
+                settings.DebugSettings.ShadowCascades.Lambda = D3D11ShadowMap::lambdaBiasTable[settings.NumShadowCascades].lambda;
+                settings.DebugSettings.ShadowCascades.Bias = D3D11ShadowMap::lambdaBiasTable[settings.NumShadowCascades].bias;
                 Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows );
             }
 
@@ -1148,6 +1150,8 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
                 ImGui::SliderFloat("Extend Back", &settings.DebugSettings.ShadowCascades.ExtendBack, -10000, 50000, "%.0f");
                 ImGui::SliderFloat("Extend Front", &settings.DebugSettings.ShadowCascades.ExtendFront, -10000, 50000, "%.0f");
                 ImGui::SliderFloat("Extend Side", &settings.DebugSettings.ShadowCascades.ExtendSide, -10000, 20000, "%.0f");
+                ImGui::SliderFloat("Split Lambda", &settings.DebugSettings.ShadowCascades.Lambda, 0.0f, 1.00f, "%.2f");
+                ImGui::SliderFloat("Split Bias", &settings.DebugSettings.ShadowCascades.Bias, 0.0f, 10.0f, "%.1f");
                 ImGui::EndTabItem();
             }
             

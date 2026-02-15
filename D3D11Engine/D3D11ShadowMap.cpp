@@ -235,6 +235,7 @@ static void CalculateCascadeMatrices(
 XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
     auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     auto _ = graphicsEngine->RecordGraphicsEvent( L"DrawLighting" );
+    auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
 
     static const XMVECTORF32 xmFltMax = { { { FLT_MAX, FLT_MAX, FLT_MAX, FLT_MAX } } };
     graphicsEngine->SetDefaultStates();
@@ -250,10 +251,10 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
         ? Engine::GAPI->GetPlayerVob()->GetPositionWorldXM()
         : xmFltMax;
 
-    bool partialShadowUpdate = Engine::GAPI->GetRendererState().RendererSettings.PartialDynamicShadowUpdates;
+    bool partialShadowUpdate = settings.PartialDynamicShadowUpdates;
 
     // Draw pointlight shadows
-    if ( Engine::GAPI->GetRendererState().RendererSettings.EnablePointlightShadows > 0 ) {
+    if ( settings.EnablePointlightShadows > 0 ) {
         std::list<VobLightInfo*> importantUpdates;
         auto _ = graphicsEngine->RecordGraphicsEvent( L"Pointlight Shadows" );
 
@@ -358,24 +359,26 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
     const float baseFarPlane = std::min( camera->GetFarPlane(), 38400.0f );
 
     // WorldShadowRangeScale als Multiplikator für die Schattenreichweite
-    const float shadowRangeScale = Engine::GAPI->GetRendererState().RendererSettings.WorldShadowRangeScale;
+    const float shadowRangeScale = settings.WorldShadowRangeScale;
     const float farPlane = baseFarPlane * std::max( 0.1f, shadowRangeScale );
-    int numCascades = Engine::GAPI->GetRendererState().RendererSettings.NumShadowCascades;
+    int numCascades = settings.NumShadowCascades;
     if ( numCascades > MAX_CSM_CASCADES || numCascades < 1 ) {
         numCascades = std::clamp( numCascades, 1, MAX_CSM_CASCADES );
-        Engine::GAPI->GetRendererState().RendererSettings.NumShadowCascades = numCascades;
+        settings.NumShadowCascades = numCascades;
     }
 
-    // Compute cascade splits
-    static struct { float lambda; float bias; } lambdaBiasTable[] = {
-        /* 0 */ { 0, 0 },
-        /* 1 */ { 1.0f, 1.0f },
-        /* 2 */ { 0.85f, 3.5f },
-        /* 3 */ { 0.92f, 2.7f },
-        /* 4 */ { 0.98f, 1.3f }, // Players should really want to use 4 cascades for best quality
-    };
+    std::vector<float> splits;
+    if (settings.DebugSettings.ShadowCascades.Lambda > 0.0001f
+        || settings.DebugSettings.ShadowCascades.Bias > 0.0001f) {
+        
+        splits = ComputeCascadeSplits(nearPlane, farPlane, numCascades,
+                                                         settings.DebugSettings.ShadowCascades.Lambda,
+                                                         settings.DebugSettings.ShadowCascades.Bias);
+    } else {
+        splits = ComputeCascadeSplits(nearPlane, farPlane, numCascades, lambdaBiasTable[numCascades].lambda, lambdaBiasTable[numCascades].bias);
+     
+    }
 
-    auto splits = ComputeCascadeSplits( nearPlane, farPlane, numCascades, lambdaBiasTable[numCascades].lambda, lambdaBiasTable[numCascades].bias );
     splits[numCascades] = baseFarPlane; // Let the last cascade reach the full far plane
 
     // Get current light direction from atmosphere
@@ -403,7 +406,7 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
     
     XMVECTOR dir;
     
-    if ( Engine::GAPI->GetRendererState().RendererSettings.SmoothShadowCameraUpdate ) {
+    if ( settings.SmoothShadowCameraUpdate ) {
         // Initialize on first frame
         if ( !s_lightDirInitialized ) {
             s_previousLightDir = currentDir;
@@ -414,7 +417,7 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
             currentDir,
             s_previousLightDir,
             dir,
-            std::max( 1.0f, Engine::GAPI->GetRendererState().RendererSettings.SmoothShadowFrequency ));
+            std::max( 1.0f, settings.SmoothShadowFrequency ));
     } else {
         dir = currentDir;
         s_previousLightDir = currentDir;
@@ -473,7 +476,7 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
     static const XMVECTORF32 c_XM_Up = { { { 0, 1, 0, 0 } } };
 
     if ( !isOutdoor ) {
-        if ( Engine::GAPI->GetRendererState().RendererSettings.EnableShadows && lastBspMode == zBSP_MODE_OUTDOOR ) {
+        if ( settings.EnableShadows && lastBspMode == zBSP_MODE_OUTDOOR ) {
             // Clear all cascade DSVs
             for ( size_t cascadeIdx = 0; cascadeIdx < MAX_CSM_CASCADES; ++cascadeIdx ) {
                 if ( auto dsv = GetCascadeDSV( static_cast<UINT>( cascadeIdx ) ) ) {
@@ -595,11 +598,11 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
     auto psPointLightDynShadow = graphicsEngine->GetShaderManager().GetPShader( "PS_DS_PointLightDynShadow" );
 
     Engine::GAPI->SetFarPlane(
-        Engine::GAPI->GetRendererState().RendererSettings.SectionDrawRadius *
+        settings.SectionDrawRadius *
         WORLD_SECTION_SIZE );
 
     Engine::GAPI->GetRendererState().BlendState.SetAdditiveBlending();
-    if ( Engine::GAPI->GetRendererState().RendererSettings.LimitLightIntesity ) {
+    if ( settings.LimitLightIntesity ) {
         Engine::GAPI->GetRendererState().BlendState.BlendOp = GothicBlendStateInfo::BO_BLEND_OP_MAX;
     }
     Engine::GAPI->GetRendererState().BlendState.SetDirty();
@@ -644,7 +647,7 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
         if ( !vob->IsEnabled() ) continue;
 
         // Set right shader
-        if ( Engine::GAPI->GetRendererState().RendererSettings.EnablePointlightShadows > 0 ) {
+        if ( settings.EnablePointlightShadows > 0 ) {
             if ( light->LightShadowBuffers && static_cast<D3D11PointLight*>(light->LightShadowBuffers)->IsInited() ) {
                 if ( graphicsEngine->GetActivePS() != psPointLightDynShadow ) {
                     // Need to update shader for shadowed pointlight
@@ -669,12 +672,12 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
 
         // Gradually fade in the lights
         if ( dist + plcb.PL_Range <
-            Engine::GAPI->GetRendererState().RendererSettings.VisualFXDrawRadius ) {
+            settings.VisualFXDrawRadius ) {
             // float fadeStart =
-            // Engine::GAPI->GetRendererState().RendererSettings.VisualFXDrawRadius -
+            // settings.VisualFXDrawRadius -
             // plcb.PL_Range;
             float fadeEnd =
-                Engine::GAPI->GetRendererState().RendererSettings.VisualFXDrawRadius;
+                settings.VisualFXDrawRadius;
 
             float fadeFactor = std::min(
                 1.0f,
@@ -727,7 +730,7 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
         graphicsEngine->GetActivePS()->GetConstantBuffer()[0]->BindToVertexShader(
             1 );  // Bind this instead of the usual per-instance buffer
 
-        if ( Engine::GAPI->GetRendererState().RendererSettings.EnablePointlightShadows > 0 ) {
+        if ( settings.EnablePointlightShadows > 0 ) {
             // Bind shadowmap, if possible
             if ( light->LightShadowBuffers )
                 static_cast<D3D11PointLight*>(light->LightShadowBuffers)->OnRenderLight();
@@ -782,11 +785,11 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
         XMVector3TransformNormal( XMLoadFloat3( sky->GetAtmosphereCB().AC_LightPos.toXMFLOAT3() ), view ) );
 
     float3 sunColor =
-        Engine::GAPI->GetRendererState().RendererSettings.SunLightColor;
+        settings.SunLightColor;
 
     float sunStrength = Toolbox::lerp(
-        Engine::GAPI->GetRendererState().RendererSettings.SunLightStrength,
-        Engine::GAPI->GetRendererState().RendererSettings.RainSunLightStrength,
+        settings.SunLightStrength,
+        settings.RainSunLightStrength,
         std::min( 1.0f, rain * 2.0f ) );// Scale the darkening-factor faster here, so it
     // matches more with the increasing fog-density
 
@@ -805,10 +808,10 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
     scb.SQ_RainView = graphicsEngine->Effects->GetRainShadowmapCameraRepl().ViewReplacement;
     scb.SQ_RainProj = graphicsEngine->Effects->GetRainShadowmapCameraRepl().ProjectionReplacement;
 
-    scb.SQ_ShadowStrength = Engine::GAPI->GetRendererState().RendererSettings.ShadowStrength;
-    scb.SQ_ShadowAOStrength = Engine::GAPI->GetRendererState().RendererSettings.ShadowAOStrength;
-    scb.SQ_WorldAOStrength = Engine::GAPI->GetRendererState().RendererSettings.WorldAOStrength;
-    scb.SQ_ShadowSoftness = Engine::GAPI->GetRendererState().RendererSettings.ShadowSoftness;
+    scb.SQ_ShadowStrength = settings.ShadowStrength;
+    scb.SQ_ShadowAOStrength = settings.ShadowAOStrength;
+    scb.SQ_WorldAOStrength = settings.WorldAOStrength;
+    scb.SQ_ShadowSoftness = settings.ShadowSoftness;
 
     // Modify lightsettings when indoor
     if ( auto bspTree = Engine::GAPI->GetLoadedWorldInfo()->BspTree )

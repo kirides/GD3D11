@@ -928,6 +928,8 @@ struct GothicRendererSettings {
             float ExtendBack;
             float ExtendFront;
             float ExtendSide;
+            float Lambda;
+            float Bias;
         } ShadowCascades;
         struct {
             bool CullVobs;
