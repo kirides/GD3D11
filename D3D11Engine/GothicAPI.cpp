@@ -2238,13 +2238,14 @@ float3* GothicAPI::GetLowestLODPoly_SkeletalMesh( zCModel* model, const int poly
     }
 
     if ( skeletalMesh ) {
+        static std::vector<XMFLOAT4X4> transforms;
         for ( auto const& itm : skeletalMesh->SkeletalMeshes ) {
             for ( auto& mesh : itm.second ) {
                 if ( polyIndex >= mesh->Indices.size() ) {
                     polyIndex -= mesh->Indices.size();
                 } else {
                     float fatness = model->GetModelFatness();
-                    std::vector<XMFLOAT4X4> transforms;
+                    transforms.clear();
                     model->GetBoneTransforms( &transforms );
 
                     for ( int i = 0; i < 3; ++i ) {
@@ -2351,7 +2352,8 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
     float fatness = model->GetModelFatness();
 
     // Get the bone transforms
-    std::vector<XMFLOAT4X4> transforms;
+    static std::vector<XMFLOAT4X4> transforms;
+    transforms.clear();
     model->GetBoneTransforms( &transforms );
 
     if ( updateState ) {
@@ -2589,7 +2591,8 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo* vi, float distance
     float fatness = model->GetModelFatness();
 
     // Get the bone transforms
-    std::vector<XMFLOAT4X4> transforms;
+    static std::vector<XMFLOAT4X4> transforms;
+    transforms.clear();
     model->GetBoneTransforms( &transforms );
 
     if ( updateState ) {
@@ -2821,7 +2824,8 @@ void GothicAPI::DrawSkeletalMeshVobs(
         float fatness = model->GetModelFatness();
 
         // Get the bone transforms
-        std::vector<XMFLOAT4X4> transforms;
+        static std::vector<XMFLOAT4X4> transforms;
+        transforms.clear();
         model->GetBoneTransforms( &transforms );
 
         if ( updateState ) {
@@ -3148,7 +3152,8 @@ void GothicAPI::DrawSkeletalVN() {
             float fatness = model->GetModelFatness();
 
             // Get the bone transforms
-            std::vector<XMFLOAT4X4> transforms;
+            static std::vector<XMFLOAT4X4> transforms;
+            transforms.clear();
             model->GetBoneTransforms( &transforms );
 
             if ( !static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->SkeletalMeshes.empty() ) {
@@ -4236,7 +4241,7 @@ std::vector<VobInfo*>::iterator GothicAPI::MoveVobFromBspToDynamic( VobInfo* vob
 
 static void CVVH_AddNotDrawnVobToList( std::vector<VobInfo*>& target, std::vector<VobInfo*>& source, float dist,
     int clipFlags,
-    EBspTreeCollectFlags collectFlags) {
+    EBspTreeCollectFlags collectFlags, zTCam_ClipType bspClip) {
     std::vector<VobInfo*> remVobs;
 
     const auto& camPos = Engine::GAPI->GetCameraPositionXM();
@@ -4251,7 +4256,7 @@ static void CVVH_AddNotDrawnVobToList( std::vector<VobInfo*>& target, std::vecto
         if ( vdSq > distSq ) continue;
 
         int clipFl = clipFlags;
-        if (cullingEnabled && Engine::GAPI->GetCameraBBox3DInFrustum( it->Vob->GetBBox(), clipFlags ) ==  zTCam_ClipType::ZTCAM_CLIPTYPE_OUT
+        if (bspClip != zTCam_ClipType::ZTCAM_CLIPTYPE_IN && cullingEnabled && Engine::GAPI->GetCameraBBox3DInFrustum( it->Vob->GetBBox(), clipFlags ) ==  zTCam_ClipType::ZTCAM_CLIPTYPE_OUT
             && (!Engine::GAPI->CameraReplacementPtr || zCCamera::GetCamera()->BBox3DInFrustum(it->Vob->GetBBox(), clipFl ) ==  zTCam_ClipType::ZTCAM_CLIPTYPE_OUT)) {
             continue;
         }
@@ -4267,7 +4272,7 @@ static void CVVH_AddNotDrawnVobToList( std::vector<VobInfo*>& target, std::vecto
     }
 }
 
-static void CVVH_AddNotDrawnVobToList( std::vector<VobLightInfo*>& target, std::vector<VobLightInfo*>& source, float dist, int clipFlags , EBspTreeCollectFlags collectFlags  ) {
+static void CVVH_AddNotDrawnVobToList( std::vector<VobLightInfo*>& target, std::vector<VobLightInfo*>& source, float dist, int clipFlags , EBspTreeCollectFlags collectFlags, zTCam_ClipType bspClip  ) {
     float veclength;
 
     const auto& camPos = Engine::GAPI->GetCameraPositionXM();
@@ -4289,7 +4294,7 @@ static void CVVH_AddNotDrawnVobToList( std::vector<VobLightInfo*>& target, std::
     }
 }
 
-static void CVVH_AddNotDrawnVobToList( std::vector<SkeletalVobInfo*>& target, std::vector<SkeletalVobInfo*>& source, float dist, int clipFlags, EBspTreeCollectFlags collectFlags  ) {
+static void CVVH_AddNotDrawnVobToList( std::vector<SkeletalVobInfo*>& target, std::vector<SkeletalVobInfo*>& source, float dist, int clipFlags, EBspTreeCollectFlags collectFlags, zTCam_ClipType bspClip  ) {
     const auto& camPos = Engine::GAPI->GetCameraPositionXM();
     auto cullingEnabled = Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.Culling.CullVobs;
     auto vDistSq = XMVectorReplicate(dist * dist);
@@ -4302,7 +4307,7 @@ static void CVVH_AddNotDrawnVobToList( std::vector<SkeletalVobInfo*>& target, st
             }
             if ( it->Vob->GetShowVisual() ) {
                 int clipFl = clipFlags;
-                if (cullingEnabled
+                if (bspClip != zTCam_ClipType::ZTCAM_CLIPTYPE_IN && cullingEnabled
                     && Engine::GAPI->GetCameraBBox3DInFrustum( it->Vob->GetBBox(), clipFlags ) ==  zTCam_ClipType::ZTCAM_CLIPTYPE_OUT
                     && (!Engine::GAPI->CameraReplacementPtr || zCCamera::GetCamera()->BBox3DInFrustum(it->Vob->GetBBox(), clipFl ) ==  zTCam_ClipType::ZTCAM_CLIPTYPE_OUT)) {
                     continue;
@@ -4335,6 +4340,7 @@ void GothicAPI::CollectVisibleVobsHelper( BspInfo* base, zTBBox3D boxCell, int c
             return;
         }
 
+        zTCam_ClipType nodeClip = zTCam_ClipType::ZTCAM_CLIPTYPE_IN;
         if ( clipFlags > 0 ) {
             float yMaxWorld = Engine::GAPI->GetLoadedWorldInfo()->BspTree->GetRootNode()->BBox3D.Max.y;
 
@@ -4345,7 +4351,6 @@ void GothicAPI::CollectVisibleVobsHelper( BspInfo* base, zTBBox3D boxCell, int c
 
             float dist = Toolbox::ComputePointAABBDistance( camPos, base->OriginalNode->BBox3D.Min, base->OriginalNode->BBox3D.Max );
             if ( dist < vobOutdoorDist ) {
-                zTCam_ClipType nodeClip;
                 if ( !Engine::GAPI->GetRendererState().RendererSettings.EnableOcclusionCulling ) {
                     nodeClip = GetCameraBBox3DInFrustum( nodeBox, clipFlags );
                 } else {
@@ -4379,15 +4384,15 @@ void GothicAPI::CollectVisibleVobsHelper( BspInfo* base, zTBBox3D boxCell, int c
                 if ( collectFlags & COLLECT_VOBS
                     && Engine::GAPI->GetRendererState().RendererSettings.DrawVOBs ) {
                     if ( collectFlags & COLLECT_INDOOR_VOBS && dist < vobIndoorDist ) {
-                        CVVH_AddNotDrawnVobToList( vobs, listA, vobIndoorDist, clipFlags, collectFlags );
+                        CVVH_AddNotDrawnVobToList( vobs, listA, vobIndoorDist, clipFlags, collectFlags, nodeClip );
                     }
 
                     if ( dist < vobOutdoorSmallDist ) {
-                        CVVH_AddNotDrawnVobToList( vobs, listB, vobOutdoorSmallDist, clipFlags, collectFlags );
+                        CVVH_AddNotDrawnVobToList( vobs, listB, vobOutdoorSmallDist, clipFlags, collectFlags, nodeClip );
                     }
 
                     if ( dist < vobOutdoorDist ) {
-                        CVVH_AddNotDrawnVobToList( vobs, listC, vobOutdoorDist, clipFlags, collectFlags );
+                        CVVH_AddNotDrawnVobToList( vobs, listC, vobOutdoorDist, clipFlags, collectFlags, nodeClip );
                     }
                 }
 
@@ -4395,7 +4400,7 @@ void GothicAPI::CollectVisibleVobsHelper( BspInfo* base, zTBBox3D boxCell, int c
 
                 if ( collectFlags & COLLECT_MOBS
                     && Engine::GAPI->GetRendererState().RendererSettings.DrawMobs && dist < vobOutdoorSmallDist ) {
-                    CVVH_AddNotDrawnVobToList( mobs, listD, vobOutdoorDist, clipFlags, collectFlags );
+                    CVVH_AddNotDrawnVobToList( mobs, listD, vobOutdoorDist, clipFlags, collectFlags, nodeClip );
                 }
 
                 if ( collectFlags & COLLECT_LIGHTS 

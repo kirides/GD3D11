@@ -190,9 +190,9 @@ struct TransparencyVobInfo {
 };
 
 class GothicAPI {
-    friend void CVVH_AddNotDrawnVobToList( std::vector<VobInfo*>& target, std::vector<VobInfo*>& source, float dist, int clipFlags, EBspTreeCollectFlags collectFlags );
-    friend void CVVH_AddNotDrawnVobToList( std::vector<VobLightInfo*>& target, std::vector<VobLightInfo*>& source, float dist, int clipFlags, EBspTreeCollectFlags collectFlags );
-    friend void CVVH_AddNotDrawnVobToList( std::vector<SkeletalVobInfo*>& target, std::vector<SkeletalVobInfo*>& source, float dist, int clipFlags, EBspTreeCollectFlags collectFlags );
+    friend void CVVH_AddNotDrawnVobToList( std::vector<VobInfo*>& target, std::vector<VobInfo*>& source, float dist, int clipFlags, EBspTreeCollectFlags collectFlags, zTCam_ClipType bspClip );
+    friend void CVVH_AddNotDrawnVobToList( std::vector<VobLightInfo*>& target, std::vector<VobLightInfo*>& source, float dist, int clipFlags, EBspTreeCollectFlags collectFlags, zTCam_ClipType bspClip );
+    friend void CVVH_AddNotDrawnVobToList( std::vector<SkeletalVobInfo*>& target, std::vector<SkeletalVobInfo*>& source, float dist, int clipFlags, EBspTreeCollectFlags collectFlags, zTCam_ClipType bspClip );
 
 public:
     GothicAPI();
