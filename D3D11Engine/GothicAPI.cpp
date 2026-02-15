@@ -4255,9 +4255,9 @@ static void CVVH_AddNotDrawnVobToList( std::vector<VobInfo*>& target, std::vecto
         XMStoreFloat( &vdSq, XMVector3LengthSq( camPos - XMLoadFloat3( &it->LastRenderPosition ) ) );
         if ( vdSq > distSq ) continue;
 
-        int clipFl = clipFlags;
-        if (bspClip != zTCam_ClipType::ZTCAM_CLIPTYPE_IN && cullingEnabled && Engine::GAPI->GetCameraBBox3DInFrustum( it->Vob->GetBBox(), clipFlags ) ==  zTCam_ClipType::ZTCAM_CLIPTYPE_OUT
-            && (!Engine::GAPI->CameraReplacementPtr || zCCamera::GetCamera()->BBox3DInFrustum(it->Vob->GetBBox(), clipFl ) ==  zTCam_ClipType::ZTCAM_CLIPTYPE_OUT)) {
+        if (bspClip != zTCam_ClipType::ZTCAM_CLIPTYPE_IN 
+            && cullingEnabled
+            && Engine::GAPI->GetCameraBBox3DInFrustum( it->Vob->GetBBox(), clipFlags ) ==  zTCam_ClipType::ZTCAM_CLIPTYPE_OUT) {
             continue;
         }
         if (collectFlags & COLLECT_MUTATE ) {
@@ -4306,10 +4306,9 @@ static void CVVH_AddNotDrawnVobToList( std::vector<SkeletalVobInfo*>& target, st
                 continue;
             }
             if ( it->Vob->GetShowVisual() ) {
-                int clipFl = clipFlags;
-                if (bspClip != zTCam_ClipType::ZTCAM_CLIPTYPE_IN && cullingEnabled
-                    && Engine::GAPI->GetCameraBBox3DInFrustum( it->Vob->GetBBox(), clipFlags ) ==  zTCam_ClipType::ZTCAM_CLIPTYPE_OUT
-                    && (!Engine::GAPI->CameraReplacementPtr || zCCamera::GetCamera()->BBox3DInFrustum(it->Vob->GetBBox(), clipFl ) ==  zTCam_ClipType::ZTCAM_CLIPTYPE_OUT)) {
+                if (bspClip != zTCam_ClipType::ZTCAM_CLIPTYPE_IN
+                    && cullingEnabled
+                    && Engine::GAPI->GetCameraBBox3DInFrustum( it->Vob->GetBBox(), clipFlags ) ==  zTCam_ClipType::ZTCAM_CLIPTYPE_OUT) {
                     continue;
                 }
                 
