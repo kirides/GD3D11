@@ -61,6 +61,8 @@ const DWORD SCENE_WETNESS_DURATION_MS = 30 * 1000;
 // Draw ghost from back to front of our camera
 auto CompareGhostDistance = []( TransparencyVobInfo& a, TransparencyVobInfo& b ) -> bool { return a.distance < b.distance; };
 
+extern float vobAnimation_WindStrength;
+
 /** Writes this info to a file */
 void MaterialInfo::WriteToFile( const std::string& name ) {
     FILE* f = fopen( ("system\\GD3D11\\textures\\infos\\" + name + ".mi").c_str(), "wb" );
@@ -348,6 +350,14 @@ namespace
     }
 }
 
+namespace {
+    void ProcessVobAnimation( zCVob* vob, zTAnimationMode aniMode, VobInstanceInfo& vobInstance ) {
+        if ( Engine::GAPI->GetRendererState().RendererSettings.WindQuality == GothicRendererSettings::EWindQuality::WIND_QUALITY_ADVANCED ) {
+            vobInstance.windStrenth = std::max<float>( 0.1f, vob->GetVisualAniModeStrength() ) * vobAnimation_WindStrength;
+        }
+    }
+}
+
 /** Called when the game starts */
 void GothicAPI::OnGameStart() {
     // Get threadid of main thread here because DllMain can be called from different thread
@@ -422,7 +432,7 @@ void GothicAPI::UpdateMTResourceManager() {
 
 /** Called to update the texture quality */
 void GothicAPI::UpdateTextureMaxSize() {
-    reinterpret_cast<void( __cdecl* )(int)>(GothicMemoryLocations::zCResourceManager::RefreshTexMaxSize)(RendererState.RendererSettings.textureMaxSize);
+    zCResourceManager::RefreshTexMaxSize(RendererState.RendererSettings.textureMaxSize);
     if ( zCResourceManager* rsm = zCResourceManager::GetResourceManager() ) {
         rsm->PurgeCaches( GothicMemoryLocations::zCClassDef::zCTexture );
     }
@@ -507,47 +517,15 @@ void GothicAPI::OnWorldUpdate() {
             skyController->SetLastMasterTime( masterTime );
         }
 
-        if( !RendererState.RendererSettings.EnableRain || !outdoor ) {
-            #ifdef BUILD_GOTHIC_1_08k
-            #ifdef BUILD_1_12F
-            int skyEffects = *reinterpret_cast<int*>(0x887EDC);
-            *reinterpret_cast<int*>(0x887EDC) = 0;
-            skyController->ProcessRainFX();
-            *reinterpret_cast<int*>(0x887EDC) = skyEffects;
-            #else
-            int skyEffects = *reinterpret_cast<int*>(0x8422A0);
-            *reinterpret_cast<int*>(0x8422A0) = 0;
-            skyController->ProcessRainFX();
-            *reinterpret_cast<int*>(0x8422A0) = skyEffects;
-            #endif
-            #endif
-            #ifdef BUILD_GOTHIC_2_6_fix
-            int skyEffects = *reinterpret_cast<int*>(0x8A5DB0);
-            *reinterpret_cast<int*>(0x8A5DB0) = 0;
-            skyController->ProcessRainFX();
-            *reinterpret_cast<int*>(0x8A5DB0) = skyEffects;
-            #endif
-        } else {
-            #ifdef BUILD_GOTHIC_1_08k
-            #ifdef BUILD_1_12F
-            int skyEffects = *reinterpret_cast<int*>(0x887EDC);
-            *reinterpret_cast<int*>(0x887EDC) = 1;
-            skyController->ProcessRainFX();
-            *reinterpret_cast<int*>(0x887EDC) = skyEffects;
-            #else
-            int skyEffects = *reinterpret_cast<int*>(0x8422A0);
-            *reinterpret_cast<int*>(0x8422A0) = 1;
-            skyController->ProcessRainFX();
-            *reinterpret_cast<int*>(0x8422A0) = skyEffects;
-            #endif
-            #endif
-            #ifdef BUILD_GOTHIC_2_6_fix
-            int skyEffects = *reinterpret_cast<int*>(0x8A5DB0);
-            *reinterpret_cast<int*>(0x8A5DB0) = 1;
-            skyController->ProcessRainFX();
-            *reinterpret_cast<int*>(0x8A5DB0) = skyEffects;
-            #endif
-        }
+#ifdef OPT_MANAGE_SKY_EFFECTS_SUPPORTED // see zCSkyController
+        int enableSkyEffect = !RendererState.RendererSettings.EnableRain || !outdoor
+            ? 0
+            : 1;
+        int skyEffects = zCSkyController::GetSkyEffectsEnabled();
+        zCSkyController::SetSkyEffectsEnabled(enableSkyEffect);
+        skyController->ProcessRainFX();
+        zCSkyController::SetSkyEffectsEnabled(skyEffects);
+#endif
     }
 
     if ( !_canRain ) {
@@ -4242,13 +4220,6 @@ std::vector<VobInfo*>::iterator GothicAPI::MoveVobFromBspToDynamic( VobInfo* vob
     DynamicallyAddedVobs.push_back( vob );
 
     return itn;
-}
-
-static void ProcessVobAnimation( zCVob* vob, zTAnimationMode aniMode, VobInstanceInfo& vobInstance ) {
-    if ( Engine::GAPI->GetRendererState().RendererSettings.WindQuality == GothicRendererSettings::EWindQuality::WIND_QUALITY_ADVANCED ) {
-        extern float vobAnimation_WindStrength;
-        vobInstance.windStrenth = std::max<float>( 0.1f, vob->GetVisualAniModeStrength() ) * vobAnimation_WindStrength;
-    }
 }
 
 static void CVVH_AddNotDrawnVobToList( std::vector<VobInfo*>& target, std::vector<VobInfo*>& source, float dist, int clipFlags  ) {

@@ -53,4 +53,8 @@ public:
     }
 
     static zCResourceManager* GetResourceManager() { return *reinterpret_cast<zCResourceManager**>(GothicMemoryLocations::GlobalObjects::zCResourceManager); }
+    
+    static void RefreshTexMaxSize(int textureMaxSize) {
+        reinterpret_cast<void( __cdecl* )(int)>(GothicMemoryLocations::zCResourceManager::RefreshTexMaxSize)(textureMaxSize);
+    }
 };
