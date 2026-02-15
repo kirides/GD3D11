@@ -205,7 +205,6 @@ static void CalculateCascadeMatrices(
     // Kombiniere View mit Offset
     XMMATRIX snappedLightView = XMMatrixMultiply( lightView, offsetMatrix );
 
-    float halfSize = cascadeSize * 0.5f;
     float cullingMargin = texelSize * 2.0f;
     
     const XMMATRIX crViewRepl = XMMatrixTranspose( snappedLightView );
@@ -218,6 +217,12 @@ static void CalculateCascadeMatrices(
     XMStoreFloat3( &outCR.LookAtReplacement, lookAt );
     
     outCR.frustum.BuildOrthographic( snappedLightView,
+        // ensure some additional margin
+        // due to blending cascades in PS_DS_AtmosphericScattering.hlsl->GetCascadeUVAndBounds(..)
+        // else we might miss some shadows due to frustum culling
+        // e.g. not visible in c0 but would be in c1, due to blending,
+        // c1 won't use it's "full" color, but rather blend in slowly
+        // causing pop-in
         cascadeSize + cullingMargin, 
         cascadeSize + cullingMargin, 
         1.0f, 
@@ -534,8 +539,6 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
         }
 
         for ( int cascadeIdx = 0; cascadeIdx < numCascades; ++cascadeIdx ) {
-            bool isLastCascade = (numCascades > 1 && cascadeIdx == numCascades - 1);
-
             // only update every Nth frame for higher cascades to save performance
             bool shouldUpdateCascade = updateCascades[cascadeIdx];
 
