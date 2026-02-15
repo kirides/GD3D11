@@ -1131,9 +1131,12 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
 #endif
 
         ImGui::SeparatorText("Debugging");
-        if (ImGui::BeginTabBar("#DebugTabs")) {
-            ImGui::SetItemTooltip("Here be dragons!");
 
+        if (ImGui::Button("Reset##ResetDebugValues", ImVec2( 100.0f, 30.f ) )) {
+            settings.ResetDebugSettings();
+        }
+
+        if (ImGui::BeginTabBar("#DebugTabs")) {
             if (ImGui::BeginTabItem("TAA Debug", nullptr, ImGuiTabItemFlags_::ImGuiTabItemFlags_NoReorder)) {
                 ImGui::Checkbox("Use Depth based Velocity", &settings.DebugSettings.TAA.DepthMotionVectors);
                 ImGui::SetItemTooltip("Instead of per-Object");

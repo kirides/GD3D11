@@ -744,7 +744,11 @@ struct GothicRendererSettings {
         EnableWaterAnimation = false;
 
         GraphicsPreset = E_GraphicsPreset::GRAPHICS_CUSTOM;
-        
+
+        ResetDebugSettings();
+    }
+    
+    void ResetDebugSettings() {
         DebugSettings = {};
         DebugSettings.Culling.CullBspSections = true;
         DebugSettings.Culling.CullVobs = true;
