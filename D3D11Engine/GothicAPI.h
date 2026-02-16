@@ -402,7 +402,7 @@ public:
     XMFLOAT3 GetCameraPosition();
     FXMVECTOR XM_CALLCONV GetCameraPositionXM();
     zTCam_ClipType GetCameraBBox3DInFrustum(const zTBBox3D& box, int clipFlags = EGothicCullFlags::CullAll);
-    zTCam_ClipType GetCameraBBox3DInFrustum(zCVob* vob, int clipFlags, bool isLocalCamera);
+    zTCam_ClipType GetCameraBBox3DInFrustum(const zCVob* vob, int clipFlags, bool isLocalCamera);
 
     /** Returns the view matrix */
     void GetViewMatrix( XMFLOAT4X4* view );

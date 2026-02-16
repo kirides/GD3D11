@@ -3685,7 +3685,7 @@ zTCam_ClipType GothicAPI::GetCameraBBox3DInFrustum( const zTBBox3D& box, int cli
     return zTCam_ClipType::ZTCAM_CLIPTYPE_IN;
 }
 
-zTCam_ClipType GothicAPI::GetCameraBBox3DInFrustum( zCVob* vob, int clipFlags, bool isLocalCamera ) {
+zTCam_ClipType GothicAPI::GetCameraBBox3DInFrustum( const zCVob* vob, int clipFlags, bool isLocalCamera ) {
     if ( CameraReplacementPtr ) {
         auto box = vob->GetBBox();
         return GetCameraBBox3DInFrustum(box, clipFlags);
