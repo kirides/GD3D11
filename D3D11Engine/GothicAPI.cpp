@@ -1195,13 +1195,12 @@ void GothicAPI::DrawWorldMeshNaive() {
             if ( dist > drawRadius )
                 continue; // Skip out of range
 
-            const zTBBox3D bb = vobInfo->Vob->GetBBoxLocal();
             zCCamera::GetCamera()->SetTransform( zCCamera::ETransformType::TT_WORLD, *vobInfo->Vob->GetWorldMatrixPtr() );
 
             //Engine::GraphicsEngine->GetLineRenderer()->AddAABBMinMax(bb.Min, bb.Max, XMFLOAT4(1, 1, 1, 1));
 
             int clipFlags = EGothicCullFlags::CullSidesNear; // No far clip
-            if ( GetCameraBBox3DInFrustum( bb, clipFlags ) == ZTCAM_CLIPTYPE_OUT )
+            if ( GetCameraBBox3DInFrustum( vobInfo->Vob, clipFlags, true ) == ZTCAM_CLIPTYPE_OUT )
                 continue;
 
             // Indoor?
@@ -3681,6 +3680,19 @@ zTCam_ClipType GothicAPI::GetCameraBBox3DInFrustum( const zTBBox3D& box, int cli
     }
     if (auto cam = zCCamera::GetCamera(); cam) {
         return cam->BBox3DInFrustum(box, clipFlags);
+    }
+    
+    return zTCam_ClipType::ZTCAM_CLIPTYPE_IN;
+}
+
+zTCam_ClipType GothicAPI::GetCameraBBox3DInFrustum( zCVob* vob, int clipFlags, bool isLocalCamera ) {
+    if ( CameraReplacementPtr ) {
+        auto box = vob->GetBBox();
+        return GetCameraBBox3DInFrustum(box, clipFlags);
+    }
+    if (auto cam = zCCamera::GetCamera(); cam) {
+        auto box = isLocalCamera ? vob->GetBBoxLocal() : vob->GetBBox();
+        return GetCameraBBox3DInFrustum(box, clipFlags);
     }
     
     return zTCam_ClipType::ZTCAM_CLIPTYPE_IN;
