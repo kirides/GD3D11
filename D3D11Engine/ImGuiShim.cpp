@@ -1049,6 +1049,8 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
             settings.NumShadowCascades = std::clamp( settings.NumShadowCascades, 1, MAX_CSM_CASCADES );
             if ( ImGui::SliderInt( "Shadow Cascade count", &settings.NumShadowCascades, 1, MAX_CSM_CASCADES, "%d", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput) ) {
                 settings.NumShadowCascades = std::clamp( settings.NumShadowCascades, 1, MAX_CSM_CASCADES );
+                settings.DebugSettings.ShadowCascades.Lambda = D3D11ShadowMap::lambdaBiasTable[settings.NumShadowCascades].lambda;
+                settings.DebugSettings.ShadowCascades.Bias = D3D11ShadowMap::lambdaBiasTable[settings.NumShadowCascades].bias;
                 Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows );
             }
 
@@ -1130,13 +1132,32 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
         ImGui::Checkbox( "DrawForestPortals", &settings.DrawG1ForestPortals );
 #endif
 
-        if (ImGui::BeginTabBar("Debug")) {
-            ImGui::SetItemTooltip("Here be dragons!");
+        ImGui::SeparatorText("Debugging");
 
+        if (ImGui::Button("Reset##ResetDebugValues", ImVec2( 100.0f, 30.f ) )) {
+            settings.ResetDebugSettings();
+        }
+
+        if (ImGui::BeginTabBar("#DebugTabs")) {
             if (ImGui::BeginTabItem("TAA Debug", nullptr, ImGuiTabItemFlags_::ImGuiTabItemFlags_NoReorder)) {
                 ImGui::Checkbox("Use Depth based Velocity", &settings.DebugSettings.TAA.DepthMotionVectors);
                 ImGui::SetItemTooltip("Instead of per-Object");
                 ImGui::Checkbox("Display Velocity", &settings.DebugSettings.TAA.DisplayVelocity);
+                ImGui::EndTabItem();
+            }
+
+            if (ImGui::BeginTabItem("Shadows", nullptr, ImGuiTabItemFlags_::ImGuiTabItemFlags_NoReorder)) {
+                ImGui::SliderFloat("Extend Back", &settings.DebugSettings.ShadowCascades.ExtendBack, -10000, 50000, "%.0f");
+                ImGui::SliderFloat("Extend Front", &settings.DebugSettings.ShadowCascades.ExtendFront, -10000, 50000, "%.0f");
+                ImGui::SliderFloat("Extend Side", &settings.DebugSettings.ShadowCascades.ExtendSide, -10000, 20000, "%.0f");
+                ImGui::SliderFloat("Split Lambda", &settings.DebugSettings.ShadowCascades.Lambda, 0.0f, 1.00f, "%.2f");
+                ImGui::SliderFloat("Split Bias", &settings.DebugSettings.ShadowCascades.Bias, 0.0f, 10.0f, "%.1f");
+                ImGui::EndTabItem();
+            }
+            
+            if (ImGui::BeginTabItem("Culling", nullptr, ImGuiTabItemFlags_::ImGuiTabItemFlags_NoReorder)) {
+                ImGui::Checkbox("BSP Nodes", &settings.DebugSettings.Culling.CullBspSections );
+                ImGui::Checkbox("Vobs", &settings.DebugSettings.Culling.CullVobs );
                 ImGui::EndTabItem();
             }
  

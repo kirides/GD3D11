@@ -744,8 +744,14 @@ struct GothicRendererSettings {
         EnableWaterAnimation = false;
 
         GraphicsPreset = E_GraphicsPreset::GRAPHICS_CUSTOM;
-        
+
+        ResetDebugSettings();
+    }
+    
+    void ResetDebugSettings() {
         DebugSettings = {};
+        DebugSettings.Culling.CullBspSections = true;
+        DebugSettings.Culling.CullVobs = true;
     }
 
     void SetupOldWorldSpecificValues() {
@@ -918,6 +924,17 @@ struct GothicRendererSettings {
             bool DepthMotionVectors;
             bool DisplayVelocity;
         } TAA;
+        struct {
+            float ExtendBack;
+            float ExtendFront;
+            float ExtendSide;
+            float Lambda;
+            float Bias;
+        } ShadowCascades;
+        struct {
+            bool CullVobs;
+            bool CullBspSections;
+        } Culling;
     } DebugSettings;
 };
 

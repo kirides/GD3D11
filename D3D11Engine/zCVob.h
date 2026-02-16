@@ -198,24 +198,24 @@ public:
     }
 
     /** Returns the local bounding box */
-    zTBBox3D GetBBoxLocal() {
+    zTBBox3D GetBBoxLocal() const {
         zTBBox3D box;
-        reinterpret_cast<void( __fastcall* )( zCVob*, int, zTBBox3D& )>( GothicMemoryLocations::zCVob::GetBBoxLocal )( this, 0, box );
+        reinterpret_cast<void( __fastcall* )( const zCVob*, int, zTBBox3D& )>( GothicMemoryLocations::zCVob::GetBBoxLocal )( this, 0, box );
         return box;
     }
 
     /** Return the world/global bbox of the vob */
-    zTBBox3D GetBBox() {
+    zTBBox3D GetBBox() const {
         return *reinterpret_cast<zTBBox3D*>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_WorldBBOX ));
     }
 
     /** Returns a pointer to this vobs world-matrix */
-    XMFLOAT4X4* GetWorldMatrixPtr() {
+    XMFLOAT4X4* GetWorldMatrixPtr() const {
         return reinterpret_cast<XMFLOAT4X4*>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_WorldMatrixPtr ));
     }
 
     /** Copys the world matrix into the given memory location */
-    void GetWorldMatrix( XMFLOAT4X4* m ) {
+    void GetWorldMatrix( XMFLOAT4X4* m ) const {
         *m = *GetWorldMatrixPtr();
     }
 

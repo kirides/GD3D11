@@ -3,160 +3,234 @@
 #include <DirectXMath.h>
 #include <DirectXCollision.h>
 #include <array>
+#include "zTypes.h"
 
 using namespace DirectX;
 
-class Frustum {
+enum EGothicCullFlags : unsigned char
+{
+    CullNone = 0,
+    CullLeftPlane = 1 << 0,
+    CullRightPlane = 1 << 1,
+    CullBottomPlane = 1 << 2,
+    CullTopPlane = 1 << 3,
+    CullNearPlane = 1 << 4,
+    CullFarPlane = 1 << 5,
+
+    CullSides = CullLeftPlane | CullRightPlane | CullBottomPlane | CullTopPlane,
+    CullSidesNear = CullSides | CullNearPlane,
+
+    CullAll = CullSides | CullNearPlane | CullFarPlane,
+};
+
+class Frustum
+{
 public:
-    // Für orthografische Projektion (Sonnen-Shadowmap)
+    // FÃ¼r orthografische Projektion (Sonnen-Shadowmap)
     // shadowCasterExpansion: Extra distance to expand the frustum to include shadow casters
     //                        behind/beside the camera that may cast shadows into the view
-    void BuildOrthographic( FXMMATRIX view, FXMMATRIX proj, 
-        float expandBack = 0.0f,
-        float expandSides = 0.0f) {
-        // Erstelle Frustum aus View-Projection Matrix
-        XMMATRIX viewProj = XMMatrixMultiply( view, proj );
-        BoundingFrustum::CreateFromMatrix( m_frustum, proj );
+    void __vectorcall BuildOrthographic(
+        FXMMATRIX view,
+        float viewWidth,
+        float viewHeight,
+        float nearZ,
+        float farZ,
+        float expandSides = 0.0f,
+        float expandFront = 0.0f,
+        float expandBack = 0.0f
+    )
+    {
+        XMMATRIX invView = XMMatrixInverse(nullptr, view);
+        XMFLOAT3 center(0.0f, 0.0f, (farZ + nearZ) * 0.5f);
+        XMFLOAT3 extents(viewWidth * 0.5f, viewHeight * 0.5f, (farZ - nearZ) * 0.5f);
 
-        // Transformiere in World-Space
-        XMMATRIX invView = XMMatrixInverse( nullptr, view );
-        m_frustum.Transform( m_frustum, invView );
+        extents = XMFLOAT3(
+            extents.x + expandSides,
+            extents.y + expandSides,
+            extents.z + expandFront
+        );
 
-        // If expansion is requested, convert to an expanded bounding box instead
-        // This ensures shadow casters outside the direct view are still rendered
-        if ( expandBack > 0.0f || expandBack < 0.0f || expandSides > 0.0f ) {
-            // Get the AABB of the frustum
-            BoundingBox frustumAABB;
-            BoundingBox::CreateFromPoints( frustumAABB,
-                8,
-                reinterpret_cast<const XMFLOAT3*>(&GetFrustumCorners()[0]),
-                sizeof( XMFLOAT3 ) );
+        // Also shift the center backwards (in light direction) to catch casters behind
+        XMVECTOR lightDir = invView.r[2]; // Z-axis of inverse view = light direction
+        XMVECTOR centerVec = XMLoadFloat3(&center);
+        centerVec = XMVectorAdd(centerVec, XMVectorScale(lightDir, -expandBack));
+        XMStoreFloat3(&center, centerVec);
 
-            // Expand the bounding box to include potential shadow casters
-            // Expand more in the light direction (negative Z in light space) and sides
-            m_expandedAABB.Center = frustumAABB.Center;
-            m_expandedAABB.Extents = XMFLOAT3(
-                frustumAABB.Extents.x + expandSides,
-                frustumAABB.Extents.y + expandSides,
-                frustumAABB.Extents.z + expandSides
-            );
+        BoundingOrientedBox viewSpaceFrustum(center, extents,
+                                             {0, 0, 0, 1} /* Identity Orientation */);
 
-            // Also shift the center backwards (in light direction) to catch casters behind
-            XMVECTOR lightDir = invView.r[2]; // Z-axis of inverse view = light direction
-            XMVECTOR centerVec = XMLoadFloat3( &m_expandedAABB.Center );
-            centerVec = XMVectorAdd( centerVec, XMVectorScale( lightDir, -expandBack ) );
-            XMStoreFloat3( &m_expandedAABB.Center, centerVec );
-
-            m_useExpandedAABB = true;
-        } else {
-            m_useExpandedAABB = false;
-        }
-
+        viewSpaceFrustum.Transform(m_orientedBox, invView);
+        m_useBoundingOrientedBox = true;
         m_useSphere = false;
     }
 
-    // Für Pointlight Cubemap (6 Frustums)
-    void BuildCubemapFace( FXMVECTOR position, float range, UINT faceIndex ) {
+    // for use with shadow mapping if the last cascade is covering the whole map.
+    static Frustum AlwaysContainingFrustum() {
+        Frustum f;
+        f.m_always_containing = true;
+        return f;
+    } 
+
+    // FÃ¼r perspektivische Projektion (normale Kamera)
+    void __vectorcall BuildPerspective(FXMMATRIX view, FXMMATRIX proj) {
+        // Erstelle Frustum aus Projection Matrix
+        BoundingFrustum::CreateFromMatrix(m_frustum, proj);
+
+        // Transformiere in World-Space
+        XMMATRIX invView = XMMatrixInverse(nullptr, view);
+        m_frustum.Transform(m_frustum, invView);
+
+        // Cache world-space planes for fast culling
+        CacheWorldSpacePlanes();
+
+        m_useSphere = false;
+        m_useBoundingOrientedBox = false;
+    }
+
+    // FÃ¼r Pointlight Cubemap (6 Frustums)
+    void BuildCubemapFace(FXMVECTOR position, float range, UINT faceIndex) {
         // Cubemap-Frustum ist effektiv eine Sphere
-        XMStoreFloat3( &m_boundingSphere.Center, position );
+        XMStoreFloat3(&m_boundingSphere.Center, position);
+
+        // For infinite depth, use a very large radius
         m_boundingSphere.Radius = range;
+
         m_useSphere = true;
+        m_useBoundingOrientedBox = false;
     }
 
     // Schneller AABB-Test
-    bool Intersects( const BoundingBox& aabb ) const {
-        if ( m_useSphere ) {
-            return m_boundingSphere.Intersects( aabb );
+    bool Intersects(const BoundingBox& aabb) const {
+        if (m_always_containing) return true;
+
+        if (m_useSphere) {
+            return m_boundingSphere.Intersects(aabb);
         }
-        if ( m_useExpandedAABB ) {
-            return m_expandedAABB.Intersects( aabb );
+        if (m_useBoundingOrientedBox) {
+            return m_orientedBox.Intersects(aabb);
         }
-        return m_frustum.Intersects( aabb );
+        return m_frustum.Intersects(aabb);
     }
 
-    // Schneller Sphere-Test für VOBs
-    bool Intersects( const BoundingSphere& sphere ) const {
-        if ( m_useSphere ) {
-            return m_boundingSphere.Intersects( sphere );
+    // Schneller Sphere-Test fÃ¼r VOBs
+    bool Intersects(const BoundingSphere& sphere) const {
+        if (m_always_containing) return true;
+
+        if (m_useSphere) {
+            return m_boundingSphere.Intersects(sphere);
         }
-        if ( m_useExpandedAABB ) {
-            return m_expandedAABB.Intersects( sphere );
+        if (m_useBoundingOrientedBox) {
+            return m_orientedBox.Intersects(sphere);
         }
-        return m_frustum.Intersects( sphere );
+        return m_frustum.Intersects(sphere);
     }
 
     // Schneller AABB-Test
-    DirectX::ContainmentType Contains( const BoundingBox& aabb ) const {
-        if ( m_useSphere ) {
-            return m_boundingSphere.Contains( aabb );
+    DirectX::ContainmentType Contains(const BoundingBox& aabb) const {
+        if (m_always_containing) return ContainmentType::CONTAINS;
+        if (m_useSphere) {
+            return m_boundingSphere.Contains(aabb);
         }
-        if ( m_useExpandedAABB ) {
-            return m_expandedAABB.Contains( aabb );
+        if (m_useBoundingOrientedBox) {
+            return m_orientedBox.Contains(aabb);
         }
-        return m_frustum.Contains( aabb );
+        return m_frustum.Contains(aabb);
     }
 
-    // Schneller Sphere-Test für VOBs
-    DirectX::ContainmentType Contains( const BoundingSphere& sphere ) const {
-        if ( m_useSphere ) {
-            return m_boundingSphere.Contains( sphere );
+    DirectX::ContainmentType Contains(const zTBBox3D& aabb) const {
+        if (m_always_containing) return ContainmentType::CONTAINS;
+        return Contains(BBoxFromzTBBox3D(aabb));
+    }
+    
+    // Schneller Sphere-Test fÃ¼r VOBs
+    DirectX::ContainmentType Contains(const BoundingSphere& sphere) const {
+        if (m_always_containing) return ContainmentType::CONTAINS;
+        if (m_useSphere) {
+            return m_boundingSphere.Contains(sphere);
         }
-        if ( m_useExpandedAABB ) {
-            return m_expandedAABB.Contains( sphere );
+        if (m_useBoundingOrientedBox) {
+            return m_orientedBox.Contains(sphere);
         }
-        return m_frustum.Contains( sphere );
+        return m_frustum.Contains(sphere);
     }
 
-    // Batch-Test mit SIMD (4 Spheres gleichzeitig)
-    void IntersectsBatch4(
-        const XMFLOAT3* centers,
-        const float* radii,
-        bool* results ) const {
+    ContainmentType Contains(const BoundingSphere& sh, EGothicCullFlags flags) const noexcept {
+        return Contains(sh);
+    }
 
-        XMVECTOR c0 = XMLoadFloat3( &centers[0] );
-        XMVECTOR c1 = XMLoadFloat3( &centers[1] );
-        XMVECTOR c2 = XMLoadFloat3( &centers[2] );
-        XMVECTOR c3 = XMLoadFloat3( &centers[3] );
+    ContainmentType Contains(const BoundingBox& bb, EGothicCullFlags flags) const noexcept {
+        return Contains(bb);
+    }
 
-        XMVECTOR sphereCenter = XMLoadFloat3( &m_boundingSphere.Center );
-        XMVECTOR sphereRadiusSq = XMVectorReplicate(
-            m_boundingSphere.Radius * m_boundingSphere.Radius );
+    static BoundingBox BBoxFromzTBBox3D(const zTBBox3D& box) {
+        BoundingBox bb;
+        XMVECTOR bbMin = XMLoadFloat3(&box.Min);
+        XMVECTOR bbMax = XMLoadFloat3(&box.Max);
+        XMStoreFloat3(&bb.Center, XMVectorScale(XMVectorAdd(bbMin, bbMax), 0.5f));
+        XMStoreFloat3(&bb.Extents, XMVectorScale(XMVectorSubtract(bbMax, bbMin), 0.5f));
+        return bb;
+    }
+    
+    float GetFarZ() const {
+        if (m_useBoundingOrientedBox)
+            return m_orientedBox.Extents.z;
+        if (m_useSphere)
+            return m_boundingSphere.Radius;
+        return m_frustum.Far;
+    }
+private:
+    // Cache world-space planes for fast culling (called after frustum is transformed to world space)
+    // Plane order: [0]=Left, [1]=Right, [2]=Bottom, [3]=Top, [4]=Near, [5]=Far
+    void CacheWorldSpacePlanes() {
+        // Load origin and orientation of the frustum
+        XMVECTOR vOrigin = XMLoadFloat3(&m_frustum.Origin);
+        XMVECTOR vOrientation = XMLoadFloat4(&m_frustum.Orientation);
 
-        // Distanz² für alle 4 gleichzeitig
-        XMVECTOR d0 = XMVector3LengthSq( XMVectorSubtract( c0, sphereCenter ) );
-        XMVECTOR d1 = XMVector3LengthSq( XMVectorSubtract( c1, sphereCenter ) );
-        XMVECTOR d2 = XMVector3LengthSq( XMVectorSubtract( c2, sphereCenter ) );
-        XMVECTOR d3 = XMVector3LengthSq( XMVectorSubtract( c3, sphereCenter ) );
+        // Left plane
+        XMVECTOR plane = XMVectorSet(-1.0f, 0.0f, m_frustum.LeftSlope, 0.0f);
+        plane = DirectX::MathInternal::XMPlaneTransform(plane, vOrientation, vOrigin);
+        XMStoreFloat4(&m_cachedPlanes[0], XMPlaneNormalize(plane));
 
-        // Kombinierte Radien²
-        XMVECTOR r0 = XMVectorReplicate( radii[0] + m_boundingSphere.Radius );
-        XMVECTOR r1 = XMVectorReplicate( radii[1] + m_boundingSphere.Radius );
-        XMVECTOR r2 = XMVectorReplicate( radii[2] + m_boundingSphere.Radius );
-        XMVECTOR r3 = XMVectorReplicate( radii[3] + m_boundingSphere.Radius );
+        // Right plane
+        plane = XMVectorSet(1.0f, 0.0f, -m_frustum.RightSlope, 0.0f);
+        plane = DirectX::MathInternal::XMPlaneTransform(plane, vOrientation, vOrigin);
+        XMStoreFloat4(&m_cachedPlanes[1], XMPlaneNormalize(plane));
 
-        r0 = XMVectorMultiply( r0, r0 );
-        r1 = XMVectorMultiply( r1, r1 );
-        r2 = XMVectorMultiply( r2, r2 );
-        r3 = XMVectorMultiply( r3, r3 );
+        // Bottom plane
+        plane = XMVectorSet(0.0f, -1.0f, m_frustum.BottomSlope, 0.0f);
+        plane = DirectX::MathInternal::XMPlaneTransform(plane, vOrientation, vOrigin);
+        XMStoreFloat4(&m_cachedPlanes[2], XMPlaneNormalize(plane));
 
-        results[0] = XMVector3LessOrEqual( d0, r0 );
-        results[1] = XMVector3LessOrEqual( d1, r1 );
-        results[2] = XMVector3LessOrEqual( d2, r2 );
-        results[3] = XMVector3LessOrEqual( d3, r3 );
+        // Top plane
+        plane = XMVectorSet(0.0f, 1.0f, -m_frustum.TopSlope, 0.0f);
+        plane = DirectX::MathInternal::XMPlaneTransform(plane, vOrientation, vOrigin);
+        XMStoreFloat4(&m_cachedPlanes[3], XMPlaneNormalize(plane));
+
+        // Near plane
+        plane = XMVectorSet(0.0f, 0.0f, -1.0f, m_frustum.Near);
+        plane = DirectX::MathInternal::XMPlaneTransform(plane, vOrientation, vOrigin);
+        XMStoreFloat4(&m_cachedPlanes[4], XMPlaneNormalize(plane));
+
+        // Far plane
+        plane = XMVectorSet(0.0f, 0.0f, 1.0f, -m_frustum.Far);
+        plane = DirectX::MathInternal::XMPlaneTransform(plane, vOrientation, vOrigin);
+        XMStoreFloat4(&m_cachedPlanes[5], XMPlaneNormalize(plane));
     }
 
 private:
     // Helper to get frustum corners for AABB creation
     std::array<XMFLOAT3, 8> GetFrustumCorners() const {
         std::array<XMFLOAT3, 8> corners;
-        m_frustum.GetCorners( corners.data() );
+        m_frustum.GetCorners(corners.data());
         return corners;
     }
 
     BoundingFrustum m_frustum;
     BoundingSphere m_boundingSphere;
-    BoundingBox m_expandedAABB;
-    bool m_useSphere = false;
-    bool m_useExpandedAABB = false;
-};
+    BoundingOrientedBox m_orientedBox;
 
+    std::array<XMFLOAT4, 6> m_cachedPlanes{}; // [0]=Left, [1]=Right, [2]=Bottom, [3]=Top, [4]=Near, [5]=Far
+    bool m_useSphere = false;
+    bool m_useBoundingOrientedBox = false;
+    bool m_always_containing = false;
+};

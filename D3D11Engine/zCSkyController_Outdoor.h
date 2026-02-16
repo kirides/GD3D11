@@ -71,6 +71,18 @@ public:
         zCSkyControllerRenderSkyPost fn = reinterpret_cast<zCSkyControllerRenderSkyPost>(vtbl[GothicMemoryLocations::zCSkyController::VTBL_RenderSkyPost]);
         fn( this, 1 );
     }
+    
+#if defined(BUILD_GOTHIC_1_08k) || defined(BUILD_GOTHIC_2_6_fix)
+#define OPT_MANAGE_SKY_EFFECTS_SUPPORTED
+
+    static void	SetSkyEffectsEnabled(const int enabled) {
+        *reinterpret_cast<int*>(GothicMemoryLocations::zCSkyController::static_skyEffectsEnabled) = enabled;
+    }
+    
+    static int GetSkyEffectsEnabled() {
+        return *reinterpret_cast<int*>(GothicMemoryLocations::zCSkyController::static_skyEffectsEnabled);
+    }
+#endif
 
     DWORD* PolyLightCLUTPtr;
     float cloudShadowScale;

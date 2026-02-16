@@ -3020,7 +3020,6 @@ void D3D11GraphicsEngine::SetupVS_ExMeshDrawCall() {
 }
 
 void D3D11GraphicsEngine::SetupVS_ExConstantBuffer() {
-    auto& world = Engine::GAPI->GetRendererState().TransformState.TransformWorld;
     auto& view = Engine::GAPI->GetRendererState().TransformState.TransformView;
     auto& proj = Engine::GAPI->GetProjectionMatrix();
 
@@ -3851,6 +3850,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
     std::vector<WorldMeshSectionInfo*> drawnSections;
 
     auto rangeSquared = range * range;
+    auto vRangeSquared = XMVectorReplicate(rangeSquared);    
+    
     if ( Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh ) {
         // Bind wrapped mesh vertex buffers
         DrawVertexBufferIndexedUINT( Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer,
@@ -3963,10 +3964,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                     }
 
                     // Check vob range
-
-                    float distSq;
-                    XMStoreFloat( &distSq, XMVector3LengthSq( position - XMLoadFloat3( &it->LastRenderPosition ) ) );
-                    if ( distSq > rangeSquared ) {
+                    if ( XMVector3Greater(XMVector3LengthSq( position - XMLoadFloat3( &it->LastRenderPosition ) ), vRangeSquared) ) {
                         continue;
                     }
 
@@ -4028,9 +4026,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                 }
 
                 // Check vob range
-                float distSq;
-                XMStoreFloat( &distSq, XMVector3LengthSq( position - it->Vob->GetPositionWorldXM() ) );
-                if ( distSq > rangeSquared ) {
+                if ( XMVector3Greater(XMVector3LengthSq( position - it->Vob->GetPositionWorldXM() ), vRangeSquared) ) {
                     continue;
                 }
 
@@ -4076,9 +4072,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                 }
 
                 // Check vob range
-                float distSq;
-                XMStoreFloat( &distSq, XMVector3LengthSq( position - skeletalMeshVob->Vob->GetPositionWorldXM() ) );
-                if ( distSq > rangeSquared ) {
+                if ( XMVector3Greater(XMVector3LengthSq( position - skeletalMeshVob->Vob->GetPositionWorldXM() ), vRangeSquared) ) {
                     continue;
                 }
 
@@ -4164,6 +4158,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
     std::vector<WorldMeshSectionInfo*> drawnSections;
 
     auto rangeSquared = range * range;
+    auto vRangeSquared = XMVectorReplicate(rangeSquared);
 
     if ( Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh ) {
         // Bind wrapped mesh vertex buffers
@@ -4278,9 +4273,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
 
                     // Check vob range
 
-                    float distSq;
-                    XMStoreFloat( &distSq, XMVector3LengthSq( position - XMLoadFloat3( &it->LastRenderPosition ) ) );
-                    if ( distSq > rangeSquared ) {
+                    if ( XMVector3Greater(XMVector3LengthSq( position - XMLoadFloat3( &it->LastRenderPosition ) ), vRangeSquared) ) {
                         continue;
                     }
 
@@ -4342,9 +4335,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                 }
 
                 // Check vob range
-                float distSq;
-                XMStoreFloat( &distSq, XMVector3LengthSq( position - it->Vob->GetPositionWorldXM() ) );
-                if ( distSq > rangeSquared ) {
+                if ( XMVector3Greater(XMVector3LengthSq( position - it->Vob->GetPositionWorldXM() ), vRangeSquared) ) {
                     continue;
                 }
 
@@ -4390,9 +4381,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                 }
 
                 // Check vob range
-                float distSq;
-                XMStoreFloat( &distSq, XMVector3LengthSq( position - skeletalMeshVob->Vob->GetPositionWorldXM() ) );
-                if ( distSq > rangeSquared ) {
+                if ( XMVector3Greater(XMVector3LengthSq( position - skeletalMeshVob->Vob->GetPositionWorldXM() ), vRangeSquared) ) {
                     continue;
                 }
                 // Check for inside vob. Don't render inside-vobs when the light is
@@ -4410,15 +4399,13 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
 /** Draws everything around the given position */
 void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR position,
     float sectionRange,
-    bool cullFront, bool dontCull,
-    const std::vector<Frustum>& frusti,
-    int cascadeIndex ) {
+    const RenderShadowmapsParams& params ) {
     // Setup renderstates
     Engine::GAPI->GetRendererState().RasterizerState.SetDefault();
     Engine::GAPI->GetRendererState().RasterizerState.CullMode =
-        cullFront ? GothicRasterizerStateInfo::CM_CULL_FRONT
+        params.CullFront ? GothicRasterizerStateInfo::CM_CULL_FRONT
         : GothicRasterizerStateInfo::CM_CULL_BACK;
-    if ( dontCull )
+    if ( params.DontCull )
         Engine::GAPI->GetRendererState().RasterizerState.CullMode =
         GothicRasterizerStateInfo::CM_CULL_NONE;
 
@@ -4473,12 +4460,6 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
     float3 fPosition; XMStoreFloat3( fPosition.toXMFLOAT3(), position );
     INT2 s = WorldConverter::GetSectionOfPos( fPosition );
 
-    float vobOutdoorDist =
-        Engine::GAPI->GetRendererState().RendererSettings.OutdoorVobDrawRadius;
-    float vobOutdoorSmallDist = Engine::GAPI->GetRendererState().RendererSettings.OutdoorSmallVobDrawRadius;
-    float vobSmallSize =
-        Engine::GAPI->GetRendererState().RendererSettings.SmallVobSize;
-
     DistortionTexture->BindToPixelShader( 0 );
 
     InfiniteRangeConstantBuffer->BindToPixelShader( 3 );
@@ -4486,11 +4467,6 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
     UpdateRenderStates();
 
     auto enableCulling = Engine::GAPI->GetRendererState().RendererSettings.IsShadowFrustumCullingEnabled();
-    const Frustum* previousCascadeFrustum = nullptr;
-    auto hasPreviousFrustum = cascadeIndex > 0 && frusti.size() > static_cast<size_t>(cascadeIndex);
-    if ( hasPreviousFrustum ) {
-        previousCascadeFrustum = &frusti[cascadeIndex - 1];
-    }
 
     bool colorWritesEnabled =
         Engine::GAPI->GetRendererState().BlendState.ColorWritesEnabled;
@@ -4499,7 +4475,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
     if ( Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh ) {
         auto _ = START_TIMING( "Shadow World Mesh");
         auto _1 = RecordGraphicsEvent( L"DrawWorldMesh" );
-
+        const auto sectionRangeSq = sectionRange * sectionRange;
         // Bind wrapped mesh vertex buffers
         DrawVertexBufferIndexedUINT(
             Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer,
@@ -4517,7 +4493,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                 float dy = static_cast<float>(ity.first - s.y);
                 float lenSq = dx * dx + dy * dy;
 
-                if ( lenSq < sectionRange * sectionRange ) {
+                if ( lenSq < sectionRangeSq ) {
                     visibleSections.push_back( &ity.second );
                 }
             }
@@ -4621,24 +4597,76 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         }
     }
 
+    static std::vector<VobInfo*> vobs = {};
+    static std::vector<VobLightInfo*> lights = {};
+    static std::vector<SkeletalVobInfo*> mobs = {};
+    vobs.clear();
+    
+    
     if ( Engine::GAPI->GetRendererState().RendererSettings.DrawVOBs ) {
+        Engine::GAPI->CollectVisibleVobs( vobs, lights, mobs, EGothicCullFlags::CullSidesNear, EBspTreeCollectFlags::COLLECT_VOBS );
+        
+        // clear any residue of main render pass
+        const std::unordered_map<zCProgMeshProto*, MeshVisualInfo*>& staticMeshVisuals = Engine::GAPI->GetStaticMeshVisuals();
+        for ( auto const& staticMeshVisual : staticMeshVisuals ) {
+            staticMeshVisual.second->StartNewFrame();
+        }
+        
+        for ( auto& it : vobs) { 
+            // because we collect without COLLECT_MUTATE enabled
+            // we don't need to reset this
+            // it->VisibleInRenderPass = false;
+            
+            // But also because of that, we need to add the instances ourselves
+            VobInstanceInfo vii = {};
+            vii.world = it->WorldMatrix;
+            vii.prevWorld = it->HasValidPrevMatrix ? it->PrevWorldMatrix : it->WorldMatrix;
+            vii.color = it->GroundColor;
+            vii.windStrenth = 0.0f;
+            vii.canBeAffectedByPlayer = 0;
+
+            zTAnimationMode aniMode = it->Vob->GetVisualAniMode();
+            if ( aniMode != zVISUAL_ANIMODE_NONE ) {
+                vii.canBeAffectedByPlayer = (!it->Vob->GetDynColl() ? 1.0f : 0.0f);
+                GothicAPI::ProcessVobAnimation( it->Vob, aniMode, vii );
+            }
+
+            reinterpret_cast<MeshVisualInfo*>(it->VisualInfo)->Instances.push_back( vii );
+        }
+
         auto _ = START_TIMING( "Static Mesh Visuals");
         auto _1 = RecordGraphicsEvent( L"DrawVOBs" );
 
-        // Reset instances
-        const std::unordered_map<zCProgMeshProto*, MeshVisualInfo*>& staticMeshVisuals =
-            Engine::GAPI->GetStaticMeshVisuals();
+        size_t ByteWidth = DynamicInstancingBuffer->GetSizeInBytes();
 
-        for ( auto const& it : RenderedVobs ) {
-            if ( !it->IsIndoorVob ) {
-                //VobInstanceInfo vii;
-                //vii.world = it->WorldMatrix;
-                //static_cast<MeshVisualInfo*>(it->VisualInfo)->Instances.emplace_back( vii );
+        if ( ByteWidth < sizeof( VobInstanceInfo ) * vobs.size() ) {
+            if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog )
+                LogInfo() << "Instancing buffer too small (" << ByteWidth
+                << "), need " << sizeof( VobInstanceInfo ) * vobs.size()
+                << " bytes. Recreating buffer.";
 
-                // We don't need vob world matrix because the data is already in buffer
-                static_cast<MeshVisualInfo*>(it->VisualInfo)->Instances.emplace_back();
-            }
+            // Buffer too small, recreate it
+            DynamicInstancingBuffer->Init(
+                nullptr, sizeof( VobInstanceInfo ) * vobs.size(),
+                D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_DYNAMIC,
+                D3D11VertexBuffer::CA_WRITE );
+
+            SetDebugName( DynamicInstancingBuffer->GetShaderResourceView().Get(), "DynamicInstancingBuffer->ShaderResourceView" );
+            SetDebugName( DynamicInstancingBuffer->GetVertexBuffer().Get(), "DynamicInstancingBuffer->VertexBuffer" );
         }
+
+        byte* data;
+        UINT size;
+        UINT loc = 0;
+        DynamicInstancingBuffer->Map( D3D11VertexBuffer::M_WRITE_DISCARD,
+            reinterpret_cast<void**>(&data), &size );
+        for ( auto const& staticMeshVisual : staticMeshVisuals ) {
+            staticMeshVisual.second->StartInstanceNum = loc;
+            memcpy( data + loc * sizeof( VobInstanceInfo ), &staticMeshVisual.second->Instances[0],
+                sizeof( VobInstanceInfo ) * staticMeshVisual.second->Instances.size() );
+            loc += staticMeshVisual.second->Instances.size();
+        }
+        DynamicInstancingBuffer->Unmap();
 
         // Apply instancing shader
         SetActiveVertexShader( "VS_ExInstancedObj" );
@@ -4655,29 +4683,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( 1 );
         }
 
-        // Static meshes should already be in buffer from main stage rendering
-        /*size_t ByteWidth = DynamicInstancingBuffer->GetSizeInBytes();
-        byte* data;
-        UINT size;
-        UINT loc = 0;
-        DynamicInstancingBuffer->Map( D3D11VertexBuffer::M_WRITE_DISCARD,
-            reinterpret_cast<void**>(&data), &size );
-        for ( auto const& staticMeshVisual : staticMeshVisuals ) {
-            if ( staticMeshVisual.second->Instances.empty() ) continue;
-
-                if ( (loc + staticMeshVisual.second->Instances.size()) * sizeof( VobInstanceInfo ) >= ByteWidth )
-                    break;  // Should never happen
-
-                staticMeshVisual.second->StartInstanceNum = loc;
-                memcpy( data + loc * sizeof( VobInstanceInfo ), &staticMeshVisual.second->Instances[0],
-                    sizeof( VobInstanceInfo ) * staticMeshVisual.second->Instances.size() );
-                loc += staticMeshVisual.second->Instances.size();
-            }            
-        DynamicInstancingBuffer->Unmap();*/
-
         XMFLOAT3 vPlayerPosition = Engine::GAPI->GetPlayerVob() ? Engine::GAPI->GetPlayerVob()->GetPositionWorld() : XMFLOAT3( 0, 0, 0 );
         g_windBuffer.playerPos = float3( vPlayerPosition.x, vPlayerPosition.y, vPlayerPosition.z );
-        auto enableCulling = Engine::GAPI->GetRendererState().RendererSettings.IsShadowFrustumCullingEnabled();
 
         // Draw all vobs the player currently sees
         for ( auto const& staticMeshVisual : staticMeshVisuals ) {
@@ -4752,16 +4759,18 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         auto _ = START_TIMING( "Skeletal Meshes NPCs");
         auto _1 = RecordGraphicsEvent( L"DrawSkeletalMeshes" );
 
-        auto indorRadiusSq = Engine::GAPI->GetRendererState().RendererSettings.SkeletalMeshDrawRadius
+        auto skeletalRadiusSq = Engine::GAPI->GetRendererState().RendererSettings.SkeletalMeshDrawRadius
             * Engine::GAPI->GetRendererState().RendererSettings.SkeletalMeshDrawRadius;
-
-        auto enableCulling = Engine::GAPI->GetRendererState().RendererSettings.IsShadowFrustumCullingEnabled();
+        auto& currentFrustum = params.CascadeCameraReplacements->at(params.CascadeIndex).frustum;
+        XMVECTOR vSkeletalRadiusSq = XMVectorReplicate(skeletalRadiusSq);
 
         // Draw skeletal meshes
 
         static std::vector<SkeletalVobInfo*> animatedSkeletalMeshVobs;
         animatedSkeletalMeshVobs.clear();
-
+        
+        const bool isLastCascade = params.CascadeIndex == params.CascadeSplits.size() - 2;
+        
         for ( auto const& skeletalMeshVob : Engine::GAPI->GetSkeletalMeshVobs() ) {
             if ( !skeletalMeshVob->VisualInfo ) continue;
 
@@ -4770,23 +4779,17 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                 continue;
             }
             
-            XMVECTOR vobPos = skeletalMeshVob->Vob->GetPositionWorldXM();
-            float distSq;
-            XMStoreFloat( &distSq, XMVector3LengthSq( vobPos - position ) );
-            if ( distSq > indorRadiusSq ) {
+            if ( XMVector3Greater(XMVector3LengthSq( skeletalMeshVob->Vob->GetPositionWorldXM() - position ), vSkeletalRadiusSq) ) {
                 continue;  // Skip out of range
             }
 
-            if ( enableCulling ) {
+            if ( enableCulling && !isLastCascade ) {
                 // Frustum culling using a bounding sphere
                 // Use the mesh size as radius, centered at the vob position
-                float radius = skeletalMeshVob->VisualInfo->MeshSize * 0.5f;
-                XMFLOAT3 center;
-                XMStoreFloat3( &center, vobPos );
-                BoundingSphere vobSphere( center, radius );
 
-                if ( previousCascadeFrustum && previousCascadeFrustum->Contains( vobSphere ) == DirectX::ContainmentType::CONTAINS ) {
-                    continue;  // Skip if already rendered in previous cascade
+                if ( currentFrustum.Contains( skeletalMeshVob->Vob->GetBBox()) == DirectX::ContainmentType::DISJOINT) {
+                    // Not hitting our frustum and not the active view.
+                    continue;
                 }
             }
 
@@ -4795,7 +4798,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         bool drawAttachments = true;
         if ( Engine::GAPI->GetRendererState().RendererSettings.ShadowFrustumCullingMode
             == GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_AGGRESSIVE ) {
-            drawAttachments = cascadeIndex <= 1; // skip attachments on higher cascades, player won't notice, hopefully
+            drawAttachments = params.CascadeIndex <= 1; // skip attachments on higher cascades, player won't notice, hopefully
         }
         // we should not need to update the skeletal meshes again, as they were updated before drawing the main scene
         Engine::GAPI->DrawSkeletalMeshVobs( animatedSkeletalMeshVobs, false, drawAttachments );
@@ -6065,12 +6068,14 @@ void D3D11GraphicsEngine::DrawQuadMarks() {
     int alphaFunc = zMAT_ALPHA_FUNC_NONE;
 
     auto vfxRadiusSq = Engine::GAPI->GetRendererState().RendererSettings.VisualFXDrawRadius * Engine::GAPI->GetRendererState().RendererSettings.VisualFXDrawRadius;
+    auto vVfxRadiusSq = XMVectorReplicate(vfxRadiusSq);
+    
     for ( auto const& it : quadMarks ) {
         if ( !it.first->GetConnectedVob() ) continue;
 
-        float distSq; XMStoreFloat( &distSq, XMVector3LengthSq( camPos - XMLoadFloat3( it.second.Position.toXMFLOAT3() ) ) );
-        if ( distSq > vfxRadiusSq )
+        if ( XMVector3Greater(XMVector3LengthSq( camPos - XMLoadFloat3( it.second.Position.toXMFLOAT3() ) ), vVfxRadiusSq) ) {
             continue;
+        }
 
         zCMesh* mesh = it.first->GetQuadMesh();
         int numPolys = mesh->GetNumPolygons();
@@ -6245,11 +6250,12 @@ void D3D11GraphicsEngine::DrawFrameParticleMeshes( std::unordered_map<zCVob*, Me
     FXMVECTOR camPos = Engine::GAPI->GetCameraPositionXM();
     int lastBlend = zRND_ALPHA_FUNC_NONE;
     auto vfxRadiusSq = state.RendererSettings.VisualFXDrawRadius * state.RendererSettings.VisualFXDrawRadius;
+    auto vVfxRadiusSq = XMVectorReplicate(vfxRadiusSq);
+    
     for ( auto const& it : progMeshes ) {
-        float distSq;
-        XMStoreFloat( &distSq, XMVector3LengthSq( it.first->GetPositionWorldXM() - camPos ) );
-        if ( distSq > vfxRadiusSq )
+        if ( XMVector3Greater(XMVector3LengthSq( it.first->GetPositionWorldXM() - camPos ), vVfxRadiusSq) ) {
             continue;
+        }
 
         if ( zCParticleFX* particle = reinterpret_cast<zCParticleFX*>(it.first->GetVisual()) ) {
             if ( zCParticleEmitter* emitter = particle->GetEmitter() ) {

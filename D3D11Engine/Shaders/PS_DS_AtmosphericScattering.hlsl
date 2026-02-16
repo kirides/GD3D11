@@ -345,7 +345,8 @@ float ComputeCascadedShadowValueSoft(float3 wsPosition, float viewSpaceZ, float 
             if (c < NUM_CSM_CASCADES - 1 && cascadeInfo[c].w > 0.0f && cascadeInfo[c + 1].z > 0.5f)
             {
                 float shadowNext = SampleCascadeShadowSoft(wsPosition, c + 1, vertLighting, bias, screenPos, softness);
-                shadow = lerp(shadow, shadowNext, cascadeInfo[c].w);
+                float blendedShadow = lerp(shadow, shadowNext, cascadeInfo[c].w);
+				shadow = min(shadow, blendedShadow);
             }
             break;
         }
@@ -582,6 +583,11 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
 	//litPixel = lerp(diffuse * vertLighting, litPixel, vertLighting < 0.9f ? 0 : 1);
 	//diffuse.rgb = lerp(diffuse.rgb, 1.0f, clamp(shaft, 0.0f, 0.4f));
 	
+	// float4 cascadeDebug = GetCascadeUVAndBounds(wsPosition, 1); // Check Cascade 0
+	// if (cascadeDebug.z > 0.5f) {
+		// // cascadeDebug.w is the blend factor (0 = Pure Cascade 0, 1 = Pure Cascade 1)
+		// return float4(lerp(float3(0,1,0), float3(1,0,0), cascadeDebug.w), 1.0f);
+	// }
 	
 	//return float4(sun.rgb, 1);
 	//return float4(vertLighting.rrr, 1);

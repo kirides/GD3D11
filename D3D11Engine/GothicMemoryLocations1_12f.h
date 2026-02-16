@@ -147,6 +147,7 @@ struct GothicMemoryLocations {
     struct zCSkyController {
         static const unsigned int VTBL_RenderSkyPre = 20;
         static const unsigned int VTBL_RenderSkyPost = 21;
+        static const unsigned int static_skyEffectsEnabled = 0x887EDC; // int*
     };
 
     struct zCParticleEmitter {

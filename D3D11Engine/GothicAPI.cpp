@@ -61,6 +61,8 @@ const DWORD SCENE_WETNESS_DURATION_MS = 30 * 1000;
 // Draw ghost from back to front of our camera
 auto CompareGhostDistance = []( TransparencyVobInfo& a, TransparencyVobInfo& b ) -> bool { return a.distance < b.distance; };
 
+extern float vobAnimation_WindStrength;
+
 /** Writes this info to a file */
 void MaterialInfo::WriteToFile( const std::string& name ) {
     FILE* f = fopen( ("system\\GD3D11\\textures\\infos\\" + name + ".mi").c_str(), "wb" );
@@ -348,6 +350,12 @@ namespace
     }
 }
 
+void GothicAPI::ProcessVobAnimation( zCVob* vob, zTAnimationMode aniMode, VobInstanceInfo& vobInstance ) {
+    if ( Engine::GAPI->GetRendererState().RendererSettings.WindQuality == GothicRendererSettings::EWindQuality::WIND_QUALITY_ADVANCED ) {
+        vobInstance.windStrenth = std::max<float>( 0.1f, vob->GetVisualAniModeStrength() ) * vobAnimation_WindStrength;
+    }
+}
+
 /** Called when the game starts */
 void GothicAPI::OnGameStart() {
     // Get threadid of main thread here because DllMain can be called from different thread
@@ -422,7 +430,7 @@ void GothicAPI::UpdateMTResourceManager() {
 
 /** Called to update the texture quality */
 void GothicAPI::UpdateTextureMaxSize() {
-    reinterpret_cast<void( __cdecl* )(int)>(GothicMemoryLocations::zCResourceManager::RefreshTexMaxSize)(RendererState.RendererSettings.textureMaxSize);
+    zCResourceManager::RefreshTexMaxSize(RendererState.RendererSettings.textureMaxSize);
     if ( zCResourceManager* rsm = zCResourceManager::GetResourceManager() ) {
         rsm->PurgeCaches( GothicMemoryLocations::zCClassDef::zCTexture );
     }
@@ -507,47 +515,15 @@ void GothicAPI::OnWorldUpdate() {
             skyController->SetLastMasterTime( masterTime );
         }
 
-        if( !RendererState.RendererSettings.EnableRain || !outdoor ) {
-            #ifdef BUILD_GOTHIC_1_08k
-            #ifdef BUILD_1_12F
-            int skyEffects = *reinterpret_cast<int*>(0x887EDC);
-            *reinterpret_cast<int*>(0x887EDC) = 0;
-            skyController->ProcessRainFX();
-            *reinterpret_cast<int*>(0x887EDC) = skyEffects;
-            #else
-            int skyEffects = *reinterpret_cast<int*>(0x8422A0);
-            *reinterpret_cast<int*>(0x8422A0) = 0;
-            skyController->ProcessRainFX();
-            *reinterpret_cast<int*>(0x8422A0) = skyEffects;
-            #endif
-            #endif
-            #ifdef BUILD_GOTHIC_2_6_fix
-            int skyEffects = *reinterpret_cast<int*>(0x8A5DB0);
-            *reinterpret_cast<int*>(0x8A5DB0) = 0;
-            skyController->ProcessRainFX();
-            *reinterpret_cast<int*>(0x8A5DB0) = skyEffects;
-            #endif
-        } else {
-            #ifdef BUILD_GOTHIC_1_08k
-            #ifdef BUILD_1_12F
-            int skyEffects = *reinterpret_cast<int*>(0x887EDC);
-            *reinterpret_cast<int*>(0x887EDC) = 1;
-            skyController->ProcessRainFX();
-            *reinterpret_cast<int*>(0x887EDC) = skyEffects;
-            #else
-            int skyEffects = *reinterpret_cast<int*>(0x8422A0);
-            *reinterpret_cast<int*>(0x8422A0) = 1;
-            skyController->ProcessRainFX();
-            *reinterpret_cast<int*>(0x8422A0) = skyEffects;
-            #endif
-            #endif
-            #ifdef BUILD_GOTHIC_2_6_fix
-            int skyEffects = *reinterpret_cast<int*>(0x8A5DB0);
-            *reinterpret_cast<int*>(0x8A5DB0) = 1;
-            skyController->ProcessRainFX();
-            *reinterpret_cast<int*>(0x8A5DB0) = skyEffects;
-            #endif
-        }
+#ifdef OPT_MANAGE_SKY_EFFECTS_SUPPORTED // see zCSkyController
+        int enableSkyEffect = !RendererState.RendererSettings.EnableRain || !outdoor
+            ? 0
+            : 1;
+        int skyEffects = zCSkyController::GetSkyEffectsEnabled();
+        zCSkyController::SetSkyEffectsEnabled(enableSkyEffect);
+        skyController->ProcessRainFX();
+        zCSkyController::SetSkyEffectsEnabled(skyEffects);
+#endif
     }
 
     if ( !_canRain ) {
@@ -1219,13 +1195,12 @@ void GothicAPI::DrawWorldMeshNaive() {
             if ( dist > drawRadius )
                 continue; // Skip out of range
 
-            const zTBBox3D bb = vobInfo->Vob->GetBBoxLocal();
             zCCamera::GetCamera()->SetTransform( zCCamera::ETransformType::TT_WORLD, *vobInfo->Vob->GetWorldMatrixPtr() );
 
             //Engine::GraphicsEngine->GetLineRenderer()->AddAABBMinMax(bb.Min, bb.Max, XMFLOAT4(1, 1, 1, 1));
 
-            int clipFlags = 15; // No far clip
-            if ( zCCamera::GetCamera()->BBox3DInFrustum( bb, clipFlags ) == ZTCAM_CLIPTYPE_OUT )
+            int clipFlags = EGothicCullFlags::CullSidesNear; // No far clip
+            if ( GetCameraBBox3DInFrustum( vobInfo->Vob, clipFlags, true ) == ZTCAM_CLIPTYPE_OUT )
                 continue;
 
             // Indoor?
@@ -1375,16 +1350,15 @@ void GothicAPI::CalcFlashMeshes() {
     if ( !RendererState.RendererSettings.DrawParticleEffects || (FlashVisuals.empty() && FrameThunderPolyStrips.empty()) ) {
         return;
     }
+    
+    auto vVfxRangeSq = XMVectorReplicate(RendererState.RendererSettings.VisualFXDrawRadius * RendererState.RendererSettings.VisualFXDrawRadius);
 
     FXMVECTOR camPos = GetCameraPositionXM();
     static std::vector<zCPolyStrip*> polyStrips; polyStrips.clear();
     for ( auto it = FlashVisuals.begin(); it != FlashVisuals.end();) {
         zCFlash* flash = it->first;
-        float dist1, dist2;
-        XMStoreFloat( &dist1, XMVector3Length( flash->GetStartPositionWorld() - camPos ) );
-        XMStoreFloat( &dist2, XMVector3Length( flash->GetEndPositionWorld() - camPos ) );
-        if ( dist1 > RendererState.RendererSettings.VisualFXDrawRadius &&
-            dist2 > RendererState.RendererSettings.VisualFXDrawRadius )
+        if ( XMVector3Greater(XMVector3LengthSq( flash->GetStartPositionWorld() - camPos ), vVfxRangeSq) &&
+            XMVector3Greater(XMVector3LengthSq( flash->GetEndPositionWorld() - camPos ), vVfxRangeSq) )
             continue;
 
         if ( flash->RenderFlash( polyStrips ) ) {
@@ -1497,8 +1471,7 @@ void GothicAPI::GetVisibleParticleEffectsList( std::vector<zCVob*>& pfxList ) {
             if ( dist > RendererState.RendererSettings.VisualFXDrawRadius )
                 continue;
 
-            int flags = 15; // Frustum check, no farplane
-            if ( zCCamera::GetCamera()->BBox3DInFrustum( it->GetBBox(), flags ) == ZTCAM_CLIPTYPE_OUT ) {
+            if ( GetCameraBBox3DInFrustum( it->GetBBox(), EGothicCullFlags::CullSides ) == ZTCAM_CLIPTYPE_OUT ) {
                 continue;
             }
 
@@ -1524,8 +1497,7 @@ void GothicAPI::GetVisibleDecalList( std::vector<zCVob*>& decals ) {
         if ( dist > RendererState.RendererSettings.VisualFXDrawRadius )
             continue;
 
-        int flags = 15; // Frustum check, no farplane
-        if ( zCCamera::GetCamera()->BBox3DInFrustum( it->GetBBox(), flags ) == ZTCAM_CLIPTYPE_OUT ) {
+        if ( GetCameraBBox3DInFrustum( it->GetBBox(), EGothicCullFlags::CullSides ) == ZTCAM_CLIPTYPE_OUT ) {
             continue;
         }
 
@@ -2265,13 +2237,14 @@ float3* GothicAPI::GetLowestLODPoly_SkeletalMesh( zCModel* model, const int poly
     }
 
     if ( skeletalMesh ) {
+        static std::vector<XMFLOAT4X4> transforms;
         for ( auto const& itm : skeletalMesh->SkeletalMeshes ) {
             for ( auto& mesh : itm.second ) {
                 if ( polyIndex >= mesh->Indices.size() ) {
                     polyIndex -= mesh->Indices.size();
                 } else {
                     float fatness = model->GetModelFatness();
-                    std::vector<XMFLOAT4X4> transforms;
+                    transforms.clear();
                     model->GetBoneTransforms( &transforms );
 
                     for ( int i = 0; i < 3; ++i ) {
@@ -2378,7 +2351,8 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
     float fatness = model->GetModelFatness();
 
     // Get the bone transforms
-    std::vector<XMFLOAT4X4> transforms;
+    static std::vector<XMFLOAT4X4> transforms;
+    transforms.clear();
     model->GetBoneTransforms( &transforms );
 
     if ( updateState ) {
@@ -2616,7 +2590,8 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo* vi, float distance
     float fatness = model->GetModelFatness();
 
     // Get the bone transforms
-    std::vector<XMFLOAT4X4> transforms;
+    static std::vector<XMFLOAT4X4> transforms;
+    transforms.clear();
     model->GetBoneTransforms( &transforms );
 
     if ( updateState ) {
@@ -2848,7 +2823,8 @@ void GothicAPI::DrawSkeletalMeshVobs(
         float fatness = model->GetModelFatness();
 
         // Get the bone transforms
-        std::vector<XMFLOAT4X4> transforms;
+        static std::vector<XMFLOAT4X4> transforms;
+        transforms.clear();
         model->GetBoneTransforms( &transforms );
 
         if ( updateState ) {
@@ -3175,7 +3151,8 @@ void GothicAPI::DrawSkeletalVN() {
             float fatness = model->GetModelFatness();
 
             // Get the bone transforms
-            std::vector<XMFLOAT4X4> transforms;
+            static std::vector<XMFLOAT4X4> transforms;
+            transforms.clear();
             model->GetBoneTransforms( &transforms );
 
             if ( !static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->SkeletalMeshes.empty() ) {
@@ -3689,6 +3666,38 @@ FXMVECTOR GothicAPI::GetCameraPositionXM() {
     return oCGame::GetGame()->_zCSession_camVob->GetPositionWorldXM();
 }
 
+zTCam_ClipType GothicAPI::GetCameraBBox3DInFrustum( const zTBBox3D& box, int clipFlags ) {
+    if ( !oCGame::GetGame()->_zCSession_camVob )
+        return zTCam_ClipType::ZTCAM_CLIPTYPE_IN;
+
+    if ( CameraReplacementPtr ) {
+        auto result = CameraReplacementPtr->frustum.Contains(box);
+        if ( result == ContainmentType::DISJOINT )
+            return zTCam_ClipType::ZTCAM_CLIPTYPE_OUT;
+        if ( result == ContainmentType::INTERSECTS )
+            return zTCam_ClipType::ZTCAM_CLIPTYPE_CROSSING;
+        return zTCam_ClipType::ZTCAM_CLIPTYPE_IN;
+    }
+    if (auto cam = zCCamera::GetCamera(); cam) {
+        return cam->BBox3DInFrustum(box, clipFlags);
+    }
+    
+    return zTCam_ClipType::ZTCAM_CLIPTYPE_IN;
+}
+
+zTCam_ClipType GothicAPI::GetCameraBBox3DInFrustum( const zCVob* vob, int clipFlags, bool isLocalCamera ) {
+    if ( CameraReplacementPtr ) {
+        auto box = vob->GetBBox();
+        return GetCameraBBox3DInFrustum(box, clipFlags);
+    }
+    if (auto cam = zCCamera::GetCamera(); cam) {
+        auto box = isLocalCamera ? vob->GetBBoxLocal() : vob->GetBBox();
+        return GetCameraBBox3DInFrustum(box, clipFlags);
+    }
+    
+    return zTCam_ClipType::ZTCAM_CLIPTYPE_IN;
+}
+
 
 /** Returns the view matrix */
 void GothicAPI::GetViewMatrix( XMFLOAT4X4* view ) {
@@ -3940,7 +3949,7 @@ void GothicAPI::DebugDrawTreeNode( zCBspBase* base, zTBBox3D boxCell, int clipFl
             nodeYMax = std::max( nodeYMax, base->BBox3D.Max.y );
             nodeBox.Max.y = nodeYMax;
 
-            zTCam_ClipType nodeClip = zCCamera::GetCamera()->BBox3DInFrustum( nodeBox, clipFlags );
+            zTCam_ClipType nodeClip = GetCameraBBox3DInFrustum( nodeBox, clipFlags );
 
             if ( nodeClip == ZTCAM_CLIPTYPE_OUT )
                 return; // Nothig to see here. Discard this node and the subtree
@@ -3948,8 +3957,8 @@ void GothicAPI::DebugDrawTreeNode( zCBspBase* base, zTBBox3D boxCell, int clipFl
 
         if ( base->IsLeaf() ) {
             // Check if this leaf is inside the frustum
-            if ( clipFlags > 0 ) {
-                if ( zCCamera::GetCamera()->BBox3DInFrustum( base->BBox3D, clipFlags ) == ZTCAM_CLIPTYPE_OUT )
+            if ( clipFlags > 0 && RendererState.RendererSettings.DebugSettings.Culling.CullBspSections ) {
+                if ( GetCameraBBox3DInFrustum( base->BBox3D, clipFlags ) == ZTCAM_CLIPTYPE_OUT )
                     return;
             }
 
@@ -4001,17 +4010,22 @@ void GothicAPI::DebugDrawBSPTree() {
 }
 
 /** Collects vobs using gothics BSP-Tree */
-void GothicAPI::CollectVisibleVobs( std::vector<VobInfo*>& vobs, std::vector<VobLightInfo*>& lights, std::vector<SkeletalVobInfo*>& mobs ) {
+void GothicAPI::CollectVisibleVobs( 
+    std::vector<VobInfo*>& vobs,
+    std::vector<VobLightInfo*>& lights, 
+    std::vector<SkeletalVobInfo*>& mobs, 
+    EGothicCullFlags cullFlags,
+    EBspTreeCollectFlags collectFlags ) {
     zCBspTree* tree = LoadedWorldInfo->BspTree;
 
     zCBspBase* rootBsp = tree->GetRootNode();
     BspInfo* root = &BspLeafVobLists[rootBsp];
-    if ( zCCamera::GetCamera() ) {
+    if ( !CameraReplacementPtr && zCCamera::GetCamera() ) {
         zCCamera::GetCamera()->Activate();
     }
 
     // Recursively go through the tree and draw all nodes
-    CollectVisibleVobsHelper( root, root->OriginalNode->BBox3D, 63, vobs, lights, mobs );
+    CollectVisibleVobsHelper( root, root->OriginalNode->BBox3D, cullFlags, collectFlags, vobs, lights, mobs );
 
     FXMVECTOR camPos = GetCameraPositionXM();
     const float vobIndoorDist = Engine::GAPI->GetRendererState().RendererSettings.IndoorVobDrawRadius;
@@ -4025,13 +4039,19 @@ void GothicAPI::CollectVisibleVobs( std::vector<VobInfo*>& vobs, std::vector<Vob
     if ( Engine::GAPI->GetRendererState().RendererSettings.DrawVOBs ) {
         float dist;
         for ( VobInfo* it : DynamicallyAddedVobs ) {
+            if (it->VisibleInRenderPass) continue;
+
             // Get distance to this vob
             XMStoreFloat( &dist, XMVector3Length( camPos - it->Vob->GetPositionWorldXM() ) );
             // Draw, if in range
-            if ( it->VisualInfo && 
-                    ((dist < vobIndoorDist && it->IsIndoorVob)
-                        || (dist < vobOutdoorSmallDist && it->VisualInfo->MeshSize < vobSmallSize)
-                        || (dist < vobOutdoorDist)) ) {
+            if ( it->VisualInfo && (
+                        (dist < vobIndoorDist && it->IsIndoorVob && collectFlags & EBspTreeCollectFlags::COLLECT_INDOOR_VOBS )
+                        || (!it->IsIndoorVob && (
+                                (dist < vobOutdoorSmallDist && it->VisualInfo->MeshSize < vobSmallSize)
+                                || (dist < vobOutdoorDist)
+                                ) 
+                            )
+                        )) {
 #ifdef BUILD_GOTHIC_1_08k
                 // TODO: This is sometimes nullptr, suggesting that the Vob is invalid. Why does this happen?
                 if ( !it->VobConstantBuffer ) {
@@ -4042,34 +4062,37 @@ void GothicAPI::CollectVisibleVobs( std::vector<VobInfo*>& vobs, std::vector<Vob
                 if ( !it->Vob->GetShowVisual() ) {
                     continue;
                 }
-
-                if ( it->Vob->GetVisualAlpha() ) {
-                    TransparencyVobs.emplace_back( dist, it->Vob->GetVobTransparency(), nullptr, it );
-                    std::push_heap( TransparencyVobs.begin(), TransparencyVobs.end(), CompareGhostDistance );
-                    continue;
+                if (collectFlags & COLLECT_MUTATE) {
+                    if ( it->Vob->GetVisualAlpha() ) {
+                        TransparencyVobs.emplace_back( dist, it->Vob->GetVobTransparency(), nullptr, it );
+                        std::push_heap( TransparencyVobs.begin(), TransparencyVobs.end(), CompareGhostDistance );
+                        continue;
+                    }
                 }
-
-                VobInstanceInfo vii = {};
-                vii.world = it->WorldMatrix;
-                vii.prevWorld = it->HasValidPrevMatrix ? it->PrevWorldMatrix : it->WorldMatrix;
-                vii.color = it->GroundColor;
-                vii.windStrenth = 0.0f;
-                vii.canBeAffectedByPlayer = 0;
-
-                zTAnimationMode aniMode = it->Vob->GetVisualAniMode();
-                if ( aniMode != zVISUAL_ANIMODE_NONE ) {
-                    vii.canBeAffectedByPlayer = (!it->Vob->GetDynColl() ? 1.0f : 0.0f);
-                    ProcessVobAnimation( it->Vob, aniMode, vii );
-                }
-
-                reinterpret_cast<MeshVisualInfo*>(it->VisualInfo)->Instances.push_back( vii );
 
                 vobs.push_back( it );
-                it->VisibleInRenderPass = true;
             }
         }
     }
 
+    if (collectFlags & COLLECT_MUTATE) {
+        for (auto it : vobs) {
+            VobInstanceInfo vii = {};
+            vii.world = it->WorldMatrix;
+            vii.prevWorld = it->HasValidPrevMatrix ? it->PrevWorldMatrix : it->WorldMatrix;
+            vii.color = it->GroundColor;
+            vii.windStrenth = 0.0f;
+            vii.canBeAffectedByPlayer = 0;
+
+            zTAnimationMode aniMode = it->Vob->GetVisualAniMode();
+            if ( aniMode != zVISUAL_ANIMODE_NONE ) {
+                vii.canBeAffectedByPlayer = (!it->Vob->GetDynColl() ? 1.0f : 0.0f);
+                ProcessVobAnimation( it->Vob, aniMode, vii );
+            }
+            reinterpret_cast<MeshVisualInfo*>(it->VisualInfo)->Instances.push_back( vii );
+            it->VisibleInRenderPass = true;
+        }
+    }
 #ifdef BUILD_GOTHIC_1_08k
     // TODO: See above for info on this
     for ( VobInfo* vi : removeList ) {
@@ -4083,7 +4106,8 @@ void GothicAPI::CollectVisibleVobs( std::vector<VobInfo*>& vobs, std::vector<Vob
 void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sections ) {
     const XMFLOAT3 camPos = Engine::GAPI->GetCameraPosition();
     const INT2 camSection = WorldConverter::GetSectionOfPos( camPos );
-
+    auto cullingEnabled = Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.Culling.CullBspSections;
+        
     if ( Engine::GAPI->GetRendererState().RendererSettings.DrawSectionIntersections ) {
         extern const float WORLD_SECTION_SIZE;
         const float sectionViewDist = Engine::GAPI->GetRendererState().RendererSettings.SectionDrawRadius * WORLD_SECTION_SIZE;
@@ -4093,8 +4117,7 @@ void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sect
 
                 float dist = Toolbox::ComputePointAABBDistance( camPos, section.BoundingBox.Min, section.BoundingBox.Max );
                 if ( dist < sectionViewDist ) {
-                    int flags = 15; // Frustum check, no farplane
-                    if ( zCCamera::GetCamera()->BBox3DInFrustum( section.BoundingBox, flags ) == ZTCAM_CLIPTYPE_OUT )
+                    if ( cullingEnabled && GetCameraBBox3DInFrustum( section.BoundingBox, EGothicCullFlags::CullSides ) == ZTCAM_CLIPTYPE_OUT )
                         continue;
 
                     sections.push_back( &section );
@@ -4114,8 +4137,7 @@ void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sect
 
                 // Simple range-check
                 if ( abs( ity.first - camSection.y ) < sectionViewDist ) {
-                    int flags = 15; // Frustum check, no farplane
-                    if ( zCCamera::GetCamera()->BBox3DInFrustum( section.BoundingBox, flags ) == ZTCAM_CLIPTYPE_OUT )
+                    if ( cullingEnabled && GetCameraBBox3DInFrustum( section.BoundingBox, EGothicCullFlags::CullSides ) == ZTCAM_CLIPTYPE_OUT )
                         continue;
 
                     sections.push_back( &section );
@@ -4227,91 +4249,99 @@ std::vector<VobInfo*>::iterator GothicAPI::MoveVobFromBspToDynamic( VobInfo* vob
     return itn;
 }
 
-static void ProcessVobAnimation( zCVob* vob, zTAnimationMode aniMode, VobInstanceInfo& vobInstance ) {
-    if ( Engine::GAPI->GetRendererState().RendererSettings.WindQuality == GothicRendererSettings::EWindQuality::WIND_QUALITY_ADVANCED ) {
-        extern float vobAnimation_WindStrength;
-        vobInstance.windStrenth = std::max<float>( 0.1f, vob->GetVisualAniModeStrength() ) * vobAnimation_WindStrength;
-    }
-}
-
-static void CVVH_AddNotDrawnVobToList( std::vector<VobInfo*>& target, std::vector<VobInfo*>& source, float dist ) {
+static void CVVH_AddNotDrawnVobToList( std::vector<VobInfo*>& target, std::vector<VobInfo*>& source, float dist,
+    int clipFlags,
+    EBspTreeCollectFlags collectFlags, zTCam_ClipType bspClip) {
     std::vector<VobInfo*> remVobs;
 
     const auto& camPos = Engine::GAPI->GetCameraPositionXM();
+    auto cullingEnabled = Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.Culling.CullVobs;
+    auto distSq = dist * dist;
 
     for ( auto const& it : source ) {
-        if ( !it->VisibleInRenderPass ) {
-            float vd;
-            XMStoreFloat( &vd, XMVector3Length( camPos - XMLoadFloat3( &it->LastRenderPosition ) ) );
-            if ( vd < dist && it->Vob->GetShowVisual() ) {
-                if ( it->Vob->GetVisualAlpha() ) {
-                    Engine::GAPI->TransparencyVobs.emplace_back( vd, it->Vob->GetVobTransparency(), nullptr, it );
-                    std::push_heap( Engine::GAPI->TransparencyVobs.begin(), Engine::GAPI->TransparencyVobs.end(), CompareGhostDistance );
-                    continue;
-                }
+        if ( it->VisibleInRenderPass ) continue;
+        if ( !it->Vob->GetShowVisual() ) continue;
+        float vdSq;
+        XMStoreFloat( &vdSq, XMVector3LengthSq( camPos - XMLoadFloat3( &it->LastRenderPosition ) ) );
+        if ( vdSq > distSq ) continue;
 
-                VobInstanceInfo vii = {};
-                vii.world = it->WorldMatrix;
-                vii.prevWorld = it->HasValidPrevMatrix ? it->PrevWorldMatrix : it->WorldMatrix;
-                vii.color = it->GroundColor;
-                vii.windStrenth = 0.0f;
-                vii.canBeAffectedByPlayer = 0;
-
-                zTAnimationMode aniMode = it->Vob->GetVisualAniMode();
-                if ( aniMode != zVISUAL_ANIMODE_NONE ) {
-                    vii.canBeAffectedByPlayer = (!it->Vob->GetDynColl() ? 1.0f : 0.0f);
-                    ProcessVobAnimation( it->Vob, aniMode, vii );
-                }
-
-                reinterpret_cast<MeshVisualInfo*>(it->VisualInfo)->Instances.push_back( vii );
-                target.push_back( it );
-                it->VisibleInRenderPass = true;
+        if (bspClip != zTCam_ClipType::ZTCAM_CLIPTYPE_IN 
+            && cullingEnabled
+            && Engine::GAPI->GetCameraBBox3DInFrustum( it->Vob->GetBBox(), clipFlags ) ==  zTCam_ClipType::ZTCAM_CLIPTYPE_OUT) {
+            continue;
+        }
+        if (collectFlags & COLLECT_MUTATE ) {
+            if ( it->Vob->GetVisualAlpha() ) {
+                Engine::GAPI->TransparencyVobs.emplace_back( std::sqrtf(vdSq), it->Vob->GetVobTransparency(), nullptr, it );
+                std::push_heap( Engine::GAPI->TransparencyVobs.begin(), Engine::GAPI->TransparencyVobs.end(), CompareGhostDistance );
+                continue;
             }
         }
+
+        target.push_back( it );
     }
 }
 
-static void CVVH_AddNotDrawnVobToList( std::vector<VobLightInfo*>& target, std::vector<VobLightInfo*>& source, float dist ) {
+static void CVVH_AddNotDrawnVobToList( std::vector<VobLightInfo*>& target, std::vector<VobLightInfo*>& source, float dist, int clipFlags , EBspTreeCollectFlags collectFlags, zTCam_ClipType bspClip  ) {
     float veclength;
 
     const auto& camPos = Engine::GAPI->GetCameraPositionXM();
 
+    bool setIsVisible = (collectFlags & COLLECT_MUTATE) != 0;
     for ( auto const& it : source ) {
         if ( !it->VisibleInRenderPass ) {
             XMStoreFloat( &veclength, XMVector3Length( camPos - it->Vob->GetPositionWorldXM() ) );
             if ( veclength - it->Vob->GetLightRange() < dist ) {
                 target.push_back( it );
-                it->VisibleInRenderPass = true;
             }
+        }
+    }
+    if (setIsVisible) {
+        // only do this branching if needed
+        for ( auto const& it : target ) {
+            it->VisibleInRenderPass = true;
         }
     }
 }
 
-static void CVVH_AddNotDrawnVobToList( std::vector<SkeletalVobInfo*>& target, std::vector<SkeletalVobInfo*>& source, float dist ) {
-    float vd;
-
+static void CVVH_AddNotDrawnVobToList( std::vector<SkeletalVobInfo*>& target, std::vector<SkeletalVobInfo*>& source, float dist, int clipFlags, EBspTreeCollectFlags collectFlags, zTCam_ClipType bspClip  ) {
     const auto& camPos = Engine::GAPI->GetCameraPositionXM();
+    auto cullingEnabled = Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.Culling.CullVobs;
+    auto vDistSq = XMVectorReplicate(dist * dist);
+    bool setIsVisible = (collectFlags & COLLECT_MUTATE) != 0;
 
     for ( auto const& it : source ) {
         if ( !it->VisibleInRenderPass ) {
-            XMStoreFloat( &vd, XMVector3Length( camPos - it->Vob->GetPositionWorldXM() ) );
-            if ( vd < dist && it->Vob->GetShowVisual() ) {
-                target.push_back( it );
-                it->VisibleInRenderPass = true;
+            if ( XMVector3Greater(XMVector3LengthSq( camPos - it->Vob->GetPositionWorldXM() ), vDistSq) ) {
+                continue;
             }
+            if ( it->Vob->GetShowVisual() ) {
+                if (bspClip != zTCam_ClipType::ZTCAM_CLIPTYPE_IN
+                    && cullingEnabled
+                    && Engine::GAPI->GetCameraBBox3DInFrustum( it->Vob->GetBBox(), clipFlags ) ==  zTCam_ClipType::ZTCAM_CLIPTYPE_OUT) {
+                    continue;
+                }
+                
+                target.push_back( it );
+            }
+        }
+    }
+    if (setIsVisible) {
+        // only do this branching if needed
+        for ( auto const& it : target ) {
+            it->VisibleInRenderPass = true;
         }
     }
 }
 
 /** Recursive helper function to draw collect the vobs */
-void GothicAPI::CollectVisibleVobsHelper( BspInfo* base, zTBBox3D boxCell, int clipFlags, std::vector<VobInfo*>& vobs, std::vector<VobLightInfo*>& lights, std::vector<SkeletalVobInfo*>& mobs ) {
+void GothicAPI::CollectVisibleVobsHelper( BspInfo* base, zTBBox3D boxCell, int clipFlags, EBspTreeCollectFlags collectFlags, std::vector<VobInfo*>& vobs, std::vector<VobLightInfo*>& lights, std::vector<SkeletalVobInfo*>& mobs ) {
     const float vobIndoorDist = Engine::GAPI->GetRendererState().RendererSettings.IndoorVobDrawRadius;
     const float vobOutdoorDist = Engine::GAPI->GetRendererState().RendererSettings.OutdoorVobDrawRadius;
     const float vobOutdoorSmallDist = Engine::GAPI->GetRendererState().RendererSettings.OutdoorSmallVobDrawRadius;
-    const float vobSmallSize = Engine::GAPI->GetRendererState().RendererSettings.SmallVobSize;
     const float visualFXDrawRadius = Engine::GAPI->GetRendererState().RendererSettings.VisualFXDrawRadius;
     const XMFLOAT3 camPos = Engine::GAPI->GetCameraPosition();
-    const FXMVECTOR cameraPosition = Engine::GAPI->GetCameraPositionXM();
+    const FXMVECTOR cameraPosition = XMLoadFloat3(&camPos);
 
     while ( base->OriginalNode ) {
         // Check for occlusion-culling
@@ -4319,6 +4349,7 @@ void GothicAPI::CollectVisibleVobsHelper( BspInfo* base, zTBBox3D boxCell, int c
             return;
         }
 
+        zTCam_ClipType nodeClip = zTCam_ClipType::ZTCAM_CLIPTYPE_IN;
         if ( clipFlags > 0 ) {
             float yMaxWorld = Engine::GAPI->GetLoadedWorldInfo()->BspTree->GetRootNode()->BBox3D.Max.y;
 
@@ -4329,9 +4360,8 @@ void GothicAPI::CollectVisibleVobsHelper( BspInfo* base, zTBBox3D boxCell, int c
 
             float dist = Toolbox::ComputePointAABBDistance( camPos, base->OriginalNode->BBox3D.Min, base->OriginalNode->BBox3D.Max );
             if ( dist < vobOutdoorDist ) {
-                zTCam_ClipType nodeClip;
                 if ( !Engine::GAPI->GetRendererState().RendererSettings.EnableOcclusionCulling ) {
-                    nodeClip = zCCamera::GetCamera()->BBox3DInFrustum( nodeBox, clipFlags );
+                    nodeClip = GetCameraBBox3DInFrustum( nodeBox, clipFlags );
                 } else {
                     nodeClip = static_cast<zTCam_ClipType>(base->OcclusionInfo.LastCameraClipType); // If we are using occlusion-clipping, this test has already been done
                 }
@@ -4360,31 +4390,34 @@ void GothicAPI::CollectVisibleVobsHelper( BspInfo* base, zTBBox3D boxCell, int c
             // float dist = XMVector3Length(XMLoadFloat3(&base->BBox3D.Min) - XMLoadFloat3(&camPos));
 
            
-                if ( Engine::GAPI->GetRendererState().RendererSettings.DrawVOBs ) {
-                    if ( dist < vobIndoorDist ) {
-                        CVVH_AddNotDrawnVobToList( vobs, listA, vobIndoorDist );
+                if ( collectFlags & COLLECT_VOBS
+                    && Engine::GAPI->GetRendererState().RendererSettings.DrawVOBs ) {
+                    if ( collectFlags & COLLECT_INDOOR_VOBS && dist < vobIndoorDist ) {
+                        CVVH_AddNotDrawnVobToList( vobs, listA, vobIndoorDist, clipFlags, collectFlags, nodeClip );
                     }
 
                     if ( dist < vobOutdoorSmallDist ) {
-                        CVVH_AddNotDrawnVobToList( vobs, listB, vobOutdoorSmallDist );
+                        CVVH_AddNotDrawnVobToList( vobs, listB, vobOutdoorSmallDist, clipFlags, collectFlags, nodeClip );
                     }
 
                     if ( dist < vobOutdoorDist ) {
-                        CVVH_AddNotDrawnVobToList( vobs, listC, vobOutdoorDist );
+                        CVVH_AddNotDrawnVobToList( vobs, listC, vobOutdoorDist, clipFlags, collectFlags, nodeClip );
                     }
                 }
 
                 
 
-                if ( Engine::GAPI->GetRendererState().RendererSettings.DrawMobs && dist < vobOutdoorSmallDist ) {
-                    CVVH_AddNotDrawnVobToList( mobs, listD, vobOutdoorDist );
+                if ( collectFlags & COLLECT_MOBS
+                    && Engine::GAPI->GetRendererState().RendererSettings.DrawMobs && dist < vobOutdoorSmallDist ) {
+                    CVVH_AddNotDrawnVobToList( mobs, listD, vobOutdoorDist, clipFlags, collectFlags, nodeClip );
                 }
 
-                if ( RendererState.RendererSettings.EnableDynamicLighting && dist < visualFXDrawRadius ) {
+                if ( collectFlags & COLLECT_LIGHTS 
+                    && RendererState.RendererSettings.EnableDynamicLighting && dist < visualFXDrawRadius ) {
                     // Add dynamic lights
                     float minDynamicUpdateLightRange = Engine::GAPI->GetRendererState().RendererSettings.MinLightShadowUpdateRange;
                     XMVECTOR playerPosition = Engine::GAPI->GetPlayerVob() != nullptr ? Engine::GAPI->GetPlayerVob()->GetPositionWorldXM() : XMVectorSet( FLT_MAX, FLT_MAX, FLT_MAX, 0 );
-                    
+
 
                     // Take cameraposition if we are freelooking
                     if ( zCCamera::IsFreeLookActive() ) {
@@ -4457,7 +4490,7 @@ void GothicAPI::CollectVisibleVobsHelper( BspInfo* base, zTBBox3D boxCell, int c
             if ( plane_normal > node->Plane.Distance ) {
                 if ( node->Front ) {
                     reinterpret_cast<float*>(&tmpbox.Min)[planeAxis] = node->Plane.Distance;
-                    CollectVisibleVobsHelper( base->Front, tmpbox, clipFlags, vobs, lights, mobs );
+                    CollectVisibleVobsHelper( base->Front, tmpbox, clipFlags, collectFlags, vobs, lights, mobs );
                 }
 
                 reinterpret_cast<float*>(&boxCell.Max)[planeAxis] = node->Plane.Distance;
@@ -4465,7 +4498,7 @@ void GothicAPI::CollectVisibleVobsHelper( BspInfo* base, zTBBox3D boxCell, int c
             } else {
                 if ( node->Back ) {
                     reinterpret_cast<float*>(&tmpbox.Max)[planeAxis] = node->Plane.Distance;
-                    CollectVisibleVobsHelper( base->Back, tmpbox, clipFlags, vobs, lights, mobs );
+                    CollectVisibleVobsHelper( base->Back, tmpbox, clipFlags, collectFlags, vobs, lights, mobs );
                 }
 
                 reinterpret_cast<float*>(&boxCell.Min)[planeAxis] = node->Plane.Distance;

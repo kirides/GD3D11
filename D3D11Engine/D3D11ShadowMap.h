@@ -124,6 +124,13 @@ public:
         WorldMeshInfo*,
         cmpMeshKey>* worldMeshCache = nullptr );
 
+    inline static struct { float lambda; float bias; } lambdaBiasTable[] {
+        /* 0 */ { 0, 0 },
+        /* 1 */ { 1.0f, 1.0f },
+        /* 2 */ { 0.85f, 3.5f },
+        /* 3 */ { 0.92f, 2.7f },
+        /* 4 */ { 0.98f, 1.9f }, // Players should really want to use 4 cascades for best quality
+    };
 private:
     Microsoft::WRL::ComPtr<ID3D11Device1> m_device;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext1> m_context;
