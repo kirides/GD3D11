@@ -64,6 +64,13 @@ public:
         m_useSphere = false;
     }
 
+    // for use with shadow mapping if the last cascade is covering the whole map.
+    static Frustum AlwaysContainingFrustum() {
+        Frustum f;
+        f.m_always_containing = true;
+        return f;
+    } 
+
     // Für perspektivische Projektion (normale Kamera)
     void __vectorcall BuildPerspective(FXMMATRIX view, FXMMATRIX proj) {
         // Erstelle Frustum aus Projection Matrix
@@ -94,6 +101,8 @@ public:
 
     // Schneller AABB-Test
     bool Intersects(const BoundingBox& aabb) const {
+        if (m_always_containing) return true;
+
         if (m_useSphere) {
             return m_boundingSphere.Intersects(aabb);
         }
@@ -105,6 +114,8 @@ public:
 
     // Schneller Sphere-Test für VOBs
     bool Intersects(const BoundingSphere& sphere) const {
+        if (m_always_containing) return true;
+
         if (m_useSphere) {
             return m_boundingSphere.Intersects(sphere);
         }
@@ -116,6 +127,7 @@ public:
 
     // Schneller AABB-Test
     DirectX::ContainmentType Contains(const BoundingBox& aabb) const {
+        if (m_always_containing) return ContainmentType::CONTAINS;
         if (m_useSphere) {
             return m_boundingSphere.Contains(aabb);
         }
@@ -125,8 +137,14 @@ public:
         return m_frustum.Contains(aabb);
     }
 
+    DirectX::ContainmentType Contains(const zTBBox3D& aabb) const {
+        if (m_always_containing) return ContainmentType::CONTAINS;
+        return Contains(BBoxFromzTBBox3D(aabb));
+    }
+    
     // Schneller Sphere-Test für VOBs
     DirectX::ContainmentType Contains(const BoundingSphere& sphere) const {
+        if (m_always_containing) return ContainmentType::CONTAINS;
         if (m_useSphere) {
             return m_boundingSphere.Contains(sphere);
         }
@@ -151,6 +169,14 @@ public:
         XMStoreFloat3(&bb.Center, XMVectorScale(XMVectorAdd(bbMin, bbMax), 0.5f));
         XMStoreFloat3(&bb.Extents, XMVectorScale(XMVectorSubtract(bbMax, bbMin), 0.5f));
         return bb;
+    }
+    
+    float GetFarZ() const {
+        if (m_useBoundingOrientedBox)
+            return m_orientedBox.Extents.z;
+        if (m_useSphere)
+            return m_boundingSphere.Radius;
+        return m_frustum.Far;
     }
 private:
     // Cache world-space planes for fast culling (called after frustum is transformed to world space)
@@ -206,4 +232,5 @@ private:
     std::array<XMFLOAT4, 6> m_cachedPlanes{}; // [0]=Left, [1]=Right, [2]=Bottom, [3]=Top, [4]=Near, [5]=Far
     bool m_useSphere = false;
     bool m_useBoundingOrientedBox = false;
+    bool m_always_containing = false;
 };

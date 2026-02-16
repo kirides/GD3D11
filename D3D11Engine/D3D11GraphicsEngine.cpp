@@ -4399,15 +4399,13 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
 /** Draws everything around the given position */
 void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR position,
     float sectionRange,
-    bool cullFront, bool dontCull,
-    const std::vector<Frustum>& frusti,
-    int cascadeIndex ) {
+    const RenderShadowmapsParams& params ) {
     // Setup renderstates
     Engine::GAPI->GetRendererState().RasterizerState.SetDefault();
     Engine::GAPI->GetRendererState().RasterizerState.CullMode =
-        cullFront ? GothicRasterizerStateInfo::CM_CULL_FRONT
+        params.CullFront ? GothicRasterizerStateInfo::CM_CULL_FRONT
         : GothicRasterizerStateInfo::CM_CULL_BACK;
-    if ( dontCull )
+    if ( params.DontCull )
         Engine::GAPI->GetRendererState().RasterizerState.CullMode =
         GothicRasterizerStateInfo::CM_CULL_NONE;
 
@@ -4462,12 +4460,6 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
     float3 fPosition; XMStoreFloat3( fPosition.toXMFLOAT3(), position );
     INT2 s = WorldConverter::GetSectionOfPos( fPosition );
 
-    float vobOutdoorDist =
-        Engine::GAPI->GetRendererState().RendererSettings.OutdoorVobDrawRadius;
-    float vobOutdoorSmallDist = Engine::GAPI->GetRendererState().RendererSettings.OutdoorSmallVobDrawRadius;
-    float vobSmallSize =
-        Engine::GAPI->GetRendererState().RendererSettings.SmallVobSize;
-
     DistortionTexture->BindToPixelShader( 0 );
 
     InfiniteRangeConstantBuffer->BindToPixelShader( 3 );
@@ -4475,11 +4467,6 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
     UpdateRenderStates();
 
     auto enableCulling = Engine::GAPI->GetRendererState().RendererSettings.IsShadowFrustumCullingEnabled();
-    const Frustum* previousCascadeFrustum = nullptr;
-    auto hasPreviousFrustum = cascadeIndex > 0 && frusti.size() > static_cast<size_t>(cascadeIndex);
-    if ( hasPreviousFrustum ) {
-        previousCascadeFrustum = &frusti[cascadeIndex - 1];
-    }
 
     bool colorWritesEnabled =
         Engine::GAPI->GetRendererState().BlendState.ColorWritesEnabled;
@@ -4488,7 +4475,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
     if ( Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh ) {
         auto _ = START_TIMING( "Shadow World Mesh");
         auto _1 = RecordGraphicsEvent( L"DrawWorldMesh" );
-
+        const auto sectionRangeSq = sectionRange * sectionRange;
         // Bind wrapped mesh vertex buffers
         DrawVertexBufferIndexedUINT(
             Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer,
@@ -4506,7 +4493,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                 float dy = static_cast<float>(ity.first - s.y);
                 float lenSq = dx * dx + dy * dy;
 
-                if ( lenSq < sectionRange * sectionRange ) {
+                if ( lenSq < sectionRangeSq ) {
                     visibleSections.push_back( &ity.second );
                 }
             }
@@ -4698,7 +4685,6 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
         XMFLOAT3 vPlayerPosition = Engine::GAPI->GetPlayerVob() ? Engine::GAPI->GetPlayerVob()->GetPositionWorld() : XMFLOAT3( 0, 0, 0 );
         g_windBuffer.playerPos = float3( vPlayerPosition.x, vPlayerPosition.y, vPlayerPosition.z );
-        auto enableCulling = Engine::GAPI->GetRendererState().RendererSettings.IsShadowFrustumCullingEnabled();
 
         // Draw all vobs the player currently sees
         for ( auto const& staticMeshVisual : staticMeshVisuals ) {
@@ -4775,17 +4761,16 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
         auto skeletalRadiusSq = Engine::GAPI->GetRendererState().RendererSettings.SkeletalMeshDrawRadius
             * Engine::GAPI->GetRendererState().RendererSettings.SkeletalMeshDrawRadius;
+        auto& currentFrustum = params.CascadeCameraReplacements->at(params.CascadeIndex).frustum;
         XMVECTOR vSkeletalRadiusSq = XMVectorReplicate(skeletalRadiusSq);
-        
-        auto enableCulling = Engine::GAPI->GetRendererState().RendererSettings.IsShadowFrustumCullingEnabled();
 
         // Draw skeletal meshes
 
         static std::vector<SkeletalVobInfo*> animatedSkeletalMeshVobs;
         animatedSkeletalMeshVobs.clear();
         
-        auto& currentFrustum = frusti[cascadeIndex];
-        auto gameCamera = ((zCCamera*)oCGame::GetGame()->_zCSession_camera);
+        const bool isLastCascade = params.CascadeIndex == params.CascadeSplits.size() - 2;
+        
         for ( auto const& skeletalMeshVob : Engine::GAPI->GetSkeletalMeshVobs() ) {
             if ( !skeletalMeshVob->VisualInfo ) continue;
 
@@ -4798,15 +4783,11 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                 continue;  // Skip out of range
             }
 
-            if ( enableCulling ) {
+            if ( enableCulling && !isLastCascade ) {
                 // Frustum culling using a bounding sphere
                 // Use the mesh size as radius, centered at the vob position
-                auto box = skeletalMeshVob->Vob->GetBBox();
-                BoundingBox bb = Frustum::BBoxFromzTBBox3D(box);
 
-                int clipFlags = EGothicCullFlags::CullSides;
-                if ( currentFrustum.Contains( bb, EGothicCullFlags::CullSides ) == DirectX::ContainmentType::DISJOINT 
-                    && gameCamera->BBox3DInFrustum(box, clipFlags) == zTCam_ClipType::ZTCAM_CLIPTYPE_OUT) {
+                if ( currentFrustum.Contains( skeletalMeshVob->Vob->GetBBox()) == DirectX::ContainmentType::DISJOINT) {
                     // Not hitting our frustum and not the active view.
                     continue;
                 }
@@ -4817,7 +4798,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         bool drawAttachments = true;
         if ( Engine::GAPI->GetRendererState().RendererSettings.ShadowFrustumCullingMode
             == GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_AGGRESSIVE ) {
-            drawAttachments = cascadeIndex <= 1; // skip attachments on higher cascades, player won't notice, hopefully
+            drawAttachments = params.CascadeIndex <= 1; // skip attachments on higher cascades, player won't notice, hopefully
         }
         // we should not need to update the skeletal meshes again, as they were updated before drawing the main scene
         Engine::GAPI->DrawSkeletalMeshVobs( animatedSkeletalMeshVobs, false, drawAttachments );

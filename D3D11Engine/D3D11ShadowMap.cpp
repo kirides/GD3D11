@@ -216,20 +216,24 @@ static void CalculateCascadeMatrices(
     XMStoreFloat3( &outCR.PositionReplacement, lightPos );
     XMStoreFloat3( &outCR.LookAtReplacement, lookAt );
     
-    outCR.frustum.BuildOrthographic( snappedLightView,
-        // ensure some additional margin
-        // due to blending cascades in PS_DS_AtmosphericScattering.hlsl->GetCascadeUVAndBounds(..)
-        // else we might miss some shadows due to frustum culling
-        // e.g. not visible in c0 but would be in c1, due to blending,
-        // c1 won't use it's "full" color, but rather blend in slowly
-        // causing pop-in
-        cascadeSize + cullingMargin, 
-        cascadeSize + cullingMargin, 
-        1.0f, 
-        20000.f, 
-        Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendBack, 
-        Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendFront,
-        Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendSide);
+    if (cascadeIdx == numCascades -1) {
+        outCR.frustum = Frustum::AlwaysContainingFrustum();    
+    } else {
+        outCR.frustum.BuildOrthographic( snappedLightView,
+            // ensure some additional margin
+            // due to blending cascades in PS_DS_AtmosphericScattering.hlsl->GetCascadeUVAndBounds(..)
+            // else we might miss some shadows due to frustum culling
+            // e.g. not visible in c0 but would be in c1, due to blending,
+            // c1 won't use it's "full" color, but rather blend in slowly
+            // causing pop-in
+            cascadeSize + cullingMargin, 
+            cascadeSize + cullingMargin, 
+            1.0f, 
+            20000.f, 
+            Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendBack, 
+            Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendFront,
+            Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendSide);
+    }
 }
 
 XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
@@ -916,21 +920,6 @@ void D3D11ShadowMap::RenderShadowmaps( const RenderShadowmapsParams& params ) {
         Engine::GAPI->GetRendererState().BlendState.ColorWritesEnabled = true;
     }
     Engine::GAPI->GetRendererState().BlendState.SetDirty();
-    
-    std::vector<Frustum> cascadeFrustums;
-
-    if ( Engine::GAPI->GetRendererState().RendererSettings.IsShadowFrustumCullingEnabled() ) {
-        if ( params.CascadeCameraReplacements && params.CascadeCameraReplacements->size() ) {
-            for ( size_t i = 0; i < params.CascadeCameraReplacements->size(); i++ ) {
-                // Build frustum from the light's view/projection matrices (cascade shadow map perspective)
-                // The view/projection matrices are already set via CameraReplacement before this call
-                // We use the light-space matrices to build the frustum for proper CSM culling
-                const CameraReplacement& cr = params.CascadeCameraReplacements->at( i );
-                
-                cascadeFrustums.push_back( cr.frustum );
-            }
-        }
-    }
 
     // Dont render shadows from the sun when it isn't on the sky
     if ( isNotWorldShadowMap ||
@@ -944,7 +933,7 @@ void D3D11ShadowMap::RenderShadowmaps( const RenderShadowmapsParams& params ) {
         // Draw the world mesh without textures        
 
         XMVECTOR cameraPosition = XMLoadFloat3( &params.CameraPosition );
-        graphicsEngine->DrawWorldAroundForWorldShadow( cameraPosition, 2, params.CullFront, params.DontCull, cascadeFrustums, params.CascadeIndex );
+        graphicsEngine->DrawWorldAroundForWorldShadow( cameraPosition, 2, params );
 
     } else {
         if ( Engine::GAPI->GetSky()->GetAtmoshpereSettings().LightDirection.y <= 0 ) {

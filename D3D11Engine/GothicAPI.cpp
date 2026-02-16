@@ -3672,9 +3672,7 @@ zTCam_ClipType GothicAPI::GetCameraBBox3DInFrustum( const zTBBox3D& box, int cli
         return zTCam_ClipType::ZTCAM_CLIPTYPE_IN;
 
     if ( CameraReplacementPtr ) {
-        BoundingBox bb = Frustum::BBoxFromzTBBox3D(box);
-
-        auto result = CameraReplacementPtr->frustum.Contains(bb, static_cast<EGothicCullFlags>(clipFlags));
+        auto result = CameraReplacementPtr->frustum.Contains(box);
         if ( result == ContainmentType::DISJOINT )
             return zTCam_ClipType::ZTCAM_CLIPTYPE_OUT;
         if ( result == ContainmentType::INTERSECTS )
