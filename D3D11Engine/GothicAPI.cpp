@@ -2341,12 +2341,8 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
 
     XMMATRIX scale = XMMatrixScalingFromVector( model->GetModelScaleXM() );
 
-    XMMATRIX world = vi->Vob->GetWorldMatrixXM() * scale;
-
-    zCCamera::GetCamera()->SetTransformXM( zCCamera::TT_WORLD, world );
-
-    XMMATRIX view = GetViewMatrixXM();
-    SetWorldViewTransform( world, view );
+    XMMATRIX xmWorld = vi->Vob->GetWorldMatrixXM() * scale;
+    XMFLOAT4X4 world; XMStoreFloat4x4(&world, xmWorld);
 
     float fatness = model->GetModelFatness();
 
@@ -2367,7 +2363,7 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
 #else
         if ( !model->GetDrawHandVisualsOnly() ) {
 #endif
-            Engine::GraphicsEngine->DrawSkeletalMesh( vi, transforms, modelColor, fatness );
+            Engine::GraphicsEngine->DrawSkeletalMesh( vi, transforms, modelColor, world, fatness );
         }
     } else {
         if ( model->GetMeshSoftSkinList()->NumInArray > 0 ) {
@@ -2397,7 +2393,7 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
         : transforms;
     const XMMATRIX prevWorldMatrix = vi->HasValidPrevTransforms 
         ? XMLoadFloat4x4(&vi->PrevWorldMatrix) 
-        : world; // TODO: don't depend so much on global state, always use local state
+        : XMLoadFloat4x4( &world );
     
     std::map<int, std::vector<MeshVisualInfo*>>& nodeAttachments = vi->NodeAttachments;
     for ( unsigned int i = 0; i < transforms.size(); i++ ) {
@@ -2445,7 +2441,8 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
             // Go through all attachments this node has
             for ( MeshVisualInfo* mvi : nodeAttachments[i] ) {
                 XMMATRIX curTransform = XMLoadFloat4x4( &transforms[i] );
-                SetWorldViewTransform( world * curTransform, view );
+                XMFLOAT4X4 finalWorld;
+                XMStoreFloat4x4(&finalWorld, xmWorld * curTransform);
 
                 XMMATRIX prevTransform = XMLoadFloat4x4( &prevBoneTransforms[i] );
                 auto prevWorldNode = prevWorldMatrix * prevTransform; 
@@ -2488,7 +2485,7 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
                     // Only draw this as a morphmesh when rendering the main scene or when rendering as ghost
                     if ( g->GetRenderingStage() == DES_MAIN || g->GetRenderingStage() == DES_GHOST ) {
                         // Update constantbuffer
-                        instanceInfo.World = RendererState.TransformState.TransformWorld;
+                        instanceInfo.World = finalWorld;
                         XMStoreFloat4x4(&instanceInfo.PrevWorld, prevWorldNode);
                         VShader->GetConstantBuffer()[1]->UpdateBuffer( &instanceInfo );
                         VShader->GetConstantBuffer()[1]->BindToVertexShader( 1 );
@@ -2502,7 +2499,7 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
                     }
                 }
 
-                instanceInfo.World = RendererState.TransformState.TransformWorld;
+                instanceInfo.World = finalWorld;
                 XMStoreFloat4x4(&instanceInfo.PrevWorld, prevWorldNode);
                 VShader->GetConstantBuffer()[1]->UpdateBuffer( &instanceInfo );
                 VShader->GetConstantBuffer()[1]->BindToVertexShader( 1 );
@@ -2580,12 +2577,8 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo* vi, float distance
 
     XMMATRIX scale = XMMatrixScalingFromVector( model->GetModelScaleXM() );
 
-    XMMATRIX world = vi->Vob->GetWorldMatrixXM() * scale;
-
-    zCCamera::GetCamera()->SetTransformXM( zCCamera::TT_WORLD, world );
-
-    XMMATRIX view = GetViewMatrixXM();
-    SetWorldViewTransform( world, view );
+    XMMATRIX xmWorld = vi->Vob->GetWorldMatrixXM() * scale;
+    XMFLOAT4X4 world; XMStoreFloat4x4(&world, xmWorld);
 
     float fatness = model->GetModelFatness();
 
@@ -2673,7 +2666,8 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo* vi, float distance
             // Go through all attachments this node has
             for ( MeshVisualInfo* mvi : nodeAttachments[i] ) {
                 XMMATRIX curTransform = XMLoadFloat4x4( &transforms[i] );
-                SetWorldViewTransform( world * curTransform, view );
+                XMFLOAT4X4 finalWorld;
+                XMStoreFloat4x4(&finalWorld, xmWorld * curTransform);
 
                 if ( !mvi->Visual ) {
                     LogWarn() << "Attachment without visual on model: " << model->GetVisualName();
@@ -2713,7 +2707,7 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo* vi, float distance
                     // Only draw this as a morphmesh when rendering the main scene or when rendering as ghost
                     if ( g->GetRenderingStage() == DES_MAIN || g->GetRenderingStage() == DES_GHOST ) {
                         // Update constantbuffer
-                        instanceInfo.World = RendererState.TransformState.TransformWorld;
+                        instanceInfo.World = finalWorld;
                         VShader->GetConstantBuffer()[1]->UpdateBuffer( &instanceInfo );
                         VShader->GetConstantBuffer()[1]->BindToVertexShader( 1 );
 
@@ -2726,7 +2720,7 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo* vi, float distance
                     }
                 }
 
-                instanceInfo.World = RendererState.TransformState.TransformWorld;
+                instanceInfo.World = finalWorld;
                 VShader->GetConstantBuffer()[1]->UpdateBuffer( &instanceInfo );
                 VShader->GetConstantBuffer()[1]->BindToVertexShader( 1 );
 
@@ -2766,7 +2760,6 @@ void GothicAPI::DrawSkeletalMeshVobs(
         float4 ModelColor;
         float Fatness;
         XMMATRIX World;
-        XMMATRIX View;
     };
 
     static std::vector<TempVobDrawInfo> tempVobList;
@@ -2813,13 +2806,8 @@ void GothicAPI::DrawSkeletalMeshVobs(
 
         XMMATRIX scale = XMMatrixScalingFromVector( model->GetModelScaleXM() );
 
-        XMMATRIX world = vi->Vob->GetWorldMatrixXM() * scale;
-
-        zCCamera::GetCamera()->SetTransformXM( zCCamera::TT_WORLD, world );
-
-        XMMATRIX view = GetViewMatrixXM();
-        SetWorldViewTransform( world, view );
-
+        XMMATRIX xmWorld = vi->Vob->GetWorldMatrixXM() * scale;
+        XMFLOAT4X4 world; XMStoreFloat4x4( &world, xmWorld );
         float fatness = model->GetModelFatness();
 
         // Get the bone transforms
@@ -2839,7 +2827,7 @@ void GothicAPI::DrawSkeletalMeshVobs(
 #else
             if ( !model->GetDrawHandVisualsOnly() ) {
 #endif
-                Engine::GraphicsEngine->DrawSkeletalMesh( vi, transforms, modelColor, fatness );
+                Engine::GraphicsEngine->DrawSkeletalMesh( vi, transforms, modelColor, world, fatness );
             }
             } else {
             if ( model->GetMeshSoftSkinList()->NumInArray > 0 ) {
@@ -2855,8 +2843,7 @@ void GothicAPI::DrawSkeletalMeshVobs(
             info.BoneTransforms = std::move( transforms );
             info.Fatness = fatness;
             info.ModelColor = modelColor;
-            info.World = world;
-            info.View = view;
+            info.World = xmWorld;
 
             tempVobList.push_back( info );
         }
@@ -2884,7 +2871,6 @@ void GothicAPI::DrawSkeletalMeshVobs(
         auto& transforms = data.BoneTransforms;
         auto fatness = data.Fatness;
         auto& world = data.World;
-        auto& view = data.View;
 
         SkeletalMeshVisualInfo* visual = static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo);
         // Set up instance info
@@ -2949,7 +2935,7 @@ void GothicAPI::DrawSkeletalMeshVobs(
                 // Go through all attachments this node has
                 for ( MeshVisualInfo* mvi : nodeAttachments[i] ) {
                     XMMATRIX curTransform = XMLoadFloat4x4( &transforms[i] );
-                    SetWorldViewTransform( world * curTransform, view );
+                    XMFLOAT4X4 finalWorld; XMStoreFloat4x4( &finalWorld, world* curTransform );
 
                     if ( !mvi->Visual ) {
                         LogWarn() << "Attachment without visual on model: " << model->GetVisualName();
@@ -2982,7 +2968,7 @@ void GothicAPI::DrawSkeletalMeshVobs(
                         // Only draw this as a morphmesh when rendering the main scene or when rendering as ghost
                         if ( g->GetRenderingStage() == DES_MAIN || g->GetRenderingStage() == DES_GHOST ) {
                             // Update constantbuffer
-                            instanceInfo.World = RendererState.TransformState.TransformWorld;
+                            instanceInfo.World = finalWorld;
                             VShader->GetConstantBuffer()[1]->UpdateBuffer( &instanceInfo );
                             VShader->GetConstantBuffer()[1]->BindToVertexShader( 1 );
 
@@ -2995,7 +2981,7 @@ void GothicAPI::DrawSkeletalMeshVobs(
                         }
                     }
 
-                    instanceInfo.World = RendererState.TransformState.TransformWorld;
+                    instanceInfo.World = finalWorld;
                     VShader->GetConstantBuffer()[1]->UpdateBuffer( &instanceInfo );
                     VShader->GetConstantBuffer()[1]->BindToVertexShader( 1 );
 
@@ -3136,17 +3122,12 @@ void GothicAPI::DrawSkeletalVN() {
         D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
 
         zCModel* model = static_cast<zCModel*>(vi->Vob->GetVisual());
-        SkeletalMeshVisualInfo* visual = static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo);
 
         if ( model && vi->VisualInfo ) {
             XMMATRIX scale = XMMatrixScalingFromVector( model->GetModelScaleXM() );
 
-            XMMATRIX world = vi->Vob->GetWorldMatrixXM() * scale;
-
-            zCCamera::GetCamera()->SetTransformXM( zCCamera::TT_WORLD, world );
-
-            XMMATRIX view = GetViewMatrixXM();
-            SetWorldViewTransform( world, view );
+            XMMATRIX xmWorld = vi->Vob->GetWorldMatrixXM() * scale;
+            XMFLOAT4X4 world; XMStoreFloat4x4(&world, xmWorld);
 
             float fatness = model->GetModelFatness();
 
@@ -3156,7 +3137,7 @@ void GothicAPI::DrawSkeletalVN() {
             model->GetBoneTransforms( &transforms );
 
             if ( !static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->SkeletalMeshes.empty() ) {
-                g->DrawSkeletalVertexNormals( vi, transforms, 0xFFFFFF, fatness );
+                g->DrawSkeletalVertexNormals( vi, world, transforms, 0xFFFFFF, fatness);
             }
         }
 

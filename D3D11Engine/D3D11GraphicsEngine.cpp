@@ -2162,6 +2162,7 @@ bool D3D11GraphicsEngine::BindTextureNRFX( zCTexture* tex, bool bindShader ) {
 }
 
 XRESULT  D3D11GraphicsEngine::DrawSkeletalVertexNormals( SkeletalVobInfo* vi,
+    const XMFLOAT4X4& world,
     const std::vector<XMFLOAT4X4>& transforms, float4 color, float fatness ) {
     std::shared_ptr<D3D11GShader> gshader = ShaderManager->GetGShader( "GS_VertexNormals" );
     gshader->Apply();
@@ -2170,9 +2171,7 @@ XRESULT  D3D11GraphicsEngine::DrawSkeletalVertexNormals( SkeletalVobInfo* vi,
     SetActivePixelShader( "PS_Simple" );
 
     InfiniteRangeConstantBuffer->BindToPixelShader( 3 );
-
-    const auto& world = Engine::GAPI->GetRendererState().TransformState.TransformWorld;
-
+    
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
 
@@ -2224,7 +2223,7 @@ XRESULT  D3D11GraphicsEngine::DrawSkeletalVertexNormals( SkeletalVobInfo* vi,
 
 /** Draws a skeletal mesh */
 XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
-    const std::vector<XMFLOAT4X4>& transforms, float4 color, float fatness ) {
+    const std::vector<XMFLOAT4X4>& transforms, float4 color, const XMFLOAT4X4& world, float fatness ) {
     if ( GetRenderingStage() == DES_SHADOWMAP_CUBE ) {
         SetActiveVertexShader( "VS_ExSkeletalCube" );
     } else {
@@ -2232,8 +2231,6 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
     }
 
     InfiniteRangeConstantBuffer->BindToPixelShader( 3 );
-
-    const auto& world = Engine::GAPI->GetRendererState().TransformState.TransformWorld;
 
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
