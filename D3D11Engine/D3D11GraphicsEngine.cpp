@@ -6132,7 +6132,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                             /*// Apply colors for these meshes
                             MaterialInfo::Buffer b;
                             ZeroMemory(&b, sizeof(b));
-                            b.Color = itt->first.Material->GetColor();
+                            b.Color = itt->first.Material->GetColor().ToFloat4();
                             PS_Diffuse->GetConstantBuffer()[2]->UpdateBuffer(&b);
                             PS_Diffuse->GetConstantBuffer()[2]->BindToPixelShader(2);*/
 #endif
@@ -6148,7 +6148,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
 
                                 MaterialInfo::Buffer b = {};
 
-                                b.Color = itt.first.Material->GetColor();
+                                b.Color = itt.first.Material->GetColor().ToFloat4();
                                 PS_DiffuseAlphatest->GetConstantBuffer()[2]->UpdateBuffer( &b );
                                 PS_DiffuseAlphatest->GetConstantBuffer()[2]->BindToPixelShader( 2 );
 
