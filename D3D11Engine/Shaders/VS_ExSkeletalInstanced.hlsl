@@ -1,6 +1,7 @@
 //--------------------------------------------------------------------------------------
 // Instanced Skeletal Vertex Shader
 // Uses StructuredBuffers for per-instance data and bone transforms
+// Uses an indirection buffer to map SV_InstanceID to actual instance index
 //--------------------------------------------------------------------------------------
 
 static const int NUM_MAX_BONES = 96;
@@ -27,6 +28,7 @@ struct SkeletalInstanceData
 // Structured buffers for instanced data
 StructuredBuffer<SkeletalInstanceData> InstanceBuffer : register(t10);
 StructuredBuffer<matrix> BoneBuffer : register(t11);
+StructuredBuffer<uint> InstanceIndexBuffer : register(t12); // Indirection: SV_InstanceID -> actual instance index
 
 //--------------------------------------------------------------------------------------
 // Input / Output structures
@@ -60,8 +62,11 @@ VS_OUTPUT VSMain(VS_INPUT Input, uint instanceID : SV_InstanceID)
 {
     VS_OUTPUT Output;
     
-    // Get instance data
-    SkeletalInstanceData inst = InstanceBuffer[instanceID];
+    // Use indirection buffer to get actual instance index
+    uint actualInstanceIndex = InstanceIndexBuffer[instanceID];
+    
+    // Get instance data using the actual index
+    SkeletalInstanceData inst = InstanceBuffer[actualInstanceIndex];
     
     // Calculate bone indices with offset for this instance
     uint bone0 = inst.BoneOffset + Input.BoneIndices.x;

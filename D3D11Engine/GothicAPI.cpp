@@ -1312,29 +1312,26 @@ void GothicAPI::DrawSkeletalMeshVobs_Batched(
         return;
     }
 
-    g->SetupVS_ExMeshDrawCall();
-    g->SetupVS_ExConstantBuffer();
+    // Build and draw node attachment batches (moved to D3D11GraphicsEngine)
+    g->BuildNodeAttachmentBatches( vobs, updateState );
+    g->DrawNodeAttachmentBatched();
 
-    // Collect node attachments for batched rendering
-    // Key: (Texture*, Visual*) -> ensures same texture AND same mesh geometry
-    static std::unordered_map<NodeAttachmentBatchKey, NodeAttachmentBatchData> NodeAttachmentBatches;
-    NodeAttachmentBatches.clear();
-
+    // Handle MorphMeshes at close distance separately (per-vertex animation, can't batch)
     XMVECTOR playerPosXm = oCGame::GetPlayer() ? oCGame::GetPlayer()->GetPositionWorldXM() : g_XMZero;
-    
-    D3D11GraphicsEngine* engine = (D3D11GraphicsEngine*)Engine::GraphicsEngine;
-    auto isShadowPass = engine->GetRenderingStage() == DES_SHADOWMAP || engine->GetRenderingStage() == DES_SHADOWMAP_CUBE; 
-
     static std::vector<XMFLOAT4X4> transforms;
+
     for ( const auto& vi : vobs ) {
         zCModel* model = static_cast<zCModel*>(vi->Vob->GetVisual());
         if ( !model || !vi->VisualInfo ) continue;
-
-        //model->SetIsVisible( true );
         if ( !vi->Vob->GetShowVisual() ) continue;
 
         float dist;
         XMStoreFloat( &dist, XMVector3Length( vi->Vob->GetPositionWorldXM() - playerPosXm ) );
+
+        // Only process close MorphMeshes in main render pass
+        if ( dist >= 1000 || (g->GetRenderingStage() != DES_MAIN && g->GetRenderingStage() != DES_GHOST) ) {
+            continue;
+        }
 
         // Calculate model color
         float4 modelColor;
@@ -1355,185 +1352,72 @@ void GothicAPI::DrawSkeletalMeshVobs_Batched(
 
         XMMATRIX scale = XMMatrixScalingFromVector( model->GetModelScaleXM() );
         XMMATRIX world = vi->Vob->GetWorldMatrixXM() * scale;
-
         float fatness = model->GetModelFatness();
 
-        // Get bone transforms
         transforms.clear();
         model->GetBoneTransforms( &transforms );
 
         const std::vector<XMFLOAT4X4>& prevBoneTransforms = (vi->HasValidPrevTransforms && !vi->PrevBoneTransforms.empty())
             ? vi->PrevBoneTransforms
             : transforms;
-        const XMMATRIX prevWorldMatrix = vi->HasValidPrevTransforms 
-            ? XMLoadFloat4x4(&vi->PrevWorldMatrix) 
+        const XMMATRIX prevWorldMatrix = vi->HasValidPrevTransforms
+            ? XMLoadFloat4x4( &vi->PrevWorldMatrix )
             : world;
-        
-        // Update attachments
-        if ( updateState ) {
-            model->UpdateAttachedVobs();
-        }
 
         std::map<int, std::vector<MeshVisualInfo*>>& nodeAttachments = vi->NodeAttachments;
-        zCModel* mvis = static_cast<zCModel*>( vi->Vob->GetVisual() );
+        zCModel* mvis = static_cast<zCModel*>(vi->Vob->GetVisual());
 
         for ( unsigned int i = 0; i < transforms.size(); i++ ) {
             zCModelNodeInst* node = mvis->GetNodeList()->Array[i];
-
             if ( !node->NodeVisual ) continue;
-
-            if ( updateState ) {
-                // Load attachment if not yet loaded
-                if ( nodeAttachments.find( i ) == nodeAttachments.end() ) {
-                    WorldConverter::ExtractNodeVisual( i, node, nodeAttachments );
-                }
-
-                // Check for changed visual
-                if ( !nodeAttachments[i].empty() && node->NodeVisual != nodeAttachments[i][0]->Visual ) {
-                    if ( !node->NodeVisual ) {
-                        delete nodeAttachments[i][0];
-                        nodeAttachments[i].clear();
-                        continue;
-                    }
-                    WorldConverter::ExtractNodeVisual( i, node, nodeAttachments );
-                }
-            }
-
-            // Skip non-hand visuals if model requests it
-            if ( model->GetDrawHandVisualsOnly() ) {
-                std::string NodeName = node->ProtoNode->NodeName.ToChar();
-#ifdef BUILD_GOTHIC_2_6_fix
-                if ( NodeName.find( "HAND" ) == std::string::npos &&
-                     (*reinterpret_cast<BYTE*>(0x57A694) != 0x90 || NodeName.find( "ARM" ) == std::string::npos) ) {
-#else
-                if ( NodeName.find( "HAND" ) == std::string::npos ) {
-#endif
-                    continue;
-                }
-            }
-
             if ( nodeAttachments.find( i ) == nodeAttachments.end() ) continue;
-            
+
             XMMATRIX curTransform = XMLoadFloat4x4( &transforms[i] );
             XMMATRIX finalWorld = world * curTransform;
-
             XMMATRIX prevTransform = XMLoadFloat4x4( &prevBoneTransforms[i] );
-            auto prevWorldNode = prevWorldMatrix * prevTransform; 
+            auto prevWorldNode = prevWorldMatrix * prevTransform;
 
-            // Process each attachment visual
             for ( MeshVisualInfo* mvi : nodeAttachments[i] ) {
                 if ( !mvi || !mvi->Visual ) continue;
 
-                // Update animated textures BEFORE getting the texture pointer
                 bool isMMS = strcmp( mvi->Visual->GetFileExtension( 0 ), ".MMS" ) == 0;
+                if ( !isMMS ) continue;
+
+                zCMorphMesh* mm = reinterpret_cast<zCMorphMesh*>(mvi->Visual);
+
                 if ( updateState ) {
                     node->TexAniState.UpdateTexList();
-                    if ( isMMS ) {
-                        zCMorphMesh* mm = reinterpret_cast<zCMorphMesh*>(mvi->Visual);
-                        mm->GetTexAniState()->UpdateTexList();
-                    }
-                }
-
-                // Handle MorphMeshes separately (can't be batched due to vertex animation)
-                if ( dist < 1000 && isMMS ) {
-                    if ( g->GetRenderingStage() == DES_MAIN || g->GetRenderingStage() == DES_GHOST ) {
-                        zCMorphMesh* mm = reinterpret_cast<zCMorphMesh*>( mvi->Visual );
-
-                        if ( updateState ) {
-                            mm->GetTexAniState()->UpdateTexList();
-                        }
-                        SetWorldViewTransform( finalWorld, GetViewMatrixXM() );
-
-                        g->SetActiveVertexShader( "VS_ExNode" );
-                        g->SetupVS_ExMeshDrawCall();
-                        g->SetupVS_ExConstantBuffer();
-
-                        VS_ExConstantBuffer_PerInstanceNode instanceInfo;
-                        instanceInfo.Color = modelColor;
-                        instanceInfo.Fatness = std::max<float>( 0.f, fatness * 0.35f );
-                        instanceInfo.Scaling = fatness * 0.02f + 1.f;
-                        XMStoreFloat4x4(&instanceInfo.World, finalWorld);
-                        XMStoreFloat4x4(&instanceInfo.PrevWorld, prevWorldNode);
-
-                        g->GetActiveVS()->GetConstantBuffer()[1]->UpdateBuffer( &instanceInfo );
-                        g->GetActiveVS()->GetConstantBuffer()[1]->BindToVertexShader( 1 );
-
-                        if ( updateState ) {
-                            mm->AdvanceAnis();
-                            mm->CalcVertexPositions();
-                        }
-                        DrawMorphMesh( mm, mvi->Meshes );
-                        continue;
-                    }
-                }
-
-                // Build instance data
-                NodeAttachmentInstanceData instData = {};
-                XMStoreFloat4x4( &instData.World, finalWorld );
-                XMStoreFloat4x4( &instData.PrevWorld, prevWorldNode );
-                instData.Color = modelColor;
-
-                if ( isMMS ) {
-                    instData.Fatness = std::max<float>( 0.f, fatness * 0.35f );
-                    instData.Scaling = fatness * 0.02f + 1.f;
-                } else {
-                    instData.Fatness = 0.f;
-                    instData.Scaling = 1.f;
-                }
-
-                NodeAttachmentBatchKey baseNodeMeshKey = 0;
-
-                if ( auto mm = mvi->Visual->As<zCMorphMesh>(); mm ) {
-                    auto progMeshPtr = mm->GetMorphMesh();
-                    if ( !progMeshPtr ) {
-                        continue; // no mesh no good.
-                    }
-
                     mm->GetTexAniState()->UpdateTexList();
-                    auto progMeshId = progMeshPtr->GetProgId();
-                    Toolbox::hash_combine( baseNodeMeshKey, progMeshId );
-                } else if ( auto proto = mvi->Visual->As<zCProgMeshProto>(); proto ) {
-                    auto progMeshId = proto->GetProgId();
-                    Toolbox::hash_combine( baseNodeMeshKey, progMeshId );
-                } else {
-                    // broken inheritance check.
-                    continue;
                 }
 
-                // Collect into batches by (Meshlib, texture) pair
-                // This ensures same texture AND same mesh geometry for proper instancing
-                for ( auto const& itm : mvi->Meshes ) {
-                    zCMaterial* mat = itm.first;
-                    if ( !mat ) continue;
+                SetWorldViewTransform( finalWorld, GetViewMatrixXM() );
 
-                    NodeAttachmentBatchKey key = baseNodeMeshKey;
-                    // TODO: figure out how to know if we need the texture in shadow pass.
-                    Toolbox::hash_combine( key, std::string_view( mat->GetAniTexture() && mat->GetAniTexture()->__GetName().Length() ? mat->GetAniTexture()->__GetName().ToChar() : ""));
+                g->SetActiveVertexShader( "VS_ExNode" );
+                g->SetupVS_ExMeshDrawCall();
+                g->SetupVS_ExConstantBuffer();
 
-                    auto& batch = NodeAttachmentBatches[key];
+                VS_ExConstantBuffer_PerInstanceNode instanceInfo;
+                instanceInfo.Color = modelColor;
+                instanceInfo.Fatness = std::max<float>( 0.f, fatness * 0.35f );
+                instanceInfo.Scaling = fatness * 0.02f + 1.f;
+                XMStoreFloat4x4( &instanceInfo.World, finalWorld );
+                XMStoreFloat4x4( &instanceInfo.PrevWorld, prevWorldNode );
 
-                    // Store the first mesh encountered
-                    if ( !batch.Mesh.size() ) {
-                        batch.Mesh = itm.second;
-                        batch.vobInfo = vi;
-                        batch.node = node;
-                        batch.MeshVisualInfo = mvi;
-                        batch.Material = mat;
-                    }
+                g->GetActiveVS()->GetConstantBuffer()[1]->UpdateBuffer( &instanceInfo );
+                g->GetActiveVS()->GetConstantBuffer()[1]->BindToVertexShader( 1 );
 
-                    batch.Instances.push_back( instData );
+                if ( updateState ) {
+                    mm->AdvanceAnis();
+                    mm->CalcVertexPositions();
                 }
+                DrawMorphMesh( mm, mvi->Meshes );
             }
         }
-    }
-
-    // Draw all batched node attachments
-    if ( !NodeAttachmentBatches.empty() ) {
-        g->DrawNodeAttachmentsBatched( NodeAttachmentBatches );
     }
 
     // Clear batches for next frame
     g->ClearSkeletalMeshBatches();
+    g->ClearNodeAttachmentBatches();
 }
 
 /** Draws particles, in a simple way */
@@ -2054,9 +1938,9 @@ void GothicAPI::DrawMeshInfo( zCMaterial* mat, MeshInfo* msh ) {
     }
 
     if ( !msh->MeshIndexBuffer ) {
-        Engine::GraphicsEngine->DrawVertexBuffer( msh->MeshVertexBuffer, msh->Vertices.size() );
+        Engine::GraphicsEngine->DrawVertexBuffer( msh->MeshVertexBuffer.get(), msh->Vertices.size() );
     } else {
-        Engine::GraphicsEngine->DrawVertexBufferIndexed( msh->MeshVertexBuffer, msh->MeshIndexBuffer, msh->Indices.size() );
+        Engine::GraphicsEngine->DrawVertexBufferIndexed( msh->MeshVertexBuffer.get(), msh->MeshIndexBuffer.get(), msh->Indices.size() );
     }
 }
 
@@ -2072,9 +1956,9 @@ void GothicAPI::DrawMeshInfo_Layered( zCMaterial* mat, MeshInfo* msh ) {
 
     D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     if ( !msh->MeshIndexBuffer ) {
-        g->DrawVertexBufferInstanced( msh->MeshVertexBuffer, msh->Vertices.size(), 6 );
+        g->DrawVertexBufferInstanced( msh->MeshVertexBuffer.get(), msh->Vertices.size(), 6 );
     } else {
-        g->DrawVertexBufferInstancedIndexed( msh->MeshVertexBuffer, msh->MeshIndexBuffer, msh->Indices.size(), 6 );
+        g->DrawVertexBufferInstancedIndexed( msh->MeshVertexBuffer.get(), msh->MeshIndexBuffer.get(), msh->Indices.size(), 6 );
     }
 }
 
@@ -3130,8 +3014,8 @@ void GothicAPI::DrawTransparencyVobs() {
 
                 for ( auto const& meshInfo : materialMesh.second ) {
                     g->DrawVertexBufferIndexed(
-                        meshInfo->MeshVertexBuffer,
-                        meshInfo->MeshIndexBuffer,
+                        meshInfo->MeshVertexBuffer.get(),
+                        meshInfo->MeshIndexBuffer.get(),
                         meshInfo->Indices.size() );
                 }
             }
@@ -3157,8 +3041,8 @@ void GothicAPI::DrawTransparencyVobs() {
 
                 for ( auto const& meshInfo : materialMesh.second ) {
                     g->DrawVertexBufferIndexed(
-                        meshInfo->MeshVertexBuffer,
-                        meshInfo->MeshIndexBuffer,
+                        meshInfo->MeshVertexBuffer.get(),
+                        meshInfo->MeshIndexBuffer.get(),
                         meshInfo->Indices.size() );
                 }
             }
@@ -5335,7 +5219,7 @@ void GothicAPI::DrawMorphMesh( zCMorphMesh* msh, std::map<zCMaterial*, std::vect
             for ( MeshInfo* mi : it.second ) {
                 if ( mi->MeshIndex == i ) {
                     mi->MeshVertexBuffer->UpdateBuffer( &vertices[0], vertices.size() * sizeof( ExVertexStruct ) );
-                    Engine::GraphicsEngine->DrawVertexBufferIndexed( mi->MeshVertexBuffer, mi->MeshIndexBuffer, mi->Indices.size() );
+                    Engine::GraphicsEngine->DrawVertexBufferIndexed( mi->MeshVertexBuffer.get(), mi->MeshIndexBuffer.get(), mi->Indices.size() );
                     goto Out_Of_Nested_Loop;
                 }
             }
@@ -5375,7 +5259,7 @@ void GothicAPI::DrawMorphMesh_Layered( zCMorphMesh* msh, std::map<zCMaterial*, s
             for ( MeshInfo* mi : it.second ) {
                 if ( mi->MeshIndex == i ) {
                     mi->MeshVertexBuffer->UpdateBuffer( &vertices[0], vertices.size() * sizeof( ExVertexStruct ) );
-                    g->DrawVertexBufferInstancedIndexed( mi->MeshVertexBuffer, mi->MeshIndexBuffer, mi->Indices.size(), 6 );
+                    g->DrawVertexBufferInstancedIndexed( mi->MeshVertexBuffer.get(), mi->MeshIndexBuffer.get(), mi->Indices.size(), 6 );
                     goto Out_Of_Nested_Loop;
                 }
             }

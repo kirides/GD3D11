@@ -807,6 +807,10 @@
       <Filter>Engine\Graph</Filter>
     </ClInclude>
     <ClInclude Include="D3D11StructuredBuffer.h" />
+    <ClInclude Include="D3D11RenderQueue.h" />
+    <ClInclude Include="MeshManager.h">
+      <Filter>Engine\GAPI</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp" />
@@ -1083,6 +1087,9 @@
     </ClCompile>
     <ClCompile Include="RenderGraph.cpp">
       <Filter>Engine\Graph</Filter>
+    </ClCompile>
+    <ClCompile Include="MeshManager.cpp">
+      <Filter>Engine\GAPI</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>

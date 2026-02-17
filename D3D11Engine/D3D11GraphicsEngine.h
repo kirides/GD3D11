@@ -373,9 +373,11 @@ public:
     // Initialize node attachment instancing buffer
     XRESULT InitNodeAttachmentInstancingBuffer();
 
-    // Draw batched node attachments
-    void DrawNodeAttachmentsBatched(
-        std::unordered_map<NodeAttachmentBatchKey, NodeAttachmentBatchData>& batches );
+    // New methods for node attachment batching (moved from GothicAPI)
+    void BuildNodeAttachmentBatches( const std::vector<SkeletalVobInfo*>& vobs, bool updateState );
+    XRESULT DrawNodeAttachmentBatched();
+    XRESULT DrawNodeAttachmentInstanced( NodeAttachmentBatch& batch );
+    void ClearNodeAttachmentBatches();
 
 protected:
 
@@ -494,8 +496,15 @@ private:
     // Instanced skeletal mesh rendering buffers
     std::unique_ptr<D3D11StructuredBuffer<SkeletalInstanceData>> SkeletalInstanceBuffer;
     std::unique_ptr<D3D11StructuredBuffer<XMFLOAT4X4>> SkeletalBoneBuffer;
+    std::unique_ptr<D3D11StructuredBuffer<uint32_t>> SkeletalInstanceIndexBuffer; // Indirection buffer for instance lookup
 
     // Batched skeletal meshes for current frame
     std::unordered_map<NodeAttachmentBatchKey, SkeletalMeshBatch> SkeletalMeshBatches;
+    
+    // Node attachment instancing buffers
     std::unique_ptr<D3D11StructuredBuffer<NodeAttachmentInstanceData>> NodeAttachmentInstanceBuffer;
+    std::unique_ptr<D3D11StructuredBuffer<uint32_t>> NodeAttachmentInstanceIndexBuffer; // Indirection buffer for instance lookup
+    
+    // Batched node attachments for current frame
+    std::unordered_map<NodeAttachmentBatchKey, NodeAttachmentBatch> NodeAttachmentBatches;
 };

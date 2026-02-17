@@ -124,7 +124,7 @@ void D3D11OcclusionQuerry::DoOcclusionForBSP( BspInfo* root ) {
             MeshInfo* mi = root->OcclusionInfo.NodeMesh;
 
             g->GetContext()->Begin( p );
-            g->DrawVertexBufferIndexed( mi->MeshVertexBuffer, mi->MeshIndexBuffer, mi->Indices.size() );
+            g->DrawVertexBufferIndexed( mi->MeshVertexBuffer.get(), mi->MeshIndexBuffer.get(), mi->Indices.size());
             g->GetContext()->End( p );
 
             root->OcclusionInfo.QueryInProgress = true;

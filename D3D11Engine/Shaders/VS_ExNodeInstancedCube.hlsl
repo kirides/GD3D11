@@ -1,6 +1,7 @@
 //--------------------------------------------------------------------------------------
 // Instanced Node Attachment Vertex Shader for Cube Shadow Maps
 // For weapons, heads, and other attachments
+// Uses an indirection buffer to map SV_InstanceID to actual instance index
 //--------------------------------------------------------------------------------------
 
 #include "Globals_VS_ExConstants.h"
@@ -14,6 +15,7 @@ cbuffer Matrices_PerFrame : register( b0 )
 struct NodeAttachmentInstance
 {
     matrix World;
+    matrix PrevWorld;
     float4 Color;
     float Fatness;
     float Scaling;
@@ -21,6 +23,7 @@ struct NodeAttachmentInstance
 };
 
 StructuredBuffer<NodeAttachmentInstance> InstanceBuffer : register(t10);
+StructuredBuffer<uint> InstanceIndexBuffer : register(t12); // Indirection: SV_InstanceID -> actual instance index
 
 struct VS_INPUT
 {
@@ -46,8 +49,11 @@ VS_OUTPUT VSMain(VS_INPUT Input, uint instanceID : SV_InstanceID)
 {
     VS_OUTPUT Output;
     
-    // Get instance data
-    NodeAttachmentInstance inst = InstanceBuffer[instanceID];
+    // Use indirection buffer to get actual instance index
+    uint actualInstanceIndex = InstanceIndexBuffer[instanceID];
+    
+    // Get instance data using the actual index
+    NodeAttachmentInstance inst = InstanceBuffer[actualInstanceIndex];
     
     // Apply scaling and fatness
     float3 position = Input.vPosition * inst.Scaling;

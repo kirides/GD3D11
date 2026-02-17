@@ -2187,8 +2187,8 @@ XRESULT  D3D11GraphicsEngine::DrawSkeletalVertexNormals( SkeletalVobInfo* vi,
         for ( auto& mesh : itm.second ) {
             WhiteTexture->BindToPixelShader( 0 );
 
-            D3D11VertexBuffer* vb = mesh->MeshVertexBuffer;
-            D3D11VertexBuffer* ib = mesh->MeshIndexBuffer;
+            auto vb = mesh->MeshVertexBuffer;
+            auto ib = mesh->MeshIndexBuffer;
             unsigned int numIndices = mesh->Indices.size();
 
             UINT offset = 0;
@@ -2290,8 +2290,8 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
         }
         for ( auto& mesh : itm.second ) {
 
-            D3D11VertexBuffer* vb = mesh->MeshVertexBuffer;
-            D3D11VertexBuffer* ib = mesh->MeshIndexBuffer;
+            auto vb = mesh->MeshVertexBuffer;
+            auto ib = mesh->MeshIndexBuffer;
             unsigned int numIndices = mesh->Indices.size();
 
             UINT offset = 0;
@@ -2382,8 +2382,8 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh_Layered( SkeletalVobInfo* vi,
                 }
             }
 
-            D3D11VertexBuffer* vb = mesh->MeshVertexBuffer;
-            D3D11VertexBuffer* ib = mesh->MeshIndexBuffer;
+            auto vb = mesh->MeshVertexBuffer;
+            auto ib = mesh->MeshIndexBuffer;
             unsigned int numIndices = mesh->Indices.size();
 
             UINT offset = 0;
@@ -3400,8 +3400,8 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
 
     // Bind wrapped mesh vertex buffers
     DrawVertexBufferIndexedUINT(
-        Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer,
-        Engine::GAPI->GetWrappedWorldMesh()->MeshIndexBuffer, 0, 0 );
+        Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer.get(),
+        Engine::GAPI->GetWrappedWorldMesh()->MeshIndexBuffer.get(), 0, 0);
 
     int lastAlphaFunc = 0;
 
@@ -3527,7 +3527,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh_Indirect( bool noTextures ) {
     Engine::GAPI->CollectVisibleSections( renderList );
 
     MeshInfo* meshInfo = Engine::GAPI->GetWrappedWorldMesh();
-    DrawVertexBufferIndexedUINT( meshInfo->MeshVertexBuffer, meshInfo->MeshIndexBuffer, 0, 0 );
+    DrawVertexBufferIndexedUINT( meshInfo->MeshVertexBuffer.get(), meshInfo->MeshIndexBuffer.get(), 0, 0);
 
     auto& context = GetContext();
     context->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
@@ -3775,7 +3775,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
     Engine::GAPI->CollectVisibleSections( renderList );
 
     MeshInfo* meshInfo = Engine::GAPI->GetWrappedWorldMesh();
-    DrawVertexBufferIndexedUINT( meshInfo->MeshVertexBuffer, meshInfo->MeshIndexBuffer, 0, 0 );
+    DrawVertexBufferIndexedUINT( meshInfo->MeshVertexBuffer.get(), meshInfo->MeshIndexBuffer.get(), 0, 0);
 
     static std::vector<std::pair<MeshKey, WorldMeshInfo*>> meshList;
     auto CompareMesh = []( std::pair<MeshKey, WorldMeshInfo*>& a, std::pair<MeshKey, WorldMeshInfo*>& b ) -> bool { return a.first.Texture < b.first.Texture; };
@@ -3955,8 +3955,8 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
 
     // Bind wrapped mesh vertex buffers
     DrawVertexBufferIndexedUINT(
-        Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer,
-        Engine::GAPI->GetWrappedWorldMesh()->MeshIndexBuffer, 0, 0 );
+        Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer.get(),
+        Engine::GAPI->GetWrappedWorldMesh()->MeshIndexBuffer.get(), 0, 0);
     for ( const auto& [texture, meshes] : FrameWaterSurfaces ) {
         // Draw surfaces
         for ( const auto& mesh : meshes ) {
@@ -4095,8 +4095,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
     
     if ( Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh ) {
         // Bind wrapped mesh vertex buffers
-        DrawVertexBufferIndexedUINT( Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer,
-            Engine::GAPI->GetWrappedWorldMesh()->MeshIndexBuffer, 0, 0 );
+        DrawVertexBufferIndexedUINT( Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer.get(),
+            Engine::GAPI->GetWrappedWorldMesh()->MeshIndexBuffer.get(), 0, 0);
 
         ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &XMMatrixIdentity() );
         ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( 1 );
@@ -4242,8 +4242,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                 }
                 for ( auto const& meshInfo : materialMesh.second ) {
                     DrawVertexBufferIndexed(
-                        meshInfo->MeshVertexBuffer,
-                        meshInfo->MeshIndexBuffer,
+                        meshInfo->MeshVertexBuffer.get(),
+                        meshInfo->MeshIndexBuffer.get(),
                         meshInfo->Indices.size() );
                 }
             }
@@ -4403,8 +4403,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
 
     if ( Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh ) {
         // Bind wrapped mesh vertex buffers
-        DrawVertexBufferInstancedIndexedUINT( Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer,
-            Engine::GAPI->GetWrappedWorldMesh()->MeshIndexBuffer, 0, 0, 0 );
+        DrawVertexBufferInstancedIndexedUINT( Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer.get(),
+            Engine::GAPI->GetWrappedWorldMesh()->MeshIndexBuffer.get(), 0, 0, 0 );
 
         ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &XMMatrixIdentity() );
         ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( 1 );
@@ -4551,8 +4551,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                 }
                 for ( auto const& meshInfo : materialMesh.second ) {
                     DrawVertexBufferInstancedIndexed(
-                        meshInfo->MeshVertexBuffer,
-                        meshInfo->MeshIndexBuffer,
+                        meshInfo->MeshVertexBuffer.get(),
+                        meshInfo->MeshIndexBuffer.get(),
                         meshInfo->Indices.size(), 6 );
                 }
             }
@@ -4650,9 +4650,17 @@ XRESULT D3D11GraphicsEngine::InitSkeletalInstancingBuffers() {
 
     // Bone transform buffer - holds all bone matrices for all instances
     SkeletalBoneBuffer = std::make_unique<D3D11StructuredBuffer<XMFLOAT4X4>>();
-    hr = SkeletalBoneBuffer->Init( GetDevice().Get(), 2048 );
+    hr = SkeletalBoneBuffer->Init( GetDevice().Get(), 512 );
     if ( FAILED( hr ) ) {
         LogError() << "Failed to create skeletal bone buffer";
+        return XR_FAILED;
+    }
+
+    // Instance index indirection buffer - maps SV_InstanceID to actual instance index
+    SkeletalInstanceIndexBuffer = std::make_unique<D3D11StructuredBuffer<uint32_t>>();
+    hr = SkeletalInstanceIndexBuffer->Init( GetDevice().Get(), MAX_SKELETAL_INSTANCES * 4 );
+    if ( FAILED( hr ) ) {
+        LogError() << "Failed to create skeletal instance index buffer";
         return XR_FAILED;
     }
 
@@ -4663,7 +4671,11 @@ XRESULT D3D11GraphicsEngine::InitSkeletalInstancingBuffers() {
 void D3D11GraphicsEngine::BuildSkeletalMeshBatches( const std::vector<SkeletalVobInfo*>& vobs ) {
     // Clear previous batches
     ClearSkeletalMeshBatches();
-
+    
+    std::vector<XMFLOAT4X4> allBones;
+    std::vector<SkeletalInstanceData> allInstances;
+    std::vector<SkeletalMeshBatchEntry> allEntries;
+    
     for ( SkeletalVobInfo* vi : vobs ) {
         if ( !vi || !vi->VisualInfo || !vi->Vob ) {
             continue;
@@ -4691,111 +4703,58 @@ void D3D11GraphicsEngine::BuildSkeletalMeshBatches( const std::vector<SkeletalVo
             }
         }
 
-        NodeAttachmentBatchKey batchKey = { };
-        size_t hashLen = 0;
-        static size_t largestSeenHash = 0;
         model->UpdateMeshLibTexAniState();
+        
+        // Build instance data
+        SkeletalInstanceData inst = {};
+        
+        auto boneIndex = allBones.size();
+        model->GetBoneTransforms(&allBones);
+        
+        // World matrix with scale
+        XMMATRIX scale = XMMatrixScalingFromVector( model->GetModelScaleXM() );
+        XMMATRIX world = vi->Vob->GetWorldMatrixXM() * scale;
+        XMStoreFloat4x4( &inst.World, world );
+        inst.PrevWorld = vi->HasValidPrevTransforms ? vi->PrevWorldMatrix : inst.World;
 
-        if ( model->GetMeshLibList() && model->GetMeshLibList()->GetSize() ) {
-            for ( unsigned int i = 0; i < model->GetMeshLibList()->GetSize(); i++ ) {
-                auto ptr = model->GetMeshLibList()->Array[i]->MeshLibPtr;
-                Toolbox::hash_combine( batchKey, (int)ptr );
-                hashLen++;
-            }
-            if (RenderingStage != DES_SHADOWMAP ) {
-                for ( auto& [k, v] : visualInfo->SkeletalMeshes ) {
-                    Toolbox::hash_combine( batchKey, std::string_view(k->GetAniTexture()->__GetName().ToChar()) );
-                    hashLen++;
-                }
-            }
+        // Model color
+        if ( Engine::GAPI->GetRendererState().RendererSettings.EnableShadows ) {
+            inst.Color = float4( 1, 1, 1, 1 );
         } else {
-            // unique draw, no batching
-            Toolbox::hash_combine( batchKey, (int)vi->Vob );
-            hashLen++;
-        }
-        if ( hashLen > largestSeenHash ) {
-            largestSeenHash = hashLen;
-        }
-        for ( size_t i = hashLen; i < largestSeenHash; ++i ) {
-            // to avoid collisions we need to make sure that shorter hashes don't collide with longer ones that have the same start
-            Toolbox::hash_combine( batchKey, i );
-        }
-
-        auto& batch = SkeletalMeshBatches[batchKey];
-        if ( !batch.Vobs.size() ) {
-            batch.VisualInfo = visualInfo;
-            batch.Vobs.reserve(25);
-        }
-        batch.Vobs.push_back( vi );
-    }
-
-    // Build instance data for each batch
-    static std::vector<XMFLOAT4X4> transforms;
-    for ( auto& [name, batch] : SkeletalMeshBatches ) {
-        if ( batch.Vobs.empty() || !batch.VisualInfo ) {
-            continue;
-        }
-
-        batch.TotalBoneCount = 0;
-        batch.InstanceData.clear();
-        batch.AllBoneTransforms.clear();
-        batch.InstanceData.reserve( batch.Vobs.size() );
-
-        for ( SkeletalVobInfo* vi : batch.Vobs ) {
-            zCModel* model = static_cast<zCModel*>(vi->Vob->GetVisual());
-            if ( !model ) {
-                continue;
-            }
-
-            // Get bone transforms
-            transforms.clear();
-            model->GetBoneTransforms( &transforms );
-
-            if ( transforms.empty() ) {
-                continue;
-            }
-
-            // Build instance data
-            SkeletalInstanceData inst = {};
-
-            // World matrix with scale
-            XMMATRIX scale = XMMatrixScalingFromVector( model->GetModelScaleXM() );
-            XMMATRIX world = vi->Vob->GetWorldMatrixXM() * scale;
-            XMStoreFloat4x4( &inst.World, world );
-            inst.PrevWorld = vi->HasValidPrevTransforms ? vi->PrevWorldMatrix : inst.World;
-
-            // Model color
-            if ( Engine::GAPI->GetRendererState().RendererSettings.EnableShadows ) {
-                inst.Color = float4( 1, 1, 1, 1 );
+            if ( vi->Vob->IsIndoorVob() ) {
+                inst.Color = DEFAULT_LIGHTMAP_POLY_COLOR;
+            } else if ( zCPolygon* polygon = vi->Vob->GetGroundPoly() ) {
+                float3 vobPos = vi->Vob->GetPositionWorld();
+                float3 polyLightStat = polygon->GetLightStatAtPos( vobPos );
+                inst.Color = float4( polyLightStat.z * inv255f, polyLightStat.y * inv255f, polyLightStat.x * inv255f, 1.f );
             } else {
-                if ( vi->Vob->IsIndoorVob() ) {
-                    inst.Color = DEFAULT_LIGHTMAP_POLY_COLOR;
-                } else if ( zCPolygon* polygon = vi->Vob->GetGroundPoly() ) {
-                    float3 vobPos = vi->Vob->GetPositionWorld();
-                    float3 polyLightStat = polygon->GetLightStatAtPos( vobPos );
-                    inst.Color = float4( polyLightStat.z * inv255f, polyLightStat.y * inv255f, polyLightStat.x * inv255f, 1.f );
-                } else {
-                    inst.Color = float4( 1, 1, 1, 1 );
-                }
+                inst.Color = float4( 1, 1, 1, 1 );
             }
+        }
 
-            inst.Fatness = model->GetModelFatness();
-            inst.Scale = 1.0f;
-            inst.BoneOffset = batch.TotalBoneCount;
-            inst.Padding = 0;
+        inst.Fatness = model->GetModelFatness();
+        inst.Scale = 1.0f;
+        inst.BoneOffset = boneIndex;
+        inst.Padding = 0;
+        
+        auto instIndex = allInstances.size();
+        allInstances.push_back(inst);
 
-            batch.InstanceData.push_back( inst );
-
-            // Add bone transforms
-            batch.AllBoneTransforms.insert( batch.AllBoneTransforms.end(),
-                transforms.begin(), transforms.end() );
-            batch.TotalBoneCount += static_cast<uint32_t>(transforms.size());
-
-            model->SetIsVisible( true );
-
-            batch.VisualInfo = dynamic_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo);
+        for (auto& [mat, meshes] : visualInfo->SkeletalMeshes) {
+            for (auto mesh : meshes) {
+                SkeletalMeshBatchEntry entry;
+                entry.material = mat->GetAniTexture();
+                entry.mesh = mesh;
+                entry.instanceIndex = instIndex;
+                allEntries.push_back(entry);
+            }
         }
     }
+    
+    auto& batch = SkeletalMeshBatches[0];
+    batch.Entries = std::move(allEntries);
+    batch.BoneTransforms = std::move(allBones);
+    batch.Instances = std::move(allInstances);
 }
 
 XRESULT D3D11GraphicsEngine::DrawSkeletalMeshBatched() {
@@ -4806,32 +4765,6 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMeshBatched() {
 
     // Draw each batch (body meshes only)
     for ( auto& [name, batch] : SkeletalMeshBatches ) {
-        if ( batch.Vobs.empty() || !batch.VisualInfo ) {
-            continue;
-        }
-
-        // Don't to the expensive upload if it's a single instance.
-        if ( batch.InstanceData.size() == 1 ) {
-            for ( SkeletalVobInfo* vi : batch.Vobs ) {
-                zCModel* model = static_cast<zCModel*>(vi->Vob->GetVisual());
-                if ( !model ) continue;
-                model->SetIsVisible( true );
-                if ( !vi->Vob->GetShowVisual() )
-                    continue;
-
-                // if we don't update the MeshLibTextAni the visual will have wrong textures
-                model->UpdateAttachedVobs();
-                model->UpdateMeshLibTexAniState();
-
-                if ( !vi->VobConstantBuffer ) {
-                    vi->UpdateVobConstantBuffer();
-                }
-                
-                DrawSkeletalMesh( vi, batch.AllBoneTransforms, batch.InstanceData[0].Color, batch.InstanceData[0].World, batch.InstanceData[0].Fatness );
-            }
-            continue;
-        }
-
         // Draw batched body mesh
         DrawSkeletalMeshInstanced( batch );
     }
@@ -4841,10 +4774,10 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMeshBatched() {
 }
 
 XRESULT D3D11GraphicsEngine::DrawSkeletalMeshInstanced( SkeletalMeshBatch& batch ) {
-    if ( batch.InstanceData.empty() || !batch.VisualInfo ) return XR_SUCCESS;
+    if ( batch.Instances.empty() ) return XR_SUCCESS;
 
-    if ( SkeletalInstanceBuffer->GetMaxElementCount() < batch.InstanceData.size() ) {
-        auto requiredSize = Toolbox::NextPowerOfTwo( batch.InstanceData.size() );
+    if ( SkeletalInstanceBuffer->GetMaxElementCount() < batch.Instances.size() ) {
+        auto requiredSize = Toolbox::NextPowerOfTwo( batch.Instances.size() );
 
         SkeletalInstanceBuffer = std::make_unique<D3D11StructuredBuffer<SkeletalInstanceData>>();
         HRESULT hr = SkeletalInstanceBuffer->Init( GetDevice().Get(), requiredSize );
@@ -4855,11 +4788,11 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMeshInstanced( SkeletalMeshBatch& batch
     }
 
     // Update structured buffers
-    SkeletalInstanceBuffer->UpdateBuffer( Context.Get(), batch.InstanceData.data(),
-                                          static_cast<UINT>(batch.InstanceData.size()) );
+    SkeletalInstanceBuffer->UpdateBuffer( Context.Get(), batch.Instances.data(),
+                                          static_cast<UINT>(batch.Instances.size()) );
 
-    if ( SkeletalBoneBuffer->GetMaxElementCount() < batch.AllBoneTransforms.size() ) {
-        auto requiredSize = Toolbox::NextPowerOfTwo( batch.AllBoneTransforms.size() );
+    if ( SkeletalBoneBuffer->GetMaxElementCount() < batch.BoneTransforms.size() ) {
+        auto requiredSize = Toolbox::NextPowerOfTwo( batch.BoneTransforms.size() );
 
         SkeletalBoneBuffer = std::make_unique<D3D11StructuredBuffer<XMFLOAT4X4>>();
         HRESULT hr = SkeletalBoneBuffer->Init( GetDevice().Get(), requiredSize );
@@ -4868,12 +4801,13 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMeshInstanced( SkeletalMeshBatch& batch
             return XR_FAILED;
         }
     }
-    SkeletalBoneBuffer->UpdateBuffer( Context.Get(), batch.AllBoneTransforms.data(),
-                                      static_cast<UINT>(batch.AllBoneTransforms.size()) );
+    SkeletalBoneBuffer->UpdateBuffer( Context.Get(), batch.BoneTransforms.data(),
+                                      static_cast<UINT>(batch.BoneTransforms.size()) );
 
     // Bind structured buffers
     SkeletalInstanceBuffer->BindToVertexShader( Context.Get(), 10 ); // t10
     SkeletalBoneBuffer->BindToVertexShader( Context.Get(), 11 );     // t11
+    SkeletalInstanceIndexBuffer->BindToVertexShader( Context.Get(), 12 ); // t12 - instance index indirection
 
     // Set shader based on rendering stage
     if ( RenderingStage == DES_SHADOWMAP_CUBE ) {
@@ -4912,201 +4846,468 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMeshInstanced( SkeletalMeshBatch& batch
         }
     }
 
-    // Draw each submesh
-    SkeletalMeshVisualInfo* meshInfo = nullptr;
-
-    for ( auto vi : batch.Vobs ) {
-        zCModel* model = static_cast<zCModel*>(vi->Vob->GetVisual());
-
-        if ( !model || !vi->VisualInfo )
-            continue; // Gothic fortunately sets this to 0 when it throws the model out of the cache
-
-        model->SetIsVisible( true );
-        if ( !vi->Vob->GetShowVisual() )
-            continue;
-
-        // if we don't update the MeshLibTextAni the visual will have wrong textures
-        model->UpdateMeshLibTexAniState();
-        
-        meshInfo = static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo);
-        break;
+    bool needsTexture = (RenderingStage != DES_GHOST && RenderingStage != DES_SHADOWMAP);
+    // Sort by material first, then by mesh pointer for optimal batching
+    if ( needsTexture ) {
+        std::sort(batch.Entries.begin(), batch.Entries.end(), [](const SkeletalMeshBatchEntry& a, const SkeletalMeshBatchEntry& b)
+        {
+            if ( a.material != b.material ) return a.material < b.material;
+            return a.mesh->MeshVertexBuffer.get() < b.mesh->MeshVertexBuffer.get();
+        });
+    } else {
+        std::sort(batch.Entries.begin(), batch.Entries.end(), [](const SkeletalMeshBatchEntry& a, const SkeletalMeshBatchEntry& b)
+        {
+            return a.mesh->MeshVertexBuffer.get() < b.mesh->MeshVertexBuffer.get();
+        });
     }
+    
+    // Temporary buffer for collecting instance indices per draw call
+    std::vector<uint32_t> drawInstanceIndices;
+    drawInstanceIndices.reserve( 64 );
 
-    for ( auto const& itm : batch.VisualInfo->SkeletalMeshes ) {
-        if ( itm.first ) {
+    for ( size_t i = 0; i < batch.Entries.size(); ) {
+        auto& itm = batch.Entries[i];
+        
+        // Bind texture for this material
+        if ( itm.material ) {
             zCTexture* tex;
-            if ( ActivePS && (tex = itm.first->GetAniTexture()) != nullptr ) {
-                if ( !BindTextureNRFX( tex, (RenderingStage != DES_GHOST) ) ) {
+            if ( ActivePS && (tex = itm.material) != nullptr ) {
+                if ( !BindTextureNRFX( tex, needsTexture ) ) {
+                    i++;
                     continue;
                 }
             }
+        } else {
+            GetContext()->PSSetShader( nullptr, nullptr, 0 );
         }
 
-        for ( auto& mesh : itm.second ) {
-            D3D11VertexBuffer* vb = mesh->MeshVertexBuffer;
-            D3D11VertexBuffer* ib = mesh->MeshIndexBuffer;
-            unsigned int numIndices = static_cast<unsigned int>(mesh->Indices.size());
-
-            UINT offset = 0;
-            UINT uStride = sizeof( ExSkelVertexStruct );
-            Context->IASetVertexBuffers( 0, 1, vb->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
-            Context->IASetIndexBuffer( ib->GetVertexBuffer().Get(), VERTEX_INDEX_DXGI_FORMAT, 0 );
-
-            // Draw instanced
-            Context->DrawIndexedInstanced( numIndices, static_cast<UINT>(batch.InstanceData.size()), 0, 0, 0 );
-
-            Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
-                (numIndices / 3) * static_cast<unsigned int>(batch.InstanceData.size());
+        // Find all entries with same material AND same mesh (can be instanced together)
+        size_t batchStart = i;
+        size_t batchEnd = i + 1;
+        while ( batchEnd < batch.Entries.size() 
+                && ( !needsTexture || batch.Entries[batchEnd].material == itm.material)
+                && batch.Entries[batchEnd].mesh->MeshVertexBuffer.get() == itm.mesh->MeshVertexBuffer.get() ) {
+            batchEnd++;
         }
+        size_t instanceCount = batchEnd - batchStart;
+
+        // Collect instance indices for this draw call
+        drawInstanceIndices.clear();
+        for ( size_t j = batchStart; j < batchEnd; j++ ) {
+            drawInstanceIndices.push_back( batch.Entries[j].instanceIndex );
+        }
+
+        // Update instance index indirection buffer
+        if ( SkeletalInstanceIndexBuffer->GetMaxElementCount() < drawInstanceIndices.size() ) {
+            auto requiredSize = Toolbox::NextPowerOfTwo( drawInstanceIndices.size() );
+            SkeletalInstanceIndexBuffer = std::make_unique<D3D11StructuredBuffer<uint32_t>>();
+            SkeletalInstanceIndexBuffer->Init( GetDevice().Get(), requiredSize );
+            SkeletalInstanceIndexBuffer->BindToVertexShader( Context.Get(), 12 );
+        }
+        SkeletalInstanceIndexBuffer->UpdateBuffer( Context.Get(), drawInstanceIndices.data(),
+                                                   static_cast<UINT>(drawInstanceIndices.size()) );
+
+        // Set up vertex/index buffers for this mesh
+        auto vb = itm.mesh->MeshVertexBuffer;
+        auto ib = itm.mesh->MeshIndexBuffer;
+        unsigned int numIndices = static_cast<unsigned int>( itm.mesh->Indices.size() );
+
+        UINT offset = 0;
+        UINT uStride = sizeof( ExSkelVertexStruct );
+        Context->IASetVertexBuffers( 0, 1, vb->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
+        Context->IASetIndexBuffer( ib->GetVertexBuffer().Get(), VERTEX_INDEX_DXGI_FORMAT, 0 );
+
+        // Draw instanced - SV_InstanceID will index into InstanceIndexBuffer to get actual instance index
+        Context->DrawIndexedInstanced( numIndices, static_cast<UINT>(instanceCount), 0, 0, 0 );
+
+        Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
+            (numIndices / 3) * static_cast<unsigned int>(instanceCount);
+
+        i = batchEnd;
     }
 
     // Unbind structured buffers
     SkeletalInstanceBuffer->UnbindFromVertexShader( Context.Get(), 10 );
     SkeletalBoneBuffer->UnbindFromVertexShader( Context.Get(), 11 );
-
-    Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnVobs +=
-        static_cast<unsigned int>(batch.InstanceData.size());
+    SkeletalInstanceIndexBuffer->UnbindFromVertexShader( Context.Get(), 12 );
 
     return XR_SUCCESS;
 }
 
 void D3D11GraphicsEngine::ClearSkeletalMeshBatches() {
     for ( auto& [name, batch] : SkeletalMeshBatches ) {
-        batch.Clear();
+        batch.Entries.clear();
+        batch.BoneTransforms.clear();
+        batch.Instances.clear();
     }
     SkeletalMeshBatches.clear();
 }
 
+void D3D11GraphicsEngine::BuildNodeAttachmentBatches( const std::vector<SkeletalVobInfo*>& vobs, bool updateState ) {
+    // Clear previous batches
+    ClearNodeAttachmentBatches();
 
-XRESULT D3D11GraphicsEngine::InitNodeAttachmentInstancingBuffer() {
-    // Instance buffer for node attachments
-    NodeAttachmentInstanceBuffer = std::make_unique<D3D11StructuredBuffer<NodeAttachmentInstanceData>>();
-    HRESULT hr = NodeAttachmentInstanceBuffer->Init( GetDevice().Get(), 64 );
-    if ( FAILED( hr ) ) {
-        LogError() << "Failed to create node attachment instance buffer";
-        return XR_FAILED;
+    XMVECTOR playerPosXm = oCGame::GetPlayer() ? oCGame::GetPlayer()->GetPositionWorldXM() : g_XMZero;
+    auto isShadowPass = RenderingStage == DES_SHADOWMAP || RenderingStage == DES_SHADOWMAP_CUBE;
+
+    std::vector<NodeAttachmentInstanceData> allInstances;
+    std::vector<NodeAttachmentBatchEntry> allEntries;
+
+    static std::vector<XMFLOAT4X4> transforms;
+
+    for ( const auto& vi : vobs ) {
+        zCModel* model = static_cast<zCModel*>(vi->Vob->GetVisual());
+        if ( !model || !vi->VisualInfo ) continue;
+
+        if ( !vi->Vob->GetShowVisual() ) continue;
+
+        float dist;
+        XMStoreFloat( &dist, XMVector3Length( vi->Vob->GetPositionWorldXM() - playerPosXm ) );
+
+        // Calculate model color
+        float4 modelColor;
+        if ( Engine::GAPI->GetRendererState().RendererSettings.EnableShadows ) {
+            modelColor = float4( 1, 1, 1, 1 );
+        } else {
+            if ( vi->Vob->IsIndoorVob() ) {
+                modelColor = DEFAULT_LIGHTMAP_POLY_COLOR;
+            } else if ( zCPolygon* polygon = vi->Vob->GetGroundPoly() ) {
+                static const float inv255f = 1.0f / 255.0f;
+                float3 vobPos = vi->Vob->GetPositionWorld();
+                float3 polyLightStat = polygon->GetLightStatAtPos( vobPos );
+                modelColor = float4( polyLightStat.z * inv255f, polyLightStat.y * inv255f, polyLightStat.x * inv255f, 1.f );
+            } else {
+                modelColor = float4( 1, 1, 1, 1 );
+            }
+        }
+
+        XMMATRIX scale = XMMatrixScalingFromVector( model->GetModelScaleXM() );
+        XMMATRIX world = vi->Vob->GetWorldMatrixXM() * scale;
+
+        float fatness = model->GetModelFatness();
+
+        // Get bone transforms
+        transforms.clear();
+        model->GetBoneTransforms( &transforms );
+
+        const std::vector<XMFLOAT4X4>& prevBoneTransforms = (vi->HasValidPrevTransforms && !vi->PrevBoneTransforms.empty())
+            ? vi->PrevBoneTransforms
+            : transforms;
+        const XMMATRIX prevWorldMatrix = vi->HasValidPrevTransforms
+            ? XMLoadFloat4x4( &vi->PrevWorldMatrix )
+            : world;
+
+        // Update attachments
+        if ( updateState ) {
+            model->UpdateAttachedVobs();
+            model->UpdateMeshLibTexAniState();
+        }
+
+        std::map<int, std::vector<MeshVisualInfo*>>& nodeAttachments = vi->NodeAttachments;
+        zCModel* mvis = static_cast<zCModel*>(vi->Vob->GetVisual());
+
+        for ( unsigned int i = 0; i < transforms.size(); i++ ) {
+            zCModelNodeInst* node = mvis->GetNodeList()->Array[i];
+
+            if ( !node->NodeVisual ) continue;
+
+            if ( updateState ) {
+                // Load attachment if not yet loaded
+                if ( nodeAttachments.find( i ) == nodeAttachments.end() ) {
+                    WorldConverter::ExtractNodeVisual( i, node, nodeAttachments );
+                }
+
+                // Check for changed visual
+                if ( !nodeAttachments[i].empty() && node->NodeVisual != nodeAttachments[i][0]->Visual ) {
+                    if ( !node->NodeVisual ) {
+                        delete nodeAttachments[i][0];
+                        nodeAttachments[i].clear();
+                        continue;
+                    }
+                    WorldConverter::ExtractNodeVisual( i, node, nodeAttachments );
+                }
+            }
+
+            // Skip non-hand visuals if model requests it
+            if ( model->GetDrawHandVisualsOnly() ) {
+                std::string NodeName = node->ProtoNode->NodeName.ToChar();
+#ifdef BUILD_GOTHIC_2_6_fix
+                if ( NodeName.find( "HAND" ) == std::string::npos &&
+                     (*reinterpret_cast<BYTE*>(0x57A694) != 0x90 || NodeName.find( "ARM" ) == std::string::npos) ) {
+#else
+                if ( NodeName.find( "HAND" ) == std::string::npos ) {
+#endif
+                    continue;
+                }
+            }
+
+            if ( nodeAttachments.find( i ) == nodeAttachments.end() ) continue;
+
+            XMMATRIX curTransform = XMLoadFloat4x4( &transforms[i] );
+            XMMATRIX finalWorld = world * curTransform;
+
+            XMMATRIX prevTransform = XMLoadFloat4x4( &prevBoneTransforms[i] );
+            auto prevWorldNode = prevWorldMatrix * prevTransform;
+
+            // Process each attachment visual
+            for ( MeshVisualInfo* mvi : nodeAttachments[i] ) {
+                if ( !mvi || !mvi->Visual ) continue;
+
+                // Update animated textures BEFORE getting the texture pointer
+                bool isMMS = strcmp( mvi->Visual->GetFileExtension( 0 ), ".MMS" ) == 0;
+                if ( updateState ) {
+                    node->TexAniState.UpdateTexList();
+                    if ( isMMS ) {
+                        zCMorphMesh* mm = reinterpret_cast<zCMorphMesh*>(mvi->Visual);
+                        mm->GetTexAniState()->UpdateTexList();
+                    }
+                }
+
+                // Skip MorphMeshes at close distance (they need per-vertex animation, can't batch)
+                if ( dist < 1000 && isMMS && (RenderingStage == DES_MAIN || RenderingStage == DES_GHOST) ) {
+                    // These are handled separately via DrawMorphMesh in GothicAPI
+                    continue;
+                }
+
+                // Build instance data
+                NodeAttachmentInstanceData instData = {};
+                XMStoreFloat4x4( &instData.World, finalWorld );
+                XMStoreFloat4x4( &instData.PrevWorld, prevWorldNode );
+                instData.Color = modelColor;
+
+                if ( isMMS ) {
+                    instData.Fatness = std::max<float>( 0.f, fatness * 0.35f );
+                    instData.Scaling = fatness * 0.02f + 1.f;
+                } else {
+                    instData.Fatness = 0.f;
+                    instData.Scaling = 1.f;
+                }
+
+                auto instIndex = allInstances.size();
+                allInstances.push_back( instData );
+
+                // Collect entries by (texture, mesh) for batching
+                for ( auto const& itm : mvi->Meshes ) {
+                    zCMaterial* mat = itm.first;
+                    if ( !mat ) continue;
+
+                    zCTexture* tex = mat->GetAniTexture();
+
+                    for ( MeshInfo* mesh : itm.second ) {
+                        if ( !mesh ) continue;
+
+                        NodeAttachmentBatchEntry entry;
+                        entry.texture = tex;
+                        entry.mesh = mesh;
+                        entry.instanceIndex = static_cast<uint32_t>(instIndex);
+                        allEntries.push_back( entry );
+                    }
+                }
+            }
+        }
     }
 
-    LogInfo() << "Initialized node attachment instancing buffer";
+    // Store in the batch
+    auto& batch = NodeAttachmentBatches[0];
+    batch.Entries = std::move( allEntries );
+    batch.Instances = std::move( allInstances );
+}
+
+XRESULT D3D11GraphicsEngine::DrawNodeAttachmentBatched() {
+    if ( NodeAttachmentBatches.empty() ) return XR_SUCCESS;
+
+    // Fix the view matrix
+    Engine::GAPI->GetViewMatrix( &Engine::GAPI->GetRendererState().TransformState.TransformView );
+
+    // Draw each batch
+    for ( auto& [name, batch] : NodeAttachmentBatches ) {
+        DrawNodeAttachmentInstanced( batch );
+    }
+
     return XR_SUCCESS;
 }
 
-void D3D11GraphicsEngine::DrawNodeAttachmentsBatched(
-    std::unordered_map<NodeAttachmentBatchKey, NodeAttachmentBatchData>& batches )
-{
-    if ( batches.empty() ) return;
+XRESULT D3D11GraphicsEngine::DrawNodeAttachmentInstanced( NodeAttachmentBatch& batch ) {
+    if ( batch.Instances.empty() ) return XR_SUCCESS;
 
-    // Set up shaders
+    // Resize instance buffer if needed
+    if ( NodeAttachmentInstanceBuffer->GetMaxElementCount() < batch.Instances.size() ) {
+        auto requiredSize = Toolbox::NextPowerOfTwo( batch.Instances.size() );
+        NodeAttachmentInstanceBuffer = std::make_unique<D3D11StructuredBuffer<NodeAttachmentInstanceData>>();
+        HRESULT hr = NodeAttachmentInstanceBuffer->Init( GetDevice().Get(), requiredSize );
+        if ( FAILED( hr ) ) {
+            LogError() << "Failed to create node attachment instance buffer";
+            return XR_FAILED;
+        }
+    }
+
+    // Update instance buffer
+    NodeAttachmentInstanceBuffer->UpdateBuffer( Context.Get(), batch.Instances.data(),
+                                                 static_cast<UINT>(batch.Instances.size()) );
+
+    // Bind structured buffers
+    NodeAttachmentInstanceBuffer->BindToVertexShader( Context.Get(), 10 ); // t10
+    NodeAttachmentInstanceIndexBuffer->BindToVertexShader( Context.Get(), 12 ); // t12 - instance index indirection
+
+    // Set shader based on rendering stage
     if ( RenderingStage == DES_SHADOWMAP_CUBE ) {
         SetActiveVertexShader( "VS_ExNodeInstancedCube" );
     } else {
         SetActiveVertexShader( "VS_ExNodeInstanced" );
     }
 
+    InfiniteRangeConstantBuffer->BindToPixelShader( 3 );
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
 
-    // Bind instance buffer to slot 10
-    NodeAttachmentInstanceBuffer->BindToVertexShader( Context.Get(), 10 );
+    Context->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
     ActiveVS->Apply();
 
     // Setup pixel shader
-    if ( RenderingStage == DES_MAIN ) {
-        SetActivePixelShader( "PS_DiffuseAlphaTest" );
-        BindActivePixelShader();
-    } else if ( RenderingStage == DES_SHADOWMAP ) {
-        Context->PSSetShader( nullptr, nullptr, 0 );
-        ActivePS = nullptr;
-    }
-
-    Context->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
-
-    // Draw each batch
-    for ( auto& [key, batch] : batches )
-    {
-        if ( batch.Instances.empty() || !batch.Mesh.size() ) continue;
-
-        zCModel* model = static_cast<zCModel*>(batch.vobInfo->Vob->GetVisual());
-
-        model->UpdateAttachedVobs();
-        model->UpdateMeshLibTexAniState();
-        
-        // Update instance buffer
-        UINT instanceCount = batch.Instances.size();
-
-        if ( NodeAttachmentInstanceBuffer->GetMaxElementCount() < instanceCount ) {
-            auto requiredSize = Toolbox::NextPowerOfTwo( instanceCount );
-
-            NodeAttachmentInstanceBuffer = std::make_unique<D3D11StructuredBuffer<NodeAttachmentInstanceData>>();
-            HRESULT hr = NodeAttachmentInstanceBuffer->Init( GetDevice().Get(), requiredSize );
-            if ( FAILED( hr ) ) {
-                LogError() << "Failed to create node attachment instance buffer";
-                return;
-            }
-        }
-
-        NodeAttachmentInstanceBuffer->UpdateBuffer( Context.Get(), batch.Instances.data(), instanceCount );
-
-        // WICHTIG: Hole die Textur JETZT aus dem Material, nicht aus dem gecachten Key!
-        if ( RenderingStage != DES_SHADOWMAP && RenderingStage != DES_SHADOWMAP_CUBE ) {
-            
-            // Only update textures if not drawing shadows
-            const bool isMMS = strcmp( batch.MeshVisualInfo->Visual->GetFileExtension( 0 ), ".MMS" ) == 0;
-            batch.node->TexAniState.UpdateTexList();
-            if ( isMMS ) {
-                // Important to also update the textures here
-                zCMorphMesh* mm = reinterpret_cast<zCMorphMesh*>(batch.MeshVisualInfo->Visual);
-                mm->GetTexAniState()->UpdateTexList();
-            }
-
-            if ( batch.Material ) {
-                zCTexture* texture = batch.Material->GetAniTexture();
-                if ( texture ) {
-                    if ( texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
-                        continue;  // Skip if texture not loaded
-                    }
-                    if ( !BindTextureNRFX( texture, (RenderingStage == DES_MAIN) ) ) {
-                        continue;
-                    }
-                } else {
-                    continue;  // Skip if no texture
-                }
-            } else {
-                continue;
-            }
-        }
-
-        // Set up alpha test from material
-        if ( batch.Material && batch.Material->GetAlphaFunc() == zRND_ALPHA_FUNC_TEST ) {
-            Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches |= GSWITCH_ALPHAREF;
+    if ( RenderingStage != DES_GHOST ) {
+        bool linearDepth = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches & GSWITCH_LINEAR_DEPTH) != 0;
+        if ( linearDepth ) {
+            ActivePS = PS_LinDepth;
+            ActivePS->Apply();
+        } else if ( RenderingStage == DES_SHADOWMAP ) {
+            Context->PSSetShader( nullptr, nullptr, 0 );
+            ActivePS = nullptr;
         } else {
-            Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches &= ~GSWITCH_ALPHAREF;
-        }
-
-        // Bind mesh buffers
-        for ( auto& mesh : batch.Mesh )
-        {
-            if ( !mesh->MeshVertexBuffer ) continue;
-
-            UINT offset = 0;
-            UINT stride = sizeof( ExVertexStruct );
-            Context->IASetVertexBuffers( 0, 1, mesh->MeshVertexBuffer->GetVertexBuffer().GetAddressOf(), &stride, &offset );
-
-            if ( mesh->MeshIndexBuffer ) {
-                Context->IASetIndexBuffer( mesh->MeshIndexBuffer->GetVertexBuffer().Get(), VERTEX_INDEX_DXGI_FORMAT, 0 );
-                Context->DrawIndexedInstanced( static_cast<UINT>(mesh->Indices.size()), instanceCount, 0, 0, 0 );
-                Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
-                    static_cast<unsigned int>(mesh->Indices.size() / 3) * instanceCount;
-            } else
-            {
-                Context->DrawInstanced( static_cast<UINT>(mesh->Vertices.size()), instanceCount, 0, 0 );
-                Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
-                    static_cast<unsigned int>(mesh->Vertices.size() / 3) * instanceCount;
-            }
+            SetActivePixelShader( "PS_DiffuseAlphaTest" );
+            BindActivePixelShader();
         }
     }
+
+    if ( RenderingStage == DES_MAIN ) {
+        if ( ActiveHDS ) {
+            Context->DSSetShader( nullptr, nullptr, 0 );
+            Context->HSSetShader( nullptr, nullptr, 0 );
+            ActiveHDS = nullptr;
+        }
+    }
+
+    // Sort by texture first, then by mesh pointer for optimal batching
+    bool needsTexture = (RenderingStage != DES_GHOST && RenderingStage != DES_SHADOWMAP);
+    // Sort by material first, then by mesh pointer for optimal batching
+    if ( needsTexture ) {
+        std::sort( batch.Entries.begin(), batch.Entries.end(), []( const NodeAttachmentBatchEntry& a, const NodeAttachmentBatchEntry& b ) {
+            if ( a.texture != b.texture ) return a.texture < b.texture;
+            return a.mesh->MeshIndexBuffer.get() < b.mesh->MeshIndexBuffer.get();
+        } );
+    } else {
+        std::sort( batch.Entries.begin(), batch.Entries.end(), []( const NodeAttachmentBatchEntry& a, const NodeAttachmentBatchEntry& b ) {
+            if ( a.texture && a.texture->HasAlphaChannel() && a.texture != b.texture )
+                return a.texture < b.texture;
+            return a.mesh->MeshIndexBuffer.get() < b.mesh->MeshIndexBuffer.get();
+        } );
+    }
+
+    // Temporary buffer for collecting instance indices per draw call
+    std::vector<uint32_t> drawInstanceIndices;
+    drawInstanceIndices.reserve( 64 );
+
+    for ( size_t i = 0; i < batch.Entries.size(); ) {
+        auto& itm = batch.Entries[i];
+
+        // Bind texture for this batch
+        if ( itm.texture ) {
+            if ( ActivePS ) {
+                if ( !BindTextureNRFX( itm.texture, needsTexture ) ) {
+                    i++;
+                    continue;
+                }
+            }
+        } else {
+            GetContext()->PSSetShader( nullptr, nullptr, 0 );
+        }
+
+        // Find all entries with same texture AND same mesh (can be instanced together)
+        size_t batchStart = i;
+        size_t batchEnd = i + 1;
+        while ( batchEnd < batch.Entries.size()
+                && batch.Entries[batchEnd].texture == itm.texture
+                && batch.Entries[batchEnd].mesh->MeshIndexBuffer.get() == itm.mesh->MeshIndexBuffer.get() ) {
+            batchEnd++;
+        }
+        size_t instanceCount = batchEnd - batchStart;
+
+        // Collect instance indices for this draw call
+        drawInstanceIndices.clear();
+        for ( size_t j = batchStart; j < batchEnd; j++ ) {
+            drawInstanceIndices.push_back( batch.Entries[j].instanceIndex );
+        }
+
+        // Update instance index indirection buffer
+        if ( NodeAttachmentInstanceIndexBuffer->GetMaxElementCount() < drawInstanceIndices.size() ) {
+            auto requiredSize = Toolbox::NextPowerOfTwo( drawInstanceIndices.size() );
+            NodeAttachmentInstanceIndexBuffer = std::make_unique<D3D11StructuredBuffer<uint32_t>>();
+            NodeAttachmentInstanceIndexBuffer->Init( GetDevice().Get(), requiredSize );
+            NodeAttachmentInstanceIndexBuffer->BindToVertexShader( Context.Get(), 12 );
+        }
+        NodeAttachmentInstanceIndexBuffer->UpdateBuffer( Context.Get(), drawInstanceIndices.data(),
+                                                          static_cast<UINT>(drawInstanceIndices.size()) );
+
+        // Set up vertex/index buffers for this mesh
+        MeshInfo* mesh = itm.mesh;
+        if ( !mesh || !mesh->MeshVertexBuffer ) {
+            i = batchEnd;
+            continue;
+        }
+
+        UINT offset = 0;
+        UINT stride = sizeof( ExVertexStruct );
+        Context->IASetVertexBuffers( 0, 1, mesh->MeshVertexBuffer->GetVertexBuffer().GetAddressOf(), &stride, &offset );
+
+        if ( mesh->MeshIndexBuffer ) {
+            Context->IASetIndexBuffer( mesh->MeshIndexBuffer->GetVertexBuffer().Get(), VERTEX_INDEX_DXGI_FORMAT, 0 );
+            Context->DrawIndexedInstanced( static_cast<UINT>(mesh->Indices.size()), static_cast<UINT>(instanceCount), 0, 0, 0 );
+            Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
+                static_cast<unsigned int>(mesh->Indices.size() / 3) * static_cast<unsigned int>(instanceCount);
+        } else {
+            Context->DrawInstanced( static_cast<UINT>(mesh->Vertices.size()), static_cast<UINT>(instanceCount), 0, 0 );
+            Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
+                static_cast<unsigned int>(mesh->Vertices.size() / 3) * static_cast<unsigned int>(instanceCount);
+        }
+
+        i = batchEnd;
+    }
+
+    // Unbind structured buffers
     NodeAttachmentInstanceBuffer->UnbindFromVertexShader( Context.Get(), 10 );
+    NodeAttachmentInstanceIndexBuffer->UnbindFromVertexShader( Context.Get(), 12 );
+
+    return XR_SUCCESS;
+}
+
+void D3D11GraphicsEngine::ClearNodeAttachmentBatches() {
+    for ( auto& [name, batch] : NodeAttachmentBatches ) {
+        batch.Entries.clear();
+        batch.Instances.clear();
+    }
+    NodeAttachmentBatches.clear();
+}
+
+
+XRESULT D3D11GraphicsEngine::InitNodeAttachmentInstancingBuffer() {
+    // Instance buffer for node attachments
+    NodeAttachmentInstanceBuffer = std::make_unique<D3D11StructuredBuffer<NodeAttachmentInstanceData>>();
+    HRESULT hr = NodeAttachmentInstanceBuffer->Init( GetDevice().Get(), 128 );
+    if ( FAILED( hr ) ) {
+        LogError() << "Failed to create node attachment instance buffer";
+        return XR_FAILED;
+    }
+
+    // Instance index indirection buffer for node attachments
+    NodeAttachmentInstanceIndexBuffer = std::make_unique<D3D11StructuredBuffer<uint32_t>>();
+    hr = NodeAttachmentInstanceIndexBuffer->Init( GetDevice().Get(), 128 );
+    if ( FAILED( hr ) ) {
+        LogError() << "Failed to create node attachment instance index buffer";
+        return XR_FAILED;
+    }
+
+    LogInfo() << "Initialized node attachment instancing buffers";
+    return XR_SUCCESS;
 }
 
 void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect(const std::vector<const WorldMeshSectionInfo*>& visibleSections)
@@ -5395,8 +5596,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         const auto sectionRangeSq = sectionRange * sectionRange;
         // Bind wrapped mesh vertex buffers
         DrawVertexBufferIndexedUINT(
-            Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer,
-            Engine::GAPI->GetWrappedWorldMesh()->MeshIndexBuffer, 0, 0 );
+            Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer.get(),
+            Engine::GAPI->GetWrappedWorldMesh()->MeshIndexBuffer.get(), 0, 0 );
 
         ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &XMMatrixIdentity() );
         ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( 1 );
@@ -5589,7 +5790,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                     MeshInfo* mi = mlist[i];
 
                     // Draw batch
-                    DrawInstanced( mi->MeshVertexBuffer, mi->MeshIndexBuffer,
+                    DrawInstanced( mi->MeshVertexBuffer.get(), mi->MeshIndexBuffer.get(),
                         mi->Indices.size(), DynamicInstancingBuffer.get(),
                         sizeof( VobInstanceInfo ), staticMeshVisual->Instances.size(),
                         sizeof( ExVertexStruct ), staticMeshVisual->StartInstanceNum );
@@ -5998,7 +6199,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                         }
 
                         // Draw batch
-                        DrawInstanced( mi->MeshVertexBuffer, mi->MeshIndexBuffer,
+                        DrawInstanced( mi->MeshVertexBuffer.get(), mi->MeshIndexBuffer.get(),
                             mi->Indices.size(), DynamicInstancingBuffer.get(),
                             sizeof( VobInstanceInfo ), staticMeshVisual->Instances.size(),
                             sizeof( ExVertexStruct ), staticMeshVisual->StartInstanceNum );
@@ -6139,7 +6340,7 @@ XRESULT D3D11GraphicsEngine::DrawFrameAlphaMeshes()
             }
 
             // Draw batch
-            DrawInstanced( mi->MeshVertexBuffer, mi->MeshIndexBuffer, mi->Indices.size(),
+            DrawInstanced( mi->MeshVertexBuffer.get(), mi->MeshIndexBuffer.get(), mi->Indices.size(),
                 DynamicInstancingBuffer.get(), sizeof( VobInstanceInfo ),
                 instances.size(), sizeof( ExVertexStruct ),
                 vi->StartInstanceNum );
@@ -6156,7 +6357,7 @@ XRESULT D3D11GraphicsEngine::DrawFrameAlphaMeshes()
         }
 
         // Draw batch
-        DrawInstanced( mi->MeshVertexBuffer, mi->MeshIndexBuffer, mi->Indices.size(),
+        DrawInstanced( mi->MeshVertexBuffer.get(), mi->MeshIndexBuffer.get(), mi->Indices.size(),
             DynamicInstancingBuffer.get(), sizeof( VobInstanceInfo ),
             instances.size(), sizeof( ExVertexStruct ),
             vi->StartInstanceNum );
@@ -6552,7 +6753,7 @@ void D3D11GraphicsEngine::DrawVobSingle( VobInfo* vob, zCCamera& camera ) {
         for ( auto const& itm2nd : itm.second ) {
             // Draw instances
             DrawVertexBufferIndexed(
-                itm2nd->MeshVertexBuffer, itm2nd->MeshIndexBuffer,
+                itm2nd->MeshVertexBuffer.get(), itm2nd->MeshIndexBuffer.get(),
                 itm2nd->Indices.size() );
         }
     }
@@ -7208,7 +7409,7 @@ void D3D11GraphicsEngine::DrawFrameParticleMeshes( std::unordered_map<zCVob*, Me
             for ( auto const& itm2nd : itm.second ) {
                 // Draw instances
                 DrawVertexBufferIndexed(
-                    itm2nd->MeshVertexBuffer, itm2nd->MeshIndexBuffer,
+                    itm2nd->MeshVertexBuffer.get(), itm2nd->MeshIndexBuffer.get(),
                     itm2nd->Indices.size() );
             }
         }

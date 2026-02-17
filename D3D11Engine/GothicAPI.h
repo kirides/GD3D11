@@ -224,19 +224,28 @@ class zCMorphMesh;
 class zCDecal;
 
 // CPU-side batch information for skeletal mesh rendering
-struct SkeletalMeshBatch {
-    SkeletalMeshVisualInfo* VisualInfo;             // Shared visual info
-    std::vector<SkeletalVobInfo*> Vobs;             // All vobs in this batch
-    std::vector<SkeletalInstanceData> InstanceData; // Per-instance GPU data
-    std::vector<XMFLOAT4X4> AllBoneTransforms;      // All bone matrices for all instances
-    uint32_t TotalBoneCount;                        // Total bones across all instances
+struct SkeletalMeshBatchEntry {
+    zCTexture* material;
+    SkeletalMeshInfo* mesh;
+    uint32_t instanceIndex;
+};
 
-    void Clear() {
-        Vobs.clear();
-        InstanceData.clear();
-        AllBoneTransforms.clear();
-        TotalBoneCount = 0;
-    }
+struct SkeletalMeshBatch {
+    std::vector<SkeletalMeshBatchEntry> Entries;
+    std::vector<XMFLOAT4X4> BoneTransforms;
+    std::vector<SkeletalInstanceData> Instances;
+};
+
+// CPU-side batch information for node attachment rendering
+struct NodeAttachmentBatchEntry {
+    zCTexture* texture;           // Texture for this entry
+    MeshInfo* mesh;               // Mesh geometry
+    uint32_t instanceIndex;       // Index into NodeAttachmentInstanceData buffer
+};
+
+struct NodeAttachmentBatch {
+    std::vector<NodeAttachmentBatchEntry> Entries;
+    std::vector<NodeAttachmentInstanceData> Instances;
 };
 
 class GothicAPI {

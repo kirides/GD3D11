@@ -1,5 +1,6 @@
 //--------------------------------------------------------------------------------------
 // Instanced Skeletal Vertex Shader for Cube Shadow Maps
+// Uses an indirection buffer to map SV_InstanceID to actual instance index
 //--------------------------------------------------------------------------------------
 
 static const int NUM_MAX_BONES = 96;
@@ -14,6 +15,7 @@ cbuffer Matrices_PerFrame : register( b0 )
 struct SkeletalInstanceData
 {
     matrix World;
+    matrix PrevWorld;
     float4 Color;
     float Fatness;
     float Scale;
@@ -23,6 +25,7 @@ struct SkeletalInstanceData
 
 StructuredBuffer<SkeletalInstanceData> InstanceBuffer : register(t10);
 StructuredBuffer<matrix> BoneBuffer : register(t11);
+StructuredBuffer<uint> InstanceIndexBuffer : register(t12); // Indirection: SV_InstanceID -> actual instance index
 
 struct VS_INPUT
 {
@@ -49,7 +52,11 @@ VS_OUTPUT VSMain(VS_INPUT Input, uint instanceID : SV_InstanceID)
 {
     VS_OUTPUT Output;
     
-    SkeletalInstanceData inst = InstanceBuffer[instanceID];
+    // Use indirection buffer to get actual instance index
+    uint actualInstanceIndex = InstanceIndexBuffer[instanceID];
+    
+    // Get instance data using the actual index
+    SkeletalInstanceData inst = InstanceBuffer[actualInstanceIndex];
     
     uint bone0 = inst.BoneOffset + Input.BoneIndices.x;
     uint bone1 = inst.BoneOffset + Input.BoneIndices.y;
