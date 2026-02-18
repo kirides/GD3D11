@@ -4038,6 +4038,43 @@ void GothicAPI::CollectVisibleVobs(
     ctx.frustum = frustum;
     CollectVisibleVobs( ctx );
 
+    if ( RendererState.RendererSettings.SortRenderQueue ) {
+        struct SortableVob {
+            VobInfo* vob;
+            float distSq;
+        };
+        static thread_local std::vector<SortableVob> sortList;
+        sortList.clear();
+        sortList.reserve( vobs.size() );
+
+        for ( auto* v : vobs ) {
+            float d = XMVectorGetX( XMVector3LengthSq( v->Vob->GetPositionWorldXM() - cameraPosition ) );
+            sortList.push_back( { v, d } );
+        }
+
+        std::sort( sortList.begin(), sortList.end(), []( const SortableVob& a, const SortableVob& b ) {
+            return a.distSq < b.distSq;
+        } );
+        for ( size_t i = 0; i < vobs.size(); ++i ) vobs[i] = sortList[i].vob;
+
+        struct SortableSkeletalVob {
+            SkeletalVobInfo* vob;
+            float distSq;
+        };
+        static thread_local std::vector<SortableSkeletalVob> skelsortList;
+        skelsortList.clear();
+        skelsortList.reserve( mobs.size() );
+        for ( auto* v : mobs ) {
+            float d = XMVectorGetX( XMVector3LengthSq( v->Vob->GetPositionWorldXM() - cameraPosition ) );
+            skelsortList.push_back( { v, d } );
+        }
+
+        std::sort( skelsortList.begin(), skelsortList.end(), []( const SortableSkeletalVob& a, const SortableSkeletalVob& b ) {
+            return a.distSq < b.distSq;
+        } );
+        for ( size_t i = 0; i < mobs.size(); ++i ) mobs[i] = skelsortList[i].vob;
+    }
+
     // Copy them into the target
     // they should be unique at this point.
 
