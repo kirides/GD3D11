@@ -498,4 +498,15 @@ struct WorldInfo {
     bool CustomWorldLoaded;
 };
 
+struct TransparencyVobInfo {
+    TransparencyVobInfo( float distance, float alpha, SkeletalVobInfo* skeletalVob, VobInfo* normalVob ) :
+        distance( distance ), alpha( alpha ), skeletalVob( skeletalVob ), normalVob( normalVob ) {
+    }
+
+    float distance;
+    float alpha;
+    SkeletalVobInfo* skeletalVob;
+    VobInfo* normalVob;
+};
+
 #pragma warning( pop )

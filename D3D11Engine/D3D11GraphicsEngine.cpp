@@ -4615,29 +4615,22 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                 }
             }
         }
-    }
-
-    static std::vector<VobInfo*> vobs = {};
-    static std::vector<VobLightInfo*> lights = {};
-    static std::vector<SkeletalVobInfo*> mobs = {};
-    vobs.clear();
-    
+    }    
     
     if ( Engine::GAPI->GetRendererState().RendererSettings.DrawVOBs ) {
-        Engine::GAPI->CollectVisibleVobs( vobs, lights, mobs, EGothicCullFlags::CullSidesNear, EBspTreeCollectFlags::COLLECT_VOBS );
-        
+        auto renderQueue = ShadowMaps->GetRenderQueue( params.CascadeIndex );
+        renderQueue->ProcessQueue();
+
+        auto& vobs = renderQueue->GetVobs();
+
         // clear any residue of main render pass
         const std::unordered_map<zCProgMeshProto*, MeshVisualInfo*>& staticMeshVisuals = Engine::GAPI->GetStaticMeshVisuals();
         for ( auto const& staticMeshVisual : staticMeshVisuals ) {
             staticMeshVisual.second->StartNewFrame();
         }
         
-        for ( auto& it : vobs) { 
-            // because we collect without COLLECT_MUTATE enabled
-            // we don't need to reset this
-            // it->VisibleInRenderPass = false;
-            
-            // But also because of that, we need to add the instances ourselves
+        for ( auto& it : vobs) {
+            // process any vobs only visible in this cascade
             VobInstanceInfo vii = {};
             vii.world = it->WorldMatrix;
             vii.prevWorld = it->HasValidPrevMatrix ? it->PrevWorldMatrix : it->WorldMatrix;
@@ -4911,6 +4904,11 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
     static std::vector<VobLightInfo*> lights;
     static std::vector<SkeletalVobInfo*> mobs;
 
+    if ( RenderingStage == DES_MAIN ) {
+        auto _ = START_TIMING( "Prepare Shadow" );
+        ShadowMaps->PrepareRender(); // calculate cameras, frusti collect any vobs needed, etc.
+    }
+
     // Need to collect alpha-meshes to render them laterdy
     std::list<std::tuple<MeshKey, MeshVisualInfo*, MeshInfo*, size_t>>
         AlphaMeshes;
@@ -5003,7 +5001,6 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
             DynamicInstancingBuffer->Unmap();
 
             for ( unsigned int i = 0; i < vobs.size(); i++ ) {
-                vobs[i]->VisibleInRenderPass = false;  // Reset this for the next frame
                 RenderedVobs.push_back( vobs[i] );
             }
 
@@ -5163,7 +5160,6 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
             static std::vector<XMFLOAT4X4> bones = {};
             for ( SkeletalVobInfo* mob : mobs ) {
                 Engine::GAPI->DrawSkeletalMeshVob( mob, FLT_MAX );
-                mob->VisibleInRenderPass = false;  // Reset this for the next frame
                 
                 zCModel* model = static_cast<zCModel*>(mob->Vob->GetVisual());
                 XMMATRIX scale = XMMatrixScalingFromVector( model->GetModelScaleXM() );

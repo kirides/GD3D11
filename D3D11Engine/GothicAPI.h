@@ -6,6 +6,7 @@
 #include "zCTree.h"
 #include "zCPolyStrip.h"
 #include "zTypes.h"
+#include "RenderQueue.h"
 
 #define START_TIMING(x) TimerScope( x, &Engine::GAPI->GetRendererState().RendererInfo.Timing.frameRecordings )
 
@@ -17,6 +18,20 @@ class zCBspBase;
 class zCModelPrototype;
 struct ScreenSpaceLine;
 struct LineVertex;
+
+struct RndCullContext {
+    Frustum frustum;
+    float maxDistance;
+    XMFLOAT3 cameraPosition;
+    RenderStage stage;
+
+    RenderQueue* queue;
+};
+
+using VisitStaticVobCallback = std::function<void( const RndCullContext&, VobInfo* )>;
+using VisitTransparentVobCallback = std::function<void( const RndCullContext&, const TransparencyVobInfo& )>;
+using VisitSkeletalVobCallback = std::function<void( const RndCullContext&, SkeletalVobInfo* )>;
+using VisitLightVobCallback = std::function<void( const RndCullContext&, VobLightInfo* )>;
 
 enum EBspTreeCollectFlags : unsigned int {
     COLLECT_VOBS = 1 << 0,
@@ -178,16 +193,6 @@ class MyDirectDrawSurface7;
 class GVegetationBox;
 class zCMorphMesh;
 class zCDecal;
-
-struct TransparencyVobInfo {
-    TransparencyVobInfo( float distance, float alpha, SkeletalVobInfo* skeletalVob, VobInfo* normalVob ) :
-        distance( distance ), alpha( alpha ), skeletalVob( skeletalVob ), normalVob( normalVob ) {}
-
-    float distance;
-    float alpha;
-    SkeletalVobInfo* skeletalVob;
-    VobInfo* normalVob;
-};
 
 class GothicAPI {
     friend void CVVH_AddNotDrawnVobToList( std::vector<VobInfo*>& target, std::vector<VobInfo*>& source, float dist, int clipFlags, EBspTreeCollectFlags collectFlags, zTCam_ClipType bspClip );
@@ -511,6 +516,13 @@ public:
         EGothicCullFlags cullFlags = EGothicCullFlags::CullAll,
         EBspTreeCollectFlags collectFlags = EBspTreeCollectFlags::COLLECT_ALL_MUTATE);
 
+    void CollectVisibleVobs( const RndCullContext& ctx );
+    void CollectVisibleVobsHelper( BspInfo* base, zTBBox3D boxCell, const RndCullContext& ctx,
+        BspTreeVobVisitor* visitor,
+        VisitStaticVobCallback staticVobCallback, 
+        VisitTransparentVobCallback alphaVobCallback,
+        VisitSkeletalVobCallback skeltalVobCallback,
+    VisitLightVobCallback lightVobCallback );
     /** Collects visible sections from the current camera perspective */
     void CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sections );
 
@@ -738,9 +750,6 @@ private:
 
     /** Helper function for going through the bsp-tree */
     void BuildBspVobMapCacheHelper( zCBspBase* base );
-
-    /** Recursive helper function to draw collect the vobs */
-    void CollectVisibleVobsHelper( BspInfo* base, zTBBox3D boxCell, int clipFlags, EBspTreeCollectFlags collectFlags, std::vector<VobInfo*>& vobs, std::vector<VobLightInfo*>& lights, std::vector<SkeletalVobInfo*>& mobs );
 
     /** Applys the suppressed textures */
     void ApplySuppressedSectionTextures();

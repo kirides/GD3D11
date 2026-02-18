@@ -15,6 +15,7 @@
 #include "GothicAPI.h"
 #include "GSky.h"
 #include "Frustum.h"
+#include "D3D11RenderQueue.h"
 
 struct RenderToDepthStencilBuffer;
 struct RenderToTextureBuffer;
@@ -98,6 +99,8 @@ public:
     // Bind the shadowmap sampler to the given slot
     void BindSampler( ID3D11DeviceContext1* context, UINT slot );
 
+    XRESULT PrepareRender();
+
     // Compute cascade split distances.
     // Returns a vector of size (numCascades + 1) where:
     //  splits[0] == nearPlane, splits[numCascades] == farPlane
@@ -131,6 +134,8 @@ public:
         /* 3 */ { 0.92f, 2.7f },
         /* 4 */ { 0.98f, 1.9f }, // Players should really want to use 4 cascades for best quality
     };
+
+    D3D11RenderQueue* GetRenderQueue( int cascadeIndex ) { return m_RenderQueues[cascadeIndex].get(); }
 private:
     Microsoft::WRL::ComPtr<ID3D11Device1> m_device;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext1> m_context;
@@ -141,4 +146,9 @@ private:
     std::unique_ptr<RenderToTextureBuffer> m_dummyCubeRT;
 
     Microsoft::WRL::ComPtr<ID3D11SamplerState> m_shadowmapSampler;
+    std::array<CameraReplacement, MAX_CSM_CASCADES> m_CascadeCRs;
+    std::array<std::unique_ptr<D3D11RenderQueue>, MAX_CSM_CASCADES> m_RenderQueues;
+    std::vector<float> m_CascadeSplits;
+    std::array<bool, MAX_CSM_CASCADES> m_ShouldUpdateCascade;
+    XMFLOAT3 m_WorldShadowPos;
 };

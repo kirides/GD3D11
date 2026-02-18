@@ -789,6 +789,8 @@
       <Filter>Engine\D3D11\PFX\Effects</Filter>
     </ClInclude>
     <ClInclude Include="TexturePool.h" />
+    <ClInclude Include="D3D11RenderQueue.h" />
+    <ClInclude Include="RenderQueue.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp" />
@@ -1056,6 +1058,7 @@
     <ClCompile Include="D3D11PFX_FSR1.cpp">
       <Filter>Engine\D3D11\PFX\Effects</Filter>
     </ClCompile>
+    <ClCompile Include="D3D11RenderQueue.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="ddraw.def">
@@ -1104,5 +1107,8 @@
     <None Include="Shaders\PS_PFX_Velocity.hlsl">
       <Filter>Engine\Shaders</Filter>
     </None>
+    <None Include="Shaders\PS_Grass.hlsl" />
+    <None Include="Shaders\VS_GrassInstanced.hlsl" />
+    <None Include="Shaders\PS_PFX_VelocityDebug.hlsl" />
   </ItemGroup>
 </Project>
