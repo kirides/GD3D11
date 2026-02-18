@@ -4397,6 +4397,29 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
 void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR position,
     float sectionRange,
     const RenderShadowmapsParams& params ) {
+    int timerLabelIndex = std::clamp(params.CascadeIndex, 0, MAX_CSM_CASCADES-1);
+    static const char* timer_labels_world_mesh[MAX_CSM_CASCADES]
+    {
+        "World Mesh 0",
+        "World Mesh 1",
+        "World Mesh 2",
+        "World Mesh 3",
+    };
+    static const char* timer_labels_vobs[MAX_CSM_CASCADES]
+    {
+        "VOBs 0",
+        "VOBs 1",
+        "VOBs 2",
+        "VOBs 3",
+    };
+    static const char* timer_labels_skeletal[MAX_CSM_CASCADES]
+    {
+        "Skeletal Meshes 0",
+        "Skeletal Meshes 1",
+        "Skeletal Meshes 2",
+        "Skeletal Meshes 3",
+    };
+    
     // Setup renderstates
     Engine::GAPI->GetRendererState().RasterizerState.SetDefault();
     Engine::GAPI->GetRendererState().RasterizerState.CullMode =
@@ -4470,7 +4493,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
     float alphaRef = Engine::GAPI->GetRendererState().GraphicsState.FF_AlphaRef;
 
     if ( Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh ) {
-        auto _ = START_TIMING( "Shadow World Mesh");
+        auto _ = START_TIMING( timer_labels_world_mesh[timerLabelIndex] );
         auto _1 = RecordGraphicsEvent( L"DrawWorldMesh" );
         const auto sectionRangeSq = sectionRange * sectionRange;
         // Bind wrapped mesh vertex buffers
@@ -4631,7 +4654,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             reinterpret_cast<MeshVisualInfo*>(it->VisualInfo)->Instances.push_back( vii );
         }
 
-        auto _ = START_TIMING( "Static Mesh Visuals");
+        auto _ = START_TIMING( timer_labels_vobs[timerLabelIndex] );
         auto _1 = RecordGraphicsEvent( L"DrawVOBs" );
 
         size_t ByteWidth = DynamicInstancingBuffer->GetSizeInBytes();
@@ -4753,7 +4776,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
     }
 
     if ( Engine::GAPI->GetRendererState().RendererSettings.DrawSkeletalMeshes ) {
-        auto _ = START_TIMING( "Skeletal Meshes NPCs");
+        auto _ = START_TIMING( timer_labels_skeletal[timerLabelIndex] );
         auto _1 = RecordGraphicsEvent( L"DrawSkeletalMeshes" );
 
         auto skeletalRadiusSq = Engine::GAPI->GetRendererState().RendererSettings.SkeletalMeshDrawRadius

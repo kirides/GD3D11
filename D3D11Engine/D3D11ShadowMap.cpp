@@ -934,6 +934,15 @@ void D3D11ShadowMap::RenderShadowmaps( const RenderShadowmapsParams& params ) {
         // Draw the world mesh without textures        
 
         XMVECTOR cameraPosition = XMLoadFloat3( &params.CameraPosition );
+        int timerLabelIndex = std::clamp(params.CascadeIndex, 0, MAX_CSM_CASCADES-1);
+        static const char* timer_labels_cascades[MAX_CSM_CASCADES]
+        {
+            "Cascade 0",
+            "Cascade 1",
+            "Cascade 2",
+            "Cascade 3",
+        };
+        auto _1 = START_TIMING(timer_labels_cascades[timerLabelIndex]);
         graphicsEngine->DrawWorldAroundForWorldShadow( cameraPosition, 2, params );
 
     } else {
