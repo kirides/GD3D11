@@ -752,6 +752,7 @@ struct GothicRendererSettings {
         DebugSettings = {};
         DebugSettings.Culling.CullBspSections = true;
         DebugSettings.Culling.CullVobs = true;
+        DebugSettings.ShadowCascades.LazyCascadeUpdate = true;
     }
 
     void SetupOldWorldSpecificValues() {
@@ -925,6 +926,7 @@ struct GothicRendererSettings {
             bool DisplayVelocity;
         } TAA;
         struct {
+            bool LazyCascadeUpdate;
             float ExtendBack;
             float ExtendFront;
             float ExtendSide;

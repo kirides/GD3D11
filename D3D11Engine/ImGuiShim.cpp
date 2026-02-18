@@ -1147,6 +1147,9 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
             }
 
             if (ImGui::BeginTabItem("Shadows", nullptr, ImGuiTabItemFlags_::ImGuiTabItemFlags_NoReorder)) {
+                ImGui::Checkbox("Lazy update", &settings.DebugSettings.ShadowCascades.LazyCascadeUpdate );
+                ImGui::SetItemTooltip("Update last cascades less frequently to save performance, may cause uneven frametimes");
+
                 ImGui::SliderFloat("Extend Back", &settings.DebugSettings.ShadowCascades.ExtendBack, -10000, 50000, "%.0f");
                 ImGui::SliderFloat("Extend Front", &settings.DebugSettings.ShadowCascades.ExtendFront, -10000, 50000, "%.0f");
                 ImGui::SliderFloat("Extend Side", &settings.DebugSettings.ShadowCascades.ExtendSide, -10000, 20000, "%.0f");

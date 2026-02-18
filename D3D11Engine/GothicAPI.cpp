@@ -4248,10 +4248,11 @@ static void CVVH_AddNotDrawnVobToList( std::vector<VobInfo*>& target, std::vecto
 
         if (bspClip != zTCam_ClipType::ZTCAM_CLIPTYPE_IN 
             && cullingEnabled
-            && Engine::GAPI->GetCameraBBox3DInFrustum( it->Vob->GetBBox(), clipFlags ) ==  zTCam_ClipType::ZTCAM_CLIPTYPE_OUT) {
+            && Engine::GAPI->GetCameraBBox3DInFrustum( it->Vob->GetBBox(), clipFlags ) == zTCam_ClipType::ZTCAM_CLIPTYPE_OUT) {
             continue;
         }
         if (collectFlags & COLLECT_MUTATE ) {
+            it->VisibleInRenderPass = true;
             if ( it->Vob->GetVisualAlpha() ) {
                 Engine::GAPI->TransparencyVobs.emplace_back( std::sqrtf(vdSq), it->Vob->GetVobTransparency(), nullptr, it );
                 std::push_heap( Engine::GAPI->TransparencyVobs.begin(), Engine::GAPI->TransparencyVobs.end(), CompareGhostDistance );
