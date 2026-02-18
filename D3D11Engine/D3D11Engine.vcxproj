@@ -1178,10 +1178,6 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <None Include="Shaders\PS_Grass.hlsl" />
     <None Include="Shaders\VS_GrassInstanced.hlsl" />
     <None Include="Shaders\PS_PFX_VelocityDebug.hlsl" />
-    <None Include="Shaders\VS_ExNodeInstanced.hlsl" />
-    <None Include="Shaders\VS_ExNodeInstancedCube.hlsl" />
-    <None Include="Shaders\VS_ExSkeletalInstanced.hlsl" />
-    <None Include="Shaders\VS_ExSkeletalInstancedCube.hlsl" />
     <ClCompile Include="SMAA\D3D11SMAA.cpp" />
     <ClCompile Include="SteamOverlay.cpp" />
     <ClCompile Include="StackWalker.cpp" />
