@@ -516,6 +516,7 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
         perFrameCascadeData.frameCount++;
 
 
+        bool lazyCascadeUpdate = settings.DebugSettings.ShadowCascades.LazyCascadeUpdate;
         bool updateCascades[MAX_CSM_CASCADES] = {};
         for ( int cascadeIdx = 0; cascadeIdx < numCascades; ++cascadeIdx ) {
             // pre-calculate all cascade matrices, to be able to frustum-cull anything that is not in this or the next cascade.
@@ -523,10 +524,10 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
             bool isLastCascade = (numCascades > 1 && cascadeIdx == numCascades - 1);
 
             bool shouldUpdateCascade = true;
-            if ( cascadeIdx == 2 ) {
+            if ( lazyCascadeUpdate && cascadeIdx == 2 ) {
                 // pre-last cascade updates every 2nd frame which is 30 FPS = 15 updates per second
                 shouldUpdateCascade = (perFrameCascadeData.frameCount % 2) == 0;
-            } else if ( cascadeIdx == 3 ) {
+            } else if ( lazyCascadeUpdate && cascadeIdx == 3 ) {
                 // final cascade updates every 3rd frame which is 30 FPS = 10 updates per second
                 shouldUpdateCascade = (perFrameCascadeData.frameCount % 3) == 0;
             }
@@ -933,6 +934,15 @@ void D3D11ShadowMap::RenderShadowmaps( const RenderShadowmapsParams& params ) {
         // Draw the world mesh without textures        
 
         XMVECTOR cameraPosition = XMLoadFloat3( &params.CameraPosition );
+        int timerLabelIndex = std::clamp(params.CascadeIndex, 0, MAX_CSM_CASCADES-1);
+        static const char* timer_labels_cascades[MAX_CSM_CASCADES]
+        {
+            "Cascade 0",
+            "Cascade 1",
+            "Cascade 2",
+            "Cascade 3",
+        };
+        auto _1 = START_TIMING(timer_labels_cascades[timerLabelIndex]);
         graphicsEngine->DrawWorldAroundForWorldShadow( cameraPosition, 2, params );
 
     } else {

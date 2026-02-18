@@ -6,6 +6,11 @@
 #include "ImGuiEditorView.h"
 #include "zCParser.h"
 #include <sstream>
+#include <map>
+#include <vector>
+#include <algorithm>
+#include <chrono>
+#include <numeric>
 
 #if defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)
 extern bool haveWindAnimations;
@@ -1147,6 +1152,9 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
             }
 
             if (ImGui::BeginTabItem("Shadows", nullptr, ImGuiTabItemFlags_::ImGuiTabItemFlags_NoReorder)) {
+                ImGui::Checkbox("Lazy update", &settings.DebugSettings.ShadowCascades.LazyCascadeUpdate );
+                ImGui::SetItemTooltip("Update last cascades less frequently to save performance, may cause uneven frametimes");
+
                 ImGui::SliderFloat("Extend Back", &settings.DebugSettings.ShadowCascades.ExtendBack, -10000, 50000, "%.0f");
                 ImGui::SliderFloat("Extend Front", &settings.DebugSettings.ShadowCascades.ExtendFront, -10000, 50000, "%.0f");
                 ImGui::SliderFloat("Extend Side", &settings.DebugSettings.ShadowCascades.ExtendSide, -10000, 20000, "%.0f");
@@ -1215,12 +1223,36 @@ void RenderAdvancedColumn3( GothicRendererSettings& settings, GothicAPI* gapi ) 
             addRowFloat( "FarPlane", rendererInfo.FarPlane, "%.0f" );
             addRowFloat( "NearPlane", rendererInfo.NearPlane, "%.0f" );
 
+            rendererInfo.Timing.StopTotal();
+            rendererInfo.Timing.frameRecordings.push_back({"Total", rendererInfo.Timing.TotalMS});
+            
+            static std::unordered_map<const char*, std::vector<float>> timingHistory;
+            static std::unordered_map<const char*, float> timingAvg;
+            static std::chrono::time_point<std::chrono::steady_clock> lastUpdate = std::chrono::steady_clock::now();
             for ( auto& record : rendererInfo.Timing.frameRecordings ) {
-                addRowFloat( record.first, record.second, "%05.3f" );
+                timingHistory[record.first].push_back(record.second);
             }
 
-            rendererInfo.Timing.StopTotal();
-            addRowFloat( "TotalMS", rendererInfo.Timing.TotalMS, "%05.3f" );
+            auto now = std::chrono::steady_clock::now();
+            if ( std::chrono::duration_cast<std::chrono::seconds>(now - lastUpdate).count() >= 1 ) {
+                timingAvg.clear();
+
+                for (auto& [name, values] : timingHistory) {
+                    if (!values.empty()) {
+                        float sum = std::accumulate(values.begin(), values.end(), 0.0f);
+                        timingAvg[name] = sum / values.size();
+                    } else {
+                        timingAvg[name] = 0.0f;
+                    }
+                }
+                timingHistory.clear();
+                lastUpdate = now;
+            }
+            
+            // Anzeige: aktuelle Werte, Durchschnitt und Perzentil
+            for ( auto& record : rendererInfo.Timing.frameRecordings ) {
+                addRowFloat( record.first, timingAvg[record.first], "%05.2f" );
+            }
 
             addRowInt( "SC_PipelineStates", rendererInfo.FramePipelineStates );
             addRowInt( "SC_Textures", rendererInfo.StateChangesByState[GothicRendererInfo::SC_TX] );

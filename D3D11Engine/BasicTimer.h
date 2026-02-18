@@ -39,8 +39,7 @@ public:
         m_total = static_cast<float>( static_cast<double>( m_currentTime.QuadPart - m_startTime.QuadPart ) / static_cast<double>( m_frequency.QuadPart ) );
 
         if ( m_lastTime.QuadPart == m_startTime.QuadPart ) {
-            // If the timer was just reset, report a time delta equivalent to 60Hz frame time.
-            m_delta = 1.0f / 60.0f;
+            m_delta = 0.01f; // report a very low number
         } else {
             m_delta = static_cast<float>( static_cast<double>( m_currentTime.QuadPart - m_lastTime.QuadPart ) / static_cast<double>( m_frequency.QuadPart ) );
         }
