@@ -44,10 +44,10 @@ struct RndCullContext {
     } drawDistances;
 };
 
-using VisitStaticVobCallback = std::function<void( const RndCullContext&, VobInfo* )>;
-using VisitTransparentVobCallback = std::function<void( const RndCullContext&, const TransparencyVobInfo& )>;
-using VisitSkeletalVobCallback = std::function<void( const RndCullContext&, SkeletalVobInfo* )>;
-using VisitLightVobCallback = std::function<void( const RndCullContext&, VobLightInfo* )>;
+using VisitStaticVobCallback = void(*)( const RndCullContext&, VobInfo* );
+using VisitTransparentVobCallback = void(*)( const RndCullContext&, const TransparencyVobInfo& );
+using VisitSkeletalVobCallback = void(*)( const RndCullContext&, SkeletalVobInfo* );
+using VisitLightVobCallback = void(*)( const RndCullContext&, VobLightInfo* );
 
 enum EBspTreeCollectFlags : unsigned int {
     COLLECT_VOBS = 1 << 0,
