@@ -672,8 +672,8 @@ struct GothicRendererSettings {
         EnableShadows = true;
         EnableVSync = false;
         DoZPrepass = true;
-        SortRenderQueue = true;
-        DrawThreaded = true;
+        SortRenderQueue = false;
+        DrawThreaded = false;
 
         WindQuality = WIND_QUALITY_ADVANCED;
         HeroAffectsObjects = true;
