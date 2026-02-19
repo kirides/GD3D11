@@ -1094,7 +1094,7 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
             ImGui::SetItemTooltip( "PCF kernel scale (1.0=sharp default, <1.0=sharper, >1.0=softer)" );
             ImGui::DragFloat( "ShadowAOStrength", &settings.ShadowAOStrength, 0.01f, -5.0f, 2.0f, "%.2f" );
             ImGui::DragFloat( "WorldAOStrength", &settings.WorldAOStrength, 0.01f, -5.0f, 2.0f, "%.2f" );
-            ImGui::DragFloat("Shadow Draw Distance", &settings.ShadowDrawDistance, 1.0f, 0.0f, 38400.0f, "%.0f" );
+            ImGui::SliderFloat("Shadow Draw Distance", &settings.ShadowDrawDistance, 0.0f, 38400.0f, "%.0f" );
             ImGui::EndDisabled();
         }
         ImGui::Separator();
