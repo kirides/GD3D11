@@ -63,12 +63,14 @@ public:
         m_useBoundingOrientedBox = true;
         m_useSphere = false;
         m_always_containing = false;
+        isValid = true;
     }
 
     // for use with shadow mapping if the last cascade is covering the whole map.
     static Frustum AlwaysContainingFrustum() {
         Frustum f;
         f.m_always_containing = true;
+        f.isValid = true;
         return f;
     } 
 
@@ -90,6 +92,7 @@ public:
         m_useSphere = false;
         m_useBoundingOrientedBox = false;
         m_always_containing = false;
+        isValid = true;
     }
 
     // Für Pointlight Cubemap (6 Frustums)
@@ -103,6 +106,7 @@ public:
         m_useSphere = true;
         m_useBoundingOrientedBox = false;
         m_always_containing = false;
+        isValid = true;
     }
 
     // Schneller AABB-Test
@@ -191,13 +195,13 @@ public:
         return bb;
     }
     
-    float GetFarZ() const {
-        if (m_useBoundingOrientedBox)
-            return m_orientedBox.Extents.z;
-        if (m_useSphere)
-            return m_boundingSphere.Radius;
-        return m_frustum.Far;
+    static BoundingSphere BSphereFromzTBBox3D(const zTBBox3D& box) {
+        BoundingSphere sp;
+        sp.CreateFromBoundingBox(sp, BBoxFromzTBBox3D(box));
+        return sp;
     }
+
+    bool IsValid() const { return isValid; }
 private:
     // Cache world-space planes for fast culling (called after frustum is transformed to world space)
     // Plane order: [0]=Left, [1]=Right, [2]=Bottom, [3]=Top, [4]=Near, [5]=Far
@@ -253,4 +257,5 @@ private:
     bool m_useSphere = false;
     bool m_useBoundingOrientedBox = false;
     bool m_always_containing = false;
+    bool isValid = false;
 };

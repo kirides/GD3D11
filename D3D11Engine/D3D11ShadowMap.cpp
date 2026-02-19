@@ -75,7 +75,7 @@ static void CalculateCascadeMatrices(
     // Cascade-spezifische Größe basierend auf Split-Verhältnis
     float splitRatio = splits[cascadeIdx + 1] / splits[numCascades];
     float cascadeSize = farPlane * std::sqrt( splitRatio );
-    cascadeSize = std::max( cascadeSize, 500.0f );
+    // cascadeSize = std::max( cascadeSize, 500.0f );
 
     // Round cascade size to fixed increments to prevent floating-point variations
     // This ensures the shadow map covers the same world-space area consistently
@@ -90,7 +90,8 @@ static void CalculateCascadeMatrices(
     float texelSize = cascadeSize / static_cast<float>(shadowMapSize);
 
     // Use a slightly larger texel size for snapping to reduce edge swimming
-    float snapSize = texelSize * 2.0f;
+    float snapSize = texelSize// * 2.0f
+        ;
 
     // Transformiere die Shadow-Kamera-Position in Light-Space
     XMVECTOR lightSpaceOrigin = XMVector3Transform( shadowCameraPos, lightView );
@@ -125,24 +126,20 @@ static void CalculateCascadeMatrices(
     XMStoreFloat3( &outCR.PositionReplacement, lightPos );
     XMStoreFloat3( &outCR.LookAtReplacement, lookAt );
 
-    if ( cascadeIdx == numCascades - 1 ) {
-        outCR.frustum = Frustum::AlwaysContainingFrustum();
-    } else {
-        outCR.frustum.BuildOrthographic( snappedLightView,
-            // ensure some additional margin
-            // due to blending cascades in PS_DS_AtmosphericScattering.hlsl->GetCascadeUVAndBounds(..)
-            // else we might miss some shadows due to frustum culling
-            // e.g. not visible in c0 but would be in c1, due to blending,
-            // c1 won't use it's "full" color, but rather blend in slowly
-            // causing pop-in
-            cascadeSize + cullingMargin,
-            cascadeSize + cullingMargin,
-            1.0f,
-            20000.f,
-            Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendBack,
-            Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendFront,
-            Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendSide );
-    }
+    outCR.frustum.BuildOrthographic( snappedLightView,
+        // ensure some additional margin
+        // due to blending cascades in PS_DS_AtmosphericScattering.hlsl->GetCascadeUVAndBounds(..)
+        // else we might miss some shadows due to frustum culling
+        // e.g. not visible in c0 but would be in c1, due to blending,
+        // c1 won't use it's "full" color, but rather blend in slowly
+        // causing pop-in
+        cascadeSize + cullingMargin,
+        cascadeSize + cullingMargin,
+        1.0f,
+        20000.f,
+        Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendBack,
+        Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendFront,
+        Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendSide );
 }
 
 D3D11ShadowMap::D3D11ShadowMap() {
@@ -254,7 +251,7 @@ XRESULT D3D11ShadowMap::PrepareRender()
         splits = ComputeCascadeSplits( nearPlane, farPlane, numCascades, lambdaBiasTable[numCascades].lambda, lambdaBiasTable[numCascades].bias );
     }
 
-    splits[numCascades] = baseFarPlane; // Let the last cascade reach the full far plane
+    splits[numCascades] = farPlane; // Let the last cascade reach the full far plane
 
     m_CascadeSplits.clear();
     m_CascadeSplits.insert( m_CascadeSplits.begin(), splits.begin(), splits.end() );
@@ -405,8 +402,8 @@ XRESULT D3D11ShadowMap::PrepareRender()
             }
             m_ShouldUpdateCascade[cascadeIdx] = shouldUpdateCascade;
 
-            auto oldValue = m_CascadeCRs[cascadeIdx];
-            CalculateCascadeMatrices(
+            if ( shouldUpdateCascade || !m_CascadeCRs[cascadeIdx].frustum.IsValid()) {
+                CalculateCascadeMatrices(
                     m_CascadeCRs[cascadeIdx],
                     splits,
                     cascadeIdx,
@@ -417,31 +414,54 @@ XRESULT D3D11ShadowMap::PrepareRender()
                     c_XM_Up,
                     isLastCascade ? lastCascadeData.Position : WorldShadowCP,
                     GetSizeX() );
-            if ( !shouldUpdateCascade ) {
-                m_CascadeCRs[cascadeIdx] = oldValue;
             }
         }
     }
 
-    for ( int i = 0; i < numCascades; ++i ) {
-        if ( !m_ShouldUpdateCascade[i] ) {
-            continue;
-        }
+    // Collect all VOBs inside our shadow draw distance (last frustum)
+    
+    static std::vector<VobInfo*> potentialCasters;
+    static std::vector<VobLightInfo*> _1;
+    static std::vector<SkeletalVobInfo*> _2;
+    potentialCasters.reserve(1024);
+    potentialCasters.clear();
+
+    {
         RndCullContext ctx;
-        m_RenderQueues[i]->Reset();
-        ctx.queue = m_RenderQueues[i].get();
-        // skip any culling for the last cascade, 
-        // as it should cover the whole view.
-        ctx.frustum = i == numCascades - 1
-            ? Frustum::AlwaysContainingFrustum()
-            : m_CascadeCRs[i].frustum;
-        ctx.cameraPosition = m_CascadeCRs[i].PositionReplacement;
+        LegacyRenderQueueProxy q(potentialCasters, _1, _2);
+
+        ctx.queue = &q;
+        ctx.frustum = m_CascadeCRs[numCascades-1].frustum;
+        ctx.cameraPosition = m_CascadeCRs[numCascades-1].PositionReplacement;
         ctx.stage = RenderStage::STAGE_DRAW_SHADOWS;
         ctx.drawDistances.OutdoorVobs = settings.ShadowDrawDistance;
         ctx.drawDistances.OutdoorVobsSmall = settings.ShadowDrawDistance;
-
+        
         Engine::GAPI->CollectVisibleVobs( ctx );
-        auto& _ = ctx;
+    }
+    
+    auto invView = XMMatrixTranspose(XMLoadFloat4x4(&zCCamera::GetCamera()->GetTransformDX( zCCamera::ETransformType::TT_VIEW_INV )));
+    auto camPos = invView.r[3];
+    XMVECTOR camForward = XMVector3Normalize( invView.r[2]);
+    
+    for ( int i = 0; i < numCascades; ++i ) {
+        m_RenderQueues[i]->Reset();
+    }
+
+    for (auto vob : potentialCasters ) {
+        
+        auto boundingSphere = Frustum::BSphereFromzTBBox3D(vob->Vob->GetBBox());
+        if ( numCascades > 0 && m_CascadeCRs[0].frustum.Intersects( boundingSphere ) )
+            m_RenderQueues[0]->GetVobs().push_back( vob );
+
+        if ( numCascades > 1 && m_ShouldUpdateCascade[1] && m_CascadeCRs[1].frustum.Intersects( boundingSphere ) )
+            m_RenderQueues[1]->GetVobs().push_back( vob );
+
+        if ( numCascades > 2 && m_ShouldUpdateCascade[2] && m_CascadeCRs[2].frustum.Intersects( boundingSphere ) )
+            m_RenderQueues[2]->GetVobs().push_back( vob );
+
+        if ( numCascades > 3 && m_ShouldUpdateCascade[3] && m_CascadeCRs[3].frustum.Intersects( boundingSphere ) )
+            m_RenderQueues[3]->GetVobs().push_back( vob );
     }
 
     return XR_SUCCESS;
