@@ -4910,8 +4910,14 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
     }
 
     // Need to collect alpha-meshes to render them laterdy
-    std::list<std::tuple<MeshKey, MeshVisualInfo*, MeshInfo*, size_t>>
-        AlphaMeshes;
+    struct alphaMeshData {
+        MeshKey mk;
+        MeshInfo* mi;
+        MeshVisualInfo* vi;
+        std::vector<VobInstanceInfo> instances;
+    };
+    std::vector<alphaMeshData> AlphaMeshes;
+    AlphaMeshes.reserve( 64 );
 
     {
         auto _ = START_TIMING( "VOBs" );
@@ -5043,8 +5049,16 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                         if ( !doReset || blendAdd || blendBlend ) {
                             MeshVisualInfo* info = staticMeshVisual.second;
                             for ( MeshInfo* mesh : mlist ) {
-                                AlphaMeshes.emplace_back(
-                                    itt.first, info, mesh, staticMeshVisual.second->Instances.size() );
+                                alphaMeshData data = {};
+                                data.mk = itt.first;
+                                data.vi = info;
+                                data.mi = mesh;
+                                // TODO: only store this once!
+                                // but as of now, this only seems to happen VERY rarely
+                                // and the only usage i found was a bug (?) in pirates camp
+                                // where there would be cobwebs randomly.
+                                data.instances = staticMeshVisual.second->Instances;
+                                AlphaMeshes.emplace_back( data );
                             }
 
                             doReset = false;
@@ -5213,8 +5227,25 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
 
     {
         auto _1 = Engine::GraphicsEngine->RecordGraphicsEvent( L"DrawVOBsInstanced->AlphaMeshes" );
+
+        // re-setup dynamic instancing buffer with correct instances and values
+        // shadow pass breaks the "global" state of this.
+
+        byte* data;
+        UINT size;
+        UINT loc = 0;
+        DynamicInstancingBuffer->Map( D3D11VertexBuffer::M_WRITE_DISCARD,
+            reinterpret_cast<void**>(&data), &size );
+        for ( auto const& alphaData : AlphaMeshes ) {
+            alphaData.vi->StartInstanceNum = loc;
+            memcpy( data + loc * sizeof( VobInstanceInfo ), &alphaData.instances[0],
+                sizeof( VobInstanceInfo ) * alphaData.instances.size() );
+            loc += alphaData.instances.size();
+        }
+        DynamicInstancingBuffer->Unmap();
+
         for ( auto const& alphaMesh : AlphaMeshes ) {
-            const MeshKey& mk = std::get<0>( alphaMesh );
+            const MeshKey& mk = alphaMesh.mk;
             zCTexture* tx = mk.Material->GetAniTexture();
             if ( !tx ) continue;
 
@@ -5223,9 +5254,9 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
             bool blendBlend = mk.Material->GetAlphaFunc() == zMAT_ALPHA_FUNC_BLEND;
 
             // Bind texture
-            MeshInfo* mi = std::get<2>( alphaMesh );
-            MeshVisualInfo* vi = std::get<1>( alphaMesh );
-            size_t instances = std::get<3>( alphaMesh );
+            MeshInfo* mi = alphaMesh.mi;
+            MeshVisualInfo* vi = alphaMesh.vi;
+            auto& instances = alphaMesh.instances;
 
             if ( tx->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
                 MyDirectDrawSurface7* surface = tx->GetSurface();
@@ -5274,12 +5305,13 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
             // Draw batch
             DrawInstanced( mi->MeshVertexBuffer, mi->MeshIndexBuffer, mi->Indices.size(),
                 DynamicInstancingBuffer.get(), sizeof( VobInstanceInfo ),
-                instances, sizeof( ExVertexStruct ),
+                instances.size(), sizeof(ExVertexStruct),
                 vi->StartInstanceNum );
 
             // Reset visual
             vi->StartNewFrame();
         }
+        AlphaMeshes.clear();
     }
 
     if ( !Engine::GAPI->GetRendererState().RendererSettings.FixViewFrustum ) {
