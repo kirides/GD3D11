@@ -20,12 +20,28 @@ struct ScreenSpaceLine;
 struct LineVertex;
 
 struct RndCullContext {
+    RndCullContext():
+    frustum({}),
+    cameraPosition({0,0,0}),
+    stage(RenderStage::STAGE_DRAW_UNKNOWN),
+    queue(nullptr),
+    drawDistances({})
+    {
+    }
+    
     Frustum frustum;
-    float maxDistance;
     XMFLOAT3 cameraPosition;
     RenderStage stage;
 
     RenderQueue* queue;
+    
+    struct
+    {
+        float OutdoorVobs;
+        float OutdoorVobsSmall;
+        float IndoorVobs;
+        float VisualFX;
+    } drawDistances;
 };
 
 using VisitStaticVobCallback = std::function<void( const RndCullContext&, VobInfo* )>;

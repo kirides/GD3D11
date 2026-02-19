@@ -405,6 +405,7 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.ShadowSoftness = 0.85f;
         s.SmoothShadowCameraUpdate = true;
         s.SmoothShadowFrequency = 500;
+        s.ShadowDrawDistance = 10'000.0f;
 
         s.EnableDynamicLighting = false;
         s.EnablePointlightShadows = GothicRendererSettings::EPointLightShadowMode::PLS_DISABLED;
@@ -437,7 +438,8 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.ShadowSoftness = 0.85f;
         s.SmoothShadowCameraUpdate = true;
         s.SmoothShadowFrequency = 1000;
-
+        s.ShadowDrawDistance = 15'000.0f;
+            
         s.EnableDynamicLighting = true;
         s.EnablePointlightShadows = GothicRendererSettings::EPointLightShadowMode::PLS_STATIC_ONLY;
 
@@ -469,6 +471,7 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.ShadowSoftness = 1.0f;
         s.SmoothShadowCameraUpdate = false;
         s.SmoothShadowFrequency = 20000;
+        s.ShadowDrawDistance = 20'000.0f;
 
         s.EnableDynamicLighting = true;
         s.EnablePointlightShadows = GothicRendererSettings::EPointLightShadowMode::PLS_UPDATE_DYNAMIC;
@@ -503,6 +506,7 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.ShadowSoftness = 1.0f;
         s.SmoothShadowCameraUpdate = false;
         s.SmoothShadowFrequency = 20000;
+        s.ShadowDrawDistance = 25'000.0f;
 
         s.EnableDynamicLighting = true;
         s.EnablePointlightShadows = GothicRendererSettings::EPointLightShadowMode::PLS_FULL;
@@ -1084,20 +1088,22 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
                 Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows );
             }
             ImGui::SetItemTooltip( "Which shadow cascades should be filtered using '16xPCF'" );
-
+            
             ImGui::DragFloat( "ShadowStrength", &settings.ShadowStrength, 0.01f, 0.01f, 5.0f, "%.2f" );
             ImGui::DragFloat( "ShadowSoftness", &settings.ShadowSoftness, 0.05f, 0.2f, 4.0f, "%.2f" );
             ImGui::SetItemTooltip( "PCF kernel scale (1.0=sharp default, <1.0=sharper, >1.0=softer)" );
             ImGui::DragFloat( "ShadowAOStrength", &settings.ShadowAOStrength, 0.01f, -5.0f, 2.0f, "%.2f" );
             ImGui::DragFloat( "WorldAOStrength", &settings.WorldAOStrength, 0.01f, -5.0f, 2.0f, "%.2f" );
-
+            ImGui::DragFloat("Shadow Draw Distance", &settings.ShadowDrawDistance, 1.0f, 0.0f, 38400.0f, "%.0f" );
             ImGui::EndDisabled();
         }
+        ImGui::Separator();
 
         ImGui::Checkbox( "WireframeWorld", &settings.WireframeWorld );
         ImGui::Checkbox( "WireframeVobs", &settings.WireframeVobs );
         // ImGui::Checkbox("Grass AlphaToCoverage", &settings.VegetationAlphaToCoverage );	
 
+        ImGui::SeparatorText("Rain Settings##AdvancedRainSettings");
         ImGui::DragFloat( "RainRadius", &settings.RainRadiusRange, 1.0f, 0.0f, 0.0f, "%.0f" );
         ImGui::DragFloat( "RainHeight", &settings.RainHeightRange, 1.0f, 0.0f, 0.0f, "%.0f" );
         ImGui::DragInt( "NumRainParticles", (int*)&settings.RainNumParticles, 1.0f, 0, 200000 );
@@ -1108,12 +1114,16 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
         ImGui::DragFloat( "RainSunLightStrength", &settings.RainSunLightStrength, 0.01f, 0.0f, 0.0f, "%.2f" );
         ImGui::DragFloat( "RainFogDensity", &settings.RainFogDensity, 0.001f );
         ImGui::ColorEdit3( "RainFogColor", &settings.RainFogColor.x );
+        ImGui::Separator();
         // TwAddVarRW("SmallVobSize", TW_TYPE_FLOAT, &settings.SmallVobSize );
         // ImGui::Checkbox("AtmosphericScattering", &settings.AtmosphericScattering );
+        ImGui::SeparatorText("Fog Settings##AdvancedFogSettings");
         ImGui::DragFloat( "FogGlobalDensity", &settings.FogGlobalDensity, 0.00001f, 0, 1.0f, "%.5f" );
         ImGui::DragFloat( "FogHeightFalloff", &settings.FogHeightFalloff, 0.00001f, 0, 1.0f, "%.5f" );
         ImGui::DragFloat( "FogHeight", &settings.FogHeight, 1.0f, 0.0f, 0.0f, "%.0f" );
         ImGui::ColorEdit3( "FogColorMod", &settings.FogColorMod.x );
+        ImGui::Separator();
+
         ImGui::DragFloat( "HDRLumWhite", &settings.HDRLumWhite, 0.01f, 0.0f, 0.0f, "%.2f" );
         ImGui::DragFloat( "HDRMiddleGray", &settings.HDRMiddleGray, 0.01f, 0.0f, 0.0f, "%.2f" );
         ImGui::DragFloat( "BloomThreshold", &settings.BloomThreshold, 0.01f, 0.0f, 0.0f, "%.2f" );

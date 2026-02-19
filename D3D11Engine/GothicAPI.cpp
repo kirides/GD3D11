@@ -4000,12 +4000,9 @@ void GothicAPI::CollectVisibleVobs(
     zCBspTree* tree = LoadedWorldInfo->BspTree;
 
     zCBspBase* rootBsp = tree->GetRootNode();
-    BspInfo* root = &BspLeafVobLists[rootBsp];
-    float maxDistance = 64'000;
     Frustum frustum = Frustum::AlwaysContainingFrustum();
     if ( auto cam = zCCamera::GetCamera() ) {
         cam->Activate();
-        maxDistance = cam->GetFarPlane();
 
         // Row-Major view
         const auto& view = cam->trafoView;
@@ -4032,10 +4029,13 @@ void GothicAPI::CollectVisibleVobs(
 
     RndCullContext ctx;
     ctx.queue = &renderQueue;
-    ctx.maxDistance = maxDistance;
     ctx.cameraPosition = GetCameraPosition();
     ctx.stage = RenderStage::STAGE_DRAW_WORLD;
     ctx.frustum = frustum;
+    ctx.drawDistances.OutdoorVobs = RendererState.RendererSettings.OutdoorVobDrawRadius;
+    ctx.drawDistances.OutdoorVobsSmall = RendererState.RendererSettings.OutdoorSmallVobDrawRadius;
+    ctx.drawDistances.IndoorVobs = RendererState.RendererSettings.IndoorVobDrawRadius;
+    ctx.drawDistances.VisualFX = RendererState.RendererSettings.VisualFXDrawRadius;
     CollectVisibleVobs( ctx );
 
     if ( RendererState.RendererSettings.SortRenderQueue ) {
@@ -4959,6 +4959,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Shadows", "ShadowSoftness", std::to_string( s.ShadowSoftness ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "ShadowAOStrength", std::to_string( s.ShadowAOStrength ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "WorldAOStrength", std::to_string( s.WorldAOStrength ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Shadows", "ShadowDrawDistance", std::to_string( s.ShadowDrawDistance ).c_str(), ini.c_str() );
 
     // WritePrivateProfileStringA( "SMAA", "Enabled", std::to_string( s.EnableSMAA ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "AntiAliasing", std::to_string( (int)s.AntiAliasingMode ).c_str(), ini.c_str() );
@@ -5046,6 +5047,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.ShadowSoftness = GetPrivateProfileFloatA( "Shadows", "ShadowSoftness", defaultRendererSettings.ShadowSoftness, ini );
         s.ShadowAOStrength = GetPrivateProfileFloatA( "Shadows", "ShadowAOStrength", defaultRendererSettings.ShadowAOStrength, ini );
         s.WorldAOStrength = GetPrivateProfileFloatA( "Shadows", "WorldAOStrength", defaultRendererSettings.WorldAOStrength, ini );
+        s.ShadowDrawDistance = GetPrivateProfileFloatA( "Shadows", "ShadowDrawDistance", defaultRendererSettings.ShadowDrawDistance, ini );
 
         INT2 res = {};
         RECT desktopRect;
@@ -5742,17 +5744,17 @@ void GothicAPI::CollectVisibleVobs( const RndCullContext& ctx ) {
     );
 
     FXMVECTOR camPos = XMLoadFloat3( &ctx.cameraPosition );
-    const float vobIndoorDist = std::min( Engine::GAPI->GetRendererState().RendererSettings.IndoorVobDrawRadius, ctx.maxDistance );
-    const float vobOutdoorDist = std::min( Engine::GAPI->GetRendererState().RendererSettings.OutdoorVobDrawRadius, ctx.maxDistance );
-    const float vobOutdoorSmallDist = std::min( Engine::GAPI->GetRendererState().RendererSettings.OutdoorSmallVobDrawRadius, ctx.maxDistance );
-    const float vobSmallSize = std::min( Engine::GAPI->GetRendererState().RendererSettings.SmallVobSize, ctx.maxDistance );
+    const float vobIndoorDist = ctx.drawDistances.IndoorVobs;
+    const float vobOutdoorDist = ctx.drawDistances.OutdoorVobs;
+    const float vobOutdoorSmallDist = ctx.drawDistances.OutdoorVobsSmall;
+    const float vobSmallSize = RendererState.RendererSettings.SmallVobSize;
     bool collectIndoor = ctx.stage != RenderStage::STAGE_DRAW_SHADOWS;
-    auto cullingEnabled = Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.Culling.CullVobs;
+    auto cullingEnabled = RendererState.RendererSettings.DebugSettings.Culling.CullVobs;
 
     std::list<VobInfo*> removeList; // TODO: This should not be needed!
 
     // Add visible dynamically added vobs
-    if ( Engine::GAPI->GetRendererState().RendererSettings.DrawVOBs ) {
+    if ( RendererState.RendererSettings.DrawVOBs ) {
         float dist;
         for ( VobInfo* it : DynamicallyAddedVobs ) {
             if ( it->VisibleInRenderPass ) continue;
@@ -5814,10 +5816,10 @@ void GothicAPI::CollectVisibleVobsHelper( BspInfo* base,
     VisitSkeletalVobCallback skeltalVobCallback,
     VisitLightVobCallback lightVobCallback
     ) {
-    const float vobIndoorDist = Engine::GAPI->GetRendererState().RendererSettings.IndoorVobDrawRadius;
-    const float vobOutdoorDist = Engine::GAPI->GetRendererState().RendererSettings.OutdoorVobDrawRadius;
-    const float vobOutdoorSmallDist = Engine::GAPI->GetRendererState().RendererSettings.OutdoorSmallVobDrawRadius;
-    const float visualFXDrawRadius = Engine::GAPI->GetRendererState().RendererSettings.VisualFXDrawRadius;
+    const float vobIndoorDist = ctx.drawDistances.IndoorVobs;
+    const float vobOutdoorDist = ctx.drawDistances.OutdoorVobs;
+    const float vobOutdoorSmallDist = ctx.drawDistances.OutdoorVobsSmall;
+    const float visualFXDrawRadius = ctx.drawDistances.VisualFX;
     const XMFLOAT3 camPos = ctx.cameraPosition;
     const FXMVECTOR cameraPosition = XMLoadFloat3( &camPos );
     EBspTreeCollectFlags collectFlags = EBspTreeCollectFlags::COLLECT_ALL_NO_MUTATE;

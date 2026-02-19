@@ -657,6 +657,7 @@ struct GothicRendererSettings {
         ShadowAOStrength = 0.50f;
         WorldAOStrength = 0.50f;
         ShadowSoftness = 1.0f; // 1.0 = default softness, higher = softer shadows
+        ShadowDrawDistance = 20000.0f;
 
         BloomStrength = 1.0f;
         GlobalWindStrength = 1.0f;
@@ -869,6 +870,7 @@ struct GothicRendererSettings {
     float ShadowAOStrength;
     float WorldAOStrength;
     float ShadowSoftness;
+    float ShadowDrawDistance;
 
     float GodRayDecay;
     float GodRayWeight;

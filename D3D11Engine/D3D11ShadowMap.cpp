@@ -437,7 +437,8 @@ XRESULT D3D11ShadowMap::PrepareRender()
             : m_CascadeCRs[i].frustum;
         ctx.cameraPosition = m_CascadeCRs[i].PositionReplacement;
         ctx.stage = RenderStage::STAGE_DRAW_SHADOWS;
-        ctx.maxDistance = splits[i + 1] * 1.1f; // Add some margin to the cascade split distance for culling
+        ctx.drawDistances.OutdoorVobs = settings.ShadowDrawDistance;
+        ctx.drawDistances.OutdoorVobsSmall = settings.ShadowDrawDistance;
 
         Engine::GAPI->CollectVisibleVobs( ctx );
         auto& _ = ctx;
