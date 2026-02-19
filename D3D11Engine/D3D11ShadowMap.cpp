@@ -26,102 +26,11 @@ const float NUM_FRAME_SHADOW_UPDATES = 2;  // Fraction of lights to update per f
 const int NUM_MIN_FRAME_SHADOW_UPDATES = 4;  // Minimum lights to update per frame
 const int MAX_IMPORTANT_LIGHT_UPDATES = 1;
 
-D3D11ShadowMap::D3D11ShadowMap() {}
-
-D3D11ShadowMap::~D3D11ShadowMap() {}
-
-void D3D11ShadowMap::Init( Microsoft::WRL::ComPtr<ID3D11Device1>& device, Microsoft::WRL::ComPtr<ID3D11DeviceContext1>& context, int size ) {
-    m_device = device;
-    m_context = context;
-
-    int s = std::min<int>( std::max<int>( size, 512 ), (FeatureLevel10Compatibility ? 8192 : 16384) );
-
-    // Create sampler
-    D3D11_SAMPLER_DESC samplerDesc = {};
-    samplerDesc.Filter = D3D11_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR;
-    samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
-    samplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_WRAP;
-    samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
-    samplerDesc.MipLODBias = 0;
-    samplerDesc.MaxAnisotropy = 1;
-    samplerDesc.ComparisonFunc = D3D11_COMPARISON_LESS_EQUAL;
-    samplerDesc.MinLOD = -FLT_MAX;
-    samplerDesc.MaxLOD = FLT_MAX;
-
-    HRESULT hr;
-    LE( m_device->CreateSamplerState( &samplerDesc, m_shadowmapSampler.GetAddressOf() ) );
-    SetDebugName( m_shadowmapSampler.Get(), "ShadowmapSamplerState" );
-
-    // Dummy cube RT used for fallback to satisfy pixel shader runs that expect a RTV bound
-    m_dummyCubeRT = std::make_unique<RenderToTextureBuffer>( m_device.Get(), POINTLIGHT_SHADOWMAP_SIZE, POINTLIGHT_SHADOWMAP_SIZE, DXGI_FORMAT_ENGINE_DEFAULT, nullptr, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, 1, 6 );
-
-    // Initialize the cascaded shadow map
-    m_cascadedShadowMap = std::make_unique<D3D11CascadedShadowMapBuffer>();
-    m_cascadedShadowMap->Init( m_device, s, MAX_CSM_CASCADES );
-
-    Resize( s );
-}
-
-void D3D11ShadowMap::Resize( int size ) {
-
-    if ( !m_device ) return;
-
-    int s = std::min<int>( std::max<int>( size, 512 ), (FeatureLevel10Compatibility ? 8192 : 16384) );
-
-    // Resize the cascaded shadow map
-    if ( m_cascadedShadowMap ) {
-        m_cascadedShadowMap->Resize( s );
-    }
-}
-
-void D3D11ShadowMap::BindToPixelShader( ID3D11DeviceContext1* context, UINT slot ) {
-    // Bind the cascaded shadow map (Texture2DArray)
-    if ( m_cascadedShadowMap ) {
-        m_cascadedShadowMap->BindToPixelShader( context, slot );
-    }
-}
-
-void D3D11ShadowMap::BindSampler( ID3D11DeviceContext1* context, UINT slot ) {
-    if ( m_shadowmapSampler ) context->PSSetSamplers( slot, 1, m_shadowmapSampler.GetAddressOf() );
-}
-
-// Computes cascade splits using a interpolation between uniform and logarithmic splits, additionally modified by a bias factor.
-// Returns vector with (numCascades + 1) entries: [nearPlane, split1, split2, ..., farPlane]
-std::vector<float> D3D11ShadowMap::ComputeCascadeSplits( float nearPlane, float farPlane, size_t numCascades, float lambda, float bias ) {
-    if ( numCascades == 0 ) return { nearPlane, farPlane };
-
-    lambda = std::clamp( lambda, 0.0f, 1.0f );
-
-    std::vector<float> splits;
-    splits.reserve( numCascades + 1 );
-    splits.push_back( nearPlane );
-
-    for ( size_t i = 1; i <= numCascades; ++i ) {
-        // Calculate the linear fraction (0.0 to 1.0)
-        float linearFraction = static_cast<float>(i) / static_cast<float>(numCascades);
-
-        // Apply the BIAS (Power Function).
-        // If bias > 1 (e.g., 2.0), this pushes values closer to 0, making near cascades smaller.
-        float si = std::pow( linearFraction, bias );
-
-        // apply logarithmic and uniform split calculations
-        float logSplit = nearPlane * std::pow( farPlane / nearPlane, si );
-        float uniformSplit = nearPlane + (farPlane - nearPlane) * si;
-
-        // Interpolate
-        float d = lambda * logSplit + (1.0f - lambda) * uniformSplit;
-
-        splits.push_back( d );
-    }
-
-    return splits;
-}
-
 void CalculateTemporalInterpolatedPosition(
     const XMVECTOR currentDir,
     XMVECTOR& previousDir,
     XMVECTOR& outDir,
-    float frequency) {
+    float frequency ) {
     // Calculate interpolation factor based on SmoothShadowFrequency
         // Higher frequency = faster updates = less smoothing
         // Lower frequency = slower updates = more smoothing (less flickering)
@@ -166,8 +75,8 @@ static void CalculateCascadeMatrices(
     // Cascade-spezifische Größe basierend auf Split-Verhältnis
     float splitRatio = splits[cascadeIdx + 1] / splits[numCascades];
     float cascadeSize = farPlane * std::sqrt( splitRatio );
-    cascadeSize = std::max( cascadeSize, 500.0f );
-    
+    // cascadeSize = std::max( cascadeSize, 500.0f );
+
     // Round cascade size to fixed increments to prevent floating-point variations
     // This ensures the shadow map covers the same world-space area consistently
     constexpr float sizeQuantization = 64.0f;
@@ -179,9 +88,10 @@ static void CalculateCascadeMatrices(
     // *** TEXEL SNAPPING ***
     // Berechne die Größe eines Texels in World-Space
     float texelSize = cascadeSize / static_cast<float>(shadowMapSize);
-    
+
     // Use a slightly larger texel size for snapping to reduce edge swimming
-    float snapSize = texelSize * 2.0f;
+    float snapSize = texelSize// * 2.0f
+        ;
 
     // Transformiere die Shadow-Kamera-Position in Light-Space
     XMVECTOR lightSpaceOrigin = XMVector3Transform( shadowCameraPos, lightView );
@@ -206,7 +116,7 @@ static void CalculateCascadeMatrices(
     XMMATRIX snappedLightView = XMMatrixMultiply( lightView, offsetMatrix );
 
     float cullingMargin = texelSize * 2.0f;
-    
+
     const XMMATRIX crViewRepl = XMMatrixTranspose( snappedLightView );
     const XMMATRIX crProjRepl = XMMatrixTranspose( XMMatrixOrthographicLH(
         cascadeSize, cascadeSize, 1.0f, 20000.f ) );
@@ -215,25 +125,378 @@ static void CalculateCascadeMatrices(
     XMStoreFloat4x4( &outCR.ProjectionReplacement, crProjRepl );
     XMStoreFloat3( &outCR.PositionReplacement, lightPos );
     XMStoreFloat3( &outCR.LookAtReplacement, lookAt );
+
+    outCR.frustum.BuildOrthographic( snappedLightView,
+        // ensure some additional margin
+        // due to blending cascades in PS_DS_AtmosphericScattering.hlsl->GetCascadeUVAndBounds(..)
+        // else we might miss some shadows due to frustum culling
+        // e.g. not visible in c0 but would be in c1, due to blending,
+        // c1 won't use it's "full" color, but rather blend in slowly
+        // causing pop-in
+        cascadeSize + cullingMargin,
+        cascadeSize + cullingMargin,
+        1.0f,
+        20000.f,
+        Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendBack,
+        Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendFront,
+        Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendSide );
+}
+
+D3D11ShadowMap::D3D11ShadowMap() {
     
-    if (cascadeIdx == numCascades -1) {
-        outCR.frustum = Frustum::AlwaysContainingFrustum();    
-    } else {
-        outCR.frustum.BuildOrthographic( snappedLightView,
-            // ensure some additional margin
-            // due to blending cascades in PS_DS_AtmosphericScattering.hlsl->GetCascadeUVAndBounds(..)
-            // else we might miss some shadows due to frustum culling
-            // e.g. not visible in c0 but would be in c1, due to blending,
-            // c1 won't use it's "full" color, but rather blend in slowly
-            // causing pop-in
-            cascadeSize + cullingMargin, 
-            cascadeSize + cullingMargin, 
-            1.0f, 
-            20000.f, 
-            Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendBack, 
-            Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendFront,
-            Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendSide);
+}
+
+D3D11ShadowMap::~D3D11ShadowMap() {}
+
+void D3D11ShadowMap::Init( Microsoft::WRL::ComPtr<ID3D11Device1>& device, Microsoft::WRL::ComPtr<ID3D11DeviceContext1>& context, int size ) {
+    m_device = device;
+    m_context = context;
+
+    int s = std::min<int>( std::max<int>( size, 512 ), (FeatureLevel10Compatibility ? 8192 : 16384) );
+
+    // Create sampler
+    D3D11_SAMPLER_DESC samplerDesc = {};
+    samplerDesc.Filter = D3D11_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR;
+    samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
+    samplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_WRAP;
+    samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
+    samplerDesc.MipLODBias = 0;
+    samplerDesc.MaxAnisotropy = 1;
+    samplerDesc.ComparisonFunc = D3D11_COMPARISON_LESS_EQUAL;
+    samplerDesc.MinLOD = -FLT_MAX;
+    samplerDesc.MaxLOD = FLT_MAX;
+
+    HRESULT hr;
+    LE( m_device->CreateSamplerState( &samplerDesc, m_shadowmapSampler.GetAddressOf() ) );
+    SetDebugName( m_shadowmapSampler.Get(), "ShadowmapSamplerState" );
+
+    // Dummy cube RT used for fallback to satisfy pixel shader runs that expect a RTV bound
+    m_dummyCubeRT = std::make_unique<RenderToTextureBuffer>( m_device.Get(), POINTLIGHT_SHADOWMAP_SIZE, POINTLIGHT_SHADOWMAP_SIZE, DXGI_FORMAT_ENGINE_DEFAULT, nullptr, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, 1, 6 );
+
+    // Initialize the cascaded shadow map
+    m_cascadedShadowMap = std::make_unique<D3D11CascadedShadowMapBuffer>();
+    m_cascadedShadowMap->Init( m_device, s, MAX_CSM_CASCADES );
+
+    for ( int i = 0; i < MAX_CSM_CASCADES; ++i ) {
+        m_RenderQueues[i] = std::make_unique<D3D11RenderQueue>( device.Get(), context.Get() );
     }
+
+    Resize( s );
+}
+
+void D3D11ShadowMap::Resize( int size ) {
+
+    if ( !m_device ) return;
+
+    int s = std::min<int>( std::max<int>( size, 512 ), (FeatureLevel10Compatibility ? 8192 : 16384) );
+
+    // Resize the cascaded shadow map
+    if ( m_cascadedShadowMap ) {
+        m_cascadedShadowMap->Resize( s );
+    }
+}
+
+void D3D11ShadowMap::BindToPixelShader( ID3D11DeviceContext1* context, UINT slot ) {
+    // Bind the cascaded shadow map (Texture2DArray)
+    if ( m_cascadedShadowMap ) {
+        m_cascadedShadowMap->BindToPixelShader( context, slot );
+    }
+}
+
+void D3D11ShadowMap::BindSampler( ID3D11DeviceContext1* context, UINT slot ) {
+    if ( m_shadowmapSampler ) context->PSSetSamplers( slot, 1, m_shadowmapSampler.GetAddressOf() );
+}
+
+XRESULT D3D11ShadowMap::PrepareRender()
+{
+    const XMVECTOR cameraPositionXm = Engine::GAPI->GetCameraPositionXM();
+    XMFLOAT3 cameraPosition;
+    XMStoreFloat3( &cameraPosition, cameraPositionXm );
+
+    auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+
+    // ********************************
+    // Cascade Shadow Map Rendering (Simple Sequential Version)
+    // ********************************
+
+    zCCamera* camera = (zCCamera*)oCGame::GetGame()->_zCSession_camera;
+    if ( !camera ) {
+        return XR_SUCCESS;
+    }
+    camera->Activate();
+
+    const float nearPlane = std::max( 1.0f, camera->GetNearPlane() );
+    // Clamp far plane to avoid extreme shadow distances
+    // 64000 (default for worldsize 4) * 0.6 = 38400
+    // this looked good ough in testing, without many popping artifacts
+    const float baseFarPlane = std::min( camera->GetFarPlane(), 38400.0f );
+
+    // WorldShadowRangeScale als Multiplikator für die Schattenreichweite
+    const float shadowRangeScale = settings.WorldShadowRangeScale;
+    const float farPlane = baseFarPlane * std::max( 0.1f, shadowRangeScale );
+    int numCascades = settings.NumShadowCascades;
+    if ( numCascades > MAX_CSM_CASCADES || numCascades < 1 ) {
+        numCascades = std::clamp( numCascades, 1, MAX_CSM_CASCADES );
+        settings.NumShadowCascades = numCascades;
+    }
+
+    std::vector<float> splits;
+    if ( settings.DebugSettings.ShadowCascades.Lambda > 0.0001f
+        || settings.DebugSettings.ShadowCascades.Bias > 0.0001f ) {
+
+        splits = ComputeCascadeSplits( nearPlane, farPlane, numCascades,
+                                                         settings.DebugSettings.ShadowCascades.Lambda,
+                                                         settings.DebugSettings.ShadowCascades.Bias );
+    } else {
+        splits = ComputeCascadeSplits( nearPlane, farPlane, numCascades, lambdaBiasTable[numCascades].lambda, lambdaBiasTable[numCascades].bias );
+    }
+
+    splits[numCascades] = farPlane; // Let the last cascade reach the full far plane
+
+    m_CascadeSplits.clear();
+    m_CascadeSplits.insert( m_CascadeSplits.begin(), splits.begin(), splits.end() );
+
+    // Get current light direction from atmosphere
+    XMVECTOR currentDir = XMLoadFloat3( Engine::GAPI->GetSky()->GetAtmosphereCB().AC_LightPos.toXMFLOAT3() );
+    currentDir = XMVector3Normalize( currentDir );
+
+    // *** TEMPORAL SMOOTHING FOR LIGHT DIRECTION ***
+    // Use static variables to maintain state across frames for smooth shadow transitions
+
+    static struct alignas(16) {
+        XMVECTOR PreviousLightDir;
+        XMVECTOR OldPosition;
+        XMVECTOR LightDir;
+        XMVECTOR Position;
+        bool initialized;
+    } lastCascadeData = {};
+
+    static struct {
+        size_t frameCount;
+        std::array<CameraReplacement, MAX_CSM_CASCADES> PreviousCascadeCRs;
+    } perFrameCascadeData = {};
+
+    static XMVECTOR s_previousLightDir = currentDir;
+    static bool s_lightDirInitialized = false;
+
+    XMVECTOR dir;
+
+    if ( settings.SmoothShadowCameraUpdate ) {
+        // Initialize on first frame
+        if ( !s_lightDirInitialized ) {
+            s_previousLightDir = currentDir;
+            s_lightDirInitialized = true;
+        }
+
+        CalculateTemporalInterpolatedPosition(
+            currentDir,
+            s_previousLightDir,
+            dir,
+            std::max( 1.0f, settings.SmoothShadowFrequency ) );
+    } else {
+        dir = currentDir;
+        s_previousLightDir = currentDir;
+        s_lightDirInitialized = true;
+    }
+
+    if ( !lastCascadeData.initialized ) {
+        lastCascadeData.PreviousLightDir = currentDir;
+        lastCascadeData.initialized = true;
+    }
+
+    CalculateTemporalInterpolatedPosition(
+        currentDir,
+        lastCascadeData.PreviousLightDir,
+        lastCascadeData.LightDir,
+        500.0f );
+
+    static XMVECTOR oldP = XMVectorZero();
+    XMVECTOR WorldShadowCP;
+    // Update position
+    // Try to update only if the camera went 200 units away from the last position
+    // This prevents "shaking" when the player is strafing or moving just a tiny bit
+    float len;
+    XMStoreFloat( &len, XMVector3LengthSq( oldP - cameraPositionXm ) );
+    constexpr float distSq = 64.f * 64.f;
+    if ( (len < distSq) ) {
+        WorldShadowCP = oldP;
+    } else {
+        oldP = cameraPositionXm;
+        WorldShadowCP = oldP;
+    }
+    XMStoreFloat3( &m_WorldShadowPos, WorldShadowCP );
+
+    XMStoreFloat( &len, XMVector3LengthSq( lastCascadeData.OldPosition - cameraPositionXm ) );
+    // for the last cascade, we snap greater distances to avoid shimmering when moving
+    if ( (len < (160.f * 160.f)) ) {
+        lastCascadeData.Position = lastCascadeData.OldPosition;
+    } else {
+        lastCascadeData.OldPosition = cameraPositionXm;
+        lastCascadeData.Position = cameraPositionXm;
+    }
+
+    // Indoor check
+    static zTBspMode lastBspMode = zBSP_MODE_OUTDOOR;
+
+    // Array für alle Cascade-Matrizen
+    bool isOutdoor = Engine::GAPI->GetLoadedWorldInfo()->BspTree->GetBspTreeMode() == zBSP_MODE_OUTDOOR;
+
+    const FXMVECTOR p = WorldShadowCP + dir * 10000.0f;
+    const FXMVECTOR lookAt = WorldShadowCP;
+
+    const XMVECTOR lastCascadeP = lastCascadeData.Position + lastCascadeData.LightDir * 10000.0f;
+    const XMVECTOR lastCascadeLookAt = lastCascadeData.Position;
+
+    static const XMVECTORF32 c_XM_Up = { { { 0, 1, 0, 0 } } };
+
+    if ( !isOutdoor ) {
+        if ( settings.EnableShadows && lastBspMode == zBSP_MODE_OUTDOOR ) {
+            // Clear all cascade DSVs
+            for ( size_t cascadeIdx = 0; cascadeIdx < MAX_CSM_CASCADES; ++cascadeIdx ) {
+                if ( auto dsv = GetCascadeDSV( static_cast<UINT>( cascadeIdx ) ) ) {
+                    m_context->ClearDepthStencilView( dsv, D3D11_CLEAR_DEPTH, 0.0f, 0 );
+                }
+            }
+            lastBspMode = zBSP_MODE_INDOOR;
+        }
+
+        // Setze Default für Indoor
+        for ( int i = 0; i < numCascades; ++i ) {
+            if ( numCascades > 1 && i == numCascades - 1 ) {
+                const auto p = lastCascadeP;
+                const auto lookAt = lastCascadeLookAt;
+
+                XMStoreFloat4x4( &m_CascadeCRs[i].ViewReplacement, XMMatrixTranspose( XMMatrixLookAtLH( p, lookAt, c_XM_Up ) ) );
+                XMStoreFloat4x4( &m_CascadeCRs[i].ProjectionReplacement, XMMatrixTranspose( XMMatrixOrthographicLH(
+                    farPlane, farPlane, 1.0f, 20000.f ) ) );
+                XMStoreFloat3( &m_CascadeCRs[i].PositionReplacement, p );
+                XMStoreFloat3( &m_CascadeCRs[i].LookAtReplacement, lookAt );
+            } else {
+                XMStoreFloat4x4( &m_CascadeCRs[i].ViewReplacement, XMMatrixTranspose( XMMatrixLookAtLH( p, lookAt, c_XM_Up ) ) );
+                XMStoreFloat4x4( &m_CascadeCRs[i].ProjectionReplacement, XMMatrixTranspose( XMMatrixOrthographicLH(
+                    farPlane, farPlane, 1.0f, 20000.f ) ) );
+                XMStoreFloat3( &m_CascadeCRs[i].PositionReplacement, p );
+                XMStoreFloat3( &m_CascadeCRs[i].LookAtReplacement, lookAt );
+            }
+        }
+    } else {
+        lastBspMode = zBSP_MODE_OUTDOOR;
+
+        // Increment frame counter for temporal cascade updates
+        perFrameCascadeData.frameCount++;
+        bool lazyCascadeUpdate = settings.DebugSettings.ShadowCascades.LazyCascadeUpdate;
+
+        for ( int cascadeIdx = 0; cascadeIdx < numCascades; ++cascadeIdx ) {
+            // pre-calculate all cascade matrices, to be able to frustum-cull anything that is not in this or the next cascade.
+
+            bool isLastCascade = (numCascades > 1 && cascadeIdx == numCascades - 1);
+
+            bool shouldUpdateCascade = true;
+            if ( lazyCascadeUpdate && cascadeIdx == 2 ) {
+                // pre-last cascade updates every 2nd frame which is 30 FPS = 15 updates per second
+                shouldUpdateCascade = (perFrameCascadeData.frameCount % 2) == 0;
+            } else if ( lazyCascadeUpdate && cascadeIdx == MAX_CSM_CASCADES-1 ) {
+                // final cascade updates every 3rd frame which is 30 FPS = 10 updates per second
+                // it covers the whole world, so this can help improve avg fps.
+                shouldUpdateCascade = (perFrameCascadeData.frameCount % 3) == 0;
+            }
+            m_ShouldUpdateCascade[cascadeIdx] = shouldUpdateCascade;
+
+            if ( shouldUpdateCascade || !m_CascadeCRs[cascadeIdx].frustum.IsValid()) {
+                CalculateCascadeMatrices(
+                    m_CascadeCRs[cascadeIdx],
+                    splits,
+                    cascadeIdx,
+                    numCascades,
+                    farPlane,
+                    isLastCascade ? lastCascadeP : p,
+                    isLastCascade ? lastCascadeLookAt : lookAt,
+                    c_XM_Up,
+                    isLastCascade ? lastCascadeData.Position : WorldShadowCP,
+                    GetSizeX() );
+            }
+        }
+    }
+
+    // Collect all VOBs inside our shadow draw distance (last frustum)
+    
+    static std::vector<VobInfo*> potentialCasters;
+    static std::vector<VobLightInfo*> _1;
+    static std::vector<SkeletalVobInfo*> _2;
+    potentialCasters.reserve(1024);
+    potentialCasters.clear();
+
+    {
+        RndCullContext ctx;
+        LegacyRenderQueueProxy q(potentialCasters, _1, _2);
+
+        ctx.queue = &q;
+        ctx.frustum = m_CascadeCRs[numCascades-1].frustum;
+        ctx.cameraPosition = m_CascadeCRs[numCascades-1].PositionReplacement;
+        ctx.stage = RenderStage::STAGE_DRAW_SHADOWS;
+        ctx.drawDistances.OutdoorVobs = settings.ShadowDrawDistance;
+        ctx.drawDistances.OutdoorVobsSmall = settings.ShadowDrawDistance;
+        
+        Engine::GAPI->CollectVisibleVobs( ctx );
+    }
+    
+    auto invView = XMMatrixTranspose(XMLoadFloat4x4(&zCCamera::GetCamera()->GetTransformDX( zCCamera::ETransformType::TT_VIEW_INV )));
+    auto camPos = invView.r[3];
+    XMVECTOR camForward = XMVector3Normalize( invView.r[2]);
+    
+    for ( int i = 0; i < numCascades; ++i ) {
+        m_RenderQueues[i]->Reset();
+    }
+
+    for (auto vob : potentialCasters ) {
+        
+        auto boundingSphere = Frustum::BSphereFromzTBBox3D(vob->Vob->GetBBox());
+        if ( numCascades > 0 && m_CascadeCRs[0].frustum.Intersects( boundingSphere ) )
+            m_RenderQueues[0]->GetVobs().push_back( vob );
+
+        if ( numCascades > 1 && m_ShouldUpdateCascade[1] && m_CascadeCRs[1].frustum.Intersects( boundingSphere ) )
+            m_RenderQueues[1]->GetVobs().push_back( vob );
+
+        if ( numCascades > 2 && m_ShouldUpdateCascade[2] && m_CascadeCRs[2].frustum.Intersects( boundingSphere ) )
+            m_RenderQueues[2]->GetVobs().push_back( vob );
+
+        if ( numCascades > 3 && m_ShouldUpdateCascade[3] && m_CascadeCRs[3].frustum.Intersects( boundingSphere ) )
+            m_RenderQueues[3]->GetVobs().push_back( vob );
+    }
+
+    return XR_SUCCESS;
+}
+
+// Computes cascade splits using a interpolation between uniform and logarithmic splits, additionally modified by a bias factor.
+// Returns vector with (numCascades + 1) entries: [nearPlane, split1, split2, ..., farPlane]
+std::vector<float> D3D11ShadowMap::ComputeCascadeSplits( float nearPlane, float farPlane, size_t numCascades, float lambda, float bias ) {
+    if ( numCascades == 0 ) return { nearPlane, farPlane };
+
+    lambda = std::clamp( lambda, 0.0f, 1.0f );
+
+    std::vector<float> splits;
+    splits.reserve( numCascades + 1 );
+    splits.push_back( nearPlane );
+
+    for ( size_t i = 1; i <= numCascades; ++i ) {
+        // Calculate the linear fraction (0.0 to 1.0)
+        float linearFraction = static_cast<float>(i) / static_cast<float>(numCascades);
+
+        // Apply the BIAS (Power Function).
+        // If bias > 1 (e.g., 2.0), this pushes values closer to 0, making near cascades smaller.
+        float si = std::pow( linearFraction, bias );
+
+        // apply logarithmic and uniform split calculations
+        float logSplit = nearPlane * std::pow( farPlane / nearPlane, si );
+        float uniformSplit = nearPlane + (farPlane - nearPlane) * si;
+
+        // Interpolate
+        float d = lambda * logSplit + (1.0f - lambda) * uniformSplit;
+
+        splits.push_back( d );
+    }
+
+    return splits;
 }
 
 XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
@@ -349,233 +612,35 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
         }
     }
 
-    // ********************************
-    // Cascade Shadow Map Rendering (Simple Sequential Version)
-    // ********************************
-
-    zCCamera* camera = zCCamera::GetCamera();
-    if ( !camera ) return XR_SUCCESS;
-
-    const float nearPlane = std::max( 1.0f, camera->GetNearPlane() );
-    // Clamp far plane to avoid extreme shadow distances
-    // 64000 (default for worldsize 4) * 0.6 = 38400
-    // this looked good ough in testing, without many popping artifacts
-    const float baseFarPlane = std::min( camera->GetFarPlane(), 38400.0f );
-
-    // WorldShadowRangeScale als Multiplikator für die Schattenreichweite
-    const float shadowRangeScale = settings.WorldShadowRangeScale;
-    const float farPlane = baseFarPlane * std::max( 0.1f, shadowRangeScale );
     int numCascades = settings.NumShadowCascades;
-    if ( numCascades > MAX_CSM_CASCADES || numCascades < 1 ) {
-        numCascades = std::clamp( numCascades, 1, MAX_CSM_CASCADES );
-        settings.NumShadowCascades = numCascades;
-    }
-
-    std::vector<float> splits;
-    if (settings.DebugSettings.ShadowCascades.Lambda > 0.0001f
-        || settings.DebugSettings.ShadowCascades.Bias > 0.0001f) {
-        
-        splits = ComputeCascadeSplits(nearPlane, farPlane, numCascades,
-                                                         settings.DebugSettings.ShadowCascades.Lambda,
-                                                         settings.DebugSettings.ShadowCascades.Bias);
-    } else {
-        splits = ComputeCascadeSplits(nearPlane, farPlane, numCascades, lambdaBiasTable[numCascades].lambda, lambdaBiasTable[numCascades].bias);
-     
-    }
-
-    splits[numCascades] = baseFarPlane; // Let the last cascade reach the full far plane
-
-    // Get current light direction from atmosphere
-    XMVECTOR currentDir = XMLoadFloat3( Engine::GAPI->GetSky()->GetAtmosphereCB().AC_LightPos.toXMFLOAT3() );
-    currentDir = XMVector3Normalize( currentDir );
-
-    // *** TEMPORAL SMOOTHING FOR LIGHT DIRECTION ***
-    // Use static variables to maintain state across frames for smooth shadow transitions
-
-    static struct alignas(16) {
-        XMVECTOR PreviousLightDir;
-        XMVECTOR OldPosition;
-        XMVECTOR LightDir;
-        XMVECTOR Position;
-        bool initialized;
-    } lastCascadeData = {};
-
-    static struct {
-        size_t frameCount;
-        std::array<CameraReplacement, MAX_CSM_CASCADES> PreviousCascadeCRs;
-    } perFrameCascadeData = {};
-
-    static XMVECTOR s_previousLightDir = currentDir;
-    static bool s_lightDirInitialized = false;
-    
-    XMVECTOR dir;
-    
-    if ( settings.SmoothShadowCameraUpdate ) {
-        // Initialize on first frame
-        if ( !s_lightDirInitialized ) {
-            s_previousLightDir = currentDir;
-            s_lightDirInitialized = true;
-        }
-        
-        CalculateTemporalInterpolatedPosition(
-            currentDir,
-            s_previousLightDir,
-            dir,
-            std::max( 1.0f, settings.SmoothShadowFrequency ));
-    } else {
-        dir = currentDir;
-        s_previousLightDir = currentDir;
-        s_lightDirInitialized = true;
-    }
-
-    if ( !lastCascadeData.initialized ) {
-        lastCascadeData.PreviousLightDir = currentDir;
-        lastCascadeData.initialized = true;
-    }
-
-    CalculateTemporalInterpolatedPosition(
-        currentDir,
-        lastCascadeData.PreviousLightDir,
-        lastCascadeData.LightDir,
-        500.0f);
-
-    static XMVECTOR oldP = XMVectorZero();
-    XMVECTOR WorldShadowCP;
-    // Update position
-    // Try to update only if the camera went 200 units away from the last position
-    // This prevents "shaking" when the player is strafing or moving just a tiny bit
-    float len;
-    XMStoreFloat( &len, XMVector3LengthSq( oldP - cameraPositionXm ) );
-    constexpr float distSq = 64.f * 64.f;
-    if ( (len < distSq )) {
-        WorldShadowCP = oldP;
-    } else {
-        oldP = cameraPositionXm;
-        WorldShadowCP = oldP;
-    }
-
-    XMStoreFloat( &len, XMVector3LengthSq( lastCascadeData.OldPosition - cameraPositionXm ) );
-    // for the last cascade, we snap greater distances to avoid shimmering when moving
-    if ( (len < (160.f * 160.f)) ) {
-        lastCascadeData.Position = lastCascadeData.OldPosition;
-    } else {
-        lastCascadeData.OldPosition = cameraPositionXm;
-        lastCascadeData.Position = cameraPositionXm;
-    }
-
-    // Indoor check
-    static zTBspMode lastBspMode = zBSP_MODE_OUTDOOR;
-
-    // Array für alle Cascade-Matrizen
-    std::array<CameraReplacement, MAX_CSM_CASCADES> cascadeCRs = {};
-
     bool isOutdoor = Engine::GAPI->GetLoadedWorldInfo()->BspTree->GetBspTreeMode() == zBSP_MODE_OUTDOOR;
 
-    const FXMVECTOR p = WorldShadowCP + dir * 10000.0f;
-    const FXMVECTOR lookAt = WorldShadowCP;
-
-    const XMVECTOR lastCascadeP = lastCascadeData.Position + lastCascadeData.LightDir * 10000.0f;
-    const XMVECTOR lastCascadeLookAt = lastCascadeData.Position;
-
-    static const XMVECTORF32 c_XM_Up = { { { 0, 1, 0, 0 } } };
-
-    if ( !isOutdoor ) {
-        if ( settings.EnableShadows && lastBspMode == zBSP_MODE_OUTDOOR ) {
-            // Clear all cascade DSVs
-            for ( size_t cascadeIdx = 0; cascadeIdx < MAX_CSM_CASCADES; ++cascadeIdx ) {
-                if ( auto dsv = GetCascadeDSV( static_cast<UINT>( cascadeIdx ) ) ) {
-                    m_context->ClearDepthStencilView( dsv, D3D11_CLEAR_DEPTH, 0.0f, 0 );
-                }
-            }
-            lastBspMode = zBSP_MODE_INDOOR;
-        }
-
-        // Setze Default für Indoor
-        for ( int i = 0; i < numCascades; ++i ) {
-            if ( numCascades > 1 && i == numCascades -1 ) {
-                const auto p = lastCascadeP;
-                const auto lookAt = lastCascadeLookAt;
-
-                XMStoreFloat4x4( &cascadeCRs[i].ViewReplacement, XMMatrixTranspose( XMMatrixLookAtLH( p, lookAt, c_XM_Up ) ) );
-                XMStoreFloat4x4( &cascadeCRs[i].ProjectionReplacement, XMMatrixTranspose( XMMatrixOrthographicLH(
-                    farPlane, farPlane, 1.0f, 20000.f ) ) );
-                XMStoreFloat3( &cascadeCRs[i].PositionReplacement, p );
-                XMStoreFloat3( &cascadeCRs[i].LookAtReplacement, lookAt );
-            } else {
-                XMStoreFloat4x4( &cascadeCRs[i].ViewReplacement, XMMatrixTranspose( XMMatrixLookAtLH( p, lookAt, c_XM_Up ) ) );
-                XMStoreFloat4x4( &cascadeCRs[i].ProjectionReplacement, XMMatrixTranspose( XMMatrixOrthographicLH(
-                    farPlane, farPlane, 1.0f, 20000.f ) ) );
-                XMStoreFloat3( &cascadeCRs[i].PositionReplacement, p );
-                XMStoreFloat3( &cascadeCRs[i].LookAtReplacement, lookAt );
-            }
-        }
-    } else {
-        lastBspMode = zBSP_MODE_OUTDOOR;
-
-        // Increment frame counter for temporal cascade updates
-        perFrameCascadeData.frameCount++;
-
-
-        bool lazyCascadeUpdate = settings.DebugSettings.ShadowCascades.LazyCascadeUpdate;
-        bool updateCascades[MAX_CSM_CASCADES] = {};
-        for ( int cascadeIdx = 0; cascadeIdx < numCascades; ++cascadeIdx ) {
-            // pre-calculate all cascade matrices, to be able to frustum-cull anything that is not in this or the next cascade.
-
-            bool isLastCascade = (numCascades > 1 && cascadeIdx == numCascades - 1);
-
-            bool shouldUpdateCascade = true;
-            if ( lazyCascadeUpdate && cascadeIdx == 2 ) {
-                // pre-last cascade updates every 2nd frame which is 30 FPS = 15 updates per second
-                shouldUpdateCascade = (perFrameCascadeData.frameCount % 2) == 0;
-            } else if ( lazyCascadeUpdate && cascadeIdx == 3 ) {
-                // final cascade updates every 3rd frame which is 30 FPS = 10 updates per second
-                shouldUpdateCascade = (perFrameCascadeData.frameCount % 3) == 0;
-            }
-            updateCascades[cascadeIdx] = shouldUpdateCascade;
-
-            CalculateCascadeMatrices(
-                    cascadeCRs[cascadeIdx],
-                    splits,
-                    cascadeIdx,
-                    numCascades,
-                    farPlane,
-                    isLastCascade ? lastCascadeP : p,
-                    isLastCascade ? lastCascadeLookAt : lookAt,
-                    c_XM_Up,
-                    isLastCascade ? lastCascadeData.Position : WorldShadowCP,
-                    GetSizeX() );
-        }
-
+    if ( isOutdoor ) {
         for ( int cascadeIdx = 0; cascadeIdx < numCascades; ++cascadeIdx ) {
             // only update every Nth frame for higher cascades to save performance
-            bool shouldUpdateCascade = updateCascades[cascadeIdx];
+            bool shouldUpdateCascade = m_ShouldUpdateCascade[cascadeIdx];
 
-            if ( shouldUpdateCascade ) {
-                // Store the current cascade matrix for future frames when we skip updates
-                perFrameCascadeData.PreviousCascadeCRs[cascadeIdx] = cascadeCRs[cascadeIdx];
+            if ( !shouldUpdateCascade ) continue;
 
-                // Render diese Cascade using the new CascadedShadowMap
-                Engine::GAPI->SetCameraReplacementPtr( &cascadeCRs[cascadeIdx] );
+            // Render diese Cascade using the new CascadedShadowMap
+            Engine::GAPI->SetCameraReplacementPtr( &m_CascadeCRs[cascadeIdx] );
 
-                // Build render params
-                RenderShadowmapsParams renderParams = {};
-                XMStoreFloat3( &renderParams.CameraPosition, WorldShadowCP );
-                renderParams.Target = nullptr;
-                renderParams.CullFront = true;
-                renderParams.DontCull = false;
-                renderParams.DSVOverwrite = GetCascadeDSV( static_cast<UINT>(cascadeIdx) );
-                renderParams.DebugRTV = nullptr;
-                renderParams.CascadeIndex = static_cast<int>(cascadeIdx);
-                renderParams.CascadeSplits = splits;
-                renderParams.CascadeCameraReplacements = &cascadeCRs;
+            // Build render params
+            RenderShadowmapsParams renderParams = {};
+            renderParams.CameraPosition = m_WorldShadowPos;
+            renderParams.Target = nullptr;
+            renderParams.CullFront = true;
+            renderParams.DontCull = false;
+            renderParams.DSVOverwrite = GetCascadeDSV( static_cast<UINT>(cascadeIdx) );
+            renderParams.DebugRTV = nullptr;
+            renderParams.CascadeIndex = static_cast<int>(cascadeIdx);
+            renderParams.CascadeSplits = m_CascadeSplits;
+            renderParams.CascadeCameraReplacements = &m_CascadeCRs;
 
-                RenderShadowmaps( renderParams );
+            RenderShadowmaps( renderParams );
 
-                Engine::GAPI->SetCameraReplacementPtr( nullptr );
-            } else {
-                // Use the previous cascade matrix when skipping this frame's update
-                cascadeCRs[cascadeIdx] = perFrameCascadeData.PreviousCascadeCRs[cascadeIdx];
-            }
+            Engine::GAPI->SetCameraReplacementPtr( nullptr );
+            m_RenderQueues[cascadeIdx]->Reset();
         }
     }
 
@@ -803,8 +868,8 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
     // CSM: Alle Cascade-Matrizen setzen
 
     for ( size_t cascadeIdx = 0; cascadeIdx < MAX_CSM_CASCADES; ++cascadeIdx ) {
-        scb.SQ_ShadowView[cascadeIdx] = cascadeCRs[cascadeIdx].ViewReplacement;
-        scb.SQ_ShadowProj[cascadeIdx] = cascadeCRs[cascadeIdx].ProjectionReplacement;
+        scb.SQ_ShadowView[cascadeIdx] = m_CascadeCRs[cascadeIdx].ViewReplacement;
+        scb.SQ_ShadowProj[cascadeIdx] = m_CascadeCRs[cascadeIdx].ProjectionReplacement;
     }
 
     scb.SQ_ShadowmapSize = static_cast<float>( this->GetSizeX() );

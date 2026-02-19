@@ -1711,7 +1711,7 @@ void GothicAPI::OnVisualDeleted( zCVisual* visual ) {
     }
 
     // Clear
-    std::list<BaseVobInfo*> list = VobsByVisual[visual];
+    auto& list = VobsByVisual[visual];
     if ( _canClearVobsByVisual ) {
         for ( auto const& it : list ) {
             OnRemovedVob( it->Vob, LoadedWorldInfo->MainWorld );
@@ -1809,10 +1809,12 @@ void GothicAPI::OnRemovedVob( zCVob* vob, zCWorld* world ) {
     }
 
     // Erase the vob from visual-vob map
-    std::list<BaseVobInfo*>& list = VobsByVisual[vob->GetVisual()];
-    for ( auto& vit = list.begin(); vit != list.end(); ++vit ) {
-        if ( (*vit)->Vob == vob ) {
-            list.erase( vit );
+    auto& vec = VobsByVisual[vob->GetVisual()];
+    for ( size_t i = 0; i < vec.size(); ++i ) {
+        if ( vec[i]->Vob == vob ) {
+            // Overwrite the deleted item with the last item, then shrink by 1
+            vec[i] = vec.back();
+            vec.pop_back();
             break; // Can (should!) only be in here once
         }
     }
@@ -3921,12 +3923,14 @@ LRESULT GothicAPI::OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
 
 /** Recursive helper function to draw the BSP-Tree */
 void GothicAPI::DebugDrawTreeNode( zCBspBase* base, zTBBox3D boxCell, int clipFlags ) {
+    auto camPos = GetCameraPosition();
+    auto camPosXm = GetCameraPositionXM();
     while ( base ) {
         if ( clipFlags > 0 ) {
             float yMaxWorld = Engine::GAPI->GetLoadedWorldInfo()->BspTree->GetRootNode()->BBox3D.Max.y;
 
             zTBBox3D nodeBox = base->BBox3D;
-            float nodeYMax = std::min( yMaxWorld, Engine::GAPI->GetCameraPosition().y );
+            float nodeYMax = std::min( yMaxWorld, camPos.y );
             nodeYMax = std::max( nodeYMax, base->BBox3D.Max.y );
             nodeBox.Max.y = nodeYMax;
 
@@ -3958,9 +3962,8 @@ void GothicAPI::DebugDrawTreeNode( zCBspBase* base, zTBBox3D boxCell, int clipFl
             boxCell.Max.y = node->BBox3D.Min.y;
 
             zTBBox3D tmpbox = boxCell;
-            float plane_normal;
-            XMStoreFloat( &plane_normal, XMVector3Dot( XMLoadFloat3( &node->Plane.Normal ), GetCameraPositionXM() ) );
-            if ( plane_normal > node->Plane.Distance ) {
+            XMVECTOR dotResult = XMVector3Dot( XMLoadFloat3( &node->Plane.Normal ), camPosXm );
+            if ( XMVectorGetX( dotResult ) > node->Plane.Distance ) {
                 if ( node->Front ) {
                     reinterpret_cast<float*>(&tmpbox.Min)[planeAxis] = node->Plane.Distance;
                     DebugDrawTreeNode( node->Front, tmpbox, clipFlags );
@@ -4000,64 +4003,86 @@ void GothicAPI::CollectVisibleVobs(
     zCBspTree* tree = LoadedWorldInfo->BspTree;
 
     zCBspBase* rootBsp = tree->GetRootNode();
-    BspInfo* root = &BspLeafVobLists[rootBsp];
-    if ( !CameraReplacementPtr && zCCamera::GetCamera() ) {
-        zCCamera::GetCamera()->Activate();
+    Frustum frustum = Frustum::AlwaysContainingFrustum();
+    if ( auto cam = zCCamera::GetCamera() ) {
+        cam->Activate();
+
+        // Row-Major view
+        const auto& view = cam->trafoView;
+        const auto& proj = cam->trafoProjection;
+        frustum.BuildPerspective(
+            XMMatrixTranspose( XMLoadFloat4x4( &view ) ),
+            XMLoadFloat4x4( &proj )
+        );
     }
 
-    // Recursively go through the tree and draw all nodes
-    CollectVisibleVobsHelper( root, root->OriginalNode->BBox3D, cullFlags, collectFlags, vobs, lights, mobs );
+    if ( CameraReplacementPtr ) {
+        LogError() << "Invalid usage of legacy API. Must not use this withCameraReplacementPtr.";
+    }
 
-    FXMVECTOR camPos = GetCameraPositionXM();
-    const float vobIndoorDist = Engine::GAPI->GetRendererState().RendererSettings.IndoorVobDrawRadius;
-    const float vobOutdoorDist = Engine::GAPI->GetRendererState().RendererSettings.OutdoorVobDrawRadius;
-    const float vobOutdoorSmallDist = Engine::GAPI->GetRendererState().RendererSettings.OutdoorSmallVobDrawRadius;
-    const float vobSmallSize = Engine::GAPI->GetRendererState().RendererSettings.SmallVobSize;
+    XMVECTOR cameraPosition = GetCameraPositionXM();
+    XMVECTOR playerPosition = Engine::GAPI->GetPlayerVob() != nullptr ? Engine::GAPI->GetPlayerVob()->GetPositionWorldXM() : XMVectorSet( FLT_MAX, FLT_MAX, FLT_MAX, 0 );
+    // Take cameraposition if we are freelooking
+    if ( zCCamera::IsFreeLookActive() ) {
+        playerPosition = cameraPosition;
+    }
 
-    std::list<VobInfo*> removeList; // TODO: This should not be needed!
-    
-    // Add visible dynamically added vobs
-    if ( Engine::GAPI->GetRendererState().RendererSettings.DrawVOBs ) {
-        float dist;
-        for ( VobInfo* it : DynamicallyAddedVobs ) {
-            if (it->VisibleInRenderPass) continue;
+    // LegacyRenderQueueProxy marks every found item and only pushes unique ones.
+    LegacyRenderQueueProxy renderQueue(vobs, lights, mobs );
 
-            // Get distance to this vob
-            XMStoreFloat( &dist, XMVector3Length( camPos - it->Vob->GetPositionWorldXM() ) );
-            // Draw, if in range
-            if ( it->VisualInfo && (
-                        (dist < vobIndoorDist && it->IsIndoorVob && collectFlags & EBspTreeCollectFlags::COLLECT_INDOOR_VOBS )
-                        || (!it->IsIndoorVob && (
-                                (dist < vobOutdoorSmallDist && it->VisualInfo->MeshSize < vobSmallSize)
-                                || (dist < vobOutdoorDist)
-                                ) 
-                            )
-                        )) {
-#ifdef BUILD_GOTHIC_1_08k
-                // TODO: This is sometimes nullptr, suggesting that the Vob is invalid. Why does this happen?
-                if ( !it->VobConstantBuffer ) {
-                    removeList.push_back( it );
-                    continue;
-                }
-#endif
-                if ( !it->Vob->GetShowVisual() ) {
-                    continue;
-                }
-                if (collectFlags & COLLECT_MUTATE) {
-                    if ( it->Vob->GetVisualAlpha() ) {
-                        TransparencyVobs.emplace_back( dist, it->Vob->GetVobTransparency(), nullptr, it );
-                        std::push_heap( TransparencyVobs.begin(), TransparencyVobs.end(), CompareGhostDistance );
-                        continue;
-                    }
-                }
+    RndCullContext ctx;
+    ctx.queue = &renderQueue;
+    ctx.cameraPosition = GetCameraPosition();
+    ctx.stage = RenderStage::STAGE_DRAW_WORLD;
+    ctx.frustum = frustum;
+    ctx.drawDistances.OutdoorVobs = RendererState.RendererSettings.OutdoorVobDrawRadius;
+    ctx.drawDistances.OutdoorVobsSmall = RendererState.RendererSettings.OutdoorSmallVobDrawRadius;
+    ctx.drawDistances.IndoorVobs = RendererState.RendererSettings.IndoorVobDrawRadius;
+    ctx.drawDistances.VisualFX = RendererState.RendererSettings.VisualFXDrawRadius;
+    CollectVisibleVobs( ctx );
 
-                vobs.push_back( it );
-            }
+    if ( RendererState.RendererSettings.SortRenderQueue ) {
+        struct SortableVob {
+            VobInfo* vob;
+            float distSq;
+        };
+        static thread_local std::vector<SortableVob> sortList;
+        sortList.clear();
+        sortList.reserve( vobs.size() );
+
+        for ( auto* v : vobs ) {
+            float d = XMVectorGetX( XMVector3LengthSq( v->Vob->GetPositionWorldXM() - cameraPosition ) );
+            sortList.push_back( { v, d } );
         }
+
+        std::sort( sortList.begin(), sortList.end(), []( const SortableVob& a, const SortableVob& b ) {
+            return a.distSq < b.distSq;
+        } );
+        for ( size_t i = 0; i < vobs.size(); ++i ) vobs[i] = sortList[i].vob;
+
+        struct SortableSkeletalVob {
+            SkeletalVobInfo* vob;
+            float distSq;
+        };
+        static thread_local std::vector<SortableSkeletalVob> skelsortList;
+        skelsortList.clear();
+        skelsortList.reserve( mobs.size() );
+        for ( auto* v : mobs ) {
+            float d = XMVectorGetX( XMVector3LengthSq( v->Vob->GetPositionWorldXM() - cameraPosition ) );
+            skelsortList.push_back( { v, d } );
+        }
+
+        std::sort( skelsortList.begin(), skelsortList.end(), []( const SortableSkeletalVob& a, const SortableSkeletalVob& b ) {
+            return a.distSq < b.distSq;
+        } );
+        for ( size_t i = 0; i < mobs.size(); ++i ) mobs[i] = skelsortList[i].vob;
     }
 
-    if (collectFlags & COLLECT_MUTATE) {
-        for (auto it : vobs) {
+    // Copy them into the target
+    // they should be unique at this point.
+
+    if ( collectFlags & COLLECT_MUTATE ) {
+        for ( auto it : renderQueue.vobs ) {
             VobInstanceInfo vii = {};
             vii.world = it->WorldMatrix;
             vii.prevWorld = it->HasValidPrevMatrix ? it->PrevWorldMatrix : it->WorldMatrix;
@@ -4071,16 +4096,33 @@ void GothicAPI::CollectVisibleVobs(
                 ProcessVobAnimation( it->Vob, aniMode, vii );
             }
             reinterpret_cast<MeshVisualInfo*>(it->VisualInfo)->Instances.push_back( vii );
-            it->VisibleInRenderPass = true;
+        }
+
+        if ( renderQueue.transparent.size() ) {
+            for ( auto& it : renderQueue.transparent ) {
+                TransparencyVobs.push_back( it );
+            }
+            std::sort( TransparencyVobs.begin(), TransparencyVobs.end(), CompareGhostDistance );
+        }
+
+        float minDynamicUpdateLightRange = Engine::GAPI->GetRendererState().RendererSettings.MinLightShadowUpdateRange;
+    
+        for ( auto vi : renderQueue.lights ) {
+            if ( vi->Vob->IsEnabled() /*&& vob->GetShowVisual()*/ ) {
+                // Update the lights shadows if: Light is dynamic or full shadow-updates are set
+                if ( !vi->IsPFXVobLight ) {
+                    if ( RendererState.RendererSettings.EnablePointlightShadows >= GothicRendererSettings::PLS_FULL
+                        || (RendererState.RendererSettings.EnablePointlightShadows >= GothicRendererSettings::PLS_UPDATE_DYNAMIC && !vi->Vob->IsStatic()) ) {
+                        // Now check for distances, etc
+                        float lightPlayerDist;
+                        XMStoreFloat( &lightPlayerDist, XMVector3Length( playerPosition - vi->Vob->GetPositionWorldXM() ) );
+                        if ( vi->Vob->GetLightRange() > minDynamicUpdateLightRange && lightPlayerDist < vi->Vob->GetLightRange() * 1.5f )
+                            vi->UpdateShadows = true;
+                    }
+                }
+            }
         }
     }
-#ifdef BUILD_GOTHIC_1_08k
-    // TODO: See above for info on this
-    for ( VobInfo* vi : removeList ) {
-        RegisteredVobs.insert( vi->Vob ); // This vob isn't in this set anymore, but still in DynamicallyAddedVobs??
-        OnRemovedVob( vi->Vob, oCGame::GetGame()->_zCSession_world );
-    }
-#endif
 }
 
 /** Collects visible sections from the current camera perspective */
@@ -4230,263 +4272,72 @@ std::vector<VobInfo*>::iterator GothicAPI::MoveVobFromBspToDynamic( VobInfo* vob
     return itn;
 }
 
-static void CVVH_AddNotDrawnVobToList( std::vector<VobInfo*>& target, std::vector<VobInfo*>& source, float dist,
-    int clipFlags,
-    EBspTreeCollectFlags collectFlags, zTCam_ClipType bspClip) {
+static void CVVH_AddNotDrawnVobToList(
+        std::vector<VobInfo*>& source,
+        float dist,
+        const RndCullContext& ctx,
+        DirectX::ContainmentType bspContainment,
+        BspTreeVobVisitor* visitor,
+        VisitStaticVobCallback callback,
+        VisitTransparentVobCallback alphaCallback
+    ) {
     std::vector<VobInfo*> remVobs;
 
-    const auto& camPos = Engine::GAPI->GetCameraPositionXM();
+    const auto camPos = XMLoadFloat3( &ctx.cameraPosition );
     auto cullingEnabled = Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.Culling.CullVobs;
     auto distSq = dist * dist;
 
     for ( auto const& it : source ) {
         if ( it->VisibleInRenderPass ) continue;
+        visitor->Visit( it );
+
         if ( !it->Vob->GetShowVisual() ) continue;
         float vdSq;
         XMStoreFloat( &vdSq, XMVector3LengthSq( camPos - XMLoadFloat3( &it->LastRenderPosition ) ) );
         if ( vdSq > distSq ) continue;
 
-        if (bspClip != zTCam_ClipType::ZTCAM_CLIPTYPE_IN 
+        if ( bspContainment != ContainmentType::CONTAINS // only do frustum check if previously "INTERSECTS"
             && cullingEnabled
-            && Engine::GAPI->GetCameraBBox3DInFrustum( it->Vob->GetBBox(), clipFlags ) == zTCam_ClipType::ZTCAM_CLIPTYPE_OUT) {
+            && ctx.frustum.Contains( Frustum::BBoxFromzTBBox3D( it->Vob->GetBBox() ) ) == DISJOINT ) {
             continue;
         }
-        if (collectFlags & COLLECT_MUTATE ) {
-            it->VisibleInRenderPass = true;
-            if ( it->Vob->GetVisualAlpha() ) {
-                Engine::GAPI->TransparencyVobs.emplace_back( std::sqrtf(vdSq), it->Vob->GetVobTransparency(), nullptr, it );
-                std::push_heap( Engine::GAPI->TransparencyVobs.begin(), Engine::GAPI->TransparencyVobs.end(), CompareGhostDistance );
-                continue;
-            }
+        if ( it->Vob->GetVisualAlpha() ) {
+            alphaCallback( ctx, TransparencyVobInfo{ std::sqrtf( vdSq ), it->Vob->GetVobTransparency(), nullptr, it } );
+            continue;
         }
 
-        target.push_back( it );
+        callback( ctx, it );
     }
 }
 
-static void CVVH_AddNotDrawnVobToList( std::vector<VobLightInfo*>& target, std::vector<VobLightInfo*>& source, float dist, int clipFlags , EBspTreeCollectFlags collectFlags, zTCam_ClipType bspClip  ) {
-    float veclength;
+static void CVVH_AddNotDrawnVobToList(
+    std::vector<SkeletalVobInfo*>& source,
+    float dist, const RndCullContext& ctx,
+    DirectX::ContainmentType bspContainment,
+    BspTreeVobVisitor* visitor,
+    VisitSkeletalVobCallback callback) {
+    const auto camPos = XMLoadFloat3( &ctx.cameraPosition );
 
-    const auto& camPos = Engine::GAPI->GetCameraPositionXM();
-
-    bool setIsVisible = (collectFlags & COLLECT_MUTATE) != 0;
-    for ( auto const& it : source ) {
-        if ( !it->VisibleInRenderPass ) {
-            XMStoreFloat( &veclength, XMVector3Length( camPos - it->Vob->GetPositionWorldXM() ) );
-            if ( veclength - it->Vob->GetLightRange() < dist ) {
-                target.push_back( it );
-            }
-        }
-    }
-    if (setIsVisible) {
-        // only do this branching if needed
-        for ( auto const& it : target ) {
-            it->VisibleInRenderPass = true;
-        }
-    }
-}
-
-static void CVVH_AddNotDrawnVobToList( std::vector<SkeletalVobInfo*>& target, std::vector<SkeletalVobInfo*>& source, float dist, int clipFlags, EBspTreeCollectFlags collectFlags, zTCam_ClipType bspClip  ) {
-    const auto& camPos = Engine::GAPI->GetCameraPositionXM();
     auto cullingEnabled = Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.Culling.CullVobs;
-    auto vDistSq = XMVectorReplicate(dist * dist);
-    bool setIsVisible = (collectFlags & COLLECT_MUTATE) != 0;
+    auto vDistSq = XMVectorReplicate( dist * dist );
 
     for ( auto const& it : source ) {
-        if ( !it->VisibleInRenderPass ) {
-            if ( XMVector3Greater(XMVector3LengthSq( camPos - it->Vob->GetPositionWorldXM() ), vDistSq) ) {
-                continue;
-            }
-            if ( it->Vob->GetShowVisual() ) {
-                if (bspClip != zTCam_ClipType::ZTCAM_CLIPTYPE_IN
-                    && cullingEnabled
-                    && Engine::GAPI->GetCameraBBox3DInFrustum( it->Vob->GetBBox(), clipFlags ) ==  zTCam_ClipType::ZTCAM_CLIPTYPE_OUT) {
-                    continue;
-                }
-                
-                target.push_back( it );
-            }
-        }
-    }
-    if (setIsVisible) {
-        // only do this branching if needed
-        for ( auto const& it : target ) {
-            it->VisibleInRenderPass = true;
-        }
-    }
-}
+        if ( it->VisibleInRenderPass ) continue;
+        visitor->Visit( it );
 
-/** Recursive helper function to draw collect the vobs */
-void GothicAPI::CollectVisibleVobsHelper( BspInfo* base, zTBBox3D boxCell, int clipFlags, EBspTreeCollectFlags collectFlags, std::vector<VobInfo*>& vobs, std::vector<VobLightInfo*>& lights, std::vector<SkeletalVobInfo*>& mobs ) {
-    const float vobIndoorDist = Engine::GAPI->GetRendererState().RendererSettings.IndoorVobDrawRadius;
-    const float vobOutdoorDist = Engine::GAPI->GetRendererState().RendererSettings.OutdoorVobDrawRadius;
-    const float vobOutdoorSmallDist = Engine::GAPI->GetRendererState().RendererSettings.OutdoorSmallVobDrawRadius;
-    const float visualFXDrawRadius = Engine::GAPI->GetRendererState().RendererSettings.VisualFXDrawRadius;
-    const XMFLOAT3 camPos = Engine::GAPI->GetCameraPosition();
-    const FXMVECTOR cameraPosition = XMLoadFloat3(&camPos);
+        if ( !it->Vob->GetShowVisual() )
+            continue;
 
-    while ( base->OriginalNode ) {
-        // Check for occlusion-culling
-        if ( Engine::GAPI->GetRendererState().RendererSettings.EnableOcclusionCulling && !base->OcclusionInfo.VisibleLastFrame ) {
-            return;
+        if ( XMVector3Greater( XMVector3LengthSq( camPos - it->Vob->GetPositionWorldXM() ), vDistSq ) ) {
+            continue;
+        }
+        if ( bspContainment != ContainmentType::CONTAINS // only do frustum check if previously "INTERSECTS"
+            && cullingEnabled
+            && ctx.frustum.Contains( Frustum::BBoxFromzTBBox3D( it->Vob->GetBBox() ) ) == DISJOINT ) {
+            continue;
         }
 
-        zTCam_ClipType nodeClip = zTCam_ClipType::ZTCAM_CLIPTYPE_IN;
-        if ( clipFlags > 0 ) {
-            float yMaxWorld = Engine::GAPI->GetLoadedWorldInfo()->BspTree->GetRootNode()->BBox3D.Max.y;
-
-            zTBBox3D nodeBox = base->OriginalNode->BBox3D;
-            float nodeYMax = std::min( yMaxWorld, camPos.y );
-            nodeYMax = std::max( nodeYMax, base->OriginalNode->BBox3D.Max.y );
-            nodeBox.Max.y = nodeYMax;
-
-            float dist = Toolbox::ComputePointAABBDistance( camPos, base->OriginalNode->BBox3D.Min, base->OriginalNode->BBox3D.Max );
-            if ( dist < vobOutdoorDist ) {
-                if ( !Engine::GAPI->GetRendererState().RendererSettings.EnableOcclusionCulling ) {
-                    nodeClip = GetCameraBBox3DInFrustum( nodeBox, clipFlags );
-                } else {
-                    nodeClip = static_cast<zTCam_ClipType>(base->OcclusionInfo.LastCameraClipType); // If we are using occlusion-clipping, this test has already been done
-                }
-
-                if ( nodeClip == ZTCAM_CLIPTYPE_OUT ) {
-                    return; // Nothig to see here. Discard this node and the subtree}
-                }
-            } else {
-                // Too far
-                return;
-            }
-        }
-
-        if ( base->OriginalNode->IsLeaf() ) {
-            // Check if this leaf is inside the frustum
-        
-
-            zCBspLeaf* leaf = static_cast<zCBspLeaf*>(base->OriginalNode);
-            std::vector<VobInfo*>& listA = base->IndoorVobs;
-            std::vector<VobInfo*>& listB = base->SmallVobs;
-            std::vector<VobInfo*>& listC = base->Vobs;
-            std::vector<SkeletalVobInfo*>& listD = base->Mobs;
-
-            // Concat the lists
-            const float dist = Toolbox::ComputePointAABBDistance( camPos, base->OriginalNode->BBox3D.Min, base->OriginalNode->BBox3D.Max );
-            // float dist = XMVector3Length(XMLoadFloat3(&base->BBox3D.Min) - XMLoadFloat3(&camPos));
-
-           
-                if ( collectFlags & COLLECT_VOBS
-                    && Engine::GAPI->GetRendererState().RendererSettings.DrawVOBs ) {
-                    if ( collectFlags & COLLECT_INDOOR_VOBS && dist < vobIndoorDist ) {
-                        CVVH_AddNotDrawnVobToList( vobs, listA, vobIndoorDist, clipFlags, collectFlags, nodeClip );
-                    }
-
-                    if ( dist < vobOutdoorSmallDist ) {
-                        CVVH_AddNotDrawnVobToList( vobs, listB, vobOutdoorSmallDist, clipFlags, collectFlags, nodeClip );
-                    }
-
-                    if ( dist < vobOutdoorDist ) {
-                        CVVH_AddNotDrawnVobToList( vobs, listC, vobOutdoorDist, clipFlags, collectFlags, nodeClip );
-                    }
-                }
-
-                
-
-                if ( collectFlags & COLLECT_MOBS
-                    && Engine::GAPI->GetRendererState().RendererSettings.DrawMobs && dist < vobOutdoorSmallDist ) {
-                    CVVH_AddNotDrawnVobToList( mobs, listD, vobOutdoorDist, clipFlags, collectFlags, nodeClip );
-                }
-
-                if ( collectFlags & COLLECT_LIGHTS 
-                    && RendererState.RendererSettings.EnableDynamicLighting && dist < visualFXDrawRadius ) {
-                    // Add dynamic lights
-                    float minDynamicUpdateLightRange = Engine::GAPI->GetRendererState().RendererSettings.MinLightShadowUpdateRange;
-                    XMVECTOR playerPosition = Engine::GAPI->GetPlayerVob() != nullptr ? Engine::GAPI->GetPlayerVob()->GetPositionWorldXM() : XMVectorSet( FLT_MAX, FLT_MAX, FLT_MAX, 0 );
-
-
-                    // Take cameraposition if we are freelooking
-                    if ( zCCamera::IsFreeLookActive() ) {
-                        playerPosition = cameraPosition;
-                    }
-
-                    for ( int i = 0; i < leaf->LightVobList.NumInArray; i++ ) {
-                        zCVobLight* vob = leaf->LightVobList.Array[i];
-
-                        float lightCameraDist;
-                        XMStoreFloat( &lightCameraDist, XMVector3Length( cameraPosition - vob->GetPositionWorldXM() ) );
-                        if ( lightCameraDist + vob->GetLightRange() < visualFXDrawRadius ) {
-                            // Check if we already have this light
-                            auto vit = VobLightMap.find( vob );
-                            if ( vit == VobLightMap.end() ) {
-                                bool PFXVobLight = false;
-                                if ( zCVob* parent = vob->GetVobParent() ) {
-                                    if ( parent->As<oCVisualFX>() ) {
-                                        PFXVobLight = true;
-                                    }
-                                }
-
-                                // Add if not. This light must have been added during gameplay
-                                VobLightInfo* vi = new VobLightInfo;
-                                vi->Vob = vob;
-                                vi->IsPFXVobLight = PFXVobLight;
-                                vi->UpdateShadows = !PFXVobLight;
-                                vit = VobLightMap.emplace( vob, vi ).first;
-
-                                // Create shadow-buffers for these lights since it was dynamically added to the world
-                                if ( !vi->IsPFXVobLight && RendererState.RendererSettings.EnablePointlightShadows >= GothicRendererSettings::PLS_STATIC_ONLY )
-                                    Engine::GraphicsEngine->CreateShadowedPointLight( &vi->LightShadowBuffers, vi, true ); // Also flag as dynamic
-                            }
-
-                            VobLightInfo* vi = vit->second;
-                            if ( !vi->VisibleInRenderPass && vob->IsEnabled() /*&& vob->GetShowVisual()*/ ) {
-                                vi->VisibleInRenderPass = true;
-
-                                // Update the lights shadows if: Light is dynamic or full shadow-updates are set
-                                if ( !vi->IsPFXVobLight ) {
-                                    if ( RendererState.RendererSettings.EnablePointlightShadows >= GothicRendererSettings::PLS_FULL
-                                        || (RendererState.RendererSettings.EnablePointlightShadows >= GothicRendererSettings::PLS_UPDATE_DYNAMIC && !vob->IsStatic()) ) {
-                                        // Now check for distances, etc
-                                        float lightPlayerDist;
-                                        XMStoreFloat( &lightPlayerDist, XMVector3Length( playerPosition - vob->GetPositionWorldXM() ) );
-                                        if ( vob->GetLightRange() > minDynamicUpdateLightRange && lightPlayerDist < vob->GetLightRange() * 1.5f )
-                                            vi->UpdateShadows = true;
-                                    }
-                                }
-
-                                // Render it
-                                lights.push_back( vi );
-                            }
-                        }
-                    }
-                }
-            
-            return;
-        } else {
-            zCBspNode* node = static_cast<zCBspNode*>(base->OriginalNode);
-
-            int	planeAxis = node->PlaneSignbits;
-
-            boxCell.Min.y = node->BBox3D.Min.y;
-            boxCell.Max.y = node->BBox3D.Min.y;
-
-            zTBBox3D tmpbox = boxCell;
-            float plane_normal;
-            XMStoreFloat( &plane_normal, XMVector3Dot( XMLoadFloat3( &node->Plane.Normal ), cameraPosition ) );
-            if ( plane_normal > node->Plane.Distance ) {
-                if ( node->Front ) {
-                    reinterpret_cast<float*>(&tmpbox.Min)[planeAxis] = node->Plane.Distance;
-                    CollectVisibleVobsHelper( base->Front, tmpbox, clipFlags, collectFlags, vobs, lights, mobs );
-                }
-
-                reinterpret_cast<float*>(&boxCell.Max)[planeAxis] = node->Plane.Distance;
-                base = base->Back;
-            } else {
-                if ( node->Back ) {
-                    reinterpret_cast<float*>(&tmpbox.Max)[planeAxis] = node->Plane.Distance;
-                    CollectVisibleVobsHelper( base->Back, tmpbox, clipFlags, collectFlags, vobs, lights, mobs );
-                }
-
-                reinterpret_cast<float*>(&boxCell.Min)[planeAxis] = node->Plane.Distance;
-                base = base->Front;
-            }
-        }
+        callback( ctx, it );
     }
 }
 
@@ -5111,6 +4962,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Shadows", "ShadowSoftness", std::to_string( s.ShadowSoftness ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "ShadowAOStrength", std::to_string( s.ShadowAOStrength ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "WorldAOStrength", std::to_string( s.WorldAOStrength ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Shadows", "ShadowDrawDistance", std::to_string( s.ShadowDrawDistance ).c_str(), ini.c_str() );
 
     // WritePrivateProfileStringA( "SMAA", "Enabled", std::to_string( s.EnableSMAA ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "AntiAliasing", std::to_string( (int)s.AntiAliasingMode ).c_str(), ini.c_str() );
@@ -5198,6 +5050,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.ShadowSoftness = GetPrivateProfileFloatA( "Shadows", "ShadowSoftness", defaultRendererSettings.ShadowSoftness, ini );
         s.ShadowAOStrength = GetPrivateProfileFloatA( "Shadows", "ShadowAOStrength", defaultRendererSettings.ShadowAOStrength, ini );
         s.WorldAOStrength = GetPrivateProfileFloatA( "Shadows", "WorldAOStrength", defaultRendererSettings.WorldAOStrength, ini );
+        s.ShadowDrawDistance = GetPrivateProfileFloatA( "Shadows", "ShadowDrawDistance", defaultRendererSettings.ShadowDrawDistance, ini );
 
         INT2 res = {};
         RECT desktopRect;
@@ -5873,4 +5726,284 @@ void GothicAPI::ResetRenderStates() {
 /** Get sky timescale variable */
 float GothicAPI::GetSkyTimeScale() {
     return SkyRenderer->GetAtmoshpereSettings().SkyTimeScale;
+}
+
+void GothicAPI::CollectVisibleVobs( const RndCullContext& ctx ) {
+    zCBspTree* tree = LoadedWorldInfo->BspTree;
+
+    zCBspBase* rootBsp = tree->GetRootNode();
+    BspInfo* root = &BspLeafVobLists[rootBsp];
+
+    static thread_local BspTreeVobVisitor bspVobVisitor{};
+
+    // Recursively go through the tree and draw all nodes
+    CollectVisibleVobsHelper( root, root->OriginalNode->BBox3D,
+        ctx,
+        &bspVobVisitor,
+        ContainmentType::INTERSECTS,
+        []( const RndCullContext& ctx, VobInfo* item ) -> void { ctx.queue->PushStaticVob( item ); },
+        []( const RndCullContext& ctx, const TransparencyVobInfo& item ) -> void { ctx.queue->PushTransparencyVob( item ); },
+        []( const RndCullContext& ctx, SkeletalVobInfo* item ) -> void { ctx.queue->PushSkeletalVob( item ); },
+        []( const RndCullContext& ctx, VobLightInfo* item ) -> void { ctx.queue->PushLightVob( item ); }
+    );
+
+    FXMVECTOR camPos = XMLoadFloat3( &ctx.cameraPosition );
+    const float vobIndoorDist = ctx.drawDistances.IndoorVobs;
+    const float vobOutdoorDist = ctx.drawDistances.OutdoorVobs;
+    const float vobOutdoorSmallDist = ctx.drawDistances.OutdoorVobsSmall;
+    const float vobSmallSize = RendererState.RendererSettings.SmallVobSize;
+    bool collectIndoor = ctx.stage != RenderStage::STAGE_DRAW_SHADOWS;
+    auto cullingEnabled = RendererState.RendererSettings.DebugSettings.Culling.CullVobs;
+
+    std::list<VobInfo*> removeList; // TODO: This should not be needed!
+
+    // Add visible dynamically added vobs
+    if ( RendererState.RendererSettings.DrawVOBs ) {
+        float dist;
+        for ( VobInfo* it : DynamicallyAddedVobs ) {
+            if ( it->VisibleInRenderPass ) continue;
+            bspVobVisitor.Visit( it );
+
+            // Get distance to this vob
+            XMStoreFloat( &dist, XMVector3Length( camPos - it->Vob->GetPositionWorldXM() ) );
+            // Draw, if in range
+            if ( it->VisualInfo && (
+                (dist < vobIndoorDist && it->IsIndoorVob && collectIndoor)
+                || (!it->IsIndoorVob && (
+                    (dist < vobOutdoorSmallDist && it->VisualInfo->MeshSize < vobSmallSize)
+                    || (dist < vobOutdoorDist)
+                    )
+                    )
+                ) ) {
+#ifdef BUILD_GOTHIC_1_08k
+                // TODO: This is sometimes nullptr, suggesting that the Vob is invalid. Why does this happen?
+                if ( !it->VobConstantBuffer ) {
+                    removeList.push_back( it );
+                    continue;
+                }
+#endif
+                if ( !it->Vob->GetShowVisual() ) {
+                    continue;
+                }
+
+                if ( cullingEnabled && ctx.frustum.Contains( Frustum::BBoxFromzTBBox3D( it->Vob->GetBBox() ) ) == DISJOINT ) {
+                    continue;
+                }
+
+                if ( it->Vob->GetVisualAlpha() ) {
+                    ctx.queue->PushTransparencyVob( TransparencyVobInfo{ dist, it->Vob->GetVobTransparency(), nullptr, it } );
+                    continue;
+                }
+
+                ctx.queue->PushStaticVob( it );
+            }
+        }
+    }
+
+    bspVobVisitor.ClearForReuse();
+
+#ifdef BUILD_GOTHIC_1_08k
+    // TODO: See above for info on this
+    for ( VobInfo* vi : removeList ) {
+        RegisteredVobs.insert( vi->Vob ); // This vob isn't in this set anymore, but still in DynamicallyAddedVobs??
+        OnRemovedVob( vi->Vob, oCGame::GetGame()->_zCSession_world );
+    }
+#endif
+}
+
+void GothicAPI::CollectVisibleVobsHelper( BspInfo* base, 
+    zTBBox3D boxCell,
+    const RndCullContext& ctx,
+    BspTreeVobVisitor* visitor,
+    DirectX::ContainmentType inheritedContainment,
+    VisitStaticVobCallback staticVobCallback,
+    VisitTransparentVobCallback alphaVobCallback,
+    VisitSkeletalVobCallback skeltalVobCallback,
+    VisitLightVobCallback lightVobCallback
+    ) {
+    const float vobIndoorDist = ctx.drawDistances.IndoorVobs;
+    const float vobOutdoorDist = ctx.drawDistances.OutdoorVobs;
+    const float vobOutdoorSmallDist = ctx.drawDistances.OutdoorVobsSmall;
+    const float visualFXDrawRadius = ctx.drawDistances.VisualFX;
+    const XMFLOAT3 camPos = ctx.cameraPosition;
+    const FXMVECTOR cameraPosition = XMLoadFloat3( &camPos );
+    EBspTreeCollectFlags collectFlags = EBspTreeCollectFlags::COLLECT_ALL_NO_MUTATE;
+    int clipFlags = EGothicCullFlags::CullSidesNear;
+    if ( ctx.stage == RenderStage::STAGE_DRAW_SHADOWS ) {
+        collectFlags = EBspTreeCollectFlags::COLLECT_VOBS;
+        clipFlags = EGothicCullFlags::CullSidesNear;
+    }
+
+    while ( base->OriginalNode ) {
+        // Check for occlusion-culling
+        if ( Engine::GAPI->GetRendererState().RendererSettings.EnableOcclusionCulling && !base->OcclusionInfo.VisibleLastFrame ) {
+            return;
+        }
+
+        float yMaxWorld = Engine::GAPI->GetLoadedWorldInfo()->BspTree->GetRootNode()->BBox3D.Max.y;
+
+        zTBBox3D nodeBox = base->OriginalNode->BBox3D;
+        float nodeYMax = std::min( yMaxWorld, camPos.y );
+        nodeYMax = std::max( nodeYMax, base->OriginalNode->BBox3D.Max.y );
+        nodeBox.Max.y = nodeYMax;
+
+        float dist = Toolbox::ComputePointAABBDistance( camPos, base->OriginalNode->BBox3D.Min, base->OriginalNode->BBox3D.Max );
+        ContainmentType clipResult = inheritedContainment;
+        if ( dist < vobOutdoorDist ) {
+            if ( clipResult != ContainmentType::CONTAINS && !Engine::GAPI->GetRendererState().RendererSettings.EnableOcclusionCulling ) {
+                clipResult = ctx.frustum.Contains( Frustum::BBoxFromzTBBox3D( nodeBox ) );
+            } else {
+                // clipResult = static_cast<zTCam_ClipType>(base->OcclusionInfo.LastCameraClipType); // If we are using occlusion-clipping, this test has already been done
+            }
+
+            if ( clipResult == ContainmentType::DISJOINT ) {
+                return; // Nothig to see here. Discard this node and the subtree}
+            }
+        } else {
+            // Too far
+            return;
+        }
+
+        if ( base->OriginalNode->IsLeaf() ) {
+            // Check if this leaf is inside the frustum
+
+
+            zCBspLeaf* leaf = static_cast<zCBspLeaf*>(base->OriginalNode);
+            std::vector<VobInfo*>& listA = base->IndoorVobs;
+            std::vector<VobInfo*>& listB = base->SmallVobs;
+            std::vector<VobInfo*>& listC = base->Vobs;
+            std::vector<SkeletalVobInfo*>& listD = base->Mobs;
+
+            const float dist = Toolbox::ComputePointAABBDistance( camPos, base->OriginalNode->BBox3D.Min, base->OriginalNode->BBox3D.Max );
+
+            if ( collectFlags & COLLECT_VOBS
+                && Engine::GAPI->GetRendererState().RendererSettings.DrawVOBs ) {
+                if ( collectFlags & COLLECT_INDOOR_VOBS && dist < vobIndoorDist ) {
+                    CVVH_AddNotDrawnVobToList( listA, vobIndoorDist, ctx, clipResult,
+                        visitor,
+                        staticVobCallback,
+                        alphaVobCallback );
+                }
+
+                if ( dist < vobOutdoorSmallDist ) {
+                    CVVH_AddNotDrawnVobToList( listB, vobOutdoorSmallDist, ctx, clipResult,
+                        visitor,
+                        staticVobCallback,
+                        alphaVobCallback );
+                }
+
+                if ( dist < vobOutdoorDist ) {
+                    CVVH_AddNotDrawnVobToList( listC, vobOutdoorDist, ctx, clipResult,
+                        visitor,
+                        staticVobCallback,
+                        alphaVobCallback );
+                }
+            }
+
+            if ( collectFlags & COLLECT_MOBS
+                && Engine::GAPI->GetRendererState().RendererSettings.DrawMobs && dist < vobOutdoorSmallDist ) {
+                CVVH_AddNotDrawnVobToList( listD, vobOutdoorDist, ctx, clipResult, visitor, skeltalVobCallback );
+            }
+
+            if ( collectFlags & COLLECT_LIGHTS
+                    && RendererState.RendererSettings.EnableDynamicLighting && dist < visualFXDrawRadius ) {
+                // Add dynamic lights
+                XMVECTOR playerPosition = Engine::GAPI->GetPlayerVob() != nullptr ? Engine::GAPI->GetPlayerVob()->GetPositionWorldXM() : XMVectorSet( FLT_MAX, FLT_MAX, FLT_MAX, 0 );
+
+
+                // Take cameraposition if we are freelooking
+                if ( zCCamera::IsFreeLookActive() ) {
+                    playerPosition = cameraPosition;
+                }
+
+                for ( int i = 0; i < leaf->LightVobList.NumInArray; i++ ) {
+                    zCVobLight* vob = leaf->LightVobList.Array[i];
+
+                    float lightCameraDist;
+                    XMStoreFloat( &lightCameraDist, XMVector3Length( cameraPosition - vob->GetPositionWorldXM() ) );
+                    if ( lightCameraDist + vob->GetLightRange() < visualFXDrawRadius ) {
+
+                        BoundingSphere lightSphere;
+                        XMStoreFloat3( &lightSphere.Center, vob->GetPositionWorldXM() );
+                        lightSphere.Radius = vob->GetLightRange();
+
+                        // Cull any lights that are not visible even though they are in range
+                        if ( clipResult != ContainmentType::CONTAINS && ctx.frustum.Contains( lightSphere ) == ContainmentType::DISJOINT ) {
+                            continue;
+                        }
+
+                        // Check if we already have this light
+                        auto vit = VobLightMap.find( vob );
+                        if ( vit == VobLightMap.end() ) {
+                            bool PFXVobLight = false;
+                            if ( zCVob* parent = vob->GetVobParent() ) {
+                                if ( parent->As<oCVisualFX>() ) {
+                                    PFXVobLight = true;
+                                }
+                            }
+
+                            // Add if not. This light must have been added during gameplay
+                            VobLightInfo* vi = new VobLightInfo;
+                            vi->Vob = vob;
+                            vi->IsPFXVobLight = PFXVobLight;
+                            vi->UpdateShadows = !PFXVobLight;
+                            vit = VobLightMap.emplace( vob, vi ).first;
+
+                            // Create shadow-buffers for these lights since it was dynamically added to the world
+                            if ( !vi->IsPFXVobLight && RendererState.RendererSettings.EnablePointlightShadows >= GothicRendererSettings::PLS_STATIC_ONLY )
+                                Engine::GraphicsEngine->CreateShadowedPointLight( &vi->LightShadowBuffers, vi, true ); // Also flag as dynamic
+                        }
+                        VobLightInfo* vi = vit->second;
+                        if ( vi->VisibleInRenderPass ) continue;
+                        visitor->Visit( vi );
+                        lightVobCallback( ctx, vi );
+                    }
+                }
+            }
+
+            return;
+        } else {
+            zCBspNode* node = static_cast<zCBspNode*>( base->OriginalNode );
+
+            int	planeAxis = node->PlaneSignbits;
+
+            boxCell.Min.y = node->BBox3D.Min.y;
+            boxCell.Max.y = node->BBox3D.Min.y;
+
+            zTBBox3D tmpbox = boxCell;
+            float plane_normal;
+            XMStoreFloat( &plane_normal, XMVector3Dot( XMLoadFloat3( &node->Plane.Normal ), cameraPosition ) );
+            if ( plane_normal > node->Plane.Distance ) {
+                if ( node->Front ) {
+                    reinterpret_cast<float*>(&tmpbox.Min)[planeAxis] = node->Plane.Distance;
+                    CollectVisibleVobsHelper( base->Front, tmpbox, ctx,
+                        visitor,
+                        clipResult,
+                        staticVobCallback,
+                        alphaVobCallback,
+                        skeltalVobCallback,
+                        lightVobCallback);
+                }
+
+                reinterpret_cast<float*>(&boxCell.Max)[planeAxis] = node->Plane.Distance;
+                base = base->Back;
+                inheritedContainment = clipResult;
+            } else {
+                if ( node->Back ) {
+                    reinterpret_cast<float*>(&tmpbox.Max)[planeAxis] = node->Plane.Distance;
+                    CollectVisibleVobsHelper( base->Back, tmpbox, ctx,
+                        visitor,
+                        clipResult,
+                        staticVobCallback,
+                        alphaVobCallback,
+                        skeltalVobCallback,
+                        lightVobCallback);
+                }
+
+                reinterpret_cast<float*>(&boxCell.Min)[planeAxis] = node->Plane.Distance;
+                base = base->Front;
+                inheritedContainment = clipResult;
+            }
+        }
+    }
 }

@@ -62,19 +62,25 @@ public:
         viewSpaceFrustum.Transform(m_orientedBox, invView);
         m_useBoundingOrientedBox = true;
         m_useSphere = false;
+        m_always_containing = false;
+        isValid = true;
     }
 
     // for use with shadow mapping if the last cascade is covering the whole map.
     static Frustum AlwaysContainingFrustum() {
         Frustum f;
         f.m_always_containing = true;
+        f.isValid = true;
         return f;
     } 
 
     // Für perspektivische Projektion (normale Kamera)
-    void __vectorcall BuildPerspective(FXMMATRIX view, FXMMATRIX proj) {
+    void __vectorcall BuildPerspective(FXMMATRIX view, CXMMATRIX proj) {
         // Erstelle Frustum aus Projection Matrix
         BoundingFrustum::CreateFromMatrix(m_frustum, proj);
+
+        /*static const XMMATRIX rotationY180 = XMMatrixRotationY( XM_PI );
+        m_frustum.Transform(m_frustum, rotationY180 );*/
 
         // Transformiere in World-Space
         XMMATRIX invView = XMMatrixInverse(nullptr, view);
@@ -85,6 +91,8 @@ public:
 
         m_useSphere = false;
         m_useBoundingOrientedBox = false;
+        m_always_containing = false;
+        isValid = true;
     }
 
     // Für Pointlight Cubemap (6 Frustums)
@@ -97,6 +105,8 @@ public:
 
         m_useSphere = true;
         m_useBoundingOrientedBox = false;
+        m_always_containing = false;
+        isValid = true;
     }
 
     // Schneller AABB-Test
@@ -134,7 +144,14 @@ public:
         if (m_useBoundingOrientedBox) {
             return m_orientedBox.Contains(aabb);
         }
-        return m_frustum.Contains(aabb);
+        return aabb.ContainedBy(
+            XMLoadFloat4(&m_cachedPlanes[0]),
+            XMLoadFloat4(&m_cachedPlanes[1]),
+            XMLoadFloat4(&m_cachedPlanes[2]),
+            XMLoadFloat4(&m_cachedPlanes[3]),
+            XMLoadFloat4(&m_cachedPlanes[4]),
+            XMLoadFloat4(&m_cachedPlanes[5])
+        );
     }
 
     DirectX::ContainmentType Contains(const zTBBox3D& aabb) const {
@@ -151,7 +168,14 @@ public:
         if (m_useBoundingOrientedBox) {
             return m_orientedBox.Contains(sphere);
         }
-        return m_frustum.Contains(sphere);
+        return sphere.ContainedBy(
+            XMLoadFloat4( &m_cachedPlanes[0] ),
+            XMLoadFloat4( &m_cachedPlanes[1] ),
+            XMLoadFloat4( &m_cachedPlanes[2] ),
+            XMLoadFloat4( &m_cachedPlanes[3] ),
+            XMLoadFloat4( &m_cachedPlanes[4] ),
+            XMLoadFloat4( &m_cachedPlanes[5] )
+        );
     }
 
     ContainmentType Contains(const BoundingSphere& sh, EGothicCullFlags flags) const noexcept {
@@ -171,13 +195,13 @@ public:
         return bb;
     }
     
-    float GetFarZ() const {
-        if (m_useBoundingOrientedBox)
-            return m_orientedBox.Extents.z;
-        if (m_useSphere)
-            return m_boundingSphere.Radius;
-        return m_frustum.Far;
+    static BoundingSphere BSphereFromzTBBox3D(const zTBBox3D& box) {
+        BoundingSphere sp;
+        sp.CreateFromBoundingBox(sp, BBoxFromzTBBox3D(box));
+        return sp;
     }
+
+    bool IsValid() const { return isValid; }
 private:
     // Cache world-space planes for fast culling (called after frustum is transformed to world space)
     // Plane order: [0]=Left, [1]=Right, [2]=Bottom, [3]=Top, [4]=Near, [5]=Far
@@ -233,4 +257,5 @@ private:
     bool m_useSphere = false;
     bool m_useBoundingOrientedBox = false;
     bool m_always_containing = false;
+    bool isValid = false;
 };
