@@ -1711,7 +1711,7 @@ void GothicAPI::OnVisualDeleted( zCVisual* visual ) {
     }
 
     // Clear
-    std::list<BaseVobInfo*> list = VobsByVisual[visual];
+    auto& list = VobsByVisual[visual];
     if ( _canClearVobsByVisual ) {
         for ( auto const& it : list ) {
             OnRemovedVob( it->Vob, LoadedWorldInfo->MainWorld );
@@ -1809,10 +1809,12 @@ void GothicAPI::OnRemovedVob( zCVob* vob, zCWorld* world ) {
     }
 
     // Erase the vob from visual-vob map
-    std::list<BaseVobInfo*>& list = VobsByVisual[vob->GetVisual()];
-    for ( auto& vit = list.begin(); vit != list.end(); ++vit ) {
-        if ( (*vit)->Vob == vob ) {
-            list.erase( vit );
+    auto& vec = VobsByVisual[vob->GetVisual()];
+    for ( size_t i = 0; i < vec.size(); ++i ) {
+        if ( vec[i]->Vob == vob ) {
+            // Overwrite the deleted item with the last item, then shrink by 1
+            vec[i] = vec.back();
+            vec.pop_back();
             break; // Can (should!) only be in here once
         }
     }
@@ -3921,12 +3923,14 @@ LRESULT GothicAPI::OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
 
 /** Recursive helper function to draw the BSP-Tree */
 void GothicAPI::DebugDrawTreeNode( zCBspBase* base, zTBBox3D boxCell, int clipFlags ) {
+    auto camPos = GetCameraPosition();
+    auto camPosXm = GetCameraPositionXM();
     while ( base ) {
         if ( clipFlags > 0 ) {
             float yMaxWorld = Engine::GAPI->GetLoadedWorldInfo()->BspTree->GetRootNode()->BBox3D.Max.y;
 
             zTBBox3D nodeBox = base->BBox3D;
-            float nodeYMax = std::min( yMaxWorld, Engine::GAPI->GetCameraPosition().y );
+            float nodeYMax = std::min( yMaxWorld, camPos.y );
             nodeYMax = std::max( nodeYMax, base->BBox3D.Max.y );
             nodeBox.Max.y = nodeYMax;
 
@@ -3958,9 +3962,8 @@ void GothicAPI::DebugDrawTreeNode( zCBspBase* base, zTBBox3D boxCell, int clipFl
             boxCell.Max.y = node->BBox3D.Min.y;
 
             zTBBox3D tmpbox = boxCell;
-            float plane_normal;
-            XMStoreFloat( &plane_normal, XMVector3Dot( XMLoadFloat3( &node->Plane.Normal ), GetCameraPositionXM() ) );
-            if ( plane_normal > node->Plane.Distance ) {
+            XMVECTOR dotResult = XMVector3Dot( XMLoadFloat3( &node->Plane.Normal ), camPosXm );
+            if ( XMVectorGetX( dotResult ) > node->Plane.Distance ) {
                 if ( node->Front ) {
                     reinterpret_cast<float*>(&tmpbox.Min)[planeAxis] = node->Plane.Distance;
                     DebugDrawTreeNode( node->Front, tmpbox, clipFlags );
@@ -5737,6 +5740,7 @@ void GothicAPI::CollectVisibleVobs( const RndCullContext& ctx ) {
     CollectVisibleVobsHelper( root, root->OriginalNode->BBox3D,
         ctx,
         &bspVobVisitor,
+        ContainmentType::INTERSECTS,
         []( const RndCullContext& ctx, VobInfo* item ) -> void { ctx.queue->PushStaticVob( item ); },
         []( const RndCullContext& ctx, const TransparencyVobInfo& item ) -> void { ctx.queue->PushTransparencyVob( item ); },
         []( const RndCullContext& ctx, SkeletalVobInfo* item ) -> void { ctx.queue->PushSkeletalVob( item ); },
@@ -5811,6 +5815,7 @@ void GothicAPI::CollectVisibleVobsHelper( BspInfo* base,
     zTBBox3D boxCell,
     const RndCullContext& ctx,
     BspTreeVobVisitor* visitor,
+    DirectX::ContainmentType inheritedContainment,
     VisitStaticVobCallback staticVobCallback,
     VisitTransparentVobCallback alphaVobCallback,
     VisitSkeletalVobCallback skeltalVobCallback,
@@ -5843,9 +5848,9 @@ void GothicAPI::CollectVisibleVobsHelper( BspInfo* base,
         nodeBox.Max.y = nodeYMax;
 
         float dist = Toolbox::ComputePointAABBDistance( camPos, base->OriginalNode->BBox3D.Min, base->OriginalNode->BBox3D.Max );
-        ContainmentType clipResult = CONTAINS;
+        ContainmentType clipResult = inheritedContainment;
         if ( dist < vobOutdoorDist ) {
-            if ( !Engine::GAPI->GetRendererState().RendererSettings.EnableOcclusionCulling ) {
+            if ( clipResult != ContainmentType::CONTAINS && !Engine::GAPI->GetRendererState().RendererSettings.EnableOcclusionCulling ) {
                 clipResult = ctx.frustum.Contains( Frustum::BBoxFromzTBBox3D( nodeBox ) );
             } else {
                 // clipResult = static_cast<zTCam_ClipType>(base->OcclusionInfo.LastCameraClipType); // If we are using occlusion-clipping, this test has already been done
@@ -5917,6 +5922,16 @@ void GothicAPI::CollectVisibleVobsHelper( BspInfo* base,
                     float lightCameraDist;
                     XMStoreFloat( &lightCameraDist, XMVector3Length( cameraPosition - vob->GetPositionWorldXM() ) );
                     if ( lightCameraDist + vob->GetLightRange() < visualFXDrawRadius ) {
+
+                        BoundingSphere lightSphere;
+                        XMStoreFloat3( &lightSphere.Center, vob->GetPositionWorldXM() );
+                        lightSphere.Radius = vob->GetLightRange();
+
+                        // Cull any lights that are not visible even though they are in range
+                        if ( clipResult != ContainmentType::CONTAINS && ctx.frustum.Contains( lightSphere ) == ContainmentType::DISJOINT ) {
+                            continue;
+                        }
+
                         // Check if we already have this light
                         auto vit = VobLightMap.find( vob );
                         if ( vit == VobLightMap.end() ) {
@@ -5963,6 +5978,7 @@ void GothicAPI::CollectVisibleVobsHelper( BspInfo* base,
                     reinterpret_cast<float*>(&tmpbox.Min)[planeAxis] = node->Plane.Distance;
                     CollectVisibleVobsHelper( base->Front, tmpbox, ctx,
                         visitor,
+                        clipResult,
                         staticVobCallback,
                         alphaVobCallback,
                         skeltalVobCallback,
@@ -5971,11 +5987,13 @@ void GothicAPI::CollectVisibleVobsHelper( BspInfo* base,
 
                 reinterpret_cast<float*>(&boxCell.Max)[planeAxis] = node->Plane.Distance;
                 base = base->Back;
+                inheritedContainment = clipResult;
             } else {
                 if ( node->Back ) {
                     reinterpret_cast<float*>(&tmpbox.Max)[planeAxis] = node->Plane.Distance;
                     CollectVisibleVobsHelper( base->Back, tmpbox, ctx,
                         visitor,
+                        clipResult,
                         staticVobCallback,
                         alphaVobCallback,
                         skeltalVobCallback,
@@ -5984,6 +6002,7 @@ void GothicAPI::CollectVisibleVobsHelper( BspInfo* base,
 
                 reinterpret_cast<float*>(&boxCell.Min)[planeAxis] = node->Plane.Distance;
                 base = base->Front;
+                inheritedContainment = clipResult;
             }
         }
     }

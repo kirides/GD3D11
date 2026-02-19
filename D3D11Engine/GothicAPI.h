@@ -535,6 +535,7 @@ public:
     void CollectVisibleVobs( const RndCullContext& ctx );
     void CollectVisibleVobsHelper( BspInfo* base, zTBBox3D boxCell, const RndCullContext& ctx,
         BspTreeVobVisitor* visitor,
+        DirectX::ContainmentType inheritedContainment,
         VisitStaticVobCallback staticVobCallback, 
         VisitTransparentVobCallback alphaVobCallback,
         VisitSkeletalVobCallback skeltalVobCallback,
@@ -854,7 +855,7 @@ private:
     std::unordered_map<zCTexture*, MaterialInfo> MaterialInfos;
 
     /** Maps visuals to vobs */
-    std::unordered_map<zCVisual*, std::list<BaseVobInfo*>> VobsByVisual;
+    std::unordered_map<zCVisual*, std::vector<BaseVobInfo*>> VobsByVisual;
 
     /** Map of textures */
     std::unordered_map<std::string, MyDirectDrawSurface7*> SurfacesByName;
