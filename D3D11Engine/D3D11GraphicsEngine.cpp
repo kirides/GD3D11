@@ -4624,8 +4624,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         auto& vobs = renderQueue->GetVobs();
 
         // clear any residue of main render pass
-        const std::unordered_map<zCProgMeshProto*, MeshVisualInfo*>& staticMeshVisuals = Engine::GAPI->GetStaticMeshVisuals();
-        for ( auto const& staticMeshVisual : staticMeshVisuals ) {
+        for ( auto const& staticMeshVisual : Engine::GAPI->GetStaticMeshVisuals() ) {
             staticMeshVisual.second->StartNewFrame();
         }
         
@@ -4667,17 +4666,25 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             SetDebugName( DynamicInstancingBuffer->GetShaderResourceView().Get(), "DynamicInstancingBuffer->ShaderResourceView" );
             SetDebugName( DynamicInstancingBuffer->GetVertexBuffer().Get(), "DynamicInstancingBuffer->VertexBuffer" );
         }
+        
+        std::vector<MeshVisualInfo*> activeVisuals;
+        activeVisuals.reserve(256); // Reserve enough memory to avoid allocations
+        for ( auto const& pair : Engine::GAPI->GetStaticMeshVisuals() ) {
+            if ( !pair.second->Instances.empty() ) {
+                activeVisuals.push_back(pair.second);
+            }
+        }
 
         byte* data;
         UINT size;
         UINT loc = 0;
         DynamicInstancingBuffer->Map( D3D11VertexBuffer::M_WRITE_DISCARD,
             reinterpret_cast<void**>(&data), &size );
-        for ( auto const& staticMeshVisual : staticMeshVisuals ) {
-            staticMeshVisual.second->StartInstanceNum = loc;
-            memcpy( data + loc * sizeof( VobInstanceInfo ), &staticMeshVisual.second->Instances[0],
-                sizeof( VobInstanceInfo ) * staticMeshVisual.second->Instances.size() );
-            loc += staticMeshVisual.second->Instances.size();
+        for ( auto const& staticMeshVisual : activeVisuals ) {
+            staticMeshVisual->StartInstanceNum = loc;
+            memcpy( data + loc * sizeof( VobInstanceInfo ), staticMeshVisual->Instances.data(),
+                sizeof( VobInstanceInfo ) * staticMeshVisual->Instances.size() );
+            loc += staticMeshVisual->Instances.size();
         }
         DynamicInstancingBuffer->Unmap();
 
@@ -4700,11 +4707,11 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         g_windBuffer.playerPos = float3( vPlayerPosition.x, vPlayerPosition.y, vPlayerPosition.z );
 
         // Draw all vobs the player currently sees
-        for ( auto const& staticMeshVisual : staticMeshVisuals ) {
-            if ( staticMeshVisual.second->Instances.empty() ) continue;
+        for ( auto const& staticMeshVisual : activeVisuals ) {
+            if ( staticMeshVisual->Instances.empty() ) continue;
  
-            g_windBuffer.minHeight = staticMeshVisual.second->BBox.Min.y;
-            g_windBuffer.maxHeight = staticMeshVisual.second->BBox.Max.y;
+            g_windBuffer.minHeight = staticMeshVisual->BBox.Min.y;
+            g_windBuffer.maxHeight = staticMeshVisual->BBox.Max.y;
 
             if ( ActiveVS ) {
                 ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &g_windBuffer );
@@ -4712,8 +4719,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
             bool doReset = true;
             zCTexture* previousTx = nullptr;
-            for ( auto const& itt : staticMeshVisual.second->MeshesByTexture ) {
-                std::vector<MeshInfo*>& mlist = staticMeshVisual.second->MeshesByTexture[itt.first];
+            for ( auto const& itt : staticMeshVisual->MeshesByTexture ) {
+                std::vector<MeshInfo*>& mlist = staticMeshVisual->MeshesByTexture[itt.first];
                 if ( mlist.empty() ) continue;
                 
                 zCTexture* tx = itt.first.Texture;
@@ -4755,16 +4762,16 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                     // Draw batch
                     DrawInstanced( mi->MeshVertexBuffer, mi->MeshIndexBuffer,
                         mi->Indices.size(), DynamicInstancingBuffer.get(),
-                        sizeof( VobInstanceInfo ), staticMeshVisual.second->Instances.size(),
-                        sizeof( ExVertexStruct ), staticMeshVisual.second->StartInstanceNum );
+                        sizeof( VobInstanceInfo ), staticMeshVisual->Instances.size(),
+                        sizeof( ExVertexStruct ), staticMeshVisual->StartInstanceNum );
 
                     Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnVobs +=
-                        staticMeshVisual.second->Instances.size();
+                        staticMeshVisual->Instances.size();
                 }
             }
 
             // Reset visual
-            if ( doReset ) staticMeshVisual.second->StartNewFrame();
+            if ( doReset ) staticMeshVisual->StartNewFrame();
         }
     }
 
@@ -4897,9 +4904,6 @@ void D3D11GraphicsEngine::ApplyWindProps( VS_ExConstantBuffer_Wind& windBuff ) {
 
 /** Draws the static vobs instanced */
 XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
-    const std::unordered_map<zCProgMeshProto*, MeshVisualInfo*>& staticMeshVisuals =
-        Engine::GAPI->GetStaticMeshVisuals();
-
     static std::vector<VobInfo*> vobs;
     static std::vector<VobLightInfo*> lights;
     static std::vector<SkeletalVobInfo*> mobs;
@@ -4974,6 +4978,14 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
         if ( Engine::GAPI->GetRendererState().RendererSettings.DrawVOBs ) {
             auto _1 = Engine::GraphicsEngine->RecordGraphicsEvent( L"DrawVOBsInstanced->DrawVOBs" );
 
+            std::vector<MeshVisualInfo*> activeVisuals;
+            activeVisuals.reserve(256); // Reserve enough memory to avoid allocations
+            for ( auto const& pair : Engine::GAPI->GetStaticMeshVisuals() ) {
+                if ( !pair.second->Instances.empty() ) {
+                    activeVisuals.push_back(pair.second);
+                }
+            }
+
             // Create instancebuffer for this frame
             size_t ByteWidth = DynamicInstancingBuffer->GetSizeInBytes();
 
@@ -4998,48 +5010,61 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
             UINT loc = 0;
             DynamicInstancingBuffer->Map( D3D11VertexBuffer::M_WRITE_DISCARD,
                 reinterpret_cast<void**>(&data), &size );
-            for ( auto const& staticMeshVisual : staticMeshVisuals ) {
-                staticMeshVisual.second->StartInstanceNum = loc;
-                memcpy( data + loc * sizeof( VobInstanceInfo ), &staticMeshVisual.second->Instances[0],
-                    sizeof( VobInstanceInfo ) * staticMeshVisual.second->Instances.size() );
-                loc += staticMeshVisual.second->Instances.size();
+            for ( auto const& staticMeshVisual : activeVisuals ) {
+                staticMeshVisual->StartInstanceNum = loc;
+                memcpy( data + loc * sizeof( VobInstanceInfo ), staticMeshVisual->Instances.data(),
+                    sizeof( VobInstanceInfo ) * staticMeshVisual->Instances.size() );
+                loc += staticMeshVisual->Instances.size();
             }
             DynamicInstancingBuffer->Unmap();
 
-            for ( unsigned int i = 0; i < vobs.size(); i++ ) {
-                RenderedVobs.push_back( vobs[i] );
+            if (!vobs.empty()) {
+                RenderedVobs.insert(RenderedVobs.end(), vobs.begin(), vobs.end());
             }
 
             XMFLOAT3 vPlayerPosition = Engine::GAPI->GetPlayerVob() ? Engine::GAPI->GetPlayerVob()->GetPositionWorld() : XMFLOAT3( 0, 0, 0 );
             g_windBuffer.playerPos = float3( vPlayerPosition.x, vPlayerPosition.y, vPlayerPosition.z );
+            
+            float cachedSmallVobRadius = -1.0f;
+            float cachedVobRadius = -1.0f;
+            float cachedMinHeight = -999999.0f;
+            float cachedMaxHeight = -999999.0f;
+            
+            for ( auto const& staticMeshVisual : activeVisuals ) {
+                if ( staticMeshVisual->Instances.empty() ) continue;
 
-            for ( auto const& staticMeshVisual : staticMeshVisuals ) {
-                if ( staticMeshVisual.second->Instances.empty() ) continue;
+                float expectedSmallRadius = Engine::GAPI->GetRendererState().RendererSettings.OutdoorSmallVobDrawRadius - staticMeshVisual->MeshSize;
+                float expectedVobRadius = Engine::GAPI->GetRendererState().RendererSettings.OutdoorVobDrawRadius - staticMeshVisual->MeshSize;
 
-                if ( staticMeshVisual.second->MeshSize <
-                    Engine::GAPI->GetRendererState().RendererSettings.SmallVobSize ) {
-                    OutdoorSmallVobsConstantBuffer->UpdateBuffer(
-                        float4( Engine::GAPI->GetRendererState().RendererSettings.OutdoorSmallVobDrawRadius -
-                            staticMeshVisual.second->MeshSize,
-                            0, 0, 0 ).toPtr() );
-                    OutdoorSmallVobsConstantBuffer->BindToPixelShader( 3 );
+                if ( staticMeshVisual->MeshSize < Engine::GAPI->GetRendererState().RendererSettings.SmallVobSize ) {
+                    // Only update if it changed
+                    if (std::abs(cachedSmallVobRadius - expectedSmallRadius) > 0.1f) {
+                        OutdoorSmallVobsConstantBuffer->UpdateBuffer( float4( expectedSmallRadius, 0, 0, 0 ).toPtr() );
+                        OutdoorSmallVobsConstantBuffer->BindToPixelShader( 3 );
+                        cachedSmallVobRadius = expectedSmallRadius;
+                    }
                 } else {
-                    OutdoorVobsConstantBuffer->UpdateBuffer(
-                        float4( Engine::GAPI->GetRendererState().RendererSettings.OutdoorVobDrawRadius -
-                            staticMeshVisual.second->MeshSize,
-                            0, 0, 0 ).toPtr() );
-                    OutdoorVobsConstantBuffer->BindToPixelShader( 3 );
+                    // Only update if it changed
+                    if (std::abs(cachedVobRadius - expectedVobRadius) > 0.1f) {
+                        OutdoorVobsConstantBuffer->UpdateBuffer( float4( expectedVobRadius, 0, 0, 0 ).toPtr() );
+                        OutdoorVobsConstantBuffer->BindToPixelShader( 3 );
+                        cachedVobRadius = expectedVobRadius;
+                    }
                 }
 
-                g_windBuffer.minHeight = staticMeshVisual.second->BBox.Min.y;
-                g_windBuffer.maxHeight = staticMeshVisual.second->BBox.Max.y;
-
-                if ( ActiveVS ) {
-                    ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &g_windBuffer );
+                // Shadow wind buffer state
+                if (std::abs(g_windBuffer.minHeight - staticMeshVisual->BBox.Min.y) > 0.1f ||
+                    std::abs(g_windBuffer.maxHeight - staticMeshVisual->BBox.Max.y) > 0.1f) {
+        
+                    g_windBuffer.minHeight = staticMeshVisual->BBox.Min.y;
+                    g_windBuffer.maxHeight = staticMeshVisual->BBox.Max.y;
+                    if ( ActiveVS ) {
+                        ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &g_windBuffer );
+                    }
                 }
 
                 bool doReset = true;  // Don't reset alpha-vobs here
-                for ( auto const& itt : staticMeshVisual.second->MeshesByTexture ) {
+                for ( auto const& itt : staticMeshVisual->MeshesByTexture ) {
                     const std::vector<MeshInfo*>& mlist = itt.second;
                     if ( mlist.empty() ) continue;
                     {
@@ -5047,7 +5072,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                         bool blendAdd = itt.first.Material->GetAlphaFunc() == zMAT_ALPHA_FUNC_ADD;
                         bool blendBlend = itt.first.Material->GetAlphaFunc() == zMAT_ALPHA_FUNC_BLEND;
                         if ( !doReset || blendAdd || blendBlend ) {
-                            MeshVisualInfo* info = staticMeshVisual.second;
+                            MeshVisualInfo* info = staticMeshVisual;
                             for ( MeshInfo* mesh : mlist ) {
                                 alphaMeshData data = {};
                                 data.mk = itt.first;
@@ -5057,7 +5082,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                                 // but as of now, this only seems to happen VERY rarely
                                 // and the only usage i found was a bug (?) in pirates camp
                                 // where there would be cobwebs randomly.
-                                data.instances = staticMeshVisual.second->Instances;
+                                data.instances = staticMeshVisual->Instances;
                                 AlphaMeshes.emplace_back( data );
                             }
 
@@ -5151,15 +5176,15 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                         // Draw batch
                         DrawInstanced( mi->MeshVertexBuffer, mi->MeshIndexBuffer,
                             mi->Indices.size(), DynamicInstancingBuffer.get(),
-                            sizeof( VobInstanceInfo ), staticMeshVisual.second->Instances.size(),
-                            sizeof( ExVertexStruct ), staticMeshVisual.second->StartInstanceNum );
+                            sizeof( VobInstanceInfo ), staticMeshVisual->Instances.size(),
+                            sizeof( ExVertexStruct ), staticMeshVisual->StartInstanceNum );
                     }
                 }
 
                 // Reset visual
                 if ( doReset &&
                     !Engine::GAPI->GetRendererState().RendererSettings.FixViewFrustum ) {
-                    staticMeshVisual.second->StartNewFrame();
+                    staticMeshVisual->StartNewFrame();
                 }
             }
         }
