@@ -68,14 +68,6 @@ public:
         vobInfo->VisibleInRenderPass = true;
         skeltalVobs.push_back( vobInfo );
     }
-    void Visit( const TransparencyVobInfo& vobInfo ) {
-        if ( !vobInfo.skeletalVob ) {
-            return;
-        }
-        vobInfo.skeletalVob->VisibleInRenderPass = true;
-
-        transparent.push_back( vobInfo );
-    }
     void Visit( VobLightInfo* vobInfo ) {
         vobInfo->VisibleInRenderPass = true;
         lights.push_back( vobInfo );
@@ -85,20 +77,13 @@ public:
         for ( auto it : vobs ) { it->VisibleInRenderPass = false; }
         for ( auto it : skeltalVobs ) { it->VisibleInRenderPass = false; }
         for ( auto it : lights ) { it->VisibleInRenderPass = false; }
-        for ( auto it : transparent ) {
-            if ( it.skeletalVob ) {
-                it.skeletalVob->VisibleInRenderPass = false;
-            }
-        }
 
         vobs.clear();
         lights.clear();
         skeltalVobs.clear();
-        transparent.clear();
     }
 private:
     std::vector<VobInfo*> vobs;
     std::vector<VobLightInfo*> lights;
     std::vector<SkeletalVobInfo*> skeltalVobs;
-    std::vector<TransparencyVobInfo> transparent;
 };
