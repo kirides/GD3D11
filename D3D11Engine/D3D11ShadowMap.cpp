@@ -619,6 +619,7 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
             RenderShadowmaps( renderParams );
 
             Engine::GAPI->SetCameraReplacementPtr( nullptr );
+            m_RenderQueues[cascadeIdx]->Reset();
         }
     }
 
