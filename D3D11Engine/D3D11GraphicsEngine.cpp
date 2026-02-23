@@ -2849,7 +2849,6 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             };
         });
     }
-
     
     graph.AddPass( L"DrawWaterSurfaces", [&]( RGBuilder& builder, RenderPass& pass ) {
         builder.Read( backBufferHandle );
@@ -2940,10 +2939,11 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     graph.AddPass( L"Reset RenderTargets", [&]( RGBuilder& builder, RenderPass& pass )
     {
         builder.Write( backBufferHandle );
-        pass.m_executeCallback = [this](const RenderGraph&) {
-                GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(),
-                    DepthStencilBuffer->GetDepthStencilView().Get() );
-            };
+        pass.m_executeCallback = [this, backBufferHandle](const RenderGraph& graph) {
+            auto backBuffer = graph.GetPhysicalTexture(backBufferHandle);
+            GetContext()->OMSetRenderTargets( 1, backBuffer->GetRenderTargetView().GetAddressOf(),
+                DepthStencilBuffer->GetDepthStencilView().Get() );
+        };
     });
     
     if (rendererState.RendererSettings.DrawParticleEffects) {
