@@ -959,7 +959,6 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
 
         ImGui::Checkbox( "Draw Skeletal Meshes", &settings.DrawSkeletalMeshes );
         ImGui::BeginDisabled( !settings.DrawSkeletalMeshes );
-        ImGui::Checkbox( "Enable Experimental Batching", &UseExperimentalSkeletalBatching );
         ImGui::SliderFloat( "SkeletalMeshDrawRadius", &settings.SkeletalMeshDrawRadius, 0.0f, 18000.0f, "%.0f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
         ImGui::SetItemTooltip( "Draw distance for NPCs" );
         ImGui::EndDisabled();
@@ -1183,6 +1182,11 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
             if (ImGui::BeginTabItem("Featureset", nullptr, ImGuiTabItemFlags_::ImGuiTabItemFlags_NoReorder)) {
                 ImGui::Checkbox("Use MDI", &settings.DebugSettings.FeatureSet.UseMDI );
                 ImGui::Checkbox("Use Layered Drawing", &settings.DebugSettings.FeatureSet.UseLayeredRendering );
+                ImGui::EndTabItem();
+            }
+            
+            if (ImGui::BeginTabItem("Experimental", nullptr, ImGuiTabItemFlags_::ImGuiTabItemFlags_NoReorder)) {
+                ImGui::Checkbox("Draw Skeletals Instanced", &settings.Experimental.DrawSkeletalsInstanced );
                 ImGui::EndTabItem();
             }
  

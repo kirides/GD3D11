@@ -755,6 +755,8 @@ struct GothicRendererSettings {
         DebugSettings.Culling.CullBspSections = true;
         DebugSettings.Culling.CullVobs = true;
         DebugSettings.ShadowCascades.LazyCascadeUpdate = true;
+        
+        Experimental = {};
     }
 
     void SetupOldWorldSpecificValues() {
@@ -945,6 +947,10 @@ struct GothicRendererSettings {
             bool UseLayeredRendering;
         } FeatureSet;
     } DebugSettings;
+    
+    struct {
+        bool DrawSkeletalsInstanced;
+    } Experimental;
 };
 
 struct GothicRendererTiming {

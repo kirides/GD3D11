@@ -59,8 +59,6 @@
 // Duration how long the scene will stay wet, in MS
 const DWORD SCENE_WETNESS_DURATION_MS = 30 * 1000;
 
-bool UseExperimentalSkeletalBatching = false;
-
 // Draw ghost from back to front of our camera
 auto CompareGhostDistance = []( TransparencyVobInfo& a, TransparencyVobInfo& b ) -> bool { return a.distance < b.distance; };
 
@@ -1189,13 +1187,13 @@ void GothicAPI::DrawWorldMeshNaive() {
 
 #if defined(BUILD_1_12F)
         // not implemented in G1 sequel
-        UseExperimentalSkeletalBatching = false;
+        RendererState.RendererSettings.Experimental.DrawSkeletalsInstanced = false;
 #endif
         // TODO: Figure out why Batching is not working properly here
         // The Batches constantly use wrong textures as if just before "DrawIndexed" the texture is being changed by something else
         // this happens on the Body meshes as well as all the Node Attachments.
         // We need this to be fixed, so that we can actually draw hundreds of animated characters with good performance.
-        if ( UseExperimentalSkeletalBatching ) {
+        if ( RendererState.RendererSettings.Experimental.DrawSkeletalsInstanced ) {
 
             static std::vector<SkeletalVobInfo*> batchedVobs;
             batchedVobs.clear();
@@ -2945,10 +2943,10 @@ void GothicAPI::DrawSkeletalMeshVobs(
 
 #if defined(BUILD_1_12F)
     // not implemented in G1 sequel
-    UseExperimentalSkeletalBatching = false;
+    RendererState.RendererSettings.Experimental.DrawSkeletalsInstanced = false;
 #endif
 
-    if ( UseExperimentalSkeletalBatching ) {
+    if ( RendererState.RendererSettings.Experimental.DrawSkeletalsInstanced ) {
         DrawSkeletalMeshVobs_Batched( vis, updateState, drawAttachments );
     } else {
         FXMVECTOR camPos = GetCameraPositionXM();
