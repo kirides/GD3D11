@@ -3139,13 +3139,16 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             && rendererState.RendererSettings.Upscaler == GothicRendererSettings::E_Upscaler::UPSCALER_FSR_1 ) {
             
             graph.AddPass( L"FSR 1 Upscale", [&]( RGBuilder& builder, RenderPass& pass ) {
+                builder.Read( backBufferHandle );
                 builder.Write( backBufferHandle );
 
-                pass.m_executeCallback = [this, &rendererState](const RenderGraph&) {
+                pass.m_executeCallback = [this, &rendererState, backBufferHandle](const RenderGraph& graph) {
+                    auto backbufferTex = graph.GetPhysicalTexture( backBufferHandle );
+
                     // Now upscale it to backbuffer with sharpening
                     auto sharpenFactor = rendererState.RendererSettings.SharpenFactor;
                     PfxRenderer->GetFSR1()->Apply(
-                        HDRBackBuffer->GetShaderResView(),
+                        backbufferTex->GetShaderResView(),
                         Backbuffer->GetRenderTargetView(),
                         GetResolution(),
                         GetBackbufferResolution(),
@@ -3157,12 +3160,14 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                 && rendererState.RendererSettings.SharpenFactor > 0.0f ) {
 
             graph.AddPass( L"Sharpen", [&]( RGBuilder& builder, RenderPass& pass ) {
+                builder.Read( backBufferHandle );
                 builder.Write( backBufferHandle );
 
-                pass.m_executeCallback = [this, &rendererState](const RenderGraph&) {
+                pass.m_executeCallback = [this, &rendererState, backBufferHandle](const RenderGraph& graph) {
+                    auto backbufferTex = graph.GetPhysicalTexture( backBufferHandle );
                     {
                         auto _ = RecordGraphicsEvent( L"Copy into native-size backbuffer" );
-                        PfxRenderer->CopyTextureToRTV( HDRBackBuffer->GetShaderResView(), Backbuffer->GetRenderTargetView(), GetBackbufferResolution() );
+                        PfxRenderer->CopyTextureToRTV( backbufferTex->GetShaderResView(), Backbuffer->GetRenderTargetView(), GetBackbufferResolution() );
                     }
 
                     switch ( rendererState.RendererSettings.SharpeningMode ) {
@@ -3187,8 +3192,9 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             graph.AddPass( L"Copy into native-size backbuffer", [&]( RGBuilder& builder, RenderPass& pass ) {
                 builder.Write( backBufferHandle );
 
-                pass.m_executeCallback = [this, &rendererState](const RenderGraph&) {
-                    PfxRenderer->CopyTextureToRTV( HDRBackBuffer->GetShaderResView(), Backbuffer->GetRenderTargetView(), GetBackbufferResolution() );
+                pass.m_executeCallback = [this, &rendererState, backBufferHandle](const RenderGraph& graph) {
+                    auto backbufferTex = graph.GetPhysicalTexture( backBufferHandle );
+                    PfxRenderer->CopyTextureToRTV( backbufferTex->GetShaderResView(), Backbuffer->GetRenderTargetView(), GetBackbufferResolution() );
                 };
             } );
         }
