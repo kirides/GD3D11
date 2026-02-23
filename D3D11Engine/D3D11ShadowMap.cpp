@@ -499,9 +499,13 @@ std::vector<float> D3D11ShadowMap::ComputeCascadeSplits( float nearPlane, float 
 }
 
 XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& lights ) {
+    auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+    if (settings.EnablePointlightShadows <= 0) {
+        return XR_SUCCESS;
+    }
+    
     auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     auto _ = graphicsEngine->RecordGraphicsEvent( L"DrawPointlightShadows" );
-    auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
 
     static const XMVECTORF32 xmFltMax = { { { FLT_MAX, FLT_MAX, FLT_MAX, FLT_MAX } } };
     graphicsEngine->SetDefaultStates();
@@ -520,94 +524,92 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
     bool partialShadowUpdate = settings.PartialDynamicShadowUpdates;
 
     // Draw pointlight shadows
-    if ( settings.EnablePointlightShadows > 0 ) {
-        std::list<VobLightInfo*> importantUpdates;
+    std::list<VobLightInfo*> importantUpdates;
 
-        for ( auto const& light : lights ) {
-            // Create shadowmap in case we should have one but haven't got it yet
-            if ( !light->LightShadowBuffers && light->UpdateShadows ) {
-                graphicsEngine->CreateShadowedPointLight( &light->LightShadowBuffers, light );
-            }
+    for ( auto const& light : lights ) {
+        // Create shadowmap in case we should have one but haven't got it yet
+        if ( !light->LightShadowBuffers && light->UpdateShadows ) {
+            graphicsEngine->CreateShadowedPointLight( &light->LightShadowBuffers, light );
+        }
 
-            if ( light->LightShadowBuffers ) {
-                // Check if this lights even needs an update
-                bool needsUpdate = static_cast<D3D11PointLight*>(light->LightShadowBuffers)->NeedsUpdate();
-                bool isInited = static_cast<D3D11PointLight*>(light->LightShadowBuffers)->IsInited();
+        if ( light->LightShadowBuffers ) {
+            // Check if this lights even needs an update
+            bool needsUpdate = static_cast<D3D11PointLight*>(light->LightShadowBuffers)->NeedsUpdate();
+            bool isInited = static_cast<D3D11PointLight*>(light->LightShadowBuffers)->IsInited();
 
-                // Add to the updatequeue if it does
-                if ( isInited && (needsUpdate || light->UpdateShadows) ) {
-                    // Always update the light if the light itself moved
-                    if ( partialShadowUpdate && !needsUpdate ) {
-                        // Only add once. This list should never be very big, so it should
-                        // be ok to search it like this This needs to be done to make sure a
-                        // light will get updated only once and won't block the queue
-                        if ( std::find( graphicsEngine->FrameShadowUpdateLights.begin(),
-                            graphicsEngine->FrameShadowUpdateLights.end(),
-                            light ) == graphicsEngine->FrameShadowUpdateLights.end() ) {
-                            // Always render the closest light to the playervob, so the player
-                            // doesn't flicker when moving
-                            float d;
-                            XMStoreFloat( &d, XMVector3LengthSq( light->Vob->GetPositionWorldXM() - vPlayerPosition ) );
-
-                            float range = light->Vob->GetLightRange();
-                            if ( d < range * range &&
-                                importantUpdates.size() < MAX_IMPORTANT_LIGHT_UPDATES ) {
-                                importantUpdates.emplace_back( light );
-                            } else {
-                                graphicsEngine->FrameShadowUpdateLights.emplace_back( light );
-                            }
-                        }
-                    } else {
+            // Add to the updatequeue if it does
+            if ( isInited && (needsUpdate || light->UpdateShadows) ) {
+                // Always update the light if the light itself moved
+                if ( partialShadowUpdate && !needsUpdate ) {
+                    // Only add once. This list should never be very big, so it should
+                    // be ok to search it like this This needs to be done to make sure a
+                    // light will get updated only once and won't block the queue
+                    if ( std::find( graphicsEngine->FrameShadowUpdateLights.begin(),
+                                    graphicsEngine->FrameShadowUpdateLights.end(),
+                                    light ) == graphicsEngine->FrameShadowUpdateLights.end() ) {
                         // Always render the closest light to the playervob, so the player
                         // doesn't flicker when moving
                         float d;
                         XMStoreFloat( &d, XMVector3LengthSq( light->Vob->GetPositionWorldXM() - vPlayerPosition ) );
 
-                        float range = light->Vob->GetLightRange() * 1.5f;
-
-                        // If the engine said this light should be updated, then do so. If
-                        // the light said this
-                        if ( needsUpdate || d < range * range )
+                        float range = light->Vob->GetLightRange();
+                        if ( d < range * range &&
+                            importantUpdates.size() < MAX_IMPORTANT_LIGHT_UPDATES ) {
                             importantUpdates.emplace_back( light );
+                        } else {
+                            graphicsEngine->FrameShadowUpdateLights.emplace_back( light );
+                        }
                     }
+                } else {
+                    // Always render the closest light to the playervob, so the player
+                    // doesn't flicker when moving
+                    float d;
+                    XMStoreFloat( &d, XMVector3LengthSq( light->Vob->GetPositionWorldXM() - vPlayerPosition ) );
+
+                    float range = light->Vob->GetLightRange() * 1.5f;
+
+                    // If the engine said this light should be updated, then do so. If
+                    // the light said this
+                    if ( needsUpdate || d < range * range )
+                        importantUpdates.emplace_back( light );
                 }
             }
         }
+    }
 
-        // Render the closest light
-        for ( auto const& importantUpdate : importantUpdates ) {
-            static_cast<D3D11PointLight*>( importantUpdate->LightShadowBuffers )->RenderCubemap( importantUpdate->UpdateShadows );
-            importantUpdate->UpdateShadows = false;
-        }
+    // Render the closest light
+    for ( auto const& importantUpdate : importantUpdates ) {
+        static_cast<D3D11PointLight*>( importantUpdate->LightShadowBuffers )->RenderCubemap( importantUpdate->UpdateShadows );
+        importantUpdate->UpdateShadows = false;
+    }
 
-        // Update only a fraction of lights, but at least some
-        int n = std::max(
-            (UINT)NUM_MIN_FRAME_SHADOW_UPDATES,
-            (UINT)(graphicsEngine->FrameShadowUpdateLights.size() / NUM_FRAME_SHADOW_UPDATES) );
-        while ( !graphicsEngine->FrameShadowUpdateLights.empty() ) {
-            auto light = graphicsEngine->FrameShadowUpdateLights.front();
-            if ( !light ) {
-                graphicsEngine->FrameShadowUpdateLights.pop_front();
-                continue;
-            }
-            D3D11PointLight* l = static_cast<D3D11PointLight*>(light->LightShadowBuffers);
-            if ( !l ) {
-                graphicsEngine->FrameShadowUpdateLights.pop_front();
-                continue;
-            }
-            // Check if we have to force this light to update itself (NPCs moving around, for example)
-            bool force = light->UpdateShadows;
-            light->UpdateShadows = false;
-
-            l->RenderCubemap( force );
-            graphicsEngine->DebugPointlight = l;
-
+    // Update only a fraction of lights, but at least some
+    int n = std::max(
+        (UINT)NUM_MIN_FRAME_SHADOW_UPDATES,
+        (UINT)(graphicsEngine->FrameShadowUpdateLights.size() / NUM_FRAME_SHADOW_UPDATES) );
+    while ( !graphicsEngine->FrameShadowUpdateLights.empty() ) {
+        auto light = graphicsEngine->FrameShadowUpdateLights.front();
+        if ( !light ) {
             graphicsEngine->FrameShadowUpdateLights.pop_front();
-
-            // Only update n lights
-            n--;
-            if ( n <= 0 ) break;
+            continue;
         }
+        D3D11PointLight* l = static_cast<D3D11PointLight*>(light->LightShadowBuffers);
+        if ( !l ) {
+            graphicsEngine->FrameShadowUpdateLights.pop_front();
+            continue;
+        }
+        // Check if we have to force this light to update itself (NPCs moving around, for example)
+        bool force = light->UpdateShadows;
+        light->UpdateShadows = false;
+
+        l->RenderCubemap( force );
+        graphicsEngine->DebugPointlight = l;
+
+        graphicsEngine->FrameShadowUpdateLights.pop_front();
+
+        // Only update n lights
+        n--;
+        if ( n <= 0 ) break;
     }
     return XR_SUCCESS;
 }
@@ -656,11 +658,11 @@ XRESULT D3D11ShadowMap::DrawWorldShadow( )
     return XR_SUCCESS;
 }
 
-XRESULT D3D11ShadowMap::DrawRainShadomap() {
+XRESULT D3D11ShadowMap::DrawRainShadowmap() {
     // Draw rainmap, if raining
     if ( Engine::GAPI->GetSceneWetness() > 0.00001f ) {
         auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
-        auto _ = graphicsEngine->RecordGraphicsEvent( L"DrawLighting" );
+        auto _ = graphicsEngine->RecordGraphicsEvent( L"DrawRainShadowmap" );
 
         graphicsEngine->Effects->DrawRainShadowmap();
     }
@@ -837,7 +839,6 @@ XRESULT D3D11ShadowMap::DrawLighting(
     RenderToTextureBuffer& specular,    
     RenderToTextureBuffer& depthCopy) {
     auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
-    auto _ = graphicsEngine->RecordGraphicsEvent( L"DrawLighting" );
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
 
     graphicsEngine->SetDefaultStates();
@@ -849,9 +850,9 @@ XRESULT D3D11ShadowMap::DrawLighting(
 
     graphicsEngine->SetDefaultStates();
 
-    DrawRainShadomap();
+    DrawRainShadowmap();
 
-    Engine::GAPI->SetFarPlane(settings.SectionDrawRadius * WORLD_SECTION_SIZE );
+    Engine::GAPI->SetFarPlane(static_cast<float>(settings.SectionDrawRadius) * WORLD_SECTION_SIZE );
     
     DrawPointlightLights(lights, color, normals, specular, depthCopy);
 

@@ -109,7 +109,7 @@ public:
     static std::vector<float> ComputeCascadeSplits( float nearPlane, float farPlane, size_t numCascades, float lambda = 0.95f, float bias = 1.0f );
     XRESULT DrawPointlightShadows(std::vector<VobLightInfo*>& lights);
     XRESULT DrawWorldShadow();
-    XRESULT DrawRainShadomap();
+    XRESULT DrawRainShadowmap();
     XRESULT DrawPointlightLights(std::vector<VobLightInfo*>& lights, RenderToTextureBuffer& color, RenderToTextureBuffer& normals, RenderToTextureBuffer
                                  & specular, RenderToTextureBuffer& depthCopy);
 

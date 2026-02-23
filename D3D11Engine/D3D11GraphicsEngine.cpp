@@ -2803,14 +2803,14 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         builder.Write( backBufferHandle );
 
         pass.m_executeCallback = [this, colorResource, normalsResource, specularResource](const RenderGraph& graph)-> void {
-            if ( !Engine::GAPI->GetRendererState().RendererSettings.EnableShadows ) {
-                return;
-            }
             auto colorTexture = graph.GetPhysicalTexture(colorResource);
             auto normalsTexture = graph.GetPhysicalTexture(normalsResource);
             auto specularTexture = graph.GetPhysicalTexture(specularResource);
 
-            ShadowMaps->PrepareRender();
+            if ( Engine::GAPI->GetRendererState().RendererSettings.EnableShadows ) {
+                // Cascades only get rendered if this is enabled. 
+                ShadowMaps->PrepareRender();
+            }
             ShadowMaps->DrawLighting(m_FrameLights, 
                 *colorTexture, 
                 *normalsTexture, 
@@ -4627,6 +4627,182 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
     }
 }
 
+void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect(const std::vector<const WorldMeshSectionInfo*>& visibleSections)
+{
+    float alphaRef = Engine::GAPI->GetRendererState().GraphicsState.FF_AlphaRef;
+    bool linearDepth = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches &
+                GSWITCH_LINEAR_DEPTH) != 0;
+    
+    auto drawMultiIndexedInstancedIndirect = Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseMDI
+            ? DrawMultiIndexedInstancedIndirect
+            : Stub_DrawMultiIndexedInstancedIndirect;
+        
+        if ( Engine::GAPI->GetRendererState().RendererSettings.FastShadows )
+        {
+            if ( !linearDepth )  // Only unbind when not rendering linear depth
+            {
+                // Unbind PS
+                Context->PSSetShader( nullptr, nullptr, 0 );
+            }
+
+            for ( const WorldMeshSectionInfo* section : visibleSections ) {
+                if ( section->FullStaticMesh ) {
+                    Engine::GAPI->DrawMeshInfo( nullptr, section->FullStaticMesh );
+                }
+            }
+            return;
+        }
+    // Collect all meshes first, then batch by alpha requirement
+    static thread_local std::vector<D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS> opaqueDrawArgs;
+    static thread_local std::vector<std::pair<zCTexture*, WorldMeshInfo*>> alphaMeshes;
+    opaqueDrawArgs.clear();
+    alphaMeshes.clear();
+
+    for ( const WorldMeshSectionInfo* section : visibleSections ) {
+        for ( const auto& meshPair : section->WorldMeshes ) {
+            // Skip non-standard materials (water, portals, etc.)
+            if ( meshPair.first.Info->MaterialType != MaterialInfo::MT_None )
+                continue;
+
+            zCTexture* tex = meshPair.first.Material ? meshPair.first.Material->GetTexture() : nullptr;
+
+            if ( tex && tex->HasAlphaChannel() && alphaRef > 0.0f ) {
+                // Need alpha testing - cache texture
+                if ( tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                    alphaMeshes.emplace_back( tex, meshPair.second );
+                }
+            } else {
+                D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS args;
+                args.IndexCountPerInstance = static_cast<UINT>(meshPair.second->Indices.size());
+                args.InstanceCount = 1;
+                args.StartIndexLocation = meshPair.second->BaseIndexLocation;
+                args.BaseVertexLocation = 0;
+                args.StartInstanceLocation = 0;
+                opaqueDrawArgs.push_back( args );
+            }
+
+            Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
+                meshPair.second->Indices.size() / 3;
+        }
+    }
+
+    // Draw all opaque meshes without pixel shader (depth only) using MDI
+    if ( !opaqueDrawArgs.empty() ) {
+        if ( !linearDepth ) {
+            // Unbind PS for depth-only rendering
+            Context->PSSetShader( nullptr, nullptr, 0 );
+        }
+
+        // Initialize or resize the indirect buffer if needed
+        const size_t requiredSize = opaqueDrawArgs.size() * sizeof( D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS );
+
+        if ( !WorldMeshIndirectBuffer || WorldMeshIndirectBuffer->GetSizeInBytes() < requiredSize ) {
+            WorldMeshIndirectBuffer.reset( new D3D11IndirectBuffer );
+            WorldMeshIndirectBuffer->Init(
+                    opaqueDrawArgs.data(), requiredSize,
+                    D3D11IndirectBuffer::B_INDEXBUFFER, D3D11IndirectBuffer::U_DYNAMIC,
+                    D3D11IndirectBuffer::CA_WRITE );
+        } else {
+            WorldMeshIndirectBuffer->UpdateBuffer( opaqueDrawArgs.data(), requiredSize );
+        }
+
+        // Execute multi-draw indirect call for all opaque meshes
+        // DrawMultiIndexedInstancedIndirect falls back to individual DrawIndexedInstancedIndirect 
+        // calls via Stub_DrawMultiIndexedInstancedIndirect if hardware doesn't support MDI
+        drawMultiIndexedInstancedIndirect( Context.Get(),
+            static_cast<unsigned int>(opaqueDrawArgs.size()),
+            WorldMeshIndirectBuffer->GetIndirectBuffer().Get(),
+            0,
+            sizeof( D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS ) );
+    }
+
+    // Draw alpha-tested meshes with texture binding
+    if ( !alphaMeshes.empty() ) {
+        // Sort by texture to minimize binding changes
+        std::sort( alphaMeshes.begin(), alphaMeshes.end(),
+            []( const auto& a, const auto& b ) { return a.first < b.first; } );
+
+        ActivePS->Apply();
+        zCTexture* lastTex = nullptr;
+
+        for ( const auto& [tex, mesh] : alphaMeshes ) {
+            if ( tex != lastTex ) {
+                if (tex->CacheIn( 0.6f ) == zRES_CACHED_OUT) {
+                    continue;
+                }
+                tex->Bind( 0 );
+                lastTex = tex;
+            }
+            DrawVertexBufferIndexedUINT( nullptr, nullptr,
+                mesh->Indices.size(), mesh->BaseIndexLocation );
+        }
+    }
+}
+
+void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh(const std::vector<const WorldMeshSectionInfo*>& visibleSections)
+{
+    float alphaRef = Engine::GAPI->GetRendererState().GraphicsState.FF_AlphaRef;
+    bool linearDepth = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches &
+                GSWITCH_LINEAR_DEPTH) != 0;
+    
+    static thread_local std::vector<WorldMeshInfo*> opaqueMeshes;
+    static thread_local std::vector<std::pair<zCTexture*, WorldMeshInfo*>> alphaMeshes;
+    opaqueMeshes.clear();
+    alphaMeshes.clear();
+
+    for ( const WorldMeshSectionInfo* section : visibleSections ) {
+        for ( const auto& meshPair : section->WorldMeshes ) {
+            // Skip non-standard materials (water, portals, etc.)
+            if ( meshPair.first.Info->MaterialType != MaterialInfo::MT_None )
+                continue;
+
+            zCTexture* tex = meshPair.first.Material ? meshPair.first.Material->GetTexture() : nullptr;
+
+            if ( tex && tex->HasAlphaChannel() && alphaRef > 0.0f ) {
+                // Need alpha testing - cache texture
+                if ( tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                    alphaMeshes.emplace_back( tex, meshPair.second );
+                }
+            } else {
+                opaqueMeshes.push_back( meshPair.second );
+            }
+        }
+    }
+
+    // Draw all opaque meshes without pixel shader (depth only)
+    if ( !opaqueMeshes.empty() ) {
+        if ( !linearDepth )  // Only unbind when not rendering linear depth
+        {
+            // Unbind PS
+            Context->PSSetShader( nullptr, nullptr, 0 );
+        }
+
+        for ( WorldMeshInfo* mesh : opaqueMeshes ) {
+            DrawVertexBufferIndexedUINT( nullptr, nullptr,
+                mesh->Indices.size(), mesh->BaseIndexLocation );
+        }
+    }
+
+    // Draw alpha-tested meshes with texture binding
+    if ( !alphaMeshes.empty() ) {
+        // Sort by texture to minimize binding changes
+        std::sort( alphaMeshes.begin(), alphaMeshes.end(),
+            []( const auto& a, const auto& b ) { return a.first < b.first; } );
+
+        ActivePS->Apply();
+        zCTexture* lastTex = nullptr;
+
+        for ( const auto& [tex, mesh] : alphaMeshes ) {
+            if ( tex != lastTex ) {
+                tex->Bind( 0 );
+                lastTex = tex;
+            }
+            DrawVertexBufferIndexedUINT( nullptr, nullptr,
+                mesh->Indices.size(), mesh->BaseIndexLocation );
+        }
+    }
+}
+
 /** Draws everything around the given position */
 void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR position,
     float sectionRange,
@@ -4725,7 +4901,11 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
     bool colorWritesEnabled =
         Engine::GAPI->GetRendererState().BlendState.ColorWritesEnabled;
     float alphaRef = Engine::GAPI->GetRendererState().GraphicsState.FF_AlphaRef;
-    auto& currentFrustum = params.CascadeCameraReplacements->at(params.CascadeIndex).frustum;
+    auto& currentFrustum = params.CascadeIndex != -1
+        ? params.CascadeCameraReplacements->at(params.CascadeIndex).frustum
+        : Engine::GAPI->GetCameraReplacementPtr() != nullptr
+            ? Engine::GAPI->GetCameraReplacementPtr()->frustum
+            : Frustum::AlwaysContainingFrustum();
 
     if ( Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh ) {
         auto _ = START_TIMING( timer_labels_world_mesh[timerLabelIndex] );
@@ -4764,10 +4944,31 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
     }    
     
     if ( Engine::GAPI->GetRendererState().RendererSettings.DrawVOBs ) {
-        auto renderQueue = ShadowMaps->GetRenderQueue( params.CascadeIndex );
-        renderQueue->ProcessQueue();
+        static std::vector<VobInfo*> potentialCasters;
+        std::vector<VobInfo*>& vobs = potentialCasters;
+        if (params.CascadeIndex != -1) {
+            auto renderQueue = ShadowMaps->GetRenderQueue( params.CascadeIndex );
+            renderQueue->ProcessQueue();
 
-        auto& vobs = renderQueue->GetVobs();
+            vobs = renderQueue->GetVobs();
+        } else {
+            static std::vector<VobLightInfo*> _1;
+            static std::vector<SkeletalVobInfo*> _2;
+            potentialCasters.reserve(1024);
+            potentialCasters.clear();
+
+            LegacyRenderQueueProxy q(potentialCasters, _1, _2);
+            RndCullContext ctx;
+            ctx.queue = &q;
+            ctx.cameraPosition = Engine::GAPI->GetCameraPosition();
+            ctx.stage = RenderStage::STAGE_DRAW_WORLD;
+            ctx.frustum = currentFrustum;
+            ctx.drawDistances.OutdoorVobs = Engine::GAPI->GetRendererState().RendererSettings.OutdoorVobDrawRadius;
+            ctx.drawDistances.OutdoorVobsSmall = Engine::GAPI->GetRendererState().RendererSettings.OutdoorSmallVobDrawRadius;
+            ctx.drawDistances.IndoorVobs = Engine::GAPI->GetRendererState().RendererSettings.IndoorVobDrawRadius;
+            ctx.drawDistances.VisualFX = Engine::GAPI->GetRendererState().RendererSettings.VisualFXDrawRadius;
+            Engine::GAPI->CollectVisibleVobs( ctx );
+        }
 
         // clear any residue of main render pass
         for ( auto const& staticMeshVisual : Engine::GAPI->GetStaticMeshVisuals() ) {
@@ -4934,7 +5135,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         static std::vector<SkeletalVobInfo*> animatedSkeletalMeshVobs;
         animatedSkeletalMeshVobs.clear();
         
-        const bool isLastCascade = params.CascadeIndex == params.CascadeSplits.size() - 2;
+        const bool isLastCascade = params.CascadeSplits.size() == 0
+            || params.CascadeIndex == params.CascadeSplits.size() - 2;
         
         for ( auto const& skeletalMeshVob : Engine::GAPI->GetSkeletalMeshVobs() ) {
             if ( !skeletalMeshVob->VisualInfo ) continue;
@@ -4949,9 +5151,6 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             }
 
             if ( enableCulling && !isLastCascade ) {
-                // Frustum culling using a bounding sphere
-                // Use the mesh size as radius, centered at the vob position
-
                 if ( currentFrustum.Contains( skeletalMeshVob->Vob->GetBBox()) == DirectX::ContainmentType::DISJOINT) {
                     // Not hitting our frustum and not the active view.
                     continue;
@@ -5464,7 +5663,7 @@ XRESULT D3D11GraphicsEngine::DrawFrameAlphaMeshes()
         }
 
         // Draw batch
-        DrawInstanced( mi->MeshVertexBuffer.get(), mi->MeshIndexBuffer.get(), mi->Indices.size(),
+        DrawInstanced( mi->MeshVertexBuffer, mi->MeshIndexBuffer, mi->Indices.size(),
             DynamicInstancingBuffer.get(), sizeof( VobInstanceInfo ),
             instances.size(), sizeof( ExVertexStruct ),
             vi->StartInstanceNum );

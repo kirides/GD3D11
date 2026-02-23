@@ -597,6 +597,7 @@ public:
 
     /** Sets the CameraReplacementPtr */
     void SetCameraReplacementPtr( CameraReplacement* ptr ) { CameraReplacementPtr = ptr; }
+    CameraReplacement* GetCameraReplacementPtr() const { return CameraReplacementPtr; }
 
     /** Lets Gothic draw its sky */
     void DrawSkyGothicOriginal();
