@@ -4521,115 +4521,15 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                 if ( lenSq > sectionRangeSq ) {
                     continue;
                 }
-                if ( !currentFrustum.Intersects(Frustum::BBoxFromzTBBox3D(ity.second.BoundingBox)) ) {
-                    continue;
-                }
+
                 visibleSections.push_back( &ity.second );
             }
         }
-
-        auto drawMultiIndexedInstancedIndirect = Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseMDI
-            ? DrawMultiIndexedInstancedIndirect
-            : Stub_DrawMultiIndexedInstancedIndirect;
         
-        if ( Engine::GAPI->GetRendererState().RendererSettings.FastShadows ) {
-            if ( !linearDepth )  // Only unbind when not rendering linear depth
-            {
-                // Unbind PS
-                Context->PSSetShader( nullptr, nullptr, 0 );
-            }
-
-            for ( const WorldMeshSectionInfo* section : visibleSections ) {
-                if ( section->FullStaticMesh ) {
-                    Engine::GAPI->DrawMeshInfo( nullptr, section->FullStaticMesh );
-                }
-            }
+        if (Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseMDI) {
+            ShadowPass_DrawWorldMesh_Indirect(visibleSections);
         } else {
-            // Collect all meshes first, then batch by alpha requirement
-            static thread_local std::vector<D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS> opaqueDrawArgs;
-            static thread_local std::vector<std::pair<zCTexture*, WorldMeshInfo*>> alphaMeshes;
-            opaqueDrawArgs.clear();
-            alphaMeshes.clear();
-
-            for ( const WorldMeshSectionInfo* section : visibleSections ) {
-                for ( const auto& meshPair : section->WorldMeshes ) {
-                    // Skip non-standard materials (water, portals, etc.)
-                    if ( meshPair.first.Info->MaterialType != MaterialInfo::MT_None )
-                        continue;
-
-                    zCTexture* tex = meshPair.first.Material ? meshPair.first.Material->GetTexture() : nullptr;
-
-                    if ( tex && tex->HasAlphaChannel() && alphaRef > 0.0f ) {
-                        // Need alpha testing - cache texture
-                        if ( tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
-                            alphaMeshes.emplace_back( tex, meshPair.second );
-                        }
-                    } else {
-                        D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS args;
-                        args.IndexCountPerInstance = static_cast<UINT>(meshPair.second->Indices.size());
-                        args.InstanceCount = 1;
-                        args.StartIndexLocation = meshPair.second->BaseIndexLocation;
-                        args.BaseVertexLocation = 0;
-                        args.StartInstanceLocation = 0;
-                        opaqueDrawArgs.push_back( args );
-                    }
-
-                    Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
-                        meshPair.second->Indices.size() / 3;
-                }
-            }
-
-            // Draw all opaque meshes without pixel shader (depth only) using MDI
-            if ( !opaqueDrawArgs.empty() ) {
-                if ( !linearDepth ) {
-                    // Unbind PS for depth-only rendering
-                    Context->PSSetShader( nullptr, nullptr, 0 );
-                }
-
-                // Initialize or resize the indirect buffer if needed
-                const size_t requiredSize = opaqueDrawArgs.size() * sizeof( D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS );
-
-                if ( !WorldMeshIndirectBuffer || WorldMeshIndirectBuffer->GetSizeInBytes() < requiredSize ) {
-                    WorldMeshIndirectBuffer.reset( new D3D11IndirectBuffer );
-                    WorldMeshIndirectBuffer->Init(
-                            opaqueDrawArgs.data(), requiredSize,
-                            D3D11IndirectBuffer::B_INDEXBUFFER, D3D11IndirectBuffer::U_DYNAMIC,
-                            D3D11IndirectBuffer::CA_WRITE );
-                } else {
-                    WorldMeshIndirectBuffer->UpdateBuffer( opaqueDrawArgs.data(), requiredSize );
-                }
-
-                // Execute multi-draw indirect call for all opaque meshes
-                // DrawMultiIndexedInstancedIndirect falls back to individual DrawIndexedInstancedIndirect 
-                // calls via Stub_DrawMultiIndexedInstancedIndirect if hardware doesn't support MDI
-                drawMultiIndexedInstancedIndirect( Context.Get(),
-                    static_cast<unsigned int>(opaqueDrawArgs.size()),
-                    WorldMeshIndirectBuffer->GetIndirectBuffer().Get(),
-                    0,
-                    sizeof( D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS ) );
-            }
-
-            // Draw alpha-tested meshes with texture binding
-            if ( !alphaMeshes.empty() ) {
-                // Sort by texture to minimize binding changes
-                std::sort( alphaMeshes.begin(), alphaMeshes.end(),
-                    []( const auto& a, const auto& b ) { return a.first < b.first; } );
-
-                ActivePS->Apply();
-                zCTexture* lastTex = nullptr;
-
-                for ( const auto& [tex, mesh] : alphaMeshes ) {
-                    if ( tex != lastTex ) {
-                        if (tex->CacheIn( 0.6f ) == zRES_CACHED_OUT) {
-                            continue;
-                        }
-                        tex->Bind( 0 );
-                        lastTex = tex;
-                    }
-                    DrawVertexBufferIndexedUINT( nullptr, nullptr,
-                        mesh->Indices.size(), mesh->BaseIndexLocation );
-                }
-            }
+            ShadowPass_DrawWorldMesh(visibleSections);
         }
     }    
     
