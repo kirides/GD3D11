@@ -1158,14 +1158,12 @@ void GothicAPI::DrawWorldMeshNaive() {
     {
         auto _ = START_TIMING( "World Mesh" );
         auto _1 = Engine::GraphicsEngine->RecordGraphicsEvent( L"World Mesh" );
-        /*
-        if ( FeatureLevel10Compatibility ) {
-            Engine::GraphicsEngine->DrawWorldMesh();
-        } else {
+        
+        if ( Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseMDI ) {
             Engine::GraphicsEngine->DrawWorldMesh_Indirect();
+        } else {
+            Engine::GraphicsEngine->DrawWorldMesh();
         }
-        */
-        Engine::GraphicsEngine->DrawWorldMesh();
     }
     
 
@@ -4132,7 +4130,6 @@ void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sect
     auto cullingEnabled = Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.Culling.CullBspSections;
         
     if ( Engine::GAPI->GetRendererState().RendererSettings.DrawSectionIntersections ) {
-        extern const float WORLD_SECTION_SIZE;
         const float sectionViewDist = Engine::GAPI->GetRendererState().RendererSettings.SectionDrawRadius * WORLD_SECTION_SIZE;
         for ( auto& itx : WorldSections ) {
             for ( auto& ity : itx.second ) {
@@ -4140,7 +4137,7 @@ void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sect
 
                 float dist = Toolbox::ComputePointAABBDistance( camPos, section.BoundingBox.Min, section.BoundingBox.Max );
                 if ( dist < sectionViewDist ) {
-                    if ( cullingEnabled && GetCameraBBox3DInFrustum( section.BoundingBox, EGothicCullFlags::CullSides ) == ZTCAM_CLIPTYPE_OUT )
+                    if ( cullingEnabled && GetCameraBBox3DInFrustum( section.BoundingBox, EGothicCullFlags::CullSidesNear ) == ZTCAM_CLIPTYPE_OUT )
                         continue;
 
                     sections.push_back( &section );
@@ -4160,7 +4157,7 @@ void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sect
 
                 // Simple range-check
                 if ( abs( ity.first - camSection.y ) < sectionViewDist ) {
-                    if ( cullingEnabled && GetCameraBBox3DInFrustum( section.BoundingBox, EGothicCullFlags::CullSides ) == ZTCAM_CLIPTYPE_OUT )
+                    if ( cullingEnabled && GetCameraBBox3DInFrustum( section.BoundingBox, EGothicCullFlags::CullSidesNear ) == ZTCAM_CLIPTYPE_OUT )
                         continue;
 
                     sections.push_back( &section );

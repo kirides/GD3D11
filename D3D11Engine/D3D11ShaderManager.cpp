@@ -534,7 +534,9 @@ XRESULT D3D11ShaderManager::Init() {
         Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerInstanceSkeletal ) );
         Shaders.back().cBufferSizes.push_back( NUM_MAX_BONES * sizeof( XMFLOAT4X4 ) );
         Shaders.back().cBufferSizes.push_back( sizeof( CubemapGSConstantBuffer ) ); // cbPerCubeRender for layered rendering
-    } else {
+    } 
+    /*else: always compile fallback shaders*/
+    {
         Shaders.push_back( ShaderInfo( "GS_Cubemap", "GS_Cubemap.hlsl", "g" ) );
         Shaders.back().cBufferSizes.push_back( sizeof( CubemapGSConstantBuffer ) );
 

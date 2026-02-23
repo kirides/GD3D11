@@ -20,7 +20,6 @@
 using namespace DirectX;
 
 extern bool FeatureLevel10Compatibility;
-extern bool FeatureRTArrayIndexFromAnyShader;
 
 const float NUM_FRAME_SHADOW_UPDATES = 2;  // Fraction of lights to update per frame
 const int NUM_MIN_FRAME_SHADOW_UPDATES = 4;  // Minimum lights to update per frame
@@ -1058,7 +1057,7 @@ void XM_CALLCONV D3D11ShadowMap::RenderShadowCube(
 
     bool useLayeredPath = false;
     if ( !face.Get() ) {
-        if ( FeatureRTArrayIndexFromAnyShader ) {
+        if ( Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseLayeredRendering ) {
             useLayeredPath = true;
             face = targetCube.GetDepthStencilView().Get();
 

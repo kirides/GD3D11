@@ -520,20 +520,21 @@ XRESULT D3D11GraphicsEngine::Init() {
     FeatureLevel10Compatibility = (maxFeatureLevel < D3D_FEATURE_LEVEL::D3D_FEATURE_LEVEL_11_0);
     FetchDisplayModeList();
 
-    IUnknown* renderdoc = nullptr;
-    result = Device->QueryInterface( IID_IDXGIDeviceRenderDoc, reinterpret_cast<void**>(&renderdoc) );
+    ComPtr<IUnknown> renderdoc = nullptr;
+    result = Device.AsIID( IID_IDXGIDeviceRenderDoc, &renderdoc );
     if ( SUCCEEDED( result ) ) {
         // Don't use extensions if they are available
         // renderdoc doesn't like them
         DrawMultiIndexedInstancedIndirect = Stub_DrawMultiIndexedInstancedIndirect;
         BeginUAVOverlap = Stub_BeginUAVOverlap;
         EndUAVOverlap = Stub_EndUAVOverlap;
-        renderdoc->Release();
     }
 
     if ( !DrawMultiIndexedInstancedIndirect ) {
         DrawMultiIndexedInstancedIndirect = Stub_DrawMultiIndexedInstancedIndirect;
     }
+
+    Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseMDI = DrawMultiIndexedInstancedIndirect != Stub_DrawMultiIndexedInstancedIndirect;
 
     if ( !BeginUAVOverlap || !EndUAVOverlap ) {
         BeginUAVOverlap = Stub_BeginUAVOverlap;
@@ -544,6 +545,7 @@ XRESULT D3D11GraphicsEngine::Init() {
     hr = Device->CheckFeatureSupport(D3D11_FEATURE_D3D11_OPTIONS3, &options3, sizeof( options3 ) );
     if ( SUCCEEDED( hr ) ) {
         FeatureRTArrayIndexFromAnyShader = options3.VPAndRTArrayIndexFromAnyShaderFeedingRasterizer;
+        Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseLayeredRendering = FeatureRTArrayIndexFromAnyShader;
     }
 
     LogInfo() << "Creating ShaderManager";
@@ -4493,6 +4495,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
     bool colorWritesEnabled =
         Engine::GAPI->GetRendererState().BlendState.ColorWritesEnabled;
     float alphaRef = Engine::GAPI->GetRendererState().GraphicsState.FF_AlphaRef;
+    auto& currentFrustum = params.CascadeCameraReplacements->at(params.CascadeIndex).frustum;
 
     if ( Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh ) {
         auto _ = START_TIMING( timer_labels_world_mesh[timerLabelIndex] );
@@ -4515,12 +4518,20 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                 float dy = static_cast<float>(ity.first - s.y);
                 float lenSq = dx * dx + dy * dy;
 
-                if ( lenSq < sectionRangeSq ) {
-                    visibleSections.push_back( &ity.second );
+                if ( lenSq > sectionRangeSq ) {
+                    continue;
                 }
+                if ( !currentFrustum.Intersects(Frustum::BBoxFromzTBBox3D(ity.second.BoundingBox)) ) {
+                    continue;
+                }
+                visibleSections.push_back( &ity.second );
             }
         }
 
+        auto drawMultiIndexedInstancedIndirect = Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseMDI
+            ? DrawMultiIndexedInstancedIndirect
+            : Stub_DrawMultiIndexedInstancedIndirect;
+        
         if ( Engine::GAPI->GetRendererState().RendererSettings.FastShadows ) {
             if ( !linearDepth )  // Only unbind when not rendering linear depth
             {
@@ -4591,7 +4602,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                 // Execute multi-draw indirect call for all opaque meshes
                 // DrawMultiIndexedInstancedIndirect falls back to individual DrawIndexedInstancedIndirect 
                 // calls via Stub_DrawMultiIndexedInstancedIndirect if hardware doesn't support MDI
-                DrawMultiIndexedInstancedIndirect( Context.Get(),
+                drawMultiIndexedInstancedIndirect( Context.Get(),
                     static_cast<unsigned int>(opaqueDrawArgs.size()),
                     WorldMeshIndirectBuffer->GetIndirectBuffer().Get(),
                     0,
@@ -4609,6 +4620,9 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
                 for ( const auto& [tex, mesh] : alphaMeshes ) {
                     if ( tex != lastTex ) {
+                        if (tex->CacheIn( 0.6f ) == zRES_CACHED_OUT) {
+                            continue;
+                        }
                         tex->Bind( 0 );
                         lastTex = tex;
                     }
@@ -4783,7 +4797,6 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
         auto skeletalRadiusSq = Engine::GAPI->GetRendererState().RendererSettings.SkeletalMeshDrawRadius
             * Engine::GAPI->GetRendererState().RendererSettings.SkeletalMeshDrawRadius;
-        auto& currentFrustum = params.CascadeCameraReplacements->at(params.CascadeIndex).frustum;
         XMVECTOR vSkeletalRadiusSq = XMVectorReplicate(skeletalRadiusSq);
 
         // Draw skeletal meshes

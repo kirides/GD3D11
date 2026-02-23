@@ -1178,6 +1178,12 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
                 ImGui::Checkbox("Vobs", &settings.DebugSettings.Culling.CullVobs );
                 ImGui::EndTabItem();
             }
+            
+            if (ImGui::BeginTabItem("Featureset", nullptr, ImGuiTabItemFlags_::ImGuiTabItemFlags_NoReorder)) {
+                ImGui::Checkbox("Use MDI", &settings.DebugSettings.FeatureSet.UseMDI );
+                ImGui::Checkbox("Use Layered Drawing", &settings.DebugSettings.FeatureSet.UseLayeredRendering );
+                ImGui::EndTabItem();
+            }
  
             ImGui::EndTabBar();
         }

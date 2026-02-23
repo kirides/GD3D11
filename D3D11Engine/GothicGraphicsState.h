@@ -940,6 +940,10 @@ struct GothicRendererSettings {
             bool CullVobs;
             bool CullBspSections;
         } Culling;
+        struct {
+            bool UseMDI;
+            bool UseLayeredRendering;
+        } FeatureSet;
     } DebugSettings;
 };
 
