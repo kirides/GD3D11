@@ -3034,7 +3034,6 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             LineRenderer->FlushScreenSpace();
         };
     } );
-    
 
     if ( rendererState.RendererSettings.AntiAliasingMode 
         == GothicRendererSettings::AA_TAA ) {
@@ -3079,93 +3078,124 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             };
         } );
     }
+    
+    graph.AddPass( L"Reset Viewport", [&]( RGBuilder& builder, RenderPass& pass ) {
+        builder.Write( backBufferHandle );
 
-    graph.Compile();
-    graph.Execute();
-    GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
+        pass.m_executeCallback = [this](const RenderGraph&) {
+            GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
 
-    PresentPending = true;
+            PresentPending = true;
 
-    // Set viewport for gothics rendering
-    vp.TopLeftX = 0.0f;
-    vp.TopLeftY = 0.0f;
-    vp.MinDepth = 0.0f;
-    vp.MaxDepth = 1.0f;
-    vp.Width = static_cast<float>(GetResolution().x);
-    vp.Height = static_cast<float>(GetResolution().y);
+            // Set viewport for gothics rendering
+            D3D11_VIEWPORT vp;
+            vp.TopLeftX = 0.0f;
+            vp.TopLeftY = 0.0f;
+            vp.MinDepth = 0.0f;
+            vp.MaxDepth = 1.0f;
+            vp.Width = static_cast<float>(GetResolution().x);
+            vp.Height = static_cast<float>(GetResolution().y);
 
-    GetContext()->RSSetViewports( 1, &vp );
+            GetContext()->RSSetViewports( 1, &vp );
+        };
+    } );
 
     // If we currently are underwater, then draw underwater effects
     if ( Engine::GAPI->IsUnderWater() ) {
-        auto _ = RecordGraphicsEvent( L"DrawUnderwaterEffects" );
-        DrawUnderwaterEffects();
+        graph.AddPass( L"Draw UnderwaterFX", [&]( RGBuilder& builder, RenderPass& pass ) {
+            builder.Write( backBufferHandle );
+
+            pass.m_executeCallback = [this](const RenderGraph&) {
+                DrawUnderwaterEffects();
+            };
+        } );
     }
 
-    // Clear here to get a working depthbuffer but no interferences with world
-    // geometry for gothic UI-Rendering
-    GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(), nullptr );
+    // If we currently are underwater, then draw underwater effects
+    if ( Engine::GAPI->IsUnderWater() ) {
+        graph.AddPass( L"Prepare finalize frame", [&]( RGBuilder& builder, RenderPass& pass ) {
+            builder.Write( backBufferHandle );
 
-    // Store the current depth state to the copy buffer before clear
-    CopyDepthStencil();
+            pass.m_executeCallback = [this](const RenderGraph&) {
+                // Clear here to get a working depthbuffer but no interferences with world
+                // geometry for gothic UI-Rendering
+                GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(), nullptr );
 
-    GetContext()->ClearDepthStencilView( DepthStencilBuffer->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
-    GetContext()->ClearDepthStencilView( m_NativeSizeDepthStencil->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
+                // Store the current depth state to the copy buffer before clear
+                CopyDepthStencil();
+
+                GetContext()->ClearDepthStencilView( DepthStencilBuffer->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
+                GetContext()->ClearDepthStencilView( m_NativeSizeDepthStencil->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
+                
+                SetDefaultStates();
+            };
+        } );
+    }    
 
     // Before returning to gothics UI, set render target to backbuffer
     {
         // Copy HDR scene to backbuffer
-
-        SetDefaultStates();
-
         if ( rendererState.RendererSettings.ResolutionScalePercent < 100 
             && rendererState.RendererSettings.Upscaler == GothicRendererSettings::E_Upscaler::UPSCALER_FSR_1 ) {
             
-            auto _ = RecordGraphicsEvent( L"FSR 1" );
+            graph.AddPass( L"FSR 1 Upscale", [&]( RGBuilder& builder, RenderPass& pass ) {
+                builder.Write( backBufferHandle );
 
-            // Now upscale it to backbuffer with sharpening
-            auto sharpenFactor = rendererState.RendererSettings.SharpenFactor;
-            PfxRenderer->GetFSR1()->Apply(
-                HDRBackBuffer->GetShaderResView(),
-                Backbuffer->GetRenderTargetView(),
-                GetResolution(),
-                GetBackbufferResolution(),
-                sharpenFactor > 0.001f,
-                1.0f - sharpenFactor );
+                pass.m_executeCallback = [this, &rendererState](const RenderGraph&) {
+                    // Now upscale it to backbuffer with sharpening
+                    auto sharpenFactor = rendererState.RendererSettings.SharpenFactor;
+                    PfxRenderer->GetFSR1()->Apply(
+                        HDRBackBuffer->GetShaderResView(),
+                        Backbuffer->GetRenderTargetView(),
+                        GetResolution(),
+                        GetBackbufferResolution(),
+                        sharpenFactor > 0.001f,
+                        1.0f - sharpenFactor );
+                };
+            } );
+        } else if (rendererState.RendererSettings.SharpeningMode
+                && rendererState.RendererSettings.SharpenFactor > 0.0f ) {
+
+            graph.AddPass( L"Sharpen", [&]( RGBuilder& builder, RenderPass& pass ) {
+                builder.Write( backBufferHandle );
+
+                pass.m_executeCallback = [this, &rendererState](const RenderGraph&) {
+                    {
+                        auto _ = RecordGraphicsEvent( L"Copy into native-size backbuffer" );
+                        PfxRenderer->CopyTextureToRTV( HDRBackBuffer->GetShaderResView(), Backbuffer->GetRenderTargetView(), GetBackbufferResolution() );
+                    }
+
+                    switch ( rendererState.RendererSettings.SharpeningMode ) {
+                    case GothicRendererSettings::SHARPEN_SIMPLE:
+                        if ( !FeatureLevel10Compatibility ) {
+                            auto _ = RecordGraphicsEvent( L"ApplySimpleSharpen" );
+                            PfxRenderer->RenderSimpleSharpen( Backbuffer->GetShaderResView(), GetBackbufferResolution(), Backbuffer->GetRenderTargetView(), GetBackbufferResolution(), *GetPfxRenderer()->GetBackbufferTempBuffer());
+                        }
+                        break;
+
+                    case GothicRendererSettings::SHARPEN_CAS:
+                        if ( !FeatureLevel10Compatibility ) {
+                            auto _ = RecordGraphicsEvent( L"ApplyCAS" );
+                            PfxRenderer->RenderCAS( Backbuffer->GetShaderResView(), GetBackbufferResolution(), Backbuffer->GetRenderTargetView(), GetBackbufferResolution(), *GetPfxRenderer()->GetBackbufferTempBuffer());
+                        }
+                        break;
+                    }
+                    GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
+                };
+            } );
         } else {
+            graph.AddPass( L"Copy into native-size backbuffer", [&]( RGBuilder& builder, RenderPass& pass ) {
+                builder.Write( backBufferHandle );
 
-            if ( rendererState.RendererSettings.SharpeningMode
-                && rendererState.RendererSettings.SharpenFactor > 0.0f) {
-
-                {
-                    auto _ = RecordGraphicsEvent( L"Copy into native-size backbuffer" );
+                pass.m_executeCallback = [this, &rendererState](const RenderGraph&) {
                     PfxRenderer->CopyTextureToRTV( HDRBackBuffer->GetShaderResView(), Backbuffer->GetRenderTargetView(), GetBackbufferResolution() );
-                }
-
-                switch ( rendererState.RendererSettings.SharpeningMode ) {
-                case GothicRendererSettings::SHARPEN_SIMPLE:
-                    if ( !FeatureLevel10Compatibility ) {
-                        auto _ = RecordGraphicsEvent( L"ApplySimpleSharpen" );
-                        PfxRenderer->RenderSimpleSharpen( Backbuffer->GetShaderResView(), GetBackbufferResolution(), Backbuffer->GetRenderTargetView(), GetBackbufferResolution(), *GetPfxRenderer()->GetBackbufferTempBuffer());
-                        GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
-                    }
-                    break;
-
-                case GothicRendererSettings::SHARPEN_CAS:
-                    if ( !FeatureLevel10Compatibility ) {
-                        auto _ = RecordGraphicsEvent( L"ApplyCAS" );
-                        PfxRenderer->RenderCAS( Backbuffer->GetShaderResView(), GetBackbufferResolution(), Backbuffer->GetRenderTargetView(), GetBackbufferResolution(), *GetPfxRenderer()->GetBackbufferTempBuffer());
-                        GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
-                    }
-                    break;
-                }
-
-            } else {
-                auto _ = RecordGraphicsEvent( L"Copy into native-size backbuffer" );
-                PfxRenderer->CopyTextureToRTV( HDRBackBuffer->GetShaderResView(), Backbuffer->GetRenderTargetView(), GetBackbufferResolution() );
-            }
+                };
+            } );
         }
 
+        graph.Compile();
+        graph.Execute();
+        
         // Below this, we assume UI/HUD rendering
         rendererState.RendererInfo.RenderStage = STAGE_DRAW_HUD;
 
