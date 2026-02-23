@@ -11,7 +11,9 @@ public:
     XRESULT Init();
 
     /** Renders the HBAO-Effect onto the given RTV */
-    XRESULT Render( Microsoft::WRL::ComPtr<ID3D11RenderTargetView> pOutputColorRTV );
+    XRESULT Render(const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& pOutputColorRTV, const Microsoft::WRL::ComPtr<
+                   ID3D11ShaderResourceView>
+                   & pFullResDepthTexSRV, const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& pFullResNormalTexSRV);
 private:
     /** Nvidia HBAO+ context */
     GFSDK_SSAO_Context_D3D11* AOContext;

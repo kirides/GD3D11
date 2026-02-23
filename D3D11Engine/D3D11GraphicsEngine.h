@@ -47,6 +47,13 @@ struct MeshInfo;
 struct RenderToTextureBuffer;
 class D3D11Effect;
 
+struct AlphaMeshData {
+    MeshKey mk;
+    MeshInfo* mi;
+    MeshVisualInfo* vi;
+    std::vector<VobInstanceInfo> instances;
+};
+
 class D3D11GraphicsEngine : public D3D11GraphicsEngineBase {
 public:
     D3D11GraphicsEngine();
@@ -187,13 +194,6 @@ public:
     RenderToDepthStencilBuffer* GetDepthBuffer() { return DepthStencilBuffer.get(); }
     RenderToTextureBuffer* GetDepthBufferCopy() { return DepthStencilBufferCopy.get(); }
 
-    /** Returns the first GBuffer */
-    RenderToTextureBuffer& GetGBuffer0() { return *GBuffer0_Diffuse; }
-
-    /** Returns the second GBuffer */
-    RenderToTextureBuffer& GetGBuffer1() { return *GBuffer1_Normals; }
-    RenderToTextureBuffer& GetGBuffer2() { return *GBuffer2_SpecIntens_SpecPower; }
-
     /** Returns the HDRBackbuffer */
     RenderToTextureBuffer& GetHDRBackBuffer() { return *HDRBackBuffer; }
 
@@ -253,12 +253,10 @@ public:
 
     /** Draws the static vobs instanced */
     XRESULT DrawVOBsInstanced();
+    XRESULT DrawFrameAlphaMeshes();
 
     /** Set wind props in const buffer */
     void ApplyWindProps( VS_ExConstantBuffer_Wind& buf );
-
-    /** Applys the lighting to the scene */
-    XRESULT DrawLighting( std::vector<VobLightInfo*>& lights );
 
     /** Called when we started to render the world */
     virtual XRESULT OnStartWorldRendering();
@@ -331,7 +329,8 @@ public:
     void DrawFrameParticleMeshes( std::unordered_map<zCVob*, MeshVisualInfo*>& progMeshes );
 
     /** Draws particle effects */
-    void DrawFrameParticles( std::map<zCTexture*, std::vector<ParticleInstanceInfo>>& particles, std::map<zCTexture*, ParticleRenderInfo>& info );
+    void DrawFrameParticles(std::map<zCTexture*, std::vector<ParticleInstanceInfo>>& particles, std::map<zCTexture*, ParticleRenderInfo>& info, RenderToTextureBuffer
+                            * bufferParticleColor, RenderToTextureBuffer* bufferParticleDistortion);
 
     /** Returns the settings window availability */
     bool HasSettingsWindow();
@@ -374,9 +373,6 @@ protected:
 
     /** Swapchain buffers */
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> BackbufferRTV;
-    std::unique_ptr<RenderToTextureBuffer> GBuffer0_Diffuse;
-    std::unique_ptr<RenderToTextureBuffer> GBuffer1_Normals; // Normals
-    std::unique_ptr<RenderToTextureBuffer> GBuffer2_SpecIntens_SpecPower; // SpecIntensity / SpecPower
     std::unique_ptr<RenderToTextureBuffer> DepthStencilBufferCopy;
     // DummyShadowCubemapTexture moved into ShadowMaps
     std::unique_ptr<D3D11ShadowMap> ShadowMaps;
@@ -424,6 +420,9 @@ public:
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> ReflectionCube;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> ReflectionCube2;
 private:
+    std::vector<AlphaMeshData> m_AlphaMeshes;
+    std::vector<VobLightInfo*> m_FrameLights;
+    
     /** World-Mesh indirect buffer */
     std::unique_ptr<D3D11IndirectBuffer> WorldMeshIndirectBuffer;
 

@@ -9,7 +9,8 @@ public:
     ~D3D11PFX_HDR();
 
     /** Draws this effect to the given buffer */
-    XRESULT Render( RenderToTextureBuffer* fxbuffer );
+    XRESULT Render( RenderToTextureBuffer* fxbuffer ) override { return XR_FAILED; };
+    XRESULT Render( ID3D11RenderTargetView* output, ID3D11ShaderResourceView* backbuffer );
 
 protected:
     /** Calcualtes the luminance */

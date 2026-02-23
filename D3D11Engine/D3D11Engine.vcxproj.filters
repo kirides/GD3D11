@@ -85,6 +85,9 @@
     <Filter Include="Engine\Shaders">
       <UniqueIdentifier>{7b924380-794f-4471-9819-06c3fca71231}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Engine\Graph">
+      <UniqueIdentifier>{e7532fd2-04b8-499d-a2a9-5b64abda0850}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="pch.h" />
@@ -791,6 +794,18 @@
     <ClInclude Include="TexturePool.h" />
     <ClInclude Include="D3D11RenderQueue.h" />
     <ClInclude Include="RenderQueue.h" />
+    <ClInclude Include="RGTextureDesc.h">
+      <Filter>Engine\Graph</Filter>
+    </ClInclude>
+    <ClInclude Include="RGBuilder.h">
+      <Filter>Engine\Graph</Filter>
+    </ClInclude>
+    <ClInclude Include="RenderPass.h">
+      <Filter>Engine\Graph</Filter>
+    </ClInclude>
+    <ClInclude Include="RenderGraph.h">
+      <Filter>Engine\Graph</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp" />
@@ -1059,6 +1074,15 @@
       <Filter>Engine\D3D11\PFX\Effects</Filter>
     </ClCompile>
     <ClCompile Include="D3D11RenderQueue.cpp" />
+    <ClCompile Include="RGBuilder.cpp">
+      <Filter>Engine\Graph</Filter>
+    </ClCompile>
+    <ClCompile Include="RenderPass.cpp">
+      <Filter>Engine\Graph</Filter>
+    </ClCompile>
+    <ClCompile Include="RenderGraph.cpp">
+      <Filter>Engine\Graph</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="ddraw.def">

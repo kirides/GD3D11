@@ -1,6 +1,7 @@
 #pragma once
 #include "WorldObjects.h"
 #include "GraphicsEventRecord.h"
+#include "RenderToTextureBuffer.h"
 #include "ShaderCategory.h"
 
 class BaseLineRenderer;
@@ -210,7 +211,10 @@ public:
     virtual void DrawFrameParticleMeshes( std::unordered_map<zCVob*, MeshVisualInfo*>& progMeshes ) {}
 
     /** Draws particle effects */
-    virtual void DrawFrameParticles( std::map<zCTexture*, std::vector<ParticleInstanceInfo>>& particles, std::map<zCTexture*, ParticleRenderInfo>& info ) {}
+    virtual void DrawFrameParticles(std::map<zCTexture*, std::vector<ParticleInstanceInfo>>& particles,
+        std::map<zCTexture*, ParticleRenderInfo>& info,
+        RenderToTextureBuffer* bufferParticleColor,
+        RenderToTextureBuffer* bufferParticleDistortion) {}
 
     virtual void DrawString( const std::string& str, float x, float y, const zFont* font, zColor& fontColor ) {};
     

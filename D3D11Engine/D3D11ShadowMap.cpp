@@ -498,9 +498,9 @@ std::vector<float> D3D11ShadowMap::ComputeCascadeSplits( float nearPlane, float 
     return splits;
 }
 
-XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
+XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& lights ) {
     auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
-    auto _ = graphicsEngine->RecordGraphicsEvent( L"DrawLighting" );
+    auto _ = graphicsEngine->RecordGraphicsEvent( L"DrawPointlightShadows" );
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
 
     static const XMVECTORF32 xmFltMax = { { { FLT_MAX, FLT_MAX, FLT_MAX, FLT_MAX } } };
@@ -522,7 +522,6 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
     // Draw pointlight shadows
     if ( settings.EnablePointlightShadows > 0 ) {
         std::list<VobLightInfo*> importantUpdates;
-        auto _ = graphicsEngine->RecordGraphicsEvent( L"Pointlight Shadows" );
 
         for ( auto const& light : lights ) {
             // Create shadowmap in case we should have one but haven't got it yet
@@ -610,7 +609,15 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
             if ( n <= 0 ) break;
         }
     }
+    return XR_SUCCESS;
+}
 
+XRESULT D3D11ShadowMap::DrawWorldShadow( )
+{
+    auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    auto _ = graphicsEngine->RecordGraphicsEvent( L"DrawWorldShadow" );
+    auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+    
     int numCascades = settings.NumShadowCascades;
     bool isOutdoor = Engine::GAPI->GetLoadedWorldInfo()->BspTree->GetBspTreeMode() == zBSP_MODE_OUTDOOR;
 
@@ -643,32 +650,43 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
         }
     }
 
-    graphicsEngine->SetDefaultStates();
-
     // Restore gothics camera
     Engine::GAPI->SetCameraReplacementPtr( nullptr );
+    
+    return XR_SUCCESS;
+}
 
+XRESULT D3D11ShadowMap::DrawRainShadomap() {
     // Draw rainmap, if raining
     if ( Engine::GAPI->GetSceneWetness() > 0.00001f ) {
-        auto _ = graphicsEngine->RecordGraphicsEvent( L"Rain Shadowmap" );
+        auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+        auto _ = graphicsEngine->RecordGraphicsEvent( L"DrawLighting" );
+
         graphicsEngine->Effects->DrawRainShadowmap();
     }
+    return XR_SUCCESS;
+}
+
+XRESULT D3D11ShadowMap::DrawPointlightLights(
+    std::vector<VobLightInfo*>& lights,
+    RenderToTextureBuffer& color,
+    RenderToTextureBuffer& normals,
+    RenderToTextureBuffer& specular,    
+    RenderToTextureBuffer& depthCopy    
+    ) {
+    auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    auto _ = graphicsEngine->RecordGraphicsEvent( L"DrawPointlightLights" );
+    auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
 
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
     Engine::GAPI->SetViewTransformXM( view );
+    view = XMMatrixTranspose( view );
 
-    // ********************************
-    // Draw direct lighting
-    // ********************************
     graphicsEngine->SetActiveVertexShader( "VS_ExPointLight" );
     graphicsEngine->SetActivePixelShader( "PS_DS_PointLight" );
 
     auto psPointLight = graphicsEngine->GetShaderManager().GetPShader( "PS_DS_PointLight" );
     auto psPointLightDynShadow = graphicsEngine->GetShaderManager().GetPShader( "PS_DS_PointLightDynShadow" );
-
-    Engine::GAPI->SetFarPlane(
-        settings.SectionDrawRadius *
-        WORLD_SECTION_SIZE );
 
     Engine::GAPI->GetRendererState().BlendState.SetAdditiveBlending();
     if ( settings.LimitLightIntesity ) {
@@ -690,9 +708,7 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
 
     // Set the main rendertarget
     m_context->OMSetRenderTargets( 1, graphicsEngine->GetHDRBackBuffer().GetRenderTargetView().GetAddressOf(), graphicsEngine->GetDepthBuffer()->GetDepthStencilView().Get() );
-
-    view = XMMatrixTranspose( view );
-
+    
     DS_PointLightConstantBuffer plcb = {};
 
     XMStoreFloat4x4( &plcb.PL_InvProj, XMMatrixInverse( nullptr, XMLoadFloat4x4( &Engine::GAPI->GetProjectionMatrix() ) ) );
@@ -701,10 +717,10 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
     auto resolution = graphicsEngine->GetResolution();
     plcb.PL_ViewportSize = float2( static_cast<float>(resolution.x), static_cast<float>(resolution.y) );
 
-    graphicsEngine->GetGBuffer0().BindToPixelShader( m_context.Get(), 0 );
-    graphicsEngine->GetGBuffer1().BindToPixelShader( m_context.Get(), 1 );
-    graphicsEngine->GetGBuffer2().BindToPixelShader( m_context.Get(), 7 );
-    graphicsEngine->GetDepthBufferCopy()->BindToPixelShader( m_context.Get(), 2 );
+    color.BindToPixelShader( m_context.Get(), 0 );
+    normals.BindToPixelShader( m_context.Get(), 1 );
+    specular.BindToPixelShader( m_context.Get(), 7 );
+    depthCopy.BindToPixelShader( m_context.Get(), 2 );
 
     // Draw all lights
     for ( auto const& light : lights ) {
@@ -810,125 +826,36 @@ XRESULT D3D11ShadowMap::DrawLighting( std::vector<VobLightInfo*>& lights ) {
 
         Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnLights++;
     }
+    
+    return XR_SUCCESS;
+}
 
-    Engine::GAPI->GetRendererState().BlendState.BlendOp = GothicBlendStateInfo::BO_BLEND_OP_ADD;
-    Engine::GAPI->GetRendererState().BlendState.SetDirty();
+XRESULT D3D11ShadowMap::DrawLighting( 
+    std::vector<VobLightInfo*>& lights,
+    RenderToTextureBuffer& color,
+    RenderToTextureBuffer& normals,
+    RenderToTextureBuffer& specular,    
+    RenderToTextureBuffer& depthCopy) {
+    auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    auto _ = graphicsEngine->RecordGraphicsEvent( L"DrawLighting" );
+    auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
 
-    Engine::GAPI->GetRendererState().DepthState.DepthBufferCompareFunc = GothicDepthBufferStateInfo::CF_COMPARISON_ALWAYS;
-    Engine::GAPI->GetRendererState().DepthState.SetDirty();
+    graphicsEngine->SetDefaultStates();
 
-    Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_NONE;
-    Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
+    // Draw pointlight shadows
+    DrawPointlightShadows(lights);
 
-    // Modify light when raining
-    float rain = Engine::GAPI->GetRainFXWeight();
-    float wetness = Engine::GAPI->GetSceneWetness();
+    DrawWorldShadow();
 
-    bool isSnow = oCGame::GetGame()
-        && oCGame::GetGame()->_zCSession_world
-        && oCGame::GetGame()->_zCSession_world->GetSkyControllerOutdoor()
-        && oCGame::GetGame()->_zCSession_world->GetSkyControllerOutdoor()->GetWeatherType() == zTWEATHER_SNOW;
+    graphicsEngine->SetDefaultStates();
 
-    // Switch global light shader when raining
-    if ( wetness > 0.0f && !isSnow) {
-        // Same shader, just has a DEFINE set to enable rain-related effects
-        graphicsEngine->SetActivePixelShader( "PS_DS_AtmosphericScattering_Rain" );
-    } else {
-        graphicsEngine->SetActivePixelShader( "PS_DS_AtmosphericScattering" );
-    }
+    DrawRainShadomap();
 
-    graphicsEngine->SetActiveVertexShader( "VS_PFX" );
+    Engine::GAPI->SetFarPlane(settings.SectionDrawRadius * WORLD_SECTION_SIZE );
+    
+    DrawPointlightLights(lights, color, normals, specular, depthCopy);
 
-    graphicsEngine->SetupVS_ExMeshDrawCall();
-
-    GSky* sky = Engine::GAPI->GetSky();
-    graphicsEngine->GetActivePS()->GetConstantBuffer()[1]->UpdateBuffer( &sky->GetAtmosphereCB() );
-    graphicsEngine->GetActivePS()->GetConstantBuffer()[1]->BindToPixelShader( 1 );
-
-    DS_ScreenQuadConstantBuffer scb = {};
-    scb.SQ_InvProj = plcb.PL_InvProj;
-    scb.SQ_InvView = plcb.PL_InvView;
-    scb.SQ_View = Engine::GAPI->GetRendererState().TransformState.TransformView;
-
-    XMStoreFloat3( scb.SQ_LightDirectionVS.toXMFLOAT3(),
-        XMVector3TransformNormal( XMLoadFloat3( sky->GetAtmosphereCB().AC_LightPos.toXMFLOAT3() ), view ) );
-
-    float3 sunColor =
-        settings.SunLightColor;
-
-    float sunStrength = Toolbox::lerp(
-        settings.SunLightStrength,
-        settings.RainSunLightStrength,
-        std::min( 1.0f, rain * 2.0f ) );// Scale the darkening-factor faster here, so it
-    // matches more with the increasing fog-density
-
-    scb.SQ_LightColor = float4( sunColor.x, sunColor.y, sunColor.z, sunStrength );
-
-    // CSM: Alle Cascade-Matrizen setzen
-
-    for ( size_t cascadeIdx = 0; cascadeIdx < MAX_CSM_CASCADES; ++cascadeIdx ) {
-        scb.SQ_ShadowView[cascadeIdx] = m_CascadeCRs[cascadeIdx].ViewReplacement;
-        scb.SQ_ShadowProj[cascadeIdx] = m_CascadeCRs[cascadeIdx].ProjectionReplacement;
-    }
-
-    scb.SQ_ShadowmapSize = static_cast<float>( this->GetSizeX() );
-
-    // Get rain matrix
-    scb.SQ_RainView = graphicsEngine->Effects->GetRainShadowmapCameraRepl().ViewReplacement;
-    scb.SQ_RainProj = graphicsEngine->Effects->GetRainShadowmapCameraRepl().ProjectionReplacement;
-
-    scb.SQ_ShadowStrength = settings.ShadowStrength;
-    scb.SQ_ShadowAOStrength = settings.ShadowAOStrength;
-    scb.SQ_WorldAOStrength = settings.WorldAOStrength;
-    scb.SQ_ShadowSoftness = settings.ShadowSoftness;
-
-    // Modify lightsettings when indoor
-    if ( auto bspTree = Engine::GAPI->GetLoadedWorldInfo()->BspTree )
-        if ( bspTree->GetBspTreeMode() == zBSP_MODE_INDOOR ) {
-            // TODO: fix caves in Gothic 1 being way too dark. Remove this workaround.
-#if BUILD_GOTHIC_1_08k
-            // Kirides: Nah, just make it dark enough.
-            if ( Engine::GAPI->GetLoadedWorldInfo()->WorldName == "ORCTEMPEL" )
-                scb.SQ_ShadowStrength = 0.15f;
-            else
-                scb.SQ_ShadowStrength = 0.3f;
-#else
-            // Turn off shadows
-            scb.SQ_ShadowStrength = 0.0f;
-#endif
-
-            // Only use world AO
-            scb.SQ_WorldAOStrength = 1.0f;
-            // Darken the lights
-            scb.SQ_LightColor = float4( 1, 1, 1, DEFAULT_INDOOR_VOB_AMBIENT.x );
-        }
-
-    graphicsEngine->GetActivePS()->GetConstantBuffer()[0]->UpdateBuffer( &scb );
-    graphicsEngine->GetActivePS()->GetConstantBuffer()[0]->BindToPixelShader( 0 );
-
-    PFXVS_ConstantBuffer vscb;
-    vscb.PFXVS_InvProj = scb.SQ_InvProj;
-    graphicsEngine->GetActiveVS()->GetConstantBuffer()[0]->UpdateBuffer( &vscb );
-    graphicsEngine->GetActiveVS()->GetConstantBuffer()[0]->BindToVertexShader( 0 );
-
-    // CSM: Bind the cascade array to a single slot (Texture2DArray)
-    BindToPixelShader( m_context.Get(), TX_ShadowmapArray );
-
-    if ( graphicsEngine->Effects->GetRainShadowmap() )
-        graphicsEngine->Effects->GetRainShadowmap()->BindToPixelShader( m_context.Get(), TX_RainShadowmap );
-
-    this->BindSampler( m_context.Get(), 2 );
-
-    m_context->PSSetShaderResources( TX_ReflectionCube, 1, graphicsEngine->ReflectionCube2.GetAddressOf() );
-
-    graphicsEngine->GetDistortionTexture()->BindToPixelShader( TX_Distortion );
-
-    // CSM: Nur 1x rendern!
-    graphicsEngine->GetPfxRenderer()->DrawFullScreenQuad();
-
-    // Reset state
-    static ID3D11ShaderResourceView* nullSrv[] = { nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr };
-    m_context->PSSetShaderResources( 3, ARRAYSIZE( nullSrv ), nullSrv );
+    DrawWorldLights();
 
     m_context->OMSetRenderTargets( 1, graphicsEngine->GetHDRBackBuffer().GetRenderTargetView().GetAddressOf(),
         graphicsEngine->GetDepthBuffer()->GetDepthStencilView().Get() );
@@ -1027,6 +954,136 @@ void D3D11ShadowMap::RenderShadowmaps( const RenderShadowmapsParams& params ) {
     Engine::GAPI->SetFarPlane(
         Engine::GAPI->GetRendererState().RendererSettings.SectionDrawRadius *
         WORLD_SECTION_SIZE );
+}
+
+XRESULT D3D11ShadowMap::DrawWorldLights()
+{
+    auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    auto _ = graphicsEngine->RecordGraphicsEvent( L"DrawWorldLights" );
+    auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+    
+    Engine::GAPI->GetRendererState().BlendState.BlendOp = GothicBlendStateInfo::BO_BLEND_OP_ADD;
+    Engine::GAPI->GetRendererState().BlendState.SetDirty();
+
+    Engine::GAPI->GetRendererState().DepthState.DepthBufferCompareFunc = GothicDepthBufferStateInfo::CF_COMPARISON_ALWAYS;
+    Engine::GAPI->GetRendererState().DepthState.SetDirty();
+
+    Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_NONE;
+    Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
+
+    // Modify light when raining
+    float rain = Engine::GAPI->GetRainFXWeight();
+    float wetness = Engine::GAPI->GetSceneWetness();
+    
+    XMMATRIX view = XMMatrixTranspose(Engine::GAPI->GetViewMatrixXM());
+
+    bool isSnow = oCGame::GetGame()
+        && oCGame::GetGame()->_zCSession_world
+        && oCGame::GetGame()->_zCSession_world->GetSkyControllerOutdoor()
+        && oCGame::GetGame()->_zCSession_world->GetSkyControllerOutdoor()->GetWeatherType() == zTWEATHER_SNOW;
+
+    // Switch global light shader when raining
+    if ( wetness > 0.0f && !isSnow) {
+        // Same shader, just has a DEFINE set to enable rain-related effects
+        graphicsEngine->SetActivePixelShader( "PS_DS_AtmosphericScattering_Rain" );
+    } else {
+        graphicsEngine->SetActivePixelShader( "PS_DS_AtmosphericScattering" );
+    }
+
+    graphicsEngine->SetActiveVertexShader( "VS_PFX" );
+
+    graphicsEngine->SetupVS_ExMeshDrawCall();
+
+    GSky* sky = Engine::GAPI->GetSky();
+    graphicsEngine->GetActivePS()->GetConstantBuffer()[1]->UpdateBuffer( &sky->GetAtmosphereCB() );
+    graphicsEngine->GetActivePS()->GetConstantBuffer()[1]->BindToPixelShader( 1 );
+
+    DS_ScreenQuadConstantBuffer scb = {};
+    XMStoreFloat4x4( &scb.SQ_InvProj, XMMatrixInverse( nullptr, XMLoadFloat4x4( &Engine::GAPI->GetProjectionMatrix() ) ) );
+    XMStoreFloat4x4( &scb.SQ_InvView, XMMatrixInverse( nullptr, XMLoadFloat4x4( &Engine::GAPI->GetRendererState().TransformState.TransformView ) ) );
+    scb.SQ_View = Engine::GAPI->GetRendererState().TransformState.TransformView;
+
+    XMStoreFloat3( scb.SQ_LightDirectionVS.toXMFLOAT3(),
+        XMVector3TransformNormal( XMLoadFloat3( sky->GetAtmosphereCB().AC_LightPos.toXMFLOAT3() ), view ) );
+
+    float3 sunColor =
+        settings.SunLightColor;
+
+    float sunStrength = Toolbox::lerp(
+        settings.SunLightStrength,
+        settings.RainSunLightStrength,
+        std::min( 1.0f, rain * 2.0f ) );// Scale the darkening-factor faster here, so it
+    // matches more with the increasing fog-density
+
+    scb.SQ_LightColor = float4( sunColor.x, sunColor.y, sunColor.z, sunStrength );
+
+    // CSM: Alle Cascade-Matrizen setzen
+
+    for ( size_t cascadeIdx = 0; cascadeIdx < MAX_CSM_CASCADES; ++cascadeIdx ) {
+        scb.SQ_ShadowView[cascadeIdx] = m_CascadeCRs[cascadeIdx].ViewReplacement;
+        scb.SQ_ShadowProj[cascadeIdx] = m_CascadeCRs[cascadeIdx].ProjectionReplacement;
+    }
+
+    scb.SQ_ShadowmapSize = static_cast<float>( this->GetSizeX() );
+
+    // Get rain matrix
+    scb.SQ_RainView = graphicsEngine->Effects->GetRainShadowmapCameraRepl().ViewReplacement;
+    scb.SQ_RainProj = graphicsEngine->Effects->GetRainShadowmapCameraRepl().ProjectionReplacement;
+
+    scb.SQ_ShadowStrength = settings.ShadowStrength;
+    scb.SQ_ShadowAOStrength = settings.ShadowAOStrength;
+    scb.SQ_WorldAOStrength = settings.WorldAOStrength;
+    scb.SQ_ShadowSoftness = settings.ShadowSoftness;
+
+    // Modify lightsettings when indoor
+    if ( auto bspTree = Engine::GAPI->GetLoadedWorldInfo()->BspTree )
+        if ( bspTree->GetBspTreeMode() == zBSP_MODE_INDOOR ) {
+            // TODO: fix caves in Gothic 1 being way too dark. Remove this workaround.
+#if BUILD_GOTHIC_1_08k
+            // Kirides: Nah, just make it dark enough.
+            if ( Engine::GAPI->GetLoadedWorldInfo()->WorldName == "ORCTEMPEL" )
+                scb.SQ_ShadowStrength = 0.15f;
+            else
+                scb.SQ_ShadowStrength = 0.3f;
+#else
+            // Turn off shadows
+            scb.SQ_ShadowStrength = 0.0f;
+#endif
+
+            // Only use world AO
+            scb.SQ_WorldAOStrength = 1.0f;
+            // Darken the lights
+            scb.SQ_LightColor = float4( 1, 1, 1, DEFAULT_INDOOR_VOB_AMBIENT.x );
+        }
+
+    graphicsEngine->GetActivePS()->GetConstantBuffer()[0]->UpdateBuffer( &scb );
+    graphicsEngine->GetActivePS()->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+
+    PFXVS_ConstantBuffer vscb;
+    vscb.PFXVS_InvProj = scb.SQ_InvProj;
+    graphicsEngine->GetActiveVS()->GetConstantBuffer()[0]->UpdateBuffer( &vscb );
+    graphicsEngine->GetActiveVS()->GetConstantBuffer()[0]->BindToVertexShader( 0 );
+
+    // CSM: Bind the cascade array to a single slot (Texture2DArray)
+    BindToPixelShader( m_context.Get(), TX_ShadowmapArray );
+
+    if ( graphicsEngine->Effects->GetRainShadowmap() )
+        graphicsEngine->Effects->GetRainShadowmap()->BindToPixelShader( m_context.Get(), TX_RainShadowmap );
+
+    this->BindSampler( m_context.Get(), 2 );
+
+    m_context->PSSetShaderResources( TX_ReflectionCube, 1, graphicsEngine->ReflectionCube2.GetAddressOf() );
+
+    graphicsEngine->GetDistortionTexture()->BindToPixelShader( TX_Distortion );
+
+    // CSM: Nur 1x rendern!
+    graphicsEngine->GetPfxRenderer()->DrawFullScreenQuad();
+
+    // Reset state
+    static ID3D11ShaderResourceView* nullSrv[] = { nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr };
+    m_context->PSSetShaderResources( 3, ARRAYSIZE( nullSrv ), nullSrv );
+
+    return XR_SUCCESS;
 }
 
 

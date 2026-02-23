@@ -107,11 +107,18 @@ public:
     //  For cascade i: near = splits[i], far = splits[i+1]
     //  lambda in [0,1] interpolates between logarithmic (1.0) and uniform (0.0) splits.
     static std::vector<float> ComputeCascadeSplits( float nearPlane, float farPlane, size_t numCascades, float lambda = 0.95f, float bias = 1.0f );
+    XRESULT DrawPointlightShadows(std::vector<VobLightInfo*>& lights);
+    XRESULT DrawWorldShadow();
+    XRESULT DrawRainShadomap();
+    XRESULT DrawPointlightLights(std::vector<VobLightInfo*>& lights, RenderToTextureBuffer& color, RenderToTextureBuffer& normals, RenderToTextureBuffer
+                                 & specular, RenderToTextureBuffer& depthCopy);
 
     /** Renders the shadowmaps for the sun using parameter struct */
     void RenderShadowmaps( const RenderShadowmapsParams& params );
 
-    XRESULT DrawLighting( std::vector<VobLightInfo*>& lights );
+    XRESULT DrawWorldLights();
+    XRESULT DrawLighting(std::vector<VobLightInfo*>& lights, RenderToTextureBuffer& color, RenderToTextureBuffer& normals, RenderToTextureBuffer
+                         & specular, RenderToTextureBuffer& depthCopy);
 
     void XM_CALLCONV RenderShadowCube( DirectX::FXMVECTOR position,
         float range,

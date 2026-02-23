@@ -30,10 +30,10 @@ public:
     XRESULT RenderHeightfog();
 
     /** Renders the distance blur effect */
-    XRESULT RenderDistanceBlur();
+    XRESULT RenderDistanceBlur(ID3D11ShaderResourceView* diffuse );
 
     /** Renders the HDR-Effect */
-    XRESULT RenderHDR();
+    XRESULT RenderHDR(ID3D11RenderTargetView* output, ID3D11ShaderResourceView* backbuffer);
 
     /** Renders the SMAA-Effect */
     XRESULT RenderSMAA();
@@ -43,7 +43,7 @@ public:
     XRESULT RenderSimpleSharpen( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& input, INT2 inputSize, const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& output, INT2 outputSize, RenderToTextureBuffer& intermediateBuffer );
 
     /** Renders the godrays-Effect */
-    XRESULT RenderGodRays();
+    XRESULT RenderGodRays(ID3D11ShaderResourceView* backbuffer, ID3D11ShaderResourceView* normals);
 
     /** Copies the given texture to the given RTV */
     XRESULT CopyTextureToRTV( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& texture, const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& rtv, INT2 targetResolution = INT2( 0, 0 ), bool useCustomPS = false, INT2 offset = INT2( 0, 0 ) );
@@ -55,7 +55,8 @@ public:
     XRESULT DrawFullScreenQuad();
 
     /** Draws the HBAO-Effect to the given buffer */
-    XRESULT DrawHBAO( const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& rtv );
+    XRESULT DrawHBAO(const ComPtr<ID3D11RenderTargetView>& rtv, const ComPtr<ID3D11ShaderResourceView>& pFullResDepthTexSRV, const ComPtr<
+                     ID3D11ShaderResourceView>& pFullResNormalTexSRV);
 
     /** Accessors */
     TextureHandle GetTempBuffer();
@@ -69,6 +70,8 @@ public:
     void OnEndFrame() {
         m_texturePool->GiveTick();
     }
+
+    TexturePool* GetTexturePool() { return m_texturePool.get(); }
 private:
     /** Blur effect referenced here because it's often needed by PFX */
     std::unique_ptr<D3D11PFX_Blur> FX_Blur;

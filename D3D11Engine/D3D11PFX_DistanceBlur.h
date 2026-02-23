@@ -8,6 +8,7 @@ public:
     ~D3D11PFX_DistanceBlur();
 
     /** Draws this effect to the given buffer */
-    XRESULT Render( RenderToTextureBuffer* fxbuffer );
+    XRESULT Render( RenderToTextureBuffer* fxbuffer ) override { return XR_FAILED; }
+    XRESULT Render( ID3D11ShaderResourceView* diffuse );
 };
 

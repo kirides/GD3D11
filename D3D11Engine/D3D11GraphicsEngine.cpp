@@ -47,6 +47,8 @@
 #include "ImGuiShim.h"
 #include "zCModel.h"
 #include "zCOption.h"
+#include "RenderGraph.h"
+#include "RGBuilder.h"
 
 #ifdef BUILD_SPACER
 #define IS_SPACER_BUILD true
@@ -1088,27 +1090,6 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
 
     PfxRenderer->OnResize( m_scaledResolution );
 
-    GBuffer2_SpecIntens_SpecPower = std::make_unique<RenderToTextureBuffer>(
-        GetDevice().Get(), m_scaledResolution.x, m_scaledResolution.y, DXGI_FORMAT_R16G16_FLOAT );
-
-    SetDebugName( GBuffer2_SpecIntens_SpecPower->GetTexture().Get(), "GBuffer2_SpecIntens_SpecPower->TEX" );
-    SetDebugName( GBuffer2_SpecIntens_SpecPower->GetShaderResView().Get(), "GBuffer2_SpecIntens_SpecPower->SRV" );
-    SetDebugName( GBuffer2_SpecIntens_SpecPower->GetRenderTargetView().Get(), "GBuffer2_SpecIntens_SpecPower->RTV" );
-
-    GBuffer1_Normals = std::make_unique<RenderToTextureBuffer>(
-        GetDevice().Get(), m_scaledResolution.x, m_scaledResolution.y, DXGI_FORMAT_R8G8B8A8_SNORM );
-
-    SetDebugName( GBuffer1_Normals->GetTexture().Get(), "GBuffer1_Normals->TEX" );
-    SetDebugName( GBuffer1_Normals->GetShaderResView().Get(), "GBuffer1_Normals->SRV" );
-    SetDebugName( GBuffer1_Normals->GetRenderTargetView().Get(), "GBuffer1_Normals->RTV" );
-
-    GBuffer0_Diffuse = std::make_unique<RenderToTextureBuffer>(
-        GetDevice().Get(), m_scaledResolution.x, m_scaledResolution.y, DXGI_FORMAT_ENGINE_SWAPCHAIN  );
-
-    SetDebugName( GBuffer0_Diffuse->GetTexture().Get(), "GBuffer0_Diffuse->TEX" );
-    SetDebugName( GBuffer0_Diffuse->GetShaderResView().Get(), "GBuffer0_Diffuse->SRV" );
-    SetDebugName( GBuffer0_Diffuse->GetRenderTargetView().Get(), "GBuffer0_Diffuse->RTV" );
-
     VelocityBuffer = std::make_unique<RenderToTextureBuffer>(
         GetDevice().Get(), m_scaledResolution.x, m_scaledResolution.y, DXGI_FORMAT_R16G16_FLOAT );
 
@@ -1363,14 +1344,9 @@ XRESULT D3D11GraphicsEngine::Clear( const float4& color ) {
     context->ClearDepthStencilView( DepthStencilBuffer->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
     context->ClearDepthStencilView( m_NativeSizeDepthStencil->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
 
-    context->ClearRenderTargetView( GBuffer0_Diffuse->GetRenderTargetView().Get(), reinterpret_cast<const float*>(&color) );
-    context->ClearRenderTargetView( GBuffer1_Normals->GetRenderTargetView().Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )) );
-    context->ClearRenderTargetView( GBuffer2_SpecIntens_SpecPower->GetRenderTargetView().Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )) );
     context->ClearRenderTargetView( HDRBackBuffer->GetRenderTargetView().Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )) );
     context->ClearRenderTargetView( Backbuffer->GetRenderTargetView().Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )) );
     
-    // remove motion information
-    context->ClearRenderTargetView( VelocityBuffer->GetRenderTargetView().Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )) );
     return XR_SUCCESS;
 }
 
@@ -2650,6 +2626,12 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     // return XR_SUCCESS;
     if ( PresentPending ) return XR_SUCCESS;
 
+    RenderGraph graph( GetPfxRenderer()->GetTexturePool() );
+
+    // TODO: Replace global Resources with RenderGraph resource
+    RGResourceHandle backBufferHandle = graph.ImportResource( L"BackBuffer", HDRBackBuffer.get() );
+    RGResourceHandle velocityBufferHandle = graph.ImportResource( L"VelocityBuffer", VelocityBuffer.get() );
+
     rendererState.RendererInfo.RenderStage = STAGE_DRAW_WORLD;
 
     D3D11_VIEWPORT vp;
@@ -2661,6 +2643,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     vp.Height = static_cast<float>(GetResolution().y);
 
     GetContext()->RSSetViewports( 1, &vp );
+
     UpdateZEngineViewport();
 
     GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(), nullptr );
@@ -2696,18 +2679,9 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     rendererState.RendererSettings.DrawSkeletalMeshes = bDrawVobsGlobal;
 #endif 
 
-    ID3D11RenderTargetView* rtvs[] = {
-        GBuffer0_Diffuse->GetRenderTargetView().Get(),
-        GBuffer1_Normals->GetRenderTargetView().Get(),
-        GBuffer2_SpecIntens_SpecPower->GetRenderTargetView().Get(),
-        VelocityBuffer->GetRenderTargetView().Get() };
-    GetContext()->OMSetRenderTargets( 4, rtvs, DepthStencilBuffer->GetDepthStencilView().Get() );
 
-    Engine::GAPI->SetFarPlane(
-        rendererState.RendererSettings.SectionDrawRadius * WORLD_SECTION_SIZE );
-
-    Clear( float4( rendererState.GraphicsState.FF_FogColor, 0.0f ) );
-
+    Engine::GAPI->SetFarPlane( rendererState.RendererSettings.SectionDrawRadius * WORLD_SECTION_SIZE );
+    
     // Clear textures from the last frame
     RenderedVobs.clear();
     FrameWaterSurfaces.clear();
@@ -2733,162 +2707,379 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     rendererState.RasterizerState.FrontCounterClockwise = false;
     rendererState.RasterizerState.SetDirty();
 
+    RGResourceHandle colorResource;
+    graph.AddPass( L"Initialize Buffers", [&]( RGBuilder& builder, RenderPass& pass ) {
+        auto size = GetResolution();
+        colorResource = builder.CreateTexture( { static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y), DXGI_FORMAT_ENGINE_DEFAULT, L"GBufferAlbedo" } );
+
+        builder.Write( colorResource );
+        builder.Write( backBufferHandle );
+
+        pass.m_executeCallback = [this, &rendererState, colorResource](const RenderGraph& graph)->void {
+            const Microsoft::WRL::ComPtr<ID3D11DeviceContext1>& context = GetContext();
+            context->ClearDepthStencilView( DepthStencilBuffer->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
+            context->ClearDepthStencilView( m_NativeSizeDepthStencil->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
+
+            context->ClearRenderTargetView( HDRBackBuffer->GetRenderTargetView().Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )) );
+            context->ClearRenderTargetView( Backbuffer->GetRenderTargetView().Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )) );
+
+            constexpr float black[]{ 0.f, 0.f, 0.f, 0.f };
+            float4 fogColor( rendererState.GraphicsState.FF_FogColor, 0.0f );
+            GetContext()->ClearRenderTargetView( graph.GetPhysicalTexture( colorResource )->GetRenderTargetView().Get(), reinterpret_cast<const float*>(&fogColor) );
+        };
+    });
+    
     if ( rendererState.RendererSettings.DrawSky ) {
-        auto _ = RecordGraphicsEvent( L"Draw Sky" );
-        // Draw back of the sky if outdoor
-        DrawSky();
+        graph.AddPass( L"Draw Sky", [&]( RGBuilder& builder, RenderPass& pass ) {
+            //// Setup / Declare
+            //RGTextureDesc albedoDesc{ 1920, 1080, 28 /* DXGI_FORMAT_R8G8B8A8_UNORM */, "Albedo" };
+            //albedoTarget = builder.CreateTexture( albedoDesc );
+            builder.Write( colorResource );
+
+            pass.m_executeCallback = [this, colorResource](const RenderGraph& graph)->void {
+                // Draw back of the sky if outdoor
+                GetContext()->OMSetRenderTargets( 1, graph.GetPhysicalTexture( colorResource )->GetRenderTargetView().GetAddressOf(), nullptr );
+                
+                DrawSky();
+            };
+        });
     }
 
-    // Draw world
-    {
-        auto _ = RecordGraphicsEvent( L"Draw WorldMesh Naive" );
-        Engine::GAPI->DrawWorldMeshNaive();
-    }
+    RGResourceHandle normalsResource;
+    RGResourceHandle specularResource;
+    graph.AddPass( L"G-Buffer Pass", [&]( RGBuilder& builder, RenderPass& pass ) {
+        // Setup / Declare
+        auto size = GetResolution();
+        normalsResource = builder.CreateTexture({ static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y), DXGI_FORMAT_R8G8B8A8_SNORM, L"GBufferNormals" });
+        specularResource = builder.CreateTexture({ static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y), DXGI_FORMAT_R16G16_FLOAT, L"GBufferSpecular" });
+
+        builder.Write( colorResource );
+        builder.Write( normalsResource );
+        builder.Write( specularResource );
+        builder.Write( velocityBufferHandle );
+        builder.Write( backBufferHandle );
+
+        pass.m_executeCallback = [this, colorResource, normalsResource, specularResource](const RenderGraph& graph)-> void {            
+            ID3D11RenderTargetView* rtvs[] = {
+                graph.GetPhysicalTexture(colorResource)->GetRenderTargetView().Get(),
+                graph.GetPhysicalTexture(normalsResource)->GetRenderTargetView().Get(),
+                graph.GetPhysicalTexture(specularResource)->GetRenderTargetView().Get(),
+                VelocityBuffer->GetRenderTargetView().Get(),
+            };
+
+            constexpr float black[] { 0.f, 0.f, 0.f, 0.f };
+            GetContext()->ClearRenderTargetView( rtvs[1], black );
+            GetContext()->ClearRenderTargetView( rtvs[2], black );
+            GetContext()->ClearRenderTargetView( rtvs[3], black );
+            GetContext()->OMSetRenderTargets( 4, rtvs, DepthStencilBuffer->GetDepthStencilView().Get() );
+
+            Engine::GAPI->DrawWorldMeshNaive();
+        };
+    });
+    
+    graph.AddPass( L"Draw ParticleFX", [&]( RGBuilder& builder, RenderPass& pass ) {
+        // Setup / Declare
+        builder.Write( backBufferHandle );
+
+        pass.m_executeCallback = [this](const RenderGraph&)-> void {
+            if ( !Engine::GAPI->GetRendererState().RendererSettings.DrawParticleEffects ) {
+                return;
+            }
+            std::vector<zCVob*> decals;
+            zCCamera::GetCamera()->Activate();
+            Engine::GAPI->GetVisibleDecalList( decals );
+
+            Engine::GAPI->ResetRenderStates();
+            DrawDecalList( decals, true );
+            DrawQuadMarks();
+        };
+    });    
+    
+    graph.AddPass( L"Draw Lighting", [&]( RGBuilder& builder, RenderPass& pass ) {
+        // Setup / Declare
+        builder.Read( colorResource );
+        builder.Read( normalsResource );
+        builder.Read( specularResource );
+        builder.Write( backBufferHandle );
+
+        pass.m_executeCallback = [this, colorResource, normalsResource, specularResource](const RenderGraph& graph)-> void {
+            if ( !Engine::GAPI->GetRendererState().RendererSettings.EnableShadows ) {
+                return;
+            }
+            auto colorTexture = graph.GetPhysicalTexture(colorResource);
+            auto normalsTexture = graph.GetPhysicalTexture(normalsResource);
+            auto specularTexture = graph.GetPhysicalTexture(specularResource);
+
+            ShadowMaps->PrepareRender();
+            ShadowMaps->DrawLighting(m_FrameLights, 
+                *colorTexture, 
+                *normalsTexture, 
+                *specularTexture, 
+                *GetDepthBufferCopy());
+            if ( !Engine::GAPI->GetRendererState().RendererSettings.FixViewFrustum ) {
+                m_FrameLights.clear();
+            }
+        };
+    });    
+    
+    graph.AddPass( L"Draw Frame AlphaMeshes", [&]( RGBuilder& builder, RenderPass& pass ) {
+        // Setup / Declare
+        builder.Write( backBufferHandle );
+
+        pass.m_executeCallback = [this](const RenderGraph&)-> void {
+            DrawFrameAlphaMeshes();
+            };
+        }
+    );    
 
     // Draw HBAO
     if ( rendererState.RendererSettings.HbaoSettings.Enabled ) {
-        auto _ = RecordGraphicsEvent( L"Draw HBAO" );
-        PfxRenderer->DrawHBAO( HDRBackBuffer->GetRenderTargetView() );
-        GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
+        graph.AddPass( L"HBAO+", [&]( RGBuilder& builder, RenderPass& pass ) {
+            builder.Read( normalsResource );
+            builder.Write( backBufferHandle );
+
+            pass.m_executeCallback = [this, normalsResource](const RenderGraph& graph) {
+                auto normalsTexture = graph.GetPhysicalTexture(normalsResource);
+
+                PfxRenderer->DrawHBAO( HDRBackBuffer->GetRenderTargetView(),
+                    GetDepthBuffer()->GetShaderResView(), 
+                    normalsTexture->GetShaderResView());
+                GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
+            };
+        });
+    }
+
+    
+    graph.AddPass( L"DrawWaterSurfaces", [&]( RGBuilder& builder, RenderPass& pass ) {
+        builder.Read( backBufferHandle );
+        builder.Write( backBufferHandle );
+
+        pass.m_executeCallback = [this](const RenderGraph&) {
+            DrawWaterSurfaces();
+        };
+    });
+    
+    graph.AddPass( L"Draw light-shafts", [&]( RGBuilder& builder, RenderPass& pass ) {
+        builder.Read( backBufferHandle );
+        builder.Write( backBufferHandle );
+
+        pass.m_executeCallback = [this](const RenderGraph&) {
+            DrawMeshInfoListAlphablended( FrameTransparencyMeshes );
+        };
+    });
+    
+    if ( rendererState.RendererSettings.DrawG1ForestPortals ) {
+        graph.AddPass( L"Draw ForestPortals", [&]( RGBuilder& builder, RenderPass& pass ) {
+            builder.Read( backBufferHandle );
+            builder.Write( backBufferHandle );
+
+            pass.m_executeCallback = [this](const RenderGraph&) {
+                DrawMeshInfoListAlphablended( FrameTransparencyMeshesPortal );
+            };
+        });
     }
     
-    // PfxRenderer->RenderDistanceBlur();
+    graph.AddPass( L"Draw Waterfall Foam", [&]( RGBuilder& builder, RenderPass& pass ) {
+        builder.Read( backBufferHandle );
+        builder.Write( backBufferHandle );
 
-    // Draw water surfaces of current frame
-    {
-        auto _ = RecordGraphicsEvent( L"DrawWaterSurfaces" );
-        DrawWaterSurfaces();
+        pass.m_executeCallback = [this](const RenderGraph&) {
+            DrawMeshInfoListAlphablended( FrameTransparencyMeshesWaterfall );
+        };
+    });
+    
+    graph.AddPass( L"Draw ghosts", [&]( RGBuilder& builder, RenderPass& pass ) {
+        builder.Read( backBufferHandle );
+        builder.Write( backBufferHandle );
+
+        pass.m_executeCallback = [this](const RenderGraph&) {
+            D3D11ENGINE_RENDER_STAGE oldStage = RenderingStage;
+            SetRenderingStage( DES_GHOST );
+            Engine::GAPI->DrawTransparencyVobs();
+            SetRenderingStage( oldStage );
+            Engine::GAPI->DrawSkeletalVN();
+        };
+    });
+    
+    if (rendererState.RendererSettings.DrawFog &&
+                Engine::GAPI->GetLoadedWorldInfo()->BspTree->GetBspTreeMode() ==
+                zBSP_MODE_OUTDOOR) {
+        graph.AddPass( L"Draw Heightfog", [&]( RGBuilder& builder, RenderPass& pass ) {
+            builder.Read( backBufferHandle );
+            builder.Write( backBufferHandle );
+
+            pass.m_executeCallback = [this](const RenderGraph&) {
+                PfxRenderer->RenderHeightfog();
+            };
+        });
     }
+    
+    if (Engine::GAPI->GetRainFXWeight() > 0.0f) {
+        if ( FeatureLevel10Compatibility || Engine::GAPI->GetRendererState().RendererSettings.DrawRainThroughTransformFeedback ) {
+            graph.AddPass( L"Draw Rain", [&]( RGBuilder& builder, RenderPass& pass ) {
+                builder.Read( backBufferHandle );
+                builder.Write( backBufferHandle );
 
-    // Draw light-shafts
-    {
-        auto _ = RecordGraphicsEvent( L"Draw light-shafts" );
-        DrawMeshInfoListAlphablended( FrameTransparencyMeshes );
-    }
-
-    //draw forest / door portals
-    if ( rendererState.RendererSettings.DrawG1ForestPortals ) {
-        auto _ = RecordGraphicsEvent( L"DrawForestPortals" );
-        DrawMeshInfoListAlphablended( FrameTransparencyMeshesPortal );
-    }
-
-    //draw waterfall foam
-    {
-        auto _ = RecordGraphicsEvent( L"Draw Waterfall Foam" );
-        DrawMeshInfoListAlphablended( FrameTransparencyMeshesWaterfall );
-    }
-
-    // Draw ghosts
-    {
-        auto _ = RecordGraphicsEvent( L"Draw ghosts" );
-        D3D11ENGINE_RENDER_STAGE oldStage = RenderingStage;
-        SetRenderingStage( DES_GHOST );
-        Engine::GAPI->DrawTransparencyVobs();
-        SetRenderingStage( oldStage );
-        Engine::GAPI->DrawSkeletalVN();
-    }
-
-    if ( rendererState.RendererSettings.DrawFog &&
-        Engine::GAPI->GetLoadedWorldInfo()->BspTree->GetBspTreeMode() ==
-        zBSP_MODE_OUTDOOR ) {
-
-        auto _ = RecordGraphicsEvent( L"RenderHeightfog" );
-        PfxRenderer->RenderHeightfog();
-    }
-
-    // Draw rain
-    if ( Engine::GAPI->GetRainFXWeight() > 0.0f ) {
-        if ( FeatureLevel10Compatibility || rendererState.RendererSettings.DrawRainThroughTransformFeedback ) {
-            auto _ = RecordGraphicsEvent( L"DrawRain" );
-            Effects->DrawRain();
+                pass.m_executeCallback = [this](const RenderGraph&) {
+                    Effects->DrawRain();
+                };
+            });
         } else {
-            auto _ = RecordGraphicsEvent( L"DrawRain_CS" );
-            Effects->DrawRain_CS();
+            graph.AddPass( L"Draw Rain CS", [&]( RGBuilder& builder, RenderPass& pass ) {
+                builder.Read( backBufferHandle );
+                builder.Write( backBufferHandle );
+
+                pass.m_executeCallback = [this](const RenderGraph&) {
+                    Effects->DrawRain_CS();
+                };
+            });
         }
     }
-
-    GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(),
-        DepthStencilBuffer->GetDepthStencilView().Get() );
-
-    // Draw unlit decals 
-    // TODO: Only get them once!
-    if ( rendererState.RendererSettings.DrawParticleEffects ) {
-        auto _ = RecordGraphicsEvent( L"DrawParticleEffects" );
-        std::vector<zCVob*> decals;
-        zCCamera::GetCamera()->Activate();
-        Engine::GAPI->GetVisibleDecalList( decals );
-
-        // Draw stuff like candle-flames
-        Engine::GAPI->ResetRenderStates();
-        DrawDecalList( decals, false );
-        DrawMQuadMarks();
-    }
-
-    // Unbind temporary backbuffer copy
-    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv;
-    GetContext()->PSSetShaderResources( 5, 1, srv.GetAddressOf() );
-
-    // TODO: TODO: GodRays need the GBuffer1 from the scene, but Particles need to
-    // clear it!
-    if ( rendererState.RendererSettings.EnableGodRays &&
-        Engine::GAPI->GetLoadedWorldInfo()->BspTree->GetBspTreeMode() ==
-        zBSP_MODE_OUTDOOR ) {
-
-        auto _ = RecordGraphicsEvent( L"RenderGodRays" );
-        PfxRenderer->RenderGodRays();
-    }
-
-    Engine::GAPI->ResetRenderStates();
-    // DrawParticleEffects();
+    
+    graph.AddPass( L"Reset RenderTargets", [&]( RGBuilder& builder, RenderPass& pass )
     {
-        auto _ = RecordGraphicsEvent( L"DrawParticlesSimple" );
-        Engine::GAPI->DrawParticlesSimple();
+        builder.Write( backBufferHandle );
+        pass.m_executeCallback = [this](const RenderGraph&) {
+                GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(),
+                    DepthStencilBuffer->GetDepthStencilView().Get() );
+            };
+    });
+    
+    if (rendererState.RendererSettings.DrawParticleEffects) {
+        graph.AddPass( L"Draw ParticleFX", [&]( RGBuilder& builder, RenderPass& pass ) {
+            builder.Read( backBufferHandle );
+            builder.Write( backBufferHandle );
+
+            pass.m_executeCallback = [this](const RenderGraph&) {
+                // Draw unlit decals 
+                // TODO: Only get them once!
+                std::vector<zCVob*> decals;
+                zCCamera::GetCamera()->Activate();
+                Engine::GAPI->GetVisibleDecalList( decals );
+
+                // Draw stuff like candle-flames
+                DrawDecalList( decals, false );
+                DrawMQuadMarks();
+            };
+        });
     }
+    
+    if (rendererState.RendererSettings.EnableGodRays &&
+        Engine::GAPI->GetLoadedWorldInfo()->BspTree->GetBspTreeMode() ==
+        zBSP_MODE_OUTDOOR) {
+        graph.AddPass( L"Draw Godrays", [&]( RGBuilder& builder, RenderPass& pass ) {
+            builder.Read( normalsResource );
+            builder.Read( backBufferHandle );
+            builder.Write( backBufferHandle );
+
+            pass.m_executeCallback = [this, backBufferHandle, normalsResource](const RenderGraph& graph) {
+                // Unbind temporary backbuffer copy
+                Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv;
+                GetContext()->PSSetShaderResources( 5, 1, srv.GetAddressOf() );
+                
+                auto backbufferResource = graph.GetPhysicalTexture(backBufferHandle);
+                auto normalsTexture = graph.GetPhysicalTexture(normalsResource);
+                
+                PfxRenderer->RenderGodRays(backbufferResource->GetShaderResView().Get(), normalsTexture->GetShaderResView().Get());
+            };
+        });
+    }
+    
+    graph.AddPass( L"Draw ParticlesSimple", [&]( RGBuilder& builder, RenderPass& pass ) {
+        auto size = GetResolution();
+
+        auto particleColorHandle = builder.CreateTexture( { static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y), DXGI_FORMAT_ENGINE_DEFAULT, L"PfxColor" } );
+        auto particleDistortionHandle = builder.CreateTexture({ static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y), DXGI_FORMAT_R8G8B8A8_SNORM, L"PfxDistortion" });
+        
+        builder.Write( particleColorHandle );
+        builder.Write( particleDistortionHandle );
+        builder.Read( particleColorHandle );
+        builder.Read( particleDistortionHandle );
+        builder.Write( backBufferHandle );
+
+        pass.m_executeCallback = [particleColorHandle, particleDistortionHandle](const RenderGraph& graph) {
+            Engine::GAPI->ResetRenderStates();
+            Engine::GAPI->DrawParticlesSimple( 
+                graph.GetPhysicalTexture( particleColorHandle ), 
+                graph.GetPhysicalTexture( particleDistortionHandle ) );
+        };
+    });
 
 #if (defined BUILD_GOTHIC_2_6_fix || defined BUILD_GOTHIC_1_08k)
-    // Calc weapon/effect trail mesh data
-    Engine::GAPI->CalcPolyStripMeshes();
-    // Calc lightning flashes mesh data
-    Engine::GAPI->CalcFlashMeshes();
-    // Draw those
-    {
-        auto _ = RecordGraphicsEvent( L"DrawPolyStrips" );
-        // For some reasons the viewport gets messed up, so set it again
-        SetViewport( ViewportInfo( 0, 0, GetResolution().x, GetResolution().y));
-        DrawPolyStrips();
-    }
+
+    graph.AddPass( L"Draw PolyStrips", [&]( RGBuilder& builder, RenderPass& pass ) {
+        builder.Write( backBufferHandle );
+
+        pass.m_executeCallback = [this](const RenderGraph&) {
+            // Calc weapon/effect trail mesh data
+            Engine::GAPI->CalcPolyStripMeshes();
+            // Calc lightning flashes mesh data
+            Engine::GAPI->CalcFlashMeshes();
+            // Draw those
+            // For some reasons the viewport gets messed up, so set it again
+            SetViewport( ViewportInfo( 0, 0, GetResolution().x, GetResolution().y ) );
+            DrawPolyStrips();
+        };
+    } );
+
 #endif
 
     // Draw debug lines
-    {
-        auto _ = RecordGraphicsEvent( L"Draw Debug Lines" );
-        LineRenderer->Flush();
-        LineRenderer->FlushScreenSpace();
-    }
+    graph.AddPass( L"Draw Debug Lines", [&]( RGBuilder& builder, RenderPass& pass ) {
+        builder.Write( backBufferHandle );
+
+        pass.m_executeCallback = [this](const RenderGraph&) {
+            LineRenderer->Flush();
+            LineRenderer->FlushScreenSpace();
+        };
+    } );
+    
 
     if ( rendererState.RendererSettings.AntiAliasingMode 
         == GothicRendererSettings::AA_TAA ) {
         // TAA before any HDR stuff
-        auto _ = RecordGraphicsEvent( L"RenderTAA" );
-        PfxRenderer->RenderTAA( rendererState.RendererSettings.DebugSettings.TAA.DepthMotionVectors
-            ? nullptr
-            : VelocityBuffer->GetShaderResView() );
-        GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
+        graph.AddPass( L"Render TAA", [&]( RGBuilder& builder, RenderPass& pass ) {
+            builder.Read( velocityBufferHandle );
+            builder.Write( backBufferHandle );
+
+            pass.m_executeCallback = [this, &rendererState, velocityBufferHandle](const RenderGraph& graph) {
+                auto velocityBufferTex = graph.GetPhysicalTexture( velocityBufferHandle );
+                PfxRenderer->RenderTAA( rendererState.RendererSettings.DebugSettings.TAA.DepthMotionVectors
+                    ? nullptr
+                    : velocityBufferTex->GetShaderResView() );
+                GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
+            };
+        } );
     }
 
-    if ( rendererState.RendererSettings.EnableHDR ) {
-        auto _ = RecordGraphicsEvent( L"RenderHDR" );
-        PfxRenderer->RenderHDR();
+    if ( rendererState.RendererSettings.EnableHDR ) {       
+        graph.AddPass( L"Render HDR", [&]( RGBuilder& builder, RenderPass& pass ) {
+            builder.Read( backBufferHandle );
+            builder.Write( backBufferHandle );
+
+            pass.m_executeCallback = [this, backBufferHandle](const RenderGraph& graph) {
+                auto backbufferTex = graph.GetPhysicalTexture( backBufferHandle );
+                PfxRenderer->RenderHDR( backbufferTex->GetRenderTargetView().Get(), backbufferTex->GetShaderResView().Get() );
+            };
+        } );
     }
 
-    // SMAA should be applied before any sharpening
     if ( rendererState.RendererSettings.AntiAliasingMode
-        == GothicRendererSettings::AA_SMAA ) {
-        // actually we could do TAA + SMAA
-        auto _ = RecordGraphicsEvent( L"RenderSMAA" );
-        PfxRenderer->RenderSMAA();
-        GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
+        == GothicRendererSettings::AA_SMAA ) {       
+        // SMAA should be applied before any sharpening
+        graph.AddPass( L"Render SMAA", [&]( RGBuilder& builder, RenderPass& pass ) {
+            builder.Read( backBufferHandle );
+            builder.Write( backBufferHandle );
+
+            pass.m_executeCallback = [this, backBufferHandle](const RenderGraph&) {
+                PfxRenderer->RenderSMAA();
+                GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
+            };
+        } );
     }
+
+    graph.Compile();
+    graph.Execute();
 
     PresentPending = true;
 
@@ -4820,24 +5011,12 @@ void D3D11GraphicsEngine::ApplyWindProps( VS_ExConstantBuffer_Wind& windBuff ) {
 /** Draws the static vobs instanced */
 XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
     static std::vector<VobInfo*> vobs;
-    static std::vector<VobLightInfo*> lights;
     static std::vector<SkeletalVobInfo*> mobs;
 
     const auto& renderSettings = Engine::GAPI->GetRendererState().RendererSettings;
-    if ( RenderingStage == DES_MAIN && renderSettings.EnableShadows ) {
-        auto _ = START_TIMING( "Prepare Shadow" );
-        ShadowMaps->PrepareRender(); // calculate cameras, frusti collect any vobs needed, etc.
-    }
 
-    // Need to collect alpha-meshes to render them laterdy
-    struct alphaMeshData {
-        MeshKey mk;
-        MeshInfo* mi;
-        MeshVisualInfo* vi;
-        std::vector<VobInstanceInfo> instances;
-    };
-    std::vector<alphaMeshData> AlphaMeshes;
-    AlphaMeshes.reserve( 64 );
+    // Need to collect alpha-meshes to render them later
+    m_AlphaMeshes.reserve( 64 );
 
     {
         auto _ = START_TIMING( "VOBs" );
@@ -4883,7 +5062,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
             if ( !renderSettings.FixViewFrustum ||
                 (renderSettings.FixViewFrustum &&
                     vobs.empty()) ) {
-                Engine::GAPI->CollectVisibleVobs( vobs, lights, mobs );
+                Engine::GAPI->CollectVisibleVobs( vobs, m_FrameLights, mobs );
             }
         }
 
@@ -4990,7 +5169,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                         if ( !doReset || blendAdd || blendBlend ) {
                             MeshVisualInfo* info = staticMeshVisual;
                             for ( MeshInfo* mesh : mlist ) {
-                                alphaMeshData data = {};
+                                AlphaMeshData data = {};
                                 data.mk = itt.first;
                                 data.vi = info;
                                 data.mi = mesh;
@@ -4999,7 +5178,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                                 // and the only usage i found was a bug (?) in pirates camp
                                 // where there would be cobwebs randomly.
                                 data.instances = staticMeshVisual->Instances;
-                                AlphaMeshes.emplace_back( data );
+                                m_AlphaMeshes.emplace_back( data );
                             }
 
                             doReset = false;
@@ -5137,23 +5316,17 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
         }
     }
 
-    if ( RenderingStage == DES_MAIN ) {
-        if ( renderSettings.DrawParticleEffects ) {
-            auto _ = START_TIMING( "DrawVOBsInstanced->DrawParticleEffects" );
-            std::vector<zCVob*> decals;
-            zCCamera::GetCamera()->Activate();
-            Engine::GAPI->GetVisibleDecalList( decals );
-
-            DrawDecalList( decals, true );
-            DrawQuadMarks();
-        }
-
-        auto _ = START_TIMING( "DrawVOBsInstanced->Lighting" );
-        // Draw lighting, since everything is drawn by now and we have the lights
-        // here
-        DrawLighting( lights );
+    if ( !renderSettings.FixViewFrustum ) {
+        vobs.clear();
+        mobs.clear();
     }
 
+    return XR_SUCCESS;
+}
+
+/** Draws the static VOBs */
+XRESULT D3D11GraphicsEngine::DrawFrameAlphaMeshes()
+{
     // Make sure lighting doesn't mess up our state
     SetDefaultStates();
 
@@ -5165,79 +5338,70 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
 
     GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(),
         DepthStencilBuffer->GetDepthStencilView().Get() );
+    
+    // re-setup dynamic instancing buffer with correct instances and values
+    // shadow pass breaks the "global" state of this.
 
-    {
-        auto _1 = Engine::GraphicsEngine->RecordGraphicsEvent( L"DrawVOBsInstanced->AlphaMeshes" );
+    byte* data;
+    UINT size;
+    UINT loc = 0;
+    DynamicInstancingBuffer->Map( D3D11VertexBuffer::M_WRITE_DISCARD,
+        reinterpret_cast<void**>(&data), &size );
+    for ( auto const& alphaData : m_AlphaMeshes ) {
+        alphaData.vi->StartInstanceNum = loc;
+        memcpy( data + loc * sizeof( VobInstanceInfo ), &alphaData.instances[0],
+            sizeof( VobInstanceInfo ) * alphaData.instances.size() );
+        loc += alphaData.instances.size();
+    }
+    DynamicInstancingBuffer->Unmap();
 
-        // re-setup dynamic instancing buffer with correct instances and values
-        // shadow pass breaks the "global" state of this.
+    for ( auto const& alphaMesh : m_AlphaMeshes ) {
+        const MeshKey& mk = alphaMesh.mk;
+        zCTexture* tx = mk.Material->GetAniTexture();
+        if ( !tx ) continue;
 
-        byte* data;
-        UINT size;
-        UINT loc = 0;
-        DynamicInstancingBuffer->Map( D3D11VertexBuffer::M_WRITE_DISCARD,
-            reinterpret_cast<void**>(&data), &size );
-        for ( auto const& alphaData : AlphaMeshes ) {
-            alphaData.vi->StartInstanceNum = loc;
-            memcpy( data + loc * sizeof( VobInstanceInfo ), &alphaData.instances[0],
-                sizeof( VobInstanceInfo ) * alphaData.instances.size() );
-            loc += alphaData.instances.size();
-        }
-        DynamicInstancingBuffer->Unmap();
+        // Check for alphablending on world mesh
+        bool blendAdd = mk.Material->GetAlphaFunc() == zMAT_ALPHA_FUNC_ADD;
+        bool blendBlend = mk.Material->GetAlphaFunc() == zMAT_ALPHA_FUNC_BLEND;
 
-        for ( auto const& alphaMesh : AlphaMeshes ) {
-            const MeshKey& mk = alphaMesh.mk;
-            zCTexture* tx = mk.Material->GetAniTexture();
-            if ( !tx ) continue;
+        // Bind texture
+        MeshInfo* mi = alphaMesh.mi;
+        MeshVisualInfo* vi = alphaMesh.vi;
+        auto& instances = alphaMesh.instances;
 
-            // Check for alphablending on world mesh
-            bool blendAdd = mk.Material->GetAlphaFunc() == zMAT_ALPHA_FUNC_ADD;
-            bool blendBlend = mk.Material->GetAlphaFunc() == zMAT_ALPHA_FUNC_BLEND;
+        if ( tx->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+            MyDirectDrawSurface7* surface = tx->GetSurface();
+            ID3D11ShaderResourceView* srv[3];
 
-            // Bind texture
-            MeshInfo* mi = alphaMesh.mi;
-            MeshVisualInfo* vi = alphaMesh.vi;
-            auto& instances = alphaMesh.instances;
+            // Get diffuse and normalmap
+            srv[0] = surface->GetEngineTexture()->GetShaderResourceView().Get();
+            srv[1] = surface->GetNormalmap()
+                ? surface->GetNormalmap()->GetShaderResourceView().Get()
+                : nullptr;
+            srv[2] = surface->GetFxMap()
+                ? surface->GetFxMap()->GetShaderResourceView().Get()
+                : nullptr;
 
-            if ( tx->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
-                MyDirectDrawSurface7* surface = tx->GetSurface();
-                ID3D11ShaderResourceView* srv[3];
+            // Bind both
+            GetContext()->PSSetShaderResources( 0, 3, srv );
 
-                // Get diffuse and normalmap
-                srv[0] = surface->GetEngineTexture()->GetShaderResourceView().Get();
-                srv[1] = surface->GetNormalmap()
-                    ? surface->GetNormalmap()->GetShaderResourceView().Get()
-                    : nullptr;
-                srv[2] = surface->GetFxMap()
-                    ? surface->GetFxMap()->GetShaderResourceView().Get()
-                    : nullptr;
+            if ( (blendAdd || blendBlend) &&
+                !Engine::GAPI->GetRendererState().BlendState.BlendEnabled ) {
+                if ( blendAdd )
+                    Engine::GAPI->GetRendererState().BlendState.SetAdditiveBlending();
+                else if ( blendBlend )
+                    Engine::GAPI->GetRendererState().BlendState.SetAlphaBlending();
 
-                // Bind both
-                GetContext()->PSSetShaderResources( 0, 3, srv );
+                Engine::GAPI->GetRendererState().BlendState.SetDirty();
 
-                if ( (blendAdd || blendBlend) &&
-                    !Engine::GAPI->GetRendererState().BlendState.BlendEnabled ) {
-                    if ( blendAdd )
-                        Engine::GAPI->GetRendererState().BlendState.SetAdditiveBlending();
-                    else if ( blendBlend )
-                        Engine::GAPI->GetRendererState().BlendState.SetAlphaBlending();
+                Engine::GAPI->GetRendererState().DepthState.DepthWriteEnabled = false;
+                Engine::GAPI->GetRendererState().DepthState.SetDirty();
 
-                    Engine::GAPI->GetRendererState().BlendState.SetDirty();
-
-                    Engine::GAPI->GetRendererState().DepthState.DepthWriteEnabled = false;
-                    Engine::GAPI->GetRendererState().DepthState.SetDirty();
-
-                    UpdateRenderStates();
-                }
-
-                MaterialInfo* info = mk.Info;
-                if ( !info->Constantbuffer ) info->UpdateConstantbuffer();
-
-                info->Constantbuffer->BindToPixelShader( 2 );
+                UpdateRenderStates();
             }
 
-            g_windBuffer.minHeight = vi->BBox.Min.y;
-            g_windBuffer.maxHeight = vi->BBox.Max.y;
+            MaterialInfo* info = mk.Info;
+            if ( !info->Constantbuffer ) info->UpdateConstantbuffer();
 
             if ( ActiveVS ) {
                 ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &g_windBuffer );
@@ -5252,19 +5416,28 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
             // Reset visual
             vi->StartNewFrame();
         }
-        AlphaMeshes.clear();
-    }
 
-    if ( !renderSettings.FixViewFrustum ) {
-        lights.clear();
-        vobs.clear();
-        mobs.clear();
-    }
+        g_windBuffer.minHeight = vi->BBox.Min.y;
+        g_windBuffer.maxHeight = vi->BBox.Max.y;
 
+        if ( ActiveVS ) {
+            ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &g_windBuffer );
+        }
+
+        // Draw batch
+        DrawInstanced( mi->MeshVertexBuffer.get(), mi->MeshIndexBuffer.get(), mi->Indices.size(),
+            DynamicInstancingBuffer.get(), sizeof( VobInstanceInfo ),
+            instances.size(), sizeof( ExVertexStruct ),
+            vi->StartInstanceNum );
+
+        // Reset visual
+        vi->StartNewFrame();
+    }
+    m_AlphaMeshes.clear();
+    
     return XR_SUCCESS;
 }
 
-/** Draws the static VOBs */
 XRESULT D3D11GraphicsEngine::DrawVOBs( bool noTextures ) {
     return DrawVOBsInstanced();
 }
@@ -5552,11 +5725,6 @@ XRESULT D3D11GraphicsEngine::ReloadShaders( ShaderCategory categories ) {
 /** Returns the line renderer object */
 BaseLineRenderer* D3D11GraphicsEngine::GetLineRenderer() {
     return LineRenderer.get();
-}
-
-/** Applys the lighting to the scene */
-XRESULT D3D11GraphicsEngine::DrawLighting( std::vector<VobLightInfo*>& lights ) {
-    return ShadowMaps->DrawLighting(lights);
 }
 
 /** Renders the shadowmaps for a pointlight */
@@ -6319,7 +6487,9 @@ void D3D11GraphicsEngine::DrawFrameParticleMeshes( std::unordered_map<zCVob*, Me
 /** Draws particle effects */
 void D3D11GraphicsEngine::DrawFrameParticles(
     std::map<zCTexture*, std::vector<ParticleInstanceInfo>>& particles,
-    std::map<zCTexture*, ParticleRenderInfo>& info ) {
+    std::map<zCTexture*, ParticleRenderInfo>& info,
+    RenderToTextureBuffer* bufferParticleColor,
+    RenderToTextureBuffer* bufferParticleDistortion ) {
     if ( particles.empty() ) return;
     SetDefaultStates();
 
@@ -6330,8 +6500,8 @@ void D3D11GraphicsEngine::DrawFrameParticles(
     // TODO: Maybe make particles draw at a lower res and bilinear upsample the result.
 
     // Clear GBuffer0 to hold the refraction vectors since it's not needed anymore
-    Context->ClearRenderTargetView( GBuffer0_Diffuse->GetRenderTargetView().Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )) );
-    Context->ClearRenderTargetView( GBuffer1_Normals->GetRenderTargetView().Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )) );
+    Context->ClearRenderTargetView( bufferParticleColor->GetRenderTargetView().Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )) );
+    Context->ClearRenderTargetView( bufferParticleDistortion->GetRenderTargetView().Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )) );
 
     RefractionInfoConstantBuffer ricb = {};
     ricb.RI_Projection = Engine::GAPI->GetProjectionMatrix();
@@ -6369,8 +6539,8 @@ void D3D11GraphicsEngine::DrawFrameParticles(
     }
 
     ID3D11RenderTargetView* rtv[] = {
-        GBuffer0_Diffuse->GetRenderTargetView().Get(),
-        GBuffer1_Normals->GetRenderTargetView().Get() };
+        bufferParticleColor->GetRenderTargetView().Get(),
+        bufferParticleDistortion->GetRenderTargetView().Get() };
     Context->OMSetRenderTargets( 2, rtv, DepthStencilBuffer->GetDepthStencilView().Get() );
 
     // Bind view/proj
@@ -6455,8 +6625,8 @@ void D3D11GraphicsEngine::DrawFrameParticles(
     state.BlendState.SetDefault();
     state.BlendState.SetDirty();
 
-    GBuffer0_Diffuse->BindToPixelShader( Context.Get(), 1 );
-    GBuffer1_Normals->BindToPixelShader( Context.Get(), 2 );
+    bufferParticleColor->BindToPixelShader( Context.Get(), 1 );
+    bufferParticleDistortion->BindToPixelShader( Context.Get(), 2 );
 
     // Copy scene behind the particle systems
     auto tempBuffer = PfxRenderer->GetTempBuffer();
@@ -6537,16 +6707,16 @@ void D3D11GraphicsEngine::SaveScreenshot() {
     auto Resolution = GetResolution();
     // Buffer for scaling down the image
     auto rt = std::make_unique<RenderToTextureBuffer>(
-        GetDevice().Get(), Resolution.x, Resolution.y, DXGI_FORMAT_ENGINE_SWAPCHAIN  );
+        GetDevice().Get(), Resolution.x, Resolution.y, DXGI_FORMAT_ENGINE_DEFAULT  );
 
     // Downscale to 256x256
     PfxRenderer->CopyTextureToRTV( HDRBackBuffer->GetShaderResView(), rt->GetRenderTargetView() );
 
-    D3D11_TEXTURE2D_DESC texDesc = {};
+    D3D11_TEXTURE2D_DESC texDesc;
     texDesc.ArraySize = 1;
     texDesc.BindFlags = 0;
     texDesc.CPUAccessFlags = 0;
-    texDesc.Format = DXGI_FORMAT_ENGINE_SWAPCHAIN ;
+    texDesc.Format = DXGI_FORMAT_ENGINE_DEFAULT;
     texDesc.Width = Resolution.x;   // must be same as backbuffer
     texDesc.Height = Resolution.y;  // must be same as backbuffer
     texDesc.MipLevels = 1;

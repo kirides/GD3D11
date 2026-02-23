@@ -16,7 +16,7 @@ D3D11PFX_DistanceBlur::D3D11PFX_DistanceBlur( D3D11PfxRenderer* rnd ) : D3D11PFX
 D3D11PFX_DistanceBlur::~D3D11PFX_DistanceBlur() {}
 
 /** Draws this effect to the given buffer */
-XRESULT D3D11PFX_DistanceBlur::Render( RenderToTextureBuffer* fxbuffer ) {
+XRESULT D3D11PFX_DistanceBlur::Render( ID3D11ShaderResourceView* diffuse ) {
 	D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
 
 	// Save old rendertargets
@@ -34,7 +34,7 @@ XRESULT D3D11PFX_DistanceBlur::Render( RenderToTextureBuffer* fxbuffer ) {
     auto tempBuffer = FxRenderer->GetTempBuffer();
 
 	engine->GetContext()->ClearRenderTargetView( tempBuffer->GetRenderTargetView().Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )) );
-    FxRenderer->CopyTextureToRTV( engine->GetGBuffer0().GetShaderResView(), tempBuffer->GetRenderTargetView(), Engine::GraphicsEngine->GetResolution() );
+    FxRenderer->CopyTextureToRTV( diffuse, tempBuffer->GetRenderTargetView(), Engine::GraphicsEngine->GetResolution() );
 
 	engine->GetContext()->OMSetRenderTargets( 1, oldRTV.GetAddressOf(), nullptr );
 

@@ -17,7 +17,9 @@ D3D11PFX_GodRays::D3D11PFX_GodRays( D3D11PfxRenderer* rnd ) : D3D11PFX_Effect( r
 D3D11PFX_GodRays::~D3D11PFX_GodRays() {}
 
 /** Draws this effect to the given buffer */
-XRESULT D3D11PFX_GodRays::Render( RenderToTextureBuffer* fxbuffer ) {
+XRESULT D3D11PFX_GodRays::Render( 
+    ID3D11ShaderResourceView* backbuffer, 
+    ID3D11ShaderResourceView* normals ) {
     if ( Engine::GAPI->GetSky()->GetAtmoshpereSettings().LightDirection.y <= 0 )
         return XR_SUCCESS; // Don't render the godrays in the night-time
 
@@ -78,8 +80,11 @@ XRESULT D3D11PFX_GodRays::Render( RenderToTextureBuffer* fxbuffer ) {
 	// Draw downscaled mask
 	engine->GetContext()->OMSetRenderTargets( 1, tempBuffer->GetRenderTargetView().GetAddressOf(), nullptr );
 
-    engine->GetHDRBackBuffer().BindToPixelShader( engine->GetContext().Get(), 0 );
-    engine->GetGBuffer1().BindToPixelShader( engine->GetContext().Get(), 1 );
+    ID3D11ShaderResourceView* srvs[2] {
+        backbuffer,
+        normals,
+    };
+    engine->GetContext()->PSSetShaderResources( 0, 2, srvs );
 
     D3D11_VIEWPORT vp = {};
     vp.TopLeftX = 0.0f;
@@ -112,6 +117,12 @@ XRESULT D3D11PFX_GodRays::Render( RenderToTextureBuffer* fxbuffer ) {
 
 	engine->GetContext()->RSSetViewports( 1, &vp );
 
+    ID3D11ShaderResourceView* nullSRVs[2] {
+        nullptr,
+        nullptr,
+    };
+    engine->GetContext()->PSSetShaderResources( 0, 2, nullSRVs );
+    
 	engine->GetContext()->OMSetRenderTargets( 1, oldRTV.GetAddressOf(), oldDSV.Get() );
 
 	return XR_SUCCESS;

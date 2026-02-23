@@ -1233,7 +1233,9 @@ void GothicAPI::DrawWorldMeshNaive() {
 }
 
 /** Draws particles, in a simple way */
-void GothicAPI::DrawParticlesSimple() {
+void GothicAPI::DrawParticlesSimple(
+    RenderToTextureBuffer* bufferParticleColor,
+    RenderToTextureBuffer* bufferParticleDistortion) {
     ParticleFrameData data;
 
     if ( RendererState.RendererSettings.DrawParticleEffects ) {
@@ -1250,7 +1252,7 @@ void GothicAPI::DrawParticlesSimple() {
         }
 
         Engine::GraphicsEngine->DrawFrameParticleMeshes( ParticleEffectProgMeshes );
-        Engine::GraphicsEngine->DrawFrameParticles( FrameParticles, FrameParticleInfo );
+        Engine::GraphicsEngine->DrawFrameParticles( FrameParticles, FrameParticleInfo, bufferParticleColor, bufferParticleDistortion);
     }
 }
 
@@ -1495,7 +1497,7 @@ void GothicAPI::GetVisibleDecalList( std::vector<zCVob*>& decals ) {
         if ( dist > RendererState.RendererSettings.VisualFXDrawRadius )
             continue;
 
-        if ( GetCameraBBox3DInFrustum( it->GetBBox(), EGothicCullFlags::CullSides ) == ZTCAM_CLIPTYPE_OUT ) {
+        if ( GetCameraBBox3DInFrustum( it->GetBBox(), EGothicCullFlags::CullSidesNear ) == ZTCAM_CLIPTYPE_OUT ) {
             continue;
         }
 

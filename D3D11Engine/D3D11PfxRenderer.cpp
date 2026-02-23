@@ -47,8 +47,8 @@ D3D11PfxRenderer::~D3D11PfxRenderer() {
 }
 
 /** Renders the distance blur effect */
-XRESULT D3D11PfxRenderer::RenderDistanceBlur() {
-    FX_DistanceBlur->Render( nullptr );
+XRESULT D3D11PfxRenderer::RenderDistanceBlur(ID3D11ShaderResourceView* diffuse ) {
+    FX_DistanceBlur->Render( diffuse );
     return XR_SUCCESS;
 }
 
@@ -64,13 +64,13 @@ XRESULT D3D11PfxRenderer::RenderHeightfog() {
 }
 
 /** Renders the godrays-Effect */
-XRESULT D3D11PfxRenderer::RenderGodRays() {
-    return FX_GodRays->Render( nullptr );
+XRESULT D3D11PfxRenderer::RenderGodRays(ID3D11ShaderResourceView* backbuffer, ID3D11ShaderResourceView* normals) {
+    return FX_GodRays->Render( backbuffer , normals );
 }
 
 /** Renders the HDR-Effect */
-XRESULT D3D11PfxRenderer::RenderHDR() {
-    return FX_HDR->Render( nullptr );
+XRESULT D3D11PfxRenderer::RenderHDR( ID3D11RenderTargetView* output, ID3D11ShaderResourceView* backbuffer ) {
+    return FX_HDR->Render( output, backbuffer );
 }
 
 /** Renders the SMAA-Effect */
@@ -222,8 +222,11 @@ XRESULT D3D11PfxRenderer::OnResize( const INT2& newResolution ) {
 }
 
 /** Draws the HBAO-Effect to the given buffer */
-XRESULT D3D11PfxRenderer::DrawHBAO( const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& rtv ) {
-    return NvHBAO->Render( rtv.Get() );
+XRESULT D3D11PfxRenderer::DrawHBAO(
+    const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& rtv,
+    const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& pFullResDepthTexSRV,
+    const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& pFullResNormalTexSRV) {
+    return NvHBAO->Render( rtv.Get(), pFullResDepthTexSRV, pFullResNormalTexSRV);
 }
 
 TextureHandle D3D11PfxRenderer::GetTempBuffer()

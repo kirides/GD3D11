@@ -7,6 +7,7 @@
 #include "zCPolyStrip.h"
 #include "zTypes.h"
 #include "RenderQueue.h"
+#include "RenderToTextureBuffer.h"
 
 #define START_TIMING(x) TimerScope( x, &Engine::GAPI->GetRendererState().RendererInfo.Timing.frameRecordings )
 
@@ -512,7 +513,9 @@ public:
     void DebugDrawTreeNode( zCBspBase* base, zTBBox3D boxCell, int clipFlags = 63 );
 
     /** Draws particles, in a simple way */
-    void DrawParticlesSimple();
+    void DrawParticlesSimple(
+        RenderToTextureBuffer* bufferParticleColor,
+        RenderToTextureBuffer* bufferParticleDistortion);
 
     /** Prepares poly strips for feeding into renderer (weapon and effect trails) */
     void CalcPolyStripMeshes();
