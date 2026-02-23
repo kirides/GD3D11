@@ -1,7 +1,5 @@
 #include "D3D11SMAA.h"
-#include <d3dcompiler.h>
-#include <vector>
-#include <iostream>
+#include "../D3D11ShaderManager.h"
 
 // Include DirectXTK or your preferred texture loader
 #include "DDSTextureLoader.h" // Assuming DirectXTK availability
@@ -21,24 +19,6 @@ D3D11SMAA::~D3D11SMAA()
 {
 }
 
-HRESULT D3D11SMAA::CompileShader(const std::wstring& path, const std::string& entryPoint, const std::string& profile, ID3DBlob** blob)
-{
-    ComPtr<ID3DBlob> errorBlob;
-    UINT flags = D3DCOMPILE_ENABLE_STRICTNESS;
-#ifdef _DEBUG
-    flags |= D3DCOMPILE_DEBUG;
-#endif
-
-    HRESULT hr = D3DCompileFromFile(path.c_str(), nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE,
-        entryPoint.c_str(), profile.c_str(), flags, 0, blob, errorBlob.GetAddressOf());
-
-    if (FAILED(hr) && errorBlob)
-    {
-        OutputDebugStringA((char*)errorBlob->GetBufferPointer());
-    }
-    return hr;
-}
-
 bool D3D11SMAA::Init(const std::wstring& shaderPath, const std::wstring& areaTexPath, const std::wstring& searchTexPath)
 {
     HRESULT hr;
@@ -46,24 +26,25 @@ bool D3D11SMAA::Init(const std::wstring& shaderPath, const std::wstring& areaTex
 
     // 1. Compile Shaders
     // Edge Detection
-    if (FAILED(CompileShader(shaderPath, "EdgeDetectionVS", "vs_5_0", &blob))) return false;
+    std::vector<D3D_SHADER_MACRO> noMacros{};
+    if (FAILED(D3D11ShaderManager::CompileShaderFromFile(shaderPath.c_str(), "EdgeDetectionVS", "vs_5_0", &blob, noMacros))) return false;
     m_device->CreateVertexShader(blob->GetBufferPointer(), blob->GetBufferSize(), nullptr, m_vsEdge.GetAddressOf());
 
-    if (FAILED(CompileShader(shaderPath, "LumaEdgeDetectionPS", "ps_5_0", &blob))) return false;
+    if (FAILED(D3D11ShaderManager::CompileShaderFromFile(shaderPath.c_str(), "LumaEdgeDetectionPS", "ps_5_0", &blob, noMacros))) return false;
     m_device->CreatePixelShader(blob->GetBufferPointer(), blob->GetBufferSize(), nullptr, m_psLumaEdge.GetAddressOf());
 
     // Blending Weight
-    if (FAILED(CompileShader(shaderPath, "BlendingWeightCalculationVS", "vs_5_0", &blob))) return false;
+    if (FAILED(D3D11ShaderManager::CompileShaderFromFile(shaderPath.c_str(), "BlendingWeightCalculationVS", "vs_5_0", &blob, noMacros))) return false;
     m_device->CreateVertexShader(blob->GetBufferPointer(), blob->GetBufferSize(), nullptr, m_vsBlend.GetAddressOf());
 
-    if (FAILED(CompileShader(shaderPath, "BlendingWeightCalculationPS", "ps_5_0", &blob))) return false;
+    if (FAILED(D3D11ShaderManager::CompileShaderFromFile(shaderPath.c_str(), "BlendingWeightCalculationPS", "ps_5_0", &blob, noMacros))) return false;
     m_device->CreatePixelShader(blob->GetBufferPointer(), blob->GetBufferSize(), nullptr, m_psBlend.GetAddressOf());
 
     // Neighborhood Blending
-    if (FAILED(CompileShader(shaderPath, "NeighborhoodBlendingVS", "vs_5_0", &blob))) return false;
+    if (FAILED(D3D11ShaderManager::CompileShaderFromFile(shaderPath.c_str(), "NeighborhoodBlendingVS", "vs_5_0", &blob, noMacros))) return false;
     m_device->CreateVertexShader(blob->GetBufferPointer(), blob->GetBufferSize(), nullptr, m_vsNeighbor.GetAddressOf());
 
-    if (FAILED(CompileShader(shaderPath, "NeighborhoodBlendingPS", "ps_5_0", &blob))) return false;
+    if (FAILED(D3D11ShaderManager::CompileShaderFromFile(shaderPath.c_str(), "NeighborhoodBlendingPS", "ps_5_0", &blob, noMacros))) return false;
     m_device->CreatePixelShader(blob->GetBufferPointer(), blob->GetBufferSize(), nullptr, m_psNeighbor.GetAddressOf());
 
     // 2. Load Textures
@@ -127,44 +108,25 @@ void D3D11SMAA::OnResize(int width, int height)
     m_width = width;
     m_height = height;
 
-    // Release old
-    m_edgesTex.Reset(); m_edgesRTV.Reset(); m_edgesSRV.Reset();
-    m_blendTex.Reset(); m_blendRTV.Reset(); m_blendSRV.Reset();
-
-    D3D11_TEXTURE2D_DESC desc = {};
-    desc.Width = width;
-    desc.Height = height;
-    desc.MipLevels = 1;
-    desc.ArraySize = 1;
-    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM; // SMAA requires specific formats, RGBA8 UNORM is generally safe
-    desc.SampleDesc.Count = 1;
-    desc.Usage = D3D11_USAGE_DEFAULT;
-    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
-
-    // Create Edges Texture
-    m_device->CreateTexture2D(&desc, nullptr, m_edgesTex.GetAddressOf());
-    m_device->CreateRenderTargetView(m_edgesTex.Get(), nullptr, m_edgesRTV.GetAddressOf());
-    m_device->CreateShaderResourceView(m_edgesTex.Get(), nullptr, m_edgesSRV.GetAddressOf());
-
-    // Create Blend Texture
-    m_device->CreateTexture2D(&desc, nullptr, m_blendTex.GetAddressOf());
-    m_device->CreateRenderTargetView(m_blendTex.Get(), nullptr, m_blendRTV.GetAddressOf());
-    m_device->CreateShaderResourceView(m_blendTex.Get(), nullptr, m_blendSRV.GetAddressOf());
-
     // Update Constant Buffer
     SMAAConstants constants;
     constants.RT_Metrics = XMFLOAT4(1.0f / width, 1.0f / height, (float)width, (float)height);
     m_context->UpdateSubresource(m_constantBuffer.Get(), 0, nullptr, &constants, 0, 0);
 }
 
-void D3D11SMAA::Render(ID3D11ShaderResourceView* inputSRV, ID3D11RenderTargetView* outputRTV)
+void D3D11SMAA::Render(ID3D11ShaderResourceView* inputSRV,
+    ID3D11RenderTargetView* outputRTV,
+    TexturePool* pool )
 {
     if (!m_width || !m_height) return;
 
     // Save old state (Optional, but good practice in a library)
     // For performance in an engine, you usually don't save/restore but assume state flow.
     // Here we just set what we need.
-
+    
+    auto edgesTex = pool->Acquire({m_width, m_height, DXGI_FORMAT_R8G8B8A8_UNORM});
+    auto blendTex = pool->Acquire({m_width, m_height, DXGI_FORMAT_R8G8B8A8_UNORM});
+    
     float clearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
     ID3D11ShaderResourceView* nullSRVs[3] = { nullptr, nullptr, nullptr };
 
@@ -188,8 +150,8 @@ void D3D11SMAA::Render(ID3D11ShaderResourceView* inputSRV, ID3D11RenderTargetVie
     // Input: Color (t0)
     // Output: EdgesTex
     // -----------------------------------------------------------
-    m_context->ClearRenderTargetView(m_edgesRTV.Get(), clearColor);
-    m_context->OMSetRenderTargets(1, m_edgesRTV.GetAddressOf(), nullptr);
+    m_context->ClearRenderTargetView(edgesTex->GetRenderTargetView().Get(), clearColor);
+    m_context->OMSetRenderTargets(1, edgesTex->GetRenderTargetView().GetAddressOf(), nullptr);
     
     m_context->VSSetShader(m_vsEdge.Get(), nullptr, 0);
     m_context->PSSetShader(m_psLumaEdge.Get(), nullptr, 0);
@@ -207,14 +169,14 @@ void D3D11SMAA::Render(ID3D11ShaderResourceView* inputSRV, ID3D11RenderTargetVie
     // Input: EdgesTex (t1), AreaTex (t3), SearchTex (t4)
     // Output: BlendTex
     // -----------------------------------------------------------
-    m_context->ClearRenderTargetView(m_blendRTV.Get(), clearColor);
-    m_context->OMSetRenderTargets(1, m_blendRTV.GetAddressOf(), nullptr);
+    m_context->ClearRenderTargetView(blendTex->GetRenderTargetView().Get(), clearColor);
+    m_context->OMSetRenderTargets(1, blendTex->GetRenderTargetView().GetAddressOf(), nullptr);
 
     m_context->VSSetShader(m_vsBlend.Get(), nullptr, 0);
     m_context->PSSetShader(m_psBlend.Get(), nullptr, 0);
 
     // Bind resources
-    ID3D11ShaderResourceView* pass2SRVs[] = { nullptr, m_edgesSRV.Get(), nullptr, m_areaTexSRV.Get(), m_searchTexSRV.Get() };
+    ID3D11ShaderResourceView* pass2SRVs[] = { nullptr, edgesTex->GetShaderResView().Get(), nullptr, m_areaTexSRV.Get(), m_searchTexSRV.Get() };
     // We start at slot 0 to clear slot 0, or just bind specifically
     // Map: t1=Edges, t3=Area, t4=Search. t0 is unused here.
     m_context->PSSetShaderResources(0, 5, pass2SRVs);
@@ -233,7 +195,7 @@ void D3D11SMAA::Render(ID3D11ShaderResourceView* inputSRV, ID3D11RenderTargetVie
     m_context->VSSetShader(m_vsNeighbor.Get(), nullptr, 0);
     m_context->PSSetShader(m_psNeighbor.Get(), nullptr, 0);
 
-    ID3D11ShaderResourceView* pass3SRVs[] = { inputSRV, nullptr, m_blendSRV.Get() };
+    ID3D11ShaderResourceView* pass3SRVs[] = { inputSRV, nullptr, blendTex->GetShaderResView().Get() };
     m_context->PSSetShaderResources(0, 3, pass3SRVs);
 
     m_context->Draw(3, 0);

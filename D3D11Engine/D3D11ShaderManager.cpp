@@ -132,6 +132,17 @@ D3D11ShaderManager::~D3D11ShaderManager() {
 // Find and compile the specified shader
 //--------------------------------------------------------------------------------------
 HRESULT D3D11ShaderManager::CompileShaderFromFile( const CHAR* szFileName, LPCSTR szEntryPoint, LPCSTR szShaderModel, ID3DBlob** ppBlobOut, const std::vector<D3D_SHADER_MACRO>& makros ) {
+    auto shaderFile = Toolbox::ToWideChar( szFileName );
+    
+    return CompileShaderFromFile(
+        shaderFile.c_str(),
+        szEntryPoint,
+        szShaderModel,
+        ppBlobOut,
+        makros);
+}
+
+HRESULT D3D11ShaderManager::CompileShaderFromFile( const WCHAR* szFileName, LPCSTR szEntryPoint, LPCSTR szShaderModel, ID3DBlob** ppBlobOut, const std::vector<D3D_SHADER_MACRO>& makros ) {
     HRESULT hr = S_OK;
 
     DWORD dwShaderFlags = D3DCOMPILE_ENABLE_STRICTNESS;
@@ -155,10 +166,8 @@ HRESULT D3D11ShaderManager::CompileShaderFromFile( const CHAR* szFileName, LPCST
     m.insert( m.begin(), makros.begin(), makros.end() );
 
     Microsoft::WRL::ComPtr<ID3DBlob> pErrorBlob;
-
-    auto shaderFile = Toolbox::ToWideChar( szFileName );
     
-    std::filesystem::path shaderPath( shaderFile );
+    std::filesystem::path shaderPath( szFileName );
 
     // absolute path
     shaderPath = Engine::GAPI->GetStartDirectory().c_str() / shaderPath;

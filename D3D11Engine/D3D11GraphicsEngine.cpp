@@ -2838,10 +2838,11 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             builder.Read( normalsResource );
             builder.Write( backBufferHandle );
 
-            pass.m_executeCallback = [this, normalsResource](const RenderGraph& graph) {
+            pass.m_executeCallback = [this, normalsResource, backBufferHandle](const RenderGraph& graph) {
                 auto normalsTexture = graph.GetPhysicalTexture(normalsResource);
+                auto backBuffer = graph.GetPhysicalTexture(backBufferHandle);
 
-                PfxRenderer->DrawHBAO( HDRBackBuffer->GetRenderTargetView(),
+                PfxRenderer->DrawHBAO( backBuffer->GetRenderTargetView(),
                     GetDepthBuffer()->GetShaderResView(), 
                     normalsTexture->GetShaderResView());
                 GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
@@ -3071,8 +3072,9 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             builder.Read( backBufferHandle );
             builder.Write( backBufferHandle );
 
-            pass.m_executeCallback = [this, backBufferHandle](const RenderGraph&) {
-                PfxRenderer->RenderSMAA();
+            pass.m_executeCallback = [this, backBufferHandle](const RenderGraph& graph) {
+                auto backbufferTex = graph.GetPhysicalTexture( backBufferHandle );
+                PfxRenderer->RenderSMAA(backbufferTex->GetShaderResView().Get());
                 GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
             };
         } );
@@ -3080,6 +3082,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
 
     graph.Compile();
     graph.Execute();
+    GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
 
     PresentPending = true;
 

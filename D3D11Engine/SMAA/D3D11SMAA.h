@@ -1,9 +1,11 @@
 #pragma once
+#include "../pch.h"
 
 #include <d3d11.h>
 #include <wrl/client.h>
 #include <DirectXMath.h>
 #include <string>
+#include "../TexturePool.h"
 
 // Forward decl for texture loader if you use DirectXTK, otherwise assume generic
 // #include "DDSTextureLoader.h" 
@@ -23,7 +25,7 @@ public:
     // Main Render Function
     // inputSRV: The scene color texture (Gamma space usually required for Luma Edge Detect)
     // outputRTV: Where the anti-aliased image will be written
-    void Render(ID3D11ShaderResourceView* inputSRV, ID3D11RenderTargetView* outputRTV);
+    void Render(ID3D11ShaderResourceView* inputSRV, ID3D11RenderTargetView* outputRTV, TexturePool* pool);
 
 private:
     struct SMAAConstants {
@@ -50,15 +52,6 @@ private:
     // Resources
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_areaTexSRV;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_searchTexSRV;
-
-    // Render Targets (Intermediate)
-    Microsoft::WRL::ComPtr<ID3D11Texture2D>          m_edgesTex;
-    Microsoft::WRL::ComPtr<ID3D11RenderTargetView>   m_edgesRTV;
-    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_edgesSRV;
-
-    Microsoft::WRL::ComPtr<ID3D11Texture2D>          m_blendTex;
-    Microsoft::WRL::ComPtr<ID3D11RenderTargetView>   m_blendRTV;
-    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_blendSRV;
 
     // States
     Microsoft::WRL::ComPtr<ID3D11Buffer>             m_constantBuffer;

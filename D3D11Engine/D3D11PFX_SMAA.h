@@ -6,8 +6,6 @@
 
 #include "pch.h"
 #include "d3d11pfx_effect.h"
-#include "D3D11PShader.h"
-#include "D3D11VShader.h"
 #include "SMAA/D3D11SMAA.h"
 
 

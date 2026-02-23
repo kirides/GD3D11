@@ -36,7 +36,7 @@ public:
     XRESULT RenderHDR(ID3D11RenderTargetView* output, ID3D11ShaderResourceView* backbuffer);
 
     /** Renders the SMAA-Effect */
-    XRESULT RenderSMAA();
+    XRESULT RenderSMAA(ID3D11ShaderResourceView* backbuffer);
 
     XRESULT RenderTAA(const ComPtr<ID3D11ShaderResourceView>& velocityBuffer);
     XRESULT RenderCAS( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& input, INT2 inputSize, const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& output, INT2 outputSize, RenderToTextureBuffer& intermediateBuffer );

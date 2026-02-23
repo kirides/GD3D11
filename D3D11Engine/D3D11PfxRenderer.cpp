@@ -74,8 +74,8 @@ XRESULT D3D11PfxRenderer::RenderHDR( ID3D11RenderTargetView* output, ID3D11Shade
 }
 
 /** Renders the SMAA-Effect */
-XRESULT D3D11PfxRenderer::RenderSMAA() {
-    FX_SMAA->RenderPostFX( reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine)->GetHDRBackBuffer().GetShaderResView() );
+XRESULT D3D11PfxRenderer::RenderSMAA(ID3D11ShaderResourceView* backbuffer) {
+    FX_SMAA->RenderPostFX( backbuffer );
     return XR_SUCCESS;
 }
 
