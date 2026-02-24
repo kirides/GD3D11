@@ -2612,6 +2612,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         Engine::GAPI->GetVisibleDecalList( decals );
 
         // Draw stuff like candle-flames
+        Engine::GAPI->ResetRenderStates();
         DrawDecalList( decals, false );
         DrawMQuadMarks();
     }
@@ -2627,6 +2628,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         zBSP_MODE_OUTDOOR )
         PfxRenderer->RenderGodRays();
 
+    Engine::GAPI->ResetRenderStates();
     // DrawParticleEffects();
     Engine::GAPI->DrawParticlesSimple();
 
