@@ -11,7 +11,10 @@ cbuffer Matrices_PerFrame : register( b0 )
 cbuffer ParticleGSInfo : register( b2 )
 {
     float3 CameraPosition;
-    float pad;
+    float PGS_RainFxWeight;
+    float PGS_RainHeight;
+    float PGS_Pad;
+    float2 PGS_RainScale;
 };
 
 //--------------------------------------------------------------------------------------
