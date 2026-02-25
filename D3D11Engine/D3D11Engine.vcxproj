@@ -791,8 +791,6 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="AlignedAllocator.h" />
-    <ClInclude Include="AntTweakBar.h" />
-    <ClInclude Include="BaseAntTweakBar.h" />
     <ClInclude Include="BasePipelineStates.h" />
     <ClInclude Include="BaseLineRenderer.h" />
     <ClInclude Include="BaseWidget.h" />
@@ -800,7 +798,6 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="D3D11CascadedShadowMapBuffer.h" />
     <ClInclude Include="CGameManager.h" />
     <ClInclude Include="D3D11AGS.h" />
-    <ClInclude Include="D3D11AntTweakBar.h" />
     <ClInclude Include="D3D11ConstantBuffer.h" />
     <ClInclude Include="ConstantBufferStructs.h" />
     <ClInclude Include="D3D11CShader.h" />
@@ -822,6 +819,8 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="D3D11PFX_DistanceBlur.h" />
     <ClInclude Include="D3D11PFX_Effect.h" />
     <ClInclude Include="D3D11PFX_FSR1.h" />
+    <ClInclude Include="D3D11PFX_FSR2.h" />
+    <ClInclude Include="D3D11PFX_FSR3.h" />
     <ClInclude Include="D3D11PFX_GodRays.h" />
     <ClInclude Include="D3D11PFX_HDR.h" />
     <ClInclude Include="D3D11PFX_HeightFog.h" />
@@ -1046,12 +1045,10 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="D3D11PFX_CAS.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="BaseAntTweakBar.cpp" />
     <ClCompile Include="BaseLineRenderer.cpp" />
     <ClCompile Include="BaseWidget.cpp" />
     <ClCompile Include="D3D11CascadedShadowMapBuffer.cpp" />
     <ClCompile Include="D3D11AGS.cpp" />
-    <ClCompile Include="D3D11AntTweakBar.cpp" />
     <ClCompile Include="D3D11ConstantBuffer.cpp" />
     <ClCompile Include="D3D11CShader.cpp" />
     <ClCompile Include="D3D11Effect.cpp" />
@@ -1072,6 +1069,8 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="D3D11PFX_DistanceBlur.cpp" />
     <ClCompile Include="D3D11PFX_Effect.cpp" />
     <ClCompile Include="D3D11PFX_FSR1.cpp" />
+    <ClCompile Include="D3D11PFX_FSR2.cpp" />
+    <ClCompile Include="D3D11PFX_FSR3.cpp" />
     <ClCompile Include="D3D11PFX_GodRays.cpp" />
     <ClCompile Include="D3D11PFX_HDR.cpp" />
     <ClCompile Include="D3D11PFX_HeightFog.cpp" />

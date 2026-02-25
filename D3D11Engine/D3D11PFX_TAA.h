@@ -45,8 +45,11 @@ public:
         const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& depthSRV,
         const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& velocitySRV);
 
-    /** Gets current jitter offset for camera */
+    /** Gets current jitter offset for camera, scaled by resolution */
     XMFLOAT2 GetJitterOffset() const { return m_CurrentJitter; }
+
+    /** jitter in -0.5 to 0.5 range */
+    XMFLOAT2 GetJitterOffsetUnscaled() const { return m_CurrentJitterUnscaled; }
     
     /** Advances to next jitter sample */
     void AdvanceJitter();
@@ -82,10 +85,9 @@ private:
     Microsoft::WRL::ComPtr<ID3D11SamplerState>       m_samplerLinear;
     Microsoft::WRL::ComPtr<ID3D11SamplerState>       m_samplerPoint;
 
-    // Jitter sequence (Halton sequence)
-    std::vector<XMFLOAT2> m_JitterSequence;
     int m_JitterIndex;
     XMFLOAT2 m_CurrentJitter;
+    XMFLOAT2 m_CurrentJitterUnscaled;
     XMFLOAT2 m_PreviousJitter;
     
     // Previous frame matrices for reprojection

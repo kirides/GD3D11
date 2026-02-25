@@ -64,8 +64,7 @@ float2 CalculateVelocity(float4 currClipPos, float4 prevClipPos)
 	float2 prevUV = float2(prevNDC.x * 0.5 + 0.5, 1.0 - (prevNDC.y * 0.5 + 0.5));
 	
 	// Velocity = current - previous (where the pixel came from)
-	// This matches the depth-based velocity calculation
-	float2 velocity = currUV - prevUV;
+	float2 velocity = prevUV - currUV;
 	
 	return velocity;
 }
@@ -75,6 +74,9 @@ float2 CalculateVelocity(float4 currClipPos, float4 prevClipPos)
 //--------------------------------------------------------------------------------------
 DEFERRED_PS_OUTPUT PSMain( PS_INPUT Input ) : SV_TARGET
 {
+	DEFERRED_PS_OUTPUT output;
+	output.vReactiveMask = 0.0f;
+
 	float4 color = TX_Texture0.Sample(SS_Linear, Input.vTexcoord);
 	
 	// Do alphatest if wanted
@@ -83,6 +85,7 @@ DEFERRED_PS_OUTPUT PSMain( PS_INPUT Input ) : SV_TARGET
 	
 	// WorldMesh can always do the alphatest
 	DoAlphaTest(color.a);
+	output.vReactiveMask = 0.1f; // 0.1f seemed fine, no blur and just tiiiiiny bit of flickering
 #endif
 	
 	// Apply normalmapping if wanted
@@ -99,7 +102,6 @@ DEFERRED_PS_OUTPUT PSMain( PS_INPUT Input ) : SV_TARGET
 	fx = 1.0f;
 #endif
 	
-	DEFERRED_PS_OUTPUT output;
 	output.vDiffuse = float4(color.rgb, Input.vDiffuse.y);
 	//output.vDiffuse = float4(Input.vTexcoord2, 0, 1);
 	//output.vDiffuse = float4(Input.vNormalVS, 1);
@@ -112,7 +114,7 @@ DEFERRED_PS_OUTPUT PSMain( PS_INPUT Input ) : SV_TARGET
 	
 	// Calculate velocity for motion vectors
 	// For instanced objects (VOBs, skeletal meshes), vCurrClipPos/vPrevClipPos come from VS
-	// For world mesh, these will be (0,0,0,0) resulting in zero velocity (camera motion handled by depth-based pass)
+	// For world mesh, these will be (0,0,0,0) resulting in zero velocity
 	output.vVelocity = CalculateVelocity(Input.vCurrClipPos, Input.vPrevClipPos);
 	
 	return output;

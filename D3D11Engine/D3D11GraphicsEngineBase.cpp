@@ -1,6 +1,5 @@
 #include "D3D11GraphicsEngineBase.h"
 
-#include "BaseAntTweakBar.h"
 #include "D3D11LineRenderer.h"
 #include "D3D11PipelineStates.h"
 #include "D3D11PointLight.h"

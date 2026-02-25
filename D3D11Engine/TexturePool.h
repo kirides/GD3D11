@@ -16,6 +16,7 @@ public:
     struct Description {
         int Width, Height;
         DXGI_FORMAT Format;
+        DXGI_USAGE textureFlags; // Custom flags for special usage (e.g., render target, shader resource, etc.)
 
         // Comparator for finding matching textures in the pool
         bool operator==( const Description& other ) const {

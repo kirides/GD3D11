@@ -8,20 +8,6 @@
 #include "D3D11ConstantBuffer.h"
 #include "GothicAPI.h"
 
-// Halton sequence generator for jitter - low-discrepancy sequence
-// Provides better sub-pixel coverage than random sampling
-static float Halton(int index, int base) {
-    float result = 0.0f;
-    float f = 1.0f / base;
-    int i = index;
-    while (i > 0) {
-        result += f * (i % base);
-        i = i / base;
-        f = f / base;
-    }
-    return result;
-}
-
 D3D11PFX_TAA::D3D11PFX_TAA(D3D11PfxRenderer* rnd) 
     : D3D11PFX_Effect(rnd)
     , m_JitterIndex(0)
@@ -34,17 +20,6 @@ D3D11PFX_TAA::D3D11PFX_TAA(D3D11PfxRenderer* rnd)
     m_PrevCameraPosition = XMFLOAT3(0, 0, 0);
     XMStoreFloat4x4( &m_PrevViewProj, XMMatrixIdentity() );
     XMStoreFloat4x4( &m_UnjitteredViewProj, XMMatrixIdentity() );
-
-    const int JITTER_SAMPLES = 8;
-    m_JitterSequence.resize(JITTER_SAMPLES);
-    for (int i = 0; i < JITTER_SAMPLES; i++) {
-        // Center the Halton sequence around 0 (-0.5 to 0.5 range)
-        // This ensures jitter is distributed evenly around pixel center
-        m_JitterSequence[i] = XMFLOAT2(
-            Halton(i + 1, 2) - 0.5f,
-            Halton(i + 1, 3) - 0.5f
-        );
-    }
 }
 
 D3D11PFX_TAA::~D3D11PFX_TAA() {}
@@ -122,7 +97,23 @@ void D3D11PFX_TAA::AdvanceJitter() {
     m_PreviousJitter = m_CurrentJitter;
 
     // Advance to next jitter sample
-    m_JitterIndex = (m_JitterIndex + 1) % m_JitterSequence.size();
+    auto renderWidth = Engine::GraphicsEngine->GetResolution().x;
+    auto displayWidth = Engine::GraphicsEngine->GetBackbufferResolution().x;
+    const int32_t phaseCount = ffxFsr2GetJitterPhaseCount( renderWidth, displayWidth );
+
+    // 2. Advance index safely
+    if ( phaseCount > 0 ) {
+        m_JitterIndex = (m_JitterIndex + 1) % phaseCount;
+    } else {
+        m_JitterIndex = 0;
+    }
+
+    // 3. Calculate FSR2 jitter offset for the current index
+    float jitterX = 0.0f;
+    float jitterY = 0.0f;
+    if ( phaseCount > 0 ) {
+        ffxFsr2GetJitterOffset( &jitterX, &jitterY, m_JitterIndex, phaseCount );
+    }
 
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
     Engine::GAPI->SetViewTransformXM( view );
@@ -139,13 +130,12 @@ void D3D11PFX_TAA::AdvanceJitter() {
     // row-major view proj
     XMStoreFloat4x4( &m_UnjitteredViewProj, viewProj );
 
-    m_CurrentJitter = XMFLOAT2(
-        m_JitterSequence[m_JitterIndex].x / static_cast<float>(m_Width),
-        m_JitterSequence[m_JitterIndex].y / static_cast<float>(m_Height)
-    );
+    m_CurrentJitterUnscaled = XMFLOAT2( jitterX, jitterY );
 
-    //m_CurrentJitter = XMFLOAT2( 0.5f, 0 ); // Disable jitter for testing
-    // m_CurrentJitter = XMFLOAT2( 0.0f, 0 ); // Disable jitter for testing
+    m_CurrentJitter = XMFLOAT2(
+        jitterX / static_cast<float>(m_Width),
+        jitterY / static_cast<float>(m_Height)
+    );
     
     // Apply the new jitter to the projection matrix for scene rendering
     // The factor of 2 converts from UV space to clip space (-1 to 1)

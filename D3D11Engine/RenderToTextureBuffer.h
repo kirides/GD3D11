@@ -36,7 +36,7 @@ struct RenderToTextureBuffer {
             SizeY,
             arraySize,
             MipLevels,
-            D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE );
+            D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS );
 
         if ( arraySize > 1 )
             Desc.MiscFlags |= D3D11_RESOURCE_MISC_TEXTURECUBE;
@@ -94,6 +94,20 @@ struct RenderToTextureBuffer {
             return;
         }
 
+        /*if ( arraySize <= 1 ) {
+            D3D11_UNORDERED_ACCESS_VIEW_DESC DescUAV = CD3D11_UNORDERED_ACCESS_VIEW_DESC();
+            DescUAV.Format = Desc.Format;
+            if ( DescUAV.Format == DXGI_FORMAT_R32_TYPELESS ) {
+                DescUAV.Format = DXGI_FORMAT_R32_FLOAT;
+            }
+            DescUAV.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
+            DescUAV.Texture2D.MipSlice = 0;
+
+            auto oldHR = hr;
+            LE( device->CreateUnorderedAccessView( Texture.Get(), &DescUAV, UnorderedAccessView.GetAddressOf() ) );
+            hr = oldHR;
+        }*/
+
         //LogInfo() << L"Successfully created ID3D11Texture2D, ID3D11ShaderResourceView, and ID3D11RenderTargetView.";
         if ( Result )*Result = hr;
     }
@@ -106,6 +120,7 @@ struct RenderToTextureBuffer {
     const Microsoft::WRL::ComPtr<ID3D11Texture2D>& GetTexture() { return Texture; }
     const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& GetShaderResView() { return ShaderResView; }
     const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& GetRenderTargetView() { return RenderTargetView; }
+    const Microsoft::WRL::ComPtr<ID3D11UnorderedAccessView>& GetUnorderedAccessView() { return UnorderedAccessView; }
 
     //void SetTexture( ID3D11Texture2D* tx ) { Texture = tx; }
     //void SetShaderResView( Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv ) { ShaderResView = srv.Get(); }
@@ -123,6 +138,7 @@ private:
     /** Shader and rendertarget resource views */
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> ShaderResView;
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> RenderTargetView;
+    Microsoft::WRL::ComPtr<ID3D11UnorderedAccessView> UnorderedAccessView;
 
     // Rendertargets for the cubemap-faces, if this is a cubemap
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> CubeMapRTVs[6];
@@ -133,6 +149,7 @@ private:
     void ReleaseAll() {
         Texture.Reset();
         ShaderResView.Reset();
+        UnorderedAccessView.Reset();
         RenderTargetView.Reset();
     }
 };

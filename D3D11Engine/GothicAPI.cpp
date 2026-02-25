@@ -25,7 +25,6 @@
 #define DIRECTINPUT_VERSION 0x0700
 #include <charconv>
 #include <dinput.h>
-#include "BaseAntTweakBar.h"
 #include "ImGuiShim.h"
 #include "zCInput.h"
 #include "zCBspTree.h"

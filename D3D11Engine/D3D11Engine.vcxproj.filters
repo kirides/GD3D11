@@ -265,15 +265,6 @@
     <ClInclude Include="GInventory.h">
       <Filter>Engine\GAPI\Objects</Filter>
     </ClInclude>
-    <ClInclude Include="BaseAntTweakBar.h">
-      <Filter>Engine</Filter>
-    </ClInclude>
-    <ClInclude Include="D3D11AntTweakBar.h">
-      <Filter>Engine\D3D11</Filter>
-    </ClInclude>
-    <ClInclude Include="AntTweakBar.h">
-      <Filter>Librarys</Filter>
-    </ClInclude>
     <ClInclude Include="zCInput.h">
       <Filter>ZenGin\Classes</Filter>
     </ClInclude>
@@ -806,6 +797,16 @@
     <ClInclude Include="RenderGraph.h">
       <Filter>Engine\Graph</Filter>
     </ClInclude>
+    <ClInclude Include="D3D11RenderQueue.h" />
+    <ClInclude Include="MeshManager.h">
+      <Filter>Engine\GAPI</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D11PFX_FSR3.h">
+      <Filter>Engine\D3D11\PFX\Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D11PFX_FSR2.h">
+      <Filter>Engine\D3D11\PFX\Effects</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp" />
@@ -865,12 +866,6 @@
     </ClCompile>
     <ClCompile Include="GInventory.cpp">
       <Filter>Engine\GAPI\Objects</Filter>
-    </ClCompile>
-    <ClCompile Include="BaseAntTweakBar.cpp">
-      <Filter>Engine</Filter>
-    </ClCompile>
-    <ClCompile Include="D3D11AntTweakBar.cpp">
-      <Filter>Engine\D3D11</Filter>
     </ClCompile>
     <ClCompile Include="D3D11PFX_Effect.cpp">
       <Filter>Engine\D3D11\PFX\Effects</Filter>
@@ -1082,6 +1077,12 @@
     </ClCompile>
     <ClCompile Include="RenderGraph.cpp">
       <Filter>Engine\Graph</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D11PFX_FSR3.cpp">
+      <Filter>Engine\D3D11\PFX\Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D11PFX_FSR2.cpp">
+      <Filter>Engine\D3D11\PFX\Effects</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>

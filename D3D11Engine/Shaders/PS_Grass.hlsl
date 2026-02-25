@@ -44,7 +44,7 @@ float2 CalculateVelocity(float4 currClipPos, float4 prevClipPos)
 	float2 currUV = float2(currNDC.x * 0.5 + 0.5, 1.0 - (currNDC.y * 0.5 + 0.5));
 	float2 prevUV = float2(prevNDC.x * 0.5 + 0.5, 1.0 - (prevNDC.y * 0.5 + 0.5));
 	
-	return currUV - prevUV;
+	return prevUV - currUV;
 }
 
 //--------------------------------------------------------------------------------------

@@ -213,7 +213,8 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET {
     float velocityLengthPixels = length(velocity * Resolution);
     
     // Calculate reprojected UV using velocity
-    float2 prevUV = texCoord - velocity;
+	// FSR 2 uses "prevUV - currUV", we used "currUV - prevUV" previously
+    float2 prevUV = texCoord + velocity;
     
     // Check if reprojected position is outside screen
     bool offScreen = prevUV.x < 0.0 || prevUV.x > 1.0 || prevUV.y < 0.0 || prevUV.y > 1.0;

@@ -2,7 +2,6 @@
 #include "D3D11ShadowMap.h"
 
 #include "AlignedAllocator.h"
-#include "BaseAntTweakBar.h"
 #include "D3D11Effect.h"
 #include "D3D11GShader.h"
 #include "D3D11HDShader.h"
@@ -613,12 +612,12 @@ XRESULT D3D11GraphicsEngine::Init() {
     SetDebugName( DynamicInstancingBuffer->GetShaderResourceView().Get(), "DynamicInstancingBuffer->ShaderResourceView" );
     SetDebugName( DynamicInstancingBuffer->GetVertexBuffer().Get(), "DynamicInstancingBuffer->VertexBuffer" );
 
-    D3D11_SAMPLER_DESC samplerDesc;
+    D3D11_SAMPLER_DESC samplerDesc{};
     samplerDesc.Filter = D3D11_FILTER_ANISOTROPIC;
     samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
     samplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_WRAP;
     samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
-    samplerDesc.MipLODBias = 0;
+    samplerDesc.MipLODBias = -1.0f;
     samplerDesc.MaxAnisotropy = 16;
     samplerDesc.ComparisonFunc = D3D11_COMPARISON_NEVER;
     samplerDesc.BorderColor[0] = 1.0f;
@@ -1325,7 +1324,6 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
 XRESULT D3D11GraphicsEngine::OnEndFrame() {
     auto& renderInfo = Engine::GAPI->GetRendererState().RendererInfo;
     renderInfo.RenderStage = STAGE_DRAW_PRESENT;
-    StoreVobPreviousTransforms(); // used for motion vectors
     Present();
 
     renderInfo.Timing.StopTotal();
@@ -2177,8 +2175,8 @@ XRESULT  D3D11GraphicsEngine::DrawSkeletalVertexNormals( SkeletalVobInfo* vi,
         for ( auto& mesh : itm.second ) {
             WhiteTexture->BindToPixelShader( 0 );
 
-            D3D11VertexBuffer* vb = mesh->MeshVertexBuffer;
-            D3D11VertexBuffer* ib = mesh->MeshIndexBuffer;
+            auto& vb = mesh->MeshVertexBuffer;
+            auto& ib = mesh->MeshIndexBuffer;
             unsigned int numIndices = mesh->Indices.size();
 
             UINT offset = 0;
@@ -2280,8 +2278,8 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
         }
         for ( auto& mesh : itm.second ) {
 
-            D3D11VertexBuffer* vb = mesh->MeshVertexBuffer;
-            D3D11VertexBuffer* ib = mesh->MeshIndexBuffer;
+            auto& vb = mesh->MeshVertexBuffer;
+            auto& ib = mesh->MeshIndexBuffer;
             unsigned int numIndices = mesh->Indices.size();
 
             UINT offset = 0;
@@ -2372,8 +2370,8 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh_Layered( SkeletalVobInfo* vi,
                 }
             }
 
-            D3D11VertexBuffer* vb = mesh->MeshVertexBuffer;
-            D3D11VertexBuffer* ib = mesh->MeshIndexBuffer;
+            auto& vb = mesh->MeshVertexBuffer;
+            auto& ib = mesh->MeshIndexBuffer;
             unsigned int numIndices = mesh->Indices.size();
 
             UINT offset = 0;
@@ -2648,10 +2646,17 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
 
     GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(), nullptr );
 
-    // If TAA is enabled, advance jitter and apply to projection
-    if ( rendererState.RendererSettings.AntiAliasingMode ==
-        GothicRendererSettings::AA_TAA ) {
+    bool requireJitter = 
+        // upscaling using FSR 2 (temporal)
+        (rendererState.RendererSettings.ResolutionScalePercent < 100 && rendererState.RendererSettings.Upscaler == GothicRendererSettings::E_Upscaler::UPSCALER_FSR_2)
+        // FSR2 based AA
+        || (rendererState.RendererSettings.ResolutionScalePercent == 100 && rendererState.RendererSettings.AntiAliasingMode == GothicRendererSettings::AA_FSR)
+        || rendererState.RendererSettings.AntiAliasingMode == GothicRendererSettings::AA_TAA
+        ;
+
+    if ( requireJitter ) {
         if ( PfxRenderer && PfxRenderer->GetTAAEffect() ) {
+            // If enabled, advance jitter and apply to projection
             PfxRenderer->GetTAAEffect()->AdvanceJitter();
         }
     } else {
@@ -2747,33 +2752,40 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
 
     RGResourceHandle normalsResource;
     RGResourceHandle specularResource;
+    RGResourceHandle reactiveMaskResource;
     graph.AddPass( L"G-Buffer Pass", [&]( RGBuilder& builder, RenderPass& pass ) {
         // Setup / Declare
         auto size = GetResolution();
         normalsResource = builder.CreateTexture({ static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y), DXGI_FORMAT_R8G8B8A8_SNORM, L"GBufferNormals" });
         specularResource = builder.CreateTexture({ static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y), DXGI_FORMAT_R16G16_FLOAT, L"GBufferSpecular" });
+        reactiveMaskResource = builder.CreateTexture({ static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y), DXGI_FORMAT_R8_UNORM, L"ReactiveMask" });
 
         builder.Write( colorResource );
         builder.Write( normalsResource );
         builder.Write( specularResource );
         builder.Write( velocityBufferHandle );
+        builder.Write( reactiveMaskResource );
         builder.Write( backBufferHandle );
 
-        pass.m_executeCallback = [this, colorResource, normalsResource, specularResource](const RenderGraph& graph)-> void {            
+        pass.m_executeCallback = [this, colorResource, normalsResource, specularResource, reactiveMaskResource](const RenderGraph& graph)-> void {
             ID3D11RenderTargetView* rtvs[] = {
                 graph.GetPhysicalTexture(colorResource)->GetRenderTargetView().Get(),
                 graph.GetPhysicalTexture(normalsResource)->GetRenderTargetView().Get(),
                 graph.GetPhysicalTexture(specularResource)->GetRenderTargetView().Get(),
                 VelocityBuffer->GetRenderTargetView().Get(),
+                graph.GetPhysicalTexture( reactiveMaskResource )->GetRenderTargetView().Get(),
             };
 
             constexpr float black[] { 0.f, 0.f, 0.f, 0.f };
             GetContext()->ClearRenderTargetView( rtvs[1], black );
             GetContext()->ClearRenderTargetView( rtvs[2], black );
             GetContext()->ClearRenderTargetView( rtvs[3], black );
-            GetContext()->OMSetRenderTargets( 4, rtvs, DepthStencilBuffer->GetDepthStencilView().Get() );
+            GetContext()->ClearRenderTargetView( rtvs[4], black );
+            GetContext()->OMSetRenderTargets( 5, rtvs, DepthStencilBuffer->GetDepthStencilView().Get() );
 
             Engine::GAPI->DrawWorldMeshNaive();
+
+            StoreVobPreviousTransforms();// used for motion vectors
         };
     });
     
@@ -3139,10 +3151,18 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             && rendererState.RendererSettings.Upscaler == GothicRendererSettings::E_Upscaler::UPSCALER_FSR_1 ) {
             
             graph.AddPass( L"FSR 1 Upscale", [&]( RGBuilder& builder, RenderPass& pass ) {
+                builder.Read( velocityBufferHandle );
+                builder.Read( reactiveMaskResource );
                 builder.Read( backBufferHandle );
                 builder.Write( backBufferHandle );
 
-                pass.m_executeCallback = [this, &rendererState, backBufferHandle](const RenderGraph& graph) {
+                builder.Write( backBufferHandle );
+
+                auto unscaledRes = GetBackbufferResolution();
+                // needs DXGI_FORMAT_R8G8B8A8_UNORM to allow for UAV
+                // auto fsrTexHandle = builder.CreateTexture( { static_cast<uint32_t>( unscaledRes.x ), static_cast<uint32_t>( unscaledRes.y ), DXGI_FORMAT_R8G8B8A8_UNORM, L"FSR3_Temporary" } );
+
+                pass.m_executeCallback = [this, &rendererState, backBufferHandle, velocityBufferHandle, reactiveMaskResource](const RenderGraph& graph) {
                     auto backbufferTex = graph.GetPhysicalTexture( backBufferHandle );
 
                     // Now upscale it to backbuffer with sharpening
@@ -3155,6 +3175,58 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                         sharpenFactor > 0.001f,
                         1.0f - sharpenFactor );
                 };
+            } );
+        } else if ( (rendererState.RendererSettings.ResolutionScalePercent < 100 && rendererState.RendererSettings.Upscaler == GothicRendererSettings::E_Upscaler::UPSCALER_FSR_2)
+            || (rendererState.RendererSettings.ResolutionScalePercent == 100 && rendererState.RendererSettings.AntiAliasingMode == GothicRendererSettings::AA_FSR)) {
+
+            graph.AddPass( L"FSR 2", [&]( RGBuilder& builder, RenderPass& pass ) {
+                builder.Read( velocityBufferHandle );
+                builder.Read( reactiveMaskResource );
+                builder.Read( backBufferHandle );
+                builder.Write( backBufferHandle );
+
+                builder.Write( backBufferHandle );
+
+                pass.m_executeCallback = [this, &rendererState, backBufferHandle, velocityBufferHandle, reactiveMaskResource]( const RenderGraph& graph ) {
+                    auto backbufferTex = graph.GetPhysicalTexture( backBufferHandle );
+
+                    auto sharpenFactor = rendererState.RendererSettings.SharpenFactor;
+
+                    auto velocityBufferTex = graph.GetPhysicalTexture( velocityBufferHandle );
+                    auto reactiveMask = graph.GetPhysicalTexture( reactiveMaskResource );
+
+                    auto jitter = PfxRenderer->GetTAAEffect()->GetJitterOffsetUnscaled();
+                    const auto inputSize = GetResolution();
+
+                    float fovY, fovX;
+                    auto cam = ((zCCamera*)oCGame::GetGame()->_zCSession_camera);
+                    cam->GetFOV( fovY, fovX );
+
+                    // Our Depth Buffer uses reversed Z, so we need to tell FSR2 about it to get correct results
+                    // calculations from GothicAPI::GetProjectionMatrix()
+                    float NearZ = rendererState.RendererSettings.SectionDrawRadius * WORLD_SECTION_SIZE;
+                    float FarZ = 1.0f;
+
+                    PfxRenderer->GetFSR2()->Apply(
+                        backbufferTex->GetShaderResView().Get(),
+                        DepthStencilBufferCopy->GetShaderResView().Get(),
+                        velocityBufferTex->GetShaderResView().Get(),
+                        reactiveMask->GetShaderResView().Get(),
+                        Backbuffer->GetRenderTargetView().Get(),
+                        inputSize,
+                        GetBackbufferResolution(),
+                        Engine::GAPI->GetDeltaTime() * 1000.f,
+                        jitter,
+                        float2( static_cast<float>(inputSize.x), static_cast<float>(inputSize.y) ),
+                        false,
+                        fovY,
+                        NearZ,
+                        FarZ,
+                        sharpenFactor > 0.001f,
+                        1.0f - sharpenFactor );
+
+                    // PfxRenderer->CopyTextureToRTV( fsrTex->GetShaderResView(), Backbuffer->GetRenderTargetView(), GetBackbufferResolution() );
+                    };
             } );
         } else if (rendererState.RendererSettings.SharpeningMode
                 && rendererState.RendererSettings.SharpenFactor > 0.0f ) {

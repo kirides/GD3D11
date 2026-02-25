@@ -142,7 +142,7 @@ private:
                 if (m_externalTextures[i] != nullptr) continue; 
 
                 const RGTextureDesc& desc = m_resourceDescs[i];
-                TexturePool::Description poolDesc{ (int)desc.width, (int)desc.height, static_cast<DXGI_FORMAT>(desc.format) };
+                TexturePool::Description poolDesc{ (int)desc.width, (int)desc.height, static_cast<DXGI_FORMAT>(desc.format), (DXGI_USAGE)desc.textureFlags };
                 
                 m_activeTextures[i] = std::move(m_texturePool->Acquire(poolDesc));
             }

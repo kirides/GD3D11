@@ -152,8 +152,7 @@ void ImGuiShim::RenderLoop()
     auto oldSettings = Engine::GAPI->GetRendererState().RendererSettings;
     if ( SettingsVisible ) {
         RenderSettingsWindow();
-    }
-    if ( AdvancedSettingsVisible ) {
+    } else if ( AdvancedSettingsVisible ) {
         RenderAdvancedSettingsWindow();
     }
 
@@ -538,6 +537,24 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
     Engine::GraphicsEngine->ReloadShaders();
 }
 
+namespace
+{
+    void FixupSettings(GothicRendererSettings& s) {
+        if (s.AntiAliasingMode == GothicRendererSettings::E_AntiAliasingMode::AA_FSR) {
+            s.Upscaler = GothicRendererSettings::E_Upscaler::UPSCALER_FSR_2;
+        }
+        if (s.AntiAliasingMode == GothicRendererSettings::E_AntiAliasingMode::AA_TAA
+            && s.Upscaler == GothicRendererSettings::E_Upscaler::UPSCALER_FSR_2) {
+            // don't allow TAA and FSR2 at the same time.
+            s.Upscaler = GothicRendererSettings::E_Upscaler::UPSCALER_FSR_1;
+        }
+        if (s.ResolutionScalePercent > 100 && s.AntiAliasingMode == GothicRendererSettings::E_AntiAliasingMode::AA_FSR) {
+            // switch to regular TAA if upsampled
+            s.AntiAliasingMode = GothicRendererSettings::AA_TAA;
+        }
+    }
+}
+
 void ImGuiShim::RenderSettingsWindow()
 {
     // Autosized settings by child objects & centered
@@ -556,7 +573,8 @@ void ImGuiShim::RenderSettingsWindow()
     ImGui::SetNextWindowPos( ImVec2( windowSize.x / 2, windowSize.y / 2 ), ImGuiCond_Appearing, ImVec2( 0.5f, 0.5f ) );
     if ( ImGui::Begin( settingsLabel, nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize ) ) {
         GothicRendererSettings& settings = Engine::GAPI->GetRendererState().RendererSettings;
-        
+        FixupSettings(settings);
+
         static std::vector<std::pair<const char*, int>> graphicsPresets = {
             {"Custom", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_CUSTOM},
             {"Low", GothicRendererSettings::E_GraphicsPreset::GRAPHICS_LOW},
@@ -587,12 +605,13 @@ void ImGuiShim::RenderSettingsWindow()
             ImGui::SetItemTooltip( "Enable Screen-Space ambient occlusion." );
 
             ImGui::Checkbox( "Godrays", &settings.EnableGodRays );
-            static std::vector<std::pair<const char*, GothicRendererSettings::E_AntiAliasingMode>> antiAliasing = {
-                {"Disabled", GothicRendererSettings::E_AntiAliasingMode::AA_NONE},
-                {"SMAA", GothicRendererSettings::E_AntiAliasingMode::AA_SMAA},
-                {"TAA", GothicRendererSettings::E_AntiAliasingMode::AA_TAA},
+            static std::vector<std::tuple<const char*, GothicRendererSettings::E_AntiAliasingMode, const char*>> antiAliasing = {
+                {"Disabled", GothicRendererSettings::E_AntiAliasingMode::AA_NONE, nullptr },
+                {"SMAA", GothicRendererSettings::E_AntiAliasingMode::AA_SMAA, nullptr },
+                {"TAA", GothicRendererSettings::E_AntiAliasingMode::AA_TAA, "Temporal Anti-Aliasing" },
+                {"FSR2", GothicRendererSettings::E_AntiAliasingMode::AA_FSR, "FidelityFX Super Resolution 2" },
             };
-            if ( ImComboBox( "Anti Aliasing", antiAliasing, &settings.AntiAliasingMode ) ) {
+            if ( ImComboBoxCT( "Anti Aliasing", antiAliasing, &settings.AntiAliasingMode, []{} ) ) {
                 ImGui::EndCombo();
             }
 
@@ -690,26 +709,47 @@ void ImGuiShim::RenderSettingsWindow()
             }
 
             ImText( "Resolution Scale", buttonWidth ); ImGui::SameLine();
-            static float previousResolutionScale = static_cast<float>(settings.ResolutionScalePercent);
-            if ( ImGui::SliderFloat( "##ResolutionScalePercent", &previousResolutionScale, 25.0f, 200.0f, "%.0f%%" ) ) {
-                previousResolutionScale = std::clamp( previousResolutionScale, 25.0f, 200.0f );
-                settings.ResolutionScalePercent = static_cast<int>(previousResolutionScale);
-            }
-            ImGui::SetItemTooltip("Effective resolution: %d x %d",
-                CurrentResolution.x * settings.ResolutionScalePercent / 100,
-                CurrentResolution.y * settings.ResolutionScalePercent / 100
-            );
-
-            ImGui::BeginDisabled( settings.ResolutionScalePercent >= 100 );
-            {
-                ImText( "Upscaler", buttonWidth ); ImGui::SameLine();
-                static std::vector<std::pair<const char*, GothicRendererSettings::E_Upscaler>> upscalers = {
-                    { "Simple", GothicRendererSettings::E_Upscaler::UPSCALER_DEFAULT },
-                    { "FSR 1", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_1 },
+            if ( settings.Upscaler == GothicRendererSettings::UPSCALER_FSR_2) {
+                settings.ResolutionScalePercent = std::clamp( settings.ResolutionScalePercent, 33, 100 );
+                // Display "levels" as typical for FSR
+                static std::vector<std::pair<const char*, int>> fsrLevels = {
+                    { "Native AA", 100 },
+                    { "High Quality", 83 },
+                    { "Quality", 75 },
+                    { "Balanced", 66 },
+                    { "Performance", 50 },
+                    { "Ultra Performance", 33 },
                 };
-                if ( ImComboBox( "##Upscaler", upscalers, &settings.Upscaler ) ) {
+                if (ImComboBox( "##ResolutionScalePercent", fsrLevels, &settings.ResolutionScalePercent ) ) {
                     ImGui::EndCombo();
                 }
+                ImGui::SetItemTooltip("Effective resolution: %d x %d",
+                    CurrentResolution.x * settings.ResolutionScalePercent / 100,
+                    CurrentResolution.y * settings.ResolutionScalePercent / 100
+                );
+            } else {
+                static float previousResolutionScale = static_cast<float>(settings.ResolutionScalePercent);
+                if ( ImGui::SliderFloat( "##ResolutionScalePercent", &previousResolutionScale, 25.0f, 200.0f, "%.0f%%" ) ) {
+                    previousResolutionScale = std::clamp( previousResolutionScale, 25.0f, 200.0f );
+                    settings.ResolutionScalePercent = static_cast<int>(previousResolutionScale);
+                }
+                ImGui::SetItemTooltip("Effective resolution: %d x %d",
+                    CurrentResolution.x * settings.ResolutionScalePercent / 100,
+                    CurrentResolution.y * settings.ResolutionScalePercent / 100
+                );
+            }
+
+            ImText( "Upscaler", buttonWidth ); ImGui::SameLine();
+            static std::vector<std::pair<const char*, GothicRendererSettings::E_Upscaler>> upscalers = {
+                { "Simple", GothicRendererSettings::E_Upscaler::UPSCALER_DEFAULT },
+                { "FSR 1", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_1 },
+                { "FSR 2", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_2 },
+            };
+            if ( ImComboBox( "##Upscaler", upscalers, &settings.Upscaler ) ) {
+                ImGui::EndCombo();
+            }
+            ImGui::BeginDisabled( settings.ResolutionScalePercent >= 100 );
+            {
                 if ( settings.Upscaler ) {
                     ImText( "Upscaler sharpening", buttonWidth ); ImGui::SameLine();
                     if ( ImGui::SliderFloat( "##Upscale sharpening", &settings.SharpenFactor, 0.0f, 1.0f, "%.3f%" ) ) {
@@ -1335,8 +1375,9 @@ void RenderAdvancedColumn4( GothicRendererSettings& settings, GothicAPI* gapi ) 
                 {"Disabled", GothicRendererSettings::E_AntiAliasingMode::AA_NONE},
                 {"SMAA", GothicRendererSettings::E_AntiAliasingMode::AA_SMAA},
                 {"TAA", GothicRendererSettings::E_AntiAliasingMode::AA_TAA},
+                {"FSR2", GothicRendererSettings::E_AntiAliasingMode::AA_FSR},
             };
-            if ( ImComboBox( "Anti Aliasing", antiAliasing, &settings.AntiAliasingMode ) ) {
+            if ( ImComboBox( "Anti Aliasing", antiAliasing, &settings.AntiAliasingMode )) {
                 ImGui::EndCombo();
             }
             ImGui::PopID();
@@ -1377,6 +1418,7 @@ void ImGuiShim::RenderAdvancedSettingsWindow()
     auto columnHeight = std::max( 400.0f, windowSize.y / 2.f );
 
     GothicRendererSettings& settings = Engine::GAPI->GetRendererState().RendererSettings;
+    FixupSettings(settings);
 
     ImGui::SetNextWindowPos( ImVec2( columnOffset, 0.0f ), ImGuiCond_Appearing, ImVec2( 0, 0 ) );
     ImGui::SetNextWindowSize( ImVec2( windowSize.x / 4, columnHeight ), ImGuiCond_Appearing );

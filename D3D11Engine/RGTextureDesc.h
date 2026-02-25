@@ -14,4 +14,5 @@ struct RGTextureDesc {
     uint32_t height = 0;
     int format = 0; // Replace with DXGI_FORMAT in your engine
     std::wstring name;
+    uint32_t textureFlags = 0; // Custom flags for special usage (e.g., render target, shader resource, etc.)
 };

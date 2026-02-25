@@ -40,6 +40,8 @@ D3D11PfxRenderer::D3D11PfxRenderer() {
     PFX_CAS = std::make_unique<D3D11PFX_CAS>( this );
     PFX_SimpleSharpen = std::make_unique<D3D11PFX_SimpleSharpen>( this );
     PFX_FSR1 = std::make_unique<D3D11PFX_FSR1>( this );
+    PFX_FSR2 = std::make_unique<D3D11PFX_FSR2>( this );
+    PFX_FSR3 = std::make_unique<D3D11PFX_FSR3>( this );
 }
 
 D3D11PfxRenderer::~D3D11PfxRenderer() {
@@ -216,6 +218,11 @@ XRESULT D3D11PfxRenderer::OnResize( const INT2& newResolution ) {
     if ( !FeatureLevel10Compatibility ) {
         FX_SMAA->OnResize( newResolution );
         FX_TAA->OnResize( newResolution );
+
+        D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+
+        PFX_FSR2->Init( engine->GetBackbufferResolution(), engine->GetBackbufferResolution() );
+        PFX_FSR3->Init( engine->GetBackbufferResolution(), engine->GetBackbufferResolution() );
     }
 
     return XR_SUCCESS;
