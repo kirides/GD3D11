@@ -269,6 +269,36 @@ void __cdecl AGS_EndUAVOverlap( ID3D11DeviceContext* context ) {
     agsDevice->EndUAVOverlap( context );
 }
 
+void D3D11GraphicsEngine::CreateAndBindDefaultSampler() {
+    HRESULT hr;
+    
+    float scaleRatio = static_cast<float>(GetScaledResolution().x) / static_cast<float>(GetBackbufferResolution().x);
+    // Calculate raw bias, but clamp it to a maximum of 0.0f to protect Supersampling
+    float mipBias = std::min(0.0f, std::log2(scaleRatio));
+
+    D3D11_SAMPLER_DESC samplerDesc{};
+    samplerDesc.Filter = D3D11_FILTER_ANISOTROPIC;
+    samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
+    samplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_WRAP;
+    samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
+    samplerDesc.MipLODBias = mipBias;
+    samplerDesc.MaxAnisotropy = 16;
+    samplerDesc.ComparisonFunc = D3D11_COMPARISON_NEVER;
+    samplerDesc.BorderColor[0] = 1.0f;
+    samplerDesc.BorderColor[1] = 1.0f;
+    samplerDesc.BorderColor[2] = 1.0f;
+    samplerDesc.BorderColor[3] = 1.0f;
+    samplerDesc.MinLOD = -3.402823466e+38F;  // -FLT_MAX
+    samplerDesc.MaxLOD = D3D11_FLOAT32_MAX;   // FLT_MAX
+    
+    LE( GetDevice()->CreateSamplerState( &samplerDesc, DefaultSamplerState.GetAddressOf() ) );
+    GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
+    GetContext()->VSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
+    GetContext()->DSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
+    GetContext()->HSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
+    SetDebugName( DefaultSamplerState.Get(), "DefaultSamplerState" );
+}
+
 /** Called when the game created it's window */
 XRESULT D3D11GraphicsEngine::Init() {
     // Load dynamically necessary libraries
@@ -611,13 +641,15 @@ XRESULT D3D11GraphicsEngine::Init() {
         D3D11VertexBuffer::U_DYNAMIC, D3D11VertexBuffer::CA_WRITE );
     SetDebugName( DynamicInstancingBuffer->GetShaderResourceView().Get(), "DynamicInstancingBuffer->ShaderResourceView" );
     SetDebugName( DynamicInstancingBuffer->GetVertexBuffer().Get(), "DynamicInstancingBuffer->VertexBuffer" );
-
+    
+    CreateAndBindDefaultSampler();
+    
     D3D11_SAMPLER_DESC samplerDesc{};
     samplerDesc.Filter = D3D11_FILTER_ANISOTROPIC;
     samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
     samplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_WRAP;
     samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
-    samplerDesc.MipLODBias = -1.0f;
+    samplerDesc.MipLODBias = 0.0f;
     samplerDesc.MaxAnisotropy = 16;
     samplerDesc.ComparisonFunc = D3D11_COMPARISON_NEVER;
     samplerDesc.BorderColor[0] = 1.0f;
@@ -625,14 +657,10 @@ XRESULT D3D11GraphicsEngine::Init() {
     samplerDesc.BorderColor[2] = 1.0f;
     samplerDesc.BorderColor[3] = 1.0f;
     samplerDesc.MinLOD = -3.402823466e+38F;  // -FLT_MAX
-    samplerDesc.MaxLOD = 3.402823466e+38F;   // FLT_MAX
+    samplerDesc.MaxLOD = D3D11_FLOAT32_MAX;   // FLT_MAX
 
-    LE( GetDevice()->CreateSamplerState( &samplerDesc, DefaultSamplerState.GetAddressOf() ) );
-    GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
-    GetContext()->VSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
-    GetContext()->DSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
-    GetContext()->HSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
-    SetDebugName( DefaultSamplerState.Get(), "DefaultSamplerState" );
+    LE( GetDevice()->CreateSamplerState( &samplerDesc, LinearSamplerState.GetAddressOf() ) );
+    SetDebugName( LinearSamplerState.Get(), "LinearSamplerState" );
 
     samplerDesc.Filter = D3D11_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR;
     //TODO: NVidia PCSS
@@ -880,6 +908,9 @@ XRESULT D3D11GraphicsEngine::RecreateBuffers() {
         return XR_SUCCESS;
     }
     lastRoundedTextureResolution = roundedTextureResolution;
+    
+    // Adjust DefaultSampler with negative LOD bias for upscaling
+    CreateAndBindDefaultSampler();
     
     // Recreate DepthStencilBuffer
     DepthStencilBuffer = std::make_unique<RenderToDepthStencilBuffer>(
@@ -2533,6 +2564,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
 
     // Re-Bind the default sampler-state in case it was overwritten
     GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
+    GetContext()->CSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
 
     // Update view distances
     InfiniteRangeConstantBuffer->UpdateBuffer( float4( FLT_MAX, 0, 0, 0 ).toPtr() );
@@ -2602,6 +2634,13 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         builder.Write( backBufferHandle );
 
         pass.m_executeCallback = [this, colorResource, normalsResource, specularResource, reactiveMaskResource](const RenderGraph& graph)-> void {
+            ID3D11ShaderResourceView* nullSRV[8]{};
+            GetContext()->VSSetShaderResources( 0, 8, nullSRV );
+            GetContext()->PSSetShaderResources( 0, 8, nullSRV );
+            GetContext()->DSSetShaderResources( 0, 8, nullSRV );
+            GetContext()->HSSetShaderResources( 0, 8, nullSRV );
+            GetContext()->CSSetShaderResources( 0, 8, nullSRV );
+
             ID3D11RenderTargetView* rtvs[] = {
                 graph.GetPhysicalTexture(colorResource)->GetRenderTargetView().Get(),
                 graph.GetPhysicalTexture(normalsResource)->GetRenderTargetView().Get(),
@@ -2616,6 +2655,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             GetContext()->ClearRenderTargetView( rtvs[3], black );
             GetContext()->ClearRenderTargetView( rtvs[4], black );
             GetContext()->OMSetRenderTargets( 5, rtvs, DepthStencilBuffer->GetDepthStencilView().Get() );
+
 
             Engine::GAPI->DrawWorldMeshNaive();
             
@@ -3023,7 +3063,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                         Backbuffer->GetRenderTargetView(),
                         GetResolution(),
                         GetBackbufferResolution(),
-                        sharpenFactor > 0.001f,
+                        sharpenFactor >= 0.001f,
                         1.0f - sharpenFactor );
                 };
             } );
@@ -3057,6 +3097,11 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                     // calculations from GothicAPI::GetProjectionMatrix()
                     float NearZ = rendererState.RendererSettings.SectionDrawRadius * WORLD_SECTION_SIZE;
                     float FarZ = 1.0f;
+                    GetContext()->CSSetSamplers( 0, 1, LinearSamplerState.GetAddressOf() );
+                    GetContext()->CSSetSamplers( 1, 1, LinearSamplerState.GetAddressOf() );
+
+                    ID3D11Buffer* nullCBs[5]{};
+                    GetContext()->CSSetConstantBuffers( 0, ARRAYSIZE( nullCBs ), nullCBs);
 
                     PfxRenderer->GetFSR2()->Apply(
                         backbufferTex->GetShaderResView().Get(),
@@ -3073,8 +3118,8 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                         fovY,
                         NearZ,
                         FarZ,
-                        sharpenFactor > 0.001f,
-                        1.0f - sharpenFactor );
+                        sharpenFactor >= 0.001f,
+                        sharpenFactor /* FSR2 has 0..1 (sharp)*/);
                     };
             } );
         } else if (rendererState.RendererSettings.SharpeningMode
@@ -3085,6 +3130,8 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                 builder.Write( backBufferHandle );
 
                 pass.m_executeCallback = [this, &rendererState, backBufferHandle](const RenderGraph& graph) {
+                    GetContext()->PSSetSamplers( 0, 1, LinearSamplerState.GetAddressOf() );
+                    
                     auto backbufferTex = graph.GetPhysicalTexture( backBufferHandle );
                     {
                         auto _ = RecordGraphicsEvent( L"Copy into native-size backbuffer" );
@@ -3106,7 +3153,6 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                         }
                         break;
                     }
-                    GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
                 };
             } );
         } else {
@@ -5688,12 +5734,6 @@ XRESULT D3D11GraphicsEngine::DrawPolyStrips( bool noTextures ) {
 
     return XR_SUCCESS;
 }
-
-/** Returns the current size of the backbuffer */
-INT2 D3D11GraphicsEngine::GetResolution() { return m_scaledResolution; }
-
-/** Returns the actual resolution of the backbuffer (not supersampled) */
-INT2 D3D11GraphicsEngine::GetBackbufferResolution() { return Resolution; }
 
 /** Sets up the default rendering state */
 void D3D11GraphicsEngine::SetDefaultStates( bool force ) {

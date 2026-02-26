@@ -186,10 +186,12 @@ public:
     void SetDefaultStates( bool force = false );
 
     /** Returns the current resolution (Maybe supersampled)*/
-    INT2 GetResolution() override;
+    INT2 GetResolution() override { return m_scaledResolution; };
 
     /** Returns the actual resolution of the backbuffer (not supersampled) */
-    INT2 GetBackbufferResolution() override;
+    INT2 GetBackbufferResolution() override { return Resolution; };
+    
+    INT2 GetScaledResolution() const { return m_scaledResolution; }
 
     /** Returns the data of the backbuffer */
     void GetBackbufferData( bool thumbnail, byte** data, INT2& buffersize, int& pixelsize ) override;
@@ -354,7 +356,7 @@ protected:
     /** D3D11 Objects */
     Microsoft::WRL::ComPtr<ID3D11SamplerState> ClampSamplerState;
     Microsoft::WRL::ComPtr<ID3D11SamplerState> CubeSamplerState;
-
+    Microsoft::WRL::ComPtr<ID3D11SamplerState> LinearSamplerState;
 
     /** Swapchain buffers */
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> BackbufferRTV;
@@ -456,4 +458,6 @@ private:
     XMFLOAT4X4 m_PrevViewProjMatrix;
     
     INT2 NewResolution;
+    
+    void CreateAndBindDefaultSampler();
 };
