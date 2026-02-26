@@ -1,7 +1,6 @@
 #pragma once
 #include "WorldObjects.h"
 #include "GraphicsEventRecord.h"
-#include "RenderToTextureBuffer.h"
 #include "ShaderCategory.h"
 
 class BaseLineRenderer;
@@ -17,7 +16,7 @@ struct VobLightInfo;
 class zFont;
 
 struct DisplayModeInfo {
-    DisplayModeInfo() {}
+    DisplayModeInfo(): DisplayModeInfo(0,0) {}
     DisplayModeInfo( int w, int h ) : Width(static_cast<DWORD>(w)), Height(static_cast<DWORD>(h)) {}
 
     DWORD Height;
@@ -32,13 +31,8 @@ enum WindowModes {
 };
 
 struct ViewportInfo {
-    ViewportInfo() :
-        TopLeftX( 0 ),
-        TopLeftY( 0 ),
-        Width( 0 ),
-        Height( 0 ),
-        MinZ( 0 ),
-        MaxZ( 0 )
+    ViewportInfo()
+    : ViewportInfo(0, 0, 0, 0)
     {}
 
     ViewportInfo( unsigned int topleftX,
@@ -59,13 +53,8 @@ struct ViewportInfo {
         unsigned int topleftY,
         INT2 wh,
         float minZ = 0.0f,
-        float maxZ = 1.0f ) :
-        TopLeftX( topleftX ),
-        TopLeftY( topleftY ),
-        Width( wh.x ),
-        Height( wh.y ),
-        MinZ( minZ ),
-        MaxZ( maxZ )
+        float maxZ = 1.0f )
+    : ViewportInfo(topleftX, topleftY, wh.x, wh.y, minZ, maxZ)
     { }
 
     unsigned int TopLeftX;
@@ -86,66 +75,65 @@ public:
         UI_ToggleAdvancedSettings,
     };
 
-    BaseGraphicsEngine() { };
-    virtual ~BaseGraphicsEngine() { }
+    BaseGraphicsEngine() = default;
+    virtual ~BaseGraphicsEngine() = default;
     
     /* Trigger resize on next frame */
-    virtual XRESULT TriggerResize(INT2 resolution) = 0;
+    virtual XRESULT TriggerResize(INT2 resolution) PURE;
 
     /** Called after the fake-DDraw-Device got created */
-    virtual XRESULT Init() = 0;
+    virtual XRESULT Init() PURE;
 
     /** Called when the game created its window */
-    virtual XRESULT SetWindow( HWND hWnd ) = 0;
+    virtual XRESULT SetWindow( HWND hWnd ) PURE;
 
     /** Called on window resize/resolution change */
-    virtual XRESULT OnResize( INT2 newSize ) = 0;
+    virtual XRESULT OnResize( INT2 newSize ) PURE;
 
     /** Called when the game wants to render a new frame */
-    virtual XRESULT OnBeginFrame() = 0;
+    virtual XRESULT OnBeginFrame() PURE;
 
     /** Called when the game ended it's frame */
-    virtual XRESULT OnEndFrame() = 0;
+    virtual XRESULT OnEndFrame() PURE;
 
     /** Called to set the current viewport */
-    virtual XRESULT SetViewport( const ViewportInfo& viewportInfo ) = 0;
+    virtual XRESULT SetViewport( const ViewportInfo& viewportInfo ) PURE;
 
     /** Called when the game wants to clear the bound rendertarget */
-    virtual XRESULT Clear( const float4& color ) = 0;
+    virtual XRESULT Clear( const float4& color ) PURE;
 
     /** Creates a vertexbuffer object (Not registered inside) */
-    virtual XRESULT CreateVertexBuffer( D3D11VertexBuffer** outBuffer ) = 0;
+    virtual XRESULT CreateVertexBuffer( D3D11VertexBuffer** outBuffer ) PURE;
 
     /** Creates a texture object (Not registered inside) */
-    virtual XRESULT CreateTexture( D3D11Texture** outTexture ) = 0;
+    virtual XRESULT CreateTexture( D3D11Texture** outTexture ) PURE;
 
     /** Creates a constantbuffer object (Not registered inside) */
-    virtual XRESULT CreateConstantBuffer( D3D11ConstantBuffer** outCB, void* data, int size ) = 0;
+    virtual XRESULT CreateConstantBuffer( D3D11ConstantBuffer** outCB, void* data, int size ) PURE;
 
     /** Creates a bufferobject for a shadowed point light */
     virtual XRESULT CreateShadowedPointLight( BaseShadowedPointLight** outPL, VobLightInfo* lightInfo, bool dynamic = false ) { return XR_SUCCESS; }
 
     /** Returns a list of available display modes */
-    virtual XRESULT GetDisplayModeList( std::vector<DisplayModeInfo>* modeList, bool includeSuperSampling = false ) = 0;
+    virtual XRESULT GetDisplayModeList( std::vector<DisplayModeInfo>* modeList, bool includeSuperSampling = false ) PURE;
 
     /** Presents the current frame to the screen */
-    virtual XRESULT Present() = 0;
+    virtual XRESULT Present() PURE;
 
     /** Called when we started to render the world */
-    virtual XRESULT OnStartWorldRendering() = 0;
+    virtual XRESULT OnStartWorldRendering() PURE;
 
     /** Returns the line renderer object */
-    virtual BaseLineRenderer* GetLineRenderer() = 0;
+    virtual BaseLineRenderer* GetLineRenderer() PURE;
 
     /** Returns the graphics-device this is running on */
-    virtual std::string GetGraphicsDeviceName() = 0;
+    virtual std::string GetGraphicsDeviceName() PURE;
 
     /** Draws a screen fade effects */
     virtual XRESULT DrawScreenFade( void* camera ) { return XR_SUCCESS; };
 
     /** Draws a vertexarray, used for rendering gothics UI */
-    virtual XRESULT DrawVertexArray( ExVertexStruct* vertices, unsigned int numVertices, unsigned int startVertex = 0, unsigned int stride = sizeof( ExVertexStruct ) ) = 0;
-    virtual XRESULT DrawVertexArrayMM( ExVertexStruct* vertices, unsigned int numVertices, unsigned int startVertex = 0, unsigned int stride = sizeof( ExVertexStruct ) ) = 0;
+    virtual XRESULT DrawVertexArray( ExVertexStruct* vertices, unsigned int numVertices, unsigned int startVertex PURE, unsigned int stride = sizeof( ExVertexStruct ) ) PURE;
 
     /** Draws a vertexbuffer, non-indexed */
     virtual XRESULT DrawVertexBuffer( D3D11VertexBuffer* vb, unsigned int numVertices, unsigned int stride = sizeof( ExVertexStruct ) ) { return XR_SUCCESS; };
@@ -164,7 +152,6 @@ public:
     virtual XRESULT DrawIndexedVertexArray( ExVertexStruct* vertices, unsigned int numVertices, D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int stride = sizeof( ExVertexStruct ) ) { return XR_SUCCESS; };
 
     /** Draws a batch of instanced geometry */
-    virtual XRESULT DrawInstanced( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, void* instanceData, unsigned int instanceDataStride, unsigned int numInstances, unsigned int vertexStride = sizeof( ExVertexStruct ) ) { return XR_SUCCESS; };
     virtual XRESULT DrawInstanced( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, D3D11VertexBuffer* instanceData, unsigned int instanceDataStride, unsigned int numInstances, unsigned int vertexStride = sizeof( ExVertexStruct ), unsigned int startInstanceNum = 0, unsigned int indexOffset = 0 ) { return XR_SUCCESS; };
 
     /** Sets the active pixel shader object */

@@ -1341,25 +1341,6 @@ XRESULT D3D11GraphicsEngine::Clear( const float4& color ) {
     return XR_SUCCESS;
 }
 
-/** Creates a vertexbuffer object (Not registered inside) */
-XRESULT D3D11GraphicsEngine::CreateVertexBuffer( D3D11VertexBuffer** outBuffer ) {
-    *outBuffer = new D3D11VertexBuffer;
-    return XR_SUCCESS;
-}
-
-/** Creates a texture object (Not registered inside) */
-XRESULT D3D11GraphicsEngine::CreateTexture( D3D11Texture** outTexture ) {
-    *outTexture = new D3D11Texture;
-    return XR_SUCCESS;
-}
-
-/** Creates a constantbuffer object (Not registered inside) */
-XRESULT D3D11GraphicsEngine::CreateConstantBuffer( D3D11ConstantBuffer** outCB,
-    void* data, int size ) {
-    *outCB = new D3D11ConstantBuffer( size, data );
-    return XR_SUCCESS;
-}
-
 /** Fetches a list of available display modes */
 XRESULT D3D11GraphicsEngine::FetchDisplayModeList() {
 #pragma warning(push)
@@ -1984,38 +1965,6 @@ XRESULT D3D11GraphicsEngine::DrawVertexArray( ExVertexStruct* vertices,
     return XR_SUCCESS;
 }
 
-/** Draws a vertexarray, morphed mesh*/
-XRESULT D3D11GraphicsEngine::DrawVertexArrayMM( ExVertexStruct* vertices,
-    unsigned int numVertices,
-    unsigned int startVertex,
-    unsigned int stride ) {
-
-    // Most morphed heads can fit into <= 3072 vertices buffer but some requires larger so let's have 2 different buffers and choose the appropriate one
-    if ( numVertices > 3072 ) {
-        EnsureTempVertexBufferSize( TempMorphedMeshBigVertexBuffer, stride * numVertices );
-        TempMorphedMeshBigVertexBuffer->UpdateBuffer( vertices, stride * numVertices );
-
-        UINT offset = 0;
-        UINT uStride = stride;
-        GetContext()->IASetVertexBuffers( 0, 1, TempMorphedMeshBigVertexBuffer->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
-    } else {
-        EnsureTempVertexBufferSize( TempMorphedMeshSmallVertexBuffer, stride * numVertices );
-        TempMorphedMeshSmallVertexBuffer->UpdateBuffer( vertices, stride * numVertices );
-
-        UINT offset = 0;
-        UINT uStride = stride;
-        GetContext()->IASetVertexBuffers( 0, 1, TempMorphedMeshSmallVertexBuffer->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
-    }
-
-    // Draw the mesh
-    GetContext()->Draw( numVertices, startVertex );
-
-    Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
-        numVertices / 3;
-
-    return XR_SUCCESS;
-}
-
 /** Draws a vertexarray, indexed */
 XRESULT D3D11GraphicsEngine::DrawIndexedVertexArray( ExVertexStruct* vertices,
     unsigned int numVertices,
@@ -2377,77 +2326,6 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh_Layered( SkeletalVobInfo* vi,
 /** Draws a batch of instanced geometry */
 XRESULT D3D11GraphicsEngine::DrawInstanced(
     D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices,
-    void* instanceData, unsigned int instanceDataStride,
-    unsigned int numInstances, unsigned int vertexStride ) {
-    UpdateRenderStates();
-
-    // Check buffersize
-    D3D11_BUFFER_DESC desc;
-    DynamicInstancingBuffer->GetVertexBuffer()->GetDesc( &desc );
-
-    if ( desc.ByteWidth < instanceDataStride * numInstances ) {
-        if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog )
-            LogInfo() << "Instancing buffer too small (" << desc.ByteWidth << "), need "
-            << instanceDataStride * numInstances
-            << " bytes. Recreating buffer.";
-
-        // Buffer too small, recreate it
-        // Put in some little extra space (32) so we don't need to recreate this
-        // every frame when approaching a field of stones or something.
-        DynamicInstancingBuffer->Init(
-            nullptr, instanceDataStride * (numInstances + 32),
-            D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_DYNAMIC, D3D11VertexBuffer::CA_WRITE );
-
-        SetDebugName( DynamicInstancingBuffer->GetShaderResourceView().Get(), "DynamicInstancingBuffer->ShaderResourceView" );
-        SetDebugName( DynamicInstancingBuffer->GetVertexBuffer().Get(), "DynamicInstancingBuffer->VertexBuffer" );
-    }
-
-    // Update the vertexbuffer
-    DynamicInstancingBuffer->UpdateBuffer( instanceData,
-        instanceDataStride * numInstances );
-
-    // Bind shader and pipeline flags
-    auto vShader = ShaderManager->GetVShader( "VS_ExInstanced" );
-
-    auto* world = &Engine::GAPI->GetRendererState().TransformState.TransformWorld;
-    auto& view = Engine::GAPI->GetRendererState().TransformState.TransformView;
-    auto& proj = Engine::GAPI->GetProjectionMatrix();
-
-    VS_ExConstantBuffer_PerFrame cb = {};
-    cb.View = view;
-    cb.Projection = proj;
-
-    VS_ExConstantBuffer_PerInstance cbb = {};
-    cbb.World = *world;
-
-    vShader->GetConstantBuffer()[0]->UpdateBuffer( &cb );
-    vShader->GetConstantBuffer()[0]->BindToVertexShader( 0 );
-
-    vShader->Apply();
-
-    Context->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
-    UINT offset[] = { 0, 0 };
-    UINT uStride[] = { vertexStride, instanceDataStride };
-    ID3D11Buffer* buffers[2] = {
-        vb->GetVertexBuffer().Get(),
-        DynamicInstancingBuffer->GetVertexBuffer().Get(),
-    };
-    Context->IASetVertexBuffers( 0, 2, buffers, uStride, offset );
-
-    Context->IASetIndexBuffer( ib->GetVertexBuffer().Get(), VERTEX_INDEX_DXGI_FORMAT, 0 );
-
-    // Draw the batch
-    Context->DrawIndexedInstanced( numIndices, numInstances, 0, 0, 0 );
-
-    Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
-        (numIndices / 3) * numInstances;
-
-    return XR_SUCCESS;
-}
-
-/** Draws a batch of instanced geometry */
-XRESULT D3D11GraphicsEngine::DrawInstanced(
-    D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices,
     D3D11VertexBuffer* instanceData, unsigned int instanceDataStride,
     unsigned int numInstances, unsigned int vertexStride,
     unsigned int startInstanceNum, unsigned int indexOffset ) {
@@ -2478,25 +2356,6 @@ XRESULT D3D11GraphicsEngine::DrawInstanced(
     return XR_SUCCESS;
 }
 
-/** Sets the active pixel shader object */
-XRESULT D3D11GraphicsEngine::SetActivePixelShader( const std::string& shader ) {
-    ActivePS = ShaderManager->GetPShader( shader );
-
-    return XR_SUCCESS;
-}
-
-XRESULT D3D11GraphicsEngine::SetActiveVertexShader( const std::string& shader ) {
-    ActiveVS = ShaderManager->GetVShader( shader );
-
-    return XR_SUCCESS;
-}
-
-XRESULT D3D11GraphicsEngine::SetActiveHDShader( const std::string& shader ) {
-    ActiveHDS = ShaderManager->GetHDShader( shader );
-
-    return XR_SUCCESS;
-}
-
 /** Binds the active PixelShader */
 XRESULT D3D11GraphicsEngine::BindActivePixelShader() {
     if ( ActivePS ) ActivePS->Apply();
@@ -2510,9 +2369,9 @@ XRESULT D3D11GraphicsEngine::BindActiveVertexShader() {
 
 /** Unbinds the texture at the given slot */
 XRESULT D3D11GraphicsEngine::UnbindTexture( int slot ) {
-    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv;
-    GetContext()->PSSetShaderResources( slot, 1, srv.GetAddressOf() );
-    GetContext()->VSSetShaderResources( slot, 1, srv.GetAddressOf() );
+    ID3D11ShaderResourceView* nullSRV[] { nullptr };
+    GetContext()->PSSetShaderResources( slot, 1, nullSRV );
+    GetContext()->VSSetShaderResources( slot, 1, nullSRV );
 
     return XR_SUCCESS;
 }

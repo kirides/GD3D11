@@ -95,15 +95,6 @@ public:
     /** Called when the game wants to clear the bound rendertarget */
     XRESULT Clear( const float4& color ) override;
 
-    /** Creates a vertexbuffer object (Not registered inside) */
-    XRESULT CreateVertexBuffer( D3D11VertexBuffer** outBuffer ) override;
-
-    /** Creates a texture object (Not registered inside) */
-    XRESULT CreateTexture( D3D11Texture** outTexture ) override;
-
-    /** Creates a constantbuffer object (Not registered inside) */
-    XRESULT CreateConstantBuffer( D3D11ConstantBuffer** outCB, void* data, int size )override;
-
     /** Fetches a list of available display modes */
     XRESULT FetchDisplayModeList();
     XRESULT FetchDisplayModeListDXGI();
@@ -160,13 +151,11 @@ public:
 
     /** Draws a vertexarray, non-indexed */
     XRESULT DrawVertexArray( ExVertexStruct* vertices, unsigned int numVertices, unsigned int startVertex = 0, unsigned int stride = sizeof( ExVertexStruct ) ) override;
-    XRESULT DrawVertexArrayMM( ExVertexStruct* vertices, unsigned int numVertices, unsigned int startVertex = 0, unsigned int stride = sizeof( ExVertexStruct ) ) override;
 
     /** Draws a vertexarray, indexed */
     XRESULT DrawIndexedVertexArray( ExVertexStruct* vertices, unsigned int numVertices, D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int stride = sizeof( ExVertexStruct ) ) override;
 
     /** Draws a batch of instanced geometry */
-    XRESULT DrawInstanced( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, void* instanceData, unsigned int instanceDataStride, unsigned int numInstances, unsigned int vertexStride = sizeof( ExVertexStruct ) ) override;
     XRESULT DrawInstanced( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, D3D11VertexBuffer* instanceData, unsigned int instanceDataStride, unsigned int numInstances, unsigned int vertexStride = sizeof( ExVertexStruct ), unsigned int startInstanceNum = 0, unsigned int indexOffset = 0 ) override;
 
     /** Called when a vob was removed from the world */
@@ -174,11 +163,6 @@ public:
 
     /** Called when a key got pressed */
     XRESULT OnKeyDown( unsigned int key ) override;
-
-    /** Sets the active pixel shader object */
-    XRESULT SetActivePixelShader( const std::string& shader ) override;
-    XRESULT SetActiveVertexShader( const std::string& shader ) override;
-    XRESULT SetActiveHDShader( const std::string& shader ) override;
 
     /** Binds the active PixelShader */
     XRESULT BindActivePixelShader() override;

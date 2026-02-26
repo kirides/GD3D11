@@ -45,7 +45,7 @@ public:
     XRESULT SetViewport( const ViewportInfo& viewportInfo ) override;
 
     /** Called when the game wants to clear the bound rendertarget */
-    XRESULT Clear( const float4& color ) override;
+    XRESULT Clear( const float4& color ) override PURE;
 
     /** Creates a vertexbuffer object (Not registered inside) */
     XRESULT CreateVertexBuffer( D3D11VertexBuffer** outBuffer ) override;
@@ -83,11 +83,6 @@ public:
     /** Draws a vertexarray, used for rendering gothics UI */
     XRESULT DrawVertexArray( ExVertexStruct* vertices, unsigned int numVertices, unsigned int startVertex = 0, unsigned int stride = sizeof( ExVertexStruct ) ) override;
 
-    XRESULT DrawVertexArrayMM( ExVertexStruct* vertices, unsigned int numVertices, unsigned int startVertex = 0, unsigned int stride = sizeof( ExVertexStruct ) ) override
-    {
-        return DrawVertexArray( vertices, numVertices, startVertex, stride );
-    }
-
     /** Draws a vertexbuffer, non-indexed, binding the FF-Pipe values */
     XRESULT DrawVertexBufferFF( D3D11VertexBuffer* vb, unsigned int numVertices, unsigned int startVertex, unsigned int stride = sizeof( ExVertexStruct ) ) override;
 
@@ -109,7 +104,7 @@ public:
     INT2 GetResolution() override { return Resolution; }
 
     /** Recreates the renderstates */
-    XRESULT UpdateRenderStates() override;
+    XRESULT UpdateRenderStates() override PURE;
 
     /** Constructs the makro list for shader compilation */
     static void ConstructShaderMakroList( std::vector<D3D_SHADER_MACRO>& list );
@@ -118,9 +113,9 @@ public:
     void SetDefaultStates();
 
     /** Sets up a draw call for a VS_Ex-Mesh */
-    virtual void SetupVS_ExMeshDrawCall();
-    virtual void SetupVS_ExConstantBuffer();
-    virtual void SetupVS_ExPerInstanceConstantBuffer();
+    virtual void SetupVS_ExMeshDrawCall() PURE;
+    virtual void SetupVS_ExConstantBuffer() PURE;
+    virtual void SetupVS_ExPerInstanceConstantBuffer() PURE;
 
     /** Sets the active pixel shader object */
     XRESULT SetActivePixelShader( const std::string& shader ) override;
