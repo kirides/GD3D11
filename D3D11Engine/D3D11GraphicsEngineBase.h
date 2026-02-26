@@ -23,56 +23,56 @@ class D3D11ConstantBuffer;
 class D3D11GraphicsEngineBase : public BaseGraphicsEngine {
 public:
     D3D11GraphicsEngineBase();
-    ~D3D11GraphicsEngineBase();
+    ~D3D11GraphicsEngineBase() override;
 
     /** Called after the fake-DDraw-Device got created */
-    virtual XRESULT Init() PURE;
+    XRESULT Init() override PURE;
 
     /** Called when the game created its window */
-    virtual XRESULT SetWindow( HWND hWnd );
+    XRESULT SetWindow( HWND hWnd ) override;
 
     /** Called on window resize/resolution change */
-    virtual XRESULT OnResize( INT2 newSize ) PURE;
-    virtual XRESULT TriggerResize( INT2 resolution ) PURE;
+    XRESULT OnResize( INT2 newSize ) override PURE;
+    XRESULT TriggerResize( INT2 resolution ) override PURE;
 
     /** Called when the game wants to render a new frame */
-    virtual XRESULT OnBeginFrame() PURE;
+    XRESULT OnBeginFrame() override PURE;
 
     /** Called when the game ended it's frame */
-    virtual XRESULT OnEndFrame() PURE;
+    XRESULT OnEndFrame() override PURE;
 
     /** Called to set the current viewport */
-    virtual XRESULT SetViewport( const ViewportInfo& viewportInfo );
+    XRESULT SetViewport( const ViewportInfo& viewportInfo ) override;
 
     /** Called when the game wants to clear the bound rendertarget */
-    virtual XRESULT Clear( const float4& color );
+    XRESULT Clear( const float4& color ) override;
 
     /** Creates a vertexbuffer object (Not registered inside) */
-    virtual XRESULT CreateVertexBuffer( D3D11VertexBuffer** outBuffer );
+    XRESULT CreateVertexBuffer( D3D11VertexBuffer** outBuffer ) override;
 
     /** Creates a texture object (Not registered inside) */
-    virtual XRESULT CreateTexture( D3D11Texture** outTexture );
+    XRESULT CreateTexture( D3D11Texture** outTexture ) override;
 
     /** Creates a constantbuffer object (Not registered inside) */
-    virtual XRESULT CreateConstantBuffer( D3D11ConstantBuffer** outCB, void* data, int size );
+    XRESULT CreateConstantBuffer( D3D11ConstantBuffer** outCB, void* data, int size ) override;
 
     /** Creates a bufferobject for a shadowed point light */
-    virtual XRESULT CreateShadowedPointLight( BaseShadowedPointLight** outPL, VobLightInfo* lightInfo, bool dynamic = false );
+    XRESULT CreateShadowedPointLight( BaseShadowedPointLight** outPL, VobLightInfo* lightInfo, bool dynamic = false ) override;
 
     /** Returns a list of available display modes */
-    virtual XRESULT GetDisplayModeList( std::vector<DisplayModeInfo>* modeList, bool includeSuperSampling = false ) PURE;
+    XRESULT GetDisplayModeList( std::vector<DisplayModeInfo>* modeList, bool includeSuperSampling = false ) override PURE;
 
     /** Presents the current frame to the screen */
-    virtual XRESULT Present();
+    XRESULT Present() override;
 
     /** Called when we started to render the world */
-    virtual XRESULT OnStartWorldRendering();
+    XRESULT OnStartWorldRendering() override;
 
     /** Returns the line renderer object */
-    virtual BaseLineRenderer* GetLineRenderer();
+    BaseLineRenderer* GetLineRenderer() override;
 
     /** Returns the graphics-device this is running on */
-    virtual std::string GetGraphicsDeviceName();
+    std::string GetGraphicsDeviceName() override;
 
     /** Saves a screenshot */
     virtual void SaveScreenshot() {}
@@ -81,34 +81,35 @@ public:
     D3D11ShaderManager& GetShaderManager();
 
     /** Draws a vertexarray, used for rendering gothics UI */
-    virtual XRESULT DrawVertexArray( ExVertexStruct* vertices, unsigned int numVertices, unsigned int startVertex = 0, unsigned int stride = sizeof( ExVertexStruct ) );
-    virtual XRESULT DrawVertexArrayMM( ExVertexStruct* vertices, unsigned int numVertices, unsigned int startVertex = 0, unsigned int stride = sizeof( ExVertexStruct ) )
+    XRESULT DrawVertexArray( ExVertexStruct* vertices, unsigned int numVertices, unsigned int startVertex = 0, unsigned int stride = sizeof( ExVertexStruct ) ) override;
+
+    XRESULT DrawVertexArrayMM( ExVertexStruct* vertices, unsigned int numVertices, unsigned int startVertex = 0, unsigned int stride = sizeof( ExVertexStruct ) ) override
     {
         return DrawVertexArray( vertices, numVertices, startVertex, stride );
     }
 
     /** Draws a vertexbuffer, non-indexed, binding the FF-Pipe values */
-    virtual XRESULT DrawVertexBufferFF( D3D11VertexBuffer* vb, unsigned int numVertices, unsigned int startVertex, unsigned int stride = sizeof( ExVertexStruct ) );
+    XRESULT DrawVertexBufferFF( D3D11VertexBuffer* vb, unsigned int numVertices, unsigned int startVertex, unsigned int stride = sizeof( ExVertexStruct ) ) override;
 
     /** Binds viewport information to the given constantbuffer slot */
-    XRESULT D3D11GraphicsEngineBase::BindViewportInformation( const std::string& shader, int slot );
+    XRESULT D3D11GraphicsEngineBase::BindViewportInformation( const std::string& shader, int slot ) override;
 
     /** Returns the Device/Context */
-    const Microsoft::WRL::ComPtr<ID3D11Device1>& GetDevice() { return Device; }
-    const Microsoft::WRL::ComPtr<ID3D11DeviceContext1>& GetContext() { return Context; }
+    auto GetDevice() -> const auto& { return Device; }
+    auto GetContext() -> const auto& { return Context; }
 
     /** Pixel Shader functions */
     void UnbindActivePS() { ActivePS = nullptr; }
-    std::shared_ptr<D3D11PShader>& GetActivePS() { return ActivePS; }
-    std::shared_ptr<D3D11VShader>& GetActiveVS() { return ActiveVS; }
-    std::shared_ptr<D3D11GShader>& GetActiveGS() { return ActiveGS; }
-    std::shared_ptr<D3D11PShader>& SetActivePS(std::shared_ptr<D3D11PShader>& ps) { return ActivePS = ps; }
+    auto GetActivePS() -> auto& { return ActivePS; }
+    auto GetActiveVS() -> auto& { return ActiveVS; }
+    auto GetActiveGS() -> auto& { return ActiveGS; }
+    auto SetActivePS(std::shared_ptr<D3D11PShader>& ps) -> auto& { return ActivePS = ps; }
 
     /** Returns the current resolution */
-    virtual INT2 GetResolution() { return Resolution; }
+    INT2 GetResolution() override { return Resolution; }
 
     /** Recreates the renderstates */
-    XRESULT UpdateRenderStates();
+    XRESULT UpdateRenderStates() override;
 
     /** Constructs the makro list for shader compilation */
     static void ConstructShaderMakroList( std::vector<D3D_SHADER_MACRO>& list );
@@ -117,23 +118,20 @@ public:
     void SetDefaultStates();
 
     /** Sets up a draw call for a VS_Ex-Mesh */
-    void SetupVS_ExMeshDrawCall();
-    void SetupVS_ExConstantBuffer();
-    void SetupVS_ExPerInstanceConstantBuffer();
-
-    /** Puts the current world matrix into a CB and binds it to the given slot */
-    void SetupPerInstanceConstantBuffer( int slot = 1 );
+    virtual void SetupVS_ExMeshDrawCall();
+    virtual void SetupVS_ExConstantBuffer();
+    virtual void SetupVS_ExPerInstanceConstantBuffer();
 
     /** Sets the active pixel shader object */
-    virtual XRESULT SetActivePixelShader( const std::string& shader );
-    virtual XRESULT SetActiveVertexShader( const std::string& shader );
+    XRESULT SetActivePixelShader( const std::string& shader ) override;
+    XRESULT SetActiveVertexShader( const std::string& shader ) override;
     virtual XRESULT SetActiveHDShader( const std::string& shader );
     virtual XRESULT SetActiveGShader( const std::string& shader );
     //virtual int MeasureString(std::string str, zFont* zFont);
 
     void ResetPresentPending() { PresentPending = false; }
 
-    HWND GetOutputWindow() { return OutputWindow; }
+    auto GetOutputWindow() -> auto { return OutputWindow; }
 
     std::unique_ptr<GraphicsEventRecord> RecordGraphicsEvent( LPCWSTR region ) override {
         return std::make_unique<D3DGraphicsEventRecord>( m_UserDefinedAnnotation.Get(), region );

@@ -422,17 +422,6 @@ XRESULT D3D11GraphicsEngineBase::SetActiveGShader( const std::string& shader ) {
 //	return 0;
 //}
 
-/** Puts the current world matrix into a CB and binds it to the given slot */
-void D3D11GraphicsEngineBase::SetupPerInstanceConstantBuffer( int slot ) {
-    const XMFLOAT4X4 world = Engine::GAPI->GetRendererState().TransformState.TransformWorld;
-
-    VS_ExConstantBuffer_PerInstance cb = {};
-    cb.World = world;
-
-    ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &cb );
-    ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( slot );
-}
-
 /** Updates the transformsCB with new values from the GAPI */
 void D3D11GraphicsEngineBase::UpdateTransformsCB() {
     const XMFLOAT4X4& world = Engine::GAPI->GetRendererState().TransformState.TransformWorld;

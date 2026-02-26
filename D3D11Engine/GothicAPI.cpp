@@ -2600,7 +2600,7 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo* vi, float distance
 #else
         if ( !model->GetDrawHandVisualsOnly() ) {
 #endif
-            g->DrawSkeletalMesh_Layered( vi, transforms, modelColor, fatness );
+            g->DrawSkeletalMesh_Layered( vi, transforms, modelColor, world, fatness );
         }
     } else {
         if ( model->GetMeshSoftSkinList()->NumInArray > 0 ) {

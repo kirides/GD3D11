@@ -716,8 +716,7 @@ XRESULT D3D11ShadowMap::DrawPointlightLights(
     XMStoreFloat4x4( &plcb.PL_InvProj, XMMatrixInverse( nullptr, XMLoadFloat4x4( &Engine::GAPI->GetProjectionMatrix() ) ) );
     XMStoreFloat4x4( &plcb.PL_InvView, XMMatrixInverse( nullptr, XMLoadFloat4x4( &Engine::GAPI->GetRendererState().TransformState.TransformView ) ) );
 
-    auto resolution = graphicsEngine->GetResolution();
-    plcb.PL_ViewportSize = float2( static_cast<float>(resolution.x), static_cast<float>(resolution.y) );
+    plcb.PL_ViewportSize = Engine::GraphicsEngine->GetResolution();
 
     color.BindToPixelShader( m_context.Get(), 0 );
     normals.BindToPixelShader( m_context.Get(), 1 );

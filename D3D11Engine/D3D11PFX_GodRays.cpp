@@ -86,15 +86,7 @@ XRESULT D3D11PFX_GodRays::Render(
     };
     engine->GetContext()->PSSetShaderResources( 0, 2, srvs );
 
-    D3D11_VIEWPORT vp = {};
-    vp.TopLeftX = 0.0f;
-    vp.TopLeftY = 0.0f;
-    vp.MinDepth = 0.0f;
-    vp.MaxDepth = 1.0f;
-    vp.Width = static_cast<float>(tempBuffer->GetSizeX());
-    vp.Height = static_cast<float>(tempBuffer->GetSizeY());
-
-    engine->GetContext()->RSSetViewports( 1, &vp );
+    engine->SetViewport({ 0,0, INT2(tempBuffer->GetSizeX(), tempBuffer->GetSizeY()) });
 
     FxRenderer->DrawFullScreenQuad();
 
@@ -112,10 +104,7 @@ XRESULT D3D11PFX_GodRays::Render(
 
     FxRenderer->CopyTextureToRTV( tempBuffer2->GetShaderResView(), oldRTV, engine->GetResolution() );
 
-	vp.Width = static_cast<float>(engine->GetResolution().x);
-	vp.Height = static_cast<float>(engine->GetResolution().y);
-
-	engine->GetContext()->RSSetViewports( 1, &vp );
+    engine->SetViewport({ 0,0, engine->GetResolution() });
 
     ID3D11ShaderResourceView* nullSRVs[2] {
         nullptr,

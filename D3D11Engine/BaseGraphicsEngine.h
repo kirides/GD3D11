@@ -32,20 +32,41 @@ enum WindowModes {
 };
 
 struct ViewportInfo {
-    ViewportInfo() {}
+    ViewportInfo() :
+        TopLeftX( 0 ),
+        TopLeftY( 0 ),
+        Width( 0 ),
+        Height( 0 ),
+        MinZ( 0 ),
+        MaxZ( 0 )
+    {}
+
     ViewportInfo( unsigned int topleftX,
         unsigned int topleftY,
         unsigned int width,
         unsigned int height,
         float minZ = 0.0f,
-        float maxZ = 1.0f ) {
-        TopLeftX = topleftX;
-        TopLeftY = topleftY;
-        Width = width;
-        Height = height;
-        MinZ = minZ;
-        MaxZ = maxZ;
-    }
+        float maxZ = 1.0f ) : 
+        TopLeftX(topleftX),
+        TopLeftY(topleftY),
+        Width(width),
+        Height(height),
+        MinZ(minZ),
+        MaxZ(maxZ)
+    { }
+
+    ViewportInfo( unsigned int topleftX,
+        unsigned int topleftY,
+        INT2 wh,
+        float minZ = 0.0f,
+        float maxZ = 1.0f ) :
+        TopLeftX( topleftX ),
+        TopLeftY( topleftY ),
+        Width( wh.x ),
+        Height( wh.y ),
+        MinZ( minZ ),
+        MaxZ( maxZ )
+    { }
 
     unsigned int TopLeftX;
     unsigned int TopLeftY;
@@ -125,9 +146,6 @@ public:
     /** Draws a vertexarray, used for rendering gothics UI */
     virtual XRESULT DrawVertexArray( ExVertexStruct* vertices, unsigned int numVertices, unsigned int startVertex = 0, unsigned int stride = sizeof( ExVertexStruct ) ) = 0;
     virtual XRESULT DrawVertexArrayMM( ExVertexStruct* vertices, unsigned int numVertices, unsigned int startVertex = 0, unsigned int stride = sizeof( ExVertexStruct ) ) = 0;
-
-    /** Puts the current world matrix into a CB and binds it to the given slot */
-    virtual void SetupPerInstanceConstantBuffer( int slot = 1 ) {};
 
     /** Draws a vertexbuffer, non-indexed */
     virtual XRESULT DrawVertexBuffer( D3D11VertexBuffer* vb, unsigned int numVertices, unsigned int stride = sizeof( ExVertexStruct ) ) { return XR_SUCCESS; };

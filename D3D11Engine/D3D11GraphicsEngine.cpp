@@ -802,15 +802,9 @@ XRESULT D3D11GraphicsEngine::SetWindow( HWND hWnd ) {
 /** Reset BackBuffer */
 void D3D11GraphicsEngine::OnResetBackBuffer() {
     auto res = GetResolution();
-    PfxRenderer->OnResize( res );
     HDRBackBuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), res.x, res.y, GetBackBufferFormat());
     SetDebugName( HDRBackBuffer->GetShaderResView().Get(), "Backbuffer->ShaderResourceView" );
     SetDebugName( HDRBackBuffer->GetRenderTargetView().Get(), "Backbuffer->RenderTargetView" );
-
-    res = GetBackbufferResolution();
-    Backbuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), res.x, res.y, DXGI_FORMAT_ENGINE_SWAPCHAIN );
-    SetDebugName( Backbuffer->GetShaderResView().Get(), "Backbuffer->ShaderResourceView" );
-    SetDebugName( Backbuffer->GetRenderTargetView().Get(), "Backbuffer->RenderTargetView" );
 }
 
 /** Get BackBuffer Format */
@@ -860,6 +854,82 @@ int D3D11GraphicsEngine::GetWindowMode() {
     return WINDOW_MODE_WINDOWED;
 }
 
+XRESULT D3D11GraphicsEngine::RecreateBuffers() {
+    INT2 bbres = GetBackbufferResolution();
+
+    static INT2 lastRoundedTextureResolution{};
+
+    auto resolutionScalePct = Engine::GAPI->GetRendererState().RendererSettings.ResolutionScalePercent;
+    if ( resolutionScalePct != 100 ) {
+        resolutionScalePct = std::clamp( resolutionScalePct, 25, 200 );
+        Engine::GAPI->GetRendererState().RendererSettings.ResolutionScalePercent = resolutionScalePct;
+
+        float scale = static_cast<float>(resolutionScalePct) / 100.0f;
+
+        m_scaledResolution = INT2{
+            static_cast<INT>(static_cast<float>(bbres.x) * scale),
+            static_cast<INT>(static_cast<float>(bbres.y) * scale)
+        };
+    } else {
+        m_scaledResolution = bbres;
+    }
+
+    auto roundedTextureResolution = GetResolution( );
+    if ( lastRoundedTextureResolution == roundedTextureResolution ) {
+        // same resolution, just adjusting the viewport
+        return XR_SUCCESS;
+    }
+    lastRoundedTextureResolution = roundedTextureResolution;
+    
+    // Recreate DepthStencilBuffer
+    DepthStencilBuffer = std::make_unique<RenderToDepthStencilBuffer>(
+        GetDevice().Get(), roundedTextureResolution.x, roundedTextureResolution.y, DXGI_FORMAT_R32_TYPELESS, nullptr,
+        DXGI_FORMAT_D32_FLOAT, DXGI_FORMAT_R32_FLOAT );
+
+    DepthStencilBufferCopy = std::make_unique<RenderToTextureBuffer>(
+        GetDevice().Get(), roundedTextureResolution.x, roundedTextureResolution.y, DXGI_FORMAT_R32_TYPELESS, nullptr,
+        DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32_FLOAT );
+
+    m_NativeSizeDepthStencil = std::make_unique<RenderToDepthStencilBuffer>(
+        GetDevice().Get(), roundedTextureResolution.x, roundedTextureResolution.y, DXGI_FORMAT_R32_TYPELESS, nullptr,
+        DXGI_FORMAT_D32_FLOAT, DXGI_FORMAT_R32_FLOAT );
+
+    // Create PFX-Renderer
+    if ( !PfxRenderer ) PfxRenderer = std::make_unique<D3D11PfxRenderer>();
+
+    PfxRenderer->OnResize( roundedTextureResolution );
+
+    VelocityBuffer = std::make_unique<RenderToTextureBuffer>(
+        GetDevice().Get(), roundedTextureResolution.x, roundedTextureResolution.y, DXGI_FORMAT_R16G16_FLOAT );
+
+    SetDebugName( VelocityBuffer->GetTexture().Get(), "VelocityBuffer->TEX" );
+    SetDebugName( VelocityBuffer->GetShaderResView().Get(), "VelocityBuffer->SRV" );
+    SetDebugName( VelocityBuffer->GetRenderTargetView().Get(), "VelocityBuffer->RTV" );
+
+    HDRBackBuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), roundedTextureResolution.x, roundedTextureResolution.y, GetBackBufferFormat() );
+
+    SetDebugName( HDRBackBuffer->GetTexture().Get(), "HDRBackBuffer->TEX" );
+    SetDebugName( HDRBackBuffer->GetShaderResView().Get(), "HDRBackBuffer->SRV" );
+    SetDebugName( HDRBackBuffer->GetRenderTargetView().Get(), "HDRBackBuffer->RTV" );
+
+    // actual native-resolution backbuffer for UI and copy operations !!
+    Backbuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), Resolution.x, Resolution.y, DXGI_FORMAT_ENGINE_SWAPCHAIN );
+
+    SetDebugName( Backbuffer->GetTexture().Get(), "Backbuffer->TEX" );
+    SetDebugName( Backbuffer->GetShaderResView().Get(), "Backbuffer->SRV" );
+    SetDebugName( Backbuffer->GetRenderTargetView().Get(), "Backbuffer->RTV" );
+
+    int s = std::min<int>( std::max<int>( Engine::GAPI->GetRendererState().RendererSettings.ShadowMapSize, 512 ), (FeatureLevel10Compatibility ? 8192 : 16384) );
+    if ( !ShadowMaps ) {
+        ShadowMaps = std::make_unique<D3D11ShadowMap>();
+        ShadowMaps->Init( Device, Context, s );
+    } else {
+        ShadowMaps->Resize( s );
+    }
+    
+    return XR_SUCCESS;
+}
+
 /** Called on window resize/resolution change */
 XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
     HRESULT hr;
@@ -870,20 +940,6 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
     NewResolution = newSize;
 
     INT2 bbres = GetBackbufferResolution();
-    
-    auto resolutionScalePct = Engine::GAPI->GetRendererState().RendererSettings.ResolutionScalePercent;
-    if ( resolutionScalePct != 100 ) {
-        resolutionScalePct = std::clamp( resolutionScalePct, 25, 200 );
-        Engine::GAPI->GetRendererState().RendererSettings.ResolutionScalePercent = resolutionScalePct;
-
-        float scale = static_cast<float>(resolutionScalePct / 100.0f);
-        m_scaledResolution = INT2{
-            static_cast<INT>(static_cast<float>(newSize.x) * scale),
-            static_cast<INT>(static_cast<float>(newSize.y) * scale)
-        };
-    } else {
-        m_scaledResolution = newSize;
-    }
 
     // TODO: Also always set/reset if player changes from Gothics UI, as settings a resolution from gothics settings breaks this.
     zCView::SetWindowMode(
@@ -1070,68 +1126,15 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
 
     // Recreate RenderTargetView
     LE( GetDevice()->CreateRenderTargetView( backbuffer.Get(), nullptr, BackbufferRTV.GetAddressOf() ) );
-
-    // Recreate DepthStencilBuffer
-    DepthStencilBuffer = std::make_unique<RenderToDepthStencilBuffer>(
-        GetDevice().Get(), m_scaledResolution.x, m_scaledResolution.y, DXGI_FORMAT_R32_TYPELESS, nullptr,
-        DXGI_FORMAT_D32_FLOAT, DXGI_FORMAT_R32_FLOAT );
-
-    DepthStencilBufferCopy = std::make_unique<RenderToTextureBuffer>(
-        GetDevice().Get(), m_scaledResolution.x, m_scaledResolution.y, DXGI_FORMAT_R32_TYPELESS, nullptr,
-        DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32_FLOAT );
-
-    m_NativeSizeDepthStencil = std::make_unique<RenderToDepthStencilBuffer>(
-        GetDevice().Get(), Resolution.x, Resolution.y, DXGI_FORMAT_R32_TYPELESS, nullptr,
-        DXGI_FORMAT_D32_FLOAT, DXGI_FORMAT_R32_FLOAT );
-
-    // Create PFX-Renderer
-    if ( !PfxRenderer ) PfxRenderer = std::make_unique<D3D11PfxRenderer>();
-
-    PfxRenderer->OnResize( m_scaledResolution );
-
-    VelocityBuffer = std::make_unique<RenderToTextureBuffer>(
-        GetDevice().Get(), m_scaledResolution.x, m_scaledResolution.y, DXGI_FORMAT_R16G16_FLOAT );
-
-    SetDebugName( VelocityBuffer->GetTexture().Get(), "VelocityBuffer->TEX" );
-    SetDebugName( VelocityBuffer->GetShaderResView().Get(), "VelocityBuffer->SRV" );
-    SetDebugName( VelocityBuffer->GetRenderTargetView().Get(), "VelocityBuffer->RTV" );
-
-    HDRBackBuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), m_scaledResolution.x, m_scaledResolution.y, GetBackBufferFormat() );
-
-    SetDebugName( HDRBackBuffer->GetTexture().Get(), "HDRBackBuffer->TEX" );
-    SetDebugName( HDRBackBuffer->GetShaderResView().Get(), "HDRBackBuffer->SRV" );
-    SetDebugName( HDRBackBuffer->GetRenderTargetView().Get(), "HDRBackBuffer->RTV" );
-
-    // actual native-resolution backbuffer for UI and copy operations !!
-    Backbuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), Resolution.x, Resolution.y, DXGI_FORMAT_ENGINE_SWAPCHAIN );
-
-    SetDebugName( Backbuffer->GetTexture().Get(), "Backbuffer->TEX" );
-    SetDebugName( Backbuffer->GetShaderResView().Get(), "Backbuffer->SRV" );
-    SetDebugName( Backbuffer->GetRenderTargetView().Get(), "Backbuffer->RTV" );
-
-    int s = std::min<int>( std::max<int>( Engine::GAPI->GetRendererState().RendererSettings.ShadowMapSize, 512 ), (FeatureLevel10Compatibility ? 8192 : 16384) );
-    if ( !ShadowMaps ) {
-        ShadowMaps = std::make_unique<D3D11ShadowMap>();
-        ShadowMaps->Init( Device, Context, s );
-    } else {
-        ShadowMaps->Resize( s );
-    }
+    
+    RecreateBuffers();
 
     // Bind our newly created resources
     GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(),
         DepthStencilBuffer->GetDepthStencilView().Get() );
 
     // Set the viewport
-    D3D11_VIEWPORT viewport = {};
-
-    viewport.TopLeftX = 0;
-    viewport.TopLeftY = 0;
-    viewport.Width = static_cast<float>(m_scaledResolution.x);
-    viewport.Height = static_cast<float>(m_scaledResolution.y);
-    viewport.MinDepth = 0.0f;
-    viewport.MaxDepth = 1.0f;
-
-    GetContext()->RSSetViewports( 1, &viewport );
+    SetViewport( ViewportInfo( 0, 0, m_scaledResolution.x, m_scaledResolution.y ) );
 
     // Engine::AntTweakBar->OnResize( newSize );
     Engine::ImGuiHandle->OnResize( newSize );
@@ -1170,9 +1173,7 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
             OnResize( oldResolution );
         }
     } else if ( rendererState.RendererSettings.ResolutionScalePercent != s_oldResolutionScalePercent ) {
-        auto oldResolution = Resolution;
-        Resolution = INT2( 0, 0 ); // force resize
-        OnResize( oldResolution );
+        RecreateBuffers();
         s_oldResolutionScalePercent = rendererState.RendererSettings.ResolutionScalePercent;
     }
     
@@ -1283,15 +1284,7 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
 
     // Bind the backbuffer, as otherwise Gothic can't render its initial menu UI
 
-    D3D11_VIEWPORT vp;
-    vp.TopLeftX = 0.0f;
-    vp.TopLeftY = 0.0f;
-    vp.MinDepth = 0.0f;
-    vp.MaxDepth = 1.0f;
-    vp.Width = static_cast<float>(GetBackbufferResolution().x);
-    vp.Height = static_cast<float>(GetBackbufferResolution().y);
-
-    GetContext()->RSSetViewports( 1, &vp );
+    SetViewport( ViewportInfo( 0, 0, GetBackbufferResolution() ) );
     GetContext()->OMSetRenderTargets( 1, Backbuffer->GetRenderTargetView().GetAddressOf(), nullptr);
 
     // Reset Render States for HUD
@@ -1517,16 +1510,8 @@ void RenderVelocity(D3D11GraphicsEngine* engine,
 /** Presents the current frame to the screen */
 XRESULT D3D11GraphicsEngine::Present() {
     const auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
-    
-    D3D11_VIEWPORT vp;
-    vp.TopLeftX = 0.0f;
-    vp.TopLeftY = 0.0f;
-    vp.MinDepth = 0.0f;
-    vp.MaxDepth = 1.0f;
-    vp.Width = static_cast<float>(GetBackbufferResolution().x);
-    vp.Height = static_cast<float>(GetBackbufferResolution().y);
 
-    GetContext()->RSSetViewports( 1, &vp );
+    SetViewport( ViewportInfo( 0, 0, GetBackbufferResolution() ) );
 
     SetDefaultStates();
     UpdateRenderStates();
@@ -2300,12 +2285,10 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
 }
 
 XRESULT D3D11GraphicsEngine::DrawSkeletalMesh_Layered( SkeletalVobInfo* vi,
-    const std::vector<XMFLOAT4X4>& transforms, float4 color, float fatness ) {
+    const std::vector<XMFLOAT4X4>& transforms, float4 color, XMFLOAT4X4& world, float fatness ) {
     SetActiveVertexShader( "VS_ExSkeletalLayered" );
 
     InfiniteRangeConstantBuffer->BindToPixelShader( 3 );
-
-    const auto& world = Engine::GAPI->GetRendererState().TransformState.TransformWorld;
 
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
@@ -2632,15 +2615,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
 
     rendererState.RendererInfo.RenderStage = STAGE_DRAW_WORLD;
 
-    D3D11_VIEWPORT vp;
-    vp.TopLeftX = 0.0f;
-    vp.TopLeftY = 0.0f;
-    vp.MinDepth = 0.0f;
-    vp.MaxDepth = 1.0f;
-    vp.Width = static_cast<float>(GetResolution().x);
-    vp.Height = static_cast<float>(GetResolution().y);
-
-    GetContext()->RSSetViewports( 1, &vp );
+    SetViewport( ViewportInfo( 0, 0, GetResolution() ) );
 
     UpdateZEngineViewport();
 
@@ -2784,12 +2759,15 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             GetContext()->OMSetRenderTargets( 5, rtvs, DepthStencilBuffer->GetDepthStencilView().Get() );
 
             Engine::GAPI->DrawWorldMeshNaive();
+            
+            // ensure we write into the full backbuffer textures next.
+            SetViewport( ViewportInfo( 0, 0, GetResolution() ) );
 
             StoreVobPreviousTransforms();// used for motion vectors
         };
     });
     
-    graph.AddPass( L"Draw ParticleFX", [&]( RGBuilder& builder, RenderPass& pass ) {
+    graph.AddPass( L"Draw ParticleFX #1", [&]( RGBuilder& builder, RenderPass& pass ) {
         // Setup / Declare
         builder.Write( backBufferHandle );
 
@@ -2799,6 +2777,9 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             }
             std::vector<zCVob*> decals;
             zCCamera::GetCamera()->Activate();
+            // Camera->Activate breaks viewport
+            SetViewport( ViewportInfo( 0, 0, GetResolution() ) );
+
             Engine::GAPI->GetVisibleDecalList( decals );
 
             Engine::GAPI->ResetRenderStates();
@@ -2823,6 +2804,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                 // Cascades only get rendered if this is enabled. 
                 ShadowMaps->PrepareRender();
             }
+
             ShadowMaps->DrawLighting(m_FrameLights, 
                 *colorTexture, 
                 *normalsTexture, 
@@ -2867,6 +2849,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         builder.Write( backBufferHandle );
 
         pass.m_executeCallback = [this](const RenderGraph&) {
+            SetViewport( ViewportInfo( 0, 0, GetResolution() ) );
             DrawWaterSurfaces();
         };
     });
@@ -2910,6 +2893,10 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             Engine::GAPI->DrawTransparencyVobs();
             SetRenderingStage( oldStage );
             Engine::GAPI->DrawSkeletalVN();
+            
+            // for Post-Processing FX we use the full viewport for now
+            // TODO: introduce UV-scaling to PostFX
+            SetViewport( ViewportInfo( 0, 0, GetResolution() ) );
         };
     });
     
@@ -2955,11 +2942,14 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             auto backBuffer = graph.GetPhysicalTexture(backBufferHandle);
             GetContext()->OMSetRenderTargets( 1, backBuffer->GetRenderTargetView().GetAddressOf(),
                 DepthStencilBuffer->GetDepthStencilView().Get() );
+
+            // Set viewport for gothics rendering
+            SetViewport( ViewportInfo( 0, 0, GetResolution() ) );
         };
     });
     
     if (rendererState.RendererSettings.DrawParticleEffects) {
-        graph.AddPass( L"Draw ParticleFX", [&]( RGBuilder& builder, RenderPass& pass ) {
+        graph.AddPass( L"Draw ParticleFX #2", [&]( RGBuilder& builder, RenderPass& pass ) {
             builder.Read( backBufferHandle );
             builder.Write( backBufferHandle );
 
@@ -2968,6 +2958,9 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                 // TODO: Only get them once!
                 std::vector<zCVob*> decals;
                 zCCamera::GetCamera()->Activate();
+                // Camera->Activate breaks viewport
+                SetViewport( ViewportInfo( 0, 0, GetResolution() ) );
+
                 Engine::GAPI->GetVisibleDecalList( decals );
 
                 // Draw stuff like candle-flames
@@ -3030,7 +3023,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             Engine::GAPI->CalcFlashMeshes();
             // Draw those
             // For some reasons the viewport gets messed up, so set it again
-            SetViewport( ViewportInfo( 0, 0, GetResolution().x, GetResolution().y ) );
+            SetViewport( ViewportInfo( 0, 0, GetResolution() ) );
             DrawPolyStrips();
         };
     } );
@@ -3044,6 +3037,16 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         pass.m_executeCallback = [this](const RenderGraph&) {
             LineRenderer->Flush();
             LineRenderer->FlushScreenSpace();
+        };
+    } );
+
+    // Draw debug lines
+    graph.AddPass( L"PostFX Viewport", [&]( RGBuilder& builder, RenderPass& pass ) {
+        builder.Write( backBufferHandle );
+
+        pass.m_executeCallback = [this](const RenderGraph&) {
+            // Set viewport for gothics rendering
+            SetViewport( ViewportInfo( 0, 0, GetResolution() ) );
         };
     } );
 
@@ -3098,17 +3101,6 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
 
             PresentPending = true;
-
-            // Set viewport for gothics rendering
-            D3D11_VIEWPORT vp;
-            vp.TopLeftX = 0.0f;
-            vp.TopLeftY = 0.0f;
-            vp.MinDepth = 0.0f;
-            vp.MaxDepth = 1.0f;
-            vp.Width = static_cast<float>(GetResolution().x);
-            vp.Height = static_cast<float>(GetResolution().y);
-
-            GetContext()->RSSetViewports( 1, &vp );
         };
     } );
 
@@ -3224,8 +3216,6 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                         FarZ,
                         sharpenFactor > 0.001f,
                         1.0f - sharpenFactor );
-
-                    // PfxRenderer->CopyTextureToRTV( fsrTex->GetShaderResView(), Backbuffer->GetRenderTargetView(), GetBackbufferResolution() );
                     };
             } );
         } else if (rendererState.RendererSettings.SharpeningMode
@@ -3277,15 +3267,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         // Below this, we assume UI/HUD rendering
         rendererState.RendererInfo.RenderStage = STAGE_DRAW_HUD;
 
-        D3D11_VIEWPORT vp;
-        vp.TopLeftX = 0.0f;
-        vp.TopLeftY = 0.0f;
-        vp.MinDepth = 0.0f;
-        vp.MaxDepth = 1.0f;
-        vp.Width = static_cast<float>(GetBackbufferResolution().x);
-        vp.Height = static_cast<float>(GetBackbufferResolution().y);
-
-        GetContext()->RSSetViewports( 1, &vp );
+        SetViewport( ViewportInfo( 0, 0, GetBackbufferResolution() ) );
         UpdateZEngineViewport();
 
         GetContext()->OMSetRenderTargets( 1, Backbuffer->GetRenderTargetView().GetAddressOf(), nullptr );
@@ -3355,17 +3337,6 @@ void D3D11GraphicsEngine::SetupVS_ExPerInstanceConstantBuffer() {
 
     ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &cb );
     ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( 1 );
-}
-
-/** Puts the current world matrix into a CB and binds it to the given slot */
-void D3D11GraphicsEngine::SetupPerInstanceConstantBuffer( int slot ) {
-    auto world = Engine::GAPI->GetRendererState().TransformState.TransformWorld;
-
-    VS_ExConstantBuffer_PerInstance cb = {};
-    cb.World = world;
-
-    ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &cb );
-    ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( slot );
 }
 
 bool SectionRenderlistSortCmp( std::pair<float, WorldMeshSectionInfo*>& a,
@@ -3988,7 +3959,8 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
     // Copy backbuffer
     PfxRenderer->CopyTextureToRTV(
         HDRBackBuffer->GetShaderResView(),
-        tempBuffer->GetRenderTargetView() );
+        tempBuffer->GetRenderTargetView(),
+        GetResolution() );
     CopyDepthStencil();
 
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
@@ -6804,6 +6776,7 @@ void D3D11GraphicsEngine::DrawFrameParticles(
     SetDefaultStates();
 
     auto Resolution = GetResolution();
+
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
     Engine::GAPI->SetViewTransformXM( view );  // Update view transform
 
@@ -6942,7 +6915,8 @@ void D3D11GraphicsEngine::DrawFrameParticles(
     auto tempBuffer = PfxRenderer->GetTempBuffer();
     PfxRenderer->CopyTextureToRTV(
         HDRBackBuffer->GetShaderResView(),
-        tempBuffer->GetRenderTargetView() );
+        tempBuffer->GetRenderTargetView(),
+        GetResolution() );
 
     SetActivePixelShader( "PS_PFX_ApplyParticleDistortion" );
     ActivePS->Apply();
@@ -6950,7 +6924,8 @@ void D3D11GraphicsEngine::DrawFrameParticles(
     // Copy it back, putting distortion behind it
     PfxRenderer->CopyTextureToRTV(
         tempBuffer->GetShaderResView(),
-        HDRBackBuffer->GetRenderTargetView(), INT2( 0, 0 ), true );
+        HDRBackBuffer->GetRenderTargetView(),
+        GetResolution(), true );
 }
 
 /** Called when a vob was removed from the world */
