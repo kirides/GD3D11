@@ -54,8 +54,6 @@ bool D3D11PFX_FSR3::Init( const INT2& maxInputSize, const INT2& maxOutputSize ) 
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     ID3D11Device* device = engine->GetDevice().Get();
 
-    FfxDevice ffxDevice = ffxGetDeviceDX11_Fsr31( device );
-
     MaxInputSize = maxInputSize;
     MaxOutputSize = maxOutputSize;
 
@@ -158,8 +156,10 @@ XRESULT D3D11PFX_FSR3::Apply(
     float sharpness ) {
 
     if ( !Initialized ) {
-        LogError() << "FSR3: Attempted to Apply before Init.";
-        return XR_FAILED;
+        if (!Init(outputSize, outputSize)) {
+            LogError() << "FSR3: Failed to initialize";
+            return XR_FAILED;
+        }
     }
 
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);

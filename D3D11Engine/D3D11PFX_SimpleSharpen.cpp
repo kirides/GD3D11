@@ -7,17 +7,10 @@
 #include "D3D11ConstantBuffer.h"
 #include "ConstantBufferStructs.h"
 
-D3D11PFX_SimpleSharpen::D3D11PFX_SimpleSharpen( D3D11PfxRenderer* renderer )
-    : Renderer( renderer ), Sharpness( 0.5f ) {
-}
-
-D3D11PFX_SimpleSharpen::~D3D11PFX_SimpleSharpen() {
-}
-
 XRESULT D3D11PFX_SimpleSharpen::Apply( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& inputTexture, INT2 inputSize,
-        const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& outputTexture,
-    INT2 outputSize,
-        RenderToTextureBuffer& intermediateBuffer ) {
+                                       const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& outputTexture,
+                                       INT2 outputSize,
+                                       RenderToTextureBuffer& intermediateBuffer ) {
     D3D11GraphicsEngine* engine = (D3D11GraphicsEngine*)Engine::GraphicsEngine;
     auto context = engine->GetContext();
 

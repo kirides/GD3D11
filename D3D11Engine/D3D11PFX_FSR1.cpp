@@ -71,6 +71,10 @@ void D3D11PFX_FSR1::SetSharpness( float sharpness ) {
     Sharpness = std::max( 0.0f, sharpness );
 }
 
+void D3D11PFX_FSR1::ReleaseResources() {
+    PointSampler.Reset();
+}
+
 XRESULT D3D11PFX_FSR1::ApplyEASU(
     const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& input,
     const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& output,

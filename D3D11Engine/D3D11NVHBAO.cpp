@@ -8,14 +8,12 @@
 
 #pragma comment(lib, "GFSDK_SSAO_D3D11.win32.lib")
 
-D3D11NVHBAO::D3D11NVHBAO() {}
-
-D3D11NVHBAO::~D3D11NVHBAO() {}
-
 /** Initializes the library */
 XRESULT D3D11NVHBAO::Init() {
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
 
+    SAFE_RELEASE( AOContext );
+    
     GFSDK_SSAO_CustomHeap CustomHeap;
     CustomHeap.new_ = ::operator new;
     CustomHeap.delete_ = ::operator delete;
@@ -37,6 +35,14 @@ XRESULT D3D11NVHBAO::Render(
     const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& pFullResDepthTexSRV,
     const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& pFullResNormalTexSRV
     ) {
+    
+    if (m_recreate) {
+        if (Init() != XR_SUCCESS) {
+            return XR_FAILED;
+        }
+        m_recreate = false;
+    }
+    
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
 
     D3D11_VIEWPORT vp;
@@ -81,4 +87,13 @@ XRESULT D3D11NVHBAO::Render(
     }
 
     return XR_SUCCESS;
+}
+
+void D3D11NVHBAO::ReleaseResources()
+{
+    if ( m_recreate ) {
+        return;
+    }
+    m_recreate = true;
+    SAFE_RELEASE( AOContext );
 }

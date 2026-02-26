@@ -30,11 +30,7 @@ D3D11PfxRenderer::D3D11PfxRenderer() {
     if ( !FeatureLevel10Compatibility ) {
         FX_SMAA = std::make_unique<D3D11PFX_SMAA>( this );
         FX_TAA = std::make_unique<D3D11PFX_TAA>( this );
-
-        FX_TAA->Init();
-
         NvHBAO = std::make_unique<D3D11NVHBAO>();
-        NvHBAO->Init();
     }
 
     PFX_CAS = std::make_unique<D3D11PFX_CAS>( this );
@@ -217,13 +213,7 @@ XRESULT D3D11PfxRenderer::OnResize( const INT2& newResolution ) {
     m_texturePool->Clear(); // textures will be created on demand
     if ( !FeatureLevel10Compatibility ) {
         FX_SMAA->OnResize( newResolution );
-        FX_TAA->OnResize( newResolution );
-
-        D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
-
-        PFX_FSR2->Init( engine->GetBackbufferResolution(), engine->GetBackbufferResolution() );
-        PFX_FSR3->Init( engine->GetBackbufferResolution(), engine->GetBackbufferResolution() );
-    }
+        FX_TAA->OnResize( newResolution );}
 
     return XR_SUCCESS;
 }
@@ -260,4 +250,28 @@ TextureHandle D3D11PfxRenderer::GetTempBufferDS4()
     auto res = engine->GetResolution();
 
     return m_texturePool->Acquire( TexturePool::Description{ res.x / 4, res.y / 4, bbufferFormat } );
+}
+
+void D3D11PfxRenderer::FreeResources()
+{
+    auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+    if ( settings.AntiAliasingMode != GothicRendererSettings::AA_SMAA ) {
+        this->FX_SMAA->ReleaseResources();
+    }
+    if ( settings.AntiAliasingMode != GothicRendererSettings::AA_TAA ) {
+        this->FX_TAA->ReleaseResources();
+    }
+
+    if ( settings.AntiAliasingMode != GothicRendererSettings::AA_FSR
+        && !(settings.Upscaler == GothicRendererSettings::UPSCALER_FSR_2) && settings.ResolutionScalePercent < 100) {
+        this->PFX_FSR2->ReleaseResources();
+    }
+
+    if ( !(settings.Upscaler == GothicRendererSettings::UPSCALER_FSR_1) && settings.ResolutionScalePercent < 100 ) {
+        this->PFX_FSR1->ReleaseResources();
+    }
+
+    if ( !settings.HbaoSettings.Enabled ) {
+        this->NvHBAO->ReleaseResources();
+    }
 }

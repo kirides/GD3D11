@@ -19,11 +19,14 @@ D3D11PFX_SMAA::~D3D11PFX_SMAA() {
 bool D3D11PFX_SMAA::Init() {
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     ID3D11DeviceContext* pContext = engine->GetContext().Get();
-    m_Native = std::make_unique <D3D11SMAA >( engine->GetDevice().Get(), pContext);
-
-    return m_Native->Init( Toolbox::ToWideChar( Engine::GAPI->GetStartDirectory() ) + L"\\system\\GD3D11\\shaders\\SMAA_Wrapper.hlsl",
+    m_Native = std::make_unique<D3D11SMAA>( 
+        engine->GetDevice().Get(),
+        pContext,
+        Toolbox::ToWideChar( Engine::GAPI->GetStartDirectory() ) + L"\\system\\GD3D11\\shaders\\SMAA_Wrapper.hlsl",
         Toolbox::ToWideChar( Engine::GAPI->GetStartDirectory() ) + L"\\system\\GD3D11\\Textures\\SMAA_AreaTexDX10.dds",
-        Toolbox::ToWideChar( Engine::GAPI->GetStartDirectory() ) + L"\\system\\GD3D11\\Textures\\SMAA_SearchTex.dds" );
+        Toolbox::ToWideChar( Engine::GAPI->GetStartDirectory() ) + L"\\system\\GD3D11\\Textures\\SMAA_SearchTex.dds");
+
+    return true;
 }
 
 /** Renders the PostFX */

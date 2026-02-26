@@ -73,7 +73,11 @@ public:
 
     void OnEndFrame() {
         m_texturePool->GiveTick();
+        FreeResources();
     }
+
+    // Free any unused resources, like SMAA buffers if the player doesnt use it.
+    void FreeResources();
 
     TexturePool* GetTexturePool() { return m_texturePool.get(); }
 private:

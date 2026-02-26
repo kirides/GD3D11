@@ -28,6 +28,8 @@ public:
     /** Draws this effect to the given buffer */
     XRESULT Render( RenderToTextureBuffer* fxbuffer ) { return XR_SUCCESS; };
 
+    void ReleaseResources() { m_Native->ReleaseResources(); }
+
 private:
     std::unique_ptr<D3D11SMAA> m_Native;
 };

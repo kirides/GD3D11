@@ -69,6 +69,8 @@ public:
     /** Gets the current frame's unjittered view-projection matrix */
     const XMFLOAT4X4& GetUnjitteredViewProj() const { return m_UnjitteredViewProj; }
 
+    void ReleaseResources();
+
 private:
     // History buffer (previous frame's AA'd result)
     std::unique_ptr<RenderToTextureBuffer> m_HistoryBuffer;
@@ -100,4 +102,5 @@ private:
     int m_Width;
     int m_Height;
     bool m_FirstFrame;
+    bool m_recreate = true;
 };

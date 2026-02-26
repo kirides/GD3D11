@@ -57,6 +57,8 @@ public:
         float cameraFar = 1000.0f,
         bool enableSharpening = true, float sharpness = 0.2f);
 
+    void ReleaseResources() { Destroy(); }
+
 private:
     /** Helper to extract an ID3D11Resource from a View (SRV, RTV, etc) */
     ID3D11Resource* GetResourceFromView( ID3D11View* view );

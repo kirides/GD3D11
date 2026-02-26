@@ -12,12 +12,25 @@
 
 class D3D11SMAA {
 public:
-    D3D11SMAA(ID3D11Device* device, ID3D11DeviceContext* context);
-    ~D3D11SMAA();
+    D3D11SMAA(ID3D11Device* device,
+    ID3D11DeviceContext* context,
+    std::wstring shaderPath,
+    std::wstring areaTexPath,
+    std::wstring searchTexPath)
+    : m_device(device), 
+    m_context(context), 
+    m_width(0),
+    m_height(0),
+    m_shaderPath(std::move(shaderPath)),
+    m_areaTexPath(std::move(areaTexPath)),
+    m_searchTexPath(std::move(searchTexPath))
+    {}
+
+    ~D3D11SMAA() = default;
 
     // Load static textures (Area/Search) and compile shaders
     // Returns true on success
-    bool Init(const std::wstring& shaderPath, const std::wstring& areaTexPath, const std::wstring& searchTexPath);
+    bool Init();
 
     // Call when backbuffer resizes
     void OnResize(int width, int height);
@@ -26,14 +39,12 @@ public:
     // inputSRV: The scene color texture (Gamma space usually required for Luma Edge Detect)
     // outputRTV: Where the anti-aliased image will be written
     void Render(ID3D11ShaderResourceView* inputSRV, ID3D11RenderTargetView* outputRTV, TexturePool* pool);
+    void ReleaseResources();
 
 private:
     struct SMAAConstants {
         DirectX::XMFLOAT4 RT_Metrics; // (1/w, 1/h, w, h)
     };
-
-    // Helper to load shaders
-    HRESULT CompileShader(const std::wstring& path, const std::string& entryPoint, const std::string& profile, ID3DBlob** blob);
 
     // Device pointers
     Microsoft::WRL::ComPtr<ID3D11Device> m_device;
@@ -63,4 +74,8 @@ private:
 
     int m_width;
     int m_height;
+    bool m_recreate = true;
+    std::wstring m_shaderPath;
+    std::wstring m_areaTexPath;
+    std::wstring m_searchTexPath;
 };

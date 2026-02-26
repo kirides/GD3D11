@@ -52,19 +52,10 @@ bool D3D11PFX_TAA::Init() {
     sampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
     engine->GetDevice()->CreateSamplerState( &sampDesc, m_samplerPoint.GetAddressOf() );
 
-    return true;
-}
-
-void D3D11PFX_TAA::OnResize(const INT2& size) {
-    auto* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
-    
-    m_Width = size.x;
-    m_Height = size.y;
-    
     // Create history buffer (same format as back buffer for color)
     DXGI_FORMAT format = engine->GetBackBufferFormat();
     m_HistoryBuffer = std::make_unique<RenderToTextureBuffer>(
-        engine->GetDevice().Get(), size.x, size.y, format);
+        engine->GetDevice().Get(), m_Width, m_Height, format);
 
     SetDebugName( m_HistoryBuffer->GetTexture().Get(), "TAA_HistoryBuffer" );
     SetDebugName( m_HistoryBuffer->GetRenderTargetView().Get(), "TAA_HistoryBuffer_RTV" );
@@ -73,7 +64,7 @@ void D3D11PFX_TAA::OnResize(const INT2& size) {
     // Create velocity buffer (RG16F for 2D motion vectors)
     // Using R16G16_FLOAT for high precision motion vectors
     m_VelocityBuffer = std::make_unique<RenderToTextureBuffer>(
-        engine->GetDevice().Get(), size.x, size.y, DXGI_FORMAT_R16G16_FLOAT);
+        engine->GetDevice().Get(), m_Width, m_Height, DXGI_FORMAT_R16G16_FLOAT);
 
     SetDebugName( m_VelocityBuffer->GetTexture().Get(), "TAA_VelocityBuffer" );
     SetDebugName( m_VelocityBuffer->GetRenderTargetView().Get(), "TAA_VelocityBuffer_RTV" );
@@ -84,15 +75,41 @@ void D3D11PFX_TAA::OnResize(const INT2& size) {
     m_JitterIndex = 0;
     m_CurrentJitter = XMFLOAT2(0, 0);
     m_PreviousJitter = XMFLOAT2(0, 0);
+    
+    return true;
+}
+
+void D3D11PFX_TAA::OnResize(const INT2& size) {
+    if (size.x == m_Width && size.y == m_Height) {
+        return;
+    }
+    m_recreate = true;
+    m_Width = size.x;
+    m_Height = size.y;
 }
 
 void D3D11PFX_TAA::OnDisabled() {
     m_CurrentJitter = XMFLOAT2( 0, 0 );
     m_PreviousJitter = XMFLOAT2( 0, 0 );
+    m_JitterIndex = 0;
     m_FirstFrame = true;
 }
 
-void D3D11PFX_TAA::AdvanceJitter() {
+void D3D11PFX_TAA::ReleaseResources() {
+    if ( m_recreate ) {
+        return;
+    }
+    m_recreate = true;
+
+    m_HistoryBuffer.reset();
+    m_VelocityBuffer.reset();
+    m_TAAConstantBuffer.reset();
+    m_VelocityConstantBuffer.reset();
+    m_samplerLinear.Reset();
+    m_samplerPoint.Reset();
+}
+
+void D3D11PFX_TAA::AdvanceJitter() {    
     // Store the previous jitter for removal
     m_PreviousJitter = m_CurrentJitter;
 
@@ -229,6 +246,13 @@ void D3D11PFX_TAA::RenderPostFX(
     const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& currentFrameSRV,
     const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& depthSRV,
     const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& velocitySRV) {
+    
+    if (m_recreate) {
+        if (!Init()) {
+            return;
+        }
+        m_recreate = false;
+    }
     
     auto* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     auto& context = engine->GetContext();

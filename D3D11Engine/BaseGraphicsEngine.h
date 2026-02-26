@@ -8,6 +8,7 @@ class BaseShadowedPointLight;
 class D3D11ConstantBuffer;
 class D3D11Texture;
 class D3D11VertexBuffer;
+struct RenderToTextureBuffer;
 class zCTexture;
 class zCVob;
 struct SkeletalMeshVisualInfo;

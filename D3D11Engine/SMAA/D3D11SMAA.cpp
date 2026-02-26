@@ -10,16 +10,7 @@
 using namespace DirectX;
 using namespace Microsoft::WRL;
 
-D3D11SMAA::D3D11SMAA(ID3D11Device* device, ID3D11DeviceContext* context)
-    : m_device(device), m_context(context), m_width(0), m_height(0)
-{
-}
-
-D3D11SMAA::~D3D11SMAA()
-{
-}
-
-bool D3D11SMAA::Init(const std::wstring& shaderPath, const std::wstring& areaTexPath, const std::wstring& searchTexPath)
+bool D3D11SMAA::Init()
 {
     HRESULT hr;
     ComPtr<ID3DBlob> blob;
@@ -27,32 +18,32 @@ bool D3D11SMAA::Init(const std::wstring& shaderPath, const std::wstring& areaTex
     // 1. Compile Shaders
     // Edge Detection
     std::vector<D3D_SHADER_MACRO> noMacros{};
-    if (FAILED(D3D11ShaderManager::CompileShaderFromFile(shaderPath.c_str(), "EdgeDetectionVS", "vs_5_0", &blob, noMacros))) return false;
+    if (FAILED(D3D11ShaderManager::CompileShaderFromFile(m_shaderPath.c_str(), "EdgeDetectionVS", "vs_5_0", &blob, noMacros))) return false;
     m_device->CreateVertexShader(blob->GetBufferPointer(), blob->GetBufferSize(), nullptr, m_vsEdge.GetAddressOf());
 
-    if (FAILED(D3D11ShaderManager::CompileShaderFromFile(shaderPath.c_str(), "LumaEdgeDetectionPS", "ps_5_0", &blob, noMacros))) return false;
+    if (FAILED(D3D11ShaderManager::CompileShaderFromFile(m_shaderPath.c_str(), "LumaEdgeDetectionPS", "ps_5_0", &blob, noMacros))) return false;
     m_device->CreatePixelShader(blob->GetBufferPointer(), blob->GetBufferSize(), nullptr, m_psLumaEdge.GetAddressOf());
 
     // Blending Weight
-    if (FAILED(D3D11ShaderManager::CompileShaderFromFile(shaderPath.c_str(), "BlendingWeightCalculationVS", "vs_5_0", &blob, noMacros))) return false;
+    if (FAILED(D3D11ShaderManager::CompileShaderFromFile(m_shaderPath.c_str(), "BlendingWeightCalculationVS", "vs_5_0", &blob, noMacros))) return false;
     m_device->CreateVertexShader(blob->GetBufferPointer(), blob->GetBufferSize(), nullptr, m_vsBlend.GetAddressOf());
 
-    if (FAILED(D3D11ShaderManager::CompileShaderFromFile(shaderPath.c_str(), "BlendingWeightCalculationPS", "ps_5_0", &blob, noMacros))) return false;
+    if (FAILED(D3D11ShaderManager::CompileShaderFromFile(m_shaderPath.c_str(), "BlendingWeightCalculationPS", "ps_5_0", &blob, noMacros))) return false;
     m_device->CreatePixelShader(blob->GetBufferPointer(), blob->GetBufferSize(), nullptr, m_psBlend.GetAddressOf());
 
     // Neighborhood Blending
-    if (FAILED(D3D11ShaderManager::CompileShaderFromFile(shaderPath.c_str(), "NeighborhoodBlendingVS", "vs_5_0", &blob, noMacros))) return false;
+    if (FAILED(D3D11ShaderManager::CompileShaderFromFile(m_shaderPath.c_str(), "NeighborhoodBlendingVS", "vs_5_0", &blob, noMacros))) return false;
     m_device->CreateVertexShader(blob->GetBufferPointer(), blob->GetBufferSize(), nullptr, m_vsNeighbor.GetAddressOf());
 
-    if (FAILED(D3D11ShaderManager::CompileShaderFromFile(shaderPath.c_str(), "NeighborhoodBlendingPS", "ps_5_0", &blob, noMacros))) return false;
+    if (FAILED(D3D11ShaderManager::CompileShaderFromFile(m_shaderPath.c_str(), "NeighborhoodBlendingPS", "ps_5_0", &blob, noMacros))) return false;
     m_device->CreatePixelShader(blob->GetBufferPointer(), blob->GetBufferSize(), nullptr, m_psNeighbor.GetAddressOf());
 
     // 2. Load Textures
     // Use DirectXTK CreateDDSTextureFromFile
-    hr = CreateDDSTextureFromFile(m_device.Get(), areaTexPath.c_str(), nullptr, m_areaTexSRV.GetAddressOf());
+    hr = CreateDDSTextureFromFile(m_device.Get(), m_areaTexPath.c_str(), nullptr, m_areaTexSRV.GetAddressOf());
     if (FAILED(hr)) return false;
 
-    hr = CreateDDSTextureFromFile(m_device.Get(), searchTexPath.c_str(), nullptr, m_searchTexSRV.GetAddressOf());
+    hr = CreateDDSTextureFromFile(m_device.Get(), m_searchTexPath.c_str(), nullptr, m_searchTexSRV.GetAddressOf());
     if (FAILED(hr)) return false;
 
     // 3. Create Constant Buffer
@@ -104,14 +95,10 @@ bool D3D11SMAA::Init(const std::wstring& shaderPath, const std::wstring& areaTex
 void D3D11SMAA::OnResize(int width, int height)
 {
     if (m_width == width && m_height == height) return;
+    m_recreate = true;
     
     m_width = width;
     m_height = height;
-
-    // Update Constant Buffer
-    SMAAConstants constants;
-    constants.RT_Metrics = XMFLOAT4(1.0f / width, 1.0f / height, (float)width, (float)height);
-    m_context->UpdateSubresource(m_constantBuffer.Get(), 0, nullptr, &constants, 0, 0);
 }
 
 void D3D11SMAA::Render(ID3D11ShaderResourceView* inputSRV,
@@ -119,6 +106,20 @@ void D3D11SMAA::Render(ID3D11ShaderResourceView* inputSRV,
     TexturePool* pool )
 {
     if (!m_width || !m_height) return;
+    
+    if (m_recreate)
+    {
+        if (!Init()) {
+            return;
+        }
+        
+        // Update Constant Buffer
+        SMAAConstants constants;
+        constants.RT_Metrics = XMFLOAT4(1.0f / static_cast<float>(m_width), 1.0f / static_cast<float>(m_height), static_cast<float>(m_width), static_cast<float>(m_height));
+        m_context->UpdateSubresource(m_constantBuffer.Get(), 0, nullptr, &constants, 0, 0);
+
+        m_recreate = false;
+    }
 
     // Save old state (Optional, but good practice in a library)
     // For performance in an engine, you usually don't save/restore but assume state flow.
@@ -202,4 +203,27 @@ void D3D11SMAA::Render(ID3D11ShaderResourceView* inputSRV,
 
     // Cleanup
     m_context->PSSetShaderResources(0, 3, nullSRVs);
+}
+
+void D3D11SMAA::ReleaseResources() {
+    if ( m_recreate ) {
+        return;
+    }
+    m_recreate = true;
+    
+    // clear any resource used by this
+    m_vsEdge.Reset();
+    m_psLumaEdge.Reset();
+    m_vsBlend.Reset();
+    m_psBlend.Reset();
+    m_vsNeighbor.Reset();
+    m_psNeighbor.Reset();
+    m_areaTexSRV.Reset();
+    m_searchTexSRV.Reset();
+    m_constantBuffer.Reset();
+    m_samplerLinear.Reset();
+    m_samplerPoint.Reset();
+    m_rasterizerState.Reset();
+    m_disableDepthState.Reset();
+    m_blendState.Reset();
 }
