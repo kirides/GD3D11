@@ -2,6 +2,15 @@
 #include <cstdint>
 
 /** Enum flags for shader categories to enable selective reloading */
+enum class ShaderType : byte
+{
+    None = 0,
+    Vertex = 1,
+    Pixel = 2,
+    Geometry = 3,
+    HullDomain = 4,
+    Compute = 5,
+};
 enum class ShaderCategory : uint32_t {
     None = 0,
 

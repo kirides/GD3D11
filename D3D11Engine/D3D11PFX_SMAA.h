@@ -1,8 +1,6 @@
 #pragma once
 #include <d3d11_1.h>
 #include <d3d11shader.h>
-#pragma comment( lib, "d3dcompiler.lib" )
-#pragma comment( lib, "dxguid.lib" )
 
 #include "pch.h"
 #include "d3d11pfx_effect.h"
@@ -14,7 +12,7 @@ class D3D11PFX_SMAA :
     public D3D11PFX_Effect {
 public:
     D3D11PFX_SMAA( D3D11PfxRenderer* rnd );
-    ~D3D11PFX_SMAA();
+    ~D3D11PFX_SMAA() = default;
 
     /** Creates needed resources */
     bool Init();

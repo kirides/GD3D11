@@ -31,7 +31,7 @@ struct VelocityBufferConstantBuffer {
 class D3D11PFX_TAA : public D3D11PFX_Effect {
 public:
     D3D11PFX_TAA(D3D11PfxRenderer* rnd);
-    ~D3D11PFX_TAA();
+    ~D3D11PFX_TAA() = default;
 
     /** Initialize TAA resources */
     bool Init();

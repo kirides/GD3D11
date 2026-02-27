@@ -1,5 +1,8 @@
 #include "pch.h"
 #include "D3D11PFX_TAA.h"
+
+#include <FidelityFX/host/ffx_fsr2.h>
+
 #include "Engine.h"
 #include "D3D11GraphicsEngine.h"
 #include "D3D11PfxRenderer.h"
@@ -21,8 +24,6 @@ D3D11PFX_TAA::D3D11PFX_TAA(D3D11PfxRenderer* rnd)
     XMStoreFloat4x4( &m_PrevViewProj, XMMatrixIdentity() );
     XMStoreFloat4x4( &m_UnjitteredViewProj, XMMatrixIdentity() );
 }
-
-D3D11PFX_TAA::~D3D11PFX_TAA() {}
 
 bool D3D11PFX_TAA::Init() {
     auto* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);

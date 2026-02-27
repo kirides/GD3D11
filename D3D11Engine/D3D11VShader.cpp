@@ -18,7 +18,7 @@ D3D11VShader::~D3D11VShader() {
 }
 
 /** Loads shader */
-XRESULT D3D11VShader::LoadShader( const char* vertexShader, int layout, const std::vector<D3D_SHADER_MACRO>& makros ) {
+XRESULT D3D11VShader::LoadShader( const char* vertexShader, int layout, const char* entryPoint, const std::vector<D3D_SHADER_MACRO>& makros ) {
     HRESULT hr;
     D3D11GraphicsEngineBase* engine = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine);
 
@@ -28,7 +28,8 @@ XRESULT D3D11VShader::LoadShader( const char* vertexShader, int layout, const st
         LogInfo() << "Compilling vertex shader: " << vertexShader;
 
     // Compile shader
-    if ( FAILED( D3D11ShaderManager::CompileShaderFromFile( vertexShader, "VSMain", (FeatureLevel10Compatibility ? "vs_4_0" : "vs_5_0"), vsBlob.GetAddressOf(), makros)) ) {
+    if ( entryPoint == nullptr ) { entryPoint = "VSMain"; }
+    if ( FAILED( D3D11ShaderManager::CompileShaderFromFile( vertexShader, entryPoint, (FeatureLevel10Compatibility ? "vs_4_0" : "vs_5_0"), vsBlob.GetAddressOf(), makros)) ) {
         return XR_FAILED;
     }
 

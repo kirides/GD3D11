@@ -13,13 +13,27 @@ struct RenderToTextureBuffer {
     }
 
     /** Creates the render-to-texture buffers */
-    RenderToTextureBuffer( const Microsoft::WRL::ComPtr<ID3D11Device1>& device, UINT SizeX, UINT SizeY, DXGI_FORMAT Format, HRESULT* Result = nullptr, DXGI_FORMAT RTVFormat = DXGI_FORMAT_UNKNOWN, DXGI_FORMAT SRVFormat = DXGI_FORMAT_UNKNOWN, int MipLevels = 1, UINT arraySize = 1 ) {
+    RenderToTextureBuffer( const Microsoft::WRL::ComPtr<ID3D11Device1>& device,
+        UINT SizeX, 
+        UINT SizeY,
+        DXGI_FORMAT Format, 
+        HRESULT* Result = nullptr, 
+        DXGI_FORMAT RTVFormat = DXGI_FORMAT_UNKNOWN, 
+        DXGI_FORMAT SRVFormat = DXGI_FORMAT_UNKNOWN, 
+        int MipLevels = 1, 
+        UINT arraySize = 1,
+        uint32_t bindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE) {
         HRESULT hr = S_OK;
 
         ZeroMemory( CubeMapRTVs, sizeof( CubeMapRTVs ) );
 
         if ( SizeX == 0 || SizeY == 0 ) {
             LogError() << L"SizeX or SizeY can't be 0";
+        }
+        
+        if (bindFlags == 0) {
+            // default to RTV and SRV
+            bindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
         }
 
         this->SizeX = SizeX;
@@ -36,7 +50,7 @@ struct RenderToTextureBuffer {
             SizeY,
             arraySize,
             MipLevels,
-            D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS );
+            (D3D11_BIND_FLAG)bindFlags );
 
         if ( arraySize > 1 )
             Desc.MiscFlags |= D3D11_RESOURCE_MISC_TEXTURECUBE;
@@ -44,7 +58,7 @@ struct RenderToTextureBuffer {
         if ( MipLevels != 1 )
             Desc.MiscFlags = D3D11_RESOURCE_MISC_GENERATE_MIPS;
 
-        LE( device->CreateTexture2D( &Desc, nullptr, Texture.GetAddressOf() ) );
+        LE( device->CreateTexture2D( &Desc, nullptr, Texture.ReleaseAndGetAddressOf() ) );
 
         // Can't do further work if texture is null.
         if ( !Texture.Get() ) return;
@@ -62,7 +76,7 @@ struct RenderToTextureBuffer {
             DescRT.Texture2DArray.FirstArraySlice = 0;
         }
 
-        LE( device->CreateRenderTargetView( Texture.Get(), &DescRT, RenderTargetView.GetAddressOf() ) );
+        LE( device->CreateRenderTargetView( Texture.Get(), &DescRT, RenderTargetView.ReleaseAndGetAddressOf() ) );
 
         if ( arraySize > 1 ) {
             // Create the one-face render target views
@@ -85,7 +99,7 @@ struct RenderToTextureBuffer {
         DescRV.Texture2D.MipLevels = MipLevels;
         DescRV.Texture2D.MostDetailedMip = 0;
 
-        LE( device->CreateShaderResourceView( Texture.Get(), &DescRV, ShaderResView.GetAddressOf() ) );
+        LE( device->CreateShaderResourceView( Texture.Get(), &DescRV, ShaderResView.ReleaseAndGetAddressOf() ) );
 
         if ( FAILED( hr ) ) {
             LogError() << L"Coould not create ID3D11Texture2D, ID3D11ShaderResourceView, or ID3D11RenderTargetView. Killing created resources (If any).";
@@ -94,7 +108,7 @@ struct RenderToTextureBuffer {
             return;
         }
 
-        /*if ( arraySize <= 1 ) {
+        if ( arraySize <= 1 && (Desc.BindFlags & D3D11_BIND_UNORDERED_ACCESS) ) {
             D3D11_UNORDERED_ACCESS_VIEW_DESC DescUAV = CD3D11_UNORDERED_ACCESS_VIEW_DESC();
             DescUAV.Format = Desc.Format;
             if ( DescUAV.Format == DXGI_FORMAT_R32_TYPELESS ) {
@@ -104,9 +118,9 @@ struct RenderToTextureBuffer {
             DescUAV.Texture2D.MipSlice = 0;
 
             auto oldHR = hr;
-            LE( device->CreateUnorderedAccessView( Texture.Get(), &DescUAV, UnorderedAccessView.GetAddressOf() ) );
+            LE( device->CreateUnorderedAccessView( Texture.Get(), &DescUAV, UnorderedAccessView.ReleaseAndGetAddressOf() ) );
             hr = oldHR;
-        }*/
+        }
 
         //LogInfo() << L"Successfully created ID3D11Texture2D, ID3D11ShaderResourceView, and ID3D11RenderTargetView.";
         if ( Result )*Result = hr;
@@ -186,7 +200,7 @@ struct RenderToDepthStencilBuffer {
             SizeY,
             arraySize,
             1,
-            D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE );
+            D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE);
 
         if ( arraySize > 1 )
             Desc.MiscFlags |= D3D11_RESOURCE_MISC_TEXTURECUBE;

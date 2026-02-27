@@ -16,7 +16,7 @@ D3D11CShader::~D3D11CShader() {
 }
 
 /** Loads both shaders at the same time */
-XRESULT D3D11CShader::LoadShader( const char* computeShader, const std::vector<D3D_SHADER_MACRO>& makros ) {
+XRESULT D3D11CShader::LoadShader( const char* computeShader, const char* entryPoint, const std::vector<D3D_SHADER_MACRO>& makros ) {
     HRESULT hr;
     D3D11GraphicsEngineBase* engine = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine);
 
@@ -26,7 +26,8 @@ XRESULT D3D11CShader::LoadShader( const char* computeShader, const std::vector<D
         LogInfo() << "Compilling compute shader: " << computeShader;
 
     // Compile shaders
-    if ( FAILED( D3D11ShaderManager::CompileShaderFromFile( computeShader, "CSMain", "cs_5_0", psBlob.GetAddressOf(), makros ) ) ) {
+    if ( entryPoint == nullptr ) { entryPoint = "CSMain"; }
+    if ( FAILED( D3D11ShaderManager::CompileShaderFromFile( computeShader, entryPoint, "cs_5_0", psBlob.GetAddressOf(), makros ) ) ) {
         return XR_FAILED;
     }
 

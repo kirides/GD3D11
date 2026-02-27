@@ -798,9 +798,6 @@
       <Filter>Engine\Graph</Filter>
     </ClInclude>
     <ClInclude Include="D3D11RenderQueue.h" />
-    <ClInclude Include="MeshManager.h">
-      <Filter>Engine\GAPI</Filter>
-    </ClInclude>
     <ClInclude Include="D3D11PFX_FSR3.h">
       <Filter>Engine\D3D11\PFX\Effects</Filter>
     </ClInclude>
@@ -866,9 +863,6 @@
     </ClCompile>
     <ClCompile Include="GInventory.cpp">
       <Filter>Engine\GAPI\Objects</Filter>
-    </ClCompile>
-    <ClCompile Include="D3D11PFX_Effect.cpp">
-      <Filter>Engine\D3D11\PFX\Effects</Filter>
     </ClCompile>
     <ClCompile Include="GSpriteCloud.cpp">
       <Filter>Engine\GAPI\Objects</Filter>
@@ -1132,8 +1126,14 @@
     <None Include="Shaders\PS_PFX_Velocity.hlsl">
       <Filter>Engine\Shaders</Filter>
     </None>
-    <None Include="Shaders\PS_Grass.hlsl" />
-    <None Include="Shaders\VS_GrassInstanced.hlsl" />
-    <None Include="Shaders\PS_PFX_VelocityDebug.hlsl" />
+    <None Include="Shaders\VS_GrassInstanced.hlsl">
+      <Filter>Engine\Shaders</Filter>
+    </None>
+    <None Include="Shaders\PS_Grass.hlsl">
+      <Filter>Engine\Shaders</Filter>
+    </None>
+    <None Include="Shaders\PS_PFX_VelocityDebug.hlsl">
+      <Filter>Engine\Shaders</Filter>
+    </None>
   </ItemGroup>
 </Project>

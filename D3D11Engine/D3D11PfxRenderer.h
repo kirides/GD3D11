@@ -1,12 +1,12 @@
 #pragma once
 #include "pch.h"
-#include "D3D11PFX_TAA.h"
-#include "D3D11PFX_CAS.h"
-#include "D3D11PFX_FSR1.h"
 #include "TexturePool.h"
-#include "D3D11PFX_FSR2.h"
-#include "D3D11PFX_FSR3.h"
 
+class D3D11PFX_FSR3;
+class D3D11PFX_FSR2;
+class D3D11PFX_FSR1;
+class D3D11PFX_CAS;
+class D3D11PFX_TAA;
 struct RenderToTextureBuffer;
 class D3D11PFX_Blur;
 class D3D11PFX_HeightFog;

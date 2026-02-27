@@ -9,13 +9,16 @@
 #include "D3D11PFX_Blur.h"
 #include "D3D11PFX_HeightFog.h"
 #include "D3D11PFX_DistanceBlur.h"
-#include "D3D11PFX_HDR.h"
 #include "D3D11NVHBAO.h"
+#include "D3D11PFX_HDR.h"
 #include "D3D11PFX_SMAA.h"
 #include "D3D11PFX_GodRays.h"
 #include "D3D11PFX_TAA.h"
 #include "D3D11PFX_SimpleSharpen.h"
+#include "D3D11PFX_CAS.h"
 #include "D3D11PFX_FSR1.h"
+#include "D3D11PFX_FSR2.h"
+#include "D3D11PFX_FSR3.h"
 
 D3D11PfxRenderer::D3D11PfxRenderer() {
 
@@ -213,7 +216,8 @@ XRESULT D3D11PfxRenderer::OnResize( const INT2& newResolution ) {
     m_texturePool->Clear(); // textures will be created on demand
     if ( !FeatureLevel10Compatibility ) {
         FX_SMAA->OnResize( newResolution );
-        FX_TAA->OnResize( newResolution );}
+        FX_TAA->OnResize( newResolution );
+    }
 
     return XR_SUCCESS;
 }

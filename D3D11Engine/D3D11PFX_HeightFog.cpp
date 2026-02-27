@@ -12,10 +12,6 @@
 #include "GothicAPI.h"
 #include "GSky.h"
 
-D3D11PFX_HeightFog::D3D11PFX_HeightFog( D3D11PfxRenderer* rnd ) : D3D11PFX_Effect( rnd ) {}
-
-D3D11PFX_HeightFog::~D3D11PFX_HeightFog() {}
-
 /** Draws this effect to the given buffer */
 XRESULT D3D11PFX_HeightFog::Render( RenderToTextureBuffer* fxbuffer ) {
 	D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);

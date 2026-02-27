@@ -9,7 +9,7 @@ public:
     ~D3D11CShader();
 
     /** Loads shader */
-    XRESULT LoadShader( const char* computeShader, const std::vector<D3D_SHADER_MACRO>& makros = std::vector<D3D_SHADER_MACRO>() );
+    XRESULT LoadShader( const char* computeShader, const char* entryPoint, const std::vector<D3D_SHADER_MACRO>& makros = std::vector<D3D_SHADER_MACRO>() );
 
     /** Applys the shader */
     XRESULT Apply();

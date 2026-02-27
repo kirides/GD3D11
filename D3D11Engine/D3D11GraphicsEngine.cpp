@@ -43,6 +43,9 @@
 #include "SteamOverlay.h"
 #include <dxgi1_6.h>
 
+#include "D3D11PFX_FSR1.h"
+#include "D3D11PFX_FSR2.h"
+#include "D3D11PFX_TAA.h"
 #include "ImGuiShim.h"
 #include "zCModel.h"
 #include "zCOption.h"
@@ -937,14 +940,10 @@ XRESULT D3D11GraphicsEngine::RecreateBuffers() {
     SetDebugName( VelocityBuffer->GetShaderResView().Get(), "VelocityBuffer->SRV" );
     SetDebugName( VelocityBuffer->GetRenderTargetView().Get(), "VelocityBuffer->RTV" );
 
-    HDRBackBuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), roundedTextureResolution.x, roundedTextureResolution.y, GetBackBufferFormat() );
-
-    SetDebugName( HDRBackBuffer->GetTexture().Get(), "HDRBackBuffer->TEX" );
-    SetDebugName( HDRBackBuffer->GetShaderResView().Get(), "HDRBackBuffer->SRV" );
-    SetDebugName( HDRBackBuffer->GetRenderTargetView().Get(), "HDRBackBuffer->RTV" );
+    OnResetBackBuffer();
 
     // actual native-resolution backbuffer for UI and copy operations !!
-    Backbuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), Resolution.x, Resolution.y, DXGI_FORMAT_ENGINE_SWAPCHAIN );
+    Backbuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), Resolution.x, Resolution.y, DXGI_FORMAT_ENGINE_SWAPCHAIN, nullptr, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, 1, 1, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS );
 
     SetDebugName( Backbuffer->GetTexture().Get(), "Backbuffer->TEX" );
     SetDebugName( Backbuffer->GetShaderResView().Get(), "Backbuffer->SRV" );

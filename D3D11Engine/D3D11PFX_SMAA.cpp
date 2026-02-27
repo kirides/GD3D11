@@ -11,10 +11,6 @@ D3D11PFX_SMAA::D3D11PFX_SMAA( D3D11PfxRenderer* rnd ) : D3D11PFX_Effect( rnd ) {
     Init();
 }
 
-D3D11PFX_SMAA::~D3D11PFX_SMAA() {
-    m_Native.reset();
-}
-
 /** Creates needed resources */
 bool D3D11PFX_SMAA::Init() {
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);

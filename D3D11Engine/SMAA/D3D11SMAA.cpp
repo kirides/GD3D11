@@ -4,9 +4,6 @@
 // Include DirectXTK or your preferred texture loader
 #include "DDSTextureLoader.h" // Assuming DirectXTK availability
 
-#pragma comment(lib, "d3d11.lib")
-#pragma comment(lib, "d3dcompiler.lib")
-
 using namespace DirectX;
 using namespace Microsoft::WRL;
 

@@ -12,33 +12,61 @@ struct ShaderInfo {
 public:
     std::string name;				//Shader's name, used as key in map
     std::string fileName;			//Shader's filename (without 'system\\GD3D11\\shaders\\')
-    std::string type;				//Shader's type: 'v' vertexShader, 'p' pixelShader
+    ShaderType type;				//Shader's type: 'v' vertexShader, 'p' pixelShader
+    std::string entryPoint;				//Shader's type: 'v' vertexShader, 'p' pixelShader
     int layout;						//Shader's input layout
     std::vector<int> cBufferSizes;	//Vector with size for each constant buffer to be created for this shader
     std::vector<D3D_SHADER_MACRO> shaderMakros;
     ShaderCategory contentCategory;	//Content category for selective reloading
 
+    static std::string EntrypointForType(const std::string& t)
+    {
+        if (t == "v") return "VSMain";
+        if (t == "p") return "PSMain";
+        if (t == "c") return "CSMain";
+        if (t == "hd") return "HSMain";
+        if (t == "g") return "GSMain";
+        return "main";
+    }
+    
+    static ShaderType ShaderTypeForType(const std::string& t) {
+        if (t == "v") return ShaderType::Vertex;
+        if (t == "p") return ShaderType::Pixel;
+        if (t == "g") return ShaderType::Geometry;
+        if (t == "hd") return ShaderType::HullDomain;
+        if (t == "c") return ShaderType::Compute;
+        return ShaderType::None;
+    }
+    
     //Constructor
-    ShaderInfo( std::string n, std::string fn, std::string t, int l, std::vector<D3D_SHADER_MACRO>& makros = std::vector<D3D_SHADER_MACRO>(), ShaderCategory category = ShaderCategory::Other ) {
-        name = n;
-        fileName = fn;
-        type = t;
+    ShaderInfo( std::string n, std::string fn, const std::string& t, int l, std::vector<D3D_SHADER_MACRO>& makros = std::vector<D3D_SHADER_MACRO>(), ShaderCategory category = ShaderCategory::Other ) {
+        name = std::move(n);
+        fileName = std::move(fn);
+        type = ShaderTypeForType(t);
         layout = l;
         cBufferSizes = std::vector<int>();
         shaderMakros = makros;
         contentCategory = category;
+        entryPoint = EntrypointForType(t);
     }
 
     //Constructor
-    ShaderInfo( std::string n, std::string fn, std::string t, std::vector<D3D_SHADER_MACRO>& makros = std::vector<D3D_SHADER_MACRO>(), ShaderCategory category = ShaderCategory::Other ) {
-        name = n;
-        fileName = fn;
-        type = t;
-        layout = 0;
-        cBufferSizes = std::vector<int>();
-        shaderMakros = makros;
-        contentCategory = category;
+    ShaderInfo( std::string n, std::string fn, const std::string& t, std::vector<D3D_SHADER_MACRO>& makros = std::vector<D3D_SHADER_MACRO>(), ShaderCategory category = ShaderCategory::Other )
+        :ShaderInfo(std::move(n), std::move(fn), t, makros, EntrypointForType(t), category)
+    {
     }
+    
+    ShaderInfo( std::string n, std::string fn, const std::string& t, std::vector<D3D_SHADER_MACRO>& makros, std::string entryPoint, ShaderCategory category = ShaderCategory::Other ) 
+        :
+        name(std::move(n)),
+        fileName(std::move(fn)),
+        type(ShaderTypeForType(t)),
+        layout(0),
+        cBufferSizes(std::vector<int>()),
+        shaderMakros(makros),
+        contentCategory(category),
+        entryPoint(std::move(entryPoint))
+    { }
 };
 
 class D3D11ShaderManager {

@@ -623,7 +623,9 @@ void ImGuiShim::RenderSettingsWindow()
                 Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows );
             }
 
-            ImGui::Checkbox( "Compress Backbuffer", &settings.CompressBackBuffer );
+            if ( ImGui::Checkbox( "Compress Backbuffer", &settings.CompressBackBuffer ) ) {
+                Engine::GAPI->UpdateCompressBackBuffer();
+            }
             ImGui::Checkbox( "Animate Static Vobs", &settings.AnimateStaticVobs );
 
 #if defined(BUILD_GOTHIC_2_6_fix) || (defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F))
@@ -1337,36 +1339,36 @@ void RenderAdvancedColumn3( GothicRendererSettings& settings, GothicAPI* gapi ) 
 
 void RenderAdvancedColumn4( GothicRendererSettings& settings, GothicAPI* gapi ) {
     if ( ImGui::Begin( "Post Processing Effects", nullptr, ImGuiWindowFlags_NoCollapse ) ) {
-        ImGui::SeparatorText( "HBAO+ Settings" );
-        {
-            ImGui::PushID( "HBAOSettings" );
-            ImGui::Checkbox( "Enable HBAO+", &settings.HbaoSettings.Enabled );
-            ImGui::DragFloat( "Radius", &settings.HbaoSettings.Radius, 0.01f );
-            ImGui::DragFloat( "MetersToViewSpaceUnits", &settings.HbaoSettings.MetersToViewSpaceUnits, 0.01f );
-            if ( ImGui::DragFloat( "PowerExponent", &settings.HbaoSettings.PowerExponent, 0.01f ) ) {
-                settings.HbaoSettings.PowerExponent = std::clamp( settings.HbaoSettings.PowerExponent, 1.0f, 4.0f );
-            }
-            if ( ImGui::DragFloat( "Bias", &settings.HbaoSettings.Bias, 0.01f ) ) {
-                settings.HbaoSettings.Bias = std::clamp( settings.HbaoSettings.Bias, 0.0f, 0.5f );
-            }
+            ImGui::SeparatorText( "HBAO+ Settings" );
+            {
+                ImGui::PushID( "HBAOSettings" );
+                ImGui::Checkbox( "Enable HBAO+", &settings.HbaoSettings.Enabled );
+                ImGui::DragFloat( "Radius", &settings.HbaoSettings.Radius, 0.01f );
+                ImGui::DragFloat( "MetersToViewSpaceUnits", &settings.HbaoSettings.MetersToViewSpaceUnits, 0.01f );
+                if ( ImGui::DragFloat( "PowerExponent", &settings.HbaoSettings.PowerExponent, 0.01f ) ) {
+                    settings.HbaoSettings.PowerExponent = std::clamp( settings.HbaoSettings.PowerExponent, 1.0f, 4.0f );
+                }
+                if ( ImGui::DragFloat( "Bias", &settings.HbaoSettings.Bias, 0.01f ) ) {
+                    settings.HbaoSettings.Bias = std::clamp( settings.HbaoSettings.Bias, 0.0f, 0.5f );
+                }
 
-            ImGui::Checkbox( "Enable Blur", &settings.HbaoSettings.EnableBlur );
-            static std::vector<std::pair<const char*, int>> ssaoRadi = { {"2", 0}, {"4", 1} };
-            if ( ImComboBox( "SSAO radius", ssaoRadi, &settings.HbaoSettings.SsaoBlurRadius ) ) {
-                ImGui::EndCombo();
-            }
-            ImGui::DragFloat( "BlurSharpness", &settings.HbaoSettings.BlurSharpness, 0.01f );
-            static std::vector<std::pair<const char*, int>> blendMode = { {"Replace", 0}, {"Multiply", 1} };
-            if ( ImComboBox( "BlendMode", blendMode, &settings.HbaoSettings.BlendMode ) ) {
-                ImGui::EndCombo();
-            }
+                ImGui::Checkbox( "Enable Blur", &settings.HbaoSettings.EnableBlur );
+                static std::vector<std::pair<const char*, int>> ssaoRadi = { {"2", 0}, {"4", 1} };
+                if ( ImComboBox( "SSAO radius", ssaoRadi, &settings.HbaoSettings.SsaoBlurRadius ) ) {
+                    ImGui::EndCombo();
+                }
+                ImGui::DragFloat( "BlurSharpness", &settings.HbaoSettings.BlurSharpness, 0.01f );
+                static std::vector<std::pair<const char*, int>> blendMode = { {"Replace", 0}, {"Multiply", 1} };
+                if ( ImComboBox( "BlendMode", blendMode, &settings.HbaoSettings.BlendMode ) ) {
+                    ImGui::EndCombo();
+                }
 
-            static std::vector<std::pair<const char*, int>> stepCount = { {"4", 0}, {"8", 1} };
-            if ( ImComboBox( "SSAO steps", stepCount, &settings.HbaoSettings.SsaoStepCount ) ) {
-                ImGui::EndCombo();
+                static std::vector<std::pair<const char*, int>> stepCount = { {"4", 0}, {"8", 1} };
+                if ( ImComboBox( "SSAO steps", stepCount, &settings.HbaoSettings.SsaoStepCount ) ) {
+                    ImGui::EndCombo();
+                }
+                ImGui::PopID();
             }
-            ImGui::PopID();
-        }
 
         ImGui::SeparatorText( "Anti Aliasing" );
         {
