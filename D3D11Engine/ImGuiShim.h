@@ -30,7 +30,7 @@ public:
     //bool DemoVisible = false;
     HWND OutputWindow = HWND( 0 );
     INT2 CurrentResolution = INT2( 800, 600 );
-    int ResolutionState = 0;
+    size_t ResolutionState = 0;
     std::vector<std::pair<INT2,std::string>> Resolutions;
 
     bool GetIsActive();

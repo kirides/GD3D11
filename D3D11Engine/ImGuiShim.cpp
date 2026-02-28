@@ -570,6 +570,8 @@ void ImGuiShim::RenderSettingsWindow()
 
     static const char* settingsLabel = "GD3D11 " VERSION_NUMBER;
 
+    ShaderCategory shadersToReload = ShaderCategory::None;
+
     ImGui::SetNextWindowPos( ImVec2( windowSize.x / 2, windowSize.y / 2 ), ImGuiCond_Appearing, ImVec2( 0.5f, 0.5f ) );
     if ( ImGui::Begin( settingsLabel, nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize ) ) {
         GothicRendererSettings& settings = Engine::GAPI->GetRendererState().RendererSettings;
@@ -617,10 +619,10 @@ void ImGuiShim::RenderSettingsWindow()
 
             ImGui::Checkbox( "HDR", &settings.EnableHDR );
             if ( ImGui::Checkbox( "Shadows", &settings.EnableShadows ) ) {
-                Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows );
+                shadersToReload |= ShaderCategory::LightsAndShadows;
             }
             if ( ImGui::Checkbox( "Shadow filtering", &settings.EnableSoftShadows ) ) {
-                Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows );
+                shadersToReload |= ShaderCategory::LightsAndShadows;
             }
 
             if ( ImGui::Checkbox( "Compress Backbuffer", &settings.CompressBackBuffer ) ) {
@@ -638,7 +640,7 @@ void ImGuiShim::RenderSettingsWindow()
                     settings.WindQuality = windEffect
                         ? GothicRendererSettings::EWindQuality::WIND_QUALITY_ADVANCED
                         : GothicRendererSettings::EWindQuality::WIND_QUALITY_NONE;
-                    Engine::GraphicsEngine->ReloadShaders( ShaderCategory::Other );
+                    shadersToReload |= ShaderCategory::Other;
                 }
                 ImGui::SetItemTooltip( "Enables trees, grass and wheats to wave with the wind" );
 
@@ -650,7 +652,7 @@ void ImGuiShim::RenderSettingsWindow()
             }
 
             if ( ImGui::Checkbox( "Hero affects objects", &settings.HeroAffectsObjects ) ) {
-                Engine::GraphicsEngine->ReloadShaders( ShaderCategory::Other );
+                shadersToReload |= ShaderCategory::Other;
             }
             ImGui::SetItemTooltip( "Grass and wheats may move when the player runs through it." );
 #endif //BUILD_GOTHIC_2_6_fix
@@ -658,7 +660,7 @@ void ImGuiShim::RenderSettingsWindow()
             ImGui::Checkbox( "Enable Rain", &settings.EnableRain );
             ImGui::Checkbox( "Enable Rain Effects", &settings.EnableRainEffects );
             if ( ImGui::Checkbox( "Enable Water waves", &settings.EnableWaterAnimation ) ) {
-                Engine::GraphicsEngine->ReloadShaders( ShaderCategory::Water );
+                shadersToReload |= ShaderCategory::Water;
             }
             ImGui::Checkbox( "Limit Light Intensity", &settings.LimitLightIntesity );
             ImGui::Checkbox( "Draw World Section Intersections", &settings.DrawSectionIntersections );
@@ -676,7 +678,7 @@ void ImGuiShim::RenderSettingsWindow()
             ImGui::BeginGroup();
             ImGui::PushItemWidth( 250 );
 
-            for (int i = 0; i < Resolutions.size(); ++i){
+            for (size_t i = 0; i < Resolutions.size(); ++i){
                 if (Resolutions[i].first == CurrentResolution) {
                     ResolutionState = i;
                     break;
@@ -829,8 +831,8 @@ void ImGuiShim::RenderSettingsWindow()
                 ? shadowMapSizesDxFeature10
                 : shadowMapSizesMax;
 
-            if ( ImComboBoxC( "##ShadowQuality", shadowMapSizes, &settings.ShadowMapSize, []{
-                Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows );
+            if ( ImComboBoxC( "##ShadowQuality", shadowMapSizes, &settings.ShadowMapSize, [&shadersToReload]{
+                shadersToReload |= ShaderCategory::LightsAndShadows;
             } ) ) {
                 ImGui::EndCombo();
             }
@@ -912,6 +914,9 @@ void ImGuiShim::RenderSettingsWindow()
     }
     ImGui::End();
 
+    if ( shadersToReload != ShaderCategory::None ) {
+        Engine::GraphicsEngine->ReloadShaders( shadersToReload );
+    }
 }
 
 void RenderAdvancedColumn1( GothicRendererSettings& settings, GothicAPI* gapi ) {
