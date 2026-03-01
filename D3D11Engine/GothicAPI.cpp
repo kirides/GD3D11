@@ -4292,7 +4292,7 @@ static void CVVH_AddNotDrawnVobToList(
 
         if ( bspContainment != ContainmentType::CONTAINS // only do frustum check if previously "INTERSECTS"
             && cullingEnabled
-            && !ctx.frustum.Intersects( Frustum::BBoxFromzTBBox3D( it->Vob->GetBBox() ) ) ) {
+            && !ctx.frustum.Intersects( it->Vob->GetBBox() ) ) {
             continue;
         }
         if ( it->Vob->GetVisualAlpha() ) {
@@ -4326,7 +4326,7 @@ static void CVVH_AddNotDrawnVobToList(
         }
         if ( bspContainment != ContainmentType::CONTAINS // only do frustum check if previously "INTERSECTS"
             && cullingEnabled
-            && !ctx.frustum.Intersects( Frustum::BBoxFromzTBBox3D( it->Vob->GetBBox() ) ) ) {
+            && !ctx.frustum.Intersects( it->Vob->GetBBox() ) ) {
             continue;
         }
 
@@ -5818,14 +5818,6 @@ static void CollectVisibleVobsHelper( BspInfo* base,
             if ( collectFlags & COLLECT_LIGHTS
                     && RendererState.RendererSettings.EnableDynamicLighting && dist < visualFXDrawRadius ) {
                 // Add dynamic lights
-                XMVECTOR playerPosition = Engine::GAPI->GetPlayerVob() != nullptr ? Engine::GAPI->GetPlayerVob()->GetPositionWorldXM() : XMVectorSet( FLT_MAX, FLT_MAX, FLT_MAX, 0 );
-
-
-                // Take cameraposition if we are freelooking
-                if ( zCCamera::IsFreeLookActive() ) {
-                    playerPosition = cameraPosition;
-                }
-
                 for ( int i = 0; i < leaf->LightVobList.NumInArray; i++ ) {
                     zCVobLight* vob = leaf->LightVobList.Array[i];
 
@@ -5966,7 +5958,7 @@ void GothicAPI::CollectVisibleVobs( const RndCullContext& ctx ) {
                     continue;
                 }
 
-                if ( cullingEnabled && !ctx.frustum.Intersects( Frustum::BBoxFromzTBBox3D( it->Vob->GetBBox() ) ) ) {
+                if ( cullingEnabled && !ctx.frustum.Intersects( it->Vob->GetBBox() ) ) {
                     continue;
                 }
 
