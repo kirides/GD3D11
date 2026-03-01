@@ -470,7 +470,7 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.ShadowSoftness = 1.0f;
         s.SmoothShadowCameraUpdate = false;
         s.SmoothShadowFrequency = 20000;
-        s.ShadowDrawDistance = 20'000.0f;
+        s.ShadowDrawDistance = 15'000.0f;
 
         s.EnableDynamicLighting = true;
         s.EnablePointlightShadows = GothicRendererSettings::EPointLightShadowMode::PLS_UPDATE_DYNAMIC;
@@ -505,7 +505,7 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.ShadowSoftness = 1.0f;
         s.SmoothShadowCameraUpdate = false;
         s.SmoothShadowFrequency = 20000;
-        s.ShadowDrawDistance = 25'000.0f;
+        s.ShadowDrawDistance = 15'000.0f;
 
         s.EnableDynamicLighting = true;
         s.EnablePointlightShadows = GothicRendererSettings::EPointLightShadowMode::PLS_FULL;
