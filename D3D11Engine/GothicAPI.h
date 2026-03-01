@@ -45,11 +45,6 @@ struct RndCullContext {
     } drawDistances;
 };
 
-using VisitStaticVobCallback = void(*)( const RndCullContext&, VobInfo* );
-using VisitTransparentVobCallback = void(*)( const RndCullContext&, const TransparencyVobInfo& );
-using VisitSkeletalVobCallback = void(*)( const RndCullContext&, SkeletalVobInfo* );
-using VisitLightVobCallback = void(*)( const RndCullContext&, VobLightInfo* );
-
 enum EBspTreeCollectFlags : unsigned int {
     COLLECT_VOBS = 1 << 0,
     COLLECT_LIGHTS = 1 << 1,
@@ -212,10 +207,6 @@ class zCMorphMesh;
 class zCDecal;
 
 class GothicAPI {
-    friend void CVVH_AddNotDrawnVobToList( std::vector<VobInfo*>& target, std::vector<VobInfo*>& source, float dist, int clipFlags, EBspTreeCollectFlags collectFlags, zTCam_ClipType bspClip );
-    friend void CVVH_AddNotDrawnVobToList( std::vector<VobLightInfo*>& target, std::vector<VobLightInfo*>& source, float dist, int clipFlags, EBspTreeCollectFlags collectFlags, zTCam_ClipType bspClip );
-    friend void CVVH_AddNotDrawnVobToList( std::vector<SkeletalVobInfo*>& target, std::vector<SkeletalVobInfo*>& source, float dist, int clipFlags, EBspTreeCollectFlags collectFlags, zTCam_ClipType bspClip );
-
 public:
     GothicAPI();
     ~GothicAPI();
@@ -536,13 +527,7 @@ public:
         EBspTreeCollectFlags collectFlags = EBspTreeCollectFlags::COLLECT_ALL_MUTATE);
 
     void CollectVisibleVobs( const RndCullContext& ctx );
-    void CollectVisibleVobsHelper( BspInfo* base, zTBBox3D boxCell, const RndCullContext& ctx,
-        BspTreeVobVisitor* visitor,
-        DirectX::ContainmentType inheritedContainment,
-        VisitStaticVobCallback staticVobCallback, 
-        VisitTransparentVobCallback alphaVobCallback,
-        VisitSkeletalVobCallback skeltalVobCallback,
-    VisitLightVobCallback lightVobCallback );
+
     /** Collects visible sections from the current camera perspective */
     void CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sections );
 
@@ -849,7 +834,10 @@ private:
 
     /** Map of vobs and VobIndfos */
     std::unordered_map<zCVob*, VobInfo*> VobMap;
+public:
+    // temporarily, to allow CollectVisibleVobsHelper to be templated for inlining optimizations
     std::unordered_map<zCVobLight*, VobLightInfo*> VobLightMap;
+private:
     std::unordered_map<zCVob*, SkeletalVobInfo*> SkeletalVobMap;
 
     /** Map of VobInfo-Lists for zCBspLeafs */
