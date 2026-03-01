@@ -4270,21 +4270,13 @@ std::vector<VobInfo*>::iterator GothicAPI::MoveVobFromBspToDynamic( VobInfo* vob
     return itn;
 }
 
-template<
-    typename VisitStaticVobCallback,
-    typename VisitTransparentVobCallback
->
 static void CVVH_AddNotDrawnVobToList(
         std::vector<VobInfo*>& source,
         float dist,
         const RndCullContext& ctx,
         DirectX::ContainmentType bspContainment,
-        BspTreeVobVisitor* visitor,
-        VisitStaticVobCallback callback,
-        VisitTransparentVobCallback alphaCallback
+        BspTreeVobVisitor* visitor
     ) {
-    std::vector<VobInfo*> remVobs;
-
     const auto camPos = XMLoadFloat3( &ctx.cameraPosition );
     auto cullingEnabled = Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.Culling.CullVobs;
     auto distSq = dist * dist;
@@ -4304,21 +4296,19 @@ static void CVVH_AddNotDrawnVobToList(
             continue;
         }
         if ( it->Vob->GetVisualAlpha() ) {
-            alphaCallback( ctx, TransparencyVobInfo{ std::sqrtf( vdSq ), it->Vob->GetVobTransparency(), nullptr, it } );
+            ctx.queue->PushTransparencyVob( TransparencyVobInfo{ std::sqrtf( vdSq ), it->Vob->GetVobTransparency(), nullptr, it } );
             continue;
         }
 
-        callback( ctx, it );
+        ctx.queue->PushStaticVob( it );
     }
 }
 
-template<typename VisitSkeletalVobCallback>
 static void CVVH_AddNotDrawnVobToList(
     std::vector<SkeletalVobInfo*>& source,
     float dist, const RndCullContext& ctx,
     DirectX::ContainmentType bspContainment,
-    BspTreeVobVisitor* visitor,
-    VisitSkeletalVobCallback callback) {
+    BspTreeVobVisitor* visitor) {
     const auto camPos = XMLoadFloat3( &ctx.cameraPosition );
 
     auto cullingEnabled = Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.Culling.CullVobs;
@@ -4340,7 +4330,7 @@ static void CVVH_AddNotDrawnVobToList(
             continue;
         }
 
-        callback( ctx, it );
+        ctx.queue->PushSkeletalVob( it );
     }
 }
 
@@ -5731,22 +5721,12 @@ float GothicAPI::GetSkyTimeScale() {
     return SkyRenderer->GetAtmoshpereSettings().SkyTimeScale;
 }
 
-template <
-    typename StaticVobCb,
-    typename TransparentVobCb,
-    typename SkeletalVobCb,
-    typename LightVobCb
->
 static void CollectVisibleVobsHelper( BspInfo* base,
     zTBBox3D boxCell,
     const RndCullContext& ctx,
     BspTreeVobVisitor* visitor,
     DirectX::ContainmentType inheritedContainment,
-    float yMaxWorld,
-    StaticVobCb staticVobCallback,
-    TransparentVobCb alphaVobCallback,
-    SkeletalVobCb skeltalVobCallback,
-    LightVobCb lightVobCallback
+    float yMaxWorld
 ) {
     const float vobIndoorDist = ctx.drawDistances.IndoorVobs;
     const float vobOutdoorDist = ctx.drawDistances.OutdoorVobs;
@@ -5806,30 +5786,21 @@ static void CollectVisibleVobsHelper( BspInfo* base,
             if ( collectFlags & COLLECT_VOBS
                 && RendererState.RendererSettings.DrawVOBs ) {
                 if ( collectFlags & COLLECT_INDOOR_VOBS && dist < vobIndoorDist ) {
-                    CVVH_AddNotDrawnVobToList( listA, vobIndoorDist, ctx, clipResult,
-                        visitor,
-                        staticVobCallback,
-                        alphaVobCallback );
+                    CVVH_AddNotDrawnVobToList( listA, vobIndoorDist, ctx, clipResult, visitor );
                 }
 
                 if ( dist < vobOutdoorSmallDist ) {
-                    CVVH_AddNotDrawnVobToList( listB, vobOutdoorSmallDist, ctx, clipResult,
-                        visitor,
-                        staticVobCallback,
-                        alphaVobCallback );
+                    CVVH_AddNotDrawnVobToList( listB, vobOutdoorSmallDist, ctx, clipResult, visitor );
                 }
 
                 if ( dist < vobOutdoorDist ) {
-                    CVVH_AddNotDrawnVobToList( listC, vobOutdoorDist, ctx, clipResult,
-                        visitor,
-                        staticVobCallback,
-                        alphaVobCallback );
+                    CVVH_AddNotDrawnVobToList( listC, vobOutdoorDist, ctx, clipResult, visitor );
                 }
             }
 
             if ( collectFlags & COLLECT_MOBS
                 && RendererState.RendererSettings.DrawMobs && dist < vobOutdoorSmallDist ) {
-                CVVH_AddNotDrawnVobToList( listD, vobOutdoorDist, ctx, clipResult, visitor, skeltalVobCallback );
+                CVVH_AddNotDrawnVobToList( listD, vobOutdoorDist, ctx, clipResult, visitor);
             }
 
             if ( collectFlags & COLLECT_LIGHTS
@@ -5882,7 +5853,7 @@ static void CollectVisibleVobsHelper( BspInfo* base,
                         VobLightInfo* vi = vit->second;
                         if ( vi->VisibleInRenderPass ) continue;
                         visitor->Visit( vi );
-                        lightVobCallback( ctx, vi );
+                        ctx.queue->PushLightVob( vi );
                     }
                 }
             }
@@ -5905,11 +5876,7 @@ static void CollectVisibleVobsHelper( BspInfo* base,
                     CollectVisibleVobsHelper( base->Front, tmpbox, ctx,
                         visitor,
                         clipResult,
-                        yMaxWorld,
-                        staticVobCallback,
-                        alphaVobCallback,
-                        skeltalVobCallback,
-                        lightVobCallback );
+                        yMaxWorld );
                 }
 
                 reinterpret_cast<float*>(&boxCell.Max)[planeAxis] = node->Plane.Distance;
@@ -5921,11 +5888,7 @@ static void CollectVisibleVobsHelper( BspInfo* base,
                     CollectVisibleVobsHelper( base->Back, tmpbox, ctx,
                         visitor,
                         clipResult,
-                        yMaxWorld,
-                        staticVobCallback,
-                        alphaVobCallback,
-                        skeltalVobCallback,
-                        lightVobCallback );
+                        yMaxWorld );
                 }
 
                 reinterpret_cast<float*>(&boxCell.Min)[planeAxis] = node->Plane.Distance;
@@ -5949,11 +5912,7 @@ void GothicAPI::CollectVisibleVobs( const RndCullContext& ctx ) {
         ctx,
         &bspVobVisitor,
         ContainmentType::INTERSECTS,
-        Engine::GAPI->GetLoadedWorldInfo()->BspTree->GetRootNode()->BBox3D.Max.y,
-        []( const RndCullContext& ctx, VobInfo* item ) -> void { ctx.queue->PushStaticVob( item ); },
-        []( const RndCullContext& ctx, const TransparencyVobInfo& item ) -> void { ctx.queue->PushTransparencyVob( item ); },
-        []( const RndCullContext& ctx, SkeletalVobInfo* item ) -> void { ctx.queue->PushSkeletalVob( item ); },
-        []( const RndCullContext& ctx, VobLightInfo* item ) -> void { ctx.queue->PushLightVob( item ); }
+        Engine::GAPI->GetLoadedWorldInfo()->BspTree->GetRootNode()->BBox3D.Max.y
     );
 
     FXMVECTOR camPos = XMLoadFloat3( &ctx.cameraPosition );
