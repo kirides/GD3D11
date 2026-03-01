@@ -783,6 +783,34 @@ XRESULT D3D11GraphicsEngine::Init() {
     return XR_SUCCESS;
 }
 
+namespace {
+    BOOL CALLBACK EnumWindowsKillSplashProc( HWND hwnd, LPARAM lParam ) {
+        // Verify the window belongs to the current process
+        DWORD windowPid;
+        GetWindowThreadProcessId( hwnd, &windowPid );
+
+        if ( windowPid != GetCurrentProcessId() ) {
+            return TRUE; // continue
+        }
+
+        char windowTitle[256];
+        // Get the window text
+        if ( GetWindowTextA( hwnd, windowTitle, sizeof( windowTitle ) ) ) {
+            // Check if the title matches "Union Splash"
+            if ( std::string( windowTitle ) == "Union Splash" ) {
+                std::cout << "Found 'Union Splash'. Closing window handle..." << std::endl;
+
+                // PostMessage is safer than SendMessage as it doesn't block
+                PostMessage( hwnd, WM_CLOSE, 0, 0 );
+
+                // Return FALSE to stop enumerating once found
+                return FALSE;
+            }
+        }
+        return TRUE; // Continue searching
+    }
+}
+
 /** Called when the game created its window */
 XRESULT D3D11GraphicsEngine::SetWindow( HWND hWnd ) {
     if ( !OutputWindow ) {
@@ -791,6 +819,8 @@ XRESULT D3D11GraphicsEngine::SetWindow( HWND hWnd ) {
 
         // Force activate the window on startup
         {
+            EnumWindows( EnumWindowsKillSplashProc, 0 );
+
             HWND hCurWnd = GetForegroundWindow();
             DWORD dwMyID = GetCurrentThreadId();
             DWORD dwCurID = GetWindowThreadProcessId( hCurWnd, NULL );
