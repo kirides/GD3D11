@@ -40,6 +40,9 @@ void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float ra
 
     FXMVECTOR xmPosition = XMLoadFloat3( position.toXMFLOAT3() );
 
+
+    XMVECTOR vRange2 = XMVectorReplicate( range );
+
     // Generate the meshes
     for ( auto const& itx : Engine::GAPI->GetWorldSections() ) {
         for ( auto const& ity : itx.second ) {
@@ -63,10 +66,13 @@ void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float ra
                     for ( unsigned int i = 0; i < it.second->Indices.size(); i += 3 ) {
                         // Check if one of them is in range
 
-                        const float range2 = range * range;
-                        if ( Toolbox::XMVector3LengthSqFloat( xmPosition - XMLoadFloat3( it.second->Vertices[it.second->Indices[i + 0]].Position.toXMFLOAT3() ) ) < range2
-                            || Toolbox::XMVector3LengthSqFloat( xmPosition - XMLoadFloat3( it.second->Vertices[it.second->Indices[i + 1]].Position.toXMFLOAT3() ) ) < range2
-                            || Toolbox::XMVector3LengthSqFloat( xmPosition - XMLoadFloat3( it.second->Vertices[it.second->Indices[i + 2]].Position.toXMFLOAT3() ) ) < range2 ) {
+                        XMVECTOR v0 = XMLoadFloat3( it.second->Vertices[it.second->Indices[i + 0]].Position.toXMFLOAT3() );
+                        XMVECTOR v1 = XMLoadFloat3( it.second->Vertices[it.second->Indices[i + 1]].Position.toXMFLOAT3() );
+                        XMVECTOR v2 = XMLoadFloat3( it.second->Vertices[it.second->Indices[i + 2]].Position.toXMFLOAT3() );
+
+                        if ( XMVector3Less( XMVector3LengthSq( XMVectorSubtract( xmPosition, v0 ) ), vRange2 ) ||
+                            XMVector3Less( XMVector3LengthSq( XMVectorSubtract( xmPosition, v1 ) ), vRange2 ) ||
+                            XMVector3Less( XMVector3LengthSq( XMVectorSubtract( xmPosition, v2 ) ), vRange2 ) ) {
                             for ( int v = 0; v < 3; v++ )
                                 m->Vertices.emplace_back( it.second->Vertices[it.second->Indices[i + v]] );
                         }
