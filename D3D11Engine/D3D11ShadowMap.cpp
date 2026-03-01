@@ -1081,7 +1081,7 @@ XRESULT D3D11ShadowMap::DrawWorldLights()
 
     // Reset state
     static ID3D11ShaderResourceView* nullSrv[] = { nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr };
-    m_context->PSSetShaderResources( 3, ARRAYSIZE( nullSrv ), nullSrv );
+    m_context->PSSetShaderResources( 3, std::size( nullSrv ), nullSrv );
 
     return XR_SUCCESS;
 }

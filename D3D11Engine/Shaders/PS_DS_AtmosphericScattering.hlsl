@@ -5,7 +5,7 @@
 
 #include <AtmosphericScattering.h>
 #ifndef MAX_CSM_CASCADES
-#define MAX_CSM_CASCADES 3
+#define MAX_CSM_CASCADES 4
 #endif
 
 #ifndef NUM_CSM_CASCADES

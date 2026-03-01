@@ -3100,7 +3100,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                     GetContext()->CSSetSamplers( 1, 1, LinearSamplerState.GetAddressOf() );
 
                     ID3D11Buffer* nullCBs[5]{};
-                    GetContext()->CSSetConstantBuffers( 0, ARRAYSIZE( nullCBs ), nullCBs);
+                    GetContext()->CSSetConstantBuffers( 0, std::size( nullCBs ), nullCBs);
 
                     PfxRenderer->GetFSR2()->Apply(
                         backbufferTex->GetShaderResView().Get(),

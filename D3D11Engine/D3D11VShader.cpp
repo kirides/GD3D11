@@ -169,67 +169,67 @@ XRESULT D3D11VShader::LoadShader( const char* vertexShader, int layout, const ch
 
     switch ( layout ) {
     case 1:
-        LE( engine->GetDevice()->CreateInputLayout( layout1, ARRAYSIZE( layout1 ), vsBlob->GetBufferPointer(),
+        LE( engine->GetDevice()->CreateInputLayout( layout1, std::size( layout1 ), vsBlob->GetBufferPointer(),
             vsBlob->GetBufferSize(), InputLayout.ReleaseAndGetAddressOf() ) );
         break;
 
     case 2:
-        LE( engine->GetDevice()->CreateInputLayout( layout2, ARRAYSIZE( layout2 ), vsBlob->GetBufferPointer(),
+        LE( engine->GetDevice()->CreateInputLayout( layout2, std::size( layout2 ), vsBlob->GetBufferPointer(),
             vsBlob->GetBufferSize(), InputLayout.ReleaseAndGetAddressOf() ) );
         break;
 
     case 3:
-        LE( engine->GetDevice()->CreateInputLayout( layout3, ARRAYSIZE( layout3 ), vsBlob->GetBufferPointer(),
+        LE( engine->GetDevice()->CreateInputLayout( layout3, std::size( layout3 ), vsBlob->GetBufferPointer(),
             vsBlob->GetBufferSize(), InputLayout.ReleaseAndGetAddressOf() ) );
         break;
 
     case 4:
-        LE( engine->GetDevice()->CreateInputLayout( layout4, ARRAYSIZE( layout4 ), vsBlob->GetBufferPointer(),
+        LE( engine->GetDevice()->CreateInputLayout( layout4, std::size( layout4 ), vsBlob->GetBufferPointer(),
             vsBlob->GetBufferSize(), InputLayout.ReleaseAndGetAddressOf() ) );
         break;
 
     case 5:
-        LE( engine->GetDevice()->CreateInputLayout( layout5, ARRAYSIZE( layout5 ), vsBlob->GetBufferPointer(),
+        LE( engine->GetDevice()->CreateInputLayout( layout5, std::size( layout5 ), vsBlob->GetBufferPointer(),
             vsBlob->GetBufferSize(), InputLayout.ReleaseAndGetAddressOf() ) );
         break;
 
     case 6:
-        LE( engine->GetDevice()->CreateInputLayout( layout6, ARRAYSIZE( layout6 ), vsBlob->GetBufferPointer(),
+        LE( engine->GetDevice()->CreateInputLayout( layout6, std::size( layout6 ), vsBlob->GetBufferPointer(),
             vsBlob->GetBufferSize(), InputLayout.ReleaseAndGetAddressOf() ) );
         break;
 
     case 7:
-        LE( engine->GetDevice()->CreateInputLayout( layout7, ARRAYSIZE( layout7 ), vsBlob->GetBufferPointer(),
+        LE( engine->GetDevice()->CreateInputLayout( layout7, std::size( layout7 ), vsBlob->GetBufferPointer(),
             vsBlob->GetBufferSize(), InputLayout.ReleaseAndGetAddressOf() ) );
         break;
 
     case 8:
-        LE( engine->GetDevice()->CreateInputLayout( layout8, ARRAYSIZE( layout8 ), vsBlob->GetBufferPointer(),
+        LE( engine->GetDevice()->CreateInputLayout( layout8, std::size( layout8 ), vsBlob->GetBufferPointer(),
             vsBlob->GetBufferSize(), InputLayout.ReleaseAndGetAddressOf() ) );
         break;
 
     case 9:
-        LE( engine->GetDevice()->CreateInputLayout( layout9, ARRAYSIZE( layout9 ), vsBlob->GetBufferPointer(),
+        LE( engine->GetDevice()->CreateInputLayout( layout9, std::size( layout9 ), vsBlob->GetBufferPointer(),
             vsBlob->GetBufferSize(), InputLayout.ReleaseAndGetAddressOf() ) );
         break;
 
     case 10:
-        LE( engine->GetDevice()->CreateInputLayout( layout10, ARRAYSIZE( layout10 ), vsBlob->GetBufferPointer(),
+        LE( engine->GetDevice()->CreateInputLayout( layout10, std::size( layout10 ), vsBlob->GetBufferPointer(),
             vsBlob->GetBufferSize(), InputLayout.ReleaseAndGetAddressOf() ) );
         break;
 
     case 11:
-        LE( engine->GetDevice()->CreateInputLayout( layout11, ARRAYSIZE( layout11 ), vsBlob->GetBufferPointer(),
+        LE( engine->GetDevice()->CreateInputLayout( layout11, std::size( layout11 ), vsBlob->GetBufferPointer(),
             vsBlob->GetBufferSize(), InputLayout.ReleaseAndGetAddressOf() ) );
         break;
 
     case 12:
-        LE( engine->GetDevice()->CreateInputLayout( layout12, ARRAYSIZE( layout12 ), vsBlob->GetBufferPointer(),
+        LE( engine->GetDevice()->CreateInputLayout( layout12, std::size( layout12 ), vsBlob->GetBufferPointer(),
             vsBlob->GetBufferSize(), InputLayout.ReleaseAndGetAddressOf() ) );
         break;
 
     case 13:
-        LE( engine->GetDevice()->CreateInputLayout( layout13, ARRAYSIZE( layout13 ), vsBlob->GetBufferPointer(),
+        LE( engine->GetDevice()->CreateInputLayout( layout13, std::size( layout13 ), vsBlob->GetBufferPointer(),
             vsBlob->GetBufferSize(), InputLayout.ReleaseAndGetAddressOf() ) );
         break;
     }

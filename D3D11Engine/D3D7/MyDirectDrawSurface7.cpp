@@ -86,7 +86,7 @@ void MyDirectDrawSurface7::LoadAdditionalResources( zCTexture* ownedTexture ) {
         TextureName = GothicTexture->GetNameWithoutExt();
 
         // Find texture type
-        if ( Toolbox::StringContainsOneOf( TextureName, LEAF_SUBSTR, ARRAYSIZE( LEAF_SUBSTR ) ) ) {
+        if ( Toolbox::StringContainsOneOf( TextureName, LEAF_SUBSTR, std::size( LEAF_SUBSTR ) ) ) {
             TextureType = ETextureType::TX_LEAF;
         }
 
