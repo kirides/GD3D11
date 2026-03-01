@@ -4292,7 +4292,7 @@ static void CVVH_AddNotDrawnVobToList(
 
         if ( bspContainment != ContainmentType::CONTAINS // only do frustum check if previously "INTERSECTS"
             && cullingEnabled
-            && ctx.frustum.Contains( Frustum::BBoxFromzTBBox3D( it->Vob->GetBBox() ) ) == DISJOINT ) {
+            && !ctx.frustum.Intersects( Frustum::BBoxFromzTBBox3D( it->Vob->GetBBox() ) ) ) {
             continue;
         }
         if ( it->Vob->GetVisualAlpha() ) {
@@ -4326,7 +4326,7 @@ static void CVVH_AddNotDrawnVobToList(
         }
         if ( bspContainment != ContainmentType::CONTAINS // only do frustum check if previously "INTERSECTS"
             && cullingEnabled
-            && ctx.frustum.Contains( Frustum::BBoxFromzTBBox3D( it->Vob->GetBBox() ) ) == DISJOINT ) {
+            && !ctx.frustum.Intersects( Frustum::BBoxFromzTBBox3D( it->Vob->GetBBox() ) ) ) {
             continue;
         }
 
@@ -5825,7 +5825,7 @@ static void CollectVisibleVobsHelper( BspInfo* base,
                         lightSphere.Radius = vob->GetLightRange();
 
                         // Cull any lights that are not visible even though they are in range
-                        if ( clipResult != ContainmentType::CONTAINS && ctx.frustum.Contains( lightSphere ) == ContainmentType::DISJOINT ) {
+                        if ( clipResult != ContainmentType::CONTAINS && !ctx.frustum.Intersects( lightSphere ) ) {
                             continue;
                         }
 
@@ -5954,7 +5954,7 @@ void GothicAPI::CollectVisibleVobs( const RndCullContext& ctx ) {
                     continue;
                 }
 
-                if ( cullingEnabled && ctx.frustum.Contains( Frustum::BBoxFromzTBBox3D( it->Vob->GetBBox() ) ) == DISJOINT ) {
+                if ( cullingEnabled && !ctx.frustum.Intersects( Frustum::BBoxFromzTBBox3D( it->Vob->GetBBox() ) ) ) {
                     continue;
                 }
 

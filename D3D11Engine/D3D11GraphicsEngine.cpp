@@ -5129,7 +5129,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             }
 
             if ( enableCulling && !isLastCascade ) {
-                if ( currentFrustum.Contains( skeletalMeshVob->Vob->GetBBox()) == DirectX::ContainmentType::DISJOINT) {
+                if ( !currentFrustum.Intersects( skeletalMeshVob->Vob->GetBBox()) ) {
                     // Not hitting our frustum and not the active view.
                     continue;
                 }
