@@ -5760,7 +5760,19 @@ static void CollectVisibleVobsHelper( BspInfo* base,
             if ( clipResult != ContainmentType::CONTAINS && !RendererState.RendererSettings.EnableOcclusionCulling ) {
                 clipResult = ctx.frustum.Contains( Frustum::BBoxFromzTBBox3D( nodeBox ) );
             } else {
-                // clipResult = static_cast<zTCam_ClipType>(base->OcclusionInfo.LastCameraClipType); // If we are using occlusion-clipping, this test has already been done
+                // If we are using occlusion-clipping, this test has already been done
+                switch (static_cast<zTCam_ClipType>(base->OcclusionInfo.LastCameraClipType))
+                {
+                case zTCam_ClipType::ZTCAM_CLIPTYPE_IN:
+                    clipResult = ContainmentType::CONTAINS; 
+                    break;
+                case zTCam_ClipType::ZTCAM_CLIPTYPE_CROSSING:
+                    clipResult = ContainmentType::INTERSECTS; 
+                    break;
+                case zTCam_ClipType::ZTCAM_CLIPTYPE_OUT:
+                    clipResult = ContainmentType::DISJOINT; 
+                    break;
+                }
             }
 
             if ( clipResult == ContainmentType::DISJOINT ) {
