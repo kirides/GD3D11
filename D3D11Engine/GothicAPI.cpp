@@ -5757,8 +5757,10 @@ static void CollectVisibleVobsHelper( BspInfo* base,
         float dist = Toolbox::ComputePointAABBDistance( camPos, base->OriginalNode->BBox3D.Min, base->OriginalNode->BBox3D.Max );
         ContainmentType clipResult = inheritedContainment;
         if ( dist < vobOutdoorDist ) {
-            if ( clipResult != ContainmentType::CONTAINS && !RendererState.RendererSettings.EnableOcclusionCulling ) {
-                clipResult = ctx.frustum.Contains( Frustum::BBoxFromzTBBox3D( nodeBox ) );
+            if ( !RendererState.RendererSettings.EnableOcclusionCulling ) {
+                if ( clipResult != ContainmentType::CONTAINS ) {
+                    clipResult = ctx.frustum.Contains( Frustum::BBoxFromzTBBox3D( nodeBox ) );
+                }
             } else {
                 // If we are using occlusion-clipping, this test has already been done
                 switch (static_cast<zTCam_ClipType>(base->OcclusionInfo.LastCameraClipType))
