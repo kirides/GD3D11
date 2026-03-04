@@ -150,6 +150,25 @@ namespace Toolbox {
         return _mm_cvtss_f32( _mm_rcp_ss( _mm_rsqrt_ss( _mm_set_ss( dx * dx + dz * dz ) ) ) );
     }
 
+    float ComputePointAABBDistanceSq( const XMFLOAT3& p, const XMFLOAT3& min, const XMFLOAT3& max ) {
+        float dx = std::max( std::max( min.x - p.x, 0.0f ), p.x - max.x );
+        float dy = std::max( std::max( min.y - p.y, 0.0f ), p.y - max.y );
+        float dz = std::max( std::max( min.z - p.z, 0.0f ), p.z - max.z );
+
+        return (dx * dx) + (dy * dy) + (dz * dz);
+    }
+
+    float ComputePointAABBDistanceSq( const XMFLOAT3& p, const DirectX::BoundingBox& box ) {
+        // 1. Get absolute distance from point to the center of the box
+        // 2. Subtract the box extents to get the distance to the edge
+        // 3. Clamp to 0 if the point is inside the box bounds along that axis
+        float dx = std::max( 0.0f, std::abs( p.x - box.Center.x ) - box.Extents.x );
+        float dy = std::max( 0.0f, std::abs( p.y - box.Center.y ) - box.Extents.y );
+        float dz = std::max( 0.0f, std::abs( p.z - box.Center.z ) - box.Extents.z );
+
+        return (dx * dx) + (dy * dy) + (dz * dz);
+    }
+
     /** Computes the Normal of a triangle */
     FXMVECTOR ComputeNormal( const XMFLOAT3& v0, const XMFLOAT3& v1, const XMFLOAT3& v2 ) {
         FXMVECTOR Normal = XMVector3Normalize( XMVector3Cross( (XMLoadFloat3( &v1 ) - XMLoadFloat3( &v0 )), (XMLoadFloat3( &v2 ) - XMLoadFloat3( &v0 )) ) );

@@ -219,15 +219,12 @@ XRESULT D3D11Effect::DrawRain() {
     // Set alphablending
 
     state.BlendState.SetAlphaBlending();
-    state.BlendState.SetDirty();
 
     // Disable depth-write
     state.DepthState.DepthWriteEnabled = false;
-    state.DepthState.SetDirty();
 
     // Disable culling
     state.RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_NONE;
-    state.RasterizerState.SetDirty();
 
     // Rendering instances only
     e->GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP );
@@ -376,15 +373,12 @@ XRESULT D3D11Effect::DrawRain_CS() {
     // Set alphablending
 
     state.BlendState.SetAlphaBlending();
-    state.BlendState.SetDirty();
 
     // Disable depth-write
     state.DepthState.DepthWriteEnabled = false;
-    state.DepthState.SetDirty();
 
     // Disable culling
     state.RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_NONE;
-    state.RasterizerState.SetDirty();
 
     // Rendering instances only
     e->GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP );

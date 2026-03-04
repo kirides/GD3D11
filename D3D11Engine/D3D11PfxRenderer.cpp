@@ -68,8 +68,8 @@ XRESULT D3D11PfxRenderer::RenderHeightfog() {
 }
 
 /** Renders the godrays-Effect */
-XRESULT D3D11PfxRenderer::RenderGodRays(ID3D11ShaderResourceView* backbuffer, ID3D11ShaderResourceView* normals) {
-    return FX_GodRays->Render( backbuffer , normals );
+XRESULT D3D11PfxRenderer::RenderGodRays(ID3D11ShaderResourceView* backbuffer, ID3D11ShaderResourceView* depth) {
+    return FX_GodRays->Render( backbuffer , depth );
 }
 
 /** Renders the depth-of-field effect */

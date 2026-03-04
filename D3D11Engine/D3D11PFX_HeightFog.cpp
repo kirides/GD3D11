@@ -120,11 +120,9 @@ XRESULT D3D11PFX_HeightFog::Render( RenderToTextureBuffer* fxbuffer ) {
 
     engine->SetDefaultStates();
     Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_NONE;
-    Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
 	Engine::GAPI->GetRendererState().BlendState.SetDefault();
 	//Engine::GAPI->GetRendererState().BlendState.SetAdditiveBlending();
 	Engine::GAPI->GetRendererState().BlendState.BlendEnabled = true;
-	Engine::GAPI->GetRendererState().BlendState.SetDirty();
 
 	// Copy
 	FxRenderer->DrawFullScreenQuad();

@@ -4,6 +4,11 @@
 #include "GothicAPI.h"
 #include "D3D11ShadowMap.h"
 #include "D3D11ShaderManager.h"
+#include "D3D11PipelineStateObject.h"
+#include "D3D11IndirectBuffer.h"
+#include "VobCulling.h"
+#include "D3D11VobAtlasPass.h"
+#include "D3D11MeshAtlasPass.h"
 
 struct RenderToDepthStencilBuffer;
 
@@ -55,6 +60,8 @@ struct AlphaMeshData {
 };
 
 class D3D11GraphicsEngine : public D3D11GraphicsEngineBase {
+    friend class D3D11VobAtlasPass;
+    friend class D3D11MeshAtlasPass;
 public:
     D3D11GraphicsEngine();
     ~D3D11GraphicsEngine() override;
@@ -188,6 +195,11 @@ public:
 
     /** Sets up the default rendering state */
     void SetDefaultStates( bool force = false );
+
+    /** Invalidates the cached FF state hashes, forcing the next UpdateRenderStates()
+     *  to re-apply all states to D3D11. Call after any code that sets D3D11 states
+     *  directly (e.g. ImGui, external libraries). */
+    void InvalidateStateCache();
 
     /** Returns the current resolution (Maybe supersampled)*/
     INT2 GetResolution() override { return m_scaledResolution; };
@@ -345,19 +357,28 @@ public:
     D3D11PfxRenderer* GetPfxRenderer() const { return PfxRenderer.get(); }
     D3D11Texture* GetDistortionTexture() const { return DistortionTexture.get(); }
 
+    /** Returns the pipeline state cache for optimal D3D11 state management */
+    D3D11PipelineStateCache& GetPipelineStateCache() { return m_PipelineStateCache; }
+
     RenderToTextureBuffer* GetVelocityBuffer() const { return VelocityBuffer.get(); }
 
     const XMFLOAT4X4& GetPrevViewProjMatrix() const { return m_PrevViewProjMatrix; }
-    void StorePrevViewProjMatrix();
-
     auto GetClampSamplerState() -> auto { return ClampSamplerState.Get(); }
     auto GetCubeSamplerState() -> auto { return CubeSamplerState.Get(); }
     auto GetLinearSamplerState() -> auto { return LinearSamplerState.Get(); }
 
     D3D11ShadowMap* GetShadowMaps() const { return ShadowMaps.get(); }
+    void OnWorldLoaded() override;
 protected:
 
     void StoreVobPreviousTransforms();
+
+    void StorePrevViewProjMatrix();
+
+    void CacheWorldStaticVobs();
+
+    /** Pipeline state cache for minimizing redundant D3D11 state transitions */
+    D3D11PipelineStateCache m_PipelineStateCache;
 
     std::unique_ptr<FpsLimiter> m_FrameLimiter;
     int m_LastFrameLimit;
@@ -459,6 +480,7 @@ private:
     /** If true, we will save a screenshot after the next frame */
     bool SaveScreenshotNextFrame;
 
+    float m_SamplerMipBias = 0.0f;
     bool m_flipWithTearing;
     bool m_swapchainflip;
     bool m_lowlatency;
@@ -473,4 +495,24 @@ private:
     INT2 NewResolution;
     
     void CreateAndBindDefaultSampler();
+
+    std::vector<VobInfo*> m_StaticVobs{};
+    std::vector<AABB_SoA_Batch8> m_StaticVobsAABBs{};
+
+    /** Atlas rendering passes */
+    std::unique_ptr<D3D11VobAtlasPass>  m_VobAtlasPass;
+    std::unique_ptr<D3D11MeshAtlasPass> m_MeshAtlasPass;
+
+    /** Hi-Z occlusion culling resources */
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> m_HiZTexture;       // Full mip-chain, SRV-only
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_HiZSRV;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> m_HiZScratch;       // Single-mip scratch for CS UAV writes
+    Microsoft::WRL::ComPtr<ID3D11UnorderedAccessView> m_HiZScratchUAV;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_HiZScratchSRV;
+    UINT m_HiZMipCount = 0;
+
+    /** Create Hi-Z pyramid resources (called after depth buffer creation) */
+    void CreateHiZResources();
+    /** Build the Hi-Z mip chain from the current depth buffer */
+    void BuildHiZPyramid();
 };

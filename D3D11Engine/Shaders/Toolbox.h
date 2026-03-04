@@ -41,3 +41,15 @@ float3 perturb_normal( float3 N, float3 V, Texture2D normalmap, float2 texcoord,
     float3x3 TBN = cotangent_frame( N, -V, texcoord );
     return normalize( mul(transpose(TBN), nrmmap) );
 }
+
+// Atlas variant: samples from a Texture2DArray using SampleGrad for correct mip selection
+float3 perturb_normal_from_grad( float3 N, float3 V, Texture2DArray normalmap, float3 uvSlice, float2 gradX, float2 gradY, SamplerState samplerState, float normalmapDepth = 1.0f)
+{
+    float3 nrmmap = normalmap.SampleGrad(samplerState, uvSlice, gradX, gradY).xyz * 2 - 1;
+	nrmmap.xy *= -1.0f;
+	nrmmap.xy *= normalmapDepth;
+	nrmmap = normalize(nrmmap);
+	
+    float3x3 TBN = cotangent_frame( N, -V, uvSlice.xy );
+    return normalize( mul(transpose(TBN), nrmmap) );
+}

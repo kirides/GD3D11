@@ -41,7 +41,6 @@ XRESULT D3D11PFX_HDR::Render( ID3D11RenderTargetView* output, ID3D11ShaderResour
 	D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     engine->SetDefaultStates();
 	Engine::GAPI->GetRendererState().BlendState.BlendEnabled = false;
-	Engine::GAPI->GetRendererState().BlendState.SetDirty();
     engine->UpdateRenderStates();
 
 	// Save old rendertargets

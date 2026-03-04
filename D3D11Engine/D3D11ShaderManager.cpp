@@ -245,9 +245,15 @@ XRESULT D3D11ShaderManager::Init() {
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExInstancedObj>( "VS_ExInstancedObj.hlsl" )
         .with_layout( 10 )  );
 
+    Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExInstancedObjIndirectAtlas>("VS_ExInstancedObjIndirectAtlas.hlsl" )
+        .with_layout( 12 ) );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExInstanced>( "VS_ExInstanced.hlsl" )
         .with_layout( 4 ) );
+
+    // World mesh atlas vertex shader (uses same layout 12: ExVertexStruct + uint instance remap)
+    Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExWorldAtlas>( "VS_ExWorldAtlas.hlsl" )
+        .with_layout( 12 ) );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_GrassInstanced>( "VS_GrassInstanced.hlsl" )
         .with_layout( 9 )  );
@@ -360,6 +366,35 @@ XRESULT D3D11ShaderManager::Init() {
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_PortalDiffuse>( "PS_PortalDiffuse.hlsl" ) ); //forest portals, doors, etc.
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_WaterfallFoam>( "PS_WaterfallFoam.hlsl" ) );     //foam on at the base of waterfalls
+    
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_DiffuseAtlas>( "PS_DiffuseAtlas.hlsl") 
+        .with_macros( makros ) ); // DIST_Distance
+
+    makros.clear();
+    m.Name = "NORMALMAPPING";
+    m.Definition = "0";
+    makros.push_back( m );
+    m.Name = "ALPHATEST";
+    m.Definition = "1";
+    makros.push_back( m );
+
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_DiffuseAtlasAlphaTest>( "PS_DiffuseAtlas.hlsl" )
+        .with_macros( makros ) ); // DIST_Distance
+    
+    makros.clear();
+    m.Name = "NORMALMAPPING";
+    m.Definition = "0";
+    makros.push_back( m );
+    m.Name = "ALPHATEST_SHADOWS";
+    m.Definition = "1";
+    makros.push_back( m );
+
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_DiffuseAtlasAlphaTestShadows>( "PS_DiffuseAtlas.hlsl" )
+        .with_macros( makros ) ); // DIST_Distance
+
+    // World mesh atlas PS — flags-driven normal/FX/alpha-test in a single shader
+    makros.clear();
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_WorldAtlas>( "PS_WorldAtlas.hlsl" ) ); // DIST_Distance
 
     makros.clear();
 
@@ -542,6 +577,10 @@ XRESULT D3D11ShaderManager::Init() {
         Shaders.push_back( ShaderInfo::make<CShaderID::CS_LightCulling>( "CS_LightCulling.hlsl" ));
 
         Shaders.push_back( ShaderInfo::make<CShaderID::CS_TiledShading>( "CS_TiledShading.hlsl" ));
+
+        Shaders.push_back( ShaderInfo::make<CShaderID::CS_CullVobs>( "CS_CullVobs.hlsl" ));
+
+        Shaders.push_back( ShaderInfo::make<CShaderID::CS_BuildHiZ>( "CS_BuildHiZ.hlsl" ) );
     }
 
     return XR_SUCCESS;

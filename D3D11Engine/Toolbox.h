@@ -6,6 +6,7 @@
 #include <Windows.h>
 
 #include "Types.h"
+#include <DirectXCollision.h>
 
 /** Misc. tools */
 enum zTCam_ClipType;
@@ -170,6 +171,10 @@ namespace Toolbox {
 
     /** Computes the distance of a point to an AABB */
     float ComputePointAABBDistance( const XMFLOAT3& p, const XMFLOAT3& min, const XMFLOAT3& max );
+
+    float ComputePointAABBDistanceSq(const XMFLOAT3& p, const XMFLOAT3& min, const XMFLOAT3& max);
+
+    float ComputePointAABBDistanceSq(const XMFLOAT3& p, const DirectX::BoundingBox& box);
 
     /** Returns whether the given file exists */
     bool FileExists( const std::string& file );

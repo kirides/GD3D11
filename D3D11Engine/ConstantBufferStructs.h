@@ -16,17 +16,104 @@ struct VobInstanceInfo {
     DWORD GP_Slot;
 };
 
-/** Remap-index for the static vobs */
-struct VobInstanceRemapInfo {
-    bool operator < ( const VobInstanceRemapInfo& b ) const {
-        return InstanceRemapIndex < b.InstanceRemapIndex;
-    }
+struct VobInstanceInfoAtlas {
+    XMFLOAT4X4 world;
+    XMFLOAT4X4 prevWorld;  // Previous frame's world matrix for motion vectors
+    DWORD color;
+    float windStrenth;
+    float canBeAffectedByPlayer;
+    // Texture Atlas information, directly stored in the instance data for easy access in shader without needing an extra StructuredBuffer
+    int slice;
+    float uStart;
+    float vStart;
+    float uEnd;
+    float vEnd;
+    UINT globalSourceIndex;  // global source index into feedback texture
+    float minHeight;         // BBox.Min.y for per-vob wind calculations
+    float maxHeight;         // BBox.Max.y for per-vob wind calculations
+};
 
-    bool operator == ( const VobInstanceRemapInfo& o ) const {
-        return InstanceRemapIndex == o.InstanceRemapIndex;
-    }
+// Descriptor returned for use with shader
+// Points to a specific slice in the Texture2DArray atlas, along with UV coordinates for sampling that slice
+// this is pointed to from VobInstanceInfo GP_Slot into a StructuredBuffer, which is then indexed in the shader to get the correct slice/UVs for each instance
+struct TextureDescriptor {
+    int slice;
+    float uStart;
+    float vStart;
+    float uEnd;
+    float vEnd;
+};
 
-    DWORD InstanceRemapIndex;
+// CPU-side lookup: maps a zCTexture* to its atlas placement
+struct TextureAtlasLookup {
+    DXGI_FORMAT atlasFormat;
+    TextureDescriptor descriptor;
+};
+
+// Per-vob data uploaded once at world load, read by GPU cull compute shader
+struct VobGPUData {
+    XMFLOAT3 aabbCenter;
+    float pad0;
+    XMFLOAT3 aabbExtent;
+    float pad1;
+    XMFLOAT4X4 world;
+    XMFLOAT4X4 prevWorld;
+    DWORD color;
+    float aniModeStrength;
+    float canBeAffectedByPlayer;
+    UINT submeshStart;       // index into SubmeshGPUData[]
+    UINT submeshCount;       // how many submeshes this vob maps to
+    float minHeight;         // BBox.Min.y for per-vob wind calculations
+    float maxHeight;         // BBox.Max.y for per-vob wind calculations
+    UINT pad2;
+};
+
+// Per-submesh lookup, shared across all vobs with the same visual
+struct SubmeshGPUData {
+    int slice;
+    float uStart, vStart, uEnd, vEnd;
+    UINT argIndex;              // index into merged indirect args
+    UINT instanceBaseOffset;    // fixed write offset in instance buffer
+    UINT globalSourceIndex;     // global source index into feedback texture
+};
+
+// Per-submesh data for the world mesh atlas indirect draw path.
+// Read by VS_ExWorldAtlas via StructuredBuffer<WorldMeshSubmeshGPUData>.
+struct WorldMeshSubmeshGPUData {
+    // Diffuse atlas
+    int   diffuseSlice;
+    float dUStart, dVStart, dUEnd, dVEnd;
+    // Normal atlas
+    int   normalSlice;
+    float nUStart, nVStart, nUEnd, nVEnd;
+    // FX atlas
+    int   fxSlice;
+    float fUStart, fVStart, fUEnd, fVEnd;
+    // Flags: 1 = HAS_NORMAL, 2 = HAS_FX, 4 = ALPHA_TEST
+    UINT  flags;
+};
+
+// Constant buffer for the GPU cull compute shader
+struct CullConstants {
+    XMFLOAT4 frustumPlanes[6];
+    XMFLOAT3 cameraPosition;
+    float drawDistance;
+    float globalWindStrength;
+    UINT windAdvanced;
+    UINT numVobs;
+    UINT feedbackFrameNumber;   // >0 = write feedback in CS; 0 = disabled (e.g. shadow pass)
+    UINT enableHiZ;             // 1 = Hi-Z occlusion culling enabled
+    UINT hiZMipCount;
+    float hiZWidth;             // Hi-Z mip 0 dimensions (full depth buffer size)
+    float hiZHeight;
+    XMFLOAT4X4 viewProjection; // Current frame view-projection matrix for Hi-Z reprojection
+};
+
+struct HiZBuildConstants {
+    UINT outputWidth;
+    UINT outputHeight;
+    UINT inputMipLevel;
+    UINT isCopyPass;    // 1 = copy from depth buffer (mip 0), 0 = downsample from previous mip
 };
 
 #pragma pack (push, 1)	

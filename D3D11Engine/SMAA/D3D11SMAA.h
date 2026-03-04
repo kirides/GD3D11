@@ -68,9 +68,6 @@ private:
     Microsoft::WRL::ComPtr<ID3D11Buffer>             m_constantBuffer;
     Microsoft::WRL::ComPtr<ID3D11SamplerState>       m_samplerLinear;
     Microsoft::WRL::ComPtr<ID3D11SamplerState>       m_samplerPoint;
-    Microsoft::WRL::ComPtr<ID3D11RasterizerState>    m_rasterizerState;
-    Microsoft::WRL::ComPtr<ID3D11DepthStencilState>  m_disableDepthState;
-    Microsoft::WRL::ComPtr<ID3D11BlendState>         m_blendState; // Default (overwrite off)
 
     int m_width;
     int m_height;

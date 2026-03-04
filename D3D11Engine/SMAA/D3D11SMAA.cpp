@@ -67,24 +67,8 @@ bool D3D11SMAA::Init()
     sampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT; // Point filter
     m_device->CreateSamplerState(&sampDesc, m_samplerPoint.GetAddressOf());
 
-    // 5. Create Helper States
-    D3D11_RASTERIZER_DESC rasterDesc = {};
-    rasterDesc.FillMode = D3D11_FILL_SOLID;
-    rasterDesc.CullMode = D3D11_CULL_NONE;
-    rasterDesc.DepthClipEnable = true;
-    m_device->CreateRasterizerState(&rasterDesc, m_rasterizerState.GetAddressOf());
-
-    D3D11_DEPTH_STENCIL_DESC dsDesc = {};
-    dsDesc.DepthEnable = FALSE;
-    dsDesc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
-    dsDesc.DepthFunc = D3D11_COMPARISON_ALWAYS;
-    m_device->CreateDepthStencilState(&dsDesc, m_disableDepthState.GetAddressOf());
-    
-    // Default blend state (Opaque/Overwrite)
-    D3D11_BLEND_DESC blendDesc = {};
-    blendDesc.RenderTarget[0].BlendEnable = FALSE;
-    blendDesc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
-    m_device->CreateBlendState(&blendDesc, m_blendState.GetAddressOf());
+    // Note: Rasterizer, depth-stencil, and blend states are managed by the caller
+    // through the Gothic state tracking system.
 
     return true;
 }
@@ -131,9 +115,8 @@ void D3D11SMAA::Render(ID3D11ShaderResourceView* inputSRV,
     // Common State Setup
     m_context->IASetInputLayout(nullptr); // Using VertexID generation
     m_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    m_context->RSSetState(m_rasterizerState.Get());
-    m_context->OMSetDepthStencilState(m_disableDepthState.Get(), 0);
-    m_context->OMSetBlendState(m_blendState.Get(), nullptr, 0xFFFFFFFF);
+    // Note: Rasterizer, depth-stencil, and blend states are configured by the caller
+    // through the Gothic state tracking system (Engine::GAPI->GetRendererState()).
     
     ID3D11SamplerState* samplers[] = { m_samplerLinear.Get(), m_samplerPoint.Get() };
     m_context->PSSetSamplers(0, 2, samplers);
@@ -220,7 +203,4 @@ void D3D11SMAA::ReleaseResources() {
     m_constantBuffer.Reset();
     m_samplerLinear.Reset();
     m_samplerPoint.Reset();
-    m_rasterizerState.Reset();
-    m_disableDepthState.Reset();
-    m_blendState.Reset();
 }

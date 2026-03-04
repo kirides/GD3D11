@@ -184,13 +184,13 @@ ID3D11ShaderResourceView* D3D11ShadowAtlas::GetShaderResourceView() const {
     return m_srv.Get();
 }
 
-void D3D11ShadowAtlas::BindToPixelShader( ID3D11DeviceContext1* context, UINT slot ) const {
+void D3D11ShadowAtlas::BindToPixelShader( ID3D11DeviceContext* context, UINT slot ) const {
     if ( m_srv ) {
         context->PSSetShaderResources( slot, 1, m_srv.GetAddressOf() );
     }
 }
 
-void D3D11ShadowAtlas::BindToVertexShader( ID3D11DeviceContext1* context, UINT slot ) const {
+void D3D11ShadowAtlas::BindToVertexShader( ID3D11DeviceContext* context, UINT slot ) const {
     if ( m_srv ) {
         context->VSSetShaderResources( slot, 1, m_srv.GetAddressOf() );
     }

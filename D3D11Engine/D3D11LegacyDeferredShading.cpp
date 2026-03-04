@@ -37,13 +37,10 @@ XRESULT D3D11LegacyDeferredShading::DrawPointlightLights(
     if ( settings.LimitLightIntesity ) {
         Engine::GAPI->GetRendererState().BlendState.BlendOp = GothicBlendStateInfo::BO_BLEND_OP_MAX;
     }
-    Engine::GAPI->GetRendererState().BlendState.SetDirty();
 
     Engine::GAPI->GetRendererState().DepthState.DepthWriteEnabled = false;
-    Engine::GAPI->GetRendererState().DepthState.SetDirty();
 
     Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_BACK;
-    Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
 
     graphicsEngine->SetupVS_ExMeshDrawCall();
     graphicsEngine->SetupVS_ExConstantBuffer();
@@ -124,16 +121,12 @@ XRESULT D3D11LegacyDeferredShading::DrawPointlightLights(
             if ( Engine::GAPI->GetRendererState().DepthState.DepthBufferEnabled ) {
                 Engine::GAPI->GetRendererState().DepthState.DepthBufferEnabled = false;
                 Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_FRONT;
-                Engine::GAPI->GetRendererState().DepthState.SetDirty();
-                Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
                 graphicsEngine->UpdateRenderStates();
             }
         } else {
             if ( !Engine::GAPI->GetRendererState().DepthState.DepthBufferEnabled ) {
                 Engine::GAPI->GetRendererState().DepthState.DepthBufferEnabled = true;
                 Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_BACK;
-                Engine::GAPI->GetRendererState().DepthState.SetDirty();
-                Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
                 graphicsEngine->UpdateRenderStates();
             }
         }

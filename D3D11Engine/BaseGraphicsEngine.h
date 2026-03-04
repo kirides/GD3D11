@@ -230,4 +230,6 @@ public:
     virtual XRESULT UpdateRenderStates() { return XR_SUCCESS; };
 
     virtual std::unique_ptr<GraphicsEventRecord> RecordGraphicsEvent( LPCWSTR region ) { return std::make_unique<GraphicsEventRecord>(); }
+
+    virtual void OnWorldLoaded() {};
 };

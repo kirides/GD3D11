@@ -167,11 +167,6 @@ void D3D11GraphicsEngineBase::SetDefaultStates() {
     Engine::GAPI->GetRendererState().DepthState.SetDefault();
     Engine::GAPI->GetRendererState().SamplerState.SetDefault();
 
-    Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
-    Engine::GAPI->GetRendererState().BlendState.SetDirty();
-    Engine::GAPI->GetRendererState().DepthState.SetDirty();
-    Engine::GAPI->GetRendererState().SamplerState.SetDirty();
-
     GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
 
     UpdateRenderStates();

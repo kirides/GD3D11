@@ -68,8 +68,8 @@ public:
     /** Get the SRV for the atlas texture (Texture2D). */
     ID3D11ShaderResourceView* GetShaderResourceView() const;
 
-    void BindToPixelShader( ID3D11DeviceContext1* context, UINT slot ) const;
-    void BindToVertexShader( ID3D11DeviceContext1* context, UINT slot ) const;
+    void BindToPixelShader( ID3D11DeviceContext* context, UINT slot ) const;
+    void BindToVertexShader( ID3D11DeviceContext* context, UINT slot ) const;
 
     /** Get cascade 0 pixel size (the largest cascade). */
     UINT GetCascade0Size() const { return m_cascade0Size; }

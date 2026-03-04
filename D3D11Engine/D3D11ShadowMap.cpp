@@ -338,10 +338,6 @@ void D3D11ShadowMap::Init( Microsoft::WRL::ComPtr<ID3D11Device1>& device, Micros
 
     EnsureShadowMapBackend( s );
 
-    for ( int i = 0; i < MAX_CSM_CASCADES; ++i ) {
-        m_RenderQueues[i] = std::make_unique<D3D11RenderQueue>( device.Get(), context.Get() );
-    }
-
     D3D11GraphicsEngineBase* engine = reinterpret_cast<D3D11GraphicsEngineBase*>( Engine::GraphicsEngine );
 
     // Create constantbuffer for the view-matrices
@@ -385,7 +381,7 @@ void D3D11ShadowMap::Resize( int size ) {
     m_lastNumCascades = static_cast<int>( atlasNumCascades );
 }
 
-void D3D11ShadowMap::BindToPixelShader( ID3D11DeviceContext1* context, UINT slot ) {
+void D3D11ShadowMap::BindToPixelShader( ID3D11DeviceContext* context, UINT slot ) {
     if ( m_useAtlas ) {
         if ( m_shadowAtlas ) m_shadowAtlas->BindToPixelShader( context, slot );
     } else {
@@ -393,11 +389,11 @@ void D3D11ShadowMap::BindToPixelShader( ID3D11DeviceContext1* context, UINT slot
     }
 }
 
-void D3D11ShadowMap::BindSampler( ID3D11DeviceContext1* context, UINT slot ) {
+void D3D11ShadowMap::BindSampler( ID3D11DeviceContext* context, UINT slot ) {
     if ( m_shadowmapSampler ) context->PSSetSamplers( slot, 1, m_shadowmapSampler.GetAddressOf() );
 }
 
-void D3D11ShadowMap::BindSamplerToCS( ID3D11DeviceContext1* context, UINT slot ) {
+void D3D11ShadowMap::BindSamplerToCS( ID3D11DeviceContext* context, UINT slot ) {
     if ( m_shadowmapSampler ) context->CSSetSamplers( slot, 1, m_shadowmapSampler.GetAddressOf() );
 }
 
@@ -648,81 +644,6 @@ XRESULT D3D11ShadowMap::PrepareRender()
         }
     }
 
-    // Collect all VOBs inside our shadow draw distance (last frustum)
-    
-    static std::vector<VobInfo*> potentialCasters;
-    static std::vector<VobLightInfo*> _1;
-    static std::vector<SkeletalVobInfo*> _2;
-    potentialCasters.reserve(1024);
-    potentialCasters.clear();
-
-    {
-        RndCullContext ctx;
-        LegacyRenderQueueProxy q(potentialCasters, _1, _2);
-
-        ctx.queue = &q;
-        ctx.frustum = Frustum::AlwaysContainingFrustum();
-        ctx.cameraPosition = m_WorldShadowPos;
-        ctx.stage = RenderStage::STAGE_DRAW_SHADOWS;
-        ctx.drawDistances.OutdoorVobs = 20000;
-        ctx.drawDistances.OutdoorVobsSmall = 20000;
-        
-        Engine::GAPI->CollectVisibleVobs( ctx );
-    }
-    
-    auto invView = XMMatrixTranspose(XMLoadFloat4x4(&zCCamera::GetCamera()->GetTransformDX( zCCamera::ETransformType::TT_VIEW_INV )));
-    auto camPos = invView.r[3];
-    XMVECTOR camForward = XMVector3Normalize( invView.r[2]);
-    
-    for ( int i = 0; i < numCascades; ++i ) {
-        m_RenderQueues[i]->Reset();
-    }
-
-    if ( numCascades > 3 ) {
-        for ( auto vob : potentialCasters ) {
-
-            auto boundingSphere = Frustum::BSphereFromzTBBox3D( vob->Vob->GetBBox() );
-            if ( m_CascadeCRs[0].frustum.Intersects( boundingSphere ) )
-                m_RenderQueues[0]->GetVobs().push_back( vob );
-
-            if ( /*m_ShouldUpdateCascade[1] && */m_CascadeCRs[1].frustum.Intersects(boundingSphere) )
-                m_RenderQueues[1]->GetVobs().push_back( vob );
-
-            if ( m_ShouldUpdateCascade[2] && m_CascadeCRs[2].frustum.Intersects( boundingSphere ) )
-                m_RenderQueues[2]->GetVobs().push_back( vob );
-
-            if ( m_ShouldUpdateCascade[3] && m_CascadeCRs[3].frustum.Intersects( boundingSphere ) )
-                m_RenderQueues[3]->GetVobs().push_back( vob );
-        }
-    } else if ( numCascades > 2 ) {
-        for ( auto vob : potentialCasters ) {
-            auto boundingSphere = Frustum::BSphereFromzTBBox3D( vob->Vob->GetBBox() );
-            if ( m_CascadeCRs[0].frustum.Intersects( boundingSphere ) )
-                m_RenderQueues[0]->GetVobs().push_back( vob );
-
-            if ( /*m_ShouldUpdateCascade[1] && */m_CascadeCRs[1].frustum.Intersects( boundingSphere ) )
-                m_RenderQueues[1]->GetVobs().push_back( vob );
-
-            if ( m_ShouldUpdateCascade[2] && m_CascadeCRs[2].frustum.Intersects( boundingSphere ) )
-                m_RenderQueues[2]->GetVobs().push_back( vob );
-        }
-    } else if ( numCascades > 1 ) {
-        for ( auto vob : potentialCasters ) {
-            auto boundingSphere = Frustum::BSphereFromzTBBox3D( vob->Vob->GetBBox() );
-            if ( m_CascadeCRs[0].frustum.Intersects( boundingSphere ) )
-                m_RenderQueues[0]->GetVobs().push_back( vob );
-
-            if ( /*m_ShouldUpdateCascade[1] && */m_CascadeCRs[1].frustum.Intersects( boundingSphere ) )
-                m_RenderQueues[1]->GetVobs().push_back( vob );
-        }
-    } else if ( numCascades > 0 ) {
-        for ( auto vob : potentialCasters ) {
-            auto boundingSphere = Frustum::BSphereFromzTBBox3D( vob->Vob->GetBBox() );
-            if ( m_CascadeCRs[0].frustum.Intersects( boundingSphere ) )
-                m_RenderQueues[0]->GetVobs().push_back( vob );
-        }
-    }
-
     return XR_SUCCESS;
 }
 
@@ -762,7 +683,7 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
 
     // Release any resources of not visible lights
-    for ( auto& it : Engine::GAPI->VobLightMap ) {
+    for ( auto& it : Engine::GAPI->VobLights_Sorted ) {
         if ( it.second->LightShadowBuffers
             && (!it.second->Vob->IsEnabled() || !it.second->VisibleInFrame) ) {
             if ( D3D11PointLight* pl = static_cast<D3D11PointLight*>(it.second->LightShadowBuffers.get()) ) {
@@ -980,7 +901,6 @@ XRESULT D3D11ShadowMap::DrawWorldShadow( )
             RenderShadowmaps( renderParams );
 
             Engine::GAPI->SetCameraReplacementPtr( nullptr );
-            m_RenderQueues[cascadeIdx]->Reset();
         }
     }
 
@@ -996,7 +916,7 @@ XRESULT D3D11ShadowMap::DrawRainShadowmap() {
         auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
         auto _ = graphicsEngine->RecordGraphicsEvent( L"DrawRainShadowmap" );
 
-        graphicsEngine->Effects->DrawRainShadowmap();
+        return graphicsEngine->Effects->DrawRainShadowmap();
     }
     return XR_SUCCESS;
 }
@@ -1005,8 +925,10 @@ XRESULT D3D11ShadowMap::DrawPointlightLights(
     std::vector<VobLightInfo*>& lights,
     RenderToTextureBuffer& color,
     RenderToTextureBuffer& normals,
-    RenderToTextureBuffer& specular,
-    RenderToTextureBuffer& depthCopy
+    RenderToTextureBuffer& specular,    
+    RenderToTextureBuffer& depthCopy,
+    ID3D11RenderTargetView* outputRTV,
+    ID3D11DepthStencilView* dsv
     ) {
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
 
@@ -1022,7 +944,9 @@ XRESULT D3D11ShadowMap::DrawLighting(
     RenderToTextureBuffer& color,
     RenderToTextureBuffer& normals,
     RenderToTextureBuffer& specular,    
-    RenderToTextureBuffer& depthCopy) {
+    RenderToTextureBuffer& depthCopy,
+    ID3D11RenderTargetView* outputRTV,
+    ID3D11DepthStencilView* dsv) {
     auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
 
@@ -1039,7 +963,7 @@ XRESULT D3D11ShadowMap::DrawLighting(
 
     Engine::GAPI->SetFarPlane(static_cast<float>(settings.SectionDrawRadius) * WORLD_SECTION_SIZE );
 
-    DrawPointlightLights(lights, color, normals, specular, depthCopy);
+    DrawPointlightLights(lights, color, normals, specular, depthCopy, outputRTV, dsv);
 
     m_context->OMSetRenderTargets( 1, graphicsEngine->GetHDRBackBuffer().GetRenderTargetView().GetAddressOf(),
         nullptr );
@@ -1054,10 +978,9 @@ XRESULT D3D11ShadowMap::DrawLighting(
     srvs[0] = specular.GetShaderResView().Get();
     m_context->PSSetShaderResources( 7, 1, srvs );
 
-    DrawWorldLights();
+    DrawWorldLights( outputRTV );
 
-    m_context->OMSetRenderTargets( 1, graphicsEngine->GetHDRBackBuffer().GetRenderTargetView().GetAddressOf(),
-        graphicsEngine->GetDepthBuffer()->GetDepthStencilView().Get() );
+    m_context->OMSetRenderTargets( 1, &outputRTV, dsv );
 
     return XR_SUCCESS;
 }
@@ -1121,7 +1044,6 @@ void D3D11ShadowMap::RenderShadowmaps( const RenderShadowmapsParams& params ) {
         m_context->OMSetRenderTargets( 1, params.DebugRTV.GetAddressOf(), dsvOverwrite.Get() );
         Engine::GAPI->GetRendererState().BlendState.ColorWritesEnabled = true;
     }
-    Engine::GAPI->GetRendererState().BlendState.SetDirty();
 
     // Dont render shadows from the sun when it isn't on the sky
     if ( isNotWorldShadowMap ||
@@ -1170,20 +1092,17 @@ void D3D11ShadowMap::RenderShadowmaps( const RenderShadowmapsParams& params ) {
         WORLD_SECTION_SIZE );
 }
 
-XRESULT D3D11ShadowMap::DrawWorldLights()
+XRESULT D3D11ShadowMap::DrawWorldLights(ID3D11RenderTargetView* outputRTV)
 {
     auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     auto _ = graphicsEngine->RecordGraphicsEvent( L"DrawWorldLights" );
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
 
     Engine::GAPI->GetRendererState().BlendState.SetAdditiveBlending();
-    Engine::GAPI->GetRendererState().BlendState.SetDirty();
 
     Engine::GAPI->GetRendererState().DepthState.DepthBufferCompareFunc = GothicDepthBufferStateInfo::CF_COMPARISON_ALWAYS;
-    Engine::GAPI->GetRendererState().DepthState.SetDirty();
 
     Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_NONE;
-    Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
 
     // Modify light when raining
     float rain = Engine::GAPI->GetRainFXWeight();
@@ -1373,12 +1292,10 @@ void XM_CALLCONV D3D11ShadowMap::RenderShadowCube(
 
         Engine::GAPI->GetRendererState().BlendState.ColorWritesEnabled =
             true;  // Should be false, but needs to be true for SV_Depth to work
-        Engine::GAPI->GetRendererState().BlendState.SetDirty();
     } else {
         m_context->OMSetRenderTargets( 1, debugRTV.GetAddressOf(), face.Get() );
 
         Engine::GAPI->GetRendererState().BlendState.ColorWritesEnabled = true;
-        Engine::GAPI->GetRendererState().BlendState.SetDirty();
     }
 
     // Always render shadowcube when dynamic shadows are enabled

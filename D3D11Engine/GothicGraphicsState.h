@@ -117,18 +117,13 @@ struct GothicGraphicsState {
 };
 
 __declspec(align(4)) struct GothicPipelineState {
-    /** Sets this state dirty, which means that it will be updated before next rendering */
-    void SetDirty() {
-        StateDirty = true;
-        HashThis( reinterpret_cast<char*>(this), StructSize );
-    }
-
-    /** Hashes the whole struct */
-    void HashThis( char* data, int size ) {
+    /** Recomputes the hash from current state data. Called automatically by UpdateRenderStates(). */
+    void ComputeHash() {
         Hash = 0;
 
-        // Start hashing at the data of the other structs, skip the data of this one
-        for ( int i = sizeof( GothicPipelineState ); i < size; i += 4 ) {
+        // Hash the derived struct data, skipping the base GothicPipelineState fields
+        char* data = reinterpret_cast<char*>(this);
+        for ( int i = sizeof( GothicPipelineState ); i < StructSize; i += 4 ) {
             DWORD d;
             memcpy( &d, data + i, 4 );
 
@@ -140,7 +135,6 @@ __declspec(align(4)) struct GothicPipelineState {
         return Hash == o.Hash;
     }
 
-    bool StateDirty;
     size_t Hash;
     int StructSize;
 };
@@ -220,7 +214,6 @@ struct GothicDepthBufferStateInfo : public GothicPipelineState {
         c.DepthWriteEnabled = DepthWriteEnabled;
         c.DepthBufferCompareFunc = DepthBufferCompareFunc;
 
-        c.StateDirty = StateDirty;
         c.Hash = Hash;
         c.StructSize = StructSize;
         return c;
@@ -232,7 +225,6 @@ struct GothicDepthBufferStateInfo : public GothicPipelineState {
         c.DepthBufferCompareFunc = DepthBufferCompareFunc;
 
         c.StructSize = StructSize;
-        c.SetDirty();
     }
 };
 
@@ -371,7 +363,6 @@ struct GothicBlendStateInfo : public GothicPipelineState {
         c.AlphaToCoverage = AlphaToCoverage;
         c.ColorWritesEnabled = ColorWritesEnabled;
 
-        c.StateDirty = StateDirty;
         c.Hash = Hash;
         c.StructSize = StructSize;
         return c;
@@ -389,7 +380,6 @@ struct GothicBlendStateInfo : public GothicPipelineState {
         c.ColorWritesEnabled = ColorWritesEnabled;
 
         c.StructSize = StructSize;
-        c.SetDirty();
     }
 };
 
@@ -640,6 +630,7 @@ struct GothicRendererSettings {
         WireframeVobs = false;
         WireframeWorld = false;
         DrawShadowGeometry = true;
+        UseIndirectVobShadows = false;
         FixViewFrustum = false;
         DisableWatermark = true;
         DisableRendering = false;
@@ -828,6 +819,7 @@ struct GothicRendererSettings {
     int ShadowCascadePCFLimit;
     E_ShadowFrustumCulling ShadowFrustumCullingMode;
     bool DrawShadowGeometry;
+    bool UseIndirectVobShadows;
     bool VegetationAlphaToCoverage;
     bool DisableWatermark;
     bool DisableRendering;
@@ -968,6 +960,8 @@ struct GothicRendererSettings {
             bool UseLayeredRendering;
             bool UseShadowAtlas;
             bool ForceFeatureLevel10;
+            bool EnableAtlasStaticVobs;
+            bool EnableAtlasWorldMesh;
         } FeatureSet;
     } DebugSettings;
 };
@@ -1094,10 +1088,10 @@ struct GothicRendererState {
         TransformState.SetDefault();
         RendererSettings.SetDefault();
 
-        DepthState.SetDirty();
-        BlendState.SetDirty();
-        RasterizerState.SetDirty();
-        SamplerState.SetDirty();
+        DepthState.ComputeHash();
+        BlendState.ComputeHash();
+        RasterizerState.ComputeHash();
+        SamplerState.ComputeHash();
     }
 
     GothicDepthBufferStateInfo DepthState;

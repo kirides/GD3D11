@@ -119,11 +119,11 @@ public:
     }
 
     // Bind world shadowmap SRV to a pixel shader slot (binds entire cascade array)
-    void BindToPixelShader( ID3D11DeviceContext1* context, UINT slot );
+    void BindToPixelShader( ID3D11DeviceContext* context, UINT slot );
 
     // Bind the shadowmap sampler to the given slot
-    void BindSampler( ID3D11DeviceContext1* context, UINT slot );
-    void BindSamplerToCS( ID3D11DeviceContext1* context, UINT slot );
+    void BindSampler( ID3D11DeviceContext* context, UINT slot );
+    void BindSamplerToCS( ID3D11DeviceContext* context, UINT slot );
 
     XRESULT PrepareRender();
 
@@ -137,14 +137,18 @@ public:
     XRESULT DrawWorldShadow();
     XRESULT DrawRainShadowmap();
     XRESULT DrawPointlightLights(std::vector<VobLightInfo*>& lights, RenderToTextureBuffer& color, RenderToTextureBuffer& normals, RenderToTextureBuffer
-                                 & specular, RenderToTextureBuffer& depthCopy);
+                                 & specular, RenderToTextureBuffer& depthCopy,
+    ID3D11RenderTargetView* outputRTV,
+    ID3D11DepthStencilView* dsv );
 
     /** Renders the shadowmaps for the sun using parameter struct */
     void RenderShadowmaps( const RenderShadowmapsParams& params );
 
-    XRESULT DrawWorldLights();
+    XRESULT DrawWorldLights( ID3D11RenderTargetView* outputRTV );
     XRESULT DrawLighting(std::vector<VobLightInfo*>& lights, RenderToTextureBuffer& color, RenderToTextureBuffer& normals, RenderToTextureBuffer
-                         & specular, RenderToTextureBuffer& depthCopy);
+                         & specular, RenderToTextureBuffer& depthCopy,
+    ID3D11RenderTargetView* outputRTV,
+    ID3D11DepthStencilView* dsv );
 
     void XM_CALLCONV RenderShadowCube( DirectX::FXMVECTOR position,
         float range,
@@ -168,7 +172,6 @@ public:
         /* 4 */ { 0.80f, 1.0f }, // Players should really want to use 4 cascades for best quality and furthest
     };
 
-    D3D11RenderQueue* GetRenderQueue( int cascadeIndex ) { return m_RenderQueues[cascadeIndex].get(); }
 private:
     bool ShouldUseAtlas() const;
     void RecreateShadowSampler();
@@ -190,7 +193,6 @@ private:
     Microsoft::WRL::ComPtr<ID3D11SamplerState> m_shadowmapSampler;
     int m_lastNumCascades = 0;
     std::array<CameraReplacement, MAX_CSM_CASCADES> m_CascadeCRs;
-    std::array<std::unique_ptr<D3D11RenderQueue>, MAX_CSM_CASCADES> m_RenderQueues;
     std::vector<float> m_CascadeSplits;
     std::array<bool, MAX_CSM_CASCADES> m_ShouldUpdateCascade;
     XMFLOAT3 m_WorldShadowPos;

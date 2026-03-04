@@ -30,7 +30,18 @@ void D3D11PFX_SMAA::RenderPostFX( const Microsoft::WRL::ComPtr<ID3D11ShaderResou
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     ID3D11DeviceContext* pContext = engine->GetContext().Get();
 
-    engine->SetDefaultStates();
+    // Configure states that SMAA needs through the Gothic state system
+    auto& state = Engine::GAPI->GetRendererState();
+    state.RasterizerState.SetDefault();
+    state.RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_NONE;
+    state.RasterizerState.DepthClipEnable = true;
+
+    state.DepthState.DepthBufferEnabled = false;
+    state.DepthState.DepthWriteEnabled = false;
+    state.DepthState.DepthBufferCompareFunc = GothicDepthBufferStateInfo::CF_COMPARISON_ALWAYS;
+
+    state.BlendState.SetDefault();
+
     engine->UpdateRenderStates();
 
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> OldRTV;

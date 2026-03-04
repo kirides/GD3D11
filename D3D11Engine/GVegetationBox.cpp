@@ -309,7 +309,6 @@ void GVegetationBox::RenderVegetation( const XMFLOAT3& eye ) {
     VegetationTexture->BindToPixelShader( 1 );
 
     Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_NONE;
-    Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
 
     // Enable alpha-to-coverage
 
@@ -317,7 +316,6 @@ void GVegetationBox::RenderVegetation( const XMFLOAT3& eye ) {
         Engine::GAPI->GetRendererState().BlendState.SetDefault();
         Engine::GAPI->GetRendererState().BlendState.BlendEnabled = false;
         Engine::GAPI->GetRendererState().BlendState.AlphaToCoverage = Engine::GAPI->GetRendererState().RendererSettings.VegetationAlphaToCoverage;
-        Engine::GAPI->GetRendererState().BlendState.SetDirty();
     }
 
     Engine::GraphicsEngine->SetActiveVertexShader( VShaderID::VS_GrassInstanced );
@@ -356,7 +354,6 @@ void GVegetationBox::RenderVegetation( const XMFLOAT3& eye ) {
 
     if ( Engine::GAPI->GetRendererState().RendererSettings.VegetationAlphaToCoverage ) {
         Engine::GAPI->GetRendererState().BlendState.SetDefault();
-        Engine::GAPI->GetRendererState().BlendState.SetDirty();
     }
 }
 
