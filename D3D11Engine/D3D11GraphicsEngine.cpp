@@ -54,6 +54,7 @@
 #include "zCOption.h"
 #include "RenderGraph.h"
 #include "RGBuilder.h"
+#include "D3D11TextureAtlasManager.h"
 
 #ifdef BUILD_SPACER
 #define IS_SPACER_BUILD true
@@ -97,6 +98,7 @@ static std::unique_ptr<D3D11IGDEXT> igdextDevice;
 static std::unique_ptr<D3D11AGS> agsDevice;
 
 extern bool userHaveAMDGPU;
+bool SupportTextureAtlases = false;
 
 namespace
 {
@@ -591,6 +593,18 @@ XRESULT D3D11GraphicsEngine::Init() {
     if ( SUCCEEDED( hr ) ) {
         FeatureRTArrayIndexFromAnyShader = options3.VPAndRTArrayIndexFromAnyShaderFeedingRasterizer;
         Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseLayeredRendering = FeatureRTArrayIndexFromAnyShader;
+    }
+
+    if (maxFeatureLevel >= D3D_FEATURE_LEVEL::D3D_FEATURE_LEVEL_11_0) {
+        // check amount of GPU Memory available
+        constexpr uint64_t GiB = 1024ull * 1024ull * 1024ull;
+        if ( adpDesc.DedicatedVideoMemory >= 4 * GiB ) {
+            // currently we just assume everything fits into memory.
+            // in the future we should make use of Tiled Resources, which would allow us
+            // to support more memory intensive features, even on less than 4GB cards, by streaming in the necessary tiles.
+            SupportTextureAtlases = true;
+            Engine::GAPI->GetRendererState().RendererSettings.UseIndirectVobShadows = SupportTextureAtlases;
+        }
     }
 
     LogInfo() << "Creating ShaderManager";
@@ -5402,241 +5416,343 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
     }    
     
     if ( Engine::GAPI->GetRendererState().RendererSettings.DrawVOBs ) {
-        static std::vector<VobInfo*> potentialCasters;
-        std::vector<VobInfo*>& vobs = potentialCasters;
-        if (params.CascadeIndex != -1) {
-            auto renderQueue = ShadowMaps->GetRenderQueue( params.CascadeIndex );
-            renderQueue->ProcessQueue();
-
-            vobs = renderQueue->GetVobs();
-        } else {
-            static std::vector<VobLightInfo*> _1;
-            static std::vector<SkeletalVobInfo*> _2;
-            potentialCasters.reserve(1024);
-            potentialCasters.clear();
-
-            LegacyRenderQueueProxy q(potentialCasters, _1, _2);
-            RndCullContext ctx;
-            ctx.queue = &q;
-            ctx.cameraPosition = Engine::GAPI->GetCameraPosition();
-            ctx.stage = RenderStage::STAGE_DRAW_WORLD;
-            ctx.frustum = currentFrustum;
-            ctx.drawDistances.OutdoorVobs = Engine::GAPI->GetRendererState().RendererSettings.OutdoorVobDrawRadius;
-            ctx.drawDistances.OutdoorVobsSmall = Engine::GAPI->GetRendererState().RendererSettings.OutdoorSmallVobDrawRadius;
-            ctx.drawDistances.IndoorVobs = Engine::GAPI->GetRendererState().RendererSettings.IndoorVobDrawRadius;
-            ctx.drawDistances.VisualFX = Engine::GAPI->GetRendererState().RendererSettings.VisualFXDrawRadius;
-            Engine::GAPI->CollectVisibleVobs( ctx );
-        }
-
-        // clear any residue of main render pass
-        for ( auto const& staticMeshVisual : Engine::GAPI->GetStaticMeshVisuals() ) {
-            staticMeshVisual.second->StartNewFrame();
-        }
         
-        for ( auto& it : vobs) {
-            // process any vobs only visible in this cascade
-            VobInstanceInfo vii = {};
-            vii.world = it->WorldMatrix;
-            vii.prevWorld = it->HasValidPrevMatrix ? it->PrevWorldMatrix : it->WorldMatrix;
-            vii.color = it->GroundColor;
-            vii.windStrenth = 0.0f;
-            vii.canBeAffectedByPlayer = 0;
-
-            zTAnimationMode aniMode = it->Vob->GetVisualAniMode();
-            if ( aniMode != zVISUAL_ANIMODE_NONE ) {
-                vii.canBeAffectedByPlayer = (!it->Vob->GetDynColl() ? 1.0f : 0.0f);
-                GothicAPI::ProcessVobAnimation( it->Vob, aniMode, vii );
-            }
-
-            reinterpret_cast<MeshVisualInfo*>(it->VisualInfo)->Instances.push_back( vii );
+        bool drawStaticVobs = true;
+        if ( Engine::GAPI->GetRendererState().RendererSettings.UseIndirectVobShadows && !m_AtlasDrawGroups.empty() ) {
+            // GPU indirect path: reuse DrawVOBsIndirect with the cascade/shadow frustum.
+            // BC1 groups render depth-only (no PS); BC2 groups use the alpha-test PS.
+            DrawVOBsIndirect( currentFrustum, /*bindPS=*/false );
+            drawStaticVobs = false;
         }
 
-        auto _ = START_TIMING( timer_labels_vobs[timerLabelIndex] );
-        auto _1 = RecordGraphicsEvent( L"Shadows::DrawVOBs" );
+        static std::vector<VobInfo*> dynamicVobCasters;
+        static std::vector<VobLightInfo*> _1;
+        static std::vector<SkeletalVobInfo*> _2;
+        dynamicVobCasters.reserve( 1024 );
+        dynamicVobCasters.clear();
 
-        size_t ByteWidth = DynamicInstancingBuffer->GetSizeInBytes();
-
-        if ( ByteWidth < sizeof( VobInstanceInfo ) * vobs.size() ) {
-            if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog )
-                LogInfo() << "Instancing buffer too small (" << ByteWidth
-                << "), need " << sizeof( VobInstanceInfo ) * vobs.size()
-                << " bytes. Recreating buffer.";
-
-            // Buffer too small, recreate it
-            DynamicInstancingBuffer->Init(
-                nullptr, sizeof( VobInstanceInfo ) * vobs.size(),
-                D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_DYNAMIC,
-                D3D11VertexBuffer::CA_WRITE );
-
-            SetDebugName( DynamicInstancingBuffer->GetShaderResourceView().Get(), "DynamicInstancingBuffer->ShaderResourceView" );
-            SetDebugName( DynamicInstancingBuffer->GetVertexBuffer().Get(), "DynamicInstancingBuffer->VertexBuffer" );
-        }
+        LegacyRenderQueueProxy q( dynamicVobCasters, _1, _2 );
+        RndCullContext ctx;
+        ctx.queue = &q;
+        ctx.cameraPosition = Engine::GAPI->GetCameraPosition();
+        ctx.stage = RenderStage::STAGE_DRAW_SHADOWS;
+        ctx.frustum = currentFrustum;
+        ctx.drawDistances.OutdoorVobs = Engine::GAPI->GetRendererState().RendererSettings.OutdoorVobDrawRadius;
+        ctx.drawDistances.OutdoorVobsSmall = Engine::GAPI->GetRendererState().RendererSettings.OutdoorSmallVobDrawRadius;
+        ctx.drawDistances.IndoorVobs = 0;
+        ctx.drawDistances.VisualFX = 0;
+        Engine::GAPI->CollectVisibleVobs( ctx, (EBspTreeCollectFlags)(EBspTreeCollectFlags::COLLECT_DYNAMIC_VOBS) );
         
-        std::vector<MeshVisualInfo*> activeVisuals;
-        activeVisuals.reserve(256); // Reserve enough memory to avoid allocations
-        for ( auto const& pair : Engine::GAPI->GetStaticMeshVisuals() ) {
-            if ( !pair.second->Instances.empty() ) {
-                activeVisuals.push_back(pair.second);
-            }
-        }
-
-        byte* data;
-        UINT size;
-        if ( SUCCEEDED( DynamicInstancingBuffer->Map( D3D11VertexBuffer::M_WRITE_DISCARD,
-            reinterpret_cast<void**>(&data), &size ) ) ) {
-            UINT loc = 0;
-            for ( auto const& staticMeshVisual : activeVisuals ) {
-                staticMeshVisual->StartInstanceNum = loc;
-                memcpy( data + loc * sizeof( VobInstanceInfo ), staticMeshVisual->Instances.data(),
-                    sizeof( VobInstanceInfo ) * staticMeshVisual->Instances.size() );
-                loc += staticMeshVisual->Instances.size();
-            }
-            DynamicInstancingBuffer->Unmap();
-        } else {
-            LogError() << "Failed to map dynamic instancing buffer for vobs.";
-        }
-
-        // Apply instancing shader
-        SetActiveVertexShader( VShaderID::VS_ExInstancedObj );
-        // SetActivePixelShader("PS_DiffuseAlphaTest");
-        ActiveVS->Apply();
-
-        if ( !linearDepth )  // Only unbind when not rendering linear depth
-        {
-            // Unbind PS
-            Context->PSSetShader( nullptr, nullptr, 0 );
-        }
-
-        GraphicsShaderConstantBuffer windBuffer = {};
-        if ( ActiveVS ) {
-            windBuffer = ActiveVS->GetBuffer( "WindParams" );
-            windBuffer.Bind();
-        }
-
-        XMFLOAT3 vPlayerPosition = Engine::GAPI->GetPlayerVob() ? Engine::GAPI->GetPlayerVob()->GetPositionWorld() : XMFLOAT3( 0, 0, 0 );
-        g_windBuffer.playerPos = float3( vPlayerPosition.x, vPlayerPosition.y, vPlayerPosition.z );
-
-        UINT dynOffset[] = { 0 };
-        UINT dynuStride[] = { sizeof( VobInstanceInfo ) };
-
-        ID3D11Buffer* buffers[1] = {
-            DynamicInstancingBuffer->GetVertexBuffer().Get()
+        struct BatchableStaticVobs {
+            MeshVisualInfo* VisualInfo;
+            std::vector<VobInstanceInfo> Instances;
+            uint32_t StartInstanceNum;
         };
 
-        GetContext()->IASetVertexBuffers( 1, 1, buffers, dynuStride, dynOffset );
+        if (drawStaticVobs) {
+            // clear any residue of main render pass
+            const auto& vobs = m_StaticVobs;
+            std::vector<StaticVobRenderItem> outRenderQueue{};
+            StaticVOBCache::CullAndGatherStaticVOBs( m_StaticVobsAABBs, vobs, currentFrustum.GetPlanes()._Elems, outRenderQueue );
 
-        // Sort visuals by whether they need alpha testing to minimize shader switches
-        if ( alphaRef > 0.0f ) {
-            std::sort( activeVisuals.begin(), activeVisuals.end(), [alphaRef, colorWritesEnabled]( const MeshVisualInfo* a, const MeshVisualInfo* b ) {
-                return a->NeedsAlphaTesting < b->NeedsAlphaTesting || (a->NeedsAlphaTesting == b->NeedsAlphaTesting && a->Visual < b->Visual);
-            } );
-        } else {
-            std::sort( activeVisuals.begin(), activeVisuals.end(), [alphaRef, colorWritesEnabled]( const MeshVisualInfo* a, const MeshVisualInfo* b ) {
-                return a->Visual < b->Visual;
-            } );
-        }
+            std::sort( outRenderQueue.begin(), outRenderQueue.end(),
+                []( const StaticVobRenderItem& a, const StaticVobRenderItem& b ) {
+                return a.mvi->Visual < a.mvi->Visual;
+                } );
 
-        // Draw all vobs the player currently sees
-        D3D11PShader* currPs = nullptr;
+            // Group vobs by visual and prepare instance data
+            std::vector<BatchableStaticVobs> batchables;
+            batchables.reserve( outRenderQueue.size() );
 
-        for ( auto const& staticMeshVisual : activeVisuals ) {
-            if ( staticMeshVisual->Instances.empty() ) continue;
- 
-            g_windBuffer.minHeight = staticMeshVisual->BBox.Min.y;
-            g_windBuffer.maxHeight = staticMeshVisual->BBox.Max.y;
+            zCVisual* lastVisual = nullptr;
+            for ( auto& itm : outRenderQueue ) {
+                auto v = vobs[itm.instanceIndex];
 
-            windBuffer.Update( &g_windBuffer );
+                if ( v->VisualInfo->Visual != lastVisual ) {
+                    // New visual, reset instance data
+                    lastVisual = v->VisualInfo->Visual;
+                    batchables.push_back( { reinterpret_cast<MeshVisualInfo*>(v->VisualInfo), std::vector<VobInstanceInfo>() } );
+                    batchables.back().Instances.reserve( 10 );
+                }
+                BatchableStaticVobs& batch = batchables.back();
 
-            bool doReset = true;
-            zCTexture* previousTx = nullptr;
-            for ( auto const& itt : staticMeshVisual->MeshesByTexture ) {
-                std::vector<MeshInfo*>& mlist = staticMeshVisual->MeshesByTexture[itt.first];
-                if ( mlist.empty() ) continue;
+                MeshVisualInfo* visualInfo = batch.VisualInfo;
+                VobInstanceInfo vii = {};
+                vii.world = v->WorldMatrix;
+                vii.prevWorld = v->HasValidPrevMatrix ? v->PrevWorldMatrix : v->WorldMatrix;
+                vii.color = v->GroundColor;
+                vii.windStrenth = 0.0f;
+                vii.canBeAffectedByPlayer = 0;
+                zTAnimationMode aniMode = v->Vob->GetVisualAniMode();
+                if ( aniMode != zVISUAL_ANIMODE_NONE ) {
+                    vii.canBeAffectedByPlayer = (!v->Vob->GetDynColl() ? 1.0f : 0.0f);
+                    GothicAPI::ProcessVobAnimation( v->Vob, aniMode, vii );
+                }
+                batch.Instances.push_back( vii );
+            }
 
-                // Check for alphablend
-                bool blendAdd =
-                    itt.first.Material->GetAlphaFunc() == zMAT_ALPHA_FUNC_ADD;
-                bool blendBlend =
-                    itt.first.Material->GetAlphaFunc() == zMAT_ALPHA_FUNC_BLEND;
-                // if one part of the mesh uses blending, all do, which means that
-                // the mesh likely is transparent and can't cast shadows
-                if ( !doReset || blendAdd || blendBlend ) {
-                    doReset = false;
-                    continue;
+            auto _ = START_TIMING( timer_labels_vobs[timerLabelIndex] );
+            auto _1 = RecordGraphicsEvent( L"DrawVOBs" );
+
+            size_t ByteWidth = DynamicInstancingBuffer->GetSizeInBytes();
+
+            if ( ByteWidth < sizeof( VobInstanceInfo ) * vobs.size() ) {
+                if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog )
+                    LogInfo() << "Instancing buffer too small (" << ByteWidth
+                    << "), need " << sizeof( VobInstanceInfo ) * vobs.size()
+                    << " bytes. Recreating buffer.";
+
+                // Buffer too small, recreate it
+                DynamicInstancingBuffer->Init(
+                    nullptr, sizeof( VobInstanceInfo ) * vobs.size(),
+                    D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_DYNAMIC,
+                    D3D11VertexBuffer::CA_WRITE );
+
+                SetDebugName( DynamicInstancingBuffer->GetShaderResourceView().Get(), "DynamicInstancingBuffer->ShaderResourceView" );
+                SetDebugName( DynamicInstancingBuffer->GetVertexBuffer().Get(), "DynamicInstancingBuffer->VertexBuffer" );
+            }
+        
+            byte* data;
+            UINT size;
+            UINT loc = 0;
+            if ( !SUCCEEDED( DynamicInstancingBuffer->Map( D3D11VertexBuffer::M_WRITE_DISCARD,
+                reinterpret_cast<void**>(&data), &size ) ) ) {
+                LogError() << "Failed to map dynamic instancing buffer for writing!";
+                return;
+            }
+            for ( auto& staticMeshVisual : batchables ) {
+                staticMeshVisual.StartInstanceNum = loc;
+                memcpy( data + loc * sizeof( VobInstanceInfo ), staticMeshVisual.Instances.data(),
+                    sizeof( VobInstanceInfo ) * staticMeshVisual.Instances.size() );
+                loc += staticMeshVisual.Instances.size();
+            }
+            DynamicInstancingBuffer->Unmap();
+
+            // Apply instancing shader
+            SetActiveVertexShader( VShaderID::VS_ExInstancedObj );
+            // SetActivePixelShader("PS_DiffuseAlphaTest");
+            ActiveVS->Apply();
+
+            if ( !linearDepth )  // Only unbind when not rendering linear depth
+            {
+                // Unbind PS
+                Context->PSSetShader( nullptr, nullptr, 0 );
+            }
+
+            if ( ActiveVS ) {
+                ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( 1 );
+            }
+
+            XMFLOAT3 vPlayerPosition = Engine::GAPI->GetPlayerVob() ? Engine::GAPI->GetPlayerVob()->GetPositionWorld() : XMFLOAT3( 0, 0, 0 );
+            g_windBuffer.playerPos = float3( vPlayerPosition.x, vPlayerPosition.y, vPlayerPosition.z );
+
+            // Draw all vobs the player currently sees
+            for ( auto const& b : batchables ) {
+                if ( b.Instances.empty() ) continue;
+                auto staticMeshVisual = b.VisualInfo;
+
+                g_windBuffer.minHeight = staticMeshVisual->BBox.Min.y;
+                g_windBuffer.maxHeight = staticMeshVisual->BBox.Max.y;
+
+                if ( ActiveVS ) {
+                    ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &g_windBuffer );
                 }
 
-                zCTexture* tx = itt.first.Texture;
-                bool bindTexture = previousTx != tx
-                    && tx
-                    && (tx->HasAlphaChannel() || colorWritesEnabled)
-                    && alphaRef > 0.0f;
+                zCTexture* previousTx = nullptr;
+                for ( auto const& itt : staticMeshVisual->MeshesByTexture ) {
+                    std::vector<MeshInfo*>& mlist = staticMeshVisual->MeshesByTexture[itt.first];
+                    if ( mlist.empty() ) continue;
+                
+                    zCTexture* tx = itt.first.Texture;
+                    bool bindTexture = previousTx != tx
+                        && tx 
+                        && (tx->HasAlphaChannel() || colorWritesEnabled);
 
-                // Bind texture
-                if ( bindTexture ) {
-                    if ( tx->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
-                        auto t = tx->GetSurface()->GetEngineTexture()->GetShaderResourceView().Get();
-                        Context->PSSetShaderResources( 0, 1, &t );
-                        auto nextPs = ActivePS.get();
-                        if ( currPs != nextPs ) { 
-                            currPs = nextPs;
-                            ActivePS->Apply();
-                        }
-                        previousTx = tx;
-                    } else
+                    // Check for alphablend
+                    bool blendAdd =
+                        itt.first.Material->GetAlphaFunc() == zMAT_ALPHA_FUNC_ADD;
+                    bool blendBlend =
+                        itt.first.Material->GetAlphaFunc() == zMAT_ALPHA_FUNC_BLEND;
+                    // if one part of the mesh uses blending, all do, which means that
+                    // the mesh likely is transparent and can't cast shadows
+                    if ( blendAdd || blendBlend ) {
                         continue;
-                } else {
-                    if ( !linearDepth )  // Only unbind when not rendering linear depth
-                    {
-                        // Unbind PS
-                        if ( currPs != nullptr ) {
-                            Context->PSSetShader( nullptr, nullptr, 0 );
-                            currPs = nullptr;
-                        }
                     }
                 }
 
                 for ( unsigned int i = 0; i < mlist.size(); i++ ) {
 
-                    MeshInfo* mi = mlist[i];
+                    for ( unsigned int i = 0; i < mlist.size(); i++ ) {
+                        // Bind texture
+                        if ( bindTexture ) {
+                            if ( alphaRef > 0.0f && tx->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                                tx->Bind( 0 );
+                                ActivePS->Apply();
+                                previousTx = tx;
+                            } else
+                                continue;
+                        } else {
+                            if ( !linearDepth )  // Only unbind when not rendering linear depth
+                            {
+                                // Unbind PS
+                                Context->PSSetShader( nullptr, nullptr, 0 );
+                            }
+                        }
 
-                    // Draw batch
+                        MeshInfo* mi = mlist[i];
 
-                    /* Dont re-bind buffer all the time*/
-                    const auto vb = mi->MeshVertexBuffer;
-                    const auto ib = mi->MeshIndexBuffer;
+                        // Draw batch
+                        DrawInstanced( mi->MeshVertexBuffer, mi->MeshIndexBuffer,
+                            mi->Indices.size(), DynamicInstancingBuffer.get(),
+                            sizeof( VobInstanceInfo ), b.Instances.size(),
+                            sizeof( ExVertexStruct ), b.StartInstanceNum );
 
-                    UINT offset[] = { 0 };
-                    UINT uStride[] = { sizeof( ExVertexStruct ) };
-                    ID3D11Buffer* buffers[1] = {
-                        vb->GetVertexBuffer().Get()
-                    };
-                    
-                    auto numIndices = mi->Indices.size();
-                    const auto numInstances = staticMeshVisual->Instances.size();
-                    const auto startInstanceNum = staticMeshVisual->StartInstanceNum;
-                    const auto indexOffset = 0;
-
-                    GetContext()->IASetVertexBuffers( 0, 1, buffers, uStride, offset );
-
-                    Context->IASetIndexBuffer( ib->GetVertexBuffer().Get(), VERTEX_INDEX_DXGI_FORMAT, 0 );
-
-                    unsigned int max =
-                        Engine::GAPI->GetRendererState().RendererSettings.MaxNumFaces * 3;
-                    numIndices = max != 0 ? (numIndices < max ? numIndices : max) : numIndices;
-
-                    // Draw the batch
-                    GetContext()->DrawIndexedInstanced( numIndices, numInstances, indexOffset, 0,
-                        startInstanceNum );
-
-                    Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
-                        (numIndices / 3) * numInstances;
-
-                    Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnVobs++;
+                        Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnVobs +=
+                            b.Instances.size();
+                    }
                 }
             }
+        } // end else (CPU indirect path)
 
-            // Reset visual
-            if ( doReset ) staticMeshVisual->StartNewFrame();
+        // Draw dynamic vobs (spawned at runtime, not part of m_StaticVobs or atlas)
+        if ( !dynamicVobCasters.empty() ) {
+            // Group by visual for instanced drawing
+
+            std::vector<BatchableStaticVobs> dynBatches;
+            std::unordered_map<MeshVisualInfo*, size_t> batchIndex;
+            batchIndex.reserve( dynamicVobCasters.size() ); // usually single, but can be multiple
+
+            for ( auto* v : dynamicVobCasters ) {
+                if ( !v->VisualInfo ) continue;
+                MeshVisualInfo* vi = reinterpret_cast<MeshVisualInfo*>( v->VisualInfo );
+
+                auto [it, inserted] = batchIndex.emplace( vi, dynBatches.size() );
+                if ( inserted ) {
+                    dynBatches.push_back( { vi, {}, 0 } );
+                }
+
+                VobInstanceInfo vii = {};
+                vii.world = v->WorldMatrix;
+                vii.prevWorld = v->HasValidPrevMatrix ? v->PrevWorldMatrix : v->WorldMatrix;
+                vii.color = v->GroundColor;
+                vii.windStrenth = 0.0f;
+                vii.canBeAffectedByPlayer = 0;
+                zTAnimationMode aniMode = v->Vob->GetVisualAniMode();
+                if ( aniMode != zVISUAL_ANIMODE_NONE ) {
+                    vii.canBeAffectedByPlayer = (!v->Vob->GetDynColl() ? 1.0f : 0.0f);
+                    GothicAPI::ProcessVobAnimation( v->Vob, aniMode, vii );
+                }
+                dynBatches[it->second].Instances.push_back( vii );
+            }
+
+            if ( !dynBatches.empty() ) {
+                // Ensure instancing buffer is large enough
+                size_t needed = dynamicVobCasters.size() * sizeof( VobInstanceInfo );
+                if ( DynamicInstancingBuffer->GetSizeInBytes() < needed ) {
+                    DynamicInstancingBuffer->Init(
+                        nullptr, needed,
+                        D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_DYNAMIC,
+                        D3D11VertexBuffer::CA_WRITE );
+                }
+
+                byte* dynData;
+                UINT dynSize;
+                UINT dynLoc = 0;
+                if ( SUCCEEDED( DynamicInstancingBuffer->Map( D3D11VertexBuffer::M_WRITE_DISCARD,
+                    reinterpret_cast<void**>(&dynData), &dynSize ) ) ) {
+                    for ( auto& batch : dynBatches ) {
+                        batch.StartInstanceNum = dynLoc;
+                        memcpy( dynData + dynLoc * sizeof( VobInstanceInfo ), batch.Instances.data(),
+                            sizeof( VobInstanceInfo ) * batch.Instances.size() );
+                        dynLoc += batch.Instances.size();
+                    }
+                    DynamicInstancingBuffer->Unmap();
+                }
+
+                // Set up instanced vertex shader (GPU indirect path may have changed shader state)
+                SetActiveVertexShader( VShaderID::VS_ExInstancedObj );
+                ActiveVS->Apply();
+
+                if ( linearDepth ) {
+                    SetActivePixelShader( PShaderID::PS_LinDepth );
+                } else {
+                    SetActivePixelShader( PShaderID::PS_DiffuseAlphaTest );
+                    Context->PSSetShader( nullptr, nullptr, 0 );
+                }
+
+                // Rebind PS constant buffers (GPU indirect path may have overwritten them)
+                ActivePS->GetConstantBuffer()[0]->UpdateBuffer(
+                    &Engine::GAPI->GetRendererState().GraphicsState );
+                ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+
+                GSky* dynSky = Engine::GAPI->GetSky();
+                ActivePS->GetConstantBuffer()[1]->UpdateBuffer( &dynSky->GetAtmosphereCB() );
+                ActivePS->GetConstantBuffer()[1]->BindToPixelShader( 1 );
+
+                InfiniteRangeConstantBuffer->BindToPixelShader( 3 );
+
+                SetupVS_ExConstantBuffer();
+
+                if ( ActiveVS ) {
+                    ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( 1 );
+                }
+
+                XMFLOAT3 vPlayerPosition = Engine::GAPI->GetPlayerVob() ? Engine::GAPI->GetPlayerVob()->GetPositionWorld() : XMFLOAT3( 0, 0, 0 );
+                g_windBuffer.playerPos = float3( vPlayerPosition.x, vPlayerPosition.y, vPlayerPosition.z );
+
+                for ( auto const& batch : dynBatches ) {
+                    if ( batch.Instances.empty() ) continue;
+
+                    g_windBuffer.minHeight = batch.VisualInfo->BBox.Min.y;
+                    g_windBuffer.maxHeight = batch.VisualInfo->BBox.Max.y;
+
+                    if ( ActiveVS ) {
+                        ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &g_windBuffer );
+                    }
+
+                    zCTexture* previousTx = nullptr;
+                    for ( auto const& itt : batch.VisualInfo->MeshesByTexture ) {
+                        const std::vector<MeshInfo*>& mlist = itt.second;
+                        if ( mlist.empty() ) continue;
+
+                        zCTexture* tx = itt.first.Texture;
+                        bool bindTexture = previousTx != tx
+                            && tx
+                            && (tx->HasAlphaChannel() || colorWritesEnabled);
+
+                        bool blendAdd = itt.first.Material->GetAlphaFunc() == zMAT_ALPHA_FUNC_ADD;
+                        bool blendBlend = itt.first.Material->GetAlphaFunc() == zMAT_ALPHA_FUNC_BLEND;
+                        if ( blendAdd || blendBlend ) {
+                            continue; // shadow pass, transparent materials shouldn't cast shadows
+                        }
+
+                        for ( unsigned int i = 0; i < mlist.size(); i++ ) {
+                            if ( bindTexture ) {
+                                if ( alphaRef > 0.0f && tx->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                                    tx->Bind( 0 );
+                                    ActivePS->Apply();
+                                    previousTx = tx;
+                                } else
+                                    continue;
+                            } else {
+                                if ( !linearDepth ) {
+                                    Context->PSSetShader( nullptr, nullptr, 0 );
+                                }
+                            }
+
+                            MeshInfo* mi = mlist[i];
+
+                            DrawInstanced( mi->MeshVertexBuffer, mi->MeshIndexBuffer,
+                                mi->Indices.size(), DynamicInstancingBuffer.get(),
+                                sizeof( VobInstanceInfo ), batch.Instances.size(),
+                                sizeof( ExVertexStruct ), batch.StartInstanceNum );
+
+                            Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnVobs +=
+                                batch.Instances.size();
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -5775,7 +5891,20 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
 
     {
         auto _ = START_TIMING( "VOBs" );
-        SetDefaultStates();
+
+        bool needsDrawVobs = true;
+        if ( !m_AtlasDrawGroups.empty() ) {
+            Frustum cameraFrustum = Frustum::AlwaysContainingFrustum();
+            if ( auto cam = zCCamera::GetCamera() ) {
+                cam->Activate();
+                cameraFrustum.BuildPerspective(
+                    XMMatrixTranspose( XMLoadFloat4x4( &cam->trafoView ) ),
+                    XMLoadFloat4x4( &cam->trafoProjection ) );
+            }
+            DrawVOBsIndirect( cameraFrustum );
+            needsDrawVobs = false;
+        }
+
 
         SetActivePixelShader( PShaderID::PS_Diffuse );
         SetActiveVertexShader( VShaderID::VS_ExInstancedObj );
@@ -5824,7 +5953,12 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
             if ( !renderSettings.FixViewFrustum ||
                 (renderSettings.FixViewFrustum &&
                     vobs.empty()) ) {
-                Engine::GAPI->CollectVisibleVobs( vobs, m_FrameLights, mobs );
+
+                EBspTreeCollectFlags collectFlags = EBspTreeCollectFlags::COLLECT_ALL_MUTATE;
+                if (!needsDrawVobs) {
+                    collectFlags = (EBspTreeCollectFlags)(collectFlags & ~EBspTreeCollectFlags::COLLECT_VOBS);
+                }
+                Engine::GAPI->CollectVisibleVobs( vobs, m_FrameLights, mobs, CullAll, collectFlags );
             }
         }
 
@@ -5832,15 +5966,15 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
             UpdateMorphMeshVisual();
         }
 
-        if ( renderSettings.DrawVOBs ) {
+        if ( renderSettings.DrawVOBs && vobs.size() > 0 ) {
             auto _1 = Engine::GraphicsEngine->RecordGraphicsEvent( L"DrawVOBsInstanced->DrawVOBs" );
-
+            
             std::vector<MeshVisualInfo*> activeVisuals;
             activeVisuals.reserve( 256 ); // Reserve enough memory to avoid allocations
             for ( auto const& pair : Engine::GAPI->GetStaticMeshVisuals() ) {
                 if ( !pair.second->Instances.empty() ) {
                     activeVisuals.push_back( pair.second );
-                }
+            }
             }
 
             // Create instancebuffer for this frame
@@ -6094,6 +6228,162 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
         vobs.clear();
         mobs.clear();
     }
+
+    return XR_SUCCESS;
+}
+
+XRESULT D3D11GraphicsEngine::DrawVOBsIndirect( const Frustum& frustum, bool bindPS ) {
+    if ( m_AtlasDrawGroups.empty() || !m_VobGPUBuffer || !m_StaticGlobalVertexBuffer || !m_StaticGlobalIndexBuffer )
+        return XR_SUCCESS;
+
+    auto _ = RecordGraphicsEvent( L"DrawVOBsIndirect" );
+
+    auto& context = GetContext();
+
+    // --- 1. Reset indirect args InstanceCounts via CopyResource from template ---
+    context->CopyResource( m_MergedIndirectArgs->GetIndirectBuffer().Get(),
+                           m_IndirectArgsTemplate.Get() );
+
+    // --- 2. Update cull constant buffer ---
+    extern float vobAnimation_WindStrength;
+    CullConstants cb = {};
+    memcpy( cb.frustumPlanes, frustum.GetPlanes().data(), 6 * sizeof( XMFLOAT4 ) );
+    cb.cameraPosition = Engine::GAPI->GetCameraPosition();
+    cb.drawDistance = Engine::GAPI->GetRendererState().RendererSettings.OutdoorVobDrawRadius;
+    cb.globalWindStrength = vobAnimation_WindStrength;
+    cb.windAdvanced = (Engine::GAPI->GetRendererState().RendererSettings.WindQuality
+                       == GothicRendererSettings::EWindQuality::WIND_QUALITY_ADVANCED) ? 1 : 0;
+    cb.numVobs = static_cast<UINT>(m_StaticVobs.size());
+    m_CullConstantBuffer->UpdateBuffer( &cb );
+    m_CullConstantBuffer->BindToComputeShader( 0 );
+
+    // --- 3. Dispatch GPU cull compute shader ---
+    auto cullCS = ShaderManager->GetCShader( CShaderID::CS_CullVobs );
+    if ( !cullCS )
+        return XR_SUCCESS;
+    cullCS->Apply();
+
+    // SRV t0 = VobGPUData, t1 = SubmeshGPUData
+    ID3D11ShaderResourceView* srvs[2] = {
+        m_VobGPUBuffer->GetSRV(),
+        m_SubmeshGPUBuffer->GetSRV()
+    };
+    context->CSSetShaderResources( 0, 2, srvs );
+
+    // UAV u0 = InstanceOutput (structured), u1 = IndirectArgs (raw byte address)
+    ID3D11UnorderedAccessView* uavs[2] = {
+        m_InstanceBufferGPU->GetUAV(),
+        m_MergedIndirectArgs->GetUnorderedAccessView().Get()
+    };
+    context->CSSetUnorderedAccessViews( 0, 2, uavs, nullptr );
+
+    UINT numGroups = (static_cast<UINT>(m_StaticVobs.size()) + 63) / 64;
+    context->Dispatch( numGroups, 1, 1 );
+
+    // Unbind CS resources
+    ID3D11ShaderResourceView* nullSRV[2] = { nullptr, nullptr };
+    ID3D11UnorderedAccessView* nullUAV[2] = { nullptr, nullptr };
+    context->CSSetShaderResources( 0, 2, nullSRV );
+    context->CSSetUnorderedAccessViews( 0, 2, nullUAV, nullptr );
+    context->CSSetShader( nullptr, nullptr, 0 );
+
+    // --- 4. Bind global geometry (once) ---
+    UINT strides[2] = { sizeof( ExVertexStruct ), sizeof( uint32_t ) };
+    UINT offsets[2] = { 0, 0 };
+    ID3D11Buffer* vbs[2] = {
+        m_StaticGlobalVertexBuffer->GetVertexBuffer().Get(),
+        m_GlobalInstanceIdBuffer->GetVertexBuffer().Get()
+    };
+    context->IASetVertexBuffers( 0, 2, vbs, strides, offsets );
+    context->IASetIndexBuffer( m_StaticGlobalIndexBuffer->GetVertexBuffer().Get(), VERTEX_INDEX_DXGI_FORMAT, 0 );
+    context->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+
+    // --- 5. Bind instance StructuredBuffer (GPU-written) to VS t1 ---
+    ID3D11ShaderResourceView* instSRV = m_InstanceBufferGPU->GetSRV();
+    context->VSSetShaderResources( 1, 1, &instSRV );
+
+    // --- 6. Set shaders ---
+    SetActiveVertexShader( VShaderID::VS_ExInstancedObjIndirectAtlas );
+
+    SetupVS_ExMeshDrawCall();
+    SetupVS_ExConstantBuffer();
+
+    // Wind constant buffer (VS still needs this for the wind animation code)
+    VS_ExConstantBuffer_Wind windBuff{};
+    ApplyWindProps( windBuff );
+    ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &windBuff );
+    ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( 1 );
+
+    // Bind reflection cube (only needed for opaque/full-shading pass)
+    if ( bindPS )
+        context->PSSetShaderResources( 4, 1, ReflectionCube.GetAddressOf() );
+
+    ActiveVS->Apply();
+
+    // Shared PS constant buffer data (same for both shader variants)
+    MaterialInfo defMaterial{};
+    GSky* sky = Engine::GAPI->GetSky();
+
+    // --- 7. Draw per atlas group using merged indirect args ---
+    for ( auto& group : m_AtlasDrawGroups ) {
+        // Bind this atlas's Texture2DArray SRV to PS slot t0
+        ID3D11ShaderResourceView* srv = m_TextureAtlasses[group.format].atlasSRV;
+        if ( !srv )
+            continue;
+
+        // In shadow pass (bindPS=false): BC2/BC3 have alpha and need the alpha-test shader.
+        // BC1 is fully opaque — depth-only, no PS needed.
+        const bool needsPS = bindPS || (group.format == DXGI_FORMAT_BC2_UNORM);
+
+        if ( needsPS ) {
+            context->PSSetShaderResources( 0, 1, &srv );
+
+            // Full shading: select by format. Shadow alpha-test: always alpha-test PS.
+            if ( bindPS && group.format != DXGI_FORMAT_BC2_UNORM )
+                SetActivePixelShader( PShaderID::PS_DiffuseAtlas );
+            else
+                SetActivePixelShader( PShaderID::PS_DiffuseAtlasAlphaTest );
+
+            ActivePS->GetConstantBuffer()[0]->UpdateBuffer(
+                &Engine::GAPI->GetRendererState().GraphicsState );
+            ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+
+            ActivePS->GetConstantBuffer()[1]->UpdateBuffer( &sky->GetAtmosphereCB() );
+            ActivePS->GetConstantBuffer()[1]->BindToPixelShader( 1 );
+
+            ActivePS->GetConstantBuffer()[2]->UpdateBuffer( &defMaterial.buffer );
+            ActivePS->GetConstantBuffer()[2]->BindToPixelShader( 2 );
+
+            OutdoorVobsConstantBuffer->BindToPixelShader( 3 );
+
+            ActivePS->Apply();
+        } else {
+            // Depth-only opaque: unbind pixel shader
+            context->PSSetShader( nullptr, nullptr, 0 );
+        }
+
+        if ( DrawMultiIndexedInstancedIndirect ) {
+            // Vendor multi-draw-indirect: all submeshes in this group in one API call
+            DrawMultiIndexedInstancedIndirect(
+                context.Get(),
+                group.mergedArgsCount,
+                m_MergedIndirectArgs->GetIndirectBuffer().Get(),
+                group.mergedArgsOffset,
+                sizeof( D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS ) );
+        } else {
+            // Fallback: one DrawIndexedInstancedIndirect per submesh
+            // InstanceCount is GPU-written, so zero-instance draws are no-ops on GPU
+            for ( UINT i = 0; i < group.mergedArgsCount; i++ ) {
+                context->DrawIndexedInstancedIndirect(
+                    m_MergedIndirectArgs->GetIndirectBuffer().Get(),
+                    group.mergedArgsOffset + i * sizeof( D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS ) );
+            }
+        }
+    }
+
+    // Unbind instance buffer
+    ID3D11ShaderResourceView* nullVSSRV = nullptr;
+    context->VSSetShaderResources( 1, 1, &nullVSSRV );
 
     return XR_SUCCESS;
 }
@@ -7782,6 +8072,462 @@ void D3D11GraphicsEngine::StorePrevViewProjMatrix() {
         XMMATRIX viewProj = XMMatrixMultiply( XMLoadFloat4x4( &projF ), view );
         XMStoreFloat4x4( &m_PrevViewProjMatrix, viewProj );
     }
+}
+
+void D3D11GraphicsEngine::BuildStaticGeometryBuffers() {
+    std::vector<ExVertexStruct> allVertices;
+    std::vector<VERTEX_INDEX> allIndices;
+
+    // Temporary: group submeshes by atlas format
+    std::map<DXGI_FORMAT, AtlasDrawGroup> groupsByFormat;
+
+    // Track which MeshInfo* we've already added (same visual used by many vobs shares geometry)
+    std::unordered_set<MeshInfo*> processedMeshes;
+
+    for ( auto const& [proto, visual] : Engine::GAPI->GetStaticMeshVisuals() ) {
+        for ( auto const& [meshKey, meshList] : visual->MeshesByTexture ) {
+            // Look up atlas descriptor for this texture
+            auto it = m_TextureAtlasLookup.find( meshKey.Texture );
+            if ( it == m_TextureAtlasLookup.end() )
+                continue; // texture not in any atlas
+
+            const TextureAtlasLookup& lookup = it->second;
+            auto& group = groupsByFormat[lookup.atlasFormat];
+            group.format = lookup.atlasFormat;
+
+            for ( MeshInfo* mi : meshList ) {
+                if ( !processedMeshes.insert( mi ).second )
+                    continue; // already in global buffer
+
+                UINT baseVertex = static_cast<UINT>(allVertices.size());
+                UINT startIndex = static_cast<UINT>(allIndices.size());
+
+                allVertices.insert( allVertices.end(), mi->Vertices.begin(), mi->Vertices.end() );
+                allIndices.insert( allIndices.end(), mi->Indices.begin(), mi->Indices.end() );
+
+                StaticSubmeshEntry entry;
+                entry.indexCount = static_cast<UINT>(mi->Indices.size());
+                entry.startIndexLocation = startIndex;
+                entry.baseVertexLocation = static_cast<int>(baseVertex);
+                entry.atlasDesc = lookup.descriptor;
+                entry.visual = visual;
+
+                group.submeshes.push_back( entry );
+
+                // Pre-build indirect args (InstanceCount filled per-frame)
+                D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS args = {};
+                args.IndexCountPerInstance = entry.indexCount;
+                args.InstanceCount = 0;
+                args.StartIndexLocation = entry.startIndexLocation;
+                args.BaseVertexLocation = entry.baseVertexLocation;
+                args.StartInstanceLocation = 0;
+                group.indirectArgs.push_back( args );
+            }
+        }
+    }
+
+    if ( allVertices.empty() ) {
+        LogWarn() << "BuildStaticGeometryBuffers: No vertices to process";
+        return;
+    }
+
+    // Create global vertex buffer (IMMUTABLE)
+    m_StaticGlobalVertexBuffer = std::make_unique<D3D11VertexBuffer>();
+    m_StaticGlobalVertexBuffer->Init(
+        allVertices.data(),
+        static_cast<unsigned int>(allVertices.size() * sizeof( ExVertexStruct )),
+        D3D11VertexBuffer::B_VERTEXBUFFER,
+        D3D11VertexBuffer::U_IMMUTABLE,
+        D3D11VertexBuffer::CA_NONE );
+
+    // Create global index buffer (IMMUTABLE)
+    m_StaticGlobalIndexBuffer = std::make_unique<D3D11VertexBuffer>();
+    m_StaticGlobalIndexBuffer->Init(
+        allIndices.data(),
+        static_cast<unsigned int>(allIndices.size() * sizeof( VERTEX_INDEX )),
+        D3D11VertexBuffer::B_INDEXBUFFER,
+        D3D11VertexBuffer::U_IMMUTABLE,
+        D3D11VertexBuffer::CA_NONE );
+
+    // Create instance ID buffer: {0, 1, 2, ..., N}
+    // A conservative upper bound for max instances (vobs * avg submeshes)
+    UINT maxInstanceIds = static_cast<UINT>(m_StaticVobs.size() * 4);
+    if ( maxInstanceIds < 4096 ) maxInstanceIds = 4096;
+    std::vector<uint32_t> instanceIds( maxInstanceIds );
+    for ( uint32_t i = 0; i < maxInstanceIds; i++ )
+        instanceIds[i] = i;
+
+    m_GlobalInstanceIdBuffer = std::make_unique<D3D11VertexBuffer>();
+    m_GlobalInstanceIdBuffer->Init(
+        instanceIds.data(),
+        static_cast<unsigned int>(instanceIds.size() * sizeof( uint32_t )),
+        D3D11VertexBuffer::B_VERTEXBUFFER,
+        D3D11VertexBuffer::U_IMMUTABLE,
+        D3D11VertexBuffer::CA_NONE );
+
+    // Move groups into final vector and create indirect buffers
+    m_AtlasDrawGroups.clear();
+    for ( auto& [fmt, group] : groupsByFormat ) {
+        if ( group.indirectArgs.empty() )
+            continue;
+
+        UINT bufSize = static_cast<UINT>(group.indirectArgs.size() * sizeof( D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS ));
+        group.indirectBuffer = std::make_unique<D3D11IndirectBuffer>();
+        group.indirectBuffer->Init(
+            group.indirectArgs.data(), bufSize,
+            D3D11IndirectBuffer::B_VERTEXBUFFER,
+            D3D11IndirectBuffer::U_DYNAMIC,
+            D3D11IndirectBuffer::CA_WRITE );
+
+        m_AtlasDrawGroups.push_back( std::move( group ) );
+    }
+
+    LogInfo() << "Atlas geometry: " << allVertices.size() << " vertices, "
+        << allIndices.size() << " indices, "
+        << m_AtlasDrawGroups.size() << " atlas groups, "
+        << processedMeshes.size() << " unique submeshes";
+}
+
+void D3D11GraphicsEngine::BuildGPUCullingBuffers() {
+    if ( m_AtlasDrawGroups.empty() || m_StaticVobs.empty() )
+        return;
+
+    // --- 1. Build visual -> vob count mapping ---
+    std::unordered_map<MeshVisualInfo*, UINT> vobsPerVisual;
+    std::unordered_map<MeshVisualInfo*, std::vector<size_t>> vobIndicesByVisual;
+
+    for ( size_t i = 0; i < m_StaticVobs.size(); i++ ) {
+        auto* visual = reinterpret_cast<MeshVisualInfo*>(m_StaticVobs[i]->VisualInfo);
+        vobsPerVisual[visual]++;
+        vobIndicesByVisual[visual].push_back( i );
+    }
+
+    // --- 2. Build merged indirect args + SubmeshGPUData ---
+    // Pass 1: Build merged indirect args (flat, in per-group order) and collect
+    // per-visual submesh entries. We must ensure SubmeshGPUData entries for the
+    // same visual are contiguous in the final array, but they may come from
+    // different atlas groups (e.g., BC1 + BC2 textures on the same mesh).
+    std::vector<D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS> mergedArgs;
+    std::unordered_map<MeshVisualInfo*, std::vector<SubmeshGPUData>> visualSubmeshMap;
+
+    UINT runningInstanceOffset = 0;
+    UINT globalArgIndex = 0;
+
+    for ( auto& group : m_AtlasDrawGroups ) {
+        group.mergedArgsOffset = static_cast<UINT>(mergedArgs.size() * sizeof( D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS ));
+        group.mergedArgsCount = static_cast<UINT>(group.indirectArgs.size());
+
+        for ( size_t si = 0; si < group.submeshes.size(); si++ ) {
+            const auto& submesh = group.submeshes[si];
+            MeshVisualInfo* visual = submesh.visual;
+            UINT maxInstances = vobsPerVisual.count( visual ) ? vobsPerVisual[visual] : 0;
+
+            // Build the indirect arg with static fields; InstanceCount will be set by CS
+            D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS args = {};
+            args.IndexCountPerInstance = submesh.indexCount;
+            args.InstanceCount = 0;
+            args.StartIndexLocation = submesh.startIndexLocation;
+            args.BaseVertexLocation = submesh.baseVertexLocation;
+            args.StartInstanceLocation = runningInstanceOffset;
+            mergedArgs.push_back( args );
+
+            // Collect per-visual submesh GPU data (written contiguously in pass 2)
+            SubmeshGPUData smGPU = {};
+            smGPU.slice = submesh.atlasDesc.slice;
+            smGPU.uStart = submesh.atlasDesc.uStart;
+            smGPU.vStart = submesh.atlasDesc.vStart;
+            smGPU.uEnd = submesh.atlasDesc.uEnd;
+            smGPU.vEnd = submesh.atlasDesc.vEnd;
+            smGPU.argIndex = globalArgIndex;
+            smGPU.instanceBaseOffset = runningInstanceOffset;
+            visualSubmeshMap[visual].push_back( smGPU );
+
+            runningInstanceOffset += maxInstances;
+            globalArgIndex++;
+        }
+    }
+
+    m_TotalMaxInstances = runningInstanceOffset;
+
+    // Pass 2: Flatten per-visual submesh entries into a contiguous SubmeshGPUData array.
+    // This guarantees VobGPUData.submeshStart/submeshCount indexes a contiguous range.
+    struct VisualSubmeshRange {
+        UINT start;
+        UINT count;
+    };
+    std::unordered_map<MeshVisualInfo*, VisualSubmeshRange> visualSubmeshRanges;
+    std::vector<SubmeshGPUData> submeshGPU;
+
+    for ( auto& [visual, entries] : visualSubmeshMap ) {
+        UINT start = static_cast<UINT>(submeshGPU.size());
+        for ( auto& entry : entries )
+            submeshGPU.push_back( entry );
+        visualSubmeshRanges[visual] = { start, static_cast<UINT>(entries.size()) };
+    }
+
+    // --- 3. Build VobGPUData ---
+    std::vector<VobGPUData> vobGPU;
+    vobGPU.reserve( m_StaticVobs.size() );
+
+    for ( size_t i = 0; i < m_StaticVobs.size(); i++ ) {
+        VobInfo* v = m_StaticVobs[i];
+        auto* visual = reinterpret_cast<MeshVisualInfo*>(v->VisualInfo);
+
+        VobGPUData data = {};
+
+        // AABB from vob's bounding box
+        DirectX::BoundingBox bb = Frustum::BBoxFromzTBBox3D( v->Vob->GetBBox() );
+        data.aabbCenter = bb.Center;
+        data.aabbExtent = bb.Extents;
+
+        data.world = v->WorldMatrix;
+        data.prevWorld = v->WorldMatrix; // for static vobs, prev == current
+        data.color = v->GroundColor;
+
+        // Bake animation properties
+        zTAnimationMode aniMode = v->Vob->GetVisualAniMode();
+        if ( aniMode != zVISUAL_ANIMODE_NONE ) {
+            data.aniModeStrength = v->Vob->GetVisualAniModeStrength();
+            data.canBeAffectedByPlayer = (!v->Vob->GetDynColl() ? 1.0f : 0.0f);
+        } else {
+            data.aniModeStrength = 0.0f;
+            data.canBeAffectedByPlayer = 0.0f;
+        }
+
+        // Look up submesh range for this visual
+        auto it = visualSubmeshRanges.find( visual );
+        if ( it != visualSubmeshRanges.end() ) {
+            data.submeshStart = it->second.start;
+            data.submeshCount = it->second.count;
+        }
+
+        vobGPU.push_back( data );
+    }
+
+    // --- 4. Upload to GPU ---
+    auto* device = GetDevice().Get();
+    auto* context = GetContext().Get();
+
+    // VobGPUData buffer (SRV only, DEFAULT usage)
+    m_VobGPUBuffer = std::make_unique<D3D11StructuredBuffer<VobGPUData>>();
+    m_VobGPUBuffer->Init( device, static_cast<UINT>(vobGPU.size()), false, false );
+    m_VobGPUBuffer->UpdateBufferDefault( context, vobGPU.data(), static_cast<UINT>(vobGPU.size()) );
+
+    // SubmeshGPUData buffer (SRV only, DEFAULT usage)
+    m_SubmeshGPUBuffer = std::make_unique<D3D11StructuredBuffer<SubmeshGPUData>>();
+    m_SubmeshGPUBuffer->Init( device, static_cast<UINT>(submeshGPU.size()), false, false );
+    m_SubmeshGPUBuffer->UpdateBufferDefault( context, submeshGPU.data(), static_cast<UINT>(submeshGPU.size()) );
+
+    // Instance buffer (UAV for CS writes, SRV for VS reads)
+    UINT instanceCapacity = std::max( m_TotalMaxInstances, 1u );
+    m_InstanceBufferGPU = std::make_unique<D3D11StructuredBuffer<VobInstanceInfoAtlas>>();
+    m_InstanceBufferGPU->Init( device, instanceCapacity, false, true );
+
+    // Merged indirect args buffer (UAV for CS atomics + indirect draw)
+    UINT argsSize = static_cast<UINT>(mergedArgs.size() * sizeof( D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS ));
+    m_MergedIndirectArgs = std::make_unique<D3D11IndirectBuffer>();
+    m_MergedIndirectArgs->Init(
+        mergedArgs.data(), argsSize,
+        D3D11IndirectBuffer::B_UNORDERED_ACCESS,
+        D3D11IndirectBuffer::U_DEFAULT,
+        D3D11IndirectBuffer::CA_NONE );
+
+    // Template buffer for per-frame reset (stores args with InstanceCount=0)
+    m_MergedArgsReset = mergedArgs; // already has InstanceCount=0
+
+    D3D11_BUFFER_DESC templateDesc = {};
+    templateDesc.ByteWidth = argsSize;
+    templateDesc.Usage = D3D11_USAGE_DEFAULT;
+    templateDesc.BindFlags = 0;
+    templateDesc.MiscFlags = D3D11_RESOURCE_MISC_DRAWINDIRECT_ARGS;
+
+    D3D11_SUBRESOURCE_DATA templateData = {};
+    templateData.pSysMem = mergedArgs.data();
+    device->CreateBuffer( &templateDesc, &templateData, m_IndirectArgsTemplate.ReleaseAndGetAddressOf() );
+
+    // Cull constant buffer
+    CullConstants initCB = {};
+    m_CullConstantBuffer = std::make_unique<D3D11ConstantBuffer>( sizeof( CullConstants ), &initCB );
+
+    // Update the instance ID buffer to match the new total capacity
+    if ( m_TotalMaxInstances > 0 ) {
+        std::vector<uint32_t> instanceIds( m_TotalMaxInstances );
+        for ( uint32_t i = 0; i < m_TotalMaxInstances; i++ )
+            instanceIds[i] = i;
+
+        m_GlobalInstanceIdBuffer = std::make_unique<D3D11VertexBuffer>();
+        m_GlobalInstanceIdBuffer->Init(
+            instanceIds.data(),
+            static_cast<unsigned int>(instanceIds.size() * sizeof( uint32_t )),
+            D3D11VertexBuffer::B_VERTEXBUFFER,
+            D3D11VertexBuffer::U_IMMUTABLE,
+            D3D11VertexBuffer::CA_NONE );
+    }
+
+    LogInfo() << "GPU culling: " << vobGPU.size() << " vobs, "
+        << submeshGPU.size() << " submesh entries, "
+        << mergedArgs.size() << " indirect args, "
+        << m_TotalMaxInstances << " max instances";
+}
+
+
+void D3D11GraphicsEngine::BuildSceneTextureAtlasses() {
+    for ( size_t i = 0; i < TEXTURE_ATLAS_MAX; i++ ) {
+        m_TextureAtlasses[(DXGI_FORMAT)i].Destroy();
+    }
+    m_TextureAtlasLookup.clear();
+    m_AtlasDrawGroups.clear();
+
+    if ( !SupportTextureAtlases ) {
+        return;
+    }
+
+    struct TextureInfo {
+        zCTexture* gothicTexture;
+        DXGI_FORMAT Format;
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> Texture2D;
+    };
+    std::unordered_set<zCTexture*> seenTextures;
+    std::vector<TextureInfo> uniqueTextures;
+
+    for ( auto vobInfo : m_StaticVobs ) {
+        for ( auto& byTex : reinterpret_cast<MeshVisualInfo*>(vobInfo->VisualInfo)->MeshesByTexture ) {
+            zCTexture* tex = byTex.first.Texture;
+            if ( !tex || !seenTextures.insert( tex ).second )
+                continue; // skip nulls and duplicates
+
+            auto cachedState = tex->CacheIn( -1 );
+            if ( cachedState != zRES_CACHED_IN )
+                continue;
+
+            auto surface = tex->GetSurface();
+            if ( !surface || !surface->IsSurfaceReady() )
+                continue;
+
+            auto engineTex = surface->GetEngineTexture();
+            if ( !engineTex )
+                continue;
+
+            D3D11_TEXTURE2D_DESC desc;
+            engineTex->GetTextureObject()->GetDesc( &desc );
+            if ( desc.Format < 1 || desc.Format >= TEXTURE_ATLAS_MAX ) {
+                LogError() << "Texture " << tex->GetName() << " has unsupported format for atlas: " << desc.Format;
+                continue;
+            }
+            uniqueTextures.push_back( { tex, desc.Format, engineTex->GetTextureObject() } );
+        }
+    }
+
+    // Sort by format so textures with the same format are contiguous
+    std::sort( uniqueTextures.begin(), uniqueTextures.end(), []( const TextureInfo& a, const TextureInfo& b ) {
+        return a.Format < b.Format;
+    } );
+
+    // Create atlases per format group (process ALL groups including last)
+    size_t rangeStart = 0;
+    while ( rangeStart < uniqueTextures.size() ) {
+        DXGI_FORMAT fmt = uniqueTextures[rangeStart].Format;
+        size_t rangeEnd = rangeStart;
+        while ( rangeEnd < uniqueTextures.size() && uniqueTextures[rangeEnd].Format == fmt )
+            rangeEnd++;
+
+        std::vector<ID3D11Texture2D*> texPtrs;
+        texPtrs.reserve( rangeEnd - rangeStart );
+        for ( size_t i = rangeStart; i < rangeEnd; i++ )
+            texPtrs.push_back( uniqueTextures[i].Texture2D.Get() );
+
+        std::basic_string_view<ID3D11Texture2D*> txView( texPtrs.data(), texPtrs.size() );
+        auto atlas = TextureManager::CreateAtlasArray( GetDevice().Get(), GetContext().Get(), txView, 2048, 6 );
+
+        // Map descriptors back to Gothic texture pointers
+        for ( size_t i = 0; i < texPtrs.size(); i++ ) {
+            size_t srcIdx = rangeStart + i;
+            m_TextureAtlasLookup[uniqueTextures[srcIdx].gothicTexture] = {
+                fmt, atlas.descriptors[i]
+            };
+        }
+
+        m_TextureAtlasses[fmt] = atlas;
+        rangeStart = rangeEnd;
+    }
+
+    LogInfo() << "Atlas: " << uniqueTextures.size() << " unique textures, " << m_TextureAtlasLookup.size() << " mapped";
+
+    // Build global VB/IB and indirect args from atlas data
+    BuildStaticGeometryBuffers();
+
+    // Build GPU structured buffers for compute shader culling
+    // currently only used with static vobs when we do atlases.
+    BuildGPUCullingBuffers();
+}
+
+void D3D11GraphicsEngine::CacheWorldStaticVobs() {
+
+    static std::vector<VobLightInfo*> _1;
+    static std::vector<SkeletalVobInfo*> _2;
+    m_StaticVobs.clear();
+    m_StaticVobs.reserve( 1024 );
+
+    LegacyRenderQueueProxy q( m_StaticVobs, _1, _2 );
+    RndCullContext ctx;
+    ctx.queue = &q;
+    ctx.cameraPosition = XMFLOAT3( 0, 0, 0 );
+    ctx.stage = RenderStage::STAGE_DRAW_WORLD;
+    ctx.frustum = Frustum::AlwaysContainingFrustum();
+    ctx.drawDistances.OutdoorVobs = 1'000'000;
+    ctx.drawDistances.OutdoorVobsSmall = ctx.drawDistances.OutdoorVobs;
+    ctx.drawDistances.IndoorVobs = 0;
+    ctx.drawDistances.VisualFX = 0;
+    Engine::GAPI->CollectVisibleVobs( ctx, (EBspTreeCollectFlags)(EBspTreeCollectFlags::COLLECT_VOBS | EBspTreeCollectFlags::COLLECT_DISABLE_CHECK_DIST) );
+
+    const size_t totalItems = m_StaticVobs.size();
+    // Correct math to calculate exact number of batches (rounds up to nearest multiple of 8, AVX ;) )
+    const size_t numBatches = (totalItems + 7) / 8;
+    m_StaticVobsAABBs.clear();
+    m_StaticVobsAABBs.reserve( numBatches );
+
+    for ( size_t i = 0; i < numBatches; ++i ) {
+        AABB_SoA_Batch8 b = {}; // Zero-initialize the batch
+
+        // Fill the 8 slots in this batch
+        for ( int j = 0; j < 8; ++j ) {
+            size_t vobIdx = (i * 8) + j;
+
+            if ( vobIdx < totalItems ) {
+                // Valid item: Extract and store
+                DirectX::BoundingBox bb = Frustum::Frustum::BBoxFromzTBBox3D( m_StaticVobs[vobIdx]->Vob->GetBBox() );
+
+                b.cx[j] = bb.Center.x;
+                b.cy[j] = bb.Center.y;
+                b.cz[j] = bb.Center.z;
+
+                b.ex[j] = bb.Extents.x;
+                b.ey[j] = bb.Extents.y;
+                b.ez[j] = bb.Extents.z;
+            } else {
+                // Out of bounds (tail padding): 
+                // Insert a dummy AABB far outside the map so it is guaranteed to be culled.
+                // This prevents invalid indices from entering your RenderQueue!
+                b.cx[j] = 1000000.0f;
+                b.cy[j] = 1000000.0f;
+                b.cz[j] = 1000000.0f;
+
+                b.ex[j] = 0.0f;
+                b.ey[j] = 0.0f;
+                b.ez[j] = 0.0f;
+            }
+        }
+
+        m_StaticVobsAABBs.push_back( b );
+    }
+}
+
+void D3D11GraphicsEngine::OnWorldLoaded()
+{
+    CacheWorldStaticVobs();
+
+    // --- Atlas building: collect unique textures, create Texture2DArray atlases, map descriptors ---
+    BuildSceneTextureAtlasses();    
 }
 
 void D3D11GraphicsEngine::StoreVobPreviousTransforms() {

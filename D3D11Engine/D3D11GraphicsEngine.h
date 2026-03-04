@@ -4,6 +4,9 @@
 #include "GothicAPI.h"
 #include "D3D11ShadowMap.h"
 #include "D3D11ShaderManager.h"
+#include "D3D11TextureAtlasManager.h"
+#include "D3D11StructuredBuffer.h"
+#include "D3D11IndirectBuffer.h"
 
 struct RenderToDepthStencilBuffer;
 
@@ -30,6 +33,7 @@ const unsigned int MORPHEDMESH_HIGH_BUFFER_SIZE = 20480 * sizeof( ExVertexStruct
 const unsigned int HUD_BUFFER_SIZE = 6 * sizeof( ExVertexStruct );
 const int NUM_MAX_BONES = 96;
 const int unsigned INSTANCING_BUFFER_SIZE = sizeof( VobInstanceInfo ) * 2048;
+constexpr size_t TEXTURE_ATLAS_MAX = DXGI_FORMAT_V408 + 1;
 
 
 class D3D11PointLight;
@@ -52,6 +56,25 @@ struct AlphaMeshData {
     MeshInfo* mi;
     MeshVisualInfo* vi;
     std::vector<VobInstanceInfo> instances;
+};
+
+// Tracks one unique submesh in the global geometry buffer
+struct StaticSubmeshEntry {
+    UINT indexCount;
+    UINT startIndexLocation;   // offset into global IB
+    int  baseVertexLocation;   // offset into global VB
+    TextureDescriptor atlasDesc;
+    MeshVisualInfo* visual;    // which visual owns this submesh
+};
+
+// Groups all submeshes that share one atlas (same DXGI_FORMAT)
+struct AtlasDrawGroup {
+    DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+    std::vector<StaticSubmeshEntry> submeshes;
+    std::vector<D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS> indirectArgs;
+    std::unique_ptr<D3D11IndirectBuffer> indirectBuffer;
+    UINT mergedArgsOffset = 0;  // byte offset into merged indirect args buffer
+    UINT mergedArgsCount = 0;   // number of args in this group
 };
 
 class D3D11GraphicsEngine : public D3D11GraphicsEngineBase {
@@ -246,6 +269,15 @@ public:
     XRESULT DrawVOBsInstanced();
     XRESULT DrawFrameAlphaMeshes();
 
+    /** Draws static vobs using atlas indirect path */
+    XRESULT DrawVOBsIndirect( const Frustum& frustum, bool bindPS = true );
+
+    /** Builds global VB/IB and indirect args from atlas data (called from OnWorldLoaded) */
+    void BuildStaticGeometryBuffers();
+
+    /** Builds GPU data for compute shader culling (called after BuildStaticGeometryBuffers) */
+    void BuildGPUCullingBuffers();
+
     /** Set wind props in const buffer */
     void ApplyWindProps( VS_ExConstantBuffer_Wind& windBuff );
 
@@ -348,16 +380,22 @@ public:
     RenderToTextureBuffer* GetVelocityBuffer() const { return VelocityBuffer.get(); }
 
     const XMFLOAT4X4& GetPrevViewProjMatrix() const { return m_PrevViewProjMatrix; }
-    void StorePrevViewProjMatrix();
 
     auto GetClampSamplerState() -> auto { return ClampSamplerState.Get(); }
     auto GetCubeSamplerState() -> auto { return CubeSamplerState.Get(); }
     auto GetLinearSamplerState() -> auto { return LinearSamplerState.Get(); }
 
     D3D11ShadowMap* GetShadowMaps() const { return ShadowMaps.get(); }
+    void OnWorldLoaded() override;
 protected:
 
     void StoreVobPreviousTransforms();
+
+    void StorePrevViewProjMatrix();
+
+    void BuildSceneTextureAtlasses();
+
+    void CacheWorldStaticVobs();
 
     std::unique_ptr<FpsLimiter> m_FrameLimiter;
     int m_LastFrameLimit;
@@ -473,4 +511,26 @@ private:
     INT2 NewResolution;
     
     void CreateAndBindDefaultSampler();
+
+    std::vector<VobInfo*> m_StaticVobs{};
+    std::vector<AABB_SoA_Batch8> m_StaticVobsAABBs{};
+    std::array<TextureManager::AtlasResult, TEXTURE_ATLAS_MAX> m_TextureAtlasses{};
+
+    /** Atlas indirect draw path */
+    std::unordered_map<zCTexture*, TextureAtlasLookup> m_TextureAtlasLookup;
+    std::unique_ptr<D3D11VertexBuffer> m_StaticGlobalVertexBuffer;
+    std::unique_ptr<D3D11VertexBuffer> m_StaticGlobalIndexBuffer;
+    std::unique_ptr<D3D11VertexBuffer> m_GlobalInstanceIdBuffer;
+    std::vector<AtlasDrawGroup> m_AtlasDrawGroups;
+    std::unique_ptr<D3D11StructuredBuffer<VobInstanceInfoAtlas>> m_StaticVobInstanceBuffer;
+
+    /** GPU culling buffers (created once at world load) */
+    std::unique_ptr<D3D11StructuredBuffer<VobGPUData>> m_VobGPUBuffer;
+    std::unique_ptr<D3D11StructuredBuffer<SubmeshGPUData>> m_SubmeshGPUBuffer;
+    std::unique_ptr<D3D11StructuredBuffer<VobInstanceInfoAtlas>> m_InstanceBufferGPU;
+    std::unique_ptr<D3D11IndirectBuffer> m_MergedIndirectArgs;
+    Microsoft::WRL::ComPtr<ID3D11Buffer> m_IndirectArgsTemplate;
+    std::unique_ptr<D3D11ConstantBuffer> m_CullConstantBuffer;
+    std::vector<D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS> m_MergedArgsReset; // CPU-side template for reset
+    UINT m_TotalMaxInstances = 0;
 };

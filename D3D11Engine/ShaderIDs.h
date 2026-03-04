@@ -17,6 +17,7 @@ enum class VShaderID : size_t {
     VS_XYZRHW_DIF_T1,
     VS_ExInstancedObj,
     VS_ExInstanced,
+    VS_ExInstancedObjIndirectAtlas,
     VS_GrassInstanced,
     VS_Lines,
     VS_Lines_XYZRHW,
@@ -77,6 +78,8 @@ enum class PShaderID : size_t {
     PS_DiffuseAlphaTestShadows,
     PS_DiffuseNormalmappedAlphaTest,
     PS_DiffuseNormalmappedAlphaTestFxMap,
+    PS_DiffuseAtlas,
+    PS_DiffuseAtlasAlphaTest,
     PS_Preview_White,
     PS_Preview_Textured,
     PS_Preview_TexturedLit,
@@ -109,5 +112,6 @@ enum class CShaderID : size_t {
     CS_AdvanceRain,
     CS_LightCulling,
     CS_TiledShading,
+    CS_CullVobs,
     COUNT
 };

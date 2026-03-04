@@ -168,7 +168,6 @@ public:
         /* 4 */ { 0.80f, 1.0f }, // Players should really want to use 4 cascades for best quality and furthest
     };
 
-    D3D11RenderQueue* GetRenderQueue( int cascadeIndex ) { return m_RenderQueues[cascadeIndex].get(); }
 private:
     bool ShouldUseAtlas() const;
     void RecreateShadowSampler();
@@ -190,7 +189,6 @@ private:
     Microsoft::WRL::ComPtr<ID3D11SamplerState> m_shadowmapSampler;
     int m_lastNumCascades = 0;
     std::array<CameraReplacement, MAX_CSM_CASCADES> m_CascadeCRs;
-    std::array<std::unique_ptr<D3D11RenderQueue>, MAX_CSM_CASCADES> m_RenderQueues;
     std::vector<float> m_CascadeSplits;
     std::array<bool, MAX_CSM_CASCADES> m_ShouldUpdateCascade;
     XMFLOAT3 m_WorldShadowPos;

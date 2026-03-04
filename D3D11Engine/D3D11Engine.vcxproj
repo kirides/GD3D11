@@ -848,7 +848,9 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="D3D11ShadowMap.h" />
     <ClInclude Include="D3D11TiledDeferredShading.h" />
     <ClInclude Include="D3D11LegacyDeferredShading.h" />
+    <ClInclude Include="D3D11StructuredBuffer.h" />
     <ClInclude Include="D3D11Texture.h" />
+    <ClInclude Include="D3D11TextureAtlasManager.h" />
     <ClInclude Include="D3D11VertexBuffer.h" />
     <ClInclude Include="D3D11VShader.h" />
     <ClInclude Include="D3D11_Helpers.h" />
@@ -993,6 +995,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="ShaderCategory.h" />
     <ClInclude Include="StringID.h" />
     <ClInclude Include="SMAA\D3D11SMAA.h" />
+    <ClInclude Include="StaticVOBCache.h" />
     <ClInclude Include="SteamOverlay.h" />
     <ClInclude Include="StackWalker.h" />
     <ClInclude Include="TAAConstantBuffer.h" />
@@ -1209,6 +1212,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="RenderPass.cpp" />
     <ClCompile Include="RGBuilder.cpp" />
     <ClCompile Include="SMAA\D3D11SMAA.cpp" />
+    <ClCompile Include="StaticVOBCache.cpp" />
     <ClCompile Include="SteamOverlay.cpp" />
     <ClCompile Include="StackWalker.cpp" />
     <ClCompile Include="Toolbox.cpp" />
@@ -1298,6 +1302,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <Import Project="..\packages\directxtk_desktop_2019.2023.4.28.1\build\native\directxtk_desktop_2019.targets" Condition="Exists('..\packages\directxtk_desktop_2019.2023.4.28.1\build\native\directxtk_desktop_2019.targets')" />
     <Import Project="..\packages\directxmath.2025.4.3.1\build\native\directxmath.targets" Condition="Exists('..\packages\directxmath.2025.4.3.1\build\native\directxmath.targets')" />
     <Import Project="..\packages\Microsoft.XAudio2.Redist.1.2.13\build\native\Microsoft.XAudio2.Redist.targets" Condition="Exists('..\packages\Microsoft.XAudio2.Redist.1.2.13\build\native\Microsoft.XAudio2.Redist.targets')" />
+    <Import Project="..\packages\directxtex_desktop_2019.2025.3.25.2\build\native\directxtex_desktop_2019.targets" Condition="Exists('..\packages\directxtex_desktop_2019.2025.3.25.2\build\native\directxtex_desktop_2019.targets')" />
   </ImportGroup>
   <Target Name="EnsureNuGetPackageBuildImports" BeforeTargets="PrepareForBuild">
     <PropertyGroup>
@@ -1307,6 +1312,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <Error Condition="!Exists('..\packages\directxtk_desktop_2019.2023.4.28.1\build\native\directxtk_desktop_2019.targets')" Text="$([System.String]::Format('$(ErrorText)', '..\packages\directxtk_desktop_2019.2023.4.28.1\build\native\directxtk_desktop_2019.targets'))" />
     <Error Condition="!Exists('..\packages\directxmath.2025.4.3.1\build\native\directxmath.targets')" Text="$([System.String]::Format('$(ErrorText)', '..\packages\directxmath.2025.4.3.1\build\native\directxmath.targets'))" />
     <Error Condition="!Exists('..\packages\Microsoft.XAudio2.Redist.1.2.13\build\native\Microsoft.XAudio2.Redist.targets')" Text="$([System.String]::Format('$(ErrorText)', '..\packages\Microsoft.XAudio2.Redist.1.2.13\build\native\Microsoft.XAudio2.Redist.targets'))" />
+    <Error Condition="!Exists('..\packages\directxtex_desktop_2019.2025.3.25.2\build\native\directxtex_desktop_2019.targets')" Text="$([System.String]::Format('$(ErrorText)', '..\packages\directxtex_desktop_2019.2025.3.25.2\build\native\directxtex_desktop_2019.targets'))" />
   </Target>
   <!-- For NuGet! This is needed because we use different configuration names than the defaults -->
   <PropertyGroup>

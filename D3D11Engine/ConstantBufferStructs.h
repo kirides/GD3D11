@@ -16,17 +16,71 @@ struct VobInstanceInfo {
     DWORD GP_Slot;
 };
 
-/** Remap-index for the static vobs */
-struct VobInstanceRemapInfo {
-    bool operator < ( const VobInstanceRemapInfo& b ) const {
-        return InstanceRemapIndex < b.InstanceRemapIndex;
-    }
+struct VobInstanceInfoAtlas {
+    XMFLOAT4X4 world;
+    XMFLOAT4X4 prevWorld;  // Previous frame's world matrix for motion vectors
+    DWORD color;
+    float windStrenth;
+    float canBeAffectedByPlayer;
+    // Texture Atlas information, directly stored in the instance data for easy access in shader without needing an extra StructuredBuffer
+    int slice;
+    float uStart;
+    float vStart;
+    float uEnd;
+    float vEnd;
+};
 
-    bool operator == ( const VobInstanceRemapInfo& o ) const {
-        return InstanceRemapIndex == o.InstanceRemapIndex;
-    }
+// Descriptor returned for use with shader
+// Points to a specific slice in the Texture2DArray atlas, along with UV coordinates for sampling that slice
+// this is pointed to from VobInstanceInfo GP_Slot into a StructuredBuffer, which is then indexed in the shader to get the correct slice/UVs for each instance
+struct TextureDescriptor {
+    int slice;
+    float uStart;
+    float vStart;
+    float uEnd;
+    float vEnd;
+};
 
-    DWORD InstanceRemapIndex;
+// CPU-side lookup: maps a zCTexture* to its atlas placement
+struct TextureAtlasLookup {
+    DXGI_FORMAT atlasFormat;
+    TextureDescriptor descriptor;
+};
+
+// Per-vob data uploaded once at world load, read by GPU cull compute shader
+struct VobGPUData {
+    XMFLOAT3 aabbCenter;
+    float pad0;
+    XMFLOAT3 aabbExtent;
+    float pad1;
+    XMFLOAT4X4 world;
+    XMFLOAT4X4 prevWorld;
+    DWORD color;
+    float aniModeStrength;
+    float canBeAffectedByPlayer;
+    UINT submeshStart;       // index into SubmeshGPUData[]
+    UINT submeshCount;       // how many submeshes this vob maps to
+    UINT pad2[3];
+};
+
+// Per-submesh lookup, shared across all vobs with the same visual
+struct SubmeshGPUData {
+    int slice;
+    float uStart, vStart, uEnd, vEnd;
+    UINT argIndex;              // index into merged indirect args
+    UINT instanceBaseOffset;    // fixed write offset in instance buffer
+    UINT pad;
+};
+
+// Constant buffer for the GPU cull compute shader
+struct CullConstants {
+    XMFLOAT4 frustumPlanes[6];
+    XMFLOAT3 cameraPosition;
+    float drawDistance;
+    float globalWindStrength;
+    UINT windAdvanced;
+    UINT numVobs;
+    UINT pad;
 };
 
 #pragma pack (push, 1)	

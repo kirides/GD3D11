@@ -640,6 +640,7 @@ struct GothicRendererSettings {
         WireframeVobs = false;
         WireframeWorld = false;
         DrawShadowGeometry = true;
+        UseIndirectVobShadows = false;
         FixViewFrustum = false;
         DisableWatermark = true;
         DisableRendering = false;
@@ -828,6 +829,7 @@ struct GothicRendererSettings {
     int ShadowCascadePCFLimit;
     E_ShadowFrustumCulling ShadowFrustumCullingMode;
     bool DrawShadowGeometry;
+    bool UseIndirectVobShadows;
     bool VegetationAlphaToCoverage;
     bool DisableWatermark;
     bool DisableRendering;

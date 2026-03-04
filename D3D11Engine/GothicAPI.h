@@ -11,6 +11,7 @@
 #include "RenderQueue.h"
 #include "RenderToTextureBuffer.h"
 #include "ShaderIDs.h"
+#include "StaticVOBCache.h"
 
 #define START_TIMING(x) TimerScope( x, &Engine::GAPI->GetRendererState().RendererInfo.Timing.frameRecordings )
 
@@ -49,15 +50,17 @@ struct RndCullContext {
 };
 
 enum EBspTreeCollectFlags : unsigned int {
-    COLLECT_VOBS = 1 << 0,
+    COLLECT_VOBS = 1 << 0, // static vobs
     COLLECT_LIGHTS = 1 << 1,
-    COLLECT_MOBS = 1 << 2,
-    COLLECT_INDOOR_VOBS = 1 << 3,
+    COLLECT_MOBS = 1 << 2, // skeletal mobs
+    COLLECT_INDOOR_VOBS = 1 << 3, // indoor vobs
+    COLLECT_DYNAMIC_VOBS = 1 << 4, // dynamic static / transparent vobs
 
-    COLLECT_ALL_VOBS = COLLECT_VOBS | COLLECT_INDOOR_VOBS,
+    COLLECT_ALL_VOBS = COLLECT_VOBS | COLLECT_INDOOR_VOBS | COLLECT_DYNAMIC_VOBS,
     
+    COLLECT_DISABLE_CHECK_DIST = 1 << 29,
     COLLECT_MUTATE = 1 << 30,
-    COLLECT_ALL_MUTATE = 0xFFFFFFFF,
+    COLLECT_ALL_MUTATE = 0xFFFFFFFF & ~(COLLECT_DISABLE_CHECK_DIST),
     COLLECT_ALL_NO_MUTATE = COLLECT_ALL_MUTATE & ~COLLECT_MUTATE,
 };
 
@@ -224,6 +227,54 @@ class MyDirectDrawSurface7;
 class GVegetationBox;
 class zCMorphMesh;
 class zCDecal;
+
+// Minimal flat-map: always-sorted vector of pairs for O(log n) binary-search lookups.
+// All methods inline to the same lower_bound calls — zero overhead over hand-written code.
+template<typename Key, typename Value>
+struct SortedPairVector {
+    using Entry = std::pair<Key, Value>;
+    using iterator = typename std::vector<Entry>::iterator;
+    using const_iterator = typename std::vector<Entry>::const_iterator;
+
+    iterator begin() { return m_data.begin(); }
+    iterator end()   { return m_data.end(); }
+    const_iterator begin() const { return m_data.begin(); }
+    const_iterator end()   const { return m_data.end(); }
+
+    // Binary search for key. Returns end() if not found.
+    __forceinline iterator find( Key key ) {
+        auto it = std::lower_bound( m_data.begin(), m_data.end(), key, Cmp{} );
+        return (it != m_data.end() && it->first == key) ? it : m_data.end();
+    }
+
+    // Insert {key, value} maintaining sort order. If key already exists, does nothing.
+    // Returns {iterator_to_element, true_if_newly_inserted}.
+    __forceinline std::pair<iterator, bool> insert( Key key, Value value ) {
+        auto it = std::lower_bound( m_data.begin(), m_data.end(), key, Cmp{} );
+        if ( it != m_data.end() && it->first == key )
+            return { it, false };
+        return { m_data.insert( it, { key, value } ), true };
+    }
+
+    // Erase by key. Returns true if found and erased.
+    __forceinline bool erase( Key key ) {
+        auto it = find( key );
+        if ( it == m_data.end() ) return false;
+        m_data.erase( it );
+        return true;
+    }
+
+    void clear()                { m_data.clear(); }
+    bool empty() const          { return m_data.empty(); }
+    size_t size() const         { return m_data.size(); }
+    void reserve( size_t n )    { m_data.reserve( n ); }
+
+private:
+    struct Cmp {
+        bool operator()( const Entry& a, Key k ) const { return a.first < k; }
+    };
+    std::vector<Entry> m_data;
+};
 
 class GothicAPI {
 public:
@@ -569,7 +620,7 @@ public:
         EGothicCullFlags cullFlags = EGothicCullFlags::CullAll,
         EBspTreeCollectFlags collectFlags = EBspTreeCollectFlags::COLLECT_ALL_MUTATE);
 
-    void CollectVisibleVobs( const RndCullContext& ctx );
+    void CollectVisibleVobs(const RndCullContext& ctx, EBspTreeCollectFlags collectFlags = EBspTreeCollectFlags::COLLECT_ALL_NO_MUTATE);
 
     /** Collects visible sections from the current camera perspective */
     void CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sections );
@@ -789,7 +840,6 @@ public:
     float GetSkyTimeScale();
     
     static void ProcessVobAnimation( zCVob* vob, zTAnimationMode aniMode, VobInstanceInfo& vobInstance );
-
 private:
     /** Collects polygons in the given AABB */
     void CollectPolygonsInAABBRec( BspInfo* base, const zTBBox3D& bbox, std::vector<zCPolygon*>& list );
@@ -879,7 +929,8 @@ private:
     std::unordered_map<zCVob*, VobInfo*> VobMap;
 public:
     // temporarily, to allow CollectVisibleVobsHelper to be templated for inlining optimizations
-    phmap::flat_hash_map<zCVobLight*, VobLightInfo*> VobLightMap;
+    // Sorted by zCVobLight* for binary-search lookups
+    SortedPairVector<zCVobLight*, VobLightInfo*> VobLights_Sorted;
 private:
     phmap::flat_hash_map<zCVob*, SkeletalVobInfo*> SkeletalVobMap;
 

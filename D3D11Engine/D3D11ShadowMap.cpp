@@ -338,10 +338,6 @@ void D3D11ShadowMap::Init( Microsoft::WRL::ComPtr<ID3D11Device1>& device, Micros
 
     EnsureShadowMapBackend( s );
 
-    for ( int i = 0; i < MAX_CSM_CASCADES; ++i ) {
-        m_RenderQueues[i] = std::make_unique<D3D11RenderQueue>( device.Get(), context.Get() );
-    }
-
     D3D11GraphicsEngineBase* engine = reinterpret_cast<D3D11GraphicsEngineBase*>( Engine::GraphicsEngine );
 
     // Create constantbuffer for the view-matrices
@@ -648,81 +644,6 @@ XRESULT D3D11ShadowMap::PrepareRender()
         }
     }
 
-    // Collect all VOBs inside our shadow draw distance (last frustum)
-    
-    static std::vector<VobInfo*> potentialCasters;
-    static std::vector<VobLightInfo*> _1;
-    static std::vector<SkeletalVobInfo*> _2;
-    potentialCasters.reserve(1024);
-    potentialCasters.clear();
-
-    {
-        RndCullContext ctx;
-        LegacyRenderQueueProxy q(potentialCasters, _1, _2);
-
-        ctx.queue = &q;
-        ctx.frustum = Frustum::AlwaysContainingFrustum();
-        ctx.cameraPosition = m_WorldShadowPos;
-        ctx.stage = RenderStage::STAGE_DRAW_SHADOWS;
-        ctx.drawDistances.OutdoorVobs = 20000;
-        ctx.drawDistances.OutdoorVobsSmall = 20000;
-        
-        Engine::GAPI->CollectVisibleVobs( ctx );
-    }
-    
-    auto invView = XMMatrixTranspose(XMLoadFloat4x4(&zCCamera::GetCamera()->GetTransformDX( zCCamera::ETransformType::TT_VIEW_INV )));
-    auto camPos = invView.r[3];
-    XMVECTOR camForward = XMVector3Normalize( invView.r[2]);
-    
-    for ( int i = 0; i < numCascades; ++i ) {
-        m_RenderQueues[i]->Reset();
-    }
-
-    if ( numCascades > 3 ) {
-        for ( auto vob : potentialCasters ) {
-
-            auto boundingSphere = Frustum::BSphereFromzTBBox3D( vob->Vob->GetBBox() );
-            if ( m_CascadeCRs[0].frustum.Intersects( boundingSphere ) )
-                m_RenderQueues[0]->GetVobs().push_back( vob );
-
-            if ( /*m_ShouldUpdateCascade[1] && */m_CascadeCRs[1].frustum.Intersects(boundingSphere) )
-                m_RenderQueues[1]->GetVobs().push_back( vob );
-
-            if ( m_ShouldUpdateCascade[2] && m_CascadeCRs[2].frustum.Intersects( boundingSphere ) )
-                m_RenderQueues[2]->GetVobs().push_back( vob );
-
-            if ( m_ShouldUpdateCascade[3] && m_CascadeCRs[3].frustum.Intersects( boundingSphere ) )
-                m_RenderQueues[3]->GetVobs().push_back( vob );
-        }
-    } else if ( numCascades > 2 ) {
-        for ( auto vob : potentialCasters ) {
-            auto boundingSphere = Frustum::BSphereFromzTBBox3D( vob->Vob->GetBBox() );
-            if ( m_CascadeCRs[0].frustum.Intersects( boundingSphere ) )
-                m_RenderQueues[0]->GetVobs().push_back( vob );
-
-            if ( /*m_ShouldUpdateCascade[1] && */m_CascadeCRs[1].frustum.Intersects( boundingSphere ) )
-                m_RenderQueues[1]->GetVobs().push_back( vob );
-
-            if ( m_ShouldUpdateCascade[2] && m_CascadeCRs[2].frustum.Intersects( boundingSphere ) )
-                m_RenderQueues[2]->GetVobs().push_back( vob );
-        }
-    } else if ( numCascades > 1 ) {
-        for ( auto vob : potentialCasters ) {
-            auto boundingSphere = Frustum::BSphereFromzTBBox3D( vob->Vob->GetBBox() );
-            if ( m_CascadeCRs[0].frustum.Intersects( boundingSphere ) )
-                m_RenderQueues[0]->GetVobs().push_back( vob );
-
-            if ( /*m_ShouldUpdateCascade[1] && */m_CascadeCRs[1].frustum.Intersects( boundingSphere ) )
-                m_RenderQueues[1]->GetVobs().push_back( vob );
-        }
-    } else if ( numCascades > 0 ) {
-        for ( auto vob : potentialCasters ) {
-            auto boundingSphere = Frustum::BSphereFromzTBBox3D( vob->Vob->GetBBox() );
-            if ( m_CascadeCRs[0].frustum.Intersects( boundingSphere ) )
-                m_RenderQueues[0]->GetVobs().push_back( vob );
-        }
-    }
-
     return XR_SUCCESS;
 }
 
@@ -980,7 +901,6 @@ XRESULT D3D11ShadowMap::DrawWorldShadow( )
             RenderShadowmaps( renderParams );
 
             Engine::GAPI->SetCameraReplacementPtr( nullptr );
-            m_RenderQueues[cascadeIdx]->Reset();
         }
     }
 
