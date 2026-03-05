@@ -995,7 +995,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="ShaderCategory.h" />
     <ClInclude Include="StringID.h" />
     <ClInclude Include="SMAA\D3D11SMAA.h" />
-    <ClInclude Include="StaticVOBCache.h" />
+    <ClInclude Include="VobCulling.h" />
     <ClInclude Include="SteamOverlay.h" />
     <ClInclude Include="StackWalker.h" />
     <ClInclude Include="TAAConstantBuffer.h" />
@@ -1212,7 +1212,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="RenderPass.cpp" />
     <ClCompile Include="RGBuilder.cpp" />
     <ClCompile Include="SMAA\D3D11SMAA.cpp" />
-    <ClCompile Include="StaticVOBCache.cpp" />
+    <ClCompile Include="VobCulling.cpp" />
     <ClCompile Include="SteamOverlay.cpp" />
     <ClCompile Include="StackWalker.cpp" />
     <ClCompile Include="Toolbox.cpp" />

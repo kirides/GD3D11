@@ -11,7 +11,6 @@
 #include "RenderQueue.h"
 #include "RenderToTextureBuffer.h"
 #include "ShaderIDs.h"
-#include "StaticVOBCache.h"
 
 #define START_TIMING(x) TimerScope( x, &Engine::GAPI->GetRendererState().RendererInfo.Timing.frameRecordings )
 

@@ -7,6 +7,7 @@
 #include "D3D11TextureAtlasManager.h"
 #include "D3D11StructuredBuffer.h"
 #include "D3D11IndirectBuffer.h"
+#include "VobCulling.h"
 
 struct RenderToDepthStencilBuffer;
 

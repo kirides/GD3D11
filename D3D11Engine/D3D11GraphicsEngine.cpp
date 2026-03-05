@@ -5453,7 +5453,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             // clear any residue of main render pass
             const auto& vobs = m_StaticVobs;
             std::vector<StaticVobRenderItem> outRenderQueue{};
-            StaticVOBCache::CullAndGatherStaticVOBs( m_StaticVobsAABBs, vobs, currentFrustum.GetPlanes()._Elems, outRenderQueue );
+            VobCulling::CullAndGatherStaticVOBs( m_StaticVobsAABBs, vobs, currentFrustum.GetPlanes()._Elems, outRenderQueue );
 
             std::sort( outRenderQueue.begin(), outRenderQueue.end(),
                 []( const StaticVobRenderItem& a, const StaticVobRenderItem& b ) {

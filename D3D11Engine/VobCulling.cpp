@@ -1,4 +1,4 @@
-#include "StaticVOBCache.h"
+#include "VobCulling.h"
 #include <intrin.h> 
 #include "ConstantBufferStructs.h"
 #include "WorldObjects.h"
@@ -8,7 +8,7 @@
 
 using namespace DirectX;
 
-void StaticVOBCache::CullAndGatherStaticVOBs_AVX2(
+void VobCulling::CullAndGatherStaticVOBs_AVX2(
     const std::vector<AABB_SoA_Batch8>& batches,
     const std::vector<VobInfo*>& instances,
     const DirectX::XMFLOAT4 planes[6],
@@ -98,7 +98,7 @@ void StaticVOBCache::CullAndGatherStaticVOBs_AVX2(
     }
 }
 
-void StaticVOBCache::CullAndGatherStaticVOBs_DirectXMath(
+void VobCulling::CullAndGatherStaticVOBs_DirectXMath(
     const std::vector<AABB_SoA_Batch8>& batches,
     const std::vector<VobInfo*>& instances,
     const XMFLOAT4 planes[6],

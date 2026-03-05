@@ -20,7 +20,7 @@ struct StaticVobRenderItem {
 
 struct VobInfo;
 
-class StaticVOBCache
+class VobCulling
 {
 public:
     static void CullAndGatherStaticVOBs(
