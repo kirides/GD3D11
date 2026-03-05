@@ -563,6 +563,7 @@ struct GothicRendererSettings {
     enum E_Upscaler {
         UPSCALER_DEFAULT = 0,
         UPSCALER_FSR_1 = 1,
+        UPSCALER_FSR_2 = 2,
         _UPSCALER_NUM_MODES
     };
 
@@ -940,6 +941,10 @@ struct GothicRendererSettings {
             bool CullVobs;
             bool CullBspSections;
         } Culling;
+        struct {
+            bool UseMDI;
+            bool UseLayeredRendering;
+        } FeatureSet;
     } DebugSettings;
 };
 

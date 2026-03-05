@@ -286,7 +286,6 @@ BOOL APIENTRY DllMain( HINSTANCE hInst, DWORD reason, LPVOID ) {
         GetModuleFileNameA( GetModuleHandleA( nullptr ), executablePath, sizeof( executablePath ) );
         PathRemoveFileSpecA( executablePath );
 
-        CheckLibraryExists( executablePath, "AntTweakBar.dll");
         CheckLibraryExists( executablePath, "assimp-vc143-mt.dll" );
         CheckLibraryExists( executablePath, "GFSDK_SSAO_D3D11.win32.dll" );
         ddraw.dll = nullptr;

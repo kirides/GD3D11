@@ -57,6 +57,8 @@ public:
     /** Sets the RCAS sharpness value (0.0 = maximum sharpness, higher values = less sharp) */
     void SetSharpness( float sharpness );
 
+    void ReleaseResources();
+
 private:
     D3D11PfxRenderer* Renderer;
     

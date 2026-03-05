@@ -85,6 +85,9 @@
     <Filter Include="Engine\Shaders">
       <UniqueIdentifier>{7b924380-794f-4471-9819-06c3fca71231}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Engine\Graph">
+      <UniqueIdentifier>{e7532fd2-04b8-499d-a2a9-5b64abda0850}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="pch.h" />
@@ -261,15 +264,6 @@
     </ClInclude>
     <ClInclude Include="GInventory.h">
       <Filter>Engine\GAPI\Objects</Filter>
-    </ClInclude>
-    <ClInclude Include="BaseAntTweakBar.h">
-      <Filter>Engine</Filter>
-    </ClInclude>
-    <ClInclude Include="D3D11AntTweakBar.h">
-      <Filter>Engine\D3D11</Filter>
-    </ClInclude>
-    <ClInclude Include="AntTweakBar.h">
-      <Filter>Librarys</Filter>
     </ClInclude>
     <ClInclude Include="zCInput.h">
       <Filter>ZenGin\Classes</Filter>
@@ -791,6 +785,25 @@
     <ClInclude Include="TexturePool.h" />
     <ClInclude Include="D3D11RenderQueue.h" />
     <ClInclude Include="RenderQueue.h" />
+    <ClInclude Include="RGTextureDesc.h">
+      <Filter>Engine\Graph</Filter>
+    </ClInclude>
+    <ClInclude Include="RGBuilder.h">
+      <Filter>Engine\Graph</Filter>
+    </ClInclude>
+    <ClInclude Include="RenderPass.h">
+      <Filter>Engine\Graph</Filter>
+    </ClInclude>
+    <ClInclude Include="RenderGraph.h">
+      <Filter>Engine\Graph</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D11RenderQueue.h" />
+    <ClInclude Include="D3D11PFX_FSR3.h">
+      <Filter>Engine\D3D11\PFX\Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D11PFX_FSR2.h">
+      <Filter>Engine\D3D11\PFX\Effects</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp" />
@@ -850,15 +863,6 @@
     </ClCompile>
     <ClCompile Include="GInventory.cpp">
       <Filter>Engine\GAPI\Objects</Filter>
-    </ClCompile>
-    <ClCompile Include="BaseAntTweakBar.cpp">
-      <Filter>Engine</Filter>
-    </ClCompile>
-    <ClCompile Include="D3D11AntTweakBar.cpp">
-      <Filter>Engine\D3D11</Filter>
-    </ClCompile>
-    <ClCompile Include="D3D11PFX_Effect.cpp">
-      <Filter>Engine\D3D11\PFX\Effects</Filter>
     </ClCompile>
     <ClCompile Include="GSpriteCloud.cpp">
       <Filter>Engine\GAPI\Objects</Filter>
@@ -1059,6 +1063,21 @@
       <Filter>Engine\D3D11\PFX\Effects</Filter>
     </ClCompile>
     <ClCompile Include="D3D11RenderQueue.cpp" />
+    <ClCompile Include="RGBuilder.cpp">
+      <Filter>Engine\Graph</Filter>
+    </ClCompile>
+    <ClCompile Include="RenderPass.cpp">
+      <Filter>Engine\Graph</Filter>
+    </ClCompile>
+    <ClCompile Include="RenderGraph.cpp">
+      <Filter>Engine\Graph</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D11PFX_FSR3.cpp">
+      <Filter>Engine\D3D11\PFX\Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D11PFX_FSR2.cpp">
+      <Filter>Engine\D3D11\PFX\Effects</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="ddraw.def">
@@ -1107,8 +1126,14 @@
     <None Include="Shaders\PS_PFX_Velocity.hlsl">
       <Filter>Engine\Shaders</Filter>
     </None>
-    <None Include="Shaders\PS_Grass.hlsl" />
-    <None Include="Shaders\VS_GrassInstanced.hlsl" />
-    <None Include="Shaders\PS_PFX_VelocityDebug.hlsl" />
+    <None Include="Shaders\VS_GrassInstanced.hlsl">
+      <Filter>Engine\Shaders</Filter>
+    </None>
+    <None Include="Shaders\PS_Grass.hlsl">
+      <Filter>Engine\Shaders</Filter>
+    </None>
+    <None Include="Shaders\PS_PFX_VelocityDebug.hlsl">
+      <Filter>Engine\Shaders</Filter>
+    </None>
   </ItemGroup>
 </Project>

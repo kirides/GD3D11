@@ -31,7 +31,7 @@ struct VelocityBufferConstantBuffer {
 class D3D11PFX_TAA : public D3D11PFX_Effect {
 public:
     D3D11PFX_TAA(D3D11PfxRenderer* rnd);
-    ~D3D11PFX_TAA();
+    ~D3D11PFX_TAA() = default;
 
     /** Initialize TAA resources */
     bool Init();
@@ -45,8 +45,11 @@ public:
         const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& depthSRV,
         const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& velocitySRV);
 
-    /** Gets current jitter offset for camera */
+    /** Gets current jitter offset for camera, scaled by resolution */
     XMFLOAT2 GetJitterOffset() const { return m_CurrentJitter; }
+
+    /** jitter in -0.5 to 0.5 range */
+    XMFLOAT2 GetJitterOffsetUnscaled() const { return m_CurrentJitterUnscaled; }
     
     /** Advances to next jitter sample */
     void AdvanceJitter();
@@ -66,6 +69,8 @@ public:
     /** Gets the current frame's unjittered view-projection matrix */
     const XMFLOAT4X4& GetUnjitteredViewProj() const { return m_UnjitteredViewProj; }
 
+    void ReleaseResources();
+
 private:
     // History buffer (previous frame's AA'd result)
     std::unique_ptr<RenderToTextureBuffer> m_HistoryBuffer;
@@ -82,10 +87,9 @@ private:
     Microsoft::WRL::ComPtr<ID3D11SamplerState>       m_samplerLinear;
     Microsoft::WRL::ComPtr<ID3D11SamplerState>       m_samplerPoint;
 
-    // Jitter sequence (Halton sequence)
-    std::vector<XMFLOAT2> m_JitterSequence;
     int m_JitterIndex;
     XMFLOAT2 m_CurrentJitter;
+    XMFLOAT2 m_CurrentJitterUnscaled;
     XMFLOAT2 m_PreviousJitter;
     
     // Previous frame matrices for reprojection
@@ -98,4 +102,5 @@ private:
     int m_Width;
     int m_Height;
     bool m_FirstFrame;
+    bool m_recreate = true;
 };

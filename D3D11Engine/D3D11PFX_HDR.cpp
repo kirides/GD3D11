@@ -37,7 +37,7 @@ D3D11PFX_HDR::~D3D11PFX_HDR() {
 }
 
 /** Draws this effect to the given buffer */
-XRESULT D3D11PFX_HDR::Render( RenderToTextureBuffer* fxbuffer ) {
+XRESULT D3D11PFX_HDR::Render( ID3D11RenderTargetView* output, ID3D11ShaderResourceView* backbuffer ) {
 	D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     engine->SetDefaultStates();
 	Engine::GAPI->GetRendererState().BlendState.BlendEnabled = false;
@@ -56,7 +56,7 @@ XRESULT D3D11PFX_HDR::Render( RenderToTextureBuffer* fxbuffer ) {
 
     auto tempBuffer = FxRenderer->GetTempBuffer();
 	// Copy the original image to our temp-buffer
-    FxRenderer->CopyTextureToRTV( engine->GetHDRBackBuffer().GetShaderResView(), tempBuffer->GetRenderTargetView(), engine->GetResolution() );
+    FxRenderer->CopyTextureToRTV( backbuffer, tempBuffer->GetRenderTargetView(), engine->GetResolution() );
 
     // Bind scene and luminance
     tempBuffer->BindToPixelShader( engine->GetContext().Get(), 0 );
@@ -77,7 +77,7 @@ XRESULT D3D11PFX_HDR::Render( RenderToTextureBuffer* fxbuffer ) {
     hps->GetConstantBuffer()[0]->UpdateBuffer( &hcb );
     hps->GetConstantBuffer()[0]->BindToPixelShader( 0 );
 
-    FxRenderer->CopyTextureToRTV( tempBuffer->GetShaderResView(), oldRTV, engine->GetResolution(), true );
+    FxRenderer->CopyTextureToRTV( tempBuffer->GetShaderResView(), output, engine->GetResolution(), true );
 
 	// Show lumBuffer
 	//FxRenderer->CopyTextureToRTV(currentLum->GetShaderResView(), oldRTV, INT2(LUM_SIZE,LUM_SIZE), false);

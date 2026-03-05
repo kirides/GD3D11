@@ -258,7 +258,7 @@
     <TargetName>ddraw</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt|Win32'">
-    <LinkIncremental>false</LinkIncremental>
+    <LinkIncremental>true</LinkIncremental>
     <IncludePath>$(IncludePath);include;include/imgui/;include/imgui/backends/</IncludePath>
     <LibraryPath>$(directxtk-LibPath);lib;$(LibraryPath)</LibraryPath>
     <TargetName>ddraw</TargetName>
@@ -700,18 +700,21 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
       <FloatingPointModel>Fast</FloatingPointModel>
+      <DebugInformationFormat>EditAndContinue</DebugInformationFormat>
+      <WholeProgramOptimization>false</WholeProgramOptimization>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <EnableCOMDATFolding>true</EnableCOMDATFolding>
-      <OptimizeReferences>true</OptimizeReferences>
+      <EnableCOMDATFolding>false</EnableCOMDATFolding>
+      <OptimizeReferences>false</OptimizeReferences>
       <ModuleDefinitionFile>ddraw.def</ModuleDefinitionFile>
       <ImageHasSafeExceptionHandlers>false</ImageHasSafeExceptionHandlers>
       <DelayLoadDLLs>
       </DelayLoadDLLs>
       <AdditionalLibraryDirectories>
       </AdditionalLibraryDirectories>
+      <LinkTimeCodeGeneration>Default</LinkTimeCodeGeneration>
     </Link>
     <CustomBuildStep>
       <Command>copy "shaders\*" "$(G2_SYSTEM_PATH)\GD3D11\shaders\"
@@ -791,8 +794,6 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="AlignedAllocator.h" />
-    <ClInclude Include="AntTweakBar.h" />
-    <ClInclude Include="BaseAntTweakBar.h" />
     <ClInclude Include="BasePipelineStates.h" />
     <ClInclude Include="BaseLineRenderer.h" />
     <ClInclude Include="BaseWidget.h" />
@@ -800,7 +801,6 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="D3D11CascadedShadowMapBuffer.h" />
     <ClInclude Include="CGameManager.h" />
     <ClInclude Include="D3D11AGS.h" />
-    <ClInclude Include="D3D11AntTweakBar.h" />
     <ClInclude Include="D3D11ConstantBuffer.h" />
     <ClInclude Include="ConstantBufferStructs.h" />
     <ClInclude Include="D3D11CShader.h" />
@@ -822,6 +822,8 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="D3D11PFX_DistanceBlur.h" />
     <ClInclude Include="D3D11PFX_Effect.h" />
     <ClInclude Include="D3D11PFX_FSR1.h" />
+    <ClInclude Include="D3D11PFX_FSR2.h" />
+    <ClInclude Include="D3D11PFX_FSR3.h" />
     <ClInclude Include="D3D11PFX_GodRays.h" />
     <ClInclude Include="D3D11PFX_HDR.h" />
     <ClInclude Include="D3D11PFX_HeightFog.h" />
@@ -974,7 +976,11 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="oCVisFX.h" />
     <ClInclude Include="pch.h" />
     <ClInclude Include="BaseShadowedPointLight.h" />
+    <ClInclude Include="RenderGraph.h" />
+    <ClInclude Include="RenderPass.h" />
     <ClInclude Include="RenderQueue.h" />
+    <ClInclude Include="RGBuilder.h" />
+    <ClInclude Include="RGTextureDesc.h" />
     <ClInclude Include="ShaderCategory.h" />
     <ClInclude Include="SMAA\D3D11SMAA.h" />
     <ClInclude Include="SteamOverlay.h" />
@@ -1042,12 +1048,10 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="D3D11PFX_CAS.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="BaseAntTweakBar.cpp" />
     <ClCompile Include="BaseLineRenderer.cpp" />
     <ClCompile Include="BaseWidget.cpp" />
     <ClCompile Include="D3D11CascadedShadowMapBuffer.cpp" />
     <ClCompile Include="D3D11AGS.cpp" />
-    <ClCompile Include="D3D11AntTweakBar.cpp" />
     <ClCompile Include="D3D11ConstantBuffer.cpp" />
     <ClCompile Include="D3D11CShader.cpp" />
     <ClCompile Include="D3D11Effect.cpp" />
@@ -1066,8 +1070,9 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="D3D11PFX_Blur.cpp" />
     <ClCompile Include="D3D11PFX_CAS.cpp" />
     <ClCompile Include="D3D11PFX_DistanceBlur.cpp" />
-    <ClCompile Include="D3D11PFX_Effect.cpp" />
     <ClCompile Include="D3D11PFX_FSR1.cpp" />
+    <ClCompile Include="D3D11PFX_FSR2.cpp" />
+    <ClCompile Include="D3D11PFX_FSR3.cpp" />
     <ClCompile Include="D3D11PFX_GodRays.cpp" />
     <ClCompile Include="D3D11PFX_HDR.cpp" />
     <ClCompile Include="D3D11PFX_HeightFog.cpp" />
@@ -1181,6 +1186,9 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <None Include="Shaders\PS_Grass.hlsl" />
     <None Include="Shaders\VS_GrassInstanced.hlsl" />
     <None Include="Shaders\PS_PFX_VelocityDebug.hlsl" />
+    <ClCompile Include="RenderGraph.cpp" />
+    <ClCompile Include="RenderPass.cpp" />
+    <ClCompile Include="RGBuilder.cpp" />
     <ClCompile Include="SMAA\D3D11SMAA.cpp" />
     <ClCompile Include="SteamOverlay.cpp" />
     <ClCompile Include="StackWalker.cpp" />

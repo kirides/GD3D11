@@ -1,5 +1,8 @@
 #include "pch.h"
 #include "D3D11PFX_TAA.h"
+
+#include <FidelityFX/host/ffx_fsr2.h>
+
 #include "Engine.h"
 #include "D3D11GraphicsEngine.h"
 #include "D3D11PfxRenderer.h"
@@ -7,20 +10,6 @@
 #include "RenderToTextureBuffer.h"
 #include "D3D11ConstantBuffer.h"
 #include "GothicAPI.h"
-
-// Halton sequence generator for jitter - low-discrepancy sequence
-// Provides better sub-pixel coverage than random sampling
-static float Halton(int index, int base) {
-    float result = 0.0f;
-    float f = 1.0f / base;
-    int i = index;
-    while (i > 0) {
-        result += f * (i % base);
-        i = i / base;
-        f = f / base;
-    }
-    return result;
-}
 
 D3D11PFX_TAA::D3D11PFX_TAA(D3D11PfxRenderer* rnd) 
     : D3D11PFX_Effect(rnd)
@@ -34,20 +23,7 @@ D3D11PFX_TAA::D3D11PFX_TAA(D3D11PfxRenderer* rnd)
     m_PrevCameraPosition = XMFLOAT3(0, 0, 0);
     XMStoreFloat4x4( &m_PrevViewProj, XMMatrixIdentity() );
     XMStoreFloat4x4( &m_UnjitteredViewProj, XMMatrixIdentity() );
-
-    const int JITTER_SAMPLES = 8;
-    m_JitterSequence.resize(JITTER_SAMPLES);
-    for (int i = 0; i < JITTER_SAMPLES; i++) {
-        // Center the Halton sequence around 0 (-0.5 to 0.5 range)
-        // This ensures jitter is distributed evenly around pixel center
-        m_JitterSequence[i] = XMFLOAT2(
-            Halton(i + 1, 2) - 0.5f,
-            Halton(i + 1, 3) - 0.5f
-        );
-    }
 }
-
-D3D11PFX_TAA::~D3D11PFX_TAA() {}
 
 bool D3D11PFX_TAA::Init() {
     auto* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
@@ -77,19 +53,10 @@ bool D3D11PFX_TAA::Init() {
     sampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
     engine->GetDevice()->CreateSamplerState( &sampDesc, m_samplerPoint.GetAddressOf() );
 
-    return true;
-}
-
-void D3D11PFX_TAA::OnResize(const INT2& size) {
-    auto* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
-    
-    m_Width = size.x;
-    m_Height = size.y;
-    
     // Create history buffer (same format as back buffer for color)
     DXGI_FORMAT format = engine->GetBackBufferFormat();
     m_HistoryBuffer = std::make_unique<RenderToTextureBuffer>(
-        engine->GetDevice().Get(), size.x, size.y, format);
+        engine->GetDevice().Get(), m_Width, m_Height, format);
 
     SetDebugName( m_HistoryBuffer->GetTexture().Get(), "TAA_HistoryBuffer" );
     SetDebugName( m_HistoryBuffer->GetRenderTargetView().Get(), "TAA_HistoryBuffer_RTV" );
@@ -98,7 +65,7 @@ void D3D11PFX_TAA::OnResize(const INT2& size) {
     // Create velocity buffer (RG16F for 2D motion vectors)
     // Using R16G16_FLOAT for high precision motion vectors
     m_VelocityBuffer = std::make_unique<RenderToTextureBuffer>(
-        engine->GetDevice().Get(), size.x, size.y, DXGI_FORMAT_R16G16_FLOAT);
+        engine->GetDevice().Get(), m_Width, m_Height, DXGI_FORMAT_R16G16_FLOAT);
 
     SetDebugName( m_VelocityBuffer->GetTexture().Get(), "TAA_VelocityBuffer" );
     SetDebugName( m_VelocityBuffer->GetRenderTargetView().Get(), "TAA_VelocityBuffer_RTV" );
@@ -109,20 +76,62 @@ void D3D11PFX_TAA::OnResize(const INT2& size) {
     m_JitterIndex = 0;
     m_CurrentJitter = XMFLOAT2(0, 0);
     m_PreviousJitter = XMFLOAT2(0, 0);
+    
+    return true;
+}
+
+void D3D11PFX_TAA::OnResize(const INT2& size) {
+    if (size.x == m_Width && size.y == m_Height) {
+        return;
+    }
+    m_recreate = true;
+    m_Width = size.x;
+    m_Height = size.y;
 }
 
 void D3D11PFX_TAA::OnDisabled() {
     m_CurrentJitter = XMFLOAT2( 0, 0 );
     m_PreviousJitter = XMFLOAT2( 0, 0 );
+    m_JitterIndex = 0;
     m_FirstFrame = true;
 }
 
-void D3D11PFX_TAA::AdvanceJitter() {
+void D3D11PFX_TAA::ReleaseResources() {
+    if ( m_recreate ) {
+        return;
+    }
+    m_recreate = true;
+
+    m_HistoryBuffer.reset();
+    m_VelocityBuffer.reset();
+    m_TAAConstantBuffer.reset();
+    m_VelocityConstantBuffer.reset();
+    m_samplerLinear.Reset();
+    m_samplerPoint.Reset();
+}
+
+void D3D11PFX_TAA::AdvanceJitter() {    
     // Store the previous jitter for removal
     m_PreviousJitter = m_CurrentJitter;
 
     // Advance to next jitter sample
-    m_JitterIndex = (m_JitterIndex + 1) % m_JitterSequence.size();
+    auto renderWidth = Engine::GraphicsEngine->GetResolution().x;
+    auto displayWidth = Engine::GraphicsEngine->GetBackbufferResolution().x;
+    const int32_t phaseCount = ffxFsr2GetJitterPhaseCount( renderWidth, displayWidth );
+
+    // 2. Advance index safely
+    if ( phaseCount > 0 ) {
+        m_JitterIndex = (m_JitterIndex + 1) % phaseCount;
+    } else {
+        m_JitterIndex = 0;
+    }
+
+    // 3. Calculate FSR2 jitter offset for the current index
+    float jitterX = 0.0f;
+    float jitterY = 0.0f;
+    if ( phaseCount > 0 ) {
+        ffxFsr2GetJitterOffset( &jitterX, &jitterY, m_JitterIndex, phaseCount );
+    }
 
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
     Engine::GAPI->SetViewTransformXM( view );
@@ -139,13 +148,12 @@ void D3D11PFX_TAA::AdvanceJitter() {
     // row-major view proj
     XMStoreFloat4x4( &m_UnjitteredViewProj, viewProj );
 
-    m_CurrentJitter = XMFLOAT2(
-        m_JitterSequence[m_JitterIndex].x / static_cast<float>(m_Width),
-        m_JitterSequence[m_JitterIndex].y / static_cast<float>(m_Height)
-    );
+    m_CurrentJitterUnscaled = XMFLOAT2( jitterX, jitterY );
 
-    //m_CurrentJitter = XMFLOAT2( 0.5f, 0 ); // Disable jitter for testing
-    // m_CurrentJitter = XMFLOAT2( 0.0f, 0 ); // Disable jitter for testing
+    m_CurrentJitter = XMFLOAT2(
+        jitterX / static_cast<float>(m_Width),
+        jitterY / static_cast<float>(m_Height)
+    );
     
     // Apply the new jitter to the projection matrix for scene rendering
     // The factor of 2 converts from UV space to clip space (-1 to 1)
@@ -239,6 +247,13 @@ void D3D11PFX_TAA::RenderPostFX(
     const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& currentFrameSRV,
     const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& depthSRV,
     const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& velocitySRV) {
+    
+    if (m_recreate) {
+        if (!Init()) {
+            return;
+        }
+        m_recreate = false;
+    }
     
     auto* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     auto& context = engine->GetContext();

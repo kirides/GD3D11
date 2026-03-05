@@ -154,6 +154,11 @@ public:
         );
     }
 
+    bool Intersects( const zTBBox3D& aabb ) const {
+        if ( m_always_containing ) return true;
+        return Intersects( BBoxFromzTBBox3D( aabb ) );
+    }
+
     DirectX::ContainmentType Contains(const zTBBox3D& aabb) const {
         if (m_always_containing) return ContainmentType::CONTAINS;
         return Contains(BBoxFromzTBBox3D(aabb));

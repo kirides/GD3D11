@@ -531,6 +531,12 @@ XRESULT D3D11Effect::DrawRainShadowmap() {
     XMStoreFloat4x4( &cr.ProjectionReplacement, XMMatrixTranspose( crProjectionReplacement ) );
     XMStoreFloat3( &cr.PositionReplacement, p );
     XMStoreFloat3( &cr.LookAtReplacement, lookAt );
+    
+    cr.frustum.BuildOrthographic( crViewReplacement,
+        size * legacySingleShadowMapScaleFactor,
+        size * legacySingleShadowMapScaleFactor,
+        1.0f,
+        20000.f );
 
     // Replace gothics camera
     Engine::GAPI->SetCameraReplacementPtr( &cr );

@@ -8,14 +8,12 @@
 
 #pragma comment(lib, "GFSDK_SSAO_D3D11.win32.lib")
 
-D3D11NVHBAO::D3D11NVHBAO() {}
-
-D3D11NVHBAO::~D3D11NVHBAO() {}
-
 /** Initializes the library */
 XRESULT D3D11NVHBAO::Init() {
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
 
+    SAFE_RELEASE( AOContext );
+    
     GFSDK_SSAO_CustomHeap CustomHeap;
     CustomHeap.new_ = ::operator new;
     CustomHeap.delete_ = ::operator delete;
@@ -32,7 +30,19 @@ XRESULT D3D11NVHBAO::Init() {
 }
 
 /** Renders the HBAO-Effect onto the given RTV */
-XRESULT D3D11NVHBAO::Render( Microsoft::WRL::ComPtr<ID3D11RenderTargetView> pOutputColorRTV ) {
+XRESULT D3D11NVHBAO::Render( 
+    const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& pOutputColorRTV,
+    const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& pFullResDepthTexSRV,
+    const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& pFullResNormalTexSRV
+    ) {
+    
+    if (m_recreate) {
+        if (Init() != XR_SUCCESS) {
+            return XR_FAILED;
+        }
+        m_recreate = false;
+    }
+    
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
 
     D3D11_VIEWPORT vp;
@@ -43,13 +53,13 @@ XRESULT D3D11NVHBAO::Render( Microsoft::WRL::ComPtr<ID3D11RenderTargetView> pOut
 
     GFSDK_SSAO_InputData_D3D11 Input;
     Input.DepthData.DepthTextureType = GFSDK_SSAO_HARDWARE_DEPTHS;
-    Input.DepthData.pFullResDepthTextureSRV = engine->GetDepthBuffer()->GetShaderResView();
+    Input.DepthData.pFullResDepthTextureSRV = pFullResDepthTexSRV.Get();
     Input.DepthData.ProjectionMatrix.Data = GFSDK_SSAO_Float4x4( reinterpret_cast<float*>(&Engine::GAPI->GetProjectionMatrix()) );
     Input.DepthData.ProjectionMatrix.Layout = GFSDK_SSAO_COLUMN_MAJOR_ORDER;
     Input.DepthData.MetersToViewSpaceUnits = settings.MetersToViewSpaceUnits;
 
     Input.NormalData.Enable = true;
-    Input.NormalData.pFullResNormalTextureSRV = engine->GetGBuffer1().GetShaderResView();
+    Input.NormalData.pFullResNormalTextureSRV = pFullResNormalTexSRV.Get();
     auto identity = XMMatrixIdentity();
     Input.NormalData.WorldToViewMatrix.Data = GFSDK_SSAO_Float4x4( reinterpret_cast<float*>(&identity) ); // We already have them in view-space
     Input.NormalData.WorldToViewMatrix.Layout = GFSDK_SSAO_COLUMN_MAJOR_ORDER;
@@ -77,4 +87,13 @@ XRESULT D3D11NVHBAO::Render( Microsoft::WRL::ComPtr<ID3D11RenderTargetView> pOut
     }
 
     return XR_SUCCESS;
+}
+
+void D3D11NVHBAO::ReleaseResources()
+{
+    if ( m_recreate ) {
+        return;
+    }
+    m_recreate = true;
+    SAFE_RELEASE( AOContext );
 }

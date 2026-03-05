@@ -127,7 +127,7 @@ struct DS_PointLightConstantBuffer {
     float PL_Pad3;
 };
 
-#define MAX_CSM_CASCADES 4
+constexpr int MAX_CSM_CASCADES = 4;
 
 struct DS_ScreenQuadConstantBuffer {
     XMFLOAT4X4 SQ_InvProj; // Optimize out!

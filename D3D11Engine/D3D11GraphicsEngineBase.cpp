@@ -1,6 +1,5 @@
 #include "D3D11GraphicsEngineBase.h"
 
-#include "BaseAntTweakBar.h"
 #include "D3D11LineRenderer.h"
 #include "D3D11PipelineStates.h"
 #include "D3D11PointLight.h"
@@ -64,15 +63,6 @@ XRESULT D3D11GraphicsEngineBase::SetViewport( const ViewportInfo& viewportInfo )
 
 /** Returns the shadermanager */
 D3D11ShaderManager& D3D11GraphicsEngineBase::GetShaderManager() { return *ShaderManager; }
-
-/** Called when the game wants to clear the bound rendertarget */
-XRESULT D3D11GraphicsEngineBase::Clear( const float4& color ) {
-    GetContext()->ClearDepthStencilView( DepthStencilBuffer->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 1.0f, 0 );
-    GetContext()->ClearRenderTargetView( HDRBackBuffer->GetRenderTargetView().Get(), reinterpret_cast<const float*>(&color) );
-    GetContext()->ClearRenderTargetView( Backbuffer->GetRenderTargetView().Get(), reinterpret_cast<const float*>(&color) );
-
-    return XR_SUCCESS;
-}
 
 /** Creates a vertexbuffer object (Not registered inside) */
 XRESULT D3D11GraphicsEngineBase::CreateVertexBuffer( D3D11VertexBuffer** outBuffer ) {
@@ -246,60 +236,6 @@ XRESULT D3D11GraphicsEngineBase::DrawVertexArray( ExVertexStruct* vertices, unsi
     return XR_SUCCESS;
 }
 
-/** Recreates the renderstates */
-XRESULT D3D11GraphicsEngineBase::UpdateRenderStates() {
-    if ( Engine::GAPI->GetRendererState().BlendState.StateDirty ) {
-        D3D11BlendStateInfo* state = static_cast<D3D11BlendStateInfo*>(GothicStateCache::s_BlendStateMap[Engine::GAPI->GetRendererState().BlendState]);
-
-        if ( !state ) {
-            // Create new state
-            state = new D3D11BlendStateInfo( Engine::GAPI->GetRendererState().BlendState );
-
-            GothicStateCache::s_BlendStateMap[Engine::GAPI->GetRendererState().BlendState] = state;
-        }
-
-        FFBlendState = state->State.Get();
-
-        Engine::GAPI->GetRendererState().BlendState.StateDirty = false;
-        GetContext()->OMSetBlendState( FFBlendState.Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )), 0xFFFFFFFF );
-    }
-
-    if ( Engine::GAPI->GetRendererState().RasterizerState.StateDirty ) {
-        D3D11RasterizerStateInfo* state = static_cast<D3D11RasterizerStateInfo*>(GothicStateCache::s_RasterizerStateMap[Engine::GAPI->GetRendererState().RasterizerState]);
-
-        if ( !state ) {
-            // Create new state
-            state = new D3D11RasterizerStateInfo( Engine::GAPI->GetRendererState().RasterizerState );
-
-            GothicStateCache::s_RasterizerStateMap[Engine::GAPI->GetRendererState().RasterizerState] = state;
-        }
-
-        FFRasterizerState = state->State.Get();
-
-        Engine::GAPI->GetRendererState().RasterizerState.StateDirty = false;
-        GetContext()->RSSetState( FFRasterizerState.Get() );
-    }
-
-    if ( Engine::GAPI->GetRendererState().DepthState.StateDirty ) {
-        D3D11DepthBufferState* state = static_cast<D3D11DepthBufferState*>(GothicStateCache::s_DepthBufferMap[Engine::GAPI->GetRendererState().DepthState]);
-
-        if ( !state ) {
-            // Create new state
-            state = new D3D11DepthBufferState( Engine::GAPI->GetRendererState().DepthState );
-
-            GothicStateCache::s_DepthBufferMap[Engine::GAPI->GetRendererState().DepthState] = state;
-        }
-
-        FFDepthStencilState = state->State.Get();
-
-        Engine::GAPI->GetRendererState().DepthState.StateDirty = false;
-        GetContext()->OMSetDepthStencilState( FFDepthStencilState.Get(), 0 );
-    }
-
-    return XR_SUCCESS;
-}
-
-
 /** Constructs the makro list for shader compilation */
 void D3D11GraphicsEngineBase::ConstructShaderMakroList( std::vector<D3D_SHADER_MACRO>& list ) {
     const GothicRendererSettings& s = Engine::GAPI->GetRendererState().RendererSettings;
@@ -363,40 +299,6 @@ void D3D11GraphicsEngineBase::ConstructShaderMakroList( std::vector<D3D_SHADER_M
     list.push_back( m );
 }
 
-void D3D11GraphicsEngineBase::SetupVS_ExMeshDrawCall() {
-    UpdateRenderStates();
-
-    if ( ActiveVS )ActiveVS->Apply();
-    if ( ActivePS )ActivePS->Apply();
-
-    GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
-}
-
-void D3D11GraphicsEngineBase::SetupVS_ExConstantBuffer() {
-    const XMFLOAT4X4& world = Engine::GAPI->GetRendererState().TransformState.TransformWorld;
-    const XMFLOAT4X4& view = Engine::GAPI->GetRendererState().TransformState.TransformView;
-    const XMFLOAT4X4& proj = Engine::GAPI->GetProjectionMatrix();
-
-    VS_ExConstantBuffer_PerFrame cb = {};
-    cb.View = view;
-    cb.Projection = proj;
-    XMStoreFloat4x4( &cb.ViewProj, XMMatrixMultiply( XMLoadFloat4x4( &proj ), XMLoadFloat4x4( &view ) ) );
-    ActiveVS->GetConstantBuffer()[0]->UpdateBuffer( &cb );
-    ActiveVS->GetConstantBuffer()[0]->BindToVertexShader( 0 );
-    ActiveVS->GetConstantBuffer()[0]->BindToDomainShader( 0 );
-    ActiveVS->GetConstantBuffer()[0]->BindToHullShader( 0 );
-}
-
-void D3D11GraphicsEngineBase::SetupVS_ExPerInstanceConstantBuffer() {
-    XMFLOAT4X4 world = Engine::GAPI->GetRendererState().TransformState.TransformWorld;
-
-    VS_ExConstantBuffer_PerInstance cb = {};
-    cb.World = world;
-
-    ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &cb );
-    ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( 1 );
-}
-
 /** Sets the active pixel shader object */
 XRESULT D3D11GraphicsEngineBase::SetActivePixelShader( const std::string& shader ) {
     ActivePS = ShaderManager->GetPShader( shader );
@@ -422,17 +324,6 @@ XRESULT D3D11GraphicsEngineBase::SetActiveGShader( const std::string& shader ) {
 //{
 //	return 0;
 //}
-
-/** Puts the current world matrix into a CB and binds it to the given slot */
-void D3D11GraphicsEngineBase::SetupPerInstanceConstantBuffer( int slot ) {
-    const XMFLOAT4X4 world = Engine::GAPI->GetRendererState().TransformState.TransformWorld;
-
-    VS_ExConstantBuffer_PerInstance cb = {};
-    cb.World = world;
-
-    ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &cb );
-    ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( slot );
-}
 
 /** Updates the transformsCB with new values from the GAPI */
 void D3D11GraphicsEngineBase::UpdateTransformsCB() {

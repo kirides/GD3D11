@@ -9,13 +9,16 @@
 #include "D3D11PFX_Blur.h"
 #include "D3D11PFX_HeightFog.h"
 #include "D3D11PFX_DistanceBlur.h"
-#include "D3D11PFX_HDR.h"
 #include "D3D11NVHBAO.h"
+#include "D3D11PFX_HDR.h"
 #include "D3D11PFX_SMAA.h"
 #include "D3D11PFX_GodRays.h"
 #include "D3D11PFX_TAA.h"
 #include "D3D11PFX_SimpleSharpen.h"
+#include "D3D11PFX_CAS.h"
 #include "D3D11PFX_FSR1.h"
+#include "D3D11PFX_FSR2.h"
+#include "D3D11PFX_FSR3.h"
 
 D3D11PfxRenderer::D3D11PfxRenderer() {
 
@@ -30,16 +33,14 @@ D3D11PfxRenderer::D3D11PfxRenderer() {
     if ( !FeatureLevel10Compatibility ) {
         FX_SMAA = std::make_unique<D3D11PFX_SMAA>( this );
         FX_TAA = std::make_unique<D3D11PFX_TAA>( this );
-
-        FX_TAA->Init();
-
         NvHBAO = std::make_unique<D3D11NVHBAO>();
-        NvHBAO->Init();
     }
 
     PFX_CAS = std::make_unique<D3D11PFX_CAS>( this );
     PFX_SimpleSharpen = std::make_unique<D3D11PFX_SimpleSharpen>( this );
     PFX_FSR1 = std::make_unique<D3D11PFX_FSR1>( this );
+    PFX_FSR2 = std::make_unique<D3D11PFX_FSR2>( this );
+    PFX_FSR3 = std::make_unique<D3D11PFX_FSR3>( this );
 }
 
 D3D11PfxRenderer::~D3D11PfxRenderer() {
@@ -47,8 +48,8 @@ D3D11PfxRenderer::~D3D11PfxRenderer() {
 }
 
 /** Renders the distance blur effect */
-XRESULT D3D11PfxRenderer::RenderDistanceBlur() {
-    FX_DistanceBlur->Render( nullptr );
+XRESULT D3D11PfxRenderer::RenderDistanceBlur(ID3D11ShaderResourceView* diffuse ) {
+    FX_DistanceBlur->Render( diffuse );
     return XR_SUCCESS;
 }
 
@@ -64,18 +65,18 @@ XRESULT D3D11PfxRenderer::RenderHeightfog() {
 }
 
 /** Renders the godrays-Effect */
-XRESULT D3D11PfxRenderer::RenderGodRays() {
-    return FX_GodRays->Render( nullptr );
+XRESULT D3D11PfxRenderer::RenderGodRays(ID3D11ShaderResourceView* backbuffer, ID3D11ShaderResourceView* normals) {
+    return FX_GodRays->Render( backbuffer , normals );
 }
 
 /** Renders the HDR-Effect */
-XRESULT D3D11PfxRenderer::RenderHDR() {
-    return FX_HDR->Render( nullptr );
+XRESULT D3D11PfxRenderer::RenderHDR( ID3D11RenderTargetView* output, ID3D11ShaderResourceView* backbuffer ) {
+    return FX_HDR->Render( output, backbuffer );
 }
 
 /** Renders the SMAA-Effect */
-XRESULT D3D11PfxRenderer::RenderSMAA() {
-    FX_SMAA->RenderPostFX( reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine)->GetHDRBackBuffer().GetShaderResView() );
+XRESULT D3D11PfxRenderer::RenderSMAA(ID3D11ShaderResourceView* backbuffer) {
+    FX_SMAA->RenderPostFX( backbuffer );
     return XR_SUCCESS;
 }
 
@@ -222,8 +223,11 @@ XRESULT D3D11PfxRenderer::OnResize( const INT2& newResolution ) {
 }
 
 /** Draws the HBAO-Effect to the given buffer */
-XRESULT D3D11PfxRenderer::DrawHBAO( const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& rtv ) {
-    return NvHBAO->Render( rtv.Get() );
+XRESULT D3D11PfxRenderer::DrawHBAO(
+    const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& rtv,
+    const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& pFullResDepthTexSRV,
+    const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& pFullResNormalTexSRV) {
+    return NvHBAO->Render( rtv.Get(), pFullResDepthTexSRV, pFullResNormalTexSRV);
 }
 
 TextureHandle D3D11PfxRenderer::GetTempBuffer()
@@ -250,4 +254,28 @@ TextureHandle D3D11PfxRenderer::GetTempBufferDS4()
     auto res = engine->GetResolution();
 
     return m_texturePool->Acquire( TexturePool::Description{ res.x / 4, res.y / 4, bbufferFormat } );
+}
+
+void D3D11PfxRenderer::FreeResources()
+{
+    auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+    if ( settings.AntiAliasingMode != GothicRendererSettings::AA_SMAA ) {
+        this->FX_SMAA->ReleaseResources();
+    }
+    if ( settings.AntiAliasingMode != GothicRendererSettings::AA_TAA ) {
+        this->FX_TAA->ReleaseResources();
+    }
+
+    if ( settings.AntiAliasingMode != GothicRendererSettings::AA_FSR
+        && !(settings.Upscaler == GothicRendererSettings::UPSCALER_FSR_2) && settings.ResolutionScalePercent < 100) {
+        this->PFX_FSR2->ReleaseResources();
+    }
+
+    if ( !(settings.Upscaler == GothicRendererSettings::UPSCALER_FSR_1) && settings.ResolutionScalePercent < 100 ) {
+        this->PFX_FSR1->ReleaseResources();
+    }
+
+    if ( !settings.HbaoSettings.Enabled ) {
+        this->NvHBAO->ReleaseResources();
+    }
 }

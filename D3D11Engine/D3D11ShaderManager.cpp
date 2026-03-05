@@ -16,6 +16,10 @@
 #include <d3dcompiler.h>
 #include "D3D11PFX_TAA.h"
 
+#pragma comment(lib, "d3d11.lib")
+#pragma comment(lib, "d3dcompiler.lib")
+#pragma comment(lib, "dxguid.lib")
+
 // Patch HLSL-Compiler for http://support.microsoft.com/kb/2448404
 #if D3DX_VERSION == 0xa2b
 #pragma ruledisable 0x0802405f
@@ -132,6 +136,17 @@ D3D11ShaderManager::~D3D11ShaderManager() {
 // Find and compile the specified shader
 //--------------------------------------------------------------------------------------
 HRESULT D3D11ShaderManager::CompileShaderFromFile( const CHAR* szFileName, LPCSTR szEntryPoint, LPCSTR szShaderModel, ID3DBlob** ppBlobOut, const std::vector<D3D_SHADER_MACRO>& makros ) {
+    auto shaderFile = Toolbox::ToWideChar( szFileName );
+    
+    return CompileShaderFromFile(
+        shaderFile.c_str(),
+        szEntryPoint,
+        szShaderModel,
+        ppBlobOut,
+        makros);
+}
+
+HRESULT D3D11ShaderManager::CompileShaderFromFile( const WCHAR* szFileName, LPCSTR szEntryPoint, LPCSTR szShaderModel, ID3DBlob** ppBlobOut, const std::vector<D3D_SHADER_MACRO>& makros ) {
     HRESULT hr = S_OK;
 
     DWORD dwShaderFlags = D3DCOMPILE_ENABLE_STRICTNESS;
@@ -155,10 +170,8 @@ HRESULT D3D11ShaderManager::CompileShaderFromFile( const CHAR* szFileName, LPCST
     m.insert( m.begin(), makros.begin(), makros.end() );
 
     Microsoft::WRL::ComPtr<ID3DBlob> pErrorBlob;
-
-    auto shaderFile = Toolbox::ToWideChar( szFileName );
     
-    std::filesystem::path shaderPath( shaderFile );
+    std::filesystem::path shaderPath( szFileName );
 
     // absolute path
     shaderPath = Engine::GAPI->GetStartDirectory().c_str() / shaderPath;
@@ -534,7 +547,9 @@ XRESULT D3D11ShaderManager::Init() {
         Shaders.back().cBufferSizes.push_back( sizeof( VS_ExConstantBuffer_PerInstanceSkeletal ) );
         Shaders.back().cBufferSizes.push_back( NUM_MAX_BONES * sizeof( XMFLOAT4X4 ) );
         Shaders.back().cBufferSizes.push_back( sizeof( CubemapGSConstantBuffer ) ); // cbPerCubeRender for layered rendering
-    } else {
+    } 
+    /*else: always compile fallback shaders*/
+    {
         Shaders.push_back( ShaderInfo( "GS_Cubemap", "GS_Cubemap.hlsl", "g" ) );
         Shaders.back().cBufferSizes.push_back( sizeof( CubemapGSConstantBuffer ) );
 
@@ -596,14 +611,14 @@ XRESULT D3D11ShaderManager::CompileShader( const ShaderInfo& si ) {
     std::string fileName = Engine::GAPI->GetStartDirectory() + "\\system\\GD3D11\\shaders\\" + si.fileName;
     if ( FILE* f = fopen( fileName.c_str(), "r" ) ) {
         //Check shader's type
-        if ( si.type == "v" ) {
+        if ( si.type == ShaderType::Vertex ) {
             // See if this is a reload
             D3D11VShader* vs = new D3D11VShader();
             if ( IsVShaderKnown( si.name ) ) {
                 if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog )
                     LogInfo() << "Reloading shader: " << si.name;
 
-                if ( XR_SUCCESS != vs->LoadShader( ("system\\GD3D11\\shaders\\" + si.fileName).c_str(), si.layout, si.shaderMakros ) ) {
+                if ( XR_SUCCESS != vs->LoadShader( ("system\\GD3D11\\shaders\\" + si.fileName).c_str(), si.layout, !si.entryPoint.empty() ? si.entryPoint.c_str() : nullptr, si.shaderMakros ) ) {
                     LogError() << "Failed to reload shader: " << si.fileName;
 
                     delete vs;
@@ -619,20 +634,20 @@ XRESULT D3D11ShaderManager::CompileShader( const ShaderInfo& si ) {
                 if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog )
                     LogInfo() << "Loading shader: " << si.name;
 
-                XLE( vs->LoadShader( ("system\\GD3D11\\shaders\\" + si.fileName).c_str(), si.layout, si.shaderMakros ) );
+                XLE( vs->LoadShader( ("system\\GD3D11\\shaders\\" + si.fileName).c_str(), si.layout, !si.entryPoint.empty() ? si.entryPoint.c_str() : nullptr, si.shaderMakros ) );
                 for ( unsigned int j = 0; j < si.cBufferSizes.size(); j++ ) {
                     vs->GetConstantBuffer().push_back( new D3D11ConstantBuffer( si.cBufferSizes[j], nullptr ) );
                 }
                 UpdateVShader( si.name, vs );
             }
-        } else if ( si.type == "p" ) {
+        } else if ( si.type == ShaderType::Pixel ) {
             // See if this is a reload
             D3D11PShader* ps = new D3D11PShader();
             if ( IsPShaderKnown( si.name ) ) {
                 if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog )
                     LogInfo() << "Reloading shader: " << si.name;
 
-                if ( XR_SUCCESS != ps->LoadShader( ("system\\GD3D11\\shaders\\" + si.fileName).c_str(), si.shaderMakros ) ) {
+                if ( XR_SUCCESS != ps->LoadShader( ("system\\GD3D11\\shaders\\" + si.fileName).c_str(), !si.entryPoint.empty() ? si.entryPoint.c_str() : nullptr, si.shaderMakros ) ) {
                     LogError() << "Failed to reload shader: " << si.fileName;
 
                     delete ps;
@@ -648,13 +663,13 @@ XRESULT D3D11ShaderManager::CompileShader( const ShaderInfo& si ) {
                 if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog )
                     LogInfo() << "Loading shader: " << si.name;
 
-                XLE( ps->LoadShader( ("system\\GD3D11\\shaders\\" + si.fileName).c_str(), si.shaderMakros ) );
+                XLE( ps->LoadShader( ("system\\GD3D11\\shaders\\" + si.fileName).c_str(), !si.entryPoint.empty() ? si.entryPoint.c_str() : nullptr, si.shaderMakros ) );
                 for ( unsigned int j = 0; j < si.cBufferSizes.size(); j++ ) {
                     ps->GetConstantBuffer().push_back( new D3D11ConstantBuffer( si.cBufferSizes[j], nullptr ) );
                 }
                 UpdatePShader( si.name, ps );
             }
-        } else if ( si.type == "g" ) {
+        } else if ( si.type == ShaderType::Geometry ) {
             // See if this is a reload
             D3D11GShader* gs = new D3D11GShader();
             if ( IsGShaderKnown( si.name ) ) {
@@ -682,14 +697,14 @@ XRESULT D3D11ShaderManager::CompileShader( const ShaderInfo& si ) {
                 }
                 UpdateGShader( si.name, gs );
             }
-        } else if ( si.type == "c" ) {
+        } else if ( si.type == ShaderType::Compute ) {
             // See if this is a reload
             D3D11CShader* cs = new D3D11CShader();
             if ( IsCShaderKnown( si.name ) ) {
                 if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog )
                     LogInfo() << "Reloading shader: " << si.name;
 
-                if ( XR_SUCCESS != cs->LoadShader( ("system\\GD3D11\\shaders\\" + si.fileName).c_str(), si.shaderMakros ) ) {
+                if ( XR_SUCCESS != cs->LoadShader( ("system\\GD3D11\\shaders\\" + si.fileName).c_str(), !si.entryPoint.empty() ? si.entryPoint.c_str() : nullptr, si.shaderMakros ) ) {
                     LogError() << "Failed to reload shader: " << si.fileName;
 
                     delete cs;
@@ -705,7 +720,7 @@ XRESULT D3D11ShaderManager::CompileShader( const ShaderInfo& si ) {
                 if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog )
                     LogInfo() << "Loading shader: " << si.name;
 
-                XLE( cs->LoadShader( ("system\\GD3D11\\shaders\\" + si.fileName).c_str(), si.shaderMakros ) );
+                XLE( cs->LoadShader( ("system\\GD3D11\\shaders\\" + si.fileName).c_str(), !si.entryPoint.empty() ? si.entryPoint.c_str() : nullptr, si.shaderMakros ) );
                 for ( unsigned int j = 0; j < si.cBufferSizes.size(); j++ ) {
                     cs->GetConstantBuffer().push_back( new D3D11ConstantBuffer( si.cBufferSizes[j], nullptr ) );
                 }
@@ -717,7 +732,7 @@ XRESULT D3D11ShaderManager::CompileShader( const ShaderInfo& si ) {
     }
 
     // Hull/Domain shaders are handled differently, they check inside for missing file
-    if ( si.type == std::string( "hd" ) ) {
+    if ( si.type == ShaderType::HullDomain ) {
         // See if this is a reload
         D3D11HDShader* hds = new D3D11HDShader();
         if ( IsHDShaderKnown( si.name ) ) {
@@ -760,15 +775,15 @@ XRESULT D3D11ShaderManager::LoadShaders( ShaderCategory categories ) {
     for ( const ShaderInfo& si : Shaders ) {
         // Determine shader type category
         ShaderCategory shaderTypeCategory = ShaderCategory::None;
-        if ( si.type == "v" ) {
+        if ( si.type == ShaderType::Vertex ) {
             shaderTypeCategory = ShaderCategory::Vertex;
-        } else if ( si.type == "p" ) {
+        } else if ( si.type == ShaderType::Pixel ) {
             shaderTypeCategory = ShaderCategory::Pixel;
-        } else if ( si.type == "g" ) {
+        } else if ( si.type == ShaderType::Geometry ) {
             shaderTypeCategory = ShaderCategory::Geometry;
-        } else if ( si.type == "hd" ) {
+        } else if ( si.type == ShaderType::HullDomain ) {
             shaderTypeCategory = ShaderCategory::HullDomain;
-        } else if ( si.type == "c" ) {
+        } else if ( si.type == ShaderType::Compute ) {
             shaderTypeCategory = ShaderCategory::Compute;
         }
 

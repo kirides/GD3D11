@@ -1,10 +1,12 @@
 #pragma once
 #include "pch.h"
-#include "D3D11PFX_TAA.h"
-#include "D3D11PFX_CAS.h"
-#include "D3D11PFX_FSR1.h"
 #include "TexturePool.h"
 
+class D3D11PFX_FSR3;
+class D3D11PFX_FSR2;
+class D3D11PFX_FSR1;
+class D3D11PFX_CAS;
+class D3D11PFX_TAA;
 struct RenderToTextureBuffer;
 class D3D11PFX_Blur;
 class D3D11PFX_HeightFog;
@@ -30,20 +32,20 @@ public:
     XRESULT RenderHeightfog();
 
     /** Renders the distance blur effect */
-    XRESULT RenderDistanceBlur();
+    XRESULT RenderDistanceBlur(ID3D11ShaderResourceView* diffuse );
 
     /** Renders the HDR-Effect */
-    XRESULT RenderHDR();
+    XRESULT RenderHDR(ID3D11RenderTargetView* output, ID3D11ShaderResourceView* backbuffer);
 
     /** Renders the SMAA-Effect */
-    XRESULT RenderSMAA();
+    XRESULT RenderSMAA(ID3D11ShaderResourceView* backbuffer);
 
     XRESULT RenderTAA(const ComPtr<ID3D11ShaderResourceView>& velocityBuffer);
     XRESULT RenderCAS( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& input, INT2 inputSize, const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& output, INT2 outputSize, RenderToTextureBuffer& intermediateBuffer );
     XRESULT RenderSimpleSharpen( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& input, INT2 inputSize, const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& output, INT2 outputSize, RenderToTextureBuffer& intermediateBuffer );
 
     /** Renders the godrays-Effect */
-    XRESULT RenderGodRays();
+    XRESULT RenderGodRays(ID3D11ShaderResourceView* backbuffer, ID3D11ShaderResourceView* normals);
 
     /** Copies the given texture to the given RTV */
     XRESULT CopyTextureToRTV( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& texture, const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& rtv, INT2 targetResolution = INT2( 0, 0 ), bool useCustomPS = false, INT2 offset = INT2( 0, 0 ) );
@@ -55,7 +57,8 @@ public:
     XRESULT DrawFullScreenQuad();
 
     /** Draws the HBAO-Effect to the given buffer */
-    XRESULT DrawHBAO( const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& rtv );
+    XRESULT DrawHBAO(const ComPtr<ID3D11RenderTargetView>& rtv, const ComPtr<ID3D11ShaderResourceView>& pFullResDepthTexSRV, const ComPtr<
+                     ID3D11ShaderResourceView>& pFullResNormalTexSRV);
 
     /** Accessors */
     TextureHandle GetTempBuffer();
@@ -65,10 +68,18 @@ public:
     D3D11PFX_TAA* GetTAAEffect() { return FX_TAA.get(); }
     D3D11PFX_CAS* GetCAS() { return PFX_CAS.get(); }
     D3D11PFX_FSR1* GetFSR1() { return PFX_FSR1.get(); }
+    D3D11PFX_FSR2* GetFSR2() { return PFX_FSR2.get(); }
+    D3D11PFX_FSR3* GetFSR3() { return PFX_FSR3.get(); }
 
     void OnEndFrame() {
         m_texturePool->GiveTick();
+        FreeResources();
     }
+
+    // Free any unused resources, like SMAA buffers if the player doesnt use it.
+    void FreeResources();
+
+    TexturePool* GetTexturePool() { return m_texturePool.get(); }
 private:
     /** Blur effect referenced here because it's often needed by PFX */
     std::unique_ptr<D3D11PFX_Blur> FX_Blur;
@@ -86,6 +97,8 @@ private:
     std::unique_ptr<D3D11PFX_CAS> PFX_CAS;
     std::unique_ptr<D3D11PFX_SimpleSharpen> PFX_SimpleSharpen;
     std::unique_ptr<D3D11PFX_FSR1> PFX_FSR1;
+    std::unique_ptr<D3D11PFX_FSR2> PFX_FSR2;
+    std::unique_ptr<D3D11PFX_FSR3> PFX_FSR3;
     std::unique_ptr<TexturePool> m_texturePool;
 };
 

@@ -65,7 +65,7 @@ float2 CalculateVelocity(float4 currClipPos, float4 prevClipPos)
 	float2 prevUV = float2(prevNDC.x * 0.5 + 0.5, 1.0 - (prevNDC.y * 0.5 + 0.5));
 	
 	// Velocity = current - previous (where the pixel came from)
-	float2 velocity = currUV - prevUV;
+	float2 velocity = prevUV - currUV;
 	
 	return velocity;
 }

@@ -3,11 +3,6 @@
 #include "ConstantBufferStructs.h" // includes definition of MAX_CSM_CASCADES
 #include <array>
 
-// Maximum number of cascades supported
-#ifndef MAX_CSM_CASCADES
-#define MAX_CSM_CASCADES 3
-#endif
-
 /**
  * Cascaded Shadow Map using a Texture2DArray.
  * Creates a single depth texture array with one slice per cascade,

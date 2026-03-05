@@ -16,6 +16,7 @@ public:
     struct Description {
         int Width, Height;
         DXGI_FORMAT Format;
+        DXGI_USAGE textureFlags; // Custom flags for special usage (e.g., render target, shader resource, etc.)
 
         // Comparator for finding matching textures in the pool
         bool operator==( const Description& other ) const {
@@ -54,7 +55,7 @@ public:
 
         if ( !found ) {
             // Create new texture if none available in pool
-            m_pool.push_back( std::make_unique<PooledTexture>( PooledTexture{ std::make_shared<RenderToTextureBuffer>(m_device, desc.Width, desc.Height, desc.Format), desc, m_currentFrame, true } ) );
+            m_pool.push_back( std::make_unique<PooledTexture>( PooledTexture{ std::make_shared<RenderToTextureBuffer>(m_device, desc.Width, desc.Height, desc.Format, nullptr, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, 1, 1, desc.textureFlags), desc, m_currentFrame, true } ) );
             found = m_pool.back().get();
 #if defined(_DEBUG) || defined(PROFILE)|| defined(DEBUG_D3D11)
             static uint64_t textureCounter = 0;
