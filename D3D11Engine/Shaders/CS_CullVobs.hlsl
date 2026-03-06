@@ -13,7 +13,7 @@ cbuffer CullCB : register( b0 )
     float globalWindStrength;
     uint windAdvanced;
     uint numVobs;
-    uint pad;
+    uint feedbackFrameNumber;
 };
 
 struct VobGPUData
@@ -41,7 +41,7 @@ struct SubmeshGPUData
     float vEnd;
     uint argIndex;
     uint instanceBaseOffset;
-    uint pad;
+    uint globalSourceIndex;
 };
 
 struct VobInstanceInfoAtlas
@@ -56,12 +56,18 @@ struct VobInstanceInfoAtlas
     float vStart;
     float uEnd;
     float vEnd;
+    uint globalSourceIndex;
 };
 
 StructuredBuffer<VobGPUData> VobBuffer : register( t0 );
 StructuredBuffer<SubmeshGPUData> SubmeshBuffer : register( t1 );
 RWStructuredBuffer<VobInstanceInfoAtlas> InstanceOutput : register( u0 );
 RWByteAddressBuffer IndirectArgsUAV : register( u1 );
+
+// GPU feedback for streaming: source-indexed RWTexture2D<uint>
+// The CS stamps visible sources once per (vob, submesh) — orders of magnitude
+// cheaper than per-pixel atomics in the pixel shader.
+RWTexture2D<uint> FeedbackUAV : register( u5 );
 
 [numthreads( 64, 1, 1 )]
 void CSMain( uint3 DTid : SV_DispatchThreadID )
@@ -124,7 +130,15 @@ void CSMain( uint3 DTid : SV_DispatchThreadID )
         inst.vStart = sm.vStart;
         inst.uEnd = sm.uEnd;
         inst.vEnd = sm.vEnd;
+        inst.globalSourceIndex = sm.globalSourceIndex;
 
         InstanceOutput[sm.instanceBaseOffset + slot] = inst;
+
+        // Stamp feedback: one atomic per visible (vob, submesh) pair.
+        // Far cheaper than per-pixel atomics in the PS.
+        if ( feedbackFrameNumber > 0 )
+        {
+            InterlockedMax( FeedbackUAV[uint2( sm.globalSourceIndex, 0 )], feedbackFrameNumber );
+        }
     }
 }

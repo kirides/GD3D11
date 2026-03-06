@@ -846,6 +846,7 @@
       <Filter>Engine</Filter>
     </ClInclude>
     <ClInclude Include="D3D11TextureAtlasManager.h" />
+    <ClInclude Include="D3D11StreamingResourcesManager.h" />
     <ClInclude Include="D3D11StructuredBuffer.h" />
   </ItemGroup>
   <ItemGroup>
@@ -875,6 +876,9 @@
       <Filter>ZenGin\Classes</Filter>
     </ClCompile>
     <ClCompile Include="D3D11Texture.cpp">
+      <Filter>Engine\D3D11</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D11StreamingResourcesManager.cpp">
       <Filter>Engine\D3D11</Filter>
     </ClCompile>
     <ClCompile Include="D3D11PShader.cpp">

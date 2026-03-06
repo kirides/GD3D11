@@ -28,6 +28,7 @@ struct VobInstanceInfoAtlas {
     float vStart;
     float uEnd;
     float vEnd;
+    UINT globalSourceIndex;  // global source index into feedback texture
 };
 
 // Descriptor returned for use with shader
@@ -69,7 +70,7 @@ struct SubmeshGPUData {
     float uStart, vStart, uEnd, vEnd;
     UINT argIndex;              // index into merged indirect args
     UINT instanceBaseOffset;    // fixed write offset in instance buffer
-    UINT pad;
+    UINT globalSourceIndex;     // global source index into feedback texture
 };
 
 // Constant buffer for the GPU cull compute shader
@@ -80,7 +81,7 @@ struct CullConstants {
     float globalWindStrength;
     UINT windAdvanced;
     UINT numVobs;
-    UINT pad;
+    UINT feedbackFrameNumber;   // >0 = write feedback in CS; 0 = disabled (e.g. shadow pass)
 };
 
 #pragma pack (push, 1)	

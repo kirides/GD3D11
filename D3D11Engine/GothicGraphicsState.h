@@ -641,6 +641,7 @@ struct GothicRendererSettings {
         WireframeWorld = false;
         DrawShadowGeometry = true;
         UseIndirectVobShadows = false;
+        EnableStreamingResources = false;
         FixViewFrustum = false;
         DisableWatermark = true;
         DisableRendering = false;
@@ -830,6 +831,7 @@ struct GothicRendererSettings {
     E_ShadowFrustumCulling ShadowFrustumCullingMode;
     bool DrawShadowGeometry;
     bool UseIndirectVobShadows;
+    bool EnableStreamingResources;
     bool VegetationAlphaToCoverage;
     bool DisableWatermark;
     bool DisableRendering;
@@ -970,6 +972,7 @@ struct GothicRendererSettings {
             bool UseLayeredRendering;
             bool UseShadowAtlas;
             bool ForceFeatureLevel10;
+            bool StreamingResourcesSupported;
         } FeatureSet;
     } DebugSettings;
 };

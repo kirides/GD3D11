@@ -32,6 +32,7 @@ struct VobInstanceInfoAtlas {
     float vStart;
     float uEnd;
     float vEnd;
+    uint globalSourceIndex;
 };
 
 StructuredBuffer<VobInstanceInfoAtlas> instances : register(t1);

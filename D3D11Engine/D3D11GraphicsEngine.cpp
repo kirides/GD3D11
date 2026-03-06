@@ -99,6 +99,7 @@ static std::unique_ptr<D3D11AGS> agsDevice;
 
 extern bool userHaveAMDGPU;
 bool SupportTextureAtlases = false;
+bool SupportStreamingResources = false;
 
 namespace
 {
@@ -598,12 +599,22 @@ XRESULT D3D11GraphicsEngine::Init() {
     if (maxFeatureLevel >= D3D_FEATURE_LEVEL::D3D_FEATURE_LEVEL_11_0) {
         // check amount of GPU Memory available
         constexpr uint64_t GiB = 1024ull * 1024ull * 1024ull;
-        if ( adpDesc.DedicatedVideoMemory >= 4 * GiB ) {
+        if ( adpDesc.DedicatedVideoMemory >= 3 * GiB ) { // on 32 bit processes dx11 can't see more than 3GiB
             // currently we just assume everything fits into memory.
             // in the future we should make use of Tiled Resources, which would allow us
             // to support more memory intensive features, even on less than 4GB cards, by streaming in the necessary tiles.
             SupportTextureAtlases = true;
             Engine::GAPI->GetRendererState().RendererSettings.UseIndirectVobShadows = SupportTextureAtlases;
+        }
+
+        // Check for tiled resource (streaming) support
+        SupportStreamingResources = D3D11StreamingResourcesManager::GetIsStreamingSupported( Device.Get() );
+        Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.StreamingResourcesSupported = SupportStreamingResources;
+        if ( SupportStreamingResources ) {
+            LogInfo() << "Tiled Resources supported — streaming resource manager available";
+            // Allow atlas path even on < 4GB cards when streaming is available
+            SupportTextureAtlases = true;
+            Engine::GAPI->GetRendererState().RendererSettings.UseIndirectVobShadows = true;
         }
     }
 
@@ -6238,6 +6249,18 @@ XRESULT D3D11GraphicsEngine::DrawVOBsIndirect( const Frustum& frustum, bool bind
 
     auto _ = RecordGraphicsEvent( L"DrawVOBsIndirect" );
 
+    // --- 0. Update streaming tile mappings (only on main pass, not shadow) ---
+    if ( m_StreamingResources && bindPS ) {
+        // Read back feedback from 2 frames ago to determine which sources need loading
+        ReadBackFeedback();
+
+        XMFLOAT3 camPos = Engine::GAPI->GetCameraPosition();
+        float drawDist = Engine::GAPI->GetRendererState().RendererSettings.OutdoorVobDrawRadius;
+        float currentTime = Engine::GAPI->GetTimeSeconds();
+        const std::unordered_set<UINT>* requested = m_RequestedSources.empty() ? nullptr : &m_RequestedSources;
+        m_StreamingResources->UpdateStreaming( camPos, drawDist, currentTime, requested );
+    }
+
     auto& context = GetContext();
 
     // --- 1. Reset indirect args InstanceCounts via CopyResource from template ---
@@ -6254,6 +6277,17 @@ XRESULT D3D11GraphicsEngine::DrawVOBsIndirect( const Frustum& frustum, bool bind
     cb.windAdvanced = (Engine::GAPI->GetRendererState().RendererSettings.WindQuality
                        == GothicRendererSettings::EWindQuality::WIND_QUALITY_ADVANCED) ? 1 : 0;
     cb.numVobs = static_cast<UINT>(m_StaticVobs.size());
+
+    // Feedback: on main pass, increment frame number and tell CS to stamp visible sources.
+    // On shadow pass, feedbackFrameNumber = 0 disables feedback writes in the CS.
+    const bool useFeedback = bindPS && m_FeedbackTexture && m_FeedbackUAV && m_StreamingResources;
+    if ( useFeedback ) {
+        m_FeedbackFrameNumber++;
+        cb.feedbackFrameNumber = m_FeedbackFrameNumber;
+    } else {
+        cb.feedbackFrameNumber = 0;
+    }
+
     m_CullConstantBuffer->UpdateBuffer( &cb );
     m_CullConstantBuffer->BindToComputeShader( 0 );
 
@@ -6277,14 +6311,32 @@ XRESULT D3D11GraphicsEngine::DrawVOBsIndirect( const Frustum& frustum, bool bind
     };
     context->CSSetUnorderedAccessViews( 0, 2, uavs, nullptr );
 
+    // UAV u5 = Feedback texture (only on main pass)
+    if ( useFeedback ) {
+        ID3D11UnorderedAccessView* feedbackUAV = m_FeedbackUAV.Get();
+        context->CSSetUnorderedAccessViews( 5, 1, &feedbackUAV, nullptr );
+    }
+
     UINT numGroups = (static_cast<UINT>(m_StaticVobs.size()) + 63) / 64;
     context->Dispatch( numGroups, 1, 1 );
+
+    // Copy feedback to staging ring for async readback (before unbinding UAVs)
+    if ( useFeedback ) {
+        context->CopyResource(
+            m_FeedbackStaging[m_FeedbackStagingHead % 3].Get(),
+            m_FeedbackTexture.Get() );
+        m_FeedbackStagingHead++;
+    }
 
     // Unbind CS resources
     ID3D11ShaderResourceView* nullSRV[2] = { nullptr, nullptr };
     ID3D11UnorderedAccessView* nullUAV[2] = { nullptr, nullptr };
     context->CSSetShaderResources( 0, 2, nullSRV );
     context->CSSetUnorderedAccessViews( 0, 2, nullUAV, nullptr );
+    if ( useFeedback ) {
+        ID3D11UnorderedAccessView* nullFeedbackUAV = nullptr;
+        context->CSSetUnorderedAccessViews( 5, 1, &nullFeedbackUAV, nullptr );
+    }
     context->CSSetShader( nullptr, nullptr, 0 );
 
     // --- 4. Bind global geometry (once) ---
@@ -8210,6 +8262,31 @@ void D3D11GraphicsEngine::BuildGPUCullingBuffers() {
     std::vector<D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS> mergedArgs;
     std::unordered_map<MeshVisualInfo*, std::vector<SubmeshGPUData>> visualSubmeshMap;
 
+    // Build reverse-lookup: for each format, map (slice, x, y) -> source index
+    // so we can populate SubmeshGPUData.globalSourceIndex for GPU feedback.
+    struct SliceXYKey {
+        UINT slice, x, y;
+        bool operator==( const SliceXYKey& o ) const { return slice == o.slice && x == o.x && y == o.y; }
+    };
+    struct SliceXYHash {
+        size_t operator()( const SliceXYKey& k ) const {
+            return std::hash<UINT>{}( k.slice ) ^ ( std::hash<UINT>{}( k.x ) << 11 ) ^ ( std::hash<UINT>{}( k.y ) << 22 );
+        }
+    };
+    std::unordered_map<DXGI_FORMAT, std::unordered_map<SliceXYKey, UINT, SliceXYHash>> sourceIndexLookup;
+    std::unordered_map<DXGI_FORMAT, UINT> formatGlobalOffsets; // cached offsets for global index computation
+    if ( m_StreamingResources ) {
+        for ( auto& group : m_AtlasDrawGroups ) {
+            const auto& srcs = m_StreamingResources->GetSourceTextures( group.format );
+            auto& lookup = sourceIndexLookup[group.format];
+            UINT globalOffset = m_StreamingResources->GetGlobalSourceOffset( group.format );
+            formatGlobalOffsets[group.format] = globalOffset;
+            for ( UINT i = 0; i < static_cast<UINT>( srcs.size() ); i++ ) {
+                lookup[{ srcs[i].slice, srcs[i].x, srcs[i].y }] = i;
+            }
+        }
+    }
+
     UINT runningInstanceOffset = 0;
     UINT globalArgIndex = 0;
 
@@ -8240,6 +8317,27 @@ void D3D11GraphicsEngine::BuildGPUCullingBuffers() {
             smGPU.vEnd = submesh.atlasDesc.vEnd;
             smGPU.argIndex = globalArgIndex;
             smGPU.instanceBaseOffset = runningInstanceOffset;
+
+            // Populate globalSourceIndex for GPU feedback by reverse-looking up pixel coords
+            smGPU.globalSourceIndex = 0;
+            if ( m_StreamingResources ) {
+                auto fmtIt = sourceIndexLookup.find( group.format );
+                if ( fmtIt != sourceIndexLookup.end() ) {
+                    // Convert normalized UVs back to pixel coords (atlasSize from texture desc)
+                    D3D11_TEXTURE2D_DESC atlasTexDesc;
+                    m_TextureAtlasses[group.format].atlasTextureArray->GetDesc( &atlasTexDesc );
+                    UINT px = static_cast<UINT>( submesh.atlasDesc.uStart * atlasTexDesc.Width + 0.5f );
+                    UINT py = static_cast<UINT>( submesh.atlasDesc.vStart * atlasTexDesc.Height + 0.5f );
+                    UINT sl = static_cast<UINT>( submesh.atlasDesc.slice );
+                    auto srcIt = fmtIt->second.find( { sl, px, py } );
+                    if ( srcIt != fmtIt->second.end() ) {
+                        // Store the global source index (format offset + local index)
+                        UINT globalOffset = formatGlobalOffsets.count( group.format ) ? formatGlobalOffsets[group.format] : 0;
+                        smGPU.globalSourceIndex = globalOffset + srcIt->second;
+                    }
+                }
+            }
+
             visualSubmeshMap[visual].push_back( smGPU );
 
             runningInstanceOffset += maxInstances;
@@ -8370,6 +8468,116 @@ void D3D11GraphicsEngine::BuildGPUCullingBuffers() {
         << m_TotalMaxInstances << " max instances";
 }
 
+void D3D11GraphicsEngine::CreateFeedbackBuffers() {
+    // Only create feedback infrastructure when streaming is active
+    if ( !m_StreamingResources )
+        return;
+
+    UINT totalSources = m_StreamingResources->GetTotalSourceCount();
+    if ( totalSources == 0 )
+        return;
+
+    // Create the feedback texture: RWTexture2D<uint> of size (totalSources, 1)
+    D3D11_TEXTURE2D_DESC texDesc = {};
+    texDesc.Width = totalSources;
+    texDesc.Height = 1;
+    texDesc.MipLevels = 1;
+    texDesc.ArraySize = 1;
+    texDesc.Format = DXGI_FORMAT_R32_UINT;
+    texDesc.SampleDesc.Count = 1;
+    texDesc.Usage = D3D11_USAGE_DEFAULT;
+    texDesc.BindFlags = D3D11_BIND_UNORDERED_ACCESS;
+
+    HRESULT hr = GetDevice()->CreateTexture2D( &texDesc, nullptr, m_FeedbackTexture.ReleaseAndGetAddressOf() );
+    if ( FAILED( hr ) ) {
+        LogError() << "[Feedback] Failed to create feedback texture (" << totalSources << " sources)";
+        return;
+    }
+
+    // Create UAV for the feedback texture
+    D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+    uavDesc.Format = DXGI_FORMAT_R32_UINT;
+    uavDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
+    uavDesc.Texture2D.MipSlice = 0;
+
+    hr = GetDevice()->CreateUnorderedAccessView( m_FeedbackTexture.Get(), &uavDesc, m_FeedbackUAV.ReleaseAndGetAddressOf() );
+    if ( FAILED( hr ) ) {
+        LogError() << "[Feedback] Failed to create feedback UAV";
+        m_FeedbackTexture.Reset();
+        return;
+    }
+
+    // Clear feedback texture to zero so the first readback doesn't see garbage
+    const UINT clearValue[4] = { 0, 0, 0, 0 };
+    GetContext()->ClearUnorderedAccessViewUint( m_FeedbackUAV.Get(), clearValue );
+
+    // Create 3 staging textures for async readback (2-frame latency ring)
+    for ( int i = 0; i < 3; i++ ) {
+        D3D11_TEXTURE2D_DESC stagingDesc = {};
+        stagingDesc.Width = totalSources;
+        stagingDesc.Height = 1;
+        stagingDesc.MipLevels = 1;
+        stagingDesc.ArraySize = 1;
+        stagingDesc.Format = DXGI_FORMAT_R32_UINT;
+        stagingDesc.SampleDesc.Count = 1;
+        stagingDesc.Usage = D3D11_USAGE_STAGING;
+        stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+
+        hr = GetDevice()->CreateTexture2D( &stagingDesc, nullptr, m_FeedbackStaging[i].ReleaseAndGetAddressOf() );
+        if ( FAILED( hr ) ) {
+            LogError() << "[Feedback] Failed to create staging texture " << i;
+            m_FeedbackTexture.Reset();
+            m_FeedbackUAV.Reset();
+            return;
+        }
+    }
+
+    m_FeedbackStagingHead = 0;
+    m_FeedbackFrameNumber = 0;
+    m_RequestedSources.clear();
+
+    LogInfo() << "[Feedback] Created feedback buffers: " << totalSources << " sources";
+}
+
+void D3D11GraphicsEngine::ReadBackFeedback() {
+    if ( !m_FeedbackTexture || !m_StreamingResources )
+        return;
+
+    UINT totalSources = m_StreamingResources->GetTotalSourceCount();
+    if ( totalSources == 0 )
+        return;
+
+    // We read back the staging buffer from 2 frames ago (to avoid GPU stalls)
+    // Only attempt readback once we have at least 3 frames of data
+    if ( m_FeedbackFrameNumber < 3 )
+        return;
+
+    UINT readIndex = ( m_FeedbackStagingHead + 1 ) % 3; // 2 frames behind current
+
+    D3D11_MAPPED_SUBRESOURCE mapped = {};
+    HRESULT hr = GetContext()->Map( m_FeedbackStaging[readIndex].Get(), 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped );
+    if ( FAILED( hr ) ) {
+        // GPU hasn't finished yet — skip this frame's readback
+        return;
+    }
+
+    m_RequestedSources.clear();
+    const UINT* data = static_cast<const UINT*>( mapped.pData );
+
+    // A source is "requested" if its feedback value is a recent frame number
+    // (within the last few frames). This provides hysteresis against single-frame flickers.
+    UINT threshold = ( m_FeedbackFrameNumber > 4 ) ? m_FeedbackFrameNumber - 4 : 0;
+
+    for ( UINT i = 0; i < totalSources; i++ ) {
+        const auto value = data[i];
+        if ( value >= threshold ) {
+            m_RequestedSources.insert( i );
+        }
+    }
+
+    GetContext()->Unmap( m_FeedbackStaging[readIndex].Get(), 0 );
+}
+
 
 void D3D11GraphicsEngine::BuildSceneTextureAtlasses() {
     for ( size_t i = 0; i < TEXTURE_ATLAS_MAX; i++ ) {
@@ -8377,6 +8585,20 @@ void D3D11GraphicsEngine::BuildSceneTextureAtlasses() {
     }
     m_TextureAtlasLookup.clear();
     m_AtlasDrawGroups.clear();
+
+    // Clean up any previous streaming state
+    if ( m_StreamingResources ) {
+        m_StreamingResources->OnWorldUnloaded();
+    }
+
+    // Clean up feedback buffers
+    m_FeedbackTexture.Reset();
+    m_FeedbackUAV.Reset();
+    for ( int i = 0; i < 3; i++ )
+        m_FeedbackStaging[i].Reset();
+    m_FeedbackStagingHead = 0;
+    m_FeedbackFrameNumber = 0;
+    m_RequestedSources.clear();
 
     if ( !SupportTextureAtlases ) {
         return;
@@ -8423,6 +8645,23 @@ void D3D11GraphicsEngine::BuildSceneTextureAtlasses() {
         return a.Format < b.Format;
     } );
 
+    // Determine if we should use the streaming (tiled resources) path
+    Engine::GAPI->GetRendererState().RendererSettings.EnableStreamingResources = SupportStreamingResources;
+    bool useStreaming = SupportStreamingResources
+        && Engine::GAPI->GetRendererState().RendererSettings.EnableStreamingResources;
+
+    if ( useStreaming ) {
+        // Initialize streaming manager if not yet created
+        if ( !m_StreamingResources ) {
+            m_StreamingResources = std::make_unique<D3D11StreamingResourcesManager>();
+            if ( !m_StreamingResources->Init( GetDevice().Get(), GetContext().Get() ) ) {
+                LogWarn() << "Streaming resources init failed, falling back to monolithic atlases";
+                m_StreamingResources.reset();
+                useStreaming = false;
+            }
+        }
+    }
+
     // Create atlases per format group (process ALL groups including last)
     size_t rangeStart = 0;
     while ( rangeStart < uniqueTextures.size() ) {
@@ -8437,7 +8676,15 @@ void D3D11GraphicsEngine::BuildSceneTextureAtlasses() {
             texPtrs.push_back( uniqueTextures[i].Texture2D.Get() );
 
         std::basic_string_view<ID3D11Texture2D*> txView( texPtrs.data(), texPtrs.size() );
-        auto atlas = TextureManager::CreateAtlasArray( GetDevice().Get(), GetContext().Get(), txView, 2048, 6 );
+
+        TextureManager::AtlasResult atlas;
+        if ( useStreaming && m_StreamingResources ) {
+            // Streaming path: tiled Texture2DArray backed by tile pool
+            atlas = m_StreamingResources->CreateStreamingAtlasArray( txView, 2048, 6 );
+        } else {
+            // Monolithic path: fully committed Texture2DArray (original behavior)
+            atlas = TextureManager::CreateAtlasArray( GetDevice().Get(), GetContext().Get(), txView, 2048, 6 );
+        }
 
         // Map descriptors back to Gothic texture pointers
         for ( size_t i = 0; i < texPtrs.size(); i++ ) {
@@ -8451,7 +8698,8 @@ void D3D11GraphicsEngine::BuildSceneTextureAtlasses() {
         rangeStart = rangeEnd;
     }
 
-    LogInfo() << "Atlas: " << uniqueTextures.size() << " unique textures, " << m_TextureAtlasLookup.size() << " mapped";
+    LogInfo() << "Atlas: " << uniqueTextures.size() << " unique textures, " << m_TextureAtlasLookup.size() << " mapped"
+              << ( useStreaming ? " (streaming)" : " (monolithic)" );
 
     // Build global VB/IB and indirect args from atlas data
     BuildStaticGeometryBuffers();
@@ -8459,6 +8707,9 @@ void D3D11GraphicsEngine::BuildSceneTextureAtlasses() {
     // Build GPU structured buffers for compute shader culling
     // currently only used with static vobs when we do atlases.
     BuildGPUCullingBuffers();
+
+    // Create GPU feedback buffers for streaming (after atlas and culling buffers are ready)
+    CreateFeedbackBuffers();
 }
 
 void D3D11GraphicsEngine::CacheWorldStaticVobs() {

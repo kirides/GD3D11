@@ -7,6 +7,7 @@
 #include "D3D11TextureAtlasManager.h"
 #include "D3D11StructuredBuffer.h"
 #include "D3D11IndirectBuffer.h"
+#include "D3D11StreamingResourcesManager.h"
 #include "VobCulling.h"
 
 struct RenderToDepthStencilBuffer;
@@ -534,4 +535,20 @@ private:
     std::unique_ptr<D3D11ConstantBuffer> m_CullConstantBuffer;
     std::vector<D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS> m_MergedArgsReset; // CPU-side template for reset
     UINT m_TotalMaxInstances = 0;
+
+    /** Streaming resources manager (tiled resources) — opt-in, coexists with monolithic atlas */
+    std::unique_ptr<D3D11StreamingResourcesManager> m_StreamingResources;
+
+    /** GPU feedback for streaming: source-indexed RWTexture2D<uint> tracking which textures need loading */
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> m_FeedbackTexture;
+    Microsoft::WRL::ComPtr<ID3D11UnorderedAccessView> m_FeedbackUAV;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> m_FeedbackStaging[3]; // ring buffer for async readback
+    UINT m_FeedbackStagingHead = 0;
+    UINT m_FeedbackFrameNumber = 0;
+    std::unordered_set<UINT> m_RequestedSources; // result of last readback
+
+    /** Read back the feedback texture from 2 frames ago and populate m_RequestedSources */
+    void ReadBackFeedback();
+    /** Create feedback buffer infrastructure (called after atlas creation) */
+    void CreateFeedbackBuffers();
 };
