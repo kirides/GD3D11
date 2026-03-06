@@ -99,7 +99,6 @@ static std::unique_ptr<D3D11AGS> agsDevice;
 
 extern bool userHaveAMDGPU;
 bool SupportTextureAtlases = false;
-bool SupportStreamingResources = false;
 
 namespace
 {
@@ -606,16 +605,6 @@ XRESULT D3D11GraphicsEngine::Init() {
             SupportTextureAtlases = true;
             Engine::GAPI->GetRendererState().RendererSettings.UseIndirectVobShadows = SupportTextureAtlases;
         }
-
-        // Check for tiled resource (streaming) support
-        SupportStreamingResources = D3D11StreamingResourcesManager::GetIsStreamingSupported( Device.Get() );
-        Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.StreamingResourcesSupported = SupportStreamingResources;
-        if ( SupportStreamingResources ) {
-            LogInfo() << "Tiled Resources supported — streaming resource manager available";
-            // Allow atlas path even on < 4GB cards when streaming is available
-            SupportTextureAtlases = true;
-            Engine::GAPI->GetRendererState().RendererSettings.UseIndirectVobShadows = true;
-        }
     }
 
     LogInfo() << "Creating ShaderManager";
@@ -981,6 +970,9 @@ XRESULT D3D11GraphicsEngine::RecreateBuffers() {
     DepthStencilBufferCopy = std::make_unique<RenderToTextureBuffer>(
         GetDevice().Get(), roundedTextureResolution.x, roundedTextureResolution.y, DXGI_FORMAT_R32_TYPELESS, nullptr,
         DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32_FLOAT );
+
+    // Create / recreate Hi-Z pyramid resources to match new depth buffer size
+    CreateHiZResources();
 
     // Create PFX-Renderer
     if ( !PfxRenderer ) PfxRenderer = std::make_unique<D3D11PfxRenderer>();
@@ -6249,19 +6241,17 @@ XRESULT D3D11GraphicsEngine::DrawVOBsIndirect( const Frustum& frustum, bool bind
 
     auto _ = RecordGraphicsEvent( L"DrawVOBsIndirect" );
 
-    // --- 0. Update streaming tile mappings (only on main pass, not shadow) ---
-    if ( m_StreamingResources && bindPS ) {
-        // Read back feedback from 2 frames ago to determine which sources need loading
-        ReadBackFeedback();
-
-        XMFLOAT3 camPos = Engine::GAPI->GetCameraPosition();
-        float drawDist = Engine::GAPI->GetRendererState().RendererSettings.OutdoorVobDrawRadius;
-        float currentTime = Engine::GAPI->GetTimeSeconds();
-        const std::unordered_set<UINT>* requested = m_RequestedSources.empty() ? nullptr : &m_RequestedSources;
-        m_StreamingResources->UpdateStreaming( camPos, drawDist, currentTime, requested );
-    }
-
     auto& context = GetContext();
+
+    // --- 0b. Build Hi-Z pyramid from current depth buffer (main pass only) ---
+    // The world mesh has already been rendered, so the depth buffer contains valid
+    // occluder geometry. Copy depth first to avoid DSV/SRV resource hazard, then
+    // build the hierarchical min-depth mip chain for GPU culling.
+    const bool useHiZ = bindPS && m_HiZTexture && m_HiZSRV;
+    if ( useHiZ ) {
+        CopyDepthStencil();
+        BuildHiZPyramid();
+    }
 
     // --- 1. Reset indirect args InstanceCounts via CopyResource from template ---
     context->CopyResource( m_MergedIndirectArgs->GetIndirectBuffer().Get(),
@@ -6277,15 +6267,25 @@ XRESULT D3D11GraphicsEngine::DrawVOBsIndirect( const Frustum& frustum, bool bind
     cb.windAdvanced = (Engine::GAPI->GetRendererState().RendererSettings.WindQuality
                        == GothicRendererSettings::EWindQuality::WIND_QUALITY_ADVANCED) ? 1 : 0;
     cb.numVobs = static_cast<UINT>(m_StaticVobs.size());
+    cb.feedbackFrameNumber = 0;
 
-    // Feedback: on main pass, increment frame number and tell CS to stamp visible sources.
-    // On shadow pass, feedbackFrameNumber = 0 disables feedback writes in the CS.
-    const bool useFeedback = bindPS && m_FeedbackTexture && m_FeedbackUAV && m_StreamingResources;
-    if ( useFeedback ) {
-        m_FeedbackFrameNumber++;
-        cb.feedbackFrameNumber = m_FeedbackFrameNumber;
+    // Hi-Z occlusion culling: populate view-projection and Hi-Z dimensions
+    if ( useHiZ ) {
+        cb.enableHiZ = 1;
+        cb.hiZMipCount = m_HiZMipCount;
+        cb.hiZWidth = static_cast<float>( DepthStencilBuffer->GetSizeX() );
+        cb.hiZHeight = static_cast<float>( DepthStencilBuffer->GetSizeY() );
+
+        XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
+        auto& projF = Engine::GAPI->GetProjectionMatrix();
+        XMStoreFloat4x4( &cb.viewProjection,
+            XMMatrixMultiply( view, XMLoadFloat4x4( &projF ) ) );
     } else {
-        cb.feedbackFrameNumber = 0;
+        cb.enableHiZ = 0;
+        cb.hiZMipCount = 0;
+        cb.hiZWidth = 0.0f;
+        cb.hiZHeight = 0.0f;
+        XMStoreFloat4x4( &cb.viewProjection, XMMatrixIdentity() );
     }
 
     m_CullConstantBuffer->UpdateBuffer( &cb );
@@ -6304,6 +6304,12 @@ XRESULT D3D11GraphicsEngine::DrawVOBsIndirect( const Frustum& frustum, bool bind
     };
     context->CSSetShaderResources( 0, 2, srvs );
 
+    // SRV t2 = Hi-Z pyramid texture (for occlusion culling)
+    if ( useHiZ ) {
+        ID3D11ShaderResourceView* hiZSRV = m_HiZSRV.Get();
+        context->CSSetShaderResources( 2, 1, &hiZSRV );
+    }
+
     // UAV u0 = InstanceOutput (structured), u1 = IndirectArgs (raw byte address)
     ID3D11UnorderedAccessView* uavs[2] = {
         m_InstanceBufferGPU->GetUAV(),
@@ -6311,32 +6317,14 @@ XRESULT D3D11GraphicsEngine::DrawVOBsIndirect( const Frustum& frustum, bool bind
     };
     context->CSSetUnorderedAccessViews( 0, 2, uavs, nullptr );
 
-    // UAV u5 = Feedback texture (only on main pass)
-    if ( useFeedback ) {
-        ID3D11UnorderedAccessView* feedbackUAV = m_FeedbackUAV.Get();
-        context->CSSetUnorderedAccessViews( 5, 1, &feedbackUAV, nullptr );
-    }
-
     UINT numGroups = (static_cast<UINT>(m_StaticVobs.size()) + 63) / 64;
     context->Dispatch( numGroups, 1, 1 );
 
-    // Copy feedback to staging ring for async readback (before unbinding UAVs)
-    if ( useFeedback ) {
-        context->CopyResource(
-            m_FeedbackStaging[m_FeedbackStagingHead % 3].Get(),
-            m_FeedbackTexture.Get() );
-        m_FeedbackStagingHead++;
-    }
-
     // Unbind CS resources
-    ID3D11ShaderResourceView* nullSRV[2] = { nullptr, nullptr };
+    ID3D11ShaderResourceView* nullSRV[3] = { nullptr, nullptr, nullptr };
     ID3D11UnorderedAccessView* nullUAV[2] = { nullptr, nullptr };
-    context->CSSetShaderResources( 0, 2, nullSRV );
+    context->CSSetShaderResources( 0, 3, nullSRV );
     context->CSSetUnorderedAccessViews( 0, 2, nullUAV, nullptr );
-    if ( useFeedback ) {
-        ID3D11UnorderedAccessView* nullFeedbackUAV = nullptr;
-        context->CSSetUnorderedAccessViews( 5, 1, &nullFeedbackUAV, nullptr );
-    }
     context->CSSetShader( nullptr, nullptr, 0 );
 
     // --- 4. Bind global geometry (once) ---
@@ -8275,17 +8263,6 @@ void D3D11GraphicsEngine::BuildGPUCullingBuffers() {
     };
     std::unordered_map<DXGI_FORMAT, std::unordered_map<SliceXYKey, UINT, SliceXYHash>> sourceIndexLookup;
     std::unordered_map<DXGI_FORMAT, UINT> formatGlobalOffsets; // cached offsets for global index computation
-    if ( m_StreamingResources ) {
-        for ( auto& group : m_AtlasDrawGroups ) {
-            const auto& srcs = m_StreamingResources->GetSourceTextures( group.format );
-            auto& lookup = sourceIndexLookup[group.format];
-            UINT globalOffset = m_StreamingResources->GetGlobalSourceOffset( group.format );
-            formatGlobalOffsets[group.format] = globalOffset;
-            for ( UINT i = 0; i < static_cast<UINT>( srcs.size() ); i++ ) {
-                lookup[{ srcs[i].slice, srcs[i].x, srcs[i].y }] = i;
-            }
-        }
-    }
 
     UINT runningInstanceOffset = 0;
     UINT globalArgIndex = 0;
@@ -8320,23 +8297,6 @@ void D3D11GraphicsEngine::BuildGPUCullingBuffers() {
 
             // Populate globalSourceIndex for GPU feedback by reverse-looking up pixel coords
             smGPU.globalSourceIndex = 0;
-            if ( m_StreamingResources ) {
-                auto fmtIt = sourceIndexLookup.find( group.format );
-                if ( fmtIt != sourceIndexLookup.end() ) {
-                    // Convert normalized UVs back to pixel coords (atlasSize from texture desc)
-                    D3D11_TEXTURE2D_DESC atlasTexDesc;
-                    m_TextureAtlasses[group.format].atlasTextureArray->GetDesc( &atlasTexDesc );
-                    UINT px = static_cast<UINT>( submesh.atlasDesc.uStart * atlasTexDesc.Width + 0.5f );
-                    UINT py = static_cast<UINT>( submesh.atlasDesc.vStart * atlasTexDesc.Height + 0.5f );
-                    UINT sl = static_cast<UINT>( submesh.atlasDesc.slice );
-                    auto srcIt = fmtIt->second.find( { sl, px, py } );
-                    if ( srcIt != fmtIt->second.end() ) {
-                        // Store the global source index (format offset + local index)
-                        UINT globalOffset = formatGlobalOffsets.count( group.format ) ? formatGlobalOffsets[group.format] : 0;
-                        smGPU.globalSourceIndex = globalOffset + srcIt->second;
-                    }
-                }
-            }
 
             visualSubmeshMap[visual].push_back( smGPU );
 
@@ -8468,116 +8428,189 @@ void D3D11GraphicsEngine::BuildGPUCullingBuffers() {
         << m_TotalMaxInstances << " max instances";
 }
 
-void D3D11GraphicsEngine::CreateFeedbackBuffers() {
-    // Only create feedback infrastructure when streaming is active
-    if ( !m_StreamingResources )
+void D3D11GraphicsEngine::CreateHiZResources() {
+    auto* device = GetDevice().Get();
+    HRESULT hr;
+
+    // Get depth buffer dimensions
+    UINT width = DepthStencilBuffer->GetSizeX();
+    UINT height = DepthStencilBuffer->GetSizeY();
+    if ( width == 0 || height == 0 )
         return;
 
-    UINT totalSources = m_StreamingResources->GetTotalSourceCount();
-    if ( totalSources == 0 )
-        return;
+    // Calculate mip count for full mip chain
+    UINT mipCount = 1;
+    {
+        UINT w = width, h = height;
+        while ( w > 1 || h > 1 ) {
+            w = (std::max)( w / 2, 1u );
+            h = (std::max)( h / 2, 1u );
+            mipCount++;
+        }
+    }
+    m_HiZMipCount = mipCount;
 
-    // Create the feedback texture: RWTexture2D<uint> of size (totalSources, 1)
-    D3D11_TEXTURE2D_DESC texDesc = {};
-    texDesc.Width = totalSources;
-    texDesc.Height = 1;
-    texDesc.MipLevels = 1;
-    texDesc.ArraySize = 1;
-    texDesc.Format = DXGI_FORMAT_R32_UINT;
-    texDesc.SampleDesc.Count = 1;
-    texDesc.Usage = D3D11_USAGE_DEFAULT;
-    texDesc.BindFlags = D3D11_BIND_UNORDERED_ACCESS;
+    // Create Hi-Z texture: full mip chain, SRV-bindable (used as CS input via SRV)
+    D3D11_TEXTURE2D_DESC hiZDesc = {};
+    hiZDesc.Width = width;
+    hiZDesc.Height = height;
+    hiZDesc.MipLevels = mipCount;
+    hiZDesc.ArraySize = 1;
+    hiZDesc.Format = DXGI_FORMAT_R32_FLOAT;
+    hiZDesc.SampleDesc.Count = 1;
+    hiZDesc.Usage = D3D11_USAGE_DEFAULT;
+    hiZDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
 
-    HRESULT hr = GetDevice()->CreateTexture2D( &texDesc, nullptr, m_FeedbackTexture.ReleaseAndGetAddressOf() );
+    hr = device->CreateTexture2D( &hiZDesc, nullptr, m_HiZTexture.ReleaseAndGetAddressOf() );
     if ( FAILED( hr ) ) {
-        LogError() << "[Feedback] Failed to create feedback texture (" << totalSources << " sources)";
+        LogError() << "[Hi-Z] Failed to create Hi-Z texture";
         return;
     }
 
-    // Create UAV for the feedback texture
+    // SRV for the full Hi-Z texture (all mips, used for occlusion testing in CS_CullVobs)
+    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+    srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Texture2D.MipLevels = mipCount;
+    srvDesc.Texture2D.MostDetailedMip = 0;
+
+    hr = device->CreateShaderResourceView( m_HiZTexture.Get(), &srvDesc, m_HiZSRV.ReleaseAndGetAddressOf() );
+    if ( FAILED( hr ) ) {
+        LogError() << "[Hi-Z] Failed to create Hi-Z SRV";
+        m_HiZTexture.Reset();
+        return;
+    }
+
+    // Create scratch texture: single mip, UAV-bindable (CS writes here, then we copy to Hi-Z)
+    D3D11_TEXTURE2D_DESC scratchDesc = {};
+    scratchDesc.Width = width;
+    scratchDesc.Height = height;
+    scratchDesc.MipLevels = 1;
+    scratchDesc.ArraySize = 1;
+    scratchDesc.Format = DXGI_FORMAT_R32_FLOAT;
+    scratchDesc.SampleDesc.Count = 1;
+    scratchDesc.Usage = D3D11_USAGE_DEFAULT;
+    scratchDesc.BindFlags = D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE;
+
+    hr = device->CreateTexture2D( &scratchDesc, nullptr, m_HiZScratch.ReleaseAndGetAddressOf() );
+    if ( FAILED( hr ) ) {
+        LogError() << "[Hi-Z] Failed to create scratch texture";
+        m_HiZTexture.Reset();
+        m_HiZSRV.Reset();
+        return;
+    }
+
+    // Scratch UAV
     D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
-    uavDesc.Format = DXGI_FORMAT_R32_UINT;
+    uavDesc.Format = DXGI_FORMAT_R32_FLOAT;
     uavDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
     uavDesc.Texture2D.MipSlice = 0;
 
-    hr = GetDevice()->CreateUnorderedAccessView( m_FeedbackTexture.Get(), &uavDesc, m_FeedbackUAV.ReleaseAndGetAddressOf() );
+    hr = device->CreateUnorderedAccessView( m_HiZScratch.Get(), &uavDesc, m_HiZScratchUAV.ReleaseAndGetAddressOf() );
     if ( FAILED( hr ) ) {
-        LogError() << "[Feedback] Failed to create feedback UAV";
-        m_FeedbackTexture.Reset();
+        LogError() << "[Hi-Z] Failed to create scratch UAV";
+        m_HiZTexture.Reset();
+        m_HiZSRV.Reset();
+        m_HiZScratch.Reset();
         return;
     }
 
-    // Clear feedback texture to zero so the first readback doesn't see garbage
-    const UINT clearValue[4] = { 0, 0, 0, 0 };
-    GetContext()->ClearUnorderedAccessViewUint( m_FeedbackUAV.Get(), clearValue );
+    // Scratch SRV (not strictly needed, but useful for debugging)
+    D3D11_SHADER_RESOURCE_VIEW_DESC scratchSRVDesc = {};
+    scratchSRVDesc.Format = DXGI_FORMAT_R32_FLOAT;
+    scratchSRVDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    scratchSRVDesc.Texture2D.MipLevels = 1;
+    scratchSRVDesc.Texture2D.MostDetailedMip = 0;
 
-    // Create 3 staging textures for async readback (2-frame latency ring)
-    for ( int i = 0; i < 3; i++ ) {
-        D3D11_TEXTURE2D_DESC stagingDesc = {};
-        stagingDesc.Width = totalSources;
-        stagingDesc.Height = 1;
-        stagingDesc.MipLevels = 1;
-        stagingDesc.ArraySize = 1;
-        stagingDesc.Format = DXGI_FORMAT_R32_UINT;
-        stagingDesc.SampleDesc.Count = 1;
-        stagingDesc.Usage = D3D11_USAGE_STAGING;
-        stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-
-        hr = GetDevice()->CreateTexture2D( &stagingDesc, nullptr, m_FeedbackStaging[i].ReleaseAndGetAddressOf() );
-        if ( FAILED( hr ) ) {
-            LogError() << "[Feedback] Failed to create staging texture " << i;
-            m_FeedbackTexture.Reset();
-            m_FeedbackUAV.Reset();
-            return;
-        }
+    hr = device->CreateShaderResourceView( m_HiZScratch.Get(), &scratchSRVDesc, m_HiZScratchSRV.ReleaseAndGetAddressOf() );
+    if ( FAILED( hr ) ) {
+        LogError() << "[Hi-Z] Failed to create scratch SRV";
+        m_HiZTexture.Reset();
+        m_HiZSRV.Reset();
+        m_HiZScratch.Reset();
+        m_HiZScratchUAV.Reset();
+        return;
     }
 
-    m_FeedbackStagingHead = 0;
-    m_FeedbackFrameNumber = 0;
-    m_RequestedSources.clear();
-
-    LogInfo() << "[Feedback] Created feedback buffers: " << totalSources << " sources";
+    LogInfo() << "[Hi-Z] Created Hi-Z pyramid resources: " << width << "x" << height
+              << ", " << mipCount << " mip levels";
 }
 
-void D3D11GraphicsEngine::ReadBackFeedback() {
-    if ( !m_FeedbackTexture || !m_StreamingResources )
+void D3D11GraphicsEngine::BuildHiZPyramid() {
+    if ( !m_HiZTexture || !m_HiZScratch || m_HiZMipCount == 0 )
         return;
 
-    UINT totalSources = m_StreamingResources->GetTotalSourceCount();
-    if ( totalSources == 0 )
+    auto hiZCS = ShaderManager->GetCShader( CShaderID::CS_BuildHiZ );
+    if ( !hiZCS )
         return;
 
-    // We read back the staging buffer from 2 frames ago (to avoid GPU stalls)
-    // Only attempt readback once we have at least 3 frames of data
-    if ( m_FeedbackFrameNumber < 3 )
-        return;
+    auto& context = GetContext();
 
-    UINT readIndex = ( m_FeedbackStagingHead + 1 ) % 3; // 2 frames behind current
+    UINT width = DepthStencilBuffer->GetSizeX();
+    UINT height = DepthStencilBuffer->GetSizeY();
 
-    D3D11_MAPPED_SUBRESOURCE mapped = {};
-    HRESULT hr = GetContext()->Map( m_FeedbackStaging[readIndex].Get(), 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped );
-    if ( FAILED( hr ) ) {
-        // GPU hasn't finished yet — skip this frame's readback
-        return;
-    }
+    hiZCS->Apply();
 
-    m_RequestedSources.clear();
-    const UINT* data = static_cast<const UINT*>( mapped.pData );
+    for ( UINT mip = 0; mip < m_HiZMipCount; mip++ ) {
+        UINT mipWidth = (std::max)( width >> mip, 1u );
+        UINT mipHeight = (std::max)( height >> mip, 1u );
 
-    // A source is "requested" if its feedback value is a recent frame number
-    // (within the last few frames). This provides hysteresis against single-frame flickers.
-    UINT threshold = ( m_FeedbackFrameNumber > 4 ) ? m_FeedbackFrameNumber - 4 : 0;
+        // Update constant buffer
+        HiZBuildConstants cb = {};
+        cb.outputWidth = mipWidth;
+        cb.outputHeight = mipHeight;
+        cb.inputMipLevel = ( mip > 0 ) ? ( mip - 1 ) : 0;
+        cb.isCopyPass = ( mip == 0 ) ? 1 : 0;
+        hiZCS->GetConstantBuffer()[0]->UpdateBuffer( &cb );
+        hiZCS->GetConstantBuffer()[0]->BindToComputeShader( 0 );
 
-    for ( UINT i = 0; i < totalSources; i++ ) {
-        const auto value = data[i];
-        if ( value >= threshold ) {
-            m_RequestedSources.insert( i );
+        // Bind input SRV:
+        //   Mip 0: read from depth buffer copy (avoids DSV/SRV hazard)
+        //   Mip N: read from Hi-Z texture SRV (previous mip levels already filled)
+        ID3D11ShaderResourceView* inputSRV = nullptr;
+        if ( mip == 0 ) {
+            inputSRV = DepthStencilBufferCopy->GetShaderResView().Get();
+        } else {
+            inputSRV = m_HiZSRV.Get();
         }
+        context->CSSetShaderResources( 0, 1, &inputSRV );
+
+        // Bind output UAV: always the scratch texture
+        ID3D11UnorderedAccessView* uav = m_HiZScratchUAV.Get();
+        context->CSSetUnorderedAccessViews( 0, 1, &uav, nullptr );
+
+        // Dispatch
+        UINT groupsX = ( mipWidth + 7 ) / 8;
+        UINT groupsY = ( mipHeight + 7 ) / 8;
+        context->Dispatch( groupsX, groupsY, 1 );
+
+        // Unbind SRV and UAV to allow the copy
+        ID3D11ShaderResourceView* nullSRV = nullptr;
+        ID3D11UnorderedAccessView* nullUAV = nullptr;
+        context->CSSetShaderResources( 0, 1, &nullSRV );
+        context->CSSetUnorderedAccessViews( 0, 1, &nullUAV, nullptr );
+
+        // Copy scratch (mip 0) -> Hi-Z texture (mip N)
+        D3D11_BOX srcBox = {};
+        srcBox.left = 0;
+        srcBox.top = 0;
+        srcBox.right = mipWidth;
+        srcBox.bottom = mipHeight;
+        srcBox.front = 0;
+        srcBox.back = 1;
+
+        context->CopySubresourceRegion(
+            m_HiZTexture.Get(),
+            D3D11CalcSubresource( mip, 0, m_HiZMipCount ),
+            0, 0, 0,
+            m_HiZScratch.Get(),
+            0,
+            &srcBox );
     }
 
-    GetContext()->Unmap( m_FeedbackStaging[readIndex].Get(), 0 );
+    // Clean up CS state
+    context->CSSetShader( nullptr, nullptr, 0 );
 }
-
 
 void D3D11GraphicsEngine::BuildSceneTextureAtlasses() {
     for ( size_t i = 0; i < TEXTURE_ATLAS_MAX; i++ ) {
@@ -8585,20 +8618,6 @@ void D3D11GraphicsEngine::BuildSceneTextureAtlasses() {
     }
     m_TextureAtlasLookup.clear();
     m_AtlasDrawGroups.clear();
-
-    // Clean up any previous streaming state
-    if ( m_StreamingResources ) {
-        m_StreamingResources->OnWorldUnloaded();
-    }
-
-    // Clean up feedback buffers
-    m_FeedbackTexture.Reset();
-    m_FeedbackUAV.Reset();
-    for ( int i = 0; i < 3; i++ )
-        m_FeedbackStaging[i].Reset();
-    m_FeedbackStagingHead = 0;
-    m_FeedbackFrameNumber = 0;
-    m_RequestedSources.clear();
 
     if ( !SupportTextureAtlases ) {
         return;
@@ -8645,23 +8664,6 @@ void D3D11GraphicsEngine::BuildSceneTextureAtlasses() {
         return a.Format < b.Format;
     } );
 
-    // Determine if we should use the streaming (tiled resources) path
-    Engine::GAPI->GetRendererState().RendererSettings.EnableStreamingResources = SupportStreamingResources;
-    bool useStreaming = SupportStreamingResources
-        && Engine::GAPI->GetRendererState().RendererSettings.EnableStreamingResources;
-
-    if ( useStreaming ) {
-        // Initialize streaming manager if not yet created
-        if ( !m_StreamingResources ) {
-            m_StreamingResources = std::make_unique<D3D11StreamingResourcesManager>();
-            if ( !m_StreamingResources->Init( GetDevice().Get(), GetContext().Get() ) ) {
-                LogWarn() << "Streaming resources init failed, falling back to monolithic atlases";
-                m_StreamingResources.reset();
-                useStreaming = false;
-            }
-        }
-    }
-
     // Create atlases per format group (process ALL groups including last)
     size_t rangeStart = 0;
     while ( rangeStart < uniqueTextures.size() ) {
@@ -8677,14 +8679,7 @@ void D3D11GraphicsEngine::BuildSceneTextureAtlasses() {
 
         std::basic_string_view<ID3D11Texture2D*> txView( texPtrs.data(), texPtrs.size() );
 
-        TextureManager::AtlasResult atlas;
-        if ( useStreaming && m_StreamingResources ) {
-            // Streaming path: tiled Texture2DArray backed by tile pool
-            atlas = m_StreamingResources->CreateStreamingAtlasArray( txView, 2048, 6 );
-        } else {
-            // Monolithic path: fully committed Texture2DArray (original behavior)
-            atlas = TextureManager::CreateAtlasArray( GetDevice().Get(), GetContext().Get(), txView, 2048, 6 );
-        }
+        TextureManager::AtlasResult atlas = TextureManager::CreateAtlasArray( GetDevice().Get(), GetContext().Get(), txView, 2048, 6 );
 
         // Map descriptors back to Gothic texture pointers
         for ( size_t i = 0; i < texPtrs.size(); i++ ) {
@@ -8698,8 +8693,7 @@ void D3D11GraphicsEngine::BuildSceneTextureAtlasses() {
         rangeStart = rangeEnd;
     }
 
-    LogInfo() << "Atlas: " << uniqueTextures.size() << " unique textures, " << m_TextureAtlasLookup.size() << " mapped"
-              << ( useStreaming ? " (streaming)" : " (monolithic)" );
+    LogInfo() << "Atlas: " << uniqueTextures.size() << " unique textures, " << m_TextureAtlasLookup.size() << " mapped";
 
     // Build global VB/IB and indirect args from atlas data
     BuildStaticGeometryBuffers();
@@ -8707,9 +8701,6 @@ void D3D11GraphicsEngine::BuildSceneTextureAtlasses() {
     // Build GPU structured buffers for compute shader culling
     // currently only used with static vobs when we do atlases.
     BuildGPUCullingBuffers();
-
-    // Create GPU feedback buffers for streaming (after atlas and culling buffers are ready)
-    CreateFeedbackBuffers();
 }
 
 void D3D11GraphicsEngine::CacheWorldStaticVobs() {

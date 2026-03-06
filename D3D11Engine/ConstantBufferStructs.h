@@ -82,6 +82,18 @@ struct CullConstants {
     UINT windAdvanced;
     UINT numVobs;
     UINT feedbackFrameNumber;   // >0 = write feedback in CS; 0 = disabled (e.g. shadow pass)
+    UINT enableHiZ;             // 1 = Hi-Z occlusion culling enabled
+    UINT hiZMipCount;
+    float hiZWidth;             // Hi-Z mip 0 dimensions (full depth buffer size)
+    float hiZHeight;
+    XMFLOAT4X4 viewProjection; // Current frame view-projection matrix for Hi-Z reprojection
+};
+
+struct HiZBuildConstants {
+    UINT outputWidth;
+    UINT outputHeight;
+    UINT inputMipLevel;
+    UINT isCopyPass;    // 1 = copy from depth buffer (mip 0), 0 = downsample from previous mip
 };
 
 #pragma pack (push, 1)	

@@ -569,8 +569,10 @@ XRESULT D3D11ShaderManager::Init() {
 
         Shaders.push_back( ShaderInfo::make<CShaderID::CS_TiledShading>( "CS_TiledShading.hlsl" ));
 
+        Shaders.push_back( ShaderInfo::make<CShaderID::CS_CullVobs>( "CS_CullVobs.hlsl" ));
 
-        Shaders.push_back( ShaderInfo::make<CShaderID::CS_CullVobs>( "CS_CullVobs.hlsl" ));}
+        Shaders.push_back( ShaderInfo::make<CShaderID::CS_BuildHiZ>( "CS_BuildHiZ.hlsl" ) );
+    }
 
     return XR_SUCCESS;
 }

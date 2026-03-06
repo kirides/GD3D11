@@ -113,5 +113,6 @@ enum class CShaderID : size_t {
     CS_LightCulling,
     CS_TiledShading,
     CS_CullVobs,
+    CS_BuildHiZ,
     COUNT
 };

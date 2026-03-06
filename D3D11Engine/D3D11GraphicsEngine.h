@@ -536,19 +536,16 @@ private:
     std::vector<D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS> m_MergedArgsReset; // CPU-side template for reset
     UINT m_TotalMaxInstances = 0;
 
-    /** Streaming resources manager (tiled resources) — opt-in, coexists with monolithic atlas */
-    std::unique_ptr<D3D11StreamingResourcesManager> m_StreamingResources;
+    /** Hi-Z occlusion culling resources */
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> m_HiZTexture;       // Full mip-chain, SRV-only
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_HiZSRV;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> m_HiZScratch;       // Single-mip scratch for CS UAV writes
+    Microsoft::WRL::ComPtr<ID3D11UnorderedAccessView> m_HiZScratchUAV;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_HiZScratchSRV;
+    UINT m_HiZMipCount = 0;
 
-    /** GPU feedback for streaming: source-indexed RWTexture2D<uint> tracking which textures need loading */
-    Microsoft::WRL::ComPtr<ID3D11Texture2D> m_FeedbackTexture;
-    Microsoft::WRL::ComPtr<ID3D11UnorderedAccessView> m_FeedbackUAV;
-    Microsoft::WRL::ComPtr<ID3D11Texture2D> m_FeedbackStaging[3]; // ring buffer for async readback
-    UINT m_FeedbackStagingHead = 0;
-    UINT m_FeedbackFrameNumber = 0;
-    std::unordered_set<UINT> m_RequestedSources; // result of last readback
-
-    /** Read back the feedback texture from 2 frames ago and populate m_RequestedSources */
-    void ReadBackFeedback();
-    /** Create feedback buffer infrastructure (called after atlas creation) */
-    void CreateFeedbackBuffers();
+    /** Create Hi-Z pyramid resources (called after depth buffer creation) */
+    void CreateHiZResources();
+    /** Build the Hi-Z mip chain from the current depth buffer */
+    void BuildHiZPyramid();
 };

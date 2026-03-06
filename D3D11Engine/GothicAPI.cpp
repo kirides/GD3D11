@@ -4132,7 +4132,7 @@ std::vector<VobInfo*>::iterator GothicAPI::MoveVobFromBspToDynamic( VobInfo* vob
 
 static void CVVH_AddNotDrawnVobToList(
         std::vector<VobInfo*>& source,
-        float dist,
+        float distSq,
         const RndCullContext& ctx,
         DirectX::ContainmentType bspContainment,
         BspTreeVobVisitor* visitor
@@ -4140,7 +4140,6 @@ static void CVVH_AddNotDrawnVobToList(
     const auto camPos = XMLoadFloat3( &ctx.cameraPosition );
     auto cullingEnabled = Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.Culling.CullVobs
         && ctx.frustum.SupportsCulling();
-    auto distSq = dist * dist;
 
     for ( auto const& it : source ) {
         if ( it->VisibleInRenderPass ) continue;
@@ -4167,14 +4166,14 @@ static void CVVH_AddNotDrawnVobToList(
 
 static void CVVH_AddNotDrawnVobToList(
     std::vector<SkeletalVobInfo*>& source,
-    float dist, const RndCullContext& ctx,
+    float distSq, const RndCullContext& ctx,
     DirectX::ContainmentType bspContainment,
     BspTreeVobVisitor* visitor) {
     const auto camPos = XMLoadFloat3( &ctx.cameraPosition );
 
     auto cullingEnabled = Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.Culling.CullVobs
         && ctx.frustum.SupportsCulling();
-    auto vDistSq = XMVectorReplicate( dist * dist );
+    auto vDistSq = XMVectorReplicate( distSq );
 
     for ( auto const& it : source ) {
         if ( it->VisibleInRenderPass ) continue;
@@ -5617,10 +5616,13 @@ static void CollectVisibleVobsHelper( BspInfo* base,
     float yMaxWorld,
     EBspTreeCollectFlags collectFlags = EBspTreeCollectFlags::COLLECT_ALL_NO_MUTATE
 ) {
-    const float vobIndoorDist = ctx.drawDistances.IndoorVobs;
-    const float vobOutdoorDist = ctx.drawDistances.OutdoorVobs;
-    const float vobOutdoorSmallDist = ctx.drawDistances.OutdoorVobsSmall;
+    const float vobIndoorDistSq = ctx.drawDistances.IndoorVobs * ctx.drawDistances.IndoorVobs;
+    const float vobOutdoorDistSq = ctx.drawDistances.OutdoorVobs * ctx.drawDistances.OutdoorVobs;
+    const float vobOutdoorSmallDistSq = ctx.drawDistances.OutdoorVobsSmall * ctx.drawDistances.OutdoorVobsSmall;
+
     const float visualFXDrawRadius = ctx.drawDistances.VisualFX;
+    const float visualFXDrawRadiusSq = ctx.drawDistances.VisualFX * ctx.drawDistances.VisualFX;
+
     const XMFLOAT3 camPos = ctx.cameraPosition;
     const FXMVECTOR cameraPosition = XMLoadFloat3( &camPos );
     int clipFlags = EGothicCullFlags::CullSidesNear;
@@ -5643,11 +5645,11 @@ static void CollectVisibleVobsHelper( BspInfo* base,
         nodeYMax = std::max( nodeYMax, base->OriginalNode->BBox3D.Max.y );
         nodeBox.Max.y = nodeYMax;
 
-        const float dist = checkDist
-            ? Toolbox::ComputePointAABBDistance( camPos, base->OriginalNode->BBox3D.Min, base->OriginalNode->BBox3D.Max )
+        const float distSq = checkDist
+            ? Toolbox::ComputePointAABBDistanceSq( camPos, base->OriginalNode->BBox3D.Min, base->OriginalNode->BBox3D.Max )
             : 0;
         ContainmentType clipResult = inheritedContainment;
-        if ( dist < vobOutdoorDist ) {
+        if ( distSq < vobOutdoorDistSq ) {
             if ( !RendererState.RendererSettings.EnableOcclusionCulling ) {
                 if ( clipResult != ContainmentType::CONTAINS ) {
                     clipResult = ctx.frustum.Contains( Frustum::BBoxFromzTBBox3D( nodeBox ) );
@@ -5686,34 +5688,32 @@ static void CollectVisibleVobsHelper( BspInfo* base,
             std::vector<VobInfo*>& listC = base->Vobs;
             std::vector<SkeletalVobInfo*>& listD = base->Mobs;
 
-            const float dist = checkDist
-                ? Toolbox::ComputePointAABBDistance( camPos, base->OriginalNode->BBox3D.Min, base->OriginalNode->BBox3D.Max )
+            const float distSq = checkDist
+                ? Toolbox::ComputePointAABBDistanceSq( camPos, base->OriginalNode->BBox3D.Min, base->OriginalNode->BBox3D.Max )
                 : 0;
 
             if ( collectFlags & COLLECT_VOBS
                 && RendererState.RendererSettings.DrawVOBs ) {
-                if ( collectFlags & COLLECT_INDOOR_VOBS && dist < vobIndoorDist ) {
-                    CVVH_AddNotDrawnVobToList( listA, vobIndoorDist, ctx, clipResult, visitor );
+                if ( collectFlags & COLLECT_INDOOR_VOBS && distSq < vobIndoorDistSq ) {
+                    CVVH_AddNotDrawnVobToList( listA, vobIndoorDistSq, ctx, clipResult, visitor );
                 }
 
-                if ( dist < vobOutdoorSmallDist ) {
-                    CVVH_AddNotDrawnVobToList( listB, vobOutdoorSmallDist, ctx, clipResult, visitor );
+                if ( distSq < vobOutdoorSmallDistSq ) {
+                    CVVH_AddNotDrawnVobToList( listB, vobOutdoorSmallDistSq, ctx, clipResult, visitor );
                 }
 
-                if ( dist < vobOutdoorDist ) {
-                    CVVH_AddNotDrawnVobToList( listC, vobOutdoorDist, ctx, clipResult, visitor );
+                if ( distSq < vobOutdoorDistSq ) {
+                    CVVH_AddNotDrawnVobToList( listC, vobOutdoorDistSq, ctx, clipResult, visitor );
                 }
             }
 
             if ( collectFlags & COLLECT_MOBS
-                && RendererState.RendererSettings.DrawMobs && dist < vobOutdoorSmallDist ) {
-                CVVH_AddNotDrawnVobToList( listD, vobOutdoorDist, ctx, clipResult, visitor);
+                && RendererState.RendererSettings.DrawMobs && distSq < vobOutdoorSmallDistSq ) {
+                CVVH_AddNotDrawnVobToList( listD, vobOutdoorDistSq, ctx, clipResult, visitor);
             }
 
             if ( collectFlags & COLLECT_LIGHTS
-                    && RendererState.RendererSettings.EnableDynamicLighting && dist < visualFXDrawRadius ) {
-                
-                bool markSeen = (collectFlags & COLLECT_MUTATE) != 0;
+                    && RendererState.RendererSettings.EnableDynamicLighting && distSq < visualFXDrawRadiusSq ) {
                 // Add dynamic lights
                 for ( int i = 0; i < leaf->LightVobList.NumInArray; i++ ) {
                     zCVobLight* vob = leaf->LightVobList.Array[i];
@@ -5815,7 +5815,7 @@ struct BspTraversalNode {
     DirectX::ContainmentType inheritedContainment;
 };
 
-static void CollectVisibleVobsHelper2( BspInfo* base,
+static void CollectVisibleVobsHelperNonRecursive( BspInfo* base,
     zTBBox3D boxCell,
     const RndCullContext& ctx,
     BspTreeVobVisitor* visitor,
@@ -5823,10 +5823,12 @@ static void CollectVisibleVobsHelper2( BspInfo* base,
     float yMaxWorld,
     EBspTreeCollectFlags collectFlags = EBspTreeCollectFlags::COLLECT_ALL_NO_MUTATE
 ) {
-    const float vobIndoorDist = ctx.drawDistances.IndoorVobs;
-    const float vobOutdoorDist = ctx.drawDistances.OutdoorVobs;
-    const float vobOutdoorSmallDist = ctx.drawDistances.OutdoorVobsSmall;
+    const float vobIndoorDistSq = ctx.drawDistances.IndoorVobs * ctx.drawDistances.IndoorVobs;
+    const float vobOutdoorDistSq = ctx.drawDistances.OutdoorVobs * ctx.drawDistances.OutdoorVobs;
+    const float vobOutdoorSmallDistSq = ctx.drawDistances.OutdoorVobsSmall * ctx.drawDistances.OutdoorVobsSmall;
+
     const float visualFXDrawRadius = ctx.drawDistances.VisualFX;
+    const float visualFXDrawRadiusSq = ctx.drawDistances.VisualFX * ctx.drawDistances.VisualFX;
     const XMFLOAT3 camPos = ctx.cameraPosition;
 
     const bool checkDist = (collectFlags & COLLECT_DISABLE_CHECK_DIST) == 0;
@@ -5860,11 +5862,11 @@ static void CollectVisibleVobsHelper2( BspInfo* base,
             nodeYMax = std::max( nodeYMax, currBase->OriginalNode->BBox3D.Max.y );
             nodeBox.Max.y = nodeYMax;
 
-            const float dist = checkDist
-                ? Toolbox::ComputePointAABBDistance( camPos, currBase->OriginalNode->BBox3D.Min, currBase->OriginalNode->BBox3D.Max )
+            const float distSq = checkDist
+                ? Toolbox::ComputePointAABBDistanceSq( camPos, currBase->OriginalNode->BBox3D.Min, currBase->OriginalNode->BBox3D.Max )
                 : 0;
 
-            if ( dist < vobOutdoorDist ) {
+            if ( distSq < vobOutdoorDistSq ) {
                 if ( !RendererState.RendererSettings.EnableOcclusionCulling ) {
                     if ( clipResult != ContainmentType::CONTAINS ) {
                         clipResult = ctx.frustum.Contains( Frustum::BBoxFromzTBBox3D( nodeBox ) );
@@ -5888,22 +5890,22 @@ static void CollectVisibleVobsHelper2( BspInfo* base,
                 zCBspLeaf* leaf = static_cast<zCBspLeaf*>(currBase->OriginalNode);
 
                 if ( collectFlags & COLLECT_VOBS && RendererState.RendererSettings.DrawVOBs ) {
-                    if ( collectFlags & COLLECT_INDOOR_VOBS && dist < vobIndoorDist ) {
-                        CVVH_AddNotDrawnVobToList( currBase->IndoorVobs, vobIndoorDist, ctx, clipResult, visitor );
+                    if ( collectFlags & COLLECT_INDOOR_VOBS && distSq < vobIndoorDistSq ) {
+                        CVVH_AddNotDrawnVobToList( currBase->IndoorVobs, vobIndoorDistSq, ctx, clipResult, visitor );
                     }
-                    if ( dist < vobOutdoorSmallDist ) {
-                        CVVH_AddNotDrawnVobToList( currBase->SmallVobs, vobOutdoorSmallDist, ctx, clipResult, visitor );
+                    if ( distSq < vobOutdoorSmallDistSq ) {
+                        CVVH_AddNotDrawnVobToList( currBase->SmallVobs, vobOutdoorSmallDistSq, ctx, clipResult, visitor );
                     }
-                    if ( dist < vobOutdoorDist ) {
-                        CVVH_AddNotDrawnVobToList( currBase->Vobs, vobOutdoorDist, ctx, clipResult, visitor );
+                    if ( distSq < vobOutdoorDistSq ) {
+                        CVVH_AddNotDrawnVobToList( currBase->Vobs, vobOutdoorDistSq, ctx, clipResult, visitor );
                     }
                 }
 
-                if ( collectFlags & COLLECT_MOBS && RendererState.RendererSettings.DrawMobs && dist < vobOutdoorSmallDist ) {
-                    CVVH_AddNotDrawnVobToList( currBase->Mobs, vobOutdoorDist, ctx, clipResult, visitor );
+                if ( collectFlags & COLLECT_MOBS && RendererState.RendererSettings.DrawMobs && distSq < vobOutdoorSmallDistSq ) {
+                    CVVH_AddNotDrawnVobToList( currBase->Mobs, vobOutdoorDistSq, ctx, clipResult, visitor );
                 }
 
-                if ( collectFlags & COLLECT_LIGHTS && RendererState.RendererSettings.EnableDynamicLighting && dist < visualFXDrawRadius ) {
+                if ( collectFlags & COLLECT_LIGHTS && RendererState.RendererSettings.EnableDynamicLighting && distSq < visualFXDrawRadiusSq ) {
                     for ( int i = 0; i < leaf->LightVobList.NumInArray; i++ ) {
                         zCVobLight* vob = leaf->LightVobList.Array[i];
 
@@ -6005,7 +6007,7 @@ void GothicAPI::CollectVisibleVobs( const RndCullContext& ctx, EBspTreeCollectFl
     static thread_local BspTreeVobVisitor bspVobVisitor{};
 
     // Recursively go through the tree and draw all nodes
-    CollectVisibleVobsHelper2( root, root->OriginalNode->BBox3D,
+    CollectVisibleVobsHelperNonRecursive( root, root->OriginalNode->BBox3D,
         ctx,
         &bspVobVisitor,
         ContainmentType::INTERSECTS,
