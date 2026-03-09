@@ -756,6 +756,7 @@ struct GothicRendererSettings {
         DebugSettings.Culling.CullBspSections = true;
         DebugSettings.Culling.CullVobs = true;
         DebugSettings.ShadowCascades.LazyCascadeUpdate = true;
+        DebugSettings.ShadowCascades.ExtendBack = 600;
     }
 
     void SetupOldWorldSpecificValues() {

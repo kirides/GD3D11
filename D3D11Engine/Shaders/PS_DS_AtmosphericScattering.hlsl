@@ -28,16 +28,15 @@ cbuffer DS_ScreenQuadConstantBuffer : register(b0)
     float SQ_ShadowmapSize;
 	
     float4 SQ_LightColor;
-    matrix SQ_ShadowView[MAX_CSM_CASCADES];
-    matrix SQ_ShadowProj[MAX_CSM_CASCADES];
-	
-    matrix SQ_RainView;
-    matrix SQ_RainProj;
+    matrix SQ_ShadowViewProj[MAX_CSM_CASCADES];
 	
     float SQ_ShadowStrength;
     float SQ_ShadowAOStrength;
     float SQ_WorldAOStrength;
     float SQ_ShadowSoftness;
+    
+    uint SQ_FrameIndex;
+    float3 SQ_Pad;
 };
 
 //--------------------------------------------------------------------------------------
@@ -125,12 +124,12 @@ static const float2 g_PoissonDisk8[8] = {
     float2( 0.0000f,  0.0000f)
 };
 
-// Generate per-pixel rotation for temporal stability with TAA
 float2x2 GetPoissonRotationMatrix(float2 screenPos)
 {
-    // Use interleaved gradient noise for temporally stable rotation
-    // This pattern works well with TAA as it provides good coverage over multiple frames
-    float angle = frac(52.9829189f * frac(dot(screenPos, float2(0.06711056f, 0.00583715f)))) * 6.283185307f;
+    float temporalOffset = (float)(SQ_FrameIndex % 8) * 0.6180339887f;
+    
+    float angle = frac(52.9829189f * frac(dot(screenPos, float2(0.06711056f, 0.00583715f)) + temporalOffset)) * 6.283185307f;
+
     float s, c;
     sincos(angle, s, c);
     return float2x2(c, -s, s, c);
@@ -138,7 +137,7 @@ float2x2 GetPoissonRotationMatrix(float2 screenPos)
 
 float IsInShadow(float3 wsPosition, Texture2DArray shadowmapArray, SamplerComparisonState samplerState)
 {
-    float4 vShadowSamplingPos = mul(float4(wsPosition, 1), mul(SQ_ShadowView[0], SQ_ShadowProj[0]));
+    float4 vShadowSamplingPos = mul(float4(wsPosition, 1), SQ_ShadowViewProj[0]);
     vShadowSamplingPos.xyz /= vShadowSamplingPos.www;
 	
     float2 projectedTexCoords = vShadowSamplingPos.xy * float2(0.5f, -0.5f) + float2(0.5f, 0.5f);
@@ -147,7 +146,7 @@ float IsInShadow(float3 wsPosition, Texture2DArray shadowmapArray, SamplerCompar
 
 float IsWet(float3 wsPosition, Texture2D shadowmap, SamplerComparisonState samplerState, matrix viewProj)
 {
-    float4 vShadowSamplingPos = mul(float4(wsPosition, 1), mul(SQ_RainView, SQ_RainProj));
+    float4 vShadowSamplingPos = mul(float4(wsPosition, 1), SQ_RainViewProj);
     vShadowSamplingPos.xyz /= vShadowSamplingPos.www;
 	
     float2 projectedTexCoords = vShadowSamplingPos.xy * float2(0.5f, -0.5f) + float2(0.5f, 0.5f);
@@ -161,7 +160,7 @@ float IsWet(float3 wsPosition, Texture2D shadowmap, SamplerComparisonState sampl
 //--------------------------------------------------------------------------------------
 float4 GetCascadeUVAndBounds(float3 wsPosition, int cascadeIndex)
 {
-    matrix viewProj = mul(SQ_ShadowView[cascadeIndex], SQ_ShadowProj[cascadeIndex]);
+    matrix viewProj = SQ_ShadowViewProj[cascadeIndex];
     float4 vShadowSamplingPos = mul(float4(wsPosition, 1), viewProj);
     vShadowSamplingPos.xyz /= vShadowSamplingPos.www;
 	
@@ -187,7 +186,7 @@ float4 GetCascadeUVAndBounds(float3 wsPosition, int cascadeIndex)
 //--------------------------------------------------------------------------------------
 float SampleCascadeShadowSoft(float3 wsPosition, int cascadeIndex, float vertLighting, float bias, float2 screenPos, float softness)
 {
-    matrix viewProj = mul(SQ_ShadowView[cascadeIndex], SQ_ShadowProj[cascadeIndex]);
+    matrix viewProj = SQ_ShadowViewProj[cascadeIndex];
     float4 vShadowSamplingPos = mul(float4(wsPosition, 1), viewProj);
     vShadowSamplingPos.xyz /= vShadowSamplingPos.www;
 	
@@ -426,7 +425,7 @@ void ApplyRainNormalDeformation(inout float3 vsNormal, float3 wsPosition, inout 
 void ApplySceneWettness(float3 wsPosition, float3 vsPosition, float3 vsDir, inout float3 vsNormal, in out float3 diffuse, in out float specIntensity, in out float specPower, out float specAdd)
 {
 	// Ask the rain-shadowmap if we can hit this pixel
-    float pixelWettnes = ComputeShadowValue(0.0f, wsPosition, TX_RainShadowmap, SS_Comp, vsPosition.z, 1.0f, mul(SQ_RainView, SQ_RainProj), 0.0001f, 2.5f) * AC_SceneWettness;
+    float pixelWettnes = ComputeShadowValue(0.0f, wsPosition, TX_RainShadowmap, SS_Comp, vsPosition.z, 1.0f, SQ_RainViewProj, 0.0001f, 2.5f) * AC_SceneWettness;
     pixelWettnes = pixelWettnes < 0.001f ? 0 : pixelWettnes;
     
     //IsWet(wsPosition, TX_RainShadowmap, SS_Comp) * AC_SceneWettness;

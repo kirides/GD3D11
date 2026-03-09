@@ -142,16 +142,14 @@ struct DS_ScreenQuadConstantBuffer {
     float4 SQ_LightColor;
     
     // CSM: Cascade 0 (f�r Kompatibilit�t mit bestehenden Shadern)
-    XMFLOAT4X4 SQ_ShadowView[MAX_CSM_CASCADES];
-    XMFLOAT4X4 SQ_ShadowProj[MAX_CSM_CASCADES];
-
-    XMFLOAT4X4 SQ_RainView;
-    XMFLOAT4X4 SQ_RainProj;
+    XMFLOAT4X4 SQ_ShadowViewProj[MAX_CSM_CASCADES];
 
     float SQ_ShadowStrength;
     float SQ_ShadowAOStrength;
     float SQ_WorldAOStrength;
     float SQ_ShadowSoftness;
+    uint32_t SQ_FrameIndex;
+    float3 SQ_Pad;
 };
 
 struct CloudConstantBuffer {
