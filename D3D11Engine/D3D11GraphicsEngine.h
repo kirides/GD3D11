@@ -4,6 +4,7 @@
 #include "GothicAPI.h"
 #include "D3D11ShadowMap.h"
 #include "D3D11ShaderManager.h"
+#include "D3D11PipelineStateObject.h"
 #include "D3D11TextureAtlasManager.h"
 #include "D3D11StructuredBuffer.h"
 #include "D3D11IndirectBuffer.h"
@@ -379,6 +380,9 @@ public:
     D3D11PfxRenderer* GetPfxRenderer() const { return PfxRenderer.get(); }
     D3D11Texture* GetDistortionTexture() const { return DistortionTexture.get(); }
 
+    /** Returns the pipeline state cache for optimal D3D11 state management */
+    D3D11PipelineStateCache& GetPipelineStateCache() { return m_PipelineStateCache; }
+
     RenderToTextureBuffer* GetVelocityBuffer() const { return VelocityBuffer.get(); }
 
     const XMFLOAT4X4& GetPrevViewProjMatrix() const { return m_PrevViewProjMatrix; }
@@ -405,6 +409,9 @@ protected:
     XRESULT DrawWorldMesh_Atlas();
 
     void CacheWorldStaticVobs();
+
+    /** Pipeline state cache for minimizing redundant D3D11 state transitions */
+    D3D11PipelineStateCache m_PipelineStateCache;
 
     std::unique_ptr<FpsLimiter> m_FrameLimiter;
     int m_LastFrameLimit;

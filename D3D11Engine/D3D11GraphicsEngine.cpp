@@ -787,6 +787,9 @@ XRESULT D3D11GraphicsEngine::Init() {
         D3D11VertexBuffer::EBindFlags::B_INDEXBUFFER,
         D3D11VertexBuffer::EUsageFlags::U_IMMUTABLE );
 
+    // Initialize pipeline state cache
+    m_PipelineStateCache.Init( Device.Get(), Context.Get() );
+
     // Create shadow map manager
     ShadowMaps = std::make_unique<D3D11ShadowMap>();
     int initialShadowSize = Engine::GAPI->GetRendererState().RendererSettings.ShadowMapSize;
