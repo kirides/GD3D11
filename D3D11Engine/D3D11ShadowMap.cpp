@@ -916,7 +916,7 @@ XRESULT D3D11ShadowMap::DrawRainShadowmap() {
         auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
         auto _ = graphicsEngine->RecordGraphicsEvent( L"DrawRainShadowmap" );
 
-        graphicsEngine->Effects->DrawRainShadowmap();
+        return graphicsEngine->Effects->DrawRainShadowmap();
     }
     return XR_SUCCESS;
 }
@@ -925,8 +925,10 @@ XRESULT D3D11ShadowMap::DrawPointlightLights(
     std::vector<VobLightInfo*>& lights,
     RenderToTextureBuffer& color,
     RenderToTextureBuffer& normals,
-    RenderToTextureBuffer& specular,
-    RenderToTextureBuffer& depthCopy
+    RenderToTextureBuffer& specular,    
+    RenderToTextureBuffer& depthCopy,
+    ID3D11RenderTargetView* outputRTV,
+    ID3D11DepthStencilView* dsv
     ) {
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
 
@@ -942,7 +944,9 @@ XRESULT D3D11ShadowMap::DrawLighting(
     RenderToTextureBuffer& color,
     RenderToTextureBuffer& normals,
     RenderToTextureBuffer& specular,    
-    RenderToTextureBuffer& depthCopy) {
+    RenderToTextureBuffer& depthCopy,
+    ID3D11RenderTargetView* outputRTV,
+    ID3D11DepthStencilView* dsv) {
     auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
 
@@ -959,7 +963,7 @@ XRESULT D3D11ShadowMap::DrawLighting(
 
     Engine::GAPI->SetFarPlane(static_cast<float>(settings.SectionDrawRadius) * WORLD_SECTION_SIZE );
 
-    DrawPointlightLights(lights, color, normals, specular, depthCopy);
+    DrawPointlightLights(lights, color, normals, specular, depthCopy, outputRTV, dsv);
 
     m_context->OMSetRenderTargets( 1, graphicsEngine->GetHDRBackBuffer().GetRenderTargetView().GetAddressOf(),
         nullptr );
@@ -974,10 +978,9 @@ XRESULT D3D11ShadowMap::DrawLighting(
     srvs[0] = specular.GetShaderResView().Get();
     m_context->PSSetShaderResources( 7, 1, srvs );
 
-    DrawWorldLights();
+    DrawWorldLights( outputRTV );
 
-    m_context->OMSetRenderTargets( 1, graphicsEngine->GetHDRBackBuffer().GetRenderTargetView().GetAddressOf(),
-        graphicsEngine->GetDepthBuffer()->GetDepthStencilView().Get() );
+    m_context->OMSetRenderTargets( 1, &outputRTV, dsv );
 
     return XR_SUCCESS;
 }
@@ -1090,7 +1093,7 @@ void D3D11ShadowMap::RenderShadowmaps( const RenderShadowmapsParams& params ) {
         WORLD_SECTION_SIZE );
 }
 
-XRESULT D3D11ShadowMap::DrawWorldLights()
+XRESULT D3D11ShadowMap::DrawWorldLights(ID3D11RenderTargetView* outputRTV)
 {
     auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     auto _ = graphicsEngine->RecordGraphicsEvent( L"DrawWorldLights" );

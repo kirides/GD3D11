@@ -137,14 +137,18 @@ public:
     XRESULT DrawWorldShadow();
     XRESULT DrawRainShadowmap();
     XRESULT DrawPointlightLights(std::vector<VobLightInfo*>& lights, RenderToTextureBuffer& color, RenderToTextureBuffer& normals, RenderToTextureBuffer
-                                 & specular, RenderToTextureBuffer& depthCopy);
+                                 & specular, RenderToTextureBuffer& depthCopy,
+    ID3D11RenderTargetView* outputRTV,
+    ID3D11DepthStencilView* dsv );
 
     /** Renders the shadowmaps for the sun using parameter struct */
     void RenderShadowmaps( const RenderShadowmapsParams& params );
 
-    XRESULT DrawWorldLights();
+    XRESULT DrawWorldLights( ID3D11RenderTargetView* outputRTV );
     XRESULT DrawLighting(std::vector<VobLightInfo*>& lights, RenderToTextureBuffer& color, RenderToTextureBuffer& normals, RenderToTextureBuffer
-                         & specular, RenderToTextureBuffer& depthCopy);
+                         & specular, RenderToTextureBuffer& depthCopy,
+    ID3D11RenderTargetView* outputRTV,
+    ID3D11DepthStencilView* dsv );
 
     void XM_CALLCONV RenderShadowCube( DirectX::FXMVECTOR position,
         float range,

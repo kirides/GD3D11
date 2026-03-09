@@ -3131,10 +3131,11 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         builder.Read( specularResource );
         builder.Write( backBufferHandle );
 
-        pass.m_executeCallback = [this, colorResource, normalsResource, specularResource](const RenderGraph& graph)-> void {
+        pass.m_executeCallback = [this, colorResource, normalsResource, specularResource, backBufferHandle](const RenderGraph& graph)-> void {
             auto colorTexture = graph.GetPhysicalTexture(colorResource);
             auto normalsTexture = graph.GetPhysicalTexture(normalsResource);
             auto specularTexture = graph.GetPhysicalTexture(specularResource);
+            auto backbuffer = graph.GetPhysicalTexture( backBufferHandle );
 
             if ( Engine::GAPI->GetRendererState().RendererSettings.EnableShadows ) {
                 // Cascades only get rendered if this is enabled. 
@@ -3147,7 +3148,9 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                 *colorTexture, 
                 *normalsTexture, 
                 *specularTexture, 
-                *GetDepthBufferCopy());
+                *GetDepthBufferCopy(),
+                backbuffer->GetRenderTargetView().Get(),
+                GetDepthBuffer()->GetDepthStencilView().Get() );
             if ( !Engine::GAPI->GetRendererState().RendererSettings.FixViewFrustum ) {
                 m_FrameLights.clear();
             }
