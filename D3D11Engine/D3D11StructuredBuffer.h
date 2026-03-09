@@ -28,7 +28,8 @@ public:
         } else if ( gpuWrite ) {
             desc.Usage = D3D11_USAGE_DEFAULT;
             desc.CPUAccessFlags = 0;
-            desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+            desc.BindFlags = D3D11_BIND_SHADER_RESOURCE 
+                | (device->GetFeatureLevel() >= D3D_FEATURE_LEVEL_11_0 ? D3D11_BIND_UNORDERED_ACCESS : 0);
         } else {
             desc.Usage = D3D11_USAGE_DEFAULT;
             desc.CPUAccessFlags = 0;
