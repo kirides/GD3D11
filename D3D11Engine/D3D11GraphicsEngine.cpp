@@ -568,7 +568,9 @@ XRESULT D3D11GraphicsEngine::Init() {
         DrawMultiIndexedInstancedIndirect = Stub_DrawMultiIndexedInstancedIndirect;
     }
 
-    Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseMDI = DrawMultiIndexedInstancedIndirect != Stub_DrawMultiIndexedInstancedIndirect;
+    Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseMDI = 
+        !FeatureLevel10Compatibility
+        && DrawMultiIndexedInstancedIndirect != Stub_DrawMultiIndexedInstancedIndirect;
 
     if ( !BeginUAVOverlap || !EndUAVOverlap ) {
         BeginUAVOverlap = Stub_BeginUAVOverlap;
@@ -973,7 +975,8 @@ XRESULT D3D11GraphicsEngine::RecreateBuffers() {
     OnResetBackBuffer();
 
     // actual native-resolution backbuffer for UI and copy operations !!
-    Backbuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), Resolution.x, Resolution.y, DXGI_FORMAT_ENGINE_SWAPCHAIN, nullptr, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, 1, 1, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS );
+    Backbuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), Resolution.x, Resolution.y, DXGI_FORMAT_ENGINE_SWAPCHAIN, nullptr, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, 1, 1,
+    D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE | (Device->GetFeatureLevel() >= D3D_FEATURE_LEVEL_11_0 ? D3D11_BIND_UNORDERED_ACCESS : 0) );
 
     SetDebugName( Backbuffer->GetTexture().Get(), "Backbuffer->TEX" );
     SetDebugName( Backbuffer->GetShaderResView().Get(), "Backbuffer->SRV" );
