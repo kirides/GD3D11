@@ -387,6 +387,9 @@
     <ClInclude Include="D3D11PipelineStateObject.h">
       <Filter>Engine\D3D11</Filter>
     </ClInclude>
+    <ClInclude Include="D3D11CommandList.h">
+      <Filter>Engine\D3D11</Filter>
+    </ClInclude>
     <ClInclude Include="D3D11PFX_GodRays.h">
       <Filter>Engine\D3D11\PFX\Effects</Filter>
     </ClInclude>
@@ -886,6 +889,9 @@
       <Filter>Engine\D3D11</Filter>
     </ClCompile>
     <ClCompile Include="D3D11PipelineStateObject.cpp">
+      <Filter>Engine\D3D11</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D11CommandList.cpp">
       <Filter>Engine\D3D11</Filter>
     </ClCompile>
     <ClCompile Include="D3D11PShader.cpp">
