@@ -1044,7 +1044,6 @@ void D3D11ShadowMap::RenderShadowmaps( const RenderShadowmapsParams& params ) {
         m_context->OMSetRenderTargets( 1, params.DebugRTV.GetAddressOf(), dsvOverwrite.Get() );
         Engine::GAPI->GetRendererState().BlendState.ColorWritesEnabled = true;
     }
-    Engine::GAPI->GetRendererState().BlendState.SetDirty();
 
     // Dont render shadows from the sun when it isn't on the sky
     if ( isNotWorldShadowMap ||
@@ -1100,13 +1099,10 @@ XRESULT D3D11ShadowMap::DrawWorldLights(ID3D11RenderTargetView* outputRTV)
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
 
     Engine::GAPI->GetRendererState().BlendState.SetAdditiveBlending();
-    Engine::GAPI->GetRendererState().BlendState.SetDirty();
 
     Engine::GAPI->GetRendererState().DepthState.DepthBufferCompareFunc = GothicDepthBufferStateInfo::CF_COMPARISON_ALWAYS;
-    Engine::GAPI->GetRendererState().DepthState.SetDirty();
 
     Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_NONE;
-    Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
 
     // Modify light when raining
     float rain = Engine::GAPI->GetRainFXWeight();
@@ -1296,12 +1292,10 @@ void XM_CALLCONV D3D11ShadowMap::RenderShadowCube(
 
         Engine::GAPI->GetRendererState().BlendState.ColorWritesEnabled =
             true;  // Should be false, but needs to be true for SV_Depth to work
-        Engine::GAPI->GetRendererState().BlendState.SetDirty();
     } else {
         m_context->OMSetRenderTargets( 1, debugRTV.GetAddressOf(), face.Get() );
 
         Engine::GAPI->GetRendererState().BlendState.ColorWritesEnabled = true;
-        Engine::GAPI->GetRendererState().BlendState.SetDirty();
     }
 
     // Always render shadowcube when dynamic shadows are enabled

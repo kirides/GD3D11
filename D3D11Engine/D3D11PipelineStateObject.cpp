@@ -39,9 +39,9 @@ D3D11PipelineStateObject::D3D11PipelineStateObject( const Desc& desc )
     memcpy( m_RTVFormats, desc.RTVFormats, sizeof( m_RTVFormats ) );
 
     // Ensure the Gothic state hashes are up to date
-    m_BlendState.SetDirty();
-    m_RasterizerState.SetDirty();
-    m_DepthStencilState.SetDirty();
+    m_BlendState.ComputeHash();
+    m_RasterizerState.ComputeHash();
+    m_DepthStencilState.ComputeHash();
 
     ComputeHash();
 }
@@ -63,9 +63,12 @@ void D3D11PipelineStateObject::ComputeHash() {
     HashPointer( m_Hash, m_GS.get() );
     HashPointer( m_Hash, m_HDS.get() );
 
-    // Fixed-function state hashes (already computed by SetDirty)
+    // Fixed-function state hashes
+    m_BlendState.ComputeHash();
     Toolbox::hash_combine( m_Hash, static_cast<DWORD>( m_BlendState.Hash ) );
+    m_RasterizerState.ComputeHash();
     Toolbox::hash_combine( m_Hash, static_cast<DWORD>( m_RasterizerState.Hash ) );
+    m_DepthStencilState.ComputeHash();
     Toolbox::hash_combine( m_Hash, static_cast<DWORD>( m_DepthStencilState.Hash ) );
 
     // Sample mask

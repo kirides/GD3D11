@@ -857,7 +857,6 @@ void EditorLinePrimitive::RenderVertexBuffer( const Microsoft::WRL::ComPtr<ID3D1
 
     engine->SetDefaultStates();
     Engine::GAPI->GetRendererState().BlendState.SetAlphaBlending();
-    Engine::GAPI->GetRendererState().BlendState.SetDirty();
     engine->UpdateRenderStates();
 
     Shader->Apply();

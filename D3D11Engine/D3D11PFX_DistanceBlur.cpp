@@ -28,7 +28,6 @@ XRESULT D3D11PFX_DistanceBlur::Render( ID3D11ShaderResourceView* diffuse ) {
 	auto ps = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_DistanceBlur );
 
 	Engine::GAPI->GetRendererState().BlendState.SetDefault();
-	Engine::GAPI->GetRendererState().BlendState.SetDirty();
 
 	// Copy scene
     auto tempBuffer = FxRenderer->GetTempBuffer();

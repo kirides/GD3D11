@@ -1267,7 +1267,6 @@ void GothicAPI::DrawWorldMeshNaive() {
 
         // Set up frustum for the camera
         RendererState.RasterizerState.SetDefault();
-        RendererState.RasterizerState.SetDirty();
         zCCamera::GetCamera()->Activate();
 
         auto drawRadius = RendererState.RendererSettings.SkeletalMeshDrawRadius;
@@ -2879,11 +2878,8 @@ void GothicAPI::DrawTransparencyVobs() {
     if ( !TransparencyVobs.empty() ) {
         // Setup alpha blending
         RendererState.RasterizerState.SetDefault();
-        RendererState.RasterizerState.SetDirty();
         RendererState.BlendState.SetAlphaBlending();
-        RendererState.BlendState.SetDirty();
         RendererState.DepthState.SetDefault();
-        RendererState.DepthState.SetDirty();
     }
 
     auto psBufGAI = g->GetShaderManager().GetPShader( PShaderID::PS_Transparency )->GetBuffer( "GhostAlphaInfo" );
@@ -2968,11 +2964,8 @@ void GothicAPI::DrawSkeletalVN() {
         SkeletalVobInfo* vi = VNSkeletalVobs.back();
 
         RendererState.RasterizerState.SetDefault();
-        RendererState.RasterizerState.SetDirty();
         RendererState.BlendState.SetAlphaBlending();
-        RendererState.BlendState.SetDirty();
         RendererState.DepthState.SetDefault();
-        RendererState.DepthState.SetDirty();
 
         D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
 

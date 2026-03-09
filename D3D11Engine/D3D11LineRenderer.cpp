@@ -65,7 +65,6 @@ XRESULT D3D11LineRenderer::Flush() {
 
     engine->SetDefaultStates();
     Engine::GAPI->GetRendererState().BlendState.SetAlphaBlending();
-    Engine::GAPI->GetRendererState().BlendState.SetDirty();
 
     engine->SetupVS_ExMeshDrawCall();
     engine->SetupVS_ExConstantBuffer();
@@ -112,7 +111,6 @@ XRESULT D3D11LineRenderer::FlushScreenSpace() {
 
     engine->SetDefaultStates();
     Engine::GAPI->GetRendererState().BlendState.SetAlphaBlending();
-    Engine::GAPI->GetRendererState().BlendState.SetDirty();
 
     engine->SetupVS_ExMeshDrawCall();
     engine->GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_LINELIST );

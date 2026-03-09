@@ -102,7 +102,6 @@ XRESULT D3D11PFX_GodRays::Render(
 
     // Upscale and blend
     Engine::GAPI->GetRendererState().BlendState.SetAdditiveBlending();
-    Engine::GAPI->GetRendererState().BlendState.SetDirty();
 
     FxRenderer->CopyTextureToRTV( tempBuffer2->GetShaderResView(), oldRTV, engine->GetResolution() );
 

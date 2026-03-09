@@ -215,6 +215,11 @@ public:
     /** Sets up the default rendering state */
     void SetDefaultStates( bool force = false );
 
+    /** Invalidates the cached FF state hashes, forcing the next UpdateRenderStates()
+     *  to re-apply all states to D3D11. Call after any code that sets D3D11 states
+     *  directly (e.g. ImGui, external libraries). */
+    void InvalidateStateCache();
+
     /** Returns the current resolution (Maybe supersampled)*/
     INT2 GetResolution() override { return m_scaledResolution; };
 
