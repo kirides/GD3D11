@@ -96,9 +96,12 @@ private:
             const DirectX::Image* src = finalChain->GetImage( chainIdx, 0, 0 );
             if ( !src || !src->pixels ) continue;
 
+            // BC formats require texture dimensions to be multiples of the block size (4).
+            // Small mips can be sub-block, so align up to avoid CREATETEXTURE2D_INVALIDDIMENSIONS.
+            UINT bsz = GetBlockSize( atlasFormat );
             D3D11_TEXTURE2D_DESC tmpDesc = {};
-            tmpDesc.Width            = (UINT)src->width;
-            tmpDesc.Height           = (UINT)src->height;
+            tmpDesc.Width            = Align( (UINT)src->width, bsz );
+            tmpDesc.Height           = Align( (UINT)src->height, bsz );
             tmpDesc.MipLevels        = 1;
             tmpDesc.ArraySize        = 1;
             tmpDesc.Format           = src->format;
@@ -115,7 +118,7 @@ private:
                 UINT mipX   = item.x >> mip;
                 UINT mipY   = item.y >> mip;
                 UINT dstSub = D3D11CalcSubresource( mip, item.slice, mipLevels );
-                D3D11_BOX box = { 0, 0, 0, (UINT)src->width, (UINT)src->height, 1 };
+                D3D11_BOX box = { 0, 0, 0, tmpDesc.Width, tmpDesc.Height, 1 };
                 context->CopySubresourceRegion( atlasTextureArray, dstSub, mipX, mipY, 0, tmpTex, 0, &box );
                 tmpTex->Release();
             }
