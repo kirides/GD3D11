@@ -83,10 +83,13 @@ XRESULT D3D11IndirectBuffer::UpdateBuffer( void* data, UINT size ) {
     if ( SizeInBytes < size ) {
         size = SizeInBytes;
     }
+    if ( !data ) {
+        return XR_SUCCESS;
+    } // Assume null-copy?
 
     if ( XR_SUCCESS == Map( EMapFlags::M_WRITE_DISCARD, &mappedData, &bsize ) ) {
         if ( size ) {
-            bsize = size;
+            bsize = std::min( bsize, size );
         }
         // Copy data
         memcpy( mappedData, data, bsize );

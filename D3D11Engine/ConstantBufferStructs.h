@@ -73,6 +73,22 @@ struct SubmeshGPUData {
     UINT globalSourceIndex;     // global source index into feedback texture
 };
 
+// Per-submesh data for the world mesh atlas indirect draw path.
+// Read by VS_ExWorldAtlas via StructuredBuffer<WorldMeshSubmeshGPUData>.
+struct WorldMeshSubmeshGPUData {
+    // Diffuse atlas
+    int   diffuseSlice;
+    float dUStart, dVStart, dUEnd, dVEnd;
+    // Normal atlas
+    int   normalSlice;
+    float nUStart, nVStart, nUEnd, nVEnd;
+    // FX atlas
+    int   fxSlice;
+    float fUStart, fVStart, fUEnd, fVEnd;
+    // Flags: 1 = HAS_NORMAL, 2 = HAS_FX, 4 = ALPHA_TEST
+    UINT  flags;
+};
+
 // Constant buffer for the GPU cull compute shader
 struct CullConstants {
     XMFLOAT4 frustumPlanes[6];

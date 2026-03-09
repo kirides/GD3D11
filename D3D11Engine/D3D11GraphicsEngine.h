@@ -397,6 +397,13 @@ protected:
 
     void BuildSceneTextureAtlasses();
 
+    /** World mesh atlas: collect textures, build atlases, merge geometry */
+    void BuildWorldMeshTextureAtlasses();
+    void BuildStaticWorldMeshBuffers();
+
+    /** Draw world mesh using atlas indirect path */
+    XRESULT DrawWorldMesh_Atlas();
+
     void CacheWorldStaticVobs();
 
     std::unique_ptr<FpsLimiter> m_FrameLimiter;
@@ -535,6 +542,20 @@ private:
     std::unique_ptr<D3D11ConstantBuffer> m_CullConstantBuffer;
     std::vector<D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS> m_MergedArgsReset; // CPU-side template for reset
     UINT m_TotalMaxInstances = 0;
+
+    /** World mesh atlas indirect draw path */
+    std::unordered_map<zCTexture*, TextureAtlasLookup> m_WorldMeshDiffuseAtlasLookup;
+    std::unordered_map<D3D11Texture*, TextureAtlasLookup> m_WorldMeshNormalAtlasLookup;
+    std::unordered_map<D3D11Texture*, TextureAtlasLookup> m_WorldMeshFxAtlasLookup;
+    std::array<TextureManager::AtlasResult, TEXTURE_ATLAS_MAX> m_WorldMeshDiffuseAtlasses{};
+    std::array<TextureManager::AtlasResult, TEXTURE_ATLAS_MAX> m_WorldMeshNormalAtlasses{};
+    std::array<TextureManager::AtlasResult, TEXTURE_ATLAS_MAX> m_WorldMeshFxAtlasses{};
+    std::unique_ptr<D3D11VertexBuffer> m_WorldMeshGlobalVertexBuffer;
+    std::unique_ptr<D3D11VertexBuffer> m_WorldMeshGlobalIndexBuffer;
+    std::unique_ptr<D3D11VertexBuffer> m_WorldMeshGlobalInstanceIdBuffer;
+    std::unique_ptr<D3D11StructuredBuffer<WorldMeshSubmeshGPUData>> m_WorldMeshSubmeshBuffer;
+    std::vector<AtlasDrawGroup> m_WorldMeshAtlasDrawGroups;
+    std::unordered_set<MeshInfo*> m_WorldMeshAtlasedSubmeshes;  // submeshes in the atlas (for legacy filter)
 
     /** Hi-Z occlusion culling resources */
     Microsoft::WRL::ComPtr<ID3D11Texture2D> m_HiZTexture;       // Full mip-chain, SRV-only

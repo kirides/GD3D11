@@ -30,6 +30,7 @@ enum class VShaderID : size_t {
     VS_ExCube,
     VS_ExNodeCube,
     VS_ExSkeletalCube,
+    VS_ExWorldAtlas,
     COUNT
 };
 
@@ -41,6 +42,7 @@ enum class PShaderID : size_t {
     PS_Rain_Snow,
     PS_Transparency,
     PS_World,
+    PS_WorldAtlas,
     PS_Water,
     PS_ParticleDistortion,
     PS_PFX_ApplyParticleDistortion,

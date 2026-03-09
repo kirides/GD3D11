@@ -3926,19 +3926,22 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh_Indirect( bool noTextures ) {
     if ( !Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh )
         return XR_SUCCESS;
 
-    struct MDI_DrawArgs
-    {
-        unsigned int DrawCount;
-        unsigned int AlignedByteOffsetForArgs;
-        MaterialInfo* MeshMaterialInfo;
-    };
-
     // Setup default renderstates
     SetDefaultStates();
 
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
     Engine::GAPI->SetViewTransformXM( view );
     Engine::GAPI->ResetWorldTransform();
+
+    // Draw atlas path first (handles opaque + alpha-test submeshes that were atlased)
+    DrawWorldMesh_Atlas();
+
+    struct MDI_DrawArgs
+    {
+        unsigned int DrawCount;
+        unsigned int AlignedByteOffsetForArgs;
+        MaterialInfo* MeshMaterialInfo;
+    };
 
     SetActivePixelShader( PShaderID::PS_Diffuse );
     SetActiveVertexShader( VShaderID::VS_Ex );
@@ -3989,6 +3992,10 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh_Indirect( bool noTextures ) {
 
     for ( auto const& renderItem : renderList ) {
         for ( auto const& worldMesh : renderItem->WorldMeshes ) {
+            // Skip submeshes already drawn by the atlas path
+            if ( m_WorldMeshAtlasedSubmeshes.count( worldMesh.second ) )
+                continue;
+
             zCTexture* aniTex = worldMesh.first.Material->GetTexture();
             if ( !aniTex ) continue;
 
@@ -4199,6 +4206,8 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
     Engine::GAPI->SetViewTransformXM( view );
     Engine::GAPI->ResetWorldTransform();
 
+    DrawWorldMesh_Atlas();
+
     SetActivePixelShader( PShaderID::PS_Diffuse );
     SetActiveVertexShader( VShaderID::VS_Ex );
 
@@ -4244,6 +4253,10 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
 
     for ( auto const& renderItem : renderList ) {
         for ( auto const& worldMesh : renderItem->WorldMeshes ) {
+            // Skip submeshes already drawn by the atlas path
+            if ( m_WorldMeshAtlasedSubmeshes.count( worldMesh.second ) )
+                continue;
+
             if ( worldMesh.first.Material ) {
                 zCTexture* aniTex = worldMesh.first.Material->GetTexture();
                 if ( !aniTex ) continue;
@@ -5120,10 +5133,6 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect(const std::vector<Wo
     float alphaRef = Engine::GAPI->GetRendererState().GraphicsState.FF_AlphaRef;
     bool linearDepth = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches &
                 GSWITCH_LINEAR_DEPTH) != 0;
-    
-    auto drawMultiIndexedInstancedIndirect = Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseMDI
-            ? DrawMultiIndexedInstancedIndirect
-            : Stub_DrawMultiIndexedInstancedIndirect;
         
         if ( Engine::GAPI->GetRendererState().RendererSettings.FastShadows )
         {
@@ -5198,7 +5207,7 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect(const std::vector<Wo
         // Execute multi-draw indirect call for all opaque meshes
         // DrawMultiIndexedInstancedIndirect falls back to individual DrawIndexedInstancedIndirect 
         // calls via Stub_DrawMultiIndexedInstancedIndirect if hardware doesn't support MDI
-        drawMultiIndexedInstancedIndirect( Context.Get(),
+        DrawMultiIndexedInstancedIndirect( Context.Get(),
             static_cast<unsigned int>(opaqueDrawArgs.size()),
             WorldMeshIndirectBuffer->GetIndirectBuffer().Get(),
             0,
@@ -6402,23 +6411,14 @@ XRESULT D3D11GraphicsEngine::DrawVOBsIndirect( const Frustum& frustum, bool bind
             context->PSSetShader( nullptr, nullptr, 0 );
         }
 
-        if ( DrawMultiIndexedInstancedIndirect ) {
-            // Vendor multi-draw-indirect: all submeshes in this group in one API call
-            DrawMultiIndexedInstancedIndirect(
-                context.Get(),
-                group.mergedArgsCount,
-                m_MergedIndirectArgs->GetIndirectBuffer().Get(),
-                group.mergedArgsOffset,
-                sizeof( D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS ) );
-        } else {
-            // Fallback: one DrawIndexedInstancedIndirect per submesh
-            // InstanceCount is GPU-written, so zero-instance draws are no-ops on GPU
-            for ( UINT i = 0; i < group.mergedArgsCount; i++ ) {
-                context->DrawIndexedInstancedIndirect(
-                    m_MergedIndirectArgs->GetIndirectBuffer().Get(),
-                    group.mergedArgsOffset + i * sizeof( D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS ) );
-            }
-        }
+        // DrawMultiIndexedInstancedIndirect falls back to individual DrawIndexedInstancedIndirect 
+        // calls via Stub_DrawMultiIndexedInstancedIndirect if hardware doesn't support MDI
+        DrawMultiIndexedInstancedIndirect(
+            context.Get(),
+            group.mergedArgsCount,
+            m_MergedIndirectArgs->GetIndirectBuffer().Get(),
+            group.mergedArgsOffset,
+            sizeof( D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS ) );
     }
 
     // Unbind instance buffer
@@ -8703,6 +8703,459 @@ void D3D11GraphicsEngine::BuildSceneTextureAtlasses() {
     BuildGPUCullingBuffers();
 }
 
+void D3D11GraphicsEngine::BuildWorldMeshTextureAtlasses() {
+    for ( size_t i = 0; i < TEXTURE_ATLAS_MAX; i++ ) {
+        m_WorldMeshDiffuseAtlasses[(DXGI_FORMAT)i].Destroy();
+        m_WorldMeshNormalAtlasses[(DXGI_FORMAT)i].Destroy();
+        m_WorldMeshFxAtlasses[(DXGI_FORMAT)i].Destroy();
+    }
+    m_WorldMeshDiffuseAtlasLookup.clear();
+    m_WorldMeshNormalAtlasLookup.clear();
+    m_WorldMeshFxAtlasLookup.clear();
+    m_WorldMeshAtlasDrawGroups.clear();
+    m_WorldMeshAtlasedSubmeshes.clear();
+    m_WorldMeshGlobalVertexBuffer.reset();
+    m_WorldMeshGlobalIndexBuffer.reset();
+    m_WorldMeshGlobalInstanceIdBuffer.reset();
+    m_WorldMeshSubmeshBuffer.reset();
+
+    if ( !SupportTextureAtlases ) {
+        return;
+    }
+
+    // --- 1. Collect unique diffuse textures from world mesh ---
+    struct DiffuseTextureInfo {
+        zCTexture* gothicTexture;
+        DXGI_FORMAT Format;
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> Texture2D;
+    };
+    std::unordered_set<zCTexture*> seenDiffuse;
+    std::vector<DiffuseTextureInfo> uniqueDiffuse;
+
+    struct AuxTextureInfo {
+        D3D11Texture* engineTexture;
+        DXGI_FORMAT Format;
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> Texture2D;
+    };
+    std::unordered_set<D3D11Texture*> seenNormal, seenFx;
+    std::vector<AuxTextureInfo> uniqueNormals, uniqueFx;
+
+    auto& worldSections = Engine::GAPI->GetWorldSections();
+    for ( auto& [x, row] : worldSections ) {
+        for ( auto& [y, section] : row ) {
+            for ( auto const& [meshKey, worldMeshInfo] : section.WorldMeshes ) {
+                if ( !meshKey.Material ) continue;
+
+                // Skip animated textures
+                zCTexture* baseTex = meshKey.Material->GetTextureSingle();
+                if ( !baseTex ) continue;
+                unsigned char texFlags = *reinterpret_cast<unsigned char*>(
+                    reinterpret_cast<DWORD>(baseTex) + GothicMemoryLocations::zCTexture::Offset_Flags );
+                if ( texFlags & GothicMemoryLocations::zCTexture::Mask_FlagIsAnimated )
+                    continue;
+
+                // Skip alpha-blended (only opaque + alpha-test)
+                int alphaFunc = meshKey.Material->GetAlphaFunc();
+                if ( alphaFunc > zMAT_ALPHA_FUNC_NONE && alphaFunc != zMAT_ALPHA_FUNC_TEST )
+                    continue;
+
+                // Skip non-standard materials (water, portals, etc.)
+                if ( meshKey.Info && meshKey.Info->MaterialType != MaterialInfo::MT_None )
+                    continue;
+
+                zCTexture* tex = baseTex;
+                auto cachedState = tex->CacheIn( -1 );
+                if ( cachedState != zRES_CACHED_IN ) continue;
+
+                auto surface = tex->GetSurface();
+                if ( !surface || !surface->IsSurfaceReady() ) continue;
+
+                auto engineTex = surface->GetEngineTexture();
+                if ( !engineTex ) continue;
+
+                // Diffuse
+                if ( seenDiffuse.insert( tex ).second ) {
+                    D3D11_TEXTURE2D_DESC desc;
+                    engineTex->GetTextureObject()->GetDesc( &desc );
+                    if ( desc.Format >= 1 && desc.Format < TEXTURE_ATLAS_MAX ) {
+                        uniqueDiffuse.push_back( { tex, desc.Format, engineTex->GetTextureObject() } );
+                    }
+                }
+
+                // Normal map
+                D3D11Texture* normalTex = surface->GetNormalmap();
+                if ( normalTex && seenNormal.insert( normalTex ).second ) {
+                    D3D11_TEXTURE2D_DESC desc;
+                    normalTex->GetTextureObject()->GetDesc( &desc );
+                    if ( desc.Format >= 1 && desc.Format < TEXTURE_ATLAS_MAX ) {
+                        uniqueNormals.push_back( { normalTex, desc.Format, normalTex->GetTextureObject() } );
+                    }
+                }
+
+                // FX map
+                D3D11Texture* fxTex = surface->GetFxMap();
+                if ( fxTex && seenFx.insert( fxTex ).second ) {
+                    D3D11_TEXTURE2D_DESC desc;
+                    fxTex->GetTextureObject()->GetDesc( &desc );
+                    if ( desc.Format >= 1 && desc.Format < TEXTURE_ATLAS_MAX ) {
+                        uniqueFx.push_back( { fxTex, desc.Format, fxTex->GetTextureObject() } );
+                    }
+                }
+            }
+        }
+    }
+
+    // --- 2. Build atlases per format group for each texture type ---
+    auto buildDiffuseAtlases = [&]() {
+        std::sort( uniqueDiffuse.begin(), uniqueDiffuse.end(),
+            []( const DiffuseTextureInfo& a, const DiffuseTextureInfo& b ) { return a.Format < b.Format; } );
+
+        size_t rangeStart = 0;
+        while ( rangeStart < uniqueDiffuse.size() ) {
+            DXGI_FORMAT fmt = uniqueDiffuse[rangeStart].Format;
+            size_t rangeEnd = rangeStart;
+            while ( rangeEnd < uniqueDiffuse.size() && uniqueDiffuse[rangeEnd].Format == fmt )
+                rangeEnd++;
+
+            std::vector<ID3D11Texture2D*> texPtrs;
+            texPtrs.reserve( rangeEnd - rangeStart );
+            for ( size_t i = rangeStart; i < rangeEnd; i++ )
+                texPtrs.push_back( uniqueDiffuse[i].Texture2D.Get() );
+
+            std::basic_string_view<ID3D11Texture2D*> txView( texPtrs.data(), texPtrs.size() );
+            TextureManager::AtlasResult atlas = TextureManager::CreateAtlasArray(
+                GetDevice().Get(), GetContext().Get(), txView, 2048, 6 );
+
+            for ( size_t i = 0; i < texPtrs.size(); i++ ) {
+                m_WorldMeshDiffuseAtlasLookup[uniqueDiffuse[rangeStart + i].gothicTexture] = {
+                    fmt, atlas.descriptors[i]
+                };
+            }
+            m_WorldMeshDiffuseAtlasses[fmt] = atlas;
+            rangeStart = rangeEnd;
+        }
+    };
+
+    auto buildAuxAtlases = []( std::vector<AuxTextureInfo>& textures,
+                               std::unordered_map<D3D11Texture*, TextureAtlasLookup>& lookup,
+                               std::array<TextureManager::AtlasResult, TEXTURE_ATLAS_MAX>& atlasses,
+                               ID3D11Device* device, ID3D11DeviceContext* context ) {
+        std::sort( textures.begin(), textures.end(),
+            []( const AuxTextureInfo& a, const AuxTextureInfo& b ) { return a.Format < b.Format; } );
+
+        size_t rangeStart = 0;
+        while ( rangeStart < textures.size() ) {
+            DXGI_FORMAT fmt = textures[rangeStart].Format;
+            size_t rangeEnd = rangeStart;
+            while ( rangeEnd < textures.size() && textures[rangeEnd].Format == fmt )
+                rangeEnd++;
+
+            std::vector<ID3D11Texture2D*> texPtrs;
+            texPtrs.reserve( rangeEnd - rangeStart );
+            for ( size_t i = rangeStart; i < rangeEnd; i++ )
+                texPtrs.push_back( textures[i].Texture2D.Get() );
+
+            std::basic_string_view<ID3D11Texture2D*> txView( texPtrs.data(), texPtrs.size() );
+            TextureManager::AtlasResult atlas = TextureManager::CreateAtlasArray(
+                device, context, txView, 2048, 6 );
+
+            for ( size_t i = 0; i < texPtrs.size(); i++ ) {
+                lookup[textures[rangeStart + i].engineTexture] = {
+                    fmt, atlas.descriptors[i]
+                };
+            }
+            atlasses[fmt] = atlas;
+            rangeStart = rangeEnd;
+        }
+    };
+
+    buildDiffuseAtlases();
+    buildAuxAtlases( uniqueNormals, m_WorldMeshNormalAtlasLookup, m_WorldMeshNormalAtlasses,
+                     GetDevice().Get(), GetContext().Get() );
+    buildAuxAtlases( uniqueFx, m_WorldMeshFxAtlasLookup, m_WorldMeshFxAtlasses,
+                     GetDevice().Get(), GetContext().Get() );
+
+    LogInfo() << "World Mesh Atlas: " << uniqueDiffuse.size() << " diffuse, "
+              << uniqueNormals.size() << " normal, " << uniqueFx.size() << " fx textures";
+
+    BuildStaticWorldMeshBuffers();
+}
+
+void D3D11GraphicsEngine::BuildStaticWorldMeshBuffers() {
+    std::vector<ExVertexStruct> allVertices;
+    std::vector<VERTEX_INDEX> allIndices;
+    std::vector<WorldMeshSubmeshGPUData> submeshGPU;
+
+    // Group by diffuse atlas format (normal/fx may differ but we key on diffuse)
+    std::map<DXGI_FORMAT, AtlasDrawGroup> groupsByFormat;
+
+    std::unordered_set<MeshInfo*> processedMeshes;
+
+    auto& worldSections = Engine::GAPI->GetWorldSections();
+    for ( auto& [x, row] : worldSections ) {
+        for ( auto& [y, section] : row ) {
+            for ( auto const& [meshKey, worldMeshInfo] : section.WorldMeshes ) {
+                if ( !meshKey.Material ) continue;
+
+                zCTexture* tex = meshKey.Material->GetTextureSingle();
+                auto diffIt = m_WorldMeshDiffuseAtlasLookup.find( tex );
+                if ( diffIt == m_WorldMeshDiffuseAtlasLookup.end() )
+                    continue; // not in atlas
+
+                MeshInfo* mi = worldMeshInfo;
+                if ( !processedMeshes.insert( mi ).second )
+                    continue; // already added
+
+                m_WorldMeshAtlasedSubmeshes.insert( mi );
+
+                const TextureAtlasLookup& diffLookup = diffIt->second;
+                auto& group = groupsByFormat[diffLookup.atlasFormat];
+                group.format = diffLookup.atlasFormat;
+
+                UINT baseVertex = static_cast<UINT>(allVertices.size());
+                UINT startIndex = static_cast<UINT>(allIndices.size());
+
+                allVertices.insert( allVertices.end(), mi->Vertices.begin(), mi->Vertices.end() );
+                allIndices.insert( allIndices.end(), mi->Indices.begin(), mi->Indices.end() );
+
+                // Build GPU descriptor for this submesh
+                WorldMeshSubmeshGPUData gpuData = {};
+                gpuData.diffuseSlice = diffLookup.descriptor.slice;
+                gpuData.dUStart = diffLookup.descriptor.uStart;
+                gpuData.dVStart = diffLookup.descriptor.vStart;
+                gpuData.dUEnd = diffLookup.descriptor.uEnd;
+                gpuData.dVEnd = diffLookup.descriptor.vEnd;
+
+                UINT flags = 0;
+
+                // Normal map lookup
+                auto surface = tex->GetSurface();
+                if ( surface ) {
+                    D3D11Texture* normalTex = surface->GetNormalmap();
+                    if ( normalTex ) {
+                        auto normIt = m_WorldMeshNormalAtlasLookup.find( normalTex );
+                        if ( normIt != m_WorldMeshNormalAtlasLookup.end() ) {
+                            gpuData.normalSlice = normIt->second.descriptor.slice;
+                            gpuData.nUStart = normIt->second.descriptor.uStart;
+                            gpuData.nVStart = normIt->second.descriptor.vStart;
+                            gpuData.nUEnd = normIt->second.descriptor.uEnd;
+                            gpuData.nVEnd = normIt->second.descriptor.vEnd;
+                            flags |= 1; // HAS_NORMAL
+                        }
+                    }
+
+                    D3D11Texture* fxTex = surface->GetFxMap();
+                    if ( fxTex ) {
+                        auto fxIt = m_WorldMeshFxAtlasLookup.find( fxTex );
+                        if ( fxIt != m_WorldMeshFxAtlasLookup.end() ) {
+                            gpuData.fxSlice = fxIt->second.descriptor.slice;
+                            gpuData.fUStart = fxIt->second.descriptor.uStart;
+                            gpuData.fVStart = fxIt->second.descriptor.vStart;
+                            gpuData.fUEnd = fxIt->second.descriptor.uEnd;
+                            gpuData.fVEnd = fxIt->second.descriptor.vEnd;
+                            flags |= 2; // HAS_FX
+                        }
+                    }
+                }
+
+                // Alpha test flag
+                int alphaFunc = meshKey.Material->GetAlphaFunc();
+                if ( alphaFunc == zMAT_ALPHA_FUNC_TEST || tex->HasAlphaChannel() ) {
+                    flags |= 4; // ALPHA_TEST
+                }
+
+                gpuData.flags = flags;
+
+                UINT submeshIndex = static_cast<UINT>(submeshGPU.size());
+                submeshGPU.push_back( gpuData );
+
+                // Indirect draw arg — InstanceCount=1 (world mesh is not instanced),
+                // StartInstanceLocation = submeshIndex (used as VS instance remap)
+                D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS args = {};
+                args.IndexCountPerInstance = static_cast<UINT>(mi->Indices.size());
+                args.InstanceCount = 1;
+                args.StartIndexLocation = startIndex;
+                args.BaseVertexLocation = static_cast<int>(baseVertex);
+                args.StartInstanceLocation = submeshIndex;
+                group.indirectArgs.push_back( args );
+            }
+        }
+    }
+
+    if ( allVertices.empty() ) {
+        LogWarn() << "BuildStaticWorldMeshBuffers: No world mesh vertices for atlas";
+        return;
+    }
+
+    // Create global vertex buffer (IMMUTABLE)
+    m_WorldMeshGlobalVertexBuffer = std::make_unique<D3D11VertexBuffer>();
+    m_WorldMeshGlobalVertexBuffer->Init(
+        allVertices.data(),
+        static_cast<unsigned int>(allVertices.size() * sizeof( ExVertexStruct )),
+        D3D11VertexBuffer::B_VERTEXBUFFER,
+        D3D11VertexBuffer::U_IMMUTABLE,
+        D3D11VertexBuffer::CA_NONE );
+
+    // Create global index buffer (IMMUTABLE)
+    m_WorldMeshGlobalIndexBuffer = std::make_unique<D3D11VertexBuffer>();
+    m_WorldMeshGlobalIndexBuffer->Init(
+        allIndices.data(),
+        static_cast<unsigned int>(allIndices.size() * sizeof( VERTEX_INDEX )),
+        D3D11VertexBuffer::B_INDEXBUFFER,
+        D3D11VertexBuffer::U_IMMUTABLE,
+        D3D11VertexBuffer::CA_NONE );
+
+    // Instance ID buffer: just {0,1,2,...} so the VS can read submeshIdx
+    // For world mesh, each submesh draws exactly 1 instance, 
+    // and StartInstanceLocation = submeshIndex in the indirect args
+    UINT maxIds = static_cast<UINT>(submeshGPU.size());
+    if ( maxIds < 256 ) maxIds = 256;
+    std::vector<uint32_t> instanceIds( maxIds );
+    for ( uint32_t i = 0; i < maxIds; i++ )
+        instanceIds[i] = i;
+
+    m_WorldMeshGlobalInstanceIdBuffer = std::make_unique<D3D11VertexBuffer>();
+    m_WorldMeshGlobalInstanceIdBuffer->Init(
+        instanceIds.data(),
+        static_cast<unsigned int>(instanceIds.size() * sizeof( uint32_t )),
+        D3D11VertexBuffer::B_VERTEXBUFFER,
+        D3D11VertexBuffer::U_IMMUTABLE,
+        D3D11VertexBuffer::CA_NONE );
+
+    // Structured buffer for submesh GPU data
+    auto* device = GetDevice().Get();
+    auto* context = GetContext().Get();
+    m_WorldMeshSubmeshBuffer = std::make_unique<D3D11StructuredBuffer<WorldMeshSubmeshGPUData>>();
+    m_WorldMeshSubmeshBuffer->Init( device, static_cast<UINT>(submeshGPU.size()), false, false );
+    m_WorldMeshSubmeshBuffer->UpdateBufferDefault( context, submeshGPU.data(), static_cast<UINT>(submeshGPU.size()) );
+
+    // Move groups and create indirect buffers
+    m_WorldMeshAtlasDrawGroups.clear();
+    for ( auto& [fmt, group] : groupsByFormat ) {
+        if ( group.indirectArgs.empty() )
+            continue;
+
+        UINT bufSize = static_cast<UINT>(group.indirectArgs.size() * sizeof( D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS ));
+        group.indirectBuffer = std::make_unique<D3D11IndirectBuffer>();
+        group.indirectBuffer->Init(
+            group.indirectArgs.data(), bufSize,
+            D3D11IndirectBuffer::B_VERTEXBUFFER,
+            D3D11IndirectBuffer::U_IMMUTABLE,
+            D3D11IndirectBuffer::CA_NONE );
+
+        m_WorldMeshAtlasDrawGroups.push_back( std::move( group ) );
+    }
+
+    LogInfo() << "World Mesh Atlas geometry: " << allVertices.size() << " vertices, "
+              << allIndices.size() << " indices, "
+              << m_WorldMeshAtlasDrawGroups.size() << " format groups, "
+              << submeshGPU.size() << " submeshes";
+}
+
+XRESULT D3D11GraphicsEngine::DrawWorldMesh_Atlas() {
+    if ( m_WorldMeshAtlasDrawGroups.empty() || !m_WorldMeshGlobalVertexBuffer || !m_WorldMeshGlobalIndexBuffer )
+        return XR_SUCCESS;
+
+    auto _ = RecordGraphicsEvent( L"DrawWorldMesh_Atlas" );
+    auto& context = GetContext();
+
+    // Reset render states to opaque defaults (depth write on, no blending, etc.)
+    SetDefaultStates();
+
+    XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
+    Engine::GAPI->SetViewTransformXM( view );
+    Engine::GAPI->ResetWorldTransform();
+
+    context->DSSetShader( nullptr, nullptr, 0 );
+    context->HSSetShader( nullptr, nullptr, 0 );
+
+    // --- 1. Bind global geometry (once) ---
+    UINT strides[2] = { sizeof( ExVertexStruct ), sizeof( uint32_t ) };
+    UINT offsets[2] = { 0, 0 };
+    ID3D11Buffer* vbs[2] = {
+        m_WorldMeshGlobalVertexBuffer->GetVertexBuffer().Get(),
+        m_WorldMeshGlobalInstanceIdBuffer->GetVertexBuffer().Get()
+    };
+    context->IASetVertexBuffers( 0, 2, vbs, strides, offsets );
+    context->IASetIndexBuffer( m_WorldMeshGlobalIndexBuffer->GetVertexBuffer().Get(), VERTEX_INDEX_DXGI_FORMAT, 0 );
+    context->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+
+    // --- 2. Bind submesh StructuredBuffer to VS t1 ---
+    ID3D11ShaderResourceView* submeshSRV = m_WorldMeshSubmeshBuffer->GetSRV();
+    context->VSSetShaderResources( 1, 1, &submeshSRV );
+
+    // --- 3. Set vertex shader ---
+    SetActiveVertexShader( VShaderID::VS_ExWorldAtlas );
+    SetupVS_ExMeshDrawCall();
+    SetupVS_ExConstantBuffer();
+
+    // World mesh is already in world space — pass identity world matrix
+    /* -- Atlas shader doesn't use this
+    ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &XMMatrixIdentity() );
+    ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( 1 );
+    */
+    ActiveVS->Apply();
+
+    // --- 4. Set pixel shader + constant buffers ---
+    SetActivePixelShader( PShaderID::PS_WorldAtlas );
+
+    ActivePS->GetConstantBuffer()[0]->UpdateBuffer(
+        &Engine::GAPI->GetRendererState().GraphicsState );
+    ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+
+    GSky* sky = Engine::GAPI->GetSky();
+    ActivePS->GetConstantBuffer()[1]->UpdateBuffer( &sky->GetAtmosphereCB() );
+    ActivePS->GetConstantBuffer()[1]->BindToPixelShader( 1 );
+
+    MaterialInfo defMaterial{};
+    ActivePS->GetConstantBuffer()[2]->UpdateBuffer( &defMaterial.buffer );
+    ActivePS->GetConstantBuffer()[2]->BindToPixelShader( 2 );
+
+    InfiniteRangeConstantBuffer->BindToPixelShader( 3 );
+
+    // Bind reflection cube
+    context->PSSetShaderResources( 4, 1, ReflectionCube.GetAddressOf() );
+
+    ActivePS->Apply();
+
+    // --- 5. Draw per format group ---
+    for ( auto& group : m_WorldMeshAtlasDrawGroups ) {
+        // Bind atlas textures for this format group
+        // Diffuse atlas -> PS t0
+        ID3D11ShaderResourceView* diffuseSRV = m_WorldMeshDiffuseAtlasses[group.format].atlasSRV;
+        if ( !diffuseSRV ) continue;
+
+        // Find normal/FX atlases — they may be a different format, so bind all available
+        // We bind the first non-null atlas of each type since format grouping is per-diffuse
+        ID3D11ShaderResourceView* normalSRV = nullptr;
+        ID3D11ShaderResourceView* fxSRV = nullptr;
+        for ( size_t i = 0; i < TEXTURE_ATLAS_MAX; i++ ) {
+            if ( !normalSRV && m_WorldMeshNormalAtlasses[i].atlasSRV )
+                normalSRV = m_WorldMeshNormalAtlasses[i].atlasSRV;
+            if ( !fxSRV && m_WorldMeshFxAtlasses[i].atlasSRV )
+                fxSRV = m_WorldMeshFxAtlasses[i].atlasSRV;
+        }
+
+        ID3D11ShaderResourceView* psSRVs[3] = { diffuseSRV, normalSRV, fxSRV };
+        context->PSSetShaderResources( 0, 3, psSRVs );
+
+        // DrawMultiIndexedInstancedIndirect falls back to individual DrawIndexedInstancedIndirect 
+        // calls via Stub_DrawMultiIndexedInstancedIndirect if hardware doesn't support MDI
+        DrawMultiIndexedInstancedIndirect(
+            context.Get(),
+            static_cast<UINT>(group.indirectArgs.size()),
+            group.indirectBuffer->GetIndirectBuffer().Get(),
+            0,
+            sizeof( D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS ) );
+    }
+
+    // Unbind
+    ID3D11ShaderResourceView* nullSRV = nullptr;
+    context->VSSetShaderResources( 1, 1, &nullSRV );
+
+    return XR_SUCCESS;
+}
+
 void D3D11GraphicsEngine::CacheWorldStaticVobs() {
 
     static std::vector<VobLightInfo*> _1;
@@ -8769,7 +9222,10 @@ void D3D11GraphicsEngine::OnWorldLoaded()
     CacheWorldStaticVobs();
 
     // --- Atlas building: collect unique textures, create Texture2DArray atlases, map descriptors ---
-    BuildSceneTextureAtlasses();    
+    BuildSceneTextureAtlasses();
+
+    // --- World mesh atlas: collect textures, build atlases, merge geometry ---
+    BuildWorldMeshTextureAtlasses();
 }
 
 void D3D11GraphicsEngine::StoreVobPreviousTransforms() {
