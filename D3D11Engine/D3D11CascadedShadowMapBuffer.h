@@ -50,14 +50,14 @@ public:
      * @param context Device context
      * @param slot Shader resource slot
      */
-    void BindToPixelShader( ID3D11DeviceContext1* context, UINT slot ) const;
+    void BindToPixelShader( ID3D11DeviceContext* context, UINT slot ) const;
 
     /**
      * Bind the texture array to a vertex shader slot.
      * @param context Device context
      * @param slot Shader resource slot
      */
-    void BindToVertexShader( ID3D11DeviceContext1* context, UINT slot ) const;
+    void BindToVertexShader( ID3D11DeviceContext* context, UINT slot ) const;
 
     /** Get the size of each cascade (width = height) */
     UINT GetSize() const { return m_size; }

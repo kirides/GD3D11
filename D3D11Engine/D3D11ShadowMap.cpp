@@ -381,7 +381,7 @@ void D3D11ShadowMap::Resize( int size ) {
     m_lastNumCascades = static_cast<int>( atlasNumCascades );
 }
 
-void D3D11ShadowMap::BindToPixelShader( ID3D11DeviceContext1* context, UINT slot ) {
+void D3D11ShadowMap::BindToPixelShader( ID3D11DeviceContext* context, UINT slot ) {
     if ( m_useAtlas ) {
         if ( m_shadowAtlas ) m_shadowAtlas->BindToPixelShader( context, slot );
     } else {
@@ -389,11 +389,11 @@ void D3D11ShadowMap::BindToPixelShader( ID3D11DeviceContext1* context, UINT slot
     }
 }
 
-void D3D11ShadowMap::BindSampler( ID3D11DeviceContext1* context, UINT slot ) {
+void D3D11ShadowMap::BindSampler( ID3D11DeviceContext* context, UINT slot ) {
     if ( m_shadowmapSampler ) context->PSSetSamplers( slot, 1, m_shadowmapSampler.GetAddressOf() );
 }
 
-void D3D11ShadowMap::BindSamplerToCS( ID3D11DeviceContext1* context, UINT slot ) {
+void D3D11ShadowMap::BindSamplerToCS( ID3D11DeviceContext* context, UINT slot ) {
     if ( m_shadowmapSampler ) context->CSSetSamplers( slot, 1, m_shadowmapSampler.GetAddressOf() );
 }
 

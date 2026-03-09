@@ -119,11 +119,11 @@ public:
     }
 
     // Bind world shadowmap SRV to a pixel shader slot (binds entire cascade array)
-    void BindToPixelShader( ID3D11DeviceContext1* context, UINT slot );
+    void BindToPixelShader( ID3D11DeviceContext* context, UINT slot );
 
     // Bind the shadowmap sampler to the given slot
-    void BindSampler( ID3D11DeviceContext1* context, UINT slot );
-    void BindSamplerToCS( ID3D11DeviceContext1* context, UINT slot );
+    void BindSampler( ID3D11DeviceContext* context, UINT slot );
+    void BindSamplerToCS( ID3D11DeviceContext* context, UINT slot );
 
     XRESULT PrepareRender();
 

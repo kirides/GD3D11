@@ -115,13 +115,13 @@ ID3D11ShaderResourceView* D3D11CascadedShadowMapBuffer::GetShaderResourceView() 
     return m_srv.Get();
 }
 
-void D3D11CascadedShadowMapBuffer::BindToPixelShader( ID3D11DeviceContext1* context, UINT slot ) const {
+void D3D11CascadedShadowMapBuffer::BindToPixelShader( ID3D11DeviceContext* context, UINT slot ) const {
     if ( m_srv ) {
         context->PSSetShaderResources( slot, 1, m_srv.GetAddressOf() );
     }
 }
 
-void D3D11CascadedShadowMapBuffer::BindToVertexShader( ID3D11DeviceContext1* context, UINT slot ) const {
+void D3D11CascadedShadowMapBuffer::BindToVertexShader( ID3D11DeviceContext* context, UINT slot ) const {
     if ( m_srv ) {
         context->VSSetShaderResources( slot, 1, m_srv.GetAddressOf() );
     }
