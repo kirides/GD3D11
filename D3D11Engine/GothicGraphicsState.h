@@ -961,6 +961,8 @@ struct GothicRendererSettings {
             bool UseShadowAtlas;
             bool ForceFeatureLevel10;
             bool StreamingResourcesSupported;
+            bool EnableAtlasStaticVobs;
+            bool EnableAtlasWorldMesh;
         } FeatureSet;
     } DebugSettings;
 };

@@ -604,6 +604,8 @@ XRESULT D3D11GraphicsEngine::Init() {
             // to support more memory intensive features, even on less than 4GB cards, by streaming in the necessary tiles.
             SupportTextureAtlases = true;
             Engine::GAPI->GetRendererState().RendererSettings.UseIndirectVobShadows = SupportTextureAtlases;
+            Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.EnableAtlasStaticVobs = SupportTextureAtlases;
+            Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.EnableAtlasWorldMesh = SupportTextureAtlases;
         }
     }
 
@@ -8582,7 +8584,7 @@ void D3D11GraphicsEngine::BuildSceneTextureAtlasses() {
     m_TextureAtlasLookup.clear();
     m_AtlasDrawGroups.clear();
 
-    if ( !SupportTextureAtlases ) {
+    if ( !SupportTextureAtlases || !Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.EnableAtlasStaticVobs ) {
         return;
     }
 
@@ -8682,7 +8684,7 @@ void D3D11GraphicsEngine::BuildWorldMeshTextureAtlasses() {
     m_WorldMeshGlobalInstanceIdBuffer.reset();
     m_WorldMeshSubmeshBuffer.reset();
 
-    if ( !SupportTextureAtlases ) {
+    if ( !SupportTextureAtlases || !Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.EnableAtlasWorldMesh ) {
         return;
     }
 

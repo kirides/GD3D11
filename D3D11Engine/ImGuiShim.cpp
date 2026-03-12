@@ -1352,6 +1352,10 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
                 ImGui::SetItemTooltip("Enables a less intensive but lower quality shadow solution.");
                 ImGui::Checkbox("Force Feature Level 10", &settings.DebugSettings.FeatureSet.ForceFeatureLevel10 );
                 ImGui::SetItemTooltip("Force DirectX 10 era feature support. Requires restart.");
+                ImGui::Checkbox("Atlas Static Vobs", &settings.DebugSettings.FeatureSet.EnableAtlasStaticVobs );
+                ImGui::SetItemTooltip("Enable texture atlas based rendering for static vobs (experimental, requires world reload)");
+                ImGui::Checkbox("Atlas World Mesh", &settings.DebugSettings.FeatureSet.EnableAtlasWorldMesh );
+                ImGui::SetItemTooltip("Enable texture atlas based rendering for world mesh (experimental, requires world reload)");
                 ImGui::EndTabItem();
             }
  
