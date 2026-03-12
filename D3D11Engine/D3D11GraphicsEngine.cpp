@@ -8067,6 +8067,26 @@ void D3D11GraphicsEngine::BuildStaticGeometryBuffers() {
     // Track which MeshInfo* we've already added (same visual used by many vobs shares geometry)
     std::unordered_set<MeshInfo*> processedMeshes;
 
+    // Pre-count vertices/indices to reserve and avoid incremental reallocation
+    {
+        size_t totalVertices = 0, totalIndices = 0;
+        std::unordered_set<MeshInfo*> counted;
+        for ( auto const& [proto, visual] : Engine::GAPI->GetStaticMeshVisuals() ) {
+            for ( auto const& [meshKey, meshList] : visual->MeshesByTexture ) {
+                if ( m_TextureAtlasLookup.find( meshKey.Texture ) == m_TextureAtlasLookup.end() )
+                    continue;
+                for ( MeshInfo* mi : meshList ) {
+                    if ( counted.insert( mi ).second ) {
+                        totalVertices += mi->Vertices.size();
+                        totalIndices += mi->Indices.size();
+                    }
+                }
+            }
+        }
+        allVertices.reserve( totalVertices );
+        allIndices.reserve( totalIndices );
+    }
+
     for ( auto const& [proto, visual] : Engine::GAPI->GetStaticMeshVisuals() ) {
         for ( auto const& [meshKey, meshList] : visual->MeshesByTexture ) {
             // Look up atlas descriptor for this texture
@@ -8833,6 +8853,28 @@ void D3D11GraphicsEngine::BuildStaticWorldMeshBuffers() {
     std::map<DXGI_FORMAT, AtlasDrawGroup> groupsByFormat;
 
     std::unordered_set<MeshInfo*> processedMeshes;
+
+    // Pre-count total vertices/indices to avoid incremental reallocation
+    {
+        size_t totalVertices = 0, totalIndices = 0, totalSubmeshes = 0;
+        auto& ws = Engine::GAPI->GetWorldSections();
+        for ( auto& [x, row] : ws ) {
+            for ( auto& [y, section] : row ) {
+                for ( auto const& [meshKey, worldMeshInfo] : section.WorldMeshes ) {
+                    if ( !meshKey.Material ) continue;
+                    zCTexture* tex = meshKey.Material->GetTextureSingle();
+                    if ( m_WorldMeshDiffuseAtlasLookup.find( tex ) != m_WorldMeshDiffuseAtlasLookup.end() ) {
+                        totalVertices += worldMeshInfo->Vertices.size();
+                        totalIndices += worldMeshInfo->Indices.size();
+                        totalSubmeshes++;
+                    }
+                }
+            }
+        }
+        allVertices.reserve( totalVertices );
+        allIndices.reserve( totalIndices );
+        submeshGPU.reserve( totalSubmeshes );
+    }
 
     auto& worldSections = Engine::GAPI->GetWorldSections();
     for ( auto& [x, row] : worldSections ) {
