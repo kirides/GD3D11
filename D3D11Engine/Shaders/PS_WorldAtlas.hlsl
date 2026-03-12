@@ -21,7 +21,8 @@ cbuffer MI_MaterialInfo : register( b2 )
 cbuffer DIST_Distance : register( b3 )
 {
 	float DIST_DrawDistance;
-	float3 DIST_Pad;
+	float DIST_LodBias;
+	float2 DIST_Pad;
 }
 
 //--------------------------------------------------------------------------------------
@@ -75,13 +76,16 @@ float2 CalculateVelocity(float4 currClipPos, float4 prevClipPos)
 // so that at higher mips the border grows to prevent bilinear bleed into neighbors.
 static const float ATLAS_SIZE = 2048.0;
 
-float4 SampleAtlas(Texture2DArray atlas, SamplerState ss, float3 rawUVSlice, float4 atlasRect)
+float4 SampleAtlas(Texture2DArray atlas, SamplerState ss, float3 rawUVSlice, float4 atlasRect, float lodBias)
 {
 	float2 rawUV    = rawUVSlice.xy;
 	float  slice    = rawUVSlice.z;
 	float2 scale    = atlasRect.zw - atlasRect.xy;
-	float2 gradX    = ddx(rawUV) * scale;
-	float2 gradY    = ddy(rawUV) * scale;
+	// SampleGrad ignores sampler MipLODBias, so we manually apply the LOD bias
+	// (needed for FSR upscaling to produce sharp textures at lower resolutions)
+	float  biasFactor = exp2(lodBias);
+	float2 gradX    = ddx(rawUV) * scale * biasFactor;
+	float2 gradY    = ddy(rawUV) * scale * biasFactor;
 
 	// Compute approximate mip level from gradients
 	float2 dxTex    = gradX * ATLAS_SIZE;
@@ -106,7 +110,7 @@ DEFERRED_PS_OUTPUT PSMain( PS_INPUT Input ) : SV_TARGET
 	output.vReactiveMask = 0.0f;
 
 	// --- Diffuse ---
-	float4 color = SampleAtlas(TX_AtlasDiffuse, SS_Linear, Input.vTexcoord3D, Input.vAtlasRect);
+	float4 color = SampleAtlas(TX_AtlasDiffuse, SS_Linear, Input.vTexcoord3D, Input.vAtlasRect, DIST_LodBias);
 
 	// Alpha test
 	if (Input.vFlags & 4u)
@@ -126,8 +130,9 @@ DEFERRED_PS_OUTPUT PSMain( PS_INPUT Input ) : SV_TARGET
 		float2 rawUV = Input.vNormalAtlas3D.xy;
 		float  slice = Input.vNormalAtlas3D.z;
 		float2 scale = nrmAtlasRect.zw - nrmAtlasRect.xy;
-		float2 gradX = ddx(rawUV) * scale;
-		float2 gradY = ddy(rawUV) * scale;
+		float  biasFactor = exp2(DIST_LodBias);
+		float2 gradX = ddx(rawUV) * scale * biasFactor;
+		float2 gradY = ddy(rawUV) * scale * biasFactor;
 		float2 atlasUV = nrmAtlasRect.xy + frac(rawUV) * scale;
 
 		nrm = perturb_normal_from_grad(
@@ -148,7 +153,7 @@ DEFERRED_PS_OUTPUT PSMain( PS_INPUT Input ) : SV_TARGET
 	float4 fx = 1.0f;
 	if (Input.vFlags & 2u)
 	{
-		fx = SampleAtlas(TX_AtlasFx, SS_Linear, Input.vFxAtlas3D, Input.vFxAtlasRect);
+		fx = SampleAtlas(TX_AtlasFx, SS_Linear, Input.vFxAtlas3D, Input.vFxAtlasRect, DIST_LodBias);
 	}
 
 	output.vDiffuse = float4(color.rgb, Input.vDiffuse.y);

@@ -20,7 +20,8 @@ cbuffer MI_MaterialInfo : register( b2 )
 cbuffer DIST_Distance : register( b3 )
 {
 	float DIST_DrawDistance;
-	float3 DIST_Pad;
+	float DIST_LodBias;
+	float2 DIST_Pad;
 }
 
 //--------------------------------------------------------------------------------------
@@ -80,8 +81,11 @@ DEFERRED_PS_OUTPUT PSMain( PS_INPUT Input ) : SV_TARGET
 	float  slice = Input.vTexcoord3D.z;
 	float2 atlasScale = Input.vAtlasRect.zw - Input.vAtlasRect.xy; // (uEnd-uStart, vEnd-vStart)
 
-	float2 gradX = ddx(rawUV) * atlasScale;
-	float2 gradY = ddy(rawUV) * atlasScale;
+	// SampleGrad ignores sampler MipLODBias, so we manually apply the LOD bias
+	// (needed for FSR upscaling to produce sharp textures at lower resolutions)
+	float biasFactor = exp2(DIST_LodBias);
+	float2 gradX = ddx(rawUV) * atlasScale * biasFactor;
+	float2 gradY = ddy(rawUV) * atlasScale * biasFactor;
 	float2 atlasUV = Input.vAtlasRect.xy + frac(rawUV) * atlasScale;
 
 	float4 color = TX_AtlasArray.SampleGrad(SS_Linear, float3(atlasUV, slice), gradX, gradY);

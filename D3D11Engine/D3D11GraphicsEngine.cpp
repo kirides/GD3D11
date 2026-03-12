@@ -285,6 +285,7 @@ void D3D11GraphicsEngine::CreateAndBindDefaultSampler() {
     float scaleRatio = static_cast<float>(GetScaledResolution().x) / static_cast<float>(GetBackbufferResolution().x);
     // Calculate raw bias, but clamp it to a maximum of 0.0f to protect Supersampling
     float mipBias = std::min(0.0f, std::log2(scaleRatio));
+    m_SamplerMipBias = mipBias;
 
     D3D11_SAMPLER_DESC samplerDesc{};
     samplerDesc.Filter = D3D11_FILTER_ANISOTROPIC;
@@ -2998,13 +2999,13 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     GetContext()->CSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
 
     // Update view distances
-    InfiniteRangeConstantBuffer->UpdateBuffer( float4( FLT_MAX, 0, 0, 0 ).toPtr() );
+    InfiniteRangeConstantBuffer->UpdateBuffer( float4( FLT_MAX, m_SamplerMipBias, 0, 0 ).toPtr() );
     OutdoorSmallVobsConstantBuffer->UpdateBuffer(
         float4( rendererState.RendererSettings.OutdoorSmallVobDrawRadius,
-            0, 0, 0 ).toPtr() );
+            m_SamplerMipBias, 0, 0 ).toPtr() );
     OutdoorVobsConstantBuffer->UpdateBuffer( float4(
         rendererState.RendererSettings.OutdoorVobDrawRadius,
-        0, 0, 0 ).toPtr() );
+        m_SamplerMipBias, 0, 0 ).toPtr() );
 
     rendererState.RasterizerState.FrontCounterClockwise = false;
 

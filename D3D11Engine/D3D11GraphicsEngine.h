@@ -518,6 +518,7 @@ private:
     /** If true, we will save a screenshot after the next frame */
     bool SaveScreenshotNextFrame;
 
+    float m_SamplerMipBias = 0.0f;
     bool m_flipWithTearing;
     bool m_swapchainflip;
     bool m_lowlatency;
