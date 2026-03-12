@@ -74,8 +74,6 @@ float2 CalculateVelocity(float4 currClipPos, float4 prevClipPos)
 // Helper: sample from an atlas Texture2DArray with correct mip via SampleGrad + frac()
 // Clamps the final atlas UV inside the entry boundary, scaled by the mip level
 // so that at higher mips the border grows to prevent bilinear bleed into neighbors.
-static const float ATLAS_SIZE = 2048.0;
-
 float4 SampleAtlas(Texture2DArray atlas, SamplerState ss, float3 rawUVSlice, float4 atlasRect, float lodBias)
 {
 	float2 rawUV    = rawUVSlice.xy;
@@ -87,14 +85,18 @@ float4 SampleAtlas(Texture2DArray atlas, SamplerState ss, float3 rawUVSlice, flo
 	float2 gradX    = ddx(rawUV) * scale * biasFactor;
 	float2 gradY    = ddy(rawUV) * scale * biasFactor;
 
+	// Query actual atlas dimensions instead of assuming a fixed size
+	float atlasW, atlasH, atlasSlices;
+	atlas.GetDimensions(atlasW, atlasH, atlasSlices);
+
 	// Compute approximate mip level from gradients
-	float2 dxTex    = gradX * ATLAS_SIZE;
-	float2 dyTex    = gradY * ATLAS_SIZE;
+	float2 dxTex    = gradX * atlasW;
+	float2 dyTex    = gradY * atlasH;
 	float  maxSq    = max(dot(dxTex, dxTex), dot(dyTex, dyTex));
 	float  mipLevel = max(0.0, 0.5 * log2(maxSq));
 
 	// Scale the half-texel border by 2^mip so it covers the filter footprint at that level
-	float  border   = (0.5 / ATLAS_SIZE) * exp2(ceil(mipLevel));
+	float2 border   = (0.5 / float2(atlasW, atlasH)) * exp2(ceil(mipLevel));
 
 	float2 atlasUV  = atlasRect.xy + frac(rawUV) * scale;
 	atlasUV = clamp(atlasUV, atlasRect.xy + border, atlasRect.zw - border);
