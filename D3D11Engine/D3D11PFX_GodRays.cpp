@@ -19,7 +19,7 @@ D3D11PFX_GodRays::~D3D11PFX_GodRays() {}
 /** Draws this effect to the given buffer */
 XRESULT D3D11PFX_GodRays::Render( 
     ID3D11ShaderResourceView* backbuffer, 
-    ID3D11ShaderResourceView* normals ) {
+    ID3D11ShaderResourceView* depth ) {
     if ( Engine::GAPI->GetSky()->GetAtmoshpereSettings().LightDirection.y <= 0 )
         return XR_SUCCESS; // Don't render the godrays in the night-time
 
@@ -82,7 +82,7 @@ XRESULT D3D11PFX_GodRays::Render(
 
     ID3D11ShaderResourceView* srvs[2] {
         backbuffer,
-        normals,
+        depth,
     };
     engine->GetContext()->PSSetShaderResources( 0, 2, srvs );
 

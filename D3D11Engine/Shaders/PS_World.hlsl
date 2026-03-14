@@ -85,7 +85,7 @@ DEFERRED_PS_OUTPUT PSMain( PS_INPUT Input ) : SV_TARGET
 	DEFERRED_PS_OUTPUT output;
 	output.vDiffuse = float4(color.rgb, Input.vDiffuse.y);
 	
-	output.vNrm = EncodeNormalGBuffer(normalize(Input.vNormalVS), 1.0f);
+	output.vNrm = EncodeNormalGBuffer(normalize(Input.vNormalVS));
 
 	output.vSI_SP.x = MI_SpecularIntensity;
 	output.vSI_SP.y = MI_SpecularPower;

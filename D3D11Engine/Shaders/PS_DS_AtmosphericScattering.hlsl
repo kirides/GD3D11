@@ -694,19 +694,17 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
     float4 diffuse = TX_Diffuse.Sample(SS_Linear, uv);
     float vertLighting = diffuse.a;
 	
-	// Get the second GBuffer
-    float4 gb2 = TX_Nrm.Sample(SS_Linear, uv);
-	
-	// If we dont have a normal, just return the diffuse color
-    if (gb2.w < 0.001f)
-        // FIXME: This is just so the sky is correctly rendered when atmospheric scattering is enabled
-        // Ideally we should draw the sky in a separate forward after applying the lighting, but that breaks other stuff.
-        // For now, we need the alpha channel (2-bit in R10G10B10A2_UNORM) to keep the sky rendering working,
-        // so we can't use Octahedral encoding. We return the diffuse color here and skip lighting for sky pixels.
+	// Sample depth first to detect sky pixels (reversed-Z: sky has depth == 0.0)
+    float expDepth = TX_Depth.Sample(SS_Linear, uv).r;
+    if (expDepth < 0.00001f)
+        // Sky pixel — no geometry was written, just return the diffuse (sky) color
         return float4(diffuse.rgb, 1);
 	
-	// Decode the view-space normal back from R10G10B10A2_UNORM
-    float3 normal = DecodeNormalGBuffer(gb2.xyz);
+	// Get the second GBuffer
+    float2 gb2 = TX_Nrm.Sample(SS_Linear, uv).xy;
+	
+	// Decode the view-space normal from octahedral R16G16_SNORM
+    float3 normal = DecodeNormalGBuffer(gb2);
 	
 	// Get specular parameters
     float4 gb3 = TX_SI_SP.Sample(SS_Linear, uv);
@@ -714,7 +712,6 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
     float specPower = gb3.y;
 	
 	// Reconstruct VS World Position from depth
-    float expDepth = TX_Depth.Sample(SS_Linear, uv).r;
     float3 vsPosition = VSPositionFromDepth(expDepth, uv);
     float3 wsPosition = mul(float4(vsPosition, 1), SQ_InvView).xyz;
     float3 V = normalize(-vsPosition);

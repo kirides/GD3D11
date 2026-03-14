@@ -9,6 +9,6 @@ public:
 
     /** Draws this effect to the given buffer */
     XRESULT Render( RenderToTextureBuffer* fxbuffer ) override { return XR_FAILED; }
-    XRESULT Render( ID3D11ShaderResourceView* backbuffer, ID3D11ShaderResourceView* normals );
+    XRESULT Render( ID3D11ShaderResourceView* backbuffer, ID3D11ShaderResourceView* depth );
 };
 
