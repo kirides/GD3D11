@@ -718,15 +718,17 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
     float4 diffuse = TX_Diffuse.Sample(SS_Linear, uv);
     float vertLighting = diffuse.a;
 	
-	// Get the second GBuffer
-    float4 gb2 = TX_Nrm.Sample(SS_Linear, uv);
-	
-	// If we dont have a normal, just return the diffuse color
-    if (gb2.w < 0.001f)
+	// Sample depth first to detect sky pixels (reversed-Z: sky has depth == 0.0)
+    float expDepth = TX_Depth.Sample(SS_Linear, uv).r;
+    if (expDepth < 0.00001f)
+        // Sky pixel — no geometry was written, just return the diffuse (sky) color
         return float4(diffuse.rgb, 1);
 	
-	// Decode the view-space normal back
-    float3 normal = normalize(gb2.xyz);
+	// Get the second GBuffer
+    float2 gb2 = TX_Nrm.Sample(SS_Linear, uv).xy;
+	
+	// Decode the view-space normal from octahedral R16G16_SNORM
+    float3 normal = DecodeNormalGBuffer(gb2);
 	
 	// Get specular parameters
     float4 gb3 = TX_SI_SP.Sample(SS_Linear, uv);
@@ -734,7 +736,6 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
     float specPower = gb3.y;
 	
 	// Reconstruct VS World Position from depth
-    float expDepth = TX_Depth.Sample(SS_Linear, uv).r;
     float3 vsPosition = VSPositionFromDepth(expDepth, uv);
     float3 wsPosition = mul(float4(vsPosition, 1), SQ_InvView).xyz;
     float3 V = normalize(-vsPosition);

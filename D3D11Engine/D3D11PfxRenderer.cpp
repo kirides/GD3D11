@@ -74,8 +74,8 @@ XRESULT D3D11PfxRenderer::RenderHeightfog() {
 }
 
 /** Renders the godrays-Effect */
-XRESULT D3D11PfxRenderer::RenderGodRays(ID3D11ShaderResourceView* backbuffer, ID3D11ShaderResourceView* normals) {
-    return FX_GodRays->Render( backbuffer , normals );
+XRESULT D3D11PfxRenderer::RenderGodRays(ID3D11ShaderResourceView* backbuffer, ID3D11ShaderResourceView* depth) {
+    return FX_GodRays->Render( backbuffer , depth );
 }
 
 /** Renders the depth-of-field effect */
@@ -266,9 +266,9 @@ ID3D11ShaderResourceView* D3D11PfxRenderer::GetSAOResultSRV() const {
 
 XRESULT D3D11PfxRenderer::RenderGodRaysToTexture(
     ID3D11ShaderResourceView* backbuffer,
-    ID3D11ShaderResourceView* normals,
+    ID3D11ShaderResourceView* depthCopy,
     ID3D11ShaderResourceView** outGodRaysSRV ) {
-    return FX_GodRays->RenderToTexture( backbuffer, normals, outGodRaysSRV );
+    return FX_GodRays->RenderToTexture( backbuffer, depthCopy, outGodRaysSRV );
 }
 
 XRESULT D3D11PfxRenderer::RenderPostFXComposition(

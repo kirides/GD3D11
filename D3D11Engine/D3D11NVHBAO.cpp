@@ -58,7 +58,7 @@ XRESULT D3D11NVHBAO::Render(
     Input.DepthData.ProjectionMatrix.Layout = GFSDK_SSAO_COLUMN_MAJOR_ORDER;
     Input.DepthData.MetersToViewSpaceUnits = settings.MetersToViewSpaceUnits;
 
-    Input.NormalData.Enable = true;
+    Input.NormalData.Enable = false;
     Input.NormalData.pFullResNormalTextureSRV = pFullResNormalTexSRV.Get();
     auto identity = XMMatrixIdentity();
     Input.NormalData.WorldToViewMatrix.Data = GFSDK_SSAO_Float4x4( reinterpret_cast<float*>(&identity) ); // We already have them in view-space

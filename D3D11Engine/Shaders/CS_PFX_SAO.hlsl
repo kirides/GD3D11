@@ -4,6 +4,8 @@
 // Reads depth + normals, writes AO to R8_UNORM UAV
 //--------------------------------------------------------------------------------------
 
+#include "DS_Defines.h"
+
 cbuffer SAOConstantBuffer : register( b0 )
 {
     float4 SAO_ProjParams;    // x = 1/P._11, y = 1/P._22, z = P._34, w = P._33
@@ -36,8 +38,8 @@ float3 VSPositionFromDepth( float depth, float2 texcoord )
 
 float3 DecodeNormal( float4 enc )
 {
-    // GBuffer normals are R8G8B8A8_SNORM - already in [-1,1] range
-    return normalize( enc.xyz );
+    // GBuffer normals are RG16_SNORM - already in [-1,1] range
+    return DecodeNormalGBuffer( enc.xy );
 }
 
 // Golden-angle spiral sampling

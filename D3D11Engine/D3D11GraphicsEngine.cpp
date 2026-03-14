@@ -3317,7 +3317,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     graph.AddPass( L"G-Buffer Pass", [&]( RGBuilder& builder, RenderPass& pass ) {
         // Setup / Declare
         auto size = GetResolution();
-        normalsResource = builder.CreateTexture({ static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y), DXGI_FORMAT_R8G8B8A8_SNORM, L"GBufferNormals" });
+        normalsResource = builder.CreateTexture({ static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y), DXGI_FORMAT_R16G16_SNORM, L"GBufferNormals" });
         specularResource = builder.CreateTexture({ static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y), DXGI_FORMAT_R16G16_FLOAT, L"GBufferSpecular" });
         reactiveMaskResource = builder.CreateTexture({ static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y), DXGI_FORMAT_R8_UNORM, L"ReactiveMask" });
 
@@ -3621,7 +3621,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
 
                     PfxRenderer->RenderGodRaysToTexture(
                         backbufferResource->GetShaderResView().Get(),
-                        normalsTexture->GetShaderResView().Get(),
+                        GetDepthBuffer()->GetShaderResView().Get(),
                         &compositionGodRaysSRV);
                     GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
                 };

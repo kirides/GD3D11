@@ -48,7 +48,7 @@ public:
     XRESULT RenderSimpleSharpen( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& input, INT2 inputSize, const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& output, INT2 outputSize, RenderToTextureBuffer& intermediateBuffer );
 
     /** Renders the godrays-Effect */
-    XRESULT RenderGodRays(ID3D11ShaderResourceView* backbuffer, ID3D11ShaderResourceView* normals);
+    XRESULT RenderGodRays(ID3D11ShaderResourceView* backbuffer, ID3D11ShaderResourceView* depth);
 
     /** Renders the depth-of-field effect */
     XRESULT RenderDepthOfField(ID3D11ShaderResourceView* backbuffer);

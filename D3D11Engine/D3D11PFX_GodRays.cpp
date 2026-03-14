@@ -21,7 +21,7 @@ D3D11PFX_GodRays::D3D11PFX_GodRays( D3D11PfxRenderer* rnd ) : D3D11PFX_Effect( r
 /** Draws this effect to the given buffer */
 XRESULT D3D11PFX_GodRays::Render( 
     ID3D11ShaderResourceView* backbuffer, 
-    ID3D11ShaderResourceView* normals ) {
+    ID3D11ShaderResourceView* depth ) {
     if ( Engine::GAPI->GetSky()->GetAtmoshpereSettings().LightDirection.y <= 0 )
         return XR_SUCCESS; // Don't render the godrays in the night-time
 
@@ -34,7 +34,7 @@ XRESULT D3D11PFX_GodRays::Render(
     engine->GetContext()->OMGetRenderTargets( 1, oldRTV.GetAddressOf(), oldDSV.GetAddressOf() );
 
     if ( !FeatureLevel10Compatibility ) {
-        auto res = RenderCS( backbuffer, normals );
+        auto res = RenderCS( backbuffer, depth );
         engine->GetContext()->OMSetRenderTargets( 1, oldRTV.GetAddressOf(), oldDSV.Get() );
         return res;
     }
@@ -89,7 +89,7 @@ XRESULT D3D11PFX_GodRays::Render(
 
     ID3D11ShaderResourceView* srvs[2] {
         backbuffer,
-        normals,
+        depth,
     };
     engine->GetContext()->PSSetShaderResources( 0, 2, srvs );
 
@@ -129,7 +129,7 @@ XRESULT D3D11PFX_GodRays::Render(
 /** Compute shader path for FL11+ */
 XRESULT D3D11PFX_GodRays::RenderCS(
     ID3D11ShaderResourceView* backbuffer,
-    ID3D11ShaderResourceView* normals ) {
+    ID3D11ShaderResourceView* depthCopy ) {
 
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     auto& context = engine->GetContext();
@@ -198,7 +198,7 @@ XRESULT D3D11PFX_GodRays::RenderCS(
 
     context->CSSetSamplers( 0, 1, &clampSampler );
 
-    ID3D11ShaderResourceView* maskSRVs[2] = { backbuffer, normals };
+    ID3D11ShaderResourceView* maskSRVs[2] = { backbuffer, depthCopy };
     context->CSSetShaderResources( 0, 2, maskSRVs );
     context->CSSetUnorderedAccessViews( 0, 1, maskBuffer->GetUnorderedAccessView().GetAddressOf(), nullptr );
 
@@ -248,7 +248,7 @@ XRESULT D3D11PFX_GodRays::RenderCS(
 /** Public entry point: renders godrays to a pool texture, skipping the final additive blit */
 XRESULT D3D11PFX_GodRays::RenderToTexture(
     ID3D11ShaderResourceView* backbuffer,
-    ID3D11ShaderResourceView* normals,
+    ID3D11ShaderResourceView* depthCopy,
     ID3D11ShaderResourceView** outGodRaysSRV ) {
 
     *outGodRaysSRV = nullptr;
@@ -260,7 +260,7 @@ XRESULT D3D11PFX_GodRays::RenderToTexture(
     engine->SetDefaultStates();
 
     if ( !FeatureLevel10Compatibility ) {
-        return RenderToTextureCS( backbuffer, normals, outGodRaysSRV );
+        return RenderToTextureCS( backbuffer, depthCopy, outGodRaysSRV );
     }
 
     // FL10 pixel shader path: mask → zoom → write to pool texture (no additive blit)
@@ -306,7 +306,7 @@ XRESULT D3D11PFX_GodRays::RenderToTexture(
 
     engine->GetContext()->OMSetRenderTargets( 1, tempBuffer->GetRenderTargetView().GetAddressOf(), nullptr );
 
-    ID3D11ShaderResourceView* srvs[2] { backbuffer, normals };
+    ID3D11ShaderResourceView* srvs[2] { backbuffer, depthCopy };
     engine->GetContext()->PSSetShaderResources( 0, 2, srvs );
     engine->SetViewport({ 0, 0, INT2(tempBuffer->GetSizeX(), tempBuffer->GetSizeY()) });
     FxRenderer->DrawFullScreenQuad();

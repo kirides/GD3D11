@@ -1,3 +1,5 @@
+#include "DS_Defines.h"
+
 #define TILE_SIZE 16
 
 struct TiledPointLight {
@@ -105,8 +107,7 @@ void CSMain( uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID, uint
 
     // Read GBuffer
     float4 diffuse = TX_Diffuse.SampleLevel( SS_Linear, uv, 0 );
-    float4 gb2 = TX_Nrm.SampleLevel( SS_Linear, uv, 0 );
-    float3 normal = normalize( gb2.xyz );
+    float3 normal = DecodeNormalGBuffer( TX_Nrm.SampleLevel( SS_Linear, uv, 0 ).xy );
     float4 gb3 = TX_SI_SP.SampleLevel( SS_Linear, uv, 0 );
     float specIntensity = gb3.x;
     float specPower = gb3.y;
