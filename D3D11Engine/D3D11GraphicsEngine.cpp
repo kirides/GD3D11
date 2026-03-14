@@ -2917,6 +2917,8 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                 auto normalsTexture = graph.GetPhysicalTexture(normalsResource);
                 
                 PfxRenderer->RenderGodRays(backbufferResource->GetShaderResView().Get(), normalsTexture->GetShaderResView().Get());
+                // Godrays bind a different sampler
+                GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );                
             };
         });
     }
