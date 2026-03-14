@@ -713,7 +713,10 @@ XRESULT D3D11ShadowMap::DrawPointlightLights(
     
     DS_PointLightConstantBuffer plcb = {};
 
-    XMStoreFloat4x4( &plcb.PL_InvProj, XMMatrixInverse( nullptr, XMLoadFloat4x4( &Engine::GAPI->GetProjectionMatrix() ) ) );
+    {
+        auto& proj = Engine::GAPI->GetProjectionMatrix();
+        plcb.PL_ProjParams = float4( 1.0f / proj._11, 1.0f / proj._22, proj._43, proj._33 );
+    }
     XMStoreFloat4x4( &plcb.PL_InvView, XMMatrixInverse( nullptr, XMLoadFloat4x4( &Engine::GAPI->GetRendererState().TransformState.TransformView ) ) );
 
     plcb.PL_ViewportSize = Engine::GraphicsEngine->GetResolution();
@@ -1000,7 +1003,7 @@ XRESULT D3D11ShadowMap::DrawWorldLights()
 
     auto& proj = Engine::GAPI->GetProjectionMatrix();
     DS_ScreenQuadConstantBuffer scb = {};
-    XMStoreFloat4x4( &scb.SQ_InvProj, XMMatrixInverse( nullptr, XMLoadFloat4x4( &proj ) ) );
+    scb.SQ_ProjParams = float4( 1.0f / proj._11, 1.0f / proj._22, proj._43, proj._33 );
     XMStoreFloat4x4( &scb.SQ_InvView, XMMatrixInverse( nullptr, XMLoadFloat4x4( &Engine::GAPI->GetRendererState().TransformState.TransformView ) ) );
     scb.SQ_View = Engine::GAPI->GetRendererState().TransformState.TransformView;
 
@@ -1072,7 +1075,7 @@ XRESULT D3D11ShadowMap::DrawWorldLights()
     graphicsEngine->GetActivePS()->GetConstantBuffer()[0]->BindToPixelShader( 0 );
 
     PFXVS_ConstantBuffer vscb;
-    vscb.PFXVS_InvProj = scb.SQ_InvProj;
+    vscb.PFXVS_ProjParams = scb.SQ_ProjParams;
     graphicsEngine->GetActiveVS()->GetConstantBuffer()[0]->UpdateBuffer( &vscb );
     graphicsEngine->GetActiveVS()->GetConstantBuffer()[0]->BindToVertexShader( 0 );
 

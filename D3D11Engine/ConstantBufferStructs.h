@@ -61,11 +61,11 @@ struct PerObjectState {
 };
 
 struct PFXVS_ConstantBuffer {
-    XMFLOAT4X4 PFXVS_InvProj;
+    float4 PFXVS_ProjParams; // x = 1/P._11, y = 1/P._22, z = P._43, w = P._33
 };
 
 struct HeightfogConstantBuffer {
-    XMFLOAT4X4 InvProj;
+    float4 HF_ProjParams; // x = 1/P._11, y = 1/P._22, z = P._43, w = P._33
     XMFLOAT4X4 InvView;
     float3 CameraPosition;
     float HF_FogHeight;
@@ -120,7 +120,7 @@ struct DS_PointLightConstantBuffer {
     float2 PL_ViewportSize;
     float2 PL_Pad2;
 
-    XMFLOAT4X4 PL_InvProj; // Optimize out!
+    float4 PL_ProjParams; // x = 1/P._11, y = 1/P._22, z = P._43, w = P._33
     XMFLOAT4X4 PL_InvView;
 
     float3 PL_LightScreenPos;
@@ -130,7 +130,7 @@ struct DS_PointLightConstantBuffer {
 constexpr int MAX_CSM_CASCADES = 4;
 
 struct DS_ScreenQuadConstantBuffer {
-    XMFLOAT4X4 SQ_InvProj; // Optimize out!
+    float4 SQ_ProjParams; // x = 1/P._11, y = 1/P._22, z = P._43, w = P._33
     XMFLOAT4X4 SQ_InvView;
     XMFLOAT4X4 SQ_View;
 

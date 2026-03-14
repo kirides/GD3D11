@@ -18,7 +18,7 @@
 
 cbuffer DS_ScreenQuadConstantBuffer : register(b0)
 {
-    matrix SQ_InvProj; // Optimize out!
+    float4 SQ_ProjParams; // x = 1/P._11, y = 1/P._22, z = P._43, w = P._33
     matrix SQ_InvView;
     matrix SQ_View;
 	
@@ -66,14 +66,11 @@ struct PS_INPUT
 
 float3 VSPositionFromDepth(float depth, float2 vTexCoord)
 {
-	// Get NDC clip-space position
-    float4 vProjectedPos = float4(vTexCoord * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f), depth, 1.0f);
-
-	// Transform by the inverse projection matrix
-    float4 vPositionVS = mul(vProjectedPos, SQ_InvProj); //invViewProj == invProjection here
-
-	// Divide by w to get the view-space position
-    return vPositionVS.xyz / vPositionVS.www;
+	// Reconstruct view-space position from depth using projection parameters
+	// Avoids full 4x4 inverse projection matrix multiply
+    float2 ndc = vTexCoord * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f);
+    float linearZ = SQ_ProjParams.z / (depth - SQ_ProjParams.w);
+    return float3(ndc * SQ_ProjParams.xy * linearZ, linearZ);
 }
 
 //--------------------------------------------------------------------------------------
