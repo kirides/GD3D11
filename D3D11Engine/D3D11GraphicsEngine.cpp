@@ -3030,7 +3030,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             GetContext()->ClearRenderTargetView( graph.GetPhysicalTexture( colorResource )->GetRenderTargetView().Get(), reinterpret_cast<const float*>(&fogColor) );
         };
     });
-    
+
     if ( rendererState.RendererSettings.DrawSky ) {
         graph.AddPass( L"Draw Sky", [&]( RGBuilder& builder, RenderPass& pass ) {
             //// Setup / Declare
@@ -3038,13 +3038,13 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             //albedoTarget = builder.CreateTexture( albedoDesc );
             builder.Write( colorResource );
 
-            pass.m_executeCallback = [this, colorResource](const RenderGraph& graph)->void {
+            pass.m_executeCallback = [this, colorResource]( const RenderGraph& graph )->void {
                 // Draw back of the sky if outdoor
                 GetContext()->OMSetRenderTargets( 1, graph.GetPhysicalTexture( colorResource )->GetRenderTargetView().GetAddressOf(), nullptr );
-                
+
                 DrawSky();
             };
-        });
+        } );
     }
 
     RGResourceHandle normalsResource;
@@ -3148,8 +3148,8 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                 m_FrameLights.clear();
             }
         };
-    });    
-    
+    });
+
     graph.AddPass( L"Draw Frame AlphaMeshes", [&]( RGBuilder& builder, RenderPass& pass ) {
         // Setup / Declare
         builder.Write( backBufferHandle );
@@ -8600,20 +8600,36 @@ void D3D11GraphicsEngine::BuildSceneTextureAtlasses() {
     for ( auto vobInfo : m_StaticVobs ) {
         for ( auto& byTex : reinterpret_cast<MeshVisualInfo*>(vobInfo->VisualInfo)->MeshesByTexture ) {
             zCTexture* tex = byTex.first.Texture;
-            if ( !tex || !seenTextures.insert( tex ).second )
+            if ( !tex ) {
+                tex = byTex.first.Material->GetTexture();
+            }
+
+            if ( !tex ) {
+                tex = byTex.first.Material->GetAniTexture();
+            }
+
+            if ( !tex || !seenTextures.insert( tex ).second ) {
+                LogError() << "Texture not found for visual " << vobInfo->VisualInfo->VisualName;
                 continue; // skip nulls and duplicates
+            }
 
             auto cachedState = tex->CacheIn( -1 );
-            if ( cachedState != zRES_CACHED_IN )
+            if ( cachedState != zRES_CACHED_IN ) {
+                LogError() << "Texture " << tex->GetName() << " was not cached in";
                 continue;
+            }
 
             auto surface = tex->GetSurface();
-            if ( !surface || !surface->IsSurfaceReady() )
+            if ( !surface || !surface->IsSurfaceReady() ) {
+                LogError() << "Texture " << tex->GetName() << " surface not ready";
                 continue;
+            }
 
             auto engineTex = surface->GetEngineTexture();
-            if ( !engineTex )
+            if ( !engineTex ) {
+                LogError() << "Texture " << tex->GetName() << " no engine texture";
                 continue;
+            }
 
             D3D11_TEXTURE2D_DESC desc;
             engineTex->GetTextureObject()->GetDesc( &desc );
