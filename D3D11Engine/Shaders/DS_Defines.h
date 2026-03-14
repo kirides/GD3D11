@@ -16,18 +16,14 @@ struct DEFERRED_PS_OUTPUT_ALPHA_TO_COVERAGE
 
 
 
-float2 EncodeNormal(float3 n)
+// Encode a normalized view-space normal [-1,1] to UNORM [0,1] for R10G10B10A2_UNORM storage
+float4 EncodeNormalGBuffer(float3 n, float alpha)
 {
-    float f = sqrt(8*n.z+8);
-    return n.xy / f + 0.5;
+    return float4(n * 0.5 + 0.5, alpha);
 }
-float3 DecodeNormal(float2 enc)
+
+// Decode a UNORM [0,1] sample back to a normalized view-space normal [-1,1]
+float3 DecodeNormalGBuffer(float3 encoded)
 {
-    float2 fenc = enc.xy*4-2;
-    float f = dot(fenc,fenc);
-    float g = sqrt(1-f/4);
-    float3 n;
-    n.xy = fenc*g;
-    n.z = 1-f/2;
-    return n;
+    return normalize(encoded * 2.0 - 1.0);
 }

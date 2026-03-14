@@ -65,8 +65,7 @@ DEFERRED_PS_OUTPUT PSMain( PS_INPUT Input ) : SV_TARGET
 	DEFERRED_PS_OUTPUT output;
 	output.vDiffuse = float4(color.rgb, 1);
 	
-	output.vNrm.xyz = normalize(Input.vNormalVS);
-	output.vNrm.w = 1.0f;
+	output.vNrm = EncodeNormalGBuffer(normalize(Input.vNormalVS), 1.0f);
 	
 	output.vSI_SP.xy = 0;
 	
