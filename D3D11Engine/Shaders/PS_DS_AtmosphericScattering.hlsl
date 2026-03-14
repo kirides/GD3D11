@@ -699,6 +699,9 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
 	
 	// If we dont have a normal, just return the diffuse color
     if (gb2.w < 0.001f)
+        // FIXME: This is just so the sky is correctly rendered when atmospheric scattering is enabled
+        // Ideally we should draw the sky in a separate forward after applying the lighting, but that breaks other stuff.
+        // For now, we need the alpha channel and can't really make use of Octahedral encoding for the normals if we want to keep the sky rendering working, so we'll just return the diffuse color here and skip all lighting calculations for pixels without normals (mostly sky)
         return float4(diffuse.rgb, 1);
 	
 	// Decode the view-space normal back
