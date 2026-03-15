@@ -611,8 +611,11 @@ XRESULT D3D11GraphicsEngine::Init() {
             // to support more memory intensive features, even on less than 4GB cards, by streaming in the necessary tiles.
             SupportTextureAtlases = true;
             Engine::GAPI->GetRendererState().RendererSettings.UseIndirectVobShadows = SupportTextureAtlases;
-            Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.EnableAtlasStaticVobs = SupportTextureAtlases;
             Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.EnableAtlasWorldMesh = SupportTextureAtlases;
+
+            // VOB atlas is currently bugged, due to some vobs not getting their correct textures,
+            // likely due to being "animated" and at world load no animation has happened yet.
+            Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.EnableAtlasStaticVobs = false;
         }
     }
 
