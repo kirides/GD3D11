@@ -14,6 +14,7 @@
 #include "zCTexture.h"
 #include "zCMaterial.h"
 #include "zCVob.h"
+#include "zCVisual.h"
 
 #include <map>
 #include <unordered_set>
@@ -76,14 +77,18 @@ void D3D11VobAtlasPass::BuildTextureAtlasses() {
 
     for ( auto vobInfo : m_Engine->m_StaticVobs ) {
         for ( auto& byTex : reinterpret_cast<MeshVisualInfo*>(vobInfo->VisualInfo)->MeshesByTexture ) {
-            zCTexture* tex = byTex.first.Texture;
-            if ( !tex )
-                tex = byTex.first.Material->GetTexture();
-            if ( !tex )
-                tex = byTex.first.Material->GetAniTexture();
+            zCTexture* tex = byTex.first.Material->GetTexture();
 
-            if ( !tex || !seenTextures.insert( tex ).second ) {
-                LogError() << "Texture not found for visual " << vobInfo->VisualInfo->VisualName;
+            if ( !tex ) {
+                auto vis = reinterpret_cast<MeshVisualInfo*>(vobInfo->VisualInfo)->Visual;
+                LogError()
+                    << "Texture not found for visual " << vobInfo->VisualInfo->VisualName
+                    << " Visual Type: " << vis->GetVisualType();
+
+                continue;
+            }
+
+            if ( !seenTextures.insert( tex ).second ) {
                 continue;
             }
 
