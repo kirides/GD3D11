@@ -77,6 +77,7 @@ public:
     /** Constructs a readable mesh from the data given in the progmesh */
     void ConstructVertexBuffer( std::vector<ExVertexStruct>* vertices ) {
         zCArrayAdapt<float3>* pl = GetPositionList();
+        vertices->reserve( pl->NumInArray );
 
         for ( int i = 0; i < pl->NumInArray; i++ ) {
             ExVertexStruct vx;
