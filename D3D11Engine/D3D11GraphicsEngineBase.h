@@ -72,7 +72,7 @@ public:
     BaseLineRenderer* GetLineRenderer() override;
 
     /** Returns the graphics-device this is running on */
-    std::string GetGraphicsDeviceName() override;
+    const std::string& GetGraphicsDeviceName() override;
 
     /** Saves a screenshot */
     virtual void SaveScreenshot() {}

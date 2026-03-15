@@ -1457,6 +1457,7 @@ XRESULT D3D11GraphicsEngine::FetchDisplayModeListDXGI() {
         currentRefreshRate = devMode.dmDisplayFrequency;
     }
 
+    CachedDisplayModes.reserve( numModes );
     for ( UINT i = 0; i < numModes; i++ ) 	{
         DXGI_MODE_DESC1& displayMode = displayModes[i];
         if ( static_cast<UINT>(Resolution.x) == displayMode.Width && static_cast<UINT>(Resolution.y) == displayMode.Height ) {
@@ -1507,6 +1508,7 @@ XRESULT D3D11GraphicsEngine::FetchDisplayModeListWindows() {
 XRESULT
 D3D11GraphicsEngine::GetDisplayModeList( std::vector<DisplayModeInfo>* modeList,
     bool includeSuperSampling ) {
+    modeList->reserve( CachedDisplayModes.size() );
     for ( DisplayModeInfo& mode : CachedDisplayModes ) {
         modeList->push_back( mode );
     }

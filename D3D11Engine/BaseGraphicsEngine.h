@@ -128,7 +128,7 @@ public:
     virtual BaseLineRenderer* GetLineRenderer() PURE;
 
     /** Returns the graphics-device this is running on */
-    virtual std::string GetGraphicsDeviceName() PURE;
+    virtual const std::string& GetGraphicsDeviceName() PURE;
 
     /** Draws a screen fade effects */
     virtual XRESULT DrawScreenFade( void* camera ) { return XR_SUCCESS; };
