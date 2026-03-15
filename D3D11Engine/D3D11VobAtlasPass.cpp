@@ -300,6 +300,11 @@ void D3D11VobAtlasPass::BuildGPUCullingBuffers() {
     // --- 2. Build merged indirect args + SubmeshGPUData ---
     std::vector<D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS> mergedArgs;
     std::unordered_map<MeshVisualInfo*, std::vector<SubmeshGPUData>> visualSubmeshMap;
+    {
+        size_t totalSubmeshes = 0;
+        for ( const auto& group : m_AtlasDrawGroups ) totalSubmeshes += group.submeshes.size();
+        mergedArgs.reserve( totalSubmeshes );
+    }
 
     UINT runningInstanceOffset = 0;
     UINT globalArgIndex        = 0;
@@ -344,11 +349,11 @@ void D3D11VobAtlasPass::BuildGPUCullingBuffers() {
     struct VisualSubmeshRange { UINT start; UINT count; };
     std::unordered_map<MeshVisualInfo*, VisualSubmeshRange> visualSubmeshRanges;
     std::vector<SubmeshGPUData> submeshGPU;
+    submeshGPU.reserve( mergedArgs.size() );
 
     for ( auto& [visual, entries] : visualSubmeshMap ) {
         UINT start = static_cast<UINT>(submeshGPU.size());
-        for ( auto& entry : entries )
-            submeshGPU.push_back( entry );
+        submeshGPU.insert( submeshGPU.end(), entries.begin(), entries.end() );
         visualSubmeshRanges[visual] = { start, static_cast<UINT>(entries.size()) };
     }
 
