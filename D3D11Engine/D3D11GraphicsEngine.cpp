@@ -8141,6 +8141,11 @@ void D3D11GraphicsEngine::OnWorldLoaded()
 
     // --- Build world mesh atlas: collect textures, build atlases, merge geometry ---
     m_MeshAtlasPass->Build();
+
+    if ( Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.EnableAtlasWorldMesh
+        || Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.EnableAtlasStaticVobs ) {
+        Engine::GAPI->ReloadTextures();
+    }
 }
 
 void D3D11GraphicsEngine::StoreVobPreviousTransforms() {
