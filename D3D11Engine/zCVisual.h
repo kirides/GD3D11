@@ -55,7 +55,7 @@ public:
         }
 
         for ( unsigned int i = 0; i < extv.size(); i++ ) {
-            std::string ext = extv[i];
+            const std::string& ext = extv[i];
 
             if ( ext == ".3DS" )
                 return VT_PROGMESHPROTO;
