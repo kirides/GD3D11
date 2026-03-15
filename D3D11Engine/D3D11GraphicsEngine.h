@@ -6,7 +6,6 @@
 #include "D3D11ShaderManager.h"
 #include "D3D11PipelineStateObject.h"
 #include "D3D11IndirectBuffer.h"
-#include "D3D11StreamingResourcesManager.h"
 #include "VobCulling.h"
 #include "D3D11VobAtlasPass.h"
 #include "D3D11MeshAtlasPass.h"

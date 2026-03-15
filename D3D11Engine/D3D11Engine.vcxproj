@@ -855,7 +855,6 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="D3D11StructuredBuffer.h" />
     <ClInclude Include="D3D11Texture.h" />
     <ClInclude Include="D3D11TextureAtlasManager.h" />
-    <ClInclude Include="D3D11StreamingResourcesManager.h" />
     <ClInclude Include="D3D11VertexBuffer.h" />
     <ClInclude Include="D3D11VobAtlasPass.h" />
     <ClInclude Include="D3D11VShader.h" />
@@ -1118,7 +1117,6 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="D3D11TiledDeferredShading.cpp" />
     <ClCompile Include="D3D11LegacyDeferredShading.cpp" />
     <ClCompile Include="D3D11Texture.cpp" />
-    <ClCompile Include="D3D11StreamingResourcesManager.cpp" />
     <ClCompile Include="D3D11VertexBuffer.cpp" />
     <ClCompile Include="D3D11VobAtlasPass.cpp" />
     <ClCompile Include="D3D11VShader.cpp" />
