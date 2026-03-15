@@ -3931,7 +3931,9 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh_Indirect( bool noTextures ) {
     Engine::GAPI->ResetWorldTransform();
 
     // Draw atlas path first (handles opaque + alpha-test submeshes that were atlased)
-    m_MeshAtlasPass->Draw();
+    if ( Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.EnableAtlasWorldMesh ) {
+        m_MeshAtlasPass->Draw();
+    }
 
     struct MDI_DrawArgs
     {
@@ -4203,7 +4205,9 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
     Engine::GAPI->SetViewTransformXM( view );
     Engine::GAPI->ResetWorldTransform();
 
-    m_MeshAtlasPass->Draw();
+    if ( Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.EnableAtlasWorldMesh ) {
+        m_MeshAtlasPass->Draw();
+    }
 
     SetActivePixelShader( PShaderID::PS_Diffuse );
     SetActiveVertexShader( VShaderID::VS_Ex );
