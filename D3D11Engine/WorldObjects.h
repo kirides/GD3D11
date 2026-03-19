@@ -98,6 +98,8 @@ struct WorldMeshInfo : public MeshInfo {
         SaveInfo = false;
     }
 
+    virtual ~WorldMeshInfo() = default;
+
     /** If true we will save an info-file on next zen-resource-save */
     bool SaveInfo;
 };
@@ -183,7 +185,7 @@ struct MeshVisualInfo : public BaseVisualInfo {
         FullMesh = nullptr;
     }
 
-    ~MeshVisualInfo() {
+    virtual ~MeshVisualInfo() {
         if ( MorphMeshVisual ) {
             zCObject_Release( MorphMeshVisual );
         }
@@ -220,7 +222,7 @@ struct SkeletalMeshVisualInfo : public BaseVisualInfo {
         Visual = nullptr;
     }
 
-    ~SkeletalMeshVisualInfo() {
+    virtual ~SkeletalMeshVisualInfo() {
         for ( auto& [k, meshes] : SkeletalMeshes ) {
             for ( SkeletalMeshInfo* smi : meshes ) {
                 delete smi;
@@ -264,7 +266,7 @@ struct VobInfo : public BaseVobInfo {
         VobSection = nullptr;
     }
 
-    ~VobInfo() {
+    virtual ~VobInfo() {
         //delete VisualInfo;
         delete VobConstantBuffer;
     }
@@ -347,7 +349,7 @@ struct SkeletalVobInfo : public BaseVobInfo {
         VobConstantBuffer = nullptr;
     }
 
-    ~SkeletalVobInfo() {
+    virtual ~SkeletalVobInfo() {
         //delete VisualInfo;
 
         for ( auto& [k, meshes] : NodeAttachments ) {
