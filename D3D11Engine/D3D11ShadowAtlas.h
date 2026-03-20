@@ -55,6 +55,13 @@ public:
      */
     HRESULT Resize( UINT cascade0Size );
 
+    /**
+     * Resize and update cascade count.
+     * @param cascade0Size New size for cascade 0
+     * @param numCascades Number of cascades (1 to 3)
+     */
+    HRESULT Resize( UINT cascade0Size, UINT numCascades );
+
     /** Get the single DSV for the entire atlas. */
     ID3D11DepthStencilView* GetDepthStencilView() const;
 

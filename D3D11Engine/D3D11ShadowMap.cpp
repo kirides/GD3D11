@@ -180,6 +180,9 @@ void D3D11ShadowMap::RecreateShadowSampler() {
 void D3D11ShadowMap::EnsureShadowMapBackend( int size ) {
     if ( !m_device ) return;
 
+    const auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+    const UINT atlasNumCascades = static_cast<UINT>( std::clamp<int>( settings.NumShadowCascades, 1, 3 ) );
+
     bool desiredUseAtlas = ShouldUseAtlas();
     int clampedSize = std::min<int>( std::max<int>( size, 512 ), (FeatureLevel10Compatibility ? 8192 : 16384) );
 
@@ -190,8 +193,9 @@ void D3D11ShadowMap::EnsureShadowMapBackend( int size ) {
         if ( m_useAtlas ) {
             m_cascadedShadowMap.reset();
             m_shadowAtlas = std::make_unique<D3D11ShadowAtlas>();
-            int atlasCascade0Size = std::min<int>( clampedSize, FeatureLevel10Compatibility ? 4096 : 8192 );
-            m_shadowAtlas->Init( m_device, atlasCascade0Size, 3 );
+            const int maxAtlasCascade0Size = (atlasNumCascades <= 1) ? clampedSize : (clampedSize / 2);
+            int atlasCascade0Size = std::min<int>( clampedSize, maxAtlasCascade0Size );
+            m_shadowAtlas->Init( m_device, atlasCascade0Size, atlasNumCascades );
         } else {
             m_shadowAtlas.reset();
             m_cascadedShadowMap = std::make_unique<D3D11CascadedShadowMapBuffer>();
@@ -211,9 +215,13 @@ void D3D11ShadowMap::EnsureShadowMapBackend( int size ) {
     // Ensure resources exist even if no mode switch occurred.
     if ( m_useAtlas && !m_shadowAtlas ) {
         m_shadowAtlas = std::make_unique<D3D11ShadowAtlas>();
-        const int maxSize = (FeatureLevel10Compatibility ? 8192 : 16384);
-        int atlasCascade0Size = std::min<int>( clampedSize, maxSize / 2 );
-        m_shadowAtlas->Init( m_device, atlasCascade0Size, 3 );
+        const int maxAtlasCascade0Size = (atlasNumCascades <= 1) ? clampedSize : (clampedSize / 2);
+        int atlasCascade0Size = std::min<int>( clampedSize, maxAtlasCascade0Size );
+        m_shadowAtlas->Init( m_device, atlasCascade0Size, atlasNumCascades );
+    } else if ( m_useAtlas && m_shadowAtlas ) {
+        const int maxAtlasCascade0Size = (atlasNumCascades <= 1) ? clampedSize : (clampedSize / 2);
+        int atlasCascade0Size = std::min<int>( clampedSize, maxAtlasCascade0Size );
+        m_shadowAtlas->Resize( atlasCascade0Size, atlasNumCascades );
     } else if ( !m_useAtlas && !m_cascadedShadowMap ) {
         m_cascadedShadowMap = std::make_unique<D3D11CascadedShadowMapBuffer>();
         m_cascadedShadowMap->Init( m_device, clampedSize, MAX_CSM_CASCADES );
@@ -247,14 +255,17 @@ void D3D11ShadowMap::Resize( int size ) {
 
     const int maxSize = (FeatureLevel10Compatibility ? 8192 : 16384);
     const int s = std::min<int>( std::max<int>( size, 512 ), maxSize );
+    const auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+    const UINT atlasNumCascades = static_cast<UINT>( std::clamp<int>( settings.NumShadowCascades, 1, 3 ) );
 
     EnsureShadowMapBackend( s );
 
     if ( m_useAtlas ) {
-        // Atlas path: cascade 0 capped at halve of max size
-        int atlasCascade0Size = std::min<int>( s, maxSize / 2 );
+        // Atlas path: with one cascade, use full hardware limit; otherwise reserve width for atlas packing.
+        const int maxAtlasCascade0Size = (atlasNumCascades <= 1) ? maxSize : (maxSize / 2);
+        int atlasCascade0Size = std::min<int>( s, maxAtlasCascade0Size );
         if ( m_shadowAtlas ) {
-            m_shadowAtlas->Resize( atlasCascade0Size );
+            m_shadowAtlas->Resize( atlasCascade0Size, atlasNumCascades );
         }
     } else {
         // Texture array path

@@ -158,6 +158,12 @@ HRESULT D3D11ShadowAtlas::Resize( UINT cascade0Size ) {
     return S_OK;
 }
 
+HRESULT D3D11ShadowAtlas::Resize( UINT cascade0Size, UINT numCascades ) {
+    constexpr UINT MAX_SHADOW_ATLAS_CASCADES = 3;
+    m_numCascades = std::clamp<UINT>( numCascades, 1, MAX_SHADOW_ATLAS_CASCADES );
+    return Resize( cascade0Size );
+}
+
 ID3D11DepthStencilView* D3D11ShadowAtlas::GetDepthStencilView() const {
     return m_dsv.Get();
 }
