@@ -1,11 +1,28 @@
 //--------------------------------------------------------------------------------------
-// Depth of Field - Composite pass
-// Blends the bokeh-blurred image with the sharp original using stored CoC
+// Depth of Field - Full-res composite pass
+// Reads full-res scene + depth, upsampled half-res bokeh blur, and focus texture
+// Blends sharp and blurred based on per-pixel CoC
 //--------------------------------------------------------------------------------------
 
+cbuffer DepthOfFieldConstantBuffer : register( b0 )
+{
+    float DoF_FocusDistance;
+    float DoF_FocusRange;
+    float DoF_BokehRadius;
+    float DoF_MaxBlur;
+
+    float4 DoF_ProjParams;
+    float DoF_NearPlane;
+    float DoF_FarPlane;
+    float DoF_Pad;
+    float DoF_Pad2;
+};
+
 SamplerState SS_Linear : register( s0 );
-Texture2D TX_CoCScene : register( t0 );  // Sharp color (rgb) + encoded CoC (a) from Pass 1
-Texture2D TX_Bokeh : register( t1 );     // Bokeh blurred result from Pass 2
+Texture2D TX_Scene : register( t0 );   // Full-res sharp scene
+Texture2D TX_Blur  : register( t1 );   // Half-res bokeh (rgb=blur, a=CoC)
+Texture2D TX_Depth : register( t2 );   // Full-res hardware depth
+Texture2D TX_Focus : register( t3 );   // 1x1 smoothed focus depth
 
 struct PS_INPUT
 {
@@ -14,20 +31,27 @@ struct PS_INPUT
     float4 vPosition : SV_POSITION;
 };
 
+float LinearizeDepth( float d )
+{
+    return DoF_ProjParams.z / ( d - DoF_ProjParams.w );
+}
+
 float4 PSMain( PS_INPUT Input ) : SV_TARGET
 {
-    float4 sharpSample = TX_CoCScene.Sample( SS_Linear, Input.vTexcoord );
-    float3 sharpColor = sharpSample.rgb;
-    // Decode CoC from [0, 1] back to [-1, 1]
-    float coc = sharpSample.a * 2.0 - 1.0;
-    float3 blurColor = TX_Bokeh.Sample( SS_Linear, Input.vTexcoord ).rgb;
+    float3 sharpColor = TX_Scene.Sample( SS_Linear, Input.vTexcoord ).rgb;
 
-    float absCoC = abs( coc );
+    float focusDepth = TX_Focus.SampleLevel( SS_Linear, float2( 0.5, 0.5 ), 0 ).r;
+    float depth = TX_Depth.Sample( SS_Linear, Input.vTexcoord ).r;
+    float linearDepth = LinearizeDepth( depth );
 
-    // Smooth blend from sharp to blurred based on circle-of-confusion magnitude
-    float blendFactor = smoothstep( 0.0, 1.0, absCoC );
+    // Per-pixel CoC at full resolution for crisp focus boundary
+    float coc = saturate( ( linearDepth - focusDepth ) / DoF_FocusRange );
 
-    float3 finalColor = lerp( sharpColor, blurColor, blendFactor );
+    // Bilinear-upsampled half-res bokeh blur
+    float4 blurSample = TX_Blur.Sample( SS_Linear, Input.vTexcoord );
+
+    float blendFactor = smoothstep( 0.0, 1.0, coc );
+    float3 finalColor = lerp( sharpColor, blurSample.rgb, blendFactor );
 
     return float4( finalColor, 1.0 );
 }

@@ -10,6 +10,7 @@
 #include "D3D11ConstantBuffer.h"
 #include "ConstantBufferStructs.h"
 #include "GothicAPI.h"
+#include "TexturePool.h"
 
 D3D11PFX_DepthOfField::D3D11PFX_DepthOfField( D3D11PfxRenderer* rnd ) : D3D11PFX_Effect( rnd ), m_FocusIndex( 0 ) {
     auto* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
@@ -44,8 +45,7 @@ XRESULT D3D11PFX_DepthOfField::Render( ID3D11ShaderResourceView* backbuffer ) {
 
     auto vs = engine->GetShaderManager().GetVShader( "VS_PFX" );
     auto focusPS = engine->GetShaderManager().GetPShader( "PS_PFX_DoF_FocusResolve" );
-    auto cocPS = engine->GetShaderManager().GetPShader( "PS_PFX_DoF_CoC" );
-    auto bokehPS = engine->GetShaderManager().GetPShader( "PS_PFX_DoF_Bokeh" );
+    auto blurPS = engine->GetShaderManager().GetPShader( "PS_PFX_DoF" );
     auto compositePS = engine->GetShaderManager().GetPShader( "PS_PFX_DoF_Composite" );
 
     vs->Apply();
@@ -58,12 +58,11 @@ XRESULT D3D11PFX_DepthOfField::Render( ID3D11ShaderResourceView* backbuffer ) {
     cb.DoF_MaxBlur = rendererSettings.DoFMaxBlur;
 
     auto& proj = Engine::GAPI->GetProjectionMatrix();
-    // Column-major projection: _34 is the depth offset, _33 is the depth scale
     cb.DoF_ProjParams = float4( 1.0f / proj._11, 1.0f / proj._22, proj._34, proj._33 );
     cb.DoF_NearPlane = Engine::GAPI->GetRendererState().RendererInfo.NearPlane;
     cb.DoF_FarPlane = Engine::GAPI->GetRendererState().RendererInfo.FarPlane;
 
-    // --- Pass 0: Focus Resolve (temporal smoothing into 1x1 R32_FLOAT) ---
+    // --- Pass 0: Focus Resolve (1x1 temporal smoothing) ---
     int prevIdx = m_FocusIndex;
     int curIdx = 1 - m_FocusIndex;
 
@@ -78,68 +77,65 @@ XRESULT D3D11PFX_DepthOfField::Render( ID3D11ShaderResourceView* backbuffer ) {
     engine->GetContext()->RSSetViewports( 1, &focusVP );
 
     engine->GetContext()->OMSetRenderTargets( 1, m_FocusRTV[curIdx].GetAddressOf(), nullptr );
-
-    // t0 = depth buffer, t1 = previous frame focus (1x1)
     engine->GetDepthBuffer()->BindToPixelShader( engine->GetContext().Get(), 0 );
     engine->GetContext()->PSSetShaderResources( 1, 1, m_FocusSRV[prevIdx].GetAddressOf() );
 
     FxRenderer->DrawFullScreenQuad();
 
     m_FocusIndex = curIdx;
-
     engine->GetContext()->RSSetViewports( 1, &oldVP );
 
     ID3D11ShaderResourceView* nullSRV2[2] = { nullptr, nullptr };
     engine->GetContext()->PSSetShaderResources( 0, 2, nullSRV2 );
 
-    // --- Pass 1: Compute CoC ---
-    auto cocBuffer = FxRenderer->GetTempBuffer();
+    // --- Pass 1: Half-res bokeh blur ---
+    auto res = engine->GetResolution();
+    DXGI_FORMAT bbufferFormat = engine->GetBackBufferFormat();
+    auto halfBuffer = FxRenderer->GetTexturePool()->Acquire(
+        TexturePool::Description{ res.x / 2, res.y / 2, bbufferFormat } );
 
-    cocPS->Apply();
-    cocPS->GetConstantBuffer()[0]->UpdateBuffer( &cb );
-    cocPS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+    D3D11_VIEWPORT halfVP = { 0, 0, static_cast<float>(res.x / 2), static_cast<float>(res.y / 2), 0, 1 };
+    engine->GetContext()->RSSetViewports( 1, &halfVP );
 
-    engine->GetContext()->OMSetRenderTargets( 1, cocBuffer->GetRenderTargetView().GetAddressOf(), nullptr );
+    blurPS->Apply();
+    blurPS->GetConstantBuffer()[0]->UpdateBuffer( &cb );
+    blurPS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
 
-    // t0 = scene, t1 = depth, t2 = focus (1x1)
+    engine->GetContext()->OMSetRenderTargets( 1, halfBuffer->GetRenderTargetView().GetAddressOf(), nullptr );
+
+    // t0 = full-res scene, t1 = full-res depth, t2 = focus (1x1)
     engine->GetContext()->PSSetShaderResources( 0, 1, &backbuffer );
     engine->GetDepthBuffer()->BindToPixelShader( engine->GetContext().Get(), 1 );
     engine->GetContext()->PSSetShaderResources( 2, 1, m_FocusSRV[m_FocusIndex].GetAddressOf() );
 
     FxRenderer->DrawFullScreenQuad();
 
-    // --- Pass 2: Bokeh blur ---
-    auto bokehBuffer = FxRenderer->GetTempBuffer();
+    ID3D11ShaderResourceView* nullSRVs[4] = { nullptr, nullptr, nullptr, nullptr };
+    engine->GetContext()->PSSetShaderResources( 0, 4, nullSRVs );
+    engine->GetContext()->RSSetViewports( 1, &oldVP );
 
-    bokehPS->Apply();
-    bokehPS->GetConstantBuffer()[0]->UpdateBuffer( &cb );
-    bokehPS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+    // --- Pass 2: Full-res composite (render to temp, then blit to avoid read-write hazard) ---
+    auto compositeBuffer = FxRenderer->GetTempBuffer();
 
-    engine->GetContext()->OMSetRenderTargets( 1, bokehBuffer->GetRenderTargetView().GetAddressOf(), nullptr );
-
-    ID3D11ShaderResourceView* cocSRV = cocBuffer->GetShaderResView().Get();
-    engine->GetContext()->PSSetShaderResources( 0, 1, &cocSRV );
-
-    FxRenderer->DrawFullScreenQuad();
-
-    // --- Pass 3: Composite ---
     compositePS->Apply();
+    compositePS->GetConstantBuffer()[0]->UpdateBuffer( &cb );
+    compositePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
 
-    engine->GetContext()->OMSetRenderTargets( 1, oldRTV.GetAddressOf(), nullptr );
+    engine->GetContext()->OMSetRenderTargets( 1, compositeBuffer->GetRenderTargetView().GetAddressOf(), nullptr );
 
-    cocSRV = cocBuffer->GetShaderResView().Get();
-    engine->GetContext()->PSSetShaderResources( 0, 1, &cocSRV );
-    ID3D11ShaderResourceView* bokehSRV = bokehBuffer->GetShaderResView().Get();
-    engine->GetContext()->PSSetShaderResources( 1, 1, &bokehSRV );
-
-    Engine::GAPI->GetRendererState().BlendState.SetDefault();
-    Engine::GAPI->GetRendererState().BlendState.SetDirty();
+    // t0 = full-res scene, t1 = half-res blur, t2 = full-res depth, t3 = focus (1x1)
+    engine->GetContext()->PSSetShaderResources( 0, 1, &backbuffer );
+    ID3D11ShaderResourceView* halfSRV = halfBuffer->GetShaderResView().Get();
+    engine->GetContext()->PSSetShaderResources( 1, 1, &halfSRV );
+    engine->GetDepthBuffer()->BindToPixelShader( engine->GetContext().Get(), 2 );
+    engine->GetContext()->PSSetShaderResources( 3, 1, m_FocusSRV[m_FocusIndex].GetAddressOf() );
 
     FxRenderer->DrawFullScreenQuad();
 
-    // Cleanup
-    ID3D11ShaderResourceView* nullSRVs[3] = { nullptr, nullptr, nullptr };
-    engine->GetContext()->PSSetShaderResources( 0, 3, nullSRVs );
+    engine->GetContext()->PSSetShaderResources( 0, 4, nullSRVs );
+
+    // Blit composite result to backbuffer
+    FxRenderer->CopyTextureToRTV( compositeBuffer->GetShaderResView(), oldRTV, res );
 
     engine->GetContext()->OMSetRenderTargets( 1, oldRTV.GetAddressOf(), oldDSV.Get() );
 

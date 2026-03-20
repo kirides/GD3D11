@@ -574,16 +574,13 @@ XRESULT D3D11ShaderManager::Init() {
     Shaders.push_back( ShaderInfo( "VS_AdvanceRain", "VS_AdvanceRain.hlsl", "v", 13 ) );
     Shaders.back().cBufferSizes.push_back( sizeof( AdvanceRainConstantBuffer ) );
     
-    Shaders.push_back( ShaderInfo( "PS_PFX_DoF_CoC", "PS_PFX_DoF_CoC.hlsl", "p" ) );
+    Shaders.push_back( ShaderInfo( "PS_PFX_DoF_FocusResolve", "PS_PFX_DoF_FocusResolve.hlsl", "p" ) );
     Shaders.back().cBufferSizes.push_back( sizeof( DepthOfFieldConstantBuffer ) );
-    
-    Shaders.push_back( ShaderInfo( "PS_PFX_DoF_Bokeh", "PS_PFX_DoF_Bokeh.hlsl", "p" ) );
+
+    Shaders.push_back( ShaderInfo( "PS_PFX_DoF", "PS_PFX_DoF.hlsl", "p" ) );
     Shaders.back().cBufferSizes.push_back( sizeof( DepthOfFieldConstantBuffer ) );
     
     Shaders.push_back( ShaderInfo( "PS_PFX_DoF_Composite", "PS_PFX_DoF_Composite.hlsl", "p" ) );
-    Shaders.back().cBufferSizes.push_back( sizeof( DepthOfFieldConstantBuffer ) );
-    
-    Shaders.push_back( ShaderInfo( "PS_PFX_DoF_FocusResolve", "PS_PFX_DoF_FocusResolve.hlsl", "p" ) );
     Shaders.back().cBufferSizes.push_back( sizeof( DepthOfFieldConstantBuffer ) );
 
     // TAA Shader
