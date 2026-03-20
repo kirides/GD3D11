@@ -227,10 +227,11 @@ float4 GetCascadeUVAndBounds(float3 wsPosition, int cascadeIndex)
                     projectedTexCoords.y > margin && projectedTexCoords.y < (1.0f - margin);
     
     // Calculate blend factor based on distance to edge
-    const float blendZoneStart = 0.15f;
+    // Wide blend zone (30%) with smoothstep for gradual cascade transitions
+    const float blendZoneStart = 0.30f;
     float distToEdge = min(min(projectedTexCoords.x, 1.0f - projectedTexCoords.x),
                            min(projectedTexCoords.y, 1.0f - projectedTexCoords.y));
-    float blendFactor = 1.0f - saturate((distToEdge - margin) / (blendZoneStart - margin));
+    float blendFactor = 1.0f - smoothstep(margin, blendZoneStart, distToEdge);
     
     return float4(projectedTexCoords, inBounds ? 1.0f : 0.0f, blendFactor);
 }
@@ -428,11 +429,11 @@ float ComputeCascadedShadowValueSoft(float3 wsPosition, float viewSpaceZ, float 
             shadow = SampleCascadeShadowSoft(wsPosition, c, vertLighting, bias, screenPos, softness);
             
             // Blend with next cascade near edges (if next cascade exists and has this pixel in bounds)
+            // Pure lerp avoids the darkening artifact that min() causes at transitions
             if (c < NUM_CSM_CASCADES - 1 && cascadeInfo[c].w > 0.0f && cascadeInfo[c + 1].z > 0.5f)
             {
                 float shadowNext = SampleCascadeShadowSoft(wsPosition, c + 1, vertLighting, bias, screenPos, softness);
-                float blendedShadow = lerp(shadow, shadowNext, cascadeInfo[c].w);
-				shadow = min(shadow, blendedShadow);
+                shadow = lerp(shadow, shadowNext, cascadeInfo[c].w);
             }
             break;
         }
