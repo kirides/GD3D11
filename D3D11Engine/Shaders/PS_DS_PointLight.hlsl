@@ -16,7 +16,7 @@ cbuffer DS_PointLightConstantBuffer : register( b0 )
 	float2 PL_ViewportSize;
 	float2 PL_Pad2;
 	
-	matrix PL_InvProj; // Optimize out!
+	float4 PL_ProjParams; // x = 1/P._11, y = 1/P._22, z = P._43, w = P._33
 	matrix PL_InvView; // Optimize out!
 	
 	float3 PL_LightScreenPos;
@@ -43,14 +43,10 @@ struct PS_INPUT
 
 float3 VSPositionFromDepth(float depth, float2 vTexCoord)
 {
-	// Get NDC clip-space position
-	float4 vProjectedPos = float4(vTexCoord * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f), depth, 1.0f);
-
-	// Transform by the inverse projection matrix
-	float4 vPositionVS = mul(vProjectedPos, PL_InvProj); //invViewProj == invProjection here
-
-	// Divide by w to get the view-space position
-	return vPositionVS.xyz / vPositionVS.www;
+	// Reconstruct view-space position from depth using projection parameters
+	float2 ndc = vTexCoord * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f);
+	float linearZ = PL_ProjParams.z / (depth - PL_ProjParams.w);
+	return float3(ndc * PL_ProjParams.xy * linearZ, linearZ);
 }
 
 //--------------------------------------------------------------------------------------

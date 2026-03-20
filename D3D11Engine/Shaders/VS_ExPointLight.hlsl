@@ -19,7 +19,7 @@ cbuffer DS_PointLightConstantBuffer : register( b1 )
 	float PL_Pad1;
 	float3 PL_PositionView;
 
-	matrix PL_InvProj; // Optimize out!
+	float4 PL_ProjParams; // x = 1/P._11, y = 1/P._22, z = P._43, w = P._33
 };
 
 

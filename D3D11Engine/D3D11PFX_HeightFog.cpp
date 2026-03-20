@@ -28,7 +28,10 @@ XRESULT D3D11PFX_HeightFog::Render( RenderToTextureBuffer* fxbuffer ) {
 	vs->Apply();
 
 	HeightfogConstantBuffer cb;
-	XMStoreFloat4x4( &cb.InvProj, XMMatrixInverse( nullptr, XMLoadFloat4x4(&Engine::GAPI->GetProjectionMatrix()) ) );
+	{
+		auto& proj = Engine::GAPI->GetProjectionMatrix();
+		cb.HF_ProjParams = float4( 1.0f / proj._11, 1.0f / proj._22, proj._43, proj._33 );
+	}
 
 	XMStoreFloat4x4( &cb.InvView, XMMatrixInverse( nullptr, Engine::GAPI->GetViewMatrixXM() ) );
 

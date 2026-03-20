@@ -713,7 +713,10 @@ XRESULT D3D11ShadowMap::DrawPointlightLights(
     
     DS_PointLightConstantBuffer plcb = {};
 
-    XMStoreFloat4x4( &plcb.PL_InvProj, XMMatrixInverse( nullptr, XMLoadFloat4x4( &Engine::GAPI->GetProjectionMatrix() ) ) );
+    {
+        auto& proj = Engine::GAPI->GetProjectionMatrix();
+        plcb.PL_ProjParams = float4( 1.0f / proj._11, 1.0f / proj._22, proj._43, proj._33 );
+    }
     XMStoreFloat4x4( &plcb.PL_InvView, XMMatrixInverse( nullptr, XMLoadFloat4x4( &Engine::GAPI->GetRendererState().TransformState.TransformView ) ) );
 
     plcb.PL_ViewportSize = Engine::GraphicsEngine->GetResolution();
@@ -961,7 +964,7 @@ XRESULT D3D11ShadowMap::DrawWorldLights()
     auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     auto _ = graphicsEngine->RecordGraphicsEvent( L"DrawWorldLights" );
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
-    
+
     Engine::GAPI->GetRendererState().BlendState.BlendOp = GothicBlendStateInfo::BO_BLEND_OP_ADD;
     Engine::GAPI->GetRendererState().BlendState.SetDirty();
 
@@ -974,8 +977,8 @@ XRESULT D3D11ShadowMap::DrawWorldLights()
     // Modify light when raining
     float rain = Engine::GAPI->GetRainFXWeight();
     float wetness = Engine::GAPI->GetSceneWetness();
-    
-    XMMATRIX view = XMMatrixTranspose(Engine::GAPI->GetViewMatrixXM());
+
+    XMMATRIX view = XMMatrixTranspose( Engine::GAPI->GetViewMatrixXM() );
 
     bool isSnow = oCGame::GetGame()
         && oCGame::GetGame()->_zCSession_world
@@ -983,7 +986,7 @@ XRESULT D3D11ShadowMap::DrawWorldLights()
         && oCGame::GetGame()->_zCSession_world->GetSkyControllerOutdoor()->GetWeatherType() == zTWEATHER_SNOW;
 
     // Switch global light shader when raining
-    if ( wetness > 0.0f && !isSnow) {
+    if ( wetness > 0.0f && !isSnow ) {
         // Same shader, just has a DEFINE set to enable rain-related effects
         graphicsEngine->SetActivePixelShader( "PS_DS_AtmosphericScattering_Rain" );
     } else {
@@ -998,10 +1001,17 @@ XRESULT D3D11ShadowMap::DrawWorldLights()
     graphicsEngine->GetActivePS()->GetConstantBuffer()[1]->UpdateBuffer( &sky->GetAtmosphereCB() );
     graphicsEngine->GetActivePS()->GetConstantBuffer()[1]->BindToPixelShader( 1 );
 
+    auto& proj = Engine::GAPI->GetProjectionMatrix();
     DS_ScreenQuadConstantBuffer scb = {};
-    XMStoreFloat4x4( &scb.SQ_InvProj, XMMatrixInverse( nullptr, XMLoadFloat4x4( &Engine::GAPI->GetProjectionMatrix() ) ) );
+    scb.SQ_ProjParams = float4( 1.0f / proj._11, 1.0f / proj._22, proj._43, proj._33 );
     XMStoreFloat4x4( &scb.SQ_InvView, XMMatrixInverse( nullptr, XMLoadFloat4x4( &Engine::GAPI->GetRendererState().TransformState.TransformView ) ) );
     scb.SQ_View = Engine::GAPI->GetRendererState().TransformState.TransformView;
+
+    static uint32_t frameCounter = 0;
+    if ( proj._13 != 0 && proj._23 != 0) {
+        // only when we have jitter in the frame
+        scb.SQ_FrameIndex = frameCounter++;
+    }
 
     XMStoreFloat3( scb.SQ_LightDirectionVS.toXMFLOAT3(),
         XMVector3TransformNormal( XMLoadFloat3( sky->GetAtmosphereCB().AC_LightPos.toXMFLOAT3() ), view ) );
@@ -1020,15 +1030,20 @@ XRESULT D3D11ShadowMap::DrawWorldLights()
     // CSM: Alle Cascade-Matrizen setzen
 
     for ( size_t cascadeIdx = 0; cascadeIdx < MAX_CSM_CASCADES; ++cascadeIdx ) {
-        scb.SQ_ShadowView[cascadeIdx] = m_CascadeCRs[cascadeIdx].ViewReplacement;
-        scb.SQ_ShadowProj[cascadeIdx] = m_CascadeCRs[cascadeIdx].ProjectionReplacement;
+        XMStoreFloat4x4( &scb.SQ_ShadowViewProj[cascadeIdx],
+            XMLoadFloat4x4( &m_CascadeCRs[cascadeIdx].ProjectionReplacement ) *
+                XMLoadFloat4x4( &m_CascadeCRs[cascadeIdx].ViewReplacement )
+        );
     }
 
     scb.SQ_ShadowmapSize = static_cast<float>( this->GetSizeX() );
 
     // Get rain matrix
-    scb.SQ_RainView = graphicsEngine->Effects->GetRainShadowmapCameraRepl().ViewReplacement;
-    scb.SQ_RainProj = graphicsEngine->Effects->GetRainShadowmapCameraRepl().ProjectionReplacement;
+    
+    XMStoreFloat4x4( &scb.SQ_RainViewProj,
+        XMLoadFloat4x4( &graphicsEngine->Effects->GetRainShadowmapCameraRepl().ProjectionReplacement ) *
+        XMLoadFloat4x4( &graphicsEngine->Effects->GetRainShadowmapCameraRepl().ViewReplacement )
+    );
 
     scb.SQ_ShadowStrength = settings.ShadowStrength;
     scb.SQ_ShadowAOStrength = settings.ShadowAOStrength;
@@ -1060,7 +1075,7 @@ XRESULT D3D11ShadowMap::DrawWorldLights()
     graphicsEngine->GetActivePS()->GetConstantBuffer()[0]->BindToPixelShader( 0 );
 
     PFXVS_ConstantBuffer vscb;
-    vscb.PFXVS_InvProj = scb.SQ_InvProj;
+    vscb.PFXVS_ProjParams = scb.SQ_ProjParams;
     graphicsEngine->GetActiveVS()->GetConstantBuffer()[0]->UpdateBuffer( &vscb );
     graphicsEngine->GetActiveVS()->GetConstantBuffer()[0]->BindToVertexShader( 0 );
 
