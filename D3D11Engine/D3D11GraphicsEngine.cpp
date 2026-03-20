@@ -2917,6 +2917,20 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                 auto normalsTexture = graph.GetPhysicalTexture(normalsResource);
                 
                 PfxRenderer->RenderGodRays(backbufferResource->GetShaderResView().Get(), normalsTexture->GetShaderResView().Get());
+                // Godrays bind a different sampler
+                GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );                
+            };
+        });
+    }
+    
+    if (rendererState.RendererSettings.EnableDoF) {
+        graph.AddPass( L"Draw DepthOfField", [&]( RGBuilder& builder, RenderPass& pass ) {
+            builder.Read( backBufferHandle );
+            builder.Write( backBufferHandle );
+
+            pass.m_executeCallback = [this, backBufferHandle](const RenderGraph& graph) {
+                auto backbufferResource = graph.GetPhysicalTexture(backBufferHandle);
+                PfxRenderer->RenderDepthOfField(backbufferResource->GetShaderResView().Get());
             };
         });
     }

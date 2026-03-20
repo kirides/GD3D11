@@ -30,14 +30,21 @@ struct PS_INPUT
 	float4 vPosition		: SV_POSITION;
 };
 
+// Interleaved Gradient Noise for cheap, effective dithering
+float InterleavedGradientNoise(float2 uv) 
+{
+    float3 magic = float3(0.06711056f, 0.00583715f, 52.9829189f);
+    return frac(magic.z * frac(dot(uv, magic.xy)));
+}
+
 //--------------------------------------------------------------------------------------
 // Pixel Shader
 //--------------------------------------------------------------------------------------
 float4 PSMain( PS_INPUT Input ) : SV_TARGET
 {
-	const int NUM_SAMPLES = 30;
+    // Increased sample count for a smoother gradient
+	const int NUM_SAMPLES = 64; 
 	float2 center = GR_Center;
-	float zoomMax = 0.5f;
 	float3 color = 0;
 	float illumDecay = 1.0f;
 	
@@ -46,16 +53,27 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	
 	float2 uv = Input.vTexcoord;
 	
-	[unroll]
-	for(int i=0;i<NUM_SAMPLES;i++)
+    // Dithering: Offset the starting UV by a random sub-texel fraction
+    // Input.vPosition.xy provides screen-space pixel coordinates
+    float jitter = InterleavedGradientNoise(Input.vPosition.xy);
+    uv -= deltaTexCoord * jitter;
+
+	[unroll(64)] // Must match NUM_SAMPLES
+	for(int i = 0; i < NUM_SAMPLES; i++)
 	{
 		uv -= deltaTexCoord;
-		color += pow(TX_Texture0.Sample(SS_Linear, uv), 1) * illumDecay * GR_Weight;
+        
+        // Anti-Smearing: Prevent sampling out of bounds if the sampler wraps
+        if (uv.x < 0.0f || uv.x > 1.0f || uv.y < 0.0f || uv.y > 1.0f) 
+        {
+            continue; 
+        }
+
+		color += TX_Texture0.Sample(SS_Linear, uv).rgb * illumDecay * GR_Weight;
 		
 		illumDecay *= GR_Decay;
 	}
 	color /= NUM_SAMPLES;
-
-	return float4(color * GR_ColorMod,1);
+	
+	return float4(color * GR_ColorMod, 1.0f);
 }
-

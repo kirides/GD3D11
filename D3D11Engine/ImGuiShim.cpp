@@ -611,6 +611,8 @@ void ImGuiShim::RenderSettingsWindow()
             ImGui::SetItemTooltip( "Enable Screen-Space ambient occlusion." );
 
             ImGui::Checkbox( "Godrays", &settings.EnableGodRays );
+            ImGui::Checkbox( "Depth of Field", &settings.EnableDoF );
+            ImGui::SetItemTooltip( "Enable Depth of Field with bokeh blur." );
             static std::vector<std::tuple<const char*, GothicRendererSettings::E_AntiAliasingMode, const char*>> antiAliasing = {
                 {"Disabled", GothicRendererSettings::E_AntiAliasingMode::AA_NONE, nullptr },
                 {"SMAA", GothicRendererSettings::E_AntiAliasingMode::AA_SMAA, nullptr },
@@ -943,6 +945,19 @@ void RenderAdvancedColumn1( GothicRendererSettings& settings, GothicAPI* gapi ) 
             ImGui::DragFloat( "GodRayWeight", &settings.GodRayWeight, 0.01f );
             ImGui::ColorEdit3( "GodRayColorMod", &settings.GodRayColorMod.x );
             ImGui::DragFloat( "GodRayDensity", &settings.GodRayDensity, 0.01f );
+            ImGui::PopID();
+        }
+
+        ImGui::SeparatorText( "Depth of Field" );
+        {
+            ImGui::PushID( "DoFSettings" );
+            ImGui::Checkbox( "Enabled", &settings.EnableDoF );
+            ImGui::DragFloat( "Focus Range", &settings.DoFFocusRange, 50.0f, 500.0f, 50000.0f, "%.0f" );
+            ImGui::SetItemTooltip( "Range around the auto-focus point that remains sharp." );
+            ImGui::DragFloat( "Bokeh Radius", &settings.DoFBokehRadius, 0.5f, 1.0f, 32.0f, "%.1f" );
+            ImGui::SetItemTooltip( "Size of the bokeh disc in pixels." );
+            ImGui::DragFloat( "Max Blur", &settings.DoFMaxBlur, 0.5f, 1.0f, 32.0f, "%.1f" );
+            ImGui::SetItemTooltip( "Maximum bokeh blur radius." );
             ImGui::PopID();
         }
 

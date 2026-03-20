@@ -96,6 +96,9 @@ XRESULT D3D11PFX_GodRays::Render(
     zoomPS->GetConstantBuffer()[0]->UpdateBuffer( &gcb );
     zoomPS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
 
+    auto clampSampler = engine->GetClampSamplerState();
+    engine->GetContext()->PSSetSamplers( 0, 1, &clampSampler );
+
     FxRenderer->CopyTextureToRTV( tempBuffer->GetShaderResView(), tempBuffer2->GetRenderTargetView(), INT2( 0, 0 ), true );
 
     // Upscale and blend

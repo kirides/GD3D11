@@ -4895,6 +4895,11 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "General", "EnableDebugLog", std::to_string( s.EnableDebugLog ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "EnableAutoupdates", std::to_string( s.EnableAutoupdates ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "EnableGodRays", std::to_string( s.EnableGodRays ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "EnableDoF", std::to_string( s.EnableDoF ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "DoFFocusDistance", float_to_string( s.DoFFocusDistance, 1 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "DoFFocusRange", float_to_string( s.DoFFocusRange, 1 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "DoFBokehRadius", float_to_string( s.DoFBokehRadius, 1 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "DoFMaxBlur", float_to_string( s.DoFMaxBlur, 1 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "AllowNormalmaps", std::to_string( s.AllowNormalmaps ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "AllowNumpadKeys", std::to_string( s.AllowNumpadKeys ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "EnableInactiveFpsLock", std::to_string( s.EnableInactiveFpsLock ? TRUE : FALSE ).c_str(), ini.c_str() );
@@ -5001,6 +5006,11 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.EnableDebugLog = GetPrivateProfileBoolA( "General", "EnableDebugLog", defaultRendererSettings.EnableDebugLog, ini );
         s.EnableAutoupdates = GetPrivateProfileBoolA( "General", "EnableAutoupdates", defaultRendererSettings.EnableAutoupdates, ini );
         s.EnableGodRays = GetPrivateProfileBoolA( "General", "EnableGodRays", defaultRendererSettings.EnableGodRays, ini );
+        s.EnableDoF = GetPrivateProfileBoolA( "General", "EnableDoF", defaultRendererSettings.EnableDoF, ini );
+        s.DoFFocusDistance = GetPrivateProfileFloatA( "General", "DoFFocusDistance", defaultRendererSettings.DoFFocusDistance, ini );
+        s.DoFFocusRange = GetPrivateProfileFloatA( "General", "DoFFocusRange", defaultRendererSettings.DoFFocusRange, ini );
+        s.DoFBokehRadius = GetPrivateProfileFloatA( "General", "DoFBokehRadius", defaultRendererSettings.DoFBokehRadius, ini );
+        s.DoFMaxBlur = GetPrivateProfileFloatA( "General", "DoFMaxBlur", defaultRendererSettings.DoFMaxBlur, ini );
         s.AllowNormalmaps = GetPrivateProfileBoolA( "General", "AllowNormalmaps", defaultRendererSettings.AllowNormalmaps, ini );
         s.AllowNumpadKeys = GetPrivateProfileBoolA( "General", "AllowNumpadKeys", defaultRendererSettings.AllowNumpadKeys, ini );
         s.EnableInactiveFpsLock = GetPrivateProfileBoolA( "General", "EnableInactiveFpsLock", defaultRendererSettings.EnableInactiveFpsLock, ini );

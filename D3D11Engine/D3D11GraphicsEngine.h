@@ -345,6 +345,10 @@ public:
 
     const XMFLOAT4X4& GetPrevViewProjMatrix() const { return m_PrevViewProjMatrix; }
     void StorePrevViewProjMatrix();
+
+    auto GetClampSamplerState() -> auto { return ClampSamplerState.Get(); }
+    auto GetCubeSamplerState() -> auto { return CubeSamplerState.Get(); }
+    auto GetLinearSamplerState() -> auto { return LinearSamplerState.Get(); }
 protected:
 
     void StoreVobPreviousTransforms();
