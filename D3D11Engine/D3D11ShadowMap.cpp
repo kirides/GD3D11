@@ -1041,8 +1041,8 @@ XRESULT D3D11ShadowMap::DrawWorldLights()
     // Get rain matrix
     
     XMStoreFloat4x4( &scb.SQ_RainViewProj,
-        XMLoadFloat4x4( &graphicsEngine->Effects->GetRainShadowmapCameraRepl().ViewReplacement )*
-        XMLoadFloat4x4( &graphicsEngine->Effects->GetRainShadowmapCameraRepl().ProjectionReplacement )
+        XMLoadFloat4x4( &graphicsEngine->Effects->GetRainShadowmapCameraRepl().ProjectionReplacement ) *
+        XMLoadFloat4x4( &graphicsEngine->Effects->GetRainShadowmapCameraRepl().ViewReplacement )
     );
 
     scb.SQ_ShadowStrength = settings.ShadowStrength;
