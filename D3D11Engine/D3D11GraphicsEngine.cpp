@@ -2921,6 +2921,18 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         });
     }
     
+    if (rendererState.RendererSettings.EnableDoF) {
+        graph.AddPass( L"Draw DepthOfField", [&]( RGBuilder& builder, RenderPass& pass ) {
+            builder.Read( backBufferHandle );
+            builder.Write( backBufferHandle );
+
+            pass.m_executeCallback = [this, backBufferHandle](const RenderGraph& graph) {
+                auto backbufferResource = graph.GetPhysicalTexture(backBufferHandle);
+                PfxRenderer->RenderDepthOfField(backbufferResource->GetShaderResView().Get());
+            };
+        });
+    }
+    
     graph.AddPass( L"Draw ParticlesSimple", [&]( RGBuilder& builder, RenderPass& pass ) {
         auto size = GetResolution();
 

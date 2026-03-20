@@ -716,6 +716,12 @@ struct GothicRendererSettings {
         GodRayDensity = 0.70f;
         GodRayColorMod = float3( 1.0f, 0.8f, 0.6f );
 
+        EnableDoF = false;
+        DoFFocusDistance = 5000.0f;
+        DoFFocusRange = 8000.0f;
+        DoFBokehRadius = 8.0f;
+        DoFMaxBlur = 12.0f;
+
         RECT desktopRect;
         GetClientRect( GetDesktopWindow(), &desktopRect );
 
@@ -885,6 +891,12 @@ struct GothicRendererSettings {
     float GodRayDensity;
     float3 GodRayColorMod;
     bool EnableGodRays;
+
+    bool EnableDoF;
+    float DoFFocusDistance;
+    float DoFFocusRange;
+    float DoFBokehRadius;
+    float DoFMaxBlur;
 
     HBAOSettings HbaoSettings;
 
