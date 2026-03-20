@@ -552,6 +552,10 @@ XRESULT D3D11GraphicsEngine::Init() {
     // and you can't trust Microsoft feature level documentation
     NativeSupport16BitTextures = Toolbox::IsWindowsVersionOrGreater( HIBYTE( _WIN32_WINNT_WIN10 ), LOBYTE( _WIN32_WINNT_WIN10 ), 0 );
     FeatureLevel10Compatibility = (maxFeatureLevel < D3D_FEATURE_LEVEL::D3D_FEATURE_LEVEL_11_0);
+    
+    if ( Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.ForceFeatureLevel10 ) {
+        FeatureLevel10Compatibility = true;
+    }
     FetchDisplayModeList();
 
     ComPtr<IUnknown> renderdoc = nullptr;

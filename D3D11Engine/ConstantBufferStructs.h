@@ -164,6 +164,10 @@ struct DS_ScreenQuadConstantBuffer {
     uint32_t SQ_FrameIndex;
     float SQ_LightSize;
     float2 SQ_Pad;
+
+    // Shadow atlas: per-cascade UV rect (xy = offset, zw = scale)
+    // Used when SHADOW_ATLAS is enabled (Feature Level 10 path)
+    float4 SQ_CascadeAtlasRect[MAX_CSM_CASCADES];
 };
 
 struct CloudConstantBuffer {

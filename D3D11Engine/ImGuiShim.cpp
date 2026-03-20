@@ -63,6 +63,8 @@ int GetDpi( HWND hWnd )
     return ydpi;
 }
 
+void ApplyFeatureLevel10Downgrades(GothicRendererSettings& s);
+
 void ImGuiShim::Init(
     HWND Window,
     const Microsoft::WRL::ComPtr<ID3D11Device1>& device,
@@ -164,6 +166,9 @@ void ImGuiShim::RenderLoop()
     if ( memcmp( &oldSettings, &Engine::GAPI->GetRendererState().RendererSettings, sizeof( GothicRendererSettings ) ) != 0 ) {
         if ( oldSettings.GraphicsPreset == Engine::GAPI->GetRendererState().RendererSettings.GraphicsPreset ) {
             Engine::GAPI->GetRendererState().RendererSettings.GraphicsPreset = GothicRendererSettings::E_GraphicsPreset::GRAPHICS_CUSTOM;
+        }
+        if ( FeatureLevel10Compatibility ) {
+            ApplyFeatureLevel10Downgrades( Engine::GAPI->GetRendererState().RendererSettings );
         }
     }
     //if ( DemoVisible )
@@ -391,6 +396,19 @@ bool ImGuizmoDirectionEdit( const char* label, XMFLOAT3& direction, float widget
     return modified;
 }
 
+void ApplyFeatureLevel10Downgrades(GothicRendererSettings& s) {
+    // one 4k texture, 1/2 2k textures max.
+    s.NumShadowCascades = std::min(s.NumShadowCascades, 3);
+
+    if (s.NumShadowCascades >= 2) {
+        s.DebugSettings.ShadowCascades.Lambda = D3D11ShadowMap::lambdaBiasTable[s.NumShadowCascades].lambda;
+        s.DebugSettings.ShadowCascades.Bias = D3D11ShadowMap::lambdaBiasTable[s.NumShadowCascades].bias;
+
+        s.DebugSettings.ShadowCascades.Lambda = 0.9f;
+        s.DebugSettings.ShadowCascades.Bias = 1.5f;
+    }
+}
+
 void ApplyGraphicsPresets( GothicRendererSettings& s ) {
     switch ( s.GraphicsPreset ) {
     case GothicRendererSettings::GRAPHICS_LOW:
@@ -537,6 +555,10 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         return;
     }
 
+    if (FeatureLevel10Compatibility) {
+        ApplyFeatureLevel10Downgrades(s);
+    }
+    
     Engine::GAPI->UpdateTextureMaxSize();
     Engine::GraphicsEngine->ReloadShaders();
 }
@@ -1130,9 +1152,13 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
             }
             ImGui::DragFloat( "WorldShadowRangeScale", &settings.WorldShadowRangeScale, 0.01f, 0.00f, 10.0f, "%.2f" );
             
-            settings.NumShadowCascades = std::clamp( settings.NumShadowCascades, 1, MAX_CSM_CASCADES );
-            if ( ImGui::SliderInt( "Shadow Cascade count", &settings.NumShadowCascades, 1, MAX_CSM_CASCADES, "%d", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput) ) {
-                settings.NumShadowCascades = std::clamp( settings.NumShadowCascades, 1, MAX_CSM_CASCADES );
+            const int max_cascaded_supported = FeatureLevel10Compatibility
+                ? std::min(3, MAX_CSM_CASCADES)
+                : MAX_CSM_CASCADES;
+
+            settings.NumShadowCascades = std::clamp( settings.NumShadowCascades, 1, max_cascaded_supported );
+            if ( ImGui::SliderInt( "Shadow Cascade count", &settings.NumShadowCascades, 1, max_cascaded_supported, "%d", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput) ) {
+                settings.NumShadowCascades = std::clamp( settings.NumShadowCascades, 1, max_cascaded_supported );
                 settings.DebugSettings.ShadowCascades.Lambda = D3D11ShadowMap::lambdaBiasTable[settings.NumShadowCascades].lambda;
                 settings.DebugSettings.ShadowCascades.Bias = D3D11ShadowMap::lambdaBiasTable[settings.NumShadowCascades].bias;
                 Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows );
@@ -1264,6 +1290,8 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
             if (ImGui::BeginTabItem("Featureset", nullptr, ImGuiTabItemFlags_::ImGuiTabItemFlags_NoReorder)) {
                 ImGui::Checkbox("Use MDI", &settings.DebugSettings.FeatureSet.UseMDI );
                 ImGui::Checkbox("Use Layered Drawing", &settings.DebugSettings.FeatureSet.UseLayeredRendering );
+                ImGui::Checkbox("Force Feature Level 10", &settings.DebugSettings.FeatureSet.ForceFeatureLevel10 );
+                ImGui::SetItemTooltip("Force DirectX 10 era feature support. Requires restart.");
                 ImGui::EndTabItem();
             }
  

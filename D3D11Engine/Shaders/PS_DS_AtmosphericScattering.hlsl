@@ -20,6 +20,10 @@
 #define SHD_FILTER_PCSS 0
 #endif
 
+#ifndef SHADOW_ATLAS
+#define SHADOW_ATLAS 0
+#endif
+
 cbuffer DS_ScreenQuadConstantBuffer : register(b0)
 {
     float4 SQ_ProjParams; // x = 1/P._11, y = 1/P._22, z = P._43, w = P._33
@@ -42,6 +46,9 @@ cbuffer DS_ScreenQuadConstantBuffer : register(b0)
     uint SQ_FrameIndex;
     float SQ_LightSize;
     float2 SQ_Pad;
+
+    // Shadow atlas: per-cascade UV rect (xy = offset, zw = scale)
+    float4 SQ_CascadeAtlasRect[MAX_CSM_CASCADES];
 };
 
 //--------------------------------------------------------------------------------------
@@ -53,11 +60,60 @@ SamplerComparisonState SS_Comp : register(s2);
 Texture2D TX_Diffuse : register(t0);
 Texture2D TX_Nrm : register(t1);
 Texture2D TX_Depth : register(t2);
+#if SHADOW_ATLAS
+Texture2D TX_ShadowmapAtlas : register(t3);
+#else
 Texture2DArray TX_ShadowmapArray : register(t3);
+#endif
 Texture2D TX_RainShadowmap : register(t4);
 TextureCube TX_ReflectionCube : register(t5);
 Texture2D TX_Distortion : register(t6);
 Texture2D TX_SI_SP : register(t7);
+
+//--------------------------------------------------------------------------------------
+// Shadow map sampling helpers
+// Abstracts Texture2DArray (FL11+) vs Texture2D atlas (FL10) sampling
+//--------------------------------------------------------------------------------------
+#if SHADOW_ATLAS
+// Convert cascade-local UV [0,1] to atlas UV with clamping to prevent seam bleeding
+float2 CascadeToAtlasUV(float2 cascadeUV, int cascadeIndex)
+{
+    float4 rect = SQ_CascadeAtlasRect[cascadeIndex];
+    float2 atlasUV = cascadeUV * rect.zw + rect.xy;
+
+    // Clamp to cascade bounds with half-texel inset to prevent bilinear filter
+    // from sampling texels in neighboring cascades
+    // Atlas texel size = rect.zw / cascadePixelSize = 1/atlasSize (constant for all cascades)
+    // Use rect.zw / SQ_ShadowmapSize as conservative estimate (correct for cascade 0,
+    // slightly conservative for smaller cascades which is fine)
+    float2 halfTexel = 0.5 * rect.zw / SQ_ShadowmapSize;
+    float2 minUV = rect.xy + halfTexel;
+    float2 maxUV = rect.xy + rect.zw - halfTexel;
+    return clamp(atlasUV, minUV, maxUV);
+}
+
+float SampleShadowMapCmp(float2 cascadeUV, int cascadeIndex, float depth)
+{
+    float2 atlasUV = CascadeToAtlasUV(cascadeUV, cascadeIndex);
+    return TX_ShadowmapAtlas.SampleCmpLevelZero(SS_Comp, atlasUV, depth);
+}
+
+float SampleShadowMapLevel(float2 cascadeUV, int cascadeIndex)
+{
+    float2 atlasUV = CascadeToAtlasUV(cascadeUV, cascadeIndex);
+    return TX_ShadowmapAtlas.SampleLevel(SS_Linear, atlasUV, 0).r;
+}
+#else
+float SampleShadowMapCmp(float2 cascadeUV, int cascadeIndex, float depth)
+{
+    return TX_ShadowmapArray.SampleCmpLevelZero(SS_Comp, float3(cascadeUV, (float)cascadeIndex), depth);
+}
+
+float SampleShadowMapLevel(float2 cascadeUV, int cascadeIndex)
+{
+    return TX_ShadowmapArray.SampleLevel(SS_Linear, float3(cascadeUV, (float)cascadeIndex), 0).r;
+}
+#endif
 
 //--------------------------------------------------------------------------------------
 // Input / Output structures
@@ -189,8 +245,7 @@ void FindBlockers(out float avgBlockerDepth, out float numBlockers,
     for (int i = 0; i < 32; ++i)
     {
         float2 offset = mul(rotMat, g_PoissonDisk32[i]) * searchRadius;
-        float shadowMapDepth = TX_ShadowmapArray.SampleLevel(SS_Linear,
-            float3(uv + offset, (float)cascadeIndex), 0).r;
+        float shadowMapDepth = SampleShadowMapLevel(uv + offset, cascadeIndex);
 
         if (shadowMapDepth < zReceiver)
         {
@@ -226,6 +281,16 @@ float EstimatePCSSFilterRadius(float2 uv, float zReceiver, int cascadeIndex,
 }
 #endif
 
+#if SHADOW_ATLAS
+float IsInShadow(float3 wsPosition, Texture2D shadowmapAtlas, SamplerComparisonState samplerState)
+{
+    float4 vShadowSamplingPos = mul(float4(wsPosition, 1), SQ_ShadowViewProj[0]);
+    vShadowSamplingPos.xyz /= vShadowSamplingPos.www;
+	
+    float2 projectedTexCoords = vShadowSamplingPos.xy * float2(0.5f, -0.5f) + float2(0.5f, 0.5f);
+    return SampleShadowMapCmp(projectedTexCoords.xy, 0, vShadowSamplingPos.z);
+}
+#else
 float IsInShadow(float3 wsPosition, Texture2DArray shadowmapArray, SamplerComparisonState samplerState)
 {
     float4 vShadowSamplingPos = mul(float4(wsPosition, 1), SQ_ShadowViewProj[0]);
@@ -234,6 +299,7 @@ float IsInShadow(float3 wsPosition, Texture2DArray shadowmapArray, SamplerCompar
     float2 projectedTexCoords = vShadowSamplingPos.xy * float2(0.5f, -0.5f) + float2(0.5f, 0.5f);
     return shadowmapArray.SampleCmpLevelZero(samplerState, float3(projectedTexCoords.xy, 0), vShadowSamplingPos.z);
 }
+#endif
 
 float IsWet(float3 wsPosition, Texture2D shadowmap, SamplerComparisonState samplerState, matrix viewProj)
 {
@@ -322,8 +388,8 @@ float SampleCascadeShadowSoft(float3 wsPosition, int cascadeIndex, float vertLig
             for (int i = 0; i < 32; i++)
             {
                 float2 offset = mul(rotMat, g_PoissonDisk32[i]) * pcssRadius;
-                sum += TX_ShadowmapArray.SampleCmpLevelZero(SS_Comp,
-                    float3(projectedTexCoords.xy + offset, (float)cascadeIndex),
+                sum += SampleShadowMapCmp(
+                    projectedTexCoords.xy + offset, cascadeIndex,
                     zReceiver);
             }
             shadow = sum / 32.0f;
@@ -339,8 +405,8 @@ float SampleCascadeShadowSoft(float3 wsPosition, int cascadeIndex, float vertLig
     for (int i = 0; i < 16; i++)
     {
         float2 offset = mul(rotMat, g_PoissonDisk16[i]) * filterRadius;
-        sum += TX_ShadowmapArray.SampleCmpLevelZero(SS_Comp,
-            float3(projectedTexCoords.xy + offset, (float)cascadeIndex),
+        sum += SampleShadowMapCmp(
+            projectedTexCoords.xy + offset, cascadeIndex,
             vShadowSamplingPos.z - bias);
     }
     shadow = sum / 16.0f;
@@ -356,8 +422,8 @@ float SampleCascadeShadowSoft(float3 wsPosition, int cascadeIndex, float vertLig
         for (int i = 0; i < 16; i++)
         {
             float2 offset = mul(rotMat, g_PoissonDisk16[i]) * filterRadius;
-            sum += TX_ShadowmapArray.SampleCmpLevelZero(SS_Comp,
-                float3(projectedTexCoords.xy + offset, (float)cascadeIndex),
+            sum += SampleShadowMapCmp(
+                projectedTexCoords.xy + offset, cascadeIndex,
                 vShadowSamplingPos.z - bias);
         }
         shadow = sum / 16.0f;
@@ -373,8 +439,8 @@ float SampleCascadeShadowSoft(float3 wsPosition, int cascadeIndex, float vertLig
         for (int i = 0; i < 8; i++)
         {
             float2 offset = mul(rotMat, g_PoissonDisk8[i]) * filterRadius;
-            sum += TX_ShadowmapArray.SampleCmpLevelZero(SS_Comp,
-                float3(projectedTexCoords.xy + offset, (float)cascadeIndex),
+            sum += SampleShadowMapCmp(
+                projectedTexCoords.xy + offset, cascadeIndex,
                 vShadowSamplingPos.z - bias);
         }
         shadow = sum / 8.0f;
@@ -382,8 +448,8 @@ float SampleCascadeShadowSoft(float3 wsPosition, int cascadeIndex, float vertLig
 #endif
 #else
     // No PCF filtering - single sample (still uses bias)
-    shadow = TX_ShadowmapArray.SampleCmpLevelZero(SS_Comp,
-        float3(projectedTexCoords.xy, (float)cascadeIndex),
+    shadow = SampleShadowMapCmp(
+        projectedTexCoords.xy, cascadeIndex,
         vShadowSamplingPos.z - bias);
 #endif
     
