@@ -405,6 +405,7 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.SmoothShadowCameraUpdate = true;
         s.SmoothShadowFrequency = 500;
         s.ShadowDrawDistance = 10'000.0f;
+        s.ShadowFilterMode = GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_DISABLED;
 
         s.EnableDynamicLighting = false;
         s.EnablePointlightShadows = GothicRendererSettings::EPointLightShadowMode::PLS_DISABLED;
@@ -438,6 +439,7 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.SmoothShadowCameraUpdate = true;
         s.SmoothShadowFrequency = 1000;
         s.ShadowDrawDistance = 15'000.0f;
+        s.ShadowFilterMode = GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_SIMPLE;
             
         s.EnableDynamicLighting = true;
         s.EnablePointlightShadows = GothicRendererSettings::EPointLightShadowMode::PLS_STATIC_ONLY;
@@ -471,6 +473,7 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.SmoothShadowCameraUpdate = false;
         s.SmoothShadowFrequency = 20000;
         s.ShadowDrawDistance = 15'000.0f;
+        s.ShadowFilterMode = GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_SIMPLE;
 
         s.EnableDynamicLighting = true;
         s.EnablePointlightShadows = GothicRendererSettings::EPointLightShadowMode::PLS_UPDATE_DYNAMIC;
@@ -506,6 +509,7 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.SmoothShadowCameraUpdate = false;
         s.SmoothShadowFrequency = 20000;
         s.ShadowDrawDistance = 15'000.0f;
+        s.ShadowFilterMode = GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_PCSS;
 
         s.EnableDynamicLighting = true;
         s.EnablePointlightShadows = GothicRendererSettings::EPointLightShadowMode::PLS_FULL;
@@ -621,8 +625,17 @@ void ImGuiShim::RenderSettingsWindow()
             if ( ImGui::Checkbox( "Shadows", &settings.EnableShadows ) ) {
                 shadersToReload |= ShaderCategory::LightsAndShadows;
             }
-            if ( ImGui::Checkbox( "Shadow filtering", &settings.EnableSoftShadows ) ) {
-                shadersToReload |= ShaderCategory::LightsAndShadows;
+            {
+                static std::vector<std::pair<const char*, GothicRendererSettings::E_ShadowFilterMode>> shadowFilterModes = {
+                    {"Disabled", GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_DISABLED},
+                    {"Simple", GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_SIMPLE},
+                    {"PCSS", GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_PCSS},
+                };
+                if ( ImComboBoxC( "Shadow filtering", shadowFilterModes, &settings.ShadowFilterMode, [&shadersToReload]() {
+                    shadersToReload |= ShaderCategory::LightsAndShadows;
+                    } ) ) {
+                    ImGui::EndCombo();
+                }
             }
 
             if ( ImGui::Checkbox( "Compress Backbuffer", &settings.CompressBackBuffer ) ) {
@@ -1124,11 +1137,18 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
                 ImGui::EndDisabled();
             }
 
-            if ( ImGui::Checkbox( "Shadow filtering", &settings.EnableSoftShadows ) ) {
-                Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows );
+            {
+                static std::vector<std::pair<const char*, GothicRendererSettings::E_ShadowFilterMode>> shadowFilterModes = {
+                    {"Disabled", GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_DISABLED},
+                    {"Simple", GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_SIMPLE},
+                    {"PCSS", GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_PCSS},
+                };
+                if ( ImComboBoxC( "Shadow filtering", shadowFilterModes, &settings.ShadowFilterMode, []() {
+                    Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows );
+                    } ) ) {
+                    ImGui::EndCombo();
+                }
             }
-
-            ImGui::SetItemTooltip( "Higher values can produce better shadows (Impact: High)" );
             settings.ShadowCascadePCFLimit = std::clamp( settings.ShadowCascadePCFLimit, 1, settings.NumShadowCascades );
             if ( ImGui::SliderInt( "Soft shadow limit", &settings.ShadowCascadePCFLimit, 1, settings.NumShadowCascades, "%d", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput ) ) {
                 settings.ShadowCascadePCFLimit = std::clamp( settings.ShadowCascadePCFLimit, 1, settings.NumShadowCascades );

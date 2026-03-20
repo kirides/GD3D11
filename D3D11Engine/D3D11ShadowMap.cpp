@@ -1049,6 +1049,7 @@ XRESULT D3D11ShadowMap::DrawWorldLights()
     scb.SQ_ShadowAOStrength = settings.ShadowAOStrength;
     scb.SQ_WorldAOStrength = settings.WorldAOStrength;
     scb.SQ_ShadowSoftness = settings.ShadowSoftness;
+    scb.SQ_LightSize = 0.03f; // PCSS light size in shadow UV space
 
     // Modify lightsettings when indoor
     if ( auto bspTree = Engine::GAPI->GetLoadedWorldInfo()->BspTree )

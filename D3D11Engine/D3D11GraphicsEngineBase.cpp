@@ -246,7 +246,11 @@ void D3D11GraphicsEngineBase::ConstructShaderMakroList( std::vector<D3D_SHADER_M
     list.push_back( m );
 
     m.Name = "SHD_FILTER_16TAP_PCF";
-    m.Definition = s.EnableSoftShadows ? "1" : "0";
+    m.Definition = (s.ShadowFilterMode >= GothicRendererSettings::SHADOW_FILTER_SIMPLE) ? "1" : "0";
+    list.push_back( m );
+
+    m.Name = "SHD_FILTER_PCSS";
+    m.Definition = (s.ShadowFilterMode == GothicRendererSettings::SHADOW_FILTER_PCSS) ? "1" : "0";
     list.push_back( m );
 
     m.Name = "MAX_CSM_CASCADES";

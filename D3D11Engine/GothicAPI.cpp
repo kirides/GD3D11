@@ -4941,7 +4941,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     
 
     WritePrivateProfileStringA( "Shadows", "EnableShadows", std::to_string( s.EnableShadows ? TRUE : FALSE ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Shadows", "EnableSoftShadows", std::to_string( s.EnableSoftShadows ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Shadows", "ShadowFilterMode", std::to_string( static_cast<int>(s.ShadowFilterMode) ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "ShadowMapSize", std::to_string( s.ShadowMapSize ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "WorldShadowRangeScale", std::to_string( s.WorldShadowRangeScale ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "NumShadowCascades", std::to_string( s.NumShadowCascades ).c_str(), ini.c_str() );
@@ -5029,7 +5029,9 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
 
         static XMFLOAT3 defaultLightDirection = XMFLOAT3( 1, 1, 1 );
         s.EnableShadows = GetPrivateProfileBoolA( "Shadows", "EnableShadows", defaultRendererSettings.EnableShadows, ini );
-        s.EnableSoftShadows = GetPrivateProfileBoolA( "Shadows", "EnableSoftShadows", defaultRendererSettings.EnableSoftShadows, ini );
+        s.ShadowFilterMode = static_cast<GothicRendererSettings::E_ShadowFilterMode>(
+            GetPrivateProfileIntA( "Shadows", "ShadowFilterMode",
+                static_cast<int>(defaultRendererSettings.ShadowFilterMode), ini.c_str() ) );
         s.ShadowMapSize = GetPrivateProfileIntA( "Shadows", "ShadowMapSize", defaultRendererSettings.ShadowMapSize, ini.c_str() );
         s.EnablePointlightShadows = GothicRendererSettings::EPointLightShadowMode( GetPrivateProfileIntA( "Shadows", "PointlightShadows", GothicRendererSettings::EPointLightShadowMode::PLS_STATIC_ONLY, ini.c_str() ) );
         s.WorldShadowRangeScale = GetPrivateProfileFloatA( "Shadows", "WorldShadowRangeScale", defaultRendererSettings.WorldShadowRangeScale, ini );

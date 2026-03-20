@@ -16,6 +16,10 @@
 #define CSM_PCF_LIMIT 3
 #endif
 
+#ifndef SHD_FILTER_PCSS
+#define SHD_FILTER_PCSS 0
+#endif
+
 cbuffer DS_ScreenQuadConstantBuffer : register(b0)
 {
     float4 SQ_ProjParams; // x = 1/P._11, y = 1/P._22, z = P._43, w = P._33
@@ -36,7 +40,8 @@ cbuffer DS_ScreenQuadConstantBuffer : register(b0)
     float SQ_ShadowSoftness;
     
     uint SQ_FrameIndex;
-    float3 SQ_Pad;
+    float SQ_LightSize;
+    float2 SQ_Pad;
 };
 
 //--------------------------------------------------------------------------------------
@@ -109,6 +114,42 @@ static const float2 g_PoissonDisk16[16] = {
     float2( 0.14383161f, -0.14100790f)
 };
 
+// 32-tap Poisson disk for high quality PCSS
+static const float2 g_PoissonDisk32[32] = {
+    float2(-0.94201624f, -0.39906216f),
+    float2( 0.94558609f, -0.76890725f),
+    float2(-0.09418410f, -0.92938870f),
+    float2( 0.34495938f,  0.29387760f),
+    float2(-0.91588581f,  0.45771432f),
+    float2(-0.81544232f, -0.87912464f),
+    float2(-0.38277543f,  0.27676845f),
+    float2( 0.97484398f,  0.75648379f),
+    float2( 0.44323325f, -0.97511554f),
+    float2( 0.53742981f, -0.47373420f),
+    float2(-0.26496911f, -0.41893023f),
+    float2( 0.79197514f,  0.19090188f),
+    float2(-0.24188840f,  0.99706507f),
+    float2(-0.81409955f,  0.91437590f),
+    float2( 0.19984126f,  0.78641367f),
+    float2( 0.14383161f, -0.14100790f),
+    float2(-0.47609370f, -0.71680200f),
+    float2( 0.67239900f,  0.46110100f),
+    float2(-0.70447400f,  0.04610860f),
+    float2( 0.26049600f, -0.73073100f),
+    float2( 0.08472460f,  0.47360000f),
+    float2(-0.52309600f,  0.71053100f),
+    float2( 0.73020300f, -0.18908300f),
+    float2(-0.16124800f,  0.16425900f),
+    float2( 0.42027400f,  0.89780800f),
+    float2(-0.89168800f, -0.14594500f),
+    float2( 0.58721500f, -0.80065300f),
+    float2(-0.30896500f, -0.18259200f),
+    float2( 0.17058400f, -0.39880500f),
+    float2(-0.62198700f, -0.49556300f),
+    float2( 0.86741400f,  0.00426336f),
+    float2(-0.04244530f,  0.71893100f)
+};
+
 // 8-tap Poisson disk for medium quality / distant cascades
 static const float2 g_PoissonDisk8[8] = {
     float2(-0.7071f,  0.7071f),
@@ -131,6 +172,59 @@ float2x2 GetPoissonRotationMatrix(float2 screenPos)
     sincos(angle, s, c);
     return float2x2(c, -s, s, c);
 }
+
+//--------------------------------------------------------------------------------------
+// PCSS: Blocker search - find average depth of blocking texels
+// Uses non-comparison sampler to read raw depth values
+//--------------------------------------------------------------------------------------
+#if SHD_FILTER_PCSS
+void FindBlockers(out float avgBlockerDepth, out float numBlockers,
+                  float2 uv, float zReceiver, float searchRadius,
+                  int cascadeIndex, float2x2 rotMat)
+{
+    float blockerSum = 0.0f;
+    numBlockers = 0.0f;
+
+    [unroll]
+    for (int i = 0; i < 32; ++i)
+    {
+        float2 offset = mul(rotMat, g_PoissonDisk32[i]) * searchRadius;
+        float shadowMapDepth = TX_ShadowmapArray.SampleLevel(SS_Linear,
+            float3(uv + offset, (float)cascadeIndex), 0).r;
+
+        if (shadowMapDepth < zReceiver)
+        {
+            blockerSum += shadowMapDepth;
+            numBlockers += 1.0f;
+        }
+    }
+    avgBlockerDepth = blockerSum / max(numBlockers, 1.0f);
+}
+
+// PCSS: Estimate penumbra width and return filter radius
+float EstimatePCSSFilterRadius(float2 uv, float zReceiver, int cascadeIndex,
+                               float lightSize, float2x2 rotMat, float texelSize)
+{
+    // For directional lights (orthographic CSM): search radius in UV space
+    // Cap to ensure adequate sampling density with 16 Poisson taps
+    float searchRadius = min(lightSize, texelSize * 24.0f);
+
+    float avgBlockerDepth = 0.0f;
+    float numBlockers = 0.0f;
+    FindBlockers(avgBlockerDepth, numBlockers, uv, zReceiver, searchRadius, cascadeIndex, rotMat);
+
+    if (numBlockers < 1.0f)
+        return -1.0f; // No blockers found - fully lit
+
+    // Orthographic penumbra: linear depth difference, no perspective divide.
+    // Division by avgBlockerDepth is only correct for perspective (point/spot) lights.
+    // For directional lights the rays are parallel, so penumbra scales linearly.
+    float penumbraWidth = (zReceiver - avgBlockerDepth) * lightSize;
+    
+    // Clamp: minimum half-texel for stability, maximum 16 texels to prevent bloom
+    return clamp(penumbraWidth, texelSize * 0.5f, texelSize * 16.0f);
+}
+#endif
 
 float IsInShadow(float3 wsPosition, Texture2DArray shadowmapArray, SamplerComparisonState samplerState)
 {
@@ -169,10 +263,11 @@ float4 GetCascadeUVAndBounds(float3 wsPosition, int cascadeIndex)
                     projectedTexCoords.y > margin && projectedTexCoords.y < (1.0f - margin);
     
     // Calculate blend factor based on distance to edge
-    const float blendZoneStart = 0.15f;
+    // Wide blend zone (30%) with smoothstep for gradual cascade transitions
+    const float blendZoneStart = 0.30f;
     float distToEdge = min(min(projectedTexCoords.x, 1.0f - projectedTexCoords.x),
                            min(projectedTexCoords.y, 1.0f - projectedTexCoords.y));
-    float blendFactor = 1.0f - saturate((distToEdge - margin) / (blendZoneStart - margin));
+    float blendFactor = 1.0f - smoothstep(margin, blendZoneStart, distToEdge);
     
     return float4(projectedTexCoords, inBounds ? 1.0f : 0.0f, blendFactor);
 }
@@ -202,7 +297,39 @@ float SampleCascadeShadowSoft(float3 wsPosition, int cascadeIndex, float vertLig
     // softness of 1.0 = default, < 1.0 = sharper, > 1.0 = softer
     float filterRadius = texelSize * softness;
     
-#if SHD_FILTER_16TAP_PCF
+#if SHD_FILTER_PCSS
+    // PCSS: Percentage-Closer Soft Shadows
+    // Variable-width PCF based on blocker distance for contact-hardening shadows
+    // Use SQ_ShadowSoftness directly (not distance-scaled 'softness') because
+    // PCSS inherently handles distance-based penumbra via the blocker depth difference.
+    {
+        float2x2 rotMat = GetPoissonRotationMatrix(screenPos);
+        float zReceiver = vShadowSamplingPos.z - bias;
+        
+        float pcssRadius = EstimatePCSSFilterRadius(projectedTexCoords.xy, zReceiver,
+            cascadeIndex, SQ_LightSize * SQ_ShadowSoftness, rotMat, texelSize);
+        
+        if (pcssRadius < 0.0f)
+        {
+            // No blockers found - fully lit
+            shadow = 1.0f;
+        }
+        else
+        {
+            // Variable PCF filtering with PCSS-derived radius
+            float sum = 0.0f;
+            [unroll]
+            for (int i = 0; i < 32; i++)
+            {
+                float2 offset = mul(rotMat, g_PoissonDisk32[i]) * pcssRadius;
+                sum += TX_ShadowmapArray.SampleCmpLevelZero(SS_Comp,
+                    float3(projectedTexCoords.xy + offset, (float)cascadeIndex),
+                    zReceiver);
+            }
+            shadow = sum / 32.0f;
+        }
+    }
+#elif SHD_FILTER_16TAP_PCF
 #if NUM_CSM_CASCADES <= 1
     // Single cascade - use high quality 16-tap rotated Poisson disk
     float2x2 rotMat = GetPoissonRotationMatrix(screenPos);
@@ -338,11 +465,11 @@ float ComputeCascadedShadowValueSoft(float3 wsPosition, float viewSpaceZ, float 
             shadow = SampleCascadeShadowSoft(wsPosition, c, vertLighting, bias, screenPos, softness);
             
             // Blend with next cascade near edges (if next cascade exists and has this pixel in bounds)
+            // Pure lerp avoids the darkening artifact that min() causes at transitions
             if (c < NUM_CSM_CASCADES - 1 && cascadeInfo[c].w > 0.0f && cascadeInfo[c + 1].z > 0.5f)
             {
                 float shadowNext = SampleCascadeShadowSoft(wsPosition, c + 1, vertLighting, bias, screenPos, softness);
-                float blendedShadow = lerp(shadow, shadowNext, cascadeInfo[c].w);
-				shadow = min(shadow, blendedShadow);
+                shadow = lerp(shadow, shadowNext, cascadeInfo[c].w);
             }
             break;
         }
