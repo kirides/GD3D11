@@ -12,18 +12,16 @@ void D3D11ShadowAtlas::Release() {
 }
 
 void D3D11ShadowAtlas::ComputeLayout() {
-    // Compute per-cascade sizes: C0=size, C1=size/2, C2=size/4, C3=size/4
+    // Compute per-cascade sizes: C0=size, C1=size/2, C2=size/2
     UINT sizes[MAX_CSM_CASCADES] = {};
     sizes[0] = m_cascade0Size;
     if ( m_numCascades > 1 ) sizes[1] = m_cascade0Size / 2;
-    if ( m_numCascades > 2 ) sizes[2] = m_cascade0Size / 4;
-    if ( m_numCascades > 3 ) sizes[3] = m_cascade0Size / 4;
+    if ( m_numCascades > 2 ) sizes[2] = m_cascade0Size / 2;
 
     // Layout in a compact 2D arrangement:
     // C0: (0, 0)
     // C1: (cascade0Size, 0)
     // C2: (cascade0Size, cascade0Size/2)
-    // C3: (cascade0Size + cascade0Size/4, cascade0Size/2)
     m_cascades[0] = {};
     m_cascades[0].offsetX = 0;
     m_cascades[0].offsetY = 0;
@@ -39,12 +37,6 @@ void D3D11ShadowAtlas::ComputeLayout() {
         m_cascades[2].offsetX = m_cascade0Size;
         m_cascades[2].offsetY = m_cascade0Size / 2;
         m_cascades[2].size = sizes[2];
-    }
-
-    if ( m_numCascades > 3 ) {
-        m_cascades[3].offsetX = m_cascade0Size + m_cascade0Size / 4;
-        m_cascades[3].offsetY = m_cascade0Size / 2;
-        m_cascades[3].size = sizes[3];
     }
 
     // Atlas dimensions
@@ -84,7 +76,8 @@ HRESULT D3D11ShadowAtlas::Init(
     UINT numCascades ) {
 
     m_device = device;
-    m_numCascades = std::clamp<UINT>( numCascades, 1, MAX_CSM_CASCADES );
+    constexpr UINT MAX_SHADOW_ATLAS_CASCADES = 3;
+    m_numCascades = std::clamp<UINT>( numCascades, 1, MAX_SHADOW_ATLAS_CASCADES );
     // Cascade 0 must be at least 512 and a power-of-2-friendly value
     m_cascade0Size = std::max<UINT>( cascade0Size, 512 );
 

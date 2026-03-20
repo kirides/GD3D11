@@ -167,6 +167,10 @@ public:
 
     D3D11RenderQueue* GetRenderQueue( int cascadeIndex ) { return m_RenderQueues[cascadeIndex].get(); }
 private:
+    bool ShouldUseAtlas() const;
+    void RecreateShadowSampler();
+    void EnsureShadowMapBackend( int size );
+
     Microsoft::WRL::ComPtr<ID3D11Device1> m_device;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext1> m_context;
 

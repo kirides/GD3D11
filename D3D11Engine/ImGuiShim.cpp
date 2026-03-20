@@ -1290,6 +1290,8 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
             if (ImGui::BeginTabItem("Featureset", nullptr, ImGuiTabItemFlags_::ImGuiTabItemFlags_NoReorder)) {
                 ImGui::Checkbox("Use MDI", &settings.DebugSettings.FeatureSet.UseMDI );
                 ImGui::Checkbox("Use Layered Drawing", &settings.DebugSettings.FeatureSet.UseLayeredRendering );
+                ImGui::Checkbox("Use Shadow Atlas", &settings.DebugSettings.FeatureSet.UseShadowAtlas );
+                ImGui::SetItemTooltip("Enables a less intensive but lower quality shadow solution.");
                 ImGui::Checkbox("Force Feature Level 10", &settings.DebugSettings.FeatureSet.ForceFeatureLevel10 );
                 ImGui::SetItemTooltip("Force DirectX 10 era feature support. Requires restart.");
                 ImGui::EndTabItem();

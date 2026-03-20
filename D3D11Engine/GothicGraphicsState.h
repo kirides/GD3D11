@@ -963,6 +963,7 @@ struct GothicRendererSettings {
         struct {
             bool UseMDI;
             bool UseLayeredRendering;
+            bool UseShadowAtlas;
             bool ForceFeatureLevel10;
         } FeatureSet;
     } DebugSettings;

@@ -267,7 +267,7 @@ void D3D11GraphicsEngineBase::ConstructShaderMakroList( std::vector<D3D_SHADER_M
     list.push_back( m );
 
     m.Name = "SHADOW_ATLAS";
-    m.Definition = FeatureLevel10Compatibility ? "1" : "0";
+    m.Definition = (FeatureLevel10Compatibility || s.DebugSettings.FeatureSet.UseShadowAtlas) ? "1" : "0";
     list.push_back( m );
 
     m.Name = "SHD_WIND";

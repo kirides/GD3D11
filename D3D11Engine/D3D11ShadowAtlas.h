@@ -20,18 +20,18 @@ struct ShadowAtlasCascadeInfo {
  * Alternative to D3D11CascadedShadowMapBuffer for Feature Level 10 compatibility
  * where Texture2DArray is not available for shadow map sampling.
  *
- * Layout (4 cascades, cascade0 = 4096):
+ * Layout (3 cascades, cascade0 = 4096):
  *   +---4096---+--2048--+
  *   |          |  C1    |
  *   |   C0     | 2048x  |
  *   | 4096x    | 2048   |
- *   | 4096     +--1024-+-1024-+
- *   |          |  C2   |  C3  |
- *   |          | 1024x | 1024x|
- *   +----------+-------+------+
+ *   | 4096     +--2048--+
+ *   |          |  C2    |
+ *   |          | 2048x  |
+ *   +----------+--------+
  *   Atlas: (1.5 * cascade0Size) x cascade0Size
  *
- * Cascade sizes: C0 = size, C1 = size/2, C2 = size/4, C3 = size/4
+ * Cascade sizes: C0 = size, C1 = size/2, C2 = size/2
  */
 class D3D11ShadowAtlas {
 public:
@@ -42,7 +42,7 @@ public:
      * Initialize the shadow atlas.
      * @param device D3D11 device
      * @param cascade0Size Size of the closest cascade (largest). Others are halved.
-     * @param numCascades Number of cascades (1 to MAX_CSM_CASCADES)
+    * @param numCascades Number of cascades (1 to 3)
      */
     HRESULT Init(
         const Microsoft::WRL::ComPtr<ID3D11Device1>& device,

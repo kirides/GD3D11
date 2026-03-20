@@ -147,18 +147,21 @@ D3D11ShadowMap::D3D11ShadowMap() {
 
 D3D11ShadowMap::~D3D11ShadowMap() {}
 
-void D3D11ShadowMap::Init( Microsoft::WRL::ComPtr<ID3D11Device1>& device, Microsoft::WRL::ComPtr<ID3D11DeviceContext1>& context, int size ) {
-    m_device = device;
-    m_context = context;
+bool D3D11ShadowMap::ShouldUseAtlas() const {
+    const auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+    // FL10 always needs atlas fallback. On FL11+, this can be toggled at runtime.
+    return FeatureLevel10Compatibility || settings.DebugSettings.FeatureSet.UseShadowAtlas;
+}
 
-    int s = std::min<int>( std::max<int>( size, 512 ), (FeatureLevel10Compatibility ? 8192 : 16384) );
+void D3D11ShadowMap::RecreateShadowSampler() {
+    if ( !m_device ) return;
 
     // Create sampler
     D3D11_SAMPLER_DESC samplerDesc = {};
     samplerDesc.Filter = D3D11_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR;
-    // Atlas path uses CLAMP to prevent seam bleeding at cascade boundaries
-    // Texture array path uses WRAP for compatibility
-    auto addressMode = FeatureLevel10Compatibility ? D3D11_TEXTURE_ADDRESS_CLAMP : D3D11_TEXTURE_ADDRESS_WRAP;
+    // Atlas path uses CLAMP to prevent seam bleeding at cascade boundaries.
+    // Texture array path uses WRAP for compatibility with previous behavior.
+    auto addressMode = m_useAtlas ? D3D11_TEXTURE_ADDRESS_CLAMP : D3D11_TEXTURE_ADDRESS_WRAP;
     samplerDesc.AddressU = addressMode;
     samplerDesc.AddressV = addressMode;
     samplerDesc.AddressW = addressMode;
@@ -168,26 +171,68 @@ void D3D11ShadowMap::Init( Microsoft::WRL::ComPtr<ID3D11Device1>& device, Micros
     samplerDesc.MinLOD = -FLT_MAX;
     samplerDesc.MaxLOD = FLT_MAX;
 
+    m_shadowmapSampler.Reset();
     HRESULT hr;
     LE( m_device->CreateSamplerState( &samplerDesc, m_shadowmapSampler.GetAddressOf() ) );
     SetDebugName( m_shadowmapSampler.Get(), "ShadowmapSamplerState" );
+}
+
+void D3D11ShadowMap::EnsureShadowMapBackend( int size ) {
+    if ( !m_device ) return;
+
+    bool desiredUseAtlas = ShouldUseAtlas();
+    int clampedSize = std::min<int>( std::max<int>( size, 512 ), (FeatureLevel10Compatibility ? 8192 : 16384) );
+
+    if ( desiredUseAtlas != m_useAtlas ) {
+        // Switch backend at runtime.
+        m_useAtlas = desiredUseAtlas;
+
+        if ( m_useAtlas ) {
+            m_cascadedShadowMap.reset();
+            m_shadowAtlas = std::make_unique<D3D11ShadowAtlas>();
+            int atlasCascade0Size = std::min<int>( clampedSize, FeatureLevel10Compatibility ? 4096 : 8192 );
+            m_shadowAtlas->Init( m_device, atlasCascade0Size, 3 );
+        } else {
+            m_shadowAtlas.reset();
+            m_cascadedShadowMap = std::make_unique<D3D11CascadedShadowMapBuffer>();
+            m_cascadedShadowMap->Init( m_device, clampedSize, MAX_CSM_CASCADES );
+        }
+
+        // Sampler addressing depends on atlas/array path.
+        RecreateShadowSampler();
+
+        // SHADOW_ATLAS is a compile-time shader macro; reload relevant shaders when mode flips.
+        auto* graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>( Engine::GraphicsEngine );
+        if ( graphicsEngine ) {
+            graphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows );
+        }
+    }
+
+    // Ensure resources exist even if no mode switch occurred.
+    if ( m_useAtlas && !m_shadowAtlas ) {
+        m_shadowAtlas = std::make_unique<D3D11ShadowAtlas>();
+        const int maxSize = (FeatureLevel10Compatibility ? 8192 : 16384);
+        int atlasCascade0Size = std::min<int>( clampedSize, maxSize / 2 );
+        m_shadowAtlas->Init( m_device, atlasCascade0Size, 3 );
+    } else if ( !m_useAtlas && !m_cascadedShadowMap ) {
+        m_cascadedShadowMap = std::make_unique<D3D11CascadedShadowMapBuffer>();
+        m_cascadedShadowMap->Init( m_device, clampedSize, MAX_CSM_CASCADES );
+    }
+}
+
+void D3D11ShadowMap::Init( Microsoft::WRL::ComPtr<ID3D11Device1>& device, Microsoft::WRL::ComPtr<ID3D11DeviceContext1>& context, int size ) {
+    m_device = device;
+    m_context = context;
+
+    int s = std::min<int>( std::max<int>( size, 512 ), (FeatureLevel10Compatibility ? 8192 : 16384) );
+
+    m_useAtlas = ShouldUseAtlas();
+    RecreateShadowSampler();
 
     // Dummy cube RT used for fallback to satisfy pixel shader runs that expect a RTV bound
     m_dummyCubeRT = std::make_unique<RenderToTextureBuffer>( m_device.Get(), POINTLIGHT_SHADOWMAP_SIZE, POINTLIGHT_SHADOWMAP_SIZE, DXGI_FORMAT_ENGINE_DEFAULT, nullptr, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, 1, 6 );
 
-    m_useAtlas = FeatureLevel10Compatibility;
-
-    if ( m_useAtlas ) {
-        // FL10 path: use shadow atlas (single Texture2D)
-        // Cap cascade 0 size at 4096 so atlas (1.5x) fits in 8192 max texture dimension
-        int atlasCascade0Size = std::min<int>( s, 4096 );
-        m_shadowAtlas = std::make_unique<D3D11ShadowAtlas>();
-        m_shadowAtlas->Init( m_device, atlasCascade0Size, MAX_CSM_CASCADES );
-    } else {
-        // FL11+ path: use Texture2DArray
-        m_cascadedShadowMap = std::make_unique<D3D11CascadedShadowMapBuffer>();
-        m_cascadedShadowMap->Init( m_device, s, MAX_CSM_CASCADES );
-    }
+    EnsureShadowMapBackend( s );
 
     for ( int i = 0; i < MAX_CSM_CASCADES; ++i ) {
         m_RenderQueues[i] = std::make_unique<D3D11RenderQueue>( device.Get(), context.Get() );
@@ -200,11 +245,14 @@ void D3D11ShadowMap::Resize( int size ) {
 
     if ( !m_device ) return;
 
-    int s = std::min<int>( std::max<int>( size, 512 ), (FeatureLevel10Compatibility ? 8192 : 16384) );
+    const int maxSize = (FeatureLevel10Compatibility ? 8192 : 16384);
+    const int s = std::min<int>( std::max<int>( size, 512 ), maxSize );
+
+    EnsureShadowMapBackend( s );
 
     if ( m_useAtlas ) {
-        // Atlas path: cascade 0 capped at 4096 so atlas fits in 8192
-        int atlasCascade0Size = std::min<int>( s, 4096 );
+        // Atlas path: cascade 0 capped at halve of max size
+        int atlasCascade0Size = std::min<int>( s, maxSize / 2 );
         if ( m_shadowAtlas ) {
             m_shadowAtlas->Resize( atlasCascade0Size );
         }
