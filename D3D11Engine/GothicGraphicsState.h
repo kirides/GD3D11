@@ -567,6 +567,12 @@ struct GothicRendererSettings {
         _UPSCALER_NUM_MODES
     };
 
+    enum E_ShadowFilterMode {
+        SHADOW_FILTER_DISABLED = 0,
+        SHADOW_FILTER_SIMPLE = 1,
+        SHADOW_FILTER_PCSS = 2,
+    };
+
     /** Sets the default values for this struct */
     void SetDefault() {
         SectionDrawRadius = 4;
@@ -668,7 +674,7 @@ struct GothicRendererSettings {
         GammaValue = 1.0f;
 
         EnableOcclusionCulling = false;
-        EnableSoftShadows = true;
+        ShadowFilterMode = E_ShadowFilterMode::SHADOW_FILTER_SIMPLE;
 
         EnableShadows = true;
         EnableVSync = false;
@@ -809,7 +815,7 @@ struct GothicRendererSettings {
     bool EnableDynamicLighting;
     bool WireframeWorld;
     bool WireframeVobs;
-    bool EnableSoftShadows;
+    E_ShadowFilterMode ShadowFilterMode;
     bool EnableShadows;
     int ShadowCascadePCFLimit;
     E_ShadowFrustumCulling ShadowFrustumCullingMode;

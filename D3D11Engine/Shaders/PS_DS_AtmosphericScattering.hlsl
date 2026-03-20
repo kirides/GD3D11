@@ -16,6 +16,10 @@
 #define CSM_PCF_LIMIT 3
 #endif
 
+#ifndef SHD_FILTER_PCSS
+#define SHD_FILTER_PCSS 0
+#endif
+
 cbuffer DS_ScreenQuadConstantBuffer : register(b0)
 {
     float4 SQ_ProjParams; // x = 1/P._11, y = 1/P._22, z = P._43, w = P._33
@@ -36,7 +40,8 @@ cbuffer DS_ScreenQuadConstantBuffer : register(b0)
     float SQ_ShadowSoftness;
     
     uint SQ_FrameIndex;
-    float3 SQ_Pad;
+    float SQ_LightSize;
+    float2 SQ_Pad;
 };
 
 //--------------------------------------------------------------------------------------
@@ -132,6 +137,59 @@ float2x2 GetPoissonRotationMatrix(float2 screenPos)
     return float2x2(c, -s, s, c);
 }
 
+//--------------------------------------------------------------------------------------
+// PCSS: Blocker search - find average depth of blocking texels
+// Uses non-comparison sampler to read raw depth values
+//--------------------------------------------------------------------------------------
+#if SHD_FILTER_PCSS
+void FindBlockers(out float avgBlockerDepth, out float numBlockers,
+                  float2 uv, float zReceiver, float searchRadius,
+                  int cascadeIndex, float2x2 rotMat)
+{
+    float blockerSum = 0.0f;
+    numBlockers = 0.0f;
+
+    [unroll]
+    for (int i = 0; i < 16; ++i)
+    {
+        float2 offset = mul(rotMat, g_PoissonDisk16[i]) * searchRadius;
+        float shadowMapDepth = TX_ShadowmapArray.SampleLevel(SS_Linear,
+            float3(uv + offset, (float)cascadeIndex), 0).r;
+
+        if (shadowMapDepth < zReceiver)
+        {
+            blockerSum += shadowMapDepth;
+            numBlockers += 1.0f;
+        }
+    }
+    avgBlockerDepth = blockerSum / max(numBlockers, 1.0f);
+}
+
+// PCSS: Estimate penumbra width and return filter radius
+float EstimatePCSSFilterRadius(float2 uv, float zReceiver, int cascadeIndex,
+                               float lightSize, float2x2 rotMat, float texelSize)
+{
+    // For directional lights (orthographic CSM): search radius in UV space
+    // Cap to ensure adequate sampling density with 16 Poisson taps
+    float searchRadius = min(lightSize, texelSize * 24.0f);
+
+    float avgBlockerDepth = 0.0f;
+    float numBlockers = 0.0f;
+    FindBlockers(avgBlockerDepth, numBlockers, uv, zReceiver, searchRadius, cascadeIndex, rotMat);
+
+    if (numBlockers < 1.0f)
+        return -1.0f; // No blockers found - fully lit
+
+    // Orthographic penumbra: linear depth difference, no perspective divide.
+    // Division by avgBlockerDepth is only correct for perspective (point/spot) lights.
+    // For directional lights the rays are parallel, so penumbra scales linearly.
+    float penumbraWidth = (zReceiver - avgBlockerDepth) * lightSize;
+
+    // Clamp: minimum half-texel for stability, maximum 16 texels to prevent bloom
+    return clamp(penumbraWidth, texelSize * 0.5f, texelSize * 16.0f);
+}
+#endif
+
 float IsInShadow(float3 wsPosition, Texture2DArray shadowmapArray, SamplerComparisonState samplerState)
 {
     float4 vShadowSamplingPos = mul(float4(wsPosition, 1), SQ_ShadowViewProj[0]);
@@ -202,7 +260,39 @@ float SampleCascadeShadowSoft(float3 wsPosition, int cascadeIndex, float vertLig
     // softness of 1.0 = default, < 1.0 = sharper, > 1.0 = softer
     float filterRadius = texelSize * softness;
     
-#if SHD_FILTER_16TAP_PCF
+#if SHD_FILTER_PCSS
+    // PCSS: Percentage-Closer Soft Shadows
+    // Variable-width PCF based on blocker distance for contact-hardening shadows
+    // Use SQ_ShadowSoftness directly (not distance-scaled 'softness') because
+    // PCSS inherently handles distance-based penumbra via the blocker depth difference.
+    {
+        float2x2 rotMat = GetPoissonRotationMatrix(screenPos);
+        float zReceiver = vShadowSamplingPos.z - bias;
+        
+        float pcssRadius = EstimatePCSSFilterRadius(projectedTexCoords.xy, zReceiver,
+            cascadeIndex, SQ_LightSize * SQ_ShadowSoftness, rotMat, texelSize);
+        
+        if (pcssRadius < 0.0f)
+        {
+            // No blockers found - fully lit
+            shadow = 1.0f;
+        }
+        else
+        {
+            // Variable PCF filtering with PCSS-derived radius
+            float sum = 0.0f;
+            [unroll]
+            for (int i = 0; i < 16; i++)
+            {
+                float2 offset = mul(rotMat, g_PoissonDisk16[i]) * pcssRadius;
+                sum += TX_ShadowmapArray.SampleCmpLevelZero(SS_Comp,
+                    float3(projectedTexCoords.xy + offset, (float)cascadeIndex),
+                    zReceiver);
+            }
+            shadow = sum / 16.0f;
+        }
+    }
+#elif SHD_FILTER_16TAP_PCF
 #if NUM_CSM_CASCADES <= 1
     // Single cascade - use high quality 16-tap rotated Poisson disk
     float2x2 rotMat = GetPoissonRotationMatrix(screenPos);
