@@ -114,6 +114,42 @@ static const float2 g_PoissonDisk16[16] = {
     float2( 0.14383161f, -0.14100790f)
 };
 
+// 32-tap Poisson disk for high quality PCSS
+static const float2 g_PoissonDisk32[32] = {
+    float2(-0.94201624f, -0.39906216f),
+    float2( 0.94558609f, -0.76890725f),
+    float2(-0.09418410f, -0.92938870f),
+    float2( 0.34495938f,  0.29387760f),
+    float2(-0.91588581f,  0.45771432f),
+    float2(-0.81544232f, -0.87912464f),
+    float2(-0.38277543f,  0.27676845f),
+    float2( 0.97484398f,  0.75648379f),
+    float2( 0.44323325f, -0.97511554f),
+    float2( 0.53742981f, -0.47373420f),
+    float2(-0.26496911f, -0.41893023f),
+    float2( 0.79197514f,  0.19090188f),
+    float2(-0.24188840f,  0.99706507f),
+    float2(-0.81409955f,  0.91437590f),
+    float2( 0.19984126f,  0.78641367f),
+    float2( 0.14383161f, -0.14100790f),
+    float2(-0.47609370f, -0.71680200f),
+    float2( 0.67239900f,  0.46110100f),
+    float2(-0.70447400f,  0.04610860f),
+    float2( 0.26049600f, -0.73073100f),
+    float2( 0.08472460f,  0.47360000f),
+    float2(-0.52309600f,  0.71053100f),
+    float2( 0.73020300f, -0.18908300f),
+    float2(-0.16124800f,  0.16425900f),
+    float2( 0.42027400f,  0.89780800f),
+    float2(-0.89168800f, -0.14594500f),
+    float2( 0.58721500f, -0.80065300f),
+    float2(-0.30896500f, -0.18259200f),
+    float2( 0.17058400f, -0.39880500f),
+    float2(-0.62198700f, -0.49556300f),
+    float2( 0.86741400f,  0.00426336f),
+    float2(-0.04244530f,  0.71893100f)
+};
+
 // 8-tap Poisson disk for medium quality / distant cascades
 static const float2 g_PoissonDisk8[8] = {
     float2(-0.7071f,  0.7071f),
@@ -150,9 +186,9 @@ void FindBlockers(out float avgBlockerDepth, out float numBlockers,
     numBlockers = 0.0f;
 
     [unroll]
-    for (int i = 0; i < 16; ++i)
+    for (int i = 0; i < 32; ++i)
     {
-        float2 offset = mul(rotMat, g_PoissonDisk16[i]) * searchRadius;
+        float2 offset = mul(rotMat, g_PoissonDisk32[i]) * searchRadius;
         float shadowMapDepth = TX_ShadowmapArray.SampleLevel(SS_Linear,
             float3(uv + offset, (float)cascadeIndex), 0).r;
 
@@ -184,7 +220,7 @@ float EstimatePCSSFilterRadius(float2 uv, float zReceiver, int cascadeIndex,
     // Division by avgBlockerDepth is only correct for perspective (point/spot) lights.
     // For directional lights the rays are parallel, so penumbra scales linearly.
     float penumbraWidth = (zReceiver - avgBlockerDepth) * lightSize;
-
+    
     // Clamp: minimum half-texel for stability, maximum 16 texels to prevent bloom
     return clamp(penumbraWidth, texelSize * 0.5f, texelSize * 16.0f);
 }
@@ -283,14 +319,14 @@ float SampleCascadeShadowSoft(float3 wsPosition, int cascadeIndex, float vertLig
             // Variable PCF filtering with PCSS-derived radius
             float sum = 0.0f;
             [unroll]
-            for (int i = 0; i < 16; i++)
+            for (int i = 0; i < 32; i++)
             {
-                float2 offset = mul(rotMat, g_PoissonDisk16[i]) * pcssRadius;
+                float2 offset = mul(rotMat, g_PoissonDisk32[i]) * pcssRadius;
                 sum += TX_ShadowmapArray.SampleCmpLevelZero(SS_Comp,
                     float3(projectedTexCoords.xy + offset, (float)cascadeIndex),
                     zReceiver);
             }
-            shadow = sum / 16.0f;
+            shadow = sum / 32.0f;
         }
     }
 #elif SHD_FILTER_16TAP_PCF
