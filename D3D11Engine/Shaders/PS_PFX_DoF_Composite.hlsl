@@ -41,16 +41,27 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
     float3 sharpColor = TX_Scene.Sample( SS_Linear, Input.vTexcoord ).rgb;
 
     float focusDepth = TX_Focus.SampleLevel( SS_Linear, float2( 0.5, 0.5 ), 0 ).r;
-    float depth = TX_Depth.Sample( SS_Linear, Input.vTexcoord ).r;
-    float linearDepth = LinearizeDepth( depth );
 
-    // Per-pixel CoC at full resolution for crisp focus boundary
-    float coc = saturate( ( linearDepth - focusDepth ) / DoF_FocusRange );
+    // Compute CoC at center and 4 neighbours, use the minimum.
+    // This erodes the blur zone by 1 pixel at depth discontinuities,
+    // preventing bilinear upsample of the half-res blur from fattening
+    // thin features like leaves and fences.
+    float2 depthSize;
+    TX_Depth.GetDimensions( depthSize.x, depthSize.y );
+    float2 dtexel = 1.0 / depthSize;
+
+    float cocC = saturate( ( LinearizeDepth( TX_Depth.Sample( SS_Linear, Input.vTexcoord ).r ) - focusDepth ) / DoF_FocusRange );
+    float cocL = saturate( ( LinearizeDepth( TX_Depth.Sample( SS_Linear, Input.vTexcoord + float2( -dtexel.x, 0 ) ).r ) - focusDepth ) / DoF_FocusRange );
+    float cocR = saturate( ( LinearizeDepth( TX_Depth.Sample( SS_Linear, Input.vTexcoord + float2(  dtexel.x, 0 ) ).r ) - focusDepth ) / DoF_FocusRange );
+    float cocU = saturate( ( LinearizeDepth( TX_Depth.Sample( SS_Linear, Input.vTexcoord + float2( 0, -dtexel.y ) ).r ) - focusDepth ) / DoF_FocusRange );
+    float cocD = saturate( ( LinearizeDepth( TX_Depth.Sample( SS_Linear, Input.vTexcoord + float2( 0,  dtexel.y ) ).r ) - focusDepth ) / DoF_FocusRange );
+
+    float minCoC = min( min( cocC, cocL ), min( cocR, min( cocU, cocD ) ) );
 
     // Bilinear-upsampled half-res bokeh blur
     float4 blurSample = TX_Blur.Sample( SS_Linear, Input.vTexcoord );
 
-    float blendFactor = smoothstep( 0.0, 1.0, coc );
+    float blendFactor = smoothstep( 0.0, 1.0, minCoC );
     float3 finalColor = lerp( sharpColor, blurSample.rgb, blendFactor );
 
     return float4( finalColor, 1.0 );

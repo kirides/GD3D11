@@ -86,6 +86,15 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 
         float weight = ( sampleCoC >= length( offset ) * centerCoC ) ? 1.0 : sampleCoC;
 
+        // Asymmetric foreground rejection: prevent closer/foreground
+        // samples from leaking into background blur. This stops thin
+        // features (leaves, fences) from appearing to expand/fatten.
+        // Only penalises samples CLOSER than center; same-depth and
+        // farther samples pass through so bokeh shapes are preserved.
+        float depthMargin = max( centerLinear * 0.05, 5.0 );
+        float foregroundReject = saturate( ( sampleLinear - centerLinear + depthMargin ) / depthMargin );
+        weight *= foregroundReject;
+
         float luminance = dot( sampleColor, float3( 0.2126, 0.7152, 0.0722 ) );
         weight *= 1.0 + luminance * 2.0;
 
