@@ -400,6 +400,6 @@ XRESULT D3D11GraphicsEngineBase::BindViewportInformation( const std::string& sha
 }
 
 /** Returns the graphics-device this is running on */
-std::string D3D11GraphicsEngineBase::GetGraphicsDeviceName() {
+const std::string& D3D11GraphicsEngineBase::GetGraphicsDeviceName() {
     return DeviceDescription;
 }

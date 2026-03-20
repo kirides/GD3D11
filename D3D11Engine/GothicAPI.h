@@ -216,8 +216,8 @@ public:
     /** Call to OnRemoveVob(player) and OnAddVob(player) in case of invisibility */
     void ReloadPlayerVob();
 
-    inline std::string GetGameName() { return m_gameName; }
-    inline void SetGameName( std::string value ) { m_gameName = value; }
+    inline const std::string& GetGameName() const { return m_gameName; }
+    inline void SetGameName( std::string value ) { m_gameName = std::move(value); }
 
     /** Called when the game starts */
     void OnGameStart();

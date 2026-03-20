@@ -93,8 +93,8 @@ void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float ra
         std::vector<ExVertexStruct> vertices;
         IndexVertices( &it->second->Vertices[0], it->second->Vertices.size(), vertices, indices );
 
-        it->second->Vertices = vertices;
-        it->second->Indices = indices;
+        it->second->Vertices = std::move( vertices );
+        it->second->Indices = std::move( indices );
 
         // Create the buffers
         Engine::GraphicsEngine->CreateVertexBuffer( &it->second->MeshVertexBuffer );
@@ -251,8 +251,8 @@ XRESULT WorldConverter::LoadWorldMeshFromFile( const std::string& file, std::map
                 std::vector<VERTEX_INDEX> indices;
                 IndexVertices( &it.second->Vertices[0], it.second->Vertices.size(), indexedVertices, indices );
 
-                it.second->Vertices = indexedVertices;
-                it.second->Indices = indices;
+                it.second->Vertices = std::move( indexedVertices );
+                it.second->Indices = std::move( indices );
 
                 // Create the buffers
                 Engine::GraphicsEngine->CreateVertexBuffer( &it.second->MeshVertexBuffer );
@@ -526,8 +526,8 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
                 std::vector<VERTEX_INDEX> indices;
                 IndexVertices( &it.second->Vertices[0], it.second->Vertices.size(), indexedVertices, indices );
 
-                it.second->Vertices = indexedVertices;
-                it.second->Indices = indices;
+                it.second->Vertices = std::move( indexedVertices );
+                it.second->Indices = std::move( indices );
 
                 // Create the buffers
                 Engine::GraphicsEngine->CreateVertexBuffer( &it.second->MeshVertexBuffer );
@@ -668,7 +668,7 @@ void WorldConverter::GenerateFullSectionMesh( WorldMeshSectionInfo& section ) {
     std::vector<VERTEX_INDEX> indices;
 
     section.FullStaticMesh = new MeshInfo;
-    section.FullStaticMesh->Vertices = vx;
+    section.FullStaticMesh->Vertices = std::move( vx );
 
     // Create the buffers
     Engine::GraphicsEngine->CreateVertexBuffer( &section.FullStaticMesh->MeshVertexBuffer );
@@ -1257,8 +1257,8 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
             continue;
         }
 
-        mi->Vertices = vertices;
-        mi->Indices = indices;
+        mi->Vertices = std::move( vertices );
+        mi->Indices = std::move( indices );
         mi->MeshIndex = i;
 
         // Create the buffers

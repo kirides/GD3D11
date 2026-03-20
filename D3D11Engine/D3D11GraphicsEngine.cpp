@@ -1457,6 +1457,7 @@ XRESULT D3D11GraphicsEngine::FetchDisplayModeListDXGI() {
         currentRefreshRate = devMode.dmDisplayFrequency;
     }
 
+    CachedDisplayModes.reserve( numModes );
     for ( UINT i = 0; i < numModes; i++ ) 	{
         DXGI_MODE_DESC1& displayMode = displayModes[i];
         if ( static_cast<UINT>(Resolution.x) == displayMode.Width && static_cast<UINT>(Resolution.y) == displayMode.Height ) {
@@ -1507,6 +1508,7 @@ XRESULT D3D11GraphicsEngine::FetchDisplayModeListWindows() {
 XRESULT
 D3D11GraphicsEngine::GetDisplayModeList( std::vector<DisplayModeInfo>* modeList,
     bool includeSuperSampling ) {
+    modeList->reserve( CachedDisplayModes.size() );
     for ( DisplayModeInfo& mode : CachedDisplayModes ) {
         modeList->push_back( mode );
     }
@@ -3505,6 +3507,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh_Indirect( bool noTextures ) {
     static std::vector<D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS> drawIndirectArgs; drawIndirectArgs.clear();
     static std::vector<std::tuple<zCTexture*, WorldMeshInfo*, MaterialInfo*>> meshList; meshList.clear();
     static std::vector<std::tuple<zCTexture*, WorldMeshInfo*, MaterialInfo*>> meshListAlpha; meshListAlpha.clear();
+    if ( meshList.capacity() == 0 ) { meshList.reserve( 4096 ); meshListAlpha.reserve( 512 ); drawIndirectArgs.reserve( 4096 ); }
     auto CompareMesh = []( std::tuple<zCTexture*, WorldMeshInfo*, MaterialInfo*>& a, std::tuple<zCTexture*, WorldMeshInfo*, MaterialInfo*>& b )
         -> bool { return std::get<0>( a ) < std::get<0>( b ); };
 
@@ -3745,6 +3748,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
     DrawVertexBufferIndexedUINT( meshInfo->MeshVertexBuffer, meshInfo->MeshIndexBuffer, 0, 0 );
 
     static std::vector<std::pair<MeshKey, WorldMeshInfo*>> meshList;
+    if ( meshList.capacity() == 0 ) meshList.reserve( 4096 );
     auto CompareMesh = []( std::pair<MeshKey, WorldMeshInfo*>& a, std::pair<MeshKey, WorldMeshInfo*>& b ) -> bool { return a.first.Texture < b.first.Texture; };
 
     GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
@@ -4635,6 +4639,7 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect(const std::vector<co
     static thread_local std::vector<std::pair<zCTexture*, WorldMeshInfo*>> alphaMeshes;
     opaqueDrawArgs.clear();
     alphaMeshes.clear();
+    if ( opaqueDrawArgs.capacity() == 0 ) { opaqueDrawArgs.reserve( 4096 ); alphaMeshes.reserve( 512 ); }
 
     for ( const WorldMeshSectionInfo* section : visibleSections ) {
         for ( const auto& meshPair : section->WorldMeshes ) {
