@@ -8086,9 +8086,9 @@ void D3D11GraphicsEngine::CacheWorldStaticVobs() {
     ctx.frustum = Frustum::AlwaysContainingFrustum();
     ctx.drawDistances.OutdoorVobs = 1'000'000;
     ctx.drawDistances.OutdoorVobsSmall = ctx.drawDistances.OutdoorVobs;
-    ctx.drawDistances.IndoorVobs = 0;
-    ctx.drawDistances.VisualFX = 0;
-    Engine::GAPI->CollectVisibleVobs( ctx, (EBspTreeCollectFlags)(EBspTreeCollectFlags::COLLECT_VOBS | EBspTreeCollectFlags::COLLECT_DISABLE_CHECK_DIST) );
+    ctx.drawDistances.IndoorVobs = ctx.drawDistances.OutdoorVobs;
+    ctx.drawDistances.VisualFX = 0; 
+    Engine::GAPI->CollectVisibleVobs( ctx, (EBspTreeCollectFlags)(COLLECT_VOBS | COLLECT_INDOOR_VOBS | COLLECT_DISABLE_CHECK_DIST) );
 
     const size_t totalItems = m_StaticVobs.size();
     // Correct math to calculate exact number of batches (rounds up to nearest multiple of 8, AVX ;) )
