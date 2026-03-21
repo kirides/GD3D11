@@ -75,14 +75,14 @@ void D3D11VobAtlasPass::BuildTextureAtlasses() {
     std::unordered_set<zCTexture*> seenTextures;
     std::vector<TextureInfo> uniqueTextures;
 
-    for ( auto vobInfo : m_Engine->m_StaticVobs ) {
-        for ( auto& byTex : reinterpret_cast<MeshVisualInfo*>(vobInfo->VisualInfo)->MeshesByTexture ) {
-            zCTexture* tex = byTex.first.Material->GetTexture();
+    for ( auto [_, vobInfo] : Engine::GAPI->GetStaticMeshVisuals() ) {
+        for ( auto& byTex : vobInfo->MeshesByTexture ) {
+            zCTexture* tex = byTex.first.Texture;
 
             if ( !tex ) {
-                auto vis = reinterpret_cast<MeshVisualInfo*>(vobInfo->VisualInfo)->Visual;
+                auto vis = vobInfo->Visual;
                 LogError()
-                    << "Texture not found for visual " << vobInfo->VisualInfo->VisualName
+                    << "Texture not found for visual " << vobInfo->VisualName
                     << " Visual Type: " << vis->GetVisualType();
 
                 continue;
@@ -112,10 +112,11 @@ void D3D11VobAtlasPass::BuildTextureAtlasses() {
 
             D3D11_TEXTURE2D_DESC desc;
             engineTex->GetTextureObject()->GetDesc( &desc );
-            if ( desc.Format < 1 || desc.Format >= TEXTURE_ATLAS_MAX ) {
+            if ( desc.Format < 0 || desc.Format >= TEXTURE_ATLAS_MAX ) {
                 LogError() << "Texture " << tex->GetName() << " has unsupported format for atlas: " << desc.Format;
                 continue;
             }
+            LogInfo() << "Texture for atlas: " << tex->GetName() << " Format: " << desc.Format;
             uniqueTextures.push_back( { tex, desc.Format, engineTex->GetTextureObject() } );
         }
     }
@@ -186,8 +187,10 @@ void D3D11VobAtlasPass::BuildGeometryBuffers() {
     for ( auto const& [proto, visual] : Engine::GAPI->GetStaticMeshVisuals() ) {
         for ( auto const& [meshKey, meshList] : visual->MeshesByTexture ) {
             auto it = m_TextureAtlasLookup.find( meshKey.Texture );
-            if ( it == m_TextureAtlasLookup.end() )
+            if ( it == m_TextureAtlasLookup.end() ) {
+                LogWarn() << "Texture for mesh not found: " << (meshKey.Texture ? meshKey.Texture->GetName() : "unknown");
                 continue;
+            }
 
             const TextureAtlasLookup& lookup = it->second;
             auto& group = groupsByFormat[lookup.atlasFormat];
