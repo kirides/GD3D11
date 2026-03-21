@@ -179,9 +179,9 @@ void D3D11ShadowMap::RecreateShadowSampler() {
 
 void D3D11ShadowMap::EnsureShadowMapBackend( int size ) {
     if ( !m_device ) return;
-
+     
     const auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
-    const UINT atlasNumCascades = static_cast<UINT>( std::clamp<int>( settings.NumShadowCascades, 1, 3 ) );
+    const UINT atlasNumCascades = static_cast<UINT>( std::clamp<int>( settings.NumShadowCascades, 1, std::min(4, MAX_CSM_CASCADES) ) );
 
     bool desiredUseAtlas = ShouldUseAtlas();
     int clampedSize = std::min<int>( std::max<int>( size, 512 ), (FeatureLevel10Compatibility ? 8192 : 16384) );
@@ -256,7 +256,7 @@ void D3D11ShadowMap::Resize( int size ) {
     const int maxSize = (FeatureLevel10Compatibility ? 8192 : 16384);
     const int s = std::min<int>( std::max<int>( size, 512 ), maxSize );
     const auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
-    const UINT atlasNumCascades = static_cast<UINT>( std::clamp<int>( settings.NumShadowCascades, 1, 3 ) );
+    const UINT atlasNumCascades = static_cast<UINT>( std::clamp<int>( settings.NumShadowCascades, 1, std::min( 4, MAX_CSM_CASCADES ) ) );
 
     EnsureShadowMapBackend( s );
 

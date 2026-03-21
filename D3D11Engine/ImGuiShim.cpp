@@ -70,7 +70,7 @@ void ImGuiShim::Init(
     const Microsoft::WRL::ComPtr<ID3D11Device1>& device,
     const Microsoft::WRL::ComPtr<ID3D11DeviceContext1>& context
 )
-{
+{ 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
@@ -398,14 +398,16 @@ bool ImGuizmoDirectionEdit( const char* label, XMFLOAT3& direction, float widget
 
 void ApplyFeatureLevel10Downgrades(GothicRendererSettings& s) {
     // one 4k texture, 1/2 2k textures max.
-    s.NumShadowCascades = std::min(s.NumShadowCascades, 3);
+    s.NumShadowCascades = std::min(s.NumShadowCascades, MAX_CSM_CASCADES);
 
     if (s.NumShadowCascades >= 2) {
         s.DebugSettings.ShadowCascades.Lambda = D3D11ShadowMap::lambdaBiasTable[s.NumShadowCascades].lambda;
         s.DebugSettings.ShadowCascades.Bias = D3D11ShadowMap::lambdaBiasTable[s.NumShadowCascades].bias;
 
-        s.DebugSettings.ShadowCascades.Lambda = 0.9f;
-        s.DebugSettings.ShadowCascades.Bias = 1.5f;
+        if (FeatureLevel10Compatibility || s.DebugSettings.FeatureSet.UseShadowAtlas) {
+            s.DebugSettings.ShadowCascades.Lambda = 0.9f;
+            s.DebugSettings.ShadowCascades.Bias = 1.5f;            
+        }
     }
 }
 
@@ -1152,15 +1154,14 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
             }
             ImGui::DragFloat( "WorldShadowRangeScale", &settings.WorldShadowRangeScale, 0.01f, 0.00f, 10.0f, "%.2f" );
             
-            const int max_cascaded_supported = FeatureLevel10Compatibility
-                ? std::min(3, MAX_CSM_CASCADES)
-                : MAX_CSM_CASCADES;
+            constexpr int max_cascaded_supported = MAX_CSM_CASCADES;
 
             settings.NumShadowCascades = std::clamp( settings.NumShadowCascades, 1, max_cascaded_supported );
             if ( ImGui::SliderInt( "Shadow Cascade count", &settings.NumShadowCascades, 1, max_cascaded_supported, "%d", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput) ) {
                 settings.NumShadowCascades = std::clamp( settings.NumShadowCascades, 1, max_cascaded_supported );
                 settings.DebugSettings.ShadowCascades.Lambda = D3D11ShadowMap::lambdaBiasTable[settings.NumShadowCascades].lambda;
                 settings.DebugSettings.ShadowCascades.Bias = D3D11ShadowMap::lambdaBiasTable[settings.NumShadowCascades].bias;
+                ApplyFeatureLevel10Downgrades(settings);
                 Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows );
             }
 
@@ -1290,7 +1291,9 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
             if (ImGui::BeginTabItem("Featureset", nullptr, ImGuiTabItemFlags_::ImGuiTabItemFlags_NoReorder)) {
                 ImGui::Checkbox("Use MDI", &settings.DebugSettings.FeatureSet.UseMDI );
                 ImGui::Checkbox("Use Layered Drawing", &settings.DebugSettings.FeatureSet.UseLayeredRendering );
-                ImGui::Checkbox("Use Shadow Atlas", &settings.DebugSettings.FeatureSet.UseShadowAtlas );
+                if ( ImGui::Checkbox( "Use Shadow Atlas", &settings.DebugSettings.FeatureSet.UseShadowAtlas ) ) {
+                    ApplyFeatureLevel10Downgrades( settings );
+                }
                 ImGui::SetItemTooltip("Enables a less intensive but lower quality shadow solution.");
                 ImGui::Checkbox("Force Feature Level 10", &settings.DebugSettings.FeatureSet.ForceFeatureLevel10 );
                 ImGui::SetItemTooltip("Force DirectX 10 era feature support. Requires restart.");

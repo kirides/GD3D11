@@ -1328,8 +1328,15 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
 
     // Check for shadowmap resize
     int s = rendererState.RendererSettings.ShadowMapSize;
+    static int numCascades = rendererState.RendererSettings.NumShadowCascades;
 
-    if ( ShadowMaps && ShadowMaps->GetSizeX() != s ) {
+    if ( ShadowMaps && (
+        ShadowMaps->GetSizeX() != s 
+        || ShadowMaps->IsUsingAtlas() != rendererState.RendererSettings.DebugSettings.FeatureSet.UseShadowAtlas
+        || numCascades != rendererState.RendererSettings.NumShadowCascades
+        )
+    ) {
+        numCascades = rendererState.RendererSettings.NumShadowCascades;
         s = std::min<int>(std::max<int>(s, 512), (FeatureLevel10Compatibility ? 8192 : 16384));
 
         int old = ShadowMaps->GetSizeX();
