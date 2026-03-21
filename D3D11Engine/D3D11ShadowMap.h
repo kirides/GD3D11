@@ -184,6 +184,7 @@ private:
     std::unique_ptr<RenderToTextureBuffer> m_dummyCubeRT;
 
     Microsoft::WRL::ComPtr<ID3D11SamplerState> m_shadowmapSampler;
+    int m_lastNumCascades = 0;
     std::array<CameraReplacement, MAX_CSM_CASCADES> m_CascadeCRs;
     std::array<std::unique_ptr<D3D11RenderQueue>, MAX_CSM_CASCADES> m_RenderQueues;
     std::vector<float> m_CascadeSplits;

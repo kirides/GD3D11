@@ -273,6 +273,8 @@ void D3D11ShadowMap::Resize( int size ) {
             m_cascadedShadowMap->Resize( s );
         }
     }
+
+    m_lastNumCascades = static_cast<int>( atlasNumCascades );
 }
 
 void D3D11ShadowMap::BindToPixelShader( ID3D11DeviceContext1* context, UINT slot ) {
@@ -289,6 +291,22 @@ void D3D11ShadowMap::BindSampler( ID3D11DeviceContext1* context, UINT slot ) {
 
 XRESULT D3D11ShadowMap::PrepareRender()
 {
+    // Check if shadowmap resources need to be recreated due to setting changes
+    {
+        auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+        const int maxSize = FeatureLevel10Compatibility ? 8192 : 16384;
+        const int desiredSize = std::min<int>( std::max<int>( settings.ShadowMapSize, 512 ), maxSize );
+        const int desiredCascades = std::clamp( settings.NumShadowCascades, 1, MAX_CSM_CASCADES );
+
+        if ( GetSizeX() != desiredSize
+            || m_useAtlas != ShouldUseAtlas()
+            || m_lastNumCascades != desiredCascades ) {
+            LogInfo() << "Shadowmap config changed, resizing to " << desiredSize << "x" << desiredSize;
+            Resize( desiredSize );
+            settings.ShadowMapSize = desiredSize;
+        }
+    }
+
     const XMVECTOR cameraPositionXm = Engine::GAPI->GetCameraPositionXM();
     XMFLOAT3 cameraPosition;
     XMStoreFloat3( &cameraPosition, cameraPositionXm );
