@@ -36,13 +36,13 @@ D3D11PfxRenderer::D3D11PfxRenderer() {
         FX_SMAA = std::make_unique<D3D11PFX_SMAA>( this );
         FX_TAA = std::make_unique<D3D11PFX_TAA>( this );
         NvHBAO = std::make_unique<D3D11NVHBAO>();
+        PFX_FSR1 = std::make_unique<D3D11PFX_FSR1>( this );
+        PFX_FSR2 = std::make_unique<D3D11PFX_FSR2>( this );
+        PFX_FSR3 = std::make_unique<D3D11PFX_FSR3>( this );
     }
 
     PFX_CAS = std::make_unique<D3D11PFX_CAS>( this );
     PFX_SimpleSharpen = std::make_unique<D3D11PFX_SimpleSharpen>( this );
-    PFX_FSR1 = std::make_unique<D3D11PFX_FSR1>( this );
-    PFX_FSR2 = std::make_unique<D3D11PFX_FSR2>( this );
-    PFX_FSR3 = std::make_unique<D3D11PFX_FSR3>( this );
 }
 
 D3D11PfxRenderer::~D3D11PfxRenderer() {
@@ -266,23 +266,28 @@ TextureHandle D3D11PfxRenderer::GetTempBufferDS4()
 void D3D11PfxRenderer::FreeResources()
 {
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
-    if ( settings.AntiAliasingMode != GothicRendererSettings::AA_SMAA ) {
+    if ( this->FX_SMAA 
+        && settings.AntiAliasingMode != GothicRendererSettings::AA_SMAA ) {
         this->FX_SMAA->ReleaseResources();
     }
-    if ( settings.AntiAliasingMode != GothicRendererSettings::AA_TAA ) {
+    if ( this->FX_TAA 
+        && settings.AntiAliasingMode != GothicRendererSettings::AA_TAA ) {
         this->FX_TAA->ReleaseResources();
     }
 
-    if ( settings.AntiAliasingMode != GothicRendererSettings::AA_FSR
+    if ( this->PFX_FSR2
+        && settings.AntiAliasingMode != GothicRendererSettings::AA_FSR
         && !(settings.Upscaler == GothicRendererSettings::UPSCALER_FSR_2) && settings.ResolutionScalePercent < 100) {
         this->PFX_FSR2->ReleaseResources();
     }
 
-    if ( !(settings.Upscaler == GothicRendererSettings::UPSCALER_FSR_1) && settings.ResolutionScalePercent < 100 ) {
+    if ( this->PFX_FSR1
+        && !(settings.Upscaler == GothicRendererSettings::UPSCALER_FSR_1) && settings.ResolutionScalePercent < 100 ) {
         this->PFX_FSR1->ReleaseResources();
     }
 
-    if ( !settings.HbaoSettings.Enabled ) {
+    if ( this->NvHBAO 
+        && !settings.HbaoSettings.Enabled ) {
         this->NvHBAO->ReleaseResources();
     }
 }

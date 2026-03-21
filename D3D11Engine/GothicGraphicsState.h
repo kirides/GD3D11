@@ -767,7 +767,7 @@ struct GothicRendererSettings {
         DebugSettings = {};
         DebugSettings.Culling.CullBspSections = true;
         DebugSettings.Culling.CullVobs = true;
-        DebugSettings.ShadowCascades.LazyCascadeUpdate = true;
+        DebugSettings.ShadowCascades.LazyCascadeUpdate = false;
         DebugSettings.ShadowCascades.ExtendBack = 600;
     }
 
@@ -963,6 +963,8 @@ struct GothicRendererSettings {
         struct {
             bool UseMDI;
             bool UseLayeredRendering;
+            bool UseShadowAtlas;
+            bool ForceFeatureLevel10;
         } FeatureSet;
     } DebugSettings;
 };

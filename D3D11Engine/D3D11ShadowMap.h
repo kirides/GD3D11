@@ -8,6 +8,7 @@
 #include <DirectXMath.h>
 #include "RenderToTextureBuffer.h"
 #include "D3D11CascadedShadowMapBuffer.h"
+#include "D3D11ShadowAtlas.h"
 #include "D3D11_Helpers.h"
 #include "WorldObjects.h"
 #include "D3D11PointLight.h"
@@ -64,6 +65,11 @@ struct RenderShadowmapsParams {
     // Optional array of camera replacements for all cascades
     // Used to build frustums for culling without requiring CameraReplacement to be set externally
     const std::array<CameraReplacement, MAX_CSM_CASCADES>* CascadeCameraReplacements = nullptr;
+
+    // Atlas viewport override for atlas rendering path
+    D3D11_VIEWPORT ViewportOverride = {};
+    bool UseViewportOverride = false;
+    bool SkipClear = false;
 };
 
 class D3D11ShadowMap {
@@ -80,15 +86,32 @@ public:
 
     RenderToTextureBuffer* GetDummyCubeRT() { return m_dummyCubeRT.get(); }
 
-    // Get the cascaded shadow map
+    // Get the cascaded shadow map (texture array path)
     D3D11CascadedShadowMapBuffer* GetCascadedShadowMap() { return m_cascadedShadowMap.get(); }
+
+    // Get the shadow atlas (atlas path, FL10)
+    D3D11ShadowAtlas* GetShadowAtlas() { return m_shadowAtlas.get(); }
+
+    // Whether we're using the atlas path (FL10) vs texture array (FL11+)
+    bool IsUsingAtlas() const { return m_useAtlas; }
 
     // Get DSV for a specific cascade
     ID3D11DepthStencilView* GetCascadeDSV( UINT cascadeIndex ) {
+        if ( m_useAtlas && m_shadowAtlas )
+            return m_shadowAtlas->GetDepthStencilView(); // Single DSV for entire atlas
         return m_cascadedShadowMap ? m_cascadedShadowMap->GetCascadeDSV( cascadeIndex ) : nullptr;
     }
 
+    // Get cascade 0 pixel size (largest cascade)
     int GetSizeX() const {
+        if ( m_useAtlas && m_shadowAtlas ) return m_shadowAtlas->GetCascade0Size();
+        if ( m_cascadedShadowMap ) return m_cascadedShadowMap->GetSize();
+        return 0;
+    }
+
+    // Get per-cascade pixel size (differs in atlas mode)
+    UINT GetCascadePixelSize( UINT cascadeIndex ) const {
+        if ( m_useAtlas && m_shadowAtlas ) return m_shadowAtlas->GetCascadeSize( cascadeIndex );
         if ( m_cascadedShadowMap ) return m_cascadedShadowMap->GetSize();
         return 0;
     }
@@ -144,15 +167,24 @@ public:
 
     D3D11RenderQueue* GetRenderQueue( int cascadeIndex ) { return m_RenderQueues[cascadeIndex].get(); }
 private:
+    bool ShouldUseAtlas() const;
+    void RecreateShadowSampler();
+    void EnsureShadowMapBackend( int size );
+
     Microsoft::WRL::ComPtr<ID3D11Device1> m_device;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext1> m_context;
 
-    // CSM using texture array
+    // CSM using texture array (FL11+)
     std::unique_ptr<D3D11CascadedShadowMapBuffer> m_cascadedShadowMap;
+
+    // CSM using texture atlas (FL10 fallback)
+    std::unique_ptr<D3D11ShadowAtlas> m_shadowAtlas;
+    bool m_useAtlas = false;
 
     std::unique_ptr<RenderToTextureBuffer> m_dummyCubeRT;
 
     Microsoft::WRL::ComPtr<ID3D11SamplerState> m_shadowmapSampler;
+    int m_lastNumCascades = 0;
     std::array<CameraReplacement, MAX_CSM_CASCADES> m_CascadeCRs;
     std::array<std::unique_ptr<D3D11RenderQueue>, MAX_CSM_CASCADES> m_RenderQueues;
     std::vector<float> m_CascadeSplits;

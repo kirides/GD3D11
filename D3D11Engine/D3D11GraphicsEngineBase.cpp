@@ -266,6 +266,10 @@ void D3D11GraphicsEngineBase::ConstructShaderMakroList( std::vector<D3D_SHADER_M
     m.Definition = staticNumbers[std::clamp<size_t>( s.ShadowCascadePCFLimit, 0, MAX_CSM_CASCADES )];
     list.push_back( m );
 
+    m.Name = "SHADOW_ATLAS";
+    m.Definition = (FeatureLevel10Compatibility || s.DebugSettings.FeatureSet.UseShadowAtlas) ? "1" : "0";
+    list.push_back( m );
+
     m.Name = "SHD_WIND";
 #ifdef BUILD_GOTHIC_2_6_fix
     m.Definition = s.WindQuality == GothicRendererSettings::EWindQuality::WIND_QUALITY_ADVANCED ? "1" : "0";
