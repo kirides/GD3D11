@@ -412,7 +412,7 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
     {
         s.ChangeWindowPreset = WINDOW_MODE_FULLSCREEN_BORDERLESS;
 
-        s.WorldShadowRangeScale = 1.0f;
+        s.WorldShadowRangeScale = 0.20f;
         s.NumShadowCascades = 2;
         s.ShadowMapSize = 1024;
         s.ShadowFrustumCullingMode = GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_AGGRESSIVE;
@@ -446,7 +446,7 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
     {
         s.ChangeWindowPreset = WINDOW_MODE_FULLSCREEN_BORDERLESS;
 
-        s.WorldShadowRangeScale = 1.0f;
+        s.WorldShadowRangeScale = 0.20f;
         s.NumShadowCascades = 3;
         s.ShadowMapSize = 2048;
         s.ShadowFrustumCullingMode = GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_CONSERVATIVE;
@@ -480,7 +480,7 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
     {
         s.ChangeWindowPreset = WINDOW_MODE_FULLSCREEN_BORDERLESS;
 
-        s.WorldShadowRangeScale = 1.0f;
+        s.WorldShadowRangeScale = 0.20f;
         s.NumShadowCascades = 3;
         s.ShadowMapSize = 4096;
         s.ShadowFrustumCullingMode = GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_CONSERVATIVE;
@@ -516,7 +516,7 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
     {
         s.ChangeWindowPreset = WINDOW_MODE_FULLSCREEN_BORDERLESS;
 
-        s.WorldShadowRangeScale = 1.0f;
+        s.WorldShadowRangeScale = 0.20f;
         s.NumShadowCascades = 4;
         s.ShadowMapSize = 4096;
         s.ShadowFrustumCullingMode = GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_CONSERVATIVE;

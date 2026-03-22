@@ -743,7 +743,7 @@ struct GothicRendererSettings {
 
         ForceFOV = false;
 
-        ChangeWindowPreset = 0;
+        ChangeWindowPreset = 2; // WINDOW_MODE_FULLSCREEN_BORDERLESS;
         StretchWindow = true;
         SmoothShadowCameraUpdate = true;
         SmoothShadowFrequency = 500.0f;
