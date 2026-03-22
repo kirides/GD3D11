@@ -101,41 +101,45 @@ static void CalculateCascadeMatrices(
             radius = std::max( radius, dist );
         }
 
-        // Round radius to prevent micro-jitter from floating point drift
-        radius = std::ceil( radius / 16.0f ) * 16.0f;
-        cascadeSize = radius * 2.0f;
+        // Round to nearest integer to eliminate sub-pixel floating point inaccuracies from rotation.
+        // This guarantees cascadeSize is perfectly constant, which is mandatory for texel snapping.
+        cascadeSize = std::round( radius ) * 2.0f;
     } else {
         float splitRatio = splits[cascadeIdx + 1] / splits[numCascades];
         cascadeSize = farPlane * std::sqrt( splitRatio );
-        cascadeSize = std::ceil( cascadeSize / 64.0f ) * 64.0f;
+        cascadeSize = std::round( cascadeSize );
         radius = cascadeSize * 0.5f;
         frustumCenter = shadowCameraPosFallback;
     }
 
-    // 3. Create initial light view looking at the frustum center
-    float pullBackDistance = std::max( 10000.0f, radius * 2.0f );
-    XMVECTOR lightPos = XMVectorSubtract( frustumCenter, XMVectorScale( lightDir, pullBackDistance ) );
-    XMMATRIX lightView = XMMatrixLookToLH( lightPos, lightDir, upDir );
+    // 3. Create a base light view matrix centered at the WORLD ORIGIN (0,0,0)
+    // This ensures our texel grid is mathematically anchored to the world, not the moving camera.
+    XMMATRIX baseLightView = XMMatrixLookToLH( XMVectorZero(), lightDir, upDir );
 
-    // 4. Texel Snapping (CRITICAL: cascadeSize is now perfectly constant, ensuring perfect grid snapping)
+    // 4. Transform the frustum center into this fixed light space
+    XMVECTOR centerLS = XMVector3TransformCoord( frustumCenter, baseLightView );
+
+    // 5. Snap the frustum center to the texel grid
     float texelSize = cascadeSize / static_cast<float>(shadowMapSize);
-
-    // Find where the center of the frustum lands in light space
-    XMVECTOR centerLS = XMVector3TransformCoord( frustumCenter, lightView );
     float cx = XMVectorGetX( centerLS );
     float cy = XMVectorGetY( centerLS );
 
-    // Calculate snapped coordinates
     float snappedCx = std::floor( cx / texelSize ) * texelSize;
     float snappedCy = std::floor( cy / texelSize ) * texelSize;
 
-    // Apply offset matrix to align the view mathematically perfectly to the texel grid
-    XMMATRIX snapMatrix = XMMatrixTranslation( snappedCx - cx, snappedCy - cy, 0.0f );
-    XMMATRIX snappedLightView = XMMatrixMultiply( lightView, snapMatrix );
+    // 6. Transform the snapped center back to world space
+    XMVECTOR snappedCenterLS = XMVectorSet( snappedCx, snappedCy, XMVectorGetZ( centerLS ), 1.0f );
+    XMMATRIX invBaseLightView = XMMatrixInverse( nullptr, baseLightView );
+    XMVECTOR snappedCenterWorld = XMVector3TransformCoord( snappedCenterLS, invBaseLightView );
 
-    // 5. Z-Bounds (Clipping against Scene to prevent massive underground overdraw)
+    // 7. Build the final light view matrix looking at the snapped center
+    float pullBackDistance = std::max( 10000.0f, radius * 2.0f );
+    XMVECTOR lightPos = XMVectorSubtract( snappedCenterWorld, XMVectorScale( lightDir, pullBackDistance ) );
+    XMMATRIX lightView = XMMatrixLookToLH( lightPos, lightDir, upDir );
+
+    // 8. Z-Bounds (Clipping against Scene to prevent massive underground overdraw)
     float orthoNear = 1.0f;
-    float orthoFar = pullBackDistance + radius + 5000.0f; // Default safe fallback
+    float orthoFar = pullBackDistance + radius + 5000.0f;
 
     if ( auto worldInfo = Engine::GAPI->GetLoadedWorldInfo() ) {
         if ( auto bspTree = worldInfo->BspTree ) {
@@ -149,7 +153,7 @@ static void CalculateCascadeMatrices(
 
             float sceneMaxZ = -FLT_MAX;
             for ( const auto& corner : sceneCorners ) {
-                XMVECTOR vLS = XMVector3TransformCoord( XMLoadFloat3( &corner ), snappedLightView );
+                XMVECTOR vLS = XMVector3TransformCoord( XMLoadFloat3( &corner ), lightView );
                 sceneMaxZ = std::max( sceneMaxZ, XMVectorGetZ( vLS ) );
             }
 
@@ -158,10 +162,10 @@ static void CalculateCascadeMatrices(
         }
     }
 
-    const XMMATRIX crProjRepl = XMMatrixTranspose( XMMatrixOrthographicLH(
+    const XMMATRIX crProjRepl = XMMatrixTranspose( XMMatrixOrthographicLH( 
         cascadeSize, cascadeSize, orthoNear, orthoFar ) );
 
-    XMStoreFloat4x4( &outCR.ViewReplacement, XMMatrixTranspose( snappedLightView ) );
+    XMStoreFloat4x4( &outCR.ViewReplacement, XMMatrixTranspose( lightView ) );
     XMStoreFloat4x4( &outCR.ProjectionReplacement, crProjRepl );
     XMStoreFloat3( &outCR.PositionReplacement, lightPos );
 
@@ -169,7 +173,7 @@ static void CalculateCascadeMatrices(
     XMStoreFloat3( &outCR.LookAtReplacement, lookAt );
 
     float cullingMargin = texelSize * 2.0f;
-    outCR.frustum.BuildOrthographic( snappedLightView,
+    outCR.frustum.BuildOrthographic( lightView,
         cascadeSize + cullingMargin,
         cascadeSize + cullingMargin,
         orthoNear,

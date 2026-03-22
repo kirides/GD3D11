@@ -412,7 +412,7 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
     {
         s.ChangeWindowPreset = WINDOW_MODE_FULLSCREEN_BORDERLESS;
 
-        s.WorldShadowRangeScale = 0.20f;
+        s.WorldShadowRangeScale = 0.34f;
         s.NumShadowCascades = 2;
         s.ShadowMapSize = 1024;
         s.ShadowFrustumCullingMode = GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_AGGRESSIVE;
@@ -446,7 +446,7 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
     {
         s.ChangeWindowPreset = WINDOW_MODE_FULLSCREEN_BORDERLESS;
 
-        s.WorldShadowRangeScale = 0.20f;
+        s.WorldShadowRangeScale = 0.34f;
         s.NumShadowCascades = 3;
         s.ShadowMapSize = 2048;
         s.ShadowFrustumCullingMode = GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_CONSERVATIVE;
@@ -480,7 +480,7 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
     {
         s.ChangeWindowPreset = WINDOW_MODE_FULLSCREEN_BORDERLESS;
 
-        s.WorldShadowRangeScale = 0.20f;
+        s.WorldShadowRangeScale = 0.34f;
         s.NumShadowCascades = 3;
         s.ShadowMapSize = 4096;
         s.ShadowFrustumCullingMode = GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_CONSERVATIVE;
@@ -516,7 +516,7 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
     {
         s.ChangeWindowPreset = WINDOW_MODE_FULLSCREEN_BORDERLESS;
 
-        s.WorldShadowRangeScale = 0.20f;
+        s.WorldShadowRangeScale = 0.34f;
         s.NumShadowCascades = 4;
         s.ShadowMapSize = 4096;
         s.ShadowFrustumCullingMode = GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_CONSERVATIVE;
@@ -1137,12 +1137,13 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
 
         ImGui::Checkbox( "Enable Shadows", &settings.EnableShadows );
         ImGui::BeginDisabled( !settings.EnableShadows );
-        {
+        { 
             ImGui::Checkbox( "Fast Shadows", &settings.FastShadows );
             ImGui::SetItemTooltip( "Renders only static world meshes" );
-            ImGui::Checkbox( "Smooth shadow update", &settings.SmoothShadowCameraUpdate );
-            ImGui::DragFloat( "Smooth shadow frequency", &settings.SmoothShadowFrequency, 200.0f, 1, 20000.f, "%.0f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
-            ImGui::SetItemTooltip( "Higher values mean more frequent shadow position updates" );
+            ImGui::Checkbox( "Fixed shadow update", &settings.SmoothShadowCameraUpdate );
+            ImGui::SetItemTooltip( "on: Higher values mean more frequent shadow position updates.\noff: real-time shadow updates." );
+            ImGui::DragFloat( "Fixed shadow frequency", &settings.SmoothShadowFrequency, 200.0f, 1, 20000.f, "%.0f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
+            ImGui::SetItemTooltip( "on: Higher values mean more frequent shadow position updates.\noff: real-time shadow updates." );
 
             if ( ImComboBoxC( "ShadowmapSize", shadowMapSizes, (int*)(&settings.ShadowMapSize), []() { Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows ); } ) ) {
                 ImGui::EndCombo();
