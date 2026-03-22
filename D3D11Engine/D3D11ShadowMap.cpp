@@ -78,10 +78,9 @@ static void CalculateCascadeMatrices(
         upDir = XMVectorSet( 0.0f, 0.0f, 1.0f, 0.0f );
     }
 
-    float cascadeWidth = 0.0f;
-    float cascadeHeight = 0.0f;
-    XMVECTOR boxCenterWorld;
-    float sliceDepth = 0.0f;
+    float cascadeSize = 0.0f;
+    XMVECTOR frustumCenter;
+    float radius = 0.0f;
 
     if ( playerFrustum.IsValid() && playerFrustum.SupportsCulling() ) {
         float splitNear = splits[cascadeIdx];
@@ -89,109 +88,78 @@ static void CalculateCascadeMatrices(
 
         auto corners = playerFrustum.GetSliceCorners( splitNear, splitFar );
 
-        // Find the World-Space AABB of the Frustum Slice
-        float wMinX = FLT_MAX, wMaxX = -FLT_MAX;
-        float wMinY = FLT_MAX, wMaxY = -FLT_MAX;
-        float wMinZ = FLT_MAX, wMaxZ = -FLT_MAX;
-
+        // 1. Calculate the center of the unclipped frustum slice
+        frustumCenter = XMVectorZero();
         for ( const auto& corner : corners ) {
-            wMinX = std::min( wMinX, corner.x ); wMaxX = std::max( wMaxX, corner.x );
-            wMinY = std::min( wMinY, corner.y ); wMaxY = std::max( wMaxY, corner.y );
-            wMinZ = std::min( wMinZ, corner.z ); wMaxZ = std::max( wMaxZ, corner.z );
+            frustumCenter = XMVectorAdd( frustumCenter, XMLoadFloat3( &corner ) );
+        }
+        frustumCenter = XMVectorScale( frustumCenter, 1.0f / 8.0f );
+
+        // 2. Calculate the radius of the bounding sphere
+        for ( const auto& corner : corners ) {
+            float dist = XMVectorGetX( XMVector3Length( XMVectorSubtract( XMLoadFloat3( &corner ), frustumCenter ) ) );
+            radius = std::max( radius, dist );
         }
 
-        // Intersect with the Scene's World-Space AABB, ensures we don't waste too much space on the shadowmap
-        if ( auto worldInfo = Engine::GAPI->GetLoadedWorldInfo() ) {
-            if ( auto bspTree = worldInfo->BspTree ) {
-                const auto& sceneBox = bspTree->GetRootNode()->BBox3D;
-                wMinX = std::max( wMinX, sceneBox.Min.x );
-                wMaxX = std::min( wMaxX, sceneBox.Max.x );
-                wMinY = std::max( wMinY, sceneBox.Min.y );
-                wMaxY = std::min( wMaxY, sceneBox.Max.y );
-                wMinZ = std::max( wMinZ, sceneBox.Min.z );
-                wMaxZ = std::min( wMaxZ, sceneBox.Max.z );
-
-                // Failsafe in case the camera slice is entirely out of bounds
-                if ( wMinX > wMaxX ) wMaxX = wMinX;
-                if ( wMinY > wMaxY ) wMaxY = wMinY;
-                if ( wMinZ > wMaxZ ) wMaxZ = wMinZ;
-            }
-        }
-
-        // Create 8 new corners from our tightly clipped AABB
-        std::array<XMFLOAT3, 8> clippedCorners = {
-            XMFLOAT3( wMinX, wMinY, wMinZ ), XMFLOAT3( wMaxX, wMinY, wMinZ ),
-            XMFLOAT3( wMinX, wMaxY, wMinZ ), XMFLOAT3( wMaxX, wMaxY, wMinZ ),
-            XMFLOAT3( wMinX, wMinY, wMaxZ ), XMFLOAT3( wMaxX, wMinY, wMaxZ ),
-            XMFLOAT3( wMinX, wMaxY, wMaxZ ), XMFLOAT3( wMaxX, wMaxY, wMaxZ )
-        };
-
-        // Project the tightly clipped bounds into light space
-        XMMATRIX tempLightView = XMMatrixLookToLH( XMVectorZero(), lightDir, upDir );
-
-        float minX = FLT_MAX, maxX = -FLT_MAX;
-        float minY = FLT_MAX, maxY = -FLT_MAX;
-        float minZ = FLT_MAX, maxZ = -FLT_MAX;
-
-        for ( const auto& corner : clippedCorners ) {
-            XMVECTOR vCorner = XMVector3TransformCoord( XMLoadFloat3( &corner ), tempLightView );
-            float x = XMVectorGetX( vCorner );
-            float y = XMVectorGetY( vCorner );
-            float z = XMVectorGetZ( vCorner );
-
-            minX = std::min( minX, x ); maxX = std::max( maxX, x );
-            minY = std::min( minY, y ); maxY = std::max( maxY, y );
-            minZ = std::min( minZ, z ); maxZ = std::max( maxZ, z );
-        }
-
-        cascadeWidth = maxX - minX;
-        cascadeHeight = maxY - minY;
-        sliceDepth = maxZ - minZ;
-
-        constexpr float sizeQuantization = 64.0f;
-        cascadeWidth = std::ceil( cascadeWidth / sizeQuantization ) * sizeQuantization;
-        cascadeHeight = std::ceil( cascadeHeight / sizeQuantization ) * sizeQuantization;
-
-        float midX = (minX + maxX) * 0.5f;
-        float midY = (minY + maxY) * 0.5f;
-        float midZ = (minZ + maxZ) * 0.5f;
-
-        XMVECTOR centerLightSpace = XMVectorSet( midX, midY, midZ, 1.0f );
-        XMMATRIX invTempLightView = XMMatrixInverse( nullptr, tempLightView );
-        boxCenterWorld = XMVector3TransformCoord( centerLightSpace, invTempLightView );
+        // Round radius to prevent micro-jitter from floating point drift
+        radius = std::ceil( radius / 16.0f ) * 16.0f;
+        cascadeSize = radius * 2.0f;
     } else {
         float splitRatio = splits[cascadeIdx + 1] / splits[numCascades];
-        float size = farPlane * std::sqrt( splitRatio );
-        constexpr float sizeQuantization = 64.0f;
-        size = std::ceil( size / sizeQuantization ) * sizeQuantization;
-        cascadeWidth = size;
-        cascadeHeight = size;
-        boxCenterWorld = shadowCameraPosFallback;
-        sliceDepth = size;
+        cascadeSize = farPlane * std::sqrt( splitRatio );
+        cascadeSize = std::ceil( cascadeSize / 64.0f ) * 64.0f;
+        radius = cascadeSize * 0.5f;
+        frustumCenter = shadowCameraPosFallback;
     }
 
-    const float pullBackDistance = 10000.0f;
-    XMVECTOR lightPos = XMVectorSubtract( boxCenterWorld, XMVectorScale( lightDir, pullBackDistance ) );
+    // 3. Create initial light view looking at the frustum center
+    float pullBackDistance = std::max( 10000.0f, radius * 2.0f );
+    XMVECTOR lightPos = XMVectorSubtract( frustumCenter, XMVectorScale( lightDir, pullBackDistance ) );
     XMMATRIX lightView = XMMatrixLookToLH( lightPos, lightDir, upDir );
 
-    float texelSizeX = cascadeWidth / static_cast<float>(shadowMapSize);
-    float texelSizeY = cascadeHeight / static_cast<float>(shadowMapSize);
+    // 4. Texel Snapping (CRITICAL: cascadeSize is now perfectly constant, ensuring perfect grid snapping)
+    float texelSize = cascadeSize / static_cast<float>(shadowMapSize);
 
-    XMVECTOR centerLightSpace = XMVector3TransformCoord( boxCenterWorld, lightView );
-    float cx = XMVectorGetX( centerLightSpace );
-    float cy = XMVectorGetY( centerLightSpace );
+    // Find where the center of the frustum lands in light space
+    XMVECTOR centerLS = XMVector3TransformCoord( frustumCenter, lightView );
+    float cx = XMVectorGetX( centerLS );
+    float cy = XMVectorGetY( centerLS );
 
-    float snapOffsetX = std::floor( cx / texelSizeX ) * texelSizeX - cx;
-    float snapOffsetY = std::floor( cy / texelSizeY ) * texelSizeY - cy;
+    // Calculate snapped coordinates
+    float snappedCx = std::floor( cx / texelSize ) * texelSize;
+    float snappedCy = std::floor( cy / texelSize ) * texelSize;
 
-    XMMATRIX offsetMatrix = XMMatrixTranslation( snapOffsetX, snapOffsetY, 0.0f );
-    XMMATRIX snappedLightView = XMMatrixMultiply( lightView, offsetMatrix );
+    // Apply offset matrix to align the view mathematically perfectly to the texel grid
+    XMMATRIX snapMatrix = XMMatrixTranslation( snappedCx - cx, snappedCy - cy, 0.0f );
+    XMMATRIX snappedLightView = XMMatrixMultiply( lightView, snapMatrix );
 
+    // 5. Z-Bounds (Clipping against Scene to prevent massive underground overdraw)
     float orthoNear = 1.0f;
-    float orthoFar = pullBackDistance + (sliceDepth * 0.5f) + 5000.0f;
+    float orthoFar = pullBackDistance + radius + 5000.0f; // Default safe fallback
+
+    if ( auto worldInfo = Engine::GAPI->GetLoadedWorldInfo() ) {
+        if ( auto bspTree = worldInfo->BspTree ) {
+            zTBBox3D sceneBox = bspTree->GetRootNode()->BBox3D;
+            std::array<XMFLOAT3, 8> sceneCorners = {
+                XMFLOAT3( sceneBox.Min.x, sceneBox.Min.y, sceneBox.Min.z ), XMFLOAT3( sceneBox.Max.x, sceneBox.Min.y, sceneBox.Min.z ),
+                XMFLOAT3( sceneBox.Min.x, sceneBox.Max.y, sceneBox.Min.z ), XMFLOAT3( sceneBox.Max.x, sceneBox.Max.y, sceneBox.Min.z ),
+                XMFLOAT3( sceneBox.Min.x, sceneBox.Min.y, sceneBox.Max.z ), XMFLOAT3( sceneBox.Max.x, sceneBox.Min.y, sceneBox.Max.z ),
+                XMFLOAT3( sceneBox.Min.x, sceneBox.Max.y, sceneBox.Max.z ), XMFLOAT3( sceneBox.Max.x, sceneBox.Max.y, sceneBox.Max.z )
+            };
+
+            float sceneMaxZ = -FLT_MAX;
+            for ( const auto& corner : sceneCorners ) {
+                XMVECTOR vLS = XMVector3TransformCoord( XMLoadFloat3( &corner ), snappedLightView );
+                sceneMaxZ = std::max( sceneMaxZ, XMVectorGetZ( vLS ) );
+            }
+
+            // Tighten Far Plane so we don't shoot miles past the level boundaries when looking down
+            orthoFar = std::min( orthoFar, sceneMaxZ + 500.0f );
+        }
+    }
 
     const XMMATRIX crProjRepl = XMMatrixTranspose( XMMatrixOrthographicLH(
-        cascadeWidth, cascadeHeight, orthoNear, orthoFar ) );
+        cascadeSize, cascadeSize, orthoNear, orthoFar ) );
 
     XMStoreFloat4x4( &outCR.ViewReplacement, XMMatrixTranspose( snappedLightView ) );
     XMStoreFloat4x4( &outCR.ProjectionReplacement, crProjRepl );
@@ -200,9 +168,10 @@ static void CalculateCascadeMatrices(
     XMVECTOR lookAt = XMVectorAdd( lightPos, lightDir );
     XMStoreFloat3( &outCR.LookAtReplacement, lookAt );
 
+    float cullingMargin = texelSize * 2.0f;
     outCR.frustum.BuildOrthographic( snappedLightView,
-        cascadeWidth + (texelSizeX * 2.0f),
-        cascadeHeight + (texelSizeY * 2.0f),
+        cascadeSize + cullingMargin,
+        cascadeSize + cullingMargin,
         orthoNear,
         orthoFar,
         Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendBack,

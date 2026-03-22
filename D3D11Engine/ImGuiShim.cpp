@@ -403,11 +403,6 @@ void ApplyFeatureLevel10Downgrades(GothicRendererSettings& s) {
     if (s.NumShadowCascades >= 2) {
         s.DebugSettings.ShadowCascades.Lambda = D3D11ShadowMap::lambdaBiasTable[s.NumShadowCascades].lambda;
         s.DebugSettings.ShadowCascades.Bias = D3D11ShadowMap::lambdaBiasTable[s.NumShadowCascades].bias;
-
-        if (FeatureLevel10Compatibility || s.DebugSettings.FeatureSet.UseShadowAtlas) {
-            s.DebugSettings.ShadowCascades.Lambda = 0.9f;
-            s.DebugSettings.ShadowCascades.Bias = 1.5f;            
-        }
     }
 }
 
