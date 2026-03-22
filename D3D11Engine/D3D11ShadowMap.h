@@ -160,9 +160,9 @@ public:
     inline static struct { float lambda; float bias; } lambdaBiasTable[] {
         /* 0 */ { 0, 0 },
         /* 1 */ { 1.0f, 1.0f },
-        /* 2 */ { 0.85f, 3.5f },
-        /* 3 */ { 0.92f, 2.7f },
-        /* 4 */ { 0.98f, 1.9f }, // Players should really want to use 4 cascades for best quality
+        /* 2 */ { 0.80f, 1.0f },
+        /* 3 */ { 0.80f, 1.0f },
+        /* 4 */ { 0.80f, 1.0f }, // Players should really want to use 4 cascades for best quality
     };
 
     D3D11RenderQueue* GetRenderQueue( int cascadeIndex ) { return m_RenderQueues[cascadeIndex].get(); }

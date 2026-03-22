@@ -58,84 +58,153 @@ void CalculateTemporalInterpolatedPosition(
     );
     outDir = XMVector3Normalize( dir );
 }
-
 static void CalculateCascadeMatrices(
     CameraReplacement& outCR,
+    const Frustum& playerFrustum,
     const std::vector<float>& splits,
     size_t cascadeIdx,
     size_t numCascades,
     float farPlane,
-    FXMVECTOR lightPos,
-    FXMVECTOR lookAt,
-    FXMVECTOR upDir,
-    GXMVECTOR shadowCameraPos,
+    FXMVECTOR lightPosOrig,
+    FXMVECTOR lookAtOrig,
+    FXMVECTOR upDirOrig,
+    GXMVECTOR shadowCameraPosFallback,
     UINT shadowMapSize )
 {
-    // Cascade-spezifische Größe basierend auf Split-Verhältnis
-    float splitRatio = splits[cascadeIdx + 1] / splits[numCascades];
-    float cascadeSize = farPlane * std::sqrt( splitRatio );
-    // cascadeSize = std::max( cascadeSize, 500.0f );
+    XMVECTOR lightDir = XMVector3Normalize( XMVectorSubtract( lookAtOrig, lightPosOrig ) );
 
-    // Round cascade size to fixed increments to prevent floating-point variations
-    // This ensures the shadow map covers the same world-space area consistently
-    constexpr float sizeQuantization = 64.0f;
-    cascadeSize = std::ceil( cascadeSize / sizeQuantization ) * sizeQuantization;
+    XMVECTOR upDir = upDirOrig;
+    if ( std::abs( XMVectorGetX( XMVector3Dot( lightDir, upDir ) ) ) > 0.999f ) {
+        upDir = XMVectorSet( 0.0f, 0.0f, 1.0f, 0.0f );
+    }
 
-    // Berechne View-Matrix für diese Cascade
-    XMMATRIX lightView = XMMatrixLookAtLH( lightPos, lookAt, upDir );
+    float cascadeWidth = 0.0f;
+    float cascadeHeight = 0.0f;
+    XMVECTOR boxCenterWorld;
+    float sliceDepth = 0.0f;
 
-    // *** TEXEL SNAPPING ***
-    // Berechne die Größe eines Texels in World-Space
-    float texelSize = cascadeSize / static_cast<float>(shadowMapSize);
+    if ( playerFrustum.IsValid() && playerFrustum.SupportsCulling() ) {
+        float splitNear = splits[cascadeIdx];
+        float splitFar = splits[cascadeIdx + 1];
 
-    // Use a slightly larger texel size for snapping to reduce edge swimming
-    float snapSize = texelSize// * 2.0f
-        ;
+        auto corners = playerFrustum.GetSliceCorners( splitNear, splitFar );
 
-    // Transformiere die Shadow-Kamera-Position in Light-Space
-    XMVECTOR lightSpaceOrigin = XMVector3Transform( shadowCameraPos, lightView );
-    XMFLOAT3 lightSpaceOriginF;
-    XMStoreFloat3( &lightSpaceOriginF, lightSpaceOrigin );
+        // Find the World-Space AABB of the Frustum Slice
+        float wMinX = FLT_MAX, wMaxX = -FLT_MAX;
+        float wMinY = FLT_MAX, wMaxY = -FLT_MAX;
+        float wMinZ = FLT_MAX, wMaxZ = -FLT_MAX;
 
-    // Snappe auf Texel-Grenzen (using larger snap size for stability)
-    lightSpaceOriginF.x = std::floor( lightSpaceOriginF.x / snapSize ) * snapSize;
-    lightSpaceOriginF.y = std::floor( lightSpaceOriginF.y / snapSize ) * snapSize;
+        for ( const auto& corner : corners ) {
+            wMinX = std::min( wMinX, corner.x ); wMaxX = std::max( wMaxX, corner.x );
+            wMinY = std::min( wMinY, corner.y ); wMaxY = std::max( wMaxY, corner.y );
+            wMinZ = std::min( wMinZ, corner.z ); wMaxZ = std::max( wMaxZ, corner.z );
+        }
 
-    // Berechne den Offset und wende ihn auf die View-Matrix an
-    XMVECTOR snappedOrigin = XMLoadFloat3( &lightSpaceOriginF );
-    XMVECTOR originalOrigin = XMVector3Transform( shadowCameraPos, lightView );
-    XMVECTOR snapOffset = XMVectorSubtract( snappedOrigin, originalOrigin );
+        // Intersect with the Scene's World-Space AABB, ensures we don't waste too much space on the shadowmap
+        if ( auto worldInfo = Engine::GAPI->GetLoadedWorldInfo() ) {
+            if ( auto bspTree = worldInfo->BspTree ) {
+                const auto& sceneBox = bspTree->GetRootNode()->BBox3D;
+                wMinX = std::max( wMinX, sceneBox.Min.x );
+                wMaxX = std::min( wMaxX, sceneBox.Max.x );
+                wMinY = std::max( wMinY, sceneBox.Min.y );
+                wMaxY = std::min( wMaxY, sceneBox.Max.y );
+                wMinZ = std::max( wMinZ, sceneBox.Min.z );
+                wMaxZ = std::min( wMaxZ, sceneBox.Max.z );
 
-    // Erstelle Offset-Matrix
-    XMFLOAT3 snapOffsetF;
-    XMStoreFloat3( &snapOffsetF, snapOffset );
-    XMMATRIX offsetMatrix = XMMatrixTranslation( snapOffsetF.x, snapOffsetF.y, 0.0f );
+                // Failsafe in case the camera slice is entirely out of bounds
+                if ( wMinX > wMaxX ) wMaxX = wMinX;
+                if ( wMinY > wMaxY ) wMaxY = wMinY;
+                if ( wMinZ > wMaxZ ) wMaxZ = wMinZ;
+            }
+        }
 
-    // Kombiniere View mit Offset
+        // Create 8 new corners from our tightly clipped AABB
+        std::array<XMFLOAT3, 8> clippedCorners = {
+            XMFLOAT3( wMinX, wMinY, wMinZ ), XMFLOAT3( wMaxX, wMinY, wMinZ ),
+            XMFLOAT3( wMinX, wMaxY, wMinZ ), XMFLOAT3( wMaxX, wMaxY, wMinZ ),
+            XMFLOAT3( wMinX, wMinY, wMaxZ ), XMFLOAT3( wMaxX, wMinY, wMaxZ ),
+            XMFLOAT3( wMinX, wMaxY, wMaxZ ), XMFLOAT3( wMaxX, wMaxY, wMaxZ )
+        };
+
+        // Project the tightly clipped bounds into light space
+        XMMATRIX tempLightView = XMMatrixLookToLH( XMVectorZero(), lightDir, upDir );
+
+        float minX = FLT_MAX, maxX = -FLT_MAX;
+        float minY = FLT_MAX, maxY = -FLT_MAX;
+        float minZ = FLT_MAX, maxZ = -FLT_MAX;
+
+        for ( const auto& corner : clippedCorners ) {
+            XMVECTOR vCorner = XMVector3TransformCoord( XMLoadFloat3( &corner ), tempLightView );
+            float x = XMVectorGetX( vCorner );
+            float y = XMVectorGetY( vCorner );
+            float z = XMVectorGetZ( vCorner );
+
+            minX = std::min( minX, x ); maxX = std::max( maxX, x );
+            minY = std::min( minY, y ); maxY = std::max( maxY, y );
+            minZ = std::min( minZ, z ); maxZ = std::max( maxZ, z );
+        }
+
+        cascadeWidth = maxX - minX;
+        cascadeHeight = maxY - minY;
+        sliceDepth = maxZ - minZ;
+
+        constexpr float sizeQuantization = 64.0f;
+        cascadeWidth = std::ceil( cascadeWidth / sizeQuantization ) * sizeQuantization;
+        cascadeHeight = std::ceil( cascadeHeight / sizeQuantization ) * sizeQuantization;
+
+        float midX = (minX + maxX) * 0.5f;
+        float midY = (minY + maxY) * 0.5f;
+        float midZ = (minZ + maxZ) * 0.5f;
+
+        XMVECTOR centerLightSpace = XMVectorSet( midX, midY, midZ, 1.0f );
+        XMMATRIX invTempLightView = XMMatrixInverse( nullptr, tempLightView );
+        boxCenterWorld = XMVector3TransformCoord( centerLightSpace, invTempLightView );
+    } else {
+        float splitRatio = splits[cascadeIdx + 1] / splits[numCascades];
+        float size = farPlane * std::sqrt( splitRatio );
+        constexpr float sizeQuantization = 64.0f;
+        size = std::ceil( size / sizeQuantization ) * sizeQuantization;
+        cascadeWidth = size;
+        cascadeHeight = size;
+        boxCenterWorld = shadowCameraPosFallback;
+        sliceDepth = size;
+    }
+
+    const float pullBackDistance = 10000.0f;
+    XMVECTOR lightPos = XMVectorSubtract( boxCenterWorld, XMVectorScale( lightDir, pullBackDistance ) );
+    XMMATRIX lightView = XMMatrixLookToLH( lightPos, lightDir, upDir );
+
+    float texelSizeX = cascadeWidth / static_cast<float>(shadowMapSize);
+    float texelSizeY = cascadeHeight / static_cast<float>(shadowMapSize);
+
+    XMVECTOR centerLightSpace = XMVector3TransformCoord( boxCenterWorld, lightView );
+    float cx = XMVectorGetX( centerLightSpace );
+    float cy = XMVectorGetY( centerLightSpace );
+
+    float snapOffsetX = std::floor( cx / texelSizeX ) * texelSizeX - cx;
+    float snapOffsetY = std::floor( cy / texelSizeY ) * texelSizeY - cy;
+
+    XMMATRIX offsetMatrix = XMMatrixTranslation( snapOffsetX, snapOffsetY, 0.0f );
     XMMATRIX snappedLightView = XMMatrixMultiply( lightView, offsetMatrix );
 
-    float cullingMargin = texelSize * 2.0f;
+    float orthoNear = 1.0f;
+    float orthoFar = pullBackDistance + (sliceDepth * 0.5f) + 5000.0f;
 
-    const XMMATRIX crViewRepl = XMMatrixTranspose( snappedLightView );
     const XMMATRIX crProjRepl = XMMatrixTranspose( XMMatrixOrthographicLH(
-        cascadeSize, cascadeSize, 1.0f, 20000.f ) );
+        cascadeWidth, cascadeHeight, orthoNear, orthoFar ) );
 
-    XMStoreFloat4x4( &outCR.ViewReplacement, crViewRepl );
+    XMStoreFloat4x4( &outCR.ViewReplacement, XMMatrixTranspose( snappedLightView ) );
     XMStoreFloat4x4( &outCR.ProjectionReplacement, crProjRepl );
     XMStoreFloat3( &outCR.PositionReplacement, lightPos );
+
+    XMVECTOR lookAt = XMVectorAdd( lightPos, lightDir );
     XMStoreFloat3( &outCR.LookAtReplacement, lookAt );
 
     outCR.frustum.BuildOrthographic( snappedLightView,
-        // ensure some additional margin
-        // due to blending cascades in PS_DS_AtmosphericScattering.hlsl->GetCascadeUVAndBounds(..)
-        // else we might miss some shadows due to frustum culling
-        // e.g. not visible in c0 but would be in c1, due to blending,
-        // c1 won't use it's "full" color, but rather blend in slowly
-        // causing pop-in
-        cascadeSize + cullingMargin,
-        cascadeSize + cullingMargin,
-        1.0f,
-        20000.f,
+        cascadeWidth + (texelSizeX * 2.0f),
+        cascadeHeight + (texelSizeY * 2.0f),
+        orthoNear,
+        orthoFar,
         Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendBack,
         Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendFront,
         Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendSide );
@@ -215,11 +284,11 @@ void D3D11ShadowMap::EnsureShadowMapBackend( int size ) {
     // Ensure resources exist even if no mode switch occurred.
     if ( m_useAtlas && !m_shadowAtlas ) {
         m_shadowAtlas = std::make_unique<D3D11ShadowAtlas>();
-        const int maxAtlasCascade0Size = (atlasNumCascades <= 1) ? clampedSize : (clampedSize / 2);
+        const int maxAtlasCascade0Size = (atlasNumCascades <= 1) ? clampedSize : (clampedSize / 4);
         int atlasCascade0Size = std::min<int>( clampedSize, maxAtlasCascade0Size );
         m_shadowAtlas->Init( m_device, atlasCascade0Size, atlasNumCascades );
     } else if ( m_useAtlas && m_shadowAtlas ) {
-        const int maxAtlasCascade0Size = (atlasNumCascades <= 1) ? clampedSize : (clampedSize / 2);
+        const int maxAtlasCascade0Size = (atlasNumCascades <= 1) ? clampedSize : (clampedSize / 4);
         int atlasCascade0Size = std::min<int>( clampedSize, maxAtlasCascade0Size );
         m_shadowAtlas->Resize( atlasCascade0Size, atlasNumCascades );
     } else if ( !m_useAtlas && !m_cascadedShadowMap ) {
@@ -262,7 +331,7 @@ void D3D11ShadowMap::Resize( int size ) {
 
     if ( m_useAtlas ) {
         // Atlas path: with one cascade, use full hardware limit; otherwise reserve width for atlas packing.
-        const int maxAtlasCascade0Size = (atlasNumCascades <= 1) ? maxSize : (maxSize / 2);
+        const int maxAtlasCascade0Size = (atlasNumCascades <= 1) ? maxSize : (maxSize / 4);
         int atlasCascade0Size = std::min<int>( s, maxAtlasCascade0Size );
         if ( m_shadowAtlas ) {
             m_shadowAtlas->Resize( atlasCascade0Size, atlasNumCascades );
@@ -493,6 +562,19 @@ XRESULT D3D11ShadowMap::PrepareRender()
             ? false 
             : settings.DebugSettings.ShadowCascades.LazyCascadeUpdate;
 
+        Frustum playerFrustum = Frustum::AlwaysContainingFrustum();
+        if ( auto cam = (zCCamera*)oCGame::GetGame()->_zCSession_camera ) {
+            cam->Activate();
+
+            // Row-Major view
+            const auto& view = cam->trafoView;
+            const auto& proj = cam->trafoProjection;
+            playerFrustum.BuildPerspective(
+                XMMatrixTranspose( XMLoadFloat4x4( &view ) ),
+                XMLoadFloat4x4( &proj )
+            );
+        }
+
         for ( int cascadeIdx = 0; cascadeIdx < numCascades; ++cascadeIdx ) {
             // pre-calculate all cascade matrices, to be able to frustum-cull anything that is not in this or the next cascade.
 
@@ -512,6 +594,7 @@ XRESULT D3D11ShadowMap::PrepareRender()
             if ( shouldUpdateCascade || !m_CascadeCRs[cascadeIdx].frustum.IsValid()) {
                 CalculateCascadeMatrices(
                     m_CascadeCRs[cascadeIdx],
+                    playerFrustum,
                     splits,
                     cascadeIdx,
                     numCascades,

@@ -209,6 +209,21 @@ public:
     }
 
     bool IsValid() const { return isValid; }
+
+    const std::array<XMFLOAT4, 6>& GetPlanes() const { return m_cachedPlanes; }
+
+    // Extract the 8 corners for a specific slice of the frustum
+    std::array<XMFLOAT3, 8> GetSliceCorners( float nearZ, float farZ ) const {
+        if ( m_always_containing || m_useSphere || m_useBoundingOrientedBox ) {
+            return GetFrustumCorners(); // Fallback
+        }
+        BoundingFrustum slice = m_frustum;
+        slice.Near = nearZ;
+        slice.Far = farZ;
+        std::array<XMFLOAT3, 8> corners;
+        slice.GetCorners( corners.data() );
+        return corners;
+    }
 private:
     // Cache world-space planes for fast culling (called after frustum is transformed to world space)
     // Plane order: [0]=Left, [1]=Right, [2]=Bottom, [3]=Top, [4]=Near, [5]=Far

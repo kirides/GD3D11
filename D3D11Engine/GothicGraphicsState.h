@@ -655,7 +655,7 @@ struct GothicRendererSettings {
 
         textureMaxSize = 16384;
         ShadowMapSize = 2048;
-        WorldShadowRangeScale = 1.0f;
+        WorldShadowRangeScale = 0.20f;
         NumShadowCascades = 4; // looks OK and performance friendly
         ShadowCascadePCFLimit = 1;
         ShadowFrustumCullingMode = E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_CONSERVATIVE;
