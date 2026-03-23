@@ -13,7 +13,7 @@ struct RenderToTextureBuffer {
     }
 
     /** Creates the render-to-texture buffers */
-    RenderToTextureBuffer( const Microsoft::WRL::ComPtr<ID3D11Device1>& device,
+    RenderToTextureBuffer( ID3D11Device* device,
         UINT SizeX, 
         UINT SizeY,
         DXGI_FORMAT Format, 
@@ -174,7 +174,7 @@ struct RenderToDepthStencilBuffer {
     }
 
     /** Creates the render-to-texture buffers */
-    RenderToDepthStencilBuffer( const Microsoft::WRL::ComPtr<ID3D11Device1>& device, UINT SizeX, UINT SizeY, DXGI_FORMAT Format, HRESULT* Result = nullptr, DXGI_FORMAT DSVFormat = DXGI_FORMAT_UNKNOWN, DXGI_FORMAT SRVFormat = DXGI_FORMAT_UNKNOWN, UINT arraySize = 1 )
+    RenderToDepthStencilBuffer( ID3D11Device* device, UINT SizeX, UINT SizeY, DXGI_FORMAT Format, HRESULT* Result = nullptr, DXGI_FORMAT DSVFormat = DXGI_FORMAT_UNKNOWN, DXGI_FORMAT SRVFormat = DXGI_FORMAT_UNKNOWN, UINT arraySize = 1 )
         :SizeX(SizeX),
         SizeY( SizeY )
     {

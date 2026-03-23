@@ -1380,6 +1380,7 @@ XRESULT D3D11GraphicsEngine::OnEndFrame() {
     RenderedVobs.clear();
     renderInfo.Timing.Reset();
     GetPfxRenderer()->OnEndFrame();
+    Engine::GAPI->ResetVobFrameStats();
     return XR_SUCCESS;
 }
 

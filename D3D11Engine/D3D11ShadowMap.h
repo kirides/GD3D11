@@ -182,6 +182,7 @@ private:
     bool m_useAtlas = false;
 
     std::unique_ptr<RenderToTextureBuffer> m_dummyCubeRT;
+    std::unique_ptr<D3D11ConstantBuffer> m_PointLightCB;
 
     Microsoft::WRL::ComPtr<ID3D11SamplerState> m_shadowmapSampler;
     int m_lastNumCascades = 0;

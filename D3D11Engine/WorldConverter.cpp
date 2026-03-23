@@ -480,6 +480,7 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
             }
         }
 
+        it->second->Vertices.reserve( polyVertices.size() * 3 );
         TriangleFanToList( &polyVertices[0], polyVertices.size(), &it->second->Vertices );
         if ( matGroup == zMAT_GROUP_WATER && !mat->HasAlphaTest() ) {
 #ifdef BUILD_GOTHIC_1_08k
@@ -878,8 +879,8 @@ void WorldConverter::ExtractSkeletalMeshFromVob( zCModel* model, SkeletalMeshVis
             zCMaterial* mat = s->GetSubmesh( i )->Material;
 
             SkeletalMeshInfo* mi = new SkeletalMeshInfo;
-            mi->Vertices = vertices;
-            mi->Indices = indices;
+            mi->Vertices = std::move(vertices);
+            mi->Indices = std::move(indices);
             mi->visual = s;
 
             // Create the buffers
@@ -891,8 +892,8 @@ void WorldConverter::ExtractSkeletalMeshFromVob( zCModel* model, SkeletalMeshVis
             mi->MeshIndexBuffer->Init( &mi->Indices[0], mi->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
 
             MeshInfo* bmi = new MeshInfo;
-            bmi->Indices = indices;
-            bmi->Vertices = bindPoseVertices;
+            bmi->Indices = mi->Indices; // copy them
+            bmi->Vertices = std::move(bindPoseVertices);
 
             Engine::GraphicsEngine->CreateVertexBuffer( &bmi->MeshVertexBuffer );
             Engine::GraphicsEngine->CreateVertexBuffer( &bmi->MeshIndexBuffer );
@@ -1075,14 +1076,25 @@ void WorldConverter::ExtractProgMeshProtoFromMesh( zCMesh* mesh, MeshVisualInfo*
     int numPolys = mesh->GetNumPolygons();
     zCMaterial* mat = (numPolys > 0 ? polys[0]->GetMaterial() : nullptr);
 
+    int numPolyVertsTotal = 0;
+    for ( int i = 0; i < numPolys; i++ ) {
+        zCPolygon* poly = polys[i];
+        numPolyVertsTotal += poly->GetNumPolyVertices();
+    }
+
     std::vector<ExVertexStruct> vertices;
+    vertices.reserve( numPolyVertsTotal * 3 /* 3x due to TriangleFanToList */);
+
     std::vector<VERTEX_INDEX> indices;
+    std::vector<ExVertexStruct> polyVertices;
+
     for ( int i = 0; i < numPolys; i++ ) {
         zCPolygon* poly = polys[i];
 
         // Extract poly vertices
-        std::vector<ExVertexStruct> polyVertices;
+        polyVertices.clear();
         polyVertices.reserve( poly->GetNumPolyVertices() );
+
         for ( int v = 0; v < poly->GetNumPolyVertices(); v++ ) {
             zCVertex* vertex = poly->getVertices()[v];
             zCVertFeature* feature = poly->getFeatures()[v];
@@ -1098,21 +1110,23 @@ void WorldConverter::ExtractProgMeshProtoFromMesh( zCMesh* mesh, MeshVisualInfo*
         // Make triangles
         TriangleFanToList( &polyVertices[0], polyVertices.size(), &vertices );
     }
+
+    indices.reserve( vertices.size() );
     for ( VERTEX_INDEX i = 0; i < static_cast<VERTEX_INDEX>(vertices.size()); ++i ) {
         indices.push_back( i );
     }
 
     MeshInfo* mi = new MeshInfo;
-    mi->Vertices = vertices;
-    mi->Indices = indices;
+    mi->Vertices = std::move(vertices);
+    mi->Indices = std::move(indices);
 
     // Create the buffers
     Engine::GraphicsEngine->CreateVertexBuffer( &mi->MeshVertexBuffer );
     Engine::GraphicsEngine->CreateVertexBuffer( &mi->MeshIndexBuffer );
 
     // Init and fill it
-    mi->MeshVertexBuffer->Init( &vertices[0], vertices.size() * sizeof( ExVertexStruct ) );
-    mi->MeshIndexBuffer->Init( &indices[0], indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER );
+    mi->MeshVertexBuffer->Init( &mi->Vertices[0], mi->Vertices.size() * sizeof( ExVertexStruct ) );
+    mi->MeshIndexBuffer->Init( &mi->Indices[0], mi->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER );
 
     meshInfo->Meshes[mat].emplace_back( mi );
     meshInfo->Visual = reinterpret_cast<zCVisual*>(mesh);
@@ -1406,6 +1420,8 @@ void WorldConverter::IndexVertices( ExVertexStruct* input, unsigned int numInput
 
     // Extract the cleaned triangles to the indices vector
     outIndices.clear();
+    outIndices.reserve( triangles.size() );
+
     for ( auto const& it : triangles ) {
         outIndices.emplace_back( std::get<0>( it ) );
         outIndices.emplace_back( std::get<1>( it ) );

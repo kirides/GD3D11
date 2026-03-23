@@ -271,6 +271,7 @@ void D3D11ShadowMap::EnsureShadowMapBackend( int size ) {
 }
 
 void D3D11ShadowMap::Init( Microsoft::WRL::ComPtr<ID3D11Device1>& device, Microsoft::WRL::ComPtr<ID3D11DeviceContext1>& context, int size ) {
+    HRESULT hr;
     m_device = device;
     m_context = context;
 
@@ -287,6 +288,13 @@ void D3D11ShadowMap::Init( Microsoft::WRL::ComPtr<ID3D11Device1>& device, Micros
     for ( int i = 0; i < MAX_CSM_CASCADES; ++i ) {
         m_RenderQueues[i] = std::make_unique<D3D11RenderQueue>( device.Get(), context.Get() );
     }
+
+    D3D11GraphicsEngineBase* engine = reinterpret_cast<D3D11GraphicsEngineBase*>( Engine::GraphicsEngine );
+
+    // Create constantbuffer for the view-matrices
+    D3D11ConstantBuffer* cb = nullptr;
+    LE(engine->CreateConstantBuffer( &cb, nullptr, sizeof( CubemapGSConstantBuffer ) ));
+    m_PointLightCB.reset( cb );
 
     Resize( s );
 }
@@ -690,91 +698,122 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
     // Draw pointlight shadows
     std::list<VobLightInfo*> importantUpdates;
 
+    DepthStencilPool* dsPool = graphicsEngine->GetPfxRenderer()->GetDepthStencilPool();
+
+    // Release any resources of not visible lights
+    for (auto& it : Engine::GAPI->VobLightMap) {
+        if (it.second->LightShadowBuffers
+            && (!it.second->Vob->IsEnabled() || !it.second->VisibleInFrame)) {
+            if ( D3D11PointLight* pl = static_cast<D3D11PointLight*>(it.second->LightShadowBuffers)) {
+                pl->ReleaseShadowMap();
+            }
+        }
+    }
+    
     for ( auto const& light : lights ) {
+        if ( !light->Vob->IsEnabled() || !light->VisibleInFrame ) {
+            continue;
+        }
         // Create shadowmap in case we should have one but haven't got it yet
         if ( !light->LightShadowBuffers && light->UpdateShadows ) {
             graphicsEngine->CreateShadowedPointLight( &light->LightShadowBuffers, light );
         }
 
         if ( light->LightShadowBuffers ) {
-            // Check if this lights even needs an update
-            bool needsUpdate = static_cast<D3D11PointLight*>(light->LightShadowBuffers)->NeedsUpdate();
-            bool isInited = static_cast<D3D11PointLight*>(light->LightShadowBuffers)->IsInited();
+            D3D11PointLight* pl = static_cast<D3D11PointLight*>(light->LightShadowBuffers);
 
-            // Add to the updatequeue if it does
-            if ( isInited && (needsUpdate || light->UpdateShadows) ) {
-                // Always update the light if the light itself moved
-                if ( partialShadowUpdate && !needsUpdate ) {
-                    // Only add once. This list should never be very big, so it should
-                    // be ok to search it like this This needs to be done to make sure a
-                    // light will get updated only once and won't block the queue
-                    if ( std::find( graphicsEngine->FrameShadowUpdateLights.begin(),
-                                    graphicsEngine->FrameShadowUpdateLights.end(),
-                                    light ) == graphicsEngine->FrameShadowUpdateLights.end() ) {
-                        // Always render the closest light to the playervob, so the player
-                        // doesn't flicker when moving
-                        float d;
-                        XMStoreFloat( &d, XMVector3LengthSq( light->Vob->GetPositionWorldXM() - vPlayerPosition ) );
+            float d;
+            XMStoreFloat( &d, XMVector3LengthSq( light->Vob->GetPositionWorldXM() - vPlayerPosition ) );
+            float range = light->Vob->GetLightRange();
+            const float rangeSq = range * range;
 
-                        float range = light->Vob->GetLightRange();
-                        if ( d < range * range &&
-                            importantUpdates.size() < MAX_IMPORTANT_LIGHT_UPDATES ) {
-                            importantUpdates.emplace_back( light );
-                        } else {
-                            graphicsEngine->FrameShadowUpdateLights.emplace_back( light );
+            float distVeryCloseSq = (range * 0.8f) * (range * 0.8f);
+            float distMaxShadowSq = (range * 9.0f) * (range * 9.0f); // Fade out entirely after this
+
+            // pick shadow resolution based on distance.
+            int desiredResolution = 64; // Fallback / far distance
+            if ( d < distVeryCloseSq ) {
+                desiredResolution = 256; // High res for close lights
+            }
+
+            bool inShadowRange = d < distMaxShadowSq;
+            if ( inShadowRange ) {
+                // Acquire memory if it doesn't have it
+                if ( !pl->HasShadowMap() || pl->GetShadowMapResolution() != desiredResolution ) {
+                    pl->AcquireShadowMap( dsPool, desiredResolution );
+                    light->UpdateShadows = true; // Force an immediate render this frame
+                }
+
+                // TODO: prioritize updates based on distance, as player will notice updates more on close lights.
+                // TODO: actually only render lights visible in the frustum.
+
+                bool needsUpdate = pl->NeedsUpdate() || desiredResolution == 256;
+                bool isInited = pl->IsInited();
+
+                // Sort into Important vs Background Queue
+                if ( isInited ) {
+                    // Immediate Priority: Light moved, was just created, or explicit flag set
+                    if ( needsUpdate || light->UpdateShadows ) {
+                        importantUpdates.emplace_back( light );
+                    }
+                    // Background Priority: Add to round-robin queue if not already there
+                    else if ( partialShadowUpdate ) {
+                        auto& queue = graphicsEngine->FrameShadowUpdateLights;
+                        if ( std::find( queue.begin(), queue.end(), light ) == queue.end() ) {
+                            queue.emplace_back( light );
                         }
                     }
-                } else {
-                    // Always render the closest light to the playervob, so the player
-                    // doesn't flicker when moving
-                    float d;
-                    XMStoreFloat( &d, XMVector3LengthSq( light->Vob->GetPositionWorldXM() - vPlayerPosition ) );
+                }
+            } else {
+                // Out of range: Return VRAM to the pool!
+                if ( pl->HasShadowMap() ) {
+                    // TODO: actually fix memory leakage, as many lights can spawn without ever releasing their shadowmaps
+                    // because if they suddenly go out of range (Frustum or VisualFX distance),
+                    // we never "collect" them and thus never get to call ReleasShadowMap().
+                    // we could in theory keep a "last seen" list of lights and every frame look up which ones are gone, 
+                    // to then release theirs resources BEFORE anything else acquires new ones.
+                    pl->ReleaseShadowMap();
 
-                    float range = light->Vob->GetLightRange() * 1.5f;
-
-                    // If the engine said this light should be updated, then do so. If
-                    // the light said this
-                    if ( needsUpdate || d < range * range )
-                        importantUpdates.emplace_back( light );
+                    // Erase from the update queue if it happens to be pending
+                    auto it = std::find( graphicsEngine->FrameShadowUpdateLights.begin(), graphicsEngine->FrameShadowUpdateLights.end(), light );
+                    if ( it != graphicsEngine->FrameShadowUpdateLights.end() ) {
+                        graphicsEngine->FrameShadowUpdateLights.erase( it );
+                    }
                 }
             }
         }
     }
 
-    // Render the closest light
+    // Render the immediate priority lights
     for ( auto const& importantUpdate : importantUpdates ) {
-        static_cast<D3D11PointLight*>( importantUpdate->LightShadowBuffers )->RenderCubemap( importantUpdate->UpdateShadows );
+        static_cast<D3D11PointLight*>(importantUpdate->LightShadowBuffers)->RenderCubemap( true, m_PointLightCB.get() );
         importantUpdate->UpdateShadows = false;
     }
 
-    // Update only a fraction of lights, but at least some
-    int n = std::max(
-        (UINT)NUM_MIN_FRAME_SHADOW_UPDATES,
-        (UINT)(graphicsEngine->FrameShadowUpdateLights.size() / NUM_FRAME_SHADOW_UPDATES) );
-    while ( !graphicsEngine->FrameShadowUpdateLights.empty() ) {
+    // Process Background Queue (Round-Robin)
+    // Set a strict, safe limit to prevent FPS drops. 
+    // 2 per frame is 120 updates per second at 60fps.
+    int maxBackgroundUpdates = 2;
+    int updatesDone = 0;
+
+    while ( !graphicsEngine->FrameShadowUpdateLights.empty() && updatesDone < maxBackgroundUpdates ) {
         auto light = graphicsEngine->FrameShadowUpdateLights.front();
-        if ( !light ) {
-            graphicsEngine->FrameShadowUpdateLights.pop_front();
-            continue;
-        }
-        D3D11PointLight* l = static_cast<D3D11PointLight*>(light->LightShadowBuffers);
-        if ( !l ) {
-            graphicsEngine->FrameShadowUpdateLights.pop_front();
-            continue;
-        }
-        // Check if we have to force this light to update itself (NPCs moving around, for example)
-        bool force = light->UpdateShadows;
-        light->UpdateShadows = false;
-
-        l->RenderCubemap( force );
-        graphicsEngine->DebugPointlight = l;
-
         graphicsEngine->FrameShadowUpdateLights.pop_front();
 
-        // Only update n lights
-        n--;
-        if ( n <= 0 ) break;
+        if ( !light ) continue;
+
+        D3D11PointLight* l = static_cast<D3D11PointLight*>( light->LightShadowBuffers );
+        if ( !l ) continue;
+
+        light->UpdateShadows = false;
+
+        // FORCE the render! It waited in line for its turn, it must draw.
+        l->RenderCubemap( true, m_PointLightCB.get() );
+        graphicsEngine->DebugPointlight = l;
+
+        updatesDone++;
     }
+
     return XR_SUCCESS;
 }
 
@@ -923,9 +962,11 @@ XRESULT D3D11ShadowMap::DrawPointlightLights(
 
         // Set right shader
         if ( settings.EnablePointlightShadows > 0 ) {
-            if ( light->LightShadowBuffers && static_cast<D3D11PointLight*>(light->LightShadowBuffers)->IsInited() ) {
+            D3D11PointLight* pl = light->LightShadowBuffers ? static_cast<D3D11PointLight*>(light->LightShadowBuffers) : nullptr;
+
+            // Only use the DynamicShadow shader if the light actually HAS a pooled shadow map assigned!
+            if ( pl && pl->IsInited() && pl->HasShadowMap() ) {
                 if ( graphicsEngine->GetActivePS() != psPointLightDynShadow ) {
-                    // Need to update shader for shadowed pointlight
                     graphicsEngine->SetActivePS( psPointLightDynShadow )->Apply();
                 }
             } else if ( graphicsEngine->GetActivePS() != psPointLight ) {

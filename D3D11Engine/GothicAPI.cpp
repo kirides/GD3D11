@@ -1339,6 +1339,7 @@ void GothicAPI::CalcPolyStripMeshes() {
 #endif
 
             //Convert list of quads to list of triangles
+            PolyStripInfos[tx].vertices.reserve( 4 * 3 );
             WorldConverter::TriangleFanToList( &polyFan[0], 4, &PolyStripInfos[tx].vertices );
             PolyStripInfos[tx].material = mat;
         }
@@ -1452,6 +1453,7 @@ void GothicAPI::CalcFlashMeshes() {
 #endif
 
             //Convert list of quads to list of triangles
+            PolyStripInfos[tx].vertices.reserve( 4 * 3 );
             WorldConverter::TriangleFanToList( &polyFan[0], 4, &PolyStripInfos[tx].vertices );
             PolyStripInfos[tx].material = mat;
         }
@@ -4108,6 +4110,8 @@ void GothicAPI::CollectVisibleVobs(
     
         for ( auto vi : renderQueue.lights ) {
             if ( vi->Vob->IsEnabled() /*&& vob->GetShowVisual()*/ ) {
+                vi->VisibleInFrame = true;
+
                 // Update the lights shadows if: Light is dynamic or full shadow-updates are set
                 if ( !vi->IsPFXVobLight ) {
                     if ( RendererState.RendererSettings.EnablePointlightShadows >= GothicRendererSettings::PLS_FULL
@@ -4595,9 +4599,13 @@ zCTexture* GothicAPI::GetTextureBySurface( MyDirectDrawSurface7* surface ) {
 }
 
 /** Resets all vob-stats drawn this frame */
-void GothicAPI::ResetVobFrameStats( std::list<VobInfo*>& vobs ) {
-    for ( auto&& it : vobs ) {
-        it->VisibleInRenderPass = false;
+void GothicAPI::ResetVobFrameStats( ) {
+    for ( auto&& it : VobMap ) {
+        it.second->VisibleInRenderPass = false;
+    }
+    for ( auto&& it : VobLightMap ) {
+        it.second->VisibleInRenderPass = false;
+        it.second->VisibleInFrame = false;
     }
 }
 
@@ -5835,6 +5843,8 @@ static void CollectVisibleVobsHelper( BspInfo* base,
 
             if ( collectFlags & COLLECT_LIGHTS
                     && RendererState.RendererSettings.EnableDynamicLighting && dist < visualFXDrawRadius ) {
+                
+                bool markSeen = (collectFlags & COLLECT_MUTATE) != 0;
                 // Add dynamic lights
                 for ( int i = 0; i < leaf->LightVobList.NumInArray; i++ ) {
                     zCVobLight* vob = leaf->LightVobList.Array[i];

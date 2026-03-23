@@ -607,7 +607,7 @@ public:
     zCTexture* GetTextureBySurface( MyDirectDrawSurface7* surface );
 
     /** Resets all vob-stats drawn this frame */
-    void ResetVobFrameStats( std::list<VobInfo*>& vobs );
+    void ResetVobFrameStats();
 
     /** Sets the currently bound texture */
     void SetBoundTexture( int idx, zCTexture* tex );

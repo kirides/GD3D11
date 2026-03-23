@@ -24,6 +24,7 @@
 D3D11PfxRenderer::D3D11PfxRenderer() {
 
     m_texturePool = std::make_unique<TexturePool>( reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine)->GetDevice().Get() );
+    m_depthStencilPool = std::make_unique<DepthStencilPool>( reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine)->GetDevice().Get() );
 
     FX_Blur = std::make_unique<D3D11PFX_Blur>( this );
     FX_HeightFog = std::make_unique<D3D11PFX_HeightFog>( this );

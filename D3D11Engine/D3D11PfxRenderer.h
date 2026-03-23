@@ -77,6 +77,7 @@ public:
 
     void OnEndFrame() {
         m_texturePool->GiveTick();
+        m_depthStencilPool->GiveTick();
         FreeResources();
     }
 
@@ -84,6 +85,7 @@ public:
     void FreeResources();
 
     TexturePool* GetTexturePool() { return m_texturePool.get(); }
+    DepthStencilPool* GetDepthStencilPool() { return m_depthStencilPool.get(); }
 private:
     /** Blur effect referenced here because it's often needed by PFX */
     std::unique_ptr<D3D11PFX_Blur> FX_Blur;
@@ -105,5 +107,6 @@ private:
     std::unique_ptr<D3D11PFX_FSR2> PFX_FSR2;
     std::unique_ptr<D3D11PFX_FSR3> PFX_FSR3;
     std::unique_ptr<TexturePool> m_texturePool;
+    std::unique_ptr<DepthStencilPool> m_depthStencilPool;
 };
 

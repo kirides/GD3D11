@@ -23,7 +23,6 @@ cbuffer DS_PointLightConstantBuffer : register( b0 )
 	float PL_Pad3;
 };
 
-static const float BLUR_SCALE = 0.029f;
 static const int BLUR_COUNT = 8;
 static const float3 BLUR_OFFSETS[] = 
 {
@@ -117,11 +116,14 @@ float IsInShadow(float3 wsPosition, TextureCube shadowCube, SamplerComparisonSta
 	//distance = ((zFar * distance) - (zNear * zFar)) / ((zFar - zNear) * distance);
 	
 	distance = distance / zFar;
-	
+
+	float fixedBias = 0.005f;
+	float fixedBlurScale = 0.010f;
+
 	float shd = 0;
 	[unroll] for(int i=0;i<BLUR_COUNT;i++)
 	{
-		shd += shadowCube.SampleCmpLevelZero(samplerState, dir + BLUR_OFFSETS[i] * BLUR_SCALE, distance - bias);
+		shd += shadowCube.SampleCmpLevelZero(samplerState, dir + BLUR_OFFSETS[i] * fixedBlurScale, distance - fixedBias);
 	}
 	shd /= BLUR_COUNT;
 	return shd;

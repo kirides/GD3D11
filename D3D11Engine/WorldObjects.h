@@ -103,7 +103,7 @@ struct WorldMeshInfo : public MeshInfo {
         SaveInfo = false;
     }
 
-    virtual ~WorldMeshInfo() = default;
+    ~WorldMeshInfo() override = default;
 
     /** If true we will save an info-file on next zen-resource-save */
     bool SaveInfo;
@@ -190,7 +190,8 @@ struct MeshVisualInfo : public BaseVisualInfo {
         FullMesh = nullptr;
     }
 
-    virtual ~MeshVisualInfo() {
+    ~MeshVisualInfo() override
+    {
         if ( MorphMeshVisual ) {
             zCObject_Release( MorphMeshVisual );
         }
@@ -227,7 +228,8 @@ struct SkeletalMeshVisualInfo : public BaseVisualInfo {
         Visual = nullptr;
     }
 
-    virtual ~SkeletalMeshVisualInfo() {
+    ~SkeletalMeshVisualInfo() override
+    {
         for ( auto& [k, meshes] : SkeletalMeshes ) {
             for ( SkeletalMeshInfo* smi : meshes ) {
                 delete smi;
@@ -272,7 +274,8 @@ struct VobInfo : public BaseVobInfo {
         HasValidPrevMatrix = false;
     }
 
-    virtual ~VobInfo() {
+    ~VobInfo() override
+    {
         //delete VisualInfo;
         delete VobConstantBuffer;
     }
@@ -324,6 +327,7 @@ struct VobLightInfo {
         IsIndoorVob = false;
         DynamicShadows = false;
         UpdateShadows = true;
+        VisibleInFrame = false;
     }
 
     ~VobLightInfo() {
@@ -333,7 +337,7 @@ struct VobLightInfo {
     /** Vob the data came from */
     zCVobLight* Vob;
 
-    /** Flag to see if this vob was drawn in the current render pass. Used to collect the same vob only once. */
+    /** Flag to see if this vob was drawn in the current render pass. Used to collect the same vob only once. Cleared immediately. */
     bool VisibleInRenderPass;
     bool IsPFXVobLight;
 
@@ -350,6 +354,9 @@ struct VobLightInfo {
 
     /** Position where we were rendered the last time */
     XMFLOAT3 LastRenderedPosition;
+    
+    /** Flag that is set on every "seen" light in this frame, reset in ResetVobFrameStats */
+    bool VisibleInFrame;
 };
 
 
@@ -364,7 +371,8 @@ struct SkeletalVobInfo : public BaseVobInfo {
         HasValidPrevTransforms = false;
     }
 
-    virtual ~SkeletalVobInfo() {
+    ~SkeletalVobInfo() override
+    {
         //delete VisualInfo;
 
         for ( auto& [k, meshes] : NodeAttachments ) {
