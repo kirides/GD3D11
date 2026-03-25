@@ -2224,6 +2224,8 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
             : transforms;
         ActiveVS->GetConstantBuffer()[3]->UpdateBuffer( &prevTransforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( prevTransforms.size(), NUM_MAX_BONES ) );
         ActiveVS->GetConstantBuffer()[3]->BindToVertexShader( 3 );
+    } else {
+        ActiveVS->GetConstantBuffer()[2]->BindToVertexShader( 3 ); // just bind the current bones again
     }
 
     if ( transforms.size() >= NUM_MAX_BONES ) {
@@ -5141,7 +5143,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                 continue;  // Skip out of range
             }
 
-            if ( enableCulling && !isLastCascade ) {
+            if ( enableCulling ) {
                 if ( !currentFrustum.Intersects( skeletalMeshVob->Vob->GetBBox()) ) {
                     // Not hitting our frustum and not the active view.
                     continue;
