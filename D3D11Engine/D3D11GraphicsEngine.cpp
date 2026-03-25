@@ -2130,7 +2130,7 @@ bool D3D11GraphicsEngine::BindTextureNRFX( zCTexture* tex, bool bindShader ) {
 
 XRESULT  D3D11GraphicsEngine::DrawSkeletalVertexNormals( SkeletalVobInfo* vi,
     const XMFLOAT4X4& world,
-    const std::vector<XMFLOAT4X4>& transforms, float4 color, float fatness ) {
+    const Span<XMFLOAT4X4> transforms, float4 color, float fatness ) {
     std::shared_ptr<D3D11GShader> gshader = ShaderManager->GetGShader( "GS_VertexNormals" );
     gshader->Apply();
 
@@ -2190,7 +2190,7 @@ XRESULT  D3D11GraphicsEngine::DrawSkeletalVertexNormals( SkeletalVobInfo* vi,
 
 /** Draws a skeletal mesh */
 XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
-    const std::vector<XMFLOAT4X4>& transforms, float4 color, const XMFLOAT4X4& world, float fatness ) {
+    const Span<XMFLOAT4X4> transforms, float4 color, const XMFLOAT4X4& world, float fatness ) {
     if ( GetRenderingStage() == DES_SHADOWMAP_CUBE ) {
         SetActiveVertexShader( "VS_ExSkeletalCube" );
     } else {
@@ -2220,8 +2220,8 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
 
     // Copy previous frame bone transforms for motion vectors (only for main scene rendering, not shadow maps)
     if ( GetRenderingStage() != DES_SHADOWMAP_CUBE && GetRenderingStage() != DES_SHADOWMAP ) {
-        const std::vector<XMFLOAT4X4>& prevTransforms = (vi->HasValidPrevTransforms && !vi->PrevBoneTransforms.empty()) 
-            ? vi->PrevBoneTransforms 
+        const Span<XMFLOAT4X4> prevTransforms = (vi->HasValidPrevTransforms && !vi->PrevBoneTransforms.empty())
+            ? make_span(vi->PrevBoneTransforms) 
             : transforms;
         ActiveVS->GetConstantBuffer()[3]->UpdateBuffer( &prevTransforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( prevTransforms.size(), NUM_MAX_BONES ) );
         ActiveVS->GetConstantBuffer()[3]->BindToVertexShader( 3 );
@@ -2293,7 +2293,7 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
 }
 
 XRESULT D3D11GraphicsEngine::DrawSkeletalMesh_Layered( SkeletalVobInfo* vi,
-    const std::vector<XMFLOAT4X4>& transforms, float4 color, XMFLOAT4X4& world, float fatness ) {
+    const Span<XMFLOAT4X4> transforms, float4 color, XMFLOAT4X4& world, float fatness ) {
     SetActiveVertexShader( "VS_ExSkeletalLayered" );
 
     InfiniteRangeConstantBuffer->BindToPixelShader( 3 );

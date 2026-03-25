@@ -319,7 +319,7 @@ public:
         if ( !nodeList )
             return;
 
-        transforms->reserve( nodeList->NumInArray );
+        transforms->reserve( transforms->size() + nodeList->NumInArray );
         for ( int i = 0; i < nodeList->NumInArray; i++ ) {
             zCModelNodeInst* node = nodeList->Array[i];
             zCModelNodeInst* parent = node->ParentNode;
