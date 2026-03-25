@@ -605,17 +605,15 @@ XRESULT D3D11GraphicsEngine::Init() {
     if (maxFeatureLevel >= D3D_FEATURE_LEVEL::D3D_FEATURE_LEVEL_11_0) {
         // check amount of GPU Memory available
         constexpr uint64_t GiB = 1024ull * 1024ull * 1024ull;
-        if ( adpDesc.DedicatedVideoMemory >= 3 * GiB ) { // on 32 bit processes dx11 can't see more than 3GiB
+        if ( adpDesc.DedicatedVideoMemory >= 3 * GiB ) {
             // currently we just assume everything fits into memory.
             // in the future we should make use of Tiled Resources, which would allow us
             // to support more memory intensive features, even on less than 4GB cards, by streaming in the necessary tiles.
+            // but that's very expensive on the CPU and requires deferred loading of textures, and a lot of management.
             SupportTextureAtlases = true;
             Engine::GAPI->GetRendererState().RendererSettings.UseIndirectVobShadows = SupportTextureAtlases;
             Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.EnableAtlasWorldMesh = SupportTextureAtlases;
-
-            // VOB atlas is currently bugged, due to some vobs not getting their correct textures,
-            // likely due to being "animated" and at world load no animation has happened yet.
-            Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.EnableAtlasStaticVobs = false;
+            Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.EnableAtlasStaticVobs = SupportTextureAtlases;
         }
     }
 
