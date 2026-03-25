@@ -412,14 +412,13 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
     {
         s.ChangeWindowPreset = WINDOW_MODE_FULLSCREEN_BORDERLESS;
 
-        s.WorldShadowRangeScale = 0.34f;
+        s.WorldShadowRangeScale = 1.0f;
         s.NumShadowCascades = 2;
         s.ShadowMapSize = 1024;
         s.ShadowFrustumCullingMode = GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_AGGRESSIVE;
         s.ShadowSoftness = 0.85f;
         s.SmoothShadowCameraUpdate = true;
         s.SmoothShadowFrequency = 500;
-        s.ShadowDrawDistance = 10'000.0f;
         s.ShadowFilterMode = GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_DISABLED;
 
         s.EnableDynamicLighting = false;
@@ -446,14 +445,13 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
     {
         s.ChangeWindowPreset = WINDOW_MODE_FULLSCREEN_BORDERLESS;
 
-        s.WorldShadowRangeScale = 0.34f;
+        s.WorldShadowRangeScale = 1.0f;
         s.NumShadowCascades = 3;
         s.ShadowMapSize = 2048;
         s.ShadowFrustumCullingMode = GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_CONSERVATIVE;
         s.ShadowSoftness = 0.85f;
         s.SmoothShadowCameraUpdate = true;
         s.SmoothShadowFrequency = 1000;
-        s.ShadowDrawDistance = 15'000.0f;
         s.ShadowFilterMode = GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_SIMPLE;
             
         s.EnableDynamicLighting = true;
@@ -480,14 +478,13 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
     {
         s.ChangeWindowPreset = WINDOW_MODE_FULLSCREEN_BORDERLESS;
 
-        s.WorldShadowRangeScale = 0.34f;
+        s.WorldShadowRangeScale = 1.0f;
         s.NumShadowCascades = 3;
         s.ShadowMapSize = 4096;
         s.ShadowFrustumCullingMode = GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_CONSERVATIVE;
         s.ShadowSoftness = 1.0f;
         s.SmoothShadowCameraUpdate = false;
         s.SmoothShadowFrequency = 20000;
-        s.ShadowDrawDistance = 15'000.0f;
         s.ShadowFilterMode = GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_SIMPLE;
 
         s.EnableDynamicLighting = true;
@@ -516,14 +513,13 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
     {
         s.ChangeWindowPreset = WINDOW_MODE_FULLSCREEN_BORDERLESS;
 
-        s.WorldShadowRangeScale = 0.34f;
+        s.WorldShadowRangeScale = 1.0f;
         s.NumShadowCascades = 4;
         s.ShadowMapSize = 4096;
         s.ShadowFrustumCullingMode = GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_CONSERVATIVE;
         s.ShadowSoftness = 1.0f;
         s.SmoothShadowCameraUpdate = false;
         s.SmoothShadowFrequency = 20000;
-        s.ShadowDrawDistance = 15'000.0f;
         s.ShadowFilterMode = GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_PCSS;
 
         s.EnableDynamicLighting = true;
@@ -1148,8 +1144,9 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
             if ( ImComboBoxC( "ShadowmapSize", shadowMapSizes, (int*)(&settings.ShadowMapSize), []() { Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows ); } ) ) {
                 ImGui::EndCombo();
             }
-            ImGui::DragFloat( "WorldShadowRangeScale", &settings.WorldShadowRangeScale, 0.01f, 0.00f, 10.0f, "%.2f" );
-            
+            ImGui::DragFloat( "Shadow Distance", &settings.WorldShadowRangeScale, 0.01f, 0.00f, 10.0f, "%.2f" );
+            ImGui::SetItemTooltip( "Larger values produce less detailed shadows\nEffective Distance: %.0f", 12000 * settings.WorldShadowRangeScale );
+
             constexpr int max_cascaded_supported = MAX_CSM_CASCADES;
 
             settings.NumShadowCascades = std::clamp( settings.NumShadowCascades, 1, max_cascaded_supported );
@@ -1195,11 +1192,10 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
             ImGui::SetItemTooltip( "Which shadow cascades should be filtered using '16xPCF'" );
             
             ImGui::DragFloat( "ShadowStrength", &settings.ShadowStrength, 0.01f, 0.01f, 5.0f, "%.2f" );
-            ImGui::DragFloat( "ShadowSoftness", &settings.ShadowSoftness, 0.05f, 0.2f, 4.0f, "%.2f" );
+            ImGui::DragFloat( "ShadowSoftness", &settings.ShadowSoftness, 0.05f, 0.2f, 8.0f, "%.2f" );
             ImGui::SetItemTooltip( "PCF kernel scale (1.0=sharp default, <1.0=sharper, >1.0=softer)" );
             ImGui::DragFloat( "ShadowAOStrength", &settings.ShadowAOStrength, 0.01f, -5.0f, 2.0f, "%.2f" );
             ImGui::DragFloat( "WorldAOStrength", &settings.WorldAOStrength, 0.01f, -5.0f, 2.0f, "%.2f" );
-            ImGui::SliderFloat("Shadow Draw Distance", &settings.ShadowDrawDistance, 0.0f, 38400.0f, "%.0f" );
             ImGui::EndDisabled();
         }
         ImGui::Separator();

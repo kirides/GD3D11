@@ -82,65 +82,86 @@ static void CalculateCascadeMatrices(
     XMVECTOR frustumCenter;
     float radius = 0.0f;
 
-    if ( playerFrustum.IsValid() && playerFrustum.SupportsCulling() ) {
-        float splitNear = splits[cascadeIdx];
-        float splitFar = splits[cascadeIdx + 1];
+    float splitNear = splits[cascadeIdx];
+    float splitFar = splits[cascadeIdx + 1];
 
-        auto corners = playerFrustum.GetSliceCorners( splitNear, splitFar );
-
-        // 1. Calculate the center of the unclipped frustum slice
-        frustumCenter = XMVectorZero();
-        for ( const auto& corner : corners ) {
-            frustumCenter = XMVectorAdd( frustumCenter, XMLoadFloat3( &corner ) );
-        }
-        frustumCenter = XMVectorScale( frustumCenter, 1.0f / 8.0f );
-
-        // 2. Calculate the radius of the bounding sphere
-        for ( const auto& corner : corners ) {
-            float dist = XMVectorGetX( XMVector3Length( XMVectorSubtract( XMLoadFloat3( &corner ), frustumCenter ) ) );
-            radius = std::max( radius, dist );
-        }
-
-        // Round to nearest integer to eliminate sub-pixel floating point inaccuracies from rotation.
-        // This guarantees cascadeSize is perfectly constant, which is mandatory for texel snapping.
-        cascadeSize = std::round( radius ) * 2.0f;
-    } else {
-        float splitRatio = splits[cascadeIdx + 1] / splits[numCascades];
-        cascadeSize = farPlane * std::sqrt( splitRatio );
-        cascadeSize = std::round( cascadeSize );
-        radius = cascadeSize * 0.5f;
-        frustumCenter = shadowCameraPosFallback;
+    if ( !playerFrustum.IsValid() || !playerFrustum.SupportsCulling() ) {
+        LogError() << L"ShadowMap: Invalid Player Frustum!";
     }
 
-    // 3. Create a base light view matrix centered at the WORLD ORIGIN (0,0,0)
-    // This ensures our texel grid is mathematically anchored to the world, not the moving camera.
-    XMMATRIX baseLightView = XMMatrixLookToLH( XMVectorZero(), lightDir, upDir );
+    auto corners = playerFrustum.GetSliceCorners( splitNear, splitFar );
 
-    // 4. Transform the frustum center into this fixed light space
-    XMVECTOR centerLS = XMVector3TransformCoord( frustumCenter, baseLightView );
+    // 1. Calculate the OPTIMAL center of the frustum slice for a minimal bounding sphere
+    XMVECTOR nearCenter = XMVectorZero();
+    for ( int i = 0; i < 4; ++i ) nearCenter = XMVectorAdd( nearCenter, XMLoadFloat3( &corners[i] ) );
+    nearCenter = XMVectorScale( nearCenter, 0.25f );
 
-    // 5. Snap the frustum center to the texel grid
+    XMVECTOR farCenter = XMVectorZero();
+    for ( int i = 4; i < 8; ++i ) farCenter = XMVectorAdd( farCenter, XMLoadFloat3( &corners[i] ) );
+    farCenter = XMVectorScale( farCenter, 0.25f );
+
+    XMVECTOR viewDir = XMVector3Normalize( XMVectorSubtract( farCenter, nearCenter ) );
+    float L = XMVectorGetX( XMVector3Length( XMVectorSubtract( farCenter, nearCenter ) ) );
+
+    float nearRadiusSq = XMVectorGetX( XMVector3LengthSq( XMVectorSubtract( XMLoadFloat3( &corners[0] ), nearCenter ) ) );
+    float farRadiusSq = XMVectorGetX( XMVector3LengthSq( XMVectorSubtract( XMLoadFloat3( &corners[4] ), farCenter ) ) );
+
+    // Slide the center along the view axis to the exact point where Near and Far distances equal out
+    float optimalX = (L * L + farRadiusSq - nearRadiusSq) / (2.0f * L);
+    optimalX = std::clamp( optimalX, 0.0f, L );
+
+    frustumCenter = XMVectorAdd( nearCenter, XMVectorScale( viewDir, optimalX ) );
+
+    // 2. Calculate the true bounding sphere radius mathematically covering all corners
+    radius = 0.0f;
+    for ( const auto& corner : corners ) {
+        float dist = XMVectorGetX( XMVector3Length( XMVectorSubtract( XMLoadFloat3( &corner ), frustumCenter ) ) );
+        radius = std::max( radius, dist );
+    }
+
+    // Snap the cascade size to a coarse boundary
+    cascadeSize = std::ceil( radius / 16.0f ) * 32.0f;
+
     float texelSize = cascadeSize / static_cast<float>(shadowMapSize);
-    float cx = XMVectorGetX( centerLS );
-    float cy = XMVectorGetY( centerLS );
 
-    float snappedCx = std::floor( cx / texelSize ) * texelSize;
-    float snappedCy = std::floor( cy / texelSize ) * texelSize;
+    XMVECTOR snappedCenterWorld = frustumCenter;
 
-    // 6. Transform the snapped center back to world space
-    XMVECTOR snappedCenterLS = XMVectorSet( snappedCx, snappedCy, XMVectorGetZ( centerLS ), 1.0f );
-    XMMATRIX invBaseLightView = XMMatrixInverse( nullptr, baseLightView );
-    XMVECTOR snappedCenterWorld = XMVector3TransformCoord( snappedCenterLS, invBaseLightView );
-
-    // 7. Build the final light view matrix looking at the snapped center
+    // 3. Build the final light view matrix looking at the snapped center
     float pullBackDistance = std::max( 10000.0f, radius * 2.0f );
     XMVECTOR lightPos = XMVectorSubtract( snappedCenterWorld, XMVectorScale( lightDir, pullBackDistance ) );
     XMMATRIX lightView = XMMatrixLookToLH( lightPos, lightDir, upDir );
 
-    // 8. Z-Bounds (Clipping against Scene to prevent massive underground overdraw)
-    float orthoNear = 1.0f;
-    float orthoFar = pullBackDistance + radius + 5000.0f;
+    // 4. Z-Bounds (Clipping against Scene to prevent overdraw)
 
+    // Find the exact Light-Space Z-bounds of the frustum slice
+    float minLightZ = FLT_MAX;
+    float maxLightZ = -FLT_MAX;
+    for ( const auto& corner : corners ) {
+        XMVECTOR vLS = XMVector3TransformCoord( XMLoadFloat3( &corner ), lightView );
+        float z = XMVectorGetZ( vLS );
+        minLightZ = std::min( minLightZ, z );
+        maxLightZ = std::max( maxLightZ, z );
+    }
+
+    // --- Dynamic Pullback Calculation ---
+    // Calculate how directly overhead the light is. 
+    // 1.0 = straight down (noon), 0.0 = completely horizontal (horizon)
+    float lightDotUp = std::abs( XMVectorGetX( XMVector3Dot( lightDir, upDirOrig ) ) );
+    lightDotUp = std::max( lightDotUp, 0.05f ); // Prevent division by zero near the horizon
+
+    // Assuming a max shadow caster height of ~6000 units (60 meters) above the frustum.
+    // The shallower the angle, the longer the shadow, so we increase the pullback.
+    float dynamicPullback = 4000.0f / lightDotUp;
+
+    // Clamp to sensible extremes:
+    // Min ~2000 units (high noon, just enough for tall objects directly overhead)
+    // Max ~15000 units (sunset, catching long shadows from distant mountains)
+    dynamicPullback = std::clamp( dynamicPullback, 2000.0f, 15000.0f );
+
+    float orthoNear = std::max( 1.0f, minLightZ - dynamicPullback );
+    float orthoFar = maxLightZ + 5000.0f;
+
+    // --- Scene Bounds Optimization ---
     if ( auto worldInfo = Engine::GAPI->GetLoadedWorldInfo() ) {
         if ( auto bspTree = worldInfo->BspTree ) {
             zTBBox3D sceneBox = bspTree->GetRootNode()->BBox3D;
@@ -151,11 +172,18 @@ static void CalculateCascadeMatrices(
                 XMFLOAT3( sceneBox.Min.x, sceneBox.Max.y, sceneBox.Max.z ), XMFLOAT3( sceneBox.Max.x, sceneBox.Max.y, sceneBox.Max.z )
             };
 
+            float sceneMinZ = FLT_MAX;
             float sceneMaxZ = -FLT_MAX;
             for ( const auto& corner : sceneCorners ) {
                 XMVECTOR vLS = XMVector3TransformCoord( XMLoadFloat3( &corner ), lightView );
-                sceneMaxZ = std::max( sceneMaxZ, XMVectorGetZ( vLS ) );
+                float z = XMVectorGetZ( vLS );
+                sceneMinZ = std::min( sceneMinZ, z );
+                sceneMaxZ = std::max( sceneMaxZ, z );
             }
+
+            // Absolute hard limit: We never need to start the shadow camera further back 
+            // than the edge of the world geometry itself.
+            orthoNear = std::max( orthoNear, sceneMinZ - 100.0f );
 
             // Tighten Far Plane so we don't shoot miles past the level boundaries when looking down
             orthoFar = std::min( orthoFar, sceneMaxZ + 500.0f );
@@ -371,13 +399,10 @@ XRESULT D3D11ShadowMap::PrepareRender()
     if ( !camera ) {
         return XR_SUCCESS;
     }
-    camera->Activate();
 
     const float nearPlane = std::max( 1.0f, camera->GetNearPlane() );
     // Clamp far plane to avoid extreme shadow distances
-    // 64000 (default for worldsize 4) * 0.6 = 38400
-    // this looked good ough in testing, without many popping artifacts
-    const float baseFarPlane = std::min( camera->GetFarPlane(), 38400.0f );
+    const float baseFarPlane = std::min( camera->GetFarPlane(), 12000.0f ); // ~120 meters, fine with Fog enabled.
 
     // WorldShadowRangeScale als Multiplikator für die Schattenreichweite
     const float shadowRangeScale = settings.WorldShadowRangeScale;
@@ -545,11 +570,8 @@ XRESULT D3D11ShadowMap::PrepareRender()
 
         Frustum playerFrustum = Frustum::AlwaysContainingFrustum();
         if ( auto cam = (zCCamera*)oCGame::GetGame()->_zCSession_camera ) {
-            cam->Activate();
-
-            // Row-Major view
-            const auto& view = cam->trafoView;
-            const auto& proj = cam->trafoProjection;
+            const auto& view = cam->trafoView; // Column-Major, needs Transpose for DxMath
+            const auto& proj = cam->trafoProjection; // Row-Major, does not need transpose.
             playerFrustum.BuildPerspective(
                 XMMatrixTranspose( XMLoadFloat4x4( &view ) ),
                 XMLoadFloat4x4( &proj )
@@ -562,13 +584,15 @@ XRESULT D3D11ShadowMap::PrepareRender()
             bool isLastCascade = (numCascades > 1 && cascadeIdx == numCascades - 1);
 
             bool shouldUpdateCascade = true;
-            if ( lazyCascadeUpdate && cascadeIdx == 2 ) {
-                // pre-last cascade updates every 2nd frame which is 30 FPS = 15 updates per second
-                shouldUpdateCascade = (perFrameCascadeData.frameCount % 2) == 0;
-            } else if ( lazyCascadeUpdate && cascadeIdx == MAX_CSM_CASCADES-1 ) {
-                // final cascade updates every 3rd frame which is 30 FPS = 10 updates per second
-                // it covers the whole world, so this can help improve avg fps.
-                shouldUpdateCascade = (perFrameCascadeData.frameCount % 3) == 0;
+            if ( lazyCascadeUpdate ) {
+                if ( cascadeIdx == 2 ) {
+                    // pre-last cascade updates every 2nd frame which is 30 FPS = 15 updates per second
+                    shouldUpdateCascade = (perFrameCascadeData.frameCount % 2) == 0;
+                } else if ( cascadeIdx == MAX_CSM_CASCADES-1 ) {
+                    // final cascade updates every 3rd frame which is 30 FPS = 10 updates per second
+                    // it covers the whole world, so this can help improve avg fps.
+                    shouldUpdateCascade = (perFrameCascadeData.frameCount % 3) == 0;
+                }
             }
             m_ShouldUpdateCascade[cascadeIdx] = shouldUpdateCascade;
 
@@ -602,8 +626,8 @@ XRESULT D3D11ShadowMap::PrepareRender()
         LegacyRenderQueueProxy q(potentialCasters, _1, _2);
 
         ctx.queue = &q;
-        ctx.frustum = m_CascadeCRs[numCascades-1].frustum;
-        ctx.cameraPosition = m_CascadeCRs[numCascades-1].PositionReplacement;
+        ctx.frustum = Frustum::AlwaysContainingFrustum();
+        ctx.cameraPosition = m_WorldShadowPos;
         ctx.stage = RenderStage::STAGE_DRAW_SHADOWS;
         ctx.drawDistances.OutdoorVobs = 20000;
         ctx.drawDistances.OutdoorVobsSmall = 20000;
@@ -619,20 +643,49 @@ XRESULT D3D11ShadowMap::PrepareRender()
         m_RenderQueues[i]->Reset();
     }
 
-    for (auto vob : potentialCasters ) {
-        
-        auto boundingSphere = Frustum::BSphereFromzTBBox3D(vob->Vob->GetBBox());
-        if ( numCascades > 0 && m_CascadeCRs[0].frustum.Intersects( boundingSphere ) )
-            m_RenderQueues[0]->GetVobs().push_back( vob );
+    if ( numCascades > 3 ) {
+        for ( auto vob : potentialCasters ) {
 
-        if ( numCascades > 1 && m_ShouldUpdateCascade[1] && m_CascadeCRs[1].frustum.Intersects( boundingSphere ) )
-            m_RenderQueues[1]->GetVobs().push_back( vob );
+            auto boundingSphere = Frustum::BSphereFromzTBBox3D( vob->Vob->GetBBox() );
+            if ( m_CascadeCRs[0].frustum.Intersects( boundingSphere ) )
+                m_RenderQueues[0]->GetVobs().push_back( vob );
 
-        if ( numCascades > 2 && m_ShouldUpdateCascade[2] && m_CascadeCRs[2].frustum.Intersects( boundingSphere ) )
-            m_RenderQueues[2]->GetVobs().push_back( vob );
+            if ( /*m_ShouldUpdateCascade[1] && */m_CascadeCRs[1].frustum.Intersects(boundingSphere) )
+                m_RenderQueues[1]->GetVobs().push_back( vob );
 
-        if ( numCascades > 3 && m_ShouldUpdateCascade[3] && m_CascadeCRs[3].frustum.Intersects( boundingSphere ) )
-            m_RenderQueues[3]->GetVobs().push_back( vob );
+            if ( m_ShouldUpdateCascade[2] && m_CascadeCRs[2].frustum.Intersects( boundingSphere ) )
+                m_RenderQueues[2]->GetVobs().push_back( vob );
+
+            if ( m_ShouldUpdateCascade[3] && m_CascadeCRs[3].frustum.Intersects( boundingSphere ) )
+                m_RenderQueues[3]->GetVobs().push_back( vob );
+        }
+    } else if ( numCascades > 2 ) {
+        for ( auto vob : potentialCasters ) {
+            auto boundingSphere = Frustum::BSphereFromzTBBox3D( vob->Vob->GetBBox() );
+            if ( m_CascadeCRs[0].frustum.Intersects( boundingSphere ) )
+                m_RenderQueues[0]->GetVobs().push_back( vob );
+
+            if ( /*m_ShouldUpdateCascade[1] && */m_CascadeCRs[1].frustum.Intersects( boundingSphere ) )
+                m_RenderQueues[1]->GetVobs().push_back( vob );
+
+            if ( m_ShouldUpdateCascade[2] && m_CascadeCRs[2].frustum.Intersects( boundingSphere ) )
+                m_RenderQueues[2]->GetVobs().push_back( vob );
+        }
+    } else if ( numCascades > 1 ) {
+        for ( auto vob : potentialCasters ) {
+            auto boundingSphere = Frustum::BSphereFromzTBBox3D( vob->Vob->GetBBox() );
+            if ( m_CascadeCRs[0].frustum.Intersects( boundingSphere ) )
+                m_RenderQueues[0]->GetVobs().push_back( vob );
+
+            if ( /*m_ShouldUpdateCascade[1] && */m_CascadeCRs[1].frustum.Intersects( boundingSphere ) )
+                m_RenderQueues[1]->GetVobs().push_back( vob );
+        }
+    } else if ( numCascades > 0 ) {
+        for ( auto vob : potentialCasters ) {
+            auto boundingSphere = Frustum::BSphereFromzTBBox3D( vob->Vob->GetBBox() );
+            if ( m_CascadeCRs[0].frustum.Intersects( boundingSphere ) )
+                m_RenderQueues[0]->GetVobs().push_back( vob );
+        }
     }
 
     return XR_SUCCESS;

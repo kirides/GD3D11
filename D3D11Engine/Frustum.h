@@ -40,26 +40,25 @@ public:
         float expandBack = 0.0f
     )
     {
-        XMMATRIX invView = XMMatrixInverse(nullptr, view);
-        XMFLOAT3 center(0.0f, 0.0f, (farZ + nearZ) * 0.5f);
-        XMFLOAT3 extents(viewWidth * 0.5f, viewHeight * 0.5f, (farZ - nearZ) * 0.5f);
+        XMMATRIX invView = XMMatrixInverse( nullptr, view );
 
-        extents = XMFLOAT3(
-            extents.x + expandSides,
-            extents.y + expandSides,
-            extents.z + expandFront
+        // Calculate new Z bounds directly in Light Space
+        float newNearZ = nearZ - expandBack;
+        float newFarZ = farZ + expandFront;
+
+        // Construct the center and extents in perfect Light Space
+        XMFLOAT3 center( 0.0f, 0.0f, (newFarZ + newNearZ) * 0.5f );
+        XMFLOAT3 extents(
+            (viewWidth * 0.5f) + expandSides,
+            (viewHeight * 0.5f) + expandSides,
+            (newFarZ - newNearZ) * 0.5f
         );
 
-        // Also shift the center backwards (in light direction) to catch casters behind
-        XMVECTOR lightDir = invView.r[2]; // Z-axis of inverse view = light direction
-        XMVECTOR centerVec = XMLoadFloat3(&center);
-        centerVec = XMVectorAdd(centerVec, XMVectorScale(lightDir, -expandBack));
-        XMStoreFloat3(&center, centerVec);
+        BoundingOrientedBox viewSpaceFrustum( center, extents, { 0, 0, 0, 1 } /* Identity */ );
 
-        BoundingOrientedBox viewSpaceFrustum(center, extents,
-                                             {0, 0, 0, 1} /* Identity Orientation */);
+        // Transform correctly to World Space
+        viewSpaceFrustum.Transform( m_orientedBox, invView );
 
-        viewSpaceFrustum.Transform(m_orientedBox, invView);
         m_useBoundingOrientedBox = true;
         m_useSphere = false;
         m_always_containing = false;
