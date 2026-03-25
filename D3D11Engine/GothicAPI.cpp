@@ -4455,7 +4455,7 @@ void GothicAPI::ResetVobFrameStats( ) {
     for ( auto&& it : VobMap ) {
         it.second->VisibleInRenderPass = false;
     }
-    for ( auto&& it : VobLightMap ) {
+    for ( auto&& it : VobLights_Sorted ) {
         it.second->VisibleInRenderPass = false;
         it.second->VisibleInFrame = false;
     }
