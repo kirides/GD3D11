@@ -541,8 +541,8 @@ XRESULT D3D11ShadowMap::PrepareRender()
         ctx.frustum = m_CascadeCRs[numCascades-1].frustum;
         ctx.cameraPosition = m_CascadeCRs[numCascades-1].PositionReplacement;
         ctx.stage = RenderStage::STAGE_DRAW_SHADOWS;
-        ctx.drawDistances.OutdoorVobs = settings.ShadowDrawDistance;
-        ctx.drawDistances.OutdoorVobsSmall = settings.ShadowDrawDistance;
+        ctx.drawDistances.OutdoorVobs = 20000;
+        ctx.drawDistances.OutdoorVobsSmall = 20000;
         
         Engine::GAPI->CollectVisibleVobs( ctx );
     }

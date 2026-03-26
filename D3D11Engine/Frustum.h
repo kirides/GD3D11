@@ -72,7 +72,9 @@ public:
         f.m_always_containing = true;
         f.isValid = true;
         return f;
-    } 
+    }
+
+    bool SupportsCulling() const { return !m_always_containing; }
 
     // Für perspektivische Projektion (normale Kamera)
     void __vectorcall BuildPerspective(FXMMATRIX view, CXMMATRIX proj) {
