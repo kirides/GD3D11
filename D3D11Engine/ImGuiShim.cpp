@@ -943,7 +943,7 @@ void ImGuiShim::RenderSettingsWindow()
         if ( ( ImGui::GetIO().KeyCtrl || hasWorldSettings ) && isInWorld ) {
             ImGui::SetItemTooltip("Save settings to \"%s\"", worldSettingsPath.c_str());
         } else {
-            ImGui::SetItemTooltip("Save settings. CTRL+Click to save just for the current world.");
+            ImGui::SetItemTooltip("Save settings.\nCTRL+Click to save just for the current world.");
         }
         
         if ( saved ) {
@@ -1046,6 +1046,16 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
         }
         if ( ImGui::Button( "Load ZEN-Resources", ImVec2( ImGui::GetContentRegionAvail().x, 30.f ) ) ) {
             gapi->LoadCustomZENResources();
+        }
+        auto worldSettingsPath = Engine::GAPI->GetLoadedWorldSettingsPath(false);
+        if (!worldSettingsPath.empty() && Toolbox::FileExists( worldSettingsPath ) ) {
+            const bool shouldDelete = ImGui::Button( "Delete World-Settings", ImVec2( ImGui::GetContentRegionAvail().x, 30.f ) );
+            ImGui::SetItemTooltip("Delete the world-settings file for the current world.\nThe current values will be saved into the global settings file.");
+            if ( shouldDelete ) {
+                std::error_code ec;
+                std::filesystem::remove(worldSettingsPath, ec);
+                Engine::GAPI->SaveRendererWorldSettings(settings, MENU_SETTINGS_FILE);
+            }
         }
         if ( ImGui::Button( "Reload all Shaders", ImVec2( ImGui::GetContentRegionAvail().x, 30.f ) ) ) {
             Engine::GraphicsEngine->ReloadShaders( ShaderCategory::All );
