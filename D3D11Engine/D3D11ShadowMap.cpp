@@ -58,6 +58,10 @@ void CalculateTemporalInterpolatedPosition(
     );
     outDir = XMVector3Normalize( dir );
 }
+
+/// <summary>
+/// Aligned to Bounding Sphere
+/// </summary>
 static void CalculateCascadeMatrices(
     CameraReplacement& outCR,
     const Frustum& playerFrustum,
@@ -204,6 +208,176 @@ static void CalculateCascadeMatrices(
     outCR.frustum.BuildOrthographic( lightView,
         cascadeSize + cullingMargin,
         cascadeSize + cullingMargin,
+        orthoNear,
+        orthoFar,
+        Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendBack,
+        Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendFront,
+        Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendSide );
+}
+
+/// <summary>
+/// Tight-fit AABB
+/// </summary>
+static void CalculateCascadeMatricesAABB(
+    CameraReplacement& outCR,
+    const Frustum& playerFrustum,
+    const std::vector<float>& splits,
+    size_t cascadeIdx,
+    size_t numCascades,
+    float farPlane,
+    FXMVECTOR lightPosOrig,
+    FXMVECTOR lookAtOrig,
+    FXMVECTOR upDirOrig,
+    GXMVECTOR shadowCameraPosFallback,
+    UINT shadowMapSize )
+{
+    XMVECTOR lightDir = XMVector3Normalize( XMVectorSubtract( lookAtOrig, lightPosOrig ) );
+
+    XMVECTOR upDir = upDirOrig;
+    if ( std::abs( XMVectorGetX( XMVector3Dot( lightDir, upDir ) ) ) > 0.999f ) {
+        upDir = XMVectorSet( 0.0f, 0.0f, 1.0f, 0.0f );
+    }
+
+    float cascadeWidth = 0.0f;
+    float cascadeHeight = 0.0f;
+    XMVECTOR boxCenterWorld;
+    float sliceDepth = 0.0f;
+    float requiredPullback = 10000.0f; // Default fallback
+
+    if ( !playerFrustum.IsValid() || !playerFrustum.SupportsCulling() ) {
+        LogError() << L"ShadowMap: Invalid Player Frustum!";
+    }
+
+    float splitNear = splits[cascadeIdx];
+    float splitFar = splits[cascadeIdx + 1];
+
+    // 1. Create a temporary Light-Space view matrix centered at origin
+    XMMATRIX tempLightView = XMMatrixLookToLH( XMVectorZero(), lightDir, upDir );
+
+    // 2. Get Frustum Slice Corners
+    auto corners = playerFrustum.GetSliceCorners( splitNear, splitFar );
+
+    // 3. Project Frustum Corners directly into Light-Space to find the tightest bounds
+    float lsMinX = FLT_MAX, lsMaxX = -FLT_MAX;
+    float lsMinY = FLT_MAX, lsMaxY = -FLT_MAX;
+    float lsMinZ = FLT_MAX, lsMaxZ = -FLT_MAX;
+
+    for ( const auto& corner : corners ) {
+        XMVECTOR vCorner = XMVector3TransformCoord( XMLoadFloat3( &corner ), tempLightView );
+        float x = XMVectorGetX( vCorner );
+        float y = XMVectorGetY( vCorner );
+        float z = XMVectorGetZ( vCorner );
+
+        lsMinX = std::min( lsMinX, x ); lsMaxX = std::max( lsMaxX, x );
+        lsMinY = std::min( lsMinY, y ); lsMaxY = std::max( lsMaxY, y );
+        lsMinZ = std::min( lsMinZ, z ); lsMaxZ = std::max( lsMaxZ, z );
+    }
+        
+    float sceneLsMinZ = FLT_MAX;       // Track the scene's highest point to the light
+
+    // 4. Intersect with the Scene's Bounding Box (also in Light-Space)
+    if ( auto worldInfo = Engine::GAPI->GetLoadedWorldInfo() ) {
+        if ( auto bspTree = worldInfo->BspTree ) {
+            const auto& sceneBox = bspTree->GetRootNode()->BBox3D;
+
+            // Construct the 8 corners of the scene's World-Space AABB
+            std::array<XMFLOAT3, 8> sceneCorners = {
+                XMFLOAT3( sceneBox.Min.x, sceneBox.Min.y, sceneBox.Min.z ),
+                XMFLOAT3( sceneBox.Max.x, sceneBox.Min.y, sceneBox.Min.z ),
+                XMFLOAT3( sceneBox.Min.x, sceneBox.Max.y, sceneBox.Min.z ),
+                XMFLOAT3( sceneBox.Max.x, sceneBox.Max.y, sceneBox.Min.z ),
+                XMFLOAT3( sceneBox.Min.x, sceneBox.Min.y, sceneBox.Max.z ),
+                XMFLOAT3( sceneBox.Max.x, sceneBox.Min.y, sceneBox.Max.z ),
+                XMFLOAT3( sceneBox.Min.x, sceneBox.Max.y, sceneBox.Max.z ),
+                XMFLOAT3( sceneBox.Max.x, sceneBox.Max.y, sceneBox.Max.z )
+            };
+
+            float sceneLsMinX = FLT_MAX, sceneLsMaxX = -FLT_MAX;
+            float sceneLsMinY = FLT_MAX, sceneLsMaxY = -FLT_MAX;
+            sceneLsMinZ = FLT_MAX;
+            float sceneLsMaxZ = -FLT_MAX;
+
+            // Project scene corners to Light-Space
+            for ( const auto& corner : sceneCorners ) {
+                XMVECTOR vCorner = XMVector3TransformCoord( XMLoadFloat3( &corner ), tempLightView );
+                float x = XMVectorGetX( vCorner );
+                float y = XMVectorGetY( vCorner );
+                float z = XMVectorGetZ( vCorner );
+
+                sceneLsMinX = std::min( sceneLsMinX, x ); sceneLsMaxX = std::max( sceneLsMaxX, x );
+                sceneLsMinY = std::min( sceneLsMinY, y ); sceneLsMaxY = std::max( sceneLsMaxY, y );
+                sceneLsMinZ = std::min( sceneLsMinZ, z ); sceneLsMaxZ = std::max( sceneLsMaxZ, z );
+            }
+
+            // Intersect Frustum Light-Space AABB with Scene Light-Space AABB
+            lsMinX = std::max( lsMinX, sceneLsMinX );
+            lsMaxX = std::min( lsMaxX, sceneLsMaxX );
+            lsMinY = std::max( lsMinY, sceneLsMinY );
+            lsMaxY = std::min( lsMaxY, sceneLsMaxY );
+            lsMinZ = std::max( lsMinZ, sceneLsMinZ );
+            lsMaxZ = std::min( lsMaxZ, sceneLsMaxZ );
+
+            // Failsafe in case the camera slice is entirely out of bounds of the scene
+            if ( lsMinX > lsMaxX ) lsMaxX = lsMinX;
+            if ( lsMinY > lsMaxY ) lsMaxY = lsMinY;
+            if ( lsMinZ > lsMaxZ ) lsMaxZ = lsMinZ;
+        }
+    }
+
+    // 5. Calculate Exact Cascade Dimensions (Quantization Removed)
+    cascadeWidth = lsMaxX - lsMinX;
+    cascadeHeight = lsMaxY - lsMinY;
+    sliceDepth = lsMaxZ - lsMinZ;
+
+    // 6. Find Center in Light-Space and Transform Back to World-Space
+    float midX = (lsMinX + lsMaxX) * 0.5f;
+    float midY = (lsMinY + lsMaxY) * 0.5f;
+    float midZ = (lsMinZ + lsMaxZ) * 0.5f;
+
+    if ( sceneLsMinZ != FLT_MAX ) {
+        float distanceToScenePeak = midZ - sceneLsMinZ;
+        // Add a 1000.0f buffer just to be safe from floating point clipping
+        requiredPullback = std::max( 10000.0f, distanceToScenePeak + 1000.0f );
+    }
+
+    XMVECTOR centerLightSpace = XMVectorSet( midX, midY, midZ, 1.0f );
+    XMMATRIX invTempLightView = XMMatrixInverse( nullptr, tempLightView );
+    boxCenterWorld = XMVector3TransformCoord( centerLightSpace, invTempLightView );
+
+    // 7. Pull back light position and create final matrices
+    XMVECTOR lightPos = XMVectorSubtract( boxCenterWorld, XMVectorScale( lightDir, requiredPullback ) );
+    XMMATRIX lightView = XMMatrixLookToLH( lightPos, lightDir, upDir );
+
+    // 8. Sub-texel snapping (Kept to reduce translation shimmering)
+    float texelSizeX = cascadeWidth / static_cast<float>(shadowMapSize);
+    float texelSizeY = cascadeHeight / static_cast<float>(shadowMapSize);
+
+    XMVECTOR centerLightSpace = XMVector3TransformCoord( boxCenterWorld, lightView );
+    float cx = XMVectorGetX( centerLightSpace );
+    float cy = XMVectorGetY( centerLightSpace );
+
+    float snapOffsetX = std::floor( cx / texelSizeX ) * texelSizeX - cx;
+    float snapOffsetY = std::floor( cy / texelSizeY ) * texelSizeY - cy;
+
+    XMMATRIX offsetMatrix = XMMatrixTranslation( snapOffsetX, snapOffsetY, 0.0f );
+    XMMATRIX snappedLightView = XMMatrixMultiply( lightView, offsetMatrix );
+
+    float orthoNear = 1.0f;
+    float orthoFar = requiredPullback + (sliceDepth * 0.5f) + 5000.0f;
+
+    const XMMATRIX crProjRepl = XMMatrixTranspose( XMMatrixOrthographicLH(
+        cascadeWidth, cascadeHeight, orthoNear, orthoFar ) );
+
+    XMStoreFloat4x4( &outCR.ViewReplacement, XMMatrixTranspose( snappedLightView ) );
+    XMStoreFloat4x4( &outCR.ProjectionReplacement, crProjRepl );
+    XMStoreFloat3( &outCR.PositionReplacement, lightPos );
+
+    XMVECTOR lookAt = XMVectorAdd( lightPos, lightDir );
+    XMStoreFloat3( &outCR.LookAtReplacement, lookAt );
+
+    outCR.frustum.BuildOrthographic( snappedLightView,
+        cascadeWidth + (texelSizeX * 2.0f),
+        cascadeHeight + (texelSizeY * 2.0f),
         orthoNear,
         orthoFar,
         Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendBack,
@@ -597,18 +771,35 @@ XRESULT D3D11ShadowMap::PrepareRender()
             m_ShouldUpdateCascade[cascadeIdx] = shouldUpdateCascade;
 
             if ( shouldUpdateCascade || !m_CascadeCRs[cascadeIdx].frustum.IsValid()) {
-                CalculateCascadeMatrices(
-                    m_CascadeCRs[cascadeIdx],
-                    playerFrustum,
-                    splits,
-                    cascadeIdx,
-                    numCascades,
-                    farPlane,
-                    isLastCascade ? lastCascadeP : p,
-                    isLastCascade ? lastCascadeLookAt : lookAt,
-                    c_XM_Up,
-                    isLastCascade ? lastCascadeData.Position : WorldShadowCP,
-                    GetCascadePixelSize( cascadeIdx ) );
+
+                if ( cascadeIdx >= MAX_CSM_CASCADES - 1 ) {
+                    CalculateCascadeMatricesAABB(
+                        m_CascadeCRs[cascadeIdx],
+                        playerFrustum,
+                        splits,
+                        cascadeIdx,
+                        numCascades,
+                        farPlane,
+                        isLastCascade ? lastCascadeP : p,
+                        isLastCascade ? lastCascadeLookAt : lookAt,
+                        c_XM_Up,
+                        isLastCascade ? lastCascadeData.Position : WorldShadowCP,
+                        GetCascadePixelSize( cascadeIdx )
+                    );
+                } else {
+                    CalculateCascadeMatrices(
+                        m_CascadeCRs[cascadeIdx],
+                        playerFrustum,
+                        splits,
+                        cascadeIdx,
+                        numCascades,
+                        farPlane,
+                        isLastCascade ? lastCascadeP : p,
+                        isLastCascade ? lastCascadeLookAt : lookAt,
+                        c_XM_Up,
+                        isLastCascade ? lastCascadeData.Position : WorldShadowCP,
+                        GetCascadePixelSize( cascadeIdx ) );
+                }
             }
         }
     }
