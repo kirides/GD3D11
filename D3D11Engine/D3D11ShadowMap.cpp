@@ -58,6 +58,10 @@ void CalculateTemporalInterpolatedPosition(
     );
     outDir = XMVector3Normalize( dir );
 }
+
+/// <summary>
+/// Aligned to Bounding Sphere
+/// </summary>
 static void CalculateCascadeMatrices(
     CameraReplacement& outCR,
     const Frustum& playerFrustum,
@@ -593,7 +597,7 @@ XRESULT D3D11ShadowMap::PrepareRender()
                     // it covers the whole world, so this can help improve avg fps.
                     shouldUpdateCascade = (perFrameCascadeData.frameCount % 3) == 0;
                 }
-            }
+            } 
             m_ShouldUpdateCascade[cascadeIdx] = shouldUpdateCascade;
 
             if ( shouldUpdateCascade || !m_CascadeCRs[cascadeIdx].frustum.IsValid()) {
@@ -1351,7 +1355,7 @@ XRESULT D3D11ShadowMap::DrawWorldLights()
     scb.SQ_ShadowAOStrength = settings.ShadowAOStrength;
     scb.SQ_WorldAOStrength = settings.WorldAOStrength;
     scb.SQ_ShadowSoftness = settings.ShadowSoftness;
-    scb.SQ_LightSize = 0.03f; // PCSS light size in shadow UV space
+    scb.SQ_LightSize = 0.04f; // PCSS light size in shadow UV space
 
     // Modify lightsettings when indoor
     if ( auto bspTree = Engine::GAPI->GetLoadedWorldInfo()->BspTree )

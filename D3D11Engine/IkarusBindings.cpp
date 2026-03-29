@@ -180,7 +180,7 @@ extern "C"
 
     /** Save Renderer Settings */
     __declspec(dllexport) void __cdecl GDX_SaveRendererSettings() {
-        Engine::GAPI->SaveRendererWorldSettings( Engine::GAPI->GetRendererState().RendererSettings );
+        Engine::GAPI->SaveRendererWorldSettings( Engine::GAPI->GetRendererState().RendererSettings, MENU_SETTINGS_FILE );
         Engine::GAPI->SaveMenuSettings( MENU_SETTINGS_FILE );
     }
 };

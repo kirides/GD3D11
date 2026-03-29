@@ -895,8 +895,10 @@ void GothicAPI::OnWorldLoaded() {
         RendererState.RendererSettings.SetupNewWorldSpecificValues();
     }
 
+    // first load the global defaults, then the world specific ones
+    LoadRendererWorldSettings( RendererState.RendererSettings, MENU_SETTINGS_FILE );
     LoadRendererWorldSettings( RendererState.RendererSettings );
-    SaveRendererWorldSettings( RendererState.RendererSettings );
+
     // Reset wetness
     SceneWetness = GetRainFXWeight();
 
@@ -913,7 +915,8 @@ void GothicAPI::OnWorldLoaded() {
     _canClearVobsByVisual = false;
 }
 
-void GothicAPI::LoadRendererWorldSettings( GothicRendererSettings& s ) {
+void GothicAPI::LoadRendererWorldSettings( GothicRendererSettings& s )
+{
     if ( !LoadedWorldInfo || LoadedWorldInfo->WorldName.empty() ) {
         return;
     }
@@ -931,6 +934,20 @@ void GothicAPI::LoadRendererWorldSettings( GothicRendererSettings& s ) {
     }
 
     auto const ini = zenFolder + LoadedWorldInfo->WorldName + ".INI";
+
+    LoadRendererWorldSettings(s, ini.c_str());
+}
+
+void GothicAPI::LoadRendererWorldSettings( GothicRendererSettings& s, const char* iniFile ) {
+    if ( !Toolbox::FileExists( iniFile ) ) {
+        return;
+    }
+    
+    if ( !LoadedWorldInfo || LoadedWorldInfo->WorldName.empty() ) {
+        return;
+    }
+
+    const std::string ini = iniFile;
     if ( !Toolbox::FileExists( ini ) ) {
         return;
     }
@@ -987,7 +1004,8 @@ void GothicAPI::LoadRendererWorldSettings( GothicRendererSettings& s ) {
     GetPrivateProfileArray("Atmoshpere", "LightDirection", &aS.LightDirection.x, 3, &aS.LightDirection.x, ini);
 }
 
-void GothicAPI::SaveRendererWorldSettings( const GothicRendererSettings& s ) {
+void GothicAPI::SaveRendererWorldSettings( const GothicRendererSettings& s )
+{
     if ( !LoadedWorldInfo || LoadedWorldInfo->WorldName.empty() ) {
         return;
     }
@@ -1006,13 +1024,18 @@ void GothicAPI::SaveRendererWorldSettings( const GothicRendererSettings& s ) {
     }
 
     auto const ini = zenFolder + LoadedWorldInfo->WorldName + ".INI";
+    SaveRendererWorldSettings(s, ini.c_str());
+}
+
+void GothicAPI::SaveRendererWorldSettings( const GothicRendererSettings& s, const char* iniFile ) {
+    const std::string ini = iniFile;
 
     WritePrivateProfileStringA( "Fog", "Height", std::to_string( s.FogHeight ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Fog", "HeightFalloff", std::to_string( s.FogHeightFalloff ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Fog", "GlobalDensity", std::to_string( s.FogGlobalDensity ).c_str(), ini.c_str() );
 
-    WritePrivateProfileRGB("Atmoshpere", "SunLightColor", s.SunLightColor, ini.c_str() );
-    WritePrivateProfileRGB("Atmoshpere", "FogColorMod", s.FogColorMod, ini.c_str() );
+    WritePrivateProfileRGB("Atmoshpere", "SunLightColor", s.SunLightColor, ini);
+    WritePrivateProfileRGB("Atmoshpere", "FogColorMod", s.FogColorMod, ini);
 
     WritePrivateProfileStringA( "General", "GraphicsPreset", std::to_string( (int)s.GraphicsPreset ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "VisualFXDrawRadius", std::to_string( s.VisualFXDrawRadius ).c_str(), ini.c_str() );
@@ -1028,7 +1051,7 @@ void GothicAPI::SaveRendererWorldSettings( const GothicRendererSettings& s ) {
     WritePrivateProfileArray( "Rain", "GlobalVelocity", &s.RainGlobalVelocity.x, 3, ini.c_str() );
     WritePrivateProfileStringA( "Rain", "SceneWettness", std::to_string( s.RainSceneWettness ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Rain", "SunLightStrength", std::to_string( s.RainSunLightStrength ).c_str(), ini.c_str() );
-    WritePrivateProfileRGB( "Rain", "FogColor", s.RainFogColor, ini.c_str() );
+    WritePrivateProfileRGB( "Rain", "FogColor", s.RainFogColor, ini );
     WritePrivateProfileStringA( "Rain", "FogDensity", std::to_string( s.RainFogDensity ).c_str(), ini.c_str() );
 
     WritePrivateProfileStringA( "Atmoshpere", "ReplaceSunDirection", std::to_string( s.ReplaceSunDirection ? TRUE : FALSE ).c_str(), ini.c_str() );

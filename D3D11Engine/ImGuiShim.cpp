@@ -935,10 +935,24 @@ void ImGuiShim::RenderSettingsWindow()
 
             ImGui::EndGroup();
         }
-
-        if ( ImGui::Button( "Save Settings", ImVec2( ImGui::GetContentRegionAvail().x, 30.f ) ) ) {
+        
+        auto saved = ImGui::Button( "Save Settings", ImVec2( ImGui::GetContentRegionAvail().x, 30.f ) );
+        auto worldSettingsPath = Engine::GAPI->GetLoadedWorldSettingsPath(false);
+        const bool isInWorld = !worldSettingsPath.empty();
+        const bool hasWorldSettings = Toolbox::FileExists( worldSettingsPath );
+        if ( ( ImGui::GetIO().KeyCtrl || hasWorldSettings ) && isInWorld ) {
+            ImGui::SetItemTooltip("Save settings to \"%s\"", worldSettingsPath.c_str());
+        } else {
+            ImGui::SetItemTooltip("Save settings.\nCTRL+Click to save just for the current world.");
+        }
+        
+        if ( saved ) {
             Engine::GraphicsEngine->OnUIEvent( BaseGraphicsEngine::UI_ClosedSettings );
-            Engine::GAPI->SaveRendererWorldSettings( settings );
+            if ( (ImGui::GetIO().KeyCtrl || hasWorldSettings) && isInWorld ) {
+                Engine::GAPI->SaveRendererWorldSettings( settings );
+            } else {
+                Engine::GAPI->SaveRendererWorldSettings( settings, MENU_SETTINGS_FILE);
+            }
             Engine::GAPI->SaveMenuSettings( MENU_SETTINGS_FILE );
         }
     }
@@ -1032,6 +1046,16 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
         }
         if ( ImGui::Button( "Load ZEN-Resources", ImVec2( ImGui::GetContentRegionAvail().x, 30.f ) ) ) {
             gapi->LoadCustomZENResources();
+        }
+        auto worldSettingsPath = Engine::GAPI->GetLoadedWorldSettingsPath(false);
+        if (!worldSettingsPath.empty() && Toolbox::FileExists( worldSettingsPath ) ) {
+            const bool shouldDelete = ImGui::Button( "Delete World-Settings", ImVec2( ImGui::GetContentRegionAvail().x, 30.f ) );
+            ImGui::SetItemTooltip("Delete the world-settings file for the current world.\nThe current values will be saved into the global settings file.");
+            if ( shouldDelete ) {
+                std::error_code ec;
+                std::filesystem::remove(worldSettingsPath, ec);
+                Engine::GAPI->SaveRendererWorldSettings(settings, MENU_SETTINGS_FILE);
+            }
         }
         if ( ImGui::Button( "Reload all Shaders", ImVec2( ImGui::GetContentRegionAvail().x, 30.f ) ) ) {
             Engine::GraphicsEngine->ReloadShaders( ShaderCategory::All );
@@ -1150,6 +1174,10 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
             constexpr int max_cascaded_supported = MAX_CSM_CASCADES;
 
             settings.NumShadowCascades = std::clamp( settings.NumShadowCascades, 1, max_cascaded_supported );
+            if ( settings.DebugSettings.ShadowCascades.Lambda < 0.00001f ) {
+                settings.DebugSettings.ShadowCascades.Lambda = D3D11ShadowMap::lambdaBiasTable[settings.NumShadowCascades].lambda;
+                settings.DebugSettings.ShadowCascades.Bias = D3D11ShadowMap::lambdaBiasTable[settings.NumShadowCascades].bias;
+            }
             if ( ImGui::SliderInt( "Shadow Cascade count", &settings.NumShadowCascades, 1, max_cascaded_supported, "%d", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput) ) {
                 settings.NumShadowCascades = std::clamp( settings.NumShadowCascades, 1, max_cascaded_supported );
                 settings.DebugSettings.ShadowCascades.Lambda = D3D11ShadowMap::lambdaBiasTable[settings.NumShadowCascades].lambda;

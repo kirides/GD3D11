@@ -242,9 +242,11 @@ public:
 
     /** Sets the per mod & per world renderersettings which can be persisted */
     void LoadRendererWorldSettings( GothicRendererSettings& s );
+    void LoadRendererWorldSettings( GothicRendererSettings& s, const char* iniFile );
 
     /** Persists the per mod & per world renderersettings */
     void SaveRendererWorldSettings( const GothicRendererSettings& s );
+    void SaveRendererWorldSettings( const GothicRendererSettings& s, const char* iniFile );
 
     /** Called to update the multi thread resource manager state */
     void UpdateMTResourceManager();
@@ -466,6 +468,30 @@ public:
 
     /** Returns the midpoint of the current world */
     WorldInfo* GetLoadedWorldInfo() { return LoadedWorldInfo.get(); }
+
+    [[nodiscard]] std::string GetLoadedWorldSettingsPath(bool createPath = false) const {
+        if ( !LoadedWorldInfo || LoadedWorldInfo->WorldName.empty() ) {
+            return "";
+        }
+        auto gameName = GetGameName();
+        std::string zenFolder;
+        if ( gameName == "Original" ) {
+            zenFolder = "system\\GD3D11\\ZENResources\\";
+        } else {
+            zenFolder = "system\\GD3D11\\ZENResources\\" + gameName + "\\";
+        }
+        if ( !Toolbox::FolderExists( zenFolder ) ) {
+            if (createPath) {
+                if ( !Toolbox::CreateDirectoryRecursive( zenFolder ) ) {
+                    LogError() << "Could not save custom ZEN-Resources. Could not create directory: " << zenFolder;
+                    return "";
+                }
+            }
+        }
+
+        auto const ini = zenFolder + LoadedWorldInfo->WorldName + ".INI";
+        return ini;
+    }
 
     /** Returns wether the camera is indoor or not */
     bool IsCameraIndoor();
