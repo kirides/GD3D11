@@ -403,11 +403,6 @@ void ApplyFeatureLevel10Downgrades(GothicRendererSettings& s) {
     if (s.NumShadowCascades >= 2) {
         s.DebugSettings.ShadowCascades.Lambda = D3D11ShadowMap::lambdaBiasTable[s.NumShadowCascades].lambda;
         s.DebugSettings.ShadowCascades.Bias = D3D11ShadowMap::lambdaBiasTable[s.NumShadowCascades].bias;
-
-        if (FeatureLevel10Compatibility || s.DebugSettings.FeatureSet.UseShadowAtlas) {
-            s.DebugSettings.ShadowCascades.Lambda = 0.9f;
-            s.DebugSettings.ShadowCascades.Bias = 1.5f;            
-        }
     }
 }
 
@@ -424,7 +419,6 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.ShadowSoftness = 0.85f;
         s.SmoothShadowCameraUpdate = true;
         s.SmoothShadowFrequency = 500;
-        s.ShadowDrawDistance = 10'000.0f;
         s.ShadowFilterMode = GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_DISABLED;
 
         s.EnableDynamicLighting = false;
@@ -458,7 +452,6 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.ShadowSoftness = 0.85f;
         s.SmoothShadowCameraUpdate = true;
         s.SmoothShadowFrequency = 1000;
-        s.ShadowDrawDistance = 15'000.0f;
         s.ShadowFilterMode = GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_SIMPLE;
             
         s.EnableDynamicLighting = true;
@@ -492,7 +485,6 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.ShadowSoftness = 1.0f;
         s.SmoothShadowCameraUpdate = false;
         s.SmoothShadowFrequency = 20000;
-        s.ShadowDrawDistance = 15'000.0f;
         s.ShadowFilterMode = GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_SIMPLE;
 
         s.EnableDynamicLighting = true;
@@ -528,7 +520,6 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.ShadowSoftness = 1.0f;
         s.SmoothShadowCameraUpdate = false;
         s.SmoothShadowFrequency = 20000;
-        s.ShadowDrawDistance = 15'000.0f;
         s.ShadowFilterMode = GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_PCSS;
 
         s.EnableDynamicLighting = true;
@@ -1142,18 +1133,20 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
 
         ImGui::Checkbox( "Enable Shadows", &settings.EnableShadows );
         ImGui::BeginDisabled( !settings.EnableShadows );
-        {
+        { 
             ImGui::Checkbox( "Fast Shadows", &settings.FastShadows );
             ImGui::SetItemTooltip( "Renders only static world meshes" );
-            ImGui::Checkbox( "Smooth shadow update", &settings.SmoothShadowCameraUpdate );
-            ImGui::DragFloat( "Smooth shadow frequency", &settings.SmoothShadowFrequency, 200.0f, 1, 20000.f, "%.0f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
-            ImGui::SetItemTooltip( "Higher values mean more frequent shadow position updates" );
+            ImGui::Checkbox( "Fixed shadow update", &settings.SmoothShadowCameraUpdate );
+            ImGui::SetItemTooltip( "on: Higher values mean more frequent shadow position updates.\noff: real-time shadow updates." );
+            ImGui::DragFloat( "Fixed shadow frequency", &settings.SmoothShadowFrequency, 200.0f, 1, 20000.f, "%.0f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
+            ImGui::SetItemTooltip( "on: Higher values mean more frequent shadow position updates.\noff: real-time shadow updates." );
 
             if ( ImComboBoxC( "ShadowmapSize", shadowMapSizes, (int*)(&settings.ShadowMapSize), []() { Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows ); } ) ) {
                 ImGui::EndCombo();
             }
-            ImGui::DragFloat( "WorldShadowRangeScale", &settings.WorldShadowRangeScale, 0.01f, 0.00f, 10.0f, "%.2f" );
-            
+            ImGui::DragFloat( "Shadow Distance", &settings.WorldShadowRangeScale, 0.01f, 0.00f, 10.0f, "%.2f" );
+            ImGui::SetItemTooltip( "Larger values produce less detailed shadows\nEffective Distance: %.0f", 12000 * settings.WorldShadowRangeScale );
+
             constexpr int max_cascaded_supported = MAX_CSM_CASCADES;
 
             settings.NumShadowCascades = std::clamp( settings.NumShadowCascades, 1, max_cascaded_supported );
@@ -1199,11 +1192,10 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
             ImGui::SetItemTooltip( "Which shadow cascades should be filtered using '16xPCF'" );
             
             ImGui::DragFloat( "ShadowStrength", &settings.ShadowStrength, 0.01f, 0.01f, 5.0f, "%.2f" );
-            ImGui::DragFloat( "ShadowSoftness", &settings.ShadowSoftness, 0.05f, 0.2f, 4.0f, "%.2f" );
+            ImGui::DragFloat( "ShadowSoftness", &settings.ShadowSoftness, 0.05f, 0.2f, 8.0f, "%.2f" );
             ImGui::SetItemTooltip( "PCF kernel scale (1.0=sharp default, <1.0=sharper, >1.0=softer)" );
             ImGui::DragFloat( "ShadowAOStrength", &settings.ShadowAOStrength, 0.01f, -5.0f, 2.0f, "%.2f" );
             ImGui::DragFloat( "WorldAOStrength", &settings.WorldAOStrength, 0.01f, -5.0f, 2.0f, "%.2f" );
-            ImGui::SliderFloat("Shadow Draw Distance", &settings.ShadowDrawDistance, 0.0f, 38400.0f, "%.0f" );
             ImGui::EndDisabled();
         }
         ImGui::Separator();

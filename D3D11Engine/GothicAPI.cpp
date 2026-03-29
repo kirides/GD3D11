@@ -1339,6 +1339,7 @@ void GothicAPI::CalcPolyStripMeshes() {
 #endif
 
             //Convert list of quads to list of triangles
+            PolyStripInfos[tx].vertices.reserve( 4 * 3 );
             WorldConverter::TriangleFanToList( &polyFan[0], 4, &PolyStripInfos[tx].vertices );
             PolyStripInfos[tx].material = mat;
         }
@@ -1452,6 +1453,7 @@ void GothicAPI::CalcFlashMeshes() {
 #endif
 
             //Convert list of quads to list of triangles
+            PolyStripInfos[tx].vertices.reserve( 4 * 3 );
             WorldConverter::TriangleFanToList( &polyFan[0], 4, &PolyStripInfos[tx].vertices );
             PolyStripInfos[tx].material = mat;
         }
@@ -2364,7 +2366,7 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
 #else
         if ( !model->GetDrawHandVisualsOnly() ) {
 #endif
-            Engine::GraphicsEngine->DrawSkeletalMesh( vi, transforms, modelColor, world, fatness );
+            Engine::GraphicsEngine->DrawSkeletalMesh( vi, make_span( transforms ), modelColor, world, fatness);
         }
     } else {
         if ( model->GetMeshSoftSkinList()->NumInArray > 0 ) {
@@ -2600,7 +2602,7 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo* vi, float distance
 #else
         if ( !model->GetDrawHandVisualsOnly() ) {
 #endif
-            g->DrawSkeletalMesh_Layered( vi, transforms, modelColor, world, fatness );
+            g->DrawSkeletalMesh_Layered( vi, make_span( transforms ), modelColor, world, fatness );
         }
     } else {
         if ( model->GetMeshSoftSkinList()->NumInArray > 0 ) {
@@ -2745,6 +2747,8 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo* vi, float distance
     RendererState.RendererInfo.FrameDrawnVobs++;
 }
 
+static thread_local std::vector<XMFLOAT4X4> g_BoneTransformCache{};
+
 void GothicAPI::DrawSkeletalMeshVobs(
     const std::vector<SkeletalVobInfo*>& vis,
     bool updateState,
@@ -2757,15 +2761,39 @@ void GothicAPI::DrawSkeletalMeshVobs(
     struct TempVobDrawInfo {
         SkeletalVobInfo* VobInfo;
         zCModel* Model;
-        std::vector<XMFLOAT4X4> BoneTransforms;
+        int BoneIdx;
+        int NumBones;
         float4 ModelColor;
         float Fatness;
         XMMATRIX World;
+
+        TempVobDrawInfo() = default;
+
+        TempVobDrawInfo(
+            SkeletalVobInfo* VobInfo,
+            zCModel* Model,
+            int BoneIdx,
+            int NumBones,
+            float4 ModelColor,
+            float Fatness,
+            XMMATRIX World
+        ) : 
+            VobInfo(VobInfo),
+            Model( Model),
+            BoneIdx( BoneIdx ),
+            NumBones( NumBones ),
+            ModelColor( ModelColor),
+            Fatness( Fatness),
+            World( World)
+        { }
     };
 
     static std::vector<TempVobDrawInfo> tempVobList;
     tempVobList.clear();
+    g_BoneTransformCache.clear();
+    g_BoneTransformCache.reserve( 150 );
 
+    int boneOffset = 0;
     for ( SkeletalVobInfo* vi : vis ) {
         zCModel* model = static_cast<zCModel*>(vi->Vob->GetVisual());
         if ( !model ) {
@@ -2812,9 +2840,12 @@ void GothicAPI::DrawSkeletalMeshVobs(
         float fatness = model->GetModelFatness();
 
         // Get the bone transforms
-        static std::vector<XMFLOAT4X4> transforms;
-        transforms.clear();
-        model->GetBoneTransforms( &transforms );
+        // boneOffset
+        auto oldOffset = boneOffset;
+        model->GetBoneTransforms( &g_BoneTransformCache );
+        auto numBones = g_BoneTransformCache.size() - boneOffset;
+        auto boneIdx = boneOffset;
+        boneOffset += numBones;
 
         if ( updateState ) {
             // Update attachments
@@ -2828,7 +2859,7 @@ void GothicAPI::DrawSkeletalMeshVobs(
 #else
             if ( !model->GetDrawHandVisualsOnly() ) {
 #endif
-                Engine::GraphicsEngine->DrawSkeletalMesh( vi, transforms, modelColor, world, fatness );
+                Engine::GraphicsEngine->DrawSkeletalMesh( vi, make_span( &g_BoneTransformCache[boneIdx], numBones), modelColor, world, fatness);
             }
             } else {
             if ( model->GetMeshSoftSkinList()->NumInArray > 0 ) {
@@ -2838,15 +2869,7 @@ void GothicAPI::DrawSkeletalMeshVobs(
         }
 
         if ( drawAttachments ) {
-            TempVobDrawInfo info = {};
-            info.VobInfo = vi;
-            info.Model = model;
-            info.BoneTransforms = std::move( transforms );
-            info.Fatness = fatness;
-            info.ModelColor = modelColor;
-            info.World = xmWorld;
-
-            tempVobList.push_back( info );
+            tempVobList.emplace_back( vi, model, boneIdx, numBones, modelColor, fatness, xmWorld );
         }
 
         RendererState.RendererInfo.FrameDrawnVobs++;
@@ -2869,7 +2892,7 @@ void GothicAPI::DrawSkeletalMeshVobs(
         auto vi = data.VobInfo;
         auto model = data.Model;
         auto modelColor = data.ModelColor;
-        auto& transforms = data.BoneTransforms;
+        auto transforms = make_span( &g_BoneTransformCache[data.BoneIdx], data.NumBones );
         auto fatness = data.Fatness;
         auto& world = data.World;
 
@@ -2933,10 +2956,11 @@ void GothicAPI::DrawSkeletalMeshVobs(
                     g->BindActivePixelShader();
                 }
 
+                const XMMATRIX curTransform = XMLoadFloat4x4( &transforms[i] );
+                XMFLOAT4X4 finalWorld; XMStoreFloat4x4( &finalWorld, world* curTransform );
+
                 // Go through all attachments this node has
                 for ( MeshVisualInfo* mvi : nodeAttachments[i] ) {
-                    XMMATRIX curTransform = XMLoadFloat4x4( &transforms[i] );
-                    XMFLOAT4X4 finalWorld; XMStoreFloat4x4( &finalWorld, world* curTransform );
 
                     if ( !mvi->Visual ) {
                         LogWarn() << "Attachment without visual on model: " << model->GetVisualName();
@@ -3138,7 +3162,7 @@ void GothicAPI::DrawSkeletalVN() {
             model->GetBoneTransforms( &transforms );
 
             if ( !static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->SkeletalMeshes.empty() ) {
-                g->DrawSkeletalVertexNormals( vi, world, transforms, 0xFFFFFF, fatness);
+                g->DrawSkeletalVertexNormals( vi, world, make_span( transforms ), 0xFFFFFF, fatness);
             }
         }
 
@@ -4108,6 +4132,8 @@ void GothicAPI::CollectVisibleVobs(
     
         for ( auto vi : renderQueue.lights ) {
             if ( vi->Vob->IsEnabled() /*&& vob->GetShowVisual()*/ ) {
+                vi->VisibleInFrame = true;
+
                 // Update the lights shadows if: Light is dynamic or full shadow-updates are set
                 if ( !vi->IsPFXVobLight ) {
                     if ( RendererState.RendererSettings.EnablePointlightShadows >= GothicRendererSettings::PLS_FULL
@@ -4595,9 +4621,13 @@ zCTexture* GothicAPI::GetTextureBySurface( MyDirectDrawSurface7* surface ) {
 }
 
 /** Resets all vob-stats drawn this frame */
-void GothicAPI::ResetVobFrameStats( std::list<VobInfo*>& vobs ) {
-    for ( auto&& it : vobs ) {
-        it->VisibleInRenderPass = false;
+void GothicAPI::ResetVobFrameStats( ) {
+    for ( auto&& it : VobMap ) {
+        it.second->VisibleInRenderPass = false;
+    }
+    for ( auto&& it : VobLightMap ) {
+        it.second->VisibleInRenderPass = false;
+        it.second->VisibleInFrame = false;
     }
 }
 
@@ -4960,7 +4990,6 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Shadows", "ShadowSoftness", std::to_string( s.ShadowSoftness ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "ShadowAOStrength", std::to_string( s.ShadowAOStrength ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Shadows", "WorldAOStrength", std::to_string( s.WorldAOStrength ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Shadows", "ShadowDrawDistance", std::to_string( s.ShadowDrawDistance ).c_str(), ini.c_str() );
 
     // WritePrivateProfileStringA( "SMAA", "Enabled", std::to_string( s.EnableSMAA ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "AntiAliasing", std::to_string( (int)s.AntiAliasingMode ).c_str(), ini.c_str() );
@@ -5057,7 +5086,6 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.ShadowSoftness = GetPrivateProfileFloatA( "Shadows", "ShadowSoftness", defaultRendererSettings.ShadowSoftness, ini );
         s.ShadowAOStrength = GetPrivateProfileFloatA( "Shadows", "ShadowAOStrength", defaultRendererSettings.ShadowAOStrength, ini );
         s.WorldAOStrength = GetPrivateProfileFloatA( "Shadows", "WorldAOStrength", defaultRendererSettings.WorldAOStrength, ini );
-        s.ShadowDrawDistance = GetPrivateProfileFloatA( "Shadows", "ShadowDrawDistance", defaultRendererSettings.ShadowDrawDistance, ini );
 
         INT2 res = {};
         RECT desktopRect;
@@ -5835,6 +5863,8 @@ static void CollectVisibleVobsHelper( BspInfo* base,
 
             if ( collectFlags & COLLECT_LIGHTS
                     && RendererState.RendererSettings.EnableDynamicLighting && dist < visualFXDrawRadius ) {
+                
+                bool markSeen = (collectFlags & COLLECT_MUTATE) != 0;
                 // Add dynamic lights
                 for ( int i = 0; i < leaf->LightVobList.NumInArray; i++ ) {
                     zCVobLight* vob = leaf->LightVobList.Array[i];

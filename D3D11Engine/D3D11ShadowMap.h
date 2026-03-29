@@ -160,9 +160,9 @@ public:
     inline static struct { float lambda; float bias; } lambdaBiasTable[] {
         /* 0 */ { 0, 0 },
         /* 1 */ { 1.0f, 1.0f },
-        /* 2 */ { 0.85f, 3.5f },
-        /* 3 */ { 0.92f, 2.7f },
-        /* 4 */ { 0.98f, 1.9f }, // Players should really want to use 4 cascades for best quality
+        /* 2 */ { 0.90f, 1.0f }, // 2 cascades really is bare minimum for quality
+        /* 3 */ { 0.85f, 1.0f }, // with 3 cascades, we can show higher quality shadows further
+        /* 4 */ { 0.80f, 1.0f }, // Players should really want to use 4 cascades for best quality and furthest
     };
 
     D3D11RenderQueue* GetRenderQueue( int cascadeIndex ) { return m_RenderQueues[cascadeIndex].get(); }
@@ -182,6 +182,7 @@ private:
     bool m_useAtlas = false;
 
     std::unique_ptr<RenderToTextureBuffer> m_dummyCubeRT;
+    std::unique_ptr<D3D11ConstantBuffer> m_PointLightCB;
 
     Microsoft::WRL::ComPtr<ID3D11SamplerState> m_shadowmapSampler;
     int m_lastNumCascades = 0;

@@ -4,6 +4,7 @@
 #include <thread>
 #include <condition_variable>
 #include <atomic>
+#include "TexturePool.h"
 
 class D3D11PointLight;
 
@@ -22,7 +23,7 @@ public:
     void InitResources();
 
     /** Draws the surrounding scene into the cubemap */
-    void RenderCubemap( bool forceUpdate = false );
+    void RenderCubemap( bool forceUpdate, D3D11ConstantBuffer* ViewMatricesCB );
 
     /** Binds the shadowmap to the pixelshader */
     void OnRenderLight();
@@ -42,6 +43,12 @@ public:
     /** Called when a vob got removed from the world */
     virtual void OnVobRemovedFromWorld( BaseVobInfo* vob );
 
+    bool HasShadowMap() const { return m_DepthCubemap != nullptr; }
+    int GetShadowMapResolution() const { return m_CurrentResolution; }
+
+    void AcquireShadowMap( DepthStencilPool* pool, int resolution );
+    void ReleaseShadowMap();
+
 protected:
     /** Renders the scene with the given view-proj-matrices */
     void RenderCubemapFace( const XMFLOAT4X4& view, const XMFLOAT4X4& proj, UINT faceIdx );
@@ -55,11 +62,11 @@ protected:
     bool WorldCacheInvalid;
 
     VobLightInfo* LightInfo;
-    std::unique_ptr<RenderToDepthStencilBuffer> DepthCubemap;
+    DepthStencilHandle m_DepthCubemap;
+    int m_CurrentResolution = 0; // Track current LOD size
     XMFLOAT4X4 CubeMapViewMatrices[6];
     XMFLOAT3 LastUpdatePosition;
     DWORD LastUpdateColor;
-    std::unique_ptr<D3D11ConstantBuffer> ViewMatricesCB;
     bool DynamicLight;
     std::atomic<bool> InitDone;
     bool DrawnOnce;

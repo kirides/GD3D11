@@ -17,8 +17,7 @@ D3D11PointLight::D3D11PointLight( VobLightInfo* info, bool dynamicLight ) {
 
     XMStoreFloat3( &LastUpdatePosition, LightInfo->Vob->GetPositionWorldXM() );
 
-    DepthCubemap = nullptr;
-    ViewMatricesCB = nullptr;
+    m_DepthCubemap = nullptr;
 
     if ( !dynamicLight ) {
         InitDone = false;
@@ -37,12 +36,40 @@ D3D11PointLight::~D3D11PointLight() {
     // Make sure we are out of the init-queue
     while ( !InitDone );
 
-    DepthCubemap.reset();
-    ViewMatricesCB.reset();
+    ReleaseShadowMap();
 
     for ( auto& [k, mesh] : WorldMeshCache ) {
         SAFE_DELETE( mesh );
     }
+}
+
+void D3D11PointLight::AcquireShadowMap( DepthStencilPool* pool, int resolution ) {
+    if ( m_DepthCubemap && m_CurrentResolution == resolution ) return;
+
+    // If we have a map but it's the wrong size, return it to the pool first
+    if ( m_DepthCubemap ) {
+        ReleaseShadowMap();
+    }
+
+    DepthStencilPool::Description desc;
+    desc.Width = resolution;
+    desc.Height = resolution;
+    desc.Format = DXGI_FORMAT_R16_TYPELESS;
+    desc.DSVFormat = DXGI_FORMAT_D16_UNORM;
+    desc.SRVFormat = DXGI_FORMAT_R16_UNORM;
+    desc.ArraySize = 6;
+
+    m_DepthCubemap = pool->Acquire( desc );
+    m_CurrentResolution = resolution;
+
+    // don't reset DrawnOnce here, or NPCs won't show up in the first frame a shadow gets a different LOD
+    // DrawnOnce = false;
+}
+
+void D3D11PointLight::ReleaseShadowMap() {
+    // This calls the custom deleter, returning the texture to the pool
+    m_DepthCubemap.reset();
+    m_CurrentResolution = 0;
 }
 
 /** Returns true if this is the first time that light is being rendered */
@@ -55,21 +82,6 @@ void D3D11PointLight::InitResources() {
     D3D11GraphicsEngineBase* engine = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine);
 
     //Engine::GAPI->EnterResourceCriticalSection();
-
-    // Create texture-cube for this light
-    DepthCubemap = std::make_unique<RenderToDepthStencilBuffer>( engine->GetDevice().Get(),
-        POINTLIGHT_SHADOWMAP_SIZE,
-        POINTLIGHT_SHADOWMAP_SIZE,
-        DXGI_FORMAT_R16_TYPELESS,
-        nullptr,
-        DXGI_FORMAT_D16_UNORM,
-        DXGI_FORMAT_R16_UNORM,
-        6 );
-
-    // Create constantbuffer for the view-matrices
-    D3D11ConstantBuffer* cb = nullptr;
-    engine->CreateConstantBuffer( &cb, nullptr, sizeof( CubemapGSConstantBuffer ) );
-    ViewMatricesCB.reset( cb );
 
     // Generate worldmesh cache if we aren't a dynamically added light
     if ( !DynamicLight ) {
@@ -107,8 +119,8 @@ bool D3D11PointLight::WantsUpdate() {
 }
 
 /** Draws the surrounding scene into the cubemap */
-void D3D11PointLight::RenderCubemap( bool forceUpdate ) {
-    if ( !InitDone )
+void D3D11PointLight::RenderCubemap( bool forceUpdate, D3D11ConstantBuffer* ViewMatricesCB ) {
+    if ( !InitDone || !ViewMatricesCB || !m_DepthCubemap )
         return;
 
     //if (!GetAsyncKeyState('X'))
@@ -221,7 +233,7 @@ void D3D11PointLight::RenderFullCubemap() {
     if ( WorldCacheInvalid )
         wc = nullptr;
     auto _ = engine->RecordGraphicsEvent( L"RenderFullCubemap->RenderShadowCube" );
-    engine->RenderShadowCube( LightInfo->Vob->GetPositionWorldXM(), range, *DepthCubemap, nullptr, nullptr, false, LightInfo->IsIndoorVob, noNPCs, &VobCache, &SkeletalVobCache, wc );
+    engine->RenderShadowCube( LightInfo->Vob->GetPositionWorldXM(), range, *m_DepthCubemap, nullptr, nullptr, false, LightInfo->IsIndoorVob, noNPCs, &VobCache, &SkeletalVobCache, wc );
 
     //Engine::GAPI->GetRendererState().RendererSettings.DrawSkeletalMeshes = oldDrawSkel;
 }
@@ -254,7 +266,7 @@ void D3D11PointLight::RenderCubemapFace( const XMFLOAT4X4& view, const XMFLOAT4X
     // Draw cubemap face
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> debugRTV = engine->GetDummyCubeRT() != nullptr ? engine->GetDummyCubeRT()->GetRTVCubemapFace( faceIdx ) : nullptr;
     auto _ = engine->RecordGraphicsEvent( L"RenderFullCubemap->RenderShadowCube" );
-    engine->RenderShadowCube( LightInfo->Vob->GetPositionWorldXM(), range, *DepthCubemap, DepthCubemap->GetDSVCubemapFace( faceIdx ).Get(), debugRTV.Get(), false );
+    engine->RenderShadowCube( LightInfo->Vob->GetPositionWorldXM(), range, *m_DepthCubemap, m_DepthCubemap->GetDSVCubemapFace( faceIdx ).Get(), debugRTV.Get(), false );
 
     //Engine::GAPI->GetRendererState().RendererSettings.DrawSkeletalMeshes = oldDrawSkel;
 
@@ -264,10 +276,10 @@ void D3D11PointLight::RenderCubemapFace( const XMFLOAT4X4& view, const XMFLOAT4X
 
 /** Binds the shadowmap to the pixelshader */
 void D3D11PointLight::OnRenderLight() {
-    if ( !InitDone )
+    if ( !InitDone || !m_DepthCubemap )
         return;
 
-    DepthCubemap->BindToPixelShader( reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext(), 3 );
+    m_DepthCubemap->BindToPixelShader( reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext(), 3 );
 }
 
 /** Called when a vob got removed from the world */

@@ -40,26 +40,25 @@ public:
         float expandBack = 0.0f
     )
     {
-        XMMATRIX invView = XMMatrixInverse(nullptr, view);
-        XMFLOAT3 center(0.0f, 0.0f, (farZ + nearZ) * 0.5f);
-        XMFLOAT3 extents(viewWidth * 0.5f, viewHeight * 0.5f, (farZ - nearZ) * 0.5f);
+        XMMATRIX invView = XMMatrixInverse( nullptr, view );
 
-        extents = XMFLOAT3(
-            extents.x + expandSides,
-            extents.y + expandSides,
-            extents.z + expandFront
+        // Calculate new Z bounds directly in Light Space
+        float newNearZ = nearZ - expandBack;
+        float newFarZ = farZ + expandFront;
+
+        // Construct the center and extents in perfect Light Space
+        XMFLOAT3 center( 0.0f, 0.0f, (newFarZ + newNearZ) * 0.5f );
+        XMFLOAT3 extents(
+            (viewWidth * 0.5f) + expandSides,
+            (viewHeight * 0.5f) + expandSides,
+            (newFarZ - newNearZ) * 0.5f
         );
 
-        // Also shift the center backwards (in light direction) to catch casters behind
-        XMVECTOR lightDir = invView.r[2]; // Z-axis of inverse view = light direction
-        XMVECTOR centerVec = XMLoadFloat3(&center);
-        centerVec = XMVectorAdd(centerVec, XMVectorScale(lightDir, -expandBack));
-        XMStoreFloat3(&center, centerVec);
+        BoundingOrientedBox viewSpaceFrustum( center, extents, { 0, 0, 0, 1 } /* Identity */ );
 
-        BoundingOrientedBox viewSpaceFrustum(center, extents,
-                                             {0, 0, 0, 1} /* Identity Orientation */);
+        // Transform correctly to World Space
+        viewSpaceFrustum.Transform( m_orientedBox, invView );
 
-        viewSpaceFrustum.Transform(m_orientedBox, invView);
         m_useBoundingOrientedBox = true;
         m_useSphere = false;
         m_always_containing = false;
@@ -72,7 +71,9 @@ public:
         f.m_always_containing = true;
         f.isValid = true;
         return f;
-    } 
+    }
+
+    bool SupportsCulling() const { return !m_always_containing; }
 
     // Für perspektivische Projektion (normale Kamera)
     void __vectorcall BuildPerspective(FXMMATRIX view, CXMMATRIX proj) {
@@ -207,6 +208,21 @@ public:
     }
 
     bool IsValid() const { return isValid; }
+
+    const std::array<XMFLOAT4, 6>& GetPlanes() const { return m_cachedPlanes; }
+
+    // Extract the 8 corners for a specific slice of the frustum
+    std::array<XMFLOAT3, 8> GetSliceCorners( float nearZ, float farZ ) const {
+        if ( m_always_containing || m_useSphere || m_useBoundingOrientedBox ) {
+            return GetFrustumCorners(); // Fallback
+        }
+        BoundingFrustum slice = m_frustum;
+        slice.Near = nearZ;
+        slice.Far = farZ;
+        std::array<XMFLOAT3, 8> corners;
+        slice.GetCorners( corners.data() );
+        return corners;
+    }
 private:
     // Cache world-space planes for fast culling (called after frustum is transformed to world space)
     // Plane order: [0]=Left, [1]=Right, [2]=Bottom, [3]=Top, [4]=Near, [5]=Far

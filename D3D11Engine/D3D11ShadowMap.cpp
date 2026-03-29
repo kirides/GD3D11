@@ -58,84 +58,154 @@ void CalculateTemporalInterpolatedPosition(
     );
     outDir = XMVector3Normalize( dir );
 }
-
 static void CalculateCascadeMatrices(
     CameraReplacement& outCR,
+    const Frustum& playerFrustum,
     const std::vector<float>& splits,
     size_t cascadeIdx,
     size_t numCascades,
     float farPlane,
-    FXMVECTOR lightPos,
-    FXMVECTOR lookAt,
-    FXMVECTOR upDir,
-    GXMVECTOR shadowCameraPos,
+    FXMVECTOR lightPosOrig,
+    FXMVECTOR lookAtOrig,
+    FXMVECTOR upDirOrig,
+    GXMVECTOR shadowCameraPosFallback,
     UINT shadowMapSize )
 {
-    // Cascade-spezifische Größe basierend auf Split-Verhältnis
-    float splitRatio = splits[cascadeIdx + 1] / splits[numCascades];
-    float cascadeSize = farPlane * std::sqrt( splitRatio );
-    // cascadeSize = std::max( cascadeSize, 500.0f );
+    XMVECTOR lightDir = XMVector3Normalize( XMVectorSubtract( lookAtOrig, lightPosOrig ) );
 
-    // Round cascade size to fixed increments to prevent floating-point variations
-    // This ensures the shadow map covers the same world-space area consistently
-    constexpr float sizeQuantization = 64.0f;
-    cascadeSize = std::ceil( cascadeSize / sizeQuantization ) * sizeQuantization;
+    XMVECTOR upDir = upDirOrig;
+    if ( std::abs( XMVectorGetX( XMVector3Dot( lightDir, upDir ) ) ) > 0.999f ) {
+        upDir = XMVectorSet( 0.0f, 0.0f, 1.0f, 0.0f );
+    }
 
-    // Berechne View-Matrix für diese Cascade
-    XMMATRIX lightView = XMMatrixLookAtLH( lightPos, lookAt, upDir );
+    float cascadeSize = 0.0f;
+    XMVECTOR frustumCenter;
+    float radius = 0.0f;
 
-    // *** TEXEL SNAPPING ***
-    // Berechne die Größe eines Texels in World-Space
+    float splitNear = splits[cascadeIdx];
+    float splitFar = splits[cascadeIdx + 1];
+
+    if ( !playerFrustum.IsValid() || !playerFrustum.SupportsCulling() ) {
+        LogError() << L"ShadowMap: Invalid Player Frustum!";
+    }
+
+    auto corners = playerFrustum.GetSliceCorners( splitNear, splitFar );
+
+    // 1. Calculate the OPTIMAL center of the frustum slice for a minimal bounding sphere
+    XMVECTOR nearCenter = XMVectorZero();
+    for ( int i = 0; i < 4; ++i ) nearCenter = XMVectorAdd( nearCenter, XMLoadFloat3( &corners[i] ) );
+    nearCenter = XMVectorScale( nearCenter, 0.25f );
+
+    XMVECTOR farCenter = XMVectorZero();
+    for ( int i = 4; i < 8; ++i ) farCenter = XMVectorAdd( farCenter, XMLoadFloat3( &corners[i] ) );
+    farCenter = XMVectorScale( farCenter, 0.25f );
+
+    XMVECTOR viewDir = XMVector3Normalize( XMVectorSubtract( farCenter, nearCenter ) );
+    float L = XMVectorGetX( XMVector3Length( XMVectorSubtract( farCenter, nearCenter ) ) );
+
+    float nearRadiusSq = XMVectorGetX( XMVector3LengthSq( XMVectorSubtract( XMLoadFloat3( &corners[0] ), nearCenter ) ) );
+    float farRadiusSq = XMVectorGetX( XMVector3LengthSq( XMVectorSubtract( XMLoadFloat3( &corners[4] ), farCenter ) ) );
+
+    // Slide the center along the view axis to the exact point where Near and Far distances equal out
+    float optimalX = (L * L + farRadiusSq - nearRadiusSq) / (2.0f * L);
+    optimalX = std::clamp( optimalX, 0.0f, L );
+
+    frustumCenter = XMVectorAdd( nearCenter, XMVectorScale( viewDir, optimalX ) );
+
+    // 2. Calculate the true bounding sphere radius mathematically covering all corners
+    radius = 0.0f;
+    for ( const auto& corner : corners ) {
+        float dist = XMVectorGetX( XMVector3Length( XMVectorSubtract( XMLoadFloat3( &corner ), frustumCenter ) ) );
+        radius = std::max( radius, dist );
+    }
+
+    // Snap the cascade size to a coarse boundary
+    cascadeSize = std::ceil( radius / 16.0f ) * 32.0f;
+
     float texelSize = cascadeSize / static_cast<float>(shadowMapSize);
 
-    // Use a slightly larger texel size for snapping to reduce edge swimming
-    float snapSize = texelSize// * 2.0f
-        ;
+    XMVECTOR snappedCenterWorld = frustumCenter;
 
-    // Transformiere die Shadow-Kamera-Position in Light-Space
-    XMVECTOR lightSpaceOrigin = XMVector3Transform( shadowCameraPos, lightView );
-    XMFLOAT3 lightSpaceOriginF;
-    XMStoreFloat3( &lightSpaceOriginF, lightSpaceOrigin );
+    // 3. Build the final light view matrix looking at the snapped center
+    float pullBackDistance = std::max( 10000.0f, radius * 2.0f );
+    XMVECTOR lightPos = XMVectorSubtract( snappedCenterWorld, XMVectorScale( lightDir, pullBackDistance ) );
+    XMMATRIX lightView = XMMatrixLookToLH( lightPos, lightDir, upDir );
 
-    // Snappe auf Texel-Grenzen (using larger snap size for stability)
-    lightSpaceOriginF.x = std::floor( lightSpaceOriginF.x / snapSize ) * snapSize;
-    lightSpaceOriginF.y = std::floor( lightSpaceOriginF.y / snapSize ) * snapSize;
+    // 4. Z-Bounds (Clipping against Scene to prevent overdraw)
 
-    // Berechne den Offset und wende ihn auf die View-Matrix an
-    XMVECTOR snappedOrigin = XMLoadFloat3( &lightSpaceOriginF );
-    XMVECTOR originalOrigin = XMVector3Transform( shadowCameraPos, lightView );
-    XMVECTOR snapOffset = XMVectorSubtract( snappedOrigin, originalOrigin );
+    // Find the exact Light-Space Z-bounds of the frustum slice
+    float minLightZ = FLT_MAX;
+    float maxLightZ = -FLT_MAX;
+    for ( const auto& corner : corners ) {
+        XMVECTOR vLS = XMVector3TransformCoord( XMLoadFloat3( &corner ), lightView );
+        float z = XMVectorGetZ( vLS );
+        minLightZ = std::min( minLightZ, z );
+        maxLightZ = std::max( maxLightZ, z );
+    }
 
-    // Erstelle Offset-Matrix
-    XMFLOAT3 snapOffsetF;
-    XMStoreFloat3( &snapOffsetF, snapOffset );
-    XMMATRIX offsetMatrix = XMMatrixTranslation( snapOffsetF.x, snapOffsetF.y, 0.0f );
+    // --- Dynamic Pullback Calculation ---
+    // Calculate how directly overhead the light is. 
+    // 1.0 = straight down (noon), 0.0 = completely horizontal (horizon)
+    float lightDotUp = std::abs( XMVectorGetX( XMVector3Dot( lightDir, upDirOrig ) ) );
+    lightDotUp = std::max( lightDotUp, 0.05f ); // Prevent division by zero near the horizon
 
-    // Kombiniere View mit Offset
-    XMMATRIX snappedLightView = XMMatrixMultiply( lightView, offsetMatrix );
+    // Assuming a max shadow caster height of ~6000 units (60 meters) above the frustum.
+    // The shallower the angle, the longer the shadow, so we increase the pullback.
+    float dynamicPullback = 4000.0f / lightDotUp;
 
-    float cullingMargin = texelSize * 2.0f;
+    // Clamp to sensible extremes:
+    // Min ~2000 units (high noon, just enough for tall objects directly overhead)
+    // Max ~15000 units (sunset, catching long shadows from distant mountains)
+    dynamicPullback = std::clamp( dynamicPullback, 2000.0f, 15000.0f );
 
-    const XMMATRIX crViewRepl = XMMatrixTranspose( snappedLightView );
-    const XMMATRIX crProjRepl = XMMatrixTranspose( XMMatrixOrthographicLH(
-        cascadeSize, cascadeSize, 1.0f, 20000.f ) );
+    float orthoNear = std::max( 1.0f, minLightZ - dynamicPullback );
+    float orthoFar = maxLightZ + 5000.0f;
 
-    XMStoreFloat4x4( &outCR.ViewReplacement, crViewRepl );
+    // --- Scene Bounds Optimization ---
+    if ( auto worldInfo = Engine::GAPI->GetLoadedWorldInfo() ) {
+        if ( auto bspTree = worldInfo->BspTree ) {
+            zTBBox3D sceneBox = bspTree->GetRootNode()->BBox3D;
+            std::array<XMFLOAT3, 8> sceneCorners = {
+                XMFLOAT3( sceneBox.Min.x, sceneBox.Min.y, sceneBox.Min.z ), XMFLOAT3( sceneBox.Max.x, sceneBox.Min.y, sceneBox.Min.z ),
+                XMFLOAT3( sceneBox.Min.x, sceneBox.Max.y, sceneBox.Min.z ), XMFLOAT3( sceneBox.Max.x, sceneBox.Max.y, sceneBox.Min.z ),
+                XMFLOAT3( sceneBox.Min.x, sceneBox.Min.y, sceneBox.Max.z ), XMFLOAT3( sceneBox.Max.x, sceneBox.Min.y, sceneBox.Max.z ),
+                XMFLOAT3( sceneBox.Min.x, sceneBox.Max.y, sceneBox.Max.z ), XMFLOAT3( sceneBox.Max.x, sceneBox.Max.y, sceneBox.Max.z )
+            };
+
+            float sceneMinZ = FLT_MAX;
+            float sceneMaxZ = -FLT_MAX;
+            for ( const auto& corner : sceneCorners ) {
+                XMVECTOR vLS = XMVector3TransformCoord( XMLoadFloat3( &corner ), lightView );
+                float z = XMVectorGetZ( vLS );
+                sceneMinZ = std::min( sceneMinZ, z );
+                sceneMaxZ = std::max( sceneMaxZ, z );
+            }
+
+            // Absolute hard limit: We never need to start the shadow camera further back 
+            // than the edge of the world geometry itself.
+            orthoNear = std::max( orthoNear, sceneMinZ - 100.0f );
+
+            // Tighten Far Plane so we don't shoot miles past the level boundaries when looking down
+            orthoFar = std::min( orthoFar, sceneMaxZ + 500.0f );
+        }
+    }
+
+    const XMMATRIX crProjRepl = XMMatrixTranspose( XMMatrixOrthographicLH( 
+        cascadeSize, cascadeSize, orthoNear, orthoFar ) );
+
+    XMStoreFloat4x4( &outCR.ViewReplacement, XMMatrixTranspose( lightView ) );
     XMStoreFloat4x4( &outCR.ProjectionReplacement, crProjRepl );
     XMStoreFloat3( &outCR.PositionReplacement, lightPos );
+
+    XMVECTOR lookAt = XMVectorAdd( lightPos, lightDir );
     XMStoreFloat3( &outCR.LookAtReplacement, lookAt );
 
-    outCR.frustum.BuildOrthographic( snappedLightView,
-        // ensure some additional margin
-        // due to blending cascades in PS_DS_AtmosphericScattering.hlsl->GetCascadeUVAndBounds(..)
-        // else we might miss some shadows due to frustum culling
-        // e.g. not visible in c0 but would be in c1, due to blending,
-        // c1 won't use it's "full" color, but rather blend in slowly
-        // causing pop-in
+    float cullingMargin = texelSize * 2.0f;
+    outCR.frustum.BuildOrthographic( lightView,
         cascadeSize + cullingMargin,
         cascadeSize + cullingMargin,
-        1.0f,
-        20000.f,
+        orthoNear,
+        orthoFar,
         Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendBack,
         Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendFront,
         Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendSide );
@@ -215,11 +285,11 @@ void D3D11ShadowMap::EnsureShadowMapBackend( int size ) {
     // Ensure resources exist even if no mode switch occurred.
     if ( m_useAtlas && !m_shadowAtlas ) {
         m_shadowAtlas = std::make_unique<D3D11ShadowAtlas>();
-        const int maxAtlasCascade0Size = (atlasNumCascades <= 1) ? clampedSize : (clampedSize / 2);
+        const int maxAtlasCascade0Size = (atlasNumCascades <= 1) ? clampedSize : (clampedSize / 4);
         int atlasCascade0Size = std::min<int>( clampedSize, maxAtlasCascade0Size );
         m_shadowAtlas->Init( m_device, atlasCascade0Size, atlasNumCascades );
     } else if ( m_useAtlas && m_shadowAtlas ) {
-        const int maxAtlasCascade0Size = (atlasNumCascades <= 1) ? clampedSize : (clampedSize / 2);
+        const int maxAtlasCascade0Size = (atlasNumCascades <= 1) ? clampedSize : (clampedSize / 4);
         int atlasCascade0Size = std::min<int>( clampedSize, maxAtlasCascade0Size );
         m_shadowAtlas->Resize( atlasCascade0Size, atlasNumCascades );
     } else if ( !m_useAtlas && !m_cascadedShadowMap ) {
@@ -229,6 +299,7 @@ void D3D11ShadowMap::EnsureShadowMapBackend( int size ) {
 }
 
 void D3D11ShadowMap::Init( Microsoft::WRL::ComPtr<ID3D11Device1>& device, Microsoft::WRL::ComPtr<ID3D11DeviceContext1>& context, int size ) {
+    HRESULT hr;
     m_device = device;
     m_context = context;
 
@@ -246,6 +317,13 @@ void D3D11ShadowMap::Init( Microsoft::WRL::ComPtr<ID3D11Device1>& device, Micros
         m_RenderQueues[i] = std::make_unique<D3D11RenderQueue>( device.Get(), context.Get() );
     }
 
+    D3D11GraphicsEngineBase* engine = reinterpret_cast<D3D11GraphicsEngineBase*>( Engine::GraphicsEngine );
+
+    // Create constantbuffer for the view-matrices
+    D3D11ConstantBuffer* cb = nullptr;
+    LE(engine->CreateConstantBuffer( &cb, nullptr, sizeof( CubemapGSConstantBuffer ) ));
+    m_PointLightCB.reset( cb );
+
     Resize( s );
 }
 
@@ -262,7 +340,7 @@ void D3D11ShadowMap::Resize( int size ) {
 
     if ( m_useAtlas ) {
         // Atlas path: with one cascade, use full hardware limit; otherwise reserve width for atlas packing.
-        const int maxAtlasCascade0Size = (atlasNumCascades <= 1) ? maxSize : (maxSize / 2);
+        const int maxAtlasCascade0Size = (atlasNumCascades <= 1) ? maxSize : (maxSize / 4);
         int atlasCascade0Size = std::min<int>( s, maxAtlasCascade0Size );
         if ( m_shadowAtlas ) {
             m_shadowAtlas->Resize( atlasCascade0Size, atlasNumCascades );
@@ -321,13 +399,10 @@ XRESULT D3D11ShadowMap::PrepareRender()
     if ( !camera ) {
         return XR_SUCCESS;
     }
-    camera->Activate();
 
     const float nearPlane = std::max( 1.0f, camera->GetNearPlane() );
     // Clamp far plane to avoid extreme shadow distances
-    // 64000 (default for worldsize 4) * 0.6 = 38400
-    // this looked good ough in testing, without many popping artifacts
-    const float baseFarPlane = std::min( camera->GetFarPlane(), 38400.0f );
+    const float baseFarPlane = std::min( camera->GetFarPlane(), 12000.0f ); // ~120 meters, fine with Fog enabled.
 
     // WorldShadowRangeScale als Multiplikator für die Schattenreichweite
     const float shadowRangeScale = settings.WorldShadowRangeScale;
@@ -493,25 +568,38 @@ XRESULT D3D11ShadowMap::PrepareRender()
             ? false 
             : settings.DebugSettings.ShadowCascades.LazyCascadeUpdate;
 
+        Frustum playerFrustum = Frustum::AlwaysContainingFrustum();
+        if ( auto cam = (zCCamera*)oCGame::GetGame()->_zCSession_camera ) {
+            const auto& view = cam->trafoView; // Column-Major, needs Transpose for DxMath
+            const auto& proj = cam->trafoProjection; // Row-Major, does not need transpose.
+            playerFrustum.BuildPerspective(
+                XMMatrixTranspose( XMLoadFloat4x4( &view ) ),
+                XMLoadFloat4x4( &proj )
+            );
+        }
+
         for ( int cascadeIdx = 0; cascadeIdx < numCascades; ++cascadeIdx ) {
             // pre-calculate all cascade matrices, to be able to frustum-cull anything that is not in this or the next cascade.
 
             bool isLastCascade = (numCascades > 1 && cascadeIdx == numCascades - 1);
 
             bool shouldUpdateCascade = true;
-            if ( lazyCascadeUpdate && cascadeIdx == 2 ) {
-                // pre-last cascade updates every 2nd frame which is 30 FPS = 15 updates per second
-                shouldUpdateCascade = (perFrameCascadeData.frameCount % 2) == 0;
-            } else if ( lazyCascadeUpdate && cascadeIdx == MAX_CSM_CASCADES-1 ) {
-                // final cascade updates every 3rd frame which is 30 FPS = 10 updates per second
-                // it covers the whole world, so this can help improve avg fps.
-                shouldUpdateCascade = (perFrameCascadeData.frameCount % 3) == 0;
+            if ( lazyCascadeUpdate ) {
+                if ( cascadeIdx == 2 ) {
+                    // pre-last cascade updates every 2nd frame which is 30 FPS = 15 updates per second
+                    shouldUpdateCascade = (perFrameCascadeData.frameCount % 2) == 0;
+                } else if ( cascadeIdx == MAX_CSM_CASCADES-1 ) {
+                    // final cascade updates every 3rd frame which is 30 FPS = 10 updates per second
+                    // it covers the whole world, so this can help improve avg fps.
+                    shouldUpdateCascade = (perFrameCascadeData.frameCount % 3) == 0;
+                }
             }
             m_ShouldUpdateCascade[cascadeIdx] = shouldUpdateCascade;
 
             if ( shouldUpdateCascade || !m_CascadeCRs[cascadeIdx].frustum.IsValid()) {
                 CalculateCascadeMatrices(
                     m_CascadeCRs[cascadeIdx],
+                    playerFrustum,
                     splits,
                     cascadeIdx,
                     numCascades,
@@ -538,11 +626,11 @@ XRESULT D3D11ShadowMap::PrepareRender()
         LegacyRenderQueueProxy q(potentialCasters, _1, _2);
 
         ctx.queue = &q;
-        ctx.frustum = m_CascadeCRs[numCascades-1].frustum;
-        ctx.cameraPosition = m_CascadeCRs[numCascades-1].PositionReplacement;
+        ctx.frustum = Frustum::AlwaysContainingFrustum();
+        ctx.cameraPosition = m_WorldShadowPos;
         ctx.stage = RenderStage::STAGE_DRAW_SHADOWS;
-        ctx.drawDistances.OutdoorVobs = settings.ShadowDrawDistance;
-        ctx.drawDistances.OutdoorVobsSmall = settings.ShadowDrawDistance;
+        ctx.drawDistances.OutdoorVobs = 20000;
+        ctx.drawDistances.OutdoorVobsSmall = 20000;
         
         Engine::GAPI->CollectVisibleVobs( ctx );
     }
@@ -555,20 +643,49 @@ XRESULT D3D11ShadowMap::PrepareRender()
         m_RenderQueues[i]->Reset();
     }
 
-    for (auto vob : potentialCasters ) {
-        
-        auto boundingSphere = Frustum::BSphereFromzTBBox3D(vob->Vob->GetBBox());
-        if ( numCascades > 0 && m_CascadeCRs[0].frustum.Intersects( boundingSphere ) )
-            m_RenderQueues[0]->GetVobs().push_back( vob );
+    if ( numCascades > 3 ) {
+        for ( auto vob : potentialCasters ) {
 
-        if ( numCascades > 1 && m_ShouldUpdateCascade[1] && m_CascadeCRs[1].frustum.Intersects( boundingSphere ) )
-            m_RenderQueues[1]->GetVobs().push_back( vob );
+            auto boundingSphere = Frustum::BSphereFromzTBBox3D( vob->Vob->GetBBox() );
+            if ( m_CascadeCRs[0].frustum.Intersects( boundingSphere ) )
+                m_RenderQueues[0]->GetVobs().push_back( vob );
 
-        if ( numCascades > 2 && m_ShouldUpdateCascade[2] && m_CascadeCRs[2].frustum.Intersects( boundingSphere ) )
-            m_RenderQueues[2]->GetVobs().push_back( vob );
+            if ( /*m_ShouldUpdateCascade[1] && */m_CascadeCRs[1].frustum.Intersects(boundingSphere) )
+                m_RenderQueues[1]->GetVobs().push_back( vob );
 
-        if ( numCascades > 3 && m_ShouldUpdateCascade[3] && m_CascadeCRs[3].frustum.Intersects( boundingSphere ) )
-            m_RenderQueues[3]->GetVobs().push_back( vob );
+            if ( m_ShouldUpdateCascade[2] && m_CascadeCRs[2].frustum.Intersects( boundingSphere ) )
+                m_RenderQueues[2]->GetVobs().push_back( vob );
+
+            if ( m_ShouldUpdateCascade[3] && m_CascadeCRs[3].frustum.Intersects( boundingSphere ) )
+                m_RenderQueues[3]->GetVobs().push_back( vob );
+        }
+    } else if ( numCascades > 2 ) {
+        for ( auto vob : potentialCasters ) {
+            auto boundingSphere = Frustum::BSphereFromzTBBox3D( vob->Vob->GetBBox() );
+            if ( m_CascadeCRs[0].frustum.Intersects( boundingSphere ) )
+                m_RenderQueues[0]->GetVobs().push_back( vob );
+
+            if ( /*m_ShouldUpdateCascade[1] && */m_CascadeCRs[1].frustum.Intersects( boundingSphere ) )
+                m_RenderQueues[1]->GetVobs().push_back( vob );
+
+            if ( m_ShouldUpdateCascade[2] && m_CascadeCRs[2].frustum.Intersects( boundingSphere ) )
+                m_RenderQueues[2]->GetVobs().push_back( vob );
+        }
+    } else if ( numCascades > 1 ) {
+        for ( auto vob : potentialCasters ) {
+            auto boundingSphere = Frustum::BSphereFromzTBBox3D( vob->Vob->GetBBox() );
+            if ( m_CascadeCRs[0].frustum.Intersects( boundingSphere ) )
+                m_RenderQueues[0]->GetVobs().push_back( vob );
+
+            if ( /*m_ShouldUpdateCascade[1] && */m_CascadeCRs[1].frustum.Intersects( boundingSphere ) )
+                m_RenderQueues[1]->GetVobs().push_back( vob );
+        }
+    } else if ( numCascades > 0 ) {
+        for ( auto vob : potentialCasters ) {
+            auto boundingSphere = Frustum::BSphereFromzTBBox3D( vob->Vob->GetBBox() );
+            if ( m_CascadeCRs[0].frustum.Intersects( boundingSphere ) )
+                m_RenderQueues[0]->GetVobs().push_back( vob );
+        }
     }
 
     return XR_SUCCESS;
@@ -634,91 +751,122 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
     // Draw pointlight shadows
     std::list<VobLightInfo*> importantUpdates;
 
+    DepthStencilPool* dsPool = graphicsEngine->GetPfxRenderer()->GetDepthStencilPool();
+
+    // Release any resources of not visible lights
+    for (auto& it : Engine::GAPI->VobLightMap) {
+        if (it.second->LightShadowBuffers
+            && (!it.second->Vob->IsEnabled() || !it.second->VisibleInFrame)) {
+            if ( D3D11PointLight* pl = static_cast<D3D11PointLight*>(it.second->LightShadowBuffers)) {
+                pl->ReleaseShadowMap();
+            }
+        }
+    }
+    
     for ( auto const& light : lights ) {
+        if ( !light->Vob->IsEnabled() || !light->VisibleInFrame ) {
+            continue;
+        }
         // Create shadowmap in case we should have one but haven't got it yet
         if ( !light->LightShadowBuffers && light->UpdateShadows ) {
             graphicsEngine->CreateShadowedPointLight( &light->LightShadowBuffers, light );
         }
 
         if ( light->LightShadowBuffers ) {
-            // Check if this lights even needs an update
-            bool needsUpdate = static_cast<D3D11PointLight*>(light->LightShadowBuffers)->NeedsUpdate();
-            bool isInited = static_cast<D3D11PointLight*>(light->LightShadowBuffers)->IsInited();
+            D3D11PointLight* pl = static_cast<D3D11PointLight*>(light->LightShadowBuffers);
 
-            // Add to the updatequeue if it does
-            if ( isInited && (needsUpdate || light->UpdateShadows) ) {
-                // Always update the light if the light itself moved
-                if ( partialShadowUpdate && !needsUpdate ) {
-                    // Only add once. This list should never be very big, so it should
-                    // be ok to search it like this This needs to be done to make sure a
-                    // light will get updated only once and won't block the queue
-                    if ( std::find( graphicsEngine->FrameShadowUpdateLights.begin(),
-                                    graphicsEngine->FrameShadowUpdateLights.end(),
-                                    light ) == graphicsEngine->FrameShadowUpdateLights.end() ) {
-                        // Always render the closest light to the playervob, so the player
-                        // doesn't flicker when moving
-                        float d;
-                        XMStoreFloat( &d, XMVector3LengthSq( light->Vob->GetPositionWorldXM() - vPlayerPosition ) );
+            float d;
+            XMStoreFloat( &d, XMVector3LengthSq( light->Vob->GetPositionWorldXM() - vPlayerPosition ) );
+            float range = light->Vob->GetLightRange();
+            const float rangeSq = range * range;
 
-                        float range = light->Vob->GetLightRange();
-                        if ( d < range * range &&
-                            importantUpdates.size() < MAX_IMPORTANT_LIGHT_UPDATES ) {
-                            importantUpdates.emplace_back( light );
-                        } else {
-                            graphicsEngine->FrameShadowUpdateLights.emplace_back( light );
+            float distVeryCloseSq = (range * 0.8f) * (range * 0.8f);
+            float distMaxShadowSq = (range * 9.0f) * (range * 9.0f); // Fade out entirely after this
+
+            // pick shadow resolution based on distance.
+            int desiredResolution = 64; // Fallback / far distance
+            if ( d < distVeryCloseSq ) {
+                desiredResolution = 256; // High res for close lights
+            }
+
+            bool inShadowRange = d < distMaxShadowSq;
+            if ( inShadowRange ) {
+                // Acquire memory if it doesn't have it
+                if ( !pl->HasShadowMap() || pl->GetShadowMapResolution() != desiredResolution ) {
+                    pl->AcquireShadowMap( dsPool, desiredResolution );
+                    light->UpdateShadows = true; // Force an immediate render this frame
+                }
+
+                // TODO: prioritize updates based on distance, as player will notice updates more on close lights.
+                // TODO: actually only render lights visible in the frustum.
+
+                bool needsUpdate = pl->NeedsUpdate() || desiredResolution == 256;
+                bool isInited = pl->IsInited();
+
+                // Sort into Important vs Background Queue
+                if ( isInited ) {
+                    // Immediate Priority: Light moved, was just created, or explicit flag set
+                    if ( needsUpdate || light->UpdateShadows ) {
+                        importantUpdates.emplace_back( light );
+                    }
+                    // Background Priority: Add to round-robin queue if not already there
+                    else if ( partialShadowUpdate ) {
+                        auto& queue = graphicsEngine->FrameShadowUpdateLights;
+                        if ( std::find( queue.begin(), queue.end(), light ) == queue.end() ) {
+                            queue.emplace_back( light );
                         }
                     }
-                } else {
-                    // Always render the closest light to the playervob, so the player
-                    // doesn't flicker when moving
-                    float d;
-                    XMStoreFloat( &d, XMVector3LengthSq( light->Vob->GetPositionWorldXM() - vPlayerPosition ) );
+                }
+            } else {
+                // Out of range: Return VRAM to the pool!
+                if ( pl->HasShadowMap() ) {
+                    // TODO: actually fix memory leakage, as many lights can spawn without ever releasing their shadowmaps
+                    // because if they suddenly go out of range (Frustum or VisualFX distance),
+                    // we never "collect" them and thus never get to call ReleasShadowMap().
+                    // we could in theory keep a "last seen" list of lights and every frame look up which ones are gone, 
+                    // to then release theirs resources BEFORE anything else acquires new ones.
+                    pl->ReleaseShadowMap();
 
-                    float range = light->Vob->GetLightRange() * 1.5f;
-
-                    // If the engine said this light should be updated, then do so. If
-                    // the light said this
-                    if ( needsUpdate || d < range * range )
-                        importantUpdates.emplace_back( light );
+                    // Erase from the update queue if it happens to be pending
+                    auto it = std::find( graphicsEngine->FrameShadowUpdateLights.begin(), graphicsEngine->FrameShadowUpdateLights.end(), light );
+                    if ( it != graphicsEngine->FrameShadowUpdateLights.end() ) {
+                        graphicsEngine->FrameShadowUpdateLights.erase( it );
+                    }
                 }
             }
         }
     }
 
-    // Render the closest light
+    // Render the immediate priority lights
     for ( auto const& importantUpdate : importantUpdates ) {
-        static_cast<D3D11PointLight*>( importantUpdate->LightShadowBuffers )->RenderCubemap( importantUpdate->UpdateShadows );
+        static_cast<D3D11PointLight*>(importantUpdate->LightShadowBuffers)->RenderCubemap( true, m_PointLightCB.get() );
         importantUpdate->UpdateShadows = false;
     }
 
-    // Update only a fraction of lights, but at least some
-    int n = std::max(
-        (UINT)NUM_MIN_FRAME_SHADOW_UPDATES,
-        (UINT)(graphicsEngine->FrameShadowUpdateLights.size() / NUM_FRAME_SHADOW_UPDATES) );
-    while ( !graphicsEngine->FrameShadowUpdateLights.empty() ) {
+    // Process Background Queue (Round-Robin)
+    // Set a strict, safe limit to prevent FPS drops. 
+    // 2 per frame is 120 updates per second at 60fps.
+    int maxBackgroundUpdates = 2;
+    int updatesDone = 0;
+
+    while ( !graphicsEngine->FrameShadowUpdateLights.empty() && updatesDone < maxBackgroundUpdates ) {
         auto light = graphicsEngine->FrameShadowUpdateLights.front();
-        if ( !light ) {
-            graphicsEngine->FrameShadowUpdateLights.pop_front();
-            continue;
-        }
-        D3D11PointLight* l = static_cast<D3D11PointLight*>(light->LightShadowBuffers);
-        if ( !l ) {
-            graphicsEngine->FrameShadowUpdateLights.pop_front();
-            continue;
-        }
-        // Check if we have to force this light to update itself (NPCs moving around, for example)
-        bool force = light->UpdateShadows;
-        light->UpdateShadows = false;
-
-        l->RenderCubemap( force );
-        graphicsEngine->DebugPointlight = l;
-
         graphicsEngine->FrameShadowUpdateLights.pop_front();
 
-        // Only update n lights
-        n--;
-        if ( n <= 0 ) break;
+        if ( !light ) continue;
+
+        D3D11PointLight* l = static_cast<D3D11PointLight*>( light->LightShadowBuffers );
+        if ( !l ) continue;
+
+        light->UpdateShadows = false;
+
+        // FORCE the render! It waited in line for its turn, it must draw.
+        l->RenderCubemap( true, m_PointLightCB.get() );
+        graphicsEngine->DebugPointlight = l;
+
+        updatesDone++;
     }
+
     return XR_SUCCESS;
 }
 
@@ -867,9 +1015,11 @@ XRESULT D3D11ShadowMap::DrawPointlightLights(
 
         // Set right shader
         if ( settings.EnablePointlightShadows > 0 ) {
-            if ( light->LightShadowBuffers && static_cast<D3D11PointLight*>(light->LightShadowBuffers)->IsInited() ) {
+            D3D11PointLight* pl = light->LightShadowBuffers ? static_cast<D3D11PointLight*>(light->LightShadowBuffers) : nullptr;
+
+            // Only use the DynamicShadow shader if the light actually HAS a pooled shadow map assigned!
+            if ( pl && pl->IsInited() && pl->HasShadowMap() ) {
                 if ( graphicsEngine->GetActivePS() != psPointLightDynShadow ) {
-                    // Need to update shader for shadowed pointlight
                     graphicsEngine->SetActivePS( psPointLightDynShadow )->Apply();
                 }
             } else if ( graphicsEngine->GetActivePS() != psPointLight ) {

@@ -220,6 +220,12 @@ static const float2 g_PoissonDisk8[8] = {
 
 float2x2 GetPoissonRotationMatrix(float2 screenPos)
 {
+	// If TAA is disabled return an identity matrix to get standard PCF instead of noise.
+    if (SQ_FrameIndex == 0)
+    {
+        return float2x2(1.0f, 0.0f, 0.0f, 1.0f);
+    }
+
     float temporalOffset = (float)(SQ_FrameIndex % 8) * 0.6180339887f;
     
     float angle = frac(52.9829189f * frac(dot(screenPos, float2(0.06711056f, 0.00583715f)) + temporalOffset)) * 6.283185307f;

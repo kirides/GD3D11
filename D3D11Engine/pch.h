@@ -79,3 +79,35 @@ extern ZQuantizeHalfFloat_X4 QuantizeHalfFloat_X4;
 extern ZUnquantizeHalfFloat UnquantizeHalfFloat;
 extern ZUnquantizeHalfFloat_X4 UnquantizeHalfFloat_X4;
 extern ZUnquantizeHalfFloat_X4 UnquantizeHalfFloat_X8;
+
+
+/* Thin span-like data structure to allow re-using parts of a big std::vector for example */
+template<typename T>
+struct Span {
+private:
+    T* _data = nullptr;
+    size_t _size = 0;
+
+public:
+    T& operator[]( size_t i ) { return _data[i]; }
+    const T& operator[]( size_t i ) const { return _data[i]; }
+    T* begin() { return _data; }
+    T* end() { return _data + _size; }
+    const size_t size() const { return _size; }
+    const T* data() { return _data; }
+
+    Span() = delete;
+    Span( T* data, size_t size )
+        : _data( data ), _size( size )
+    { }
+};
+
+template<typename T>
+static Span<T> make_span( T* data, size_t size ) {
+    return Span( data, size );
+}
+
+template<typename T>
+static Span<T> make_span( std::vector<T>& vec ) {
+    return Span( vec.data(), vec.size() );
+}

@@ -656,7 +656,7 @@ struct GothicRendererSettings {
         textureMaxSize = 16384;
         ShadowMapSize = 2048;
         WorldShadowRangeScale = 1.0f;
-        NumShadowCascades = 4; // looks OK and performance friendly
+        NumShadowCascades = 3; // looks OK and performance friendly
         ShadowCascadePCFLimit = 1;
         ShadowFrustumCullingMode = E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_CONSERVATIVE;
 
@@ -664,7 +664,6 @@ struct GothicRendererSettings {
         ShadowAOStrength = 0.50f;
         WorldAOStrength = 0.50f;
         ShadowSoftness = 1.0f; // 1.0 = default softness, higher = softer shadows
-        ShadowDrawDistance = 20000.0f;
 
         BloomStrength = 1.0f;
         GlobalWindStrength = 1.0f;
@@ -743,7 +742,7 @@ struct GothicRendererSettings {
 
         ForceFOV = false;
 
-        ChangeWindowPreset = 0;
+        ChangeWindowPreset = 2; // WINDOW_MODE_FULLSCREEN_BORDERLESS;
         StretchWindow = true;
         SmoothShadowCameraUpdate = true;
         SmoothShadowFrequency = 500.0f;
@@ -768,7 +767,6 @@ struct GothicRendererSettings {
         DebugSettings.Culling.CullBspSections = true;
         DebugSettings.Culling.CullVobs = true;
         DebugSettings.ShadowCascades.LazyCascadeUpdate = false;
-        DebugSettings.ShadowCascades.ExtendBack = 600;
     }
 
     void SetupOldWorldSpecificValues() {
@@ -884,7 +882,6 @@ struct GothicRendererSettings {
     float ShadowAOStrength;
     float WorldAOStrength;
     float ShadowSoftness;
-    float ShadowDrawDistance;
 
     float GodRayDecay;
     float GodRayWeight;

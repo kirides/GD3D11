@@ -42,7 +42,7 @@ public:
         reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetDevice()->CreateDepthStencilState( &depthStencilDesc, State.ReleaseAndGetAddressOf() );
     }
 
-    virtual ~D3D11DepthBufferState() {}
+    ~D3D11DepthBufferState() override {}
 
     Microsoft::WRL::ComPtr<ID3D11DepthStencilState> State;
     GothicDepthBufferStateInfo Values;
@@ -75,7 +75,7 @@ public:
         reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetDevice()->CreateBlendState( &blendDesc, State.ReleaseAndGetAddressOf() );
     }
 
-    virtual ~D3D11BlendStateInfo() {}
+    ~D3D11BlendStateInfo() override {}
 
     Microsoft::WRL::ComPtr<ID3D11BlendState> State;
     GothicBlendStateInfo Values;
@@ -107,7 +107,7 @@ public:
         reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetDevice()->CreateRasterizerState( &rasterizerDesc, State.ReleaseAndGetAddressOf() );
     }
 
-    virtual ~D3D11RasterizerStateInfo() {}
+    ~D3D11RasterizerStateInfo() override {}
 
     Microsoft::WRL::ComPtr<ID3D11RasterizerState> State;
     GothicRasterizerStateInfo Values;

@@ -141,10 +141,10 @@ public:
     bool BindTextureNRFX( zCTexture* tex, bool bindShader );
 
     /** Draws a skeletal mesh */
-    XRESULT DrawSkeletalVertexNormals(SkeletalVobInfo* vi, const XMFLOAT4X4& world, const std::vector<XMFLOAT4X4>& transforms, float4 color, float fatness =
+    XRESULT DrawSkeletalVertexNormals(SkeletalVobInfo* vi, const XMFLOAT4X4& world, const Span<XMFLOAT4X4> transforms, float4 color, float fatness =
                                           1.0f);
-    XRESULT DrawSkeletalMesh( SkeletalVobInfo* vi, const std::vector<XMFLOAT4X4>& transforms, float4 color, const XMFLOAT4X4& world, float fatness = 1.0f ) override;
-    XRESULT DrawSkeletalMesh_Layered(SkeletalVobInfo* vi, const std::vector<XMFLOAT4X4>& transforms, float4 color, XMFLOAT4X4& world, float fatness = 1.0f);
+    XRESULT DrawSkeletalMesh( SkeletalVobInfo* vi, const Span<XMFLOAT4X4> transforms, float4 color, const XMFLOAT4X4& world, float fatness = 1.0f ) override;
+    XRESULT DrawSkeletalMesh_Layered(SkeletalVobInfo* vi, const Span<XMFLOAT4X4> transforms, float4 color, XMFLOAT4X4& world, float fatness = 1.0f);
 
     /** Draws a screen fade effects */
     XRESULT DrawScreenFade( void* camera ) override;
