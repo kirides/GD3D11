@@ -935,10 +935,24 @@ void ImGuiShim::RenderSettingsWindow()
 
             ImGui::EndGroup();
         }
-
-        if ( ImGui::Button( "Save Settings", ImVec2( ImGui::GetContentRegionAvail().x, 30.f ) ) ) {
+        
+        auto saved = ImGui::Button( "Save Settings", ImVec2( ImGui::GetContentRegionAvail().x, 30.f ) );
+        auto worldSettingsPath = Engine::GAPI->GetLoadedWorldSettingsPath(false);
+        const bool isInWorld = !worldSettingsPath.empty();
+        const bool hasWorldSettings = Toolbox::FileExists( worldSettingsPath );
+        if ( ( ImGui::GetIO().KeyCtrl || hasWorldSettings ) && isInWorld ) {
+            ImGui::SetItemTooltip("Save settings to \"%s\"", worldSettingsPath.c_str());
+        } else {
+            ImGui::SetItemTooltip("Save settings. CTRL+Click to save just for the current world.");
+        }
+        
+        if ( saved ) {
             Engine::GraphicsEngine->OnUIEvent( BaseGraphicsEngine::UI_ClosedSettings );
-            Engine::GAPI->SaveRendererWorldSettings( settings );
+            if ( (ImGui::GetIO().KeyCtrl || hasWorldSettings) && isInWorld ) {
+                Engine::GAPI->SaveRendererWorldSettings( settings );
+            } else {
+                Engine::GAPI->SaveRendererWorldSettings( settings, MENU_SETTINGS_FILE);
+            }
             Engine::GAPI->SaveMenuSettings( MENU_SETTINGS_FILE );
         }
     }
