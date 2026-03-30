@@ -23,7 +23,10 @@ public:
 
         // Comparator for finding matching textures in the pool
         bool operator==( const Description& other ) const {
-            return Width == other.Width && Height == other.Height && Format == other.Format;
+            return Width == other.Width 
+                && Height == other.Height 
+                && Format == other.Format
+                && textureFlags == other.textureFlags;
         }
     };
 

@@ -43,6 +43,7 @@ public:
         ID3D11ShaderResourceView* color,
         ID3D11ShaderResourceView* depth,
         ID3D11ShaderResourceView* motionVectors,
+        ID3D11ShaderResourceView* reactiveMask,
         ID3D11RenderTargetView* output, // We extract the ID3D11Resource from this
         const INT2& inputSize,
         const INT2& outputSize,

@@ -46,6 +46,11 @@ D3D11PFX_FSR3::~D3D11PFX_FSR3() {
     Destroy();
 }
 
+static void Ffx_log( FfxMsgType type,
+    const wchar_t* message ) {
+    LogError() << "FFX Error (" << type << "): " << message;
+}
+
 bool D3D11PFX_FSR3::Init( const INT2& maxInputSize, const INT2& maxOutputSize ) {
     if ( Initialized ) {
         return true;
@@ -81,9 +86,12 @@ bool D3D11PFX_FSR3::Init( const INT2& maxInputSize, const INT2& maxOutputSize ) 
     // 2. Setup the FSR3 Context Description
     FfxFsr3UpscalerContextDescription contextDesc = {};
     contextDesc.flags = FFX_FSR3UPSCALER_ENABLE_HIGH_DYNAMIC_RANGE
-        | FFX_FSR3UPSCALER_ENABLE_AUTO_EXPOSURE;
+        | FFX_FSR3UPSCALER_ENABLE_AUTO_EXPOSURE
+        //| FFX_FSR3UPSCALER_ENABLE_MOTION_VECTORS_JITTER_CANCELLATION 
+        | FFX_FSR3UPSCALER_ENABLE_DEPTH_INVERTED | FFX_FSR3UPSCALER_ENABLE_DEPTH_INFINITE;
 #ifdef DEBUG_D3D11
     contextDesc.flags |= FFX_FSR3UPSCALER_ENABLE_DEBUG_CHECKING;
+    contextDesc.fpMessage = &Ffx_log;
 #endif
 
     // If your depth buffer is inverted (1.0 = near, 0.0 = far), uncomment the following line:
@@ -96,10 +104,7 @@ bool D3D11PFX_FSR3::Init( const INT2& maxInputSize, const INT2& maxOutputSize ) 
     contextDesc.backendInterface = ffxInterface;
 
     // 3. Create the Context
-    if ( Context != nullptr ) {
-        delete Context;
-        Context = nullptr;
-    }
+    SAFE_DELETE( Context );
     Context = new FfxFsr3UpscalerContext;
     errorCode = ffxFsr3UpscalerContextCreate( Context, &contextDesc );
     if ( errorCode != FFX_OK ) {
@@ -118,6 +123,7 @@ bool D3D11PFX_FSR3::Init( const INT2& maxInputSize, const INT2& maxOutputSize ) 
 void D3D11PFX_FSR3::Destroy() {
     if ( Initialized ) {
         ffxFsr3UpscalerContextDestroy( Context );
+        SAFE_DELETE(Context);
 
         if ( ScratchMemory ) {
             free( ScratchMemory );
@@ -142,6 +148,7 @@ XRESULT D3D11PFX_FSR3::Apply(
     ID3D11ShaderResourceView* color,
     ID3D11ShaderResourceView* depth,
     ID3D11ShaderResourceView* motionVectors,
+    ID3D11ShaderResourceView* reactiveMask,
     ID3D11RenderTargetView* output,
     const INT2& inputSize,
     const INT2& outputSize,
@@ -155,8 +162,9 @@ XRESULT D3D11PFX_FSR3::Apply(
     bool enableSharpening,
     float sharpness ) {
 
-    if ( !Initialized ) {
-        if (!Init(outputSize, outputSize)) {
+    if ( !Initialized || (MaxInputSize != inputSize || MaxOutputSize != outputSize) ) {
+        Destroy();
+        if (!Init( inputSize, outputSize )) {
             LogError() << "FSR3: Failed to initialize";
             return XR_FAILED;
         }
@@ -170,8 +178,13 @@ XRESULT D3D11PFX_FSR3::Apply(
     engine->UpdateRenderStates();
 
     // Unbind any output RTVs currently bound to avoid SRV/UAV collision hazards
-    ID3D11RenderTargetView* nullRTVs[1] = { nullptr };
-    context->OMSetRenderTargets( 1, nullRTVs, nullptr );
+    ID3D11RenderTargetView* nullRTVs[8] = { nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr };
+    context->OMSetRenderTargets( std::size( nullRTVs ), nullRTVs, nullptr);
+
+    ID3D11ShaderResourceView* nullSRVs[8] = { nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr };
+    context->VSSetShaderResources( 0, std::size( nullSRVs ), nullSRVs );
+    context->PSSetShaderResources( 0, std::size( nullSRVs ), nullSRVs );
+    context->CSSetShaderResources( 0, std::size( nullSRVs ), nullSRVs );
 
     FfxFsr3UpscalerDispatchDescription dispatchDesc = {};
     dispatchDesc.commandList = ffxGetCommandListDX11( context );
@@ -180,6 +193,7 @@ XRESULT D3D11PFX_FSR3::Apply(
     ID3D11Resource* colorRes = GetResourceFromView( color );
     ID3D11Resource* depthRes = GetResourceFromView( depth );
     ID3D11Resource* mvRes = GetResourceFromView( motionVectors );
+    ID3D11Resource* tncRes = GetResourceFromView( reactiveMask );
     ID3D11Resource* outRes = GetResourceFromView( output );
 
     // Register Resources with FFX SDK
@@ -191,10 +205,38 @@ XRESULT D3D11PFX_FSR3::Apply(
     dispatchDesc.motionVectors = ffxGetResourceDX11_Fsr31_( mvRes, GetFfxResourceDescriptionDX11( mvRes ), L"FSR3_InputMotionVectors" );
     dispatchDesc.output = ffxGetResourceDX11_Fsr31_( outRes, GetFfxResourceDescriptionDX11( outRes ), L"FSR3_OutputColor" );
 
+    auto dilatedMV = Renderer->GetTexturePool()->Acquire( { 
+        (int)sharedResources.dilatedMotionVectors.resourceDescription.width, 
+        (int)sharedResources.dilatedMotionVectors.resourceDescription.height,
+        DXGI_FORMAT_R16G16_FLOAT,
+        D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE
+    } );
+    auto dilatedDepth = Renderer->GetTexturePool()->Acquire( {
+        (int)sharedResources.dilatedDepth.resourceDescription.width,
+        (int)sharedResources.dilatedDepth.resourceDescription.height,
+        DXGI_FORMAT_R32_FLOAT,
+        D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE
+        } );
+
+    auto reconstructedPrevNearestDepth = Renderer->GetTexturePool()->Acquire( {
+        (int)sharedResources.reconstructedPrevNearestDepth.resourceDescription.width,
+        (int)sharedResources.reconstructedPrevNearestDepth.resourceDescription.height,
+        DXGI_FORMAT_R32_UINT,
+        D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE
+        } );
+
+    ID3D11Resource* dilatedMvRes = dilatedMV->GetTexture().Get();
+    ID3D11Resource* dilatedDepthRes = dilatedDepth->GetTexture().Get();
+    ID3D11Resource* reconstructedPrevNearestDepthRes = reconstructedPrevNearestDepth->GetTexture().Get();
+
+    dispatchDesc.dilatedMotionVectors = ffxGetResourceDX11_Fsr31_( dilatedMvRes, GetFfxResourceDescriptionDX11( dilatedMvRes ), L"FSR3_DilatedMV" );
+    dispatchDesc.dilatedDepth = ffxGetResourceDX11_Fsr31_( dilatedDepthRes, GetFfxResourceDescriptionDX11( dilatedDepthRes ), L"FSR3_DilatedDepth" );
+    dispatchDesc.reconstructedPrevNearestDepth = ffxGetResourceDX11_Fsr31_( reconstructedPrevNearestDepthRes, GetFfxResourceDescriptionDX11( reconstructedPrevNearestDepthRes ), L"FSR3_ReconstructedPrevNearestDepth");
+
     // Optional Resources (Passing nullptr handles them internally, e.g., Auto Exposure)
     // dispatchDesc.exposure = ffxGetResourceDX11_Fsr31_( nullptr, GetFfxResourceDescriptionDX11(nullptr), L"" );
-    // dispatchDesc.reactive = ffxGetResourceDX11_Fsr31_( nullptr, GetFfxResourceDescriptionDX11(nullptr), L"" );
-    // dispatchDesc.transparencyAndComposition = ffxGetResourceDX11_Fsr31_( nullptr, GetFfxResourceDescriptionDX11(nullptr), L"" );
+    // dispatchDesc.reactive = ffxGetResourceDX11_Fsr31_( tncRes, GetFfxResourceDescriptionDX11( tncRes ), L"" );
+    dispatchDesc.transparencyAndComposition = ffxGetResourceDX11_Fsr31_( tncRes, GetFfxResourceDescriptionDX11( tncRes ), L"FSR3_TNC" );
 
     // Set Dispatch Properties
     dispatchDesc.renderSize.width = inputSize.x;
@@ -208,12 +250,13 @@ XRESULT D3D11PFX_FSR3::Apply(
     dispatchDesc.reset = resetAccumulation;
     dispatchDesc.enableSharpening = enableSharpening;
     dispatchDesc.sharpness = std::max( 0.0f, std::min( 1.0f, sharpness ) ); // 0 to 1 range
-    dispatchDesc.frameTimeDelta = deltaTimeMs;
+    dispatchDesc.frameTimeDelta = deltaTimeMs >= 1.0f ? deltaTimeMs : 1.0f;
     dispatchDesc.preExposure = 1.0f; // Adjust if your engine uses pre-exposure
+    dispatchDesc.viewSpaceToMetersFactor = 100.0f;
 
     // Camera metrics
     dispatchDesc.cameraFovAngleVertical = XMConvertToRadians(cameraFovAngleVertical);
-    dispatchDesc.cameraNear = cameraNear;
+    dispatchDesc.cameraNear = FLT_MAX; // cameraNear;
     dispatchDesc.cameraFar = cameraFar;
 
     // Execute FSR3
