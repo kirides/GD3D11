@@ -1307,7 +1307,7 @@ XRESULT D3D11ShadowMap::DrawWorldLights()
     scb.SQ_View = Engine::GAPI->GetRendererState().TransformState.TransformView;
 
     static uint32_t frameCounter = 0;
-    if ( proj._13 != 0 && proj._23 != 0) {
+    if ( proj._13 != 0 || proj._23 != 0) {
         // only when we have jitter in the frame
         scb.SQ_FrameIndex = frameCounter++;
     }
