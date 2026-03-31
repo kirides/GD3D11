@@ -134,14 +134,27 @@ void D3D11PFX_FSR3::Destroy() {
     }
 }
 
-ID3D11Resource* D3D11PFX_FSR3::GetResourceFromView( ID3D11View* view ) {
-    if ( !view ) return nullptr;
-    ID3D11Resource* resource = nullptr;
-    view->GetResource( &resource );
-    if ( resource ) {
-        resource->Release(); // GetResource increments ref count, we just want the raw pointer for the FFX SDK wrapper
+namespace {
+
+    ID3D11Resource* GetResourceFromView( ID3D11View* view ) {
+        if ( !view ) return nullptr;
+        ID3D11Resource* resource = nullptr;
+        view->GetResource( &resource );
+        if ( resource ) {
+            resource->Release(); // GetResource increments ref count, we just want the raw pointer for the FFX SDK wrapper
+        }
+        return resource;
     }
-    return resource;
+
+    FfxResource GetAsFfxResource( ID3D11Resource* res, const wchar_t* name ) {
+        return ffxGetResourceDX11_Fsr31_( res, GetFfxResourceDescriptionDX11( res ), name );
+    }
+
+    FfxResource GetAsFfxResource( ID3D11View* d3d11View, const wchar_t* name ) {
+        ID3D11Resource* res = GetResourceFromView( d3d11View );
+        return GetAsFfxResource( res, name );
+    }
+
 }
 
 XRESULT D3D11PFX_FSR3::Apply(
@@ -189,21 +202,15 @@ XRESULT D3D11PFX_FSR3::Apply(
     FfxFsr3UpscalerDispatchDescription dispatchDesc = {};
     dispatchDesc.commandList = ffxGetCommandListDX11( context );
 
-    // Extract underlying resources
-    ID3D11Resource* colorRes = GetResourceFromView( color );
-    ID3D11Resource* depthRes = GetResourceFromView( depth );
-    ID3D11Resource* mvRes = GetResourceFromView( motionVectors );
-    ID3D11Resource* tncRes = GetResourceFromView( reactiveMask );
-    ID3D11Resource* outRes = GetResourceFromView( output );
-
     // Register Resources with FFX SDK
+
+    dispatchDesc.color = GetAsFfxResource( color, L"FSR3_InputColor" );
+    dispatchDesc.depth = GetAsFfxResource( depth, L"FSR3_InputDepth" );
+    dispatchDesc.motionVectors = GetAsFfxResource( motionVectors, L"FSR3_InputMotionVectors" );
+    dispatchDesc.output = GetAsFfxResource( output, L"FSR3_OutputColor" );
 
     FfxFsr3UpscalerSharedResourceDescriptions sharedResources;
     ffxFsr3UpscalerGetSharedResourceDescriptions( Context, &sharedResources );
-    dispatchDesc.color = ffxGetResourceDX11_Fsr31_( colorRes, GetFfxResourceDescriptionDX11( colorRes ), L"FSR3_InputColor" );
-    dispatchDesc.depth = ffxGetResourceDX11_Fsr31_( depthRes, GetFfxResourceDescriptionDX11( depthRes ), L"FSR3_InputDepth" );
-    dispatchDesc.motionVectors = ffxGetResourceDX11_Fsr31_( mvRes, GetFfxResourceDescriptionDX11( mvRes ), L"FSR3_InputMotionVectors" );
-    dispatchDesc.output = ffxGetResourceDX11_Fsr31_( outRes, GetFfxResourceDescriptionDX11( outRes ), L"FSR3_OutputColor" );
 
     auto dilatedMV = Renderer->GetTexturePool()->Acquire( { 
         (int)sharedResources.dilatedMotionVectors.resourceDescription.width, 
@@ -225,18 +232,14 @@ XRESULT D3D11PFX_FSR3::Apply(
         D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE
         } );
 
-    ID3D11Resource* dilatedMvRes = dilatedMV->GetTexture().Get();
-    ID3D11Resource* dilatedDepthRes = dilatedDepth->GetTexture().Get();
-    ID3D11Resource* reconstructedPrevNearestDepthRes = reconstructedPrevNearestDepth->GetTexture().Get();
-
-    dispatchDesc.dilatedMotionVectors = ffxGetResourceDX11_Fsr31_( dilatedMvRes, GetFfxResourceDescriptionDX11( dilatedMvRes ), L"FSR3_DilatedMV" );
-    dispatchDesc.dilatedDepth = ffxGetResourceDX11_Fsr31_( dilatedDepthRes, GetFfxResourceDescriptionDX11( dilatedDepthRes ), L"FSR3_DilatedDepth" );
-    dispatchDesc.reconstructedPrevNearestDepth = ffxGetResourceDX11_Fsr31_( reconstructedPrevNearestDepthRes, GetFfxResourceDescriptionDX11( reconstructedPrevNearestDepthRes ), L"FSR3_ReconstructedPrevNearestDepth");
+    dispatchDesc.dilatedMotionVectors = GetAsFfxResource( dilatedMV->GetTexture().Get(), sharedResources.dilatedMotionVectors.name );
+    dispatchDesc.dilatedDepth = GetAsFfxResource( dilatedDepth->GetTexture().Get(), sharedResources.dilatedDepth.name );
+    dispatchDesc.reconstructedPrevNearestDepth = GetAsFfxResource( reconstructedPrevNearestDepth->GetTexture().Get(), sharedResources.reconstructedPrevNearestDepth.name);
 
     // Optional Resources (Passing nullptr handles them internally, e.g., Auto Exposure)
     // dispatchDesc.exposure = ffxGetResourceDX11_Fsr31_( nullptr, GetFfxResourceDescriptionDX11(nullptr), L"" );
     // dispatchDesc.reactive = ffxGetResourceDX11_Fsr31_( tncRes, GetFfxResourceDescriptionDX11( tncRes ), L"" );
-    dispatchDesc.transparencyAndComposition = ffxGetResourceDX11_Fsr31_( tncRes, GetFfxResourceDescriptionDX11( tncRes ), L"FSR3_TNC" );
+    dispatchDesc.transparencyAndComposition = GetAsFfxResource( reactiveMask, L"FSR3_TNC" );
 
     // Set Dispatch Properties
     dispatchDesc.renderSize.width = inputSize.x;
@@ -252,7 +255,7 @@ XRESULT D3D11PFX_FSR3::Apply(
     dispatchDesc.sharpness = std::max( 0.0f, std::min( 1.0f, sharpness ) ); // 0 to 1 range
     dispatchDesc.frameTimeDelta = deltaTimeMs >= 1.0f ? deltaTimeMs : 1.0f;
     dispatchDesc.preExposure = 1.0f; // Adjust if your engine uses pre-exposure
-    dispatchDesc.viewSpaceToMetersFactor = 100.0f;
+    dispatchDesc.viewSpaceToMetersFactor = 0.01f; // 100 units in view space = 1 meter.
 
     // Camera metrics
     dispatchDesc.cameraFovAngleVertical = XMConvertToRadians(cameraFovAngleVertical);

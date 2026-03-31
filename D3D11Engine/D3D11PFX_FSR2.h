@@ -60,9 +60,6 @@ public:
     void ReleaseResources() { Destroy(); }
 
 private:
-    /** Helper to extract an ID3D11Resource from a View (SRV, RTV, etc) */
-    ID3D11Resource* GetResourceFromView( ID3D11View* view );
-
     D3D11PfxRenderer* Renderer;
 
     FfxInterface m_ffxInterface;

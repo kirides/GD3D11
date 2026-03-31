@@ -45,6 +45,7 @@
 
 #include "D3D11PFX_FSR1.h"
 #include "D3D11PFX_FSR2.h"
+#include "D3D11PFX_FSR3.h"
 #include "D3D11PFX_TAA.h"
 #include "ImGuiShim.h"
 #include "zCModel.h"
@@ -3109,8 +3110,10 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                         1.0f - sharpenFactor );
                 };
             } );
-        } else if ( (rendererState.RendererSettings.ResolutionScalePercent < 100 && rendererState.RendererSettings.Upscaler == GothicRendererSettings::E_Upscaler::UPSCALER_FSR_2)
-            || (rendererState.RendererSettings.ResolutionScalePercent == 100 && rendererState.RendererSettings.AntiAliasingMode == GothicRendererSettings::AA_FSR)) {
+        } else if ( rendererState.RendererSettings.Upscaler == GothicRendererSettings::E_Upscaler::UPSCALER_FSR_2
+            && (rendererState.RendererSettings.ResolutionScalePercent <= 100)
+            && rendererState.RendererSettings.AntiAliasingMode == GothicRendererSettings::AA_FSR
+            ) {
 
             graph.AddPass( L"FSR 2", [&]( RGBuilder& builder, RenderPass& pass ) {
                 builder.Read( velocityBufferHandle );
@@ -3162,6 +3165,62 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                         FarZ,
                         sharpenFactor >= 0.001f,
                         sharpenFactor /* FSR2 has 0..1 (sharp)*/);
+                    };
+            } );
+        } else if ( rendererState.RendererSettings.Upscaler == GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3
+            && (rendererState.RendererSettings.ResolutionScalePercent <= 100)
+            && rendererState.RendererSettings.AntiAliasingMode == GothicRendererSettings::AA_FSR ) {
+
+            graph.AddPass( L"FSR 3", [&]( RGBuilder& builder, RenderPass& pass ) {
+                builder.Read( velocityBufferHandle );
+                builder.Read( reactiveMaskResource );
+                builder.Read( backBufferHandle );
+                builder.Write( backBufferHandle );
+
+                builder.Write( backBufferHandle );
+
+                pass.m_executeCallback = [this, &rendererState, backBufferHandle, velocityBufferHandle, reactiveMaskResource]( const RenderGraph& graph ) {
+                    auto backbufferTex = graph.GetPhysicalTexture( backBufferHandle );
+
+                    auto sharpenFactor = rendererState.RendererSettings.SharpenFactor;
+
+                    auto velocityBufferTex = graph.GetPhysicalTexture( velocityBufferHandle );
+                    auto reactiveMask = graph.GetPhysicalTexture( reactiveMaskResource );
+
+                    auto jitter = PfxRenderer->GetTAAEffect()->GetJitterOffsetUnscaled();
+                    const auto inputSize = GetResolution();
+
+                    float fovY, fovX;
+                    auto cam = ((zCCamera*)oCGame::GetGame()->_zCSession_camera);
+                    cam->GetFOV( fovY, fovX );
+
+                    // Our Depth Buffer uses reversed Z, so we need to tell FSR2 about it to get correct results
+                    // calculations from GothicAPI::GetProjectionMatrix()
+                    float NearZ = rendererState.RendererSettings.SectionDrawRadius * WORLD_SECTION_SIZE;
+                    float FarZ = 1.0f;
+                    GetContext()->CSSetSamplers( 0, 1, LinearSamplerState.GetAddressOf() );
+                    GetContext()->CSSetSamplers( 1, 1, LinearSamplerState.GetAddressOf() );
+
+                    ID3D11Buffer* nullCBs[5]{};
+                    GetContext()->CSSetConstantBuffers( 0, std::size( nullCBs ), nullCBs );
+
+                    PfxRenderer->GetFSR3()->Apply(
+                        backbufferTex->GetShaderResView().Get(),
+                        DepthStencilBufferCopy->GetShaderResView().Get(),
+                        velocityBufferTex->GetShaderResView().Get(),
+                        reactiveMask->GetShaderResView().Get(),
+                        Backbuffer->GetRenderTargetView().Get(),
+                        inputSize,
+                        GetBackbufferResolution(),
+                        Engine::GAPI->GetDeltaTime() * 1000.f,
+                        jitter,
+                        float2( static_cast<float>(inputSize.x), static_cast<float>(inputSize.y) ),
+                        false,
+                        fovY,
+                        NearZ,
+                        FarZ,
+                        sharpenFactor >= 0.001f,
+                        sharpenFactor /* FSR3 has 0..1 (sharp)*/ );
                     };
             } );
         } else if (rendererState.RendererSettings.SharpeningMode
@@ -4848,7 +4907,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
     // Set shader
     SetActivePixelShader( "PS_AtmosphereGround" );
     auto nrmPS = ActivePS;
-    SetActivePixelShader( "PS_DiffuseAlphaTest" );
+    SetActivePixelShader( "PS_DiffuseAlphaTestShadows" );
     auto defaultPS = ActivePS;
     SetActiveVertexShader( "VS_Ex" );
 

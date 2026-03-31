@@ -472,6 +472,21 @@ XRESULT D3D11ShaderManager::Init() {
     Shaders.back().cBufferSizes.push_back( sizeof( AtmosphereConstantBuffer ) );
     Shaders.back().cBufferSizes.push_back( sizeof( MaterialInfo::Buffer ) );
     Shaders.back().cBufferSizes.push_back( sizeof( PerObjectState ) );
+    
+    makros.clear();
+    m.Name = "NORMALMAPPING";
+    m.Definition = "0";
+    makros.push_back( m );
+    
+    m.Name = "ALPHATEST_SHADOWS";
+    m.Definition = "1";
+    makros.push_back( m );
+
+    Shaders.push_back( ShaderInfo( "PS_DiffuseAlphaTestShadows", "PS_Diffuse.hlsl", "p", makros ) );
+    Shaders.back().cBufferSizes.push_back( sizeof( GothicGraphicsState ) );
+    Shaders.back().cBufferSizes.push_back( sizeof( AtmosphereConstantBuffer ) );
+    Shaders.back().cBufferSizes.push_back( sizeof( MaterialInfo::Buffer ) );
+    Shaders.back().cBufferSizes.push_back( sizeof( PerObjectState ) );
 
     makros.clear();
     m.Name = "NORMALMAPPING";

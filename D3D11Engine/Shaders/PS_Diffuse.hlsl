@@ -72,7 +72,21 @@ float2 CalculateVelocity(float4 currClipPos, float4 prevClipPos)
 //--------------------------------------------------------------------------------------
 // Pixel Shader
 //--------------------------------------------------------------------------------------
+#if ALPHATEST_SHADOWS == 1
+void PSMain( PS_INPUT Input )
+{
+	float4 color = TX_Texture0.Sample(SS_Linear, Input.vTexcoord);
+
+	ClipDistanceEffect(length(Input.vViewPosition), DIST_DrawDistance, color.r * 2 - 1, 500.0f);
+	DoAlphaTest(color.a);
+}
+
+
+// Disable regular shader
+DEFERRED_PS_OUTPUT PSMainDISABLED( PS_INPUT Input ) : SV_TARGET
+#else
 DEFERRED_PS_OUTPUT PSMain( PS_INPUT Input ) : SV_TARGET
+#endif
 {
 	DEFERRED_PS_OUTPUT output;
 	output.vReactiveMask = 0.0f;
