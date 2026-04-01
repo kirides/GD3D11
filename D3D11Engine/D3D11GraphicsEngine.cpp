@@ -2541,10 +2541,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(), nullptr );
 
     bool requireJitter = 
-        // upscaling using FSR 2 (temporal)
-        (rendererState.RendererSettings.ResolutionScalePercent < 100 && rendererState.RendererSettings.Upscaler == GothicRendererSettings::E_Upscaler::UPSCALER_FSR_2)
-        // FSR2 based AA
-        || (rendererState.RendererSettings.ResolutionScalePercent == 100 && rendererState.RendererSettings.AntiAliasingMode == GothicRendererSettings::AA_FSR)
+        rendererState.RendererSettings.AntiAliasingMode == GothicRendererSettings::AA_FSR
         || rendererState.RendererSettings.AntiAliasingMode == GothicRendererSettings::AA_TAA
         ;
 

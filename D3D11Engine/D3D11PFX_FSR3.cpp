@@ -87,8 +87,8 @@ bool D3D11PFX_FSR3::Init( const INT2& maxInputSize, const INT2& maxOutputSize ) 
     FfxFsr3UpscalerContextDescription contextDesc = {};
     contextDesc.flags = FFX_FSR3UPSCALER_ENABLE_HIGH_DYNAMIC_RANGE
         | FFX_FSR3UPSCALER_ENABLE_AUTO_EXPOSURE
-        //| FFX_FSR3UPSCALER_ENABLE_MOTION_VECTORS_JITTER_CANCELLATION 
-        | FFX_FSR3UPSCALER_ENABLE_DEPTH_INVERTED | FFX_FSR3UPSCALER_ENABLE_DEPTH_INFINITE;
+        | FFX_FSR3UPSCALER_ENABLE_DEPTH_INVERTED 
+        | FFX_FSR3UPSCALER_ENABLE_DYNAMIC_RESOLUTION;
 #ifdef DEBUG_D3D11
     contextDesc.flags |= FFX_FSR3UPSCALER_ENABLE_DEBUG_CHECKING;
     contextDesc.fpMessage = &Ffx_log;
@@ -259,7 +259,7 @@ XRESULT D3D11PFX_FSR3::Apply(
 
     // Camera metrics
     dispatchDesc.cameraFovAngleVertical = XMConvertToRadians(cameraFovAngleVertical);
-    dispatchDesc.cameraNear = FLT_MAX; // cameraNear;
+    dispatchDesc.cameraNear = cameraNear;
     dispatchDesc.cameraFar = cameraFar;
 
     // Execute FSR3
