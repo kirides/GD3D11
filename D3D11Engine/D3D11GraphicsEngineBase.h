@@ -127,6 +127,7 @@ public:
     void ResetPresentPending() { PresentPending = false; }
 
     auto GetOutputWindow() -> auto { return OutputWindow; }
+    ID3D11SamplerState* GetDefaultSamplerState() const { return DefaultSamplerState.Get(); }
 
     std::unique_ptr<GraphicsEventRecord> RecordGraphicsEvent( LPCWSTR region ) override {
         return std::make_unique<D3DGraphicsEventRecord>( m_UserDefinedAnnotation.Get(), region );

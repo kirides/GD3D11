@@ -842,6 +842,8 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="D3D11RenderQueue.h" />
     <ClInclude Include="D3D11ShaderManager.h" />
     <ClInclude Include="D3D11ShadowMap.h" />
+    <ClInclude Include="D3D11TiledDeferredShading.h" />
+    <ClInclude Include="D3D11LegacyDeferredShading.h" />
     <ClInclude Include="D3D11Texture.h" />
     <ClInclude Include="D3D11VertexBuffer.h" />
     <ClInclude Include="D3D11VShader.h" />
@@ -1092,6 +1094,8 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="D3D11RenderQueue.cpp" />
     <ClCompile Include="D3D11ShaderManager.cpp" />
     <ClCompile Include="D3D11ShadowMap.cpp" />
+    <ClCompile Include="D3D11TiledDeferredShading.cpp" />
+    <ClCompile Include="D3D11LegacyDeferredShading.cpp" />
     <ClCompile Include="D3D11Texture.cpp" />
     <ClCompile Include="D3D11VertexBuffer.cpp" />
     <ClCompile Include="D3D11VShader.cpp" />

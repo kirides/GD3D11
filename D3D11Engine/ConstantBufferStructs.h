@@ -353,4 +353,22 @@ struct VelocityDebugConstantBuffer {
     float AbsoluteMode;     // 0 = signed (-1 to 1), 1 = absolute values
     float Padding;
 };
+
+struct LightCullingConstantBuffer {
+    XMFLOAT4X4 Proj;
+    uint32_t ScreenWidth;
+    uint32_t ScreenHeight;
+    uint32_t TotalLights;
+    uint32_t Pad;
+};
+
+struct TiledShadingConstantBuffer {
+    float2 ViewportSize;
+    float2 Pad0;
+    float4 ProjParams; // x = 1/P._11, y = 1/P._22, z = P._43, w = P._33
+    uint32_t LimitLightIntensity;
+    uint32_t NumTilesX;
+    float2 Pad1;
+    XMFLOAT4X4 InvView; // For world-space reconstruction (shadow sampling)
+};
 #pragma pack (pop)

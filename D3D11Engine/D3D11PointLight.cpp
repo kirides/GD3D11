@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "D3D11PointLight.h"
+#include "D3D11TiledDeferredShading.h"
 #include "RenderToTextureBuffer.h"
 #include "D3D11GraphicsEngineBase.h"
 #include "D3D11GraphicsEngine.h" // TODO: Remove and use newer system!
@@ -36,6 +37,7 @@ D3D11PointLight::~D3D11PointLight() {
     // Make sure we are out of the init-queue
     while ( !InitDone );
 
+    ClearTiledSlot();
     ReleaseShadowMap();
 
     for ( auto& [k, mesh] : WorldMeshCache ) {
@@ -70,6 +72,21 @@ void D3D11PointLight::ReleaseShadowMap() {
     // This calls the custom deleter, returning the texture to the pool
     m_DepthCubemap.reset();
     m_CurrentResolution = 0;
+}
+
+void D3D11PointLight::SetTiledSlot( int slot, RenderToDepthStencilBuffer* target, D3D11TiledDeferredShading* owner ) {
+    m_TiledSlotIndex = slot;
+    m_TiledDepthTarget = target;
+    m_TiledOwner = owner;
+}
+
+void D3D11PointLight::ClearTiledSlot() {
+    if ( m_TiledSlotIndex >= 0 && m_TiledOwner ) {
+        m_TiledOwner->FreeSlot( m_TiledSlotIndex );
+    }
+    m_TiledSlotIndex = -1;
+    m_TiledDepthTarget = nullptr;
+    m_TiledOwner = nullptr;
 }
 
 /** Returns true if this is the first time that light is being rendered */
@@ -120,7 +137,7 @@ bool D3D11PointLight::WantsUpdate() {
 
 /** Draws the surrounding scene into the cubemap */
 void D3D11PointLight::RenderCubemap( bool forceUpdate, D3D11ConstantBuffer* ViewMatricesCB ) {
-    if ( !InitDone || !ViewMatricesCB || !m_DepthCubemap )
+    if ( !InitDone || !ViewMatricesCB || (!m_DepthCubemap && !m_TiledDepthTarget) )
         return;
 
     //if (!GetAsyncKeyState('X'))
@@ -233,7 +250,8 @@ void D3D11PointLight::RenderFullCubemap() {
     if ( WorldCacheInvalid )
         wc = nullptr;
     auto _ = engine->RecordGraphicsEvent( L"RenderFullCubemap->RenderShadowCube" );
-    engine->RenderShadowCube( LightInfo->Vob->GetPositionWorldXM(), range, *m_DepthCubemap, nullptr, nullptr, false, LightInfo->IsIndoorVob, noNPCs, &VobCache, &SkeletalVobCache, wc );
+    RenderToDepthStencilBuffer& target = m_TiledDepthTarget ? *m_TiledDepthTarget : *m_DepthCubemap;
+    engine->RenderShadowCube( LightInfo->Vob->GetPositionWorldXM(), range, target, nullptr, nullptr, false, LightInfo->IsIndoorVob, noNPCs, &VobCache, &SkeletalVobCache, wc );
 
     //Engine::GAPI->GetRendererState().RendererSettings.DrawSkeletalMeshes = oldDrawSkel;
 }
