@@ -961,10 +961,6 @@ XRESULT D3D11GraphicsEngine::RecreateBuffers() {
         GetDevice().Get(), roundedTextureResolution.x, roundedTextureResolution.y, DXGI_FORMAT_R32_TYPELESS, nullptr,
         DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32_FLOAT );
 
-    m_NativeSizeDepthStencil = std::make_unique<RenderToDepthStencilBuffer>(
-        GetDevice().Get(), roundedTextureResolution.x, roundedTextureResolution.y, DXGI_FORMAT_R32_TYPELESS, nullptr,
-        DXGI_FORMAT_D32_FLOAT, DXGI_FORMAT_R32_FLOAT );
-
     // Create PFX-Renderer
     if ( !PfxRenderer ) PfxRenderer = std::make_unique<D3D11PfxRenderer>();
 
@@ -1389,7 +1385,6 @@ XRESULT D3D11GraphicsEngine::OnEndFrame() {
 XRESULT D3D11GraphicsEngine::Clear( const float4& color ) {
     const Microsoft::WRL::ComPtr<ID3D11DeviceContext1>& context = GetContext();
     context->ClearDepthStencilView( DepthStencilBuffer->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
-    context->ClearDepthStencilView( m_NativeSizeDepthStencil->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
 
     context->ClearRenderTargetView( HDRBackBuffer->GetRenderTargetView().Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )) );
     context->ClearRenderTargetView( Backbuffer->GetRenderTargetView().Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )) );
@@ -2615,7 +2610,6 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         pass.m_executeCallback = [this, &rendererState, colorResource](const RenderGraph& graph)->void {
             const Microsoft::WRL::ComPtr<ID3D11DeviceContext1>& context = GetContext();
             context->ClearDepthStencilView( DepthStencilBuffer->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
-            context->ClearDepthStencilView( m_NativeSizeDepthStencil->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
 
             context->ClearRenderTargetView( HDRBackBuffer->GetRenderTargetView().Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )) );
             context->ClearRenderTargetView( Backbuffer->GetRenderTargetView().Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )) );
@@ -3054,26 +3048,18 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         } );
     }
 
-    // If we currently are underwater, then draw underwater effects
-    if ( Engine::GAPI->IsUnderWater() ) {
-        graph.AddPass( L"Prepare finalize frame", [&]( RGBuilder& builder, RenderPass& pass ) {
-            builder.Write( backBufferHandle );
+    graph.AddPass( L"Prepare finalize frame", [&]( RGBuilder& builder, RenderPass& pass ) {
+        builder.Write( backBufferHandle );
 
-            pass.m_executeCallback = [this](const RenderGraph&) {
-                // Clear here to get a working depthbuffer but no interferences with world
-                // geometry for gothic UI-Rendering
-                GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(), nullptr );
+        pass.m_executeCallback = [this](const RenderGraph&) {
+            // Clear here to get a working depthbuffer but no interferences with world
+            // geometry for gothic UI-Rendering
+            GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(), nullptr );
 
-                // Store the current depth state to the copy buffer before clear
-                CopyDepthStencil();
-
-                GetContext()->ClearDepthStencilView( DepthStencilBuffer->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
-                GetContext()->ClearDepthStencilView( m_NativeSizeDepthStencil->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
-                
-                SetDefaultStates();
-            };
-        } );
-    }    
+            // Store the current depth state to the copy buffer before clear
+            CopyDepthStencil();
+        };
+    } );
 
     // Before returning to gothics UI, set render target to backbuffer
     {
@@ -3267,6 +3253,9 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         graph.Compile();
         graph.Execute();
         
+        GetContext()->ClearDepthStencilView( DepthStencilBuffer->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
+        SetDefaultStates();
+
         // Below this, we assume UI/HUD rendering
         rendererState.RendererInfo.RenderStage = STAGE_DRAW_HUD;
 
@@ -6072,7 +6061,7 @@ D3D11ENGINE_RENDER_STAGE D3D11GraphicsEngine::GetRenderingStage() {
 void D3D11GraphicsEngine::DrawVobSingle( VobInfo* vob, zCCamera& camera ) {
     Engine::GAPI->SetViewTransformXM( XMLoadFloat4x4( &camera.GetTransformDX( zCCamera::ETransformType::TT_VIEW ) ) );
     // TODO: Does this even need a depth stencil? we clear the previous one anyways
-    GetContext()->OMSetRenderTargets( 1, Backbuffer->GetRenderTargetView().GetAddressOf(), m_NativeSizeDepthStencil->GetDepthStencilView().Get() );
+    GetContext()->OMSetRenderTargets( 1, Backbuffer->GetRenderTargetView().GetAddressOf(), nullptr );
 
     // Set backface culling
     Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_BACK;
