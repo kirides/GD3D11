@@ -7,6 +7,7 @@
 #include "MyDirectDrawSurface7.h"
 #include "../GothicAPI.h"
 #include "../HookExceptionFilter.h"
+#include "../ShaderIDs.h"
 
 #define GOTHIC_FVF_XYZ_DIF_T1 (D3DFVF_XYZ | D3DFVF_DIFFUSE | D3DFVF_TEX1)
 #define GOTHIC_FVF_XYZ_DIF_T1_SIZE ((3 + 1 + 2) * 4)
@@ -509,8 +510,8 @@ public:
 			// Gothic wants that for the sky
 			Engine::GAPI->GetRendererState().RasterizerState.FrontCounterClockwise = true;
 			Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
-			Engine::GraphicsEngine->SetActiveVertexShader( "VS_TransformedEx" );
-			Engine::GraphicsEngine->BindViewportInformation( "VS_TransformedEx", 0 );
+			Engine::GraphicsEngine->SetActiveVertexShader( VShaderID::VS_TransformedEx );
+			Engine::GraphicsEngine->BindViewportInformation( VShaderID::VS_TransformedEx, 0 );
 			break;
 
 		case GOTHIC_FVF_XYZRHW_DIF_SPEC_T1:
@@ -523,15 +524,15 @@ public:
 				exv[i].Color = rhw[i].color;
 			}
 
-			Engine::GraphicsEngine->SetActiveVertexShader( "VS_TransformedEx" );
-			Engine::GraphicsEngine->BindViewportInformation( "VS_TransformedEx", 0 );
+			Engine::GraphicsEngine->SetActiveVertexShader( VShaderID::VS_TransformedEx );
+			Engine::GraphicsEngine->BindViewportInformation( VShaderID::VS_TransformedEx, 0 );
 			break;
 
 		default:
 			return S_OK;
 		}
 
-		Engine::GraphicsEngine->SetActivePixelShader( "PS_FixedFunctionPipe" );
+		Engine::GraphicsEngine->SetActivePixelShader( PShaderID::PS_FixedFunctionPipe );
 		if ( dptPrimitiveType == D3DPT_TRIANGLEFAN ) {
 			static std::vector<ExVertexStruct> vertexList;
 			vertexList.clear();
@@ -565,10 +566,10 @@ public:
 
 		switch ( desc.dwFVF ) {
 		case GOTHIC_FVF_XYZRHW_DIF_T1:
-			Engine::GraphicsEngine->SetActiveVertexShader( "VS_XYZRHW_DIF_T1" );
-			Engine::GraphicsEngine->SetActivePixelShader( "PS_FixedFunctionPipe" );
+			Engine::GraphicsEngine->SetActiveVertexShader( VShaderID::VS_XYZRHW_DIF_T1 );
+			Engine::GraphicsEngine->SetActivePixelShader( PShaderID::PS_FixedFunctionPipe );
 
-			Engine::GraphicsEngine->BindViewportInformation( "VS_XYZRHW_DIF_T1", 0 );
+			Engine::GraphicsEngine->BindViewportInformation( VShaderID::VS_XYZRHW_DIF_T1, 0 );
 
 			// Gothic wants that for the sky
 			Engine::GAPI->GetRendererState().RasterizerState.FrontCounterClockwise = true;

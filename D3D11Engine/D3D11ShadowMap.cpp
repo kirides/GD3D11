@@ -1175,12 +1175,12 @@ XRESULT D3D11ShadowMap::DrawWorldLights()
     // Switch global light shader when raining
     if ( wetness > 0.0f && !isSnow ) {
         // Same shader, just has a DEFINE set to enable rain-related effects
-        graphicsEngine->SetActivePixelShader( "PS_DS_AtmosphericScattering_Rain" );
+        graphicsEngine->SetActivePixelShader( PShaderID::PS_DS_AtmosphericScattering_Rain );
     } else {
-        graphicsEngine->SetActivePixelShader( "PS_DS_AtmosphericScattering" );
+        graphicsEngine->SetActivePixelShader( PShaderID::PS_DS_AtmosphericScattering );
     }
 
-    graphicsEngine->SetActiveVertexShader( "VS_PFX" );
+    graphicsEngine->SetActiveVertexShader( VShaderID::VS_PFX );
 
     graphicsEngine->SetupVS_ExMeshDrawCall();
 
@@ -1329,14 +1329,14 @@ void XM_CALLCONV D3D11ShadowMap::RenderShadowCube(
             face = targetCube.GetDepthStencilView().Get();
 
             // Set layered shader
-            graphicsEngine->SetActiveVertexShader( "VS_ExLayered" );
+            graphicsEngine->SetActiveVertexShader( VShaderID::VS_ExLayered );
         } else {
             // Set cubemap shader
-            graphicsEngine->SetActiveGShader( "GS_Cubemap" );
+            graphicsEngine->SetActiveGShader( GShaderID::GS_Cubemap );
             graphicsEngine->GetActiveGS().get()->Apply();
             face = targetCube.GetDepthStencilView().Get();
 
-            graphicsEngine->SetActiveVertexShader( "VS_ExCube" );
+            graphicsEngine->SetActiveVertexShader( VShaderID::VS_ExCube );
         }
     }
 
@@ -1376,7 +1376,7 @@ void XM_CALLCONV D3D11ShadowMap::RenderShadowCube(
     graphicsEngine->SetRenderingStage( oldStage );
     m_context->RSSetViewports( 1, &oldVP );
     m_context->GSSetShader( nullptr, nullptr, 0 );
-    graphicsEngine->SetActiveVertexShader( "VS_Ex" );
+    graphicsEngine->SetActiveVertexShader( VShaderID::VS_Ex );
 
     Engine::GAPI->SetFarPlane(
         Engine::GAPI->GetRendererState().RendererSettings.SectionDrawRadius *

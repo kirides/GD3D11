@@ -2,6 +2,7 @@
 #include "WorldObjects.h"
 #include "GraphicsEventRecord.h"
 #include "ShaderCategory.h"
+#include "ShaderIDs.h"
 
 class BaseLineRenderer;
 class BaseShadowedPointLight;
@@ -156,15 +157,15 @@ public:
     virtual XRESULT DrawInstanced( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, D3D11VertexBuffer* instanceData, unsigned int instanceDataStride, unsigned int numInstances, unsigned int vertexStride = sizeof( ExVertexStruct ), unsigned int startInstanceNum = 0, unsigned int indexOffset = 0 ) { return XR_SUCCESS; };
 
     /** Sets the active pixel shader object */
-    virtual XRESULT SetActivePixelShader( const std::string& shader ) { return XR_SUCCESS; };
-    virtual XRESULT SetActiveVertexShader( const std::string& shader ) { return XR_SUCCESS; };
+    virtual XRESULT SetActivePixelShader( PShaderID shader ) { return XR_SUCCESS; };
+    virtual XRESULT SetActiveVertexShader( VShaderID shader ) { return XR_SUCCESS; };
 
     /** Binds the active PixelShader */
     virtual XRESULT BindActivePixelShader() { return XR_SUCCESS; };
     virtual XRESULT BindActiveVertexShader() { return XR_SUCCESS; };
 
     /** Binds viewport information to the given constantbuffer slot */
-    virtual XRESULT BindViewportInformation( const std::string& shader, int slot ) { return XR_SUCCESS; };
+    virtual XRESULT BindViewportInformation( VShaderID vshader, int slot ) { return XR_SUCCESS; };
 
     /** Unbinds the texture at the given slot */
     virtual XRESULT UnbindTexture( int slot ) { return XR_SUCCESS; };

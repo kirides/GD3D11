@@ -2399,9 +2399,9 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
     }
 
     if ( g->GetRenderingStage() == DES_SHADOWMAP_CUBE )
-        g->SetActiveVertexShader( "VS_ExNodeCube" );
+        g->SetActiveVertexShader( VShaderID::VS_ExNodeCube );
     else
-        g->SetActiveVertexShader( "VS_ExNode" );
+        g->SetActiveVertexShader( VShaderID::VS_ExNode );
 
     // Set up instance info
     VS_ExConstantBuffer_PerInstanceNode instanceInfo;
@@ -2481,7 +2481,7 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
                 // Setup pixel shader here so that we get correct normals
                 // Somehow BindShaderForTexture make normals to be inversed
                 if ( g->GetRenderingStage() == DES_MAIN ) {
-                    g->SetActivePixelShader( "PS_DiffuseAlphaTest" );
+                    g->SetActivePixelShader( PShaderID::PS_DiffuseAlphaTest );
                     g->BindActivePixelShader();
                 }
 
@@ -2633,7 +2633,7 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo* vi, float distance
             WorldConverter::ExtractSkeletalMeshFromVob( model, static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo) );
         }
     }
-    g->SetActiveVertexShader( "VS_ExNodeLayered" );
+    g->SetActiveVertexShader( VShaderID::VS_ExNodeLayered );
 
     // Set up instance info
     VS_ExConstantBuffer_PerInstanceNode instanceInfo;
@@ -2703,7 +2703,7 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo* vi, float distance
                 // Setup pixel shader here so that we get correct normals
                 // Somehow BindShaderForTexture make normals to be inversed
                 if ( g->GetRenderingStage() == DES_MAIN ) {
-                    g->SetActivePixelShader( "PS_DiffuseAlphaTest" );
+                    g->SetActivePixelShader( PShaderID::PS_DiffuseAlphaTest );
                     g->BindActivePixelShader();
                 }
 
@@ -2903,9 +2903,9 @@ void GothicAPI::DrawSkeletalMeshVobs(
     }
 
     if ( g->GetRenderingStage() == DES_SHADOWMAP_CUBE )
-        g->SetActiveVertexShader( "VS_ExNodeCube" );
+        g->SetActiveVertexShader( VShaderID::VS_ExNodeCube );
     else
-        g->SetActiveVertexShader( "VS_ExNode" );
+        g->SetActiveVertexShader( VShaderID::VS_ExNode );
 
     g->SetupVS_ExMeshDrawCall();
     g->SetupVS_ExConstantBuffer();
@@ -2975,7 +2975,7 @@ void GothicAPI::DrawSkeletalMeshVobs(
                 // Setup pixel shader here so that we get correct normals
                     // Somehow BindShaderForTexture make normals to be inversed
                 if ( g->GetRenderingStage() == DES_MAIN ) {
-                    g->SetActivePixelShader( "PS_DiffuseAlphaTest" );
+                    g->SetActivePixelShader( PShaderID::PS_DiffuseAlphaTest );
                     g->BindActivePixelShader();
                 }
 
@@ -3089,7 +3089,7 @@ void GothicAPI::DrawTransparencyVobs() {
             RendererState.RendererInfo.FrameDrawnVobs--; // Don't calculate prepass as drawn vob
 
             // Now actually draw mesh using transparency pixel shader
-            g->SetActivePixelShader( "PS_Transparency" );
+            g->SetActivePixelShader( PShaderID::PS_Transparency );
             g->BindActivePixelShader();
 
             // Update transparency alpha information
@@ -3100,7 +3100,7 @@ void GothicAPI::DrawTransparencyVobs() {
             g->GetActivePS()->GetConstantBuffer()[0]->BindToPixelShader( 0 );
             DrawSkeletalMeshVob( TransVobInfo.skeletalVob, TransVobInfo.distance, false );
         } else if ( TransVobInfo.normalVob ) {
-            g->SetActiveVertexShader( "VS_Ex" );
+            g->SetActiveVertexShader( VShaderID::VS_Ex );
             g->SetupVS_ExMeshDrawCall();
             TransVobInfo.normalVob->VobConstantBuffer->BindToVertexShader( 1 );
 
@@ -3125,7 +3125,7 @@ void GothicAPI::DrawTransparencyVobs() {
             RendererState.RendererInfo.FrameDrawnVobs--; // Don't calculate prepass as drawn vob
 
             // Now actually draw mesh using transparency pixel shader
-            g->SetActivePixelShader( "PS_Transparency" );
+            g->SetActivePixelShader( PShaderID::PS_Transparency );
             g->BindActivePixelShader();
 
             // Update transparency alpha information

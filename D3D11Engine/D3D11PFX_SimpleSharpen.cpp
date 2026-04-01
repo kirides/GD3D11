@@ -28,7 +28,7 @@ XRESULT D3D11PFX_SimpleSharpen::Apply( const Microsoft::WRL::ComPtr<ID3D11Shader
     // update the temp buffer with the latest backbuffer data
     Renderer->CopyTextureToRTV( inputTexture, tempBuffer.GetRenderTargetView(), outputSize );
 
-    auto sharpenPS = engine->GetShaderManager().GetPShader( "PS_PFX_Sharpen" );
+    auto sharpenPS = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_Sharpen );
     sharpenPS->Apply();
 
     PfxSharpenConstantBuffer gcb;

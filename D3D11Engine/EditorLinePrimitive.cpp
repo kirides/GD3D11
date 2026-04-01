@@ -9,14 +9,14 @@
 
 EditorLinePrimitive::EditorLinePrimitive() {
     Vertices = nullptr;
-    PrimShader = nullptr;
+    PrimShaderID = PShaderID::PS_Lines;
     Location = XMFLOAT3( 0, 0, 0 );
     Rotation = XMFLOAT3( 0, 0, 0 );
     Scale = XMFLOAT3( 1, 1, 1 );
     RecalcTransforms();
     bHidden = false;
 
-    SolidPrimShader = nullptr;
+    SolidPrimShaderID = PShaderID::PS_Lines;
     SolidVertices = nullptr;
     NumSolidVertices = 0;
 
@@ -28,8 +28,8 @@ EditorLinePrimitive::EditorLinePrimitive() {
 
     bJustUseRotationMatrix = false;
 
-    SetSolidShader( reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetShaderManager().GetPShader( "PS_Lines" ) );
-    SetShader( reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetShaderManager().GetPShader( "PS_Lines" ) );
+    SetSolidShader( PShaderID::PS_Lines );
+    SetShader( PShaderID::PS_Lines );
 }
 
 
@@ -789,7 +789,7 @@ void EditorLinePrimitive::RecalcTransforms() {
 
         RotationMatrixAngles = Rotation;
     } else if ( !bJustUseRotationMatrix ) {
-        // Reset matrix to identity (Todo: ROTATION! Ò.ó Y U NO WORK!? (As I want))
+        // Reset matrix to identity (Todo: ROTATION! ï¿½.ï¿½ Y U NO WORK!? (As I want))
         xmRotationMatrix = XMMatrixIdentity();
         XMStoreFloat4x4( &RotationMatrix, xmRotationMatrix );
 
@@ -832,13 +832,13 @@ HRESULT EditorLinePrimitive::CreatePrimitive( LineVertex* PrimVerts, UINT NumVer
 }
 
 /** Sets the shader to render with */
-void EditorLinePrimitive::SetShader( std::shared_ptr<D3D11PShader> Shader ) {
-    PrimShader = Shader;
+void EditorLinePrimitive::SetShader( PShaderID ShaderID ) {
+    PrimShaderID = ShaderID;
 }
 
 /** Sets the solid shader to render with */
-void EditorLinePrimitive::SetSolidShader( std::shared_ptr<D3D11PShader> SolidShader ) {
-    SolidPrimShader = SolidShader;
+void EditorLinePrimitive::SetSolidShader( PShaderID SolidShaderID ) {
+    SolidPrimShaderID = SolidShaderID;
 }
 
 /** Renders a vertexbuffer with the given shader */
@@ -848,8 +848,8 @@ void EditorLinePrimitive::RenderVertexBuffer( const Microsoft::WRL::ComPtr<ID3D1
     XMMATRIX tr = XMMatrixTranspose( XMLoadFloat4x4( &WorldMatrix ) );;
     Engine::GAPI->SetWorldTransformXM( tr );
 
-    engine->SetActiveVertexShader( "VS_Lines" );
-    engine->SetActivePixelShader( "PS_Lines" );
+    engine->SetActiveVertexShader( VShaderID::VS_Lines );
+    engine->SetActivePixelShader( PShaderID::PS_Lines );
 
     engine->SetupVS_ExMeshDrawCall();
     engine->SetupVS_ExConstantBuffer();
@@ -874,20 +874,16 @@ void EditorLinePrimitive::RenderVertexBuffer( const Microsoft::WRL::ComPtr<ID3D1
 }
 
 HRESULT EditorLinePrimitive::RenderPrimitive( int Pass ) {
-    if ( !PrimShader && !SolidPrimShader ) {
-        return E_FAIL;
-    }
-
     if ( bHidden ) {
         return S_OK;
     }
 
-    if ( NumVertices > 0 && PrimShader ) {
-        RenderVertexBuffer( PrimVB.Get(), NumVertices, PrimShader.get(), PrimitiveTopology, Pass );
+    if ( NumVertices > 0 ) {
+        RenderVertexBuffer( PrimVB.Get(), NumVertices, reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetShaderManager().GetPShader( PrimShaderID ).get(), PrimitiveTopology, Pass );
     }
 
-    if ( NumSolidVertices > 0 && SolidPrimShader ) {
-        RenderVertexBuffer( SolidPrimVB.Get(), NumSolidVertices, SolidPrimShader.get(), SolidPrimitiveTopology, Pass );
+    if ( NumSolidVertices > 0 ) {
+        RenderVertexBuffer( SolidPrimVB.Get(), NumSolidVertices, reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetShaderManager().GetPShader( SolidPrimShaderID ).get(), SolidPrimitiveTopology, Pass );
     }
 
     return S_OK;

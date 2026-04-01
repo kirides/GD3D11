@@ -60,8 +60,8 @@ XRESULT D3D11LineRenderer::Flush() {
     Engine::GAPI->SetWorldTransformXM( XMMatrixIdentity() );
     Engine::GAPI->SetViewTransformXM( Engine::GAPI->GetViewMatrixXM() );
 
-    engine->SetActivePixelShader( "PS_Lines" );
-    engine->SetActiveVertexShader( "VS_Lines" );
+    engine->SetActivePixelShader( PShaderID::PS_Lines );
+    engine->SetActiveVertexShader( VShaderID::VS_Lines );
 
     engine->SetDefaultStates();
     Engine::GAPI->GetRendererState().BlendState.SetAlphaBlending();
@@ -105,10 +105,10 @@ XRESULT D3D11LineRenderer::FlushScreenSpace() {
         XLE( LineBuffer->UpdateBuffer( &ScreenSpaceLineCache[0], ScreenSpaceLineCache.size() * sizeof( LineVertex ) ) );
     }
 
-    engine->SetActivePixelShader( "PS_Lines" );
-    engine->SetActiveVertexShader( "VS_Lines_XYZRHW" );
+    engine->SetActivePixelShader( PShaderID::PS_Lines );
+    engine->SetActiveVertexShader( VShaderID::VS_Lines_XYZRHW );
 
-    engine->BindViewportInformation( "VS_Lines_XYZRHW", 0 );
+    engine->BindViewportInformation( VShaderID::VS_Lines_XYZRHW, 0 );
 
     engine->SetDefaultStates();
     Engine::GAPI->GetRendererState().BlendState.SetAlphaBlending();

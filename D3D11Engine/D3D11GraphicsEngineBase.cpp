@@ -180,8 +180,8 @@ void D3D11GraphicsEngineBase::SetDefaultStates() {
 /** Draws a vertexarray, used for rendering gothics UI */
 XRESULT D3D11GraphicsEngineBase::DrawVertexArray( ExVertexStruct* vertices, unsigned int numVertices, unsigned int startVertex, unsigned int stride ) {
     UpdateRenderStates();
-    auto vShader = ShaderManager->GetVShader( "VS_TransformedEx" );
-    auto pShader = ShaderManager->GetPShader( "PS_FixedFunctionPipe" );
+    auto vShader = ShaderManager->GetVShader( VShaderID::VS_TransformedEx );
+    auto pShader = ShaderManager->GetPShader( PShaderID::PS_FixedFunctionPipe );
 
     // Bind the FF-Info to the first PS slot
     pShader->GetConstantBuffer()[0]->UpdateBuffer( &Engine::GAPI->GetRendererState().GraphicsState );
@@ -308,22 +308,22 @@ void D3D11GraphicsEngineBase::ConstructShaderMakroList( std::vector<D3D_SHADER_M
 }
 
 /** Sets the active pixel shader object */
-XRESULT D3D11GraphicsEngineBase::SetActivePixelShader( const std::string& shader ) {
+XRESULT D3D11GraphicsEngineBase::SetActivePixelShader( PShaderID shader ) {
     ActivePS = ShaderManager->GetPShader( shader );
     return XR_SUCCESS;
 }
 
-XRESULT D3D11GraphicsEngineBase::SetActiveVertexShader( const std::string& shader ) {
+XRESULT D3D11GraphicsEngineBase::SetActiveVertexShader( VShaderID shader ) {
     ActiveVS = ShaderManager->GetVShader( shader );
     return XR_SUCCESS;
 }
 
-XRESULT D3D11GraphicsEngineBase::SetActiveHDShader( const std::string& shader ) {
+XRESULT D3D11GraphicsEngineBase::SetActiveHDShader( HDShaderID shader ) {
     ActiveHDS = ShaderManager->GetHDShader( shader );
     return XR_SUCCESS;
 }
 
-XRESULT D3D11GraphicsEngineBase::SetActiveGShader( const std::string& shader ) {
+XRESULT D3D11GraphicsEngineBase::SetActiveGShader( GShaderID shader ) {
     ActiveGS = ShaderManager->GetGShader( shader );
     return XR_SUCCESS;
 }
@@ -378,7 +378,7 @@ XRESULT D3D11GraphicsEngineBase::DrawVertexBufferFF( D3D11VertexBuffer* vb, unsi
 }
 
 /** Binds viewport information to the given constantbuffer slot */
-XRESULT D3D11GraphicsEngineBase::BindViewportInformation( const std::string& shader, int slot ) {
+XRESULT D3D11GraphicsEngineBase::BindViewportInformation( VShaderID shader, int slot ) {
     D3D11_VIEWPORT vp;
     UINT num = 1;
     GetContext()->RSGetViewports( &num, &vp );
@@ -391,17 +391,11 @@ XRESULT D3D11GraphicsEngineBase::BindViewportInformation( const std::string& sha
     f2[1].x = vp.Width / scale;
     f2[1].y = vp.Height / scale;
 
-    auto ps = ShaderManager->GetPShader( shader );
     auto vs = ShaderManager->GetVShader( shader );
 
     if ( vs ) {
         vs->GetConstantBuffer()[slot]->UpdateBuffer( f2 );
         vs->GetConstantBuffer()[slot]->BindToVertexShader( slot );
-    }
-
-    if ( ps ) {
-        ps->GetConstantBuffer()[slot]->UpdateBuffer( f2 );
-        ps->GetConstantBuffer()[slot]->BindToVertexShader( slot );
     }
 
     return XR_SUCCESS;

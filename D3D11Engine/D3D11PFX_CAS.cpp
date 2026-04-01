@@ -44,7 +44,7 @@ XRESULT D3D11PFX_CAS::Apply( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceVi
     Renderer->CopyTextureToRTV( inputTexture, tempBuffer.GetRenderTargetView(), outputSize );
 
     // Get shader
-    auto casPS = engine->GetShaderManager().GetPShader( "PS_PFX_CAS" );
+    auto casPS = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_CAS );
     if ( !casPS ) {
         return XR_FAILED;
     }
