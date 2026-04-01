@@ -349,6 +349,8 @@ public:
     auto GetClampSamplerState() -> auto { return ClampSamplerState.Get(); }
     auto GetCubeSamplerState() -> auto { return CubeSamplerState.Get(); }
     auto GetLinearSamplerState() -> auto { return LinearSamplerState.Get(); }
+
+    D3D11ShadowMap* GetShadowMaps() const { return ShadowMaps.get(); }
 protected:
 
     void StoreVobPreviousTransforms();

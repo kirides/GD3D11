@@ -329,6 +329,11 @@ void D3D11ShadowMap::Init( Microsoft::WRL::ComPtr<ID3D11Device1>& device, Micros
     m_PointLightCB.reset( cb );
 
     Resize( s );
+
+    if ( !FeatureLevel10Compatibility ) {
+        m_TiledDeferred = std::make_unique<D3D11TiledDeferredShading>();
+        m_TiledDeferred->Init( device, context );
+    }
 }
 
 void D3D11ShadowMap::Resize( int size ) {
@@ -369,6 +374,10 @@ void D3D11ShadowMap::BindToPixelShader( ID3D11DeviceContext1* context, UINT slot
 
 void D3D11ShadowMap::BindSampler( ID3D11DeviceContext1* context, UINT slot ) {
     if ( m_shadowmapSampler ) context->PSSetSamplers( slot, 1, m_shadowmapSampler.GetAddressOf() );
+}
+
+void D3D11ShadowMap::BindSamplerToCS( ID3D11DeviceContext1* context, UINT slot ) {
+    if ( m_shadowmapSampler ) context->CSSetSamplers( slot, 1, m_shadowmapSampler.GetAddressOf() );
 }
 
 XRESULT D3D11ShadowMap::PrepareRender()
@@ -762,6 +771,7 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
         if (it.second->LightShadowBuffers
             && (!it.second->Vob->IsEnabled() || !it.second->VisibleInFrame)) {
             if ( D3D11PointLight* pl = static_cast<D3D11PointLight*>(it.second->LightShadowBuffers)) {
+                pl->ClearTiledSlot();
                 pl->ReleaseShadowMap();
             }
         }
@@ -795,9 +805,24 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
 
             bool inShadowRange = d < distMaxShadowSq;
             if ( inShadowRange ) {
-                // Acquire memory if it doesn't have it
+                // Acquire memory if it doesn't have it (or resolution changed)
                 if ( !pl->HasShadowMap() || pl->GetShadowMapResolution() != desiredResolution ) {
-                    pl->AcquireShadowMap( dsPool, desiredResolution );
+                    pl->ClearTiledSlot();
+                    pl->ReleaseShadowMap();
+
+                    // Try tiled slot for small (64×64) lights when tiled lighting is active
+                    if ( desiredResolution == SHADOW_CUBE_SIZE && m_TiledDeferred && settings.EnableTiledLighting ) {
+                        int slot = m_TiledDeferred->AllocateSlot();
+                        if ( slot >= 0 ) {
+                            pl->SetTiledSlot( slot, m_TiledDeferred->GetSlotTarget( slot ), m_TiledDeferred.get() );
+                            pl->SetCurrentResolution( desiredResolution );
+                        } else {
+                            pl->AcquireShadowMap( dsPool, desiredResolution );
+                        }
+                    } else {
+                        pl->AcquireShadowMap( dsPool, desiredResolution );
+                    }
+
                     light->UpdateShadows = true; // Force an immediate render this frame
                 }
 
@@ -827,8 +852,9 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
                     // TODO: actually fix memory leakage, as many lights can spawn without ever releasing their shadowmaps
                     // because if they suddenly go out of range (Frustum or VisualFX distance),
                     // we never "collect" them and thus never get to call ReleasShadowMap().
-                    // we could in theory keep a "last seen" list of lights and every frame look up which ones are gone, 
+                    // we could in theory keep a "last seen" list of lights and every frame look up which ones are gone,
                     // to then release theirs resources BEFORE anything else acquires new ones.
+                    pl->ClearTiledSlot();
                     pl->ReleaseShadowMap();
 
                     // Erase from the update queue if it happens to be pending
@@ -955,167 +981,16 @@ XRESULT D3D11ShadowMap::DrawPointlightLights(
     std::vector<VobLightInfo*>& lights,
     RenderToTextureBuffer& color,
     RenderToTextureBuffer& normals,
-    RenderToTextureBuffer& specular,    
-    RenderToTextureBuffer& depthCopy    
+    RenderToTextureBuffer& specular,
+    RenderToTextureBuffer& depthCopy
     ) {
-    auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
-    auto _ = graphicsEngine->RecordGraphicsEvent( L"DrawPointlightLights" );
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
 
-    XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
-    Engine::GAPI->SetViewTransformXM( view );
-    view = XMMatrixTranspose( view );
-
-    graphicsEngine->SetActiveVertexShader( "VS_ExPointLight" );
-    graphicsEngine->SetActivePixelShader( "PS_DS_PointLight" );
-
-    auto psPointLight = graphicsEngine->GetShaderManager().GetPShader( "PS_DS_PointLight" );
-    auto psPointLightDynShadow = graphicsEngine->GetShaderManager().GetPShader( "PS_DS_PointLightDynShadow" );
-
-    Engine::GAPI->GetRendererState().BlendState.SetAdditiveBlending();
-    if ( settings.LimitLightIntesity ) {
-        Engine::GAPI->GetRendererState().BlendState.BlendOp = GothicBlendStateInfo::BO_BLEND_OP_MAX;
+    if ( m_TiledDeferred && settings.EnableTiledLighting ) {
+        return m_TiledDeferred->DrawPointlightLights( lights, color, normals, specular, depthCopy );
     }
-    Engine::GAPI->GetRendererState().BlendState.SetDirty();
 
-    Engine::GAPI->GetRendererState().DepthState.DepthWriteEnabled = false;
-    Engine::GAPI->GetRendererState().DepthState.SetDirty();
-
-    Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_BACK;
-    Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
-
-    graphicsEngine->SetupVS_ExMeshDrawCall();
-    graphicsEngine->SetupVS_ExConstantBuffer();
-
-    // Copy this, so we can access depth in the pixelshader and still use the buffer for culling
-    graphicsEngine->CopyDepthStencil();
-
-    // Set the main rendertarget
-    m_context->OMSetRenderTargets( 1, graphicsEngine->GetHDRBackBuffer().GetRenderTargetView().GetAddressOf(), graphicsEngine->GetDepthBuffer()->GetDepthStencilView().Get() );
-    
-    DS_PointLightConstantBuffer plcb = {};
-
-    {
-        auto& proj = Engine::GAPI->GetProjectionMatrix();
-        plcb.PL_ProjParams = float4( 1.0f / proj._11, 1.0f / proj._22, proj._43, proj._33 );
-    }
-    XMStoreFloat4x4( &plcb.PL_InvView, XMMatrixInverse( nullptr, XMLoadFloat4x4( &Engine::GAPI->GetRendererState().TransformState.TransformView ) ) );
-
-    plcb.PL_ViewportSize = Engine::GraphicsEngine->GetResolution();
-
-    color.BindToPixelShader( m_context.Get(), 0 );
-    normals.BindToPixelShader( m_context.Get(), 1 );
-    specular.BindToPixelShader( m_context.Get(), 7 );
-    depthCopy.BindToPixelShader( m_context.Get(), 2 );
-
-    // Draw all lights
-    for ( auto const& light : lights ) {
-        zCVobLight* vob = light->Vob;
-
-        // Reset state from CollectVisibleVobs
-        light->VisibleInRenderPass = false;
-
-        if ( !vob->IsEnabled() ) continue;
-
-        // Set right shader
-        if ( settings.EnablePointlightShadows > 0 ) {
-            D3D11PointLight* pl = light->LightShadowBuffers ? static_cast<D3D11PointLight*>(light->LightShadowBuffers) : nullptr;
-
-            // Only use the DynamicShadow shader if the light actually HAS a pooled shadow map assigned!
-            if ( pl && pl->IsInited() && pl->HasShadowMap() ) {
-                if ( graphicsEngine->GetActivePS() != psPointLightDynShadow ) {
-                    graphicsEngine->SetActivePS( psPointLightDynShadow )->Apply();
-                }
-            } else if ( graphicsEngine->GetActivePS() != psPointLight ) {
-                // Need to update shader for usual pointlight
-                graphicsEngine->SetActivePS( psPointLight )->Apply();
-            }
-        }
-
-        // Animate the light
-        vob->DoAnimation();
-
-        plcb.PL_Color = float4( vob->GetLightColor() );
-        plcb.PL_Range = vob->GetLightRange();
-        plcb.Pl_PositionWorld = vob->GetPositionWorld();
-        plcb.PL_Outdoor = light->IsIndoorVob ? 0.0f : 1.0f;
-
-        float dist;
-        XMStoreFloat( &dist, XMVector3Length( XMLoadFloat3( plcb.Pl_PositionWorld.toXMFLOAT3() ) - Engine::GAPI->GetCameraPositionXM() ) );
-
-        // Gradually fade in the lights
-        if ( dist + plcb.PL_Range <
-            settings.VisualFXDrawRadius ) {
-            // float fadeStart =
-            // settings.VisualFXDrawRadius -
-            // plcb.PL_Range;
-            float fadeEnd =
-                settings.VisualFXDrawRadius;
-
-            float fadeFactor = std::min(
-                1.0f,
-                std::max( 0.0f, ((fadeEnd - (dist + plcb.PL_Range)) / plcb.PL_Range) ) );
-            plcb.PL_Color.x *= fadeFactor;
-            plcb.PL_Color.y *= fadeFactor;
-            plcb.PL_Color.z *= fadeFactor;
-            // plcb.PL_Color.w *= fadeFactor;
-        }
-
-        // Make the lights a little bit brighter
-        float lightFactor = 1.2f;
-
-        plcb.PL_Color.x *= lightFactor;
-        plcb.PL_Color.y *= lightFactor;
-        plcb.PL_Color.z *= lightFactor;
-
-        // Need that in view space
-        FXMVECTOR Pl_PositionWorld = XMLoadFloat3( plcb.Pl_PositionWorld.toXMFLOAT3() );
-        XMStoreFloat3( plcb.Pl_PositionView.toXMFLOAT3(),
-            XMVector3TransformCoord( Pl_PositionWorld, view ) );
-
-        XMStoreFloat3( plcb.PL_LightScreenPos.toXMFLOAT3(),
-            XMVector3TransformCoord( Pl_PositionWorld, XMLoadFloat4x4( &Engine::GAPI->GetProjectionMatrix() ) ) );
-
-        if ( dist < plcb.PL_Range ) {
-            if ( Engine::GAPI->GetRendererState().DepthState.DepthBufferEnabled ) {
-                Engine::GAPI->GetRendererState().DepthState.DepthBufferEnabled = false;
-                Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_FRONT;
-                Engine::GAPI->GetRendererState().DepthState.SetDirty();
-                Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
-                graphicsEngine->UpdateRenderStates();
-            }
-        } else {
-            if ( !Engine::GAPI->GetRendererState().DepthState.DepthBufferEnabled ) {
-                Engine::GAPI->GetRendererState().DepthState.DepthBufferEnabled = true;
-                Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_BACK;
-                Engine::GAPI->GetRendererState().DepthState.SetDirty();
-                Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
-                graphicsEngine->UpdateRenderStates();
-            }
-        }
-
-        plcb.PL_LightScreenPos.x = plcb.PL_LightScreenPos.x / 2.0f + 0.5f;
-        plcb.PL_LightScreenPos.y = plcb.PL_LightScreenPos.y / -2.0f + 0.5f;
-
-        // Apply the constantbuffer to vs and PS
-        graphicsEngine->GetActivePS()->GetConstantBuffer()[0]->UpdateBuffer( &plcb );
-        graphicsEngine->GetActivePS()->GetConstantBuffer()[0]->BindToPixelShader( 0 );
-        graphicsEngine->GetActivePS()->GetConstantBuffer()[0]->BindToVertexShader(
-            1 );  // Bind this instead of the usual per-instance buffer
-
-        if ( settings.EnablePointlightShadows > 0 ) {
-            // Bind shadowmap, if possible
-            if ( light->LightShadowBuffers )
-                static_cast<D3D11PointLight*>(light->LightShadowBuffers)->OnRenderLight();
-        }
-
-        // Draw the mesh
-        graphicsEngine->InverseUnitSphereMesh->DrawMesh();
-
-        Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnLights++;
-    }
-    
-    return XR_SUCCESS;
+    return m_LegacyDeferred.DrawPointlightLights( lights, color, normals, specular, depthCopy );
 }
 
 XRESULT D3D11ShadowMap::DrawLighting( 
@@ -1139,8 +1014,21 @@ XRESULT D3D11ShadowMap::DrawLighting(
     DrawRainShadowmap();
 
     Engine::GAPI->SetFarPlane(static_cast<float>(settings.SectionDrawRadius) * WORLD_SECTION_SIZE );
-    
+
     DrawPointlightLights(lights, color, normals, specular, depthCopy);
+
+    m_context->OMSetRenderTargets( 1, graphicsEngine->GetHDRBackBuffer().GetRenderTargetView().GetAddressOf(),
+        nullptr );
+
+    ID3D11ShaderResourceView* srvs[3] = {
+        color.GetShaderResView().Get(),
+        normals.GetShaderResView().Get(),
+        depthCopy.GetShaderResView().Get(),
+    };
+    m_context->PSSetShaderResources( 0, 3, srvs );
+
+    srvs[0] = specular.GetShaderResView().Get();
+    m_context->PSSetShaderResources( 7, 1, srvs );
 
     DrawWorldLights();
 
@@ -1264,7 +1152,7 @@ XRESULT D3D11ShadowMap::DrawWorldLights()
     auto _ = graphicsEngine->RecordGraphicsEvent( L"DrawWorldLights" );
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
 
-    Engine::GAPI->GetRendererState().BlendState.BlendOp = GothicBlendStateInfo::BO_BLEND_OP_ADD;
+    Engine::GAPI->GetRendererState().BlendState.SetAdditiveBlending();
     Engine::GAPI->GetRendererState().BlendState.SetDirty();
 
     Engine::GAPI->GetRendererState().DepthState.DepthBufferCompareFunc = GothicDepthBufferStateInfo::CF_COMPARISON_ALWAYS;

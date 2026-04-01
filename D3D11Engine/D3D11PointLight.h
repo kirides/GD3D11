@@ -7,6 +7,7 @@
 #include "TexturePool.h"
 
 class D3D11PointLight;
+class D3D11TiledDeferredShading;
 
 struct VobLightInfo;
 struct RenderToDepthStencilBuffer;
@@ -43,11 +44,18 @@ public:
     /** Called when a vob got removed from the world */
     virtual void OnVobRemovedFromWorld( BaseVobInfo* vob );
 
-    bool HasShadowMap() const { return m_DepthCubemap != nullptr; }
+    bool HasShadowMap() const { return m_DepthCubemap != nullptr || m_TiledDepthTarget != nullptr; }
     int GetShadowMapResolution() const { return m_CurrentResolution; }
+    ID3D11Texture2D* GetShadowCubeTexture() const { return m_DepthCubemap ? m_DepthCubemap->GetTexture().Get() : nullptr; }
 
     void AcquireShadowMap( DepthStencilPool* pool, int resolution );
     void ReleaseShadowMap();
+
+    // Tiled deferred slot management (renders directly into shared TextureCubeArray)
+    void SetTiledSlot( int slot, RenderToDepthStencilBuffer* target, D3D11TiledDeferredShading* owner );
+    void ClearTiledSlot();
+    int GetTiledSlot() const { return m_TiledSlotIndex; }
+    void SetCurrentResolution( int r ) { m_CurrentResolution = r; }
 
 protected:
     /** Renders the scene with the given view-proj-matrices */
@@ -70,5 +78,9 @@ protected:
     bool DynamicLight;
     std::atomic<bool> InitDone;
     bool DrawnOnce;
-};
 
+    // Tiled deferred slot (non-owning, owned by D3D11TiledDeferredShading)
+    int m_TiledSlotIndex = -1;
+    RenderToDepthStencilBuffer* m_TiledDepthTarget = nullptr;
+    D3D11TiledDeferredShading* m_TiledOwner = nullptr;
+};

@@ -810,6 +810,12 @@
     <ClInclude Include="D3D11ShadowMap.h">
       <Filter>Engine\D3D11</Filter>
     </ClInclude>
+    <ClInclude Include="D3D11TiledDeferredShading.h">
+      <Filter>Engine\D3D11</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D11LegacyDeferredShading.h">
+      <Filter>Engine\D3D11</Filter>
+    </ClInclude>
     <ClInclude Include="D3D11PipelineStates.h">
       <Filter>Engine\D3D11</Filter>
     </ClInclude>
@@ -1095,6 +1101,12 @@
       <Filter>Engine\D3D11\PFX\Effects</Filter>
     </ClCompile>
     <ClCompile Include="D3D11ShadowMap.cpp">
+      <Filter>Engine\D3D11</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D11TiledDeferredShading.cpp">
+      <Filter>Engine\D3D11</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D11LegacyDeferredShading.cpp">
       <Filter>Engine\D3D11</Filter>
     </ClCompile>
     <ClCompile Include="D3D11RenderQueue.cpp">

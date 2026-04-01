@@ -1334,8 +1334,14 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
             }
             
             if (ImGui::BeginTabItem("Featureset", nullptr, ImGuiTabItemFlags_::ImGuiTabItemFlags_NoReorder)) {
-                ImGui::Checkbox("Use MDI", &settings.DebugSettings.FeatureSet.UseMDI );
-                ImGui::Checkbox("Use Layered Drawing", &settings.DebugSettings.FeatureSet.UseLayeredRendering );
+                if (!FeatureLevel10Compatibility){
+                    ImGui::Checkbox("Use MDI", &settings.DebugSettings.FeatureSet.UseMDI );
+                    ImGui::SetItemTooltip("Support for MultiDrawInstancedIndirect via Driver Extensions (AMD, Nvidia, Intel).");
+
+                    ImGui::Checkbox("Use Layered Drawing", &settings.DebugSettings.FeatureSet.UseLayeredRendering );
+                    ImGui::Checkbox("Use Tiled Lighting", &settings.EnableTiledLighting );
+                    ImGui::SetItemTooltip( "Uses compute shader light culling for point lights. Reduces draw calls and overdraw." );
+                }
                 if ( ImGui::Checkbox( "Use Shadow Atlas", &settings.DebugSettings.FeatureSet.UseShadowAtlas ) ) {
                     ApplyFeatureLevel10Downgrades( settings );
                 }

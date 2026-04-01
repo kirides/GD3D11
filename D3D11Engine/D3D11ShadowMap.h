@@ -17,6 +17,8 @@
 #include "GSky.h"
 #include "Frustum.h"
 #include "D3D11RenderQueue.h"
+#include "D3D11TiledDeferredShading.h"
+#include "D3D11LegacyDeferredShading.h"
 
 struct RenderToDepthStencilBuffer;
 struct RenderToTextureBuffer;
@@ -121,6 +123,7 @@ public:
 
     // Bind the shadowmap sampler to the given slot
     void BindSampler( ID3D11DeviceContext1* context, UINT slot );
+    void BindSamplerToCS( ID3D11DeviceContext1* context, UINT slot );
 
     XRESULT PrepareRender();
 
@@ -191,4 +194,7 @@ private:
     std::vector<float> m_CascadeSplits;
     std::array<bool, MAX_CSM_CASCADES> m_ShouldUpdateCascade;
     XMFLOAT3 m_WorldShadowPos;
+
+    std::unique_ptr<D3D11TiledDeferredShading> m_TiledDeferred;
+    D3D11LegacyDeferredShading m_LegacyDeferred;
 };

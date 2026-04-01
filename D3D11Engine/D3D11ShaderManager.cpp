@@ -626,6 +626,12 @@ XRESULT D3D11ShaderManager::Init() {
 
         Shaders.push_back( ShaderInfo( "CS_AdvanceRain", "CS_AdvanceRain.hlsl", "c" ) );
         Shaders.back().cBufferSizes.push_back( sizeof( AdvanceRainConstantBuffer ) );
+
+        Shaders.push_back( ShaderInfo( "CS_LightCulling", "CS_LightCulling.hlsl", "c" ) );
+        Shaders.back().cBufferSizes.push_back( sizeof( LightCullingConstantBuffer ) );
+
+        Shaders.push_back( ShaderInfo( "CS_TiledShading", "CS_TiledShading.hlsl", "c" ) );
+        Shaders.back().cBufferSizes.push_back( sizeof( TiledShadingConstantBuffer ) );
     }
 
     return XR_SUCCESS;

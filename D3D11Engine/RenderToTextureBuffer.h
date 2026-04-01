@@ -181,6 +181,16 @@ struct RenderToDepthStencilBuffer {
     ~RenderToDepthStencilBuffer() {
     }
 
+    /** Wraps pre-existing resources without allocating — used for views into a shared TextureCubeArray */
+    RenderToDepthStencilBuffer(
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> texture,
+        Microsoft::WRL::ComPtr<ID3D11DepthStencilView> dsv,
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv,
+        UINT SizeX, UINT SizeY )
+        : Texture( std::move( texture ) ), DepthStencilView( std::move( dsv ) ),
+          ShaderResView( std::move( srv ) ), SizeX( SizeX ), SizeY( SizeY ) {
+    }
+
     /** Creates the render-to-texture buffers */
     RenderToDepthStencilBuffer( ID3D11Device* device, UINT SizeX, UINT SizeY, DXGI_FORMAT Format, HRESULT* Result = nullptr, DXGI_FORMAT DSVFormat = DXGI_FORMAT_UNKNOWN, DXGI_FORMAT SRVFormat = DXGI_FORMAT_UNKNOWN, UINT arraySize = 1 )
         :SizeX(SizeX),
