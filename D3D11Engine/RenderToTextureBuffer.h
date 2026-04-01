@@ -64,48 +64,56 @@ struct RenderToTextureBuffer {
         if ( !Texture.Get() ) return;
 
         //Create a render target view
-        D3D11_RENDER_TARGET_VIEW_DESC DescRT = CD3D11_RENDER_TARGET_VIEW_DESC();
-        DescRT.Format = (RTVFormat != DXGI_FORMAT_UNKNOWN ? RTVFormat : Desc.Format);
-        DescRT.Texture2D.MipSlice = 0;
-        DescRT.Texture2DArray.ArraySize = arraySize;
+        if ( Desc.BindFlags & D3D11_BIND_RENDER_TARGET ) {
+            D3D11_RENDER_TARGET_VIEW_DESC DescRT = CD3D11_RENDER_TARGET_VIEW_DESC();
+            DescRT.Format = (RTVFormat != DXGI_FORMAT_UNKNOWN ? RTVFormat : Desc.Format);
+            DescRT.Texture2D.MipSlice = 0;
+            DescRT.Texture2DArray.ArraySize = arraySize;
 
-        if ( arraySize == 1 )
-            DescRT.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
-        else {
-            DescRT.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DARRAY;
-            DescRT.Texture2DArray.FirstArraySlice = 0;
-        }
+            if ( arraySize == 1 )
+                DescRT.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+            else {
+                DescRT.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DARRAY;
+                DescRT.Texture2DArray.FirstArraySlice = 0;
+            }
 
-        LE( device->CreateRenderTargetView( Texture.Get(), &DescRT, RenderTargetView.ReleaseAndGetAddressOf() ) );
+            LE( device->CreateRenderTargetView( Texture.Get(), &DescRT, RenderTargetView.ReleaseAndGetAddressOf() ) );
 
-        if ( arraySize > 1 ) {
-            // Create the one-face render target views
-            DescRT.Texture2DArray.ArraySize = 1;
-            for ( int i = 0; i < 6; ++i ) {
-                DescRT.Texture2DArray.FirstArraySlice = i;
-                LE( device->CreateRenderTargetView( Texture.Get(), &DescRT, CubeMapRTVs[i].GetAddressOf() ) );
+            if ( arraySize > 1 ) {
+                // Create the one-face render target views
+                DescRT.Texture2DArray.ArraySize = 1;
+                for ( int i = 0; i < 6; ++i ) {
+                    DescRT.Texture2DArray.FirstArraySlice = i;
+                    LE( device->CreateRenderTargetView( Texture.Get(), &DescRT, CubeMapRTVs[i].GetAddressOf() ) );
+                }
             }
         }
 
         // Create the resource view
-        D3D11_SHADER_RESOURCE_VIEW_DESC DescRV = CD3D11_SHADER_RESOURCE_VIEW_DESC();
-        DescRV.Format = (SRVFormat != DXGI_FORMAT_UNKNOWN ? SRVFormat : Desc.Format);
+        if ( Desc.BindFlags & D3D11_BIND_SHADER_RESOURCE ) {
+            D3D11_SHADER_RESOURCE_VIEW_DESC DescRV = CD3D11_SHADER_RESOURCE_VIEW_DESC();
+            DescRV.Format = (SRVFormat != DXGI_FORMAT_UNKNOWN ? SRVFormat : Desc.Format);
 
-        if ( arraySize > 1 )
-            DescRV.ViewDimension = D3D11_SRV_DIMENSION_TEXTURECUBE;
-        else
-            DescRV.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+            if ( DescRV.Format == DXGI_FORMAT_R32_TYPELESS ) {
+                DescRV.Format = DXGI_FORMAT_R32_FLOAT;
+            }
 
-        DescRV.Texture2D.MipLevels = MipLevels;
-        DescRV.Texture2D.MostDetailedMip = 0;
+            if ( arraySize > 1 )
+                DescRV.ViewDimension = D3D11_SRV_DIMENSION_TEXTURECUBE;
+            else
+                DescRV.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
 
-        LE( device->CreateShaderResourceView( Texture.Get(), &DescRV, ShaderResView.ReleaseAndGetAddressOf() ) );
+            DescRV.Texture2D.MipLevels = MipLevels;
+            DescRV.Texture2D.MostDetailedMip = 0;
 
-        if ( FAILED( hr ) ) {
-            LogError() << L"Coould not create ID3D11Texture2D, ID3D11ShaderResourceView, or ID3D11RenderTargetView. Killing created resources (If any).";
-            ReleaseAll();
-            if ( Result )*Result = hr;
-            return;
+            LE( device->CreateShaderResourceView( Texture.Get(), &DescRV, ShaderResView.ReleaseAndGetAddressOf() ) );
+
+            if ( FAILED( hr ) ) {
+                LogError() << L"Coould not create ID3D11Texture2D, ID3D11ShaderResourceView, or ID3D11RenderTargetView. Killing created resources (If any).";
+                ReleaseAll();
+                if ( Result )*Result = hr;
+                return;
+            } 
         }
 
         if ( arraySize <= 1 && (Desc.BindFlags & D3D11_BIND_UNORDERED_ACCESS) ) {

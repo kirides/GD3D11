@@ -135,14 +135,27 @@ void D3D11PFX_FSR2::Destroy() {
     }
 }
 
-ID3D11Resource* D3D11PFX_FSR2::GetResourceFromView( ID3D11View* view ) {
-    if ( !view ) return nullptr;
-    ID3D11Resource* resource = nullptr;
-    view->GetResource( &resource );
-    if ( resource ) {
-        resource->Release(); // GetResource increments ref count, we just want the raw pointer for the FFX SDK wrapper
+namespace {
+
+    ID3D11Resource* GetResourceFromView( ID3D11View* view ) {
+        if ( !view ) return nullptr;
+        ID3D11Resource* resource = nullptr;
+        view->GetResource( &resource );
+        if ( resource ) {
+            resource->Release(); // GetResource increments ref count, we just want the raw pointer for the FFX SDK wrapper
+        }
+        return resource;
     }
-    return resource;
+
+    FfxResource GetAsFfxResource( ID3D11Resource* res, const wchar_t* name ) {
+        return ffxGetResourceDX11_Fsr31_( res, GetFfxResourceDescriptionDX11( res ), name );
+    }
+
+    FfxResource GetAsFfxResource( ID3D11View* d3d11View, const wchar_t* name ) {
+        ID3D11Resource* res = GetResourceFromView( d3d11View );
+        return GetAsFfxResource( res, name );
+    }
+
 }
 
 XRESULT D3D11PFX_FSR2::Apply(
@@ -184,25 +197,19 @@ XRESULT D3D11PFX_FSR2::Apply(
     FfxFsr2DispatchDescription dispatchDesc = {};
     dispatchDesc.commandList = ffxGetCommandListDX11( context );
 
-    // Extract underlying resources
-    ID3D11Resource* colorRes = GetResourceFromView( color );
-    ID3D11Resource* depthRes = GetResourceFromView( depth );
-    ID3D11Resource* mvRes = GetResourceFromView( motionVectors );
-    ID3D11Resource* outRes = GetResourceFromView( output );
-
     // Register Resources with FFX SDK
 
-    dispatchDesc.color = ffxGetResourceDX11_Fsr31_( colorRes, GetFfxResourceDescriptionDX11( colorRes ), L"FSR2_InputColor" );
-    dispatchDesc.depth = ffxGetResourceDX11_Fsr31_( depthRes, GetFfxResourceDescriptionDX11( depthRes ), L"FSR2_InputDepth" );
-    dispatchDesc.motionVectors = ffxGetResourceDX11_Fsr31_( mvRes, GetFfxResourceDescriptionDX11( mvRes ), L"FSR2_InputMotionVectors" );
-    dispatchDesc.output = ffxGetResourceDX11_Fsr31_( outRes, GetFfxResourceDescriptionDX11( outRes ), L"FSR2_OutputColor" );
+    dispatchDesc.color = GetAsFfxResource( color, L"FSR2_InputColor" );
+    dispatchDesc.depth = GetAsFfxResource( depth, L"FSR2_InputDepth" );
+    dispatchDesc.motionVectors = GetAsFfxResource( motionVectors, L"FSR2_InputMotionVectors" );
+    dispatchDesc.output = GetAsFfxResource( output, L"FSR2_OutputColor" );
 
     // Optional Resources (Passing nullptr handles them internally, e.g., Auto Exposure)
     // dispatchDesc.exposure = ffxGetResourceDX11_Fsr31_( nullptr, GetFfxResourceDescriptionDX11(nullptr), L"" );
     if (reactiveMask != nullptr) {
         ID3D11Resource* reactiveRes = GetResourceFromView( reactiveMask );
-        dispatchDesc.reactive = ffxGetResourceDX11_Fsr31_( reactiveRes, GetFfxResourceDescriptionDX11(reactiveRes), L"FSR2_ReactiveMask" );
-        dispatchDesc.transparencyAndComposition = ffxGetResourceDX11_Fsr31_( reactiveRes, GetFfxResourceDescriptionDX11( reactiveRes ), L"FSR2_T_C" );
+        // dispatchDesc.reactive = GetAsFfxResource( reactiveMask, L"FSR2_ReactiveMask" );
+        dispatchDesc.transparencyAndComposition = GetAsFfxResource( reactiveMask, L"FSR2_T_C" );
     }
 
     // Set Dispatch Properties

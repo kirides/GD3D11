@@ -35,6 +35,9 @@ XRESULT D3D11PFX_CAS::Apply( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceVi
     Microsoft::WRL::ComPtr<ID3D11DepthStencilView> oldDSV;
     context->OMGetRenderTargets( 1, oldRTV.GetAddressOf(), oldDSV.GetAddressOf() );
 
+    ID3D11RenderTargetView* nullRTVs[6] { nullptr, nullptr, nullptr, nullptr, nullptr, nullptr };
+    context->OMSetRenderTargets( 6, nullRTVs, nullptr );
+
     RenderToTextureBuffer& tempBuffer = intermediateBuffer;
 
     // update the temp buffer with the latest backbuffer data

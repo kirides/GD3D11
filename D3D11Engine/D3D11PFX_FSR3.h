@@ -43,6 +43,7 @@ public:
         ID3D11ShaderResourceView* color,
         ID3D11ShaderResourceView* depth,
         ID3D11ShaderResourceView* motionVectors,
+        ID3D11ShaderResourceView* reactiveMask,
         ID3D11RenderTargetView* output, // We extract the ID3D11Resource from this
         const INT2& inputSize,
         const INT2& outputSize,
@@ -57,9 +58,6 @@ public:
         float sharpness = 0.2f );
 
 private:
-    /** Helper to extract an ID3D11Resource from a View (SRV, RTV, etc) */
-    ID3D11Resource* GetResourceFromView( ID3D11View* view );
-
     D3D11PfxRenderer* Renderer;
 
     FfxInterface m_ffxInterface;

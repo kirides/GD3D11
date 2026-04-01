@@ -166,6 +166,13 @@ void D3D11PFX_TAA::AdvanceJitter() {
 void D3D11PFX_TAA::RenderVelocityBuffer(
     const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& depthSRV) {
     
+    if ( m_recreate ) {
+        if ( !Init() ) {
+            return;
+        }
+        m_recreate = false;
+    }
+
     // depthSRV is using reverse-z where far plane is 0.0 and near plane is 1.0
     // where most "near" items are in the range of 0.05 to 0.2, and all far items are lower.
 

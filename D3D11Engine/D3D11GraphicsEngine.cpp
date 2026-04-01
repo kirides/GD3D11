@@ -45,6 +45,7 @@
 
 #include "D3D11PFX_FSR1.h"
 #include "D3D11PFX_FSR2.h"
+#include "D3D11PFX_FSR3.h"
 #include "D3D11PFX_TAA.h"
 #include "ImGuiShim.h"
 #include "zCModel.h"
@@ -960,10 +961,6 @@ XRESULT D3D11GraphicsEngine::RecreateBuffers() {
         GetDevice().Get(), roundedTextureResolution.x, roundedTextureResolution.y, DXGI_FORMAT_R32_TYPELESS, nullptr,
         DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32_FLOAT );
 
-    m_NativeSizeDepthStencil = std::make_unique<RenderToDepthStencilBuffer>(
-        GetDevice().Get(), roundedTextureResolution.x, roundedTextureResolution.y, DXGI_FORMAT_R32_TYPELESS, nullptr,
-        DXGI_FORMAT_D32_FLOAT, DXGI_FORMAT_R32_FLOAT );
-
     // Create PFX-Renderer
     if ( !PfxRenderer ) PfxRenderer = std::make_unique<D3D11PfxRenderer>();
 
@@ -1388,7 +1385,6 @@ XRESULT D3D11GraphicsEngine::OnEndFrame() {
 XRESULT D3D11GraphicsEngine::Clear( const float4& color ) {
     const Microsoft::WRL::ComPtr<ID3D11DeviceContext1>& context = GetContext();
     context->ClearDepthStencilView( DepthStencilBuffer->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
-    context->ClearDepthStencilView( m_NativeSizeDepthStencil->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
 
     context->ClearRenderTargetView( HDRBackBuffer->GetRenderTargetView().Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )) );
     context->ClearRenderTargetView( Backbuffer->GetRenderTargetView().Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )) );
@@ -2540,10 +2536,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(), nullptr );
 
     bool requireJitter = 
-        // upscaling using FSR 2 (temporal)
-        (rendererState.RendererSettings.ResolutionScalePercent < 100 && rendererState.RendererSettings.Upscaler == GothicRendererSettings::E_Upscaler::UPSCALER_FSR_2)
-        // FSR2 based AA
-        || (rendererState.RendererSettings.ResolutionScalePercent == 100 && rendererState.RendererSettings.AntiAliasingMode == GothicRendererSettings::AA_FSR)
+        rendererState.RendererSettings.AntiAliasingMode == GothicRendererSettings::AA_FSR
         || rendererState.RendererSettings.AntiAliasingMode == GothicRendererSettings::AA_TAA
         ;
 
@@ -2617,7 +2610,6 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         pass.m_executeCallback = [this, &rendererState, colorResource](const RenderGraph& graph)->void {
             const Microsoft::WRL::ComPtr<ID3D11DeviceContext1>& context = GetContext();
             context->ClearDepthStencilView( DepthStencilBuffer->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
-            context->ClearDepthStencilView( m_NativeSizeDepthStencil->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
 
             context->ClearRenderTargetView( HDRBackBuffer->GetRenderTargetView().Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )) );
             context->ClearRenderTargetView( Backbuffer->GetRenderTargetView().Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )) );
@@ -3056,26 +3048,18 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         } );
     }
 
-    // If we currently are underwater, then draw underwater effects
-    if ( Engine::GAPI->IsUnderWater() ) {
-        graph.AddPass( L"Prepare finalize frame", [&]( RGBuilder& builder, RenderPass& pass ) {
-            builder.Write( backBufferHandle );
+    graph.AddPass( L"Prepare finalize frame", [&]( RGBuilder& builder, RenderPass& pass ) {
+        builder.Write( backBufferHandle );
 
-            pass.m_executeCallback = [this](const RenderGraph&) {
-                // Clear here to get a working depthbuffer but no interferences with world
-                // geometry for gothic UI-Rendering
-                GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(), nullptr );
+        pass.m_executeCallback = [this](const RenderGraph&) {
+            // Clear here to get a working depthbuffer but no interferences with world
+            // geometry for gothic UI-Rendering
+            GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(), nullptr );
 
-                // Store the current depth state to the copy buffer before clear
-                CopyDepthStencil();
-
-                GetContext()->ClearDepthStencilView( DepthStencilBuffer->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
-                GetContext()->ClearDepthStencilView( m_NativeSizeDepthStencil->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
-                
-                SetDefaultStates();
-            };
-        } );
-    }    
+            // Store the current depth state to the copy buffer before clear
+            CopyDepthStencil();
+        };
+    } );
 
     // Before returning to gothics UI, set render target to backbuffer
     {
@@ -3109,8 +3093,10 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                         1.0f - sharpenFactor );
                 };
             } );
-        } else if ( (rendererState.RendererSettings.ResolutionScalePercent < 100 && rendererState.RendererSettings.Upscaler == GothicRendererSettings::E_Upscaler::UPSCALER_FSR_2)
-            || (rendererState.RendererSettings.ResolutionScalePercent == 100 && rendererState.RendererSettings.AntiAliasingMode == GothicRendererSettings::AA_FSR)) {
+        } else if ( rendererState.RendererSettings.Upscaler == GothicRendererSettings::E_Upscaler::UPSCALER_FSR_2
+            && (rendererState.RendererSettings.ResolutionScalePercent <= 100)
+            && rendererState.RendererSettings.AntiAliasingMode == GothicRendererSettings::AA_FSR
+            ) {
 
             graph.AddPass( L"FSR 2", [&]( RGBuilder& builder, RenderPass& pass ) {
                 builder.Read( velocityBufferHandle );
@@ -3164,6 +3150,62 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                         sharpenFactor /* FSR2 has 0..1 (sharp)*/);
                     };
             } );
+        } else if ( rendererState.RendererSettings.Upscaler == GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3
+            && (rendererState.RendererSettings.ResolutionScalePercent <= 100)
+            && rendererState.RendererSettings.AntiAliasingMode == GothicRendererSettings::AA_FSR ) {
+
+            graph.AddPass( L"FSR 3", [&]( RGBuilder& builder, RenderPass& pass ) {
+                builder.Read( velocityBufferHandle );
+                builder.Read( reactiveMaskResource );
+                builder.Read( backBufferHandle );
+                builder.Write( backBufferHandle );
+
+                builder.Write( backBufferHandle );
+
+                pass.m_executeCallback = [this, &rendererState, backBufferHandle, velocityBufferHandle, reactiveMaskResource]( const RenderGraph& graph ) {
+                    auto backbufferTex = graph.GetPhysicalTexture( backBufferHandle );
+
+                    auto sharpenFactor = rendererState.RendererSettings.SharpenFactor;
+
+                    auto velocityBufferTex = graph.GetPhysicalTexture( velocityBufferHandle );
+                    auto reactiveMask = graph.GetPhysicalTexture( reactiveMaskResource );
+
+                    auto jitter = PfxRenderer->GetTAAEffect()->GetJitterOffsetUnscaled();
+                    const auto inputSize = GetResolution();
+
+                    float fovY, fovX;
+                    auto cam = ((zCCamera*)oCGame::GetGame()->_zCSession_camera);
+                    cam->GetFOV( fovY, fovX );
+
+                    // Our Depth Buffer uses reversed Z, so we need to tell FSR2 about it to get correct results
+                    // calculations from GothicAPI::GetProjectionMatrix()
+                    float NearZ = rendererState.RendererSettings.SectionDrawRadius * WORLD_SECTION_SIZE;
+                    float FarZ = 1.0f;
+                    GetContext()->CSSetSamplers( 0, 1, LinearSamplerState.GetAddressOf() );
+                    GetContext()->CSSetSamplers( 1, 1, LinearSamplerState.GetAddressOf() );
+
+                    ID3D11Buffer* nullCBs[5]{};
+                    GetContext()->CSSetConstantBuffers( 0, std::size( nullCBs ), nullCBs );
+
+                    PfxRenderer->GetFSR3()->Apply(
+                        backbufferTex->GetShaderResView().Get(),
+                        DepthStencilBufferCopy->GetShaderResView().Get(),
+                        velocityBufferTex->GetShaderResView().Get(),
+                        reactiveMask->GetShaderResView().Get(),
+                        Backbuffer->GetRenderTargetView().Get(),
+                        inputSize,
+                        GetBackbufferResolution(),
+                        Engine::GAPI->GetDeltaTime() * 1000.f,
+                        jitter,
+                        float2( static_cast<float>(inputSize.x), static_cast<float>(inputSize.y) ),
+                        false,
+                        fovY,
+                        NearZ,
+                        FarZ,
+                        sharpenFactor >= 0.001f,
+                        sharpenFactor /* FSR3 has 0..1 (sharp)*/ );
+                    };
+            } );
         } else if (rendererState.RendererSettings.SharpeningMode
                 && rendererState.RendererSettings.SharpenFactor > 0.0f ) {
 
@@ -3211,6 +3253,9 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         graph.Compile();
         graph.Execute();
         
+        GetContext()->ClearDepthStencilView( DepthStencilBuffer->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
+        SetDefaultStates();
+
         // Below this, we assume UI/HUD rendering
         rendererState.RendererInfo.RenderStage = STAGE_DRAW_HUD;
 
@@ -4848,7 +4893,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
     // Set shader
     SetActivePixelShader( "PS_AtmosphereGround" );
     auto nrmPS = ActivePS;
-    SetActivePixelShader( "PS_DiffuseAlphaTest" );
+    SetActivePixelShader( "PS_DiffuseAlphaTestShadows" );
     auto defaultPS = ActivePS;
     SetActiveVertexShader( "VS_Ex" );
 
@@ -6016,7 +6061,7 @@ D3D11ENGINE_RENDER_STAGE D3D11GraphicsEngine::GetRenderingStage() {
 void D3D11GraphicsEngine::DrawVobSingle( VobInfo* vob, zCCamera& camera ) {
     Engine::GAPI->SetViewTransformXM( XMLoadFloat4x4( &camera.GetTransformDX( zCCamera::ETransformType::TT_VIEW ) ) );
     // TODO: Does this even need a depth stencil? we clear the previous one anyways
-    GetContext()->OMSetRenderTargets( 1, Backbuffer->GetRenderTargetView().GetAddressOf(), m_NativeSizeDepthStencil->GetDepthStencilView().Get() );
+    GetContext()->OMSetRenderTargets( 1, Backbuffer->GetRenderTargetView().GetAddressOf(), nullptr );
 
     // Set backface culling
     Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_BACK;
