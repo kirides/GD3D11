@@ -33,7 +33,7 @@ D3D11ConstantBuffer::D3D11ConstantBuffer( int size, void* data ) {
 D3D11ConstantBuffer::~D3D11ConstantBuffer() {}
 
 /** Updates the buffer */
-void D3D11ConstantBuffer::UpdateBuffer( const void* data ) {
+D3D11ConstantBuffer* D3D11ConstantBuffer::UpdateBuffer( const void* data ) {
     D3D11GraphicsEngineBase* engine = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine);
 
     D3D11_MAPPED_SUBRESOURCE res;
@@ -44,9 +44,10 @@ void D3D11ConstantBuffer::UpdateBuffer( const void* data ) {
 
         BufferDirty = true;
     }
+    return this;
 }
 
-void D3D11ConstantBuffer::UpdateBuffer( const void* data, UINT size ) {
+D3D11ConstantBuffer* D3D11ConstantBuffer::UpdateBuffer( const void* data, UINT size ) {
     D3D11GraphicsEngineBase* engine = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine);
 
     D3D11_MAPPED_SUBRESOURCE res;
@@ -57,37 +58,44 @@ void D3D11ConstantBuffer::UpdateBuffer( const void* data, UINT size ) {
 
         BufferDirty = true;
     }
+    return this;
 }
 
 /** Binds the buffer */
-void D3D11ConstantBuffer::BindToVertexShader( int slot ) {
+D3D11ConstantBuffer* D3D11ConstantBuffer::BindToVertexShader( int slot ) {
     reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->VSSetConstantBuffers( slot, 1, Buffer.GetAddressOf() );
     BufferDirty = false;
+    return this;
 }
 
-void D3D11ConstantBuffer::BindToPixelShader( int slot ) {
+D3D11ConstantBuffer* D3D11ConstantBuffer::BindToPixelShader( int slot ) {
     reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->PSSetConstantBuffers( slot, 1, Buffer.GetAddressOf() );
     BufferDirty = false;
+    return this;
 }
 
-void D3D11ConstantBuffer::BindToDomainShader( int slot ) {
+D3D11ConstantBuffer* D3D11ConstantBuffer::BindToDomainShader( int slot ) {
     reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->DSSetConstantBuffers( slot, 1, Buffer.GetAddressOf() );
     BufferDirty = false;
+    return this;
 }
 
-void D3D11ConstantBuffer::BindToHullShader( int slot ) {
+D3D11ConstantBuffer* D3D11ConstantBuffer::BindToHullShader( int slot ) {
     reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->HSSetConstantBuffers( slot, 1, Buffer.GetAddressOf() );
     BufferDirty = false;
+    return this;
 }
 
-void D3D11ConstantBuffer::BindToGeometryShader( int slot ) {
+D3D11ConstantBuffer* D3D11ConstantBuffer::BindToGeometryShader( int slot ) {
     reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->GSSetConstantBuffers( slot, 1, Buffer.GetAddressOf() );
     BufferDirty = false;
+    return this;
 }
 
-void D3D11ConstantBuffer::BindToComputeShader( int slot ) {
+D3D11ConstantBuffer* D3D11ConstantBuffer::BindToComputeShader( int slot ) {
     reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->CSSetConstantBuffers( slot, 1, Buffer.GetAddressOf() );
     BufferDirty = false;
+    return this;
 }
 
 /** Returns whether this buffer has been updated since the last bind */

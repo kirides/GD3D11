@@ -822,6 +822,12 @@
     <ClInclude Include="D3D11RenderQueue.h">
       <Filter>Engine\D3D11</Filter>
     </ClInclude>
+    <ClInclude Include="GraphicsShader.h">
+      <Filter>Engine</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D11GraphicsShader.h">
+      <Filter>Engine\D3D11</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp" />
@@ -1110,6 +1116,12 @@
       <Filter>Engine\D3D11</Filter>
     </ClCompile>
     <ClCompile Include="D3D11RenderQueue.cpp">
+      <Filter>Engine\D3D11</Filter>
+    </ClCompile>
+    <ClCompile Include="GraphicsShader.cpp">
+      <Filter>Engine</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D11GraphicsShader.cpp">
       <Filter>Engine\D3D11</Filter>
     </ClCompile>
   </ItemGroup>

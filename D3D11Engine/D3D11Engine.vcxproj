@@ -799,6 +799,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="BaseWidget.h" />
     <ClInclude Include="BasicTimer.h" />
     <ClInclude Include="D3D11CascadedShadowMapBuffer.h" />
+    <ClInclude Include="D3D11GraphicsShader.h" />
     <ClInclude Include="D3D11ShadowAtlas.h" />
     <ClInclude Include="CGameManager.h" />
     <ClInclude Include="D3D11AGS.h" />
@@ -874,6 +875,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="GothicMemoryLocations2_6_fix.h" />
     <ClInclude Include="GothicMemoryLocations1_12f.h" />
     <ClInclude Include="GraphicsEventRecord.h" />
+    <ClInclude Include="GraphicsShader.h" />
     <ClInclude Include="GSky.h" />
     <ClInclude Include="GSpriteCloud.h" />
     <ClInclude Include="GVegetationBox.h" />
@@ -1055,6 +1057,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="BaseLineRenderer.cpp" />
     <ClCompile Include="BaseWidget.cpp" />
     <ClCompile Include="D3D11CascadedShadowMapBuffer.cpp" />
+    <ClCompile Include="D3D11GraphicsShader.cpp" />
     <ClCompile Include="D3D11ShadowAtlas.cpp" />
     <ClCompile Include="D3D11AGS.cpp" />
     <ClCompile Include="D3D11ConstantBuffer.cpp" />
@@ -1145,6 +1148,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="GMeshSimple.cpp" />
     <ClCompile Include="GothicAPI.cpp" />
     <ClCompile Include="GothicExternals.cpp" />
+    <ClCompile Include="GraphicsShader.cpp" />
     <ClCompile Include="GSky.cpp" />
     <ClCompile Include="GSpriteCloud.cpp" />
     <ClCompile Include="GVegetationBox.cpp" />

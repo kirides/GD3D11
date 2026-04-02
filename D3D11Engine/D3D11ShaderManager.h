@@ -43,6 +43,7 @@ public:
     ShaderInfo& with_category( ShaderCategory c ) { contentCategory = c; return *this; }
     ShaderInfo& with_entrypoint( std::string ep ) { entryPoint = std::move( ep ); return *this; }
     ShaderInfo& with_cbuffer( int size ) { cBufferSizes.push_back( size ); return *this; }
+    ShaderInfo& with_cbuffer(const std::string& name, int size ) { cBufferSizes.push_back( size ); return *this; }
 
 private:
     ShaderInfo() : type( ShaderType::None ), shaderIndex( 0 ), layout( 0 ), contentCategory( ShaderCategory::Other ) {}

@@ -166,7 +166,8 @@ HRESULT D3D11ShaderManager::CompileShaderFromFile( const WCHAR* szFileName, LPCS
     ;
 #else
 #endif
-    dwShaderFlags |= D3DCOMPILE_OPTIMIZATION_LEVEL3;
+    dwShaderFlags |= D3DCOMPILE_OPTIMIZATION_LEVEL3
+    ;
 
     // Construct makros
     std::vector<D3D_SHADER_MACRO> m;
@@ -328,8 +329,7 @@ XRESULT D3D11ShaderManager::Init() {
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_Grass>( "PS_Grass.hlsl" )
         .with_cbuffer( sizeof( MaterialInfo::Buffer ) ) );
 
-    Shaders.push_back( ShaderInfo::make<VShaderID::VS_PFX>( "VS_PFX.hlsl" )
-        .with_cbuffer( sizeof( PFXVS_ConstantBuffer ) ) );
+    Shaders.push_back( ShaderInfo::make<VShaderID::VS_PFX>( "VS_PFX.hlsl" ) );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_CinemaScope>( "VS_CinemaScope.hlsl" )
         .with_cbuffer( sizeof( PFXVS_ConstantBuffer ) ) );
@@ -697,9 +697,9 @@ XRESULT D3D11ShaderManager::CompileShader( const ShaderInfo& si ) {
                 } else {
                     // Compilation succeeded, switch the shader
 
-                    for ( unsigned int j = 0; j < si.cBufferSizes.size(); j++ ) {
-                        vs->GetConstantBuffer().push_back( new D3D11ConstantBuffer( si.cBufferSizes[j], nullptr ) );
-                    }
+                    //for ( unsigned int j = 0; j < si.cBufferSizes.size(); j++ ) {
+                    //    vs->GetConstantBuffer().emplace_back( std::make_unique<D3D11ConstantBuffer>( si.cBufferSizes[j], nullptr ) );
+                    //}
                     UpdateVShader( si.shaderIndex, vs );
                 }
             } else {
@@ -707,9 +707,9 @@ XRESULT D3D11ShaderManager::CompileShader( const ShaderInfo& si ) {
                     LogInfo() << "Loading shader: " << si.name;
 
                 XLE( vs->LoadShader( ("system\\GD3D11\\shaders\\" + si.fileName).c_str(), si.layout, !si.entryPoint.empty() ? si.entryPoint.c_str() : nullptr, si.shaderMakros ) );
-                for ( unsigned int j = 0; j < si.cBufferSizes.size(); j++ ) {
-                    vs->GetConstantBuffer().push_back( new D3D11ConstantBuffer( si.cBufferSizes[j], nullptr ) );
-                }
+                /*for ( unsigned int j = 0; j < si.cBufferSizes.size(); j++ ) {
+                    vs->GetConstantBuffer().emplace_back( std::make_unique<D3D11ConstantBuffer>( si.cBufferSizes[j], nullptr ) );
+                }*/
                 UpdateVShader( si.shaderIndex, vs );
             }
         } else if ( si.type == ShaderType::Pixel ) {
@@ -726,9 +726,9 @@ XRESULT D3D11ShaderManager::CompileShader( const ShaderInfo& si ) {
                 } else {
                     // Compilation succeeded, switch the shader
 
-                    for ( unsigned int j = 0; j < si.cBufferSizes.size(); j++ ) {
-                        ps->GetConstantBuffer().push_back( new D3D11ConstantBuffer( si.cBufferSizes[j], nullptr ) );
-                    }
+                    //for ( unsigned int j = 0; j < si.cBufferSizes.size(); j++ ) {
+                    //    ps->GetConstantBuffer().emplace_back( std::make_unique<D3D11ConstantBuffer>( si.cBufferSizes[j], nullptr ) );
+                    //}
                     UpdatePShader( si.shaderIndex, ps );
                 }
             } else {
@@ -736,9 +736,9 @@ XRESULT D3D11ShaderManager::CompileShader( const ShaderInfo& si ) {
                     LogInfo() << "Loading shader: " << si.name;
 
                 XLE( ps->LoadShader( ("system\\GD3D11\\shaders\\" + si.fileName).c_str(), !si.entryPoint.empty() ? si.entryPoint.c_str() : nullptr, si.shaderMakros ) );
-                for ( unsigned int j = 0; j < si.cBufferSizes.size(); j++ ) {
-                    ps->GetConstantBuffer().push_back( new D3D11ConstantBuffer( si.cBufferSizes[j], nullptr ) );
-                }
+                /*for ( unsigned int j = 0; j < si.cBufferSizes.size(); j++ ) {
+                    ps->GetConstantBuffer().emplace_back( std::make_unique<D3D11ConstantBuffer>( si.cBufferSizes[j], nullptr ) );
+                }*/
                 UpdatePShader( si.shaderIndex, ps );
             }
         } else if ( si.type == ShaderType::Geometry ) {
@@ -783,9 +783,9 @@ XRESULT D3D11ShaderManager::CompileShader( const ShaderInfo& si ) {
                 } else {
                     // Compilation succeeded, switch the shader
 
-                    for ( unsigned int j = 0; j < si.cBufferSizes.size(); j++ ) {
-                        cs->GetConstantBuffer().push_back( new D3D11ConstantBuffer( si.cBufferSizes[j], nullptr ) );
-                    }
+                    //for ( unsigned int j = 0; j < si.cBufferSizes.size(); j++ ) {
+                    //    cs->GetConstantBuffer().emplace_back( std::make_unique<D3D11ConstantBuffer>( si.cBufferSizes[j], nullptr ) );
+                    //}
                     UpdateCShader( si.shaderIndex, cs );
                 }
             } else {
@@ -793,9 +793,9 @@ XRESULT D3D11ShaderManager::CompileShader( const ShaderInfo& si ) {
                     LogInfo() << "Loading shader: " << si.name;
 
                 XLE( cs->LoadShader( ("system\\GD3D11\\shaders\\" + si.fileName).c_str(), !si.entryPoint.empty() ? si.entryPoint.c_str() : nullptr, si.shaderMakros ) );
-                for ( unsigned int j = 0; j < si.cBufferSizes.size(); j++ ) {
-                    cs->GetConstantBuffer().push_back( new D3D11ConstantBuffer( si.cBufferSizes[j], nullptr ) );
-                }
+                /*for ( unsigned int j = 0; j < si.cBufferSizes.size(); j++ ) {
+                    cs->GetConstantBuffer().emplace_back( std::make_unique<D3D11ConstantBuffer>( si.cBufferSizes[j], nullptr ) );
+                }*/
                 UpdateCShader( si.shaderIndex, cs );
             }
         }

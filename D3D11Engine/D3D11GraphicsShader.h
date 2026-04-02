@@ -1,0 +1,78 @@
+#pragma once
+#include "GraphicsShader.h"
+#include <d3d11.h>
+#include <d3d11shader.h>
+#include <parallel_hashmap/phmap.h>
+#include "D3D11ConstantBuffer.h"
+#include "Types.h"
+
+class D3D11GraphicsShader;
+class D3D11ConstantBuffer;
+
+struct GraphicsShaderConstantBuffer
+{
+public:
+    GraphicsShaderConstantBuffer()
+        : buffer( nullptr ),
+        slot( -1 ),
+        shader( nullptr )
+    {
+    }
+
+    GraphicsShaderConstantBuffer(
+        D3D11ConstantBuffer* buffer,
+        UINT slot,
+        D3D11GraphicsShader* shader)
+        : buffer(buffer),
+    slot(slot),
+    shader(shader)
+    {}
+
+    GraphicsShaderConstantBuffer& Update(const void* data) { 
+        if ( buffer ) {
+            buffer->UpdateBuffer(data);
+        }
+        return *this; 
+    }
+    
+    GraphicsShaderConstantBuffer& Update(const void* data, UINT size) { 
+        if ( buffer ) {
+            buffer->UpdateBuffer(data, size);
+        }
+        return *this; 
+    }
+    GraphicsShaderConstantBuffer& Bind();
+    GraphicsShaderConstantBuffer& Bind(UINT slot);
+private:
+    D3D11ConstantBuffer* buffer;
+    D3D11GraphicsShader* shader;
+    UINT slot;
+};
+
+class D3D11GraphicsShader 
+    : public GraphicsShader
+{
+public:
+    D3D11GraphicsShader() = default;
+    ~D3D11GraphicsShader() override = default;
+    /** Returns the input index for the given semantic name */
+    int32_t GetInputIndex( std::string_view name ) override;
+    
+    std::vector<std::unique_ptr<D3D11ConstantBuffer>>& GetConstantBuffer() { return ConstantBuffers; }
+
+    virtual void BindResource(std::string_view name, ID3D11ShaderResourceView* srv) = 0;
+    virtual void BindSampler(std::string_view name, ID3D11SamplerState* sampler) = 0;
+    virtual void BindBuffer( std::string_view name, D3D11ConstantBuffer* buffer) = 0;
+    virtual void BindBuffer(UINT slot, D3D11ConstantBuffer* buffer) = 0;
+    virtual GraphicsShaderConstantBuffer GetBuffer(std::string_view name);
+    
+    virtual XRESULT Apply() = 0;
+protected:
+    phmap::flat_hash_map<std::string, int32_t> InputSemanticToIndex;
+    phmap::flat_hash_map<std::string, D3D11ConstantBuffer*> ConstantBuffersByName;
+    std::vector<std::unique_ptr<D3D11ConstantBuffer>> ConstantBuffers;
+
+    virtual HRESULT ReflectShaderResources( ID3DBlob* shaderBlob );
+    virtual void OnReflectShader( ID3DBlob* blob, ID3D11ShaderReflection* pReflection,  const D3D11_SHADER_DESC& shaderDesc );
+    virtual void OnReflectShaderResource( ID3D11ShaderReflection* pReflection, const D3D11_SHADER_DESC& shaderDesc, const D3D11_SHADER_INPUT_BIND_DESC& resourceDesc );
+};

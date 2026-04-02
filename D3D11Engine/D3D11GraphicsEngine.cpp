@@ -1985,9 +1985,9 @@ XRESULT D3D11GraphicsEngine::DrawVertexArray( ExVertexStruct* vertices,
     // ShaderManager->GetVShader("VS_TransformedEx");
 
     // Bind the FF-Info to the first PS slot
-    ActivePS->GetConstantBuffer()[0]->UpdateBuffer(
-        &Engine::GAPI->GetRendererState().GraphicsState );
-    ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+    ActivePS->GetBuffer( "FFPipelineConstantBuffer" )
+        .Update( &Engine::GAPI->GetRendererState().GraphicsState )
+        .Bind();
 
     SetupVS_ExMeshDrawCall();
 
@@ -2018,10 +2018,9 @@ XRESULT D3D11GraphicsEngine::DrawIndexedVertexArray( ExVertexStruct* vertices,
     auto vShader = ActiveVS;  // ShaderManager->GetVShader("VS_TransformedEx");
 
     // Bind the FF-Info to the first PS slot
-
-    ActivePS->GetConstantBuffer()[0]->UpdateBuffer(
-        &Engine::GAPI->GetRendererState().GraphicsState );
-    ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+    ActivePS->GetBuffer( "FFPipelineConstantBuffer" )
+        .Update( &Engine::GAPI->GetRendererState().GraphicsState )
+        .Bind();
 
     SetupVS_ExMeshDrawCall();
 
@@ -2056,9 +2055,9 @@ XRESULT D3D11GraphicsEngine::DrawVertexBufferFF( D3D11VertexBuffer* vb,
     SetupVS_ExMeshDrawCall();
 
     // Bind the FF-Info to the first PS slot
-    ActivePS->GetConstantBuffer()[0]->UpdateBuffer(
-        &Engine::GAPI->GetRendererState().GraphicsState );
-    ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+    ActivePS->GetBuffer( "FFPipelineConstantBuffer" )
+        .Update( &Engine::GAPI->GetRendererState().GraphicsState )
+        .Bind();
 
     UINT offset = 0;
     UINT uStride = stride;
@@ -2182,7 +2181,6 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
         SetActiveVertexShader( VShaderID::VS_ExSkeletal );
     }
 
-    InfiniteRangeConstantBuffer->BindToPixelShader( 3 );
 
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
@@ -2196,22 +2194,22 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
     // Set PrevWorld for motion vectors (use current world if no previous is available)
     cb2.PrevWorld = vi->HasValidPrevTransforms ? vi->PrevWorldMatrix : world;
 
-    ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &cb2 );
-    ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( 1 );
-
+    ActiveVS->GetBuffer("Matrices_PerInstances").Update( &cb2 ).Bind();
     // Copy bones
-    ActiveVS->GetConstantBuffer()[2]->UpdateBuffer( &transforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( transforms.size(), NUM_MAX_BONES ) );
-    ActiveVS->GetConstantBuffer()[2]->BindToVertexShader( 2 );
+    ActiveVS->GetBuffer("BoneTransforms").Update( &transforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( transforms.size(), NUM_MAX_BONES ) ).Bind();
 
     // Copy previous frame bone transforms for motion vectors (only for main scene rendering, not shadow maps)
-    if ( GetRenderingStage() != DES_SHADOWMAP_CUBE && GetRenderingStage() != DES_SHADOWMAP ) {
+    if ( GetRenderingStage() == DES_SHADOWMAP_CUBE ) {
+        // Don't bind previous, as we don't use them here yet.
+    }
+    else if ( GetRenderingStage() != DES_SHADOWMAP ) {
         const Span<XMFLOAT4X4> prevTransforms = (vi->HasValidPrevTransforms && !vi->PrevBoneTransforms.empty())
             ? make_span(vi->PrevBoneTransforms) 
             : transforms;
-        ActiveVS->GetConstantBuffer()[3]->UpdateBuffer( &prevTransforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( prevTransforms.size(), NUM_MAX_BONES ) );
-        ActiveVS->GetConstantBuffer()[3]->BindToVertexShader( 3 );
+        
+        ActiveVS->GetBuffer("PrevBoneTransforms").Update( &prevTransforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( prevTransforms.size(), NUM_MAX_BONES ) ).Bind();
     } else {
-        ActiveVS->GetConstantBuffer()[2]->BindToVertexShader( 3 ); // just bind the current bones again
+        ActiveVS->GetBuffer("BoneTransforms").Bind( ActiveVS->GetInputIndex( "PrevBoneTransforms" ) ); // just bind the current bones again
     }
 
     if ( transforms.size() >= NUM_MAX_BONES ) {
@@ -2281,8 +2279,6 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh_Layered( SkeletalVobInfo* vi,
     const Span<XMFLOAT4X4> transforms, float4 color, XMFLOAT4X4& world, float fatness ) {
     SetActiveVertexShader( VShaderID::VS_ExSkeletalLayered );
 
-    InfiniteRangeConstantBuffer->BindToPixelShader( 3 );
-
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
 
@@ -2292,14 +2288,9 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh_Layered( SkeletalVobInfo* vi,
     cb2.World = world;
     cb2.PI_ModelColor = color;
     cb2.PI_ModelFatness = fatness;
-    // Note: PrevWorld not used in layered rendering (shadow maps don't need motion vectors)
-
-    ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &cb2 );
-    ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( 1 );
-
+    ActiveVS->GetBuffer("Matrices_PerInstances").Update( &cb2 ).Bind();
     // Copy bones
-    ActiveVS->GetConstantBuffer()[2]->UpdateBuffer( &transforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( transforms.size(), NUM_MAX_BONES ) );
-    ActiveVS->GetConstantBuffer()[2]->BindToVertexShader( 2 );
+    ActiveVS->GetBuffer("BoneTransforms").Update( &transforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( transforms.size(), NUM_MAX_BONES ) ).Bind();
 
     // Note: Slot b3 is used for cbPerCubeRender in VS_ExSkeletalLayered, not PrevBoneTransforms
     // Motion vectors are not needed for shadow map rendering
@@ -3307,11 +3298,7 @@ void D3D11GraphicsEngine::SetupVS_ExConstantBuffer() {
         cb.UnjitteredViewProj = cb.ViewProj;
     }
 
-    ActiveVS->GetConstantBuffer()[0]->UpdateBuffer( &cb );
-    ActiveVS->GetConstantBuffer()[0]->BindToVertexShader( 0 );
-    ActiveVS->GetConstantBuffer()[0]->BindToDomainShader( 0 );
-    ActiveVS->GetConstantBuffer()[0]->BindToHullShader( 0 );
-    ActiveVS->GetConstantBuffer()[0]->BindToGeometryShader( 0 );
+    ActiveVS->GetBuffer("Matrices_PerFrame").Update(&cb).Bind();
 }
 
 void D3D11GraphicsEngine::SetupVS_ExPerInstanceConstantBuffer() {
@@ -3320,8 +3307,7 @@ void D3D11GraphicsEngine::SetupVS_ExPerInstanceConstantBuffer() {
     VS_ExConstantBuffer_PerInstance cb = {};
     cb.World = world;
 
-    ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &cb );
-    ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( 1 );
+    ActiveVS->GetBuffer("Matrices_PerInstances").Update(&cb).Bind();
 }
 
 bool SectionRenderlistSortCmp( std::pair<float, WorldMeshSectionInfo*>& a,
@@ -3403,13 +3389,14 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
     SetupVS_ExConstantBuffer();
 
     // Set constant buffer
-    ActivePS->GetConstantBuffer()[0]->UpdateBuffer(
-        &Engine::GAPI->GetRendererState().GraphicsState );
-    ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+    ActivePS->GetBuffer( "FFPipelineConstantBuffer" )
+        .Update( &Engine::GAPI->GetRendererState().GraphicsState )
+        .Bind();
 
     GSky* sky = Engine::GAPI->GetSky();
-    ActivePS->GetConstantBuffer()[1]->UpdateBuffer( &sky->GetAtmosphereCB() );
-    ActivePS->GetConstantBuffer()[1]->BindToPixelShader( 1 );
+    ActivePS->GetBuffer( "Atmosphere" )
+        .Update( &sky->GetAtmosphereCB() )
+        .Bind();
 
     ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &XMMatrixIdentity() );
     ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( 1 );
@@ -3528,18 +3515,23 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh_Indirect( bool noTextures ) {
     GetContext()->PSSetShaderResources( 4, 1, ReflectionCube.GetAddressOf() );
 
     // Set constant buffer
-    ActivePS->GetConstantBuffer()[0]->UpdateBuffer(
-        &Engine::GAPI->GetRendererState().GraphicsState );
-    ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+    ActiveVS->GetBuffer( "Matrices_PerInstances" )
+        .Update( &XMMatrixIdentity() )
+        .Bind();
 
-    GSky* sky = Engine::GAPI->GetSky();
-    ActivePS->GetConstantBuffer()[1]->UpdateBuffer( &sky->GetAtmosphereCB() );
-    ActivePS->GetConstantBuffer()[1]->BindToPixelShader( 1 );
+    auto updatePSBuffers = [this] {
+        ActivePS->GetBuffer( "FFPipelineConstantBuffer" )
+            .Update( &Engine::GAPI->GetRendererState().GraphicsState )
+            .Bind();
 
-    ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &XMMatrixIdentity() );
-    ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( 1 );
+        GSky* sky = Engine::GAPI->GetSky();
+        ActivePS->GetBuffer( "Atmosphere" )
+            .Update( &sky->GetAtmosphereCB() )
+            .Bind();
 
-    InfiniteRangeConstantBuffer->BindToPixelShader( 3 );
+        ActivePS->BindBuffer( "DIST_Distance", InfiniteRangeConstantBuffer.get() );
+    };
+    updatePSBuffers();
 
     static std::vector<WorldMeshSectionInfo*> renderList; renderList.clear();
     Engine::GAPI->CollectVisibleSections( renderList );
@@ -3648,6 +3640,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh_Indirect( bool noTextures ) {
 
     SetActivePixelShader( PShaderID::PS_Diffuse );
     ActivePS->Apply();
+    UINT materialSlot = ActivePS->GetInputIndex( "MI_MaterialInfo" );
 
     // Now draw the actual pixels
     zCTexture* bound = nullptr;
@@ -3684,12 +3677,14 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh_Indirect( bool noTextures ) {
             GetContext()->PSSetShaderResources( 0, 3, srv );
 
             // Get the right shader for it
-            BindShaderForTexture( tex, false, zMAT_ALPHA_FUNC_MAT_DEFAULT );
+            if ( BindShaderForTexture( tex, false, zMAT_ALPHA_FUNC_MAT_DEFAULT ) ) {
+                updatePSBuffers();
+            }
 
             if ( info ) {
                 if ( !info->Constantbuffer ) info->UpdateConstantbuffer();
 
-                info->Constantbuffer->BindToPixelShader( 2 );
+                info->Constantbuffer->BindToPixelShader( materialSlot );
             }
             bound = tex;
         }
@@ -3736,12 +3731,14 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh_Indirect( bool noTextures ) {
             Context->PSSetShaderResources( 0, 3, srv );
 
             // Get the right shader for it
-            BindShaderForTexture( texture, false, zMAT_ALPHA_FUNC_MAT_DEFAULT );
+            if ( BindShaderForTexture( texture, false, zMAT_ALPHA_FUNC_MAT_DEFAULT ) ) {
+                updatePSBuffers();
+            }
 
             if ( info ) {
                 if ( !info->Constantbuffer ) info->UpdateConstantbuffer();
 
-                info->Constantbuffer->BindToPixelShader( 2 );
+                info->Constantbuffer->BindToPixelShader( materialSlot );
             }
         }
 
@@ -3761,7 +3758,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
         return XR_SUCCESS;
 
     // Setup default renderstates
-    SetDefaultStates();
+    SetDefaultStates(); 
 
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
     Engine::GAPI->SetViewTransformXM( view );
@@ -3777,18 +3774,24 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
     GetContext()->PSSetShaderResources( 4, 1, ReflectionCube.GetAddressOf() );
 
     // Set constant buffer
-    ActivePS->GetConstantBuffer()[0]->UpdateBuffer(
-        &Engine::GAPI->GetRendererState().GraphicsState );
-    ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
 
-    GSky* sky = Engine::GAPI->GetSky();
-    ActivePS->GetConstantBuffer()[1]->UpdateBuffer( &sky->GetAtmosphereCB() );
-    ActivePS->GetConstantBuffer()[1]->BindToPixelShader( 1 );
+    ActiveVS->GetBuffer( "Matrices_PerInstances" )
+        .Update( &XMMatrixIdentity() )
+        .Bind();
 
-    ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &XMMatrixIdentity() );
-    ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( 1 );
-    
-    InfiniteRangeConstantBuffer->BindToPixelShader( 3 );
+    auto updatePSBuffers = [this] {
+        ActivePS->GetBuffer( "FFPipelineConstantBuffer" )
+            .Update( &Engine::GAPI->GetRendererState().GraphicsState )
+            .Bind();
+
+        GSky* sky = Engine::GAPI->GetSky();
+        ActivePS->GetBuffer( "Atmosphere" )
+            .Update( &sky->GetAtmosphereCB() )
+            .Bind();
+
+        ActivePS->BindBuffer( "DIST_Distance", InfiniteRangeConstantBuffer.get() );
+    };
+    updatePSBuffers();
 
     static std::vector<WorldMeshSectionInfo*> renderList; renderList.clear();
     Engine::GAPI->CollectVisibleSections( renderList );
@@ -3906,8 +3909,11 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
             GetContext()->PSSetShaderResources( 0, 3, srv );
 
             // Get the right shader for it
-            BindShaderForTexture( mesh.first.Texture, false,
-                mesh.first.Material->GetAlphaFunc() );
+            if ( BindShaderForTexture( mesh.first.Texture, false,
+                mesh.first.Material->GetAlphaFunc() ) ) {
+                // shader changed? update buffers.
+                updatePSBuffers();
+            }
 
             if ( info ) {
                 if ( !info->Constantbuffer ) info->UpdateConstantbuffer();
@@ -4019,8 +4025,7 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
     ricb.RI_Time = Engine::GAPI->GetTimeSeconds();
     ricb.RI_CameraPosition = float3( Engine::GAPI->GetCameraPosition() );
 
-    ActivePS->GetConstantBuffer()[2]->UpdateBuffer( &ricb );
-    ActivePS->GetConstantBuffer()[2]->BindToPixelShader( 2 );
+    ActivePS->GetBuffer("RefractionInfo").Update(&ricb).Bind();
 
     // Bind reflection cube
     GetContext()->PSSetShaderResources( 3, 1, ReflectionCube.GetAddressOf() );
@@ -4068,26 +4073,25 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
     }
 
     // Set constant buffer
-    ActivePS->GetConstantBuffer()[0]->UpdateBuffer(
-        &Engine::GAPI->GetRendererState().GraphicsState );
-    ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+    ActivePS->GetBuffer( "FFPipelineConstantBuffer" )
+        .Update( &Engine::GAPI->GetRendererState().GraphicsState )
+        .Bind();
 
     GSky* sky = Engine::GAPI->GetSky();
-    ActivePS->GetConstantBuffer()[1]->UpdateBuffer( &sky->GetAtmosphereCB() );
-    ActivePS->GetConstantBuffer()[1]->BindToPixelShader( 1 );
+    ActivePS->GetBuffer( "Atmosphere" )
+        .Update( &sky->GetAtmosphereCB() )
+        .Bind();
 
     // Init drawcalls
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
 
-    ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &XMMatrixIdentity() );
-    ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( 1 );
+    ActiveVS->GetBuffer( "Matrices_PerInstances" ).Update( &XMMatrixIdentity() ).Bind();
 
     // Update and bind buffer of PS
     PerObjectState ocb;
     ocb.OS_AmbientColor = float3( 1, 1, 1 );
-    ActivePS->GetConstantBuffer()[3]->UpdateBuffer( &ocb );
-    ActivePS->GetConstantBuffer()[3]->BindToPixelShader( 3 );
+    ActivePS->GetBuffer( "POS_MaterialInfo" ).Update( &ocb ).Bind();
 
     float3 pos; XMStoreFloat3( pos.toXMFLOAT3(), position );
     INT2 s = WorldConverter::GetSectionOfPos( pos );
@@ -4100,7 +4104,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
 
     DistortionTexture->BindToPixelShader( 0 );
 
-    InfiniteRangeConstantBuffer->BindToPixelShader( 3 );
+    ActivePS->BindBuffer( "DIST_Distance", InfiniteRangeConstantBuffer.get() );
 
     UpdateRenderStates();
 
@@ -4376,26 +4380,25 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
     }
 
     // Set constant buffer
-    ActivePS->GetConstantBuffer()[0]->UpdateBuffer(
-        &Engine::GAPI->GetRendererState().GraphicsState );
-    ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+    ActivePS->GetBuffer( "FFPipelineConstantBuffer" )
+        .Update( &Engine::GAPI->GetRendererState().GraphicsState )
+        .Bind();
 
     GSky* sky = Engine::GAPI->GetSky();
-    ActivePS->GetConstantBuffer()[1]->UpdateBuffer( &sky->GetAtmosphereCB() );
-    ActivePS->GetConstantBuffer()[1]->BindToPixelShader( 1 );
+    ActivePS->GetBuffer( "Atmosphere" )
+        .Update( &sky->GetAtmosphereCB() )
+        .Bind();
 
     // Init drawcalls
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
 
-    ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &XMMatrixIdentity() );
-    ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( 1 );
+    ActiveVS->GetBuffer( "Matrices_PerInstances" ).Update( &XMMatrixIdentity() ).Bind();
 
     // Update and bind buffer of PS
     PerObjectState ocb;
     ocb.OS_AmbientColor = float3( 1, 1, 1 );
-    ActivePS->GetConstantBuffer()[3]->UpdateBuffer( &ocb );
-    ActivePS->GetConstantBuffer()[3]->BindToPixelShader( 3 );
+    ActivePS->GetBuffer( "POS_MaterialInfo" ).Update( &ocb ).Bind();
 
     float3 pos; XMStoreFloat3( pos.toXMFLOAT3(), position );
     INT2 s = WorldConverter::GetSectionOfPos( pos );
@@ -4408,7 +4411,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
 
     DistortionTexture->BindToPixelShader( 0 );
 
-    InfiniteRangeConstantBuffer->BindToPixelShader( 3 );
+    ActivePS->BindBuffer( "DIST_Distance", InfiniteRangeConstantBuffer.get() );
 
     UpdateRenderStates();
 
@@ -4427,8 +4430,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
         DrawVertexBufferInstancedIndexedUINT( Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer,
             Engine::GAPI->GetWrappedWorldMesh()->MeshIndexBuffer, 0, 0, 0 );
 
-        ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &XMMatrixIdentity() );
-        ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( 1 );
+        ActiveVS->GetBuffer( "Matrices_PerInstances" ).Update( &XMMatrixIdentity() ).Bind();
 
         // Only use cache if we haven't already collected the vobs
         // TODO: Collect vobs in a different way than using the drawn sections!
@@ -4884,8 +4886,6 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
     Engine::GAPI->SetViewTransformXM( view );
 
     // Set shader
-    SetActivePixelShader( PShaderID::PS_AtmosphereGround );
-    auto nrmPS = ActivePS;
     SetActivePixelShader( PShaderID::PS_DiffuseAlphaTestShadows );
     auto defaultPS = ActivePS;
     SetActiveVertexShader( VShaderID::VS_Ex );
@@ -4898,33 +4898,29 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
     }
 
     // Set constant buffer
-    ActivePS->GetConstantBuffer()[0]->UpdateBuffer(
-        &Engine::GAPI->GetRendererState().GraphicsState );
-    ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+    ActivePS->GetBuffer( "FFPipelineConstantBuffer" )
+        .Update( &Engine::GAPI->GetRendererState().GraphicsState )
+        .Bind();
 
     GSky* sky = Engine::GAPI->GetSky();
-    ActivePS->GetConstantBuffer()[1]->UpdateBuffer( &sky->GetAtmosphereCB() );
-    ActivePS->GetConstantBuffer()[1]->BindToPixelShader( 1 );
+    ActivePS->GetBuffer( "Atmosphere" )
+        .Update( &sky->GetAtmosphereCB() )
+        .Bind();
 
     // Init drawcalls
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
 
-    ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &XMMatrixIdentity() );
-    ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( 1 );
-
-    // Update and bind buffer of PS
-    PerObjectState ocb;
-    ocb.OS_AmbientColor = float3( 1, 1, 1 );
-    ActivePS->GetConstantBuffer()[3]->UpdateBuffer( &ocb );
-    ActivePS->GetConstantBuffer()[3]->BindToPixelShader( 3 );
+    auto cbMatrices_PerInstances = ActiveVS->GetBuffer( "Matrices_PerInstances" )
+        .Update( &XMMatrixIdentity() )
+        .Bind();
 
     float3 fPosition; XMStoreFloat3( fPosition.toXMFLOAT3(), position );
     INT2 s = WorldConverter::GetSectionOfPos( fPosition );
 
     DistortionTexture->BindToPixelShader( 0 );
 
-    InfiniteRangeConstantBuffer->BindToPixelShader( 3 );
+    ActivePS->BindBuffer( "DIST_Distance", InfiniteRangeConstantBuffer.get() );
 
     UpdateRenderStates();
 
@@ -4948,8 +4944,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer,
             Engine::GAPI->GetWrappedWorldMesh()->MeshIndexBuffer, 0, 0 );
 
-        ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &XMMatrixIdentity() );
-        ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( 1 );
+        cbMatrices_PerInstances.Update( &XMMatrixIdentity() ).Bind();
 
         static thread_local std::vector<const WorldMeshSectionInfo*> visibleSections;
         visibleSections.clear();
@@ -5078,8 +5073,10 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             Context->PSSetShader( nullptr, nullptr, 0 );
         }
 
+        GraphicsShaderConstantBuffer windBuffer = {};
         if ( ActiveVS ) {
-            ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( 1 );
+            windBuffer = ActiveVS->GetBuffer( "WindParams" );
+            windBuffer.Bind();
         }
 
         XMFLOAT3 vPlayerPosition = Engine::GAPI->GetPlayerVob() ? Engine::GAPI->GetPlayerVob()->GetPositionWorld() : XMFLOAT3( 0, 0, 0 );
@@ -5092,9 +5089,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             g_windBuffer.minHeight = staticMeshVisual->BBox.Min.y;
             g_windBuffer.maxHeight = staticMeshVisual->BBox.Max.y;
 
-            if ( ActiveVS ) {
-                ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &g_windBuffer );
-            }
+            windBuffer.Update( &g_windBuffer );
 
             bool doReset = true;
             zCTexture* previousTx = nullptr;
@@ -5206,8 +5201,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
 /** Update morph mesh visual */
 void D3D11GraphicsEngine::UpdateMorphMeshVisual() {
-    const std::unordered_map<zCProgMeshProto*, MeshVisualInfo*>& staticMeshVisuals =
-        Engine::GAPI->GetStaticMeshVisuals();
+    const auto& staticMeshVisuals = Engine::GAPI->GetStaticMeshVisuals();
 
     for ( auto const& staticMeshVisual : staticMeshVisuals ) {
         if ( !staticMeshVisual.second->MorphMeshVisual ) continue;
@@ -5296,18 +5290,20 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
         SetActiveVertexShader( VShaderID::VS_ExInstancedObj );
 
         // Set constant buffer
-        ActivePS->GetConstantBuffer()[0]->UpdateBuffer(
-            &Engine::GAPI->GetRendererState().GraphicsState );
-        ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+        ActivePS->GetBuffer("FFPipelineConstantBuffer")
+            .Update(&Engine::GAPI->GetRendererState().GraphicsState )
+            .Bind();
 
         GSky* sky = Engine::GAPI->GetSky();
-        ActivePS->GetConstantBuffer()[1]->UpdateBuffer( &sky->GetAtmosphereCB() );
-        ActivePS->GetConstantBuffer()[1]->BindToPixelShader( 1 );
+        ActivePS->GetBuffer( "Atmosphere" )
+            .Update( &sky->GetAtmosphereCB() )
+            .Bind();
 
         // Use default material info for now
         MaterialInfo defInfo;
-        ActivePS->GetConstantBuffer()[2]->UpdateBuffer( &defInfo );
-        ActivePS->GetConstantBuffer()[2]->BindToPixelShader( 2 );
+        ActivePS->GetBuffer("MI_MaterialInfo")
+            .Update(&defInfo)
+            .Bind();
 
         float3 camPos = Engine::GAPI->GetCameraPosition();
         INT2 camSection = WorldConverter::GetSectionOfPos( camPos );
@@ -5323,9 +5319,14 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
         SetupVS_ExMeshDrawCall();
         SetupVS_ExConstantBuffer();
 
+        GraphicsShaderConstantBuffer windBuffer = {};
         if ( ActiveVS ) {
-            ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( 1 );
+            windBuffer = ActiveVS->GetBuffer("WindParams");
+            windBuffer.Bind();
         }
+
+        auto materialInfoSlot = ActivePS->GetInputIndex( "MI_MaterialInfo" );
+        auto DIST_DistanceSlot = ActivePS->GetInputIndex( "DIST_Distance" );
 
         if ( renderSettings.DrawVOBs ||
             renderSettings.EnableDynamicLighting ) {
@@ -5401,19 +5402,21 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                 float expectedSmallRadius = renderSettings.OutdoorSmallVobDrawRadius - staticMeshVisual->MeshSize;
                 float expectedVobRadius = renderSettings.OutdoorVobDrawRadius - staticMeshVisual->MeshSize;
 
-                if ( staticMeshVisual->MeshSize < renderSettings.SmallVobSize ) {
-                    // Only update if it changed
-                    if ( std::abs( cachedSmallVobRadius - expectedSmallRadius ) > 0.1f ) {
-                        OutdoorSmallVobsConstantBuffer->UpdateBuffer( float4( expectedSmallRadius, 0, 0, 0 ).toPtr() );
-                        OutdoorSmallVobsConstantBuffer->BindToPixelShader( 3 );
-                        cachedSmallVobRadius = expectedSmallRadius;
-                    }
-                } else {
-                    // Only update if it changed
-                    if ( std::abs( cachedVobRadius - expectedVobRadius ) > 0.1f ) {
-                        OutdoorVobsConstantBuffer->UpdateBuffer( float4( expectedVobRadius, 0, 0, 0 ).toPtr() );
-                        OutdoorVobsConstantBuffer->BindToPixelShader( 3 );
-                        cachedVobRadius = expectedVobRadius;
+                if ( DIST_DistanceSlot != -1 ) {
+                    if ( staticMeshVisual->MeshSize < renderSettings.SmallVobSize ) {
+                        // Only update if it changed
+                        if ( std::abs( cachedSmallVobRadius - expectedSmallRadius ) > 0.1f ) {
+                            OutdoorSmallVobsConstantBuffer->UpdateBuffer( float4( expectedSmallRadius, 0, 0, 0 ).toPtr() );
+                            OutdoorSmallVobsConstantBuffer->BindToPixelShader( DIST_DistanceSlot );
+                            cachedSmallVobRadius = expectedSmallRadius;
+                        }
+                    } else {
+                        // Only update if it changed
+                        if ( std::abs( cachedVobRadius - expectedVobRadius ) > 0.1f ) {
+                            OutdoorVobsConstantBuffer->UpdateBuffer( float4( expectedVobRadius, 0, 0, 0 ).toPtr() );
+                            OutdoorVobsConstantBuffer->BindToPixelShader( DIST_DistanceSlot );
+                            cachedVobRadius = expectedVobRadius;
+                        }
                     }
                 }
 
@@ -5423,9 +5426,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
 
                     g_windBuffer.minHeight = staticMeshVisual->BBox.Min.y;
                     g_windBuffer.maxHeight = staticMeshVisual->BBox.Max.y;
-                    if ( ActiveVS ) {
-                        ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &g_windBuffer );
-                    }
+                    windBuffer.Update( &g_windBuffer );
                 }
 
                 bool doReset = true;  // Don't reset alpha-vobs here
@@ -5534,7 +5535,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
 
                                 if ( !info->Constantbuffer ) info->UpdateConstantbuffer();
 
-                                info->Constantbuffer->BindToPixelShader( 2 );
+                                info->Constantbuffer->BindToPixelShader( materialInfoSlot );
                             }
                         }
 
@@ -5625,6 +5626,12 @@ XRESULT D3D11GraphicsEngine::DrawFrameAlphaMeshes()
     }
     DynamicInstancingBuffer->Unmap();
 
+    GraphicsShaderConstantBuffer windBuffer = {};
+    if ( ActiveVS ) {
+        windBuffer = ActiveVS->GetBuffer( "WindParams" );
+        windBuffer.Bind();
+    }
+
     for ( auto const& alphaMesh : m_AlphaMeshes ) {
         const MeshKey& mk = alphaMesh.mk;
         zCTexture* tx = mk.Material->GetAniTexture();
@@ -5673,9 +5680,7 @@ XRESULT D3D11GraphicsEngine::DrawFrameAlphaMeshes()
             MaterialInfo* info = mk.Info;
             if ( !info->Constantbuffer ) info->UpdateConstantbuffer();
 
-            if ( ActiveVS ) {
-                ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &g_windBuffer );
-            }
+            windBuffer.Update( &g_windBuffer );
 
             // Draw batch
             DrawInstanced( mi->MeshVertexBuffer, mi->MeshIndexBuffer, mi->Indices.size(),
@@ -5690,9 +5695,7 @@ XRESULT D3D11GraphicsEngine::DrawFrameAlphaMeshes()
         g_windBuffer.minHeight = vi->BBox.Min.y;
         g_windBuffer.maxHeight = vi->BBox.Max.y;
 
-        if ( ActiveVS ) {
-            ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &g_windBuffer );
-        }
+        windBuffer.Update( &g_windBuffer );
 
         // Draw batch
         DrawInstanced( mi->MeshVertexBuffer, mi->MeshIndexBuffer, mi->Indices.size(),
@@ -5738,18 +5741,20 @@ XRESULT D3D11GraphicsEngine::DrawPolyStrips( bool noTextures ) {
     SetupVS_ExConstantBuffer();
 
     // Set constant buffer
-    ActivePS->GetConstantBuffer()[0]->UpdateBuffer( &Engine::GAPI->GetRendererState().GraphicsState );
-    ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+    ActivePS->GetBuffer( "FFPipelineConstantBuffer" )
+        .Update( &Engine::GAPI->GetRendererState().GraphicsState )
+        .Bind();
 
-    // Not sure what this does, adds some kind of sky tint?
     GSky* sky = Engine::GAPI->GetSky();
-    ActivePS->GetConstantBuffer()[1]->UpdateBuffer( &sky->GetAtmosphereCB() );
-    ActivePS->GetConstantBuffer()[1]->BindToPixelShader( 1 );
+    ActivePS->GetBuffer( "Atmosphere" )
+        .Update( &sky->GetAtmosphereCB() )
+        .Bind();
 
     // Use default material info for now
     MaterialInfo defInfo;
-    ActivePS->GetConstantBuffer()[2]->UpdateBuffer( &defInfo );
-    ActivePS->GetConstantBuffer()[2]->BindToPixelShader( 2 );
+    ActivePS->GetBuffer( "MI_MaterialInfo" )
+        .Update( &defInfo )
+        .Bind();
 
     for ( auto it = polyStripInfos.begin(); it != polyStripInfos.end(); it++ ) {
         zCMaterial* mat = it->second.material;
@@ -5888,13 +5893,15 @@ XRESULT D3D11GraphicsEngine::DrawSky() {
 
     SetActiveVertexShader( VShaderID::VS_ExWS );
 
-    ActivePS->GetConstantBuffer()[0]->UpdateBuffer( &sky->GetAtmosphereCB() );
-    ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 1 );
+    ActivePS->GetBuffer("Atmosphere")
+        .Update(&sky->GetAtmosphereCB())
+        .Bind();
 
     VS_ExConstantBuffer_PerInstance cbi;
     XMStoreFloat4x4( &cbi.World, world );
-    ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &cbi );
-    ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( 1 );
+    ActiveVS->GetBuffer("Matrices_PerInstances")
+        .Update(&cbi)
+        .Bind();
 
     Engine::GAPI->GetRendererState().BlendState.SetDefault();
     Engine::GAPI->GetRendererState().BlendState.BlendEnabled = true;
@@ -6292,7 +6299,7 @@ void D3D11GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& 
 }
 
 /* Binds the right shader for the given texture */ 
-void D3D11GraphicsEngine::BindShaderForTexture( zCTexture* texture,
+bool D3D11GraphicsEngine::BindShaderForTexture( zCTexture* texture,
     bool forceAlphaTest,
     int zMatAlphaFunc,
     MaterialInfo::EMaterialType materialInfo ) {
@@ -6329,7 +6336,9 @@ void D3D11GraphicsEngine::BindShaderForTexture( zCTexture* texture,
     if ( active != newShader ) {
         ActivePS = newShader;
         ActivePS->Apply();
+        return true;
     }
+    return false;
 }
 
 /** Draws the given list of decals */
@@ -6465,8 +6474,7 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
 
 /** Draws quadmarks in a simple way */
 void D3D11GraphicsEngine::DrawQuadMarks() {
-    const std::unordered_map<zCQuadMark*, QuadMarkInfo>& quadMarks =
-        Engine::GAPI->GetQuadMarks();
+    const auto& quadMarks = Engine::GAPI->GetQuadMarks();
     if ( quadMarks.empty() ) return;
 
     SetActiveVertexShader( VShaderID::VS_Ex );
@@ -6481,8 +6489,9 @@ void D3D11GraphicsEngine::DrawQuadMarks() {
     Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_NONE;
     Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
 
-    ActivePS->GetConstantBuffer()[0]->UpdateBuffer( &Engine::GAPI->GetRendererState().GraphicsState );
-    ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+    ActivePS->GetBuffer( "FFPipelineConstantBuffer" )
+        .Update( &Engine::GAPI->GetRendererState().GraphicsState )
+        .Bind();
 
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
@@ -6778,8 +6787,7 @@ void D3D11GraphicsEngine::DrawFrameParticles(
 
     SetActivePixelShader( PShaderID::PS_ParticleDistortion );
     ActivePS->Apply();
-    ActivePS->GetConstantBuffer()[0]->UpdateBuffer( &ricb );
-    ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+    ActivePS->GetBuffer("RefractionInfo").Update(&ricb).Bind();
 
     GothicRendererState& state = Engine::GAPI->GetRendererState();
 
