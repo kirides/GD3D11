@@ -1,72 +1,69 @@
 #pragma once
 #include "ShaderCategory.h"
-#include <unordered_map>
+#include "ShaderIDs.h"
 #include "D3D11VShader.h"
 #include "D3D11PShader.h"
 #include "D3D11HDShader.h"
 #include "D3D11GShader.h"
 #include "D3D11CShader.h"
+#include <type_traits>
+#include <string_view>
 
 /** Struct holds initial shader data for load operation*/
 struct ShaderInfo {
 public:
-    std::string name;				//Shader's name, used as key in map
+    std::string name;				//Shader's name, used for debug logging
     std::string fileName;			//Shader's filename (without 'system\\GD3D11\\shaders\\')
-    ShaderType type;				//Shader's type: 'v' vertexShader, 'p' pixelShader
-    std::string entryPoint;				//Shader's type: 'v' vertexShader, 'p' pixelShader
+    ShaderType type;				//Shader's type: Vertex, Pixel, Geometry, HullDomain, Compute
+    std::string entryPoint;			//Shader's entry point function name
+    size_t shaderIndex;				//Per-type enum index (e.g. VShaderID/PShaderID cast to size_t)
     int layout;						//Shader's input layout
     std::vector<int> cBufferSizes;	//Vector with size for each constant buffer to be created for this shader
     std::vector<D3D_SHADER_MACRO> shaderMakros;
     ShaderCategory contentCategory;	//Content category for selective reloading
 
-    static std::string EntrypointForType(const std::string& t)
-    {
-        if (t == "v") return "VSMain";
-        if (t == "p") return "PSMain";
-        if (t == "c") return "CSMain";
-        if (t == "hd") return "HSMain";
-        if (t == "g") return "GSMain";
-        return "main";
-    }
-    
-    static ShaderType ShaderTypeForType(const std::string& t) {
-        if (t == "v") return ShaderType::Vertex;
-        if (t == "p") return ShaderType::Pixel;
-        if (t == "g") return ShaderType::Geometry;
-        if (t == "hd") return ShaderType::HullDomain;
-        if (t == "c") return ShaderType::Compute;
-        return ShaderType::None;
-    }
-    
-    //Constructor
-    ShaderInfo( std::string n, std::string fn, const std::string& t, int l, std::vector<D3D_SHADER_MACRO>& makros = std::vector<D3D_SHADER_MACRO>(), ShaderCategory category = ShaderCategory::Other ) {
-        name = std::move(n);
-        fileName = std::move(fn);
-        type = ShaderTypeForType(t);
-        layout = l;
-        cBufferSizes = std::vector<int>();
-        shaderMakros = makros;
-        contentCategory = category;
-        entryPoint = EntrypointForType(t);
+    /** Builder-style factory: infers name, type, and entrypoint from enum template parameter */
+    template<auto ID>
+    static ShaderInfo make( std::string fn ) {
+        using EnumT = decltype(ID);
+        ShaderInfo si{};
+        
+        si.shaderIndex = static_cast<size_t>(ID);
+        si.name = magic_enum::enum_name( ID );
+        si.fileName = std::move( fn );
+        si.type = shader_type_for<EnumT>();
+        si.entryPoint = entrypoint_for<EnumT>();
+
+        return si;
     }
 
-    //Constructor
-    ShaderInfo( std::string n, std::string fn, const std::string& t, std::vector<D3D_SHADER_MACRO>& makros = std::vector<D3D_SHADER_MACRO>(), ShaderCategory category = ShaderCategory::Other )
-        :ShaderInfo(std::move(n), std::move(fn), t, makros, EntrypointForType(t), category)
-    {
+    /** Chainable setters for builder pattern */
+    ShaderInfo& with_layout( int l ) { layout = l; return *this; }
+    ShaderInfo& with_macros( const std::vector<D3D_SHADER_MACRO>& m ) { shaderMakros = m; return *this; }
+    ShaderInfo& with_category( ShaderCategory c ) { contentCategory = c; return *this; }
+    ShaderInfo& with_entrypoint( std::string ep ) { entryPoint = std::move( ep ); return *this; }
+    ShaderInfo& with_cbuffer( int size ) { cBufferSizes.push_back( size ); return *this; }
+
+private:
+    ShaderInfo() : type( ShaderType::None ), shaderIndex( 0 ), layout( 0 ), contentCategory( ShaderCategory::Other ) {}
+
+    template<typename EnumT>
+    static constexpr ShaderType shader_type_for() {
+        if constexpr ( std::is_same_v<EnumT, VShaderID> )  return ShaderType::Vertex;
+        if constexpr ( std::is_same_v<EnumT, PShaderID> )  return ShaderType::Pixel;
+        if constexpr ( std::is_same_v<EnumT, GShaderID> )  return ShaderType::Geometry;
+        if constexpr ( std::is_same_v<EnumT, HDShaderID> ) return ShaderType::HullDomain;
+        if constexpr ( std::is_same_v<EnumT, CShaderID> )  return ShaderType::Compute;
     }
-    
-    ShaderInfo( std::string n, std::string fn, const std::string& t, std::vector<D3D_SHADER_MACRO>& makros, std::string entryPoint, ShaderCategory category = ShaderCategory::Other ) 
-        :
-        name(std::move(n)),
-        fileName(std::move(fn)),
-        type(ShaderTypeForType(t)),
-        layout(0),
-        cBufferSizes(std::vector<int>()),
-        shaderMakros(makros),
-        contentCategory(category),
-        entryPoint(std::move(entryPoint))
-    { }
+
+    template<typename EnumT>
+    static constexpr const char* entrypoint_for() {
+        if constexpr ( std::is_same_v<EnumT, VShaderID> )  return "VSMain";
+        if constexpr ( std::is_same_v<EnumT, PShaderID> )  return "PSMain";
+        if constexpr ( std::is_same_v<EnumT, GShaderID> )  return "GSMain";
+        if constexpr ( std::is_same_v<EnumT, HDShaderID> ) return "HSMain";
+        if constexpr ( std::is_same_v<EnumT, CShaderID> )  return "CSMain";
+    }
 };
 
 class D3D11ShaderManager {
@@ -92,38 +89,37 @@ public:
 
     /** Deletes all shaders */
     XRESULT DeleteShaders();
-    ShaderInfo GetShaderInfo( const std::string& shader, bool& ok );
     void UpdateShaderInfo( ShaderInfo& shader );
 
     /** Return a specific shader */
-    std::shared_ptr<D3D11VShader> GetVShader( const std::string& shader );
-    std::shared_ptr<D3D11PShader> GetPShader( const std::string& shader );
-    std::shared_ptr<D3D11HDShader> GetHDShader( const std::string& shader );
-    std::shared_ptr<D3D11GShader> GetGShader( const std::string& shader );
-    std::shared_ptr<D3D11CShader> GetCShader( const std::string& shader );
+    std::shared_ptr<D3D11VShader> GetVShader( VShaderID id ) { return VShaders[static_cast<size_t>(id)]; }
+    std::shared_ptr<D3D11PShader> GetPShader( PShaderID id ) { return PShaders[static_cast<size_t>(id)]; }
+    std::shared_ptr<D3D11HDShader> GetHDShader( HDShaderID id ) { return HDShaders[static_cast<size_t>(id)]; }
+    std::shared_ptr<D3D11GShader> GetGShader( GShaderID id ) { return GShaders[static_cast<size_t>(id)]; }
+    std::shared_ptr<D3D11CShader> GetCShader( CShaderID id ) { return CShaders[static_cast<size_t>(id)]; }
 
 private:
     XRESULT CompileShader( const ShaderInfo& si );
 
-    void UpdateVShader( const std::string& name, D3D11VShader* shader ) { std::unique_lock<std::mutex> lock( _VShaderMutex ); VShaders[name].reset( shader ); }
-    void UpdatePShader( const std::string& name, D3D11PShader* shader ) { std::unique_lock<std::mutex> lock( _PShaderMutex );  PShaders[name].reset( shader ); }
-    void UpdateHDShader( const std::string& name, D3D11HDShader* shader ) { std::unique_lock<std::mutex> lock( _HDShaderMutex );  HDShaders[name].reset( shader ); }
-    void UpdateGShader( const std::string& name, D3D11GShader* shader ) { std::unique_lock<std::mutex> lock( _GShaderMutex );  GShaders[name].reset( shader ); }
-    void UpdateCShader( const std::string& name, D3D11CShader* shader ) { std::unique_lock<std::mutex> lock( _CShaderMutex );  CShaders[name].reset( shader ); }
+    void UpdateVShader( size_t index, D3D11VShader* shader ) { std::unique_lock<std::mutex> lock( _VShaderMutex ); VShaders[index].reset( shader ); }
+    void UpdatePShader( size_t index, D3D11PShader* shader ) { std::unique_lock<std::mutex> lock( _PShaderMutex );  PShaders[index].reset( shader ); }
+    void UpdateHDShader( size_t index, D3D11HDShader* shader ) { std::unique_lock<std::mutex> lock( _HDShaderMutex );  HDShaders[index].reset( shader ); }
+    void UpdateGShader( size_t index, D3D11GShader* shader ) { std::unique_lock<std::mutex> lock( _GShaderMutex );  GShaders[index].reset( shader ); }
+    void UpdateCShader( size_t index, D3D11CShader* shader ) { std::unique_lock<std::mutex> lock( _CShaderMutex );  CShaders[index].reset( shader ); }
 
-    bool IsVShaderKnown( const std::string& name ) { std::unique_lock<std::mutex> lock( _VShaderMutex ); return VShaders.count( name ) > 0; }
-    bool IsPShaderKnown( const std::string& name ) { std::unique_lock<std::mutex> lock( _PShaderMutex ); return PShaders.count( name ) > 0; }
-    bool IsHDShaderKnown( const std::string& name ) { std::unique_lock<std::mutex> lock( _HDShaderMutex ); return HDShaders.count( name ) > 0; }
-    bool IsGShaderKnown( const std::string& name ) { std::unique_lock<std::mutex> lock( _GShaderMutex ); return GShaders.count( name ) > 0; }
-    bool IsCShaderKnown( const std::string& name ) { std::unique_lock<std::mutex> lock( _CShaderMutex ); return CShaders.count( name ) > 0; }
+    bool IsVShaderKnown( size_t index ) { std::unique_lock<std::mutex> lock( _VShaderMutex ); return VShaders[index] != nullptr; }
+    bool IsPShaderKnown( size_t index ) { std::unique_lock<std::mutex> lock( _PShaderMutex ); return PShaders[index] != nullptr; }
+    bool IsHDShaderKnown( size_t index ) { std::unique_lock<std::mutex> lock( _HDShaderMutex ); return HDShaders[index] != nullptr; }
+    bool IsGShaderKnown( size_t index ) { std::unique_lock<std::mutex> lock( _GShaderMutex ); return GShaders[index] != nullptr; }
+    bool IsCShaderKnown( size_t index ) { std::unique_lock<std::mutex> lock( _CShaderMutex ); return CShaders[index] != nullptr; }
 
 private:
     std::vector<ShaderInfo> Shaders;							//Initial shader list for loading
-    std::unordered_map<std::string, std::shared_ptr<D3D11VShader>> VShaders;
-    std::unordered_map<std::string, std::shared_ptr<D3D11PShader>> PShaders;
-    std::unordered_map<std::string, std::shared_ptr<D3D11HDShader>> HDShaders;
-    std::unordered_map<std::string, std::shared_ptr<D3D11GShader>> GShaders;
-    std::unordered_map<std::string, std::shared_ptr<D3D11CShader>> CShaders;
+    std::vector<std::shared_ptr<D3D11VShader>> VShaders;
+    std::vector<std::shared_ptr<D3D11PShader>> PShaders;
+    std::vector<std::shared_ptr<D3D11HDShader>> HDShaders;
+    std::vector<std::shared_ptr<D3D11GShader>> GShaders;
+    std::vector<std::shared_ptr<D3D11CShader>> CShaders;
 
     std::mutex _VShaderMutex;
     std::mutex _PShaderMutex;

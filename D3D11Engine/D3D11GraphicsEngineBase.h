@@ -87,7 +87,7 @@ public:
     XRESULT DrawVertexBufferFF( D3D11VertexBuffer* vb, unsigned int numVertices, unsigned int startVertex, unsigned int stride = sizeof( ExVertexStruct ) ) override;
 
     /** Binds viewport information to the given constantbuffer slot */
-    XRESULT D3D11GraphicsEngineBase::BindViewportInformation( const std::string& shader, int slot ) override;
+    XRESULT D3D11GraphicsEngineBase::BindViewportInformation( VShaderID shader, int slot ) override;
 
     /** Returns the Device/Context */
     auto GetDevice() -> const auto& { return Device; }
@@ -118,10 +118,10 @@ public:
     virtual void SetupVS_ExPerInstanceConstantBuffer() PURE;
 
     /** Sets the active pixel shader object */
-    XRESULT SetActivePixelShader( const std::string& shader ) override;
-    XRESULT SetActiveVertexShader( const std::string& shader ) override;
-    virtual XRESULT SetActiveHDShader( const std::string& shader );
-    virtual XRESULT SetActiveGShader( const std::string& shader );
+    XRESULT SetActivePixelShader( PShaderID shader ) override;
+    XRESULT SetActiveVertexShader( VShaderID shader ) override;
+    virtual XRESULT SetActiveHDShader( HDShaderID shader );
+    virtual XRESULT SetActiveGShader( GShaderID shader );
     //virtual int MeasureString(std::string str, zFont* zFont);
 
     void ResetPresentPending() { PresentPending = false; }
@@ -149,6 +149,8 @@ protected:
     /** Swapchain and resources */
     Microsoft::WRL::ComPtr<IDXGISwapChain1> SwapChain;
     std::unique_ptr<RenderToTextureBuffer> Backbuffer;
+    std::unique_ptr<RenderToDepthStencilBuffer> m_SwapchainDepthStencilBuffer;
+
     std::unique_ptr<RenderToDepthStencilBuffer> DepthStencilBuffer;
     std::unique_ptr<RenderToTextureBuffer> HDRBackBuffer;
 
@@ -170,21 +172,11 @@ protected:
     /** Constantbuffers */
     std::unique_ptr<D3D11ConstantBuffer> TransformsCB; // Holds View/Proj-Transforms
 
-    /** Shaders */
-    std::shared_ptr<D3D11PShader> PS_DiffuseNormalmapped;
-    std::shared_ptr<D3D11PShader> PS_DiffuseNormalmappedFxMap;
-    std::shared_ptr<D3D11PShader> PS_Diffuse;
-    std::shared_ptr<D3D11PShader> PS_DiffuseNormalmappedAlphatest;
-    std::shared_ptr<D3D11PShader> PS_DiffuseNormalmappedAlphatestFxMap;
-    std::shared_ptr<D3D11PShader> PS_DiffuseAlphatest;
-    std::shared_ptr<D3D11PShader> PS_Simple;
-    std::shared_ptr<D3D11PShader> PS_LinDepth;
-    std::shared_ptr<D3D11VShader> VS_Ex;
-    std::shared_ptr<D3D11VShader> VS_ExInstancedObj;
-    std::shared_ptr<D3D11VShader> VS_ExSkeletal;
-    
-    std::shared_ptr<D3D11PShader> PS_PortalDiffuse;
-    std::shared_ptr<D3D11PShader> PS_WaterfallFoam;
+    /** Resolved shader IDs (may point to different actual shaders based on settings like AllowNormalmaps) */
+    PShaderID Resolved_DiffuseNormalmapped;
+    PShaderID Resolved_DiffuseNormalmappedFxMap;
+    PShaderID Resolved_DiffuseNormalmappedAlphatest;
+    PShaderID Resolved_DiffuseNormalmappedAlphatestFxMap;
 
     std::shared_ptr<D3D11VShader> ActiveVS;
     std::shared_ptr<D3D11PShader> ActivePS;

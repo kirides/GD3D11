@@ -94,16 +94,16 @@ XRESULT D3D11Effect::DrawRain() {
     GothicRendererState& state = Engine::GAPI->GetRendererState();
 
     // Get shaders
-    auto streamOutGS = e->GetShaderManager().GetGShader( "GS_ParticleStreamOut" );
-    auto particleAdvanceVS = e->GetShaderManager().GetVShader( "VS_AdvanceRain" );
-    auto particleVS = e->GetShaderManager().GetVShader( "VS_ParticlePointShaded" );
+    auto streamOutGS = e->GetShaderManager().GetGShader( GShaderID::GS_ParticleStreamOut );
+    auto particleAdvanceVS = e->GetShaderManager().GetVShader( VShaderID::VS_AdvanceRain );
+    auto particleVS = e->GetShaderManager().GetVShader( VShaderID::VS_ParticlePointShaded );
     
     bool isSnow = oCGame::GetGame()
         && oCGame::GetGame()->_zCSession_world
         && oCGame::GetGame()->_zCSession_world->GetSkyControllerOutdoor()
         && oCGame::GetGame()->_zCSession_world->GetSkyControllerOutdoor()->GetWeatherType() == zTWEATHER_SNOW;
 
-    auto rainPS = e->GetShaderManager().GetPShader( isSnow ? "PS_Rain_Snow" : "PS_Rain" );
+    auto rainPS = e->GetShaderManager().GetPShader( isSnow ? PShaderID::PS_Rain_Snow : PShaderID::PS_Rain );
 
     // artificially increase the number of particles for snow, to make it look better.
     // Snowflakes are bigger and slower than raindrops, so we can get away with less particles for rain, but for snow we need more to make it look good.
@@ -289,15 +289,15 @@ XRESULT D3D11Effect::DrawRain_CS() {
     GothicRendererState& state = Engine::GAPI->GetRendererState();
 
     // Get shaders
-    auto advanceRainCS = e->GetShaderManager().GetCShader( "CS_AdvanceRain" );
-    auto particleVS = e->GetShaderManager().GetVShader( "VS_ParticlePointShaded" );
+    auto advanceRainCS = e->GetShaderManager().GetCShader( CShaderID::CS_AdvanceRain );
+    auto particleVS = e->GetShaderManager().GetVShader( VShaderID::VS_ParticlePointShaded );
 
     bool isSnow = oCGame::GetGame()
         && oCGame::GetGame()->_zCSession_world
         && oCGame::GetGame()->_zCSession_world->GetSkyControllerOutdoor()
         && oCGame::GetGame()->_zCSession_world->GetSkyControllerOutdoor()->GetWeatherType() == zTWEATHER_SNOW;
     
-    auto rainPS = e->GetShaderManager().GetPShader( isSnow ? "PS_Rain_Snow" : "PS_Rain" );
+    auto rainPS = e->GetShaderManager().GetPShader( isSnow ? PShaderID::PS_Rain_Snow : PShaderID::PS_Rain );
 
     // artificially increase the number of particles for snow, to make it look better.
     // Snowflakes are bigger and slower than raindrops, so we can get away with less particles for rain, but for snow we need more to make it look good.
@@ -548,7 +548,7 @@ XRESULT D3D11Effect::DrawRainShadowmap() {
     Engine::GAPI->GetRendererState().GraphicsState.FF_AlphaRef = -1.0f;
 
     // Bind the FF-Info to the first PS slot
-    auto PS_Diffuse = e->GetShaderManager().GetPShader( "PS_Diffuse" );
+    auto PS_Diffuse = e->GetShaderManager().GetPShader( PShaderID::PS_Diffuse );
     if ( PS_Diffuse ) {
         PS_Diffuse->GetConstantBuffer()[0]->UpdateBuffer( &Engine::GAPI->GetRendererState().GraphicsState );
         PS_Diffuse->GetConstantBuffer()[0]->BindToPixelShader( 0 );

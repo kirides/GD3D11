@@ -325,7 +325,7 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
 
         // ---- Pass 1: Light Culling ----
         {
-            auto csLightCull = graphicsEngine->GetShaderManager().GetCShader( "CS_LightCulling" );
+            auto csLightCull = graphicsEngine->GetShaderManager().GetCShader( CShaderID::CS_LightCulling );
             csLightCull->Apply();
 
             // Fill and bind culling constant buffer
@@ -368,7 +368,7 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
             ID3D11RenderTargetView* nullRTV = nullptr;
             context->OMSetRenderTargets( 1, &nullRTV, nullptr );
 
-            auto csTiledShading = graphicsEngine->GetShaderManager().GetCShader( "CS_TiledShading" );
+            auto csTiledShading = graphicsEngine->GetShaderManager().GetCShader( CShaderID::CS_TiledShading );
             csTiledShading->Apply();
 
             // Fill and bind shading constant buffer

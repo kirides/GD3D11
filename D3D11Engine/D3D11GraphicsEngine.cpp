@@ -594,15 +594,6 @@ XRESULT D3D11GraphicsEngine::Init() {
     ShaderManager->Init();
     ShaderManager->LoadShaders();
 
-    PS_DiffuseNormalmapped = ShaderManager->GetPShader( "PS_DiffuseNormalmapped" );
-    PS_Diffuse = ShaderManager->GetPShader( "PS_Diffuse" );
-    PS_DiffuseNormalmappedAlphatest = ShaderManager->GetPShader( "PS_DiffuseNormalmappedAlphaTest" );
-    PS_DiffuseAlphatest = ShaderManager->GetPShader( "PS_DiffuseAlphaTest" );
-
-    PS_PortalDiffuse = ShaderManager->GetPShader( "PS_PortalDiffuse" );
-
-    PS_WaterfallFoam = ShaderManager->GetPShader( "PS_WaterfallFoam" );
-
     TempVertexBuffer = std::make_unique<D3D11VertexBuffer>();
     TempVertexBuffer->Init(
         nullptr, DRAWVERTEXARRAY_BUFFER_SIZE, D3D11VertexBuffer::B_VERTEXBUFFER,
@@ -692,8 +683,8 @@ XRESULT D3D11GraphicsEngine::Init() {
     GetDevice()->CreateSamplerState( &samplerDesc, CubeSamplerState.GetAddressOf() );
     SetDebugName( CubeSamplerState.Get(), "CubeSamplerState" );
 
-    SetActivePixelShader( "PS_Simple" );
-    SetActiveVertexShader( "VS_Ex" );
+    SetActivePixelShader( PShaderID::PS_Simple );
+    SetActiveVertexShader( VShaderID::VS_Ex );
 
     DistortionTexture = std::make_unique<D3D11Texture>();
     DistortionTexture->Init( "system\\GD3D11\\textures\\distortion2.dds" );
@@ -979,6 +970,10 @@ XRESULT D3D11GraphicsEngine::RecreateBuffers() {
     // actual native-resolution backbuffer for UI and copy operations !!
     Backbuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), Resolution.x, Resolution.y, DXGI_FORMAT_ENGINE_SWAPCHAIN, nullptr, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, 1, 1,
     D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE | (Device->GetFeatureLevel() >= D3D_FEATURE_LEVEL_11_0 ? D3D11_BIND_UNORDERED_ACCESS : 0) );
+
+    m_SwapchainDepthStencilBuffer = std::make_unique<RenderToDepthStencilBuffer>(
+        GetDevice().Get(), Resolution.x, Resolution.y, DXGI_FORMAT_R32_TYPELESS, nullptr,
+        DXGI_FORMAT_D32_FLOAT, DXGI_FORMAT_R32_FLOAT );
 
     SetDebugName( Backbuffer->GetTexture().Get(), "Backbuffer->TEX" );
     SetDebugName( Backbuffer->GetShaderResView().Get(), "Backbuffer->SRV" );
@@ -1284,11 +1279,13 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
         }
         makros.push_back( m );
 
-        ShaderInfo si = ShaderInfo( "PS_PFX_HDR", "PS_PFX_HDR.hlsl", "p", makros );
-        si.cBufferSizes.push_back( sizeof( HDRSettingsConstantBuffer ) );
+        auto si = ShaderInfo::make<PShaderID::PS_PFX_HDR>( "PS_PFX_HDR.hlsl" )
+            .with_macros( makros )
+            .with_cbuffer( sizeof( HDRSettingsConstantBuffer ) );
         ShaderManager->UpdateShaderInfo( si );
-        si = ShaderInfo( "PS_PFX_Tonemap", "PS_PFX_Tonemap.hlsl", "p", makros );
-        si.cBufferSizes.push_back( sizeof( HDRSettingsConstantBuffer ) );
+        si = ShaderInfo::make<PShaderID::PS_PFX_Tonemap>( "PS_PFX_Tonemap.hlsl" )
+            .with_macros( makros )
+            .with_cbuffer( sizeof( HDRSettingsConstantBuffer ) );
         ShaderManager->UpdateShaderInfo( si );
     }
 
@@ -1342,24 +1339,20 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
     // Reset Render States for HUD
     Engine::GAPI->ResetRenderStates();
 
-    SetActivePixelShader( "PS_Simple" );
-    SetActiveVertexShader( "VS_Ex" );
+    SetActivePixelShader( PShaderID::PS_Simple );
+    SetActiveVertexShader( VShaderID::VS_Ex );
 
     if ( rendererState.RendererSettings.AllowNormalmaps ) {
-        PS_DiffuseNormalmappedFxMap = ShaderManager->GetPShader( "PS_DiffuseNormalmappedFxMap" );
-        PS_DiffuseNormalmappedAlphatestFxMap = ShaderManager->GetPShader( "PS_DiffuseNormalmappedAlphaTestFxMap" );
-        PS_DiffuseNormalmapped = ShaderManager->GetPShader( "PS_DiffuseNormalmapped" );
-        PS_DiffuseNormalmappedAlphatest = ShaderManager->GetPShader( "PS_DiffuseNormalmappedAlphaTest" );
+        Resolved_DiffuseNormalmappedFxMap = PShaderID::PS_DiffuseNormalmappedFxMap;
+        Resolved_DiffuseNormalmappedAlphatestFxMap = PShaderID::PS_DiffuseNormalmappedAlphaTestFxMap;
+        Resolved_DiffuseNormalmapped = PShaderID::PS_DiffuseNormalmapped;
+        Resolved_DiffuseNormalmappedAlphatest = PShaderID::PS_DiffuseNormalmappedAlphaTest;
     } else {
-        PS_DiffuseNormalmappedFxMap = ShaderManager->GetPShader( "PS_Diffuse" );
-        PS_DiffuseNormalmappedAlphatestFxMap = ShaderManager->GetPShader( "PS_DiffuseAlphaTest" );
-        PS_DiffuseNormalmapped = ShaderManager->GetPShader( "PS_Diffuse" );
-        PS_DiffuseNormalmappedAlphatest = ShaderManager->GetPShader( "PS_DiffuseAlphaTest" );
+        Resolved_DiffuseNormalmappedFxMap = PShaderID::PS_Diffuse;
+        Resolved_DiffuseNormalmappedAlphatestFxMap = PShaderID::PS_DiffuseAlphaTest;
+        Resolved_DiffuseNormalmapped = PShaderID::PS_Diffuse;
+        Resolved_DiffuseNormalmappedAlphatest = PShaderID::PS_DiffuseAlphaTest;
     }
-    PS_Diffuse = ShaderManager->GetPShader( "PS_Diffuse" );
-    PS_DiffuseAlphatest = ShaderManager->GetPShader( "PS_DiffuseAlphaTest" );
-    PS_Simple = ShaderManager->GetPShader( "PS_Simple" );
-    PS_LinDepth = ShaderManager->GetPShader( "PS_LinDepth" );
 
     s_firstFrame = false;
     return XR_SUCCESS;
@@ -1386,6 +1379,7 @@ XRESULT D3D11GraphicsEngine::OnEndFrame() {
 XRESULT D3D11GraphicsEngine::Clear( const float4& color ) {
     const Microsoft::WRL::ComPtr<ID3D11DeviceContext1>& context = GetContext();
     context->ClearDepthStencilView( DepthStencilBuffer->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
+    context->ClearDepthStencilView( m_SwapchainDepthStencilBuffer->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
 
     context->ClearRenderTargetView( HDRBackBuffer->GetRenderTargetView().Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )) );
     context->ClearRenderTargetView( Backbuffer->GetRenderTargetView().Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )) );
@@ -1522,7 +1516,7 @@ void RenderVelocity(D3D11GraphicsEngine* engine,
     const GothicRendererSettings& settings,
     const ComPtr<ID3D11RenderTargetView>& rtv)
 {
-    auto ps = engine->GetShaderManager().GetPShader("PS_PFX_VelocityDebug");
+    auto ps = engine->GetShaderManager().GetPShader(PShaderID::PS_PFX_VelocityDebug);
     
     VelocityDebugConstantBuffer cb = {};
     cb.Amplification = 100;
@@ -1553,7 +1547,7 @@ XRESULT D3D11GraphicsEngine::Present() {
     {
         auto _ = RecordGraphicsEvent( L"Blit onto Swapchain" );
 
-        SetActivePixelShader( "PS_PFX_GammaCorrectInv" );
+        SetActivePixelShader( PShaderID::PS_PFX_GammaCorrectInv );
 
         ActivePS->Apply();
 
@@ -1840,7 +1834,7 @@ XRESULT D3D11GraphicsEngine::DrawVertexBufferInstancedIndexedUINT(
 }
 
 /** Binds viewport information to the given constantbuffer slot */
-XRESULT D3D11GraphicsEngine::BindViewportInformation( const std::string& shader,
+XRESULT D3D11GraphicsEngine::BindViewportInformation( VShaderID shader,
     int slot ) {
     D3D11_VIEWPORT vp;
     UINT num = 1;
@@ -1854,17 +1848,11 @@ XRESULT D3D11GraphicsEngine::BindViewportInformation( const std::string& shader,
     Temp2Float2[1].x = vp.Width / scale;
     Temp2Float2[1].y = vp.Height / scale;
 
-    auto ps = ShaderManager->GetPShader( shader );
     auto vs = ShaderManager->GetVShader( shader );
 
     if ( vs ) {
         vs->GetConstantBuffer()[slot]->UpdateBuffer( Temp2Float2 );
         vs->GetConstantBuffer()[slot]->BindToVertexShader( slot );
-    }
-
-    if ( ps ) {
-        ps->GetConstantBuffer()[slot]->UpdateBuffer( Temp2Float2 );
-        ps->GetConstantBuffer()[slot]->BindToVertexShader( slot );
     }
 
     return XR_SUCCESS;
@@ -1889,10 +1877,10 @@ XRESULT D3D11GraphicsEngine::DrawScreenFade( void* c ) {
         Engine::GAPI->GetRendererState().DepthState.DepthWriteEnabled = false;
         Engine::GAPI->GetRendererState().DepthState.SetDirty();
 
-        SetActivePixelShader( "PS_PFX_CinemaScope" );
+        SetActivePixelShader( PShaderID::PS_PFX_CinemaScope );
         ActivePS->Apply();
 
-        SetActiveVertexShader( "VS_CinemaScope" );
+        SetActiveVertexShader( VShaderID::VS_CinemaScope );
         ActiveVS->Apply();
 
         ScreenFadeConstantBuffer colorBuffer;
@@ -1956,13 +1944,13 @@ XRESULT D3D11GraphicsEngine::DrawScreenFade( void* c ) {
         Engine::GAPI->GetRendererState().DepthState.SetDirty();
 
         if ( haveTexture )
-            SetActivePixelShader( "PS_PFX_Alpha_Blend" );
+            SetActivePixelShader( PShaderID::PS_PFX_Alpha_Blend );
         else
-            SetActivePixelShader( "PS_PFX_CinemaScope" );
+            SetActivePixelShader( PShaderID::PS_PFX_CinemaScope );
 
         ActivePS->Apply();
 
-        SetActiveVertexShader( "VS_PFX" );
+        SetActiveVertexShader( VShaderID::VS_PFX );
         ActiveVS->Apply();
 
         ScreenFadeConstantBuffer colorBuffer;
@@ -2128,11 +2116,11 @@ bool D3D11GraphicsEngine::BindTextureNRFX( zCTexture* tex, bool bindShader ) {
 XRESULT  D3D11GraphicsEngine::DrawSkeletalVertexNormals( SkeletalVobInfo* vi,
     const XMFLOAT4X4& world,
     const Span<XMFLOAT4X4> transforms, float4 color, float fatness ) {
-    std::shared_ptr<D3D11GShader> gshader = ShaderManager->GetGShader( "GS_VertexNormals" );
+    std::shared_ptr<D3D11GShader> gshader = ShaderManager->GetGShader( GShaderID::GS_VertexNormals );
     gshader->Apply();
 
-    SetActiveVertexShader( "VS_ExSkeletalVN" );
-    SetActivePixelShader( "PS_Simple" );
+    SetActiveVertexShader( VShaderID::VS_ExSkeletalVN );
+    SetActivePixelShader( PShaderID::PS_Simple );
 
     InfiniteRangeConstantBuffer->BindToPixelShader( 3 );
     
@@ -2189,9 +2177,9 @@ XRESULT  D3D11GraphicsEngine::DrawSkeletalVertexNormals( SkeletalVobInfo* vi,
 XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
     const Span<XMFLOAT4X4> transforms, float4 color, const XMFLOAT4X4& world, float fatness ) {
     if ( GetRenderingStage() == DES_SHADOWMAP_CUBE ) {
-        SetActiveVertexShader( "VS_ExSkeletalCube" );
+        SetActiveVertexShader( VShaderID::VS_ExSkeletalCube );
     } else {
-        SetActiveVertexShader( "VS_ExSkeletal" );
+        SetActiveVertexShader( VShaderID::VS_ExSkeletal );
     }
 
     InfiniteRangeConstantBuffer->BindToPixelShader( 3 );
@@ -2236,7 +2224,7 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
     if ( RenderingStage != DES_GHOST ) {
         bool linearDepth = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches & GSWITCH_LINEAR_DEPTH) != 0;
         if ( linearDepth ) {
-            ActivePS = PS_LinDepth;
+            ActivePS = ShaderManager->GetPShader( PShaderID::PS_LinDepth );
             ActivePS->Apply();
         } else if ( RenderingStage == DES_SHADOWMAP ) {
             // Unbind PixelShader in this case
@@ -2245,7 +2233,7 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
         } else {
             // It is only to indicate that we want pixel shader(to populate gbuffer)
             // the actual shader will be activated before drawing
-            ActivePS = PS_LinDepth;
+            ActivePS = ShaderManager->GetPShader( PShaderID::PS_LinDepth );
         }
     }
 
@@ -2291,7 +2279,7 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
 
 XRESULT D3D11GraphicsEngine::DrawSkeletalMesh_Layered( SkeletalVobInfo* vi,
     const Span<XMFLOAT4X4> transforms, float4 color, XMFLOAT4X4& world, float fatness ) {
-    SetActiveVertexShader( "VS_ExSkeletalLayered" );
+    SetActiveVertexShader( VShaderID::VS_ExSkeletalLayered );
 
     InfiniteRangeConstantBuffer->BindToPixelShader( 3 );
 
@@ -2326,7 +2314,7 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh_Layered( SkeletalVobInfo* vi,
     if ( RenderingStage != DES_GHOST ) {
         bool linearDepth = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches & GSWITCH_LINEAR_DEPTH) != 0;
         if ( linearDepth ) {
-            ActivePS = PS_LinDepth;
+            ActivePS = ShaderManager->GetPShader( PShaderID::PS_LinDepth );
             ActivePS->Apply();
         } else if ( RenderingStage == DES_SHADOWMAP ) {
             // Unbind PixelShader in this case
@@ -2335,7 +2323,7 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh_Layered( SkeletalVobInfo* vi,
         } else {
             // It is only to indicate that we want pixel shader(to populate gbuffer)
             // the actual shader will be activated before drawing
-            ActivePS = PS_LinDepth;
+            ActivePS = ShaderManager->GetPShader( PShaderID::PS_LinDepth );
         }
     }
 
@@ -2611,6 +2599,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         pass.m_executeCallback = [this, &rendererState, colorResource](const RenderGraph& graph)->void {
             const Microsoft::WRL::ComPtr<ID3D11DeviceContext1>& context = GetContext();
             context->ClearDepthStencilView( DepthStencilBuffer->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
+            context->ClearDepthStencilView( m_SwapchainDepthStencilBuffer->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
 
             context->ClearRenderTargetView( HDRBackBuffer->GetRenderTargetView().Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )) );
             context->ClearRenderTargetView( Backbuffer->GetRenderTargetView().Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )) );
@@ -3255,6 +3244,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         graph.Execute();
         
         GetContext()->ClearDepthStencilView( DepthStencilBuffer->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
+        GetContext()->ClearDepthStencilView( m_SwapchainDepthStencilBuffer->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
         SetDefaultStates();
 
         // Below this, we assume UI/HUD rendering
@@ -3404,8 +3394,8 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
     Engine::GAPI->SetViewTransformXM( view );
     Engine::GAPI->ResetWorldTransform();
 
-    SetActivePixelShader( "PS_Diffuse" );
-    SetActiveVertexShader( "VS_Ex" );
+    SetActivePixelShader( PShaderID::PS_Diffuse );
+    SetActiveVertexShader( VShaderID::VS_Ex );
 
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
@@ -3526,8 +3516,8 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh_Indirect( bool noTextures ) {
     Engine::GAPI->SetViewTransformXM( view );
     Engine::GAPI->ResetWorldTransform();
 
-    SetActivePixelShader( "PS_Diffuse" );
-    SetActiveVertexShader( "VS_Ex" );
+    SetActivePixelShader( PShaderID::PS_Diffuse );
+    SetActiveVertexShader( VShaderID::VS_Ex );
 
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
@@ -3654,7 +3644,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh_Indirect( bool noTextures ) {
             WorldMeshIndirectBuffer->GetIndirectBuffer().Get(), 0, sizeof( D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS ) );
     }
 
-    SetActivePixelShader( "PS_Diffuse" );
+    SetActivePixelShader( PShaderID::PS_Diffuse );
     ActivePS->Apply();
 
     // Now draw the actual pixels
@@ -3775,8 +3765,8 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
     Engine::GAPI->SetViewTransformXM( view );
     Engine::GAPI->ResetWorldTransform();
 
-    SetActivePixelShader( "PS_Diffuse" );
-    SetActiveVertexShader( "VS_Ex" );
+    SetActivePixelShader( PShaderID::PS_Diffuse );
+    SetActiveVertexShader( VShaderID::VS_Ex );
 
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
@@ -3874,7 +3864,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
         }
     }
 
-    SetActivePixelShader( "PS_Diffuse" );
+    SetActivePixelShader( PShaderID::PS_Diffuse );
     ActivePS->Apply();
 
     // Now draw the actual pixels
@@ -3969,7 +3959,7 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
 
     // Bind vertex water shader
     ActivePS = nullptr;
-    SetActiveVertexShader( "VS_ExWater" );
+    SetActiveVertexShader( VShaderID::VS_ExWater );
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
 
@@ -4003,7 +3993,7 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
     UpdateRenderStates();
 
     // Bind pixel water shader
-    SetActivePixelShader( "PS_Water" );
+    SetActivePixelShader( PShaderID::PS_Water );
     if ( ActivePS ) {
         ActivePS->Apply();
     }
@@ -4072,7 +4062,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
         (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches &
             GSWITCH_LINEAR_DEPTH) != 0;
     if ( linearDepth ) {
-        SetActivePixelShader( "PS_LinDepth" );
+        SetActivePixelShader( PShaderID::PS_LinDepth );
     }
 
     // Set constant buffer
@@ -4380,7 +4370,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
         (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches &
             GSWITCH_LINEAR_DEPTH) != 0;
     if ( linearDepth ) {
-        SetActivePixelShader( "PS_LinDepth" );
+        SetActivePixelShader( PShaderID::PS_LinDepth );
     }
 
     // Set constant buffer
@@ -4892,17 +4882,17 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
     Engine::GAPI->SetViewTransformXM( view );
 
     // Set shader
-    SetActivePixelShader( "PS_AtmosphereGround" );
+    SetActivePixelShader( PShaderID::PS_AtmosphereGround );
     auto nrmPS = ActivePS;
-    SetActivePixelShader( "PS_DiffuseAlphaTestShadows" );
+    SetActivePixelShader( PShaderID::PS_DiffuseAlphaTestShadows );
     auto defaultPS = ActivePS;
-    SetActiveVertexShader( "VS_Ex" );
+    SetActiveVertexShader( VShaderID::VS_Ex );
 
     bool linearDepth =
         (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches &
             GSWITCH_LINEAR_DEPTH) != 0;
     if ( linearDepth ) {
-        SetActivePixelShader( "PS_LinDepth" );
+        SetActivePixelShader( PShaderID::PS_LinDepth );
     }
 
     // Set constant buffer
@@ -5076,7 +5066,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         DynamicInstancingBuffer->Unmap();
 
         // Apply instancing shader
-        SetActiveVertexShader( "VS_ExInstancedObj" );
+        SetActiveVertexShader( VShaderID::VS_ExInstancedObj );
         // SetActivePixelShader("PS_DiffuseAlphaTest");
         ActiveVS->Apply();
 
@@ -5300,8 +5290,8 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
         auto _ = START_TIMING( "VOBs" );
         SetDefaultStates();
 
-        SetActivePixelShader( "PS_Diffuse" );
-        SetActiveVertexShader( "VS_ExInstancedObj" );
+        SetActivePixelShader( PShaderID::PS_Diffuse );
+        SetActiveVertexShader( VShaderID::VS_ExInstancedObj );
 
         // Set constant buffer
         ActivePS->GetConstantBuffer()[0]->UpdateBuffer(
@@ -5475,7 +5465,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
 #else
                             // This is most likely some spacer helper-vob
                             WhiteTexture->BindToPixelShader( 0 );
-                            PS_Diffuse->Apply();
+                            ShaderManager->GetPShader( PShaderID::PS_Diffuse )->Apply();
 
                             /*// Apply colors for these meshes
                             MaterialInfo::Buffer b;
@@ -5492,13 +5482,13 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
 
                             if ( showHelpers ) {
                                 WhiteTexture->BindToPixelShader( 0 );
-                                PS_DiffuseAlphatest->Apply();
+                                ShaderManager->GetPShader( PShaderID::PS_DiffuseAlphaTest )->Apply();
 
                                 MaterialInfo::Buffer b = {};
 
                                 b.Color = itt.first.Material->GetColor();
-                                PS_DiffuseAlphatest->GetConstantBuffer()[2]->UpdateBuffer( &b );
-                                PS_DiffuseAlphatest->GetConstantBuffer()[2]->BindToPixelShader( 2 );
+                                ShaderManager->GetPShader( PShaderID::PS_DiffuseAlphaTest )->GetConstantBuffer()[2]->UpdateBuffer( &b );
+                                ShaderManager->GetPShader( PShaderID::PS_DiffuseAlphaTest )->GetConstantBuffer()[2]->BindToPixelShader( 2 );
 
                             } else {
                                 continue;
@@ -5608,8 +5598,8 @@ XRESULT D3D11GraphicsEngine::DrawFrameAlphaMeshes()
     // Make sure lighting doesn't mess up our state
     SetDefaultStates();
 
-    SetActivePixelShader( "PS_Simple" );
-    SetActiveVertexShader( "VS_ExInstancedObj" );
+    SetActivePixelShader( PShaderID::PS_Simple );
+    SetActiveVertexShader( VShaderID::VS_ExInstancedObj );
 
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
@@ -5738,8 +5728,8 @@ XRESULT D3D11GraphicsEngine::DrawPolyStrips( bool noTextures ) {
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
     Engine::GAPI->SetViewTransformXM( view );
 
-    SetActivePixelShader( "PS_Diffuse" );//seems like "PS_Simple" is used anyway thanks to BindShaderForTexture function used below
-    SetActiveVertexShader( "VS_Ex" );
+    SetActivePixelShader( PShaderID::PS_Diffuse );//seems like "PS_Simple" is used anyway thanks to BindShaderForTexture function used below
+    SetActiveVertexShader( VShaderID::VS_Ex );
 
     //No idea what these do
     SetupVS_ExMeshDrawCall();
@@ -5889,12 +5879,12 @@ XRESULT D3D11GraphicsEngine::DrawSky() {
     Engine::GAPI->SetViewTransformXM( Engine::GAPI->GetViewMatrixXM() );
 
     if ( sky->GetAtmosphereCB().AC_CameraHeight > sky->GetAtmosphereCB().AC_OuterRadius ) {
-        SetActivePixelShader( "PS_AtmosphereOuter" );
+        SetActivePixelShader( PShaderID::PS_AtmosphereOuter );
     } else {
-        SetActivePixelShader( "PS_Atmosphere" );
+        SetActivePixelShader( PShaderID::PS_Atmosphere );
     }
 
-    SetActiveVertexShader( "VS_ExWS" );
+    SetActiveVertexShader( VShaderID::VS_ExWS );
 
     ActivePS->GetConstantBuffer()[0]->UpdateBuffer( &sky->GetAtmosphereCB() );
     ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 1 );
@@ -6061,16 +6051,17 @@ D3D11ENGINE_RENDER_STAGE D3D11GraphicsEngine::GetRenderingStage() {
 /** Draws a VOB (used for inventory) */
 void D3D11GraphicsEngine::DrawVobSingle( VobInfo* vob, zCCamera& camera ) {
     Engine::GAPI->SetViewTransformXM( XMLoadFloat4x4( &camera.GetTransformDX( zCCamera::ETransformType::TT_VIEW ) ) );
-    // TODO: Does this even need a depth stencil? we clear the previous one anyways
-    GetContext()->OMSetRenderTargets( 1, Backbuffer->GetRenderTargetView().GetAddressOf(), nullptr );
+
+    // Important: We NEED a swapchain-sized depth stencil buffer here, otherwise Advanced Inventory VOBs will be rendered without depth testing and thus look very bad.
+    GetContext()->OMSetRenderTargets( 1, Backbuffer->GetRenderTargetView().GetAddressOf(), m_SwapchainDepthStencilBuffer->GetDepthStencilView().Get() );
 
     // Set backface culling
     Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_BACK;
     Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
     GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
 
-    SetActivePixelShader( "PS_Preview_Textured" );
-    SetActiveVertexShader( "VS_Ex" );
+    SetActivePixelShader( PShaderID::PS_Preview_Textured );
+    SetActiveVertexShader( VShaderID::VS_Ex );
 
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
@@ -6224,7 +6215,7 @@ void D3D11GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& 
     // Copy HDR scene to backbuffer
     SetDefaultStates();
 
-    SetActivePixelShader( "PS_PFX_GammaCorrectInv" );
+    SetActivePixelShader( PShaderID::PS_PFX_GammaCorrectInv );
     ActivePS->Apply();
 
     GammaCorrectConstantBuffer gcb;
@@ -6311,24 +6302,24 @@ void D3D11GraphicsEngine::BindShaderForTexture( zCTexture* texture,
     bool linZ = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches & GSWITCH_LINEAR_DEPTH) != 0;
 
     if ( materialInfo == MaterialInfo::MT_Portal ) {
-        newShader = PS_PortalDiffuse;
+        newShader = ShaderManager->GetPShader( PShaderID::PS_PortalDiffuse );
     } else if ( materialInfo == MaterialInfo::MT_WaterfallFoam ) {
-        newShader = PS_WaterfallFoam;
+        newShader = ShaderManager->GetPShader( PShaderID::PS_WaterfallFoam );
     } else if ( linZ ) {
-        newShader = PS_LinDepth;
+        newShader = ShaderManager->GetPShader( PShaderID::PS_LinDepth );
     } else if ( blendAdd || blendBlend ) {
-        newShader = PS_Simple;
+        newShader = ShaderManager->GetPShader( PShaderID::PS_Simple );
     } else if ( texture->HasAlphaChannel() || forceAlphaTest ) {
         if ( texture->GetSurface()->GetFxMap() ) {
-            newShader = PS_DiffuseNormalmappedAlphatestFxMap;
+            newShader = ShaderManager->GetPShader( Resolved_DiffuseNormalmappedAlphatestFxMap );
         } else {
-            newShader = PS_DiffuseNormalmappedAlphatest;
+            newShader = ShaderManager->GetPShader( Resolved_DiffuseNormalmappedAlphatest );
         }
     } else {
         if ( texture->GetSurface()->GetFxMap() ) {
-            newShader = PS_DiffuseNormalmappedFxMap;
+            newShader = ShaderManager->GetPShader( Resolved_DiffuseNormalmappedFxMap );
         } else {
-            newShader = PS_DiffuseNormalmapped;
+            newShader = ShaderManager->GetPShader( Resolved_DiffuseNormalmapped );
         }
     }
 
@@ -6352,14 +6343,14 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
 
     // Set up alpha
     if ( !lighting ) {
-        SetActivePixelShader( "PS_Transparency" );
+        SetActivePixelShader( PShaderID::PS_Transparency );
         Engine::GAPI->GetRendererState().DepthState.DepthWriteEnabled = false;
         Engine::GAPI->GetRendererState().DepthState.SetDirty();
     } else {
-        SetActivePixelShader( "PS_World" );
+        SetActivePixelShader( PShaderID::PS_World );
     }
 
-    SetActiveVertexShader( "VS_Decal" );
+    SetActiveVertexShader( VShaderID::VS_Decal );
 
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
@@ -6476,8 +6467,8 @@ void D3D11GraphicsEngine::DrawQuadMarks() {
         Engine::GAPI->GetQuadMarks();
     if ( quadMarks.empty() ) return;
 
-    SetActiveVertexShader( "VS_Ex" );
-    SetActivePixelShader( "PS_World" );
+    SetActiveVertexShader( VShaderID::VS_Ex );
+    SetActivePixelShader( PShaderID::PS_World );
 
     SetDefaultStates();
 
@@ -6553,8 +6544,8 @@ void D3D11GraphicsEngine::DrawQuadMarks() {
 void D3D11GraphicsEngine::DrawMQuadMarks() {
     if ( MulQuadMarks.empty() ) return;
 
-    SetActiveVertexShader( "VS_Ex" );
-    SetActivePixelShader( "PS_Simple" );
+    SetActiveVertexShader( VShaderID::VS_Ex );
+    SetActivePixelShader( PShaderID::PS_Simple );
 
     SetDefaultStates();
 
@@ -6625,7 +6616,7 @@ void D3D11GraphicsEngine::DrawUnderwaterEffects() {
     ricb.RI_CameraPosition = Engine::GAPI->GetCameraPosition();
 
     // Set up water final copy
-    SetActivePixelShader( "PS_PFX_UnderwaterFinal" );
+    SetActivePixelShader( PShaderID::PS_PFX_UnderwaterFinal );
     ActivePS->GetConstantBuffer()[0]->UpdateBuffer( &ricb );
     ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 3 );
 
@@ -6633,7 +6624,7 @@ void D3D11GraphicsEngine::DrawUnderwaterEffects() {
     DepthStencilBufferCopy->BindToPixelShader( GetContext().Get(), 3 );
 
     PfxRenderer->BlurTexture( HDRBackBuffer.get(), false, 0.10f, UNDERWATER_COLOR_MOD,
-        "PS_PFX_UnderwaterFinal" );
+        PShaderID::PS_PFX_UnderwaterFinal );
 }
 
 /** Returns the settings window availability */
@@ -6663,8 +6654,8 @@ void D3D11GraphicsEngine::DrawFrameParticleMeshes( std::unordered_map<zCVob*, Me
     if ( progMeshes.empty() ) return;
     SetDefaultStates();
 
-    SetActivePixelShader( "PS_Simple" );
-    SetActiveVertexShader( "VS_Ex" );
+    SetActivePixelShader( PShaderID::PS_Simple );
+    SetActiveVertexShader( VShaderID::VS_Ex );
 
     GothicRendererState& state = Engine::GAPI->GetRendererState();
     state.DepthState.DepthWriteEnabled = false;
@@ -6783,7 +6774,7 @@ void D3D11GraphicsEngine::DrawFrameParticles(
     ricb.RI_CameraPosition = Engine::GAPI->GetCameraPosition();
     ricb.RI_Far = Engine::GAPI->GetFarPlane();
 
-    SetActivePixelShader( "PS_ParticleDistortion" );
+    SetActivePixelShader( PShaderID::PS_ParticleDistortion );
     ActivePS->Apply();
     ActivePS->GetConstantBuffer()[0]->UpdateBuffer( &ricb );
     ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
@@ -6820,7 +6811,7 @@ void D3D11GraphicsEngine::DrawFrameParticles(
     SetupVS_ExConstantBuffer();
 
     // Setup GS
-    SetActiveVertexShader( "VS_ParticlePoint" );
+    SetActiveVertexShader( VShaderID::VS_ParticlePoint );
     ActiveVS->Apply();
 
     ParticleGSInfoConstantBuffer gcb = {};
@@ -6854,8 +6845,8 @@ void D3D11GraphicsEngine::DrawFrameParticles(
     }
 
     // Set usual rendering for everything else. Alphablending mostly.
-    SetActivePixelShader( "PS_Simple" );
-    PS_Simple->Apply();
+    SetActivePixelShader( PShaderID::PS_Simple );
+    ShaderManager->GetPShader( PShaderID::PS_Simple )->Apply();
 
     Context->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(),
         DepthStencilBuffer->GetDepthStencilView().Get() );
@@ -6908,7 +6899,7 @@ void D3D11GraphicsEngine::DrawFrameParticles(
         tempBuffer->GetRenderTargetView(),
         GetResolution() );
 
-    SetActivePixelShader( "PS_PFX_ApplyParticleDistortion" );
+    SetActivePixelShader( PShaderID::PS_PFX_ApplyParticleDistortion );
     ActivePS->Apply();
 
     // Copy it back, putting distortion behind it
@@ -7183,8 +7174,8 @@ void D3D11GraphicsEngine::DrawString( const std::string& str, float x, float y, 
     // Setup Shaders
     //
 
-    SetActiveVertexShader( "VS_TransformedEx" );
-    SetActivePixelShader( "PS_FixedFunctionPipe" );
+    SetActiveVertexShader( VShaderID::VS_TransformedEx );
+    SetActivePixelShader( PShaderID::PS_FixedFunctionPipe );
 
     GothicGraphicsState& graphicState = Engine::GAPI->GetRendererState().GraphicsState;
     FixedFunctionStage::EColorOp copyColorOp = graphicState.FF_Stages[0].ColorOp;
@@ -7206,7 +7197,7 @@ void D3D11GraphicsEngine::DrawString( const std::string& str, float x, float y, 
     // Set vertex type
     GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
-    BindViewportInformation( "VS_TransformedEx", 0 );
+    BindViewportInformation( VShaderID::VS_TransformedEx, 0 );
 
     //
     // Convert the characters to verticies which mask the Font-Texture alias

@@ -181,12 +181,12 @@ void Widget_TransRot::DoHoverTest( HWND hw ) {
 	float Width = 0.15f;
 	float Eps = 0.01f;
 
-	auto ColorShader = ((D3D11GraphicsEngineBase*)Engine::GraphicsEngine)->GetShaderManager().GetPShader( "PS_Lines" );
-	auto SelectedShader = ((D3D11GraphicsEngineBase*)Engine::GraphicsEngine)->GetShaderManager().GetPShader( "PS_LinesSel" );
+	auto ColorShaderID = PShaderID::PS_Lines;
+	auto SelectedShaderID = PShaderID::PS_LinesSel;
 
 	for ( int i = 0; i < 3; i++ ) {
-		Arrows[i]->SetSolidShader( ColorShader );
-		TransLines[i]->SetShader( ColorShader );
+		Arrows[i]->SetSolidShader( ColorShaderID );
+		TransLines[i]->SetShader( ColorShaderID );
 	}
 
 	float Dist = Width;
@@ -201,22 +201,22 @@ void Widget_TransRot::DoHoverTest( HWND hw ) {
 	ActiveSelection = WTR_None;
 
 	if ( TransXDist < Dist ) {
-		TransLines[0]->SetShader( SelectedShader );
-		Arrows[0]->SetSolidShader( SelectedShader );
+		TransLines[0]->SetShader( SelectedShaderID );
+		Arrows[0]->SetSolidShader( SelectedShaderID );
 		Dist = TransXDist;
 
 		ActiveSelection = WTR_TransX;
 		//StartValue = (*Targets.begin())->GetLocation()->x;
 	} else if ( TransYDist < Dist ) {
-		TransLines[1]->SetShader( SelectedShader );
-		Arrows[1]->SetSolidShader( SelectedShader );
+		TransLines[1]->SetShader( SelectedShaderID );
+		Arrows[1]->SetSolidShader( SelectedShaderID );
 		Dist = TransYDist;
 
 		ActiveSelection = WTR_TransY;
 		//StartValue = (*Targets.begin())->GetLocation()->y;
 	} else if ( TransZDist < Dist ) {
-		TransLines[2]->SetShader( SelectedShader );
-		Arrows[2]->SetSolidShader( SelectedShader );
+		TransLines[2]->SetShader( SelectedShaderID );
+		Arrows[2]->SetSolidShader( SelectedShaderID );
 		Dist = TransZDist;
 
 		ActiveSelection = WTR_TransZ;

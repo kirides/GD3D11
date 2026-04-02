@@ -1,5 +1,6 @@
 #pragma once
 #include "pch.h"
+#include "ShaderIDs.h"
 
 /** LEGACY */
 #define SET(TYPE, NAME) void Set##NAME (const TYPE& value) { NAME = value; }
@@ -60,8 +61,8 @@ public:
     HRESULT CreateLineGrid( int LinesX, int LinesY, XMFLOAT2* Middle, const float4& Color );
 
     /** Sets the shader to render with */
-    void SetShader( std::shared_ptr<D3D11PShader> Shader );
-    void SetSolidShader( std::shared_ptr<D3D11PShader> SolidShader );
+    void SetShader( PShaderID ShaderID );
+    void SetSolidShader( PShaderID SolidShaderID );
 
     /** Sets the transforms */
     void XM_CALLCONV SetLocation( FXMVECTOR NewLoc );
@@ -91,8 +92,8 @@ public:
     GETSET( XMFLOAT3, RotationMatrixAngles );
 
 
-    GET( std::shared_ptr<D3D11PShader>, PrimShader );
-    GET( std::shared_ptr<D3D11PShader>, SolidPrimShader );
+    GET( PShaderID, PrimShaderID );
+    GET( PShaderID, SolidPrimShaderID );
     GETSET_MEMBER( bool, bLocalRotation );
     GETSET_MEMBER( bool, bJustUseRotationMatrix ); // If true we will just multiply the existing rotation matrix when creating a new world matrix
 private:
@@ -117,8 +118,8 @@ private:
     Microsoft::WRL::ComPtr<ID3D11Buffer> PrimVB;
 
     /** Primitives shaders */
-    std::shared_ptr<D3D11PShader> PrimShader;
-    std::shared_ptr<D3D11PShader> SolidPrimShader;
+    PShaderID PrimShaderID;
+    PShaderID SolidPrimShaderID;
 
     /** Solid vertices we have */
     LineVertex* SolidVertices;

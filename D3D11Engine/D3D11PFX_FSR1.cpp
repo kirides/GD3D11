@@ -92,7 +92,7 @@ XRESULT D3D11PFX_FSR1::ApplyEASU(
     engine->UpdateRenderStates();
 
     // Get EASU shader
-    auto easuPS = engine->GetShaderManager().GetPShader( "PS_PFX_FSR1_EASU" );
+    auto easuPS = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_FSR1_EASU );
     if ( !easuPS ) {
         LogError() << "FSR1 EASU shader not found";
         return XR_FAILED;
@@ -170,7 +170,7 @@ XRESULT D3D11PFX_FSR1::ApplyRCAS(
     engine->UpdateRenderStates();
 
     // Get RCAS shader
-    auto rcasPS = engine->GetShaderManager().GetPShader( "PS_PFX_FSR1_RCAS" );
+    auto rcasPS = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_FSR1_RCAS );
     if ( !rcasPS ) {
         LogError() << "FSR1 RCAS shader not found";
         return XR_FAILED;

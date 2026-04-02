@@ -25,11 +25,11 @@ XRESULT D3D11LegacyDeferredShading::DrawPointlightLights(
     Engine::GAPI->SetViewTransformXM( view );
     view = XMMatrixTranspose( view );
 
-    graphicsEngine->SetActiveVertexShader( "VS_ExPointLight" );
-    graphicsEngine->SetActivePixelShader( "PS_DS_PointLight" );
+    graphicsEngine->SetActiveVertexShader( VShaderID::VS_ExPointLight );
+    graphicsEngine->SetActivePixelShader( PShaderID::PS_DS_PointLight );
 
-    auto psPointLight = graphicsEngine->GetShaderManager().GetPShader( "PS_DS_PointLight" );
-    auto psPointLightDynShadow = graphicsEngine->GetShaderManager().GetPShader( "PS_DS_PointLightDynShadow" );
+    auto psPointLight = graphicsEngine->GetShaderManager().GetPShader( PShaderID::PS_DS_PointLight );
+    auto psPointLightDynShadow = graphicsEngine->GetShaderManager().GetPShader( PShaderID::PS_DS_PointLightDynShadow );
 
     Engine::GAPI->GetRendererState().BlendState.SetAdditiveBlending();
     if ( settings.LimitLightIntesity ) {

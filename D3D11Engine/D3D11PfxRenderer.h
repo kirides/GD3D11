@@ -1,5 +1,6 @@
 #pragma once
 #include "pch.h"
+#include "ShaderIDs.h"
 #include "TexturePool.h"
 
 class D3D11PFX_FSR3;
@@ -27,7 +28,7 @@ public:
     XRESULT OnResize( const INT2& newResolution );
 
     /** Blurs the given texture */
-    XRESULT BlurTexture( RenderToTextureBuffer* texture, bool leaveResultInD4_2 = false, float scale = 1.0f, const XMFLOAT4& colorMod = XMFLOAT4( 1, 1, 1, 1 ), const std::string& finalCopyShader = "PS_PFX_Simple" );
+    XRESULT BlurTexture( RenderToTextureBuffer* texture, bool leaveResultInD4_2 = false, float scale = 1.0f, const XMFLOAT4& colorMod = XMFLOAT4( 1, 1, 1, 1 ), PShaderID finalCopyShader = PShaderID::PS_PFX_Simple );
 
     /** Renders the heightfog */
     XRESULT RenderHeightfog();

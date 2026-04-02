@@ -14,6 +14,7 @@
 #include <Windows.h>
 #include <wrl/client.h>
 #include <chrono>
+#include <magic_enum/magic_enum.hpp>
 #include <d3d11_4.h>
 #include <DirectXMath.h>
 #include <future>

@@ -24,8 +24,8 @@ XRESULT D3D11PFX_DistanceBlur::Render( ID3D11ShaderResourceView* diffuse ) {
 	Microsoft::WRL::ComPtr<ID3D11DepthStencilView> oldDSV;
 	engine->GetContext()->OMGetRenderTargets( 1, oldRTV.GetAddressOf(), oldDSV.GetAddressOf() );
 
-	engine->GetShaderManager().GetVShader( "VS_PFX" )->Apply();
-	auto ps = engine->GetShaderManager().GetPShader( "PS_PFX_DistanceBlur" );
+	engine->GetShaderManager().GetVShader( VShaderID::VS_PFX )->Apply();
+	auto ps = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_DistanceBlur );
 
 	Engine::GAPI->GetRendererState().BlendState.SetDefault();
 	Engine::GAPI->GetRendererState().BlendState.SetDirty();

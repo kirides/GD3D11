@@ -402,9 +402,9 @@ int __fastcall BinkPlayerPlayFrame(DWORD BinkPlayer)
                 verts[5].TexCoord2 = float2(0.f, 0.f);
                 verts[5].Color = 0xFFFFFFFF;
 
-                Engine::GraphicsEngine->SetActiveVertexShader("VS_TransformedEx");
-                Engine::GraphicsEngine->BindViewportInformation("VS_TransformedEx", 0);
-                Engine::GraphicsEngine->SetActivePixelShader("PS_Video");
+                Engine::GraphicsEngine->SetActiveVertexShader(VShaderID::VS_TransformedEx);
+                Engine::GraphicsEngine->BindViewportInformation(VShaderID::VS_TransformedEx, 0);
+                Engine::GraphicsEngine->SetActivePixelShader(PShaderID::PS_Video);
                 video->textureY->BindToPixelShader(0);
                 video->textureU->BindToPixelShader(1);
                 video->textureV->BindToPixelShader(2);
