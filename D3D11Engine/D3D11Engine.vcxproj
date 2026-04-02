@@ -988,6 +988,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="RGBuilder.h" />
     <ClInclude Include="RGTextureDesc.h" />
     <ClInclude Include="ShaderCategory.h" />
+    <ClInclude Include="StringID.h" />
     <ClInclude Include="SMAA\D3D11SMAA.h" />
     <ClInclude Include="SteamOverlay.h" />
     <ClInclude Include="StackWalker.h" />

@@ -251,15 +251,15 @@ XRESULT D3D11VShader::Apply() {
     return XR_SUCCESS;
 }
 
-void D3D11VShader::BindResource(std::string_view name, ID3D11ShaderResourceView* srv) {
+void D3D11VShader::BindResource(StringID name, ID3D11ShaderResourceView* srv) {
     reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->VSSetShaderResources( GetInputIndex(name), 1, &srv );
 }
 
-void D3D11VShader::BindSampler(std::string_view name, ID3D11SamplerState* sampler) {
+void D3D11VShader::BindSampler(StringID name, ID3D11SamplerState* sampler) {
     reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->VSSetSamplers( GetInputIndex(name), 1, &sampler );
 }
 
-void D3D11VShader::BindBuffer(std::string_view name, D3D11ConstantBuffer* buffer) {
+void D3D11VShader::BindBuffer(StringID name, D3D11ConstantBuffer* buffer) {
     if (auto idx = GetInputIndex(name); idx != -1) {
         buffer->BindToVertexShader(idx);
     }

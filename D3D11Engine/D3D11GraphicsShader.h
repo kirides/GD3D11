@@ -5,6 +5,7 @@
 #include <parallel_hashmap/phmap.h>
 #include "D3D11ConstantBuffer.h"
 #include "Types.h"
+#include "StringID.h"
 
 class D3D11GraphicsShader;
 class D3D11ConstantBuffer;
@@ -56,20 +57,20 @@ public:
     D3D11GraphicsShader() = default;
     ~D3D11GraphicsShader() override = default;
     /** Returns the input index for the given semantic name */
-    int32_t GetInputIndex( std::string_view name ) override;
+    int32_t GetInputIndex( StringID name ) override;
     
     std::vector<std::unique_ptr<D3D11ConstantBuffer>>& GetConstantBuffer() { return ConstantBuffers; }
 
-    virtual void BindResource(std::string_view name, ID3D11ShaderResourceView* srv) = 0;
-    virtual void BindSampler(std::string_view name, ID3D11SamplerState* sampler) = 0;
-    virtual void BindBuffer( std::string_view name, D3D11ConstantBuffer* buffer) = 0;
+    virtual void BindResource(StringID name, ID3D11ShaderResourceView* srv) = 0;
+    virtual void BindSampler(StringID name, ID3D11SamplerState* sampler) = 0;
+    virtual void BindBuffer( StringID name, D3D11ConstantBuffer* buffer) = 0;
     virtual void BindBuffer(UINT slot, D3D11ConstantBuffer* buffer) = 0;
-    virtual GraphicsShaderConstantBuffer GetBuffer(std::string_view name);
+    virtual GraphicsShaderConstantBuffer GetBuffer(StringID name);
     
     virtual XRESULT Apply() = 0;
 protected:
-    phmap::flat_hash_map<std::string, int32_t> InputSemanticToIndex;
-    phmap::flat_hash_map<std::string, D3D11ConstantBuffer*> ConstantBuffersByName;
+    phmap::flat_hash_map<StringID, int32_t> InputSemanticToIndex;
+    phmap::flat_hash_map<StringID, std::pair<D3D11ConstantBuffer*, int32_t>> ConstantBuffersByName;
     std::vector<std::unique_ptr<D3D11ConstantBuffer>> ConstantBuffers;
 
     virtual HRESULT ReflectShaderResources( ID3DBlob* shaderBlob );

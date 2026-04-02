@@ -9,6 +9,7 @@
 #include "GothicAPI.h"
 #include "D3D11ShaderManager.h"
 #include "D3D11_Helpers.h"
+#include "StringID.h"
 
 D3D11CShader::D3D11CShader() = default;
 
@@ -46,15 +47,15 @@ XRESULT D3D11CShader::Apply() {
     return XR_SUCCESS;
 }
 
-void D3D11CShader::BindResource(std::string_view name, ID3D11ShaderResourceView* srv) {
+void D3D11CShader::BindResource(StringID name, ID3D11ShaderResourceView* srv) {
     reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->CSSetShaderResources( GetInputIndex(name), 1, &srv );
 }
 
-void D3D11CShader::BindSampler(std::string_view name, ID3D11SamplerState* sampler) {
+void D3D11CShader::BindSampler(StringID name, ID3D11SamplerState* sampler) {
     reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->CSSetSamplers( GetInputIndex(name), 1, &sampler );
 }
 
-void D3D11CShader::BindBuffer(std::string_view name, D3D11ConstantBuffer* buffer) {
+void D3D11CShader::BindBuffer(StringID name, D3D11ConstantBuffer* buffer) {
     if (auto idx = GetInputIndex(name); idx != -1) {
         buffer->BindToComputeShader(idx);
     }

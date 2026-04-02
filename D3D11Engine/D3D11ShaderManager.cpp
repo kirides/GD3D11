@@ -207,91 +207,56 @@ XRESULT D3D11ShaderManager::Init() {
     std::vector<D3D_SHADER_MACRO> makros;
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_Ex>( "VS_Ex.hlsl" )
-        .with_layout( 1 )
-        .with_cbuffer( sizeof( VS_ExConstantBuffer_PerFrame ) )
-        .with_cbuffer( sizeof( VS_ExConstantBuffer_PerInstance ) ) );
+        .with_layout( 1 )  );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExNode>( "VS_ExNode.hlsl" )
-        .with_layout( 1 )
-        .with_cbuffer( sizeof( VS_ExConstantBuffer_PerFrame ) )
-        .with_cbuffer( sizeof( VS_ExConstantBuffer_PerInstanceNode ) ) );
+        .with_layout( 1 ) );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_Decal>( "VS_Decal.hlsl" )
-        .with_layout( 1 )
-        .with_cbuffer( sizeof( VS_ExConstantBuffer_PerFrame ) )
-        .with_cbuffer( sizeof( VS_ExConstantBuffer_PerInstance ) ) );
+        .with_layout( 1 )  );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExWater>( "VS_ExWater.hlsl" )
-        .with_layout( 1 )
-        .with_cbuffer( sizeof( VS_ExConstantBuffer_PerFrame ) )
-        .with_cbuffer( sizeof( VS_ExConstantBuffer_PerInstance ) ) );
+        .with_layout( 1 ) );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ParticlePoint>( "VS_ParticlePoint.hlsl" )
-        .with_layout( 11 )
-        .with_cbuffer( sizeof( VS_ExConstantBuffer_PerFrame ) )
-        .with_cbuffer( sizeof( ParticleGSInfoConstantBuffer ) ) );
+        .with_layout( 11 ) );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ParticlePointShaded>( "VS_ParticlePointShaded.hlsl" )
-        .with_layout( 13 )
-        .with_cbuffer( sizeof( VS_ExConstantBuffer_PerFrame ) )
-        .with_cbuffer( sizeof( ParticlePointShadingConstantBuffer ) )
-        .with_cbuffer( sizeof( ParticleGSInfoConstantBuffer ) ) );
+        .with_layout( 13 )  );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExWS>( "VS_ExWS.hlsl" )
-        .with_layout( 1 )
-        .with_cbuffer( sizeof( VS_ExConstantBuffer_PerFrame ) )
-        .with_cbuffer( sizeof( VS_ExConstantBuffer_PerInstance ) ) );
+        .with_layout( 1 ) );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExSkeletal>( "VS_ExSkeletal.hlsl" )
-        .with_layout( 3 )
-        .with_cbuffer( sizeof( VS_ExConstantBuffer_PerFrame ) )
-        .with_cbuffer( sizeof( VS_ExConstantBuffer_PerInstanceSkeletal ) )
-        .with_cbuffer( NUM_MAX_BONES * sizeof( XMFLOAT4X4 ) )
-        .with_cbuffer( NUM_MAX_BONES * sizeof( XMFLOAT4X4 ) ) ); // PrevBoneTransforms for motion vectors
+        .with_layout( 3 ) );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExSkeletalVN>( "VS_ExSkeletalVN.hlsl" )
-        .with_layout( 3 )
-        .with_cbuffer( sizeof( VS_ExConstantBuffer_PerFrame ) )
-        .with_cbuffer( sizeof( VS_ExConstantBuffer_PerInstanceSkeletal ) )
-        .with_cbuffer( NUM_MAX_BONES * sizeof( XMFLOAT4X4 ) )
-        .with_cbuffer( NUM_MAX_BONES * sizeof( XMFLOAT4X4 ) ) ); // PrevBoneTransforms for motion vectors
+        .with_layout( 3 )  );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_TransformedEx>( "VS_TransformedEx.hlsl" )
-        .with_layout( 1 )
-        .with_cbuffer( 2 * sizeof( float2 ) ) );
+        .with_layout( 1 ) );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExPointLight>( "VS_ExPointLight.hlsl" )
-        .with_layout( 1 )
-        .with_cbuffer( sizeof( VS_ExConstantBuffer_PerFrame ) )
-        .with_cbuffer( sizeof( DS_PointLightConstantBuffer ) ) );
+        .with_layout( 1 ) );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_XYZRHW_DIF_T1>( "VS_XYZRHW_DIF_T1.hlsl" )
-        .with_layout( 7 )
-        .with_cbuffer( 2 * sizeof( float2 ) ) );
+        .with_layout( 7 ) );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExInstancedObj>( "VS_ExInstancedObj.hlsl" )
-        .with_layout( 10 )
-        .with_cbuffer( sizeof( VS_ExConstantBuffer_PerFrame ) )
-        .with_cbuffer( sizeof( VS_ExConstantBuffer_Wind ) ) );
+        .with_layout( 10 )  );
 
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExInstanced>( "VS_ExInstanced.hlsl" )
-        .with_layout( 4 )
-        .with_cbuffer( sizeof( VS_ExConstantBuffer_PerFrame ) )
-        .with_cbuffer( sizeof( GrassConstantBuffer ) ) );
+        .with_layout( 4 ) );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_GrassInstanced>( "VS_GrassInstanced.hlsl" )
-        .with_layout( 9 )
-        .with_cbuffer( sizeof( VS_ExConstantBuffer_PerFrame ) ) );
+        .with_layout( 9 )  );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_Lines>( "VS_Lines.hlsl" )
-        .with_layout( 6 )
-        .with_cbuffer( sizeof( VS_ExConstantBuffer_PerFrame ) )
-        .with_cbuffer( sizeof( VS_ExConstantBuffer_PerInstance ) ) );
+        .with_layout( 6 )  );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_Lines_XYZRHW>( "VS_Lines_XYZRHW.hlsl" )
-        .with_layout( 6 )
-        .with_cbuffer( 2 * sizeof( float2 ) ) );
+        .with_layout( 6 )  );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_Lines>( "PS_Lines.hlsl" ) );
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_LinesSel>( "PS_LinesSel.hlsl" ) );
@@ -305,113 +270,80 @@ XRESULT D3D11ShaderManager::Init() {
         .with_macros( makros ) );
     makros.clear();
 
-    Shaders.push_back( ShaderInfo::make<PShaderID::PS_Transparency>( "PS_Transparency.hlsl" )
-        .with_cbuffer( sizeof( GhostAlphaConstantBuffer ) ) );
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_Transparency>( "PS_Transparency.hlsl" )  );
 
-    Shaders.push_back( ShaderInfo::make<PShaderID::PS_World>( "PS_World.hlsl" )
-        .with_cbuffer( sizeof( GothicGraphicsState ) )
-        .with_cbuffer( sizeof( AtmosphereConstantBuffer ) )
-        .with_cbuffer( sizeof( MaterialInfo::Buffer ) )
-        .with_cbuffer( sizeof( PerObjectState ) ) );
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_World>( "PS_World.hlsl" )  );
 
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_Water>( "PS_Water.hlsl" )
-        .with_category( ShaderCategory::Water )
-        .with_cbuffer( sizeof( GothicGraphicsState ) )
-        .with_cbuffer( sizeof( AtmosphereConstantBuffer ) )
-        .with_cbuffer( sizeof( RefractionInfoConstantBuffer ) ) );
+        .with_category( ShaderCategory::Water )  );
 
-    Shaders.push_back( ShaderInfo::make<PShaderID::PS_ParticleDistortion>( "PS_ParticleDistortion.hlsl" )
-        .with_cbuffer( sizeof( RefractionInfoConstantBuffer ) ) );
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_ParticleDistortion>( "PS_ParticleDistortion.hlsl" )  );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_ApplyParticleDistortion>( "PS_PFX_ApplyParticleDistortion.hlsl" ) );
 
-    Shaders.push_back( ShaderInfo::make<PShaderID::PS_Grass>( "PS_Grass.hlsl" )
-        .with_cbuffer( sizeof( MaterialInfo::Buffer ) ) );
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_Grass>( "PS_Grass.hlsl" ) );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_PFX>( "VS_PFX.hlsl" ) );
 
-    Shaders.push_back( ShaderInfo::make<VShaderID::VS_CinemaScope>( "VS_CinemaScope.hlsl" )
-        .with_cbuffer( sizeof( PFXVS_ConstantBuffer ) ) );
+    Shaders.push_back( ShaderInfo::make<VShaderID::VS_CinemaScope>( "VS_CinemaScope.hlsl" )  );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_Simple>( "PS_PFX_Simple.hlsl" ) );
 
-    Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_VelocityDebug>( "PS_PFX_VelocityDebug.hlsl" )
-        .with_cbuffer( sizeof( VelocityDebugConstantBuffer ) ) );
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_VelocityDebug>( "PS_PFX_VelocityDebug.hlsl" )  );
 
-    Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_GaussBlur>( "PS_PFX_GaussBlur.hlsl" )
-        .with_cbuffer( sizeof( BlurConstantBuffer ) ) );
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_GaussBlur>( "PS_PFX_GaussBlur.hlsl" )  );
 
-    Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_Heightfog>( "PS_PFX_Heightfog.hlsl" )
-        .with_cbuffer( sizeof( HeightfogConstantBuffer ) )
-        .with_cbuffer( sizeof( AtmosphereConstantBuffer ) ) );
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_Heightfog>( "PS_PFX_Heightfog.hlsl" )  );
 
-    Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_UnderwaterFinal>( "PS_PFX_UnderwaterFinal.hlsl" )
-        .with_cbuffer( sizeof( RefractionInfoConstantBuffer ) ) );
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_UnderwaterFinal>( "PS_PFX_UnderwaterFinal.hlsl" )  );
 
-    Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_Alpha_Blend>( "PS_PFX_Alpha_Blend.hlsl" )
-        .with_cbuffer( sizeof( ScreenFadeConstantBuffer ) ) );
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_Alpha_Blend>( "PS_PFX_Alpha_Blend.hlsl" )  );
 
-    Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_CinemaScope>( "PS_PFX_CinemaScope.hlsl" )
-        .with_cbuffer( sizeof( ScreenFadeConstantBuffer ) ) );
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_CinemaScope>( "PS_PFX_CinemaScope.hlsl" )  );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_DistanceBlur>( "PS_PFX_DistanceBlur.hlsl" ) );
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_LumConvert>( "PS_PFX_LumConvert.hlsl" ) );
-    Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_LumAdapt>( "PS_PFX_LumAdapt.hlsl" )
-        .with_cbuffer( sizeof( LumAdaptConstantBuffer ) ) );
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_LumAdapt>( "PS_PFX_LumAdapt.hlsl" )  );
 
     m.Name = "USE_TONEMAP";
     m.Definition = "4";
     makros.push_back( m );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_HDR>( "PS_PFX_HDR.hlsl" )
-        .with_macros( makros )
-        .with_cbuffer( sizeof( HDRSettingsConstantBuffer ) ) );
+        .with_macros( makros )  );
     makros.clear();
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_GodRayMask>( "PS_PFX_GodRayMask.hlsl" ) );
-    Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_GodRayZoom>( "PS_PFX_GodRayZoom.hlsl" )
-        .with_cbuffer( sizeof( GodRayZoomConstantBuffer ) ) );
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_GodRayZoom>( "PS_PFX_GodRayZoom.hlsl" ) );
 
     m.Name = "USE_TONEMAP";
     m.Definition = "4";
     makros.push_back( m );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_Tonemap>( "PS_PFX_Tonemap.hlsl" )
-        .with_macros( makros )
-        .with_cbuffer( sizeof( HDRSettingsConstantBuffer ) ) );
+        .with_macros( makros )  );
     makros.clear();
 
-    Shaders.push_back( ShaderInfo::make<PShaderID::PS_AtmosphereGround>( "PS_AtmosphereGround.hlsl" )
-        .with_cbuffer( sizeof( GothicGraphicsState ) )
-        .with_cbuffer( sizeof( AtmosphereConstantBuffer ) )
-        .with_cbuffer( sizeof( MaterialInfo::Buffer ) )
-        .with_cbuffer( sizeof( PerObjectState ) ) );
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_AtmosphereGround>( "PS_AtmosphereGround.hlsl" )  );
 
-    Shaders.push_back( ShaderInfo::make<PShaderID::PS_Atmosphere>( "PS_Atmosphere.hlsl" )
-        .with_cbuffer( sizeof( AtmosphereConstantBuffer ) ) );
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_Atmosphere>( "PS_Atmosphere.hlsl" )  );
 
-    Shaders.push_back( ShaderInfo::make<PShaderID::PS_AtmosphereOuter>( "PS_AtmosphereOuter.hlsl" )
-        .with_cbuffer( sizeof( AtmosphereConstantBuffer ) ) );
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_AtmosphereOuter>( "PS_AtmosphereOuter.hlsl" ) );
 
-    Shaders.push_back( ShaderInfo::make<PShaderID::PS_FixedFunctionPipe>( "PS_FixedFunctionPipe.hlsl" )
-        .with_cbuffer( sizeof( GothicGraphicsState ) ) );
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_FixedFunctionPipe>( "PS_FixedFunctionPipe.hlsl" )  );
 
-    Shaders.push_back( ShaderInfo::make<PShaderID::PS_Video>( "PS_Video.hlsl" )
-        .with_cbuffer( sizeof( GothicGraphicsState ) ) );
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_Video>( "PS_Video.hlsl" )  );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_DS_PointLight>( "PS_DS_PointLight.hlsl" )
-        .with_category( ShaderCategory::LightsAndShadows )
-        .with_cbuffer( sizeof( DS_PointLightConstantBuffer ) ) );
+        .with_category( ShaderCategory::LightsAndShadows ) );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_DS_PointLightDynShadow>( "PS_DS_PointLightDynShadow.hlsl" )
-        .with_category( ShaderCategory::LightsAndShadows )
-        .with_cbuffer( sizeof( DS_PointLightConstantBuffer ) ) );
+        .with_category( ShaderCategory::LightsAndShadows ) );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_DS_AtmosphericScattering>( "PS_DS_AtmosphericScattering.hlsl" )
-        .with_category( ShaderCategory::LightsAndShadows ) // see ConstructShaderMakroList
-        .with_cbuffer( sizeof( DS_ScreenQuadConstantBuffer ) )
-        .with_cbuffer( sizeof( AtmosphereConstantBuffer ) ) );
+        .with_category( ShaderCategory::LightsAndShadows ) // see ConstructShaderMakroList 
+        );
 
     Shaders.push_back( ShaderInfo::make<GShaderID::GS_VertexNormals>( "GS_VertexNormals.hlsl" ) );
 
@@ -424,11 +356,7 @@ XRESULT D3D11ShaderManager::Init() {
     makros.push_back( m );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_Diffuse>( "PS_Diffuse.hlsl" )
-        .with_macros( makros )
-        .with_cbuffer( sizeof( GothicGraphicsState ) )
-        .with_cbuffer( sizeof( AtmosphereConstantBuffer ) )
-        .with_cbuffer( sizeof( MaterialInfo::Buffer ) )
-        .with_cbuffer( sizeof( PerObjectState ) ) );
+        .with_macros( makros )  );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_PortalDiffuse>( "PS_PortalDiffuse.hlsl" ) ); //forest portals, doors, etc.
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_WaterfallFoam>( "PS_WaterfallFoam.hlsl" ) );     //foam on at the base of waterfalls
@@ -441,17 +369,11 @@ XRESULT D3D11ShaderManager::Init() {
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_DS_AtmosphericScattering_Rain>( "PS_DS_AtmosphericScattering.hlsl" )
         .with_macros( makros )
-        .with_category( ShaderCategory::LightsAndShadows )
-        .with_cbuffer( sizeof( DS_ScreenQuadConstantBuffer ) )
-        .with_cbuffer( sizeof( AtmosphereConstantBuffer ) ) );
+        .with_category( ShaderCategory::LightsAndShadows ) );
 
     makros.clear();
 
-    Shaders.push_back( ShaderInfo::make<PShaderID::PS_LinDepth>( "PS_LinDepth.hlsl" )
-        .with_cbuffer( sizeof( GothicGraphicsState ) )
-        .with_cbuffer( sizeof( AtmosphereConstantBuffer ) )
-        .with_cbuffer( sizeof( MaterialInfo::Buffer ) )
-        .with_cbuffer( sizeof( PerObjectState ) ) );
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_LinDepth>( "PS_LinDepth.hlsl" )  );
 
 
     m.Name = "NORMALMAPPING";
@@ -463,11 +385,7 @@ XRESULT D3D11ShaderManager::Init() {
     makros.push_back( m );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_DiffuseNormalmapped>( "PS_Diffuse.hlsl" )
-        .with_macros( makros )
-        .with_cbuffer( sizeof( GothicGraphicsState ) )
-        .with_cbuffer( sizeof( AtmosphereConstantBuffer ) )
-        .with_cbuffer( sizeof( MaterialInfo::Buffer ) )
-        .with_cbuffer( sizeof( PerObjectState ) ) );
+        .with_macros( makros )  );
 
     makros.clear();
     m.Name = "NORMALMAPPING";
@@ -483,11 +401,7 @@ XRESULT D3D11ShaderManager::Init() {
     makros.push_back( m );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_DiffuseNormalmappedFxMap>( "PS_Diffuse.hlsl" )
-        .with_macros( makros )
-        .with_cbuffer( sizeof( GothicGraphicsState ) )
-        .with_cbuffer( sizeof( AtmosphereConstantBuffer ) )
-        .with_cbuffer( sizeof( MaterialInfo::Buffer ) )
-        .with_cbuffer( sizeof( PerObjectState ) ) );
+        .with_macros( makros )  );
 
     makros.clear();
     m.Name = "NORMALMAPPING";
@@ -499,11 +413,7 @@ XRESULT D3D11ShaderManager::Init() {
     makros.push_back( m );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_DiffuseAlphaTest>( "PS_Diffuse.hlsl" )
-        .with_macros( makros )
-        .with_cbuffer( sizeof( GothicGraphicsState ) )
-        .with_cbuffer( sizeof( AtmosphereConstantBuffer ) )
-        .with_cbuffer( sizeof( MaterialInfo::Buffer ) )
-        .with_cbuffer( sizeof( PerObjectState ) ) );
+        .with_macros( makros ) );
 
     makros.clear();
     m.Name = "NORMALMAPPING";
@@ -515,11 +425,7 @@ XRESULT D3D11ShaderManager::Init() {
     makros.push_back( m );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_DiffuseAlphaTestShadows>( "PS_Diffuse.hlsl" )
-        .with_macros( makros )
-        .with_cbuffer( sizeof( GothicGraphicsState ) )
-        .with_cbuffer( sizeof( AtmosphereConstantBuffer ) )
-        .with_cbuffer( sizeof( MaterialInfo::Buffer ) )
-        .with_cbuffer( sizeof( PerObjectState ) ) );
+        .with_macros( makros )  );
 
     makros.clear();
     m.Name = "NORMALMAPPING";
@@ -531,11 +437,7 @@ XRESULT D3D11ShaderManager::Init() {
     makros.push_back( m );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_DiffuseNormalmappedAlphaTest>( "PS_Diffuse.hlsl" )
-        .with_macros( makros )
-        .with_cbuffer( sizeof( GothicGraphicsState ) )
-        .with_cbuffer( sizeof( AtmosphereConstantBuffer ) )
-        .with_cbuffer( sizeof( MaterialInfo::Buffer ) )
-        .with_cbuffer( sizeof( PerObjectState ) ) );
+        .with_macros( makros )  );
 
     makros.clear();
     m.Name = "NORMALMAPPING";
@@ -551,11 +453,7 @@ XRESULT D3D11ShaderManager::Init() {
     makros.push_back( m );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_DiffuseNormalmappedAlphaTestFxMap>( "PS_Diffuse.hlsl" )
-        .with_macros( makros )
-        .with_cbuffer( sizeof( GothicGraphicsState ) )
-        .with_cbuffer( sizeof( AtmosphereConstantBuffer ) )
-        .with_cbuffer( sizeof( MaterialInfo::Buffer ) )
-        .with_cbuffer( sizeof( PerObjectState ) ) );
+        .with_macros( makros )  );
 
     makros.clear();
     m.Name = "RENDERMODE";
@@ -580,99 +478,67 @@ XRESULT D3D11ShaderManager::Init() {
 
     makros.clear();
 
-    Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_Sharpen>( "PS_PFX_Sharpen.hlsl" )
-        .with_cbuffer( sizeof( GammaCorrectConstantBuffer ) ) );
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_Sharpen>( "PS_PFX_Sharpen.hlsl" ) );
 
-    Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_GammaCorrectInv>( "PS_PFX_GammaCorrectInv.hlsl" )
-        .with_cbuffer( sizeof( GammaCorrectConstantBuffer ) ) );
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_GammaCorrectInv>( "PS_PFX_GammaCorrectInv.hlsl" ) );
 
     if ( FeatureRTArrayIndexFromAnyShader ) {
         Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExLayered>( "VS_ExLayered.hlsl" )
-            .with_layout( 1 )
-            .with_cbuffer( sizeof( VS_ExConstantBuffer_PerFrame ) )
-            .with_cbuffer( sizeof( VS_ExConstantBuffer_PerInstance ) ) );
+            .with_layout( 1 ) );
 
         Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExNodeLayered>( "VS_ExNodeLayered.hlsl" )
-            .with_layout( 1 )
-            .with_cbuffer( sizeof( VS_ExConstantBuffer_PerFrame ) )
-            .with_cbuffer( sizeof( VS_ExConstantBuffer_PerInstanceNode ) ) );
+            .with_layout( 1 )  );
 
         Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExSkeletalLayered>( "VS_ExSkeletalLayered.hlsl" )
-            .with_layout( 3 )
-            .with_cbuffer( sizeof( VS_ExConstantBuffer_PerFrame ) )
-            .with_cbuffer( sizeof( VS_ExConstantBuffer_PerInstanceSkeletal ) )
-            .with_cbuffer( NUM_MAX_BONES * sizeof( XMFLOAT4X4 ) )
-            .with_cbuffer( sizeof( CubemapGSConstantBuffer ) ) ); // cbPerCubeRender for layered rendering
+            .with_layout( 3 )  ); // cbPerCubeRender for layered rendering
     }
     /*else: always compile fallback shaders*/
     {
-        Shaders.push_back( ShaderInfo::make<GShaderID::GS_Cubemap>( "GS_Cubemap.hlsl" )
-            .with_cbuffer( sizeof( CubemapGSConstantBuffer ) ) );
+        Shaders.push_back( ShaderInfo::make<GShaderID::GS_Cubemap>( "GS_Cubemap.hlsl" )  );
 
         Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExCube>( "VS_ExCube.hlsl" )
-            .with_layout( 1 )
-            .with_cbuffer( sizeof( VS_ExConstantBuffer_PerFrame ) )
-            .with_cbuffer( sizeof( VS_ExConstantBuffer_PerInstance ) ) );
+            .with_layout( 1 )  );
 
         Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExNodeCube>( "VS_ExNodeCube.hlsl" )
-            .with_layout( 1 )
-            .with_cbuffer( sizeof( VS_ExConstantBuffer_PerFrame ) )
-            .with_cbuffer( sizeof( VS_ExConstantBuffer_PerInstanceNode ) ) );
+            .with_layout( 1 )  );
 
         Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExSkeletalCube>( "VS_ExSkeletalCube.hlsl" )
-            .with_layout( 3 )
-            .with_cbuffer( sizeof( VS_ExConstantBuffer_PerFrame ) )
-            .with_cbuffer( sizeof( VS_ExConstantBuffer_PerInstanceSkeletal ) )
-            .with_cbuffer( NUM_MAX_BONES * sizeof( XMFLOAT4X4 ) ) );
-        // Note: No b3 buffer - this shader is for shadow map rendering only
+            .with_layout( 3 )  );
     }
 
     Shaders.push_back( ShaderInfo::make<GShaderID::GS_ParticleStreamOut>( "VS_AdvanceRain.hlsl" )
-        .with_layout( 13 )
-        .with_cbuffer( sizeof( ParticleGSInfoConstantBuffer ) ) );
+        .with_layout( 13 ) );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_AdvanceRain>( "VS_AdvanceRain.hlsl" )
-        .with_layout( 13 )
-        .with_cbuffer( sizeof( AdvanceRainConstantBuffer ) ) );
+        .with_layout( 13 ) );
 
-    Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_DoF_FocusResolve>( "PS_PFX_DoF_FocusResolve.hlsl" )
-        .with_cbuffer( sizeof( DepthOfFieldConstantBuffer ) ) );
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_DoF_FocusResolve>( "PS_PFX_DoF_FocusResolve.hlsl" )  );
 
-    Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_DoF>( "PS_PFX_DoF.hlsl" )
-        .with_cbuffer( sizeof( DepthOfFieldConstantBuffer ) ) );
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_DoF>( "PS_PFX_DoF.hlsl" )  );
 
-    Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_DoF_Composite>( "PS_PFX_DoF_Composite.hlsl" )
-        .with_cbuffer( sizeof( DepthOfFieldConstantBuffer ) ) );
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_DoF_Composite>( "PS_PFX_DoF_Composite.hlsl" )  );
 
     // TAA Shader
-    Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_TAA>( "PS_PFX_TAA.hlsl" )
-        .with_cbuffer( sizeof( TAAConstantBuffer ) ) );
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_TAA>( "PS_PFX_TAA.hlsl" )  );
 
     // Velocity Buffer Shader
-    Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_Velocity>( "PS_PFX_Velocity.hlsl" )
-        .with_cbuffer( sizeof( VelocityBufferConstantBuffer ) ) );
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_Velocity>( "PS_PFX_Velocity.hlsl" ) );
 
-    Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_CAS>( "PS_PFX_CAS.hlsl" )
-        .with_cbuffer( sizeof( CASConstantBuffer ) ) );
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_CAS>( "PS_PFX_CAS.hlsl" ));
 
 
     if ( !FeatureLevel10Compatibility ) {
         // FSR1 EASU (Edge Adaptive Spatial Upsampling) Shader
-        Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_FSR1_EASU>( "PS_PFX_FSR1_EASU.hlsl" )
-            .with_cbuffer( sizeof( FSR1EASUConstantBuffer ) ) );
+        Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_FSR1_EASU>( "PS_PFX_FSR1_EASU.hlsl" ));
 
         // FSR1 RCAS (Robust Contrast Adaptive Sharpening) Shader
-        Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_FSR1_RCAS>( "PS_PFX_FSR1_RCAS.hlsl" )
-            .with_cbuffer( sizeof( FSR1RCASConstantBuffer ) ) );
+        Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_FSR1_RCAS>( "PS_PFX_FSR1_RCAS.hlsl" ));
 
-        Shaders.push_back( ShaderInfo::make<CShaderID::CS_AdvanceRain>( "CS_AdvanceRain.hlsl" )
-            .with_cbuffer( sizeof( AdvanceRainConstantBuffer ) ) );
+        Shaders.push_back( ShaderInfo::make<CShaderID::CS_AdvanceRain>( "CS_AdvanceRain.hlsl" ));
 
-        Shaders.push_back( ShaderInfo::make<CShaderID::CS_LightCulling>( "CS_LightCulling.hlsl" )
-            .with_cbuffer( sizeof( LightCullingConstantBuffer ) ) );
+        Shaders.push_back( ShaderInfo::make<CShaderID::CS_LightCulling>( "CS_LightCulling.hlsl" ));
 
-        Shaders.push_back( ShaderInfo::make<CShaderID::CS_TiledShading>( "CS_TiledShading.hlsl" )
-            .with_cbuffer( sizeof( TiledShadingConstantBuffer ) ) );
+        Shaders.push_back( ShaderInfo::make<CShaderID::CS_TiledShading>( "CS_TiledShading.hlsl" ));
     }
 
     return XR_SUCCESS;
@@ -695,11 +561,6 @@ XRESULT D3D11ShaderManager::CompileShader( const ShaderInfo& si ) {
 
                     delete vs;
                 } else {
-                    // Compilation succeeded, switch the shader
-
-                    //for ( unsigned int j = 0; j < si.cBufferSizes.size(); j++ ) {
-                    //    vs->GetConstantBuffer().emplace_back( std::make_unique<D3D11ConstantBuffer>( si.cBufferSizes[j], nullptr ) );
-                    //}
                     UpdateVShader( si.shaderIndex, vs );
                 }
             } else {
@@ -707,9 +568,6 @@ XRESULT D3D11ShaderManager::CompileShader( const ShaderInfo& si ) {
                     LogInfo() << "Loading shader: " << si.name;
 
                 XLE( vs->LoadShader( ("system\\GD3D11\\shaders\\" + si.fileName).c_str(), si.layout, !si.entryPoint.empty() ? si.entryPoint.c_str() : nullptr, si.shaderMakros ) );
-                /*for ( unsigned int j = 0; j < si.cBufferSizes.size(); j++ ) {
-                    vs->GetConstantBuffer().emplace_back( std::make_unique<D3D11ConstantBuffer>( si.cBufferSizes[j], nullptr ) );
-                }*/
                 UpdateVShader( si.shaderIndex, vs );
             }
         } else if ( si.type == ShaderType::Pixel ) {
@@ -724,11 +582,6 @@ XRESULT D3D11ShaderManager::CompileShader( const ShaderInfo& si ) {
 
                     delete ps;
                 } else {
-                    // Compilation succeeded, switch the shader
-
-                    //for ( unsigned int j = 0; j < si.cBufferSizes.size(); j++ ) {
-                    //    ps->GetConstantBuffer().emplace_back( std::make_unique<D3D11ConstantBuffer>( si.cBufferSizes[j], nullptr ) );
-                    //}
                     UpdatePShader( si.shaderIndex, ps );
                 }
             } else {
@@ -736,9 +589,6 @@ XRESULT D3D11ShaderManager::CompileShader( const ShaderInfo& si ) {
                     LogInfo() << "Loading shader: " << si.name;
 
                 XLE( ps->LoadShader( ("system\\GD3D11\\shaders\\" + si.fileName).c_str(), !si.entryPoint.empty() ? si.entryPoint.c_str() : nullptr, si.shaderMakros ) );
-                /*for ( unsigned int j = 0; j < si.cBufferSizes.size(); j++ ) {
-                    ps->GetConstantBuffer().emplace_back( std::make_unique<D3D11ConstantBuffer>( si.cBufferSizes[j], nullptr ) );
-                }*/
                 UpdatePShader( si.shaderIndex, ps );
             }
         } else if ( si.type == ShaderType::Geometry ) {
@@ -781,11 +631,6 @@ XRESULT D3D11ShaderManager::CompileShader( const ShaderInfo& si ) {
 
                     delete cs;
                 } else {
-                    // Compilation succeeded, switch the shader
-
-                    //for ( unsigned int j = 0; j < si.cBufferSizes.size(); j++ ) {
-                    //    cs->GetConstantBuffer().emplace_back( std::make_unique<D3D11ConstantBuffer>( si.cBufferSizes[j], nullptr ) );
-                    //}
                     UpdateCShader( si.shaderIndex, cs );
                 }
             } else {
@@ -793,9 +638,6 @@ XRESULT D3D11ShaderManager::CompileShader( const ShaderInfo& si ) {
                     LogInfo() << "Loading shader: " << si.name;
 
                 XLE( cs->LoadShader( ("system\\GD3D11\\shaders\\" + si.fileName).c_str(), !si.entryPoint.empty() ? si.entryPoint.c_str() : nullptr, si.shaderMakros ) );
-                /*for ( unsigned int j = 0; j < si.cBufferSizes.size(); j++ ) {
-                    cs->GetConstantBuffer().emplace_back( std::make_unique<D3D11ConstantBuffer>( si.cBufferSizes[j], nullptr ) );
-                }*/
                 UpdateCShader( si.shaderIndex, cs );
             }
         }

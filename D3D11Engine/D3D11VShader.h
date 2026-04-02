@@ -22,9 +22,9 @@ public:
     /** Returns the inputlayout */
     Microsoft::WRL::ComPtr<ID3D11InputLayout> GetInputLayout() const { return InputLayout.Get(); }
 
-    void BindResource(std::string_view name, ID3D11ShaderResourceView* srv) override;
-    void BindSampler(std::string_view name, ID3D11SamplerState* sampler) override;
-    void BindBuffer( std::string_view name, D3D11ConstantBuffer* buffer) override;
+    void BindResource(StringID name, ID3D11ShaderResourceView* srv) override;
+    void BindSampler(StringID name, ID3D11SamplerState* sampler) override;
+    void BindBuffer( StringID name, D3D11ConstantBuffer* buffer) override;
     void BindBuffer(UINT slot, D3D11ConstantBuffer* buffer) override;
 
 private:

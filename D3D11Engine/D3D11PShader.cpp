@@ -9,6 +9,7 @@
 #include "D3D11ConstantBuffer.h"
 #include "D3D11ShaderManager.h"
 #include "D3D11_Helpers.h"
+#include "StringID.h"
 
 extern bool FeatureLevel10Compatibility;
 
@@ -51,17 +52,17 @@ XRESULT D3D11PShader::Apply() {
     return XR_SUCCESS;
 }
 
-void D3D11PShader::BindResource(std::string_view name, ID3D11ShaderResourceView* srv)
+void D3D11PShader::BindResource(StringID name, ID3D11ShaderResourceView* srv)
 {
     reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->PSSetShaderResources( GetInputIndex(name), 1, &srv );
 }
 
-void D3D11PShader::BindSampler(std::string_view name, ID3D11SamplerState* sampler)
+void D3D11PShader::BindSampler(StringID name, ID3D11SamplerState* sampler)
 {
     reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->PSSetSamplers( GetInputIndex(name), 1, &sampler );
 }
 
-void D3D11PShader::BindBuffer(std::string_view name, D3D11ConstantBuffer* buffer) {
+void D3D11PShader::BindBuffer(StringID name, D3D11ConstantBuffer* buffer) {
     if (auto idx = GetInputIndex(name); idx != -1) {
         buffer->BindToPixelShader(idx);
     }
