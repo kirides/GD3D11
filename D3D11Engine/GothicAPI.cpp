@@ -117,7 +117,9 @@ void MaterialInfo::UpdateConstantbuffer() {
     if ( Constantbuffer ) {
         Constantbuffer->UpdateBuffer( &buffer );
     } else {
-        Engine::GraphicsEngine->CreateConstantBuffer( &Constantbuffer, &buffer, sizeof( buffer ) );
+        D3D11ConstantBuffer* cb = nullptr;
+        Engine::GraphicsEngine->CreateConstantBuffer( &cb, &buffer, sizeof( buffer ) );
+        Constantbuffer.reset(cb);
     }
 }
 

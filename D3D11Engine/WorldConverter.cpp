@@ -157,7 +157,7 @@ XRESULT WorldConverter::LoadWorldMeshFromFile( const std::string& file, std::map
                 // Give water surfaces a water-shader
                 MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( mat->GetTextureSingle() );
                 if ( info ) {
-                    info->PixelShader = "PS_Water";
+                    info->PixelShader = PShaderID::PS_Water;
                     info->MaterialType = MaterialInfo::MT_Water;
                 }
             }
@@ -488,7 +488,7 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
             if ( !(AdditionalCheckWaterFall( key.Texture )) ) { 
                 // Give water surfaces a water-shader
                 if ( info ) {
-                    info->PixelShader = "PS_Water";
+                    info->PixelShader = PShaderID::PS_Water;
                     info->MaterialType = MaterialInfo::MT_Water;
                 }
             }
@@ -503,7 +503,7 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
             // Give water surfaces a water-shader
             MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( key.Texture );
             if ( info ) {
-                info->PixelShader = "PS_Water";
+                info->PixelShader = PShaderID::PS_Water;
                 info->MaterialType = MaterialInfo::MT_Water;
             }
 #endif

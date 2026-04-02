@@ -917,7 +917,7 @@ bool ImGuiEditorView::OnWindowMessage(HWND hWnd, unsigned int msg, WPARAM wParam
 
                     if (info) {
                         // Overwrite shader
-                        info->TesselationShaderPair = "PNAEN_Tesselation";
+                        // info->TesselationShaderPair = "PNAEN_Tesselation";
                     }
                 }
             }
