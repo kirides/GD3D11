@@ -801,6 +801,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="BaseLineRenderer.h" />
     <ClInclude Include="BaseWidget.h" />
     <ClInclude Include="BasicTimer.h" />
+    <ClInclude Include="D3D11AtlasTypes.h" />
     <ClInclude Include="D3D11CascadedShadowMapBuffer.h" />
     <ClInclude Include="D3D11GraphicsShader.h" />
     <ClInclude Include="D3D11ShadowAtlas.h" />
@@ -819,6 +820,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="D3D11IGDEXT.h" />
     <ClInclude Include="D3D11IndirectBuffer.h" />
     <ClInclude Include="D3D11LineRenderer.h" />
+    <ClInclude Include="D3D11MeshAtlasPass.h" />
     <ClInclude Include="D3D11NVAPI.h" />
     <ClInclude Include="D3D11NVHBAO.h" />
     <ClInclude Include="D3D11OcclusionQuerry.h" />
@@ -855,6 +857,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="D3D11TextureAtlasManager.h" />
     <ClInclude Include="D3D11StreamingResourcesManager.h" />
     <ClInclude Include="D3D11VertexBuffer.h" />
+    <ClInclude Include="D3D11VobAtlasPass.h" />
     <ClInclude Include="D3D11VShader.h" />
     <ClInclude Include="D3D11_Helpers.h" />
     <ClInclude Include="D3D7\FakeDirectDrawSurface7.h" />
@@ -1083,6 +1086,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="D3D11IGDEXT.cpp" />
     <ClCompile Include="D3D11IndirectBuffer.cpp" />
     <ClCompile Include="D3D11LineRenderer.cpp" />
+    <ClCompile Include="D3D11MeshAtlasPass.cpp" />
     <ClCompile Include="D3D11NVAPI.cpp" />
     <ClCompile Include="D3D11NVHBAO.cpp" />
     <ClCompile Include="D3D11OcclusionQuerry.cpp" />
@@ -1116,6 +1120,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="D3D11Texture.cpp" />
     <ClCompile Include="D3D11StreamingResourcesManager.cpp" />
     <ClCompile Include="D3D11VertexBuffer.cpp" />
+    <ClCompile Include="D3D11VobAtlasPass.cpp" />
     <ClCompile Include="D3D11VShader.cpp" />
     <ClCompile Include="D3D7\FakeDirectDrawSurface7.cpp">
       <PrecompiledHeaderFile Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">../pch.h</PrecompiledHeaderFile>

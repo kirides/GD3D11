@@ -855,6 +855,15 @@
     <ClInclude Include="D3D11TextureAtlasManager.h" />
     <ClInclude Include="D3D11StreamingResourcesManager.h" />
     <ClInclude Include="D3D11StructuredBuffer.h" />
+    <ClInclude Include="D3D11AtlasTypes.h">
+      <Filter>Engine\D3D11</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D11MeshAtlasPass.h">
+      <Filter>Engine\D3D11</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D11VobAtlasPass.h">
+      <Filter>Engine\D3D11</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp" />
@@ -1168,6 +1177,12 @@
     </ClCompile>
     <ClCompile Include="VobCulling.cpp">
       <Filter>Engine</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D11MeshAtlasPass.cpp">
+      <Filter>Engine\D3D11</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D11VobAtlasPass.cpp">
+      <Filter>Engine\D3D11</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
