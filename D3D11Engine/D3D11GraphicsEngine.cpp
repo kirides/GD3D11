@@ -971,6 +971,10 @@ XRESULT D3D11GraphicsEngine::RecreateBuffers() {
     Backbuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), Resolution.x, Resolution.y, DXGI_FORMAT_ENGINE_SWAPCHAIN, nullptr, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, 1, 1,
     D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE | (Device->GetFeatureLevel() >= D3D_FEATURE_LEVEL_11_0 ? D3D11_BIND_UNORDERED_ACCESS : 0) );
 
+    m_SwapchainDepthStencilBuffer = std::make_unique<RenderToDepthStencilBuffer>(
+        GetDevice().Get(), Resolution.x, Resolution.y, DXGI_FORMAT_R32_TYPELESS, nullptr,
+        DXGI_FORMAT_D32_FLOAT, DXGI_FORMAT_R32_FLOAT );
+
     SetDebugName( Backbuffer->GetTexture().Get(), "Backbuffer->TEX" );
     SetDebugName( Backbuffer->GetShaderResView().Get(), "Backbuffer->SRV" );
     SetDebugName( Backbuffer->GetRenderTargetView().Get(), "Backbuffer->RTV" );
@@ -1375,6 +1379,7 @@ XRESULT D3D11GraphicsEngine::OnEndFrame() {
 XRESULT D3D11GraphicsEngine::Clear( const float4& color ) {
     const Microsoft::WRL::ComPtr<ID3D11DeviceContext1>& context = GetContext();
     context->ClearDepthStencilView( DepthStencilBuffer->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
+    context->ClearDepthStencilView( m_SwapchainDepthStencilBuffer->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
 
     context->ClearRenderTargetView( HDRBackBuffer->GetRenderTargetView().Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )) );
     context->ClearRenderTargetView( Backbuffer->GetRenderTargetView().Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )) );
@@ -2594,6 +2599,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         pass.m_executeCallback = [this, &rendererState, colorResource](const RenderGraph& graph)->void {
             const Microsoft::WRL::ComPtr<ID3D11DeviceContext1>& context = GetContext();
             context->ClearDepthStencilView( DepthStencilBuffer->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
+            context->ClearDepthStencilView( m_SwapchainDepthStencilBuffer->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
 
             context->ClearRenderTargetView( HDRBackBuffer->GetRenderTargetView().Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )) );
             context->ClearRenderTargetView( Backbuffer->GetRenderTargetView().Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )) );
@@ -3238,6 +3244,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         graph.Execute();
         
         GetContext()->ClearDepthStencilView( DepthStencilBuffer->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
+        GetContext()->ClearDepthStencilView( m_SwapchainDepthStencilBuffer->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
         SetDefaultStates();
 
         // Below this, we assume UI/HUD rendering
@@ -6044,8 +6051,9 @@ D3D11ENGINE_RENDER_STAGE D3D11GraphicsEngine::GetRenderingStage() {
 /** Draws a VOB (used for inventory) */
 void D3D11GraphicsEngine::DrawVobSingle( VobInfo* vob, zCCamera& camera ) {
     Engine::GAPI->SetViewTransformXM( XMLoadFloat4x4( &camera.GetTransformDX( zCCamera::ETransformType::TT_VIEW ) ) );
-    // TODO: Does this even need a depth stencil? we clear the previous one anyways
-    GetContext()->OMSetRenderTargets( 1, Backbuffer->GetRenderTargetView().GetAddressOf(), nullptr );
+
+    // Important: We NEED a swapchain-sized depth stencil buffer here, otherwise Advanced Inventory VOBs will be rendered without depth testing and thus look very bad.
+    GetContext()->OMSetRenderTargets( 1, Backbuffer->GetRenderTargetView().GetAddressOf(), m_SwapchainDepthStencilBuffer->GetDepthStencilView().Get() );
 
     // Set backface culling
     Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_BACK;
