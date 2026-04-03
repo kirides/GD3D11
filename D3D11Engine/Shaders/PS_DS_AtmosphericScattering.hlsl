@@ -720,26 +720,9 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
 	float shadow = 0.0f;
 	if(AC_LightPos.y > 0) // only get shadow value if it isn't night-time
 	{
-        float bias = 0.00001f; 
-
-        // --- Transform Normal and Light to World Space ---
-        float3 wsNormal = normalize(mul(normal, (float3x3)SQ_InvView));
-        float3 wsLightDir = normalize(mul(SQ_LightDirectionVS, (float3x3)SQ_InvView));
-        
-        // Two-sided foliage normals often face away from the light, causing negative dot products.
-        float NdotL = saturate(abs(dot(wsNormal, wsLightDir)));
-        float slopeScale = 1.0f - NdotL;
-        
-        // Higher cascades cover more area, meaning larger texels, requiring a larger push.
-        float normalBiasMultiplier = clamp(vsPosition.z * 0.005f, 3.0f, 25.0f); 
-
-        // Pushing towards the light guarantees thin foliage lifts off its own shadow plane.
-        float3 biasAlongNormal = wsNormal * slopeScale * normalBiasMultiplier;
-        float3 biasAlongLight  = wsLightDir * (normalBiasMultiplier * 0.3f);
-        
-        float3 biasedWsPosition = wsPosition + biasAlongNormal + biasAlongLight;
-
-        shadow = ComputeCascadedShadowValueSoft(biasedWsPosition, vsPosition.z, vertLighting, bias, Input.vPosition.xy);
+		float bias = lerp(0.00005f, 0.0001f, abs(vsPosition.z) / 1000);
+		// Use screen position for per-pixel rotation (TAA-friendly)
+		shadow = ComputeCascadedShadowValueSoft(wsPosition, vsPosition.z, vertLighting, bias, Input.vPosition.xy);
 	}
 #else
     float shadow = vertLighting;

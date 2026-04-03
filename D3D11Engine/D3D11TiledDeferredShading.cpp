@@ -216,9 +216,8 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
     auto& context = graphicsEngine->GetContext();
 
-    XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
-    Engine::GAPI->SetViewTransformXM( view );
-    view = XMMatrixTranspose( view );
+    XMMATRIX viewRaw = Engine::GAPI->GetViewMatrixXM();
+    XMMATRIX view = XMMatrixTranspose( viewRaw );
 
     INT2 resolution = Engine::GraphicsEngine->GetResolution();
     uint32_t numTilesX = (resolution.x + TILE_SIZE - 1) / TILE_SIZE;
@@ -237,6 +236,8 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
     D3D11_MAPPED_SUBRESOURCE mapped;
     context->Map( m_LightBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped );
     TiledPointLight* lightData = reinterpret_cast<TiledPointLight*>(mapped.pData);
+
+    const auto camPos = Engine::GAPI->GetCameraPositionXM();
 
     for ( auto const& light : lights ) {
         zCVobLight* vob = light->Vob;
@@ -273,7 +274,7 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
 
         // Distance fade
         float dist;
-        XMStoreFloat( &dist, XMVector3Length( XMLoadFloat3( posWorld.toXMFLOAT3() ) - Engine::GAPI->GetCameraPositionXM() ) );
+        XMStoreFloat( &dist, XMVector3Length( XMLoadFloat3( posWorld.toXMFLOAT3() ) - camPos ) );
 
         if ( dist + lightRange < settings.VisualFXDrawRadius ) {
             float fadeEnd = settings.VisualFXDrawRadius;
@@ -321,8 +322,6 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
 
     // Only run tiled path if we have lights
     if ( tiledLightCount > 0 ) {
-        graphicsEngine->CopyDepthStencil();
-
         // ---- Pass 1: Light Culling ----
         {
             auto csLightCull = graphicsEngine->GetShaderManager().GetCShader( CShaderID::CS_LightCulling );
@@ -380,7 +379,7 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
             }
             shadeCB.LimitLightIntensity = settings.LimitLightIntesity ? 1 : 0;
             shadeCB.NumTilesX = numTilesX;
-            XMStoreFloat4x4( &shadeCB.InvView, XMMatrixInverse( nullptr, XMLoadFloat4x4( &Engine::GAPI->GetRendererState().TransformState.TransformView ) ) );
+            XMStoreFloat4x4( &shadeCB.InvView, XMMatrixInverse( nullptr, view ) );
 
             csTiledShading->GetConstantBuffer()[0]->UpdateBuffer( &shadeCB );
             csTiledShading->GetConstantBuffer()[0]->BindToComputeShader( 0 );
@@ -400,10 +399,13 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
             context->CSSetShaderResources( 9, 1, m_LightGridSRV.GetAddressOf() );
             context->CSSetShaderResources( 10, 1, m_LightIndexListSRV.GetAddressOf() );
 
-            // Bind shadow cubemap array and comparison sampler
+            // Bind comparison sampler unconditionally — the runtime validates at Dispatch
+            // even if the shader branches around SampleCmpLevelZero
+            graphicsEngine->GetShadowMaps()->BindSamplerToCS( context.Get(), 2 );
+
+            // Bind shadow cubemap array SRV
             if ( hasShadowedTiledLights && m_ShadowArrayCreated ) {
                 context->CSSetShaderResources( 11, 1, m_ShadowCubeArraySRV.GetAddressOf() );
-                graphicsEngine->GetShadowMaps()->BindSamplerToCS( context.Get(), 2 );
             }
 
             // Bind HDR UAV

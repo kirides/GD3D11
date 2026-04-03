@@ -2712,6 +2712,8 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             if ( Engine::GAPI->GetRendererState().RendererSettings.EnableShadows ) {
                 // Cascades only get rendered if this is enabled. 
                 ShadowMaps->PrepareRender();
+                // Lights need a working depth stencil copy!
+                CopyDepthStencil();
             }
 
             ShadowMaps->DrawLighting(m_FrameLights, 

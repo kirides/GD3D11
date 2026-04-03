@@ -135,7 +135,7 @@ struct RenderToTextureBuffer {
     }
 
     /** Binds the texture to the pixel shader */
-    void BindToPixelShader( const Microsoft::WRL::ComPtr<ID3D11DeviceContext1>& context, int slot ) {
+    void BindToPixelShader( ID3D11DeviceContext* context, int slot ) {
         context->PSSetShaderResources( slot, 1, ShaderResView.GetAddressOf() );
     };
 

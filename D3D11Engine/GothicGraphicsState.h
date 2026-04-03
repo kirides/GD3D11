@@ -688,7 +688,7 @@ struct GothicRendererSettings {
         EnablePointlightShadows = PLS_UPDATE_DYNAMIC;
         MinLightShadowUpdateRange = 300.0f;
         PartialDynamicShadowUpdates = true;
-        EnableTiledLighting = true;
+        EnableTiledLighting = false;
         DrawSectionIntersections = true;
 
         EnableGodRays = true;

@@ -82,9 +82,7 @@ static void CalculateCascadeMatrices(
         upDir = XMVectorSet( 0.0f, 0.0f, 1.0f, 0.0f );
     }
 
-    float cascadeSize = 0.0f;
     XMVECTOR frustumCenter;
-    float radius = 0.0f;
 
     float splitNear = splits[cascadeIdx];
     float splitFar = splits[cascadeIdx + 1];
@@ -95,7 +93,7 @@ static void CalculateCascadeMatrices(
 
     auto corners = playerFrustum.GetSliceCorners( splitNear, splitFar );
 
-    // 1. Calculate the OPTIMAL center of the frustum slice for a minimal bounding sphere
+    // Calculate the OPTIMAL center of the frustum slice for a minimal bounding sphere
     XMVECTOR nearCenter = XMVectorZero();
     for ( int i = 0; i < 4; ++i ) nearCenter = XMVectorAdd( nearCenter, XMLoadFloat3( &corners[i] ) );
     nearCenter = XMVectorScale( nearCenter, 0.25f );
@@ -116,26 +114,49 @@ static void CalculateCascadeMatrices(
 
     frustumCenter = XMVectorAdd( nearCenter, XMVectorScale( viewDir, optimalX ) );
 
-    // 2. Calculate the true bounding sphere radius mathematically covering all corners
-    radius = 0.0f;
-    for ( const auto& corner : corners ) {
-        float dist = XMVectorGetX( XMVector3Length( XMVectorSubtract( XMLoadFloat3( &corner ), frustumCenter ) ) );
-        radius = std::max( radius, dist );
+    // Calculate the true bounding sphere radius covering all corners
+    float invariantRadius = 0.0f;
+    for ( int i = 0; i < 8; ++i ) {
+        XMVECTOR corner = XMLoadFloat3( &corners[i] );
+        XMVECTOR distVec = XMVector3Length( XMVectorSubtract( corner, frustumCenter ) );
+        invariantRadius = std::max( invariantRadius, XMVectorGetX( distVec ) );
     }
 
-    // Snap the cascade size to a coarse boundary
-    cascadeSize = std::ceil( radius / 16.0f ) * 32.0f;
+    // Round the radius to fixed increments to prevent floating-point micro-scaling
+    // which can happen due to slight FOV/Aspect ratio rounding.
+    invariantRadius = std::ceil( invariantRadius * 16.0f ) / 16.0f;
+    float radius = invariantRadius;
+
+    float cascadeSize = invariantRadius * 2.0f;
 
     float texelSize = cascadeSize / static_cast<float>(shadowMapSize);
 
-    XMVECTOR snappedCenterWorld = frustumCenter;
+    // Establish a GLOBAL, unmoving light-space grid by using the World Origin (0,0,0)
+    // By anchoring to XMVectorZero(), the grid never shifts as the player moves.
+    XMMATRIX tempLightView = XMMatrixLookToLH( XMVectorZero(), lightDir, upDir );
 
-    // 3. Build the final light view matrix looking at the snapped center
+    // Transform the moving frustum center into this global light-space grid
+    XMVECTOR centerLS = XMVector3TransformCoord( frustumCenter, tempLightView );
+
+    // Snap the X and Y coordinates to the exact size of a shadow texel.
+    float snappedX = std::floor( XMVectorGetX( centerLS ) / texelSize ) * texelSize;
+    float snappedY = std::floor( XMVectorGetY( centerLS ) / texelSize ) * texelSize;
+    float centerZ = XMVectorGetZ( centerLS );
+
+    XMVECTOR snappedCenterLS = XMVectorSet( snappedX, snappedY, centerZ, 1.0f );
+
+    // Transform the snapped center back into world-space
+    XMMATRIX tempLightViewInv = XMMatrixInverse( nullptr, tempLightView );
+    XMVECTOR snappedCenterWorld = XMVector3TransformCoord( snappedCenterLS, tempLightViewInv );
+
+    // -----------------------------------------------------------
+
+    // Build the final light view matrix looking at the snapped center
     float pullBackDistance = std::max( 10000.0f, radius * 2.0f );
     XMVECTOR lightPos = XMVectorSubtract( snappedCenterWorld, XMVectorScale( lightDir, pullBackDistance ) );
     XMMATRIX lightView = XMMatrixLookToLH( lightPos, lightDir, upDir );
 
-    // 4. Z-Bounds (Clipping against Scene to prevent overdraw)
+    // Z-Bounds (Clipping against Scene to prevent overdraw)
 
     // Find the exact Light-Space Z-bounds of the frustum slice
     float minLightZ = FLT_MAX;
@@ -412,6 +433,7 @@ XRESULT D3D11ShadowMap::PrepareRender()
     if ( !camera ) {
         return XR_SUCCESS;
     }
+    camera->Activate();
 
     const float nearPlane = std::max( 1.0f, camera->GetNearPlane() );
     // Clamp far plane to avoid extreme shadow distances
@@ -584,7 +606,7 @@ XRESULT D3D11ShadowMap::PrepareRender()
         Frustum playerFrustum = Frustum::AlwaysContainingFrustum();
         if ( auto cam = (zCCamera*)oCGame::GetGame()->_zCSession_camera ) {
             const auto& view = cam->trafoView; // Column-Major, needs Transpose for DxMath
-            const auto& proj = cam->trafoProjection; // Row-Major, does not need transpose.
+            const auto& proj = Engine::GAPI->GetProjectionMatrix(); // Row-Major, does not need transpose.
             playerFrustum.BuildPerspective(
                 XMMatrixTranspose( XMLoadFloat4x4( &view ) ),
                 XMLoadFloat4x4( &proj )
@@ -1165,7 +1187,8 @@ XRESULT D3D11ShadowMap::DrawWorldLights()
     float rain = Engine::GAPI->GetRainFXWeight();
     float wetness = Engine::GAPI->GetSceneWetness();
 
-    XMMATRIX view = XMMatrixTranspose( Engine::GAPI->GetViewMatrixXM() );
+    XMMATRIX viewRaw = Engine::GAPI->GetViewMatrixXM();
+    XMMATRIX view = XMMatrixTranspose( viewRaw );
 
     bool isSnow = oCGame::GetGame()
         && oCGame::GetGame()->_zCSession_world
@@ -1191,8 +1214,8 @@ XRESULT D3D11ShadowMap::DrawWorldLights()
     auto& proj = Engine::GAPI->GetProjectionMatrix();
     DS_ScreenQuadConstantBuffer scb = {};
     scb.SQ_ProjParams = float4( 1.0f / proj._11, 1.0f / proj._22, proj._43, proj._33 );
-    XMStoreFloat4x4( &scb.SQ_InvView, XMMatrixInverse( nullptr, XMLoadFloat4x4( &Engine::GAPI->GetRendererState().TransformState.TransformView ) ) );
-    scb.SQ_View = Engine::GAPI->GetRendererState().TransformState.TransformView;
+    XMStoreFloat4x4( &scb.SQ_InvView, XMMatrixInverse( nullptr, viewRaw ) );
+    XMStoreFloat4x4( &scb.SQ_View, viewRaw );
 
     static uint32_t frameCounter = 0;
     if ( proj._13 != 0 || proj._23 != 0) {
