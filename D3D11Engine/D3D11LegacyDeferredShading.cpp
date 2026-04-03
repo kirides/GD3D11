@@ -46,8 +46,6 @@ XRESULT D3D11LegacyDeferredShading::DrawPointlightLights(
     graphicsEngine->SetupVS_ExMeshDrawCall();
     graphicsEngine->SetupVS_ExConstantBuffer();
 
-    graphicsEngine->CopyDepthStencil();
-
     context->OMSetRenderTargets( 1, graphicsEngine->GetHDRBackBuffer().GetRenderTargetView().GetAddressOf(), graphicsEngine->GetDepthBuffer()->GetDepthStencilView().Get() );
 
     DS_PointLightConstantBuffer plcb = {};

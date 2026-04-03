@@ -609,7 +609,7 @@ XRESULT D3D11ShadowMap::PrepareRender()
         Frustum playerFrustum = Frustum::AlwaysContainingFrustum();
         if ( auto cam = (zCCamera*)oCGame::GetGame()->_zCSession_camera ) {
             const auto& view = cam->trafoView; // Column-Major, needs Transpose for DxMath
-            const auto& proj = cam->trafoProjection; // Row-Major, does not need transpose.
+            const auto& proj = Engine::GAPI->GetProjectionMatrix(); // Row-Major, does not need transpose.
             playerFrustum.BuildPerspective(
                 XMMatrixTranspose( XMLoadFloat4x4( &view ) ),
                 XMLoadFloat4x4( &proj )
@@ -1190,7 +1190,8 @@ XRESULT D3D11ShadowMap::DrawWorldLights()
     float rain = Engine::GAPI->GetRainFXWeight();
     float wetness = Engine::GAPI->GetSceneWetness();
 
-    XMMATRIX view = XMMatrixTranspose( Engine::GAPI->GetViewMatrixXM() );
+    XMMATRIX viewRaw = Engine::GAPI->GetViewMatrixXM();
+    XMMATRIX view = XMMatrixTranspose( viewRaw );
 
     bool isSnow = oCGame::GetGame()
         && oCGame::GetGame()->_zCSession_world
@@ -1216,8 +1217,8 @@ XRESULT D3D11ShadowMap::DrawWorldLights()
     auto& proj = Engine::GAPI->GetProjectionMatrix();
     DS_ScreenQuadConstantBuffer scb = {};
     scb.SQ_ProjParams = float4( 1.0f / proj._11, 1.0f / proj._22, proj._43, proj._33 );
-    XMStoreFloat4x4( &scb.SQ_InvView, XMMatrixInverse( nullptr, XMLoadFloat4x4( &Engine::GAPI->GetRendererState().TransformState.TransformView ) ) );
-    scb.SQ_View = Engine::GAPI->GetRendererState().TransformState.TransformView;
+    XMStoreFloat4x4( &scb.SQ_InvView, XMMatrixInverse( nullptr, viewRaw ) );
+    XMStoreFloat4x4( &scb.SQ_View, viewRaw );
 
     static uint32_t frameCounter = 0;
     if ( proj._13 != 0 || proj._23 != 0) {
