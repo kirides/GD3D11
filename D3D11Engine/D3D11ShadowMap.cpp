@@ -82,9 +82,7 @@ static void CalculateCascadeMatrices(
         upDir = XMVectorSet( 0.0f, 0.0f, 1.0f, 0.0f );
     }
 
-    float cascadeSize = 0.0f;
     XMVECTOR frustumCenter;
-    float radius = 0.0f;
 
     float splitNear = splits[cascadeIdx];
     float splitFar = splits[cascadeIdx + 1];
@@ -117,18 +115,44 @@ static void CalculateCascadeMatrices(
     frustumCenter = XMVectorAdd( nearCenter, XMVectorScale( viewDir, optimalX ) );
 
     // 2. Calculate the true bounding sphere radius mathematically covering all corners
-    radius = 0.0f;
-    for ( const auto& corner : corners ) {
-        float dist = XMVectorGetX( XMVector3Length( XMVectorSubtract( XMLoadFloat3( &corner ), frustumCenter ) ) );
-        radius = std::max( radius, dist );
+    float invariantRadius = 0.0f;
+    for ( int i = 0; i < 8; ++i ) {
+        XMVECTOR corner = XMLoadFloat3( &corners[i] );
+        XMVECTOR distVec = XMVector3Length( XMVectorSubtract( corner, frustumCenter ) );
+        invariantRadius = std::max( invariantRadius, XMVectorGetX( distVec ) );
     }
 
-    // Snap the cascade size to a coarse boundary
-    cascadeSize = std::ceil( radius / 16.0f ) * 32.0f;
+    // Round the radius to fixed increments to prevent floating-point micro-scaling
+    // which can happen due to slight FOV/Aspect ratio rounding.
+    invariantRadius = std::ceil( invariantRadius * 16.0f ) / 16.0f;
+    float radius = invariantRadius;
+
+    float cascadeSize = invariantRadius * 2.0f;
 
     float texelSize = cascadeSize / static_cast<float>(shadowMapSize);
 
-    XMVECTOR snappedCenterWorld = frustumCenter;
+    // 1. Establish a GLOBAL, unmoving light-space grid by using the World Origin (0,0,0)
+    // By anchoring to XMVectorZero(), the grid never shifts as the player moves.
+    XMMATRIX tempLightView = XMMatrixLookToLH( XMVectorZero(), lightDir, upDir );
+
+    // 2. Transform the moving frustum center into this global light-space grid
+    XMVECTOR centerLS = XMVector3TransformCoord( frustumCenter, tempLightView );
+
+    // 3. Snap the X and Y coordinates to the exact size of a shadow texel.
+    // CRITICAL: We MUST use std::floor(). Using std::round() or (int) casting causes 
+    // the grid to warp at negative coordinates (because it rounds towards zero),
+    // which causes shadows to swim aggressively in certain quadrants of the map!
+    float snappedX = std::floor( XMVectorGetX( centerLS ) / texelSize ) * texelSize;
+    float snappedY = std::floor( XMVectorGetY( centerLS ) / texelSize ) * texelSize;
+    float centerZ = XMVectorGetZ( centerLS );
+
+    XMVECTOR snappedCenterLS = XMVectorSet( snappedX, snappedY, centerZ, 1.0f );
+
+    // 4. Transform the snapped center back into world-space
+    XMMATRIX tempLightViewInv = XMMatrixInverse( nullptr, tempLightView );
+    XMVECTOR snappedCenterWorld = XMVector3TransformCoord( snappedCenterLS, tempLightViewInv );
+
+    // -----------------------------------------------------------
 
     // 3. Build the final light view matrix looking at the snapped center
     float pullBackDistance = std::max( 10000.0f, radius * 2.0f );
@@ -412,6 +436,7 @@ XRESULT D3D11ShadowMap::PrepareRender()
     if ( !camera ) {
         return XR_SUCCESS;
     }
+    camera->Activate();
 
     const float nearPlane = std::max( 1.0f, camera->GetNearPlane() );
     // Clamp far plane to avoid extreme shadow distances
