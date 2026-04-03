@@ -93,7 +93,7 @@ static void CalculateCascadeMatrices(
 
     auto corners = playerFrustum.GetSliceCorners( splitNear, splitFar );
 
-    // 1. Calculate the OPTIMAL center of the frustum slice for a minimal bounding sphere
+    // Calculate the OPTIMAL center of the frustum slice for a minimal bounding sphere
     XMVECTOR nearCenter = XMVectorZero();
     for ( int i = 0; i < 4; ++i ) nearCenter = XMVectorAdd( nearCenter, XMLoadFloat3( &corners[i] ) );
     nearCenter = XMVectorScale( nearCenter, 0.25f );
@@ -114,7 +114,7 @@ static void CalculateCascadeMatrices(
 
     frustumCenter = XMVectorAdd( nearCenter, XMVectorScale( viewDir, optimalX ) );
 
-    // 2. Calculate the true bounding sphere radius mathematically covering all corners
+    // Calculate the true bounding sphere radius covering all corners
     float invariantRadius = 0.0f;
     for ( int i = 0; i < 8; ++i ) {
         XMVECTOR corner = XMLoadFloat3( &corners[i] );
@@ -131,35 +131,32 @@ static void CalculateCascadeMatrices(
 
     float texelSize = cascadeSize / static_cast<float>(shadowMapSize);
 
-    // 1. Establish a GLOBAL, unmoving light-space grid by using the World Origin (0,0,0)
+    // Establish a GLOBAL, unmoving light-space grid by using the World Origin (0,0,0)
     // By anchoring to XMVectorZero(), the grid never shifts as the player moves.
     XMMATRIX tempLightView = XMMatrixLookToLH( XMVectorZero(), lightDir, upDir );
 
-    // 2. Transform the moving frustum center into this global light-space grid
+    // Transform the moving frustum center into this global light-space grid
     XMVECTOR centerLS = XMVector3TransformCoord( frustumCenter, tempLightView );
 
-    // 3. Snap the X and Y coordinates to the exact size of a shadow texel.
-    // CRITICAL: We MUST use std::floor(). Using std::round() or (int) casting causes 
-    // the grid to warp at negative coordinates (because it rounds towards zero),
-    // which causes shadows to swim aggressively in certain quadrants of the map!
+    // Snap the X and Y coordinates to the exact size of a shadow texel.
     float snappedX = std::floor( XMVectorGetX( centerLS ) / texelSize ) * texelSize;
     float snappedY = std::floor( XMVectorGetY( centerLS ) / texelSize ) * texelSize;
     float centerZ = XMVectorGetZ( centerLS );
 
     XMVECTOR snappedCenterLS = XMVectorSet( snappedX, snappedY, centerZ, 1.0f );
 
-    // 4. Transform the snapped center back into world-space
+    // Transform the snapped center back into world-space
     XMMATRIX tempLightViewInv = XMMatrixInverse( nullptr, tempLightView );
     XMVECTOR snappedCenterWorld = XMVector3TransformCoord( snappedCenterLS, tempLightViewInv );
 
     // -----------------------------------------------------------
 
-    // 3. Build the final light view matrix looking at the snapped center
+    // Build the final light view matrix looking at the snapped center
     float pullBackDistance = std::max( 10000.0f, radius * 2.0f );
     XMVECTOR lightPos = XMVectorSubtract( snappedCenterWorld, XMVectorScale( lightDir, pullBackDistance ) );
     XMMATRIX lightView = XMMatrixLookToLH( lightPos, lightDir, upDir );
 
-    // 4. Z-Bounds (Clipping against Scene to prevent overdraw)
+    // Z-Bounds (Clipping against Scene to prevent overdraw)
 
     // Find the exact Light-Space Z-bounds of the frustum slice
     float minLightZ = FLT_MAX;
