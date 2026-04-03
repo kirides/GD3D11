@@ -2423,7 +2423,7 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
         ? XMLoadFloat4x4(&vi->PrevWorldMatrix) 
         : XMLoadFloat4x4( &world );
     
-    std::map<int, std::vector<MeshVisualInfo*>>& nodeAttachments = vi->NodeAttachments;
+    phmap::flat_hash_map<int, std::vector<MeshVisualInfo*>>& nodeAttachments = vi->NodeAttachments;
     for ( unsigned int i = 0; i < transforms.size(); i++ ) {
         // Check for new visual
         zCModel* mvis = static_cast<zCModel*>(vi->Vob->GetVisual());
@@ -2465,9 +2465,10 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
             }
         }
 
-        if ( nodeAttachments.find( i ) != nodeAttachments.end() ) {
+        auto nodeAttachment = nodeAttachments.find( i );
+        if ( nodeAttachment != nodeAttachments.end() ) {
             // Go through all attachments this node has
-            for ( MeshVisualInfo* mvi : nodeAttachments[i] ) {
+            for ( MeshVisualInfo* mvi : nodeAttachment->second ) {
                 XMMATRIX curTransform = XMLoadFloat4x4( &transforms[i] );
                 XMFLOAT4X4 finalWorld;
                 XMStoreFloat4x4(&finalWorld, xmWorld * curTransform);
@@ -2648,7 +2649,7 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo* vi, float distance
     g->SetupVS_ExMeshDrawCall();
     g->SetupVS_ExConstantBuffer();
 
-    std::map<int, std::vector<MeshVisualInfo*>>& nodeAttachments = vi->NodeAttachments;
+    phmap::flat_hash_map<int, std::vector<MeshVisualInfo*>>& nodeAttachments = vi->NodeAttachments;
     for ( unsigned int i = 0; i < transforms.size(); i++ ) {
         // Check for new visual
         zCModel* mvis = static_cast<zCModel*>(vi->Vob->GetVisual());
@@ -2690,9 +2691,10 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo* vi, float distance
             }
         }
 
-        if ( nodeAttachments.find( i ) != nodeAttachments.end() ) {
+        auto nodeAttachment = nodeAttachments.find( i );
+        if ( nodeAttachment != nodeAttachments.end() ) {
             // Go through all attachments this node has
-            for ( MeshVisualInfo* mvi : nodeAttachments[i] ) {
+            for ( MeshVisualInfo* mvi : nodeAttachment->second ) {
                 XMMATRIX curTransform = XMLoadFloat4x4( &transforms[i] );
                 XMFLOAT4X4 finalWorld;
                 XMStoreFloat4x4(&finalWorld, xmWorld * curTransform);
@@ -2930,7 +2932,7 @@ void GothicAPI::DrawSkeletalMeshVobs(
         if ( !vi->VobConstantBuffer )
             vi->UpdateVobConstantBuffer();
 
-        std::map<int, std::vector<MeshVisualInfo*>>& nodeAttachments = vi->NodeAttachments;
+        phmap::flat_hash_map<int, std::vector<MeshVisualInfo*>>& nodeAttachments = vi->NodeAttachments;
         for ( unsigned int i = 0; i < transforms.size(); i++ ) {
             // Check for new visual
             zCModel* mvis = static_cast<zCModel*>( vi->Vob->GetVisual() );
@@ -2972,7 +2974,8 @@ void GothicAPI::DrawSkeletalMeshVobs(
                 }
                 }
 
-            if ( nodeAttachments.find( i ) != nodeAttachments.end() ) {
+            auto nodeAttachment = nodeAttachments.find( i );
+            if ( nodeAttachment != nodeAttachments.end() ) {
 
                 // Setup pixel shader here so that we get correct normals
                     // Somehow BindShaderForTexture make normals to be inversed
@@ -2985,7 +2988,7 @@ void GothicAPI::DrawSkeletalMeshVobs(
                 XMFLOAT4X4 finalWorld; XMStoreFloat4x4( &finalWorld, world* curTransform );
 
                 // Go through all attachments this node has
-                for ( MeshVisualInfo* mvi : nodeAttachments[i] ) {
+                for ( MeshVisualInfo* mvi : nodeAttachment->second ) {
 
                     if ( !mvi->Visual ) {
                         LogWarn() << "Attachment without visual on model: " << model->GetVisualName();

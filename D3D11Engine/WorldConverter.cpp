@@ -1133,7 +1133,7 @@ void WorldConverter::ExtractProgMeshProtoFromMesh( zCMesh* mesh, MeshVisualInfo*
 }
 
 /** Extracts a node-visual */
-void WorldConverter::ExtractNodeVisual( int index, zCModelNodeInst* node, std::map<int, std::vector<MeshVisualInfo*>>& attachments ) {
+void WorldConverter::ExtractNodeVisual( int index, zCModelNodeInst* node, phmap::flat_hash_map<int, std::vector<MeshVisualInfo*>>& attachments ) {
     // Only allow 1 attachment
     if ( !attachments[index].empty() ) {
         delete attachments[index][0];
