@@ -5092,7 +5092,34 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
         GetContext()->IASetVertexBuffers( 1, 1, buffers, dynuStride, dynOffset );
 
+        // Sort visuals by whether they need alpha testing to minimize shader switches
+        std::sort( activeVisuals.begin(), activeVisuals.end(), [alphaRef, colorWritesEnabled]( const MeshVisualInfo* a, const MeshVisualInfo* b ) {
+            int aNeedShader = 0;
+            for ( auto const& itt : a->MeshesByTexture ) {
+                const auto tx = itt.first.Texture;
+                if (tx && (tx->HasAlphaChannel() || colorWritesEnabled)
+                    && alphaRef > 0.0f ) {
+                    aNeedShader = 1;
+                    break;
+                }
+            }
+
+            int bNeedShader = 0;
+            for ( auto const& itt : b->MeshesByTexture ) {
+                const auto tx = itt.first.Texture;
+                if ( tx && (tx->HasAlphaChannel() || colorWritesEnabled)
+                    && alphaRef > 0.0f ) {
+                    bNeedShader = 1;
+                    break;
+                }
+            }
+
+            return aNeedShader < bNeedShader || (aNeedShader == bNeedShader && a->Visual < b->Visual);
+        } );
+
         // Draw all vobs the player currently sees
+        D3D11PShader* currPs = nullptr;
+
         for ( auto const& staticMeshVisual : activeVisuals ) {
             if ( staticMeshVisual->Instances.empty() ) continue;
  
@@ -5106,11 +5133,6 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             for ( auto const& itt : staticMeshVisual->MeshesByTexture ) {
                 std::vector<MeshInfo*>& mlist = staticMeshVisual->MeshesByTexture[itt.first];
                 if ( mlist.empty() ) continue;
-                
-                zCTexture* tx = itt.first.Texture;
-                bool bindTexture = previousTx != tx
-                    && tx 
-                    && (tx->HasAlphaChannel() || colorWritesEnabled);
 
                 // Check for alphablend
                 bool blendAdd =
@@ -5124,31 +5146,37 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                     continue;
                 }
 
-                D3D11PShader* currPs = nullptr;
-                for ( unsigned int i = 0; i < mlist.size(); i++ ) {
-                    // Bind texture
-                    if ( bindTexture ) {
-                        if ( alphaRef > 0.0f && tx->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
-                            auto t = tx->GetSurface()->GetEngineTexture()->GetShaderResourceView().Get();
-                            Context->PSSetShaderResources( 0, 1, &t );
-                            auto nextPs = ActivePS.get();
-                            if ( currPs != nextPs ) {
-                                currPs = nextPs;
-                                ActivePS->Apply();
-                            }
-                            previousTx = tx;
-                        } else
-                            continue;
-                    } else {
-                        if ( !linearDepth )  // Only unbind when not rendering linear depth
-                        {
-                            // Unbind PS
-                            if ( currPs != nullptr ) {
-                                Context->PSSetShader( nullptr, nullptr, 0 );
-                                currPs = nullptr;
-                            }
+                zCTexture* tx = itt.first.Texture;
+                bool bindTexture = previousTx != tx
+                    && tx
+                    && (tx->HasAlphaChannel() || colorWritesEnabled)
+                    && alphaRef > 0.0f;
+
+                // Bind texture
+                if ( bindTexture ) {
+                    if ( tx->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                        auto t = tx->GetSurface()->GetEngineTexture()->GetShaderResourceView().Get();
+                        Context->PSSetShaderResources( 0, 1, &t );
+                        auto nextPs = ActivePS.get();
+                        if ( currPs != nextPs ) { 
+                            currPs = nextPs;
+                            ActivePS->Apply();
+                        }
+                        previousTx = tx;
+                    } else
+                        continue;
+                } else {
+                    if ( !linearDepth )  // Only unbind when not rendering linear depth
+                    {
+                        // Unbind PS
+                        if ( currPs != nullptr ) {
+                            Context->PSSetShader( nullptr, nullptr, 0 );
+                            currPs = nullptr;
                         }
                     }
+                }
+
+                for ( unsigned int i = 0; i < mlist.size(); i++ ) {
 
                     MeshInfo* mi = mlist[i];
 
