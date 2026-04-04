@@ -14,6 +14,7 @@ cbuffer Matrices_PerFrame : register( b0 )
 cbuffer Matrices_PerInstances : register( b1 )
 {
 	matrix M_World;
+	matrix M_PrevWorld;
 	float4 PI_ModelColor;
 	float PI_ModelFatness;
 	float3 PI_Pad1;
