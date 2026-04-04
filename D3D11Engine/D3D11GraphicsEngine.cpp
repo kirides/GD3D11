@@ -3599,7 +3599,7 @@ void D3D11GraphicsEngine::SetupVS_ExConstantBuffer() {
         cb.UnjitteredViewProj = cb.ViewProj;
     }
 
-    ActiveVS->GetBuffer("Matrices_PerFrame").Update(&cb).Bind();
+    ActiveVS->GetBuffer(0).Update(&cb).Bind();
 }
 
 void D3D11GraphicsEngine::SetupVS_ExPerInstanceConstantBuffer() {
@@ -3608,7 +3608,7 @@ void D3D11GraphicsEngine::SetupVS_ExPerInstanceConstantBuffer() {
     VS_ExConstantBuffer_PerInstance cb = {};
     cb.World = world;
 
-    ActiveVS->GetBuffer("Matrices_PerInstances").Update(&cb).Bind();
+    ActiveVS->GetBuffer(1).Update(&cb).Bind();
 }
 
 bool SectionRenderlistSortCmp( std::pair<float, WorldMeshSectionInfo*>& a,
