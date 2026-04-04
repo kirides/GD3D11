@@ -2424,6 +2424,8 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
         : XMLoadFloat4x4( &world );
     
     phmap::flat_hash_map<int, std::vector<MeshVisualInfo*>>& nodeAttachments = vi->NodeAttachments;
+    auto vsBufMPI = g->GetActiveVS()->GetBuffer( "Matrices_PerInstances" );
+    vsBufMPI.Bind();
     for ( unsigned int i = 0; i < transforms.size(); i++ ) {
         // Check for new visual
         zCModel* mvis = static_cast<zCModel*>(vi->Vob->GetVisual());
@@ -2516,8 +2518,7 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
                         // Update constantbuffer
                         instanceInfo.World = finalWorld;
                         XMStoreFloat4x4(&instanceInfo.PrevWorld, prevWorldNode);
-                        VShader->GetConstantBuffer()[1]->UpdateBuffer( &instanceInfo );
-                        VShader->GetConstantBuffer()[1]->BindToVertexShader( 1 );
+                        vsBufMPI.Update( &instanceInfo );
 
                         if ( updateState ) {
                             mm->AdvanceAnis();
@@ -2530,8 +2531,7 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
 
                 instanceInfo.World = finalWorld;
                 XMStoreFloat4x4(&instanceInfo.PrevWorld, prevWorldNode);
-                VShader->GetConstantBuffer()[1]->UpdateBuffer( &instanceInfo );
-                VShader->GetConstantBuffer()[1]->BindToVertexShader( 1 );
+                vsBufMPI.Update( &instanceInfo );
 
                 // Go through all materials registered here
 
@@ -2650,6 +2650,8 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo* vi, float distance
     g->SetupVS_ExConstantBuffer();
 
     phmap::flat_hash_map<int, std::vector<MeshVisualInfo*>>& nodeAttachments = vi->NodeAttachments;
+    auto vsBufMPI = g->GetActiveVS()->GetBuffer( "Matrices_PerInstances" );
+    vsBufMPI.Bind();
     for ( unsigned int i = 0; i < transforms.size(); i++ ) {
         // Check for new visual
         zCModel* mvis = static_cast<zCModel*>(vi->Vob->GetVisual());
@@ -2738,8 +2740,7 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo* vi, float distance
                     if ( g->GetRenderingStage() == DES_MAIN || g->GetRenderingStage() == DES_GHOST ) {
                         // Update constantbuffer
                         instanceInfo.World = finalWorld;
-                        VShader->GetConstantBuffer()[1]->UpdateBuffer( &instanceInfo );
-                        VShader->GetConstantBuffer()[1]->BindToVertexShader( 1 );
+                        vsBufMPI.Update( &instanceInfo );
 
                         if ( updateState ) {
                             mm->AdvanceAnis();
@@ -2751,8 +2752,7 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo* vi, float distance
                 }
 
                 instanceInfo.World = finalWorld;
-                VShader->GetConstantBuffer()[1]->UpdateBuffer( &instanceInfo );
-                VShader->GetConstantBuffer()[1]->BindToVertexShader( 1 );
+                vsBufMPI.Update( &instanceInfo );
 
                 // Go through all materials registered here
                 for ( auto const& itm : mvi->Meshes ) {
@@ -2914,6 +2914,8 @@ void GothicAPI::DrawSkeletalMeshVobs(
     g->SetupVS_ExMeshDrawCall();
     g->SetupVS_ExConstantBuffer();
 
+    auto vsBufMPI = g->GetActiveVS()->GetBuffer( "Matrices_PerInstances" );
+    vsBufMPI.Bind();
     for ( auto& data : tempVobList ) {
 
         auto vi = data.VobInfo;
@@ -3022,8 +3024,7 @@ void GothicAPI::DrawSkeletalMeshVobs(
                         if ( g->GetRenderingStage() == DES_MAIN || g->GetRenderingStage() == DES_GHOST ) {
                             // Update constantbuffer
                             instanceInfo.World = finalWorld;
-                            VShader->GetConstantBuffer()[1]->UpdateBuffer( &instanceInfo );
-                            VShader->GetConstantBuffer()[1]->BindToVertexShader( 1 );
+                            vsBufMPI.Update( &instanceInfo );
 
                             if ( updateState ) {
                                 mm->AdvanceAnis();
@@ -3035,8 +3036,7 @@ void GothicAPI::DrawSkeletalMeshVobs(
                     }
 
                     instanceInfo.World = finalWorld;
-                    VShader->GetConstantBuffer()[1]->UpdateBuffer( &instanceInfo );
-                    VShader->GetConstantBuffer()[1]->BindToVertexShader( 1 );
+                    vsBufMPI.Update( &instanceInfo );
 
                     // Go through all materials registered here
 
@@ -3083,6 +3083,7 @@ void GothicAPI::DrawTransparencyVobs() {
         RendererState.DepthState.SetDirty();
     }
 
+    auto psBufGAI = g->GetShaderManager().GetPShader( PShaderID::PS_Transparency )->GetBuffer( "GhostAlphaInfo" );
     while ( !TransparencyVobs.empty() ) {
         auto const& TransVobInfo = TransparencyVobs.front();
 
@@ -3101,8 +3102,7 @@ void GothicAPI::DrawTransparencyVobs() {
             GhostAlphaConstantBuffer gacb;
             gacb.GA_ViewportSize = float2( Engine::GraphicsEngine->GetResolution().x, Engine::GraphicsEngine->GetResolution().y );
             gacb.GA_Alpha = TransVobInfo.alpha;
-            g->GetActivePS()->GetConstantBuffer()[0]->UpdateBuffer( &gacb );
-            g->GetActivePS()->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+            psBufGAI.Update( &gacb ).Bind();
             DrawSkeletalMeshVob( TransVobInfo.skeletalVob, TransVobInfo.distance, false );
         } else if ( TransVobInfo.normalVob ) {
             g->SetActiveVertexShader( VShaderID::VS_Ex );
@@ -3137,8 +3137,7 @@ void GothicAPI::DrawTransparencyVobs() {
             GhostAlphaConstantBuffer gacb;
             gacb.GA_ViewportSize = float2( Engine::GraphicsEngine->GetResolution().x, Engine::GraphicsEngine->GetResolution().y );
             gacb.GA_Alpha = TransVobInfo.alpha;
-            g->GetActivePS()->GetConstantBuffer()[0]->UpdateBuffer( &gacb );
-            g->GetActivePS()->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+            psBufGAI.Update( &gacb ).Bind();
 
             for ( auto const& materialMesh : TransVobInfo.normalVob->VisualInfo->Meshes ) {
                 if ( materialMesh.first && materialMesh.first->GetTexture() ) {

@@ -66,8 +66,7 @@ XRESULT D3D11PFX_CAS::Apply( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceVi
     );
 
     // Update constant buffer
-    casPS->GetConstantBuffer()[0]->UpdateBuffer( &cb );
-    casPS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+    casPS->GetBuffer( "CASConstants" ).Update( &cb ).Bind();
 
     D3D11_VIEWPORT oldVP;
     UINT n = 1;

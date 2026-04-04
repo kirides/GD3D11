@@ -74,8 +74,7 @@ XRESULT D3D11PFX_HDR::Render( ID3D11RenderTargetView* output, ID3D11ShaderResour
     hcb.HDR_MiddleGray = Engine::GAPI->GetRendererState().RendererSettings.HDRMiddleGray;
     hcb.HDR_Threshold = Engine::GAPI->GetRendererState().RendererSettings.BloomThreshold;
     hcb.HDR_BloomStrength = Engine::GAPI->GetRendererState().RendererSettings.BloomStrength;
-    hps->GetConstantBuffer()[0]->UpdateBuffer( &hcb );
-    hps->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+    hps->GetBuffer( "HDR_Settings" ).Update( &hcb ).Bind();
 
     FxRenderer->CopyTextureToRTV( tempBuffer->GetShaderResView(), output, engine->GetResolution(), true );
 
@@ -103,8 +102,7 @@ void D3D11PFX_HDR::CreateBloom( RenderToTextureBuffer* lum, RenderToTextureBuffe
 	hcb.HDR_LumWhite = Engine::GAPI->GetRendererState().RendererSettings.HDRLumWhite;
 	hcb.HDR_MiddleGray = Engine::GAPI->GetRendererState().RendererSettings.HDRMiddleGray;
 	hcb.HDR_Threshold = Engine::GAPI->GetRendererState().RendererSettings.BloomThreshold;
-	tonemapPS->GetConstantBuffer()[0]->UpdateBuffer( &hcb );
-	tonemapPS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+	tonemapPS->GetBuffer( "HDR_Settings" ).Update( &hcb ).Bind();
 
 	lum->BindToPixelShader( engine->GetContext().Get(), 1 );
 	FxRenderer->CopyTextureToRTV( engine->GetHDRBackBuffer().GetShaderResView(), bloomTempBuffer->GetRenderTargetView(), dsRes, true );
@@ -124,8 +122,7 @@ void D3D11PFX_HDR::CreateBloom( RenderToTextureBuffer* lum, RenderToTextureBuffe
 	bcb.B_BlurSize = 1.0f;
 	bcb.B_PixelSize = float2( 1.0f / bloomTempBuffer->GetSizeX(), 0.0f );
     //bcb.B_ColorMod = float4( 1.0f, 1.0f, 1.0f, 1.0f );
-    gaussPS->GetConstantBuffer()[0]->UpdateBuffer( &bcb );
-    gaussPS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+    gaussPS->GetBuffer( "B_BlurSettings" ).Update( &bcb ).Bind();
 
     auto tempBloomBuffer2 = FxRenderer->GetTempBufferDS4();
     // Copy
@@ -137,8 +134,7 @@ void D3D11PFX_HDR::CreateBloom( RenderToTextureBuffer* lum, RenderToTextureBuffe
     bcb.B_BlurSize = 1.0f;
     bcb.B_PixelSize = float2( 0.0f, 1.0f / bloomTempBuffer->GetSizeY() );
     bcb.B_Threshold = 0.0f;
-    gaussPS->GetConstantBuffer()[0]->UpdateBuffer( &bcb );
-    gaussPS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+    gaussPS->GetBuffer( "B_BlurSettings" ).Update( &bcb ).Bind();
 
     // Copy
     FxRenderer->CopyTextureToRTV( tempBloomBuffer2->GetShaderResView(), bloomTempBuffer->GetRenderTargetView(), dsRes, true );
@@ -190,8 +186,7 @@ RenderToTextureBuffer* D3D11PFX_HDR::CalcLuminance() {
 
 	LumAdaptConstantBuffer lcb;
 	lcb.LC_DeltaTime = Engine::GAPI->GetDeltaTime();
-	aps->GetConstantBuffer()[0]->UpdateBuffer( &lcb );
-	aps->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+	aps->GetBuffer( "LumConvertCB" ).Update( &lcb ).Bind();
 
 	// Bind luminances
 	lastLum->BindToPixelShader( engine->GetContext().Get(), 1 );

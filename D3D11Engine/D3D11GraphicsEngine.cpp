@@ -1521,8 +1521,7 @@ void RenderVelocity(D3D11GraphicsEngine* engine,
     VelocityDebugConstantBuffer cb = {};
     cb.Amplification = 100;
 
-    ps->GetConstantBuffer()[0]->UpdateBuffer( &cb );
-    ps->GetConstantBuffer()[0]->BindToPixelShader(0);
+    ps->GetBuffer( "VelocityDebugCB" ).Update( &cb ).Bind();
     ps->Apply();
     
     engine->GetPfxRenderer()->CopyTextureToRTV(
@@ -1556,8 +1555,7 @@ XRESULT D3D11GraphicsEngine::Present() {
         gcb.G_Gamma = Engine::GAPI->GetGammaValue();
         gcb.G_Brightness = Engine::GAPI->GetBrightnessValue();
 
-        ActivePS->GetConstantBuffer()[0]->UpdateBuffer( &gcb );
-        ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+        ActivePS->GetBuffer( "GammaCorrectConstantBuffer" ).Update( &gcb ).Bind();
 
         PfxRenderer->CopyTextureToRTV( Backbuffer->GetShaderResView(), BackbufferRTV, {}, true );
         
@@ -1851,8 +1849,7 @@ XRESULT D3D11GraphicsEngine::BindViewportInformation( VShaderID shader,
     auto vs = ShaderManager->GetVShader( shader );
 
     if ( vs ) {
-        vs->GetConstantBuffer()[slot]->UpdateBuffer( Temp2Float2 );
-        vs->GetConstantBuffer()[slot]->BindToVertexShader( slot );
+        vs->GetBuffer( "Viewport" ).Update( Temp2Float2 ).Bind();
     }
 
     return XR_SUCCESS;
@@ -1888,8 +1885,7 @@ XRESULT D3D11GraphicsEngine::DrawScreenFade( void* c ) {
         colorBuffer.GA_Pad.x = cinemaScopeColor.bgra.r * inv255f;
         colorBuffer.GA_Pad.y = cinemaScopeColor.bgra.g * inv255f;
         colorBuffer.GA_Pad.z = cinemaScopeColor.bgra.b * inv255f;
-        ActivePS->GetConstantBuffer()[0]->UpdateBuffer( &colorBuffer );
-        ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+        ActivePS->GetBuffer( "AlphaBlendInfo" ).Update( &colorBuffer ).Bind();
 
         UpdateRenderStates();
         GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
@@ -1958,8 +1954,7 @@ XRESULT D3D11GraphicsEngine::DrawScreenFade( void* c ) {
         colorBuffer.GA_Pad.x = screenFadeColor.bgra.r * inv255f;
         colorBuffer.GA_Pad.y = screenFadeColor.bgra.g * inv255f;
         colorBuffer.GA_Pad.z = screenFadeColor.bgra.b * inv255f;
-        ActivePS->GetConstantBuffer()[0]->UpdateBuffer( &colorBuffer );
-        ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+        ActivePS->GetBuffer( "AlphaBlendInfo" ).Update( &colorBuffer ).Bind();
 
         PfxRenderer->DrawFullScreenQuad();
     }
@@ -2133,13 +2128,12 @@ XRESULT  D3D11GraphicsEngine::DrawSkeletalVertexNormals( SkeletalVobInfo* vi,
     cb2.PI_ModelColor = color;
     cb2.PI_ModelFatness = fatness;
 
-    ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &cb2 );
-    ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( 1 );
-    ActiveVS->GetConstantBuffer()[1]->BindToGeometryShader( 1 );
+    auto perInstanceBuf = ActiveVS->GetBuffer( "Matrices_PerInstances" );
+    perInstanceBuf.Update( &cb2 ).Bind();
+    perInstanceBuf.GetRawBuffer()->BindToGeometryShader( 1 );
 
     // Copy bones
-    ActiveVS->GetConstantBuffer()[2]->UpdateBuffer( &transforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( transforms.size(), NUM_MAX_BONES ) );
-    ActiveVS->GetConstantBuffer()[2]->BindToVertexShader( 2 );
+    ActiveVS->GetBuffer( "BoneTransforms" ).Update( &transforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( transforms.size(), NUM_MAX_BONES ) ).Bind();
 
     if ( transforms.size() >= NUM_MAX_BONES ) {
         LogWarn() << "SkeletalMesh has more than "
@@ -3398,8 +3392,7 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
         .Update( &sky->GetAtmosphereCB() )
         .Bind();
 
-    ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &XMMatrixIdentity() );
-    ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( 1 );
+    ActiveVS->GetBuffer( "Matrices_PerInstances" ).Update( &XMMatrixIdentity() ).Bind();
 
     InfiniteRangeConstantBuffer->BindToPixelShader( 3 );
 
@@ -3972,8 +3965,7 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
     SetupVS_ExConstantBuffer();
 
     float totalTime = Engine::GAPI->GetTotalTime();
-    ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &totalTime, 4 );
-    ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( 1 );
+    ActiveVS->GetBuffer( "Matrices_PerInstances" ).Update( &totalTime, 4 ).Bind();
 
     // Do Z-prepass on the water to make sure only the visible pixels will get drawn instead of multiple layers of water
     GetContext()->PSSetShader( nullptr, nullptr, 0 );
@@ -4118,13 +4110,14 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
     auto rangeSquared = range * range;
     auto vRangeSquared = XMVectorReplicate(rangeSquared);    
     
+    auto vsBufMPI = ActiveVS->GetBuffer( "Matrices_PerInstances" );
+
     if ( Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh ) {
         // Bind wrapped mesh vertex buffers
         DrawVertexBufferIndexedUINT( Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer,
             Engine::GAPI->GetWrappedWorldMesh()->MeshIndexBuffer, 0, 0 );
 
-        ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &XMMatrixIdentity() );
-        ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( 1 );
+        vsBufMPI.Update( &XMMatrixIdentity() ).Bind();
 
         // Only use cache if we haven't already collected the vobs
         // TODO: Collect vobs in a different way than using the drawn sections!
@@ -5490,8 +5483,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                                 MaterialInfo::Buffer b = {};
 
                                 b.Color = itt.first.Material->GetColor();
-                                ShaderManager->GetPShader( PShaderID::PS_DiffuseAlphaTest )->GetConstantBuffer()[2]->UpdateBuffer( &b );
-                                ShaderManager->GetPShader( PShaderID::PS_DiffuseAlphaTest )->GetConstantBuffer()[2]->BindToPixelShader( 2 );
+                                ShaderManager->GetPShader( PShaderID::PS_DiffuseAlphaTest )->GetBuffer( "MI_MaterialInfo" ).Update( &b ).Bind();
 
                             } else {
                                 continue;
@@ -5756,6 +5748,8 @@ XRESULT D3D11GraphicsEngine::DrawPolyStrips( bool noTextures ) {
         .Update( &defInfo )
         .Bind();
 
+    auto vsBufMPI = ActiveVS->GetBuffer( "Matrices_PerInstances" );
+
     for ( auto it = polyStripInfos.begin(); it != polyStripInfos.end(); it++ ) {
         zCMaterial* mat = it->second.material;
         zCTexture* tx = it->first;
@@ -5767,8 +5761,7 @@ XRESULT D3D11GraphicsEngine::DrawPolyStrips( bool noTextures ) {
         //Setting world transform matrix/////////////
 
         //vob->GetWorldMatrix(&id);
-        ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &XMMatrixIdentity() );
-        ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( 1 );
+        vsBufMPI.Update( &XMMatrixIdentity() ).Bind();
 
         // Check for alphablending on world mesh
         bool blendAdd = mat->GetAlphaFunc() == zMAT_ALPHA_FUNC_ADD;
@@ -6075,8 +6068,7 @@ void D3D11GraphicsEngine::DrawVobSingle( VobInfo* vob, zCCamera& camera ) {
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
 
-    ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( vob->Vob->GetWorldMatrixPtr() );
-    ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( 1 );
+    ActiveVS->GetBuffer( "Matrices_PerInstances" ).Update( vob->Vob->GetWorldMatrixPtr() ).Bind();
         
     for ( auto const& itm : vob->VisualInfo->Meshes ) {
         // Cache & bind texture
@@ -6231,8 +6223,7 @@ void D3D11GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& 
     gcb.G_Gamma = Engine::GAPI->GetGammaValue();
     gcb.G_Brightness = Engine::GAPI->GetBrightnessValue();
 
-    ActivePS->GetConstantBuffer()[0]->UpdateBuffer( &gcb );
-    ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+    ActivePS->GetBuffer( "GammaCorrectConstantBuffer" ).Update( &gcb ).Bind();
 
     HRESULT hr;
     auto rt = std::make_unique<RenderToTextureBuffer>(
@@ -6368,6 +6359,8 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
     XMFLOAT3 camPos = Engine::GAPI->GetCameraPosition();
 
     int lastAlphaFunc = -1;
+    auto psBufGAI = ActivePS->GetBuffer( "GhostAlphaInfo" );
+    psBufGAI.Bind();
     for ( unsigned int i = 0; i < decals.size(); i++ ) {
         zCDecal* d = static_cast<zCDecal*>(decals[i]->GetVisual());
         if ( !d ) {
@@ -6463,8 +6456,7 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
             GhostAlphaConstantBuffer gacb;
             gacb.GA_ViewportSize = float2( Engine::GraphicsEngine->GetResolution().x, Engine::GraphicsEngine->GetResolution().y );
             gacb.GA_Alpha = (material->GetColor() >> 24) * inv255f;
-            ActivePS->GetConstantBuffer()[0]->UpdateBuffer( &gacb );
-            ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+            psBufGAI.Update( &gacb );
         }
 
         texture->Bind( 0 );
@@ -6628,8 +6620,7 @@ void D3D11GraphicsEngine::DrawUnderwaterEffects() {
 
     // Set up water final copy
     SetActivePixelShader( PShaderID::PS_PFX_UnderwaterFinal );
-    ActivePS->GetConstantBuffer()[0]->UpdateBuffer( &ricb );
-    ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 3 );
+    ActivePS->GetBuffer( "RefractionInfo" ).Update( &ricb ).Bind();
 
     DistortionTexture->BindToPixelShader( 2 );
     DepthStencilBufferCopy->BindToPixelShader( GetContext().Get(), 3 );
@@ -6682,7 +6673,9 @@ void D3D11GraphicsEngine::DrawFrameParticleMeshes( std::unordered_map<zCVob*, Me
     int lastBlend = zRND_ALPHA_FUNC_NONE;
     auto vfxRadiusSq = state.RendererSettings.VisualFXDrawRadius * state.RendererSettings.VisualFXDrawRadius;
     auto vVfxRadiusSq = XMVectorReplicate(vfxRadiusSq);
-    
+    auto vsBufMPI = ActiveVS->GetBuffer( "Matrices_PerInstances" );
+    vsBufMPI.Bind();
+
     for ( auto const& it : progMeshes ) {
         if ( XMVector3Greater(XMVector3LengthSq( it.first->GetPositionWorldXM() - camPos ), vVfxRadiusSq) ) {
             continue;
@@ -6733,8 +6726,7 @@ void D3D11GraphicsEngine::DrawFrameParticleMeshes( std::unordered_map<zCVob*, Me
             continue;
         }
 
-        ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( it.first->GetWorldMatrixPtr() );
-        ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( 1 );
+        vsBufMPI.Update( it.first->GetWorldMatrixPtr() );
 
         for ( auto const& itm : it.second->Meshes ) {
             // Cache & bind texture
@@ -6826,8 +6818,7 @@ void D3D11GraphicsEngine::DrawFrameParticles(
 
     ParticleGSInfoConstantBuffer gcb = {};
     gcb.CameraPosition = Engine::GAPI->GetCameraPosition();
-    ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &gcb );
-    ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( 2 );
+    ActiveVS->GetBuffer( "ParticleGSInfo" ).Update( &gcb ).Bind();
 
     // Rendering points only
     Context->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP );
@@ -7198,8 +7189,7 @@ void D3D11GraphicsEngine::DrawString( const std::string& str, float x, float y, 
     graphicState.FF_Stages[0].ColorArg2 = FixedFunctionStage::ETextureArg::TA_DIFFUSE;
 
     // Bind the FF-Info to the first PS slot
-    ActivePS->GetConstantBuffer()[0]->UpdateBuffer( &graphicState );
-    ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+    ActivePS->GetBuffer( "FFPipelineConstantBuffer" ).Update( &graphicState ).Bind();
 
     BindActiveVertexShader();
     BindActivePixelShader();

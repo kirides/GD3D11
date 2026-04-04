@@ -335,8 +335,7 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
             cullCB.TotalLights = tiledLightCount;
             cullCB.Pad = 0;
 
-            csLightCull->GetConstantBuffer()[0]->UpdateBuffer( &cullCB );
-            csLightCull->GetConstantBuffer()[0]->BindToComputeShader( 0 );
+            csLightCull->GetBuffer( "LightCullingConstantBuffer" ).Update( &cullCB ).Bind();
 
             // Bind depth copy as SRV to CS slot t0
             context->CSSetShaderResources( 0, 1, depthCopy.GetShaderResView().GetAddressOf() );
@@ -381,8 +380,7 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
             shadeCB.NumTilesX = numTilesX;
             XMStoreFloat4x4( &shadeCB.InvView, XMMatrixInverse( nullptr, view ) );
 
-            csTiledShading->GetConstantBuffer()[0]->UpdateBuffer( &shadeCB );
-            csTiledShading->GetConstantBuffer()[0]->BindToComputeShader( 0 );
+            csTiledShading->GetBuffer( "TiledShadingConstantBuffer" ).Update( &shadeCB ).Bind();
 
             // Bind GBuffer SRVs to CS
             context->CSSetShaderResources( 0, 1, color.GetShaderResView().GetAddressOf() );

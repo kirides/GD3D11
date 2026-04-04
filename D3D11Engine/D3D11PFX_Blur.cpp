@@ -43,8 +43,7 @@ XRESULT D3D11PFX_Blur::RenderBlur( RenderToTextureBuffer* fxbuffer, bool leaveRe
 	bcb.B_PixelSize = float2( 1.0f / tempBuffer->GetSizeX(), 0.0f );
     bcb.B_Threshold = threshold;
     bcb.B_ColorMod = colorMod;
-    gaussPS->GetConstantBuffer()[0]->UpdateBuffer( &bcb );
-    gaussPS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+    gaussPS->GetBuffer( "B_BlurSettings" ).Update( &bcb ).Bind();
 
     // Bind depthbuffer
     //engine->GetDepthBuffer()->BindToPixelShader(engine->GetContext().Get(), 1);
@@ -58,8 +57,7 @@ XRESULT D3D11PFX_Blur::RenderBlur( RenderToTextureBuffer* fxbuffer, bool leaveRe
     bcb.B_BlurSize = scale;
     bcb.B_PixelSize = float2( 0.0f, 1.0f / tempBuffer->GetSizeY() );
     bcb.B_Threshold = 0.0f;
-    gaussPS->GetConstantBuffer()[0]->UpdateBuffer( &bcb );
-    gaussPS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+    gaussPS->GetBuffer( "B_BlurSettings" ).Update( &bcb ).Bind();
 
     // Copy
     FxRenderer->CopyTextureToRTV( tempBuffer->GetShaderResView(), tempBuffer2->GetRenderTargetView(), dsRes, true );

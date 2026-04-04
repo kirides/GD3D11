@@ -7,16 +7,9 @@
 #include "D3D11ShaderManager.h"
 #include "D3D11_Helpers.h"
 
-D3D11HDShader::D3D11HDShader() {
-    ConstantBuffers = std::vector<D3D11ConstantBuffer*>();
-}
+D3D11HDShader::D3D11HDShader() = default;
 
-
-D3D11HDShader::~D3D11HDShader() {
-    for ( unsigned int i = 0; i < ConstantBuffers.size(); i++ ) {
-        delete ConstantBuffers[i];
-    }
-}
+D3D11HDShader::~D3D11HDShader() = default;
 
 /** Loads both shaders at the same time */
 XRESULT D3D11HDShader::LoadShader( const char* hullShader, const char* domainShader ) {
@@ -37,6 +30,9 @@ XRESULT D3D11HDShader::LoadShader( const char* hullShader, const char* domainSha
     if ( FAILED( D3D11ShaderManager::CompileShaderFromFile( domainShader, "DSMain", "ds_5_0", dsBlob.GetAddressOf(), {} ) ) ) {
         return XR_FAILED;
     }
+
+    ReflectShaderResources( hsBlob.Get() );
+    ReflectShaderResources( dsBlob.Get() );
 
     // Create the shaders
     LE( engine->GetDevice()->CreateHullShader( hsBlob->GetBufferPointer(), hsBlob->GetBufferSize(), nullptr, HullShader.GetAddressOf() ) );
@@ -66,7 +62,20 @@ void D3D11HDShader::Unbind() {
     engine->GetContext()->DSSetShader( nullptr, nullptr, 0 );
 }
 
-/** Returns a reference to the constantBuffer vector*/
-std::vector<D3D11ConstantBuffer*>& D3D11HDShader::GetConstantBuffer() {
-    return ConstantBuffers;
+void D3D11HDShader::BindResource(StringID name, ID3D11ShaderResourceView* srv) {
+    reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->DSSetShaderResources( GetInputIndex(name), 1, &srv );
+}
+
+void D3D11HDShader::BindSampler(StringID name, ID3D11SamplerState* sampler) {
+    reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->DSSetSamplers( GetInputIndex(name), 1, &sampler );
+}
+
+void D3D11HDShader::BindBuffer(StringID name, D3D11ConstantBuffer* buffer) {
+    if (auto idx = GetInputIndex(name); idx != -1) {
+        buffer->BindToDomainShader(idx);
+    }
+}
+
+void D3D11HDShader::BindBuffer(UINT slot, D3D11ConstantBuffer* buffer) {
+    buffer->BindToDomainShader(slot);
 }

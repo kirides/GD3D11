@@ -35,8 +35,7 @@ XRESULT D3D11PFX_SimpleSharpen::Apply( const Microsoft::WRL::ComPtr<ID3D11Shader
     gcb.G_TextureSize = inputSize;
     gcb.G_SharpenStrength = Engine::GAPI->GetRendererState().RendererSettings.SharpenFactor;
 
-    sharpenPS->GetConstantBuffer()[0]->UpdateBuffer( &gcb );
-    sharpenPS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+    sharpenPS->GetBuffer( "PfxSharpenConstantBuffer" ).Update( &gcb ).Bind();
 
     D3D11_VIEWPORT oldVP;
     UINT n = 1;

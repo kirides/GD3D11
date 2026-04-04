@@ -604,9 +604,6 @@ XRESULT D3D11ShaderManager::CompileShader( const ShaderInfo& si ) {
                     delete gs;
                 } else {
                     // Compilation succeeded, switch the shader
-                    for ( unsigned int j = 0; j < si.cBufferSizes.size(); j++ ) {
-                        gs->GetConstantBuffer().push_back( new D3D11ConstantBuffer( si.cBufferSizes[j], nullptr ) );
-                    }
                     UpdateGShader( si.shaderIndex, gs );
                 }
             } else {
@@ -614,9 +611,6 @@ XRESULT D3D11ShaderManager::CompileShader( const ShaderInfo& si ) {
                     LogInfo() << "Loading shader: " << si.name;
 
                 XLE( gs->LoadShader( ("system\\GD3D11\\shaders\\" + si.fileName).c_str(), si.shaderMakros, si.layout != 0, si.layout ) );
-                for ( unsigned int j = 0; j < si.cBufferSizes.size(); j++ ) {
-                    gs->GetConstantBuffer().push_back( new D3D11ConstantBuffer( si.cBufferSizes[j], nullptr ) );
-                }
                 UpdateGShader( si.shaderIndex, gs );
             }
         } else if ( si.type == ShaderType::Compute ) {
@@ -657,17 +651,11 @@ XRESULT D3D11ShaderManager::CompileShader( const ShaderInfo& si ) {
                 delete hds;
             } else {
                 // Compilation succeeded, switch the shader
-                for ( unsigned int j = 0; j < si.cBufferSizes.size(); j++ ) {
-                    hds->GetConstantBuffer().push_back( new D3D11ConstantBuffer( si.cBufferSizes[j], nullptr ) );
-                }
                 UpdateHDShader( si.shaderIndex, hds );
             }
         } else {
             XLE( hds->LoadShader( ("system\\GD3D11\\shaders\\" + si.fileName).c_str(),
                 ("system\\GD3D11\\shaders\\" + si.fileName).c_str() ) );
-            for ( unsigned int j = 0; j < si.cBufferSizes.size(); j++ ) {
-                hds->GetConstantBuffer().push_back( new D3D11ConstantBuffer( si.cBufferSizes[j], nullptr ) );
-            }
             UpdateHDShader( si.shaderIndex, hds );
         }
     }

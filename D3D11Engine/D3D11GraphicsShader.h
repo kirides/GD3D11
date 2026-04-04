@@ -44,6 +44,7 @@ public:
     }
     GraphicsShaderConstantBuffer& Bind();
     GraphicsShaderConstantBuffer& Bind(UINT slot);
+    D3D11ConstantBuffer* GetRawBuffer() const { return buffer; }
 private:
     D3D11ConstantBuffer* buffer;
     D3D11GraphicsShader* shader;

@@ -93,8 +93,7 @@ XRESULT D3D11PFX_GodRays::Render(
     // Zoom
     zoomPS->Apply();
 
-    zoomPS->GetConstantBuffer()[0]->UpdateBuffer( &gcb );
-    zoomPS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+    zoomPS->GetBuffer( "GodRayZoomConstantBuffer" ).Update( &gcb ).Bind();
 
     auto clampSampler = engine->GetClampSamplerState();
     engine->GetContext()->PSSetSamplers( 0, 1, &clampSampler );
