@@ -4653,7 +4653,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
     }
 }
 
-void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect(const std::vector<const WorldMeshSectionInfo*>& visibleSections)
+void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect(const std::vector<WorldMeshSectionInfo*>& visibleSections)
 {
     float alphaRef = Engine::GAPI->GetRendererState().GraphicsState.FF_AlphaRef;
     bool linearDepth = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches &
@@ -4768,7 +4768,7 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect(const std::vector<co
     }
 }
 
-void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh(const std::vector<const WorldMeshSectionInfo*>& visibleSections)
+void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh(const std::vector<WorldMeshSectionInfo*>& visibleSections)
 {
     float alphaRef = Engine::GAPI->GetRendererState().GraphicsState.FF_AlphaRef;
     bool linearDepth = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches &
@@ -4947,22 +4947,9 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
         cbMatrices_PerInstances.Update( &XMMatrixIdentity() ).Bind();
 
-        static thread_local std::vector<const WorldMeshSectionInfo*> visibleSections;
+        static thread_local std::vector<WorldMeshSectionInfo*> visibleSections;
         visibleSections.clear();
-
-        for ( const auto& itx : Engine::GAPI->GetWorldSections() ) {
-            for ( const auto& ity : itx.second ) {
-                float dx = static_cast<float>(itx.first - s.x);
-                float dy = static_cast<float>(ity.first - s.y);
-                float lenSq = dx * dx + dy * dy;
-
-                if ( lenSq > sectionRangeSq ) {
-                    continue;
-                }
-
-                visibleSections.push_back( &ity.second );
-            }
-        }
+        Engine::GAPI->CollectVisibleSections(visibleSections);
         
         if (Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseMDI) {
             ShadowPass_DrawWorldMesh_Indirect(visibleSections);
