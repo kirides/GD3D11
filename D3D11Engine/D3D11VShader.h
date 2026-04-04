@@ -2,6 +2,7 @@
 #include "D3D11GraphicsShader.h"
 #include "pch.h"
 
+struct ShaderInfo;
 class D3D11ConstantBuffer;
 class D3D11VertexBuffer;
 
@@ -11,7 +12,7 @@ public:
     ~D3D11VShader() override;
 
     /** Loads both shader at the same time */
-    XRESULT LoadShader( const char* vertexShader, int layout = 1, const char* entryPoint = nullptr, const std::vector<D3D_SHADER_MACRO>& makros = std::vector<D3D_SHADER_MACRO>() );
+    XRESULT LoadShader( const ShaderInfo& shaderInfo, const char* filePath );
 
     /** Applys the shader */
     XRESULT Apply() override;

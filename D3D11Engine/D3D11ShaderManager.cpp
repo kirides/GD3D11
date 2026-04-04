@@ -556,7 +556,7 @@ XRESULT D3D11ShaderManager::CompileShader( const ShaderInfo& si ) {
                 if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog )
                     LogInfo() << "Reloading shader: " << si.name;
 
-                if ( XR_SUCCESS != vs->LoadShader( ("system\\GD3D11\\shaders\\" + si.fileName).c_str(), si.layout, !si.entryPoint.empty() ? si.entryPoint.c_str() : nullptr, si.shaderMakros ) ) {
+                if ( XR_SUCCESS != vs->LoadShader( si, ("system\\GD3D11\\shaders\\" + si.fileName).c_str() ) ) {
                     LogError() << "Failed to reload shader: " << si.fileName;
 
                     delete vs;
@@ -567,7 +567,7 @@ XRESULT D3D11ShaderManager::CompileShader( const ShaderInfo& si ) {
                 if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog )
                     LogInfo() << "Loading shader: " << si.name;
 
-                XLE( vs->LoadShader( ("system\\GD3D11\\shaders\\" + si.fileName).c_str(), si.layout, !si.entryPoint.empty() ? si.entryPoint.c_str() : nullptr, si.shaderMakros ) );
+                XLE( vs->LoadShader( si, ("system\\GD3D11\\shaders\\" + si.fileName).c_str() ) );
                 UpdateVShader( si.shaderIndex, vs );
             }
         } else if ( si.type == ShaderType::Pixel ) {
@@ -577,7 +577,7 @@ XRESULT D3D11ShaderManager::CompileShader( const ShaderInfo& si ) {
                 if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog )
                     LogInfo() << "Reloading shader: " << si.name;
 
-                if ( XR_SUCCESS != ps->LoadShader( ("system\\GD3D11\\shaders\\" + si.fileName).c_str(), !si.entryPoint.empty() ? si.entryPoint.c_str() : nullptr, si.shaderMakros ) ) {
+                if ( XR_SUCCESS != ps->LoadShader( si, ("system\\GD3D11\\shaders\\" + si.fileName).c_str() ) ) {
                     LogError() << "Failed to reload shader: " << si.fileName;
 
                     delete ps;
@@ -588,7 +588,7 @@ XRESULT D3D11ShaderManager::CompileShader( const ShaderInfo& si ) {
                 if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog )
                     LogInfo() << "Loading shader: " << si.name;
 
-                XLE( ps->LoadShader( ("system\\GD3D11\\shaders\\" + si.fileName).c_str(), !si.entryPoint.empty() ? si.entryPoint.c_str() : nullptr, si.shaderMakros ) );
+                XLE( ps->LoadShader( si, ("system\\GD3D11\\shaders\\" + si.fileName).c_str() ) );
                 UpdatePShader( si.shaderIndex, ps );
             }
         } else if ( si.type == ShaderType::Geometry ) {

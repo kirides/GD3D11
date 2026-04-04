@@ -92,7 +92,7 @@ void D3D11GraphicsShader::OnReflectShader(ID3DBlob* blob, ID3D11ShaderReflection
                 // Ignore the bind-point here, due to global-per-frame CBs
                 ConstantBuffers[cbIndex] = std::make_unique<D3D11ConstantBuffer>( paddedSize, nullptr );
                 ConstantBuffersByName[StringID(resourceDesc.Name)] = {ConstantBuffers[cbIndex].get(), resourceDesc.BindPoint};
-                ConstantBufferIndexBySlot[resourceDesc.BindPoint] = cbIndex;
+                ConstantBufferIndexBySlot[resourceDesc.BindPoint] = static_cast<byte>(cbIndex);
                 ++cbIndex;
             }
         }

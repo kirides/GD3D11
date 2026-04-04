@@ -1,6 +1,7 @@
 #pragma once
 #include "D3D11GraphicsShader.h"
 
+struct ShaderInfo;
 class D3D11ConstantBuffer;
 
 class D3D11PShader : public D3D11GraphicsShader {
@@ -10,8 +11,7 @@ public:
     ~D3D11PShader() override;
 
     /** Loads shader */
-    XRESULT LoadShader(const char* pixelShader, const char* entryPoint, const std::vector<D3D_SHADER_MACRO>& makros = std::vector<
-                           D3D_SHADER_MACRO>());
+    XRESULT LoadShader(const ShaderInfo& shaderInfo, const char* filePath);
 
     /** Applys the shader */
     XRESULT Apply() override;

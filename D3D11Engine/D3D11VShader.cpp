@@ -16,22 +16,17 @@ D3D11VShader::D3D11VShader() = default;
 D3D11VShader::~D3D11VShader() = default;
 
 /** Loads shader */
-XRESULT D3D11VShader::LoadShader( const char* vertexShader, int layout, const char* entryPoint, const std::vector<D3D_SHADER_MACRO>& makros ) {
+XRESULT D3D11VShader::LoadShader( const ShaderInfo& shaderInfo, const char* filePath ) {
     HRESULT hr;
     D3D11GraphicsEngineBase* engine = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine);
 
     Microsoft::WRL::ComPtr<ID3DBlob> vsBlob;
 
 
-    LogInfo() << "Compilling vertex shader: " << vertexShader;
-
-#ifdef DEBUG_D3D11
-    filePath = vertexShader;
-#endif
+    LogInfo() << "Compilling vertex shader: " << shaderInfo.name;
 
     // Compile shader
-    if ( entryPoint == nullptr ) { entryPoint = "VSMain"; }
-    if ( FAILED( D3D11ShaderManager::CompileShaderFromFile( vertexShader, entryPoint, (FeatureLevel10Compatibility ? "vs_4_0" : "vs_5_0"), vsBlob.GetAddressOf(), makros)) ) {
+    if ( FAILED( D3D11ShaderManager::CompileShaderFromFile( filePath, !shaderInfo.entryPoint.empty() ? shaderInfo.entryPoint.c_str() : "VSMain", (FeatureLevel10Compatibility ? "vs_4_0" : "vs_5_0"), vsBlob.GetAddressOf(), shaderInfo.shaderMakros)) ) {
         return XR_FAILED;
     }
 
@@ -41,7 +36,7 @@ XRESULT D3D11VShader::LoadShader( const char* vertexShader, int layout, const ch
     LE( engine->GetDevice()->CreateVertexShader( vsBlob->GetBufferPointer(),
         vsBlob->GetBufferSize(), nullptr, VertexShader.ReleaseAndGetAddressOf() ) );
 
-    SetDebugName( VertexShader.Get(), vertexShader );
+    SetDebugName( VertexShader.Get(), shaderInfo.name );
 
     const D3D11_INPUT_ELEMENT_DESC layout1[] =
     {
@@ -171,7 +166,7 @@ XRESULT D3D11VShader::LoadShader( const char* vertexShader, int layout, const ch
         { "VELOCITY", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
     };
 
-    switch ( layout ) {
+    switch ( shaderInfo.layout ) {
     case 1:
         LE( engine->GetDevice()->CreateInputLayout( layout1, std::size( layout1 ), vsBlob->GetBufferPointer(),
             vsBlob->GetBufferSize(), InputLayout.ReleaseAndGetAddressOf() ) );

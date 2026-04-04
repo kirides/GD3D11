@@ -1282,12 +1282,10 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
         makros.push_back( m );
 
         auto si = ShaderInfo::make<PShaderID::PS_PFX_HDR>( "PS_PFX_HDR.hlsl" )
-            .with_macros( makros )
-            .with_cbuffer( sizeof( HDRSettingsConstantBuffer ) );
+            .with_macros( makros );
         ShaderManager->UpdateShaderInfo( si );
         si = ShaderInfo::make<PShaderID::PS_PFX_Tonemap>( "PS_PFX_Tonemap.hlsl" )
-            .with_macros( makros )
-            .with_cbuffer( sizeof( HDRSettingsConstantBuffer ) );
+            .with_macros( makros );
         ShaderManager->UpdateShaderInfo( si );
     }
 
