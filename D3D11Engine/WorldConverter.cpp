@@ -1731,8 +1731,10 @@ void WorldConverter::UpdateQuadMarkInfo( QuadMarkInfo* info, zCQuadMark* mark, c
     if ( quadVertices.empty() )
         return;
 
-    delete info->Mesh; info->Mesh = nullptr;
-    Engine::GraphicsEngine->CreateVertexBuffer( &info->Mesh );
+    info->Mesh.reset();
+    D3D11VertexBuffer* vb;
+    Engine::GraphicsEngine->CreateVertexBuffer( &vb );
+    info->Mesh.reset( vb );
 
     // Init and fill it
     info->Mesh->Init( &quadVertices[0], quadVertices.size() * sizeof( ExVertexStruct ) );

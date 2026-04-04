@@ -45,34 +45,10 @@ void SkeletalVobInfo::UpdateVobConstantBuffer() {
         VobConstantBuffer->UpdateBuffer( &cb );
 }
 
-SectionInstanceCache::~SectionInstanceCache() {
-    for ( auto& [mvi, vertexBuffer] : InstanceCache ) {
-        delete vertexBuffer;
-    }
-}
-
-MeshInfo::~MeshInfo() {
-    //Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize -= Indices.size() * sizeof(VERTEX_INDEX);
-    //Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize -= Vertices.size() * sizeof(ExVertexStruct);
-
-    MeshVertexBuffer.reset();
-    MeshIndexBuffer.reset();
-}
-
-SkeletalMeshInfo::~SkeletalMeshInfo() {
-    Engine::GAPI->GetRendererState().RendererInfo.SkeletalVerticesDataSize -= Indices.size() * sizeof( VERTEX_INDEX );
-    Engine::GAPI->GetRendererState().RendererInfo.SkeletalVerticesDataSize -= Vertices.size() * sizeof( ExSkelVertexStruct );
-
-    MeshVertexBuffer.reset();
-    MeshIndexBuffer.reset();
-}
-
 /** Clears the cache for the given progmesh */
 void SectionInstanceCache::ClearCacheForStatic( MeshVisualInfo* pm ) {
     if ( InstanceCache.find( pm ) != InstanceCache.end() ) {
-        D3D11VertexBuffer* vb = InstanceCache[pm];
-        delete vb;
-        InstanceCache[pm] = nullptr;
+        InstanceCache[pm].reset();
         InstanceCacheData[pm].clear();
     }
 }

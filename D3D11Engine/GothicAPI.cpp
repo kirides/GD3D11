@@ -2092,7 +2092,9 @@ void GothicAPI::OnAddVob( zCVob* vob, zCWorld* world ) {
                 vi->VobSection->Vobs.push_back( vi );
 
                 // Create this constantbuffer only for non-inventory vobs because it would be recreated for each vob every frame
-                Engine::GraphicsEngine->CreateConstantBuffer( &vi->VobConstantBuffer, nullptr, sizeof( VS_ExConstantBuffer_PerInstance ) );
+                D3D11ConstantBuffer* cb;
+                Engine::GraphicsEngine->CreateConstantBuffer( &cb, nullptr, sizeof( VS_ExConstantBuffer_PerInstance ) );
+                vi->VobConstantBuffer.reset(cb);
                 vi->UpdateVobConstantBuffer();
 
                 if ( !BspLeafVobLists.empty() ) { // Check if this is the initial loading
@@ -4465,7 +4467,9 @@ void GothicAPI::BuildBspVobMapCacheHelper( zCBspBase* base ) {
                 if ( RendererState.RendererSettings.EnablePointlightShadows >= GothicRendererSettings::PLS_STATIC_ONLY
                     && vi->Vob->GetLightRange() > minDynamicUpdateLightRange ) {
                     // Create shadowcubemap, if wanted
-                    Engine::GraphicsEngine->CreateShadowedPointLight( &vi->LightShadowBuffers, vi );
+                    BaseShadowedPointLight* bpl;
+                    Engine::GraphicsEngine->CreateShadowedPointLight( &bpl, vi );
+                    vi->LightShadowBuffers.reset(bpl);
                 }
 
                 if ( vob->IsIndoorVob() ) {
@@ -5928,8 +5932,11 @@ static void CollectVisibleVobsHelper( BspInfo* base,
                             vit = VobLightMap.emplace( vob, vi ).first;
 
                             // Create shadow-buffers for these lights since it was dynamically added to the world
-                            if ( !vi->IsPFXVobLight && RendererState.RendererSettings.EnablePointlightShadows >= GothicRendererSettings::PLS_STATIC_ONLY )
-                                Engine::GraphicsEngine->CreateShadowedPointLight( &vi->LightShadowBuffers, vi, true ); // Also flag as dynamic
+                            if ( !vi->IsPFXVobLight && RendererState.RendererSettings.EnablePointlightShadows >= GothicRendererSettings::PLS_STATIC_ONLY ) {
+                                BaseShadowedPointLight* bpl;
+                                Engine::GraphicsEngine->CreateShadowedPointLight( &bpl, vi, true ); // Also flag as dynamic
+                                vi->LightShadowBuffers.reset(bpl);
+                            }
                         }
                         VobLightInfo* vi = vit->second;
                         if ( vi->VisibleInRenderPass ) continue;

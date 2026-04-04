@@ -6605,7 +6605,7 @@ void D3D11GraphicsEngine::DrawQuadMarks() {
         Engine::GAPI->SetWorldTransformXM( it.first->GetConnectedVob()->GetWorldMatrixXM() );
         SetupVS_ExPerInstanceConstantBuffer();
 
-        DrawVertexBuffer( it.second.Mesh, it.second.NumVertices );
+        DrawVertexBuffer( it.second.Mesh.get(), it.second.NumVertices );
     }
 }
 
@@ -6661,7 +6661,7 @@ void D3D11GraphicsEngine::DrawMQuadMarks() {
         Engine::GAPI->SetWorldTransformXM( it.first->GetConnectedVob()->GetWorldMatrixXM() );
         SetupVS_ExPerInstanceConstantBuffer();
 
-        DrawVertexBuffer( it.second->Mesh, it.second->NumVertices );
+        DrawVertexBuffer( it.second->Mesh.get(), it.second->NumVertices );
     }
     MulQuadMarks.clear();
 }

@@ -101,7 +101,7 @@ struct MeshInfo {
         MeshIndex = -1;
     }
 
-    virtual ~MeshInfo();
+    virtual ~MeshInfo() = default;
 
     static MeshInfo* CreateStatic() {
         auto info = new MeshInfo();
@@ -121,9 +121,7 @@ struct MeshInfo {
 };
 
 struct WorldMeshInfo : public MeshInfo {
-    WorldMeshInfo() {
-        SaveInfo = false;
-    }
+    WorldMeshInfo() = default;
 
     ~WorldMeshInfo() override = default;
 
@@ -132,16 +130,11 @@ struct WorldMeshInfo : public MeshInfo {
 };
 
 struct QuadMarkInfo {
-    QuadMarkInfo() {
-        Mesh = nullptr;
-        NumVertices = 0;
-    }
+    QuadMarkInfo() = default;
 
-    ~QuadMarkInfo() {
-        delete Mesh;
-    }
+    ~QuadMarkInfo() = default;
 
-    D3D11VertexBuffer* Mesh;
+    std::unique_ptr<D3D11VertexBuffer> Mesh;
     int NumVertices;
 
     zCQuadMark* Visual;
@@ -151,13 +144,9 @@ struct QuadMarkInfo {
 /** Holds information about a skeletal mesh */
 class zCMeshSoftSkin;
 struct SkeletalMeshInfo {
-    SkeletalMeshInfo() {
-        MeshVertexBuffer = nullptr;
-        MeshIndexBuffer = nullptr;
-        visual = nullptr;
-    }
+    SkeletalMeshInfo() = default;
 
-    ~SkeletalMeshInfo();
+    ~SkeletalMeshInfo() = default;
 
     std::shared_ptr<D3D11VertexBuffer> MeshVertexBuffer;
     std::shared_ptr<D3D11VertexBuffer> MeshIndexBuffer;
@@ -170,9 +159,7 @@ struct SkeletalMeshInfo {
 
 class zCVisual;
 struct BaseVisualInfo {
-    BaseVisualInfo() {
-        Visual = nullptr;
-    }
+    BaseVisualInfo() = default;
 
     virtual ~BaseVisualInfo() {
         for ( auto& [k, meshes] : Meshes ) {
@@ -249,9 +236,7 @@ struct MeshVisualInfo : public BaseVisualInfo {
 class zCMeshSoftSkin;
 class zCModel;
 struct SkeletalMeshVisualInfo : public BaseVisualInfo {
-    SkeletalMeshVisualInfo() {
-        Visual = nullptr;
-    }
+    SkeletalMeshVisualInfo() = default;
 
     ~SkeletalMeshVisualInfo() override
     {
@@ -280,7 +265,7 @@ struct SkeletalMeshVisualInfo : public BaseVisualInfo {
 };
 
 struct BaseVobInfo {
-    virtual ~BaseVobInfo() {}
+    virtual ~BaseVobInfo() = default;
     /** Visual for this vob */
     BaseVisualInfo* VisualInfo;
 
@@ -290,26 +275,14 @@ struct BaseVobInfo {
 
 struct WorldMeshSectionInfo;
 struct VobInfo : public BaseVobInfo {
-    VobInfo() {
-        //Vob = nullptr;
-        VobConstantBuffer = nullptr;
-        IsIndoorVob = false;
-        VisibleInRenderPass = false;
-        VobSection = nullptr;
-        HasValidPrevMatrix = false;
-    }
-
-    ~VobInfo() override
-    {
-        //delete VisualInfo;
-        delete VobConstantBuffer;
-    }
+    VobInfo() = default;
+    ~VobInfo() override = default;
 
     /** Updates the vobs constantbuffer */
     void UpdateVobConstantBuffer();
 
     /** Constantbuffer which holds this vobs world matrix */
-    D3D11ConstantBuffer* VobConstantBuffer;
+    std::unique_ptr<D3D11ConstantBuffer> VobConstantBuffer;
 
     /** Position the vob was at while being rendered last time */
     XMFLOAT3 LastRenderPosition;
@@ -344,20 +317,9 @@ struct VobInfo : public BaseVobInfo {
 class zCVobLight;
 class BaseShadowedPointLight;
 struct VobLightInfo {
-    VobLightInfo() {
-        Vob = nullptr;
-        LightShadowBuffers = nullptr;
-        VisibleInRenderPass = false;
-        IsPFXVobLight = false;
-        IsIndoorVob = false;
-        DynamicShadows = false;
-        UpdateShadows = true;
-        VisibleInFrame = false;
-    }
+    VobLightInfo() = default;
 
-    ~VobLightInfo() {
-        delete LightShadowBuffers;
-    }
+    ~VobLightInfo() = default;
 
     /** Vob the data came from */
     zCVobLight* Vob;
@@ -373,7 +335,7 @@ struct VobLightInfo {
     std::vector<BspInfo*> ParentBSPNodes;
 
     /** Buffers for doing shadows on this light */
-    BaseShadowedPointLight* LightShadowBuffers;
+    std::unique_ptr<BaseShadowedPointLight> LightShadowBuffers;
     bool DynamicShadows; // Whether this light should be able to have dynamic shadows
     bool UpdateShadows; // Whether to update this lights shadows on the next occasion
 
@@ -442,17 +404,15 @@ struct SkeletalVobInfo : public BaseVobInfo {
 };
 
 struct SectionInstanceCache {
-    SectionInstanceCache() {
-
-    }
-
-    ~SectionInstanceCache();
+    SectionInstanceCache() = default;
+    ~SectionInstanceCache() = default;
 
     /** Clears the cache for the given progmesh */
     void ClearCacheForStatic( MeshVisualInfo* pm );
 
+    
     std::map<MeshVisualInfo*, std::vector<VS_ExConstantBuffer_PerInstance>> InstanceCacheData;
-    std::map<MeshVisualInfo*, D3D11VertexBuffer*> InstanceCache;
+    std::map<MeshVisualInfo*, std::unique_ptr<D3D11VertexBuffer>> InstanceCache;
 };
 
 class D3D11Texture;

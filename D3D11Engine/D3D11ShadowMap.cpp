@@ -792,7 +792,7 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
     for (auto& it : Engine::GAPI->VobLightMap) {
         if (it.second->LightShadowBuffers
             && (!it.second->Vob->IsEnabled() || !it.second->VisibleInFrame)) {
-            if ( D3D11PointLight* pl = static_cast<D3D11PointLight*>(it.second->LightShadowBuffers)) {
+            if ( D3D11PointLight* pl = static_cast<D3D11PointLight*>(it.second->LightShadowBuffers.get())) {
                 pl->ClearTiledSlot();
                 pl->ReleaseShadowMap();
             }
@@ -805,11 +805,13 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
         }
         // Create shadowmap in case we should have one but haven't got it yet
         if ( !light->LightShadowBuffers && light->UpdateShadows ) {
-            graphicsEngine->CreateShadowedPointLight( &light->LightShadowBuffers, light );
+            BaseShadowedPointLight* bpl;
+            graphicsEngine->CreateShadowedPointLight( &bpl, light );
+            light->LightShadowBuffers.reset(bpl);
         }
 
         if ( light->LightShadowBuffers ) {
-            D3D11PointLight* pl = static_cast<D3D11PointLight*>(light->LightShadowBuffers);
+            D3D11PointLight* pl = static_cast<D3D11PointLight*>(light->LightShadowBuffers.get());
 
             float d;
             XMStoreFloat( &d, XMVector3LengthSq( light->Vob->GetPositionWorldXM() - vPlayerPosition ) );
@@ -891,7 +893,7 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
 
     // Render the immediate priority lights
     for ( auto const& importantUpdate : importantUpdates ) {
-        static_cast<D3D11PointLight*>(importantUpdate->LightShadowBuffers)->RenderCubemap( true, m_PointLightCB.get() );
+        static_cast<D3D11PointLight*>(importantUpdate->LightShadowBuffers.get())->RenderCubemap( true, m_PointLightCB.get() );
         importantUpdate->UpdateShadows = false;
     }
 
@@ -907,7 +909,7 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
 
         if ( !light ) continue;
 
-        D3D11PointLight* l = static_cast<D3D11PointLight*>( light->LightShadowBuffers );
+        D3D11PointLight* l = static_cast<D3D11PointLight*>( light->LightShadowBuffers.get() );
         if ( !l ) continue;
 
         light->UpdateShadows = false;

@@ -73,7 +73,7 @@ XRESULT D3D11LegacyDeferredShading::DrawPointlightLights(
         if ( !vob->IsEnabled() ) continue;
 
         if ( settings.EnablePointlightShadows > 0 ) {
-            D3D11PointLight* pl = light->LightShadowBuffers ? static_cast<D3D11PointLight*>(light->LightShadowBuffers) : nullptr;
+            D3D11PointLight* pl = light->LightShadowBuffers ? static_cast<D3D11PointLight*>(light->LightShadowBuffers.get()) : nullptr;
 
             if ( pl && pl->IsInited() && pl->HasShadowMap() ) {
                 if ( graphicsEngine->GetActivePS() != psPointLightDynShadow ) {
@@ -147,7 +147,7 @@ XRESULT D3D11LegacyDeferredShading::DrawPointlightLights(
 
         if ( settings.EnablePointlightShadows > 0 ) {
             if ( light->LightShadowBuffers )
-                static_cast<D3D11PointLight*>(light->LightShadowBuffers)->OnRenderLight();
+                static_cast<D3D11PointLight*>(light->LightShadowBuffers.get())->OnRenderLight();
         }
 
         graphicsEngine->InverseUnitSphereMesh->DrawMesh();
