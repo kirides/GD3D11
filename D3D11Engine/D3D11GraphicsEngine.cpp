@@ -6705,6 +6705,7 @@ bool D3D11GraphicsEngine::BindShaderForTexture( zCTexture* texture,
 void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
     bool lighting ) {
     SetDefaultStates();
+    auto _ = RecordGraphicsEvent(L"DrawDecalList");
 
     Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_NONE;
     Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
@@ -6728,8 +6729,17 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
     XMFLOAT3 camPos = Engine::GAPI->GetCameraPosition();
 
     int lastAlphaFunc = -1;
-    auto psBufGAI = ActivePS->GetBuffer( "GhostAlphaInfo" );
-    psBufGAI.Bind();
+    auto psBufGAI = ActivePS->GetBuffer( "GhostAlphaInfo" ).Bind();
+
+    GhostAlphaConstantBuffer gacb = {};
+    gacb.GA_ViewportSize = float2( Engine::GraphicsEngine->GetResolution().x, Engine::GraphicsEngine->GetResolution().y );
+
+    zCTexture* lastTex = nullptr;
+    float lastGhostAlpha = gacb.GA_Alpha;
+
+    VS_ExConstantBuffer_PerInstance cb = {};
+    auto vsPerInstBuffer = ActiveVS->GetBuffer( 1 ).Bind();
+
     for ( unsigned int i = 0; i < decals.size(); i++ ) {
         zCDecal* d = static_cast<zCDecal*>(decals[i]->GetVisual());
         if ( !d ) {
@@ -6787,8 +6797,22 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
             }
         }
 
-        if ( texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
-            continue;  // Don't render not cached surfaces
+        if ( texture != lastTex ) {
+            if ( texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
+                continue;  // Don't render not cached surfaces
+            }
+            auto t = texture->GetSurface()->GetEngineTexture()->GetShaderResourceView().Get();
+            Context->PSSetShaderResources( 0, 1, &t );
+            lastTex = texture;
+        }
+
+        if ( !lighting ) {
+            const auto ghostAlpha = (material->GetColor() >> 24) * inv255f;
+            if ( lastGhostAlpha != ghostAlpha ) {
+                gacb.GA_Alpha = ghostAlpha;
+                psBufGAI.Update( &gacb );
+                lastGhostAlpha = gacb.GA_Alpha;
+            }
         }
 
         int alignment = decals[i]->GetAlignment();
@@ -6818,17 +6842,10 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
         }
 
         XMMATRIX mat = view * world * offset * scale;
-        Engine::GAPI->SetWorldTransformXM( mat );
-        SetupVS_ExPerInstanceConstantBuffer();
 
-        if ( !lighting ) {
-            GhostAlphaConstantBuffer gacb;
-            gacb.GA_ViewportSize = float2( Engine::GraphicsEngine->GetResolution().x, Engine::GraphicsEngine->GetResolution().y );
-            gacb.GA_Alpha = (material->GetColor() >> 24) * inv255f;
-            psBufGAI.Update( &gacb );
-        }
+        XMStoreFloat4x4( &cb.World, mat );
+        vsPerInstBuffer.Update( &cb );
 
-        texture->Bind( 0 );
         DrawVertexBufferIndexed( QuadVertexBuffer, QuadIndexBuffer, 6 );
     }
 }
@@ -6916,6 +6933,8 @@ void D3D11GraphicsEngine::DrawQuadMarks() {
 void D3D11GraphicsEngine::DrawMQuadMarks() {
     if ( MulQuadMarks.empty() ) return;
 
+    auto _ = RecordGraphicsEvent(L"DrawMQuadMarks");
+    
     SetActiveVertexShader( VShaderID::VS_Ex );
     SetActivePixelShader( PShaderID::PS_Simple );
 

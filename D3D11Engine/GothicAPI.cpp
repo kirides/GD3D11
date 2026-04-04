@@ -1517,10 +1517,11 @@ void GothicAPI::GetVisibleDecalList( std::vector<zCVob*>& decals ) {
     FXMVECTOR camPos = GetCameraPositionXM();
     static std::vector<std::pair<zCVob*, float>> decalDistances; // Static to get around reallocations
 
+    float vVfxRangeSq = RendererState.RendererSettings.VisualFXDrawRadius * RendererState.RendererSettings.VisualFXDrawRadius;
     float dist;
     for ( auto const& it : DecalVobs ) {
-        XMStoreFloat( &dist, XMVector3Length( it->GetPositionWorldXM() - camPos ) );
-        if ( dist > RendererState.RendererSettings.VisualFXDrawRadius )
+        XMStoreFloat( &dist, XMVector3LengthSq( it->GetPositionWorldXM() - camPos ) );
+        if ( dist > vVfxRangeSq )
             continue;
 
         if ( GetCameraBBox3DInFrustum( it->GetBBox(), EGothicCullFlags::CullSidesNear ) == ZTCAM_CLIPTYPE_OUT ) {
@@ -1536,6 +1537,7 @@ void GothicAPI::GetVisibleDecalList( std::vector<zCVob*>& decals ) {
     std::sort( decalDistances.begin(), decalDistances.end(), DecalSortcmpFunc );
 
     // Put into output list
+    decals.reserve(decalDistances.size());
     for ( auto const& it : decalDistances ) {
         decals.push_back( it.first );
     }
