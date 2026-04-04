@@ -328,8 +328,6 @@ public:
 
     void DrawSkeletalMeshVob_Layered( SkeletalVobInfo* vi, float distance, bool updateState = true );
 
-    void DrawSkeletalMeshVobs( const std::vector<SkeletalVobInfo*>& vis, bool updateState, bool drawAttachments );
-
     void DrawTransparencyVobs();
     void DrawSkeletalVN();
 

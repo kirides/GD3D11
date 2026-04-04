@@ -49,6 +49,8 @@
 #include "D3D11PFX_TAA.h"
 #include "ImGuiShim.h"
 #include "zCModel.h"
+#include "zCMorphMesh.h"
+#include "zCPolygon.h"
 #include "zCOption.h"
 #include "RenderGraph.h"
 #include "RGBuilder.h"
@@ -2383,6 +2385,298 @@ XRESULT D3D11GraphicsEngine::DrawInstanced(
     Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnVobs++;
 
     return XR_SUCCESS;
+}
+
+void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
+    const std::vector<SkeletalVobInfo*>& vis,
+    bool updateState,
+    bool drawAttachments ) {
+
+    constexpr float distance = FLT_MAX;
+
+    struct TempVobDrawInfo {
+        SkeletalVobInfo* VobInfo;
+        zCModel* Model;
+        int BoneIdx;
+        int NumBones;
+        float4 ModelColor;
+        float Fatness;
+        XMMATRIX World;
+
+        TempVobDrawInfo() = default;
+
+        TempVobDrawInfo(
+            SkeletalVobInfo* VobInfo,
+            zCModel* Model,
+            int BoneIdx,
+            int NumBones,
+            float4 ModelColor,
+            float Fatness,
+            XMMATRIX World
+        ) : 
+            VobInfo(VobInfo),
+            Model( Model),
+            BoneIdx( BoneIdx ),
+            NumBones( NumBones ),
+            ModelColor( ModelColor),
+            Fatness( Fatness),
+            World( World)
+        { }
+    };
+
+    static std::vector<TempVobDrawInfo> tempVobList;
+    tempVobList.clear();
+    BoneTransformCache.clear();
+    BoneTransformCache.reserve( 150 );
+
+    int boneOffset = 0;
+    for ( SkeletalVobInfo* vi : vis ) {
+        zCModel* model = static_cast<zCModel*>(vi->Vob->GetVisual());
+        if ( !model ) {
+            continue;
+        }
+
+        model->SetIsVisible( true );
+        if ( !vi->VisualInfo )
+            continue; // Gothic fortunately sets this to 0 when it throws the model out of the cache
+        if ( !vi->Vob->GetShowVisual() )
+            continue;
+
+
+        SkeletalMeshVisualInfo* visual = static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo);
+
+        float4 modelColor;
+        if ( Engine::GAPI->GetRendererState().RendererSettings.EnableShadows ) {
+            // Let shadows do the work
+            modelColor = 0xFFFFFFFF;
+        } else {
+            if ( vi->Vob->IsIndoorVob() ) {
+                // All lightmapped polys have this color, so just use it
+                modelColor = DEFAULT_LIGHTMAP_POLY_COLOR;
+            } else {
+                // Get the color from vob position of the ground poly
+                if ( zCPolygon* polygon = vi->Vob->GetGroundPoly() ) {
+                    static const float inv255f = (1.0f / 255.0f);
+                    float3 vobPos = vi->Vob->GetPositionWorld();
+                    float3 polyLightStat = polygon->GetLightStatAtPos( vobPos );
+                    modelColor.x = polyLightStat.z * inv255f;
+                    modelColor.y = polyLightStat.y * inv255f;
+                    modelColor.z = polyLightStat.x * inv255f;
+                    modelColor.w = 1.f;
+                } else {
+                    modelColor = 0xFFFFFFFF;
+                }
+            }
+        }
+
+        XMMATRIX scale = XMMatrixScalingFromVector( model->GetModelScaleXM() );
+
+        XMMATRIX xmWorld = vi->Vob->GetWorldMatrixXM() * scale;
+        XMFLOAT4X4 world; XMStoreFloat4x4( &world, xmWorld );
+        float fatness = model->GetModelFatness();
+
+        // Get the bone transforms
+        // boneOffset
+        auto oldOffset = boneOffset;
+        model->GetBoneTransforms( &BoneTransformCache );
+        auto numBones = BoneTransformCache.size() - boneOffset;
+        auto boneIdx = boneOffset;
+        boneOffset += numBones;
+
+        if ( updateState ) {
+            // Update attachments
+            model->UpdateAttachedVobs();
+            model->UpdateMeshLibTexAniState();
+        }
+
+        if ( !static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->SkeletalMeshes.empty() ) {
+#ifdef BUILD_GOTHIC_2_6_fix
+            if ( !model->GetDrawHandVisualsOnly() || *reinterpret_cast<BYTE*>(0x57A694) == 0x90 ) {
+#else
+            if ( !model->GetDrawHandVisualsOnly() ) {
+#endif
+                DrawSkeletalMesh( vi, make_span( &BoneTransformCache[boneIdx], numBones), modelColor, world, fatness);
+            }
+            } else {
+            if ( model->GetMeshSoftSkinList()->NumInArray > 0 ) {
+                // Just in case somehow we end up without skeletal meshes and they are available
+                WorldConverter::ExtractSkeletalMeshFromVob( model, static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo) );
+            }
+        }
+
+        if ( drawAttachments ) {
+            tempVobList.emplace_back( vi, model, boneIdx, numBones, modelColor, fatness, xmWorld );
+        }
+
+        Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnVobs++;
+        }
+
+    if ( !drawAttachments ) {
+        return;
+    }
+
+    if ( GetRenderingStage() == DES_SHADOWMAP_CUBE )
+        SetActiveVertexShader( VShaderID::VS_ExNodeCube );
+    else
+        SetActiveVertexShader( VShaderID::VS_ExNode );
+
+    SetupVS_ExMeshDrawCall();
+    SetupVS_ExConstantBuffer();
+
+    auto vsBufMPI = GetActiveVS()->GetBuffer( "Matrices_PerInstances" )
+        .Bind();
+    for ( auto& data : tempVobList ) {
+
+        auto vi = data.VobInfo;
+        auto model = data.Model;
+        auto modelColor = data.ModelColor;
+        auto transforms = make_span( &BoneTransformCache[data.BoneIdx], data.NumBones );
+        auto fatness = data.Fatness;
+        auto& world = data.World;
+
+        SkeletalMeshVisualInfo* visual = static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo);
+        // Set up instance info
+        VS_ExConstantBuffer_PerInstanceNode instanceInfo;
+        instanceInfo.Color = modelColor;
+
+        // Init the constantbuffer if not already done
+        if ( !vi->VobConstantBuffer )
+            vi->UpdateVobConstantBuffer();
+
+        phmap::flat_hash_map<int, std::vector<MeshVisualInfo*>>& nodeAttachments = vi->NodeAttachments;
+        for ( unsigned int i = 0; i < transforms.size(); i++ ) {
+            // Check for new visual
+            zCModel* mvis = static_cast<zCModel*>( vi->Vob->GetVisual() );
+            zCModelNodeInst* node = mvis->GetNodeList()->Array[i];
+
+            if ( !node->NodeVisual )
+                continue; // Happens when you pull your sword for example
+
+            // Check if this is loaded
+            if ( node->NodeVisual && nodeAttachments.find( i ) == nodeAttachments.end() ) {
+                // It's not, extract it
+                WorldConverter::ExtractNodeVisual( i, node, nodeAttachments );
+            }
+
+            // Check for changed visual
+            if ( nodeAttachments[i].size() && node->NodeVisual != nodeAttachments[i][0]->Visual ) {
+                // Check for deleted attachment
+                if ( !node->NodeVisual ) {
+                    // Remove attachment
+                    delete nodeAttachments[i][0];
+                    nodeAttachments[i].clear();
+
+                    LogInfo() << "Removed attachment from model " << vi->VisualInfo->VisualName;
+
+                    continue; // Go to next attachment
+                }
+                // Load the new one
+                WorldConverter::ExtractNodeVisual( i, node, nodeAttachments );
+            }
+
+            if ( model->GetDrawHandVisualsOnly() ) {
+                std::string NodeName = node->ProtoNode->NodeName.ToChar();
+#ifdef BUILD_GOTHIC_2_6_fix
+                if ( NodeName.find( "HAND" ) == std::string::npos && (*reinterpret_cast<BYTE*>(0x57A694) != 0x90 || NodeName.find( "ARM" ) == std::string::npos) ) {
+#else
+                if ( NodeName.find( "HAND" ) == std::string::npos ) {
+#endif
+                    continue;
+                }
+                }
+
+            auto nodeAttachment = nodeAttachments.find( i );
+            if ( nodeAttachment != nodeAttachments.end() ) {
+
+                // Setup pixel shader here so that we get correct normals
+                    // Somehow BindShaderForTexture make normals to be inversed
+                if ( GetRenderingStage() == DES_MAIN ) {
+                    SetActivePixelShader( PShaderID::PS_DiffuseAlphaTest );
+                    BindActivePixelShader();
+                }
+
+                const XMMATRIX curTransform = XMLoadFloat4x4( &transforms[i] );
+                XMFLOAT4X4 finalWorld; XMStoreFloat4x4( &finalWorld, world* curTransform );
+
+                // Go through all attachments this node has
+                for ( MeshVisualInfo* mvi : nodeAttachment->second ) {
+
+                    if ( !mvi->Visual ) {
+                        LogWarn() << "Attachment without visual on model: " << model->GetVisualName();
+                        continue;
+                    }
+
+                    // Update animated textures
+                    bool isMMS = strcmp( mvi->Visual->GetFileExtension( 0 ), ".MMS" ) == 0;
+                    if ( updateState ) {
+                        node->TexAniState.UpdateTexList();
+                        if ( isMMS ) {
+                            zCMorphMesh* mm = reinterpret_cast<zCMorphMesh*>(mvi->Visual);
+                            mm->GetTexAniState()->UpdateTexList();
+                        }
+                    }
+
+                    if ( isMMS ) {
+                        // Only 0.35f of the fatness wanted by gothic.
+                        // They seem to compensate for that with the scaling.
+                        instanceInfo.Fatness = std::max<float>( 0.f, fatness * 0.35f );
+                        instanceInfo.Scaling = fatness * 0.02f + 1.f;
+                    } else {
+                        instanceInfo.Fatness = 0.f;
+                        instanceInfo.Scaling = 1.f;
+                    }
+
+                    auto& VShader = GetActiveVS();
+                    if ( distance < 1000 && isMMS ) {
+                        zCMorphMesh* mm = reinterpret_cast<zCMorphMesh*>( mvi->Visual );
+                        // Only draw this as a morphmesh when rendering the main scene or when rendering as ghost
+                        if ( GetRenderingStage() == DES_MAIN || GetRenderingStage() == DES_GHOST ) {
+                            // Update constantbuffer
+                            instanceInfo.World = finalWorld;
+                            vsBufMPI.Update( &instanceInfo );
+
+                            if ( updateState ) {
+                                mm->AdvanceAnis();
+                                mm->CalcVertexPositions();
+                            }
+                            Engine::GAPI->DrawMorphMesh( mm, mvi->Meshes );
+                            continue;
+                        }
+                    }
+
+                    instanceInfo.World = finalWorld;
+                    vsBufMPI.Update( &instanceInfo );
+
+                    // Go through all materials registered here
+
+                    if ( GetRenderingStage() == DES_SHADOWMAP
+                        || GetRenderingStage() == DES_SHADOWMAP_CUBE ) {
+                        for ( auto const& itm : mvi->Meshes ) {
+                            // no texture binding for shadowmap
+
+                            // Go through all meshes using that material
+                            for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
+                                Engine::GAPI->DrawMeshInfo( itm.first, itm.second[m] );
+                            }
+                        }
+                    } else {
+                        for ( auto const& itm : mvi->Meshes ) {
+                            zCTexture* texture;
+                            if ( itm.first && (texture = itm.first->GetAniTexture()) != nullptr ) {
+                                if ( !BindTextureNRFX( texture, (GetRenderingStage() == DES_MAIN) ) )
+                                    continue;
+                            }
+
+                            // Go through all meshes using that material
+                            for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
+                                Engine::GAPI->DrawMeshInfo( itm.first, itm.second[m] );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /** Binds the active PixelShader */
@@ -5237,7 +5531,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             drawAttachments = params.CascadeIndex <= 1; // skip attachments on higher cascades, player won't notice, hopefully
         }
         // we should not need to update the skeletal meshes again, as they were updated before drawing the main scene
-        Engine::GAPI->DrawSkeletalMeshVobs( animatedSkeletalMeshVobs, false, drawAttachments );
+        DrawSkeletalMeshVobs( animatedSkeletalMeshVobs, false, drawAttachments );
     }
 
     Engine::GAPI->GetRendererState().BlendState.ColorWritesEnabled = true;
