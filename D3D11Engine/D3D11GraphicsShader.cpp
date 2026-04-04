@@ -35,11 +35,19 @@ GraphicsShaderConstantBuffer D3D11GraphicsShader::GetBuffer(StringID name) {
 #ifdef DEBUG_D3D11
     // LogError() << "Tried to find constant buffer for semantic '" << name << "' but it was not registered!";
 #endif
-    return GraphicsShaderConstantBuffer(nullptr, 10, nullptr);
+    return GraphicsShaderConstantBuffer(nullptr, INVALID_SHADER_CB_SLOT, nullptr);
 }
 
-HRESULT D3D11GraphicsShader::ReflectShaderResources( ID3DBlob* shaderBlob )
-{
+GraphicsShaderConstantBuffer D3D11GraphicsShader::GetBuffer(UINT slot) {
+#ifdef DEBUG_D3D11
+    if (slot >= ConstantBufferIndexBySlot.size()) {
+        return {nullptr, INVALID_SHADER_CB_SLOT, nullptr};
+    }
+#endif
+    return GraphicsShaderConstantBuffer(ConstantBuffers[ConstantBufferIndexBySlot[slot]].get(), slot, this);
+}
+
+HRESULT D3D11GraphicsShader::ReflectShaderResources( ID3DBlob* shaderBlob ) {
     Microsoft::WRL::ComPtr<ID3D11ShaderReflection> pReflection;
     HRESULT hr = D3DReflect(
         shaderBlob->GetBufferPointer(),
@@ -58,13 +66,15 @@ HRESULT D3D11GraphicsShader::ReflectShaderResources( ID3DBlob* shaderBlob )
 
 void D3D11GraphicsShader::OnReflectShader(ID3DBlob* blob, ID3D11ShaderReflection* pReflection, const D3D11_SHADER_DESC& shaderDesc)
 {
-    // Would be nice to also create all constant buffers, but we need a way to tell the reflection engine "Hey, this is an external per-frame"-Constant Buffer
-    ConstantBuffers.clear();
-    ConstantBuffers.reserve(shaderDesc.ConstantBuffers);
+    for (size_t i = 0; i< ConstantBuffers.size(); ++i) {
+        ConstantBuffers[i].reset();
+    }
+    ConstantBufferIndexBySlot.fill(INVALID_SHADER_CB_SLOT);
     ConstantBuffersByName.clear();
     ConstantBuffersByName.reserve(shaderDesc.ConstantBuffers);
-    
+
     // Loop through every resource bound to this shader
+    size_t cbIndex = 0;
     for ( UINT i = 0; i < shaderDesc.BoundResources; ++i ) {
         D3D11_SHADER_INPUT_BIND_DESC resourceDesc;
         if ( SUCCEEDED( pReflection->GetResourceBindingDesc( i, &resourceDesc ) ) ) {
@@ -80,8 +90,10 @@ void D3D11GraphicsShader::OnReflectShader(ID3DBlob* blob, ID3D11ShaderReflection
                 UINT paddedSize = ((cbDesc.Size * resourceDesc.BindCount) + 15) & ~15;
 
                 // Ignore the bind-point here, due to global-per-frame CBs
-                ConstantBuffers.emplace_back(std::make_unique<D3D11ConstantBuffer>( paddedSize, nullptr ));
-                ConstantBuffersByName[StringID(resourceDesc.Name)] = {ConstantBuffers.back().get(), resourceDesc.BindPoint};
+                ConstantBuffers[cbIndex] = std::make_unique<D3D11ConstantBuffer>( paddedSize, nullptr );
+                ConstantBuffersByName[StringID(resourceDesc.Name)] = {ConstantBuffers[cbIndex].get(), resourceDesc.BindPoint};
+                ConstantBufferIndexBySlot[resourceDesc.BindPoint] = cbIndex;
+                ++cbIndex;
             }
         }
     }    

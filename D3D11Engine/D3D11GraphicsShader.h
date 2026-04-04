@@ -9,6 +9,8 @@
 
 class D3D11GraphicsShader;
 class D3D11ConstantBuffer;
+constexpr size_t MAX_SHADER_CB = 6;
+constexpr size_t INVALID_SHADER_CB_SLOT = 255;
 
 struct GraphicsShaderConstantBuffer
 {
@@ -60,19 +62,21 @@ public:
     /** Returns the input index for the given semantic name */
     int32_t GetInputIndex( StringID name ) override;
     
-    std::vector<std::unique_ptr<D3D11ConstantBuffer>>& GetConstantBuffer() { return ConstantBuffers; }
+    std::array<std::unique_ptr<D3D11ConstantBuffer>, MAX_SHADER_CB>& GetConstantBuffer() { return ConstantBuffers; }
 
     virtual void BindResource(StringID name, ID3D11ShaderResourceView* srv) = 0;
     virtual void BindSampler(StringID name, ID3D11SamplerState* sampler) = 0;
     virtual void BindBuffer( StringID name, D3D11ConstantBuffer* buffer) = 0;
     virtual void BindBuffer(UINT slot, D3D11ConstantBuffer* buffer) = 0;
     virtual GraphicsShaderConstantBuffer GetBuffer(StringID name);
+    virtual GraphicsShaderConstantBuffer GetBuffer(UINT slot);
     
     virtual XRESULT Apply() = 0;
 protected:
     phmap::flat_hash_map<StringID, int32_t> InputSemanticToIndex;
     phmap::flat_hash_map<StringID, std::pair<D3D11ConstantBuffer*, int32_t>> ConstantBuffersByName;
-    std::vector<std::unique_ptr<D3D11ConstantBuffer>> ConstantBuffers;
+    std::array<std::unique_ptr<D3D11ConstantBuffer>, MAX_SHADER_CB> ConstantBuffers;
+    std::array<byte, MAX_SHADER_CB> ConstantBufferIndexBySlot;
 
     virtual HRESULT ReflectShaderResources( ID3DBlob* shaderBlob );
     virtual void OnReflectShader( ID3DBlob* blob, ID3D11ShaderReflection* pReflection,  const D3D11_SHADER_DESC& shaderDesc );
