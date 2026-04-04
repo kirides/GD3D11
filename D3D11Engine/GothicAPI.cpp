@@ -2916,8 +2916,8 @@ void GothicAPI::DrawSkeletalMeshVobs(
     g->SetupVS_ExMeshDrawCall();
     g->SetupVS_ExConstantBuffer();
 
-    auto vsBufMPI = g->GetActiveVS()->GetBuffer( "Matrices_PerInstances" );
-    vsBufMPI.Bind();
+    auto vsBufMPI = g->GetActiveVS()->GetBuffer( "Matrices_PerInstances" )
+        .Bind();
     for ( auto& data : tempVobList ) {
 
         auto vi = data.VobInfo;
@@ -5322,10 +5322,11 @@ void GothicAPI::DrawMorphMesh( zCMorphMesh* msh, std::map<zCMaterial*, std::vect
         return;
 
     XMFLOAT3* posList = morphMesh->GetPositionList()->Array->toXMFLOAT3();
+    std::vector<ExVertexStruct> vertices;
     for ( int i = 0; i < morphMesh->GetNumSubmeshes(); i++ ) {
-        std::vector<ExVertexStruct> vertices;
 
         zCSubMesh* s = morphMesh->GetSubmesh( i );
+        vertices.clear();
         vertices.reserve( s->WedgeList.NumInArray );
         for ( int v = 0; v < s->WedgeList.NumInArray; v++ ) {
             zTPMWedge& wedge = s->WedgeList.Array[v];
@@ -5363,10 +5364,11 @@ void GothicAPI::DrawMorphMesh_Layered( zCMorphMesh* msh, std::map<zCMaterial*, s
 
     D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     XMFLOAT3* posList = morphMesh->GetPositionList()->Array->toXMFLOAT3();
+    std::vector<ExVertexStruct> vertices;
     for ( int i = 0; i < morphMesh->GetNumSubmeshes(); i++ ) {
-        std::vector<ExVertexStruct> vertices;
 
         zCSubMesh* s = morphMesh->GetSubmesh( i );
+        vertices.clear();
         vertices.reserve( s->WedgeList.NumInArray );
         for ( int v = 0; v < s->WedgeList.NumInArray; v++ ) {
             zTPMWedge& wedge = s->WedgeList.Array[v];
