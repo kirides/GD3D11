@@ -5051,8 +5051,7 @@ void GothicAPI::DrawMorphMesh( zCMorphMesh* msh, std::map<zCMaterial*, std::vect
         for ( auto const& it : meshes ) {
             for ( MeshInfo* mi : it.second ) {
                 if ( mi->MeshIndex == i ) {
-                    mi->MeshVertexBuffer->UpdateBuffer( &vertices[0], vertices.size() * sizeof( ExVertexStruct ) );
-                    Engine::GraphicsEngine->DrawVertexBufferIndexed( mi->MeshVertexBuffer.get(), mi->MeshIndexBuffer.get(), mi->Indices.size() );
+                    Engine::GraphicsEngine->DrawDynamicVertexBufferIndexed( vertices, mi->MeshIndexBuffer.get(), mi->Indices.size() );
                     goto Out_Of_Nested_Loop;
                 }
             }

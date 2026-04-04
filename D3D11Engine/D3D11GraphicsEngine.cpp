@@ -1747,6 +1747,21 @@ XRESULT D3D11GraphicsEngine::DrawVertexBufferIndexedUINT(
     return XR_SUCCESS;
 }
 
+XRESULT D3D11GraphicsEngine::DrawDynamicVertexBufferIndexed(std::vector<ExVertexStruct>& vertices,
+    D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int indexOffset)
+{
+    const size_t requiredSize = std::max(vertices.size(), size_t(200)) * sizeof( ExVertexStruct );
+    if ( !DynamicVertexBuffer || DynamicVertexBuffer->GetSizeInBytes() < requiredSize ) {
+        DynamicVertexBuffer.reset( new D3D11VertexBuffer );
+        DynamicVertexBuffer->Init(nullptr, requiredSize,
+                D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_DYNAMIC,
+                D3D11VertexBuffer::CA_WRITE );
+    }
+    DynamicVertexBuffer->UpdateBuffer( vertices.data(), vertices.size() * sizeof( ExVertexStruct ) );
+
+    return DrawVertexBufferIndexed( DynamicVertexBuffer.get(), ib, numIndices, indexOffset );
+}
+
 /** Draws a vertexbuffer, instanced */
 XRESULT D3D11GraphicsEngine::DrawVertexBufferInstanced(
     D3D11VertexBuffer* vb, unsigned int numVertices,
@@ -5331,16 +5346,19 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
         byte* data;
         UINT size;
-        UINT loc = 0;
-        DynamicInstancingBuffer->Map( D3D11VertexBuffer::M_WRITE_DISCARD,
-            reinterpret_cast<void**>(&data), &size );
-        for ( auto const& staticMeshVisual : activeVisuals ) {
-            staticMeshVisual->StartInstanceNum = loc;
-            memcpy( data + loc * sizeof( VobInstanceInfo ), staticMeshVisual->Instances.data(),
-                sizeof( VobInstanceInfo ) * staticMeshVisual->Instances.size() );
-            loc += staticMeshVisual->Instances.size();
+        if ( SUCCEEDED( DynamicInstancingBuffer->Map( D3D11VertexBuffer::M_WRITE_DISCARD,
+            reinterpret_cast<void**>(&data), &size ) ) ) {
+            UINT loc = 0;
+            for ( auto const& staticMeshVisual : activeVisuals ) {
+                staticMeshVisual->StartInstanceNum = loc;
+                memcpy( data + loc * sizeof( VobInstanceInfo ), staticMeshVisual->Instances.data(),
+                    sizeof( VobInstanceInfo ) * staticMeshVisual->Instances.size() );
+                loc += staticMeshVisual->Instances.size();
+            }
+            DynamicInstancingBuffer->Unmap();
+        } else {
+            LogError() << "Failed to map dynamic instancing buffer for vobs.";
         }
-        DynamicInstancingBuffer->Unmap();
 
         // Apply instancing shader
         SetActiveVertexShader( VShaderID::VS_ExInstancedObj );
@@ -5710,16 +5728,20 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
 
             byte* data;
             UINT size;
-            UINT loc = 0;
-            DynamicInstancingBuffer->Map( D3D11VertexBuffer::M_WRITE_DISCARD,
-                reinterpret_cast<void**>(&data), &size );
-            for ( auto const& staticMeshVisual : activeVisuals ) {
-                staticMeshVisual->StartInstanceNum = loc;
-                memcpy( data + loc * sizeof( VobInstanceInfo ), staticMeshVisual->Instances.data(),
-                    sizeof( VobInstanceInfo ) * staticMeshVisual->Instances.size() );
-                loc += staticMeshVisual->Instances.size();
+
+            if ( SUCCEEDED( DynamicInstancingBuffer->Map( D3D11VertexBuffer::M_WRITE_DISCARD,
+                reinterpret_cast<void**>(&data), &size ) ) ) {
+                UINT loc = 0;
+                for ( auto const& staticMeshVisual : activeVisuals ) {
+                    staticMeshVisual->StartInstanceNum = loc;
+                    memcpy( data + loc * sizeof( VobInstanceInfo ), staticMeshVisual->Instances.data(),
+                        sizeof( VobInstanceInfo ) * staticMeshVisual->Instances.size() );
+                    loc += staticMeshVisual->Instances.size();
+                }
+                DynamicInstancingBuffer->Unmap();
+            } else {
+                LogError() << "Failed to map dynamic instancing buffer for vobs.";
             }
-            DynamicInstancingBuffer->Unmap();
 
             if ( !vobs.empty() ) {
                 RenderedVobs.insert( RenderedVobs.end(), vobs.begin(), vobs.end() );
@@ -5951,16 +5973,19 @@ XRESULT D3D11GraphicsEngine::DrawFrameAlphaMeshes()
 
     byte* data;
     UINT size;
-    UINT loc = 0;
-    DynamicInstancingBuffer->Map( D3D11VertexBuffer::M_WRITE_DISCARD,
-        reinterpret_cast<void**>(&data), &size );
-    for ( auto const& alphaData : m_AlphaMeshes ) {
-        alphaData.vi->StartInstanceNum = loc;
-        memcpy( data + loc * sizeof( VobInstanceInfo ), &alphaData.instances[0],
-            sizeof( VobInstanceInfo ) * alphaData.instances.size() );
-        loc += alphaData.instances.size();
+    if ( SUCCEEDED( DynamicInstancingBuffer->Map( D3D11VertexBuffer::M_WRITE_DISCARD,
+        reinterpret_cast<void**>(&data), &size ) ) ) {
+        UINT loc = 0;
+        for ( auto const& alphaData : m_AlphaMeshes ) {
+            alphaData.vi->StartInstanceNum = loc;
+            memcpy( data + loc * sizeof( VobInstanceInfo ), &alphaData.instances[0],
+                sizeof( VobInstanceInfo ) * alphaData.instances.size() );
+            loc += alphaData.instances.size();
+        }
+        DynamicInstancingBuffer->Unmap();
+    } else {
+        LogError() << "Failed to map dynamic instancing buffer for vobs.";
     }
-    DynamicInstancingBuffer->Unmap();
 
     GraphicsShaderConstantBuffer windBuffer = {};
     if ( ActiveVS ) {

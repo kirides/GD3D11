@@ -43,6 +43,8 @@ D3D11ConstantBuffer* D3D11ConstantBuffer::UpdateBuffer( const void* data ) {
         engine->GetContext()->Unmap( Buffer.Get(), 0 );
 
         BufferDirty = true;
+    } else {
+        LogError() << "Failed to map buffer.";
     }
     return this;
 }
@@ -57,6 +59,8 @@ D3D11ConstantBuffer* D3D11ConstantBuffer::UpdateBuffer( const void* data, UINT s
         engine->GetContext()->Unmap( Buffer.Get(), 0 );
 
         BufferDirty = true;
+    } else {
+        LogError() << "Failed to map buffer.";
     }
     return this;
 }

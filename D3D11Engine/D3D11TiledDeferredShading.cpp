@@ -234,7 +234,10 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
 
     // Map light buffer
     D3D11_MAPPED_SUBRESOURCE mapped;
-    context->Map( m_LightBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped );
+    if (! SUCCEEDED(context->Map( m_LightBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped ))) {
+        LogError() << "Failed to map buffer.";
+        return XR_FAILED;
+    }
     TiledPointLight* lightData = reinterpret_cast<TiledPointLight*>(mapped.pData);
 
     const auto camPos = Engine::GAPI->GetCameraPositionXM();
