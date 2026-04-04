@@ -80,12 +80,16 @@ struct cmpMeshKey {
 struct StaticMeshData {
     std::shared_ptr<D3D11VertexBuffer> MeshVertexBuffer;
     std::shared_ptr<D3D11VertexBuffer> MeshIndexBuffer;
+    SharedVector<ExVertexStruct> Vertices;
+    SharedVector<VERTEX_INDEX> Indices;
 };
 
 // singleton data struct
 struct SkeletalMeshData {
     std::shared_ptr<D3D11VertexBuffer> MeshVertexBuffer;
     std::shared_ptr<D3D11VertexBuffer> MeshIndexBuffer;
+    SharedVector<ExSkelVertexStruct> Vertices;
+    SharedVector<VERTEX_INDEX> Indices;
 };
 
 /** Holds information about a mesh, ready to be loaded into the renderer */
@@ -109,8 +113,8 @@ struct MeshInfo {
 
     std::shared_ptr<D3D11VertexBuffer> MeshVertexBuffer;
     std::shared_ptr<D3D11VertexBuffer> MeshIndexBuffer;
-    std::vector<ExVertexStruct> Vertices;
-    std::vector<VERTEX_INDEX> Indices;
+    SharedVector<ExVertexStruct> Vertices;
+    SharedVector<VERTEX_INDEX> Indices;
 
     unsigned int BaseIndexLocation;
     unsigned int MeshIndex;
@@ -157,8 +161,8 @@ struct SkeletalMeshInfo {
 
     std::shared_ptr<D3D11VertexBuffer> MeshVertexBuffer;
     std::shared_ptr<D3D11VertexBuffer> MeshIndexBuffer;
-    std::vector<ExSkelVertexStruct> Vertices;
-    std::vector<VERTEX_INDEX> Indices;
+    SharedVector<ExSkelVertexStruct> Vertices;
+    SharedVector<VERTEX_INDEX> Indices;
 
     /** Actual visual containing this */
     zCMeshSoftSkin* visual;
