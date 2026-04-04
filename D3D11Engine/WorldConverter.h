@@ -22,6 +22,7 @@ class zCModel;
 class zCModelPrototype;
 class zCModelMeshLib;
 class zCMesh;
+
 class WorldConverter {
 public:
     WorldConverter();

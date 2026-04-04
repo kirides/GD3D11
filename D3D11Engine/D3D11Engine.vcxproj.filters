@@ -828,6 +828,9 @@
     <ClInclude Include="D3D11GraphicsShader.h">
       <Filter>Engine\D3D11</Filter>
     </ClInclude>
+    <ClInclude Include="MeshManager.h">
+      <Filter>Engine\GAPI</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp" />
@@ -1123,6 +1126,9 @@
     </ClCompile>
     <ClCompile Include="D3D11GraphicsShader.cpp">
       <Filter>Engine\D3D11</Filter>
+    </ClCompile>
+    <ClCompile Include="MeshManager.cpp">
+      <Filter>Engine\GAPI</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
