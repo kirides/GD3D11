@@ -108,12 +108,10 @@ XRESULT D3D11PFX_HeightFog::Render( RenderToTextureBuffer* fxbuffer ) {
 	cb.HF_GlobalDensity = Toolbox::lerp( cb.HF_GlobalDensity, Engine::GAPI->GetRendererState().RendererSettings.RainFogDensity, rain * fogDensityFactorRain );
 
 
-	hfPS->GetConstantBuffer()[0]->UpdateBuffer( &cb );
-	hfPS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+	hfPS->GetBuffer( "PFXBuffer" ).Update( &cb ).Bind();
 
 	GSky* sky = Engine::GAPI->GetSky();
-	hfPS->GetConstantBuffer()[1]->UpdateBuffer( &sky->GetAtmosphereCB() );
-	hfPS->GetConstantBuffer()[1]->BindToPixelShader( 1 );
+	hfPS->GetBuffer( "Atmosphere" ).Update( &sky->GetAtmosphereCB() ).Bind();
 
 	engine->GetContext()->OMSetRenderTargets( 1, oldRTV.GetAddressOf(), nullptr );
 

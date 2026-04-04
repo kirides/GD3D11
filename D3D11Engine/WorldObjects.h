@@ -22,6 +22,7 @@ struct zCModelNodeInst;
 struct BspInfo;
 class zCQuadMark;
 struct MaterialInfo;
+class zCSubMesh;
 
 struct ParticleRenderInfo {
     GothicBlendStateInfo BlendState;
@@ -75,6 +76,22 @@ struct cmpMeshKey {
     }
 };*/
 
+// singleton data struct
+struct StaticMeshData {
+    std::shared_ptr<D3D11VertexBuffer> MeshVertexBuffer;
+    std::shared_ptr<D3D11VertexBuffer> MeshIndexBuffer;
+    SharedVector<ExVertexStruct> Vertices;
+    SharedVector<VERTEX_INDEX> Indices;
+};
+
+// singleton data struct
+struct SkeletalMeshData {
+    std::shared_ptr<D3D11VertexBuffer> MeshVertexBuffer;
+    std::shared_ptr<D3D11VertexBuffer> MeshIndexBuffer;
+    SharedVector<ExSkelVertexStruct> Vertices;
+    SharedVector<VERTEX_INDEX> Indices;
+};
+
 /** Holds information about a mesh, ready to be loaded into the renderer */
 struct MeshInfo {
     MeshInfo() {
@@ -84,24 +101,27 @@ struct MeshInfo {
         MeshIndex = -1;
     }
 
-    virtual ~MeshInfo();
+    virtual ~MeshInfo() = default;
+
+    static MeshInfo* CreateStatic() {
+        auto info = new MeshInfo();
+        return info;
+    }
 
     /** Creates buffers for this mesh info */
     XRESULT Create( ExVertexStruct* vertices, unsigned int numVertices, VERTEX_INDEX* indices, unsigned int numIndices );
 
-    D3D11VertexBuffer* MeshVertexBuffer;
-    D3D11VertexBuffer* MeshIndexBuffer;
-    std::vector<ExVertexStruct> Vertices;
-    std::vector<VERTEX_INDEX> Indices;
+    std::shared_ptr<D3D11VertexBuffer> MeshVertexBuffer;
+    std::shared_ptr<D3D11VertexBuffer> MeshIndexBuffer;
+    SharedVector<ExVertexStruct> Vertices;
+    SharedVector<VERTEX_INDEX> Indices;
 
     unsigned int BaseIndexLocation;
     unsigned int MeshIndex;
 };
 
 struct WorldMeshInfo : public MeshInfo {
-    WorldMeshInfo() {
-        SaveInfo = false;
-    }
+    WorldMeshInfo() = default;
 
     ~WorldMeshInfo() override = default;
 
@@ -110,16 +130,11 @@ struct WorldMeshInfo : public MeshInfo {
 };
 
 struct QuadMarkInfo {
-    QuadMarkInfo() {
-        Mesh = nullptr;
-        NumVertices = 0;
-    }
+    QuadMarkInfo() = default;
 
-    ~QuadMarkInfo() {
-        delete Mesh;
-    }
+    ~QuadMarkInfo() = default;
 
-    D3D11VertexBuffer* Mesh;
+    std::unique_ptr<D3D11VertexBuffer> Mesh;
     int NumVertices;
 
     zCQuadMark* Visual;
@@ -129,18 +144,14 @@ struct QuadMarkInfo {
 /** Holds information about a skeletal mesh */
 class zCMeshSoftSkin;
 struct SkeletalMeshInfo {
-    SkeletalMeshInfo() {
-        MeshVertexBuffer = nullptr;
-        MeshIndexBuffer = nullptr;
-        visual = nullptr;
-    }
+    SkeletalMeshInfo() = default;
 
-    ~SkeletalMeshInfo();
+    ~SkeletalMeshInfo() = default;
 
-    D3D11VertexBuffer* MeshVertexBuffer;
-    D3D11VertexBuffer* MeshIndexBuffer;
-    std::vector<ExSkelVertexStruct> Vertices;
-    std::vector<VERTEX_INDEX> Indices;
+    std::shared_ptr<D3D11VertexBuffer> MeshVertexBuffer;
+    std::shared_ptr<D3D11VertexBuffer> MeshIndexBuffer;
+    SharedVector<ExSkelVertexStruct> Vertices;
+    SharedVector<VERTEX_INDEX> Indices;
 
     /** Actual visual containing this */
     zCMeshSoftSkin* visual;
@@ -148,9 +159,7 @@ struct SkeletalMeshInfo {
 
 class zCVisual;
 struct BaseVisualInfo {
-    BaseVisualInfo() {
-        Visual = nullptr;
-    }
+    BaseVisualInfo() = default;
 
     virtual ~BaseVisualInfo() {
         for ( auto& [k, meshes] : Meshes ) {
@@ -218,15 +227,16 @@ struct MeshVisualInfo : public BaseVisualInfo {
     /** This is true if we can't actually render something on this. TODO: Try to fix this! */
     bool UnloadedSomething;
     void* MorphMeshVisual;
+
+    /** Flag wether some mesh inside needs alpha testing, to allow sorting for shader usage */
+    bool NeedsAlphaTesting;
 };
 
 /** Holds the converted mesh of a VOB */
 class zCMeshSoftSkin;
 class zCModel;
 struct SkeletalMeshVisualInfo : public BaseVisualInfo {
-    SkeletalMeshVisualInfo() {
-        Visual = nullptr;
-    }
+    SkeletalMeshVisualInfo() = default;
 
     ~SkeletalMeshVisualInfo() override
     {
@@ -255,7 +265,7 @@ struct SkeletalMeshVisualInfo : public BaseVisualInfo {
 };
 
 struct BaseVobInfo {
-    virtual ~BaseVobInfo() {}
+    virtual ~BaseVobInfo() = default;
     /** Visual for this vob */
     BaseVisualInfo* VisualInfo;
 
@@ -265,26 +275,14 @@ struct BaseVobInfo {
 
 struct WorldMeshSectionInfo;
 struct VobInfo : public BaseVobInfo {
-    VobInfo() {
-        //Vob = nullptr;
-        VobConstantBuffer = nullptr;
-        IsIndoorVob = false;
-        VisibleInRenderPass = false;
-        VobSection = nullptr;
-        HasValidPrevMatrix = false;
-    }
-
-    ~VobInfo() override
-    {
-        //delete VisualInfo;
-        delete VobConstantBuffer;
-    }
+    VobInfo() = default;
+    ~VobInfo() override = default;
 
     /** Updates the vobs constantbuffer */
     void UpdateVobConstantBuffer();
 
     /** Constantbuffer which holds this vobs world matrix */
-    D3D11ConstantBuffer* VobConstantBuffer;
+    std::unique_ptr<D3D11ConstantBuffer> VobConstantBuffer;
 
     /** Position the vob was at while being rendered last time */
     XMFLOAT3 LastRenderPosition;
@@ -319,20 +317,9 @@ struct VobInfo : public BaseVobInfo {
 class zCVobLight;
 class BaseShadowedPointLight;
 struct VobLightInfo {
-    VobLightInfo() {
-        Vob = nullptr;
-        LightShadowBuffers = nullptr;
-        VisibleInRenderPass = false;
-        IsPFXVobLight = false;
-        IsIndoorVob = false;
-        DynamicShadows = false;
-        UpdateShadows = true;
-        VisibleInFrame = false;
-    }
+    VobLightInfo() = default;
 
-    ~VobLightInfo() {
-        delete LightShadowBuffers;
-    }
+    ~VobLightInfo() = default;
 
     /** Vob the data came from */
     zCVobLight* Vob;
@@ -348,7 +335,7 @@ struct VobLightInfo {
     std::vector<BspInfo*> ParentBSPNodes;
 
     /** Buffers for doing shadows on this light */
-    BaseShadowedPointLight* LightShadowBuffers;
+    std::unique_ptr<BaseShadowedPointLight> LightShadowBuffers;
     bool DynamicShadows; // Whether this light should be able to have dynamic shadows
     bool UpdateShadows; // Whether to update this lights shadows on the next occasion
 
@@ -397,7 +384,7 @@ struct SkeletalVobInfo : public BaseVobInfo {
     D3D11ConstantBuffer* VobConstantBuffer;
 
     /** Map of visuals attached to nodes */
-    std::map<int, std::vector<MeshVisualInfo*>> NodeAttachments;
+    phmap::flat_hash_map<int, std::vector<MeshVisualInfo*>> NodeAttachments;
 
     /** Indoor* */
     bool IndoorVob;
@@ -417,17 +404,15 @@ struct SkeletalVobInfo : public BaseVobInfo {
 };
 
 struct SectionInstanceCache {
-    SectionInstanceCache() {
-
-    }
-
-    ~SectionInstanceCache();
+    SectionInstanceCache() = default;
+    ~SectionInstanceCache() = default;
 
     /** Clears the cache for the given progmesh */
     void ClearCacheForStatic( MeshVisualInfo* pm );
 
+    
     std::map<MeshVisualInfo*, std::vector<VS_ExConstantBuffer_PerInstance>> InstanceCacheData;
-    std::map<MeshVisualInfo*, D3D11VertexBuffer*> InstanceCache;
+    std::map<MeshVisualInfo*, std::unique_ptr<D3D11VertexBuffer>> InstanceCache;
 };
 
 class D3D11Texture;

@@ -184,8 +184,7 @@ XRESULT D3D11GraphicsEngineBase::DrawVertexArray( ExVertexStruct* vertices, unsi
     auto pShader = ShaderManager->GetPShader( PShaderID::PS_FixedFunctionPipe );
 
     // Bind the FF-Info to the first PS slot
-    pShader->GetConstantBuffer()[0]->UpdateBuffer( &Engine::GAPI->GetRendererState().GraphicsState );
-    pShader->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+    pShader->GetBuffer( "FFPipelineConstantBuffer" ).Update( &Engine::GAPI->GetRendererState().GraphicsState ).Bind();
 
     vShader->Apply();
     pShader->Apply();
@@ -206,8 +205,7 @@ XRESULT D3D11GraphicsEngineBase::DrawVertexArray( ExVertexStruct* vertices, unsi
     temp2Float2[1].x = vp.Width / scale;
     temp2Float2[1].y = vp.Height / scale;
 
-    vShader->GetConstantBuffer()[0]->UpdateBuffer( temp2Float2 );
-    vShader->GetConstantBuffer()[0]->BindToVertexShader( 0 );
+    vShader->GetBuffer( "Viewport" ).Update( temp2Float2 ).Bind();
 
     D3D11_BUFFER_DESC desc;
     TempVertexBuffer->GetVertexBuffer().Get()->GetDesc( &desc );
@@ -362,8 +360,7 @@ XRESULT D3D11GraphicsEngineBase::DrawVertexBufferFF( D3D11VertexBuffer* vb, unsi
     SetupVS_ExMeshDrawCall();
 
     // Bind the FF-Info to the first PS slot
-    ActivePS->GetConstantBuffer()[0]->UpdateBuffer( &Engine::GAPI->GetRendererState().GraphicsState );
-    ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+    ActivePS->GetBuffer( "FFPipelineConstantBuffer" ).Update( &Engine::GAPI->GetRendererState().GraphicsState ).Bind();
 
     UINT offset = 0;
     UINT uStride = stride;
@@ -394,8 +391,7 @@ XRESULT D3D11GraphicsEngineBase::BindViewportInformation( VShaderID shader, int 
     auto vs = ShaderManager->GetVShader( shader );
 
     if ( vs ) {
-        vs->GetConstantBuffer()[slot]->UpdateBuffer( f2 );
-        vs->GetConstantBuffer()[slot]->BindToVertexShader( slot );
+        vs->GetBuffer( "Viewport" ).Update( f2 ).Bind();
     }
 
     return XR_SUCCESS;

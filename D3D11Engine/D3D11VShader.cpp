@@ -1,43 +1,42 @@
 #include "pch.h"
 #include "D3D11VShader.h"
+
+#include <d3dcompiler.h>
+
 #include "D3D11GraphicsEngineBase.h"
 #include "Engine.h"
 #include "GothicAPI.h"
-#include "D3D11ConstantBuffer.h"
 #include "D3D11ShaderManager.h"
 #include "D3D11_Helpers.h"
 
 extern bool FeatureLevel10Compatibility;
 
-D3D11VShader::D3D11VShader() {}
+D3D11VShader::D3D11VShader() = default;
 
-D3D11VShader::~D3D11VShader() {
-    for ( unsigned int i = 0; i < ConstantBuffers.size(); i++ ) {
-        delete ConstantBuffers[i];
-    }
-}
+D3D11VShader::~D3D11VShader() = default;
 
 /** Loads shader */
-XRESULT D3D11VShader::LoadShader( const char* vertexShader, int layout, const char* entryPoint, const std::vector<D3D_SHADER_MACRO>& makros ) {
+XRESULT D3D11VShader::LoadShader( const ShaderInfo& shaderInfo, const char* filePath ) {
     HRESULT hr;
     D3D11GraphicsEngineBase* engine = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine);
 
     Microsoft::WRL::ComPtr<ID3DBlob> vsBlob;
 
-    if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog )
-        LogInfo() << "Compilling vertex shader: " << vertexShader;
+
+    LogInfo() << "Compilling vertex shader: " << shaderInfo.name;
 
     // Compile shader
-    if ( entryPoint == nullptr ) { entryPoint = "VSMain"; }
-    if ( FAILED( D3D11ShaderManager::CompileShaderFromFile( vertexShader, entryPoint, (FeatureLevel10Compatibility ? "vs_4_0" : "vs_5_0"), vsBlob.GetAddressOf(), makros)) ) {
+    if ( FAILED( D3D11ShaderManager::CompileShaderFromFile( filePath, !shaderInfo.entryPoint.empty() ? shaderInfo.entryPoint.c_str() : "VSMain", (FeatureLevel10Compatibility ? "vs_4_0" : "vs_5_0"), vsBlob.GetAddressOf(), shaderInfo.shaderMakros)) ) {
         return XR_FAILED;
     }
 
+    auto hrReflected = ReflectShaderResources( vsBlob.Get() );
+    
     // Create the shader
     LE( engine->GetDevice()->CreateVertexShader( vsBlob->GetBufferPointer(),
         vsBlob->GetBufferSize(), nullptr, VertexShader.ReleaseAndGetAddressOf() ) );
 
-    SetDebugName( VertexShader.Get(), vertexShader );
+    SetDebugName( VertexShader.Get(), shaderInfo.name );
 
     const D3D11_INPUT_ELEMENT_DESC layout1[] =
     {
@@ -167,7 +166,7 @@ XRESULT D3D11VShader::LoadShader( const char* vertexShader, int layout, const ch
         { "VELOCITY", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
     };
 
-    switch ( layout ) {
+    switch ( shaderInfo.layout ) {
     case 1:
         LE( engine->GetDevice()->CreateInputLayout( layout1, std::size( layout1 ), vsBlob->GetBufferPointer(),
             vsBlob->GetBufferSize(), InputLayout.ReleaseAndGetAddressOf() ) );
@@ -239,15 +238,28 @@ XRESULT D3D11VShader::LoadShader( const char* vertexShader, int layout, const ch
 
 /** Applys the shaders */
 XRESULT D3D11VShader::Apply() {
-    D3D11GraphicsEngineBase* engine = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine);
+    auto context = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext().Get();
 
-    engine->GetContext()->IASetInputLayout( InputLayout.Get() );
-    engine->GetContext()->VSSetShader( VertexShader.Get(), nullptr, 0 );
+    context->IASetInputLayout( InputLayout.Get() );
+    context->VSSetShader( VertexShader.Get(), nullptr, 0 );
 
     return XR_SUCCESS;
 }
 
-/** Returns a reference to the constantBuffer vector */
-std::vector<D3D11ConstantBuffer*>& D3D11VShader::GetConstantBuffer() {
-    return ConstantBuffers;
+void D3D11VShader::BindResource(StringID name, ID3D11ShaderResourceView* srv) {
+    reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->VSSetShaderResources( GetInputIndex(name), 1, &srv );
+}
+
+void D3D11VShader::BindSampler(StringID name, ID3D11SamplerState* sampler) {
+    reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->VSSetSamplers( GetInputIndex(name), 1, &sampler );
+}
+
+void D3D11VShader::BindBuffer(StringID name, D3D11ConstantBuffer* buffer) {
+    if (auto idx = GetInputIndex(name); idx != -1) {
+        buffer->BindToVertexShader(idx);
+    }
+}
+
+void D3D11VShader::BindBuffer(UINT slot, D3D11ConstantBuffer* buffer) {
+    buffer->BindToVertexShader(slot);
 }

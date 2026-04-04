@@ -115,8 +115,7 @@ XRESULT D3D11PFX_FSR1::ApplyEASU(
     );
 
     // Update constant buffer
-    easuPS->GetConstantBuffer()[0]->UpdateBuffer( &cb );
-    easuPS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+    easuPS->GetBuffer( "FSR1Constants" ).Update( &cb ).Bind();
 
     // Save old render targets
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> oldRTV;
@@ -182,8 +181,7 @@ XRESULT D3D11PFX_FSR1::ApplyRCAS(
     FsrRcasCon( cb.RCASConst, sharpness );
 
     // Update constant buffer
-    rcasPS->GetConstantBuffer()[0]->UpdateBuffer( &cb );
-    rcasPS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+    rcasPS->GetBuffer( "FSR1RCASConstants" ).Update( &cb ).Bind();
 
     // Save old render targets
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> oldRTV;

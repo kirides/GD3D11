@@ -1,4 +1,6 @@
 #pragma once
+#include <parallel_hashmap/phmap.h>
+
 #include "pch.h"
 #include "Frustum.h"
 #include "GothicGraphicsState.h"
@@ -8,6 +10,7 @@
 #include "zTypes.h"
 #include "RenderQueue.h"
 #include "RenderToTextureBuffer.h"
+#include "ShaderIDs.h"
 
 #define START_TIMING(x) TimerScope( x, &Engine::GAPI->GetRendererState().RendererInfo.Timing.frameRecordings )
 
@@ -74,6 +77,24 @@ struct BspInfo {
         OcclusionInfo.NodeMesh = nullptr;
     }
 
+    BspInfo( BspInfo&& other ) noexcept {
+        Vobs = std::move( other.Vobs );
+        IndoorVobs = std::move( other.IndoorVobs );
+        SmallVobs = std::move( other.SmallVobs );
+        Lights = std::move( other.Lights );
+        IndoorLights = std::move( other.IndoorLights );
+        Mobs = std::move( other.Mobs );
+        NodePolygons = std::move( other.NodePolygons );
+        NumStaticLights = other.NumStaticLights;
+        
+        OcclusionInfo.NodeMesh = std::move(other.OcclusionInfo.NodeMesh);
+        OriginalNode = other.OriginalNode;
+        Front = other.Front;
+        Back = other.Back;
+    }
+
+    BspInfo( const BspInfo& ) = delete;
+
     ~BspInfo() {
         delete OcclusionInfo.NodeMesh;
     }
@@ -132,24 +153,29 @@ struct MaterialInfo {
         MT_WaterfallFoam
     };
 
-    MaterialInfo() {
+    MaterialInfo() :
+        PixelShader(static_cast<PShaderID>(0)),
+        Constantbuffer(nullptr),
+        MaterialType(MT_None)
+    {
         buffer.SpecularIntensity = 0.1f;
         buffer.SpecularPower = 60.0f;
         buffer.NormalmapStrength = 1.0f;
         buffer.DisplacementFactor = 1.0f;
         buffer.Color = 0xFFFFFFFF;
-
-        Constantbuffer = nullptr;
-
-        MaterialType = MT_None;
-
-        VertexShader = "";
-        PixelShader = "";
     }
 
-    ~MaterialInfo() {
-        delete Constantbuffer;
+    ~MaterialInfo() = default;
+
+    MaterialInfo(MaterialInfo&& other) noexcept
+    {
+        buffer = other.buffer;
+        PixelShader = other.PixelShader;
+        MaterialType = other.MaterialType;
+        Constantbuffer = std::move(other.Constantbuffer);
     }
+
+    MaterialInfo(const MaterialInfo&) = delete;
 
     /** Writes this info to a file */
     void WriteToFile( const std::string& name );
@@ -169,11 +195,9 @@ struct MaterialInfo {
     /** creates/updates the constantbuffer */
     void UpdateConstantbuffer();
 
-    D3D11ConstantBuffer* Constantbuffer;
+    std::unique_ptr<D3D11ConstantBuffer> Constantbuffer;
 
-    std::string VertexShader;
-    std::string TesselationShaderPair;
-    std::string PixelShader;
+    PShaderID PixelShader;
     EMaterialType MaterialType;
     Buffer buffer;
 };
@@ -303,8 +327,6 @@ public:
     void DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool updateState = true );
 
     void DrawSkeletalMeshVob_Layered( SkeletalVobInfo* vi, float distance, bool updateState = true );
-
-    void DrawSkeletalMeshVobs( const std::vector<SkeletalVobInfo*>& vis, bool updateState, bool drawAttachments );
 
     void DrawTransparencyVobs();
     void DrawSkeletalVN();
@@ -661,7 +683,7 @@ public:
     zCVob* GetPlayerVob();
 
     /** Returns the map of static mesh visuals */
-    const std::unordered_map<zCProgMeshProto*, MeshVisualInfo*>& GetStaticMeshVisuals() { return StaticMeshVisuals; }
+    const phmap::flat_hash_map<zCProgMeshProto*, MeshVisualInfo*>& GetStaticMeshVisuals() { return StaticMeshVisuals; }
 
     /** Returns the collection of PolyStrip meshes infos */
     const std::map<zCTexture*, PolyStripInfo>& GetPolyStripInfos() { return PolyStripInfos; };
@@ -843,14 +865,14 @@ private:
     std::set<MeshVisualInfo*> FrameMeshInstances;
 
     /** Map for static mesh visuals */
-    std::unordered_map<zCProgMeshProto*, MeshVisualInfo*> StaticMeshVisuals;
+    phmap::flat_hash_map<zCProgMeshProto*, MeshVisualInfo*> StaticMeshVisuals;
 
     /** Collection of poly strip infos (includes mesh and material data) */
     std::map<zCTexture*, PolyStripInfo> PolyStripInfos;
 
     /** Map for skeletal mesh visuals */
-    std::unordered_map<std::string, SkeletalMeshVisualInfo*> SkeletalMeshVisuals;
-    std::unordered_map<oCNPC*, SkeletalMeshVisualInfo*> SkeletalMeshNpcs;
+    phmap::flat_hash_map<std::string, SkeletalMeshVisualInfo*> SkeletalMeshVisuals;
+    phmap::flat_hash_map<oCNPC*, SkeletalMeshVisualInfo*> SkeletalMeshNpcs;
 
     /** Set of all vobs we registered by now */
     std::unordered_set<zCVob*> RegisteredVobs;
@@ -862,9 +884,9 @@ private:
     std::unordered_map<zCVob*, VobInfo*> VobMap;
 public:
     // temporarily, to allow CollectVisibleVobsHelper to be templated for inlining optimizations
-    std::unordered_map<zCVobLight*, VobLightInfo*> VobLightMap;
+    phmap::flat_hash_map<zCVobLight*, VobLightInfo*> VobLightMap;
 private:
-    std::unordered_map<zCVob*, SkeletalVobInfo*> SkeletalVobMap;
+    phmap::flat_hash_map<zCVob*, SkeletalVobInfo*> SkeletalVobMap;
 
     /** Map of VobInfo-Lists for zCBspLeafs */
     std::unordered_map<zCBspBase*, BspInfo> BspLeafVobLists;
@@ -873,10 +895,10 @@ private:
     std::unordered_map<zCTexture*, MaterialInfo> MaterialInfos;
 
     /** Maps visuals to vobs */
-    std::unordered_map<zCVisual*, std::vector<BaseVobInfo*>> VobsByVisual;
+    phmap::flat_hash_map<zCVisual*, std::vector<BaseVobInfo*>> VobsByVisual;
 
     /** Map of textures */
-    std::unordered_map<std::string, MyDirectDrawSurface7*> SurfacesByName;
+    phmap::flat_hash_map<std::string, MyDirectDrawSurface7*> SurfacesByName;
 
     /** Directory we started in */
     std::string StartDirectory;

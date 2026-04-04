@@ -30,6 +30,8 @@ XRESULT D3D11LegacyDeferredShading::DrawPointlightLights(
 
     auto psPointLight = graphicsEngine->GetShaderManager().GetPShader( PShaderID::PS_DS_PointLight );
     auto psPointLightDynShadow = graphicsEngine->GetShaderManager().GetPShader( PShaderID::PS_DS_PointLightDynShadow );
+    auto plBuf = psPointLight->GetBuffer( "DS_PointLightConstantBuffer" );
+    auto plDynBuf = psPointLightDynShadow->GetBuffer( "DS_PointLightConstantBuffer" );
 
     Engine::GAPI->GetRendererState().BlendState.SetAdditiveBlending();
     if ( settings.LimitLightIntesity ) {
@@ -71,7 +73,7 @@ XRESULT D3D11LegacyDeferredShading::DrawPointlightLights(
         if ( !vob->IsEnabled() ) continue;
 
         if ( settings.EnablePointlightShadows > 0 ) {
-            D3D11PointLight* pl = light->LightShadowBuffers ? static_cast<D3D11PointLight*>(light->LightShadowBuffers) : nullptr;
+            D3D11PointLight* pl = light->LightShadowBuffers ? static_cast<D3D11PointLight*>(light->LightShadowBuffers.get()) : nullptr;
 
             if ( pl && pl->IsInited() && pl->HasShadowMap() ) {
                 if ( graphicsEngine->GetActivePS() != psPointLightDynShadow ) {
@@ -139,13 +141,13 @@ XRESULT D3D11LegacyDeferredShading::DrawPointlightLights(
         plcb.PL_LightScreenPos.x = plcb.PL_LightScreenPos.x / 2.0f + 0.5f;
         plcb.PL_LightScreenPos.y = plcb.PL_LightScreenPos.y / -2.0f + 0.5f;
 
-        graphicsEngine->GetActivePS()->GetConstantBuffer()[0]->UpdateBuffer( &plcb );
-        graphicsEngine->GetActivePS()->GetConstantBuffer()[0]->BindToPixelShader( 0 );
-        graphicsEngine->GetActivePS()->GetConstantBuffer()[0]->BindToVertexShader( 1 );
+        auto& activePlBuf = (graphicsEngine->GetActivePS() == psPointLightDynShadow) ? plDynBuf : plBuf;
+        activePlBuf.Update( &plcb ).Bind();
+        activePlBuf.GetRawBuffer()->BindToVertexShader( 1 );
 
         if ( settings.EnablePointlightShadows > 0 ) {
             if ( light->LightShadowBuffers )
-                static_cast<D3D11PointLight*>(light->LightShadowBuffers)->OnRenderLight();
+                static_cast<D3D11PointLight*>(light->LightShadowBuffers.get())->OnRenderLight();
         }
 
         graphicsEngine->InverseUnitSphereMesh->DrawMesh();

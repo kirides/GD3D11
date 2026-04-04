@@ -917,7 +917,7 @@ bool ImGuiEditorView::OnWindowMessage(HWND hWnd, unsigned int msg, WPARAM wParam
 
                     if (info) {
                         // Overwrite shader
-                        info->TesselationShaderPair = "PNAEN_Tesselation";
+                        // info->TesselationShaderPair = "PNAEN_Tesselation";
                     }
                 }
             }
@@ -1092,12 +1092,7 @@ GVegetationBox* ImGuiEditorView::TraceVegetationBoxes(const XMFLOAT3& wPos, cons
 }
 
 void ImGuiEditorView::SmoothMesh(WorldMeshInfo* mesh, bool tesselate) {
-    // Copy old vertices so we can directly write to the vectors again
-    std::vector<ExVertexStruct> vxOld = mesh->Vertices;
-    std::vector<unsigned short> ixOld = mesh->Indices;
-
-    // Mark dirty
-    mesh->SaveInfo = true;
+   // Not implemented
 }
 
 XRESULT ImGuiEditorView::OnVobRemovedFromWorld(zCVob* vob) {

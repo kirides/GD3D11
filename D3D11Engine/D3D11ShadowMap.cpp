@@ -792,7 +792,7 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
     for (auto& it : Engine::GAPI->VobLightMap) {
         if (it.second->LightShadowBuffers
             && (!it.second->Vob->IsEnabled() || !it.second->VisibleInFrame)) {
-            if ( D3D11PointLight* pl = static_cast<D3D11PointLight*>(it.second->LightShadowBuffers)) {
+            if ( D3D11PointLight* pl = static_cast<D3D11PointLight*>(it.second->LightShadowBuffers.get())) {
                 pl->ClearTiledSlot();
                 pl->ReleaseShadowMap();
             }
@@ -805,11 +805,13 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
         }
         // Create shadowmap in case we should have one but haven't got it yet
         if ( !light->LightShadowBuffers && light->UpdateShadows ) {
-            graphicsEngine->CreateShadowedPointLight( &light->LightShadowBuffers, light );
+            BaseShadowedPointLight* bpl;
+            graphicsEngine->CreateShadowedPointLight( &bpl, light );
+            light->LightShadowBuffers.reset(bpl);
         }
 
         if ( light->LightShadowBuffers ) {
-            D3D11PointLight* pl = static_cast<D3D11PointLight*>(light->LightShadowBuffers);
+            D3D11PointLight* pl = static_cast<D3D11PointLight*>(light->LightShadowBuffers.get());
 
             float d;
             XMStoreFloat( &d, XMVector3LengthSq( light->Vob->GetPositionWorldXM() - vPlayerPosition ) );
@@ -891,7 +893,7 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
 
     // Render the immediate priority lights
     for ( auto const& importantUpdate : importantUpdates ) {
-        static_cast<D3D11PointLight*>(importantUpdate->LightShadowBuffers)->RenderCubemap( true, m_PointLightCB.get() );
+        static_cast<D3D11PointLight*>(importantUpdate->LightShadowBuffers.get())->RenderCubemap( true, m_PointLightCB.get() );
         importantUpdate->UpdateShadows = false;
     }
 
@@ -907,7 +909,7 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
 
         if ( !light ) continue;
 
-        D3D11PointLight* l = static_cast<D3D11PointLight*>( light->LightShadowBuffers );
+        D3D11PointLight* l = static_cast<D3D11PointLight*>( light->LightShadowBuffers.get() );
         if ( !l ) continue;
 
         light->UpdateShadows = false;
@@ -1205,11 +1207,13 @@ XRESULT D3D11ShadowMap::DrawWorldLights()
 
     graphicsEngine->SetActiveVertexShader( VShaderID::VS_PFX );
 
+    auto psAtmo = graphicsEngine->GetActivePS();
+    auto vsPfx = graphicsEngine->GetActiveVS();
+
     graphicsEngine->SetupVS_ExMeshDrawCall();
 
     GSky* sky = Engine::GAPI->GetSky();
-    graphicsEngine->GetActivePS()->GetConstantBuffer()[1]->UpdateBuffer( &sky->GetAtmosphereCB() );
-    graphicsEngine->GetActivePS()->GetConstantBuffer()[1]->BindToPixelShader( 1 );
+    psAtmo->GetBuffer("Atmosphere").Update(&sky->GetAtmosphereCB()).Bind();
 
     auto& proj = Engine::GAPI->GetProjectionMatrix();
     DS_ScreenQuadConstantBuffer scb = {};
@@ -1289,13 +1293,7 @@ XRESULT D3D11ShadowMap::DrawWorldLights()
             scb.SQ_LightColor = float4( 1, 1, 1, DEFAULT_INDOOR_VOB_AMBIENT.x );
         }
 
-    graphicsEngine->GetActivePS()->GetConstantBuffer()[0]->UpdateBuffer( &scb );
-    graphicsEngine->GetActivePS()->GetConstantBuffer()[0]->BindToPixelShader( 0 );
-
-    PFXVS_ConstantBuffer vscb;
-    vscb.PFXVS_ProjParams = scb.SQ_ProjParams;
-    graphicsEngine->GetActiveVS()->GetConstantBuffer()[0]->UpdateBuffer( &vscb );
-    graphicsEngine->GetActiveVS()->GetConstantBuffer()[0]->BindToVertexShader( 0 );
+    psAtmo->GetBuffer( "DS_ScreenQuadConstantBuffer" ).Update( &scb ).Bind();
 
     // CSM: Bind the cascade array to a single slot (Texture2DArray)
     BindToPixelShader( m_context.Get(), TX_ShadowmapArray );

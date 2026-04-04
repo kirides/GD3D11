@@ -234,7 +234,10 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
 
     // Map light buffer
     D3D11_MAPPED_SUBRESOURCE mapped;
-    context->Map( m_LightBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped );
+    if (! SUCCEEDED(context->Map( m_LightBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped ))) {
+        LogError() << "Failed to map buffer.";
+        return XR_FAILED;
+    }
     TiledPointLight* lightData = reinterpret_cast<TiledPointLight*>(mapped.pData);
 
     const auto camPos = Engine::GAPI->GetCameraPositionXM();
@@ -250,7 +253,7 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
         D3D11PointLight* pl = nullptr;
         bool hasShadow = false;
         if ( settings.EnablePointlightShadows > 0 ) {
-            pl = light->LightShadowBuffers ? static_cast<D3D11PointLight*>(light->LightShadowBuffers) : nullptr;
+            pl = light->LightShadowBuffers ? static_cast<D3D11PointLight*>(light->LightShadowBuffers.get()) : nullptr;
             if ( pl && pl->IsInited() && pl->HasShadowMap() ) {
                 hasShadow = true;
             }
@@ -335,8 +338,7 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
             cullCB.TotalLights = tiledLightCount;
             cullCB.Pad = 0;
 
-            csLightCull->GetConstantBuffer()[0]->UpdateBuffer( &cullCB );
-            csLightCull->GetConstantBuffer()[0]->BindToComputeShader( 0 );
+            csLightCull->GetBuffer( "LightCullingConstantBuffer" ).Update( &cullCB ).Bind();
 
             // Bind depth copy as SRV to CS slot t0
             context->CSSetShaderResources( 0, 1, depthCopy.GetShaderResView().GetAddressOf() );
@@ -381,8 +383,7 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
             shadeCB.NumTilesX = numTilesX;
             XMStoreFloat4x4( &shadeCB.InvView, XMMatrixInverse( nullptr, view ) );
 
-            csTiledShading->GetConstantBuffer()[0]->UpdateBuffer( &shadeCB );
-            csTiledShading->GetConstantBuffer()[0]->BindToComputeShader( 0 );
+            csTiledShading->GetBuffer( "TiledShadingConstantBuffer" ).Update( &shadeCB ).Bind();
 
             // Bind GBuffer SRVs to CS
             context->CSSetShaderResources( 0, 1, color.GetShaderResView().GetAddressOf() );

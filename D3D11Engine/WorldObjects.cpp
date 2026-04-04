@@ -45,34 +45,10 @@ void SkeletalVobInfo::UpdateVobConstantBuffer() {
         VobConstantBuffer->UpdateBuffer( &cb );
 }
 
-SectionInstanceCache::~SectionInstanceCache() {
-    for ( auto& [mvi, vertexBuffer] : InstanceCache ) {
-        delete vertexBuffer;
-    }
-}
-
-MeshInfo::~MeshInfo() {
-    //Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize -= Indices.size() * sizeof(VERTEX_INDEX);
-    //Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize -= Vertices.size() * sizeof(ExVertexStruct);
-
-    delete MeshVertexBuffer;
-    delete MeshIndexBuffer;
-}
-
-SkeletalMeshInfo::~SkeletalMeshInfo() {
-    Engine::GAPI->GetRendererState().RendererInfo.SkeletalVerticesDataSize -= Indices.size() * sizeof( VERTEX_INDEX );
-    Engine::GAPI->GetRendererState().RendererInfo.SkeletalVerticesDataSize -= Vertices.size() * sizeof( ExSkelVertexStruct );
-
-    delete MeshVertexBuffer;
-    delete MeshIndexBuffer;
-}
-
 /** Clears the cache for the given progmesh */
 void SectionInstanceCache::ClearCacheForStatic( MeshVisualInfo* pm ) {
     if ( InstanceCache.find( pm ) != InstanceCache.end() ) {
-        D3D11VertexBuffer* vb = InstanceCache[pm];
-        delete vb;
-        InstanceCache[pm] = nullptr;
+        InstanceCache[pm].reset();
         InstanceCacheData[pm].clear();
     }
 }
@@ -95,8 +71,13 @@ XRESULT MeshInfo::Create( ExVertexStruct* vertices, unsigned int numVertices, VE
     memcpy( &Indices[0], indices, numIndices * sizeof( VERTEX_INDEX ) );
 
     // Create the buffers
-    Engine::GraphicsEngine->CreateVertexBuffer( &MeshVertexBuffer );
-    Engine::GraphicsEngine->CreateVertexBuffer( &MeshIndexBuffer );
+    D3D11VertexBuffer* vertexBuffer;
+    Engine::GraphicsEngine->CreateVertexBuffer( &vertexBuffer );
+    MeshVertexBuffer.reset( vertexBuffer );
+
+    D3D11VertexBuffer* indexBuffer;
+    Engine::GraphicsEngine->CreateVertexBuffer( &indexBuffer );
+    MeshIndexBuffer.reset( indexBuffer );
 
     // Init and fill it
     MeshVertexBuffer->Init( vertices, numVertices * sizeof( ExVertexStruct ) );

@@ -18,7 +18,6 @@ public:
     std::string entryPoint;			//Shader's entry point function name
     size_t shaderIndex;				//Per-type enum index (e.g. VShaderID/PShaderID cast to size_t)
     int layout;						//Shader's input layout
-    std::vector<int> cBufferSizes;	//Vector with size for each constant buffer to be created for this shader
     std::vector<D3D_SHADER_MACRO> shaderMakros;
     ShaderCategory contentCategory;	//Content category for selective reloading
 
@@ -42,7 +41,6 @@ public:
     ShaderInfo& with_macros( const std::vector<D3D_SHADER_MACRO>& m ) { shaderMakros = m; return *this; }
     ShaderInfo& with_category( ShaderCategory c ) { contentCategory = c; return *this; }
     ShaderInfo& with_entrypoint( std::string ep ) { entryPoint = std::move( ep ); return *this; }
-    ShaderInfo& with_cbuffer( int size ) { cBufferSizes.push_back( size ); return *this; }
 
 private:
     ShaderInfo() : type( ShaderType::None ), shaderIndex( 0 ), layout( 0 ), contentCategory( ShaderCategory::Other ) {}

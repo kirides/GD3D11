@@ -822,6 +822,15 @@
     <ClInclude Include="D3D11RenderQueue.h">
       <Filter>Engine\D3D11</Filter>
     </ClInclude>
+    <ClInclude Include="GraphicsShader.h">
+      <Filter>Engine</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D11GraphicsShader.h">
+      <Filter>Engine\D3D11</Filter>
+    </ClInclude>
+    <ClInclude Include="MeshManager.h">
+      <Filter>Engine\GAPI</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp" />
@@ -1111,6 +1120,15 @@
     </ClCompile>
     <ClCompile Include="D3D11RenderQueue.cpp">
       <Filter>Engine\D3D11</Filter>
+    </ClCompile>
+    <ClCompile Include="GraphicsShader.cpp">
+      <Filter>Engine</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D11GraphicsShader.cpp">
+      <Filter>Engine\D3D11</Filter>
+    </ClCompile>
+    <ClCompile Include="MeshManager.cpp">
+      <Filter>Engine\GAPI</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>

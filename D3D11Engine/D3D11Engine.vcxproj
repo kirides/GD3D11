@@ -799,6 +799,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="BaseWidget.h" />
     <ClInclude Include="BasicTimer.h" />
     <ClInclude Include="D3D11CascadedShadowMapBuffer.h" />
+    <ClInclude Include="D3D11GraphicsShader.h" />
     <ClInclude Include="D3D11ShadowAtlas.h" />
     <ClInclude Include="CGameManager.h" />
     <ClInclude Include="D3D11AGS.h" />
@@ -874,6 +875,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="GothicMemoryLocations2_6_fix.h" />
     <ClInclude Include="GothicMemoryLocations1_12f.h" />
     <ClInclude Include="GraphicsEventRecord.h" />
+    <ClInclude Include="GraphicsShader.h" />
     <ClInclude Include="GSky.h" />
     <ClInclude Include="GSpriteCloud.h" />
     <ClInclude Include="GVegetationBox.h" />
@@ -973,6 +975,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="InstructionSet.h" />
     <ClInclude Include="Logger.h" />
     <ClInclude Include="MemoryTracker.h" />
+    <ClInclude Include="MeshManager.h" />
     <ClInclude Include="MeshModifier.h" />
     <ClInclude Include="oCGame.h" />
     <ClInclude Include="oCNPC.h" />
@@ -986,6 +989,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="RGBuilder.h" />
     <ClInclude Include="RGTextureDesc.h" />
     <ClInclude Include="ShaderCategory.h" />
+    <ClInclude Include="StringID.h" />
     <ClInclude Include="SMAA\D3D11SMAA.h" />
     <ClInclude Include="SteamOverlay.h" />
     <ClInclude Include="StackWalker.h" />
@@ -1055,6 +1059,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="BaseLineRenderer.cpp" />
     <ClCompile Include="BaseWidget.cpp" />
     <ClCompile Include="D3D11CascadedShadowMapBuffer.cpp" />
+    <ClCompile Include="D3D11GraphicsShader.cpp" />
     <ClCompile Include="D3D11ShadowAtlas.cpp" />
     <ClCompile Include="D3D11AGS.cpp" />
     <ClCompile Include="D3D11ConstantBuffer.cpp" />
@@ -1145,6 +1150,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="GMeshSimple.cpp" />
     <ClCompile Include="GothicAPI.cpp" />
     <ClCompile Include="GothicExternals.cpp" />
+    <ClCompile Include="GraphicsShader.cpp" />
     <ClCompile Include="GSky.cpp" />
     <ClCompile Include="GSpriteCloud.cpp" />
     <ClCompile Include="GVegetationBox.cpp" />
@@ -1163,6 +1169,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="include\imgui\imgui_draw.cpp" />
     <ClCompile Include="include\imgui\imgui_tables.cpp" />
     <ClCompile Include="include\imgui\imgui_widgets.cpp" />
+    <ClCompile Include="MeshManager.cpp" />
     <ClCompile Include="MeshModifier.cpp" />
     <ClCompile Include="pch.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Create</PrecompiledHeader>

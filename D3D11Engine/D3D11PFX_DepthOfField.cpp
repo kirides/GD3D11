@@ -67,8 +67,7 @@ XRESULT D3D11PFX_DepthOfField::Render( ID3D11ShaderResourceView* backbuffer ) {
     int curIdx = 1 - m_FocusIndex;
 
     focusPS->Apply();
-    focusPS->GetConstantBuffer()[0]->UpdateBuffer( &cb );
-    focusPS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+    focusPS->GetBuffer( "DepthOfFieldConstantBuffer" ).Update( &cb ).Bind();
 
     D3D11_VIEWPORT oldVP;
     UINT numVP = 1;
@@ -98,8 +97,7 @@ XRESULT D3D11PFX_DepthOfField::Render( ID3D11ShaderResourceView* backbuffer ) {
     engine->GetContext()->RSSetViewports( 1, &halfVP );
 
     blurPS->Apply();
-    blurPS->GetConstantBuffer()[0]->UpdateBuffer( &cb );
-    blurPS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+    blurPS->GetBuffer( "DepthOfFieldConstantBuffer" ).Update( &cb ).Bind();
 
     engine->GetContext()->OMSetRenderTargets( 1, halfBuffer->GetRenderTargetView().GetAddressOf(), nullptr );
 
@@ -118,8 +116,7 @@ XRESULT D3D11PFX_DepthOfField::Render( ID3D11ShaderResourceView* backbuffer ) {
     auto compositeBuffer = FxRenderer->GetTempBuffer();
 
     compositePS->Apply();
-    compositePS->GetConstantBuffer()[0]->UpdateBuffer( &cb );
-    compositePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+    compositePS->GetBuffer( "DepthOfFieldConstantBuffer" ).Update( &cb ).Bind();
 
     engine->GetContext()->OMSetRenderTargets( 1, compositeBuffer->GetRenderTargetView().GetAddressOf(), nullptr );
 

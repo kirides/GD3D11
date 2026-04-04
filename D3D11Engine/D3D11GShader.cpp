@@ -9,13 +9,9 @@
 
 extern bool FeatureLevel10Compatibility;
 
-D3D11GShader::D3D11GShader() {}
+D3D11GShader::D3D11GShader() = default;
 
-D3D11GShader::~D3D11GShader() {
-    for ( unsigned int i = 0; i < ConstantBuffers.size(); i++ ) {
-        delete ConstantBuffers[i];
-    }
-}
+D3D11GShader::~D3D11GShader() = default;
 
 /** Loads both shaders at the same time */
 XRESULT D3D11GShader::LoadShader( const char* geometryShader, const std::vector<D3D_SHADER_MACRO>& makros, bool createStreamOutFromVS, int soLayout ) {
@@ -30,6 +26,8 @@ XRESULT D3D11GShader::LoadShader( const char* geometryShader, const std::vector<
         if ( FAILED( D3D11ShaderManager::CompileShaderFromFile( geometryShader, "GSMain", (FeatureLevel10Compatibility ? "gs_4_0" : "gs_5_0"), gsBlob.GetAddressOf(), makros)) ) {
             return XR_FAILED;
         }
+
+        ReflectShaderResources( gsBlob.Get() );
 
         // Create the shader
         LE( engine->GetDevice()->CreateGeometryShader( gsBlob->GetBufferPointer(), gsBlob->GetBufferSize(), nullptr, GeometryShader.GetAddressOf() ) );
@@ -79,7 +77,20 @@ XRESULT D3D11GShader::Apply() {
     return XR_SUCCESS;
 }
 
-/** Returns a reference to the constantBuffer vector*/
-std::vector<D3D11ConstantBuffer*>& D3D11GShader::GetConstantBuffer() {
-    return ConstantBuffers;
+void D3D11GShader::BindResource(StringID name, ID3D11ShaderResourceView* srv) {
+    reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->GSSetShaderResources( GetInputIndex(name), 1, &srv );
+}
+
+void D3D11GShader::BindSampler(StringID name, ID3D11SamplerState* sampler) {
+    reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->GSSetSamplers( GetInputIndex(name), 1, &sampler );
+}
+
+void D3D11GShader::BindBuffer(StringID name, D3D11ConstantBuffer* buffer) {
+    if (auto idx = GetInputIndex(name); idx != -1) {
+        buffer->BindToGeometryShader(idx);
+    }
+}
+
+void D3D11GShader::BindBuffer(UINT slot, D3D11ConstantBuffer* buffer) {
+    buffer->BindToGeometryShader(slot);
 }

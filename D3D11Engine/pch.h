@@ -27,6 +27,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <filesystem>
+#include <parallel_hashmap/phmap.h>
 
 #include "Logger.h"
 #include "Types.h"

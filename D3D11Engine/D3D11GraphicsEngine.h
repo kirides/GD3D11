@@ -117,6 +117,7 @@ public:
     XRESULT DrawVertexBuffer( D3D11VertexBuffer* vb, unsigned int numVertices, unsigned int stride = sizeof( ExVertexStruct ) ) override;
     XRESULT DrawVertexBufferIndexed( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int indexOffset = 0 ) override;
     XRESULT DrawVertexBufferIndexedUINT( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int indexOffset ) override;
+    XRESULT DrawDynamicVertexBufferIndexed( std::vector<ExVertexStruct>& vertices, D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int indexOffset ) override;
 
     /** Draws a vertexbuffer, instanced */
     XRESULT DrawVertexBufferInstanced( D3D11VertexBuffer* vb, unsigned int numVertices, unsigned int numInstances, unsigned int stride = sizeof( ExVertexStruct ) );
@@ -145,6 +146,9 @@ public:
                                           1.0f);
     XRESULT DrawSkeletalMesh( SkeletalVobInfo* vi, const Span<XMFLOAT4X4> transforms, float4 color, const XMFLOAT4X4& world, float fatness = 1.0f ) override;
     XRESULT DrawSkeletalMesh_Layered(SkeletalVobInfo* vi, const Span<XMFLOAT4X4> transforms, float4 color, XMFLOAT4X4& world, float fatness = 1.0f);
+
+    /** Draws a batch of skeletal mesh vobs */
+    void DrawSkeletalMeshVobs( const std::vector<SkeletalVobInfo*>& vis, bool updateState, bool drawAttachments );
 
     /** Draws a screen fade effects */
     XRESULT DrawScreenFade( void* camera ) override;
@@ -218,8 +222,8 @@ public:
     void DrawVobSingle( VobInfo* vob, zCCamera& camera ) override;
 
     /** Draws everything around the given position */
-    void ShadowPass_DrawWorldMesh_Indirect(const std::vector<const WorldMeshSectionInfo*>& visibleSections);
-    void ShadowPass_DrawWorldMesh(const std::vector<const WorldMeshSectionInfo*>& visibleSections);
+    void ShadowPass_DrawWorldMesh_Indirect(const std::vector<WorldMeshSectionInfo*>& visibleSections);
+    void ShadowPass_DrawWorldMesh(const std::vector<WorldMeshSectionInfo*>& visibleSections);
 
     void XM_CALLCONV DrawWorldAroundForWorldShadow( FXMVECTOR position, float sectionRange, const RenderShadowmapsParams& params );
     void XM_CALLCONV DrawWorldAround( FXMVECTOR position,
@@ -307,7 +311,7 @@ public:
     void DrawUnderwaterEffects();
 
     /** Binds the right shader for the given texture */
-    void BindShaderForTexture( zCTexture* texture, bool forceAlphaTest = false, int zMatAlphaFunc = 0, MaterialInfo::EMaterialType materialInfo = MaterialInfo::MT_None );
+    bool BindShaderForTexture( zCTexture* texture, bool forceAlphaTest = false, int zMatAlphaFunc = 0, MaterialInfo::EMaterialType materialInfo = MaterialInfo::MT_None );
 
     /** Copies the depth stencil buffer to DepthStencilBufferCopy */
     void CopyDepthStencil();
@@ -374,6 +378,7 @@ protected:
     XMFLOAT4X4 Temp2D3DXMatrix[2];
     float2 Temp2Float2[2];
     std::unique_ptr<D3D11VertexBuffer> DynamicInstancingBuffer;
+    std::unique_ptr<D3D11VertexBuffer> DynamicVertexBuffer;
 
     /** Post processing */
     std::unique_ptr<D3D11PfxRenderer> PfxRenderer;
@@ -421,6 +426,9 @@ private:
 
     /** Buffer for previous bone transforms */
     std::unique_ptr<D3D11ConstantBuffer> PrevBoneTransformsBuffer;
+
+    /** Cached bone transforms for batched skeletal mesh drawing */
+    std::vector<XMFLOAT4X4> BoneTransformCache;
 
     /** Constantbuffers for view-distances */
     std::unique_ptr<D3D11ConstantBuffer> InfiniteRangeConstantBuffer;
