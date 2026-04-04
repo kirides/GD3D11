@@ -4751,14 +4751,16 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect(const std::vector<co
 
         ActivePS->Apply();
         zCTexture* lastTex = nullptr;
+        ID3D11ShaderResourceView* nullSRVs[3] = {};
+        Context->PSSetShaderResources( 0, std::size( nullSRVs ), nullSRVs );
 
         for ( const auto& [tex, mesh] : alphaMeshes ) {
             if ( tex != lastTex ) {
-                if (tex->CacheIn( 0.6f ) == zRES_CACHED_OUT) {
-                    continue;
+                if ( tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                    auto t = tex->GetSurface()->GetEngineTexture()->GetShaderResourceView().Get();
+                    Context->PSSetShaderResources( 0, 1, &t );
+                    lastTex = tex;
                 }
-                tex->Bind( 0 );
-                lastTex = tex;
             }
             DrawVertexBufferIndexedUINT( nullptr, nullptr,
                 mesh->Indices.size(), mesh->BaseIndexLocation );
@@ -4819,10 +4821,16 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh(const std::vector<const World
         ActivePS->Apply();
         zCTexture* lastTex = nullptr;
 
+        ID3D11ShaderResourceView* nullSRVs[3] = {};
+        Context->PSSetShaderResources( 0, std::size( nullSRVs ), nullSRVs);
+
         for ( const auto& [tex, mesh] : alphaMeshes ) {
             if ( tex != lastTex ) {
-                tex->Bind( 0 );
-                lastTex = tex;
+                if ( tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                    auto t = tex->GetSurface()->GetEngineTexture()->GetShaderResourceView().Get();
+                    Context->PSSetShaderResources( 0, 1, &t );
+                    lastTex = tex;
+                }
             }
             DrawVertexBufferIndexedUINT( nullptr, nullptr,
                 mesh->Indices.size(), mesh->BaseIndexLocation );
@@ -4930,7 +4938,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
     if ( Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh ) {
         auto _ = START_TIMING( timer_labels_world_mesh[timerLabelIndex] );
-        auto _1 = RecordGraphicsEvent( L"DrawWorldMesh" );
+        auto _1 = RecordGraphicsEvent( L"Shadows::DrawWorldMesh" );
         const auto sectionRangeSq = sectionRange * sectionRange;
         // Bind wrapped mesh vertex buffers
         DrawVertexBufferIndexedUINT(
@@ -5014,7 +5022,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         }
 
         auto _ = START_TIMING( timer_labels_vobs[timerLabelIndex] );
-        auto _1 = RecordGraphicsEvent( L"DrawVOBs" );
+        auto _1 = RecordGraphicsEvent( L"Shadows::DrawVOBs" );
 
         size_t ByteWidth = DynamicInstancingBuffer->GetSizeInBytes();
 
@@ -5075,6 +5083,15 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         XMFLOAT3 vPlayerPosition = Engine::GAPI->GetPlayerVob() ? Engine::GAPI->GetPlayerVob()->GetPositionWorld() : XMFLOAT3( 0, 0, 0 );
         g_windBuffer.playerPos = float3( vPlayerPosition.x, vPlayerPosition.y, vPlayerPosition.z );
 
+        UINT dynOffset[] = { 0 };
+        UINT dynuStride[] = { sizeof( VobInstanceInfo ) };
+
+        ID3D11Buffer* buffers[1] = {
+            DynamicInstancingBuffer->GetVertexBuffer().Get()
+        };
+
+        GetContext()->IASetVertexBuffers( 1, 1, buffers, dynuStride, dynOffset );
+
         // Draw all vobs the player currently sees
         for ( auto const& staticMeshVisual : activeVisuals ) {
             if ( staticMeshVisual->Instances.empty() ) continue;
@@ -5107,12 +5124,18 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                     continue;
                 }
 
+                D3D11PShader* currPs = nullptr;
                 for ( unsigned int i = 0; i < mlist.size(); i++ ) {
                     // Bind texture
                     if ( bindTexture ) {
                         if ( alphaRef > 0.0f && tx->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
-                            tx->Bind( 0 );
-                            ActivePS->Apply();
+                            auto t = tx->GetSurface()->GetEngineTexture()->GetShaderResourceView().Get();
+                            Context->PSSetShaderResources( 0, 1, &t );
+                            auto nextPs = ActivePS.get();
+                            if ( currPs != nextPs ) {
+                                currPs = nextPs;
+                                ActivePS->Apply();
+                            }
                             previousTx = tx;
                         } else
                             continue;
@@ -5120,20 +5143,48 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                         if ( !linearDepth )  // Only unbind when not rendering linear depth
                         {
                             // Unbind PS
-                            Context->PSSetShader( nullptr, nullptr, 0 );
+                            if ( currPs != nullptr ) {
+                                Context->PSSetShader( nullptr, nullptr, 0 );
+                                currPs = nullptr;
+                            }
                         }
                     }
 
                     MeshInfo* mi = mlist[i];
 
                     // Draw batch
-                    DrawInstanced( mi->MeshVertexBuffer, mi->MeshIndexBuffer,
-                        mi->Indices.size(), DynamicInstancingBuffer.get(),
-                        sizeof( VobInstanceInfo ), staticMeshVisual->Instances.size(),
-                        sizeof( ExVertexStruct ), staticMeshVisual->StartInstanceNum );
 
-                    Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnVobs +=
-                        staticMeshVisual->Instances.size();
+                    /* Dont re-bind buffer all the time*/
+                    const auto vb = mi->MeshVertexBuffer;
+                    const auto ib = mi->MeshIndexBuffer;
+
+                    UINT offset[] = { 0 };
+                    UINT uStride[] = { sizeof( ExVertexStruct ) };
+                    ID3D11Buffer* buffers[1] = {
+                        vb->GetVertexBuffer().Get()
+                    };
+                    
+                    auto numIndices = mi->Indices.size();
+                    const auto numInstances = staticMeshVisual->Instances.size();
+                    const auto startInstanceNum = staticMeshVisual->StartInstanceNum;
+                    const auto indexOffset = 0;
+
+                    GetContext()->IASetVertexBuffers( 0, 1, buffers, uStride, offset );
+
+                    Context->IASetIndexBuffer( ib->GetVertexBuffer().Get(), VERTEX_INDEX_DXGI_FORMAT, 0 );
+
+                    unsigned int max =
+                        Engine::GAPI->GetRendererState().RendererSettings.MaxNumFaces * 3;
+                    numIndices = max != 0 ? (numIndices < max ? numIndices : max) : numIndices;
+
+                    // Draw the batch
+                    GetContext()->DrawIndexedInstanced( numIndices, numInstances, indexOffset, 0,
+                        startInstanceNum );
+
+                    Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
+                        (numIndices / 3) * numInstances;
+
+                    Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnVobs++;
                 }
             }
 
@@ -5144,7 +5195,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
     if ( Engine::GAPI->GetRendererState().RendererSettings.DrawSkeletalMeshes ) {
         auto _ = START_TIMING( timer_labels_skeletal[timerLabelIndex] );
-        auto _1 = RecordGraphicsEvent( L"DrawSkeletalMeshes" );
+        auto _1 = RecordGraphicsEvent( L"Shadows::DrawSkeletalMeshes" );
 
         auto skeletalRadiusSq = Engine::GAPI->GetRendererState().RendererSettings.SkeletalMeshDrawRadius
             * Engine::GAPI->GetRendererState().RendererSettings.SkeletalMeshDrawRadius;
