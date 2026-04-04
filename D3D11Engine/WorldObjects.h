@@ -218,6 +218,9 @@ struct MeshVisualInfo : public BaseVisualInfo {
     /** This is true if we can't actually render something on this. TODO: Try to fix this! */
     bool UnloadedSomething;
     void* MorphMeshVisual;
+
+    /** Flag wether some mesh inside needs alpha testing, to allow sorting for shader usage */
+    bool NeedsAlphaTesting;
 };
 
 /** Holds the converted mesh of a VOB */

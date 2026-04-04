@@ -1027,6 +1027,9 @@ void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualIn
             key.Info = Engine::GAPI->GetMaterialInfoFrom( key.Texture );
 
             meshInfo->MeshesByTexture[key].emplace_back( mi );
+            if (key.Texture && key.Texture->HasAlphaChannel()) {
+                meshInfo->NeedsAlphaTesting = true;
+            }
 
             vertexBuffers.emplace_back( &mi->Vertices );
             indexBuffers.emplace_back( &mi->Indices );
@@ -1317,6 +1320,9 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
         key.Info = Engine::GAPI->GetMaterialInfoFrom( key.Texture );
 
         meshInfo->MeshesByTexture[key].emplace_back( mi );
+        if (key.Texture && key.Texture->HasAlphaChannel()) {
+            meshInfo->NeedsAlphaTesting = true;
+        }
 
         vertexBuffers.emplace_back( &mi->Vertices );
         indexBuffers.emplace_back( &mi->Indices );

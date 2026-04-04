@@ -5093,29 +5093,15 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         GetContext()->IASetVertexBuffers( 1, 1, buffers, dynuStride, dynOffset );
 
         // Sort visuals by whether they need alpha testing to minimize shader switches
-        std::sort( activeVisuals.begin(), activeVisuals.end(), [alphaRef, colorWritesEnabled]( const MeshVisualInfo* a, const MeshVisualInfo* b ) {
-            int aNeedShader = 0;
-            for ( auto const& itt : a->MeshesByTexture ) {
-                const auto tx = itt.first.Texture;
-                if (tx && (tx->HasAlphaChannel() || colorWritesEnabled)
-                    && alphaRef > 0.0f ) {
-                    aNeedShader = 1;
-                    break;
-                }
-            }
-
-            int bNeedShader = 0;
-            for ( auto const& itt : b->MeshesByTexture ) {
-                const auto tx = itt.first.Texture;
-                if ( tx && (tx->HasAlphaChannel() || colorWritesEnabled)
-                    && alphaRef > 0.0f ) {
-                    bNeedShader = 1;
-                    break;
-                }
-            }
-
-            return aNeedShader < bNeedShader || (aNeedShader == bNeedShader && a->Visual < b->Visual);
-        } );
+        if ( alphaRef > 0.0f ) {
+            std::sort( activeVisuals.begin(), activeVisuals.end(), [alphaRef, colorWritesEnabled]( const MeshVisualInfo* a, const MeshVisualInfo* b ) {
+                return a->NeedsAlphaTesting < b->NeedsAlphaTesting || (a->NeedsAlphaTesting == b->NeedsAlphaTesting && a->Visual < b->Visual);
+            } );
+        } else {
+            std::sort( activeVisuals.begin(), activeVisuals.end(), [alphaRef, colorWritesEnabled]( const MeshVisualInfo* a, const MeshVisualInfo* b ) {
+                return a->Visual < b->Visual;
+            } );
+        }
 
         // Draw all vobs the player currently sees
         D3D11PShader* currPs = nullptr;
