@@ -936,8 +936,8 @@ void WorldConverter::ExtractSkeletalMeshFromVob( zCModel* model, SkeletalMeshVis
                 }
 
                 // Init and fill it
-                meshData->Vertices = SharedVector{ std::make_shared<std::vector<ExSkelVertexStruct>>( std::move(vertices) ) };
-                meshData->Indices = SharedVector{ std::make_shared<std::vector<VERTEX_INDEX>>( std::move(indices) ) };
+                meshData->Vertices = SharedVector{ std::make_shared<std::vector<ExSkelVertexStruct>>( /*no-move*/(vertices) ) };
+                meshData->Indices = SharedVector{ std::make_shared<std::vector<VERTEX_INDEX>>( /*no-move*/(indices) ) };
                 meshData->MeshVertexBuffer->Init( &meshData->Vertices[0], meshData->Vertices.size() * sizeof( ExSkelVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
                 meshData->MeshIndexBuffer->Init( &meshData->Indices[0], meshData->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
 
@@ -965,8 +965,8 @@ void WorldConverter::ExtractSkeletalMeshFromVob( zCModel* model, SkeletalMeshVis
                     meshData->MeshIndexBuffer.reset( indexBuffer );
                 }
 
-                meshData->Vertices = SharedVector{ std::make_shared<std::vector<ExVertexStruct>>( std::move(bindPoseVertices) ) };
-                meshData->Indices = SharedVector{ std::make_shared<std::vector<VERTEX_INDEX>>( std::move(indices) ) };
+                meshData->Vertices = SharedVector{ std::make_shared<std::vector<ExVertexStruct>>( /*no-move*/(bindPoseVertices) ) };
+                meshData->Indices = SharedVector{ std::make_shared<std::vector<VERTEX_INDEX>>( /*no-move*/(indices) ) };
                 meshData->MeshVertexBuffer->Init( meshData->Vertices.data_ptr(), meshData->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
                 meshData->MeshIndexBuffer->Init( meshData->Indices.data_ptr(), meshData->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
 
