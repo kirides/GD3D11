@@ -112,5 +112,7 @@ enum class CShaderID : size_t {
     CS_AdvanceRain,
     CS_LightCulling,
     CS_TiledShading,
+    CS_PFX_GodRayMask,
+    CS_PFX_GodRayZoom,
     COUNT
 };
