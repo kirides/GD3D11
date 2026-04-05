@@ -12,6 +12,16 @@
 class zCSkyController_Outdoor;
 class zCSkyController;
 
+enum zTWorldLoadMode
+{
+    zWLD_LOAD_GAME_STARTUP,
+    zWLD_LOAD_GAME_SAVED_DYN,
+    zWLD_LOAD_GAME_SAVED_STAT,
+    zWLD_LOAD_EDITOR_COMPILED,
+    zWLD_LOAD_EDITOR_UNCOMPILED,
+    zWLD_LOAD_MERGE
+};
+
 class zCWorld {
 public:
     /** Hooks the functions of this Class */
