@@ -95,6 +95,7 @@ enum class PShaderID : size_t {
     PS_PFX_CAS,
     PS_PFX_FSR1_EASU,
     PS_PFX_FSR1_RCAS,
+    PS_PFX_Composition,
     COUNT
 };
 

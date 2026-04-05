@@ -647,12 +647,18 @@ void ImGuiShim::RenderSettingsWindow()
                 {"HBAO+", AOMode::AO_HBAO},
                 {"SAO", AOMode::AO_SAO},
             };
-            if ( ImComboBox( "Ambient Occlusion", aoModes, &settings.AoMode ) ) {
+            if ( ImComboBoxC( "Ambient Occlusion", aoModes, &settings.AoMode , [] {
+                    Engine::GraphicsEngine->ReloadShaders( ShaderCategory::Other );
+                } )) {
                 ImGui::EndCombo();
             }
-            ImGui::SetItemTooltip( "Screen-Space ambient occlusion mode." );
+            ImGui::SetItemTooltip( "Screen-Space ambient occlusion mode.\nChanging this will reload shaders." );
 
-            ImGui::Checkbox( "Godrays", &settings.EnableGodRays );
+            if ( ImGui::Checkbox( "Godrays", &settings.EnableGodRays ) ) {
+                Engine::GraphicsEngine->ReloadShaders( ShaderCategory::Other );
+            }
+            ImGui::SetItemTooltip( "Changing this will reload shaders." );
+
             ImGui::Checkbox( "Depth of Field", &settings.EnableDoF );
             ImGui::SetItemTooltip( "Enable Depth of Field with bokeh blur." );
             static std::vector<std::tuple<const char*, GothicRendererSettings::E_AntiAliasingMode, const char*>> antiAliasing = {
@@ -1015,7 +1021,10 @@ void RenderAdvancedColumn1( GothicRendererSettings& settings, GothicAPI* gapi ) 
         ImGui::SeparatorText( "GodRays" );
         {
             ImGui::PushID( "GodRaysSettings" );
-            ImGui::Checkbox( "GodRays", &settings.EnableGodRays );
+            if ( ImGui::Checkbox( "GodRays", &settings.EnableGodRays ) ) {
+                Engine::GraphicsEngine->ReloadShaders( ShaderCategory::Other );
+            }
+            ImGui::SetItemTooltip( "Changing this will reload shaders." );
             ImGui::DragFloat( "GodRayDecay", &settings.GodRayDecay, 0.01f );
             ImGui::DragFloat( "GodRayWeight", &settings.GodRayWeight, 0.01f );
             ImGui::ColorEdit3( "GodRayColorMod", &settings.GodRayColorMod.x );
@@ -1138,7 +1147,11 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
         ImGui::EndDisabled();
 
         // ImGui::Checkbox( "Draw Sky", &settings.DrawSky );
-        ImGui::Checkbox( "Draw Fog", &settings.DrawFog );
+        if ( ImGui::Checkbox( "Draw Fog", &settings.DrawFog ) ) {
+            Engine::GraphicsEngine->ReloadShaders( ShaderCategory::Other );
+        }
+        ImGui::SetItemTooltip( "Changing this will reload shaders." );
+
         ImGui::BeginDisabled( !settings.DrawFog );
         {
             // caution, FogRange is reduced by 0.5f (secScale - 0.5f) in D3D11PFX_HeightFog
@@ -1223,6 +1236,8 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
             if ( ImComboBoxC( "ShadowmapSize", shadowMapSizes, (int*)(&settings.ShadowMapSize), []() { Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows ); } ) ) {
                 ImGui::EndCombo();
             }
+            ImGui::SetItemTooltip( "Changing this will reload shaders." );
+
             ImGui::DragFloat( "Shadow Distance", &settings.WorldShadowRangeScale, 0.01f, 0.00f, 10.0f, "%.2f" );
             ImGui::SetItemTooltip( "Larger values produce less detailed shadows\nEffective Distance: %.0f", 12000 * settings.WorldShadowRangeScale );
 
@@ -1240,6 +1255,7 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                 ApplyFeatureLevel10Downgrades(settings);
                 Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows );
             }
+            ImGui::SetItemTooltip( "Changing this will reload shaders." );
 
             ImGui::BeginDisabled( settings.NumShadowCascades <= 1 );
             {
@@ -1266,13 +1282,14 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                     } ) ) {
                     ImGui::EndCombo();
                 }
+                ImGui::SetItemTooltip( "Changing this will reload shaders." );
             }
             settings.ShadowCascadePCFLimit = std::clamp( settings.ShadowCascadePCFLimit, 1, settings.NumShadowCascades );
             if ( ImGui::SliderInt( "Soft shadow limit", &settings.ShadowCascadePCFLimit, 1, settings.NumShadowCascades, "%d", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput ) ) {
                 settings.ShadowCascadePCFLimit = std::clamp( settings.ShadowCascadePCFLimit, 1, settings.NumShadowCascades );
                 Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows );
             }
-            ImGui::SetItemTooltip( "Which shadow cascades should be filtered using '16xPCF'" );
+            ImGui::SetItemTooltip( "Which shadow cascades should be filtered using '16xPCF'.\nChanging this will reload shaders." );
             
             ImGui::DragFloat( "ShadowStrength", &settings.ShadowStrength, 0.01f, 0.01f, 5.0f, "%.2f" );
             ImGui::DragFloat( "ShadowSoftness", &settings.ShadowSoftness, 0.05f, 0.2f, 8.0f, "%.2f" );
@@ -1512,9 +1529,12 @@ void RenderAdvancedColumn4( GothicRendererSettings& settings, GothicAPI* gapi ) 
                     {"HBAO+", AOMode::AO_HBAO},
                     {"SAO", AOMode::AO_SAO},
                 };
-                if ( ImComboBox( "AO Mode", aoModes, &settings.AoMode ) ) {
+                if ( ImComboBoxC( "AO Mode", aoModes, &settings.AoMode, [] {
+                        Engine::GraphicsEngine->ReloadShaders( ShaderCategory::Other );
+                    } ) ) {
                     ImGui::EndCombo();
                 }
+                ImGui::SetItemTooltip( "Changing this will reload shaders." );
 
                 if ( settings.AoMode == AOMode::AO_HBAO ) {
                     ImGui::SeparatorText( "HBAO+ Settings" );

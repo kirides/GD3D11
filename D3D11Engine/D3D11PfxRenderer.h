@@ -71,6 +71,25 @@ public:
                        ID3D11ShaderResourceView* normalsSRV,
                        ID3D11RenderTargetView* outputRTV );
 
+    /** Computes SAO into internal buffer, skipping the final modulate blit */
+    XRESULT RenderSAOCompute( ID3D11ShaderResourceView* depthSRV,
+                              ID3D11ShaderResourceView* normalsSRV );
+
+    /** Returns the SRV of the last computed SAO result (R8_UNORM) */
+    ID3D11ShaderResourceView* GetSAOResultSRV() const;
+
+    /** Renders godrays mask+zoom to a pool texture, skipping the final additive blit */
+    XRESULT RenderGodRaysToTexture( ID3D11ShaderResourceView* backbuffer,
+                                    ID3D11ShaderResourceView* normals,
+                                    ID3D11ShaderResourceView** outGodRaysSRV );
+
+    /** Renders the PostFX composition uber pass (SAO + HeightFog + GodRays) */
+    XRESULT RenderPostFXComposition( ID3D11RenderTargetView* outputRTV,
+                                     ID3D11ShaderResourceView* backbufferSRV,
+                                     ID3D11ShaderResourceView* saoSRV,
+                                     ID3D11ShaderResourceView* godraysSRV,
+                                     ID3D11ShaderResourceView* depthSRV );
+
     /** Accessors */
     TextureHandle GetTempBuffer();
     TextureHandle GetBackbufferTempBuffer();

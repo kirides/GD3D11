@@ -17,6 +17,13 @@ public:
                     ID3D11ShaderResourceView* normalsSRV,
                     ID3D11RenderTargetView* outputRTV );
 
+    /** Computes AO into m_AOBuffer but skips the final modulate blit */
+    XRESULT RenderAO( ID3D11ShaderResourceView* depthSRV,
+                      ID3D11ShaderResourceView* normalsSRV );
+
+    /** Returns the SRV of the computed AO buffer (R8_UNORM) for composition */
+    ID3D11ShaderResourceView* GetAOResultSRV() const;
+
 private:
     std::unique_ptr<RenderToTextureBuffer> m_AOBuffer;      // Full-res R8_UNORM with UAV
     std::unique_ptr<RenderToTextureBuffer> m_BlurTempBuffer; // Full-res R8_UNORM with UAV for blur ping-pong

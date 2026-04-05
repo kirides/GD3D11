@@ -3436,6 +3436,14 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     );    
 
     // Draw Ambient Occlusion
+    // Shared state for PostFX composition pass
+    ID3D11ShaderResourceView* compositionGodRaysSRV = nullptr;
+    bool isOutdoor = Engine::GAPI->GetLoadedWorldInfo()->BspTree->GetBspTreeMode() == zBSP_MODE_OUTDOOR;
+    bool compositionSAO = (rendererState.RendererSettings.AoMode == AOMode::AO_SAO);
+    bool compositionGodRays = (rendererState.RendererSettings.EnableGodRays && isOutdoor);
+    bool compositionHeightFog = (rendererState.RendererSettings.DrawFog && isOutdoor);
+    bool compositionActive = compositionSAO || compositionGodRays || compositionHeightFog;
+
     if ( rendererState.RendererSettings.AoMode == AOMode::AO_HBAO ) {
         graph.AddPass( L"HBAO+", [&]( RGBuilder& builder, RenderPass& pass ) {
             builder.Read( normalsResource );
@@ -3451,19 +3459,17 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                 GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
             };
         });
-    } else if ( rendererState.RendererSettings.AoMode == AOMode::AO_SAO ) {
-        graph.AddPass( L"SAO", [&]( RGBuilder& builder, RenderPass& pass ) {
+    } else if ( compositionSAO ) {
+        // SAO compute-only pass — skips the final modulate blit (composition handles it)
+        graph.AddPass( L"SAO Compute", [&]( RGBuilder& builder, RenderPass& pass ) {
             builder.Read( normalsResource );
-            builder.Write( backBufferHandle );
 
-            pass.m_executeCallback = [this, normalsResource, backBufferHandle](const RenderGraph& graph) {
+            pass.m_executeCallback = [this, normalsResource](const RenderGraph& graph) {
                 auto normalsTexture = graph.GetPhysicalTexture(normalsResource);
-                auto backBuffer = graph.GetPhysicalTexture(backBufferHandle);
 
-                PfxRenderer->RenderSAO(
+                PfxRenderer->RenderSAOCompute(
                     GetDepthBuffer()->GetShaderResView().Get(),
-                    normalsTexture->GetShaderResView().Get(),
-                    backBuffer->GetRenderTargetView().Get());
+                    normalsTexture->GetShaderResView().Get());
                 GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
             };
         });
@@ -3527,7 +3533,9 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     
     if (rendererState.RendererSettings.DrawFog &&
                 Engine::GAPI->GetLoadedWorldInfo()->BspTree->GetBspTreeMode() ==
-                zBSP_MODE_OUTDOOR) {
+                zBSP_MODE_OUTDOOR && !compositionActive) {
+        // Standalone heightfog pass — only used when composition is not active (shouldn't happen
+        // when DrawFog is on, but kept as fallback for FL10 or edge cases)
         graph.AddPass( L"Draw Heightfog", [&]( RGBuilder& builder, RenderPass& pass ) {
             builder.Read( backBufferHandle );
             builder.Write( backBufferHandle );
@@ -3598,22 +3606,73 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     if (rendererState.RendererSettings.EnableGodRays &&
         Engine::GAPI->GetLoadedWorldInfo()->BspTree->GetBspTreeMode() ==
         zBSP_MODE_OUTDOOR) {
-        graph.AddPass( L"Draw Godrays", [&]( RGBuilder& builder, RenderPass& pass ) {
-            builder.Read( normalsResource );
+        if ( compositionActive ) {
+            // GodRays compute-only pass — writes to pool texture, skips the final additive blit
+            graph.AddPass( L"GodRays Compute", [&]( RGBuilder& builder, RenderPass& pass ) {
+                builder.Read( normalsResource );
+                builder.Read( backBufferHandle );
+
+                pass.m_executeCallback = [this, backBufferHandle, normalsResource, &compositionGodRaysSRV](const RenderGraph& graph) {
+                    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv;
+                    GetContext()->PSSetShaderResources( 5, 1, srv.GetAddressOf() );
+
+                    auto backbufferResource = graph.GetPhysicalTexture(backBufferHandle);
+                    auto normalsTexture = graph.GetPhysicalTexture(normalsResource);
+
+                    PfxRenderer->RenderGodRaysToTexture(
+                        backbufferResource->GetShaderResView().Get(),
+                        normalsTexture->GetShaderResView().Get(),
+                        &compositionGodRaysSRV);
+                    GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
+                };
+            });
+        } else {
+            // Standalone GodRays pass (fallback when composition is not active)
+            graph.AddPass( L"Draw Godrays", [&]( RGBuilder& builder, RenderPass& pass ) {
+                builder.Read( normalsResource );
+                builder.Read( backBufferHandle );
+                builder.Write( backBufferHandle );
+
+                pass.m_executeCallback = [this, backBufferHandle, normalsResource](const RenderGraph& graph) {
+                    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv;
+                    GetContext()->PSSetShaderResources( 5, 1, srv.GetAddressOf() );
+
+                    auto backbufferResource = graph.GetPhysicalTexture(backBufferHandle);
+                    auto normalsTexture = graph.GetPhysicalTexture(normalsResource);
+
+                    PfxRenderer->RenderGodRays(backbufferResource->GetShaderResView().Get(), normalsTexture->GetShaderResView().Get());
+                    GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
+                };
+            });
+        }
+    }
+
+    // PostFX Composition pass — merges SAO, HeightFog, and GodRays in a single full-screen blit
+    if ( compositionActive ) {
+        graph.AddPass( L"PostFX Composition", [&]( RGBuilder& builder, RenderPass& pass ) {
             builder.Read( backBufferHandle );
             builder.Write( backBufferHandle );
 
-            pass.m_executeCallback = [this, backBufferHandle, normalsResource](const RenderGraph& graph) {
-                // Unbind temporary backbuffer copy
-                Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv;
-                GetContext()->PSSetShaderResources( 5, 1, srv.GetAddressOf() );
-                
-                auto backbufferResource = graph.GetPhysicalTexture(backBufferHandle);
-                auto normalsTexture = graph.GetPhysicalTexture(normalsResource);
-                
-                PfxRenderer->RenderGodRays(backbufferResource->GetShaderResView().Get(), normalsTexture->GetShaderResView().Get());
-                // Godrays bind a different sampler
-                GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );                
+            pass.m_executeCallback = [this, backBufferHandle, compositionSAO, compositionHeightFog,
+                                      &compositionGodRaysSRV](const RenderGraph& graph) {
+                auto backBuffer = graph.GetPhysicalTexture(backBufferHandle);
+
+                // Copy backbuffer to a temp texture — we need to read it as SRV while writing to RTV
+                auto tempBuffer = PfxRenderer->GetTempBuffer();
+                GetContext()->CopyResource( tempBuffer->GetTexture().Get(), backBuffer->GetTexture().Get() );
+
+                // Gather SRVs for composition
+                ID3D11ShaderResourceView* saoSRV = compositionSAO ? PfxRenderer->GetSAOResultSRV() : nullptr;
+                ID3D11ShaderResourceView* depthSRV = compositionHeightFog ? GetDepthBuffer()->GetShaderResView().Get() : nullptr;
+
+                PfxRenderer->RenderPostFXComposition(
+                    backBuffer->GetRenderTargetView().Get(),
+                    tempBuffer->GetShaderResView().Get(),
+                    saoSRV,
+                    compositionGodRaysSRV,
+                    depthSRV );
+
+                GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
             };
         });
     }

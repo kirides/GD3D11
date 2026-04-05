@@ -336,6 +336,16 @@ XRESULT D3D11ShaderManager::Init() {
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_GodRayMask>( "PS_PFX_GodRayMask.hlsl" ) );
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_GodRayZoom>( "PS_PFX_GodRayZoom.hlsl" ) );
 
+    // PostFX Composition uber shader — macros come from ConstructShaderMakroList()
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_Composition>( "PS_PFX_Composition.hlsl" )
+        .with_macros( []( std::vector<D3D_SHADER_MACRO>& list ) {
+            const auto& s = Engine::GAPI->GetRendererState().RendererSettings;
+
+            list.push_back( { "COMPOSE_SAO", (s.AoMode == AOMode::AO_SAO) ? "1" : "0" } );
+            list.push_back( { "COMPOSE_GODRAYS", s.EnableGodRays ? "1" : "0" } );
+            list.push_back( { "COMPOSE_HEIGHTFOG", s.DrawFog ? "1" : "0" } );
+        } ) );
+
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_Tonemap>( "PS_PFX_Tonemap.hlsl" )
         .with_category(ShaderCategory::Tonemapping)
         .with_macros( []( std::vector<D3D_SHADER_MACRO>& list ) {

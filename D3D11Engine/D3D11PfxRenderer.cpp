@@ -21,6 +21,10 @@
 #include "D3D11PFX_FSR2.h"
 #include "D3D11PFX_FSR3.h"
 #include "D3D11PFX_SAO.h"
+#include "D3D11ConstantBuffer.h"
+#include "ConstantBufferStructs.h"
+#include "GothicAPI.h"
+#include "GSky.h"
 
 D3D11PfxRenderer::D3D11PfxRenderer() {
 
@@ -247,6 +251,142 @@ XRESULT D3D11PfxRenderer::RenderSAO(
     ID3D11RenderTargetView* outputRTV ) {
     if ( !FX_SAO ) return XR_FAILED;
     return FX_SAO->Render( depthSRV, normalsSRV, outputRTV );
+}
+
+XRESULT D3D11PfxRenderer::RenderSAOCompute(
+    ID3D11ShaderResourceView* depthSRV,
+    ID3D11ShaderResourceView* normalsSRV ) {
+    if ( !FX_SAO ) return XR_FAILED;
+    return FX_SAO->RenderAO( depthSRV, normalsSRV );
+}
+
+ID3D11ShaderResourceView* D3D11PfxRenderer::GetSAOResultSRV() const {
+    return FX_SAO ? FX_SAO->GetAOResultSRV() : nullptr;
+}
+
+XRESULT D3D11PfxRenderer::RenderGodRaysToTexture(
+    ID3D11ShaderResourceView* backbuffer,
+    ID3D11ShaderResourceView* normals,
+    ID3D11ShaderResourceView** outGodRaysSRV ) {
+    return FX_GodRays->RenderToTexture( backbuffer, normals, outGodRaysSRV );
+}
+
+XRESULT D3D11PfxRenderer::RenderPostFXComposition(
+    ID3D11RenderTargetView* outputRTV,
+    ID3D11ShaderResourceView* backbufferSRV,
+    ID3D11ShaderResourceView* saoSRV,
+    ID3D11ShaderResourceView* godraysSRV,
+    ID3D11ShaderResourceView* depthSRV ) {
+
+    D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    auto& context = engine->GetContext();
+    auto res = engine->GetResolution();
+
+    // Set up shaders
+    engine->GetShaderManager().GetVShader( VShaderID::VS_PFX )->Apply();
+    auto compositionPS = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_Composition );
+    compositionPS->Apply();
+
+    // Update constant buffers for inline heightfog if active
+    auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+    if ( settings.DrawFog ) {
+        HeightfogConstantBuffer cb;
+        {
+            auto& proj = Engine::GAPI->GetProjectionMatrix();
+            cb.HF_ProjParams = float4( 1.0f / proj._11, 1.0f / proj._22, proj._43, proj._33 );
+        }
+        XMStoreFloat4x4( &cb.InvView, XMMatrixInverse( nullptr, Engine::GAPI->GetViewMatrixXM() ) );
+        cb.CameraPosition = Engine::GAPI->GetCameraPosition();
+        cb.HF_GlobalDensity = settings.FogGlobalDensity;
+        cb.HF_HeightFalloff = settings.FogHeightFalloff;
+
+        float height = settings.FogHeight;
+        XMVECTOR color = XMLoadFloat3( settings.FogColorMod.toXMFLOAT3() );
+
+        float fnear = 15000.0f;
+        float ffar = 60000.0f;
+        float secScale = std::min<float>( settings.SectionDrawRadius, settings.FogRange );
+
+        cb.HF_WeightZNear = std::max( 0.0f, WORLD_SECTION_SIZE * ((secScale - 0.5f) * 0.7f) - (ffar - fnear) );
+        cb.HF_WeightZFar = WORLD_SECTION_SIZE * ((secScale - 0.5f) * 0.8f);
+
+        float atmoMax = 83200.0f;
+        float atmoMin = 27799.9922f;
+        cb.HF_WeightZFar = std::min( cb.HF_WeightZFar, atmoMax );
+        cb.HF_WeightZNear = std::min( cb.HF_WeightZNear, atmoMin );
+
+#if !defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)
+        float fogDensityFactor = 2;
+        float fogDensityFactorRain = (1.0f - Engine::GAPI->GetFogOverride());
+#else
+        float fogDensityFactor = pow( 15000.0f / Engine::GAPI->GetFarZ(), 4.0f );
+        float fogDensityFactorRain = 1.0f;
+#endif
+
+        if ( Engine::GAPI->GetFogOverride() > 0.0f ) {
+            height = Toolbox::lerp( height, Engine::GAPI->GetCameraPosition().y + 10000, Engine::GAPI->GetFogOverride() );
+            color = Engine::GAPI->GetFogColor();
+#if !defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)
+            cb.HF_HeightFalloff = Toolbox::lerp( cb.HF_HeightFalloff, 0.000001f, Engine::GAPI->GetFogOverride() );
+#endif
+            cb.HF_GlobalDensity = Toolbox::lerp( cb.HF_GlobalDensity, cb.HF_GlobalDensity * fogDensityFactor, Engine::GAPI->GetFogOverride() );
+#if !defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)
+            cb.HF_WeightZNear = Toolbox::lerp( cb.HF_WeightZNear, WORLD_SECTION_SIZE * 0.09f, Engine::GAPI->GetFogOverride() );
+            cb.HF_WeightZFar = Toolbox::lerp( cb.HF_WeightZFar, WORLD_SECTION_SIZE * 0.8, Engine::GAPI->GetFogOverride() );
+#endif
+        }
+
+        cb.HF_FogHeight = height;
+        cb.HF_ProjAB = float2( Engine::GAPI->GetProjectionMatrix()._33, Engine::GAPI->GetProjectionMatrix()._34 );
+
+        float rain = Engine::GAPI->GetRainFXWeight();
+        XMFLOAT3 FogColorMod;
+        XMStoreFloat3( &FogColorMod, XMVectorLerpV( color, XMLoadFloat3( &settings.RainFogColor ), XMVectorSet( std::min( 1.0f, rain * 2.0f ), std::min( 1.0f, rain * 2.0f ), std::min( 1.0f, rain * 2.0f ), 0 ) ) );
+        cb.HF_FogColorMod = FogColorMod;
+        cb.HF_GlobalDensity = Toolbox::lerp( cb.HF_GlobalDensity, settings.RainFogDensity, rain * fogDensityFactorRain );
+
+        compositionPS->GetBuffer( "PFXBuffer" ).Update( &cb ).Bind();
+
+        GSky* sky = Engine::GAPI->GetSky();
+        compositionPS->GetBuffer( "Atmosphere" ).Update( &sky->GetAtmosphereCB() ).Bind();
+    }
+
+    // Set viewport
+    D3D11_VIEWPORT vp = {};
+    vp.Width = static_cast<float>(res.x);
+    vp.Height = static_cast<float>(res.y);
+    vp.MinDepth = 0.0f;
+    vp.MaxDepth = 1.0f;
+    context->RSSetViewports( 1, &vp );
+
+    // Bind output RTV (no depth)
+    context->OMSetRenderTargets( 1, &outputRTV, nullptr );
+
+    // Bind SRVs: t0=backbuffer, t1=SAO, t2=GodRays, t3=Depth
+    ID3D11ShaderResourceView* srvs[4] = { backbufferSRV, saoSRV, godraysSRV, depthSRV };
+    context->PSSetShaderResources( 0, 4, srvs );
+
+    // No blending — direct overwrite
+    Engine::GAPI->GetRendererState().BlendState.SetDefault();
+    Engine::GAPI->GetRendererState().BlendState.SetDirty();
+    Engine::GAPI->GetRendererState().DepthState.DepthBufferCompareFunc =
+        GothicDepthBufferStateInfo::CF_COMPARISON_ALWAYS;
+    Engine::GAPI->GetRendererState().DepthState.DepthWriteEnabled = false;
+    Engine::GAPI->GetRendererState().DepthState.SetDirty();
+
+    DrawFullScreenQuad();
+
+    // Unbind SRVs
+    ID3D11ShaderResourceView* nullSRVs[4] = { nullptr, nullptr, nullptr, nullptr };
+    context->PSSetShaderResources( 0, 4, nullSRVs );
+
+    // Restore default states
+    Engine::GAPI->GetRendererState().DepthState.DepthBufferCompareFunc =
+        GothicDepthBufferStateInfo::DEFAULT_DEPTH_COMP_STATE;
+    Engine::GAPI->GetRendererState().DepthState.DepthWriteEnabled = true;
+    Engine::GAPI->GetRendererState().DepthState.SetDirty();
+
+    return XR_SUCCESS;
 }
 
 TextureHandle D3D11PfxRenderer::GetTempBuffer()
