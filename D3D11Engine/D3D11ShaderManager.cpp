@@ -515,6 +515,15 @@ XRESULT D3D11ShaderManager::Init() {
         Shaders.push_back( ShaderInfo::make<CShaderID::CS_PFX_GodRayMask>( "CS_PFX_GodRayMask.hlsl" ));
 
         Shaders.push_back( ShaderInfo::make<CShaderID::CS_PFX_GodRayZoom>( "CS_PFX_GodRayZoom.hlsl" ));
+
+        Shaders.push_back( ShaderInfo::make<CShaderID::CS_PFX_DoF_FocusResolve>( "CS_PFX_DoF_FocusResolve.hlsl" ));
+
+        Shaders.push_back( ShaderInfo::make<CShaderID::CS_PFX_DoF>( "CS_PFX_DoF.hlsl" ));
+
+        Shaders.push_back( ShaderInfo::make<CShaderID::CS_PFX_DoF_Gauss>( "CS_PFX_DoF.hlsl" )
+            .with_macros( {{ "DOF_GAUSS_BLUR", "1" }} ) );
+
+        Shaders.push_back( ShaderInfo::make<CShaderID::CS_PFX_DoF_Composite>( "CS_PFX_DoF_Composite.hlsl" ));
     }
 
     return XR_SUCCESS;

@@ -114,5 +114,9 @@ enum class CShaderID : size_t {
     CS_TiledShading,
     CS_PFX_GodRayMask,
     CS_PFX_GodRayZoom,
+    CS_PFX_DoF_FocusResolve,
+    CS_PFX_DoF,
+    CS_PFX_DoF_Gauss,
+    CS_PFX_DoF_Composite,
     COUNT
 };
