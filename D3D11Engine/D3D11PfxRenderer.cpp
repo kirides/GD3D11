@@ -20,6 +20,7 @@
 #include "D3D11PFX_FSR1.h"
 #include "D3D11PFX_FSR2.h"
 #include "D3D11PFX_FSR3.h"
+#include "D3D11PFX_SAO.h"
 
 D3D11PfxRenderer::D3D11PfxRenderer() {
 
@@ -37,6 +38,7 @@ D3D11PfxRenderer::D3D11PfxRenderer() {
         FX_SMAA = std::make_unique<D3D11PFX_SMAA>( this );
         FX_TAA = std::make_unique<D3D11PFX_TAA>( this );
         NvHBAO = std::make_unique<D3D11NVHBAO>();
+        FX_SAO = std::make_unique<D3D11PFX_SAO>( this );
         PFX_FSR1 = std::make_unique<D3D11PFX_FSR1>( this );
         PFX_FSR2 = std::make_unique<D3D11PFX_FSR2>( this );
         PFX_FSR3 = std::make_unique<D3D11PFX_FSR3>( this );
@@ -238,6 +240,15 @@ XRESULT D3D11PfxRenderer::DrawHBAO(
     return NvHBAO->Render( rtv.Get(), pFullResDepthTexSRV, pFullResNormalTexSRV);
 }
 
+/** Renders the SAO effect */
+XRESULT D3D11PfxRenderer::RenderSAO(
+    ID3D11ShaderResourceView* depthSRV,
+    ID3D11ShaderResourceView* normalsSRV,
+    ID3D11RenderTargetView* outputRTV ) {
+    if ( !FX_SAO ) return XR_FAILED;
+    return FX_SAO->Render( depthSRV, normalsSRV, outputRTV );
+}
+
 TextureHandle D3D11PfxRenderer::GetTempBuffer()
 {
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
@@ -288,7 +299,7 @@ void D3D11PfxRenderer::FreeResources()
     }
 
     if ( this->NvHBAO 
-        && !settings.HbaoSettings.Enabled ) {
+        && settings.AoMode != AOMode::AO_HBAO ) {
         this->NvHBAO->ReleaseResources();
     }
 }

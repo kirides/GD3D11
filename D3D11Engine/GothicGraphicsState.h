@@ -508,6 +508,28 @@ struct HBAOSettings {
     int SsaoStepCount;
 };
 
+enum class AOMode : int {
+    AO_NONE = 0,
+    AO_HBAO = 1,
+    AO_SAO = 2,
+};
+
+struct SAOSettings {
+    SAOSettings() {
+        Radius = 1.5f;
+        Bias = 0.02f;
+        Intensity = 3.0f;
+        NumSamples = 16;
+        BlurSharpness = 1.0f;
+    }
+
+    float Radius;
+    float Bias;
+    float Intensity;
+    int NumSamples;
+    float BlurSharpness;
+};
+
 struct GothicRendererSettings {
     enum EPointLightShadowMode {
         PLS_DISABLED = 0,
@@ -725,6 +747,8 @@ struct GothicRendererSettings {
         DoFBokehRadius = 8.0f;
         DoFMaxBlur = 12.0f;
 
+        AoMode = AOMode::AO_HBAO;
+
         RECT desktopRect;
         GetClientRect( GetDesktopWindow(), &desktopRect );
 
@@ -903,6 +927,8 @@ struct GothicRendererSettings {
     float DoFMaxBlur;
 
     HBAOSettings HbaoSettings;
+    SAOSettings SaoSettings;
+    AOMode AoMode;
 
     bool FixViewFrustum;
 

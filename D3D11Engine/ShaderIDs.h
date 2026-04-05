@@ -48,6 +48,7 @@ enum class PShaderID : size_t {
     PS_PFX_ApplyParticleDistortion,
     PS_Grass,
     PS_PFX_Simple,
+    PS_PFX_Simple_R8,
     PS_PFX_VelocityDebug,
     PS_PFX_GaussBlur,
     PS_PFX_Heightfog,
@@ -118,5 +119,7 @@ enum class CShaderID : size_t {
     CS_PFX_DoF,
     CS_PFX_DoF_Gauss,
     CS_PFX_DoF_Composite,
+    CS_PFX_SAO,
+    CS_PFX_SAO_Blur,
     COUNT
 };

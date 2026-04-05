@@ -3230,6 +3230,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     if ( FeatureLevel10Compatibility ) {
         // Disable here what we can't draw in feature level 10 compatibility
         rendererState.RendererSettings.HbaoSettings.Enabled = false;
+        rendererState.RendererSettings.AoMode = AOMode::AO_NONE;
         rendererState.RendererSettings.AntiAliasingMode = GothicRendererSettings::E_AntiAliasingMode::AA_NONE;
     }
 
@@ -3434,8 +3435,8 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         }
     );    
 
-    // Draw HBAO
-    if ( rendererState.RendererSettings.HbaoSettings.Enabled ) {
+    // Draw Ambient Occlusion
+    if ( rendererState.RendererSettings.AoMode == AOMode::AO_HBAO ) {
         graph.AddPass( L"HBAO+", [&]( RGBuilder& builder, RenderPass& pass ) {
             builder.Read( normalsResource );
             builder.Write( backBufferHandle );
@@ -3447,6 +3448,22 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                 PfxRenderer->DrawHBAO( backBuffer->GetRenderTargetView(),
                     GetDepthBuffer()->GetShaderResView(), 
                     normalsTexture->GetShaderResView());
+                GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
+            };
+        });
+    } else if ( rendererState.RendererSettings.AoMode == AOMode::AO_SAO ) {
+        graph.AddPass( L"SAO", [&]( RGBuilder& builder, RenderPass& pass ) {
+            builder.Read( normalsResource );
+            builder.Write( backBufferHandle );
+
+            pass.m_executeCallback = [this, normalsResource, backBufferHandle](const RenderGraph& graph) {
+                auto normalsTexture = graph.GetPhysicalTexture(normalsResource);
+                auto backBuffer = graph.GetPhysicalTexture(backBufferHandle);
+
+                PfxRenderer->RenderSAO(
+                    GetDepthBuffer()->GetShaderResView().Get(),
+                    normalsTexture->GetShaderResView().Get(),
+                    backBuffer->GetRenderTargetView().Get());
                 GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
             };
         });

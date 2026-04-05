@@ -434,7 +434,7 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.EnableDynamicLighting = false;
         s.EnablePointlightShadows = GothicRendererSettings::EPointLightShadowMode::PLS_DISABLED;
 
-        s.HbaoSettings.Enabled = false;
+        s.AoMode = AOMode::AO_NONE;
 
         s.textureMaxSize = static_cast<int>(TX_QUALITY::Medium);
 
@@ -467,7 +467,7 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.EnableDynamicLighting = true;
         s.EnablePointlightShadows = GothicRendererSettings::EPointLightShadowMode::PLS_STATIC_ONLY;
 
-        s.HbaoSettings.Enabled = false;
+        s.AoMode = AOMode::AO_NONE;
 
         s.textureMaxSize = static_cast<int>(TX_QUALITY::Medium);
 
@@ -500,7 +500,7 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.EnableDynamicLighting = true;
         s.EnablePointlightShadows = GothicRendererSettings::EPointLightShadowMode::PLS_UPDATE_DYNAMIC;
 
-        s.HbaoSettings.Enabled = true;
+        s.AoMode = AOMode::AO_HBAO;
         s.HbaoSettings.SsaoStepCount = 4;
         s.HbaoSettings.SsaoBlurRadius = 4;
 
@@ -535,7 +535,7 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.EnableDynamicLighting = true;
         s.EnablePointlightShadows = GothicRendererSettings::EPointLightShadowMode::PLS_FULL;
 
-        s.HbaoSettings.Enabled = true;
+        s.AoMode = AOMode::AO_HBAO;
         s.HbaoSettings.SsaoStepCount = 8;
         s.HbaoSettings.SsaoBlurRadius = 4;
 
@@ -642,8 +642,15 @@ void ImGuiShim::RenderSettingsWindow()
                 Engine::GAPI->UpdateTextureMaxSize();
             }
 
-            ImGui::Checkbox( "HBAO+", &settings.HbaoSettings.Enabled );
-            ImGui::SetItemTooltip( "Enable Screen-Space ambient occlusion." );
+            static std::vector<std::pair<const char*, AOMode>> aoModes = {
+                {"Off", AOMode::AO_NONE},
+                {"HBAO+", AOMode::AO_HBAO},
+                {"SAO", AOMode::AO_SAO},
+            };
+            if ( ImComboBox( "Ambient Occlusion", aoModes, &settings.AoMode ) ) {
+                ImGui::EndCombo();
+            }
+            ImGui::SetItemTooltip( "Screen-Space ambient occlusion mode." );
 
             ImGui::Checkbox( "Godrays", &settings.EnableGodRays );
             ImGui::Checkbox( "Depth of Field", &settings.EnableDoF );
@@ -1497,33 +1504,51 @@ void RenderAdvancedColumn3( GothicRendererSettings& settings, GothicAPI* gapi ) 
 
 void RenderAdvancedColumn4( GothicRendererSettings& settings, GothicAPI* gapi ) {
     if ( ImGui::Begin( "Post Processing Effects", nullptr, ImGuiWindowFlags_NoCollapse ) ) {
-            ImGui::SeparatorText( "HBAO+ Settings" );
+            ImGui::SeparatorText( "Ambient Occlusion" );
             {
-                ImGui::PushID( "HBAOSettings" );
-                ImGui::Checkbox( "Enable HBAO+", &settings.HbaoSettings.Enabled );
-                ImGui::DragFloat( "Radius", &settings.HbaoSettings.Radius, 0.01f );
-                ImGui::DragFloat( "MetersToViewSpaceUnits", &settings.HbaoSettings.MetersToViewSpaceUnits, 0.01f );
-                if ( ImGui::DragFloat( "PowerExponent", &settings.HbaoSettings.PowerExponent, 0.01f ) ) {
-                    settings.HbaoSettings.PowerExponent = std::clamp( settings.HbaoSettings.PowerExponent, 1.0f, 4.0f );
-                }
-                if ( ImGui::DragFloat( "Bias", &settings.HbaoSettings.Bias, 0.01f ) ) {
-                    settings.HbaoSettings.Bias = std::clamp( settings.HbaoSettings.Bias, 0.0f, 0.5f );
-                }
-
-                ImGui::Checkbox( "Enable Blur", &settings.HbaoSettings.EnableBlur );
-                static std::vector<std::pair<const char*, int>> ssaoRadi = { {"2", 0}, {"4", 1} };
-                if ( ImComboBox( "SSAO radius", ssaoRadi, &settings.HbaoSettings.SsaoBlurRadius ) ) {
-                    ImGui::EndCombo();
-                }
-                ImGui::DragFloat( "BlurSharpness", &settings.HbaoSettings.BlurSharpness, 0.01f );
-                static std::vector<std::pair<const char*, int>> blendMode = { {"Replace", 0}, {"Multiply", 1} };
-                if ( ImComboBox( "BlendMode", blendMode, &settings.HbaoSettings.BlendMode ) ) {
+                ImGui::PushID( "AOSettings" );
+                static std::vector<std::pair<const char*, AOMode>> aoModes = {
+                    {"Disabled", AOMode::AO_NONE},
+                    {"HBAO+", AOMode::AO_HBAO},
+                    {"SAO", AOMode::AO_SAO},
+                };
+                if ( ImComboBox( "AO Mode", aoModes, &settings.AoMode ) ) {
                     ImGui::EndCombo();
                 }
 
-                static std::vector<std::pair<const char*, int>> stepCount = { {"4", 0}, {"8", 1} };
-                if ( ImComboBox( "SSAO steps", stepCount, &settings.HbaoSettings.SsaoStepCount ) ) {
-                    ImGui::EndCombo();
+                if ( settings.AoMode == AOMode::AO_HBAO ) {
+                    ImGui::SeparatorText( "HBAO+ Settings" );
+                    ImGui::DragFloat( "Radius", &settings.HbaoSettings.Radius, 0.01f );
+                    ImGui::DragFloat( "MetersToViewSpaceUnits", &settings.HbaoSettings.MetersToViewSpaceUnits, 0.01f );
+                    if ( ImGui::DragFloat( "PowerExponent", &settings.HbaoSettings.PowerExponent, 0.01f ) ) {
+                        settings.HbaoSettings.PowerExponent = std::clamp( settings.HbaoSettings.PowerExponent, 1.0f, 4.0f );
+                    }
+                    if ( ImGui::DragFloat( "Bias", &settings.HbaoSettings.Bias, 0.01f ) ) {
+                        settings.HbaoSettings.Bias = std::clamp( settings.HbaoSettings.Bias, 0.0f, 0.5f );
+                    }
+
+                    ImGui::Checkbox( "Enable Blur", &settings.HbaoSettings.EnableBlur );
+                    static std::vector<std::pair<const char*, int>> ssaoRadi = { {"2", 0}, {"4", 1} };
+                    if ( ImComboBox( "SSAO radius", ssaoRadi, &settings.HbaoSettings.SsaoBlurRadius ) ) {
+                        ImGui::EndCombo();
+                    }
+                    ImGui::DragFloat( "BlurSharpness", &settings.HbaoSettings.BlurSharpness, 0.01f );
+                    static std::vector<std::pair<const char*, int>> blendMode = { {"Replace", 0}, {"Multiply", 1} };
+                    if ( ImComboBox( "BlendMode", blendMode, &settings.HbaoSettings.BlendMode ) ) {
+                        ImGui::EndCombo();
+                    }
+
+                    static std::vector<std::pair<const char*, int>> stepCount = { {"4", 0}, {"8", 1} };
+                    if ( ImComboBox( "SSAO steps", stepCount, &settings.HbaoSettings.SsaoStepCount ) ) {
+                        ImGui::EndCombo();
+                    }
+                } else if ( settings.AoMode == AOMode::AO_SAO ) {
+                    ImGui::SeparatorText( "SAO Settings" );
+                    ImGui::DragFloat( "Radius", &settings.SaoSettings.Radius, 0.01f, 0.1f, 10.0f );
+                    ImGui::DragFloat( "Bias", &settings.SaoSettings.Bias, 0.001f, 0.0f, 0.1f );
+                    ImGui::DragFloat( "Intensity", &settings.SaoSettings.Intensity, 0.01f, 0.0f, 10.0f );
+                    ImGui::SliderInt( "Samples", &settings.SaoSettings.NumSamples, 4, 64 );
+                    ImGui::DragFloat( "Blur Sharpness", &settings.SaoSettings.BlurSharpness, 0.01f, 0.0f, 16.0f );
                 }
                 ImGui::PopID();
             }

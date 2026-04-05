@@ -17,6 +17,7 @@ class D3D11PFX_SMAA;
 class D3D11PFX_GodRays;
 class D3D11PFX_DepthOfField;
 class D3D11NVHBAO;
+class D3D11PFX_SAO;
 class D3D11PFX_SimpleSharpen;
 
 class D3D11PfxRenderer {
@@ -65,6 +66,11 @@ public:
     XRESULT DrawHBAO(const ComPtr<ID3D11RenderTargetView>& rtv, const ComPtr<ID3D11ShaderResourceView>& pFullResDepthTexSRV, const ComPtr<
                      ID3D11ShaderResourceView>& pFullResNormalTexSRV);
 
+    /** Renders the SAO effect */
+    XRESULT RenderSAO( ID3D11ShaderResourceView* depthSRV,
+                       ID3D11ShaderResourceView* normalsSRV,
+                       ID3D11RenderTargetView* outputRTV );
+
     /** Accessors */
     TextureHandle GetTempBuffer();
     TextureHandle GetBackbufferTempBuffer();
@@ -96,6 +102,9 @@ private:
     std::unique_ptr<D3D11PFX_SMAA> FX_SMAA;
     std::unique_ptr<D3D11PFX_GodRays> FX_GodRays;
     std::unique_ptr<D3D11PFX_DepthOfField> FX_DepthOfField;
+
+    /** SAO effect (FL11+ only) */
+    std::unique_ptr<D3D11PFX_SAO> FX_SAO;
 
     /** Nivida HBAO+ */
     std::unique_ptr<D3D11NVHBAO> NvHBAO;

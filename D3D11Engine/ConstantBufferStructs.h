@@ -116,6 +116,25 @@ struct DepthOfFieldConstantBuffer {
     float DoF_Pad2;
 };
 
+struct SAOConstantBuffer {
+    float4 SAO_ProjParams;    // x = 1/P._11, y = 1/P._22, z = P._34, w = P._33
+    float  SAO_Radius;        // World-space AO radius
+    float  SAO_Bias;          // Normal bias to reduce self-occlusion
+    float  SAO_Intensity;     // Darkening strength
+    int    SAO_NumSamples;    // Spiral sample count (16-48)
+    float2 SAO_InvResolution; // 1/width, 1/height
+    float  SAO_BlurSharpness; // Bilateral blur edge preservation
+    float  SAO_Pad;
+};
+
+struct SAOBlurConstantBuffer {
+    float2 SAO_Blur_InvResolution;
+    float2 SAO_Blur_Direction;
+    float  SAO_Blur_Sharpness;
+    float3 SAO_Blur_Pad;
+    float4 SAO_Blur_ProjParams;
+};
+
 struct HDRSettingsConstantBuffer {
     float HDR_MiddleGray;
     float HDR_LumWhite;
