@@ -47,6 +47,7 @@
 
 // TODO: REMOVE THIS!
 #include "D3D11GraphicsEngine.h"
+#include "MeshManager.h"
 
 #ifndef PUBLIC_RELEASE
 #define OPT_DBG_NOINLINE __declspec(noinline)
@@ -820,21 +821,26 @@ void GothicAPI::OnGeometryLoaded( zCBspTree* tree ) {
 /** Called when the game is about to load a new level */
 void GothicAPI::OnLoadWorld( const std::string& levelName, int loadMode ) {
     _canClearVobsByVisual = true;
-    if ( (loadMode == 0 || loadMode == 2) && !levelName.empty() ) {
-        std::string name = levelName;
-        const size_t last_slash_idx = name.find_last_of( "\\/" );
-        if ( std::string::npos != last_slash_idx ) {
-            name.erase( 0, last_slash_idx + 1 );
-        }
+    if ( (loadMode == zWLD_LOAD_GAME_STARTUP || loadMode == zWLD_LOAD_GAME_SAVED_STAT) ) {
+        extern MeshManager* s_MeshManager;
+        s_MeshManager->DropCaches();
 
-        // Remove extension if present.
-        const size_t period_idx = name.rfind( '.' );
-        if ( std::string::npos != period_idx ) {
-            name.erase( period_idx );
-        }
+        if ( !levelName.empty() ) {
+            std::string name = levelName;
+            const size_t last_slash_idx = name.find_last_of( "\\/" );
+            if ( std::string::npos != last_slash_idx ) {
+                name.erase( 0, last_slash_idx + 1 );
+            }
 
-        // Initial load
-        LoadedWorldInfo->WorldName = name;
+            // Remove extension if present.
+            const size_t period_idx = name.rfind( '.' );
+            if ( std::string::npos != period_idx ) {
+                name.erase( period_idx );
+            }
+
+            // Initial load
+            LoadedWorldInfo->WorldName = name;
+        }
     }
 
 #ifndef PUBLIC_RELEASE

@@ -35,6 +35,11 @@ public:
         return nullptr;
     }
 
+    void DropCaches() {
+        m_skeletalMeshInfo.clear();
+        m_staticMeshInfo.clear();
+    }
+
 private:
     std::unordered_map<zCSubMesh*, std::shared_ptr<SkeletalMeshData>> m_skeletalMeshInfo;
     std::unordered_map<zCSubMesh*, std::shared_ptr<StaticMeshData>> m_staticMeshInfo;

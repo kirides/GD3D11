@@ -646,6 +646,23 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
 /** Creates the FullSectionMesh for the given section */
 void WorldConverter::GenerateFullSectionMesh( WorldMeshSectionInfo& section ) {
     std::vector<ExVertexStruct> vx;
+
+    // Pre-calculate total triangle count to avoid reallocations
+    size_t totalVerts = 0;
+    for ( auto const& it : section.WorldMeshes ) {
+        if ( !it.first.Material || it.first.Material->HasAlphaTest() ) continue;
+        totalVerts += it.second->Indices.size();
+    }
+    for ( auto const& it : section.Vobs ) {
+        if ( it->IsIndoorVob ) continue;
+        for ( auto const& itm : it->VisualInfo->Meshes ) {
+            if ( !itm.first || itm.first->HasAlphaTest() ) continue;
+            for ( unsigned int m = 0; m < itm.second.size(); m++ )
+                totalVerts += itm.second[m]->Indices.size();
+        }
+    }
+    vx.reserve( totalVerts );
+
     for ( auto const& it : section.WorldMeshes ) {
         if ( !it.first.Material ||
             it.first.Material->HasAlphaTest() )
@@ -936,8 +953,8 @@ void WorldConverter::ExtractSkeletalMeshFromVob( zCModel* model, SkeletalMeshVis
                 }
 
                 // Init and fill it
-                meshData->Vertices = SharedVector{ std::make_shared<std::vector<ExSkelVertexStruct>>( std::move(vertices) ) };
-                meshData->Indices = SharedVector{ std::make_shared<std::vector<VERTEX_INDEX>>( std::move(indices) ) };
+                meshData->Vertices = SharedVector{ std::make_shared<std::vector<ExSkelVertexStruct>>( /*no-move*/(vertices) ) };
+                meshData->Indices = SharedVector{ std::make_shared<std::vector<VERTEX_INDEX>>( /*no-move*/(indices) ) };
                 meshData->MeshVertexBuffer->Init( &meshData->Vertices[0], meshData->Vertices.size() * sizeof( ExSkelVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
                 meshData->MeshIndexBuffer->Init( &meshData->Indices[0], meshData->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
 
@@ -965,8 +982,8 @@ void WorldConverter::ExtractSkeletalMeshFromVob( zCModel* model, SkeletalMeshVis
                     meshData->MeshIndexBuffer.reset( indexBuffer );
                 }
 
-                meshData->Vertices = SharedVector{ std::make_shared<std::vector<ExVertexStruct>>( std::move(bindPoseVertices) ) };
-                meshData->Indices = SharedVector{ std::make_shared<std::vector<VERTEX_INDEX>>( std::move(indices) ) };
+                meshData->Vertices = SharedVector{ std::make_shared<std::vector<ExVertexStruct>>( /*no-move*/(bindPoseVertices) ) };
+                meshData->Indices = SharedVector{ std::make_shared<std::vector<VERTEX_INDEX>>( /*no-move*/(indices) ) };
                 meshData->MeshVertexBuffer->Init( meshData->Vertices.data_ptr(), meshData->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
                 meshData->MeshIndexBuffer->Init( meshData->Indices.data_ptr(), meshData->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
 
@@ -1029,12 +1046,14 @@ void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualIn
             node->TrafoObjToCam = node->Trafo;
         }
 
+        std::vector<ExVertexStruct> vertices;
+        std::vector<VERTEX_INDEX> indices;
         for ( int i = 0; i < visual->GetNumSubmeshes(); i++ ) {
             //std::vector<ExSkelVertexStruct> vertices;
-            std::vector<ExVertexStruct> vertices;
-            std::vector<VERTEX_INDEX> indices;
             // Get the data out
             zCSubMesh* m = visual->GetSubmesh( i );
+            vertices.clear();
+            indices.clear();
 
             // Get indices
             indices.reserve( m->TriList.NumInArray * 3 );
@@ -1336,10 +1355,12 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
     std::list<MeshInfo*> meshInfos;
 
     // Construct unindexed mesh
+    std::vector<ExVertexStruct> vertices;
+    std::vector<VERTEX_INDEX> indices;
     for ( int i = 0; i < visual->GetNumSubmeshes(); i++ ) {
         zCSubMesh* s = visual->GetSubmesh( i );
-        std::vector<ExVertexStruct> vertices;
-        std::vector<VERTEX_INDEX> indices;
+        vertices.clear();
+        indices.clear();
 
         // Get vertices
         indices.reserve( s->TriList.NumInArray * 3 );
@@ -1631,8 +1652,19 @@ void WorldConverter::WrapVertexBuffers( const std::list<std::vector<ExVertexStru
     std::vector<ExVertexStruct>& outVertices,
     std::vector<unsigned int>& outIndices,
     std::vector<unsigned int>& outOffsets ) {
+    // Pre-calculate totals to avoid reallocations
+    size_t totalVertices = 0;
+    size_t totalIndices = 0;
+    for ( auto const& itv : vertexBuffers ) totalVertices += itv->size();
+    for ( auto const& iti : indexBuffers )  totalIndices  += iti->size();
+
     std::vector<unsigned int> vxOffsets;
+    vxOffsets.reserve( vertexBuffers.size() + 1 );
     vxOffsets.emplace_back( 0 );
+
+    outVertices.reserve( outVertices.size() + totalVertices );
+    outIndices.reserve( outIndices.size() + totalIndices );
+    outOffsets.reserve( indexBuffers.size() + 1 );
 
     // Pack vertices
     for ( auto const& itv : vertexBuffers ) {
@@ -1700,11 +1732,20 @@ void WorldConverter::UpdateQuadMarkInfo( QuadMarkInfo* info, zCQuadMark* mark, c
     zCMaterial* mat = (numPolys > 0 ? polys[0]->GetMaterial() : mark->GetMaterial());
 
     std::vector<ExVertexStruct> quadVertices;
+    std::vector<ExVertexStruct> polyVertices;
+
+    // Pre-count total output triangles so quadVertices doesn't reallocate
+    int totalPolyVerts = 0;
+    for ( int i = 0; i < numPolys; i++ )
+        totalPolyVerts += polys[i]->GetNumPolyVertices();
+    // TriangleFanToList turns N verts into (N-2)*3 output verts
+    quadVertices.reserve( (totalPolyVerts - numPolys * 2) * 3 );
+
     for ( int i = 0; i < numPolys; i++ ) {
         zCPolygon* poly = polys[i];
 
         // Extract poly vertices
-        std::vector<ExVertexStruct> polyVertices;
+        polyVertices.clear();
         polyVertices.reserve( poly->GetNumPolyVertices() );
         for ( int v = 0; v < poly->GetNumPolyVertices(); v++ ) {
             zCVertex* vertex = poly->getVertices()[v];
