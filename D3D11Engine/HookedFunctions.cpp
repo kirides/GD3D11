@@ -387,10 +387,20 @@ void HookedFunctionInfo::InitHooks() {
 }
 
 /** Function hooks */
-void __fastcall HookedFunctionInfo::hooked_zCActiveSndAutoCalcObstruction( void* thisptr, void* unknwn, int i ) {
-    // Just do nothing here. Something was inside zCBspTree::Render that managed this and thus voices get really quiet in indoor locations
-    // This function is for calculating the automatic volume-changes when the camera goes in/out buildings
-    // We keep everything on the same level by removing it
+void __fastcall HookedFunctionInfo::hooked_zCActiveSndAutoCalcObstruction( void* thisptr, void* unknwn, int immediate ) {
+    using OriginalFuncType = void( __thiscall* )(void*, int);
+    OriginalFuncType original = reinterpret_cast<OriginalFuncType>(
+        HookedFunctions::OriginalFunctions.original_zCActiveSndAutoCalcObstruction
+    );
+
+    if ( auto game = oCGame::GetGame() ) {
+        if ( auto cam = (zCCamera*)game->_zCSession_camera ) {
+            if ( zCCamera::GetCamera() != cam ) {
+                cam->Activate(); // set as active cam, otherwise obstruction is calculated wrong.
+            }
+             original( thisptr, immediate );
+        }
+    }
 }
 
 int __cdecl HookedFunctionInfo::hooked_GetNumDevices() {
