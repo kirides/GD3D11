@@ -388,6 +388,7 @@ void HookedFunctionInfo::InitHooks() {
 
 /** Function hooks */
 void __fastcall HookedFunctionInfo::hooked_zCActiveSndAutoCalcObstruction( void* thisptr, void* unknwn, int immediate ) {
+#ifdef BUILD_GOTHIC_2_6_fix
     using OriginalFuncType = void( __thiscall* )(void*, int);
     OriginalFuncType original = reinterpret_cast<OriginalFuncType>(
         HookedFunctions::OriginalFunctions.original_zCActiveSndAutoCalcObstruction
@@ -401,6 +402,7 @@ void __fastcall HookedFunctionInfo::hooked_zCActiveSndAutoCalcObstruction( void*
              original( thisptr, immediate );
         }
     }
+#endif
 }
 
 int __cdecl HookedFunctionInfo::hooked_GetNumDevices() {
