@@ -33,6 +33,7 @@
 #endif
 
 #include "StackWalker.h"
+#include "zSndMss.h"
 
 bool IsRunningUnderUnion = false;
 bool CreatingThumbnail = false;
@@ -387,22 +388,8 @@ void HookedFunctionInfo::InitHooks() {
 }
 
 /** Function hooks */
-void __fastcall HookedFunctionInfo::hooked_zCActiveSndAutoCalcObstruction( void* thisptr, void* unknwn, int immediate ) {
-#ifdef BUILD_GOTHIC_2_6_fix
-    using OriginalFuncType = void( __thiscall* )(void*, int);
-    OriginalFuncType original = reinterpret_cast<OriginalFuncType>(
-        HookedFunctions::OriginalFunctions.original_zCActiveSndAutoCalcObstruction
-    );
-
-    if ( auto game = oCGame::GetGame() ) {
-        if ( auto cam = (zCCamera*)game->_zCSession_camera ) {
-            if ( zCCamera::GetCamera() != cam ) {
-                cam->Activate(); // set as active cam, otherwise obstruction is calculated wrong.
-            }
-             original( thisptr, immediate );
-        }
-    }
-#endif
+void __fastcall HookedFunctionInfo::hooked_zCActiveSndAutoCalcObstruction( void* thisptr, void* unknwn, int i ) {
+    ((zCActiveSnd*)thisptr)->AutoCalcObstruction( i );
 }
 
 int __cdecl HookedFunctionInfo::hooked_GetNumDevices() {

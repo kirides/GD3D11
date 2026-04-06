@@ -1050,6 +1050,8 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="ZipArchive.h" />
     <ClInclude Include="zMat4.h" />
     <ClInclude Include="zQuat.h" />
+    <ClInclude Include="zSndMss.h" />
+    <ClInclude Include="zSound.h" />
     <ClInclude Include="zSTRING.h" />
     <ClInclude Include="zTypes.h" />
     <ClInclude Include="zViewTypes.h" />
@@ -1198,6 +1200,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
       <PrecompiledHeaderFile Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt_G1|Win32'">pch.h</PrecompiledHeaderFile>
     </ClCompile>
     <ClCompile Include="BaseShadowedPointLight.cpp" />
+    <ClCompile Include="zSndMss.cpp" />
     <None Include="Shaders\PS_Grass.hlsl" />
     <None Include="Shaders\VS_GrassInstanced.hlsl" />
     <None Include="Shaders\PS_PFX_VelocityDebug.hlsl" />
