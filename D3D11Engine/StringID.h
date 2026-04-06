@@ -8,8 +8,8 @@ public:
     constexpr StringID(std::string_view str) : m_hash(SID(str)) {
     }
     
-    constexpr StringID(const char* str) : m_hash(SID(str)) {
-    }
+    template <size_t N>
+    constexpr StringID( const char( &str )[N] ) : m_hash( SID( std::string_view( str, N - 1 ) ) ) {}
 
     constexpr operator uint32_t() const { return m_hash; }
 
