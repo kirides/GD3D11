@@ -44,7 +44,11 @@ GraphicsShaderConstantBuffer D3D11GraphicsShader::GetBuffer(UINT slot) {
         return {nullptr, INVALID_SHADER_CB_SLOT, nullptr};
     }
 #endif
-    return GraphicsShaderConstantBuffer(ConstantBuffers[ConstantBufferIndexBySlot[slot]].get(), slot, this);
+    const auto idx = ConstantBufferIndexBySlot[slot];
+    if ( idx >= ConstantBuffers.size() ) {
+        return { nullptr, INVALID_SHADER_CB_SLOT, nullptr };
+    }
+    return GraphicsShaderConstantBuffer(ConstantBuffers[idx].get(), slot, this);
 }
 
 HRESULT D3D11GraphicsShader::ReflectShaderResources( ID3DBlob* shaderBlob ) {
