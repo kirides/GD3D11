@@ -439,6 +439,9 @@ private:
     /** World-Mesh indirect buffer */
     std::unique_ptr<D3D11IndirectBuffer> WorldMeshIndirectBuffer;
 
+    /** Water surface indirect buffer */
+    std::unique_ptr<D3D11IndirectBuffer> WaterIndirectBuffer;
+
     /** Buffer for previous bone transforms */
     std::unique_ptr<D3D11ConstantBuffer> PrevBoneTransformsBuffer;
 

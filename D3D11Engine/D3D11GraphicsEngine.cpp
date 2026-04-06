@@ -4628,12 +4628,6 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
     Engine::GAPI->SetViewTransformXM( view );  // Update view transform
 
-    // Setup render states for z-prepass
-    Engine::GAPI->GetRendererState().BlendState.ColorWritesEnabled =
-        false; // Rasterization is faster without writes
-    Engine::GAPI->GetRendererState().BlendState.SetDirty();
-    UpdateRenderStates();
-
     // Bind vertex water shader
     ActivePS = nullptr;
     SetActiveVertexShader( VShaderID::VS_ExWater );
@@ -4643,8 +4637,6 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
     float totalTime = Engine::GAPI->GetTotalTime();
     ActiveVS->GetBuffer( "Matrices_PerInstances" ).Update( &totalTime, 4 ).Bind();
 
-    // Do Z-prepass on the water to make sure only the visible pixels will get drawn instead of multiple layers of water
-    GetContext()->PSSetShader( nullptr, nullptr, 0 );
     GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(),
         DepthStencilBuffer->GetDepthStencilView().Get() );
 
@@ -4652,19 +4644,80 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
     DrawVertexBufferIndexedUINT(
         Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer,
         Engine::GAPI->GetWrappedWorldMesh()->MeshIndexBuffer, 0, 0 );
+
+    // Build per-texture batch descriptors and flat indirect draw args
+    struct WaterTextureBatch {
+        zCTexture* texture;
+        unsigned int argsOffset; // index into waterDrawArgs
+        unsigned int drawCount;
+    };
+
+    static std::vector<D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS> waterDrawArgs;
+    static std::vector<WaterTextureBatch> waterBatches;
+    waterDrawArgs.clear();
+    waterBatches.clear();
+
     for ( const auto& [texture, meshes] : FrameWaterSurfaces ) {
-        // Draw surfaces
+        WaterTextureBatch batch;
+        batch.texture = texture;
+        batch.argsOffset = static_cast<unsigned int>( waterDrawArgs.size() );
+        batch.drawCount = 0;
+
         for ( const auto& mesh : meshes ) {
+            D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS args;
+            args.IndexCountPerInstance = static_cast<UINT>( mesh->Indices.size() );
+            args.InstanceCount = 1;
+            args.StartIndexLocation = mesh->BaseIndexLocation;
+            args.BaseVertexLocation = 0;
+            args.StartInstanceLocation = 0;
+            waterDrawArgs.push_back( args );
+            batch.drawCount++;
+        }
+
+        waterBatches.push_back( batch );
+    }
+
+    constexpr unsigned int argStride = sizeof( D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS );
+
+    // === Z-Prepass ===
+    // Disable color writes for depth-only rendering
+    Engine::GAPI->GetRendererState().BlendState.ColorWritesEnabled = false;
+    Engine::GAPI->GetRendererState().BlendState.SetDirty();
+    UpdateRenderStates();
+
+    GetContext()->PSSetShader( nullptr, nullptr, 0 );
+
+    if ( !FeatureLevel10Compatibility ) {
+        // MDI path: upload all draw args and dispatch in one call
+        const size_t requiredSize = waterDrawArgs.size() * argStride;
+
+        if ( !WaterIndirectBuffer || WaterIndirectBuffer->GetSizeInBytes() < requiredSize ) {
+            WaterIndirectBuffer = std::make_unique<D3D11IndirectBuffer>();
+            WaterIndirectBuffer->Init(
+                waterDrawArgs.data(), static_cast<unsigned int>( requiredSize ),
+                D3D11IndirectBuffer::B_INDEXBUFFER, D3D11IndirectBuffer::U_DYNAMIC,
+                D3D11IndirectBuffer::CA_WRITE );
+        } else {
+            WaterIndirectBuffer->UpdateBuffer( waterDrawArgs.data(), static_cast<unsigned int>( requiredSize ) );
+        }
+
+        DrawMultiIndexedInstancedIndirect( Context.Get(),
+            static_cast<unsigned int>( waterDrawArgs.size() ),
+            WaterIndirectBuffer->GetIndirectBuffer().Get(),
+            0, argStride );
+    } else {
+        // FL10 fallback: direct DrawIndexed per mesh
+        for ( const auto& args : waterDrawArgs ) {
             DrawVertexBufferIndexedUINT( nullptr, nullptr,
-                mesh->Indices.size(), mesh->BaseIndexLocation );
+                args.IndexCountPerInstance, args.StartIndexLocation );
         }
     }
 
-    // Disable depth writes after z-prepass
+    // === Refraction Pass ===
+    // Enable color writes, disable depth writes
     Engine::GAPI->GetRendererState().BlendState.ColorWritesEnabled = true;
     Engine::GAPI->GetRendererState().BlendState.SetDirty();
-    Engine::GAPI->GetRendererState().DepthState.DepthWriteEnabled =
-        false; // Rasterization is faster without writes
+    Engine::GAPI->GetRendererState().DepthState.DepthWriteEnabled = false;
     Engine::GAPI->GetRendererState().DepthState.SetDirty();
     UpdateRenderStates();
 
@@ -4693,20 +4746,33 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
     ricb.RI_Time = Engine::GAPI->GetTimeSeconds();
     ricb.RI_CameraPosition = float3( Engine::GAPI->GetCameraPosition() );
 
-    ActivePS->GetBuffer("RefractionInfo").Update(&ricb).Bind();
+    ActivePS->GetBuffer( "RefractionInfo" ).Update( &ricb ).Bind();
 
     // Bind reflection cube
     GetContext()->PSSetShaderResources( 3, 1, ReflectionCube.GetAddressOf() );
-    for ( const auto& [texture, meshes] : FrameWaterSurfaces ) {
-        // Bind diffuse
-        texture->CacheIn( -1 );    // Force immediate cache in, because water
-                                   // is important!
-        texture->Bind( 0 );
 
-        // Draw surfaces
-        for ( const auto& mesh : meshes ) {
-            DrawVertexBufferIndexedUINT( nullptr, nullptr,
-                mesh->Indices.size(), mesh->BaseIndexLocation );
+    if ( !FeatureLevel10Compatibility ) {
+        // MDI path: one MDI call per texture batch
+        for ( const auto& batch : waterBatches ) {
+            batch.texture->CacheIn( -1 );
+            batch.texture->Bind( 0 );
+
+            DrawMultiIndexedInstancedIndirect( Context.Get(),
+                batch.drawCount,
+                WaterIndirectBuffer->GetIndirectBuffer().Get(),
+                batch.argsOffset * argStride, argStride );
+        }
+    } else {
+        // FL10 fallback: per-texture loop with direct DrawIndexed
+        for ( const auto& batch : waterBatches ) {
+            batch.texture->CacheIn( -1 );
+            batch.texture->Bind( 0 );
+
+            for ( unsigned int i = 0; i < batch.drawCount; i++ ) {
+                const auto& args = waterDrawArgs[batch.argsOffset + i];
+                DrawVertexBufferIndexedUINT( nullptr, nullptr,
+                    args.IndexCountPerInstance, args.StartIndexLocation );
+            }
         }
     }
 
