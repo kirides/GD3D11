@@ -561,8 +561,7 @@ XRESULT D3D11VobAtlasPass::Draw( const Frustum& frustum, bool bindPS ) {
 
     VS_ExConstantBuffer_Wind windBuff{};
     m_Engine->ApplyWindProps( windBuff );
-    m_Engine->ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &windBuff );
-    m_Engine->ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( 1 );
+    m_Engine->ActiveVS->GetBuffer(1).Update( &windBuff ).Bind();
 
     if ( bindPS )
         context->PSSetShaderResources( 4, 1, m_Engine->ReflectionCube.GetAddressOf() );
@@ -572,6 +571,10 @@ XRESULT D3D11VobAtlasPass::Draw( const Frustum& frustum, bool bindPS ) {
     // --- 7. Draw per atlas group ---
     MaterialInfo defMaterial{};
     GSky* sky = Engine::GAPI->GetSky();
+
+    m_Engine->SetActivePixelShader( PShaderID::PS_DiffuseAtlas );
+    auto lastPs = PShaderID::COUNT;
+    GraphicsShaderConstantBuffer buffersToBind[3] = {};
 
     for ( auto& group : m_AtlasDrawGroups ) {
         ID3D11ShaderResourceView* srv = m_TextureAtlasses[group.format].atlasSRV;
@@ -583,26 +586,28 @@ XRESULT D3D11VobAtlasPass::Draw( const Frustum& frustum, bool bindPS ) {
         if ( needsPS ) {
             context->PSSetShaderResources( 0, 1, &srv );
 
-            if ( bindPS && group.format != DXGI_FORMAT_BC2_UNORM )
-                m_Engine->SetActivePixelShader( PShaderID::PS_DiffuseAtlas );
-            else
-                m_Engine->SetActivePixelShader( PShaderID::PS_DiffuseAtlasAlphaTest );
+            auto newPs = (bindPS && group.format != DXGI_FORMAT_BC2_UNORM)
+                ? PShaderID::PS_DiffuseAtlas 
+                : PShaderID::PS_DiffuseAtlasAlphaTest;
 
-            m_Engine->ActivePS->GetConstantBuffer()[0]->UpdateBuffer(
-                &Engine::GAPI->GetRendererState().GraphicsState );
-            m_Engine->ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+            if ( newPs != lastPs ) {
+                m_Engine->SetActivePixelShader( newPs );
+                m_Engine->ActivePS->Apply();
 
-            m_Engine->ActivePS->GetConstantBuffer()[1]->UpdateBuffer( &sky->GetAtmosphereCB() );
-            m_Engine->ActivePS->GetConstantBuffer()[1]->BindToPixelShader( 1 );
+                buffersToBind[0] = m_Engine->ActivePS->GetBuffer( 0 ).Bind();
+                buffersToBind[1] = m_Engine->ActivePS->GetBuffer( 1 ).Bind();
+                buffersToBind[2] = m_Engine->ActivePS->GetBuffer( 2 ).Bind();
+                m_Engine->OutdoorVobsConstantBuffer->BindToPixelShader( 3 );
 
-            m_Engine->ActivePS->GetConstantBuffer()[2]->UpdateBuffer( &defMaterial.buffer );
-            m_Engine->ActivePS->GetConstantBuffer()[2]->BindToPixelShader( 2 );
+                lastPs = newPs;
+            }
 
-            m_Engine->OutdoorVobsConstantBuffer->BindToPixelShader( 3 );
-
-            m_Engine->ActivePS->Apply();
-        } else {
+            buffersToBind[0].Update( &Engine::GAPI->GetRendererState().GraphicsState );
+            buffersToBind[1].Update( &sky->GetAtmosphereCB() );
+            buffersToBind[2].Update( &defMaterial.buffer );
+        } else if ( lastPs != PShaderID::COUNT ) {
             context->PSSetShader( nullptr, nullptr, 0 );
+            lastPs = PShaderID::COUNT;
         }
 
         DrawMultiIndexedInstancedIndirect(

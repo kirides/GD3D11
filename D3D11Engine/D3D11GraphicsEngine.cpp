@@ -5541,8 +5541,9 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                 Context->PSSetShader( nullptr, nullptr, 0 );
             }
 
+            GraphicsShaderConstantBuffer windParamsCB = {};
             if ( ActiveVS ) {
-                ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( 1 );
+                windParamsCB = ActiveVS->GetBuffer( "WindParams" ).Bind();
             }
 
             XMFLOAT3 vPlayerPosition = Engine::GAPI->GetPlayerVob() ? Engine::GAPI->GetPlayerVob()->GetPositionWorld() : XMFLOAT3( 0, 0, 0 );
@@ -5557,7 +5558,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                 g_windBuffer.maxHeight = staticMeshVisual->BBox.Max.y;
 
                 if ( ActiveVS ) {
-                    ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &g_windBuffer );
+                    windParamsCB.Update( &g_windBuffer );
                 }
 
                 zCTexture* previousTx = nullptr;
@@ -5680,20 +5681,17 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                 }
 
                 // Rebind PS constant buffers (GPU indirect path may have overwritten them)
-                ActivePS->GetConstantBuffer()[0]->UpdateBuffer(
-                    &Engine::GAPI->GetRendererState().GraphicsState );
-                ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+                ActivePS->GetBuffer(0).Update(&Engine::GAPI->GetRendererState().GraphicsState ).Bind();
 
                 GSky* dynSky = Engine::GAPI->GetSky();
-                ActivePS->GetConstantBuffer()[1]->UpdateBuffer( &dynSky->GetAtmosphereCB() );
-                ActivePS->GetConstantBuffer()[1]->BindToPixelShader( 1 );
-
+                ActivePS->GetBuffer(1).Update(&dynSky->GetAtmosphereCB() ).Bind();
                 InfiniteRangeConstantBuffer->BindToPixelShader( 3 );
 
                 SetupVS_ExConstantBuffer();
 
+                GraphicsShaderConstantBuffer windParamsCB = {};
                 if ( ActiveVS ) {
-                    ActiveVS->GetConstantBuffer()[1]->BindToVertexShader( 1 );
+                    windParamsCB = ActiveVS->GetBuffer(1).Bind();
                 }
 
                 XMFLOAT3 vPlayerPosition = Engine::GAPI->GetPlayerVob() ? Engine::GAPI->GetPlayerVob()->GetPositionWorld() : XMFLOAT3( 0, 0, 0 );
@@ -5706,7 +5704,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                     g_windBuffer.maxHeight = batch.VisualInfo->BBox.Max.y;
 
                     if ( ActiveVS ) {
-                        ActiveVS->GetConstantBuffer()[1]->UpdateBuffer( &g_windBuffer );
+                        windParamsCB.Update( &g_windBuffer );
                     }
 
                     zCTexture* previousTx = nullptr;
@@ -8005,6 +8003,8 @@ void D3D11GraphicsEngine::BuildHiZPyramid() {
 
     hiZCS->Apply();
 
+    auto hiZCb = hiZCS->GetBuffer(0).Bind();
+
     for ( UINT mip = 0; mip < m_HiZMipCount; mip++ ) {
         UINT mipWidth = (std::max)( width >> mip, 1u );
         UINT mipHeight = (std::max)( height >> mip, 1u );
@@ -8015,8 +8015,7 @@ void D3D11GraphicsEngine::BuildHiZPyramid() {
         cb.outputHeight = mipHeight;
         cb.inputMipLevel = ( mip > 0 ) ? ( mip - 1 ) : 0;
         cb.isCopyPass = ( mip == 0 ) ? 1 : 0;
-        hiZCS->GetConstantBuffer()[0]->UpdateBuffer( &cb );
-        hiZCS->GetConstantBuffer()[0]->BindToComputeShader( 0 );
+        hiZCb.Update( &cb );
 
         // Bind input SRV:
         //   Mip 0: read from depth buffer copy (avoids DSV/SRV hazard)

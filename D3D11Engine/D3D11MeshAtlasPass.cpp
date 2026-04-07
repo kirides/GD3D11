@@ -443,17 +443,13 @@ XRESULT D3D11MeshAtlasPass::Draw() {
     // Pixel shader
     m_Engine->SetActivePixelShader( PShaderID::PS_WorldAtlas );
 
-    m_Engine->ActivePS->GetConstantBuffer()[0]->UpdateBuffer(
-        &Engine::GAPI->GetRendererState().GraphicsState );
-    m_Engine->ActivePS->GetConstantBuffer()[0]->BindToPixelShader( 0 );
+    m_Engine->ActivePS->GetBuffer(0).Update(&Engine::GAPI->GetRendererState().GraphicsState ).Bind();
 
     GSky* sky = Engine::GAPI->GetSky();
-    m_Engine->ActivePS->GetConstantBuffer()[1]->UpdateBuffer( &sky->GetAtmosphereCB() );
-    m_Engine->ActivePS->GetConstantBuffer()[1]->BindToPixelShader( 1 );
+    m_Engine->ActivePS->GetBuffer(1).Update( &sky->GetAtmosphereCB() ).Bind();
 
     MaterialInfo defMaterial{};
-    m_Engine->ActivePS->GetConstantBuffer()[2]->UpdateBuffer( &defMaterial.buffer );
-    m_Engine->ActivePS->GetConstantBuffer()[2]->BindToPixelShader( 2 );
+    m_Engine->ActivePS->GetBuffer(2).Update( &defMaterial.buffer ).Bind();
 
     m_Engine->InfiniteRangeConstantBuffer->BindToPixelShader( 3 );
 
