@@ -188,7 +188,7 @@ HRESULT D3D11ShaderManager::CompileShaderFromFile( const WCHAR* szFileName, LPCS
     hr = D3DCompileFromFile( shaderPath.wstring().c_str(), &m[0], &includeHandler, szEntryPoint, szShaderModel, dwShaderFlags, 0, ppBlobOut, &pErrorBlob);
 
     if ( FAILED( hr ) ) {
-        LogInfo() << "Shader compilation failed!";
+        LogInfo1( "Shader compilation failed!" );
         if ( pErrorBlob.Get() ) {
             LogErrorBox() << reinterpret_cast<char*>(pErrorBlob->GetBufferPointer()) << "\n\n (You can ignore the next error from Gothic about too small video memory!)";
         }
@@ -554,10 +554,10 @@ XRESULT D3D11ShaderManager::CompileShader( const ShaderInfo& si ) {
             D3D11VShader* vs = new D3D11VShader();
             if ( IsVShaderKnown( si.shaderIndex ) ) {
                 if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog )
-                    LogInfo() << "Reloading shader: " << si.name;
+                    LogInfo1( "Reloading shader: {}", si.name );
 
                 if ( XR_SUCCESS != vs->LoadShader( si, ("system\\GD3D11\\shaders\\" + si.fileName).c_str() ) ) {
-                    LogError() << "Failed to reload shader: " << si.fileName;
+                    LogError1( "Failed to reload shader: {}", si.fileName );
 
                     delete vs;
                 } else {
@@ -565,7 +565,7 @@ XRESULT D3D11ShaderManager::CompileShader( const ShaderInfo& si ) {
                 }
             } else {
                 if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog )
-                    LogInfo() << "Loading shader: " << si.name;
+                    LogInfo1( "Loading shader: {}", si.name );
 
                 XLE( vs->LoadShader( si, ("system\\GD3D11\\shaders\\" + si.fileName).c_str() ) );
                 UpdateVShader( si.shaderIndex, vs );
@@ -575,10 +575,10 @@ XRESULT D3D11ShaderManager::CompileShader( const ShaderInfo& si ) {
             D3D11PShader* ps = new D3D11PShader();
             if ( IsPShaderKnown( si.shaderIndex ) ) {
                 if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog )
-                    LogInfo() << "Reloading shader: " << si.name;
+                    LogInfo1( "Reloading shader: {}", si.name );
 
                 if ( XR_SUCCESS != ps->LoadShader( si, ("system\\GD3D11\\shaders\\" + si.fileName).c_str() ) ) {
-                    LogError() << "Failed to reload shader: " << si.fileName;
+                    LogError1( "Failed to reload shader: {}", si.fileName );
 
                     delete ps;
                 } else {
@@ -586,7 +586,7 @@ XRESULT D3D11ShaderManager::CompileShader( const ShaderInfo& si ) {
                 }
             } else {
                 if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog )
-                    LogInfo() << "Loading shader: " << si.name;
+                    LogInfo1( "Loading shader: {}", si.name );
 
                 XLE( ps->LoadShader( si, ("system\\GD3D11\\shaders\\" + si.fileName).c_str() ) );
                 UpdatePShader( si.shaderIndex, ps );
@@ -596,10 +596,10 @@ XRESULT D3D11ShaderManager::CompileShader( const ShaderInfo& si ) {
             D3D11GShader* gs = new D3D11GShader();
             if ( IsGShaderKnown( si.shaderIndex ) ) {
                 if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog )
-                    LogInfo() << "Reloading shader: " << si.name;
+                    LogInfo1( "Reloading shader: {}", si.name );
 
                 if ( XR_SUCCESS != gs->LoadShader( ("system\\GD3D11\\shaders\\" + si.fileName).c_str(), si.shaderMakros, si.layout != 0, si.layout ) ) {
-                    LogError() << "Failed to reload shader: " << si.fileName;
+                    LogError1( "Failed to reload shader: {}", si.fileName );
 
                     delete gs;
                 } else {
@@ -608,7 +608,7 @@ XRESULT D3D11ShaderManager::CompileShader( const ShaderInfo& si ) {
                 }
             } else {
                 if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog )
-                    LogInfo() << "Loading shader: " << si.name;
+                    LogInfo1( "Loading shader: {}", si.name );
 
                 XLE( gs->LoadShader( ("system\\GD3D11\\shaders\\" + si.fileName).c_str(), si.shaderMakros, si.layout != 0, si.layout ) );
                 UpdateGShader( si.shaderIndex, gs );
@@ -618,10 +618,10 @@ XRESULT D3D11ShaderManager::CompileShader( const ShaderInfo& si ) {
             D3D11CShader* cs = new D3D11CShader();
             if ( IsCShaderKnown( si.shaderIndex ) ) {
                 if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog )
-                    LogInfo() << "Reloading shader: " << si.name;
+                    LogInfo1( "Reloading shader: {}", si.name );
 
                 if ( XR_SUCCESS != cs->LoadShader( ("system\\GD3D11\\shaders\\" + si.fileName).c_str(), !si.entryPoint.empty() ? si.entryPoint.c_str() : nullptr, si.shaderMakros ) ) {
-                    LogError() << "Failed to reload shader: " << si.fileName;
+                    LogError1( "Failed to reload shader: {}", si.fileName );
 
                     delete cs;
                 } else {
@@ -629,7 +629,7 @@ XRESULT D3D11ShaderManager::CompileShader( const ShaderInfo& si ) {
                 }
             } else {
                 if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog )
-                    LogInfo() << "Loading shader: " << si.name;
+                    LogInfo1( "Loading shader: {}", si.name );
 
                 XLE( cs->LoadShader( ("system\\GD3D11\\shaders\\" + si.fileName).c_str(), !si.entryPoint.empty() ? si.entryPoint.c_str() : nullptr, si.shaderMakros ) );
                 UpdateCShader( si.shaderIndex, cs );
@@ -646,7 +646,7 @@ XRESULT D3D11ShaderManager::CompileShader( const ShaderInfo& si ) {
         if ( IsHDShaderKnown( si.shaderIndex ) ) {
             if ( XR_SUCCESS != hds->LoadShader( ("system\\GD3D11\\shaders\\" + si.fileName).c_str(),
                 ("system\\GD3D11\\shaders\\" + si.fileName).c_str() ) ) {
-                LogError() << "Failed to reload shader: " << si.fileName;
+                LogError1( "Failed to reload shader: {}", si.fileName );
 
                 delete hds;
             } else {
@@ -671,9 +671,9 @@ XRESULT D3D11ShaderManager::LoadShaders( ShaderCategory categories ) {
         numThreads = numThreads - 1;
     }
     auto compilationTP = std::make_unique<ThreadPool>( numThreads );
-    LogInfo() << "Compiling/Reloading shaders with " << compilationTP->getNumThreads() << " threads";
+    LogInfo1( "Compiling/Reloading shaders with {} threads", compilationTP->getNumThreads() );
     */
-    LogInfo() << "Compiling/Reloading shaders";
+    LogInfo1( "Compiling/Reloading shaders" );
     for ( const ShaderInfo& si : Shaders ) {
         // Determine shader type category
         ShaderCategory shaderTypeCategory = ShaderCategory::None;

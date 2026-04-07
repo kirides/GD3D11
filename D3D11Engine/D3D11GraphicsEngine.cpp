@@ -143,7 +143,7 @@ namespace
             {D3D_FEATURE_LEVEL::D3D_FEATURE_LEVEL_9_2 , "D3D_FEATURE_LEVEL_9_2" },
             {D3D_FEATURE_LEVEL::D3D_FEATURE_LEVEL_9_1 , "D3D_FEATURE_LEVEL_9_1" },
         };
-        LogInfo() << "D3D_FEATURE_LEVEL: " << dxFeatureLevelsMap.at( lvl );
+        LogInfo1( "D3D_FEATURE_LEVEL: {}", dxFeatureLevelsMap.at( lvl ) );
     }
 }
 
@@ -1144,7 +1144,7 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
 
         hr = DXGIFactory2->CreateSwapChainForHwnd( GetDevice().Get(), OutputWindow, &scd, nullptr, nullptr, SwapChain.GetAddressOf() );
         if ( FAILED( hr ) ) {
-            LogError() << "Failed to create Swapchain! Program will now exit! HR: " << std::hex << hr;
+            LogError1( "Failed to create Swapchain! Program will now exit! HR: 0x{:08X}", hr );
             exit( 0 );
         }
 
@@ -1183,7 +1183,7 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
         LogInfo() << "Resizing swapchain  (Format: DXGI_FORMAT_SWAPCHAIN )";
         hr =SwapChain->ResizeBuffers( 0, bbres.x, bbres.y, DXGI_FORMAT_ENGINE_SWAPCHAIN , lastSwapchainFlags );
         if ( FAILED( hr ) ) {
-            LogError() << "Failed to resize swapchain! HRESULT: " << std::hex << hr;
+            LogError1( "Failed to resize swapchain! HRESULT: 0x{:08X}", hr );
             return XR_FAILED;
         }
     }
@@ -1642,7 +1642,7 @@ XRESULT D3D11GraphicsEngine::Present() {
             break;
 
         case S_OK:
-            LogInfo() << "Device removed, but we're fine!";
+            LogInfo1( "Device removed, but we're fine!" );
             break;
 
         default:
@@ -5466,7 +5466,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             }
             DynamicInstancingBuffer->Unmap();
         } else {
-            LogError() << "Failed to map dynamic instancing buffer for vobs.";
+            LogError1( "Failed to map dynamic instancing buffer for vobs." );
         }
 
         // Apply instancing shader
@@ -5849,7 +5849,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                 }
                 DynamicInstancingBuffer->Unmap();
             } else {
-                LogError() << "Failed to map dynamic instancing buffer for vobs.";
+                LogError1( "Failed to map dynamic instancing buffer for vobs." );
             }
 
             if ( !vobs.empty() ) {
@@ -6096,7 +6096,7 @@ XRESULT D3D11GraphicsEngine::DrawFrameAlphaMeshes()
         }
         DynamicInstancingBuffer->Unmap();
     } else {
-        LogError() << "Failed to map dynamic instancing buffer for vobs.";
+        LogError1( "Failed to map dynamic instancing buffer for vobs." );
     }
 
     GraphicsShaderConstantBuffer windBuffer = {};
@@ -7496,7 +7496,7 @@ void D3D11GraphicsEngine::SaveScreenshot() {
     wrl::ComPtr<ID3D11Texture2D> texture;
     LE( GetDevice()->CreateTexture2D( &texDesc, 0, texture.GetAddressOf() ) );
     if ( !texture.Get() ) {
-        LogError() << "Could not create texture for screenshot!";
+        LogError1( "Could not create texture for screenshot!" );
         return;
     }
     GetContext()->CopyResource( texture.Get(), rt->GetTexture().Get() );

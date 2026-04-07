@@ -23,7 +23,7 @@ XRESULT D3D11VShader::LoadShader( const ShaderInfo& shaderInfo, const char* file
     Microsoft::WRL::ComPtr<ID3DBlob> vsBlob;
 
 
-    LogInfo() << "Compilling vertex shader: " << shaderInfo.name;
+    LogInfo1( "Compilling vertex shader: {}", shaderInfo.name );
 
     // Compile shader
     if ( FAILED( D3D11ShaderManager::CompileShaderFromFile( filePath, !shaderInfo.entryPoint.empty() ? shaderInfo.entryPoint.c_str() : "VSMain", (FeatureLevel10Compatibility ? "vs_4_0" : "vs_5_0"), vsBlob.GetAddressOf(), shaderInfo.shaderMakros)) ) {

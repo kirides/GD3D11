@@ -33,7 +33,7 @@ HRESULT D3D11CascadedShadowMapBuffer::Init(
 
 HRESULT D3D11CascadedShadowMapBuffer::Resize( UINT size ) {
     if ( !m_device ) {
-        LogError() << "CascadedShadowMap::Resize - Device not initialized";
+        LogError1( "CascadedShadowMap::Resize - Device not initialized" );
         return E_FAIL;
     }
 
@@ -60,7 +60,7 @@ HRESULT D3D11CascadedShadowMapBuffer::Resize( UINT size ) {
 
     LE( m_device->CreateTexture2D( &texDesc, nullptr, m_texture.GetAddressOf() ) );
     if ( FAILED( hr ) || !m_texture ) {
-        LogError() << "CascadedShadowMap::Resize - Failed to create texture array";
+        LogError1( "CascadedShadowMap::Resize - Failed to create texture array" );
         return hr;
     }
     SetDebugName( m_texture.Get(), "CascadedShadowMap_TextureArray" );
@@ -77,7 +77,7 @@ HRESULT D3D11CascadedShadowMapBuffer::Resize( UINT size ) {
 
         LE( m_device->CreateDepthStencilView( m_texture.Get(), &dsvDesc, m_cascadeDSVs[i].GetAddressOf() ) );
         if ( FAILED( hr ) || !m_cascadeDSVs[i] ) {
-            LogError() << "CascadedShadowMap::Resize - Failed to create DSV for cascade " << i;
+            LogError1("CascadedShadowMap::Resize - Failed to create DSV for cascade {}", i);
             return hr;
         }
         SetDebugName( m_cascadeDSVs[i].Get(), "CascadedShadowMap_DSV_Cascade" + std::to_string( i ) );
@@ -94,12 +94,12 @@ HRESULT D3D11CascadedShadowMapBuffer::Resize( UINT size ) {
 
     LE( m_device->CreateShaderResourceView( m_texture.Get(), &srvDesc, m_srv.GetAddressOf() ) );
     if ( FAILED( hr ) || !m_srv ) {
-        LogError() << "CascadedShadowMap::Resize - Failed to create SRV";
+        LogError1("CascadedShadowMap::Resize - Failed to create SRV");
         return hr;
     }
     SetDebugName( m_srv.Get(), "CascadedShadowMap_SRV" );
 
-    LogInfo() << "CascadedShadowMap: Created " << m_numCascades << " cascades at " << m_size << "x" << m_size;
+    LogInfo1("CascadedShadowMap: Created {} cascades at {}x{}", m_numCascades, m_size, m_size);
 
     return S_OK;
 }

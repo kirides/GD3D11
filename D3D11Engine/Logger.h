@@ -7,6 +7,10 @@
 #include "Toolbox.h"
 #include <mutex>
 
+#include <format>
+#include <source_location>
+#include <string_view>
+
 //#include <DxErr.h>
 //#pragma comment(lib, "Dxerr.lib")
 #define USE_LOG
@@ -132,6 +136,16 @@ public:
         Flush();
     }
 
+    static void WriteToFile( const std::string& message ) {
+        FILE* f;
+        std::unique_lock<std::mutex> lock( LogCache::LogMutex );
+        f = fopen( LOGFILE.c_str(), "a" );
+        if ( f ) {
+            fputs( message.c_str(), f );
+            fclose( f );
+        }
+    }
+
     /** Clears the logfile */
     static void Clear() {
         char path[MAX_PATH + 1];
@@ -140,6 +154,7 @@ public:
         LOGFILE = LOGFILE.substr( 0, LOGFILE.find_last_of( '\\' ) + 1 );
         LOGFILE += "Log.txt";
 
+        std::unique_lock<std::mutex> lock( LogCache::LogMutex );
         FILE* f;
         f = fopen( LOGFILE.c_str(), "w" );
         fclose( f );
@@ -250,3 +265,50 @@ private:
 };
 
 #endif
+
+// This captures BOTH the format string and the exact line of code that called it.
+template <typename... Args>
+struct LogFmt {
+    std::format_string<Args...> format_str;
+    std::source_location location;
+
+    // consteval forces this to evaluate at compile-time at the call site!
+    template <typename T>
+    consteval LogFmt( const T& s, std::source_location loc = std::source_location::current() )
+        : format_str( s ), location( loc ) {
+    }
+};
+
+template <typename... Args>
+void LogInfo1( LogFmt<std::type_identity_t<Args>...> logLoc, Args&&... args ) {
+    std::string userMessage = std::format( logLoc.format_str, std::forward<Args>( args )... );
+
+    std::string finalOutput = std::format( "[Info] {}\n",
+        userMessage );
+
+    Log::WriteToFile( finalOutput );
+}
+
+template <typename... Args>
+void LogWarn1( LogFmt<std::type_identity_t<Args>...> logLoc, Args&&... args ) {
+    std::string userMessage = std::format( logLoc.format_str, std::forward<Args>( args )... );
+    std::string finalOutput = std::format( "[Warning] {}:{} in {}: {}\n",
+        logLoc.location.file_name(),
+        logLoc.location.line(),
+        logLoc.location.function_name(),
+        userMessage );
+
+    Log::WriteToFile( finalOutput );
+}
+
+template <typename... Args>
+void LogError1( LogFmt<std::type_identity_t<Args>...> logLoc, Args&&... args ) {
+    std::string userMessage = std::format( logLoc.format_str, std::forward<Args>( args )... );
+    std::string finalOutput = std::format( "[Error] {}:{} in {}: {}\n",
+        logLoc.location.file_name(),
+        logLoc.location.line(),
+        logLoc.location.function_name(),
+        userMessage );
+
+    Log::WriteToFile( finalOutput );
+}
