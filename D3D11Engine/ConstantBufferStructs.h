@@ -29,6 +29,8 @@ struct VobInstanceInfoAtlas {
     float uEnd;
     float vEnd;
     UINT globalSourceIndex;  // global source index into feedback texture
+    float minHeight;         // BBox.Min.y for per-vob wind calculations
+    float maxHeight;         // BBox.Max.y for per-vob wind calculations
 };
 
 // Descriptor returned for use with shader
@@ -61,7 +63,9 @@ struct VobGPUData {
     float canBeAffectedByPlayer;
     UINT submeshStart;       // index into SubmeshGPUData[]
     UINT submeshCount;       // how many submeshes this vob maps to
-    UINT pad2[3];
+    float minHeight;         // BBox.Min.y for per-vob wind calculations
+    float maxHeight;         // BBox.Max.y for per-vob wind calculations
+    UINT pad2;
 };
 
 // Per-submesh lookup, shared across all vobs with the same visual

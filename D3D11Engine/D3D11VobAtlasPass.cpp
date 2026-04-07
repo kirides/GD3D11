@@ -385,6 +385,9 @@ void D3D11VobAtlasPass::BuildGPUCullingBuffers() {
             data.canBeAffectedByPlayer  = 0.0f;
         }
 
+        data.minHeight = visual->BBox.Min.y;
+        data.maxHeight = visual->BBox.Max.y;
+
         auto it = visualSubmeshRanges.find( visual );
         if ( it != visualSubmeshRanges.end() ) {
             data.submeshStart = it->second.start;

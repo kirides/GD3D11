@@ -33,6 +33,8 @@ struct VobInstanceInfoAtlas {
     float uEnd;
     float vEnd;
     uint globalSourceIndex;
+    float minHeight;
+    float maxHeight;
 };
 
 StructuredBuffer<VobInstanceInfoAtlas> instances : register(t1);
@@ -85,17 +87,17 @@ static const float phaseVariation = 0.40f;
 static const float windStrengMult = 16.0f;
 static const float PI_2 = 6.283185;
 
-float GetInstancePhaseOffset(float4x4 objMatrix)
+float GetInstancePhaseOffset(float4x4 objMatrix, float maxH)
 {
-    float seed = dot(objMatrix._11_22_33, float3(12.9898, 78.233, 53.539)) + maxHeight;
+    float seed = dot(objMatrix._11_22_33, float3(12.9898, 78.233, 53.539)) + maxH;
     return frac(sin(seed) * 43758.5453) * phaseVariation;
 }
 
-float3 ApplyTreeWind(float3 vertexPos, float3 direction, float heightNorm, float timeSec, float4x4 instMatrix, float windStrength)
+float3 ApplyTreeWind(float3 vertexPos, float3 direction, float heightNorm, float timeSec, float4x4 instMatrix, float windStrength, float maxH)
 {
     float shouldAffect = saturate(sign(heightNorm - trunkStiffness + 0.0001f));
 
-    float instancePhase = GetInstancePhaseOffset(instMatrix) * PI_2;
+    float instancePhase = GetInstancePhaseOffset(instMatrix, maxH) * PI_2;
 
     float adjustedHeight = saturate((heightNorm - trunkStiffness) / (1.0 - trunkStiffness)) * shouldAffect;
     float heightFactor = pow(adjustedHeight, 2.6f);
@@ -167,7 +169,7 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 
     if (inst.canBeAffectedByPlayer > 0)
     {
-        position += CalculatePlayerInfluence(playerPos, position, minHeight, maxHeight, inst.world);
+        position += CalculatePlayerInfluence(playerPos, position, inst.minHeight, inst.maxHeight, inst.world);
     }
 #endif
 
@@ -175,8 +177,8 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 
     if (inst.windStrength > 0)
     {
-        float heightRange = max(maxHeight - minHeight, 0.001);
-        float vertexHeightNorm = saturate((Input.vPosition.y - minHeight) / heightRange);
+        float heightRange = max(inst.maxHeight - inst.minHeight, 0.001);
+        float vertexHeightNorm = saturate((Input.vPosition.y - inst.minHeight) / heightRange);
 
         position += ApplyTreeWind(
             Input.vPosition,
@@ -184,7 +186,8 @@ VS_OUTPUT VSMain( VS_INPUT Input )
             vertexHeightNorm,
             globalTime,
             inst.world,
-            inst.windStrength
+            inst.windStrength,
+            inst.maxHeight
         );
     }
 #endif

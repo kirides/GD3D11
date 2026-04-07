@@ -34,7 +34,9 @@ struct VobGPUData
     float canBeAffectedByPlayer;
     uint submeshStart;
     uint submeshCount;
-    uint pad2[3];
+    float minHeight;
+    float maxHeight;
+    uint pad2;
 };
 
 struct SubmeshGPUData
@@ -62,6 +64,8 @@ struct VobInstanceInfoAtlas
     float uEnd;
     float vEnd;
     uint globalSourceIndex;
+    float minHeight;
+    float maxHeight;
 };
 
 StructuredBuffer<VobGPUData> VobBuffer : register( t0 );
@@ -237,6 +241,8 @@ void CSMain( uint3 DTid : SV_DispatchThreadID )
         inst.uEnd = sm.uEnd;
         inst.vEnd = sm.vEnd;
         inst.globalSourceIndex = sm.globalSourceIndex;
+        inst.minHeight = vob.minHeight;
+        inst.maxHeight = vob.maxHeight;
 
         InstanceOutput[sm.instanceBaseOffset + slot] = inst;
 
