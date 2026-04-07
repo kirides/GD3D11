@@ -5925,86 +5925,89 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                         }
                     }
 
-                    for ( unsigned int i = 0; i < mlist.size(); i++ ) {
-                        zCTexture* tx = itt.first.Material->GetAniTexture();
-                        MeshInfo* mi = mlist[i];
+                    zCTexture* tx = itt.first.Material->GetAniTexture();
 
-                        if ( !tx ) {
+                    if ( !tx ) {
 #ifndef BUILD_SPACER_NET
 #ifndef BUILD_SPACER
-                            continue;  // Don't render meshes without texture if not in spacer
+                        continue;  // Don't render meshes without texture if not in spacer
 #else
-                            // This is most likely some spacer helper-vob
-                            WhiteTexture->BindToPixelShader( 0 );
-                            ShaderManager->GetPShader( PShaderID::PS_Diffuse )->Apply();
+                        // This is most likely some spacer helper-vob
+                        WhiteTexture->BindToPixelShader( 0 );
+                        ShaderManager->GetPShader( PShaderID::PS_Diffuse )->Apply();
 
-                            /*// Apply colors for these meshes
-                            MaterialInfo::Buffer b;
-                            ZeroMemory(&b, sizeof(b));
-                            b.Color = itt->first.Material->GetColor();
-                            PS_Diffuse->GetConstantBuffer()[2]->UpdateBuffer(&b);
-                            PS_Diffuse->GetConstantBuffer()[2]->BindToPixelShader(2);*/
+                        /*// Apply colors for these meshes
+                        MaterialInfo::Buffer b;
+                        ZeroMemory(&b, sizeof(b));
+                        b.Color = itt->first.Material->GetColor();
+                        PS_Diffuse->GetConstantBuffer()[2]->UpdateBuffer(&b);
+                        PS_Diffuse->GetConstantBuffer()[2]->BindToPixelShader(2);*/
 #endif
 #else
-                            if ( !renderSettings.RunInSpacerNet ) {
-                                continue;
-                            }
-                            bool showHelpers = *reinterpret_cast<int*>(GothicMemoryLocations::zCVob::s_ShowHelperVisuals) != 0;
-
-                            if ( showHelpers ) {
-                                WhiteTexture->BindToPixelShader( 0 );
-                                ShaderManager->GetPShader( PShaderID::PS_DiffuseAlphaTest )->Apply();
-
-                                MaterialInfo::Buffer b = {};
-
-                                b.Color = itt.first.Material->GetColor();
-                                ShaderManager->GetPShader( PShaderID::PS_DiffuseAlphaTest )->GetBuffer( "MI_MaterialInfo" ).Update( &b ).Bind();
-
-                            } else {
-                                continue;
-                            }
-
-#endif
-                        } else {
-                            // Bind texture
-                            if ( tx->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
-                                MyDirectDrawSurface7* surface = tx->GetSurface();
-                                ID3D11ShaderResourceView* srv[3];
-                                MaterialInfo* info = itt.first.Info;
-
-                                // Get diffuse and normalmap
-                                srv[0] = surface->GetEngineTexture()->GetShaderResourceView().Get();
-                                srv[1] = surface->GetNormalmap()
-                                    ? surface->GetNormalmap()->GetShaderResourceView().Get()
-                                    : nullptr;
-                                srv[2] = surface->GetFxMap()
-                                    ? surface->GetFxMap()->GetShaderResourceView().Get()
-                                    : nullptr;
-
-                                // Bind a default normalmap in case the scene is wet and we
-                                // currently have none
-                                if ( !srv[1] ) {
-                                    // Modify the strength of that default normalmap for the
-                                    // material info
-                                    if ( info->buffer.NormalmapStrength /* *
-                                                              Engine::GAPI->GetSceneWetness()*/
-                                        != DEFAULT_NORMALMAP_STRENGTH ) {
-                                        info->buffer.NormalmapStrength = DEFAULT_NORMALMAP_STRENGTH;
-                                        info->UpdateConstantbuffer();
-                                    }
-                                    srv[1] = DistortionTexture->GetShaderResourceView().Get();
-                                }
-                                // Bind both
-                                GetContext()->PSSetShaderResources( 0, 3, srv );
-
-                                // Force alphatest on vobs for now
-                                BindShaderForTexture( tx, true, 0 );
-
-                                if ( !info->Constantbuffer ) info->UpdateConstantbuffer();
-
-                                info->Constantbuffer->BindToPixelShader( materialInfoSlot );
-                            }
+                        if ( !renderSettings.RunInSpacerNet ) {
+                            continue;
                         }
+                        bool showHelpers = *reinterpret_cast<int*>(GothicMemoryLocations::zCVob::s_ShowHelperVisuals) != 0;
+
+                        if ( showHelpers ) {
+                            WhiteTexture->BindToPixelShader( 0 );
+                            ShaderManager->GetPShader( PShaderID::PS_DiffuseAlphaTest )->Apply();
+
+                            MaterialInfo::Buffer b = {};
+
+                            b.Color = itt.first.Material->GetColor();
+                            ShaderManager->GetPShader( PShaderID::PS_DiffuseAlphaTest )->GetBuffer( "MI_MaterialInfo" ).Update( &b ).Bind();
+
+                        } else {
+                            continue;
+                        }
+
+#endif
+                    } else {
+                        // Bind texture
+                        if ( tx->CacheIn( 0.6f ) == zRES_CACHED_OUT ) {
+                            continue;
+                        }
+
+                        MyDirectDrawSurface7* surface = tx->GetSurface();
+                        ID3D11ShaderResourceView* srv[3];
+                        MaterialInfo* info = itt.first.Info;
+
+                        // Get diffuse and normalmap
+                        srv[0] = surface->GetEngineTexture()->GetShaderResourceView().Get();
+                        srv[1] = surface->GetNormalmap()
+                            ? surface->GetNormalmap()->GetShaderResourceView().Get()
+                            : nullptr;
+                        srv[2] = surface->GetFxMap()
+                            ? surface->GetFxMap()->GetShaderResourceView().Get()
+                            : nullptr;
+
+                        // Bind a default normalmap in case the scene is wet and we
+                        // currently have none
+                        if ( !srv[1] ) {
+                            // Modify the strength of that default normalmap for the
+                            // material info
+                            if ( info->buffer.NormalmapStrength /* *
+                                                      Engine::GAPI->GetSceneWetness()*/
+                                != DEFAULT_NORMALMAP_STRENGTH ) {
+                                info->buffer.NormalmapStrength = DEFAULT_NORMALMAP_STRENGTH;
+                                info->UpdateConstantbuffer();
+                            }
+                            srv[1] = DistortionTexture->GetShaderResourceView().Get();
+                        }
+                        // Bind both
+                        GetContext()->PSSetShaderResources( 0, 3, srv );
+
+                        // Force alphatest on vobs for now
+                        BindShaderForTexture( tx, true, 0 );
+
+                        if ( !info->Constantbuffer ) info->UpdateConstantbuffer();
+
+                        info->Constantbuffer->BindToPixelShader( materialInfoSlot );
+                    }
+
+                    for ( unsigned int i = 0; i < mlist.size(); i++ ) {
+                        MeshInfo* mi = mlist[i];
 
                         // Draw batch
                         DrawInstanced( mi->MeshVertexBuffer.get(), mi->MeshIndexBuffer.get(),
