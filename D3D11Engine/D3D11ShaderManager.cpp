@@ -246,16 +246,14 @@ XRESULT D3D11ShaderManager::Init() {
         .with_layout( 10 )  );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExInstancedObjIndirectAtlas>("VS_ExInstancedObjIndirectAtlas.hlsl" )
-        .with_layout( 12 )
-        .with_cbuffer( sizeof( VS_ExConstantBuffer_PerFrame ) )
-        .with_cbuffer( sizeof( VS_ExConstantBuffer_Wind ) ) );
+        .with_layout( 12 ) );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExInstanced>( "VS_ExInstanced.hlsl" )
         .with_layout( 4 ) );
 
     // World mesh atlas vertex shader (uses same layout 12: ExVertexStruct + uint instance remap)
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExWorldAtlas>( "VS_ExWorldAtlas.hlsl" )
-        .with_layout( 12 );
+        .with_layout( 12 ) );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_GrassInstanced>( "VS_GrassInstanced.hlsl" )
         .with_layout( 9 )  );
@@ -370,11 +368,7 @@ XRESULT D3D11ShaderManager::Init() {
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_WaterfallFoam>( "PS_WaterfallFoam.hlsl" ) );     //foam on at the base of waterfalls
     
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_DiffuseAtlas>( "PS_DiffuseAtlas.hlsl") 
-    .with_macros( makros )
-        .with_cbuffer( sizeof( GothicGraphicsState ) )
-        .with_cbuffer( sizeof( AtmosphereConstantBuffer ) )
-        .with_cbuffer( sizeof( MaterialInfo::Buffer ) )
-        .with_cbuffer( sizeof( float4 ) ) ); // DIST_Distance
+        .with_macros( makros ) ); // DIST_Distance
 
     makros.clear();
     m.Name = "NORMALMAPPING";
@@ -385,19 +379,11 @@ XRESULT D3D11ShaderManager::Init() {
     makros.push_back( m );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_DiffuseAtlasAlphaTest>( "PS_DiffuseAtlas.hlsl" )
-        .with_macros( makros )
-        .with_cbuffer( sizeof( GothicGraphicsState ) )
-        .with_cbuffer( sizeof( AtmosphereConstantBuffer ) )
-        .with_cbuffer( sizeof( MaterialInfo::Buffer ) )
-        .with_cbuffer( sizeof( float4 ) ) ); // DIST_Distance
+        .with_macros( makros ) ); // DIST_Distance
 
     // World mesh atlas PS — flags-driven normal/FX/alpha-test in a single shader
     makros.clear();
-    Shaders.push_back( ShaderInfo::make<PShaderID::PS_WorldAtlas>( "PS_WorldAtlas.hlsl" )
-        .with_cbuffer( sizeof( GothicGraphicsState ) )
-        .with_cbuffer( sizeof( AtmosphereConstantBuffer ) )
-        .with_cbuffer( sizeof( MaterialInfo::Buffer ) )
-        .with_cbuffer( sizeof( float4 ) ) ); // DIST_Distance
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_WorldAtlas>( "PS_WorldAtlas.hlsl" ) ); // DIST_Distance
 
     makros.clear();
 

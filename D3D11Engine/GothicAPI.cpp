@@ -5942,8 +5942,11 @@ static void CollectVisibleVobsHelperNonRecursive( BspInfo* base,
                                 vi->UpdateShadows = !PFXVobLight;
                                 vit->second = vi;
 
-                                if ( !vi->IsPFXVobLight && RendererState.RendererSettings.EnablePointlightShadows >= GothicRendererSettings::PLS_STATIC_ONLY )
-                                    Engine::GraphicsEngine->CreateShadowedPointLight( &vi->LightShadowBuffers, vi, true );
+                                if ( !vi->IsPFXVobLight && RendererState.RendererSettings.EnablePointlightShadows >= GothicRendererSettings::PLS_STATIC_ONLY ) {
+                                    BaseShadowedPointLight* pl;
+                                    Engine::GraphicsEngine->CreateShadowedPointLight( &pl, vi, true );
+                                    vi->LightShadowBuffers.reset( pl );
+                                }
                             }
 
                             VobLightInfo* vi = vit->second;

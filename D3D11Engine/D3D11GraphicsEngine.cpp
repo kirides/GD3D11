@@ -5580,9 +5580,6 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                     if ( blendAdd || blendBlend ) {
                         continue;
                     }
-                }
-
-                for ( unsigned int i = 0; i < mlist.size(); i++ ) {
 
                     for ( unsigned int i = 0; i < mlist.size(); i++ ) {
                         // Bind texture
@@ -5604,7 +5601,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                         MeshInfo* mi = mlist[i];
 
                         // Draw batch
-                        DrawInstanced( mi->MeshVertexBuffer, mi->MeshIndexBuffer,
+                        DrawInstanced( mi->MeshVertexBuffer.get(), mi->MeshIndexBuffer.get(),
                             mi->Indices.size(), DynamicInstancingBuffer.get(),
                             sizeof( VobInstanceInfo ), b.Instances.size(),
                             sizeof( ExVertexStruct ), b.StartInstanceNum );
@@ -5744,7 +5741,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
                             MeshInfo* mi = mlist[i];
 
-                            DrawInstanced( mi->MeshVertexBuffer, mi->MeshIndexBuffer,
+                            DrawInstanced( mi->MeshVertexBuffer.get(), mi->MeshIndexBuffer.get(),
                                 mi->Indices.size(), DynamicInstancingBuffer.get(),
                                 sizeof( VobInstanceInfo ), batch.Instances.size(),
                                 sizeof( ExVertexStruct ), batch.StartInstanceNum );
