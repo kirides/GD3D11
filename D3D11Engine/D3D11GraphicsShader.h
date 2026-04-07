@@ -2,7 +2,7 @@
 #include "GraphicsShader.h"
 #include <d3d11.h>
 #include <d3d11shader.h>
-#include <parallel_hashmap/phmap.h>
+#include <gtl/phmap.hpp>
 #include "D3D11ConstantBuffer.h"
 #include "Types.h"
 #include "StringID.h"
@@ -74,8 +74,8 @@ public:
     
     virtual XRESULT Apply() = 0;
 protected:
-    phmap::flat_hash_map<StringID, int32_t> InputSemanticToIndex;
-    phmap::flat_hash_map<StringID, std::pair<D3D11ConstantBuffer*, int32_t>> ConstantBuffersByName;
+    gtl::flat_hash_map<StringID, int32_t> InputSemanticToIndex;
+    gtl::flat_hash_map<StringID, std::pair<D3D11ConstantBuffer*, int32_t>> ConstantBuffersByName;
     std::array<std::unique_ptr<D3D11ConstantBuffer>, MAX_SHADER_CB> ConstantBuffers;
     std::array<byte, MAX_SHADER_CB> ConstantBufferIndexBySlot;
 

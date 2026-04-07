@@ -68,7 +68,7 @@ public:
     static void ExtractProgMeshProtoFromMesh( zCMesh* mesh, MeshVisualInfo* meshInfo );
 
     /** Extracts a node-visual */
-    static void ExtractNodeVisual( int index, zCModelNodeInst* node, phmap::flat_hash_map<int, std::vector<MeshVisualInfo*>>& attachments );
+    static void ExtractNodeVisual( int index, zCModelNodeInst* node, gtl::flat_hash_map<int, std::vector<MeshVisualInfo*>>& attachments );
 
     /** Updates a quadmark info */
     static void UpdateQuadMarkInfo( QuadMarkInfo* info, zCQuadMark* mark, const float3& position );

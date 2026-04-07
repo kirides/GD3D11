@@ -384,7 +384,7 @@ struct SkeletalVobInfo : public BaseVobInfo {
     D3D11ConstantBuffer* VobConstantBuffer;
 
     /** Map of visuals attached to nodes */
-    phmap::flat_hash_map<int, std::vector<MeshVisualInfo*>> NodeAttachments;
+    gtl::flat_hash_map<int, std::vector<MeshVisualInfo*>> NodeAttachments;
 
     /** Indoor* */
     bool IndoorVob;

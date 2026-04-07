@@ -1,5 +1,4 @@
 #pragma once
-#include <parallel_hashmap/phmap.h>
 
 #include "pch.h"
 #include "Frustum.h"
@@ -683,7 +682,7 @@ public:
     zCVob* GetPlayerVob();
 
     /** Returns the map of static mesh visuals */
-    const phmap::flat_hash_map<zCProgMeshProto*, MeshVisualInfo*>& GetStaticMeshVisuals() { return StaticMeshVisuals; }
+    const gtl::flat_hash_map<zCProgMeshProto*, MeshVisualInfo*>& GetStaticMeshVisuals() { return StaticMeshVisuals; }
 
     /** Returns the collection of PolyStrip meshes infos */
     const std::map<zCTexture*, PolyStripInfo>& GetPolyStripInfos() { return PolyStripInfos; };
@@ -865,14 +864,14 @@ private:
     std::set<MeshVisualInfo*> FrameMeshInstances;
 
     /** Map for static mesh visuals */
-    phmap::flat_hash_map<zCProgMeshProto*, MeshVisualInfo*> StaticMeshVisuals;
+    gtl::flat_hash_map<zCProgMeshProto*, MeshVisualInfo*> StaticMeshVisuals;
 
     /** Collection of poly strip infos (includes mesh and material data) */
     std::map<zCTexture*, PolyStripInfo> PolyStripInfos;
 
     /** Map for skeletal mesh visuals */
-    phmap::flat_hash_map<std::string, SkeletalMeshVisualInfo*> SkeletalMeshVisuals;
-    phmap::flat_hash_map<oCNPC*, SkeletalMeshVisualInfo*> SkeletalMeshNpcs;
+    gtl::flat_hash_map<std::string, SkeletalMeshVisualInfo*> SkeletalMeshVisuals;
+    gtl::flat_hash_map<oCNPC*, SkeletalMeshVisualInfo*> SkeletalMeshNpcs;
 
     /** Set of all vobs we registered by now */
     std::unordered_set<zCVob*> RegisteredVobs;
@@ -884,9 +883,9 @@ private:
     std::unordered_map<zCVob*, VobInfo*> VobMap;
 public:
     // temporarily, to allow CollectVisibleVobsHelper to be templated for inlining optimizations
-    phmap::flat_hash_map<zCVobLight*, VobLightInfo*> VobLightMap;
+    gtl::flat_hash_map<zCVobLight*, VobLightInfo*> VobLightMap;
 private:
-    phmap::flat_hash_map<zCVob*, SkeletalVobInfo*> SkeletalVobMap;
+    gtl::flat_hash_map<zCVob*, SkeletalVobInfo*> SkeletalVobMap;
 
     /** Map of VobInfo-Lists for zCBspLeafs */
     std::unordered_map<zCBspBase*, BspInfo> BspLeafVobLists;
@@ -895,10 +894,10 @@ private:
     std::unordered_map<zCTexture*, MaterialInfo> MaterialInfos;
 
     /** Maps visuals to vobs */
-    phmap::flat_hash_map<zCVisual*, std::vector<BaseVobInfo*>> VobsByVisual;
+    gtl::flat_hash_map<zCVisual*, std::vector<BaseVobInfo*>> VobsByVisual;
 
     /** Map of textures */
-    phmap::flat_hash_map<std::string, MyDirectDrawSurface7*> SurfacesByName;
+    gtl::flat_hash_map<std::string, MyDirectDrawSurface7*> SurfacesByName;
 
     /** Directory we started in */
     std::string StartDirectory;
