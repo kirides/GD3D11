@@ -5,15 +5,21 @@ class StringID {
 public:
     // This allows: StringID myId = "u_Texture"; 
     // Computed at compile-time!
-    constexpr StringID(std::string_view str) : m_hash(SID(str)) {
+    consteval StringID(std::string_view str) : m_hash(SID(str)) {
     }
     
     template <size_t N>
-    constexpr StringID( const char( &str )[N] ) : m_hash( SID( std::string_view( str, N - 1 ) ) ) {}
+    consteval StringID( const char( &str )[N] ) : m_hash( SID( std::string_view( str, N - 1 ) ) ) {}
 
     constexpr operator uint32_t() const { return m_hash; }
 
-private:
+    static StringID make(std::string_view str) {
+        StringID id;
+        id.m_hash = SID( str );
+        return id;
+    }
+private:    
+    StringID() = default;
     uint32_t m_hash;
     
     static constexpr uint32_t SID(std::string_view str) {

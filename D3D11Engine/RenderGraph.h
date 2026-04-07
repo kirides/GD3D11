@@ -50,6 +50,7 @@ public:
 
     // Add a pass using modern C++ lambdas
     template<typename SetupFunc>
+        requires std::invocable<SetupFunc, RGBuilder&, RenderPass&>
     void AddPass( RGPassName name, SetupFunc setupFunc );
 
     // Called by RGBuilder to register handles
@@ -95,6 +96,7 @@ private:
 };
 
 template<typename SetupFunc>
+    requires std::invocable<SetupFunc, RGBuilder&, RenderPass&>
 inline void RenderGraph::AddPass( RGPassName name, SetupFunc setupFunc ) {
     auto pass = std::make_unique<RenderPass>( name );
     RGBuilder builder = RGBuilder( *this, *pass );
