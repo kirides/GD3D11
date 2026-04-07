@@ -252,7 +252,8 @@ XRESULT D3D11Texture::CreateThumbnail() {
     if ( !tempRTV.Get() )
         return XR_FAILED;
 
-    engine->GetContext()->ClearRenderTargetView( tempRTV.Get(), reinterpret_cast<float*>(&float4( 1, 0, 0, 1 )) );
+    static const float clearColor[4] = { 1, 0, 0, 1 };
+    engine->GetContext()->ClearRenderTargetView( tempRTV.Get(), clearColor );
 
     // Copy main texture to it
     engine->GetContext()->PSSetShaderResources( 0, 1, ShaderResourceView.GetAddressOf() );

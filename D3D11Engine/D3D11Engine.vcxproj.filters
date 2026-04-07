@@ -789,9 +789,6 @@
     <ClInclude Include="RGTextureDesc.h">
       <Filter>Engine\Graph</Filter>
     </ClInclude>
-    <ClInclude Include="RGBuilder.h">
-      <Filter>Engine\Graph</Filter>
-    </ClInclude>
     <ClInclude Include="RenderPass.h">
       <Filter>Engine\Graph</Filter>
     </ClInclude>
@@ -1104,9 +1101,6 @@
     <ClCompile Include="ImGuiEditorView.cpp" />
     <ClCompile Include="D3D11PFX_FSR1.cpp">
       <Filter>Engine\D3D11\PFX\Effects</Filter>
-    </ClCompile>
-    <ClCompile Include="RGBuilder.cpp">
-      <Filter>Engine\Graph</Filter>
     </ClCompile>
     <ClCompile Include="RenderPass.cpp">
       <Filter>Engine\Graph</Filter>

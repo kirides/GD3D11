@@ -21,7 +21,8 @@ D3D11ConstantBuffer::D3D11ConstantBuffer( int size, void* data ) {
 
     // Create constantbuffer
     HRESULT hr;
-    LE( engine->GetDevice()->CreateBuffer( &CD3D11_BUFFER_DESC( size, D3D11_BIND_CONSTANT_BUFFER, D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE ), &d, Buffer.GetAddressOf()));
+    auto desc = CD3D11_BUFFER_DESC( size, D3D11_BIND_CONSTANT_BUFFER, D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE );
+    LE( engine->GetDevice()->CreateBuffer( &desc, &d, Buffer.GetAddressOf()));
     OriginalSize = size;
 
     if ( !data )

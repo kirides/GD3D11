@@ -374,29 +374,6 @@ XRESULT D3D11GraphicsEngineBase::DrawVertexBufferFF( D3D11VertexBuffer* vb, unsi
     return XR_SUCCESS;
 }
 
-/** Binds viewport information to the given constantbuffer slot */
-XRESULT D3D11GraphicsEngineBase::BindViewportInformation( VShaderID shader, int slot ) {
-    D3D11_VIEWPORT vp;
-    UINT num = 1;
-    GetContext()->RSGetViewports( &num, &vp );
-
-    // Update viewport information
-    float scale = Engine::GAPI->GetRendererState().RendererSettings.GothicUIScale;
-    float2 f2[2];
-    f2[0].x = vp.TopLeftX / scale;
-    f2[0].y = vp.TopLeftY / scale;
-    f2[1].x = vp.Width / scale;
-    f2[1].y = vp.Height / scale;
-
-    auto vs = ShaderManager->GetVShader( shader );
-
-    if ( vs ) {
-        vs->GetBuffer( "Viewport" ).Update( f2 ).Bind();
-    }
-
-    return XR_SUCCESS;
-}
-
 /** Returns the graphics-device this is running on */
 const std::string& D3D11GraphicsEngineBase::GetGraphicsDeviceName() {
     return DeviceDescription;

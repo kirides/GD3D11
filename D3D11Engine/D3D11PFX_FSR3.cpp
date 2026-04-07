@@ -48,7 +48,10 @@ D3D11PFX_FSR3::~D3D11PFX_FSR3() {
 
 static void Ffx_log( FfxMsgType type,
     const wchar_t* message ) {
-    LogError() << "FFX Error (" << type << "): " << message;
+
+    char ansiStr[1024];
+    auto len = wcstombs( ansiStr, message, sizeof( ansiStr ) );
+    LogError() << "FFX Error (" << type << "): " << std::string_view(ansiStr, len);
 }
 
 bool D3D11PFX_FSR3::Init( const INT2& maxInputSize, const INT2& maxOutputSize ) {

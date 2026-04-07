@@ -5,7 +5,6 @@
 #include "BaseGraphicsEngine.h"
 #include "Engine.h"
 #include "RenderPass.h"
-#include "RGBuilder.h"
 #include "TexturePool.h"
 
 // Helpers for bit-packing
@@ -20,6 +19,27 @@ inline uint32_t GetHandleIndex(RGResourceHandle handle) {
 inline RGResourceHandle MakeHandle(uint32_t index, bool isExternal) {
     return (index << 1) | (isExternal ? 1 : 0);
 }
+
+
+class RGBuilder {
+public:
+    RGBuilder( class RenderGraph& graph, class RenderPass& pass )
+        : m_graph( graph ), m_pass( pass ) {
+    }
+
+    // Declare that this pass READS from a resource (Source)
+    RGResourceHandle Read( RGResourceHandle handle );
+
+    // Declare that this pass WRITES to a resource (Sink)
+    RGResourceHandle Write( RGResourceHandle handle );
+
+    // Declare a brand new transient resource that lives only for this graph execution
+    RGResourceHandle CreateTexture( const RGTextureDesc& desc );
+
+private:
+    RenderGraph& m_graph;
+    RenderPass& m_pass;
+};
 
 class RenderGraph {
 public:
@@ -44,7 +64,7 @@ public:
     template<typename SetupFunc>
     void AddPass( const std::wstring& name, SetupFunc setupFunc ) {
         auto pass = std::make_unique<RenderPass>( name );
-        RGBuilder builder( *this, *pass );
+        RGBuilder builder = RGBuilder( *this, *pass );
 
         // 1. Run the setup function to declare reads/writes
         setupFunc( builder, *pass );

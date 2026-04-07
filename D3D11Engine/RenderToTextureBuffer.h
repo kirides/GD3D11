@@ -28,7 +28,7 @@ struct RenderToTextureBuffer {
         ZeroMemory( CubeMapRTVs, sizeof( CubeMapRTVs ) );
 
         if ( SizeX == 0 || SizeY == 0 ) {
-            LogError() << L"SizeX or SizeY can't be 0";
+            LogError() << "SizeX or SizeY can't be 0";
         }
         
         if (bindFlags == 0) {
@@ -40,7 +40,7 @@ struct RenderToTextureBuffer {
         this->SizeY = SizeY;
 
         if ( Format == 0 ) {
-            LogError() << L"DXGI_FORMAT_UNKNOWN (0) isn't a valid texture format";
+            LogError() << "DXGI_FORMAT_UNKNOWN (0) isn't a valid texture format";
         }
 
         //Create a new render target texture
@@ -109,7 +109,7 @@ struct RenderToTextureBuffer {
             LE( device->CreateShaderResourceView( Texture.Get(), &DescRV, ShaderResView.ReleaseAndGetAddressOf() ) );
 
             if ( FAILED( hr ) ) {
-                LogError() << L"Coould not create ID3D11Texture2D, ID3D11ShaderResourceView, or ID3D11RenderTargetView. Killing created resources (If any).";
+                LogError() << "Coould not create ID3D11Texture2D, ID3D11ShaderResourceView, or ID3D11RenderTargetView. Killing created resources (If any).";
                 ReleaseAll();
                 if ( Result )*Result = hr;
                 return;
@@ -204,11 +204,11 @@ struct RenderToDepthStencilBuffer {
         }
 
         if ( SizeX == 0 || SizeY == 0 ) {
-            LogError() << L"SizeX or SizeY can't be 0";
+            LogError() << "SizeX or SizeY can't be 0";
         }
 
         if ( Format == 0 ) {
-            LogError() << L"DXGI_FORMAT_UNKNOWN (0) isn't a valid texture format";
+            LogError() << "DXGI_FORMAT_UNKNOWN (0) isn't a valid texture format";
         }
 
         //Create a new render target texture
@@ -271,7 +271,7 @@ struct RenderToDepthStencilBuffer {
         LE( device->CreateShaderResourceView( Texture.Get(), &DescRV, ShaderResView.GetAddressOf() ) );
 
         if ( FAILED( hr ) ) {
-            LogError() << L"Could not create ID3D11Texture2D, ID3D11ShaderResourceView, or ID3D11DepthStencilView. Killing created resources (If any).";
+            LogError() << "Could not create ID3D11Texture2D, ID3D11ShaderResourceView, or ID3D11DepthStencilView. Killing created resources (If any).";
             if ( Result )*Result = hr;
             return;
         }

@@ -78,10 +78,10 @@ public:
     }
 
     template <typename... Args>
-    void DefineExternal( zSTRING& name, int( __cdecl* fn )(void), zPAR_TYPE returnType, Args... args ) {
+    void DefineExternal( const zSTRING& name, int( __cdecl* fn )(void), zPAR_TYPE returnType, Args... args ) {
 #ifndef zCParserSupported
 #else
-        auto zCParser_DefineExternal = reinterpret_cast<void( __cdecl* )(zCParser*, zSTRING&, int( __cdecl * fn )(void), int returnType, int paramType ...)>(GothicMemoryLocations::zCParser::DefineExternal);
+        auto zCParser_DefineExternal = reinterpret_cast<void( __cdecl* )(zCParser*, const zSTRING&, int( __cdecl * fn )(void), int returnType, int paramType ...)>(GothicMemoryLocations::zCParser::DefineExternal);
         zCParser_DefineExternal( this, name, fn, (int)returnType, args... );
 #endif
     }
