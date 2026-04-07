@@ -38,6 +38,12 @@ XRESULT D3D11VShader::LoadShader( const ShaderInfo& shaderInfo, const char* file
 
     SetDebugName( VertexShader.Get(), shaderInfo.name );
 
+    if (shaderInfo.layout == 0) {
+        // No layout, skip input layout creation
+        // Likely VS_PFX or similar, where we work with SV_VertexID
+        return XR_SUCCESS;
+    }
+    
     const D3D11_INPUT_ELEMENT_DESC layout1[] =
     {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
