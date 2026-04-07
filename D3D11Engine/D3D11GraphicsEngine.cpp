@@ -4341,6 +4341,9 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
         }
     }
 
+    ID3D11ShaderResourceView* nullSRV[6] = { nullptr, nullptr, nullptr, nullptr, nullptr, nullptr };
+    GetContext()->PSSetShaderResources( 0, std::size(nullSRV), nullSRV);
+
     GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(),
         DepthStencilBuffer->GetDepthStencilView().Get() );
 }
