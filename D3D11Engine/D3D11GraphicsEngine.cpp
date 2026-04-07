@@ -5624,6 +5624,10 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         // Draw dynamic vobs (spawned at runtime, not part of m_StaticVobs or atlas)
         if ( !dynamicVobCasters.empty() ) {
             // Group by visual for instanced drawing
+            
+            PShaderID alphaTestShader = (GetRenderingStage() == DES_SHADOWMAP) || (GetRenderingStage() == DES_SHADOWMAP_CUBE)
+                ? PShaderID::PS_DiffuseAtlasAlphaTestShadows
+                : PShaderID::PS_DiffuseAtlasAlphaTest;
 
             std::vector<BatchableStaticVobs> dynBatches;
             std::unordered_map<MeshVisualInfo*, size_t> batchIndex;
@@ -5683,7 +5687,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                 if ( linearDepth ) {
                     SetActivePixelShader( PShaderID::PS_LinDepth );
                 } else {
-                    SetActivePixelShader( PShaderID::PS_DiffuseAlphaTest );
+                    SetActivePixelShader( alphaTestShader );
                     Context->PSSetShader( nullptr, nullptr, 0 );
                 }
 
@@ -5704,6 +5708,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                 XMFLOAT3 vPlayerPosition = Engine::GAPI->GetPlayerVob() ? Engine::GAPI->GetPlayerVob()->GetPositionWorld() : XMFLOAT3( 0, 0, 0 );
                 g_windBuffer.playerPos = float3( vPlayerPosition.x, vPlayerPosition.y, vPlayerPosition.z );
 
+                bool hasPS = false;
                 for ( auto const& batch : dynBatches ) {
                     if ( batch.Instances.empty() ) continue;
 
@@ -5734,13 +5739,17 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                             if ( bindTexture ) {
                                 if ( alphaRef > 0.0f && tx->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
                                     tx->Bind( 0 );
-                                    ActivePS->Apply();
+                                    if (!hasPS) {
+                                        ActivePS->Apply();
+                                        hasPS = true;
+                                    }
                                     previousTx = tx;
                                 } else
                                     continue;
                             } else {
-                                if ( !linearDepth ) {
+                                if ( !linearDepth && hasPS ) {
                                     Context->PSSetShader( nullptr, nullptr, 0 );
+                                    hasPS = false;
                                 }
                             }
 
