@@ -653,7 +653,6 @@
     <ClInclude Include="zViewTypes.h">
       <Filter>ZenGin\Classes</Filter>
     </ClInclude>
-    <ClInclude Include="zFont.h" />
     <ClInclude Include="D3D11GraphicsEngine.h">
       <Filter>Engine\D3D11\Engine</Filter>
     </ClInclude>
@@ -782,7 +781,6 @@
     </ClInclude>
     <ClInclude Include="Frustum.h" />
     <ClInclude Include="ImGuiEditorView.h" />
-    <ClInclude Include="zCSoundSystem.h" />
     <ClInclude Include="D3D11PFX_FSR1.h">
       <Filter>Engine\D3D11\PFX\Effects</Filter>
     </ClInclude>
@@ -830,6 +828,19 @@
     </ClInclude>
     <ClInclude Include="MeshManager.h">
       <Filter>Engine\GAPI</Filter>
+    </ClInclude>
+    <ClInclude Include="StringID.h" />
+    <ClInclude Include="zSndMss.h">
+      <Filter>ZenGin\Classes</Filter>
+    </ClInclude>
+    <ClInclude Include="zSound.h">
+      <Filter>ZenGin\Classes</Filter>
+    </ClInclude>
+    <ClInclude Include="zFont.h">
+      <Filter>ZenGin\Classes</Filter>
+    </ClInclude>
+    <ClInclude Include="zCSoundSystem.h">
+      <Filter>ZenGin\Classes</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -1129,6 +1140,9 @@
     </ClCompile>
     <ClCompile Include="MeshManager.cpp">
       <Filter>Engine\GAPI</Filter>
+    </ClCompile>
+    <ClCompile Include="zSndMss.cpp">
+      <Filter>ZenGin\Classes</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>

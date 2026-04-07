@@ -33,6 +33,7 @@
 #endif
 
 #include "StackWalker.h"
+#include "zSndMss.h"
 
 bool IsRunningUnderUnion = false;
 bool CreatingThumbnail = false;
@@ -388,9 +389,7 @@ void HookedFunctionInfo::InitHooks() {
 
 /** Function hooks */
 void __fastcall HookedFunctionInfo::hooked_zCActiveSndAutoCalcObstruction( void* thisptr, void* unknwn, int i ) {
-    // Just do nothing here. Something was inside zCBspTree::Render that managed this and thus voices get really quiet in indoor locations
-    // This function is for calculating the automatic volume-changes when the camera goes in/out buildings
-    // We keep everything on the same level by removing it
+    ((zCActiveSnd*)thisptr)->AutoCalcObstruction( i );
 }
 
 int __cdecl HookedFunctionInfo::hooked_GetNumDevices() {
