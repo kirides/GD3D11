@@ -68,7 +68,35 @@ float2 CalculateVelocity(float4 currClipPos, float4 prevClipPos)
 //--------------------------------------------------------------------------------------
 // Pixel Shader
 //--------------------------------------------------------------------------------------
+#if ALPHATEST_SHADOWS == 1
+void PSMain( PS_INPUT Input )
+{
+	// Per-pixel atlas UV remapping: avoids frac() interpolation collapse in the VS
+	// (frac(1.0)=0.0 in VS causes entire [0,1] UV range to collapse to a single texel).
+	// SampleGrad uses gradients from the raw (pre-frac) UVs so MIP selection stays correct
+	// even at UV wrap boundaries where frac() would create huge derivative discontinuities.
+	float2 rawUV = Input.vTexcoord3D.xy;
+	float  slice = Input.vTexcoord3D.z;
+	float2 atlasScale = Input.vAtlasRect.zw - Input.vAtlasRect.xy; // (uEnd-uStart, vEnd-vStart)
+
+	// SampleGrad ignores sampler MipLODBias, so we manually apply the LOD bias
+	// (needed for FSR upscaling to produce sharp textures at lower resolutions)
+	float biasFactor = exp2(DIST_LodBias);
+	float2 gradX = ddx(rawUV) * atlasScale * biasFactor;
+	float2 gradY = ddy(rawUV) * atlasScale * biasFactor;
+	float2 atlasUV = Input.vAtlasRect.xy + frac(rawUV) * atlasScale;
+
+	float4 color = TX_AtlasArray.SampleGrad(SS_Linear, float3(atlasUV, slice), gradX, gradY);
+
+	ClipDistanceEffect(length(Input.vViewPosition), DIST_DrawDistance, color.r * 2 - 1, 500.0f);
+	DoAlphaTest(color.a);
+}
+
+// Disable regular shader
+DEFERRED_PS_OUTPUT PSMainDISABLED( PS_INPUT Input ) : SV_TARGET
+#else
 DEFERRED_PS_OUTPUT PSMain( PS_INPUT Input ) : SV_TARGET
+#endif
 {
 	DEFERRED_PS_OUTPUT output;
 	output.vReactiveMask = 0.0f;

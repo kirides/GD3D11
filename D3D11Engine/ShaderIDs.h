@@ -82,6 +82,7 @@ enum class PShaderID : size_t {
     PS_DiffuseNormalmappedAlphaTestFxMap,
     PS_DiffuseAtlas,
     PS_DiffuseAtlasAlphaTest,
+    PS_DiffuseAtlasAlphaTestShadows,
     PS_Preview_White,
     PS_Preview_Textured,
     PS_Preview_TexturedLit,

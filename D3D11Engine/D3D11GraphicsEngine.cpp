@@ -5346,7 +5346,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
     Engine::GAPI->SetViewTransformXM( view );
 
     // Set shader
-    SetActivePixelShader( PShaderID::PS_DiffuseAlphaTestShadows );
+    SetActivePixelShader( PShaderID::PS_DiffuseAlphaTest );
     auto defaultPS = ActivePS;
     SetActiveVertexShader( VShaderID::VS_Ex );
 
@@ -5421,10 +5421,17 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         
         bool drawStaticVobs = true;
         if ( Engine::GAPI->GetRendererState().RendererSettings.UseIndirectVobShadows && m_VobAtlasPass->IsReady() ) {
+
+            SetActivePixelShader( PShaderID::PS_DiffuseAtlasAlphaTestShadows );
+            defaultPS = ActivePS;
+
             // GPU indirect path: reuse the VOB atlas pass with the cascade/shadow frustum.
             // BC1 groups render depth-only (no PS); BC2 groups use the alpha-test PS.
             m_VobAtlasPass->Draw( currentFrustum, /*bindPS=*/false );
             drawStaticVobs = false;
+
+            SetActivePixelShader( PShaderID::PS_DiffuseAlphaTestShadows );
+            defaultPS = ActivePS;
         }
 
         static std::vector<VobInfo*> dynamicVobCasters;

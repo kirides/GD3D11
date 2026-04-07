@@ -380,6 +380,17 @@ XRESULT D3D11ShaderManager::Init() {
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_DiffuseAtlasAlphaTest>( "PS_DiffuseAtlas.hlsl" )
         .with_macros( makros ) ); // DIST_Distance
+    
+    makros.clear();
+    m.Name = "NORMALMAPPING";
+    m.Definition = "0";
+    makros.push_back( m );
+    m.Name = "ALPHATEST_SHADOWS";
+    m.Definition = "1";
+    makros.push_back( m );
+
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_DiffuseAtlasAlphaTestShadows>( "PS_DiffuseAtlas.hlsl" )
+        .with_macros( makros ) ); // DIST_Distance
 
     // World mesh atlas PS — flags-driven normal/FX/alpha-test in a single shader
     makros.clear();
