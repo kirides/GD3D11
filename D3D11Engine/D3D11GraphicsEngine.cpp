@@ -99,7 +99,9 @@ static std::unique_ptr<D3D11AGS> agsDevice;
 extern bool userHaveAMDGPU;
 
 namespace
-{    
+{
+    static ID3D11ShaderResourceView* s_nullSRVs[16] = { nullptr };
+
     void ApplyWindowMode(GothicRendererSettings& s) {
         // Only used for runtime changes, changes from/to exclusive fullscreen are not supported
         switch ( s.ChangeWindowPreset ) {
@@ -2705,9 +2707,8 @@ XRESULT D3D11GraphicsEngine::BindActiveVertexShader() {
 
 /** Unbinds the texture at the given slot */
 XRESULT D3D11GraphicsEngine::UnbindTexture( int slot ) {
-    ID3D11ShaderResourceView* nullSRV[] { nullptr };
-    GetContext()->PSSetShaderResources( slot, 1, nullSRV );
-    GetContext()->VSSetShaderResources( slot, 1, nullSRV );
+    GetContext()->PSSetShaderResources( slot, 1, s_nullSRVs );
+    GetContext()->VSSetShaderResources( slot, 1, s_nullSRVs );
 
     return XR_SUCCESS;
 }
@@ -2936,12 +2937,11 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         builder.Write( backBufferHandle );
 
         pass.m_executeCallback = [this, colorResource, normalsResource, specularResource, reactiveMaskResource](const RenderGraph& graph)-> void {
-            ID3D11ShaderResourceView* nullSRV[8]{};
-            GetContext()->VSSetShaderResources( 0, 8, nullSRV );
-            GetContext()->PSSetShaderResources( 0, 8, nullSRV );
-            GetContext()->DSSetShaderResources( 0, 8, nullSRV );
-            GetContext()->HSSetShaderResources( 0, 8, nullSRV );
-            GetContext()->CSSetShaderResources( 0, 8, nullSRV );
+            GetContext()->VSSetShaderResources( 0, 8, s_nullSRVs );
+            GetContext()->PSSetShaderResources( 0, 8, s_nullSRVs );
+            GetContext()->DSSetShaderResources( 0, 8, s_nullSRVs );
+            GetContext()->HSSetShaderResources( 0, 8, s_nullSRVs );
+            GetContext()->CSSetShaderResources( 0, 8, s_nullSRVs );
 
             ID3D11RenderTargetView* rtvs[] = {
                 graph.GetPhysicalTexture(colorResource)->GetRenderTargetView().Get(),
@@ -4341,8 +4341,7 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
         }
     }
 
-    ID3D11ShaderResourceView* nullSRV[6] = { nullptr, nullptr, nullptr, nullptr, nullptr, nullptr };
-    GetContext()->PSSetShaderResources( 0, std::size(nullSRV), nullSRV);
+    GetContext()->PSSetShaderResources( 0, 6, s_nullSRVs );
 
     GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(),
         DepthStencilBuffer->GetDepthStencilView().Get() );
@@ -5061,8 +5060,7 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect(const std::vector<Wo
 
         ActivePS->Apply();
         zCTexture* lastTex = nullptr;
-        ID3D11ShaderResourceView* nullSRVs[3] = {};
-        Context->PSSetShaderResources( 0, std::size( nullSRVs ), nullSRVs );
+        Context->PSSetShaderResources( 0, 3, s_nullSRVs );
 
         for ( const auto& [tex, mesh] : alphaMeshes ) {
             if ( tex != lastTex ) {
@@ -5131,8 +5129,7 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh(const std::vector<WorldMeshSe
         ActivePS->Apply();
         zCTexture* lastTex = nullptr;
 
-        ID3D11ShaderResourceView* nullSRVs[3] = {};
-        Context->PSSetShaderResources( 0, std::size( nullSRVs ), nullSRVs);
+        Context->PSSetShaderResources( 0, 3, s_nullSRVs );
 
         for ( const auto& [tex, mesh] : alphaMeshes ) {
             if ( tex != lastTex ) {
