@@ -1230,4 +1230,9 @@
       <Filter>Engine\Shaders</Filter>
     </None>
   </ItemGroup>
+  <ItemGroup>
+    <Natvis Include="include\gtl\debug_vis\gtl.natvis">
+      <Filter>Librarys</Filter>
+    </Natvis>
+  </ItemGroup>
 </Project>

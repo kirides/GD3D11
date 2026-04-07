@@ -2538,8 +2538,8 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
     const XMMATRIX prevWorldMatrix = vi->HasValidPrevTransforms
         ? XMLoadFloat4x4( &vi->PrevWorldMatrix )
         : XMLoadFloat4x4( &world );
-
-    phmap::flat_hash_map<int, std::vector<MeshVisualInfo*>>& nodeAttachments = vi->NodeAttachments;
+    
+    gtl::flat_hash_map<int, std::vector<MeshVisualInfo*>>& nodeAttachments = vi->NodeAttachments;
     auto vsBufMPI = g->GetActiveVS()->GetBuffer( "Matrices_PerInstances" );
     vsBufMPI.Bind();
     for ( unsigned int i = 0; i < transforms.size(); i++ ) {
@@ -2772,7 +2772,7 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
     g->SetupVS_ExMeshDrawCall();
     g->SetupVS_ExConstantBuffer();
 
-    phmap::flat_hash_map<int, std::vector<MeshVisualInfo*>>& nodeAttachments = vi->NodeAttachments;
+    auto& nodeAttachments = vi->NodeAttachments;
     auto vsBufMPI = g->GetActiveVS()->GetBuffer( "Matrices_PerInstances" );
     vsBufMPI.Bind();
 
