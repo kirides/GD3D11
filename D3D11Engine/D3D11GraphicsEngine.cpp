@@ -2133,7 +2133,7 @@ bool D3D11GraphicsEngine::BindTextureNRFX( zCTexture* tex, bool bindShader ) {
 
 XRESULT  D3D11GraphicsEngine::DrawSkeletalVertexNormals( SkeletalVobInfo* vi,
     const XMFLOAT4X4& world,
-    const Span<XMFLOAT4X4> transforms, float4 color, float fatness ) {
+    const std::span<XMFLOAT4X4> transforms, float4 color, float fatness ) {
     std::shared_ptr<D3D11GShader> gshader = ShaderManager->GetGShader( GShaderID::GS_VertexNormals );
     gshader->Apply();
 
@@ -2192,7 +2192,7 @@ XRESULT  D3D11GraphicsEngine::DrawSkeletalVertexNormals( SkeletalVobInfo* vi,
 
 /** Draws a skeletal mesh */
 XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
-    const Span<XMFLOAT4X4> transforms, float4 color, const XMFLOAT4X4& world, float fatness ) {
+    const std::span<XMFLOAT4X4> transforms, float4 color, const XMFLOAT4X4& world, float fatness ) {
     if ( GetRenderingStage() == DES_SHADOWMAP_CUBE ) {
         SetActiveVertexShader( VShaderID::VS_ExSkeletalCube );
     } else {
@@ -2221,8 +2221,8 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
         // Don't bind previous, as we don't use them here yet.
     }
     else if ( GetRenderingStage() != DES_SHADOWMAP ) {
-        const Span<XMFLOAT4X4> prevTransforms = (vi->HasValidPrevTransforms && !vi->PrevBoneTransforms.empty())
-            ? make_span(vi->PrevBoneTransforms) 
+        const std::span<XMFLOAT4X4> prevTransforms = (vi->HasValidPrevTransforms && !vi->PrevBoneTransforms.empty())
+            ? std::span(vi->PrevBoneTransforms)
             : transforms;
         
         ActiveVS->GetBuffer("PrevBoneTransforms").Update( &prevTransforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( prevTransforms.size(), NUM_MAX_BONES ) ).Bind();
@@ -2294,7 +2294,7 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
 }
 
 XRESULT D3D11GraphicsEngine::DrawSkeletalMesh_Layered( SkeletalVobInfo* vi,
-    const Span<XMFLOAT4X4> transforms, float4 color, XMFLOAT4X4& world, float fatness ) {
+    const std::span<XMFLOAT4X4> transforms, float4 color, XMFLOAT4X4& world, float fatness ) {
     SetActiveVertexShader( VShaderID::VS_ExSkeletalLayered );
 
     SetupVS_ExMeshDrawCall();
@@ -2559,7 +2559,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 #else
             if ( !model->GetDrawHandVisualsOnly() ) {
 #endif
-                const auto transforms = make_span( &BoneTransformCache[boneIdx], numBones );
+                const auto transforms = std::span( &BoneTransformCache[boneIdx], numBones );
                 const auto color = modelColor;
 
                 VS_ExConstantBuffer_PerInstanceSkeletal cb2;
@@ -2578,8 +2578,8 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                     // Don't bind previous, as we don't use them here yet.
                 }
                 else if ( GetRenderingStage() != DES_SHADOWMAP ) {
-                    const Span<XMFLOAT4X4> prevTransforms = (vi->HasValidPrevTransforms && !vi->PrevBoneTransforms.empty())
-                        ? make_span(vi->PrevBoneTransforms) 
+                    const std::span<XMFLOAT4X4> prevTransforms = (vi->HasValidPrevTransforms && !vi->PrevBoneTransforms.empty())
+                        ? std::span(vi->PrevBoneTransforms) 
                         : transforms;
                     
                     prevBoneTransformsCb.Update( &prevTransforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( prevTransforms.size(), NUM_MAX_BONES ) );
@@ -2661,7 +2661,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         auto vi = data.VobInfo;
         auto model = data.Model;
         auto modelColor = data.ModelColor;
-        auto transforms = make_span( &BoneTransformCache[data.BoneIdx], data.NumBones );
+        auto transforms = std::span( &BoneTransformCache[data.BoneIdx], data.NumBones );
         auto fatness = data.Fatness;
         auto& world = data.World;
 

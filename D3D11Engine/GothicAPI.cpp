@@ -2484,7 +2484,7 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
 #else
         if ( !model->GetDrawHandVisualsOnly() ) {
 #endif
-            Engine::GraphicsEngine->DrawSkeletalMesh( vi, make_span( transforms ), modelColor, world, fatness);
+            Engine::GraphicsEngine->DrawSkeletalMesh( vi, std::span( transforms ), modelColor, world, fatness);
         }
     } else {
         if ( model->GetMeshSoftSkinList()->NumInArray > 0 ) {
@@ -2721,7 +2721,7 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo* vi, float distance
 #else
         if ( !model->GetDrawHandVisualsOnly() ) {
 #endif
-            g->DrawSkeletalMesh_Layered( vi, make_span( transforms ), modelColor, world, fatness );
+            g->DrawSkeletalMesh_Layered( vi, std::span( transforms ), modelColor, world, fatness );
         }
     } else {
         if ( model->GetMeshSoftSkinList()->NumInArray > 0 ) {
@@ -2986,7 +2986,7 @@ void GothicAPI::DrawSkeletalVN() {
             model->GetBoneTransforms( &transforms );
 
             if ( !static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->SkeletalMeshes.empty() ) {
-                g->DrawSkeletalVertexNormals( vi, world, make_span( transforms ), 0xFFFFFF, fatness);
+                g->DrawSkeletalVertexNormals( vi, world, std::span( transforms ), 0xFFFFFF, fatness);
             }
         }
 
