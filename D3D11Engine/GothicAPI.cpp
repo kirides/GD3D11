@@ -139,6 +139,10 @@ GothicAPI::GothicAPI() {
 
     _canRain = false;
     _canClearVobsByVisual = false;
+
+    SkeletalMeshVobs.reserve(300);
+    AnimatedSkeletalVobs.reserve(300);
+    DynamicallyAddedVobs.reserve(100);
 }
 
 GothicAPI::~GothicAPI() {
@@ -1966,26 +1970,26 @@ void GothicAPI::OnRemovedVob( zCVob* vob, zCWorld* world ) {
         vi->VobSection->Vobs.remove( vi );
     }
     // Erase it from the skeletal vob-list
-    for ( auto& vit = SkeletalMeshVobs.begin(); vit != SkeletalMeshVobs.end(); ++vit ) {
-        if ( (*vit)->Vob == vob ) {
-            //SkeletalVobInfo* vi = *vit;
-            SkeletalMeshVobs.erase( vit );
+    for ( size_t i = 0; i< SkeletalMeshVobs.size(); ++i ) {
+        if ( SkeletalMeshVobs[i]->Vob == vob ) {
+            SkeletalMeshVobs[i] = SkeletalMeshVobs.back();
+            SkeletalMeshVobs.pop_back();
             break;
         }
     }
 
-    for ( auto& vit = AnimatedSkeletalVobs.begin(); vit != AnimatedSkeletalVobs.end(); ++vit ) {
-        if ( (*vit)->Vob == vob ) {
-            //SkeletalVobInfo* vi = *it;
-            AnimatedSkeletalVobs.erase( vit );
+    for ( size_t i = 0; i< AnimatedSkeletalVobs.size(); ++i ) {
+        if ( AnimatedSkeletalVobs[i]->Vob == vob ) {
+            AnimatedSkeletalVobs[i] = AnimatedSkeletalVobs.back();
+            AnimatedSkeletalVobs.pop_back();
             break;
         }
     }
 
-    // Erase it from dynamically loaded vobs
-    for ( auto& vit = DynamicallyAddedVobs.begin(); vit != DynamicallyAddedVobs.end(); ++vit ) {
-        if ( (*vit)->Vob == vob ) {
-            DynamicallyAddedVobs.erase( vit );
+    for ( size_t i = 0; i< DynamicallyAddedVobs.size(); ++i ) {
+        if ( DynamicallyAddedVobs[i]->Vob == vob ) {
+            DynamicallyAddedVobs[i] = DynamicallyAddedVobs.back();
+            DynamicallyAddedVobs.pop_back();
             break;
         }
     }
@@ -4339,16 +4343,16 @@ void GothicAPI::RemoveSurface( MyDirectDrawSurface7* surface ) {
 }
 
 /** Returns the loaded skeletal mesh vobs */
-std::list<SkeletalVobInfo*>& GothicAPI::GetSkeletalMeshVobs() {
+std::vector<SkeletalVobInfo*>& GothicAPI::GetSkeletalMeshVobs() {
     return SkeletalMeshVobs;
 }
 
 /** Returns the loaded skeletal mesh vobs */
-std::list<SkeletalVobInfo*>& GothicAPI::GetAnimatedSkeletalMeshVobs() {
+std::vector<SkeletalVobInfo*>& GothicAPI::GetAnimatedSkeletalMeshVobs() {
     return AnimatedSkeletalVobs;
 }
 
-std::list<VobInfo*>& GothicAPI::GetDynamicallyAddedVobs() {
+std::vector<VobInfo*>& GothicAPI::GetDynamicallyAddedVobs() {
     return DynamicallyAddedVobs;
 }
     
