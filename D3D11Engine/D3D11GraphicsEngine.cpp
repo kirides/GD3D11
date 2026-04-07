@@ -2404,10 +2404,9 @@ XRESULT D3D11GraphicsEngine::DrawInstanced(
 
 void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     const std::vector<SkeletalVobInfo*>& vis,
+    float distance,
     bool updateState,
     bool drawAttachments ) {
-
-    constexpr float distance = FLT_MAX;
 
     struct TempVobDrawInfo {
         SkeletalVobInfo* VobInfo;
@@ -2750,7 +2749,6 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                         instanceInfo.Scaling = 1.f;
                     }
 
-                    auto& VShader = GetActiveVS();
                     if ( distance < 1000 && isMMS ) {
                         zCMorphMesh* mm = reinterpret_cast<zCMorphMesh*>( mvi->Visual );
                         // Only draw this as a morphmesh when rendering the main scene or when rendering as ghost
@@ -5656,7 +5654,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             drawAttachments = params.CascadeIndex <= 1; // skip attachments on higher cascades, player won't notice, hopefully
         }
         // we should not need to update the skeletal meshes again, as they were updated before drawing the main scene
-        DrawSkeletalMeshVobs( animatedSkeletalMeshVobs, false, drawAttachments );
+        DrawSkeletalMeshVobs( animatedSkeletalMeshVobs, FLT_MAX, false, drawAttachments );
     }
 
     Engine::GAPI->GetRendererState().BlendState.ColorWritesEnabled = true;
@@ -6034,7 +6032,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
 
             static std::vector<XMFLOAT4X4> bones = {};
 
-            DrawSkeletalMeshVobs( mobs, true, true );
+            DrawSkeletalMeshVobs( mobs, FLT_MAX, true, true );
             for ( SkeletalVobInfo* mob : mobs ) {
                 zCModel* model = static_cast<zCModel*>(mob->Vob->GetVisual());
                 XMMATRIX scale = XMMatrixScalingFromVector( model->GetModelScaleXM() );

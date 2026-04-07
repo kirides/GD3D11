@@ -1218,6 +1218,11 @@ void GothicAPI::DrawWorldMeshNaive() {
 
         auto drawRadius = RendererState.RendererSettings.SkeletalMeshDrawRadius;
 
+        static std::vector<SkeletalVobInfo*> drawAsMorphMesh;
+        static std::vector<SkeletalVobInfo*> drawRegular;
+        drawAsMorphMesh.reserve(50);
+        drawRegular.reserve(200);
+
         for ( const auto& vobInfo : AnimatedSkeletalVobs ) {
             // Don't render if sleeping and has skeletal meshes available
             if ( !vobInfo->VisualInfo ) continue;
@@ -1252,9 +1257,25 @@ void GothicAPI::DrawWorldMeshNaive() {
                 continue;
             }
 
-            DrawSkeletalMeshVob( vobInfo, dist );
+            if (dist < 1000 && strcmp( model->GetFileExtension( 0 ), ".MMS") == 0) {
+                drawAsMorphMesh.push_back( vobInfo );
+            } else {
+                drawRegular.push_back( vobInfo );
+            }
+
             if( RendererState.RendererSettings.ShowSkeletalVertexNormals )
                 VNSkeletalVobs.emplace_back( vobInfo );
+        }
+        D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+
+        if (!drawAsMorphMesh.empty()) {
+            // force drawing as morph Mesh for those, by setting distance very close.
+            g->DrawSkeletalMeshVobs( drawAsMorphMesh, 500, true, true );
+            drawAsMorphMesh.clear();
+        }
+        if (!drawRegular.empty()) {
+            g->DrawSkeletalMeshVobs( drawRegular, FLT_MAX, true, true );
+            drawRegular.clear();
         }
     }
 

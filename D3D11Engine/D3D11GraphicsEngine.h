@@ -148,7 +148,7 @@ public:
     XRESULT DrawSkeletalMesh_Layered(SkeletalVobInfo* vi, const Span<XMFLOAT4X4> transforms, float4 color, XMFLOAT4X4& world, float fatness = 1.0f);
 
     /** Draws a batch of skeletal mesh vobs */
-    void DrawSkeletalMeshVobs( const std::vector<SkeletalVobInfo*>& vis, bool updateState, bool drawAttachments );
+    void DrawSkeletalMeshVobs( const std::vector<SkeletalVobInfo*>& vis, float distance, bool updateState, bool drawAttachments );
 
     /** Draws a screen fade effects */
     XRESULT DrawScreenFade( void* camera ) override;
