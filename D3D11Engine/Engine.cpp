@@ -13,7 +13,7 @@ namespace Engine {
     /** Refresh worker threadpool */
     void RefreshWorkerThreadpool() {
         delete WorkerThreadPool;
-        WorkerThreadPool = new ThreadPool;
+        WorkerThreadPool = new ThreadPool(L"GD3D11-Worker");
     }
 
     /** Creates main graphics engine */
@@ -32,8 +32,8 @@ namespace Engine {
         XLE( GraphicsEngine->Init() );
 
         // Create threadpool
-        RenderingThreadPool = new ThreadPool;
-        WorkerThreadPool = new ThreadPool;
+        RenderingThreadPool = new ThreadPool(L"GD3D11-Render");
+        WorkerThreadPool = new ThreadPool(L"GD3D11-Worker");
     }
 
     /** Creates the Global GAPI-Object */
