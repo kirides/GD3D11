@@ -2515,7 +2515,6 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             } else {
                 // Get the color from vob position of the ground poly
                 if ( zCPolygon* polygon = vi->Vob->GetGroundPoly() ) {
-                    static const float inv255f = (1.0f / 255.0f);
                     float3 vobPos = vi->Vob->GetPositionWorld();
                     float3 polyLightStat = polygon->GetLightStatAtPos( vobPos );
                     modelColor.x = polyLightStat.z * inv255f;
