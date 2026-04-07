@@ -431,9 +431,9 @@ public:
     MeshInfo* GetWrappedWorldMesh();
 
     /** Returns the loaded skeletal mesh vobs */
-    std::list<SkeletalVobInfo*>& GetSkeletalMeshVobs();
-    std::list<SkeletalVobInfo*>& GetAnimatedSkeletalMeshVobs();
-    std::list<VobInfo*>& GetDynamicallyAddedVobs();
+    std::vector<SkeletalVobInfo*>& GetSkeletalMeshVobs();
+    std::vector<SkeletalVobInfo*>& GetAnimatedSkeletalMeshVobs();
+    std::vector<VobInfo*>& GetDynamicallyAddedVobs();
 
     /** Returns the current cameraposition */
     XMFLOAT3 GetCameraPosition();
@@ -838,8 +838,8 @@ private:
     MeshInfo* WrappedWorldMesh;
 
     /** List of vobs with skeletal meshes (Having a zCModel-Visual) */
-    std::list<SkeletalVobInfo*> SkeletalMeshVobs;
-    std::list<SkeletalVobInfo*> AnimatedSkeletalVobs;
+    std::vector<SkeletalVobInfo*> SkeletalMeshVobs;
+    std::vector<SkeletalVobInfo*> AnimatedSkeletalVobs;
     std::vector<TransparencyVobInfo> TransparencyVobs;
     std::vector<SkeletalVobInfo*> VNSkeletalVobs;
 
@@ -878,7 +878,7 @@ private:
     std::unordered_set<zCVob*> RegisteredVobs;
 
     /** List of dynamically added vobs */
-    std::list<VobInfo*> DynamicallyAddedVobs;
+    std::vector<VobInfo*> DynamicallyAddedVobs;
 
     /** Map of vobs and VobIndfos */
     std::unordered_map<zCVob*, VobInfo*> VobMap;

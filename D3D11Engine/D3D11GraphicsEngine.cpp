@@ -99,7 +99,9 @@ static std::unique_ptr<D3D11AGS> agsDevice;
 extern bool userHaveAMDGPU;
 
 namespace
-{    
+{
+    static ID3D11ShaderResourceView* s_nullSRVs[16] = { nullptr };
+
     void ApplyWindowMode(GothicRendererSettings& s) {
         // Only used for runtime changes, changes from/to exclusive fullscreen are not supported
         switch ( s.ChangeWindowPreset ) {
@@ -2402,10 +2404,9 @@ XRESULT D3D11GraphicsEngine::DrawInstanced(
 
 void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     const std::vector<SkeletalVobInfo*>& vis,
+    float distance,
     bool updateState,
     bool drawAttachments ) {
-
-    constexpr float distance = FLT_MAX;
 
     struct TempVobDrawInfo {
         SkeletalVobInfo* VobInfo;
@@ -2443,6 +2444,54 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     BoneTransformCache.reserve( 150 );
 
     int boneOffset = 0;
+    
+    // Setup drawing of SkeletalMeshes, attachments are deferred, to reduce api calls
+    
+    if ( GetRenderingStage() == DES_SHADOWMAP_CUBE ) {
+        SetActiveVertexShader( VShaderID::VS_ExSkeletalCube );
+    } else {
+        SetActiveVertexShader( VShaderID::VS_ExSkeletal );
+    }
+
+    ActiveVS->Apply();
+
+    SetupVS_ExMeshDrawCall();
+    SetupVS_ExConstantBuffer();
+
+    Context->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+    
+    auto perInstanceCb = ActiveVS->GetBuffer("Matrices_PerInstances").Bind();
+    // Copy bones
+    auto boneTransformsCb = ActiveVS->GetBuffer("BoneTransforms").Bind();
+    auto prevBoneTransformsCb = ActiveVS->GetBuffer("PrevBoneTransforms").Bind();
+
+    // Copy previous frame bone transforms for motion vectors (only for main scene rendering, not shadow maps)
+    if ( GetRenderingStage() == DES_SHADOWMAP_CUBE ) {
+        // Don't bind previous, as we don't use them here yet.
+    }
+    else if ( GetRenderingStage() != DES_SHADOWMAP ) {
+        prevBoneTransformsCb.Bind(); // we actually should have previous bones
+    } else {
+        // must be shadowmap, bind current bones as previous
+        boneTransformsCb.Bind( ActiveVS->GetInputIndex( "PrevBoneTransforms" ) ); // just bind the current bones again
+    }
+    
+    bool wantShader = true;
+    if ( RenderingStage != DES_GHOST ) {
+        bool linearDepth = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches & GSWITCH_LINEAR_DEPTH) != 0;
+        if ( linearDepth ) {
+            ActivePS = ShaderManager->GetPShader( PShaderID::PS_LinDepth );
+            ActivePS->Apply();
+        } else if ( RenderingStage == DES_SHADOWMAP ) {
+            // Unbind PixelShader in this case
+            if (ActivePS) {
+                Context->PSSetShader( nullptr, nullptr, 0 );
+                ActivePS = nullptr;
+            }
+            wantShader = false;
+        }
+    }
+    
     for ( SkeletalVobInfo* vi : vis ) {
         zCModel* model = static_cast<zCModel*>(vi->Vob->GetVisual());
         if ( !model ) {
@@ -2454,9 +2503,6 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             continue; // Gothic fortunately sets this to 0 when it throws the model out of the cache
         if ( !vi->Vob->GetShowVisual() )
             continue;
-
-
-        SkeletalMeshVisualInfo* visual = static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo);
 
         float4 modelColor;
         if ( Engine::GAPI->GetRendererState().RendererSettings.EnableShadows ) {
@@ -2489,8 +2535,6 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         float fatness = model->GetModelFatness();
 
         // Get the bone transforms
-        // boneOffset
-        auto oldOffset = boneOffset;
         model->GetBoneTransforms( &BoneTransformCache );
         auto numBones = BoneTransformCache.size() - boneOffset;
         auto boneIdx = boneOffset;
@@ -2508,7 +2552,73 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 #else
             if ( !model->GetDrawHandVisualsOnly() ) {
 #endif
-                DrawSkeletalMesh( vi, make_span( &BoneTransformCache[boneIdx], numBones), modelColor, world, fatness);
+                const auto transforms = make_span( &BoneTransformCache[boneIdx], numBones );
+                const auto color = modelColor;
+
+                VS_ExConstantBuffer_PerInstanceSkeletal cb2;
+                cb2.World = world;
+                cb2.PI_ModelColor = color;
+                cb2.PI_ModelFatness = fatness;
+                // Set PrevWorld for motion vectors (use current world if no previous is available)
+                cb2.PrevWorld = vi->HasValidPrevTransforms ? vi->PrevWorldMatrix : world;
+
+                perInstanceCb.Update( &cb2 );
+                // Copy bones
+                boneTransformsCb.Update( &transforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( transforms.size(), NUM_MAX_BONES ) );
+
+                // Copy previous frame bone transforms for motion vectors (only for main scene rendering, not shadow maps)
+                if ( GetRenderingStage() == DES_SHADOWMAP_CUBE ) {
+                    // Don't bind previous, as we don't use them here yet.
+                }
+                else if ( GetRenderingStage() != DES_SHADOWMAP ) {
+                    const Span<XMFLOAT4X4> prevTransforms = (vi->HasValidPrevTransforms && !vi->PrevBoneTransforms.empty())
+                        ? make_span(vi->PrevBoneTransforms) 
+                        : transforms;
+                    
+                    prevBoneTransformsCb.Update( &prevTransforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( prevTransforms.size(), NUM_MAX_BONES ) );
+                }
+
+                if ( transforms.size() >= NUM_MAX_BONES ) {
+                    LogWarn() << "SkeletalMesh has more than "
+                        << NUM_MAX_BONES << " bones! (" << transforms.size() << ")Up this limit!";
+                }
+
+                if ( RenderingStage == DES_MAIN ) {
+                    if ( ActiveHDS ) {
+                        Context->DSSetShader( nullptr, nullptr, 0 );
+                        Context->HSSetShader( nullptr, nullptr, 0 );
+                        ActiveHDS = nullptr;
+                    }
+                }
+
+                for ( auto const& itm : dynamic_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->SkeletalMeshes ) {
+                    if ( zCMaterial* mat = itm.first ) {
+                        zCTexture* tex;
+                        if ( wantShader && (tex = mat->GetAniTexture()) != nullptr ) {
+                            if ( !BindTextureNRFX( tex, (RenderingStage == DES_MAIN) ) ) {
+                                continue;
+                            }
+                        }
+                    }
+                    for ( auto& mesh : itm.second ) {
+
+                        auto& vb = mesh->MeshVertexBuffer;
+                        auto& ib = mesh->MeshIndexBuffer;
+                        unsigned int numIndices = mesh->Indices.size();
+
+                        UINT offset = 0;
+                        UINT uStride = sizeof( ExSkelVertexStruct );
+                        Context->IASetVertexBuffers( 0, 1, vb->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
+
+                        Context->IASetIndexBuffer( ib->GetVertexBuffer().Get(), VERTEX_INDEX_DXGI_FORMAT, 0 );
+
+                        // Draw the mesh
+                        Context->DrawIndexed( numIndices, 0, 0 );
+
+                        Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
+                            numIndices / 3;
+                    }
+                }
             }
             } else {
             if ( model->GetMeshSoftSkinList()->NumInArray > 0 ) {
@@ -2639,7 +2749,6 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                         instanceInfo.Scaling = 1.f;
                     }
 
-                    auto& VShader = GetActiveVS();
                     if ( distance < 1000 && isMMS ) {
                         zCMorphMesh* mm = reinterpret_cast<zCMorphMesh*>( mvi->Visual );
                         // Only draw this as a morphmesh when rendering the main scene or when rendering as ghost
@@ -2705,9 +2814,8 @@ XRESULT D3D11GraphicsEngine::BindActiveVertexShader() {
 
 /** Unbinds the texture at the given slot */
 XRESULT D3D11GraphicsEngine::UnbindTexture( int slot ) {
-    ID3D11ShaderResourceView* nullSRV[] { nullptr };
-    GetContext()->PSSetShaderResources( slot, 1, nullSRV );
-    GetContext()->VSSetShaderResources( slot, 1, nullSRV );
+    GetContext()->PSSetShaderResources( slot, 1, s_nullSRVs );
+    GetContext()->VSSetShaderResources( slot, 1, s_nullSRVs );
 
     return XR_SUCCESS;
 }
@@ -2936,12 +3044,11 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         builder.Write( backBufferHandle );
 
         pass.m_executeCallback = [this, colorResource, normalsResource, specularResource, reactiveMaskResource](const RenderGraph& graph)-> void {
-            ID3D11ShaderResourceView* nullSRV[8]{};
-            GetContext()->VSSetShaderResources( 0, 8, nullSRV );
-            GetContext()->PSSetShaderResources( 0, 8, nullSRV );
-            GetContext()->DSSetShaderResources( 0, 8, nullSRV );
-            GetContext()->HSSetShaderResources( 0, 8, nullSRV );
-            GetContext()->CSSetShaderResources( 0, 8, nullSRV );
+            GetContext()->VSSetShaderResources( 0, 8, s_nullSRVs );
+            GetContext()->PSSetShaderResources( 0, 8, s_nullSRVs );
+            GetContext()->DSSetShaderResources( 0, 8, s_nullSRVs );
+            GetContext()->HSSetShaderResources( 0, 8, s_nullSRVs );
+            GetContext()->CSSetShaderResources( 0, 8, s_nullSRVs );
 
             ID3D11RenderTargetView* rtvs[] = {
                 graph.GetPhysicalTexture(colorResource)->GetRenderTargetView().Get(),
@@ -4341,6 +4448,8 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
         }
     }
 
+    GetContext()->PSSetShaderResources( 0, 6, s_nullSRVs );
+
     GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(),
         DepthStencilBuffer->GetDepthStencilView().Get() );
 }
@@ -5058,8 +5167,7 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect(const std::vector<Wo
 
         ActivePS->Apply();
         zCTexture* lastTex = nullptr;
-        ID3D11ShaderResourceView* nullSRVs[3] = {};
-        Context->PSSetShaderResources( 0, std::size( nullSRVs ), nullSRVs );
+        Context->PSSetShaderResources( 0, 3, s_nullSRVs );
 
         for ( const auto& [tex, mesh] : alphaMeshes ) {
             if ( tex != lastTex ) {
@@ -5128,8 +5236,7 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh(const std::vector<WorldMeshSe
         ActivePS->Apply();
         zCTexture* lastTex = nullptr;
 
-        ID3D11ShaderResourceView* nullSRVs[3] = {};
-        Context->PSSetShaderResources( 0, std::size( nullSRVs ), nullSRVs);
+        Context->PSSetShaderResources( 0, 3, s_nullSRVs );
 
         for ( const auto& [tex, mesh] : alphaMeshes ) {
             if ( tex != lastTex ) {
@@ -5547,7 +5654,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             drawAttachments = params.CascadeIndex <= 1; // skip attachments on higher cascades, player won't notice, hopefully
         }
         // we should not need to update the skeletal meshes again, as they were updated before drawing the main scene
-        DrawSkeletalMeshVobs( animatedSkeletalMeshVobs, false, drawAttachments );
+        DrawSkeletalMeshVobs( animatedSkeletalMeshVobs, FLT_MAX, false, drawAttachments );
     }
 
     Engine::GAPI->GetRendererState().BlendState.ColorWritesEnabled = true;
@@ -5816,86 +5923,89 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                         }
                     }
 
-                    for ( unsigned int i = 0; i < mlist.size(); i++ ) {
-                        zCTexture* tx = itt.first.Material->GetAniTexture();
-                        MeshInfo* mi = mlist[i];
+                    zCTexture* tx = itt.first.Material->GetAniTexture();
 
-                        if ( !tx ) {
+                    if ( !tx ) {
 #ifndef BUILD_SPACER_NET
 #ifndef BUILD_SPACER
-                            continue;  // Don't render meshes without texture if not in spacer
+                        continue;  // Don't render meshes without texture if not in spacer
 #else
-                            // This is most likely some spacer helper-vob
-                            WhiteTexture->BindToPixelShader( 0 );
-                            ShaderManager->GetPShader( PShaderID::PS_Diffuse )->Apply();
+                        // This is most likely some spacer helper-vob
+                        WhiteTexture->BindToPixelShader( 0 );
+                        ShaderManager->GetPShader( PShaderID::PS_Diffuse )->Apply();
 
-                            /*// Apply colors for these meshes
-                            MaterialInfo::Buffer b;
-                            ZeroMemory(&b, sizeof(b));
-                            b.Color = itt->first.Material->GetColor();
-                            PS_Diffuse->GetConstantBuffer()[2]->UpdateBuffer(&b);
-                            PS_Diffuse->GetConstantBuffer()[2]->BindToPixelShader(2);*/
+                        /*// Apply colors for these meshes
+                        MaterialInfo::Buffer b;
+                        ZeroMemory(&b, sizeof(b));
+                        b.Color = itt->first.Material->GetColor();
+                        PS_Diffuse->GetConstantBuffer()[2]->UpdateBuffer(&b);
+                        PS_Diffuse->GetConstantBuffer()[2]->BindToPixelShader(2);*/
 #endif
 #else
-                            if ( !renderSettings.RunInSpacerNet ) {
-                                continue;
-                            }
-                            bool showHelpers = *reinterpret_cast<int*>(GothicMemoryLocations::zCVob::s_ShowHelperVisuals) != 0;
-
-                            if ( showHelpers ) {
-                                WhiteTexture->BindToPixelShader( 0 );
-                                ShaderManager->GetPShader( PShaderID::PS_DiffuseAlphaTest )->Apply();
-
-                                MaterialInfo::Buffer b = {};
-
-                                b.Color = itt.first.Material->GetColor();
-                                ShaderManager->GetPShader( PShaderID::PS_DiffuseAlphaTest )->GetBuffer( "MI_MaterialInfo" ).Update( &b ).Bind();
-
-                            } else {
-                                continue;
-                            }
-
-#endif
-                        } else {
-                            // Bind texture
-                            if ( tx->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
-                                MyDirectDrawSurface7* surface = tx->GetSurface();
-                                ID3D11ShaderResourceView* srv[3];
-                                MaterialInfo* info = itt.first.Info;
-
-                                // Get diffuse and normalmap
-                                srv[0] = surface->GetEngineTexture()->GetShaderResourceView().Get();
-                                srv[1] = surface->GetNormalmap()
-                                    ? surface->GetNormalmap()->GetShaderResourceView().Get()
-                                    : nullptr;
-                                srv[2] = surface->GetFxMap()
-                                    ? surface->GetFxMap()->GetShaderResourceView().Get()
-                                    : nullptr;
-
-                                // Bind a default normalmap in case the scene is wet and we
-                                // currently have none
-                                if ( !srv[1] ) {
-                                    // Modify the strength of that default normalmap for the
-                                    // material info
-                                    if ( info->buffer.NormalmapStrength /* *
-                                                              Engine::GAPI->GetSceneWetness()*/
-                                        != DEFAULT_NORMALMAP_STRENGTH ) {
-                                        info->buffer.NormalmapStrength = DEFAULT_NORMALMAP_STRENGTH;
-                                        info->UpdateConstantbuffer();
-                                    }
-                                    srv[1] = DistortionTexture->GetShaderResourceView().Get();
-                                }
-                                // Bind both
-                                GetContext()->PSSetShaderResources( 0, 3, srv );
-
-                                // Force alphatest on vobs for now
-                                BindShaderForTexture( tx, true, 0 );
-
-                                if ( !info->Constantbuffer ) info->UpdateConstantbuffer();
-
-                                info->Constantbuffer->BindToPixelShader( materialInfoSlot );
-                            }
+                        if ( !renderSettings.RunInSpacerNet ) {
+                            continue;
                         }
+                        bool showHelpers = *reinterpret_cast<int*>(GothicMemoryLocations::zCVob::s_ShowHelperVisuals) != 0;
+
+                        if ( showHelpers ) {
+                            WhiteTexture->BindToPixelShader( 0 );
+                            ShaderManager->GetPShader( PShaderID::PS_DiffuseAlphaTest )->Apply();
+
+                            MaterialInfo::Buffer b = {};
+
+                            b.Color = itt.first.Material->GetColor();
+                            ShaderManager->GetPShader( PShaderID::PS_DiffuseAlphaTest )->GetBuffer( "MI_MaterialInfo" ).Update( &b ).Bind();
+
+                        } else {
+                            continue;
+                        }
+
+#endif
+                    } else {
+                        // Bind texture
+                        if ( tx->CacheIn( 0.6f ) == zRES_CACHED_OUT ) {
+                            continue;
+                        }
+
+                        MyDirectDrawSurface7* surface = tx->GetSurface();
+                        ID3D11ShaderResourceView* srv[3];
+                        MaterialInfo* info = itt.first.Info;
+
+                        // Get diffuse and normalmap
+                        srv[0] = surface->GetEngineTexture()->GetShaderResourceView().Get();
+                        srv[1] = surface->GetNormalmap()
+                            ? surface->GetNormalmap()->GetShaderResourceView().Get()
+                            : nullptr;
+                        srv[2] = surface->GetFxMap()
+                            ? surface->GetFxMap()->GetShaderResourceView().Get()
+                            : nullptr;
+
+                        // Bind a default normalmap in case the scene is wet and we
+                        // currently have none
+                        if ( !srv[1] ) {
+                            // Modify the strength of that default normalmap for the
+                            // material info
+                            if ( info->buffer.NormalmapStrength /* *
+                                                      Engine::GAPI->GetSceneWetness()*/
+                                != DEFAULT_NORMALMAP_STRENGTH ) {
+                                info->buffer.NormalmapStrength = DEFAULT_NORMALMAP_STRENGTH;
+                                info->UpdateConstantbuffer();
+                            }
+                            srv[1] = DistortionTexture->GetShaderResourceView().Get();
+                        }
+                        // Bind both
+                        GetContext()->PSSetShaderResources( 0, 3, srv );
+
+                        // Force alphatest on vobs for now
+                        BindShaderForTexture( tx, true, 0 );
+
+                        if ( !info->Constantbuffer ) info->UpdateConstantbuffer();
+
+                        info->Constantbuffer->BindToPixelShader( materialInfoSlot );
+                    }
+
+                    for ( unsigned int i = 0; i < mlist.size(); i++ ) {
+                        MeshInfo* mi = mlist[i];
 
                         // Draw batch
                         DrawInstanced( mi->MeshVertexBuffer.get(), mi->MeshIndexBuffer.get(),
@@ -5921,9 +6031,9 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
             Engine::GAPI->ResetRenderStates();
 
             static std::vector<XMFLOAT4X4> bones = {};
-            for ( SkeletalVobInfo* mob : mobs ) {
-                Engine::GAPI->DrawSkeletalMeshVob( mob, FLT_MAX );
 
+            DrawSkeletalMeshVobs( mobs, FLT_MAX, true, true );
+            for ( SkeletalVobInfo* mob : mobs ) {
                 zCModel* model = static_cast<zCModel*>(mob->Vob->GetVisual());
                 XMMATRIX scale = XMMatrixScalingFromVector( model->GetModelScaleXM() );
                 XMMATRIX world = mob->Vob->GetWorldMatrixXM() * scale;
