@@ -2445,6 +2445,54 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     BoneTransformCache.reserve( 150 );
 
     int boneOffset = 0;
+    
+    // Setup drawing of SkeletalMeshes, attachments are deferred, to reduce api calls
+    
+    if ( GetRenderingStage() == DES_SHADOWMAP_CUBE ) {
+        SetActiveVertexShader( VShaderID::VS_ExSkeletalCube );
+    } else {
+        SetActiveVertexShader( VShaderID::VS_ExSkeletal );
+    }
+
+    ActiveVS->Apply();
+
+    SetupVS_ExMeshDrawCall();
+    SetupVS_ExConstantBuffer();
+
+    Context->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+    
+    auto perInstanceCb = ActiveVS->GetBuffer("Matrices_PerInstances").Bind();
+    // Copy bones
+    auto boneTransformsCb = ActiveVS->GetBuffer("BoneTransforms").Bind();
+    auto prevBoneTransformsCb = ActiveVS->GetBuffer("PrevBoneTransforms").Bind();
+
+    // Copy previous frame bone transforms for motion vectors (only for main scene rendering, not shadow maps)
+    if ( GetRenderingStage() == DES_SHADOWMAP_CUBE ) {
+        // Don't bind previous, as we don't use them here yet.
+    }
+    else if ( GetRenderingStage() != DES_SHADOWMAP ) {
+        prevBoneTransformsCb.Bind(); // we actually should have previous bones
+    } else {
+        // must be shadowmap, bind current bones as previous
+        boneTransformsCb.Bind( ActiveVS->GetInputIndex( "PrevBoneTransforms" ) ); // just bind the current bones again
+    }
+    
+    bool wantShader = true;
+    if ( RenderingStage != DES_GHOST ) {
+        bool linearDepth = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches & GSWITCH_LINEAR_DEPTH) != 0;
+        if ( linearDepth ) {
+            ActivePS = ShaderManager->GetPShader( PShaderID::PS_LinDepth );
+            ActivePS->Apply();
+        } else if ( RenderingStage == DES_SHADOWMAP ) {
+            // Unbind PixelShader in this case
+            if (ActivePS) {
+                Context->PSSetShader( nullptr, nullptr, 0 );
+                ActivePS = nullptr;
+            }
+            wantShader = false;
+        }
+    }
+    
     for ( SkeletalVobInfo* vi : vis ) {
         zCModel* model = static_cast<zCModel*>(vi->Vob->GetVisual());
         if ( !model ) {
@@ -2456,9 +2504,6 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             continue; // Gothic fortunately sets this to 0 when it throws the model out of the cache
         if ( !vi->Vob->GetShowVisual() )
             continue;
-
-
-        SkeletalMeshVisualInfo* visual = static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo);
 
         float4 modelColor;
         if ( Engine::GAPI->GetRendererState().RendererSettings.EnableShadows ) {
@@ -2491,8 +2536,6 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         float fatness = model->GetModelFatness();
 
         // Get the bone transforms
-        // boneOffset
-        auto oldOffset = boneOffset;
         model->GetBoneTransforms( &BoneTransformCache );
         auto numBones = BoneTransformCache.size() - boneOffset;
         auto boneIdx = boneOffset;
@@ -2510,7 +2553,73 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 #else
             if ( !model->GetDrawHandVisualsOnly() ) {
 #endif
-                DrawSkeletalMesh( vi, make_span( &BoneTransformCache[boneIdx], numBones), modelColor, world, fatness);
+                const auto transforms = make_span( &BoneTransformCache[boneIdx], numBones );
+                const auto color = modelColor;
+
+                VS_ExConstantBuffer_PerInstanceSkeletal cb2;
+                cb2.World = world;
+                cb2.PI_ModelColor = color;
+                cb2.PI_ModelFatness = fatness;
+                // Set PrevWorld for motion vectors (use current world if no previous is available)
+                cb2.PrevWorld = vi->HasValidPrevTransforms ? vi->PrevWorldMatrix : world;
+
+                perInstanceCb.Update( &cb2 );
+                // Copy bones
+                boneTransformsCb.Update( &transforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( transforms.size(), NUM_MAX_BONES ) );
+
+                // Copy previous frame bone transforms for motion vectors (only for main scene rendering, not shadow maps)
+                if ( GetRenderingStage() == DES_SHADOWMAP_CUBE ) {
+                    // Don't bind previous, as we don't use them here yet.
+                }
+                else if ( GetRenderingStage() != DES_SHADOWMAP ) {
+                    const Span<XMFLOAT4X4> prevTransforms = (vi->HasValidPrevTransforms && !vi->PrevBoneTransforms.empty())
+                        ? make_span(vi->PrevBoneTransforms) 
+                        : transforms;
+                    
+                    prevBoneTransformsCb.Update( &prevTransforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( prevTransforms.size(), NUM_MAX_BONES ) );
+                }
+
+                if ( transforms.size() >= NUM_MAX_BONES ) {
+                    LogWarn() << "SkeletalMesh has more than "
+                        << NUM_MAX_BONES << " bones! (" << transforms.size() << ")Up this limit!";
+                }
+
+                if ( RenderingStage == DES_MAIN ) {
+                    if ( ActiveHDS ) {
+                        Context->DSSetShader( nullptr, nullptr, 0 );
+                        Context->HSSetShader( nullptr, nullptr, 0 );
+                        ActiveHDS = nullptr;
+                    }
+                }
+
+                for ( auto const& itm : dynamic_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->SkeletalMeshes ) {
+                    if ( zCMaterial* mat = itm.first ) {
+                        zCTexture* tex;
+                        if ( wantShader && (tex = mat->GetAniTexture()) != nullptr ) {
+                            if ( !BindTextureNRFX( tex, (RenderingStage == DES_MAIN) ) ) {
+                                continue;
+                            }
+                        }
+                    }
+                    for ( auto& mesh : itm.second ) {
+
+                        auto& vb = mesh->MeshVertexBuffer;
+                        auto& ib = mesh->MeshIndexBuffer;
+                        unsigned int numIndices = mesh->Indices.size();
+
+                        UINT offset = 0;
+                        UINT uStride = sizeof( ExSkelVertexStruct );
+                        Context->IASetVertexBuffers( 0, 1, vb->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
+
+                        Context->IASetIndexBuffer( ib->GetVertexBuffer().Get(), VERTEX_INDEX_DXGI_FORMAT, 0 );
+
+                        // Draw the mesh
+                        Context->DrawIndexed( numIndices, 0, 0 );
+
+                        Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
+                            numIndices / 3;
+                    }
+                }
             }
             } else {
             if ( model->GetMeshSoftSkinList()->NumInArray > 0 ) {
@@ -5921,9 +6030,9 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
             Engine::GAPI->ResetRenderStates();
 
             static std::vector<XMFLOAT4X4> bones = {};
-            for ( SkeletalVobInfo* mob : mobs ) {
-                Engine::GAPI->DrawSkeletalMeshVob( mob, FLT_MAX );
 
+            DrawSkeletalMeshVobs( mobs, true, true );
+            for ( SkeletalVobInfo* mob : mobs ) {
                 zCModel* model = static_cast<zCModel*>(mob->Vob->GetVisual());
                 XMMATRIX scale = XMMatrixScalingFromVector( model->GetModelScaleXM() );
                 XMMATRIX world = mob->Vob->GetWorldMatrixXM() * scale;
