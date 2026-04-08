@@ -249,7 +249,7 @@ void D3D11PointLight::RenderFullCubemap() {
     // Don't use the cache if we have moved
     if ( WorldCacheInvalid )
         wc = nullptr;
-    auto _ = engine->RecordGraphicsEvent( L"RenderFullCubemap->RenderShadowCube" );
+    auto _ = engine->RecordGraphicsEvent( L"RenderFullCubemap->RenderFullCubemap" );
     RenderToDepthStencilBuffer& target = m_TiledDepthTarget ? *m_TiledDepthTarget : *m_DepthCubemap;
     engine->RenderShadowCube( LightInfo->Vob->GetPositionWorldXM(), range, target, nullptr, nullptr, false, LightInfo->IsIndoorVob, noNPCs, &VobCache, &SkeletalVobCache, wc );
 
@@ -283,7 +283,7 @@ void D3D11PointLight::RenderCubemapFace( const XMFLOAT4X4& view, const XMFLOAT4X
 
     // Draw cubemap face
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> debugRTV = engine->GetDummyCubeRT() != nullptr ? engine->GetDummyCubeRT()->GetRTVCubemapFace( faceIdx ) : nullptr;
-    auto _ = engine->RecordGraphicsEvent( L"RenderFullCubemap->RenderShadowCube" );
+    auto _ = engine->RecordGraphicsEvent( L"RenderFullCubemap->RenderCubemapFace" );
     engine->RenderShadowCube( LightInfo->Vob->GetPositionWorldXM(), range, *m_DepthCubemap, m_DepthCubemap->GetDSVCubemapFace( faceIdx ).Get(), debugRTV.Get(), false );
 
     //Engine::GAPI->GetRendererState().RendererSettings.DrawSkeletalMeshes = oldDrawSkel;

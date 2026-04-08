@@ -4473,6 +4473,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
     Engine::GAPI->GetRendererState().DepthState.DepthBufferCompareFunc = GothicDepthBufferStateInfo::ECompareFunc::CF_COMPARISON_LESS_EQUAL;
     Engine::GAPI->GetRendererState().DepthState.SetDirty();
 
+    Context->PSSetShaderResources( 0, 6, s_nullSRVs );
+
     bool linearDepth =
         (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches &
             GSWITCH_LINEAR_DEPTH) != 0;
@@ -4656,6 +4658,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
         }
 
         // At this point either renderedVobs or rndVob is filled with something
+        D3D11Texture* lastBoundTexture = nullptr;
         std::list<VobInfo*>& rl = renderedVobs != nullptr ? *renderedVobs : rndVob;
         for ( auto const& vobInfo : rl ) {
             // Bind per-instance buffer
@@ -4668,10 +4671,14 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                         materialMesh.first->GetAlphaFunc() !=
                         zMAT_ALPHA_FUNC_MAT_DEFAULT ) {
                         if ( materialMesh.first->GetTexture()->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
-                            materialMesh.first->GetTexture()->Bind( 0 );
+                            materialMesh.first->GetTexture()->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
+                            lastBoundTexture = materialMesh.first->GetTexture()->GetSurface()->GetEngineTexture();
                         }
                     } else {
+                        if (lastBoundTexture != DistortionTexture.get()) {
                             DistortionTexture->BindToPixelShader( 0 );
+                            lastBoundTexture = DistortionTexture.get();
+                        }
                     }
                 }
                 for ( auto const& meshInfo : materialMesh.second ) {
@@ -4780,6 +4787,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
     Engine::GAPI->GetRendererState().DepthState.SetDefault();
     Engine::GAPI->GetRendererState().DepthState.DepthBufferCompareFunc = GothicDepthBufferStateInfo::ECompareFunc::CF_COMPARISON_LESS_EQUAL;
     Engine::GAPI->GetRendererState().DepthState.SetDirty();
+
+    Context->PSSetShaderResources( 0, 6, s_nullSRVs );
 
     bool linearDepth =
         (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches &
@@ -4964,21 +4973,28 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
 
         // At this point either renderedVobs or rndVob is filled with something
         std::list<VobInfo*>& rl = renderedVobs != nullptr ? *renderedVobs : rndVob;
+        auto _ = Engine::GraphicsEngine->RecordGraphicsEvent(L"Draw vobs (layered)");
+
+        D3D11Texture* lastBoundTexture = nullptr;
         for ( auto const& vobInfo : rl ) {
             // Bind per-instance buffer
             vobInfo->VobConstantBuffer->BindToVertexShader( 1 );
 
-            // Draw the vob
+            // Draw the vob1
             for ( auto const& materialMesh : vobInfo->VisualInfo->Meshes ) {
                 if ( materialMesh.first && materialMesh.first->GetTexture() ) {
                     if ( materialMesh.first->GetAlphaFunc() != zMAT_ALPHA_FUNC_NONE ||
                         materialMesh.first->GetAlphaFunc() !=
                         zMAT_ALPHA_FUNC_MAT_DEFAULT ) {
                         if ( materialMesh.first->GetTexture()->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
-                            materialMesh.first->GetTexture()->Bind( 0 );
+                            materialMesh.first->GetTexture()->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
+                            lastBoundTexture = materialMesh.first->GetTexture()->GetSurface()->GetEngineTexture();
                         }
                     } else {
+                        if (lastBoundTexture != DistortionTexture.get()) {
                             DistortionTexture->BindToPixelShader( 0 );
+                            lastBoundTexture = DistortionTexture.get();
+                        }
                     }
                 }
                 for ( auto const& meshInfo : materialMesh.second ) {
@@ -5034,6 +5050,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
 
         // At this point eiter renderedMobs or rndVob is filled with something
         std::list<SkeletalVobInfo*>& rl = renderedMobs != nullptr ? *renderedMobs : rndVob;
+        auto _ = Engine::GraphicsEngine->RecordGraphicsEvent(L"Draw static skeletal meshes (layered)");
         for ( auto it : rl ) {
             Engine::GAPI->DrawSkeletalMeshVob_Layered( it, FLT_MAX );
         }
@@ -5042,6 +5059,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
     if ( Engine::GAPI->GetRendererState().RendererSettings.DrawSkeletalMeshes ) {
         // Draw animated skeletal meshes if wanted
         if ( renderNPCs ) {
+            auto _ = Engine::GraphicsEngine->RecordGraphicsEvent(L"Draw animated skeletal meshes (layered)");
             for ( auto const& skeletalMeshVob : Engine::GAPI->GetAnimatedSkeletalMeshVobs() ) {
                 if ( !skeletalMeshVob->VisualInfo ) {
                     // Seems to happen in Gothic 1

@@ -822,10 +822,7 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
             float distMaxShadowSq = (range * 9.0f) * (range * 9.0f); // Fade out entirely after this
 
             // pick shadow resolution based on distance.
-            int desiredResolution = 64; // Fallback / far distance
-            if ( d < distVeryCloseSq ) {
-                desiredResolution = 256; // High res for close lights
-            }
+            int desiredResolution = SHADOW_CUBE_SIZE; // Fallback / far distance
 
             bool inShadowRange = d < distMaxShadowSq;
             if ( inShadowRange ) {
