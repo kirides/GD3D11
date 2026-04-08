@@ -42,15 +42,18 @@ XRESULT D3D11PFX_DepthOfField::Render( ID3D11ShaderResourceView* backbuffer ) {
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> oldRTV;
     Microsoft::WRL::ComPtr<ID3D11DepthStencilView> oldDSV;
     engine->GetContext()->OMGetRenderTargets( 1, oldRTV.GetAddressOf(), oldDSV.GetAddressOf() );
+    auto& rendererSettings = Engine::GAPI->GetRendererState().RendererSettings;
 
     auto vs = engine->GetShaderManager().GetVShader( VShaderID::VS_PFX );
     auto focusPS = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_DoF_FocusResolve );
-    auto blurPS = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_DoF );
+    auto blurPS = engine->GetShaderManager().GetPShader(
+        rendererSettings.DoFGaussBlur
+            ? PShaderID::PS_PFX_DoF_Gauss
+            : PShaderID::PS_PFX_DoF );
     auto compositePS = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_DoF_Composite );
 
     vs->Apply();
 
-    auto& rendererSettings = Engine::GAPI->GetRendererState().RendererSettings;
 
     DepthOfFieldConstantBuffer cb = {};
     cb.DoF_FocusRange = rendererSettings.DoFFocusRange;

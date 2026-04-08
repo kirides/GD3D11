@@ -73,6 +73,29 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
     float3 colorAccum = 0.0;
     float weightAccum = 0.0;
 
+#ifdef DOF_GAUSS_BLUR
+    // --- Simple Gaussian blur (16 taps) ---
+    // Uses a radial Gaussian kernel with exp(-r^2 * 3) weights.
+    // Much cheaper than the bokeh path; no highlight boost or
+    // foreground rejection — just a smooth, uniform blur.
+    static const int GAUSS_SAMPLE_COUNT = 16;
+
+    [unroll]
+    for ( int i = 0; i < GAUSS_SAMPLE_COUNT; i++ )
+    {
+        float2 offset = GetSpiralSample( i, GAUSS_SAMPLE_COUNT );
+        float2 sampleUV = Input.vTexcoord + offset * blurRadius * texelSize;
+
+        float3 sampleColor = TX_Scene.Sample( SS_Linear, sampleUV ).rgb;
+
+        float r2 = dot( offset, offset );
+        float weight = exp( -r2 * 3.0 );
+
+        colorAccum += sampleColor * weight;
+        weightAccum += weight;
+    }
+#else
+    // --- Bokeh spiral blur (48 taps) ---
     [unroll]
     for ( int i = 0; i < SAMPLE_COUNT; i++ )
     {
@@ -101,6 +124,7 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
         colorAccum += sampleColor * weight;
         weightAccum += weight;
     }
+#endif
 
     colorAccum /= max( weightAccum, 0.001 );
 
