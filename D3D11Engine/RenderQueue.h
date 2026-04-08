@@ -8,7 +8,7 @@ public:
 
     virtual void PushStaticVob( VobInfo* vobInfo ) PURE;
     virtual void PushSkeletalVob( SkeletalVobInfo* vobInfo ) PURE;
-    virtual void PushTransparencyVob( const TransparencyVobInfo& vobInfo ) PURE;
+    virtual void PushTransparencyVob( TransparencyVobInfo vobInfo ) PURE;
     virtual void PushLightVob( VobLightInfo* vobInfo ) PURE;
 
     virtual XRESULT Init() PURE;
@@ -33,16 +33,16 @@ public:
     virtual ~LegacyRenderQueueProxy() = default;
 
     void PushStaticVob( VobInfo* vobInfo ) {
-        vobs.push_back( vobInfo );
+        vobs.emplace_back( vobInfo );
     }
     void PushSkeletalVob( SkeletalVobInfo* vobInfo ) {
-        skeltalVobs.push_back( vobInfo );
+        skeltalVobs.emplace_back( vobInfo );
     }
-    void PushTransparencyVob( const TransparencyVobInfo& vobInfo ) {
-        transparent.push_back( vobInfo );
+    void PushTransparencyVob( TransparencyVobInfo vobInfo ) {
+        transparent.emplace_back( std::move( vobInfo ) );
     }
     void PushLightVob( VobLightInfo* vobInfo ) {
-        lights.push_back( vobInfo );
+        lights.emplace_back( vobInfo );
     }
 
     XRESULT Init() { return XR_SUCCESS; }
@@ -62,15 +62,15 @@ class BspTreeVobVisitor {
 public:
     void Visit( VobInfo* vobInfo ) {
         vobInfo->VisibleInRenderPass = true;
-        vobs.push_back( vobInfo );
+        vobs.emplace_back( vobInfo );
     }
     void Visit( SkeletalVobInfo* vobInfo ) {
         vobInfo->VisibleInRenderPass = true;
-        skeltalVobs.push_back( vobInfo );
+        skeltalVobs.emplace_back( vobInfo );
     }
     void Visit( VobLightInfo* vobInfo ) {
         vobInfo->VisibleInRenderPass = true;
-        lights.push_back( vobInfo );
+        lights.emplace_back( vobInfo );
     }
 
     void ClearForReuse() {

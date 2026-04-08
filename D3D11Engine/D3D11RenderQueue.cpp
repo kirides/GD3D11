@@ -23,24 +23,24 @@ XRESULT D3D11RenderQueue::ProcessQueue()
 
 void D3D11RenderQueue::PushStaticVob( VobInfo* vobInfo )
 {
-    vobs.push_back( vobInfo );
+    vobs.emplace_back( vobInfo );
     // TODO: actually create renderItem in here, ready for indexed/instanced drawing.
 }
 
 void D3D11RenderQueue::PushSkeletalVob( SkeletalVobInfo* vobInfo )
 {
-    skeltalVobs.push_back( vobInfo );
+    skeltalVobs.emplace_back( vobInfo );
     // TODO: actually create renderItem in here, ready for indexed/instanced drawing.
 }
 
-void D3D11RenderQueue::PushTransparencyVob( const TransparencyVobInfo& vobInfo )
+void D3D11RenderQueue::PushTransparencyVob( TransparencyVobInfo vobInfo )
 {
-    transparent.push_back( vobInfo );
+    transparent.emplace_back( std::move( vobInfo ) );
     // TODO: actually create renderItem in here, ready for indexed/instanced drawing.
 }
 
 void D3D11RenderQueue::PushLightVob( VobLightInfo* vobInfo )
 {
-    lights.push_back( vobInfo );
+    lights.emplace_back( vobInfo );
     // TODO: actually create renderItem in here, ready for indexed/instanced drawing.
 }

@@ -56,7 +56,7 @@ public:
 
     void PushStaticVob( VobInfo* vobInfo ) override;
     void PushSkeletalVob( SkeletalVobInfo* vobInfo ) override;
-    void PushTransparencyVob( const TransparencyVobInfo& vobInfo ) override;
+    void PushTransparencyVob( TransparencyVobInfo vobInfo ) override;
     void PushLightVob( VobLightInfo* vobInfo ) override;
 
     std::vector<VobInfo*>& GetVobs() { return vobs; }
