@@ -3812,8 +3812,8 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
 
     // Bind wrapped mesh vertex buffers
     DrawVertexBufferIndexedUINT(
-        Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer.get(),
-        Engine::GAPI->GetWrappedWorldMesh()->MeshIndexBuffer.get(), 0, 0);
+        Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer,
+        Engine::GAPI->GetWrappedWorldMesh()->MeshIndexBuffer, 0, 0 );
 
     int lastAlphaFunc = 0;
 
@@ -3944,7 +3944,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh_Indirect( bool noTextures ) {
     Engine::GAPI->CollectVisibleSections( renderList );
 
     MeshInfo* meshInfo = Engine::GAPI->GetWrappedWorldMesh();
-    DrawVertexBufferIndexedUINT( meshInfo->MeshVertexBuffer.get(), meshInfo->MeshIndexBuffer.get(), 0, 0);
+    DrawVertexBufferIndexedUINT( meshInfo->MeshVertexBuffer, meshInfo->MeshIndexBuffer, 0, 0 );
 
     auto& context = GetContext();
     context->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
@@ -4204,7 +4204,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
     Engine::GAPI->CollectVisibleSections( renderList );
 
     MeshInfo* meshInfo = Engine::GAPI->GetWrappedWorldMesh();
-    DrawVertexBufferIndexedUINT( meshInfo->MeshVertexBuffer.get(), meshInfo->MeshIndexBuffer.get(), 0, 0);
+    DrawVertexBufferIndexedUINT( meshInfo->MeshVertexBuffer, meshInfo->MeshIndexBuffer, 0, 0 );
 
     static std::vector<std::pair<MeshKey, WorldMeshInfo*>> meshList;
     if ( meshList.capacity() == 0 ) meshList.reserve( 4096 );
@@ -4388,8 +4388,8 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
 
     // Bind wrapped mesh vertex buffers
     DrawVertexBufferIndexedUINT(
-        Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer.get(),
-        Engine::GAPI->GetWrappedWorldMesh()->MeshIndexBuffer.get(), 0, 0);
+        Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer,
+        Engine::GAPI->GetWrappedWorldMesh()->MeshIndexBuffer, 0, 0 );
     for ( const auto& [texture, meshes] : FrameWaterSurfaces ) {
         // Draw surfaces
         for ( const auto& mesh : meshes ) {
@@ -4530,8 +4530,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
 
     if ( Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh ) {
         // Bind wrapped mesh vertex buffers
-        DrawVertexBufferIndexedUINT( Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer.get(),
-            Engine::GAPI->GetWrappedWorldMesh()->MeshIndexBuffer.get(), 0, 0);
+        DrawVertexBufferIndexedUINT( Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer,
+            Engine::GAPI->GetWrappedWorldMesh()->MeshIndexBuffer, 0, 0 );
 
         vsBufMPI.Update( &XMMatrixIdentity() ).Bind();
 
@@ -4676,8 +4676,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                 }
                 for ( auto const& meshInfo : materialMesh.second ) {
                     DrawVertexBufferIndexed(
-                        meshInfo->MeshVertexBuffer.get(),
-                        meshInfo->MeshIndexBuffer.get(),
+                        meshInfo->MeshVertexBuffer,
+                        meshInfo->MeshIndexBuffer,
                         meshInfo->Indices.size() );
                 }
             }
@@ -4836,8 +4836,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
 
     if ( Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh ) {
         // Bind wrapped mesh vertex buffers
-        DrawVertexBufferInstancedIndexedUINT( Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer.get(),
-            Engine::GAPI->GetWrappedWorldMesh()->MeshIndexBuffer.get(), 0, 0, 0 );
+        DrawVertexBufferInstancedIndexedUINT( Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer,
+            Engine::GAPI->GetWrappedWorldMesh()->MeshIndexBuffer, 0, 0, 0 );
 
         ActiveVS->GetBuffer( "Matrices_PerInstances" ).Update( &XMMatrixIdentity() ).Bind();
 
@@ -4983,8 +4983,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                 }
                 for ( auto const& meshInfo : materialMesh.second ) {
                     DrawVertexBufferInstancedIndexed(
-                        meshInfo->MeshVertexBuffer.get(),
-                        meshInfo->MeshIndexBuffer.get(),
+                        meshInfo->MeshVertexBuffer,
+                        meshInfo->MeshIndexBuffer,
                         meshInfo->Indices.size(), 6 );
                 }
             }
@@ -5356,8 +5356,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         const auto sectionRangeSq = sectionRange * sectionRange;
         // Bind wrapped mesh vertex buffers
         DrawVertexBufferIndexedUINT(
-            Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer.get(),
-            Engine::GAPI->GetWrappedWorldMesh()->MeshIndexBuffer.get(), 0, 0 );
+            Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer,
+            Engine::GAPI->GetWrappedWorldMesh()->MeshIndexBuffer, 0, 0 );
 
         cbMatrices_PerInstances.Update( &XMMatrixIdentity() ).Bind();
 
@@ -6008,7 +6008,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                         MeshInfo* mi = mlist[i];
 
                         // Draw batch
-                        DrawInstanced( mi->MeshVertexBuffer.get(), mi->MeshIndexBuffer.get(),
+                        DrawInstanced( mi->MeshVertexBuffer, mi->MeshIndexBuffer,
                             mi->Indices.size(), DynamicInstancingBuffer.get(),
                             sizeof( VobInstanceInfo ), staticMeshVisual->Instances.size(),
                             sizeof( ExVertexStruct ), staticMeshVisual->StartInstanceNum );
@@ -6154,7 +6154,7 @@ XRESULT D3D11GraphicsEngine::DrawFrameAlphaMeshes()
             windBuffer.Update( &g_windBuffer );
 
             // Draw batch
-            DrawInstanced( mi->MeshVertexBuffer.get(), mi->MeshIndexBuffer.get(), mi->Indices.size(),
+            DrawInstanced( mi->MeshVertexBuffer, mi->MeshIndexBuffer, mi->Indices.size(),
                 DynamicInstancingBuffer.get(), sizeof( VobInstanceInfo ),
                 instances.size(), sizeof( ExVertexStruct ),
                 vi->StartInstanceNum );
@@ -6169,7 +6169,7 @@ XRESULT D3D11GraphicsEngine::DrawFrameAlphaMeshes()
         windBuffer.Update( &g_windBuffer );
 
         // Draw batch
-        DrawInstanced( mi->MeshVertexBuffer.get(), mi->MeshIndexBuffer.get(), mi->Indices.size(),
+        DrawInstanced( mi->MeshVertexBuffer, mi->MeshIndexBuffer, mi->Indices.size(),
             DynamicInstancingBuffer.get(), sizeof( VobInstanceInfo ),
             instances.size(), sizeof( ExVertexStruct ),
             vi->StartInstanceNum );
@@ -6564,7 +6564,7 @@ void D3D11GraphicsEngine::DrawVobSingle( VobInfo* vob, zCCamera& camera ) {
         for ( auto const& itm2nd : itm.second ) {
             // Draw instances
             DrawVertexBufferIndexed(
-                itm2nd->MeshVertexBuffer.get(), itm2nd->MeshIndexBuffer.get(),
+                itm2nd->MeshVertexBuffer, itm2nd->MeshIndexBuffer,
                 itm2nd->Indices.size() );
         }
     }
@@ -7241,7 +7241,7 @@ void D3D11GraphicsEngine::DrawFrameParticleMeshes( std::unordered_map<zCVob*, Me
             for ( auto const& itm2nd : itm.second ) {
                 // Draw instances
                 DrawVertexBufferIndexed(
-                    itm2nd->MeshVertexBuffer.get(), itm2nd->MeshIndexBuffer.get(),
+                    itm2nd->MeshVertexBuffer, itm2nd->MeshIndexBuffer,
                     itm2nd->Indices.size() );
             }
         }

@@ -22,7 +22,6 @@ struct zCModelNodeInst;
 struct BspInfo;
 class zCQuadMark;
 struct MaterialInfo;
-class zCSubMesh;
 
 struct ParticleRenderInfo {
     GothicBlendStateInfo BlendState;
@@ -76,18 +75,6 @@ struct cmpMeshKey {
     }
 };*/
 
-// singleton data struct
-struct StaticMeshData {
-    std::shared_ptr<D3D11VertexBuffer> MeshVertexBuffer;
-    std::shared_ptr<D3D11VertexBuffer> MeshIndexBuffer;
-};
-
-// singleton data struct
-struct SkeletalMeshData {
-    std::shared_ptr<D3D11VertexBuffer> MeshVertexBuffer;
-    std::shared_ptr<D3D11VertexBuffer> MeshIndexBuffer;
-};
-
 /** Holds information about a mesh, ready to be loaded into the renderer */
 struct MeshInfo {
     MeshInfo() {
@@ -103,16 +90,11 @@ struct MeshInfo {
 
     virtual ~MeshInfo() = default;
 
-    static MeshInfo* CreateStatic() {
-        auto info = new MeshInfo();
-        return info;
-    }
-
     /** Creates buffers for this mesh info */
     XRESULT Create( ExVertexStruct* vertices, unsigned int numVertices, VERTEX_INDEX* indices, unsigned int numIndices );
 
-    std::shared_ptr<D3D11VertexBuffer> MeshVertexBuffer;
-    std::shared_ptr<D3D11VertexBuffer> MeshIndexBuffer;
+    D3D11VertexBuffer* MeshVertexBuffer;
+    D3D11VertexBuffer* MeshIndexBuffer;
     std::vector<ExVertexStruct> Vertices;
     std::vector<VERTEX_INDEX> Indices;
 
@@ -157,8 +139,8 @@ struct SkeletalMeshInfo {
 
     ~SkeletalMeshInfo() = default;
 
-    std::shared_ptr<D3D11VertexBuffer> MeshVertexBuffer;
-    std::shared_ptr<D3D11VertexBuffer> MeshIndexBuffer;
+    D3D11VertexBuffer* MeshVertexBuffer;
+    D3D11VertexBuffer* MeshIndexBuffer;
     std::vector<ExSkelVertexStruct> Vertices;
     std::vector<VERTEX_INDEX> Indices;
 
