@@ -167,13 +167,8 @@ struct MaterialInfo {
 
     ~MaterialInfo() = default;
 
-    MaterialInfo(MaterialInfo&& other) noexcept
-    {
-        buffer = other.buffer;
-        PixelShader = other.PixelShader;
-        MaterialType = other.MaterialType;
-        Constantbuffer = std::move(other.Constantbuffer);
-    }
+    MaterialInfo( MaterialInfo&& other ) = default;
+    MaterialInfo& operator=( MaterialInfo&& ) = default;
 
     MaterialInfo(const MaterialInfo&) = delete;
 

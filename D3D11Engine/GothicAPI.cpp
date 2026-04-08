@@ -59,7 +59,7 @@
 const DWORD SCENE_WETNESS_DURATION_MS = 30 * 1000;
 
 // Draw ghost from back to front of our camera
-auto CompareGhostDistance = []( TransparencyVobInfo& a, TransparencyVobInfo& b ) -> bool { return a.distance < b.distance; };
+auto CompareGhostDistance = []( const TransparencyVobInfo& a, const TransparencyVobInfo& b ) -> bool { return a.distance < b.distance; };
 
 extern float vobAnimation_WindStrength;
 
@@ -3943,9 +3943,12 @@ void GothicAPI::CollectVisibleVobs(
         }
 
         if ( renderQueue.transparent.size() ) {
-            for ( auto& it : renderQueue.transparent ) {
-                TransparencyVobs.push_back( it );
-            }
+            TransparencyVobs.insert( TransparencyVobs.end(), 
+                std::make_move_iterator(renderQueue.transparent.begin()), 
+                std::make_move_iterator(renderQueue.transparent.end()) );
+            // ignore dead items in renderQueue.transparent after move-insert
+
+            // sort back to front
             std::sort( TransparencyVobs.begin(), TransparencyVobs.end(), CompareGhostDistance );
         }
 
@@ -4933,7 +4936,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.EnableRain = GetPrivateProfileBoolA( "Display", "Rain", true, ini );
         s.EnableRainEffects = GetPrivateProfileBoolA( "Display", "RainEffects", true, ini );
         s.LimitLightIntesity = GetPrivateProfileBoolA( "Display", "LimitLightIntesity", false, ini );
-        s.EnableTiledLighting = GetPrivateProfileBoolA( "Display", "TiledLighting", true, ini );
+        s.EnableTiledLighting = GetPrivateProfileBoolA( "Display", "TiledLighting", false, ini );
         s.WindQuality = GetPrivateProfileIntA( "Display", "WindQuality", 0, ini.c_str() );
         s.GlobalWindStrength = GetPrivateProfileFloatA( "Display", "WindStrength", 1.0f, ini );
         s.EnableWaterAnimation = GetPrivateProfileBoolA( "Display", "WaterWaveAnimation", true, ini );

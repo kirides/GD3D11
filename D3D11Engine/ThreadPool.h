@@ -19,7 +19,10 @@
 
 class ThreadPool {
 public:
-	ThreadPool( size_t threads = std::thread::hardware_concurrency() / 2 );
+    ThreadPool( 
+	    const wchar_t* poolIdentifier,
+	    size_t threads = std::clamp(std::thread::hardware_concurrency(), static_cast<size_t>(1), static_cast<size_t>(4) ) );
+
 	template<class F, class... Args>
 	auto enqueue( F&& f, Args&&... args )
 		->std::future<typename std::invoke_result<F, Args...>::type>;
@@ -40,29 +43,31 @@ private:
 };
 
 // the constructor just launches some amount of workers
-inline ThreadPool::ThreadPool( size_t threads )
+inline ThreadPool::ThreadPool( const wchar_t* poolIdentifier, size_t threads )
 	: stop( false ) {
 	numThreads = threads;
 
+    std::wstring identifier = std::wstring(L"GD3D11-") + std::wstring(poolIdentifier);
 	for ( size_t i = 0; i < threads; ++i )
 		workers.emplace_back(
-			[this] {
+			[](ThreadPool* pool, size_t workerId, const std::wstring& descriptionPrefix) {
+			    SetThreadDescription( GetCurrentThread(), (descriptionPrefix+std::to_wstring(workerId)).c_str() );
 				for ( ;;) {
 					std::function<void()> task;
 
 					{
-						std::unique_lock<std::mutex> lock( this->queue_mutex );
-						this->condition.wait( lock,
-							[this] { return this->stop || !this->tasks.empty(); } );
-						if ( this->stop && this->tasks.empty() )
+						std::unique_lock<std::mutex> lock( pool->queue_mutex );
+						pool->condition.wait( lock,
+							[pool] { return pool->stop || !pool->tasks.empty(); } );
+						if ( pool->stop && pool->tasks.empty() )
 							return;
-						task = std::move( this->tasks.front() );
-						this->tasks.pop();
+						task = std::move( pool->tasks.front() );
+						pool->tasks.pop();
 					}
 
 					task();
 				}
-			}
+			}, this, i, identifier
 	);
 }
 

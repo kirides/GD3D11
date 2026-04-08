@@ -101,6 +101,10 @@ struct MeshInfo {
         MeshIndex = -1;
     }
 
+    MeshInfo( MeshInfo&& other ) = default;
+    MeshInfo& operator=( MeshInfo&& ) = default;
+    MeshInfo( const MeshInfo& other ) = delete;
+
     virtual ~MeshInfo() = default;
 
     static MeshInfo* CreateStatic() {
@@ -122,6 +126,9 @@ struct MeshInfo {
 
 struct WorldMeshInfo : public MeshInfo {
     WorldMeshInfo() = default;
+    WorldMeshInfo( WorldMeshInfo&& other ) = default;
+    WorldMeshInfo& operator=( WorldMeshInfo&& ) = default;
+    WorldMeshInfo( const WorldMeshInfo& other ) = delete;
 
     ~WorldMeshInfo() override = default;
 
@@ -131,6 +138,9 @@ struct WorldMeshInfo : public MeshInfo {
 
 struct QuadMarkInfo {
     QuadMarkInfo() = default;
+    QuadMarkInfo( QuadMarkInfo&& other ) = default;
+    QuadMarkInfo& operator=( QuadMarkInfo&& ) = default;
+    QuadMarkInfo( const QuadMarkInfo& other ) = delete;
 
     ~QuadMarkInfo() = default;
 
@@ -145,6 +155,9 @@ struct QuadMarkInfo {
 class zCMeshSoftSkin;
 struct SkeletalMeshInfo {
     SkeletalMeshInfo() = default;
+    SkeletalMeshInfo(SkeletalMeshInfo&& other) = default;
+    SkeletalMeshInfo& operator=( SkeletalMeshInfo&& ) = default;
+    SkeletalMeshInfo(const SkeletalMeshInfo& other) = delete;
 
     ~SkeletalMeshInfo() = default;
 
@@ -160,6 +173,9 @@ struct SkeletalMeshInfo {
 class zCVisual;
 struct BaseVisualInfo {
     BaseVisualInfo() = default;
+    BaseVisualInfo(BaseVisualInfo&& other) = default;
+    BaseVisualInfo& operator=( BaseVisualInfo&& ) = default;
+    BaseVisualInfo(const BaseVisualInfo& other) = delete;
 
     virtual ~BaseVisualInfo() {
         for ( auto& [k, meshes] : Meshes ) {
@@ -198,6 +214,10 @@ struct MeshVisualInfo : public BaseVisualInfo {
         StartInstanceNum = 0;
         FullMesh = nullptr;
     }
+    
+    MeshVisualInfo(MeshVisualInfo&& other) = default;
+    MeshVisualInfo& operator=( MeshVisualInfo&& ) = default;
+    MeshVisualInfo(const MeshVisualInfo& other) = delete;
 
     ~MeshVisualInfo() override
     {
@@ -237,7 +257,10 @@ class zCMeshSoftSkin;
 class zCModel;
 struct SkeletalMeshVisualInfo : public BaseVisualInfo {
     SkeletalMeshVisualInfo() = default;
-
+    SkeletalMeshVisualInfo(SkeletalMeshVisualInfo&& other) = default;
+    SkeletalMeshVisualInfo& operator=( SkeletalMeshVisualInfo&& ) = default;
+    SkeletalMeshVisualInfo(const SkeletalMeshVisualInfo& other) = delete;
+    
     ~SkeletalMeshVisualInfo() override
     {
         for ( auto& [k, meshes] : SkeletalMeshes ) {
@@ -265,6 +288,11 @@ struct SkeletalMeshVisualInfo : public BaseVisualInfo {
 };
 
 struct BaseVobInfo {
+    BaseVobInfo() = default;
+    BaseVobInfo(BaseVobInfo&& other) = default;
+    BaseVobInfo& operator=( BaseVobInfo&& ) = default;
+    BaseVobInfo(const BaseVobInfo& other) = delete;
+    
     virtual ~BaseVobInfo() = default;
     /** Visual for this vob */
     BaseVisualInfo* VisualInfo;
@@ -276,6 +304,10 @@ struct BaseVobInfo {
 struct WorldMeshSectionInfo;
 struct VobInfo : public BaseVobInfo {
     VobInfo() = default;
+    VobInfo(VobInfo&& other) = default;
+    VobInfo& operator=( VobInfo&& ) = default;
+    VobInfo(const VobInfo& other) = delete;
+    
     ~VobInfo() override = default;
 
     /** Updates the vobs constantbuffer */
@@ -318,6 +350,9 @@ class zCVobLight;
 class BaseShadowedPointLight;
 struct VobLightInfo {
     VobLightInfo() = default;
+    VobLightInfo(VobLightInfo&& other) = default;
+    VobLightInfo& operator=( VobLightInfo&& ) = default;
+    VobLightInfo(const VobLightInfo& other) = delete;
 
     ~VobLightInfo() = default;
 
@@ -357,6 +392,10 @@ struct SkeletalVobInfo : public BaseVobInfo {
         VobConstantBuffer = nullptr;
         HasValidPrevTransforms = false;
     }
+    
+    SkeletalVobInfo(SkeletalVobInfo&& other) = default;
+    SkeletalVobInfo& operator=( SkeletalVobInfo&& ) = default;
+    SkeletalVobInfo(const SkeletalVobInfo& other) = delete;
 
     ~SkeletalVobInfo() override
     {
@@ -424,6 +463,10 @@ struct WorldMeshSectionInfo {
         BoundingBox.Max = XMFLOAT3( -FLT_MAX, -FLT_MAX, -FLT_MAX );
         FullStaticMesh = nullptr;
     }
+    
+    WorldMeshSectionInfo(WorldMeshSectionInfo&& other) = default;
+    WorldMeshSectionInfo& operator=( WorldMeshSectionInfo&& ) = default;
+    WorldMeshSectionInfo(const WorldMeshSectionInfo& other) = delete;
 
     ~WorldMeshSectionInfo() {
         for ( auto& [k, mesh] : WorldMeshes ) {
@@ -483,6 +526,9 @@ struct WorldInfo {
         BspTree = nullptr;
         CustomWorldLoaded = false;
     }
+    
+    WorldInfo(WorldInfo&& other) = default;
+    WorldInfo(const WorldInfo& other) = delete;
 
     XMFLOAT2 MidPoint;
     float LowestVertex;
@@ -497,6 +543,11 @@ struct TransparencyVobInfo {
     TransparencyVobInfo( float distance, float alpha, SkeletalVobInfo* skeletalVob, VobInfo* normalVob ) :
         distance( distance ), alpha( alpha ), skeletalVob( skeletalVob ), normalVob( normalVob ) {
     }
+    
+    TransparencyVobInfo() = default;
+    TransparencyVobInfo(TransparencyVobInfo&& other) = default;
+    TransparencyVobInfo& operator=( TransparencyVobInfo&& ) = default;
+    TransparencyVobInfo(const TransparencyVobInfo& other) = delete;
 
     float distance;
     float alpha;
