@@ -2477,7 +2477,7 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
 #else
         if ( !model->GetDrawHandVisualsOnly() ) {
 #endif
-            Engine::GraphicsEngine->DrawSkeletalMesh( vi, make_span( transforms ), modelColor, world, fatness);
+            Engine::GraphicsEngine->DrawSkeletalMesh( vi, std::span( transforms ), modelColor, world, fatness );
         }
     } else {
         if ( model->GetMeshSoftSkinList()->NumInArray > 0 ) {
@@ -2505,16 +2505,16 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
     const std::vector<XMFLOAT4X4>& prevBoneTransforms = (vi->HasValidPrevTransforms && !vi->PrevBoneTransforms.empty())
         ? vi->PrevBoneTransforms
         : transforms;
-    const XMMATRIX prevWorldMatrix = vi->HasValidPrevTransforms 
-        ? XMLoadFloat4x4(&vi->PrevWorldMatrix) 
+    const XMMATRIX prevWorldMatrix = vi->HasValidPrevTransforms
+        ? XMLoadFloat4x4( &vi->PrevWorldMatrix )
         : XMLoadFloat4x4( &world );
-    
+
     phmap::flat_hash_map<int, std::vector<MeshVisualInfo*>>& nodeAttachments = vi->NodeAttachments;
     auto vsBufMPI = g->GetActiveVS()->GetBuffer( "Matrices_PerInstances" );
     vsBufMPI.Bind();
     for ( unsigned int i = 0; i < transforms.size(); i++ ) {
         // Check for new visual
-        zCModel* mvis = static_cast<zCModel*>(vi->Vob->GetVisual());
+        zCModel* mvis = static_cast<zCModel*>( vi->Vob->GetVisual() );
         zCModelNodeInst* node = mvis->GetNodeList()->Array[i];
 
         if ( !node->NodeVisual )
@@ -2559,11 +2559,11 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
             for ( MeshVisualInfo* mvi : nodeAttachment->second ) {
                 XMMATRIX curTransform = XMLoadFloat4x4( &transforms[i] );
                 XMFLOAT4X4 finalWorld;
-                XMStoreFloat4x4(&finalWorld, xmWorld * curTransform);
+                XMStoreFloat4x4( &finalWorld, xmWorld * curTransform );
 
                 XMMATRIX prevTransform = XMLoadFloat4x4( &prevBoneTransforms[i] );
-                auto prevWorldNode = prevWorldMatrix * prevTransform; 
-                
+                auto prevWorldNode = prevWorldMatrix * prevTransform;
+
                 if ( !mvi->Visual ) {
                     LogWarn() << "Attachment without visual on model: " << model->GetVisualName();
                     continue;
@@ -2577,7 +2577,7 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
                 }
 
                 // Update animated textures
-                bool isMMS = strcmp( mvi->Visual->GetFileExtension( 0 ), ".MMS") == 0;
+                bool isMMS = strcmp( mvi->Visual->GetFileExtension( 0 ), ".MMS" ) == 0;
                 if ( updateState ) {
                     node->TexAniState.UpdateTexList();
                     if ( isMMS ) {
@@ -2598,12 +2598,12 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
 
                 auto& VShader = g->GetActiveVS();
                 if ( distance < 1000 && isMMS ) {
-                    zCMorphMesh* mm = reinterpret_cast<zCMorphMesh*>(mvi->Visual);
+                    zCMorphMesh* mm = reinterpret_cast<zCMorphMesh*>( mvi->Visual );
                     // Only draw this as a morphmesh when rendering the main scene or when rendering as ghost
                     if ( g->GetRenderingStage() == DES_MAIN || g->GetRenderingStage() == DES_GHOST ) {
                         // Update constantbuffer
                         instanceInfo.World = finalWorld;
-                        XMStoreFloat4x4(&instanceInfo.PrevWorld, prevWorldNode);
+                        XMStoreFloat4x4( &instanceInfo.PrevWorld, prevWorldNode );
                         vsBufMPI.Update( &instanceInfo );
 
                         if ( updateState ) {
@@ -2616,12 +2616,12 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
                 }
 
                 instanceInfo.World = finalWorld;
-                XMStoreFloat4x4(&instanceInfo.PrevWorld, prevWorldNode);
+                XMStoreFloat4x4( &instanceInfo.PrevWorld, prevWorldNode );
                 vsBufMPI.Update( &instanceInfo );
 
                 // Go through all materials registered here
 
-                if ( g->GetRenderingStage() == DES_SHADOWMAP 
+                if ( g->GetRenderingStage() == DES_SHADOWMAP
                     || g->GetRenderingStage() == DES_SHADOWMAP_CUBE ) {
                     for ( auto const& itm : mvi->Meshes ) {
                         // no texture binding for shadowmap
@@ -2652,7 +2652,7 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
     RendererState.RendererInfo.FrameDrawnVobs++;
 }
 
-void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo* vi, float distance, bool updateState ) {
+void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distance, bool updateState ) {
     // TODO: Put this into the renderer!!
     D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
 
@@ -2693,7 +2693,7 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo* vi, float distance
     XMMATRIX scale = XMMatrixScalingFromVector( model->GetModelScaleXM() );
 
     XMMATRIX xmWorld = vi->Vob->GetWorldMatrixXM() * scale;
-    XMFLOAT4X4 world; XMStoreFloat4x4(&world, xmWorld);
+    XMFLOAT4X4 world; XMStoreFloat4x4( &world, xmWorld );
 
     float fatness = model->GetModelFatness();
 
@@ -2714,7 +2714,7 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo* vi, float distance
 #else
         if ( !model->GetDrawHandVisualsOnly() ) {
 #endif
-            g->DrawSkeletalMesh_Layered( vi, make_span( transforms ), modelColor, world, fatness );
+            g->DrawSkeletalMesh_Layered( vi, std::span( transforms ), modelColor, world, fatness );
         }
     } else {
         if ( model->GetMeshSoftSkinList()->NumInArray > 0 ) {
@@ -2740,7 +2740,7 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo* vi, float distance
     vsBufMPI.Bind();
     for ( unsigned int i = 0; i < transforms.size(); i++ ) {
         // Check for new visual
-        zCModel* mvis = static_cast<zCModel*>(vi->Vob->GetVisual());
+        zCModel* mvis = static_cast<zCModel*>( vi->Vob->GetVisual() );
         zCModelNodeInst* node = mvis->GetNodeList()->Array[i];
 
         if ( !node->NodeVisual )
@@ -2785,7 +2785,7 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo* vi, float distance
             for ( MeshVisualInfo* mvi : nodeAttachment->second ) {
                 XMMATRIX curTransform = XMLoadFloat4x4( &transforms[i] );
                 XMFLOAT4X4 finalWorld;
-                XMStoreFloat4x4(&finalWorld, xmWorld * curTransform);
+                XMStoreFloat4x4( &finalWorld, xmWorld * curTransform );
 
                 if ( !mvi->Visual ) {
                     LogWarn() << "Attachment without visual on model: " << model->GetVisualName();
@@ -2821,7 +2821,7 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo* vi, float distance
 
                 auto& VShader = g->GetActiveVS();
                 if ( distance < 1000 && isMMS ) {
-                    zCMorphMesh* mm = reinterpret_cast<zCMorphMesh*>(mvi->Visual);
+                    zCMorphMesh* mm = reinterpret_cast<zCMorphMesh*>( mvi->Visual );
                     // Only draw this as a morphmesh when rendering the main scene or when rendering as ghost
                     if ( g->GetRenderingStage() == DES_MAIN || g->GetRenderingStage() == DES_GHOST ) {
                         // Update constantbuffer
@@ -2969,7 +2969,7 @@ void GothicAPI::DrawSkeletalVN() {
             XMMATRIX scale = XMMatrixScalingFromVector( model->GetModelScaleXM() );
 
             XMMATRIX xmWorld = vi->Vob->GetWorldMatrixXM() * scale;
-            XMFLOAT4X4 world; XMStoreFloat4x4(&world, xmWorld);
+            XMFLOAT4X4 world; XMStoreFloat4x4( &world, xmWorld );
 
             float fatness = model->GetModelFatness();
 
@@ -2979,7 +2979,7 @@ void GothicAPI::DrawSkeletalVN() {
             model->GetBoneTransforms( &transforms );
 
             if ( !static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->SkeletalMeshes.empty() ) {
-                g->DrawSkeletalVertexNormals( vi, world, make_span( transforms ), 0xFFFFFF, fatness);
+                g->DrawSkeletalVertexNormals( vi, world, std::span( transforms ), 0xFFFFFF, fatness);
             }
         }
 

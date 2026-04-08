@@ -109,7 +109,7 @@ void D3D11TiledDeferredShading::EnsureShadowArray() {
     desc.Format = DXGI_FORMAT_R16_TYPELESS;
     desc.SampleDesc.Count = 1;
     desc.Usage = D3D11_USAGE_DEFAULT;
-    desc.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
+    desc.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE; 
     desc.MiscFlags = D3D11_RESOURCE_MISC_TEXTURECUBE;
 
     m_device->CreateTexture2D( &desc, nullptr, m_ShadowCubeArray.ReleaseAndGetAddressOf() );
@@ -381,7 +381,7 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
             }
             shadeCB.LimitLightIntensity = settings.LimitLightIntesity ? 1 : 0;
             shadeCB.NumTilesX = numTilesX;
-            XMStoreFloat4x4( &shadeCB.InvView, XMMatrixInverse( nullptr, view ) );
+            XMStoreFloat4x4( &shadeCB.InvView, XMMatrixInverse( nullptr, viewRaw ) );
 
             csTiledShading->GetBuffer( "TiledShadingConstantBuffer" ).Update( &shadeCB ).Bind();
 

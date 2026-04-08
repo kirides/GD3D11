@@ -84,32 +84,27 @@ extern ZUnquantizeHalfFloat_X4 UnquantizeHalfFloat_X8;
 
 
 /* Thin span-like data structure to allow re-using parts of a big std::vector for example */
-template<typename T>
-struct Span {
-private:
-    T* _data = nullptr;
-    size_t _size = 0;
+namespace std {
+    template<typename T>
+    struct span {
+    private:
+        T* _data = nullptr;
+        size_t _size = 0;
 
-public:
-    T& operator[]( size_t i ) { return _data[i]; }
-    const T& operator[]( size_t i ) const { return _data[i]; }
-    T* begin() { return _data; }
-    T* end() { return _data + _size; }
-    const size_t size() const { return _size; }
-    const T* data() { return _data; }
+    public:
+        span() = delete;
+        span(const span&) = default;
+        span(span&&) = default;
 
-    Span() = delete;
-    Span( T* data, size_t size )
-        : _data( data ), _size( size )
-    { }
-};
+        constexpr span( T* data, size_t size ) : _data( data ), _size( size ) {}
+        constexpr span( std::vector<T>& data ) : _data( data.data() ), _size( data.size() ) {}
 
-template<typename T>
-static Span<T> make_span( T* data, size_t size ) {
-    return Span( data, size );
-}
+        T& operator[]( size_t i ) { return _data[i]; }
+        const T& operator[]( size_t i ) const { return _data[i]; }
+        T* begin() { return _data; }
+        T* end() { return _data + _size; }
+        const size_t size() const { return _size; }
+        const T* data() { return _data; }
 
-template<typename T>
-static Span<T> make_span( std::vector<T>& vec ) {
-    return Span( vec.data(), vec.size() );
+    };
 }

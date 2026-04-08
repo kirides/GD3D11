@@ -19,16 +19,9 @@ D3D11PointLight::D3D11PointLight( VobLightInfo* info, bool dynamicLight ) {
     XMStoreFloat3( &LastUpdatePosition, LightInfo->Vob->GetPositionWorldXM() );
 
     m_DepthCubemap = nullptr;
+    WorldCacheInvalid = true;
 
-    if ( !dynamicLight ) {
-        InitDone = false;
-
-        // Add to queue
-        Engine::WorkerThreadPool->enqueue( [this] { InitResources(); } );
-
-    } else {
-        InitResources();
-    }
+    StartReInit();
 
     DrawnOnce = false;
 }
@@ -66,18 +59,22 @@ void D3D11PointLight::AcquireShadowMap( DepthStencilPool* pool, int resolution )
 
     // don't reset DrawnOnce here, or NPCs won't show up in the first frame a shadow gets a different LOD
     // DrawnOnce = false;
+    StartReInit();
 }
 
 void D3D11PointLight::ReleaseShadowMap() {
     // This calls the custom deleter, returning the texture to the pool
     m_DepthCubemap.reset();
     m_CurrentResolution = 0;
+
 }
 
 void D3D11PointLight::SetTiledSlot( int slot, RenderToDepthStencilBuffer* target, D3D11TiledDeferredShading* owner ) {
     m_TiledSlotIndex = slot;
     m_TiledDepthTarget = target;
     m_TiledOwner = owner;
+
+    StartReInit();
 }
 
 void D3D11PointLight::ClearTiledSlot() {
@@ -87,6 +84,7 @@ void D3D11PointLight::ClearTiledSlot() {
     m_TiledSlotIndex = -1;
     m_TiledDepthTarget = nullptr;
     m_TiledOwner = nullptr;
+
 }
 
 /** Returns true if this is the first time that light is being rendered */
@@ -249,11 +247,34 @@ void D3D11PointLight::RenderFullCubemap() {
     // Don't use the cache if we have moved
     if ( WorldCacheInvalid )
         wc = nullptr;
-    auto _ = engine->RecordGraphicsEvent( L"RenderFullCubemap->RenderShadowCube" );
+    auto _ = engine->RecordGraphicsEvent( L"RenderFullCubemap->RenderFullCubemap" );
     RenderToDepthStencilBuffer& target = m_TiledDepthTarget ? *m_TiledDepthTarget : *m_DepthCubemap;
     engine->RenderShadowCube( LightInfo->Vob->GetPositionWorldXM(), range, target, nullptr, nullptr, false, LightInfo->IsIndoorVob, noNPCs, &VobCache, &SkeletalVobCache, wc );
 
     //Engine::GAPI->GetRendererState().RendererSettings.DrawSkeletalMeshes = oldDrawSkel;
+}
+
+void D3D11PointLight::Invalidate() {
+    DrawnOnce = false;
+    VobCache.clear();
+    SkeletalVobCache.clear();
+    WorldCacheInvalid = true;
+}
+
+void D3D11PointLight::StartReInit() {
+    if ( !WorldCacheInvalid ) {
+        return;
+    }
+
+    if ( !DynamicLight ) {
+        InitDone = false;
+
+        // Add to queue
+        Engine::WorkerThreadPool->enqueue( [this] { InitResources(); } );
+
+    } else {
+        InitResources();
+    }
 }
 
 /** Renders the scene with the given view-proj-matrices */
@@ -283,7 +304,7 @@ void D3D11PointLight::RenderCubemapFace( const XMFLOAT4X4& view, const XMFLOAT4X
 
     // Draw cubemap face
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> debugRTV = engine->GetDummyCubeRT() != nullptr ? engine->GetDummyCubeRT()->GetRTVCubemapFace( faceIdx ) : nullptr;
-    auto _ = engine->RecordGraphicsEvent( L"RenderFullCubemap->RenderShadowCube" );
+    auto _ = engine->RecordGraphicsEvent( L"RenderFullCubemap->RenderCubemapFace" );
     engine->RenderShadowCube( LightInfo->Vob->GetPositionWorldXM(), range, *m_DepthCubemap, m_DepthCubemap->GetDSVCubemapFace( faceIdx ).Get(), debugRTV.Get(), false );
 
     //Engine::GAPI->GetRendererState().RendererSettings.DrawSkeletalMeshes = oldDrawSkel;

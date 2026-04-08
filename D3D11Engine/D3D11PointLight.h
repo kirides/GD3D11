@@ -58,6 +58,9 @@ public:
     void SetCurrentResolution( int r ) { m_CurrentResolution = r; }
 
 protected:
+    void Invalidate();
+    void StartReInit();
+
     /** Renders the scene with the given view-proj-matrices */
     void RenderCubemapFace( const XMFLOAT4X4& view, const XMFLOAT4X4& proj, UINT faceIdx );
 
