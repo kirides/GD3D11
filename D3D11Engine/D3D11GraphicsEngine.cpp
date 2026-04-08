@@ -2416,6 +2416,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         float4 ModelColor;
         float Fatness;
         XMMATRIX World;
+        XMFLOAT4X4 PrevWorld;
 
         TempVobDrawInfo() = default;
 
@@ -2426,7 +2427,8 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             int NumBones,
             float4 ModelColor,
             float Fatness,
-            XMMATRIX World
+            XMMATRIX World,
+            XMFLOAT4X4 PrevWorld
         ) : 
             VobInfo(VobInfo),
             Model( Model),
@@ -2434,7 +2436,8 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             NumBones( NumBones ),
             ModelColor( ModelColor),
             Fatness( Fatness),
-            World( World)
+            World( World),
+            PrevWorld( PrevWorld )
         { }
     };
 
@@ -2632,7 +2635,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         }
 
         if ( drawAttachments ) {
-            tempVobList.emplace_back( vi, model, boneIdx, numBones, modelColor, fatness, xmWorld );
+            tempVobList.emplace_back( vi, model, boneIdx, numBones, modelColor, fatness, xmWorld, vi->HasValidPrevTransforms ? vi->PrevWorldMatrix : world );
         }
 
         Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnVobs++;
@@ -2669,6 +2672,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         auto transforms = std::span( &BoneTransformCache[data.BoneIdx], data.NumBones );
         auto fatness = data.Fatness;
         auto& world = data.World;
+        auto& prevWorld = data.PrevWorld;
 
         SkeletalMeshVisualInfo* visual = static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo);
         // Set up instance info
@@ -2727,6 +2731,10 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                 const XMMATRIX curTransform = XMLoadFloat4x4( &transforms[i] );
                 XMFLOAT4X4 finalWorld; XMStoreFloat4x4( &finalWorld, world* curTransform );
 
+            const XMMATRIX prevWorldXm = XMLoadFloat4x4( &prevWorld );
+            // just assume same bone transforms of current frame, if we don't have valid previous transforms
+            XMFLOAT4X4 finalPrevWorld; XMStoreFloat4x4( &finalPrevWorld, prevWorldXm * curTransform );
+
                 // Go through all attachments this node has
                 for ( MeshVisualInfo* mvi : nodeAttachment->second ) {
 
@@ -2754,14 +2762,15 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                         instanceInfo.Fatness = 0.f;
                         instanceInfo.Scaling = 1.f;
                     }
+                instanceInfo.World = finalWorld;
+                instanceInfo.PrevWorld = finalPrevWorld;
+                vsBufMPI.Update( &instanceInfo );
 
                     if ( distance < 1000 && isMMS ) {
                         zCMorphMesh* mm = reinterpret_cast<zCMorphMesh*>( mvi->Visual );
                         // Only draw this as a morphmesh when rendering the main scene or when rendering as ghost
                         if ( GetRenderingStage() == DES_MAIN || GetRenderingStage() == DES_GHOST ) {
                             // Update constantbuffer
-                            instanceInfo.World = finalWorld;
-                            vsBufMPI.Update( &instanceInfo );
 
                             if ( updateState ) {
                                 mm->AdvanceAnis();
@@ -2772,11 +2781,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                         }
                     }
 
-                    instanceInfo.World = finalWorld;
-                    vsBufMPI.Update( &instanceInfo );
-
                     // Go through all materials registered here
-
                     if ( GetRenderingStage() == DES_SHADOWMAP
                         || GetRenderingStage() == DES_SHADOWMAP_CUBE ) {
                         for ( auto const& itm : mvi->Meshes ) {
