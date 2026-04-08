@@ -2637,6 +2637,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     if ( !drawAttachments ) {
         return;
     }
+    auto _scopeNodeAttachments = RecordGraphicsEvent( L"DrawSkeletalMeshVobs::Attachments" );
 
     if ( GetRenderingStage() == DES_SHADOWMAP_CUBE )
         SetActiveVertexShader( VShaderID::VS_ExNodeCube );
@@ -2666,7 +2667,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         if ( !vi->VobConstantBuffer )
             vi->UpdateVobConstantBuffer();
 
-        phmap::flat_hash_map<int, std::vector<MeshVisualInfo*>>& nodeAttachments = vi->NodeAttachments;
+        auto& nodeAttachments = vi->NodeAttachments;
         for ( unsigned int i = 0; i < transforms.size(); i++ ) {
             // Check for new visual
             zCModel* mvis = static_cast<zCModel*>( vi->Vob->GetVisual() );
