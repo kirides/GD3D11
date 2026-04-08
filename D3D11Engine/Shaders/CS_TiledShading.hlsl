@@ -48,31 +48,46 @@ float CalcBlinnPhongLighting( float3 N, float3 H ) {
     return saturate( dot( N, H ) );
 }
 
-// 8-tap PCF shadow sampling matching PS_DS_PointLightDynShadow.hlsl
+// 8-tap PCF for 64×64 cubemap faces.
+// Two-ring unit-disk layout: inner ring (r=0.5) + outer ring (r=1.0, rotated 22.5°).
+// All magnitudes ≤ 1.0 so fixedBlurScale directly controls the texel spread.
 static const int SHADOW_BLUR_COUNT = 8;
-static const float3 SHADOW_BLUR_OFFSETS[SHADOW_BLUR_COUNT] = {
-    float3( 0.054426466605825*2-1, 0.057144871008184*2-1, 0.57025665350736*2-1 ),
-    float3( 0.32904030165125*2-1, 0.22406590786952*2-1, 0.76940122329136*2-1 ),
-    float3( 0.90462177475198*2-1, 0.091382070021416*2-1, 0.0065345494107038*2-1 ),
-    float3( 0.93540243382352*2-1, 0.61764284391778*2-1, 0.103979589466*2-1 ),
-    float3( 0.44626536287659*2-1, 0.19266830440269*2-1, 0.73062449308607*2-1 ),
-    float3( 0.0084832706528172*2-1, 0.83200742948428*2-1, 0.43927977813374*2-1 ),
-    float3( 0.28579624476181*2-1, 0.57096250149001*2-1, 0.0095401159532089*2-1 ),
-    float3( 0.55814247604373*2-1, 0.59385285228205*2-1, 0.44374119743879*2-1 )
+static const float2 SHADOW_BLUR_OFFSETS[SHADOW_BLUR_COUNT] = {
+    // Inner ring – r = 0.5, every 90°
+    float2(  0.500f,  0.000f ),
+    float2(  0.000f,  0.500f ),
+    float2( -0.500f,  0.000f ),
+    float2(  0.000f, -0.500f ),
+    // Outer ring – r = 1.0, offset 22.5° from inner so rings don't align
+    float2(  0.924f,  0.383f ),
+    float2( -0.383f,  0.924f ),
+    float2( -0.924f, -0.383f ),
+    float2(  0.383f, -0.924f ),
 };
 
 float SampleShadowCube( float3 wsPosition, float3 lightPosWorld, float lightRange, int cubeIndex ) {
-    float3 dir = normalize( wsPosition - lightPosWorld );
-    float distance = length( wsPosition - lightPosWorld );
+    float3 toPixel = wsPosition - lightPosWorld;
+    float3 dir = normalize( toPixel );
+    float distance = length( toPixel );
     float zFar = lightRange * 2.0f;
     distance = distance / zFar;
 
-    float fixedBias = 0.005f;
-    float fixedBlurScale = 0.010f;
+    float fixedBias = 0.006f;
+    // One texel on a 64×64 cubemap face ≈ 0.031 in direction-space.
+    // 0.034 puts outer-ring taps just over 1 texel away – enough to blur stripe
+    // boundaries without reaching into unrelated geometry at the light's range edge.
+    float fixedBlurScale = 0.034f;
+
+    // Stable tangent frame: displace perpendicular to the lookup direction so
+    // all perturbed directions remain close to the original cubemap face.
+    float3 up = abs( dir.y ) < 0.999f ? float3( 0, 1, 0 ) : float3( 1, 0, 0 );
+    float3 right = normalize( cross( up, dir ) );
+    up = cross( dir, right );
 
     float shd = 0;
     [unroll] for ( int i = 0; i < SHADOW_BLUR_COUNT; i++ ) {
-        float4 sampleCoord = float4( dir + SHADOW_BLUR_OFFSETS[i] * fixedBlurScale, (float)cubeIndex );
+        float3 perturbedDir = dir + (right * SHADOW_BLUR_OFFSETS[i].x + up * SHADOW_BLUR_OFFSETS[i].y) * fixedBlurScale;
+        float4 sampleCoord = float4( perturbedDir, (float)cubeIndex );
         shd += TX_ShadowCubeArray.SampleCmpLevelZero( SS_Comp, sampleCoord, distance - fixedBias );
     }
     shd /= SHADOW_BLUR_COUNT;

@@ -760,6 +760,18 @@ std::vector<float> D3D11ShadowMap::ComputeCascadeSplits( float nearPlane, float 
 
 XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& lights ) {
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+
+    // Release any resources of not visible lights
+    for ( auto& it : Engine::GAPI->VobLightMap ) {
+        if ( it.second->LightShadowBuffers
+            && (!it.second->Vob->IsEnabled() || !it.second->VisibleInFrame) ) {
+            if ( D3D11PointLight* pl = static_cast<D3D11PointLight*>(it.second->LightShadowBuffers.get()) ) {
+                pl->ClearTiledSlot();
+                pl->ReleaseShadowMap();
+            }
+        }
+    }
+
     if (settings.EnablePointlightShadows <= 0) {
         return XR_SUCCESS;
     }
@@ -787,17 +799,6 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
     std::list<VobLightInfo*> importantUpdates;
 
     DepthStencilPool* dsPool = graphicsEngine->GetPfxRenderer()->GetDepthStencilPool();
-
-    // Release any resources of not visible lights
-    for (auto& it : Engine::GAPI->VobLightMap) {
-        if (it.second->LightShadowBuffers
-            && (!it.second->Vob->IsEnabled() || !it.second->VisibleInFrame)) {
-            if ( D3D11PointLight* pl = static_cast<D3D11PointLight*>(it.second->LightShadowBuffers.get())) {
-                pl->ClearTiledSlot();
-                pl->ReleaseShadowMap();
-            }
-        }
-    }
     
     for ( auto const& light : lights ) {
         if ( !light->Vob->IsEnabled() || !light->VisibleInFrame ) {
@@ -823,6 +824,11 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
 
             // pick shadow resolution based on distance.
             int desiredResolution = SHADOW_CUBE_SIZE; // Fallback / far distance
+            if ( d < distVeryCloseSq ) {
+                light->UpdateShadows = true;
+                // for now, keep all lights/shadows the same size, otherwise they change their "volume"
+                // desiredResolution = 256; // High res for close lights
+            }
 
             bool inShadowRange = d < distMaxShadowSq;
             if ( inShadowRange ) {
@@ -847,10 +853,7 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
                     light->UpdateShadows = true; // Force an immediate render this frame
                 }
 
-                // TODO: prioritize updates based on distance, as player will notice updates more on close lights.
-                // TODO: actually only render lights visible in the frustum.
-
-                bool needsUpdate = pl->NeedsUpdate() || desiredResolution == 256;
+                bool needsUpdate = pl->NeedsUpdate();
                 bool isInited = pl->IsInited();
 
                 // Sort into Important vs Background Queue
