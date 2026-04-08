@@ -1092,7 +1092,12 @@ GVegetationBox* ImGuiEditorView::TraceVegetationBoxes(const XMFLOAT3& wPos, cons
 }
 
 void ImGuiEditorView::SmoothMesh(WorldMeshInfo* mesh, bool tesselate) {
-   // Not implemented
+    // Copy old vertices so we can directly write to the vectors again
+    std::vector<ExVertexStruct> vxOld = mesh->Vertices;
+    std::vector<unsigned short> ixOld = mesh->Indices;
+
+    // Mark dirty
+    mesh->SaveInfo = true;
 }
 
 XRESULT ImGuiEditorView::OnVobRemovedFromWorld(zCVob* vob) {

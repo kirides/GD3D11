@@ -47,7 +47,6 @@
 
 // TODO: REMOVE THIS!
 #include "D3D11GraphicsEngine.h"
-#include "MeshManager.h"
 
 #ifndef PUBLIC_RELEASE
 #define OPT_DBG_NOINLINE __declspec(noinline)
@@ -826,9 +825,6 @@ void GothicAPI::OnGeometryLoaded( zCBspTree* tree ) {
 void GothicAPI::OnLoadWorld( const std::string& levelName, int loadMode ) {
     _canClearVobsByVisual = true;
     if ( (loadMode == zWLD_LOAD_GAME_STARTUP || loadMode == zWLD_LOAD_GAME_SAVED_STAT) ) {
-        extern MeshManager* s_MeshManager;
-        s_MeshManager->DropCaches();
-
         if ( !levelName.empty() ) {
             std::string name = levelName;
             const size_t last_slash_idx = name.find_last_of( "\\/" );
@@ -1864,9 +1860,9 @@ void GothicAPI::DrawMeshInfo( zCMaterial* mat, MeshInfo* msh ) {
     }
 
     if ( !msh->MeshIndexBuffer ) {
-        Engine::GraphicsEngine->DrawVertexBuffer( msh->MeshVertexBuffer.get(), msh->Vertices.size() );
+        Engine::GraphicsEngine->DrawVertexBuffer( msh->MeshVertexBuffer, msh->Vertices.size() );
     } else {
-        Engine::GraphicsEngine->DrawVertexBufferIndexed( msh->MeshVertexBuffer.get(), msh->MeshIndexBuffer.get(), msh->Indices.size() );
+        Engine::GraphicsEngine->DrawVertexBufferIndexed( msh->MeshVertexBuffer, msh->MeshIndexBuffer, msh->Indices.size() );
     }
 }
 
@@ -1882,9 +1878,9 @@ void GothicAPI::DrawMeshInfo_Layered( zCMaterial* mat, MeshInfo* msh ) {
 
     D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     if ( !msh->MeshIndexBuffer ) {
-        g->DrawVertexBufferInstanced( msh->MeshVertexBuffer.get(), msh->Vertices.size(), 6 );
+        g->DrawVertexBufferInstanced( msh->MeshVertexBuffer, msh->Vertices.size(), 6 );
     } else {
-        g->DrawVertexBufferInstancedIndexed( msh->MeshVertexBuffer.get(), msh->MeshIndexBuffer.get(), msh->Indices.size(), 6 );
+        g->DrawVertexBufferInstancedIndexed( msh->MeshVertexBuffer, msh->MeshIndexBuffer, msh->Indices.size(), 6 );
     }
 }
 
@@ -2916,8 +2912,8 @@ void GothicAPI::DrawTransparencyVobs() {
 
                 for ( auto const& meshInfo : materialMesh.second ) {
                     g->DrawVertexBufferIndexed(
-                        meshInfo->MeshVertexBuffer.get(),
-                        meshInfo->MeshIndexBuffer.get(),
+                        meshInfo->MeshVertexBuffer,
+                        meshInfo->MeshIndexBuffer,
                         meshInfo->Indices.size() );
                 }
             }
@@ -2942,8 +2938,8 @@ void GothicAPI::DrawTransparencyVobs() {
 
                 for ( auto const& meshInfo : materialMesh.second ) {
                     g->DrawVertexBufferIndexed(
-                        meshInfo->MeshVertexBuffer.get(),
-                        meshInfo->MeshIndexBuffer.get(),
+                        meshInfo->MeshVertexBuffer,
+                        meshInfo->MeshIndexBuffer,
                         meshInfo->Indices.size() );
                 }
             }
@@ -5144,7 +5140,8 @@ void GothicAPI::DrawMorphMesh( zCMorphMesh* msh, std::map<zCMaterial*, std::vect
         for ( auto const& it : meshes ) {
             for ( MeshInfo* mi : it.second ) {
                 if ( mi->MeshIndex == i ) {
-                    Engine::GraphicsEngine->DrawDynamicVertexBufferIndexed( vertices, mi->MeshIndexBuffer.get(), mi->Indices.size() );
+                    mi->MeshVertexBuffer->UpdateBuffer( &vertices[0], vertices.size() * sizeof( ExVertexStruct ) );
+                    Engine::GraphicsEngine->DrawVertexBufferIndexed( mi->MeshVertexBuffer, mi->MeshIndexBuffer, mi->Indices.size() );
                     goto Out_Of_Nested_Loop;
                 }
             }
@@ -5185,7 +5182,7 @@ void GothicAPI::DrawMorphMesh_Layered( zCMorphMesh* msh, std::map<zCMaterial*, s
             for ( MeshInfo* mi : it.second ) {
                 if ( mi->MeshIndex == i ) {
                     mi->MeshVertexBuffer->UpdateBuffer( &vertices[0], vertices.size() * sizeof( ExVertexStruct ) );
-                    g->DrawVertexBufferInstancedIndexed( mi->MeshVertexBuffer.get(), mi->MeshIndexBuffer.get(), mi->Indices.size(), 6 );
+                    g->DrawVertexBufferInstancedIndexed( mi->MeshVertexBuffer, mi->MeshIndexBuffer, mi->Indices.size(), 6 );
                     goto Out_Of_Nested_Loop;
                 }
             }
@@ -5426,7 +5423,7 @@ void GothicAPI::CreatezCPolygonsForSections() {
 
                 it->first.Material->SetAlphaFunc( zMAT_ALPHA_FUNC_NONE );
 
-                WorldConverter::ConvertExVerticesTozCPolygons( *it->second->Vertices.data, *it->second->Indices.data, it->first.Material, section.SectionPolygons );
+                WorldConverter::ConvertExVerticesTozCPolygons( it->second->Vertices, it->second->Indices, it->first.Material, section.SectionPolygons );
             }
         }
     }

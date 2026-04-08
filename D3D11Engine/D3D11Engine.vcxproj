@@ -975,7 +975,6 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="InstructionSet.h" />
     <ClInclude Include="Logger.h" />
     <ClInclude Include="MemoryTracker.h" />
-    <ClInclude Include="MeshManager.h" />
     <ClInclude Include="MeshModifier.h" />
     <ClInclude Include="oCGame.h" />
     <ClInclude Include="oCNPC.h" />
@@ -1171,7 +1170,6 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="include\imgui\imgui_draw.cpp" />
     <ClCompile Include="include\imgui\imgui_tables.cpp" />
     <ClCompile Include="include\imgui\imgui_widgets.cpp" />
-    <ClCompile Include="MeshManager.cpp" />
     <ClCompile Include="MeshModifier.cpp" />
     <ClCompile Include="pch.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Create</PrecompiledHeader>
