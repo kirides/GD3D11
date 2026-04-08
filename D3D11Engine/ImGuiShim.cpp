@@ -1008,10 +1008,13 @@ void RenderAdvancedColumn1( GothicRendererSettings& settings, GothicAPI* gapi ) 
             ImGui::Checkbox( "Enabled", &settings.EnableDoF );
             ImGui::DragFloat( "Focus Range", &settings.DoFFocusRange, 50.0f, 500.0f, 50000.0f, "%.0f" );
             ImGui::SetItemTooltip( "Range around the auto-focus point that remains sharp." );
-            ImGui::DragFloat( "Bokeh Radius", &settings.DoFBokehRadius, 0.5f, 1.0f, 32.0f, "%.1f" );
-            ImGui::SetItemTooltip( "Size of the bokeh disc in pixels." );
+            const char* bokehOrBlurLabel = settings.DoFGaussBlur ? "Blur Radius" : "Bokeh Radius";
+            ImGui::DragFloat( bokehOrBlurLabel, &settings.DoFBokehRadius, 0.5f, 1.0f, 32.0f, "%.1f" );
+            ImGui::SetItemTooltip( "Size of the blur disc in pixels." );
             ImGui::DragFloat( "Max Blur", &settings.DoFMaxBlur, 0.5f, 1.0f, 32.0f, "%.1f" );
-            ImGui::SetItemTooltip( "Maximum bokeh blur radius." );
+            ImGui::SetItemTooltip( "Maximum blur radius." );
+            ImGui::Checkbox( "Simple Gaussian Blur", &settings.DoFGaussBlur );
+            ImGui::SetItemTooltip( "Use a fast Gaussian blur instead of the full bokeh kernel (cheaper, ~3x fewer taps)." );
             ImGui::PopID();
         }
 

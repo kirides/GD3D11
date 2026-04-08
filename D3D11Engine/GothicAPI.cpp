@@ -4752,6 +4752,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "General", "EnableAutoupdates", std::to_string( s.EnableAutoupdates ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "EnableGodRays", std::to_string( s.EnableGodRays ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "EnableDoF", std::to_string( s.EnableDoF ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "DoFGaussBlur", std::to_string( s.DoFGaussBlur ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "DoFFocusDistance", float_to_string( s.DoFFocusDistance, 1 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "DoFFocusRange", float_to_string( s.DoFFocusRange, 1 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "DoFBokehRadius", float_to_string( s.DoFBokehRadius, 1 ).c_str(), ini.c_str() );
@@ -4865,6 +4866,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.EnableAutoupdates = GetPrivateProfileBoolA( "General", "EnableAutoupdates", defaultRendererSettings.EnableAutoupdates, ini );
         s.EnableGodRays = GetPrivateProfileBoolA( "General", "EnableGodRays", defaultRendererSettings.EnableGodRays, ini );
         s.EnableDoF = GetPrivateProfileBoolA( "General", "EnableDoF", defaultRendererSettings.EnableDoF, ini );
+        s.DoFGaussBlur = GetPrivateProfileBoolA( "General", "DoFGaussBlur", defaultRendererSettings.DoFGaussBlur, ini );
         s.DoFFocusDistance = GetPrivateProfileFloatA( "General", "DoFFocusDistance", defaultRendererSettings.DoFFocusDistance, ini );
         s.DoFFocusRange = GetPrivateProfileFloatA( "General", "DoFFocusRange", defaultRendererSettings.DoFFocusRange, ini );
         s.DoFBokehRadius = GetPrivateProfileFloatA( "General", "DoFBokehRadius", defaultRendererSettings.DoFBokehRadius, ini );

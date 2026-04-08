@@ -719,6 +719,7 @@ struct GothicRendererSettings {
         GodRayColorMod = float3( 1.0f, 0.8f, 0.6f );
 
         EnableDoF = false;
+        DoFGaussBlur = false;
         DoFFocusDistance = 5000.0f;
         DoFFocusRange = 8000.0f;
         DoFBokehRadius = 8.0f;
@@ -894,6 +895,7 @@ struct GothicRendererSettings {
     bool EnableGodRays;
 
     bool EnableDoF;
+    bool DoFGaussBlur;
     float DoFFocusDistance;
     float DoFFocusRange;
     float DoFBokehRadius;

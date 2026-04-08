@@ -84,6 +84,7 @@ enum class PShaderID : size_t {
     PS_PFX_GammaCorrectInv,
     PS_PFX_DoF_FocusResolve,
     PS_PFX_DoF,
+    PS_PFX_DoF_Gauss,
     PS_PFX_DoF_Composite,
     PS_PFX_TAA,
     PS_PFX_Velocity,
