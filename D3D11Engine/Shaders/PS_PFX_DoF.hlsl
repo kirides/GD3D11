@@ -70,15 +70,15 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 
     float blurRadius = min( centerCoC * DoF_BokehRadius, DoF_MaxBlur );
 
-    float3 colorAccum = 0.0;
-    float weightAccum = 0.0;
-
 #ifdef DOF_GAUSS_BLUR
     // --- Simple Gaussian blur (16 taps) ---
     // Uses a radial Gaussian kernel with exp(-r^2 * 3) weights.
     // Much cheaper than the bokeh path; no highlight boost or
     // foreground rejection — just a smooth, uniform blur.
     static const int GAUSS_SAMPLE_COUNT = 16;
+
+    float3 colorAccum = 0.0;
+    float weightAccum = 0.0;
 
     [unroll]
     for ( int i = 0; i < GAUSS_SAMPLE_COUNT; i++ )
@@ -96,6 +96,15 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
     }
 #else
     // --- Bokeh spiral blur (48 taps) ---
+    // Seed accumulator with the center pixel so that if all 48 spiral
+    // samples are foreground-rejected (e.g. background visible through
+    // a leaf gap), the result falls back to the center color instead
+    // of producing black.  Weight uses the same luminance-boost formula
+    // applied to every spiral sample.
+    float centerLum = dot( centerColor, float3( 0.2126, 0.7152, 0.0722 ) );
+    float3 colorAccum = centerColor * ( 1.0 + centerLum * 2.0 );
+    float weightAccum = 1.0 + centerLum * 2.0;
+
     [unroll]
     for ( int i = 0; i < SAMPLE_COUNT; i++ )
     {
