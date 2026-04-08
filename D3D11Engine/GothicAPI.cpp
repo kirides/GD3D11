@@ -1137,6 +1137,59 @@ int GothicAPI::DialogFinished() {
     return *reinterpret_cast<int*>(GetInformationManager() + GothicMemoryLocations::oCInformationManager::IsDoneOffset);
 }
 
+static bool GetShouldRenderAsMorphMesh(SkeletalVobInfo* vi, zCModel* model) {
+    auto& nodeAttachments = vi->NodeAttachments;
+    auto nodeList = model->GetNodeList();
+    auto numTransforms = nodeList->NumInArray;
+
+    for ( unsigned int i = 0; i < numTransforms; ++i ) {
+        // Check for new visual
+        zCModelNodeInst* node = nodeList->Array[i];
+
+        if ( !node->NodeVisual )
+            continue; // Happens when you pull your sword for example
+
+        // Check if this is loaded
+        auto nodeAttachment = nodeAttachments.find( i );
+        if ( node->NodeVisual && nodeAttachment == nodeAttachments.end() ) {
+            // It's not, will be fixed in next frame.
+            continue;
+        }
+
+        // Check for changed visual
+        if ( nodeAttachments[i].size() && node->NodeVisual != nodeAttachments[i][0]->Visual ) {
+            // will be fixed in next frame.
+            continue;
+        }
+
+        if ( model->GetDrawHandVisualsOnly() ) {
+            std::string NodeName = node->ProtoNode->NodeName.ToChar();
+#ifdef BUILD_GOTHIC_2_6_fix
+            if ( NodeName.find( "HAND" ) == std::string::npos && (*reinterpret_cast<BYTE*>(0x57A694) != 0x90 || NodeName.find( "ARM" ) == std::string::npos) ) {
+#else
+            if ( NodeName.find( "HAND" ) == std::string::npos ) {
+#endif
+                continue;
+            }
+        }
+
+        if ( nodeAttachment != nodeAttachments.end() ) {
+            // Go through all attachments this node has
+            for ( MeshVisualInfo* mvi : nodeAttachment->second ) {
+                if ( !mvi->Visual ) {
+                    continue;
+                }
+
+                bool isMMS = strcmp( mvi->Visual->GetFileExtension( 0 ), ".MMS" ) == 0;
+                if ( isMMS ) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
 /** Draws the world-mesh */
 void GothicAPI::DrawWorldMeshNaive() {
     if ( !zCCamera::GetCamera() || !oCGame::GetGame() )
@@ -1257,7 +1310,7 @@ void GothicAPI::DrawWorldMeshNaive() {
                 continue;
             }
 
-            if (dist < 1000 && strcmp( model->GetFileExtension( 0 ), ".MMS") == 0) {
+            if (dist < 1000 && GetShouldRenderAsMorphMesh(vobInfo, model ) ) {
                 drawAsMorphMesh.push_back( vobInfo );
             } else {
                 drawRegular.push_back( vobInfo );
@@ -1269,11 +1322,13 @@ void GothicAPI::DrawWorldMeshNaive() {
         D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
 
         if (!drawAsMorphMesh.empty()) {
+            auto _ = Engine::GraphicsEngine->RecordGraphicsEvent( L"Draw Skeletal Morph Meshes" ); 
             // force drawing as morph Mesh for those, by setting distance very close.
             g->DrawSkeletalMeshVobs( drawAsMorphMesh, 500, true, true );
             drawAsMorphMesh.clear();
         }
         if (!drawRegular.empty()) {
+            auto _ = Engine::GraphicsEngine->RecordGraphicsEvent( L"Draw Skeletal Meshes" );
             g->DrawSkeletalMeshVobs( drawRegular, FLT_MAX, true, true );
             drawRegular.clear();
         }
