@@ -2086,7 +2086,7 @@ XRESULT D3D11GraphicsEngine::DrawVertexBufferFF( D3D11VertexBuffer* vb,
 
 /** Sets up texture with normalmap and fxmap for rendering */
 bool D3D11GraphicsEngine::BindTextureNRFX( zCTexture* tex, bool bindShader ) {
-    if ( tex->CacheIn( 0.6f ) == zRES_CACHED_IN )
+    if ( tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) 
         tex->Bind( 0 );
     else
         return false;
@@ -2638,7 +2638,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnVobs++;
         }
 
-    if ( !drawAttachments ) {
+    if ( !drawAttachments || tempVobList.empty() ) {
         return;
     }
     auto _scopeNodeAttachments = RecordGraphicsEvent( L"DrawSkeletalMeshVobs::Attachments" );
@@ -2653,6 +2653,14 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 
     auto vsBufMPI = GetActiveVS()->GetBuffer( "Matrices_PerInstances" )
         .Bind();
+
+    // Setup pixel shader here so that we get correct normals
+    // Somehow BindShaderForTexture make normals to be inversed
+    if ( GetRenderingStage() == DES_MAIN ) {
+        SetActivePixelShader( PShaderID::PS_DiffuseAlphaTest );
+        BindActivePixelShader();
+    }
+
     for ( auto& data : tempVobList ) {
 
         auto vi = data.VobInfo;
@@ -2711,17 +2719,10 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 #endif
                     continue;
                 }
-                }
+            }
 
             auto nodeAttachment = nodeAttachments.find( i );
-            if ( nodeAttachment != nodeAttachments.end() ) {
-
-                // Setup pixel shader here so that we get correct normals
-                    // Somehow BindShaderForTexture make normals to be inversed
-                if ( GetRenderingStage() == DES_MAIN ) {
-                    SetActivePixelShader( PShaderID::PS_DiffuseAlphaTest );
-                    BindActivePixelShader();
-                }
+            if ( nodeAttachment != nodeAttachments.end() ) {                
 
                 const XMMATRIX curTransform = XMLoadFloat4x4( &transforms[i] );
                 XMFLOAT4X4 finalWorld; XMStoreFloat4x4( &finalWorld, world* curTransform );
@@ -2790,7 +2791,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                         for ( auto const& itm : mvi->Meshes ) {
                             zCTexture* texture;
                             if ( itm.first && (texture = itm.first->GetAniTexture()) != nullptr ) {
-                                if ( !BindTextureNRFX( texture, (GetRenderingStage() == DES_MAIN) ) )
+                                if ( !BindTextureNRFX( texture, GetRenderingStage() == DES_MAIN ) )
                                     continue;
                             }
 
