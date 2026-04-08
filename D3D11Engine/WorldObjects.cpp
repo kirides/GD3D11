@@ -46,9 +46,7 @@ void SkeletalVobInfo::UpdateVobConstantBuffer() {
 }
 
 SectionInstanceCache::~SectionInstanceCache() {
-    for ( auto& [mvi, vertexBuffer] : InstanceCache ) {
-        delete vertexBuffer;
-    }
+    InstanceCache.clear();
 }
 
 MeshInfo::~MeshInfo() {

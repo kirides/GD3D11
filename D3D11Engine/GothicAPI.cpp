@@ -47,7 +47,6 @@
 
 // TODO: REMOVE THIS!
 #include "D3D11GraphicsEngine.h"
-#include "MeshManager.h"
 
 #ifndef PUBLIC_RELEASE
 #define OPT_DBG_NOINLINE __declspec(noinline)
@@ -826,9 +825,6 @@ void GothicAPI::OnGeometryLoaded( zCBspTree* tree ) {
 void GothicAPI::OnLoadWorld( const std::string& levelName, int loadMode ) {
     _canClearVobsByVisual = true;
     if ( (loadMode == zWLD_LOAD_GAME_STARTUP || loadMode == zWLD_LOAD_GAME_SAVED_STAT) ) {
-        extern MeshManager* s_MeshManager;
-        s_MeshManager->DropCaches();
-
         if ( !levelName.empty() ) {
             std::string name = levelName;
             const size_t last_slash_idx = name.find_last_of( "\\/" );

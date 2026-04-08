@@ -88,7 +88,7 @@ struct MeshInfo {
     MeshInfo& operator=( MeshInfo&& ) = default;
     MeshInfo( const MeshInfo& other ) = delete;
 
-    virtual ~MeshInfo() = default;
+    virtual ~MeshInfo();
 
     /** Creates buffers for this mesh info */
     XRESULT Create( ExVertexStruct* vertices, unsigned int numVertices, VERTEX_INDEX* indices, unsigned int numIndices );
@@ -137,7 +137,7 @@ struct SkeletalMeshInfo {
     SkeletalMeshInfo& operator=( SkeletalMeshInfo&& ) = default;
     SkeletalMeshInfo(const SkeletalMeshInfo& other) = delete;
 
-    ~SkeletalMeshInfo() = default;
+    ~SkeletalMeshInfo();
 
     D3D11VertexBuffer* MeshVertexBuffer;
     D3D11VertexBuffer* MeshIndexBuffer;
@@ -422,7 +422,7 @@ struct SkeletalVobInfo : public BaseVobInfo {
 
 struct SectionInstanceCache {
     SectionInstanceCache() = default;
-    ~SectionInstanceCache() = default;
+    ~SectionInstanceCache();
 
     /** Clears the cache for the given progmesh */
     void ClearCacheForStatic( MeshVisualInfo* pm );
