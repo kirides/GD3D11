@@ -5426,7 +5426,7 @@ void GothicAPI::CreatezCPolygonsForSections() {
 
                 it->first.Material->SetAlphaFunc( zMAT_ALPHA_FUNC_NONE );
 
-                WorldConverter::ConvertExVerticesTozCPolygons( *it->second->Vertices.data, *it->second->Indices.data, it->first.Material, section.SectionPolygons );
+                WorldConverter::ConvertExVerticesTozCPolygons( it->second->Vertices, it->second->Indices, it->first.Material, section.SectionPolygons );
             }
         }
     }
