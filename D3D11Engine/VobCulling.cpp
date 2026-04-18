@@ -86,10 +86,12 @@ void VobCulling::CullAndGatherStaticVOBs_AVX2(
             uint32_t instanceIdx = (i * 8) + bitIndex;
 
             // Push to dense render queue
-            outRenderQueue.push_back( {
-                instanceIdx,
-                reinterpret_cast<MeshVisualInfo*>(instances[instanceIdx]->VisualInfo),
-            } );
+            if (instances[instanceIdx]) {
+                outRenderQueue.push_back( {
+                    instanceIdx,
+                    reinterpret_cast<MeshVisualInfo*>(instances[instanceIdx]->VisualInfo),
+                } );
+            }
 
             // Clear the lowest set bit so we can find the next one
             // e.g., 010100 -> 010000
@@ -141,10 +143,12 @@ void VobCulling::CullAndGatherStaticVOBs_DirectXMath(
             if ( visible ) {
                 uint32_t instanceIdx = static_cast<uint32_t>(i * 8 + j);
 
-                outRenderQueue.push_back( {
-                    instanceIdx,
-                    reinterpret_cast<MeshVisualInfo*>(instances[instanceIdx]->VisualInfo),
-                } );
+                if (instances[instanceIdx]) {
+                    outRenderQueue.push_back( {
+                        instanceIdx,
+                        reinterpret_cast<MeshVisualInfo*>(instances[instanceIdx]->VisualInfo),
+                    } );
+                }
             }
         }
     }

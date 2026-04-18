@@ -47,6 +47,8 @@ void D3D11VobAtlasPass::Build() {
         m_TextureAtlasses[(DXGI_FORMAT)i].Destroy();
     m_TextureAtlasLookup.clear();
     m_AtlasDrawGroups.clear();
+    m_VobGPUDataCPU.clear();
+    m_VobToGPUIndex.clear();
 
     if ( !SupportTextureAtlases ||
         !Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.EnableAtlasStaticVobs ) {
@@ -396,6 +398,14 @@ void D3D11VobAtlasPass::BuildGPUCullingBuffers() {
         vobGPU.push_back( data );
     }
 
+    // Keep CPU-side copy and build vob-pointer lookup for runtime removal
+    m_VobGPUDataCPU = vobGPU;
+    m_VobToGPUIndex.clear();
+    m_VobToGPUIndex.reserve( m_Engine->m_StaticVobs.size() );
+    for ( size_t i = 0; i < m_Engine->m_StaticVobs.size(); i++ ) {
+        m_VobToGPUIndex[m_Engine->m_StaticVobs[i]->Vob] = static_cast<UINT>(i);
+    }
+
     // --- 5. Upload to GPU ---
     auto* device  = m_Engine->GetDevice().Get();
     auto* context = m_Engine->GetContext().Get();
@@ -453,6 +463,33 @@ void D3D11VobAtlasPass::BuildGPUCullingBuffers() {
               << submeshGPU.size() << " submesh entries, "
               << mergedArgs.size() << " indirect args, "
               << m_TotalMaxInstances << " max instances";
+}
+
+// ============================================================
+//  OnVobRemovedFromWorld – hide a removed vob without rebuild
+// ============================================================
+void D3D11VobAtlasPass::OnVobRemovedFromWorld( zCVob* vob ) {
+    auto it = m_VobToGPUIndex.find( vob );
+    if ( it == m_VobToGPUIndex.end() )
+        return;
+
+    UINT idx = it->second;
+    m_VobToGPUIndex.erase( it );
+
+    // Zero submeshCount so the CS never emits instances for this vob
+    m_VobGPUDataCPU[idx].submeshCount = 0;
+
+    // Upload only the modified element to the GPU via UpdateSubresource + D3D11_BOX
+    D3D11_BOX box = {};
+    box.left   = idx * sizeof( VobGPUData );
+    box.right  = box.left + sizeof( VobGPUData );
+    box.top    = 0;
+    box.bottom = 1;
+    box.front  = 0;
+    box.back   = 1;
+    m_Engine->GetContext()->UpdateSubresource(
+        m_VobGPUBuffer->GetBuffer(), 0, &box,
+        &m_VobGPUDataCPU[idx], 0, 0 );
 }
 
 // ============================================================

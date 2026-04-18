@@ -7564,6 +7564,17 @@ void D3D11GraphicsEngine::DrawFrameParticles(
 XRESULT D3D11GraphicsEngine::OnVobRemovedFromWorld( zCVob* vob ) {
     if ( Engine::ImGuiHandle ) Engine::ImGuiHandle->OnVobRemovedFromWorld( vob );
 
+    // Remove from atlas GPU-culling buffer so it stops drawing
+    if ( m_VobAtlasPass ) m_VobAtlasPass->OnVobRemovedFromWorld( vob ); 
+
+    for ( int32_t i = 0; i < m_StaticVobs.size(); ++i ) {
+        // remove from static vob cache aswell, by moving to the end and resizing the vector, since order doesn't matter in the cache
+        if ( m_StaticVobs[i] && m_StaticVobs[i]->Vob == vob ) {
+            m_StaticVobs[i] = nullptr;
+            break;
+        }
+    }
+
     // Take out of shadowupdate queue
     for ( auto&& it = FrameShadowUpdateLights.begin(); it != FrameShadowUpdateLights.end(); ++it ) {
         if ( (*it)->Vob == vob ) {

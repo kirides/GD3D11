@@ -41,6 +41,9 @@ public:
      *  bindPS=false is used in shadow passes to skip the pixel shader. */
     XRESULT Draw( const Frustum& frustum, bool bindPS = true );
 
+    /** Mark a removed vob as invisible in the GPU buffer without rebuilding. */
+    void OnVobRemovedFromWorld( class zCVob* vob );
+
     /** True once Build() has completed and at least one draw group exists. */
     bool IsReady() const { return !m_AtlasDrawGroups.empty(); }
 
@@ -74,6 +77,10 @@ private:
     std::unique_ptr<D3D11ConstantBuffer>                         m_CullConstantBuffer;
     std::vector<D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS>      m_MergedArgsReset;
     UINT m_TotalMaxInstances = 0;
+
+    // CPU-side cache for targeted per-vob GPU updates on removal
+    std::vector<VobGPUData>                   m_VobGPUDataCPU;
+    std::unordered_map<void*, UINT>          m_VobToGPUIndex;
 
     void BuildTextureAtlasses();
     void BuildGeometryBuffers();
