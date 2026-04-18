@@ -5609,7 +5609,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                         MeshInfo* mi = mlist[i];
 
                         // Draw batch
-                        DrawInstanced( mi->MeshVertexBuffer.get(), mi->MeshIndexBuffer.get(),
+                        DrawInstanced( mi->MeshVertexBuffer, mi->MeshIndexBuffer,
                             mi->Indices.size(), DynamicInstancingBuffer.get(),
                             sizeof( VobInstanceInfo ), b.Instances.size(),
                             sizeof( ExVertexStruct ), b.StartInstanceNum );
@@ -5755,7 +5755,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
                             MeshInfo* mi = mlist[i];
 
-                            DrawInstanced( mi->MeshVertexBuffer.get(), mi->MeshIndexBuffer.get(),
+                            DrawInstanced( mi->MeshVertexBuffer, mi->MeshIndexBuffer,
                                 mi->Indices.size(), DynamicInstancingBuffer.get(),
                                 sizeof( VobInstanceInfo ), batch.Instances.size(),
                                 sizeof( ExVertexStruct ), batch.StartInstanceNum );

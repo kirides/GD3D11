@@ -683,7 +683,7 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
 
     // Release any resources of not visible lights
-    for ( auto& it : Engine::GAPI->VobLightMap ) {
+    for ( auto& it : Engine::GAPI->VobLights_Sorted ) {
         if ( it.second->LightShadowBuffers
             && (!it.second->Vob->IsEnabled() || !it.second->VisibleInFrame) ) {
             if ( D3D11PointLight* pl = static_cast<D3D11PointLight*>(it.second->LightShadowBuffers.get()) ) {
