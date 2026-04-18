@@ -119,6 +119,10 @@ void MaterialInfo::UpdateConstantbuffer() {
     } else {
         D3D11ConstantBuffer* cb = nullptr;
         Engine::GraphicsEngine->CreateConstantBuffer( &cb, &buffer, sizeof( buffer ) );
+#ifdef DEBUG_D3D11
+        SetDebugName( cb->Get().Get(), "ConstantBuffer::MaterialInfo" );
+#endif
+
         Constantbuffer.reset(cb);
     }
 }
@@ -2178,6 +2182,9 @@ void GothicAPI::OnAddVob( zCVob* vob, zCWorld* world ) {
                 // Create this constantbuffer only for non-inventory vobs because it would be recreated for each vob every frame
                 D3D11ConstantBuffer* cb;
                 Engine::GraphicsEngine->CreateConstantBuffer( &cb, nullptr, sizeof( VS_ExConstantBuffer_PerInstance ) );
+#ifdef DEBUG_D3D11
+                SetDebugName( cb->Get().Get(), "VS_ExConstantBuffer_PerInstance::"+vob->GetName());
+#endif
                 vi->VobConstantBuffer.reset(cb);
                 vi->UpdateVobConstantBuffer();
 
