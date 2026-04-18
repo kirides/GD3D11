@@ -575,9 +575,13 @@ XRESULT D3D11VobAtlasPass::Draw( const Frustum& frustum, bool bindPS ) {
     MaterialInfo defMaterial{};
     GSky* sky = Engine::GAPI->GetSky();
 
-    m_Engine->SetActivePixelShader( PShaderID::PS_DiffuseAtlas );
+    context->PSSetShader( nullptr, nullptr, 0 );
     auto lastPs = PShaderID::COUNT;
     GraphicsShaderConstantBuffer buffersToBind[3] = {};
+
+    const PShaderID alphaTestPS = m_Engine->GetRenderingStage() == D3D11ENGINE_RENDER_STAGE::DES_SHADOWMAP
+        ? PShaderID::PS_DiffuseAtlasAlphaTestShadows
+        : PShaderID::PS_DiffuseAtlasAlphaTest;
 
     for ( auto& group : m_AtlasDrawGroups ) {
         ID3D11ShaderResourceView* srv = m_TextureAtlasses[group.format].atlasSRV;
@@ -591,7 +595,7 @@ XRESULT D3D11VobAtlasPass::Draw( const Frustum& frustum, bool bindPS ) {
 
             auto newPs = (bindPS && group.format != DXGI_FORMAT_BC2_UNORM)
                 ? PShaderID::PS_DiffuseAtlas 
-                : PShaderID::PS_DiffuseAtlasAlphaTest;
+                : alphaTestPS;
 
             if ( newPs != lastPs ) {
                 m_Engine->SetActivePixelShader( newPs );
