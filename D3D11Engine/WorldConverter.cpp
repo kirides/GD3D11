@@ -23,6 +23,10 @@
 #include "D3D7\MyDirectDrawSurface7.h"
 #include "zCQuadMark.h"
 
+#include "MeshManager.h"
+
+extern MeshManager* s_MeshManager;
+
 WorldConverter::WorldConverter() {}
 
 WorldConverter::~WorldConverter() {}
@@ -770,18 +774,19 @@ void WorldConverter::Extract3DSMeshFromVisual( zCProgMeshProto* visual, MeshVisu
 
         // Get indices
         std::vector<VERTEX_INDEX> indices;
-        for ( int n = 0; n < visual->GetSubmesh( i )->TriList.NumInArray; n++ ) {
-            indices.emplace_back( visual->GetSubmesh( i )->WedgeList.Get( visual->GetSubmesh( i )->TriList.Get( n ).wedge[0] ).position );
-            indices.emplace_back( visual->GetSubmesh( i )->WedgeList.Get( visual->GetSubmesh( i )->TriList.Get( n ).wedge[1] ).position );
-            indices.emplace_back( visual->GetSubmesh( i )->WedgeList.Get( visual->GetSubmesh( i )->TriList.Get( n ).wedge[2] ).position );
+        for ( int n = 0; n < m->TriList.NumInArray; n++ ) {
+            indices.emplace_back( m->WedgeList.Get( m->TriList.Get( n ).wedge[0] ).position );
+            indices.emplace_back( m->WedgeList.Get( m->TriList.Get( n ).wedge[1] ).position );
+            indices.emplace_back( m->WedgeList.Get( m->TriList.Get( n ).wedge[2] ).position );
         }
 
-        zCMaterial* mat = visual->GetSubmesh( i )->Material;
+        zCMaterial* mat = m->Material;
 
         MeshInfo* mi = new MeshInfo;
 
         mi->Vertices = vertices;
         mi->Indices = indices;
+        mi->meshId = s_MeshManager->RecordMesh( m );
 
         // Create the buffers
         Engine::GraphicsEngine->CreateVertexBuffer( &mi->MeshVertexBuffer );
@@ -893,12 +898,13 @@ void WorldConverter::ExtractSkeletalMeshFromVob( zCModel* model, SkeletalMeshVis
                 pvx.Color = 0xFFFFFFFF;
             }
 
-            zCMaterial* mat = s->GetSubmesh( i )->Material;
+            zCMaterial* mat = m->Material;
 
             SkeletalMeshInfo* mi = new SkeletalMeshInfo;
             mi->Vertices = std::move(vertices);
             mi->Indices = std::move(indices);
             mi->visual = s;
+            mi->meshId = s_MeshManager->RecordMesh( m );
 
             // Create the buffers
             Engine::GraphicsEngine->CreateVertexBuffer( &mi->MeshVertexBuffer );
@@ -1000,8 +1006,6 @@ void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualIn
                 vx.Color = 0xFFFFFFFF;
             }
 
-            // Create the buffers and sort the mesh into the structure
-            MeshInfo* mi = new MeshInfo;
 
             // Create the indexed mesh
             if ( vertices.empty() ) {
@@ -1009,8 +1013,11 @@ void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualIn
                 continue;
             }
 
+            // Create the buffers and sort the mesh into the structure
+            MeshInfo* mi = new MeshInfo;
             mi->Vertices = vertices;
             mi->Indices = indices;
+            mi->meshId = s_MeshManager->RecordMesh( m );
 
             // Create the buffers
             Engine::GraphicsEngine->CreateVertexBuffer( &mi->MeshVertexBuffer );
@@ -1293,8 +1300,6 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
             bbmax.z = bbmax.z < vx.Position.z ? vx.Position.z : bbmax.z;
         }
 
-        // Create the buffers and sort the mesh into the structure
-        MeshInfo* mi = new MeshInfo;
 
         // Create the indexed mesh
         if ( vertices.empty() ) {
@@ -1302,9 +1307,12 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
             continue;
         }
 
+        // Create the buffers and sort the mesh into the structure
+        MeshInfo* mi = new MeshInfo;
         mi->Vertices = std::move( vertices );
         mi->Indices = std::move( indices );
         mi->MeshIndex = i;
+        mi->meshId = s_MeshManager->RecordMesh( s );
 
         // Create the buffers
         Engine::GraphicsEngine->CreateVertexBuffer( &mi->MeshVertexBuffer );
@@ -1339,7 +1347,7 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
         Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize += mi->Vertices.size() * sizeof( ExVertexStruct );
         Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize += mi->Indices.size() * sizeof( VERTEX_INDEX );
 
-        zCMaterial* mat = visual->GetSubmesh( i )->Material;
+        zCMaterial* mat = s->Material;
         meshInfo->Meshes[mat].emplace_back( mi );
 
         MeshKey key;

@@ -826,6 +826,9 @@
     <ClInclude Include="D3D11GraphicsShader.h">
       <Filter>Engine\D3D11</Filter>
     </ClInclude>
+    <ClInclude Include="MeshManager.h">
+      <Filter>Engine\GAPI</Filter>
+    </ClInclude>
     <ClInclude Include="StringID.h" />
     <ClInclude Include="zSndMss.h">
       <Filter>ZenGin\Classes</Filter>
@@ -1134,6 +1137,9 @@
     </ClCompile>
     <ClCompile Include="D3D11GraphicsShader.cpp">
       <Filter>Engine\D3D11</Filter>
+    </ClCompile>
+    <ClCompile Include="MeshManager.cpp">
+      <Filter>Engine\GAPI</Filter>
     </ClCompile>
     <ClCompile Include="zSndMss.cpp">
       <Filter>ZenGin\Classes</Filter>

@@ -29,6 +29,7 @@ enum class VShaderID : size_t {
     VS_ExCube,
     VS_ExNodeCube,
     VS_ExSkeletalCube,
+    VS_ExNodeInstanced,
     COUNT
 };
 

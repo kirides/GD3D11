@@ -139,7 +139,7 @@ public:
     void UpdateColorSpace_SwapChain();
 
     /** Sets up texture with normalmap and fxmap for rendering */
-    bool BindTextureNRFX( zCTexture* tex, bool bindShader );
+    bool BindTextureNRFX( zCTexture* tex, bool bindShader, bool updateMaterialInfo = true );
 
     /** Draws a skeletal mesh */
     XRESULT DrawSkeletalVertexNormals(SkeletalVobInfo* vi, const XMFLOAT4X4& world, const std::span<XMFLOAT4X4> transforms, float4 color, float fatness =
@@ -378,6 +378,7 @@ protected:
     XMFLOAT4X4 Temp2D3DXMatrix[2];
     float2 Temp2Float2[2];
     std::unique_ptr<D3D11VertexBuffer> DynamicInstancingBuffer;
+    std::unique_ptr<D3D11VertexBuffer> NodeAttachmentInstancingBuffer;
     std::unique_ptr<D3D11VertexBuffer> DynamicVertexBuffer;
 
     /** Post processing */
