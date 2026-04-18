@@ -2491,6 +2491,11 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             wantShader = false;
         }
     }
+    // Ensure we have correct Constantbuffer for eventual Alphatest stuff.
+    ShaderManager->GetPShader( Resolved_DiffuseNormalmappedAlphatest )
+        ->GetBuffer( "FFPipelineConstantBuffer" )
+        .Update( &Engine::GAPI->GetRendererState().GraphicsState )
+        .Bind();
     
     for ( SkeletalVobInfo* vi : vis ) {
         zCModel* model = static_cast<zCModel*>(vi->Vob->GetVisual());
@@ -5879,6 +5884,12 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
             float cachedVobRadius = -1.0f;
             float cachedMinHeight = -999999.0f;
             float cachedMaxHeight = -999999.0f;
+            
+            // Ensure we have correct Constantbuffer for eventual Alphatest stuff.
+            ShaderManager->GetPShader( Resolved_DiffuseNormalmappedAlphatest )
+                ->GetBuffer( "FFPipelineConstantBuffer" )
+                .Update( &Engine::GAPI->GetRendererState().GraphicsState )
+                .Bind();
 
             for ( auto const& staticMeshVisual : activeVisuals ) {
                 if ( staticMeshVisual->Instances.empty() ) continue;
