@@ -4,7 +4,6 @@
 /** Global engine information */
 class BaseGraphicsEngine;
 class GothicAPI;
-class BaseAntTweakBar;
 class ImGuiShim;
 class GGame;
 class ThreadPool;

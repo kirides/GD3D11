@@ -277,6 +277,9 @@ void GVegetationBox::InitSpotsRandom( const std::vector<XMFLOAT3>& trisInside, E
 
     // Create constant buffer
     Engine::GraphicsEngine->CreateConstantBuffer( &GrassCB, nullptr, sizeof( GrassConstantBuffer ) );
+#ifdef DEBUG_D3D11
+    SetDebugName( GrassCB->Get().Get(), "ConstantBuffer::GrassConstantBuffer" );
+#endif
 
     RefitBoundingBox();
 
@@ -598,6 +601,9 @@ void GVegetationBox::LoadFromFILE( FILE* f, int version ) {
 
     // Create constant buffer
     Engine::GraphicsEngine->CreateConstantBuffer( &GrassCB, nullptr, sizeof( GrassConstantBuffer ) );
+#ifdef DEBUG_D3D11
+    SetDebugName( GrassCB->Get().Get(), "ConstantBuffer::GrassConstantBuffer" );
+#endif
 
     // TODO: Make resource-load method!
     if ( VegetationMesh ) {

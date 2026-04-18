@@ -6,6 +6,7 @@
 #include "zCVob.h"
 #include "zCMaterial.h"
 #include "zCTexture.h"
+#include "D3D11_Helpers.h"
 
 const int WORLDMESHINFO_VERSION = 5;
 const int VISUALINFO_VERSION = 5;
@@ -39,10 +40,14 @@ void SkeletalVobInfo::UpdateVobConstantBuffer() {
 
     WorldMatrix = cb.World;
 
-    if ( !VobConstantBuffer )
+    if ( !VobConstantBuffer ) {
         Engine::GraphicsEngine->CreateConstantBuffer( &VobConstantBuffer, &cb, sizeof( cb ) );
-    else
+#ifdef DEBUG_D3D11
+        SetDebugName( VobConstantBuffer->Get().Get(), "VS_ExConstantBuffer_PerInstance::"+Vob->GetName());
+#endif
+    } else {
         VobConstantBuffer->UpdateBuffer( &cb );
+    }
 }
 
 SectionInstanceCache::~SectionInstanceCache() {
