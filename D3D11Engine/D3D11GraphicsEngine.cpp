@@ -5710,6 +5710,15 @@ void D3D11GraphicsEngine::UpdateMorphMeshVisual() {
         WorldConverter::UpdateMorphMeshVisual( staticMeshVisual.second->MorphMeshVisual, staticMeshVisual.second );
     }
 }
+namespace {
+    void UpdateMorphMeshVisuals( std::vector<MeshVisualInfo*>& staticMeshVisuals ) {
+        for ( auto const& staticMeshVisual : staticMeshVisuals ) {
+            if ( !staticMeshVisual->MorphMeshVisual ) continue;
+            if ( staticMeshVisual->Instances.empty() ) continue;
+            WorldConverter::UpdateMorphMeshVisual( staticMeshVisual->MorphMeshVisual, staticMeshVisual );
+        }
+    }
+}
 
 /** Updates wind direction and set time for shader */
 void D3D11GraphicsEngine::ApplyWindProps( VS_ExConstantBuffer_Wind& windBuff ) {
@@ -5838,10 +5847,6 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
             }
         }
 
-        if ( renderSettings.AnimateStaticVobs ) {
-            UpdateMorphMeshVisual();
-        }
-
         if ( renderSettings.DrawVOBs ) {
             auto _1 = Engine::GraphicsEngine->RecordGraphicsEvent( L"DrawVOBsInstanced->DrawVOBs" );
 
@@ -5851,6 +5856,10 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                 if ( !pair.second->Instances.empty() ) {
                     activeVisuals.push_back( pair.second );
                 }
+            }
+
+            if ( renderSettings.AnimateStaticVobs ) {
+                UpdateMorphMeshVisuals( activeVisuals );
             }
 
             // Create instancebuffer for this frame
