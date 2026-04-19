@@ -3175,7 +3175,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         };
     });
     
-    graph.AddPass( L"Draw light-shafts", [&]( RGBuilder& builder, RenderPass& pass ) {
+    graph.AddPass( L"Draw FrameTransparencyMeshes", [&]( RGBuilder& builder, RenderPass& pass ) {
         builder.Read( backBufferHandle );
         builder.Write( backBufferHandle );
 
@@ -3195,7 +3195,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         });
     }
     
-    graph.AddPass( L"Draw Waterfall Foam", [&]( RGBuilder& builder, RenderPass& pass ) {
+    graph.AddPass( L"Draw FrameTransparencyMeshesWaterfall", [&]( RGBuilder& builder, RenderPass& pass ) {
         builder.Read( backBufferHandle );
         builder.Write( backBufferHandle );
 
@@ -3997,7 +3997,8 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh_Indirect( bool noTextures ) {
             // Check for alphablending
             int alphaFunc = worldMesh.first.Material->GetAlphaFunc();
             if ( alphaFunc > zMAT_ALPHA_FUNC_NONE &&
-                alphaFunc != zMAT_ALPHA_FUNC_TEST ) {
+                alphaFunc != zMAT_ALPHA_FUNC_TEST
+                && worldMesh.first.Texture->HasAlphaChannel() ) {
                 FrameTransparencyMeshes.push_back( worldMesh );
             } else {
                 // Create a new pair using the animated texture
@@ -4258,7 +4259,8 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
 
                 // Check for alphablending
                 if ( worldMesh.first.Material->GetAlphaFunc() > zMAT_ALPHA_FUNC_NONE &&
-                    worldMesh.first.Material->GetAlphaFunc() != zMAT_ALPHA_FUNC_TEST ) {
+                    worldMesh.first.Material->GetAlphaFunc() != zMAT_ALPHA_FUNC_TEST
+                    && worldMesh.first.Texture->HasAlphaChannel()) {
                     FrameTransparencyMeshes.push_back( worldMesh );
                 } else {
                     // Create a new pair using the animated texture
@@ -4328,7 +4330,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
 
             // Get the right shader for it
             if ( BindShaderForTexture( mesh.first.Texture, false,
-                mesh.first.Material->GetAlphaFunc() ) ) {
+                zMAT_ALPHA_FUNC_MAT_DEFAULT ) ) { // default alpha stuff, we defer blend/add
                 // shader changed? update buffers.
                 updatePSBuffers();
             }
