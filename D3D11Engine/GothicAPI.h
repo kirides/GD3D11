@@ -172,6 +172,7 @@ struct MaterialInfo {
     MaterialInfo& operator=( MaterialInfo&& ) = default;
 
     MaterialInfo(const MaterialInfo&) = delete;
+    MaterialInfo& operator=( const MaterialInfo& ) = delete;
 
     /** Writes this info to a file */
     void WriteToFile( const std::string& name );
@@ -902,7 +903,7 @@ private:
     std::unordered_map<zCBspBase*, BspInfo> BspLeafVobLists;
 
     /** Map for the material infos */
-    std::unordered_map<zCTexture*, MaterialInfo> MaterialInfos;
+    phmap::flat_hash_map<zCTexture*, std::unique_ptr<MaterialInfo>> MaterialInfos;
 
     /** Maps visuals to vobs */
     phmap::flat_hash_map<zCVisual*, std::vector<BaseVobInfo*>> VobsByVisual;

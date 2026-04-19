@@ -143,8 +143,11 @@ public:
     void RenderShadowmaps( const RenderShadowmapsParams& params );
 
     XRESULT DrawWorldLights();
+    DS_ScreenQuadConstantBuffer FillSunCSMConstantBuffer() const;
     XRESULT DrawLighting(std::vector<VobLightInfo*>& lights, RenderToTextureBuffer& color, RenderToTextureBuffer& normals, RenderToTextureBuffer
                          & specular, RenderToTextureBuffer& depthCopy);
+
+    D3D11TiledDeferredShading* GetTiledDeferred() const { return m_TiledDeferred.get(); }
 
     void XM_CALLCONV RenderShadowCube( DirectX::FXMVECTOR position,
         float range,

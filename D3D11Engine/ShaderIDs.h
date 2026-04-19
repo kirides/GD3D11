@@ -96,6 +96,13 @@ enum class PShaderID : size_t {
     PS_PFX_FSR1_EASU,
     PS_PFX_FSR1_RCAS,
     PS_PFX_Composition,
+    PS_FP_Diffuse,
+    PS_FP_DiffuseNormalmapped,
+    PS_FP_DiffuseNormalmappedFxMap,
+    PS_FP_DiffuseAlphaTest,
+    PS_FP_DiffuseNormalmappedAlphaTest,
+    PS_FP_DiffuseNormalmappedAlphaTestFxMap,
+    PS_FP_ShadowMask,
     COUNT
 };
 

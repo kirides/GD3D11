@@ -408,4 +408,10 @@ struct TiledShadingConstantBuffer {
     float2 Pad1;
     XMFLOAT4X4 InvView; // For world-space reconstruction (shadow sampling)
 };
+
+struct ForwardPlusTileConstantBuffer {
+    float2 ViewportSize;
+    uint32_t NumTilesX;
+    uint32_t LimitLightIntensity;
+};
 #pragma pack (pop)

@@ -32,6 +32,12 @@ Texture2D	TX_Texture1 : register( t1 );
 Texture2D	TX_Texture2 : register( t2 );
 TextureCube	TX_ReflectionCube : register( t4 );
 
+#ifdef FORWARD_PLUS
+#include <include/ForwardPlusLighting.hlsl>
+// Pre-computed screen-space CSM shadow mask from the shadow mask pre-pass (bound at t12)
+Texture2D FP_ShadowMask : register( t12 );
+#endif
+
 //--------------------------------------------------------------------------------------
 // Input / Output structures
 //--------------------------------------------------------------------------------------
@@ -72,12 +78,89 @@ float2 CalculateVelocity(float4 currClipPos, float4 prevClipPos)
 //--------------------------------------------------------------------------------------
 // Pixel Shader
 //--------------------------------------------------------------------------------------
+#ifdef FORWARD_PLUS
+//--------------------------------------------------------------------------------------
+// Forward+ Lit Output
+//--------------------------------------------------------------------------------------
+FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
+{
+	FORWARD_PLUS_PS_OUTPUT output;
+	output.vReactiveMask = 0.0f;
+
+	float4 color = TX_Texture0.Sample(SS_Linear, Input.vTexcoord);
+
+	// clip but only use z approximation
+	ClipDistanceEffect(abs(Input.vViewPosition.z), DIST_DrawDistance, color.r * 2 - 1, 500.0f);
+
+#if ALPHATEST == 1
+	DoAlphaTest(color.a);
+	output.vReactiveMask = 0.1f;
+#endif
+
+#if NORMALMAPPING == 1
+	float3 nrm = perturb_normal(Input.vNormalVS, Input.vViewPosition, TX_Texture1, Input.vTexcoord, SS_Linear, MI_NormalmapStrength);
+#else
+	float3 nrm = normalize(Input.vNormalVS);
+#endif
+
+	float4 fx;
+#if FXMAP == 1
+	fx = TX_Texture2.Sample(SS_Linear, Input.vTexcoord);
+#else
+	fx = 1.0f;
+#endif
+
+	float specIntensity = MI_SpecularIntensity * fx.r;
+	float specPower = MI_SpecularPower * fx.g;
+	float vertLighting = Input.vDiffuse.y;
+
+	float3 vsPosition = Input.vViewPosition;
+	float3 wsPosition = mul(float4(vsPosition, 1), SQ_InvView).xyz;
+	
+	float pixelDistZ = abs(vsPosition.z);
+
+	// CSM shadow — sampled from pre-computed screen-space shadow mask (PS_FP_ShadowMask.hlsl)
+	float shadow = vertLighting;
+#if SHD_ENABLE
+	if (AC_LightPos.y > 0)
+	{
+		float2 screenUV = Input.vPosition.xy / FP_ViewportSize;
+		shadow = FP_ShadowMask.SampleLevel( SS_Linear, screenUV, 0 ).r;
+	}
+#endif
+
+	// Sun lighting
+	float3 litPixel = FP_ComputeSunLighting(wsPosition, vsPosition, nrm, color.rgb, specIntensity, specPower, shadow, vertLighting);
+
+	// Point lights, only when close enough
+	if (pixelDistZ < 6000.0f) 
+	{
+		litPixel += FP_ComputePointLighting(wsPosition, vsPosition, nrm, color.rgb, specIntensity, specPower, Input.vPosition.xy);
+	}
+
+	// Atmospheric scattering
+	litPixel = ApplyAtmosphericScatteringGround(wsPosition, litPixel);
+
+	output.vColor = float4(litPixel, 1);
+	output.vNrm = float4(nrm, 1.0f);
+	output.vSI_SP = float2(specIntensity, specPower);
+	output.vVelocity = CalculateVelocity(Input.vCurrClipPos, Input.vPrevClipPos);
+
+	return output;
+}
+
+#else // !FORWARD_PLUS
+//--------------------------------------------------------------------------------------
+// Deferred GBuffer Output
+//--------------------------------------------------------------------------------------
 #if ALPHATEST_SHADOWS == 1
 void PSMain( PS_INPUT Input )
 {
 	float4 color = TX_Texture0.Sample(SS_Linear, Input.vTexcoord);
 
-	ClipDistanceEffect(length(Input.vViewPosition), DIST_DrawDistance, color.r * 2 - 1, 500.0f);
+	// clip but only use z approximation
+	ClipDistanceEffect(abs(Input.vViewPosition.z), DIST_DrawDistance, color.r * 2 - 1, 500.0f);
+
 	DoAlphaTest(color.a);
 }
 
@@ -95,7 +178,8 @@ DEFERRED_PS_OUTPUT PSMain( PS_INPUT Input ) : SV_TARGET
 	
 	// Do alphatest if wanted
 #if ALPHATEST == 1
-	ClipDistanceEffect(length(Input.vViewPosition), DIST_DrawDistance, color.r * 2 - 1, 500.0f);
+	// clip but only use z approximation
+	ClipDistanceEffect(abs(Input.vViewPosition.z), DIST_DrawDistance, color.r * 2 - 1, 500.0f);
 	
 	// WorldMesh can always do the alphatest
 	DoAlphaTest(color.a);
@@ -132,4 +216,5 @@ DEFERRED_PS_OUTPUT PSMain( PS_INPUT Input ) : SV_TARGET
 	
 	return output;
 }
+#endif // FORWARD_PLUS
 

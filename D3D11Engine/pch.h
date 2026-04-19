@@ -114,6 +114,8 @@ namespace std {
 #define SWITCH_ENGINE(G1, G1A, G2A, OTHER) G2A
 #elif defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)
 #define SWITCH_ENGINE(G1, G1A, G2A, OTHER) G1
-#elif defined(BUILD_GOTHIC_1_08k, OTHER) G1A
+#elif defined(BUILD_GOTHIC_1_08k) && defined(BUILD_1_12F)
+#define SWITCH_ENGINE(G1, G1A, G2A, OTHER) G1A
+#else
 #define SWITCH_ENGINE(G1, G1A, G2A, OTHER) OTHER
 #endif

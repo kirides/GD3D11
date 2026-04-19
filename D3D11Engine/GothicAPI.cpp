@@ -4430,33 +4430,43 @@ void GothicAPI::ResetMaterialInfo() {
 MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCTexture* tex ) {
     auto it = MaterialInfos.find( tex );
     MaterialInfo* mi = nullptr;
-    if ( it == MaterialInfos.end() && tex ) {
+    if ( it == MaterialInfos.end() ) {
+
         // Make a new one and try to load it
-        MaterialInfos[tex].LoadFromFile( tex->GetNameWithoutExt() );
-        mi = &MaterialInfos[tex];
-        if ( std::string_view{ tex->__GetName().ToChar() } == "NW_MISC_FULLALPHA_01.TGA" ) {
-            mi->MaterialType = MaterialInfo::MT_FullAlpha;
+        auto info = std::make_unique<MaterialInfo>();
+        MaterialInfos.emplace(tex, std::move(info));
+        mi = MaterialInfos[tex].get();
+        if ( tex ) {
+            mi->LoadFromFile( tex->GetNameWithoutExt() );
+            if ( std::string_view{ tex->__GetName().ToChar() } == "NW_MISC_FULLALPHA_01.TGA" ) {
+                mi->MaterialType = MaterialInfo::MT_FullAlpha;
+            }
         }
     } else {
-        mi = &it->second;
+        mi = it->second.get();
     }
 
     return mi;
 }
 
 MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCTexture* tex, const std::string& textureName ) {
-    auto it = MaterialInfos.find( tex );
-    
-    MaterialInfo* mi = nullptr;
-    if ( it == MaterialInfos.end() && tex ) {
-        // Make a new one and try to load it
-        mi = &MaterialInfos[tex];
-        mi->LoadFromFile( textureName );
-    } else {
-        mi = &it->second;
-    }
+        auto it = MaterialInfos.find( tex );
+        MaterialInfo* mi = nullptr;
+        if ( it == MaterialInfos.end() ) {
+            auto info = std::make_unique<MaterialInfo>();
+            MaterialInfos.emplace( tex, std::move( info ) );
+            mi = MaterialInfos[tex].get();
+            if ( tex ) {
+                mi->LoadFromFile( textureName );
+                if ( std::string_view{ textureName } == "NW_MISC_FULLALPHA_01" ) {
+                    mi->MaterialType = MaterialInfo::MT_FullAlpha;
+                }
+            }
+        } else {
+            mi = it->second.get();
+        }
 
-    return &MaterialInfos[tex];
+        return mi;
 }
 
 /** Adds a surface */
@@ -4850,6 +4860,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Display", "RainEffects", std::to_string( s.EnableRainEffects ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "LimitLightIntesity", std::to_string( s.LimitLightIntesity ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "TiledLighting", std::to_string( s.EnableTiledLighting ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "RendererMode", std::to_string( static_cast<int>(s.RendererMode) ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WindQuality", std::to_string( s.WindQuality ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WindStrength", std::to_string( s.GlobalWindStrength ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterWaveAnimation", std::to_string( s.EnableWaterAnimation ? TRUE : FALSE ).c_str(), ini.c_str() );
@@ -5000,6 +5011,8 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.EnableRainEffects = GetPrivateProfileBoolA( "Display", "RainEffects", true, ini );
         s.LimitLightIntesity = GetPrivateProfileBoolA( "Display", "LimitLightIntesity", false, ini );
         s.EnableTiledLighting = GetPrivateProfileBoolA( "Display", "TiledLighting", false, ini );
+        s.RendererMode = static_cast<GothicRendererSettings::E_RendererMode>(
+            GetPrivateProfileIntA( "Display", "RendererMode", GothicRendererSettings::RM_ForwardPlus, ini.c_str() ) );
         s.WindQuality = GetPrivateProfileIntA( "Display", "WindQuality", 0, ini.c_str() );
         s.GlobalWindStrength = GetPrivateProfileFloatA( "Display", "WindStrength", 1.0f, ini );
         s.EnableWaterAnimation = GetPrivateProfileBoolA( "Display", "WaterWaveAnimation", true, ini );

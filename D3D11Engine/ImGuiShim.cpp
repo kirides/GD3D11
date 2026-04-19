@@ -1200,7 +1200,10 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
         }
         // ImGui::Checkbox("FastShadows", &settings.FastShadows );	
         ImGui::Checkbox( "DrawShadowGeometry", &settings.DrawShadowGeometry );
-        ImGui::Checkbox( "DoZPrepass", &settings.DoZPrepass );
+        if ( settings.RendererMode != GothicRendererSettings::RM_ForwardPlus) {
+            ImGui::Checkbox( "DoZPrepass", &settings.DoZPrepass );
+            ImGui::SetItemTooltip("Perform a lightweight Z Prepass.\nMIGHT improve performance on low bandwidth devices.");
+        }
         ImGui::Checkbox( "VSync", &settings.EnableVSync );
         ImGui::Checkbox( "OcclusionCulling", &settings.EnableOcclusionCulling );
         ImGui::Checkbox( "Sort RenderQueue", &settings.SortRenderQueue );
@@ -1389,6 +1392,16 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                 ImGui::Checkbox("Enable GPU Driver Extensions", &settings.DebugSettings.FeatureSet.EnableDriverExtensions );
                 ImGui::SetItemTooltip("Allow Driver Extensions (AMD, Nvidia, Intel).\nRequires restart.");
 
+                {
+                    static const std::vector<std::pair<const char*, GothicRendererSettings::E_RendererMode>> rendererModes = {
+                        { "Deferred",   GothicRendererSettings::RM_Deferred },
+                        { "Forward+",   GothicRendererSettings::RM_ForwardPlus },
+                    };
+                    if ( ImComboBox( "Renderer Mode", rendererModes, &settings.RendererMode ) ) {
+                        ImGui::EndCombo();
+                    }
+                    ImGui::SetItemTooltip( "Deferred: GBuffer + tiled deferred lighting.  Forward+: depth prepass + per-pixel lit geometry pass." );
+                }
                 if (!FeatureLevel10Compatibility){
                     ImGui::Checkbox("Use MDI", &settings.DebugSettings.FeatureSet.UseMDI );
                     ImGui::SetItemTooltip("Support for MultiDrawInstancedIndirect via Driver Extensions (AMD, Nvidia, Intel).");

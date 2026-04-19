@@ -1,5 +1,7 @@
 #pragma once
 #include "D3D11GraphicsEngineBase.h"
+#include "D3D11DeferredRenderer.h"
+#include "D3D11ForwardPlusRenderer.h"
 #include "fpslimiter.h"
 #include "GothicAPI.h"
 #include "D3D11ShadowMap.h"
@@ -59,6 +61,7 @@ struct AlphaMeshData {
     MeshKey mk;
     MeshInfo* mi;
     MeshVisualInfo* vi;
+    unsigned int StartInstanceNum = 0;
     std::vector<VobInstanceInfo> instances;
 };
 
@@ -69,6 +72,9 @@ public:
 
     /** Called after the fake-DDraw-Device got created */
     XRESULT Init() override;
+
+    /** Selects the active scene renderer based on the RendererMode setting */
+    void SelectActiveRenderer();
 
     /** Called when the game created its window */
     XRESULT SetWindow( HWND hWnd ) override;
@@ -370,9 +376,33 @@ public:
     D3D11ShadowMap* GetShadowMaps() const { return ShadowMaps.get(); }
 
     void SetFrameNeedsJitter() { m_FrameNeedsJitter = true; }
-protected:
 
     void StoreVobPreviousTransforms();
+
+private:
+    struct FrameIndirectBufferPool {
+        std::vector<std::unique_ptr<D3D11IndirectBuffer>> Buffers;
+        size_t NextBuffer = 0;
+
+        void ResetFrame() {
+            NextBuffer = 0;
+        }
+    };
+
+    struct FrameInstancingBufferPool {
+        std::vector<std::unique_ptr<D3D11VertexBuffer>> Buffers;
+        size_t NextBuffer = 0;
+
+        void ResetFrame() {
+            NextBuffer = 0;
+        }
+    };
+
+    void ResetFrameTransientBufferPools();
+    D3D11IndirectBuffer* AcquireFrameIndirectBuffer( FrameIndirectBufferPool& pool, const void* initData, unsigned int sizeInBytes, const char* debugName );
+    D3D11VertexBuffer* AcquireFrameInstancingBuffer( FrameInstancingBufferPool& pool, unsigned int sizeInBytes, const char* debugName );
+
+protected:
 
     std::unique_ptr<FpsLimiter> m_FrameLimiter;
     int m_LastFrameLimit;
@@ -388,6 +418,15 @@ protected:
     std::unique_ptr<RenderToTextureBuffer> DepthStencilBufferCopy;
     // DummyShadowCubemapTexture moved into ShadowMaps
     std::unique_ptr<D3D11ShadowMap> ShadowMaps;
+
+    /** Deferred renderer (GBuffer pass, lighting pass, shader selection) */
+    D3D11DeferredRenderer DeferredRenderer;
+
+    /** Forward+ renderer (depth prepass, light culling, lit geometry pass) */
+    D3D11ForwardPlusRenderer ForwardPlusRenderer{ DeferredRenderer };
+
+    /** Active scene renderer, selected by RendererMode setting */
+    ISceneRenderer* ActiveSceneRenderer = nullptr;
 
     /** Temp-Arrays for storing data to be put in constant buffers */
     float2 Temp2Float2[2];
@@ -445,6 +484,66 @@ private:
     
     /** World-Mesh indirect buffer */
     std::unique_ptr<D3D11IndirectBuffer> WorldMeshIndirectBuffer;
+public:
+    std::vector<VobLightInfo*>& GetFrameLights() { return m_FrameLights; }
+private:
+
+    /** Per-frame geometry cache: culling and draw-arg building is done once per frame.
+     *  The Z-prepass populates this; the lit geometry pass reuses it. */
+    struct FrameGeometryCache {
+        struct MDIBatch {
+            unsigned int DrawCount;
+            unsigned int AlignedByteOffsetForArgs;
+            MaterialInfo* MeshMaterialInfo;
+        };
+
+        /// Snapshot of a static-mesh visual and its per-frame instance data.
+        /// Avoids reliance on MeshVisualInfo::Instances across shadow-map passes.
+        struct CachedVobVisual {
+            MeshVisualInfo*              Visual          = nullptr;
+            std::vector<VobInstanceInfo> Instances;
+            unsigned int                 StartInstanceNum = 0;
+        };
+
+        struct CachedInstancedMeshDraw {
+            unsigned int VisualIndex = 0;
+            MeshKey Mesh;
+            MeshInfo* MeshEntry = nullptr;
+        };
+
+        bool worldMeshBuilt    = false;  ///< CollectVisibleSections + MDI arg build + buffer upload done
+        bool vobInstancesUploaded = false; ///< CollectVisibleVobs + DynamicInstancingBuffer upload done
+
+        std::vector<WorldMeshSectionInfo*> visibleSections;
+        std::unordered_map<zCTexture*, MDIBatch> mdiBatches;
+        std::vector<D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS> drawIndirectArgs;
+        std::vector<std::tuple<zCTexture*, MeshInfo*, MaterialInfo*>> meshListAlpha;
+        D3D11IndirectBuffer*           MainWorldIndirectArgsBuffer = nullptr;
+        D3D11VertexBuffer*             MainVobInstancingBuffer = nullptr;
+        std::vector<CachedVobVisual>    vobVisuals;
+        std::vector<CachedInstancedMeshDraw> sortedInstancedMeshes;
+        std::vector<SkeletalVobInfo*>   cachedMobs;
+
+        void Reset() {
+            worldMeshBuilt      = false;
+            vobInstancesUploaded = false;
+            visibleSections.clear();
+            mdiBatches.clear();
+            drawIndirectArgs.clear();
+            meshListAlpha.clear();
+            MainWorldIndirectArgsBuffer = nullptr;
+            MainVobInstancingBuffer = nullptr;
+            vobVisuals.clear();
+            sortedInstancedMeshes.clear();
+            cachedMobs.clear();
+        }
+    };
+    FrameGeometryCache m_FrameGeometryCache;
+
+    FrameIndirectBufferPool m_MainWorldIndirectPool;
+    FrameIndirectBufferPool m_ShadowWorldIndirectPool;
+    FrameInstancingBufferPool m_MainVobInstancingPool;
+    FrameInstancingBufferPool m_ShadowVobInstancingPool;
 
     /** Water surface indirect buffer */
     std::unique_ptr<D3D11IndirectBuffer> WaterIndirectBuffer;

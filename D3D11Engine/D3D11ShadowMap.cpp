@@ -1188,6 +1188,77 @@ void D3D11ShadowMap::RenderShadowmaps( const RenderShadowmapsParams& params ) {
         WORLD_SECTION_SIZE );
 }
 
+DS_ScreenQuadConstantBuffer D3D11ShadowMap::FillSunCSMConstantBuffer() const {
+    auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+    float rain = Engine::GAPI->GetRainFXWeight();
+
+    XMMATRIX viewRaw = Engine::GAPI->GetViewMatrixXM();
+    XMMATRIX view = XMMatrixTranspose( viewRaw );
+
+    GSky* sky = Engine::GAPI->GetSky();
+    auto& proj = Engine::GAPI->GetProjectionMatrix();
+
+    DS_ScreenQuadConstantBuffer scb = {};
+    scb.SQ_ProjParams = float4( 1.0f / proj._11, 1.0f / proj._22, proj._43, proj._33 );
+    XMStoreFloat4x4( &scb.SQ_InvView, XMMatrixInverse( nullptr, viewRaw ) );
+    XMStoreFloat4x4( &scb.SQ_View, viewRaw );
+
+    static uint32_t frameCounter = 0;
+    if ( proj._13 != 0 || proj._23 != 0 ) {
+        scb.SQ_FrameIndex = frameCounter++;
+    }
+
+    XMStoreFloat3( scb.SQ_LightDirectionVS.toXMFLOAT3(),
+        XMVector3TransformNormal( XMLoadFloat3( sky->GetAtmosphereCB().AC_LightPos.toXMFLOAT3() ), view ) );
+
+    float3 sunColor = settings.SunLightColor;
+    float sunStrength = Toolbox::lerp(
+        settings.SunLightStrength,
+        settings.RainSunLightStrength,
+        std::min( 1.0f, rain * 2.0f ) );
+    scb.SQ_LightColor = float4( sunColor.x, sunColor.y, sunColor.z, sunStrength );
+
+    for ( size_t cascadeIdx = 0; cascadeIdx < MAX_CSM_CASCADES; ++cascadeIdx ) {
+        XMStoreFloat4x4( &scb.SQ_ShadowViewProj[cascadeIdx],
+            XMLoadFloat4x4( &m_CascadeCRs[cascadeIdx].ProjectionReplacement ) *
+                XMLoadFloat4x4( &m_CascadeCRs[cascadeIdx].ViewReplacement ) );
+    }
+
+    scb.SQ_ShadowmapSize = static_cast<float>( this->GetSizeX() );
+
+    if ( m_useAtlas && m_shadowAtlas ) {
+        for ( size_t i = 0; i < MAX_CSM_CASCADES; ++i ) {
+            scb.SQ_CascadeAtlasRect[i] = m_shadowAtlas->GetCascadeUVRect( static_cast<UINT>( i ) );
+        }
+    }
+
+    XMStoreFloat4x4( &scb.SQ_RainViewProj,
+        XMLoadFloat4x4( &reinterpret_cast<D3D11GraphicsEngine*>( Engine::GraphicsEngine )->Effects->GetRainShadowmapCameraRepl().ProjectionReplacement ) *
+        XMLoadFloat4x4( &reinterpret_cast<D3D11GraphicsEngine*>( Engine::GraphicsEngine )->Effects->GetRainShadowmapCameraRepl().ViewReplacement ) );
+
+    scb.SQ_ShadowStrength = settings.ShadowStrength;
+    scb.SQ_ShadowAOStrength = settings.ShadowAOStrength;
+    scb.SQ_WorldAOStrength = settings.WorldAOStrength;
+    scb.SQ_ShadowSoftness = settings.ShadowSoftness;
+    scb.SQ_LightSize = 0.04f;
+
+    if ( auto bspTree = Engine::GAPI->GetLoadedWorldInfo()->BspTree )
+        if ( bspTree->GetBspTreeMode() == zBSP_MODE_INDOOR ) {
+#if BUILD_GOTHIC_1_08k
+            if ( Engine::GAPI->GetLoadedWorldInfo()->WorldName == "ORCTEMPEL" )
+                scb.SQ_ShadowStrength = 0.15f;
+            else
+                scb.SQ_ShadowStrength = 0.3f;
+#else
+            scb.SQ_ShadowStrength = 0.0f;
+#endif
+            scb.SQ_WorldAOStrength = 1.0f;
+            scb.SQ_LightColor = float4( 1, 1, 1, DEFAULT_INDOOR_VOB_AMBIENT.x );
+        }
+
+    return scb;
+}
+
 XRESULT D3D11ShadowMap::DrawWorldLights()
 {
     auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);

@@ -451,6 +451,61 @@ XRESULT D3D11ShaderManager::Init() {
         Shaders.push_back( ShaderInfo::make<CShaderID::CS_PFX_SAO>( "CS_PFX_SAO.hlsl" ));
 
         Shaders.push_back( ShaderInfo::make<CShaderID::CS_PFX_SAO_Blur>( "CS_PFX_SAO_Blur.hlsl" ));
+        
+        // Forward+ pixel shader variants
+        Shaders.push_back( ShaderInfo::make<PShaderID::PS_FP_Diffuse>( "PS_Diffuse.hlsl" )
+            .with_macros(shadowMacroBuilder)
+            .with_macros( {
+                { "FORWARD_PLUS", "1" },
+                { "NORMALMAPPING", "0" },
+                { "ALPHATEST", "0" },
+            }).with_category(ShaderCategory::LightsAndShadows));
+
+        Shaders.push_back( ShaderInfo::make<PShaderID::PS_FP_DiffuseNormalmapped>( "PS_Diffuse.hlsl" )
+            .with_macros(shadowMacroBuilder)
+            .with_macros( {
+                { "FORWARD_PLUS", "1" },
+                { "NORMALMAPPING", "1" },
+                { "ALPHATEST", "0" },
+            } ).with_category( ShaderCategory::LightsAndShadows ) );
+
+        Shaders.push_back( ShaderInfo::make<PShaderID::PS_FP_DiffuseNormalmappedFxMap>( "PS_Diffuse.hlsl" )
+            .with_macros(shadowMacroBuilder)
+            .with_macros( {
+                { "FORWARD_PLUS", "1" },
+                { "NORMALMAPPING", "1" },
+                { "ALPHATEST", "0" },
+                { "FXMAP", "1" },
+            } ).with_category( ShaderCategory::LightsAndShadows ) );
+
+        Shaders.push_back( ShaderInfo::make<PShaderID::PS_FP_DiffuseAlphaTest>( "PS_Diffuse.hlsl" )
+            .with_macros(shadowMacroBuilder)
+            .with_macros( {
+                { "FORWARD_PLUS", "1" },
+                { "NORMALMAPPING", "0" },
+                { "ALPHATEST", "1" },
+            } ).with_category( ShaderCategory::LightsAndShadows ) );
+
+        Shaders.push_back( ShaderInfo::make<PShaderID::PS_FP_DiffuseNormalmappedAlphaTest>( "PS_Diffuse.hlsl" )
+            .with_macros(shadowMacroBuilder)
+            .with_macros( {
+                { "FORWARD_PLUS", "1" },
+                { "NORMALMAPPING", "1" },
+                { "ALPHATEST", "1" },
+            } ).with_category( ShaderCategory::LightsAndShadows ) );
+
+        Shaders.push_back( ShaderInfo::make<PShaderID::PS_FP_DiffuseNormalmappedAlphaTestFxMap>( "PS_Diffuse.hlsl" )
+            .with_macros(shadowMacroBuilder)
+            .with_macros( {
+                { "FORWARD_PLUS", "1" },
+                { "NORMALMAPPING", "1" },
+                { "ALPHATEST", "1" },
+                { "FXMAP", "1" },
+            } ).with_category( ShaderCategory::LightsAndShadows ) );
+
+        Shaders.push_back( ShaderInfo::make<PShaderID::PS_FP_ShadowMask>( "PS_FP_ShadowMask.hlsl" )
+            .with_macros(shadowMacroBuilder)
+            .with_category( ShaderCategory::LightsAndShadows ) );
     }
 
     return XR_SUCCESS;

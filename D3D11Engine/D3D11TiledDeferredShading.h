@@ -40,6 +40,27 @@ public:
         RenderToTextureBuffer& specular,
         RenderToTextureBuffer& depthCopy );
 
+    /** Packs lights into the structured buffer and dispatches CS_LightCulling.
+        After this call, GetLightBufferSRV/GetLightGridSRV/GetLightIndexListSRV
+        are valid for the current frame. Returns the number of tiled lights and
+        any lights that must fall back to the legacy path.
+        Does NOT run CS_TiledShading — the caller decides how to consume the culled data. */
+    struct CullResult {
+        uint32_t TiledLightCount = 0;
+        bool HasShadowedTiledLights = false;
+        std::vector<VobLightInfo*> LegacyLights;
+    };
+    CullResult CullLights(
+        std::vector<VobLightInfo*>& lights,
+        RenderToTextureBuffer& depthCopy );
+
+    /** SRVs for reading culled light data in pixel shaders (valid after CullLights). */
+    ID3D11ShaderResourceView* GetLightBufferSRV() const { return m_LightBufferSRV.Get(); }
+    ID3D11ShaderResourceView* GetLightGridSRV() const { return m_LightGridSRV.Get(); }
+    ID3D11ShaderResourceView* GetLightIndexListSRV() const { return m_LightIndexListSRV.Get(); }
+    ID3D11ShaderResourceView* GetShadowCubeArraySRV() const { return m_ShadowCubeArraySRV.Get(); }
+    bool IsShadowArrayCreated() const { return m_ShadowArrayCreated; }
+
     // Shadow cubemap array slot management
     int AllocateSlot();
     void FreeSlot( int slot );

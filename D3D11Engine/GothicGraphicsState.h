@@ -599,6 +599,11 @@ struct GothicRendererSettings {
         SHADOW_FILTER_PCSS = 2,
     };
 
+    enum E_RendererMode {
+        RM_Deferred = 0,
+        RM_ForwardPlus = 1,
+    };
+
     /** Sets the default values for this struct */
     void SetDefault() {
         SectionDrawRadius = 4;
@@ -713,6 +718,7 @@ struct GothicRendererSettings {
         MinLightShadowUpdateRange = 300.0f;
         PartialDynamicShadowUpdates = true;
         EnableTiledLighting = false;
+        RendererMode = RM_ForwardPlus;
         DrawSectionIntersections = true;
 
         EnableGodRays = true;
@@ -907,6 +913,7 @@ struct GothicRendererSettings {
     float MinLightShadowUpdateRange;
     bool PartialDynamicShadowUpdates;
     bool EnableTiledLighting;
+    E_RendererMode RendererMode;
     bool DrawSectionIntersections;
 
     int MaxNumFaces;
