@@ -2471,10 +2471,13 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
     static std::vector<XMFLOAT4X4> transforms;
     transforms.clear();
     model->GetBoneTransforms( &transforms );
-
+    const auto now = Engine::GAPI->GetTotalTimeDW();
     if ( updateState ) {
         // Update attachments
-        model->UpdateAttachedVobs();
+        if ( vi->LastAniUpdateFrame != now ) {
+            vi->LastAniUpdateFrame = now;
+            model->UpdateAttachedVobs();
+        }
         model->UpdateMeshLibTexAniState();
     }
 
@@ -2614,8 +2617,11 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
                         vsBufMPI.Update( &instanceInfo );
 
                         if ( updateState ) {
-                            mm->AdvanceAnis();
-                            mm->CalcVertexPositions();
+                            if ( mvi->LastAniUpdateFrame != now ) {
+                                mvi->LastAniUpdateFrame = now;
+                                mm->AdvanceAnis();
+                                mm->CalcVertexPositions();
+                            }
                         }
                         DrawMorphMesh( mm, mvi->Meshes );
                         continue;
@@ -2709,10 +2715,15 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
     transforms.clear();
     model->GetBoneTransforms( &transforms );
 
+    const auto now = Engine::GAPI->GetTotalTimeDW();
+
     if ( updateState ) {
         // Update attachments
-        model->UpdateAttachedVobs();
-        model->UpdateMeshLibTexAniState();
+        if ( vi->LastAniUpdateFrame != now ) {
+            vi->LastAniUpdateFrame = now;
+            model->UpdateAttachedVobs();
+            model->UpdateMeshLibTexAniState();
+        }
     }
 
     if ( !static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->SkeletalMeshes.empty() ) {
@@ -2836,8 +2847,11 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
                         vsBufMPI.Update( &instanceInfo );
 
                         if ( updateState ) {
-                            mm->AdvanceAnis();
-                            mm->CalcVertexPositions();
+                            if ( mvi->LastAniUpdateFrame != now ) {
+                                mvi->LastAniUpdateFrame = now;
+                                mm->AdvanceAnis();
+                                mm->CalcVertexPositions();
+                            }
                         }
                         DrawMorphMesh_Layered( mm, mvi->Meshes );
                         continue;

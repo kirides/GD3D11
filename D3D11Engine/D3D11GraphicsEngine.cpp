@@ -2468,6 +2468,8 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     auto boneTransformsCb = ActiveVS->GetBuffer("BoneTransforms").Bind();
     auto prevBoneTransformsCb = ActiveVS->GetBuffer("PrevBoneTransforms").Bind();
 
+    const auto now = Engine::GAPI->GetTotalTimeDW();
+
     // Copy previous frame bone transforms for motion vectors (only for main scene rendering, not shadow maps)
     if ( GetRenderingStage() == DES_SHADOWMAP_CUBE ) {
         // Don't bind previous, as we don't use them here yet.
@@ -2547,9 +2549,12 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         auto boneIdx = boneOffset;
         boneOffset += numBones;
 
-        if ( updateState ) {
-            // Update attachments
-            model->UpdateAttachedVobs();
+        if ( updateState) {
+            if ( vi->LastAniUpdateFrame != now ) {
+                vi->LastAniUpdateFrame = now;
+                // Update attachments
+                model->UpdateAttachedVobs();
+            }
             model->UpdateMeshLibTexAniState();
         }
 
@@ -2773,8 +2778,11 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                             // Update constantbuffer
 
                             if ( updateState ) {
-                                mm->AdvanceAnis();
-                                mm->CalcVertexPositions();
+                                if ( mvi->LastAniUpdateFrame != now ) {
+                                    mvi->LastAniUpdateFrame = now;
+                                    mm->AdvanceAnis();
+                                    mm->CalcVertexPositions();
+                                }
                             }
                             Engine::GAPI->DrawMorphMesh( mm, mvi->Meshes );
                             continue;

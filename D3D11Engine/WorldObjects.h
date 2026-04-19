@@ -191,6 +191,7 @@ struct MeshVisualInfo : public BaseVisualInfo {
         UnloadedSomething = false;
         StartInstanceNum = 0;
         FullMesh = nullptr;
+        LastAniUpdateFrame = 0;
     }
     
     MeshVisualInfo(MeshVisualInfo&& other) = default;
@@ -228,6 +229,7 @@ struct MeshVisualInfo : public BaseVisualInfo {
 
     /** Flag wether some mesh inside needs alpha testing, to allow sorting for shader usage */
     bool NeedsAlphaTesting;
+    size_t LastAniUpdateFrame;
 };
 
 /** Holds the converted mesh of a VOB */
@@ -369,6 +371,7 @@ struct SkeletalVobInfo : public BaseVobInfo {
         VisibleInRenderPass = false;
         VobConstantBuffer = nullptr;
         HasValidPrevTransforms = false;
+        LastAniUpdateFrame = 0;
     }
     
     SkeletalVobInfo(SkeletalVobInfo&& other) = default;
@@ -418,6 +421,7 @@ struct SkeletalVobInfo : public BaseVobInfo {
     std::vector<XMFLOAT4X4> PrevBoneTransforms;
     XMFLOAT4X4 PrevWorldMatrix;
     bool HasValidPrevTransforms;
+    size_t LastAniUpdateFrame;
 };
 
 struct SectionInstanceCache {
