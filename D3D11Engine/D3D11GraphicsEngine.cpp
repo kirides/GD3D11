@@ -3410,9 +3410,9 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             if ( Engine::GAPI->GetRendererState().RendererSettings.EnableShadows ) {
                 // Cascades only get rendered if this is enabled. 
                 ShadowMaps->PrepareRender();
-                // Lights need a working depth stencil copy!
-                CopyDepthStencil();
             }
+            // Lights need a working depth stencil copy, so do other effects!
+            CopyDepthStencil();
 
             ShadowMaps->DrawLighting(m_FrameLights, 
                 *colorTexture, 
@@ -3454,12 +3454,29 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                 auto backBuffer = graph.GetPhysicalTexture(backBufferHandle);
 
                 PfxRenderer->DrawHBAO( backBuffer->GetRenderTargetView(),
-                    GetDepthBuffer()->GetShaderResView(), 
+                    GetDepthBufferCopy()->GetShaderResView(),
                     normalsTexture->GetShaderResView());
                 GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
             };
         });
-    } else if ( compositionSAO ) {
+    }
+    else if ( rendererState.RendererSettings.AoMode == AOMode::AO_ASSAO ) {
+        graph.AddPass( L"ASSAO", [&]( RGBuilder& builder, RenderPass& pass ) {
+            builder.Read( normalsResource );
+            builder.Write( backBufferHandle );
+
+            pass.m_executeCallback = [this, normalsResource, backBufferHandle]( const RenderGraph& graph ) {
+                auto normalsTexture = graph.GetPhysicalTexture( normalsResource );
+                auto backBuffer = graph.GetPhysicalTexture( backBufferHandle );
+
+                PfxRenderer->RenderASSAO( backBuffer->GetRenderTargetView().Get(),
+                    GetDepthBufferCopy()->GetShaderResView().Get(),
+                    normalsTexture->GetShaderResView().Get() );
+                GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
+            };
+        } );
+    }
+    else if ( compositionSAO ) {
         // SAO compute-only pass — skips the final modulate blit (composition handles it)
         graph.AddPass( L"SAO Compute", [&]( RGBuilder& builder, RenderPass& pass ) {
             builder.Read( normalsResource );
@@ -3468,7 +3485,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                 auto normalsTexture = graph.GetPhysicalTexture(normalsResource);
 
                 PfxRenderer->RenderSAOCompute(
-                    GetDepthBuffer()->GetShaderResView().Get(),
+                    GetDepthBufferCopy()->GetShaderResView().Get(),
                     normalsTexture->GetShaderResView().Get());
                 GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
             };

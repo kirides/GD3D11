@@ -21,6 +21,7 @@
 #include "D3D11PFX_FSR2.h"
 #include "D3D11PFX_FSR3.h"
 #include "D3D11PFX_SAO.h"
+#include "D3D11PFX_ASSAO.h"
 #include "D3D11ConstantBuffer.h"
 #include "ConstantBufferStructs.h"
 #include "GothicAPI.h"
@@ -28,8 +29,9 @@
 
 D3D11PfxRenderer::D3D11PfxRenderer() {
 
-    m_texturePool = std::make_unique<TexturePool>( reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine)->GetDevice().Get() );
-    m_depthStencilPool = std::make_unique<DepthStencilPool>( reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine)->GetDevice().Get() );
+    auto engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    m_texturePool = std::make_unique<TexturePool>( engine->GetDevice().Get() );
+    m_depthStencilPool = std::make_unique<DepthStencilPool>( engine->GetDevice().Get() );
 
     FX_Blur = std::make_unique<D3D11PFX_Blur>( this );
     FX_HeightFog = std::make_unique<D3D11PFX_HeightFog>( this );
@@ -46,6 +48,11 @@ D3D11PfxRenderer::D3D11PfxRenderer() {
         PFX_FSR1 = std::make_unique<D3D11PFX_FSR1>( this );
         PFX_FSR2 = std::make_unique<D3D11PFX_FSR2>( this );
         PFX_FSR3 = std::make_unique<D3D11PFX_FSR3>( this );
+        PFX_ASSAO = std::make_unique<D3D11PFX_ASSAO>(
+            engine->GetDevice().Get(),
+            engine->GetContext().Get() );
+
+        PFX_ASSAO->Init();
     }
 
     PFX_CAS = std::make_unique<D3D11PFX_CAS>( this );
@@ -386,6 +393,16 @@ XRESULT D3D11PfxRenderer::RenderPostFXComposition(
     Engine::GAPI->GetRendererState().DepthState.DepthWriteEnabled = true;
     Engine::GAPI->GetRendererState().DepthState.SetDirty();
 
+    return XR_SUCCESS;
+}
+
+XRESULT D3D11PfxRenderer::RenderASSAO( ID3D11RenderTargetView* outputRTV, ID3D11ShaderResourceView* depthCopy, ID3D11ShaderResourceView* normals )
+{
+    if ( !PFX_ASSAO ) {
+        return XR_FAILED;
+    }
+
+    PFX_ASSAO->Render( depthCopy, normals, outputRTV );
     return XR_SUCCESS;
 }
 

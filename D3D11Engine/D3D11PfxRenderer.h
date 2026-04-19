@@ -19,6 +19,7 @@ class D3D11PFX_DepthOfField;
 class D3D11NVHBAO;
 class D3D11PFX_SAO;
 class D3D11PFX_SimpleSharpen;
+class D3D11PFX_ASSAO;
 
 class D3D11PfxRenderer {
 public:
@@ -90,6 +91,10 @@ public:
                                      ID3D11ShaderResourceView* godraysSRV,
                                      ID3D11ShaderResourceView* depthSRV );
 
+    XRESULT RenderASSAO( ID3D11RenderTargetView* outputRTV,
+                            ID3D11ShaderResourceView* depthCopy,
+                            ID3D11ShaderResourceView* normals );
+
     /** Accessors */
     TextureHandle GetTempBuffer();
     TextureHandle GetBackbufferTempBuffer();
@@ -135,6 +140,7 @@ private:
     std::unique_ptr<D3D11PFX_FSR1> PFX_FSR1;
     std::unique_ptr<D3D11PFX_FSR2> PFX_FSR2;
     std::unique_ptr<D3D11PFX_FSR3> PFX_FSR3;
+    std::unique_ptr<D3D11PFX_ASSAO> PFX_ASSAO;
     std::unique_ptr<TexturePool> m_texturePool;
     std::unique_ptr<DepthStencilPool> m_depthStencilPool;
 };

@@ -642,14 +642,15 @@ void ImGuiShim::RenderSettingsWindow()
                 Engine::GAPI->UpdateTextureMaxSize();
             }
 
-            static std::vector<std::pair<const char*, AOMode>> aoModes = {
-                {"Off", AOMode::AO_NONE},
-                {"HBAO+", AOMode::AO_HBAO},
-                {"SAO", AOMode::AO_SAO},
+            static std::vector<std::tuple<const char*, AOMode, const char*>> aoModes = {
+                    {"Disabled", AOMode::AO_NONE, nullptr},
+                    {"HBAO+", AOMode::AO_HBAO, "NVIDIA HBAO+ (Horizon-Based Ambient Occlusion Plus)"},
+                    {"SAO", AOMode::AO_SAO, nullptr},
+                    {"ASSAO", AOMode::AO_ASSAO, "Intel ASSAO (Adaptive Screen Space Ambient Occlusion)"},
             };
-            if ( ImComboBoxC( "Ambient Occlusion", aoModes, &settings.AoMode , [] {
-                    Engine::GraphicsEngine->ReloadShaders( ShaderCategory::Other );
-                } )) {
+            if ( ImComboBoxCT( "AO Mode", aoModes, &settings.AoMode, [] {
+                Engine::GraphicsEngine->ReloadShaders( ShaderCategory::Other );
+                } ) ) {
                 ImGui::EndCombo();
             }
             ImGui::SetItemTooltip( "Screen-Space ambient occlusion mode.\nChanging this will reload shaders." );
@@ -1524,12 +1525,13 @@ void RenderAdvancedColumn4( GothicRendererSettings& settings, GothicAPI* gapi ) 
             ImGui::SeparatorText( "Ambient Occlusion" );
             {
                 ImGui::PushID( "AOSettings" );
-                static std::vector<std::pair<const char*, AOMode>> aoModes = {
-                    {"Disabled", AOMode::AO_NONE},
-                    {"HBAO+", AOMode::AO_HBAO},
-                    {"SAO", AOMode::AO_SAO},
+                static std::vector<std::tuple<const char*, AOMode, const char*>> aoModes = {
+                    {"Disabled", AOMode::AO_NONE, nullptr},
+                    {"HBAO+", AOMode::AO_HBAO, "NVIDIA HBAO+ (Horizon-Based Ambient Occlusion Plus)"},
+                    {"SAO", AOMode::AO_SAO, nullptr},
+                    {"ASSAO", AOMode::AO_ASSAO, "Intel ASSAO (Adaptive Screen Space Ambient Occlusion)"},
                 };
-                if ( ImComboBoxC( "AO Mode", aoModes, &settings.AoMode, [] {
+                if ( ImComboBoxCT( "AO Mode", aoModes, &settings.AoMode, [] {
                         Engine::GraphicsEngine->ReloadShaders( ShaderCategory::Other );
                     } ) ) {
                     ImGui::EndCombo();
@@ -1569,6 +1571,61 @@ void RenderAdvancedColumn4( GothicRendererSettings& settings, GothicAPI* gapi ) 
                     ImGui::DragFloat( "Intensity", &settings.SaoSettings.Intensity, 0.01f, 0.0f, 10.0f );
                     ImGui::SliderInt( "Samples", &settings.SaoSettings.NumSamples, 4, 64 );
                     ImGui::DragFloat( "Blur Sharpness", &settings.SaoSettings.BlurSharpness, 0.01f, 0.0f, 16.0f );
+                } else if ( settings.AoMode == AOMode::AO_ASSAO ) {
+                    ImGui::SeparatorText( "ASSAO Settings" );
+
+                    ImGui::TextUnformatted( "Preset" ); ImGui::SameLine();
+                    if ( ImGui::Button( "Low" ) ) {
+                        settings.ApplyAssaoPreset(0);
+                    }
+                    ImGui::SameLine();
+                    if ( ImGui::Button( "High" ) ) {
+                        settings.ApplyAssaoPreset( 1 );
+                    }
+                    ImGui::SameLine();
+
+                    if ( ImGui::Button( "Dark" ) ) {
+                        settings.ApplyAssaoPreset( 2 );
+                    }
+                    ImGui::SetItemTooltip( "Mimics HBAO+" );
+                    ImGui::SameLine();
+
+                    if ( ImGui::Button( "Soft" ) ) {
+                        settings.ApplyAssaoPreset( 3 );
+                    }
+                    ImGui::SetItemTooltip("Mimics GTAO");
+
+                    ImGui::DragFloat( "Radius", &settings.AssaoSettings.Radius, 0.01f, 0.0f, 0.0f, "%.2f" );
+                    ImGui::SetItemTooltip( "[0.0, ~] World (view) space size of the occlusion sphere." );
+                    ImGui::DragFloat( "Shadow Multiplier", &settings.AssaoSettings.ShadowMultiplier, 0.01f, 0.0f, 5.0f, "%.2f", ImGuiSliderFlags_ClampOnInput );
+                    ImGui::SetItemTooltip( "[0.0, 5.0] Effect strength linear multiplier." );
+                    ImGui::DragFloat( "Shadow Power", &settings.AssaoSettings.ShadowPower, 0.01f, 0.5f, 5.0f, "%.2f", ImGuiSliderFlags_ClampOnInput );
+                    ImGui::SetItemTooltip( "[0.5, 5.0] Effect strength pow modifier." );
+                    ImGui::DragFloat( "Shadow Clamp", &settings.AssaoSettings.ShadowClamp, 0.01f, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_ClampOnInput );
+                    ImGui::SetItemTooltip( "[0.0, 1.0] Effect max limit." );
+                    ImGui::DragFloat( "Horizon Angle Threshold", &settings.AssaoSettings.HorizonAngleThreshold, 0.001f, 0.0f, 0.2f, "%.3f", ImGuiSliderFlags_ClampOnInput );
+                    ImGui::SetItemTooltip( "[0.0, 0.2] Limits self-shadowing." );
+                    ImGui::DragFloat( "Fade Out From", &settings.AssaoSettings.FadeOutFrom, 1.0f, 0.0f, 0.0f, "%.0f" );
+                    ImGui::SetItemTooltip( "[0.0, ~] Distance to start fading out the effect." );
+                    ImGui::DragFloat( "Fade Out To", &settings.AssaoSettings.FadeOutTo, 1.0f, 0.0f, 0.0f, "%.0f" );
+                    ImGui::SetItemTooltip( "[0.0, ~] Distance at which the effect is fully faded out." );
+                    static std::vector<std::pair<const char*, int>> assaoQuality = {
+                        {"Lowest (-1)", -1}, {"Low (0)", 0}, {"Medium (1)", 1}, {"High (2)", 2}, {"Very High/Adaptive (3)", 3}
+                    };
+                    if ( ImComboBox( "Quality Level", assaoQuality, &settings.AssaoSettings.QualityLevel ) ) {
+                        ImGui::EndCombo();
+                    }
+                    ImGui::SetItemTooltip( "[-1, 3] Effect quality. Each level is ~2x more costly than the previous." );
+                    ImGui::BeginDisabled( settings.AssaoSettings.QualityLevel != 3 );
+                    ImGui::DragFloat( "Adaptive Quality Limit", &settings.AssaoSettings.AdaptiveQualityLimit, 0.01f, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_ClampOnInput );
+                    ImGui::SetItemTooltip( "[0.0, 1.0] Only for Quality Level 3." );
+                    ImGui::EndDisabled();
+                    ImGui::SliderInt( "Blur Pass Count", &settings.AssaoSettings.BlurPassCount, 0, 6 );
+                    ImGui::SetItemTooltip( "[0, 6] Number of edge-sensitive smart blur passes." );
+                    ImGui::DragFloat( "Sharpness", &settings.AssaoSettings.Sharpness, 0.01f, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_ClampOnInput );
+                    ImGui::SetItemTooltip( "[0.0, 1.0] How much to bleed over edges." );
+                    ImGui::DragFloat( "Detail Shadow Strength", &settings.AssaoSettings.DetailShadowStrength, 0.01f, 0.0f, 5.0f, "%.2f", ImGuiSliderFlags_ClampOnInput );
+                    ImGui::SetItemTooltip( "[0.0, 5.0] High-res detail AO; adds detail but reduces temporal stability." );
                 }
                 ImGui::PopID();
             }
