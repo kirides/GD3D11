@@ -1,6 +1,7 @@
 #pragma once
 #include "RGTextureDesc.h"
 #include <memory>
+#include <vector>
 
 #include "BaseGraphicsEngine.h"
 #include "Engine.h"
@@ -66,7 +67,7 @@ public:
     }
 
     void Compile() {
-        m_resourceLifetimes.assign(m_nextHandle, { UINT32_MAX, 0 });
+        m_resourceLifetimes.assign(m_nextHandle, { UINT32_MAX, 0, false });
 
         for ( size_t passIndex = 0; passIndex < m_passes.size(); ++passIndex ) {
             const auto& pass = m_passes[passIndex];
@@ -90,10 +91,11 @@ public:
                 
                 // Reads extend the lifetime of the resource to this pass
                 m_resourceLifetimes[index].lastPass = (uint32_t)passIndex;
+                
+                // Mark that this resource actually serves a read dependency downstream
+                m_resourceLifetimes[index].isRead = true;
             }
         }
-
-        // TODO: remove all passes whose writes are never read.
     }
 
     void Execute() {
@@ -102,7 +104,22 @@ public:
 
             AllocateResourcesForPass( i );
 
-            if ( pass->m_executeCallback ) {
+            // Eliminate any passes whose writes are never read
+            bool isPassDead = false;
+            if (!pass->m_writes.empty()) {
+                isPassDead = true; 
+                for (RGResourceHandle writeHandle : pass->m_writes) {
+                    uint32_t index = GetHandleIndex(writeHandle);
+                    // A pass is alive if it writes to an external resource OR an internal resource that gets read
+                    if (IsExternalHandle(writeHandle) || m_resourceLifetimes[index].isRead) {
+                        isPassDead = false;
+                        break;
+                    }
+                }
+            }
+
+            // Only execute if it provides a meaningful side-effect/write
+            if ( !isPassDead && pass->m_executeCallback ) {
                 auto _ = Engine::GraphicsEngine->RecordGraphicsEvent( pass->m_name.c_str() );
                 pass->m_executeCallback(*this);
             }
@@ -119,7 +136,7 @@ public:
             : m_activeTextures[index].get();
     }
 private:
-    struct Lifetime { uint32_t firstPass; uint32_t lastPass; };
+    struct Lifetime { uint32_t firstPass; uint32_t lastPass; bool isRead; };
 
     TexturePool* m_texturePool;
     uint32_t m_nextHandle = 0;
@@ -134,12 +151,12 @@ private:
     void AllocateResourcesForPass(size_t passIndex) {
         for (uint32_t i = 0; i < m_resourceLifetimes.size(); ++i) {
             // We only allocate for Graph-Managed resources
-            // (Assuming we track external handles in the lifetimes list too, we just skip them)
-
             if (m_resourceLifetimes[i].firstPass == (uint32_t)passIndex) {
-                // If this index is meant to be external, m_externalTextures[i] will be populated,
-                // so we don't allocate it from the pool.
+                // If this index is meant to be external, we don't allocate it from the pool.
                 if (m_externalTextures[i] != nullptr) continue; 
+                
+                // Do NOT allocate if the resource is completely unread downstream
+                if (!m_resourceLifetimes[i].isRead) continue;
 
                 const RGTextureDesc& desc = m_resourceDescs[i];
                 TexturePool::Description poolDesc{ (int)desc.width, (int)desc.height, static_cast<DXGI_FORMAT>(desc.format), (DXGI_USAGE)desc.textureFlags };

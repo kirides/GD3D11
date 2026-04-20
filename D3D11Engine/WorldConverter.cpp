@@ -1200,7 +1200,14 @@ void WorldConverter::ExtractNodeVisual( int index, zCModelNodeInst* node, phmap:
 /** Updates a Morph-Mesh visual */
 void WorldConverter::UpdateMorphMeshVisual( void* v, MeshVisualInfo* meshInfo ) {
     zCMorphMesh* visual = reinterpret_cast<zCMorphMesh*>(v);
-    visual->GetTexAniState()->UpdateTexList();
+    visual->GetTexAniState()->UpdateTexList(); // always update tex list, otherwise texture corrupt (very rarely).
+
+    const auto now = Engine::GAPI->GetTotalTimeDW();
+    if ( meshInfo->LastAniUpdateFrame == now ) {
+        return;
+    }
+    meshInfo->LastAniUpdateFrame = now;
+
     visual->AdvanceAnis();
     visual->CalcVertexPositions();
 

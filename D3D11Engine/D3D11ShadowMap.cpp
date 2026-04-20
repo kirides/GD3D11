@@ -622,11 +622,11 @@ XRESULT D3D11ShadowMap::PrepareRender()
             if ( lazyCascadeUpdate ) {
                 if ( cascadeIdx == 2 ) {
                     // pre-last cascade updates every 2nd frame which is 30 FPS = 15 updates per second
-                    shouldUpdateCascade = (perFrameCascadeData.frameCount % 2) == 0;
+                    shouldUpdateCascade = (perFrameCascadeData.frameCount % 5) == 0;
                 } else if ( cascadeIdx == MAX_CSM_CASCADES-1 ) {
                     // final cascade updates every 3rd frame which is 30 FPS = 10 updates per second
                     // it covers the whole world, so this can help improve avg fps.
-                    shouldUpdateCascade = (perFrameCascadeData.frameCount % 3) == 0;
+                    shouldUpdateCascade = (perFrameCascadeData.frameCount % 10) == 0;
                 }
             } 
             m_ShouldUpdateCascade[cascadeIdx] = shouldUpdateCascade;

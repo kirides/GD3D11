@@ -2468,6 +2468,8 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     auto boneTransformsCb = ActiveVS->GetBuffer("BoneTransforms").Bind();
     auto prevBoneTransformsCb = ActiveVS->GetBuffer("PrevBoneTransforms").Bind();
 
+    const auto now = Engine::GAPI->GetTotalTimeDW();
+
     // Copy previous frame bone transforms for motion vectors (only for main scene rendering, not shadow maps)
     if ( GetRenderingStage() == DES_SHADOWMAP_CUBE ) {
         // Don't bind previous, as we don't use them here yet.
@@ -2547,9 +2549,12 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         auto boneIdx = boneOffset;
         boneOffset += numBones;
 
-        if ( updateState ) {
-            // Update attachments
-            model->UpdateAttachedVobs();
+        if ( updateState) {
+            if ( vi->LastAniUpdateFrame != now ) {
+                vi->LastAniUpdateFrame = now;
+                // Update attachments
+                model->UpdateAttachedVobs();
+            }
             model->UpdateMeshLibTexAniState();
         }
 
@@ -2773,8 +2778,11 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                             // Update constantbuffer
 
                             if ( updateState ) {
-                                mm->AdvanceAnis();
-                                mm->CalcVertexPositions();
+                                if ( mvi->LastAniUpdateFrame != now ) {
+                                    mvi->LastAniUpdateFrame = now;
+                                    mm->AdvanceAnis();
+                                    mm->CalcVertexPositions();
+                                }
                             }
                             Engine::GAPI->DrawMorphMesh( mm, mvi->Meshes );
                             continue;
@@ -3054,26 +3062,40 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         builder.Write( reactiveMaskResource );
         builder.Write( backBufferHandle );
 
-        pass.m_executeCallback = [this, colorResource, normalsResource, specularResource, reactiveMaskResource](const RenderGraph& graph)-> void {
+        pass.m_executeCallback = [this, colorResource, normalsResource, specularResource, reactiveMaskResource, velocityBufferHandle](const RenderGraph& graph)-> void {
             GetContext()->VSSetShaderResources( 0, 8, s_nullSRVs );
             GetContext()->PSSetShaderResources( 0, 8, s_nullSRVs );
             GetContext()->DSSetShaderResources( 0, 8, s_nullSRVs );
             GetContext()->HSSetShaderResources( 0, 8, s_nullSRVs );
             GetContext()->CSSetShaderResources( 0, 8, s_nullSRVs );
+            
+            auto normals = graph.GetPhysicalTexture( normalsResource );
+            auto specular = graph.GetPhysicalTexture( specularResource );
+            auto reactiveMask = graph.GetPhysicalTexture( reactiveMaskResource );
+            auto velocityBuffer = graph.GetPhysicalTexture( velocityBufferHandle );
 
+            const auto aaMode = Engine::GAPI->GetRendererState().RendererSettings.AntiAliasingMode;
+            if ( aaMode != GothicRendererSettings::AA_TAA
+                && aaMode != GothicRendererSettings::AA_FSR
+                && aaMode != GothicRendererSettings::AA_FSR3 ) {
+                velocityBuffer = nullptr; // don't write velocity if not needed.
+                // NOTE: we should automate this, by putting the velocity 
+                // buffer creation INTO the rendergraph instead of passing it in via external handle
+            }
             ID3D11RenderTargetView* rtvs[] = {
-                graph.GetPhysicalTexture(colorResource)->GetRenderTargetView().Get(),
-                graph.GetPhysicalTexture(normalsResource)->GetRenderTargetView().Get(),
-                graph.GetPhysicalTexture(specularResource)->GetRenderTargetView().Get(),
-                VelocityBuffer->GetRenderTargetView().Get(),
-                graph.GetPhysicalTexture( reactiveMaskResource )->GetRenderTargetView().Get(),
+                graph.GetPhysicalTexture( colorResource )->GetRenderTargetView().Get(),
+                normals ? normals->GetRenderTargetView().Get() : nullptr,
+                specular ? specular->GetRenderTargetView().Get() : nullptr,
+                velocityBuffer ? velocityBuffer->GetRenderTargetView().Get() : nullptr,
+                reactiveMask ? reactiveMask->GetRenderTargetView().Get() : nullptr,
             };
 
             constexpr float black[] { 0.f, 0.f, 0.f, 0.f };
-            GetContext()->ClearRenderTargetView( rtvs[1], black );
-            GetContext()->ClearRenderTargetView( rtvs[2], black );
-            GetContext()->ClearRenderTargetView( rtvs[3], black );
-            GetContext()->ClearRenderTargetView( rtvs[4], black );
+            // skip color target, clear all others.
+            for ( size_t i = 1; i < std::size( rtvs ); i++ ) {
+                if ( rtvs[i] )
+                    GetContext()->ClearRenderTargetView( rtvs[i], black );
+            }
             GetContext()->OMSetRenderTargets( 5, rtvs, DepthStencilBuffer->GetDepthStencilView().Get() );
 
 
@@ -3504,7 +3526,6 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                 builder.Read( velocityBufferHandle );
                 builder.Read( reactiveMaskResource );
                 builder.Read( backBufferHandle );
-                builder.Write( backBufferHandle );
 
                 builder.Write( backBufferHandle );
 
@@ -3560,7 +3581,6 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                 builder.Read( velocityBufferHandle );
                 builder.Read( reactiveMaskResource );
                 builder.Read( backBufferHandle );
-                builder.Write( backBufferHandle );
 
                 builder.Write( backBufferHandle );
 
@@ -3643,6 +3663,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             } );
         } else {
             graph.AddPass( L"Copy into native-size backbuffer", [&]( RGBuilder& builder, RenderPass& pass ) {
+                builder.Read( backBufferHandle );
                 builder.Write( backBufferHandle );
 
                 pass.m_executeCallback = [this, &rendererState, backBufferHandle](const RenderGraph& graph) {
@@ -5702,6 +5723,15 @@ void D3D11GraphicsEngine::UpdateMorphMeshVisual() {
         WorldConverter::UpdateMorphMeshVisual( staticMeshVisual.second->MorphMeshVisual, staticMeshVisual.second );
     }
 }
+namespace {
+    void UpdateMorphMeshVisuals( std::vector<MeshVisualInfo*>& staticMeshVisuals ) {
+        for ( auto const& staticMeshVisual : staticMeshVisuals ) {
+            if ( !staticMeshVisual->MorphMeshVisual ) continue;
+            if ( staticMeshVisual->Instances.empty() ) continue;
+            WorldConverter::UpdateMorphMeshVisual( staticMeshVisual->MorphMeshVisual, staticMeshVisual );
+        }
+    }
+}
 
 /** Updates wind direction and set time for shader */
 void D3D11GraphicsEngine::ApplyWindProps( VS_ExConstantBuffer_Wind& windBuff ) {
@@ -5830,10 +5860,6 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
             }
         }
 
-        if ( renderSettings.AnimateStaticVobs ) {
-            UpdateMorphMeshVisual();
-        }
-
         if ( renderSettings.DrawVOBs ) {
             auto _1 = Engine::GraphicsEngine->RecordGraphicsEvent( L"DrawVOBsInstanced->DrawVOBs" );
 
@@ -5843,6 +5869,10 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                 if ( !pair.second->Instances.empty() ) {
                     activeVisuals.push_back( pair.second );
                 }
+            }
+
+            if ( renderSettings.AnimateStaticVobs ) {
+                UpdateMorphMeshVisuals( activeVisuals );
             }
 
             // Create instancebuffer for this frame
