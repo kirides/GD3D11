@@ -43,8 +43,10 @@ struct PS_INPUT
 	float4 vDiffuse			: TEXCOORD2;
 	float3 vNormalVS		: TEXCOORD4;
 	float3 vViewPosition	: TEXCOORD5;
+#if MOTION_VECTORS == 1
 	float4 vCurrClipPos     : TEXCOORD6;  // Current clip position for velocity
 	float4 vPrevClipPos     : TEXCOORD7;  // Previous clip position for velocity
+#endif
 	float4 vPosition		: SV_POSITION;
 };
 
@@ -91,8 +93,9 @@ DEFERRED_PS_OUTPUT PSMain( PS_INPUT Input ) : SV_TARGET
 	output.vSI_SP.x = MI_SpecularIntensity;
 	output.vSI_SP.y = MI_SpecularPower;
 	
+#if MOTION_VECTORS == 1
 	// Calculate velocity for motion vectors
 	output.vVelocity = CalculateVelocity(Input.vCurrClipPos, Input.vPrevClipPos);
-	
+#endif
 	return output;
 }

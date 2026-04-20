@@ -2655,6 +2655,8 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         SetActiveVertexShader( VShaderID::VS_ExNodeCube );
     else
         SetActiveVertexShader( VShaderID::VS_ExNode );
+        
+    const bool requiresMorphMeshSameAsMain = (GetRenderingStage() == DES_MAIN || GetRenderingStage() == DES_GHOST || GetRenderingStage() == DES_Z_PRE_PASS);
 
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
@@ -2773,15 +2775,11 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 
                     if ( distance < 1000 && isMMS ) {
                         zCMorphMesh* mm = reinterpret_cast<zCMorphMesh*>( mvi->Visual );
-                        // Only draw this as a morphmesh when rendering the main scene or when rendering as ghost
-                        if ( GetRenderingStage() == DES_MAIN || GetRenderingStage() == DES_GHOST ) {
-                            // Update constantbuffer
-
-                            if ( updateState ) {
+                        if ( requiresMorphMeshSameAsMain ) {
+                            if ( updateState ) { 
                                 if ( mvi->LastAniUpdateFrame != now ) {
+                                    WorldConverter::UpdateMorphMeshVisual( mm, mvi );
                                     mvi->LastAniUpdateFrame = now;
-                                    mm->AdvanceAnis();
-                                    mm->CalcVertexPositions();
                                 }
                             }
                             Engine::GAPI->DrawMorphMesh( mm, mvi->Meshes );
@@ -6896,7 +6894,7 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
         Engine::GAPI->GetRendererState().DepthState.DepthWriteEnabled = false;
         Engine::GAPI->GetRendererState().DepthState.SetDirty();
     } else {
-        SetActivePixelShader( PShaderID::PS_World );
+        SetActivePixelShader( PShaderID::PS_World_NoMV );
     }
 
     SetActiveVertexShader( VShaderID::VS_Decal );

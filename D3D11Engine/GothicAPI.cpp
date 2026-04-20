@@ -2618,9 +2618,8 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
 
                         if ( updateState ) {
                             if ( mvi->LastAniUpdateFrame != now ) {
+                                WorldConverter::UpdateMorphMeshVisual( mm, mvi );
                                 mvi->LastAniUpdateFrame = now;
-                                mm->AdvanceAnis();
-                                mm->CalcVertexPositions();
                             }
                         }
                         DrawMorphMesh( mm, mvi->Meshes );
@@ -2906,7 +2905,7 @@ void GothicAPI::DrawTransparencyVobs() {
             RendererState.RendererInfo.FrameDrawnVobs--; // Don't calculate prepass as drawn vob
 
             // Now actually draw mesh using transparency pixel shader
-            g->SetActivePixelShader( PShaderID::PS_Transparency );
+            g->SetActivePixelShader( PShaderID::PS_TransparencySkel );
             g->BindActivePixelShader();
 
             // Update transparency alpha information
@@ -5134,34 +5133,20 @@ void GothicAPI::DrawMorphMesh( zCMorphMesh* msh, std::map<zCMaterial*, std::vect
     zCProgMeshProto* morphMesh = msh->GetMorphMesh();
     if ( !morphMesh )
         return;
+        
+    // Ensure to call `WorldConverter::UpdateMorphMeshVisual( ... );` once per frame for this mesh to update the vertex buffers before drawing.
 
-    XMFLOAT3* posList = morphMesh->GetPositionList()->Array->toXMFLOAT3();
-    std::vector<ExVertexStruct> vertices;
     for ( int i = 0; i < morphMesh->GetNumSubmeshes(); i++ ) {
-
         zCSubMesh* s = morphMesh->GetSubmesh( i );
-        vertices.clear();
-        vertices.reserve( s->WedgeList.NumInArray );
-        for ( int v = 0; v < s->WedgeList.NumInArray; v++ ) {
-            zTPMWedge& wedge = s->WedgeList.Array[v];
-            vertices.emplace_back();
-            ExVertexStruct& vx = vertices.back();
-            vx.Position = posList[wedge.position];
-            vx.Normal = wedge.normal;
-            vx.TexCoord = wedge.texUV;
-            vx.Color = 0xFFFFFFFF;
-        }
-
         if ( zCTexture* texture = s->Material->GetAniTexture() ) {
             D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
-            if ( !g->BindTextureNRFX( texture, (g->GetRenderingStage() == DES_MAIN) ) )
+            if ( !g->BindTextureNRFX( texture, (g->GetRenderingStage() == DES_MAIN || g->GetRenderingStage() == DES_Z_PRE_PASS) ) )
                 continue;
         }
 
         for ( auto const& it : meshes ) {
             for ( MeshInfo* mi : it.second ) {
                 if ( mi->MeshIndex == i ) {
-                    mi->MeshVertexBuffer->UpdateBuffer( &vertices[0], vertices.size() * sizeof( ExVertexStruct ) );
                     Engine::GraphicsEngine->DrawVertexBufferIndexed( mi->MeshVertexBuffer, mi->MeshIndexBuffer, mi->Indices.size() );
                     goto Out_Of_Nested_Loop;
                 }
