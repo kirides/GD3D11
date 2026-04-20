@@ -2905,7 +2905,7 @@ void GothicAPI::DrawTransparencyVobs() {
             RendererState.RendererInfo.FrameDrawnVobs--; // Don't calculate prepass as drawn vob
 
             // Now actually draw mesh using transparency pixel shader
-            g->SetActivePixelShader( PShaderID::PS_Transparency );
+            g->SetActivePixelShader( PShaderID::PS_TransparencySkel );
             g->BindActivePixelShader();
 
             // Update transparency alpha information

@@ -6894,7 +6894,7 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
         Engine::GAPI->GetRendererState().DepthState.DepthWriteEnabled = false;
         Engine::GAPI->GetRendererState().DepthState.SetDirty();
     } else {
-        SetActivePixelShader( PShaderID::PS_World );
+        SetActivePixelShader( PShaderID::PS_World_NoMV );
     }
 
     SetActiveVertexShader( VShaderID::VS_Decal );
