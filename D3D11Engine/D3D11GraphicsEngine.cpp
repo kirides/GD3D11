@@ -646,6 +646,12 @@ XRESULT D3D11GraphicsEngine::Init() {
         D3D11VertexBuffer::U_DYNAMIC, D3D11VertexBuffer::CA_WRITE );
     SetDebugName( DynamicInstancingBuffer->GetShaderResourceView().Get(), "DynamicInstancingBuffer->ShaderResourceView" );
     SetDebugName( DynamicInstancingBuffer->GetVertexBuffer().Get(), "DynamicInstancingBuffer->VertexBuffer" );
+
+    NodeAttachmentInstancingBuffer = std::make_unique<D3D11VertexBuffer>();
+    NodeAttachmentInstancingBuffer->Init(
+        nullptr, sizeof( NodeAttachmentInstanceData ) * 1024, D3D11VertexBuffer::B_VERTEXBUFFER,
+        D3D11VertexBuffer::U_DYNAMIC, D3D11VertexBuffer::CA_WRITE );
+    SetDebugName( NodeAttachmentInstancingBuffer->GetVertexBuffer().Get(), "NodeAttachmentInstancingBuffer" );
     
     CreateAndBindDefaultSampler();
     
@@ -2085,27 +2091,31 @@ XRESULT D3D11GraphicsEngine::DrawVertexBufferFF( D3D11VertexBuffer* vb,
 }
 
 /** Sets up texture with normalmap and fxmap for rendering */
-bool D3D11GraphicsEngine::BindTextureNRFX( zCTexture* tex, bool bindShader ) {
+bool D3D11GraphicsEngine::BindTextureNRFX( zCTexture* tex, bool bindShader, bool updateMaterialInfo ) {
     if ( tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) 
         tex->Bind( 0 );
     else
         return false;
 
-    MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( tex );
-    if ( !info->Constantbuffer )
-        info->UpdateConstantbuffer();
+    MaterialInfo* info = nullptr;
+    if ( updateMaterialInfo ) {
+        info = Engine::GAPI->GetMaterialInfoFrom( tex );
+        if ( !info->Constantbuffer )
+            info->UpdateConstantbuffer();
 
-    if ( info->buffer.SpecularIntensity != 0.05f ) {
-        info->buffer.SpecularIntensity = 0.05f;
-        info->UpdateConstantbuffer();
+        if ( info->buffer.SpecularIntensity != 0.05f ) {
+            info->buffer.SpecularIntensity = 0.05f;
+            info->UpdateConstantbuffer();
+        }
+
+        info->Constantbuffer->BindToPixelShader( 2 );
     }
-
-    info->Constantbuffer->BindToPixelShader( 2 );
 
     // Bind a default normalmap in case the scene is wet and we currently have none
     if ( !tex->GetSurface()->GetNormalmap() ) {
         // Modify the strength of that default normalmap for the material info
-        if ( info->buffer.NormalmapStrength != DEFAULT_NORMALMAP_STRENGTH ) {
+        if ( info &&
+            info->buffer.NormalmapStrength != DEFAULT_NORMALMAP_STRENGTH ) {
             info->buffer.NormalmapStrength = DEFAULT_NORMALMAP_STRENGTH;
             info->UpdateConstantbuffer();
         }
@@ -2487,7 +2497,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         if ( linearDepth ) {
             ActivePS = ShaderManager->GetPShader( PShaderID::PS_LinDepth );
             ActivePS->Apply();
-        } else if ( RenderingStage == DES_SHADOWMAP ) {
+        } else if ( RenderingStage == DES_SHADOWMAP) {
             // Unbind PixelShader in this case
             if (ActivePS) {
                 Context->PSSetShader( nullptr, nullptr, 0 );
@@ -2651,24 +2661,59 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     }
     auto _scopeNodeAttachments = RecordGraphicsEvent( L"DrawSkeletalMeshVobs::Attachments" );
 
-    if ( GetRenderingStage() == DES_SHADOWMAP_CUBE )
-        SetActiveVertexShader( VShaderID::VS_ExNodeCube );
-    else
-        SetActiveVertexShader( VShaderID::VS_ExNode );
-        
-    const bool requiresMorphMeshSameAsMain = (GetRenderingStage() == DES_MAIN || GetRenderingStage() == DES_GHOST || GetRenderingStage() == DES_Z_PRE_PASS);
+    // For DES_SHADOWMAP_CUBE we need the existing per-draw path (SV_InstanceID used for cubemap faces)
+    const bool useCubePath = (GetRenderingStage() == DES_SHADOWMAP_CUBE);
+    const bool isShadowPass = (GetRenderingStage() == DES_SHADOWMAP || GetRenderingStage() == DES_SHADOWMAP_CUBE);
+    const bool isMainOrGhost = (GetRenderingStage() == DES_MAIN || GetRenderingStage() == DES_GHOST);
+	const bool requiresMorphMeshSameAsMain = (GetRenderingStage() == DES_MAIN || GetRenderingStage() == DES_GHOST || GetRenderingStage() == DES_Z_PRE_PASS);
 
-    SetupVS_ExMeshDrawCall();
-    SetupVS_ExConstantBuffer();
+	// Collect all non-MorphMesh draws and handle MorphMesh/Cube per-draw 
 
-    auto vsBufMPI = GetActiveVS()->GetBuffer( "Matrices_PerInstances" )
-        .Bind();
+    struct NodeAttachmentDrawItem {
+        MeshInfo* mesh;
+        zCTexture* texture;    // null for shadow passes
+        zCMaterial* material;
+        NodeAttachmentInstanceData instanceData;
+        bool needAlpha;
+    };
 
-    // Setup pixel shader here so that we get correct normals
-    // Somehow BindShaderForTexture make normals to be inversed
-    if ( GetRenderingStage() == DES_MAIN ) {
-        SetActivePixelShader( PShaderID::PS_DiffuseAlphaTest );
-        BindActivePixelShader();
+    static std::vector<NodeAttachmentDrawItem> instancedDrawItems;
+    instancedDrawItems.clear();
+
+    // For the cube shadow path and MorphMesh, we need the old per-draw setup
+    bool needPerDrawSetup = useCubePath; // cube always needs it
+    // We'll lazily set it up if we encounter MorphMesh
+
+    auto ensurePerDrawShaderSetup = [&]() {
+        if ( useCubePath )
+            SetActiveVertexShader( VShaderID::VS_ExNodeCube );
+        else
+            SetActiveVertexShader( VShaderID::VS_ExNode );
+
+        SetupVS_ExMeshDrawCall();
+        SetupVS_ExConstantBuffer();
+    };
+
+    // For MorphMesh per-draw calls, lazily initialized
+    bool perDrawSetupDone = false;
+    GraphicsShaderConstantBuffer perDrawMPI;
+
+    auto ensurePerDrawReady = [&]() {
+        if ( !perDrawSetupDone ) {
+            ensurePerDrawShaderSetup();
+            perDrawMPI = GetActiveVS()->GetBuffer( "Matrices_PerInstances" ).Bind();
+
+            if ( isMainOrGhost ) {
+                SetActivePixelShader( PShaderID::PS_DiffuseAlphaTest );
+                BindActivePixelShader();
+            }
+            perDrawSetupDone = true;
+        }
+    };
+
+    // If cube path, set up per-draw immediately since everything goes through it
+    if ( useCubePath ) {
+        ensurePerDrawReady();
     }
 
     for ( auto& data : tempVobList ) {
@@ -2680,11 +2725,6 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         auto fatness = data.Fatness;
         auto& world = data.World;
         auto& prevWorld = data.PrevWorld;
-
-        SkeletalMeshVisualInfo* visual = static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo);
-        // Set up instance info
-        VS_ExConstantBuffer_PerInstanceNode instanceInfo;
-        instanceInfo.Color = modelColor;
 
         // Init the constantbuffer if not already done
         if ( !vi->VobConstantBuffer )
@@ -2701,7 +2741,6 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 
             // Check if this is loaded
             if ( node->NodeVisual && nodeAttachments.find( i ) == nodeAttachments.end() ) {
-                // It's not, extract it
                 WorldConverter::ExtractNodeVisual( i, node, nodeAttachments );
             }
 
@@ -2717,8 +2756,12 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 
                     continue; // Go to next attachment
                 }
-                // Load the new one
                 WorldConverter::ExtractNodeVisual( i, node, nodeAttachments );
+            }
+
+            auto nodeAttachment = nodeAttachments.find( i );
+            if ( nodeAttachment == nodeAttachments.end() ) {
+                continue;
             }
 
             if ( model->GetDrawHandVisualsOnly() ) {
@@ -2732,48 +2775,44 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                 }
             }
 
-            auto nodeAttachment = nodeAttachments.find( i );
-            if ( nodeAttachment != nodeAttachments.end() ) {                
-
-                const XMMATRIX curTransform = XMLoadFloat4x4( &transforms[i] );
-                XMFLOAT4X4 finalWorld; XMStoreFloat4x4( &finalWorld, world* curTransform );
+            const XMMATRIX curTransform = XMLoadFloat4x4( &transforms[i] );
+            XMFLOAT4X4 finalWorld; XMStoreFloat4x4( &finalWorld, world * curTransform );
 
             const XMMATRIX prevWorldXm = XMLoadFloat4x4( &prevWorld );
-            // just assume same bone transforms of current frame, if we don't have valid previous transforms
             XMFLOAT4X4 finalPrevWorld; XMStoreFloat4x4( &finalPrevWorld, prevWorldXm * curTransform );
 
-                // Go through all attachments this node has
-                for ( MeshVisualInfo* mvi : nodeAttachment->second ) {
+            for ( MeshVisualInfo* mvi : nodeAttachment->second ) {
 
-                    if ( !mvi->Visual ) {
-                        LogWarn() << "Attachment without visual on model: " << model->GetVisualName();
-                        continue;
-                    }
+                if ( !mvi->Visual ) {
+                    LogWarn() << "Attachment without visual on model: " << model->GetVisualName();
+                    continue;
+                }
 
-                    // Update animated textures
-                    bool isMMS = strcmp( mvi->Visual->GetFileExtension( 0 ), ".MMS" ) == 0;
-                    if ( updateState ) {
-                        node->TexAniState.UpdateTexList();
-                        if ( isMMS ) {
-                            zCMorphMesh* mm = reinterpret_cast<zCMorphMesh*>(mvi->Visual);
-                            mm->GetTexAniState()->UpdateTexList();
-                        }
-                    }
-
+                bool isMMS = strcmp( mvi->Visual->GetFileExtension( 0 ), ".MMS" ) == 0;
+                if ( updateState ) {
+                    node->TexAniState.UpdateTexList();
                     if ( isMMS ) {
-                        // Only 0.35f of the fatness wanted by gothic.
-                        // They seem to compensate for that with the scaling.
-                        instanceInfo.Fatness = std::max<float>( 0.f, fatness * 0.35f );
-                        instanceInfo.Scaling = fatness * 0.02f + 1.f;
-                    } else {
-                        instanceInfo.Fatness = 0.f;
-                        instanceInfo.Scaling = 1.f;
+                        zCMorphMesh* mm = reinterpret_cast<zCMorphMesh*>(mvi->Visual);
+                        mm->GetTexAniState()->UpdateTexList();
                     }
-                instanceInfo.World = finalWorld;
-                instanceInfo.PrevWorld = finalPrevWorld;
-                vsBufMPI.Update( &instanceInfo );
+                }
 
-                    if ( distance < 1000 && isMMS ) {
+                // MorphMesh: always per-draw
+                if ( isMMS ) {
+                    // Only 0.35f of the fatness wanted by gothic.
+                    // They seem to compensate for that with the scaling.
+                    
+                    ensurePerDrawReady();
+
+                    VS_ExConstantBuffer_PerInstanceNode instanceInfo;
+                    instanceInfo.Color = modelColor;
+                    instanceInfo.Fatness = std::max<float>( 0.f, fatness * 0.35f );
+                    instanceInfo.Scaling = fatness * 0.02f + 1.f;
+                    instanceInfo.World = finalWorld;
+                    instanceInfo.PrevWorld = finalPrevWorld;
+                    perDrawMPI.Update( &instanceInfo );
+
+                    if ( distance < 1000 ) {
                         zCMorphMesh* mm = reinterpret_cast<zCMorphMesh*>( mvi->Visual );
                         if ( requiresMorphMeshSameAsMain ) {
                             if ( updateState ) { 
@@ -2787,35 +2826,244 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                         }
                     }
 
-                    // Go through all materials registered here
-                    if ( GetRenderingStage() == DES_SHADOWMAP
-                        || GetRenderingStage() == DES_SHADOWMAP_CUBE ) {
+                    if ( isShadowPass ) {
                         for ( auto const& itm : mvi->Meshes ) {
-                            // no texture binding for shadowmap
-
-                            // Go through all meshes using that material
                             for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
                                 Engine::GAPI->DrawMeshInfo( itm.first, itm.second[m] );
                             }
                         }
                     } else {
+                        MaterialInfo* lastMaterialInfo = nullptr;
                         for ( auto const& itm : mvi->Meshes ) {
                             zCTexture* texture;
                             if ( itm.first && (texture = itm.first->GetAniTexture()) != nullptr ) {
-                                if ( !BindTextureNRFX( texture, GetRenderingStage() == DES_MAIN ) )
+                                MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( texture );
+                                if ( !BindTextureNRFX( texture, isMainOrGhost, info != lastMaterialInfo ) )
                                     continue;
-                            }
 
-                            // Go through all meshes using that material
+                                lastMaterialInfo = info;
+                            }
                             for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
                                 Engine::GAPI->DrawMeshInfo( itm.first, itm.second[m] );
                             }
                         }
                     }
+                    continue;
+                }
+
+                // DES_SHADOWMAP_CUBE: per-draw path (SV_InstanceID conflict with instancing)
+                if ( useCubePath ) {
+                    VS_ExConstantBuffer_PerInstanceNode instanceInfo;
+                    instanceInfo.Color = modelColor;
+                    instanceInfo.Fatness = 0.f;
+                    instanceInfo.Scaling = 1.f;
+                    instanceInfo.World = finalWorld;
+                    instanceInfo.PrevWorld = finalPrevWorld;
+                    perDrawMPI.Update( &instanceInfo );
+
+                    for ( auto const& itm : mvi->Meshes ) {
+                        for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
+                            Engine::GAPI->DrawMeshInfo( itm.first, itm.second[m] );
+                        }
+                    }
+                    continue;
+                }
+
+                // Non-MMS, non-cube: collect for instanced drawing
+                NodeAttachmentInstanceData instData;
+                instData.World = finalWorld;
+                instData.PrevWorld = finalPrevWorld;
+                instData.Color = modelColor;
+
+                for ( auto const& itm : mvi->Meshes ) {
+                    zCTexture* texture = nullptr;
+                    if ( !isShadowPass && itm.first ) {
+                        texture = itm.first->GetAniTexture();
+                    }
+
+                    for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
+                        instancedDrawItems.push_back( { itm.second[m], texture, itm.first, instData, texture && texture->HasAlphaChannel() } );
+                    }
                 }
             }
         }
     }
+
+    // ---- Phase 2: Sort collected items by (MeshVertexBuffer, texture) and upload ----
+    if ( instancedDrawItems.empty() )
+        return;
+
+    // Sort by required shaders first, then texture, then mesh to minimize state changes
+    // By sorting ->HasAlphaChannel() first, we ensure minimum shader changes
+    // then sorting by texture pointer groups nulls together for shadow passes, and also minimizes texture changes for main/ghost
+    
+    if (wantShader) {
+        std::sort( instancedDrawItems.begin(), instancedDrawItems.end(),
+          []( const NodeAttachmentDrawItem& a, const NodeAttachmentDrawItem& b ) {
+              if ( a.needAlpha != b.needAlpha )
+                  return a.needAlpha < b.needAlpha; // non-alpha firstes
+              if ( a.texture != b.texture )
+                  return a.texture < b.texture; // sort by texture pointer
+              return a.mesh->meshId < b.mesh->meshId;
+          } );
+    } else {
+        std::sort( instancedDrawItems.begin(), instancedDrawItems.end(),
+          []( const NodeAttachmentDrawItem& a, const NodeAttachmentDrawItem& b ) {
+              return a.mesh->meshId < b.mesh->meshId;
+          } );
+    }
+
+    // Ensure instance buffer is large enough
+    const size_t neededBytes = instancedDrawItems.size() * sizeof( NodeAttachmentInstanceData );
+    if ( NodeAttachmentInstancingBuffer->GetSizeInBytes() < neededBytes ) {
+        NodeAttachmentInstancingBuffer->Init(
+            nullptr, static_cast<unsigned int>(neededBytes),
+            D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_DYNAMIC, D3D11VertexBuffer::CA_WRITE );
+        SetDebugName( NodeAttachmentInstancingBuffer->GetVertexBuffer().Get(), "NodeAttachmentInstancingBuffer" );
+    }
+
+    // Build batch list and upload instance data
+    struct InstanceBatch {
+        MeshInfo* mesh;
+        zCTexture* texture;
+        zCMaterial* material;
+        unsigned int startInstance;
+        unsigned int instanceCount;
+    };
+
+    static std::vector<InstanceBatch> batches;
+    batches.clear();
+
+    void* mappedData;
+    UINT mappedSize;
+    if ( XR_SUCCESS != NodeAttachmentInstancingBuffer->Map( D3D11VertexBuffer::M_WRITE_DISCARD,
+        &mappedData, &mappedSize ) ) {
+        return;
+    }
+
+    auto* destData = static_cast<NodeAttachmentInstanceData*>(mappedData);
+    unsigned int currentIdx = 0;
+
+    for ( size_t i = 0; i < instancedDrawItems.size(); ) {
+        // Find the end of this batch (same mesh + texture)
+        size_t batchStart = i;
+        auto batchMesh = instancedDrawItems[i].mesh;
+        auto meshId = batchMesh->meshId;
+        zCTexture* batchTex = instancedDrawItems[i].texture;
+        zCMaterial* batchMat = instancedDrawItems[i].material;
+
+        while ( i < instancedDrawItems.size()
+                && meshId > 0 // assume meshId 0 means "not batch-able"
+                && instancedDrawItems[i].mesh->meshId == meshId
+                && instancedDrawItems[i].texture == batchTex ) {
+            destData[currentIdx] = instancedDrawItems[i].instanceData;
+            ++currentIdx;
+            ++i;
+        }
+
+        batches.push_back( { batchMesh, batchTex, batchMat,
+            batchStart,
+            (i - batchStart) } );
+    }
+
+    NodeAttachmentInstancingBuffer->Unmap();
+
+    // ---- Phase 3: Issue instanced draw calls ----
+
+    SetActiveVertexShader( VShaderID::VS_ExNodeInstanced );
+    ActiveVS->Apply();
+    SetupVS_ExMeshDrawCall();
+    SetupVS_ExConstantBuffer();
+
+    if ( isMainOrGhost ) {
+        SetActivePixelShader( PShaderID::PS_DiffuseAlphaTest );
+        BindActivePixelShader();
+    }
+
+    Context->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+
+    // Bind instance buffer to slot 1 (persists across batches)
+    UINT instOffset = 0;
+    UINT instStride = sizeof( NodeAttachmentInstanceData );
+    Context->IASetVertexBuffers( 1, 1, NodeAttachmentInstancingBuffer->GetVertexBuffer().GetAddressOf(), &instStride, &instOffset );
+
+    wantShader = true;
+
+    if ( !isMainOrGhost && !isShadowPass ) {
+        // ghost or other: keep the pixel shader whatever was set
+    } else if ( isShadowPass ) {
+        bool linearDepth = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches & GSWITCH_LINEAR_DEPTH) != 0;
+        if ( linearDepth ) {
+            ActivePS = ShaderManager->GetPShader( PShaderID::PS_LinDepth );
+            ActivePS->Apply();
+        } else {
+            Context->PSSetShader( nullptr, nullptr, 0 );
+            ActivePS = nullptr;
+        }
+        wantShader = false;
+    }
+
+    D3D11VertexBuffer* lastVB = nullptr;
+    D3D11VertexBuffer* lastIB = nullptr;
+
+
+    MaterialInfo* lastMaterialInfo = nullptr;
+
+    for ( const auto& batch : batches ) {
+        MeshInfo* mi = batch.mesh;
+
+        // Bind texture for non-shadow passes
+        if ( wantShader && batch.texture ) {
+            MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( batch.texture );
+            if ( !BindTextureNRFX( batch.texture, isMainOrGhost, info != lastMaterialInfo ) ) {
+                continue;
+            }
+            lastMaterialInfo = info;
+        }
+
+        // Set up alpha test state from material
+        if ( batch.material ) {
+            if ( batch.material->GetAlphaFunc() == zRND_ALPHA_FUNC_TEST )
+                Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches |= GSWITCH_ALPHAREF;
+            else
+                Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches &= ~GSWITCH_ALPHAREF;
+        }
+
+        // Bind mesh VB to slot 0 (only when changed)
+        if ( mi->MeshVertexBuffer != lastVB ) {
+            UINT vbOffset = 0;
+            UINT vbStride = sizeof( ExVertexStruct );
+            Context->IASetVertexBuffers( 0, 1, mi->MeshVertexBuffer->GetVertexBuffer().GetAddressOf(), &vbStride, &vbOffset );
+            lastVB = mi->MeshVertexBuffer;
+        }
+
+        // Bind IB (only when changed)
+        if ( mi->MeshIndexBuffer && mi->MeshIndexBuffer != lastIB ) {
+            Context->IASetIndexBuffer( mi->MeshIndexBuffer->GetVertexBuffer().Get(), VERTEX_INDEX_DXGI_FORMAT, 0 );
+            lastIB = mi->MeshIndexBuffer;
+        }
+
+        // Draw instanced
+        if ( mi->MeshIndexBuffer ) {
+            const unsigned int numIndices = static_cast<unsigned int>(mi->Indices.size());
+            Context->DrawIndexedInstanced( numIndices, batch.instanceCount, 0, 0, batch.startInstance );
+
+            Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
+                (numIndices / 3) * batch.instanceCount;
+        } else {
+            const unsigned int numVertices = static_cast<unsigned int>(mi->Vertices.size());
+            Context->DrawInstanced( numVertices, batch.instanceCount, 0, batch.startInstance );
+
+            Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
+                (numVertices / 3) * batch.instanceCount;
+        }
+    }
+
+    // Unbind instance buffer from slot 1
+    ID3D11Buffer* nullBuf = nullptr;
+    UINT nullStride = 0;
+    UINT nullOffset = 0;
+    Context->IASetVertexBuffers( 1, 1, &nullBuf, &nullStride, &nullOffset );
 }
 
 /** Binds the active PixelShader */

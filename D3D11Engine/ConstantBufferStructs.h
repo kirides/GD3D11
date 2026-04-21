@@ -16,6 +16,13 @@ struct VobInstanceInfo {
     DWORD GP_Slot;
 };
 
+/** Per-instance data for instanced node attachment rendering */
+struct NodeAttachmentInstanceData {
+    XMFLOAT4X4 World;
+    XMFLOAT4X4 PrevWorld;
+    float4 Color;
+};
+
 /** Remap-index for the static vobs */
 struct VobInstanceRemapInfo {
     bool operator < ( const VobInstanceRemapInfo& b ) const {

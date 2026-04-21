@@ -47,6 +47,7 @@
 
 // TODO: REMOVE THIS!
 #include "D3D11GraphicsEngine.h"
+#include "MeshManager.h"
 
 #ifndef PUBLIC_RELEASE
 #define OPT_DBG_NOINLINE __declspec(noinline)
@@ -845,6 +846,9 @@ void GothicAPI::OnLoadWorld( const std::string& levelName, int loadMode ) {
             // Initial load
             LoadedWorldInfo->WorldName = name;
         }
+
+        extern MeshManager* s_MeshManager;
+        s_MeshManager->DropCaches();
     }
 
 #ifndef PUBLIC_RELEASE

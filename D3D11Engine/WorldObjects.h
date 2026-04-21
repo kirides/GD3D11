@@ -82,6 +82,7 @@ struct MeshInfo {
         MeshIndexBuffer = nullptr;
         BaseIndexLocation = 0;
         MeshIndex = -1;
+        meshId = 0;
     }
 
     MeshInfo( MeshInfo&& other ) = default;
@@ -100,6 +101,7 @@ struct MeshInfo {
 
     unsigned int BaseIndexLocation;
     unsigned int MeshIndex;
+    uint16_t meshId;
 };
 
 struct WorldMeshInfo : public MeshInfo {
@@ -146,6 +148,7 @@ struct SkeletalMeshInfo {
 
     /** Actual visual containing this */
     zCMeshSoftSkin* visual;
+    uint16_t meshId;
 };
 
 class zCVisual;

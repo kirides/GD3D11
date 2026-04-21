@@ -508,6 +508,9 @@ XRESULT D3D11ShaderManager::Init() {
             .with_layout( 3 )  );
     }
 
+    Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExNodeInstanced>( "VS_ExNodeInstanced.hlsl" )
+        .with_layout( 14 ) );
+
     Shaders.push_back( ShaderInfo::make<GShaderID::GS_ParticleStreamOut>( "VS_AdvanceRain.hlsl" )
         .with_layout( 13 ) );
 
