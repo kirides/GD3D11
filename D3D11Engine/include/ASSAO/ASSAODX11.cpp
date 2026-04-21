@@ -36,6 +36,7 @@
 #ifndef SAFE_RELEASE_ARRAY
 #define SAFE_RELEASE_ARRAY(p)   { for( int i = 0; i < _countof(p); i++ ) if (p[i]) { (p[i])->Release(); (p[i])=NULL; } }
 #endif
+#include "../../D3D11_Helpers.h"
 
 #define SSA_STRINGIZIZER( x )                       SSA_STRINGIZIZER_( x )
 #define SSA_STRINGIZIZER_( x )                      #x
@@ -546,6 +547,11 @@ static HRESULT CreateVertexShaderAndIL( const ASSAO_CreateDescDX11 * createDesc,
     hr = createDesc->Device->CreateInputLayout( pInputElementDescs, NumElements, shaderBlob->GetBufferPointer( ), shaderBlob->GetBufferSize( ), ppInputLayout );
     if( FAILED( hr ) ) { SAFE_RELEASE( shaderBlob ); SAFE_RELEASE( *ppInputLayout ); assert( false ); return hr; }
 
+#ifdef DEBUG_D3D11
+    SetDebugName( *ppShader,  "ASSAO::VS::" + std::string(pFunctionName));
+    SetDebugName( *ppInputLayout, "ASSAO::IL::" + std::string(pFunctionName));
+#endif
+
     SAFE_RELEASE( shaderBlob );
 
     return S_OK;
@@ -560,6 +566,10 @@ static HRESULT CreatePixelShader( const ASSAO_CreateDescDX11 * createDesc, CONST
 
     hr = createDesc->Device->CreatePixelShader( shaderBlob->GetBufferPointer( ), shaderBlob->GetBufferSize( ), NULL, ppShader );
     if( FAILED( hr ) ) { SAFE_RELEASE( shaderBlob ); assert( false ); return hr; }
+
+#ifdef DEBUG_D3D11
+    SetDebugName( *ppShader, "ASSAO::PS::" + std::string( pFunctionName ) );
+#endif
 
     SAFE_RELEASE( shaderBlob );
 
