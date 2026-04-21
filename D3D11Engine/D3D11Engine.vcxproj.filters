@@ -849,6 +849,7 @@
     <ClInclude Include="D3D11PFX_ASSAO.h">
       <Filter>Engine\D3D11\PFX\Effects</Filter>
     </ClInclude>
+    <ClInclude Include="D3D11FileRelativeInclude.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp" />
@@ -1158,6 +1159,7 @@
     <ClCompile Include="D3D11PFX_ASSAO.cpp">
       <Filter>Engine\D3D11\PFX\Effects</Filter>
     </ClCompile>
+    <ClCompile Include="D3D11FileRelativeInclude.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="ddraw.def">

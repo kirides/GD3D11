@@ -878,6 +878,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="BaseWidget.h" />
     <ClInclude Include="BasicTimer.h" />
     <ClInclude Include="D3D11CascadedShadowMapBuffer.h" />
+    <ClInclude Include="D3D11FileRelativeInclude.h" />
     <ClInclude Include="D3D11GraphicsShader.h" />
     <ClInclude Include="D3D11PFX_ASSAO.h" />
     <ClInclude Include="D3D11ShadowAtlas.h" />
@@ -1144,6 +1145,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="BaseLineRenderer.cpp" />
     <ClCompile Include="BaseWidget.cpp" />
     <ClCompile Include="D3D11CascadedShadowMapBuffer.cpp" />
+    <ClCompile Include="D3D11FileRelativeInclude.cpp" />
     <ClCompile Include="D3D11GraphicsShader.cpp" />
     <ClCompile Include="D3D11PFX_ASSAO.cpp" />
     <ClCompile Include="D3D11ShadowAtlas.cpp" />

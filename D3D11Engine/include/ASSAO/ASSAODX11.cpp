@@ -32,6 +32,7 @@
 #ifndef SAFE_RELEASE
 #define SAFE_RELEASE(p)      { if (p) { (p)->Release(); (p)=NULL; } }
 #endif
+#include "../../D3D11FileRelativeInclude.h"
 #ifndef SAFE_RELEASE_ARRAY
 #define SAFE_RELEASE_ARRAY(p)   { for( int i = 0; i < _countof(p); i++ ) if (p[i]) { (p[i])->Release(); (p[i])=NULL; } }
 #endif
@@ -512,7 +513,16 @@ ASSAODX11::~ASSAODX11( )
 static HRESULT CompileShader( const ASSAO_CreateDescDX11 * createDesc, CONST D3D_SHADER_MACRO* pDefines, LPCSTR pFunctionName, LPCSTR pProfile, DWORD dwShaderFlags, ID3DBlob** ppShader )
 {
     ID3DBlob* pErrorBlob = NULL;
-    HRESULT hr = D3DCompile( createDesc->ShaderData, createDesc->ShaderDataSize, NULL, pDefines, NULL/*D3D_COMPILE_STANDARD_FILE_INCLUDE*/, pFunctionName, pProfile, dwShaderFlags, 0, ppShader, &pErrorBlob );
+
+
+    std::filesystem::path shaderPath = std::filesystem::path("system") / "GD3D11" / "shaders" / "ASSAO" / "ASSAO.hlsl";
+
+    // absolute path
+    shaderPath = Engine::GAPI->GetStartDirectory().c_str() / shaderPath;
+
+    D3D11FileRelativeInclude includeHandler( shaderPath.parent_path() );
+
+    HRESULT hr = D3DCompile( createDesc->ShaderData, createDesc->ShaderDataSize, NULL, pDefines, &includeHandler, pFunctionName, pProfile, dwShaderFlags, 0, ppShader, &pErrorBlob );
     if( FAILED( hr ) )
     {
         MessageBoxA( NULL, (LPCSTR)pErrorBlob->GetBufferPointer( ), "Pixel shader compilation error", MB_OK );
@@ -669,7 +679,7 @@ bool ASSAODX11::InitializeDX( const ASSAO_CreateDescDX11 * createDesc )
         };
 
         DWORD shaderFlags = D3DCOMPILE_ENABLE_STRICTNESS;
-#if defined( DEBUG ) || defined( _DEBUG )
+#if defined( DEBUG ) || defined( _DEBUG ) || defined( DEBUG_D3D11 )
         // Set the D3D10_SHADER_DEBUG flag to embed debug information in the shaders.
         // Setting this flag improves the shader debugging experience, but still allows 
         // the shaders to be optimized and to run exactly the way they will run in 

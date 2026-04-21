@@ -16,23 +16,8 @@
 // 2016-09-07: filip.strugar@intel.com: first commit
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-
-// Octahedral encoding: map a unit normal to [-1,1]^2 for R16G16_SNORM storage
-// Reference: "A Survey of Efficient Representations for Independent Unit Vectors" (Cigolle et al. 2014)
-float2 OctWrap(float2 v)
-{
-    return (1.0 - abs(v.yx)) * (v.xy >= 0.0 ? 1.0 : -1.0);
-}
-
-// Decode octahedral [-1,1]^2 back to a unit normal
-float3 DecodeNormalGBuffer(float2 encoded)
-{
-    float3 n;
-    n.z = 1.0 - abs(encoded.x) - abs(encoded.y);
-    n.xy = n.z >= 0.0 ? encoded.xy : OctWrap(encoded.xy);
-    return normalize(n);
-}
-
+// Contains `DecodeNormalGBuffer`
+#include "../DS_Defines.h"
 
 // progressive poisson-like pattern; x, y are in [-1, 1] range, .z is length( float2(x,y) ), .w is log2( z )
 #define INTELSSAO_MAIN_DISK_SAMPLE_COUNT (32)

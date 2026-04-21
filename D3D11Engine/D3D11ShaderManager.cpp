@@ -15,6 +15,7 @@
 #include "D3D11GraphicsEngineBase.h"
 #include <d3dcompiler.h>
 #include "D3D11PFX_TAA.h"
+#include "D3D11FileRelativeInclude.h"
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "d3dcompiler.lib")
@@ -27,97 +28,6 @@
 
 #include <fstream>
 #include <unordered_map>
-
-namespace
-{
-    // Include handler that resolves includes relative to the including file
-    // and also files relative to any relative included file (i.e. nested includes).
-    class D3D11FileRelativeInclude final : public ID3DInclude
-    {
-    public:
-        explicit D3D11FileRelativeInclude( std::filesystem::path rootDir )
-            : RootDir( std::move( rootDir ) )
-        {
-        }
-
-        HRESULT __stdcall Open( D3D_INCLUDE_TYPE includeType, LPCSTR pFileName, LPCVOID pParentData, LPCVOID* ppData, UINT* pBytes ) override
-        {
-            if ( ppData == nullptr || pBytes == nullptr || pFileName == nullptr )
-                return E_INVALIDARG;
-
-            std::filesystem::path baseDir = RootDir;
-
-            // If pParentData is an include we previously returned, use its directory as base.
-            if ( pParentData != nullptr ) {
-                auto it = ParentDirByData.find( pParentData );
-                if ( it != ParentDirByData.end() )
-                    baseDir = it->second;
-            }
-
-            std::filesystem::path requested = std::filesystem::path( pFileName );
-
-            // Resolve strategy:
-            // 1) If requested is absolute -> use it
-            // 2) else -> resolve relative to includer's directory (baseDir)
-            // 3) If not found, optionally fall back to RootDir (useful for global include roots)
-            std::filesystem::path fullPath = requested.is_absolute() ? requested : (baseDir / requested);
-            fullPath = fullPath.lexically_normal();
-
-            if ( !std::filesystem::exists( fullPath ) && !requested.is_absolute() ) {
-                std::filesystem::path fallback = (RootDir / requested).lexically_normal();
-                if ( std::filesystem::exists( fallback ) )
-                    fullPath = fallback;
-            }
-
-            std::ifstream file( fullPath, std::ios::binary );
-            if ( !file )
-                return HRESULT_FROM_WIN32( ERROR_FILE_NOT_FOUND );
-
-            file.seekg( 0, std::ios::end );
-            const std::streamoff size = file.tellg();
-            file.seekg( 0, std::ios::beg );
-
-            if ( size <= 0 )
-                return HRESULT_FROM_WIN32( ERROR_INVALID_DATA );
-
-            auto buffer = std::make_unique<uint8_t[]>( static_cast<size_t>(size) );
-            file.read( reinterpret_cast<char*>(buffer.get()), size );
-            if ( !file )
-                return HRESULT_FROM_WIN32( ERROR_READ_FAULT );
-
-            const void* dataPtr = buffer.get();
-            *ppData = dataPtr;
-            *pBytes = static_cast<UINT>(size);
-
-            // Track the directory of THIS include, so nested includes resolve against it.
-            ParentDirByData.emplace( dataPtr, fullPath.parent_path() );
-
-            OwnedBuffers.emplace_back( std::move( buffer ) );
-            return S_OK;
-        }
-
-        HRESULT __stdcall Close( LPCVOID pData ) override
-        {
-            if ( pData == nullptr )
-                return E_INVALIDARG;
-
-            ParentDirByData.erase( pData );
-
-            // Owned buffer lifetime is tied to this include handler; we can keep it until the compile ends.
-            // (D3DCompile will call Close, but we keep buffers to avoid pointer invalidation for ParentDirByData lookups.)
-            return S_OK;
-        }
-
-    private:
-        std::filesystem::path RootDir;
-
-        // key: pointer handed to compiler (ppData), value: directory of that include
-        std::unordered_map<const void*, std::filesystem::path> ParentDirByData;
-
-        // keep memory alive for duration of compilation
-        std::vector<std::unique_ptr<uint8_t[]>> OwnedBuffers;
-    };
-}
 
 const int NUM_MAX_BONES = 96;
 
