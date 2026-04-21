@@ -13,7 +13,12 @@ Texture2D	TX_Texture0 : register(t0);
 struct PS_INPUT
 {
 	float2 vTexcoord		: TEXCOORD0;
-	float3 vEyeRay			: TEXCOORD1;
+	float2 vTexcoord2		: TEXCOORD1;
+	float4 vDiffuse			: TEXCOORD2;
+	float3 vNormalVS		: TEXCOORD4;
+	float3 vViewPosition	: TEXCOORD5;
+	float4 vCurrClipPos     : TEXCOORD6;
+	float4 vPrevClipPos     : TEXCOORD7;
 	float4 vPosition		: SV_POSITION;
 };
 
