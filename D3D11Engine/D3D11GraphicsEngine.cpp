@@ -1265,38 +1265,6 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
         }
     }
 
-    static int oldToneMap = -1;
-    if ( rendererState.RendererSettings.HDRToneMap != oldToneMap ) {
-        oldToneMap = rendererState.RendererSettings.HDRToneMap;
-        std::vector<D3D_SHADER_MACRO> makros;
-
-        D3D_SHADER_MACRO m;
-        m.Name = "USE_TONEMAP";
-        if ( oldToneMap == GothicRendererSettings::E_HDRToneMap::ToneMap_jafEq4 ) {
-            m.Definition = "0";
-        } else if ( oldToneMap == GothicRendererSettings::E_HDRToneMap::Uncharted2Tonemap ) {
-            m.Definition = "1";
-        } else if ( oldToneMap == GothicRendererSettings::E_HDRToneMap::ACESFilmTonemap ) {
-            m.Definition = "2";
-        } else if ( oldToneMap == GothicRendererSettings::E_HDRToneMap::PerceptualQuantizerTonemap ) {
-            m.Definition = "3";
-        } else if ( oldToneMap == GothicRendererSettings::E_HDRToneMap::ACESFittedTonemap ) {
-            m.Definition = "5";
-        } else {
-            m.Definition = "4";
-            oldToneMap = 4;
-            rendererState.RendererSettings.HDRToneMap = GothicRendererSettings::E_HDRToneMap::ToneMap_Simple;
-        }
-        makros.push_back( m );
-
-        auto si = ShaderInfo::make<PShaderID::PS_PFX_HDR>( "PS_PFX_HDR.hlsl" )
-            .with_macros( makros );
-        ShaderManager->UpdateShaderInfo( si );
-        si = ShaderInfo::make<PShaderID::PS_PFX_Tonemap>( "PS_PFX_Tonemap.hlsl" )
-            .with_macros( makros );
-        ShaderManager->UpdateShaderInfo( si );
-    }
-
     static bool s_firstFrame = true;
 
     SteamOverlay::Update();

@@ -1134,7 +1134,10 @@ void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) 
         };
 
         ImGui::BeginDisabled( !settings.EnableHDR );
-        if ( ImComboBox( "HDR ToneMap", hdrToneMapValues, (int*)(&settings.HDRToneMap) ) ) {
+        if ( ImComboBoxC( "HDR ToneMap", hdrToneMapValues, reinterpret_cast<int*>(&settings.HDRToneMap), []
+        {
+            Engine::GraphicsEngine->ReloadShaders( ShaderCategory::Tonemapping );
+        } ) ) {
             ImGui::EndCombo();
         }
         ImGui::EndDisabled();

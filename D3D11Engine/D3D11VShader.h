@@ -12,7 +12,7 @@ public:
     ~D3D11VShader() override;
 
     /** Loads both shader at the same time */
-    XRESULT LoadShader( const ShaderInfo& shaderInfo, const char* filePath );
+    XRESULT LoadShader( const ShaderInfo& si, const std::vector<D3D_SHADER_MACRO>& macros, const char* filePath );
 
     /** Applys the shader */
     XRESULT Apply() override;
