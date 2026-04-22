@@ -222,13 +222,29 @@ float2x2 GetPoissonRotationMatrix(float2 screenPos)
 {
 	// If TAA is disabled return an identity matrix to get standard PCF instead of noise.
     if (SQ_FrameIndex == 0)
-    {
-        return float2x2(1.0f, 0.0f, 0.0f, 1.0f);
-    }
+	{
+			return float2x2(1.0f, 0.0f, 0.0f, 1.0f);
+	}
 
     float temporalOffset = (float)(SQ_FrameIndex % 8) * 0.6180339887f;
     
     float angle = frac(52.9829189f * frac(dot(screenPos, float2(0.06711056f, 0.00583715f)) + temporalOffset)) * 6.283185307f;
+
+    float s, c;
+    sincos(angle, s, c);
+    return float2x2(c, -s, s, c);
+}
+
+float2x2 GetPoissonRotationMatrixR(float2 screenPos, out float rawNoise)
+{
+    // Interleaved Gradient Noise (IGN)
+    float temporalOffset = (float)(SQ_FrameIndex % 8) * 0.6180339887f;
+    
+    // Calculate noise once
+    rawNoise = frac(52.9829189f * frac(dot(screenPos, float2(0.06711056f, 0.00583715f)) + temporalOffset));
+    
+    // Create rotation angle
+    float angle = rawNoise * 6.283185307f;
 
     float s, c;
     sincos(angle, s, c);
@@ -247,10 +263,10 @@ void FindBlockers(out float avgBlockerDepth, out float numBlockers,
     float blockerSum = 0.0f;
     numBlockers = 0.0f;
 
-    [unroll]
-    for (int i = 0; i < 32; ++i)
+    for (int i = 0; i < 16; ++i)
     {
-        float2 offset = mul(rotMat, g_PoissonDisk32[i]) * searchRadius;
+        // Re-use your 16-tap Poisson disk for the blocker search
+        float2 offset = mul(rotMat, g_PoissonDisk16[i]) * searchRadius;
         float shadowMapDepth = SampleShadowMapLevel(uv + offset, cascadeIndex);
 
         if (shadowMapDepth < zReceiver)
@@ -266,10 +282,9 @@ void FindBlockers(out float avgBlockerDepth, out float numBlockers,
 float EstimatePCSSFilterRadius(float2 uv, float zReceiver, int cascadeIndex,
                                float lightSize, float2x2 rotMat, float texelSize)
 {
-    // For directional lights (orthographic CSM): search radius in UV space
-    // Cap to ensure adequate sampling density with 16 Poisson taps
-    float searchRadius = min(lightSize, texelSize * 24.0f);
-
+    // Capped slightly lower to match the 16-tap blocker limit efficiently
+    float searchRadius = min(lightSize, texelSize * 16.0f);
+    
     float avgBlockerDepth = 0.0f;
     float numBlockers = 0.0f;
     FindBlockers(avgBlockerDepth, numBlockers, uv, zReceiver, searchRadius, cascadeIndex, rotMat);
@@ -277,13 +292,9 @@ float EstimatePCSSFilterRadius(float2 uv, float zReceiver, int cascadeIndex,
     if (numBlockers < 1.0f)
         return -1.0f; // No blockers found - fully lit
 
-    // Orthographic penumbra: linear depth difference, no perspective divide.
-    // Division by avgBlockerDepth is only correct for perspective (point/spot) lights.
-    // For directional lights the rays are parallel, so penumbra scales linearly.
     float penumbraWidth = (zReceiver - avgBlockerDepth) * lightSize;
     
-    // Clamp: minimum half-texel for stability, maximum 16 texels to prevent bloom
-    return clamp(penumbraWidth, texelSize * 0.5f, texelSize * 16.0f);
+    return clamp(penumbraWidth, texelSize * 0.5f, texelSize * 32.0f);
 }
 #endif
 
@@ -291,7 +302,7 @@ float EstimatePCSSFilterRadius(float2 uv, float zReceiver, int cascadeIndex,
 float IsInShadow(float3 wsPosition, Texture2D shadowmapAtlas, SamplerComparisonState samplerState)
 {
     float4 vShadowSamplingPos = mul(float4(wsPosition, 1), SQ_ShadowViewProj[0]);
-    vShadowSamplingPos.xyz /= vShadowSamplingPos.www;
+    // vShadowSamplingPos.xyz /= vShadowSamplingPos.www; // no need for perspective divide, as this is an orthographic sun light
 	
     float2 projectedTexCoords = vShadowSamplingPos.xy * float2(0.5f, -0.5f) + float2(0.5f, 0.5f);
     return SampleShadowMapCmp(projectedTexCoords.xy, 0, vShadowSamplingPos.z);
@@ -300,7 +311,7 @@ float IsInShadow(float3 wsPosition, Texture2D shadowmapAtlas, SamplerComparisonS
 float IsInShadow(float3 wsPosition, Texture2DArray shadowmapArray, SamplerComparisonState samplerState)
 {
     float4 vShadowSamplingPos = mul(float4(wsPosition, 1), SQ_ShadowViewProj[0]);
-    vShadowSamplingPos.xyz /= vShadowSamplingPos.www;
+    // vShadowSamplingPos.xyz /= vShadowSamplingPos.www; // no need for perspective divide, as this is an orthographic sun light
 	
     float2 projectedTexCoords = vShadowSamplingPos.xy * float2(0.5f, -0.5f) + float2(0.5f, 0.5f);
     return shadowmapArray.SampleCmpLevelZero(samplerState, float3(projectedTexCoords.xy, 0), vShadowSamplingPos.z);
@@ -321,41 +332,37 @@ float IsWet(float3 wsPosition, Texture2D shadowmap, SamplerComparisonState sampl
 // Helper: Get shadow map UV and check if position is within cascade bounds
 // Returns: projectedTexCoords in xy, isInBounds as 0 or 1 in z, blend factor in w
 //--------------------------------------------------------------------------------------
-float4 GetCascadeUVAndBounds(float3 wsPosition, int cascadeIndex)
+void GetCascadeUVAndBounds(float3 wsPosition, int cascadeIndex, 
+                           out float4 vShadowSamplingPos, out float2 projectedTexCoords, 
+                           out float inBounds, out float blendFactor)
 {
     matrix viewProj = SQ_ShadowViewProj[cascadeIndex];
-    float4 vShadowSamplingPos = mul(float4(wsPosition, 1), viewProj);
-    vShadowSamplingPos.xyz /= vShadowSamplingPos.www;
-	
-    float2 projectedTexCoords = vShadowSamplingPos.xy * float2(0.5f, -0.5f) + float2(0.5f, 0.5f);
+    
+    // Calculate once and pass out
+    vShadowSamplingPos = mul(float4(wsPosition, 1), viewProj);
+    projectedTexCoords = vShadowSamplingPos.xy * float2(0.5f, -0.5f) + float2(0.5f, 0.5f);
     
     // Check if within bounds (with margin for blend zone)
     const float margin = 0.02f;
-    bool inBounds = projectedTexCoords.x > margin && projectedTexCoords.x < (1.0f - margin) &&
-                    projectedTexCoords.y > margin && projectedTexCoords.y < (1.0f - margin);
+    bool isInBounds = projectedTexCoords.x > margin && projectedTexCoords.x < (1.0f - margin) &&
+                      projectedTexCoords.y > margin && projectedTexCoords.y < (1.0f - margin);
+    inBounds = isInBounds ? 1.0f : 0.0f;
     
     // Calculate blend factor based on distance to edge
     // Wide blend zone (30%) with smoothstep for gradual cascade transitions
     const float blendZoneStart = 0.30f;
     float distToEdge = min(min(projectedTexCoords.x, 1.0f - projectedTexCoords.x),
                            min(projectedTexCoords.y, 1.0f - projectedTexCoords.y));
-    float blendFactor = 1.0f - smoothstep(margin, blendZoneStart, distToEdge);
-    
-    return float4(projectedTexCoords, inBounds ? 1.0f : 0.0f, blendFactor);
+    blendFactor = 1.0f - smoothstep(margin, blendZoneStart, distToEdge);
 }
 
 //--------------------------------------------------------------------------------------
 // High-quality shadow sampling with configurable softness
 // Uses rotated Poisson disk for TAA-friendly results
 //--------------------------------------------------------------------------------------
-float SampleCascadeShadowSoft(float3 wsPosition, int cascadeIndex, float vertLighting, float bias, float2 screenPos, float softness)
+float SampleCascadeShadowSoft(float4 vShadowSamplingPos, float2 projectedTexCoords, 
+                              int cascadeIndex, float bias, float2 screenPos, float softness)
 {
-    matrix viewProj = SQ_ShadowViewProj[cascadeIndex];
-    float4 vShadowSamplingPos = mul(float4(wsPosition, 1), viewProj);
-    vShadowSamplingPos.xyz /= vShadowSamplingPos.www;
-	
-    float2 projectedTexCoords = vShadowSamplingPos.xy * float2(0.5f, -0.5f) + float2(0.5f, 0.5f);
-    
     if (projectedTexCoords.x < 0.0f || projectedTexCoords.x > 1.0f ||
         projectedTexCoords.y < 0.0f || projectedTexCoords.y > 1.0f)
     {
@@ -368,32 +375,36 @@ float SampleCascadeShadowSoft(float3 wsPosition, int cascadeIndex, float vertLig
     // Scale the filter radius based on softness setting
     // softness of 1.0 = default, < 1.0 = sharper, > 1.0 = softer
     float filterRadius = texelSize * softness;
-    
+
 #if SHD_FILTER_PCSS
     // PCSS: Percentage-Closer Soft Shadows
     // Variable-width PCF based on blocker distance for contact-hardening shadows
     // Use SQ_ShadowSoftness directly (not distance-scaled 'softness') because
     // PCSS inherently handles distance-based penumbra via the blocker depth difference.
     {
-        float2x2 rotMat = GetPoissonRotationMatrix(screenPos);
+        float noiseVal;
+        float2x2 rotMat = GetPoissonRotationMatrixR(screenPos, noiseVal);
         float zReceiver = vShadowSamplingPos.z - bias;
         
         float pcssRadius = EstimatePCSSFilterRadius(projectedTexCoords.xy, zReceiver,
             cascadeIndex, SQ_LightSize * SQ_ShadowSoftness, rotMat, texelSize);
-        
+
         if (pcssRadius < 0.0f)
         {
-            // No blockers found - fully lit
             shadow = 1.0f;
         }
         else
         {
-            // Variable PCF filtering with PCSS-derived radius
             float sum = 0.0f;
-            [unroll]
+            
+            // some dithering to reduce the visible "shears" of the noise
+            float radiusJitter = lerp(0.85f, 1.15f, noiseVal);
+            float finalRadius = pcssRadius * radiusJitter;
+            
             for (int i = 0; i < 32; i++)
             {
-                float2 offset = mul(rotMat, g_PoissonDisk32[i]) * pcssRadius;
+                float2 offset = mul(rotMat, g_PoissonDisk32[i]) * finalRadius;
+                
                 sum += SampleShadowMapCmp(
                     projectedTexCoords.xy + offset, cascadeIndex,
                     zReceiver);
@@ -466,7 +477,7 @@ float ComputeShadowValueDirect(float3 wsPosition, Texture2D shadowmap, SamplerCo
 {
 	// Reconstruct VS World ShadowViewPosition from depth
     float4 vShadowSamplingPos = mul(float4(wsPosition, 1), viewProj);
-    vShadowSamplingPos.xyz /= vShadowSamplingPos.www;
+    // vShadowSamplingPos.xyz /= vShadowSamplingPos.www; // no need for perspective divide, as this is an orthographic sun light
 	
     float2 projectedTexCoords = vShadowSamplingPos.xy * float2(0.5f, -0.5f) + float2(0.5f, 0.5f);
     float shadow = 1.0f;
@@ -512,38 +523,43 @@ float ComputeShadowValue(float2 uv, float3 wsPosition, Texture2D shadowmap, Samp
 //--------------------------------------------------------------------------------------
 float ComputeCascadedShadowValueSoft(float3 wsPosition, float viewSpaceZ, float vertLighting, float bias, float2 screenPos)
 {
-    // Get cascade bounds info for all cascades
-    float4 cascadeInfo[NUM_CSM_CASCADES];
-    [unroll]
-    for (int i = 0; i < NUM_CSM_CASCADES; i++)
-    {
-        cascadeInfo[i] = GetCascadeUVAndBounds(wsPosition, i);
-    }
-    
     float shadow = vertLighting;
-    
     // Apply distance-based softness scaling
     // Shadows get slightly softer with distance (simulating penumbra growth)
     float distanceFactor = saturate(abs(viewSpaceZ) / 5000.0f);
     float softness = SQ_ShadowSoftness * (1.0f + distanceFactor * 0.5f);
-    
-    // Determine which cascade to use based on projection bounds
-    // Start with highest resolution cascade and fall back to lower ones
+
     [unroll]
     for (int c = 0; c < NUM_CSM_CASCADES; c++)
     {
-        if (cascadeInfo[c].z > 0.5f) // In bounds of this cascade
+        float4 vShadowPos;
+        float2 projCoords;
+        float inBounds;
+        float blendFactor;
+
+        GetCascadeUVAndBounds(wsPosition, c, vShadowPos, projCoords, inBounds, blendFactor);
+        
+        if (inBounds > 0.5f) 
         {
-            shadow = SampleCascadeShadowSoft(wsPosition, c, vertLighting, bias, screenPos, softness);
+            shadow = SampleCascadeShadowSoft(vShadowPos, projCoords, c, bias, screenPos, softness);
             
-            // Blend with next cascade near edges (if next cascade exists and has this pixel in bounds)
-            // Pure lerp avoids the darkening artifact that min() causes at transitions
-            if (c < NUM_CSM_CASCADES - 1 && cascadeInfo[c].w > 0.0f && cascadeInfo[c + 1].z > 0.5f)
+            // 3. Check if we need to blend with the next cascade
+            if (c < NUM_CSM_CASCADES - 1 && blendFactor > 0.0f)
             {
-                float shadowNext = SampleCascadeShadowSoft(wsPosition, c + 1, vertLighting, bias, screenPos, softness);
-                shadow = lerp(shadow, shadowNext, cascadeInfo[c].w);
+                float4 nextShadowPos;
+                float2 nextProjCoords;
+                float nextInBounds;
+                float nextBlendFactor;
+                
+                GetCascadeUVAndBounds(wsPosition, c + 1, nextShadowPos, nextProjCoords, nextInBounds, nextBlendFactor);
+                
+                if (nextInBounds > 0.5f)
+                {
+                    float shadowNext = SampleCascadeShadowSoft(nextShadowPos, nextProjCoords, c + 1, bias, screenPos, softness);
+                    shadow = lerp(shadow, shadowNext, blendFactor);
+                }
             }
-            break;
+            break; // Exit loop early once shadow is found
         }
     }
     
@@ -600,7 +616,10 @@ void ApplyRainNormalDeformation(inout float3 vsNormal, float3 wsPosition, inout 
 					  normalize((TX_Distortion.Sample(SS_Linear, uv[3]).xyz * 2 - 1))
     };
 		
-    weights = pow(weights, 4.0f);
+	// weights = pow(weights, 4.0f);
+	// inline "pow 4"
+	weights *= weights;
+	weights *= weights;
 		
     const float distWeight = 0.9f;
 	
@@ -632,12 +651,17 @@ void ApplySceneWettness(float3 wsPosition, float3 vsPosition, float3 vsDir, inou
     float3 nrm = vsNormal;
     float3 wsNormal;
     ApplyRainNormalDeformation(nrm, wsPosition, diffuse.rgb, wsNormal);
-    pixelWettnes *= 1 - pow(saturate(dot(wsNormal, float3(0, -1, 0))), 4.0f);
+
+    // pixelWettnes *= 1 - pow(saturate(dot(wsNormal, float3(0, -1, 0))), 4.0f);
+	// simplify pow
+	float wDot = saturate(dot(wsNormal, float3(0, -1, 0))); 
+	float wDot2 = wDot * wDot;
+	pixelWettnes *= 1.0f - (wDot2 * wDot2);
 	
     vsNormal = lerp(vsNormal, nrm, AC_RainFXWeight * pixelWettnes * 0.5f); // Only apply deformation if it's actually raining
 	
 	// Get fresnel-effect
-    float fresnel = pow(1.0f - max(0.0f, dot(vsNormal, -vsDir)), 160.0f);
+    // float fresnel = pow(1.0f - max(0.0f, dot(vsNormal, -vsDir)), 160.0f);
     
     	
 	//vsNormalCpy.z *= 0.3f;
@@ -753,7 +777,9 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
 	// Apply sunlight
     float sunStrength = dot(lightColor.rgb, float3(0.333f, 0.333f, 0.333f));
 	
-    float vertAO = lerp(pow(saturate(vertLighting * 2), 2), 1.0f, 0.5f);
+	float vl = saturate(vertLighting * 2);
+	float vertAO = lerp(vl * vl, 1.0f, 0.5f);
+
     float sun = saturate(dot(normalize(SQ_LightDirectionVS), normal) * shadow) * 1.0f;
 
     spec = pow(spec, specPower) * specIntensity;
@@ -767,7 +793,13 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
 							diffuse.rgb * lightColor.rgb * lightColor.a * worldAO, sun)
 				  + specColored;
 	
-    float fresnel = pow(1.0f - saturate(dot(normal, V)), 10.0f);
+    float f = 1.0f - saturate(dot(normal, V));
+    // float fresnel = pow(f, 10.0f);
+	// use optimized pow alternative
+	float f2 = f*f;
+	float f4 = f2*f2;
+	float f8 = f4*f4; 
+	float fresnel = f8*f2;
     litPixel += lerp(fresnel * litPixel * 0.5f, 0.0f, sun);
 	
 	// Run scattering
