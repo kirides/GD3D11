@@ -54,6 +54,7 @@
 #include "zCOption.h"
 #include "RenderGraph.h"
 #include "RGBuilder.h"
+#include "D3D11Upscaling.h"
 
 #ifdef BUILD_SPACER
 #define IS_SPACER_BUILD true
@@ -3134,7 +3135,8 @@ namespace {
 /** Called when we started to render the world */
 XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     SetDefaultStates();
-    
+    m_FrameNeedsJitter = false;
+
     auto& rendererState = Engine::GAPI->GetRendererState();
 
     if ( rendererState.RendererSettings.DisableRendering )
@@ -3157,10 +3159,11 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
 
     GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(), nullptr );
 
-    bool requireJitter = 
-        rendererState.RendererSettings.AntiAliasingMode == GothicRendererSettings::AA_FSR
-        || rendererState.RendererSettings.AntiAliasingMode == GothicRendererSettings::AA_TAA
-        ;
+    D3D11Upscaling u;
+    u.UpdateUpscaling( *this );
+
+    bool requireJitter = m_FrameNeedsJitter
+        || rendererState.RendererSettings.AntiAliasingMode == GothicRendererSettings::AA_TAA;
 
     if ( requireJitter ) {
         if ( PfxRenderer && PfxRenderer->GetTAAEffect() ) {
@@ -3699,149 +3702,19 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         };
     } );
 
+    const bool isUpscaling = u.AddUpscalingPass( graph,
+        *this,
+        Backbuffer->GetRenderTargetView().Get(), 
+        backBufferHandle, 
+        DepthStencilBufferCopy->GetShaderResView().Get(),
+        velocityBufferHandle, 
+        reactiveMaskResource );
+
     // Before returning to gothics UI, set render target to backbuffer
     {
         // Copy HDR scene to backbuffer
-        if ( rendererState.RendererSettings.ResolutionScalePercent < 100 
-            && rendererState.RendererSettings.Upscaler == GothicRendererSettings::E_Upscaler::UPSCALER_FSR_1 ) {
-            
-            graph.AddPass( L"FSR 1 Upscale", [&]( RGBuilder& builder, RenderPass& pass ) {
-                builder.Read( velocityBufferHandle );
-                builder.Read( reactiveMaskResource );
-                builder.Read( backBufferHandle );
-                builder.Write( backBufferHandle );
-
-                builder.Write( backBufferHandle );
-
-                auto unscaledRes = GetBackbufferResolution();
-                // needs DXGI_FORMAT_R8G8B8A8_UNORM to allow for UAV
-                // auto fsrTexHandle = builder.CreateTexture( { static_cast<uint32_t>( unscaledRes.x ), static_cast<uint32_t>( unscaledRes.y ), DXGI_FORMAT_R8G8B8A8_UNORM, L"FSR3_Temporary" } );
-
-                pass.m_executeCallback = [this, &rendererState, backBufferHandle, velocityBufferHandle, reactiveMaskResource](const RenderGraph& graph) {
-                    auto backbufferTex = graph.GetPhysicalTexture( backBufferHandle );
-
-                    // Now upscale it to backbuffer with sharpening
-                    auto sharpenFactor = rendererState.RendererSettings.SharpenFactor;
-                    PfxRenderer->GetFSR1()->Apply(
-                        backbufferTex->GetShaderResView(),
-                        Backbuffer->GetRenderTargetView(),
-                        GetResolution(),
-                        GetBackbufferResolution(),
-                        sharpenFactor >= 0.001f,
-                        1.0f - sharpenFactor );
-                };
-            } );
-        } else if ( rendererState.RendererSettings.Upscaler == GothicRendererSettings::E_Upscaler::UPSCALER_FSR_2
-            && (rendererState.RendererSettings.ResolutionScalePercent <= 100)
-            && rendererState.RendererSettings.AntiAliasingMode == GothicRendererSettings::AA_FSR
-            ) {
-
-            graph.AddPass( L"FSR 2", [&]( RGBuilder& builder, RenderPass& pass ) {
-                builder.Read( velocityBufferHandle );
-                builder.Read( reactiveMaskResource );
-                builder.Read( backBufferHandle );
-
-                builder.Write( backBufferHandle );
-
-                pass.m_executeCallback = [this, &rendererState, backBufferHandle, velocityBufferHandle, reactiveMaskResource]( const RenderGraph& graph ) {
-                    auto backbufferTex = graph.GetPhysicalTexture( backBufferHandle );
-
-                    auto sharpenFactor = rendererState.RendererSettings.SharpenFactor;
-
-                    auto velocityBufferTex = graph.GetPhysicalTexture( velocityBufferHandle );
-                    auto reactiveMask = graph.GetPhysicalTexture( reactiveMaskResource );
-
-                    auto jitter = PfxRenderer->GetTAAEffect()->GetJitterOffsetUnscaled();
-                    const auto inputSize = GetResolution();
-
-                    float fovY, fovX;
-                    auto cam = ((zCCamera*)oCGame::GetGame()->_zCSession_camera);
-                    cam->GetFOV( fovY, fovX );
-
-                    // Our Depth Buffer uses reversed Z, so we need to tell FSR2 about it to get correct results
-                    // calculations from GothicAPI::GetProjectionMatrix()
-                    float NearZ = rendererState.RendererSettings.SectionDrawRadius * WORLD_SECTION_SIZE;
-                    float FarZ = 1.0f;
-                    GetContext()->CSSetSamplers( 0, 1, LinearSamplerState.GetAddressOf() );
-                    GetContext()->CSSetSamplers( 1, 1, LinearSamplerState.GetAddressOf() );
-
-                    ID3D11Buffer* nullCBs[5]{};
-                    GetContext()->CSSetConstantBuffers( 0, std::size( nullCBs ), nullCBs);
-
-                    PfxRenderer->GetFSR2()->Apply(
-                        backbufferTex->GetShaderResView().Get(),
-                        DepthStencilBufferCopy->GetShaderResView().Get(),
-                        velocityBufferTex->GetShaderResView().Get(),
-                        reactiveMask->GetShaderResView().Get(),
-                        Backbuffer->GetRenderTargetView().Get(),
-                        inputSize,
-                        GetBackbufferResolution(),
-                        Engine::GAPI->GetDeltaTime() * 1000.f,
-                        jitter,
-                        float2( static_cast<float>(inputSize.x), static_cast<float>(inputSize.y) ),
-                        false,
-                        fovY,
-                        NearZ,
-                        FarZ,
-                        sharpenFactor >= 0.001f,
-                        sharpenFactor /* FSR2 has 0..1 (sharp)*/);
-                    };
-            } );
-        } else if ( rendererState.RendererSettings.Upscaler == GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3
-            && (rendererState.RendererSettings.ResolutionScalePercent <= 100)
-            && rendererState.RendererSettings.AntiAliasingMode == GothicRendererSettings::AA_FSR ) {
-
-            graph.AddPass( L"FSR 3", [&]( RGBuilder& builder, RenderPass& pass ) {
-                builder.Read( velocityBufferHandle );
-                builder.Read( reactiveMaskResource );
-                builder.Read( backBufferHandle );
-
-                builder.Write( backBufferHandle );
-
-                pass.m_executeCallback = [this, &rendererState, backBufferHandle, velocityBufferHandle, reactiveMaskResource]( const RenderGraph& graph ) {
-                    auto backbufferTex = graph.GetPhysicalTexture( backBufferHandle );
-
-                    auto sharpenFactor = rendererState.RendererSettings.SharpenFactor;
-
-                    auto velocityBufferTex = graph.GetPhysicalTexture( velocityBufferHandle );
-                    auto reactiveMask = graph.GetPhysicalTexture( reactiveMaskResource );
-
-                    auto jitter = PfxRenderer->GetTAAEffect()->GetJitterOffsetUnscaled();
-                    const auto inputSize = GetResolution();
-
-                    float fovY, fovX;
-                    auto cam = ((zCCamera*)oCGame::GetGame()->_zCSession_camera);
-                    cam->GetFOV( fovY, fovX );
-
-                    // Our Depth Buffer uses reversed Z, so we need to tell FSR2 about it to get correct results
-                    // calculations from GothicAPI::GetProjectionMatrix()
-                    float NearZ = rendererState.RendererSettings.SectionDrawRadius * WORLD_SECTION_SIZE;
-                    float FarZ = 1.0f;
-                    GetContext()->CSSetSamplers( 0, 1, LinearSamplerState.GetAddressOf() );
-                    GetContext()->CSSetSamplers( 1, 1, LinearSamplerState.GetAddressOf() );
-
-                    ID3D11Buffer* nullCBs[5]{};
-                    GetContext()->CSSetConstantBuffers( 0, std::size( nullCBs ), nullCBs );
-
-                    PfxRenderer->GetFSR3()->Apply(
-                        backbufferTex->GetShaderResView().Get(),
-                        DepthStencilBufferCopy->GetShaderResView().Get(),
-                        velocityBufferTex->GetShaderResView().Get(),
-                        reactiveMask->GetShaderResView().Get(),
-                        Backbuffer->GetRenderTargetView().Get(),
-                        inputSize,
-                        GetBackbufferResolution(),
-                        Engine::GAPI->GetDeltaTime() * 1000.f,
-                        jitter,
-                        float2( static_cast<float>(inputSize.x), static_cast<float>(inputSize.y) ),
-                        false,
-                        fovY,
-                        NearZ,
-                        FarZ,
-                        sharpenFactor >= 0.001f,
-                        sharpenFactor /* FSR3 has 0..1 (sharp)*/ );
-                    };
-            } );
+        if ( isUpscaling ) {
+            // do don't sharpen, scale or blit. Upscalers do the work themselves.
         } else if (rendererState.RendererSettings.SharpeningMode
                 && rendererState.RendererSettings.SharpenFactor > 0.0f ) {
 

@@ -180,7 +180,7 @@ public:
     RenderToDepthStencilBuffer* GetDepthBuffer() const { return DepthStencilBuffer.get(); }
     RenderToTextureBuffer* GetDepthBufferCopy() const { return DepthStencilBufferCopy.get(); }
 
-    /** Returns the HDRBackbuffer */
+    /** Returns the HDRBackbuffer for regular geometry and effects */
     RenderToTextureBuffer& GetHDRBackBuffer() const { return *HDRBackBuffer; }
 
     /** Unbinds the texture at the given slot */
@@ -355,6 +355,8 @@ public:
     auto GetLinearSamplerState() -> auto { return LinearSamplerState.Get(); }
 
     D3D11ShadowMap* GetShadowMaps() const { return ShadowMaps.get(); }
+
+    void SetFrameNeedsJitter() { m_FrameNeedsJitter = true; }
 protected:
 
     void StoreVobPreviousTransforms();
@@ -466,6 +468,7 @@ private:
     bool m_HDR;
     int m_previousFpsLimit;
     bool m_isWindowActive;
+    bool m_FrameNeedsJitter;
     float unionCurrentCustomFontMultiplier;
 
     std::unique_ptr<RenderToTextureBuffer> VelocityBuffer;

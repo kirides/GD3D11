@@ -77,7 +77,7 @@ void D3D11PFX_FSR1::ReleaseResources() {
 
 XRESULT D3D11PFX_FSR1::ApplyEASU(
     const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& input,
-    const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& output,
+    ID3D11RenderTargetView* output,
     const INT2& inputSize,
     const INT2& outputSize ) {
     
@@ -123,7 +123,7 @@ XRESULT D3D11PFX_FSR1::ApplyEASU(
     context->OMGetRenderTargets( 1, oldRTV.GetAddressOf(), oldDSV.GetAddressOf() );
 
     // Set output render target
-    context->OMSetRenderTargets( 1, output.GetAddressOf(), nullptr );
+    context->OMSetRenderTargets( 1, &output, nullptr );
 
     // Set viewport to output size
     D3D11_VIEWPORT vp = {};
@@ -155,7 +155,7 @@ XRESULT D3D11PFX_FSR1::ApplyEASU(
 
 XRESULT D3D11PFX_FSR1::ApplyRCAS(
     const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& input,
-    const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& output,
+    ID3D11RenderTargetView* output,
     float sharpness ) {
     
     if ( !Initialized && !Init() ) {
@@ -189,7 +189,7 @@ XRESULT D3D11PFX_FSR1::ApplyRCAS(
     context->OMGetRenderTargets( 1, oldRTV.GetAddressOf(), oldDSV.GetAddressOf() );
 
     // Set output render target
-    context->OMSetRenderTargets( 1, output.GetAddressOf(), nullptr );
+    context->OMSetRenderTargets( 1, &output, nullptr );
 
     // Bind input texture and point sampler
     context->PSSetShaderResources( 0, 1, input.GetAddressOf() );
@@ -213,7 +213,7 @@ XRESULT D3D11PFX_FSR1::ApplyRCAS(
 
 XRESULT D3D11PFX_FSR1::Apply(
     const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& input,
-    const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& output,
+    ID3D11RenderTargetView* output,
     const INT2& inputSize,
     const INT2& outputSize,
     bool enableRCAS,
@@ -231,7 +231,7 @@ XRESULT D3D11PFX_FSR1::Apply(
         auto tempBuffer = Renderer->GetBackbufferTempBuffer();
 
         // Two-pass: EASU to intermediate buffer, then RCAS to final output
-        XRESULT result = ApplyEASU( input, tempBuffer->GetRenderTargetView(), inputSize, outputSize );
+        XRESULT result = ApplyEASU( input, tempBuffer->GetRenderTargetView().Get(), inputSize, outputSize);
         if ( result != XR_SUCCESS ) {
             return result;
         }
