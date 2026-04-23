@@ -16,17 +16,17 @@ D3D11VShader::D3D11VShader() = default;
 D3D11VShader::~D3D11VShader() = default;
 
 /** Loads shader */
-XRESULT D3D11VShader::LoadShader( const ShaderInfo& shaderInfo, const char* filePath ) {
+XRESULT D3D11VShader::LoadShader( const ShaderInfo& si, const std::vector<D3D_SHADER_MACRO>& macros, const char* filePath ) {
     HRESULT hr;
     D3D11GraphicsEngineBase* engine = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine);
 
     Microsoft::WRL::ComPtr<ID3DBlob> vsBlob;
 
 
-    LogInfo() << "Compilling vertex shader: " << shaderInfo.name;
+    LogInfo() << "Compilling vertex shader: " << si.name;
 
     // Compile shader
-    if ( FAILED( D3D11ShaderManager::CompileShaderFromFile( filePath, !shaderInfo.entryPoint.empty() ? shaderInfo.entryPoint.c_str() : "VSMain", (FeatureLevel10Compatibility ? "vs_4_0" : "vs_5_0"), vsBlob.GetAddressOf(), shaderInfo.shaderMakros)) ) {
+    if ( FAILED( D3D11ShaderManager::CompileShaderFromFile( filePath, !si.entryPoint.empty() ? si.entryPoint.c_str() : "VSMain", (FeatureLevel10Compatibility ? "vs_4_0" : "vs_5_0"), vsBlob.GetAddressOf(), macros)) ) {
         return XR_FAILED;
     }
 
@@ -36,9 +36,9 @@ XRESULT D3D11VShader::LoadShader( const ShaderInfo& shaderInfo, const char* file
     LE( engine->GetDevice()->CreateVertexShader( vsBlob->GetBufferPointer(),
         vsBlob->GetBufferSize(), nullptr, VertexShader.ReleaseAndGetAddressOf() ) );
 
-    SetDebugName( VertexShader.Get(), shaderInfo.name );
+    SetDebugName( VertexShader.Get(), si.name );
 
-    if (shaderInfo.layout == 0) {
+    if (si.layout == 0) {
         // No layout, skip input layout creation
         // Likely VS_PFX or similar, where we work with SV_VertexID
         return XR_SUCCESS;
@@ -193,7 +193,7 @@ XRESULT D3D11VShader::LoadShader( const ShaderInfo& shaderInfo, const char* file
         { "INSTANCE_COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
     };
 
-    switch ( shaderInfo.layout ) {
+    switch ( si.layout ) {
     case 1:
         LE( engine->GetDevice()->CreateInputLayout( layout1, std::size( layout1 ), vsBlob->GetBufferPointer(),
             vsBlob->GetBufferSize(), InputLayout.ReleaseAndGetAddressOf() ) );

@@ -849,6 +849,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="D3D11TiledDeferredShading.h" />
     <ClInclude Include="D3D11LegacyDeferredShading.h" />
     <ClInclude Include="D3D11Texture.h" />
+    <ClInclude Include="D3D11Upscaling.h" />
     <ClInclude Include="D3D11VertexBuffer.h" />
     <ClInclude Include="D3D11VShader.h" />
     <ClInclude Include="D3D11_Helpers.h" />
@@ -1107,6 +1108,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="D3D11TiledDeferredShading.cpp" />
     <ClCompile Include="D3D11LegacyDeferredShading.cpp" />
     <ClCompile Include="D3D11Texture.cpp" />
+    <ClCompile Include="D3D11Upscaling.cpp" />
     <ClCompile Include="D3D11VertexBuffer.cpp" />
     <ClCompile Include="D3D11VShader.cpp" />
     <ClCompile Include="D3D7\FakeDirectDrawSurface7.cpp">

@@ -11,7 +11,7 @@ public:
     ~D3D11PShader() override;
 
     /** Loads shader */
-    XRESULT LoadShader(const ShaderInfo& shaderInfo, const char* filePath);
+    XRESULT LoadShader( const ShaderInfo& si, const std::vector<D3D_SHADER_MACRO>& macros, const char* filePath );
 
     /** Applys the shader */
     XRESULT Apply() override;

@@ -36,7 +36,8 @@
 using namespace DirectX;
 
 #ifndef VERSION_NUMBER
-#define VERSION_NUMBER "17.8-rev'SK9"
+#define VERSION_NUMBER "17.10-dev"
+#define IS_DEV_BUILD
 #endif
 #ifndef BUILD_DATE
 #define BUILD_DATE __DATE__

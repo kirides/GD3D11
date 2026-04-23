@@ -842,6 +842,9 @@
     <ClInclude Include="zCSoundSystem.h">
       <Filter>ZenGin\Classes</Filter>
     </ClInclude>
+    <ClInclude Include="D3D11Upscaling.h">
+      <Filter>Engine\D3D11</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp" />
@@ -1143,6 +1146,9 @@
     </ClCompile>
     <ClCompile Include="zSndMss.cpp">
       <Filter>ZenGin\Classes</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D11Upscaling.cpp">
+      <Filter>Engine\D3D11</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>

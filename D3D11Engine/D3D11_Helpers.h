@@ -9,6 +9,7 @@
 template<UINT TNameLength>
 inline void SetDebugObjectName( _In_ ID3D11DeviceChild* resource, _In_z_ const char( &name )[TNameLength] ) {
 #if defined(_DEBUG) || defined(PROFILE) || defined(DEBUG_D3D11)
+    if ( !resource ) return;
     HRESULT nameSet = resource->SetPrivateData( WKPDID_D3DDebugObjectName, TNameLength - 1, name );
     if ( FAILED( nameSet ) ) LogError() << "Failed to set debug name";
 #endif
@@ -34,7 +35,7 @@ inline void SetDebugName( _In_  ID3D11DeviceChild* resource, const std::string& 
 inline void SetDebugName( _In_  ID3D11DeviceChild* resource, const char* debugName ) {
 #if defined(_DEBUG) || defined(PROFILE)|| defined(DEBUG_D3D11)
     if ( !resource ) return;
-    HRESULT nameSet = resource->SetPrivateData( WKPDID_D3DDebugObjectName, strlen(debugName), debugName );
+    HRESULT nameSet = resource->SetPrivateData( WKPDID_D3DDebugObjectName, std::strlen(debugName), debugName );
     if ( FAILED( nameSet ) ) LogError() << "Failed to set debug name";
 #endif
 }
@@ -47,10 +48,60 @@ inline void SetDebugName( _In_  IDXGIObject* resource, const std::string& debugN
 #endif
 }
 
-inline void SetDebugName( _In_  ID3D11Device1* resource, const std::string& debugName ) {
+inline void SetDebugName( _In_  ID3D11Device* resource, const std::string& debugName ) {
 #if defined(_DEBUG) || defined(PROFILE)|| defined(DEBUG_D3D11)
     if ( !resource ) return;
     HRESULT nameSet = resource->SetPrivateData( WKPDID_D3DDebugObjectName, debugName.size(), debugName.c_str() );
+    if ( FAILED( nameSet ) ) LogError() << "Failed to set debug name";
+#endif
+}
+
+template<UINT TNameLength>
+inline void SetDebugObjectName( _In_ ID3D11DeviceChild* resource, _In_z_ const wchar_t( &name )[TNameLength] ) {
+#if defined(_DEBUG) || defined(PROFILE) || defined(DEBUG_D3D11)
+    if ( !resource ) return;
+    HRESULT nameSet = resource->SetPrivateData( WKPDID_D3DDebugObjectNameW, (TNameLength - 1) * sizeof( wchar_t ), name);
+    if ( FAILED( nameSet ) ) LogError() << "Failed to set debug name";
+#endif
+}
+
+template<UINT TNameLength>
+inline void SetDebugObjectName( _In_ IDXGIObject* resource, _In_z_ const wchar_t( &name )[TNameLength] ) {
+#if defined(_DEBUG) || defined(PROFILE)|| defined(DEBUG_D3D11)
+    if ( !resource ) return;
+    HRESULT nameSet = resource->SetPrivateData( WKPDID_D3DDebugObjectNameW, (TNameLength - 1) * sizeof( wchar_t ), name );
+    if ( FAILED( nameSet ) ) LogError() << "Failed to set debug name";
+#endif
+}
+
+inline void SetDebugName( _In_  ID3D11DeviceChild* resource, const std::wstring& debugName ) {
+#if defined(_DEBUG) || defined(PROFILE)|| defined(DEBUG_D3D11)
+    if ( !resource ) return;
+    HRESULT nameSet = resource->SetPrivateData( WKPDID_D3DDebugObjectNameW, debugName.size() * sizeof( wchar_t ), debugName.c_str() );
+    if ( FAILED( nameSet ) ) LogError() << "Failed to set debug name";
+#endif
+}
+
+inline void SetDebugName( _In_  ID3D11DeviceChild* resource, const wchar_t* debugName ) {
+#if defined(_DEBUG) || defined(PROFILE)|| defined(DEBUG_D3D11)
+    if ( !resource ) return;
+    HRESULT nameSet = resource->SetPrivateData( WKPDID_D3DDebugObjectNameW, wcslen( debugName ) * sizeof( wchar_t ), debugName );
+    if ( FAILED( nameSet ) ) LogError() << "Failed to set debug name";
+#endif
+}
+
+inline void SetDebugName( _In_  IDXGIObject* resource, const std::wstring& debugName ) {
+#if defined(_DEBUG) || defined(PROFILE)|| defined(DEBUG_D3D11)
+    if ( !resource ) return;
+    HRESULT nameSet = resource->SetPrivateData( WKPDID_D3DDebugObjectNameW, debugName.size() * sizeof( wchar_t ), debugName.c_str() );
+    if ( FAILED( nameSet ) ) LogError() << "Failed to set debug name";
+#endif
+}
+
+inline void SetDebugName( _In_  ID3D11Device* resource, const std::wstring& debugName ) {
+#if defined(_DEBUG) || defined(PROFILE)|| defined(DEBUG_D3D11)
+    if ( !resource ) return;
+    HRESULT nameSet = resource->SetPrivateData( WKPDID_D3DDebugObjectNameW, debugName.size() * sizeof( wchar_t ), debugName.c_str() );
     if ( FAILED( nameSet ) ) LogError() << "Failed to set debug name";
 #endif
 }

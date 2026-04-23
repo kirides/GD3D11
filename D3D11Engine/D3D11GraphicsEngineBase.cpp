@@ -13,10 +13,6 @@ const unsigned int DRAWVERTEXARRAY_BUFFER_SIZE = 4096 * sizeof( ExVertexStruct )
 const int NUM_MAX_BONES = 96;
 const unsigned int INSTANCING_BUFFER_SIZE = sizeof( VobInstanceInfo ) * 2048;
 
-#if defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)
-extern bool haveWindAnimations;
-#endif
-
 // If defined, creates a debug-version of the d3d11-device
 //#define DEBUG_D3D11
 
@@ -232,77 +228,6 @@ XRESULT D3D11GraphicsEngineBase::DrawVertexArray( ExVertexStruct* vertices, unsi
     GetContext()->Draw( numVertices, startVertex );
 
     return XR_SUCCESS;
-}
-
-/** Constructs the makro list for shader compilation */
-void D3D11GraphicsEngineBase::ConstructShaderMakroList( std::vector<D3D_SHADER_MACRO>& list ) {
-    const GothicRendererSettings& s = Engine::GAPI->GetRendererState().RendererSettings;
-    D3D_SHADER_MACRO m;
-
-    m.Name = "SHD_ENABLE";
-    m.Definition = s.EnableShadows ? "1" : "0";
-    list.push_back( m );
-
-    m.Name = "SHD_FILTER_16TAP_PCF";
-    m.Definition = (s.ShadowFilterMode >= GothicRendererSettings::SHADOW_FILTER_SIMPLE) ? "1" : "0";
-    list.push_back( m );
-
-    m.Name = "SHD_FILTER_PCSS";
-    m.Definition = (s.ShadowFilterMode == GothicRendererSettings::SHADOW_FILTER_PCSS) ? "1" : "0";
-    list.push_back( m );
-
-    m.Name = "MAX_CSM_CASCADES";
-    m.Definition = TO_LITERAL( MAX_CSM_CASCADES );
-    list.push_back( m );
-
-    m.Name = "NUM_CSM_CASCADES";
-    static const char* staticNumbers[] = { "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15" };
-    m.Definition = staticNumbers[std::clamp<size_t>( s.NumShadowCascades, 1, MAX_CSM_CASCADES)];
-    list.push_back( m );
-
-    m.Name = "CSM_PCF_LIMIT";
-    m.Definition = staticNumbers[std::clamp<size_t>( s.ShadowCascadePCFLimit, 0, MAX_CSM_CASCADES )];
-    list.push_back( m );
-
-    m.Name = "SHADOW_ATLAS";
-    m.Definition = (FeatureLevel10Compatibility || s.DebugSettings.FeatureSet.UseShadowAtlas) ? "1" : "0";
-    list.push_back( m );
-
-    m.Name = "SHD_WIND";
-#ifdef BUILD_GOTHIC_2_6_fix
-    m.Definition = s.WindQuality == GothicRendererSettings::EWindQuality::WIND_QUALITY_ADVANCED ? "1" : "0";
-#else
-#ifdef BUILD_1_12F
-    m.Definition = "0";
-#else
-    m.Definition = (haveWindAnimations && s.WindQuality == GothicRendererSettings::EWindQuality::WIND_QUALITY_ADVANCED) ? "1" : "0";
-#endif
-#endif
-    list.push_back( m );
-
-    m.Name = "SHD_INFLUENCE";
-#ifdef BUILD_GOTHIC_2_6_fix
-    m.Definition = Engine::GAPI->GetRendererState().RendererSettings.HeroAffectsObjects ? "1" : "0";
-#else
-#ifdef BUILD_1_12F
-    m.Definition = "0";
-#else
-    m.Definition = (haveWindAnimations && Engine::GAPI->GetRendererState().RendererSettings.HeroAffectsObjects) ? "1" : "0";
-#endif
-#endif
-    list.push_back( m );
-
-    m.Name = "SHD_WATERANI";
-#ifdef BUILD_GOTHIC_2_6_fix
-    m.Definition = s.EnableWaterAnimation ? "1" : "0";
-#else
-    m.Definition = "0";
-#endif
-    list.push_back( m );
-
-    m.Name = nullptr;
-    m.Definition = nullptr;
-    list.push_back( m );
 }
 
 /** Sets the active pixel shader object */

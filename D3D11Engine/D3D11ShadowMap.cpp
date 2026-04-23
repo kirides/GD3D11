@@ -1138,12 +1138,12 @@ void D3D11ShadowMap::RenderShadowmaps( const RenderShadowmapsParams& params ) {
 
         XMVECTOR cameraPosition = XMLoadFloat3( &params.CameraPosition );
         int timerLabelIndex = std::clamp(params.CascadeIndex, 0, MAX_CSM_CASCADES-1);
-        static const char* timer_labels_cascades[MAX_CSM_CASCADES]
+        static const wchar_t* timer_labels_cascades[MAX_CSM_CASCADES]
         {
-            "Cascade 0",
-            "Cascade 1",
-            "Cascade 2",
-            "Cascade 3",
+            L"Cascade 0",
+            L"Cascade 1",
+            L"Cascade 2",
+            L"Cascade 3",
         };
         auto _1 = START_TIMING(timer_labels_cascades[timerLabelIndex]);
         graphicsEngine->DrawWorldAroundForWorldShadow( cameraPosition, 2, params );

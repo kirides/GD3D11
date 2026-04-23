@@ -6,6 +6,7 @@
 #include "D3D11HDShader.h"
 #include "D3D11GShader.h"
 #include "D3D11CShader.h"
+#include <functional>
 #include <type_traits>
 #include <string_view>
 
@@ -20,6 +21,12 @@ public:
     int layout;						//Shader's input layout
     std::vector<D3D_SHADER_MACRO> shaderMakros;
     ShaderCategory contentCategory;	//Content category for selective reloading
+    size_t compiledHash = 0;			//Hash of last successful compilation (file timestamp + macros)
+
+    // Optional: builds per-shader dynamic macros (renderer-settings-dependent) at compile/hash time.
+    // Only macros this shader actually uses should be emitted — keeps hashing precise.
+    using MacroBuilder = std::function<void( std::vector<D3D_SHADER_MACRO>& )>;
+    MacroBuilder macroBuilder;
 
     /** Builder-style factory: infers name, type, and entrypoint from enum template parameter */
     template<auto ID>
@@ -38,7 +45,8 @@ public:
 
     /** Chainable setters for builder pattern */
     ShaderInfo& with_layout( int l ) { layout = l; return *this; }
-    ShaderInfo& with_macros( const std::vector<D3D_SHADER_MACRO>& m ) { shaderMakros = m; return *this; }
+    ShaderInfo& with_macros( std::vector<D3D_SHADER_MACRO> m ) { shaderMakros = std::move(m); return *this; }
+    ShaderInfo& with_macros( MacroBuilder b ) { macroBuilder = std::move( b ); return *this; }
     ShaderInfo& with_category( ShaderCategory c ) { contentCategory = c; return *this; }
     ShaderInfo& with_entrypoint( std::string ep ) { entryPoint = std::move( ep ); return *this; }
 
@@ -97,7 +105,7 @@ public:
     std::shared_ptr<D3D11CShader> GetCShader( CShaderID id ) { return CShaders[static_cast<size_t>(id)]; }
 
 private:
-    XRESULT CompileShader( const ShaderInfo& si );
+    XRESULT CompileShader( ShaderInfo& si );
 
     void UpdateVShader( size_t index, D3D11VShader* shader ) { std::unique_lock<std::mutex> lock( _VShaderMutex ); VShaders[index].reset( shader ); }
     void UpdatePShader( size_t index, D3D11PShader* shader ) { std::unique_lock<std::mutex> lock( _PShaderMutex );  PShaders[index].reset( shader ); }

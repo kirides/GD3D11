@@ -123,6 +123,9 @@ const int NUM_MAX_BONES = 96;
 
 extern bool FeatureLevel10Compatibility;
 extern bool FeatureRTArrayIndexFromAnyShader;
+#if !defined(BUILD_GOTHIC_2_6_fix) && !defined(BUILD_1_12F)
+extern bool haveWindAnimations;
+#endif
 
 D3D11ShaderManager::D3D11ShaderManager()
     : VShaders( static_cast<size_t>(VShaderID::COUNT) )
@@ -169,12 +172,9 @@ HRESULT D3D11ShaderManager::CompileShaderFromFile( const WCHAR* szFileName, LPCS
     dwShaderFlags |= D3DCOMPILE_OPTIMIZATION_LEVEL3
     ;
 
-    // Construct makros
-    std::vector<D3D_SHADER_MACRO> m;
-    D3D11GraphicsEngineBase::ConstructShaderMakroList( m );
-
-    // Push these to the front
-    m.insert( m.begin(), makros.begin(), makros.end() );
+    // Build the final macro list, adding the required null terminator for D3DCompileFromFile
+    std::vector<D3D_SHADER_MACRO> m = makros;
+    m.push_back( {nullptr, nullptr} );
 
     Microsoft::WRL::ComPtr<ID3DBlob> pErrorBlob;
 
@@ -202,9 +202,7 @@ HRESULT D3D11ShaderManager::CompileShaderFromFile( const WCHAR* szFileName, LPCS
 /** Creates list with ShaderInfos */
 XRESULT D3D11ShaderManager::Init() {
     Shaders = std::vector<ShaderInfo>();
-
-    D3D_SHADER_MACRO m;
-    std::vector<D3D_SHADER_MACRO> makros;
+    static const char* sNums[] = { "0","1","2","3","4","5","6","7","8","9","10","11","12","13","14","15" };
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_Ex>( "VS_Ex.hlsl" )
         .with_layout( 1 )  );
@@ -216,7 +214,15 @@ XRESULT D3D11ShaderManager::Init() {
         .with_layout( 1 )  );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExWater>( "VS_ExWater.hlsl" )
-        .with_layout( 1 ) );
+        .with_layout( 1 )
+        .with_macros( [](std::vector<D3D_SHADER_MACRO>& list) {
+            const auto& s = Engine::GAPI->GetRendererState().RendererSettings;
+#ifdef BUILD_GOTHIC_2_6_fix
+            list.push_back( {"SHD_WATERANI", s.EnableWaterAnimation ? "1" : "0"} );
+#else
+            list.push_back( {"SHD_WATERANI", "0"} );
+#endif
+        }) );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ParticlePoint>( "VS_ParticlePoint.hlsl" )
         .with_layout( 11 ) );
@@ -243,7 +249,20 @@ XRESULT D3D11ShaderManager::Init() {
         .with_layout( 7 ) );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExInstancedObj>( "VS_ExInstancedObj.hlsl" )
-        .with_layout( 10 )  );
+        .with_layout( 10 )
+        .with_macros( [](std::vector<D3D_SHADER_MACRO>& list) {
+            const auto& s = Engine::GAPI->GetRendererState().RendererSettings;
+#ifdef BUILD_GOTHIC_2_6_fix
+            list.push_back( {"SHD_WIND",      s.WindQuality == GothicRendererSettings::EWindQuality::WIND_QUALITY_ADVANCED ? "1" : "0"} );
+            list.push_back( {"SHD_INFLUENCE", s.HeroAffectsObjects ? "1" : "0"} );
+#elif defined(BUILD_1_12F)
+            list.push_back( {"SHD_WIND",      "0"} );
+            list.push_back( {"SHD_INFLUENCE", "0"} );
+#else
+            list.push_back( {"SHD_WIND",      (haveWindAnimations && s.WindQuality == GothicRendererSettings::EWindQuality::WIND_QUALITY_ADVANCED) ? "1" : "0"} );
+            list.push_back( {"SHD_INFLUENCE", (haveWindAnimations && s.HeroAffectsObjects) ? "1" : "0"} );
+#endif
+        }) );
 
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExInstanced>( "VS_ExInstanced.hlsl" )
@@ -265,10 +284,8 @@ XRESULT D3D11ShaderManager::Init() {
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_Rain>( "PS_Rain.hlsl" ) );
 
-    makros.push_back( D3D_SHADER_MACRO{ "SNOW_FEATURE", "1" } );
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_Rain_Snow>( "PS_Rain.hlsl" )
-        .with_macros( makros ) );
-    makros.clear();
+        .with_macros( { { "SNOW_FEATURE", "1" } }));
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_Transparency>( "PS_Transparency.hlsl" )  );
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_TransparencySkel>( "PS_TransparencySkel.hlsl" )  );
@@ -308,24 +325,22 @@ XRESULT D3D11ShaderManager::Init() {
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_LumConvert>( "PS_PFX_LumConvert.hlsl" ) );
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_LumAdapt>( "PS_PFX_LumAdapt.hlsl" )  );
 
-    m.Name = "USE_TONEMAP";
-    m.Definition = "4";
-    makros.push_back( m );
-
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_HDR>( "PS_PFX_HDR.hlsl" )
-        .with_macros( makros )  );
-    makros.clear();
+        .with_category(ShaderCategory::Tonemapping)
+        .with_macros( []( std::vector<D3D_SHADER_MACRO>& list ) {
+            const auto& s = Engine::GAPI->GetRendererState().RendererSettings;
+            list.push_back( { "USE_TONEMAP", sNums[std::clamp( size_t(s.HDRToneMap), size_t(0), std::size(sNums)-1)]});
+        } )  );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_GodRayMask>( "PS_PFX_GodRayMask.hlsl" ) );
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_GodRayZoom>( "PS_PFX_GodRayZoom.hlsl" ) );
 
-    m.Name = "USE_TONEMAP";
-    m.Definition = "4";
-    makros.push_back( m );
-
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_Tonemap>( "PS_PFX_Tonemap.hlsl" )
-        .with_macros( makros )  );
-    makros.clear();
+        .with_category(ShaderCategory::Tonemapping)
+        .with_macros( []( std::vector<D3D_SHADER_MACRO>& list ) {
+            const auto& s = Engine::GAPI->GetRendererState().RendererSettings;
+            list.push_back( { "USE_TONEMAP", sNums[std::clamp( size_t( s.HDRToneMap ), size_t( 0 ), std::size( sNums ) - 1 )] } );
+        } ) );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_AtmosphereGround>( "PS_AtmosphereGround.hlsl" )  );
 
@@ -343,142 +358,87 @@ XRESULT D3D11ShaderManager::Init() {
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_DS_PointLightDynShadow>( "PS_DS_PointLightDynShadow.hlsl" )
         .with_category( ShaderCategory::LightsAndShadows ) );
 
+    // Shadow macro builder shared by both atmospheric scattering shader variants
+    ShaderInfo::MacroBuilder shadowMacroBuilder = [](std::vector<D3D_SHADER_MACRO>& list) {
+        const auto& s = Engine::GAPI->GetRendererState().RendererSettings;
+        list.push_back( {"SHD_ENABLE",           s.EnableShadows ? "1" : "0"} );
+        list.push_back( {"SHD_FILTER_16TAP_PCF", (s.ShadowFilterMode >= GothicRendererSettings::SHADOW_FILTER_SIMPLE) ? "1" : "0"} );
+        list.push_back( {"SHD_FILTER_PCSS",      (s.ShadowFilterMode == GothicRendererSettings::SHADOW_FILTER_PCSS) ? "1" : "0"} );
+        list.push_back( {"MAX_CSM_CASCADES",     TO_LITERAL(MAX_CSM_CASCADES)} );
+        list.push_back( {"NUM_CSM_CASCADES",     sNums[std::clamp<size_t>(s.NumShadowCascades, 1, MAX_CSM_CASCADES)]} );
+        list.push_back( {"CSM_PCF_LIMIT",        sNums[std::clamp<size_t>(s.ShadowCascadePCFLimit, 0, MAX_CSM_CASCADES)]} );
+        list.push_back( {"SHADOW_ATLAS",         (FeatureLevel10Compatibility || s.DebugSettings.FeatureSet.UseShadowAtlas) ? "1" : "0"} );
+    };
+
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_DS_AtmosphericScattering>( "PS_DS_AtmosphericScattering.hlsl" )
-        .with_category( ShaderCategory::LightsAndShadows ) // see ConstructShaderMakroList 
-        );
+        .with_macros( shadowMacroBuilder )
+        .with_category( ShaderCategory::LightsAndShadows ) );
 
     Shaders.push_back( ShaderInfo::make<GShaderID::GS_VertexNormals>( "GS_VertexNormals.hlsl" ) );
 
-    m.Name = "NORMALMAPPING";
-    m.Definition = "0";
-    makros.push_back( m );
-
-    m.Name = "ALPHATEST";
-    m.Definition = "0";
-    makros.push_back( m );
-
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_Diffuse>( "PS_Diffuse.hlsl" )
-        .with_macros( makros )  );
+        .with_macros( {
+            {"NORMALMAPPING", "0"},
+            {"ALPHATEST", "0"}
+        } ) );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_PortalDiffuse>( "PS_PortalDiffuse.hlsl" ) ); //forest portals, doors, etc.
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_WaterfallFoam>( "PS_WaterfallFoam.hlsl" ) );     //foam on at the base of waterfalls
 
-    makros.clear();
-
-    m.Name = "APPLY_RAIN_EFFECTS";
-    m.Definition = "1";
-    makros.push_back( m );
-
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_DS_AtmosphericScattering_Rain>( "PS_DS_AtmosphericScattering.hlsl" )
-        .with_macros( makros )
+        .with_macros( { { "APPLY_RAIN_EFFECTS", "1" } })
+        .with_macros( shadowMacroBuilder )
         .with_category( ShaderCategory::LightsAndShadows ) );
-
-    makros.clear();
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_LinDepth>( "PS_LinDepth.hlsl" )  );
 
-
-    m.Name = "NORMALMAPPING";
-    m.Definition = "1";
-    makros.push_back( m );
-
-    m.Name = "ALPHATEST";
-    m.Definition = "0";
-    makros.push_back( m );
-
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_DiffuseNormalmapped>( "PS_Diffuse.hlsl" )
-        .with_macros( makros )  );
-
-    makros.clear();
-    m.Name = "NORMALMAPPING";
-    m.Definition = "1";
-    makros.push_back( m );
-
-    m.Name = "ALPHATEST";
-    m.Definition = "0";
-    makros.push_back( m );
-
-    m.Name = "FXMAP";
-    m.Definition = "1";
-    makros.push_back( m );
+        .with_macros( {
+            {"NORMALMAPPING", "1"},
+            {"ALPHATEST", "0"},
+        } ) );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_DiffuseNormalmappedFxMap>( "PS_Diffuse.hlsl" )
-        .with_macros( makros )  );
+        .with_macros( {
+            {"NORMALMAPPING", "1"},
+            {"ALPHATEST", "0"},
+            {"FXMAP", "1"}
+        } ) );
 
-    makros.clear();
-    m.Name = "NORMALMAPPING";
-    m.Definition = "0";
-    makros.push_back( m );
-
-    m.Name = "ALPHATEST";
-    m.Definition = "1";
-    makros.push_back( m );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_DiffuseAlphaTest>( "PS_Diffuse.hlsl" )
-        .with_macros( makros ) );
-
-    makros.clear();
-    m.Name = "NORMALMAPPING";
-    m.Definition = "0";
-    makros.push_back( m );
-
-    m.Name = "ALPHATEST_SHADOWS";
-    m.Definition = "1";
-    makros.push_back( m );
+        .with_macros( {
+            {"NORMALMAPPING", "0"},
+            {"ALPHATEST", "1"},
+        } ) );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_DiffuseAlphaTestShadows>( "PS_Diffuse.hlsl" )
-        .with_macros( makros )  );
-
-    makros.clear();
-    m.Name = "NORMALMAPPING";
-    m.Definition = "1";
-    makros.push_back( m );
-
-    m.Name = "ALPHATEST";
-    m.Definition = "1";
-    makros.push_back( m );
+        .with_macros( {
+            {"NORMALMAPPING", "0"},
+            {"ALPHATEST_SHADOWS", "1"},
+            } ) );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_DiffuseNormalmappedAlphaTest>( "PS_Diffuse.hlsl" )
-        .with_macros( makros )  );
-
-    makros.clear();
-    m.Name = "NORMALMAPPING";
-    m.Definition = "1";
-    makros.push_back( m );
-
-    m.Name = "ALPHATEST";
-    m.Definition = "1";
-    makros.push_back( m );
-
-    m.Name = "FXMAP";
-    m.Definition = "1";
-    makros.push_back( m );
+        .with_macros( {
+            {"NORMALMAPPING", "1"},
+            {"ALPHATEST", "1"},
+        } ) );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_DiffuseNormalmappedAlphaTestFxMap>( "PS_Diffuse.hlsl" )
-        .with_macros( makros )  );
+        .with_macros( {
+            {"NORMALMAPPING", "1"},
+            {"ALPHATEST", "1"},
+            {"FXMAP", "1"}
+        } ) );
 
-    makros.clear();
-    m.Name = "RENDERMODE";
-    m.Definition = "0";
-    makros.push_back( m );
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_Preview_White>( "PS_Preview.hlsl" )
-        .with_macros( makros ) );
+        .with_macros( { {"RENDERMODE", "0"} }));
 
-    makros.clear();
-    m.Name = "RENDERMODE";
-    m.Definition = "1";
-    makros.push_back( m );
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_Preview_Textured>( "PS_Preview.hlsl" )
-        .with_macros( makros ) );
+        .with_macros( { {"RENDERMODE", "1"} } ) );
 
-    makros.clear();
-    m.Name = "RENDERMODE";
-    m.Definition = "2";
-    makros.push_back( m );
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_Preview_TexturedLit>( "PS_Preview.hlsl" )
-        .with_macros( makros ) );
-
-    makros.clear();
+        .with_macros( { {"RENDERMODE", "2"} } ) );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_Sharpen>( "PS_PFX_Sharpen.hlsl" ) );
 
@@ -552,7 +512,67 @@ XRESULT D3D11ShaderManager::Init() {
     return XR_SUCCESS;
 }
 
-XRESULT D3D11ShaderManager::CompileShader( const ShaderInfo& si ) {
+static size_t HashCombine( size_t seed, size_t val ) noexcept {
+    return seed ^ (val + 0x9e3779b9 + (seed << 6) + (seed >> 2));
+}
+
+static size_t ComputeShaderHash( const ShaderInfo& si ) {
+    size_t h = 0;
+
+    // Hash file last-modified timestamp
+    std::string fullPath = Engine::GAPI->GetStartDirectory() + "\\system\\GD3D11\\shaders\\" + si.fileName;
+    std::error_code ec;
+    auto lwt = std::filesystem::last_write_time( std::filesystem::path( fullPath ), ec );
+    if ( !ec ) {
+        h = HashCombine( h, static_cast<size_t>(lwt.time_since_epoch().count()) );
+    }
+
+    // Hash per-shader macros
+    for ( const auto& macro : si.shaderMakros ) {
+        if ( macro.Name )       h = HashCombine( h, std::hash<std::string_view>{}( macro.Name ) );
+        if ( macro.Definition ) h = HashCombine( h, std::hash<std::string_view>{}( macro.Definition ) );
+    }
+
+    // Hash dynamic macros via the per-shader builder (only macros this shader actually uses).
+    // Shaders without a builder have no renderer-setting-dependent macros to hash.
+    if ( si.macroBuilder ) {
+        std::vector<D3D_SHADER_MACRO> dynamicMakros;
+        si.macroBuilder( dynamicMakros );
+        for ( const auto& macro : dynamicMakros ) {
+            if ( macro.Name )       h = HashCombine( h, std::hash<std::string_view>{}( macro.Name ) );
+            if ( macro.Definition ) h = HashCombine( h, std::hash<std::string_view>{}( macro.Definition ) );
+        }
+    }
+
+    return h;
+}
+
+XRESULT D3D11ShaderManager::CompileShader( ShaderInfo& si ) {
+    // Compute hash (file timestamp + per-shader macros + global renderer macros).
+    // Skip recompilation when the shader is already loaded and nothing has changed.
+    size_t newHash = ComputeShaderHash( si );
+
+    auto IsKnown = [&]() -> bool {
+        switch ( si.type ) {
+        case ShaderType::Vertex:     return IsVShaderKnown( si.shaderIndex );
+        case ShaderType::Pixel:      return IsPShaderKnown( si.shaderIndex );
+        case ShaderType::Geometry:   return IsGShaderKnown( si.shaderIndex );
+        case ShaderType::HullDomain: return IsHDShaderKnown( si.shaderIndex );
+        case ShaderType::Compute:    return IsCShaderKnown( si.shaderIndex );
+        default: return false;
+        }
+    };
+
+    if ( IsKnown() && newHash != 0 && si.compiledHash == newHash ) {
+        return XR_SUCCESS;
+    }
+
+    // Build compile-time macro list: static shaderMakros merged with any dynamic builder macros.
+    std::vector<D3D_SHADER_MACRO> compileMakros = si.shaderMakros;
+    if ( si.macroBuilder ) {
+        si.macroBuilder( compileMakros );
+    }
+
     //Check if shader src-file exists
     std::string fileName = Engine::GAPI->GetStartDirectory() + "\\system\\GD3D11\\shaders\\" + si.fileName;
     if ( FILE* f = fopen( fileName.c_str(), "r" ) ) {
@@ -564,19 +584,21 @@ XRESULT D3D11ShaderManager::CompileShader( const ShaderInfo& si ) {
                 if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog )
                     LogInfo() << "Reloading shader: " << si.name;
 
-                if ( XR_SUCCESS != vs->LoadShader( si, ("system\\GD3D11\\shaders\\" + si.fileName).c_str() ) ) {
+                if ( XR_SUCCESS != vs->LoadShader( si, compileMakros, ("system\\GD3D11\\shaders\\" + si.fileName).c_str() ) ) {
                     LogError() << "Failed to reload shader: " << si.fileName;
 
                     delete vs;
                 } else {
                     UpdateVShader( si.shaderIndex, vs );
+                    si.compiledHash = newHash;
                 }
             } else {
                 if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog )
                     LogInfo() << "Loading shader: " << si.name;
 
-                XLE( vs->LoadShader( si, ("system\\GD3D11\\shaders\\" + si.fileName).c_str() ) );
+                XLE( vs->LoadShader( si, compileMakros, ("system\\GD3D11\\shaders\\" + si.fileName).c_str() ) );
                 UpdateVShader( si.shaderIndex, vs );
+                si.compiledHash = newHash;
             }
         } else if ( si.type == ShaderType::Pixel ) {
             // See if this is a reload
@@ -585,19 +607,21 @@ XRESULT D3D11ShaderManager::CompileShader( const ShaderInfo& si ) {
                 if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog )
                     LogInfo() << "Reloading shader: " << si.name;
 
-                if ( XR_SUCCESS != ps->LoadShader( si, ("system\\GD3D11\\shaders\\" + si.fileName).c_str() ) ) {
+                if ( XR_SUCCESS != ps->LoadShader( si, compileMakros, ("system\\GD3D11\\shaders\\" + si.fileName).c_str() ) ) {
                     LogError() << "Failed to reload shader: " << si.fileName;
 
                     delete ps;
                 } else {
                     UpdatePShader( si.shaderIndex, ps );
+                    si.compiledHash = newHash;
                 }
             } else {
                 if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog )
                     LogInfo() << "Loading shader: " << si.name;
 
-                XLE( ps->LoadShader( si, ("system\\GD3D11\\shaders\\" + si.fileName).c_str() ) );
+                XLE( ps->LoadShader( si, compileMakros, ("system\\GD3D11\\shaders\\" + si.fileName).c_str() ) );
                 UpdatePShader( si.shaderIndex, ps );
+                si.compiledHash = newHash;
             }
         } else if ( si.type == ShaderType::Geometry ) {
             // See if this is a reload
@@ -606,20 +630,22 @@ XRESULT D3D11ShaderManager::CompileShader( const ShaderInfo& si ) {
                 if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog )
                     LogInfo() << "Reloading shader: " << si.name;
 
-                if ( XR_SUCCESS != gs->LoadShader( ("system\\GD3D11\\shaders\\" + si.fileName).c_str(), si.shaderMakros, si.layout != 0, si.layout ) ) {
+                if ( XR_SUCCESS != gs->LoadShader( ("system\\GD3D11\\shaders\\" + si.fileName).c_str(), compileMakros, si.layout != 0, si.layout ) ) {
                     LogError() << "Failed to reload shader: " << si.fileName;
 
                     delete gs;
                 } else {
                     // Compilation succeeded, switch the shader
                     UpdateGShader( si.shaderIndex, gs );
+                    si.compiledHash = newHash;
                 }
             } else {
                 if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog )
                     LogInfo() << "Loading shader: " << si.name;
 
-                XLE( gs->LoadShader( ("system\\GD3D11\\shaders\\" + si.fileName).c_str(), si.shaderMakros, si.layout != 0, si.layout ) );
+                XLE( gs->LoadShader( ("system\\GD3D11\\shaders\\" + si.fileName).c_str(), compileMakros, si.layout != 0, si.layout ) );
                 UpdateGShader( si.shaderIndex, gs );
+                si.compiledHash = newHash;
             }
         } else if ( si.type == ShaderType::Compute ) {
             // See if this is a reload
@@ -628,19 +654,21 @@ XRESULT D3D11ShaderManager::CompileShader( const ShaderInfo& si ) {
                 if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog )
                     LogInfo() << "Reloading shader: " << si.name;
 
-                if ( XR_SUCCESS != cs->LoadShader( ("system\\GD3D11\\shaders\\" + si.fileName).c_str(), !si.entryPoint.empty() ? si.entryPoint.c_str() : nullptr, si.shaderMakros ) ) {
+                if ( XR_SUCCESS != cs->LoadShader( ("system\\GD3D11\\shaders\\" + si.fileName).c_str(), !si.entryPoint.empty() ? si.entryPoint.c_str() : nullptr, compileMakros ) ) {
                     LogError() << "Failed to reload shader: " << si.fileName;
 
                     delete cs;
                 } else {
                     UpdateCShader( si.shaderIndex, cs );
+                    si.compiledHash = newHash;
                 }
             } else {
                 if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog )
                     LogInfo() << "Loading shader: " << si.name;
 
-                XLE( cs->LoadShader( ("system\\GD3D11\\shaders\\" + si.fileName).c_str(), !si.entryPoint.empty() ? si.entryPoint.c_str() : nullptr, si.shaderMakros ) );
+                XLE( cs->LoadShader( ("system\\GD3D11\\shaders\\" + si.fileName).c_str(), !si.entryPoint.empty() ? si.entryPoint.c_str() : nullptr, compileMakros ) );
                 UpdateCShader( si.shaderIndex, cs );
+                si.compiledHash = newHash;
             }
         }
 
@@ -660,11 +688,13 @@ XRESULT D3D11ShaderManager::CompileShader( const ShaderInfo& si ) {
             } else {
                 // Compilation succeeded, switch the shader
                 UpdateHDShader( si.shaderIndex, hds );
+                si.compiledHash = newHash;
             }
         } else {
             XLE( hds->LoadShader( ("system\\GD3D11\\shaders\\" + si.fileName).c_str(),
                 ("system\\GD3D11\\shaders\\" + si.fileName).c_str() ) );
             UpdateHDShader( si.shaderIndex, hds );
+            si.compiledHash = newHash;
         }
     }
     return XR_SUCCESS;
@@ -682,7 +712,7 @@ XRESULT D3D11ShaderManager::LoadShaders( ShaderCategory categories ) {
     LogInfo() << "Compiling/Reloading shaders with " << compilationTP->getNumThreads() << " threads";
     */
     LogInfo() << "Compiling/Reloading shaders";
-    for ( const ShaderInfo& si : Shaders ) {
+    for ( ShaderInfo& si : Shaders ) {
         // Determine shader type category
         ShaderCategory shaderTypeCategory = ShaderCategory::None;
         if ( si.type == ShaderType::Vertex ) {
@@ -760,10 +790,10 @@ void D3D11ShaderManager::UpdateShaderInfo( ShaderInfo& shader ) {
     for ( size_t i = 0; i < Shaders.size(); i++ ) {
         if ( Shaders[i].type == shader.type && Shaders[i].shaderIndex == shader.shaderIndex ) {
             Shaders[i] = shader;
-            CompileShader( shader );
+            CompileShader( Shaders[i] );
             return;
         }
     }
     Shaders.push_back( shader );
-    CompileShader( shader );
+    CompileShader( Shaders.back() );
 }
