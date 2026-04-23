@@ -989,7 +989,7 @@ struct GothicRendererTiming {
     }
 
     float TotalMS;
-    std::vector<std::pair<const char*, float>> frameRecordings;
+    std::vector<std::pair<const wchar_t*, float>> frameRecordings;
 
 private:
     BasicTimer _timer;
@@ -998,20 +998,19 @@ private:
 
 class TimerScope {
 public:
-    TimerScope( const char* label, std::vector<std::pair<const char*, float>>* collection )
+    TimerScope( const wchar_t* label, std::vector<std::pair<const wchar_t*, float>>* collection )
         : _timer( {} ),
         _type( label ),
         _collection(collection) {
-        _timer.Update();
     }
     ~TimerScope() {
-        _timer.Update();
-        _collection->push_back( std::make_pair( _type, _timer.GetDelta() * 1000.0f ) );
+        const float delta = _timer.GetDelta();
+        _collection->push_back( std::make_pair( _type, delta * 1000.0f ) );
     }
 private:
-    BasicTimer _timer;
-    std::vector<std::pair<const char*, float>>* _collection;
-    const char* _type;
+    OneShotTimer _timer;
+    std::vector<std::pair<const wchar_t*, float>>* _collection;
+    const wchar_t* _type;
 };
 
 struct GothicRendererInfo {

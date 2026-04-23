@@ -1247,7 +1247,7 @@ void GothicAPI::DrawWorldMeshNaive() {
     FrameMeshInstances.clear();
 
     {
-        auto _ = START_TIMING( "World Mesh" );
+        auto _ = START_TIMING( L"World Mesh" );
         auto _1 = Engine::GraphicsEngine->RecordGraphicsEvent( L"World Mesh" );
         
         if ( Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseMDI ) {
@@ -1265,7 +1265,7 @@ void GothicAPI::DrawWorldMeshNaive() {
     const auto cameraPosXm = GetCameraPositionXM();
 
     if ( RendererState.RendererSettings.DrawSkeletalMeshes ) {
-        auto _ = START_TIMING( "Animated Skeletal Meshes" );
+        auto _ = START_TIMING( L"Animated Skeletal Meshes" );
         auto _1 = Engine::GraphicsEngine->RecordGraphicsEvent( L"Animated Skeletal Meshes" );
 
         // Set up frustum for the camera

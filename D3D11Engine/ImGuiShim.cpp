@@ -11,6 +11,16 @@
 #include <algorithm>
 #include <chrono>
 #include <numeric>
+#include <codecvt>
+
+namespace ImGui {
+    void TextUnformatted( const wchar_t* text ) {
+        char dest[64];
+        auto len = WideCharToMultiByte(CP_UTF8, 0, text, -1, dest, sizeof(dest), NULL, NULL);
+        dest[std::min(static_cast<size_t>(len), sizeof(dest) - 1)] = '\0';
+        ImGui::TextUnformatted( dest );
+    }
+}
 
 #if defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)
 extern bool haveWindAnimations;
@@ -1400,6 +1410,14 @@ void RenderAdvancedColumn3( GothicRendererSettings& settings, GothicAPI* gapi ) 
                 ImGui::Text( fmt, value );
                 };
 
+            static auto addRowFloatW = []( const wchar_t* label, float value, const char* fmt ) {
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex( 0 );
+                ImGui::TextUnformatted( label );
+                ImGui::TableSetColumnIndex( 1 );
+                ImGui::Text( fmt, value );
+                };
+
             addRowInt( "FPS", rendererInfo.FPS );
             addRowUInt( "StateChanges", rendererInfo.StateChanges );
             addRowInt( "DrawnVobs", rendererInfo.FrameDrawnVobs );
@@ -1412,10 +1430,10 @@ void RenderAdvancedColumn3( GothicRendererSettings& settings, GothicAPI* gapi ) 
             addRowFloat( "NearPlane", rendererInfo.NearPlane, "%.0f" );
 
             rendererInfo.Timing.StopTotal();
-            rendererInfo.Timing.frameRecordings.push_back({"Total", rendererInfo.Timing.TotalMS});
+            rendererInfo.Timing.frameRecordings.push_back({L"Total", rendererInfo.Timing.TotalMS});
             
-            static std::unordered_map<const char*, std::vector<float>> timingHistory;
-            static std::unordered_map<const char*, float> timingAvg;
+            static std::unordered_map<const wchar_t*, std::vector<float>> timingHistory;
+            static std::unordered_map<const wchar_t*, float> timingAvg;
             static std::chrono::time_point<std::chrono::steady_clock> lastUpdate = std::chrono::steady_clock::now();
             for ( auto& record : rendererInfo.Timing.frameRecordings ) {
                 timingHistory[record.first].push_back(record.second);
@@ -1439,7 +1457,7 @@ void RenderAdvancedColumn3( GothicRendererSettings& settings, GothicAPI* gapi ) 
             
             // Anzeige: aktuelle Werte, Durchschnitt und Perzentil
             for ( auto& record : rendererInfo.Timing.frameRecordings ) {
-                addRowFloat( record.first, timingAvg[record.first], "%05.2f" );
+                addRowFloatW( record.first, timingAvg[record.first], "%05.2f" );
             }
 
             addRowInt( "SC_PipelineStates", rendererInfo.FramePipelineStates );

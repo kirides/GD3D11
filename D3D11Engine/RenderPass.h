@@ -9,9 +9,9 @@ class RenderPass {
     friend class RenderGraph;
 
 public:
-    RenderPass(std::wstring name ) : m_name(std::move(name)) {}
+    RenderPass(const wchar_t* name ) : m_name(name) {}
 
-    std::wstring m_name;
+    const wchar_t* m_name;
     std::vector<RGResourceHandle> m_reads;  // Sources
     std::vector<RGResourceHandle> m_writes; // Sinks
 

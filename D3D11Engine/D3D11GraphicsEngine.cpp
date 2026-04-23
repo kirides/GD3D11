@@ -5396,26 +5396,26 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
     float sectionRange,
     const RenderShadowmapsParams& params ) {
     int timerLabelIndex = std::clamp(params.CascadeIndex, 0, MAX_CSM_CASCADES-1);
-    static const char* timer_labels_world_mesh[MAX_CSM_CASCADES]
+    static const wchar_t* timer_labels_world_mesh[MAX_CSM_CASCADES]
     {
-        "World Mesh 0",
-        "World Mesh 1",
-        "World Mesh 2",
-        "World Mesh 3",
+        L"World Mesh 0",
+        L"World Mesh 1",
+        L"World Mesh 2",
+        L"World Mesh 3",
     };
-    static const char* timer_labels_vobs[MAX_CSM_CASCADES]
+    static const wchar_t* timer_labels_vobs[MAX_CSM_CASCADES]
     {
-        "VOBs 0",
-        "VOBs 1",
-        "VOBs 2",
-        "VOBs 3",
+        L"VOBs 0",
+        L"VOBs 1",
+        L"VOBs 2",
+        L"VOBs 3",
     };
-    static const char* timer_labels_skeletal[MAX_CSM_CASCADES]
+    static const wchar_t* timer_labels_skeletal[MAX_CSM_CASCADES]
     {
-        "Skeletal Meshes 0",
-        "Skeletal Meshes 1",
-        "Skeletal Meshes 2",
-        "Skeletal Meshes 3",
+        L"Skeletal Meshes 0",
+        L"Skeletal Meshes 1",
+        L"Skeletal Meshes 2",
+        L"Skeletal Meshes 3",
     };
     
     // Setup renderstates
@@ -5893,7 +5893,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
     m_AlphaMeshes.reserve( 64 );
 
     {
-        auto _ = START_TIMING( "VOBs" );
+        auto _ = START_TIMING( L"VOBs" );
         SetDefaultStates();
 
         SetActivePixelShader( PShaderID::PS_Diffuse );
