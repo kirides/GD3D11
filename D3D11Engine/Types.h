@@ -200,6 +200,13 @@ struct float4 {
         return static_cast<DWORD>((a << 24) | (r << 16) | (g << 8) | b);
     }
 
+    bool operator==( const float4& b ) const noexcept {
+        return x == b.x 
+            && y == b.y
+            && z == b.z
+            && w == b.w;
+    }
+
     float x, y, z, w;
 };
 

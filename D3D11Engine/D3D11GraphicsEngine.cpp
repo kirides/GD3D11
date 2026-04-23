@@ -2061,10 +2061,15 @@ XRESULT D3D11GraphicsEngine::DrawVertexBufferFF( D3D11VertexBuffer* vb,
 
 /** Sets up texture with normalmap and fxmap for rendering */
 bool D3D11GraphicsEngine::BindTextureNRFX( zCTexture* tex, bool bindShader, bool updateMaterialInfo ) {
-    if ( tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) 
-        tex->Bind( 0 );
-    else
+    if ( tex->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
         return false;
+    }
+
+    ID3D11ShaderResourceView* srvs[3] = {
+        tex->GetSurface()->GetEngineTexture()->GetShaderResourceView().Get(),
+        nullptr, 
+        nullptr,
+    };
 
     MaterialInfo* info = nullptr;
     if ( updateMaterialInfo ) {
@@ -2081,20 +2086,24 @@ bool D3D11GraphicsEngine::BindTextureNRFX( zCTexture* tex, bool bindShader, bool
     }
 
     // Bind a default normalmap in case the scene is wet and we currently have none
-    if ( !tex->GetSurface()->GetNormalmap() ) {
+    if ( D3D11Texture* nrm = tex->GetSurface()->GetNormalmap() ) {
         // Modify the strength of that default normalmap for the material info
+        srvs[1] = nrm->GetShaderResourceView().Get();
+    } else {
         if ( info &&
             info->buffer.NormalmapStrength != DEFAULT_NORMALMAP_STRENGTH ) {
             info->buffer.NormalmapStrength = DEFAULT_NORMALMAP_STRENGTH;
             info->UpdateConstantbuffer();
         }
-
-        DistortionTexture->BindToPixelShader( 1 );
+        srvs[1] = DistortionTexture->GetShaderResourceView().Get();
     }
 
     if ( D3D11Texture* fxmap = tex->GetSurface()->GetFxMap() ) {
+        srvs[2] = fxmap->GetShaderResourceView().Get();
         fxmap->BindToPixelShader( 2 );
     }
+
+    GetContext()->PSSetShaderResources( 0, 3, srvs );
 
     // Select shader
     if ( bindShader ) {
@@ -6016,6 +6025,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                 .Update( &Engine::GAPI->GetRendererState().GraphicsState )
                 .Bind();
 
+            MaterialInfo* lastMatInfo = nullptr;
             for ( auto const& staticMeshVisual : activeVisuals ) {
                 if ( staticMeshVisual->Instances.empty() ) continue;
 
@@ -6139,11 +6149,12 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                         if ( !srv[1] ) {
                             // Modify the strength of that default normalmap for the
                             // material info
-                            if ( info->buffer.NormalmapStrength /* *
-                                                      Engine::GAPI->GetSceneWetness()*/
+                            if ( info->buffer.NormalmapStrength
                                 != DEFAULT_NORMALMAP_STRENGTH ) {
+                                // update values for distortion texture
                                 info->buffer.NormalmapStrength = DEFAULT_NORMALMAP_STRENGTH;
                                 info->UpdateConstantbuffer();
+                                lastMatInfo = info;
                             }
                             srv[1] = DistortionTexture->GetShaderResourceView().Get();
                         }
@@ -6153,9 +6164,11 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                         // Force alphatest on vobs for now
                         BindShaderForTexture( tx, true, 0 );
 
-                        if ( !info->Constantbuffer ) info->UpdateConstantbuffer();
-
-                        info->Constantbuffer->BindToPixelShader( materialInfoSlot );
+                            if ( info && !info->IsSame( lastMatInfo ) ) {
+                            	if ( !info->Constantbuffer ) info->UpdateConstantbuffer();
+                            	info->Constantbuffer->BindToPixelShader( materialInfoSlot );
+                                lastMatInfo = info;
+                            }
                     }
 
                     for ( unsigned int i = 0; i < mlist.size(); i++ ) {
