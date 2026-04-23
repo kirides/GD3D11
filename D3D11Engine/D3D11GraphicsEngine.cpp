@@ -7545,7 +7545,7 @@ void D3D11GraphicsEngine::DrawFrameParticles(
     bufferParticleColor->BindToPixelShader( Context.Get(), 1 );
     bufferParticleDistortion->BindToPixelShader( Context.Get(), 2 );
 
-    // Copy scene behind the particle systems
+    // Copy scene behind the particle systems 
     auto tempBuffer = PfxRenderer->GetTempBuffer();
     PfxRenderer->CopyTextureToRTV(
         HDRBackBuffer->GetShaderResView(),
@@ -7560,6 +7560,8 @@ void D3D11GraphicsEngine::DrawFrameParticles(
         tempBuffer->GetShaderResView(),
         HDRBackBuffer->GetRenderTargetView(),
         GetResolution(), true );
+
+    GetContext()->PSSetShaderResources( 1, 2, s_nullSRVs );
 }
 
 /** Called when a vob was removed from the world */
