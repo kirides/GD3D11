@@ -494,7 +494,7 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.ShadowFrustumCullingMode = GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_CONSERVATIVE;
         s.ShadowSoftness = 1.0f;
         s.SmoothShadowCameraUpdate = false;
-        s.SmoothShadowFrequency = 20000;
+        s.SmoothShadowFrequency = 1000;
         s.ShadowFilterMode = GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_SIMPLE;
 
         s.EnableDynamicLighting = true;
@@ -529,7 +529,7 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.ShadowFrustumCullingMode = GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_CONSERVATIVE;
         s.ShadowSoftness = 1.0f;
         s.SmoothShadowCameraUpdate = false;
-        s.SmoothShadowFrequency = 20000;
+        s.SmoothShadowFrequency = 1000;
         s.ShadowFilterMode = GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_PCSS;
 
         s.EnableDynamicLighting = true;
