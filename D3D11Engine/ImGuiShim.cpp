@@ -1071,14 +1071,13 @@ void RenderAdvancedColumn1( GothicRendererSettings& settings, GothicAPI* gapi ) 
 }
 
 
-void RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) {
+void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) {
     if ( ImGui::Begin( "General", nullptr, ImGuiWindowFlags_NoCollapse ) ) {
 
-        ImGui::Text( "Version: " );
-        ImGui::SameLine();
-        ImGui::Text( VERSION_NUMBER );
+        ImGui::Text( "Version: %s", VERSION_NUMBER );
 
         ImGui::Checkbox( "Enable DebugLog", &settings.EnableDebugLog );
+        ImGui::Checkbox( "Toggle frame stats", &m_FrameStatisticsVisible );
         if ( ImGui::Button( "Save ZEN-Resources", ImVec2( ImGui::GetContentRegionAvail().x, 30.f ) ) ) {
             gapi->SaveCustomZENResources();
         }
@@ -1576,30 +1575,43 @@ void ImGuiShim::RenderAdvancedSettingsWindow()
     IMGUI_CHECKVERSION();
 
     auto windowSize = CurrentResolution;
-    auto columnWidth = windowSize.x / 4;
+    
+    int numCols = m_FrameStatisticsVisible ? 4 : 3;
+    auto columnWidth = static_cast<float>(windowSize.x) / numCols;
     auto columnOffset = 0.0f;
-    auto columnHeight = std::max( 400.0f, windowSize.y / 2.f );
+    auto columnHeight = std::max( 400.0f, static_cast<float>(windowSize.y) / 2.f );
 
     GothicRendererSettings& settings = Engine::GAPI->GetRendererState().RendererSettings;
     FixupSettings(settings);
 
-    ImGui::SetNextWindowPos( ImVec2( columnOffset, 0.0f ), ImGuiCond_Appearing, ImVec2( 0, 0 ) );
-    ImGui::SetNextWindowSize( ImVec2( windowSize.x / 4, columnHeight ), ImGuiCond_Appearing );
+    static bool lastStatisticsVisible = m_FrameStatisticsVisible;
+    bool forceReappear = false;
+    if ( m_FrameStatisticsVisible != lastStatisticsVisible ) {
+        lastStatisticsVisible = m_FrameStatisticsVisible;
+        forceReappear = true;
+    }
+    int ImGuiCond_Appearing_Or_ForceReappear = forceReappear ? ImGuiCond_Always : ImGuiCond_Appearing;
+    
+    ImGui::SetNextWindowPos( ImVec2( columnOffset, 0.0f ), ImGuiCond_Appearing_Or_ForceReappear, ImVec2( 0, 0 ) );
+    ImGui::SetNextWindowSize( ImVec2( columnWidth, columnHeight ), ImGuiCond_Appearing_Or_ForceReappear );
     RenderAdvancedColumn1( settings, Engine::GAPI );
     columnOffset += columnWidth;
 
-    ImGui::SetNextWindowPos( ImVec2( columnOffset, 0.0f ), ImGuiCond_Appearing, ImVec2( 0, 0 ) );
-    ImGui::SetNextWindowSize( ImVec2( windowSize.x / 4, columnHeight ), ImGuiCond_Appearing );
+    ImGui::SetNextWindowPos( ImVec2( columnOffset, 0.0f ), ImGuiCond_Appearing_Or_ForceReappear, ImVec2( 0, 0 ) );
+    ImGui::SetNextWindowSize( ImVec2( columnWidth, columnHeight ), ImGuiCond_Appearing_Or_ForceReappear );
     RenderAdvancedColumn2( settings, Engine::GAPI );
     columnOffset += columnWidth;
 
-    ImGui::SetNextWindowPos( ImVec2( columnOffset, 0.0f ), ImGuiCond_Appearing, ImVec2( 0, 0 ) );
-    ImGui::SetNextWindowSize( ImVec2( windowSize.x / 4, columnHeight ), ImGuiCond_Appearing );
-    RenderAdvancedColumn3( settings, Engine::GAPI );
-    columnOffset += columnWidth;
+    if (m_FrameStatisticsVisible)
+    {
+        ImGui::SetNextWindowPos( ImVec2( columnOffset, 0.0f ), ImGuiCond_Appearing_Or_ForceReappear, ImVec2( 0, 0 ) );
+        ImGui::SetNextWindowSize( ImVec2( columnWidth, columnHeight ), ImGuiCond_Appearing_Or_ForceReappear );
+        RenderAdvancedColumn3( settings, Engine::GAPI );
+        columnOffset += columnWidth;
+    }
 
-    ImGui::SetNextWindowPos( ImVec2( columnOffset, 0.0f ), ImGuiCond_Appearing, ImVec2( 0, 0 ) );
-    ImGui::SetNextWindowSize( ImVec2( windowSize.x / 4, columnHeight ), ImGuiCond_Appearing );
+    ImGui::SetNextWindowPos( ImVec2( columnOffset, 0.0f ), ImGuiCond_Appearing_Or_ForceReappear, ImVec2( 0, 0 ) );
+    ImGui::SetNextWindowSize( ImVec2( columnWidth, columnHeight ), ImGuiCond_Appearing_Or_ForceReappear );
     RenderAdvancedColumn4( settings, Engine::GAPI );
 
 }

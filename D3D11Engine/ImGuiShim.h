@@ -68,6 +68,8 @@ public:
 private:
     void RenderSettingsWindow();
     void RenderAdvancedSettingsWindow();
+    void RenderAdvancedColumn2(GothicRendererSettings& settings, GothicAPI* gapi);
     bool m_lastFrameBlockGameInput = false;
+    bool m_FrameStatisticsVisible = false;
     std::unique_ptr<ImGuiEditorView> m_EditorView;
 };
