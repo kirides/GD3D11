@@ -603,7 +603,11 @@ void ImGuiShim::RenderSettingsWindow()
     ImVec2 buttonWidth( 275, 0 );
     auto& style = ImGui::GetStyle();
 
+#ifdef IS_DEV_BUILD
+    static const char* settingsLabel = "GD3D11 " VERSION_NUMBER " - (" BUILD_DATE ")";
+#else
     static const char* settingsLabel = "GD3D11 " VERSION_NUMBER;
+#endif
 
     ShaderCategory shadersToReload = ShaderCategory::None;
 
@@ -1074,8 +1078,12 @@ void RenderAdvancedColumn1( GothicRendererSettings& settings, GothicAPI* gapi ) 
 void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicAPI* gapi ) {
     if ( ImGui::Begin( "General", nullptr, ImGuiWindowFlags_NoCollapse ) ) {
 
+#ifdef IS_DEV_BUILD
+        ImGui::Text( "Version: %s", VERSION_NUMBER " - (" BUILD_DATE ")" );
+#else
         ImGui::Text( "Version: %s", VERSION_NUMBER );
-
+#endif
+        
         ImGui::Checkbox( "Enable DebugLog", &settings.EnableDebugLog );
         ImGui::Checkbox( "Toggle frame stats", &m_FrameStatisticsVisible );
         if ( ImGui::Button( "Save ZEN-Resources", ImVec2( ImGui::GetContentRegionAvail().x, 30.f ) ) ) {
