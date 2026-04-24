@@ -281,7 +281,14 @@ void D3D11PointLight::StartReInit() {
         InitDone = false;
 
         // Add to queue
-        Engine::WorkerThreadPool->enqueue( [this] { InitResources(); } );
+        Engine::WorkerThreadPool->enqueue( [this] (const CancellationToken& token)
+        {
+            if (token.isCancelled()) {
+                InitDone = true;
+                return;
+            }
+            InitResources();
+        } );
 
     } else {
         InitResources();
