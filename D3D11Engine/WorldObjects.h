@@ -88,6 +88,7 @@ struct MeshInfo {
     MeshInfo( MeshInfo&& other ) = default;
     MeshInfo& operator=( MeshInfo&& ) = default;
     MeshInfo( const MeshInfo& other ) = delete;
+    MeshInfo& operator=(const MeshInfo& other) = delete;
 
     virtual ~MeshInfo();
 
@@ -109,6 +110,7 @@ struct WorldMeshInfo : public MeshInfo {
     WorldMeshInfo( WorldMeshInfo&& other ) = default;
     WorldMeshInfo& operator=( WorldMeshInfo&& ) = default;
     WorldMeshInfo( const WorldMeshInfo& other ) = delete;
+    WorldMeshInfo& operator=(const WorldMeshInfo& other) = delete;
 
     ~WorldMeshInfo() override = default;
 
@@ -121,6 +123,7 @@ struct QuadMarkInfo {
     QuadMarkInfo( QuadMarkInfo&& other ) = default;
     QuadMarkInfo& operator=( QuadMarkInfo&& ) = default;
     QuadMarkInfo( const QuadMarkInfo& other ) = delete;
+    QuadMarkInfo& operator=(const QuadMarkInfo& other) = delete;
 
     ~QuadMarkInfo() = default;
 
@@ -138,6 +141,7 @@ struct SkeletalMeshInfo {
     SkeletalMeshInfo(SkeletalMeshInfo&& other) = default;
     SkeletalMeshInfo& operator=( SkeletalMeshInfo&& ) = default;
     SkeletalMeshInfo(const SkeletalMeshInfo& other) = delete;
+    SkeletalMeshInfo& operator=(const SkeletalMeshInfo& other) = delete;
 
     ~SkeletalMeshInfo();
 
@@ -155,8 +159,9 @@ class zCVisual;
 struct BaseVisualInfo {
     BaseVisualInfo() = default;
     BaseVisualInfo(BaseVisualInfo&& other) = default;
-    BaseVisualInfo& operator=( BaseVisualInfo&& ) = default;
+    BaseVisualInfo& operator=( BaseVisualInfo&& ) noexcept = default;
     BaseVisualInfo(const BaseVisualInfo& other) = delete;
+    BaseVisualInfo& operator=(const BaseVisualInfo& other) = delete;
 
     virtual ~BaseVisualInfo() {
         for ( auto& [k, meshes] : Meshes ) {
@@ -195,11 +200,13 @@ struct MeshVisualInfo : public BaseVisualInfo {
         StartInstanceNum = 0;
         FullMesh = nullptr;
         LastAniUpdateFrame = 0;
+        NeedsAlphaTesting = false;
     }
     
     MeshVisualInfo(MeshVisualInfo&& other) = default;
     MeshVisualInfo& operator=( MeshVisualInfo&& ) = default;
     MeshVisualInfo(const MeshVisualInfo& other) = delete;
+    MeshVisualInfo& operator=(const MeshVisualInfo& other) = delete;
 
     ~MeshVisualInfo() override
     {
@@ -243,6 +250,7 @@ struct SkeletalMeshVisualInfo : public BaseVisualInfo {
     SkeletalMeshVisualInfo(SkeletalMeshVisualInfo&& other) = default;
     SkeletalMeshVisualInfo& operator=( SkeletalMeshVisualInfo&& ) = default;
     SkeletalMeshVisualInfo(const SkeletalMeshVisualInfo& other) = delete;
+    SkeletalMeshVisualInfo& operator=(const SkeletalMeshVisualInfo& other) = delete;
     
     ~SkeletalMeshVisualInfo() override
     {
@@ -275,6 +283,7 @@ struct BaseVobInfo {
     BaseVobInfo(BaseVobInfo&& other) = default;
     BaseVobInfo& operator=( BaseVobInfo&& ) = default;
     BaseVobInfo(const BaseVobInfo& other) = delete;
+    BaseVobInfo& operator=(const BaseVobInfo& other) = delete;
     
     virtual ~BaseVobInfo() = default;
     /** Visual for this vob */
@@ -290,6 +299,7 @@ struct VobInfo : public BaseVobInfo {
     VobInfo(VobInfo&& other) = default;
     VobInfo& operator=( VobInfo&& ) = default;
     VobInfo(const VobInfo& other) = delete;
+    VobInfo& operator=(const VobInfo& other) = delete;
     
     ~VobInfo() override = default;
 
@@ -336,6 +346,7 @@ struct VobLightInfo {
     VobLightInfo(VobLightInfo&& other) = default;
     VobLightInfo& operator=( VobLightInfo&& ) = default;
     VobLightInfo(const VobLightInfo& other) = delete;
+    VobLightInfo& operator=(const VobLightInfo& other) = delete;
 
     ~VobLightInfo() = default;
 
@@ -364,10 +375,16 @@ struct VobLightInfo {
     bool VisibleInFrame;
 };
 
-
+static auto g_MatIdentity = XMFLOAT4X4(
+    1, 0, 0, 0,
+    0, 1, 0, 0,
+    0, 0, 1, 0,
+    0, 0, 0, 1
+);
 /** Holds the converted mesh of a VOB */
 struct SkeletalVobInfo : public BaseVobInfo {
-    SkeletalVobInfo() {
+    SkeletalVobInfo() : WorldMatrix(g_MatIdentity), PrevWorldMatrix(g_MatIdentity)
+    {
         Vob = nullptr;
         VisualInfo = nullptr;
         IndoorVob = false;
@@ -376,10 +393,11 @@ struct SkeletalVobInfo : public BaseVobInfo {
         HasValidPrevTransforms = false;
         LastAniUpdateFrame = 0;
     }
-    
+
     SkeletalVobInfo(SkeletalVobInfo&& other) = default;
     SkeletalVobInfo& operator=( SkeletalVobInfo&& ) = default;
     SkeletalVobInfo(const SkeletalVobInfo& other) = delete;
+    SkeletalVobInfo& operator=(const SkeletalVobInfo& other) = delete;
 
     ~SkeletalVobInfo() override
     {
@@ -391,7 +409,7 @@ struct SkeletalVobInfo : public BaseVobInfo {
             }
         }
 
-        delete VobConstantBuffer;
+        VobConstantBuffer.reset();
     }
 
     /** Updates the vobs constantbuffer */
@@ -404,7 +422,8 @@ struct SkeletalVobInfo : public BaseVobInfo {
     }
 
     /** Constantbuffer which holds this vobs world matrix */
-    D3D11ConstantBuffer* VobConstantBuffer;
+    D3D11ConstantBuffer* GetVobConstantBuffer() const { return VobConstantBuffer.get(); };
+    std::unique_ptr<D3D11ConstantBuffer> VobConstantBuffer;
 
     /** Map of visuals attached to nodes */
     phmap::flat_hash_map<int, std::vector<MeshVisualInfo*>> NodeAttachments;

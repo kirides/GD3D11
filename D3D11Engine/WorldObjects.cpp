@@ -41,7 +41,9 @@ void SkeletalVobInfo::UpdateVobConstantBuffer() {
     WorldMatrix = cb.World;
 
     if ( !VobConstantBuffer ) {
-        Engine::GraphicsEngine->CreateConstantBuffer( &VobConstantBuffer, &cb, sizeof( cb ) );
+        D3D11ConstantBuffer* d3dcb;
+        Engine::GraphicsEngine->CreateConstantBuffer( &d3dcb, &cb, sizeof( cb ) );
+        VobConstantBuffer.reset(d3dcb);
 #ifdef DEBUG_D3D11
         SetDebugName( VobConstantBuffer->Get().Get(), "VS_ExConstantBuffer_PerInstance::"+Vob->GetName());
 #endif
