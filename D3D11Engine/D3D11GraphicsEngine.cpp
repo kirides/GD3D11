@@ -6154,7 +6154,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
 
                         MaterialInfo::Buffer b = {};
 
-                        b.Color = itt.first.Material->GetColor();
+                        b.Color = meshKey.Material->GetColor();
                         ShaderManager->GetPShader( PShaderID::PS_DiffuseAlphaTest )->GetBuffer( "MI_MaterialInfo" ).Update( &b ).Bind();
 
                     } else {
