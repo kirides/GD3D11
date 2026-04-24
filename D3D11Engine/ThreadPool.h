@@ -29,6 +29,15 @@ public:
 	~ThreadPool();
 
 	size_t getNumThreads() { return numThreads; }
+    bool getIsBusy() {
+	    std::unique_lock<std::mutex> lock(queue_mutex);
+	    return !tasks.empty() || activeTasks.load() > 0;
+    }
+    void clearAndFlush() {
+        while ( getIsBusy() ) {
+            std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
+        }
+    }
 private:
 	// need to keep track of threads so we can join them
 	std::vector< std::thread > workers;
@@ -36,6 +45,7 @@ private:
 	std::queue< std::function<void()> > tasks;
 
 	// synchronization
+    std::atomic_int activeTasks;
 	std::mutex queue_mutex;
 	std::condition_variable condition;
 	bool stop;
@@ -59,13 +69,19 @@ inline ThreadPool::ThreadPool( const wchar_t* poolIdentifier, size_t threads )
 						std::unique_lock<std::mutex> lock( pool->queue_mutex );
 						pool->condition.wait( lock,
 							[pool] { return pool->stop || !pool->tasks.empty(); } );
+
+					    pool->activeTasks.fetch_add(1);
 						if ( pool->stop && pool->tasks.empty() )
+						{
+						    pool->activeTasks.fetch_sub(1);
 							return;
+						}
 						task = std::move( pool->tasks.front() );
 						pool->tasks.pop();
 					}
 
 					task();
+				    pool->activeTasks.fetch_sub(1);
 				}
 			}, this, i, identifier
 	);

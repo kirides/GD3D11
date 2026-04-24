@@ -48,6 +48,7 @@
 // TODO: REMOVE THIS!
 #include "D3D11GraphicsEngine.h"
 #include "MeshManager.h"
+#include "Threadpool.h"
 
 #ifndef PUBLIC_RELEASE
 #define OPT_DBG_NOINLINE __declspec(noinline)
@@ -711,9 +712,8 @@ void GothicAPI::RemoveVegetationBox( GVegetationBox* box ) {
 
 /** Resets the object, like at level load */
 void GothicAPI::ResetWorld() {
-    WorldSections.clear();
-
     ResetVobs();
+    WorldSections.clear();
 
     SAFE_DELETE( WrappedWorldMesh );
 
@@ -735,6 +735,18 @@ void GothicAPI::ReloadPlayerVob() {
 }
 /** Resets only the vobs */
 void GothicAPI::ResetVobs() {
+    
+    // complete what ever is currently working, and clear everything else.
+    Engine::WorkerThreadPool->clearAndFlush();
+    
+    // Delete light vobs, those depend on world sections and load stuff in the background.
+    // by deleting them first we block the thread until the destructor finished
+    for ( auto const& it : VobLightMap ) {
+        Engine::GraphicsEngine->OnVobRemovedFromWorld( it.first );
+        delete it.second;
+    }
+    VobLightMap.clear();
+    
     // Clear sections
     for ( auto&& itx : Engine::GAPI->GetWorldSections() ) {
         for ( auto&& ity : itx.second ) {
@@ -788,13 +800,6 @@ void GothicAPI::ResetVobs() {
     }
     SkeletalMeshVobs.clear();
     AnimatedSkeletalVobs.clear();
-
-    // Delete light vobs
-    for ( auto const& it : VobLightMap ) {
-        Engine::GraphicsEngine->OnVobRemovedFromWorld( it.first );
-        delete it.second;
-    }
-    VobLightMap.clear();
 }
 
 /** Called when the game loaded a new level */
