@@ -15,6 +15,10 @@ const float LIGHT_COLORCHANGE_POS_MOD = 0.1f;
 D3D11PointLight::D3D11PointLight( VobLightInfo* info, bool dynamicLight ) {
     LightInfo = info;
     DynamicLight = dynamicLight;
+    
+    // Ensure this light is actually in the VobLightMap
+    // some lights don't seem to be in here!
+    Engine::GAPI->VobLightMap[info->Vob] = info;
 
     XMStoreFloat3( &LastUpdatePosition, LightInfo->Vob->GetPositionWorldXM() );
 
@@ -28,7 +32,9 @@ D3D11PointLight::D3D11PointLight( VobLightInfo* info, bool dynamicLight ) {
 
 D3D11PointLight::~D3D11PointLight() {
     // Make sure we are out of the init-queue
-    while ( !InitDone );
+    while ( !InitDone.load() ) {
+        std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
+    }
 
     ClearTiledSlot();
     ReleaseShadowMap();
@@ -94,7 +100,12 @@ bool D3D11PointLight::NotYetDrawn() {
 
 /** Initializes the resources of this light */
 void D3D11PointLight::InitResources() {
-    D3D11GraphicsEngineBase* engine = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine);
+    InitDone = false;
+    if (!LightInfo || !LightInfo->Vob) {
+        // Light got removed before we could init, just return
+        InitDone = true;
+        return;
+    }
 
     //Engine::GAPI->EnterResourceCriticalSection();
 
@@ -270,7 +281,14 @@ void D3D11PointLight::StartReInit() {
         InitDone = false;
 
         // Add to queue
-        Engine::WorkerThreadPool->enqueue( [this] { InitResources(); } );
+        Engine::WorkerThreadPool->enqueue( [this] (const CancellationToken& token)
+        {
+            if (token.isCancelled()) {
+                InitDone = true;
+                return;
+            }
+            InitResources();
+        } );
 
     } else {
         InitResources();
@@ -333,6 +351,13 @@ void D3D11PointLight::OnVobRemovedFromWorld( BaseVobInfo* vob ) {
         VobCache.clear();
         SkeletalVobCache.clear();
         DrawnOnce = false;
+    }
+
+    if (vob->Vob == LightInfo->Vob) {
+        // Our light got removed, release shadowmap
+        ReleaseShadowMap();
+        ClearTiledSlot();
+        LightInfo->Vob = nullptr;
     }
 
     //Engine::GAPI->LeaveResourceCriticalSection();

@@ -137,6 +137,19 @@ public:
         PatchAddr( 0x006BB643, "\x90" );
         PatchCall( 0x006BB644, reinterpret_cast<DWORD>(&zCSkyController_Outdoor::RenderThunderPolyStrip) );
 #endif
+
+        if ( HookedFunctions::OriginalFunctions.original_zCSkyControler_ClearBackground )
+            DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCSkyControler_ClearBackground), &zCSkyController_Outdoor::hooked_zCSkyControler_ClearBackground );
+    }
+
+    static void __fastcall hooked_zCSkyControler_ClearBackground( void* thisPtr, void* vtbl, zColor color ) {
+        // Prevent the skycontroller from clearing the backbuffer/depth buffer.
+        // We do this anyway, and this here causes issues with upscaling, as the code for "clearing" explicitly only clears if the viewport == window size.
+        // But keep the original code from working if we don't upscale, in case there are any more issues with it.
+        if (Engine::GAPI->GetRendererState().RendererSettings.ResolutionScalePercent < 100) {
+            return;
+        }
+        HookedFunctions::OriginalFunctions.original_zCSkyControler_ClearBackground( thisPtr, color );
     }
 
     /** Updates the rain-weight and sound-effects */

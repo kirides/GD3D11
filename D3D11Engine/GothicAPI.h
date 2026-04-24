@@ -150,7 +150,8 @@ struct MaterialInfo {
         MT_Water,
         MT_Ocean,
         MT_Portal,
-        MT_WaterfallFoam
+        MT_WaterfallFoam,
+        MT_FullAlpha, // why does this exist "NW_MISC_FULLALPHA_01" ?? This is just a block of nothing
     };
 
     MaterialInfo() :
@@ -183,8 +184,15 @@ struct MaterialInfo {
         float SpecularPower;
         float NormalmapStrength;
         float DisplacementFactor;
-
         float4 Color;
+
+        bool operator==( const Buffer& other ) const noexcept {
+            return SpecularIntensity == other.SpecularIntensity &&
+                SpecularPower == other.SpecularPower &&
+                NormalmapStrength == other.NormalmapStrength &&
+                DisplacementFactor == other.DisplacementFactor &&
+                Color == other.Color;
+        }
     };
 
     /** creates/updates the constantbuffer */
@@ -195,6 +203,13 @@ struct MaterialInfo {
     PShaderID PixelShader;
     EMaterialType MaterialType;
     Buffer buffer;
+
+    bool IsSame( MaterialInfo* other ) {
+        if ( other == nullptr ) return false;
+        return PixelShader == other->PixelShader
+            && MaterialType == other->MaterialType
+            && buffer == other->buffer;
+    }
 };
 
 struct ParticleFrameData {

@@ -97,6 +97,8 @@ typedef void( __cdecl* oCItemContainer__Container_Draw )();
 typedef void( __thiscall* zCCamera__Activate )(void*);
 typedef void( __thiscall* zCCamera__UpdateViewport )(void*);
 
+typedef void( __thiscall* zCSkyControler_ClearBackground )(void*, zColor);
+
 struct zTRndSurfaceDesc;
 struct HookedFunctionInfo {
 
@@ -182,6 +184,7 @@ struct HookedFunctionInfo {
     zCModelGetLowestLODPoly original_zCModelGetLowestLODPoly = reinterpret_cast<zCModelGetLowestLODPoly>(GothicMemoryLocations::zCModel::GetLowestLODPoly);
 #endif
     zCInput_Win32__GetKey original_zCInput_Win32__GetKey = reinterpret_cast<zCInput_Win32__GetKey>(GothicMemoryLocations::zCInput_Win32::GetKey);
+    zCSkyControler_ClearBackground original_zCSkyControler_ClearBackground = reinterpret_cast<zCSkyControler_ClearBackground>(GothicMemoryLocations::zCSkyController::ClearBackground);
     //zCModelPrototypeLoadModelASC original_zCModelPrototypeLoadModelASC = reinterpret_cast<zCModelPrototypeLoadModelASC>(GothicMemoryLocations::zCModelPrototype::LoadModelASC);
     //zCModelPrototypeReadMeshAndTreeMSB original_zCModelPrototypeReadMeshAndTreeMSB = reinterpret_cast<zCModelPrototypeReadMeshAndTreeMSB>(GothicMemoryLocations::zCModelPrototype::ReadMeshAndTreeMSB);
 

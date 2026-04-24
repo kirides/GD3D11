@@ -48,6 +48,7 @@
 // TODO: REMOVE THIS!
 #include "D3D11GraphicsEngine.h"
 #include "MeshManager.h"
+#include "Threadpool.h"
 
 #ifndef PUBLIC_RELEASE
 #define OPT_DBG_NOINLINE __declspec(noinline)
@@ -711,9 +712,8 @@ void GothicAPI::RemoveVegetationBox( GVegetationBox* box ) {
 
 /** Resets the object, like at level load */
 void GothicAPI::ResetWorld() {
-    WorldSections.clear();
-
     ResetVobs();
+    WorldSections.clear();
 
     SAFE_DELETE( WrappedWorldMesh );
 
@@ -735,6 +735,18 @@ void GothicAPI::ReloadPlayerVob() {
 }
 /** Resets only the vobs */
 void GothicAPI::ResetVobs() {
+    
+    // complete what ever is currently working, and clear everything else.
+    Engine::WorkerThreadPool->clearAndFlush();
+    
+    // Delete light vobs, those depend on world sections and load stuff in the background.
+    // by deleting them first we block the thread until the destructor finished
+    for ( auto const& it : VobLightMap ) {
+        Engine::GraphicsEngine->OnVobRemovedFromWorld( it.first );
+        delete it.second;
+    }
+    VobLightMap.clear();
+    
     // Clear sections
     for ( auto&& itx : Engine::GAPI->GetWorldSections() ) {
         for ( auto&& ity : itx.second ) {
@@ -788,13 +800,6 @@ void GothicAPI::ResetVobs() {
     }
     SkeletalMeshVobs.clear();
     AnimatedSkeletalVobs.clear();
-
-    // Delete light vobs
-    for ( auto const& it : VobLightMap ) {
-        Engine::GraphicsEngine->OnVobRemovedFromWorld( it.first );
-        delete it.second;
-    }
-    VobLightMap.clear();
 }
 
 /** Called when the game loaded a new level */
@@ -4408,19 +4413,31 @@ void GothicAPI::ResetMaterialInfo() {
 /** Returns the material info associated with the given material */
 MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCTexture* tex ) {
     auto it = MaterialInfos.find( tex );
+    MaterialInfo* mi = nullptr;
     if ( it == MaterialInfos.end() && tex ) {
         // Make a new one and try to load it
         MaterialInfos[tex].LoadFromFile( tex->GetNameWithoutExt() );
+        mi = &MaterialInfos[tex];
+        if ( std::string_view{ tex->__GetName().ToChar() } == "NW_MISC_FULLALPHA_01.TGA" ) {
+            mi->MaterialType = MaterialInfo::MT_FullAlpha;
+        }
+    } else {
+        mi = &it->second;
     }
 
-    return &MaterialInfos[tex];
+    return mi;
 }
 
 MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCTexture* tex, const std::string& textureName ) {
     auto it = MaterialInfos.find( tex );
+    
+    MaterialInfo* mi = nullptr;
     if ( it == MaterialInfos.end() && tex ) {
         // Make a new one and try to load it
-        MaterialInfos[tex].LoadFromFile( textureName );
+        mi = &MaterialInfos[tex];
+        mi->LoadFromFile( textureName );
+    } else {
+        mi = &it->second;
     }
 
     return &MaterialInfos[tex];
@@ -5140,12 +5157,26 @@ void GothicAPI::DrawMorphMesh( zCMorphMesh* msh, std::map<zCMaterial*, std::vect
         
     // Ensure to call `WorldConverter::UpdateMorphMeshVisual( ... );` once per frame for this mesh to update the vertex buffers before drawing.
 
+    D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+
+    const bool isZPrepass = g->GetRenderingStage() == DES_Z_PRE_PASS;
+    const bool bindShader = g->GetRenderingStage() == DES_MAIN || isZPrepass;
+
+    zCTexture* lastTex = nullptr;
     for ( int i = 0; i < morphMesh->GetNumSubmeshes(); i++ ) {
         zCSubMesh* s = morphMesh->GetSubmesh( i );
         if ( zCTexture* texture = s->Material->GetAniTexture() ) {
-            D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
-            if ( !g->BindTextureNRFX( texture, (g->GetRenderingStage() == DES_MAIN || g->GetRenderingStage() == DES_Z_PRE_PASS) ) )
-                continue;
+            if ( lastTex != texture ) {
+                if ( texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
+                    continue;
+                }
+                lastTex = texture;
+                if ( isZPrepass ) {
+                    texture->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
+                } else if ( !g->BindTextureNRFX( texture, bindShader ) ) {
+                    continue;
+                }
+            }
         }
 
         for ( auto const& it : meshes ) {

@@ -18,7 +18,7 @@ class D3D11ConstantBuffer;
 class D3D11PointLight : public BaseShadowedPointLight {
 public:
     D3D11PointLight( VobLightInfo* info, bool dynamicLight = false );
-    ~D3D11PointLight();
+    ~D3D11PointLight() override;
 
     /** Initializes the resources of this light */
     void InitResources();

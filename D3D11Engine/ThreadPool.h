@@ -1,5 +1,4 @@
 #pragma once
-#include <iostream>
 #include <deque>
 #include <functional>
 #include <thread>
@@ -10,98 +9,178 @@
 #include <vector>
 #include <queue>
 #include <memory>
-#include <thread>
-#include <mutex>
-#include <condition_variable>
 #include <future>
-#include <functional>
 #include <stdexcept>
+#include <algorithm>
+#include <utility>
 
-class ThreadPool {
-public:
-    ThreadPool( 
-	    const wchar_t* poolIdentifier,
-	    size_t threads = std::clamp(std::thread::hardware_concurrency(), static_cast<size_t>(1), static_cast<size_t>(4) ) );
-
-	template<class F, class... Args>
-	auto enqueue( F&& f, Args&&... args )
-		->std::future<typename std::invoke_result<F, Args...>::type>;
-	~ThreadPool();
-
-	size_t getNumThreads() { return numThreads; }
+class CancellationToken
+{
 private:
-	// need to keep track of threads so we can join them
-	std::vector< std::thread > workers;
-	// the task queue
-	std::queue< std::function<void()> > tasks;
+    std::shared_ptr<std::atomic<bool>> cancelledFlag;
 
-	// synchronization
-	std::mutex queue_mutex;
-	std::condition_variable condition;
-	bool stop;
-	size_t numThreads;
+public:
+    CancellationToken() : cancelledFlag(std::make_shared<std::atomic<bool>>(false))
+    {
+    }
+
+    bool isCancelled() const
+    {
+        return cancelledFlag->load(std::memory_order_acquire);
+    }
+
+    void cancel()
+    {
+        cancelledFlag->store(true, std::memory_order_release);
+    }
 };
 
-// the constructor just launches some amount of workers
-inline ThreadPool::ThreadPool( const wchar_t* poolIdentifier, size_t threads )
-	: stop( false ) {
-	numThreads = threads;
+template <typename T>
+struct TaskHandle
+{
+    std::future<T> future;
+    CancellationToken token;
+
+    void cancel()
+    {
+        token.cancel();
+    }
+};
+
+class ThreadPool
+{
+public:
+    ThreadPool(
+        const wchar_t* poolIdentifier,
+        size_t threads = std::clamp(static_cast<size_t>(std::thread::hardware_concurrency()), static_cast<size_t>(1),
+                                    static_cast<size_t>(4)));
+
+    // 3. enqueue returns a TaskHandle and expects 'F' to accept CancellationToken as its first param
+    template <class F, class... Args>
+    auto enqueue(F&& f, Args&&... args)
+        -> TaskHandle<typename std::invoke_result<F, CancellationToken, Args...>::type>;
+
+    ~ThreadPool();
+
+    size_t getNumThreads() { return numThreads; }
+
+    bool getIsBusy()
+    {
+        std::unique_lock<std::mutex> lock(queue_mutex);
+        return !tasks.empty() || activeTasks.load() > 0;
+    }
+
+    void clearAndFlush()
+    {
+        // Swap out the tasks quickly to minimize mutex lock time
+        std::queue<std::pair<std::function<void()>, CancellationToken>> pending_tasks;
+        {
+            std::unique_lock<std::mutex> lock(queue_mutex);
+            std::swap(tasks, pending_tasks);
+        }
+
+        // Cancel and invoke all pending tasks so promises are fulfilled gracefully
+        while (!pending_tasks.empty())
+        {
+            auto& taskItem = pending_tasks.front();
+            taskItem.second.cancel(); // Trigger the cancellation state
+            taskItem.first(); // Invoke the task, assume it will immediately return.
+            pending_tasks.pop();
+        }
+
+        // Wait for actively running tasks to finish
+        while (getIsBusy()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+
+private:
+    std::vector<std::thread> workers;
+    std::queue<std::pair<std::function<void()>, CancellationToken>> tasks;
+
+    std::atomic_int activeTasks{0};
+    std::mutex queue_mutex;
+    std::condition_variable condition;
+    bool stop;
+    size_t numThreads;
+};
+
+inline ThreadPool::ThreadPool(const wchar_t* poolIdentifier, size_t threads)
+    : stop(false)
+{
+    numThreads = threads;
 
     std::wstring identifier = std::wstring(L"GD3D11-") + std::wstring(poolIdentifier);
-	for ( size_t i = 0; i < threads; ++i )
-		workers.emplace_back(
-			[](ThreadPool* pool, size_t workerId, const std::wstring& descriptionPrefix) {
-			    SetThreadDescription( GetCurrentThread(), (descriptionPrefix+std::to_wstring(workerId)).c_str() );
-				for ( ;;) {
-					std::function<void()> task;
+    for (size_t i = 0; i < threads; ++i)
+        workers.emplace_back(
+            [](ThreadPool* pool, size_t workerId, const std::wstring& descriptionPrefix)
+            {
+                SetThreadDescription( GetCurrentThread(), (descriptionPrefix+std::to_wstring(workerId)).c_str() );
+                for (;;)
+                {
+                    std::function<void()> task;
 
-					{
-						std::unique_lock<std::mutex> lock( pool->queue_mutex );
-						pool->condition.wait( lock,
-							[pool] { return pool->stop || !pool->tasks.empty(); } );
-						if ( pool->stop && pool->tasks.empty() )
-							return;
-						task = std::move( pool->tasks.front() );
-						pool->tasks.pop();
-					}
+                    {
+                        std::unique_lock<std::mutex> lock(pool->queue_mutex);
+                        pool->condition.wait(lock,
+                                             [pool] { return pool->stop || !pool->tasks.empty(); });
 
-					task();
-				}
-			}, this, i, identifier
-	);
+                        pool->activeTasks.fetch_add(1);
+                        if (pool->stop && pool->tasks.empty())
+                        {
+                            pool->activeTasks.fetch_sub(1);
+                            return;
+                        }
+
+                        // Extract just the function to execute
+                        task = std::move(pool->tasks.front().first);
+                        pool->tasks.pop();
+                    }
+
+                    task();
+                    pool->activeTasks.fetch_sub(1);
+                }
+            }, this, i, identifier
+        );
 }
 
-// add new work item to the pool
-template<class F, class... Args>
-auto ThreadPool::enqueue( F&& f, Args&&... args )
--> std::future<typename std::invoke_result<F, Args...>::type> {
-	using return_type = typename std::invoke_result<F, Args...>::type;
+template <class F, class... Args>
+auto ThreadPool::enqueue(F&& f, Args&&... args)
+    -> TaskHandle<typename std::invoke_result<F, CancellationToken, Args...>::type>
+{
+    using return_type = typename std::invoke_result<F, CancellationToken, Args...>::type;
 
-	auto task = std::make_shared< std::packaged_task<return_type()> >(
-		std::bind( std::forward<F>( f ), std::forward<Args>( args )... )
-		);
+    CancellationToken token;
 
-	std::future<return_type> res = task->get_future();
-	{
-		std::unique_lock<std::mutex> lock( queue_mutex );
+    auto task = std::make_shared<std::packaged_task<return_type()>>(
+        std::bind(std::forward<F>(f), token, std::forward<Args>(args)...)
+    );
 
-		// don't allow enqueueing after stopping the pool
-		if ( stop )
-			throw std::runtime_error( "enqueue on stopped ThreadPool" );
+    std::future<return_type> res = task->get_future();
+    {
+        std::unique_lock<std::mutex> lock(queue_mutex);
 
-		tasks.emplace( [task]() { (*task)(); } );
-	}
-	condition.notify_one();
-	return res;
+        if (stop)
+            throw std::runtime_error("enqueue on stopped ThreadPool");
+
+        // Store the task function and its token together
+        tasks.emplace(std::make_pair([task]()
+        {
+            (*task)();
+        }, token));
+    }
+    condition.notify_one();
+
+    return {std::move(res), token};
 }
 
-// the destructor joins all threads
-inline ThreadPool::~ThreadPool() {
-	{
-		std::unique_lock<std::mutex> lock( queue_mutex );
-		stop = true;
-	}
-	condition.notify_all();
-	for ( std::thread& worker : workers )
-		worker.join();
+inline ThreadPool::~ThreadPool()
+{
+    {
+        std::unique_lock<std::mutex> lock(queue_mutex);
+        stop = true;
+    }
+    condition.notify_all();
+    for (std::thread& worker : workers)
+        worker.join();
 }

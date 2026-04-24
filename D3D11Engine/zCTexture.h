@@ -138,7 +138,6 @@ public:
         return (flags & GothicMemoryLocations::zCTexture::Mask_FlagHasAlpha) != 0;
     }
 
-private:
     const zSTRING& __GetName() {
         return reinterpret_cast<zSTRING&(__fastcall*)( zCTexture* )>( GothicMemoryLocations::zCObject::GetObjectName )( this );
     }
