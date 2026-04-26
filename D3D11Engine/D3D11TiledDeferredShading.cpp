@@ -228,7 +228,6 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
     // Partition lights: all lights go tiled where possible.
     // Shadowed lights with a tiled slot render directly into the shared array (no copies).
     // Shadowed lights without a tiled slot (256×256 or overflow) fall back to legacy.
-    std::vector<VobLightInfo*> legacyLights;
     uint32_t tiledLightCount = 0;
     bool hasShadowedTiledLights = false;
 
@@ -260,9 +259,7 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
         }
 
         // Shadowed lights need a tiled slot (assigned earlier in DrawPointlightShadows).
-        // If they don't have one (256×256 or slot overflow), fall back to legacy.
         if ( hasShadow && pl->GetTiledSlot() < 0 ) {
-            legacyLights.push_back( light );
             continue;
         }
 
@@ -426,12 +423,6 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
             context->OMSetRenderTargets( 1, graphicsEngine->GetHDRBackBuffer().GetRenderTargetView().GetAddressOf(),
                 graphicsEngine->GetDepthBuffer()->GetDepthStencilView().Get() );
         }
-    }
-
-    // Draw lights that couldn't go through the tiled path (mismatched shadow cube size, overflow)
-    if ( !legacyLights.empty() ) {
-        D3D11LegacyDeferredShading legacy;
-        legacy.DrawPointlightLights( legacyLights, color, normals, specular, depthCopy );
     }
 
     return XR_SUCCESS;
