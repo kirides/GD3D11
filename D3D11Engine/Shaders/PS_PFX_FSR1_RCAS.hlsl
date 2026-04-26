@@ -40,8 +40,9 @@ void FsrRcasInputF(inout AF1 r, inout AF1 g, inout AF1 b)
 
 struct PS_INPUT
 {
-    float4 Position : SV_POSITION;
     float2 TexCoord : TEXCOORD0;
+	float3 vEyeRay	: TEXCOORD1;
+    float4 Position : SV_POSITION;
 };
 
 float4 PSMain(PS_INPUT input) : SV_TARGET

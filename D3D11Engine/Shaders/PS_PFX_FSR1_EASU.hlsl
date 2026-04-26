@@ -48,8 +48,9 @@ AF4 FsrEasuBF(AF2 p)
 
 struct PS_INPUT
 {
-    float4 Position : SV_POSITION;
     float2 TexCoord : TEXCOORD0;
+	float3 vEyeRay	: TEXCOORD1;
+    float4 Position : SV_POSITION;
 };
 
 float4 PSMain(PS_INPUT input) : SV_TARGET
