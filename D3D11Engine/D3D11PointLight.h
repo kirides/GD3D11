@@ -5,6 +5,7 @@
 #include <condition_variable>
 #include <atomic>
 #include "TexturePool.h"
+#include "Threadpool.h"
 
 class D3D11PointLight;
 class D3D11TiledDeferredShading;
@@ -86,4 +87,5 @@ protected:
     int m_TiledSlotIndex = -1;
     RenderToDepthStencilBuffer* m_TiledDepthTarget = nullptr;
     D3D11TiledDeferredShading* m_TiledOwner = nullptr;
+    CancellationToken m_PendingInit;
 };
