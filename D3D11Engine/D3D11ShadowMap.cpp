@@ -800,6 +800,8 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
 
     DepthStencilPool* dsPool = graphicsEngine->GetPfxRenderer()->GetDepthStencilPool();
     
+    const bool isTiledShadingEnabled = m_TiledDeferred && settings.EnableTiledLighting;
+    const int requiredShadowMapKind = isTiledShadingEnabled ? 1 : 0;
     for ( auto const& light : lights ) {
         if ( !light->Vob->IsEnabled() || !light->VisibleInFrame ) {
             continue;
@@ -833,18 +835,23 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
             bool inShadowRange = d < distMaxShadowSq;
             if ( inShadowRange ) {
                 // Acquire memory if it doesn't have it (or resolution changed)
-                if ( !pl->HasShadowMap() || pl->GetShadowMapResolution() != desiredResolution ) {
+                if ( !pl->HasShadowMap( requiredShadowMapKind ) || pl->GetShadowMapResolution() != desiredResolution ) {
                     pl->ClearTiledSlot();
                     pl->ReleaseShadowMap();
 
                     // Try tiled slot for small (64×64) lights when tiled lighting is active
-                    if ( desiredResolution == SHADOW_CUBE_SIZE && m_TiledDeferred && settings.EnableTiledLighting ) {
+                    if ( isTiledShadingEnabled ) {
+                        if ( desiredResolution != SHADOW_CUBE_SIZE ) {
+                            light->UpdateShadows = false;
+                            continue; // should never happen, as we currently only use one resolution, but just in case, don't try to put bigger shadowmaps into tiled slots
+                        }
                         int slot = m_TiledDeferred->AllocateSlot();
                         if ( slot >= 0 ) {
                             pl->SetTiledSlot( slot, m_TiledDeferred->GetSlotTarget( slot ), m_TiledDeferred.get() );
                             pl->SetCurrentResolution( desiredResolution );
                         } else {
-                            pl->AcquireShadowMap( dsPool, desiredResolution );
+                            light->UpdateShadows = false;
+                            continue; // failed to allocate tiled slot, skip shadow rendering for this light this frame
                         }
                     } else {
                         pl->AcquireShadowMap( dsPool, desiredResolution );
@@ -872,7 +879,7 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
                 }
             } else {
                 // Out of range: Return VRAM to the pool!
-                if ( pl->HasShadowMap() ) {
+                if ( pl->HasAnyShadowMap() ) {
                     // TODO: actually fix memory leakage, as many lights can spawn without ever releasing their shadowmaps
                     // because if they suddenly go out of range (Frustum or VisualFX distance),
                     // we never "collect" them and thus never get to call ReleasShadowMap().
@@ -885,6 +892,11 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
                     auto it = std::find( graphicsEngine->FrameShadowUpdateLights.begin(), graphicsEngine->FrameShadowUpdateLights.end(), light );
                     if ( it != graphicsEngine->FrameShadowUpdateLights.end() ) {
                         graphicsEngine->FrameShadowUpdateLights.erase( it );
+                    }
+
+                    auto importantIt = std::find( importantUpdates.begin(), importantUpdates.end(), light );
+                    if ( importantIt != importantUpdates.end() ) {
+                        importantUpdates.erase( importantIt );
                     }
                 }
             }
