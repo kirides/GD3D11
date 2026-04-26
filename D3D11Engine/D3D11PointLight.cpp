@@ -28,10 +28,12 @@ D3D11PointLight::D3D11PointLight( VobLightInfo* info, bool dynamicLight ) {
     StartReInit();
 
     DrawnOnce = false;
+    m_PendingInit = {};
 }
 
 D3D11PointLight::~D3D11PointLight() {
     // Make sure we are out of the init-queue
+    m_PendingInit.cancel(); // ensure any pending job is cancelled such that we get to InitDone state
     while ( !InitDone.load() ) {
         std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
     }
@@ -281,14 +283,15 @@ void D3D11PointLight::StartReInit() {
         InitDone = false;
 
         // Add to queue
-        Engine::WorkerThreadPool->enqueue( [this] (const CancellationToken& token)
+        m_PendingInit.cancel(); // Cancel any pending init first, we only care about the latest one
+        m_PendingInit = Engine::WorkerThreadPool->enqueue( [this] (const CancellationToken& token)
         {
             if (token.isCancelled()) {
                 InitDone = true;
                 return;
             }
             InitResources();
-        } );
+        } ).token;
 
     } else {
         InitResources();
