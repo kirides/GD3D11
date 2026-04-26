@@ -1,5 +1,10 @@
+#ifndef TILE_SIZE
 #define TILE_SIZE 16
-#define MAX_LIGHTS_PER_TILE 256
+#endif
+
+#ifndef MAX_LIGHTS_PER_TILE
+#define MAX_LIGHTS_PER_TILE 32
+#endif
 
 struct TiledPointLight {
     float3 PositionView;

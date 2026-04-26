@@ -361,6 +361,9 @@ struct VelocityDebugConstantBuffer {
     float Padding;
 };
 
+#define TILE_SIZE 16
+#define MAX_LIGHTS_PER_TILE 32
+
 struct LightCullingConstantBuffer {
     XMFLOAT4X4 Proj;
     uint32_t ScreenWidth;
