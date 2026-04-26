@@ -45,7 +45,14 @@ public:
     /** Called when a vob got removed from the world */
     virtual void OnVobRemovedFromWorld( BaseVobInfo* vob );
 
-    bool HasShadowMap() const { return m_DepthCubemap != nullptr || m_TiledDepthTarget != nullptr; }
+    bool HasAnyShadowMap() const {
+        return HasShadowMap(0) || HasShadowMap(1);
+    }
+
+    bool HasShadowMap(int shadowMapKind ) const { 
+        if ( shadowMapKind == 0 ) return m_DepthCubemap != nullptr;
+        return m_TiledDepthTarget != nullptr;
+    }
     int GetShadowMapResolution() const { return m_CurrentResolution; }
     ID3D11Texture2D* GetShadowCubeTexture() const { return m_DepthCubemap ? m_DepthCubemap->GetTexture().Get() : nullptr; }
 

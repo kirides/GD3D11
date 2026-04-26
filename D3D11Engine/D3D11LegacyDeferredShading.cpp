@@ -75,7 +75,7 @@ XRESULT D3D11LegacyDeferredShading::DrawPointlightLights(
         if ( settings.EnablePointlightShadows > 0 ) {
             D3D11PointLight* pl = light->LightShadowBuffers ? static_cast<D3D11PointLight*>(light->LightShadowBuffers.get()) : nullptr;
 
-            if ( pl && pl->IsInited() && pl->HasShadowMap() ) {
+            if ( pl && pl->IsInited() && pl->HasShadowMap( 0 ) ) {
                 if ( graphicsEngine->GetActivePS() != psPointLightDynShadow ) {
                     graphicsEngine->SetActivePS( psPointLightDynShadow )->Apply();
                 }

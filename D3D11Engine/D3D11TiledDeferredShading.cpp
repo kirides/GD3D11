@@ -254,7 +254,7 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
         bool hasShadow = false;
         if ( settings.EnablePointlightShadows > 0 ) {
             pl = light->LightShadowBuffers ? static_cast<D3D11PointLight*>(light->LightShadowBuffers.get()) : nullptr;
-            if ( pl && pl->IsInited() && pl->HasShadowMap() ) {
+            if ( pl && pl->IsInited() && pl->HasShadowMap( 1 ) ) {
                 hasShadow = true;
             }
         }
