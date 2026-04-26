@@ -125,7 +125,7 @@ void CSMain( uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID, uint
     for ( uint i = threadIndex; i < TotalLights; i += numThreads ) {
         TiledPointLight light = SB_Lights[i];
 
-        if ( SphereInsideAABB( light.PositionView, light.Range, aabbMin, aabbMax ) ) {
+        if ( SphereInsideAABB( light.PositionView, light.Range * 1.05f, aabbMin, aabbMax ) ) {
             uint index;
             InterlockedAdd( gs_TileLightCount, 1, index );
             if ( index < MAX_LIGHTS_PER_TILE ) {

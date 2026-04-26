@@ -362,7 +362,8 @@ struct VelocityDebugConstantBuffer {
 };
 
 #define TILE_SIZE 16
-#define MAX_LIGHTS_PER_TILE 32
+// 64 Tiles seemed enough to fix issues in G1 old camp
+#define MAX_LIGHTS_PER_TILE 64
 
 struct LightCullingConstantBuffer {
     XMFLOAT4X4 Proj;
