@@ -366,7 +366,7 @@ struct LightCullingConstantBuffer {
     uint32_t ScreenWidth;
     uint32_t ScreenHeight;
     uint32_t TotalLights;
-    uint32_t Pad;
+    uint32_t MaxBufferIndices;
 };
 
 struct TiledShadingConstantBuffer {

@@ -21,7 +21,7 @@ cbuffer LightCullingConstantBuffer : register( b0 ) {
     matrix Proj;
     uint2 ScreenDimensions;
     uint TotalLights;
-    uint Pad;
+    uint MaxBufferIndices;
 };
 
 RWStructuredBuffer<LightGrid> RW_LightGrid : register( u0 );
@@ -138,6 +138,13 @@ void CSMain( uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID, uint
 
         uint numTilesX = (ScreenDimensions.x + TILE_SIZE - 1) / TILE_SIZE;
         uint tileIndex = groupID.y * numTilesX + groupID.x;
+		
+		if (offset >= MaxBufferIndices) {
+			count = 0; // Completely full
+		} else if (offset + count > MaxBufferIndices) {
+			count = MaxBufferIndices - offset; // Write remaining
+		}
+		
         RW_LightGrid[tileIndex].Offset = offset;
         RW_LightGrid[tileIndex].Count = count;
 

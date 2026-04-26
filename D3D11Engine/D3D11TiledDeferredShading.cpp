@@ -336,7 +336,7 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
             cullCB.ScreenWidth = static_cast<uint32_t>(resolution.x);
             cullCB.ScreenHeight = static_cast<uint32_t>(resolution.y);
             cullCB.TotalLights = tiledLightCount;
-            cullCB.Pad = 0;
+            cullCB.MaxBufferIndices = (numTilesX * numTilesY) * MAX_LIGHTS_PER_TILE;
 
             csLightCull->GetBuffer( "LightCullingConstantBuffer" ).Update( &cullCB ).Bind();
 
