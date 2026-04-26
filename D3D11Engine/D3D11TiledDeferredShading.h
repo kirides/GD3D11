@@ -14,7 +14,6 @@ struct RenderToDepthStencilBuffer;
 constexpr uint32_t MAX_TILED_LIGHTS = 1024;
 constexpr uint32_t TILE_SIZE = 16;
 constexpr uint32_t MAX_LIGHTS_PER_TILE = 256;
-constexpr uint32_t MAX_LIGHT_INDEX_ENTRIES = 256 * 1024;
 
 constexpr uint32_t MAX_SHADOW_CUBEMAPS = 128;
 constexpr uint32_t SHADOW_CUBE_SIZE = 64; // Must match POINTLIGHT_SHADOWMAP_SIZE

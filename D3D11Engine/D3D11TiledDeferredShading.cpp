@@ -64,35 +64,6 @@ void D3D11TiledDeferredShading::Init(
         SetDebugName( m_IndexCounterUAV.Get(), "TiledDeferred_IndexCounter_UAV" );
     }
 
-    // Light index list: global flat array of light indices
-    {
-        D3D11_BUFFER_DESC desc = {};
-        desc.ByteWidth = MAX_LIGHT_INDEX_ENTRIES * sizeof( uint32_t );
-        desc.Usage = D3D11_USAGE_DEFAULT;
-        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
-        desc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
-        desc.StructureByteStride = sizeof( uint32_t );
-
-        m_device->CreateBuffer( &desc, nullptr, m_LightIndexList.ReleaseAndGetAddressOf() );
-        SetDebugName( m_LightIndexList.Get(), "TiledDeferred_LightIndexList" );
-
-        D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-        srvDesc.Format = DXGI_FORMAT_UNKNOWN;
-        srvDesc.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
-        srvDesc.Buffer.ElementWidth = MAX_LIGHT_INDEX_ENTRIES;
-
-        m_device->CreateShaderResourceView( m_LightIndexList.Get(), &srvDesc, m_LightIndexListSRV.ReleaseAndGetAddressOf() );
-        SetDebugName( m_LightIndexListSRV.Get(), "TiledDeferred_LightIndexList_SRV" );
-
-        D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
-        uavDesc.Format = DXGI_FORMAT_UNKNOWN;
-        uavDesc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
-        uavDesc.Buffer.NumElements = MAX_LIGHT_INDEX_ENTRIES;
-
-        m_device->CreateUnorderedAccessView( m_LightIndexList.Get(), &uavDesc, m_LightIndexListUAV.ReleaseAndGetAddressOf() );
-        SetDebugName( m_LightIndexListUAV.Get(), "TiledDeferred_LightIndexList_UAV" );
-    }
-
     // Shadow cube array is lazy-created on first AllocateSlot() to save memory when shadows are off
 }
 
@@ -175,6 +146,38 @@ void D3D11TiledDeferredShading::EnsureBuffers( uint32_t numTilesX, uint32_t numT
 
     m_lastNumTilesX = numTilesX;
     m_lastNumTilesY = numTilesY;
+
+
+    // Light index list: global flat array of light indices
+    {
+        const uint32_t MAX_LIGHT_INDEX_ENTRIES = MAX_LIGHTS_PER_TILE * totalTiles;
+
+        D3D11_BUFFER_DESC desc = {};
+        desc.ByteWidth = MAX_LIGHT_INDEX_ENTRIES * sizeof( uint32_t );
+        desc.Usage = D3D11_USAGE_DEFAULT;
+        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+        desc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+        desc.StructureByteStride = sizeof( uint32_t );
+
+        m_device->CreateBuffer( &desc, nullptr, m_LightIndexList.ReleaseAndGetAddressOf() );
+        SetDebugName( m_LightIndexList.Get(), "TiledDeferred_LightIndexList" );
+
+        D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Format = DXGI_FORMAT_UNKNOWN;
+        srvDesc.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
+        srvDesc.Buffer.ElementWidth = MAX_LIGHT_INDEX_ENTRIES;
+
+        m_device->CreateShaderResourceView( m_LightIndexList.Get(), &srvDesc, m_LightIndexListSRV.ReleaseAndGetAddressOf() );
+        SetDebugName( m_LightIndexListSRV.Get(), "TiledDeferred_LightIndexList_SRV" );
+
+        D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+        uavDesc.Format = DXGI_FORMAT_UNKNOWN;
+        uavDesc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
+        uavDesc.Buffer.NumElements = MAX_LIGHT_INDEX_ENTRIES;
+
+        m_device->CreateUnorderedAccessView( m_LightIndexList.Get(), &uavDesc, m_LightIndexListUAV.ReleaseAndGetAddressOf() );
+        SetDebugName( m_LightIndexListUAV.Get(), "TiledDeferred_LightIndexList_UAV" );
+    }
 
     // Recreate light grid buffer for new tile count
     D3D11_BUFFER_DESC desc = {};
