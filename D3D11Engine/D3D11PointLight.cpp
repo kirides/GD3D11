@@ -34,8 +34,11 @@ D3D11PointLight::D3D11PointLight( VobLightInfo* info, bool dynamicLight ) {
 D3D11PointLight::~D3D11PointLight() {
     // Make sure we are out of the init-queue
     m_PendingInit.cancel(); // ensure any pending job is cancelled such that we get to InitDone state
-    while ( !InitDone.load() ) {
-        std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
+
+    int numRetry = 1;
+    while ( !InitDone.load() && numRetry < 7 ) {
+        LogInfo() << "Waiting for pending init to finish before destroying light... Attempt " << numRetry;
+        std::this_thread::sleep_for( std::chrono::milliseconds( 100 * static_cast<long>(std::pow( 2, numRetry++ ))) );
     }
 
     ClearTiledSlot();
@@ -131,12 +134,17 @@ bool D3D11PointLight::IsInited() {
 
 /** Returns if this light needs an update */
 bool D3D11PointLight::NeedsUpdate() {
+    if ( !IsReady() )
+        return false;
     FXMVECTOR lastPos = XMLoadFloat3( &LastUpdatePosition );
     return !XMVector3Equal( LightInfo->Vob->GetPositionWorldXM(), lastPos ) || NotYetDrawn();
 }
 
 /** Returns true if the light could need an update, but it's not very important */
 bool D3D11PointLight::WantsUpdate() {
+    if ( !IsReady() )
+        return false;
+
     // If dynamic, update colorchanging lights too, because they are mostly lamps and campfires
     // They wouldn't need an update just because of the colorchange, but most of them are dominant lights so it looks better
     if ( Engine::GAPI->GetRendererState().RendererSettings.EnablePointlightShadows >= GothicRendererSettings::PLS_UPDATE_DYNAMIC )
@@ -148,7 +156,9 @@ bool D3D11PointLight::WantsUpdate() {
 
 /** Draws the surrounding scene into the cubemap */
 void D3D11PointLight::RenderCubemap( bool forceUpdate, D3D11ConstantBuffer* ViewMatricesCB ) {
-    if ( !InitDone || !ViewMatricesCB || (!m_DepthCubemap && !m_TiledDepthTarget) )
+    if ( !IsReady() )
+        return;
+    if ( !ViewMatricesCB || (!m_DepthCubemap && !m_TiledDepthTarget) )
         return;
 
     //if (!GetAsyncKeyState('X'))
@@ -242,6 +252,8 @@ void D3D11PointLight::RenderCubemap( bool forceUpdate, D3D11ConstantBuffer* View
 
 /** Renders all cubemap faces at once, using the geometry shader */
 void D3D11PointLight::RenderFullCubemap() {
+    if ( !IsReady() )
+        return;
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine); // TODO: Remove and use newer system!
 
     // Disable shadows for NPCs
@@ -265,6 +277,13 @@ void D3D11PointLight::RenderFullCubemap() {
     engine->RenderShadowCube( LightInfo->Vob->GetPositionWorldXM(), range, target, nullptr, nullptr, false, LightInfo->IsIndoorVob, noNPCs, &VobCache, &SkeletalVobCache, wc );
 
     //Engine::GAPI->GetRendererState().RendererSettings.DrawSkeletalMeshes = oldDrawSkel;
+}
+
+bool D3D11PointLight::IsReady()
+{
+    return InitDone
+        && LightInfo
+        && LightInfo->Vob;
 }
 
 void D3D11PointLight::Invalidate() {
@@ -300,6 +319,9 @@ void D3D11PointLight::StartReInit() {
 
 /** Renders the scene with the given view-proj-matrices */
 void D3D11PointLight::RenderCubemapFace( const XMFLOAT4X4& view, const XMFLOAT4X4& proj, UINT faceIdx ) {
+    if ( !IsReady() )
+        return;
+
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine); // TODO: Remove and use newer system!
     auto lightPos = LightInfo->Vob->GetPositionWorldXM();
     float range = LightInfo->Vob->GetLightRange() * 1.1f;
@@ -336,7 +358,7 @@ void D3D11PointLight::RenderCubemapFace( const XMFLOAT4X4& view, const XMFLOAT4X
 
 /** Binds the shadowmap to the pixelshader */
 void D3D11PointLight::OnRenderLight() {
-    if ( !InitDone || !m_DepthCubemap )
+    if ( !IsReady() || !m_DepthCubemap)
         return;
 
     m_DepthCubemap->BindToPixelShader( reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext(), 3 );

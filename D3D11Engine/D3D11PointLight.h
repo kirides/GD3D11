@@ -59,6 +59,7 @@ public:
     void SetCurrentResolution( int r ) { m_CurrentResolution = r; }
 
 protected:
+    bool IsReady();
     void Invalidate();
     void StartReInit();
 
