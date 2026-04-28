@@ -2845,15 +2845,16 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
                     instanceInfo.Scaling = 1.f;
                 }
 
+                instanceInfo.World = finalWorld;
+                instanceInfo.PrevWorld = finalWorld;
+                // Update constantbuffer
+                vsBufMPI.Update( &instanceInfo );
+
                 auto& VShader = g->GetActiveVS();
                 if ( distance < 1000 && isMMS ) {
                     zCMorphMesh* mm = reinterpret_cast<zCMorphMesh*>( mvi->Visual );
                     // Only draw this as a morphmesh when rendering the main scene or when rendering as ghost
                     if ( g->GetRenderingStage() == DES_MAIN || g->GetRenderingStage() == DES_GHOST ) {
-                        // Update constantbuffer
-                        instanceInfo.World = finalWorld;
-                        vsBufMPI.Update( &instanceInfo );
-
                         if ( updateState ) {
                             if ( mvi->LastAniUpdateFrame != now ) {
                                 mvi->LastAniUpdateFrame = now;
@@ -2865,9 +2866,6 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
                         continue;
                     }
                 }
-
-                instanceInfo.World = finalWorld;
-                vsBufMPI.Update( &instanceInfo );
 
                 // Go through all materials registered here
                 for ( auto const& itm : mvi->Meshes ) {

@@ -13,10 +13,7 @@ cbuffer Matrices_PerFrame : register( b0 )
 
 cbuffer Matrices_PerInstances : register( b1 )
 {
-	matrix M_World;
-	float4 PI_ModelColor;
-	float PI_ModelFatness;
-	float3 PI_Pad1;
+	VS_ExConstantBuffer_PerInstanceSkeletal instance;
 };
 
 cbuffer BoneTransforms : register( b2 )
@@ -74,14 +71,14 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 	normal += Input.Weights.z * mul(Input.vNormal, (float3x3)BT_Transforms[Input.BoneIndices.z]);
 	normal += Input.Weights.w * mul(Input.vNormal, (float3x3)BT_Transforms[Input.BoneIndices.w]);
 	
-	float3 positionWorld = mul(float4(position + PI_ModelFatness * normal, 1), M_World).xyz;
+	float3 positionWorld = mul(float4(position + instance.PI_ModelFatness * normal, 1), instance.M_World).xyz;
 	
     Output.RTIndex = Input.instanceID;
     Output.vPosition = mul(float4(positionWorld, 1), PCR_ViewProj[Input.instanceID]);
 	Output.vTexcoord2 = Input.vTex1;
 	Output.vTexcoord = Input.vTex1;
-	Output.vDiffuse  = PI_ModelColor;
-    Output.vNormalVS = mul(Input.vBindPoseNormal, (float3x3)mul(M_World, PCR_View[Input.instanceID]));
+	Output.vDiffuse  = instance.PI_ModelColor;
+    Output.vNormalVS = mul(Input.vBindPoseNormal, (float3x3)mul(instance.M_World, PCR_View[Input.instanceID]));
     Output.vViewPosition = mul(float4(positionWorld, 1), PCR_View[Input.instanceID]).xyz;
 	
 	return Output;

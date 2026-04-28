@@ -23,4 +23,12 @@ struct VS_ExConstantBuffer_PerInstanceNode {
 	float2 M_Pad1;
 };
 
+struct VS_ExConstantBuffer_PerInstanceSkeletal {
+	matrix M_World;
+	matrix M_PrevWorld;
+	float4 PI_ModelColor;
+	float PI_ModelFatness;
+	float3 PI_Pad1;
+};
+
 #endif

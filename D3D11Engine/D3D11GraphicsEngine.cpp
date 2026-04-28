@@ -2285,6 +2285,7 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh_Layered( SkeletalVobInfo* vi,
 
     VS_ExConstantBuffer_PerInstanceSkeletal cb2;
     cb2.World = world;
+    cb2.PrevWorld = world;
     cb2.PI_ModelColor = color;
     cb2.PI_ModelFatness = fatness;
     ActiveVS->GetBuffer("Matrices_PerInstances").Update( &cb2 ).Bind();
