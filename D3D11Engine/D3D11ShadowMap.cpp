@@ -765,7 +765,7 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
     for ( auto& it : Engine::GAPI->VobLightMap ) {
         if ( it.second->LightShadowBuffers
             && (!it.second->Vob->IsEnabled() || !it.second->VisibleInFrame) ) {
-            if ( D3D11PointLight* pl = static_cast<D3D11PointLight*>(it.second->LightShadowBuffers.get()) ) {
+            if ( D3D11PointLight* pl = dynamic_cast<D3D11PointLight*>(it.second->LightShadowBuffers.get()) ) {
                 pl->ClearTiledSlot();
                 pl->ReleaseShadowMap();
             }
@@ -809,13 +809,12 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
         // Create shadowmap in case we should have one but haven't got it yet
         if ( !light->LightShadowBuffers && light->UpdateShadows ) {
             BaseShadowedPointLight* bpl;
-            graphicsEngine->CreateShadowedPointLight( &bpl, light );
+            // assume this is a dynamic light
+            graphicsEngine->CreateShadowedPointLight( &bpl, light, /*dynamic light*/ true );
             light->LightShadowBuffers.reset(bpl);
         }
 
-        if ( light->LightShadowBuffers ) {
-            D3D11PointLight* pl = static_cast<D3D11PointLight*>(light->LightShadowBuffers.get());
-
+        if ( D3D11PointLight* pl = dynamic_cast<D3D11PointLight*>(light->LightShadowBuffers.get()) ) {
             float d;
             XMStoreFloat( &d, XMVector3LengthSq( light->Vob->GetPositionWorldXM() - vPlayerPosition ) );
             float range = light->Vob->GetLightRange();
@@ -880,11 +879,6 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
             } else {
                 // Out of range: Return VRAM to the pool!
                 if ( pl->HasAnyShadowMap() ) {
-                    // TODO: actually fix memory leakage, as many lights can spawn without ever releasing their shadowmaps
-                    // because if they suddenly go out of range (Frustum or VisualFX distance),
-                    // we never "collect" them and thus never get to call ReleasShadowMap().
-                    // we could in theory keep a "last seen" list of lights and every frame look up which ones are gone,
-                    // to then release theirs resources BEFORE anything else acquires new ones.
                     pl->ClearTiledSlot();
                     pl->ReleaseShadowMap();
 
