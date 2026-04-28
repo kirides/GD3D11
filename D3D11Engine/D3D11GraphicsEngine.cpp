@@ -704,7 +704,9 @@ XRESULT D3D11GraphicsEngine::Init() {
     NoiseTexture->Init( "system\\GD3D11\\textures\\noise.dds" );
 
     WhiteTexture = std::make_unique<D3D11Texture>();
-    WhiteTexture->Init( "system\\GD3D11\\textures\\white.dds" );
+    uint32_t whitePixel = 0xFFFFFFFF;
+    WhiteTexture->Init( {1,1}, D3D11Texture::ETextureFormat::TF_B8G8R8A8, 1, nullptr, "FULL_WHITE_ALPHA_OPAQUE.static-memory");
+    WhiteTexture->UpdateData( &whitePixel, 0 );
 
     InverseUnitSphereMesh = new GMesh;
     InverseUnitSphereMesh->LoadMesh( "system\\GD3D11\\meshes\\icoSphere.obj" );
@@ -2285,6 +2287,7 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh_Layered( SkeletalVobInfo* vi,
 
     VS_ExConstantBuffer_PerInstanceSkeletal cb2;
     cb2.World = world;
+    cb2.PrevWorld = world;
     cb2.PI_ModelColor = color;
     cb2.PI_ModelFatness = fatness;
     ActiveVS->GetBuffer("Matrices_PerInstances").Update( &cb2 ).Bind();
@@ -2325,16 +2328,31 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh_Layered( SkeletalVobInfo* vi,
         }
     }
 
+    void* lastTex = nullptr;
+
+    GetWhiteTexture()->BindToPixelShader( 0 );
+    lastTex = GetWhiteTexture()->GetShaderResourceView().Get();
+
     for ( auto const& itm : dynamic_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->SkeletalMeshes ) {
-        for ( auto& mesh : itm.second ) {
-            if ( zCMaterial* mat = itm.first ) {
-                zCTexture* tex;
-                if ( ActivePS && (tex = mat->GetAniTexture()) != nullptr ) {
-                    if ( !BindTextureNRFX( tex, (RenderingStage != DES_GHOST) ) ) {
-                        continue;
-                    }
+        if ( zCMaterial* mat = itm.first ) {
+            zCTexture* tex = nullptr;
+            if ( ActivePS && (tex = mat->GetAniTexture()) != nullptr ) {
+                if ( tex->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
+                    continue; // we cant determine if we need to draw this, alpha data is only available after loading a texture.
+                }
+                const bool needTex =  tex != lastTex
+                    && (tex->HasAlphaChannel() || mat->HasAlphaTest());
+
+                if ( needTex ) {
+                    tex->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
+                    lastTex = tex;
+                } else if ( lastTex != GetWhiteTexture()->GetShaderResourceView().Get() ) {
+                    GetWhiteTexture()->BindToPixelShader( 0 );
+                    lastTex = GetWhiteTexture()->GetShaderResourceView().Get();
                 }
             }
+        }
+        for ( auto& mesh : itm.second ) {
 
             auto& vb = mesh->MeshVertexBuffer;
             auto& ib = mesh->MeshIndexBuffer;

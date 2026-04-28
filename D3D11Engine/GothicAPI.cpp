@@ -2444,6 +2444,17 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
     model->SetIsVisible( true );
     if ( !vi->Vob->GetShowVisual() )
         return;
+    
+    const auto now = Engine::GAPI->GetTotalTimeDW();
+
+    if ( updateState ) {
+        // Update attachments
+        if ( vi->LastAniUpdateFrame != now ) {
+            vi->LastAniUpdateFrame = now;
+            model->UpdateAttachedVobs();
+        }
+        model->UpdateMeshLibTexAniState();
+    }
 
     float4 modelColor;
     if ( Engine::GAPI->GetRendererState().RendererSettings.EnableShadows ) {
@@ -2480,15 +2491,6 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
     static std::vector<XMFLOAT4X4> transforms;
     transforms.clear();
     model->GetBoneTransforms( &transforms );
-    const auto now = Engine::GAPI->GetTotalTimeDW();
-    if ( updateState ) {
-        // Update attachments
-        if ( vi->LastAniUpdateFrame != now ) {
-            vi->LastAniUpdateFrame = now;
-            model->UpdateAttachedVobs();
-        }
-        model->UpdateMeshLibTexAniState();
-    }
 
     if ( !static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->SkeletalMeshes.empty() ) {
 #ifdef BUILD_GOTHIC_2_6_fix
@@ -2687,6 +2689,17 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
     if ( !vi->Vob->GetShowVisual() )
         return;
 
+    const auto now = Engine::GAPI->GetTotalTimeDW();
+
+    if ( updateState ) {
+        // Update attachments
+        if ( vi->LastAniUpdateFrame != now ) {
+            vi->LastAniUpdateFrame = now;
+            model->UpdateAttachedVobs();
+        }
+        model->UpdateMeshLibTexAniState();
+    }
+
     float4 modelColor;
     if ( Engine::GAPI->GetRendererState().RendererSettings.EnableShadows ) {
         // Let shadows do the work
@@ -2723,17 +2736,6 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
     transforms.clear();
     model->GetBoneTransforms( &transforms );
 
-    const auto now = Engine::GAPI->GetTotalTimeDW();
-
-    if ( updateState ) {
-        // Update attachments
-        if ( vi->LastAniUpdateFrame != now ) {
-            vi->LastAniUpdateFrame = now;
-            model->UpdateAttachedVobs();
-            model->UpdateMeshLibTexAniState();
-        }
-    }
-
     if ( !static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->SkeletalMeshes.empty() ) {
 #ifdef BUILD_GOTHIC_2_6_fix
         if ( !model->GetDrawHandVisualsOnly() || *reinterpret_cast<BYTE*>(0x57A694) == 0x90 ) {
@@ -2764,6 +2766,10 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
     phmap::flat_hash_map<int, std::vector<MeshVisualInfo*>>& nodeAttachments = vi->NodeAttachments;
     auto vsBufMPI = g->GetActiveVS()->GetBuffer( "Matrices_PerInstances" );
     vsBufMPI.Bind();
+
+    g->GetWhiteTexture()->BindToPixelShader( 0 );
+    void* lastTex = g->GetWhiteTexture()->GetShaderResourceView().Get();
+
     for ( unsigned int i = 0; i < transforms.size(); i++ ) {
         // Check for new visual
         zCModel* mvis = static_cast<zCModel*>( vi->Vob->GetVisual() );
@@ -2845,15 +2851,16 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
                     instanceInfo.Scaling = 1.f;
                 }
 
+                instanceInfo.World = finalWorld;
+                instanceInfo.PrevWorld = finalWorld;
+                // Update constantbuffer
+                vsBufMPI.Update( &instanceInfo );
+
                 auto& VShader = g->GetActiveVS();
                 if ( distance < 1000 && isMMS ) {
                     zCMorphMesh* mm = reinterpret_cast<zCMorphMesh*>( mvi->Visual );
                     // Only draw this as a morphmesh when rendering the main scene or when rendering as ghost
                     if ( g->GetRenderingStage() == DES_MAIN || g->GetRenderingStage() == DES_GHOST ) {
-                        // Update constantbuffer
-                        instanceInfo.World = finalWorld;
-                        vsBufMPI.Update( &instanceInfo );
-
                         if ( updateState ) {
                             if ( mvi->LastAniUpdateFrame != now ) {
                                 mvi->LastAniUpdateFrame = now;
@@ -2866,15 +2873,24 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
                     }
                 }
 
-                instanceInfo.World = finalWorld;
-                vsBufMPI.Update( &instanceInfo );
-
                 // Go through all materials registered here
                 for ( auto const& itm : mvi->Meshes ) {
                     zCTexture* texture;
                     if ( itm.first && (texture = itm.first->GetAniTexture()) != nullptr ) {
-                        if ( !g->BindTextureNRFX( texture, (g->GetRenderingStage() == DES_MAIN) ) )
-                            continue;
+                        if ( texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
+                            continue; // we cant determine if we need to draw this, alpha data is only available after loading a texture.
+                        }
+
+                        const bool needTex = texture != lastTex
+                            && (texture->HasAlphaChannel() || itm.first->HasAlphaTest());
+
+                        if ( needTex ) {
+                            texture->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
+                            lastTex = texture;
+                        } else if ( lastTex != g->GetWhiteTexture()->GetShaderResourceView().Get() ) {
+                            g->GetWhiteTexture()->BindToPixelShader( 0 );
+                            lastTex = g->GetWhiteTexture()->GetShaderResourceView().Get();
+                        }
                     }
 
                     // Go through all meshes using that material

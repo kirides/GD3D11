@@ -40,11 +40,9 @@ GraphicsShaderConstantBuffer D3D11GraphicsShader::GetBuffer(StringID name) {
 }
 
 GraphicsShaderConstantBuffer D3D11GraphicsShader::GetBuffer(UINT slot) {
-#ifdef DEBUG_D3D11
     if (slot >= ConstantBufferIndexBySlot.size()) {
         return {nullptr, INVALID_SHADER_CB_SLOT, nullptr};
     }
-#endif
     const auto idx = ConstantBufferIndexBySlot[slot];
     if ( idx >= ConstantBuffers.size() ) {
         return { nullptr, INVALID_SHADER_CB_SLOT, nullptr };
