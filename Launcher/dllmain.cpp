@@ -54,7 +54,24 @@ struct ddraw_dll {
     FARPROC	GDX_SetShadowAOStrength;
     FARPROC	GDX_SetWorldAOStrength;
     FARPROC	GDX_OpenMessageBox;
-    FARPROC	GDX_Module;
+    FARPROC	GDX_SetBinkVideoRunning;
+    FARPROC	GDX_SetAtmosphericScattering;
+    FARPROC	GDX_SetFogRange;
+    FARPROC	GDX_SetGlobalWindStrength;
+    FARPROC	GDX_SetRainRadiusRange;
+    FARPROC	GDX_SetRainHeightRange;
+    FARPROC	GDX_SetRainSceneWettness;
+    FARPROC	GDX_SetRainFogDensity;
+    FARPROC	GDX_SetRainSunLightStrength;
+    FARPROC	GDX_SetRainNumParticles;
+    FARPROC	GDX_SetRainGlobalVelocity;
+    FARPROC	GDX_SetRainFogColor;
+    FARPROC	GDX_SetRainMoveParticles;
+    FARPROC	GDX_SetRainUseInitialSet;
+    FARPROC	GDX_GetDX11RenderingContext;
+    FARPROC	GDX_GetVersionString;
+    FARPROC	GDX_GetRendererSettings;
+    FARPROC	GDX_SaveRendererSettings;    
     FARPROC	UpdateCustomFontMultiplier;
     FARPROC	SetCustomSkyTexture;
     FARPROC LoadMenuSettings;
@@ -129,6 +146,24 @@ __declspec(naked) void FakeGDX_SetShadowStrength() { _asm { jmp[ddraw.GDX_SetSha
 __declspec(naked) void FakeGDX_SetShadowAOStrength() { _asm { jmp[ddraw.GDX_SetShadowAOStrength] } }
 __declspec(naked) void FakeGDX_SetWorldAOStrength() { _asm { jmp[ddraw.GDX_SetWorldAOStrength] } }
 __declspec(naked) void FakeGDX_OpenMessageBox() { _asm { jmp[ddraw.GDX_OpenMessageBox] } }
+__declspec(naked) void FakeGDX_SetBinkVideoRunning() { _asm { jmp[ddraw.GDX_SetBinkVideoRunning] } }
+__declspec(naked) void FakeGDX_SetAtmosphericScattering() { _asm { jmp[ddraw.GDX_SetAtmosphericScattering] } }
+__declspec(naked) void FakeGDX_SetFogRange() { _asm { jmp[ddraw.GDX_SetFogRange] } }
+__declspec(naked) void FakeGDX_SetGlobalWindStrength() { _asm { jmp[ddraw.GDX_SetGlobalWindStrength] } }
+__declspec(naked) void FakeGDX_SetRainRadiusRange() { _asm { jmp[ddraw.GDX_SetRainRadiusRange] } }
+__declspec(naked) void FakeGDX_SetRainHeightRange() { _asm { jmp[ddraw.GDX_SetRainHeightRange] } }
+__declspec(naked) void FakeGDX_SetRainSceneWettness() { _asm { jmp[ddraw.GDX_SetRainSceneWettness] } }
+__declspec(naked) void FakeGDX_SetRainFogDensity() { _asm { jmp[ddraw.GDX_SetRainFogDensity] } }
+__declspec(naked) void FakeGDX_SetRainSunLightStrength() { _asm { jmp[ddraw.GDX_SetRainSunLightStrength] } }
+__declspec(naked) void FakeGDX_SetRainNumParticles() { _asm { jmp[ddraw.GDX_SetRainNumParticles] } }
+__declspec(naked) void FakeGDX_SetRainGlobalVelocity() { _asm { jmp[ddraw.GDX_SetRainGlobalVelocity] } }
+__declspec(naked) void FakeGDX_SetRainFogColor() { _asm { jmp[ddraw.GDX_SetRainFogColor] } }
+__declspec(naked) void FakeGDX_SetRainMoveParticles() { _asm { jmp[ddraw.GDX_SetRainMoveParticles] } }
+__declspec(naked) void FakeGDX_SetRainUseInitialSet() { _asm { jmp[ddraw.GDX_SetRainUseInitialSet] } }
+__declspec(naked) void FakeGDX_GetDX11RenderingContext() { _asm { jmp[ddraw.GDX_GetDX11RenderingContext] } }
+__declspec(naked) void FakeGDX_GetVersionString() { _asm { jmp[ddraw.GDX_GetVersionString] } }
+__declspec(naked) void FakeGDX_GetRendererSettings() { _asm { jmp[ddraw.GDX_GetRendererSettings] } }
+__declspec(naked) void FakeGDX_SaveRendererSettings() { _asm { jmp[ddraw.GDX_SaveRendererSettings] } }
 __declspec(naked) void FakeUpdateCustomFontMultiplier() { _asm { jmp[ddraw.UpdateCustomFontMultiplier] } }
 __declspec(naked) void FakeSetCustomSkyTexture() { _asm { jmp[ddraw.SetCustomSkyTexture] } }
 __declspec(naked) void FakeLoadMenuSettings() { _asm { jmp[ddraw.LoadMenuSettings] } }
@@ -384,6 +419,25 @@ BOOL APIENTRY DllMain( HINSTANCE hInst, DWORD reason, LPVOID ) {
         ddraw.GDX_SetShadowAOStrength = GetProcAddress( ddraw.dll, "GDX_SetShadowAOStrength" );
         ddraw.GDX_SetWorldAOStrength = GetProcAddress( ddraw.dll, "GDX_SetWorldAOStrength" );
         ddraw.GDX_OpenMessageBox = GetProcAddress( ddraw.dll, "GDX_OpenMessageBox" );
+        ddraw.GDX_SetBinkVideoRunning = GetProcAddress( ddraw.dll, "GDX_SetBinkVideoRunning" );
+        ddraw.GDX_SetAtmosphericScattering = GetProcAddress( ddraw.dll, "GDX_SetAtmosphericScattering" );
+        ddraw.GDX_SetFogRange = GetProcAddress( ddraw.dll, "GDX_SetFogRange" );
+        ddraw.GDX_SetGlobalWindStrength = GetProcAddress( ddraw.dll, "GDX_SetGlobalWindStrength" );
+        ddraw.GDX_SetRainRadiusRange = GetProcAddress( ddraw.dll, "GDX_SetRainRadiusRange" );
+        ddraw.GDX_SetRainHeightRange = GetProcAddress( ddraw.dll, "GDX_SetRainHeightRange" );
+        ddraw.GDX_SetRainSceneWettness = GetProcAddress( ddraw.dll, "GDX_SetRainSceneWettness" );
+        ddraw.GDX_SetRainFogDensity = GetProcAddress( ddraw.dll, "GDX_SetRainFogDensity" );
+        ddraw.GDX_SetRainSunLightStrength = GetProcAddress( ddraw.dll, "GDX_SetRainSunLightStrength" );
+        ddraw.GDX_SetRainNumParticles = GetProcAddress( ddraw.dll, "GDX_SetRainNumParticles" );
+        ddraw.GDX_SetRainGlobalVelocity = GetProcAddress( ddraw.dll, "GDX_SetRainGlobalVelocity" );
+        ddraw.GDX_SetRainFogColor = GetProcAddress( ddraw.dll, "GDX_SetRainFogColor" );
+        ddraw.GDX_SetRainMoveParticles = GetProcAddress( ddraw.dll, "GDX_SetRainMoveParticles" );
+        ddraw.GDX_SetRainUseInitialSet = GetProcAddress( ddraw.dll, "GDX_SetRainUseInitialSet" );
+        ddraw.GDX_GetDX11RenderingContext = GetProcAddress( ddraw.dll, "GDX_GetDX11RenderingContext" );
+        ddraw.GDX_GetVersionString = GetProcAddress( ddraw.dll, "GDX_GetVersionString" );
+        ddraw.GDX_GetRendererSettings = GetProcAddress( ddraw.dll, "GDX_GetRendererSettings" );
+        ddraw.GDX_SaveRendererSettings = GetProcAddress( ddraw.dll, "GDX_SaveRendererSettings" );
+
         ddraw.UpdateCustomFontMultiplier = GetProcAddress( ddraw.dll, "UpdateCustomFontMultiplier" );
         ddraw.SetCustomSkyTexture = GetProcAddress( ddraw.dll, "SetCustomSkyTexture" );
         ddraw.LoadMenuSettings = GetProcAddress( ddraw.dll, "LoadMenuSettings" );
