@@ -2767,8 +2767,8 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
     auto vsBufMPI = g->GetActiveVS()->GetBuffer( "Matrices_PerInstances" );
     vsBufMPI.Bind();
 
-    g->GetDistortionTexture()->BindToPixelShader( 0 );
-    void* lastTex = g->GetDistortionTexture()->GetShaderResourceView().Get();
+    g->GetWhiteTexture()->BindToPixelShader( 0 );
+    void* lastTex = g->GetWhiteTexture()->GetShaderResourceView().Get();
 
     for ( unsigned int i = 0; i < transforms.size(); i++ ) {
         // Check for new visual
@@ -2887,9 +2887,9 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
                         if ( needTex ) {
                             texture->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
                             lastTex = texture;
-                        } else if ( lastTex != g->GetDistortionTexture()->GetShaderResourceView().Get() ) {
-                            g->GetDistortionTexture()->BindToPixelShader( 0 );
-                            lastTex = g->GetDistortionTexture()->GetShaderResourceView().Get();
+                        } else if ( lastTex != g->GetWhiteTexture()->GetShaderResourceView().Get() ) {
+                            g->GetWhiteTexture()->BindToPixelShader( 0 );
+                            lastTex = g->GetWhiteTexture()->GetShaderResourceView().Get();
                         }
                     }
 

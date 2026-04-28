@@ -704,7 +704,9 @@ XRESULT D3D11GraphicsEngine::Init() {
     NoiseTexture->Init( "system\\GD3D11\\textures\\noise.dds" );
 
     WhiteTexture = std::make_unique<D3D11Texture>();
-    WhiteTexture->Init( "system\\GD3D11\\textures\\white.dds" );
+    uint32_t whitePixel = 0xFFFFFFFF;
+    WhiteTexture->Init( {1,1}, D3D11Texture::ETextureFormat::TF_B8G8R8A8, 1, nullptr, "FULL_WHITE_ALPHA_OPAQUE.static-memory");
+    WhiteTexture->UpdateData( &whitePixel, 0 );
 
     InverseUnitSphereMesh = new GMesh;
     InverseUnitSphereMesh->LoadMesh( "system\\GD3D11\\meshes\\icoSphere.obj" );
@@ -2328,8 +2330,8 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh_Layered( SkeletalVobInfo* vi,
 
     void* lastTex = nullptr;
 
-    GetDistortionTexture()->BindToPixelShader( 0 );
-    lastTex = GetDistortionTexture()->GetShaderResourceView().Get();
+    GetWhiteTexture()->BindToPixelShader( 0 );
+    lastTex = GetWhiteTexture()->GetShaderResourceView().Get();
 
     for ( auto const& itm : dynamic_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->SkeletalMeshes ) {
         if ( zCMaterial* mat = itm.first ) {
@@ -2344,9 +2346,9 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh_Layered( SkeletalVobInfo* vi,
                 if ( needTex ) {
                     tex->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
                     lastTex = tex;
-                } else if ( lastTex != GetDistortionTexture()->GetShaderResourceView().Get() ) {
-                    GetDistortionTexture()->BindToPixelShader( 0 );
-                    lastTex = GetDistortionTexture()->GetShaderResourceView().Get();
+                } else if ( lastTex != GetWhiteTexture()->GetShaderResourceView().Get() ) {
+                    GetWhiteTexture()->BindToPixelShader( 0 );
+                    lastTex = GetWhiteTexture()->GetShaderResourceView().Get();
                 }
             }
         }
