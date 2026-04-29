@@ -382,7 +382,6 @@ void D3D11PointLight::OnVobRemovedFromWorld( BaseVobInfo* vob ) {
         // Our light got removed, release shadowmap
         ReleaseShadowMap();
         ClearTiledSlot();
-        LightInfo->Vob = nullptr;
     }
 
     //Engine::GAPI->LeaveResourceCriticalSection();

@@ -4819,13 +4819,13 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                         materialMesh.first->GetAlphaFunc() !=
                         zMAT_ALPHA_FUNC_MAT_DEFAULT ) {
                         if ( materialMesh.first->GetTexture()->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
-                            materialMesh.first->GetTexture()->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
                             lastBoundTexture = materialMesh.first->GetTexture()->GetSurface()->GetEngineTexture();
+                            lastBoundTexture->BindToPixelShader( 0 );
                         }
                     } else {
-                        if (lastBoundTexture != DistortionTexture.get()) {
-                            DistortionTexture->BindToPixelShader( 0 );
-                            lastBoundTexture = DistortionTexture.get();
+                        if (lastBoundTexture != WhiteTexture.get()) {
+                            WhiteTexture->BindToPixelShader( 0 );
+                            lastBoundTexture = WhiteTexture.get();
                         }
                     }
                 }
@@ -5135,13 +5135,13 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                         materialMesh.first->GetAlphaFunc() !=
                         zMAT_ALPHA_FUNC_MAT_DEFAULT ) {
                         if ( materialMesh.first->GetTexture()->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
-                            materialMesh.first->GetTexture()->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
                             lastBoundTexture = materialMesh.first->GetTexture()->GetSurface()->GetEngineTexture();
+                            lastBoundTexture->BindToPixelShader( 0 );
                         }
                     } else {
-                        if (lastBoundTexture != DistortionTexture.get()) {
-                            DistortionTexture->BindToPixelShader( 0 );
-                            lastBoundTexture = DistortionTexture.get();
+                        if (lastBoundTexture != WhiteTexture.get()) {
+                            WhiteTexture->BindToPixelShader( 0 );
+                            lastBoundTexture = WhiteTexture.get();
                         }
                     }
                 }
