@@ -47,6 +47,7 @@ runs:
 
         Copy-Item -Path "$artifactDir/*" -Destination $binDir -Force
         Move-Item -Path "$binDir/ddraw.dll" -Destination "$relDir/" -Force
+        Move-Item -Path "$binDir/ddraw.pdb" -Destination "$relDir/" -Force
 
     - name: Create final Zip
       shell: pwsh
