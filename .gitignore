@@ -273,3 +273,5 @@ redist*/
 /Launcher/ddraw.dll
 /Launcher/Launcher/Launcher.tlog/Cl.items.tlog
 /Launcher/Launcher/Launcher.tlog/link.secondary.1.tlog
+D3D11Engine/G2_Debug/
+G2_Debug/
