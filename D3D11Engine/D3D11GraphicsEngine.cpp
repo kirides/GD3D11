@@ -4815,11 +4815,13 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
             // Draw the vob
             for ( auto const& materialMesh : vobInfo->VisualInfo->Meshes ) {
                 if ( materialMesh.first && materialMesh.first->GetTexture() ) {
-                    if ( materialMesh.first->GetAlphaFunc() != zMAT_ALPHA_FUNC_NONE ||
-                        materialMesh.first->GetAlphaFunc() !=
-                        zMAT_ALPHA_FUNC_MAT_DEFAULT ) {
-                        if ( materialMesh.first->GetTexture()->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
-                            lastBoundTexture = materialMesh.first->GetTexture()->GetSurface()->GetEngineTexture();
+                    if ( materialMesh.first->GetTexture()->CacheIn( 0.6f ) == zRES_CACHED_IN
+                        && (
+                            (materialMesh.first->GetAlphaFunc() != zMAT_ALPHA_FUNC_NONE && materialMesh.first->GetAlphaFunc() != zMAT_ALPHA_FUNC_MAT_DEFAULT)
+                            || materialMesh.first->GetTexture()->HasAlphaChannel())
+                        ) {
+                        if ( lastBoundTexture != materialMesh.first->GetTexture()->GetSurface()->GetEngineTexture() ) {
+                            lastBoundTexture = materialMesh.first->GetTexture()->GetSurface()->GetEngineTexture(); 
                             lastBoundTexture->BindToPixelShader( 0 );
                         }
                     } else {
@@ -5131,15 +5133,17 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
             // Draw the vob1
             for ( auto const& materialMesh : vobInfo->VisualInfo->Meshes ) {
                 if ( materialMesh.first && materialMesh.first->GetTexture() ) {
-                    if ( materialMesh.first->GetAlphaFunc() != zMAT_ALPHA_FUNC_NONE ||
-                        materialMesh.first->GetAlphaFunc() !=
-                        zMAT_ALPHA_FUNC_MAT_DEFAULT ) {
-                        if ( materialMesh.first->GetTexture()->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                    if ( materialMesh.first->GetTexture()->CacheIn( 0.6f ) == zRES_CACHED_IN
+                        && (
+                            (materialMesh.first->GetAlphaFunc() != zMAT_ALPHA_FUNC_NONE && materialMesh.first->GetAlphaFunc() != zMAT_ALPHA_FUNC_MAT_DEFAULT)
+                            || materialMesh.first->GetTexture()->HasAlphaChannel())
+                        ) {
+                        if ( lastBoundTexture != materialMesh.first->GetTexture()->GetSurface()->GetEngineTexture() ) {
                             lastBoundTexture = materialMesh.first->GetTexture()->GetSurface()->GetEngineTexture();
                             lastBoundTexture->BindToPixelShader( 0 );
                         }
                     } else {
-                        if (lastBoundTexture != WhiteTexture.get()) {
+                        if ( lastBoundTexture != WhiteTexture.get() ) {
                             WhiteTexture->BindToPixelShader( 0 );
                             lastBoundTexture = WhiteTexture.get();
                         }
