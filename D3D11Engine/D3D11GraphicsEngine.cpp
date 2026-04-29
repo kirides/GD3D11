@@ -5950,13 +5950,14 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
             .Update(&Engine::GAPI->GetRendererState().GraphicsState )
             .Bind();
 
-        GSky* sky = Engine::GAPI->GetSky();
-        ActivePS->GetBuffer( "Atmosphere" )
-            .Update( &sky->GetAtmosphereCB() )
-            .Bind();
+        if ( GSky* sky = Engine::GAPI->GetSky() ) {
+            ActivePS->GetBuffer( "Atmosphere" )
+                .Update( &sky->GetAtmosphereCB() )
+                .Bind();
+        }
 
         // Use default material info for now
-        MaterialInfo defInfo;
+        MaterialInfo defInfo = {};
         ActivePS->GetBuffer("MI_MaterialInfo")
             .Update(&defInfo)
             .Bind();
@@ -6086,6 +6087,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                     if ( mlist.empty() ) continue;
                     for ( unsigned int i = 0; i < mlist.size(); i++ ) {
                         MeshInfo* mi = mlist[i];
+                        if ( !mi ) continue;
                         instancedMeshesToDraw.emplace_back( staticMeshVisual, itt.first, mi );
                     }
                 }
@@ -6142,7 +6144,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                     windBuffer.Update( &g_windBuffer );
                 }
 
-                zCTexture* tx = meshKey.Material->GetAniTexture();
+                zCTexture* tx = meshKey.Material ? meshKey.Material->GetAniTexture() : nullptr;
 
                 if ( !tx ) {
 #ifndef BUILD_SPACER_NET
@@ -6204,7 +6206,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                     if ( !srv[1] ) {
                         // Modify the strength of that default normalmap for the
                         // material info
-                        if ( info->buffer.NormalmapStrength
+                        if ( info && info->buffer.NormalmapStrength
                             != DEFAULT_NORMALMAP_STRENGTH ) {
                             // update values for distortion texture
                             info->buffer.NormalmapStrength = DEFAULT_NORMALMAP_STRENGTH;
@@ -6243,7 +6245,8 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
             for ( auto sm : activeVisuals ) {
                 bool clear = true;
                 for ( auto& [meshKey, _] : sm->MeshesByTexture ) {
-                    if ( meshKey.Material->GetAlphaFunc() == zMAT_ALPHA_FUNC_BLEND ||
+                    if ( meshKey.Material &&
+                        meshKey.Material->GetAlphaFunc() == zMAT_ALPHA_FUNC_BLEND ||
                         meshKey.Material->GetAlphaFunc() == zMAT_ALPHA_FUNC_ADD ) {
                         clear = false;
                         break;
