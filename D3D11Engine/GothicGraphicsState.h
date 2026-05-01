@@ -771,6 +771,7 @@ struct GothicRendererSettings {
         DebugSettings.Culling.CullBspSections = true;
         DebugSettings.Culling.CullVobs = true;
         DebugSettings.ShadowCascades.LazyCascadeUpdate = true;
+        DebugSettings.FeatureSet.EnableDriverExtensions = true;
     }
 
     void SetupOldWorldSpecificValues() {
@@ -964,6 +965,7 @@ struct GothicRendererSettings {
             bool CullBspSections;
         } Culling;
         struct {
+            bool EnableDriverExtensions;
             bool UseMDI;
             bool UseLayeredRendering;
             bool UseShadowAtlas;

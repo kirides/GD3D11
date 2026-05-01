@@ -144,27 +144,29 @@ namespace
     }
 }
 
-D3D11GraphicsEngine::D3D11GraphicsEngine() {
-    DebugPointlight = nullptr;
-    OutputWindow = nullptr;
-    ActiveHDS = nullptr;
-    ActivePS = nullptr;
-    InverseUnitSphereMesh = nullptr;
-    frameLatencyWaitableObject = nullptr;
-
+D3D11GraphicsEngine::D3D11GraphicsEngine() :
+    DebugPointlight(nullptr),
+    m_LastFrameLimit(0),
+    RenderingStage(DES_MAIN),
+    InverseUnitSphereMesh(nullptr),
+    QuadVertexBuffer(nullptr),
+    QuadIndexBuffer(nullptr),
+    CachedRefreshRate{0, 0},
+    frameLatencyWaitableObject(nullptr),
+    SaveScreenshotNextFrame(false),
+    m_flipWithTearing(false),
+    m_swapchainflip(false),
+    m_lowlatency(false),
+    m_HDR(false),
+    m_previousFpsLimit(0),
+    m_isWindowActive(false),
+    m_FrameNeedsJitter(false)
+{
     Effects = std::make_unique<D3D11Effect>();
-    RenderingStage = DES_MAIN;
-    PresentPending = false;
-    SaveScreenshotNextFrame = false;
     LineRenderer = std::make_unique<D3D11LineRenderer>();
     Occlusion = std::make_unique<D3D11OcclusionQuerry>();
 
     m_FrameLimiter = std::make_unique<FpsLimiter>();
-    m_LastFrameLimit = 0;
-    m_flipWithTearing = false;
-    m_HDR = false;
-    m_lowlatency = false;
-    m_isWindowActive = false;
 
     // Initialize previous view-proj matrix to identity for motion vectors
     XMStoreFloat4x4( &m_PrevViewProjMatrix, XMMatrixIdentity() );
@@ -172,8 +174,6 @@ D3D11GraphicsEngine::D3D11GraphicsEngine() {
     // Match the resolution with the current desktop resolution
     Resolution = m_scaledResolution = 
         Engine::GAPI->GetRendererState().RendererSettings.LoadedResolution;
-    CachedRefreshRate.Numerator = 0;
-    CachedRefreshRate.Denominator = 0;
     unionCurrentCustomFontMultiplier = 1.0;
 }
 
@@ -421,7 +421,7 @@ XRESULT D3D11GraphicsEngine::Init() {
         dxgiVKInterop->Release();
     }
     
-    if ( !dxvkAvailable ) {
+    if ( !dxvkAvailable && Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.EnableDriverExtensions ) {
         if ( adpDesc.VendorId == 0x10DE ) {
             nvapiDevice.reset( new D3D11NVAPI );
             if ( !nvapiDevice->InitNVAPI() ) {
@@ -509,7 +509,7 @@ XRESULT D3D11GraphicsEngine::Init() {
         exit( 2 );
     }
 
-    if ( dxvkAvailable ) {
+    if ( dxvkAvailable && Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.EnableDriverExtensions) {
         Microsoft::WRL::ComPtr<ID3D11VkExtDevice> DXVKDevice;
         if ( SUCCEEDED( Device11.As( &DXVKDevice ) ) ) {
             if ( DXVKDevice->GetExtensionSupport( D3D11_VK_EXT_MULTI_DRAW_INDIRECT ) ) {
@@ -723,7 +723,8 @@ XRESULT D3D11GraphicsEngine::Init() {
     OutdoorVobsConstantBuffer.reset(outdoorVobsConstantBuffer);
 
     // Init inf-buffer now
-    InfiniteRangeConstantBuffer->UpdateBuffer( &float4( FLT_MAX, 0, 0, 0 ) );
+    static const float4 infiniteRange( FLT_MAX, 0, 0, 0 );
+    InfiniteRangeConstantBuffer->UpdateBuffer( &infiniteRange );
     SetDebugName( InfiniteRangeConstantBuffer->Get().Get(), "InfiniteRangeConstantBuffer" );
     SetDebugName( OutdoorSmallVobsConstantBuffer->Get().Get(), "OutdoorSmallVobsConstantBuffer" );
     SetDebugName( OutdoorVobsConstantBuffer->Get().Get(), "OutdoorVobsConstantBuffer" );
@@ -2912,9 +2913,13 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     // Ensure instance buffer is large enough
     const size_t neededBytes = instancedDrawItems.size() * sizeof( NodeAttachmentInstanceData );
     if ( NodeAttachmentInstancingBuffer->GetSizeInBytes() < neededBytes ) {
-        NodeAttachmentInstancingBuffer->Init(
-            nullptr, static_cast<unsigned int>(neededBytes),
-            D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_DYNAMIC, D3D11VertexBuffer::CA_WRITE );
+        if (XR_FAILED == NodeAttachmentInstancingBuffer->Init(
+            nullptr, neededBytes,
+            D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_DYNAMIC, D3D11VertexBuffer::CA_WRITE ) )
+        {
+            LogError() << "Failed to create instance buffer for node attachments!";
+            return;
+        }
         SetDebugName( NodeAttachmentInstancingBuffer->GetVertexBuffer().Get(), "NodeAttachmentInstancingBuffer" );
     }
 
@@ -2934,6 +2939,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     UINT mappedSize;
     if ( XR_SUCCESS != NodeAttachmentInstancingBuffer->Map( D3D11VertexBuffer::M_WRITE_DISCARD,
         &mappedData, &mappedSize ) ) {
+        LogError() << "Failed to map instance buffer for node attachments!";
         return;
     }
 
@@ -3240,13 +3246,14 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     GetContext()->CSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
 
     // Update view distances
-    InfiniteRangeConstantBuffer->UpdateBuffer( float4( FLT_MAX, 0, 0, 0 ).toPtr() );
-    OutdoorSmallVobsConstantBuffer->UpdateBuffer(
-        float4( rendererState.RendererSettings.OutdoorSmallVobDrawRadius,
-            0, 0, 0 ).toPtr() );
-    OutdoorVobsConstantBuffer->UpdateBuffer( float4(
-        rendererState.RendererSettings.OutdoorVobDrawRadius,
-        0, 0, 0 ).toPtr() );
+    static const float4 defaultInfiniteRange = float4( FLT_MAX, 0, 0, 0 );
+    InfiniteRangeConstantBuffer->UpdateBuffer( &defaultInfiniteRange );
+
+    const float4 outdoorSmallRange( rendererState.RendererSettings.OutdoorSmallVobDrawRadius, 0, 0, 0 );
+    OutdoorSmallVobsConstantBuffer->UpdateBuffer( &outdoorSmallRange );
+
+    const float4 outdoorRange( rendererState.RendererSettings.OutdoorVobDrawRadius, 0, 0, 0 );
+    OutdoorVobsConstantBuffer->UpdateBuffer( &outdoorRange );
 
     rendererState.RasterizerState.FrontCounterClockwise = false;
     rendererState.RasterizerState.SetDirty();

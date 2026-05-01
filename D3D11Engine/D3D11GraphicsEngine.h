@@ -378,7 +378,6 @@ protected:
     std::unique_ptr<D3D11ShadowMap> ShadowMaps;
 
     /** Temp-Arrays for storing data to be put in constant buffers */
-    XMFLOAT4X4 Temp2D3DXMatrix[2];
     float2 Temp2Float2[2];
     std::unique_ptr<D3D11VertexBuffer> DynamicInstancingBuffer;
     std::unique_ptr<D3D11VertexBuffer> NodeAttachmentInstancingBuffer;
