@@ -2879,7 +2879,9 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                     }
 
                     for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
-                        instancedDrawItems.push_back( { itm.second[m], texture, itm.first, instData, texture && texture->HasAlphaChannel() } );
+                        instancedDrawItems.push_back( { itm.second[m], texture, itm.first, instData, 
+                            (texture && texture->HasAlphaChannel()) || (itm.first && itm.first->HasAlphaTest())
+                        } );
                     }
                 }
             }
