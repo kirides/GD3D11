@@ -4374,9 +4374,17 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
     MeshInfo* meshInfo = Engine::GAPI->GetWrappedWorldMesh();
     DrawVertexBufferIndexedUINT( meshInfo->MeshVertexBuffer, meshInfo->MeshIndexBuffer, 0, 0 );
 
-    static std::vector<std::pair<MeshKey, WorldMeshInfo*>> meshList;
+    struct WorldMeshKey {
+        zCTexture* Texture;
+        zCMaterial* Material;
+        MaterialInfo* Info;
+        int AlphaLevel; // 0 = opaque, 1 = alpha test, 2 = alpha texture
+        //zCLightmap* Lightmap;
+    };
+
+    static std::vector<std::pair<WorldMeshKey, WorldMeshInfo*>> meshList;
+    meshList.clear();
     if ( meshList.capacity() == 0 ) meshList.reserve( 4096 );
-    auto CompareMesh = []( std::pair<MeshKey, WorldMeshInfo*>& a, std::pair<MeshKey, WorldMeshInfo*>& b ) -> bool { return a.first.Texture < b.first.Texture; };
 
     GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
     GetContext()->DSSetShader( nullptr, nullptr, 0 );
@@ -4398,13 +4406,6 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
                     continue;
                 }
 
-                // Check if the animated texture and the registered textures are the
-                // same
-                MeshKey key = worldMesh.first;
-                if ( worldMesh.first.Texture != aniTex ) {
-                    key.Texture = aniTex;
-                }
-
                 if ( worldMesh.first.Info->MaterialType == MaterialInfo::MT_Portal ) {
                     FrameTransparencyMeshesPortal.push_back( worldMesh );
                     continue;
@@ -4419,13 +4420,33 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
                     && worldMesh.first.Texture->HasAlphaChannel()) {
                     FrameTransparencyMeshes.push_back( worldMesh );
                 } else {
+
+                    int alphaLevel = 0;
+                    if ( worldMesh.first.Texture && worldMesh.first.Texture->HasAlphaChannel() ) {
+                        alphaLevel = 2;
+                    } else if ( worldMesh.first.Material && worldMesh.first.Material->HasAlphaTest() ) {
+                        alphaLevel = 1;
+                    }
+
+                    WorldMeshKey key = {
+                        aniTex,
+                        worldMesh.first.Material,
+                        worldMesh.first.Info,
+                        alphaLevel,
+                    };
+
                     // Create a new pair using the animated texture
                     meshList.emplace_back( key, worldMesh.second );
-                    std::push_heap( meshList.begin(), meshList.end(), CompareMesh );
                 }
             }
         }
     }
+    auto CompareMesh = []( std::pair<WorldMeshKey, WorldMeshInfo*>& a, std::pair<WorldMeshKey, WorldMeshInfo*>& b ) -> bool {
+        if ( a.first.AlphaLevel != b.first.AlphaLevel )
+            return a.first.AlphaLevel < b.first.AlphaLevel;
+        return a.first.Texture < b.first.Texture;
+    };
+    std::sort( meshList.begin(), meshList.end(), CompareMesh );
 
     // Draw depth only
     if ( Engine::GAPI->GetRendererState().RendererSettings.DoZPrepass ) {
@@ -4435,7 +4456,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
             zCTexture* texture;
             if ( ( texture = mesh.first.Texture ) == nullptr ) continue;
 
-            if ( texture->HasAlphaChannel() )
+            if ( texture->HasAlphaChannel() || (mesh.first.Material && mesh.first.Material->HasAlphaTest()) )
                 continue;  // Don't pre-render stuff with alpha channel
 
             if ( mesh.first.Info->MaterialType == MaterialInfo::MT_Water )
@@ -4451,8 +4472,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
     // Now draw the actual pixels
     zCTexture* bound = nullptr;
     MaterialInfo* boundInfo = nullptr;
-    while ( !meshList.empty() ) {
-        auto const& mesh = meshList.front();
+    for ( auto const& mesh : meshList ) {
 
         int indicesNumMod = 1;
         if ( mesh.first.Texture != bound &&
@@ -4506,9 +4526,6 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
         if ( Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh > 2 ) {
             DrawVertexBufferIndexedUINT( nullptr, nullptr, mesh.second->Indices.size(), mesh.second->BaseIndexLocation );
         }
-
-        std::pop_heap( meshList.begin(), meshList.end(), CompareMesh );
-        meshList.pop_back();
     }
 
     UpdateOcclusion();
