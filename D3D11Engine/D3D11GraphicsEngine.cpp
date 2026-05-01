@@ -2518,7 +2518,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             continue;
         }
 
-        model->SetIsVisible( true );
+        model->SetIsVisible( true ); 
         if ( !vi->VisualInfo )
             continue; // Gothic fortunately sets this to 0 when it throws the model out of the cache
         if ( !vi->Vob->GetShowVisual() )
@@ -2547,6 +2547,15 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             }
         }
 
+        if ( updateState) {
+            if ( vi->LastAniUpdateFrame != now ) {
+                vi->LastAniUpdateFrame = now;
+                // Update attachments
+                model->UpdateAttachedVobs();
+            }
+            model->UpdateMeshLibTexAniState();
+        }
+
         XMMATRIX scale = XMMatrixScalingFromVector( model->GetModelScaleXM() );
 
         XMMATRIX xmWorld = vi->Vob->GetWorldMatrixXM() * scale;
@@ -2559,14 +2568,6 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         auto boneIdx = boneOffset;
         boneOffset += numBones;
 
-        if ( updateState) {
-            if ( vi->LastAniUpdateFrame != now ) {
-                vi->LastAniUpdateFrame = now;
-                // Update attachments
-                model->UpdateAttachedVobs();
-            }
-            model->UpdateMeshLibTexAniState();
-        }
 
         if ( !static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->SkeletalMeshes.empty() ) {
 #ifdef BUILD_GOTHIC_2_6_fix
@@ -2798,7 +2799,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                 }
 
                 // MorphMesh: always per-draw
-                if ( isMMS ) {
+                if ( isMMS && distance < 1000 ) {
                     // Only 0.35f of the fatness wanted by gothic.
                     // They seem to compensate for that with the scaling.
                     
@@ -3015,17 +3016,19 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 
     MaterialInfo* lastMaterialInfo = nullptr;
 
+    void* lastTex = nullptr;
     auto lastSwitches = graphicsState.FF_GSwitches;
     for ( const auto& batch : batches ) {
         MeshInfo* mi = batch.mesh;
 
         // Bind texture for non-shadow passes
-        if ( wantShader && batch.texture ) {
+        if ( wantShader && batch.texture && batch.texture != lastTex) {
             MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( batch.texture );
             if ( !BindTextureNRFX( batch.texture, isMainOrGhost, info != lastMaterialInfo ) ) {
                 continue;
             }
             lastMaterialInfo = info;
+            lastTex = batch.texture;
         }
 
         // Set up alpha test state from material
