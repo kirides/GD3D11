@@ -794,6 +794,7 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
         : xmFltMax;
 
     bool partialShadowUpdate = settings.PartialDynamicShadowUpdates;
+    const bool staticOnlyMode = settings.EnablePointlightShadows == GothicRendererSettings::PLS_STATIC_ONLY;
 
     // Draw pointlight shadows
     std::list<VobLightInfo*> importantUpdates;
@@ -825,7 +826,7 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
 
             // pick shadow resolution based on distance.
             int desiredResolution = SHADOW_CUBE_SIZE; // Fallback / far distance
-            if ( d < distVeryCloseSq ) {
+            if ( d < distVeryCloseSq && !staticOnlyMode ) {
                 light->UpdateShadows = true;
                 // for now, keep all lights/shadows the same size, otherwise they change their "volume"
                 // desiredResolution = 256; // High res for close lights
@@ -869,10 +870,16 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
                         importantUpdates.emplace_back( light );
                     }
                     // Background Priority: Add to round-robin queue if not already there
-                    else if ( partialShadowUpdate ) {
+                    else if ( partialShadowUpdate && !staticOnlyMode ) {
                         auto& queue = graphicsEngine->FrameShadowUpdateLights;
                         if ( std::find( queue.begin(), queue.end(), light ) == queue.end() ) {
                             queue.emplace_back( light );
+                        }
+                    } else if ( staticOnlyMode ) {
+                        auto& queue = graphicsEngine->FrameShadowUpdateLights;
+                        auto queued = std::find( queue.begin(), queue.end(), light );
+                        if ( queued != queue.end() ) {
+                            queue.erase( queued );
                         }
                     }
                 }
@@ -917,6 +924,11 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
 
         D3D11PointLight* l = static_cast<D3D11PointLight*>( light->LightShadowBuffers.get() );
         if ( !l ) continue;
+
+        if ( staticOnlyMode && l->IsStaticShadowReady() && !l->NeedsUpdate() ) {
+            light->UpdateShadows = false;
+            continue;
+        }
 
         light->UpdateShadows = false;
 
@@ -1331,7 +1343,9 @@ void XM_CALLCONV D3D11ShadowMap::RenderShadowCube(
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> debugRTV, bool cullFront, bool indoor, bool noNPCs,
     std::list<VobInfo*>* renderedVobs,
     std::list<SkeletalVobInfo*>* renderedMobs,
-    std::map<MeshKey, WorldMeshInfo*, cmpMeshKey>* worldMeshCache ) {
+    std::map<MeshKey, WorldMeshInfo*, cmpMeshKey>* worldMeshCache,
+    bool clearDepth,
+    unsigned int casterMask ) {
 
     auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
 
@@ -1387,16 +1401,17 @@ void XM_CALLCONV D3D11ShadowMap::RenderShadowCube(
         Engine::GAPI->GetRendererState().BlendState.SetDirty();
     }
 
-    // Always render shadowcube when dynamic shadows are enabled
-    m_context->ClearDepthStencilView( face.Get(), D3D11_CLEAR_DEPTH, 1.0f, 0 );
+    if ( clearDepth ) {
+        m_context->ClearDepthStencilView( face.Get(), D3D11_CLEAR_DEPTH, 1.0f, 0 );
+    }
 
     // Draw the world mesh without textures
     if ( useLayeredPath ) {
         graphicsEngine->DrawWorldAround_Layered( position, range, cullFront, indoor, noNPCs, renderedVobs,
-            renderedMobs, worldMeshCache );
+            renderedMobs, worldMeshCache, casterMask );
     } else {
         graphicsEngine->DrawWorldAround( position, range, cullFront, indoor, noNPCs, renderedVobs,
-            renderedMobs, worldMeshCache );
+            renderedMobs, worldMeshCache, casterMask );
     }
 
     // Restore state

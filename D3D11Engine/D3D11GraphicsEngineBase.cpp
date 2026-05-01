@@ -14,7 +14,9 @@ const int NUM_MAX_BONES = 96;
 const unsigned int INSTANCING_BUFFER_SIZE = sizeof( VobInstanceInfo ) * 2048;
 
 // If defined, creates a debug-version of the d3d11-device
-//#define DEBUG_D3D11
+#if !PUBLIC_RELEASE
+#define DEBUG_D3D11
+#endif
 
 D3D11GraphicsEngineBase::D3D11GraphicsEngineBase() {
     OutputWindow = HWND( 0 );

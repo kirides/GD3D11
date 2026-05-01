@@ -30,8 +30,6 @@ D3D11ConstantBuffer::D3D11ConstantBuffer( int size, void* data ) {
     BufferDirty = false;
 }
 
-D3D11ConstantBuffer::~D3D11ConstantBuffer() {}
-
 /** Updates the buffer */
 D3D11ConstantBuffer* D3D11ConstantBuffer::UpdateBuffer( const void* data ) {
     D3D11GraphicsEngineBase* engine = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine);
@@ -39,7 +37,13 @@ D3D11ConstantBuffer* D3D11ConstantBuffer::UpdateBuffer( const void* data ) {
     D3D11_MAPPED_SUBRESOURCE res;
     if ( SUCCEEDED( engine->GetContext()->Map( Buffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &res ) )) {
         // Copy data
-        memcpy( res.pData, data, OriginalSize );
+        if ( res.pData ) {
+            if ( data ) {
+                memcpy( res.pData, data, OriginalSize );
+            } else {
+                ZeroMemory( res.pData, OriginalSize );
+            }
+        }
         engine->GetContext()->Unmap( Buffer.Get(), 0 );
 
         BufferDirty = true;
@@ -55,7 +59,14 @@ D3D11ConstantBuffer* D3D11ConstantBuffer::UpdateBuffer( const void* data, UINT s
     D3D11_MAPPED_SUBRESOURCE res;
     if ( SUCCEEDED( engine->GetContext()->Map( Buffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &res ) )) {
         // Copy data
-        memcpy( res.pData, data, size );
+        if ( res.pData ) {
+            if (size < OriginalSize) {
+                ZeroMemory( res.pData, OriginalSize );
+            }
+            if ( data ) {
+                memcpy( res.pData, data, size );
+            }
+        }
         engine->GetContext()->Unmap( Buffer.Get(), 0 );
 
         BufferDirty = true;

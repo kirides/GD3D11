@@ -4890,6 +4890,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "FontRendering", "Enable", std::to_string( s.EnableCustomFontRendering ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Debug", "UseShadowAtlas", std::to_string( s.DebugSettings.FeatureSet.UseShadowAtlas ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Debug", "ForceFeatureLevel10", std::to_string( s.DebugSettings.FeatureSet.ForceFeatureLevel10 ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Debug", "EnableDriverExtensions", std::to_string( s.DebugSettings.FeatureSet.EnableDriverExtensions ? TRUE : FALSE ).c_str(), ini.c_str() );
 
     return XR_SUCCESS;
 }
@@ -5018,6 +5019,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.EnableCustomFontRendering = GetPrivateProfileBoolA( "FontRendering", "Enable", defaultRendererSettings.EnableCustomFontRendering, ini );
         s.DebugSettings.FeatureSet.UseShadowAtlas = GetPrivateProfileBoolA( "Debug", "UseShadowAtlas", defaultRendererSettings.DebugSettings.FeatureSet.UseShadowAtlas, ini );
         s.DebugSettings.FeatureSet.ForceFeatureLevel10 = GetPrivateProfileBoolA( "Debug", "ForceFeatureLevel10", defaultRendererSettings.DebugSettings.FeatureSet.ForceFeatureLevel10, ini );
+        s.DebugSettings.FeatureSet.EnableDriverExtensions = GetPrivateProfileBoolA( "Debug", "EnableDriverExtensions", defaultRendererSettings.DebugSettings.FeatureSet.EnableDriverExtensions, ini );
 
         // Fix the resolution if the players maximum resolution got lower
         /*RECT r;

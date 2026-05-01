@@ -144,36 +144,36 @@ namespace
     }
 }
 
-D3D11GraphicsEngine::D3D11GraphicsEngine() {
-    DebugPointlight = nullptr;
-    OutputWindow = nullptr;
-    ActiveHDS = nullptr;
-    ActivePS = nullptr;
-    InverseUnitSphereMesh = nullptr;
-    frameLatencyWaitableObject = nullptr;
-
+D3D11GraphicsEngine::D3D11GraphicsEngine() :
+    DebugPointlight(nullptr),
+    m_LastFrameLimit(0),
+    RenderingStage(DES_MAIN),
+    InverseUnitSphereMesh(nullptr),
+    QuadVertexBuffer(nullptr),
+    QuadIndexBuffer(nullptr),
+    CachedRefreshRate{0, 0},
+    frameLatencyWaitableObject(nullptr),
+    SaveScreenshotNextFrame(false),
+    m_flipWithTearing(false),
+    m_swapchainflip(false),
+    m_lowlatency(false),
+    m_HDR(false),
+    m_previousFpsLimit(0),
+    m_isWindowActive(false),
+    m_FrameNeedsJitter(false)
+{
     Effects = std::make_unique<D3D11Effect>();
-    RenderingStage = DES_MAIN;
-    PresentPending = false;
-    SaveScreenshotNextFrame = false;
     LineRenderer = std::make_unique<D3D11LineRenderer>();
     Occlusion = std::make_unique<D3D11OcclusionQuerry>();
 
     m_FrameLimiter = std::make_unique<FpsLimiter>();
-    m_LastFrameLimit = 0;
-    m_flipWithTearing = false;
-    m_HDR = false;
-    m_lowlatency = false;
-    m_isWindowActive = false;
 
     // Initialize previous view-proj matrix to identity for motion vectors
-    XMStoreFloat4x4( &m_PrevViewProjMatrix, XMMatrixIdentity() );
+    XMStoreFloat4x4(&m_PrevViewProjMatrix, XMMatrixIdentity());
 
     // Match the resolution with the current desktop resolution
-    Resolution = m_scaledResolution = 
+    Resolution = m_scaledResolution =
         Engine::GAPI->GetRendererState().RendererSettings.LoadedResolution;
-    CachedRefreshRate.Numerator = 0;
-    CachedRefreshRate.Denominator = 0;
     unionCurrentCustomFontMultiplier = 1.0;
 }
 
@@ -421,7 +421,7 @@ XRESULT D3D11GraphicsEngine::Init() {
         dxgiVKInterop->Release();
     }
     
-    if ( !dxvkAvailable ) {
+    if ( !dxvkAvailable && Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.EnableDriverExtensions ) {
         if ( adpDesc.VendorId == 0x10DE ) {
             nvapiDevice.reset( new D3D11NVAPI );
             if ( !nvapiDevice->InitNVAPI() ) {
@@ -509,7 +509,7 @@ XRESULT D3D11GraphicsEngine::Init() {
         exit( 2 );
     }
 
-    if ( dxvkAvailable ) {
+    if ( dxvkAvailable && Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.EnableDriverExtensions) {
         Microsoft::WRL::ComPtr<ID3D11VkExtDevice> DXVKDevice;
         if ( SUCCEEDED( Device11.As( &DXVKDevice ) ) ) {
             if ( DXVKDevice->GetExtensionSupport( D3D11_VK_EXT_MULTI_DRAW_INDIRECT ) ) {
@@ -723,7 +723,8 @@ XRESULT D3D11GraphicsEngine::Init() {
     OutdoorVobsConstantBuffer.reset(outdoorVobsConstantBuffer);
 
     // Init inf-buffer now
-    InfiniteRangeConstantBuffer->UpdateBuffer( &float4( FLT_MAX, 0, 0, 0 ) );
+    static const float4 infiniteRange( FLT_MAX, 0, 0, 0 );
+    InfiniteRangeConstantBuffer->UpdateBuffer( &infiniteRange );
     SetDebugName( InfiniteRangeConstantBuffer->Get().Get(), "InfiniteRangeConstantBuffer" );
     SetDebugName( OutdoorSmallVobsConstantBuffer->Get().Get(), "OutdoorSmallVobsConstantBuffer" );
     SetDebugName( OutdoorVobsConstantBuffer->Get().Get(), "OutdoorVobsConstantBuffer" );
@@ -2451,6 +2452,8 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     tempVobList.clear();
     BoneTransformCache.clear();
     BoneTransformCache.reserve( 150 );
+    
+    GothicGraphicsState& graphicsState = Engine::GAPI->GetRendererState().GraphicsState;
 
     int boneOffset = 0;
     
@@ -2489,7 +2492,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     
     bool wantShader = true;
     if ( RenderingStage != DES_GHOST ) {
-        bool linearDepth = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches & GSWITCH_LINEAR_DEPTH) != 0;
+        bool linearDepth = (graphicsState.FF_GSwitches & GSWITCH_LINEAR_DEPTH) != 0;
         if ( linearDepth ) {
             ActivePS = ShaderManager->GetPShader( PShaderID::PS_LinDepth );
             ActivePS->Apply();
@@ -2503,25 +2506,26 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         }
     }
     // Ensure we have correct Constantbuffer for eventual Alphatest stuff.
-    ShaderManager->GetPShader( Resolved_DiffuseNormalmappedAlphatest )
+    auto cbFFPipelineConstantBuffer = ShaderManager->GetPShader( Resolved_DiffuseNormalmappedAlphatest )
         ->GetBuffer( "FFPipelineConstantBuffer" )
-        .Update( &Engine::GAPI->GetRendererState().GraphicsState )
+        .Update( &graphicsState )
         .Bind();
     
+    const bool enableShadows = Engine::GAPI->GetRendererState().RendererSettings.EnableShadows;
     for ( SkeletalVobInfo* vi : vis ) {
         zCModel* model = static_cast<zCModel*>(vi->Vob->GetVisual());
         if ( !model ) {
             continue;
         }
 
-        model->SetIsVisible( true );
+        model->SetIsVisible( true ); 
         if ( !vi->VisualInfo )
             continue; // Gothic fortunately sets this to 0 when it throws the model out of the cache
         if ( !vi->Vob->GetShowVisual() )
             continue;
 
         float4 modelColor;
-        if ( Engine::GAPI->GetRendererState().RendererSettings.EnableShadows ) {
+        if ( enableShadows ) {
             // Let shadows do the work
             modelColor = 0xFFFFFFFF;
         } else {
@@ -2543,6 +2547,15 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             }
         }
 
+        if ( updateState) {
+            if ( vi->LastAniUpdateFrame != now ) {
+                vi->LastAniUpdateFrame = now;
+                // Update attachments
+                model->UpdateAttachedVobs();
+            }
+            model->UpdateMeshLibTexAniState();
+        }
+
         XMMATRIX scale = XMMatrixScalingFromVector( model->GetModelScaleXM() );
 
         XMMATRIX xmWorld = vi->Vob->GetWorldMatrixXM() * scale;
@@ -2555,14 +2568,6 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         auto boneIdx = boneOffset;
         boneOffset += numBones;
 
-        if ( updateState) {
-            if ( vi->LastAniUpdateFrame != now ) {
-                vi->LastAniUpdateFrame = now;
-                // Update attachments
-                model->UpdateAttachedVobs();
-            }
-            model->UpdateMeshLibTexAniState();
-        }
 
         if ( !static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->SkeletalMeshes.empty() ) {
 #ifdef BUILD_GOTHIC_2_6_fix
@@ -2794,7 +2799,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                 }
 
                 // MorphMesh: always per-draw
-                if ( isMMS ) {
+                if ( isMMS && distance < 1000 ) {
                     // Only 0.35f of the fatness wanted by gothic.
                     // They seem to compensate for that with the scaling.
                     
@@ -2878,7 +2883,9 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                     }
 
                     for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
-                        instancedDrawItems.push_back( { itm.second[m], texture, itm.first, instData, texture && texture->HasAlphaChannel() } );
+                        instancedDrawItems.push_back( { itm.second[m], texture, itm.first, instData, 
+                            (texture && texture->HasAlphaChannel()) || (itm.first && itm.first->HasAlphaTest())
+                        } );
                     }
                 }
             }
@@ -2912,9 +2919,13 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     // Ensure instance buffer is large enough
     const size_t neededBytes = instancedDrawItems.size() * sizeof( NodeAttachmentInstanceData );
     if ( NodeAttachmentInstancingBuffer->GetSizeInBytes() < neededBytes ) {
-        NodeAttachmentInstancingBuffer->Init(
-            nullptr, static_cast<unsigned int>(neededBytes),
-            D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_DYNAMIC, D3D11VertexBuffer::CA_WRITE );
+        if (XR_FAILED == NodeAttachmentInstancingBuffer->Init(
+            nullptr, neededBytes,
+            D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_DYNAMIC, D3D11VertexBuffer::CA_WRITE ) )
+        {
+            LogError() << "Failed to create instance buffer for node attachments!";
+            return;
+        }
         SetDebugName( NodeAttachmentInstancingBuffer->GetVertexBuffer().Get(), "NodeAttachmentInstancingBuffer" );
     }
 
@@ -2934,6 +2945,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     UINT mappedSize;
     if ( XR_SUCCESS != NodeAttachmentInstancingBuffer->Map( D3D11VertexBuffer::M_WRITE_DISCARD,
         &mappedData, &mappedSize ) ) {
+        LogError() << "Failed to map instance buffer for node attachments!";
         return;
     }
 
@@ -2988,7 +3000,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     if ( !isMainOrGhost && !isShadowPass ) {
         // ghost or other: keep the pixel shader whatever was set
     } else if ( isShadowPass ) {
-        bool linearDepth = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches & GSWITCH_LINEAR_DEPTH) != 0;
+        bool linearDepth = (graphicsState.FF_GSwitches & GSWITCH_LINEAR_DEPTH) != 0;
         if ( linearDepth ) {
             ActivePS = ShaderManager->GetPShader( PShaderID::PS_LinDepth );
             ActivePS->Apply();
@@ -3002,27 +3014,35 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     D3D11VertexBuffer* lastVB = nullptr;
     D3D11VertexBuffer* lastIB = nullptr;
 
-
     MaterialInfo* lastMaterialInfo = nullptr;
 
+    void* lastTex = nullptr;
+    auto lastSwitches = graphicsState.FF_GSwitches;
     for ( const auto& batch : batches ) {
         MeshInfo* mi = batch.mesh;
 
         // Bind texture for non-shadow passes
-        if ( wantShader && batch.texture ) {
+        if ( wantShader && batch.texture && batch.texture != lastTex) {
             MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( batch.texture );
             if ( !BindTextureNRFX( batch.texture, isMainOrGhost, info != lastMaterialInfo ) ) {
                 continue;
             }
             lastMaterialInfo = info;
+            lastTex = batch.texture;
         }
 
         // Set up alpha test state from material
         if ( batch.material ) {
             if ( batch.material->GetAlphaFunc() == zRND_ALPHA_FUNC_TEST )
-                Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches |= GSWITCH_ALPHAREF;
+                graphicsState.FF_GSwitches |= GSWITCH_ALPHAREF;
             else
-                Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches &= ~GSWITCH_ALPHAREF;
+                graphicsState.FF_GSwitches &= ~GSWITCH_ALPHAREF;
+            
+            if (lastSwitches != graphicsState.FF_GSwitches) {
+                lastSwitches = graphicsState.FF_GSwitches;
+                cbFFPipelineConstantBuffer.Update( &lastSwitches );
+                UpdateRenderStates();
+            }
         }
 
         // Bind mesh VB to slot 0 (only when changed)
@@ -3240,13 +3260,14 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     GetContext()->CSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
 
     // Update view distances
-    InfiniteRangeConstantBuffer->UpdateBuffer( float4( FLT_MAX, 0, 0, 0 ).toPtr() );
-    OutdoorSmallVobsConstantBuffer->UpdateBuffer(
-        float4( rendererState.RendererSettings.OutdoorSmallVobDrawRadius,
-            0, 0, 0 ).toPtr() );
-    OutdoorVobsConstantBuffer->UpdateBuffer( float4(
-        rendererState.RendererSettings.OutdoorVobDrawRadius,
-        0, 0, 0 ).toPtr() );
+    static const float4 defaultInfiniteRange = float4( FLT_MAX, 0, 0, 0 );
+    InfiniteRangeConstantBuffer->UpdateBuffer( &defaultInfiniteRange );
+
+    const float4 outdoorSmallRange( rendererState.RendererSettings.OutdoorSmallVobDrawRadius, 0, 0, 0 );
+    OutdoorSmallVobsConstantBuffer->UpdateBuffer( &outdoorSmallRange );
+
+    const float4 outdoorRange( rendererState.RendererSettings.OutdoorVobDrawRadius, 0, 0, 0 );
+    OutdoorVobsConstantBuffer->UpdateBuffer( &outdoorRange );
 
     rendererState.RasterizerState.FrontCounterClockwise = false;
     rendererState.RasterizerState.SetDirty();
@@ -4353,9 +4374,17 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
     MeshInfo* meshInfo = Engine::GAPI->GetWrappedWorldMesh();
     DrawVertexBufferIndexedUINT( meshInfo->MeshVertexBuffer, meshInfo->MeshIndexBuffer, 0, 0 );
 
-    static std::vector<std::pair<MeshKey, WorldMeshInfo*>> meshList;
+    struct WorldMeshKey {
+        zCTexture* Texture;
+        zCMaterial* Material;
+        MaterialInfo* Info;
+        int AlphaLevel; // 0 = opaque, 1 = alpha test, 2 = alpha texture
+        //zCLightmap* Lightmap;
+    };
+
+    static std::vector<std::pair<WorldMeshKey, WorldMeshInfo*>> meshList;
+    meshList.clear();
     if ( meshList.capacity() == 0 ) meshList.reserve( 4096 );
-    auto CompareMesh = []( std::pair<MeshKey, WorldMeshInfo*>& a, std::pair<MeshKey, WorldMeshInfo*>& b ) -> bool { return a.first.Texture < b.first.Texture; };
 
     GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
     GetContext()->DSSetShader( nullptr, nullptr, 0 );
@@ -4377,13 +4406,6 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
                     continue;
                 }
 
-                // Check if the animated texture and the registered textures are the
-                // same
-                MeshKey key = worldMesh.first;
-                if ( worldMesh.first.Texture != aniTex ) {
-                    key.Texture = aniTex;
-                }
-
                 if ( worldMesh.first.Info->MaterialType == MaterialInfo::MT_Portal ) {
                     FrameTransparencyMeshesPortal.push_back( worldMesh );
                     continue;
@@ -4398,13 +4420,33 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
                     && worldMesh.first.Texture->HasAlphaChannel()) {
                     FrameTransparencyMeshes.push_back( worldMesh );
                 } else {
+
+                    int alphaLevel = 0;
+                    if ( worldMesh.first.Texture && worldMesh.first.Texture->HasAlphaChannel() ) {
+                        alphaLevel = 2;
+                    } else if ( worldMesh.first.Material && worldMesh.first.Material->HasAlphaTest() ) {
+                        alphaLevel = 1;
+                    }
+
+                    WorldMeshKey key = {
+                        aniTex,
+                        worldMesh.first.Material,
+                        worldMesh.first.Info,
+                        alphaLevel,
+                    };
+
                     // Create a new pair using the animated texture
                     meshList.emplace_back( key, worldMesh.second );
-                    std::push_heap( meshList.begin(), meshList.end(), CompareMesh );
                 }
             }
         }
     }
+    auto CompareMesh = []( std::pair<WorldMeshKey, WorldMeshInfo*>& a, std::pair<WorldMeshKey, WorldMeshInfo*>& b ) -> bool {
+        if ( a.first.AlphaLevel != b.first.AlphaLevel )
+            return a.first.AlphaLevel < b.first.AlphaLevel;
+        return a.first.Texture < b.first.Texture;
+    };
+    std::sort( meshList.begin(), meshList.end(), CompareMesh );
 
     // Draw depth only
     if ( Engine::GAPI->GetRendererState().RendererSettings.DoZPrepass ) {
@@ -4414,7 +4456,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
             zCTexture* texture;
             if ( ( texture = mesh.first.Texture ) == nullptr ) continue;
 
-            if ( texture->HasAlphaChannel() )
+            if ( texture->HasAlphaChannel() || (mesh.first.Material && mesh.first.Material->HasAlphaTest()) )
                 continue;  // Don't pre-render stuff with alpha channel
 
             if ( mesh.first.Info->MaterialType == MaterialInfo::MT_Water )
@@ -4430,8 +4472,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
     // Now draw the actual pixels
     zCTexture* bound = nullptr;
     MaterialInfo* boundInfo = nullptr;
-    while ( !meshList.empty() ) {
-        auto const& mesh = meshList.front();
+    for ( auto const& mesh : meshList ) {
 
         int indicesNumMod = 1;
         if ( mesh.first.Texture != bound &&
@@ -4485,9 +4526,6 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
         if ( Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh > 2 ) {
             DrawVertexBufferIndexedUINT( nullptr, nullptr, mesh.second->Indices.size(), mesh.second->BaseIndexLocation );
         }
-
-        std::pop_heap( meshList.begin(), meshList.end(), CompareMesh );
-        meshList.pop_back();
     }
 
     UpdateOcclusion();
@@ -4607,7 +4645,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
     FXMVECTOR position, float range, bool cullFront, bool indoor,
     bool noNPCs, std::list<VobInfo*>* renderedVobs,
     std::list<SkeletalVobInfo*>* renderedMobs,
-    std::map<MeshKey, WorldMeshInfo*, cmpMeshKey>* worldMeshCache ) {
+    std::map<MeshKey, WorldMeshInfo*, cmpMeshKey>* worldMeshCache,
+    unsigned int casterMask ) {
 
     // Setup renderstates
     Engine::GAPI->GetRendererState().RasterizerState.SetDefault();
@@ -4678,7 +4717,12 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
     
     auto vsBufMPI = ActiveVS->GetBuffer( "Matrices_PerInstances" );
 
-    if ( Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh ) {
+    const bool drawWorldCasters = (casterMask & SHADOW_CASTER_WORLD) != 0;
+    const bool drawVobCasters = (casterMask & SHADOW_CASTER_VOBS) != 0;
+    const bool drawMobCasters = (casterMask & SHADOW_CASTER_MOBS) != 0;
+    const bool drawAnimatedCasters = (casterMask & SHADOW_CASTER_ANIMATED) != 0;
+
+    if ( drawWorldCasters && Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh ) {
         // Bind wrapped mesh vertex buffers
         DrawVertexBufferIndexedUINT( Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer,
             Engine::GAPI->GetWrappedWorldMesh()->MeshIndexBuffer, 0, 0 );
@@ -4773,7 +4817,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
         }
     }
     
-    if ( Engine::GAPI->GetRendererState().RendererSettings.DrawVOBs ) {
+    if ( drawVobCasters && Engine::GAPI->GetRendererState().RendererSettings.DrawVOBs ) {
         // Draw visible vobs here
         std::list<VobInfo*> rndVob;
         // construct new renderedvob list or fake one
@@ -4841,8 +4885,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
         }
     }
 
-    bool renderNPCs = !noNPCs;
-    if ( Engine::GAPI->GetRendererState().RendererSettings.DrawMobs ) {
+    bool renderNPCs = !noNPCs && drawAnimatedCasters;
+    if ( drawMobCasters && Engine::GAPI->GetRendererState().RendererSettings.DrawMobs ) {
         // Draw visible vobs here
         std::list<SkeletalVobInfo*> rndVob;
 
@@ -4889,7 +4933,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
         }
     }
 
-    if ( Engine::GAPI->GetRendererState().RendererSettings.DrawSkeletalMeshes ) {
+    if ( drawAnimatedCasters && Engine::GAPI->GetRendererState().RendererSettings.DrawSkeletalMeshes ) {
         // Draw animated skeletal meshes if wanted
         if ( renderNPCs ) {
             for ( auto const& skeletalMeshVob : Engine::GAPI->GetAnimatedSkeletalMeshVobs() ) {
@@ -4924,7 +4968,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
     FXMVECTOR position, float range, bool cullFront, bool indoor,
     bool noNPCs, std::list<VobInfo*>* renderedVobs,
     std::list<SkeletalVobInfo*>* renderedMobs,
-    std::map<MeshKey, WorldMeshInfo*, cmpMeshKey>* worldMeshCache ) {
+    std::map<MeshKey, WorldMeshInfo*, cmpMeshKey>* worldMeshCache,
+    unsigned int casterMask ) {
 
     // Setup renderstates
     Engine::GAPI->GetRendererState().RasterizerState.SetDefault();
@@ -4993,7 +5038,12 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
     auto rangeSquared = range * range;
     auto vRangeSquared = XMVectorReplicate(rangeSquared);
 
-    if ( Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh ) {
+    const bool drawWorldCasters = (casterMask & SHADOW_CASTER_WORLD) != 0;
+    const bool drawVobCasters = (casterMask & SHADOW_CASTER_VOBS) != 0;
+    const bool drawMobCasters = (casterMask & SHADOW_CASTER_MOBS) != 0;
+    const bool drawAnimatedCasters = (casterMask & SHADOW_CASTER_ANIMATED) != 0;
+
+    if ( drawWorldCasters && Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh ) {
         // Bind wrapped mesh vertex buffers
         DrawVertexBufferInstancedIndexedUINT( Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer,
             Engine::GAPI->GetWrappedWorldMesh()->MeshIndexBuffer, 0, 0, 0 );
@@ -5088,7 +5138,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
         }
     }
     
-    if ( Engine::GAPI->GetRendererState().RendererSettings.DrawVOBs ) {
+    if ( drawVobCasters && Engine::GAPI->GetRendererState().RendererSettings.DrawVOBs ) {
         // Draw visible vobs here
         std::list<VobInfo*> rndVob;
         // construct new renderedvob list or fake one
@@ -5159,8 +5209,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
         }
     }
 
-    bool renderNPCs = !noNPCs;
-    if ( Engine::GAPI->GetRendererState().RendererSettings.DrawMobs ) {
+    bool renderNPCs = !noNPCs && drawAnimatedCasters;
+    if ( drawMobCasters && Engine::GAPI->GetRendererState().RendererSettings.DrawMobs ) {
         // Draw visible vobs here
         std::list<SkeletalVobInfo*> rndVob;
 
@@ -5208,7 +5258,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
         }
     }
 
-    if ( Engine::GAPI->GetRendererState().RendererSettings.DrawSkeletalMeshes ) {
+    if ( drawAnimatedCasters && Engine::GAPI->GetRendererState().RendererSettings.DrawSkeletalMeshes ) {
         // Draw animated skeletal meshes if wanted
         if ( renderNPCs ) {
             auto _ = Engine::GraphicsEngine->RecordGraphicsEvent(L"Draw animated skeletal meshes (layered)");
@@ -6228,9 +6278,13 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                         lastFxTex = srv[2];
                         
                         GetContext()->PSSetShaderResources( 0, 3, srv );
-                    
-                         // Force alphatest on vobs for now
-                        BindShaderForTexture( tx, true, 0 );
+
+                        // Previously this forced alpha testing, now we need to check material flags as well for that and only enable the shader if absolutely necessery
+                        BindShaderForTexture( tx, 
+                            tx->HasAlphaChannel()
+                            || meshKey.Material->HasAlphaTest()
+                            , meshKey.Material->GetAlphaFunc(),
+                            meshKey.Info->MaterialType);
                     }
 
                     if ( info && !info->IsSame( lastMatInfo ) ) {
@@ -6717,10 +6771,12 @@ void XM_CALLCONV D3D11GraphicsEngine::RenderShadowCube(
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> debugRTV, bool cullFront, bool indoor, bool noNPCs,
     std::list<VobInfo*>* renderedVobs,
     std::list<SkeletalVobInfo*>* renderedMobs,
-    std::map<MeshKey, WorldMeshInfo*, cmpMeshKey>* worldMeshCache ) {
+    std::map<MeshKey, WorldMeshInfo*, cmpMeshKey>* worldMeshCache,
+    bool clearDepth,
+    unsigned int casterMask ) {
     
     ShadowMaps->RenderShadowCube( position, range, targetCube, face, debugRTV,
-        cullFront, indoor, noNPCs, renderedVobs, renderedMobs, worldMeshCache );
+        cullFront, indoor, noNPCs, renderedVobs, renderedMobs, worldMeshCache, clearDepth, casterMask );
 }
 
 /** Renders the shadowmaps for the sun */

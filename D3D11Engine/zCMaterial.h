@@ -159,7 +159,7 @@ public:
     }
 
     bool HasAlphaTest() {
-        int f = GetAlphaFunc();
+        const int f = GetAlphaFunc();
         return f == zMAT_ALPHA_FUNC_TEST || f == zMAT_ALPHA_FUNC_BLEND_TEST;
     }
 

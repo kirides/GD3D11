@@ -1,6 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" ToolsVersion="16.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="G2_Debug|Win32">
+      <Configuration>G2_Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
     <ProjectConfiguration Include="Launcher|Win32">
       <Configuration>Launcher</Configuration>
       <Platform>Win32</Platform>
@@ -131,6 +135,13 @@
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>MultiByte</CharacterSet>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='G2_Debug|Win32'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>MultiByte</CharacterSet>
+  </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt_Spacer|Win32'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
@@ -180,6 +191,9 @@
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
   <ImportGroup Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt|Win32'" Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Condition="'$(Configuration)|$(Platform)'=='G2_Debug|Win32'" Label="PropertySheets">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
   <ImportGroup Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt_Spacer|Win32'" Label="PropertySheets">
@@ -259,6 +273,11 @@
     <TargetName>ddraw</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt|Win32'">
+    <IncludePath>$(IncludePath);include;include/imgui/;include/imgui/backends/</IncludePath>
+    <LibraryPath>$(directxtk-LibPath);lib;$(LibraryPath)</LibraryPath>
+    <TargetName>ddraw</TargetName>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='G2_Debug|Win32'">
     <LinkIncremental>true</LinkIncremental>
     <IncludePath>$(IncludePath);include;include/imgui/;include/imgui/backends/</IncludePath>
     <LibraryPath>$(directxtk-LibPath);lib;$(LibraryPath)</LibraryPath>
@@ -712,6 +731,44 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>DebugFull</GenerateDebugInformation>
+      <OptimizeReferences>false</OptimizeReferences>
+      <ModuleDefinitionFile>ddraw.def</ModuleDefinitionFile>
+      <ImageHasSafeExceptionHandlers>false</ImageHasSafeExceptionHandlers>
+      <DelayLoadDLLs>
+      </DelayLoadDLLs>
+      <AdditionalLibraryDirectories>
+      </AdditionalLibraryDirectories>
+      <LinkTimeCodeGeneration>Default</LinkTimeCodeGeneration>
+      <EnableCOMDATFolding>false</EnableCOMDATFolding>
+    </Link>
+    <CustomBuildStep>
+      <Command>copy "shaders\*" "$(G2_SYSTEM_PATH)\GD3D11\shaders\"
+copy "$(OutDir)$(TargetName)$(TargetExt)" "$(G2_SYSTEM_PATH)\ddraw.dll"
+copy "$(OutDir)$(TargetName).pdb" "$(G2_SYSTEM_PATH)\ddraw.pdb"</Command>
+      <Outputs>xxx</Outputs>
+    </CustomBuildStep>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='G2_Debug|Win32'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <Optimization>Disabled</Optimization>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <PreprocessorDefinitions>_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR;BUILD_GOTHIC_2_6_fix;_USE_MATH_DEFINES;WIN32_LEAN_AND_MEAN;_CRT_SECURE_NO_WARNINGS;WIN32;NDEBUG;_WINDOWS;_USRDLL;D3D11ENGINE_EXPORTS;NOMINMAX;%(PreprocessorDefinitions);WINVER=0x0601;_WIN32_WINNT=0x0601;NTDDI_VERSION=0x06010000;_WIN7_PLATFORM_UPDATE=1;_XM_DISABLE_INTEL_SVML_;PUBLIC_RELEASE</PreprocessorDefinitions>
+      <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <DisableSpecificWarnings>4005;4530;4577;6246;6322;26812;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <EnableEnhancedInstructionSet>StreamingSIMDExtensions2</EnableEnhancedInstructionSet>
+      <FloatingPointModel>Fast</FloatingPointModel>
+      <DebugInformationFormat>EditAndContinue</DebugInformationFormat>
+      <WholeProgramOptimization>false</WholeProgramOptimization>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <OptimizeReferences>false</OptimizeReferences>
       <ModuleDefinitionFile>ddraw.def</ModuleDefinitionFile>
@@ -855,6 +912,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="D3D11PFX_SimpleSharpen.h" />
     <ClInclude Include="D3D11PFX_SMAA.h">
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt|Win32'">false</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='G2_Debug|Win32'">false</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt_Spacer|Win32'">false</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt_G1|Win32'">false</ExcludedFromBuild>
     </ClInclude>
@@ -1115,6 +1173,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="D3D11PFX_SimpleSharpen.cpp" />
     <ClCompile Include="D3D11PFX_SMAA.cpp">
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt|Win32'">false</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='G2_Debug|Win32'">false</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt_Spacer|Win32'">false</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt_G1|Win32'">false</ExcludedFromBuild>
     </ClCompile>
@@ -1141,6 +1200,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
       <PrecompiledHeaderFile Condition="'$(Configuration)|$(Platform)'=='Release_G1_AVX|Win32'">../pch.h</PrecompiledHeaderFile>
       <PrecompiledHeaderFile Condition="'$(Configuration)|$(Platform)'=='Release_G1_AVX2|Win32'">../pch.h</PrecompiledHeaderFile>
       <PrecompiledHeaderFile Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt|Win32'">../pch.h</PrecompiledHeaderFile>
+      <PrecompiledHeaderFile Condition="'$(Configuration)|$(Platform)'=='G2_Debug|Win32'">../pch.h</PrecompiledHeaderFile>
       <PrecompiledHeaderFile Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt_Spacer|Win32'">../pch.h</PrecompiledHeaderFile>
       <PrecompiledHeaderFile Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt_G1|Win32'">../pch.h</PrecompiledHeaderFile>
     </ClCompile>
@@ -1155,6 +1215,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
       <PrecompiledHeaderFile Condition="'$(Configuration)|$(Platform)'=='Release_G1_AVX|Win32'">../pch.h</PrecompiledHeaderFile>
       <PrecompiledHeaderFile Condition="'$(Configuration)|$(Platform)'=='Release_G1_AVX2|Win32'">../pch.h</PrecompiledHeaderFile>
       <PrecompiledHeaderFile Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt|Win32'">../pch.h</PrecompiledHeaderFile>
+      <PrecompiledHeaderFile Condition="'$(Configuration)|$(Platform)'=='G2_Debug|Win32'">../pch.h</PrecompiledHeaderFile>
       <PrecompiledHeaderFile Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt_Spacer|Win32'">../pch.h</PrecompiledHeaderFile>
       <PrecompiledHeaderFile Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt_G1|Win32'">../pch.h</PrecompiledHeaderFile>
     </ClCompile>
@@ -1208,6 +1269,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release_G1_AVX|Win32'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release_G1_AVX2|Win32'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt|Win32'">Create</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='G2_Debug|Win32'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt_Spacer|Win32'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt_G1|Win32'">Create</PrecompiledHeader>
       <PrecompiledHeaderFile Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">pch.h</PrecompiledHeaderFile>
@@ -1220,6 +1282,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
       <PrecompiledHeaderFile Condition="'$(Configuration)|$(Platform)'=='Release_G1_AVX|Win32'">pch.h</PrecompiledHeaderFile>
       <PrecompiledHeaderFile Condition="'$(Configuration)|$(Platform)'=='Release_G1_AVX2|Win32'">pch.h</PrecompiledHeaderFile>
       <PrecompiledHeaderFile Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt|Win32'">pch.h</PrecompiledHeaderFile>
+      <PrecompiledHeaderFile Condition="'$(Configuration)|$(Platform)'=='G2_Debug|Win32'">pch.h</PrecompiledHeaderFile>
       <PrecompiledHeaderFile Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt_Spacer|Win32'">pch.h</PrecompiledHeaderFile>
       <PrecompiledHeaderFile Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt_G1|Win32'">pch.h</PrecompiledHeaderFile>
     </ClCompile>
@@ -1237,6 +1300,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="Toolbox.cpp" />
     <ClCompile Include="VersionCheck.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt|Win32'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='G2_Debug|Win32'">NotUsing</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt_Spacer|Win32'">NotUsing</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">NotUsing</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Spacer_NET|Win32'">NotUsing</PrecompiledHeader>
@@ -1256,6 +1320,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="WorldObjects.cpp" />
     <ClCompile Include="XUnzip.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt|Win32'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='G2_Debug|Win32'">NotUsing</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt_Spacer|Win32'">NotUsing</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">NotUsing</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Spacer_NET|Win32'">NotUsing</PrecompiledHeader>

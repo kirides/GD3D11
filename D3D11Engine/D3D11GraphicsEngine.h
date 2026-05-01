@@ -22,6 +22,14 @@ enum D3D11ENGINE_RENDER_STAGE {
     DES_GHOST
 };
 
+enum ShadowCubeCasterMask : unsigned int {
+    SHADOW_CASTER_WORLD = 1u << 0,
+    SHADOW_CASTER_VOBS = 1u << 1,
+    SHADOW_CASTER_MOBS = 1u << 2,
+    SHADOW_CASTER_ANIMATED = 1u << 3,
+    SHADOW_CASTER_ALL = SHADOW_CASTER_WORLD | SHADOW_CASTER_VOBS | SHADOW_CASTER_MOBS | SHADOW_CASTER_ANIMATED,
+};
+
 const unsigned int DRAWVERTEXARRAY_BUFFER_SIZE = 4096 * sizeof( ExVertexStruct );
 const unsigned int POLYS_BUFFER_SIZE = 1024 * sizeof( ExVertexStruct );
 const unsigned int PARTICLES_BUFFER_SIZE = 3072 * sizeof( ParticleInstanceInfo );
@@ -231,13 +239,15 @@ public:
         bool cullFront = true,
         bool indoor = false,
         bool noNPCs = false,
-        std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::map<MeshKey, WorldMeshInfo*, cmpMeshKey>* worldMeshCache = nullptr );
+        std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::map<MeshKey, WorldMeshInfo*, cmpMeshKey>* worldMeshCache = nullptr,
+        unsigned int casterMask = SHADOW_CASTER_ALL );
     void XM_CALLCONV DrawWorldAround_Layered( FXMVECTOR position,
         float range,
         bool cullFront = true,
         bool indoor = false,
         bool noNPCs = false,
-        std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::map<MeshKey, WorldMeshInfo*, cmpMeshKey>* worldMeshCache = nullptr );
+        std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::map<MeshKey, WorldMeshInfo*, cmpMeshKey>* worldMeshCache = nullptr,
+        unsigned int casterMask = SHADOW_CASTER_ALL );
 
     /** Update morph mesh visual */
     void UpdateMorphMeshVisual();
@@ -267,7 +277,9 @@ public:
         bool cullFront = true,
         bool indoor = false,
         bool noNPCs = false,
-        std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::map<MeshKey, WorldMeshInfo*, cmpMeshKey>* worldMeshCache = nullptr );
+        std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::map<MeshKey, WorldMeshInfo*, cmpMeshKey>* worldMeshCache = nullptr,
+        bool clearDepth = true,
+        unsigned int casterMask = SHADOW_CASTER_ALL );
 
     /** Updates the occlusion for the bsp-tree */
     void UpdateOcclusion();
@@ -378,7 +390,6 @@ protected:
     std::unique_ptr<D3D11ShadowMap> ShadowMaps;
 
     /** Temp-Arrays for storing data to be put in constant buffers */
-    XMFLOAT4X4 Temp2D3DXMatrix[2];
     float2 Temp2Float2[2];
     std::unique_ptr<D3D11VertexBuffer> DynamicInstancingBuffer;
     std::unique_ptr<D3D11VertexBuffer> NodeAttachmentInstancingBuffer;

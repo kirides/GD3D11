@@ -5,6 +5,7 @@
 #include "D3D11GraphicsEngineBase.h"
 #include "D3D11GraphicsEngine.h" // TODO: Remove and use newer system!
 #include "Engine.h"
+#include "D3D11PfxRenderer.h"
 #include "zCVobLight.h"
 #include "BaseLineRenderer.h"
 #include "WorldConverter.h"
@@ -23,6 +24,7 @@ D3D11PointLight::D3D11PointLight( VobLightInfo* info, bool dynamicLight ) {
     XMStoreFloat3( &LastUpdatePosition, LightInfo->Vob->GetPositionWorldXM() );
 
     m_DepthCubemap = nullptr;
+    m_StaticDepthCubemap = nullptr;
     WorldCacheInvalid = true;
 
     StartReInit();
@@ -76,7 +78,9 @@ void D3D11PointLight::AcquireShadowMap( DepthStencilPool* pool, int resolution )
 void D3D11PointLight::ReleaseShadowMap() {
     // This calls the custom deleter, returning the texture to the pool
     m_DepthCubemap.reset();
+    ReleaseStaticAsideShadowMap();
     m_CurrentResolution = 0;
+    DrawnOnce = false;
 
 }
 
@@ -86,6 +90,8 @@ void D3D11PointLight::SetTiledSlot( int slot, RenderToDepthStencilBuffer* target
     m_TiledOwner = owner;
 
     StartReInit();
+    DrawnOnce = false;
+    m_StaticShadowReady = false;
 }
 
 void D3D11PointLight::ClearTiledSlot() {
@@ -95,7 +101,114 @@ void D3D11PointLight::ClearTiledSlot() {
     m_TiledSlotIndex = -1;
     m_TiledDepthTarget = nullptr;
     m_TiledOwner = nullptr;
+    m_StaticShadowReady = false;
 
+}
+
+int D3D11PointLight::GetCurrentShadowMode() const {
+    return static_cast<int>(Engine::GAPI->GetRendererState().RendererSettings.EnablePointlightShadows);
+}
+
+void D3D11PointLight::HandleShadowModeChange( int shadowMode ) {
+    if ( m_LastShadowMode == shadowMode ) {
+        return;
+    }
+
+    m_LastShadowMode = shadowMode;
+    m_StaticShadowReady = false;
+    DrawnOnce = false;
+
+    if ( shadowMode != GothicRendererSettings::PLS_UPDATE_DYNAMIC ) {
+        ReleaseStaticAsideShadowMap();
+    }
+}
+
+RenderToDepthStencilBuffer* D3D11PointLight::GetActiveShadowTarget() const {
+    if ( m_TiledDepthTarget ) {
+        return m_TiledDepthTarget;
+    }
+    if ( m_DepthCubemap ) {
+        return m_DepthCubemap.get();
+    }
+    return nullptr;
+}
+
+void D3D11PointLight::AcquireStaticAsideShadowMap( DepthStencilPool* pool, int resolution ) {
+    if ( !pool || resolution <= 0 ) {
+        return;
+    }
+
+    if ( m_StaticDepthCubemap
+        && static_cast<int>(m_StaticDepthCubemap->GetSizeX()) == resolution
+        && static_cast<int>(m_StaticDepthCubemap->GetSizeY()) == resolution ) {
+        return;
+    }
+
+    ReleaseStaticAsideShadowMap();
+
+    DepthStencilPool::Description desc;
+    desc.Width = resolution;
+    desc.Height = resolution;
+    desc.Format = DXGI_FORMAT_R16_TYPELESS;
+    desc.DSVFormat = DXGI_FORMAT_D16_UNORM;
+    desc.SRVFormat = DXGI_FORMAT_R16_UNORM;
+    desc.ArraySize = 6;
+
+    m_StaticDepthCubemap = pool->Acquire( desc );
+    m_StaticShadowReady = false;
+}
+
+void D3D11PointLight::ReleaseStaticAsideShadowMap() {
+    m_StaticDepthCubemap.reset();
+    m_StaticShadowReady = false;
+}
+
+void D3D11PointLight::CopyStaticAsideToActiveTarget() const {
+    if ( !m_StaticDepthCubemap ) {
+        return;
+    }
+
+    RenderToDepthStencilBuffer* target = GetActiveShadowTarget();
+    if ( !target ) {
+        return;
+    }
+
+    ID3D11Texture2D* srcTexture = m_StaticDepthCubemap->GetTexture().Get();
+    ID3D11Texture2D* dstTexture = target->GetTexture().Get();
+    auto context = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext();
+    if ( !srcTexture || !dstTexture || !context ) {
+        return;
+    }
+
+    const UINT dstBaseSlice = m_TiledDepthTarget ? static_cast<UINT>(std::max( m_TiledSlotIndex, 0 ) * 6) : 0u;
+    for ( UINT face = 0; face < 6; ++face ) {
+        const UINT srcSubresource = D3D11CalcSubresource( 0, face, 1 );
+        const UINT dstSubresource = D3D11CalcSubresource( 0, dstBaseSlice + face, 1 );
+        context->CopySubresourceRegion( dstTexture, dstSubresource, 0, 0, 0, srcTexture, srcSubresource, nullptr );
+    }
+}
+
+void D3D11PointLight::RenderStaticShadowPass( RenderToDepthStencilBuffer& target, bool clearDepth ) {
+    D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    const float range = LightInfo->Vob->GetLightRange() * 1.1f;
+
+    std::map<MeshKey, WorldMeshInfo*, cmpMeshKey>* wc = &WorldMeshCache;
+    if ( WorldCacheInvalid ) {
+        wc = nullptr;
+    }
+
+    const unsigned int staticCasterMask = SHADOW_CASTER_WORLD | SHADOW_CASTER_VOBS | SHADOW_CASTER_MOBS;
+    engine->RenderShadowCube( LightInfo->Vob->GetPositionWorldXM(), range, target, nullptr, nullptr, false, LightInfo->IsIndoorVob, false,
+        &VobCache, &SkeletalVobCache, wc, clearDepth, staticCasterMask );
+}
+
+void D3D11PointLight::RenderAnimatedShadowPass( RenderToDepthStencilBuffer& target, bool clearDepth ) {
+    D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    const float range = LightInfo->Vob->GetLightRange() * 1.1f;
+
+    const unsigned int animatedCasterMask = SHADOW_CASTER_ANIMATED;
+    engine->RenderShadowCube( LightInfo->Vob->GetPositionWorldXM(), range, target, nullptr, nullptr, false, LightInfo->IsIndoorVob, false,
+        nullptr, nullptr, nullptr, clearDepth, animatedCasterMask );
 }
 
 /** Returns true if this is the first time that light is being rendered */
@@ -136,8 +249,24 @@ bool D3D11PointLight::IsInited() {
 bool D3D11PointLight::NeedsUpdate() {
     if ( !IsReady() )
         return false;
+
+    const int shadowMode = GetCurrentShadowMode();
+    if ( shadowMode != m_LastShadowMode ) {
+        return true;
+    }
+
     FXMVECTOR lastPos = XMLoadFloat3( &LastUpdatePosition );
-    return !XMVector3Equal( LightInfo->Vob->GetPositionWorldXM(), lastPos ) || NotYetDrawn();
+    const bool moved = !XMVector3Equal( LightInfo->Vob->GetPositionWorldXM(), lastPos );
+
+    if ( shadowMode == GothicRendererSettings::PLS_STATIC_ONLY ) {
+        return moved || !m_StaticShadowReady || NotYetDrawn();
+    }
+
+    if ( shadowMode == GothicRendererSettings::PLS_UPDATE_DYNAMIC ) {
+        return moved || !m_StaticShadowReady || NotYetDrawn();
+    }
+
+    return moved || NotYetDrawn();
 }
 
 /** Returns true if the light could need an update, but it's not very important */
@@ -145,9 +274,14 @@ bool D3D11PointLight::WantsUpdate() {
     if ( !IsReady() )
         return false;
 
+    const int shadowMode = GetCurrentShadowMode();
+    if ( shadowMode == GothicRendererSettings::PLS_STATIC_ONLY ) {
+        return false;
+    }
+
     // If dynamic, update colorchanging lights too, because they are mostly lamps and campfires
     // They wouldn't need an update just because of the colorchange, but most of them are dominant lights so it looks better
-    if ( Engine::GAPI->GetRendererState().RendererSettings.EnablePointlightShadows >= GothicRendererSettings::PLS_UPDATE_DYNAMIC )
+    if ( shadowMode >= GothicRendererSettings::PLS_UPDATE_DYNAMIC )
         if ( LightInfo->Vob->GetLightColor() != LastUpdateColor )
             return true;
 
@@ -161,23 +295,33 @@ void D3D11PointLight::RenderCubemap( bool forceUpdate, D3D11ConstantBuffer* View
     if ( !ViewMatricesCB || (!m_DepthCubemap && !m_TiledDepthTarget) )
         return;
 
+    const int shadowMode = GetCurrentShadowMode();
+    HandleShadowModeChange( shadowMode );
+
     //if (!GetAsyncKeyState('X'))
     //	return;
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine); // TODO: Remove and use newer system!
 
+    FXMVECTOR xmlastPos = XMLoadFloat3( &LastUpdatePosition );
+    const bool moved = !XMVector3Equal( LightInfo->Vob->GetPositionWorldXM(), xmlastPos );
+
+    if ( moved ) {
+        // Position changed, refresh our caches
+        VobCache.clear();
+        SkeletalVobCache.clear();
+
+        // Invalidate worldcache
+        WorldCacheInvalid = true;
+        m_StaticShadowReady = false;
+    }
+
+    if ( shadowMode == GothicRendererSettings::PLS_STATIC_ONLY && !moved && m_StaticShadowReady && DrawnOnce ) {
+        return;
+    }
+
     if ( !NeedsUpdate() && !WantsUpdate() ) {
         if ( !forceUpdate )
             return; // Don't update when we don't need to
-    } else {
-        FXMVECTOR xmlastPos = XMLoadFloat3( &LastUpdatePosition );
-        if ( !XMVector3Equal( LightInfo->Vob->GetPositionWorldXM(), xmlastPos ) ) {
-            // Position changed, refresh our caches
-            VobCache.clear();
-            SkeletalVobCache.clear();
-
-            // Invalidate worldcache
-            WorldCacheInvalid = true;
-        }
     }
 
     FXMVECTOR vEyePt = LightInfo->Vob->GetPositionWorldXM();
@@ -255,28 +399,49 @@ void D3D11PointLight::RenderFullCubemap() {
     if ( !IsReady() )
         return;
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine); // TODO: Remove and use newer system!
-
-    // Disable shadows for NPCs
-    // TODO: Only for the player himself, because his shadows look ugly when using a torch
-    //bool oldDrawSkel = Engine::GAPI->GetRendererState().RendererSettings.DrawSkeletalMeshes;
-    //Engine::GAPI->GetRendererState().RendererSettings.DrawSkeletalMeshes = false;
-
-    float range = LightInfo->Vob->GetLightRange() * 1.1f;
-
-    // Draw no npcs if this is a static light. This is archived by simply not drawing them in the first update
-    bool noNPCs = !DrawnOnce;//!LightInfo->Vob->IsStatic();
-
-    // Draw cubemap
-    std::map<MeshKey, WorldMeshInfo*, cmpMeshKey>* wc = &WorldMeshCache;
-
-    // Don't use the cache if we have moved
-    if ( WorldCacheInvalid )
-        wc = nullptr;
     auto _ = engine->RecordGraphicsEvent( L"RenderFullCubemap->RenderFullCubemap" );
-    RenderToDepthStencilBuffer& target = m_TiledDepthTarget ? *m_TiledDepthTarget : *m_DepthCubemap;
-    engine->RenderShadowCube( LightInfo->Vob->GetPositionWorldXM(), range, target, nullptr, nullptr, false, LightInfo->IsIndoorVob, noNPCs, &VobCache, &SkeletalVobCache, wc );
 
-    //Engine::GAPI->GetRendererState().RendererSettings.DrawSkeletalMeshes = oldDrawSkel;
+    RenderToDepthStencilBuffer* activeTarget = GetActiveShadowTarget();
+    if ( !activeTarget ) {
+        return;
+    }
+
+    const int shadowMode = GetCurrentShadowMode();
+    if ( shadowMode == GothicRendererSettings::PLS_STATIC_ONLY ) {
+        RenderStaticShadowPass( *activeTarget, true );
+        m_StaticShadowReady = true;
+        return;
+    }
+
+    if ( shadowMode == GothicRendererSettings::PLS_UPDATE_DYNAMIC ) {
+        DepthStencilPool* dsPool = engine->GetPfxRenderer()->GetDepthStencilPool();
+        AcquireStaticAsideShadowMap( dsPool, m_CurrentResolution );
+
+        if ( !m_StaticShadowReady || !m_StaticDepthCubemap ) {
+            if ( m_StaticDepthCubemap ) {
+                RenderStaticShadowPass( *m_StaticDepthCubemap, true );
+                m_StaticShadowReady = true;
+            } else {
+                RenderStaticShadowPass( *activeTarget, true );
+                m_StaticShadowReady = true;
+            }
+        }
+
+        if ( m_StaticDepthCubemap ) {
+            CopyStaticAsideToActiveTarget();
+        }
+
+        RenderAnimatedShadowPass( *activeTarget, false );
+        return;
+    }
+
+    std::map<MeshKey, WorldMeshInfo*, cmpMeshKey>* wc = &WorldMeshCache;
+    if ( WorldCacheInvalid ) {
+        wc = nullptr;
+    }
+
+    engine->RenderShadowCube( LightInfo->Vob->GetPositionWorldXM(), LightInfo->Vob->GetLightRange() * 1.1f, *activeTarget,
+        nullptr, nullptr, false, LightInfo->IsIndoorVob, false, &VobCache, &SkeletalVobCache, wc, true, SHADOW_CASTER_ALL );
 }
 
 bool D3D11PointLight::IsReady()
@@ -288,6 +453,7 @@ bool D3D11PointLight::IsReady()
 
 void D3D11PointLight::Invalidate() {
     DrawnOnce = false;
+    m_StaticShadowReady = false;
     VobCache.clear();
     SkeletalVobCache.clear();
     WorldCacheInvalid = true;
@@ -376,6 +542,7 @@ void D3D11PointLight::OnVobRemovedFromWorld( BaseVobInfo* vob ) {
         VobCache.clear();
         SkeletalVobCache.clear();
         DrawnOnce = false;
+        m_StaticShadowReady = false;
     }
 
     if (vob->Vob == LightInfo->Vob) {
