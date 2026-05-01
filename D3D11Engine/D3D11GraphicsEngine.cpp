@@ -6280,7 +6280,11 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                         GetContext()->PSSetShaderResources( 0, 3, srv );
                     
                          // Force alphatest on vobs for now
-                        BindShaderForTexture( tx, true, 0 );
+                        BindShaderForTexture( tx, 
+                            tx->HasAlphaChannel()
+                            || meshKey.Material->HasAlphaTest()
+                            , meshKey.Material->GetAlphaFunc(),
+                            meshKey.Info->MaterialType);
                     }
 
                     if ( info && !info->IsSame( lastMatInfo ) ) {
