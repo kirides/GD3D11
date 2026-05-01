@@ -6278,8 +6278,8 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                         lastFxTex = srv[2];
                         
                         GetContext()->PSSetShaderResources( 0, 3, srv );
-                    
-                         // Force alphatest on vobs for now
+
+                        // Previously this forced alpha testing, now we need to check material flags as well for that and only enable the shader if absolutely necessery
                         BindShaderForTexture( tx, 
                             tx->HasAlphaChannel()
                             || meshKey.Material->HasAlphaTest()
