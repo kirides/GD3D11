@@ -169,10 +169,10 @@ D3D11GraphicsEngine::D3D11GraphicsEngine() :
     m_FrameLimiter = std::make_unique<FpsLimiter>();
 
     // Initialize previous view-proj matrix to identity for motion vectors
-    XMStoreFloat4x4( &m_PrevViewProjMatrix, XMMatrixIdentity() );
+    XMStoreFloat4x4(&m_PrevViewProjMatrix, XMMatrixIdentity());
 
     // Match the resolution with the current desktop resolution
-    Resolution = m_scaledResolution = 
+    Resolution = m_scaledResolution =
         Engine::GAPI->GetRendererState().RendererSettings.LoadedResolution;
     unionCurrentCustomFontMultiplier = 1.0;
 }
@@ -2452,6 +2452,8 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     tempVobList.clear();
     BoneTransformCache.clear();
     BoneTransformCache.reserve( 150 );
+    
+    GothicGraphicsState& graphicsState = Engine::GAPI->GetRendererState().GraphicsState;
 
     int boneOffset = 0;
     
@@ -2490,7 +2492,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     
     bool wantShader = true;
     if ( RenderingStage != DES_GHOST ) {
-        bool linearDepth = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches & GSWITCH_LINEAR_DEPTH) != 0;
+        bool linearDepth = (graphicsState.FF_GSwitches & GSWITCH_LINEAR_DEPTH) != 0;
         if ( linearDepth ) {
             ActivePS = ShaderManager->GetPShader( PShaderID::PS_LinDepth );
             ActivePS->Apply();
@@ -2504,11 +2506,12 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         }
     }
     // Ensure we have correct Constantbuffer for eventual Alphatest stuff.
-    ShaderManager->GetPShader( Resolved_DiffuseNormalmappedAlphatest )
+    auto cbFFPipelineConstantBuffer = ShaderManager->GetPShader( Resolved_DiffuseNormalmappedAlphatest )
         ->GetBuffer( "FFPipelineConstantBuffer" )
-        .Update( &Engine::GAPI->GetRendererState().GraphicsState )
+        .Update( &graphicsState )
         .Bind();
     
+    const bool enableShadows = Engine::GAPI->GetRendererState().RendererSettings.EnableShadows;
     for ( SkeletalVobInfo* vi : vis ) {
         zCModel* model = static_cast<zCModel*>(vi->Vob->GetVisual());
         if ( !model ) {
@@ -2522,7 +2525,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             continue;
 
         float4 modelColor;
-        if ( Engine::GAPI->GetRendererState().RendererSettings.EnableShadows ) {
+        if ( enableShadows ) {
             // Let shadows do the work
             modelColor = 0xFFFFFFFF;
         } else {
@@ -2996,7 +2999,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     if ( !isMainOrGhost && !isShadowPass ) {
         // ghost or other: keep the pixel shader whatever was set
     } else if ( isShadowPass ) {
-        bool linearDepth = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches & GSWITCH_LINEAR_DEPTH) != 0;
+        bool linearDepth = (graphicsState.FF_GSwitches & GSWITCH_LINEAR_DEPTH) != 0;
         if ( linearDepth ) {
             ActivePS = ShaderManager->GetPShader( PShaderID::PS_LinDepth );
             ActivePS->Apply();
@@ -3010,9 +3013,9 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     D3D11VertexBuffer* lastVB = nullptr;
     D3D11VertexBuffer* lastIB = nullptr;
 
-
     MaterialInfo* lastMaterialInfo = nullptr;
 
+    auto lastSwitches = graphicsState.FF_GSwitches;
     for ( const auto& batch : batches ) {
         MeshInfo* mi = batch.mesh;
 
@@ -3028,9 +3031,15 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         // Set up alpha test state from material
         if ( batch.material ) {
             if ( batch.material->GetAlphaFunc() == zRND_ALPHA_FUNC_TEST )
-                Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches |= GSWITCH_ALPHAREF;
+                graphicsState.FF_GSwitches |= GSWITCH_ALPHAREF;
             else
-                Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches &= ~GSWITCH_ALPHAREF;
+                graphicsState.FF_GSwitches &= ~GSWITCH_ALPHAREF;
+            
+            if (lastSwitches != graphicsState.FF_GSwitches) {
+                lastSwitches = graphicsState.FF_GSwitches;
+                cbFFPipelineConstantBuffer.Update( &lastSwitches );
+                UpdateRenderStates();
+            }
         }
 
         // Bind mesh VB to slot 0 (only when changed)
