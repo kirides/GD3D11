@@ -46,7 +46,11 @@ public:
     virtual void OnVobRemovedFromWorld( BaseVobInfo* vob );
 
     bool HasAnyShadowMap() const {
-        return HasShadowMap(0) || HasShadowMap(1);
+        return HasShadowMap(0) || HasShadowMap(1) || m_StaticDepthCubemap != nullptr;
+    }
+
+    bool IsStaticShadowReady() const {
+        return m_StaticShadowReady;
     }
 
     bool HasShadowMap(int shadowMapKind ) const { 
@@ -66,6 +70,15 @@ public:
     void SetCurrentResolution( int r ) { m_CurrentResolution = r; }
 
 protected:
+    int GetCurrentShadowMode() const;
+    void HandleShadowModeChange( int shadowMode );
+    RenderToDepthStencilBuffer* GetActiveShadowTarget() const;
+    void AcquireStaticAsideShadowMap( DepthStencilPool* pool, int resolution );
+    void ReleaseStaticAsideShadowMap();
+    void CopyStaticAsideToActiveTarget() const;
+    void RenderStaticShadowPass( RenderToDepthStencilBuffer& target, bool clearDepth );
+    void RenderAnimatedShadowPass( RenderToDepthStencilBuffer& target, bool clearDepth );
+
     bool IsReady();
     void Invalidate();
     void StartReInit();
@@ -83,6 +96,7 @@ protected:
 
     VobLightInfo* LightInfo;
     DepthStencilHandle m_DepthCubemap;
+    DepthStencilHandle m_StaticDepthCubemap;
     int m_CurrentResolution = 0; // Track current LOD size
     XMFLOAT4X4 CubeMapViewMatrices[6];
     XMFLOAT3 LastUpdatePosition;
@@ -90,6 +104,8 @@ protected:
     bool DynamicLight;
     std::atomic<bool> InitDone;
     bool DrawnOnce;
+    bool m_StaticShadowReady = false;
+    int m_LastShadowMode = -1;
 
     // Tiled deferred slot (non-owning, owned by D3D11TiledDeferredShading)
     int m_TiledSlotIndex = -1;

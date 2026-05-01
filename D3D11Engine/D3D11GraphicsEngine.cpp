@@ -4625,7 +4625,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
     FXMVECTOR position, float range, bool cullFront, bool indoor,
     bool noNPCs, std::list<VobInfo*>* renderedVobs,
     std::list<SkeletalVobInfo*>* renderedMobs,
-    std::map<MeshKey, WorldMeshInfo*, cmpMeshKey>* worldMeshCache ) {
+    std::map<MeshKey, WorldMeshInfo*, cmpMeshKey>* worldMeshCache,
+    unsigned int casterMask ) {
 
     // Setup renderstates
     Engine::GAPI->GetRendererState().RasterizerState.SetDefault();
@@ -4696,7 +4697,12 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
     
     auto vsBufMPI = ActiveVS->GetBuffer( "Matrices_PerInstances" );
 
-    if ( Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh ) {
+    const bool drawWorldCasters = (casterMask & SHADOW_CASTER_WORLD) != 0;
+    const bool drawVobCasters = (casterMask & SHADOW_CASTER_VOBS) != 0;
+    const bool drawMobCasters = (casterMask & SHADOW_CASTER_MOBS) != 0;
+    const bool drawAnimatedCasters = (casterMask & SHADOW_CASTER_ANIMATED) != 0;
+
+    if ( drawWorldCasters && Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh ) {
         // Bind wrapped mesh vertex buffers
         DrawVertexBufferIndexedUINT( Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer,
             Engine::GAPI->GetWrappedWorldMesh()->MeshIndexBuffer, 0, 0 );
@@ -4791,7 +4797,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
         }
     }
     
-    if ( Engine::GAPI->GetRendererState().RendererSettings.DrawVOBs ) {
+    if ( drawVobCasters && Engine::GAPI->GetRendererState().RendererSettings.DrawVOBs ) {
         // Draw visible vobs here
         std::list<VobInfo*> rndVob;
         // construct new renderedvob list or fake one
@@ -4859,8 +4865,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
         }
     }
 
-    bool renderNPCs = !noNPCs;
-    if ( Engine::GAPI->GetRendererState().RendererSettings.DrawMobs ) {
+    bool renderNPCs = !noNPCs && drawAnimatedCasters;
+    if ( drawMobCasters && Engine::GAPI->GetRendererState().RendererSettings.DrawMobs ) {
         // Draw visible vobs here
         std::list<SkeletalVobInfo*> rndVob;
 
@@ -4907,7 +4913,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
         }
     }
 
-    if ( Engine::GAPI->GetRendererState().RendererSettings.DrawSkeletalMeshes ) {
+    if ( drawAnimatedCasters && Engine::GAPI->GetRendererState().RendererSettings.DrawSkeletalMeshes ) {
         // Draw animated skeletal meshes if wanted
         if ( renderNPCs ) {
             for ( auto const& skeletalMeshVob : Engine::GAPI->GetAnimatedSkeletalMeshVobs() ) {
@@ -4942,7 +4948,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
     FXMVECTOR position, float range, bool cullFront, bool indoor,
     bool noNPCs, std::list<VobInfo*>* renderedVobs,
     std::list<SkeletalVobInfo*>* renderedMobs,
-    std::map<MeshKey, WorldMeshInfo*, cmpMeshKey>* worldMeshCache ) {
+    std::map<MeshKey, WorldMeshInfo*, cmpMeshKey>* worldMeshCache,
+    unsigned int casterMask ) {
 
     // Setup renderstates
     Engine::GAPI->GetRendererState().RasterizerState.SetDefault();
@@ -5011,7 +5018,12 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
     auto rangeSquared = range * range;
     auto vRangeSquared = XMVectorReplicate(rangeSquared);
 
-    if ( Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh ) {
+    const bool drawWorldCasters = (casterMask & SHADOW_CASTER_WORLD) != 0;
+    const bool drawVobCasters = (casterMask & SHADOW_CASTER_VOBS) != 0;
+    const bool drawMobCasters = (casterMask & SHADOW_CASTER_MOBS) != 0;
+    const bool drawAnimatedCasters = (casterMask & SHADOW_CASTER_ANIMATED) != 0;
+
+    if ( drawWorldCasters && Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh ) {
         // Bind wrapped mesh vertex buffers
         DrawVertexBufferInstancedIndexedUINT( Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer,
             Engine::GAPI->GetWrappedWorldMesh()->MeshIndexBuffer, 0, 0, 0 );
@@ -5106,7 +5118,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
         }
     }
     
-    if ( Engine::GAPI->GetRendererState().RendererSettings.DrawVOBs ) {
+    if ( drawVobCasters && Engine::GAPI->GetRendererState().RendererSettings.DrawVOBs ) {
         // Draw visible vobs here
         std::list<VobInfo*> rndVob;
         // construct new renderedvob list or fake one
@@ -5177,8 +5189,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
         }
     }
 
-    bool renderNPCs = !noNPCs;
-    if ( Engine::GAPI->GetRendererState().RendererSettings.DrawMobs ) {
+    bool renderNPCs = !noNPCs && drawAnimatedCasters;
+    if ( drawMobCasters && Engine::GAPI->GetRendererState().RendererSettings.DrawMobs ) {
         // Draw visible vobs here
         std::list<SkeletalVobInfo*> rndVob;
 
@@ -5226,7 +5238,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
         }
     }
 
-    if ( Engine::GAPI->GetRendererState().RendererSettings.DrawSkeletalMeshes ) {
+    if ( drawAnimatedCasters && Engine::GAPI->GetRendererState().RendererSettings.DrawSkeletalMeshes ) {
         // Draw animated skeletal meshes if wanted
         if ( renderNPCs ) {
             auto _ = Engine::GraphicsEngine->RecordGraphicsEvent(L"Draw animated skeletal meshes (layered)");
@@ -6735,10 +6747,12 @@ void XM_CALLCONV D3D11GraphicsEngine::RenderShadowCube(
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> debugRTV, bool cullFront, bool indoor, bool noNPCs,
     std::list<VobInfo*>* renderedVobs,
     std::list<SkeletalVobInfo*>* renderedMobs,
-    std::map<MeshKey, WorldMeshInfo*, cmpMeshKey>* worldMeshCache ) {
+    std::map<MeshKey, WorldMeshInfo*, cmpMeshKey>* worldMeshCache,
+    bool clearDepth,
+    unsigned int casterMask ) {
     
     ShadowMaps->RenderShadowCube( position, range, targetCube, face, debugRTV,
-        cullFront, indoor, noNPCs, renderedVobs, renderedMobs, worldMeshCache );
+        cullFront, indoor, noNPCs, renderedVobs, renderedMobs, worldMeshCache, clearDepth, casterMask );
 }
 
 /** Renders the shadowmaps for the sun */

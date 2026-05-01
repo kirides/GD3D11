@@ -158,7 +158,9 @@ public:
         std::list<SkeletalVobInfo*>* renderedMobs = nullptr,
         std::map<MeshKey,
         WorldMeshInfo*,
-        cmpMeshKey>* worldMeshCache = nullptr );
+        cmpMeshKey>* worldMeshCache = nullptr,
+        bool clearDepth = true,
+        unsigned int casterMask = 0xFFFFFFFFu );
 
     inline static struct { float lambda; float bias; } lambdaBiasTable[] {
         /* 0 */ { 0, 0 },
