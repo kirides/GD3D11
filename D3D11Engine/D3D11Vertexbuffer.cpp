@@ -6,10 +6,6 @@
 #include <DirectXMesh.h>
 #include "D3D11_Helpers.h"
 
-D3D11VertexBuffer::D3D11VertexBuffer() {}
-
-D3D11VertexBuffer::~D3D11VertexBuffer() {}
-
 /** Creates the vertexbuffer with the given arguments */
 XRESULT D3D11VertexBuffer::Init( void* initData, unsigned int sizeInBytes, EBindFlags EBindFlags, EUsageFlags usage, ECPUAccessFlags cpuAccess, const std::string& fileName, unsigned int structuredByteSize ) {
     HRESULT hr;
@@ -93,10 +89,6 @@ XRESULT D3D11VertexBuffer::Init( void* initData, unsigned int sizeInBytes, EBind
 
 /** Updates the vertexbuffer with the given data */
 XRESULT D3D11VertexBuffer::UpdateBuffer( void* data, UINT size ) {
-    if ( !data || size == 0 ) {
-        return XR_SUCCESS;
-    }
-
     if ( SizeInBytes < size ) {
         size = SizeInBytes;
     }
@@ -113,7 +105,9 @@ XRESULT D3D11VertexBuffer::UpdateBuffer( void* data, UINT size ) {
                 ZeroMemory( mappedData, SizeInBytes );
             }
             // Copy data
-            memcpy( mappedData, data, size );
+            if ( data ) {
+                memcpy( mappedData, data, size );
+            }
         }
 
         return Unmap();

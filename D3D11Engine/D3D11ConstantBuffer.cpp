@@ -37,7 +37,13 @@ D3D11ConstantBuffer* D3D11ConstantBuffer::UpdateBuffer( const void* data ) {
     D3D11_MAPPED_SUBRESOURCE res;
     if ( SUCCEEDED( engine->GetContext()->Map( Buffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &res ) )) {
         // Copy data
-        memcpy( res.pData, data, OriginalSize );
+        if ( res.pData ) {
+            if ( data ) {
+                memcpy( res.pData, data, OriginalSize );
+            } else {
+                ZeroMemory( res.pData, OriginalSize );
+            }
+        }
         engine->GetContext()->Unmap( Buffer.Get(), 0 );
 
         BufferDirty = true;
@@ -54,7 +60,7 @@ D3D11ConstantBuffer* D3D11ConstantBuffer::UpdateBuffer( const void* data, UINT s
     if ( SUCCEEDED( engine->GetContext()->Map( Buffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &res ) )) {
         // Copy data
         if ( res.pData ) {
-            if (size< OriginalSize) {
+            if (size < OriginalSize) {
                 ZeroMemory( res.pData, OriginalSize );
             }
             if ( data ) {
