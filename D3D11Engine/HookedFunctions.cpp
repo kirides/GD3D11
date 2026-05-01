@@ -99,7 +99,7 @@ void HookedFunctionInfo::InitHooks() {
     PatchAddr( 0x004381E1, "\x55" );
     PatchAddr( 0x00438218, "\xEB\x15" );
 
-    char* ThubmnailAddrChar[5];
+    char ThubmnailAddrChar[5] = {0};
     DWORD ThubmnailAddr = reinterpret_cast<DWORD>(&CreatingThumbnail);
     memcpy( ThubmnailAddrChar, &ThubmnailAddr, 4 );
     PatchAddr( 0x0042B4AB, ThubmnailAddrChar );
@@ -205,7 +205,7 @@ void HookedFunctionInfo::InitHooks() {
     PatchAddr( 0x004342B5, "\x55" );
     PatchAddr( 0x004342E0, "\xEB\x15" );
 
-    char* ThubmnailAddrChar[5];
+    char ThubmnailAddrChar[5] = {0};
     DWORD ThubmnailAddr = reinterpret_cast<DWORD>(&CreatingThumbnail);
     memcpy( ThubmnailAddrChar, &ThubmnailAddr, 4 );
     PatchAddr( 0x004289F8, ThubmnailAddrChar );
@@ -345,7 +345,7 @@ void HookedFunctionInfo::InitHooks() {
     PatchAddr( 0x0043728E, "\x55" );
     PatchAddr( 0x004372B9, "\xEB\x15" );
 
-    char* ThubmnailAddrChar[5];
+    char ThubmnailAddrChar[5] = {0};
     DWORD ThubmnailAddr = reinterpret_cast<DWORD>(&CreatingThumbnail);
     memcpy( ThubmnailAddrChar, &ThubmnailAddr, 4 );
     PatchAddr( 0x0042A5AD, ThubmnailAddrChar );
