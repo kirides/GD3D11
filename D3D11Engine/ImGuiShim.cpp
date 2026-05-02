@@ -422,6 +422,7 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
     {
         s.ChangeWindowPreset = WINDOW_MODE_FULLSCREEN_BORDERLESS;
 
+        s.CompressBackBuffer = true;
         s.WorldShadowRangeScale = 1.0f;
         s.NumShadowCascades = 2;
         s.ShadowMapSize = 1024;
@@ -455,6 +456,7 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
     {
         s.ChangeWindowPreset = WINDOW_MODE_FULLSCREEN_BORDERLESS;
 
+        s.CompressBackBuffer = true;
         s.WorldShadowRangeScale = 1.0f;
         s.NumShadowCascades = 3;
         s.ShadowMapSize = 2048;
@@ -488,6 +490,7 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
     {
         s.ChangeWindowPreset = WINDOW_MODE_FULLSCREEN_BORDERLESS;
 
+        s.CompressBackBuffer = false;
         s.WorldShadowRangeScale = 1.0f;
         s.NumShadowCascades = 3;
         s.ShadowMapSize = 4096;
@@ -523,6 +526,7 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
     {
         s.ChangeWindowPreset = WINDOW_MODE_FULLSCREEN_BORDERLESS;
 
+        s.CompressBackBuffer = false;
         s.WorldShadowRangeScale = 1.0f;
         s.NumShadowCascades = 4;
         s.ShadowMapSize = 4096;

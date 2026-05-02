@@ -109,3 +109,11 @@ namespace std {
 
     };
 }
+
+#if defined(BUILD_GOTHIC_2_6_fix)
+#define SWITCH_ENGINE(G1, G1A, G2A, OTHER) G2A
+#elif defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)
+#define SWITCH_ENGINE(G1, G1A, G2A, OTHER) G1
+#elif defined(BUILD_GOTHIC_1_08k, OTHER) G1A
+#define SWITCH_ENGINE(G1, G1A, G2A, OTHER) OTHER
+#endif
