@@ -32,14 +32,14 @@ WorldConverter::WorldConverter() {}
 WorldConverter::~WorldConverter() {}
 
 /** Collects all world-polys in the specific range. Drops all materials that have no alphablending */
-void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float range, std::map<int, std::map<int, WorldMeshSectionInfo>>& inSections, std::map<MeshKey, WorldMeshInfo*, cmpMeshKey>& outMeshes ) {
+void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float range, std::map<int, std::map<int, WorldMeshSectionInfo>>& inSections, std::map<MeshKey, MeshInfo*, cmpMeshKey>& outMeshes ) {
     INT2 s = GetSectionOfPos( position );
     MeshKey opaqueKey;
     opaqueKey.Material = nullptr;
     opaqueKey.Info = nullptr;
     opaqueKey.Texture = nullptr;
 
-    WorldMeshInfo* opaqueMesh = new WorldMeshInfo;
+    MeshInfo* opaqueMesh = new MeshInfo;
     outMeshes[opaqueKey] = opaqueMesh;
 
     FXMVECTOR xmPosition = XMLoadFloat3( position.toXMFLOAT3() );
@@ -56,11 +56,11 @@ void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float ra
             if ( len < 2 ) {
                 // Check all polys from all meshes
                 for ( auto const& it : ity.second.WorldMeshes ) {
-                    WorldMeshInfo* m;
+                    MeshInfo* m;
 
                     // Create new mesh-part for alphatested surfaces
                     if ( it.first.Texture && it.first.Texture->HasAlphaChannel() ) {
-                        m = new WorldMeshInfo;
+                        m = new MeshInfo;
                         outMeshes[it.first] = m;
                     } else {
                         // Just use the same mesh for opaque surfaces
@@ -214,7 +214,7 @@ XRESULT WorldConverter::LoadWorldMeshFromFile( const std::string& file, std::map
             if ( section.WorldMeshes.find( key ) == section.WorldMeshes.end() ) {
                 key.Info = Engine::GAPI->GetMaterialInfoFrom( key.Texture );
 
-                section.WorldMeshes[key] = new WorldMeshInfo;
+                section.WorldMeshes[key] = new MeshInfo;
 
             }
 
@@ -419,7 +419,7 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
         auto it = sectionInfo.WorldMeshes.find( key );
         if ( it == sectionInfo.WorldMeshes.end() ) {
             key.Info = Engine::GAPI->GetMaterialInfoFrom( key.Texture );
-            it = sectionInfo.WorldMeshes.emplace( key, new WorldMeshInfo ).first;
+            it = sectionInfo.WorldMeshes.emplace( key, new MeshInfo ).first;
         }
 
         int matGroup = mat->GetMatGroup();

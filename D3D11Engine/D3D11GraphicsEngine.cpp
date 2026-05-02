@@ -4213,10 +4213,10 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh_Indirect( bool noTextures ) {
 
     std::unordered_map<zCTexture*, MDI_DrawArgs> mdiDrawArgs;
     static std::vector<D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS> drawIndirectArgs; drawIndirectArgs.clear();
-    static std::vector<std::tuple<zCTexture*, WorldMeshInfo*, MaterialInfo*>> meshList; meshList.clear();
-    static std::vector<std::tuple<zCTexture*, WorldMeshInfo*, MaterialInfo*>> meshListAlpha; meshListAlpha.clear();
+    static std::vector<std::tuple<zCTexture*, MeshInfo*, MaterialInfo*>> meshList; meshList.clear();
+    static std::vector<std::tuple<zCTexture*, MeshInfo*, MaterialInfo*>> meshListAlpha; meshListAlpha.clear();
     if ( meshList.capacity() == 0 ) { meshList.reserve( 4096 ); meshListAlpha.reserve( 512 ); drawIndirectArgs.reserve( 4096 ); }
-    auto CompareMesh = []( std::tuple<zCTexture*, WorldMeshInfo*, MaterialInfo*>& a, std::tuple<zCTexture*, WorldMeshInfo*, MaterialInfo*>& b )
+    auto CompareMesh = []( std::tuple<zCTexture*, MeshInfo*, MaterialInfo*>& a, std::tuple<zCTexture*, MeshInfo*, MaterialInfo*>& b )
         -> bool { return std::get<0>( a ) < std::get<0>( b ); };
 
     for ( auto const& renderItem : renderList ) {
@@ -4475,7 +4475,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
         //zCLightmap* Lightmap;
     };
 
-    static std::vector<std::pair<WorldMeshKey, WorldMeshInfo*>> meshList;
+    static std::vector<std::pair<WorldMeshKey, MeshInfo*>> meshList;
     meshList.clear();
     if ( meshList.capacity() == 0 ) meshList.reserve( 4096 );
 
@@ -4534,7 +4534,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
             }
         }
     }
-    auto CompareMesh = []( std::pair<WorldMeshKey, WorldMeshInfo*>& a, std::pair<WorldMeshKey, WorldMeshInfo*>& b ) -> bool {
+    auto CompareMesh = []( std::pair<WorldMeshKey, MeshInfo*>& a, std::pair<WorldMeshKey, MeshInfo*>& b ) -> bool {
         if ( a.first.AlphaLevel != b.first.AlphaLevel )
             return a.first.AlphaLevel < b.first.AlphaLevel;
         return a.first.Texture < b.first.Texture;
@@ -4804,7 +4804,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
     FXMVECTOR position, float range, bool cullFront, bool indoor,
     bool noNPCs, std::list<VobInfo*>* renderedVobs,
     std::list<SkeletalVobInfo*>* renderedMobs,
-    std::map<MeshKey, WorldMeshInfo*, cmpMeshKey>* worldMeshCache,
+    std::map<MeshKey, MeshInfo*, cmpMeshKey>* worldMeshCache,
     unsigned int casterMask ) {
 
     // Setup renderstates
@@ -5127,7 +5127,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
     FXMVECTOR position, float range, bool cullFront, bool indoor,
     bool noNPCs, std::list<VobInfo*>* renderedVobs,
     std::list<SkeletalVobInfo*>* renderedMobs,
-    std::map<MeshKey, WorldMeshInfo*, cmpMeshKey>* worldMeshCache,
+    std::map<MeshKey, MeshInfo*, cmpMeshKey>* worldMeshCache,
     unsigned int casterMask ) {
 
     // Setup renderstates
@@ -5475,7 +5475,7 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect(const std::vector<Wo
         }
     // Collect all meshes first, then batch by alpha requirement
     static thread_local std::vector<D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS> opaqueDrawArgs;
-    static thread_local std::vector<std::pair<zCTexture*, WorldMeshInfo*>> alphaMeshes;
+    static thread_local std::vector<std::pair<zCTexture*, MeshInfo*>> alphaMeshes;
     opaqueDrawArgs.clear();
     alphaMeshes.clear();
     if ( opaqueDrawArgs.capacity() == 0 ) { opaqueDrawArgs.reserve( 4096 ); alphaMeshes.reserve( 512 ); }
@@ -5568,8 +5568,8 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh(const std::vector<WorldMeshSe
     bool linearDepth = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches &
                 GSWITCH_LINEAR_DEPTH) != 0;
     
-    static thread_local std::vector<WorldMeshInfo*> opaqueMeshes;
-    static thread_local std::vector<std::pair<zCTexture*, WorldMeshInfo*>> alphaMeshes;
+    static thread_local std::vector<MeshInfo*> opaqueMeshes;
+    static thread_local std::vector<std::pair<zCTexture*, MeshInfo*>> alphaMeshes;
     opaqueMeshes.clear();
     alphaMeshes.clear();
 
@@ -5600,7 +5600,7 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh(const std::vector<WorldMeshSe
             Context->PSSetShader( nullptr, nullptr, 0 );
         }
 
-        for ( WorldMeshInfo* mesh : opaqueMeshes ) {
+        for ( MeshInfo* mesh : opaqueMeshes ) {
             DrawVertexBufferIndexedUINT( nullptr, nullptr,
                 mesh->Indices.size(), mesh->BaseIndexLocation );
         }
@@ -6930,7 +6930,7 @@ void XM_CALLCONV D3D11GraphicsEngine::RenderShadowCube(
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> debugRTV, bool cullFront, bool indoor, bool noNPCs,
     std::list<VobInfo*>* renderedVobs,
     std::list<SkeletalVobInfo*>* renderedMobs,
-    std::map<MeshKey, WorldMeshInfo*, cmpMeshKey>* worldMeshCache,
+    std::map<MeshKey, MeshInfo*, cmpMeshKey>* worldMeshCache,
     bool clearDepth,
     unsigned int casterMask ) {
     

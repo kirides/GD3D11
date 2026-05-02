@@ -105,19 +105,6 @@ struct MeshInfo {
     uint16_t meshId;
 };
 
-struct WorldMeshInfo : public MeshInfo {
-    WorldMeshInfo() = default;
-    WorldMeshInfo( WorldMeshInfo&& other ) = default;
-    WorldMeshInfo& operator=( WorldMeshInfo&& ) = default;
-    WorldMeshInfo( const WorldMeshInfo& other ) = delete;
-    WorldMeshInfo& operator=(const WorldMeshInfo& other) = delete;
-
-    ~WorldMeshInfo() override = default;
-
-    /** If true we will save an info-file on next zen-resource-save */
-    bool SaveInfo;
-};
-
 struct QuadMarkInfo {
     QuadMarkInfo() = default;
     QuadMarkInfo( QuadMarkInfo&& other ) = default;
@@ -499,7 +486,7 @@ struct WorldMeshSectionInfo {
     /** Saves this sections mesh to a file */
     void SaveSectionMeshToFile( const std::string& name );
 
-    std::map<MeshKey, WorldMeshInfo*, cmpMeshKey> WorldMeshes;
+    std::map<MeshKey, MeshInfo*, cmpMeshKey> WorldMeshes;
     std::map<D3D11Texture*, std::vector<MeshInfo*>> WorldMeshesByCustomTexture;
     std::map<zCMaterial*, std::vector<MeshInfo*>> WorldMeshesByCustomTextureOriginal;
     std::map<MeshKey, MeshInfo*, cmpMeshKey> SuppressedMeshes;

@@ -192,7 +192,7 @@ void D3D11PointLight::RenderStaticShadowPass( RenderToDepthStencilBuffer& target
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     const float range = LightInfo->Vob->GetLightRange() * 1.1f;
 
-    std::map<MeshKey, WorldMeshInfo*, cmpMeshKey>* wc = &WorldMeshCache;
+    std::map<MeshKey, MeshInfo*, cmpMeshKey>* wc = &WorldMeshCache;
     if ( WorldCacheInvalid ) {
         wc = nullptr;
     }
@@ -435,7 +435,7 @@ void D3D11PointLight::RenderFullCubemap() {
         return;
     }
 
-    std::map<MeshKey, WorldMeshInfo*, cmpMeshKey>* wc = &WorldMeshCache;
+    std::map<MeshKey, MeshInfo*, cmpMeshKey>* wc = &WorldMeshCache;
     if ( WorldCacheInvalid ) {
         wc = nullptr;
     }

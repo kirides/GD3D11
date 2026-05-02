@@ -1343,7 +1343,7 @@ void XM_CALLCONV D3D11ShadowMap::RenderShadowCube(
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> debugRTV, bool cullFront, bool indoor, bool noNPCs,
     std::list<VobInfo*>* renderedVobs,
     std::list<SkeletalVobInfo*>* renderedMobs,
-    std::map<MeshKey, WorldMeshInfo*, cmpMeshKey>* worldMeshCache,
+    std::map<MeshKey, MeshInfo*, cmpMeshKey>* worldMeshCache,
     bool clearDepth,
     unsigned int casterMask ) {
 

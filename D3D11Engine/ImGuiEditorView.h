@@ -8,7 +8,6 @@
 
 class GVegetationBox;
 struct MeshInfo;
-struct WorldMeshInfo;
 struct VobInfo;
 struct SkeletalVobInfo;
 class zCMaterial;
@@ -108,9 +107,6 @@ protected:
 
     /** Handles vegetation removing */
     void DoVegetationRemove();
-
-    /** Smoothes a mesh */
-    void SmoothMesh(WorldMeshInfo* mesh, bool tesselate = false);
 
     /** Called on VK_DELETE */
     void OnDelete();

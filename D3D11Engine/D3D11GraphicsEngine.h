@@ -239,14 +239,14 @@ public:
         bool cullFront = true,
         bool indoor = false,
         bool noNPCs = false,
-        std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::map<MeshKey, WorldMeshInfo*, cmpMeshKey>* worldMeshCache = nullptr,
+        std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::map<MeshKey, MeshInfo*, cmpMeshKey>* worldMeshCache = nullptr,
         unsigned int casterMask = SHADOW_CASTER_ALL );
     void XM_CALLCONV DrawWorldAround_Layered( FXMVECTOR position,
         float range,
         bool cullFront = true,
         bool indoor = false,
         bool noNPCs = false,
-        std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::map<MeshKey, WorldMeshInfo*, cmpMeshKey>* worldMeshCache = nullptr,
+        std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::map<MeshKey, MeshInfo*, cmpMeshKey>* worldMeshCache = nullptr,
         unsigned int casterMask = SHADOW_CASTER_ALL );
 
     /** Update morph mesh visual */
@@ -277,7 +277,7 @@ public:
         bool cullFront = true,
         bool indoor = false,
         bool noNPCs = false,
-        std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::map<MeshKey, WorldMeshInfo*, cmpMeshKey>* worldMeshCache = nullptr,
+        std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::map<MeshKey, MeshInfo*, cmpMeshKey>* worldMeshCache = nullptr,
         bool clearDepth = true,
         unsigned int casterMask = SHADOW_CASTER_ALL );
 
@@ -413,7 +413,7 @@ protected:
     D3D11ENGINE_RENDER_STAGE RenderingStage;
 
     /** List of water surfaces for this frame */
-    std::unordered_map<zCTexture*, std::vector<WorldMeshInfo*>> FrameWaterSurfaces;
+    std::unordered_map<zCTexture*, std::vector<MeshInfo*>> FrameWaterSurfaces;
 
     /** List of worldmeshes we have to render using alphablending */
     std::vector<std::pair<MeshKey, MeshInfo*>> FrameTransparencyMeshes;

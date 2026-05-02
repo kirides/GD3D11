@@ -157,7 +157,7 @@ public:
         std::list<VobInfo*>* renderedVobs = nullptr, 
         std::list<SkeletalVobInfo*>* renderedMobs = nullptr,
         std::map<MeshKey,
-        WorldMeshInfo*,
+        MeshInfo*,
         cmpMeshKey>* worldMeshCache = nullptr,
         bool clearDepth = true,
         unsigned int casterMask = 0xFFFFFFFFu );
