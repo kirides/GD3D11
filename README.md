@@ -27,6 +27,7 @@ The new renderer is able to utilize more of the current GPU generation's power. 
 ## Installation & Usage
 > [!NOTE]
 > In the past there used to be separate files for Gothic 1 and Gothic 2, this has now changed since the mod will automatically detect the game.
+> Only Gothic 1 1.08k (1.30.0.0) and Gothic 2 Night of the Raven 2.6 (2.6.0.0-rev2) are supported. https://www.worldofgothic.de/dl/download_278.htm
 1. Download the **GD3D11-*VERSION*.zip** file from the **Assets** section in the latest release of this repository (e.g. [kirides/releases](https://github.com/kirides/GD3D11/releases/latest)).
 3. Unpack the zip file and copy the content into the `Gothic\system\` or `Gothic2\system\` game folder.
 4. When starting the game you should see the version number of GD3D11 in the top-left corner.
