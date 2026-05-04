@@ -143,6 +143,13 @@ namespace
         };
         LogInfo() << "D3D_FEATURE_LEVEL: " << dxFeatureLevelsMap.at( lvl );
     }
+
+    FORCEINLINE uint64_t BuildSortKeyBase( zCMaterial* mat ) {
+        const uint64_t isAlpha = mat->GetAniTexture()->HasAlphaChannel() ? 1ULL : 0ULL;
+        const uint64_t sortKeyBase = (isAlpha << 63);
+        const uint64_t texPtr = reinterpret_cast<uint64_t>(mat->GetAniTexture());
+        return sortKeyBase | (texPtr << 16);
+    }
 }
 
 D3D11GraphicsEngine::D3D11GraphicsEngine() :
@@ -2811,6 +2818,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         zCTexture* texture;    // null for shadow passes
         zCMaterial* material;
         NodeAttachmentInstanceData instanceData;
+        uint64_t sortKey;
         bool needAlpha;
     };
 
@@ -3010,16 +3018,19 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 
                 for ( auto const& itm : mvi->Meshes ) {
                     zCTexture* texture = nullptr;
+                    uint64_t sortKeyBase = 0;
                     if ( itm.first ) {
                         texture = itm.first->GetAniTexture();
                         if ( !texture || texture->CacheIn( 0.6f ) != zRES_CACHED_IN) {
                             // need to cache in in order to know its alpha/material state
                             continue;
                         }
+                        sortKeyBase = BuildSortKeyBase( itm.first );
                     }
 
                     for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
                         instancedDrawItems.push_back( { itm.second[m], texture, itm.first, instData, 
+                            sortKeyBase | itm.second[m]->meshId,
                             (texture && texture->HasAlphaChannel()) || (itm.first && itm.first->HasAlphaTest())
                         } );
                     }
@@ -3038,11 +3049,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     
     std::sort( instancedDrawItems.begin(), instancedDrawItems.end(),
         []( const NodeAttachmentDrawItem& a, const NodeAttachmentDrawItem& b ) {
-            if ( a.needAlpha != b.needAlpha )
-                return a.needAlpha < b.needAlpha; // non-alpha firstes
-            if ( a.texture != b.texture )
-                return a.texture < b.texture; // sort by texture pointer
-            return a.mesh->meshId < b.mesh->meshId;
+            return a.sortKey < b.sortKey;
         } );
 
     // Ensure instance buffer is large enough
@@ -6119,34 +6126,33 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                 }
             }
         }
-        std::vector<std::tuple<MeshVisualInfo*, MeshKey, MeshInfo*>> instancedMeshesToDraw;
+        std::vector<std::tuple<MeshVisualInfo*, MeshKey, MeshInfo*, uint64_t>> instancedMeshesToDraw;
         instancedMeshesToDraw.reserve( numMeshesToDraw );
 
         for ( auto const& staticMeshVisual : activeVisuals ) {
             if ( staticMeshVisual->Instances.empty() ) continue;
             for ( auto const& itt : staticMeshVisual->MeshesByTexture ) {
                 const std::vector<MeshInfo*>& mlist = itt.second;
+
+                uint64_t sortKeyBase = 0;
+                if ( itt.first.Material && itt.first.Material->GetAniTexture() ) {
+                    if ( itt.first.Material->GetAniTexture()->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
+                        continue; // cant draw if no texture
+                    }
+                    sortKeyBase = BuildSortKeyBase( itt.first.Material );
+                }
+
                 if ( mlist.empty() ) continue;
                 for ( unsigned int i = 0; i < mlist.size(); i++ ) {
                     MeshInfo* mi = mlist[i];
-                    instancedMeshesToDraw.emplace_back( staticMeshVisual, itt.first, mi );
-                }
-                    }
-                }
 
-        std::sort( instancedMeshesToDraw.begin(), instancedMeshesToDraw.end(), []( const std::tuple<MeshVisualInfo*, MeshKey, MeshInfo*>& a, const std::tuple<MeshVisualInfo*, MeshKey, MeshInfo*>& b ) {
-            auto aTex = std::get<1>( a ).Texture;
-            auto bTex = std::get<1>( b ).Texture;
-
-            if ( aTex && bTex && aTex->HasAlphaChannel() != bTex->HasAlphaChannel() ) {
-                return aTex->HasAlphaChannel() < bTex->HasAlphaChannel();
+                    instancedMeshesToDraw.emplace_back( staticMeshVisual, itt.first, mi, sortKeyBase + mi->meshId );
+                }
             }
-
-            if ( aTex != bTex ) {
-                return aTex < bTex;
         }
 
-            return std::get<2>( a )->meshId < std::get<2>( b )->meshId;
+        std::sort( instancedMeshesToDraw.begin(), instancedMeshesToDraw.end(), []( const std::tuple<MeshVisualInfo*, MeshKey, MeshInfo*, uint64_t>& a, const std::tuple<MeshVisualInfo*, MeshKey, MeshInfo*, uint64_t>& b ) {
+            return std::get<3>( a ) < std::get<3>( b );
         } );
 
         zCTexture* previousTx = nullptr;
@@ -6154,7 +6160,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         ID3D11ShaderResourceView* lastFxTex = nullptr;
         MeshVisualInfo* lastWindVisual = nullptr;
 
-        for ( auto const& [staticMeshVisual, meshKey, meshInfo] : instancedMeshesToDraw ) {
+        for ( auto const& [staticMeshVisual, meshKey, meshInfo, _] : instancedMeshesToDraw ) {
             if ( !useWindMetadata && windBuffer.GetRawBuffer() && lastWindVisual != staticMeshVisual ) {
                 lastWindVisual = staticMeshVisual;
                 g_windBuffer.minHeight = staticMeshVisual->BBox.Min.y;
