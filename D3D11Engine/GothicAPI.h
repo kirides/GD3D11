@@ -2,6 +2,7 @@
 #include <parallel_hashmap/phmap.h>
 
 #include "pch.h"
+#include "AlignedAllocator.h"
 #include "Frustum.h"
 #include "GothicGraphicsState.h"
 #include "WorldConverter.h"
@@ -127,6 +128,19 @@ struct BspInfo {
     zCBspBase* OriginalNode;
     BspInfo* Front;
     BspInfo* Back;
+};
+
+/** Pre-built linear cache of all BSP leaf bounding boxes for SIMD-accelerated frustum culling.
+ *  Stores Min/Max extents in Structure-of-Arrays layout, 32-byte aligned for AVX2 batch processing.
+ *  Padded to a multiple of 8 entries with sentinel values that always fail culling tests. */
+struct BspLeafLinearCache {
+    VectorA32<float> MinX, MinY, MinZ;
+    VectorA32<float> MaxX, MaxY, MaxZ;
+    std::vector<BspInfo*> Leaves;
+    uint32_t Count = 0;
+
+    void Build( BspInfo* root );
+    void Clear();
 };
 
 
@@ -813,6 +827,7 @@ private:
 
     /** Helper function for going through the bsp-tree */
     void BuildBspVobMapCacheHelper( zCBspBase* base );
+    void BuildBspLeafLinearCache();
 
     /** Applys the suppressed textures */
     void ApplySuppressedSectionTextures();
@@ -894,6 +909,8 @@ private:
 public:
     // temporarily, to allow CollectVisibleVobsHelper to be templated for inlining optimizations
     phmap::flat_hash_map<zCVobLight*, VobLightInfo*> VobLightMap;
+    // Exposed for CollectLeafVobs/CollectVisibleVobsWithLeafCache (file-static helpers)
+    BspLeafLinearCache LeafLinearCache;
 private:
     phmap::flat_hash_map<zCVob*, SkeletalVobInfo*> SkeletalVobMap;
 

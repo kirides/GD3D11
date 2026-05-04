@@ -768,6 +768,7 @@ void GothicAPI::ResetVobs() {
     ParticleEffectVobs.clear();
     RegisteredVobs.clear();
     BspLeafVobLists.clear();
+    LeafLinearCache.Clear();
     DynamicallyAddedVobs.clear();
     DecalVobs.clear();
     VobsByVisual.clear();
@@ -4339,10 +4340,64 @@ void GothicAPI::BuildBspVobMapCacheHelper( zCBspBase* base ) {
     }
 }
 
+/** Builds the flat leaf cache by DFS over the BspInfo mirror tree */
+void BspLeafLinearCache::Build( BspInfo* root ) {
+    std::vector<BspInfo*> stack;
+    stack.reserve( 512 );
+    stack.push_back( root );
+
+    while ( !stack.empty() ) {
+        BspInfo* base = stack.back();
+        stack.pop_back();
+
+        if ( !base || !base->OriginalNode )
+            continue;
+
+        if ( base->OriginalNode->IsLeaf() ) {
+            const zTBBox3D& bb = base->OriginalNode->BBox3D;
+            MinX.push_back( bb.Min.x );
+            MinY.push_back( bb.Min.y );
+            MinZ.push_back( bb.Min.z );
+            MaxX.push_back( bb.Max.x );
+            MaxY.push_back( bb.Max.y );
+            MaxZ.push_back( bb.Max.z );
+            Leaves.push_back( base );
+        } else {
+            if ( base->Front ) stack.push_back( base->Front );
+            if ( base->Back )  stack.push_back( base->Back );
+        }
+    }
+
+    Count = static_cast<uint32_t>( Leaves.size() );
+
+    // Pad to the next multiple of 8 with sentinel values that always fail frustum and distance tests.
+    // Padding Min with +FLT_MAX and Max with -FLT_MAX makes any AABB distance check return infinity
+    // and the p-vertex dot product will be < 0 for any valid frustum plane.
+    const uint32_t padded = (Count + 7u) & ~7u;
+    MinX.resize( padded,  FLT_MAX ); MinY.resize( padded,  FLT_MAX ); MinZ.resize( padded,  FLT_MAX );
+    MaxX.resize( padded, -FLT_MAX ); MaxY.resize( padded, -FLT_MAX ); MaxZ.resize( padded, -FLT_MAX );
+    Leaves.resize( padded, nullptr );
+}
+
+void BspLeafLinearCache::Clear() {
+    MinX.clear(); MinY.clear(); MinZ.clear();
+    MaxX.clear(); MaxY.clear(); MaxZ.clear();
+    Leaves.clear();
+    Count = 0;
+}
+
 /** Builds our BspTreeVobMap */
 void GothicAPI::BuildBspVobMapCache() {
     ZoneScopedN( "GothicAPI::BuildBspVobMapCache" );
     BuildBspVobMapCacheHelper( LoadedWorldInfo->BspTree->GetRootNode() );
+    BuildBspLeafLinearCache();
+}
+
+void GothicAPI::BuildBspLeafLinearCache() {
+    LeafLinearCache.Clear();
+    BspInfo* root = &BspLeafVobLists[LoadedWorldInfo->BspTree->GetRootNode()];
+    LeafLinearCache.Build( root );
+    LogInfo() << "BspLeafLinearCache: " << LeafLinearCache.Count << " leaves indexed for SIMD culling";
 }
 
 /** Cleans empty BSPNodes */
@@ -5694,6 +5749,106 @@ float GothicAPI::GetSkyTimeScale() {
     return SkyRenderer->GetAtmoshpereSettings().SkyTimeScale;
 }
 
+/** Processes vobs and lights in a single BSP leaf node that has already passed distance and frustum tests. */
+static void CollectLeafVobs(
+    BspInfo* base,
+    float leafDist,
+    const RndCullContext& ctx,
+    DirectX::ContainmentType clipResult,
+    BspTreeVobVisitor* visitor
+) {
+    const float vobIndoorDist      = ctx.drawDistances.IndoorVobs;
+    const float vobOutdoorDist     = ctx.drawDistances.OutdoorVobs;
+    const float vobOutdoorSmallDist = ctx.drawDistances.OutdoorVobsSmall;
+    const float visualFXDrawRadius = ctx.drawDistances.VisualFX;
+    const FXMVECTOR cameraPosition = XMLoadFloat3( &ctx.cameraPosition );
+
+    EBspTreeCollectFlags collectFlags = EBspTreeCollectFlags::COLLECT_ALL_NO_MUTATE;
+    if ( ctx.stage == RenderStage::STAGE_DRAW_SHADOWS ) {
+        collectFlags = EBspTreeCollectFlags::COLLECT_VOBS;
+    }
+
+    const auto& RendererState = Engine::GAPI->GetRendererState();
+    auto& VobLightMap = Engine::GAPI->VobLightMap;
+
+    zCBspLeaf* leaf = static_cast<zCBspLeaf*>(base->OriginalNode);
+    std::vector<VobInfo*>& listA = base->IndoorVobs;
+    std::vector<VobInfo*>& listB = base->SmallVobs;
+    std::vector<VobInfo*>& listC = base->Vobs;
+    std::vector<SkeletalVobInfo*>& listD = base->Mobs;
+
+    if ( collectFlags & COLLECT_VOBS
+        && RendererState.RendererSettings.DrawVOBs ) {
+        if ( collectFlags & COLLECT_INDOOR_VOBS && leafDist < vobIndoorDist ) {
+            CVVH_AddNotDrawnVobToList( listA, vobIndoorDist, ctx, clipResult, visitor );
+        }
+
+        if ( leafDist < vobOutdoorSmallDist ) {
+            CVVH_AddNotDrawnVobToList( listB, vobOutdoorSmallDist, ctx, clipResult, visitor );
+        }
+
+        if ( leafDist < vobOutdoorDist ) {
+            CVVH_AddNotDrawnVobToList( listC, vobOutdoorDist, ctx, clipResult, visitor );
+        }
+    }
+
+    if ( collectFlags & COLLECT_MOBS
+        && RendererState.RendererSettings.DrawMobs && leafDist < vobOutdoorSmallDist ) {
+        CVVH_AddNotDrawnVobToList( listD, vobOutdoorDist, ctx, clipResult, visitor );
+    }
+
+    if ( collectFlags & COLLECT_LIGHTS
+            && RendererState.RendererSettings.EnableDynamicLighting && leafDist < visualFXDrawRadius ) {
+
+        // Add dynamic lights
+        for ( int i = 0; i < leaf->LightVobList.NumInArray; i++ ) {
+            zCVobLight* vob = leaf->LightVobList.Array[i];
+
+            const float lightCameraDist = XMVectorGetX( XMVector3Length( cameraPosition - vob->GetPositionWorldXM() ) );
+            if ( lightCameraDist + vob->GetLightRange() < visualFXDrawRadius ) {
+
+                BoundingSphere lightSphere;
+                lightSphere.Center = vob->GetPositionWorld();
+                lightSphere.Radius = vob->GetLightRange();
+
+                // Cull any lights that are not visible even though they are in range
+                if ( clipResult != ContainmentType::CONTAINS && !ctx.frustum.Intersects( lightSphere ) ) {
+                    continue;
+                }
+
+                // Check if we already have this light
+                auto vit = VobLightMap.find( vob );
+                if ( vit == VobLightMap.end() ) {
+                    bool PFXVobLight = false;
+                    if ( zCVob* parent = vob->GetVobParent() ) {
+                        if ( parent->As<oCVisualFX>() ) {
+                            PFXVobLight = true;
+                        }
+                    }
+
+                    // Add if not. This light must have been added during gameplay
+                    VobLightInfo* vi = new VobLightInfo;
+                    vi->Vob = vob;
+                    vi->IsPFXVobLight = PFXVobLight;
+                    vi->UpdateShadows = !PFXVobLight;
+                    vit = VobLightMap.emplace( vob, vi ).first;
+
+                    // Create shadow-buffers for these lights since it was dynamically added to the world
+                    if ( !vi->IsPFXVobLight && RendererState.RendererSettings.EnablePointlightShadows >= GothicRendererSettings::PLS_STATIC_ONLY ) {
+                        BaseShadowedPointLight* bpl;
+                        Engine::GraphicsEngine->CreateShadowedPointLight( &bpl, vi, true ); // Also flag as dynamic
+                        vi->LightShadowBuffers.reset(bpl);
+                    }
+                }
+                VobLightInfo* vi = vit->second;
+                if ( vi->VisibleInRenderPass ) continue;
+                visitor->Visit( vi );
+                ctx.queue->PushLightVob( vi );
+            }
+        }
+    }
+}
+
 static void CollectVisibleVobsHelper( BspInfo* base,
     zTBBox3D boxCell,
     const RndCullContext& ctx,
@@ -5759,89 +5914,7 @@ static void CollectVisibleVobsHelper( BspInfo* base,
         }
 
         if ( base->OriginalNode->IsLeaf() ) {
-            // Check if this leaf is inside the frustum
-
-
-            zCBspLeaf* leaf = static_cast<zCBspLeaf*>(base->OriginalNode);
-            std::vector<VobInfo*>& listA = base->IndoorVobs;
-            std::vector<VobInfo*>& listB = base->SmallVobs;
-            std::vector<VobInfo*>& listC = base->Vobs;
-            std::vector<SkeletalVobInfo*>& listD = base->Mobs;
-
-            const float dist = Toolbox::ComputePointAABBDistance( camPos, base->OriginalNode->BBox3D.Min, base->OriginalNode->BBox3D.Max );
-
-            if ( collectFlags & COLLECT_VOBS
-                && RendererState.RendererSettings.DrawVOBs ) {
-                if ( collectFlags & COLLECT_INDOOR_VOBS && dist < vobIndoorDist ) {
-                    CVVH_AddNotDrawnVobToList( listA, vobIndoorDist, ctx, clipResult, visitor );
-                }
-
-                if ( dist < vobOutdoorSmallDist ) {
-                    CVVH_AddNotDrawnVobToList( listB, vobOutdoorSmallDist, ctx, clipResult, visitor );
-                }
-
-                if ( dist < vobOutdoorDist ) {
-                    CVVH_AddNotDrawnVobToList( listC, vobOutdoorDist, ctx, clipResult, visitor );
-                }
-            }
-
-            if ( collectFlags & COLLECT_MOBS
-                && RendererState.RendererSettings.DrawMobs && dist < vobOutdoorSmallDist ) {
-                CVVH_AddNotDrawnVobToList( listD, vobOutdoorDist, ctx, clipResult, visitor);
-            }
-
-            if ( collectFlags & COLLECT_LIGHTS
-                    && RendererState.RendererSettings.EnableDynamicLighting && dist < visualFXDrawRadius ) {
-                
-                bool markSeen = (collectFlags & COLLECT_MUTATE) != 0;
-                // Add dynamic lights
-                for ( int i = 0; i < leaf->LightVobList.NumInArray; i++ ) {
-                    zCVobLight* vob = leaf->LightVobList.Array[i];
-
-                    const float lightCameraDist = XMVectorGetX( XMVector3Length( cameraPosition - vob->GetPositionWorldXM() ) );
-                    if ( lightCameraDist + vob->GetLightRange() < visualFXDrawRadius ) {
-
-                        BoundingSphere lightSphere;
-                        lightSphere.Center = vob->GetPositionWorld();
-                        lightSphere.Radius = vob->GetLightRange();
-
-                        // Cull any lights that are not visible even though they are in range
-                        if ( clipResult != ContainmentType::CONTAINS && !ctx.frustum.Intersects( lightSphere ) ) {
-                            continue;
-                        }
-
-                        // Check if we already have this light
-                        auto vit = VobLightMap.find( vob );
-                        if ( vit == VobLightMap.end() ) {
-                            bool PFXVobLight = false;
-                            if ( zCVob* parent = vob->GetVobParent() ) {
-                                if ( parent->As<oCVisualFX>() ) {
-                                    PFXVobLight = true;
-                                }
-                            }
-
-                            // Add if not. This light must have been added during gameplay
-                            VobLightInfo* vi = new VobLightInfo;
-                            vi->Vob = vob;
-                            vi->IsPFXVobLight = PFXVobLight;
-                            vi->UpdateShadows = !PFXVobLight;
-                            vit = VobLightMap.emplace( vob, vi ).first;
-
-                            // Create shadow-buffers for these lights since it was dynamically added to the world
-                            if ( !vi->IsPFXVobLight && RendererState.RendererSettings.EnablePointlightShadows >= GothicRendererSettings::PLS_STATIC_ONLY ) {
-                                BaseShadowedPointLight* bpl;
-                                Engine::GraphicsEngine->CreateShadowedPointLight( &bpl, vi, true ); // Also flag as dynamic
-                                vi->LightShadowBuffers.reset(bpl);
-                            }
-                        }
-                        VobLightInfo* vi = vit->second;
-                        if ( vi->VisibleInRenderPass ) continue;
-                        visitor->Visit( vi );
-                        ctx.queue->PushLightVob( vi );
-                    }
-                }
-            }
-
+            CollectLeafVobs( base, dist, ctx, clipResult, visitor );
             return;
         } else {
             zCBspNode* node = static_cast<zCBspNode*>(base->OriginalNode);
@@ -5883,6 +5956,121 @@ static void CollectVisibleVobsHelper( BspInfo* base,
     }
 }
 
+#ifdef __AVX2__
+/** Batch-tests all pre-indexed BSP leaf AABBs against the current frustum using 8-wide AVX2 SIMD.
+ *  Uses the p-vertex (positive-vertex) method: for each plane, the corner of the AABB most
+ *  aligned with the plane normal is tested. If that corner is outside the plane, the whole
+ *  AABB is outside. All 8 leaves are tested in parallel; surviving leaves are processed
+ *  with CollectLeafVobs.  Requires a perspective (plane-cached) Frustum — checked by the caller.
+ */
+static void CollectVisibleVobsWithLeafCache(
+    const RndCullContext& ctx,
+    BspTreeVobVisitor* visitor
+) {
+    const BspLeafLinearCache& cache = Engine::GAPI->LeafLinearCache;
+    if ( cache.Count == 0 ) return;
+
+    const auto& planes = ctx.frustum.GetPlanes();
+
+    // Broadcast all 6 plane components across 8 AVX2 lanes
+    __m256 pNX[6], pNY[6], pNZ[6], pD[6];
+    for ( int p = 0; p < 6; ++p ) {
+        pNX[p] = _mm256_set1_ps( planes[p].x );
+        pNY[p] = _mm256_set1_ps( planes[p].y );
+        pNZ[p] = _mm256_set1_ps( planes[p].z );
+        pD[p]  = _mm256_set1_ps( planes[p].w );
+    }
+
+    const XMFLOAT3& cp = ctx.cameraPosition;
+    const __m256 vCamX = _mm256_set1_ps( cp.x );
+    const __m256 vCamY = _mm256_set1_ps( cp.y );
+    const __m256 vCamZ = _mm256_set1_ps( cp.z );
+
+    const float outdoorDist = ctx.drawDistances.OutdoorVobs;
+    const __m256 vDistSqThresh = _mm256_set1_ps( outdoorDist * outdoorDist );
+    const __m256 vZero = _mm256_setzero_ps();
+
+    const float* pMinX = cache.MinX.data();
+    const float* pMinY = cache.MinY.data();
+    const float* pMinZ = cache.MinZ.data();
+    const float* pMaxX = cache.MaxX.data();
+    const float* pMaxY = cache.MaxY.data();
+    const float* pMaxZ = cache.MaxZ.data();
+
+    const auto& RendererState = Engine::GAPI->GetRendererState();
+    const uint32_t padded = (cache.Count + 7u) & ~7u;
+
+    for ( uint32_t i = 0; i < padded; i += 8 ) {
+        // Load 8 leaf AABBs from the 32-byte-aligned SoA arrays
+        const __m256 vMinX = _mm256_load_ps( pMinX + i );
+        const __m256 vMinY = _mm256_load_ps( pMinY + i );
+        const __m256 vMinZ = _mm256_load_ps( pMinZ + i );
+        const __m256 vMaxX = _mm256_load_ps( pMaxX + i );
+        const __m256 vMaxY = _mm256_load_ps( pMaxY + i );
+        const __m256 vMaxZ = _mm256_load_ps( pMaxZ + i );
+
+        // Frustum cull: n-vertex test across all 6 planes.
+        // DirectX cached planes have OUTWARD-facing normals (positive dot = outside frustum),
+        // matching FastIntersectAxisAlignedBoxPlane: Outside = (Dist > Radius).
+        // For each plane we pick the n-vertex (the AABB corner with the MINIMUM dot product).
+        // If that corner's dot > 0, the ENTIRE AABB is on the outside (positive/outer) side.
+        // blendv_ps(a, b, mask): MSB=0 -> a, MSB=1 (negative) -> b
+        // So blendv(MinX, MaxX, pNX): pNX>=0 (MSB=0) -> MinX (min along positive normal), pNX<0 (MSB=1) -> MaxX.
+        __m256 vOutside = vZero;
+        for ( int p = 0; p < 6; ++p ) {
+            const __m256 vPX = _mm256_blendv_ps( vMinX, vMaxX, pNX[p] );
+            const __m256 vPY = _mm256_blendv_ps( vMinY, vMaxY, pNY[p] );
+            const __m256 vPZ = _mm256_blendv_ps( vMinZ, vMaxZ, pNZ[p] );
+            // dot(n, n_vertex) + d: positive means the entire AABB is outside this plane
+            const __m256 vDot = _mm256_fmadd_ps( pNX[p], vPX,
+                                _mm256_fmadd_ps( pNY[p], vPY,
+                                _mm256_fmadd_ps( pNZ[p], vPZ, pD[p] ) ) );
+            // Accumulate "outside" flag: dot > 0 means AABB is fully on the outer side of this plane
+            vOutside = _mm256_or_ps( vOutside, _mm256_cmp_ps( vDot, vZero, _CMP_GT_OQ ) );
+        }
+
+        // Distance cull: squared AABB-to-point distance
+        const __m256 vDX = _mm256_max_ps( vZero, _mm256_max_ps(
+            _mm256_sub_ps( vMinX, vCamX ), _mm256_sub_ps( vCamX, vMaxX ) ) );
+        const __m256 vDY = _mm256_max_ps( vZero, _mm256_max_ps(
+            _mm256_sub_ps( vMinY, vCamY ), _mm256_sub_ps( vCamY, vMaxY ) ) );
+        const __m256 vDZ = _mm256_max_ps( vZero, _mm256_max_ps(
+            _mm256_sub_ps( vMinZ, vCamZ ), _mm256_sub_ps( vCamZ, vMaxZ ) ) );
+        const __m256 vDistSq = _mm256_fmadd_ps( vDX, vDX,
+                               _mm256_fmadd_ps( vDY, vDY,
+                               _mm256_mul_ps(   vDZ, vDZ ) ) );
+        vOutside = _mm256_or_ps( vOutside, _mm256_cmp_ps( vDistSq, vDistSqThresh, _CMP_GE_OQ ) );
+
+        const int cullMask = _mm256_movemask_ps( vOutside );
+        if ( cullMask == 0xFF ) continue; // All 8 culled — skip scalar work
+
+        // Process surviving lanes with full scalar logic
+        for ( int lane = 0; lane < 8; ++lane ) {
+            if ( cullMask & (1 << lane) ) continue;
+
+            const uint32_t idx = i + static_cast<uint32_t>( lane );
+            if ( idx >= cache.Count ) break; // past padding sentinel entries
+
+            BspInfo* leaf = cache.Leaves[idx];
+            if ( !leaf ) continue;
+
+            // Occlusion culling gate (GPU query result from prior frame)
+            if ( RendererState.RendererSettings.EnableOcclusionCulling && !leaf->OcclusionInfo.VisibleLastFrame )
+                continue;
+
+            // Recompute scalar distance for per-category range checks inside CollectLeafVobs
+            const float dx = std::max( 0.0f, std::max( pMinX[idx] - cp.x, cp.x - pMaxX[idx] ) );
+            const float dy = std::max( 0.0f, std::max( pMinY[idx] - cp.y, cp.y - pMaxY[idx] ) );
+            const float dz = std::max( 0.0f, std::max( pMinZ[idx] - cp.z, cp.z - pMaxZ[idx] ) );
+            const float leafDist = std::sqrtf( dx*dx + dy*dy + dz*dz );
+
+            // Use INTERSECTS so per-vob frustum checks still run inside CollectLeafVobs
+            CollectLeafVobs( leaf, leafDist, ctx, ContainmentType::INTERSECTS, visitor );
+        }
+    }
+}
+#endif // __AVX2__
+
 void GothicAPI::CollectVisibleVobs( const RndCullContext& ctx ) {
     ZoneScopedN( "GothicAPI::CollectVisibleVobs" );
     zCBspTree* tree = LoadedWorldInfo->BspTree;
@@ -5892,13 +6080,23 @@ void GothicAPI::CollectVisibleVobs( const RndCullContext& ctx ) {
 
     static thread_local BspTreeVobVisitor bspVobVisitor{};
 
-    // Recursively go through the tree and draw all nodes
-    CollectVisibleVobsHelper( root, root->OriginalNode->BBox3D,
-        ctx,
-        &bspVobVisitor,
-        ContainmentType::INTERSECTS,
-        Engine::GAPI->GetLoadedWorldInfo()->BspTree->GetRootNode()->BBox3D.Max.y
-    );
+    // Use the flat SIMD leaf cache when available (perspective frustum + cache built at world load).
+    // Falls back to the pointer-chasing recursive tree walk for sphere/OBB frustums (shadow cubemaps,
+    // orthographic shadow maps) or before the first world is loaded.
+#ifdef __AVX2__
+    if ( LeafLinearCache.Count > 0 && ctx.frustum.UsesPlaneFrustum() ) {
+        CollectVisibleVobsWithLeafCache( ctx, &bspVobVisitor );
+    } else
+#endif
+    {
+        // Recursively go through the tree and draw all nodes
+        CollectVisibleVobsHelper( root, root->OriginalNode->BBox3D,
+            ctx,
+            &bspVobVisitor,
+            ContainmentType::INTERSECTS,
+            Engine::GAPI->GetLoadedWorldInfo()->BspTree->GetRootNode()->BBox3D.Max.y
+        );
+    }
 
     FXMVECTOR camPos = XMLoadFloat3( &ctx.cameraPosition );
     const float vobIndoorDist = ctx.drawDistances.IndoorVobs;

@@ -75,4 +75,7 @@ using AlignAlloc16 = AlignmentAllocator<T, 16>;
 
 template <typename T>
 using VectorA16 = std::vector<T, AlignAlloc16<T>>;
+
+template <typename T>
+using VectorA32 = std::vector<T, AlignmentAllocator<T, 32>>;
 #endif

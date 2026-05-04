@@ -211,6 +211,10 @@ public:
 
     const std::array<XMFLOAT4, 6>& GetPlanes() const { return m_cachedPlanes; }
 
+    /** Returns true when this frustum uses 6 cached world-space planes (perspective mode).
+     *  Only in this mode can the SIMD p-vertex batch test be applied. */
+    bool UsesPlaneFrustum() const { return isValid && !m_useSphere && !m_useBoundingOrientedBox && !m_always_containing; }
+
     // Extract the 8 corners for a specific slice of the frustum
     std::array<XMFLOAT3, 8> GetSliceCorners( float nearZ, float farZ ) const {
         if ( m_always_containing || m_useSphere || m_useBoundingOrientedBox ) {
