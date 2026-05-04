@@ -6,6 +6,7 @@
 #include "GothicAPI.h"
 #include "D3D11ShadowMap.h"
 #include "D3D11ShaderManager.h"
+#include <tracy/public/tracy/TracyD3D11.hpp>
 
 struct RenderToDepthStencilBuffer;
 

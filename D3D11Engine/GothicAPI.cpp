@@ -449,6 +449,7 @@ void GothicAPI::UpdateTextureMaxSize() {
 
 /** Called to update the world, before rendering */
 void GothicAPI::OnWorldUpdate() {
+    ZoneScopedN( "GothicAPI::OnWorldUpdate" );
 #if BUILD_SPACER
     zCBspBase* rootBsp = oCGame::GetGame()->_zCSession_world->GetBspTree()->GetRootNode();
     BspInfo* root = &BspLeafVobLists[rootBsp];
@@ -1201,6 +1202,7 @@ static bool GetShouldRenderAsMorphMesh(SkeletalVobInfo* vi, zCModel* model) {
 
 /** Draws the world-mesh */
 void GothicAPI::DrawWorldMeshNaive() {
+    ZoneScopedN( "GothicAPI::DrawWorldMeshNaive" );
     if ( !zCCamera::GetCamera() || !oCGame::GetGame() )
         return;
 
@@ -1355,6 +1357,7 @@ void GothicAPI::DrawWorldMeshNaive() {
 void GothicAPI::DrawParticlesSimple(
     RenderToTextureBuffer* bufferParticleColor,
     RenderToTextureBuffer* bufferParticleDistortion) {
+    ZoneScopedN( "GothicAPI::DrawParticlesSimple" );
     ParticleFrameData data;
 
     if ( RendererState.RendererSettings.DrawParticleEffects ) {
@@ -1377,6 +1380,7 @@ void GothicAPI::DrawParticlesSimple(
 
 // Converts poly strip visuals to render ready geometry
 void GothicAPI::CalcPolyStripMeshes() {
+    ZoneScopedN( "GothicAPI::CalcPolyStripMeshes" );
     ExVertexStruct polyFan[4];
     PolyStripInfos.clear();
 
@@ -1467,6 +1471,7 @@ void GothicAPI::CalcPolyStripMeshes() {
 };
 
 void GothicAPI::CalcFlashMeshes() {
+    ZoneScopedN( "GothicAPI::CalcFlashMeshes" );
     if ( !RendererState.RendererSettings.DrawParticleEffects || (FlashVisuals.empty() && FrameThunderPolyStrips.empty()) ) {
         return;
     }
@@ -1582,6 +1587,7 @@ void GothicAPI::CalcFlashMeshes() {
 
 /** Returns a list of visible particle-effects */
 void GothicAPI::GetVisibleParticleEffectsList( std::vector<zCVob*>& pfxList ) {
+    ZoneScopedN( "GothicAPI::GetVisibleParticleEffectsList" );
     if ( RendererState.RendererSettings.DrawParticleEffects ) {
         FXMVECTOR camPos = GetCameraPositionXM();
 
@@ -1609,6 +1615,7 @@ static bool DecalSortcmpFunc( const std::pair<zCVob*, float>& a, const std::pair
 
 /** Gets a list of visible decals */
 void GothicAPI::GetVisibleDecalList( std::vector<zCVob*>& decals ) {
+    ZoneScopedN( "GothicAPI::GetVisibleDecalList" );
     FXMVECTOR camPos = GetCameraPositionXM();
     static std::vector<std::pair<zCVob*, float>> decalDistances; // Static to get around reallocations
 
@@ -2907,6 +2914,7 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
 
 
 void GothicAPI::DrawTransparencyVobs() {
+    ZoneScopedN( "GothicAPI::DrawTransparencyVobs" );
     D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     if ( !TransparencyVobs.empty() ) {
         // Setup alpha blending
@@ -3885,6 +3893,7 @@ void GothicAPI::CollectVisibleVobs(
     std::vector<SkeletalVobInfo*>& mobs, 
     EGothicCullFlags cullFlags,
     EBspTreeCollectFlags collectFlags ) {
+    ZoneScopedN( "GothicAPI::CollectVisibleVobsLegacy" );
     zCBspTree* tree = LoadedWorldInfo->BspTree;
 
     zCBspBase* rootBsp = tree->GetRootNode();
@@ -4017,6 +4026,7 @@ void GothicAPI::CollectVisibleVobs(
 
 /** Collects visible sections from the current camera perspective */
 void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sections ) {
+    ZoneScopedN( "GothicAPI::CollectVisibleSections" );
     const XMFLOAT3 camPos = Engine::GAPI->GetCameraPosition();
     const INT2 camSection = WorldConverter::GetSectionOfPos( camPos );
     auto cullingEnabled = Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.Culling.CullBspSections;
@@ -4331,6 +4341,7 @@ void GothicAPI::BuildBspVobMapCacheHelper( zCBspBase* base ) {
 
 /** Builds our BspTreeVobMap */
 void GothicAPI::BuildBspVobMapCache() {
+    ZoneScopedN( "GothicAPI::BuildBspVobMapCache" );
     BuildBspVobMapCacheHelper( LoadedWorldInfo->BspTree->GetRootNode() );
 }
 
@@ -5873,6 +5884,7 @@ static void CollectVisibleVobsHelper( BspInfo* base,
 }
 
 void GothicAPI::CollectVisibleVobs( const RndCullContext& ctx ) {
+    ZoneScopedN( "GothicAPI::CollectVisibleVobs" );
     zCBspTree* tree = LoadedWorldInfo->BspTree;
 
     zCBspBase* rootBsp = tree->GetRootNode();
