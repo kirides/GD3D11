@@ -3,7 +3,6 @@
 #pragma warning( disable : 26495 )
 
 #include "pch.h"
-#include "BasicTimer.h"
 #include "BasePipelineStates.h"
 #include <ASSAO/ASSAO.h>
 
@@ -1048,47 +1047,6 @@ struct GothicRendererSettings {
     } DebugSettings;
 };
 
-struct GothicRendererTiming {
-
-    void StartTotal() {
-        _totalTimer.Update();
-    }
-
-    void StopTotal() {
-        _totalTimer.Update();
-        TotalMS = _totalTimer.GetDelta() * 1000.0f;
-    }
-
-    void Reset() {
-        frameRecordings.clear();
-        TotalMS = 0.0f;
-    }
-
-    float TotalMS;
-    std::vector<std::pair<const wchar_t*, float>> frameRecordings;
-
-private:
-    BasicTimer _timer;
-    BasicTimer _totalTimer;
-};
-
-class TimerScope {
-public:
-    TimerScope( const wchar_t* label, std::vector<std::pair<const wchar_t*, float>>* collection )
-        : _timer( {} ),
-        _type( label ),
-        _collection(collection) {
-    }
-    ~TimerScope() {
-        const float delta = _timer.GetDelta();
-        _collection->push_back( std::make_pair( _type, delta * 1000.0f ) );
-    }
-private:
-    OneShotTimer _timer;
-    std::vector<std::pair<const wchar_t*, float>>* _collection;
-    const wchar_t* _type;
-};
-
 struct GothicRendererInfo {
     GothicRendererInfo() {
         VOBVerticesDataSize = 0;
@@ -1146,8 +1104,6 @@ struct GothicRendererInfo {
     float NearPlane;
     int FrameDrawnLights;
     int WorldMeshDrawCalls;
-
-    GothicRendererTiming Timing;
 
     unsigned int VOBVerticesDataSize;
     unsigned int SkeletalVerticesDataSize;

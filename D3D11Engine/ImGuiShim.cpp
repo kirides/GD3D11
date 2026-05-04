@@ -1462,14 +1462,6 @@ void RenderAdvancedColumn3( GothicRendererSettings& settings, GothicAPI* gapi ) 
                 ImGui::Text( fmt, value );
                 };
 
-            static auto addRowFloatW = []( const wchar_t* label, float value, const char* fmt ) {
-                ImGui::TableNextRow();
-                ImGui::TableSetColumnIndex( 0 );
-                ImGui::TextUnformatted( label );
-                ImGui::TableSetColumnIndex( 1 );
-                ImGui::Text( fmt, value );
-                };
-
             addRowInt( "FPS", rendererInfo.FPS );
             addRowUInt( "StateChanges", rendererInfo.StateChanges );
             addRowInt( "DrawnVobs", rendererInfo.FrameDrawnVobs );
@@ -1480,37 +1472,6 @@ void RenderAdvancedColumn3( GothicRendererSettings& settings, GothicAPI* gapi ) 
             addRowInt( "WorldMeshDrawCalls", rendererInfo.WorldMeshDrawCalls );
             addRowFloat( "FarPlane", rendererInfo.FarPlane, "%.0f" );
             addRowFloat( "NearPlane", rendererInfo.NearPlane, "%.0f" );
-
-            rendererInfo.Timing.StopTotal();
-            rendererInfo.Timing.frameRecordings.push_back({L"Total", rendererInfo.Timing.TotalMS});
-            
-            static std::unordered_map<const wchar_t*, std::vector<float>> timingHistory;
-            static std::unordered_map<const wchar_t*, float> timingAvg;
-            static std::chrono::time_point<std::chrono::steady_clock> lastUpdate = std::chrono::steady_clock::now();
-            for ( auto& record : rendererInfo.Timing.frameRecordings ) {
-                timingHistory[record.first].push_back(record.second);
-            }
-
-            auto now = std::chrono::steady_clock::now();
-            if ( std::chrono::duration_cast<std::chrono::seconds>(now - lastUpdate).count() >= 1 ) {
-                timingAvg.clear();
-
-                for (auto& [name, values] : timingHistory) {
-                    if (!values.empty()) {
-                        float sum = std::accumulate(values.begin(), values.end(), 0.0f);
-                        timingAvg[name] = sum / values.size();
-                    } else {
-                        timingAvg[name] = 0.0f;
-                    }
-                }
-                timingHistory.clear();
-                lastUpdate = now;
-            }
-            
-            // Anzeige: aktuelle Werte, Durchschnitt und Perzentil
-            for ( auto& record : rendererInfo.Timing.frameRecordings ) {
-                addRowFloatW( record.first, timingAvg[record.first], "%05.2f" );
-            }
 
             addRowInt( "SC_PipelineStates", rendererInfo.FramePipelineStates );
             addRowInt( "SC_Textures", rendererInfo.StateChangesByState[GothicRendererInfo::SC_TX] );

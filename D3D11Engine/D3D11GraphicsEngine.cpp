@@ -551,8 +551,12 @@ XRESULT D3D11GraphicsEngine::Init() {
         }
     }
 
+
     Device11.As( &Device );
     Context11.As( &Context );
+    auto ctx = TracyD3D11Context( Device.Get(), Context.Get() )
+    m_tracyd3d11Context.reset(ctx);
+
     Context.As( &m_UserDefinedAnnotation );
 
     // Check for windows 10 - pretend 8 doesn't exist because I can't verify if they actually works on windows 8
@@ -1312,6 +1316,8 @@ D3D11VertexBuffer* D3D11GraphicsEngine::AcquireFrameInstancingBuffer( FrameInsta
 
 /** Called when the game wants to render a new frame */
 XRESULT D3D11GraphicsEngine::OnBeginFrame() {
+    FrameMarkStart("Frame");
+
     auto& rendererState = Engine::GAPI->GetRendererState();
     static WindowModes lastWindowMode = ImGuiShim::InterpretWindowMode(rendererState.RendererSettings);
     WindowModes currentWindowMode = (WindowModes)rendererState.RendererSettings.ChangeWindowPreset;
@@ -1346,8 +1352,6 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
         s_oldResolutionScalePercent = rendererState.RendererSettings.ResolutionScalePercent;
     }
     
-    rendererState.RendererInfo.Timing.StartTotal();
-
 #ifdef BUILD_SPACER_NET
     rendererState.RendererSettings.EnableInactiveFpsLock = false;
 #endif //  BUILD_SPACERNET
@@ -1439,15 +1443,14 @@ XRESULT D3D11GraphicsEngine::OnEndFrame() {
     renderInfo.RenderStage = STAGE_DRAW_PRESENT;
     Present();
 
-    renderInfo.Timing.StopTotal();
     if ( !Engine::GAPI->GetRendererState().RendererSettings.BinkVideoRunning && !Engine::GAPI->IsInSavingLoadingState() ) {
         m_FrameLimiter->Wait();
     }
     RenderedVobs.clear();
-    renderInfo.Timing.Reset();
     GetPfxRenderer()->OnEndFrame();
     ResetFrameTransientBufferPools();
     Engine::GAPI->ResetVobFrameStats();
+    FrameMarkEnd("Frame");
     return XR_SUCCESS;
 }
 
@@ -1620,7 +1623,7 @@ XRESULT D3D11GraphicsEngine::Present() {
     SetDefaultStates();
     UpdateRenderStates();
     {
-        auto _ = RecordGraphicsEvent( L"Blit onto Swapchain" );
+        auto _ = RecordGraphicsEvent( GE_NAME( "Blit onto Swapchain" ) );
 
         SetActivePixelShader( PShaderID::PS_PFX_GammaCorrectInv );
 
@@ -1720,6 +1723,7 @@ XRESULT D3D11GraphicsEngine::Present() {
     }
 
     PresentPending = false;
+    TracyD3D11Collect( m_tracyd3d11Context.get() );
 
     return XR_SUCCESS;
 }
@@ -2784,7 +2788,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     if ( !drawAttachments || tempVobList.empty() ) {
         return;
     }
-    auto _scopeNodeAttachments = RecordGraphicsEvent( L"DrawSkeletalMeshVobs::Attachments" );
+    auto _scopeNodeAttachments = RecordGraphicsEvent( GE_NAME( "DrawSkeletalMeshVobs::Attachments" ) );
 
     // For DES_SHADOWMAP_CUBE we need the existing per-draw path (SV_InstanceID used for cubemap faces)
     const bool useCubePath = (GetRenderingStage() == DES_SHADOWMAP_CUBE);
@@ -3336,6 +3340,8 @@ namespace {
 
 /** Called when we started to render the world */
 XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
+    ZoneScopedN("D3D11GraphicsEngine::OnStartWorldRendering");
+    TracyD3D11Zone( m_tracyd3d11Context.get(), "D3D11GraphicsEngine::OnStartWorldRendering");
     SetDefaultStates();
     m_FrameNeedsJitter = false;
 
@@ -3430,7 +3436,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     rendererState.RasterizerState.SetDirty();
 
     RGResourceHandle colorResource = backBufferHandle;
-    graph.AddPass( L"Initialize Buffers", [&]( RGBuilder& builder, RenderPass& pass ) {
+    graph.AddPass( RG_PASS_NAME("Initialize Buffers"), [&]( RGBuilder& builder, RenderPass& pass ) {
         auto size = GetResolution();
         if ( rendererState.RendererSettings.RendererMode == GothicRendererSettings::E_RendererMode::RM_Deferred ) { 
             colorResource = builder.CreateTexture( { static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y), DXGI_FORMAT_ENGINE_DEFAULT, L"GBufferAlbedo" } );
@@ -3454,7 +3460,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     });
     
     if ( rendererState.RendererSettings.DrawSky ) {
-        graph.AddPass( L"Draw Sky", [&]( RGBuilder& builder, RenderPass& pass ) {
+        graph.AddPass( RG_PASS_NAME("Draw Sky"), [&]( RGBuilder& builder, RenderPass& pass ) {
             //// Setup / Declare
             //RGTextureDesc albedoDesc{ 1920, 1080, 28 /* DXGI_FORMAT_R8G8B8A8_UNORM */, "Albedo" };
             //albedoTarget = builder.CreateTexture( albedoDesc );
@@ -3478,7 +3484,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         colorResource, velocityBufferHandle, backBufferHandle,
         normalsResource, specularResource, reactiveMaskResource );
     
-    graph.AddPass( L"Draw ParticleFX #1", [&]( RGBuilder& builder, RenderPass& pass ) {
+    graph.AddPass( RG_PASS_NAME("Draw ParticleFX #1"), [&]( RGBuilder& builder, RenderPass& pass ) {
         // Setup / Declare
         builder.Write( backBufferHandle );
 
@@ -3503,7 +3509,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         colorResource, normalsResource, specularResource,
         backBufferHandle, m_FrameLights );
     
-    graph.AddPass( L"Draw Frame AlphaMeshes", [&]( RGBuilder& builder, RenderPass& pass ) {
+    graph.AddPass( RG_PASS_NAME("Draw Frame AlphaMeshes"), [&]( RGBuilder& builder, RenderPass& pass ) {
         // Setup / Declare
         builder.Write( backBufferHandle );
 
@@ -3523,7 +3529,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     bool compositionActive = compositionSAO || compositionGodRays || compositionHeightFog;
 
     if ( rendererState.RendererSettings.AoMode == AOMode::AO_HBAO ) {
-        graph.AddPass( L"HBAO+", [&]( RGBuilder& builder, RenderPass& pass ) {
+        graph.AddPass( RG_PASS_NAME("HBAO+"), [&]( RGBuilder& builder, RenderPass& pass ) {
             builder.Read( normalsResource );
             builder.Write( backBufferHandle );
 
@@ -3539,7 +3545,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         });
     }
     else if ( rendererState.RendererSettings.AoMode == AOMode::AO_ASSAO ) {
-        graph.AddPass( L"ASSAO", [&]( RGBuilder& builder, RenderPass& pass ) {
+        graph.AddPass( RG_PASS_NAME("ASSAO"), [&]( RGBuilder& builder, RenderPass& pass ) {
             builder.Read( normalsResource );
             builder.Write( backBufferHandle );
 
@@ -3556,7 +3562,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     }
     else if ( compositionSAO ) {
         // SAO compute-only pass — skips the final modulate blit (composition handles it)
-        graph.AddPass( L"SAO Compute", [&]( RGBuilder& builder, RenderPass& pass ) {
+        graph.AddPass( RG_PASS_NAME("SAO Compute"), [&]( RGBuilder& builder, RenderPass& pass ) {
             builder.Read( normalsResource );
 
             pass.m_executeCallback = [this, normalsResource](const RenderGraph& graph) {
@@ -3570,7 +3576,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         });
     }
     
-    graph.AddPass( L"DrawWaterSurfaces", [&]( RGBuilder& builder, RenderPass& pass ) {
+    graph.AddPass( RG_PASS_NAME("DrawWaterSurfaces"), [&]( RGBuilder& builder, RenderPass& pass ) {
         builder.Read( backBufferHandle );
         builder.Write( backBufferHandle );
 
@@ -3580,7 +3586,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         };
     });
     
-    graph.AddPass( L"Draw FrameTransparencyMeshes", [&]( RGBuilder& builder, RenderPass& pass ) {
+    graph.AddPass( RG_PASS_NAME("Draw FrameTransparencyMeshes"), [&]( RGBuilder& builder, RenderPass& pass ) {
         builder.Read( backBufferHandle );
         builder.Write( backBufferHandle );
 
@@ -3590,7 +3596,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     });
     
     if ( rendererState.RendererSettings.DrawG1ForestPortals ) {
-        graph.AddPass( L"Draw ForestPortals", [&]( RGBuilder& builder, RenderPass& pass ) {
+        graph.AddPass( RG_PASS_NAME("Draw ForestPortals"), [&]( RGBuilder& builder, RenderPass& pass ) {
             builder.Read( backBufferHandle );
             builder.Write( backBufferHandle );
 
@@ -3600,7 +3606,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         });
     }
     
-    graph.AddPass( L"Draw FrameTransparencyMeshesWaterfall", [&]( RGBuilder& builder, RenderPass& pass ) {
+    graph.AddPass( RG_PASS_NAME("Draw FrameTransparencyMeshesWaterfall"), [&]( RGBuilder& builder, RenderPass& pass ) {
         builder.Read( backBufferHandle );
         builder.Write( backBufferHandle );
 
@@ -3609,7 +3615,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         };
     });
     
-    graph.AddPass( L"Draw ghosts", [&]( RGBuilder& builder, RenderPass& pass ) {
+    graph.AddPass( RG_PASS_NAME("Draw ghosts"), [&]( RGBuilder& builder, RenderPass& pass ) {
         builder.Read( backBufferHandle );
         builder.Write( backBufferHandle );
 
@@ -3631,7 +3637,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                 zBSP_MODE_OUTDOOR && !compositionActive) {
         // Standalone heightfog pass — only used when composition is not active (shouldn't happen
         // when DrawFog is on, but kept as fallback for FL10 or edge cases)
-        graph.AddPass( L"Draw Heightfog", [&]( RGBuilder& builder, RenderPass& pass ) {
+        graph.AddPass( RG_PASS_NAME("Draw Heightfog"), [&]( RGBuilder& builder, RenderPass& pass ) {
             builder.Read( backBufferHandle );
             builder.Write( backBufferHandle );
 
@@ -3643,7 +3649,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     
     if (Engine::GAPI->GetRainFXWeight() > 0.0f) {
         if ( FeatureLevel10Compatibility || Engine::GAPI->GetRendererState().RendererSettings.DrawRainThroughTransformFeedback ) {
-            graph.AddPass( L"Draw Rain", [&]( RGBuilder& builder, RenderPass& pass ) {
+            graph.AddPass( RG_PASS_NAME("Draw Rain"), [&]( RGBuilder& builder, RenderPass& pass ) {
                 builder.Read( backBufferHandle );
                 builder.Write( backBufferHandle );
 
@@ -3652,7 +3658,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                 };
             });
         } else {
-            graph.AddPass( L"Draw Rain CS", [&]( RGBuilder& builder, RenderPass& pass ) {
+            graph.AddPass( RG_PASS_NAME("Draw Rain CS"), [&]( RGBuilder& builder, RenderPass& pass ) {
                 builder.Read( backBufferHandle );
                 builder.Write( backBufferHandle );
 
@@ -3663,7 +3669,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         }
     }
     
-    graph.AddPass( L"Reset RenderTargets", [&]( RGBuilder& builder, RenderPass& pass )
+    graph.AddPass( RG_PASS_NAME("Reset RenderTargets"), [&]( RGBuilder& builder, RenderPass& pass )
     {
         builder.Write( backBufferHandle );
         pass.m_executeCallback = [this, backBufferHandle](const RenderGraph& graph) {
@@ -3677,7 +3683,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     });
     
     if (rendererState.RendererSettings.DrawParticleEffects) {
-        graph.AddPass( L"Draw ParticleFX #2", [&]( RGBuilder& builder, RenderPass& pass ) {
+        graph.AddPass( RG_PASS_NAME("Draw ParticleFX #2"), [&]( RGBuilder& builder, RenderPass& pass ) {
             builder.Read( backBufferHandle );
             builder.Write( backBufferHandle );
 
@@ -3703,7 +3709,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         zBSP_MODE_OUTDOOR) {
         if ( compositionActive ) {
             // GodRays compute-only pass — writes to pool texture, skips the final additive blit
-            graph.AddPass( L"GodRays Compute", [&]( RGBuilder& builder, RenderPass& pass ) {
+            graph.AddPass( RG_PASS_NAME("GodRays Compute"), [&]( RGBuilder& builder, RenderPass& pass ) {
                 builder.Read( normalsResource );
                 builder.Read( backBufferHandle );
 
@@ -3723,7 +3729,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             });
         } else {
             // Standalone GodRays pass (fallback when composition is not active)
-            graph.AddPass( L"Draw Godrays", [&]( RGBuilder& builder, RenderPass& pass ) {
+            graph.AddPass( RG_PASS_NAME("Draw Godrays"), [&]( RGBuilder& builder, RenderPass& pass ) {
                 builder.Read( normalsResource );
                 builder.Read( backBufferHandle );
                 builder.Write( backBufferHandle );
@@ -3744,7 +3750,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
 
     // PostFX Composition pass — merges SAO, HeightFog, and GodRays in a single full-screen blit
     if ( compositionActive ) {
-        graph.AddPass( L"PostFX Composition", [&]( RGBuilder& builder, RenderPass& pass ) {
+        graph.AddPass( RG_PASS_NAME("PostFX Composition"), [&]( RGBuilder& builder, RenderPass& pass ) {
             builder.Read( backBufferHandle );
             builder.Write( backBufferHandle );
 
@@ -3773,7 +3779,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     }
     
     if (rendererState.RendererSettings.EnableDoF) {
-        graph.AddPass( L"Draw DepthOfField", [&]( RGBuilder& builder, RenderPass& pass ) {
+        graph.AddPass( RG_PASS_NAME("Draw DepthOfField"), [&]( RGBuilder& builder, RenderPass& pass ) {
             builder.Read( backBufferHandle );
             builder.Write( backBufferHandle );
 
@@ -3784,7 +3790,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         });
     }
     
-    graph.AddPass( L"Draw ParticlesSimple", [&]( RGBuilder& builder, RenderPass& pass ) {
+    graph.AddPass( RG_PASS_NAME("Draw ParticlesSimple"), [&]( RGBuilder& builder, RenderPass& pass ) {
         auto size = GetResolution();
 
         auto particleColorHandle = builder.CreateTexture( { static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y), DXGI_FORMAT_ENGINE_DEFAULT, L"PfxColor" } );
@@ -3806,7 +3812,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
 
 #if (defined BUILD_GOTHIC_2_6_fix || defined BUILD_GOTHIC_1_08k)
 
-    graph.AddPass( L"Draw PolyStrips", [&]( RGBuilder& builder, RenderPass& pass ) {
+    graph.AddPass( RG_PASS_NAME("Draw PolyStrips"), [&]( RGBuilder& builder, RenderPass& pass ) {
         builder.Write( backBufferHandle );
 
         pass.m_executeCallback = [this](const RenderGraph&) {
@@ -3824,7 +3830,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
 #endif
 
     // Draw debug lines
-    graph.AddPass( L"Draw Debug Lines", [&]( RGBuilder& builder, RenderPass& pass ) {
+    graph.AddPass( RG_PASS_NAME("Draw Debug Lines"), [&]( RGBuilder& builder, RenderPass& pass ) {
         builder.Write( backBufferHandle );
 
         pass.m_executeCallback = [this](const RenderGraph&) {
@@ -3834,7 +3840,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     } );
 
     // Draw debug lines
-    graph.AddPass( L"PostFX Viewport", [&]( RGBuilder& builder, RenderPass& pass ) {
+    graph.AddPass( RG_PASS_NAME("PostFX Viewport"), [&]( RGBuilder& builder, RenderPass& pass ) {
         builder.Write( backBufferHandle );
 
         pass.m_executeCallback = [this](const RenderGraph&) {
@@ -3846,7 +3852,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     if ( rendererState.RendererSettings.AntiAliasingMode 
         == GothicRendererSettings::AA_TAA ) {
         // TAA before any HDR stuff
-        graph.AddPass( L"Render TAA", [&]( RGBuilder& builder, RenderPass& pass ) {
+        graph.AddPass( RG_PASS_NAME("Render TAA"), [&]( RGBuilder& builder, RenderPass& pass ) {
             builder.Read( velocityBufferHandle );
             builder.Write( backBufferHandle );
 
@@ -3861,7 +3867,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     }
 
     if ( rendererState.RendererSettings.EnableHDR ) {       
-        graph.AddPass( L"Render HDR", [&]( RGBuilder& builder, RenderPass& pass ) {
+        graph.AddPass( RG_PASS_NAME("Render HDR"), [&]( RGBuilder& builder, RenderPass& pass ) {
             builder.Read( backBufferHandle );
             builder.Write( backBufferHandle );
 
@@ -3875,7 +3881,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     if ( rendererState.RendererSettings.AntiAliasingMode
         == GothicRendererSettings::AA_SMAA ) {       
         // SMAA should be applied before any sharpening
-        graph.AddPass( L"Render SMAA", [&]( RGBuilder& builder, RenderPass& pass ) {
+        graph.AddPass( RG_PASS_NAME("Render SMAA"), [&]( RGBuilder& builder, RenderPass& pass ) {
             builder.Read( backBufferHandle );
             builder.Write( backBufferHandle );
 
@@ -3887,7 +3893,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         } );
     }
     
-    graph.AddPass( L"Reset Viewport", [&]( RGBuilder& builder, RenderPass& pass ) {
+    graph.AddPass( RG_PASS_NAME("Reset Viewport"), [&]( RGBuilder& builder, RenderPass& pass ) {
         builder.Write( backBufferHandle );
 
         pass.m_executeCallback = [this](const RenderGraph&) {
@@ -3899,7 +3905,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
 
     // If we currently are underwater, then draw underwater effects
     if ( Engine::GAPI->IsUnderWater() ) {
-        graph.AddPass( L"Draw UnderwaterFX", [&]( RGBuilder& builder, RenderPass& pass ) {
+        graph.AddPass( RG_PASS_NAME("Draw UnderwaterFX"), [&]( RGBuilder& builder, RenderPass& pass ) {
             builder.Write( backBufferHandle );
 
             pass.m_executeCallback = [this](const RenderGraph&) {
@@ -3908,7 +3914,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         } );
     }
 
-    graph.AddPass( L"Prepare finalize frame", [&]( RGBuilder& builder, RenderPass& pass ) {
+    graph.AddPass( RG_PASS_NAME("Prepare finalize frame"), [&]( RGBuilder& builder, RenderPass& pass ) {
         builder.Write( backBufferHandle );
 
         pass.m_executeCallback = [this](const RenderGraph&) {
@@ -3937,7 +3943,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         } else if (rendererState.RendererSettings.SharpeningMode
                 && rendererState.RendererSettings.SharpenFactor > 0.0f ) {
 
-            graph.AddPass( L"Sharpen", [&]( RGBuilder& builder, RenderPass& pass ) {
+            graph.AddPass( RG_PASS_NAME("Sharpen"), [&]( RGBuilder& builder, RenderPass& pass ) {
                 builder.Read( backBufferHandle );
                 builder.Write( backBufferHandle );
 
@@ -3946,21 +3952,21 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                     
                     auto backbufferTex = graph.GetPhysicalTexture( backBufferHandle );
                     {
-                        auto _ = RecordGraphicsEvent( L"Copy into native-size backbuffer" );
+                        auto _ = RecordGraphicsEvent( GE_NAME( "Copy into native-size backbuffer" ) );
                         PfxRenderer->CopyTextureToRTV( backbufferTex->GetShaderResView(), Backbuffer->GetRenderTargetView(), GetBackbufferResolution() );
                     }
 
                     switch ( rendererState.RendererSettings.SharpeningMode ) {
                     case GothicRendererSettings::SHARPEN_SIMPLE:
                         if ( !FeatureLevel10Compatibility ) {
-                            auto _ = RecordGraphicsEvent( L"ApplySimpleSharpen" );
+                            auto _ = RecordGraphicsEvent( GE_NAME( "ApplySimpleSharpen" ) );
                             PfxRenderer->RenderSimpleSharpen( Backbuffer->GetShaderResView(), GetBackbufferResolution(), Backbuffer->GetRenderTargetView(), GetBackbufferResolution(), *GetPfxRenderer()->GetBackbufferTempBuffer());
                         }
                         break;
 
                     case GothicRendererSettings::SHARPEN_CAS:
                         if ( !FeatureLevel10Compatibility ) {
-                            auto _ = RecordGraphicsEvent( L"ApplyCAS" );
+                            auto _ = RecordGraphicsEvent( GE_NAME( "ApplyCAS" ) );
                             PfxRenderer->RenderCAS( Backbuffer->GetShaderResView(), GetBackbufferResolution(), Backbuffer->GetRenderTargetView(), GetBackbufferResolution(), *GetPfxRenderer()->GetBackbufferTempBuffer());
                         }
                         break;
@@ -3968,7 +3974,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                 };
             } );
         } else {
-            graph.AddPass( L"Copy into native-size backbuffer", [&]( RGBuilder& builder, RenderPass& pass ) {
+            graph.AddPass( RG_PASS_NAME("Copy into native-size backbuffer"), [&]( RGBuilder& builder, RenderPass& pass ) {
                 builder.Read( backBufferHandle );
                 builder.Write( backBufferHandle );
 
@@ -5501,7 +5507,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
 
         // At this point either renderedVobs or rndVob is filled with something
         std::list<VobInfo*>& rl = renderedVobs != nullptr ? *renderedVobs : rndVob;
-        auto _ = Engine::GraphicsEngine->RecordGraphicsEvent(L"Draw vobs (layered)");
+        auto _ = Engine::GraphicsEngine->RecordGraphicsEvent( GE_NAME( "Draw vobs (layered)" ) );
 
         D3D11Texture* lastBoundTexture = nullptr;
         for ( auto const& vobInfo : rl ) {
@@ -5580,7 +5586,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
 
         // At this point eiter renderedMobs or rndVob is filled with something
         std::list<SkeletalVobInfo*>& rl = renderedMobs != nullptr ? *renderedMobs : rndVob;
-        auto _ = Engine::GraphicsEngine->RecordGraphicsEvent(L"Draw static skeletal meshes (layered)");
+        auto _ = Engine::GraphicsEngine->RecordGraphicsEvent( GE_NAME( "Draw static skeletal meshes (layered)" ) );
         for ( auto it : rl ) {
             Engine::GAPI->DrawSkeletalMeshVob_Layered( it, FLT_MAX );
         }
@@ -5589,7 +5595,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
     if ( drawAnimatedCasters && Engine::GAPI->GetRendererState().RendererSettings.DrawSkeletalMeshes ) {
         // Draw animated skeletal meshes if wanted
         if ( renderNPCs ) {
-            auto _ = Engine::GraphicsEngine->RecordGraphicsEvent(L"Draw animated skeletal meshes (layered)");
+            auto _ = Engine::GraphicsEngine->RecordGraphicsEvent( GE_NAME( "Draw animated skeletal meshes (layered)" ) );
             for ( auto const& skeletalMeshVob : Engine::GAPI->GetAnimatedSkeletalMeshVobs() ) {
                 if ( !skeletalMeshVob->VisualInfo ) {
                     // Seems to happen in Gothic 1
@@ -5800,28 +5806,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
     float sectionRange,
     const RenderShadowmapsParams& params ) {
     int timerLabelIndex = std::clamp(params.CascadeIndex, 0, MAX_CSM_CASCADES-1);
-    static const wchar_t* timer_labels_world_mesh[MAX_CSM_CASCADES]
-    {
-        L"World Mesh 0",
-        L"World Mesh 1",
-        L"World Mesh 2",
-        L"World Mesh 3",
-    };
-    static const wchar_t* timer_labels_vobs[MAX_CSM_CASCADES]
-    {
-        L"VOBs 0",
-        L"VOBs 1",
-        L"VOBs 2",
-        L"VOBs 3",
-    };
-    static const wchar_t* timer_labels_skeletal[MAX_CSM_CASCADES]
-    {
-        L"Skeletal Meshes 0",
-        L"Skeletal Meshes 1",
-        L"Skeletal Meshes 2",
-        L"Skeletal Meshes 3",
-    };
-    
+
     // Setup renderstates
     Engine::GAPI->GetRendererState().RasterizerState.SetDefault();
     Engine::GAPI->GetRendererState().RasterizerState.CullMode =
@@ -5894,8 +5879,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             : Frustum::AlwaysContainingFrustum();
 
     if ( Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh ) {
-        auto _ = START_TIMING( timer_labels_world_mesh[timerLabelIndex] );
-        auto _1 = RecordGraphicsEvent( L"Shadows::DrawWorldMesh" );
+        ZoneScopedN( "Shadows::DrawWorldMesh" );
+        auto _1 = RecordGraphicsEvent( GE_NAME( "Shadows::DrawWorldMesh" ) );
         const auto sectionRangeSq = sectionRange * sectionRange;
         // Bind wrapped mesh vertex buffers
         DrawVertexBufferIndexedUINT(
@@ -5965,8 +5950,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             reinterpret_cast<MeshVisualInfo*>(it->VisualInfo)->Instances.push_back( vii );
         }
 
-        auto _ = START_TIMING( timer_labels_vobs[timerLabelIndex] );
-        auto _1 = RecordGraphicsEvent( L"Shadows::DrawVOBs" );
+        ZoneScopedN( "Shadows::DrawVOBs");
+        auto _1 = RecordGraphicsEvent( GE_NAME( "Shadows::DrawVOBs" ) );
 
         const size_t shadowInstanceCount = vobs.empty() ? 1 : vobs.size();
         const unsigned int shadowInstancingBytes = static_cast<unsigned int>(
@@ -6179,8 +6164,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
     }
 
     if ( Engine::GAPI->GetRendererState().RendererSettings.DrawSkeletalMeshes ) {
-        auto _ = START_TIMING( timer_labels_skeletal[timerLabelIndex] );
-        auto _1 = RecordGraphicsEvent( L"Shadows::DrawSkeletalMeshes" );
+        ZoneScopedN( "Shadows::DrawSkeletalMeshes" );
+        auto _1 = RecordGraphicsEvent( GE_NAME( "Shadows::DrawSkeletalMeshes" ) );
 
         auto skeletalRadiusSq = Engine::GAPI->GetRendererState().RendererSettings.SkeletalMeshDrawRadius
             * Engine::GAPI->GetRendererState().RendererSettings.SkeletalMeshDrawRadius;
@@ -6384,7 +6369,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
     const auto& renderSettings = Engine::GAPI->GetRendererState().RendererSettings;
 
     {
-        auto _ = START_TIMING( L"VOBs" );
+        ZoneScopedN( "VOBs" );
         SetDefaultStates();
 
         SetActivePixelShader( PShaderID::PS_Diffuse );
@@ -6464,7 +6449,8 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
         }
 
         if ( renderSettings.DrawVOBs ) {
-            auto _1 = Engine::GraphicsEngine->RecordGraphicsEvent( L"DrawVOBsInstanced->DrawVOBs" );
+            auto _1 = Engine::GraphicsEngine->RecordGraphicsEvent( GE_NAME( "DrawVOBsInstanced->DrawVOBs" ) );
+            ZoneScopedN( "DrawVOBsInstanced->VOBs" );
 
             auto& cache = m_FrameGeometryCache;
             D3D11VertexBuffer* instancingBuffer = cache.MainVobInstancingBuffer;
@@ -6840,7 +6826,8 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
 
         // Draw mobs
         if ( renderSettings.DrawMobs ) {
-            auto _1 = Engine::GraphicsEngine->RecordGraphicsEvent( L"DrawVOBsInstanced->DrawMobs" );
+            ZoneScopedN( "DrawVOBsInstanced->MOBs" );
+            auto _1 = Engine::GraphicsEngine->RecordGraphicsEvent( GE_NAME( "DrawVOBsInstanced->DrawMobs" ) );
 
             // Mobs use zengine functions for binding textures so let's reset zengine texture state
             Engine::GAPI->ResetRenderStates();
@@ -7648,7 +7635,7 @@ bool D3D11GraphicsEngine::BindShaderForTexture( zCTexture* texture,
 void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
     bool lighting ) {
     SetDefaultStates();
-    auto _ = RecordGraphicsEvent(L"DrawDecalList");
+    auto _ = RecordGraphicsEvent( GE_NAME( "DrawDecalList" ) );
 
     Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_NONE;
     Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
@@ -7876,7 +7863,7 @@ void D3D11GraphicsEngine::DrawQuadMarks() {
 void D3D11GraphicsEngine::DrawMQuadMarks() {
     if ( MulQuadMarks.empty() ) return;
 
-    auto _ = RecordGraphicsEvent(L"DrawMQuadMarks");
+    auto _ = RecordGraphicsEvent( GE_NAME( "DrawMQuadMarks" ) );
     
     SetActiveVertexShader( VShaderID::VS_Ex );
     SetActivePixelShader( PShaderID::PS_Simple );

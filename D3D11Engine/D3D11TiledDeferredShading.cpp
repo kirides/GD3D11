@@ -215,7 +215,7 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
     RenderToTextureBuffer& depthCopy ) {
 
     auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
-    auto _ = graphicsEngine->RecordGraphicsEvent( L"TiledPointlightLights" );
+    auto _ = graphicsEngine->RecordGraphicsEvent( GE_NAME( "TiledPointlightLights" ) );
     auto& context = graphicsEngine->GetContext();
 
     // ---- Pass 1: Pack lights + cull ----
@@ -306,7 +306,7 @@ D3D11TiledDeferredShading::CullResult D3D11TiledDeferredShading::CullLights(
     RenderToTextureBuffer& depthCopy ) {
 
     auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
-    auto _ = graphicsEngine->RecordGraphicsEvent( L"CullLights" );
+    auto _ = graphicsEngine->RecordGraphicsEvent( GE_NAME( "CullLights" ) );
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
     auto& context = graphicsEngine->GetContext();
 

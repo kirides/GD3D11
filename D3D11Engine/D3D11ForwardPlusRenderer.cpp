@@ -39,7 +39,7 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
     RGResourceHandle shadowMaskResource = {};
 
     // --- Depth prepass ---
-    graph.AddPass( L"FP Depth Prepass", [&]( RGBuilder& builder, RenderPass& pass ) {
+    graph.AddPass( RG_PASS_NAME("FP Depth Prepass"), [&]( RGBuilder& builder, RenderPass& pass ) {
         builder.Write( backBufferHandle );
 
         pass.m_executeCallback = [&engine]( const RenderGraph& ) -> void {
@@ -72,7 +72,7 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
     } );
 
     // --- Light culling ---
-    graph.AddPass( L"FP Light Culling", [&]( RGBuilder& builder, RenderPass& pass ) {
+    graph.AddPass( RG_PASS_NAME("FP Light Culling"), [&]( RGBuilder& builder, RenderPass& pass ) {
         builder.Write( backBufferHandle );
 
         pass.m_executeCallback = [&engine]( const RenderGraph& ) -> void {
@@ -88,7 +88,7 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
     } );
 
     // --- Shadow map rendering ---
-    graph.AddPass( L"FP Shadow Maps", [&]( RGBuilder& builder, RenderPass& pass ) {
+    graph.AddPass( RG_PASS_NAME("FP Shadow Maps"), [&]( RGBuilder& builder, RenderPass& pass ) {
         builder.Write( backBufferHandle );
 
         pass.m_executeCallback = [&engine]( const RenderGraph& ) -> void {
@@ -111,7 +111,7 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
     // value per pixel.  PS_Diffuse.hlsl (Forward+ branch) samples this at t12 instead
     // of running ComputeCascadedShadowValueSoft inline, saving one CSM evaluation per
     // visible fragment.
-    graph.AddPass( L"FP Shadow Mask", [&]( RGBuilder& builder, RenderPass& pass ) {
+    graph.AddPass( RG_PASS_NAME("FP Shadow Mask"), [&]( RGBuilder& builder, RenderPass& pass ) {
         auto size = engine.GetResolution();
         shadowMaskResource = builder.CreateTexture( {
             static_cast<uint32_t>( size.x ), static_cast<uint32_t>( size.y ),
@@ -170,7 +170,7 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
     } );
 
     // --- Forward+ lit geometry pass ---
-    graph.AddPass( L"FP Lit Geometry", [&]( RGBuilder& builder, RenderPass& pass ) {
+    graph.AddPass( RG_PASS_NAME("FP Lit Geometry"), [&]( RGBuilder& builder, RenderPass& pass ) {
         auto size = engine.GetResolution();
         normalsResource = builder.CreateTexture( { static_cast<uint32_t>( size.x ), static_cast<uint32_t>( size.y ), DXGI_FORMAT_R8G8B8A8_SNORM, L"GBufferNormals" } );
         specularResource = builder.CreateTexture( { static_cast<uint32_t>( size.x ), static_cast<uint32_t>( size.y ), DXGI_FORMAT_R16G16_FLOAT, L"GBufferSpecular" } );

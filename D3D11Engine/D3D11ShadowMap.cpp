@@ -759,6 +759,8 @@ std::vector<float> D3D11ShadowMap::ComputeCascadeSplits( float nearPlane, float 
 }
 
 XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& lights ) {
+    ZoneScopedN( "DrawPointlightShadows" );
+
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
 
     // Release any resources of not visible lights
@@ -777,7 +779,7 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
     }
     
     auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
-    auto _ = graphicsEngine->RecordGraphicsEvent( L"DrawPointlightShadows" );
+    auto _ = graphicsEngine->RecordGraphicsEvent( GE_NAME( "DrawPointlightShadows" ) );
 
     static const XMVECTORF32 xmFltMax = { { { FLT_MAX, FLT_MAX, FLT_MAX, FLT_MAX } } };
     graphicsEngine->SetDefaultStates();
@@ -945,7 +947,8 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
 XRESULT D3D11ShadowMap::DrawWorldShadow( )
 {
     auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
-    auto _ = graphicsEngine->RecordGraphicsEvent( L"DrawWorldShadow" );
+    auto _ = graphicsEngine->RecordGraphicsEvent( GE_NAME( "DrawWorldShadow" ) );
+    ZoneScopedN( "DrawWorldShadow" );
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
     
     int numCascades = settings.NumShadowCascades;
@@ -1012,7 +1015,8 @@ XRESULT D3D11ShadowMap::DrawRainShadowmap() {
     // Draw rainmap, if raining
     if ( Engine::GAPI->GetSceneWetness() > 0.00001f ) {
         auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
-        auto _ = graphicsEngine->RecordGraphicsEvent( L"DrawRainShadowmap" );
+        auto _ = graphicsEngine->RecordGraphicsEvent( GE_NAME( "DrawRainShadowmap" ) );
+        ZoneScopedN( "DrawRainShadowmap" );
 
         graphicsEngine->Effects->DrawRainShadowmap();
     }
@@ -1103,7 +1107,7 @@ void D3D11ShadowMap::RenderShadowmaps( const RenderShadowmapsParams& params ) {
 
     // todo: remove this dependency at some point
     auto graphicsEngine = (D3D11GraphicsEngine*)Engine::GraphicsEngine;
-    auto _ = graphicsEngine->RecordGraphicsEvent( L"RenderShadowmaps" );
+    auto _ = graphicsEngine->RecordGraphicsEvent( GE_NAME( "RenderShadowmaps" ) );
 
     D3D11_VIEWPORT oldVP;
     UINT n = 1;
@@ -1156,14 +1160,8 @@ void D3D11ShadowMap::RenderShadowmaps( const RenderShadowmapsParams& params ) {
 
         XMVECTOR cameraPosition = XMLoadFloat3( &params.CameraPosition );
         int timerLabelIndex = std::clamp(params.CascadeIndex, 0, MAX_CSM_CASCADES-1);
-        static const wchar_t* timer_labels_cascades[MAX_CSM_CASCADES]
-        {
-            L"Cascade 0",
-            L"Cascade 1",
-            L"Cascade 2",
-            L"Cascade 3",
-        };
-        auto _1 = START_TIMING(timer_labels_cascades[timerLabelIndex]);
+
+        ZoneScopedN( "Shadows::DrawCascade" );
         graphicsEngine->DrawWorldAroundForWorldShadow( cameraPosition, 2, params );
 
     } else {
@@ -1262,7 +1260,7 @@ DS_ScreenQuadConstantBuffer D3D11ShadowMap::FillSunCSMConstantBuffer() const {
 XRESULT D3D11ShadowMap::DrawWorldLights()
 {
     auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
-    auto _ = graphicsEngine->RecordGraphicsEvent( L"DrawWorldLights" );
+    auto _ = graphicsEngine->RecordGraphicsEvent( GE_NAME( "DrawWorldLights" ) );
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
 
     Engine::GAPI->GetRendererState().BlendState.SetAdditiveBlending();

@@ -88,6 +88,9 @@
     <Filter Include="Engine\Graph">
       <UniqueIdentifier>{e7532fd2-04b8-499d-a2a9-5b64abda0850}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Librarys\Tracy">
+      <UniqueIdentifier>{7b69a12f-dac5-490c-825b-b1e5382d377c}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="pch.h" />
@@ -1175,6 +1178,9 @@
       <Filter>Engine\D3D11\PFX\Effects</Filter>
     </ClCompile>
     <ClCompile Include="D3D11FileRelativeInclude.cpp" />
+    <ClCompile Include="include\tracy\public\TracyClient.cpp">
+      <Filter>Librarys\Tracy</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="ddraw.def">

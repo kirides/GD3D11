@@ -445,20 +445,16 @@ XRESULT D3D11Effect::LoadRainResources()
         HRESULT hr = S_OK;
         // Load textures...
         LogInfo() << "Loading rain-drop textures";
-        BASIC_TIMING( t );
+        ZoneScopedN( "LoadRainTextures" );
         LE( LoadTextureArray( e->GetDevice().Get(), e->GetContext().Get(), "system\\GD3D11\\Textures\\Raindrops\\cv0_vPositive_", 370, &RainTextureArray, &RainTextureArraySRV ) );
-        t.Update();
-        LogInfo() << "Loading rain drops took " << static_cast<int>(t.GetDelta() * 1000.0f) << "ms";
     }
 
     if ( !SnowTextureArray.Get() ) {
         HRESULT hr = S_OK;
         // Load textures...
         LogInfo() << "Loading snow flake textures";
-        BASIC_TIMING( t );
+        ZoneScopedN( "LoadSnowTextures" );
         LE( LoadTextureArray( e->GetDevice().Get(), e->GetContext().Get(), "system\\GD3D11\\Textures\\Snowflakes\\Snow_", 256, &SnowTextureArray, &SnowTextureArraySRV ) );
-        t.Update();
-        LogInfo() << "Loading snow flakes took " << static_cast<int>(t.GetDelta() * 1000.0f) << "ms";
     }
 
     if ( !RainShadowmap.get() ) {

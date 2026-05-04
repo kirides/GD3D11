@@ -137,7 +137,10 @@ inline ThreadPool::ThreadPool(const wchar_t* poolIdentifier, size_t threads)
                         pool->tasks.pop();
                     }
 
-                    task();
+                    {
+                        ZoneScopedN( "ThreadPool Worker Task" );
+                        task();
+                    }
                     pool->activeTasks.fetch_sub(1);
                 }
             }, this, i, identifier

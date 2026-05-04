@@ -17,7 +17,7 @@ XRESULT D3D11LegacyDeferredShading::DrawPointlightLights(
     RenderToTextureBuffer& specular,
     RenderToTextureBuffer& depthCopy ) {
     auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
-    auto _ = graphicsEngine->RecordGraphicsEvent( L"LegacyPointlightLights" );
+    auto _ = graphicsEngine->RecordGraphicsEvent( GE_NAME( "LegacyPointlightLights" ) );
     auto& context = graphicsEngine->GetContext();
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
 

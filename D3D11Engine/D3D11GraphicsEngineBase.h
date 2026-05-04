@@ -22,6 +22,8 @@ class D3D11ConstantBuffer;
 
 class D3D11GraphicsEngineBase : public BaseGraphicsEngine {
 public:
+    using BaseGraphicsEngine::RecordGraphicsEvent;
+
     D3D11GraphicsEngineBase();
     ~D3D11GraphicsEngineBase() override;
 
@@ -126,8 +128,8 @@ public:
     auto GetOutputWindow() -> auto { return OutputWindow; }
     ID3D11SamplerState* GetDefaultSamplerState() const { return DefaultSamplerState.Get(); }
 
-    std::unique_ptr<GraphicsEventRecord> RecordGraphicsEvent( LPCWSTR region ) override {
-        return std::make_unique<D3DGraphicsEventRecord>( m_UserDefinedAnnotation.Get(), region );
+    std::unique_ptr<GraphicsEventRecord> RecordGraphicsEvent( GraphicsEventName region ) override {
+        return std::make_unique<GraphicsEventRecord>();
     }
 
 protected:

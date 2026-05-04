@@ -399,7 +399,7 @@ void D3D11PointLight::RenderFullCubemap() {
     if ( !IsReady() )
         return;
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine); // TODO: Remove and use newer system!
-    auto _ = engine->RecordGraphicsEvent( L"RenderFullCubemap->RenderFullCubemap" );
+    auto _ = engine->RecordGraphicsEvent( GE_NAME("RenderFullCubemap->RenderFullCubemap") );
 
     RenderToDepthStencilBuffer* activeTarget = GetActiveShadowTarget();
     if ( !activeTarget ) {
@@ -513,7 +513,7 @@ void D3D11PointLight::RenderCubemapFace( const XMFLOAT4X4& view, const XMFLOAT4X
 
     // Draw cubemap face
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> debugRTV = engine->GetDummyCubeRT() != nullptr ? engine->GetDummyCubeRT()->GetRTVCubemapFace( faceIdx ) : nullptr;
-    auto _ = engine->RecordGraphicsEvent( L"RenderFullCubemap->RenderCubemapFace" );
+    auto _ = engine->RecordGraphicsEvent( GE_NAME( "RenderFullCubemap->RenderCubemapFace" ) );
     engine->RenderShadowCube( LightInfo->Vob->GetPositionWorldXM(), range, *m_DepthCubemap, m_DepthCubemap->GetDSVCubemapFace( faceIdx ).Get(), debugRTV.Get(), false );
 
     //Engine::GAPI->GetRendererState().RendererSettings.DrawSkeletalMeshes = oldDrawSkel;

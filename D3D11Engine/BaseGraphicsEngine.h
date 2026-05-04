@@ -17,6 +17,13 @@ struct VobInfo;
 struct VobLightInfo;
 class zFont;
 
+struct GraphicsEventName {
+    const wchar_t* wide;
+    const char* narrow;
+};
+
+#define GE_NAME(nameLiteral) GraphicsEventName{ L##nameLiteral, nameLiteral }
+
 struct DisplayModeInfo {
     DisplayModeInfo(): DisplayModeInfo(0,0) {}
     DisplayModeInfo( int w, int h ) : Width(static_cast<DWORD>(w)), Height(static_cast<DWORD>(h)) {}
@@ -229,5 +236,5 @@ public:
     
     virtual XRESULT UpdateRenderStates() { return XR_SUCCESS; };
 
-    virtual std::unique_ptr<GraphicsEventRecord> RecordGraphicsEvent( LPCWSTR region ) { return std::make_unique<GraphicsEventRecord>(); }
+    virtual std::unique_ptr<GraphicsEventRecord> RecordGraphicsEvent( GraphicsEventName region ) { return std::make_unique<GraphicsEventRecord>(); }
 };

@@ -12,8 +12,6 @@
 #include "RenderToTextureBuffer.h"
 #include "ShaderIDs.h"
 
-#define START_TIMING(x) TimerScope( x, &Engine::GAPI->GetRendererState().RendererInfo.Timing.frameRecordings )
-
 static const char* MENU_SETTINGS_FILE = "system\\GD3D11\\UserSettings.ini";
 const float INDOOR_LIGHT_DISTANCE_SCALE_FACTOR = 0.5f;
 

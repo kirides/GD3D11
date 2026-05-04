@@ -1252,8 +1252,8 @@ void GothicAPI::DrawWorldMeshNaive() {
     FrameMeshInstances.clear();
 
     {
-        auto _ = START_TIMING( L"World Mesh" );
-        auto _1 = Engine::GraphicsEngine->RecordGraphicsEvent( L"World Mesh" );
+        ZoneScopedN( "World Mesh" );
+        auto _1 = Engine::GraphicsEngine->RecordGraphicsEvent( GE_NAME( "World Mesh" ) );
         
         if ( Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseMDI ) {
             Engine::GraphicsEngine->DrawWorldMesh_Indirect();
@@ -1270,8 +1270,8 @@ void GothicAPI::DrawWorldMeshNaive() {
     const auto cameraPosXm = GetCameraPositionXM();
 
     if ( RendererState.RendererSettings.DrawSkeletalMeshes ) {
-        auto _ = START_TIMING( L"Animated Skeletal Meshes" );
-        auto _1 = Engine::GraphicsEngine->RecordGraphicsEvent( L"Animated Skeletal Meshes" );
+        ZoneScopedN( "Animated Skeletal Meshes" );
+        auto _1 = Engine::GraphicsEngine->RecordGraphicsEvent( GE_NAME( "Animated Skeletal Meshes" ) );
 
         // Set up frustum for the camera
         RendererState.RasterizerState.SetDefault();
@@ -1331,13 +1331,13 @@ void GothicAPI::DrawWorldMeshNaive() {
         D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
 
         if (!drawAsMorphMesh.empty()) {
-            auto _ = Engine::GraphicsEngine->RecordGraphicsEvent( L"Draw Skeletal Morph Meshes" ); 
+            auto _ = Engine::GraphicsEngine->RecordGraphicsEvent( GE_NAME( "Draw Skeletal Morph Meshes" ) ); 
             // force drawing as morph Mesh for those, by setting distance very close.
             g->DrawSkeletalMeshVobs( drawAsMorphMesh, 500, true, true );
             drawAsMorphMesh.clear();
         }
         if (!drawRegular.empty()) {
-            auto _ = Engine::GraphicsEngine->RecordGraphicsEvent( L"Draw Skeletal Meshes" );
+            auto _ = Engine::GraphicsEngine->RecordGraphicsEvent( GE_NAME( "Draw Skeletal Meshes" ) );
             g->DrawSkeletalMeshVobs( drawRegular, FLT_MAX, true, true );
             drawRegular.clear();
         }

@@ -379,6 +379,10 @@ public:
 
     void StoreVobPreviousTransforms();
 
+    std::unique_ptr<GraphicsEventRecord> RecordGraphicsEvent( GraphicsEventName region ) override {
+        return std::make_unique<D3DGraphicsEventRecord>( m_UserDefinedAnnotation.Get(), region );
+    }
+
 private:
     struct FrameIndirectBufferPool {
         std::vector<std::unique_ptr<D3D11IndirectBuffer>> Buffers;
@@ -602,4 +606,6 @@ private:
     INT2 NewResolution;
     
     void CreateAndBindDefaultSampler();
+
+    std::unique_ptr<tracy::D3D11Ctx> m_tracyd3d11Context;
 };

@@ -11,6 +11,10 @@
 #endif
 #endif
 
+#include <tracy/public/tracy/Tracy.hpp>
+#include <tracy/public/client/TracyCallstack.hpp>
+#include <tracy/public/tracy/TracyD3D11.hpp>
+#include "MemoryTracker.h"
 #include <Windows.h>
 #include <wrl/client.h>
 #include <chrono>
