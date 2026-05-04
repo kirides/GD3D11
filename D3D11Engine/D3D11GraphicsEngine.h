@@ -513,6 +513,7 @@ private:
 
         bool worldMeshBuilt    = false;  ///< CollectVisibleSections + MDI arg build + buffer upload done
         bool vobInstancesUploaded = false; ///< CollectVisibleVobs + DynamicInstancingBuffer upload done
+        bool vobWindMetadataPrepared = false; ///< Wind metadata prepared for cached vob visuals
 
         std::vector<WorldMeshSectionInfo*> visibleSections;
         std::unordered_map<zCTexture*, MDIBatch> mdiBatches;
@@ -520,6 +521,7 @@ private:
         std::vector<std::tuple<zCTexture*, MeshInfo*, MaterialInfo*>> meshListAlpha;
         D3D11IndirectBuffer*           MainWorldIndirectArgsBuffer = nullptr;
         D3D11VertexBuffer*             MainVobInstancingBuffer = nullptr;
+        std::vector<VobWindMetadata>   vobWindMetadata;
         std::vector<CachedVobVisual>    vobVisuals;
         std::vector<CachedInstancedMeshDraw> sortedInstancedMeshes;
         std::vector<SkeletalVobInfo*>   cachedMobs;
@@ -527,12 +529,14 @@ private:
         void Reset() {
             worldMeshBuilt      = false;
             vobInstancesUploaded = false;
+            vobWindMetadataPrepared = false;
             visibleSections.clear();
             mdiBatches.clear();
             drawIndirectArgs.clear();
             meshListAlpha.clear();
             MainWorldIndirectArgsBuffer = nullptr;
             MainVobInstancingBuffer = nullptr;
+            vobWindMetadata.clear();
             vobVisuals.clear();
             sortedInstancedMeshes.clear();
             cachedMobs.clear();
