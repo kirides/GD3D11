@@ -59,6 +59,8 @@ public:
         // Transform correctly to World Space
         viewSpaceFrustum.Transform( m_orientedBox, invView );
 
+        CacheOBBPlanes();
+        m_hasPlanes = true;
         m_useBoundingOrientedBox = true;
         m_useSphere = false;
         m_always_containing = false;
@@ -89,6 +91,7 @@ public:
 
         // Cache world-space planes for fast culling
         CacheWorldSpacePlanes();
+        m_hasPlanes = true;
 
         m_useSphere = false;
         m_useBoundingOrientedBox = false;
@@ -211,9 +214,9 @@ public:
 
     const std::array<XMFLOAT4, 6>& GetPlanes() const { return m_cachedPlanes; }
 
-    /** Returns true when this frustum uses 6 cached world-space planes (perspective mode).
-     *  Only in this mode can the SIMD p-vertex batch test be applied. */
-    bool UsesPlaneFrustum() const { return isValid && !m_useSphere && !m_useBoundingOrientedBox && !m_always_containing; }
+    /** Returns true when this frustum has 6 cached world-space planes available.
+     *  Only in this mode can the SIMD n-vertex batch test be applied. */
+    bool UsesPlaneFrustum() const { return isValid && m_hasPlanes && !m_useSphere && !m_always_containing; }
 
     // Extract the 8 corners for a specific slice of the frustum
     std::array<XMFLOAT3, 8> GetSliceCorners( float nearZ, float farZ ) const {
@@ -228,6 +231,34 @@ public:
         return corners;
     }
 private:
+    // Build 6 outward-facing planes from the cached BoundingOrientedBox.
+    // Plane format: (nx, ny, nz, d) where a point is outside if dot(n,p)+d > 0.
+    void CacheOBBPlanes() {
+        XMVECTOR q      = XMLoadFloat4( &m_orientedBox.Orientation );
+        XMVECTOR center = XMLoadFloat3( &m_orientedBox.Center );
+        XMFLOAT3 ext    = m_orientedBox.Extents;
+
+        XMVECTOR axisX = XMVector3Rotate( g_XMIdentityR0, q );
+        XMVECTOR axisY = XMVector3Rotate( g_XMIdentityR1, q );
+        XMVECTOR axisZ = XMVector3Rotate( g_XMIdentityR2, q );
+
+        // d = -(dot(n, center) + extent)  →  outside when dot(n,p)+d > 0
+        auto storePlane = [&]( int idx, XMVECTOR n, float extent ) {
+            XMVECTOR d = XMVectorNegate( XMVectorAdd(
+                XMVector3Dot( n, center ),
+                XMVectorReplicate( extent ) ) );
+            XMVECTOR plane = XMVectorPermute<0, 1, 2, 4>( n, d );
+            XMStoreFloat4( &m_cachedPlanes[idx], plane );
+        };
+
+        storePlane( 0,  axisX,              ext.x ); // +X face
+        storePlane( 1, XMVectorNegate(axisX), ext.x ); // -X face
+        storePlane( 2,  axisY,              ext.y ); // +Y face
+        storePlane( 3, XMVectorNegate(axisY), ext.y ); // -Y face
+        storePlane( 4,  axisZ,              ext.z ); // +Z face
+        storePlane( 5, XMVectorNegate(axisZ), ext.z ); // -Z face
+    }
+
     // Cache world-space planes for fast culling (called after frustum is transformed to world space)
     // Plane order: [0]=Left, [1]=Right, [2]=Bottom, [3]=Top, [4]=Near, [5]=Far
     void CacheWorldSpacePlanes() {
@@ -278,9 +309,10 @@ private:
     BoundingSphere m_boundingSphere;
     BoundingOrientedBox m_orientedBox;
 
-    std::array<XMFLOAT4, 6> m_cachedPlanes{}; // [0]=Left, [1]=Right, [2]=Bottom, [3]=Top, [4]=Near, [5]=Far
+    std::array<XMFLOAT4, 6> m_cachedPlanes{}; // [0]=Left/+X, [1]=Right/-X, [2]=Bottom/+Y, [3]=Top/-Y, [4]=Near/+Z, [5]=Far/-Z
     bool m_useSphere = false;
     bool m_useBoundingOrientedBox = false;
     bool m_always_containing = false;
+    bool m_hasPlanes = false;  // true when m_cachedPlanes are valid (perspective or OBB)
     bool isValid = false;
 };
