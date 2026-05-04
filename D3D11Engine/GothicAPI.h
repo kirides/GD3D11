@@ -28,7 +28,9 @@ struct RndCullContext {
     cameraPosition({0,0,0}),
     stage(RenderStage::STAGE_DRAW_UNKNOWN),
     queue(nullptr),
-    drawDistances({})
+    drawDistances({}),
+    drawDistancesSq({}),
+    drawFlags({})
     {
     }
     
@@ -45,6 +47,26 @@ struct RndCullContext {
         float IndoorVobs;
         float VisualFX;
     } drawDistances;
+
+    struct
+    {
+        float OutdoorVobs;
+        float OutdoorVobsSmall;
+        float IndoorVobs;
+        float VisualFX;
+    } drawDistancesSq;
+
+    struct
+    {
+        bool DrawVOBs;
+        bool DrawMobs;
+        bool EnableDynamicLighting;
+        bool EnableOcclusionCulling;
+        bool CullVobs;
+        bool CollectIndoorVobs;
+        bool CollectMobs;
+        bool CollectLights;
+    } drawFlags;
 };
 
 enum EBspTreeCollectFlags : unsigned int {

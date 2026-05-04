@@ -3934,6 +3934,18 @@ void GothicAPI::CollectVisibleVobs(
     ctx.drawDistances.OutdoorVobsSmall = RendererState.RendererSettings.OutdoorSmallVobDrawRadius;
     ctx.drawDistances.IndoorVobs = RendererState.RendererSettings.IndoorVobDrawRadius;
     ctx.drawDistances.VisualFX = RendererState.RendererSettings.VisualFXDrawRadius;
+    ctx.drawDistancesSq.OutdoorVobs = ctx.drawDistances.OutdoorVobs * ctx.drawDistances.OutdoorVobs;
+    ctx.drawDistancesSq.OutdoorVobsSmall = ctx.drawDistances.OutdoorVobsSmall * ctx.drawDistances.OutdoorVobsSmall;
+    ctx.drawDistancesSq.IndoorVobs = ctx.drawDistances.IndoorVobs * ctx.drawDistances.IndoorVobs;
+    ctx.drawDistancesSq.VisualFX = ctx.drawDistances.VisualFX * ctx.drawDistances.VisualFX;
+    ctx.drawFlags.DrawVOBs = RendererState.RendererSettings.DrawVOBs;
+    ctx.drawFlags.DrawMobs = RendererState.RendererSettings.DrawMobs;
+    ctx.drawFlags.EnableDynamicLighting = RendererState.RendererSettings.EnableDynamicLighting;
+    ctx.drawFlags.EnableOcclusionCulling = RendererState.RendererSettings.EnableOcclusionCulling;
+    ctx.drawFlags.CullVobs = RendererState.RendererSettings.DebugSettings.Culling.CullVobs;
+    ctx.drawFlags.CollectIndoorVobs = true;
+    ctx.drawFlags.CollectMobs = true;
+    ctx.drawFlags.CollectLights = true;
     CollectVisibleVobs( ctx );
 
     if ( RendererState.RendererSettings.SortRenderQueue ) {
@@ -4174,14 +4186,13 @@ std::vector<VobInfo*>::iterator GothicAPI::MoveVobFromBspToDynamic( VobInfo* vob
 
 static void CVVH_AddNotDrawnVobToList(
         std::vector<VobInfo*>& source,
-        float dist,
+        float distSq,
         const RndCullContext& ctx,
         DirectX::ContainmentType bspContainment,
         BspTreeVobVisitor* visitor
     ) {
     const auto camPos = XMLoadFloat3( &ctx.cameraPosition );
-    auto cullingEnabled = Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.Culling.CullVobs;
-    auto distSq = dist * dist;
+    const bool cullingEnabled = ctx.drawFlags.CullVobs;
 
     for ( auto const& it : source ) {
         if ( it->VisibleInRenderPass ) continue;
@@ -4208,13 +4219,13 @@ static void CVVH_AddNotDrawnVobToList(
 
 static void CVVH_AddNotDrawnVobToList(
     std::vector<SkeletalVobInfo*>& source,
-    float dist, const RndCullContext& ctx,
+    float distSq, const RndCullContext& ctx,
     DirectX::ContainmentType bspContainment,
     BspTreeVobVisitor* visitor) {
     const auto camPos = XMLoadFloat3( &ctx.cameraPosition );
 
-    auto cullingEnabled = Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.Culling.CullVobs;
-    auto vDistSq = XMVectorReplicate( dist * dist );
+    const bool cullingEnabled = ctx.drawFlags.CullVobs;
+    const auto vDistSq = XMVectorReplicate( distSq );
 
     for ( auto const& it : source ) {
         if ( it->VisibleInRenderPass ) continue;
@@ -5752,23 +5763,21 @@ float GothicAPI::GetSkyTimeScale() {
 /** Processes vobs and lights in a single BSP leaf node that has already passed distance and frustum tests. */
 static void CollectLeafVobs(
     BspInfo* base,
-    float leafDist,
+    float leafDistSq,
     const RndCullContext& ctx,
     DirectX::ContainmentType clipResult,
     BspTreeVobVisitor* visitor
 ) {
-    const float vobIndoorDist      = ctx.drawDistances.IndoorVobs;
-    const float vobOutdoorDist     = ctx.drawDistances.OutdoorVobs;
-    const float vobOutdoorSmallDist = ctx.drawDistances.OutdoorVobsSmall;
+    const float vobIndoorDistSq = ctx.drawDistancesSq.IndoorVobs;
+    const float vobOutdoorDistSq = ctx.drawDistancesSq.OutdoorVobs;
+    const float vobOutdoorSmallDistSq = ctx.drawDistancesSq.OutdoorVobsSmall;
     const float visualFXDrawRadius = ctx.drawDistances.VisualFX;
+    const float visualFXDrawRadiusSq = ctx.drawDistancesSq.VisualFX;
     const FXMVECTOR cameraPosition = XMLoadFloat3( &ctx.cameraPosition );
-
-    EBspTreeCollectFlags collectFlags = EBspTreeCollectFlags::COLLECT_ALL_NO_MUTATE;
-    if ( ctx.stage == RenderStage::STAGE_DRAW_SHADOWS ) {
-        collectFlags = EBspTreeCollectFlags::COLLECT_VOBS;
-    }
-
-    const auto& RendererState = Engine::GAPI->GetRendererState();
+    const bool collectIndoorVobs = ctx.drawFlags.CollectIndoorVobs;
+    const bool collectMobs = ctx.drawFlags.CollectMobs;
+    const bool collectLights = ctx.drawFlags.CollectLights;
+    const auto& rendererSettings = Engine::GAPI->GetRendererState().RendererSettings;
     auto& VobLightMap = Engine::GAPI->VobLightMap;
 
     zCBspLeaf* leaf = static_cast<zCBspLeaf*>(base->OriginalNode);
@@ -5777,28 +5786,27 @@ static void CollectLeafVobs(
     std::vector<VobInfo*>& listC = base->Vobs;
     std::vector<SkeletalVobInfo*>& listD = base->Mobs;
 
-    if ( collectFlags & COLLECT_VOBS
-        && RendererState.RendererSettings.DrawVOBs ) {
-        if ( collectFlags & COLLECT_INDOOR_VOBS && leafDist < vobIndoorDist ) {
-            CVVH_AddNotDrawnVobToList( listA, vobIndoorDist, ctx, clipResult, visitor );
+    if ( ctx.drawFlags.DrawVOBs ) {
+        if ( collectIndoorVobs && leafDistSq < vobIndoorDistSq ) {
+            CVVH_AddNotDrawnVobToList( listA, vobIndoorDistSq, ctx, clipResult, visitor );
         }
 
-        if ( leafDist < vobOutdoorSmallDist ) {
-            CVVH_AddNotDrawnVobToList( listB, vobOutdoorSmallDist, ctx, clipResult, visitor );
+        if ( leafDistSq < vobOutdoorSmallDistSq ) {
+            CVVH_AddNotDrawnVobToList( listB, vobOutdoorSmallDistSq, ctx, clipResult, visitor );
         }
 
-        if ( leafDist < vobOutdoorDist ) {
-            CVVH_AddNotDrawnVobToList( listC, vobOutdoorDist, ctx, clipResult, visitor );
+        if ( leafDistSq < vobOutdoorDistSq ) {
+            CVVH_AddNotDrawnVobToList( listC, vobOutdoorDistSq, ctx, clipResult, visitor );
         }
     }
 
-    if ( collectFlags & COLLECT_MOBS
-        && RendererState.RendererSettings.DrawMobs && leafDist < vobOutdoorSmallDist ) {
-        CVVH_AddNotDrawnVobToList( listD, vobOutdoorDist, ctx, clipResult, visitor );
+    if ( collectMobs
+        && ctx.drawFlags.DrawMobs && leafDistSq < vobOutdoorSmallDistSq ) {
+        CVVH_AddNotDrawnVobToList( listD, vobOutdoorDistSq, ctx, clipResult, visitor );
     }
 
-    if ( collectFlags & COLLECT_LIGHTS
-            && RendererState.RendererSettings.EnableDynamicLighting && leafDist < visualFXDrawRadius ) {
+    if ( collectLights
+            && ctx.drawFlags.EnableDynamicLighting && leafDistSq < visualFXDrawRadiusSq ) {
 
         // Add dynamic lights
         for ( int i = 0; i < leaf->LightVobList.NumInArray; i++ ) {
@@ -5834,7 +5842,7 @@ static void CollectLeafVobs(
                     vit = VobLightMap.emplace( vob, vi ).first;
 
                     // Create shadow-buffers for these lights since it was dynamically added to the world
-                    if ( !vi->IsPFXVobLight && RendererState.RendererSettings.EnablePointlightShadows >= GothicRendererSettings::PLS_STATIC_ONLY ) {
+                    if ( !vi->IsPFXVobLight && rendererSettings.EnablePointlightShadows >= GothicRendererSettings::PLS_STATIC_ONLY ) {
                         BaseShadowedPointLight* bpl;
                         Engine::GraphicsEngine->CreateShadowedPointLight( &bpl, vi, true ); // Also flag as dynamic
                         vi->LightShadowBuffers.reset(bpl);
@@ -5856,24 +5864,13 @@ static void CollectVisibleVobsHelper( BspInfo* base,
     DirectX::ContainmentType inheritedContainment,
     float yMaxWorld
 ) {
-    const float vobIndoorDist = ctx.drawDistances.IndoorVobs;
     const float vobOutdoorDist = ctx.drawDistances.OutdoorVobs;
-    const float vobOutdoorSmallDist = ctx.drawDistances.OutdoorVobsSmall;
-    const float visualFXDrawRadius = ctx.drawDistances.VisualFX;
     const XMFLOAT3 camPos = ctx.cameraPosition;
     const FXMVECTOR cameraPosition = XMLoadFloat3( &camPos );
-    EBspTreeCollectFlags collectFlags = EBspTreeCollectFlags::COLLECT_ALL_NO_MUTATE;
-    int clipFlags = EGothicCullFlags::CullSidesNear;
-    if ( ctx.stage == RenderStage::STAGE_DRAW_SHADOWS ) {
-        collectFlags = EBspTreeCollectFlags::COLLECT_VOBS;
-        clipFlags = EGothicCullFlags::CullSidesNear;
-    }
-
-    const auto& RendererState = Engine::GAPI->GetRendererState();
-    auto& VobLightMap = Engine::GAPI->VobLightMap;
+    const bool enableOcclusionCulling = ctx.drawFlags.EnableOcclusionCulling;
     while ( base->OriginalNode ) {
         // Check for occlusion-culling
-        if ( RendererState.RendererSettings.EnableOcclusionCulling && !base->OcclusionInfo.VisibleLastFrame ) {
+        if ( enableOcclusionCulling && !base->OcclusionInfo.VisibleLastFrame ) {
             return;
         }
 
@@ -5885,7 +5882,7 @@ static void CollectVisibleVobsHelper( BspInfo* base,
         float dist = Toolbox::ComputePointAABBDistance( camPos, base->OriginalNode->BBox3D.Min, base->OriginalNode->BBox3D.Max );
         ContainmentType clipResult = inheritedContainment;
         if ( dist < vobOutdoorDist ) {
-            if ( !RendererState.RendererSettings.EnableOcclusionCulling ) {
+            if ( !enableOcclusionCulling ) {
                 if ( clipResult != ContainmentType::CONTAINS ) {
                     clipResult = ctx.frustum.Contains( Frustum::BBoxFromzTBBox3D( nodeBox ) );
                 }
@@ -5914,7 +5911,7 @@ static void CollectVisibleVobsHelper( BspInfo* base,
         }
 
         if ( base->OriginalNode->IsLeaf() ) {
-            CollectLeafVobs( base, dist, ctx, clipResult, visitor );
+            CollectLeafVobs( base, dist * dist, ctx, clipResult, visitor );
             return;
         } else {
             zCBspNode* node = static_cast<zCBspNode*>(base->OriginalNode);
@@ -5955,7 +5952,7 @@ static void CollectVisibleVobsHelper( BspInfo* base,
         }
     }
 }
-
+    
 #ifdef __AVX2__
 /** Batch-tests all pre-indexed BSP leaf AABBs against the current frustum using 8-wide AVX2 SIMD.
  *  Uses the p-vertex (positive-vertex) method: for each plane, the corner of the AABB most
@@ -5982,12 +5979,14 @@ static void CollectVisibleVobsWithLeafCache(
     }
 
     const XMFLOAT3& cp = ctx.cameraPosition;
+    const float cpX = cp.x;
+    const float cpY = cp.y;
+    const float cpZ = cp.z;
     const __m256 vCamX = _mm256_set1_ps( cp.x );
     const __m256 vCamY = _mm256_set1_ps( cp.y );
     const __m256 vCamZ = _mm256_set1_ps( cp.z );
 
-    const float outdoorDist = ctx.drawDistances.OutdoorVobs;
-    const __m256 vDistSqThresh = _mm256_set1_ps( outdoorDist * outdoorDist );
+    const __m256 vDistSqThresh = _mm256_set1_ps( ctx.drawDistancesSq.OutdoorVobs );
     const __m256 vZero = _mm256_setzero_ps();
 
     const float* pMinX = cache.MinX.data();
@@ -5997,7 +5996,7 @@ static void CollectVisibleVobsWithLeafCache(
     const float* pMaxY = cache.MaxY.data();
     const float* pMaxZ = cache.MaxZ.data();
 
-    const auto& RendererState = Engine::GAPI->GetRendererState();
+    const bool enableOcclusionCulling = ctx.drawFlags.EnableOcclusionCulling;
     const uint32_t padded = (cache.Count + 7u) & ~7u;
 
     for ( uint32_t i = 0; i < padded; i += 8 ) {
@@ -6044,6 +6043,26 @@ static void CollectVisibleVobsWithLeafCache(
         const int cullMask = _mm256_movemask_ps( vOutside );
         if ( cullMask == 0xFF ) continue; // All 8 culled — skip scalar work
 
+        if ( cullMask == 0 ) {
+            for ( uint32_t lane = 0; lane < 8; ++lane ) {
+                const uint32_t idx = i + lane;
+                if ( idx >= cache.Count ) break;
+
+                BspInfo* leaf = cache.Leaves[idx];
+                if ( !leaf ) continue;
+                if ( enableOcclusionCulling && !leaf->OcclusionInfo.VisibleLastFrame ) continue;
+
+                const float dx = std::max( 0.0f, std::max( pMinX[idx] - cpX, cpX - pMaxX[idx] ) );
+                const float dy = std::max( 0.0f, std::max( pMinY[idx] - cpY, cpY - pMaxY[idx] ) );
+                const float dz = std::max( 0.0f, std::max( pMinZ[idx] - cpZ, cpZ - pMaxZ[idx] ) );
+                const float leafDistSq = dx * dx + dy * dy + dz * dz;
+
+                // Use INTERSECTS so per-vob frustum checks still run inside CollectLeafVobs.
+                CollectLeafVobs( leaf, leafDistSq, ctx, ContainmentType::INTERSECTS, visitor );
+            }
+            continue;
+        }
+
         // Process surviving lanes with full scalar logic
         for ( int lane = 0; lane < 8; ++lane ) {
             if ( cullMask & (1 << lane) ) continue;
@@ -6055,17 +6074,17 @@ static void CollectVisibleVobsWithLeafCache(
             if ( !leaf ) continue;
 
             // Occlusion culling gate (GPU query result from prior frame)
-            if ( RendererState.RendererSettings.EnableOcclusionCulling && !leaf->OcclusionInfo.VisibleLastFrame )
+            if ( enableOcclusionCulling && !leaf->OcclusionInfo.VisibleLastFrame )
                 continue;
 
-            // Recompute scalar distance for per-category range checks inside CollectLeafVobs
-            const float dx = std::max( 0.0f, std::max( pMinX[idx] - cp.x, cp.x - pMaxX[idx] ) );
-            const float dy = std::max( 0.0f, std::max( pMinY[idx] - cp.y, cp.y - pMaxY[idx] ) );
-            const float dz = std::max( 0.0f, std::max( pMinZ[idx] - cp.z, cp.z - pMaxZ[idx] ) );
-            const float leafDist = std::sqrtf( dx*dx + dy*dy + dz*dz );
+            // Recompute scalar distance^2 for per-category range checks inside CollectLeafVobs.
+            const float dx = std::max( 0.0f, std::max( pMinX[idx] - cpX, cpX - pMaxX[idx] ) );
+            const float dy = std::max( 0.0f, std::max( pMinY[idx] - cpY, cpY - pMaxY[idx] ) );
+            const float dz = std::max( 0.0f, std::max( pMinZ[idx] - cpZ, cpZ - pMaxZ[idx] ) );
+            const float leafDistSq = dx * dx + dy * dy + dz * dz;
 
             // Use INTERSECTS so per-vob frustum checks still run inside CollectLeafVobs
-            CollectLeafVobs( leaf, leafDist, ctx, ContainmentType::INTERSECTS, visitor );
+            CollectLeafVobs( leaf, leafDistSq, ctx, ContainmentType::INTERSECTS, visitor );
         }
     }
 }

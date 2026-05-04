@@ -6006,10 +6006,23 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             ctx.cameraPosition = Engine::GAPI->GetCameraPosition();
             ctx.stage = RenderStage::STAGE_DRAW_WORLD;
             ctx.frustum = currentFrustum;
-            ctx.drawDistances.OutdoorVobs = Engine::GAPI->GetRendererState().RendererSettings.OutdoorVobDrawRadius;
-            ctx.drawDistances.OutdoorVobsSmall = Engine::GAPI->GetRendererState().RendererSettings.OutdoorSmallVobDrawRadius;
-            ctx.drawDistances.IndoorVobs = Engine::GAPI->GetRendererState().RendererSettings.IndoorVobDrawRadius;
-            ctx.drawDistances.VisualFX = Engine::GAPI->GetRendererState().RendererSettings.VisualFXDrawRadius;
+            const auto& rs = Engine::GAPI->GetRendererState().RendererSettings;
+            ctx.drawDistances.OutdoorVobs = rs.OutdoorVobDrawRadius;
+            ctx.drawDistances.OutdoorVobsSmall = rs.OutdoorSmallVobDrawRadius;
+            ctx.drawDistances.IndoorVobs = rs.IndoorVobDrawRadius;
+            ctx.drawDistances.VisualFX = rs.VisualFXDrawRadius;
+            ctx.drawDistancesSq.OutdoorVobs = ctx.drawDistances.OutdoorVobs * ctx.drawDistances.OutdoorVobs;
+            ctx.drawDistancesSq.OutdoorVobsSmall = ctx.drawDistances.OutdoorVobsSmall * ctx.drawDistances.OutdoorVobsSmall;
+            ctx.drawDistancesSq.IndoorVobs = ctx.drawDistances.IndoorVobs * ctx.drawDistances.IndoorVobs;
+            ctx.drawDistancesSq.VisualFX = ctx.drawDistances.VisualFX * ctx.drawDistances.VisualFX;
+            ctx.drawFlags.DrawVOBs = rs.DrawVOBs;
+            ctx.drawFlags.DrawMobs = rs.DrawMobs;
+            ctx.drawFlags.EnableDynamicLighting = rs.EnableDynamicLighting;
+            ctx.drawFlags.EnableOcclusionCulling = rs.EnableOcclusionCulling;
+            ctx.drawFlags.CullVobs = rs.DebugSettings.Culling.CullVobs;
+            ctx.drawFlags.CollectIndoorVobs = true;
+            ctx.drawFlags.CollectMobs = true;
+            ctx.drawFlags.CollectLights = true;
             Engine::GAPI->CollectVisibleVobs( ctx );
         }
 

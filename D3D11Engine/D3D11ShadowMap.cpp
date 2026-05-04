@@ -667,6 +667,22 @@ XRESULT D3D11ShadowMap::PrepareRender()
         ctx.stage = RenderStage::STAGE_DRAW_SHADOWS;
         ctx.drawDistances.OutdoorVobs = 20000;
         ctx.drawDistances.OutdoorVobsSmall = 20000;
+        ctx.drawDistances.IndoorVobs = 20000;
+        ctx.drawDistances.VisualFX = 0.0f;
+        ctx.drawDistancesSq.OutdoorVobs = ctx.drawDistances.OutdoorVobs * ctx.drawDistances.OutdoorVobs;
+        ctx.drawDistancesSq.OutdoorVobsSmall = ctx.drawDistances.OutdoorVobsSmall * ctx.drawDistances.OutdoorVobsSmall;
+        ctx.drawDistancesSq.IndoorVobs = ctx.drawDistances.IndoorVobs * ctx.drawDistances.IndoorVobs;
+        ctx.drawDistancesSq.VisualFX = 0.0f;
+
+        const auto& rs = Engine::GAPI->GetRendererState().RendererSettings;
+        ctx.drawFlags.DrawVOBs = rs.DrawVOBs;
+        ctx.drawFlags.DrawMobs = rs.DrawMobs;
+        ctx.drawFlags.EnableDynamicLighting = rs.EnableDynamicLighting;
+        ctx.drawFlags.EnableOcclusionCulling = rs.EnableOcclusionCulling;
+        ctx.drawFlags.CullVobs = rs.DebugSettings.Culling.CullVobs;
+        ctx.drawFlags.CollectIndoorVobs = false;
+        ctx.drawFlags.CollectMobs = false;
+        ctx.drawFlags.CollectLights = false;
         
         Engine::GAPI->CollectVisibleVobs( ctx );
     }
