@@ -2878,8 +2878,12 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 
                 for ( auto const& itm : mvi->Meshes ) {
                     zCTexture* texture = nullptr;
-                    if ( !isShadowPass && itm.first ) {
+                    if ( itm.first ) {
                         texture = itm.first->GetAniTexture();
+                        if ( !texture || texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
+                            // need to cache in in order to know its alpha/material state
+                            continue;
+                        }
                     }
 
                     for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
@@ -2900,21 +2904,14 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     // By sorting ->HasAlphaChannel() first, we ensure minimum shader changes
     // then sorting by texture pointer groups nulls together for shadow passes, and also minimizes texture changes for main/ghost
     
-    if (wantShader) {
-        std::sort( instancedDrawItems.begin(), instancedDrawItems.end(),
-          []( const NodeAttachmentDrawItem& a, const NodeAttachmentDrawItem& b ) {
-              if ( a.needAlpha != b.needAlpha )
-                  return a.needAlpha < b.needAlpha; // non-alpha firstes
-              if ( a.texture != b.texture )
-                  return a.texture < b.texture; // sort by texture pointer
-              return a.mesh->meshId < b.mesh->meshId;
-          } );
-    } else {
-        std::sort( instancedDrawItems.begin(), instancedDrawItems.end(),
-          []( const NodeAttachmentDrawItem& a, const NodeAttachmentDrawItem& b ) {
-              return a.mesh->meshId < b.mesh->meshId;
-          } );
-    }
+    std::sort( instancedDrawItems.begin(), instancedDrawItems.end(),
+        []( const NodeAttachmentDrawItem& a, const NodeAttachmentDrawItem& b ) {
+            if ( a.needAlpha != b.needAlpha )
+                return a.needAlpha < b.needAlpha; // non-alpha firstes
+            if ( a.texture != b.texture )
+                return a.texture < b.texture; // sort by texture pointer
+            return a.mesh->meshId < b.mesh->meshId;
+        } );
 
     // Ensure instance buffer is large enough
     const size_t neededBytes = instancedDrawItems.size() * sizeof( NodeAttachmentInstanceData );
@@ -2936,6 +2933,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         zCMaterial* material;
         unsigned int startInstance;
         unsigned int instanceCount;
+        bool needAlpha;
     };
 
     static std::vector<InstanceBatch> batches;
@@ -2960,10 +2958,14 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         zCTexture* batchTex = instancedDrawItems[i].texture;
         zCMaterial* batchMat = instancedDrawItems[i].material;
 
+        bool needAlpha = false;
         while ( i < instancedDrawItems.size()
                 && meshId > 0 // assume meshId 0 means "not batch-able"
                 && instancedDrawItems[i].mesh->meshId == meshId
                 && instancedDrawItems[i].texture == batchTex ) {
+            // Some of them have needAlpha false, even though they share the same texture!
+            // thus we now just walk all batch items and assume if one needs alpha, all do.
+            needAlpha |= instancedDrawItems[i].needAlpha;
             destData[currentIdx] = instancedDrawItems[i].instanceData;
             ++currentIdx;
             ++i;
@@ -2971,7 +2973,8 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 
         batches.push_back( { batchMesh, batchTex, batchMat,
             batchStart,
-            (i - batchStart) } );
+            (i - batchStart),
+            needAlpha } );
     }
 
     NodeAttachmentInstancingBuffer->Unmap();
@@ -3016,19 +3019,51 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 
     MaterialInfo* lastMaterialInfo = nullptr;
 
-    void* lastTex = nullptr;
+    void* lastBatchTex = nullptr;
     auto lastSwitches = graphicsState.FF_GSwitches;
+    void* lastPs = nullptr;
+
+    // otherwise shadows of streetlamps are not accurate
+    const bool needsAlphaTesting = isShadowPass;
+
     for ( const auto& batch : batches ) {
         MeshInfo* mi = batch.mesh;
 
+        MaterialInfo* info = nullptr;
+        if ( batch.texture ) {
+            info = Engine::GAPI->GetMaterialInfoFrom( batch.texture );
+            if ( needsAlphaTesting && info->MaterialType == MaterialInfo::MT_FullAlpha ) {
+                continue;
+            }
+        }
+
         // Bind texture for non-shadow passes
-        if ( wantShader && batch.texture && batch.texture != lastTex) {
-            MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( batch.texture );
+        if ( needsAlphaTesting ) {
+            if ( batch.needAlpha ) {
+                if ( !batch.texture || batch.texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
+                    // can't do alpha without a texture
+                    continue;
+                }
+                if ( lastBatchTex != batch.texture ) {
+                    batch.texture->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
+                    lastBatchTex = batch.texture;
+                }
+                SetActivePixelShader( PShaderID::PS_DiffuseAlphaTestShadows );
+                if ( ActivePS.get() != lastPs ) {
+                    ActivePS->Apply();
+                    lastPs = ActivePS.get();
+                }
+            } else if ( lastPs != nullptr ) {
+                ActivePS = nullptr;
+                lastPs = nullptr;
+                GetContext()->PSSetShader( nullptr, nullptr, 0 );
+            }
+        } else if ( wantShader && batch.texture && batch.texture != lastBatchTex ) {
             if ( !BindTextureNRFX( batch.texture, isMainOrGhost, info != lastMaterialInfo ) ) {
                 continue;
             }
             lastMaterialInfo = info;
-            lastTex = batch.texture;
+            lastBatchTex = batch.texture;
         }
 
         // Set up alpha test state from material
