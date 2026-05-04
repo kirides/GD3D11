@@ -804,6 +804,7 @@ void D3D11GraphicsEngine::SelectActiveRenderer() {
     auto mode = settings.RendererMode;
     if ( mode == GothicRendererSettings::RM_ForwardPlus ) {
         ActiveSceneRenderer = &ForwardPlusRenderer;
+        settings.EnableTiledLighting = true;
     } else {
         ActiveSceneRenderer = &DeferredRenderer;
     }
