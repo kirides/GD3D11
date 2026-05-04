@@ -20,6 +20,21 @@ cbuffer WindParams : register(b1)
      float padding1;
 };
 
+#ifndef WIND_META_SRV
+#define WIND_META_SRV 0
+#endif
+
+#if WIND_META_SRV
+struct WindMetaDataEntry
+{
+    float minHeight;
+    float maxHeight;
+    float2 padding;
+};
+
+StructuredBuffer<WindMetaDataEntry> WindMetaData;
+#endif
+
 //--------------------------------------------------------------------------------------
 // Input / Output structures
 //--------------------------------------------------------------------------------------
@@ -34,6 +49,7 @@ struct VS_INPUT
     float4x4 InstancePrevWorldMatrix : INSTANCE_PREV_WORLD_MATRIX;
     float4 InstanceColor : INSTANCE_COLOR;
     float2 InstanceWind : INSTANCE_WINDFLUENCE;
+    uint InstanceWindMetaIndex : INSTANCE_WIND_META_INDEX;
 };
 
 struct VS_OUTPUT
@@ -57,20 +73,20 @@ static const float phaseVariation = 0.40f;
 static const float windStrengMult = 16.0f; // original engine uses [0.1 -> 5] range, we use higher values in formulas 
 static const float PI_2 = 6.283185; // 2 * PI
 
-float GetInstancePhaseOffset(float4x4 objMatrix)
+float GetInstancePhaseOffset(float4x4 objMatrix, float maxHeightValue)
 {
     // Random seed by object's matrix
     // Combine object matrix and maxHeight for more stable randomness
-    float seed = dot(objMatrix._11_22_33, float3(12.9898, 78.233, 53.539)) + maxHeight;
+    float seed = dot(objMatrix._11_22_33, float3(12.9898, 78.233, 53.539)) + maxHeightValue;
     return frac(sin(seed) * 43758.5453) * phaseVariation;
 }
 
-float3 ApplyTreeWind(float3 vertexPos, float3 direction, float heightNorm, float timeSec, float4x4 instMatrix, float windStrength)
+float3 ApplyTreeWind(float3 vertexPos, float3 direction, float heightNorm, float timeSec, float4x4 instMatrix, float maxHeightValue, float windStrength)
 {
     // Calculate if vertex should be affected (1 if heightNorm >= trunkStiffness, 0 otherwise)
     float shouldAffect = saturate(sign(heightNorm - trunkStiffness + 0.0001f));
     
-    float instancePhase = GetInstancePhaseOffset(instMatrix) * PI_2;
+    float instancePhase = GetInstancePhaseOffset(instMatrix, maxHeightValue) * PI_2;
     
     // Smooth height factor with more natural falloff
     float adjustedHeight = saturate((heightNorm - trunkStiffness) / (1.0 - trunkStiffness)) * shouldAffect;
@@ -151,12 +167,20 @@ VS_OUTPUT VSMain( VS_INPUT Input )
     // Base vertex position (local)
     float3 position = Input.vPosition;
 
+    float localMinHeight = minHeight;
+    float localMaxHeight = maxHeight;
+#if WIND_META_SRV
+    WindMetaDataEntry meta = WindMetaData[Input.InstanceWindMetaIndex];
+    localMinHeight = meta.minHeight;
+    localMaxHeight = meta.maxHeight;
+#endif
+
 #if SHD_INFLUENCE
     
     if (Input.InstanceWind.y > 0)
     {
         // HERO MOVING BUSHES SHADER
-        position += CalculatePlayerInfluence(playerPos, position, minHeight, maxHeight, Input.InstanceWorldMatrix);
+        position += CalculatePlayerInfluence(playerPos, position, localMinHeight, localMaxHeight, Input.InstanceWorldMatrix);
     }
 #endif
     
@@ -166,8 +190,8 @@ VS_OUTPUT VSMain( VS_INPUT Input )
     {
         // WIND SHADER
         // Protect 0 height
-        float heightRange = max(maxHeight - minHeight, 0.001);
-        float vertexHeightNorm = saturate((Input.vPosition.y - minHeight) / heightRange);
+        float heightRange = max(localMaxHeight - localMinHeight, 0.001);
+        float vertexHeightNorm = saturate((Input.vPosition.y - localMinHeight) / heightRange);
 
         // Apply wind
         position += ApplyTreeWind(
@@ -176,6 +200,7 @@ VS_OUTPUT VSMain( VS_INPUT Input )
             vertexHeightNorm,
             globalTime,
             Input.InstanceWorldMatrix,
+            localMaxHeight,
             Input.InstanceWind.x
         );
     }

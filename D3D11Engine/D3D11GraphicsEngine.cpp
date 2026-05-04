@@ -5865,6 +5865,11 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             }
         }
 
+        // Apply instancing shader early so metadata indexing can be prepared before instance upload.
+        SetActiveVertexShader( VShaderID::VS_ExInstancedObj );
+        ActiveVS->Apply();
+        const bool useWindMetadata = PrepareAndBindWindMetadata( activeVisuals );
+
         byte* data;
         UINT size;
         if ( SUCCEEDED( DynamicInstancingBuffer->Map( D3D11VertexBuffer::M_WRITE_DISCARD,
@@ -5881,11 +5886,6 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             LogError() << "Failed to map dynamic instancing buffer for vobs.";
         }
 
-        // Apply instancing shader
-        SetActiveVertexShader( VShaderID::VS_ExInstancedObj );
-        // SetActivePixelShader("PS_DiffuseAlphaTest");
-        ActiveVS->Apply();
-
         if ( !linearDepth )  // Only unbind when not rendering linear depth
         {
             // Unbind PS
@@ -5901,6 +5901,9 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
         XMFLOAT3 vPlayerPosition = Engine::GAPI->GetPlayerVob() ? Engine::GAPI->GetPlayerVob()->GetPositionWorld() : XMFLOAT3( 0, 0, 0 );
         g_windBuffer.playerPos = float3( vPlayerPosition.x, vPlayerPosition.y, vPlayerPosition.z );
+        if ( windBuffer.GetRawBuffer() ) {
+            windBuffer.Update( &g_windBuffer );
+        }
 
         UINT dynOffset[] = { 0 };
         UINT dynuStride[] = { sizeof( VobInstanceInfo ) };
@@ -5958,12 +5961,11 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         zCTexture* previousTx = nullptr;
         ID3D11ShaderResourceView* lastNrmTex = nullptr;
         ID3D11ShaderResourceView* lastFxTex = nullptr;
+        MeshVisualInfo* lastWindVisual = nullptr;
 
         for ( auto const& [staticMeshVisual, meshKey, meshInfo] : instancedMeshesToDraw ) {
-            // Shadow wind buffer state
-            if ( std::abs( g_windBuffer.minHeight - staticMeshVisual->BBox.Min.y ) > 0.1f ||
-                std::abs( g_windBuffer.maxHeight - staticMeshVisual->BBox.Max.y ) > 0.1f ) {
-
+            if ( !useWindMetadata && windBuffer.GetRawBuffer() && lastWindVisual != staticMeshVisual ) {
+                lastWindVisual = staticMeshVisual;
                 g_windBuffer.minHeight = staticMeshVisual->BBox.Min.y;
                 g_windBuffer.maxHeight = staticMeshVisual->BBox.Max.y;
                 windBuffer.Update( &g_windBuffer );
@@ -6039,6 +6041,10 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnVobs++;
         }
 
+        if ( useWindMetadata ) {
+            UnbindWindMetadata();
+        }
+
         for ( auto [_, sm] : Engine::GAPI->GetStaticMeshVisuals() ) {
             sm->Instances.clear();
         }
@@ -6111,6 +6117,72 @@ namespace {
             if ( staticMeshVisual->Instances.empty() ) continue;
             WorldConverter::UpdateMorphMeshVisual( staticMeshVisual->MorphMeshVisual, staticMeshVisual );
         }
+    }
+}
+
+bool D3D11GraphicsEngine::PrepareAndBindWindMetadata( const std::vector<MeshVisualInfo*>& activeVisuals ) {
+    if ( !ActiveVS || activeVisuals.empty() ) {
+        return false;
+    }
+
+    if ( ActiveVS->GetInputIndex( "WindMetaData" ) == -1 ) {
+        return false;
+    }
+
+    m_WindMetadataStaging.clear();
+    m_WindMetadataStaging.reserve( activeVisuals.size() );
+
+    for ( MeshVisualInfo* visual : activeVisuals ) {
+        if ( !visual ) {
+            continue;
+        }
+
+        const DWORD metadataIndex = static_cast<DWORD>(m_WindMetadataStaging.size());
+        VobWindMetadata metadata = {};
+        metadata.MinHeight = visual->BBox.Min.y;
+        metadata.MaxHeight = visual->BBox.Max.y;
+        m_WindMetadataStaging.push_back( metadata );
+
+        for ( auto& instance : visual->Instances ) {
+            instance.GP_Slot = metadataIndex;
+        }
+    }
+
+    if ( m_WindMetadataStaging.empty() ) {
+        return false;
+    }
+
+    const UINT requiredSize = static_cast<UINT>(m_WindMetadataStaging.size() * sizeof( VobWindMetadata ));
+
+    if ( !WindMetadataBuffer || WindMetadataBuffer->GetSizeInBytes() < requiredSize ) {
+        WindMetadataBuffer = std::make_unique<D3D11VertexBuffer>();
+        if ( XR_SUCCESS != WindMetadataBuffer->Init(
+            nullptr,
+            requiredSize,
+            D3D11VertexBuffer::B_SHADER_RESOURCE,
+            D3D11VertexBuffer::U_DYNAMIC,
+            D3D11VertexBuffer::CA_WRITE,
+            "WindMetadataBuffer",
+            sizeof( VobWindMetadata ) ) ) {
+            WindMetadataBuffer.reset();
+            return false;
+        }
+
+        SetDebugName( WindMetadataBuffer->GetShaderResourceView().Get(), "WindMetadataBuffer->ShaderResourceView" );
+        SetDebugName( WindMetadataBuffer->GetVertexBuffer().Get(), "WindMetadataBuffer->Buffer" );
+    }
+
+    if ( XR_SUCCESS != WindMetadataBuffer->UpdateBuffer( m_WindMetadataStaging.data(), requiredSize ) ) {
+        return false;
+    }
+
+    ActiveVS->BindResource( "WindMetaData", WindMetadataBuffer->GetShaderResourceView().Get() );
+    return true;
+}
+
+void D3D11GraphicsEngine::UnbindWindMetadata() {
+    if ( ActiveVS ) {
+        ActiveVS->BindResource( "WindMetaData", nullptr );
     }
 }
 
@@ -6258,6 +6330,8 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                 UpdateMorphMeshVisuals( activeVisuals );
             }
 
+            const bool useWindMetadata = PrepareAndBindWindMetadata( activeVisuals );
+
             // Create instancebuffer for this frame
             size_t ByteWidth = DynamicInstancingBuffer->GetSizeInBytes();
 
@@ -6300,6 +6374,9 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
 
             XMFLOAT3 vPlayerPosition = Engine::GAPI->GetPlayerVob() ? Engine::GAPI->GetPlayerVob()->GetPositionWorld() : XMFLOAT3( 0, 0, 0 );
             g_windBuffer.playerPos = float3( vPlayerPosition.x, vPlayerPosition.y, vPlayerPosition.z );
+            if ( windBuffer.GetRawBuffer() ) {
+                windBuffer.Update( &g_windBuffer );
+            }
 
             float cachedSmallVobRadius = -1.0f;
             float cachedVobRadius = -1.0f;
@@ -6360,6 +6437,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
             zCTexture* lastTex = nullptr;
             ID3D11ShaderResourceView* lastNrmTex = nullptr;
             ID3D11ShaderResourceView* lastFxTex = nullptr;
+            MeshVisualInfo* lastWindVisual = nullptr;
 
             for ( auto const& [staticMeshVisual, meshKey, meshInfo] : instancedMeshesToDraw ) {
                 float expectedSmallRadius = renderSettings.OutdoorSmallVobDrawRadius - staticMeshVisual->MeshSize;
@@ -6383,10 +6461,8 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                     }
                 }
 
-                // Shadow wind buffer state
-                if ( std::abs( g_windBuffer.minHeight - staticMeshVisual->BBox.Min.y ) > 0.1f ||
-                    std::abs( g_windBuffer.maxHeight - staticMeshVisual->BBox.Max.y ) > 0.1f ) {
-
+                if ( !useWindMetadata && windBuffer.GetRawBuffer() && lastWindVisual != staticMeshVisual ) {
+                    lastWindVisual = staticMeshVisual;
                     g_windBuffer.minHeight = staticMeshVisual->BBox.Min.y;
                     g_windBuffer.maxHeight = staticMeshVisual->BBox.Max.y;
                     windBuffer.Update( &g_windBuffer );
@@ -6494,6 +6570,11 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                     sizeof( VobInstanceInfo ), staticMeshVisual->Instances.size(),
                     sizeof( ExVertexStruct ), staticMeshVisual->StartInstanceNum );
             }
+
+            if ( useWindMetadata ) {
+                UnbindWindMetadata();
+            }
+
             for ( auto sm : activeVisuals ) {
                 bool clear = true;
                 for ( auto& [meshKey, _] : sm->MeshesByTexture ) {
@@ -6564,6 +6645,61 @@ XRESULT D3D11GraphicsEngine::DrawFrameAlphaMeshes()
 
     GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(),
         DepthStencilBuffer->GetDepthStencilView().Get() );
+
+    bool useWindMetadata = false;
+    if ( ActiveVS && ActiveVS->GetInputIndex( "WindMetaData" ) != -1 && !m_AlphaMeshes.empty() ) {
+        std::unordered_map<MeshVisualInfo*, DWORD> metadataByVisual;
+        metadataByVisual.reserve( m_AlphaMeshes.size() );
+
+        m_WindMetadataStaging.clear();
+        m_WindMetadataStaging.reserve( m_AlphaMeshes.size() );
+
+        for ( auto& alphaData : m_AlphaMeshes ) {
+            MeshVisualInfo* visual = alphaData.vi;
+            if ( !visual ) {
+                continue;
+            }
+
+            auto [it, inserted] = metadataByVisual.try_emplace( visual, static_cast<DWORD>(m_WindMetadataStaging.size()) );
+            if ( inserted ) {
+                VobWindMetadata metadata = {};
+                metadata.MinHeight = visual->BBox.Min.y;
+                metadata.MaxHeight = visual->BBox.Max.y;
+                m_WindMetadataStaging.push_back( metadata );
+            }
+
+            for ( auto& instance : alphaData.instances ) {
+                instance.GP_Slot = it->second;
+            }
+        }
+
+        if ( !m_WindMetadataStaging.empty() ) {
+            const UINT requiredSize = static_cast<UINT>(m_WindMetadataStaging.size() * sizeof( VobWindMetadata ));
+
+            if ( !WindMetadataBuffer || WindMetadataBuffer->GetSizeInBytes() < requiredSize ) {
+                WindMetadataBuffer = std::make_unique<D3D11VertexBuffer>();
+                if ( XR_SUCCESS == WindMetadataBuffer->Init(
+                    nullptr,
+                    requiredSize,
+                    D3D11VertexBuffer::B_SHADER_RESOURCE,
+                    D3D11VertexBuffer::U_DYNAMIC,
+                    D3D11VertexBuffer::CA_WRITE,
+                    "WindMetadataBuffer",
+                    sizeof( VobWindMetadata ) ) ) {
+                    SetDebugName( WindMetadataBuffer->GetShaderResourceView().Get(), "WindMetadataBuffer->ShaderResourceView" );
+                    SetDebugName( WindMetadataBuffer->GetVertexBuffer().Get(), "WindMetadataBuffer->Buffer" );
+                } else {
+                    WindMetadataBuffer.reset();
+                }
+            }
+
+            if ( WindMetadataBuffer
+                && XR_SUCCESS == WindMetadataBuffer->UpdateBuffer( m_WindMetadataStaging.data(), requiredSize ) ) {
+                ActiveVS->BindResource( "WindMetaData", WindMetadataBuffer->GetShaderResourceView().Get() );
+                useWindMetadata = true;
+            }
+        }
+    }
     
     // re-setup dynamic instancing buffer with correct instances and values
     // shadow pass breaks the "global" state of this.
@@ -6589,6 +6725,7 @@ XRESULT D3D11GraphicsEngine::DrawFrameAlphaMeshes()
         (Engine::GAPI->GetRendererState().RendererSettings.WindQuality > 0 || Engine::GAPI->GetRendererState().RendererSettings.HeroAffectsObjects) ) {
         windBuffer = ActiveVS->GetBuffer( "WindParams" );
         windBuffer.Bind();
+        windBuffer.Update( &g_windBuffer );
     }
 
     for ( auto const& alphaMesh : m_AlphaMeshes ) {
@@ -6639,7 +6776,9 @@ XRESULT D3D11GraphicsEngine::DrawFrameAlphaMeshes()
             MaterialInfo* info = mk.Info;
             if ( !info->Constantbuffer ) info->UpdateConstantbuffer();
 
-            windBuffer.Update( &g_windBuffer );
+            if ( !useWindMetadata && windBuffer.GetRawBuffer() ) {
+                windBuffer.Update( &g_windBuffer );
+            }
 
             // Draw batch
             DrawInstanced( mi->MeshVertexBuffer, mi->MeshIndexBuffer, mi->Indices.size(),
@@ -6654,7 +6793,9 @@ XRESULT D3D11GraphicsEngine::DrawFrameAlphaMeshes()
         g_windBuffer.minHeight = vi->BBox.Min.y;
         g_windBuffer.maxHeight = vi->BBox.Max.y;
 
-        windBuffer.Update( &g_windBuffer );
+        if ( !useWindMetadata && windBuffer.GetRawBuffer() ) {
+            windBuffer.Update( &g_windBuffer );
+        }
 
         // Draw batch
         DrawInstanced( mi->MeshVertexBuffer, mi->MeshIndexBuffer, mi->Indices.size(),
@@ -6665,6 +6806,11 @@ XRESULT D3D11GraphicsEngine::DrawFrameAlphaMeshes()
         // Reset visual
         vi->StartNewFrame();
     }
+
+    if ( useWindMetadata ) {
+        UnbindWindMetadata();
+    }
+
     m_AlphaMeshes.clear();
     
     return XR_SUCCESS;

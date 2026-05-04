@@ -165,12 +165,15 @@ XRESULT D3D11ShaderManager::Init() {
 #ifdef BUILD_GOTHIC_2_6_fix
             list.push_back( {"SHD_WIND",      s.WindQuality == GothicRendererSettings::EWindQuality::WIND_QUALITY_ADVANCED ? "1" : "0"} );
             list.push_back( {"SHD_INFLUENCE", s.HeroAffectsObjects ? "1" : "0"} );
+            list.push_back( {"WIND_META_SRV", (!FeatureLevel10Compatibility && (s.WindQuality == GothicRendererSettings::EWindQuality::WIND_QUALITY_ADVANCED || s.HeroAffectsObjects)) ? "1" : "0"} );
 #elif defined(BUILD_1_12F)
             list.push_back( {"SHD_WIND",      "0"} );
             list.push_back( {"SHD_INFLUENCE", "0"} );
+            list.push_back( {"WIND_META_SRV", "0"} );
 #else
             list.push_back( {"SHD_WIND",      (haveWindAnimations && s.WindQuality == GothicRendererSettings::EWindQuality::WIND_QUALITY_ADVANCED) ? "1" : "0"} );
             list.push_back( {"SHD_INFLUENCE", (haveWindAnimations && s.HeroAffectsObjects) ? "1" : "0"} );
+            list.push_back( {"WIND_META_SRV", (!FeatureLevel10Compatibility && haveWindAnimations && (s.WindQuality == GothicRendererSettings::EWindQuality::WIND_QUALITY_ADVANCED || s.HeroAffectsObjects)) ? "1" : "0"} );
 #endif
         }) );
 

@@ -49,12 +49,16 @@ XRESULT D3D11PShader::Apply() {
 
 void D3D11PShader::BindResource(StringID name, ID3D11ShaderResourceView* srv)
 {
-    reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->PSSetShaderResources( GetInputIndex(name), 1, &srv );
+    const int inputIndex = GetInputIndex(name);
+    if (inputIndex != -1)
+        reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->PSSetShaderResources( inputIndex, 1, &srv );
 }
 
 void D3D11PShader::BindSampler(StringID name, ID3D11SamplerState* sampler)
 {
-    reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->PSSetSamplers( GetInputIndex(name), 1, &sampler );
+    const int inputIndex = GetInputIndex(name);
+    if (inputIndex != -1)
+        reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->PSSetSamplers( inputIndex, 1, &sampler );
 }
 
 void D3D11PShader::BindBuffer(StringID name, D3D11ConstantBuffer* buffer) {

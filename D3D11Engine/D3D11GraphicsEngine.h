@@ -433,8 +433,15 @@ public:
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> ReflectionCube;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> ReflectionCube2;
 private:
+    bool PrepareAndBindWindMetadata( const std::vector<MeshVisualInfo*>& activeVisuals );
+    void UnbindWindMetadata();
+
     std::vector<AlphaMeshData> m_AlphaMeshes;
     std::vector<VobLightInfo*> m_FrameLights;
+    std::vector<VobWindMetadata> m_WindMetadataStaging;
+
+    /** Optional per-visual wind metadata for FL11+ instanced VOB rendering. */
+    std::unique_ptr<D3D11VertexBuffer> WindMetadataBuffer;
     
     /** World-Mesh indirect buffer */
     std::unique_ptr<D3D11IndirectBuffer> WorldMeshIndirectBuffer;

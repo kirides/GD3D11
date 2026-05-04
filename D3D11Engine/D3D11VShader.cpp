@@ -144,6 +144,7 @@ XRESULT D3D11VShader::LoadShader( const ShaderInfo& si, const std::vector<D3D_SH
         { "INSTANCE_PREV_WORLD_MATRIX", 3, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
         { "INSTANCE_COLOR", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 1, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
         { "INSTANCE_WINDFLUENCE", 0, DXGI_FORMAT_R32G32_FLOAT, 1, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
+        { "INSTANCE_WIND_META_INDEX", 0, DXGI_FORMAT_R32_UINT, 1, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
     };
 
     const D3D11_INPUT_ELEMENT_DESC layout11[] =
@@ -279,11 +280,15 @@ XRESULT D3D11VShader::Apply() {
 }
 
 void D3D11VShader::BindResource(StringID name, ID3D11ShaderResourceView* srv) {
-    reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->VSSetShaderResources( GetInputIndex(name), 1, &srv );
+    const int inputIndex = GetInputIndex(name);
+    if (inputIndex != -1)
+        reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->VSSetShaderResources( inputIndex, 1, &srv );
 }
 
 void D3D11VShader::BindSampler(StringID name, ID3D11SamplerState* sampler) {
-    reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->VSSetSamplers( GetInputIndex(name), 1, &sampler );
+    const int inputIndex = GetInputIndex(name);
+    if (inputIndex != -1)
+        reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->VSSetSamplers( inputIndex, 1, &sampler );
 }
 
 void D3D11VShader::BindBuffer(StringID name, D3D11ConstantBuffer* buffer) {

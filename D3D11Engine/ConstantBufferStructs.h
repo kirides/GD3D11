@@ -12,8 +12,15 @@ struct VobInstanceInfo {
     DWORD color;
     float windStrenth;
     float canBeAffectedByPlayer;
-    // General purpose slot
+    // General purpose slot. Used by instanced VOB rendering to store an index
+    // into optional per-visual metadata buffers.
     DWORD GP_Slot;
+};
+
+struct VobWindMetadata {
+    float MinHeight;
+    float MaxHeight;
+    float2 Padding;
 };
 
 /** Per-instance data for instanced node attachment rendering */
