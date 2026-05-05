@@ -68,8 +68,6 @@ XRESULT D3D11LegacyDeferredShading::DrawPointlightLights(
     for ( auto const& light : lights ) {
         zCVobLight* vob = light->Vob;
 
-        light->VisibleInRenderPass = false;
-
         if ( !vob->IsEnabled() ) continue;
 
         if ( settings.EnablePointlightShadows > 0 ) {

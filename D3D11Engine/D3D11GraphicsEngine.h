@@ -383,6 +383,7 @@ public:
     std::unique_ptr<GraphicsEventRecord> RecordGraphicsEvent( GraphicsEventName region ) override {
         return std::make_unique<D3DGraphicsEventRecord>( m_UserDefinedAnnotation.Get(), region );
     }
+    void WaitShadowsReady();
 
 private:
     struct FrameIndirectBufferPool {
@@ -609,4 +610,8 @@ private:
     void CreateAndBindDefaultSampler();
 
     std::unique_ptr<tracy::D3D11Ctx> m_tracyd3d11Context;
+
+    std::mutex g_cullingMutex;
+    std::condition_variable g_cullingCV;
+    bool g_cullingDone; // The "Predicate"
 };

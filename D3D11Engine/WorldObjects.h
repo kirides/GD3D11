@@ -303,7 +303,7 @@ struct VobInfo : public BaseVobInfo {
     bool IsIndoorVob;
 
     /** Flag to see if this vob was drawn in the current render pass. Used to collect the same vob only once. */
-    bool VisibleInRenderPass;
+    std::atomic<size_t> VisibleInRenderPass;
 
     /** Section this vob is in */
     WorldMeshSectionInfo* VobSection;
@@ -341,7 +341,7 @@ struct VobLightInfo {
     zCVobLight* Vob;
 
     /** Flag to see if this vob was drawn in the current render pass. Used to collect the same vob only once. Cleared immediately. */
-    bool VisibleInRenderPass;
+    std::atomic<size_t> VisibleInRenderPass;
     bool IsPFXVobLight;
 
     /** True if this is an indoor-vob */
@@ -375,7 +375,6 @@ struct SkeletalVobInfo : public BaseVobInfo {
         Vob = nullptr;
         VisualInfo = nullptr;
         IndoorVob = false;
-        VisibleInRenderPass = false;
         VobConstantBuffer = nullptr;
         HasValidPrevTransforms = false;
         LastAniUpdateFrame = 0;
@@ -419,7 +418,7 @@ struct SkeletalVobInfo : public BaseVobInfo {
     bool IndoorVob;
 
     /** Flag to see if this vob was drawn in the current render pass. Used to collect the same vob only once. */
-    bool VisibleInRenderPass;
+    std::atomic<size_t> VisibleInRenderPass;
 
     /** Current world transform */
     XMFLOAT4X4 WorldMatrix;

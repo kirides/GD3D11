@@ -339,8 +339,6 @@ D3D11TiledDeferredShading::CullResult D3D11TiledDeferredShading::CullLights(
     for ( auto const& light : lights ) {
         zCVobLight* vob = light->Vob;
 
-        light->VisibleInRenderPass = false;
-
         if ( !vob->IsEnabled() ) continue;
 
         // Check if this light has shadows

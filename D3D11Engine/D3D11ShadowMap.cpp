@@ -434,7 +434,7 @@ XRESULT D3D11ShadowMap::PrepareRender()
     if ( !camera ) {
         return XR_SUCCESS;
     }
-    camera->Activate();
+    // camera->Activate();
 
     const float nearPlane = std::max( 1.0f, camera->GetNearPlane() );
     // Clamp far plane to avoid extreme shadow distances
@@ -648,9 +648,57 @@ XRESULT D3D11ShadowMap::PrepareRender()
             }
         }
     }
-
-    // Collect all VOBs inside our shadow draw distance (last frustum)
     
+
+    // Build a conservative culling volume that covers all cascades rendered this frame.
+    Frustum frustum = Frustum::AlwaysContainingFrustum();
+    if ( isOutdoor && numCascades > 0 ) {
+        int lastUpdatedCascade = 0;
+        for ( int cascadeIdx = 0; cascadeIdx < numCascades; ++cascadeIdx ) {
+            if ( m_ShouldUpdateCascade[cascadeIdx] ) {
+                lastUpdatedCascade = cascadeIdx;
+            }
+        }
+
+        std::array<XMFLOAT3, MAX_CSM_CASCADES * 8> combinedCorners = {};
+        size_t combinedCornerCount = 0;
+
+        static constexpr XMFLOAT3 ndcCorners[8] = {
+            XMFLOAT3( -1.0f, -1.0f, 0.0f ), XMFLOAT3( 1.0f, -1.0f, 0.0f ),
+            XMFLOAT3( -1.0f, 1.0f, 0.0f ),  XMFLOAT3( 1.0f, 1.0f, 0.0f ),
+            XMFLOAT3( -1.0f, -1.0f, 1.0f ), XMFLOAT3( 1.0f, -1.0f, 1.0f ),
+            XMFLOAT3( -1.0f, 1.0f, 1.0f ),  XMFLOAT3( 1.0f, 1.0f, 1.0f )
+        };
+
+        for ( int cascadeIdx = 0; cascadeIdx <= lastUpdatedCascade; ++cascadeIdx ) {
+            if ( !m_CascadeCRs[cascadeIdx].frustum.IsValid() ) {
+                continue;
+            }
+
+            const XMMATRIX view = XMMatrixTranspose( XMLoadFloat4x4( &m_CascadeCRs[cascadeIdx].ViewReplacement ) );
+            const XMMATRIX proj = XMMatrixTranspose( XMLoadFloat4x4( &m_CascadeCRs[cascadeIdx].ProjectionReplacement ) );
+            const XMMATRIX invViewProj = XMMatrixInverse( nullptr, XMMatrixMultiply( view, proj ) );
+
+            for ( const XMFLOAT3& ndcCorner : ndcCorners ) {
+                XMVECTOR worldCorner = XMVector3TransformCoord( XMLoadFloat3( &ndcCorner ), invViewProj );
+                XMStoreFloat3( &combinedCorners[combinedCornerCount++], worldCorner );
+            }
+        }
+
+        if ( combinedCornerCount > 0 ) {
+            BoundingSphere combinedSphere;
+            BoundingSphere::CreateFromPoints(
+                combinedSphere,
+                combinedCornerCount,
+                combinedCorners.data(),
+                sizeof( XMFLOAT3 ) );
+            // Keep this conservative because shadow caster expansion can exceed strict cascade bounds.
+            combinedSphere.Radius *= 1.2f;
+            frustum.BuildCubemapFace( XMLoadFloat3( &combinedSphere.Center ), combinedSphere.Radius, 0 );
+        }
+    }
+
+
     static std::vector<VobInfo*> potentialCasters;
     static std::vector<VobLightInfo*> _1;
     static std::vector<SkeletalVobInfo*> _2;
@@ -662,7 +710,7 @@ XRESULT D3D11ShadowMap::PrepareRender()
         LegacyRenderQueueProxy q(potentialCasters, _1, _2);
 
         ctx.queue = &q;
-        ctx.frustum = Frustum::AlwaysContainingFrustum();
+        ctx.frustum = frustum;
         ctx.cameraPosition = m_WorldShadowPos;
         ctx.stage = RenderStage::STAGE_DRAW_SHADOWS;
         ctx.drawDistances.OutdoorVobs = 20000;

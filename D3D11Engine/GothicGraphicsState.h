@@ -706,6 +706,7 @@ struct GothicRendererSettings {
         ShadowFilterMode = E_ShadowFilterMode::SHADOW_FILTER_SIMPLE;
 
         EnableShadows = true;
+        ThreadedShadowCulling = true;
         EnableVSync = false;
         DoZPrepass = true;
         SortRenderQueue = false;
@@ -895,6 +896,7 @@ struct GothicRendererSettings {
     bool WireframeVobs;
     E_ShadowFilterMode ShadowFilterMode;
     bool EnableShadows;
+    bool ThreadedShadowCulling;
     int ShadowCascadePCFLimit;
     E_ShadowFrustumCulling ShadowFrustumCullingMode;
     bool DrawShadowGeometry;

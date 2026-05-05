@@ -921,13 +921,13 @@ private:
     phmap::flat_hash_map<oCNPC*, SkeletalMeshVisualInfo*> SkeletalMeshNpcs;
 
     /** Set of all vobs we registered by now */
-    std::unordered_set<zCVob*> RegisteredVobs;
+    phmap::flat_hash_set<zCVob*> RegisteredVobs;
 
     /** List of dynamically added vobs */
     std::vector<VobInfo*> DynamicallyAddedVobs;
 
     /** Map of vobs and VobIndfos */
-    std::unordered_map<zCVob*, VobInfo*> VobMap;
+    phmap::flat_hash_map<zCVob*, VobInfo*> VobMap;
 public:
     // temporarily, to allow CollectVisibleVobsHelper to be templated for inlining optimizations
     phmap::flat_hash_map<zCVobLight*, VobLightInfo*> VobLightMap;

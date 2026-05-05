@@ -4195,8 +4195,7 @@ static void CVVH_AddNotDrawnVobToList(
     const bool cullingEnabled = ctx.drawFlags.CullVobs;
 
     for ( auto const& it : source ) {
-        if ( it->VisibleInRenderPass ) continue;
-        visitor->Visit( it );
+        if ( !visitor->Visit( it ) ) continue;
 
         if ( !it->Vob->GetShowVisual() ) continue;
         float vdSq;
@@ -4228,8 +4227,7 @@ static void CVVH_AddNotDrawnVobToList(
     const auto vDistSq = XMVectorReplicate( distSq );
 
     for ( auto const& it : source ) {
-        if ( it->VisibleInRenderPass ) continue;
-        visitor->Visit( it );
+        if ( !visitor->Visit( it ) ) continue;
 
         if ( !it->Vob->GetShowVisual() )
             continue;
@@ -4588,11 +4586,7 @@ zCTexture* GothicAPI::GetTextureBySurface( MyDirectDrawSurface7* surface ) {
 
 /** Resets all vob-stats drawn this frame */
 void GothicAPI::ResetVobFrameStats( ) {
-    for ( auto&& it : VobMap ) {
-        it.second->VisibleInRenderPass = false;
-    }
     for ( auto&& it : VobLightMap ) {
-        it.second->VisibleInRenderPass = false;
         it.second->VisibleInFrame = false;
     }
 }
@@ -5849,8 +5843,7 @@ static void CollectLeafVobs(
                     }
                 }
                 VobLightInfo* vi = vit->second;
-                if ( vi->VisibleInRenderPass ) continue;
-                visitor->Visit( vi );
+                if ( !visitor->Visit( vi ) ) continue;
                 ctx.queue->PushLightVob( vi );
             }
         }
@@ -6091,23 +6084,24 @@ static void CollectVisibleVobsWithLeafCache(
 #endif // __AVX2__
 
 void GothicAPI::CollectVisibleVobs( const RndCullContext& ctx ) {
-    ZoneScopedN( "GothicAPI::CollectVisibleVobs" );
     zCBspTree* tree = LoadedWorldInfo->BspTree;
 
     zCBspBase* rootBsp = tree->GetRootNode();
     BspInfo* root = &BspLeafVobLists[rootBsp];
 
-    static thread_local BspTreeVobVisitor bspVobVisitor{};
+    thread_local BspTreeVobVisitor bspVobVisitor{};
 
     // Use the flat SIMD leaf cache when available (perspective frustum + cache built at world load).
     // Falls back to the pointer-chasing recursive tree walk for sphere/OBB frustums (shadow cubemaps,
     // orthographic shadow maps) or before the first world is loaded.
 #ifdef __AVX2__
     if ( LeafLinearCache.Count > 0 && ctx.frustum.UsesPlaneFrustum() ) {
+        ZoneScopedN( "GothicAPI::CollectVisibleVobsWithLeafCache" );
         CollectVisibleVobsWithLeafCache( ctx, &bspVobVisitor );
     } else
 #endif
     {
+        ZoneScopedN( "GothicAPI::CollectVisibleVobsHelper" );
         // Recursively go through the tree and draw all nodes
         CollectVisibleVobsHelper( root, root->OriginalNode->BBox3D,
             ctx,
@@ -6131,8 +6125,7 @@ void GothicAPI::CollectVisibleVobs( const RndCullContext& ctx ) {
     if ( RendererState.RendererSettings.DrawVOBs ) {
         float dist;
         for ( VobInfo* it : DynamicallyAddedVobs ) {
-            if ( it->VisibleInRenderPass ) continue;
-            bspVobVisitor.Visit( it );
+            if ( !bspVobVisitor.Visit( it ) ) continue;
 
             // Get distance to this vob
             XMStoreFloat( &dist, XMVector3Length( camPos - it->Vob->GetPositionWorldXM() ) );

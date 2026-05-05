@@ -1450,14 +1450,15 @@ XRESULT D3D11GraphicsEngine::OnEndFrame() {
     renderInfo.RenderStage = STAGE_DRAW_PRESENT;
     Present();
 
-    if ( !Engine::GAPI->GetRendererState().RendererSettings.BinkVideoRunning && !Engine::GAPI->IsInSavingLoadingState() ) {
-        m_FrameLimiter->Wait();
-    }
     RenderedVobs.clear();
     GetPfxRenderer()->OnEndFrame();
     ResetFrameTransientBufferPools();
     Engine::GAPI->ResetVobFrameStats();
     FrameMarkEnd("Frame");
+
+    if ( !Engine::GAPI->GetRendererState().RendererSettings.BinkVideoRunning && !Engine::GAPI->IsInSavingLoadingState() ) {
+        m_FrameLimiter->Wait();
+    }
     return XR_SUCCESS;
 }
 
@@ -3451,6 +3452,34 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
 
     rendererState.RasterizerState.FrontCounterClockwise = false;
     rendererState.RasterizerState.SetDirty();
+
+    if ( rendererState.RendererSettings.EnableShadows ) {
+        zCCamera* camera = (zCCamera*)oCGame::GetGame()->_zCSession_camera;
+        if ( camera ) {
+            camera->Activate();
+        }
+
+        if ( rendererState.RendererSettings.ThreadedShadowCulling ) {
+            g_cullingDone = false;
+            Engine::WorkerThreadPool->enqueue( [&]( const CancellationToken& token ) {
+                if ( token.isCancelled() ) {
+                    std::lock_guard<std::mutex> lock( g_cullingMutex );
+                    g_cullingDone = true;
+                    g_cullingCV.notify_all();
+                    return;
+                }
+                ShadowMaps->PrepareRender();
+
+                std::lock_guard<std::mutex> lock( g_cullingMutex );
+                g_cullingDone = true;
+                g_cullingCV.notify_all();
+            } );
+        } else {
+            ShadowMaps->PrepareRender();
+        }
+    } else {
+        g_cullingDone = true;
+    }
 
     RGResourceHandle colorResource = backBufferHandle;
     graph.AddPass( RG_PASS_NAME("Initialize Buffers"), [&]( RGBuilder& builder, RenderPass& pass ) {
@@ -8717,4 +8746,10 @@ void D3D11GraphicsEngine::StoreVobPreviousTransforms() {
 
     // Store view-projection matrix
     StorePrevViewProjMatrix();
+}
+
+void D3D11GraphicsEngine::WaitShadowsReady()
+{
+    std::unique_lock<std::mutex> lock( g_cullingMutex );
+    g_cullingCV.wait( lock, [this] { return g_cullingDone; } );
 }
