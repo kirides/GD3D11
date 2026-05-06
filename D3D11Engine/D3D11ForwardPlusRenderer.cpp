@@ -94,8 +94,6 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
         pass.m_executeCallback = [&engine]( const RenderGraph& ) -> void {
             auto* shadowMaps = engine.GetShadowMaps();
             engine.SetDefaultStates();
-            engine.WaitShadowsReady();
-            // shadowMaps->PrepareRender();
 
             shadowMaps->DrawPointlightShadows( engine.GetFrameLights() );
             shadowMaps->DrawWorldShadow();

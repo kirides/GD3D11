@@ -3454,21 +3454,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     rendererState.RasterizerState.SetDirty();
 
     if ( rendererState.RendererSettings.EnableShadows ) {
-        zCCamera* camera = (zCCamera*)oCGame::GetGame()->_zCSession_camera;
-        if ( camera ) {
-            camera->Activate();
-        }
-
-        if ( rendererState.RendererSettings.ThreadedShadowCulling ) {
-            m_shadowCullingFuture = Engine::WorkerThreadPool->enqueue( [&]( const CancellationToken& token ) {
-                if ( token.isCancelled() ) {
-                    return;
-                }
-                ShadowMaps->PrepareRender();
-            } ).future;
-        } else {
-            ShadowMaps->PrepareRender();
-        }
+        ShadowMaps->PrepareRender();
     }
 
     RGResourceHandle colorResource = backBufferHandle;
@@ -8738,8 +8724,3 @@ void D3D11GraphicsEngine::StoreVobPreviousTransforms() {
     StorePrevViewProjMatrix();
 }
 
-void D3D11GraphicsEngine::WaitShadowsReady() {
-    if ( m_shadowCullingFuture.valid() ) {
-        m_shadowCullingFuture.wait();
-    }
-}

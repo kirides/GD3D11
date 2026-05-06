@@ -110,7 +110,6 @@ void D3D11DeferredRenderer::AddLightingPasses( RenderGraph& graph,
             auto specularTexture = graph.GetPhysicalTexture( specularResource );
 
             if ( Engine::GAPI->GetRendererState().RendererSettings.EnableShadows ) {
-                engine.WaitShadowsReady();
                 engine.CopyDepthStencil();
             }
 

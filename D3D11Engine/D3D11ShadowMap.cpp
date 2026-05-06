@@ -434,7 +434,7 @@ XRESULT D3D11ShadowMap::PrepareRender()
     if ( !camera ) {
         return XR_SUCCESS;
     }
-    // camera->Activate();
+     camera->Activate();
 
     const float nearPlane = std::max( 1.0f, camera->GetNearPlane() );
     // Clamp far plane to avoid extreme shadow distances
@@ -648,7 +648,55 @@ XRESULT D3D11ShadowMap::PrepareRender()
             }
         }
     }
-    
+
+    if ( settings.ThreadedShadowCulling ) {
+        std::lock_guard<std::mutex> lock( m_CullingJobsMutex );
+        m_ShadowCullingJobs.clear();
+
+        for ( size_t i = 0; i < numCascades; i++ ) {
+            m_RenderQueues[i]->Reset();
+            if ( !m_ShouldUpdateCascade[i] ) {
+                continue; // Skip culling for this cascade if we're not updating it this frame
+            }
+
+            m_ShadowCullingJobs.push_back( Engine::WorkerThreadPool->enqueue( []( const CancellationToken& token, D3D11ShadowMap* _this, size_t idx ) {
+                if ( token.isCancelled() ) {
+                    return;
+                }
+                ZoneScoped;
+                ZoneNameF( "Shadow Cascade %zu", idx );
+
+                RndCullContext ctx;
+                ctx.queue = _this->m_RenderQueues[idx].get();
+                ctx.frustum = _this->m_CascadeCRs[idx].frustum;
+                ctx.cameraPosition = _this->m_WorldShadowPos;
+                ctx.stage = RenderStage::STAGE_DRAW_SHADOWS;
+                ctx.drawDistances.OutdoorVobs = 20000;
+                ctx.drawDistances.OutdoorVobsSmall = 20000;
+                ctx.drawDistances.IndoorVobs = 20000;
+                ctx.drawDistances.VisualFX = 0.0f;
+                ctx.drawDistancesSq.OutdoorVobs = ctx.drawDistances.OutdoorVobs * ctx.drawDistances.OutdoorVobs;
+                ctx.drawDistancesSq.OutdoorVobsSmall = ctx.drawDistances.OutdoorVobsSmall * ctx.drawDistances.OutdoorVobsSmall;
+                ctx.drawDistancesSq.IndoorVobs = ctx.drawDistances.IndoorVobs * ctx.drawDistances.IndoorVobs;
+                ctx.drawDistancesSq.VisualFX = 0.0f;
+
+                const auto& rs = Engine::GAPI->GetRendererState().RendererSettings;
+                ctx.drawFlags.DrawVOBs = rs.DrawVOBs;
+                ctx.drawFlags.DrawMobs = rs.DrawMobs;
+                ctx.drawFlags.EnableDynamicLighting = rs.EnableDynamicLighting;
+                ctx.drawFlags.EnableOcclusionCulling = rs.EnableOcclusionCulling;
+                ctx.drawFlags.CullVobs = rs.DebugSettings.Culling.CullVobs;
+                ctx.drawFlags.CollectIndoorVobs = false;
+                ctx.drawFlags.CollectMobs = false;
+                ctx.drawFlags.CollectLights = false;
+
+                Engine::GAPI->CollectVisibleVobs( ctx );
+
+            }, this, i ).future );
+        }
+        
+        return XR_SUCCESS;
+    }
 
     // Build a conservative culling volume that covers all cascades rendered this frame.
     Frustum frustum = Frustum::AlwaysContainingFrustum();
@@ -697,7 +745,6 @@ XRESULT D3D11ShadowMap::PrepareRender()
             frustum.BuildCubemapFace( XMLoadFloat3( &combinedSphere.Center ), combinedSphere.Radius, 0 );
         }
     }
-
 
     static std::vector<VobInfo*> potentialCasters;
     static std::vector<VobLightInfo*> _1;
@@ -1035,6 +1082,9 @@ XRESULT D3D11ShadowMap::DrawWorldShadow( )
     auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     auto _ = graphicsEngine->RecordGraphicsEvent( GE_NAME( "DrawWorldShadow" ) );
     ZoneScopedN( "DrawWorldShadow" );
+
+    WaitShadowCullingComplete();
+
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
     
     int numCascades = settings.NumShadowCascades;
