@@ -3460,25 +3460,15 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         }
 
         if ( rendererState.RendererSettings.ThreadedShadowCulling ) {
-            g_cullingDone = false;
-            Engine::WorkerThreadPool->enqueue( [&]( const CancellationToken& token ) {
+            m_shadowCullingFuture = Engine::WorkerThreadPool->enqueue( [&]( const CancellationToken& token ) {
                 if ( token.isCancelled() ) {
-                    std::lock_guard<std::mutex> lock( g_cullingMutex );
-                    g_cullingDone = true;
-                    g_cullingCV.notify_all();
                     return;
                 }
                 ShadowMaps->PrepareRender();
-
-                std::lock_guard<std::mutex> lock( g_cullingMutex );
-                g_cullingDone = true;
-                g_cullingCV.notify_all();
-            } );
+            } ).future;
         } else {
             ShadowMaps->PrepareRender();
         }
-    } else {
-        g_cullingDone = true;
     }
 
     RGResourceHandle colorResource = backBufferHandle;
@@ -8748,8 +8738,8 @@ void D3D11GraphicsEngine::StoreVobPreviousTransforms() {
     StorePrevViewProjMatrix();
 }
 
-void D3D11GraphicsEngine::WaitShadowsReady()
-{
-    std::unique_lock<std::mutex> lock( g_cullingMutex );
-    g_cullingCV.wait( lock, [this] { return g_cullingDone; } );
+void D3D11GraphicsEngine::WaitShadowsReady() {
+    if ( m_shadowCullingFuture.valid() ) {
+        m_shadowCullingFuture.wait();
+    }
 }

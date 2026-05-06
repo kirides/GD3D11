@@ -611,7 +611,5 @@ private:
 
     std::unique_ptr<tracy::D3D11Ctx> m_tracyd3d11Context;
 
-    std::mutex g_cullingMutex;
-    std::condition_variable g_cullingCV;
-    bool g_cullingDone; // The "Predicate"
+    std::future<void> m_shadowCullingFuture;
 };
