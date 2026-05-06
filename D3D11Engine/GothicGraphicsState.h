@@ -706,7 +706,7 @@ struct GothicRendererSettings {
         ShadowFilterMode = E_ShadowFilterMode::SHADOW_FILTER_SIMPLE;
 
         EnableShadows = true;
-        ThreadedShadowCulling = true;
+        ThreadedShadowCulling = false;
         EnableVSync = false;
         DoZPrepass = true;
         SortRenderQueue = false;
@@ -718,7 +718,7 @@ struct GothicRendererSettings {
         MinLightShadowUpdateRange = 300.0f;
         PartialDynamicShadowUpdates = true;
         EnableTiledLighting = false;
-        RendererMode = RM_ForwardPlus;
+        RendererMode = RM_Deferred;
         DrawSectionIntersections = true;
 
         EnableGodRays = true;
