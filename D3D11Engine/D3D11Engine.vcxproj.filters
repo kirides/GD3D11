@@ -862,6 +862,9 @@
       <Filter>Engine\D3D11\PFX\Effects</Filter>
     </ClInclude>
     <ClInclude Include="D3D11FileRelativeInclude.h" />
+    <ClInclude Include="D3D11TracyDebug.h">
+      <Filter>Engine\D3D11</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp" />

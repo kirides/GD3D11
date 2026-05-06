@@ -323,6 +323,17 @@ void D3D11ShadowMap::EnsureShadowMapBackend( int size ) {
     }
 }
 
+void D3D11ShadowMap::WaitShadowCullingComplete()
+{
+    ZoneScopedN( "WaitShadowCullingComplete" );
+    std::lock_guard<LockableBase( std::mutex )> lock( m_CullingJobsMutex );
+    for ( auto& job : m_ShadowCullingJobs ) {
+        if ( job.valid() ) {
+            job.wait();
+        }
+    }
+}
+
 void D3D11ShadowMap::Init( Microsoft::WRL::ComPtr<ID3D11Device1>& device, Microsoft::WRL::ComPtr<ID3D11DeviceContext1>& context, int size ) {
     HRESULT hr;
     m_device = device;
@@ -650,7 +661,7 @@ XRESULT D3D11ShadowMap::PrepareRender()
     }
 
     if ( settings.ThreadedShadowCulling ) {
-        std::lock_guard<std::mutex> lock( m_CullingJobsMutex );
+        std::lock_guard<LockableBase( std::mutex )> lock( m_CullingJobsMutex );
         m_ShadowCullingJobs.clear();
 
         for ( size_t i = 0; i < numCascades; i++ ) {

@@ -180,15 +180,7 @@ private:
     void RecreateShadowSampler();
     void EnsureShadowMapBackend( int size );
 
-    void WaitShadowCullingComplete() {
-        ZoneScopedN( "WaitShadowCullingComplete" );
-        std::lock_guard<std::mutex> lock( m_CullingJobsMutex );
-        for ( auto& job : m_ShadowCullingJobs ) {
-            if (job.valid() ) {
-                job.wait();
-            }
-        }
-    }
+    void WaitShadowCullingComplete();
 
     Microsoft::WRL::ComPtr<ID3D11Device1> m_device;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext1> m_context;
@@ -214,6 +206,6 @@ private:
     std::unique_ptr<D3D11TiledDeferredShading> m_TiledDeferred;
     D3D11LegacyDeferredShading m_LegacyDeferred;
 
-    std::mutex m_CullingJobsMutex;
+    TracyLockable(std::mutex, m_CullingJobsMutex);
     std::vector<std::future<void>> m_ShadowCullingJobs;
 };

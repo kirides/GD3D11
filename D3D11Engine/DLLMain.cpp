@@ -525,6 +525,8 @@ BOOL WINAPI DllMain( HINSTANCE hInst, DWORD reason, LPVOID ) {
                 LogInfo() << "COM initialized";
             }
 
+            ZoneScoped;
+
             // Check for right version
             VersionCheck::CheckExecutable();
             CheckPlatformSupport();

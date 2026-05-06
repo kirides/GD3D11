@@ -6,7 +6,7 @@
 #include "GothicAPI.h"
 #include "D3D11ShadowMap.h"
 #include "D3D11ShaderManager.h"
-#include <tracy/public/tracy/TracyD3D11.hpp>
+#include "D3D11TracyDebug.h"
 
 struct RenderToDepthStencilBuffer;
 
@@ -607,6 +607,4 @@ private:
     INT2 NewResolution;
     
     void CreateAndBindDefaultSampler();
-
-    std::unique_ptr<TracyD3D11Ctx> m_tracyd3d11Context;
 };
