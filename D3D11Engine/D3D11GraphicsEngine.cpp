@@ -561,7 +561,7 @@ XRESULT D3D11GraphicsEngine::Init() {
 
     Device11.As( &Device );
     Context11.As( &Context );
-    auto ctx = TracyD3D11Context( Device.Get(), Context.Get() )
+    auto ctx = TracyD3D11Context( Device.Get(), Context.Get() );
     m_tracyd3d11Context.reset(ctx);
 
     Context.As( &m_UserDefinedAnnotation );

@@ -608,5 +608,5 @@ private:
     
     void CreateAndBindDefaultSampler();
 
-    std::unique_ptr<tracy::D3D11Ctx> m_tracyd3d11Context;
+    std::unique_ptr<TracyD3D11Ctx> m_tracyd3d11Context;
 };
