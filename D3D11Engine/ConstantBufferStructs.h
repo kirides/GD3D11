@@ -12,8 +12,15 @@ struct VobInstanceInfo {
     DWORD color;
     float windStrenth;
     float canBeAffectedByPlayer;
-    // General purpose slot
+    // General purpose slot. Used by instanced VOB rendering to store an index
+    // into optional per-visual metadata buffers.
     DWORD GP_Slot;
+};
+
+struct VobWindMetadata {
+    float MinHeight;
+    float MaxHeight;
+    float2 Padding;
 };
 
 /** Per-instance data for instanced node attachment rendering */
@@ -114,6 +121,25 @@ struct DepthOfFieldConstantBuffer {
     float DoF_FarPlane;
     float DoF_Pad;
     float DoF_Pad2;
+};
+
+struct SAOConstantBuffer {
+    float4 SAO_ProjParams;    // x = 1/P._11, y = 1/P._22, z = P._34, w = P._33
+    float  SAO_Radius;        // World-space AO radius
+    float  SAO_Bias;          // Normal bias to reduce self-occlusion
+    float  SAO_Intensity;     // Darkening strength
+    int    SAO_NumSamples;    // Spiral sample count (16-48)
+    float2 SAO_InvResolution; // 1/width, 1/height
+    float  SAO_BlurSharpness; // Bilateral blur edge preservation
+    float  SAO_Pad;
+};
+
+struct SAOBlurConstantBuffer {
+    float2 SAO_Blur_InvResolution;
+    float2 SAO_Blur_Direction;
+    float  SAO_Blur_Sharpness;
+    float3 SAO_Blur_Pad;
+    float4 SAO_Blur_ProjParams;
 };
 
 struct HDRSettingsConstantBuffer {
@@ -381,5 +407,11 @@ struct TiledShadingConstantBuffer {
     uint32_t NumTilesX;
     float2 Pad1;
     XMFLOAT4X4 InvView; // For world-space reconstruction (shadow sampling)
+};
+
+struct ForwardPlusTileConstantBuffer {
+    float2 ViewportSize;
+    uint32_t NumTilesX;
+    uint32_t LimitLightIntensity;
 };
 #pragma pack (pop)

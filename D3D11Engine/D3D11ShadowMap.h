@@ -143,8 +143,11 @@ public:
     void RenderShadowmaps( const RenderShadowmapsParams& params );
 
     XRESULT DrawWorldLights();
+    DS_ScreenQuadConstantBuffer FillSunCSMConstantBuffer() const;
     XRESULT DrawLighting(std::vector<VobLightInfo*>& lights, RenderToTextureBuffer& color, RenderToTextureBuffer& normals, RenderToTextureBuffer
                          & specular, RenderToTextureBuffer& depthCopy);
+
+    D3D11TiledDeferredShading* GetTiledDeferred() const { return m_TiledDeferred.get(); }
 
     void XM_CALLCONV RenderShadowCube( DirectX::FXMVECTOR position,
         float range,
@@ -157,7 +160,7 @@ public:
         std::list<VobInfo*>* renderedVobs = nullptr, 
         std::list<SkeletalVobInfo*>* renderedMobs = nullptr,
         std::map<MeshKey,
-        WorldMeshInfo*,
+        MeshInfo*,
         cmpMeshKey>* worldMeshCache = nullptr,
         bool clearDepth = true,
         unsigned int casterMask = 0xFFFFFFFFu );
@@ -171,10 +174,21 @@ public:
     };
 
     D3D11RenderQueue* GetRenderQueue( int cascadeIndex ) { return m_RenderQueues[cascadeIndex].get(); }
+
 private:
     bool ShouldUseAtlas() const;
     void RecreateShadowSampler();
     void EnsureShadowMapBackend( int size );
+
+    void WaitShadowCullingComplete() {
+        ZoneScopedN( "WaitShadowCullingComplete" );
+        std::lock_guard<std::mutex> lock( m_CullingJobsMutex );
+        for ( auto& job : m_ShadowCullingJobs ) {
+            if (job.valid() ) {
+                job.wait();
+            }
+        }
+    }
 
     Microsoft::WRL::ComPtr<ID3D11Device1> m_device;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext1> m_context;
@@ -199,4 +213,7 @@ private:
 
     std::unique_ptr<D3D11TiledDeferredShading> m_TiledDeferred;
     D3D11LegacyDeferredShading m_LegacyDeferred;
+
+    std::mutex m_CullingJobsMutex;
+    std::vector<std::future<void>> m_ShadowCullingJobs;
 };

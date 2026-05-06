@@ -16,7 +16,7 @@ namespace {
         ID3D11RenderTargetView* outputRTV,
         RGResourceHandle backBufferHandle)
     {
-        graph.AddPass( L"FSR 1 Upscale", [&]( RGBuilder& builder, RenderPass& pass ) {
+        graph.AddPass( RG_PASS_NAME("FSR 1 Upscale"), [&]( RGBuilder& builder, RenderPass& pass ) {
             builder.Read( backBufferHandle );
             builder.Write( backBufferHandle );
 
@@ -46,7 +46,7 @@ namespace {
         RGResourceHandle velocityBufferHandle,
         RGResourceHandle reactiveMaskResource )
     {
-        graph.AddPass( L"FSR 2", [&]( RGBuilder& builder, RenderPass& pass ) {
+        graph.AddPass( RG_PASS_NAME("FSR 2"), [&]( RGBuilder& builder, RenderPass& pass ) {
             builder.Read( velocityBufferHandle );
             builder.Read( reactiveMaskResource );
             builder.Read( backBufferHandle );
@@ -111,7 +111,7 @@ namespace {
         RGResourceHandle velocityBufferHandle,
         RGResourceHandle reactiveMaskResource )
     {
-        graph.AddPass( L"FSR 3", [&]( RGBuilder& builder, RenderPass& pass ) {
+        graph.AddPass( RG_PASS_NAME("FSR 3"), [&]( RGBuilder& builder, RenderPass& pass ) {
             builder.Read( velocityBufferHandle );
             builder.Read( reactiveMaskResource );
             builder.Read( backBufferHandle );

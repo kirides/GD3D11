@@ -15,6 +15,7 @@
 #include "D3D11GraphicsEngineBase.h"
 #include <d3dcompiler.h>
 #include "D3D11PFX_TAA.h"
+#include "D3D11FileRelativeInclude.h"
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "d3dcompiler.lib")
@@ -27,97 +28,6 @@
 
 #include <fstream>
 #include <unordered_map>
-
-namespace
-{
-    // Include handler that resolves includes relative to the including file
-    // and also files relative to any relative included file (i.e. nested includes).
-    class D3D11FileRelativeInclude final : public ID3DInclude
-    {
-    public:
-        explicit D3D11FileRelativeInclude( std::filesystem::path rootDir )
-            : RootDir( std::move( rootDir ) )
-        {
-        }
-
-        HRESULT __stdcall Open( D3D_INCLUDE_TYPE includeType, LPCSTR pFileName, LPCVOID pParentData, LPCVOID* ppData, UINT* pBytes ) override
-        {
-            if ( ppData == nullptr || pBytes == nullptr || pFileName == nullptr )
-                return E_INVALIDARG;
-
-            std::filesystem::path baseDir = RootDir;
-
-            // If pParentData is an include we previously returned, use its directory as base.
-            if ( pParentData != nullptr ) {
-                auto it = ParentDirByData.find( pParentData );
-                if ( it != ParentDirByData.end() )
-                    baseDir = it->second;
-            }
-
-            std::filesystem::path requested = std::filesystem::path( pFileName );
-
-            // Resolve strategy:
-            // 1) If requested is absolute -> use it
-            // 2) else -> resolve relative to includer's directory (baseDir)
-            // 3) If not found, optionally fall back to RootDir (useful for global include roots)
-            std::filesystem::path fullPath = requested.is_absolute() ? requested : (baseDir / requested);
-            fullPath = fullPath.lexically_normal();
-
-            if ( !std::filesystem::exists( fullPath ) && !requested.is_absolute() ) {
-                std::filesystem::path fallback = (RootDir / requested).lexically_normal();
-                if ( std::filesystem::exists( fallback ) )
-                    fullPath = fallback;
-            }
-
-            std::ifstream file( fullPath, std::ios::binary );
-            if ( !file )
-                return HRESULT_FROM_WIN32( ERROR_FILE_NOT_FOUND );
-
-            file.seekg( 0, std::ios::end );
-            const std::streamoff size = file.tellg();
-            file.seekg( 0, std::ios::beg );
-
-            if ( size <= 0 )
-                return HRESULT_FROM_WIN32( ERROR_INVALID_DATA );
-
-            auto buffer = std::make_unique<uint8_t[]>( static_cast<size_t>(size) );
-            file.read( reinterpret_cast<char*>(buffer.get()), size );
-            if ( !file )
-                return HRESULT_FROM_WIN32( ERROR_READ_FAULT );
-
-            const void* dataPtr = buffer.get();
-            *ppData = dataPtr;
-            *pBytes = static_cast<UINT>(size);
-
-            // Track the directory of THIS include, so nested includes resolve against it.
-            ParentDirByData.emplace( dataPtr, fullPath.parent_path() );
-
-            OwnedBuffers.emplace_back( std::move( buffer ) );
-            return S_OK;
-        }
-
-        HRESULT __stdcall Close( LPCVOID pData ) override
-        {
-            if ( pData == nullptr )
-                return E_INVALIDARG;
-
-            ParentDirByData.erase( pData );
-
-            // Owned buffer lifetime is tied to this include handler; we can keep it until the compile ends.
-            // (D3DCompile will call Close, but we keep buffers to avoid pointer invalidation for ParentDirByData lookups.)
-            return S_OK;
-        }
-
-    private:
-        std::filesystem::path RootDir;
-
-        // key: pointer handed to compiler (ppData), value: directory of that include
-        std::unordered_map<const void*, std::filesystem::path> ParentDirByData;
-
-        // keep memory alive for duration of compilation
-        std::vector<std::unique_ptr<uint8_t[]>> OwnedBuffers;
-    };
-}
 
 const int NUM_MAX_BONES = 96;
 
@@ -255,12 +165,15 @@ XRESULT D3D11ShaderManager::Init() {
 #ifdef BUILD_GOTHIC_2_6_fix
             list.push_back( {"SHD_WIND",      s.WindQuality == GothicRendererSettings::EWindQuality::WIND_QUALITY_ADVANCED ? "1" : "0"} );
             list.push_back( {"SHD_INFLUENCE", s.HeroAffectsObjects ? "1" : "0"} );
+            list.push_back( {"WIND_META_SRV", (!FeatureLevel10Compatibility && (s.WindQuality == GothicRendererSettings::EWindQuality::WIND_QUALITY_ADVANCED || s.HeroAffectsObjects)) ? "1" : "0"} );
 #elif defined(BUILD_1_12F)
             list.push_back( {"SHD_WIND",      "0"} );
             list.push_back( {"SHD_INFLUENCE", "0"} );
+            list.push_back( {"WIND_META_SRV", "0"} );
 #else
             list.push_back( {"SHD_WIND",      (haveWindAnimations && s.WindQuality == GothicRendererSettings::EWindQuality::WIND_QUALITY_ADVANCED) ? "1" : "0"} );
             list.push_back( {"SHD_INFLUENCE", (haveWindAnimations && s.HeroAffectsObjects) ? "1" : "0"} );
+            list.push_back( {"WIND_META_SRV", (!FeatureLevel10Compatibility && haveWindAnimations && (s.WindQuality == GothicRendererSettings::EWindQuality::WIND_QUALITY_ADVANCED || s.HeroAffectsObjects)) ? "1" : "0"} );
 #endif
         }) );
 
@@ -308,6 +221,7 @@ XRESULT D3D11ShaderManager::Init() {
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_CinemaScope>( "VS_CinemaScope.hlsl" )  );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_Simple>( "PS_PFX_Simple.hlsl" ) );
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_Simple_R8>( "PS_PFX_Simple_R8.hlsl" ) );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_VelocityDebug>( "PS_PFX_VelocityDebug.hlsl" )  );
 
@@ -334,6 +248,15 @@ XRESULT D3D11ShaderManager::Init() {
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_GodRayMask>( "PS_PFX_GodRayMask.hlsl" ) );
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_GodRayZoom>( "PS_PFX_GodRayZoom.hlsl" ) );
+
+    // PostFX Composition uber shader
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_Composition>( "PS_PFX_Composition.hlsl" )
+        .with_macros( [](std::vector<D3D_SHADER_MACRO>& list) {
+            const auto& s = Engine::GAPI->GetRendererState().RendererSettings;
+            list.push_back( { "COMPOSE_SAO", (s.AoMode == AOMode::AO_SAO) ? "1" : "0" } );
+            list.push_back( { "COMPOSE_GODRAYS", s.EnableGodRays ? "1" : "0" } );
+            list.push_back( { "COMPOSE_HEIGHTFOG", s.DrawFog ? "1" : "0" } );
+        } ) );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_Tonemap>( "PS_PFX_Tonemap.hlsl" )
         .with_category(ShaderCategory::Tonemapping)
@@ -511,6 +434,78 @@ XRESULT D3D11ShaderManager::Init() {
         }));
 
         Shaders.push_back( ShaderInfo::make<CShaderID::CS_TiledShading>( "CS_TiledShading.hlsl" ));
+
+        Shaders.push_back( ShaderInfo::make<CShaderID::CS_PFX_GodRayMask>( "CS_PFX_GodRayMask.hlsl" ));
+
+        Shaders.push_back( ShaderInfo::make<CShaderID::CS_PFX_GodRayZoom>( "CS_PFX_GodRayZoom.hlsl" ));
+
+        Shaders.push_back( ShaderInfo::make<CShaderID::CS_PFX_DoF_FocusResolve>( "CS_PFX_DoF_FocusResolve.hlsl" ));
+
+        Shaders.push_back( ShaderInfo::make<CShaderID::CS_PFX_DoF>( "CS_PFX_DoF.hlsl" ));
+
+        Shaders.push_back( ShaderInfo::make<CShaderID::CS_PFX_DoF_Gauss>( "CS_PFX_DoF.hlsl" )
+            .with_macros( {{ "DOF_GAUSS_BLUR", "1" }} ) );
+
+        Shaders.push_back( ShaderInfo::make<CShaderID::CS_PFX_DoF_Composite>( "CS_PFX_DoF_Composite.hlsl" ));
+
+        Shaders.push_back( ShaderInfo::make<CShaderID::CS_PFX_SAO>( "CS_PFX_SAO.hlsl" ));
+
+        Shaders.push_back( ShaderInfo::make<CShaderID::CS_PFX_SAO_Blur>( "CS_PFX_SAO_Blur.hlsl" ));
+        
+        // Forward+ pixel shader variants
+        Shaders.push_back( ShaderInfo::make<PShaderID::PS_FP_Diffuse>( "PS_Diffuse.hlsl" )
+            .with_macros(shadowMacroBuilder)
+            .with_macros( {
+                { "FORWARD_PLUS", "1" },
+                { "NORMALMAPPING", "0" },
+                { "ALPHATEST", "0" },
+            }).with_category(ShaderCategory::LightsAndShadows));
+
+        Shaders.push_back( ShaderInfo::make<PShaderID::PS_FP_DiffuseNormalmapped>( "PS_Diffuse.hlsl" )
+            .with_macros(shadowMacroBuilder)
+            .with_macros( {
+                { "FORWARD_PLUS", "1" },
+                { "NORMALMAPPING", "1" },
+                { "ALPHATEST", "0" },
+            } ).with_category( ShaderCategory::LightsAndShadows ) );
+
+        Shaders.push_back( ShaderInfo::make<PShaderID::PS_FP_DiffuseNormalmappedFxMap>( "PS_Diffuse.hlsl" )
+            .with_macros(shadowMacroBuilder)
+            .with_macros( {
+                { "FORWARD_PLUS", "1" },
+                { "NORMALMAPPING", "1" },
+                { "ALPHATEST", "0" },
+                { "FXMAP", "1" },
+            } ).with_category( ShaderCategory::LightsAndShadows ) );
+
+        Shaders.push_back( ShaderInfo::make<PShaderID::PS_FP_DiffuseAlphaTest>( "PS_Diffuse.hlsl" )
+            .with_macros(shadowMacroBuilder)
+            .with_macros( {
+                { "FORWARD_PLUS", "1" },
+                { "NORMALMAPPING", "0" },
+                { "ALPHATEST", "1" },
+            } ).with_category( ShaderCategory::LightsAndShadows ) );
+
+        Shaders.push_back( ShaderInfo::make<PShaderID::PS_FP_DiffuseNormalmappedAlphaTest>( "PS_Diffuse.hlsl" )
+            .with_macros(shadowMacroBuilder)
+            .with_macros( {
+                { "FORWARD_PLUS", "1" },
+                { "NORMALMAPPING", "1" },
+                { "ALPHATEST", "1" },
+            } ).with_category( ShaderCategory::LightsAndShadows ) );
+
+        Shaders.push_back( ShaderInfo::make<PShaderID::PS_FP_DiffuseNormalmappedAlphaTestFxMap>( "PS_Diffuse.hlsl" )
+            .with_macros(shadowMacroBuilder)
+            .with_macros( {
+                { "FORWARD_PLUS", "1" },
+                { "NORMALMAPPING", "1" },
+                { "ALPHATEST", "1" },
+                { "FXMAP", "1" },
+            } ).with_category( ShaderCategory::LightsAndShadows ) );
+
+        Shaders.push_back( ShaderInfo::make<PShaderID::PS_FP_ShadowMask>( "PS_FP_ShadowMask.hlsl" )
+            .with_macros(shadowMacroBuilder)
+            .with_category( ShaderCategory::LightsAndShadows ) );
     }
 
     return XR_SUCCESS;

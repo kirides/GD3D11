@@ -11,6 +11,10 @@
 #endif
 #endif
 
+#include <tracy/public/tracy/Tracy.hpp>
+#include <tracy/public/client/TracyCallstack.hpp>
+#include <tracy/public/tracy/TracyD3D11.hpp>
+#include "MemoryTracker.h"
 #include <Windows.h>
 #include <wrl/client.h>
 #include <chrono>
@@ -109,3 +113,13 @@ namespace std {
 
     };
 }
+
+#if defined(BUILD_GOTHIC_2_6_fix)
+#define SWITCH_ENGINE(G1, G1A, G2A, OTHER) G2A
+#elif defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)
+#define SWITCH_ENGINE(G1, G1A, G2A, OTHER) G1
+#elif defined(BUILD_GOTHIC_1_08k) && defined(BUILD_1_12F)
+#define SWITCH_ENGINE(G1, G1A, G2A, OTHER) G1A
+#else
+#define SWITCH_ENGINE(G1, G1A, G2A, OTHER) OTHER
+#endif

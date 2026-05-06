@@ -105,19 +105,6 @@ struct MeshInfo {
     uint16_t meshId;
 };
 
-struct WorldMeshInfo : public MeshInfo {
-    WorldMeshInfo() = default;
-    WorldMeshInfo( WorldMeshInfo&& other ) = default;
-    WorldMeshInfo& operator=( WorldMeshInfo&& ) = default;
-    WorldMeshInfo( const WorldMeshInfo& other ) = delete;
-    WorldMeshInfo& operator=(const WorldMeshInfo& other) = delete;
-
-    ~WorldMeshInfo() override = default;
-
-    /** If true we will save an info-file on next zen-resource-save */
-    bool SaveInfo;
-};
-
 struct QuadMarkInfo {
     QuadMarkInfo() = default;
     QuadMarkInfo( QuadMarkInfo&& other ) = default;
@@ -316,7 +303,7 @@ struct VobInfo : public BaseVobInfo {
     bool IsIndoorVob;
 
     /** Flag to see if this vob was drawn in the current render pass. Used to collect the same vob only once. */
-    bool VisibleInRenderPass;
+    std::atomic<size_t> VisibleInRenderPass;
 
     /** Section this vob is in */
     WorldMeshSectionInfo* VobSection;
@@ -354,7 +341,7 @@ struct VobLightInfo {
     zCVobLight* Vob;
 
     /** Flag to see if this vob was drawn in the current render pass. Used to collect the same vob only once. Cleared immediately. */
-    bool VisibleInRenderPass;
+    std::atomic<size_t> VisibleInRenderPass;
     bool IsPFXVobLight;
 
     /** True if this is an indoor-vob */
@@ -388,7 +375,6 @@ struct SkeletalVobInfo : public BaseVobInfo {
         Vob = nullptr;
         VisualInfo = nullptr;
         IndoorVob = false;
-        VisibleInRenderPass = false;
         VobConstantBuffer = nullptr;
         HasValidPrevTransforms = false;
         LastAniUpdateFrame = 0;
@@ -432,7 +418,7 @@ struct SkeletalVobInfo : public BaseVobInfo {
     bool IndoorVob;
 
     /** Flag to see if this vob was drawn in the current render pass. Used to collect the same vob only once. */
-    bool VisibleInRenderPass;
+    std::atomic<size_t> VisibleInRenderPass;
 
     /** Current world transform */
     XMFLOAT4X4 WorldMatrix;
@@ -499,7 +485,7 @@ struct WorldMeshSectionInfo {
     /** Saves this sections mesh to a file */
     void SaveSectionMeshToFile( const std::string& name );
 
-    std::map<MeshKey, WorldMeshInfo*, cmpMeshKey> WorldMeshes;
+    std::map<MeshKey, MeshInfo*, cmpMeshKey> WorldMeshes;
     std::map<D3D11Texture*, std::vector<MeshInfo*>> WorldMeshesByCustomTexture;
     std::map<zCMaterial*, std::vector<MeshInfo*>> WorldMeshesByCustomTextureOriginal;
     std::map<MeshKey, MeshInfo*, cmpMeshKey> SuppressedMeshes;

@@ -215,7 +215,98 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
     RenderToTextureBuffer& depthCopy ) {
 
     auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
-    auto _ = graphicsEngine->RecordGraphicsEvent( L"TiledPointlightLights" );
+    auto _ = graphicsEngine->RecordGraphicsEvent( GE_NAME( "TiledPointlightLights" ) );
+    auto& context = graphicsEngine->GetContext();
+
+    // ---- Pass 1: Pack lights + cull ----
+    auto cullResult = CullLights( lights, depthCopy );
+
+    INT2 resolution = Engine::GraphicsEngine->GetResolution();
+    uint32_t numTilesX = (resolution.x + TILE_SIZE - 1) / TILE_SIZE;
+    uint32_t numTilesY = (resolution.y + TILE_SIZE - 1) / TILE_SIZE;
+
+    // ---- Pass 2: Tiled Shading (compute) ----
+    if ( cullResult.TiledLightCount > 0 ) {
+        auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+        XMMATRIX viewRaw = Engine::GAPI->GetViewMatrixXM();
+
+        // Unbind HDR as RTV before binding as UAV
+        ID3D11RenderTargetView* nullRTV = nullptr;
+        context->OMSetRenderTargets( 1, &nullRTV, nullptr );
+
+        auto csTiledShading = graphicsEngine->GetShaderManager().GetCShader( CShaderID::CS_TiledShading );
+        csTiledShading->Apply();
+
+        // Fill and bind shading constant buffer
+        TiledShadingConstantBuffer shadeCB = {};
+        shadeCB.ViewportSize = float2( static_cast<float>(resolution.x), static_cast<float>(resolution.y) );
+        {
+            auto& proj = Engine::GAPI->GetProjectionMatrix();
+            shadeCB.ProjParams = float4( 1.0f / proj._11, 1.0f / proj._22, proj._43, proj._33 );
+        }
+        shadeCB.LimitLightIntensity = settings.LimitLightIntesity ? 1 : 0;
+        shadeCB.NumTilesX = numTilesX;
+        XMStoreFloat4x4( &shadeCB.InvView, XMMatrixInverse( nullptr, viewRaw ) );
+
+        csTiledShading->GetBuffer( "TiledShadingConstantBuffer" ).Update( &shadeCB ).Bind();
+
+        // Bind GBuffer SRVs to CS
+        context->CSSetShaderResources( 0, 1, color.GetShaderResView().GetAddressOf() );
+        context->CSSetShaderResources( 1, 1, normals.GetShaderResView().GetAddressOf() );
+        context->CSSetShaderResources( 2, 1, depthCopy.GetShaderResView().GetAddressOf() );
+        context->CSSetShaderResources( 7, 1, specular.GetShaderResView().GetAddressOf() );
+
+        // Bind linear sampler to CS slot 0 (required for GBuffer SampleLevel calls)
+        ID3D11SamplerState* linearSampler = graphicsEngine->GetDefaultSamplerState();
+        context->CSSetSamplers( 0, 1, &linearSampler );
+
+        // Bind tiled data SRVs
+        context->CSSetShaderResources( 8, 1, m_LightBufferSRV.GetAddressOf() );
+        context->CSSetShaderResources( 9, 1, m_LightGridSRV.GetAddressOf() );
+        context->CSSetShaderResources( 10, 1, m_LightIndexListSRV.GetAddressOf() );
+
+        // Bind comparison sampler unconditionally — the runtime validates at Dispatch
+        // even if the shader branches around SampleCmpLevelZero
+        graphicsEngine->GetShadowMaps()->BindSamplerToCS( context.Get(), 2 );
+
+        // Bind shadow cubemap array SRV
+        if ( cullResult.HasShadowedTiledLights && m_ShadowArrayCreated ) {
+            context->CSSetShaderResources( 11, 1, m_ShadowCubeArraySRV.GetAddressOf() );
+        }
+
+        // Bind HDR UAV
+        auto& hdrUAV = graphicsEngine->GetHDRBackBuffer().GetUnorderedAccessView();
+        context->CSSetUnorderedAccessViews( 0, 1, hdrUAV.GetAddressOf(), nullptr );
+
+        context->Dispatch( numTilesX, numTilesY, 1 );
+
+        // Unbind everything
+        ID3D11UnorderedAccessView* nullUAV = nullptr;
+        context->CSSetUnorderedAccessViews( 0, 1, &nullUAV, nullptr );
+        ID3D11ShaderResourceView* nullSRVs[12] = {};
+        context->CSSetShaderResources( 0, 12, nullSRVs );
+        context->CSSetShader( nullptr, nullptr, 0 );
+
+        // Restore HDR as RTV
+        context->OMSetRenderTargets( 1, graphicsEngine->GetHDRBackBuffer().GetRenderTargetView().GetAddressOf(),
+            graphicsEngine->GetDepthBuffer()->GetDepthStencilView().Get() );
+    }
+
+    // Draw lights that couldn't go through the tiled path (mismatched shadow cube size, overflow)
+    if ( !cullResult.LegacyLights.empty() ) {
+        D3D11LegacyDeferredShading legacy;
+        legacy.DrawPointlightLights( cullResult.LegacyLights, color, normals, specular, depthCopy );
+    }
+
+    return XR_SUCCESS;
+}
+
+D3D11TiledDeferredShading::CullResult D3D11TiledDeferredShading::CullLights(
+    std::vector<VobLightInfo*>& lights,
+    RenderToTextureBuffer& depthCopy ) {
+
+    auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    auto _ = graphicsEngine->RecordGraphicsEvent( GE_NAME( "CullLights" ) );
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
     auto& context = graphicsEngine->GetContext();
 
@@ -228,17 +319,18 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
 
     EnsureBuffers( numTilesX, numTilesY );
 
+    CullResult result = {};
+
     // Partition lights: all lights go tiled where possible.
     // Shadowed lights with a tiled slot render directly into the shared array (no copies).
-    // Shadowed lights without a tiled slot (256×256 or overflow) fall back to legacy.
-    uint32_t tiledLightCount = 0;
+    // Shadowed lights without a tiled slot (256x256 or overflow) fall back to legacy.
     bool hasShadowedTiledLights = false;
 
     // Map light buffer
     D3D11_MAPPED_SUBRESOURCE mapped;
-    if (! SUCCEEDED(context->Map( m_LightBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped ))) {
-        LogError() << "Failed to map buffer.";
-        return XR_FAILED;
+    if ( !SUCCEEDED( context->Map( m_LightBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped ) ) ) {
+        LogError() << "Failed to map light buffer.";
+        return result;
     }
     TiledPointLight* lightData = reinterpret_cast<TiledPointLight*>(mapped.pData);
 
@@ -246,8 +338,6 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
 
     for ( auto const& light : lights ) {
         zCVobLight* vob = light->Vob;
-
-        light->VisibleInRenderPass = false;
 
         if ( !vob->IsEnabled() ) continue;
 
@@ -266,7 +356,7 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
             continue;
         }
 
-        if ( tiledLightCount >= MAX_TILED_LIGHTS )
+        if ( result.TiledLightCount >= MAX_TILED_LIGHTS )
             continue;
 
         vob->DoAnimation();
@@ -287,22 +377,19 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
             lightColor.z *= fadeFactor;
         }
 
-        // Brightness multiplier
         float lightFactor = 1.2f;
         lightColor.x *= lightFactor;
         lightColor.y *= lightFactor;
         lightColor.z *= lightFactor;
 
-        // Skip completely dark lights
         if ( lightColor.x <= 0.0f && lightColor.y <= 0.0f && lightColor.z <= 0.0f )
             continue;
 
-        // View-space position
         FXMVECTOR posWorldVec = XMLoadFloat3( posWorld.toXMFLOAT3() );
         XMFLOAT3 posView;
         XMStoreFloat3( &posView, XMVector3TransformCoord( posWorldVec, view ) );
 
-        TiledPointLight& tl = lightData[tiledLightCount];
+        TiledPointLight& tl = lightData[result.TiledLightCount];
         tl.PositionView = posView;
         tl.Range = lightRange;
         tl.Color = XMFLOAT4( lightColor.x, lightColor.y, lightColor.z, lightColor.w );
@@ -315,118 +402,45 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
             tl.ShadowCubeIndex = -1;
         }
 
-        tiledLightCount++;
+        result.TiledLightCount++;
         Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnLights++;
     }
 
     context->Unmap( m_LightBuffer.Get(), 0 );
 
-    // No copies needed — shadowed lights rendered directly into the TextureCubeArray slots
+    // Dispatch CS_LightCulling if we have lights
+    if ( result.TiledLightCount > 0 ) {
+        auto csLightCull = graphicsEngine->GetShaderManager().GetCShader( CShaderID::CS_LightCulling );
+        csLightCull->Apply();
 
-    // Only run tiled path if we have lights
-    if ( tiledLightCount > 0 ) {
-        // ---- Pass 1: Light Culling ----
-        {
-            auto csLightCull = graphicsEngine->GetShaderManager().GetCShader( CShaderID::CS_LightCulling );
-            csLightCull->Apply();
+        LightCullingConstantBuffer cullCB = {};
+        cullCB.Proj = Engine::GAPI->GetProjectionMatrix();
+        cullCB.ScreenWidth = static_cast<uint32_t>(resolution.x);
+        cullCB.ScreenHeight = static_cast<uint32_t>(resolution.y);
+        cullCB.TotalLights = result.TiledLightCount;
+        cullCB.MaxBufferIndices = (numTilesX * numTilesY) * MAX_LIGHTS_PER_TILE;
 
-            // Fill and bind culling constant buffer
-            LightCullingConstantBuffer cullCB = {};
-            cullCB.Proj = Engine::GAPI->GetProjectionMatrix();
-            cullCB.ScreenWidth = static_cast<uint32_t>(resolution.x);
-            cullCB.ScreenHeight = static_cast<uint32_t>(resolution.y);
-            cullCB.TotalLights = tiledLightCount;
-            cullCB.MaxBufferIndices = (numTilesX * numTilesY) * MAX_LIGHTS_PER_TILE;
+        csLightCull->GetBuffer( "LightCullingConstantBuffer" ).Update( &cullCB ).Bind();
 
-            csLightCull->GetBuffer( "LightCullingConstantBuffer" ).Update( &cullCB ).Bind();
+        context->CSSetShaderResources( 0, 1, depthCopy.GetShaderResView().GetAddressOf() );
+        context->CSSetShaderResources( 1, 1, m_LightBufferSRV.GetAddressOf() );
 
-            // Bind depth copy as SRV to CS slot t0
-            context->CSSetShaderResources( 0, 1, depthCopy.GetShaderResView().GetAddressOf() );
-            // Bind light buffer as SRV to CS slot t1
-            context->CSSetShaderResources( 1, 1, m_LightBufferSRV.GetAddressOf() );
+        UINT clearVal[4] = { 0, 0, 0, 0 };
+        context->ClearUnorderedAccessViewUint( m_IndexCounterUAV.Get(), clearVal );
 
-            // Clear atomic counter
-            UINT clearVal[4] = { 0, 0, 0, 0 };
-            context->ClearUnorderedAccessViewUint( m_IndexCounterUAV.Get(), clearVal );
+        ID3D11UnorderedAccessView* uavs[3] = { m_LightGridUAV.Get(), m_LightIndexListUAV.Get(), m_IndexCounterUAV.Get() };
+        context->CSSetUnorderedAccessViews( 0, 3, uavs, nullptr );
 
-            // Bind UAVs
-            ID3D11UnorderedAccessView* uavs[3] = { m_LightGridUAV.Get(), m_LightIndexListUAV.Get(), m_IndexCounterUAV.Get() };
-            context->CSSetUnorderedAccessViews( 0, 3, uavs, nullptr );
+        context->Dispatch( numTilesX, numTilesY, 1 );
 
-            context->Dispatch( numTilesX, numTilesY, 1 );
-
-            // Unbind
-            ID3D11UnorderedAccessView* nullUAVs[3] = { nullptr, nullptr, nullptr };
-            context->CSSetUnorderedAccessViews( 0, 3, nullUAVs, nullptr );
-            ID3D11ShaderResourceView* nullSRVs[2] = { nullptr, nullptr };
-            context->CSSetShaderResources( 0, 2, nullSRVs );
-            context->CSSetShader( nullptr, nullptr, 0 );
-        }
-
-        // ---- Pass 2: Tiled Shading ----
-        {
-            // Unbind HDR as RTV before binding as UAV
-            ID3D11RenderTargetView* nullRTV = nullptr;
-            context->OMSetRenderTargets( 1, &nullRTV, nullptr );
-
-            auto csTiledShading = graphicsEngine->GetShaderManager().GetCShader( CShaderID::CS_TiledShading );
-            csTiledShading->Apply();
-
-            // Fill and bind shading constant buffer
-            TiledShadingConstantBuffer shadeCB = {};
-            shadeCB.ViewportSize = float2( static_cast<float>(resolution.x), static_cast<float>(resolution.y) );
-            {
-                auto& proj = Engine::GAPI->GetProjectionMatrix();
-                shadeCB.ProjParams = float4( 1.0f / proj._11, 1.0f / proj._22, proj._43, proj._33 );
-            }
-            shadeCB.LimitLightIntensity = settings.LimitLightIntesity ? 1 : 0;
-            shadeCB.NumTilesX = numTilesX;
-            XMStoreFloat4x4( &shadeCB.InvView, XMMatrixInverse( nullptr, viewRaw ) );
-
-            csTiledShading->GetBuffer( "TiledShadingConstantBuffer" ).Update( &shadeCB ).Bind();
-
-            // Bind GBuffer SRVs to CS
-            context->CSSetShaderResources( 0, 1, color.GetShaderResView().GetAddressOf() );
-            context->CSSetShaderResources( 1, 1, normals.GetShaderResView().GetAddressOf() );
-            context->CSSetShaderResources( 2, 1, depthCopy.GetShaderResView().GetAddressOf() );
-            context->CSSetShaderResources( 7, 1, specular.GetShaderResView().GetAddressOf() );
-
-            // Bind linear sampler to CS slot 0 (required for GBuffer SampleLevel calls)
-            ID3D11SamplerState* linearSampler = graphicsEngine->GetDefaultSamplerState();
-            context->CSSetSamplers( 0, 1, &linearSampler );
-
-            // Bind tiled data SRVs
-            context->CSSetShaderResources( 8, 1, m_LightBufferSRV.GetAddressOf() );
-            context->CSSetShaderResources( 9, 1, m_LightGridSRV.GetAddressOf() );
-            context->CSSetShaderResources( 10, 1, m_LightIndexListSRV.GetAddressOf() );
-
-            // Bind comparison sampler unconditionally — the runtime validates at Dispatch
-            // even if the shader branches around SampleCmpLevelZero
-            graphicsEngine->GetShadowMaps()->BindSamplerToCS( context.Get(), 2 );
-
-            // Bind shadow cubemap array SRV
-            if ( hasShadowedTiledLights && m_ShadowArrayCreated ) {
-                context->CSSetShaderResources( 11, 1, m_ShadowCubeArraySRV.GetAddressOf() );
-            }
-
-            // Bind HDR UAV
-            auto& hdrUAV = graphicsEngine->GetHDRBackBuffer().GetUnorderedAccessView();
-            context->CSSetUnorderedAccessViews( 0, 1, hdrUAV.GetAddressOf(), nullptr );
-
-            context->Dispatch( numTilesX, numTilesY, 1 );
-
-            // Unbind everything
-            ID3D11UnorderedAccessView* nullUAV = nullptr;
-            context->CSSetUnorderedAccessViews( 0, 1, &nullUAV, nullptr );
-            ID3D11ShaderResourceView* nullSRVs[12] = {};
-            context->CSSetShaderResources( 0, 12, nullSRVs );
-            context->CSSetShader( nullptr, nullptr, 0 );
-
-            // Restore HDR as RTV
-            context->OMSetRenderTargets( 1, graphicsEngine->GetHDRBackBuffer().GetRenderTargetView().GetAddressOf(),
-                graphicsEngine->GetDepthBuffer()->GetDepthStencilView().Get() );
-        }
+        // Unbind
+        ID3D11UnorderedAccessView* nullUAVs[3] = { nullptr, nullptr, nullptr };
+        context->CSSetUnorderedAccessViews( 0, 3, nullUAVs, nullptr );
+        ID3D11ShaderResourceView* nullSRVs[2] = { nullptr, nullptr };
+        context->CSSetShaderResources( 0, 2, nullSRVs );
+        context->CSSetShader( nullptr, nullptr, 0 );
     }
 
-    return XR_SUCCESS;
+    result.HasShadowedTiledLights = hasShadowedTiledLights;
+    return result;
 }

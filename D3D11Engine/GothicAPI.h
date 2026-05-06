@@ -2,6 +2,7 @@
 #include <parallel_hashmap/phmap.h>
 
 #include "pch.h"
+#include "AlignedAllocator.h"
 #include "Frustum.h"
 #include "GothicGraphicsState.h"
 #include "WorldConverter.h"
@@ -11,8 +12,6 @@
 #include "RenderQueue.h"
 #include "RenderToTextureBuffer.h"
 #include "ShaderIDs.h"
-
-#define START_TIMING(x) TimerScope( x, &Engine::GAPI->GetRendererState().RendererInfo.Timing.frameRecordings )
 
 static const char* MENU_SETTINGS_FILE = "system\\GD3D11\\UserSettings.ini";
 const float INDOOR_LIGHT_DISTANCE_SCALE_FACTOR = 0.5f;
@@ -29,7 +28,9 @@ struct RndCullContext {
     cameraPosition({0,0,0}),
     stage(RenderStage::STAGE_DRAW_UNKNOWN),
     queue(nullptr),
-    drawDistances({})
+    drawDistances({}),
+    drawDistancesSq({}),
+    drawFlags({})
     {
     }
     
@@ -46,6 +47,26 @@ struct RndCullContext {
         float IndoorVobs;
         float VisualFX;
     } drawDistances;
+
+    struct
+    {
+        float OutdoorVobs;
+        float OutdoorVobsSmall;
+        float IndoorVobs;
+        float VisualFX;
+    } drawDistancesSq;
+
+    struct
+    {
+        bool DrawVOBs;
+        bool DrawMobs;
+        bool EnableDynamicLighting;
+        bool EnableOcclusionCulling;
+        bool CullVobs;
+        bool CollectIndoorVobs;
+        bool CollectMobs;
+        bool CollectLights;
+    } drawFlags;
 };
 
 enum EBspTreeCollectFlags : unsigned int {
@@ -131,6 +152,19 @@ struct BspInfo {
     BspInfo* Back;
 };
 
+/** Pre-built linear cache of all BSP leaf bounding boxes for SIMD-accelerated frustum culling.
+ *  Stores Min/Max extents in Structure-of-Arrays layout, 32-byte aligned for AVX2 batch processing.
+ *  Padded to a multiple of 8 entries with sentinel values that always fail culling tests. */
+struct BspLeafLinearCache {
+    VectorA32<float> MinX, MinY, MinZ;
+    VectorA32<float> MaxX, MaxY, MaxZ;
+    std::vector<BspInfo*> Leaves;
+    uint32_t Count = 0;
+
+    void Build( BspInfo* root );
+    void Clear();
+};
+
 
 struct CameraReplacement {
     XMFLOAT4X4 ViewReplacement;
@@ -172,6 +206,7 @@ struct MaterialInfo {
     MaterialInfo& operator=( MaterialInfo&& ) = default;
 
     MaterialInfo(const MaterialInfo&) = delete;
+    MaterialInfo& operator=( const MaterialInfo& ) = delete;
 
     /** Writes this info to a file */
     void WriteToFile( const std::string& name );
@@ -814,6 +849,7 @@ private:
 
     /** Helper function for going through the bsp-tree */
     void BuildBspVobMapCacheHelper( zCBspBase* base );
+    void BuildBspLeafLinearCache();
 
     /** Applys the suppressed textures */
     void ApplySuppressedSectionTextures();
@@ -885,16 +921,18 @@ private:
     phmap::flat_hash_map<oCNPC*, SkeletalMeshVisualInfo*> SkeletalMeshNpcs;
 
     /** Set of all vobs we registered by now */
-    std::unordered_set<zCVob*> RegisteredVobs;
+    phmap::flat_hash_set<zCVob*> RegisteredVobs;
 
     /** List of dynamically added vobs */
     std::vector<VobInfo*> DynamicallyAddedVobs;
 
     /** Map of vobs and VobIndfos */
-    std::unordered_map<zCVob*, VobInfo*> VobMap;
+    phmap::flat_hash_map<zCVob*, VobInfo*> VobMap;
 public:
     // temporarily, to allow CollectVisibleVobsHelper to be templated for inlining optimizations
     phmap::flat_hash_map<zCVobLight*, VobLightInfo*> VobLightMap;
+    // Exposed for CollectLeafVobs/CollectVisibleVobsWithLeafCache (file-static helpers)
+    BspLeafLinearCache LeafLinearCache;
 private:
     phmap::flat_hash_map<zCVob*, SkeletalVobInfo*> SkeletalVobMap;
 
@@ -902,7 +940,7 @@ private:
     std::unordered_map<zCBspBase*, BspInfo> BspLeafVobLists;
 
     /** Map for the material infos */
-    std::unordered_map<zCTexture*, MaterialInfo> MaterialInfos;
+    phmap::flat_hash_map<zCTexture*, std::unique_ptr<MaterialInfo>> MaterialInfos;
 
     /** Maps visuals to vobs */
     phmap::flat_hash_map<zCVisual*, std::vector<BaseVobInfo*>> VobsByVisual;

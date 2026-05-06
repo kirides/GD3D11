@@ -718,7 +718,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
       <Optimization>Disabled</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <PreprocessorDefinitions>_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR;BUILD_GOTHIC_2_6_fix;_USE_MATH_DEFINES;WIN32_LEAN_AND_MEAN;_CRT_SECURE_NO_WARNINGS;WIN32;NDEBUG;_WINDOWS;_USRDLL;D3D11ENGINE_EXPORTS;NOMINMAX;%(PreprocessorDefinitions);WINVER=0x0601;_WIN32_WINNT=0x0601;NTDDI_VERSION=0x06010000;_WIN7_PLATFORM_UPDATE=1;_XM_DISABLE_INTEL_SVML_</PreprocessorDefinitions>
+      <PreprocessorDefinitions>TRACY_ENABLE;TRACY_ON_DEMAND;_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR;BUILD_GOTHIC_2_6_fix;_USE_MATH_DEFINES;WIN32_LEAN_AND_MEAN;_CRT_SECURE_NO_WARNINGS;WIN32;NDEBUG;_WINDOWS;_USRDLL;D3D11ENGINE_EXPORTS;NOMINMAX;%(PreprocessorDefinitions);WINVER=0x0601;_WIN32_WINNT=0x0601;NTDDI_VERSION=0x06010000;_WIN7_PLATFORM_UPDATE=1;_XM_DISABLE_INTEL_SVML_</PreprocessorDefinitions>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
@@ -878,7 +878,9 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="BaseWidget.h" />
     <ClInclude Include="BasicTimer.h" />
     <ClInclude Include="D3D11CascadedShadowMapBuffer.h" />
+    <ClInclude Include="D3D11FileRelativeInclude.h" />
     <ClInclude Include="D3D11GraphicsShader.h" />
+    <ClInclude Include="D3D11PFX_ASSAO.h" />
     <ClInclude Include="D3D11ShadowAtlas.h" />
     <ClInclude Include="CGameManager.h" />
     <ClInclude Include="D3D11AGS.h" />
@@ -907,6 +909,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="D3D11PFX_FSR3.h" />
     <ClInclude Include="D3D11PFX_GodRays.h" />
     <ClInclude Include="D3D11PFX_DepthOfField.h" />
+    <ClInclude Include="D3D11PFX_SAO.h" />
     <ClInclude Include="D3D11PFX_HDR.h" />
     <ClInclude Include="D3D11PFX_HeightFog.h" />
     <ClInclude Include="D3D11PFX_SimpleSharpen.h" />
@@ -924,6 +927,9 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="D3D11ShaderManager.h" />
     <ClInclude Include="D3D11ShadowMap.h" />
     <ClInclude Include="D3D11TiledDeferredShading.h" />
+    <ClInclude Include="D3D11DeferredRenderer.h" />
+    <ClInclude Include="D3D11ForwardPlusRenderer.h" />
+    <ClInclude Include="ISceneRenderer.h" />
     <ClInclude Include="D3D11LegacyDeferredShading.h" />
     <ClInclude Include="D3D11Texture.h" />
     <ClInclude Include="D3D11Upscaling.h" />
@@ -1142,7 +1148,9 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="BaseLineRenderer.cpp" />
     <ClCompile Include="BaseWidget.cpp" />
     <ClCompile Include="D3D11CascadedShadowMapBuffer.cpp" />
+    <ClCompile Include="D3D11FileRelativeInclude.cpp" />
     <ClCompile Include="D3D11GraphicsShader.cpp" />
+    <ClCompile Include="D3D11PFX_ASSAO.cpp" />
     <ClCompile Include="D3D11ShadowAtlas.cpp" />
     <ClCompile Include="D3D11AGS.cpp" />
     <ClCompile Include="D3D11ConstantBuffer.cpp" />
@@ -1168,6 +1176,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="D3D11PFX_FSR3.cpp" />
     <ClCompile Include="D3D11PFX_GodRays.cpp" />
     <ClCompile Include="D3D11PFX_DepthOfField.cpp" />
+    <ClCompile Include="D3D11PFX_SAO.cpp" />
     <ClCompile Include="D3D11PFX_HDR.cpp" />
     <ClCompile Include="D3D11PFX_HeightFog.cpp" />
     <ClCompile Include="D3D11PFX_SimpleSharpen.cpp" />
@@ -1184,6 +1193,8 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="D3D11ShaderManager.cpp" />
     <ClCompile Include="D3D11ShadowMap.cpp" />
     <ClCompile Include="D3D11TiledDeferredShading.cpp" />
+    <ClCompile Include="D3D11DeferredRenderer.cpp" />
+    <ClCompile Include="D3D11ForwardPlusRenderer.cpp" />
     <ClCompile Include="D3D11LegacyDeferredShading.cpp" />
     <ClCompile Include="D3D11Texture.cpp" />
     <ClCompile Include="D3D11Upscaling.cpp" />
@@ -1256,6 +1267,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="include\imgui\imgui_draw.cpp" />
     <ClCompile Include="include\imgui\imgui_tables.cpp" />
     <ClCompile Include="include\imgui\imgui_widgets.cpp" />
+    <ClCompile Include="include\tracy\public\TracyClient.cpp" />
     <ClCompile Include="MeshManager.cpp" />
     <ClCompile Include="MeshModifier.cpp" />
     <ClCompile Include="pch.cpp">

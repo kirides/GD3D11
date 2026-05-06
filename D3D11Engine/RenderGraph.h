@@ -1,4 +1,5 @@
 #pragma once
+#include "pch.h"
 #include "RGTextureDesc.h"
 #include <memory>
 #include <vector>
@@ -30,7 +31,7 @@ public:
 
     // Add a pass using modern C++ lambdas
     template<typename SetupFunc>
-    void AddPass( const wchar_t* name, SetupFunc setupFunc ) {
+    void AddPass( RGPassName name, SetupFunc setupFunc ) {
         auto pass = std::make_unique<RenderPass>( name );
         RGBuilder builder( *this, *pass );
 

@@ -403,6 +403,7 @@ void D3D11ShadowMap::BindSamplerToCS( ID3D11DeviceContext1* context, UINT slot )
 
 XRESULT D3D11ShadowMap::PrepareRender()
 {
+    ZoneScopedN("D3D11ShadowMap::PrepareRender");
     // Check if shadowmap resources need to be recreated due to setting changes
     {
         auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
@@ -433,7 +434,7 @@ XRESULT D3D11ShadowMap::PrepareRender()
     if ( !camera ) {
         return XR_SUCCESS;
     }
-    camera->Activate();
+     camera->Activate();
 
     const float nearPlane = std::max( 1.0f, camera->GetNearPlane() );
     // Clamp far plane to avoid extreme shadow distances
@@ -648,8 +649,103 @@ XRESULT D3D11ShadowMap::PrepareRender()
         }
     }
 
-    // Collect all VOBs inside our shadow draw distance (last frustum)
-    
+    if ( settings.ThreadedShadowCulling ) {
+        std::lock_guard<std::mutex> lock( m_CullingJobsMutex );
+        m_ShadowCullingJobs.clear();
+
+        for ( size_t i = 0; i < numCascades; i++ ) {
+            m_RenderQueues[i]->Reset();
+            if ( !m_ShouldUpdateCascade[i] ) {
+                continue; // Skip culling for this cascade if we're not updating it this frame
+            }
+
+            m_ShadowCullingJobs.push_back( Engine::WorkerThreadPool->enqueue( []( const CancellationToken& token, D3D11ShadowMap* _this, size_t idx ) {
+                if ( token.isCancelled() ) {
+                    return;
+                }
+                ZoneScoped;
+                ZoneNameF( "Shadow Cascade %zu", idx );
+
+                RndCullContext ctx;
+                ctx.queue = _this->m_RenderQueues[idx].get();
+                ctx.frustum = _this->m_CascadeCRs[idx].frustum;
+                ctx.cameraPosition = _this->m_WorldShadowPos;
+                ctx.stage = RenderStage::STAGE_DRAW_SHADOWS;
+                ctx.drawDistances.OutdoorVobs = 20000;
+                ctx.drawDistances.OutdoorVobsSmall = 20000;
+                ctx.drawDistances.IndoorVobs = 20000;
+                ctx.drawDistances.VisualFX = 0.0f;
+                ctx.drawDistancesSq.OutdoorVobs = ctx.drawDistances.OutdoorVobs * ctx.drawDistances.OutdoorVobs;
+                ctx.drawDistancesSq.OutdoorVobsSmall = ctx.drawDistances.OutdoorVobsSmall * ctx.drawDistances.OutdoorVobsSmall;
+                ctx.drawDistancesSq.IndoorVobs = ctx.drawDistances.IndoorVobs * ctx.drawDistances.IndoorVobs;
+                ctx.drawDistancesSq.VisualFX = 0.0f;
+
+                const auto& rs = Engine::GAPI->GetRendererState().RendererSettings;
+                ctx.drawFlags.DrawVOBs = rs.DrawVOBs;
+                ctx.drawFlags.DrawMobs = rs.DrawMobs;
+                ctx.drawFlags.EnableDynamicLighting = rs.EnableDynamicLighting;
+                ctx.drawFlags.EnableOcclusionCulling = rs.EnableOcclusionCulling;
+                ctx.drawFlags.CullVobs = rs.DebugSettings.Culling.CullVobs;
+                ctx.drawFlags.CollectIndoorVobs = false;
+                ctx.drawFlags.CollectMobs = false;
+                ctx.drawFlags.CollectLights = false;
+
+                Engine::GAPI->CollectVisibleVobs( ctx );
+
+            }, this, i ).future );
+        }
+        
+        return XR_SUCCESS;
+    }
+
+    // Build a conservative culling volume that covers all cascades rendered this frame.
+    Frustum frustum = Frustum::AlwaysContainingFrustum();
+    if ( isOutdoor && numCascades > 0 ) {
+        int lastUpdatedCascade = 0;
+        for ( int cascadeIdx = 0; cascadeIdx < numCascades; ++cascadeIdx ) {
+            if ( m_ShouldUpdateCascade[cascadeIdx] ) {
+                lastUpdatedCascade = cascadeIdx;
+            }
+        }
+
+        std::array<XMFLOAT3, MAX_CSM_CASCADES * 8> combinedCorners = {};
+        size_t combinedCornerCount = 0;
+
+        static constexpr XMFLOAT3 ndcCorners[8] = {
+            XMFLOAT3( -1.0f, -1.0f, 0.0f ), XMFLOAT3( 1.0f, -1.0f, 0.0f ),
+            XMFLOAT3( -1.0f, 1.0f, 0.0f ),  XMFLOAT3( 1.0f, 1.0f, 0.0f ),
+            XMFLOAT3( -1.0f, -1.0f, 1.0f ), XMFLOAT3( 1.0f, -1.0f, 1.0f ),
+            XMFLOAT3( -1.0f, 1.0f, 1.0f ),  XMFLOAT3( 1.0f, 1.0f, 1.0f )
+        };
+
+        for ( int cascadeIdx = 0; cascadeIdx <= lastUpdatedCascade; ++cascadeIdx ) {
+            if ( !m_CascadeCRs[cascadeIdx].frustum.IsValid() ) {
+                continue;
+            }
+
+            const XMMATRIX view = XMMatrixTranspose( XMLoadFloat4x4( &m_CascadeCRs[cascadeIdx].ViewReplacement ) );
+            const XMMATRIX proj = XMMatrixTranspose( XMLoadFloat4x4( &m_CascadeCRs[cascadeIdx].ProjectionReplacement ) );
+            const XMMATRIX invViewProj = XMMatrixInverse( nullptr, XMMatrixMultiply( view, proj ) );
+
+            for ( const XMFLOAT3& ndcCorner : ndcCorners ) {
+                XMVECTOR worldCorner = XMVector3TransformCoord( XMLoadFloat3( &ndcCorner ), invViewProj );
+                XMStoreFloat3( &combinedCorners[combinedCornerCount++], worldCorner );
+            }
+        }
+
+        if ( combinedCornerCount > 0 ) {
+            BoundingSphere combinedSphere;
+            BoundingSphere::CreateFromPoints(
+                combinedSphere,
+                combinedCornerCount,
+                combinedCorners.data(),
+                sizeof( XMFLOAT3 ) );
+            // Keep this conservative because shadow caster expansion can exceed strict cascade bounds.
+            combinedSphere.Radius *= 1.2f;
+            frustum.BuildCubemapFace( XMLoadFloat3( &combinedSphere.Center ), combinedSphere.Radius, 0 );
+        }
+    }
+
     static std::vector<VobInfo*> potentialCasters;
     static std::vector<VobLightInfo*> _1;
     static std::vector<SkeletalVobInfo*> _2;
@@ -661,65 +757,102 @@ XRESULT D3D11ShadowMap::PrepareRender()
         LegacyRenderQueueProxy q(potentialCasters, _1, _2);
 
         ctx.queue = &q;
-        ctx.frustum = Frustum::AlwaysContainingFrustum();
+        ctx.frustum = frustum;
         ctx.cameraPosition = m_WorldShadowPos;
         ctx.stage = RenderStage::STAGE_DRAW_SHADOWS;
         ctx.drawDistances.OutdoorVobs = 20000;
         ctx.drawDistances.OutdoorVobsSmall = 20000;
+        ctx.drawDistances.IndoorVobs = 20000;
+        ctx.drawDistances.VisualFX = 0.0f;
+        ctx.drawDistancesSq.OutdoorVobs = ctx.drawDistances.OutdoorVobs * ctx.drawDistances.OutdoorVobs;
+        ctx.drawDistancesSq.OutdoorVobsSmall = ctx.drawDistances.OutdoorVobsSmall * ctx.drawDistances.OutdoorVobsSmall;
+        ctx.drawDistancesSq.IndoorVobs = ctx.drawDistances.IndoorVobs * ctx.drawDistances.IndoorVobs;
+        ctx.drawDistancesSq.VisualFX = 0.0f;
+
+        const auto& rs = Engine::GAPI->GetRendererState().RendererSettings;
+        ctx.drawFlags.DrawVOBs = rs.DrawVOBs;
+        ctx.drawFlags.DrawMobs = rs.DrawMobs;
+        ctx.drawFlags.EnableDynamicLighting = rs.EnableDynamicLighting;
+        ctx.drawFlags.EnableOcclusionCulling = rs.EnableOcclusionCulling;
+        ctx.drawFlags.CullVobs = rs.DebugSettings.Culling.CullVobs;
+        ctx.drawFlags.CollectIndoorVobs = false;
+        ctx.drawFlags.CollectMobs = false;
+        ctx.drawFlags.CollectLights = false;
         
         Engine::GAPI->CollectVisibleVobs( ctx );
     }
     
-    auto invView = XMMatrixTranspose(XMLoadFloat4x4(&zCCamera::GetCamera()->GetTransformDX( zCCamera::ETransformType::TT_VIEW_INV )));
-    auto camPos = invView.r[3];
-    XMVECTOR camForward = XMVector3Normalize( invView.r[2]);
-    
-    for ( int i = 0; i < numCascades; ++i ) {
-        m_RenderQueues[i]->Reset();
-    }
+    {
+        ZoneScopedN("CascadeFrustumCulling");
 
-    if ( numCascades > 3 ) {
-        for ( auto vob : potentialCasters ) {
-
-            auto boundingSphere = Frustum::BSphereFromzTBBox3D( vob->Vob->GetBBox() );
-            if ( m_CascadeCRs[0].frustum.Intersects( boundingSphere ) )
-                m_RenderQueues[0]->GetVobs().push_back( vob );
-
-            if ( /*m_ShouldUpdateCascade[1] && */m_CascadeCRs[1].frustum.Intersects(boundingSphere) )
-                m_RenderQueues[1]->GetVobs().push_back( vob );
-
-            if ( m_ShouldUpdateCascade[2] && m_CascadeCRs[2].frustum.Intersects( boundingSphere ) )
-                m_RenderQueues[2]->GetVobs().push_back( vob );
-
-            if ( m_ShouldUpdateCascade[3] && m_CascadeCRs[3].frustum.Intersects( boundingSphere ) )
-                m_RenderQueues[3]->GetVobs().push_back( vob );
+        for ( int i = 0; i < numCascades; ++i ) {
+            m_RenderQueues[i]->Reset();
         }
-    } else if ( numCascades > 2 ) {
-        for ( auto vob : potentialCasters ) {
-            auto boundingSphere = Frustum::BSphereFromzTBBox3D( vob->Vob->GetBBox() );
-            if ( m_CascadeCRs[0].frustum.Intersects( boundingSphere ) )
-                m_RenderQueues[0]->GetVobs().push_back( vob );
 
-            if ( /*m_ShouldUpdateCascade[1] && */m_CascadeCRs[1].frustum.Intersects( boundingSphere ) )
-                m_RenderQueues[1]->GetVobs().push_back( vob );
+        if ( numCascades > 3 ) {
+            for ( auto vob : potentialCasters ) {
 
-            if ( m_ShouldUpdateCascade[2] && m_CascadeCRs[2].frustum.Intersects( boundingSphere ) )
-                m_RenderQueues[2]->GetVobs().push_back( vob );
-        }
-    } else if ( numCascades > 1 ) {
-        for ( auto vob : potentialCasters ) {
-            auto boundingSphere = Frustum::BSphereFromzTBBox3D( vob->Vob->GetBBox() );
-            if ( m_CascadeCRs[0].frustum.Intersects( boundingSphere ) )
-                m_RenderQueues[0]->GetVobs().push_back( vob );
+                auto boundingSphere = Frustum::BSphereFromzTBBox3D( vob->Vob->GetBBox() );
+                if ( m_CascadeCRs[0].frustum.Intersects( boundingSphere ) ) {
+                    m_RenderQueues[0]->GetVobs().push_back( vob );
+                    m_RenderQueues[1]->GetVobs().push_back( vob );
+                    m_RenderQueues[2]->GetVobs().push_back( vob );
+                    m_RenderQueues[3]->GetVobs().push_back( vob );
+                    continue;
+                }
 
-            if ( /*m_ShouldUpdateCascade[1] && */m_CascadeCRs[1].frustum.Intersects( boundingSphere ) )
-                m_RenderQueues[1]->GetVobs().push_back( vob );
-        }
-    } else if ( numCascades > 0 ) {
-        for ( auto vob : potentialCasters ) {
-            auto boundingSphere = Frustum::BSphereFromzTBBox3D( vob->Vob->GetBBox() );
-            if ( m_CascadeCRs[0].frustum.Intersects( boundingSphere ) )
-                m_RenderQueues[0]->GetVobs().push_back( vob );
+                if ( /*m_ShouldUpdateCascade[1] && */m_CascadeCRs[1].frustum.Intersects( boundingSphere ) ) {
+                    m_RenderQueues[1]->GetVobs().push_back( vob );
+                    m_RenderQueues[2]->GetVobs().push_back( vob );
+                    m_RenderQueues[3]->GetVobs().push_back( vob );
+                    continue;
+                }
+
+                if ( m_ShouldUpdateCascade[2] && m_CascadeCRs[2].frustum.Intersects( boundingSphere ) ) {
+                    m_RenderQueues[2]->GetVobs().push_back( vob );
+                    m_RenderQueues[3]->GetVobs().push_back( vob );
+                    continue;
+                }
+
+                if ( m_ShouldUpdateCascade[3] && m_CascadeCRs[3].frustum.Intersects( boundingSphere ) )
+                    m_RenderQueues[3]->GetVobs().push_back( vob );
+            }
+        } else if ( numCascades > 2 ) {
+            for ( auto vob : potentialCasters ) {
+                auto boundingSphere = Frustum::BSphereFromzTBBox3D( vob->Vob->GetBBox() );
+                if ( m_CascadeCRs[0].frustum.Intersects( boundingSphere ) ) {
+                    m_RenderQueues[0]->GetVobs().push_back( vob );
+                    m_RenderQueues[1]->GetVobs().push_back( vob );
+                    m_RenderQueues[2]->GetVobs().push_back( vob );
+                    continue;
+                }
+
+                if ( /*m_ShouldUpdateCascade[1] && */m_CascadeCRs[1].frustum.Intersects( boundingSphere ) ) {
+                    m_RenderQueues[1]->GetVobs().push_back( vob );
+                    m_RenderQueues[2]->GetVobs().push_back( vob );
+                    continue;
+                }
+                if ( m_ShouldUpdateCascade[2] && m_CascadeCRs[2].frustum.Intersects( boundingSphere ) )
+                    m_RenderQueues[2]->GetVobs().push_back( vob );
+            }
+        } else if ( numCascades > 1 ) {
+            for ( auto vob : potentialCasters ) {
+                auto boundingSphere = Frustum::BSphereFromzTBBox3D( vob->Vob->GetBBox() );
+                if ( m_CascadeCRs[0].frustum.Intersects( boundingSphere ) )                     {
+                    m_RenderQueues[0]->GetVobs().push_back( vob );
+                    m_RenderQueues[1]->GetVobs().push_back( vob );
+                    continue;
+                }
+
+                if ( /*m_ShouldUpdateCascade[1] && */m_CascadeCRs[1].frustum.Intersects( boundingSphere ) )
+                    m_RenderQueues[1]->GetVobs().push_back( vob );
+            }
+        } else if ( numCascades > 0 ) {
+            for ( auto vob : potentialCasters ) {
+                auto boundingSphere = Frustum::BSphereFromzTBBox3D( vob->Vob->GetBBox() );
+                if ( m_CascadeCRs[0].frustum.Intersects( boundingSphere ) )
+                    m_RenderQueues[0]->GetVobs().push_back( vob );
+            }
         }
     }
 
@@ -759,6 +892,8 @@ std::vector<float> D3D11ShadowMap::ComputeCascadeSplits( float nearPlane, float 
 }
 
 XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& lights ) {
+    ZoneScopedN( "DrawPointlightShadows" );
+
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
 
     // Release any resources of not visible lights
@@ -777,7 +912,7 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
     }
     
     auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
-    auto _ = graphicsEngine->RecordGraphicsEvent( L"DrawPointlightShadows" );
+    auto _ = graphicsEngine->RecordGraphicsEvent( GE_NAME( "DrawPointlightShadows" ) );
 
     static const XMVECTORF32 xmFltMax = { { { FLT_MAX, FLT_MAX, FLT_MAX, FLT_MAX } } };
     graphicsEngine->SetDefaultStates();
@@ -945,7 +1080,11 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
 XRESULT D3D11ShadowMap::DrawWorldShadow( )
 {
     auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
-    auto _ = graphicsEngine->RecordGraphicsEvent( L"DrawWorldShadow" );
+    auto _ = graphicsEngine->RecordGraphicsEvent( GE_NAME( "DrawWorldShadow" ) );
+    ZoneScopedN( "DrawWorldShadow" );
+
+    WaitShadowCullingComplete();
+
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
     
     int numCascades = settings.NumShadowCascades;
@@ -1012,7 +1151,8 @@ XRESULT D3D11ShadowMap::DrawRainShadowmap() {
     // Draw rainmap, if raining
     if ( Engine::GAPI->GetSceneWetness() > 0.00001f ) {
         auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
-        auto _ = graphicsEngine->RecordGraphicsEvent( L"DrawRainShadowmap" );
+        auto _ = graphicsEngine->RecordGraphicsEvent( GE_NAME( "DrawRainShadowmap" ) );
+        ZoneScopedN( "DrawRainShadowmap" );
 
         graphicsEngine->Effects->DrawRainShadowmap();
     }
@@ -1103,7 +1243,7 @@ void D3D11ShadowMap::RenderShadowmaps( const RenderShadowmapsParams& params ) {
 
     // todo: remove this dependency at some point
     auto graphicsEngine = (D3D11GraphicsEngine*)Engine::GraphicsEngine;
-    auto _ = graphicsEngine->RecordGraphicsEvent( L"RenderShadowmaps" );
+    auto _ = graphicsEngine->RecordGraphicsEvent( GE_NAME( "RenderShadowmaps" ) );
 
     D3D11_VIEWPORT oldVP;
     UINT n = 1;
@@ -1156,14 +1296,8 @@ void D3D11ShadowMap::RenderShadowmaps( const RenderShadowmapsParams& params ) {
 
         XMVECTOR cameraPosition = XMLoadFloat3( &params.CameraPosition );
         int timerLabelIndex = std::clamp(params.CascadeIndex, 0, MAX_CSM_CASCADES-1);
-        static const wchar_t* timer_labels_cascades[MAX_CSM_CASCADES]
-        {
-            L"Cascade 0",
-            L"Cascade 1",
-            L"Cascade 2",
-            L"Cascade 3",
-        };
-        auto _1 = START_TIMING(timer_labels_cascades[timerLabelIndex]);
+
+        ZoneScopedN( "Shadows::DrawCascade" );
         graphicsEngine->DrawWorldAroundForWorldShadow( cameraPosition, 2, params );
 
     } else {
@@ -1188,10 +1322,81 @@ void D3D11ShadowMap::RenderShadowmaps( const RenderShadowmapsParams& params ) {
         WORLD_SECTION_SIZE );
 }
 
+DS_ScreenQuadConstantBuffer D3D11ShadowMap::FillSunCSMConstantBuffer() const {
+    auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+    float rain = Engine::GAPI->GetRainFXWeight();
+
+    XMMATRIX viewRaw = Engine::GAPI->GetViewMatrixXM();
+    XMMATRIX view = XMMatrixTranspose( viewRaw );
+
+    GSky* sky = Engine::GAPI->GetSky();
+    auto& proj = Engine::GAPI->GetProjectionMatrix();
+
+    DS_ScreenQuadConstantBuffer scb = {};
+    scb.SQ_ProjParams = float4( 1.0f / proj._11, 1.0f / proj._22, proj._43, proj._33 );
+    XMStoreFloat4x4( &scb.SQ_InvView, XMMatrixInverse( nullptr, viewRaw ) );
+    XMStoreFloat4x4( &scb.SQ_View, viewRaw );
+
+    static uint32_t frameCounter = 0;
+    if ( proj._13 != 0 || proj._23 != 0 ) {
+        scb.SQ_FrameIndex = frameCounter++;
+    }
+
+    XMStoreFloat3( scb.SQ_LightDirectionVS.toXMFLOAT3(),
+        XMVector3TransformNormal( XMLoadFloat3( sky->GetAtmosphereCB().AC_LightPos.toXMFLOAT3() ), view ) );
+
+    float3 sunColor = settings.SunLightColor;
+    float sunStrength = Toolbox::lerp(
+        settings.SunLightStrength,
+        settings.RainSunLightStrength,
+        std::min( 1.0f, rain * 2.0f ) );
+    scb.SQ_LightColor = float4( sunColor.x, sunColor.y, sunColor.z, sunStrength );
+
+    for ( size_t cascadeIdx = 0; cascadeIdx < MAX_CSM_CASCADES; ++cascadeIdx ) {
+        XMStoreFloat4x4( &scb.SQ_ShadowViewProj[cascadeIdx],
+            XMLoadFloat4x4( &m_CascadeCRs[cascadeIdx].ProjectionReplacement ) *
+                XMLoadFloat4x4( &m_CascadeCRs[cascadeIdx].ViewReplacement ) );
+    }
+
+    scb.SQ_ShadowmapSize = static_cast<float>( this->GetSizeX() );
+
+    if ( m_useAtlas && m_shadowAtlas ) {
+        for ( size_t i = 0; i < MAX_CSM_CASCADES; ++i ) {
+            scb.SQ_CascadeAtlasRect[i] = m_shadowAtlas->GetCascadeUVRect( static_cast<UINT>( i ) );
+        }
+    }
+
+    XMStoreFloat4x4( &scb.SQ_RainViewProj,
+        XMLoadFloat4x4( &reinterpret_cast<D3D11GraphicsEngine*>( Engine::GraphicsEngine )->Effects->GetRainShadowmapCameraRepl().ProjectionReplacement ) *
+        XMLoadFloat4x4( &reinterpret_cast<D3D11GraphicsEngine*>( Engine::GraphicsEngine )->Effects->GetRainShadowmapCameraRepl().ViewReplacement ) );
+
+    scb.SQ_ShadowStrength = settings.ShadowStrength;
+    scb.SQ_ShadowAOStrength = settings.ShadowAOStrength;
+    scb.SQ_WorldAOStrength = settings.WorldAOStrength;
+    scb.SQ_ShadowSoftness = settings.ShadowSoftness;
+    scb.SQ_LightSize = 0.04f;
+
+    if ( auto bspTree = Engine::GAPI->GetLoadedWorldInfo()->BspTree )
+        if ( bspTree->GetBspTreeMode() == zBSP_MODE_INDOOR ) {
+#if BUILD_GOTHIC_1_08k
+            if ( Engine::GAPI->GetLoadedWorldInfo()->WorldName == "ORCTEMPEL" )
+                scb.SQ_ShadowStrength = 0.15f;
+            else
+                scb.SQ_ShadowStrength = 0.3f;
+#else
+            scb.SQ_ShadowStrength = 0.0f;
+#endif
+            scb.SQ_WorldAOStrength = 1.0f;
+            scb.SQ_LightColor = float4( 1, 1, 1, DEFAULT_INDOOR_VOB_AMBIENT.x );
+        }
+
+    return scb;
+}
+
 XRESULT D3D11ShadowMap::DrawWorldLights()
 {
     auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
-    auto _ = graphicsEngine->RecordGraphicsEvent( L"DrawWorldLights" );
+    auto _ = graphicsEngine->RecordGraphicsEvent( GE_NAME( "DrawWorldLights" ) );
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
 
     Engine::GAPI->GetRendererState().BlendState.SetAdditiveBlending();
@@ -1343,7 +1548,7 @@ void XM_CALLCONV D3D11ShadowMap::RenderShadowCube(
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> debugRTV, bool cullFront, bool indoor, bool noNPCs,
     std::list<VobInfo*>* renderedVobs,
     std::list<SkeletalVobInfo*>* renderedMobs,
-    std::map<MeshKey, WorldMeshInfo*, cmpMeshKey>* worldMeshCache,
+    std::map<MeshKey, MeshInfo*, cmpMeshKey>* worldMeshCache,
     bool clearDepth,
     unsigned int casterMask ) {
 

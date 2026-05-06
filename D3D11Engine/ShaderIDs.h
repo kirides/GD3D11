@@ -48,6 +48,7 @@ enum class PShaderID : size_t {
     PS_PFX_ApplyParticleDistortion,
     PS_Grass,
     PS_PFX_Simple,
+    PS_PFX_Simple_R8,
     PS_PFX_VelocityDebug,
     PS_PFX_GaussBlur,
     PS_PFX_Heightfog,
@@ -94,6 +95,14 @@ enum class PShaderID : size_t {
     PS_PFX_CAS,
     PS_PFX_FSR1_EASU,
     PS_PFX_FSR1_RCAS,
+    PS_PFX_Composition,
+    PS_FP_Diffuse,
+    PS_FP_DiffuseNormalmapped,
+    PS_FP_DiffuseNormalmappedFxMap,
+    PS_FP_DiffuseAlphaTest,
+    PS_FP_DiffuseNormalmappedAlphaTest,
+    PS_FP_DiffuseNormalmappedAlphaTestFxMap,
+    PS_FP_ShadowMask,
     COUNT
 };
 
@@ -112,5 +121,13 @@ enum class CShaderID : size_t {
     CS_AdvanceRain,
     CS_LightCulling,
     CS_TiledShading,
+    CS_PFX_GodRayMask,
+    CS_PFX_GodRayZoom,
+    CS_PFX_DoF_FocusResolve,
+    CS_PFX_DoF,
+    CS_PFX_DoF_Gauss,
+    CS_PFX_DoF_Composite,
+    CS_PFX_SAO,
+    CS_PFX_SAO_Blur,
     COUNT
 };

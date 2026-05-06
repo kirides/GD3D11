@@ -3,8 +3,8 @@
 #pragma warning( disable : 26495 )
 
 #include "pch.h"
-#include "BasicTimer.h"
 #include "BasePipelineStates.h"
+#include <ASSAO/ASSAO.h>
 
 /** Struct handling all the graphical states set by the game. Can be used as Constantbuffer */
 const int GSWITCH_FOG = 1;
@@ -508,6 +508,29 @@ struct HBAOSettings {
     int SsaoStepCount;
 };
 
+enum class AOMode : int {
+    AO_NONE = 0,
+    AO_HBAO = 1,
+    AO_SAO = 2,
+    AO_ASSAO = 3,
+};
+
+struct SAOSettings {
+    SAOSettings() {
+        Radius = 1.5f;
+        Bias = 0.02f;
+        Intensity = 3.0f;
+        NumSamples = 16;
+        BlurSharpness = 1.0f;
+    }
+
+    float Radius;
+    float Bias;
+    float Intensity;
+    int NumSamples;
+    float BlurSharpness;
+};
+
 struct GothicRendererSettings {
     enum EPointLightShadowMode {
         PLS_DISABLED = 0,
@@ -575,6 +598,11 @@ struct GothicRendererSettings {
         SHADOW_FILTER_PCSS = 2,
     };
 
+    enum E_RendererMode {
+        RM_Deferred = 0,
+        RM_ForwardPlus = 1,
+    };
+
     /** Sets the default values for this struct */
     void SetDefault() {
         SectionDrawRadius = 4;
@@ -590,7 +618,7 @@ struct GothicRendererSettings {
 
         DrawSky = true;
         DrawFog = true;
-        FogRange = 1.0f;
+        FogRange = SWITCH_ENGINE(1.0f, 1.0f, 3.0f, 3.0f);
         EnableHDR = false;
         HDRToneMap = E_HDRToneMap::ToneMap_Simple;
         ReplaceSunDirection = false;
@@ -678,6 +706,7 @@ struct GothicRendererSettings {
         ShadowFilterMode = E_ShadowFilterMode::SHADOW_FILTER_SIMPLE;
 
         EnableShadows = true;
+        ThreadedShadowCulling = false;
         EnableVSync = false;
         DoZPrepass = true;
         SortRenderQueue = false;
@@ -689,6 +718,7 @@ struct GothicRendererSettings {
         MinLightShadowUpdateRange = 300.0f;
         PartialDynamicShadowUpdates = true;
         EnableTiledLighting = false;
+        RendererMode = RM_Deferred;
         DrawSectionIntersections = true;
 
         EnableGodRays = true;
@@ -724,6 +754,8 @@ struct GothicRendererSettings {
         DoFFocusRange = 8000.0f;
         DoFBokehRadius = 8.0f;
         DoFMaxBlur = 12.0f;
+
+        AoMode = AOMode::AO_HBAO;
 
         RECT desktopRect;
         GetClientRect( GetDesktopWindow(), &desktopRect );
@@ -762,8 +794,46 @@ struct GothicRendererSettings {
         EnableWaterAnimation = false;
 
         GraphicsPreset = E_GraphicsPreset::GRAPHICS_CUSTOM;
+        ApplyAssaoPreset(1);
 
         ResetDebugSettings();
+    }
+
+    void ApplyAssaoPreset( int preset ) {
+        AssaoSettings = ASSAO_Settings();
+        // personal taste.
+        AssaoSettings.ShadowPower = 1.0f; // i feel defaults are too dark
+        AssaoSettings.HorizonAngleThreshold = 0.2f; // way too harsh shadowing otherwise
+
+        if ( preset <= 0 ) {
+            // default
+        } else if ( preset == 1 ) {
+            // higher quality but still default look
+            AssaoSettings.QualityLevel = 3;
+            AssaoSettings.AdaptiveQualityLimit = 0.6f;
+        } else if ( preset == 2 ) {
+            // Fake HBAO+ look, dark punchy shadowing
+            AssaoSettings.Radius = 1.0f;
+            AssaoSettings.ShadowMultiplier = 1.3f;
+            AssaoSettings.ShadowPower = 1.5f;
+            AssaoSettings.ShadowClamp = 1.0f;
+            AssaoSettings.HorizonAngleThreshold = 0.200f;
+            AssaoSettings.QualityLevel = 3;
+            AssaoSettings.AdaptiveQualityLimit = 0.6f;
+
+            AssaoSettings.BlurPassCount = 4;
+            AssaoSettings.Sharpness = 1.0f;
+            AssaoSettings.DetailShadowStrength = 0.5f;
+        } else if ( preset >= 3 ) {
+            // Fake GTAO look, broader radius, more details
+            AssaoSettings.Radius = 1.6f;
+            AssaoSettings.ShadowPower = 1.3f;
+            AssaoSettings.ShadowClamp = 0.95f;
+            AssaoSettings.HorizonAngleThreshold = 0.150f;
+            AssaoSettings.QualityLevel = 3;
+            AssaoSettings.AdaptiveQualityLimit = 0.6f;
+            AssaoSettings.DetailShadowStrength = 2.5f;
+        }
     }
     
     void ResetDebugSettings() {
@@ -826,6 +896,7 @@ struct GothicRendererSettings {
     bool WireframeVobs;
     E_ShadowFilterMode ShadowFilterMode;
     bool EnableShadows;
+    bool ThreadedShadowCulling;
     int ShadowCascadePCFLimit;
     E_ShadowFrustumCulling ShadowFrustumCullingMode;
     bool DrawShadowGeometry;
@@ -843,6 +914,7 @@ struct GothicRendererSettings {
     float MinLightShadowUpdateRange;
     bool PartialDynamicShadowUpdates;
     bool EnableTiledLighting;
+    E_RendererMode RendererMode;
     bool DrawSectionIntersections;
 
     int MaxNumFaces;
@@ -903,6 +975,9 @@ struct GothicRendererSettings {
     float DoFMaxBlur;
 
     HBAOSettings HbaoSettings;
+    SAOSettings SaoSettings;
+    ASSAO_Settings AssaoSettings;
+    AOMode AoMode;
 
     bool FixViewFrustum;
 
@@ -974,47 +1049,6 @@ struct GothicRendererSettings {
     } DebugSettings;
 };
 
-struct GothicRendererTiming {
-
-    void StartTotal() {
-        _totalTimer.Update();
-    }
-
-    void StopTotal() {
-        _totalTimer.Update();
-        TotalMS = _totalTimer.GetDelta() * 1000.0f;
-    }
-
-    void Reset() {
-        frameRecordings.clear();
-        TotalMS = 0.0f;
-    }
-
-    float TotalMS;
-    std::vector<std::pair<const wchar_t*, float>> frameRecordings;
-
-private:
-    BasicTimer _timer;
-    BasicTimer _totalTimer;
-};
-
-class TimerScope {
-public:
-    TimerScope( const wchar_t* label, std::vector<std::pair<const wchar_t*, float>>* collection )
-        : _timer( {} ),
-        _type( label ),
-        _collection(collection) {
-    }
-    ~TimerScope() {
-        const float delta = _timer.GetDelta();
-        _collection->push_back( std::make_pair( _type, delta * 1000.0f ) );
-    }
-private:
-    OneShotTimer _timer;
-    std::vector<std::pair<const wchar_t*, float>>* _collection;
-    const wchar_t* _type;
-};
-
 struct GothicRendererInfo {
     GothicRendererInfo() {
         VOBVerticesDataSize = 0;
@@ -1072,8 +1106,6 @@ struct GothicRendererInfo {
     float NearPlane;
     int FrameDrawnLights;
     int WorldMeshDrawCalls;
-
-    GothicRendererTiming Timing;
 
     unsigned int VOBVerticesDataSize;
     unsigned int SkeletalVerticesDataSize;

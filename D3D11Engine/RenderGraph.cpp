@@ -66,6 +66,7 @@ void RenderGraph::Compile()
 
 void RenderGraph::Execute()
 {
+    ZoneScopedN( "RenderGraph::Execute" );
     for ( size_t i = 0; i < m_passes.size(); ++i ) {
         const auto& pass = m_passes[i];
 
@@ -87,9 +88,9 @@ void RenderGraph::Execute()
 
         // Only execute if it provides a meaningful side-effect/write
         if ( !isPassDead && pass->m_executeCallback ) {
-            auto _ = Engine::GraphicsEngine->RecordGraphicsEvent( pass->m_name );
-            auto _timing = START_TIMING( pass->m_name );
-
+            auto _ = Engine::GraphicsEngine->RecordGraphicsEvent( { pass->m_name.wide, pass->m_name.narrow } );
+            ZoneScoped;
+            ZoneName( pass->m_name.narrow, strlen( pass->m_name.narrow ) );
             pass->m_executeCallback( *this );
         }
 

@@ -54,7 +54,7 @@ public:
     static void __cdecl hooked_ContainerDraw() {
         isDrawingContainers = true;
 
-        auto _ = Engine::GraphicsEngine->RecordGraphicsEvent( L"Draw Inventory World" );
+        auto _ = Engine::GraphicsEngine->RecordGraphicsEvent( GE_NAME( "Draw Inventory World" ) );
 
         HookedFunctions::OriginalFunctions.original_ContainerDraw();
 

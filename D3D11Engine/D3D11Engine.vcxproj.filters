@@ -88,6 +88,9 @@
     <Filter Include="Engine\Graph">
       <UniqueIdentifier>{e7532fd2-04b8-499d-a2a9-5b64abda0850}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Librarys\Tracy">
+      <UniqueIdentifier>{7b69a12f-dac5-490c-825b-b1e5382d377c}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="pch.h" />
@@ -811,6 +814,15 @@
     <ClInclude Include="D3D11TiledDeferredShading.h">
       <Filter>Engine\D3D11</Filter>
     </ClInclude>
+    <ClInclude Include="D3D11DeferredRenderer.h">
+      <Filter>Engine\D3D11</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D11ForwardPlusRenderer.h">
+      <Filter>Engine\D3D11</Filter>
+    </ClInclude>
+    <ClInclude Include="ISceneRenderer.h">
+      <Filter>Engine\D3D11</Filter>
+    </ClInclude>
     <ClInclude Include="D3D11LegacyDeferredShading.h">
       <Filter>Engine\D3D11</Filter>
     </ClInclude>
@@ -845,6 +857,11 @@
     <ClInclude Include="D3D11Upscaling.h">
       <Filter>Engine\D3D11</Filter>
     </ClInclude>
+    <ClInclude Include="D3D11PFX_SAO.h" />
+    <ClInclude Include="D3D11PFX_ASSAO.h">
+      <Filter>Engine\D3D11\PFX\Effects</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D11FileRelativeInclude.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp" />
@@ -1129,6 +1146,12 @@
     <ClCompile Include="D3D11TiledDeferredShading.cpp">
       <Filter>Engine\D3D11</Filter>
     </ClCompile>
+    <ClCompile Include="D3D11DeferredRenderer.cpp">
+      <Filter>Engine\D3D11</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D11ForwardPlusRenderer.cpp">
+      <Filter>Engine\D3D11</Filter>
+    </ClCompile>
     <ClCompile Include="D3D11LegacyDeferredShading.cpp">
       <Filter>Engine\D3D11</Filter>
     </ClCompile>
@@ -1149,6 +1172,14 @@
     </ClCompile>
     <ClCompile Include="D3D11Upscaling.cpp">
       <Filter>Engine\D3D11</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D11PFX_SAO.cpp" />
+    <ClCompile Include="D3D11PFX_ASSAO.cpp">
+      <Filter>Engine\D3D11\PFX\Effects</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D11FileRelativeInclude.cpp" />
+    <ClCompile Include="include\tracy\public\TracyClient.cpp">
+      <Filter>Librarys\Tracy</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>

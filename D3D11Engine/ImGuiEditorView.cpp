@@ -908,19 +908,6 @@ bool ImGuiEditorView::OnWindowMessage(HWND hWnd, unsigned int msg, WPARAM wParam
         }
         if (wParam == VK_DELETE) {
             OnDelete();
-        } else if (wParam == VK_SPACE) {
-            if (Selection.SelectedMesh) {
-                SmoothMesh((WorldMeshInfo*)Selection.SelectedMesh, true);
-
-                if (Selection.SelectedMaterial && Selection.SelectedMaterial->GetTexture()) {
-                    MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom(Selection.SelectedMaterial->GetTexture());
-
-                    if (info) {
-                        // Overwrite shader
-                        // info->TesselationShaderPair = "PNAEN_Tesselation";
-                    }
-                }
-            }
         }
         break;
 
@@ -1089,15 +1076,6 @@ GVegetationBox* ImGuiEditorView::TraceVegetationBoxes(const XMFLOAT3& wPos, cons
     }
 
     return b;
-}
-
-void ImGuiEditorView::SmoothMesh(WorldMeshInfo* mesh, bool tesselate) {
-    // Copy old vertices so we can directly write to the vectors again
-    std::vector<ExVertexStruct> vxOld = mesh->Vertices;
-    std::vector<unsigned short> ixOld = mesh->Indices;
-
-    // Mark dirty
-    mesh->SaveInfo = true;
 }
 
 XRESULT ImGuiEditorView::OnVobRemovedFromWorld(zCVob* vob) {

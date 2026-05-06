@@ -4,14 +4,21 @@
 #include <functional>
 #include "RGTextureDesc.h"
 
+struct RGPassName {
+    const wchar_t* wide;
+    const char* narrow;
+};
+
+#define RG_PASS_NAME(nameLiteral) RGPassName{ L##nameLiteral, nameLiteral }
+
 class RenderPass {
     // Only the RenderGraph should trigger execution
     friend class RenderGraph;
 
 public:
-    RenderPass(const wchar_t* name ) : m_name(name) {}
+    RenderPass( RGPassName name ) : m_name( name ) {}
 
-    const wchar_t* m_name;
+    RGPassName m_name;
     std::vector<RGResourceHandle> m_reads;  // Sources
     std::vector<RGResourceHandle> m_writes; // Sinks
 

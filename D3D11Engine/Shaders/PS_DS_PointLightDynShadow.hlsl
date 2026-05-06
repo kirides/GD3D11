@@ -144,10 +144,10 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	float4 diffuse = TX_Diffuse.Sample(SS_Linear, uv);
 	
 	// Get the second GBuffer
-	float4 gb2 = TX_Nrm.Sample(SS_Linear, uv);
+	float2 gb2 = TX_Nrm.Sample(SS_Linear, uv).xy;
 	
-	// Decode the view-space normal back
-	float3 normal = normalize(gb2.xyz);
+	// Decode the view-space normal from octahedral R16G16_SNORM
+	float3 normal = DecodeNormalGBuffer(gb2);
 	
 	// Get specular parameters
 	float4 gb3 = TX_SI_SP.Sample(SS_Linear, uv);

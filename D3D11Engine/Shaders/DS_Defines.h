@@ -1,7 +1,7 @@
 struct DEFERRED_PS_OUTPUT
 {
 	float4 vDiffuse : SV_TARGET0;
-	float4 vNrm : SV_TARGET1; 
+	float2 vNrm : SV_TARGET1; 
 	float2 vSI_SP : SV_TARGET2;
 	float2 vVelocity : SV_TARGET3;  // Screen-space velocity for motion vectors
 	float vReactiveMask : SV_TARGET4;  // Screen-space velocity for motion vectors
@@ -14,20 +14,35 @@ struct DEFERRED_PS_OUTPUT_ALPHA_TO_COVERAGE
 	uint fCoverage	: SV_Coverage;
 };
 
-
-
-float2 EncodeNormal(float3 n)
+struct FORWARD_PLUS_PS_OUTPUT
 {
-    float f = sqrt(8*n.z+8);
-    return n.xy / f + 0.5;
+	float4 vColor : SV_TARGET0;
+	float4 vNrm : SV_TARGET1;
+	float2 vSI_SP : SV_TARGET2;
+	float2 vVelocity : SV_TARGET3;
+	float vReactiveMask : SV_TARGET4;
+};
+
+
+// Octahedral encoding: map a unit normal to [-1,1]^2 for R16G16_SNORM storage
+// Reference: "A Survey of Efficient Representations for Independent Unit Vectors" (Cigolle et al. 2014)
+float2 OctWrap(float2 v)
+{
+    return (1.0 - abs(v.yx)) * (v.xy >= 0.0 ? 1.0 : -1.0);
 }
-float3 DecodeNormal(float2 enc)
+
+float2 EncodeNormalGBuffer(float3 n)
 {
-    float2 fenc = enc.xy*4-2;
-    float f = dot(fenc,fenc);
-    float g = sqrt(1-f/4);
+    n /= (abs(n.x) + abs(n.y) + abs(n.z));
+    n.xy = n.z >= 0.0 ? n.xy : OctWrap(n.xy);
+    return n.xy;
+}
+
+// Decode octahedral [-1,1]^2 back to a unit normal
+float3 DecodeNormalGBuffer(float2 encoded)
+{
     float3 n;
-    n.xy = fenc*g;
-    n.z = 1-f/2;
-    return n;
+    n.z = 1.0 - abs(encoded.x) - abs(encoded.y);
+    n.xy = n.z >= 0.0 ? encoded.xy : OctWrap(encoded.xy);
+    return normalize(n);
 }

@@ -1,3 +1,5 @@
+#include "DS_Defines.h"
+
 #define TILE_SIZE 16
 
 struct TiledPointLight {
@@ -23,7 +25,6 @@ cbuffer TiledShadingConstantBuffer : register( b0 ) {
     matrix InvView; // For world-space reconstruction (shadow sampling)
 };
 
-SamplerState SS_Linear : register( s0 );
 SamplerComparisonState SS_Comp : register( s2 );
 Texture2D TX_Diffuse : register( t0 );
 Texture2D TX_Nrm : register( t1 );
@@ -38,8 +39,8 @@ TextureCubeArray TX_ShadowCubeArray : register( t11 );
 
 RWTexture2D<float4> RW_HDR : register( u0 );
 
-float3 VSPositionFromDepth( float depth, float2 texCoord ) {
-    float2 ndc = texCoord * float2( 2.0f, -2.0f ) + float2( -1.0f, 1.0f );
+float3 VSPositionFromDepth( float depth, uint2 pixelCoord ) {
+    float2 ndc = ((float2( pixelCoord ) + 0.5f) / ViewportSize) * float2( 2.0f, -2.0f ) + float2( -1.0f, 1.0f );
     float linearZ = ProjParams.z / (depth - ProjParams.w);
     return float3( ndc * ProjParams.xy * linearZ, linearZ );
 }
@@ -101,18 +102,15 @@ void CSMain( uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID, uint
     if ( pixelCoord.x >= (uint)ViewportSize.x || pixelCoord.y >= (uint)ViewportSize.y )
         return;
 
-    float2 uv = (float2( pixelCoord ) + 0.5f) / ViewportSize;
-
-    // Read GBuffer
-    float4 diffuse = TX_Diffuse.SampleLevel( SS_Linear, uv, 0 );
-    float4 gb2 = TX_Nrm.SampleLevel( SS_Linear, uv, 0 );
-    float3 normal = normalize( gb2.xyz );
-    float4 gb3 = TX_SI_SP.SampleLevel( SS_Linear, uv, 0 );
+    // Read GBuffer via integer Load — exact pixel, no sampler filtering
+    float4 diffuse = TX_Diffuse.Load( int3( pixelCoord, 0 ) );
+    float3 normal = DecodeNormalGBuffer( TX_Nrm.Load( int3( pixelCoord, 0 ) ).xy );
+    float4 gb3 = TX_SI_SP.Load( int3( pixelCoord, 0 ) );
     float specIntensity = gb3.x;
     float specPower = gb3.y;
 
-    float expDepth = TX_Depth.SampleLevel( SS_Linear, uv, 0 ).r;
-    float3 vsPosition = VSPositionFromDepth( expDepth, uv );
+    float expDepth = TX_Depth.Load( int3( pixelCoord, 0 ) ).r;
+    float3 vsPosition = VSPositionFromDepth( expDepth, pixelCoord );
 
     // World-space position for shadow sampling (computed once, shared by all shadowed lights)
     float3 wsPosition = mul( float4( vsPosition, 1 ), InvView ).xyz;
@@ -123,6 +121,10 @@ void CSMain( uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID, uint
     uint tileIndex = tileY * NumTilesX + tileX;
 
     LightGrid grid = SB_LightGrid[tileIndex];
+
+    // Hoist per-pixel constants outside the light loop
+    float3 V = normalize( -vsPosition );
+    float specMod = pow( dot( float3( 0.333f, 0.333f, 0.333f ), diffuse.rgb ), 2 );
 
     float3 totalLighting = float3( 0, 0, 0 );
     float3 maxLighting = float3( 0, 0, 0 );
@@ -140,22 +142,19 @@ void CSMain( uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID, uint
         lightDir /= distance;
 
         float ndl = max( 0, dot( lightDir, normal ) );
-        float falloff = pow( saturate( 1.0f - (distance / light.Range) ), 1.2f );
+        float normalizedDist = saturate( 1.0f - (distance / light.Range) );
+        float falloff = normalizedDist * (normalizedDist * 0.2f + 0.8f);
 
-        // Match legacy PS_DS_PointLight: V is computed from the light's view position,
-        // not the pixel's. This is per-light, matching the legacy per-draw-call behavior.
-        float3 V = normalize( -light.PositionView );
         float3 H = normalize( lightDir + V );
         float spec = CalcBlinnPhongLighting( normal, H );
-        float specMod = pow( dot( float3( 0.333f, 0.333f, 0.333f ), diffuse.rgb ), 2 );
         float3 specBare = pow( spec, specPower ) * specIntensity * light.Color.rgb * falloff;
         float3 specColored = lerp( specBare, specBare * diffuse.rgb, specMod );
 
         float3 color = saturate( falloff * ndl * light.Color.rgb );
         float3 lighting = color * diffuse.rgb + specColored;
 
-        // Apply shadow if this light has a shadow cubemap
-        if ( light.ShadowCubeIndex >= 0 ) {
+        // Apply shadow if this light has a shadow cubemap and contribution is non-negligible
+        if ( light.ShadowCubeIndex >= 0 && any( lighting > 0.001f ) ) {
             float shadow = SampleShadowCube( wsPosition, light.PositionWorld, light.Range, light.ShadowCubeIndex );
             lighting *= shadow;
         }
