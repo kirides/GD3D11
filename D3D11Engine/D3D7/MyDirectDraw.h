@@ -6,7 +6,7 @@
 #include "FakeDirectDrawSurface7.h"
 #include "MyClipper.h"
 
-class MyDirectDraw final : public IDirectDraw7 {
+class MyDirectDraw : public IDirectDraw7 {
 public:
 	MyDirectDraw( IDirectDraw7* directDraw7 ) : directDraw7( directDraw7 ) {
 		DebugWrite( "MyDirectDraw::MyDirectDraw\n" );

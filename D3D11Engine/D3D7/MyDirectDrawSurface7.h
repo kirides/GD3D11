@@ -15,10 +15,10 @@ enum ETextureType {
 
 class zCTexture;
 class D3D11Texture;
-class MyDirectDrawSurface7 final : public IDirectDrawSurface7 {
+class MyDirectDrawSurface7 : public IDirectDrawSurface7 {
 public:
     MyDirectDrawSurface7();
-    ~MyDirectDrawSurface7();
+    virtual ~MyDirectDrawSurface7();
 
     /*** IUnknown methods ***/
     HRESULT __declspec(nothrow) __stdcall QueryInterface( REFIID riid, LPVOID* ppvObj ) override;

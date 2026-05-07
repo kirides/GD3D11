@@ -7,7 +7,7 @@
 #include "../D3D11VertexBuffer.h"
 #include "../Engine.h"
 
-class MyDirect3DVertexBuffer7 final : public IDirect3DVertexBuffer7 {
+class MyDirect3DVertexBuffer7 : public IDirect3DVertexBuffer7 {
 public:
 	MyDirect3DVertexBuffer7( const D3DVERTEXBUFFERDESC& originalDesc ) {
 		DebugWrite( "MyDirect3DVertexBuffer7::MyDirect3DVertexBuffer7\n" );
@@ -25,7 +25,7 @@ public:
 		RefCount = 1;
 	}
 
-    ~MyDirect3DVertexBuffer7() {
+    virtual ~MyDirect3DVertexBuffer7() {
         delete VertexBuffer;
     }
 

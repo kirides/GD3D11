@@ -8,10 +8,10 @@
 #include <ddraw.h>
 
 class MyDirectDrawSurface7;
-class FakeDirectDrawSurface7 final : public IDirectDrawSurface7 {
+class FakeDirectDrawSurface7 : public IDirectDrawSurface7 {
 public:
 	FakeDirectDrawSurface7();
-    ~FakeDirectDrawSurface7();
+    virtual ~FakeDirectDrawSurface7();
 
 	/*** IUnknown methods ***/
 	HRESULT __declspec(nothrow) __stdcall QueryInterface( REFIID riid, LPVOID* ppvObj ) override;

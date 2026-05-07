@@ -16,9 +16,9 @@ public:
     {
     }
 
-    HRESULT __stdcall Open( D3D_INCLUDE_TYPE includeType, LPCSTR pFileName, LPCVOID pParentData, LPCVOID* ppData, UINT* pBytes ) override;
+    HRESULT __declspec(nothrow) __stdcall Open( D3D_INCLUDE_TYPE includeType, LPCSTR pFileName, LPCVOID pParentData, LPCVOID* ppData, UINT* pBytes ) override;
 
-    HRESULT __stdcall Close( LPCVOID pData ) override
+    HRESULT __declspec(nothrow) __stdcall Close( LPCVOID pData ) override
     {
         if ( pData == nullptr )
             return E_INVALIDARG;

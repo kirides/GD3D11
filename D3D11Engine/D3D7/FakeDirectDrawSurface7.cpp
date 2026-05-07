@@ -4,16 +4,18 @@
 #include "../Engine.h"
 #include "../GothicAPI.h"
 
-FakeDirectDrawSurface7::FakeDirectDrawSurface7() {
-    RefCount = 0;
-    Data = nullptr;
+FakeDirectDrawSurface7::FakeDirectDrawSurface7() : 
+    RefCount(0),
+    Data(nullptr) {
 }
+
 
 FakeDirectDrawSurface7::~FakeDirectDrawSurface7() {
     // Release mip-map chain first
-    for ( LPDIRECTDRAWSURFACE7 mipmap : AttachedSurfaces ) {
-        mipmap->Release();
+    for (size_t i = 0; i < AttachedSurfaces.size(); ++i ) {
+        if ( AttachedSurfaces[i] ) AttachedSurfaces[i]->Release();
     }
+    AttachedSurfaces.clear();
 
     delete[] Data;
 }
