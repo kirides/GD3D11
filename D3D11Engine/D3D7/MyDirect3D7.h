@@ -14,17 +14,17 @@ public:
 	}
 
 	/*** IUnknown methods ***/
-	HRESULT STDMETHODCALLTYPE QueryInterface( REFIID riid, void** ppvObj ) override {
+	HRESULT __declspec(nothrow) STDMETHODCALLTYPE QueryInterface( REFIID riid, void** ppvObj ) override {
 		DebugWrite( "MyDirect3D7::QueryInterface\n" );
 		return S_OK;
 	}
 
-	ULONG STDMETHODCALLTYPE AddRef() override {
+	ULONG __declspec(nothrow) STDMETHODCALLTYPE AddRef() override {
 		DebugWrite( "MyDirect3D7::AddRef\n" );
 		return ++RefCount;
 	}
 
-	ULONG STDMETHODCALLTYPE Release() override {
+	ULONG __declspec(nothrow) STDMETHODCALLTYPE Release() override {
 		DebugWrite( "MyDirect3D7::Release\n" );
 		if ( --RefCount == 0 ) {
 			delete this;
@@ -35,7 +35,7 @@ public:
 	}
 
 	/*** IDirect3D7 methods ***/
-	HRESULT STDMETHODCALLTYPE CreateDevice( REFCLSID rclsid, LPDIRECTDRAWSURFACE7 lpDDS, LPDIRECT3DDEVICE7* lplpD3DDevice ) override {
+	HRESULT __declspec(nothrow) STDMETHODCALLTYPE CreateDevice( REFCLSID rclsid, LPDIRECTDRAWSURFACE7 lpDDS, LPDIRECT3DDEVICE7* lplpD3DDevice ) override {
 		DebugWrite( "MyDirect3D7::CreateDevice\n" );
 		HRESULT hr = S_OK;
 
@@ -46,7 +46,7 @@ public:
 		return hr;
 	}
 
-	HRESULT STDMETHODCALLTYPE CreateVertexBuffer( LPD3DVERTEXBUFFERDESC lpVBDesc, LPDIRECT3DVERTEXBUFFER7* lplpD3DVertexBuffer, DWORD dwFlags ) override {
+	HRESULT __declspec(nothrow) STDMETHODCALLTYPE CreateVertexBuffer( LPD3DVERTEXBUFFERDESC lpVBDesc, LPDIRECT3DVERTEXBUFFER7* lplpD3DVertexBuffer, DWORD dwFlags ) override {
 		DebugWrite( "MyDirect3D7::CreateVertexBuffer\n" );
 
 		// Fake a vertexbuffer
@@ -55,7 +55,7 @@ public:
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE EnumDevices( LPD3DENUMDEVICESCALLBACK7 lpEnumDevicesCallback, LPVOID lpUserArg ) override {
+	HRESULT __declspec(nothrow) STDMETHODCALLTYPE EnumDevices( LPD3DENUMDEVICESCALLBACK7 lpEnumDevicesCallback, LPVOID lpUserArg ) override {
 		DebugWrite( "MyDirect3D7::EnumDevices\n" );
 
         D3DDEVICEDESC7 devDesc;
@@ -150,12 +150,12 @@ public:
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE EvictManagedTextures() override {
+	HRESULT __declspec(nothrow) STDMETHODCALLTYPE EvictManagedTextures() override {
 		DebugWrite( "MyDirect3D7::EvictManagedTextures\n" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE EnumZBufferFormats( REFCLSID riidDevice, LPD3DENUMPIXELFORMATSCALLBACK lpEnumCallback, LPVOID lpContext ) override {
+	HRESULT __declspec(nothrow) STDMETHODCALLTYPE EnumZBufferFormats( REFCLSID riidDevice, LPD3DENUMPIXELFORMATSCALLBACK lpEnumCallback, LPVOID lpContext ) override {
 		DebugWrite( "MyDirect3D7::EnumZBufferFormats\n" );
 
         static std::array<DDPIXELFORMAT, 4> zformats = { {
