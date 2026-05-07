@@ -249,6 +249,12 @@ function(gd3d11_apply_common_compile_settings target_name)
       target_compile_options(${target_name} PRIVATE
         -m32
         $<$<OR:$<COMPILE_LANGUAGE:C>,$<COMPILE_LANGUAGE:CXX>>:-fms-extensions>
+        -Wno-microsoft-cast
+        -Wno-microsoft-extra-qualification
+        -Wno-microsoft-exception-spec
+        -Wno-defaulted-function-deleted
+        -Wno-microsoft-enum-forward-reference
+        -Wno-inconsistent-missing-override
       )
       target_link_options(${target_name} PRIVATE -m32)
     endif()

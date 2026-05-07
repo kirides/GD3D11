@@ -24,8 +24,7 @@ D3D11NVAPI::~D3D11NVAPI() {
 /** Initializes the api */
 bool D3D11NVAPI::InitNVAPI() {
     if ( HMODULE nvapiDLL = LoadLibraryW( L"nvapi.dll" ) ) {
-        PFN_QUERYINTERFACE nvapi_QueryInterface;
-        if ( nvapi_QueryInterface = reinterpret_cast<PFN_QUERYINTERFACE>( GetProcAddress( nvapiDLL, "nvapi_QueryInterface" ) ) ) {
+        if ( auto nvapi_QueryInterface = reinterpret_cast<PFN_QUERYINTERFACE>( GetProcAddress( nvapiDLL, "nvapi_QueryInterface" ) ) ) {
             NvAPI_Initialize = reinterpret_cast<PFN_NVAPI_INITIALIZE>( nvapi_QueryInterface( IID_NvAPI_Initialize ) );
             NvAPI_Unload = reinterpret_cast<PFN_NVAPI_UNLOAD>( nvapi_QueryInterface( IID_NvAPI_Unload ) );
             NvAPI_D3D_RegisterDevice = reinterpret_cast<PFN_NVAPI_D3D_REGISTERDEVICE>( nvapi_QueryInterface( IID_NvAPI_D3D_RegisterDevice ) );

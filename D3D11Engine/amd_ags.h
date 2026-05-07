@@ -1,3 +1,5 @@
+#pragma clang diagnostic ignored "-Wignored-attributes"
+
 //
 // Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
 //

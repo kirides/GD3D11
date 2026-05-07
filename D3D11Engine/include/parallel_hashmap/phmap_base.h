@@ -4386,8 +4386,13 @@ struct OffsetOf {
 template <class Pair>
 struct OffsetOf<Pair, typename std::is_standard_layout<Pair>::type> 
 {
+#if defined(__clang__) && PHMAP_HAVE_BUILTIN(__builtin_offsetof)
+    static constexpr size_t kFirst  = __builtin_offsetof(Pair, first);
+    static constexpr size_t kSecond = __builtin_offsetof(Pair, second);
+#else
     static constexpr size_t kFirst  = offsetof(Pair, first);
     static constexpr size_t kSecond = offsetof(Pair, second);
+#endif
 };
 
 // ----------------------------------------------------------------------------

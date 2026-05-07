@@ -1,5 +1,5 @@
 #pragma once
-#include "d3d11pfx_effect.h"
+#include "D3D11PFX_Effect.h"
 
 class D3D11PFX_HeightFog :
     public D3D11PFX_Effect {

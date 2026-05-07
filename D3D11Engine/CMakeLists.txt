@@ -99,16 +99,23 @@ target_link_directories(D3D11Engine PRIVATE
   ${GD3D11_VENDOR_LIB_DIR}
 )
 
+set(_gd3d11_nuget_cpp_lib_cfg "$<$<CONFIG:Debug>:Debug>$<$<NOT:$<CONFIG:Debug>>:Release>")
+set(_gd3d11_nuget_xaudio_lib_cfg "$<$<CONFIG:Debug>:debug>$<$<NOT:$<CONFIG:Debug>>:release>")
+if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+  set(_gd3d11_nuget_cpp_lib_cfg "Release")
+  set(_gd3d11_nuget_xaudio_lib_cfg "release")
+endif()
+
 if(EXISTS "${_directxmesh_root}/native/lib/x86")
-  target_link_directories(D3D11Engine PRIVATE "${_directxmesh_root}/native/lib/x86/$<$<CONFIG:Debug>:Debug>$<$<NOT:$<CONFIG:Debug>>:Release>")
+  target_link_directories(D3D11Engine PRIVATE "${_directxmesh_root}/native/lib/x86/${_gd3d11_nuget_cpp_lib_cfg}")
 endif()
 
 if(EXISTS "${_directxtk_root}/native/lib/x86")
-  target_link_directories(D3D11Engine PRIVATE "${_directxtk_root}/native/lib/x86/$<$<CONFIG:Debug>:Debug>$<$<NOT:$<CONFIG:Debug>>:Release>")
+  target_link_directories(D3D11Engine PRIVATE "${_directxtk_root}/native/lib/x86/${_gd3d11_nuget_cpp_lib_cfg}")
 endif()
 
 if(EXISTS "${_xaudio2_root}/build/native")
-  target_link_directories(D3D11Engine PRIVATE "${_xaudio2_root}/build/native/$<$<CONFIG:Debug>:debug>$<$<NOT:$<CONFIG:Debug>>:release>/lib/x86")
+  target_link_directories(D3D11Engine PRIVATE "${_xaudio2_root}/build/native/${_gd3d11_nuget_xaudio_lib_cfg}/lib/x86")
 endif()
 
 if(EXISTS "${CMAKE_SOURCE_DIR}/blobs/libs")

@@ -38,7 +38,7 @@ __declspec(selectany) std::string LOGFILE;
 
 #else
 
-#define XLE(x) { XRESULT xr = (x); if (xr != XRESULT::XR_SUCCESS){ LogError() << ##x << " failed with code: " << std::hex << xr << " (" + Toolbox::MakeErrorString(xr) + ")";}}
+#define XLE(x) { XRESULT xr = (x); if (xr != XRESULT::XR_SUCCESS){ LogError() << #x << " failed with code: " << std::hex << xr << " (" + Toolbox::MakeErrorString(xr) + ")";}}
 
 /** Checks for errors and logs them, HRESULT hr needs to be declared */
 #define LE(x) { hr = (x); if (FAILED(hr)){LogError() << "failed with code: " << std::hex << hr << "!"; }/*else{ LogInfo() << L#x << L" Succeeded."; }*/ }

@@ -382,17 +382,19 @@ public:
 
 		GothicRendererState& state = Engine::GAPI->GetRendererState();
 		switch ( dtstTransformStateType ) {
-		case D3DTRANSFORMSTATE_WORLD:
+		case D3DTRANSFORMSTATE_WORLD: {
 			XMMATRIX matrixWorld = XMLoadFloat4x4( reinterpret_cast<XMFLOAT4X4*>(lpD3DMatrix) );
 			XMStoreFloat4x4( &state.TransformState.TransformWorld, XMMatrixTranspose( matrixWorld ) );
 			break;
+		}
 
-		case D3DTRANSFORMSTATE_VIEW:
+		case D3DTRANSFORMSTATE_VIEW: {
 			XMMATRIX matrixView = XMLoadFloat4x4( reinterpret_cast<XMFLOAT4X4*>(lpD3DMatrix) );
 			XMStoreFloat4x4( &state.TransformState.TransformView, XMMatrixTranspose( matrixView ) );
 			break;
+		}
 
-		case D3DTRANSFORMSTATE_PROJECTION:
+		case D3DTRANSFORMSTATE_PROJECTION: {
             if ( state.RendererInfo.RenderStage == STAGE_DRAW_WORLD ) {
                 // stop the game from constantly resetting the projection matrix
                 // as we may have modified it for TAA. Only allow this once at the start of a frame.
@@ -403,6 +405,7 @@ public:
 			XMStoreFloat4x4( &state.TransformState.TransformProj, XMMatrixTranspose( matrixProj ) );
             state.TransformState.TransformProjUnjittered = state.TransformState.TransformProj;
 			break;
+		}
 		}
 
 		return S_OK;

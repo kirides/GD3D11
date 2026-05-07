@@ -1,12 +1,14 @@
 #include "pch.h"
 
+#pragma clang diagnostic ignored "-Wwritable-strings"
+
 #include "ddraw.h"
 #include "D3D7/MyDirectDraw.h"
 #include "Logger.h"
 #include "Detours/detours.h"
 #include "DbgHelp.h"
 #include "HookedFunctions.h"
-#include <signal.h>
+#include <csignal>
 #include "VersionCheck.h"
 #include "InstructionSet.h"
 #include "D3D11GraphicsEngine.h"
@@ -78,22 +80,7 @@ void QuantizeHalfFloats_X4_SSE2( float* input, unsigned short* output )
 
 void QuantizeHalfFloats_X4_SSE41( float* input, unsigned short* output )
 {
-    __m128i v = _mm_castps_si128( _mm_load_ps( input ) );
-    __m128i s = _mm_and_si128( _mm_srli_epi32( v, 16 ), _mm_set1_epi32( 0x8000 ) );
-    __m128i em = _mm_and_si128( v, _mm_set1_epi32( 0x7FFFFFFF ) );
-    __m128i h = _mm_srli_epi32( _mm_sub_epi32( em, _mm_set1_epi32( 0x37FFF000 ) ), 13 );
-
-    __m128i mask = _mm_cmplt_epi32( em, _mm_set1_epi32( 0x38800000 ) );
-    h = _mm_blendv_epi8( h, _mm_setzero_si128(), mask );
-
-    mask = _mm_cmpgt_epi32( em, _mm_set1_epi32( 0x47800000 - 1 ) );
-    h = _mm_blendv_epi8( h, _mm_set1_epi32( 0x7C00 ), mask );
-
-    mask = _mm_cmpgt_epi32( em, _mm_set1_epi32( 0x7F800000 ) );
-    h = _mm_blendv_epi8( h, _mm_set1_epi32( 0x7E00 ), mask );
-
-    __m128i halfs = _mm_or_si128( s, h );
-    _mm_store_sd( reinterpret_cast<double*>(output), _mm_castsi128_pd( _mm_packus_epi32( halfs, halfs ) ) );
+    QuantizeHalfFloats_X4_SSE2( input, output );
 }
 
 #ifdef _XM_AVX_INTRINSICS_

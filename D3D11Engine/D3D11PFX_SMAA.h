@@ -3,7 +3,7 @@
 #include <d3d11shader.h>
 
 #include "pch.h"
-#include "d3d11pfx_effect.h"
+#include "D3D11PFX_Effect.h"
 #include "SMAA/D3D11SMAA.h"
 
 

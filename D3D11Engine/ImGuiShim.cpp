@@ -297,7 +297,7 @@ bool ImComboBoxCT( const char* id, const std::vector<std::tuple<const char*, T, 
                 selected();
             }
             if ( std::get<2>(items[i]) ) {
-                ImGui::SetItemTooltip( std::get<2>( items[i] ) );
+                ImGui::SetItemTooltip( "%s", std::get<2>( items[i] ) );
             }
 
             if ( isSelected ) {

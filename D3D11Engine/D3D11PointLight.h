@@ -5,7 +5,7 @@
 #include <condition_variable>
 #include <atomic>
 #include "TexturePool.h"
-#include "Threadpool.h"
+#include "ThreadPool.h"
 
 class D3D11PointLight;
 class D3D11TiledDeferredShading;

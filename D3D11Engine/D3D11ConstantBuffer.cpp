@@ -20,8 +20,9 @@ D3D11ConstantBuffer::D3D11ConstantBuffer( int size, void* data ) {
     d.SysMemSlicePitch = 0;
 
     // Create constantbuffer
+    CD3D11_BUFFER_DESC bufferDesc( size, D3D11_BIND_CONSTANT_BUFFER, D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE );
     HRESULT hr;
-    LE( engine->GetDevice()->CreateBuffer( &CD3D11_BUFFER_DESC( size, D3D11_BIND_CONSTANT_BUFFER, D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE ), &d, Buffer.GetAddressOf()));
+    LE( engine->GetDevice()->CreateBuffer( &bufferDesc, &d, Buffer.GetAddressOf()));
     OriginalSize = size;
 
     if ( !data )

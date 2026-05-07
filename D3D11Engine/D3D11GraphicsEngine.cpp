@@ -1051,7 +1051,8 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
         static_cast<int>(Resolution.y),
         32 );
 
-    zCViewDraw::GetScreen().SetVirtualSize( POINT{ 8192, 8192 } );
+    POINT virtualSize = { 8192, 8192 };
+    zCViewDraw::GetScreen().SetVirtualSize( virtualSize );
 
 #ifndef BUILD_SPACER
     BOOL isFullscreen = 0;
@@ -1468,8 +1469,9 @@ XRESULT D3D11GraphicsEngine::Clear( const float4& color ) {
     context->ClearDepthStencilView( DepthStencilBuffer->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
     context->ClearDepthStencilView( m_SwapchainDepthStencilBuffer->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
 
-    context->ClearRenderTargetView( HDRBackBuffer->GetRenderTargetView().Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )) );
-    context->ClearRenderTargetView( Backbuffer->GetRenderTargetView().Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )) );
+    const float clearColor[4] = { 0.f, 0.f, 0.f, 0.f };
+    context->ClearRenderTargetView( HDRBackBuffer->GetRenderTargetView().Get(), clearColor );
+    context->ClearRenderTargetView( Backbuffer->GetRenderTargetView().Get(), clearColor );
     
     return XR_SUCCESS;
 }
@@ -3471,8 +3473,9 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             context->ClearDepthStencilView( DepthStencilBuffer->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
             context->ClearDepthStencilView( m_SwapchainDepthStencilBuffer->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
 
-            context->ClearRenderTargetView( HDRBackBuffer->GetRenderTargetView().Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )) );
-            context->ClearRenderTargetView( Backbuffer->GetRenderTargetView().Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )) );
+            const float clearColor[4] = { 0.f, 0.f, 0.f, 0.f };
+            context->ClearRenderTargetView( HDRBackBuffer->GetRenderTargetView().Get(), clearColor );
+            context->ClearRenderTargetView( Backbuffer->GetRenderTargetView().Get(), clearColor );
 
             constexpr float black[]{ 0.f, 0.f, 0.f, 0.f };
             float4 fogColor( rendererState.GraphicsState.FF_FogColor, 0.0f );
@@ -4171,7 +4174,8 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
         .Update( &sky->GetAtmosphereCB() )
         .Bind();
 
-    ActiveVS->GetBuffer( "Matrices_PerInstances" ).Update( &XMMatrixIdentity() ).Bind();
+    const XMMATRIX identityMatrix = XMMatrixIdentity();
+    ActiveVS->GetBuffer( "Matrices_PerInstances" ).Update( &identityMatrix ).Bind();
 
     InfiniteRangeConstantBuffer->BindToPixelShader( 3 );
 
@@ -4288,8 +4292,9 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh_Indirect( bool noTextures ) {
     GetContext()->PSSetShaderResources( 4, 1, ReflectionCube.GetAddressOf() );
 
     // Set constant buffer
+    const XMMATRIX identityMatrix = XMMatrixIdentity();
     ActiveVS->GetBuffer( "Matrices_PerInstances" )
-        .Update( &XMMatrixIdentity() )
+        .Update( &identityMatrix )
         .Bind();
 
     auto updatePSBuffers = [this] {
@@ -4630,9 +4635,9 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
     GetContext()->PSSetShaderResources( 4, 1, ReflectionCube.GetAddressOf() );
 
     // Set constant buffer
-
+    const XMMATRIX identityMatrix = XMMatrixIdentity();
     ActiveVS->GetBuffer( "Matrices_PerInstances" )
-        .Update( &XMMatrixIdentity() )
+        .Update( &identityMatrix )
         .Bind();
 
     auto updatePSBuffers = [this] {
@@ -5083,7 +5088,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
 
-    ActiveVS->GetBuffer( "Matrices_PerInstances" ).Update( &XMMatrixIdentity() ).Bind();
+    const XMMATRIX identityMatrix = XMMatrixIdentity();
+    ActiveVS->GetBuffer( "Matrices_PerInstances" ).Update( &identityMatrix ).Bind();
 
     // Update and bind buffer of PS
     PerObjectState ocb;
@@ -5127,7 +5133,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
         DrawVertexBufferIndexedUINT( Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer,
             Engine::GAPI->GetWrappedWorldMesh()->MeshIndexBuffer, 0, 0 );
 
-        vsBufMPI.Update( &XMMatrixIdentity() ).Bind();
+        vsBufMPI.Update( &identityMatrix ).Bind();
 
         // Only use cache if we haven't already collected the vobs
         // TODO: Collect vobs in a different way than using the drawn sections!
@@ -5406,7 +5412,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
 
-    ActiveVS->GetBuffer( "Matrices_PerInstances" ).Update( &XMMatrixIdentity() ).Bind();
+    const XMMATRIX identityMatrix = XMMatrixIdentity();
+    ActiveVS->GetBuffer( "Matrices_PerInstances" ).Update( &identityMatrix ).Bind();
 
     // Update and bind buffer of PS
     PerObjectState ocb;
@@ -5448,7 +5455,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
         DrawVertexBufferInstancedIndexedUINT( Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer,
             Engine::GAPI->GetWrappedWorldMesh()->MeshIndexBuffer, 0, 0, 0 );
 
-        ActiveVS->GetBuffer( "Matrices_PerInstances" ).Update( &XMMatrixIdentity() ).Bind();
+        ActiveVS->GetBuffer( "Matrices_PerInstances" ).Update( &identityMatrix ).Bind();
 
         // Only use cache if we haven't already collected the vobs
         // TODO: Collect vobs in a different way than using the drawn sections!
@@ -5942,8 +5949,9 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
 
+    const XMMATRIX identityMatrix = XMMatrixIdentity();
     auto cbMatrices_PerInstances = ActiveVS->GetBuffer( "Matrices_PerInstances" )
-        .Update( &XMMatrixIdentity() )
+        .Update( &identityMatrix )
         .Bind();
 
     float3 fPosition; XMStoreFloat3( fPosition.toXMFLOAT3(), position );
@@ -5975,7 +5983,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer,
             Engine::GAPI->GetWrappedWorldMesh()->MeshIndexBuffer, 0, 0 );
 
-        cbMatrices_PerInstances.Update( &XMMatrixIdentity() ).Bind();
+        cbMatrices_PerInstances.Update( &identityMatrix ).Bind();
 
         static thread_local std::vector<WorldMeshSectionInfo*> visibleSections;
         visibleSections.clear();
@@ -7207,7 +7215,8 @@ XRESULT D3D11GraphicsEngine::DrawPolyStrips( bool noTextures ) {
         //Setting world transform matrix/////////////
 
         //vob->GetWorldMatrix(&id);
-        vsBufMPI.Update( &XMMatrixIdentity() ).Bind();
+        const XMMATRIX identityMatrix = XMMatrixIdentity();
+        vsBufMPI.Update( &identityMatrix ).Bind();
 
         // Check for alphablending on world mesh
         bool blendAdd = mat->GetAlphaFunc() == zMAT_ALPHA_FUNC_ADD;
@@ -8206,8 +8215,9 @@ void D3D11GraphicsEngine::DrawFrameParticles(
     // TODO: Maybe make particles draw at a lower res and bilinear upsample the result.
 
     // Clear GBuffer0 to hold the refraction vectors since it's not needed anymore
-    Context->ClearRenderTargetView( bufferParticleColor->GetRenderTargetView().Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )) );
-    Context->ClearRenderTargetView( bufferParticleDistortion->GetRenderTargetView().Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )) );
+    const float clearColor[4] = { 0.f, 0.f, 0.f, 0.f };
+    Context->ClearRenderTargetView( bufferParticleColor->GetRenderTargetView().Get(), clearColor );
+    Context->ClearRenderTargetView( bufferParticleDistortion->GetRenderTargetView().Get(), clearColor );
 
     RefractionInfoConstantBuffer ricb = {};
     ricb.RI_Projection = Engine::GAPI->GetProjectionMatrix();

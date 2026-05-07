@@ -33,7 +33,8 @@ XRESULT D3D11PFX_DistanceBlur::Render( ID3D11ShaderResourceView* diffuse ) {
 	// Copy scene
     auto tempBuffer = FxRenderer->GetTempBuffer();
 
-	engine->GetContext()->ClearRenderTargetView( tempBuffer->GetRenderTargetView().Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )) );
+	const float clearColor[4] = { 0.f, 0.f, 0.f, 0.f };
+	engine->GetContext()->ClearRenderTargetView( tempBuffer->GetRenderTargetView().Get(), clearColor );
     FxRenderer->CopyTextureToRTV( diffuse, tempBuffer->GetRenderTargetView(), Engine::GraphicsEngine->GetResolution() );
 
 	engine->GetContext()->OMSetRenderTargets( 1, oldRTV.GetAddressOf(), nullptr );

@@ -48,7 +48,7 @@
 // TODO: REMOVE THIS!
 #include "D3D11GraphicsEngine.h"
 #include "MeshManager.h"
-#include "Threadpool.h"
+#include "ThreadPool.h"
 
 #ifndef PUBLIC_RELEASE
 #define OPT_DBG_NOINLINE __declspec(noinline)
@@ -2349,8 +2349,9 @@ int GothicAPI::GetLowestLODNumPolys_SkeletalMesh( zCModel* model ) {
 
 float3* GothicAPI::GetLowestLODPoly_SkeletalMesh( zCModel* model, const int polyId, float3*& polyNormal ) {
     static float3 returnPositions[3];
+    static float3 defaultPolyNormal( 0.f, 1.f, 0.f );
     size_t polyIndex = static_cast<size_t>(polyId) * 3;
-    polyNormal = &float3(0.f, 1.f, 0.f);
+    polyNormal = &defaultPolyNormal;
 
     SkeletalMeshVisualInfo* skeletalMesh = nullptr;
     zCVob* homeVob = model->GetHomeVob();
@@ -3646,7 +3647,8 @@ FXMVECTOR GothicAPI::GetFogColor() {
 
         return FogColorMod;
 
-    XMVECTOR color = XMLoadFloat3( &sc->GetOverrideColor() );
+    const XMFLOAT3 overrideColor = sc->GetOverrideColor();
+    XMVECTOR color = XMLoadFloat3( &overrideColor );
 
     // Clamp to length of 0.5f. Gothic does it at an intensity of 120 / 255.
     float len;
@@ -3697,7 +3699,8 @@ float GothicAPI::GetFogOverride() {
     if ( !sc )
         return 0.0f;
     float veclenght;
-    XMStoreFloat( &veclenght, XMVector3Length( XMLoadFloat3( &sc->GetOverrideColor() ) ) );
+    const XMFLOAT3 overrideColor = sc->GetOverrideColor();
+    XMStoreFloat( &veclenght, XMVector3Length( XMLoadFloat3( &overrideColor ) ) );
     return sc->GetOverrideFlag() ? std::min( veclenght, 0.5f ) * 2.0f : 0.0f;
 }
 
