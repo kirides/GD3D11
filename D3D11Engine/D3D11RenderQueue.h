@@ -48,7 +48,8 @@ public:
         m_Device( device ),
         m_Context( context )
     { }
-    virtual ~D3D11RenderQueue() = default;
+
+    ~D3D11RenderQueue() override = default;
 
     XRESULT Init() override ;
     void Reset() override;

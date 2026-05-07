@@ -19,7 +19,7 @@ public:
 	}
 
 	/*** IUnknown methods ***/
-	HRESULT STDMETHODCALLTYPE QueryInterface( REFIID riid, void** ppvObj ) {
+	HRESULT STDMETHODCALLTYPE QueryInterface( REFIID riid, void** ppvObj ) override {
 		DebugWrite( "MyDirectDraw::QueryInterface\n" );
 		if ( riid == IID_IDirect3D7 ) {
 			*ppvObj = new MyDirect3D7( reinterpret_cast<IDirect3D7*>(*ppvObj) );
@@ -28,12 +28,12 @@ public:
 		return S_OK;
 	}
 
-	ULONG STDMETHODCALLTYPE AddRef() {
+	ULONG STDMETHODCALLTYPE AddRef() override {
 		DebugWrite( "MyDirectDraw::AddRef\n" );
 		return ++RefCount;
 	}
 
-	ULONG STDMETHODCALLTYPE Release() {
+	ULONG STDMETHODCALLTYPE Release() override {
 		DebugWrite( "MyDirectDraw::Release\n" );
 		if ( --RefCount == 0 ) {
 			delete this;
@@ -44,22 +44,22 @@ public:
 	}
 
 	/*** IDirectDraw7 methods ***/
-	HRESULT STDMETHODCALLTYPE GetAvailableVidMem( LPDDSCAPS2 lpDDSCaps2, LPDWORD lpdwTotal, LPDWORD lpdwFree ) {
+	HRESULT STDMETHODCALLTYPE GetAvailableVidMem( LPDDSCAPS2 lpDDSCaps2, LPDWORD lpdwTotal, LPDWORD lpdwFree ) override {
 		DebugWrite( "MyDirectDraw::GetAvailableVidMem\n" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE GetCaps( LPDDCAPS lpDDDriverCaps, LPDDCAPS lpDDHELCaps ) {
+	HRESULT STDMETHODCALLTYPE GetCaps( LPDDCAPS lpDDDriverCaps, LPDDCAPS lpDDHELCaps ) override {
 		DebugWrite( "MyDirectDraw::GetCaps\n" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE SetCooperativeLevel( HWND hWnd, DWORD dwFlags ) {
+	HRESULT STDMETHODCALLTYPE SetCooperativeLevel( HWND hWnd, DWORD dwFlags ) override {
 		DebugWrite( "MyDirectDraw::SetCooperativeLevel\n" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE GetDeviceIdentifier( LPDDDEVICEIDENTIFIER2 lpdddi, DWORD dwFlags ) {
+	HRESULT STDMETHODCALLTYPE GetDeviceIdentifier( LPDDDEVICEIDENTIFIER2 lpdddi, DWORD dwFlags ) override {
 		DebugWrite( "MyDirectDraw::GetDeviceIdentifier\n" );
 
 		ZeroMemory( lpdddi, sizeof( DDDEVICEIDENTIFIER2 ) );
@@ -74,14 +74,14 @@ public:
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE GetDisplayMode( LPDDSURFACEDESC2 lpDDSurfaceDesc2 ) {
+	HRESULT STDMETHODCALLTYPE GetDisplayMode( LPDDSURFACEDESC2 lpDDSurfaceDesc2 ) override {
 		DebugWrite( "MyDirectDraw::GetDisplayMode\n" );
 		*lpDDSurfaceDesc2 = DisplayMode;
 
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE SetDisplayMode( DWORD dwWidth, DWORD dwHeight, DWORD dwBPP, DWORD dwRefreshRate, DWORD dwFlags ) {
+	HRESULT STDMETHODCALLTYPE SetDisplayMode( DWORD dwWidth, DWORD dwHeight, DWORD dwBPP, DWORD dwRefreshRate, DWORD dwFlags ) override {
 		DebugWrite( "MyDirectDraw::SetDisplayMode\n" );
 
 		DisplayMode.dwWidth = dwWidth;
@@ -98,42 +98,42 @@ public:
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE GetFourCCCodes( LPDWORD lpNumCodes, LPDWORD lpCodes ) {
+	HRESULT STDMETHODCALLTYPE GetFourCCCodes( LPDWORD lpNumCodes, LPDWORD lpCodes ) override {
 		DebugWrite( "MyDirectDraw::GetFourCCCodes\n" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE GetGDISurface( LPDIRECTDRAWSURFACE7 FAR* lplpGDIDDSSurface ) {
+	HRESULT STDMETHODCALLTYPE GetGDISurface( LPDIRECTDRAWSURFACE7 FAR* lplpGDIDDSSurface ) override {
 		DebugWrite( "MyDirectDraw::GetGDISurface\n" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE GetMonitorFrequency( LPDWORD lpdwFrequency ) {
+	HRESULT STDMETHODCALLTYPE GetMonitorFrequency( LPDWORD lpdwFrequency ) override {
 		DebugWrite( "MyDirectDraw::GetMonitorFrequency\n" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE GetScanLine( LPDWORD lpdwScanLine ) {
+	HRESULT STDMETHODCALLTYPE GetScanLine( LPDWORD lpdwScanLine ) override {
 		DebugWrite( "MyDirectDraw::GetScanLine\n" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE GetSurfaceFromDC( HDC hdc, LPDIRECTDRAWSURFACE7* lpDDS ) {
+	HRESULT STDMETHODCALLTYPE GetSurfaceFromDC( HDC hdc, LPDIRECTDRAWSURFACE7* lpDDS ) override {
 		DebugWrite( "MyDirectDraw::GetSurfaceFromDC\n" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE GetVerticalBlankStatus( LPBOOL lpbIsInVB ) {
+	HRESULT STDMETHODCALLTYPE GetVerticalBlankStatus( LPBOOL lpbIsInVB ) override {
 		DebugWrite( "MyDirectDraw::GetVerticalBlankStatus\n" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE Compact() {
+	HRESULT STDMETHODCALLTYPE Compact() override {
 		DebugWrite( "MyDirectDraw::Compact\n" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE CreateClipper( DWORD dwFlags, LPDIRECTDRAWCLIPPER FAR* lplpDDClipper, IUnknown FAR* pUnkOuter ) {
+	HRESULT STDMETHODCALLTYPE CreateClipper( DWORD dwFlags, LPDIRECTDRAWCLIPPER FAR* lplpDDClipper, IUnknown FAR* pUnkOuter ) override {
 		DebugWrite( "MyDirectDraw::CreateClipper\n" );
 
 		*lplpDDClipper = new MyClipper;
@@ -141,12 +141,12 @@ public:
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE CreatePalette( DWORD dwFlags, LPPALETTEENTRY lpDDColorArray, LPDIRECTDRAWPALETTE FAR* lplpDDPalette, IUnknown FAR* pUnkOuter ) {
+	HRESULT STDMETHODCALLTYPE CreatePalette( DWORD dwFlags, LPPALETTEENTRY lpDDColorArray, LPDIRECTDRAWPALETTE FAR* lplpDDPalette, IUnknown FAR* pUnkOuter ) override {
 		DebugWrite( "MyDirectDraw::CreatePalette\n" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE CreateSurface( LPDDSURFACEDESC2 lpDDSurfaceDesc2, LPDIRECTDRAWSURFACE7 FAR* lplpDDSurface, IUnknown FAR* pUnkOuter ) {
+	HRESULT STDMETHODCALLTYPE CreateSurface( LPDDSURFACEDESC2 lpDDSurfaceDesc2, LPDIRECTDRAWSURFACE7 FAR* lplpDDSurface, IUnknown FAR* pUnkOuter ) override {
 		DebugWrite( "MyDirectDraw::CreateSurface\n" );
 
 		if ( lpDDSurfaceDesc2->ddsCaps.dwCaps & DDSCAPS_OFFSCREENPLAIN ) {
@@ -240,12 +240,12 @@ public:
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE DuplicateSurface( LPDIRECTDRAWSURFACE7 lpDDSurface, LPDIRECTDRAWSURFACE7 FAR* lplpDupDDSurface ) {
+	HRESULT STDMETHODCALLTYPE DuplicateSurface( LPDIRECTDRAWSURFACE7 lpDDSurface, LPDIRECTDRAWSURFACE7 FAR* lplpDupDDSurface ) override {
 		DebugWrite( "MyDirectDraw::DuplicateSurface\n" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE EnumDisplayModes( DWORD dwFlags, LPDDSURFACEDESC2 lpDDSurfaceDesc2, LPVOID lpContext, LPDDENUMMODESCALLBACK2 lpEnumModesCallback ) {
+	HRESULT STDMETHODCALLTYPE EnumDisplayModes( DWORD dwFlags, LPDDSURFACEDESC2 lpDDSurfaceDesc2, LPVOID lpContext, LPDDENUMMODESCALLBACK2 lpEnumModesCallback ) override {
 		DebugWrite( "MyDirectDraw::EnumDisplayModes\n" );
 
 		std::vector<DisplayModeInfo> modes;
@@ -303,47 +303,47 @@ public:
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE EnumSurfaces( DWORD dwFlags, LPDDSURFACEDESC2 lpDDSD2, LPVOID lpContext, LPDDENUMSURFACESCALLBACK7 lpEnumSurfacesCallback ) {
+	HRESULT STDMETHODCALLTYPE EnumSurfaces( DWORD dwFlags, LPDDSURFACEDESC2 lpDDSD2, LPVOID lpContext, LPDDENUMSURFACESCALLBACK7 lpEnumSurfacesCallback ) override {
 		DebugWrite( "MyDirectDraw::EnumSurfaces\n" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE EvaluateMode( DWORD dwFlags, DWORD* pSecondsUntilTimeout ) {
+	HRESULT STDMETHODCALLTYPE EvaluateMode( DWORD dwFlags, DWORD* pSecondsUntilTimeout ) override {
 		DebugWrite( "MyDirectDraw::EvaluateMode\n" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE FlipToGDISurface() {
+	HRESULT STDMETHODCALLTYPE FlipToGDISurface() override {
 		DebugWrite( "MyDirectDraw::FlipToGDISurface\n" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE Initialize( GUID FAR* lpGUID ) {
+	HRESULT STDMETHODCALLTYPE Initialize( GUID FAR* lpGUID ) override {
 		DebugWrite( "MyDirectDraw::Initialize\n" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE RestoreDisplayMode() {
+	HRESULT STDMETHODCALLTYPE RestoreDisplayMode() override {
 		DebugWrite( "MyDirectDraw::RestoreDisplayMode\n" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE WaitForVerticalBlank( DWORD dwFlags, HANDLE hEvent ) {
+	HRESULT STDMETHODCALLTYPE WaitForVerticalBlank( DWORD dwFlags, HANDLE hEvent ) override {
 		DebugWrite( "MyDirectDraw::WaitForVerticalBlank\n" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE RestoreAllSurfaces() {
+	HRESULT STDMETHODCALLTYPE RestoreAllSurfaces() override {
 		DebugWrite( "MyDirectDraw::RestoreAllSurfaces\n" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE StartModeTest( LPSIZE lpModesToTest, DWORD dwNumEntries, DWORD dwFlags ) {
+	HRESULT STDMETHODCALLTYPE StartModeTest( LPSIZE lpModesToTest, DWORD dwNumEntries, DWORD dwFlags ) override {
 		DebugWrite( "MyDirectDraw::StartModeTest\n" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE TestCooperativeLevel() {
+	HRESULT STDMETHODCALLTYPE TestCooperativeLevel() override {
 		DebugWrite( "MyDirectDraw::TestCooperativeLevel\n" );
 		return S_OK;
 	}

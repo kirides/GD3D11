@@ -283,8 +283,8 @@ struct BaseVobInfo {
 struct WorldMeshSectionInfo;
 struct VobInfo : public BaseVobInfo {
     VobInfo() = default;
-    VobInfo(VobInfo&& other) = default;
-    VobInfo& operator=( VobInfo&& ) = default;
+    VobInfo(VobInfo&& other) = delete;
+    VobInfo& operator=( VobInfo&& ) = delete;
     VobInfo(const VobInfo& other) = delete;
     VobInfo& operator=(const VobInfo& other) = delete;
     
@@ -330,8 +330,8 @@ class zCVobLight;
 class BaseShadowedPointLight;
 struct VobLightInfo {
     VobLightInfo() = default;
-    VobLightInfo(VobLightInfo&& other) = default;
-    VobLightInfo& operator=( VobLightInfo&& ) = default;
+    VobLightInfo(VobLightInfo&& other) = delete;
+    VobLightInfo& operator=( VobLightInfo&& ) = delete;
     VobLightInfo(const VobLightInfo& other) = delete;
     VobLightInfo& operator=(const VobLightInfo& other) = delete;
 
@@ -380,8 +380,8 @@ struct SkeletalVobInfo : public BaseVobInfo {
         LastAniUpdateFrame = 0;
     }
 
-    SkeletalVobInfo(SkeletalVobInfo&& other) = default;
-    SkeletalVobInfo& operator=( SkeletalVobInfo&& ) = default;
+    SkeletalVobInfo(SkeletalVobInfo&& other) = delete;
+    SkeletalVobInfo& operator=( SkeletalVobInfo&& ) = delete;
     SkeletalVobInfo(const SkeletalVobInfo& other) = delete;
     SkeletalVobInfo& operator=(const SkeletalVobInfo& other) = delete;
 

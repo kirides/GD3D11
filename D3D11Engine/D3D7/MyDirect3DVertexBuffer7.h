@@ -30,17 +30,17 @@ public:
     }
 
 	/*** IUnknown methods ***/
-	HRESULT STDMETHODCALLTYPE QueryInterface( REFIID riid, void** ppvObj ) {
+	HRESULT STDMETHODCALLTYPE QueryInterface( REFIID riid, void** ppvObj ) override {
 		DebugWrite( "MyDirect3DVertexBuffer7::QueryInterface\n" );
 		return S_OK;
 	}
 
-	ULONG STDMETHODCALLTYPE AddRef() {
+	ULONG STDMETHODCALLTYPE AddRef() override {
 		DebugWrite( "MyDirect3DVertexBuffer7::AddRef\n" );
 		return ++RefCount;
 	}
 
-	ULONG STDMETHODCALLTYPE Release() {
+	ULONG STDMETHODCALLTYPE Release() override {
 		DebugWrite( "MyDirect3DVertexBuffer7::Release\n" );
 
 		if ( --RefCount == 0 ) {
@@ -52,14 +52,14 @@ public:
 	}
 
 	/*** IDirect3DVertexBuffer7 methods ***/
-	HRESULT STDMETHODCALLTYPE GetVertexBufferDesc( LPD3DVERTEXBUFFERDESC lpVBDesc ) {
+	HRESULT STDMETHODCALLTYPE GetVertexBufferDesc( LPD3DVERTEXBUFFERDESC lpVBDesc ) override {
 		DebugWrite( "MyDirect3DVertexBuffer7::GetVertexBufferDesc\n" );
 
 		if ( lpVBDesc )*lpVBDesc = OriginalDesc;
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE Lock( DWORD dwFlags, LPVOID* lplpData, LPDWORD lpdwSize ) {
+	HRESULT STDMETHODCALLTYPE Lock( DWORD dwFlags, LPVOID* lplpData, LPDWORD lpdwSize ) override {
 		DebugWrite( "MyDirect3DVertexBuffer7::Lock\n" );
 
 		// Pass the lock-call through to our engine
@@ -73,22 +73,22 @@ public:
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE Optimize( LPDIRECT3DDEVICE7 lpD3DDevice, DWORD dwFlags ) {
+	HRESULT STDMETHODCALLTYPE Optimize( LPDIRECT3DDEVICE7 lpD3DDevice, DWORD dwFlags ) override {
 		// Not needed
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE ProcessVertices( DWORD dwVertexOp, DWORD dwDestIndex, DWORD dwCount, LPDIRECT3DVERTEXBUFFER7 lpSrcBuffer, DWORD dwSrcIndex, LPDIRECT3DDEVICE7 lpD3DDevice, DWORD dwFlags ) {
+	HRESULT STDMETHODCALLTYPE ProcessVertices( DWORD dwVertexOp, DWORD dwDestIndex, DWORD dwCount, LPDIRECT3DVERTEXBUFFER7 lpSrcBuffer, DWORD dwSrcIndex, LPDIRECT3DDEVICE7 lpD3DDevice, DWORD dwFlags ) override {
 		LogWarn() << "Unimplemented method: MyDirect3DVertexBuffer7::ProcessVertices";
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE ProcessVerticesStrided( DWORD dwVertexOp, DWORD dwDestIndex, DWORD dwCount, LPD3DDRAWPRIMITIVESTRIDEDDATA lpVertexArray, DWORD dwSrcIndex, LPDIRECT3DDEVICE7 lpD3DDevice, DWORD dwFlags ) {
+	HRESULT STDMETHODCALLTYPE ProcessVerticesStrided( DWORD dwVertexOp, DWORD dwDestIndex, DWORD dwCount, LPD3DDRAWPRIMITIVESTRIDEDDATA lpVertexArray, DWORD dwSrcIndex, LPDIRECT3DDEVICE7 lpD3DDevice, DWORD dwFlags ) override {
 		LogWarn() << "Unimplemented method: MyDirect3DVertexBuffer7::ProcessVerticesStrided";
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE Unlock() {
+	HRESULT STDMETHODCALLTYPE Unlock() override {
 		DebugWrite( "MyDirect3DVertexBuffer7::Unlock\n" );
 		VertexBuffer->Unmap();
 		return S_OK;

@@ -118,17 +118,17 @@ public:
 	}
 
 	/*** IUnknown methods ***/
-	HRESULT STDMETHODCALLTYPE QueryInterface( REFIID riid, void** ppvObj ) {
+	HRESULT STDMETHODCALLTYPE QueryInterface( REFIID riid, void** ppvObj ) override {
 		DebugWrite( "MyDirect3DDevice7::QueryInterface" );
 		return S_OK;
 	}
 
-	ULONG STDMETHODCALLTYPE AddRef() {
+	ULONG STDMETHODCALLTYPE AddRef() override {
 		DebugWrite( "MyDirect3DDevice7::AddRef" );
 		return ++RefCount;
 	}
 
-	ULONG STDMETHODCALLTYPE Release() {
+	ULONG STDMETHODCALLTYPE Release() override {
 		DebugWrite( "MyDirect3DDevice7::Release" );
 		if ( --RefCount == 0 ) {
 			delete this;
@@ -139,7 +139,7 @@ public:
 	}
 
 	/*** IDirect3DDevice7 methods ***/
-	HRESULT STDMETHODCALLTYPE GetCaps( LPD3DDEVICEDESC7 lpD3DDevDesc ) {
+	HRESULT STDMETHODCALLTYPE GetCaps( LPD3DDEVICEDESC7 lpD3DDevDesc ) override {
 		DebugWrite( "MyDirect3DDevice7::GetCaps" );
 
 		// Tell Gothic what it wants to hear
@@ -148,63 +148,63 @@ public:
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE GetClipPlane( DWORD Index, float* pPlane ) {
+	HRESULT STDMETHODCALLTYPE GetClipPlane( DWORD Index, float* pPlane ) override {
 		DebugWrite( "MyDirect3DDevice7::GetClipPlane" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE SetClipPlane( DWORD dwIndex, D3DVALUE* pPlaneEquation ) {
+	HRESULT STDMETHODCALLTYPE SetClipPlane( DWORD dwIndex, D3DVALUE* pPlaneEquation ) override {
 		DebugWrite( "MyDirect3DDevice7::SetClipPlane" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE GetClipStatus( LPD3DCLIPSTATUS lpD3DClipStatus ) {
+	HRESULT STDMETHODCALLTYPE GetClipStatus( LPD3DCLIPSTATUS lpD3DClipStatus ) override {
 		DebugWrite( "MyDirect3DDevice7::GetClipStatus" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE SetClipStatus( LPD3DCLIPSTATUS lpD3DClipStatus ) {
+	HRESULT STDMETHODCALLTYPE SetClipStatus( LPD3DCLIPSTATUS lpD3DClipStatus ) override {
 		DebugWrite( "MyDirect3DDevice7::SetClipStatus" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE GetDirect3D( IDirect3D7** ppD3D ) {
+	HRESULT STDMETHODCALLTYPE GetDirect3D( IDirect3D7** ppD3D ) override {
 		DebugWrite( "MyDirect3DDevice7::GetDirect3D" );
 		*ppD3D = nullptr;
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE GetInfo( DWORD dwDevInfoID, LPVOID pDevInfoStruct, DWORD dwSize ) {
+	HRESULT STDMETHODCALLTYPE GetInfo( DWORD dwDevInfoID, LPVOID pDevInfoStruct, DWORD dwSize ) override {
 		DebugWrite( "MyDirect3DDevice7::GetInfo" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE GetLight( DWORD dwLightIndex, LPD3DLIGHT7 lpLight ) {
+	HRESULT STDMETHODCALLTYPE GetLight( DWORD dwLightIndex, LPD3DLIGHT7 lpLight ) override {
 		DebugWrite( "MyDirect3DDevice7::GetLight" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE GetLightEnable( DWORD Index, BOOL* pEnable ) {
+	HRESULT STDMETHODCALLTYPE GetLightEnable( DWORD Index, BOOL* pEnable ) override {
 		DebugWrite( "MyDirect3DDevice7::GetLightEnable" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE GetMaterial( LPD3DMATERIAL7 lpMaterial ) {
+	HRESULT STDMETHODCALLTYPE GetMaterial( LPD3DMATERIAL7 lpMaterial ) override {
 		DebugWrite( "MyDirect3DDevice7::GetMaterial" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE SetMaterial( LPD3DMATERIAL7 lpMaterial ) {
+	HRESULT STDMETHODCALLTYPE SetMaterial( LPD3DMATERIAL7 lpMaterial ) override {
 		DebugWrite( "MyDirect3DDevice7::SetMaterial" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE GetRenderState( D3DRENDERSTATETYPE State, DWORD* pValue ) {
+	HRESULT STDMETHODCALLTYPE GetRenderState( D3DRENDERSTATETYPE State, DWORD* pValue ) override {
 		DebugWrite( "MyDirect3DDevice7::GetRenderState" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE SetRenderState( D3DRENDERSTATETYPE State, DWORD Value ) {
+	HRESULT STDMETHODCALLTYPE SetRenderState( D3DRENDERSTATETYPE State, DWORD Value ) override {
 		DebugWrite( "MyDirect3DDevice7::SetRenderState" );
 
 		GothicRendererState& state = Engine::GAPI->GetRendererState();
@@ -262,22 +262,22 @@ public:
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE GetRenderTarget( LPDIRECTDRAWSURFACE7* lplpRenderTarget ) {
+	HRESULT STDMETHODCALLTYPE GetRenderTarget( LPDIRECTDRAWSURFACE7* lplpRenderTarget ) override {
 		DebugWrite( "MyDirect3DDevice7::GetRenderTarget" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE SetRenderTarget( LPDIRECTDRAWSURFACE7 lpNewRenderTarget, DWORD dwFlags ) {
+	HRESULT STDMETHODCALLTYPE SetRenderTarget( LPDIRECTDRAWSURFACE7 lpNewRenderTarget, DWORD dwFlags ) override {
 		DebugWrite( "MyDirect3DDevice7::SetRenderTarget" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE GetTexture( DWORD dwStage, LPDIRECTDRAWSURFACE7* lplpTexture ) {
+	HRESULT STDMETHODCALLTYPE GetTexture( DWORD dwStage, LPDIRECTDRAWSURFACE7* lplpTexture ) override {
 		DebugWrite( "MyDirect3DDevice7::GetTexture" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE SetTexture( DWORD dwStage, LPDIRECTDRAWSURFACE7 lplpTexture ) {
+	HRESULT STDMETHODCALLTYPE SetTexture( DWORD dwStage, LPDIRECTDRAWSURFACE7 lplpTexture ) override {
 		DebugWrite( "MyDirect3DDevice7::SetTexture" );
 
 		// Bind the texture
@@ -289,12 +289,12 @@ public:
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE GetTextureStageState( DWORD Stage, D3DTEXTURESTAGESTATETYPE Type, DWORD* pValue ) {
+	HRESULT STDMETHODCALLTYPE GetTextureStageState( DWORD Stage, D3DTEXTURESTAGESTATETYPE Type, DWORD* pValue ) override {
 		DebugWrite( "MyDirect3DDevice7::GetTextureStageState" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE SetTextureStageState( DWORD Stage, D3DTEXTURESTAGESTATETYPE Type, DWORD Value ) {
+	HRESULT STDMETHODCALLTYPE SetTextureStageState( DWORD Stage, D3DTEXTURESTAGESTATETYPE Type, DWORD Value ) override {
 		DebugWrite( "MyDirect3DDevice7::SetTextureStageState" );
 
 		GothicRendererState& state = Engine::GAPI->GetRendererState();
@@ -372,12 +372,12 @@ public:
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE GetTransform( D3DTRANSFORMSTATETYPE State, D3DMATRIX* pMatrix ) {
+	HRESULT STDMETHODCALLTYPE GetTransform( D3DTRANSFORMSTATETYPE State, D3DMATRIX* pMatrix ) override {
 		DebugWrite( "MyDirect3DDevice7::GetTransform" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE SetTransform( D3DTRANSFORMSTATETYPE dtstTransformStateType, LPD3DMATRIX lpD3DMatrix ) {
+	HRESULT STDMETHODCALLTYPE SetTransform( D3DTRANSFORMSTATETYPE dtstTransformStateType, LPD3DMATRIX lpD3DMatrix ) override {
 		DebugWrite( "MyDirect3DDevice7::SetTransform" );
 
 		GothicRendererState& state = Engine::GAPI->GetRendererState();
@@ -411,12 +411,12 @@ public:
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE GetViewport( LPD3DVIEWPORT7 lpViewport ) {
+	HRESULT STDMETHODCALLTYPE GetViewport( LPD3DVIEWPORT7 lpViewport ) override {
 		DebugWrite( "MyDirect3DDevice7::GetViewport" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE SetViewport( LPD3DVIEWPORT7 lpViewport ) {
+	HRESULT STDMETHODCALLTYPE SetViewport( LPD3DVIEWPORT7 lpViewport ) override {
 		DebugWrite( "MyDirect3DDevice7::SetViewport" );
 
 		float scale = std::max( 0.1f, Engine::GAPI->GetRendererState().RendererSettings.GothicUIScale );
@@ -434,64 +434,64 @@ public:
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE ApplyStateBlock( DWORD dwBlockHandle ) {
+	HRESULT STDMETHODCALLTYPE ApplyStateBlock( DWORD dwBlockHandle ) override {
 		DebugWrite( "MyDirect3DDevice7::ApplyStateBlock" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE BeginScene() {
+	HRESULT STDMETHODCALLTYPE BeginScene() override {
 		DebugWrite( "MyDirect3DDevice7::BeginScene" );
 
 		Engine::GraphicsEngine->OnBeginFrame();
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE BeginStateBlock() {
+	HRESULT STDMETHODCALLTYPE BeginStateBlock() override {
 		DebugWrite( "MyDirect3DDevice7::BeginStateBlock" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE CaptureStateBlock( DWORD dwBlockHandle ) {
+	HRESULT STDMETHODCALLTYPE CaptureStateBlock( DWORD dwBlockHandle ) override {
 		DebugWrite( "MyDirect3DDevice7::CaptureStateBlock" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE Clear( DWORD dwCount, LPD3DRECT lpRects, DWORD dwFlags, D3DCOLOR dwColor, D3DVALUE dvZ, DWORD dwStencil ) {
+	HRESULT STDMETHODCALLTYPE Clear( DWORD dwCount, LPD3DRECT lpRects, DWORD dwFlags, D3DCOLOR dwColor, D3DVALUE dvZ, DWORD dwStencil ) override {
 		DebugWrite( "MyDirect3DDevice7::Clear" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE ComputeSphereVisibility( LPD3DVECTOR lpCenters, LPD3DVALUE lpRadii, DWORD dwNumSpheres, DWORD dwFlags, LPDWORD lpdwReturnValues ) {
+	HRESULT STDMETHODCALLTYPE ComputeSphereVisibility( LPD3DVECTOR lpCenters, LPD3DVALUE lpRadii, DWORD dwNumSpheres, DWORD dwFlags, LPDWORD lpdwReturnValues ) override {
 		DebugWrite( "MyDirect3DDevice7::ComputeSphereVisibility" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE CreateStateBlock( D3DSTATEBLOCKTYPE d3dsbType, LPDWORD lpdwBlockHandle ) {
+	HRESULT STDMETHODCALLTYPE CreateStateBlock( D3DSTATEBLOCKTYPE d3dsbType, LPDWORD lpdwBlockHandle ) override {
 		DebugWrite( "MyDirect3DDevice7::CreateStateBlock" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE DeleteStateBlock( DWORD dwBlockHandle ) {
+	HRESULT STDMETHODCALLTYPE DeleteStateBlock( DWORD dwBlockHandle ) override {
 		DebugWrite( "MyDirect3DDevice7::DeleteStateBlock" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE DrawIndexedPrimitive( D3DPRIMITIVETYPE dptPrimitiveType, DWORD dwVertexTypeDesc, LPVOID lpvVertices, DWORD dwVertexCount, LPWORD lpwIndices, DWORD dwIndexCount, DWORD dwFlags ) {
+	HRESULT STDMETHODCALLTYPE DrawIndexedPrimitive( D3DPRIMITIVETYPE dptPrimitiveType, DWORD dwVertexTypeDesc, LPVOID lpvVertices, DWORD dwVertexCount, LPWORD lpwIndices, DWORD dwIndexCount, DWORD dwFlags ) override {
 		DebugWrite( "MyDirect3DDevice7::DrawIndexedPrimitive" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE DrawIndexedPrimitiveStrided( D3DPRIMITIVETYPE dptPrimitiveType, DWORD dwVertexTypeDesc, LPD3DDRAWPRIMITIVESTRIDEDDATA lpVertexArray, DWORD dwVertexCount, LPWORD lpwIndices, DWORD dwIndexCount, DWORD dwFlags ) {
+	HRESULT STDMETHODCALLTYPE DrawIndexedPrimitiveStrided( D3DPRIMITIVETYPE dptPrimitiveType, DWORD dwVertexTypeDesc, LPD3DDRAWPRIMITIVESTRIDEDDATA lpVertexArray, DWORD dwVertexCount, LPWORD lpwIndices, DWORD dwIndexCount, DWORD dwFlags ) override {
 		DebugWrite( "MyDirect3DDevice7::DrawIndexedPrimitiveStrided" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE DrawIndexedPrimitiveVB( D3DPRIMITIVETYPE d3dptPrimitiveType, LPDIRECT3DVERTEXBUFFER7 lpd3dVertexBuffer, DWORD dwStartVertex, DWORD dwNumVertices, LPWORD lpwIndices, DWORD dwIndexCount, DWORD dwFlags ) {
+	HRESULT STDMETHODCALLTYPE DrawIndexedPrimitiveVB( D3DPRIMITIVETYPE d3dptPrimitiveType, LPDIRECT3DVERTEXBUFFER7 lpd3dVertexBuffer, DWORD dwStartVertex, DWORD dwNumVertices, LPWORD lpwIndices, DWORD dwIndexCount, DWORD dwFlags ) override {
 		DebugWrite( "MyDirect3DDevice7::DrawIndexedPrimitiveVB" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE DrawPrimitive( D3DPRIMITIVETYPE dptPrimitiveType, DWORD dwVertexTypeDesc, LPVOID lpvVertices, DWORD dwVertexCount, DWORD dwFlags ) {
+	HRESULT STDMETHODCALLTYPE DrawPrimitive( D3DPRIMITIVETYPE dptPrimitiveType, DWORD dwVertexTypeDesc, LPVOID lpvVertices, DWORD dwVertexCount, DWORD dwFlags ) override {
 		DebugWrite( "MyDirect3DDevice7::DrawPrimitive" );
 
 		// Convert them into ExVertices
@@ -552,12 +552,12 @@ public:
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE DrawPrimitiveStrided( D3DPRIMITIVETYPE dptPrimitiveType, DWORD dwVertexTypeDesc, LPD3DDRAWPRIMITIVESTRIDEDDATA lpVertexArray, DWORD dwVertexCount, DWORD dwFlags ) {
+	HRESULT STDMETHODCALLTYPE DrawPrimitiveStrided( D3DPRIMITIVETYPE dptPrimitiveType, DWORD dwVertexTypeDesc, LPD3DDRAWPRIMITIVESTRIDEDDATA lpVertexArray, DWORD dwVertexCount, DWORD dwFlags ) override {
 		DebugWrite( "MyDirect3DDevice7::DrawPrimitiveStrided" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE DrawPrimitiveVB( D3DPRIMITIVETYPE d3dptPrimitiveType, LPDIRECT3DVERTEXBUFFER7 lpd3dVertexBuffer, DWORD dwStartVertex, DWORD dwNumVertices, DWORD dwFlags ) {
+	HRESULT STDMETHODCALLTYPE DrawPrimitiveVB( D3DPRIMITIVETYPE d3dptPrimitiveType, LPDIRECT3DVERTEXBUFFER7 lpd3dVertexBuffer, DWORD dwStartVertex, DWORD dwNumVertices, DWORD dwFlags ) override {
 		DebugWrite( "MyDirect3DDevice7::DrawPrimitiveVB" );
 		if ( d3dptPrimitiveType < 4 )
 		{
@@ -587,7 +587,7 @@ public:
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE EndScene() {
+	HRESULT STDMETHODCALLTYPE EndScene() override {
 		DebugWrite( "MyDirect3DDevice7::EndScene" );
 
 		hook_infunc
@@ -599,12 +599,12 @@ public:
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE EndStateBlock( LPDWORD lpdwBlockHandle ) {
+	HRESULT STDMETHODCALLTYPE EndStateBlock( LPDWORD lpdwBlockHandle ) override {
 		DebugWrite( "MyDirect3DDevice7::EndStateBlock" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE EnumTextureFormats( LPD3DENUMPIXELFORMATSCALLBACK lpd3dEnumPixelProc, LPVOID lpArg ) {
+	HRESULT STDMETHODCALLTYPE EnumTextureFormats( LPD3DENUMPIXELFORMATSCALLBACK lpd3dEnumPixelProc, LPVOID lpArg ) override {
 		DebugWrite( "MyDirect3DDevice7::EnumTextureFormats" );
 
         static std::array<DDPIXELFORMAT, 19> tformats = { {
@@ -635,32 +635,32 @@ public:
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE Load( LPDIRECTDRAWSURFACE7 lpDestTex, LPPOINT lpDestPoint, LPDIRECTDRAWSURFACE7 lpSrcTex, LPRECT lprcSrcRect, DWORD dwFlags ) {
+	HRESULT STDMETHODCALLTYPE Load( LPDIRECTDRAWSURFACE7 lpDestTex, LPPOINT lpDestPoint, LPDIRECTDRAWSURFACE7 lpSrcTex, LPRECT lprcSrcRect, DWORD dwFlags ) override {
 		DebugWrite( "MyDirect3DDevice7::Load" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE MultiplyTransform( D3DTRANSFORMSTATETYPE dtstTransformStateType, LPD3DMATRIX lpD3DMatrix ) {
+	HRESULT STDMETHODCALLTYPE MultiplyTransform( D3DTRANSFORMSTATETYPE dtstTransformStateType, LPD3DMATRIX lpD3DMatrix ) override {
 		DebugWrite( "MyDirect3DDevice7::MultiplyTransform" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE PreLoad( LPDIRECTDRAWSURFACE7 lpddsTexture ) {
+	HRESULT STDMETHODCALLTYPE PreLoad( LPDIRECTDRAWSURFACE7 lpddsTexture ) override {
 		DebugWrite( "MyDirect3DDevice7::PreLoad" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE ValidateDevice( DWORD* pNumPasses ) {
+	HRESULT STDMETHODCALLTYPE ValidateDevice( DWORD* pNumPasses ) override {
 		DebugWrite( "MyDirect3DDevice7::ValidateDevice" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE LightEnable( DWORD Index, BOOL Enable ) {
+	HRESULT STDMETHODCALLTYPE LightEnable( DWORD Index, BOOL Enable ) override {
 		DebugWrite( "MyDirect3DDevice7::LightEnable" );
 		return S_OK;
 	}
 
-	HRESULT STDMETHODCALLTYPE SetLight( DWORD dwLightIndex, LPD3DLIGHT7 lpLight ) {
+	HRESULT STDMETHODCALLTYPE SetLight( DWORD dwLightIndex, LPD3DLIGHT7 lpLight ) override {
 		DebugWrite( "MyDirect3DDevice7::SetLight" );
 		return S_OK;
 	}

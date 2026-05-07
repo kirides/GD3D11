@@ -4002,7 +4002,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                 builder.Read( backBufferHandle );
                 builder.Write( backBufferHandle );
 
-                pass.m_executeCallback = [this, &rendererState, backBufferHandle](const RenderGraph& graph) {
+                pass.m_executeCallback = [this, backBufferHandle](const RenderGraph& graph) {
                     auto backbufferTex = graph.GetPhysicalTexture( backBufferHandle );
                     PfxRenderer->CopyTextureToRTV( backbufferTex->GetShaderResView(), Backbuffer->GetRenderTargetView(), GetBackbufferResolution() );
                 };

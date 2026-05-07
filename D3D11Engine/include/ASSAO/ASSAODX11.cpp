@@ -399,19 +399,23 @@ private:
     friend class ASSAO_Effect;
     
     ASSAODX11( const ASSAO_CreateDescDX11 * createDesc );
-    virtual ~ASSAODX11( );
+
+    ~ASSAODX11( ) override;
 
     bool                                    InitializeDX( const ASSAO_CreateDescDX11 * createDesc );
     void                                    CleanupDX( );
 
 private:
     // ASSAO_Effect implementation
-    virtual void                            PreAllocateVideoMemory( const ASSAO_Inputs * inputs );
-    virtual void                            DeleteAllocatedVideoMemory( );
-    virtual unsigned int                    GetAllocatedVideoMemory( );
-    virtual void                            GetVersion( int & major, int & minor )                                          { major = 1; minor = 0; }
+    void                            PreAllocateVideoMemory( const ASSAO_Inputs * inputs ) override;
+
+    void                            DeleteAllocatedVideoMemory( ) override;
+
+    unsigned int                    GetAllocatedVideoMemory( ) override;
+
+    void                            GetVersion( int & major, int & minor ) override { major = 1; minor = 0; }
     // Apply the SSAO effect to the currently selected render target using provided settings and platform-dependent inputs
-    virtual void                            Draw( const ASSAO_Settings & settings, const ASSAO_Inputs * inputs );
+    void                            Draw( const ASSAO_Settings & settings, const ASSAO_Inputs * inputs ) override;
 
 private:
     void                                    UpdateTextures( const ASSAO_InputsDX11 * inputs );
