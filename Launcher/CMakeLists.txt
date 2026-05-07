@@ -16,7 +16,9 @@ if(MSVC)
     /W3
     /MP
     /fp:fast
+    /Zi
   )
+  target_link_options(Launcher PRIVATE /DEBUG:FULL)
 endif()
 
 target_compile_definitions(Launcher PRIVATE

@@ -160,15 +160,3 @@ if(GD3D11_DEPLOY_AFTER_BUILD)
     VERBATIM
   )
 endif()
-
-set(GD3D11_REDIST_DIR "" CACHE PATH "Optional output directory for prepare_redist target")
-if(NOT GD3D11_REDIST_DIR STREQUAL "")
-  add_custom_target(prepare_redist
-    COMMAND ${CMAKE_COMMAND}
-      -DGD3D11_SOURCE_DIR=${CMAKE_SOURCE_DIR}
-      -DGD3D11_TARGET_DIR=${GD3D11_REDIST_DIR}
-      -P ${CMAKE_SOURCE_DIR}/cmake/PrepareRedist.cmake
-    COMMENT "Copy shaders/assets/libs into redist directory"
-    VERBATIM
-  )
-endif()

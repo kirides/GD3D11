@@ -87,6 +87,7 @@ function(gd3d11_apply_common_compile_settings target_name)
       /W3
       /MP
       /fp:fast
+      /Zi
       /EHs-c-
       /wd4005
       /wd4530
@@ -108,10 +109,10 @@ function(gd3d11_apply_common_compile_settings target_name)
 
     if(GD3D11_PROFILE STREQUAL "NOOPT")
       target_compile_options(${target_name} PRIVATE /Od /Ob1)
-      target_link_options(${target_name} PRIVATE /OPT:NOREF /OPT:NOICF)
+      target_link_options(${target_name} PRIVATE /OPT:NOREF /OPT:NOICF /DEBUG:FULL)
     else()
       target_compile_options(${target_name} PRIVATE /O2 /Ob2 /GL)
-      target_link_options(${target_name} PRIVATE /LTCG /OPT:REF /OPT:ICF)
+      target_link_options(${target_name} PRIVATE /LTCG /OPT:REF /OPT:ICF /DEBUG:FULL)
     endif()
   elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(${target_name} PRIVATE -ffast-math)

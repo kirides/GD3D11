@@ -48,3 +48,20 @@ endif()
 if(GD3D11_BUILD_LAUNCHER)
   add_subdirectory(Launcher)
 endif()
+
+set(GD3D11_REDIST_DIR "" CACHE PATH "Optional output directory for prepare_redist target")
+option(GD3D11_REDIST_SKIP_MATRIX_BUILD "Skip matrix build and package already-built presets" OFF)
+set(GD3D11_REDIST_VERSION_SUFFIX "" CACHE STRING "Optional release suffix override for prepare_redist")
+
+if(NOT GD3D11_REDIST_DIR STREQUAL "")
+  add_custom_target(prepare_redist
+    COMMAND ${CMAKE_COMMAND}
+      -DGD3D11_SOURCE_DIR=${CMAKE_SOURCE_DIR}
+      -DGD3D11_TARGET_DIR=${GD3D11_REDIST_DIR}
+      -DGD3D11_SKIP_MATRIX_BUILD=${GD3D11_REDIST_SKIP_MATRIX_BUILD}
+      -DGD3D11_REDIST_VERSION_SUFFIX=${GD3D11_REDIST_VERSION_SUFFIX}
+      -P ${CMAKE_SOURCE_DIR}/cmake/PrepareRedist.cmake
+    COMMENT "Build CI matrix and package CI-style redistribution artifacts"
+    VERBATIM
+  )
+endif()
