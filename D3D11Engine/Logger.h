@@ -67,6 +67,9 @@ __declspec(selectany) std::string LOGFILE;
     Usage: LogInfo() << L"Loaded Texture: " << TextureName;
     */
 
+#ifndef __FUNCSIG__
+#define __FUNCSIG__ __builtin_FUNCSIG()
+#endif
 
 #define LogInfo() Log("Info",__FILE__, __LINE__, __FUNCSIG__)
 #define LogWarn() Log("Warning",__FILE__, __LINE__, __FUNCSIG__, true)

@@ -69,7 +69,19 @@ endfunction()
 function(gd3d11_apply_windows_sdk_includes target_name)
   gd3d11_detect_compiler_family(_compiler_family)
 
-  if(NOT WIN32 OR _compiler_family STREQUAL "MSVC")
+  set(_gnu_like_windows_toolchain FALSE)
+  if(MINGW OR CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    set(_gnu_like_windows_toolchain TRUE)
+  elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    if(CMAKE_CXX_COMPILER_TARGET MATCHES "mingw|windows-gnu" OR CMAKE_CXX_SIMULATE_ID STREQUAL "GNU")
+      set(_gnu_like_windows_toolchain TRUE)
+    endif()
+  endif()
+
+  if(NOT WIN32 OR _compiler_family STREQUAL "MSVC" OR _gnu_like_windows_toolchain)
+    if(_gnu_like_windows_toolchain)
+      message(STATUS "Skipping Windows SDK include injection for target '${target_name}' on GNU-like Windows toolchain to avoid UCRT/MSVC header mixing.")
+    endif()
     return()
   endif()
 
@@ -234,7 +246,10 @@ function(gd3d11_apply_common_compile_settings target_name)
   elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     if(WIN32)
       target_compile_definitions(${target_name} PRIVATE _ALLOW_COMPILER_AND_STL_VERSION_MISMATCH)
-      target_compile_options(${target_name} PRIVATE -m32)
+      target_compile_options(${target_name} PRIVATE
+        -m32
+        $<$<OR:$<COMPILE_LANGUAGE:C>,$<COMPILE_LANGUAGE:CXX>>:-fms-extensions>
+      )
       target_link_options(${target_name} PRIVATE -m32)
     endif()
 
