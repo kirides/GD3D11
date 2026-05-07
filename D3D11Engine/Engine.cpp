@@ -4,7 +4,7 @@
 #include "D3D11GraphicsEngine.h"
 #include "HookExceptionFilter.h"
 #include "ThreadPool.h"
-#include "imGuiShim.h"
+#include "ImGuiShim.h"
 
 //#define TESTING
 

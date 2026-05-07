@@ -88,7 +88,7 @@ static void CalculateCascadeMatrices(
     float splitFar = splits[cascadeIdx + 1];
 
     if ( !playerFrustum.IsValid() || !playerFrustum.SupportsCulling() ) {
-        LogError() << L"ShadowMap: Invalid Player Frustum!";
+        LogError() << "ShadowMap: Invalid Player Frustum!";
     }
 
     auto corners = playerFrustum.GetSliceCorners( splitNear, splitFar );
@@ -320,6 +320,17 @@ void D3D11ShadowMap::EnsureShadowMapBackend( int size ) {
     } else if ( !m_useAtlas && !m_cascadedShadowMap ) {
         m_cascadedShadowMap = std::make_unique<D3D11CascadedShadowMapBuffer>();
         m_cascadedShadowMap->Init( m_device, clampedSize, MAX_CSM_CASCADES );
+    }
+}
+
+void D3D11ShadowMap::WaitShadowCullingComplete()
+{
+    ZoneScopedN( "WaitShadowCullingComplete" );
+    std::lock_guard<LockableBase( std::mutex )> lock( m_CullingJobsMutex );
+    for ( auto& job : m_ShadowCullingJobs ) {
+        if ( job.valid() ) {
+            job.wait();
+        }
     }
 }
 
@@ -650,7 +661,7 @@ XRESULT D3D11ShadowMap::PrepareRender()
     }
 
     if ( settings.ThreadedShadowCulling ) {
-        std::lock_guard<std::mutex> lock( m_CullingJobsMutex );
+        std::lock_guard<LockableBase( std::mutex )> lock( m_CullingJobsMutex );
         m_ShadowCullingJobs.clear();
 
         for ( size_t i = 0; i < numCascades; i++ ) {

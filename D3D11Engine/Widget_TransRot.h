@@ -11,22 +11,22 @@ enum EWTR_Selection {
 class Widget_TransRot : public BaseWidget {
 public:
     Widget_TransRot( WidgetContainer* container );
-    ~Widget_TransRot();
+    ~Widget_TransRot() override;
 
     /** Renders the widget */
-    virtual void RenderWidget();
+    void RenderWidget() override;
 
     /** Called when the owning window got a message */
-    virtual void OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam );
+    void OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam ) override;
 
     /** Called when a mousebutton was clicked */
-    virtual void OnMButtonClick( int button );
+    void OnMButtonClick( int button ) override;
 
     /** Returns whether this widget is active or not */
-    virtual bool IsActive() const override;
+    bool IsActive() const override;
 
     /** Called when an object was added to the selection */
-    virtual void OnSelectionAdded( zCVob* vob );
+    void OnSelectionAdded( zCVob* vob ) override;
 
 protected:
     /** Applys the transforms to all parts of the widget */

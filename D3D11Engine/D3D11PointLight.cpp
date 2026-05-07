@@ -329,33 +329,33 @@ void D3D11PointLight::RenderCubemap( bool forceUpdate, D3D11ConstantBuffer* View
     // TODO: Move the actual lightsource up too!
 
     XMVECTOR vLookDir;
-    constexpr XMVECTORF32 c_XM_Right = { { {  1,  0,  0, 0 } } };
-    constexpr XMVECTORF32 c_XM_Left = { { { -1,  0,  0, 0 } } };
-    constexpr XMVECTORF32 c_XM_Up = { { {  0,  1,  0, 0 } } };
-    constexpr XMVECTORF32 c_XM_Down = { { {  0, -1,  0, 0 } } };
-    constexpr XMVECTORF32 c_XM_Forward = { { {  0,  0,  1, 0 } } };
-    constexpr XMVECTORF32 c_XM_Backward = { { {  0,  0, -1, 0 } } };
+    const XMVECTOR c_XM_Right = XMVectorSet( 1.f, 0.f, 0.f, 0.f );
+    const XMVECTOR c_XM_Left = XMVectorSet( -1.f, 0.f, 0.f, 0.f );
+    const XMVECTOR c_XM_Up = XMVectorSet( 0.f, 1.f, 0.f, 0.f );
+    const XMVECTOR c_XM_Down = XMVectorSet( 0.f, -1.f, 0.f, 0.f );
+    const XMVECTOR c_XM_Forward = XMVectorSet( 0.f, 0.f, 1.f, 0.f );
+    const XMVECTOR c_XM_Backward = XMVectorSet( 0.f, 0.f, -1.f, 0.f );
 
     // Update indoor/outdoor-state
     LightInfo->IsIndoorVob = LightInfo->Vob->IsIndoorVob();
 
     // Generate cubemap view-matrices
-    vLookDir = c_XM_Right + vEyePt;
+    vLookDir = XMVectorAdd( c_XM_Right, vEyePt );
     XMStoreFloat4x4( &CubeMapViewMatrices[0], XMMatrixTranspose( XMMatrixLookAtLH( vEyePt, vLookDir, c_XM_Up ) ) );
 
-    vLookDir = c_XM_Left + vEyePt;
+    vLookDir = XMVectorAdd( c_XM_Left, vEyePt );
     XMStoreFloat4x4( &CubeMapViewMatrices[1], XMMatrixTranspose( XMMatrixLookAtLH( vEyePt, vLookDir, c_XM_Up ) ) );
 
-    vLookDir = c_XM_Up + vEyePt;
+    vLookDir = XMVectorAdd( c_XM_Up, vEyePt );
     XMStoreFloat4x4( &CubeMapViewMatrices[2], XMMatrixTranspose( XMMatrixLookAtLH( vEyePt, vLookDir, c_XM_Backward ) ) );
 
-    vLookDir = c_XM_Down + vEyePt;
+    vLookDir = XMVectorAdd( c_XM_Down, vEyePt );
     XMStoreFloat4x4( &CubeMapViewMatrices[3], XMMatrixTranspose( XMMatrixLookAtLH( vEyePt, vLookDir, c_XM_Forward ) ) );
 
-    vLookDir = c_XM_Forward + vEyePt;
+    vLookDir = XMVectorAdd( c_XM_Forward, vEyePt );
     XMStoreFloat4x4( &CubeMapViewMatrices[4], XMMatrixTranspose( XMMatrixLookAtLH( vEyePt, vLookDir, c_XM_Up ) ) );
 
-    vLookDir = c_XM_Backward + vEyePt;
+    vLookDir = XMVectorAdd( c_XM_Backward, vEyePt );
     XMStoreFloat4x4( &CubeMapViewMatrices[5], XMMatrixTranspose( XMMatrixLookAtLH( vEyePt, vLookDir, c_XM_Up ) ) );
 
     // Create the projection matrix
@@ -503,8 +503,10 @@ void D3D11PointLight::RenderCubemapFace( const XMFLOAT4X4& view, const XMFLOAT4X
     // Replace gothics camera
     Engine::GAPI->SetCameraReplacementPtr( &cr );
 
-    if ( engine->GetDummyCubeRT() )
-        engine->GetContext()->ClearRenderTargetView( engine->GetDummyCubeRT()->GetRTVCubemapFace( faceIdx ).Get(), reinterpret_cast<float*>(&float4( 0, 0, 0, 0 )) );
+    if ( engine->GetDummyCubeRT() ) {
+        const float clearColor[4] = { 0.f, 0.f, 0.f, 0.f };
+        engine->GetContext()->ClearRenderTargetView( engine->GetDummyCubeRT()->GetRTVCubemapFace( faceIdx ).Get(), clearColor );
+    }
 
     // Disable shadows for NPCs
     // TODO: Only for the player himself, because his shadows look ugly when using a torch

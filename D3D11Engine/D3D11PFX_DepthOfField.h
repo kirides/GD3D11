@@ -1,5 +1,5 @@
 #pragma once
-#include "d3d11pfx_effect.h"
+#include "D3D11PFX_Effect.h"
 #include <wrl/client.h>
 
 struct ID3D11Texture2D;

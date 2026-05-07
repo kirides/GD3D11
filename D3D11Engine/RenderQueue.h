@@ -30,25 +30,25 @@ public:
     {
     }
 
-    virtual ~LegacyRenderQueueProxy() = default;
+    ~LegacyRenderQueueProxy() override = default;
 
-    void PushStaticVob( VobInfo* vobInfo ) {
+    void PushStaticVob( VobInfo* vobInfo ) override {
         vobs.emplace_back( vobInfo );
     }
-    void PushSkeletalVob( SkeletalVobInfo* vobInfo ) {
+    void PushSkeletalVob( SkeletalVobInfo* vobInfo ) override {
         skeltalVobs.emplace_back( vobInfo );
     }
-    void PushTransparencyVob( TransparencyVobInfo vobInfo ) {
+    void PushTransparencyVob( TransparencyVobInfo vobInfo ) override {
         transparent.emplace_back( std::move( vobInfo ) );
     }
-    void PushLightVob( VobLightInfo* vobInfo ) {
+    void PushLightVob( VobLightInfo* vobInfo ) override {
         lights.emplace_back( vobInfo );
     }
 
-    XRESULT Init() { return XR_SUCCESS; }
+    XRESULT Init() override { return XR_SUCCESS; }
 
-    void Reset() { }
-    XRESULT ProcessQueue() { return XR_SUCCESS; }
+    void Reset() override { }
+    XRESULT ProcessQueue() override { return XR_SUCCESS; }
 
     std::vector<VobInfo*>& vobs;
     std::vector<VobLightInfo*>& lights;

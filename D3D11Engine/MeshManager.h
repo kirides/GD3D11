@@ -7,7 +7,7 @@ class MeshManager {
 public:
     MeshManager() = default;
 
-    int32_t MeshManager::RecordMesh( zCSubMesh* subMesh ) {
+    int32_t RecordMesh( zCSubMesh* subMesh ) {
         auto it = m_meshIds.find( subMesh );
         if ( it == m_meshIds.end() ) {
             int32_t id = m_meshIds.size() + 1;

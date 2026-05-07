@@ -1,12 +1,14 @@
 #include "pch.h"
 
+#pragma clang diagnostic ignored "-Wwritable-strings"
+
 #include "ddraw.h"
 #include "D3D7/MyDirectDraw.h"
 #include "Logger.h"
 #include "Detours/detours.h"
 #include "DbgHelp.h"
 #include "HookedFunctions.h"
-#include <signal.h>
+#include <csignal>
 #include "VersionCheck.h"
 #include "InstructionSet.h"
 #include "D3D11GraphicsEngine.h"
@@ -78,22 +80,7 @@ void QuantizeHalfFloats_X4_SSE2( float* input, unsigned short* output )
 
 void QuantizeHalfFloats_X4_SSE41( float* input, unsigned short* output )
 {
-    __m128i v = _mm_castps_si128( _mm_load_ps( input ) );
-    __m128i s = _mm_and_si128( _mm_srli_epi32( v, 16 ), _mm_set1_epi32( 0x8000 ) );
-    __m128i em = _mm_and_si128( v, _mm_set1_epi32( 0x7FFFFFFF ) );
-    __m128i h = _mm_srli_epi32( _mm_sub_epi32( em, _mm_set1_epi32( 0x37FFF000 ) ), 13 );
-
-    __m128i mask = _mm_cmplt_epi32( em, _mm_set1_epi32( 0x38800000 ) );
-    h = _mm_blendv_epi8( h, _mm_setzero_si128(), mask );
-
-    mask = _mm_cmpgt_epi32( em, _mm_set1_epi32( 0x47800000 - 1 ) );
-    h = _mm_blendv_epi8( h, _mm_set1_epi32( 0x7C00 ), mask );
-
-    mask = _mm_cmpgt_epi32( em, _mm_set1_epi32( 0x7F800000 ) );
-    h = _mm_blendv_epi8( h, _mm_set1_epi32( 0x7E00 ), mask );
-
-    __m128i halfs = _mm_or_si128( s, h );
-    _mm_store_sd( reinterpret_cast<double*>(output), _mm_castsi128_pd( _mm_packus_epi32( halfs, halfs ) ) );
+    QuantizeHalfFloats_X4_SSE2( input, output );
 }
 
 #ifdef _XM_AVX_INTRINSICS_
@@ -340,17 +327,20 @@ __declspec(naked) void FakeDirectDrawCreateClipper() { _asm { jmp[ddraw.DirectDr
 // HRESULT WINAPI DirectDrawCreateEx(GUID FAR * lpGuid, LPVOID *lplpDD, REFIID iid,IUnknown FAR *pUnkOuter);
 __declspec(naked) void FakeDirectDrawCreateEx() { _asm { jmp[ddraw.DirectDrawCreateEx] } }
 // HRESULT WINAPI DirectDrawEnumerateA(LPDDENUMCALLBACKA lpCallback, LPVOID lpContext);
+
+static char FakeDirectDrawEnumerateA_deviceName[] = "DirectX11";
+
 HRESULT WINAPI FakeDirectDrawEnumerateA( LPDDENUMCALLBACKA lpCallback, LPVOID lpContext )
 {
     GUID deviceGUID = { 0xF5049E78, 0x4861, 0x11D2, {0xA4, 0x07, 0x00, 0xA0, 0xC9, 0x06, 0x29, 0xA8} };
-    lpCallback( &deviceGUID, "DirectX11", "DirectX11", lpContext );
+    lpCallback( &deviceGUID, FakeDirectDrawEnumerateA_deviceName, FakeDirectDrawEnumerateA_deviceName, lpContext );
     return S_OK;
 }
 // HRESULT WINAPI DirectDrawEnumerateExA(LPDDENUMCALLBACKEXA lpCallback, LPVOID lpContext, DWORD dwFlags);
 HRESULT WINAPI FakeDirectDrawEnumerateExA( LPDDENUMCALLBACKEXA lpCallback, LPVOID lpContext, DWORD dwFlags )
 {
     GUID deviceGUID = { 0xF5049E78, 0x4861, 0x11D2, {0xA4, 0x07, 0x00, 0xA0, 0xC9, 0x06, 0x29, 0xA8} };
-    lpCallback( &deviceGUID, "DirectX11", "DirectX11", lpContext, nullptr );
+    lpCallback( &deviceGUID, FakeDirectDrawEnumerateA_deviceName, FakeDirectDrawEnumerateA_deviceName, lpContext, nullptr );
     return S_OK;
 }
 // HRESULT WINAPI DirectDrawEnumerateExW(LPDDENUMCALLBACKEXW lpCallback, LPVOID lpContext, DWORD dwFlags);
@@ -524,6 +514,8 @@ BOOL WINAPI DllMain( HINSTANCE hInst, DWORD reason, LPVOID ) {
                 comInitialized = true;
                 LogInfo() << "COM initialized";
             }
+
+            ZoneScoped;
 
             // Check for right version
             VersionCheck::CheckExecutable();

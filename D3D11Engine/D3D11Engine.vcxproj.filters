@@ -376,12 +376,6 @@
     <ClInclude Include="zCParser.h">
       <Filter>ZenGin\Classes</Filter>
     </ClInclude>
-    <ClInclude Include="XUnzip.h">
-      <Filter>Librarys</Filter>
-    </ClInclude>
-    <ClInclude Include="ZipArchive.h">
-      <Filter>Engine\GAPI</Filter>
-    </ClInclude>
     <ClInclude Include="zCPolyStrip.h">
       <Filter>ZenGin\Classes</Filter>
     </ClInclude>
@@ -792,9 +786,6 @@
     <ClInclude Include="RGTextureDesc.h">
       <Filter>Engine\Graph</Filter>
     </ClInclude>
-    <ClInclude Include="RGBuilder.h">
-      <Filter>Engine\Graph</Filter>
-    </ClInclude>
     <ClInclude Include="RenderPass.h">
       <Filter>Engine\Graph</Filter>
     </ClInclude>
@@ -862,6 +853,9 @@
       <Filter>Engine\D3D11\PFX\Effects</Filter>
     </ClInclude>
     <ClInclude Include="D3D11FileRelativeInclude.h" />
+    <ClInclude Include="D3D11TracyDebug.h">
+      <Filter>Engine\D3D11</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp" />
@@ -966,12 +960,6 @@
     </ClCompile>
     <ClCompile Include="IkarusBindings.cpp">
       <Filter>Engine</Filter>
-    </ClCompile>
-    <ClCompile Include="XUnzip.cpp">
-      <Filter>Librarys</Filter>
-    </ClCompile>
-    <ClCompile Include="ZipArchive.cpp">
-      <Filter>Engine\GAPI</Filter>
     </ClCompile>
     <ClCompile Include="D3D11PFX_GodRays.cpp">
       <Filter>Engine\D3D11\PFX\Effects</Filter>
@@ -1125,9 +1113,6 @@
     <ClCompile Include="D3D11PFX_FSR1.cpp">
       <Filter>Engine\D3D11\PFX\Effects</Filter>
     </ClCompile>
-    <ClCompile Include="RGBuilder.cpp">
-      <Filter>Engine\Graph</Filter>
-    </ClCompile>
     <ClCompile Include="RenderPass.cpp">
       <Filter>Engine\Graph</Filter>
     </ClCompile>
@@ -1244,5 +1229,10 @@
     <None Include="Shaders\PS_DS_PointLightDynShadow.hlsl">
       <Filter>Engine\Shaders</Filter>
     </None>
+  </ItemGroup>
+  <ItemGroup>
+    <Natvis Include="include\gtl\debug_vis\gtl.natvis">
+      <Filter>Librarys</Filter>
+    </Natvis>
   </ItemGroup>
 </Project>

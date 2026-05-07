@@ -89,7 +89,7 @@ public:
     XRESULT DrawVertexBufferFF( D3D11VertexBuffer* vb, unsigned int numVertices, unsigned int startVertex, unsigned int stride = sizeof( ExVertexStruct ) ) override;
 
     /** Binds viewport information to the given constantbuffer slot */
-    XRESULT D3D11GraphicsEngineBase::BindViewportInformation( VShaderID shader, int slot ) override;
+    XRESULT BindViewportInformation( VShaderID shader, int slot ) override;
 
     /** Returns the Device/Context */
     auto GetDevice() -> const auto& { return Device; }

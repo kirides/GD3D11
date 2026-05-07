@@ -1,6 +1,6 @@
 #include "pch.h"
 #include "D3D11ShaderManager.h"
-#include "D3D11Vshader.h"
+#include "D3D11VShader.h"
 #include "D3D11PShader.h"
 #include "D3D11HDShader.h"
 #include "D3D11GShader.h"
@@ -10,7 +10,7 @@
 #include "ConstantBufferStructs.h"
 #include "GothicAPI.h"
 #include "Engine.h"
-#include "Threadpool.h"
+#include "ThreadPool.h"
 
 #include "D3D11GraphicsEngineBase.h"
 #include <d3dcompiler.h>

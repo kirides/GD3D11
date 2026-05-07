@@ -18,19 +18,19 @@ __declspec(selectany) std::string LOGFILE;
 #ifdef BLERGH__
 //#if defined(DEBUG) || defined(_DEBUG)
 /** Checks for errors and logs them, HRESULT hr needs to be declared */
-#define LE(x) { hr = (x); if (FAILED(hr)){LogError() << L#x << L" failed: " << DXGetErrorDescription(hr); }/*else{ LogInfo() << L#x << L" Succeeded."; }*/ }
+#define LE(x) { hr = (x); if (FAILED(hr)){LogError() << #x << " failed: " << DXGetErrorDescription(hr); }/*else{ LogInfo() << L#x << L" Succeeded."; }*/ }
 
 /** Returns hr if failed (HRESULT-function, hr needs to be declared)*/
-#define LE_R(x) { hr = (x); if (FAILED(hr)){LogError() << L#x << L" failed: " << DXGetErrorDescription(hr); return hr;} }
+#define LE_R(x) { hr = (x); if (FAILED(hr)){LogError() << #x << " failed: " << DXGetErrorDescription(hr); return hr;} }
 
 /** Returns nothing if failed (void-function)*/
-#define LE_RV(x) { hr = (x); if (FAILED(hr)){LogError() << L#x << L" failed: " << DXGetErrorDescription(hr); return;} }
+#define LE_RV(x) { hr = (x); if (FAILED(hr)){LogError() << #x << " failed: " << DXGetErrorDescription(hr); return;} }
 
 /** Returns false if failed (bool-function) */
-#define LE_RB(x) { hr = (x); if (FAILED(hr)){LogError() << L#x << L" failed: " << DXGetErrorDescription(hr); return false;} }
+#define LE_RB(x) { hr = (x); if (FAILED(hr)){LogError() << #x << " failed: " << DXGetErrorDescription(hr); return false;} }
 
 /** throws an exceptopn if failed (HRESULT-function) */
-#define LE_THROW(x) { hr = (x); if (FAILED(hr)){LogError() << L#x << L" failed: " << DXGetErrorDescription(hr); UT::ThrowIfFailed(hr);} }
+#define LE_THROW(x) { hr = (x); if (FAILED(hr)){LogError() << #x << " failed: " << DXGetErrorDescription(hr); UT::ThrowIfFailed(hr);} }
 
 #define ErrorBox(Msg) MessageBox(nullptr,Msg,L"Error!",MB_OK|MB_ICONERROR|MB_TOPMOST)
 #define InfoBox(Msg) MessageBox(nullptr,Msg,L"Info!",MB_OK|MB_ICONASTERISK|MB_TOPMOST)
@@ -38,7 +38,7 @@ __declspec(selectany) std::string LOGFILE;
 
 #else
 
-#define XLE(x) { XRESULT xr = (x); if (xr != XRESULT::XR_SUCCESS){ LogError() << ##x << " failed with code: " << std::hex << xr << " (" + Toolbox::MakeErrorString(xr) + ")";}}
+#define XLE(x) { XRESULT xr = (x); if (xr != XRESULT::XR_SUCCESS){ LogError() << #x << " failed with code: " << std::hex << xr << " (" + Toolbox::MakeErrorString(xr) + ")";}}
 
 /** Checks for errors and logs them, HRESULT hr needs to be declared */
 #define LE(x) { hr = (x); if (FAILED(hr)){LogError() << "failed with code: " << std::hex << hr << "!"; }/*else{ LogInfo() << L#x << L" Succeeded."; }*/ }
@@ -67,6 +67,9 @@ __declspec(selectany) std::string LOGFILE;
     Usage: LogInfo() << L"Loaded Texture: " << TextureName;
     */
 
+#ifndef __FUNCSIG__
+#define __FUNCSIG__ __builtin_FUNCSIG()
+#endif
 
 #define LogInfo() Log("Info",__FILE__, __LINE__, __FUNCSIG__)
 #define LogWarn() Log("Warning",__FILE__, __LINE__, __FUNCSIG__, true)
@@ -154,6 +157,26 @@ public:
         Message << obj;
         return *this;
     }
+
+    template< typename T >
+    inline Log& operator << ( const T* obj ) {
+        if ( obj ) {
+            Message << *obj;
+        } else {
+            Message << "<nullptr>";
+        }
+        return *this;
+    }
+
+    template<>
+    inline Log& operator << ( const wchar_t* wide ) {
+        char ansiStr[1024];
+        auto len = wcstombs( ansiStr, wide, sizeof( ansiStr ) );
+
+        Message << std::string_view( ansiStr, len );
+        return *this;
+    }
+
 
     inline Log& operator << ( std::wostream& (*fn)(std::wostream&) ) {
         Message << fn;

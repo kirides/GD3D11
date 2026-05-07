@@ -1,0 +1,318 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 24,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "base-msvc",
+      "hidden": true,
+      "generator": "Visual Studio 18 2026",
+      "architecture": "Win32",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_CXX_STANDARD": "20",
+        "GD3D11_BUILD_ENGINE": "ON",
+        "GD3D11_BUILD_LAUNCHER": "ON",
+        "GD3D11_GAME": "G2",
+        "GD3D11_SIMD": "SSE2",
+        "GD3D11_PROFILE": "RELEASE",
+        "GD3D11_PUBLIC_RELEASE": "ON",
+        "GD3D11_SPACER_NET": "OFF",
+        "GD3D11_SPACER": "OFF",
+        "GD3D11_WIN32_LEAN_AND_MEAN": "ON",
+        "GD3D11_TRACY_ENABLE": "OFF",
+        "GD3D11_TRACY_ON_DEMAND": "OFF",
+        "GD3D11_USE_VCPKG": "ON"
+      }
+    },
+    {
+      "name": "base-clang",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_STANDARD": "20",
+        "GD3D11_BUILD_ENGINE": "ON",
+        "GD3D11_BUILD_LAUNCHER": "ON",
+        "GD3D11_GAME": "G2",
+        "GD3D11_SIMD": "SSE2",
+        "GD3D11_PROFILE": "RELEASE",
+        "GD3D11_COMPILER": "CLANG",
+        "GD3D11_PUBLIC_RELEASE": "ON",
+        "GD3D11_SPACER_NET": "OFF",
+        "GD3D11_SPACER": "OFF",
+        "GD3D11_WIN32_LEAN_AND_MEAN": "ON",
+        "GD3D11_TRACY_ENABLE": "OFF",
+        "GD3D11_TRACY_ON_DEMAND": "OFF",
+        "GD3D11_USE_VCPKG": "ON"
+      }
+    },
+    {
+      "name": "Release",
+      "inherits": "base-msvc"
+    },
+    {
+      "name": "Release_AVX",
+      "inherits": "base-msvc",
+      "cacheVariables": {
+        "GD3D11_SIMD": "AVX"
+      }
+    },
+    {
+      "name": "Release_AVX2",
+      "inherits": "base-msvc",
+      "cacheVariables": {
+        "GD3D11_SIMD": "AVX2",
+        "GD3D11_TRACY_ENABLE": "ON",
+        "GD3D11_TRACY_ON_DEMAND": "ON",
+        "GD3D11_TRACY_CALLSTACK": "8"
+      }
+    },
+    {
+      "name": "Spacer_NET",
+      "inherits": "base-msvc",
+      "cacheVariables": {
+        "GD3D11_SPACER_NET": "ON"
+      }
+    },
+    {
+      "name": "Spacer_NET_G1",
+      "inherits": "base-msvc",
+      "cacheVariables": {
+        "GD3D11_GAME": "G1",
+        "GD3D11_SPACER_NET": "ON"
+      }
+    },
+    {
+      "name": "Release_G1",
+      "inherits": "base-msvc",
+      "cacheVariables": {
+        "GD3D11_GAME": "G1"
+      }
+    },
+    {
+      "name": "Release_G1_12f",
+      "inherits": "base-msvc",
+      "cacheVariables": {
+        "GD3D11_GAME": "G1_12F"
+      }
+    },
+    {
+      "name": "Release_G1_AVX",
+      "inherits": "base-msvc",
+      "cacheVariables": {
+        "GD3D11_GAME": "G1",
+        "GD3D11_SIMD": "AVX"
+      }
+    },
+    {
+      "name": "Release_G1_AVX2",
+      "inherits": "base-msvc",
+      "cacheVariables": {
+        "GD3D11_GAME": "G1",
+        "GD3D11_SIMD": "AVX2"
+      }
+    },
+    {
+      "name": "Release_NoOpt",
+      "inherits": "base-msvc",
+      "cacheVariables": {
+        "GD3D11_PROFILE": "NOOPT",
+        "GD3D11_WIN32_LEAN_AND_MEAN": "ON",
+        "GD3D11_PUBLIC_RELEASE": "OFF",
+        "GD3D11_TRACY_ENABLE": "ON",
+        "GD3D11_TRACY_ON_DEMAND": "ON",
+        "GD3D11_TRACY_CALLSTACK": "8"
+      }
+    },
+    {
+      "name": "Release_NoOpt_G1",
+      "inherits": "base-msvc",
+      "cacheVariables": {
+        "GD3D11_GAME": "G1",
+        "GD3D11_PROFILE": "NOOPT",
+        "GD3D11_PUBLIC_RELEASE": "OFF",
+        "GD3D11_TRACY_ENABLE": "ON",
+        "GD3D11_TRACY_ON_DEMAND": "ON",
+        "GD3D11_TRACY_CALLSTACK": "8"
+      }
+    },
+    {
+      "name": "Release_NoOpt_Spacer",
+      "inherits": "base-msvc",
+      "cacheVariables": {
+        "GD3D11_PROFILE": "NOOPT",
+        "GD3D11_PUBLIC_RELEASE": "OFF",
+        "GD3D11_SPACER_NET": "ON",
+        "GD3D11_WIN32_LEAN_AND_MEAN": "ON"
+      }
+    },
+    {
+      "name": "G2_NoOpt",
+      "inherits": "base-msvc",
+      "cacheVariables": {
+        "GD3D11_PROFILE": "NOOPT",
+        "GD3D11_WIN32_LEAN_AND_MEAN": "ON"
+      }
+    },
+    {
+      "name": "Launcher",
+      "inherits": "base-msvc",
+      "cacheVariables": {
+        "GD3D11_BUILD_ENGINE": "OFF",
+        "GD3D11_BUILD_LAUNCHER": "ON"
+      }
+    },
+    {
+      "name": "Release_Clang",
+      "inherits": "base-clang"
+    },
+    {
+      "name": "Release_NoOpt_Clang",
+      "inherits": "base-clang",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "GD3D11_PROFILE": "NOOPT",
+        "GD3D11_TRACY_ENABLE": "ON",
+        "GD3D11_TRACY_ON_DEMAND": "ON",
+        "GD3D11_TRACY_CALLSTACK": "8"
+      }
+    },
+    {
+      "name": "Release_AVX2_Clang",
+      "inherits": "base-clang",
+      "cacheVariables": {
+        "GD3D11_SIMD": "AVX2",
+        "GD3D11_TRACY_ENABLE": "ON",
+        "GD3D11_TRACY_ON_DEMAND": "ON",
+        "GD3D11_TRACY_CALLSTACK": "8"
+      }
+    },
+    {
+      "name": "Release_G1_Clang",
+      "inherits": "base-clang",
+      "cacheVariables": {
+        "GD3D11_GAME": "G1"
+      }
+    },
+    {
+      "name": "Launcher_Clang",
+      "inherits": "base-clang",
+      "cacheVariables": {
+        "GD3D11_BUILD_ENGINE": "OFF",
+        "GD3D11_BUILD_LAUNCHER": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "Release",
+      "configurePreset": "Release",
+      "configuration": "Release",
+      "targets": ["D3D11Engine"]
+    },
+    {
+      "name": "Release_AVX",
+      "configurePreset": "Release_AVX",
+      "configuration": "Release",
+      "targets": ["D3D11Engine"]
+    },
+    {
+      "name": "Release_AVX2",
+      "configurePreset": "Release_AVX2",
+      "configuration": "Release",
+      "targets": ["D3D11Engine"]
+    },
+    {
+      "name": "Spacer_NET",
+      "configurePreset": "Spacer_NET",
+      "configuration": "Release",
+      "targets": ["D3D11Engine"]
+    },
+    {
+      "name": "Spacer_NET_G1",
+      "configurePreset": "Spacer_NET_G1",
+      "configuration": "Release",
+      "targets": ["D3D11Engine"]
+    },
+    {
+      "name": "Release_G1",
+      "configurePreset": "Release_G1",
+      "configuration": "Release",
+      "targets": ["D3D11Engine"]
+    },
+    {
+      "name": "Release_G1_12f",
+      "configurePreset": "Release_G1_12f",
+      "configuration": "Release",
+      "targets": ["D3D11Engine"]
+    },
+    {
+      "name": "Release_G1_AVX",
+      "configurePreset": "Release_G1_AVX",
+      "configuration": "Release",
+      "targets": ["D3D11Engine"]
+    },
+    {
+      "name": "Release_G1_AVX2",
+      "configurePreset": "Release_G1_AVX2",
+      "configuration": "Release",
+      "targets": ["D3D11Engine"]
+    },
+    {
+      "name": "Release_NoOpt",
+      "configurePreset": "Release_NoOpt",
+      "configuration": "RelWithDebInfo",
+      "targets": ["D3D11Engine"]
+    },
+    {
+      "name": "Release_NoOpt_G1",
+      "configurePreset": "Release_NoOpt_G1",
+      "configuration": "RelWithDebInfo",
+      "targets": ["D3D11Engine"]
+    },
+    {
+      "name": "Release_NoOpt_Spacer",
+      "configurePreset": "Release_NoOpt_Spacer",
+      "configuration": "RelWithDebInfo",
+      "targets": ["D3D11Engine"]
+    },
+    {
+      "name": "Launcher",
+      "configurePreset": "Launcher",
+      "configuration": "Release",
+      "targets": ["Launcher"]
+    },
+    {
+      "name": "Release_Clang",
+      "configurePreset": "Release_Clang",
+      "targets": ["D3D11Engine"]
+    },
+    {
+      "name": "Release_NoOpt_Clang",
+      "configurePreset": "Release_NoOpt_Clang",
+      "targets": ["D3D11Engine"]
+    },
+    {
+      "name": "Release_AVX2_Clang",
+      "configurePreset": "Release_AVX2_Clang",
+      "targets": ["D3D11Engine"]
+    },
+    {
+      "name": "Release_G1_Clang",
+      "configurePreset": "Release_G1_Clang",
+      "targets": ["D3D11Engine"]
+    },
+    {
+      "name": "Launcher_Clang",
+      "configurePreset": "Launcher_Clang",
+      "targets": ["Launcher"]
+    }
+  ]
+}

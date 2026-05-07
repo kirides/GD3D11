@@ -3,7 +3,7 @@
 #include <d3d11shader.h>
 
 #include "pch.h"
-#include "d3d11pfx_effect.h"
+#include "D3D11PFX_Effect.h"
 #include "SMAA/D3D11SMAA.h"
 
 
@@ -12,7 +12,7 @@ class D3D11PFX_SMAA :
     public D3D11PFX_Effect {
 public:
     D3D11PFX_SMAA( D3D11PfxRenderer* rnd );
-    ~D3D11PFX_SMAA() = default;
+    ~D3D11PFX_SMAA() override = default;
 
     /** Creates needed resources */
     bool Init();
@@ -24,7 +24,7 @@ public:
     void RenderPostFX( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& renderTargetSRV );
 
     /** Draws this effect to the given buffer */
-    XRESULT Render( RenderToTextureBuffer* fxbuffer ) { return XR_SUCCESS; };
+    XRESULT Render( RenderToTextureBuffer* fxbuffer ) override { return XR_SUCCESS; };
 
     void ReleaseResources() { m_Native->ReleaseResources(); }
 

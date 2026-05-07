@@ -105,7 +105,7 @@ private:
 
             // Calling __cpuid with 0x0 as the function_id argument
             // gets the number of the highest valid function ID.
-            __cpuid( cpui.data(), 0 );
+            __cpuidex( cpui.data(), 0, 0 );
             nIds_ = cpui[0];
 
             for ( int i = 0; i <= nIds_; ++i ) {
@@ -140,7 +140,7 @@ private:
 
             // Calling __cpuid with 0x80000000 as the function_id argument
             // gets the number of the highest valid extended ID.
-            __cpuid( cpui.data(), 0x80000000 );
+            __cpuidex( cpui.data(), 0x80000000, 0 );
             nExIds_ = cpui[0];
 
             char brand[0x40];

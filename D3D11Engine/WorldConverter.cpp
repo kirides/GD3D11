@@ -1162,7 +1162,7 @@ void WorldConverter::ExtractProgMeshProtoFromMesh( zCMesh* mesh, MeshVisualInfo*
 }
 
 /** Extracts a node-visual */
-void WorldConverter::ExtractNodeVisual( int index, zCModelNodeInst* node, phmap::flat_hash_map<int, std::vector<MeshVisualInfo*>>& attachments ) {
+void WorldConverter::ExtractNodeVisual( int index, zCModelNodeInst* node, gtl::flat_hash_map<int, std::vector<MeshVisualInfo*>>& attachments ) {
     // Only allow 1 attachment
     if ( !attachments[index].empty() ) {
         delete attachments[index][0];
@@ -1566,7 +1566,7 @@ void WorldConverter::WrapVertexBuffers( const std::list<std::vector<ExVertexStru
     outOffsets.emplace_back( 0 );
     int off = 0;
     for ( auto const& iti : indexBuffers ) {
-        for ( auto& vi = iti->begin(); vi != iti->end(); ++vi ) {
+        for ( auto&& vi = iti->begin(); vi != iti->end(); ++vi ) {
             outIndices.emplace_back( *vi + vxOffsets[off] );
         }
         off++;

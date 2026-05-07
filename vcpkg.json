@@ -1,0 +1,10 @@
+{
+  "name": "gd3d11",
+  "version-string": "0.1.0",
+  "dependencies": [
+    "directxmath",
+    "directxmesh",
+    "directxtk",
+    "xaudio2redist"
+  ]
+}

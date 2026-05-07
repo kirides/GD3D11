@@ -97,7 +97,7 @@ void D3D11GraphicsShader::OnReflectShader(ID3DBlob* blob, ID3D11ShaderReflection
 #ifdef DEBUG_D3D11
                 SetDebugName(ConstantBuffers[cbIndex]->Get().Get(), resourceDesc.Name);
 #endif
-                ConstantBuffersByName[StringID(resourceDesc.Name)] = {ConstantBuffers[cbIndex].get(), resourceDesc.BindPoint};
+                ConstantBuffersByName[StringID::make(resourceDesc.Name)] = {ConstantBuffers[cbIndex].get(), resourceDesc.BindPoint};
                 ConstantBufferIndexBySlot[resourceDesc.BindPoint] = static_cast<byte>(cbIndex);
                 ++cbIndex;
             }
@@ -110,5 +110,5 @@ void D3D11GraphicsShader::OnReflectShaderResource(
     const D3D11_SHADER_DESC& shaderDesc, 
     const D3D11_SHADER_INPUT_BIND_DESC& resourceDesc)
 {
-    InputSemanticToIndex[StringID(resourceDesc.Name)] = resourceDesc.BindPoint;
+    InputSemanticToIndex[StringID::make(resourceDesc.Name)] = resourceDesc.BindPoint;
 }

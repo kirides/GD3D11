@@ -5,7 +5,7 @@
 #include <condition_variable>
 #include <atomic>
 #include "TexturePool.h"
-#include "Threadpool.h"
+#include "ThreadPool.h"
 
 class D3D11PointLight;
 class D3D11TiledDeferredShading;
@@ -43,7 +43,7 @@ public:
     bool NotYetDrawn();
 
     /** Called when a vob got removed from the world */
-    virtual void OnVobRemovedFromWorld( BaseVobInfo* vob );
+    void OnVobRemovedFromWorld( BaseVobInfo* vob ) override;
 
     bool HasAnyShadowMap() const {
         return HasShadowMap(0) || HasShadowMap(1) || m_StaticDepthCubemap != nullptr;

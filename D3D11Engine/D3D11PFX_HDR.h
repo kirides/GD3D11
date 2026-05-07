@@ -1,12 +1,12 @@
 #pragma once
-#include "d3d11pfx_effect.h"
+#include "D3D11PFX_Effect.h"
 
 struct RenderToTextureBuffer;
 class D3D11PFX_HDR :
     public D3D11PFX_Effect {
 public:
     D3D11PFX_HDR( D3D11PfxRenderer* rnd );
-    ~D3D11PFX_HDR();
+    ~D3D11PFX_HDR() override;
 
     /** Draws this effect to the given buffer */
     XRESULT Render( RenderToTextureBuffer* fxbuffer ) override { return XR_FAILED; };

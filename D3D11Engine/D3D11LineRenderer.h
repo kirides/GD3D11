@@ -1,23 +1,25 @@
 #pragma once
-#include "baselinerenderer.h"
+#include "BaseLineRenderer.h"
 
 class D3D11VertexBuffer;
 class D3D11LineRenderer :
     public BaseLineRenderer {
 public:
     D3D11LineRenderer();
-    ~D3D11LineRenderer();
+    ~D3D11LineRenderer() override;
 
     /** Adds a line to the list */
-    virtual XRESULT AddLine( const LineVertex& v1, const LineVertex& v2 );
-    virtual XRESULT AddLineScreenSpace( const LineVertex& v1, const LineVertex& v2 );
+    XRESULT AddLine( const LineVertex& v1, const LineVertex& v2 ) override;
+
+    XRESULT AddLineScreenSpace( const LineVertex& v1, const LineVertex& v2 ) override;
 
     /** Flushes the cached lines */
-    virtual XRESULT Flush();
-    virtual XRESULT FlushScreenSpace();
+    XRESULT Flush() override;
+
+    XRESULT FlushScreenSpace() override;
 
     /** Clears the line cache */
-    virtual XRESULT ClearCache();
+    XRESULT ClearCache() override;
 
 private:
     /** Line cache */

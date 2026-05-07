@@ -2,7 +2,7 @@
 
 #include "GothicAPI.h"
 #include "ShaderIDs.h"
-#include "RGBuilder.h"
+#include "RenderGraph.h"
 #include <memory>
 #include <vector>
 
