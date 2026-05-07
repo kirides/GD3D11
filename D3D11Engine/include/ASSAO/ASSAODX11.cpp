@@ -229,7 +229,7 @@ namespace
             m_dx11Context->IAGetInputLayout( &m_inputLayout );
             m_dx11Context->RSGetState( &m_rasterizerState );
 
-            memset( m_RTVs, sizeof( m_RTVs ), 0 );
+            memset( m_RTVs, 0, sizeof( m_RTVs ) );
             dx11Context->OMGetRenderTargets( _countof( m_RTVs ), m_RTVs, &m_DSV );
 
 #ifdef _DEBUG
