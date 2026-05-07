@@ -376,12 +376,6 @@
     <ClInclude Include="zCParser.h">
       <Filter>ZenGin\Classes</Filter>
     </ClInclude>
-    <ClInclude Include="XUnzip.h">
-      <Filter>Librarys</Filter>
-    </ClInclude>
-    <ClInclude Include="ZipArchive.h">
-      <Filter>Engine\GAPI</Filter>
-    </ClInclude>
     <ClInclude Include="zCPolyStrip.h">
       <Filter>ZenGin\Classes</Filter>
     </ClInclude>
@@ -966,12 +960,6 @@
     </ClCompile>
     <ClCompile Include="IkarusBindings.cpp">
       <Filter>Engine</Filter>
-    </ClCompile>
-    <ClCompile Include="XUnzip.cpp">
-      <Filter>Librarys</Filter>
-    </ClCompile>
-    <ClCompile Include="ZipArchive.cpp">
-      <Filter>Engine\GAPI</Filter>
     </ClCompile>
     <ClCompile Include="D3D11PFX_GodRays.cpp">
       <Filter>Engine\D3D11\PFX\Effects</Filter>

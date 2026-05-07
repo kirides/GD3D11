@@ -1088,7 +1088,6 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="Widget_TransRot.h" />
     <ClInclude Include="win32ClipboardWrapper.h" />
     <ClInclude Include="WorldObjects.h" />
-    <ClInclude Include="XUnzip.h" />
     <ClInclude Include="zCArray.h" />
     <ClInclude Include="zCArrayAdapt.h" />
     <ClInclude Include="zCCamera.h" />
@@ -1134,7 +1133,6 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="zFILE.h" />
     <ClInclude Include="zFont.h" />
     <ClInclude Include="zCSoundSystem.h" />
-    <ClInclude Include="ZipArchive.h" />
     <ClInclude Include="zMat4.h" />
     <ClInclude Include="zQuat.h" />
     <ClInclude Include="zSndMss.h" />
@@ -1329,23 +1327,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="win32ClipboardWrapper.cpp" />
     <ClCompile Include="WorldConverter.cpp" />
     <ClCompile Include="WorldObjects.cpp" />
-    <ClCompile Include="XUnzip.cpp">
-      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt|Win32'">NotUsing</PrecompiledHeader>
-      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='G2_Debug|Win32'">NotUsing</PrecompiledHeader>
-      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt_Spacer|Win32'">NotUsing</PrecompiledHeader>
-      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">NotUsing</PrecompiledHeader>
-      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Spacer_NET|Win32'">NotUsing</PrecompiledHeader>
-      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Spacer_NET_G1|Win32'">NotUsing</PrecompiledHeader>
-      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release_AVX|Win32'">NotUsing</PrecompiledHeader>
-      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release_AVX2|Win32'">NotUsing</PrecompiledHeader>
-      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt_G1|Win32'">NotUsing</PrecompiledHeader>
-      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release_G1|Win32'">NotUsing</PrecompiledHeader>
-      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release_G1_12f|Win32'">NotUsing</PrecompiledHeader>
-      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release_G1_AVX|Win32'">NotUsing</PrecompiledHeader>
-      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release_G1_AVX2|Win32'">NotUsing</PrecompiledHeader>
-    </ClCompile>
     <ClCompile Include="zBinkPlayer.cpp" />
-    <ClCompile Include="ZipArchive.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="ddraw.def" />
