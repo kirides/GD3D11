@@ -8,7 +8,7 @@
 #include <ddraw.h>
 
 class MyDirectDrawSurface7;
-class FakeDirectDrawSurface7 : public IDirectDrawSurface7 {
+class FakeDirectDrawSurface7 final : public IDirectDrawSurface7 {
 public:
 	FakeDirectDrawSurface7();
     ~FakeDirectDrawSurface7();

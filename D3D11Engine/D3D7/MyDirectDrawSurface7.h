@@ -15,7 +15,7 @@ enum ETextureType {
 
 class zCTexture;
 class D3D11Texture;
-class MyDirectDrawSurface7 : public IDirectDrawSurface7 {
+class MyDirectDrawSurface7 final : public IDirectDrawSurface7 {
 public:
     MyDirectDrawSurface7();
     ~MyDirectDrawSurface7();
