@@ -1,0 +1,50 @@
+cmake_minimum_required(VERSION 3.24)
+
+project(GD3D11 LANGUAGES C CXX)
+
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
+include(GD3D11Helpers)
+
+option(GD3D11_BUILD_ENGINE "Build the D3D11Engine ddraw.dll target" ON)
+option(GD3D11_BUILD_LAUNCHER "Build the Launcher ddraw.dll target" ON)
+option(GD3D11_USE_VCPKG "Use vcpkg packages when available" ON)
+option(GD3D11_DEPLOY_AFTER_BUILD "Copy build output into game system path after build" OFF)
+
+set(GD3D11_GAME "G2" CACHE STRING "Game target (G2, G1, G1_12F)")
+set_property(CACHE GD3D11_GAME PROPERTY STRINGS G2 G1 G1_12F)
+
+set(GD3D11_SIMD "SSE2" CACHE STRING "SIMD target (SSE2, AVX, AVX2)")
+set_property(CACHE GD3D11_SIMD PROPERTY STRINGS SSE2 AVX AVX2)
+
+set(GD3D11_PROFILE "RELEASE" CACHE STRING "Build profile (RELEASE, NOOPT)")
+set_property(CACHE GD3D11_PROFILE PROPERTY STRINGS RELEASE NOOPT)
+
+option(GD3D11_PUBLIC_RELEASE "Define PUBLIC_RELEASE" ON)
+option(GD3D11_SPACER_NET "Define BUILD_SPACER_NET" OFF)
+option(GD3D11_SPACER "Define BUILD_SPACER" OFF)
+option(GD3D11_WIN32_LEAN_AND_MEAN "Define WIN32_LEAN_AND_MEAN" OFF)
+option(GD3D11_TRACY_ENABLE "Define TRACY_ENABLE" OFF)
+option(GD3D11_TRACY_ON_DEMAND "Define TRACY_ON_DEMAND" OFF)
+set(GD3D11_TRACY_CALLSTACK "" CACHE STRING "Optional TRACY_CALLSTACK value")
+
+set(GD3D11_SYSTEM_PATH_G1 "$ENV{G1_SYSTEM_PATH}" CACHE PATH "Gothic 1 deployment path")
+set(GD3D11_SYSTEM_PATH_G2 "$ENV{G2_SYSTEM_PATH}" CACHE PATH "Gothic 2 deployment path")
+
+set(GD3D11_VENDOR_LIB_DIR "${CMAKE_SOURCE_DIR}/lib" CACHE PATH "Directory with vendored .lib files")
+set(GD3D11_DIRECTXTK_LIB_PATH "" CACHE PATH "Optional legacy DirectXTK lib path")
+
+gd3d11_validate_enum(GD3D11_GAME "G2;G1;G1_12F")
+gd3d11_validate_enum(GD3D11_SIMD "SSE2;AVX;AVX2")
+gd3d11_validate_enum(GD3D11_PROFILE "RELEASE;NOOPT")
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+if(GD3D11_BUILD_ENGINE)
+  add_subdirectory(D3D11Engine)
+endif()
+
+if(GD3D11_BUILD_LAUNCHER)
+  add_subdirectory(Launcher)
+endif()
