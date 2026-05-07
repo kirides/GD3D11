@@ -95,16 +95,16 @@ public:
     const std::string& GetTextureName();
 
     /** Sets this texture ready to use */
-    void SetReady( bool ready ) { IsReady = ready; }
+    void SetReady(const bool ready ) { IsReady = ready; }
 
     /** returns if this surface is ready or not */
-    bool IsSurfaceReady() { return IsReady; }
+    bool IsSurfaceReady() const { return IsReady; }
 
     /** Returns true if this surface is used to render a movie to */
-    bool IsMovieSurface() { return LockedData != nullptr; }
+    bool IsMovieSurface() const { return LockedData != nullptr; }
 
     /** Returns the type of this texture */
-    ETextureType GetTextureType() { return TextureType; };
+    ETextureType GetTextureType() const { return TextureType; };
 private:
 
     /** Faked attached surfaces for the mipmaps */
