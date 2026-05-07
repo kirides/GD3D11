@@ -28,6 +28,7 @@
 #include <future>
 #include <list>
 #include <map>
+#include <span>
 #include <array>
 #include <mmsystem.h>
 #include <set>
@@ -90,33 +91,6 @@ extern ZQuantizeHalfFloat_X4 QuantizeHalfFloat_X4;
 extern ZUnquantizeHalfFloat UnquantizeHalfFloat;
 extern ZUnquantizeHalfFloat_X4 UnquantizeHalfFloat_X4;
 extern ZUnquantizeHalfFloat_X4 UnquantizeHalfFloat_X8;
-
-
-/* Thin span-like data structure to allow re-using parts of a big std::vector for example */
-namespace std {
-    template<typename T>
-    struct span {
-    private:
-        T* _data = nullptr;
-        size_t _size = 0;
-
-    public:
-        span() = delete;
-        span(const span&) = default;
-        span(span&&) = default;
-
-        constexpr span( T* data, size_t size ) : _data( data ), _size( size ) {}
-        constexpr span( std::vector<T>& data ) : _data( data.data() ), _size( data.size() ) {}
-
-        T& operator[]( size_t i ) { return _data[i]; }
-        const T& operator[]( size_t i ) const { return _data[i]; }
-        T* begin() { return _data; }
-        T* end() { return _data + _size; }
-        const size_t size() const { return _size; }
-        const T* data() { return _data; }
-
-    };
-}
 
 #if defined(BUILD_GOTHIC_2_6_fix)
 #define SWITCH_ENGINE(G1, G1A, G2A, OTHER) G2A

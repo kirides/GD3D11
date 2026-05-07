@@ -88,7 +88,7 @@ static void CalculateCascadeMatrices(
     float splitFar = splits[cascadeIdx + 1];
 
     if ( !playerFrustum.IsValid() || !playerFrustum.SupportsCulling() ) {
-        LogError() << L"ShadowMap: Invalid Player Frustum!";
+        LogError() << "ShadowMap: Invalid Player Frustum!";
     }
 
     auto corners = playerFrustum.GetSliceCorners( splitNear, splitFar );

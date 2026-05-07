@@ -54,7 +54,6 @@
 #include "zCPolygon.h"
 #include "zCOption.h"
 #include "RenderGraph.h"
-#include "RGBuilder.h"
 #include "D3D11Upscaling.h"
 
 #ifdef BUILD_SPACER
