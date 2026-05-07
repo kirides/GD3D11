@@ -8,12 +8,12 @@
 #include "D3D7\MyDirectDrawSurface7.h"
 
 namespace zCTextureCacheHack {
-    __declspec(selectany) unsigned int NumNotCachedTexturesInFrame;
-    const int MAX_NOT_CACHED_TEXTURES_IN_FRAME = 40;
+    inline __declspec(selectany) unsigned int NumNotCachedTexturesInFrame;
+    constexpr int MAX_NOT_CACHED_TEXTURES_IN_FRAME = 40;
 
     /** If true, this will force all calls to CacheIn to have -1 as parameter, which makes them an immediate cache in!
         Be very careful with this as the game will lag everytime a texture is being loaded!*/
-    __declspec(selectany) bool ForceCacheIn;
+    inline __declspec(selectany) bool ForceCacheIn;
 };
 
 class zCTexture {
