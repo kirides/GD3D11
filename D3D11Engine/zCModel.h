@@ -230,7 +230,7 @@ public:
     }
 
     /** Updates stuff like blinking eyes, etc */
-    void zCModel::UpdateMeshLibTexAniState() {
+    void UpdateMeshLibTexAniState() {
         for ( int i = 0; i < GetMeshLibList()->NumInArray; i++ )
             GetMeshLibList()->Array[i]->TexAniState.UpdateTexList();
     }

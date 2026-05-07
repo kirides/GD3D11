@@ -251,7 +251,6 @@ function(gd3d11_apply_common_compile_settings target_name)
         $<$<OR:$<COMPILE_LANGUAGE:C>,$<COMPILE_LANGUAGE:CXX>>:-fms-extensions>
         -Wno-switch
         -Wno-microsoft-cast
-        -Wno-microsoft-extra-qualification
         -Wno-microsoft-exception-spec
         -Wno-microsoft-enum-forward-reference
       )
