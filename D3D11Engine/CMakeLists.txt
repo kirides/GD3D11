@@ -74,6 +74,8 @@ if(EXISTS "${_xaudio2_root}/build/native/include")
   target_include_directories(D3D11Engine BEFORE PRIVATE "${_xaudio2_root}/build/native/include")
 endif()
 
+gd3d11_apply_windows_sdk_includes(D3D11Engine)
+
 gd3d11_apply_common_compile_settings(D3D11Engine)
 target_compile_definitions(D3D11Engine PRIVATE D3D11ENGINE_EXPORTS)
 
@@ -117,7 +119,7 @@ if(NOT GD3D11_DIRECTXTK_LIB_PATH STREQUAL "")
   target_link_directories(D3D11Engine PRIVATE "${GD3D11_DIRECTXTK_LIB_PATH}")
 endif()
 
-if(MSVC)
+if(WIN32)
   target_link_libraries(D3D11Engine PRIVATE
     DirectXMesh.lib
     DirectXTK.lib
