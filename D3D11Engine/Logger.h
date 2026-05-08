@@ -160,11 +160,7 @@ public:
 
     template< typename T >
     inline Log& operator << ( const T* obj ) {
-        if ( obj ) {
-            Message << *obj;
-        } else {
-            Message << "<nullptr>";
-        }
+        Message << obj;
         return *this;
     }
 
