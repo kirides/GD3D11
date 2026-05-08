@@ -111,5 +111,5 @@ protected:
     int m_TiledSlotIndex = -1;
     RenderToDepthStencilBuffer* m_TiledDepthTarget = nullptr;
     D3D11TiledDeferredShading* m_TiledOwner = nullptr;
-    CancellationToken m_PendingInit;
+    TaskHandle<void> m_PendingInit;
 };

@@ -35,12 +35,15 @@ D3D11PointLight::D3D11PointLight( VobLightInfo* info, bool dynamicLight ) {
 
 D3D11PointLight::~D3D11PointLight() {
     // Make sure we are out of the init-queue
-    m_PendingInit.cancel(); // ensure any pending job is cancelled such that we get to InitDone state
+    m_PendingInit.cancel( ); // ensure any pending job is cancelled such that we get to InitDone state
 
-    int numRetry = 1;
-    while ( !InitDone.load() && numRetry < 7 ) {
-        LogInfo() << "Waiting for pending init to finish before destroying light... Attempt " << numRetry;
-        std::this_thread::sleep_for( std::chrono::milliseconds( 100 * static_cast<long>(std::pow( 2, numRetry++ ))) );
+    if ( m_PendingInit.future.valid() ) {
+        
+        for ( size_t i = 0; i < 3; ++i) {
+            LogInfo() << "Waiting for pending init to finish before destroying light... Attempt " << (i+1);
+            m_PendingInit.future.wait_for( std::chrono::milliseconds(100) );
+        }
+        m_PendingInit.future.wait();
     }
 
     ClearTiledSlot();
@@ -468,7 +471,7 @@ void D3D11PointLight::StartReInit() {
         InitDone = false;
 
         // Add to queue
-        m_PendingInit.cancel(); // Cancel any pending init first, we only care about the latest one
+        m_PendingInit.cancel( ); // Cancel any pending init first, we only care about the latest one
         m_PendingInit = Engine::WorkerThreadPool->enqueue( [this] (const CancellationToken& token)
         {
             if (token.isCancelled()) {
@@ -476,7 +479,7 @@ void D3D11PointLight::StartReInit() {
                 return;
             }
             InitResources();
-        } ).token;
+        } );
 
     } else {
         InitResources();

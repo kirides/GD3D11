@@ -618,7 +618,7 @@ struct GothicRendererSettings {
 
         DrawSky = true;
         DrawFog = true;
-        FogRange = SWITCH_ENGINE(1.0f, 1.0f, 3.0f, 3.0f);
+        FogRange = SWITCH_ENGINE12(1.0f, 3.0f);
         EnableHDR = false;
         HDRToneMap = E_HDRToneMap::ToneMap_Simple;
         ReplaceSunDirection = false;

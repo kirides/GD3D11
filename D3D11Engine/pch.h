@@ -92,7 +92,7 @@ extern ZUnquantizeHalfFloat UnquantizeHalfFloat;
 extern ZUnquantizeHalfFloat_X4 UnquantizeHalfFloat_X4;
 extern ZUnquantizeHalfFloat_X4 UnquantizeHalfFloat_X8;
 
-#if defined(BUILD_GOTHIC_2_6_fix)
+#ifdef BUILD_GOTHIC_2_6_fix
 #define SWITCH_ENGINE(G1, G1A, G2A, OTHER) G2A
 #elif defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)
 #define SWITCH_ENGINE(G1, G1A, G2A, OTHER) G1
@@ -101,3 +101,5 @@ extern ZUnquantizeHalfFloat_X4 UnquantizeHalfFloat_X8;
 #else
 #define SWITCH_ENGINE(G1, G1A, G2A, OTHER) OTHER
 #endif
+
+#define SWITCH_ENGINE12(G1, G2) SWITCH_ENGINE(G1, G1, G2, G2)
