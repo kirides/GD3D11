@@ -156,7 +156,9 @@ auto ThreadPool::enqueue(F&& f, Args&&... args)
     CancellationToken token;
 
     auto task = std::make_shared<std::packaged_task<return_type()>>(
-        std::bind(std::forward<F>(f), token, std::forward<Args>(args)...)
+        [f = std::forward<F>(f), token, ...args = std::forward<Args>(args)]() mutable {
+            return f(token, std::forward<Args>(args)...);
+        }
     );
 
     std::future<return_type> res = task->get_future();
