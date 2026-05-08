@@ -417,7 +417,10 @@ void ApplyFeatureLevel10Downgrades(GothicRendererSettings& s) {
 }
 
 void ApplyGraphicsPresets( GothicRendererSettings& s ) {
-    switch ( s.GraphicsPreset ) {
+    const auto preset = s.GraphicsPreset; // remember before setting defaults
+    s.SetDefault();
+
+    switch ( preset ) {
     case GothicRendererSettings::GRAPHICS_LOW:
     {
         s.ChangeWindowPreset = WINDOW_MODE_FULLSCREEN_BORDERLESS;
@@ -425,6 +428,7 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.CompressBackBuffer = true;
         s.WorldShadowRangeScale = 1.0f;
         s.NumShadowCascades = 2;
+        s.DebugSettings.FeatureSet.UseShadowAtlas = true;
         s.ShadowMapSize = 1024;
         s.ShadowFrustumCullingMode = GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_AGGRESSIVE;
         s.ShadowSoftness = 0.85f;
@@ -459,6 +463,7 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.CompressBackBuffer = true;
         s.WorldShadowRangeScale = 1.0f;
         s.NumShadowCascades = 3;
+        s.DebugSettings.FeatureSet.UseShadowAtlas = true;
         s.ShadowMapSize = 2048;
         s.ShadowFrustumCullingMode = GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_CONSERVATIVE;
         s.ShadowSoftness = 0.85f;
@@ -512,8 +517,8 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.AntiAliasingMode = GothicRendererSettings::E_AntiAliasingMode::AA_SMAA;
         s.SectionDrawRadius = 4;
         s.VisualFXDrawRadius = 8'000;
-        s.OutdoorVobDrawRadius = 50'000;
-        s.OutdoorSmallVobDrawRadius = 30'000;
+        s.OutdoorVobDrawRadius = 40'000;
+        s.OutdoorSmallVobDrawRadius = 25'000;
         s.IndoorVobDrawRadius = 20'000;
 
         s.WindQuality = GothicRendererSettings::EWindQuality::WIND_QUALITY_ADVANCED;
@@ -548,9 +553,9 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.AntiAliasingMode = GothicRendererSettings::E_AntiAliasingMode::AA_SMAA;
         s.SectionDrawRadius = 5;
         s.VisualFXDrawRadius = 10'000;
-        s.OutdoorVobDrawRadius = 50'000;
-        s.OutdoorSmallVobDrawRadius = 35'000;
-        s.IndoorVobDrawRadius = 25'000;
+        s.OutdoorVobDrawRadius = 40'000;
+        s.OutdoorSmallVobDrawRadius = 25'000;
+        s.IndoorVobDrawRadius = 20'000;
 
         s.WindQuality = GothicRendererSettings::EWindQuality::WIND_QUALITY_ADVANCED;
         s.HeroAffectsObjects = 1;
