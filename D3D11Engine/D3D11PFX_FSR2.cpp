@@ -46,6 +46,11 @@ D3D11PFX_FSR2::~D3D11PFX_FSR2() {
     Destroy();
 }
 
+static void Ffx_log( FfxMsgType type,
+    const wchar_t* message ) {
+    LogError() << "FFX2 Error (" << type << "): " << message;
+}
+
 bool D3D11PFX_FSR2::Init( const INT2& maxInputSize, const INT2& maxOutputSize ) {
     if ( Initialized ) {
         if (maxInputSize == MaxInputSize 
@@ -92,9 +97,11 @@ bool D3D11PFX_FSR2::Init( const INT2& maxInputSize, const INT2& maxOutputSize ) 
         | FFX_FSR2_ENABLE_AUTO_EXPOSURE
         | FFX_FSR2_ENABLE_DYNAMIC_RESOLUTION
         | FFX_FSR2_ENABLE_DEPTH_INVERTED
+        | FFX_FSR2_ENABLE_DEPTH_INFINITE
         ;
 #ifdef DEBUG_D3D11
     contextDesc.flags |= FFX_FSR2_ENABLE_DEBUG_CHECKING;
+    contextDesc.fpMessage = &Ffx_log;
 #endif
 
     // If your depth buffer is inverted (1.0 = near, 0.0 = far), uncomment the following line:

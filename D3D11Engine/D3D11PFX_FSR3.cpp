@@ -48,7 +48,7 @@ D3D11PFX_FSR3::~D3D11PFX_FSR3() {
 
 static void Ffx_log( FfxMsgType type,
     const wchar_t* message ) {
-    LogError() << "FFX Error (" << type << "): " << message;
+    LogError() << "FFX3 Error (" << type << "): " << message;
 }
 
 bool D3D11PFX_FSR3::Init( const INT2& maxInputSize, const INT2& maxOutputSize ) {
@@ -88,6 +88,7 @@ bool D3D11PFX_FSR3::Init( const INT2& maxInputSize, const INT2& maxOutputSize ) 
     contextDesc.flags = FFX_FSR3UPSCALER_ENABLE_HIGH_DYNAMIC_RANGE
         | FFX_FSR3UPSCALER_ENABLE_AUTO_EXPOSURE
         | FFX_FSR3UPSCALER_ENABLE_DEPTH_INVERTED 
+        | FFX_FSR3UPSCALER_ENABLE_DEPTH_INFINITE
         | FFX_FSR3UPSCALER_ENABLE_DYNAMIC_RESOLUTION;
 #ifdef DEBUG_D3D11
     contextDesc.flags |= FFX_FSR3UPSCALER_ENABLE_DEBUG_CHECKING;

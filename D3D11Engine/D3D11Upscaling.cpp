@@ -70,11 +70,12 @@ namespace {
                 auto cam = ((zCCamera*)oCGame::GetGame()->_zCSession_camera);
                 cam->GetFOV( fovY, fovX );
 
-                // Our depth projection uses reversed-Z with infinite far plane.
-                // FSR still expects finite camera metrics, so use camera near and
-                // the finite world culling distance as a stable surrogate far.
-                float nearZ = std::max( cam ? cam->GetNearPlane() : 1.0f, 0.001f );
-                float farZ = std::max( static_cast<float>( settings.SectionDrawRadius ) * WORLD_SECTION_SIZE, nearZ + 1.0f );
+                // With ENABLE_DEPTH_INVERTED | ENABLE_DEPTH_INFINITE flags,
+                // FSR expects inverted metrics: cameraNear=FLT_MAX (infinity),
+                // cameraFar=actual near plane (since depth is inverted: 1=near, 0=far)
+                float nearZ = FLT_MAX;  // Infinity in view space
+                float farZ = cam ? cam->GetNearPlane() : 0.01f;
+                farZ = std::max( farZ, 0.075f );  // FSR2 validation requires cameraFar >= 0.075f
 
                 ID3D11SamplerState* linearSampler = engine.GetLinearSamplerState();
                 engine.GetContext()->CSSetSamplers( 0, 1, &linearSampler );
@@ -136,11 +137,12 @@ namespace {
                 auto cam = ((zCCamera*)oCGame::GetGame()->_zCSession_camera);
                 cam->GetFOV( fovY, fovX );
 
-                // Our depth projection uses reversed-Z with infinite far plane.
-                // FSR still expects finite camera metrics, so use camera near and
-                // the finite world culling distance as a stable surrogate far.
-                float nearZ = std::max( cam ? cam->GetNearPlane() : 1.0f, 0.001f );
-                float farZ = std::max( static_cast<float>( settings.SectionDrawRadius ) * WORLD_SECTION_SIZE, nearZ + 1.0f );
+                // With ENABLE_DEPTH_INVERTED | ENABLE_DEPTH_INFINITE flags,
+                // FSR expects inverted metrics: cameraNear=FLT_MAX (infinity),
+                // cameraFar=actual near plane (since depth is inverted: 1=near, 0=far)
+                float nearZ = FLT_MAX;  // Infinity in view space
+                float farZ = cam ? cam->GetNearPlane() : 0.01f;
+                farZ = std::max( farZ, 0.075f );  // FSR2 validation requires cameraFar >= 0.075f
 
                 ID3D11SamplerState* linearSampler = engine.GetLinearSamplerState();
                 engine.GetContext()->CSSetSamplers( 0, 1, &linearSampler );
