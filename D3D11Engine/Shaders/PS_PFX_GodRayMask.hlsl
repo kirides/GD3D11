@@ -29,7 +29,7 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	
 	// Sky detection via depth buffer (reversed-Z: sky has depth == 0.0)
 	float depth = TX_Depth.Sample(SS_Linear, Input.vTexcoord).r;
-	if(depth < 0.00001f)
+	if(!(depth > 0.0f))
 		return color;
 	
 	return float4(0,0,0,0);
