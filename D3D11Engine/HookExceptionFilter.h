@@ -1,6 +1,6 @@
 #pragma once
 #if _MSC_VER >= 1300
-#include <Tlhelp32.h>
+#include <TlHelp32.h>
 #endif
 
 #include "pch.h"

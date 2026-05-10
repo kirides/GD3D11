@@ -217,7 +217,7 @@ function(gd3d11_apply_common_compile_settings target_name)
       /MP
       /fp:fast
       /Zi
-      /EHs-c-
+      /EHsc
       /wd4005
       /wd4530
       /wd4577

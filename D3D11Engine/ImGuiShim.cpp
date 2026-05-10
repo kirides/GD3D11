@@ -1,7 +1,7 @@
 #include "ImGuiShim.h"
 #include "GSky.h"
 #include <VersionHelpers.h>
-#include <ShellScalingAPI.h>
+#include <ShellScalingApi.h>
 
 #include "ImGuiEditorView.h"
 #include "zCParser.h"
