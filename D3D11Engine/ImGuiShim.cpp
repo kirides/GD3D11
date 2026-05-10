@@ -417,8 +417,10 @@ void ApplyFeatureLevel10Downgrades(GothicRendererSettings& s) {
 }
 
 void ApplyGraphicsPresets( GothicRendererSettings& s ) {
-    const auto preset = s.GraphicsPreset; // remember before setting defaults
-    s.SetDefault();
+    const auto preset = s.GraphicsPreset;
+    if ( preset == GothicRendererSettings::E_GraphicsPreset::GRAPHICS_CUSTOM ) {
+        return;
+    }
 
     switch ( preset ) {
     case GothicRendererSettings::GRAPHICS_LOW:
@@ -444,7 +446,7 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.textureMaxSize = static_cast<int>(TX_QUALITY::Medium);
 
         s.AntiAliasingMode = GothicRendererSettings::E_AntiAliasingMode::AA_NONE;
-        s.SectionDrawRadius = 2;
+        s.SectionDrawRadius = 5;
         s.VisualFXDrawRadius = 5'000;
         s.OutdoorVobDrawRadius = 30'000;
         s.OutdoorSmallVobDrawRadius = 10'000;
@@ -479,7 +481,7 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.textureMaxSize = static_cast<int>(TX_QUALITY::Medium);
 
         s.AntiAliasingMode = GothicRendererSettings::E_AntiAliasingMode::AA_SMAA;
-        s.SectionDrawRadius = 4;
+        s.SectionDrawRadius = 5;
         s.VisualFXDrawRadius = 6'000;
         s.OutdoorVobDrawRadius = 30'000;
         s.OutdoorSmallVobDrawRadius = 15'000;
@@ -515,7 +517,7 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.textureMaxSize = static_cast<int>(TX_QUALITY::High);
 
         s.AntiAliasingMode = GothicRendererSettings::E_AntiAliasingMode::AA_SMAA;
-        s.SectionDrawRadius = 4;
+        s.SectionDrawRadius = 5;
         s.VisualFXDrawRadius = 8'000;
         s.OutdoorVobDrawRadius = 40'000;
         s.OutdoorSmallVobDrawRadius = 25'000;
