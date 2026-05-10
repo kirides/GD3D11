@@ -4,6 +4,8 @@
 // Writes to a 1x1 R32_FLOAT UAV storing the linearized focus distance
 //--------------------------------------------------------------------------------------
 
+#include "DepthReconstruction.h"
+
 cbuffer DepthOfFieldConstantBuffer : register( b0 )
 {
     float DoF_FocusDistance;
@@ -26,7 +28,7 @@ RWTexture2D<float> OutputFocus : register( u0 );
 
 float LinearizeDepth( float d )
 {
-    return DoF_ProjParams.z / ( d - DoF_ProjParams.w );
+    return LinearizeDepthReverseZInfinite( d );
 }
 
 [numthreads(1, 1, 1)]

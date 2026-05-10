@@ -2,6 +2,7 @@
 // World/VOB-Pixelshader for G2D3D11 by Degenerated
 //--------------------------------------------------------------------------------------
 #include <DS_Defines.h>
+#include "DepthReconstruction.h"
 
 #include <AtmosphericScattering.h>
 
@@ -70,11 +71,7 @@ struct PS_INPUT
 
 float3 VSPositionFromDepth(float depth, float2 vTexCoord)
 {
-	// Reconstruct view-space position from depth using projection parameters
-	// Avoids full 4x4 inverse projection matrix multiply
-    float2 ndc = vTexCoord * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f);
-    float linearZ = SQ_ProjParams.z / (depth - SQ_ProjParams.w);
-    return float3(ndc * SQ_ProjParams.xy * linearZ, linearZ);
+    return ReconstructVSPositionFromDepthReverseZInfinite( depth, vTexCoord, SQ_ProjParams.xy );
 }
 
 //--------------------------------------------------------------------------------------

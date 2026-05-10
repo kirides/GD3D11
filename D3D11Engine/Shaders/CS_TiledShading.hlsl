@@ -1,4 +1,5 @@
 #include "DS_Defines.h"
+#include "DepthReconstruction.h"
 
 #define TILE_SIZE 16
 
@@ -40,9 +41,7 @@ TextureCubeArray TX_ShadowCubeArray : register( t11 );
 RWTexture2D<float4> RW_HDR : register( u0 );
 
 float3 VSPositionFromDepth( float depth, uint2 pixelCoord ) {
-    float2 ndc = ((float2( pixelCoord ) + 0.5f) / ViewportSize) * float2( 2.0f, -2.0f ) + float2( -1.0f, 1.0f );
-    float linearZ = ProjParams.z / (depth - ProjParams.w);
-    return float3( ndc * ProjParams.xy * linearZ, linearZ );
+    return ReconstructVSPositionFromDepthReverseZInfinite( depth, pixelCoord, ViewportSize, ProjParams.xy );
 }
 
 float CalcBlinnPhongLighting( float3 N, float3 H ) {

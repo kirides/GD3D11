@@ -4,6 +4,8 @@
 // Outputs blurred color (rgb) + CoC (a) at half resolution to UAV
 //--------------------------------------------------------------------------------------
 
+#include "DepthReconstruction.h"
+
 cbuffer DepthOfFieldConstantBuffer : register( b0 )
 {
     float DoF_FocusDistance;
@@ -27,7 +29,7 @@ RWTexture2D<float4> OutputBlur : register( u0 ); // Half-res output
 
 float LinearizeDepth( float d )
 {
-    return DoF_ProjParams.z / ( d - DoF_ProjParams.w );
+    return LinearizeDepthReverseZInfinite( d );
 }
 
 float ComputeCoC( float linearDepth, float focusDepth )
