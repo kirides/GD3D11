@@ -1,3 +1,4 @@
+#include "DepthReconstruction.h"
 //--------------------------------------------------------------------------------------
 // Compute Shader - SAO Bilateral Blur
 // Depth-aware separable Gaussian blur for denoising SAO output
@@ -21,7 +22,7 @@ RWTexture2D<float> OutputAO : register( u0 );
 
 float LinearizeDepth( float d )
 {
-    return SAO_Blur_ProjParams.z / ( d - SAO_Blur_ProjParams.w );
+    return LinearizeDepthReverseZInfinite( d );
 }
 
 static const int BLUR_RADIUS = 4;

@@ -5,6 +5,7 @@
 //--------------------------------------------------------------------------------------
 
 #include "DS_Defines.h"
+#include "DepthReconstruction.h"
 
 cbuffer SAOConstantBuffer : register( b0 )
 {
@@ -26,14 +27,12 @@ RWTexture2D<float> OutputAO : register( u0 );
 
 float LinearizeDepth( float d )
 {
-    return SAO_ProjParams.z / ( d - SAO_ProjParams.w );
+    return LinearizeDepthReverseZInfinite( d );
 }
 
 float3 VSPositionFromDepth( float depth, float2 texcoord )
 {
-    float2 ndc = texcoord * float2( 2.0f, -2.0f ) + float2( -1.0f, 1.0f );
-    float linearZ = LinearizeDepth( depth );
-    return float3( ndc * SAO_ProjParams.xy * linearZ, linearZ );
+    return ReconstructVSPositionFromDepthReverseZInfinite( depth, texcoord, SAO_ProjParams.xy );
 }
 
 float3 DecodeNormal( float4 enc )

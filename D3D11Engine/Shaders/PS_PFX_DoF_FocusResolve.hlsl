@@ -4,6 +4,8 @@
 // Renders to a 1x1 R32_FLOAT target storing the linearized focus distance
 //--------------------------------------------------------------------------------------
 
+#include "DepthReconstruction.h"
+
 cbuffer DepthOfFieldConstantBuffer : register( b0 )
 {
     float DoF_FocusDistance;
@@ -31,7 +33,7 @@ struct PS_INPUT
 
 float LinearizeDepth( float d )
 {
-    return DoF_ProjParams.z / ( d - DoF_ProjParams.w );
+    return LinearizeDepthReverseZInfinite( d );
 }
 
 float4 PSMain( PS_INPUT Input ) : SV_TARGET

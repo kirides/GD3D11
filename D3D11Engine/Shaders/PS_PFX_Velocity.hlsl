@@ -59,7 +59,7 @@ float2 ProjectToPreviousFrame(float3 worldPos) {
 // Calculate velocity for a single sample point
 float2 CalculateVelocity(float2 texCoord, float depth) {
     // Skip sky pixels (depth = 0 in reversed-Z means far plane/sky)
-    if (depth < 0.0001) {
+    if (!(depth > 0.0f)) {
         return float2(0.0, 0.0);
     }
 

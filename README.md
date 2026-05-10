@@ -116,6 +116,39 @@ When using a Release target, those same exceptions will very likely stop the exe
 > [!TIP]
 > Check out the GitHub Actions workflow to see how the releases are build.
 
+### [EXPERIMENTAL] Building on Linux
+
+1. install clang & llvm
+1. grab/install xwin
+   ```shell
+   xwin --accept-license --arch x86 splat --use-winsysroot-style --preserve-ms-arch-notation --output ~/.xwin
+   ```
+1. ensure vcpkg dependencies are installed in `./packages` (see bottom of `D3D11Engine.vcxproj`)
+  - `directxmath.2025.4.3.1`
+  - `directxmesh_desktop_2019.2023.4.28.1`
+  - `directxtk_desktop_2019.2023.4.28.1`
+  - `Microsoft.XAudio2.Redist.1.2.13`
+1. export correct vcpkg triplets in current terminal session
+   ```shell
+   export VCPKG_DEFAULT_TRIPLET="x86-windows-static-md"
+   ```
+1. prepare preset
+   ```shell
+   cmake --preset Release_NoOpt_Clang -DCMAKE_TOOLCHAIN_FILE=./cmake/msvc-clang-linux.cmake
+   ```
+1. build the project
+   ```shell
+   cmake --build --preset Release_NoOpt_Clang
+   ```
+1. copy `out/build/Release_NoOpt_Clang/D3D11Engine/ddraw.dll` (& `ddraw.pdb` for debugging) into `Gothic2\system\`
+  
+#### building a "release" version of G2 for example would mean
+
+```shell
+> cmake --preset Release_AVX2_Clang -DCMAKE_TOOLCHAIN_FILE=./cmake/msvc-clang-linux.cmake
+> cmake --build --preset Release_AVX2_Clang
+```
+
 ### Dependencies
 
 - HBAO+ files from [dboleslawski/VVVV.HBAOPlus](https://github.com/dboleslawski/VVVV.HBAOPlus/tree/master/Dependencies/NVIDIA-HBAOPlus)

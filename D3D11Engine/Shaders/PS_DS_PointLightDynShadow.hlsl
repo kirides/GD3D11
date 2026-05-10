@@ -2,6 +2,7 @@
 // World/VOB-Pixelshader for G2D3D11 by Degenerated
 //--------------------------------------------------------------------------------------
 #include <DS_Defines.h>
+#include "DepthReconstruction.h"
 
 cbuffer DS_PointLightConstantBuffer : register( b0 )
 {
@@ -85,10 +86,7 @@ struct PS_INPUT
 
 float3 VSPositionFromDepth(float depth, float2 vTexCoord)
 {
-	// Reconstruct view-space position from depth using projection parameters
-	float2 ndc = vTexCoord * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f);
-	float linearZ = PL_ProjParams.z / (depth - PL_ProjParams.w);
-	return float3(ndc * PL_ProjParams.xy * linearZ, linearZ);
+	return ReconstructVSPositionFromDepthReverseZInfinite( depth, vTexCoord, PL_ProjParams.xy );
 }
 
 //--------------------------------------------------------------------------------------

@@ -3611,12 +3611,11 @@ XMFLOAT4X4& GothicAPI::GetProjectionMatrix() {
         return CameraReplacementPtr->ProjectionReplacement;
     }
 
-    // Reverse depth buffer
-    float NearZ = RendererState.RendererSettings.SectionDrawRadius * WORLD_SECTION_SIZE;
-    float FarZ = 1.0f;
-    float zRange = FarZ / (FarZ - NearZ);
-    RendererState.TransformState.TransformProj._33 = zRange;
-    RendererState.TransformState.TransformProj._34 = -zRange * NearZ;
+    // Reverse depth buffer with infinite far plane:
+    // depth = NearClip / viewZ, where NearClip is fixed at 1.0 in engine units.
+    constexpr float NearClip = 1.0f;
+    RendererState.TransformState.TransformProj._33 = 0.0f;
+    RendererState.TransformState.TransformProj._34 = NearClip;
     return RendererState.TransformState.TransformProj;
 }
 

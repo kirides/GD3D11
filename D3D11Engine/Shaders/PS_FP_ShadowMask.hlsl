@@ -57,6 +57,7 @@ Texture2DArray TX_ShadowmapArray : register( t3 );
 #endif
 
 #include "ShadowSampling.h"
+#include "DepthReconstruction.h"
 
 //--------------------------------------------------------------------------------------
 // Input / Output structures  (must match VS_PFX output)
@@ -73,9 +74,7 @@ struct PS_INPUT
 //--------------------------------------------------------------------------------------
 float3 VSPositionFromDepth( float depth, float2 vTexCoord )
 {
-    float2 ndc    = vTexCoord * float2( 2.0f, -2.0f ) + float2( -1.0f, 1.0f );
-    float linearZ = SQ_ProjParams.z / (depth - SQ_ProjParams.w);
-    return float3( ndc * SQ_ProjParams.xy * linearZ, linearZ );
+    return ReconstructVSPositionFromDepthReverseZInfinite( depth, vTexCoord, SQ_ProjParams.xy );
 }
 
 //--------------------------------------------------------------------------------------
@@ -88,7 +87,7 @@ float PSMain( PS_INPUT Input ) : SV_TARGET
 
     // Sample depth.  Reversed-Z: sky pixels have depth == 0 (no geometry written).
     float depth = TX_Depth.Sample( SS_Linear, uv ).r;
-    if ( depth < 0.00001f )
+    if ( !(depth > 0.0f) )
         return 1.0f; // Sky — treat as fully lit
 
     // Reconstruct positions

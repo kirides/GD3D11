@@ -4,6 +4,8 @@
 // Blends sharp and blurred based on per-pixel CoC, writes to UAV
 //--------------------------------------------------------------------------------------
 
+#include "DepthReconstruction.h"
+
 cbuffer DepthOfFieldConstantBuffer : register( b0 )
 {
     float DoF_FocusDistance;
@@ -28,7 +30,7 @@ RWTexture2D<float4> OutputComposite : register( u0 );
 
 float LinearizeDepth( float d )
 {
-    return DoF_ProjParams.z / ( d - DoF_ProjParams.w );
+    return LinearizeDepthReverseZInfinite( d );
 }
 
 [numthreads(8, 8, 1)]
