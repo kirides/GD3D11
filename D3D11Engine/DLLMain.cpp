@@ -83,7 +83,7 @@ void QuantizeHalfFloats_X4_SSE41( float* input, unsigned short* output )
     QuantizeHalfFloats_X4_SSE2( input, output );
 }
 
-#ifdef _XM_AVX_INTRINSICS_
+#ifdef _XM_AVX2_INTRINSICS_
 unsigned short QuantizeHalfFloat_F16C( float input )
 {
     return static_cast<unsigned short>(_mm_cvtsi128_si32( _mm_cvtps_ph( _mm_set_ss( input ), _MM_FROUND_CUR_DIRECTION ) ));
@@ -174,7 +174,7 @@ void UnquantizeHalfFloat_X8_SSE2( unsigned short* input, float* output )
     _mm_store_si128( reinterpret_cast<__m128i*>(output + 4), _mm_or_si128( s4, _mm_or_si128( e4, m4 ) ) );
 }
 
-#ifdef _XM_AVX_INTRINSICS_
+#ifdef _XM_AVX2_INTRINSICS_
 float UnquantizeHalfFloat_F16C( unsigned short input )
 {
     return _mm_cvtss_f32( _mm_cvtph_ps( _mm_cvtsi32_si128( input ) ) );
@@ -402,7 +402,7 @@ void CheckPlatformSupport() {
     support_message( "SSE", InstructionSet::SSE() );
 #endif
 
-#ifdef _XM_AVX_INTRINSICS_
+#ifdef _XM_AVX2_INTRINSICS_
     if ( InstructionSet::F16C() ) {
         QuantizeHalfFloat = QuantizeHalfFloat_F16C;
         QuantizeHalfFloat_X4 = QuantizeHalfFloats_X4_F16C;

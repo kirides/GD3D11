@@ -1458,11 +1458,6 @@ void RenderAdvancedColumn3( GothicRendererSettings& settings, GothicAPI* gapi ) 
                 ImGui::TableSetColumnIndex( 1 );
                 };
 
-            static auto addRowText = []( const char* label, const char* text ) {
-                addRowLabel( label );
-                ImGui::TextUnformatted( text );
-                };
-
             static auto addRowInt = []( const char* label, int value ) {
                 addRowLabel( label );
                 ImGui::Text( "%d", value );

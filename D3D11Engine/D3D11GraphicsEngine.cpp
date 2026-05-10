@@ -64,10 +64,7 @@
 
 namespace wrl = Microsoft::WRL;
 
-const int NUM_UNLOADEDTEXCOUNT_FORCE_LOAD_TEXTURES = 100;
-
 const float DEFAULT_NORMALMAP_STRENGTH = 0.10f;
-const float DEFAULT_FAR_PLANE = 50000.0f;
 const XMFLOAT4 UNDERWATER_COLOR_MOD = XMFLOAT4( 0.5f, 0.7f, 1.0f, 1.0f );
 
 static const GUID IID_IDXGIVkInteropAdapter = { 0x3A6D8F2C, 0xB0E8, 0x4AB4, { 0xB4, 0xDC, 0x4F, 0xD2, 0x48, 0x91, 0xBF, 0xA5 } };
@@ -2828,8 +2825,6 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         instancedDrawItems.clear();
 
         // For the cube shadow path and MorphMesh, we need the old per-draw setup
-        bool needPerDrawSetup = useCubePath; // cube always needs it
-        // We'll lazily set it up if we encounter MorphMesh
 
         auto ensurePerDrawShaderSetup = [&]() {
             if ( useCubePath )
@@ -4833,7 +4828,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
                     updatePSBuffers();
                 }
 
-                if ( info ) {
+                if ( info && !info->IsSame( boundInfo) ) {
                     if ( !info->Constantbuffer ) info->UpdateConstantbuffer();
 
                     info->Constantbuffer->BindToPixelShader( 2 );
@@ -5097,12 +5092,6 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
 
     float3 pos; XMStoreFloat3( pos.toXMFLOAT3(), position );
     INT2 s = WorldConverter::GetSectionOfPos( pos );
-
-    float vobOutdoorDist =
-        Engine::GAPI->GetRendererState().RendererSettings.OutdoorVobDrawRadius;
-    float vobOutdoorSmallDist = Engine::GAPI->GetRendererState().RendererSettings.OutdoorSmallVobDrawRadius;
-    float vobSmallSize =
-        Engine::GAPI->GetRendererState().RendererSettings.SmallVobSize;
 
     DistortionTexture->BindToPixelShader( 0 );
 
@@ -5421,12 +5410,6 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
 
     float3 pos; XMStoreFloat3( pos.toXMFLOAT3(), position );
     INT2 s = WorldConverter::GetSectionOfPos( pos );
-
-    float vobOutdoorDist =
-        Engine::GAPI->GetRendererState().RendererSettings.OutdoorVobDrawRadius;
-    float vobOutdoorSmallDist = Engine::GAPI->GetRendererState().RendererSettings.OutdoorSmallVobDrawRadius;
-    float vobSmallSize =
-        Engine::GAPI->GetRendererState().RendererSettings.SmallVobSize;
 
     DistortionTexture->BindToPixelShader( 0 );
 
@@ -5899,7 +5882,6 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh(const std::vector<WorldMeshSe
 void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR position,
     float sectionRange,
     const RenderShadowmapsParams& params ) {
-    int timerLabelIndex = std::clamp(params.CascadeIndex, 0, MAX_CSM_CASCADES-1);
 
     // Setup renderstates
     Engine::GAPI->GetRendererState().RasterizerState.SetDefault();

@@ -43,6 +43,7 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
         builder.Write( backBufferHandle );
 
         pass.m_executeCallback = [&engine]( const RenderGraph& ) -> void {
+            ZoneScopedN( "FR Depth Prepass" );
             auto& context = engine.GetContext();
 
             // Clear all SRVs to avoid resource hazards
@@ -76,6 +77,7 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
         builder.Write( backBufferHandle );
 
         pass.m_executeCallback = [&engine]( const RenderGraph& ) -> void {
+            ZoneScopedN( "FR Light Culling" );
             // CopyDepthStencil so depth can be read as SRV
             engine.CopyDepthStencil();
 
@@ -92,6 +94,7 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
         builder.Write( backBufferHandle );
 
         pass.m_executeCallback = [&engine]( const RenderGraph& ) -> void {
+            ZoneScopedN( "FR Shadow Maps" );
             auto* shadowMaps = engine.GetShadowMaps();
             engine.SetDefaultStates();
 

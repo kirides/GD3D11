@@ -77,7 +77,7 @@ public:
         found->LastFrameUsed = m_currentFrame;
 
         // Return RAII handle with custom deleter to "return" to pool
-        return TextureHandle( found->Texture.get(), [this, found]( RenderToTextureBuffer* ) {
+        return TextureHandle( found->Texture.get(), [found]( RenderToTextureBuffer* ) {
             found->InUse = false;
         } );
     }
@@ -180,7 +180,7 @@ public:
         found->LastFrameUsed = m_currentFrame;
 
         // Return RAII handle with custom deleter to "return" to pool
-        return DepthStencilHandle( found->Buffer.get(), [this, found]( RenderToDepthStencilBuffer* ) {
+        return DepthStencilHandle( found->Buffer.get(), [found]( RenderToDepthStencilBuffer* ) {
             found->InUse = false;
         } );
     }
