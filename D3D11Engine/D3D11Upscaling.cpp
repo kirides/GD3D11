@@ -70,10 +70,11 @@ namespace {
                 auto cam = ((zCCamera*)oCGame::GetGame()->_zCSession_camera);
                 cam->GetFOV( fovY, fovX );
 
-                // Our Depth Buffer uses reversed Z, so we need to tell FSR2 about it to get correct results
-                // calculations from GothicAPI::GetProjectionMatrix()
-                float NearZ = settings.SectionDrawRadius * WORLD_SECTION_SIZE;
-                float FarZ = 1.0f;
+                // Our depth projection uses reversed-Z with infinite far plane.
+                // FSR still expects finite camera metrics, so use camera near and
+                // the finite world culling distance as a stable surrogate far.
+                float nearZ = std::max( cam ? cam->GetNearPlane() : 1.0f, 0.001f );
+                float farZ = std::max( static_cast<float>( settings.SectionDrawRadius ) * WORLD_SECTION_SIZE, nearZ + 1.0f );
 
                 ID3D11SamplerState* linearSampler = engine.GetLinearSamplerState();
                 engine.GetContext()->CSSetSamplers( 0, 1, &linearSampler );
@@ -95,8 +96,8 @@ namespace {
                     float2( static_cast<float>(inputSize.x), static_cast<float>(inputSize.y) ),
                     false,
                     fovY,
-                    NearZ,
-                    FarZ,
+                    nearZ,
+                    farZ,
                     sharpenFactor >= 0.001f,
                     sharpenFactor /* FSR2 has 0..1 (sharp)*/ );
                 };
@@ -135,10 +136,11 @@ namespace {
                 auto cam = ((zCCamera*)oCGame::GetGame()->_zCSession_camera);
                 cam->GetFOV( fovY, fovX );
 
-                // Our Depth Buffer uses reversed Z, so we need to tell FSR2 about it to get correct results
-                // calculations from GothicAPI::GetProjectionMatrix()
-                float NearZ = settings.SectionDrawRadius * WORLD_SECTION_SIZE;
-                float FarZ = 1.0f;
+                // Our depth projection uses reversed-Z with infinite far plane.
+                // FSR still expects finite camera metrics, so use camera near and
+                // the finite world culling distance as a stable surrogate far.
+                float nearZ = std::max( cam ? cam->GetNearPlane() : 1.0f, 0.001f );
+                float farZ = std::max( static_cast<float>( settings.SectionDrawRadius ) * WORLD_SECTION_SIZE, nearZ + 1.0f );
 
                 ID3D11SamplerState* linearSampler = engine.GetLinearSamplerState();
                 engine.GetContext()->CSSetSamplers( 0, 1, &linearSampler );
@@ -160,8 +162,8 @@ namespace {
                     float2( static_cast<float>(inputSize.x), static_cast<float>(inputSize.y) ),
                     false,
                     fovY,
-                    NearZ,
-                    FarZ,
+                    nearZ,
+                    farZ,
                     sharpenFactor >= 0.001f,
                     sharpenFactor /* FSR3 has 0..1 (sharp)*/ );
                 };
