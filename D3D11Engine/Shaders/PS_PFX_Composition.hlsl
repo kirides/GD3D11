@@ -92,13 +92,23 @@ float4 ComputeHeightFog( float2 texcoord )
 
     float fog = 1.0f - ComputeVolumetricFog( position, posOriginal );
     float3 color = ApplyAtmosphericScatteringGround( position, HF_FogColorMod, true );
+	
+	// (Increased the R, G, B values. Tweak these up/down if you want it brighter/darker!)
+	float3 nightFogColor = float3(0.04f, 0.06f, 0.09f); 
+	        nightFogColor = float3(0.12f, 0.18f, 0.27f); 
+	float nightTimeBlend = saturate(-AC_LightPos.y * 4.0f);
+	color = lerp(color, nightFogColor, nightTimeBlend);
 
-    float darknessFactor = 2.0f;
-    if ( AC_LightPos.y < 0.0f ) { darknessFactor -= AC_LightPos.y * 3.0f; }
-    else if ( AC_LightPos.y > 0.0f ) { darknessFactor -= AC_LightPos.y; }
+	// Starts darker (2.5) and doesn't drop as much at noon.
+	float darknessFactor = 2.5f; 
+	if (AC_LightPos.y > 0.0f) { 
+		darknessFactor -= (AC_LightPos.y * 0.8f); 
+	}
+	
+	// Never let the fog become a 100% solid wall of color.
+	float maxFogOpacity = 0.85f;
 
-    return float4( saturate( color / darknessFactor ), saturate( fog ) );
-}
+	return float4(saturate(color / darknessFactor), saturate(fog) * maxFogOpacity);}
 #endif
 
 //--------------------------------------------------------------------------------------
