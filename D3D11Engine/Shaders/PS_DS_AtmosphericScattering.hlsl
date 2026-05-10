@@ -240,7 +240,7 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
 	
 	// Sample depth first to detect sky pixels (reversed-Z: sky has depth == 0.0)
     float expDepth = TX_Depth.Sample(SS_Linear, uv).r;
-    if (expDepth < 0.00001f)
+    if (!(expDepth > 0.0f))
         // Sky pixel — no geometry was written, just return the diffuse (sky) color
         return float4(diffuse.rgb, 1);
 	
@@ -260,17 +260,15 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
     float3 wsPosition = mul(float4(vsPosition, 1), SQ_InvView).xyz;
     float3 V = normalize(-vsPosition);
 	
+	float shadow = vertLighting;
 #if SHD_ENABLE
 	// CSM: Use soft cascaded shadow map with configurable softness
-	float shadow = 0.0f;
 	if(AC_LightPos.y > 0) // only get shadow value if it isn't night-time
 	{
 		float bias = lerp(0.00005f, 0.0001f, abs(vsPosition.z) / 1000);
 		// Use screen position for per-pixel rotation (TAA-friendly)
 		shadow = ComputeCascadedShadowValueSoft(wsPosition, vsPosition.z, vertLighting, bias, Input.vPosition.xy);
 	}
-#else
-    float shadow = vertLighting;
 #endif
 
 	// Compute wettness
