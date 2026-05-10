@@ -1130,9 +1130,15 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                 Engine::GAPI->SaveRendererWorldSettings(settings, MENU_SETTINGS_FILE);
             }
         }
+        if ( ImGui::Button( "Reset Settings", ImVec2( ImGui::GetContentRegionAvail().x, 30.f ) ) ) {
+            settings.SetDefault();
+            Engine::GraphicsEngine->ReloadShaders( ShaderCategory::All );
+        }
+        ImGui::SetItemTooltip( "Reset all settings to their default values." );
         if ( ImGui::Button( "Reload all Shaders", ImVec2( ImGui::GetContentRegionAvail().x, 30.f ) ) ) {
             Engine::GraphicsEngine->ReloadShaders( ShaderCategory::All );
         }
+
         ImGui::Separator();
         ImGui::Checkbox( "DisableRendering", &settings.DisableRendering );
         ImGui::SliderInt( "SectionDrawRadius", &settings.SectionDrawRadius, 0, 20, "%d", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
