@@ -106,6 +106,6 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	// Never let the fog become a 100% solid wall of color.
 	float maxFogOpacity = 0.85f;
 
-	return float4(saturate(color / darknessFactor), saturate(fog) * maxFogOpacity);}
+	return float4(saturate(color / darknessFactor), saturate(fog) * maxFogOpacity);
 }
 
