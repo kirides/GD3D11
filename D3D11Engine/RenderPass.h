@@ -16,7 +16,7 @@ class RenderPass {
     friend class RenderGraph;
 
 public:
-    RenderPass( RGPassName name ) : m_name( name ) {}
+    RenderPass( RGPassName name ) : m_name( std::move(name) ) {}
 
     RGPassName m_name;
     std::vector<RGResourceHandle> m_reads;  // Sources

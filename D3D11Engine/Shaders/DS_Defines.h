@@ -17,7 +17,7 @@ struct DEFERRED_PS_OUTPUT_ALPHA_TO_COVERAGE
 struct FORWARD_PLUS_PS_OUTPUT
 {
 	float4 vColor : SV_TARGET0;
-	float4 vNrm : SV_TARGET1;
+	float2 vNrm : SV_TARGET1;
 	float2 vSI_SP : SV_TARGET2;
 	float2 vVelocity : SV_TARGET3;
 	float vReactiveMask : SV_TARGET4;

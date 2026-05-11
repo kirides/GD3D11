@@ -52,6 +52,7 @@ public:
 
     inline static bool isDrawingContainers = false;
     static void __cdecl hooked_ContainerDraw() {
+        ZoneScoped;
         isDrawingContainers = true;
 
         auto _ = Engine::GraphicsEngine->RecordGraphicsEvent( GE_NAME( "Draw Inventory World" ) );
@@ -108,6 +109,7 @@ public:
     */
 
     static void __fastcall hooked_zCWorldDisposeVobs( zCWorld* thisptr, void* unknwn, zCTree<zCVob>* tree ) {
+        ZoneScoped;
         // Reset only if this is the main world, inventory worlds are handled differently
         if ( thisptr == Engine::GAPI->GetLoadedWorldInfo()->MainWorld )
             Engine::GAPI->ResetVobs();
@@ -127,6 +129,7 @@ public:
     }
 
     static void __fastcall hooked_LoadWorld( zCWorld* thisptr, void* unknwn, const zSTRING& fileName, const int loadMode ) {
+        ZoneScoped;
         Engine::GAPI->OnLoadWorld( fileName.ToChar(), loadMode );
 
         HookedFunctions::OriginalFunctions.original_zCWorldLoadWorld( thisptr, fileName, loadMode );

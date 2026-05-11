@@ -503,7 +503,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G2_SYSTEM_PATH)\ddraw.pdb"</Command>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <PreprocessorDefinitions>PUBLIC_RELEASE;_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR;BUILD_GOTHIC_2_6_fix;_USE_MATH_DEFINES;_CRT_SECURE_NO_WARNINGS;WIN32;NDEBUG;_WINDOWS;_USRDLL;D3D11ENGINE_EXPORTS;NOMINMAX;%(PreprocessorDefinitions);WINVER=0x0601;_WIN32_WINNT=0x0601;NTDDI_VERSION=0x06010000;_WIN7_PLATFORM_UPDATE=1;_XM_DISABLE_INTEL_SVML_</PreprocessorDefinitions>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
-      <ExceptionHandling>false</ExceptionHandling>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <OpenMPSupport>true</OpenMPSupport>
@@ -515,7 +515,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G2_SYSTEM_PATH)\ddraw.pdb"</Command>
       <EnableEnhancedInstructionSet>AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
       <AdditionalOptions>/Zc:inline /Zc:throwingNew %(AdditionalOptions)</AdditionalOptions>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
-      <BufferSecurityCheck>false</BufferSecurityCheck>
+      <BufferSecurityCheck>true</BufferSecurityCheck>
       <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <LanguageStandard_C>Default</LanguageStandard_C>
@@ -529,7 +529,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G2_SYSTEM_PATH)\ddraw.pdb"</Command>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <ModuleDefinitionFile>ddraw.def</ModuleDefinitionFile>
-      <ImageHasSafeExceptionHandlers>false</ImageHasSafeExceptionHandlers>
+      <ImageHasSafeExceptionHandlers>true</ImageHasSafeExceptionHandlers>
       <DelayLoadDLLs>
       </DelayLoadDLLs>
       <AdditionalLibraryDirectories>

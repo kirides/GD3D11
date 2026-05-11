@@ -10,7 +10,9 @@
 // Simple implementation of an additional output to the console:
 class MyStackWalker : public StackWalker {
 public:
-    MyStackWalker() : StackWalker() { LoadModules(); }
+    MyStackWalker() : StackWalker() { 
+        // LoadModules();
+    }
     MyStackWalker( DWORD dwProcessId, HANDLE hProcess ) : StackWalker( dwProcessId, hProcess ) {}
     void OnOutput( LPCSTR szText ) override { Log( "STACK", __FILE__, __LINE__, __FUNCSIG__ ) << szText; StackWalker::OnOutput( szText ); }
 

@@ -36,8 +36,6 @@ XRESULT D3D11PFX_HeightFog::Render( RenderToTextureBuffer* fxbuffer ) {
 	XMStoreFloat4x4( &cb.InvView, XMMatrixInverse( nullptr, Engine::GAPI->GetViewMatrixXM() ) );
 
 	cb.CameraPosition = Engine::GAPI->GetCameraPosition();
-	float NearPlane = Engine::GAPI->GetRendererState().RendererInfo.NearPlane;
-	float FarPlane = Engine::GAPI->GetRendererState().RendererInfo.FarPlane;
 
 	cb.HF_GlobalDensity = Engine::GAPI->GetRendererState().RendererSettings.FogGlobalDensity;
 	cb.HF_HeightFalloff = Engine::GAPI->GetRendererState().RendererSettings.FogHeightFalloff;
@@ -83,7 +81,6 @@ XRESULT D3D11PFX_HeightFog::Render( RenderToTextureBuffer* fxbuffer ) {
 
 #if !defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)
 		// Use other fog-values for fog-zones
-		float distNear = WORLD_SECTION_SIZE * ((ffar - fnear) / ffar);
 		cb.HF_WeightZNear = Toolbox::lerp( cb.HF_WeightZNear, WORLD_SECTION_SIZE * 0.09f, Engine::GAPI->GetFogOverride() );
 		cb.HF_WeightZFar = Toolbox::lerp( cb.HF_WeightZFar, WORLD_SECTION_SIZE * 0.8, Engine::GAPI->GetFogOverride() );
 #endif

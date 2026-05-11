@@ -11,7 +11,7 @@
 #define DEBUG_D3D11
 // assume SSE3 is available when compiling in debug mode for SSE2
 #if _M_IX86_FP == 2 // SSE2
-#define _XM_SSE3_INTRINSICS_
+// #define _XM_SSE3_INTRINSICS_
 #endif
 #endif
 

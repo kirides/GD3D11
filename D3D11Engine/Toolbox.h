@@ -6,9 +6,9 @@
 #include <Windows.h>
 
 #include "Types.h"
+#include "zTypes.h"
 
 /** Misc. tools */
-enum zTCam_ClipType;
 struct zTBBox3D;
 struct zTPlane;
 

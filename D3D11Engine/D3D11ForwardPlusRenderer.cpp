@@ -43,6 +43,7 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
         builder.Write( backBufferHandle );
 
         pass.m_executeCallback = [&engine]( const RenderGraph& ) -> void {
+            ZoneScopedN( "FR Depth Prepass" );
             auto& context = engine.GetContext();
 
             // Clear all SRVs to avoid resource hazards
@@ -76,6 +77,7 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
         builder.Write( backBufferHandle );
 
         pass.m_executeCallback = [&engine]( const RenderGraph& ) -> void {
+            ZoneScopedN( "FR Light Culling" );
             // CopyDepthStencil so depth can be read as SRV
             engine.CopyDepthStencil();
 
@@ -92,6 +94,7 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
         builder.Write( backBufferHandle );
 
         pass.m_executeCallback = [&engine]( const RenderGraph& ) -> void {
+            ZoneScopedN( "FR Shadow Maps" );
             auto* shadowMaps = engine.GetShadowMaps();
             engine.SetDefaultStates();
 
@@ -171,7 +174,7 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
     // --- Forward+ lit geometry pass ---
     graph.AddPass( RG_PASS_NAME("FP Lit Geometry"), [&]( RGBuilder& builder, RenderPass& pass ) {
         auto size = engine.GetResolution();
-        normalsResource = builder.CreateTexture( { static_cast<uint32_t>( size.x ), static_cast<uint32_t>( size.y ), DXGI_FORMAT_R8G8B8A8_SNORM, L"GBufferNormals" } );
+        normalsResource = builder.CreateTexture( { static_cast<uint32_t>( size.x ), static_cast<uint32_t>( size.y ), DXGI_FORMAT_R16G16_FLOAT, L"GBufferNormals" } );
         specularResource = builder.CreateTexture( { static_cast<uint32_t>( size.x ), static_cast<uint32_t>( size.y ), DXGI_FORMAT_R16G16_FLOAT, L"GBufferSpecular" } );
         reactiveMaskResource = builder.CreateTexture( { static_cast<uint32_t>( size.x ), static_cast<uint32_t>( size.y ), DXGI_FORMAT_R8_UNORM, L"ReactiveMask" } );
         builder.Write( reactiveMaskResource );

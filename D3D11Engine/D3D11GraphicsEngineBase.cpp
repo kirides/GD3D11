@@ -260,7 +260,6 @@ XRESULT D3D11GraphicsEngineBase::SetActiveGShader( GShaderID shader ) {
 
 /** Updates the transformsCB with new values from the GAPI */
 void D3D11GraphicsEngineBase::UpdateTransformsCB() {
-    const XMFLOAT4X4& world = Engine::GAPI->GetRendererState().TransformState.TransformWorld;
     const XMFLOAT4X4& view = Engine::GAPI->GetRendererState().TransformState.TransformView;
     const XMFLOAT4X4& proj = Engine::GAPI->GetProjectionMatrix();
 

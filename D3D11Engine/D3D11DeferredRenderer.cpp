@@ -29,7 +29,7 @@ void D3D11DeferredRenderer::AddGeometryPasses( RenderGraph& graph,
 
     graph.AddPass( RG_PASS_NAME("G-Buffer Pass"), [&, colorResource, velocityBufferHandle, backBufferHandle]( RGBuilder& builder, RenderPass& pass ) {
         auto size = engine.GetResolution();
-        normalsResource = builder.CreateTexture( { static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y), DXGI_FORMAT_R8G8B8A8_SNORM, L"GBufferNormals" } );
+        normalsResource = builder.CreateTexture( { static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y), DXGI_FORMAT_R16G16_FLOAT, L"GBufferNormals" } );
         specularResource = builder.CreateTexture( { static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y), DXGI_FORMAT_R16G16_FLOAT, L"GBufferSpecular" } );
         reactiveMaskResource = builder.CreateTexture( { static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y), DXGI_FORMAT_R8_UNORM, L"ReactiveMask" } );
 
@@ -41,6 +41,7 @@ void D3D11DeferredRenderer::AddGeometryPasses( RenderGraph& graph,
         builder.Write( backBufferHandle );
 
         pass.m_executeCallback = [&engine, colorResource, normalsResource, specularResource, reactiveMaskResource, velocityBufferHandle]( const RenderGraph& graph ) -> void {
+            ZoneScopedN( "DR GBuffer" );
             const auto& context = engine.GetContext();
             context->VSSetShaderResources( 0, 8, s_nullSRVs );
             context->PSSetShaderResources( 0, 8, s_nullSRVs );
@@ -105,6 +106,7 @@ void D3D11DeferredRenderer::AddLightingPasses( RenderGraph& graph,
         builder.Write( backBufferHandle );
 
         pass.m_executeCallback = [&engine, &frameLights, colorResource, normalsResource, specularResource]( const RenderGraph& graph ) -> void {
+            ZoneScopedN( "DR Draw Lighting" );
             auto colorTexture = graph.GetPhysicalTexture( colorResource );
             auto normalsTexture = graph.GetPhysicalTexture( normalsResource );
             auto specularTexture = graph.GetPhysicalTexture( specularResource );
