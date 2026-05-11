@@ -142,7 +142,7 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
 	litPixel = ApplyAtmosphericScatteringGround(wsPosition, litPixel);
 
 	output.vColor = float4(litPixel, 1);
-	output.vNrm = float4(nrm, 1.0f);
+	output.vNrm = EncodeNormalGBuffer(nrm);
 	output.vSI_SP = float2(specIntensity, specPower);
 	output.vVelocity = CalculateVelocity(Input.vCurrClipPos, Input.vPrevClipPos);
 
