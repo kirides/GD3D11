@@ -16,11 +16,13 @@ int clipput(char *toclipdata)
 	OpenClipboard(nullptr);
 	EmptyClipboard();
 	clipbuffer = GlobalAlloc(GMEM_DDESHARE,bytes+1);
-    if ( clipbuffer == nullptr )
+    if ( clipbuffer == nullptr ) {
         return GetLastError() * -1; // Do what you want to signal error
+    }
 	buffer = (char far*)GlobalLock(clipbuffer);
-	if (buffer == nullptr)
+    if ( buffer == nullptr ) {
 		return GetLastError() * -1; // Do what you want to signal error
+    }
 	strcpy(buffer,toclipdata);
 
 	GlobalUnlock(clipbuffer);
@@ -34,52 +36,51 @@ int clipput(char *toclipdata)
 char *clipget(int &bytes)
 	{
 		int k;
-		char *buffer=nullptr;
-		char *data=nullptr;
-		char empty[80]="<Clipboard is empty>";
+		char *data = nullptr;
+		char empty[80] = "<Clipboard is empty>";
 
 		bytes = 0;
 
 		// open the clipboard
-		if (OpenClipboard(nullptr))
+		if ( OpenClipboard( nullptr ) )
 		{
-			HANDLE hData = GetClipboardData(CF_TEXT);
-			char * buffer = (char*)GlobalLock(hData);
-			GlobalUnlock(hData);
-			CloseClipboard();
+			HANDLE hData = GetClipboardData( CF_TEXT );
+			char* clipboardBuffer = hData ? static_cast<char*>(GlobalLock( hData )) : nullptr;
 
-			// Return an error message
-			if (buffer == nullptr)
+			if ( clipboardBuffer == nullptr )
 			{
-				bytes = strlen(empty);
-				data = (char *) malloc(bytes+1);
-                if ( data ) {
-                    strcpy( data, empty );
-                }
+				bytes = strlen( empty );
+				data = static_cast<char*>(malloc( bytes + 1 ));
+				if ( data ) {
+					strcpy( data, empty );
+				}
 			}
-			// Return pointer to retrieved data
 			else
 			{
-				bytes = strlen(buffer);
-				data = (char *) malloc(bytes+1);
-                if ( data ) {
-                    strcpy( data, buffer );
-                }
+				bytes = strlen( clipboardBuffer );
+				data = static_cast<char*>(malloc( bytes + 1 ));
+				if ( data ) {
+					strcpy( data, clipboardBuffer );
+				}
+
+				GlobalUnlock( hData );
 			}
+
+			CloseClipboard();
 		}
 		// Return an open clipboard failed message
 		else
 		{
 			k = GetLastError();
-			if (k < 0)
+			if ( k < 0 )
 				bytes = k;
 			else
 				bytes = k * -1;
-			sprintf(empty,"Error occurred opening clipboard - RC: %d",k);
-			k = strlen(empty);
-			data = (char *) malloc(k + 1);
-			if (data) {
-				strcpy(data, empty);
+			sprintf( empty, "Error occurred opening clipboard - RC: %d", k );
+			k = strlen( empty );
+			data = static_cast<char*>(malloc( k + 1 ));
+			if ( data ) {
+				strcpy( data, empty );
 			}
 		}
 		// Return pointer to data field allocated
