@@ -71,8 +71,6 @@ extern "C"
         - Type: 0 = OK, 1 = YES/NO
         - Callback: Script-Function ID to use as a callback. */
     __declspec(dllexport) void __cdecl GDX_OpenMessageBox( zSTRING* message, zSTRING* caption, int type, int callbackID ) {
-        D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
-
         // Check again, in case it failed
         // TODO: Re-Implement this on top of the new UI-System
         

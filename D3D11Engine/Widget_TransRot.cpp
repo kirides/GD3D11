@@ -190,7 +190,6 @@ void Widget_TransRot::DoHoverTest( HWND hw ) {
 	}
 
 	float Dist = Width;
-	EditorLinePrimitive* Prim = nullptr;
 	ActiveSelection = WTR_None;
 
 

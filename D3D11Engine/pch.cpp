@@ -39,9 +39,6 @@ void DebugWrite_i( LPCSTR lpDebugMessage, void* thisptr ) {
 int ComputeFVFSize( DWORD fvf ) {
 	//Those -inc s are the offset for the vertexptr to get to the data you want..
 	//i.e. :if you want the normal data you can do vertexptr+nromalinc and you have a pointer to it
-	int normalinc = 0;
-	int texcoordinc = 0;
-	int szfloat = sizeof( float );
 	int size = 0;
 	DWORD test = fvf;
 	//test which fvf-code are included in fvf:
@@ -54,7 +51,6 @@ int ComputeFVFSize( DWORD fvf ) {
 		test &= ~D3DFVF_XYZRHW;
 	}
 	if ( (fvf & D3DFVF_NORMAL) == D3DFVF_NORMAL ) {
-		normalinc = size;
 		size += 3 * sizeof( float );
 		test &= ~D3DFVF_NORMAL;
 	}
@@ -67,35 +63,27 @@ int ComputeFVFSize( DWORD fvf ) {
 		test &= ~D3DFVF_SPECULAR;
 	}
 	if ( (fvf & D3DFVF_TEX1) == D3DFVF_TEX1 ) {
-		texcoordinc = size;
 		size += 2 * sizeof( float );
 		test &= ~D3DFVF_TEX1;
 	} else if ( (fvf & D3DFVF_TEX2) == D3DFVF_TEX2 ) {
-		texcoordinc = size;
 		size += 2 * sizeof( float ) * 2;
 		test &= ~D3DFVF_TEX2;
 	} else if ( (fvf & D3DFVF_TEX3) == D3DFVF_TEX3 ) {
-		texcoordinc = size;
 		size += 2 * sizeof( float ) * 3;
 		test &= ~D3DFVF_TEX3;
 	} else if ( (fvf & D3DFVF_TEX4) == D3DFVF_TEX4 ) {
-		texcoordinc = size;
 		size += 2 * sizeof( float ) * 4;
 		test &= ~D3DFVF_TEX4;
 	} else if ( (fvf & D3DFVF_TEX5) == D3DFVF_TEX5 ) {
-		texcoordinc = size;
 		size += 2 * sizeof( float ) * 5;
 		test &= ~D3DFVF_TEX5;
 	} else if ( (fvf & D3DFVF_TEX6) == D3DFVF_TEX6 ) {
-		texcoordinc = size;
 		size += 2 * sizeof( float ) * 6;
 		test &= ~D3DFVF_TEX6;
 	} else if ( (fvf & D3DFVF_TEX7) == D3DFVF_TEX7 ) {
-		texcoordinc = size;
 		size += 2 * sizeof( float ) * 7;
 		test &= ~D3DFVF_TEX7;
 	} else if ( (fvf & D3DFVF_TEX8) == D3DFVF_TEX8 ) {
-		texcoordinc = size;
 		size += 2 * sizeof( float ) * 8;
 		test &= ~D3DFVF_TEX8;
 	}

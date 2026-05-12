@@ -3128,7 +3128,6 @@ void GothicAPI::DrawParticleFX( zCVob* source, zCParticleFX* fx, ParticleFrameDa
             break;
         }
 
-        int i = 0;
         for ( p = pfx; p; p = p->Next ) {
             for ( ;;) {
                 kill = p->Next;
@@ -3185,8 +3184,6 @@ void GothicAPI::DrawParticleFX( zCVob* source, zCParticleFX* fx, ParticleFrameDa
             }
 
             fx->UpdateParticle( p );
-
-            i++;
         }
     }
 

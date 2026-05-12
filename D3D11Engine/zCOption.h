@@ -152,7 +152,6 @@ public:
 
     /** Reads config stuff */
     static unsigned long __fastcall hooked_zOptionReadDWORD( void* thisptr, void* unknwn, zSTRING const& section, char const* var, unsigned long def ) {
-        BaseGraphicsEngine* engine = Engine::GraphicsEngine;
         // TODO: Make Option checkable
         // LogInfo() << "Reading Gothic-Config: " << var;
 
