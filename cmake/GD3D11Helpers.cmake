@@ -250,8 +250,6 @@ function(gd3d11_apply_common_compile_settings target_name)
         -m32
         $<$<OR:$<COMPILE_LANGUAGE:C>,$<COMPILE_LANGUAGE:CXX>>:-fms-extensions>
         -Wno-switch
-        -Wno-microsoft-cast
-        -Wno-microsoft-enum-forward-reference
         -Wno-defaulted-function-deleted # DirectXMath uses = default for XMFLOAT4X4 which causes this warning
       )
       target_link_options(${target_name} PRIVATE -m32)
