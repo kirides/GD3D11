@@ -119,8 +119,8 @@ class zCModelPrototype {
 public:
     /** Hooks the functions of this Class */
     static void Hook() {
-        //DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCModelPrototypeLoadModelASC), Hooked_LoadModelASC );
-        //DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCModelPrototypeReadMeshAndTreeMSB), Hooked_ReadMeshAndTreeMSB );
+        //DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCModelPrototypeLoadModelASC, Hooked_LoadModelASC  );
+        //DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCModelPrototypeReadMeshAndTreeMSB, Hooked_ReadMeshAndTreeMSB  );
     }
 
     /** This is called on load time for models */
@@ -187,8 +187,8 @@ public:
         #endif*/
 
 #ifdef BUILD_GOTHIC_2_6_fix
-        DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCModelGetLowestLODNumPolys), Hooked_zCModelGetLowestLODNumPolys );
-        DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCModelGetLowestLODPoly), Hooked_zCModelGetLowestLODPoly );
+        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCModelGetLowestLODNumPolys, Hooked_zCModelGetLowestLODNumPolys  );
+        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCModelGetLowestLODPoly, Hooked_zCModelGetLowestLODPoly  );
 #endif
     }
 

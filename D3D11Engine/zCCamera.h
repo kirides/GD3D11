@@ -20,8 +20,8 @@ public:
     };
 
     static void Hook() {
-        DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCCamera__Activate), Activate_Hook );
-        DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCCamera__UpdateViewport), UpdateViewport_Hook );
+        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCCamera__Activate, Activate_Hook  );
+        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCCamera__UpdateViewport, UpdateViewport_Hook  );
     }
 
     static bool IsFreeLookActive() {

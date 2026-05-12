@@ -11,7 +11,7 @@ public:
 
     /** Hooks the functions of this Class */
     static void Hook() {
-        DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCThreadSuspendThread), hooked_SuspendThread );
+        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCThreadSuspendThread, hooked_SuspendThread  );
     }
 
     /** Reads config stuff */

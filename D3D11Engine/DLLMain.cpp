@@ -436,7 +436,7 @@ int WINAPI hooked_WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR l
     // TODO: Implement!
     if ( !GMPModeActive ) {
         DetourTransactionBegin();
-        DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCActiveSndAutoCalcObstruction), HookedFunctionInfo::hooked_zCActiveSndAutoCalcObstruction );
+        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCActiveSndAutoCalcObstruction, HookedFunctionInfo::hooked_zCActiveSndAutoCalcObstruction  );
         DetourTransactionCommit();
     }
     return originalWinMain( hInstance, hPrevInstance, lpCmdLine, nShowCmd );
@@ -496,7 +496,7 @@ BOOL WINAPI DllMain( HINSTANCE hInst, DWORD reason, LPVOID ) {
         Engine::PassThrough = false;
 
 #if defined(BUILD_GOTHIC_2_6_fix)
-        DetourAttach( &reinterpret_cast<PVOID&>(originalWinMain), hooked_WinMain );
+        DetourAttachTyped( &originalWinMain, hooked_WinMain  );
 #endif
 
         //_CrtSetDbgFlag (_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);

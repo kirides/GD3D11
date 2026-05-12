@@ -30,7 +30,7 @@ public:
         // Some plugins or patches override savegame behavior and cause crashing.
         // THIS CRASHES SAVING IN CHRONICLES OF MYRTANA! :/ need a better fix for this.
         // for now we undo 04b215a6e9
-        // DetourAttach( &reinterpret_cast<PVOID&>(original_CGameManagerWrite_Savegame), hooked_Write_Savegame );
+        // DetourAttachTyped( &original_CGameManagerWrite_Savegame, hooked_Write_Savegame  );
 #endif
     }
 

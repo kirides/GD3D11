@@ -10,17 +10,17 @@ public:
 
     /** Hooks the functions of this Class */
     static void Hook() {
-        DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCRnd_D3D_DrawLineZ), hooked_zCRndD3DDrawLineZ );
-        DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCRnd_D3D_DrawLine), hooked_zCRndD3DDrawLine );
+        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCRnd_D3D_DrawLineZ, hooked_zCRndD3DDrawLineZ  );
+        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCRnd_D3D_DrawLine, hooked_zCRndD3DDrawLine  );
 
-        DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCRnd_D3D_DrawPoly), hooked_zCRndD3DDrawPoly );
-        DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCRnd_D3D_DrawPolySimple), hooked_zCRndD3DDrawPolySimple );
+        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCRnd_D3D_DrawPoly, hooked_zCRndD3DDrawPoly  );
+        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCRnd_D3D_DrawPolySimple, hooked_zCRndD3DDrawPolySimple  );
 
-        DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCRnd_D3D_CacheInSurface), hooked_zCSurfaceCache_D3DCacheInSurface );
-        DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCRnd_D3D_CacheOutSurface), hooked_zCSurfaceCache_D3DCacheOutSurface );
+        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCRnd_D3D_CacheInSurface, hooked_zCSurfaceCache_D3DCacheInSurface  );
+        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCRnd_D3D_CacheOutSurface, hooked_zCSurfaceCache_D3DCacheOutSurface  );
 
-        DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCRnd_D3D_RenderScreenFade), hooked_zCCameraRenderScreenFade );
-        DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCRnd_D3D_RenderCinemaScope), hooked_zCCameraRenderCinemaScope );
+        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCRnd_D3D_RenderScreenFade, hooked_zCCameraRenderScreenFade  );
+        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCRnd_D3D_RenderCinemaScope, hooked_zCCameraRenderCinemaScope  );
     }
 
     /** Disable caching surfaces to let engine create new surfaces for every textures */

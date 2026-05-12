@@ -12,9 +12,9 @@ public:
 
     /** Hooks the functions of this Class */
     static void Hook() {
-        DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCOptionReadInt), hooked_zOptionReadInt );
-        DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCOptionReadBool), hooked_zOptionReadBool );
-        DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCOptionReadDWORD), hooked_zOptionReadDWORD );
+        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCOptionReadInt, hooked_zOptionReadInt  );
+        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCOptionReadBool, hooked_zOptionReadBool  );
+        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCOptionReadDWORD, hooked_zOptionReadDWORD  );
     }
 
     /** Returns true if the given string is in the commandline of the game */
