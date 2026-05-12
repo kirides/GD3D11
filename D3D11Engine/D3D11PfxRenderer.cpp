@@ -297,60 +297,7 @@ XRESULT D3D11PfxRenderer::RenderPostFXComposition(
     // Update constant buffers for inline heightfog if active
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
     if ( settings.DrawFog ) {
-        HeightfogConstantBuffer cb;
-        {
-            auto& proj = Engine::GAPI->GetProjectionMatrix();
-            cb.HF_ProjParams = float4( 1.0f / proj._11, 1.0f / proj._22, proj._43, proj._33 );
-        }
-        XMStoreFloat4x4( &cb.InvView, XMMatrixInverse( nullptr, Engine::GAPI->GetViewMatrixXM() ) );
-        cb.CameraPosition = Engine::GAPI->GetCameraPosition();
-        cb.HF_GlobalDensity = settings.FogGlobalDensity;
-        cb.HF_HeightFalloff = settings.FogHeightFalloff;
-
-        float height = settings.FogHeight;
-        XMVECTOR color = XMLoadFloat3( settings.FogColorMod.toXMFLOAT3() );
-
-        float fnear = 15000.0f;
-        float ffar = 60000.0f;
-        float secScale = std::min<float>( settings.SectionDrawRadius, settings.FogRange );
-
-        cb.HF_WeightZNear = std::max( 0.0f, WORLD_SECTION_SIZE * ((secScale - 0.5f) * 0.7f) - (ffar - fnear) );
-        cb.HF_WeightZFar = WORLD_SECTION_SIZE * ((secScale - 0.5f) * 0.8f);
-
-        float atmoMax = 83200.0f;
-        float atmoMin = 27799.9922f;
-        cb.HF_WeightZFar = std::min( cb.HF_WeightZFar, atmoMax );
-        cb.HF_WeightZNear = std::min( cb.HF_WeightZNear, atmoMin );
-
-#if !defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)
-        float fogDensityFactor = 2;
-        float fogDensityFactorRain = (1.0f - Engine::GAPI->GetFogOverride());
-#else
-        float fogDensityFactor = pow( 15000.0f / Engine::GAPI->GetFarZ(), 4.0f );
-        float fogDensityFactorRain = 1.0f;
-#endif
-
-        if ( Engine::GAPI->GetFogOverride() > 0.0f ) {
-            height = Toolbox::lerp( height, Engine::GAPI->GetCameraPosition().y + 10000, Engine::GAPI->GetFogOverride() );
-            color = Engine::GAPI->GetFogColor();
-#if !defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)
-            cb.HF_HeightFalloff = Toolbox::lerp( cb.HF_HeightFalloff, 0.000001f, Engine::GAPI->GetFogOverride() );
-#endif
-            cb.HF_GlobalDensity = Toolbox::lerp( cb.HF_GlobalDensity, cb.HF_GlobalDensity * fogDensityFactor, Engine::GAPI->GetFogOverride() );
-#if !defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)
-            cb.HF_WeightZNear = Toolbox::lerp( cb.HF_WeightZNear, WORLD_SECTION_SIZE * 0.09f, Engine::GAPI->GetFogOverride() );
-            cb.HF_WeightZFar = Toolbox::lerp( cb.HF_WeightZFar, WORLD_SECTION_SIZE * 0.8, Engine::GAPI->GetFogOverride() );
-#endif
-        }
-
-        cb.HF_FogHeight = height;
-        cb.HF_ProjAB = float2( Engine::GAPI->GetProjectionMatrix()._33, Engine::GAPI->GetProjectionMatrix()._34 );
-
-        float rain = Engine::GAPI->GetRainFXWeight();
-        XMFLOAT3 FogColorMod;
-        XMStoreFloat3( &FogColorMod, XMVectorLerpV( color, XMLoadFloat3( &settings.RainFogColor ), XMVectorSet( std::min( 1.0f, rain * 2.0f ), std::min( 1.0f, rain * 2.0f ), std::min( 1.0f, rain * 2.0f ), 0 ) ) );
-        cb.HF_FogColorMod = FogColorMod;
-        cb.HF_GlobalDensity = Toolbox::lerp( cb.HF_GlobalDensity, settings.RainFogDensity, rain * fogDensityFactorRain );
+        HeightfogConstantBuffer cb = BuildHeightfogConstantBuffer();
 
         compositionPS->GetBuffer( "PFXBuffer" ).Update( &cb ).Bind();
 

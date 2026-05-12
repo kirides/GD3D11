@@ -94,6 +94,22 @@ struct HeightfogConstantBuffer {
 
     float2 HF_ProjAB;
     float2 HF_Pad3;
+
+    float HF_GlobalDistanceDensity;
+    float HF_GlobalDistanceStart;
+    float HF_GlobalDistanceRange;
+    float HF_MaxOpacity;
+
+    float HF_SecondaryFogHeight;
+    float HF_SecondaryHeightFalloff;
+    float HF_SecondaryGlobalDensity;
+    float HF_SecondaryWeight;
+
+    float3 HF_GlobalDistanceColorMod;
+    float HF_SwampBlend;
+
+    float3 HF_SecondaryFogColorMod;
+    float HF_pad4;
 };
 
 struct LumAdaptConstantBuffer {

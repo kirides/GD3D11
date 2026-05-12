@@ -618,6 +618,7 @@ struct GothicRendererSettings {
 
         DrawSky = true;
         DrawFog = true;
+        AutoFogColor = true;
         FogRange = SWITCH_ENGINE12(1.0f, 3.0f);
         EnableHDR = false;
         HDRToneMap = E_HDRToneMap::ToneMap_Simple;
@@ -740,6 +741,12 @@ struct GothicRendererSettings {
         RainFogColor = XMFLOAT3( 0.28f, 0.28f, 0.28f );
         RainFogDensity = 0.00050f;
 
+        FogSwampBlendStrength = 1.0f;
+        FogSwampLayer2DensityMul = 2.5f;
+        FogSwampDistanceDensityMul = 1.6f;
+        FogSwampHeightOffset = -700.0f;
+        FogSwampLayer2WeightBoost = 0.35f;
+
         EnableRain = true;
         EnableRainEffects = true;
 
@@ -849,6 +856,16 @@ struct GothicRendererSettings {
         FogHeightFalloff = 0.00018f;
         FogColorMod = float3::FromColor( 189, 146, 107 );
         FogHeight = 4000;
+        FogGlobalDistanceDensity = 0.000015f;
+        FogGlobalDistanceStart = 18000.0f;
+        FogGlobalDistanceRange = 52000.0f;
+        FogGlobalDistanceColorMod = FogColorMod;
+        FogLayer2Height = 2600.0f;
+        FogLayer2HeightFalloff = 0.00100f;
+        FogLayer2GlobalDensity = 0.00008f;
+        FogLayer2Weight = 0.45f;
+        FogLayer2ColorMod = float3::FromColor( 166, 138, 112 );
+        FogMaxOpacity = 0.90f;
     }
 
     void SetupNewWorldSpecificValues() {
@@ -856,6 +873,16 @@ struct GothicRendererSettings {
         FogHeightFalloff = 0.0005f;
         FogColorMod = float3::FromColor( 180, 180, 255 );
         FogHeight = 800;
+        FogGlobalDistanceDensity = 0.000018f;
+        FogGlobalDistanceStart = 22000.0f;
+        FogGlobalDistanceRange = 60000.0f;
+        FogGlobalDistanceColorMod = float3::FromColor( 170, 175, 235 );
+        FogLayer2Height = 200.0f;
+        FogLayer2HeightFalloff = 0.00160f;
+        FogLayer2GlobalDensity = 0.00011f;
+        FogLayer2Weight = 0.55f;
+        FogLayer2ColorMod = float3::FromColor( 150, 162, 190 );
+        FogMaxOpacity = 0.92f;
     }
 
     void SetupAddonWorldSpecificValues() {
@@ -863,6 +890,16 @@ struct GothicRendererSettings {
         FogHeightFalloff = 0.0005f;
         FogColorMod = float3::FromColor( 180, 180, 255 );
         FogHeight = 0;
+        FogGlobalDistanceDensity = 0.000018f;
+        FogGlobalDistanceStart = 22000.0f;
+        FogGlobalDistanceRange = 60000.0f;
+        FogGlobalDistanceColorMod = float3::FromColor( 170, 175, 235 );
+        FogLayer2Height = -400.0f;
+        FogLayer2HeightFalloff = 0.00160f;
+        FogLayer2GlobalDensity = 0.00011f;
+        FogLayer2Weight = 0.55f;
+        FogLayer2ColorMod = float3::FromColor( 145, 160, 185 );
+        FogMaxOpacity = 0.92f;
     }
 
     void DisableEverything() {}
@@ -879,6 +916,7 @@ struct GothicRendererSettings {
     bool DrawParticleEffects;
     bool DrawSky;
     bool DrawFog;
+    bool AutoFogColor;
     float FogRange;
     int WindQuality;
     bool HeroAffectsObjects;
@@ -940,6 +978,21 @@ struct GothicRendererSettings {
     float FogHeightFalloff;
     float FogHeight;
     float3 FogColorMod;
+    float FogGlobalDistanceDensity;
+    float FogGlobalDistanceStart;
+    float FogGlobalDistanceRange;
+    float3 FogGlobalDistanceColorMod;
+    float FogLayer2Height;
+    float FogLayer2HeightFalloff;
+    float FogLayer2GlobalDensity;
+    float FogLayer2Weight;
+    float3 FogLayer2ColorMod;
+    float FogMaxOpacity;
+    float FogSwampBlendStrength;
+    float FogSwampLayer2DensityMul;
+    float FogSwampDistanceDensityMul;
+    float FogSwampHeightOffset;
+    float FogSwampLayer2WeightBoost;
     float3 SunLightColor;
     float SunLightStrength;
     INT2 LoadedResolution;

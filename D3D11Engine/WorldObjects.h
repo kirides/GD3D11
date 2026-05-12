@@ -515,6 +515,8 @@ struct WorldInfo {
     WorldInfo() {
         BspTree = nullptr;
         CustomWorldLoaded = false;
+        WorldFogColorAtLoad = float3( 1.0f, 1.0f, 1.0f );
+        HasWorldFogColorAtLoad = false;
     }
     
     WorldInfo(WorldInfo&& other) = default;
@@ -527,6 +529,8 @@ struct WorldInfo {
     zCWorld* MainWorld;
     std::string WorldName;
     bool CustomWorldLoaded;
+    float3 WorldFogColorAtLoad;
+    bool HasWorldFogColorAtLoad;
 };
 
 struct TransparencyVobInfo {

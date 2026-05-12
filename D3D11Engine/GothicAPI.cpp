@@ -852,6 +852,7 @@ void GothicAPI::OnLoadWorld( const std::string& levelName, int loadMode ) {
 
             // Initial load
             LoadedWorldInfo->WorldName = name;
+            LoadedWorldInfo->HasWorldFogColorAtLoad = false;
         }
 
         extern MeshManager* s_MeshManager;
@@ -917,10 +918,13 @@ void GothicAPI::OnWorldLoaded() {
         GetSky()->SetSkyTexture( ESkyTexture::ST_NewWorld ); // Make newworld default
         RendererState.RendererSettings.SetupNewWorldSpecificValues();
     }
+    LoadedWorldInfo->WorldFogColorAtLoad = RendererState.RendererSettings.FogColorMod;
 
     // first load the global defaults, then the world specific ones
     LoadRendererWorldSettings( RendererState.RendererSettings, MENU_SETTINGS_FILE );
     LoadRendererWorldSettings( RendererState.RendererSettings );
+    
+    LoadedWorldInfo->HasWorldFogColorAtLoad = true;
 
     // Reset wetness
     SceneWetness = GetRainFXWeight();
@@ -978,6 +982,7 @@ void GothicAPI::LoadRendererWorldSettings( GothicRendererSettings& s, const char
     s.FogHeight = GetPrivateProfileFloatA( "Fog", "Height", s.FogHeight, ini );
     s.FogHeightFalloff = GetPrivateProfileFloatA( "Fog", "HeightFalloff", s.FogHeightFalloff, ini );
     s.FogGlobalDensity = GetPrivateProfileFloatA( "Fog", "GlobalDensity", s.FogGlobalDensity, ini );
+    s.AutoFogColor = GetPrivateProfileBoolA( "General", "AutoFogColor", s.AutoFogColor, ini );
 
     s.SunLightColor = float3::FromColor(
         GetPrivateProfileIntA( "Atmoshpere", "SunLightColorR", static_cast<int>(s.SunLightColor.x * 255.0f), ini.c_str() ),
@@ -1056,6 +1061,7 @@ void GothicAPI::SaveRendererWorldSettings( const GothicRendererSettings& s, cons
     WritePrivateProfileStringA( "Fog", "Height", std::to_string( s.FogHeight ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Fog", "HeightFalloff", std::to_string( s.FogHeightFalloff ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Fog", "GlobalDensity", std::to_string( s.FogGlobalDensity ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "AutoFogColor", std::to_string( s.AutoFogColor ? TRUE : FALSE ).c_str(), ini.c_str() );
 
     WritePrivateProfileRGB("Atmoshpere", "SunLightColor", s.SunLightColor, ini);
     WritePrivateProfileRGB("Atmoshpere", "FogColorMod", s.FogColorMod, ini);
@@ -4881,6 +4887,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "General", "ChangeToMode", std::to_string( s.ChangeWindowPreset ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "AtmosphericScattering", std::to_string( s.AtmosphericScattering ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "EnableFog", std::to_string( s.DrawFog ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "AutoFogColor", std::to_string( s.AutoFogColor ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "FogRange", float_to_string( s.FogRange , 2).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "EnableHDR", std::to_string( s.EnableHDR ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "HDRToneMap", std::to_string( s.HDRToneMap ).c_str(), ini.c_str() );
@@ -5003,6 +5010,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
 
         s.ChangeWindowPreset = GetPrivateProfileIntA( "General", "ChangeToMode", 0, ini.c_str() );
         s.DrawFog = GetPrivateProfileBoolA( "General", "EnableFog", defaultRendererSettings.DrawFog, ini );
+        s.AutoFogColor = GetPrivateProfileBoolA( "General", "AutoFogColor", defaultRendererSettings.AutoFogColor, ini );
         s.FogRange = GetPrivateProfileFloatA( "General", "FogRange", defaultRendererSettings.FogRange, ini.c_str() );
         s.AtmosphericScattering = GetPrivateProfileBoolA( "General", "AtmosphericScattering", defaultRendererSettings.AtmosphericScattering, ini );
         s.EnableHDR = GetPrivateProfileBoolA( "General", "EnableHDR", defaultRendererSettings.EnableHDR, ini );

@@ -1,6 +1,10 @@
 #pragma once
 #include "D3D11PFX_Effect.h"
 
+struct HeightfogConstantBuffer;
+
+HeightfogConstantBuffer BuildHeightfogConstantBuffer();
+
 class D3D11PFX_HeightFog :
     public D3D11PFX_Effect {
 public:
