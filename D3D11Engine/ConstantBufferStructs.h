@@ -109,7 +109,10 @@ struct HeightfogConstantBuffer {
     float HF_SwampBlend;
 
     float3 HF_SecondaryFogColorMod;
-    float HF_pad4;
+    float HF_SkyDepthThreshold;
+
+    float HF_SkyDepthFadeWidth;
+    float3 HF_pad4;
 };
 
 struct LumAdaptConstantBuffer {

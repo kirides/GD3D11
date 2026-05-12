@@ -45,7 +45,10 @@ cbuffer PFXBuffer : register( b0 )
     float HF_SwampBlend;
 
     float3 HF_SecondaryFogColorMod;
-    float HF_pad4;
+    float HF_SkyDepthThreshold;
+
+    float HF_SkyDepthFadeWidth;
+    float3 HF_pad4;
 };
 #endif
 
@@ -112,6 +115,13 @@ float ComputeDistanceTransmittance( float3 posOriginal )
 float4 ComputeHeightFog( float2 texcoord )
 {
     float expDepth = TX_Depth.Sample( SS_Linear, texcoord ).r;
+    float skyFadeEnd = HF_SkyDepthThreshold + max( HF_SkyDepthFadeWidth, 0.000001f );
+    float skyMask = smoothstep( HF_SkyDepthThreshold, skyFadeEnd, expDepth );
+    if ( skyMask <= 0.0001f )
+    {
+        return float4( 0.0f, 0.0f, 0.0f, 0.0f );
+    }
+
     float3 worldPos = VSPositionFromDepth( expDepth, texcoord );
     worldPos = mul( float4( worldPos, 1 ), HF_InvView ).xyz;
     float3 cameraToWorldPos = worldPos - HF_CameraPosition;
@@ -123,7 +133,7 @@ float4 ComputeHeightFog( float2 texcoord )
     float distanceTrans = ComputeDistanceTransmittance( worldPos );
 
     float totalTrans = saturate( baseTrans * secondaryTrans * distanceTrans );
-    float fog = saturate( 1.0 - totalTrans ) * saturate( HF_MaxOpacity );
+    float fog = saturate( 1.0 - totalTrans ) * saturate( HF_MaxOpacity ) * skyMask;
 
     float baseFog = 1.0 - baseTrans;
     float secondaryFog = ( 1.0 - secondaryRawTrans ) * secondaryWeight;

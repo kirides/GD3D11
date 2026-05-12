@@ -95,6 +95,8 @@ HeightfogConstantBuffer BuildHeightfogConstantBuffer() {
 	cb.HF_SecondaryWeight = std::clamp( settings.FogLayer2Weight, 0.0f, 1.0f );
 	cb.HF_GlobalDistanceColorMod = settings.FogGlobalDistanceColorMod;
 	cb.HF_SecondaryFogColorMod = settings.FogLayer2ColorMod;
+	cb.HF_SkyDepthThreshold = std::max( 0.0f, settings.FogSkyDepthThreshold );
+	cb.HF_SkyDepthFadeWidth = std::max( 0.00001f, settings.FogSkyDepthFadeWidth );
 
 	const float swampBlend = std::clamp( fogOverride * std::max( 0.0f, settings.FogSwampBlendStrength ), 0.0f, 1.0f );
 	cb.HF_SwampBlend = swampBlend;

@@ -982,6 +982,8 @@ void GothicAPI::LoadRendererWorldSettings( GothicRendererSettings& s, const char
     s.FogHeight = GetPrivateProfileFloatA( "Fog", "Height", s.FogHeight, ini );
     s.FogHeightFalloff = GetPrivateProfileFloatA( "Fog", "HeightFalloff", s.FogHeightFalloff, ini );
     s.FogGlobalDensity = GetPrivateProfileFloatA( "Fog", "GlobalDensity", s.FogGlobalDensity, ini );
+    s.FogSkyDepthThreshold = GetPrivateProfileFloatA( "Fog", "SkyDepthThreshold", s.FogSkyDepthThreshold, ini );
+    s.FogSkyDepthFadeWidth = GetPrivateProfileFloatA( "Fog", "SkyDepthFadeWidth", s.FogSkyDepthFadeWidth, ini );
     s.AutoFogColor = GetPrivateProfileBoolA( "General", "AutoFogColor", s.AutoFogColor, ini );
 
     s.SunLightColor = float3::FromColor(
@@ -1061,6 +1063,8 @@ void GothicAPI::SaveRendererWorldSettings( const GothicRendererSettings& s, cons
     WritePrivateProfileStringA( "Fog", "Height", std::to_string( s.FogHeight ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Fog", "HeightFalloff", std::to_string( s.FogHeightFalloff ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Fog", "GlobalDensity", std::to_string( s.FogGlobalDensity ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Fog", "SkyDepthThreshold", std::to_string( s.FogSkyDepthThreshold ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Fog", "SkyDepthFadeWidth", std::to_string( s.FogSkyDepthFadeWidth ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "AutoFogColor", std::to_string( s.AutoFogColor ? TRUE : FALSE ).c_str(), ini.c_str() );
 
     WritePrivateProfileRGB("Atmoshpere", "SunLightColor", s.SunLightColor, ini);

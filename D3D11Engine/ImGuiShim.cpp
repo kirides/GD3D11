@@ -1344,8 +1344,8 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
         ImGui::SeparatorText( "Primary Height Fog (Layer 1)##AdvancedPrimaryFog" );
         ImGui::Checkbox( "Auto Fog Color", &settings.AutoFogColor );
         ImGui::SetItemTooltip( "Use fog color captured once when the current world was loaded." );
-        ImGui::DragFloat( "FogLayer1GlobalDensity", &settings.FogGlobalDensity, 0.00001f, 0, 1.0f, "%.5f" );
-        ImGui::DragFloat( "FogLayer1HeightFalloff", &settings.FogHeightFalloff, 0.00001f, 0, 1.0f, "%.5f" );
+        ImGui::DragFloat( "FogLayer1GlobalDensity", &settings.FogGlobalDensity, 0.00001f, 0, 1.0f, "%.6f" );
+        ImGui::DragFloat( "FogLayer1HeightFalloff", &settings.FogHeightFalloff, 0.00001f, 0, 1.0f, "%.6f" );
         ImGui::DragFloat( "FogLayer1Height", &settings.FogHeight, 1.0f, 0.0f, 0.0f, "%.0f" );
         ImGui::BeginDisabled( settings.AutoFogColor );
         ImGui::ColorEdit3( "FogLayer1Color", &settings.FogColorMod.x );
@@ -1353,15 +1353,21 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
         ImGui::DragFloat( "FogMaxOpacity", &settings.FogMaxOpacity, 0.01f, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
 
         ImGui::SeparatorText( "Global Fog##AdvancedGlobalFog" );
-        ImGui::DragFloat( "FogGlobalDistanceDensity", &settings.FogGlobalDistanceDensity, 0.00001f, 0.0f, 1.0f, "%.5f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
+        ImGui::DragFloat( "FogGlobalDistanceDensity", &settings.FogGlobalDistanceDensity, 0.00001f, 0.0f, 1.0f, "%.6f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
         ImGui::DragFloat( "FogGlobalDistanceStart", &settings.FogGlobalDistanceStart, 100.0f, 0.0f, 200000.0f, "%.0f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
         ImGui::DragFloat( "FogGlobalDistanceRange", &settings.FogGlobalDistanceRange, 100.0f, 1.0f, 250000.0f, "%.0f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
         ImGui::ColorEdit3( "FogGlobalDistanceColor", &settings.FogGlobalDistanceColorMod.x );
 
+        ImGui::SeparatorText( "Sky Exclusion##AdvancedSkyFog" );
+        ImGui::DragFloat( "FogSkyDepthThreshold", &settings.FogSkyDepthThreshold, 0.00001f, 0.0f, 0.02f, "%.6f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
+        ImGui::SetItemTooltip( "Reverse-Z depth threshold where sky exclusion begins. Lower values keep more horizon fog." );
+        ImGui::DragFloat( "FogSkyDepthFadeWidth", &settings.FogSkyDepthFadeWidth, 0.0001f, 0.000001f, 0.02f, "%.6f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
+        ImGui::SetItemTooltip( "Soft transition width for sky fog exclusion to avoid hard horizon seams." );
+
         ImGui::SeparatorText( "Secondary Height Fog##AdvancedSecondaryFog" );
         ImGui::DragFloat( "FogLayer2Weight", &settings.FogLayer2Weight, 0.01f, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
-        ImGui::DragFloat( "FogLayer2GlobalDensity", &settings.FogLayer2GlobalDensity, 0.00001f, 0.0f, 1.0f, "%.5f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
-        ImGui::DragFloat( "FogLayer2HeightFalloff", &settings.FogLayer2HeightFalloff, 0.00001f, 0.0f, 1.0f, "%.5f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
+        ImGui::DragFloat( "FogLayer2GlobalDensity", &settings.FogLayer2GlobalDensity, 0.00001f, 0.0f, 1.0f, "%.6f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
+        ImGui::DragFloat( "FogLayer2HeightFalloff", &settings.FogLayer2HeightFalloff, 0.00001f, 0.0f, 1.0f, "%.6f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
         ImGui::DragFloat( "FogLayer2Height", &settings.FogLayer2Height, 1.0f, -20000.0f, 50000.0f, "%.0f", ImGuiSliderFlags_::ImGuiSliderFlags_ClampOnInput );
         ImGui::ColorEdit3( "FogLayer2Color", &settings.FogLayer2ColorMod.x );
 
