@@ -6097,6 +6097,12 @@ void GothicAPI::CollectVisibleVobs( const RndCullContext& ctx ) {
     if ( LeafLinearCache.Count > 0 && ctx.frustum.UsesPlaneFrustum() ) {
         ZoneScopedN( "GothicAPI::CollectVisibleVobsWithLeafCache" );
         CollectVisibleVobsWithLeafCache( ctx, &bspVobVisitor );
+        ZoneText( "vobs", std::size( "vobs" ) - 1 );
+        ZoneValue( bspVobVisitor.GetSeenVobs() );
+        ZoneText( "mobs", std::size( "mobs" ) - 1 );
+        ZoneValue( bspVobVisitor.GetSeenMobs() );
+        ZoneText( "lights", std::size( "lights" ) - 1 );
+        ZoneValue( bspVobVisitor.GetSeenLights() );
     } else
 #endif
     {
@@ -6108,6 +6114,12 @@ void GothicAPI::CollectVisibleVobs( const RndCullContext& ctx ) {
             ContainmentType::INTERSECTS,
             Engine::GAPI->GetLoadedWorldInfo()->BspTree->GetRootNode()->BBox3D.Max.y
         );
+        ZoneText( "vobs", std::size( "vobs" ) - 1 );
+        ZoneValue( bspVobVisitor.GetSeenVobs() );
+        ZoneText( "mobs", std::size( "mobs" ) - 1 );
+        ZoneValue( bspVobVisitor.GetSeenMobs() );
+        ZoneText( "lights", std::size( "lights" ) - 1 );
+        ZoneValue( bspVobVisitor.GetSeenLights() );
     }
 
     FXMVECTOR camPos = XMLoadFloat3( &ctx.cameraPosition );
