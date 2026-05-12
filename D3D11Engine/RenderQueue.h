@@ -56,7 +56,7 @@ public:
     std::vector<TransparencyVobInfo> transparent;
 };
 
-static std::atomic<size_t> g_nextSeenId = 1;
+static std::atomic<size_t> g_nextSeenId = 0;
 // Marks any visited vob 
 class BspTreeVobVisitor {
 public:
