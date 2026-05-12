@@ -30,7 +30,9 @@ XRESULT D3D11VShader::LoadShader( const ShaderInfo& si, const std::vector<D3D_SH
         return XR_FAILED;
     }
 
-    auto hrReflected = ReflectShaderResources( vsBlob.Get() );
+    if ( ReflectShaderResources( vsBlob.Get() ) != XR_SUCCESS ) {
+        return XR_FAILED;
+    }
     
     // Create the shader
     LE( engine->GetDevice()->CreateVertexShader( vsBlob->GetBufferPointer(),

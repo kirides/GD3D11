@@ -12,11 +12,13 @@
 
 namespace VersionCheck {
 
+#ifndef DISABLE_EXECUTABLE_CHECKSUM_CHECK
 	static const int CHECKSUM_G2_2_6_FIX = 0x008a3e89;
 	static const int CHECKSUM_G2_2_6_FIX_4GB = 0x008a3ea9;
 	static const int CHECKSUM_G1_1_08k = 0x0000eb3d;
 	static const int CHECKSUM_G1_1_08k_4GB = 0x08608228;
 	static const int CHECKSUM_G1_1_12f = 0x00862362;
+#endif
 
 	/** Returns whether the given file exists */
 	bool FileExists( const std::string& file ) {

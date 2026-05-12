@@ -174,7 +174,12 @@ public:
     }
 
 
-    inline Log& operator << ( std::wostream& (*fn)(std::wostream&) ) {
+    inline Log& operator << ( std::ostream& (*fn)(std::ostream&) ) {
+        Message << fn;
+        return *this;
+    }
+
+    inline Log& operator << ( std::ios_base& (*fn)(std::ios_base&) ) {
         Message << fn;
         return *this;
     }
