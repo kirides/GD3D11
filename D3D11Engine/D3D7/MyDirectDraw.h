@@ -176,37 +176,6 @@ public:
                 lpDDSurfaceDesc2->ddpfPixelFormat.dwFourCC = 0;
         }
 
-		// Calculate bpp
-		int redBits = Toolbox::GetNumberOfBits( lpDDSurfaceDesc2->ddpfPixelFormat.dwRBitMask );
-		int greenBits = Toolbox::GetNumberOfBits( lpDDSurfaceDesc2->ddpfPixelFormat.dwGBitMask );
-		int blueBits = Toolbox::GetNumberOfBits( lpDDSurfaceDesc2->ddpfPixelFormat.dwBBitMask );
-		int alphaBits = Toolbox::GetNumberOfBits( lpDDSurfaceDesc2->ddpfPixelFormat.dwRGBAlphaBitMask );
-
-		// Figure out format
-		DXGI_FORMAT fmt;
-		int bpp = 0;
-		if ( (lpDDSurfaceDesc2->ddpfPixelFormat.dwFlags & DDPF_FOURCC) == DDPF_FOURCC ) {
-			switch ( lpDDSurfaceDesc2->ddpfPixelFormat.dwFourCC ) {
-			case FOURCC_DXT1:
-				fmt = DXGI_FORMAT_BC1_UNORM;
-				break;
-			case FOURCC_DXT2:
-			case FOURCC_DXT3:
-				fmt = DXGI_FORMAT_BC2_UNORM;
-				break;
-			case FOURCC_DXT4:
-			case FOURCC_DXT5:
-				fmt = DXGI_FORMAT_BC3_UNORM;
-				break;
-			}
-		} else {
-			fmt = DXGI_FORMAT_B8G8R8A8_UNORM;
-			bpp = 32;
-		}
-
-		if ( redBits == 5 )
-			bpp = 16;
-
 		// Create surface
 		MyDirectDrawSurface7* mySurface = new MyDirectDrawSurface7();
 
