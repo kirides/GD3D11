@@ -431,6 +431,11 @@ XRESULT D3D11ShadowMap::PrepareRender()
         }
     }
 
+    zCCamera* camera = (zCCamera*)oCGame::GetGame()->_zCSession_camera;
+    if ( !camera ) {
+        return XR_SUCCESS;
+    }
+    camera->Activate();
     const XMVECTOR cameraPositionXm = Engine::GAPI->GetCameraPositionXM();
     XMFLOAT3 cameraPosition;
     XMStoreFloat3( &cameraPosition, cameraPositionXm );
@@ -440,12 +445,6 @@ XRESULT D3D11ShadowMap::PrepareRender()
     // ********************************
     // Cascade Shadow Map Rendering (Simple Sequential Version)
     // ********************************
-
-    zCCamera* camera = (zCCamera*)oCGame::GetGame()->_zCSession_camera;
-    if ( !camera ) {
-        return XR_SUCCESS;
-    }
-     camera->Activate();
 
     const float nearPlane = std::max( 1.0f, camera->GetNearPlane() );
     // Clamp far plane to avoid extreme shadow distances
@@ -618,7 +617,7 @@ XRESULT D3D11ShadowMap::PrepareRender()
         Frustum playerFrustum = Frustum::AlwaysContainingFrustum();
         if ( auto cam = (zCCamera*)oCGame::GetGame()->_zCSession_camera ) {
             const auto& view = cam->trafoView; // Column-Major, needs Transpose for DxMath
-            const auto& proj = Engine::GAPI->GetProjectionMatrix(); // Row-Major, does not need transpose.
+            const auto& proj = cam->trafoProjection; // Row-Major, does not need transpose.
             playerFrustum.BuildPerspective(
                 XMMatrixTranspose( XMLoadFloat4x4( &view ) ),
                 XMLoadFloat4x4( &proj )

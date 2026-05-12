@@ -36,7 +36,7 @@ public:
         }
 
 #if (defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)) || defined(BUILD_GOTHIC_2_6_fix)
-        DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCViewPrintChars), hooked_PrintChars );
+        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCViewPrintChars, hooked_PrintChars  );
 #endif
     }
 

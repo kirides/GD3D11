@@ -9,10 +9,6 @@
 #include "RenderToTextureBuffer.h"
 #include "zCView.h"
 
-const unsigned int DRAWVERTEXARRAY_BUFFER_SIZE = 4096 * sizeof( ExVertexStruct );
-const int NUM_MAX_BONES = 96;
-const unsigned int INSTANCING_BUFFER_SIZE = sizeof( VobInstanceInfo ) * 2048;
-
 // If defined, creates a debug-version of the d3d11-device
 #if !PUBLIC_RELEASE
 #define DEBUG_D3D11

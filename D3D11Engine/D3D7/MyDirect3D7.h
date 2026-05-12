@@ -4,7 +4,7 @@
 #include "MyDirect3DVertexBuffer7.h"
 #include "../Engine.h"
 
-class MyDirect3D7 : public IDirect3D7 {
+class MyDirect3D7 final : public IDirect3D7 {
 public:
 	MyDirect3D7( IDirect3D7* direct3d7 ) {
 		DebugWrite( "MyDirect3D7::MyDirect3D7\n" );

@@ -46,8 +46,6 @@ XRESULT GMeshSimple::LoadMesh( const std::string& file ) {
 
         LogInfo() << " - Submesh: (Num Vertices: " << s->mMeshes[i]->mNumVertices << ") (Texture: " << texture.C_Str() << ")";
 
-        MeshInfo* mi = new MeshInfo;
-
         SimpleObjectVertexStruct* vertices = new SimpleObjectVertexStruct[s->mMeshes[i]->mNumVertices];
         VERTEX_INDEX* indices = new VERTEX_INDEX[s->mMeshes[i]->mNumFaces * 3];
 

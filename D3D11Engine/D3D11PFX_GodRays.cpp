@@ -22,8 +22,9 @@ D3D11PFX_GodRays::D3D11PFX_GodRays( D3D11PfxRenderer* rnd ) : D3D11PFX_Effect( r
 XRESULT D3D11PFX_GodRays::Render( 
     ID3D11ShaderResourceView* backbuffer, 
     ID3D11ShaderResourceView* depth ) {
-    if ( Engine::GAPI->GetSky()->GetAtmoshpereSettings().LightDirection.y <= 0 )
+    if ( Engine::GAPI->GetSky()->GetAtmoshpereSettings().LightDirection.y <= 0 ) {
         return XR_SUCCESS; // Don't render the godrays in the night-time
+    }
 
 	D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
 

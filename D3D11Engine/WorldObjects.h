@@ -303,7 +303,7 @@ struct VobInfo : public BaseVobInfo {
     bool IsIndoorVob;
 
     /** Flag to see if this vob was drawn in the current render pass. Used to collect the same vob only once. */
-    std::atomic<size_t> VisibleInRenderPass;
+    std::atomic<size_t> VisibleInRenderPass{};
 
     /** Section this vob is in */
     WorldMeshSectionInfo* VobSection;
@@ -312,7 +312,7 @@ struct VobInfo : public BaseVobInfo {
     XMFLOAT4X4 WorldMatrix;
 
     /** BSP-Node this is stored in */
-    std::vector<BspInfo*> ParentBSPNodes;
+    std::vector<BspInfo*> ParentBSPNodes{};
 
     /** Color the underlaying polygon has */
     DWORD GroundColor;
@@ -341,14 +341,14 @@ struct VobLightInfo {
     zCVobLight* Vob;
 
     /** Flag to see if this vob was drawn in the current render pass. Used to collect the same vob only once. Cleared immediately. */
-    std::atomic<size_t> VisibleInRenderPass;
+    std::atomic<size_t> VisibleInRenderPass{};
     bool IsPFXVobLight;
 
     /** True if this is an indoor-vob */
     bool IsIndoorVob;
 
     /** BSP-Node this is stored in */
-    std::vector<BspInfo*> ParentBSPNodes;
+    std::vector<BspInfo*> ParentBSPNodes{};
 
     /** Buffers for doing shadows on this light */
     std::unique_ptr<BaseShadowedPointLight> LightShadowBuffers;
@@ -412,21 +412,21 @@ struct SkeletalVobInfo : public BaseVobInfo {
     std::unique_ptr<D3D11ConstantBuffer> VobConstantBuffer;
 
     /** Map of visuals attached to nodes */
-    gtl::flat_hash_map<int, std::vector<MeshVisualInfo*>> NodeAttachments;
+    gtl::flat_hash_map<int, std::vector<MeshVisualInfo*>> NodeAttachments{};
 
     /** Indoor* */
     bool IndoorVob;
 
     /** Flag to see if this vob was drawn in the current render pass. Used to collect the same vob only once. */
-    std::atomic<size_t> VisibleInRenderPass;
+    std::atomic<size_t> VisibleInRenderPass{};
 
     /** Current world transform */
     XMFLOAT4X4 WorldMatrix;
 
     /** BSP-Node this is stored in */
-    std::vector<BspInfo*> ParentBSPNodes;
+    std::vector<BspInfo*> ParentBSPNodes{};
 
-    std::vector<XMFLOAT4X4> PrevBoneTransforms;
+    std::vector<XMFLOAT4X4> PrevBoneTransforms{};
     XMFLOAT4X4 PrevWorldMatrix;
     bool HasValidPrevTransforms;
     size_t LastAniUpdateFrame;
@@ -518,7 +518,9 @@ struct WorldInfo {
     }
     
     WorldInfo(WorldInfo&& other) = default;
+    WorldInfo& operator=(WorldInfo&& other) = default;
     WorldInfo(const WorldInfo& other) = delete;
+    WorldInfo& operator=(const WorldInfo& other) = delete;
 
     XMFLOAT2 MidPoint;
     float LowestVertex;

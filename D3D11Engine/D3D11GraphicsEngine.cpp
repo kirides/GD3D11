@@ -1372,8 +1372,6 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
         }
     }
 
-    static bool s_firstFrame = true;
-
     SteamOverlay::Update();
 #ifdef BUILD_1_12F
     // Some shitty workaround for weird hidden window bug that happen on d3d11 renderer
@@ -1437,7 +1435,6 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
         Resolved_DiffuseNormalmappedAlphatest = PShaderID::PS_DiffuseAlphaTest;
     }
 
-    s_firstFrame = false;
     return XR_SUCCESS;
 }
 
@@ -3471,7 +3468,6 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             context->ClearRenderTargetView( HDRBackBuffer->GetRenderTargetView().Get(), clearColor );
             context->ClearRenderTargetView( Backbuffer->GetRenderTargetView().Get(), clearColor );
 
-            constexpr float black[]{ 0.f, 0.f, 0.f, 0.f };
             float4 fogColor( rendererState.GraphicsState.FF_FogColor, 0.0f );
             GetContext()->ClearRenderTargetView( graph.GetPhysicalTexture( colorResource )->GetRenderTargetView().Get(), reinterpret_cast<const float*>(&fogColor) );
         };
@@ -3728,16 +3724,13 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         if ( compositionActive ) {
             // GodRays compute-only pass — writes to pool texture, skips the final additive blit
             graph.AddPass( RG_PASS_NAME("GodRays Compute"), [&]( RGBuilder& builder, RenderPass& pass ) {
-                builder.Read( normalsResource );
                 builder.Read( backBufferHandle );
 
-                pass.m_executeCallback = [this, backBufferHandle, normalsResource, &compositionGodRaysSRV](const RenderGraph& graph) {
+                pass.m_executeCallback = [this, backBufferHandle, &compositionGodRaysSRV](const RenderGraph& graph) {
                     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv;
                     GetContext()->PSSetShaderResources( 5, 1, srv.GetAddressOf() );
 
                     auto backbufferResource = graph.GetPhysicalTexture(backBufferHandle);
-                    auto normalsTexture = graph.GetPhysicalTexture(normalsResource);
-
                     PfxRenderer->RenderGodRaysToTexture(
                         backbufferResource->GetShaderResView().Get(),
                         GetDepthBuffer()->GetShaderResView().Get(),
@@ -4182,7 +4175,6 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
 
     // Draw the list
     for ( auto const& [meshKey, meshInfo] : list ) {
-        int indicesNumMod = 1;
         if ( zCTexture* texture = meshKey.Material->GetAniTexture() ) {
             MyDirectDrawSurface7* surface = texture->GetSurface();
             ID3D11ShaderResourceView* srv[3];
@@ -4791,7 +4783,6 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
         auto _scopeOpaqueSubmission = RecordGraphicsEvent( GE_NAME( "DrawWorldMesh::OpaqueSubmission" ) );
         for ( auto const& mesh : meshList ) {
 
-            int indicesNumMod = 1;
             if ( mesh.first.Texture != bound &&
                 Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh > 1 ) {
                 MyDirectDrawSurface7* surface = mesh.first.Texture->GetSurface();
@@ -5936,8 +5927,6 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         .Bind();
 
     float3 fPosition; XMStoreFloat3( fPosition.toXMFLOAT3(), position );
-    INT2 s = WorldConverter::GetSectionOfPos( fPosition );
-
     DistortionTexture->BindToPixelShader( 0 );
 
     ActivePS->BindBuffer( "DIST_Distance", InfiniteRangeConstantBuffer.get() );
@@ -5958,7 +5947,6 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
     if ( Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh ) {
         TracyD3D11ZoneCGX( "Shadows::DrawWorldMesh" );
         auto _1 = RecordGraphicsEvent( GE_NAME( "Shadows::DrawWorldMesh" ) );
-        const auto sectionRangeSq = sectionRange * sectionRange;
         // Bind wrapped mesh vertex buffers
         DrawVertexBufferIndexedUINT(
             Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer,
@@ -6163,8 +6151,6 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         } );
 
         zCTexture* previousTx = nullptr;
-        ID3D11ShaderResourceView* lastNrmTex = nullptr;
-        ID3D11ShaderResourceView* lastFxTex = nullptr;
         MeshVisualInfo* lastWindVisual = nullptr;
 
         for ( auto const& [staticMeshVisual, meshKey, meshInfo, _] : instancedMeshesToDraw ) {
@@ -6266,9 +6252,6 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
         static std::vector<SkeletalVobInfo*> animatedSkeletalMeshVobs;
         animatedSkeletalMeshVobs.clear();
-        
-        const bool isLastCascade = params.CascadeSplits.size() == 0
-            || params.CascadeIndex == params.CascadeSplits.size() - 2;
         
         for ( auto const& skeletalMeshVob : Engine::GAPI->GetSkeletalMeshVobs() ) {
             if ( !skeletalMeshVob->VisualInfo ) continue;
@@ -6483,9 +6466,6 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
         ActivePS->GetBuffer( "MI_MaterialInfo" )
             .Update( &defInfo )
             .Bind();
-
-        float3 camPos = Engine::GAPI->GetCameraPosition();
-        INT2 camSection = WorldConverter::GetSectionOfPos( camPos );
 
         XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
         Engine::GAPI->SetViewTransformXM( view );
@@ -6718,9 +6698,6 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
 
             float cachedSmallVobRadius = -1.0f;
             float cachedVobRadius = -1.0f;
-            float cachedMinHeight = -999999.0f;
-            float cachedMaxHeight = -999999.0f;
-
             // Ensure we have correct Constantbuffer for eventual Alphatest stuff.
             ShaderManager->GetPShader( Resolved_DiffuseNormalmappedAlphatest )
                 ->GetBuffer( "FFPipelineConstantBuffer" )
@@ -6740,7 +6717,6 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
             ID3D11ShaderResourceView* lastFxTex = nullptr;
             MeshVisualInfo* lastWindVisual = nullptr;
 
-            void* lastShader = nullptr;
             if ( !cache.sortedInstancedMeshes.empty() ) {
                 TracyD3D11ZoneCGX( "DrawVOBsInstanced::OpaqueSubmission" );
                 auto _scopeOpaqueSubmission = RecordGraphicsEvent( GE_NAME( "DrawVOBsInstanced::OpaqueSubmission" ) );
@@ -6909,8 +6885,8 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                     bool clear = true;
                     for ( auto& [meshKey, _] : cv.Visual->MeshesByTexture ) {
                         if ( meshKey.Material &&
-                            meshKey.Material->GetAlphaFunc() == zMAT_ALPHA_FUNC_BLEND ||
-                            meshKey.Material->GetAlphaFunc() == zMAT_ALPHA_FUNC_ADD ) {
+                            (meshKey.Material->GetAlphaFunc() == zMAT_ALPHA_FUNC_BLEND ||
+                                meshKey.Material->GetAlphaFunc() == zMAT_ALPHA_FUNC_ADD) ) {
                             clear = false;
                             break;
                         }
@@ -7900,7 +7876,6 @@ void D3D11GraphicsEngine::DrawQuadMarks() {
 
     SetDefaultStates();
 
-    FXMVECTOR camPos = Engine::GAPI->GetCameraPositionXM();
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
     Engine::GAPI->SetViewTransformXM( view );  // Update view transform
 
@@ -7918,7 +7893,7 @@ void D3D11GraphicsEngine::DrawQuadMarks() {
 
     auto vfxRadiusSq = Engine::GAPI->GetRendererState().RendererSettings.VisualFXDrawRadius * Engine::GAPI->GetRendererState().RendererSettings.VisualFXDrawRadius;
     auto vVfxRadiusSq = XMVectorReplicate(vfxRadiusSq);
-    
+    const auto camPos = Engine::GAPI->GetCameraPositionXM();
     for ( auto const& it : quadMarks ) {
         if ( !it.first->GetConnectedVob() ) continue;
 
@@ -7981,7 +7956,6 @@ void D3D11GraphicsEngine::DrawMQuadMarks() {
 
     SetDefaultStates();
 
-    FXMVECTOR camPos = Engine::GAPI->GetCameraPositionXM();
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
     Engine::GAPI->SetViewTransformXM( view );  // Update view transform
 
@@ -8256,7 +8230,6 @@ void D3D11GraphicsEngine::DrawFrameParticles(
 
     for ( auto const& textureParticleRenderInfo : pvecAdd ) {
         zCTexture* tx = std::get<0>( textureParticleRenderInfo );
-        ParticleRenderInfo& partInfo = *std::get<1>( textureParticleRenderInfo );
         std::vector<ParticleInstanceInfo>& instances = *std::get<2>( textureParticleRenderInfo );
 
         if ( instances.empty() ) continue;

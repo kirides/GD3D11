@@ -576,7 +576,6 @@ float XM_CALLCONV EditorLinePrimitive::IntersectPrimitive( FXMVECTOR RayOrigin, 
     if ( NumSolidVertices > 0 ) {
         FLOAT fBary1, fBary2;
         FLOAT fDist;
-        int NumIntersections = 0;
         Shortest = FLT_MAX;
 
         for ( DWORD i = 0; i < NumSolidVertices; i += 3 ) {
@@ -587,7 +586,6 @@ float XM_CALLCONV EditorLinePrimitive::IntersectPrimitive( FXMVECTOR RayOrigin, 
             // Check if the pick ray passes through this point
             if ( IntersectTriangle( Origin, Dir, v0, v1, v2, &fDist, &fBary1, &fBary2 ) ) {
                 if ( fDist < Shortest || Shortest == -1 ) {
-                    NumIntersections++;
                     Shortest = 0;
 
                     //if (NumIntersections == MAX_INTERSECTIONS)

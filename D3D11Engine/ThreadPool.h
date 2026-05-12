@@ -55,10 +55,38 @@ public:
         size_t threads = std::clamp(static_cast<size_t>(std::thread::hardware_concurrency()), static_cast<size_t>(1),
                                     static_cast<size_t>(4)));
 
-    // 3. enqueue returns a TaskHandle and expects 'F' to accept CancellationToken as its first param
-    template <class F, class... Args>
-    auto enqueue(F&& f, Args&&... args)
-        -> TaskHandle<typename std::invoke_result<F, CancellationToken, Args...>::type>;
+    //  enqueue returns a TaskHandle and expects 'F' to accept CancellationToken as its first param
+    template <typename F, typename... Args>
+    auto enqueue( F&& f, Args&&... args ) {
+        using ReturnType = std::invoke_result_t<F, CancellationToken, Args...>;
+
+        CancellationToken token;
+
+        auto task = std::make_shared<std::packaged_task<ReturnType()>>(
+            [f = std::forward<F>( f ),
+             token,
+             ...args = std::forward<Args>( args )]() mutable {
+                     return std::invoke( std::move( f ), token, std::forward<Args>( args )... );
+            }
+        );
+
+        std::future<ReturnType> future = task->get_future();
+        {
+            std::scoped_lock lock( queue_mutex );
+
+            if ( stop ) {
+                throw std::runtime_error( "enqueue on stopped ThreadPool" );
+            }
+
+            tasks.emplace( [task]() 
+            { 
+                (*task)(); 
+            }, token );
+        }
+        condition.notify_one();
+
+        return TaskHandle<ReturnType>{std::move( future ), token};
+    }
 
     ~ThreadPool();
 
@@ -145,38 +173,6 @@ inline ThreadPool::ThreadPool(const wchar_t* poolIdentifier, size_t threads)
                 }
             }, this, i, identifier
         );
-}
-
-template <class F, class... Args>
-auto ThreadPool::enqueue(F&& f, Args&&... args)
-    -> TaskHandle<typename std::invoke_result<F, CancellationToken, Args...>::type>
-{
-    using return_type = typename std::invoke_result<F, CancellationToken, Args...>::type;
-
-    CancellationToken token;
-
-    auto task = std::make_shared<std::packaged_task<return_type()>>(
-        [f = std::forward<F>(f), token, ...args = std::forward<Args>(args)]() mutable {
-            return f(token, std::forward<Args>(args)...);
-        }
-    );
-
-    std::future<return_type> res = task->get_future();
-    {
-        std::unique_lock<std::mutex> lock(queue_mutex);
-
-        if (stop)
-            throw std::runtime_error("enqueue on stopped ThreadPool");
-
-        // Store the task function and its token together
-        tasks.emplace(std::make_pair([task]()
-        {
-            (*task)();
-        }, token));
-    }
-    condition.notify_one();
-
-    return {std::move(res), token};
 }
 
 inline ThreadPool::~ThreadPool()

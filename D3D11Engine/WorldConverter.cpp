@@ -328,12 +328,12 @@ XRESULT WorldConverter::LoadWorldMeshFromFile( const std::string& file, std::map
     avgSections /= static_cast<float>(numSections);
 
     if ( info ) {
-        WorldInfo i;
+        WorldInfo i{};
         XMStoreFloat2( &i.MidPoint, avgSections * WORLD_SECTION_SIZE );
         i.LowestVertex = 0;
         i.HighestVertex = 0;
 
-        memcpy( info, &i, sizeof( WorldInfo ) );
+        *info = std::move(i);
     }
 
 

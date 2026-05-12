@@ -32,9 +32,9 @@ class zCMaterial {
 public:
     /** Hooks the functions of this Class */
     static void Hook() {
-        DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCMaterialDestructor), Hooked_Destructor );
-        //DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCMaterialConstruktor), Hooked_Constructor );
-        DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCMaterialInitValues), Hooked_InitValues );
+        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCMaterialDestructor, Hooked_Destructor  );
+        //DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCMaterialConstruktor, Hooked_Constructor  );
+        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCMaterialInitValues, Hooked_InitValues  );
 
     }
 

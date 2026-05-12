@@ -11,7 +11,7 @@ public:
     static void Hook() {
 #if (defined( BUILD_GOTHIC_2_6_fix) || (defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)))
         // TODO: Also implement for other gothics
-        DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCInput_Win32__GetKey), hooked_GetKey );
+        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCInput_Win32__GetKey, hooked_GetKey  );
 #endif
     }
 

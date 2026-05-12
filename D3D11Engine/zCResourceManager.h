@@ -19,7 +19,7 @@ public:
 
     /** Hooks the functions of this Class */
     static void Hook() {
-        //DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCResourceManagerCacheOut), hooked_CacheOut );
+        //DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCResourceManagerCacheOut, hooked_CacheOut  );
     }
 
     /*

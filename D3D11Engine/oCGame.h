@@ -32,9 +32,9 @@ public:
 
     /** Hooks the functions of this Class */
     static void Hook() {
-        DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_oCGameEnterWorld), hooked_EnterWorld );
+        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_oCGameEnterWorld, hooked_EnterWorld  );
 #if defined(BUILD_GOTHIC_2_6_fix) || (defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F))
-        DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_oCGameDefineExternals_Ulfi), hooked_DefineExternals_Ulfi );
+        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_oCGameDefineExternals_Ulfi, hooked_DefineExternals_Ulfi  );
 #endif
     }
 

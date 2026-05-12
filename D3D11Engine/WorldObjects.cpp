@@ -8,9 +8,6 @@
 #include "zCTexture.h"
 #include "D3D11_Helpers.h"
 
-const int WORLDMESHINFO_VERSION = 5;
-const int VISUALINFO_VERSION = 5;
-
 /** Updates the vobs constantbuffer */
 void VobInfo::UpdateVobConstantBuffer() {
     VS_ExConstantBuffer_PerInstance cb;

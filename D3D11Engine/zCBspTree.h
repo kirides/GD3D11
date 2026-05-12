@@ -51,13 +51,13 @@ public:
 
     /** Hooks the functions of this Class */
     static void Hook() {
-        DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCBspNodeRender), hooked_zCBspNodeRender );
+        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCBspNodeRender, hooked_zCBspNodeRender  );
 
 #ifdef BUILD_GOTHIC_1_08k
-        DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCBspBaseCollectPolysInBBox3D), hooked_zCBspBaseCollectPolysInBBox3D );
-        DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCBspBaseCheckRayAgainstPolys), hooked_zCBspBaseCheckRayAgainstPolys );
-        DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCBspBaseCheckRayAgainstPolysCache), hooked_zCBspBaseCheckRayAgainstPolysCache );
-        DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCBspBaseCheckRayAgainstPolysNearestHit), hooked_zCBspBaseCheckRayAgainstPolysNearestHit );
+        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCBspBaseCollectPolysInBBox3D, hooked_zCBspBaseCollectPolysInBBox3D  );
+        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCBspBaseCheckRayAgainstPolys, hooked_zCBspBaseCheckRayAgainstPolys  );
+        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCBspBaseCheckRayAgainstPolysCache, hooked_zCBspBaseCheckRayAgainstPolysCache  );
+        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCBspBaseCheckRayAgainstPolysNearestHit, hooked_zCBspBaseCheckRayAgainstPolysNearestHit  );
 #endif
     }
 
@@ -213,8 +213,8 @@ class zCBspTree {
 public:
     /** Hooks the functions of this Class */
     static void Hook() {
-        DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCBspTreeLoadBIN), hooked_LoadBIN );
-        //DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_zCBspTreeAddVob), hooked_AddVob );
+        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCBspTreeLoadBIN, hooked_LoadBIN  );
+        //DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCBspTreeAddVob, hooked_AddVob  );
     }
 
     /** Called when a vob gets added to a bsp-tree */

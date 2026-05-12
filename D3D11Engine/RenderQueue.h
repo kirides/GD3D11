@@ -56,7 +56,7 @@ public:
     std::vector<TransparencyVobInfo> transparent;
 };
 
-static std::atomic<size_t> g_nextSeenId = 1;
+static std::atomic<size_t> g_nextSeenId = 0;
 // Marks any visited vob 
 class BspTreeVobVisitor {
 public:
@@ -103,6 +103,10 @@ public:
         lights.clear();
         skeltalVobs.clear();
     }
+
+    size_t GetSeenLights() const { return lights.size(); }
+    size_t GetSeenVobs() const { return vobs.size(); }
+    size_t GetSeenMobs() const { return skeltalVobs.size(); }
 private:
     size_t seen_flag_id;
     std::vector<VobInfo*> vobs;

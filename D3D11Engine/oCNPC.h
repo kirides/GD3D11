@@ -22,9 +22,9 @@ public:
 
     /** Hooks the functions of this Class */
     static void Hook() {
-        DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_oCNPCEnable), hooked_oCNPCEnable );
-        DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_oCNPCDisable), hooked_oCNPCDisable );
-        DetourAttach( &reinterpret_cast<PVOID&>(HookedFunctions::OriginalFunctions.original_oCNPCInitModel), hooked_oCNPCInitModel );
+        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_oCNPCEnable, hooked_oCNPCEnable  );
+        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_oCNPCDisable, hooked_oCNPCDisable  );
+        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_oCNPCInitModel, hooked_oCNPCInitModel  );
     }
 
     static void __fastcall hooked_oCNPCInitModel( zCVob* thisptr, void* unknwn ) {
