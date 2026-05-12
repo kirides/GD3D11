@@ -5,7 +5,7 @@
 
 #include <wrl/client.h>
 
-enum XRESULT;
+enum XRESULT : int;
 
 class D3D11IndirectBuffer {
 public:

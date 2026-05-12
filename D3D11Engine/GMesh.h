@@ -2,7 +2,7 @@
 #include <string>
 #include <vector>
 
-enum XRESULT;
+enum XRESULT : int;
 struct MeshInfo;
 
 class GMesh {

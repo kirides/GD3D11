@@ -9,7 +9,7 @@ using namespace DirectX;
 /** Defines types used for the project */
 
 /** Errorcodes */
-enum XRESULT {
+enum XRESULT : int {
     XR_SUCCESS,
     XR_FAILED,
     XR_INVALID_ARG,
