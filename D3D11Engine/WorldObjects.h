@@ -518,7 +518,9 @@ struct WorldInfo {
     }
     
     WorldInfo(WorldInfo&& other) = default;
+    WorldInfo& operator=(WorldInfo&& other) = default;
     WorldInfo(const WorldInfo& other) = delete;
+    WorldInfo& operator=(const WorldInfo& other) = delete;
 
     XMFLOAT2 MidPoint;
     float LowestVertex;
