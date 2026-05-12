@@ -6885,8 +6885,8 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                     bool clear = true;
                     for ( auto& [meshKey, _] : cv.Visual->MeshesByTexture ) {
                         if ( meshKey.Material &&
-                            meshKey.Material->GetAlphaFunc() == zMAT_ALPHA_FUNC_BLEND ||
-                            meshKey.Material->GetAlphaFunc() == zMAT_ALPHA_FUNC_ADD ) {
+                            (meshKey.Material->GetAlphaFunc() == zMAT_ALPHA_FUNC_BLEND ||
+                                meshKey.Material->GetAlphaFunc() == zMAT_ALPHA_FUNC_ADD) ) {
                             clear = false;
                             break;
                         }
