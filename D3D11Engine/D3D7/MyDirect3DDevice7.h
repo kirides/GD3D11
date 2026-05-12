@@ -29,7 +29,7 @@
 
 const int DRAW_PRIM_INDEX_BUFFER_SIZE = 4096 * sizeof( VERTEX_INDEX );
 
-class MyDirect3DDevice7 : public IDirect3DDevice7 {
+class MyDirect3DDevice7 final : public IDirect3DDevice7 {
 public:
 	MyDirect3DDevice7( IDirect3D7* direct3D7, IDirect3DDevice7* direct3DDevice7 ) {
 		DebugWrite( "MyDirect3DDevice7::MyDirect3DDevice7" );
@@ -225,7 +225,6 @@ public:
 
 		case D3DRENDERSTATETYPE::D3DRENDERSTATE_FOGCOLOR:
 		{
-			BYTE a = Value >> 24;
 			BYTE r = (Value >> 16) & 0xFF;
 			BYTE g = (Value >> 8) & 0xFF;
 			BYTE b = Value & 0xFF;
@@ -235,7 +234,6 @@ public:
 
 		case D3DRENDERSTATETYPE::D3DRENDERSTATE_AMBIENT:
 		{
-			BYTE a = Value >> 24;
 			BYTE r = (Value >> 16) & 0xFF;
 			BYTE g = (Value >> 8) & 0xFF;
 			BYTE b = Value & 0xFF;

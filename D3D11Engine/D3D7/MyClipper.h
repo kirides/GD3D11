@@ -2,7 +2,7 @@
 #include "../pch.h"
 #include <ddraw.h>
 
-class MyClipper : public IDirectDrawClipper {
+class MyClipper final : public IDirectDrawClipper {
 public:
 	MyClipper() : hWnd(nullptr), refCount(1) {
 	}
