@@ -707,8 +707,8 @@ struct GothicRendererSettings {
 
         EnableShadows = true;
         ThreadedShadowCulling = false;
-        EnableVSync = false;
-        DoZPrepass = true;
+        EnableVSync = true;
+        DoZPrepass = false;
         SortRenderQueue = false;
         DrawThreaded = false;
 
@@ -905,6 +905,8 @@ struct GothicRendererSettings {
     bool DisableRendering;
     bool DisableDrawcalls;
     bool EnableEditorPanel;
+    // deferred render pass geometry Z-Prepass.
+    // doesn't help much if at all.
     bool DoZPrepass;
     bool EnableAutoupdates;
     bool EnableOcclusionCulling;

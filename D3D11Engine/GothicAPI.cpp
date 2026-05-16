@@ -4995,40 +4995,41 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
     if ( Toolbox::FileExists( ini ) ) {
         LogInfo() << "Loading menu settings from " << ini;
     
-        GothicRendererSettings defaultRendererSettings;
+        GothicRendererSettings defaultRendererSettings{};
         defaultRendererSettings.SetDefault();
+        const GothicRendererSettings& ds = defaultRendererSettings;
 
         s.ChangeWindowPreset = GetPrivateProfileIntA( "General", "ChangeToMode", 0, ini.c_str() );
-        s.DrawFog = GetPrivateProfileBoolA( "General", "EnableFog", defaultRendererSettings.DrawFog, ini );
-        s.FogRange = GetPrivateProfileFloatA( "General", "FogRange", defaultRendererSettings.FogRange, ini.c_str() );
-        s.AtmosphericScattering = GetPrivateProfileBoolA( "General", "AtmosphericScattering", defaultRendererSettings.AtmosphericScattering, ini );
-        s.EnableHDR = GetPrivateProfileBoolA( "General", "EnableHDR", defaultRendererSettings.EnableHDR, ini );
-        s.HDRToneMap = GothicRendererSettings::E_HDRToneMap( GetPrivateProfileIntA( "General", "HDRToneMap", defaultRendererSettings.HDRToneMap, ini.c_str() ) );
-        s.EnableDebugLog = GetPrivateProfileBoolA( "General", "EnableDebugLog", defaultRendererSettings.EnableDebugLog, ini );
-        s.EnableAutoupdates = GetPrivateProfileBoolA( "General", "EnableAutoupdates", defaultRendererSettings.EnableAutoupdates, ini );
-        s.EnableGodRays = GetPrivateProfileBoolA( "General", "EnableGodRays", defaultRendererSettings.EnableGodRays, ini );
-        s.EnableDoF = GetPrivateProfileBoolA( "General", "EnableDoF", defaultRendererSettings.EnableDoF, ini );
-        s.DoFGaussBlur = GetPrivateProfileBoolA( "General", "DoFGaussBlur", defaultRendererSettings.DoFGaussBlur, ini );
-        s.DoFFocusDistance = GetPrivateProfileFloatA( "General", "DoFFocusDistance", defaultRendererSettings.DoFFocusDistance, ini );
-        s.DoFFocusRange = GetPrivateProfileFloatA( "General", "DoFFocusRange", defaultRendererSettings.DoFFocusRange, ini );
-        s.DoFBokehRadius = GetPrivateProfileFloatA( "General", "DoFBokehRadius", defaultRendererSettings.DoFBokehRadius, ini );
-        s.DoFMaxBlur = GetPrivateProfileFloatA( "General", "DoFMaxBlur", defaultRendererSettings.DoFMaxBlur, ini );
-        s.AllowNormalmaps = GetPrivateProfileBoolA( "General", "AllowNormalmaps", defaultRendererSettings.AllowNormalmaps, ini );
-        s.AllowNumpadKeys = GetPrivateProfileBoolA( "General", "AllowNumpadKeys", defaultRendererSettings.AllowNumpadKeys, ini );
-        s.EnableInactiveFpsLock = GetPrivateProfileBoolA( "General", "EnableInactiveFpsLock", defaultRendererSettings.EnableInactiveFpsLock, ini );
-        s.MTResoureceManager = GetPrivateProfileBoolA( "General", "MultiThreadResourceManager", defaultRendererSettings.MTResoureceManager, ini );
-        s.CompressBackBuffer = GetPrivateProfileBoolA( "General", "CompressBackBuffer", defaultRendererSettings.CompressBackBuffer, ini );
-        s.AnimateStaticVobs = GetPrivateProfileBoolA( "General", "AnimateStaticVobs", defaultRendererSettings.AnimateStaticVobs, ini );
-        s.DrawSectionIntersections = GetPrivateProfileBoolA( "General", "DrawWorldSectionIntersections", defaultRendererSettings.DrawSectionIntersections, ini );
-        s.SunLightStrength = GetPrivateProfileFloatA( "General", "SunLightStrength", defaultRendererSettings.SunLightStrength, ini );
-        s.DrawG1ForestPortals = GetPrivateProfileBoolA( "General", "DrawG1ForestPortals", defaultRendererSettings.DrawG1ForestPortals, ini );
-        s.DrawRainThroughTransformFeedback = GetPrivateProfileBoolA( "General", "DrawRainThroughTransformFeedback", defaultRendererSettings.DrawRainThroughTransformFeedback, ini );
+        s.DrawFog = GetPrivateProfileBoolA( "General", "EnableFog", ds.DrawFog, ini );
+        s.FogRange = GetPrivateProfileFloatA( "General", "FogRange", ds.FogRange, ini.c_str() );
+        s.AtmosphericScattering = GetPrivateProfileBoolA( "General", "AtmosphericScattering", ds.AtmosphericScattering, ini );
+        s.EnableHDR = GetPrivateProfileBoolA( "General", "EnableHDR", ds.EnableHDR, ini );
+        s.HDRToneMap = GothicRendererSettings::E_HDRToneMap( GetPrivateProfileIntA( "General", "HDRToneMap", ds.HDRToneMap, ini.c_str() ) );
+        s.EnableDebugLog = GetPrivateProfileBoolA( "General", "EnableDebugLog", ds.EnableDebugLog, ini );
+        s.EnableAutoupdates = GetPrivateProfileBoolA( "General", "EnableAutoupdates", ds.EnableAutoupdates, ini );
+        s.EnableGodRays = GetPrivateProfileBoolA( "General", "EnableGodRays", ds.EnableGodRays, ini );
+        s.EnableDoF = GetPrivateProfileBoolA( "General", "EnableDoF", ds.EnableDoF, ini );
+        s.DoFGaussBlur = GetPrivateProfileBoolA( "General", "DoFGaussBlur", ds.DoFGaussBlur, ini );
+        s.DoFFocusDistance = GetPrivateProfileFloatA( "General", "DoFFocusDistance", ds.DoFFocusDistance, ini );
+        s.DoFFocusRange = GetPrivateProfileFloatA( "General", "DoFFocusRange", ds.DoFFocusRange, ini );
+        s.DoFBokehRadius = GetPrivateProfileFloatA( "General", "DoFBokehRadius", ds.DoFBokehRadius, ini );
+        s.DoFMaxBlur = GetPrivateProfileFloatA( "General", "DoFMaxBlur", ds.DoFMaxBlur, ini );
+        s.AllowNormalmaps = GetPrivateProfileBoolA( "General", "AllowNormalmaps", ds.AllowNormalmaps, ini );
+        s.AllowNumpadKeys = GetPrivateProfileBoolA( "General", "AllowNumpadKeys", ds.AllowNumpadKeys, ini );
+        s.EnableInactiveFpsLock = GetPrivateProfileBoolA( "General", "EnableInactiveFpsLock", ds.EnableInactiveFpsLock, ini );
+        s.MTResoureceManager = GetPrivateProfileBoolA( "General", "MultiThreadResourceManager", ds.MTResoureceManager, ini );
+        s.CompressBackBuffer = GetPrivateProfileBoolA( "General", "CompressBackBuffer", ds.CompressBackBuffer, ini );
+        s.AnimateStaticVobs = GetPrivateProfileBoolA( "General", "AnimateStaticVobs", ds.AnimateStaticVobs, ini );
+        s.DrawSectionIntersections = GetPrivateProfileBoolA( "General", "DrawWorldSectionIntersections", ds.DrawSectionIntersections, ini );
+        s.SunLightStrength = GetPrivateProfileFloatA( "General", "SunLightStrength", ds.SunLightStrength, ini );
+        s.DrawG1ForestPortals = GetPrivateProfileBoolA( "General", "DrawG1ForestPortals", ds.DrawG1ForestPortals, ini );
+        s.DrawRainThroughTransformFeedback = GetPrivateProfileBoolA( "General", "DrawRainThroughTransformFeedback", ds.DrawRainThroughTransformFeedback, ini );
 
         /*
         * Draw-distance is Loaded on a per World basis using LoadRendererWorldSettings
         */
 
-        s.EnableOcclusionCulling = GetPrivateProfileBoolA( "General", "EnableOcclusionCulling", defaultRendererSettings.EnableOcclusionCulling, ini );
+        s.EnableOcclusionCulling = GetPrivateProfileBoolA( "General", "EnableOcclusionCulling", ds.EnableOcclusionCulling, ini );
         s.FpsLimit = GetPrivateProfileIntA( "General", "FpsLimit", 0, ini.c_str() );
 
         // override INI settings with GMP minimum values.
@@ -5040,23 +5041,23 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         }
 
         static XMFLOAT3 defaultLightDirection = XMFLOAT3( 1, 1, 1 );
-        s.EnableShadows = GetPrivateProfileBoolA( "Shadows", "EnableShadows", defaultRendererSettings.EnableShadows, ini );
+        s.EnableShadows = GetPrivateProfileBoolA( "Shadows", "EnableShadows", ds.EnableShadows, ini );
         s.ShadowFilterMode = static_cast<GothicRendererSettings::E_ShadowFilterMode>(
             GetPrivateProfileIntA( "Shadows", "ShadowFilterMode",
-                static_cast<int>(defaultRendererSettings.ShadowFilterMode), ini.c_str() ) );
-        s.ShadowMapSize = GetPrivateProfileIntA( "Shadows", "ShadowMapSize", defaultRendererSettings.ShadowMapSize, ini.c_str() );
+                static_cast<int>(ds.ShadowFilterMode), ini.c_str() ));
+        s.ShadowMapSize = GetPrivateProfileIntA( "Shadows", "ShadowMapSize", ds.ShadowMapSize, ini.c_str() );
         s.EnablePointlightShadows = GothicRendererSettings::EPointLightShadowMode( GetPrivateProfileIntA( "Shadows", "PointlightShadows", GothicRendererSettings::EPointLightShadowMode::PLS_STATIC_ONLY, ini.c_str() ) );
-        s.WorldShadowRangeScale = GetPrivateProfileFloatA( "Shadows", "WorldShadowRangeScale", defaultRendererSettings.WorldShadowRangeScale, ini );
-        s.NumShadowCascades = GetPrivateProfileIntA( "Shadows", "NumShadowCascades", defaultRendererSettings.NumShadowCascades, ini.c_str() );
-        s.ShadowCascadePCFLimit = GetPrivateProfileIntA( "Shadows", "ShadowCascadePCFLimit", defaultRendererSettings.ShadowCascadePCFLimit, ini.c_str() );
-        s.ShadowFrustumCullingMode = static_cast<GothicRendererSettings::E_ShadowFrustumCulling>(GetPrivateProfileIntA( "Shadows", "ShadowFrustumCullingMode", defaultRendererSettings.ShadowFrustumCullingMode, ini.c_str() ));
-        s.EnableDynamicLighting = GetPrivateProfileBoolA( "Shadows", "EnableDynamicLighting", defaultRendererSettings.EnableDynamicLighting, ini );
-        s.SmoothShadowCameraUpdate = GetPrivateProfileBoolA( "Shadows", "SmoothCameraUpdate", defaultRendererSettings.SmoothShadowCameraUpdate, ini );
-        s.SmoothShadowFrequency = GetPrivateProfileFloatA( "Shadows", "SmoothShadowFrequency", defaultRendererSettings.SmoothShadowFrequency, ini );
-        s.ShadowStrength = GetPrivateProfileFloatA( "Shadows", "ShadowStrength", defaultRendererSettings.ShadowStrength, ini );
-        s.ShadowSoftness = GetPrivateProfileFloatA( "Shadows", "ShadowSoftness", defaultRendererSettings.ShadowSoftness, ini );
-        s.ShadowAOStrength = GetPrivateProfileFloatA( "Shadows", "ShadowAOStrength", defaultRendererSettings.ShadowAOStrength, ini );
-        s.WorldAOStrength = GetPrivateProfileFloatA( "Shadows", "WorldAOStrength", defaultRendererSettings.WorldAOStrength, ini );
+        s.WorldShadowRangeScale = GetPrivateProfileFloatA( "Shadows", "WorldShadowRangeScale", ds.WorldShadowRangeScale, ini );
+        s.NumShadowCascades = GetPrivateProfileIntA( "Shadows", "NumShadowCascades", ds.NumShadowCascades, ini.c_str() );
+        s.ShadowCascadePCFLimit = GetPrivateProfileIntA( "Shadows", "ShadowCascadePCFLimit", ds.ShadowCascadePCFLimit, ini.c_str() );
+        s.ShadowFrustumCullingMode = static_cast<GothicRendererSettings::E_ShadowFrustumCulling>(GetPrivateProfileIntA( "Shadows", "ShadowFrustumCullingMode", ds.ShadowFrustumCullingMode, ini.c_str() ));
+        s.EnableDynamicLighting = GetPrivateProfileBoolA( "Shadows", "EnableDynamicLighting", ds.EnableDynamicLighting, ini );
+        s.SmoothShadowCameraUpdate = GetPrivateProfileBoolA( "Shadows", "SmoothCameraUpdate", ds.SmoothShadowCameraUpdate, ini );
+        s.SmoothShadowFrequency = GetPrivateProfileFloatA( "Shadows", "SmoothShadowFrequency", ds.SmoothShadowFrequency, ini );
+        s.ShadowStrength = GetPrivateProfileFloatA( "Shadows", "ShadowStrength", ds.ShadowStrength, ini );
+        s.ShadowSoftness = GetPrivateProfileFloatA( "Shadows", "ShadowSoftness", ds.ShadowSoftness, ini );
+        s.ShadowAOStrength = GetPrivateProfileFloatA( "Shadows", "ShadowAOStrength", ds.ShadowAOStrength, ini );
+        s.WorldAOStrength = GetPrivateProfileFloatA( "Shadows", "WorldAOStrength", ds.WorldAOStrength, ini );
 
         INT2 res = {};
         RECT desktopRect;
@@ -5064,38 +5065,43 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.textureMaxSize = std::max<int>( 32, GetPrivateProfileIntA( "Display", "TextureQuality", 16384, ini.c_str() ) );
         res.x = GetPrivateProfileIntA( "Display", "Width", desktopRect.right, ini.c_str() );
         res.y = GetPrivateProfileIntA( "Display", "Height", desktopRect.bottom, ini.c_str() );
-        s.ResolutionScalePercent = std::clamp<int>( GetPrivateProfileIntA( "Display", "ResolutionScale", s.ResolutionScalePercent, ini.c_str() ), 25, 200 );
-        s.Upscaler = (GothicRendererSettings::E_Upscaler)std::clamp<int>( GetPrivateProfileIntA( "Display", "Upscaler", s.Upscaler, ini.c_str() ), 0, GothicRendererSettings::E_Upscaler::_UPSCALER_NUM_MODES - 1 );
-        s.EnableVSync = GetPrivateProfileBoolA( "Display", "VSync", false, ini );
-        s.ForceFOV = GetPrivateProfileBoolA( "Display", "ForceFOV", defaultRendererSettings.ForceFOV, ini );
+        s.ResolutionScalePercent = std::clamp<int>( GetPrivateProfileIntA( "Display", "ResolutionScale", ds.ResolutionScalePercent, ini.c_str() ), 25, 200 );
+        s.Upscaler = (GothicRendererSettings::E_Upscaler)std::clamp<int>( GetPrivateProfileIntA( "Display", "Upscaler", ds.Upscaler, ini.c_str() ), 0, GothicRendererSettings::E_Upscaler::_UPSCALER_NUM_MODES - 1 );
+        s.EnableVSync = GetPrivateProfileBoolA( "Display", "VSync", ds.EnableVSync, ini );
+        s.ForceFOV = GetPrivateProfileBoolA( "Display", "ForceFOV", ds.ForceFOV, ini );
         s.FOVHoriz = GetPrivateProfileIntA( "Display", "FOVHoriz", 90, ini.c_str() );
         s.FOVVert = GetPrivateProfileIntA( "Display", "FOVVert", 90, ini.c_str() );
         s.GammaValue = GetPrivateProfileFloatA( "Display", "Gamma", 1.0f, ini );
         s.BrightnessValue = GetPrivateProfileFloatA( "Display", "Brightness", 1.0f, ini );
-        s.DisplayFlip = GetPrivateProfileBoolA( "Display", "DisplayFlip", false, ini );
-        s.LowLatency = GetPrivateProfileBoolA( "Display", "LowLatency", false, ini );
+        s.DisplayFlip = GetPrivateProfileBoolA( "Display", "DisplayFlip", ds.DisplayFlip, ini );
+        s.LowLatency = GetPrivateProfileBoolA( "Display", "LowLatency", ds.LowLatency, ini );
         s.HDR_Monitor = GetPrivateProfileBoolA( "Display", "HDR_Monitor", false, ini );
-        s.StretchWindow = GetPrivateProfileBoolA( "Display", "StretchWindow", false, ini );
+        s.StretchWindow = GetPrivateProfileBoolA( "Display", "StretchWindow", ds.StretchWindow, ini );
         s.GothicUIScale = GetPrivateProfileFloatA( "Display", "UIScale", 1.0f, ini );
-        s.EnableRain = GetPrivateProfileBoolA( "Display", "Rain", true, ini );
-        s.EnableRainEffects = GetPrivateProfileBoolA( "Display", "RainEffects", true, ini );
-        s.LimitLightIntesity = GetPrivateProfileBoolA( "Display", "LimitLightIntesity", false, ini );
-        s.EnableTiledLighting = GetPrivateProfileBoolA( "Display", "TiledLighting", false, ini );
-        s.RendererMode = static_cast<GothicRendererSettings::E_RendererMode>(
-            GetPrivateProfileIntA( "Display", "RendererMode", GothicRendererSettings::RM_ForwardPlus, ini.c_str() ) );
+        s.EnableRain = GetPrivateProfileBoolA( "Display", "Rain", ds.EnableRain, ini );
+        s.EnableRainEffects = GetPrivateProfileBoolA( "Display", "RainEffects", ds.EnableRainEffects, ini );
+        s.LimitLightIntesity = GetPrivateProfileBoolA( "Display", "LimitLightIntesity", ds.LimitLightIntesity, ini );
+
+        // s.EnableTiledLighting = GetPrivateProfileBoolA( "Display", "TiledLighting", s.EnableTiledLighting, ini );
+        // s.RendererMode = static_cast<GothicRendererSettings::E_RendererMode>(GetPrivateProfileIntA( "Display", "RendererMode", s.RendererMode, ini.c_str() ) );
+        // Force these two experimental settings OFF
+        s.EnableTiledLighting = false;
+        s.RendererMode = GothicRendererSettings::E_RendererMode::RM_Deferred;
+        // ....
+
         s.WindQuality = GetPrivateProfileIntA( "Display", "WindQuality", 0, ini.c_str() );
-        s.GlobalWindStrength = GetPrivateProfileFloatA( "Display", "WindStrength", 1.0f, ini );
-        s.EnableWaterAnimation = GetPrivateProfileBoolA( "Display", "WaterWaveAnimation", true, ini );
-        s.HeroAffectsObjects = GetPrivateProfileBoolA( "Display", "HeroAffectsObjects", true, ini );
-        
+        s.GlobalWindStrength = GetPrivateProfileFloatA( "Display", "WindStrength", ds.GlobalWindStrength, ini );
+        s.EnableWaterAnimation = GetPrivateProfileBoolA( "Display", "WaterWaveAnimation", ds.EnableWaterAnimation, ini );
+        s.HeroAffectsObjects = GetPrivateProfileBoolA( "Display", "HeroAffectsObjects", ds.HeroAffectsObjects, ini );
+
         if ( GetPrivateProfileBoolA( "SMAA", "Enabled", false, ini ) ) {
             s.AntiAliasingMode = GothicRendererSettings::E_AntiAliasingMode::AA_SMAA;
         }
-        
-        s.SharpenFactor = GetPrivateProfileFloatA( "SMAA", "SharpenFactor", 0.30f, ini );
-        s.AntiAliasingMode = (GothicRendererSettings::E_AntiAliasingMode)GetPrivateProfileIntA( "General", "AntiAliasing", (int)defaultRendererSettings.AntiAliasingMode, ini.c_str() );
 
-        HBAOSettings defaultHBAOSettings;
+        s.SharpenFactor = GetPrivateProfileFloatA( "SMAA", "SharpenFactor", 0.30f, ini );
+        s.AntiAliasingMode = (GothicRendererSettings::E_AntiAliasingMode)GetPrivateProfileIntA( "General", "AntiAliasing", (int)ds.AntiAliasingMode, ini.c_str() );
+
+        const HBAOSettings& defaultHBAOSettings = ds.HbaoSettings;
         s.HbaoSettings.Enabled = GetPrivateProfileBoolA( "HBAO", "Enabled", defaultHBAOSettings.Enabled, ini );
         s.HbaoSettings.Bias = GetPrivateProfileFloatA( "HBAO", "Bias", defaultHBAOSettings.Bias, ini );
         s.HbaoSettings.Radius = GetPrivateProfileFloatA( "HBAO", "Radius", defaultHBAOSettings.Radius, ini );
@@ -5110,17 +5116,17 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         int defaultAoMode = static_cast<int>(s.HbaoSettings.Enabled ? AOMode::AO_HBAO : AOMode::AO_NONE);
         s.AoMode = static_cast<AOMode>(GetPrivateProfileIntA( "AO", "Mode", defaultAoMode, ini.c_str() ));
 
-        SAOSettings defaultSAOSettings;
+        const SAOSettings& defaultSAOSettings = ds.SaoSettings;
         s.SaoSettings.Radius = GetPrivateProfileFloatA( "SAO", "Radius", defaultSAOSettings.Radius, ini );
         s.SaoSettings.Bias = GetPrivateProfileFloatA( "SAO", "Bias", defaultSAOSettings.Bias, ini );
         s.SaoSettings.Intensity = GetPrivateProfileFloatA( "SAO", "Intensity", defaultSAOSettings.Intensity, ini );
         s.SaoSettings.NumSamples = GetPrivateProfileIntA( "SAO", "NumSamples", defaultSAOSettings.NumSamples, ini.c_str() );
         s.SaoSettings.BlurSharpness = GetPrivateProfileFloatA( "SAO", "BlurSharpness", defaultSAOSettings.BlurSharpness, ini );
 
-        s.EnableCustomFontRendering = GetPrivateProfileBoolA( "FontRendering", "Enable", defaultRendererSettings.EnableCustomFontRendering, ini );
-        s.DebugSettings.FeatureSet.UseShadowAtlas = GetPrivateProfileBoolA( "Debug", "UseShadowAtlas", defaultRendererSettings.DebugSettings.FeatureSet.UseShadowAtlas, ini );
-        s.DebugSettings.FeatureSet.ForceFeatureLevel10 = GetPrivateProfileBoolA( "Debug", "ForceFeatureLevel10", defaultRendererSettings.DebugSettings.FeatureSet.ForceFeatureLevel10, ini );
-        s.DebugSettings.FeatureSet.EnableDriverExtensions = GetPrivateProfileBoolA( "Debug", "EnableDriverExtensions", defaultRendererSettings.DebugSettings.FeatureSet.EnableDriverExtensions, ini );
+        s.EnableCustomFontRendering = GetPrivateProfileBoolA( "FontRendering", "Enable", ds.EnableCustomFontRendering, ini );
+        s.DebugSettings.FeatureSet.UseShadowAtlas = GetPrivateProfileBoolA( "Debug", "UseShadowAtlas", ds.DebugSettings.FeatureSet.UseShadowAtlas, ini );
+        s.DebugSettings.FeatureSet.ForceFeatureLevel10 = GetPrivateProfileBoolA( "Debug", "ForceFeatureLevel10", ds.DebugSettings.FeatureSet.ForceFeatureLevel10, ini );
+        s.DebugSettings.FeatureSet.EnableDriverExtensions = GetPrivateProfileBoolA( "Debug", "EnableDriverExtensions", ds.DebugSettings.FeatureSet.EnableDriverExtensions, ini );
 
         // Fix the resolution if the players maximum resolution got lower
         /*RECT r;
