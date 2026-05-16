@@ -2622,6 +2622,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         // as this otherwise slows down prepass too much.
         Context->PSSetShader( nullptr, nullptr, 0 );
         ActivePS = nullptr;
+        wantShader = true;
     }
 
     // Ensure we have correct Constantbuffer for eventual Alphatest stuff.
@@ -2638,6 +2639,23 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             return true;
 
         if ( isZPrepass ) {
+            if (tex->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
+                return false;
+            }
+            if (tex->HasAlphaChannel()) {
+                // we need to ensure alpha tested visuals are properly alpha tested or depth go woooosh
+                tex->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
+                lastTex = tex;
+                if (!ActivePS) {
+                    ActivePS = ShaderManager->GetPShader( PShaderID::PS_DiffuseAlphaTestShadows );
+                    ActivePS->Apply();
+                }
+            } else if (lastTex != nullptr) {
+                Context->PSSetShaderResources( 0, 1, nullptr );
+                lastTex = nullptr;
+                Context->PSSetShader( nullptr, nullptr, 0 );
+                ActivePS = nullptr;
+            }
             return true;
         } else {
             lastTex = tex;
