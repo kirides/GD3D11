@@ -7,6 +7,7 @@
 // Expected defines (set by ConstructShaderMakroList):
 //   MAX_CSM_CASCADES, NUM_CSM_CASCADES, CSM_PCF_LIMIT
 //   SHD_ENABLE, SHD_FILTER_16TAP_PCF, SHD_FILTER_PCSS, SHADOW_ATLAS
+//   FP_USE_SHADOW_MASK
 //
 // Expected resources already declared by the including shader:
 //   (FP_SS_Linear is declared internally at register(s0))
