@@ -89,6 +89,7 @@ SamplerComparisonState SS_Comp : register( s2 );
 
 
 #include "ShadowSampling.h"
+#include "PointLightShadows.h"
 
 // ============================================
 // Point Light Structures & Resources
@@ -121,57 +122,6 @@ StructuredBuffer<uint> FP_LightIndexList : register( t10 );
 TextureCubeArray FP_ShadowCubeArray : register( t11 );
 
 // ============================================
-// Helper Functions
-// ============================================
-
-float FP_CalcBlinnPhongLighting( float3 N, float3 H )
-{
-    return saturate( dot( N, H ) );
-}
-
-// ============================================
-// Point Light Shadow Cube (matches CS_TiledShading.hlsl)
-// ============================================
-
-static const int FP_SHADOW_BLUR_COUNT = 8;
-static const float2 FP_SHADOW_BLUR_OFFSETS[FP_SHADOW_BLUR_COUNT] = {
-    float2(  0.500f,  0.000f ),
-    float2(  0.000f,  0.500f ),
-    float2( -0.500f,  0.000f ),
-    float2(  0.000f, -0.500f ),
-    float2(  0.924f,  0.383f ),
-    float2( -0.383f,  0.924f ),
-    float2( -0.924f, -0.383f ),
-    float2(  0.383f, -0.924f ),
-};
-
-float FP_SampleShadowCube( float3 wsPosition, float3 lightPosWorld, float lightRange, int cubeIndex )
-{
-    float3 toPixel = wsPosition - lightPosWorld;
-    float3 dir = normalize( toPixel );
-    float distance = length( toPixel );
-    float zFar = lightRange * 2.0f;
-    distance = distance / zFar;
-
-    float fixedBias = 0.006f;
-    float fixedBlurScale = 0.034f;
-
-    float3 up = abs( dir.y ) < 0.999f ? float3( 0, 1, 0 ) : float3( 1, 0, 0 );
-    float3 right = normalize( cross( up, dir ) );
-    up = cross( dir, right );
-
-    float shd = 0;
-    for ( int i = 0; i < FP_SHADOW_BLUR_COUNT; i++ )
-    {
-        float3 perturbedDir = dir + (right * FP_SHADOW_BLUR_OFFSETS[i].x + up * FP_SHADOW_BLUR_OFFSETS[i].y) * fixedBlurScale;
-        float4 sampleCoord = float4( perturbedDir, (float)cubeIndex );
-        shd += FP_ShadowCubeArray.SampleCmpLevelZero( SS_Comp, sampleCoord, distance - fixedBias );
-    }
-    shd /= FP_SHADOW_BLUR_COUNT;
-    return shd;
-}
-
-// ============================================
 // Point Light Accumulation (matches CS_TiledShading.hlsl)
 // ============================================
 
@@ -190,7 +140,7 @@ float3 FP_ComputePointLighting(
 
     // These only need to be calculated once per pixel
     float3 V = normalize( -vsPosition );
-    float specMod = pow( dot( float3( 0.333f, 0.333f, 0.333f ), diffuseColor ), 2 );
+    float specMod = PLS_ComputeSpecMod( diffuseColor );
     
     for ( uint i = 0; i < grid.Count; i++ )
     {
@@ -208,22 +158,16 @@ float3 FP_ComputePointLighting(
         float ndl = max( 0, dot( lightDir, normal ) );
         
         // instead of pow(..., 1.2f) we use a fast quadratic-like approach.
-        float normalizedDist = saturate( 1.0f - (distance / light.Range) );
-        float falloff = normalizedDist * (normalizedDist * 0.2f + 0.8f); 
+        float falloff = PLS_ComputeRangeFalloff( distance, light.Range );
 
         float3 H = normalize( lightDir + V );
-        float spec = FP_CalcBlinnPhongLighting( normal, H );
-        
-        float3 specBare = pow( spec, specPower ) * specIntensity * light.Color.rgb * falloff;
-        float3 specColored = lerp( specBare, specBare * diffuseColor, specMod );
-
-        float3 color = saturate( falloff * ndl * light.Color.rgb );
-        float3 lighting = color * diffuseColor + specColored;
+        float spec = PLS_CalcBlinnPhongLighting( normal, H );
+        float3 lighting = PLS_ComputePointLightLighting( diffuseColor, light.Color.rgb, ndl, falloff, spec, specIntensity, specPower, specMod );
 
         // Don't fetch shadows if the light contribution is effectively zero.
         if ( light.ShadowCubeIndex >= 0 && any(lighting > 0.001f) )
         {
-            float shadow = FP_SampleShadowCube( wsPosition, light.PositionWorld, light.Range, light.ShadowCubeIndex );
+            float shadow = PLS_SampleShadowCube( FP_ShadowCubeArray, SS_Comp, wsPosition, light.PositionWorld, light.Range, light.ShadowCubeIndex );
             lighting *= shadow;
         }
 
@@ -246,7 +190,7 @@ float3 FP_ComputeSunLighting(
 {
     float3 V = normalize( -vsPosition );
     float3 H = normalize( SQ_LightDirectionVS + V );
-    float spec = FP_CalcBlinnPhongLighting( normal, H );
+    float spec = PLS_CalcBlinnPhongLighting( normal, H );
     float specMod = pow( dot( float3( 0.333f, 0.333f, 0.333f ), diffuseColor ), 2 );
 
     float4 lightColor = SQ_LightColor;
