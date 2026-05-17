@@ -3364,6 +3364,27 @@ namespace {
             ((zCCamera*)game->_zCSession_camera)->UpdateViewport();
         }
     }
+
+    D3D11VertexBuffer* GetShadowAwareIndexBuffer( MeshInfo* mesh ) {
+        if ( !mesh ) {
+            return nullptr;
+        }
+
+        if ( mesh->MeshShadowIndexBuffer && !mesh->ShadowIndices.empty() ) {
+            return mesh->MeshShadowIndexBuffer;
+        }
+
+        return mesh->MeshIndexBuffer;
+    }
+
+    unsigned int GetShadowAwareIndexCount( const MeshInfo* mesh ) {
+        if ( !mesh ) {
+            return 0;
+        }
+
+        return static_cast<unsigned int>(
+            mesh->ShadowIndices.empty() ? mesh->Indices.size() : mesh->ShadowIndices.size() );
+    }
 }
 
 /** Called when we started to render the world */
@@ -5126,10 +5147,6 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
     const bool drawAnimatedCasters = (casterMask & SHADOW_CASTER_ANIMATED) != 0;
 
     if ( drawWorldCasters && Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh ) {
-        // Bind wrapped mesh vertex buffers
-        DrawVertexBufferIndexedUINT( Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer,
-            Engine::GAPI->GetWrappedWorldMesh()->MeshIndexBuffer, 0, 0 );
-
         vsBufMPI.Update( &identityMatrix ).Bind();
 
         // Only use cache if we haven't already collected the vobs
@@ -5164,8 +5181,10 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                 }
 
                 // Draw from wrapped mesh
-                DrawVertexBufferIndexedUINT( nullptr, nullptr,
-                    meshInfoByKey->second->Indices.size(), meshInfoByKey->second->BaseIndexLocation );
+                MeshInfo* mesh = meshInfoByKey->second;
+                DrawVertexBufferIndexed( mesh->MeshVertexBuffer,
+                    GetShadowAwareIndexBuffer( mesh ),
+                    GetShadowAwareIndexCount( mesh ) );
             }
         } else {
             for ( auto&& itx : Engine::GAPI->GetWorldSections() ) {
@@ -5210,8 +5229,10 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                                 }
 
                                 // Draw from wrapped mesh
-                                DrawVertexBufferIndexedUINT( nullptr, nullptr,
-                                    meshInfoByKey->second->Indices.size(), meshInfoByKey->second->BaseIndexLocation );
+                                MeshInfo* mesh = meshInfoByKey->second;
+                                DrawVertexBufferIndexed( mesh->MeshVertexBuffer,
+                                    GetShadowAwareIndexBuffer( mesh ),
+                                    GetShadowAwareIndexCount( mesh ) );
                             }
                         }
                     }
@@ -5281,8 +5302,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                 for ( auto const& meshInfo : materialMesh.second ) {
                     DrawVertexBufferIndexed(
                         meshInfo->MeshVertexBuffer,
-                        meshInfo->MeshIndexBuffer,
-                        meshInfo->Indices.size() );
+                        GetShadowAwareIndexBuffer( meshInfo ),
+                        GetShadowAwareIndexCount( meshInfo ) );
                 }
             }
         }
@@ -5442,10 +5463,6 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
     const bool drawAnimatedCasters = (casterMask & SHADOW_CASTER_ANIMATED) != 0;
 
     if ( drawWorldCasters && Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh ) {
-        // Bind wrapped mesh vertex buffers
-        DrawVertexBufferInstancedIndexedUINT( Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer,
-            Engine::GAPI->GetWrappedWorldMesh()->MeshIndexBuffer, 0, 0, 0 );
-
         ActiveVS->GetBuffer( "Matrices_PerInstances" ).Update( &identityMatrix ).Bind();
 
         // Only use cache if we haven't already collected the vobs
@@ -5480,8 +5497,11 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                 }
 
                 // Draw from wrapped mesh
-                DrawVertexBufferInstancedIndexedUINT( nullptr, nullptr,
-                    meshInfoByKey->second->Indices.size(), 6, meshInfoByKey->second->BaseIndexLocation );
+                MeshInfo* mesh = meshInfoByKey->second;
+                DrawVertexBufferInstancedIndexed( mesh->MeshVertexBuffer,
+                    GetShadowAwareIndexBuffer( mesh ),
+                    GetShadowAwareIndexCount( mesh ),
+                    6 );
             }
         } else {
             for ( auto&& itx : Engine::GAPI->GetWorldSections() ) {
@@ -5526,8 +5546,11 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                                 }
 
                                 // Draw from wrapped mesh
-                                DrawVertexBufferInstancedIndexedUINT( nullptr, nullptr,
-                                    meshInfoByKey->second->Indices.size(), 6, meshInfoByKey->second->BaseIndexLocation );
+                                MeshInfo* mesh = meshInfoByKey->second;
+                                DrawVertexBufferInstancedIndexed( mesh->MeshVertexBuffer,
+                                    GetShadowAwareIndexBuffer( mesh ),
+                                    GetShadowAwareIndexCount( mesh ),
+                                    6 );
                             }
                         }
                     }
@@ -5600,8 +5623,9 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                 for ( auto const& meshInfo : materialMesh.second ) {
                     DrawVertexBufferInstancedIndexed(
                         meshInfo->MeshVertexBuffer,
-                        meshInfo->MeshIndexBuffer,
-                        meshInfo->Indices.size(), 6 );
+                        GetShadowAwareIndexBuffer( meshInfo ),
+                        GetShadowAwareIndexCount( meshInfo ),
+                        6 );
                 }
             }
         }
@@ -5695,97 +5719,90 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect(const std::vector<Wo
     float alphaRef = Engine::GAPI->GetRendererState().GraphicsState.FF_AlphaRef;
     bool linearDepth = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches &
                 GSWITCH_LINEAR_DEPTH) != 0;
-    
-    auto drawMultiIndexedInstancedIndirect = Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseMDI
-            ? DrawMultiIndexedInstancedIndirect
-            : Stub_DrawMultiIndexedInstancedIndirect;
-        
-        if ( Engine::GAPI->GetRendererState().RendererSettings.FastShadows )
-        {
-            if ( !linearDepth )  // Only unbind when not rendering linear depth
-            {
-                // Unbind PS
-                Context->PSSetShader( nullptr, nullptr, 0 );
-            }
 
-            for ( const WorldMeshSectionInfo* section : visibleSections ) {
-                if ( section->FullStaticMesh ) {
-                    Engine::GAPI->DrawMeshInfo( nullptr, section->FullStaticMesh );
-                }
-            }
-            return;
+    auto drawMultiIndexedInstancedIndirect = Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseMDI
+        ? DrawMultiIndexedInstancedIndirect
+        : Stub_DrawMultiIndexedInstancedIndirect;
+
+    if ( Engine::GAPI->GetRendererState().RendererSettings.FastShadows ) {
+        if ( !linearDepth ) {
+            Context->PSSetShader( nullptr, nullptr, 0 );
         }
-    // Collect all meshes first, then batch by alpha requirement
+
+        for ( const WorldMeshSectionInfo* section : visibleSections ) {
+            if ( section->FullStaticMesh ) {
+                Engine::GAPI->DrawMeshInfo( nullptr, section->FullStaticMesh );
+            }
+        }
+        return;
+    }
+
+    // Collect all meshes first, then batch by alpha requirement.
     static thread_local std::vector<D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS> opaqueDrawArgs;
     static thread_local std::vector<std::pair<zCTexture*, MeshInfo*>> alphaMeshes;
     opaqueDrawArgs.clear();
     alphaMeshes.clear();
-    if ( opaqueDrawArgs.capacity() == 0 ) { opaqueDrawArgs.reserve( 4096 ); alphaMeshes.reserve( 512 ); }
+    if ( opaqueDrawArgs.capacity() == 0 ) {
+        opaqueDrawArgs.reserve( 4096 );
+        alphaMeshes.reserve( 512 );
+    }
 
     {
         TracyD3D11ZoneCGX( "ShadowPass_DrawWorldMesh_Indirect::Classify" );
         auto _scopeClassify = RecordGraphicsEvent( GE_NAME( "ShadowPass_DrawWorldMesh_Indirect::Classify" ) );
         for ( const WorldMeshSectionInfo* section : visibleSections ) {
             for ( const auto& meshPair : section->WorldMeshes ) {
-                // Skip non-standard materials (water, portals, etc.)
                 if ( meshPair.first.Info->MaterialType != MaterialInfo::MT_None )
                     continue;
 
+                MeshInfo* mesh = meshPair.second;
                 zCTexture* tex = meshPair.first.Material ? meshPair.first.Material->GetTexture() : nullptr;
+                const unsigned int indexCount = GetShadowAwareIndexCount( mesh );
 
                 if ( tex && tex->HasAlphaChannel() && alphaRef > 0.0f ) {
-                    // Need alpha testing - cache texture
                     if ( tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
-                        alphaMeshes.emplace_back( tex, meshPair.second );
+                        alphaMeshes.emplace_back( tex, mesh );
                     }
                 } else {
                     D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS args;
-                    args.IndexCountPerInstance = static_cast<UINT>(meshPair.second->Indices.size());
+                    args.IndexCountPerInstance = indexCount;
                     args.InstanceCount = 1;
-                    args.StartIndexLocation = meshPair.second->BaseIndexLocation;
+                    args.StartIndexLocation = mesh->BaseIndexLocation;
                     args.BaseVertexLocation = 0;
                     args.StartInstanceLocation = 0;
                     opaqueDrawArgs.push_back( args );
                 }
 
-                Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
-                    meshPair.second->Indices.size() / 3;
+                Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles += indexCount / 3;
             }
         }
     }
 
-    // Draw all opaque meshes without pixel shader (depth only) using MDI
     if ( !opaqueDrawArgs.empty() ) {
         TracyD3D11ZoneCGX( "ShadowPass_DrawWorldMesh_Indirect::OpaqueSubmission" );
         auto _scopeOpaqueSubmission = RecordGraphicsEvent( GE_NAME( "ShadowPass_DrawWorldMesh_Indirect::OpaqueSubmission" ) );
         if ( !linearDepth ) {
-            // Unbind PS for depth-only rendering
             Context->PSSetShader( nullptr, nullptr, 0 );
         }
 
-        // Initialize or resize the indirect buffer if needed
         const size_t requiredSize = opaqueDrawArgs.size() * sizeof( D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS );
-
         D3D11IndirectBuffer* shadowIndirectBuffer = AcquireFrameIndirectBuffer( m_ShadowWorldIndirectPool,
-            opaqueDrawArgs.data(), static_cast<unsigned int>( requiredSize ), "ShadowWorldMeshIndirectArgs" );
+            opaqueDrawArgs.data(),
+            static_cast<unsigned int>( requiredSize ),
+            "ShadowWorldMeshIndirectArgs" );
 
-        // Execute multi-draw indirect call for all opaque meshes
-        // DrawMultiIndexedInstancedIndirect falls back to individual DrawIndexedInstancedIndirect 
-        // calls via Stub_DrawMultiIndexedInstancedIndirect if hardware doesn't support MDI
         if ( shadowIndirectBuffer ) {
             drawMultiIndexedInstancedIndirect( Context.Get(),
-                static_cast<unsigned int>(opaqueDrawArgs.size()),
+                static_cast<unsigned int>( opaqueDrawArgs.size() ),
                 shadowIndirectBuffer->GetIndirectBuffer().Get(),
                 0,
                 sizeof( D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS ) );
         }
     }
 
-    // Draw alpha-tested meshes with texture binding
     if ( !alphaMeshes.empty() ) {
         TracyD3D11ZoneCGX( "ShadowPass_DrawWorldMesh_Indirect::AlphaSubmission" );
         auto _scopeAlphaSubmission = RecordGraphicsEvent( GE_NAME( "ShadowPass_DrawWorldMesh_Indirect::AlphaSubmission" ) );
-        // Sort by texture to minimize binding changes
         std::sort( alphaMeshes.begin(), alphaMeshes.end(),
             []( const auto& a, const auto& b ) { return a.first < b.first; } );
 
@@ -5801,8 +5818,10 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect(const std::vector<Wo
                     lastTex = tex;
                 }
             }
+
             DrawVertexBufferIndexedUINT( nullptr, nullptr,
-                mesh->Indices.size(), mesh->BaseIndexLocation );
+                GetShadowAwareIndexCount( mesh ),
+                mesh->BaseIndexLocation );
         }
     }
 }
@@ -5855,8 +5874,9 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh(const std::vector<WorldMeshSe
         }
 
         for ( MeshInfo* mesh : opaqueMeshes ) {
-            DrawVertexBufferIndexedUINT( nullptr, nullptr,
-                mesh->Indices.size(), mesh->BaseIndexLocation );
+            DrawVertexBufferIndexed( mesh->MeshVertexBuffer,
+                GetShadowAwareIndexBuffer( mesh ),
+                GetShadowAwareIndexCount( mesh ) );
         }
     }
 
@@ -5881,8 +5901,9 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh(const std::vector<WorldMeshSe
                     lastTex = tex;
                 }
             }
-            DrawVertexBufferIndexedUINT( nullptr, nullptr,
-                mesh->Indices.size(), mesh->BaseIndexLocation );
+            DrawVertexBufferIndexed( mesh->MeshVertexBuffer,
+                GetShadowAwareIndexBuffer( mesh ),
+                GetShadowAwareIndexCount( mesh ) );
         }
     }
 }
@@ -5965,16 +5986,21 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
     if ( Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh ) {
         TracyD3D11ZoneCGX( "Shadows::DrawWorldMesh" );
         auto _1 = RecordGraphicsEvent( GE_NAME( "Shadows::DrawWorldMesh" ) );
-        // Bind wrapped mesh vertex buffers
-        DrawVertexBufferIndexedUINT(
-            Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer,
-            Engine::GAPI->GetWrappedWorldMesh()->MeshIndexBuffer, 0, 0 );
-
         cbMatrices_PerInstances.Update( &identityMatrix ).Bind();
 
         static thread_local std::vector<WorldMeshSectionInfo*> visibleSections;
         visibleSections.clear();
         Engine::GAPI->CollectVisibleSections(visibleSections);
+
+        if ( Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseMDI ) {
+            MeshInfo* wrappedWorldMesh = Engine::GAPI->GetWrappedWorldMesh();
+            if ( wrappedWorldMesh ) {
+                D3D11VertexBuffer* wrappedIndexBuffer = wrappedWorldMesh->MeshShadowIndexBuffer
+                    ? wrappedWorldMesh->MeshShadowIndexBuffer
+                    : wrappedWorldMesh->MeshIndexBuffer;
+                DrawVertexBufferIndexedUINT( wrappedWorldMesh->MeshVertexBuffer, wrappedIndexBuffer, 0, 0 );
+            }
+        }
         
         if (Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseMDI) {
             ShadowPass_DrawWorldMesh_Indirect(visibleSections);
@@ -6218,7 +6244,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
             /* Dont re-bind buffer all the time*/
             const auto vb = mi->MeshVertexBuffer;
-            const auto ib = mi->MeshIndexBuffer;
+            const auto ib = GetShadowAwareIndexBuffer( mi );
 
             UINT offset[] = { 0 };
             UINT uStride[] = { sizeof( ExVertexStruct ) };
@@ -6226,7 +6252,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                 vb->GetVertexBuffer().Get()
             };
 
-            auto numIndices = mi->Indices.size();
+            auto numIndices = static_cast<size_t>(GetShadowAwareIndexCount( mi ));
             const auto numInstances = staticMeshVisual->Instances.size();
             const auto startInstanceNum = staticMeshVisual->StartInstanceNum;
             const auto indexOffset = 0;

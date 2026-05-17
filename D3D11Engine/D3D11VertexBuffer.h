@@ -2,6 +2,7 @@
 #include <string>
 
 #include <d3d11_4.h>
+#include <vector>
 
 #include "VertexTypes.h"
 
@@ -61,7 +62,7 @@ public:
     XRESULT Unmap();
 
     /** Optimizes the given set of vertices */
-    XRESULT OptimizeVertices( VERTEX_INDEX* indices, byte* vertices, unsigned int numIndices, unsigned int numVertices, unsigned int stride );
+    XRESULT OptimizeVertices( VERTEX_INDEX* indices, byte* vertices, unsigned int numIndices, unsigned int numVertices, unsigned int stride, std::vector<VERTEX_INDEX>* outShadowIndices = nullptr );
 
     /** Optimizes the given set of vertices */
     XRESULT OptimizeFaces( VERTEX_INDEX* indices, byte* vertices, unsigned int numIndices, unsigned int numVertices, unsigned int stride );
