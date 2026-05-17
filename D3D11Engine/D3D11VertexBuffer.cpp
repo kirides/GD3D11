@@ -229,6 +229,8 @@ XRESULT D3D11VertexBuffer::OptimizeVertices( VERTEX_INDEX* indices, byte* vertic
         return XR_FAILED;
     }
 
+    ZoneScoped;
+
     std::vector<unsigned int> indexData;
     ConvertIndicesToUInt32( indices, numIndices, indexData );
 
@@ -288,6 +290,8 @@ XRESULT D3D11VertexBuffer::OptimizeFaces( VERTEX_INDEX* indices, byte* vertices,
         LogError() << "OptimizeFaces: numVertices exceeds VERTEX_INDEX range";
         return XR_FAILED;
     }
+
+    ZoneScoped;
 
     std::vector<unsigned int> indexData;
     ConvertIndicesToUInt32( indices, numIndices, indexData );

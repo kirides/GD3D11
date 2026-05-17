@@ -47,6 +47,8 @@ namespace {
 
 /** Collects all world-polys in the specific range. Drops all materials that have no alphablending */
 void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float range, std::map<int, std::map<int, WorldMeshSectionInfo>>& inSections, std::map<MeshKey, MeshInfo*, cmpMeshKey>& outMeshes ) {
+    ZoneScoped;
+
     INT2 s = GetSectionOfPos( position );
     MeshKey opaqueKey;
     opaqueKey.Material = nullptr;
@@ -142,6 +144,8 @@ void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float ra
 
 /** Converts a loaded custommesh to be the worldmesh */
 XRESULT WorldConverter::LoadWorldMeshFromFile( const std::string& file, std::map<int, std::map<int, WorldMeshSectionInfo>>* outSections, WorldInfo* info, MeshInfo** outWrappedMesh ) {
+    ZoneScoped;
+
     GMesh* mesh = new GMesh();
 
     const float worldScale = 100.0f;
@@ -402,6 +406,8 @@ bool AdditionalCheckWaterFall(zCTexture* texture)
 
 /** Converts the worldmesh into a more usable format */
 HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPolygons, std::map<int, std::map<int, WorldMeshSectionInfo>>* outSections, WorldInfo* info, MeshInfo** outWrappedMesh, bool indoorLocation ) {
+    ZoneScoped;
+    
     // Go through every polygon and put it into its section
     for ( unsigned int i = 0; i < numPolygons; i++ ) {
         zCPolygon* poly = polys[i];
@@ -670,6 +676,8 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
 
 /** Creates the FullSectionMesh for the given section */
 void WorldConverter::GenerateFullSectionMesh( WorldMeshSectionInfo& section ) {
+    ZoneScoped;
+
     std::vector<ExVertexStruct> vx;
 
     // Pre-calculate total triangle count to avoid reallocations
@@ -804,6 +812,8 @@ void WorldConverter::SaveSectionsToObjUnindexed( const char* file, const std::ma
 
 /** Extracts a 3DS-Mesh from a zCVisual */
 void WorldConverter::Extract3DSMeshFromVisual( zCProgMeshProto* visual, MeshVisualInfo* meshInfo ) {
+    ZoneScoped;
+
     std::vector<ExVertexStruct> vertices;
 
     // Get the data out for all submeshes
@@ -870,6 +880,8 @@ void WorldConverter::Extract3DSMeshFromVisual( zCProgMeshProto* visual, MeshVisu
 
 /** Extracts a skeletal mesh from a zCMeshSoftSkin */
 void WorldConverter::ExtractSkeletalMeshFromVob( zCModel* model, SkeletalMeshVisualInfo* skeletalMeshInfo ) {
+    ZoneScoped;
+
     // This type has multiple skinned meshes inside
     for ( int i = 0; i < model->GetMeshSoftSkinList()->NumInArray; i++ ) {
         zCMeshSoftSkin* s = model->GetMeshSoftSkinList()->Array[i];
@@ -1003,6 +1015,8 @@ void WorldConverter::ExtractSkeletalMeshFromVob( zCModel* model, SkeletalMeshVis
 
 /** Extracts a zCProgMeshProto from a zCModel */
 void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualInfo* meshInfo ) {
+    ZoneScoped;
+
     XMFLOAT3 bbmin = XMFLOAT3( FLT_MAX, FLT_MAX, FLT_MAX );
     XMFLOAT3 bbmax = XMFLOAT3( -FLT_MAX, -FLT_MAX, -FLT_MAX );
 
@@ -1169,6 +1183,8 @@ void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualIn
 
 /** Extracts a zCProgMeshProto from a zCMesh */
 void WorldConverter::ExtractProgMeshProtoFromMesh( zCMesh* mesh, MeshVisualInfo* meshInfo ) {
+    ZoneScoped;
+
     zCPolygon** polys = mesh->GetPolygons();
     int numPolys = mesh->GetNumPolygons();
     zCMaterial* mat = (numPolys > 0 ? polys[0]->GetMaterial() : nullptr);
@@ -1245,6 +1261,8 @@ void WorldConverter::ExtractProgMeshProtoFromMesh( zCMesh* mesh, MeshVisualInfo*
 
 /** Extracts a node-visual */
 void WorldConverter::ExtractNodeVisual( int index, zCModelNodeInst* node, gtl::flat_hash_map<int, std::vector<MeshVisualInfo*>>& attachments ) {
+    ZoneScoped;
+
     // Only allow 1 attachment
     if ( !attachments[index].empty() ) {
         delete attachments[index][0];
@@ -1288,6 +1306,8 @@ void WorldConverter::ExtractNodeVisual( int index, zCModelNodeInst* node, gtl::f
 
 /** Updates a Morph-Mesh visual */
 void WorldConverter::UpdateMorphMeshVisual( void* v, MeshVisualInfo* meshInfo ) {
+    ZoneScoped;
+
     zCMorphMesh* visual = reinterpret_cast<zCMorphMesh*>(v);
     visual->GetTexAniState()->UpdateTexList(); // always update tex list, otherwise texture corrupt (very rarely).
 
@@ -1334,6 +1354,8 @@ void WorldConverter::UpdateMorphMeshVisual( void* v, MeshVisualInfo* meshInfo ) 
 
 /** Extracts a 3DS-Mesh from a zCVisual */
 void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVisualInfo* meshInfo ) {
+    ZoneScoped;
+
     XMFLOAT3 bbmin = XMFLOAT3( FLT_MAX, FLT_MAX, FLT_MAX );
     XMFLOAT3 bbmax = XMFLOAT3( -FLT_MAX, -FLT_MAX, -FLT_MAX );
 
