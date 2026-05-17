@@ -2327,7 +2327,7 @@ XRESULT D3D11GraphicsEngine::DrawVertexBufferFF( D3D11VertexBuffer* vb,
     return XR_SUCCESS;
 }
 
-/** Sets up texture with normalmap and fxmap for rendering */
+/** Sets up texture with normalmap and ORM map for rendering */
 bool D3D11GraphicsEngine::BindTextureNRFX( zCTexture* tex, bool bindShader, bool updateMaterialInfo ) {
     if ( tex->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
         return false;
@@ -2370,9 +2370,8 @@ bool D3D11GraphicsEngine::BindTextureNRFX( zCTexture* tex, bool bindShader, bool
         GetContext()->PSSetConstantBuffers1( 2, 1, &allocation.pBuffer, &firstConstant, &numConstants );
     }
 
-    if ( D3D11Texture* fxmap = tex->GetSurface()->GetFxMap() ) {
-        srvs[2] = fxmap->GetShaderResourceView().Get();
-        fxmap->BindToPixelShader( 2 );
+    if ( D3D11Texture* ormMap = tex->GetSurface()->GetOrmMap() ) {
+        srvs[2] = ormMap->GetShaderResourceView().Get();
     }
 
     GetContext()->PSSetShaderResources( 0, 3, srvs );
@@ -4759,8 +4758,8 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
             srv[1] = surface->GetNormalmap()
                 ? surface->GetNormalmap()->GetShaderResourceView().Get()
                 : nullptr;
-            srv[2] = surface->GetFxMap()
-                ? surface->GetFxMap()->GetShaderResourceView().Get()
+            srv[2] = surface->GetOrmMap()
+                ? surface->GetOrmMap()->GetShaderResourceView().Get()
                 : nullptr;
             
             int alphaFunc = meshKey.Material->GetAlphaFunc();
@@ -5202,8 +5201,8 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
                 srv[1] = surface->GetNormalmap()
                     ? surface->GetNormalmap()->GetShaderResourceView().Get()
                     : nullptr;
-                srv[2] = surface->GetFxMap()
-                    ? surface->GetFxMap()->GetShaderResourceView().Get()
+                srv[2] = surface->GetOrmMap()
+                    ? surface->GetOrmMap()->GetShaderResourceView().Get()
                     : nullptr;
 
                 auto needDefaultNormalsStrength = !srv[1] && sceneIsWet;
@@ -7380,19 +7379,19 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                     float expectedSmallRadius = renderSettings.OutdoorSmallVobDrawRadius - cachedVisual->Visual->MeshSize;
                     float expectedVobRadius = renderSettings.OutdoorVobDrawRadius - cachedVisual->Visual->MeshSize;
 
-                    if ( DIST_DistanceSlot != -1 ) {
+                    if ( DIST_DistanceSlot.IsValid()) {
                         if ( cachedVisual->Visual->MeshSize < renderSettings.SmallVobSize ) {
                             // Only update if it changed
                             if ( std::abs( cachedSmallVobRadius - expectedSmallRadius ) > 0.1f ) {
                                 OutdoorSmallVobsConstantBuffer->UpdateBuffer( float4( expectedSmallRadius, 0, 0, 0 ).toPtr() );
-                                OutdoorSmallVobsConstantBuffer->BindToPixelShader( DIST_DistanceSlot );
+                                DIST_DistanceSlot.Bind(OutdoorSmallVobsConstantBuffer.get());
                                 cachedSmallVobRadius = expectedSmallRadius;
                             }
                         } else {
                             // Only update if it changed
                             if ( std::abs( cachedVobRadius - expectedVobRadius ) > 0.1f ) {
                                 OutdoorVobsConstantBuffer->UpdateBuffer( float4( expectedVobRadius, 0, 0, 0 ).toPtr() );
-                                OutdoorVobsConstantBuffer->BindToPixelShader( DIST_DistanceSlot );
+                                DIST_DistanceSlot.Bind(OutdoorVobsConstantBuffer.get());
                                 cachedVobRadius = expectedVobRadius;
                             }
                         }
@@ -7461,8 +7460,8 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                         srv[1] = surface->GetNormalmap()
                             ? surface->GetNormalmap()->GetShaderResourceView().Get()
                             : nullptr;
-                        srv[2] = surface->GetFxMap()
-                            ? surface->GetFxMap()->GetShaderResourceView().Get()
+                        srv[2] = surface->GetOrmMap()
+                            ? surface->GetOrmMap()->GetShaderResourceView().Get()
                             : nullptr;
 
                         // Bind a default normalmap in case the scene is wet and we
@@ -7700,8 +7699,8 @@ XRESULT D3D11GraphicsEngine::DrawFrameAlphaMeshes()
             srv[1] = surface->GetNormalmap()
                 ? surface->GetNormalmap()->GetShaderResourceView().Get()
                 : nullptr;
-            srv[2] = surface->GetFxMap()
-                ? surface->GetFxMap()->GetShaderResourceView().Get()
+            srv[2] = surface->GetOrmMap()
+                ? surface->GetOrmMap()->GetShaderResourceView().Get()
                 : nullptr;
 
             // Bind both
@@ -7832,7 +7831,7 @@ XRESULT D3D11GraphicsEngine::DrawPolyStrips( bool noTextures ) {
             // Get diffuse and normalmap
             srv[0] = surface->GetEngineTexture()->GetShaderResourceView().Get();
             srv[1] = surface->GetNormalmap() ? surface->GetNormalmap()->GetShaderResourceView().Get() : NULL;
-            srv[2] = surface->GetFxMap() ? surface->GetFxMap()->GetShaderResourceView().Get() : NULL;
+            srv[2] = surface->GetOrmMap() ? surface->GetOrmMap()->GetShaderResourceView().Get() : NULL;
 
             // Bind both
             Context->PSSetShaderResources( 0, 3, srv );

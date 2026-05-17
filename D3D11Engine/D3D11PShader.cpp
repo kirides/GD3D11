@@ -56,23 +56,25 @@ XRESULT D3D11PShader::Apply() {
 void D3D11PShader::BindResource(StringID name, ID3D11ShaderResourceView* srv)
 {
     const int inputIndex = GetInputIndex(name);
-    if (inputIndex != -1)
+    if (inputIndex != INVALID_SHADER_CB_SLOT )
         reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->PSSetShaderResources( inputIndex, 1, &srv );
 }
 
 void D3D11PShader::BindSampler(StringID name, ID3D11SamplerState* sampler)
 {
     const int inputIndex = GetInputIndex(name);
-    if (inputIndex != -1)
+    if (inputIndex != INVALID_SHADER_CB_SLOT )
         reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->PSSetSamplers( inputIndex, 1, &sampler );
 }
 
-void D3D11PShader::BindBuffer(StringID name, D3D11ConstantBuffer* buffer) {
-    if (auto idx = GetInputIndex(name); idx != -1) {
+void D3D11PShader::BindBuffer( StringID name, D3D11ConstantBuffer* buffer ) {
+    if ( auto idx = GetInputIndex( name ); idx != INVALID_SHADER_CB_SLOT ) {
         buffer->BindToPixelShader(idx);
     }
 }
 
 void D3D11PShader::BindBuffer(UINT slot, D3D11ConstantBuffer* buffer) {
-    buffer->BindToPixelShader(slot);
+    if ( slot != INVALID_SHADER_CB_SLOT ) {
+        buffer->BindToPixelShader(slot);
+    }
 }

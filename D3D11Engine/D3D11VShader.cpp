@@ -240,22 +240,24 @@ XRESULT D3D11VShader::Apply() {
 
 void D3D11VShader::BindResource(StringID name, ID3D11ShaderResourceView* srv) {
     const int inputIndex = GetInputIndex(name);
-    if (inputIndex != -1)
+    if (inputIndex != INVALID_SHADER_CB_SLOT )
         reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->VSSetShaderResources( inputIndex, 1, &srv );
 }
 
-void D3D11VShader::BindSampler(StringID name, ID3D11SamplerState* sampler) {
-    const int inputIndex = GetInputIndex(name);
-    if (inputIndex != -1)
+void D3D11VShader::BindSampler( StringID name, ID3D11SamplerState* sampler ) {
+    const int inputIndex = GetInputIndex( name );
+    if ( inputIndex != INVALID_SHADER_CB_SLOT )
         reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->VSSetSamplers( inputIndex, 1, &sampler );
 }
 
-void D3D11VShader::BindBuffer(StringID name, D3D11ConstantBuffer* buffer) {
-    if (auto idx = GetInputIndex(name); idx != -1) {
+void D3D11VShader::BindBuffer( StringID name, D3D11ConstantBuffer* buffer ) {
+    if ( auto idx = GetInputIndex( name ); idx != INVALID_SHADER_CB_SLOT ) {
         buffer->BindToVertexShader(idx);
     }
 }
 
 void D3D11VShader::BindBuffer(UINT slot, D3D11ConstantBuffer* buffer) {
-    buffer->BindToVertexShader(slot);
+    if ( slot != INVALID_SHADER_CB_SLOT ) {
+        buffer->BindToVertexShader(slot);
+    }
 }

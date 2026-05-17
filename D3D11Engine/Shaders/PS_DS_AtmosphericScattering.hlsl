@@ -63,6 +63,7 @@ Texture2D TX_ShadowBlueNoise : register(t8);
 Texture2D TX_AO : register(t9);
 
 #include "ShadowSampling.h"
+#include "include/PointLightShadows.h"
 
 
 //--------------------------------------------------------------------------------------
@@ -81,15 +82,6 @@ float3 VSPositionFromDepth(float depth, float2 vTexCoord)
     // projection, so the reconstructed world position is stable across frames.
     return ReconstructVSPositionFromDepthReverseZInfinite( depth, vTexCoord - SQ_JitterOffset, SQ_ProjParams.xy );
 }
-
-//--------------------------------------------------------------------------------------
-// Blinn-Phong Lighting Reflection Model
-//--------------------------------------------------------------------------------------
-float CalcBlinnPhongLighting(float3 N, float3 H)
-{
-    return saturate(dot(N, H));
-}
-
 
 static const float WEIGHT_BIAS = -0.55;
 static const float WEIGHT_MUL = 0.7;
@@ -162,7 +154,7 @@ void ApplyRainNormalDeformation(inout float3 vsNormal, float3 wsPosition, inout 
 }
 
 /** Returns new diffusecolor (rgb)*/
-void ApplySceneWettness(float3 wsPosition, float3 vsPosition, float3 vsDir, inout float3 vsNormal, in out float3 diffuse, in out float specIntensity, in out float specPower, out float specAdd, out float localWettness)
+void ApplySceneWettness(float3 wsPosition, float3 vsPosition, float3 vsDir, inout float3 vsNormal, in out float3 diffuse, in out float roughness, out float specAdd, out float localWettness)
 {
 	// Ask the rain-shadowmap if we can hit this pixel
     float pixelWettnes = ComputeShadowValue(0.0f, wsPosition, TX_RainShadowmap, SS_Comp, vsPosition.z, 1.0f, SQ_RainViewProj, 0.0001f, 2.5f) * AC_SceneWettness;
@@ -198,9 +190,8 @@ void ApplySceneWettness(float3 wsPosition, float3 vsPosition, float3 vsDir, inou
 	//vsNormalCpy.z *= 0.3f;
 	//vsNormalCpy = normalize(vsNormalCpy);
 	
-	// Scale specular intensity and power
-    specIntensity = lerp(specIntensity, 0.0, pixelWettnes);
-    specPower = lerp(specPower, 150.0f, pixelWettnes);
+	// Wet surfaces are smoother.
+    roughness = lerp(roughness, 0.08f, pixelWettnes);
 	
 	// Reflection
     float3 reflect_vec = reflect(-vsDir.xyz, vsNormal.xyz);
@@ -216,15 +207,17 @@ void ApplySceneWettness(float3 wsPosition, float3 vsPosition, float3 vsDir, inou
     float3 H_1 = normalize(l1 + vsDir);
     float3 H_2 = normalize(l2 + vsDir);
     float3 H_3 = normalize(l3 + vsDir);
-    float spec1 = CalcBlinnPhongLighting(vsNormal, H_1);
-    float spec2 = CalcBlinnPhongLighting(vsNormal, H_2);
-    float spec3 = CalcBlinnPhongLighting(vsNormal, H_3);
+    float spec1 = PLS_CalcBlinnPhongLighting(vsNormal, H_1);
+    float spec2 = PLS_CalcBlinnPhongLighting(vsNormal, H_2);
+    float spec3 = PLS_CalcBlinnPhongLighting(vsNormal, H_3);
+
+    float wetSpecPower = lerp(32.0f, 256.0f, 1.0f - roughness);
 		
 	// power the reflection 
     reflection = pow(reflection, 2.5f) * 1.0f;
     //reflection += fresnel * 0.1f;
 	
-    reflection += pow(spec1, specPower) * 0.7f + pow(spec2, specPower) * 0.7f + pow(spec3, specPower) * 0.6f;
+    reflection += pow(spec1, wetSpecPower) * 0.7f + pow(spec2, wetSpecPower) * 0.7f + pow(spec3, wetSpecPower) * 0.6f;
 	
 	// Compute wet pixel color
     float diffuseLum = dot(diffuse, float3(0.3333f, 0.3333f, 0.3333f));
@@ -263,10 +256,11 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
 	
 	// Get specular parameters
     float4 gb3 = TX_SI_SP.Sample(SS_Linear, uv);
-	// Negative specIntensity signals a focused VOB (encoded in PS_Diffuse GBuffer fill).
-	bool focused = gb3.x < 0.0f;
-    float specIntensity = focused ? (-gb3.x - 0.001f) : gb3.x;
-    float specPower = gb3.y;
+    float roughness = gb3.x;
+    float metallic = gb3.y;
+    float ao = gb3.z;
+    bool focused = gb3.w;
+
 	
 	// Reconstruct VS World Position from depth
     float3 vsPosition = VSPositionFromDepth(expDepth, uv);
@@ -306,20 +300,15 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
     float localWettness = 0.0f;
 	
 #ifdef APPLY_RAIN_EFFECTS
-    ApplySceneWettness(wsPosition, vsPosition, V, normal, diffuse.rgb, specIntensity, specPower, specWet, localWettness);
+	ApplySceneWettness(wsPosition, vsPosition, V, normal, diffuse.rgb, roughness, specWet, localWettness);
 	
 	// Boost specWet when not in shadow
 	specWet += specWet * shadow;
 #endif
-	// Compute specular lighting
-	
-    float3 H = normalize(SQ_LightDirectionVS + V);
-    float spec = CalcBlinnPhongLighting(normal, H);
-    float specMod = pow(dot(float3(0.333f, 0.333f, 0.333f), diffuse.rgb), 2);
-    
-    
-	
-	//return float4(diffuse.rgb, 1);
+
+    roughness = PLS_SafeRoughness( roughness );
+
+    float3 L = normalize(SQ_LightDirectionVS);
 	
     float4 lightColor = SQ_LightColor;
     lightColor.rgb = lerp(lightColor.rgb, lightColor.rgb * 0.8f, localWettness);
@@ -330,31 +319,21 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
 	float vl = saturate(vertLighting * 2);
 	float vertAO = lerp(vl * vl, 1.0f, 0.5f);
 
-    float sun = saturate(dot(normalize(SQ_LightDirectionVS), normal) * shadow) * 1.0f;
-    
-    // Screen-space AO: applied to indirect/ambient light only (not direct sun),
+	float sun = saturate(dot(L, normal) * shadow) * 1.0f;
+	
+	// Screen-space AO: applied to indirect/ambient light only (not direct sun),
     // so it doesn't produce deep shadows on ground/objects that are lit strongly by the sun.
     float ssao = TX_AO.Sample(SS_Linear, uv).r;
 
-    spec = pow(spec, specPower) * specIntensity;
-    float3 specBare = spec * lightColor.rgb * sun + specWet * lightColor.rgb;
-    float3 specColored = saturate(lerp(specBare, specBare * diffuse.rgb, specMod));
+    float shadowAO = lerp(1.0f, vertLighting, SQ_ShadowAOStrength) * ao;
+    float worldAO = lerp(1.0f, vertLighting, SQ_WorldAOStrength) * ao;
 	
-    float shadowAO = lerp(1.0f, vertLighting, SQ_ShadowAOStrength);
-    float worldAO = lerp(1.0f, vertLighting, SQ_WorldAOStrength);
-	
-    float3 litPixel = lerp(diffuse.rgb * SQ_ShadowStrength * sunStrength * shadowAO * ssao,
-							diffuse.rgb * lightColor.rgb * lightColor.a * worldAO, sun)
-				  + specColored;
-	
-    float f = 1.0f - saturate(dot(normal, V));
-    // float fresnel = pow(f, 10.0f);
-	// use optimized pow alternative
-	float f2 = f*f;
-	float f4 = f2*f2;
-	float f8 = f4*f4; 
-	float fresnel = f8*f2;
-    litPixel += lerp(fresnel * litPixel * 0.5f, 0.0f, sun);
+    float sunAttenuation = sun * worldAO * lightColor.a;
+    float3 directSun = PLS_ComputeDirectPBRLighting(diffuse.rgb, lightColor.rgb, normal, V, L, roughness, metallic, sunAttenuation);
+
+    float3 litPixel = diffuse.rgb * SQ_ShadowStrength * sunStrength * shadowAO * ssao
+                    + directSun
+                    + specWet * lightColor.rgb;
 	
 	// Run scattering
     litPixel = ApplyAtmosphericScatteringGround(wsPosition, litPixel.rgb);

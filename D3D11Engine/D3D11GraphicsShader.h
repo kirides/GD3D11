@@ -12,6 +12,15 @@ class D3D11ConstantBuffer;
 constexpr size_t MAX_SHADER_CB = 6;
 constexpr size_t INVALID_SHADER_CB_SLOT = 255;
 
+struct GraphicsShaderConstantBufferSlot {
+    UINT slot;
+    D3D11GraphicsShader* shader;
+
+    void Bind( D3D11ConstantBuffer* buffer ) const;
+
+    bool IsValid() const;
+};
+
 struct GraphicsShaderConstantBuffer
 {
 public:
@@ -47,7 +56,8 @@ public:
     GraphicsShaderConstantBuffer& Bind();
     GraphicsShaderConstantBuffer& Bind(UINT slot);
     constexpr D3D11ConstantBuffer* GetRawBuffer() const { return buffer; }
-    constexpr UINT GetSlot() const { return slot; } 
+    constexpr UINT GetSlot() const { return slot; }
+    GraphicsShaderConstantBufferSlot GetRawSlot() const { return { slot, shader }; }
 private:
     D3D11ConstantBuffer* buffer;
     D3D11GraphicsShader* shader;

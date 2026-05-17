@@ -89,8 +89,7 @@ DEFERRED_PS_OUTPUT PSMain( PS_INPUT Input ) : SV_TARGET
 	
 	output.vNrm = EncodeNormalGBuffer(normalize(Input.vNormalVS));
 
-	output.vSI_SP.x = MI_SpecularIntensity;
-	output.vSI_SP.y = MI_SpecularPower;
+	output.vSI_SP = float4(0.6f, 0.0f, 1.0f, 1.0f);
 	
 #if MOTION_VECTORS == 1
 	// Calculate velocity for motion vectors

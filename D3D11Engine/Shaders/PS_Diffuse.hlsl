@@ -124,15 +124,17 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
 	float3 nrm = normalize(Input.vNormalVS);
 #endif
 
-	float4 fx;
+	float3 orm;
 #if FXMAP == 1
-	fx = TX_Texture2.Sample(SS_Linear, texcoord);
+	orm = saturate( TX_Texture2.Sample(SS_Linear, Input.vTexcoord).rgb );
 #else
-	fx = 1.0f;
+	orm = float3( 1.0f, 0.6f, 0.0f );
 #endif
 
-	float specIntensity = MI_SpecularIntensity * fx.r;
-	float specPower = MI_SpecularPower * fx.g;
+	float ao = orm.r;
+	float roughness = max( orm.g, 0.045f );
+	float metallic = orm.b;
+	float3 baseColor = color.rgb;
 	float vertLighting = Input.vDiffuse.y;
 
 	float3 vsPosition = Input.vViewPosition;
@@ -178,7 +180,7 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
 	float ssao = FP_AOMask.Load( int3( int2( Input.vPosition.xy ), 0 ) ).r;
 
 	// Sun lighting
-	float3 litPixel = FP_ComputeSunLighting(wsPosition, vsPosition, nrm, color.rgb, specIntensity, specPower, shadow, vertLighting, ssao);
+	float3 litPixel = FP_ComputeSunLighting(wsPosition, vsPosition, nrm, baseColor, roughness, metallic, ao, shadow, vertLighting, ssao);
 	
 	// Atmospheric scattering
 	litPixel = ApplyAtmosphericScatteringGround(wsPosition, litPixel);
@@ -186,7 +188,7 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
 	// Point lights, only when close enough
 	if (pixelDistZ < 6000.0f) 
 	{
-		litPixel += FP_ComputePointLighting(wsPosition, vsPosition, nrm, color.rgb, specIntensity, specPower, Input.vPosition.xy);
+		litPixel += FP_ComputePointLighting(wsPosition, vsPosition, nrm, baseColor, roughness, metallic, Input.vPosition.xy);
 	}
 
 	float focusBrightness = 1.0f + step(1.5f, Input.vDiffuse.w) * 1.0f;
@@ -244,13 +246,17 @@ DEFERRED_PS_OUTPUT PSMain( PS_INPUT Input ) : SV_TARGET
 #else
 	float3 nrm = normalize(Input.vNormalVS);
 #endif
-
-	float4 fx;
+	
+	float3 orm;
 #if FXMAP == 1
-	fx = TX_Texture2.Sample(SS_Linear, texcoord);
+	orm = saturate( TX_Texture2.Sample(SS_Linear, Input.vTexcoord).rgb );
 #else
-	fx = 1.0f;
+	orm = float3( 1.0f, 0.6f, 0.0f );
 #endif
+
+	float ao = orm.r;
+	float roughness = max( orm.g, 0.045f );
+	float metallic = orm.b;
 	
 	output.vDiffuse = float4(color.rgb, Input.vDiffuse.y);
 	//output.vDiffuse = float4(Input.vTexcoord2, 0, 1);
@@ -258,12 +264,8 @@ DEFERRED_PS_OUTPUT PSMain( PS_INPUT Input ) : SV_TARGET
 
 	output.vNrm = EncodeNormalGBuffer(nrm);
 
-	// Encode focused flag as negative specIntensity so it survives into the deferred lighting pass.
-	// PS_DS_AtmosphericScattering decodes it and applies the brightness boost post-lighting.
-	float rawSpecIntensity = MI_SpecularIntensity * fx.r; // fix negative specular intensity here.
 	bool focused = Input.vDiffuse.w > 1.5f;
-	output.vSI_SP.x = focused ? -(rawSpecIntensity + 0.001f) : rawSpecIntensity;
-	output.vSI_SP.y = MI_SpecularPower * fx.g;
+	output.vSI_SP = float4(roughness, metallic, ao, focused ? 1.0f : 0.0f);
 	
 	// Calculate velocity for motion vectors
 	// For instanced objects (VOBs, skeletal meshes), vCurrClipPos/vPrevClipPos come from VS

@@ -132,7 +132,7 @@ TextureCubeArray FP_ShadowCubeArray : register( t11 );
 
 float3 FP_ComputePointLighting(
     float3 wsPosition, float3 vsPosition, float3 normal,
-    float3 diffuseColor, float specIntensity, float specPower,
+    float3 diffuseColor, float roughness, float metallic,
     float2 screenPos )
 {
     uint tileX = (uint)screenPos.x / FP_TILE_SIZE;
@@ -145,7 +145,6 @@ float3 FP_ComputePointLighting(
 
     // These only need to be calculated once per pixel
     float3 V = normalize( -vsPosition );
-    float specMod = PLS_ComputeSpecMod( diffuseColor );
     float3 wsNormal = normalize( mul( float4( normal, 0 ), SQ_InvView ).xyz );
     
     for ( uint i = 0; i < grid.Count; i++ )
@@ -166,9 +165,7 @@ float3 FP_ComputePointLighting(
         // instead of pow(..., 1.2f) we use a fast quadratic-like approach.
         float falloff = PLS_ComputeRangeFalloff( distance, light.Range );
 
-        float3 H = normalize( lightDir + V );
-        float spec = PLS_CalcBlinnPhongLighting( normal, H ) * light.Color.w;
-        float3 lighting = PLS_ComputePointLightLighting( diffuseColor, light.Color.rgb, ndl, falloff, spec, specIntensity, specPower, specMod );
+        float3 lighting = PLS_ComputePointLightLightingPBR( diffuseColor, light.Color.rgb, normal, V, lightDir, falloff, roughness, metallic );
 
         // Don't fetch shadows if the light contribution is effectively zero.
         if ( light.ShadowCubeIndex >= 0 && any(lighting > 0.001f) )
@@ -191,33 +188,25 @@ float3 FP_ComputePointLighting(
 
 float3 FP_ComputeSunLighting(
     float3 wsPosition, float3 vsPosition, float3 normal,
-    float3 diffuseColor, float specIntensity, float specPower,
-    float shadow, float vertLighting, float ssao)
+    float3 diffuseColor, float roughness, float metallic,
+    float ao, float shadow, float vertLighting, float ssao )
 {
     float3 V = normalize( -vsPosition );
-    float3 H = normalize( SQ_LightDirectionVS + V );
-    float spec = PLS_CalcBlinnPhongLighting( normal, H );
-    float specMod = pow( dot( float3( 0.333f, 0.333f, 0.333f ), diffuseColor ), 2 );
+    float3 L = normalize( SQ_LightDirectionVS );
 
     float4 lightColor = SQ_LightColor;
     float sunStrength = dot( lightColor.rgb, float3( 0.333f, 0.333f, 0.333f ) );
-    float sun = saturate( dot( normalize( SQ_LightDirectionVS ), normal ) * shadow );
+    float sun = saturate( dot( L, normal ) * shadow );
 
-    spec = pow( spec, specPower ) * specIntensity;
-    float3 specBare = spec * lightColor.rgb * sun;
-    float3 specColored = saturate( lerp( specBare, specBare * diffuseColor, specMod ) );
+    float shadowAO = lerp( 1.0f, vertLighting, SQ_ShadowAOStrength ) * ao;
+    float worldAO = lerp( 1.0f, vertLighting, SQ_WorldAOStrength ) * ao;
 
-    float shadowAO = lerp( 1.0f, vertLighting, SQ_ShadowAOStrength );
-    float worldAO = lerp( 1.0f, vertLighting, SQ_WorldAOStrength );
+    float sunAttenuation = sun * worldAO * lightColor.a;
+    float3 directSun = PLS_ComputeDirectPBRLighting( diffuseColor, lightColor.rgb, normal, V, L, roughness, metallic, sunAttenuation );
 
-    float3 litPixel = lerp( diffuseColor * SQ_ShadowStrength * sunStrength * shadowAO * ssao,
-                            diffuseColor * lightColor.rgb * lightColor.a * worldAO, sun )
-                    + specColored;
+    float3 ambientSun = diffuseColor * SQ_ShadowStrength * sunStrength * shadowAO * ssao;
 
-    float fresnel = pow( 1.0f - saturate( dot( normal, V ) ), 10.0f );
-    litPixel += lerp( fresnel * litPixel * 0.5f, 0.0f, sun );
-
-    return litPixel;
+    return ambientSun + directSun;
 }
 
 #endif // FORWARD_PLUS_LIGHTING_H

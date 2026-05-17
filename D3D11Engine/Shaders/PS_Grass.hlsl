@@ -67,7 +67,7 @@ DEFERRED_PS_OUTPUT PSMain( PS_INPUT Input ) : SV_TARGET
 	
 	output.vNrm = EncodeNormalGBuffer(normalize(Input.vNormalVS));
 	
-	output.vSI_SP.xy = 0;
+	output.vSI_SP = float4(0.8f, 0.0f, 1.0f, 1.0f);
 	
 	// Calculate velocity from clip positions
 	output.vVelocity = CalculateVelocity(Input.vCurrClipPos, Input.vPrevClipPos);

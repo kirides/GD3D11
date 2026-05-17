@@ -85,8 +85,8 @@ public:
     /** Returns the normalmap of this surface */
     D3D11Texture* GetNormalmap();
 
-    /** Returns the fx-map for this surface */
-    D3D11Texture* GetFxMap();
+    /** Returns the ORM map for this surface */
+    D3D11Texture* GetOrmMap();
 
     /** Loads additional resources if possible */
     void LoadAdditionalResources( zCTexture* ownedTexture );
@@ -127,7 +127,7 @@ private:
 
     /** Additional maps */
     D3D11Texture* Normalmap;
-    D3D11Texture* FxMap;
+    D3D11Texture* OrmMap;
 
     /** Locktype */
     DWORD LockType;

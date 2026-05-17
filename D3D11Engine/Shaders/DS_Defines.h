@@ -2,7 +2,7 @@ struct DEFERRED_PS_OUTPUT
 {
 	float4 vDiffuse : SV_TARGET0;
 	float2 vNrm : SV_TARGET1; 
-	float2 vSI_SP : SV_TARGET2;
+	float4 vSI_SP : SV_TARGET2;
 	float2 vVelocity : SV_TARGET3;  // Screen-space velocity for motion vectors
 };
 

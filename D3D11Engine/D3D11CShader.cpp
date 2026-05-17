@@ -56,11 +56,13 @@ void D3D11CShader::BindSampler(StringID name, ID3D11SamplerState* sampler) {
 }
 
 void D3D11CShader::BindBuffer(StringID name, D3D11ConstantBuffer* buffer) {
-    if (auto idx = GetInputIndex(name); idx != -1) {
+    if (auto idx = GetInputIndex(name); idx != INVALID_SHADER_CB_SLOT ) {
         buffer->BindToComputeShader(idx);
     }
 }
 
 void D3D11CShader::BindBuffer(UINT slot, D3D11ConstantBuffer* buffer) {
-    buffer->BindToComputeShader(slot);
+    if ( slot != INVALID_SHADER_CB_SLOT ) {
+        buffer->BindToComputeShader(slot);
+    }
 }

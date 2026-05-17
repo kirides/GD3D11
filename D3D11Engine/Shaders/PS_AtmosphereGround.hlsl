@@ -85,8 +85,7 @@ DEFERRED_PS_OUTPUT PSMain( PS_INPUT Input ) : SV_TARGET
 	
 	output.vNrm = EncodeNormalGBuffer(nrm);
 	
-	output.vSI_SP.x = MI_SpecularIntensity;
-	output.vSI_SP.y = MI_SpecularPower;
+	output.vSI_SP = float4(0.6f, 0.0f, 1.0f, 1.0f);
 	return output;
 }
 

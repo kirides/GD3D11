@@ -30,7 +30,7 @@ void D3D11DeferredRenderer::AddGeometryPasses( RenderGraph& graph,
     graph.AddPass( RG_PASS_NAME("G-Buffer Pass"), [&, colorResource, velocityBufferHandle, backBufferHandle]( RGBuilder& builder, RenderPass& pass ) {
         auto size = engine.GetResolution();
         normalsResource = builder.CreateTexture( { static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y), DXGI_FORMAT_R16G16_FLOAT, L"GBufferNormals" } );
-        specularResource = builder.CreateTexture( { static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y), DXGI_FORMAT_R16G16_FLOAT, L"GBufferSpecular" } );
+        specularResource = builder.CreateTexture( { static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y), DXGI_FORMAT_R16G16B16A16_FLOAT, L"GBufferMaterial" } );
         reactiveMaskResource = builder.CreateTexture( { static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y), DXGI_FORMAT_R8_UNORM, L"ReactiveMask" } );
 
         builder.Write( colorResource );
@@ -162,7 +162,7 @@ bool D3D11DeferredRenderer::BindShaderForTexture( D3D11ShaderManager& shaderMana
     } else if ( blendAdd || blendBlend ) {
         newShader = shaderManager.GetPShader( PShaderID::PS_Simple_FF );
     } else if ( texture->HasAlphaChannel() || forceAlphaTest ) {
-        if ( texture->GetSurface()->GetFxMap() ) {
+        if ( texture->GetSurface()->GetOrmMap() ) {
             newShader = shaderManager.GetPShader( resolvedDiffuseNormalmappedAlphatestFxMap );
         } else if ( texture->GetSurface()->GetNormalmap() || Engine::GAPI->GetSceneWetness() > 1e-6 ) {
             newShader = shaderManager.GetPShader( resolvedDiffuseNormalmappedAlphatest ); 
@@ -170,7 +170,7 @@ bool D3D11DeferredRenderer::BindShaderForTexture( D3D11ShaderManager& shaderMana
             newShader = shaderManager.GetPShader( PShaderID::PS_DiffuseAlphaTest );
         }
     } else {
-        if ( texture->GetSurface()->GetFxMap() ) {
+        if ( texture->GetSurface()->GetOrmMap() ) {
             newShader = shaderManager.GetPShader( resolvedDiffuseNormalmappedFxMap );
         } else if ( texture->GetSurface()->GetNormalmap() || Engine::GAPI->GetSceneWetness() > 1e-6 ) {
             newShader = shaderManager.GetPShader( resolvedDiffuseNormalmapped );

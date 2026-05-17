@@ -48,14 +48,6 @@ float3 VSPositionFromDepth(float depth, float2 vTexCoord)
 	return ReconstructVSPositionFromDepthReverseZInfinite( depth, vTexCoord - PL_JitterOffset, PL_ProjParams.xy );
 }
 
-//--------------------------------------------------------------------------------------
-// Blinn-Phong Lighting Reflection Model
-//--------------------------------------------------------------------------------------
-float CalcBlinnPhongLighting(float3 N, float3 H)
-{
-    return saturate(dot(N, H));
-}
-
 float GetShadow(float2 uv)
 {
 	// Get light direction
@@ -106,8 +98,8 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	
 	// Get specular parameters
 	float4 gb3 = TX_SI_SP.Sample(SS_Linear, uv);
-	float specIntensity = gb3.x;
-	float specPower = gb3.y;
+	float roughness = gb3.x;
+	float metallic = gb3.y;
 	
 	// Reconstruct VS World Position from depth
 	float expDepth = TX_Depth.Sample(SS_Linear, uv).r;
@@ -118,21 +110,13 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	float distance = length(lightDir);
 	lightDir /= distance; // Normalize the direction
 	
-	// Do some simple NdL-Lighting
-	float ndl = max(0, dot(lightDir, normal));
-	
 	// Compute range falloff
 	float falloff = PLS_ComputeRangeFalloff(distance, PL_Range);
 	//float falloff = saturate(1.0f / (pow(distance / PL_Range * 2, 2)));
-	
-	// Compute specular lighting
-	float3 V = normalize(-vsPosition);
-	float3 H = normalize(lightDir + V);
-	float spec = PLS_CalcBlinnPhongLighting(normal, H) * PL_Color.w;
-	float specMod = PLS_ComputeSpecMod(diffuse.rgb);
-	
-	// Blend this with the light color, world diffuse and specular term.
-	float3 lighting = PLS_ComputePointLightLighting(diffuse.rgb, PL_Color.rgb, ndl, falloff, spec, specIntensity, specPower, specMod);
+
+	// Compute physically-based direct lighting
+	float3 V = normalize(-Pl_PositionView);
+	float3 lighting = PLS_ComputePointLightLightingPBR(diffuse.rgb, PL_Color.rgb, normal, V, lightDir, falloff, roughness, metallic);
 	
 	return float4(saturate(lighting),1);
 }

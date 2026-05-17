@@ -86,7 +86,7 @@ void D3D11GShader::BindSampler(StringID name, ID3D11SamplerState* sampler) {
 }
 
 void D3D11GShader::BindBuffer(StringID name, D3D11ConstantBuffer* buffer) {
-    if (auto idx = GetInputIndex(name); idx != -1) {
+    if (auto idx = GetInputIndex(name); idx != INVALID_SHADER_CB_SLOT) {
         buffer->BindToGeometryShader(idx);
     }
 }
