@@ -22,7 +22,7 @@
 #include "D3D11Texture.h"
 #include "D3D7\MyDirectDrawSurface7.h"
 #include "zCQuadMark.h"
-
+#include <meshoptimizer/src/meshoptimizer.h>
 #include "MeshManager.h"
 
 extern MeshManager* s_MeshManager;
@@ -103,6 +103,18 @@ void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float ra
         // Create the buffers
         Engine::GraphicsEngine->CreateVertexBuffer( &it->second->MeshVertexBuffer );
         Engine::GraphicsEngine->CreateVertexBuffer( &it->second->MeshIndexBuffer );
+
+        // Optimize index and vertex locality before uploading immutable buffers.
+        it->second->MeshVertexBuffer->OptimizeFaces( it->second->Indices.data(),
+            reinterpret_cast<byte*>( it->second->Vertices.data() ),
+            it->second->Indices.size(),
+            it->second->Vertices.size(),
+            sizeof( ExVertexStruct ) );
+        it->second->MeshVertexBuffer->OptimizeVertices( it->second->Indices.data(),
+            reinterpret_cast<byte*>( it->second->Vertices.data() ),
+            it->second->Indices.size(),
+            it->second->Vertices.size(),
+            sizeof( ExVertexStruct ) );
 
         // Init and fill them
         it->second->MeshVertexBuffer->Init( &it->second->Vertices[0], it->second->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
@@ -792,9 +804,21 @@ void WorldConverter::Extract3DSMeshFromVisual( zCProgMeshProto* visual, MeshVisu
         Engine::GraphicsEngine->CreateVertexBuffer( &mi->MeshVertexBuffer );
         Engine::GraphicsEngine->CreateVertexBuffer( &mi->MeshIndexBuffer );
 
+        // Optimize static submesh ordering for better cache and vertex fetch locality.
+        mi->MeshVertexBuffer->OptimizeFaces( mi->Indices.data(),
+            reinterpret_cast<byte*>( mi->Vertices.data() ),
+            mi->Indices.size(),
+            mi->Vertices.size(),
+            sizeof( ExVertexStruct ) );
+        mi->MeshVertexBuffer->OptimizeVertices( mi->Indices.data(),
+            reinterpret_cast<byte*>( mi->Vertices.data() ),
+            mi->Indices.size(),
+            mi->Vertices.size(),
+            sizeof( ExVertexStruct ) );
+
         // Init and fill it
-        mi->MeshVertexBuffer->Init( &vertices[0], vertices.size() * sizeof( ExVertexStruct ) );
-        mi->MeshIndexBuffer->Init( &indices[0], indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER );
+        mi->MeshVertexBuffer->Init( &mi->Vertices[0], mi->Vertices.size() * sizeof( ExVertexStruct ) );
+        mi->MeshIndexBuffer->Init( &mi->Indices[0], mi->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER );
 
         meshInfo->Meshes[mat].emplace_back( mi );
     }
@@ -1152,6 +1176,18 @@ void WorldConverter::ExtractProgMeshProtoFromMesh( zCMesh* mesh, MeshVisualInfo*
     // Create the buffers
     Engine::GraphicsEngine->CreateVertexBuffer( &mi->MeshVertexBuffer );
     Engine::GraphicsEngine->CreateVertexBuffer( &mi->MeshIndexBuffer );
+
+    // Optimize static mesh ordering for better cache and vertex fetch locality.
+    mi->MeshVertexBuffer->OptimizeFaces( mi->Indices.data(),
+        reinterpret_cast<byte*>( mi->Vertices.data() ),
+        mi->Indices.size(),
+        mi->Vertices.size(),
+        sizeof( ExVertexStruct ) );
+    mi->MeshVertexBuffer->OptimizeVertices( mi->Indices.data(),
+        reinterpret_cast<byte*>( mi->Vertices.data() ),
+        mi->Indices.size(),
+        mi->Vertices.size(),
+        sizeof( ExVertexStruct ) );
 
     // Init and fill it
     mi->MeshVertexBuffer->Init( &mi->Vertices[0], mi->Vertices.size() * sizeof( ExVertexStruct ) );

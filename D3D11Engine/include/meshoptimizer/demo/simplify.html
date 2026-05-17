@@ -1,0 +1,1084 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<title>meshoptimizer - demo</title>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0" />
+		<style>
+			body {
+				font-family: Monospace;
+				background-color: #300a24;
+				color: #fff;
+				margin: 0px;
+				overflow: hidden;
+				display: flex;
+				flex-direction: column;
+				height: 100vh;
+			}
+			#info {
+				color: #fff;
+				position: absolute;
+				top: 10px;
+				width: 100%;
+				text-align: center;
+				z-index: 100;
+				display: block;
+			}
+			#info a,
+			.button {
+				color: #f00;
+				font-weight: bold;
+				text-decoration: underline;
+				cursor: pointer;
+			}
+			#grid-container {
+				width: 100%;
+				flex: 1;
+				display: grid;
+				grid-template-columns: repeat(var(--grid-columns, 1), 1fr);
+				grid-auto-rows: minmax(300px, 1fr);
+				overflow-y: auto;
+			}
+			.renderer-container {
+				position: relative;
+				width: 100%;
+				height: 100%;
+			}
+			.renderer-container canvas {
+				width: 100% !important;
+				height: 100% !important;
+				display: block;
+				user-select: none;
+			}
+			.renderer-label {
+				position: absolute;
+				top: 10px;
+				left: 10px;
+				background-color: rgba(0, 0, 0, 0.5);
+				padding: 5px 10px;
+				border-radius: 5px;
+				pointer-events: auto;
+				font-size: 14px;
+				transition: background-color 0.2s;
+			}
+			.renderer-label:hover {
+				background-color: rgba(0, 0, 0, 0.7);
+			}
+			.renderer-label.focused {
+				background-color: rgba(255, 100, 100, 0.7);
+				color: white;
+			}
+			.renderer-label.clickable {
+				cursor: pointer;
+			}
+			.stats-label {
+				position: absolute;
+				top: 45px;
+				left: 10px;
+				background-color: rgba(0, 0, 0, 0.5);
+				padding: 5px 10px;
+				border-radius: 5px;
+				pointer-events: none;
+				font-size: 12px;
+				line-height: 1.4;
+			}
+
+			.renderer-container.hidden {
+				display: none;
+			}
+
+			/* Custom scrollbar styling */
+			#grid-container::-webkit-scrollbar {
+				width: 16px;
+			}
+
+			#grid-container::-webkit-scrollbar-track {
+				background: rgba(255, 255, 255, 0.1);
+			}
+
+			#grid-container::-webkit-scrollbar-thumb {
+				background: rgba(255, 255, 255, 0.3);
+				border-radius: 8px;
+			}
+
+			#grid-container::-webkit-scrollbar-thumb:hover {
+				background: rgba(255, 255, 255, 0.5);
+			}
+		</style>
+
+		<script type="importmap">
+			{
+				"imports": {
+					"three": "https://cdn.jsdelivr.net/npm/three@0.174.0/build/three.module.js",
+					"three-examples/": "https://cdn.jsdelivr.net/npm/three@0.174.0/examples/jsm/",
+					"lil-gui": "https://cdn.jsdelivr.net/npm/lil-gui@0.20.0/dist/lil-gui.esm.js"
+				}
+			}
+		</script>
+	</head>
+
+	<body>
+		<div id="grid-container"></div>
+		<input type="file" id="fileInput" style="display: none" accept=".obj,.glb" multiple />
+
+		<script type="module">
+			import * as THREE from 'three';
+			import { GLTFLoader } from 'three-examples/loaders/GLTFLoader.js';
+			import { OBJLoader } from 'three-examples/loaders/OBJLoader.js';
+			import { OrbitControls } from 'three-examples/controls/OrbitControls.js';
+			import { mergeGeometries, mergeVertices } from 'three-examples/utils/BufferGeometryUtils.js';
+			import { MeshoptDecoder } from '../js/meshopt_decoder.mjs';
+			import { MeshoptSimplifier } from '../js/meshopt_simplifier.js';
+			import { GUI } from 'lil-gui';
+
+			var container, gridContainer;
+			var camera, clock;
+			var renderers = [];
+			var scenes = [];
+			var controls = [];
+			var models = [];
+			var mixers = [];
+			var viewStats = [];
+
+			// Focus tracking
+			var focusedViewIndex = -1; // -1 means no focus (show all)
+
+			// Track camera distance for autoLod
+			var lastCameraDistance = 0;
+
+			var settings = {
+				wireframe: false,
+				wireframeOverlay: false,
+				animate: false,
+				pointSize: 1.0,
+				ratio: 1.0,
+				debugOverlay: false,
+				sloppy: false,
+				permissive: false,
+				permissiveProtection: 2, // uvs
+				lockBorder: false,
+				preprune: 0.0,
+				prune: true,
+				regularize: false,
+				solve: false,
+				useAttributes: true,
+				autoTextureWeight: false,
+				errorThresholdLog10: 1,
+				errorScaled: true,
+				normalWeight: 1.0,
+				colorWeight: 1.0,
+				textureWeight: 0.0,
+				autoLod: false,
+				autoLodFactor: 1.0,
+				gridColumns: 2,
+				debugCheckerboard: false,
+
+				loadFile: function () {
+					var input = document.getElementById('fileInput');
+					input.onchange = function () {
+						var files = Array.from(input.files).sort(function (a, b) {
+							var an = a.name.split('.')[0];
+							var bn = b.name.split('.')[0];
+							return an.localeCompare(bn);
+						});
+						loadFiles(files);
+					};
+					input.click();
+				},
+
+				updateModule: function () {
+					reload();
+					simplify();
+				},
+				autoUpdate: false,
+				autoUpdateStatus: '',
+			};
+
+			var gui = new GUI({ width: 300 });
+			var guiDisplay = gui.addFolder('Display');
+			guiDisplay.add(settings, 'wireframe').onChange(update);
+			guiDisplay.add(settings, 'wireframeOverlay').onChange(simplify); // requires debug data rebuild
+			guiDisplay.add(settings, 'animate').onChange(update);
+			guiDisplay.add(settings, 'pointSize', 1, 16).onChange(update);
+			guiDisplay.add(settings, 'debugOverlay').onChange(simplify); // requires debug data rebuild
+			guiDisplay.add(settings, 'gridColumns', 1, 6, 1).onChange(updateGridLayout);
+
+			var guiSimplify = gui.addFolder('Simplify');
+			guiSimplify.add(settings, 'ratio', 0, 1, 0.01).onChange(simplify);
+			guiSimplify.add(settings, 'sloppy').onChange(simplify);
+			guiSimplify.add(settings, 'permissive').onChange(simplify);
+			guiSimplify.add(settings, 'permissiveProtection', { none: 0, uvs: 2, normals: 1, all: 3 }).onChange(simplify);
+			guiSimplify.add(settings, 'lockBorder').onChange(simplify);
+			guiSimplify.add(settings, 'prune').onChange(simplify);
+			guiSimplify.add(settings, 'regularize').onChange(simplify);
+			guiSimplify.add(settings, 'solve').onChange(simplify);
+			guiSimplify.add(settings, 'preprune', 0, 0.2, 0.01).onChange(simplify);
+			guiSimplify.add(settings, 'useAttributes').onChange(simplify).onFinishChange(updateSettings);
+
+			var guiAttributes = [];
+			guiAttributes.push(guiSimplify.add(settings, 'normalWeight', 0, 2, 0.01).onChange(simplify));
+			guiAttributes.push(guiSimplify.add(settings, 'colorWeight', 0, 2, 0.01).onChange(simplify));
+			guiAttributes.push(guiSimplify.add(settings, 'textureWeight', 0, 100, 0.1).onChange(simplify));
+
+			guiSimplify.add(settings, 'autoTextureWeight').onChange(simplify);
+			guiSimplify.add(settings, 'errorScaled').onChange(simplify);
+			guiSimplify.add(settings, 'errorThresholdLog10', 0, 3, 0.1).onChange(simplify);
+
+			var guiLod = gui.addFolder('LOD');
+			guiLod.add(settings, 'autoLod').onChange(simplify);
+			guiLod.add(settings, 'autoLodFactor', 0, 10, 0.01).onChange(simplify);
+
+			var guiLoad = gui.addFolder('Load');
+			guiLoad.add(settings, 'loadFile');
+			guiLoad.add(settings, 'updateModule');
+			guiLoad.add(settings, 'debugCheckerboard');
+			guiLoad.add(settings, 'autoUpdate').onChange(autoReload);
+			guiLoad.add(settings, 'autoUpdateStatus').listen();
+
+			updateSettings();
+			init();
+			loadDefault();
+			animate();
+
+			function loadFiles(files) {
+				// Clear existing views
+				clearViews();
+
+				if (files.length > 0) {
+					// Set grid columns based on the number of files, up to the max setting
+					const columns = Math.min(files.length, settings.gridColumns);
+					document.documentElement.style.setProperty('--grid-columns', columns);
+
+					// Load each file into a separate view
+					for (var i = 0; i < files.length; i++) {
+						var file = files[i];
+						var uri = URL.createObjectURL(file);
+						var ext = file.name.split('.').pop().toLowerCase();
+
+						createView(i, file.name);
+						loadIntoView(i, uri, ext);
+					}
+				}
+			}
+
+			function updateGridLayout() {
+				if (renderers.length > 0) {
+					var visibleViews = focusedViewIndex >= 0 ? 1 : renderers.length;
+					var columns = Math.min(visibleViews, settings.gridColumns);
+					document.documentElement.style.setProperty('--grid-columns', columns);
+
+					// Set grid cell height based on whether we're in single view or grid mode
+					if (columns > 1) {
+						// In grid mode, make cells square by calculating height based on viewport width
+						var cellWidth = Math.floor(window.innerWidth / columns);
+						document.documentElement.style.setProperty('--grid-cell-height', cellWidth + 'px');
+					} else {
+						// Single view mode, use full height
+						document.documentElement.style.setProperty('--grid-cell-height', '100vh');
+					}
+
+					updateRendererSizes();
+				}
+			}
+
+			// Helper function to handle autoLOD updates - no longer tied to camera rotation
+			function updateAutoLod() {
+				if (settings.autoLod) {
+					// Check if distance has changed significantly
+					var center = new THREE.Vector3();
+					var currentDistance = camera.position.distanceTo(center);
+
+					if (Math.abs(currentDistance - lastCameraDistance) > 1e-3) {
+						lastCameraDistance = currentDistance;
+						simplify();
+					}
+				}
+			}
+
+			function updateSettings() {
+				for (var i = 0; i < guiAttributes.length; ++i) {
+					guiAttributes[i].enable(settings.useAttributes);
+				}
+			}
+
+			function clearViews() {
+				// Remove all existing renderers and clear arrays
+				for (var i = 0; i < renderers.length; i++) {
+					var container = renderers[i].domElement.parentElement;
+					if (container) {
+						container.parentElement.removeChild(container);
+					}
+				}
+
+				renderers = [];
+				scenes = [];
+				controls = [];
+				models = [];
+				mixers = [];
+				viewStats = [];
+
+				// Reset focus state
+				focusedViewIndex = -1;
+
+				// Clear the grid container
+				gridContainer.innerHTML = '';
+			}
+
+			function updateLabelsClickability() {
+				var isClickable = renderers.length > 1;
+
+				for (var i = 0; i < renderers.length; i++) {
+					var container = renderers[i].domElement.parentElement;
+					var label = container.querySelector('.renderer-label');
+
+					if (isClickable) {
+						label.classList.add('clickable');
+						label.title = 'Click to focus on this view';
+					} else {
+						label.classList.remove('clickable');
+						label.title = '';
+					}
+				}
+			}
+
+			function toggleFocus(viewIndex) {
+				if (focusedViewIndex === viewIndex) {
+					// Currently focused on this view, unfocus (show all)
+					focusedViewIndex = -1;
+				} else {
+					// Focus on this view
+					focusedViewIndex = viewIndex;
+				}
+				updateFocusDisplay();
+				simplify(); // Re-run simplify with new focus state
+			}
+
+			function updateFocusDisplay() {
+				for (var i = 0; i < renderers.length; i++) {
+					var container = renderers[i].domElement.parentElement;
+					var label = container.querySelector('.renderer-label');
+
+					if (focusedViewIndex === -1) {
+						// No focus - show all containers
+						container.classList.remove('hidden');
+						label.classList.remove('focused');
+						if (renderers.length > 1) {
+							label.title = 'Click to focus on this view';
+						}
+					} else if (focusedViewIndex === i) {
+						// This is the focused view
+						container.classList.remove('hidden');
+						label.classList.add('focused');
+						label.title = 'Click to exit focus mode';
+					} else {
+						// Hide non-focused views
+						container.classList.add('hidden');
+						label.classList.remove('focused');
+					}
+				}
+
+				// Update grid layout when focus changes
+				updateGridLayout();
+			}
+
+			function createView(index, name) {
+				// Create renderer container
+				var rendererContainer = document.createElement('div');
+				rendererContainer.className = 'renderer-container';
+				gridContainer.appendChild(rendererContainer);
+
+				// Add label with file name
+				var label = document.createElement('div');
+				label.className = 'renderer-label';
+				label.textContent = name;
+				label.onclick = function () {
+					if (renderers.length > 1) {
+						toggleFocus(index);
+					}
+				};
+				rendererContainer.appendChild(label);
+
+				// Add stats label
+				var statsLabel = document.createElement('div');
+				statsLabel.className = 'stats-label';
+				rendererContainer.appendChild(statsLabel);
+
+				// Initialize stats for this view
+				viewStats.push({
+					triangles: 0,
+					vertices: 0,
+					error: 0,
+					ratio: 0,
+					label: statsLabel,
+				});
+
+				// Create renderer
+				var renderer = new THREE.WebGLRenderer();
+				renderer.setPixelRatio(window.devicePixelRatio);
+				rendererContainer.appendChild(renderer.domElement);
+				renderers.push(renderer);
+
+				// Create scene
+				var scene = new THREE.Scene();
+				scene.background = new THREE.Color(0x300a24);
+				scenes.push(scene);
+
+				// Add lighting
+				var ambientLight = new THREE.AmbientLight(0xcccccc, 1);
+				scene.add(ambientLight);
+
+				var pointLightR = new THREE.PointLight(0xffffff, 4);
+				pointLightR.position.set(3, 3, 0);
+				pointLightR.decay = 0.5;
+				scene.add(pointLightR);
+
+				var pointLightL = new THREE.PointLight(0xffffff, 1);
+				pointLightL.position.set(-3, 5, 0);
+				pointLightL.decay = 0.5;
+				scene.add(pointLightL);
+
+				// Create controls
+				var control = new OrbitControls(camera, renderer.domElement);
+				control.addEventListener('change', updateAutoLod);
+				controls.push(control);
+
+				// Set null placeholders
+				models.push(null);
+				mixers.push(null);
+
+				// Adjust renderer size
+				updateRendererSizes();
+
+				// Update label clickability for all views
+				updateLabelsClickability();
+			}
+
+			function simplifyMesh(geo, threshold, scale) {
+				var attributes = 8; // 3 color, 3 normal, 2 uv
+
+				var positions = new Float32Array(geo.attributes.position.array).slice(); // clone for solve
+				var indices = new Uint32Array(geo.index.array).slice(); // clone for solve, upcast 16-bit indices for _InternalDebug
+				var target = settings.autoLod ? 0 : Math.floor((indices.length * settings.ratio) / 3) * 3;
+
+				var stride = geo.attributes.position instanceof THREE.InterleavedBufferAttribute ? geo.attributes.position.data.stride : 3;
+
+				if (settings.useAttributes) {
+					var attrib = new Float32Array(geo.attributes.position.count * attributes);
+
+					for (var i = 0, e = geo.attributes.position.count; i < e; ++i) {
+						if (geo.attributes.normal) {
+							attrib[i * attributes + 0] = geo.attributes.normal.getX(i);
+							attrib[i * attributes + 1] = geo.attributes.normal.getY(i);
+							attrib[i * attributes + 2] = geo.attributes.normal.getZ(i);
+						}
+
+						if (geo.attributes.color) {
+							attrib[i * attributes + 3] = geo.attributes.color.getX(i);
+							attrib[i * attributes + 4] = geo.attributes.color.getY(i);
+							attrib[i * attributes + 5] = geo.attributes.color.getZ(i);
+						}
+
+						if (geo.attributes.uv) {
+							attrib[i * attributes + 6] = geo.attributes.uv.getX(i);
+							attrib[i * attributes + 7] = geo.attributes.uv.getY(i);
+						}
+					}
+
+					var autoTextureWeight = 0;
+
+					if (settings.autoTextureWeight && geo.attributes.uv) {
+						for (var i = 0, e = geo.index.count; i < e; i += 3) {
+							var a = geo.index.getX(i),
+								b = geo.index.getX(i + 1),
+								c = geo.index.getX(i + 2);
+
+							var au = geo.attributes.uv.getX(a),
+								av = geo.attributes.uv.getY(a);
+
+							var bu = geo.attributes.uv.getX(b),
+								bv = geo.attributes.uv.getY(b);
+
+							var cu = geo.attributes.uv.getX(c),
+								cv = geo.attributes.uv.getY(c);
+
+							var uvarea = Math.abs((bu - au) * (cv - av) - (cu - au) * (bv - av)) * 0.5;
+							autoTextureWeight += uvarea;
+						}
+
+						autoTextureWeight /= geo.index.count / 3;
+						autoTextureWeight = autoTextureWeight > 0 ? 1 / Math.sqrt(autoTextureWeight) : 0;
+					}
+
+					var attrib_weights = [
+						settings.normalWeight,
+						settings.normalWeight,
+						settings.normalWeight,
+						settings.colorWeight,
+						settings.colorWeight,
+						settings.colorWeight,
+						settings.autoTextureWeight ? autoTextureWeight : settings.textureWeight,
+						settings.autoTextureWeight ? autoTextureWeight : settings.textureWeight,
+					];
+				} else {
+					var attrib = new Float32Array();
+					var attrib_weights = [];
+					attributes = 0;
+				}
+
+				var flags = [];
+				if (settings.lockBorder) {
+					flags.push('LockBorder');
+				}
+				if (settings.prune) {
+					flags.push('Prune');
+				}
+				if (settings.regularize) {
+					flags.push('Regularize');
+				}
+				if (settings.permissive) {
+					flags.push('Permissive');
+				}
+				if (settings.debugOverlay) {
+					flags.push('_InternalDebug');
+				}
+
+				var locks = new Uint8Array(geo.attributes.position.count);
+
+				if (settings.permissive) {
+					var pos_remap = MeshoptSimplifier.generatePositionRemap(positions, stride);
+					var protect_bit = 2;
+
+					if (geo.attributes.normal && (settings.permissiveProtection & 1) != 0) {
+						for (var i = 0, e = geo.attributes.position.count; i < e; ++i) {
+							if (pos_remap[i] != i) {
+								var rx = geo.attributes.normal.getX(pos_remap[i]),
+									ry = geo.attributes.normal.getY(pos_remap[i]),
+									rz = geo.attributes.normal.getZ(pos_remap[i]);
+								var nx = geo.attributes.normal.getX(i),
+									ny = geo.attributes.normal.getY(i),
+									nz = geo.attributes.normal.getZ(i);
+
+								// keep sharp edges
+								if (rx * nx + ry * ny + rz * nz < 0.25) {
+									locks[i] |= protect_bit;
+								}
+							}
+						}
+					}
+
+					if (geo.attributes.uv && (settings.permissiveProtection & 2) != 0) {
+						for (var i = 0, e = geo.attributes.position.count; i < e; ++i) {
+							if (pos_remap[i] != i) {
+								var ru = geo.attributes.uv.getX(pos_remap[i]),
+									rv = geo.attributes.uv.getY(pos_remap[i]);
+								var u = geo.attributes.uv.getX(i),
+									v = geo.attributes.uv.getY(i);
+
+								// keep UV seams
+								if (u != ru || v != rv) {
+									locks[i] |= protect_bit;
+								}
+							}
+						}
+					}
+				}
+
+				if (settings.preprune > 0) {
+					indices = MeshoptSimplifier.simplifyPrune(indices, positions, stride, settings.preprune / scale);
+					target = Math.min(target, indices.length);
+				}
+
+				var S = MeshoptSimplifier; // to avoid line breaks below...
+				var res = settings.sloppy
+					? S.simplifySloppy(indices, positions, stride, null, target, threshold)
+					: settings.solve
+						? S.simplifyWithUpdate(indices, positions, stride, attrib, attributes, attrib_weights, locks, target, threshold, flags)
+						: S.simplifyWithAttributes(indices, positions, stride, attrib, attributes, attrib_weights, locks, target, threshold, flags);
+
+				if (!settings.sloppy && settings.solve) {
+					res[0] = indices.slice(0, res[0]);
+				}
+
+				var rgeo = geo.clone();
+
+				var dind = res[0];
+				var dlen = dind.length;
+
+				if (settings.debugOverlay) {
+					// we need extra indices for debug overlay
+					dind = Array.from(dind);
+
+					var mask = (1 << 28) - 1;
+
+					for (var kind = 1; kind <= 6; ++kind) {
+						var offset = dind.length;
+
+						for (var i = 0; i < dlen; i += 3) {
+							for (var e = 0; e < 3; ++e) {
+								var a = dind[i + e],
+									b = dind[i + ((e + 1) % 3)];
+								var ak = (a >> 28) & 7,
+									bk = (b >> 28) & 7;
+
+								if (a >> 31 != 0 && (ak == kind || bk == kind) && (ak == kind || ak == 4) && (bk == kind || bk == 4)) {
+									// loop edge of current kind (allow one of the vertices to be locked)
+									// note: complex edges ignore loop metadata
+									dind.push(a & mask);
+									dind.push(a & mask);
+									dind.push(b & mask);
+								} else if (a >> 31 != 0 && kind == 5 && ak != bk && ak != 4 && bk != 4) {
+									// mixed edge (neither vertex is locked, and they are of different kinds)
+									dind.push(a & mask);
+									dind.push(a & mask);
+									dind.push(b & mask);
+								} else if (a >> 31 == 0 && kind == 4 && ak == kind && bk == kind) {
+									// locked edge (not marked as a loop)
+									dind.push(a & mask);
+									dind.push(a & mask);
+									dind.push(b & mask);
+								} else if (a >> 31 == 0 && kind == 6 && ak == 3 && bk == 3) {
+									// complex edge (not marked as a loop)
+									dind.push(a & mask);
+									dind.push(a & mask);
+									dind.push(b & mask);
+								}
+							}
+						}
+
+						if (offset != dind.length) {
+							rgeo.addGroup(offset, dind.length - offset, kind + 1); // +1 to skip overlay
+							offset = dind.length;
+						}
+					}
+
+					// clear debug bits for actual indices
+					for (var i = 0; i < dlen; i++) {
+						dind[i] &= mask;
+					}
+
+					if (settings.wireframeOverlay) {
+						rgeo.addGroup(0, dlen, 1); // 1=overlay
+					}
+				} else if (settings.wireframeOverlay) {
+					rgeo.addGroup(0, dind.length, 1); // 1=overlay
+				}
+
+				rgeo.index.array = new Uint32Array(dind);
+				rgeo.index.count = dind.length;
+				rgeo.index.needsUpdate = true;
+
+				if (settings.solve) {
+					rgeo.attributes.position = new THREE.BufferAttribute(positions, stride);
+
+					if (settings.useAttributes) {
+						for (var i = 0, e = geo.attributes.position.count; i < e; ++i) {
+							var nx = attrib[i * attributes + 0];
+							var ny = attrib[i * attributes + 1];
+							var nz = attrib[i * attributes + 2];
+
+							var nl = Math.sqrt(nx * nx + ny * ny + nz * nz);
+
+							if (nl > 0) {
+								attrib[i * attributes + 0] = nx / nl;
+								attrib[i * attributes + 1] = ny / nl;
+								attrib[i * attributes + 2] = nz / nl;
+							}
+						}
+
+						var attribbuf = new THREE.InterleavedBuffer(attrib, attrib_weights.length);
+
+						if (geo.attributes.normal) {
+							rgeo.attributes.normal = new THREE.InterleavedBufferAttribute(attribbuf, 3, 0, false);
+						}
+						if (geo.attributes.color) {
+							rgeo.attributes.color = new THREE.InterleavedBufferAttribute(attribbuf, 3, 3, false);
+						}
+						if (geo.attributes.uv) {
+							rgeo.attributes.uv = new THREE.InterleavedBufferAttribute(attribbuf, 2, 6, false);
+						}
+					}
+				}
+
+				rgeo.addGroup(0, dlen, 0);
+
+				return [rgeo, dlen / 3, res[1]];
+			}
+
+			function simplifyPoints(geo) {
+				var positions = new Float32Array(geo.attributes.position.array);
+				var colors = undefined;
+
+				var target = Math.floor(geo.attributes.position.count * settings.ratio);
+
+				if (settings.useAttributes && geo.attributes.color) {
+					colors = new Float32Array(geo.attributes.color.array);
+				}
+
+				var pos_stride = geo.attributes.position instanceof THREE.InterleavedBufferAttribute ? geo.attributes.position.data.stride : 3;
+				var col_stride =
+					geo.attributes.color instanceof THREE.InterleavedBufferAttribute
+						? geo.attributes.color.data.stride
+						: geo.attributes.color.itemSize;
+
+				// note: we are converting source color array without normalization; if the color data is quantized, we need to divide by 255 to normalize it
+				var colorScale = geo.attributes.color && geo.attributes.color.normalized ? 255 : 1;
+
+				console.time('simplify');
+
+				var res = MeshoptSimplifier.simplifyPoints(positions, pos_stride, target, colors, col_stride, settings.colorWeight / colorScale);
+
+				console.timeEnd('simplify');
+
+				console.log('simplified to', res.length);
+
+				geo.index = new THREE.BufferAttribute(res, 1);
+			}
+
+			function getRadius(obj) {
+				var box = new THREE.Box3().setFromObject(obj);
+				return box.max.sub(box.min).length() / 2;
+			}
+
+			function simplify() {
+				MeshoptSimplifier.ready.then(function () {
+					var threshold = Math.pow(10, -settings.errorThresholdLog10);
+
+					if (settings.autoLod) {
+						// compute distance to model sphere
+						// ideally this should actually use the real radius and center :) but we rescale/center the model when loading
+						var center = new THREE.Vector3();
+						var radius = 1;
+						var distance = Math.max(camera.position.distanceTo(center) - radius, 0);
+						var loderrortarget = 1e-3 * (2 * Math.tan(camera.fov * 0.5 * (Math.PI / 180))); // ~1 pixel at 1k x 1k
+
+						// note: we are currently cutting corners wrt handling the actual mesh scale
+						// since we rescale the entire scene to fit a unit box, we can directly feed the threshold
+						// this works correctly if there's just one mesh or scales match; ideally we tweak this to compute
+						// threshold per mesh based on relative scale between mesh and scene.
+						// this also computes distance to model *center* instead of surface boundary so features on the boundary
+						// might be simplified more than they should be.
+						threshold = distance * loderrortarget * settings.autoLodFactor;
+					}
+
+					// Process each scene
+					for (var sceneIndex = 0; sceneIndex < scenes.length; sceneIndex++) {
+						var scene = scenes[sceneIndex];
+						if (focusedViewIndex >= 0 && sceneIndex != focusedViewIndex) {
+							continue;
+						}
+
+						// Reset stats for this view
+						var stats = viewStats[sceneIndex];
+						stats.triangles = 0;
+						stats.vertices = 0;
+						stats.error = 0;
+						stats.ratio = 0;
+
+						var rnum = 0;
+						var rden = 0;
+
+						var extent = getRadius(scene);
+
+						scene.traverse(function (object) {
+							if (object.isMesh && object.geometry.index) {
+								if (!object.original) {
+									object.original = object.geometry.clone();
+
+									// use small depth offset to avoid overlay z-fighting with the original mesh
+									// has to be done on the main material as overlays use lines that don't support depth offset
+									object.material.polygonOffset = true;
+									object.material.polygonOffsetFactor = 0.5;
+									object.material.polygonOffsetUnits = 16;
+
+									object.material = [
+										object.material,
+										new THREE.MeshBasicMaterial({ color: 0xffffff, wireframe: true }), // overlay
+										new THREE.MeshBasicMaterial({ color: 0x0000ff, wireframe: true }), // border
+										new THREE.MeshBasicMaterial({ color: 0x00ff00, wireframe: true }), // seam
+										new THREE.MeshBasicMaterial({ color: 0x009f9f, wireframe: true }), // complex
+										new THREE.MeshBasicMaterial({ color: 0xff0000, wireframe: true }), // locked
+										new THREE.MeshBasicMaterial({ color: 0xff9f00, wireframe: true }), // mixed edge
+										new THREE.MeshBasicMaterial({ color: 0x9f5f9f, wireframe: true }), // complex, no loop
+									];
+								}
+
+								var scale = settings.errorScaled ? getRadius(object) / extent : 1.0;
+
+								var [geo, tri, err] = simplifyMesh(object.original, threshold / scale, scale);
+
+								object.geometry = geo;
+
+								stats.error = Math.max(stats.error, err * scale);
+								stats.triangles += tri;
+								stats.vertices += object.geometry.attributes.position.count;
+
+								rnum += tri;
+								rden += object.original.index.count / 3;
+							}
+							if (object.isPoints) {
+								simplifyPoints(object.geometry);
+
+								stats.vertices += object.geometry.index.count;
+
+								rnum += object.geometry.index.count;
+								rden += object.geometry.attributes.position.count;
+							}
+						});
+
+						stats.ratio = rden > 0 ? (rnum / rden) * 100 : 0;
+
+						// Update stats display for this view
+						updateStatsDisplay(sceneIndex);
+					}
+				});
+			}
+
+			function updateStatsDisplay(viewIndex) {
+				if (viewIndex >= 0 && viewIndex < viewStats.length) {
+					var stats = viewStats[viewIndex];
+
+					stats.label.innerHTML =
+						'Triangles: ' +
+						stats.triangles +
+						'<br>' +
+						'Vertices: ' +
+						stats.vertices +
+						'<br>' +
+						'Error: ' +
+						stats.error.toExponential(3) +
+						'<br>' +
+						'Ratio: ' +
+						stats.ratio.toFixed(1) +
+						'%';
+				}
+			}
+
+			function reload() {
+				var simp = import('/js/meshopt_simplifier.js?x=' + Date.now());
+				MeshoptSimplifier.ready = simp.then(function (s) {
+					return s.MeshoptSimplifier.ready.then(function () {
+						for (var prop in s.MeshoptSimplifier) {
+							MeshoptSimplifier[prop] = s.MeshoptSimplifier[prop];
+						}
+					});
+				});
+			}
+
+			var moduleLastModified = 0;
+
+			function autoReload() {
+				if (!settings.autoUpdate) return;
+
+				fetch('/js/meshopt_simplifier.js?x=' + Date.now(), { method: 'HEAD' })
+					.then(function (r) {
+						var last = r.headers.get('Last-Modified');
+						if (last != moduleLastModified) {
+							moduleLastModified = last;
+							reload();
+							simplify();
+						}
+
+						settings.autoUpdateStatus = new Date(last).toLocaleTimeString();
+						setTimeout(autoReload, 1000);
+					})
+					.catch(function (e) {
+						settings.autoUpdateStatus = 'error';
+						setTimeout(autoReload, 5000);
+					});
+			}
+
+			function update() {
+				for (var sceneIndex = 0; sceneIndex < scenes.length; sceneIndex++) {
+					var scene = scenes[sceneIndex];
+
+					scene.traverse(function (child) {
+						if (child.isMesh) {
+							if (Array.isArray(child.material)) {
+								child.material[0].wireframe = settings.wireframe;
+							} else {
+								child.material.wireframe = settings.wireframe;
+							}
+						}
+						if (child.isPoints) {
+							child.material.size = settings.pointSize;
+						}
+					});
+				}
+			}
+
+			function loadIntoView(viewIndex, path, ext) {
+				if (models[viewIndex]) {
+					scenes[viewIndex].remove(models[viewIndex]);
+					models[viewIndex] = undefined;
+					mixers[viewIndex] = undefined;
+				}
+
+				var onProgress = function (xhr) {};
+				var onError = function (e) {
+					console.log(e);
+				};
+
+				function center(model) {
+					var bbox = new THREE.Box3().setFromObject(model);
+					var scale = 2 / Math.max(bbox.max.x - bbox.min.x, bbox.max.y - bbox.min.y, bbox.max.z - bbox.min.z);
+					var offset = new THREE.Vector3().addVectors(bbox.max, bbox.min).multiplyScalar(scale / 2);
+
+					model.scale.set(scale, scale, scale);
+					model.position.set(-offset.x, -offset.y, -offset.z);
+				}
+
+				if (ext == 'gltf' || ext == 'glb') {
+					var loader = new GLTFLoader();
+					loader.setMeshoptDecoder(MeshoptDecoder);
+					loader.load(
+						path,
+						function (gltf) {
+							models[viewIndex] = gltf.scene;
+							center(models[viewIndex]);
+							scenes[viewIndex].add(models[viewIndex]);
+
+							mixers[viewIndex] = new THREE.AnimationMixer(models[viewIndex]);
+
+							if (gltf.animations.length) {
+								mixers[viewIndex].clipAction(gltf.animations[gltf.animations.length - 1]).play();
+							}
+
+							// Apply simplification
+							simplify();
+						},
+						onProgress,
+						onError
+					);
+				} else if (ext == 'obj') {
+					var loader = new OBJLoader();
+					loader.load(
+						path,
+						function (obj) {
+							var geos = [];
+
+							obj.traverse(function (node) {
+								if (node.isMesh) {
+									// obj loader does not index the geometry, so we need to do it ourselves
+									node.geometry = mergeVertices(node.geometry);
+
+									// we use groups and multiple materials for debug visualization, so merge all of the source ones for now
+									if (Array.isArray(node.material)) {
+										node.material = node.material[0];
+										node.geometry.clearGroups();
+									}
+
+									geos.push(node.geometry);
+								}
+							});
+
+							// try to merge geometries into a single mesh; this cleanly handles material boundaries and separate objects
+							// it may fail if the geometries are incompatible (different attributes), in which case we just use the original object
+							var merged = mergeGeometries(geos);
+
+							if (merged) {
+								if (settings.debugCheckerboard) {
+									var cb = new THREE.TextureLoader().load(
+										'https://threejs.org/examples/textures/floors/FloorsCheckerboard_S_Diffuse.jpg'
+									);
+									cb.wrapS = THREE.RepeatWrapping;
+									cb.wrapT = THREE.RepeatWrapping;
+									cb.repeat.set(8, 8); // Adjust for number of repetitions
+
+									var mat = new THREE.MeshStandardMaterial({ map: cb });
+								} else {
+									var mat = new THREE.MeshStandardMaterial({ color: 0xdddddd });
+								}
+
+								models[viewIndex] = new THREE.Mesh(merged, mat);
+							} else {
+								models[viewIndex] = obj;
+							}
+
+							center(models[viewIndex]);
+							scenes[viewIndex].add(models[viewIndex]);
+
+							// Apply simplification
+							simplify();
+						},
+						onProgress,
+						onError
+					);
+				} else {
+					console.error('Unsupported file format');
+				}
+			}
+
+			function loadDefault() {
+				// Create a single view with the default model
+				document.documentElement.style.setProperty('--grid-columns', 1);
+				createView(0, 'pirate.glb');
+				loadIntoView(0, 'pirate.glb', 'glb');
+			}
+
+			function init() {
+				container = document.createElement('div');
+				document.body.appendChild(container);
+
+				gridContainer = document.getElementById('grid-container');
+
+				// Create a single camera shared by all views
+				camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+				camera.position.y = 1.0;
+				camera.position.z = 3.0;
+
+				clock = new THREE.Clock();
+
+				window.addEventListener('resize', updateRendererSizes, false);
+			}
+
+			function updateRendererSizes() {
+				// Calculate the correct aspect ratio based on a visible view
+				var container = renderers[focusedViewIndex >= 0 ? focusedViewIndex : 0].domElement.parentElement;
+				var aspectRatio = container.clientWidth / container.clientHeight;
+
+				// Update camera aspect ratio once
+				camera.aspect = aspectRatio;
+				camera.updateProjectionMatrix();
+
+				// Update all renderer sizes
+				for (var i = 0; i < renderers.length; i++) {
+					var domElement = renderers[i].domElement;
+					var container = domElement.parentElement;
+
+					// Use the container's actual dimensions
+					var width = container.clientWidth;
+					var height = container.clientHeight;
+
+					renderers[i].setSize(width, height);
+				}
+			}
+
+			function animate() {
+				requestAnimationFrame(animate);
+
+				// Update all controls
+				for (var i = 0; i < controls.length; i++) {
+					controls[i].update();
+				}
+
+				// Update animation mixers
+				if (settings.animate) {
+					var delta = clock.getDelta();
+					for (var i = 0; i < mixers.length; i++) {
+						if (mixers[i]) {
+							mixers[i].update(delta);
+						}
+					}
+				}
+
+				// Render only visible views
+				for (var i = 0; i < renderers.length; i++) {
+					// Only render if view is visible (not hidden by focus mode)
+					if (focusedViewIndex === -1 || focusedViewIndex === i) {
+						renderers[i].render(scenes[i], camera);
+					}
+				}
+			}
+		</script>
+	</body>
+</html>

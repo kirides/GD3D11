@@ -3,8 +3,35 @@
 #include "pch.h"
 #include "D3D11GraphicsEngineBase.h"
 #include "Engine.h"
-#include <DirectXMesh.h>
+#include <meshoptimizer/src/meshoptimizer.h>
+#include <limits>
+#include <vector>
 #include "D3D11_Helpers.h"
+
+namespace {
+    bool ConvertIndicesToUInt32( const VERTEX_INDEX* src, size_t count, std::vector<unsigned int>& dst ) {
+        dst.resize( count );
+        for ( size_t i = 0; i < count; ++i ) {
+            dst[i] = src[i];
+        }
+
+        return true;
+    }
+
+    bool ConvertIndicesToVertexIndex( const std::vector<unsigned int>& src, VERTEX_INDEX* dst ) {
+        const unsigned int maxVertexIndex = static_cast<unsigned int>(std::numeric_limits<VERTEX_INDEX>::max());
+
+        for ( size_t i = 0; i < src.size(); ++i ) {
+            if ( src[i] > maxVertexIndex ) {
+                return false;
+            }
+
+            dst[i] = static_cast<VERTEX_INDEX>(src[i]);
+        }
+
+        return true;
+    }
+}
 
 /** Creates the vertexbuffer with the given arguments */
 XRESULT D3D11VertexBuffer::Init( void* initData, unsigned int sizeInBytes, EBindFlags EBindFlags, EUsageFlags usage, ECPUAccessFlags cpuAccess, const std::string& fileName, unsigned int structuredByteSize ) {
@@ -142,56 +169,67 @@ Microsoft::WRL::ComPtr <ID3D11Buffer>& D3D11VertexBuffer::GetVertexBuffer() {
 
 /** Optimizes the given set of vertices */
 XRESULT D3D11VertexBuffer::OptimizeVertices( VERTEX_INDEX* indices, byte* vertices, unsigned int numIndices, unsigned int numVertices, unsigned int stride ) {
-    return XR_SUCCESS;
+    if ( !indices || !vertices || numIndices == 0 || numVertices == 0 || stride == 0 ) {
+        return XR_SUCCESS;
+    }
 
-    uint32_t* remap = new uint32_t[numVertices];
-    if ( FAILED( DirectX::OptimizeVertices( indices, numIndices / 3, numVertices, remap ) ) ) {
-        delete[] remap;
+    // meshoptimizer supports per-vertex element sizes up to 256 bytes.
+    if ( stride > 256 ) {
+        return XR_SUCCESS;
+    }
+
+    const unsigned int maxVertexIndex = static_cast<unsigned int>(std::numeric_limits<VERTEX_INDEX>::max());
+    if ( numVertices > maxVertexIndex + 1 ) {
+        LogError() << "OptimizeVertices: numVertices exceeds VERTEX_INDEX range";
         return XR_FAILED;
     }
 
-    // Remap vertices
-    byte* vxCopy = new byte[numVertices * stride];
-    memcpy( vxCopy, vertices, numVertices * stride );
+    std::vector<unsigned int> indexData;
+    ConvertIndicesToUInt32( indices, numIndices, indexData );
 
-    for ( unsigned int i = 0; i < numVertices; i++ ) {
-        // Assign the vertex at remap[i] to its new vertex
-        memcpy( vertices + remap[i] * stride, vxCopy + i * stride, stride );
+    std::vector<unsigned int> remap( numVertices );
+    meshopt_optimizeVertexFetchRemap( remap.data(), indexData.data(), numIndices, numVertices );
+
+    std::vector<unsigned int> remappedIndices( numIndices );
+    meshopt_remapIndexBuffer( remappedIndices.data(), indexData.data(), numIndices, remap.data() );
+
+    std::vector<byte> remappedVertices( static_cast<size_t>(numVertices) * stride );
+    memcpy( remappedVertices.data(), vertices, remappedVertices.size() );
+    meshopt_remapVertexBuffer( remappedVertices.data(), vertices, numVertices, stride, remap.data() );
+
+    if ( !ConvertIndicesToVertexIndex( remappedIndices, indices ) ) {
+        LogError() << "OptimizeVertices: remapped index exceeds VERTEX_INDEX range";
+        return XR_FAILED;
     }
 
-    for ( unsigned int i = 0; i < numIndices; i++ ) {
-        // Remap the indices.
-        indices[i] = static_cast<VERTEX_INDEX>(remap[indices[i]]);
-    }
-
-    delete[] vxCopy;
-    delete[] remap;
+    memcpy( vertices, remappedVertices.data(), remappedVertices.size() );
 
     return XR_SUCCESS;
 }
 
 /** Optimizes the given set of vertices */
 XRESULT D3D11VertexBuffer::OptimizeFaces( VERTEX_INDEX* indices, byte* vertices, unsigned int numIndices, unsigned int numVertices, unsigned int stride ) {
-    return XR_SUCCESS;
+    (void)vertices;
+    (void)stride;
 
-    unsigned int numFaces = numIndices / 3;
-    uint32_t* remap = new uint32_t[numFaces];
+    if ( !indices || numIndices < 3 || numVertices == 0 || (numIndices % 3) != 0 ) {
+        return XR_SUCCESS;
+    }
 
-    if ( FAILED( DirectX::OptimizeFaces( indices, numFaces, &numVertices, remap ) ) ) {
-        delete[] remap;
+    const unsigned int maxVertexIndex = static_cast<unsigned int>(std::numeric_limits<VERTEX_INDEX>::max());
+    if ( numVertices > maxVertexIndex + 1 ) {
+        LogError() << "OptimizeFaces: numVertices exceeds VERTEX_INDEX range";
         return XR_FAILED;
     }
-    // Remap vertices
-    VERTEX_INDEX* ibCopy = new VERTEX_INDEX[numFaces * 3];
-    memcpy( ibCopy, indices, numFaces * 3 * sizeof( VERTEX_INDEX ) );
 
-    for ( unsigned int i = 0; i < numFaces; i++ ) {
-        // Copy the remapped face
-        memcpy( &indices[i * 3], &ibCopy[remap[i] * 3], 3 * sizeof( VERTEX_INDEX ) );
+    std::vector<unsigned int> indexData;
+    ConvertIndicesToUInt32( indices, numIndices, indexData );
+    meshopt_optimizeVertexCache( indexData.data(), indexData.data(), numIndices, numVertices );
+
+    if ( !ConvertIndicesToVertexIndex( indexData, indices ) ) {
+        LogError() << "OptimizeFaces: remapped index exceeds VERTEX_INDEX range";
+        return XR_FAILED;
     }
-
-    delete[] ibCopy;
-    delete[] remap;
 
     return XR_SUCCESS;
 }
