@@ -519,6 +519,7 @@ private:
         bool worldMeshBuilt    = false;  ///< CollectVisibleSections + MDI arg build + buffer upload done
         bool vobInstancesUploaded = false; ///< CollectVisibleVobs + DynamicInstancingBuffer upload done
         bool vobWindMetadataPrepared = false; ///< Wind metadata prepared for cached vob visuals
+        bool skeletalBonesUploaded = false; ///< FL11 packed skeletal bone buffers uploaded for main/z-prepass reuse
 
         std::vector<WorldMeshSectionInfo*> visibleSections;
         std::unordered_map<zCTexture*, MDIBatch> mdiBatches;
@@ -530,11 +531,14 @@ private:
         std::vector<CachedVobVisual>    vobVisuals;
         std::vector<CachedInstancedMeshDraw> sortedInstancedMeshes;
         std::vector<SkeletalVobInfo*>   cachedMobs;
+        std::vector<SkeletalVobInfo*> skeletalBoneVisOrder;
+        std::vector<VS_ExConstantBuffer_SkeletalBoneRange> skeletalBoneRanges;
 
         void Reset() {
             worldMeshBuilt      = false;
             vobInstancesUploaded = false;
             vobWindMetadataPrepared = false;
+            skeletalBonesUploaded = false;
             visibleSections.clear();
             mdiBatches.clear();
             drawIndirectArgs.clear();
@@ -545,6 +549,8 @@ private:
             vobVisuals.clear();
             sortedInstancedMeshes.clear();
             cachedMobs.clear();
+            skeletalBoneVisOrder.clear();
+            skeletalBoneRanges.clear();
         }
     };
     FrameGeometryCache m_FrameGeometryCache;
@@ -557,8 +563,13 @@ private:
     /** Water surface indirect buffer */
     std::unique_ptr<D3D11IndirectBuffer> WaterIndirectBuffer;
 
-    /** Buffer for previous bone transforms */
-    std::unique_ptr<D3D11ConstantBuffer> PrevBoneTransformsBuffer;
+    /** FL11 packed structured buffers for skeletal skinning (main/z-prepass reusable path). */
+    std::unique_ptr<D3D11VertexBuffer> SkeletalBoneTransformsBuffer;
+    std::unique_ptr<D3D11VertexBuffer> SkeletalPrevBoneTransformsBuffer;
+
+    /** FL11 packed structured buffers for non-reusable stages (shadow/cube/debug paths). */
+    std::unique_ptr<D3D11VertexBuffer> SkeletalBoneTransformsBufferTransient;
+    std::unique_ptr<D3D11VertexBuffer> SkeletalPrevBoneTransformsBufferTransient;
 
     /** Cached bone transforms for batched skeletal mesh drawing */
     std::vector<XMFLOAT4X4> BoneTransformCache;

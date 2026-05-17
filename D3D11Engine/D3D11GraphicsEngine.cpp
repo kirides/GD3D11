@@ -100,6 +100,70 @@ namespace
 {
     static ID3D11ShaderResourceView* s_nullSRVs[16] = { nullptr };
 
+    bool EnsureStructuredMatrixBuffer(
+        std::unique_ptr<D3D11VertexBuffer>& buffer,
+        UINT matrixCount,
+        const char* debugName
+    ) {
+        const UINT safeMatrixCount = std::max<UINT>( matrixCount, 1u );
+        const UINT requiredBytes = safeMatrixCount * static_cast<UINT>(sizeof( XMFLOAT4X4 ));
+
+        if ( !buffer || buffer->GetSizeInBytes() < requiredBytes ) {
+            auto newBuffer = std::make_unique<D3D11VertexBuffer>();
+            if ( XR_SUCCESS != newBuffer->Init(
+                nullptr,
+                requiredBytes,
+                D3D11VertexBuffer::B_SHADER_RESOURCE,
+                D3D11VertexBuffer::U_DYNAMIC,
+                D3D11VertexBuffer::CA_WRITE,
+                debugName ? debugName : "SkeletalBoneStructuredBuffer",
+                sizeof( XMFLOAT4X4 ) ) ) {
+                return false;
+            }
+
+            SetDebugName( newBuffer->GetVertexBuffer().Get(), debugName ? debugName : "SkeletalBoneStructuredBuffer" );
+            if ( debugName ) {
+                SetDebugName( newBuffer->GetShaderResourceView().Get(), std::string( debugName ) + "_SRV" );
+            }
+
+            buffer = std::move( newBuffer );
+        }
+
+        return true;
+    }
+
+    bool UploadStructuredMatrixBuffer(
+        std::unique_ptr<D3D11VertexBuffer>& buffer,
+        const std::vector<XMFLOAT4X4>& matrices,
+        const char* debugName
+    ) {
+        const UINT matrixCount = static_cast<UINT>(matrices.size());
+        if ( !EnsureStructuredMatrixBuffer( buffer, matrixCount, debugName ) ) {
+            return false;
+        }
+
+        if ( matrices.empty() ) {
+            static const XMFLOAT4X4 identity = {
+                1, 0, 0, 0,
+                0, 1, 0, 0,
+                0, 0, 1, 0,
+                0, 0, 0, 1,
+            };
+            return XR_SUCCESS == buffer->UpdateBuffer( const_cast<XMFLOAT4X4*>( &identity ), sizeof( identity ) );
+        }
+
+        return XR_SUCCESS == buffer->UpdateBuffer(
+            const_cast<XMFLOAT4X4*>(matrices.data()),
+            matrixCount * static_cast<UINT>(sizeof( XMFLOAT4X4 )) );
+    }
+
+    bool HasMatchingSkeletalVisOrder(
+        const std::vector<SkeletalVobInfo*>& a,
+        const std::vector<SkeletalVobInfo*>& b
+    ) {
+        return a.size() == b.size() && std::equal( a.begin(), a.end(), b.begin() );
+    }
+
     void ApplyWindowMode(GothicRendererSettings& s) {
         // Only used for runtime changes, changes from/to exclusive fullscreen are not supported
         switch ( s.ChangeWindowPreset ) {
@@ -2244,8 +2308,26 @@ XRESULT  D3D11GraphicsEngine::DrawSkeletalVertexNormals( SkeletalVobInfo* vi,
     perInstanceBuf.Update( &cb2 ).Bind();
     perInstanceBuf.GetRawBuffer()->BindToGeometryShader( 1 );
 
-    // Copy bones
-    ActiveVS->GetBuffer( "BoneTransforms" ).Update( &transforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( transforms.size(), NUM_MAX_BONES ) ).Bind();
+    bool useStructuredBones = !FeatureLevel10Compatibility;
+    if ( useStructuredBones ) {
+        const std::vector<XMFLOAT4X4> packedCurrent( transforms.begin(), transforms.begin() + std::min<size_t>( transforms.size(), NUM_MAX_BONES ) );
+        if ( !UploadStructuredMatrixBuffer( SkeletalBoneTransformsBufferTransient, packedCurrent, "SkeletalBoneTransformsBufferTransient" )
+            || !SkeletalBoneTransformsBufferTransient
+            || !SkeletalBoneTransformsBufferTransient->GetShaderResourceView().Get() ) {
+            useStructuredBones = false;
+        } else {
+            ActiveVS->BindResource( "BoneTransforms", SkeletalBoneTransformsBufferTransient->GetShaderResourceView().Get() );
+            VS_ExConstantBuffer_SkeletalBoneRange range = {};
+            range.BoneCount = static_cast<unsigned int>(packedCurrent.size());
+            range.UseStructuredBones = 1u;
+            ActiveVS->GetBuffer( "BoneTransformRange" ).Update( &range ).Bind();
+        }
+    }
+
+    if ( !useStructuredBones ) {
+        // Copy bones using legacy cbuffer path.
+        ActiveVS->GetBuffer( "BoneTransforms" ).Update( &transforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( transforms.size(), NUM_MAX_BONES ) ).Bind();
+    }
 
     if ( transforms.size() >= NUM_MAX_BONES ) {
         LogWarn() << "SkeletalMesh has more than "
@@ -2301,21 +2383,59 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
     cb2.PrevWorld = vi->HasValidPrevTransforms ? vi->PrevWorldMatrix : world;
 
     ActiveVS->GetBuffer("Matrices_PerInstances").Update( &cb2 ).Bind();
-    // Copy bones
-    ActiveVS->GetBuffer("BoneTransforms").Update( &transforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( transforms.size(), NUM_MAX_BONES ) ).Bind();
 
-    // Copy previous frame bone transforms for motion vectors (only for main scene rendering, not shadow maps)
-    if ( GetRenderingStage() == DES_SHADOWMAP_CUBE ) {
-        // Don't bind previous, as we don't use them here yet.
+    bool useStructuredBones = !FeatureLevel10Compatibility;
+    if ( useStructuredBones ) {
+        const size_t boneCount = std::min<size_t>( transforms.size(), NUM_MAX_BONES );
+        std::vector<XMFLOAT4X4> packedCurrent( transforms.begin(), transforms.begin() + boneCount );
+        std::vector<XMFLOAT4X4> packedPrev;
+        packedPrev.reserve( boneCount );
+
+        if ( vi->HasValidPrevTransforms && !vi->PrevBoneTransforms.empty() ) {
+            const size_t copyCount = std::min<size_t>( vi->PrevBoneTransforms.size(), boneCount );
+            packedPrev.insert( packedPrev.end(), vi->PrevBoneTransforms.begin(), vi->PrevBoneTransforms.begin() + copyCount );
+            if ( copyCount < boneCount ) {
+                packedPrev.insert( packedPrev.end(), packedCurrent.begin() + static_cast<std::ptrdiff_t>(copyCount), packedCurrent.end() );
+            }
+        } else {
+            packedPrev = packedCurrent;
+        }
+
+        if ( !UploadStructuredMatrixBuffer( SkeletalBoneTransformsBufferTransient, packedCurrent, "SkeletalBoneTransformsBufferTransient" )
+            || !UploadStructuredMatrixBuffer( SkeletalPrevBoneTransformsBufferTransient, packedPrev, "SkeletalPrevBoneTransformsBufferTransient" )
+            || !SkeletalBoneTransformsBufferTransient
+            || !SkeletalPrevBoneTransformsBufferTransient
+            || !SkeletalBoneTransformsBufferTransient->GetShaderResourceView().Get()
+            || !SkeletalPrevBoneTransformsBufferTransient->GetShaderResourceView().Get() ) {
+            useStructuredBones = false;
+        } else {
+            ActiveVS->BindResource( "BoneTransforms", SkeletalBoneTransformsBufferTransient->GetShaderResourceView().Get() );
+            ActiveVS->BindResource( "PrevBoneTransforms", SkeletalPrevBoneTransformsBufferTransient->GetShaderResourceView().Get() );
+
+            VS_ExConstantBuffer_SkeletalBoneRange range = {};
+            range.BoneCount = static_cast<unsigned int>(boneCount);
+            range.UseStructuredBones = 1u;
+            ActiveVS->GetBuffer( "BoneTransformRange" ).Update( &range ).Bind();
+        }
     }
-    else if ( GetRenderingStage() != DES_SHADOWMAP ) {
-        const std::span<XMFLOAT4X4> prevTransforms = (vi->HasValidPrevTransforms && !vi->PrevBoneTransforms.empty())
-            ? std::span(vi->PrevBoneTransforms)
-            : transforms;
-        
-        ActiveVS->GetBuffer("PrevBoneTransforms").Update( &prevTransforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( prevTransforms.size(), NUM_MAX_BONES ) ).Bind();
-    } else {
-        ActiveVS->GetBuffer("BoneTransforms").Bind( ActiveVS->GetInputIndex( "PrevBoneTransforms" ) ); // just bind the current bones again
+
+    if ( !useStructuredBones ) {
+        // Copy bones
+        ActiveVS->GetBuffer("BoneTransforms").Update( &transforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( transforms.size(), NUM_MAX_BONES ) ).Bind();
+
+        // Copy previous frame bone transforms for motion vectors (only for main scene rendering, not shadow maps)
+        if ( GetRenderingStage() == DES_SHADOWMAP_CUBE ) {
+            // Don't bind previous, as we don't use them here yet.
+        }
+        else if ( GetRenderingStage() != DES_SHADOWMAP ) {
+            const std::span<XMFLOAT4X4> prevTransforms = (vi->HasValidPrevTransforms && !vi->PrevBoneTransforms.empty())
+                ? std::span(vi->PrevBoneTransforms)
+                : transforms;
+
+            ActiveVS->GetBuffer("PrevBoneTransforms").Update( &prevTransforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( prevTransforms.size(), NUM_MAX_BONES ) ).Bind();
+        } else {
+            ActiveVS->GetBuffer("BoneTransforms").Bind( ActiveVS->GetInputIndex( "PrevBoneTransforms" ) ); // just bind the current bones again
+        }
     }
 
     if ( transforms.size() >= NUM_MAX_BONES ) {
@@ -2396,8 +2516,27 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh_Layered( SkeletalVobInfo* vi,
     cb2.PI_ModelColor = color;
     cb2.PI_ModelFatness = fatness;
     ActiveVS->GetBuffer("Matrices_PerInstances").Update( &cb2 ).Bind();
-    // Copy bones
-    ActiveVS->GetBuffer("BoneTransforms").Update( &transforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( transforms.size(), NUM_MAX_BONES ) ).Bind();
+
+    bool useStructuredBones = !FeatureLevel10Compatibility;
+    if ( useStructuredBones ) {
+        const std::vector<XMFLOAT4X4> packedCurrent( transforms.begin(), transforms.begin() + std::min<size_t>( transforms.size(), NUM_MAX_BONES ) );
+        if ( !UploadStructuredMatrixBuffer( SkeletalBoneTransformsBufferTransient, packedCurrent, "SkeletalBoneTransformsBufferTransient" )
+            || !SkeletalBoneTransformsBufferTransient
+            || !SkeletalBoneTransformsBufferTransient->GetShaderResourceView().Get() ) {
+            useStructuredBones = false;
+        } else {
+            ActiveVS->BindResource( "BoneTransforms", SkeletalBoneTransformsBufferTransient->GetShaderResourceView().Get() );
+            VS_ExConstantBuffer_SkeletalBoneRange range = {};
+            range.BoneCount = static_cast<unsigned int>(packedCurrent.size());
+            range.UseStructuredBones = 1u;
+            ActiveVS->GetBuffer( "BoneTransformRange" ).Update( &range ).Bind();
+        }
+    }
+
+    if ( !useStructuredBones ) {
+        // Copy bones
+        ActiveVS->GetBuffer("BoneTransforms").Update( &transforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( transforms.size(), NUM_MAX_BONES ) ).Bind();
+    }
 
     // Note: Slot b3 is used for cbPerCubeRender in VS_ExSkeletalLayered, not PrevBoneTransforms
     // Motion vectors are not needed for shadow map rendering
@@ -2562,8 +2701,104 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     tempVobList.clear();
     BoneTransformCache.clear();
     BoneTransformCache.reserve( 150 );
+    static std::vector<XMFLOAT4X4> packedPrevBoneTransforms;
+    packedPrevBoneTransforms.clear();
     
     GothicGraphicsState& graphicsState = Engine::GAPI->GetRendererState().GraphicsState;
+
+    const bool isZPrepass = GetRenderingStage() == DES_Z_PRE_PASS;
+    const bool isMainStage = GetRenderingStage() == DES_MAIN;
+    const bool isMainReuseStage = isZPrepass || isMainStage;
+    bool useStructuredBones = !FeatureLevel10Compatibility;
+
+    std::vector<VS_ExConstantBuffer_SkeletalBoneRange> structuredBoneRanges( vis.size() );
+    bool reuseMainPackedUpload = false;
+
+    if ( useStructuredBones
+        && isMainStage
+        && m_FrameGeometryCache.skeletalBonesUploaded
+        && m_FrameGeometryCache.skeletalBoneRanges.size() == vis.size()
+        && HasMatchingSkeletalVisOrder( vis, m_FrameGeometryCache.skeletalBoneVisOrder ) ) {
+        structuredBoneRanges = m_FrameGeometryCache.skeletalBoneRanges;
+        reuseMainPackedUpload = true;
+    }
+
+    if ( useStructuredBones && !reuseMainPackedUpload ) {
+        BoneTransformCache.clear();
+        packedPrevBoneTransforms.clear();
+
+        int packedBoneOffset = 0;
+        for ( size_t i = 0; i < vis.size(); ++i ) {
+            SkeletalVobInfo* vi = vis[i];
+            auto& range = structuredBoneRanges[i];
+
+            if ( !vi || !vi->Vob ) {
+                continue;
+            }
+
+            zCModel* model = static_cast<zCModel*>(vi->Vob->GetVisual());
+            if ( !model || !vi->VisualInfo || !vi->Vob->GetShowVisual() ) {
+                continue;
+            }
+
+            const int currentBegin = static_cast<int>(BoneTransformCache.size());
+            model->GetBoneTransforms( &BoneTransformCache );
+            int numBones = static_cast<int>(BoneTransformCache.size()) - currentBegin;
+            if ( numBones <= 0 ) {
+                continue;
+            }
+
+            numBones = std::min<int>( numBones, NUM_MAX_BONES );
+            BoneTransformCache.resize( currentBegin + numBones );
+
+            range.BoneOffset = static_cast<unsigned int>(packedBoneOffset);
+            range.BoneCount = static_cast<unsigned int>(numBones);
+            range.PrevBoneOffset = static_cast<unsigned int>(packedPrevBoneTransforms.size());
+            range.UseStructuredBones = 1u;
+
+            const auto transforms = std::span( &BoneTransformCache[currentBegin], numBones );
+            if ( vi->HasValidPrevTransforms && !vi->PrevBoneTransforms.empty() ) {
+                const size_t copyCount = std::min<size_t>( vi->PrevBoneTransforms.size(), static_cast<size_t>(numBones) );
+                packedPrevBoneTransforms.insert(
+                    packedPrevBoneTransforms.end(),
+                    vi->PrevBoneTransforms.begin(),
+                    vi->PrevBoneTransforms.begin() + copyCount );
+
+                if ( copyCount < static_cast<size_t>(numBones) ) {
+                    packedPrevBoneTransforms.insert(
+                        packedPrevBoneTransforms.end(),
+                        transforms.begin() + static_cast<std::ptrdiff_t>(copyCount),
+                        transforms.end() );
+                }
+            } else {
+                packedPrevBoneTransforms.insert( packedPrevBoneTransforms.end(), transforms.begin(), transforms.end() );
+            }
+
+            packedBoneOffset += numBones;
+        }
+
+        auto& currentBuffer = isMainReuseStage ? SkeletalBoneTransformsBuffer : SkeletalBoneTransformsBufferTransient;
+        auto& prevBuffer = isMainReuseStage ? SkeletalPrevBoneTransformsBuffer : SkeletalPrevBoneTransformsBufferTransient;
+
+        const bool uploadedCurrent = UploadStructuredMatrixBuffer(
+            currentBuffer,
+            BoneTransformCache,
+            isMainReuseStage ? "SkeletalBoneTransformsBuffer" : "SkeletalBoneTransformsBufferTransient" );
+        const bool uploadedPrevious = UploadStructuredMatrixBuffer(
+            prevBuffer,
+            packedPrevBoneTransforms,
+            isMainReuseStage ? "SkeletalPrevBoneTransformsBuffer" : "SkeletalPrevBoneTransformsBufferTransient" );
+
+        if ( !uploadedCurrent || !uploadedPrevious ) {
+            useStructuredBones = false;
+        } else if ( isMainReuseStage ) {
+            m_FrameGeometryCache.skeletalBonesUploaded = true;
+            m_FrameGeometryCache.skeletalBoneVisOrder = vis;
+            m_FrameGeometryCache.skeletalBoneRanges = structuredBoneRanges;
+        }
+    }
+
+    BoneTransformCache.clear();
 
     int boneOffset = 0;
     
@@ -2583,23 +2818,42 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     Context->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
     
     auto perInstanceCb = ActiveVS->GetBuffer("Matrices_PerInstances").Bind();
-    // Copy bones
-    auto boneTransformsCb = ActiveVS->GetBuffer("BoneTransforms").Bind();
-    auto prevBoneTransformsCb = ActiveVS->GetBuffer("PrevBoneTransforms").Bind();
+    auto boneRangeCb = ActiveVS->GetBuffer( "BoneTransformRange" ).Bind();
+    auto boneTransformsCb = GraphicsShaderConstantBuffer();
+    auto prevBoneTransformsCb = GraphicsShaderConstantBuffer();
+
+    if ( useStructuredBones ) {
+        auto& currentBuffer = isMainReuseStage ? SkeletalBoneTransformsBuffer : SkeletalBoneTransformsBufferTransient;
+        auto& prevBuffer = isMainReuseStage ? SkeletalPrevBoneTransformsBuffer : SkeletalPrevBoneTransformsBufferTransient;
+
+        if ( !currentBuffer || !prevBuffer
+            || !currentBuffer->GetShaderResourceView().Get()
+            || !prevBuffer->GetShaderResourceView().Get() ) {
+            useStructuredBones = false;
+        } else {
+            ActiveVS->BindResource( "BoneTransforms", currentBuffer->GetShaderResourceView().Get() );
+            ActiveVS->BindResource( "PrevBoneTransforms", prevBuffer->GetShaderResourceView().Get() );
+        }
+    }
+
+    if ( !useStructuredBones ) {
+        // Copy bones using the legacy cbuffer path.
+        boneTransformsCb = ActiveVS->GetBuffer("BoneTransforms").Bind();
+        prevBoneTransformsCb = ActiveVS->GetBuffer("PrevBoneTransforms").Bind();
+
+        // Copy previous frame bone transforms for motion vectors (only for main scene rendering, not shadow maps)
+        if ( GetRenderingStage() == DES_SHADOWMAP_CUBE ) {
+            // Don't bind previous, as we don't use them here yet.
+        }
+        else if ( GetRenderingStage() != DES_SHADOWMAP ) {
+            prevBoneTransformsCb.Bind(); // we actually should have previous bones
+        } else {
+            // must be shadowmap, bind current bones as previous
+            boneTransformsCb.Bind( ActiveVS->GetInputIndex( "PrevBoneTransforms" ) ); // just bind the current bones again
+        }
+    }
 
     const auto now = Engine::GAPI->GetTotalTimeDW();
-
-    // Copy previous frame bone transforms for motion vectors (only for main scene rendering, not shadow maps)
-    if ( GetRenderingStage() == DES_SHADOWMAP_CUBE ) {
-        // Don't bind previous, as we don't use them here yet.
-    }
-    else if ( GetRenderingStage() != DES_SHADOWMAP ) {
-        prevBoneTransformsCb.Bind(); // we actually should have previous bones
-    } else {
-        // must be shadowmap, bind current bones as previous
-        boneTransformsCb.Bind( ActiveVS->GetInputIndex( "PrevBoneTransforms" ) ); // just bind the current bones again
-    }
-    const bool isZPrepass = GetRenderingStage() == DES_Z_PRE_PASS;
 
     bool wantShader = true;
     if ( RenderingStage != DES_GHOST ) {
@@ -2666,7 +2920,9 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     {
         auto _scopeBaseMeshes = RecordGraphicsEvent( GE_NAME( "DrawSkeletalMeshVobs::BaseMeshes" ) );
         TracyD3D11ZoneCGX( "DrawSkeletalMeshVobs::BaseMeshes" );
+        size_t drawIndex = 0;
         for ( SkeletalVobInfo* vi : vis ) {
+            const size_t currentDrawIndex = drawIndex++;
             zCModel* model = static_cast<zCModel*>(vi->Vob->GetVisual());
             if ( !model ) {
                 continue;
@@ -2740,18 +2996,34 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                     cb2.PrevWorld = vi->HasValidPrevTransforms ? vi->PrevWorldMatrix : world;
 
                     perInstanceCb.Update( &cb2 );
-                    // Copy bones
-                    boneTransformsCb.Update( &transforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( transforms.size(), NUM_MAX_BONES ) );
 
-                    // Copy previous frame bone transforms for motion vectors (only for main scene rendering, not shadow maps)
-                    if ( GetRenderingStage() == DES_SHADOWMAP_CUBE ) {
-                        // Don't bind previous, as we don't use them here yet.
-                    } else if ( GetRenderingStage() != DES_SHADOWMAP ) {
-                        const std::span<XMFLOAT4X4> prevTransforms = (vi->HasValidPrevTransforms && !vi->PrevBoneTransforms.empty())
-                            ? std::span( vi->PrevBoneTransforms )
-                            : transforms;
+                    if ( useStructuredBones ) {
+                        VS_ExConstantBuffer_SkeletalBoneRange range = {};
+                        if ( currentDrawIndex < structuredBoneRanges.size() ) {
+                            range = structuredBoneRanges[currentDrawIndex];
+                        }
 
-                        prevBoneTransformsCb.Update( &prevTransforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( prevTransforms.size(), NUM_MAX_BONES ) );
+                        if ( range.BoneCount == 0 ) {
+                            range.BoneOffset = static_cast<unsigned int>(boneIdx);
+                            range.PrevBoneOffset = static_cast<unsigned int>(boneIdx);
+                            range.BoneCount = static_cast<unsigned int>(std::min<UINT>( transforms.size(), NUM_MAX_BONES ));
+                        }
+                        range.UseStructuredBones = 1u;
+                        boneRangeCb.Update( &range );
+                    } else {
+                        // Copy bones
+                        boneTransformsCb.Update( &transforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( transforms.size(), NUM_MAX_BONES ) );
+
+                        // Copy previous frame bone transforms for motion vectors (only for main scene rendering, not shadow maps)
+                        if ( GetRenderingStage() == DES_SHADOWMAP_CUBE ) {
+                            // Don't bind previous, as we don't use them here yet.
+                        } else if ( GetRenderingStage() != DES_SHADOWMAP ) {
+                            const std::span<XMFLOAT4X4> prevTransforms = (vi->HasValidPrevTransforms && !vi->PrevBoneTransforms.empty())
+                                ? std::span( vi->PrevBoneTransforms )
+                                : transforms;
+
+                            prevBoneTransformsCb.Update( &prevTransforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( prevTransforms.size(), NUM_MAX_BONES ) );
+                        }
                     }
 
                     if ( transforms.size() >= NUM_MAX_BONES ) {
@@ -3033,7 +3305,10 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                         uint64_t sortKeyBase = 0;
                         if ( itm.first ) {
                             texture = itm.first->GetAniTexture();
-                            if ( !texture || texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
+                            if ( !texture
+                                // don't draw certain textures in the shadow pass, like human teeth, those will never be visible anyway.
+                                || (isShadowPass && (strncmp(texture->__GetName().ToChar(), "HUM_TEETH_V0.TGA", std::size("HUM_TEETH_V0.TGA") - 1) == 0))
+                                || texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
                                 // need to cache in in order to know its alpha/material state
                                 continue;
                             }

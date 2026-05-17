@@ -144,10 +144,16 @@ XRESULT D3D11ShaderManager::Init() {
         .with_layout( 1 ) );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExSkeletal>( "VS_ExSkeletal.hlsl" )
-        .with_layout( 3 ) );
+        .with_layout( 3 )
+        .with_macros( [](std::vector<D3D_SHADER_MACRO>& list) {
+            list.push_back( { "SKINNING_STRUCTURED", FeatureLevel10Compatibility ? "0" : "1" } );
+        } ) );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExSkeletalVN>( "VS_ExSkeletalVN.hlsl" )
-        .with_layout( 3 )  );
+        .with_layout( 3 )
+        .with_macros( [](std::vector<D3D_SHADER_MACRO>& list) {
+            list.push_back( { "SKINNING_STRUCTURED", FeatureLevel10Compatibility ? "0" : "1" } );
+        } ) );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_TransformedEx>( "VS_TransformedEx.hlsl" )
         .with_layout( 1 ) );
@@ -376,7 +382,10 @@ XRESULT D3D11ShaderManager::Init() {
             .with_layout( 1 )  );
 
         Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExSkeletalLayered>( "VS_ExSkeletalLayered.hlsl" )
-            .with_layout( 3 )  ); // cbPerCubeRender for layered rendering
+            .with_layout( 3 )
+            .with_macros( [](std::vector<D3D_SHADER_MACRO>& list) {
+                list.push_back( { "SKINNING_STRUCTURED", FeatureLevel10Compatibility ? "0" : "1" } );
+            } ) ); // cbPerCubeRender for layered rendering
     }
     /*else: always compile fallback shaders*/
     {
@@ -389,7 +398,10 @@ XRESULT D3D11ShaderManager::Init() {
             .with_layout( 1 )  );
 
         Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExSkeletalCube>( "VS_ExSkeletalCube.hlsl" )
-            .with_layout( 3 )  );
+            .with_layout( 3 )
+            .with_macros( [](std::vector<D3D_SHADER_MACRO>& list) {
+                list.push_back( { "SKINNING_STRUCTURED", FeatureLevel10Compatibility ? "0" : "1" } );
+            } ) );
     }
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExNodeInstanced>( "VS_ExNodeInstanced.hlsl" )
