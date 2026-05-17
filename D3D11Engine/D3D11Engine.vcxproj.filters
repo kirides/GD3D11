@@ -1166,6 +1166,12 @@
     <ClCompile Include="include\tracy\public\TracyClient.cpp">
       <Filter>Librarys\Tracy</Filter>
     </ClCompile>
+    <ClCompile Include="include\meshoptimizer\src\allocator.cpp" />
+    <ClCompile Include="include\meshoptimizer\src\indexgenerator.cpp" />
+    <ClCompile Include="include\meshoptimizer\src\overdrawoptimizer.cpp" />
+    <ClCompile Include="include\meshoptimizer\src\quantization.cpp" />
+    <ClCompile Include="include\meshoptimizer\src\vcacheoptimizer.cpp" />
+    <ClCompile Include="include\meshoptimizer\src\vfetchoptimizer.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="ddraw.def">

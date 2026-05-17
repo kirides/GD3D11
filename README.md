@@ -156,6 +156,7 @@ When using a Release target, those same exceptions will very likely stop the exe
 - [AntTweakBar](https://sourceforge.net/projects/anttweakbar/)
 - [Dear ImGui](https://github.com/ocornut/imgui)
 - [assimp](https://github.com/assimp/assimp)
+- [meshoptimizer](https://github.com/zeux/meshoptimizer)
 
 ## Special Thanks
 

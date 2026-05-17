@@ -36,7 +36,8 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
     RGResourceHandle normalsResource = {};
     RGResourceHandle specularResource = {};
     RGResourceHandle reactiveMaskResource = {};
-    RGResourceHandle shadowMaskResource = {};
+    RGResourceHandle shadowMaskResource = RG_INVALID_HANDLE;
+    const bool useScreenSpaceShadowMask = Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseScreenSpaceShadowMask;
 
     // --- Depth prepass ---
     graph.AddPass( RG_PASS_NAME("FP Depth Prepass"), [&]( RGBuilder& builder, RenderPass& pass ) {
@@ -113,63 +114,65 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
     // value per pixel.  PS_Diffuse.hlsl (Forward+ branch) samples this at t12 instead
     // of running ComputeCascadedShadowValueSoft inline, saving one CSM evaluation per
     // visible fragment.
-    graph.AddPass( RG_PASS_NAME("FP Shadow Mask"), [&]( RGBuilder& builder, RenderPass& pass ) {
-        auto size = engine.GetResolution();
-        shadowMaskResource = builder.CreateTexture( {
-            static_cast<uint32_t>( size.x ), static_cast<uint32_t>( size.y ),
-            DXGI_FORMAT_R8_UNORM, L"ShadowMask" } );
-        builder.Write( shadowMaskResource );
-        builder.Write( backBufferHandle );
+    if ( useScreenSpaceShadowMask ) {
+        graph.AddPass( RG_PASS_NAME("FP Shadow Mask"), [&]( RGBuilder& builder, RenderPass& pass ) {
+            auto size = engine.GetResolution();
+            shadowMaskResource = builder.CreateTexture( {
+                static_cast<uint32_t>( size.x ), static_cast<uint32_t>( size.y ),
+                DXGI_FORMAT_R8_UNORM, L"ShadowMask" } );
+            builder.Write( shadowMaskResource );
+            builder.Write( backBufferHandle );
 
-        pass.m_executeCallback = [this, &engine, shadowMaskResource]( const RenderGraph& graph ) -> void {
-            auto& context = engine.GetContext();
-            auto* shadowMaps = engine.GetShadowMaps();
+            pass.m_executeCallback = [this, &engine, shadowMaskResource]( const RenderGraph& graph ) -> void {
+                auto& context = engine.GetContext();
+                auto* shadowMaps = engine.GetShadowMaps();
 
-            ID3D11RenderTargetView* nullRTV = nullptr;
-            context->OMSetRenderTargets( 1, &nullRTV, nullptr ); 
+                ID3D11RenderTargetView* nullRTV = nullptr;
+                context->OMSetRenderTargets( 1, &nullRTV, nullptr ); 
 
-            // Fill and bind the sun/CSM constant buffer at b0
-            DS_ScreenQuadConstantBuffer scb = shadowMaps->FillSunCSMConstantBuffer();
-            if ( !m_SunCSMConstantBuffer ) {
-                m_SunCSMConstantBuffer = std::make_unique<D3D11ConstantBuffer>(
-                    sizeof( DS_ScreenQuadConstantBuffer ), &scb );
-            } else {
-                m_SunCSMConstantBuffer->UpdateBuffer( &scb );
-            }
-            m_SunCSMConstantBuffer->BindToPixelShader( 0 );
+                // Fill and bind the sun/CSM constant buffer at b0
+                DS_ScreenQuadConstantBuffer scb = shadowMaps->FillSunCSMConstantBuffer();
+                if ( !m_SunCSMConstantBuffer ) {
+                    m_SunCSMConstantBuffer = std::make_unique<D3D11ConstantBuffer>(
+                        sizeof( DS_ScreenQuadConstantBuffer ), &scb );
+                } else {
+                    m_SunCSMConstantBuffer->UpdateBuffer( &scb );
+                }
+                m_SunCSMConstantBuffer->BindToPixelShader( 0 );
 
-            // Bind depth copy as SRV at t2 (filled by the "FP Light Culling" pass)
-            auto* depthCopy = engine.GetDepthBufferCopy();
-            ID3D11ShaderResourceView* depthSRV = depthCopy ? depthCopy->GetShaderResView().Get() : nullptr;
-            context->PSSetShaderResources( 2, 1, &depthSRV );
+                // Bind depth copy as SRV at t2 (filled by the "FP Light Culling" pass)
+                auto* depthCopy = engine.GetDepthBufferCopy();
+                ID3D11ShaderResourceView* depthSRV = depthCopy ? depthCopy->GetShaderResView().Get() : nullptr;
+                context->PSSetShaderResources( 2, 1, &depthSRV );
 
-            // Bind CSM shadow map at t3 and comparison sampler at s2
-            shadowMaps->BindToPixelShader( context.Get(), 3 );
-            shadowMaps->BindSampler( context.Get(), 2 );
+                // Bind CSM shadow map at t3 and comparison sampler at s2
+                shadowMaps->BindToPixelShader( context.Get(), 3 );
+                shadowMaps->BindSampler( context.Get(), 2 );
 
-            // Bind shadow mask RTV and clear to default (fully lit, sky depth)
-            auto* shadowMaskTex = graph.GetPhysicalTexture( shadowMaskResource );
-            ID3D11RenderTargetView* maskRTV = shadowMaskTex ? shadowMaskTex->GetRenderTargetView().Get() : nullptr;
-            constexpr float defaultMask[] { 1.f, 0.f, 0.f, 0.f };
-            if ( maskRTV ) context->ClearRenderTargetView( maskRTV, defaultMask );
-            context->OMSetRenderTargets( 1, &maskRTV, nullptr );
+                // Bind shadow mask RTV and clear to default (fully lit, sky depth)
+                auto* shadowMaskTex = graph.GetPhysicalTexture( shadowMaskResource );
+                ID3D11RenderTargetView* maskRTV = shadowMaskTex ? shadowMaskTex->GetRenderTargetView().Get() : nullptr;
+                constexpr float defaultMask[] { 1.f, 0.f, 0.f, 0.f };
+                if ( maskRTV ) context->ClearRenderTargetView( maskRTV, defaultMask );
+                context->OMSetRenderTargets( 1, &maskRTV, nullptr );
 
-            // Draw fullscreen triangle with the shadow mask shader
-            engine.SetActiveVertexShader( VShaderID::VS_PFX );
-            engine.BindActiveVertexShader();
+                // Draw fullscreen triangle with the shadow mask shader
+                engine.SetActiveVertexShader( VShaderID::VS_PFX );
+                engine.BindActiveVertexShader();
 
-            engine.SetActivePixelShader( PShaderID::PS_FP_ShadowMask );
-            engine.BindActivePixelShader();
+                engine.SetActivePixelShader( PShaderID::PS_FP_ShadowMask );
+                engine.BindActivePixelShader();
 
-            engine.UpdateRenderStates();
-            engine.GetPfxRenderer()->DrawFullScreenQuad();
+                engine.UpdateRenderStates();
+                engine.GetPfxRenderer()->DrawFullScreenQuad();
 
-            // Unbind RTVs and SRVs
-            context->OMSetRenderTargets( 1, &nullRTV, nullptr );
-            context->PSSetShaderResources( 2, 1, s_nullSRVs );
-            context->PSSetShaderResources( 3, 1, s_nullSRVs );
-        };
-    } );
+                // Unbind RTVs and SRVs
+                context->OMSetRenderTargets( 1, &nullRTV, nullptr );
+                context->PSSetShaderResources( 2, 1, s_nullSRVs );
+                context->PSSetShaderResources( 3, 1, s_nullSRVs );
+            };
+        } );
+    }
 
     // --- Forward+ lit geometry pass ---
     graph.AddPass( RG_PASS_NAME("FP Lit Geometry"), [&]( RGBuilder& builder, RenderPass& pass ) {
@@ -183,9 +186,11 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
         builder.Write( normalsResource );
         builder.Write( specularResource );
         builder.Write( backBufferHandle );
-        builder.Read( shadowMaskResource );
+        if ( useScreenSpaceShadowMask && shadowMaskResource != RG_INVALID_HANDLE ) {
+            builder.Read( shadowMaskResource );
+        }
 
-        pass.m_executeCallback = [this, &engine, colorResource, normalsResource, specularResource, reactiveMaskResource, velocityBufferHandle, shadowMaskResource]( const RenderGraph& graph ) -> void {
+        pass.m_executeCallback = [this, &engine, colorResource, normalsResource, specularResource, reactiveMaskResource, velocityBufferHandle, shadowMaskResource, useScreenSpaceShadowMask]( const RenderGraph& graph ) -> void {
             auto& context = engine.GetContext();
             auto* shadowMaps = engine.GetShadowMaps();
 
@@ -193,7 +198,9 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
             auto specular = graph.GetPhysicalTexture( specularResource );
             auto reactiveMask = graph.GetPhysicalTexture( reactiveMaskResource );
             auto velocityBuffer = graph.GetPhysicalTexture( velocityBufferHandle );
-            auto shadowMask = graph.GetPhysicalTexture( shadowMaskResource );
+            auto* shadowMask = ( useScreenSpaceShadowMask && shadowMaskResource != RG_INVALID_HANDLE )
+                ? graph.GetPhysicalTexture( shadowMaskResource )
+                : nullptr;
             const auto aaMode = Engine::GAPI->GetRendererState().RendererSettings.AntiAliasingMode;
             if (aaMode != GothicRendererSettings::AA_TAA
                 && aaMode != GothicRendererSettings::AA_FSR
@@ -250,7 +257,7 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
             m_TileConstantBuffer->BindToPixelShader( 5 );
              
             // --- Bind CSM shadow map at t3 ---
-            // shadowMaps->BindToPixelShader( context.Get(), 3 ); // no need for CSM, as we use Screen Space Shadow Mask now
+            shadowMaps->BindToPixelShader( context.Get(), 3 );
             shadowMaps->BindSampler( context.Get(), 2 );
 
             // --- Bind atmosphere cbuffer at b1 ---
@@ -277,7 +284,9 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
             }
 
             // --- Bind shadow mask at t12 ---
-            ID3D11ShaderResourceView* shadowMaskSRV = shadowMask ? shadowMask->GetShaderResView().Get() : nullptr;
+            ID3D11ShaderResourceView* shadowMaskSRV = ( useScreenSpaceShadowMask && shadowMask )
+                ? shadowMask->GetShaderResView().Get()
+                : nullptr;
             context->PSSetShaderResources( 12, 1, &shadowMaskSRV );
 
             // Draw all world geometry with Forward+ shaders

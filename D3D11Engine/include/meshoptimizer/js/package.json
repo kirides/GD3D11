@@ -1,0 +1,55 @@
+{
+	"name": "meshoptimizer",
+	"version": "1.1.0",
+	"description": "Mesh optimization library that makes meshes smaller and faster to render",
+	"author": "Arseny Kapoulkine",
+	"license": "MIT",
+	"bugs": "https://github.com/zeux/meshoptimizer/issues",
+	"homepage": "https://github.com/zeux/meshoptimizer",
+	"keywords": [
+		"compression",
+		"mesh"
+	],
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/zeux/meshoptimizer"
+	},
+	"files": [
+		"*.cjs",
+		"*.mjs",
+		"*.js",
+		"*.ts"
+	],
+	"type": "module",
+	"main": "index.js",
+	"types": "index.d.ts",
+	"exports": {
+		".": {
+			"types": "./index.d.ts",
+			"default": "./index.js"
+		},
+		"./encoder": {
+			"types": "./meshopt_encoder.d.ts",
+			"default": "./meshopt_encoder.js"
+		},
+		"./decoder": {
+			"types": "./meshopt_decoder.d.ts",
+			"default": "./meshopt_decoder.mjs"
+		},
+		"./simplifier": {
+			"types": "./meshopt_simplifier.d.ts",
+			"default": "./meshopt_simplifier.js"
+		},
+		"./clusterizer": {
+			"types": "./meshopt_clusterizer.d.ts",
+			"default": "./meshopt_clusterizer.js"
+		},
+		"./decoder.cjs": {
+			"require": "./meshopt_decoder.cjs"
+		}
+	},
+	"scripts": {
+		"test": "node meshopt_encoder.test.js && node meshopt_decoder.test.js && node meshopt_simplifier.test.js && node meshopt_clusterizer.test.js",
+		"prepublishOnly": "npm test"
+	}
+}

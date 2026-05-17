@@ -842,6 +842,7 @@ struct GothicRendererSettings {
         DebugSettings.Culling.CullVobs = true;
         DebugSettings.ShadowCascades.LazyCascadeUpdate = true;
         DebugSettings.FeatureSet.EnableDriverExtensions = true;
+        DebugSettings.FeatureSet.UseScreenSpaceShadowMask = false;
     }
 
     void SetupOldWorldSpecificValues() {
@@ -1046,6 +1047,7 @@ struct GothicRendererSettings {
             bool UseMDI;
             bool UseLayeredRendering;
             bool UseShadowAtlas;
+            bool UseScreenSpaceShadowMask;
             bool ForceFeatureLevel10;
         } FeatureSet;
     } DebugSettings;

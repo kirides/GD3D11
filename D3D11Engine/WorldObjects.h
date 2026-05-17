@@ -80,6 +80,7 @@ struct MeshInfo {
     MeshInfo() {
         MeshVertexBuffer = nullptr;
         MeshIndexBuffer = nullptr;
+        MeshShadowIndexBuffer = nullptr;
         BaseIndexLocation = 0;
         MeshIndex = -1;
         meshId = 0;
@@ -97,8 +98,10 @@ struct MeshInfo {
 
     D3D11VertexBuffer* MeshVertexBuffer;
     D3D11VertexBuffer* MeshIndexBuffer;
+    D3D11VertexBuffer* MeshShadowIndexBuffer;
     std::vector<ExVertexStruct> Vertices;
     std::vector<VERTEX_INDEX> Indices;
+    std::vector<VERTEX_INDEX> ShadowIndices;
 
     unsigned int BaseIndexLocation;
     unsigned int MeshIndex;

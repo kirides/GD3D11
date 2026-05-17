@@ -1430,6 +1430,10 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                     ApplyFeatureLevel10Downgrades( settings );
                 }
                 ImGui::SetItemTooltip("Enables a less intensive but lower quality shadow solution.");
+                if ( ImGui::Checkbox( "Use Screen-Space Shadow Mask", &settings.DebugSettings.FeatureSet.UseScreenSpaceShadowMask ) ) {
+                    Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows );
+                }
+                ImGui::SetItemTooltip( "Forward+ debug option: precompute sun shadows in a separate screen-space pass. Changing this reloads light/shadow shaders." );
                 ImGui::Checkbox("Force Feature Level 10", &settings.DebugSettings.FeatureSet.ForceFeatureLevel10 );
                 ImGui::SetItemTooltip("Force DirectX 10 era feature support. Requires restart.");
                 ImGui::EndTabItem();

@@ -272,6 +272,13 @@ struct VS_ExConstantBuffer_PerInstanceSkeletal {
     float3 PI_Pad1;
 };
 
+struct VS_ExConstantBuffer_SkeletalBoneRange {
+    unsigned int BoneOffset;
+    unsigned int PrevBoneOffset;
+    unsigned int BoneCount;
+    unsigned int UseStructuredBones;
+};
+
 struct ScreenFadeConstantBuffer {
     float GA_Alpha;
     float3 GA_Pad;

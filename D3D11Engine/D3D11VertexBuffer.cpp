@@ -3,8 +3,74 @@
 #include "pch.h"
 #include "D3D11GraphicsEngineBase.h"
 #include "Engine.h"
-#include <DirectXMesh.h>
+#include <meshoptimizer/src/meshoptimizer.h>
+#include <limits>
+#include <vector>
 #include "D3D11_Helpers.h"
+
+namespace {
+    constexpr float kOverdrawThreshold = 1.05f;
+    constexpr int kNormalQuantizationBits = 10;
+
+    void ConvertIndicesToUInt32( const VERTEX_INDEX* src, size_t count, std::vector<unsigned int>& dst ) {
+        dst.resize( count );
+        for ( size_t i = 0; i < count; ++i ) {
+            dst[i] = src[i];
+        }
+    }
+
+    bool ConvertIndicesToVertexIndex( const std::vector<unsigned int>& src, VERTEX_INDEX* dst, size_t dstCount ) {
+        const unsigned int maxVertexIndex = static_cast<unsigned int>(std::numeric_limits<VERTEX_INDEX>::max());
+        if ( src.size() > dstCount ) {
+            return false;
+        }
+
+        for ( size_t i = 0; i < src.size(); ++i ) {
+            if ( src[i] > maxVertexIndex ) {
+                return false;
+            }
+
+            dst[i] = static_cast<VERTEX_INDEX>(src[i]);
+        }
+
+        return true;
+    }
+
+    float DequantizeSnorm( int v, int bits ) {
+        const int maxValue = (1 << (bits - 1)) - 1;
+        if ( v > maxValue ) {
+            v = maxValue;
+        } else if ( v < -maxValue ) {
+            v = -maxValue;
+        }
+
+        return static_cast<float>(v) / static_cast<float>(maxValue);
+    }
+
+    void BuildQuantizedVertexKeyBuffer( const byte* srcVertices, unsigned int numVertices, unsigned int stride, std::vector<byte>& outKeyBuffer ) {
+        const size_t totalBytes = static_cast<size_t>(numVertices) * stride;
+        outKeyBuffer.assign( srcVertices, srcVertices + totalBytes );
+
+        // Quantize attributes in the key stream to collapse tiny floating-point drift during reindexing.
+        if ( stride != sizeof( ExVertexStruct ) ) {
+            return;
+        }
+
+        ExVertexStruct* keyVertices = reinterpret_cast<ExVertexStruct*>(outKeyBuffer.data());
+        for ( unsigned int i = 0; i < numVertices; ++i ) {
+            ExVertexStruct& v = keyVertices[i];
+
+            v.Normal.x = DequantizeSnorm( meshopt_quantizeSnorm( v.Normal.x, kNormalQuantizationBits ), kNormalQuantizationBits );
+            v.Normal.y = DequantizeSnorm( meshopt_quantizeSnorm( v.Normal.y, kNormalQuantizationBits ), kNormalQuantizationBits );
+            v.Normal.z = DequantizeSnorm( meshopt_quantizeSnorm( v.Normal.z, kNormalQuantizationBits ), kNormalQuantizationBits );
+
+            v.TexCoord.x = meshopt_dequantizeHalf( meshopt_quantizeHalf( v.TexCoord.x ) );
+            v.TexCoord.y = meshopt_dequantizeHalf( meshopt_quantizeHalf( v.TexCoord.y ) );
+            v.TexCoord2.x = meshopt_dequantizeHalf( meshopt_quantizeHalf( v.TexCoord2.x ) );
+            v.TexCoord2.y = meshopt_dequantizeHalf( meshopt_quantizeHalf( v.TexCoord2.y ) );
+        }
+    }
+}
 
 /** Creates the vertexbuffer with the given arguments */
 XRESULT D3D11VertexBuffer::Init( void* initData, unsigned int sizeInBytes, EBindFlags EBindFlags, EUsageFlags usage, ECPUAccessFlags cpuAccess, const std::string& fileName, unsigned int structuredByteSize ) {
@@ -141,57 +207,138 @@ Microsoft::WRL::ComPtr <ID3D11Buffer>& D3D11VertexBuffer::GetVertexBuffer() {
 }
 
 /** Optimizes the given set of vertices */
-XRESULT D3D11VertexBuffer::OptimizeVertices( VERTEX_INDEX* indices, byte* vertices, unsigned int numIndices, unsigned int numVertices, unsigned int stride ) {
-    return XR_SUCCESS;
+XRESULT D3D11VertexBuffer::OptimizeVertices( VERTEX_INDEX* indices, byte* vertices, unsigned int numIndices, unsigned int numVertices, unsigned int stride, std::vector<VERTEX_INDEX>* outShadowIndices ) {
+    if ( !indices || !vertices || numIndices == 0 || numVertices == 0 || stride == 0 ) {
+        if ( outShadowIndices ) {
+            outShadowIndices->clear();
+        }
+        return XR_SUCCESS;
+    }
 
-    uint32_t* remap = new uint32_t[numVertices];
-    if ( FAILED( DirectX::OptimizeVertices( indices, numIndices / 3, numVertices, remap ) ) ) {
-        delete[] remap;
+    // meshoptimizer supports per-vertex element sizes up to 256 bytes.
+    if ( stride > 256 ) {
+        if ( outShadowIndices ) {
+            outShadowIndices->clear();
+        }
+        return XR_SUCCESS;
+    }
+
+    const unsigned int maxVertexIndex = static_cast<unsigned int>(std::numeric_limits<VERTEX_INDEX>::max());
+    if ( numVertices > maxVertexIndex + 1 ) {
+        LogError() << "OptimizeVertices: numVertices exceeds VERTEX_INDEX range";
         return XR_FAILED;
     }
 
-    // Remap vertices
-    byte* vxCopy = new byte[numVertices * stride];
-    memcpy( vxCopy, vertices, numVertices * stride );
+    ZoneScoped;
 
-    for ( unsigned int i = 0; i < numVertices; i++ ) {
-        // Assign the vertex at remap[i] to its new vertex
-        memcpy( vertices + remap[i] * stride, vxCopy + i * stride, stride );
+    std::vector<unsigned int> indexData;
+    ConvertIndicesToUInt32( indices, numIndices, indexData );
+
+    std::vector<unsigned int> remap( numVertices );
+    const size_t fetchedVertexCount = meshopt_optimizeVertexFetchRemap( remap.data(), indexData.data(), numIndices, numVertices );
+
+    std::vector<unsigned int> remappedIndices( numIndices );
+    meshopt_remapIndexBuffer( remappedIndices.data(), indexData.data(), numIndices, remap.data() );
+
+    std::vector<byte> remappedVertices( static_cast<size_t>(numVertices) * stride );
+    memcpy( remappedVertices.data(), vertices, remappedVertices.size() );
+    meshopt_remapVertexBuffer( remappedVertices.data(), vertices, numVertices, stride, remap.data() );
+
+    if ( outShadowIndices ) {
+        std::vector<unsigned int> shadowIndices( numIndices );
+        meshopt_generateShadowIndexBuffer( shadowIndices.data(),
+            remappedIndices.data(),
+            numIndices,
+            remappedVertices.data(),
+            fetchedVertexCount,
+            sizeof( float ) * 3,
+            stride );
+
+        outShadowIndices->resize( numIndices );
+        if ( !ConvertIndicesToVertexIndex( shadowIndices, outShadowIndices->data(), outShadowIndices->size() ) ) {
+            LogError() << "OptimizeVertices: shadow index exceeds VERTEX_INDEX range";
+            outShadowIndices->clear();
+            return XR_FAILED;
+        }
     }
 
-    for ( unsigned int i = 0; i < numIndices; i++ ) {
-        // Remap the indices.
-        indices[i] = static_cast<VERTEX_INDEX>(remap[indices[i]]);
+    if ( !ConvertIndicesToVertexIndex( remappedIndices, indices, numIndices ) ) {
+        LogError() << "OptimizeVertices: remapped index exceeds VERTEX_INDEX range";
+        if ( outShadowIndices ) {
+            outShadowIndices->clear();
+        }
+        return XR_FAILED;
     }
 
-    delete[] vxCopy;
-    delete[] remap;
+    memcpy( vertices, remappedVertices.data(), remappedVertices.size() );
 
     return XR_SUCCESS;
 }
 
 /** Optimizes the given set of vertices */
 XRESULT D3D11VertexBuffer::OptimizeFaces( VERTEX_INDEX* indices, byte* vertices, unsigned int numIndices, unsigned int numVertices, unsigned int stride ) {
-    return XR_SUCCESS;
+    if ( !indices || !vertices || numIndices < 3 || numVertices == 0 || (numIndices % 3) != 0 || stride == 0 ) {
+        return XR_SUCCESS;
+    }
 
-    unsigned int numFaces = numIndices / 3;
-    uint32_t* remap = new uint32_t[numFaces];
+    if ( stride > 256 ) {
+        return XR_SUCCESS;
+    }
 
-    if ( FAILED( DirectX::OptimizeFaces( indices, numFaces, &numVertices, remap ) ) ) {
-        delete[] remap;
+    const unsigned int maxVertexIndex = static_cast<unsigned int>(std::numeric_limits<VERTEX_INDEX>::max());
+    if ( numVertices > maxVertexIndex + 1 ) {
+        LogError() << "OptimizeFaces: numVertices exceeds VERTEX_INDEX range";
         return XR_FAILED;
     }
-    // Remap vertices
-    VERTEX_INDEX* ibCopy = new VERTEX_INDEX[numFaces * 3];
-    memcpy( ibCopy, indices, numFaces * 3 * sizeof( VERTEX_INDEX ) );
 
-    for ( unsigned int i = 0; i < numFaces; i++ ) {
-        // Copy the remapped face
-        memcpy( &indices[i * 3], &ibCopy[remap[i] * 3], 3 * sizeof( VERTEX_INDEX ) );
+    ZoneScoped;
+
+    std::vector<unsigned int> indexData;
+    ConvertIndicesToUInt32( indices, numIndices, indexData );
+
+    // Step 1: Indexing/reindexing with a quantized key stream to reduce float drift duplicates.
+    std::vector<byte> remapKeyVertices;
+    BuildQuantizedVertexKeyBuffer( vertices, numVertices, stride, remapKeyVertices );
+
+    std::vector<unsigned int> remap( numVertices );
+    const size_t indexedVertexCount = meshopt_generateVertexRemap( remap.data(),
+        indexData.data(),
+        numIndices,
+        remapKeyVertices.data(),
+        numVertices,
+        stride );
+    if ( indexedVertexCount == 0 ) {
+        return XR_FAILED;
     }
 
-    delete[] ibCopy;
-    delete[] remap;
+    std::vector<unsigned int> reindexedIndices( numIndices );
+    meshopt_remapIndexBuffer( reindexedIndices.data(), indexData.data(), numIndices, remap.data() );
+
+    std::vector<byte> reindexedVertices( static_cast<size_t>(numVertices) * stride );
+    memcpy( reindexedVertices.data(), vertices, reindexedVertices.size() );
+    meshopt_remapVertexBuffer( reindexedVertices.data(), vertices, numVertices, stride, remap.data() );
+
+    memcpy( vertices, reindexedVertices.data(), reindexedVertices.size() );
+    indexData.swap( reindexedIndices );
+
+    // Step 2: Vertex cache optimization.
+    meshopt_optimizeVertexCache( indexData.data(), indexData.data(), numIndices, indexedVertexCount );
+
+    // Step 3 (optional): Overdraw optimization.
+    if ( stride >= sizeof( float ) * 3 ) {
+        meshopt_optimizeOverdraw( indexData.data(),
+            indexData.data(),
+            numIndices,
+            reinterpret_cast<const float*>(vertices),
+            indexedVertexCount,
+            stride,
+            kOverdrawThreshold );
+    }
+
+    if ( !ConvertIndicesToVertexIndex( indexData, indices, numIndices ) ) {
+        LogError() << "OptimizeFaces: remapped index exceeds VERTEX_INDEX range";
+        return XR_FAILED;
+    }
 
     return XR_SUCCESS;
 }

@@ -119,13 +119,18 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
 	
 	float pixelDistZ = abs(vsPosition.z);
 
-	// CSM shadow — sampled from pre-computed screen-space shadow mask (PS_FP_ShadowMask.hlsl)
+	// CSM shadow source is toggleable in Forward+: precomputed screen-space mask or direct CSM.
 	float shadow = vertLighting;
 #if SHD_ENABLE
 	if (AC_LightPos.y > 0)
 	{
-		float2 screenUV = Input.vPosition.xy / FP_ViewportSize;
-		shadow = FP_ShadowMask.SampleLevel( SS_Linear, screenUV, 0 ).r;
+		#if FP_USE_SHADOW_MASK
+			float2 screenUV = Input.vPosition.xy / FP_ViewportSize;
+			shadow = FP_ShadowMask.SampleLevel( SS_Linear, screenUV, 0 ).r;
+		#else
+			float bias = lerp(0.00005f, 0.0001f, abs(vsPosition.z) / 1000.0f);
+			shadow = ComputeCascadedShadowValueSoft(wsPosition, vsPosition.z, vertLighting, bias, Input.vPosition.xy);
+		#endif
 	}
 #endif
 
