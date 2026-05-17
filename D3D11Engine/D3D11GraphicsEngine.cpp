@@ -2905,7 +2905,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                     ActivePS->Apply();
                 }
             } else if (lastTex != nullptr) {
-                Context->PSSetShaderResources( 0, 1, nullptr );
+                Context->PSSetShaderResources( 0, 1, s_nullSRVs );
                 lastTex = nullptr;
                 Context->PSSetShader( nullptr, nullptr, 0 );
                 ActivePS = nullptr;
