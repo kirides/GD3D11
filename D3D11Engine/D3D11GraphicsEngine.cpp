@@ -3640,25 +3640,30 @@ namespace {
         }
     }
 
-    D3D11VertexBuffer* GetShadowAwareIndexBuffer( MeshInfo* mesh ) {
+    D3D11VertexBuffer* GetShadowAwareIndexBuffer( MeshInfo* mesh, bool isAlpha ) {
         if ( !mesh ) {
             return nullptr;
+        }
+
+        if ( isAlpha ) {
+            return mesh->MeshIndexBuffer;
         }
 
         if ( mesh->MeshShadowIndexBuffer && !mesh->ShadowIndices.empty() ) {
             return mesh->MeshShadowIndexBuffer;
         }
-
         return mesh->MeshIndexBuffer;
     }
 
-    unsigned int GetShadowAwareIndexCount( const MeshInfo* mesh ) {
+    unsigned int GetShadowAwareIndexCount( const MeshInfo* mesh, bool isAlpha ) {
         if ( !mesh ) {
             return 0;
         }
 
-        return static_cast<unsigned int>(
-            mesh->ShadowIndices.empty() ? mesh->Indices.size() : mesh->ShadowIndices.size() );
+        if ( isAlpha ) {
+            return mesh->Indices.size();
+        }
+        return static_cast<unsigned int>(mesh->ShadowIndices.empty() ? mesh->Indices.size() : mesh->ShadowIndices.size() );
     }
 }
 
@@ -5430,6 +5435,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
         // no vobs near!
         if ( worldMeshCache && renderedVobs && !renderedVobs->empty() ) {
             for ( auto&& meshInfoByKey = worldMeshCache->begin(); meshInfoByKey != worldMeshCache->end(); ++meshInfoByKey ) {
+                bool isAlpha = false;
                 // Bind texture
                 if ( meshInfoByKey->first.Material && meshInfoByKey->first.Material->GetTexture() ) {
                     // Check surface type
@@ -5440,10 +5446,10 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
 
                     if ( meshInfoByKey->first.Material->GetTexture()->HasAlphaChannel() ||
                         colorWritesEnabled ) {
-                        if ( alphaRef > 0.0f && meshInfoByKey->first.Material->GetTexture()->CacheIn(
-                            0.6f ) == zRES_CACHED_IN ) {
+                        if ( alphaRef > 0.0f && meshInfoByKey->first.Material->GetTexture()->CacheIn(0.6f ) == zRES_CACHED_IN ) {
                             meshInfoByKey->first.Material->GetTexture()->Bind( 0 );
                             ActivePS->Apply();
+                            isAlpha = true;
                         } else
                             continue;  // Don't render if not loaded
                     } else {
@@ -5458,8 +5464,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                 // Draw from wrapped mesh
                 MeshInfo* mesh = meshInfoByKey->second;
                 DrawVertexBufferIndexed( mesh->MeshVertexBuffer,
-                    GetShadowAwareIndexBuffer( mesh ),
-                    GetShadowAwareIndexCount( mesh ) );
+                    GetShadowAwareIndexBuffer( mesh, isAlpha ),
+                    GetShadowAwareIndexCount( mesh, isAlpha ) );
             }
         } else {
             for ( auto&& itx : Engine::GAPI->GetWorldSections() ) {
@@ -5482,6 +5488,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                                     continue;
                                 }
 
+                                bool isAlpha = false;
                                 // Bind texture
                                 if ( meshInfoByKey->first.Material && meshInfoByKey->first.Material->GetTexture() ) {
                                     if ( meshInfoByKey->first.Material->GetTexture()->HasAlphaChannel() ||
@@ -5491,6 +5498,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                                             zRES_CACHED_IN ) {
                                             meshInfoByKey->first.Material->GetTexture()->Bind( 0 );
                                             ActivePS->Apply();
+                                            isAlpha = true;
                                         } else
                                             continue;  // Don't render if not loaded
                                     } else {
@@ -5506,8 +5514,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                                 // Draw from wrapped mesh
                                 MeshInfo* mesh = meshInfoByKey->second;
                                 DrawVertexBufferIndexed( mesh->MeshVertexBuffer,
-                                    GetShadowAwareIndexBuffer( mesh ),
-                                    GetShadowAwareIndexCount( mesh ) );
+                                    GetShadowAwareIndexBuffer( mesh, isAlpha ),
+                                    GetShadowAwareIndexCount( mesh, isAlpha ) );
                             }
                         }
                     }
@@ -5557,12 +5565,14 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
 
             // Draw the vob
             for ( auto const& materialMesh : vobInfo->VisualInfo->Meshes ) {
+                bool isAlpha = false;
                 if ( materialMesh.first && materialMesh.first->GetTexture() ) {
                     if ( materialMesh.first->GetTexture()->CacheIn( 0.6f ) == zRES_CACHED_IN
                         && (
                             (materialMesh.first->GetAlphaFunc() != zMAT_ALPHA_FUNC_NONE && materialMesh.first->GetAlphaFunc() != zMAT_ALPHA_FUNC_MAT_DEFAULT)
                             || materialMesh.first->GetTexture()->HasAlphaChannel())
                         ) {
+                        isAlpha = true;
                         if ( lastBoundTexture != materialMesh.first->GetTexture()->GetSurface()->GetEngineTexture() ) {
                             lastBoundTexture = materialMesh.first->GetTexture()->GetSurface()->GetEngineTexture(); 
                             lastBoundTexture->BindToPixelShader( 0 );
@@ -5577,8 +5587,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                 for ( auto const& meshInfo : materialMesh.second ) {
                     DrawVertexBufferIndexed(
                         meshInfo->MeshVertexBuffer,
-                        GetShadowAwareIndexBuffer( meshInfo ),
-                        GetShadowAwareIndexCount( meshInfo ) );
+                        GetShadowAwareIndexBuffer( meshInfo, isAlpha ),
+                        GetShadowAwareIndexCount( meshInfo, isAlpha ) );
                 }
             }
         }
@@ -5747,6 +5757,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
         if ( worldMeshCache && renderedVobs && !renderedVobs->empty() ) {
             for ( auto&& meshInfoByKey = worldMeshCache->begin(); meshInfoByKey != worldMeshCache->end(); ++meshInfoByKey ) {
                 // Bind texture
+                bool isAlpha = false;
                 if ( meshInfoByKey->first.Material && meshInfoByKey->first.Material->GetTexture() ) {
                     // Check surface type
 
@@ -5760,6 +5771,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                             0.6f ) == zRES_CACHED_IN ) {
                             meshInfoByKey->first.Material->GetTexture()->Bind( 0 );
                             ActivePS->Apply();
+                            isAlpha = true;
                         } else
                             continue;  // Don't render if not loaded
                     } else {
@@ -5774,8 +5786,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                 // Draw from wrapped mesh
                 MeshInfo* mesh = meshInfoByKey->second;
                 DrawVertexBufferInstancedIndexed( mesh->MeshVertexBuffer,
-                    GetShadowAwareIndexBuffer( mesh ),
-                    GetShadowAwareIndexCount( mesh ),
+                    GetShadowAwareIndexBuffer( mesh, isAlpha ),
+                    GetShadowAwareIndexCount( mesh, isAlpha ),
                     6 );
             }
         } else {
@@ -5799,6 +5811,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                                     continue;
                                 }
 
+                                bool isAlpha = false;
                                 // Bind texture
                                 if ( meshInfoByKey->first.Material && meshInfoByKey->first.Material->GetTexture() ) {
                                     if ( meshInfoByKey->first.Material->GetTexture()->HasAlphaChannel() ||
@@ -5808,6 +5821,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                                             zRES_CACHED_IN ) {
                                             meshInfoByKey->first.Material->GetTexture()->Bind( 0 );
                                             ActivePS->Apply();
+                                            isAlpha = true;
                                         } else
                                             continue;  // Don't render if not loaded
                                     } else {
@@ -5823,8 +5837,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                                 // Draw from wrapped mesh
                                 MeshInfo* mesh = meshInfoByKey->second;
                                 DrawVertexBufferInstancedIndexed( mesh->MeshVertexBuffer,
-                                    GetShadowAwareIndexBuffer( mesh ),
-                                    GetShadowAwareIndexCount( mesh ),
+                                    GetShadowAwareIndexBuffer( mesh, isAlpha ),
+                                    GetShadowAwareIndexCount( mesh, isAlpha ),
                                     6 );
                             }
                         }
@@ -5878,12 +5892,14 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
 
             // Draw the vob1
             for ( auto const& materialMesh : vobInfo->VisualInfo->Meshes ) {
+                bool isAlpha = false;
                 if ( materialMesh.first && materialMesh.first->GetTexture() ) {
                     if ( materialMesh.first->GetTexture()->CacheIn( 0.6f ) == zRES_CACHED_IN
                         && (
                             (materialMesh.first->GetAlphaFunc() != zMAT_ALPHA_FUNC_NONE && materialMesh.first->GetAlphaFunc() != zMAT_ALPHA_FUNC_MAT_DEFAULT)
                             || materialMesh.first->GetTexture()->HasAlphaChannel())
                         ) {
+                        isAlpha = true;
                         if ( lastBoundTexture != materialMesh.first->GetTexture()->GetSurface()->GetEngineTexture() ) {
                             lastBoundTexture = materialMesh.first->GetTexture()->GetSurface()->GetEngineTexture();
                             lastBoundTexture->BindToPixelShader( 0 );
@@ -5898,8 +5914,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                 for ( auto const& meshInfo : materialMesh.second ) {
                     DrawVertexBufferInstancedIndexed(
                         meshInfo->MeshVertexBuffer,
-                        GetShadowAwareIndexBuffer( meshInfo ),
-                        GetShadowAwareIndexCount( meshInfo ),
+                        GetShadowAwareIndexBuffer( meshInfo, isAlpha ),
+                        GetShadowAwareIndexCount( meshInfo, isAlpha ),
                         6 );
                 }
             }
@@ -6032,13 +6048,15 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect(const std::vector<Wo
 
                 MeshInfo* mesh = meshPair.second;
                 zCTexture* tex = meshPair.first.Material ? meshPair.first.Material->GetTexture() : nullptr;
-                const unsigned int indexCount = GetShadowAwareIndexCount( mesh );
+                unsigned int indexCount = 0;
 
                 if ( tex && tex->HasAlphaChannel() && alphaRef > 0.0f ) {
                     if ( tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
                         alphaMeshes.emplace_back( tex, mesh );
                     }
+                    indexCount = GetShadowAwareIndexCount( mesh, true );
                 } else {
+                    indexCount = GetShadowAwareIndexCount( mesh, false );
                     D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS args;
                     args.IndexCountPerInstance = indexCount;
                     args.InstanceCount = 1;
@@ -6095,7 +6113,7 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect(const std::vector<Wo
             }
 
             DrawVertexBufferIndexedUINT( nullptr, nullptr,
-                GetShadowAwareIndexCount( mesh ),
+                GetShadowAwareIndexCount( mesh, true ),
                 mesh->BaseIndexLocation );
         }
     }
@@ -6150,8 +6168,8 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh(const std::vector<WorldMeshSe
 
         for ( MeshInfo* mesh : opaqueMeshes ) {
             DrawVertexBufferIndexed( mesh->MeshVertexBuffer,
-                GetShadowAwareIndexBuffer( mesh ),
-                GetShadowAwareIndexCount( mesh ) );
+                GetShadowAwareIndexBuffer( mesh, false ),
+                GetShadowAwareIndexCount( mesh, false ) );
         }
     }
 
@@ -6177,8 +6195,8 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh(const std::vector<WorldMeshSe
                 }
             }
             DrawVertexBufferIndexed( mesh->MeshVertexBuffer,
-                GetShadowAwareIndexBuffer( mesh ),
-                GetShadowAwareIndexCount( mesh ) );
+                GetShadowAwareIndexBuffer( mesh, true ),
+                GetShadowAwareIndexCount( mesh, true ) );
         }
     }
 }
@@ -6485,6 +6503,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             bool bindTexture = tx
                 && (tx->HasAlphaChannel() || colorWritesEnabled || meshKey.Material->HasAlphaTest())
                 && alphaRef > 0.0f;
+            const bool isAlpha = bindTexture;
 
             // Bind texture
             if ( bindTexture ) {
@@ -6519,7 +6538,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
             /* Dont re-bind buffer all the time*/
             const auto vb = mi->MeshVertexBuffer;
-            const auto ib = GetShadowAwareIndexBuffer( mi );
+            const auto ib = GetShadowAwareIndexBuffer( mi, isAlpha );
 
             UINT offset[] = { 0 };
             UINT uStride[] = { sizeof( ExVertexStruct ) };
@@ -6527,7 +6546,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                 vb->GetVertexBuffer().Get()
             };
 
-            auto numIndices = static_cast<size_t>(GetShadowAwareIndexCount( mi ));
+            auto numIndices = static_cast<size_t>(GetShadowAwareIndexCount( mi, isAlpha ));
             const auto numInstances = staticMeshVisual->Instances.size();
             const auto startInstanceNum = staticMeshVisual->StartInstanceNum;
             const auto indexOffset = 0;
@@ -8160,20 +8179,73 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
 
         if ( alignment == zVISUAL_CAM_ALIGN_YAW ) {
             XMFLOAT3 decalPos = decals[i]->GetPositionWorld();
-            float angle = atan2( decalPos.x - camPos.x, decalPos.z - camPos.z );
-            XMMATRIX rotationVector = XMMatrixTranspose( XMMatrixRotationY( angle ) );
-            //world *= rotationVector;
+            XMVECTOR at = XMVectorSet( decalPos.x - camPos.x, 0.0f, decalPos.z - camPos.z, 0.0f );
+            XMFLOAT4 atLengthSq = {};
+            XMStoreFloat4( &atLengthSq, XMVector3LengthSq( at ) );
 
-            // We only need to change rotation vectors - maintain old W-coordinates
-            XMStoreFloat3( reinterpret_cast<XMFLOAT3*>(&world.r[0]), rotationVector.r[0] );
-            XMStoreFloat3( reinterpret_cast<XMFLOAT3*>(&world.r[1]), rotationVector.r[1] );
-            XMStoreFloat3( reinterpret_cast<XMFLOAT3*>(&world.r[2]), rotationVector.r[2] );
+            // Match original Gothic cam-align yaw: SetAt/SetUp/MakeOrthonormal on object transform.
+            if ( atLengthSq.x > 1e-6f ) {
+                XMMATRIX worldObj = XMMatrixTranspose( world );
+                XMVECTOR translation = worldObj.r[3];
+
+                at = XMVector3Normalize( at );
+                XMVECTOR up = XMVectorSet( 0.0f, 1.0f, 0.0f, 0.0f );
+                XMVECTOR right = XMVector3Normalize( XMVector3Cross( up, at ) );
+                up = XMVector3Normalize( XMVector3Cross( at, right ) );
+
+                XMFLOAT3 right3 = {};
+                XMFLOAT3 up3 = {};
+                XMFLOAT3 at3 = {};
+                XMFLOAT3 translation3 = {};
+                XMStoreFloat3( &right3, right );
+                XMStoreFloat3( &up3, up );
+                XMStoreFloat3( &at3, at );
+                XMStoreFloat3( &translation3, translation );
+
+                worldObj.r[0] = XMVectorSet( right3.x, right3.y, right3.z, 0.0f );
+                worldObj.r[1] = XMVectorSet( up3.x, up3.y, up3.z, 0.0f );
+                worldObj.r[2] = XMVectorSet( at3.x, at3.y, at3.z, 0.0f );
+                worldObj.r[3] = XMVectorSet( translation3.x, translation3.y, translation3.z, 1.0f );
+
+                world = XMMatrixTranspose( worldObj );
+            }
         } else if ( alignment == zVISUAL_CAM_ALIGN_FULL ) {
             XMFLOAT3 decalPos = decals[i]->GetPositionWorld();
-            world = XMMatrixIdentity();
-            reinterpret_cast<XMFLOAT4*>(&world.r[0])->w = decalPos.x;
-            reinterpret_cast<XMFLOAT4*>(&world.r[1])->w = decalPos.y;
-            reinterpret_cast<XMFLOAT4*>(&world.r[2])->w = decalPos.z;
+            XMVECTOR at = XMVectorSet( decalPos.x - camPos.x, decalPos.y - camPos.y, decalPos.z - camPos.z, 0.0f );
+            XMFLOAT4 atLengthSq = {};
+            XMStoreFloat4( &atLengthSq, XMVector3LengthSq( at ) );
+
+            if ( atLengthSq.x > 1e-6f ) {
+                at = XMVector3Normalize( at );
+
+                XMVECTOR upRef = XMVectorSet( 0.0f, 1.0f, 0.0f, 0.0f );
+                XMFLOAT4 upDot = {};
+                XMStoreFloat4( &upDot, XMVector3Dot( at, upRef ) );
+
+                if ( fabsf( upDot.x ) > 0.999f ) {
+                    upRef = XMVectorSet( 0.0f, 0.0f, 1.0f, 0.0f );
+                }
+
+                XMVECTOR right = XMVector3Normalize( XMVector3Cross( upRef, at ) );
+                XMVECTOR up = XMVector3Normalize( XMVector3Cross( at, right ) );
+
+                XMFLOAT3 right3 = {};
+                XMFLOAT3 up3 = {};
+                XMFLOAT3 at3 = {};
+                XMStoreFloat3( &right3, right );
+                XMStoreFloat3( &up3, up );
+                XMStoreFloat3( &at3, at );
+
+                XMMATRIX worldObj;
+                worldObj.r[0] = XMVectorSet( right3.x, right3.y, right3.z, 0.0f );
+                worldObj.r[1] = XMVectorSet( up3.x, up3.y, up3.z, 0.0f );
+                worldObj.r[2] = XMVectorSet( at3.x, at3.y, at3.z, 0.0f );
+                worldObj.r[3] = XMVectorSet( decalPos.x, decalPos.y, decalPos.z, 1.0f );
+
+                world = XMMatrixTranspose( worldObj );
+            } else {
+                world = XMMatrixTranspose( XMMatrixTranslation( decalPos.x, decalPos.y, decalPos.z ) );
+            }
         }
 
         XMMATRIX mat = view * world * offset * scale;
