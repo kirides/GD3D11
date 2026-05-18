@@ -8160,20 +8160,73 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
 
         if ( alignment == zVISUAL_CAM_ALIGN_YAW ) {
             XMFLOAT3 decalPos = decals[i]->GetPositionWorld();
-            float angle = atan2( decalPos.x - camPos.x, decalPos.z - camPos.z );
-            XMMATRIX rotationVector = XMMatrixTranspose( XMMatrixRotationY( angle ) );
-            //world *= rotationVector;
+            XMVECTOR at = XMVectorSet( decalPos.x - camPos.x, 0.0f, decalPos.z - camPos.z, 0.0f );
+            XMFLOAT4 atLengthSq = {};
+            XMStoreFloat4( &atLengthSq, XMVector3LengthSq( at ) );
 
-            // We only need to change rotation vectors - maintain old W-coordinates
-            XMStoreFloat3( reinterpret_cast<XMFLOAT3*>(&world.r[0]), rotationVector.r[0] );
-            XMStoreFloat3( reinterpret_cast<XMFLOAT3*>(&world.r[1]), rotationVector.r[1] );
-            XMStoreFloat3( reinterpret_cast<XMFLOAT3*>(&world.r[2]), rotationVector.r[2] );
+            // Match original Gothic cam-align yaw: SetAt/SetUp/MakeOrthonormal on object transform.
+            if ( atLengthSq.x > 1e-6f ) {
+                XMMATRIX worldObj = XMMatrixTranspose( world );
+                XMVECTOR translation = worldObj.r[3];
+
+                at = XMVector3Normalize( at );
+                XMVECTOR up = XMVectorSet( 0.0f, 1.0f, 0.0f, 0.0f );
+                XMVECTOR right = XMVector3Normalize( XMVector3Cross( up, at ) );
+                up = XMVector3Normalize( XMVector3Cross( at, right ) );
+
+                XMFLOAT3 right3 = {};
+                XMFLOAT3 up3 = {};
+                XMFLOAT3 at3 = {};
+                XMFLOAT3 translation3 = {};
+                XMStoreFloat3( &right3, right );
+                XMStoreFloat3( &up3, up );
+                XMStoreFloat3( &at3, at );
+                XMStoreFloat3( &translation3, translation );
+
+                worldObj.r[0] = XMVectorSet( right3.x, right3.y, right3.z, 0.0f );
+                worldObj.r[1] = XMVectorSet( up3.x, up3.y, up3.z, 0.0f );
+                worldObj.r[2] = XMVectorSet( at3.x, at3.y, at3.z, 0.0f );
+                worldObj.r[3] = XMVectorSet( translation3.x, translation3.y, translation3.z, 1.0f );
+
+                world = XMMatrixTranspose( worldObj );
+            }
         } else if ( alignment == zVISUAL_CAM_ALIGN_FULL ) {
             XMFLOAT3 decalPos = decals[i]->GetPositionWorld();
-            world = XMMatrixIdentity();
-            reinterpret_cast<XMFLOAT4*>(&world.r[0])->w = decalPos.x;
-            reinterpret_cast<XMFLOAT4*>(&world.r[1])->w = decalPos.y;
-            reinterpret_cast<XMFLOAT4*>(&world.r[2])->w = decalPos.z;
+            XMVECTOR at = XMVectorSet( decalPos.x - camPos.x, decalPos.y - camPos.y, decalPos.z - camPos.z, 0.0f );
+            XMFLOAT4 atLengthSq = {};
+            XMStoreFloat4( &atLengthSq, XMVector3LengthSq( at ) );
+
+            if ( atLengthSq.x > 1e-6f ) {
+                at = XMVector3Normalize( at );
+
+                XMVECTOR upRef = XMVectorSet( 0.0f, 1.0f, 0.0f, 0.0f );
+                XMFLOAT4 upDot = {};
+                XMStoreFloat4( &upDot, XMVector3Dot( at, upRef ) );
+
+                if ( fabsf( upDot.x ) > 0.999f ) {
+                    upRef = XMVectorSet( 0.0f, 0.0f, 1.0f, 0.0f );
+                }
+
+                XMVECTOR right = XMVector3Normalize( XMVector3Cross( upRef, at ) );
+                XMVECTOR up = XMVector3Normalize( XMVector3Cross( at, right ) );
+
+                XMFLOAT3 right3 = {};
+                XMFLOAT3 up3 = {};
+                XMFLOAT3 at3 = {};
+                XMStoreFloat3( &right3, right );
+                XMStoreFloat3( &up3, up );
+                XMStoreFloat3( &at3, at );
+
+                XMMATRIX worldObj;
+                worldObj.r[0] = XMVectorSet( right3.x, right3.y, right3.z, 0.0f );
+                worldObj.r[1] = XMVectorSet( up3.x, up3.y, up3.z, 0.0f );
+                worldObj.r[2] = XMVectorSet( at3.x, at3.y, at3.z, 0.0f );
+                worldObj.r[3] = XMVectorSet( decalPos.x, decalPos.y, decalPos.z, 1.0f );
+
+                world = XMMatrixTranspose( worldObj );
+            } else {
+                world = XMMatrixTranspose( XMMatrixTranslation( decalPos.x, decalPos.y, decalPos.z ) );
+            }
         }
 
         XMMATRIX mat = view * world * offset * scale;
