@@ -1434,6 +1434,10 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                     Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows );
                 }
                 ImGui::SetItemTooltip( "Forward+ debug option: precompute sun shadows in a separate screen-space pass. Changing this reloads light/shadow shaders." );
+
+                ImGui::Checkbox("Use World Section BVH", &settings.DebugSettings.FeatureSet.UseWorldSectionBVH );
+                ImGui::SetItemTooltip("Use Bounding Volume Hierarchy for world sections. Improves culling performance.");
+
                 ImGui::Checkbox("Force Feature Level 10", &settings.DebugSettings.FeatureSet.ForceFeatureLevel10 );
                 ImGui::SetItemTooltip("Force DirectX 10 era feature support. Requires restart.");
                 ImGui::EndTabItem();
