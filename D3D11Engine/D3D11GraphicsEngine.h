@@ -221,7 +221,6 @@ public:
     /** ---------------- Gothic rendering functions -------------------- */
 
     /** Draws the world mesh */
-    XRESULT DrawWorldMesh_Indirect( bool noTextures = false ) override;
     XRESULT DrawWorldMesh( bool noTextures = false ) override;
 
     /** Draws a list of mesh infos */
@@ -496,10 +495,12 @@ private:
     /** Per-frame geometry cache: culling and draw-arg building is done once per frame.
      *  The Z-prepass populates this; the lit geometry pass reuses it. */
     struct FrameGeometryCache {
-        struct MDIBatch {
-            unsigned int DrawCount;
-            unsigned int AlignedByteOffsetForArgs;
-            MaterialInfo* MeshMaterialInfo;
+        struct CachedWorldMeshDraw {
+            zCTexture* Texture = nullptr;
+            MeshInfo* Mesh = nullptr;
+            MaterialInfo* MeshMaterialInfo = nullptr;
+            float DistanceSq = 0.0f;
+            bool AlphaTest = false;
         };
 
         /// Snapshot of a static-mesh visual and its per-frame instance data.
@@ -522,9 +523,8 @@ private:
         bool skeletalBonesUploaded = false; ///< FL11 packed skeletal bone buffers uploaded for main/z-prepass reuse
 
         std::vector<WorldMeshSectionInfo*> visibleSections;
-        std::unordered_map<zCTexture*, MDIBatch> mdiBatches;
         std::vector<D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS> drawIndirectArgs;
-        std::vector<std::tuple<zCTexture*, MeshInfo*, MaterialInfo*>> meshListAlpha;
+        std::vector<CachedWorldMeshDraw> sortedDepthWorldMeshes;
         D3D11IndirectBuffer*           MainWorldIndirectArgsBuffer = nullptr;
         D3D11VertexBuffer*             MainVobInstancingBuffer = nullptr;
         std::vector<VobWindMetadata>   vobWindMetadata;
@@ -540,9 +540,8 @@ private:
             vobWindMetadataPrepared = false;
             skeletalBonesUploaded = false;
             visibleSections.clear();
-            mdiBatches.clear();
             drawIndirectArgs.clear();
-            meshListAlpha.clear();
+            sortedDepthWorldMeshes.clear();
             MainWorldIndirectArgsBuffer = nullptr;
             MainVobInstancingBuffer = nullptr;
             vobWindMetadata.clear();

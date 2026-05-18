@@ -1289,12 +1289,7 @@ void GothicAPI::DrawWorldMeshNaive() {
     {
         ZoneScopedN( "World Mesh" );
         auto _1 = Engine::GraphicsEngine->RecordGraphicsEvent( GE_NAME( "World Mesh" ) );
-        
-        if ( Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseMDI ) {
-            Engine::GraphicsEngine->DrawWorldMesh_Indirect();
-        } else {
-            Engine::GraphicsEngine->DrawWorldMesh();
-        }
+        Engine::GraphicsEngine->DrawWorldMesh();
     }
     
 
@@ -4272,6 +4267,7 @@ void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sect
             if ( auto cam = (zCCamera*)oCGame::GetGame()->_zCSession_camera ) {
                 const auto& view = cam->trafoView; // Column-Major, needs Transpose for DxMath
                 const auto& proj = cam->trafoProjection; // Row-Major, does not need transpose.
+
                 generatedFrustum.BuildPerspective(
                     XMMatrixTranspose( XMLoadFloat4x4( &view ) ),
                     XMLoadFloat4x4( &proj )

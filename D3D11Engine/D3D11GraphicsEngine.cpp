@@ -210,6 +210,34 @@ namespace
         const uint64_t texPtr = reinterpret_cast<uint64_t>(mat->GetAniTexture());
         return sortKeyBase | (texPtr << 16);
     }
+
+    XMFLOAT3 GetBoundingBoxCenter( const zTBBox3D& bbox ) {
+        return XMFLOAT3(
+            (bbox.Min.x + bbox.Max.x) * 0.5f,
+            (bbox.Min.y + bbox.Max.y) * 0.5f,
+            (bbox.Min.z + bbox.Max.z) * 0.5f );
+    }
+
+    float ComputeWorldMeshDistanceSqFromCamera(
+        const WorldMeshSectionInfo* section,
+        const WorldMeshInfo* mesh,
+        FXMVECTOR cameraPosition ) {
+        const zTBBox3D* sourceBounds = nullptr;
+        if ( mesh && mesh->HasBoundingBox ) {
+            sourceBounds = &mesh->BoundingBox;
+        } else if ( section ) {
+            sourceBounds = &section->BoundingBox;
+        }
+
+        if ( !sourceBounds ) {
+            return 0.0f;
+        }
+
+        const XMFLOAT3 center = GetBoundingBoxCenter( *sourceBounds );
+        float distanceSq = 0.0f;
+        XMStoreFloat( &distanceSq, XMVector3LengthSq( XMLoadFloat3( &center ) - cameraPosition ) );
+        return distanceSq;
+    }
 }
 
 D3D11GraphicsEngine::D3D11GraphicsEngine() :
@@ -4568,348 +4596,6 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
     return XR_SUCCESS;
 }
 
-XRESULT D3D11GraphicsEngine::DrawWorldMesh_Indirect( bool noTextures ) {
-    if ( !Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh )
-        return XR_SUCCESS;
-
-    ZoneScopedN( "DrawWorldMesh_Indirect" );
-    auto _scopeDrawWorldMeshIndirect = RecordGraphicsEvent( GE_NAME( "DrawWorldMesh_Indirect" ) );
-
-    const bool isZPrepass = RenderingStage == DES_Z_PRE_PASS;
-    if ( isZPrepass ) {
-        noTextures = true;
-    }
-
-    // Setup default renderstates
-    SetDefaultStates();
-
-    XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
-    Engine::GAPI->SetViewTransformXM( view );
-    Engine::GAPI->ResetWorldTransform();
-
-    SetActivePixelShader( PShaderID::PS_Diffuse );
-    SetActiveVertexShader( VShaderID::VS_Ex );
-
-    SetupVS_ExMeshDrawCall();
-    SetupVS_ExConstantBuffer();
-
-    // Bind reflection-cube to slot 4
-    GetContext()->PSSetShaderResources( 4, 1, ReflectionCube.GetAddressOf() );
-
-    // Set constant buffer
-    const XMMATRIX identityMatrix = XMMatrixIdentity();
-    ActiveVS->GetBuffer( "Matrices_PerInstances" )
-        .Update( &identityMatrix )
-        .Bind();
-
-    auto updatePSBuffers = [this] {
-        ActivePS->GetBuffer( "FFPipelineConstantBuffer" )
-            .Update( &Engine::GAPI->GetRendererState().GraphicsState )
-            .Bind();
-
-        GSky* sky = Engine::GAPI->GetSky();
-        ActivePS->GetBuffer( "Atmosphere" )
-            .Update( &sky->GetAtmosphereCB() )
-            .Bind();
-
-        ActivePS->BindBuffer( "DIST_Distance", InfiniteRangeConstantBuffer.get() );
-    };
-    updatePSBuffers();
-
-    auto& cache = m_FrameGeometryCache;
-
-    auto CompareMesh = []( std::tuple<zCTexture*, MeshInfo*, MaterialInfo*>& a, std::tuple<zCTexture*, MeshInfo*, MaterialInfo*>& b )
-        -> bool { return std::get<0>( a ) < std::get<0>( b ); };
-
-    MeshInfo* meshInfo = Engine::GAPI->GetWrappedWorldMesh();
-    DrawVertexBufferIndexedUINT( meshInfo->MeshVertexBuffer, meshInfo->MeshIndexBuffer, 0, 0 );
-
-    auto& context = GetContext();
-    context->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
-    context->DSSetShader( nullptr, nullptr, 0 );
-    context->HSSetShader( nullptr, nullptr, 0 );
-
-    if ( !cache.worldMeshBuilt ) {
-        ZoneScopedN( "DrawWorldMesh_Indirect::BuildBatches" );
-        auto _scopeBuildBatches = RecordGraphicsEvent( GE_NAME( "DrawWorldMesh_Indirect::BuildBatches" ) );
-        // First call this frame: collect visible sections, build MDI batches, upload buffer.
-        Engine::GAPI->CollectVisibleSections( cache.visibleSections );
-
-        static std::vector<std::tuple<zCTexture*, MeshInfo*, MaterialInfo*>> meshList;
-        meshList.clear();
-        if ( cache.drawIndirectArgs.capacity() == 0 ) {
-            meshList.reserve( 4096 );
-            cache.meshListAlpha.reserve( 512 );
-            cache.drawIndirectArgs.reserve( 4096 );
-        }
-
-        for ( auto const& renderItem : cache.visibleSections ) {
-            for ( auto const& worldMesh : renderItem->WorldMeshes ) {
-                zCTexture* aniTex = worldMesh.first.Material->GetTexture();
-                if ( !aniTex ) continue;
-
-                // Check surface type
-                MaterialInfo::EMaterialType materialType = worldMesh.first.Info->MaterialType;
-                if ( materialType == MaterialInfo::MT_Water ) {
-                    if ( !isZPrepass ) {
-                        FrameWaterSurfaces[aniTex].push_back( worldMesh.second );
-                    }
-                    continue;
-                }
-
-                if ( aniTex->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
-                    continue;
-                }
-
-                if ( materialType == MaterialInfo::MT_Portal ) {
-                    if ( !isZPrepass ) {
-                        FrameTransparencyMeshesPortal.push_back( worldMesh );
-                    }
-                    continue;
-                } else if ( materialType == MaterialInfo::MT_WaterfallFoam ) {
-                    if ( !isZPrepass ) {
-                        FrameTransparencyMeshesWaterfall.push_back( worldMesh );
-                    }
-                    continue;
-                }
-
-                // Check for alphablending
-                int alphaFunc = worldMesh.first.Material->GetAlphaFunc();
-                if ( alphaFunc > zMAT_ALPHA_FUNC_NONE &&
-                    alphaFunc != zMAT_ALPHA_FUNC_TEST
-                    && worldMesh.first.Texture->HasAlphaChannel() ) {
-                    if ( !isZPrepass ) {
-                        FrameTransparencyMeshes.push_back( worldMesh );
-                    }
-                } else {
-                    // Create a new pair using the animated texture
-                    if ( aniTex->HasAlphaChannel() ) {
-                        cache.meshListAlpha.emplace_back( aniTex, worldMesh.second, worldMesh.first.Info );
-                        std::push_heap( cache.meshListAlpha.begin(), cache.meshListAlpha.end(), CompareMesh );
-                    } else {
-                        meshList.emplace_back( aniTex, worldMesh.second, worldMesh.first.Info );
-                        std::push_heap( meshList.begin(), meshList.end(), CompareMesh );
-                    }
-                }
-            }
-        }
-
-        unsigned int alignedOffset = 0;
-        while ( !meshList.empty() ) {
-            auto const& mesh = meshList.front();
-            cache.drawIndirectArgs.emplace_back();
-            D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS& drawArgs = cache.drawIndirectArgs.back();
-            drawArgs.IndexCountPerInstance = static_cast<UINT>( std::get<1>( mesh )->Indices.size() );
-            drawArgs.InstanceCount = 1;
-            drawArgs.StartIndexLocation = std::get<1>( mesh )->BaseIndexLocation;
-            drawArgs.BaseVertexLocation = 0;
-            drawArgs.StartInstanceLocation = 0;
-
-            auto it = cache.mdiBatches.find( std::get<0>( mesh ) );
-            if ( it != cache.mdiBatches.end() ) {
-                it->second.DrawCount++;
-            } else {
-                FrameGeometryCache::MDIBatch mdiDraw;
-                mdiDraw.DrawCount = 1;
-                mdiDraw.AlignedByteOffsetForArgs = alignedOffset;
-                mdiDraw.MeshMaterialInfo = std::get<2>( mesh );
-                cache.mdiBatches.emplace( std::get<0>( mesh ), mdiDraw );
-            }
-
-            alignedOffset += sizeof( D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS );
-            std::pop_heap( meshList.begin(), meshList.end(), CompareMesh );
-            meshList.pop_back();
-        }
-
-        cache.MainWorldIndirectArgsBuffer = AcquireFrameIndirectBuffer( m_MainWorldIndirectPool,
-            cache.drawIndirectArgs.data(), alignedOffset, "MainWorldMeshIndirectArgs" );
-
-        cache.worldMeshBuilt = true;
-    } else {
-        ZoneScopedN( "DrawWorldMesh_Indirect::PopulateTransparency" );
-        auto _scopePopulateTransparency = RecordGraphicsEvent( GE_NAME( "DrawWorldMesh_Indirect::PopulateTransparency" ) );
-        // Second call this frame (Forward+ lit pass): populate transparency/water lists from
-        // the already-culled section list — skips the expensive BSP traversal.
-        for ( auto const& renderItem : cache.visibleSections ) {
-            for ( auto const& worldMesh : renderItem->WorldMeshes ) {
-                zCTexture* aniTex = worldMesh.first.Material->GetTexture();
-                if ( !aniTex ) continue;
-
-                MaterialInfo::EMaterialType materialType = worldMesh.first.Info->MaterialType;
-                if ( materialType == MaterialInfo::MT_Water ) {
-                    FrameWaterSurfaces[aniTex].push_back( worldMesh.second );
-                    continue;
-                }
-
-                if ( aniTex->CacheIn( 0.6f ) != zRES_CACHED_IN ) continue;
-
-                if ( materialType == MaterialInfo::MT_Portal ) {
-                    FrameTransparencyMeshesPortal.push_back( worldMesh );
-                    continue;
-                } else if ( materialType == MaterialInfo::MT_WaterfallFoam ) {
-                    FrameTransparencyMeshesWaterfall.push_back( worldMesh );
-                    continue;
-                }
-
-                int alphaFunc = worldMesh.first.Material->GetAlphaFunc();
-                if ( alphaFunc > zMAT_ALPHA_FUNC_NONE &&
-                    alphaFunc != zMAT_ALPHA_FUNC_TEST
-                    && worldMesh.first.Texture->HasAlphaChannel() ) {
-                    FrameTransparencyMeshes.push_back( worldMesh );
-                }
-            }
-        }
-    }
-
-    const unsigned int totalDrawCount = static_cast<unsigned int>( cache.drawIndirectArgs.size() );
-    auto* worldIndirectArgsBuffer = cache.MainWorldIndirectArgsBuffer;
-
-    // Draw depth only
-    if ( (Engine::GAPI->GetRendererState().RendererSettings.DoZPrepass && Engine::GAPI->GetRendererState().RendererSettings.RendererMode == GothicRendererSettings::RM_Deferred)
-        || isZPrepass
-        ) {
-        ZoneScopedN( "DrawWorldMesh_Indirect::DepthPrepass" );
-        auto _scopeDepthPrepass = RecordGraphicsEvent( GE_NAME( "DrawWorldMesh_Indirect::DepthPrepass" ) );
-        context->PSSetShader( nullptr, nullptr, 0 );
-        if ( worldIndirectArgsBuffer && totalDrawCount > 0 ) {
-            DrawMultiIndexedInstancedIndirect( Context.Get(), totalDrawCount,
-                worldIndirectArgsBuffer->GetIndirectBuffer().Get(), 0,
-                sizeof( D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS ) );
-        }
-
-        if ( isZPrepass ) {
-            return XR_SUCCESS;
-        }
-    }
-
-    SetActivePixelShader( PShaderID::PS_Diffuse );
-    ActivePS->Apply();
-    UINT materialSlot = ActivePS->GetInputIndex( "MI_MaterialInfo" );
-
-    // Now draw the actual pixels
-    zCTexture* bound = nullptr;
-    if ( !cache.meshListAlpha.empty() ) {
-        ZoneScopedN( "DrawWorldMesh_Indirect::AlphaSubmission" );
-        auto _scopeAlphaSubmission = RecordGraphicsEvent( GE_NAME( "DrawWorldMesh_Indirect::AlphaSubmission" ) );
-        while ( !cache.meshListAlpha.empty() ) {
-            auto const& mesh = cache.meshListAlpha.front();
-            zCTexture* tex = std::get<0>( mesh );
-            if ( tex != bound &&
-                Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh > 1 ) {
-                MyDirectDrawSurface7* surface = tex->GetSurface();
-                ID3D11ShaderResourceView* srv[3];
-                MaterialInfo* info = std::get<2>( mesh );
-
-                // Get diffuse and normalmap
-                srv[0] = surface->GetEngineTexture()->GetShaderResourceView().Get();
-                srv[1] = surface->GetNormalmap()
-                    ? surface->GetNormalmap()->GetShaderResourceView().Get()
-                    : nullptr;
-                srv[2] = surface->GetFxMap()
-                    ? surface->GetFxMap()->GetShaderResourceView().Get()
-                    : nullptr;
-
-                // Bind a default normalmap in case the scene is wet and we currently have
-                // none
-                if ( !srv[1] ) {
-                    // Modify the strength of that default normalmap for the material info
-                    if ( info && info->buffer.NormalmapStrength != DEFAULT_NORMALMAP_STRENGTH ) {
-                        info->buffer.NormalmapStrength = DEFAULT_NORMALMAP_STRENGTH;
-                        info->UpdateConstantbuffer();
-                    }
-                    srv[1] = DistortionTexture->GetShaderResourceView().Get();
-                }
-
-                // Bind both
-                GetContext()->PSSetShaderResources( 0, 3, srv );
-
-                // Get the right shader for it
-                if ( BindShaderForTexture( tex, false, zMAT_ALPHA_FUNC_MAT_DEFAULT ) ) {
-                    updatePSBuffers();
-                }
-
-                if ( info ) {
-                    if ( !info->Constantbuffer ) info->UpdateConstantbuffer();
-
-                    info->Constantbuffer->BindToPixelShader( materialSlot );
-                }
-                bound = tex;
-            }
-
-            if ( Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh > 2 ) {
-                DrawVertexBufferIndexedUINT( nullptr, nullptr,
-                    std::get<1>( mesh )->Indices.size(), std::get<1>( mesh )->BaseIndexLocation );
-            }
-
-            std::pop_heap( cache.meshListAlpha.begin(), cache.meshListAlpha.end(), CompareMesh );
-            cache.meshListAlpha.pop_back();
-        }
-    }
-
-    if ( !cache.mdiBatches.empty() ) {
-        ZoneScopedN( "DrawWorldMesh_Indirect::OpaqueSubmission" );
-        auto _scopeOpaqueSubmission = RecordGraphicsEvent( GE_NAME( "DrawWorldMesh_Indirect::OpaqueSubmission" ) );
-        for ( auto const& it : cache.mdiBatches ) {
-            zCTexture* texture = it.first;
-            const FrameGeometryCache::MDIBatch& mdiDraw = it.second;
-
-            if ( Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh > 1 ) {
-                MyDirectDrawSurface7* surface = texture->GetSurface();
-                ID3D11ShaderResourceView* srv[3];
-                MaterialInfo* info = mdiDraw.MeshMaterialInfo;
-
-                // Get diffuse and normalmap
-                srv[0] = surface->GetEngineTexture()->GetShaderResourceView().Get();
-                srv[1] = surface->GetNormalmap()
-                    ? surface->GetNormalmap()->GetShaderResourceView().Get()
-                    : nullptr;
-                srv[2] = surface->GetFxMap()
-                    ? surface->GetFxMap()->GetShaderResourceView().Get()
-                    : nullptr;
-
-                // Bind a default normalmap in case the scene is wet and we currently have
-                // none
-                if ( !srv[1] ) {
-                    // Modify the strength of that default normalmap for the material info
-                    if ( info && info->buffer.NormalmapStrength != DEFAULT_NORMALMAP_STRENGTH ) {
-                        info->buffer.NormalmapStrength = DEFAULT_NORMALMAP_STRENGTH;
-                        info->UpdateConstantbuffer();
-                    }
-                    srv[1] = DistortionTexture->GetShaderResourceView().Get();
-                }
-
-                // Bind textures
-                // Bind resources. For z-prepass we only bind engine texture, as we ignore normalmaps
-                GetContext()->PSSetShaderResources( 0, isZPrepass ? 1 : 3, srv );
-
-                if (!isZPrepass) {
-                    // Get the right shader for it
-                    if ( BindShaderForTexture( texture, false, zMAT_ALPHA_FUNC_MAT_DEFAULT ) ) {
-                        updatePSBuffers();
-                    }
-
-                    if ( info ) {
-                        if ( !info->Constantbuffer ) info->UpdateConstantbuffer();
-
-                        info->Constantbuffer->BindToPixelShader( materialSlot );
-                    }
-                }
-
-            }
-
-            if ( Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh > 2 ) {
-                if ( worldIndirectArgsBuffer && mdiDraw.DrawCount > 0 ) {
-                    DrawMultiIndexedInstancedIndirect( Context.Get(), mdiDraw.DrawCount,
-                        worldIndirectArgsBuffer->GetIndirectBuffer().Get(),
-                        mdiDraw.AlignedByteOffsetForArgs, sizeof( D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS ) );
-                }
-            }
-        }
-    }
-
-    UpdateOcclusion();
-    return XR_SUCCESS;
-}
 
 XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
     if ( !Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh )
@@ -4961,7 +4647,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
 
     static std::vector<WorldMeshSectionInfo*> renderList;
     if ( !m_FrameGeometryCache.worldMeshBuilt ) {
-        Engine::GAPI->CollectVisibleSections( m_FrameGeometryCache.visibleSections );
+        Engine::GAPI->CollectVisibleSections( m_FrameGeometryCache.visibleSections, nullptr, true );
         m_FrameGeometryCache.worldMeshBuilt = true;
     }
     renderList = m_FrameGeometryCache.visibleSections; // shallow copy of pointers — O(N_sections), not O(BSP)
@@ -4974,6 +4660,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
         zCMaterial* Material;
         MaterialInfo* Info;
         int AlphaLevel; // 0 = opaque, 1 = alpha test, 2 = alpha texture
+        float DistanceSq;
         //zCLightmap* Lightmap;
     };
 
@@ -4988,6 +4675,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
     {
         ZoneScopedN( "DrawWorldMesh::BuildMeshList" );
         auto _scopeBuildMeshList = RecordGraphicsEvent( GE_NAME( "DrawWorldMesh::BuildMeshList" ) );
+        const XMVECTOR cameraPosition = Engine::GAPI->GetCameraPositionXM();
         for ( auto const& renderItem : renderList ) {
             for ( auto const& worldMesh : renderItem->WorldMeshes ) {
                 if ( worldMesh.first.Material ) {
@@ -5039,6 +4727,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
                             worldMesh.first.Material,
                             worldMesh.first.Info,
                             alphaLevel,
+                            ComputeWorldMeshDistanceSqFromCamera( renderItem, worldMesh.second, cameraPosition ),
                         };
 
                         // Create a new pair using the animated texture
@@ -5051,7 +4740,13 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
     auto CompareMesh = []( std::pair<WorldMeshKey, MeshInfo*>& a, std::pair<WorldMeshKey, MeshInfo*>& b ) -> bool {
         if ( a.first.AlphaLevel != b.first.AlphaLevel )
             return a.first.AlphaLevel < b.first.AlphaLevel;
-        return a.first.Texture < b.first.Texture;
+        if ( a.first.DistanceSq < b.first.DistanceSq )
+            return true;
+        if ( a.first.DistanceSq > b.first.DistanceSq )
+            return false;
+        if ( a.first.Texture != b.first.Texture )
+            return a.first.Texture < b.first.Texture;
+        return a.second->BaseIndexLocation < b.second->BaseIndexLocation;
     };
     std::sort( meshList.begin(), meshList.end(), CompareMesh );
 
