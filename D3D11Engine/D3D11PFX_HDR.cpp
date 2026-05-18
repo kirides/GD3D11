@@ -51,8 +51,32 @@ XRESULT D3D11PFX_HDR::Render( ID3D11RenderTargetView* output, ID3D11ShaderResour
 	Microsoft::WRL::ComPtr<ID3D11DepthStencilView> oldDSV;
 	engine->GetContext()->OMGetRenderTargets( 1, oldRTV.GetAddressOf(), oldDSV.GetAddressOf() );
 
-	RenderToTextureBuffer* lum = CalcLuminance( backbuffer );
-	const bool enableBloom = Engine::GAPI->GetRendererState().RendererSettings.EnableHDR;
+	const bool enableHDRPipeline = Engine::GAPI->GetRendererState().RendererSettings.EnableHDR;
+	if ( !enableHDRPipeline ) {
+		auto tempBuffer = FxRenderer->GetTempBuffer();
+		FxRenderer->CopyTextureToRTV( backbuffer, tempBuffer->GetRenderTargetView(), engine->GetResolution() );
+
+		tempBuffer->BindToPixelShader( engine->GetContext().Get(), 0 );
+		auto simpleTonemapPS = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_TonemapSimple );
+		simpleTonemapPS->Apply();
+
+		HDRSettingsConstantBuffer hcb;
+		hcb.HDR_LumWhite = Engine::GAPI->GetRendererState().RendererSettings.HDRLumWhite;
+		hcb.HDR_MiddleGray = Engine::GAPI->GetRendererState().RendererSettings.HDRMiddleGray;
+		hcb.HDR_Threshold = 0.0f;
+		hcb.HDR_BloomStrength = 0.0f;
+		simpleTonemapPS->GetBuffer( "HDR_Settings" ).Update( &hcb ).Bind();
+
+		FxRenderer->CopyTextureToRTV( tempBuffer->GetShaderResView(), output, engine->GetResolution(), true );
+
+		Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv;
+		engine->GetContext()->PSSetShaderResources( 0, 1, srv.GetAddressOf() );
+		engine->GetContext()->OMSetRenderTargets( 1, oldRTV.GetAddressOf(), oldDSV.Get() );
+		return XR_SUCCESS;
+	}
+
+    RenderToTextureBuffer* lum = CalcLuminance( backbuffer );
+    const bool enableBloom = true;
 
     auto tempBufferDs4_1 = FxRenderer->GetTempBufferDS4();
 	DXGI_FORMAT bbufferFormat = engine->GetBackBufferFormat();

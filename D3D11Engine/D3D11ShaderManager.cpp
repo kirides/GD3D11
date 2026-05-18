@@ -273,6 +273,9 @@ XRESULT D3D11ShaderManager::Init() {
             list.push_back( { "USE_TONEMAP", sNums[std::clamp( size_t(s.HDRToneMap), size_t(0), std::size(sNums)-1)]});
         } )  );
 
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_TonemapSimple>( "PS_PFX_TonemapSimple.hlsl" )
+        .with_category( ShaderCategory::Tonemapping ) );
+
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_GodRayMask>( "PS_PFX_GodRayMask.hlsl" ) );
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_GodRayZoom>( "PS_PFX_GodRayZoom.hlsl" ) );
 
