@@ -256,11 +256,10 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
 	
 	// Get specular parameters
     float4 gb3 = TX_SI_SP.Sample(SS_Linear, uv);
-    float roughness = gb3.x;
-    float metallic = gb3.y;
-    float ao = gb3.z;
-    bool focused = gb3.w;
-
+    float ao = gb3.x;
+    float roughness = gb3.y;
+    float metallic = gb3.z;
+	bool focused = gb3.w;
 	
 	// Reconstruct VS World Position from depth
     float3 vsPosition = VSPositionFromDepth(expDepth, uv);

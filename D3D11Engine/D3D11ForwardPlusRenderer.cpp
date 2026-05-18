@@ -121,7 +121,7 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
             auto size = engine.GetResolution();
             shadowMaskResource = builder.CreateTexture( {
                 static_cast<uint32_t>( size.x ), static_cast<uint32_t>( size.y ),
-                DXGI_FORMAT_R8_UNORM, L"ShadowMask" } );
+                DXGI_FORMAT_R8G8_UNORM, L"ShadowMask" } );
             builder.Write( shadowMaskResource );
             builder.Write( backBufferHandle );
 

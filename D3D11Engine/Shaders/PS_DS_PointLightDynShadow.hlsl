@@ -69,8 +69,8 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	
 	// Get specular parameters
 	float4 gb3 = TX_SI_SP.Sample(SS_Linear, uv);
-	float roughness = gb3.x;
-	float metallic = gb3.y;
+	float roughness = gb3.y;
+	float metallic = gb3.z;
 	
 	// Reconstruct VS World Position from depth
 	float expDepth = TX_Depth.Sample(SS_Linear, uv).r;

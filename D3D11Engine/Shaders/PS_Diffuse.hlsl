@@ -150,8 +150,12 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
 	if (AC_LightPos.y > 0)
 	{
 		#if FP_USE_SHADOW_MASK
-			float2 screenUV = Input.vPosition.xy / FP_ViewportSize;
-			shadow = FP_ShadowMask.SampleLevel( SS_Linear, screenUV, 0 ).r;
+			float2 shadowMaskSample = FP_ShadowMask.Load( int3( int2( Input.vPosition.xy ), 0 ) ).rg;
+			float currentDepth = saturate( Input.vPosition.z );
+			const float depthEpsilon = 2.0f / 255.0f;
+			shadow = (abs( shadowMaskSample.g - currentDepth ) <= depthEpsilon)
+				? shadowMaskSample.r
+				: vertLighting;
 		#else
 			float3 wsLightDirection = normalize(mul(float4(SQ_LightDirectionVS, 0.0f), SQ_InvView).xyz);
 
@@ -265,7 +269,7 @@ DEFERRED_PS_OUTPUT PSMain( PS_INPUT Input ) : SV_TARGET
 	output.vNrm = EncodeNormalGBuffer(nrm);
 
 	bool focused = Input.vDiffuse.w > 1.5f;
-	output.vSI_SP = float4(roughness, metallic, ao, focused ? 1.0f : 0.0f);
+	output.vSI_SP = float4(ao, roughness, metallic, focused ? 1.0f : 0.0f);
 	
 	// Calculate velocity for motion vectors
 	// For instanced objects (VOBs, skeletal meshes), vCurrClipPos/vPrevClipPos come from VS

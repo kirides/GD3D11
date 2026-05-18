@@ -58,8 +58,8 @@ void CSMain( uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID, uint
     float4 diffuse = TX_Diffuse.Load( int3( pixelCoord, 0 ) );
     float3 normal = DecodeNormalGBuffer( TX_Nrm.Load( int3( pixelCoord, 0 ) ).xy );
     float4 gb3 = TX_SI_SP.Load( int3( pixelCoord, 0 ) );
-    float roughness = gb3.x;
-    float metallic = gb3.y;
+    float roughness = gb3.y;
+    float metallic = gb3.z;
 
     float expDepth = TX_Depth.Load( int3( pixelCoord, 0 ) ).r;
     float3 vsPosition = VSPositionFromDepth( expDepth, pixelCoord );

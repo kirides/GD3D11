@@ -52,11 +52,16 @@ XRESULT D3D11PFX_HDR::Render( ID3D11RenderTargetView* output, ID3D11ShaderResour
 	engine->GetContext()->OMGetRenderTargets( 1, oldRTV.GetAddressOf(), oldDSV.GetAddressOf() );
 
 	RenderToTextureBuffer* lum = CalcLuminance( backbuffer );
+	const bool enableBloom = Engine::GAPI->GetRendererState().RendererSettings.EnableHDR;
 
-    DXGI_FORMAT bbufferFormat = engine->GetBackBufferFormat();
-    auto tempBufferDs4_1 = FxRenderer->GetTexturePool()->Acquire(
-        TexturePool::Description{ resolution.x / 4, resolution.y / 4, bbufferFormat } );
-	CreateBloom( lum, tempBufferDs4_1.get(), backbuffer, resolution );
+    auto tempBufferDs4_1 = FxRenderer->GetTempBufferDS4();
+	DXGI_FORMAT bbufferFormat = engine->GetBackBufferFormat();
+	if ( enableBloom ) {
+		CreateBloom( lum, tempBufferDs4_1.get(), backbuffer, resolution );
+	} else {
+		const float black[4] = { 0.f, 0.f, 0.f, 0.f };
+		engine->GetContext()->ClearRenderTargetView( tempBufferDs4_1->GetRenderTargetView().Get(), black );
+	}
 
     auto tempBuffer = FxRenderer->GetTexturePool()->Acquire(
         TexturePool::Description{ resolution.x, resolution.y, bbufferFormat } );
@@ -78,7 +83,9 @@ XRESULT D3D11PFX_HDR::Render( ID3D11RenderTargetView* output, ID3D11ShaderResour
     hcb.HDR_LumWhite = Engine::GAPI->GetRendererState().RendererSettings.HDRLumWhite;
     hcb.HDR_MiddleGray = Engine::GAPI->GetRendererState().RendererSettings.HDRMiddleGray;
     hcb.HDR_Threshold = Engine::GAPI->GetRendererState().RendererSettings.BloomThreshold;
-    hcb.HDR_BloomStrength = Engine::GAPI->GetRendererState().RendererSettings.BloomStrength;
+	hcb.HDR_BloomStrength = enableBloom
+		? Engine::GAPI->GetRendererState().RendererSettings.BloomStrength
+		: 0.0f;
     hps->GetBuffer( "HDR_Settings" ).Update( &hcb ).Bind();
 
     FxRenderer->CopyTextureToRTV( tempBuffer->GetShaderResView(), output, resolution, true );
