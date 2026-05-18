@@ -24,6 +24,7 @@
 
 #define DIRECTINPUT_VERSION 0x0700
 #include <charconv>
+#include <numeric>
 #include <dinput.h>
 #include "ImGuiShim.h"
 #include "zCInput.h"
@@ -157,6 +158,35 @@ GothicAPI::~GothicAPI() {
 
 namespace
 {
+    constexpr uint32_t WORLD_SECTION_BVH_LEAF_SIZE = 8;
+
+    struct WorldSectionBVHBuildPrimitive {
+        WorldMeshSectionInfo* Section = nullptr;
+        DirectX::BoundingBox Bounds = {};
+        XMFLOAT3 Center = {};
+    };
+
+    bool IsValidSectionBounds( const zTBBox3D& box ) {
+        return box.Min.x <= box.Max.x
+            && box.Min.y <= box.Max.y
+            && box.Min.z <= box.Max.z;
+    }
+
+    float GetAxisValue( const XMFLOAT3& value, int axis ) {
+        switch ( axis ) {
+        default:
+        case 0: return value.x;
+        case 1: return value.y;
+        case 2: return value.z;
+        }
+    }
+
+    DirectX::BoundingBox MergeBoundingBoxes( const DirectX::BoundingBox& a, const DirectX::BoundingBox& b ) {
+        DirectX::BoundingBox merged;
+        DirectX::BoundingBox::CreateMerged( merged, a, b );
+        return merged;
+    }
+
     OPT_DBG_NOINLINE float GetPrivateProfileFloatA(
         const LPCSTR lpAppName,
         const LPCSTR lpKeyName,
@@ -714,6 +744,7 @@ void GothicAPI::RemoveVegetationBox( GVegetationBox* box ) {
 /** Resets the object, like at level load */
 void GothicAPI::ResetWorld() {
     ResetVobs();
+    ClearWorldSectionBVH();
     WorldSections.clear();
 
     SAFE_DELETE( WrappedWorldMesh );
@@ -830,6 +861,7 @@ void GothicAPI::OnGeometryLoaded( zCBspTree* tree ) {
         WorldConverter::ConvertWorldMesh( &polys[0], polys.size(), &WorldSections, LoadedWorldInfo.get(), &WrappedWorldMesh, indoorLocation );
     }
 #endif
+    BuildWorldSectionBVH();
     LogInfo() << "Done extracting world!";
 }
 
@@ -3444,7 +3476,7 @@ bool GothicAPI::TraceWorldMesh( const XMFLOAT3& origin, const XMFLOAT3& dir, XMF
 
     int numProcessed = 0;
     for ( auto const& bit : hitSections ) {
-        for ( std::map<MeshKey, MeshInfo*>::iterator it = bit.first->WorldMeshes.begin(); it != bit.first->WorldMeshes.end(); ++it ) {
+        for ( auto it = bit.first->WorldMeshes.begin(); it != bit.first->WorldMeshes.end(); ++it ) {
             float u, v, t;
 
             for ( unsigned int i = 0; i < it->second->Indices.size(); i += 3 ) {
@@ -4036,14 +4068,237 @@ void GothicAPI::CollectVisibleVobs(
     }
 }
 
+void GothicAPI::BuildWorldSectionBVH() {
+    ClearWorldSectionBVH();
+
+    std::vector<WorldSectionBVHBuildPrimitive> primitives;
+    primitives.reserve( 4096 );
+
+    for ( auto& [_, byY] : WorldSections ) {
+        for ( auto& [__, section] : byY ) {
+            if ( !IsValidSectionBounds( section.BoundingBox ) ) {
+                continue;
+            }
+
+            WorldSectionBVHBuildPrimitive primitive;
+            primitive.Section = &section;
+            primitive.Bounds = Frustum::BBoxFromzTBBox3D( section.BoundingBox );
+            primitive.Center = primitive.Bounds.Center;
+            primitives.push_back( primitive );
+        }
+    }
+
+    if ( primitives.empty() ) {
+        return;
+    }
+
+    std::vector<uint32_t> primitiveIndices( primitives.size() );
+    std::iota( primitiveIndices.begin(), primitiveIndices.end(), 0u );
+
+    WorldSectionBVHNodes.reserve( primitives.size() * 2 );
+    WorldSectionBVHSections.reserve( primitives.size() );
+
+    auto buildRecursive = [&]( auto&& self, uint32_t begin, uint32_t end ) -> uint32_t {
+        const uint32_t nodeIndex = static_cast<uint32_t>(WorldSectionBVHNodes.size());
+        WorldSectionBVHNodes.emplace_back();
+        auto& node = WorldSectionBVHNodes.back();
+
+        DirectX::BoundingBox bounds = primitives[primitiveIndices[begin]].Bounds;
+        XMFLOAT3 centroidMin = primitives[primitiveIndices[begin]].Center;
+        XMFLOAT3 centroidMax = centroidMin;
+
+        for ( uint32_t i = begin + 1; i < end; ++i ) {
+            const auto& primitive = primitives[primitiveIndices[i]];
+            bounds = MergeBoundingBoxes( bounds, primitive.Bounds );
+
+            centroidMin.x = std::min( centroidMin.x, primitive.Center.x );
+            centroidMin.y = std::min( centroidMin.y, primitive.Center.y );
+            centroidMin.z = std::min( centroidMin.z, primitive.Center.z );
+            centroidMax.x = std::max( centroidMax.x, primitive.Center.x );
+            centroidMax.y = std::max( centroidMax.y, primitive.Center.y );
+            centroidMax.z = std::max( centroidMax.z, primitive.Center.z );
+        }
+
+        node.Bounds = bounds;
+
+        const uint32_t primitiveCount = end - begin;
+        const XMFLOAT3 centroidExtent(
+            centroidMax.x - centroidMin.x,
+            centroidMax.y - centroidMin.y,
+            centroidMax.z - centroidMin.z );
+
+        int splitAxis = 0;
+        float axisExtent = centroidExtent.x;
+        if ( centroidExtent.y > axisExtent ) {
+            splitAxis = 1;
+            axisExtent = centroidExtent.y;
+        }
+        if ( centroidExtent.z > axisExtent ) {
+            splitAxis = 2;
+            axisExtent = centroidExtent.z;
+        }
+
+        if ( primitiveCount <= WORLD_SECTION_BVH_LEAF_SIZE || axisExtent <= 0.001f ) {
+            node.LeafStart = static_cast<uint32_t>(WorldSectionBVHSections.size());
+            node.LeafCount = primitiveCount;
+            for ( uint32_t i = begin; i < end; ++i ) {
+                WorldSectionBVHSections.push_back( primitives[primitiveIndices[i]].Section );
+            }
+            return nodeIndex;
+        }
+
+        const uint32_t splitIndex = begin + primitiveCount / 2;
+        std::nth_element(
+            primitiveIndices.begin() + begin,
+            primitiveIndices.begin() + splitIndex,
+            primitiveIndices.begin() + end,
+            [&]( uint32_t a, uint32_t b ) {
+                return GetAxisValue( primitives[a].Center, splitAxis )
+                    < GetAxisValue( primitives[b].Center, splitAxis );
+            } );
+
+        node.LeftChild = self( self, begin, splitIndex );
+        node.RightChild = self( self, splitIndex, end );
+        return nodeIndex;
+    };
+
+    buildRecursive( buildRecursive, 0, static_cast<uint32_t>(primitiveIndices.size()) );
+    WorldSectionBVHValid = !WorldSectionBVHNodes.empty();
+}
+
+void GothicAPI::ClearWorldSectionBVH() {
+    WorldSectionBVHValid = false;
+    WorldSectionBVHNodes.clear();
+    WorldSectionBVHSections.clear();
+}
+
+bool GothicAPI::IsWorldMeshVisibleInFrustum( const WorldMeshInfo* mesh, const Frustum& frustum ) const {
+    if ( !mesh ) {
+        return false;
+    }
+
+    if ( !mesh->HasBoundingBox ) {
+        return true;
+    }
+
+    return frustum.Contains( mesh->BoundingBox ) != DirectX::ContainmentType::DISJOINT;
+}
+
+void GothicAPI::QueryWorldSectionBVH( const Frustum& frustum,
+    std::vector<WorldMeshSectionInfo*>& sections,
+    bool useSectionRadiusFilter ) const {
+    if ( !WorldSectionBVHValid || WorldSectionBVHNodes.empty() ) {
+        return;
+    }
+
+    static thread_local std::vector<uint32_t> nodeStack;
+    nodeStack.clear();
+    nodeStack.push_back( 0 );
+
+    INT2 camSection = {};
+    int sectionViewDist = 0;
+    if ( useSectionRadiusFilter ) {
+        camSection = WorldConverter::GetSectionOfPos( Engine::GAPI->GetCameraPosition() );
+        sectionViewDist = Engine::GAPI->GetRendererState().RendererSettings.SectionDrawRadius;
+    }
+
+    while ( !nodeStack.empty() ) {
+        const uint32_t nodeIndex = nodeStack.back();
+        nodeStack.pop_back();
+
+        const WorldSectionBVHNode& node = WorldSectionBVHNodes[nodeIndex];
+        if ( frustum.Contains( node.Bounds ) == DirectX::ContainmentType::DISJOINT ) {
+            continue;
+        }
+
+        if ( node.IsLeaf() ) {
+            const uint32_t leafEnd = node.LeafStart + node.LeafCount;
+            for ( uint32_t i = node.LeafStart; i < leafEnd; ++i ) {
+                WorldMeshSectionInfo* section = WorldSectionBVHSections[i];
+                if ( !section ) {
+                    continue;
+                }
+
+                if ( useSectionRadiusFilter ) {
+                    if ( abs( section->WorldCoordinates.x - camSection.x ) >= sectionViewDist ) {
+                        continue;
+                    }
+                    if ( abs( section->WorldCoordinates.y - camSection.y ) >= sectionViewDist ) {
+                        continue;
+                    }
+                }
+
+                sections.push_back( section );
+            }
+        } else {
+            nodeStack.push_back( node.LeftChild );
+            nodeStack.push_back( node.RightChild );
+        }
+    }
+}
+
+bool GothicAPI::UseWorldSectionBVH() const {
+    return RendererState.RendererSettings.DebugSettings.FeatureSet.UseWorldSectionBVH;
+}
+
 /** Collects visible sections from the current camera perspective */
-void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sections ) {
-    ZoneScopedN( "GothicAPI::CollectVisibleSections" );
+void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sections,
+    const Frustum* queryFrustum,
+    bool useSectionRadiusFilter ) {
     const XMFLOAT3 camPos = Engine::GAPI->GetCameraPosition();
     const INT2 camSection = WorldConverter::GetSectionOfPos( camPos );
     auto cullingEnabled = Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.Culling.CullBspSections;
-        
-    if ( Engine::GAPI->GetRendererState().RendererSettings.DrawSectionIntersections ) {
+    auto drawSectionIntersections = Engine::GAPI->GetRendererState().RendererSettings.DrawSectionIntersections;
+
+    auto sectionInFrustum = [&]( const WorldMeshSectionInfo& section ) {
+        if ( !cullingEnabled ) {
+            return true;
+        }
+
+        if ( queryFrustum ) {
+            return queryFrustum->Contains( section.BoundingBox ) != DirectX::ContainmentType::DISJOINT;
+        }
+
+        return GetCameraBBox3DInFrustum( section.BoundingBox, EGothicCullFlags::CullSidesNear ) != ZTCAM_CLIPTYPE_OUT;
+    };
+
+    if ( UseWorldSectionBVH() && WorldSectionBVHValid && cullingEnabled && (queryFrustum || !drawSectionIntersections) ) {
+        ZoneScopedN( "GothicAPI::CollectVisibleSections->BVH" );
+
+        Frustum generatedFrustum;
+        const Frustum* activeFrustum = queryFrustum;
+
+        if ( !activeFrustum ) {
+            if ( auto cam = (zCCamera*)oCGame::GetGame()->_zCSession_camera ) {
+                const auto& view = cam->trafoView; // Column-Major, needs Transpose for DxMath
+                const auto& proj = cam->trafoProjection; // Row-Major, does not need transpose.
+                generatedFrustum.BuildPerspective(
+                    XMMatrixTranspose( XMLoadFloat4x4( &view ) ),
+                    XMLoadFloat4x4( &proj )
+                );
+            } else {
+                generatedFrustum.AlwaysContainingFrustum();
+            }
+            activeFrustum = &generatedFrustum;
+        }
+
+        QueryWorldSectionBVH( *activeFrustum, sections, useSectionRadiusFilter );
+        return;
+    }
+
+    ZoneScopedN( "GothicAPI::CollectVisibleSections" );
+    if ( drawSectionIntersections ) {
+        if ( !useSectionRadiusFilter ) {
+            for ( auto& [_, byY] : WorldSections ) {
+                for ( auto& [__, section] : byY ) {
+                    if ( sectionInFrustum( section ) ) {
+                        sections.push_back( &section );
+                    }
+                }
+            }
+            return;
+        }
+
         const float sectionViewDist = Engine::GAPI->GetRendererState().RendererSettings.SectionDrawRadius * WORLD_SECTION_SIZE;
         for ( auto& itx : WorldSections ) {
             for ( auto& ity : itx.second ) {
@@ -4051,7 +4306,7 @@ void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sect
 
                 float dist = Toolbox::ComputePointAABBDistance( camPos, section.BoundingBox.Min, section.BoundingBox.Max );
                 if ( dist < sectionViewDist ) {
-                    if ( cullingEnabled && GetCameraBBox3DInFrustum( section.BoundingBox, EGothicCullFlags::CullSidesNear ) == ZTCAM_CLIPTYPE_OUT )
+                    if ( !sectionInFrustum( section ) )
                         continue;
 
                     sections.push_back( &section );
@@ -4059,6 +4314,17 @@ void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sect
             }
         }
     } else {
+        if ( !useSectionRadiusFilter ) {
+            for ( auto& [_, byY] : WorldSections ) {
+                for ( auto& [__, section] : byY ) {
+                    if ( sectionInFrustum( section ) ) {
+                        sections.push_back( &section );
+                    }
+                }
+            }
+            return;
+        }
+
         // run through every section and check for range and frustum
         const int sectionViewDist = Engine::GAPI->GetRendererState().RendererSettings.SectionDrawRadius;
         for ( auto& itx : WorldSections ) {
@@ -4071,7 +4337,7 @@ void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sect
 
                 // Simple range-check
                 if ( abs( ity.first - camSection.y ) < sectionViewDist ) {
-                    if ( cullingEnabled && GetCameraBBox3DInFrustum( section.BoundingBox, EGothicCullFlags::CullSidesNear ) == ZTCAM_CLIPTYPE_OUT )
+                    if ( !sectionInFrustum( section ) )
                         continue;
 
                     sections.push_back( &section );
@@ -4672,15 +4938,21 @@ void GothicAPI::ApplySuppressedSectionTextures() {
         WorldMeshSectionInfo* section = it.first;
 
         // Look into each mesh of this section and find the texture
-        for ( std::map<MeshKey, MeshInfo*>::iterator mit = section->WorldMeshes.begin(); mit != section->WorldMeshes.end(); mit++ ) {
+        for ( auto mit = section->WorldMeshes.begin(); mit != section->WorldMeshes.end(); ) {
+            bool movedToSuppressed = false;
             for ( unsigned int i = 0; i < it.second.size(); i++ ) {
                 // Is this the texture we are looking for?
                 if ( (*mit).first.Material && (*mit).first.Material->GetTexture() && (*mit).first.Material->GetTexture()->GetNameWithoutExt() == it.second[i] ) {
                     // Yes, move it to the suppressed map
                     section->SuppressedMeshes[(*mit).first] = (*mit).second;
-                    section->WorldMeshes.erase( mit );
+                    mit = section->WorldMeshes.erase( mit );
+                    movedToSuppressed = true;
                     break;
                 }
+            }
+
+            if ( !movedToSuppressed ) {
+                ++mit;
             }
         }
     }

@@ -108,6 +108,18 @@ struct MeshInfo {
     uint16_t meshId;
 };
 
+/** World mesh with precomputed object-space bounds for fast culling. */
+struct WorldMeshInfo : public MeshInfo {
+    WorldMeshInfo() {
+        BoundingBox.Min = XMFLOAT3( FLT_MAX, FLT_MAX, FLT_MAX );
+        BoundingBox.Max = XMFLOAT3( -FLT_MAX, -FLT_MAX, -FLT_MAX );
+        HasBoundingBox = false;
+    }
+
+    zTBBox3D BoundingBox;
+    bool HasBoundingBox;
+};
+
 struct QuadMarkInfo {
     QuadMarkInfo() = default;
     QuadMarkInfo( QuadMarkInfo&& other ) = default;
@@ -488,10 +500,10 @@ struct WorldMeshSectionInfo {
     /** Saves this sections mesh to a file */
     void SaveSectionMeshToFile( const std::string& name );
 
-    std::map<MeshKey, MeshInfo*, cmpMeshKey> WorldMeshes;
+    std::map<MeshKey, WorldMeshInfo*, cmpMeshKey> WorldMeshes;
     std::map<D3D11Texture*, std::vector<MeshInfo*>> WorldMeshesByCustomTexture;
     std::map<zCMaterial*, std::vector<MeshInfo*>> WorldMeshesByCustomTextureOriginal;
-    std::map<MeshKey, MeshInfo*, cmpMeshKey> SuppressedMeshes;
+    std::map<MeshKey, WorldMeshInfo*, cmpMeshKey> SuppressedMeshes;
     std::list<VobInfo*> Vobs;
 
     // This is filled in case we have loaded a custom worldmesh

@@ -6002,7 +6002,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
     }
 }
 
-void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect(const std::vector<WorldMeshSectionInfo*>& visibleSections)
+void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<WorldMeshSectionInfo*>& visibleSections, const Frustum* cullingFrustum )
 {
     TracyD3D11ZoneCGX( "ShadowPass_DrawWorldMesh_Indirect" );
     auto _scopeShadowPassIndirect = RecordGraphicsEvent( GE_NAME( "ShadowPass_DrawWorldMesh_Indirect" ) );
@@ -6015,7 +6015,7 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect(const std::vector<Wo
         ? DrawMultiIndexedInstancedIndirect
         : Stub_DrawMultiIndexedInstancedIndirect;
 
-    if ( Engine::GAPI->GetRendererState().RendererSettings.FastShadows ) {
+    if ( Engine::GAPI->GetRendererState().RendererSettings.FastShadows && !cullingFrustum ) {
         if ( !linearDepth ) {
             Context->PSSetShader( nullptr, nullptr, 0 );
         }
@@ -6046,7 +6046,11 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect(const std::vector<Wo
                 if ( meshPair.first.Info->MaterialType != MaterialInfo::MT_None )
                     continue;
 
-                MeshInfo* mesh = meshPair.second;
+                WorldMeshInfo* mesh = meshPair.second;
+                if ( cullingFrustum && !Engine::GAPI->IsWorldMeshVisibleInFrustum( mesh, *cullingFrustum ) ) {
+                    continue;
+                }
+
                 zCTexture* tex = meshPair.first.Material ? meshPair.first.Material->GetTexture() : nullptr;
                 unsigned int indexCount = 0;
 
@@ -6119,7 +6123,7 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect(const std::vector<Wo
     }
 }
 
-void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh(const std::vector<WorldMeshSectionInfo*>& visibleSections)
+void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh( const std::vector<WorldMeshSectionInfo*>& visibleSections, const Frustum* cullingFrustum )
 {
     TracyD3D11ZoneCGX( "ShadowPass_DrawWorldMesh" );
     auto _scopeShadowPass = RecordGraphicsEvent( GE_NAME( "ShadowPass_DrawWorldMesh" ) );
@@ -6141,6 +6145,10 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh(const std::vector<WorldMeshSe
                 // Skip non-standard materials (water, portals, etc.)
                 if ( meshPair.first.Info->MaterialType != MaterialInfo::MT_None )
                     continue;
+
+                if ( cullingFrustum && !Engine::GAPI->IsWorldMeshVisibleInFrustum( meshPair.second, *cullingFrustum ) ) {
+                    continue;
+                }
 
                 zCTexture* tex = meshPair.first.Material ? meshPair.first.Material->GetTexture() : nullptr;
 
@@ -6283,7 +6291,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
         static thread_local std::vector<WorldMeshSectionInfo*> visibleSections;
         visibleSections.clear();
-        Engine::GAPI->CollectVisibleSections(visibleSections);
+        Engine::GAPI->CollectVisibleSections( visibleSections, &currentFrustum, false );
 
         if ( Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseMDI ) {
             MeshInfo* wrappedWorldMesh = Engine::GAPI->GetWrappedWorldMesh();
@@ -6296,9 +6304,9 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         }
         
         if (Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseMDI) {
-            ShadowPass_DrawWorldMesh_Indirect(visibleSections);
+            ShadowPass_DrawWorldMesh_Indirect( visibleSections, &currentFrustum );
         } else {
-            ShadowPass_DrawWorldMesh(visibleSections);
+            ShadowPass_DrawWorldMesh( visibleSections, &currentFrustum );
         }
     }    
     
