@@ -18,9 +18,9 @@ static const float2 PLS_SHADOW_BLUR_OFFSETS[PLS_SHADOW_BLUR_COUNT] = {
     float2( 0.383f, -0.924f ),
 };
 
-float PLS_Hash2D( float2 p )
+float PLS_Hash3D( float3 p )
 {
-    float3 p3 = frac( float3( p.xyx ) * 0.1031f );
+    float3 p3 = frac( p * 0.1031f );
     p3 += dot( p3, p3.yzx + 33.33f );
     return frac( (p3.x + p3.y) * p3.z );
 }
@@ -72,21 +72,25 @@ void PLS_PrepareShadowSampling(
     out float cosA )
 {
     float3 toPixel = wsPosition - lightPosWorld;
-    dir = normalize( toPixel );
-
     float distance = length( toPixel );
+    dir = toPixel / (distance + 0.00001f);
+
     float zFar = lightRange * 2.0f;
     compareDistance = distance / zFar;
 
-    float distance01 = saturate( compareDistance );
-    fixedBias = lerp( 0.006f, 0.009f, distance01 );
-    fixedBlurScale = lerp( 0.034f, 0.050f, distance01 * distance01 );
+    float visualDistance01 = saturate( distance / lightRange );
+    
+    // Cubic ramp to keep bias extremely low near the center, but aggressively ramp up at the edges
+    float distRamp = visualDistance01 * visualDistance01 * visualDistance01;
+    
+    fixedBias = lerp( 0.006f, 0.150f, distRamp );
+    fixedBlurScale = lerp( 0.034f, 0.060f, visualDistance01 * visualDistance01 );
 
     up = abs( dir.y ) < 0.999f ? float3( 0, 1, 0 ) : float3( 1, 0, 0 );
     right = normalize( cross( up, dir ) );
     up = cross( dir, right );
 
-    float angle = PLS_Hash2D( wsPosition.xz * 0.1f ) * 6.2831853f;
+    float angle = PLS_Hash3D( wsPosition * 100.0f ) * 6.2831853f;
     sincos( angle, sinA, cosA );
 }
 
@@ -119,6 +123,18 @@ float PLS_SampleShadowCube(
         sinA,
         cosA );
 
+    uint width, height;
+    shadowCube.GetDimensions(width, height); // TODO: Optimize out by passing in shadowmap resolution!
+
+    float resScale = 128.0f / max((float)width, 1.0f); 
+
+    float3 absDir = abs(dir);
+    float maxFaceDist = max(absDir.x, max(absDir.y, absDir.z));
+    float edgeFactor = 1.0f / maxFaceDist;
+
+    fixedBias *= resScale * (edgeFactor * edgeFactor);
+    fixedBlurScale *= resScale * edgeFactor;
+
     float shd = 0;
     [unroll] for ( int i = 0; i < PLS_SHADOW_BLUR_COUNT; i++ )
     {
@@ -129,7 +145,13 @@ float PLS_SampleShadowCube(
         shd += shadowCube.SampleCmpLevelZero( samplerState, perturbedDir, compareDistance - fixedBias );
     }
 
-    return shd / PLS_SHADOW_BLUR_COUNT;
+    shd /= PLS_SHADOW_BLUR_COUNT;
+
+    // Smoothly transition shadows to unshadowed (1.0) in the final 15% of the light's radius
+    float visualDistance01 = saturate( compareDistance * 2.0f );
+    float shadowFade = smoothstep( 0.85f, 1.0f, visualDistance01 );
+    
+    return lerp( shd, 1.0f, shadowFade );
 }
 
 float PLS_SampleShadowCube(
@@ -162,6 +184,17 @@ float PLS_SampleShadowCube(
         sinA,
         cosA );
 
+    uint width, height, elements;
+    shadowCubeArray.GetDimensions(width, height, elements); // TODO: Optimize out by passing in shadowmap resolution!
+    float resScale = 128.0f / max((float)width, 1.0f);
+
+    float3 absDir = abs(dir);
+    float maxFaceDist = max(absDir.x, max(absDir.y, absDir.z));
+    float edgeFactor = 1.0f / maxFaceDist;
+
+    fixedBias *= resScale * (edgeFactor * edgeFactor);
+    fixedBlurScale *= resScale * edgeFactor;
+
     float shd = 0;
     [unroll] for ( int i = 0; i < PLS_SHADOW_BLUR_COUNT; i++ )
     {
@@ -173,7 +206,13 @@ float PLS_SampleShadowCube(
         shd += shadowCubeArray.SampleCmpLevelZero( samplerState, sampleCoord, compareDistance - fixedBias );
     }
 
-    return shd / PLS_SHADOW_BLUR_COUNT;
+    shd /= PLS_SHADOW_BLUR_COUNT;
+
+    // Smoothly transition shadows to unshadowed (1.0) in the final 15% of the light's radius
+    float visualDistance01 = saturate( compareDistance * 2.0f );
+    float shadowFade = smoothstep( 0.85f, 1.0f, visualDistance01 );
+    
+    return lerp( shd, 1.0f, shadowFade );
 }
 
 #endif // !defined(__cplusplus)
