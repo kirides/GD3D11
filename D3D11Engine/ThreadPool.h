@@ -53,7 +53,7 @@ public:
     ThreadPool(
         const wchar_t* poolIdentifier,
         size_t threads = std::clamp(static_cast<size_t>(std::thread::hardware_concurrency()), static_cast<size_t>(1),
-                                    static_cast<size_t>(4)));
+                                    static_cast<size_t>(6)));
 
     //  enqueue returns a TaskHandle and expects 'F' to accept CancellationToken as its first param
     template <typename F, typename... Args>

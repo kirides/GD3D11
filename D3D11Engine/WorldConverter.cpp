@@ -43,6 +43,30 @@ namespace {
             D3D11VertexBuffer::B_INDEXBUFFER,
             D3D11VertexBuffer::U_IMMUTABLE );
     }
+
+    void ComputeWorldMeshBounds( WorldMeshInfo* meshInfo ) {
+        if ( !meshInfo || meshInfo->Vertices.empty() ) {
+            if ( meshInfo ) {
+                meshInfo->HasBoundingBox = false;
+            }
+            return;
+        }
+
+        XMFLOAT3 bbMin( FLT_MAX, FLT_MAX, FLT_MAX );
+        XMFLOAT3 bbMax( -FLT_MAX, -FLT_MAX, -FLT_MAX );
+        for ( const auto& v : meshInfo->Vertices ) {
+            bbMin.x = std::min( bbMin.x, v.Position.x );
+            bbMin.y = std::min( bbMin.y, v.Position.y );
+            bbMin.z = std::min( bbMin.z, v.Position.z );
+            bbMax.x = std::max( bbMax.x, v.Position.x );
+            bbMax.y = std::max( bbMax.y, v.Position.y );
+            bbMax.z = std::max( bbMax.z, v.Position.z );
+        }
+
+        meshInfo->BoundingBox.Min = bbMin;
+        meshInfo->BoundingBox.Max = bbMax;
+        meshInfo->HasBoundingBox = true;
+    }
 }
 
 /** Collects all world-polys in the specific range. Drops all materials that have no alphablending */
@@ -246,7 +270,7 @@ XRESULT WorldConverter::LoadWorldMeshFromFile( const std::string& file, std::map
             if ( section.WorldMeshes.find( key ) == section.WorldMeshes.end() ) {
                 key.Info = Engine::GAPI->GetMaterialInfoFrom( key.Texture );
 
-                section.WorldMeshes[key] = new MeshInfo;
+                section.WorldMeshes[key] = new WorldMeshInfo;
 
             }
 
@@ -290,6 +314,7 @@ XRESULT WorldConverter::LoadWorldMeshFromFile( const std::string& file, std::map
 
                 it.second->Vertices = std::move( indexedVertices );
                 it.second->Indices = std::move( indices );
+                ComputeWorldMeshBounds( it.second );
 
                 // Create the buffers
                 Engine::GraphicsEngine->CreateVertexBuffer( &it.second->MeshVertexBuffer );
@@ -465,7 +490,7 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
         auto it = sectionInfo.WorldMeshes.find( key );
         if ( it == sectionInfo.WorldMeshes.end() ) {
             key.Info = Engine::GAPI->GetMaterialInfoFrom( key.Texture );
-            it = sectionInfo.WorldMeshes.emplace( key, new MeshInfo ).first;
+            it = sectionInfo.WorldMeshes.emplace( key, new WorldMeshInfo ).first;
         }
 
         int matGroup = mat->GetMatGroup();
@@ -580,6 +605,7 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
 
                 it.second->Vertices = std::move( indexedVertices );
                 it.second->Indices = std::move( indices );
+                ComputeWorldMeshBounds( it.second );
 
                 // Create the buffers
                 Engine::GraphicsEngine->CreateVertexBuffer( &it.second->MeshVertexBuffer );

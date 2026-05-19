@@ -345,7 +345,7 @@ void D3D11ShadowMap::Init( Microsoft::WRL::ComPtr<ID3D11Device1>& device, Micros
     RecreateShadowSampler();
 
     // Dummy cube RT used for fallback to satisfy pixel shader runs that expect a RTV bound
-    m_dummyCubeRT = std::make_unique<RenderToTextureBuffer>( m_device.Get(), POINTLIGHT_SHADOWMAP_SIZE, POINTLIGHT_SHADOWMAP_SIZE, DXGI_FORMAT_ENGINE_DEFAULT, nullptr, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, 1, 6 );
+    m_dummyCubeRT = std::make_unique<RenderToTextureBuffer>( m_device.Get(), 16, 16, DXGI_FORMAT_ENGINE_DEFAULT, nullptr, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, 1, 6 );
 
     EnsureShadowMapBackend( s );
 

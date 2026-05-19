@@ -621,7 +621,12 @@ public:
     void CollectVisibleVobs( const RndCullContext& ctx );
 
     /** Collects visible sections from the current camera perspective */
-    void CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sections );
+    void CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sections,
+        const Frustum* queryFrustum = nullptr,
+        bool useSectionRadiusFilter = true );
+
+    /** Returns whether a world mesh intersects the given frustum (true when no bounds are available). */
+    bool IsWorldMeshVisibleInFrustum( const WorldMeshInfo* mesh, const Frustum& frustum ) const;
 
     /** Builds our BspTreeVobMap */
     void BuildBspVobMapCache();
@@ -840,6 +845,23 @@ public:
     static void ProcessVobAnimation( zCVob* vob, zTAnimationMode aniMode, VobInstanceInfo& vobInstance );
 
 private:
+    struct WorldSectionBVHNode {
+        DirectX::BoundingBox Bounds = {};
+        uint32_t LeftChild = 0;
+        uint32_t RightChild = 0;
+        uint32_t LeafStart = 0;
+        uint32_t LeafCount = 0;
+
+        bool IsLeaf() const { return LeafCount > 0; }
+    };
+
+    void BuildWorldSectionBVH();
+    void ClearWorldSectionBVH();
+    void QueryWorldSectionBVH( const Frustum& frustum,
+        std::vector<WorldMeshSectionInfo*>& sections,
+        bool useSectionRadiusFilter ) const;
+    bool UseWorldSectionBVH() const;
+
     /** Collects polygons in the given AABB */
     void CollectPolygonsInAABBRec( BspInfo* base, const zTBBox3D& bbox, std::vector<zCPolygon*>& list );
 
@@ -880,6 +902,9 @@ private:
 
     /** Loaded game sections */
     std::map<int, std::map<int, WorldMeshSectionInfo>> WorldSections;
+    std::vector<WorldSectionBVHNode> WorldSectionBVHNodes;
+    std::vector<WorldMeshSectionInfo*> WorldSectionBVHSections;
+    bool WorldSectionBVHValid = false;
     MeshInfo* WrappedWorldMesh;
 
     /** List of vobs with skeletal meshes (Having a zCModel-Visual) */

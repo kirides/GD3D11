@@ -544,7 +544,7 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.ShadowFilterMode = GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_PCSS;
 
         s.EnableDynamicLighting = true;
-        s.EnablePointlightShadows = GothicRendererSettings::EPointLightShadowMode::PLS_FULL;
+        s.EnablePointlightShadows = GothicRendererSettings::EPointLightShadowMode::PLS_UPDATE_DYNAMIC;
 
         s.AoMode = AOMode::AO_HBAO;
         s.HbaoSettings.SsaoStepCount = 8;
@@ -933,15 +933,14 @@ void ImGuiShim::RenderSettingsWindow()
 
             ImText( "Dynamic Shadows", buttonWidth ); ImGui::SameLine();
             
-            const static std::vector<std::pair<const char*, int>> dynamicShadowValues = {
-                { "Off", GothicRendererSettings::EPointLightShadowMode::PLS_DISABLED },
-                { "Static", GothicRendererSettings::EPointLightShadowMode::PLS_STATIC_ONLY },
-                { "Dynamic Update", GothicRendererSettings::EPointLightShadowMode::PLS_UPDATE_DYNAMIC },
-                { "Full", GothicRendererSettings::EPointLightShadowMode::PLS_FULL },
+            const static std::vector<std::tuple<const char*, GothicRendererSettings::EPointLightShadowMode, const char*>> dynamicShadowValues = {
+                { "Off", GothicRendererSettings::EPointLightShadowMode::PLS_DISABLED, nullptr },
+                { "Static", GothicRendererSettings::EPointLightShadowMode::PLS_STATIC_ONLY, nullptr },
+                { "Dynamic Update", GothicRendererSettings::EPointLightShadowMode::PLS_UPDATE_DYNAMIC, nullptr },
+                { "Full", GothicRendererSettings::EPointLightShadowMode::PLS_FULL, "Very expensive. Don't use unless you encounter visual bugs." },
             };
-            
-            static_assert(sizeof(settings.EnablePointlightShadows) == sizeof(int), "can't reinterpret cast enum to int");
-            if ( ImComboBox( "##DynamicShadows", dynamicShadowValues, reinterpret_cast<int*>(&settings.EnablePointlightShadows) ) ) {
+
+            if ( ImComboBoxCT( "##DynamicShadows", dynamicShadowValues, &settings.EnablePointlightShadows, [] {} ) ) {
                 ImGui::EndCombo();
             }
 
@@ -1200,15 +1199,17 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
         ImGui::Checkbox( "DynamicLighting", &settings.EnableDynamicLighting );
         ImGui::BeginDisabled( !settings.EnableDynamicLighting );
         {
-            static std::vector<std::pair<const char*, int>> pointlightShadows = {
-               {"Disabled", 0},
-               {"Static", 1},
-               {"Update Dynamic", 2},
-               {"Full", 3},
+            const static std::vector<std::tuple<const char*, GothicRendererSettings::EPointLightShadowMode, const char*>> dynamicShadowValues = {
+                { "Off", GothicRendererSettings::EPointLightShadowMode::PLS_DISABLED, nullptr },
+                { "Static", GothicRendererSettings::EPointLightShadowMode::PLS_STATIC_ONLY, nullptr },
+                { "Dynamic Update", GothicRendererSettings::EPointLightShadowMode::PLS_UPDATE_DYNAMIC, nullptr },
+                { "Full", GothicRendererSettings::EPointLightShadowMode::PLS_FULL, "Very expensive. Don't use unless you encounter visual bugs." },
             };
-            if ( ImComboBox( "PointlightShadows", pointlightShadows, (int*)(&settings.EnablePointlightShadows) ) ) {
+
+            if ( ImComboBoxCT( "##DynamicShadows", dynamicShadowValues, &settings.EnablePointlightShadows, [] {} ) ) {
                 ImGui::EndCombo();
             }
+
             ImGui::EndDisabled();
         }
         // ImGui::Checkbox("FastShadows", &settings.FastShadows );	
@@ -1434,6 +1435,10 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                     Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows );
                 }
                 ImGui::SetItemTooltip( "Forward+ debug option: precompute sun shadows in a separate screen-space pass. Changing this reloads light/shadow shaders." );
+
+                ImGui::Checkbox("Use World Section BVH", &settings.DebugSettings.FeatureSet.UseWorldSectionBVH );
+                ImGui::SetItemTooltip("Use Bounding Volume Hierarchy for world sections. Improves culling performance.");
+
                 ImGui::Checkbox("Force Feature Level 10", &settings.DebugSettings.FeatureSet.ForceFeatureLevel10 );
                 ImGui::SetItemTooltip("Force DirectX 10 era feature support. Requires restart.");
                 ImGui::EndTabItem();
