@@ -75,7 +75,8 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	// Reconstruct VS World Position from depth
 	float expDepth = TX_Depth.Sample(SS_Linear, uv).r;
 	float3 vsPosition = VSPositionFromDepth(expDepth, uv);
-	float3 wsPosition = mul(float4(vsPosition, 1), PL_InvView);
+	float3 wsPosition = mul(float4(vsPosition, 1), PL_InvView).xyz;
+	float3 wsNormal = normalize(mul(float4(normal, 0), PL_InvView).xyz);
 	
 	//return float4(normalize(wsPosition - Pl_PositionWorld), 1.0f);
 	
@@ -96,7 +97,7 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	float ndl = max(0, dot(lightDir, normal));
 	
 	// Apply dynamic shadow
-	float shadow = PLS_SampleShadowCube(TX_ShadowCube, SS_Comp, wsPosition, Pl_PositionWorld, PL_Range);
+	float shadow = PLS_SampleShadowCube(TX_ShadowCube, SS_Comp, wsPosition, wsNormal, Pl_PositionWorld, PL_Range);
 	//return float4(ndl.rrr,1);
 	
 	// Get rid of lighting on the backfaces of normalmapped surfaces

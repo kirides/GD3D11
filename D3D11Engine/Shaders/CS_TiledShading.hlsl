@@ -64,6 +64,7 @@ void CSMain( uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID, uint
 
     // World-space position for shadow sampling (computed once, shared by all shadowed lights)
     float3 wsPosition = mul( float4( vsPosition, 1 ), InvView ).xyz;
+    float3 wsNormal = normalize( mul( float4( normal, 0 ), InvView ).xyz );
 
     // Compute tile index
     uint tileX = pixelCoord.x / TILE_SIZE;
@@ -100,7 +101,7 @@ void CSMain( uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID, uint
 
         // Apply shadow if this light has a shadow cubemap and contribution is non-negligible
         if ( light.ShadowCubeIndex >= 0 && any( lighting > 0.001f ) ) {
-            float shadow = PLS_SampleShadowCube( TX_ShadowCubeArray, SS_Comp, wsPosition, light.PositionWorld, light.Range, light.ShadowCubeIndex );
+            float shadow = PLS_SampleShadowCubeArray( TX_ShadowCubeArray, SS_Comp, wsPosition, wsNormal, light.PositionWorld, light.Range, light.ShadowCubeIndex );
             lighting *= shadow;
         }
 

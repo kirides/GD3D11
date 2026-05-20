@@ -141,6 +141,7 @@ float3 FP_ComputePointLighting(
     // These only need to be calculated once per pixel
     float3 V = normalize( -vsPosition );
     float specMod = PLS_ComputeSpecMod( diffuseColor );
+    float3 wsNormal = normalize( mul( float4( normal, 0 ), SQ_InvView ).xyz );
     
     for ( uint i = 0; i < grid.Count; i++ )
     {
@@ -167,7 +168,7 @@ float3 FP_ComputePointLighting(
         // Don't fetch shadows if the light contribution is effectively zero.
         if ( light.ShadowCubeIndex >= 0 && any(lighting > 0.001f) )
         {
-            float shadow = PLS_SampleShadowCube( FP_ShadowCubeArray, SS_Comp, wsPosition, light.PositionWorld, light.Range, light.ShadowCubeIndex );
+            float shadow = PLS_SampleShadowCubeArray( FP_ShadowCubeArray, SS_Comp, wsPosition, wsNormal, light.PositionWorld, light.Range, light.ShadowCubeIndex );
             lighting *= shadow;
         }
 
