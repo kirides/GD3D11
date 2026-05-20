@@ -362,7 +362,7 @@ void D3D11PointLight::RenderCubemap( bool forceUpdate, D3D11ConstantBuffer* View
     XMStoreFloat4x4( &CubeMapViewMatrices[5], XMMatrixTranspose( XMMatrixLookAtLH( vEyePt, vLookDir, c_XM_Up ) ) );
 
     // Create the projection matrix
-    float zNear = 15.0f;
+    float zNear = 5.0f;
     float zFar = LightInfo->Vob->GetLightRange() * 2.0f;
 
     XMMATRIX proj = XMMatrixPerspectiveFovLH( XM_PIDIV2, 1.0f, zNear, zFar );
