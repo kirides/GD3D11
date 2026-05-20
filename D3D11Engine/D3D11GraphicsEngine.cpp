@@ -576,7 +576,7 @@ XRESULT D3D11GraphicsEngine::Init() {
 
             maxFeatureLevel = D3D_FEATURE_LEVEL::D3D_FEATURE_LEVEL_9_1;
         }
-    } else {
+    } else { 
         for ( size_t i = 0; i < featureLevelCount; ++i ) {
             hr = D3D11CreateDeviceFunc( DXGIAdapter2.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, flags, &featureLevels[i], featureLevelCount - i,
                 D3D11_SDK_VERSION, Device11.GetAddressOf(), &maxFeatureLevel, Context11.GetAddressOf() );
@@ -589,7 +589,7 @@ XRESULT D3D11GraphicsEngine::Init() {
     }
 
     if ( FAILED( hr ) ) {
-        LogErrorBox() << "D3D11CreateDevice failed with code: " << hr << "!";
+        LogErrorBox() << "D3D11CreateDevice failed with code: " << std::hex << hr << "!";
         exit( 2 );
     }
 
