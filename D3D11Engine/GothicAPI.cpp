@@ -4251,13 +4251,18 @@ void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sect
         }
 
         if ( queryFrustum ) {
+            if ( !queryFrustum->IsValid() ) {
+                return true;
+            }
             return queryFrustum->Contains( section.BoundingBox ) != DirectX::ContainmentType::DISJOINT;
         }
 
         return GetCameraBBox3DInFrustum( section.BoundingBox, EGothicCullFlags::CullSidesNear ) != ZTCAM_CLIPTYPE_OUT;
     };
 
-    if ( UseWorldSectionBVH() && WorldSectionBVHValid && cullingEnabled && (queryFrustum || !drawSectionIntersections) ) {
+    const bool queryFrustumValid = queryFrustum == nullptr || queryFrustum->IsValid();
+    if ( UseWorldSectionBVH() && WorldSectionBVHValid && cullingEnabled && queryFrustumValid
+        && (queryFrustum || !drawSectionIntersections) ) {
         ZoneScopedN( "GothicAPI::CollectVisibleSections->BVH" );
 
         Frustum generatedFrustum;
@@ -4273,7 +4278,7 @@ void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sect
                     XMLoadFloat4x4( &proj )
                 );
             } else {
-                generatedFrustum.AlwaysContainingFrustum();
+                generatedFrustum = Frustum::AlwaysContainingFrustum();
             }
             activeFrustum = &generatedFrustum;
         }

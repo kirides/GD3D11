@@ -98,13 +98,15 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
             ZoneScopedN( "FR Shadow Maps" );
             auto* shadowMaps = engine.GetShadowMaps();
             engine.SetDefaultStates();
+            const auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
 
             shadowMaps->DrawPointlightShadows( engine.GetFrameLights() );
-            shadowMaps->DrawWorldShadow();
+            if ( settings.EnableShadows ) {
+                shadowMaps->DrawWorldShadow();
+            }
             engine.SetDefaultStates();
             shadowMaps->DrawRainShadowmap();
 
-            auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
             Engine::GAPI->SetFarPlane( static_cast<float>( settings.SectionDrawRadius ) * WORLD_SECTION_SIZE );
         };
     } );

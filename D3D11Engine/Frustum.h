@@ -3,6 +3,8 @@
 #include <DirectXMath.h>
 #include <DirectXCollision.h>
 #include <array>
+#include <cmath>
+#include <cfloat>
 #include "zTypes.h"
 
 using namespace DirectX;
@@ -26,6 +28,31 @@ enum EGothicCullFlags : unsigned char
 class Frustum
 {
 public:
+    static bool IsFiniteVector( FXMVECTOR value ) {
+        return !XMVector4IsInfinite( value );
+    }
+
+    static bool IsFiniteMatrix( CXMMATRIX matrix ) {
+        return IsFiniteVector( matrix.r[0] )
+            && IsFiniteVector( matrix.r[1] )
+            && IsFiniteVector( matrix.r[2] )
+            && IsFiniteVector( matrix.r[3] );
+    }
+
+    static bool IsFiniteOrientedBox( const BoundingOrientedBox& box ) {
+        return IsFiniteVector( XMLoadFloat3( &box.Center ) )
+            && IsFiniteVector( XMLoadFloat3( &box.Extents ) )
+            && IsFiniteVector( XMLoadFloat4( &box.Orientation ) );
+    }
+
+    void Invalidate() {
+        m_useSphere = false;
+        m_useBoundingOrientedBox = false;
+        m_always_containing = false;
+        m_hasPlanes = false;
+        isValid = false;
+    }
+
     // Für orthografische Projektion (Sonnen-Shadowmap)
     // shadowCasterExpansion: Extra distance to expand the frustum to include shadow casters
     //                        behind/beside the camera that may cast shadows into the view
@@ -40,7 +67,23 @@ public:
         float expandBack = 0.0f
     )
     {
-        XMMATRIX invView = XMMatrixInverse( nullptr, view );
+        if ( !IsFiniteMatrix( view ) ) {
+            Invalidate();
+            return;
+        }
+
+        XMVECTOR determinant = XMMatrixDeterminant( view );
+        const float determinantScalar = XMVectorGetX( determinant );
+        if ( !std::isfinite( determinantScalar ) || fabsf( determinantScalar ) <= FLT_EPSILON ) {
+            Invalidate();
+            return;
+        }
+
+        XMMATRIX invView = XMMatrixInverse( &determinant, view );
+        if ( !IsFiniteMatrix( invView ) ) {
+            Invalidate();
+            return;
+        }
 
         // Calculate new Z bounds directly in Light Space
         float newNearZ = nearZ - expandBack;
@@ -58,6 +101,10 @@ public:
 
         // Transform correctly to World Space
         viewSpaceFrustum.Transform( m_orientedBox, invView );
+        if ( !IsFiniteOrientedBox( m_orientedBox ) ) {
+            Invalidate();
+            return;
+        }
 
         CacheOBBPlanes();
         m_hasPlanes = true;
