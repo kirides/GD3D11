@@ -154,7 +154,7 @@ void ApplyRainNormalDeformation(inout float3 vsNormal, float3 wsPosition, inout 
 }
 
 /** Returns new diffusecolor (rgb)*/
-void ApplySceneWettness(float3 wsPosition, float3 vsPosition, float3 vsDir, inout float3 vsNormal, in out float3 diffuse, in out float specIntensity, in out float specPower, out float specAdd)
+void ApplySceneWettness(float3 wsPosition, float3 vsPosition, float3 vsDir, inout float3 vsNormal, in out float3 diffuse, in out float specIntensity, in out float specPower, out float specAdd, out float localWettness)
 {
 	// Ask the rain-shadowmap if we can hit this pixel
     float pixelWettnes = ComputeShadowValue(0.0f, wsPosition, TX_RainShadowmap, SS_Comp, vsPosition.z, 1.0f, SQ_RainViewProj, 0.0001f, 2.5f) * AC_SceneWettness;
@@ -174,6 +174,12 @@ void ApplySceneWettness(float3 wsPosition, float3 vsPosition, float3 vsDir, inou
 	float wDot = saturate(dot(wsNormal, float3(0, -1, 0))); 
 	float wDot2 = wDot * wDot;
 	pixelWettnes *= 1.0f - (wDot2 * wDot2);
+
+    // Rain mostly settles on upward-facing surfaces.
+    float surfaceExposure = saturate(dot(wsNormal, float3(0, 1, 0)));
+    surfaceExposure *= surfaceExposure;
+    pixelWettnes *= surfaceExposure;
+    localWettness = pixelWettnes;
 	
     vsNormal = lerp(vsNormal, nrm, AC_RainFXWeight * pixelWettnes * 0.5f); // Only apply deformation if it's actually raining
 	
@@ -270,9 +276,10 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
 
 	// Compute wettness
     float specWet = 0.0f;
+    float localWettness = 0.0f;
 	
 #ifdef APPLY_RAIN_EFFECTS
-	ApplySceneWettness(wsPosition, vsPosition, V, normal, diffuse.rgb, specIntensity, specPower, specWet);
+    ApplySceneWettness(wsPosition, vsPosition, V, normal, diffuse.rgb, specIntensity, specPower, specWet, localWettness);
 	
 	// Boost specWet when not in shadow
 	specWet += specWet * shadow;
@@ -288,7 +295,7 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
 	//return float4(diffuse.rgb, 1);
 	
     float4 lightColor = SQ_LightColor;
-    lightColor.rgb = lerp(lightColor.rgb, lightColor.rgb * 0.8f, AC_SceneWettness);
+    lightColor.rgb = lerp(lightColor.rgb, lightColor.rgb * 0.8f, localWettness);
 	
 	// Apply sunlight
     float sunStrength = dot(lightColor.rgb, float3(0.333f, 0.333f, 0.333f));

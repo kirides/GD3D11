@@ -6011,11 +6011,19 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
     bool colorWritesEnabled =
         Engine::GAPI->GetRendererState().BlendState.ColorWritesEnabled;
     float alphaRef = Engine::GAPI->GetRendererState().GraphicsState.FF_AlphaRef;
-    auto& currentFrustum = params.CascadeIndex != -1
-        ? params.CascadeCameraReplacements->at(params.CascadeIndex).frustum
-        : Engine::GAPI->GetCameraReplacementPtr() != nullptr
-            ? Engine::GAPI->GetCameraReplacementPtr()->frustum
-            : Frustum::AlwaysContainingFrustum();
+    const Frustum* currentFrustum = nullptr;
+    Frustum alwaysContainingFrustum;
+
+    if ( params.CascadeIndex != -1 && params.CascadeCameraReplacements ) {
+        currentFrustum = &params.CascadeCameraReplacements->at( params.CascadeIndex ).frustum;
+    } else if ( Engine::GAPI->GetCameraReplacementPtr() != nullptr ) {
+        currentFrustum = &Engine::GAPI->GetCameraReplacementPtr()->frustum;
+    }
+
+    if ( !currentFrustum || !currentFrustum->IsValid() ) {
+        alwaysContainingFrustum = Frustum::AlwaysContainingFrustum();
+        currentFrustum = &alwaysContainingFrustum;
+    }
 
     if ( Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh ) {
         TracyD3D11ZoneCGX( "Shadows::DrawWorldMesh" );
@@ -6024,7 +6032,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
         static thread_local std::vector<WorldMeshSectionInfo*> visibleSections;
         visibleSections.clear();
-        Engine::GAPI->CollectVisibleSections( visibleSections, &currentFrustum, false );
+        Engine::GAPI->CollectVisibleSections( visibleSections, currentFrustum, false );
 
         if ( Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseMDI ) {
             MeshInfo* wrappedWorldMesh = Engine::GAPI->GetWrappedWorldMesh();
@@ -6037,9 +6045,9 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         }
         
         if (Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseMDI) {
-            ShadowPass_DrawWorldMesh_Indirect( visibleSections, &currentFrustum );
+            ShadowPass_DrawWorldMesh_Indirect( visibleSections, currentFrustum );
         } else {
-            ShadowPass_DrawWorldMesh( visibleSections, &currentFrustum );
+            ShadowPass_DrawWorldMesh( visibleSections, currentFrustum );
         }
     }    
     
@@ -6064,7 +6072,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             ctx.queue = &q;
             ctx.cameraPosition = Engine::GAPI->GetCameraPosition();
             ctx.stage = RenderStage::STAGE_DRAW_WORLD;
-            ctx.frustum = currentFrustum;
+            ctx.frustum = *currentFrustum;
             const auto& rs = Engine::GAPI->GetRendererState().RendererSettings;
             ctx.drawDistances.OutdoorVobs = rs.OutdoorVobDrawRadius;
             ctx.drawDistances.OutdoorVobsSmall = rs.OutdoorSmallVobDrawRadius;
@@ -6345,7 +6353,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             }
 
             if ( enableCulling ) {
-                if ( !currentFrustum.Intersects( skeletalMeshVob->Vob->GetBBox()) ) {
+                if ( !currentFrustum->Intersects( skeletalMeshVob->Vob->GetBBox()) ) {
                     // Not hitting our frustum and not the active view.
                     continue;
                 }
