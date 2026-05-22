@@ -48,6 +48,14 @@ float PLS_ComputeRangeFalloff( float distance, float lightRange )
     return normalizedDist * (normalizedDist * 0.2f + 0.8f);
 }
 
+float PLS_ApplyShadowDistanceFade( float finalShadow, float normalizedDist )
+{
+    // Keep fade-out for mostly lit samples, but preserve strong occlusion to avoid wall bleed.
+    float shadowFade = smoothstep( 0.65f, 0.95f, normalizedDist );
+    float fadeWeight = shadowFade * smoothstep( 0.45f, 0.90f, finalShadow );
+    return lerp( finalShadow, 1.0f, fadeWeight );
+}
+
 float3 PLS_ComputePointLightLighting(
     float3 diffuseColor,
     float3 lightColor,
@@ -154,9 +162,7 @@ float PLS_SampleShadowCube(
     float distanceToLight = length(wsPosition - lightPosWorld);
     float normalizedDist = saturate(distanceToLight / lightRange);
     
-    // Smoothly fade the shadow to 1.0 (unshadowed) starting at 65% of the range, fully gone by 95%
-    float shadowFade = smoothstep(0.65f, 0.95f, normalizedDist);
-    return lerp(finalShadow, 1.0f, shadowFade);
+    return PLS_ApplyShadowDistanceFade( finalShadow, normalizedDist );
 }
 
 float PLS_SampleShadowCubeArray(
@@ -199,8 +205,7 @@ float PLS_SampleShadowCubeArray(
     float distanceToLight = length(wsPosition - lightPosWorld);
     float normalizedDist = saturate(distanceToLight / lightRange);
     
-    float shadowFade = smoothstep(0.65f, 0.95f, normalizedDist);
-    return lerp(finalShadow, 1.0f, shadowFade);
+    return PLS_ApplyShadowDistanceFade( finalShadow, normalizedDist );
 }
 
 #endif // !defined(__cplusplus)
