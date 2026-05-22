@@ -107,7 +107,7 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	float falloff = PLS_ComputeRangeFalloff(distance, PL_Range);
 	
 	// Compute specular lighting
-	float3 V = normalize(-Pl_PositionView);
+	float3 V = normalize(-vsPosition);
 	float3 H = normalize(lightDir + V);
 	float spec = PLS_CalcBlinnPhongLighting(normal, H);
 	float specMod = PLS_ComputeSpecMod(diffuse.rgb);

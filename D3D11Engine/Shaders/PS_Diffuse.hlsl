@@ -128,23 +128,35 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
 			float2 screenUV = Input.vPosition.xy / FP_ViewportSize;
 			shadow = FP_ShadowMask.SampleLevel( SS_Linear, screenUV, 0 ).r;
 		#else
-			float bias = lerp(0.00005f, 0.0001f, abs(vsPosition.z) / 1000.0f);
-			shadow = ComputeCascadedShadowValueSoft(wsPosition, vsPosition.z, vertLighting, bias, Input.vPosition.xy);
+			float3 wsNormal = normalize(mul(float4(nrm, 0.0f), SQ_InvView).xyz);
+			float3 wsLightDirection = normalize(mul(float4(SQ_LightDirectionVS, 0.0f), SQ_InvView).xyz);
+
+			float NoL = saturate(abs(dot(wsNormal, wsLightDirection)));
+			float slopeScale = sqrt(saturate(1.0f - NoL * NoL));
+
+			int cascadeIndex = GetPrimaryCascadeIndex(wsPosition);
+			float texelWorldSize = GetCascadeWorldTexelSize(cascadeIndex);
+
+			const float normalBiasMultiplier = 1.5f;
+
+			float3 biasedWsPosition = wsPosition + wsNormal * (slopeScale * texelWorldSize * normalBiasMultiplier);
+
+			shadow = ComputeCascadedShadowValueSoft(biasedWsPosition, vsPosition.z, vertLighting, 0.0f, Input.vPosition.xy);
 		#endif
 	}
 #endif
 
 	// Sun lighting
 	float3 litPixel = FP_ComputeSunLighting(wsPosition, vsPosition, nrm, color.rgb, specIntensity, specPower, shadow, vertLighting);
+	
+	// Atmospheric scattering
+	litPixel = ApplyAtmosphericScatteringGround(wsPosition, litPixel);
 
 	// Point lights, only when close enough
 	if (pixelDistZ < 6000.0f) 
 	{
 		litPixel += FP_ComputePointLighting(wsPosition, vsPosition, nrm, color.rgb, specIntensity, specPower, Input.vPosition.xy);
 	}
-
-	// Atmospheric scattering
-	litPixel = ApplyAtmosphericScatteringGround(wsPosition, litPixel);
 
 	output.vColor = float4(litPixel, 1);
 	output.vNrm = EncodeNormalGBuffer(nrm);

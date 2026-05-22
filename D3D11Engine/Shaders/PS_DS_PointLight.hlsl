@@ -3,6 +3,7 @@
 //--------------------------------------------------------------------------------------
 #include <DS_Defines.h>
 #include "DepthReconstruction.h"
+#include "include/PointLightShadows.h"
 
 cbuffer DS_PointLightConstantBuffer : register( b0 )
 {
@@ -121,23 +122,17 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	float ndl = max(0, dot(lightDir, normal));
 	
 	// Compute range falloff
-	float falloff = pow(saturate(1.0f - (distance / PL_Range)), 1.2f);
+	float falloff = PLS_ComputeRangeFalloff(distance, PL_Range);
 	//float falloff = saturate(1.0f / (pow(distance / PL_Range * 2, 2)));
 	
 	// Compute specular lighting
-	float3 V = normalize(-Pl_PositionView);
+	float3 V = normalize(-vsPosition);
 	float3 H = normalize(lightDir + V);
-	float spec = CalcBlinnPhongLighting(normal, H);
-	float specMod = pow(dot(float3(0.333f,0.333f,0.333f), diffuse.rgb), 2);
-	float3 specBare = pow(spec, specPower) * specIntensity * PL_Color.rgb * falloff;
-	float3 specColored = lerp(specBare, specBare * diffuse.rgb, specMod);
+	float spec = PLS_CalcBlinnPhongLighting(normal, H);
+	float specMod = PLS_ComputeSpecMod(diffuse.rgb);
 	
-	float3 color = falloff * ndl * PL_Color.rgb;
-	color = saturate(color);
-	
-	// Blend this with the lights color and the worlds diffuse color
-	// Also apply specular lighting
-	float3 lighting = color * diffuse.rgb + specColored;
+	// Blend this with the light color, world diffuse and specular term.
+	float3 lighting = PLS_ComputePointLightLighting(diffuse.rgb, PL_Color.rgb, ndl, falloff, spec, specIntensity, specPower, specMod);
 	
 	return float4(saturate(lighting),1);
 }

@@ -1316,6 +1316,8 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
             ImGui::DragFloat( "ShadowStrength", &settings.ShadowStrength, 0.01f, 0.01f, 5.0f, "%.2f" );
             ImGui::DragFloat( "ShadowSoftness", &settings.ShadowSoftness, 0.05f, 0.2f, 8.0f, "%.2f" );
             ImGui::SetItemTooltip( "PCF kernel scale (1.0=sharp default, <1.0=sharper, >1.0=softer)" );
+            ImGui::DragFloat( "PCSSLightSize", &settings.PCSSLightSize, 0.002f, 0.005f, 0.5f, "%.3f" );
+            ImGui::SetItemTooltip( "PCSS light radius in shadow UV space. Higher values increase contact hardening and penumbra growth." );
             ImGui::DragFloat( "ShadowAOStrength", &settings.ShadowAOStrength, 0.01f, -5.0f, 2.0f, "%.2f" );
             ImGui::DragFloat( "WorldAOStrength", &settings.WorldAOStrength, 0.01f, -5.0f, 2.0f, "%.2f" );
             ImGui::EndDisabled();
