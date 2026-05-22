@@ -38,7 +38,7 @@ enum PS_DS_AtmosphericScatteringSlots {
     TX_SI_SP = 7,
 };
 
-const int POINTLIGHT_SHADOWMAP_SIZE = 64;
+const int POINTLIGHT_SHADOWMAP_SIZE = 128;
 
 /** Parameters for rendering shadow maps */
 struct RenderShadowmapsParams {
