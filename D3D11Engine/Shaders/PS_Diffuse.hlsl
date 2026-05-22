@@ -136,15 +136,15 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
 
 	// Sun lighting
 	float3 litPixel = FP_ComputeSunLighting(wsPosition, vsPosition, nrm, color.rgb, specIntensity, specPower, shadow, vertLighting);
+	
+	// Atmospheric scattering
+	litPixel = ApplyAtmosphericScatteringGround(wsPosition, litPixel);
 
 	// Point lights, only when close enough
 	if (pixelDistZ < 6000.0f) 
 	{
 		litPixel += FP_ComputePointLighting(wsPosition, vsPosition, nrm, color.rgb, specIntensity, specPower, Input.vPosition.xy);
 	}
-
-	// Atmospheric scattering
-	litPixel = ApplyAtmosphericScatteringGround(wsPosition, litPixel);
 
 	output.vColor = float4(litPixel, 1);
 	output.vNrm = EncodeNormalGBuffer(nrm);
