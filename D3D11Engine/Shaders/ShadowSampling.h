@@ -21,6 +21,10 @@
 #define SHADOW_ATLAS 0
 #endif
 
+#ifndef PCSS_BLOCKER_SEARCH_TEXEL_CAP
+#define PCSS_BLOCKER_SEARCH_TEXEL_CAP 24
+#endif
+
 //--------------------------------------------------------------------------------------
 // Shadow map sampling helpers
 // Abstracts Texture2DArray (FL11+) vs Texture2D atlas (FL10) sampling
@@ -201,8 +205,8 @@ void FindBlockers(out float avgBlockerDepth, out float numBlockers,
 float EstimatePCSSFilterRadius(float2 uv, float zReceiver, int cascadeIndex,
                                float lightSize, float2x2 rotMat, float texelSize)
 {
-    // Capped slightly lower to match the 16-tap blocker limit efficiently
-    float searchRadius = min(lightSize, texelSize * 16.0f);
+    // Cap search radius in texel units to keep blocker search cost predictable.
+    float searchRadius = min(lightSize, texelSize * PCSS_BLOCKER_SEARCH_TEXEL_CAP);
     
     float avgBlockerDepth = 0.0f;
     float numBlockers = 0.0f;
@@ -276,6 +280,52 @@ void GetCascadeUVAndBounds(float3 wsPosition, int cascadeIndex,
 }
 
 //--------------------------------------------------------------------------------------
+// Returns the first cascade that contains wsPosition. If no cascade contains the
+// position, returns -1.
+//--------------------------------------------------------------------------------------
+int GetPrimaryCascadeIndex(float3 wsPosition)
+{
+    float4 vShadowPos;
+    float2 projCoords;
+    float inBounds;
+    float blendFactor;
+
+    for (int c = 0; c < NUM_CSM_CASCADES; c++)
+    {
+        GetCascadeUVAndBounds(wsPosition, c, vShadowPos, projCoords, inBounds, blendFactor);
+        if (inBounds > 0.5f)
+            return c;
+    }
+
+    return -1;
+}
+
+//--------------------------------------------------------------------------------------
+// Estimates current-cascade world-space texel size from the orthographic shadow matrix.
+//--------------------------------------------------------------------------------------
+float GetCascadeWorldTexelSize(int cascadeIndex)
+{
+    if (cascadeIndex < 0)
+        return 0.0f;
+
+    matrix shadowViewProj = SQ_ShadowViewProj[cascadeIndex];
+
+    float shadowScaleX = length(float3(shadowViewProj[0][0], shadowViewProj[1][0], shadowViewProj[2][0]));
+    float shadowScaleY = length(float3(shadowViewProj[0][1], shadowViewProj[1][1], shadowViewProj[2][1]));
+
+    float worldSpanX = (shadowScaleX > 1e-6f) ? (2.0f / shadowScaleX) : 0.0f;
+    float worldSpanY = (shadowScaleY > 1e-6f) ? (2.0f / shadowScaleY) : 0.0f;
+
+    float cascadeResolution = SQ_ShadowmapSize;
+#if SHADOW_ATLAS
+    float4 atlasRect = SQ_CascadeAtlasRect[cascadeIndex];
+    cascadeResolution *= max(atlasRect.z, atlasRect.w);
+#endif
+
+    return 0.5f * (worldSpanX + worldSpanY) / max(cascadeResolution, 1.0f);
+}
+
+//--------------------------------------------------------------------------------------
 // High-quality shadow sampling with configurable softness
 // Uses rotated Poisson disk for TAA-friendly results
 //--------------------------------------------------------------------------------------
@@ -306,7 +356,8 @@ float SampleCascadeShadowSoft(float4 vShadowSamplingPos, float2 projectedTexCoor
         float zReceiver = vShadowSamplingPos.z - bias;
         
         float pcssRadius = EstimatePCSSFilterRadius(projectedTexCoords.xy, zReceiver,
-            cascadeIndex, SQ_LightSize * SQ_ShadowSoftness, rotMat, texelSize);
+            cascadeIndex, SQ_LightSize, rotMat, texelSize);
+        pcssRadius *= SQ_ShadowSoftness;
 
         if (pcssRadius < 0.0f)
         {
@@ -331,12 +382,14 @@ float SampleCascadeShadowSoft(float4 vShadowSamplingPos, float2 projectedTexCoor
 				}
 				shadow = sum / 32.0f;
 			} else {
+                float radiusJitter = lerp(0.95f, 1.05f, noiseVal);
+                float finalRadius = pcssRadius * radiusJitter;
 				for (int i = 0; i < 8; i++)
 				{
-					float2 offset = mul(rotMat, g_PoissonDisk8[i]) * (texelSize * 4.0f);
+                    float2 offset = mul(rotMat, g_PoissonDisk8[i]) * finalRadius;
 					sum += SampleShadowMapCmp(
 						projectedTexCoords.xy + offset, cascadeIndex,
-						vShadowSamplingPos.z - bias);
+                        zReceiver);
 				}
 				shadow = sum / 8.0f;
 			}

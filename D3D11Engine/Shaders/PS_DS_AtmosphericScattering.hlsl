@@ -268,9 +268,21 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
 	// CSM: Use soft cascaded shadow map with configurable softness
 	if(AC_LightPos.y > 0) // only get shadow value if it isn't night-time
 	{
-		float bias = lerp(0.00005f, 0.0001f, abs(vsPosition.z) / 1000);
-		// Use screen position for per-pixel rotation (TAA-friendly)
-		shadow = ComputeCascadedShadowValueSoft(wsPosition, vsPosition.z, vertLighting, bias, Input.vPosition.xy);
+        float3 wsNormal = normalize(mul(float4(normal, 0.0f), SQ_InvView).xyz);
+        float3 wsLightDirection = normalize(mul(float4(SQ_LightDirectionVS, 0.0f), SQ_InvView).xyz);
+
+        float NoL = saturate(abs(dot(wsNormal, wsLightDirection)));
+        float slopeScale = sqrt(saturate(1.0f - NoL * NoL));
+
+        int cascadeIndex = GetPrimaryCascadeIndex(wsPosition);
+        float texelWorldSize = GetCascadeWorldTexelSize(cascadeIndex);
+
+        const float normalBiasMultiplier = 1.5f;
+
+        float3 biasedWsPosition = wsPosition + wsNormal * (slopeScale * texelWorldSize * normalBiasMultiplier);
+
+        // Use screen position for per-pixel rotation (TAA-friendly)
+        shadow = ComputeCascadedShadowValueSoft(biasedWsPosition, vsPosition.z, vertLighting, 0.0f, Input.vPosition.xy);
 	}
 #endif
 

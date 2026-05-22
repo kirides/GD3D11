@@ -694,6 +694,7 @@ struct GothicRendererSettings {
         ShadowAOStrength = 0.50f;
         WorldAOStrength = 0.50f;
         ShadowSoftness = 1.0f; // 1.0 = default softness, higher = softer shadows
+        PCSSLightSize = 0.140f; // Shadow-UV light radius used by PCSS blocker search
 
         BloomStrength = 1.0f;
         GlobalWindStrength = 1.0f;
@@ -964,6 +965,7 @@ struct GothicRendererSettings {
     float ShadowAOStrength;
     float WorldAOStrength;
     float ShadowSoftness;
+    float PCSSLightSize;
 
     float GodRayDecay;
     float GodRayWeight;

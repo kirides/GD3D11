@@ -1384,7 +1384,7 @@ DS_ScreenQuadConstantBuffer D3D11ShadowMap::FillSunCSMConstantBuffer() const {
     scb.SQ_ShadowAOStrength = settings.ShadowAOStrength;
     scb.SQ_WorldAOStrength = settings.WorldAOStrength;
     scb.SQ_ShadowSoftness = settings.ShadowSoftness;
-    scb.SQ_LightSize = 0.04f;
+    scb.SQ_LightSize = std::clamp( settings.PCSSLightSize, 0.005f, 0.5f );
 
     if ( auto bspTree = Engine::GAPI->GetLoadedWorldInfo()->BspTree )
         if ( bspTree->GetBspTreeMode() == zBSP_MODE_INDOOR ) {
@@ -1503,7 +1503,7 @@ XRESULT D3D11ShadowMap::DrawWorldLights()
     scb.SQ_ShadowAOStrength = settings.ShadowAOStrength;
     scb.SQ_WorldAOStrength = settings.WorldAOStrength;
     scb.SQ_ShadowSoftness = settings.ShadowSoftness;
-    scb.SQ_LightSize = 0.04f; // PCSS light size in shadow UV space
+    scb.SQ_LightSize = std::clamp( settings.PCSSLightSize, 0.005f, 0.5f );
 
     // Modify lightsettings when indoor
     if ( auto bspTree = Engine::GAPI->GetLoadedWorldInfo()->BspTree )
