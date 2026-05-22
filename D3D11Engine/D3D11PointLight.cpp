@@ -193,7 +193,7 @@ void D3D11PointLight::CopyStaticAsideToActiveTarget() const {
 
 void D3D11PointLight::RenderStaticShadowPass( RenderToDepthStencilBuffer& target, bool clearDepth ) {
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
-    const float range = LightInfo->Vob->GetLightRange() * 1.1f;
+    const float range = LightInfo->Vob->GetLightRange();
 
     std::map<MeshKey, MeshInfo*, cmpMeshKey>* wc = &WorldMeshCache;
     if ( WorldCacheInvalid ) {
@@ -207,7 +207,7 @@ void D3D11PointLight::RenderStaticShadowPass( RenderToDepthStencilBuffer& target
 
 void D3D11PointLight::RenderAnimatedShadowPass( RenderToDepthStencilBuffer& target, bool clearDepth ) {
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
-    const float range = LightInfo->Vob->GetLightRange() * 1.1f;
+    const float range = LightInfo->Vob->GetLightRange();
 
     const unsigned int animatedCasterMask = SHADOW_CASTER_ANIMATED;
     engine->RenderShadowCube( LightInfo->Vob->GetPositionWorldXM(), range, target, nullptr, nullptr, false, LightInfo->IsIndoorVob, false,
@@ -363,7 +363,7 @@ void D3D11PointLight::RenderCubemap( bool forceUpdate, D3D11ConstantBuffer* View
 
     // Create the projection matrix
     float zNear = 15.0f;
-    float zFar = LightInfo->Vob->GetLightRange() * 2.0f;
+    float zFar = LightInfo->Vob->GetLightRange()*2.0f;
 
     XMMATRIX proj = XMMatrixPerspectiveFovLH( XM_PIDIV2, 1.0f, zNear, zFar );
     proj = XMMatrixTranspose( proj );
@@ -443,7 +443,7 @@ void D3D11PointLight::RenderFullCubemap() {
         wc = nullptr;
     }
 
-    engine->RenderShadowCube( LightInfo->Vob->GetPositionWorldXM(), LightInfo->Vob->GetLightRange() * 1.1f, *activeTarget,
+    engine->RenderShadowCube( LightInfo->Vob->GetPositionWorldXM(), LightInfo->Vob->GetLightRange(), *activeTarget,
         nullptr, nullptr, false, LightInfo->IsIndoorVob, false, &VobCache, &SkeletalVobCache, wc, true, SHADOW_CASTER_ALL );
 }
 
@@ -493,7 +493,7 @@ void D3D11PointLight::RenderCubemapFace( const XMFLOAT4X4& view, const XMFLOAT4X
 
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine); // TODO: Remove and use newer system!
     auto lightPos = LightInfo->Vob->GetPositionWorldXM();
-    float range = LightInfo->Vob->GetLightRange() * 1.1f;
+    float range = LightInfo->Vob->GetLightRange();
     
     CameraReplacement cr;
     XMStoreFloat3( &cr.PositionReplacement, lightPos );
