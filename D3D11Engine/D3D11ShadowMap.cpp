@@ -206,9 +206,8 @@ static void CalculateCascadeMatrices(
                 sceneMaxZ = std::max( sceneMaxZ, z );
             }
 
-            // Absolute hard limit: We never need to start the shadow camera further back 
-            // than the edge of the world geometry itself.
-            orthoNear = std::max( orthoNear, sceneMinZ - 100.0f );
+            // Pushes the near plane further back if the scene geometry requires it
+            orthoNear = std::min( orthoNear, sceneMinZ - 100.0f );
 
             // Tighten Far Plane so we don't shoot miles past the level boundaries when looking down
             orthoFar = std::min( orthoFar, sceneMaxZ + 500.0f );
