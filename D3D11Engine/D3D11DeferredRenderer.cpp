@@ -151,7 +151,7 @@ bool D3D11DeferredRenderer::BindShaderForTexture( D3D11ShaderManager& shaderMana
     } else if ( linZ ) {
         newShader = shaderManager.GetPShader( PShaderID::PS_LinDepth );
     } else if ( blendAdd || blendBlend ) {
-        newShader = shaderManager.GetPShader( PShaderID::PS_Simple );
+        newShader = shaderManager.GetPShader( PShaderID::PS_Simple_FF );
     } else if ( texture->HasAlphaChannel() || forceAlphaTest ) {
         if ( texture->GetSurface()->GetFxMap() ) {
             newShader = shaderManager.GetPShader( resolvedDiffuseNormalmappedAlphatestFxMap );

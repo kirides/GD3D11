@@ -211,7 +211,7 @@ struct MaterialInfo {
     void WriteToFile( const std::string& name );
 
     /** Loads this info from a file */
-    void LoadFromFile( const std::string& name );
+    void LoadFromFile( const std::string_view name );
 
     struct Buffer {
         float SpecularIntensity;
@@ -689,7 +689,7 @@ public:
 
     /** Returns the material info associated with the given material */
     MaterialInfo* GetMaterialInfoFrom( zCTexture* tex );
-    MaterialInfo* GetMaterialInfoFrom( zCTexture* tex, const std::string& textureName );
+    MaterialInfo* GetMaterialInfoFrom( zCTexture* tex, const std::string_view textureName );
 
     /** Adds a surface */
     void AddSurface( const std::string& name, MyDirectDrawSurface7* surface );

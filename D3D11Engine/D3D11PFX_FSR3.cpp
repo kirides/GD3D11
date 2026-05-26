@@ -240,7 +240,7 @@ XRESULT D3D11PFX_FSR3::Apply(
     // Optional Resources (Passing nullptr handles them internally, e.g., Auto Exposure)
     // dispatchDesc.exposure = ffxGetResourceDX11_Fsr31_( nullptr, GetFfxResourceDescriptionDX11(nullptr), L"" );
     // dispatchDesc.reactive = ffxGetResourceDX11_Fsr31_( tncRes, GetFfxResourceDescriptionDX11( tncRes ), L"" );
-    dispatchDesc.transparencyAndComposition = GetAsFfxResource( reactiveMask, L"FSR3_TNC" );
+    // dispatchDesc.transparencyAndComposition = GetAsFfxResource( reactiveMask, L"FSR3_TNC" );
 
     // Set Dispatch Properties
     dispatchDesc.renderSize.width = inputSize.x;

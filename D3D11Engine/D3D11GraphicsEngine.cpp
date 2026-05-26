@@ -3952,6 +3952,13 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         builder.Write( backBufferHandle );
 
         pass.m_executeCallback = [this](const RenderGraph&) {
+
+            SetDefaultStates();
+
+            // Setup renderstates
+            Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_BACK;
+            Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
+
             DrawMeshInfoListAlphablended( FrameTransparencyMeshes );
         };
     });
@@ -3962,6 +3969,13 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             builder.Write( backBufferHandle );
 
             pass.m_executeCallback = [this](const RenderGraph&) {
+
+                SetDefaultStates();
+
+                // Setup renderstates
+                Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_BACK;
+                Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
+
                 DrawMeshInfoListAlphablended( FrameTransparencyMeshesPortal );
             };
         });
@@ -3972,6 +3986,13 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         builder.Write( backBufferHandle );
 
         pass.m_executeCallback = [this](const RenderGraph&) {
+
+            SetDefaultStates();
+
+            // Setup renderstates
+            Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_BACK;
+            Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
+
             DrawMeshInfoListAlphablended( FrameTransparencyMeshesWaterfall );
         };
     });
@@ -4482,12 +4503,6 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
         return XR_SUCCESS;
     }
 
-    SetDefaultStates();
-
-    // Setup renderstates
-    Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_NONE;
-    Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
-
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
     Engine::GAPI->SetViewTransformXM( view );
     Engine::GAPI->ResetWorldTransform();
@@ -4521,6 +4536,8 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
     int lastAlphaFunc = 0;
 
     // Draw the list
+    PsSimpleFFdata ffdata = { };
+    ffdata.textureFactor = float4( 1.0f, 1.0f, 1.0f, 1.0f );
     for ( auto const& [meshKey, meshInfo] : list ) {
         if ( zCTexture* texture = meshKey.Material->GetAniTexture() ) {
             MyDirectDrawSurface7* surface = texture->GetSurface();
@@ -4537,9 +4554,15 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
                 : nullptr;
 
             // Bind both
-            GetContext()->PSSetShaderResources( 0, 3, srv );
+            GetContext()->PSSetShaderResources( 0, 3, srv  );
 
             int alphaFunc = meshKey.Material->GetAlphaFunc();
+
+            if ( alphaFunc == 0 ) {
+                alphaFunc = zColor( meshKey.Material->GetColor() ).bgra.alpha < 255
+                    ? zMAT_ALPHA_FUNC_BLEND
+                    : zMAT_ALPHA_FUNC_MAT_DEFAULT;
+            }
 
             //Get the right shader for it
             BindShaderForTexture( texture, false, alphaFunc, meshKey.Info->MaterialType );
@@ -4560,6 +4583,29 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
                 UpdateRenderStates();
                 lastAlphaFunc = alphaFunc;
             }
+            
+            if (meshKey.Material->GetEnvMapEnabled()) {
+                if (Engine::GAPI->GetSky()->GetAtmosphereCB().AC_LightPos.y > 0) {
+                    // sun is up
+
+                    float sunHeight = Engine::GAPI->GetSky()->GetAtmosphereCB().AC_LightPos.y;
+                    const float maxSunHeight = 1.0f;
+                    float lerpFactor = std::clamp( sunHeight / maxSunHeight, 0.0f, 1.0f );
+
+                    float minIntensity = 0.1f;
+                    float maxIntensity = 0.7f;
+                    float currentIntensity = std::clamp( meshKey.Material->GetEnvMapStrength() * std::lerp( minIntensity, maxIntensity, lerpFactor ), 0.0f, 1.0f);
+                    ffdata.textureFactor = zColor( 255, 255, 255, (uint8_t)(255.0f * currentIntensity) ).ToFloat4();
+                } else {
+                    ffdata.textureFactor = zColor( 255, 255, 255, (uint8_t)(255.0f * meshKey.Material->GetEnvMapStrength() * 0.1f) ).ToFloat4();
+                }
+            } else {
+                ffdata.textureFactor = zColor( meshKey.Material->GetColor() ).ToFloat4();
+            }
+
+            ActivePS->GetBuffer( "cbFFData" )
+                .Update( &ffdata )
+                .Bind();
 
             MaterialInfo* info = meshKey.Info;
             if ( !info->Constantbuffer ) info->UpdateConstantbuffer();
@@ -4630,7 +4676,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
     ActiveVS->GetBuffer( "Matrices_PerInstances" )
         .Update( &identityMatrix )
         .Bind();
-
+    
     auto updatePSBuffers = [this] {
         ActivePS->GetBuffer( "FFPipelineConstantBuffer" )
             .Update( &Engine::GAPI->GetRendererState().GraphicsState )
@@ -4642,6 +4688,12 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
             .Bind();
 
         ActivePS->BindBuffer( "DIST_Distance", InfiniteRangeConstantBuffer.get() );
+
+        PsSimpleFFdata ffdata = { };
+        ffdata.textureFactor = float4( 1.0f, 1.0f, 1.0f, 1.0f );
+        ActivePS->GetBuffer( "cbFFData" )
+            .Update( &ffdata )
+            .Bind();
     };
     updatePSBuffers();
 
@@ -4664,9 +4716,18 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
         //zCLightmap* Lightmap;
     };
 
+    struct TransparencyWorldMeshEntry {
+        std::pair<MeshKey, MeshInfo*> Mesh;
+        float DistanceSq;
+    };
+
     static std::vector<std::pair<WorldMeshKey, MeshInfo*>> meshList;
     meshList.clear();
     if ( meshList.capacity() == 0 ) meshList.reserve( 4096 );
+
+    std::vector<TransparencyWorldMeshEntry> transparencyMeshes;
+    std::vector<TransparencyWorldMeshEntry> portalTransparencyMeshes;
+    std::vector<TransparencyWorldMeshEntry> waterfallTransparencyMeshes;
 
     GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
     GetContext()->DSSetShader( nullptr, nullptr, 0 );
@@ -4676,6 +4737,11 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
         ZoneScopedN( "DrawWorldMesh::BuildMeshList" );
         auto _scopeBuildMeshList = RecordGraphicsEvent( GE_NAME( "DrawWorldMesh::BuildMeshList" ) );
         const XMVECTOR cameraPosition = Engine::GAPI->GetCameraPositionXM();
+
+        static std::vector<WorldMeshSectionInfo*> alphaBlendedThings;
+        alphaBlendedThings.clear();
+        alphaBlendedThings.reserve( 200 );
+
         for ( auto const& renderItem : renderList ) {
             for ( auto const& worldMesh : renderItem->WorldMeshes ) {
                 if ( worldMesh.first.Material ) {
@@ -4694,25 +4760,30 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
                         continue;
                     }
 
+                    const float distanceSq = ComputeWorldMeshDistanceSqFromCamera( renderItem, worldMesh.second, cameraPosition );
+                    const std::pair<MeshKey, MeshInfo*> transparencyMesh = { worldMesh.first, worldMesh.second };
+
                     if ( worldMesh.first.Info->MaterialType == MaterialInfo::MT_Portal ) {
                         if ( !isZPrepass ) {
-                            FrameTransparencyMeshesPortal.push_back( worldMesh );
+                            portalTransparencyMeshes.push_back( { transparencyMesh, distanceSq } );
                         }
                         continue;
                     } else if ( worldMesh.first.Info->MaterialType == MaterialInfo::MT_WaterfallFoam ) {
                         if ( !isZPrepass ) {
-                            FrameTransparencyMeshesWaterfall.push_back( worldMesh );
+                            waterfallTransparencyMeshes.push_back( { transparencyMesh, distanceSq } );
                         }
                         continue;
                     }
 
                     // Check for alphablending
-                    if ( worldMesh.first.Material->GetAlphaFunc() > zMAT_ALPHA_FUNC_NONE &&
-                        worldMesh.first.Material->GetAlphaFunc() != zMAT_ALPHA_FUNC_TEST
-                        && worldMesh.first.Texture->HasAlphaChannel()) {
+                    if ( (worldMesh.first.Material->GetAlphaFunc() > zMAT_ALPHA_FUNC_NONE &&
+                        worldMesh.first.Material->GetAlphaFunc() != zMAT_ALPHA_FUNC_TEST)
+                        // || (worldMesh.first.Material->GetEnvMapEnabled())
+                        ) {
                         if ( !isZPrepass ) {
-                            FrameTransparencyMeshes.push_back( worldMesh );
+                            transparencyMeshes.push_back( { transparencyMesh, distanceSq } );
                         }
+                        continue;
                     } else {
 
                         int alphaLevel = 0;
@@ -4727,7 +4798,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
                             worldMesh.first.Material,
                             worldMesh.first.Info,
                             alphaLevel,
-                            ComputeWorldMeshDistanceSqFromCamera( renderItem, worldMesh.second, cameraPosition ),
+                            distanceSq,
                         };
 
                         // Create a new pair using the animated texture
@@ -4736,6 +4807,40 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
                 }
             }
         }
+
+        auto sortAndAppendTransparencyMeshes = []( std::vector<TransparencyWorldMeshEntry>& source,
+            std::vector<std::pair<MeshKey, MeshInfo*>>& destination ) {
+            if ( source.empty() ) {
+                return;
+            }
+
+            std::sort( source.begin(), source.end(),
+                []( const TransparencyWorldMeshEntry& a, const TransparencyWorldMeshEntry& b ) {
+                    if ( a.DistanceSq > b.DistanceSq )
+                        return true;
+                    if ( a.DistanceSq < b.DistanceSq )
+                        return false;
+                    if ( a.Mesh.first.Material != b.Mesh.first.Material )
+                        return a.Mesh.first.Material < b.Mesh.first.Material;
+                    if ( a.Mesh.first.Texture != b.Mesh.first.Texture )
+                        return a.Mesh.first.Texture < b.Mesh.first.Texture;
+                    if ( a.Mesh.first.Info != b.Mesh.first.Info )
+                        return a.Mesh.first.Info < b.Mesh.first.Info;
+
+                    const unsigned int aBaseIndex = a.Mesh.second ? a.Mesh.second->BaseIndexLocation : 0u;
+                    const unsigned int bBaseIndex = b.Mesh.second ? b.Mesh.second->BaseIndexLocation : 0u;
+                    return aBaseIndex < bBaseIndex;
+                } );
+
+            destination.reserve( destination.size() + source.size() );
+            for ( auto& entry : source ) {
+                destination.emplace_back( std::move( entry.Mesh ) );
+            }
+        };
+
+        sortAndAppendTransparencyMeshes( transparencyMeshes, FrameTransparencyMeshes );
+        sortAndAppendTransparencyMeshes( portalTransparencyMeshes, FrameTransparencyMeshesPortal );
+        sortAndAppendTransparencyMeshes( waterfallTransparencyMeshes, FrameTransparencyMeshesWaterfall );
     }
     auto CompareMesh = []( std::pair<WorldMeshKey, MeshInfo*>& a, std::pair<WorldMeshKey, MeshInfo*>& b ) -> bool {
         if ( a.first.AlphaLevel != b.first.AlphaLevel )
@@ -5784,6 +5889,13 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<W
                     continue;
                 }
 
+                // we don't draw alpha stuff into shadowmaps.
+                if ( (meshPair.first.Material->GetAlphaFunc() > zMAT_ALPHA_FUNC_NONE &&
+                    meshPair.first.Material->GetAlphaFunc() != zMAT_ALPHA_FUNC_TEST)
+                        || (meshPair.first.Material->GetAlphaFunc() == 0 && zColor( meshPair.first.Material->GetColor() ).bgra.alpha < 255) ) {
+                    continue;
+                }
+
                 zCTexture* tex = meshPair.first.Material ? meshPair.first.Material->GetTexture() : nullptr;
                 unsigned int indexCount = 0;
 
@@ -5880,6 +5992,13 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh( const std::vector<WorldMeshS
                     continue;
 
                 if ( cullingFrustum && !Engine::GAPI->IsWorldMeshVisibleInFrustum( meshPair.second, *cullingFrustum ) ) {
+                    continue;
+                }
+
+                // we don't draw alpha stuff into shadowmaps.
+                if ( (meshPair.first.Material->GetAlphaFunc() > zMAT_ALPHA_FUNC_NONE &&
+                    meshPair.first.Material->GetAlphaFunc() != zMAT_ALPHA_FUNC_TEST)
+                        || (meshPair.first.Material->GetAlphaFunc() == 0 && zColor( meshPair.first.Material->GetColor() ).bgra.alpha < 255) ) {
                     continue;
                 }
 
@@ -6034,7 +6153,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         visibleSections.clear();
         Engine::GAPI->CollectVisibleSections( visibleSections, currentFrustum, false );
 
-        if ( Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseMDI ) {
+        /*if ( Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseMDI ) {
             MeshInfo* wrappedWorldMesh = Engine::GAPI->GetWrappedWorldMesh();
             if ( wrappedWorldMesh ) {
                 D3D11VertexBuffer* wrappedIndexBuffer = wrappedWorldMesh->MeshShadowIndexBuffer
@@ -6042,7 +6161,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                     : wrappedWorldMesh->MeshIndexBuffer;
                 DrawVertexBufferIndexedUINT( wrappedWorldMesh->MeshVertexBuffer, wrappedIndexBuffer, 0, 0 );
             }
-        }
+        }*/
         
         if (Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseMDI) {
             ShadowPass_DrawWorldMesh_Indirect( visibleSections, currentFrustum );
@@ -6945,11 +7064,18 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                             if ( wantShader ) {
                                 GetContext()->PSSetShaderResources( 0, isZPrepass ? 1 : 3, srv );
 
-                                BindShaderForTexture( tx,
+                                if ( BindShaderForTexture( tx,
                                     tx->HasAlphaChannel()
                                     || meshKey.Material->HasAlphaTest()
                                     , meshKey.Material->GetAlphaFunc(),
-                                    meshKey.Info->MaterialType );
+                                    meshKey.Info->MaterialType ) ) {
+                                    
+                                    PsSimpleFFdata ffdata = { };
+                                    ffdata.textureFactor = float4( 1.0f, 1.0f, 1.0f, 1.0f );
+                                    ActivePS->GetBuffer( "cbFFData" )
+                                        .Update( &ffdata )
+                                        .Bind();
+                                }
 
                                 if ( info && !info->IsSame( lastMatInfo ) ) {
                                     if ( !info->Constantbuffer ) info->UpdateConstantbuffer();
@@ -7271,7 +7397,13 @@ XRESULT D3D11GraphicsEngine::DrawPolyStrips( bool noTextures ) {
             MyDirectDrawSurface7* surface = tx->GetSurface();
             ID3D11ShaderResourceView* srv[3];
 
-            BindShaderForTexture( tx, false, mat->GetAlphaFunc() );
+            if ( BindShaderForTexture( tx, false, mat->GetAlphaFunc() ) ) {
+                PsSimpleFFdata ffdata = { };
+                ffdata.textureFactor = float4( 1.0f, 1.0f, 1.0f, 1.0f );
+                ActivePS->GetBuffer( "cbFFData" )
+                    .Update( &ffdata )
+                    .Bind();
+            }
 
             // Get diffuse and normalmap
             srv[0] = surface->GetEngineTexture()->GetShaderResourceView().Get();

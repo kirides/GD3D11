@@ -85,8 +85,12 @@ void MaterialInfo::WriteToFile( const std::string& name ) {
 }
 
 /** Loads this info from a file */
-void MaterialInfo::LoadFromFile( const std::string& name ) {
-    FILE* f = fopen( ("system\\GD3D11\\textures\\infos\\" + name + ".mi").c_str(), "rb" );
+void MaterialInfo::LoadFromFile( const std::string_view name ) {
+    char filePath[MAX_PATH]{};
+    if (snprintf( filePath, MAX_PATH, R"(system\GD3D11\textures\infos\%.*s.mi)", static_cast<int>(name.size()), name.data() ) >= MAX_PATH) {
+        return;
+    }
+    FILE* f = fopen( filePath, "rb" );
 
     if ( !f )
         return;
@@ -4790,7 +4794,7 @@ MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCTexture* tex ) {
     return mi;
 }
 
-MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCTexture* tex, const std::string& textureName ) {
+MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCTexture* tex, const std::string_view textureName ) {
         auto it = MaterialInfos.find( tex );
         MaterialInfo* mi = nullptr;
         if ( it == MaterialInfos.end() ) {
@@ -4799,7 +4803,7 @@ MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCTexture* tex, const std::string&
             mi = MaterialInfos[tex].get();
             if ( tex ) {
                 mi->LoadFromFile( textureName );
-                if ( std::string_view{ textureName } == "NW_MISC_FULLALPHA_01" ) {
+                if ( textureName == "NW_MISC_FULLALPHA_01" ) {
                     mi->MaterialType = MaterialInfo::MT_FullAlpha;
                 }
             }

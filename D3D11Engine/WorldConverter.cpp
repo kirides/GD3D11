@@ -429,11 +429,19 @@ bool AdditionalCheckWaterFall(zCTexture* texture)
     return false;
 }
 
+static bool IsPortalMaterial( std::string_view matName )
+{
+    return matName.starts_with( "P:" )
+        || matName.starts_with( "PN:" )
+        || matName.starts_with( "PI:" );
+}
+
 /** Converts the worldmesh into a more usable format */
 HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPolygons, std::map<int, std::map<int, WorldMeshSectionInfo>>* outSections, WorldInfo* info, MeshInfo** outWrappedMesh, bool indoorLocation ) {
     ZoneScoped;
     
     // Go through every polygon and put it into its section
+    std::vector<ExVertexStruct> polyVertices;
     for ( unsigned int i = 0; i < numPolygons; i++ ) {
         zCPolygon* poly = polys[i];
 
@@ -442,13 +450,19 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
             continue;
         }
 
+        zCMaterial* mat = poly->GetMaterial();
+        if ( !mat ) {
+            continue;
+        }
+        std::string_view matName = mat->__GetName().ToChar();
+        // std::string_view textureName = mat->GetTextureSingle() ? mat->GetTextureSingle()->__GetName().ToChar() : "";
+
         // Flag portals so that we can apply a different PS shader later
         zCTexture* _tex = nullptr;
-        if ( poly->GetPolyFlags()->PortalPoly ) {
-            zCMaterial* polymat = poly->GetMaterial();
-            if ( zCTexture* tex = polymat->GetTextureSingle() ) {
-                std::string textureName = tex->GetNameWithoutExt();
-                if ( textureName == "OWODFLWOODGROUND" ) {
+        if ( poly->GetPolyFlags()->PortalPoly || IsPortalMaterial( matName ) ) {
+            if ( const zCTexture* tex = mat->GetTextureSingle() ) {
+                std::string_view textureName = tex->__GetName().ToChar();
+                if ( textureName.starts_with("OWODFLWOODGROUND.") ) {
                     continue; // this is a ground texture that is sometimes re-used for visual tricks to darken tunnels, etc. We don't want to treat this as a portal.
                 } else {
                     // unsafe hack to avoid portal polys assigning material for valid normal polygons
@@ -474,10 +488,6 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
         XMFLOAT3& bbmin = sectionInfo.BoundingBox.Min;
         XMFLOAT3& bbmax = sectionInfo.BoundingBox.Max;
 
-        zCMaterial* mat = poly->GetMaterial();
-        if ( !mat ) {
-            continue;
-        }
         if ( poly->GetNumPolyVertices() < 3 ) {
             LogWarn() << "Poly with less than 3 vertices!";
         }
@@ -503,7 +513,7 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
 #endif
 
         // Extract poly vertices
-        std::vector<ExVertexStruct> polyVertices;
+        polyVertices.clear();
         polyVertices.reserve( poly->GetNumPolyVertices() );
         for ( int v = 0; v < poly->GetNumPolyVertices(); v++ ) {
             zCVertex* vertex = poly->getVertices()[v];

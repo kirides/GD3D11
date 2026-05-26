@@ -160,6 +160,13 @@ float2x2 GetPoissonRotationMatrix(float2 screenPos)
 
 float2x2 GetPoissonRotationMatrixR(float2 screenPos, out float rawNoise)
 {
+    // If TAA is disabled return an identity matrix to get standard PCF instead of noise.
+    if (SQ_FrameIndex == 0)
+	{
+        rawNoise = 0.5f;
+        return float2x2(1.0f, 0.0f, 0.0f, 1.0f);
+	}
+
     // Interleaved Gradient Noise (IGN)
     float temporalOffset = (float)(SQ_FrameIndex % 8) * 0.6180339887f;
     
@@ -367,32 +374,36 @@ float SampleCascadeShadowSoft(float4 vShadowSamplingPos, float2 projectedTexCoor
         {
             float sum = 0.0f;
 
-            if (cascadeIndex < 2) {
-				// some dithering to reduce the visible "shears" of the noise
-				float radiusJitter = lerp(0.85f, 1.15f, noiseVal);
-				float finalRadius = pcssRadius * radiusJitter;
-				
-				for (int i = 0; i < 32; i++)
-				{
-					float2 offset = mul(rotMat, g_PoissonDisk32[i]) * finalRadius;
-					
-					sum += SampleShadowMapCmp(
-						projectedTexCoords.xy + offset, cascadeIndex,
-						zReceiver);
-				}
-				shadow = sum / 32.0f;
-			} else {
+            if (cascadeIndex < 2) { // You could also change this to CSM_PCF_LIMIT
+                // some dithering to reduce the visible "shears" of the noise
+                float radiusJitter = lerp(0.85f, 1.15f, noiseVal);
+                float finalRadius = pcssRadius * radiusJitter;
+                
+                [unroll]
+                for (int i = 0; i < 32; i++)
+                {
+                    float2 offset = mul(rotMat, g_PoissonDisk32[i]) * finalRadius;
+                    
+                    sum += SampleShadowMapCmp(
+                        projectedTexCoords.xy + offset, cascadeIndex,
+                        zReceiver);
+                }
+                shadow = sum / 32.0f;
+            } else {
+                // FIX: Upgraded from 8 to 16 taps to prevent extreme noise spread
                 float radiusJitter = lerp(0.95f, 1.05f, noiseVal);
                 float finalRadius = pcssRadius * radiusJitter;
-				for (int i = 0; i < 8; i++)
-				{
-                    float2 offset = mul(rotMat, g_PoissonDisk8[i]) * finalRadius;
-					sum += SampleShadowMapCmp(
-						projectedTexCoords.xy + offset, cascadeIndex,
+                
+                [unroll]
+                for (int i = 0; i < 16; i++)
+                {
+                    float2 offset = mul(rotMat, g_PoissonDisk16[i]) * finalRadius;
+                    sum += SampleShadowMapCmp(
+                        projectedTexCoords.xy + offset, cascadeIndex,
                         zReceiver);
-				}
-				shadow = sum / 8.0f;
-			}
+                }
+                shadow = sum / 16.0f;
+            }
         }
     }
 #elif SHD_FILTER_16TAP_PCF

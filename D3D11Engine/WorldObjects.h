@@ -58,7 +58,9 @@ struct MeshKey {
 
 struct cmpMeshKey {
     bool operator()( const MeshKey& a, const MeshKey& b ) const {
-        return (a.Texture < b.Texture);
+        return (a.Material != b.Material) 
+            ? (a.Material < b.Material)
+            : (a.Texture < b.Texture);
     }
 };
 

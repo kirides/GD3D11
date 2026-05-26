@@ -90,12 +90,12 @@ public:
     }
 
     /** Returns the color-mod of this material */
-    DWORD GetColor() {
+    DWORD GetColor() const {
         return *reinterpret_cast<DWORD*>(THISPTR_OFFSET( GothicMemoryLocations::zCMaterial::Offset_Color ));
     }
 
     /** Returns single texture, because not all seem to be animated and returned by GetAniTexture? */
-    zCTexture* GetTextureSingle() {
+    zCTexture* GetTextureSingle() const {
         return *reinterpret_cast<zCTexture**>(THISPTR_OFFSET( GothicMemoryLocations::zCMaterial::Offset_Texture ));
     }
 
@@ -163,15 +163,31 @@ public:
         return f == zMAT_ALPHA_FUNC_TEST || f == zMAT_ALPHA_FUNC_BLEND_TEST;
     }
 
-    bool HasTexAniMap() {
+    bool HasTexAniMap() const {
         return *reinterpret_cast<unsigned char*>(THISPTR_OFFSET( GothicMemoryLocations::zCMaterial::Offset_Flags )) & GothicMemoryLocations::zCMaterial::Mask_FlagTexAniMap;
     }
 
-    XMFLOAT2 GetTexAniMapDelta() {
+    bool GetEnvMapEnabled() const {
+#if defined(BUILD_GOTHIC_1_08k)
+        return false;
+#else
+        return *reinterpret_cast<unsigned char*>(THISPTR_OFFSET( GothicMemoryLocations::zCMaterial::Offset_Flags )) & GothicMemoryLocations::zCMaterial::Mask_FlagEnvMapEnabled;
+#endif
+    }
+
+    float GetEnvMapStrength() const {
+#if defined(BUILD_GOTHIC_1_08k)
+        return 0.0f;
+#else
+        return *reinterpret_cast<float*>(THISPTR_OFFSET( GothicMemoryLocations::zCMaterial::Offset_EnvMapStrength ));
+#endif
+    }
+
+    XMFLOAT2 GetTexAniMapDelta() const {
         return *reinterpret_cast<XMFLOAT2*>(THISPTR_OFFSET( GothicMemoryLocations::zCMaterial::Offset_TexAniMapDelta ));
     }
 
-    zTMat_WaveMode GetWaveMode() {
+    zTMat_WaveMode GetWaveMode() const {
 #ifdef BUILD_GOTHIC_1_08k
         return zTMode_NONE;
 #else
@@ -199,6 +215,10 @@ public:
 #else
         return *reinterpret_cast<float*>(THISPTR_OFFSET( GothicMemoryLocations::zCMaterial::Offset_WaveMaxAmplitude ));
 #endif
+    }
+    
+    const zSTRING& __GetName() const {
+        return reinterpret_cast<zSTRING&(__fastcall*)( const zCMaterial* )>( GothicMemoryLocations::zCObject::GetObjectName )( this );
     }
 };
 

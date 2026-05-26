@@ -421,4 +421,10 @@ struct ForwardPlusTileConstantBuffer {
     uint32_t NumTilesX;
     uint32_t LimitLightIntensity;
 };
+
+struct PsSimpleFFdata {
+    float4 textureFactor;
+};
+
 #pragma pack (pop)
+
