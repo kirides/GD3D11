@@ -569,9 +569,11 @@ struct GothicMemoryLocations {
         static const unsigned int Offset_MatGroup = 0x40;
         static const unsigned int Offset_TexAniCtrl = 0x4C;
 
+        static const unsigned int Offset_EnvMapStrength = 0x6C;
         static const unsigned int Offset_Flags = 0x70;
         static const unsigned int Offset_TexAniMapDelta = 0x94;
         static const unsigned int Mask_FlagTexAniMap = 0x4;
+        static const unsigned int Mask_FlagEnvMapEnabled = 0x40;
 
         static const unsigned int Offset_WaveMode = 0x7C;
         static const unsigned int Offset_WaveSpeed = 0x80;
