@@ -4595,10 +4595,9 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
                     float lerpFactor = std::clamp( sunHeight / maxSunHeight, 0.0f, 1.0f );
 
                     float minIntensity = 0.1f;
-                    float maxIntensity = 0.5f;
+                    float maxIntensity = 0.7f;
                     float currentIntensity = std::clamp( meshKey.Material->GetEnvMapStrength() * std::lerp( minIntensity, maxIntensity, lerpFactor ), 0.0f, 1.0f);
                     ffdata.textureFactor = zColor( 255, 255, 255, (uint8_t)(255.0f * currentIntensity) ).ToFloat4();
-                    
                 } else {
                     ffdata.textureFactor = zColor( 255, 255, 255, (uint8_t)(255.0f * meshKey.Material->GetEnvMapStrength() * 0.1f) ).ToFloat4();
                 }
