@@ -200,6 +200,8 @@ XRESULT D3D11ShaderManager::Init() {
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_LinesSel>( "PS_LinesSel.hlsl" ) );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_Simple>( "PS_Simple.hlsl" ) );
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_Simple_FF>( "PS_Simple.hlsl" )
+        .with_macros( { { "USE_FFDATA", "1" } } ) );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_Rain>( "PS_Rain.hlsl" ) );
 

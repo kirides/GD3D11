@@ -4536,6 +4536,8 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
     int lastAlphaFunc = 0;
 
     // Draw the list
+    PsSimpleFFdata ffdata = { };
+    ffdata.textureFactor = float4( 1.0f, 1.0f, 1.0f, 1.0f );
     for ( auto const& [meshKey, meshInfo] : list ) {
         if ( zCTexture* texture = meshKey.Material->GetAniTexture() ) {
             MyDirectDrawSurface7* surface = texture->GetSurface();
@@ -4581,10 +4583,6 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
                 UpdateRenderStates();
                 lastAlphaFunc = alphaFunc;
             }
-
-            struct FFData {
-                float4 textureFactor;
-            } ffdata;
             
             if (meshKey.Material->GetEnvMapEnabled()) {
                 if (Engine::GAPI->GetSky()->GetAtmosphereCB().AC_LightPos.y > 0) {
@@ -4678,7 +4676,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
     ActiveVS->GetBuffer( "Matrices_PerInstances" )
         .Update( &identityMatrix )
         .Bind();
-
+    
     auto updatePSBuffers = [this] {
         ActivePS->GetBuffer( "FFPipelineConstantBuffer" )
             .Update( &Engine::GAPI->GetRendererState().GraphicsState )
@@ -4690,6 +4688,12 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
             .Bind();
 
         ActivePS->BindBuffer( "DIST_Distance", InfiniteRangeConstantBuffer.get() );
+
+        PsSimpleFFdata ffdata = { };
+        ffdata.textureFactor = float4( 1.0f, 1.0f, 1.0f, 1.0f );
+        ActivePS->GetBuffer( "cbFFData" )
+            .Update( &ffdata )
+            .Bind();
     };
     updatePSBuffers();
 
@@ -7060,11 +7064,18 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                             if ( wantShader ) {
                                 GetContext()->PSSetShaderResources( 0, isZPrepass ? 1 : 3, srv );
 
-                                BindShaderForTexture( tx,
+                                if ( BindShaderForTexture( tx,
                                     tx->HasAlphaChannel()
                                     || meshKey.Material->HasAlphaTest()
                                     , meshKey.Material->GetAlphaFunc(),
-                                    meshKey.Info->MaterialType );
+                                    meshKey.Info->MaterialType ) ) {
+                                    
+                                    PsSimpleFFdata ffdata = { };
+                                    ffdata.textureFactor = float4( 1.0f, 1.0f, 1.0f, 1.0f );
+                                    ActivePS->GetBuffer( "cbFFData" )
+                                        .Update( &ffdata )
+                                        .Bind();
+                                }
 
                                 if ( info && !info->IsSame( lastMatInfo ) ) {
                                     if ( !info->Constantbuffer ) info->UpdateConstantbuffer();
@@ -7386,7 +7397,13 @@ XRESULT D3D11GraphicsEngine::DrawPolyStrips( bool noTextures ) {
             MyDirectDrawSurface7* surface = tx->GetSurface();
             ID3D11ShaderResourceView* srv[3];
 
-            BindShaderForTexture( tx, false, mat->GetAlphaFunc() );
+            if ( BindShaderForTexture( tx, false, mat->GetAlphaFunc() ) ) {
+                PsSimpleFFdata ffdata = { };
+                ffdata.textureFactor = float4( 1.0f, 1.0f, 1.0f, 1.0f );
+                ActivePS->GetBuffer( "cbFFData" )
+                    .Update( &ffdata )
+                    .Bind();
+            }
 
             // Get diffuse and normalmap
             srv[0] = surface->GetEngineTexture()->GetShaderResourceView().Get();

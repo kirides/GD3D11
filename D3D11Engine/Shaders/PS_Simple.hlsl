@@ -39,8 +39,9 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 {
 	float4 color = TX_Texture0.Sample(SS_Linear, Input.vTexcoord);
 	color *= Input.vDiffuse;
+#ifdef USE_FFDATA
 	color *= cbFFData.textureFactor;
-
+#endif
 	//return float4(1,0,0,1);
 	
 	return color;
