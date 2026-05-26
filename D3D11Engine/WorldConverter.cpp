@@ -429,6 +429,13 @@ bool AdditionalCheckWaterFall(zCTexture* texture)
     return false;
 }
 
+static bool IsPortalMaterial( std::string_view matName )
+{
+    return matName.starts_with( "P:" )
+        || matName.starts_with( "PN:" )
+        || matName.starts_with( "PI:" );
+}
+
 /** Converts the worldmesh into a more usable format */
 HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPolygons, std::map<int, std::map<int, WorldMeshSectionInfo>>* outSections, WorldInfo* info, MeshInfo** outWrappedMesh, bool indoorLocation ) {
     ZoneScoped;
@@ -447,12 +454,12 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
         if ( !mat ) {
             continue;
         }
-        // std::string_view matName = mat->__GetName().ToChar();
+        std::string_view matName = mat->__GetName().ToChar();
         // std::string_view textureName = mat->GetTextureSingle() ? mat->GetTextureSingle()->__GetName().ToChar() : "";
 
         // Flag portals so that we can apply a different PS shader later
         zCTexture* _tex = nullptr;
-        if ( poly->GetPolyFlags()->PortalPoly ) {
+        if ( poly->GetPolyFlags()->PortalPoly || IsPortalMaterial( matName ) ) {
             if ( const zCTexture* tex = mat->GetTextureSingle() ) {
                 std::string_view textureName = tex->__GetName().ToChar();
                 if ( textureName.starts_with("OWODFLWOODGROUND.") ) {
