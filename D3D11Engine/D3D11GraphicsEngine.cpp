@@ -4700,9 +4700,18 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
         //zCLightmap* Lightmap;
     };
 
+    struct TransparencyWorldMeshEntry {
+        std::pair<MeshKey, MeshInfo*> Mesh;
+        float DistanceSq;
+    };
+
     static std::vector<std::pair<WorldMeshKey, MeshInfo*>> meshList;
     meshList.clear();
     if ( meshList.capacity() == 0 ) meshList.reserve( 4096 );
+
+    std::vector<TransparencyWorldMeshEntry> transparencyMeshes;
+    std::vector<TransparencyWorldMeshEntry> portalTransparencyMeshes;
+    std::vector<TransparencyWorldMeshEntry> waterfallTransparencyMeshes;
 
     GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
     GetContext()->DSSetShader( nullptr, nullptr, 0 );
@@ -4735,14 +4744,17 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
                         continue;
                     }
 
+                    const float distanceSq = ComputeWorldMeshDistanceSqFromCamera( renderItem, worldMesh.second, cameraPosition );
+                    const std::pair<MeshKey, MeshInfo*> transparencyMesh = { worldMesh.first, worldMesh.second };
+
                     if ( worldMesh.first.Info->MaterialType == MaterialInfo::MT_Portal ) {
                         if ( !isZPrepass ) {
-                            FrameTransparencyMeshesPortal.push_back( worldMesh );
+                            portalTransparencyMeshes.push_back( { transparencyMesh, distanceSq } );
                         }
                         continue;
                     } else if ( worldMesh.first.Info->MaterialType == MaterialInfo::MT_WaterfallFoam ) {
                         if ( !isZPrepass ) {
-                            FrameTransparencyMeshesWaterfall.push_back( worldMesh );
+                            waterfallTransparencyMeshes.push_back( { transparencyMesh, distanceSq } );
                         }
                         continue;
                     }
@@ -4750,11 +4762,10 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
                     // Check for alphablending
                     if ( (worldMesh.first.Material->GetAlphaFunc() > zMAT_ALPHA_FUNC_NONE &&
                         worldMesh.first.Material->GetAlphaFunc() != zMAT_ALPHA_FUNC_TEST)
-                        || (worldMesh.first.Material->GetAlphaFunc() == 0 && zColor( worldMesh.first.Material->GetColor() ).bgra.alpha < 255)
                         // || (worldMesh.first.Material->GetEnvMapEnabled())
                         ) {
                         if ( !isZPrepass ) {
-                            FrameTransparencyMeshes.push_back( worldMesh );
+                            transparencyMeshes.push_back( { transparencyMesh, distanceSq } );
                         }
                         continue;
                     } else {
@@ -4771,7 +4782,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
                             worldMesh.first.Material,
                             worldMesh.first.Info,
                             alphaLevel,
-                            ComputeWorldMeshDistanceSqFromCamera( renderItem, worldMesh.second, cameraPosition ),
+                            distanceSq,
                         };
 
                         // Create a new pair using the animated texture
@@ -4780,6 +4791,40 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
                 }
             }
         }
+
+        auto sortAndAppendTransparencyMeshes = []( std::vector<TransparencyWorldMeshEntry>& source,
+            std::vector<std::pair<MeshKey, MeshInfo*>>& destination ) {
+            if ( source.empty() ) {
+                return;
+            }
+
+            std::sort( source.begin(), source.end(),
+                []( const TransparencyWorldMeshEntry& a, const TransparencyWorldMeshEntry& b ) {
+                    if ( a.DistanceSq > b.DistanceSq )
+                        return true;
+                    if ( a.DistanceSq < b.DistanceSq )
+                        return false;
+                    if ( a.Mesh.first.Material != b.Mesh.first.Material )
+                        return a.Mesh.first.Material < b.Mesh.first.Material;
+                    if ( a.Mesh.first.Texture != b.Mesh.first.Texture )
+                        return a.Mesh.first.Texture < b.Mesh.first.Texture;
+                    if ( a.Mesh.first.Info != b.Mesh.first.Info )
+                        return a.Mesh.first.Info < b.Mesh.first.Info;
+
+                    const unsigned int aBaseIndex = a.Mesh.second ? a.Mesh.second->BaseIndexLocation : 0u;
+                    const unsigned int bBaseIndex = b.Mesh.second ? b.Mesh.second->BaseIndexLocation : 0u;
+                    return aBaseIndex < bBaseIndex;
+                } );
+
+            destination.reserve( destination.size() + source.size() );
+            for ( auto& entry : source ) {
+                destination.emplace_back( std::move( entry.Mesh ) );
+            }
+        };
+
+        sortAndAppendTransparencyMeshes( transparencyMeshes, FrameTransparencyMeshes );
+        sortAndAppendTransparencyMeshes( portalTransparencyMeshes, FrameTransparencyMeshesPortal );
+        sortAndAppendTransparencyMeshes( waterfallTransparencyMeshes, FrameTransparencyMeshesWaterfall );
     }
     auto CompareMesh = []( std::pair<WorldMeshKey, MeshInfo*>& a, std::pair<WorldMeshKey, MeshInfo*>& b ) -> bool {
         if ( a.first.AlphaLevel != b.first.AlphaLevel )
