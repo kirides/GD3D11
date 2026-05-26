@@ -168,11 +168,19 @@ public:
     }
 
     bool GetEnvMapEnabled() const {
+#if defined(BUILD_GOTHIC_1_08k)
+        return false;
+#else
         return *reinterpret_cast<unsigned char*>(THISPTR_OFFSET( GothicMemoryLocations::zCMaterial::Offset_Flags )) & GothicMemoryLocations::zCMaterial::Mask_FlagEnvMapEnabled;
+#endif
     }
 
     float GetEnvMapStrength() const {
+#if defined(BUILD_GOTHIC_1_08k)
+        return 0.0f;
+#else
         return *reinterpret_cast<float*>(THISPTR_OFFSET( GothicMemoryLocations::zCMaterial::Offset_EnvMapStrength ));
+#endif
     }
 
     XMFLOAT2 GetTexAniMapDelta() const {
