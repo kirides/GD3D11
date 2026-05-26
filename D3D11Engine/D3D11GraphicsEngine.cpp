@@ -3952,6 +3952,13 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         builder.Write( backBufferHandle );
 
         pass.m_executeCallback = [this](const RenderGraph&) {
+
+            SetDefaultStates();
+
+            // Setup renderstates
+            Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_BACK;
+            Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
+
             DrawMeshInfoListAlphablended( FrameTransparencyMeshes );
         };
     });
@@ -3962,6 +3969,13 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             builder.Write( backBufferHandle );
 
             pass.m_executeCallback = [this](const RenderGraph&) {
+
+                SetDefaultStates();
+
+                // Setup renderstates
+                Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_BACK;
+                Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
+
                 DrawMeshInfoListAlphablended( FrameTransparencyMeshesPortal );
             };
         });
@@ -3972,6 +3986,13 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         builder.Write( backBufferHandle );
 
         pass.m_executeCallback = [this](const RenderGraph&) {
+
+            SetDefaultStates();
+
+            // Setup renderstates
+            Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_BACK;
+            Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
+
             DrawMeshInfoListAlphablended( FrameTransparencyMeshesWaterfall );
         };
     });
@@ -4481,14 +4502,6 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
     if ( list.empty() ) {
         return XR_SUCCESS;
     }
-
-    SetDefaultStates();
-
-    // Setup renderstates
-    Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_NONE;
-    Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
-    Engine::GAPI->GetRendererState().DepthState.SetDirty();
-    Engine::GAPI->GetRendererState().DepthState.SetDirty();
 
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
     Engine::GAPI->SetViewTransformXM( view );
