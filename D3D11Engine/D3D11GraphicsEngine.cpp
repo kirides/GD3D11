@@ -8013,6 +8013,8 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
     VS_ExConstantBuffer_PerInstance cb = {};
     auto vsPerInstBuffer = ActiveVS->GetBuffer( 1 ).Bind();
 
+    void* lastVertexBuffer = nullptr;
+    void* lastIndexBuffer = nullptr;
     for ( unsigned int i = 0; i < decals.size(); i++ ) {
         zCDecal* d = static_cast<zCDecal*>(decals[i]->GetVisual());
         if ( !d ) {
@@ -8172,7 +8174,12 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
         XMStoreFloat4x4( &cb.World, mat );
         vsPerInstBuffer.Update( &cb );
 
-        DrawVertexBufferIndexed( QuadVertexBuffer, QuadIndexBuffer, 6 );
+        if (QuadVertexBuffer != lastVertexBuffer || QuadIndexBuffer != lastIndexBuffer) {
+            DrawVertexBufferIndexed( QuadVertexBuffer, QuadIndexBuffer, 0 );
+            lastVertexBuffer = QuadVertexBuffer;
+            lastIndexBuffer = QuadIndexBuffer;
+        }
+        DrawVertexBufferIndexed( nullptr, nullptr, 6 );
     }
 }
 
@@ -8441,6 +8448,8 @@ void D3D11GraphicsEngine::DrawFrameParticleMeshes( std::unordered_map<zCVob*, Me
 
         vsBufMPI.Update( it.first->GetWorldMatrixPtr() );
 
+        void* lastMeshBuffer = nullptr;
+        void* lastIndexBuffer = nullptr;
         for ( auto const& itm : it.second->Meshes ) {
             // Cache & bind texture
             zCTexture* texture;
@@ -8454,9 +8463,19 @@ void D3D11GraphicsEngine::DrawFrameParticleMeshes( std::unordered_map<zCVob*, Me
                 continue;
             }
             for ( auto const& itm2nd : itm.second ) {
+                if (itm2nd->MeshVertexBuffer != lastMeshBuffer
+                    || itm2nd->MeshIndexBuffer != lastIndexBuffer) {
+                    // Bind them 
+                    DrawVertexBufferIndexed(
+                        itm2nd->MeshVertexBuffer, itm2nd->MeshIndexBuffer,
+                        0 );
+                    lastMeshBuffer = itm2nd->MeshVertexBuffer;
+                    lastIndexBuffer = itm2nd->MeshIndexBuffer;
+                }
+                
                 // Draw instances
                 DrawVertexBufferIndexed(
-                    itm2nd->MeshVertexBuffer, itm2nd->MeshIndexBuffer,
+                    nullptr, nullptr,
                     itm2nd->Indices.size() );
             }
         }
