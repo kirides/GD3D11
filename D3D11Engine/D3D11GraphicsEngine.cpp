@@ -3689,8 +3689,8 @@ namespace {
         }
 
         if ( isAlpha ) {
-            return mesh->Indices.size();
-        }
+        return mesh->Indices.size();
+    }
         return static_cast<unsigned int>(mesh->ShadowIndices.empty() ? mesh->Indices.size() : mesh->ShadowIndices.size() );
     }
 }
@@ -5909,7 +5909,7 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<W
                     D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS args;
                     args.IndexCountPerInstance = indexCount;
                     args.InstanceCount = 1;
-                    args.StartIndexLocation = mesh->BaseIndexLocation;
+                    args.StartIndexLocation = mesh->BaseShadowIndexLocation;
                     args.BaseVertexLocation = 0;
                     args.StartInstanceLocation = 0;
                     opaqueDrawArgs.push_back( args );
@@ -5919,6 +5919,16 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<W
             }
         }
     }
+
+    MeshInfo* wrappedWorldMesh = Engine::GAPI->GetWrappedWorldMesh();
+
+    if ( opaqueDrawArgs.empty() && alphaMeshes.empty() ) {
+        return;
+    }
+
+    UINT offset = 0;
+    UINT uStride = sizeof( ExVertexStruct );
+    Context->IASetVertexBuffers( 0, 1, wrappedWorldMesh->MeshVertexBuffer->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
 
     if ( !opaqueDrawArgs.empty() ) {
         TracyD3D11ZoneCGX( "ShadowPass_DrawWorldMesh_Indirect::OpaqueSubmission" );
@@ -5934,6 +5944,8 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<W
             "ShadowWorldMeshIndirectArgs" );
 
         if ( shadowIndirectBuffer ) {
+            Context->IASetIndexBuffer( wrappedWorldMesh->MeshShadowIndexBuffer->GetVertexBuffer().Get(), DXGI_FORMAT_R32_UINT, 0 );
+
             drawMultiIndexedInstancedIndirect( Context.Get(),
                 static_cast<unsigned int>( opaqueDrawArgs.size() ),
                 shadowIndirectBuffer->GetIndirectBuffer().Get(),
@@ -5951,6 +5963,7 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<W
         ActivePS->Apply();
         zCTexture* lastTex = nullptr;
         Context->PSSetShaderResources( 0, 3, s_nullSRVs );
+        Context->IASetIndexBuffer( wrappedWorldMesh->MeshIndexBuffer->GetVertexBuffer().Get(), DXGI_FORMAT_R32_UINT, 0 );
 
         for ( const auto& [tex, mesh] : alphaMeshes ) {
             if ( tex != lastTex ) {
@@ -5977,7 +5990,7 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh( const std::vector<WorldMeshS
     bool linearDepth = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches &
                 GSWITCH_LINEAR_DEPTH) != 0;
     
-    static thread_local std::vector<MeshInfo*> opaqueMeshes;
+    static thread_local std::vector<WorldMeshInfo*> opaqueMeshes;
     static thread_local std::vector<std::pair<zCTexture*, MeshInfo*>> alphaMeshes;
     opaqueMeshes.clear();
     alphaMeshes.clear();
@@ -6016,6 +6029,15 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh( const std::vector<WorldMeshS
         }
     }
 
+    if (opaqueMeshes.empty() && alphaMeshes.empty() ) {
+        return;
+    }
+    
+    MeshInfo* wrappedWorldMesh = Engine::GAPI->GetWrappedWorldMesh();
+    UINT offset = 0;
+    UINT uStride = sizeof( ExVertexStruct );
+    Context->IASetVertexBuffers( 0, 1, wrappedWorldMesh->MeshVertexBuffer->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
+    
     // Draw all opaque meshes without pixel shader (depth only)
     if ( !opaqueMeshes.empty() ) {
         TracyD3D11ZoneCGX( "ShadowPass_DrawWorldMesh::OpaqueSubmission" );
@@ -6025,11 +6047,12 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh( const std::vector<WorldMeshS
             // Unbind PS
             Context->PSSetShader( nullptr, nullptr, 0 );
         }
+        Context->IASetIndexBuffer( wrappedWorldMesh->MeshShadowIndexBuffer->GetVertexBuffer().Get(), DXGI_FORMAT_R32_UINT, 0 );
 
-        for ( MeshInfo* mesh : opaqueMeshes ) {
-            DrawVertexBufferIndexed( mesh->MeshVertexBuffer,
-                GetShadowAwareIndexBuffer( mesh, false ),
-                GetShadowAwareIndexCount( mesh, false ) );
+        for ( auto mesh : opaqueMeshes ) {
+            DrawVertexBufferIndexedUINT( nullptr, nullptr,
+                GetShadowAwareIndexCount( mesh, false ),
+                mesh->BaseShadowIndexLocation );
         }
     }
 
@@ -6045,6 +6068,7 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh( const std::vector<WorldMeshS
         zCTexture* lastTex = nullptr;
 
         Context->PSSetShaderResources( 0, 3, s_nullSRVs );
+        Context->IASetIndexBuffer( wrappedWorldMesh->MeshIndexBuffer->GetVertexBuffer().Get(), DXGI_FORMAT_R32_UINT, 0 );
 
         for ( const auto& [tex, mesh] : alphaMeshes ) {
             if ( tex != lastTex ) {
@@ -6054,9 +6078,9 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh( const std::vector<WorldMeshS
                     lastTex = tex;
                 }
             }
-            DrawVertexBufferIndexed( mesh->MeshVertexBuffer,
-                GetShadowAwareIndexBuffer( mesh, true ),
-                GetShadowAwareIndexCount( mesh, true ) );
+            DrawVertexBufferIndexed( nullptr, nullptr,
+                GetShadowAwareIndexCount( mesh, true ),
+                mesh->BaseIndexLocation );
         }
     }
 }
@@ -6153,18 +6177,17 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         visibleSections.clear();
         Engine::GAPI->CollectVisibleSections( visibleSections, currentFrustum, false );
 
-        /*if ( Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseMDI ) {
+        if ( Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseMDI ) {
             MeshInfo* wrappedWorldMesh = Engine::GAPI->GetWrappedWorldMesh();
-            if ( wrappedWorldMesh ) {
-                D3D11VertexBuffer* wrappedIndexBuffer = wrappedWorldMesh->MeshShadowIndexBuffer
-                    ? wrappedWorldMesh->MeshShadowIndexBuffer
-                    : wrappedWorldMesh->MeshIndexBuffer;
-                DrawVertexBufferIndexedUINT( wrappedWorldMesh->MeshVertexBuffer, wrappedIndexBuffer, 0, 0 );
+            if ( wrappedWorldMesh
+                && wrappedWorldMesh->MeshVertexBuffer
+                && wrappedWorldMesh->MeshIndexBuffer
+                && wrappedWorldMesh->MeshShadowIndexBuffer
+                ) {
+                ShadowPass_DrawWorldMesh_Indirect( visibleSections, currentFrustum );
+            } else {
+                ShadowPass_DrawWorldMesh( visibleSections, currentFrustum );
             }
-        }*/
-        
-        if (Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseMDI) {
-            ShadowPass_DrawWorldMesh_Indirect( visibleSections, currentFrustum );
         } else {
             ShadowPass_DrawWorldMesh( visibleSections, currentFrustum );
         }
