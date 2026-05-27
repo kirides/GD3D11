@@ -4538,8 +4538,17 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
     // Draw the list
     PsSimpleFFdata ffdata = { };
     ffdata.textureFactor = float4( 1.0f, 1.0f, 1.0f, 1.0f );
+    
+    void* lastTex = nullptr;
+    void* lastMat = nullptr;
+    MaterialInfo* lastInfo = nullptr;
     for ( auto const& [meshKey, meshInfo] : list ) {
         if ( zCTexture* texture = meshKey.Material->GetAniTexture() ) {
+            if (texture->CacheIn( 0.6f ) != zRES_CACHED_IN) {
+                // Draw what? black? :)
+                continue;
+            }
+
             MyDirectDrawSurface7* surface = texture->GetSurface();
             ID3D11ShaderResourceView* srv[3];
 
@@ -4552,10 +4561,7 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
             srv[2] = surface->GetFxMap()
                 ? surface->GetFxMap()->GetShaderResourceView().Get()
                 : nullptr;
-
-            // Bind both
-            GetContext()->PSSetShaderResources( 0, 3, srv  );
-
+            
             int alphaFunc = meshKey.Material->GetAlphaFunc();
 
             if ( alphaFunc == 0 ) {
@@ -4564,8 +4570,16 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
                     : zMAT_ALPHA_FUNC_MAT_DEFAULT;
             }
 
-            //Get the right shader for it
-            BindShaderForTexture( texture, false, alphaFunc, meshKey.Info->MaterialType );
+            if (lastTex != texture) {
+                GetContext()->PSSetShaderResources( 0, 3, srv  );
+                lastTex = texture;
+            }
+            
+            if (lastMat != meshKey.Material) {
+                //Get the right shader for it
+                BindShaderForTexture( texture, false, alphaFunc, meshKey.Info->MaterialType );
+                lastMat = meshKey.Material;
+            }
 
             // Check for alphablending on world mesh
             if ( lastAlphaFunc != alphaFunc ) {
@@ -4608,12 +4622,13 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
                 .Bind();
 
             MaterialInfo* info = meshKey.Info;
-            if ( !info->Constantbuffer ) info->UpdateConstantbuffer();
-
-            info->Constantbuffer->BindToPixelShader( 2 );
-
-            // Don't let the game unload the texture after some time
-            texture->CacheIn( 0.6f );
+            if (info != lastInfo) {
+                if (!lastInfo || !lastInfo->IsSame(info)) {
+                    if ( !info->Constantbuffer ) info->UpdateConstantbuffer();
+                    info->Constantbuffer->BindToPixelShader( 2 );
+                    lastInfo = info;
+                }
+            }
 
             // Draw the section-part
             DrawVertexBufferIndexedUINT( nullptr, nullptr, meshInfo->Indices.size(),
