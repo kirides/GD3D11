@@ -72,7 +72,7 @@ struct GothicGraphicsState {
         FF_AmbientLighting = float3( 1.0f, 1.0f, 1.0f );
         FF_TextureFactor = float4( 1.0f, 1.0f, 1.0f, 1.0f );
 
-        FF_AlphaRef = 0.5f;
+        FF_AlphaRef = 170.0f / 255.0f;
 
         FF_GSwitches = 0;
 
@@ -106,7 +106,10 @@ struct GothicGraphicsState {
     /** Texture factor section */
     float4 FF_TextureFactor;
 
-    /** Alpha ref section */
+    /** Alpha ref section
+        G2: zRnd_D3D uses 0xb0 = 170 as default alpha ref
+            and combines this with calculated per-vob distance-calculated alpha values.
+    */
     float FF_AlphaRef;
 
     /** Graphical Switches (Takes GSWITCH_*) */

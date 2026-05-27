@@ -6124,6 +6124,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
     }
 
     // Set constant buffer
+    Engine::GAPI->GetRendererState().GraphicsState.FF_AlphaRef = 170.0f / 255.0f; // zRnd_D3D uses 0xb0 = 170 as default alpha ref
     ActivePS->GetBuffer( "FFPipelineConstantBuffer" )
         .Update( &Engine::GAPI->GetRendererState().GraphicsState )
         .Bind();
@@ -6392,8 +6393,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             zCTexture* tx = meshKey.Material->GetAniTexture();
 
             bool bindTexture = tx
-                && (tx->HasAlphaChannel() || colorWritesEnabled || meshKey.Material->HasAlphaTest())
-                && alphaRef > 0.0f;
+                && (tx->HasAlphaChannel() || colorWritesEnabled || meshKey.Material->HasAlphaTest());
             const bool isAlpha = bindTexture;
 
             // Bind texture
