@@ -105,6 +105,7 @@ struct MeshInfo {
     std::vector<VERTEX_INDEX> Indices;
     std::vector<VERTEX_INDEX> ShadowIndices;
 
+    // Offset in wrapped world mesh
     unsigned int BaseIndexLocation;
     unsigned int MeshIndex;
     uint16_t meshId;
@@ -120,6 +121,9 @@ struct WorldMeshInfo : public MeshInfo {
 
     zTBBox3D BoundingBox;
     bool HasBoundingBox;
+
+    // Offset in wrapped world mesh
+    unsigned int BaseShadowIndexLocation;
 };
 
 struct QuadMarkInfo {

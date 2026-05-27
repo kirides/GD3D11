@@ -369,6 +369,7 @@ XRESULT WorldConverter::LoadWorldMeshFromFile( const std::string& file, std::map
             for ( auto const& it : ity.second.WorldMeshes ) {
                 it.second->BaseIndexLocation = offsets[i];
                 numIndices += it.second->Indices.size();
+                it.second->BaseShadowIndexLocation = shadowOffsets[i];
 
                 i++;
             }
@@ -671,6 +672,7 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
         for ( auto const& ity : itx.second ) {
             for ( auto const& it : ity.second.WorldMeshes ) {
                 it.second->BaseIndexLocation = offsets[i];
+                it.second->BaseShadowIndexLocation = shadowOffsets[i];
 
                 i++;
             }

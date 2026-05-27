@@ -3689,8 +3689,8 @@ namespace {
         }
 
         if ( isAlpha ) {
-            return mesh->Indices.size();
-        }
+        return mesh->Indices.size();
+    }
         return static_cast<unsigned int>(mesh->ShadowIndices.empty() ? mesh->Indices.size() : mesh->ShadowIndices.size() );
     }
 }
@@ -4538,8 +4538,17 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
     // Draw the list
     PsSimpleFFdata ffdata = { };
     ffdata.textureFactor = float4( 1.0f, 1.0f, 1.0f, 1.0f );
+    
+    void* lastTex = nullptr;
+    void* lastMat = nullptr;
+    MaterialInfo* lastInfo = nullptr;
     for ( auto const& [meshKey, meshInfo] : list ) {
         if ( zCTexture* texture = meshKey.Material->GetAniTexture() ) {
+            if (texture->CacheIn( 0.6f ) != zRES_CACHED_IN) {
+                // Draw what? black? :)
+                continue;
+            }
+
             MyDirectDrawSurface7* surface = texture->GetSurface();
             ID3D11ShaderResourceView* srv[3];
 
@@ -4552,10 +4561,7 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
             srv[2] = surface->GetFxMap()
                 ? surface->GetFxMap()->GetShaderResourceView().Get()
                 : nullptr;
-
-            // Bind both
-            GetContext()->PSSetShaderResources( 0, 3, srv  );
-
+            
             int alphaFunc = meshKey.Material->GetAlphaFunc();
 
             if ( alphaFunc == 0 ) {
@@ -4564,8 +4570,16 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
                     : zMAT_ALPHA_FUNC_MAT_DEFAULT;
             }
 
-            //Get the right shader for it
-            BindShaderForTexture( texture, false, alphaFunc, meshKey.Info->MaterialType );
+            if (lastTex != texture) {
+                GetContext()->PSSetShaderResources( 0, 3, srv  );
+                lastTex = texture;
+            }
+            
+            if (lastMat != meshKey.Material) {
+                //Get the right shader for it
+                BindShaderForTexture( texture, false, alphaFunc, meshKey.Info->MaterialType );
+                lastMat = meshKey.Material;
+            }
 
             // Check for alphablending on world mesh
             if ( lastAlphaFunc != alphaFunc ) {
@@ -4608,12 +4622,13 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
                 .Bind();
 
             MaterialInfo* info = meshKey.Info;
-            if ( !info->Constantbuffer ) info->UpdateConstantbuffer();
-
-            info->Constantbuffer->BindToPixelShader( 2 );
-
-            // Don't let the game unload the texture after some time
-            texture->CacheIn( 0.6f );
+            if (info != lastInfo) {
+                if (!lastInfo || !lastInfo->IsSame(info)) {
+                    if ( !info->Constantbuffer ) info->UpdateConstantbuffer();
+                    info->Constantbuffer->BindToPixelShader( 2 );
+                    lastInfo = info;
+                }
+            }
 
             // Draw the section-part
             DrawVertexBufferIndexedUINT( nullptr, nullptr, meshInfo->Indices.size(),
@@ -5909,7 +5924,7 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<W
                     D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS args;
                     args.IndexCountPerInstance = indexCount;
                     args.InstanceCount = 1;
-                    args.StartIndexLocation = mesh->BaseIndexLocation;
+                    args.StartIndexLocation = mesh->BaseShadowIndexLocation;
                     args.BaseVertexLocation = 0;
                     args.StartInstanceLocation = 0;
                     opaqueDrawArgs.push_back( args );
@@ -5919,6 +5934,16 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<W
             }
         }
     }
+
+    MeshInfo* wrappedWorldMesh = Engine::GAPI->GetWrappedWorldMesh();
+
+    if ( opaqueDrawArgs.empty() && alphaMeshes.empty() ) {
+        return;
+    }
+
+    UINT offset = 0;
+    UINT uStride = sizeof( ExVertexStruct );
+    Context->IASetVertexBuffers( 0, 1, wrappedWorldMesh->MeshVertexBuffer->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
 
     if ( !opaqueDrawArgs.empty() ) {
         TracyD3D11ZoneCGX( "ShadowPass_DrawWorldMesh_Indirect::OpaqueSubmission" );
@@ -5934,6 +5959,8 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<W
             "ShadowWorldMeshIndirectArgs" );
 
         if ( shadowIndirectBuffer ) {
+            Context->IASetIndexBuffer( wrappedWorldMesh->MeshShadowIndexBuffer->GetVertexBuffer().Get(), DXGI_FORMAT_R32_UINT, 0 );
+
             drawMultiIndexedInstancedIndirect( Context.Get(),
                 static_cast<unsigned int>( opaqueDrawArgs.size() ),
                 shadowIndirectBuffer->GetIndirectBuffer().Get(),
@@ -5951,6 +5978,7 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<W
         ActivePS->Apply();
         zCTexture* lastTex = nullptr;
         Context->PSSetShaderResources( 0, 3, s_nullSRVs );
+        Context->IASetIndexBuffer( wrappedWorldMesh->MeshIndexBuffer->GetVertexBuffer().Get(), DXGI_FORMAT_R32_UINT, 0 );
 
         for ( const auto& [tex, mesh] : alphaMeshes ) {
             if ( tex != lastTex ) {
@@ -5977,7 +6005,7 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh( const std::vector<WorldMeshS
     bool linearDepth = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches &
                 GSWITCH_LINEAR_DEPTH) != 0;
     
-    static thread_local std::vector<MeshInfo*> opaqueMeshes;
+    static thread_local std::vector<WorldMeshInfo*> opaqueMeshes;
     static thread_local std::vector<std::pair<zCTexture*, MeshInfo*>> alphaMeshes;
     opaqueMeshes.clear();
     alphaMeshes.clear();
@@ -6016,6 +6044,15 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh( const std::vector<WorldMeshS
         }
     }
 
+    if (opaqueMeshes.empty() && alphaMeshes.empty() ) {
+        return;
+    }
+    
+    MeshInfo* wrappedWorldMesh = Engine::GAPI->GetWrappedWorldMesh();
+    UINT offset = 0;
+    UINT uStride = sizeof( ExVertexStruct );
+    Context->IASetVertexBuffers( 0, 1, wrappedWorldMesh->MeshVertexBuffer->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
+    
     // Draw all opaque meshes without pixel shader (depth only)
     if ( !opaqueMeshes.empty() ) {
         TracyD3D11ZoneCGX( "ShadowPass_DrawWorldMesh::OpaqueSubmission" );
@@ -6025,11 +6062,12 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh( const std::vector<WorldMeshS
             // Unbind PS
             Context->PSSetShader( nullptr, nullptr, 0 );
         }
+        Context->IASetIndexBuffer( wrappedWorldMesh->MeshShadowIndexBuffer->GetVertexBuffer().Get(), DXGI_FORMAT_R32_UINT, 0 );
 
-        for ( MeshInfo* mesh : opaqueMeshes ) {
-            DrawVertexBufferIndexed( mesh->MeshVertexBuffer,
-                GetShadowAwareIndexBuffer( mesh, false ),
-                GetShadowAwareIndexCount( mesh, false ) );
+        for ( auto mesh : opaqueMeshes ) {
+            DrawVertexBufferIndexedUINT( nullptr, nullptr,
+                GetShadowAwareIndexCount( mesh, false ),
+                mesh->BaseShadowIndexLocation );
         }
     }
 
@@ -6045,6 +6083,7 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh( const std::vector<WorldMeshS
         zCTexture* lastTex = nullptr;
 
         Context->PSSetShaderResources( 0, 3, s_nullSRVs );
+        Context->IASetIndexBuffer( wrappedWorldMesh->MeshIndexBuffer->GetVertexBuffer().Get(), DXGI_FORMAT_R32_UINT, 0 );
 
         for ( const auto& [tex, mesh] : alphaMeshes ) {
             if ( tex != lastTex ) {
@@ -6054,9 +6093,9 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh( const std::vector<WorldMeshS
                     lastTex = tex;
                 }
             }
-            DrawVertexBufferIndexed( mesh->MeshVertexBuffer,
-                GetShadowAwareIndexBuffer( mesh, true ),
-                GetShadowAwareIndexCount( mesh, true ) );
+            DrawVertexBufferIndexed( nullptr, nullptr,
+                GetShadowAwareIndexCount( mesh, true ),
+                mesh->BaseIndexLocation );
         }
     }
 }
@@ -6100,6 +6139,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
     }
 
     // Set constant buffer
+    Engine::GAPI->GetRendererState().GraphicsState.FF_AlphaRef = 170.0f / 255.0f; // zRnd_D3D uses 0xb0 = 170 as default alpha ref
     ActivePS->GetBuffer( "FFPipelineConstantBuffer" )
         .Update( &Engine::GAPI->GetRendererState().GraphicsState )
         .Bind();
@@ -6153,18 +6193,17 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         visibleSections.clear();
         Engine::GAPI->CollectVisibleSections( visibleSections, currentFrustum, false );
 
-        /*if ( Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseMDI ) {
+        if ( Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseMDI ) {
             MeshInfo* wrappedWorldMesh = Engine::GAPI->GetWrappedWorldMesh();
-            if ( wrappedWorldMesh ) {
-                D3D11VertexBuffer* wrappedIndexBuffer = wrappedWorldMesh->MeshShadowIndexBuffer
-                    ? wrappedWorldMesh->MeshShadowIndexBuffer
-                    : wrappedWorldMesh->MeshIndexBuffer;
-                DrawVertexBufferIndexedUINT( wrappedWorldMesh->MeshVertexBuffer, wrappedIndexBuffer, 0, 0 );
+            if ( wrappedWorldMesh
+                && wrappedWorldMesh->MeshVertexBuffer
+                && wrappedWorldMesh->MeshIndexBuffer
+                && wrappedWorldMesh->MeshShadowIndexBuffer
+                ) {
+                ShadowPass_DrawWorldMesh_Indirect( visibleSections, currentFrustum );
+            } else {
+                ShadowPass_DrawWorldMesh( visibleSections, currentFrustum );
             }
-        }*/
-        
-        if (Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseMDI) {
-            ShadowPass_DrawWorldMesh_Indirect( visibleSections, currentFrustum );
         } else {
             ShadowPass_DrawWorldMesh( visibleSections, currentFrustum );
         }
@@ -6369,8 +6408,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             zCTexture* tx = meshKey.Material->GetAniTexture();
 
             bool bindTexture = tx
-                && (tx->HasAlphaChannel() || colorWritesEnabled || meshKey.Material->HasAlphaTest())
-                && alphaRef > 0.0f;
+                && (tx->HasAlphaChannel() || colorWritesEnabled || meshKey.Material->HasAlphaTest());
             const bool isAlpha = bindTexture;
 
             // Bind texture
@@ -7975,6 +8013,8 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
     VS_ExConstantBuffer_PerInstance cb = {};
     auto vsPerInstBuffer = ActiveVS->GetBuffer( 1 ).Bind();
 
+    void* lastVertexBuffer = nullptr;
+    void* lastIndexBuffer = nullptr;
     for ( unsigned int i = 0; i < decals.size(); i++ ) {
         zCDecal* d = static_cast<zCDecal*>(decals[i]->GetVisual());
         if ( !d ) {
@@ -8134,7 +8174,12 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
         XMStoreFloat4x4( &cb.World, mat );
         vsPerInstBuffer.Update( &cb );
 
-        DrawVertexBufferIndexed( QuadVertexBuffer, QuadIndexBuffer, 6 );
+        if (QuadVertexBuffer != lastVertexBuffer || QuadIndexBuffer != lastIndexBuffer) {
+            DrawVertexBufferIndexed( QuadVertexBuffer, QuadIndexBuffer, 0 );
+            lastVertexBuffer = QuadVertexBuffer;
+            lastIndexBuffer = QuadIndexBuffer;
+        }
+        DrawVertexBufferIndexed( nullptr, nullptr, 6 );
     }
 }
 
@@ -8403,6 +8448,8 @@ void D3D11GraphicsEngine::DrawFrameParticleMeshes( std::unordered_map<zCVob*, Me
 
         vsBufMPI.Update( it.first->GetWorldMatrixPtr() );
 
+        void* lastMeshBuffer = nullptr;
+        void* lastIndexBuffer = nullptr;
         for ( auto const& itm : it.second->Meshes ) {
             // Cache & bind texture
             zCTexture* texture;
@@ -8416,9 +8463,19 @@ void D3D11GraphicsEngine::DrawFrameParticleMeshes( std::unordered_map<zCVob*, Me
                 continue;
             }
             for ( auto const& itm2nd : itm.second ) {
+                if (itm2nd->MeshVertexBuffer != lastMeshBuffer
+                    || itm2nd->MeshIndexBuffer != lastIndexBuffer) {
+                    // Bind them 
+                    DrawVertexBufferIndexed(
+                        itm2nd->MeshVertexBuffer, itm2nd->MeshIndexBuffer,
+                        0 );
+                    lastMeshBuffer = itm2nd->MeshVertexBuffer;
+                    lastIndexBuffer = itm2nd->MeshIndexBuffer;
+                }
+                
                 // Draw instances
                 DrawVertexBufferIndexed(
-                    itm2nd->MeshVertexBuffer, itm2nd->MeshIndexBuffer,
+                    nullptr, nullptr,
                     itm2nd->Indices.size() );
             }
         }
