@@ -693,7 +693,7 @@ XRESULT D3D11ShadowMap::PrepareRender()
                 ctx.drawFlags.DrawVOBs = rs.DrawVOBs;
                 ctx.drawFlags.DrawMobs = rs.DrawMobs;
                 ctx.drawFlags.EnableDynamicLighting = rs.EnableDynamicLighting;
-                ctx.drawFlags.EnableOcclusionCulling = rs.EnableOcclusionCulling;
+                ctx.drawFlags.EnableOcclusionCulling = false; // shadows do not use the players view frustum for culling, so occlusion culling would be inaccurate and cause popping.
                 ctx.drawFlags.CullVobs = rs.DebugSettings.Culling.CullVobs;
                 ctx.drawFlags.CollectIndoorVobs = false;
                 ctx.drawFlags.CollectMobs = false;
@@ -782,7 +782,7 @@ XRESULT D3D11ShadowMap::PrepareRender()
         ctx.drawFlags.DrawVOBs = rs.DrawVOBs;
         ctx.drawFlags.DrawMobs = rs.DrawMobs;
         ctx.drawFlags.EnableDynamicLighting = rs.EnableDynamicLighting;
-        ctx.drawFlags.EnableOcclusionCulling = rs.EnableOcclusionCulling;
+        ctx.drawFlags.EnableOcclusionCulling = false; // shadows do not use the players view frustum for culling, so occlusion culling would be inaccurate and cause popping.
         ctx.drawFlags.CullVobs = rs.DebugSettings.Culling.CullVobs;
         ctx.drawFlags.CollectIndoorVobs = false;
         ctx.drawFlags.CollectMobs = false;
