@@ -3128,11 +3128,11 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         // Collect all non-MorphMesh draws and handle MorphMesh/Cube per-draw 
 
         struct NodeAttachmentDrawItem {
+            uint64_t sortKey;
             MeshInfo* mesh;
             zCTexture* texture;    // null for shadow passes
             zCMaterial* material;
             NodeAttachmentInstanceData instanceData;
-            uint64_t sortKey;
             bool needAlpha;
         };
 
@@ -3330,7 +3330,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 
                     for ( auto const& itm : mvi->Meshes ) {
                         zCTexture* texture = nullptr;
-                        uint64_t sortKeyBase = 0;
+                        FrameGeometryCache::SortKeyBuilder sortKeyBase = { 0 };
                         if ( itm.first ) {
                             texture = itm.first->GetAniTexture();
                             if ( !texture
@@ -3340,14 +3340,19 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                                 // need to cache in in order to know its alpha/material state
                                 continue;
                             }
-                            sortKeyBase = BuildSortKeyBase( itm.first );
+                            if ( texture->HasAlphaChannel() ) {
+                                sortKeyBase.withAlphaType( 1 );
+                            }
+                            sortKeyBase.withTexture(reinterpret_cast<size_t>(texture));
                         }
 
                         for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
-                            instancedDrawItems.push_back( { itm.second[m], texture, itm.first, instData,
-                                sortKeyBase | itm.second[m]->meshId,
+                            FrameGeometryCache::SortKeyBuilder meshSortKey = sortKeyBase;
+                            meshSortKey.withMesh( itm.second[m]->meshId );
+
+                            instancedDrawItems.emplace_back( meshSortKey.sortKey, itm.second[m], texture, itm.first, instData,
                                 (texture && texture->HasAlphaChannel()) || (itm.first && itm.first->HasAlphaTest())
-                            } );
+                            );
                         }
                     }
                 }
@@ -6851,18 +6856,41 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
 
                 cache.sortedInstancedMeshes.clear();
                 cache.sortedInstancedMeshes.reserve( numMeshesToDraw );
+
                 for ( unsigned int visualIndex = 0; visualIndex < cache.vobVisuals.size(); ++visualIndex ) {
                     const auto& cv = cache.vobVisuals[visualIndex];
                     for ( auto const& itt : cv.Visual->MeshesByTexture ) {
                         const std::vector<MeshInfo*>& mlist = itt.second;
                         if ( mlist.empty() ) continue;
+
+                        FrameGeometryCache::SortKeyBuilder sortKeyBase{ 0 };
+                        if ( itt.first.Material ) {
+                            const auto alphaFunc = itt.first.Material->GetAlphaFunc();
+                            if ( alphaFunc > zMAT_ALPHA_FUNC_NONE && alphaFunc != zMAT_ALPHA_FUNC_TEST ) {
+                                sortKeyBase.withAlphaType(2);
+                            } else if ( alphaFunc == zMAT_ALPHA_FUNC_TEST ) {
+                                sortKeyBase.withAlphaType(1);
+                            }
+                        }
+                        if ( itt.first.Texture ) {
+                            if ( itt.first.Texture->HasAlphaChannel() && sortKeyBase.GetAlphaType() == 0 ) {
+                                sortKeyBase.withAlphaType(1);
+                            }
+                            sortKeyBase.withTexture(reinterpret_cast<size_t>(itt.first.Texture));
+                        }
+
                         for ( MeshInfo* mi : mlist ) {
                             if ( !mi ) continue;
+
+                            FrameGeometryCache::SortKeyBuilder meshSortKey = sortKeyBase; // copy current base key
+                            meshSortKey.withMesh(mi->meshId);
 
                             FrameGeometryCache::CachedInstancedMeshDraw drawItem;
                             drawItem.VisualIndex = visualIndex;
                             drawItem.Mesh = itt.first;
                             drawItem.MeshEntry = mi;
+                            drawItem.sortKey = meshSortKey;
+
                             cache.sortedInstancedMeshes.push_back( drawItem );
                         }
                     }
@@ -6870,18 +6898,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
 
                 std::sort( cache.sortedInstancedMeshes.begin(), cache.sortedInstancedMeshes.end(),
                     []( const FrameGeometryCache::CachedInstancedMeshDraw& a, const FrameGeometryCache::CachedInstancedMeshDraw& b ) {
-                        auto aTex = a.Mesh.Texture;
-                        auto bTex = b.Mesh.Texture;
-
-                        if ( aTex && bTex && aTex->HasAlphaChannel() != bTex->HasAlphaChannel() ) {
-                            return aTex->HasAlphaChannel() < bTex->HasAlphaChannel();
-                        }
-
-                        if ( aTex != bTex ) {
-                            return aTex < bTex;
-                        }
-
-                        return a.MeshEntry->meshId < b.MeshEntry->meshId;
+                        return a.sortKey < b.sortKey;
                     } );
 
                 if ( !vobs.empty() ) {
