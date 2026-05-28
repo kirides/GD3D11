@@ -4674,7 +4674,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
     if ( isZPrepass ) {
         noTextures = true;
     }
-
+    
     // Setup default renderstates
     SetDefaultStates(); 
 
@@ -8688,6 +8688,9 @@ XRESULT D3D11GraphicsEngine::OnVobRemovedFromWorld( zCVob* vob ) {
 void D3D11GraphicsEngine::UpdateOcclusion() {
     if ( !Engine::GAPI->GetRendererState().RendererSettings.EnableOcclusionCulling )
         return;
+    auto _ = RecordGraphicsEvent( GE_NAME( "D3D11GraphicsEngine::UpdateOcclusion" ) );
+    TracyD3D11ZoneCGX( "D3D11GraphicsEngine::UpdateOcclusion" );
+    ZoneScopedN( "D3D11GraphicsEngine::UpdateOcclusion" );
 
     // Set up states
     Engine::GAPI->GetRendererState().RasterizerState.SetDefault();

@@ -114,6 +114,7 @@ struct BspInfo {
     }
 
     BspInfo( const BspInfo& ) = delete;
+    BspInfo& operator=( const BspInfo& ) = delete;
 
     ~BspInfo() {
         delete OcclusionInfo.NodeMesh;
