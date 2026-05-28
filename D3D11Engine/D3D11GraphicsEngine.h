@@ -506,12 +506,51 @@ private:
         /// Snapshot of a static-mesh visual and its per-frame instance data.
         /// Avoids reliance on MeshVisualInfo::Instances across shadow-map passes.
         struct CachedVobVisual {
-            MeshVisualInfo*              Visual          = nullptr;
+            MeshVisualInfo* Visual = nullptr;
             std::vector<VobInstanceInfo> Instances;
             unsigned int                 StartInstanceNum = 0;
         };
 
+        struct SortKeyBuilder {
+        public:
+            uint64_t sortKey;
+        public:
+            uint8_t GetAlphaType() const {
+                return (sortKey >> alpha_type_offset) & alpha_type_mask;
+            }
+
+            SortKeyBuilder& withAlphaType( uint8_t alphaType ) {
+                sortKey = (sortKey & ~alpha_type_mask) | ((static_cast<uint64_t>(alphaType) & alpha_type_mask) << alpha_type_offset);
+                return *this;
+            }
+
+            SortKeyBuilder& withTexture( uint64_t texture_id ) {
+                uint64_t textureId = texture_id;
+                sortKey = (sortKey & ~texture_id_mask) | ((textureId & texture_id_mask) << texture_id_offset);
+                return *this;
+            }
+
+            SortKeyBuilder& withMesh( uint16_t mesh_id ) {
+                sortKey = (sortKey & ~mesh_id_mask) | ((static_cast<uint64_t>(mesh_id) & mesh_id_mask) << mesh_id_offset);
+                return *this;
+            }
+
+            operator uint64_t() { return sortKey; }
+
+        private:
+            static const uint64_t alpha_type_mask = 0b11ull;
+            static const uint64_t alpha_type_offset = 62;
+
+            static const uint64_t texture_id_mask = 0xFFFFFFFF;
+            static const uint64_t texture_id_offset = 16;
+
+            static const uint64_t mesh_id_mask = 0xFFFF;
+            static const uint64_t mesh_id_offset = 0;
+        };
+
         struct CachedInstancedMeshDraw {
+        public:
+            uint64_t sortKey;
             unsigned int VisualIndex = 0;
             MeshKey Mesh;
             MeshInfo* MeshEntry = nullptr;

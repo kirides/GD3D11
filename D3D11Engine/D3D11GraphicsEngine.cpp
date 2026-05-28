@@ -3128,11 +3128,11 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         // Collect all non-MorphMesh draws and handle MorphMesh/Cube per-draw 
 
         struct NodeAttachmentDrawItem {
+            uint64_t sortKey;
             MeshInfo* mesh;
             zCTexture* texture;    // null for shadow passes
             zCMaterial* material;
             NodeAttachmentInstanceData instanceData;
-            uint64_t sortKey;
             bool needAlpha;
         };
 
@@ -3330,7 +3330,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 
                     for ( auto const& itm : mvi->Meshes ) {
                         zCTexture* texture = nullptr;
-                        uint64_t sortKeyBase = 0;
+                        FrameGeometryCache::SortKeyBuilder sortKeyBase = { 0 };
                         if ( itm.first ) {
                             texture = itm.first->GetAniTexture();
                             if ( !texture
@@ -3340,14 +3340,19 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                                 // need to cache in in order to know its alpha/material state
                                 continue;
                             }
-                            sortKeyBase = BuildSortKeyBase( itm.first );
+                            if ( texture->HasAlphaChannel() ) {
+                                sortKeyBase.withAlphaType( 1 );
+                            }
+                            sortKeyBase.withTexture(reinterpret_cast<size_t>(texture));
                         }
 
                         for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
-                            instancedDrawItems.push_back( { itm.second[m], texture, itm.first, instData,
-                                sortKeyBase | itm.second[m]->meshId,
+                            FrameGeometryCache::SortKeyBuilder meshSortKey = sortKeyBase;
+                            meshSortKey.withMesh( itm.second[m]->meshId );
+
+                            instancedDrawItems.emplace_back( meshSortKey.sortKey, itm.second[m], texture, itm.first, instData,
                                 (texture && texture->HasAlphaChannel()) || (itm.first && itm.first->HasAlphaTest())
-                            } );
+                            );
                         }
                     }
                 }
@@ -4669,7 +4674,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
     if ( isZPrepass ) {
         noTextures = true;
     }
-
+    
     // Setup default renderstates
     SetDefaultStates(); 
 
@@ -4880,6 +4885,12 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
         for ( auto const& mesh : meshList ) {
             zCTexture* texture;
             if ( ( texture = mesh.first.Texture ) == nullptr ) continue;
+            const auto alphaFunc = mesh.first.Material->GetAlphaFunc();
+            const auto isBlend = alphaFunc > zRND_ALPHA_FUNC_NONE && alphaFunc != zRND_ALPHA_FUNC_TEST;
+            if (isBlend || zColor( mesh.first.Material->GetColor() ).bgra.alpha < 255) {
+                // Skip blended meshes in z-prepass, they will be rendered in main pass
+                continue;
+            }
 
             if ( texture->HasAlphaChannel() || (mesh.first.Material && mesh.first.Material->HasAlphaTest()) ) {
                 if ( texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
@@ -6243,7 +6254,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             ctx.drawFlags.DrawVOBs = rs.DrawVOBs;
             ctx.drawFlags.DrawMobs = rs.DrawMobs;
             ctx.drawFlags.EnableDynamicLighting = rs.EnableDynamicLighting;
-            ctx.drawFlags.EnableOcclusionCulling = rs.EnableOcclusionCulling;
+            ctx.drawFlags.EnableOcclusionCulling = false; // shadows do not use the players view frustum for culling, so occlusion culling would be inaccurate and cause popping.
             ctx.drawFlags.CullVobs = rs.DebugSettings.Culling.CullVobs;
             ctx.drawFlags.CollectIndoorVobs = true;
             ctx.drawFlags.CollectMobs = true;
@@ -6851,18 +6862,41 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
 
                 cache.sortedInstancedMeshes.clear();
                 cache.sortedInstancedMeshes.reserve( numMeshesToDraw );
+
                 for ( unsigned int visualIndex = 0; visualIndex < cache.vobVisuals.size(); ++visualIndex ) {
                     const auto& cv = cache.vobVisuals[visualIndex];
                     for ( auto const& itt : cv.Visual->MeshesByTexture ) {
                         const std::vector<MeshInfo*>& mlist = itt.second;
                         if ( mlist.empty() ) continue;
+
+                        FrameGeometryCache::SortKeyBuilder sortKeyBase{ 0 };
+                        if ( itt.first.Material ) {
+                            const auto alphaFunc = itt.first.Material->GetAlphaFunc();
+                            if ( alphaFunc > zMAT_ALPHA_FUNC_NONE && alphaFunc != zMAT_ALPHA_FUNC_TEST ) {
+                                sortKeyBase.withAlphaType(2);
+                            } else if ( alphaFunc == zMAT_ALPHA_FUNC_TEST ) {
+                                sortKeyBase.withAlphaType(1);
+                            }
+                        }
+                        if ( itt.first.Texture ) {
+                            if ( itt.first.Texture->HasAlphaChannel() && sortKeyBase.GetAlphaType() == 0 ) {
+                                sortKeyBase.withAlphaType(1);
+                            }
+                            sortKeyBase.withTexture(reinterpret_cast<size_t>(itt.first.Texture));
+                        }
+
                         for ( MeshInfo* mi : mlist ) {
                             if ( !mi ) continue;
+
+                            FrameGeometryCache::SortKeyBuilder meshSortKey = sortKeyBase; // copy current base key
+                            meshSortKey.withMesh(mi->meshId);
 
                             FrameGeometryCache::CachedInstancedMeshDraw drawItem;
                             drawItem.VisualIndex = visualIndex;
                             drawItem.Mesh = itt.first;
                             drawItem.MeshEntry = mi;
+                            drawItem.sortKey = meshSortKey;
+
                             cache.sortedInstancedMeshes.push_back( drawItem );
                         }
                     }
@@ -6870,18 +6904,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
 
                 std::sort( cache.sortedInstancedMeshes.begin(), cache.sortedInstancedMeshes.end(),
                     []( const FrameGeometryCache::CachedInstancedMeshDraw& a, const FrameGeometryCache::CachedInstancedMeshDraw& b ) {
-                        auto aTex = a.Mesh.Texture;
-                        auto bTex = b.Mesh.Texture;
-
-                        if ( aTex && bTex && aTex->HasAlphaChannel() != bTex->HasAlphaChannel() ) {
-                            return aTex->HasAlphaChannel() < bTex->HasAlphaChannel();
-                        }
-
-                        if ( aTex != bTex ) {
-                            return aTex < bTex;
-                        }
-
-                        return a.MeshEntry->meshId < b.MeshEntry->meshId;
+                        return a.sortKey < b.sortKey;
                     } );
 
                 if ( !vobs.empty() ) {
@@ -8665,6 +8688,9 @@ XRESULT D3D11GraphicsEngine::OnVobRemovedFromWorld( zCVob* vob ) {
 void D3D11GraphicsEngine::UpdateOcclusion() {
     if ( !Engine::GAPI->GetRendererState().RendererSettings.EnableOcclusionCulling )
         return;
+    auto _ = RecordGraphicsEvent( GE_NAME( "D3D11GraphicsEngine::UpdateOcclusion" ) );
+    TracyD3D11ZoneCGX( "D3D11GraphicsEngine::UpdateOcclusion" );
+    ZoneScopedN( "D3D11GraphicsEngine::UpdateOcclusion" );
 
     // Set up states
     Engine::GAPI->GetRendererState().RasterizerState.SetDefault();

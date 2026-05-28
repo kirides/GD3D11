@@ -32,6 +32,7 @@ unsigned int D3D11OcclusionQuerry::AddPredicationObject() {
     qd.Query = D3D11_QUERY_OCCLUSION_PREDICATE;
     qd.MiscFlags = 0;
     LE( g->GetDevice()->CreatePredicate( &qd, p.GetAddressOf() ) );
+    SetDebugName(p.Get(), "OcclusionPredicate");
 
     // Add to the end of the list and return its ID
     Predicates.push_back( p.Detach() );
