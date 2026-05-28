@@ -4885,6 +4885,12 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
         for ( auto const& mesh : meshList ) {
             zCTexture* texture;
             if ( ( texture = mesh.first.Texture ) == nullptr ) continue;
+            const auto alphaFunc = mesh.first.Material->GetAlphaFunc();
+            const auto isBlend = alphaFunc > zRND_ALPHA_FUNC_NONE && alphaFunc != zRND_ALPHA_FUNC_TEST;
+            if (isBlend || zColor( mesh.first.Material->GetColor() ).bgra.alpha < 255) {
+                // Skip blended meshes in z-prepass, they will be rendered in main pass
+                continue;
+            }
 
             if ( texture->HasAlphaChannel() || (mesh.first.Material && mesh.first.Material->HasAlphaTest()) ) {
                 if ( texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
