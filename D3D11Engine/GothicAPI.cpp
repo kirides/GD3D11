@@ -1187,7 +1187,7 @@ int GothicAPI::DialogFinished() {
 static bool GetShouldRenderAsMorphMesh(SkeletalVobInfo* vi, zCModel* model) {
     auto& nodeAttachments = vi->NodeAttachments;
     auto nodeList = model->GetNodeList();
-    auto numTransforms = nodeList->NumInArray;
+    auto numTransforms = static_cast<unsigned int>(nodeList->NumInArray);
 
     for ( unsigned int i = 0; i < numTransforms; ++i ) {
         // Check for new visual

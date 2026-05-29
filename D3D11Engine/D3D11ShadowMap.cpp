@@ -662,7 +662,7 @@ XRESULT D3D11ShadowMap::PrepareRender()
         std::lock_guard<LockableBase( std::mutex )> lock( m_CullingJobsMutex );
         m_ShadowCullingJobs.clear();
 
-        for ( size_t i = 0; i < numCascades; i++ ) {
+        for ( size_t i = 0; i < static_cast<size_t>(numCascades); i++ ) {
             m_RenderQueues[i]->Reset();
             if ( !m_ShouldUpdateCascade[i] ) {
                 continue; // Skip culling for this cascade if we're not updating it this frame
