@@ -21,13 +21,6 @@ namespace {
         { "DIFFUSE", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
     };
 
-    static const D3D11_INPUT_ELEMENT_DESC layout2[] =
-    {
-        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-        { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-    };
-
     static const D3D11_INPUT_ELEMENT_DESC layout3[] =
     {
         { "POSITION", 0, DXGI_FORMAT_R16G16B16A16_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
@@ -55,12 +48,6 @@ namespace {
         { "INSTANCE_WORLD_MATRIX", 3, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
         { "INSTANCE_COLOR", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 1, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
         { "INSTANCE_SCALE", 0, DXGI_FORMAT_R32G32_FLOAT, 1, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
-    };
-
-    static const D3D11_INPUT_ELEMENT_DESC layout5[] =
-    {
-        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
     };
 
     static const D3D11_INPUT_ELEMENT_DESC layout6[] =
@@ -117,17 +104,6 @@ namespace {
         { "VELOCITY", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
     };
 
-    static const D3D11_INPUT_ELEMENT_DESC layout12[] =
-    {
-        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-        { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 1, DXGI_FORMAT_R32G32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-        { "DIFFUSE", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-
-        { "INSTANCE_REMAP_INDEX", 0, DXGI_FORMAT_R32_UINT, 1, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
-    };
-
     static const D3D11_INPUT_ELEMENT_DESC layout13[] =
     {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
@@ -155,22 +131,17 @@ namespace {
         { "INSTANCE_COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
     };
 
-    static const std::pair<const D3D11_INPUT_ELEMENT_DESC*, size_t> lookupTable[]{
-        {layout1, std::size( layout1 )}, // duplicate 1 into 0 for a fallback
-        {layout1, std::size( layout1 )},
-        {layout2, std::size( layout2 )},
-        {layout3, std::size( layout3 )},
-        {layout4, std::size( layout4 )},
-        {layout5, std::size( layout5 )},
-        {layout6, std::size( layout6 )},
-        {layout7, std::size( layout7 )},
-        {layout2, std::size( layout2 )}, // 8 and 2 were identical
-        {layout9, std::size( layout9 )},
-        {layout10, std::size( layout10 )},
-        {layout11, std::size( layout11 )},
-        {layout12, std::size( layout12 )},
-        {layout13, std::size( layout13 )},
-        {layout14, std::size( layout14 )},
+    static const std::map<EVERTEX_INPUT_LAYOUT, std::pair<const D3D11_INPUT_ELEMENT_DESC*, size_t>> lookupTable {
+        { VERTEX_INPUT_LAYOUT_1, {layout1, std::size( layout1 )} },
+        { VERTEX_INPUT_LAYOUT_3_VS_ExSkeletal, {layout3, std::size( layout3 )} },
+        { VERTEX_INPUT_LAYOUT_4_VS_ExInstanced, {layout4, std::size( layout4 )} },
+        { VERTEX_INPUT_LAYOUT_6_Lines, {layout6, std::size( layout6 )} },
+        { VERTEX_INPUT_LAYOUT_7_VS_XYZRHW_DIF_T1, {layout7, std::size( layout7 )} },
+        { VERTEX_INPUT_LAYOUT_9_VS_GrassInstanced, {layout9, std::size( layout9 )} },
+        { VERTEX_INPUT_LAYOUT_10_VS_ExInstancedObj, {layout10, std::size( layout10 )} },
+        { VERTEX_INPUT_LAYOUT_11_VS_ParticlePoint, {layout11, std::size( layout11 )} },
+        { VERTEX_INPUT_LAYOUT_13, {layout13, std::size( layout13 )} },
+        { VERTEX_INPUT_LAYOUT_14_VS_ExNodeInstanced, {layout14, std::size( layout14 )} },
     };
 }
 
@@ -213,8 +184,10 @@ XRESULT D3D11VShader::LoadShader( const ShaderInfo& si, const std::vector<D3D_SH
         // Likely VS_PFX or similar, where we work with SV_VertexID
         return XR_SUCCESS;
     }
+    
+    auto layout = lookupTable.find( si.layout );
 
-    if ( si.layout >= std::size( lookupTable ) ) {
+    if ( layout == lookupTable.end() ) {
         LogError() << "Input layout index out of range: " << si.layout;
 
         std::stringstream ss;
@@ -226,7 +199,7 @@ XRESULT D3D11VShader::LoadShader( const ShaderInfo& si, const std::vector<D3D_SH
         return XR_FAILED;
     }
 
-    LE( engine->GetDevice()->CreateInputLayout( lookupTable[si.layout].first, lookupTable[si.layout].second, vsBlob->GetBufferPointer(),
+    LE( engine->GetDevice()->CreateInputLayout( layout->second.first, layout->second.second, vsBlob->GetBufferPointer(),
         vsBlob->GetBufferSize(), InputLayout.ReleaseAndGetAddressOf() ) );
 
     return XR_SUCCESS;

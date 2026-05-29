@@ -18,7 +18,7 @@ public:
     ShaderType type;				//Shader's type: Vertex, Pixel, Geometry, HullDomain, Compute
     std::string entryPoint;			//Shader's entry point function name
     size_t shaderIndex;				//Per-type enum index (e.g. VShaderID/PShaderID cast to size_t)
-    int layout;						//Shader's input layout
+    EVERTEX_INPUT_LAYOUT layout;						//Shader's input layout
     std::vector<D3D_SHADER_MACRO> shaderMakros;
     ShaderCategory contentCategory;	//Content category for selective reloading
     size_t compiledHash = 0;			//Hash of last successful compilation (file timestamp + macros)
@@ -44,14 +44,14 @@ public:
     }
 
     /** Chainable setters for builder pattern */
-    ShaderInfo& with_layout( int l ) { layout = l; return *this; }
+    ShaderInfo& with_layout( EVERTEX_INPUT_LAYOUT l ) { layout = l; return *this; }
     ShaderInfo& with_macros( std::vector<D3D_SHADER_MACRO> m ) { shaderMakros = std::move(m); return *this; }
     ShaderInfo& with_macros( MacroBuilder b ) { macroBuilder = std::move( b ); return *this; }
     ShaderInfo& with_category( ShaderCategory c ) { contentCategory = c; return *this; }
     ShaderInfo& with_entrypoint( std::string ep ) { entryPoint = std::move( ep ); return *this; }
 
 private:
-    ShaderInfo() : type( ShaderType::None ), shaderIndex( 0 ), layout( 0 ), contentCategory( ShaderCategory::Other ) {}
+    ShaderInfo() : type( ShaderType::None ), shaderIndex( 0 ), layout( VERTEX_INPUT_LAYOUT_NONE ), contentCategory( ShaderCategory::Other ) {}
 
     template<typename EnumT>
     static constexpr ShaderType shader_type_for() {

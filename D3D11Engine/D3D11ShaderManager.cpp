@@ -115,16 +115,16 @@ XRESULT D3D11ShaderManager::Init() {
     static const char* sNums[] = { "0","1","2","3","4","5","6","7","8","9","10","11","12","13","14","15" };
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_Ex>( "VS_Ex.hlsl" )
-        .with_layout( 1 )  );
+        .with_layout( VERTEX_INPUT_LAYOUT_1 )  );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExNode>( "VS_ExNode.hlsl" )
-        .with_layout( 1 ) );
+        .with_layout( VERTEX_INPUT_LAYOUT_1 ) );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_Decal>( "VS_Decal.hlsl" )
-        .with_layout( 1 )  );
+        .with_layout( VERTEX_INPUT_LAYOUT_1 )  );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExWater>( "VS_ExWater.hlsl" )
-        .with_layout( 1 )
+        .with_layout( VERTEX_INPUT_LAYOUT_1 )
         .with_macros( [](std::vector<D3D_SHADER_MACRO>& list) {
             const auto& s = Engine::GAPI->GetRendererState().RendererSettings;
 #ifdef BUILD_GOTHIC_2_6_fix
@@ -135,37 +135,37 @@ XRESULT D3D11ShaderManager::Init() {
         }) );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ParticlePoint>( "VS_ParticlePoint.hlsl" )
-        .with_layout( 11 ) );
+        .with_layout( VERTEX_INPUT_LAYOUT_11_VS_ParticlePoint ) );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ParticlePointShaded>( "VS_ParticlePointShaded.hlsl" )
-        .with_layout( 13 )  );
+        .with_layout( VERTEX_INPUT_LAYOUT_13 )  );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExWS>( "VS_ExWS.hlsl" )
-        .with_layout( 1 ) );
+        .with_layout( VERTEX_INPUT_LAYOUT_1 ) );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExSkeletal>( "VS_ExSkeletal.hlsl" )
-        .with_layout( 3 )
+        .with_layout( VERTEX_INPUT_LAYOUT_3_VS_ExSkeletal )
         .with_macros( [](std::vector<D3D_SHADER_MACRO>& list) {
             list.push_back( { "SKINNING_STRUCTURED", FeatureLevel10Compatibility ? "0" : "1" } );
         } ) );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExSkeletalVN>( "VS_ExSkeletalVN.hlsl" )
-        .with_layout( 3 )
+        .with_layout( VERTEX_INPUT_LAYOUT_3_VS_ExSkeletal )
         .with_macros( [](std::vector<D3D_SHADER_MACRO>& list) {
             list.push_back( { "SKINNING_STRUCTURED", FeatureLevel10Compatibility ? "0" : "1" } );
         } ) );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_TransformedEx>( "VS_TransformedEx.hlsl" )
-        .with_layout( 1 ) );
+        .with_layout( VERTEX_INPUT_LAYOUT_1 ) );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExPointLight>( "VS_ExPointLight.hlsl" )
-        .with_layout( 1 ) );
+        .with_layout( VERTEX_INPUT_LAYOUT_1 ) );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_XYZRHW_DIF_T1>( "VS_XYZRHW_DIF_T1.hlsl" )
-        .with_layout( 7 ) );
+        .with_layout( VERTEX_INPUT_LAYOUT_7_VS_XYZRHW_DIF_T1 ) );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExInstancedObj>( "VS_ExInstancedObj.hlsl" )
-        .with_layout( 10 )
+        .with_layout( VERTEX_INPUT_LAYOUT_10_VS_ExInstancedObj )
         .with_macros( [](std::vector<D3D_SHADER_MACRO>& list) {
             const auto& s = Engine::GAPI->GetRendererState().RendererSettings;
 #ifdef BUILD_GOTHIC_2_6_fix
@@ -185,16 +185,16 @@ XRESULT D3D11ShaderManager::Init() {
 
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExInstanced>( "VS_ExInstanced.hlsl" )
-        .with_layout( 4 ) );
+        .with_layout( VERTEX_INPUT_LAYOUT_4_VS_ExInstanced ) );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_GrassInstanced>( "VS_GrassInstanced.hlsl" )
-        .with_layout( 9 )  );
+        .with_layout( VERTEX_INPUT_LAYOUT_9_VS_GrassInstanced )  );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_Lines>( "VS_Lines.hlsl" )
-        .with_layout( 6 )  );
+        .with_layout( VERTEX_INPUT_LAYOUT_6_Lines )  );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_Lines_XYZRHW>( "VS_Lines_XYZRHW.hlsl" )
-        .with_layout( 6 )  );
+        .with_layout( VERTEX_INPUT_LAYOUT_6_Lines )  );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_Lines>( "PS_Lines.hlsl" ) );
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_LinesSel>( "PS_LinesSel.hlsl" ) );
@@ -378,13 +378,13 @@ XRESULT D3D11ShaderManager::Init() {
 
     if ( FeatureRTArrayIndexFromAnyShader ) {
         Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExLayered>( "VS_ExLayered.hlsl" )
-            .with_layout( 1 ) );
+            .with_layout( VERTEX_INPUT_LAYOUT_1 ) );
 
         Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExNodeLayered>( "VS_ExNodeLayered.hlsl" )
-            .with_layout( 1 )  );
+            .with_layout( VERTEX_INPUT_LAYOUT_1 )  );
 
         Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExSkeletalLayered>( "VS_ExSkeletalLayered.hlsl" )
-            .with_layout( 3 )
+            .with_layout( VERTEX_INPUT_LAYOUT_3_VS_ExSkeletal )
             .with_macros( [](std::vector<D3D_SHADER_MACRO>& list) {
                 list.push_back( { "SKINNING_STRUCTURED", FeatureLevel10Compatibility ? "0" : "1" } );
             } ) ); // cbPerCubeRender for layered rendering
@@ -394,26 +394,26 @@ XRESULT D3D11ShaderManager::Init() {
         Shaders.push_back( ShaderInfo::make<GShaderID::GS_Cubemap>( "GS_Cubemap.hlsl" )  );
 
         Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExCube>( "VS_ExCube.hlsl" )
-            .with_layout( 1 )  );
+            .with_layout( VERTEX_INPUT_LAYOUT_1 )  );
 
         Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExNodeCube>( "VS_ExNodeCube.hlsl" )
-            .with_layout( 1 )  );
+            .with_layout( VERTEX_INPUT_LAYOUT_1 )  );
 
         Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExSkeletalCube>( "VS_ExSkeletalCube.hlsl" )
-            .with_layout( 3 )
+            .with_layout( VERTEX_INPUT_LAYOUT_3_VS_ExSkeletal )
             .with_macros( [](std::vector<D3D_SHADER_MACRO>& list) {
                 list.push_back( { "SKINNING_STRUCTURED", FeatureLevel10Compatibility ? "0" : "1" } );
             } ) );
     }
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExNodeInstanced>( "VS_ExNodeInstanced.hlsl" )
-        .with_layout( 14 ) );
+        .with_layout( VERTEX_INPUT_LAYOUT_14_VS_ExNodeInstanced ) );
 
     Shaders.push_back( ShaderInfo::make<GShaderID::GS_ParticleStreamOut>( "VS_AdvanceRain.hlsl" )
-        .with_layout( 13 ) );
+        .with_layout( VERTEX_INPUT_LAYOUT_13 ) );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_AdvanceRain>( "VS_AdvanceRain.hlsl" )
-        .with_layout( 13 ) );
+        .with_layout( VERTEX_INPUT_LAYOUT_13 ) );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_DoF_FocusResolve>( "PS_PFX_DoF_FocusResolve.hlsl" )  );
 
@@ -589,7 +589,8 @@ XRESULT D3D11ShaderManager::CompileShader( ShaderInfo& si ) {
 
     //Check if shader src-file exists
     std::string fileName = Engine::GAPI->GetStartDirectory() + "\\system\\GD3D11\\shaders\\" + si.fileName;
-    if ( FILE* f = fopen( fileName.c_str(), "r" ) ) {
+    std::error_code ec;
+    if ( std::filesystem::exists(fileName, ec)) {
         //Check shader's type
         if ( si.type == ShaderType::Vertex ) {
             // See if this is a reload
@@ -685,8 +686,6 @@ XRESULT D3D11ShaderManager::CompileShader( ShaderInfo& si ) {
                 si.compiledHash = newHash;
             }
         }
-
-        fclose( f );
     }
 
     // Hull/Domain shaders are handled differently, they check inside for missing file
