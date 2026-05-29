@@ -143,9 +143,9 @@ public:
         LOGFILE = LOGFILE.substr( 0, LOGFILE.find_last_of( '\\' ) + 1 );
         LOGFILE += "Log.txt";
 
-        FILE* f;
-        f = fopen( LOGFILE.c_str(), "w" );
-        fclose( f );
+        if (FILE* f = fopen( LOGFILE.c_str(), "w" )) {
+            (void)fclose( f );
+        }
     }
 
 #pragma warning( push )
