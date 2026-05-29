@@ -17,6 +17,8 @@
 
 // CHANGELOG
 // (minor and older changes stripped away, please see git history for details)
+//  2026-04-23: DirectX11: Added support for standard draw callbacks (in platform_io): DrawCallback_ResetRenderState, DrawCallback_SetSamplerLinear, DrawCallback_SetSamplerNearest. Obsoleting samplers from ImGui_ImplDX11_RenderState. (#9378)
+//  2026-01-19: DirectX11: Added 'SamplerNearest' in ImGui_ImplDX11_RenderState. Renamed 'SamplerDefault' to 'SamplerLinear'.
 //  2025-09-18: Call platform_io.ClearRendererHandlers() on shutdown.
 //  2025-06-11: DirectX11: Added support for ImGuiBackendFlags_RendererHasTextures, for dynamic font atlas.
 //  2025-05-07: DirectX11: Honor draw_data->FramebufferScale to allow for custom backends and experiment using it (consistently with other renderer backends, even though in normal condition it is not set under Windows).
@@ -78,11 +80,13 @@ struct ImGui_ImplDX11_Data
     ID3D11Buffer*               pVertexConstantBuffer;
     ID3D11PixelShader*          pPixelShader;
     ID3D11SamplerState*         pTexSamplerLinear;
+    ID3D11SamplerState*         pTexSamplerNearest;
     ID3D11RasterizerState*      pRasterizerState;
     ID3D11BlendState*           pBlendState;
     ID3D11DepthStencilState*    pDepthStencilState;
     int                         VertexBufferSize;
     int                         IndexBufferSize;
+    ImGui_ImplDX11_RenderState* RenderState;            // == (ImGui_ImplDX11_RenderState*)ImGui::GetPlatformIO().Renderer_RenderState during rendering.
 
     ImGui_ImplDX11_Data()       { memset((void*)this, 0, sizeof(*this)); VertexBufferSize = 5000; IndexBufferSize = 10000; }
 };
@@ -157,6 +161,11 @@ static void ImGui_ImplDX11_SetupRenderState(const ImDrawData* draw_data, ID3D11D
     device_ctx->RSSetState(bd->pRasterizerState);
 }
 
+// Draw callbacks
+static void ImGui_ImplDX11_DrawCallback_ResetRenderState(const ImDrawList*, const ImDrawCmd*)       {} // Intentionally empty. Used as an identifier for rendering loop to call its code. Simpler to implement this way.
+static void ImGui_ImplDX11_DrawCallback_SetSamplerLinear(const ImDrawList*, const ImDrawCmd*)       { ImGui_ImplDX11_Data* bd = ImGui_ImplDX11_GetBackendData(); bd->RenderState->DeviceContext->PSSetSamplers(0, 1, &bd->pTexSamplerLinear); }
+static void ImGui_ImplDX11_DrawCallback_SetSamplerNearest(const ImDrawList*, const ImDrawCmd*)      { ImGui_ImplDX11_Data* bd = ImGui_ImplDX11_GetBackendData(); bd->RenderState->DeviceContext->PSSetSamplers(0, 1, &bd->pTexSamplerNearest); }
+
 // Render function
 void ImGui_ImplDX11_RenderDrawData(ImDrawData* draw_data)
 {
@@ -181,7 +190,7 @@ void ImGui_ImplDX11_RenderDrawData(ImDrawData* draw_data)
         bd->VertexBufferSize = draw_data->TotalVtxCount + 5000;
         D3D11_BUFFER_DESC desc = {};
         desc.Usage = D3D11_USAGE_DYNAMIC;
-        desc.ByteWidth = bd->VertexBufferSize * sizeof(ImDrawVert);
+        desc.ByteWidth = (UINT)bd->VertexBufferSize * sizeof(ImDrawVert);
         desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
         desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
         desc.MiscFlags = 0;
@@ -194,7 +203,7 @@ void ImGui_ImplDX11_RenderDrawData(ImDrawData* draw_data)
         bd->IndexBufferSize = draw_data->TotalIdxCount + 10000;
         D3D11_BUFFER_DESC desc = {};
         desc.Usage = D3D11_USAGE_DYNAMIC;
-        desc.ByteWidth = bd->IndexBufferSize * sizeof(ImDrawIdx);
+        desc.ByteWidth = (UINT)bd->IndexBufferSize * sizeof(ImDrawIdx);
         desc.BindFlags = D3D11_BIND_INDEX_BUFFER;
         desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
         if (bd->pd3dDevice->CreateBuffer(&desc, nullptr, &bd->pIB) < 0)
@@ -272,9 +281,8 @@ void ImGui_ImplDX11_RenderDrawData(ImDrawData* draw_data)
     ImGui_ImplDX11_RenderState render_state;
     render_state.Device = bd->pd3dDevice;
     render_state.DeviceContext = bd->pd3dDeviceContext;
-    render_state.SamplerDefault = bd->pTexSamplerLinear;
     render_state.VertexConstantBuffer = bd->pVertexConstantBuffer;
-    platform_io.Renderer_RenderState = &render_state;
+    platform_io.Renderer_RenderState = bd->RenderState = &render_state;
 
     // Render command lists
     // (Because we merged all buffers into a single one, we maintain our own offset into them)
@@ -290,8 +298,7 @@ void ImGui_ImplDX11_RenderDrawData(ImDrawData* draw_data)
             if (pcmd->UserCallback != nullptr)
             {
                 // User callback, registered via ImDrawList::AddCallback()
-                // (ImDrawCallback_ResetRenderState is a special callback value used by the user to request the renderer to reset render state.)
-                if (pcmd->UserCallback == ImDrawCallback_ResetRenderState)
+                if (pcmd->UserCallback == ImGui_ImplDX11_DrawCallback_ResetRenderState)
                     ImGui_ImplDX11_SetupRenderState(draw_data, device);
                 else
                     pcmd->UserCallback(draw_list, pcmd);
@@ -317,7 +324,7 @@ void ImGui_ImplDX11_RenderDrawData(ImDrawData* draw_data)
         global_idx_offset += draw_list->IdxBuffer.Size;
         global_vtx_offset += draw_list->VtxBuffer.Size;
     }
-    platform_io.Renderer_RenderState = nullptr;
+    platform_io.Renderer_RenderState = bd->RenderState = nullptr;
 
     // Restore modified DX state
     device->RSSetScissorRects(old.ScissorRectsCount, old.ScissorRects);
@@ -580,6 +587,8 @@ bool    ImGui_ImplDX11_CreateDeviceObjects()
         desc.MinLOD = 0.f;
         desc.MaxLOD = 0.f;
         bd->pd3dDevice->CreateSamplerState(&desc, &bd->pTexSamplerLinear);
+        desc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
+        bd->pd3dDevice->CreateSamplerState(&desc, &bd->pTexSamplerNearest);
     }
 
     return true;
@@ -597,6 +606,7 @@ void    ImGui_ImplDX11_InvalidateDeviceObjects()
             ImGui_ImplDX11_DestroyTexture(tex);
 
     if (bd->pTexSamplerLinear)      { bd->pTexSamplerLinear->Release(); bd->pTexSamplerLinear = nullptr; }
+    if (bd->pTexSamplerNearest)     { bd->pTexSamplerNearest->Release(); bd->pTexSamplerNearest = nullptr; }
     if (bd->pIB)                    { bd->pIB->Release(); bd->pIB = nullptr; }
     if (bd->pVB)                    { bd->pVB->Release(); bd->pVB = nullptr; }
     if (bd->pBlendState)            { bd->pBlendState->Release(); bd->pBlendState = nullptr; }
@@ -623,6 +633,9 @@ bool    ImGui_ImplDX11_Init(ID3D11Device* device, ID3D11DeviceContext* device_co
 
     ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
     platform_io.Renderer_TextureMaxWidth = platform_io.Renderer_TextureMaxHeight = D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION;
+    platform_io.DrawCallback_ResetRenderState = ImGui_ImplDX11_DrawCallback_ResetRenderState;
+    platform_io.DrawCallback_SetSamplerLinear = ImGui_ImplDX11_DrawCallback_SetSamplerLinear;
+    platform_io.DrawCallback_SetSamplerNearest = ImGui_ImplDX11_DrawCallback_SetSamplerNearest;
 
     // Get factory from device
     IDXGIDevice* pDXGIDevice = nullptr;
