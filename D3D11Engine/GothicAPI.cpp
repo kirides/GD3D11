@@ -58,7 +58,7 @@
 #endif
 
 // Duration how long the scene will stay wet, in MS
-const DWORD SCENE_WETNESS_DURATION_MS = 30 * 1000;
+const DWORD SCENE_WETNESS_DURATION_MS = 20 * 1000;
 
 // Draw ghost from back to front of our camera
 auto CompareGhostDistance = []( const TransparencyVobInfo& a, const TransparencyVobInfo& b ) -> bool { return a.distance < b.distance; };
@@ -1187,7 +1187,7 @@ int GothicAPI::DialogFinished() {
 static bool GetShouldRenderAsMorphMesh(SkeletalVobInfo* vi, zCModel* model) {
     auto& nodeAttachments = vi->NodeAttachments;
     auto nodeList = model->GetNodeList();
-    auto numTransforms = nodeList->NumInArray;
+    auto numTransforms = static_cast<unsigned int>(nodeList->NumInArray);
 
     for ( unsigned int i = 0; i < numTransforms; ++i ) {
         // Check for new visual

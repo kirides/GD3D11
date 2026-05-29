@@ -297,11 +297,9 @@ namespace Toolbox {
 
     /** Returns whether the given file exists */
     bool FileExists( const std::string& file ) {
-        try {
-            return std::filesystem::exists( file );
-        } catch ( const std::exception& ) {
-            return false;
-        }
+        std::error_code ec;
+        const auto status = std::filesystem::status( file, ec );
+        return exists( status ) && !is_directory( status );
     }
 
     /** Saves a std::string to a FILE* */

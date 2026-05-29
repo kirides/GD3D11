@@ -31,7 +31,13 @@ XRESULT D3D11PShader::LoadShader( const ShaderInfo& si, const std::vector<D3D_SH
         return XR_FAILED;
     }
 
-    ReflectShaderResources( psBlob.Get() );
+#ifdef DEBUG_D3D11
+    this->filePath = filePath;
+#endif
+
+    if ( ReflectShaderResources( psBlob.Get() ) != XR_SUCCESS ) {
+        return XR_FAILED;
+    }
     
     // Create the shader
     LE( engine->GetDevice()->CreatePixelShader( psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, PixelShader.GetAddressOf() ) );

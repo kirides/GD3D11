@@ -49,3 +49,18 @@ inline ShaderCategory& operator|=( ShaderCategory& a, ShaderCategory b ) {
 inline bool HasCategory( ShaderCategory flags, ShaderCategory category ) {
     return (static_cast<uint32_t>(flags) & static_cast<uint32_t>(category)) != 0;
 }
+
+enum EVERTEX_INPUT_LAYOUT : std::uint8_t {
+    VERTEX_INPUT_LAYOUT_NONE,
+    VERTEX_INPUT_LAYOUT_1,
+    VERTEX_INPUT_LAYOUT_3_VS_ExSkeletal,
+    VERTEX_INPUT_LAYOUT_4_VS_ExInstanced,
+    VERTEX_INPUT_LAYOUT_6_Lines,
+    VERTEX_INPUT_LAYOUT_7_VS_XYZRHW_DIF_T1,
+    VERTEX_INPUT_LAYOUT_9_VS_GrassInstanced,
+    VERTEX_INPUT_LAYOUT_10_VS_ExInstancedObj,
+    VERTEX_INPUT_LAYOUT_11_VS_ParticlePoint,
+    VERTEX_INPUT_LAYOUT_13,
+    VERTEX_INPUT_LAYOUT_14_VS_ExNodeInstanced,
+    _VERTEX_INPUT_LAYOUT_COUNT,
+};

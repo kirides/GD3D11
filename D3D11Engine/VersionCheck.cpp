@@ -1,6 +1,7 @@
 #include "VersionCheck.h"
 
 #include <algorithm>
+#include <filesystem>
 #include <string>
 
 #include <Windows.h>
@@ -19,17 +20,6 @@ namespace VersionCheck {
 	static const int CHECKSUM_G1_1_08k_4GB = 0x08608228;
 	static const int CHECKSUM_G1_1_12f = 0x00862362;
 #endif
-
-	/** Returns whether the given file exists */
-	bool FileExists( const std::string& file ) {
-		FILE* f = fopen( file.c_str(), "rb" );
-
-		if ( f ) {
-			fclose( f );
-			return true;
-		}
-		return false;
-	}
 
 	/** Checks the executable checksum for the right version */
 	void CheckExecutable() {

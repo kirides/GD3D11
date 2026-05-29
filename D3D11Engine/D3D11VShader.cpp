@@ -11,42 +11,8 @@
 
 extern bool FeatureLevel10Compatibility;
 
-D3D11VShader::D3D11VShader() = default;
-
-D3D11VShader::~D3D11VShader() = default;
-
-/** Loads shader */
-XRESULT D3D11VShader::LoadShader( const ShaderInfo& si, const std::vector<D3D_SHADER_MACRO>& macros, const char* filePath ) {
-    HRESULT hr;
-    D3D11GraphicsEngineBase* engine = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine);
-
-    Microsoft::WRL::ComPtr<ID3DBlob> vsBlob;
-
-
-    LogInfo() << "Compilling vertex shader: " << si.name;
-
-    // Compile shader
-    if ( FAILED( D3D11ShaderManager::CompileShaderFromFile( filePath, !si.entryPoint.empty() ? si.entryPoint.c_str() : "VSMain", (FeatureLevel10Compatibility ? "vs_4_0" : "vs_5_0"), vsBlob.GetAddressOf(), macros)) ) {
-        return XR_FAILED;
-    }
-
-    if ( ReflectShaderResources( vsBlob.Get() ) != XR_SUCCESS ) {
-        return XR_FAILED;
-    }
-    
-    // Create the shader
-    LE( engine->GetDevice()->CreateVertexShader( vsBlob->GetBufferPointer(),
-        vsBlob->GetBufferSize(), nullptr, VertexShader.ReleaseAndGetAddressOf() ) );
-
-    SetDebugName( VertexShader.Get(), si.name );
-
-    if (si.layout == 0) {
-        // No layout, skip input layout creation
-        // Likely VS_PFX or similar, where we work with SV_VertexID
-        return XR_SUCCESS;
-    }
-    
-    const D3D11_INPUT_ELEMENT_DESC layout1[] =
+namespace {
+    static const D3D11_INPUT_ELEMENT_DESC layout1[] =
     {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
         { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
@@ -55,14 +21,7 @@ XRESULT D3D11VShader::LoadShader( const ShaderInfo& si, const std::vector<D3D_SH
         { "DIFFUSE", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
     };
 
-    const D3D11_INPUT_ELEMENT_DESC layout2[] =
-    {
-        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-        { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-    };
-
-    const D3D11_INPUT_ELEMENT_DESC layout3[] =
+    static const D3D11_INPUT_ELEMENT_DESC layout3[] =
     {
         { "POSITION", 0, DXGI_FORMAT_R16G16B16A16_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
         { "POSITION", 1, DXGI_FORMAT_R16G16B16A16_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
@@ -75,7 +34,7 @@ XRESULT D3D11VShader::LoadShader( const ShaderInfo& si, const std::vector<D3D_SH
         { "WEIGHTS", 0, DXGI_FORMAT_R16G16B16A16_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
     };
 
-    const D3D11_INPUT_ELEMENT_DESC layout4[] =
+    static const D3D11_INPUT_ELEMENT_DESC layout4[] =
     {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
         { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
@@ -91,33 +50,20 @@ XRESULT D3D11VShader::LoadShader( const ShaderInfo& si, const std::vector<D3D_SH
         { "INSTANCE_SCALE", 0, DXGI_FORMAT_R32G32_FLOAT, 1, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
     };
 
-    const D3D11_INPUT_ELEMENT_DESC layout5[] =
-    {
-        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-    };
-
-    const D3D11_INPUT_ELEMENT_DESC layout6[] =
+    static const D3D11_INPUT_ELEMENT_DESC layout6[] =
     {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
         { "DIFFUSE", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
     };
 
-    const D3D11_INPUT_ELEMENT_DESC layout7[] =
+    static const D3D11_INPUT_ELEMENT_DESC layout7[] =
     {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
         { "DIFFUSE", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
         { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
     };
 
-    const D3D11_INPUT_ELEMENT_DESC layout8[] =
-    {
-        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-        { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-    };
-
-    const D3D11_INPUT_ELEMENT_DESC layout9[] =
+    static const D3D11_INPUT_ELEMENT_DESC layout9[] =
     {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
         { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
@@ -128,7 +74,7 @@ XRESULT D3D11VShader::LoadShader( const ShaderInfo& si, const std::vector<D3D_SH
         { "INSTANCE_WORLD_MATRIX", 3, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
     };
 
-    const D3D11_INPUT_ELEMENT_DESC layout10[] =
+    static const D3D11_INPUT_ELEMENT_DESC layout10[] =
     {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
         { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
@@ -149,7 +95,7 @@ XRESULT D3D11VShader::LoadShader( const ShaderInfo& si, const std::vector<D3D_SH
         { "INSTANCE_WIND_META_INDEX", 0, DXGI_FORMAT_R32_UINT, 1, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
     };
 
-    const D3D11_INPUT_ELEMENT_DESC layout11[] =
+    static const D3D11_INPUT_ELEMENT_DESC layout11[] =
     {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
         { "DIFFUSE", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
@@ -158,24 +104,13 @@ XRESULT D3D11VShader::LoadShader( const ShaderInfo& si, const std::vector<D3D_SH
         { "VELOCITY", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
     };
 
-    const D3D11_INPUT_ELEMENT_DESC layout12[] =
-    {
-        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-        { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 1, DXGI_FORMAT_R32G32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-        { "DIFFUSE", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-
-        { "INSTANCE_REMAP_INDEX", 0, DXGI_FORMAT_R32_UINT, 1, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
-    };
-
-    const D3D11_INPUT_ELEMENT_DESC layout13[] =
+    static const D3D11_INPUT_ELEMENT_DESC layout13[] =
     {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
         { "VELOCITY", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
     };
 
-    const D3D11_INPUT_ELEMENT_DESC layout14[] =
+    static const D3D11_INPUT_ELEMENT_DESC layout14[] =
     {
         // Per-vertex data (Slot 0) - ExVertexStruct
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
@@ -196,77 +131,76 @@ XRESULT D3D11VShader::LoadShader( const ShaderInfo& si, const std::vector<D3D_SH
         { "INSTANCE_COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
     };
 
-    switch ( si.layout ) {
-    case 1:
-        LE( engine->GetDevice()->CreateInputLayout( layout1, std::size( layout1 ), vsBlob->GetBufferPointer(),
-            vsBlob->GetBufferSize(), InputLayout.ReleaseAndGetAddressOf() ) );
-        break;
+    static const std::map<EVERTEX_INPUT_LAYOUT, std::pair<const D3D11_INPUT_ELEMENT_DESC*, size_t>> lookupTable {
+        { VERTEX_INPUT_LAYOUT_1, {layout1, std::size( layout1 )} },
+        { VERTEX_INPUT_LAYOUT_3_VS_ExSkeletal, {layout3, std::size( layout3 )} },
+        { VERTEX_INPUT_LAYOUT_4_VS_ExInstanced, {layout4, std::size( layout4 )} },
+        { VERTEX_INPUT_LAYOUT_6_Lines, {layout6, std::size( layout6 )} },
+        { VERTEX_INPUT_LAYOUT_7_VS_XYZRHW_DIF_T1, {layout7, std::size( layout7 )} },
+        { VERTEX_INPUT_LAYOUT_9_VS_GrassInstanced, {layout9, std::size( layout9 )} },
+        { VERTEX_INPUT_LAYOUT_10_VS_ExInstancedObj, {layout10, std::size( layout10 )} },
+        { VERTEX_INPUT_LAYOUT_11_VS_ParticlePoint, {layout11, std::size( layout11 )} },
+        { VERTEX_INPUT_LAYOUT_13, {layout13, std::size( layout13 )} },
+        { VERTEX_INPUT_LAYOUT_14_VS_ExNodeInstanced, {layout14, std::size( layout14 )} },
+    };
+}
 
-    case 2:
-        LE( engine->GetDevice()->CreateInputLayout( layout2, std::size( layout2 ), vsBlob->GetBufferPointer(),
-            vsBlob->GetBufferSize(), InputLayout.ReleaseAndGetAddressOf() ) );
-        break;
 
-    case 3:
-        LE( engine->GetDevice()->CreateInputLayout( layout3, std::size( layout3 ), vsBlob->GetBufferPointer(),
-            vsBlob->GetBufferSize(), InputLayout.ReleaseAndGetAddressOf() ) );
-        break;
+D3D11VShader::D3D11VShader() = default;
 
-    case 4:
-        LE( engine->GetDevice()->CreateInputLayout( layout4, std::size( layout4 ), vsBlob->GetBufferPointer(),
-            vsBlob->GetBufferSize(), InputLayout.ReleaseAndGetAddressOf() ) );
-        break;
+D3D11VShader::~D3D11VShader() = default;
 
-    case 5:
-        LE( engine->GetDevice()->CreateInputLayout( layout5, std::size( layout5 ), vsBlob->GetBufferPointer(),
-            vsBlob->GetBufferSize(), InputLayout.ReleaseAndGetAddressOf() ) );
-        break;
+/** Loads shader */
+XRESULT D3D11VShader::LoadShader( const ShaderInfo& si, const std::vector<D3D_SHADER_MACRO>& macros, const char* filePath ) {
+    HRESULT hr;
+    D3D11GraphicsEngineBase* engine = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine);
 
-    case 6:
-        LE( engine->GetDevice()->CreateInputLayout( layout6, std::size( layout6 ), vsBlob->GetBufferPointer(),
-            vsBlob->GetBufferSize(), InputLayout.ReleaseAndGetAddressOf() ) );
-        break;
+    Microsoft::WRL::ComPtr<ID3DBlob> vsBlob;
 
-    case 7:
-        LE( engine->GetDevice()->CreateInputLayout( layout7, std::size( layout7 ), vsBlob->GetBufferPointer(),
-            vsBlob->GetBufferSize(), InputLayout.ReleaseAndGetAddressOf() ) );
-        break;
 
-    case 8:
-        LE( engine->GetDevice()->CreateInputLayout( layout8, std::size( layout8 ), vsBlob->GetBufferPointer(),
-            vsBlob->GetBufferSize(), InputLayout.ReleaseAndGetAddressOf() ) );
-        break;
+    LogInfo() << "Compilling vertex shader: " << si.name;
 
-    case 9:
-        LE( engine->GetDevice()->CreateInputLayout( layout9, std::size( layout9 ), vsBlob->GetBufferPointer(),
-            vsBlob->GetBufferSize(), InputLayout.ReleaseAndGetAddressOf() ) );
-        break;
-
-    case 10:
-        LE( engine->GetDevice()->CreateInputLayout( layout10, std::size( layout10 ), vsBlob->GetBufferPointer(),
-            vsBlob->GetBufferSize(), InputLayout.ReleaseAndGetAddressOf() ) );
-        break;
-
-    case 11:
-        LE( engine->GetDevice()->CreateInputLayout( layout11, std::size( layout11 ), vsBlob->GetBufferPointer(),
-            vsBlob->GetBufferSize(), InputLayout.ReleaseAndGetAddressOf() ) );
-        break;
-
-    case 12:
-        LE( engine->GetDevice()->CreateInputLayout( layout12, std::size( layout12 ), vsBlob->GetBufferPointer(),
-            vsBlob->GetBufferSize(), InputLayout.ReleaseAndGetAddressOf() ) );
-        break;
-
-    case 13:
-        LE( engine->GetDevice()->CreateInputLayout( layout13, std::size( layout13 ), vsBlob->GetBufferPointer(),
-            vsBlob->GetBufferSize(), InputLayout.ReleaseAndGetAddressOf() ) );
-        break;
-
-    case 14:
-        LE( engine->GetDevice()->CreateInputLayout( layout14, std::size( layout14 ), vsBlob->GetBufferPointer(),
-            vsBlob->GetBufferSize(), InputLayout.ReleaseAndGetAddressOf() ) );
-        break;
+    // Compile shader
+    if ( FAILED( D3D11ShaderManager::CompileShaderFromFile( filePath, !si.entryPoint.empty() ? si.entryPoint.c_str() : "VSMain", (FeatureLevel10Compatibility ? "vs_4_0" : "vs_5_0"), vsBlob.GetAddressOf(), macros)) ) {
+        return XR_FAILED;
     }
+    
+#ifdef DEBUG_D3D11
+    this->filePath = filePath;
+#endif
+
+    if ( ReflectShaderResources( vsBlob.Get() ) != XR_SUCCESS ) {
+        return XR_FAILED;
+    }
+    
+    // Create the shader
+    LE( engine->GetDevice()->CreateVertexShader( vsBlob->GetBufferPointer(),
+        vsBlob->GetBufferSize(), nullptr, VertexShader.ReleaseAndGetAddressOf() ) );
+
+    SetDebugName( VertexShader.Get(), si.name );
+
+    if ( si.layout <= 0 ) {
+        // No layout, skip input layout creation
+        // Likely VS_PFX or similar, where we work with SV_VertexID
+        return XR_SUCCESS;
+    }
+    
+    auto layout = lookupTable.find( si.layout );
+
+    if ( layout == lookupTable.end() ) {
+        LogError() << "Input layout index out of range: " << si.layout;
+
+        std::stringstream ss;
+        ss << "Invalid input layout index"  << std::endl
+            << "Shader: " << si.name << std::endl
+            << "Input layout index: " << si.layout << std::endl
+            << "Max supported layout index: " << (std::size( lookupTable ) - 1);
+        ErrorBox( ss.str().c_str() );
+        return XR_FAILED;
+    }
+
+    LE( engine->GetDevice()->CreateInputLayout( layout->second.first, layout->second.second, vsBlob->GetBufferPointer(),
+        vsBlob->GetBufferSize(), InputLayout.ReleaseAndGetAddressOf() ) );
 
     return XR_SUCCESS;
 }

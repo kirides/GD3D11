@@ -61,7 +61,7 @@ D3D11ConstantBuffer* D3D11ConstantBuffer::UpdateBuffer( const void* data, UINT s
     if ( SUCCEEDED( engine->GetContext()->Map( Buffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &res ) )) {
         // Copy data
         if ( res.pData ) {
-            if (size < OriginalSize) {
+            if ( size < static_cast<UINT>(OriginalSize) ) {
                 ZeroMemory( res.pData, OriginalSize );
             }
             if ( data ) {
