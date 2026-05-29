@@ -1,6 +1,7 @@
 #include "VersionCheck.h"
 
 #include <algorithm>
+#include <filesystem>
 #include <string>
 
 #include <Windows.h>
@@ -22,13 +23,9 @@ namespace VersionCheck {
 
 	/** Returns whether the given file exists */
 	bool FileExists( const std::string& file ) {
-		FILE* f = fopen( file.c_str(), "rb" );
-
-		if ( f ) {
-			fclose( f );
-			return true;
-		}
-		return false;
+	    std::error_code ec;
+		const auto status = std::filesystem::status(file, ec);
+        return exists(status) && !is_directory(status);
 	}
 
 	/** Checks the executable checksum for the right version */
