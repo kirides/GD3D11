@@ -58,7 +58,7 @@
 #endif
 
 // Duration how long the scene will stay wet, in MS
-const DWORD SCENE_WETNESS_DURATION_MS = 30 * 1000;
+const DWORD SCENE_WETNESS_DURATION_MS = 20 * 1000;
 
 // Draw ghost from back to front of our camera
 auto CompareGhostDistance = []( const TransparencyVobInfo& a, const TransparencyVobInfo& b ) -> bool { return a.distance < b.distance; };
