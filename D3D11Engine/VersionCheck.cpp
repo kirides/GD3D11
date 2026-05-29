@@ -21,13 +21,6 @@ namespace VersionCheck {
 	static const int CHECKSUM_G1_1_12f = 0x00862362;
 #endif
 
-	/** Returns whether the given file exists */
-	bool FileExists( const std::string& file ) {
-	    std::error_code ec;
-		const auto status = std::filesystem::status(file, ec);
-        return exists(status) && !is_directory(status);
-	}
-
 	/** Checks the executable checksum for the right version */
 	void CheckExecutable() {
 #ifndef DISABLE_EXECUTABLE_CHECKSUM_CHECK
