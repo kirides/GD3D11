@@ -7505,6 +7505,8 @@ XRESULT D3D11GraphicsEngine::DrawPolyStrips( bool noTextures ) {
         DrawVertexBuffer( TempPolysVertexBuffer.get(), vertices.size(), sizeof( ExVertexStruct ) );
     }
 
+    SetDefaultStates();
+
     return XR_SUCCESS;
 }
 
