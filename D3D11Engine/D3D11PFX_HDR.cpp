@@ -61,8 +61,8 @@ XRESULT D3D11PFX_HDR::Render( ID3D11RenderTargetView* output, ID3D11ShaderResour
 		simpleTonemapPS->Apply();
 
 		HDRSettingsConstantBuffer hcb;
-		hcb.HDR_LumWhite = Engine::GAPI->GetRendererState().RendererSettings.HDRLumWhite;
-		hcb.HDR_MiddleGray = Engine::GAPI->GetRendererState().RendererSettings.HDRMiddleGray;
+		hcb.HDR_LumWhite = 4.0f; // Engine::GAPI->GetRendererState().RendererSettings.HDRLumWhite;
+		hcb.HDR_MiddleGray = 1.2f; // Engine::GAPI->GetRendererState().RendererSettings.HDRMiddleGray;
 		hcb.HDR_Threshold = 0.0f;
 		hcb.HDR_BloomStrength = 0.0f;
 		simpleTonemapPS->GetBuffer( "HDR_Settings" ).Update( &hcb ).Bind();
