@@ -4619,7 +4619,9 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
                     ffdata.textureFactor = zColor( 255, 255, 255, (uint8_t)(255.0f * meshKey.Material->GetEnvMapStrength() * 0.1f) ).ToFloat4();
                 }
             } else {
-                ffdata.textureFactor = zColor( meshKey.Material->GetColor() ).ToFloat4();
+                if ( zColor( meshKey.Material->GetColor() ).bgra.alpha < 255 ) {
+                    ffdata.textureFactor = zColor( meshKey.Material->GetColor() ).ToFloat4();
+                }
             }
 
             ActivePS->GetBuffer( "cbFFData" )

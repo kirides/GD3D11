@@ -143,7 +143,13 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
 
 			shadow = ComputeCascadedShadowValueSoft(biasedWsPosition, vsPosition.z, vertLighting, 0.0f, Input.vPosition.xy);
 		#endif
-	}
+	} else {
+		float3 wsNormal = normalize(mul(float4(nrm, 0.0f), SQ_InvView).xyz);
+        // Night-time sky ambient:
+        // saturate(wsNormal.y) restricts the value to [0, 1].
+        // Facing up = 1, Facing sides/down = 0.
+        shadow = saturate(wsNormal.y) * vertLighting;
+    }
 #endif
 
 	// Sun lighting
