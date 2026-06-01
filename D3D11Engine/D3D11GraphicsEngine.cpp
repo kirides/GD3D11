@@ -802,6 +802,9 @@ XRESULT D3D11GraphicsEngine::Init() {
     NoiseTexture = std::make_unique<D3D11Texture>();
     NoiseTexture->Init( "system\\GD3D11\\textures\\noise.dds" );
 
+    BlueNoise512BGRA = std::make_unique<D3D11Texture>();
+    BlueNoise512BGRA->Init( "system\\GD3D11\\textures\\bluenoise-rgba-512-bgra.dds" );
+
     WhiteTexture = std::make_unique<D3D11Texture>();
     uint32_t whitePixel = 0xFFFFFFFF;
     WhiteTexture->Init( {1,1}, D3D11Texture::ETextureFormat::TF_B8G8R8A8, 1, nullptr, "FULL_WHITE_ALPHA_OPAQUE.static-memory");
