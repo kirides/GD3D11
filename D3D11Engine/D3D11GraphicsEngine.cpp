@@ -1521,10 +1521,11 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
         Resolved_DiffuseNormalmapped = PShaderID::PS_DiffuseNormalmapped;
         Resolved_DiffuseNormalmappedAlphatest = PShaderID::PS_DiffuseNormalmappedAlphaTest;
     } else {
-        Resolved_DiffuseNormalmappedFxMap = PShaderID::PS_Diffuse;
-        Resolved_DiffuseNormalmappedAlphatestFxMap = PShaderID::PS_DiffuseAlphaTest;
-        Resolved_DiffuseNormalmapped = PShaderID::PS_Diffuse;
-        Resolved_DiffuseNormalmappedAlphatest = PShaderID::PS_DiffuseAlphaTest;
+        const bool isRaining = Engine::GAPI->GetSceneWetness() > 1e-6;
+        Resolved_DiffuseNormalmappedFxMap = isRaining ? PShaderID::PS_DiffuseNormalmappedFxMap : PShaderID::PS_Diffuse;
+        Resolved_DiffuseNormalmappedAlphatestFxMap = isRaining ? PShaderID::PS_DiffuseNormalmappedAlphaTestFxMap : PShaderID::PS_DiffuseAlphaTest;
+        Resolved_DiffuseNormalmapped = isRaining ? PShaderID::PS_DiffuseNormalmapped : PShaderID::PS_Diffuse;
+        Resolved_DiffuseNormalmappedAlphatest = isRaining ? PShaderID::PS_DiffuseNormalmappedAlphaTest : PShaderID::PS_DiffuseAlphaTest;
     }
 
     return XR_SUCCESS;
@@ -4919,7 +4920,12 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
         }
     }
 
-    SetActivePixelShader( PShaderID::PS_Diffuse );
+    const PShaderID defaultShader = 
+        Engine::GAPI->GetSceneWetness() > 1e-6
+        ? Resolved_DiffuseNormalmapped
+        : PShaderID::PS_Diffuse;
+
+    SetActivePixelShader( defaultShader );
     ActivePS->Apply();
 
     // Now draw the actual pixels
@@ -5228,7 +5234,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
     ocb.OS_AmbientColor = float3( 1, 1, 1 );
     ActivePS->GetBuffer( "POS_MaterialInfo" ).Update( &ocb ).Bind();
 
-    DistortionTexture->BindToPixelShader( 0 );
+    WhiteTexture->BindToPixelShader( 0 );
+    void* lastTex = WhiteTexture.get();
 
     ActivePS->BindBuffer( "DIST_Distance", InfiniteRangeConstantBuffer.get() );
 
@@ -5248,7 +5255,6 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
     const bool drawMobCasters = (casterMask & SHADOW_CASTER_MOBS) != 0;
     const bool drawAnimatedCasters = (casterMask & SHADOW_CASTER_ANIMATED) != 0;
 
-    void* lastTex = nullptr;
     if ( drawWorldCasters && Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh ) {
         vsBufMPI.Update( &identityMatrix ).Bind();
 
