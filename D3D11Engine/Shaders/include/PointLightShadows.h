@@ -74,12 +74,16 @@ float PLS_GeometrySmith( float NdotV, float NdotL, float roughness )
     return PLS_GeometrySchlickGGX( NdotV, roughness ) * PLS_GeometrySchlickGGX( NdotL, roughness );
 }
 
+float PLS_Pow5( float x )
+{
+    float x2 = x * x;
+    return x2 * x2 * x; // x^5
+}
+
 float3 PLS_FresnelSchlick( float cosTheta, float3 F0 )
 {
     float x = saturate( 1.0f - cosTheta );
-    float x2 = x * x;
-    float x5 = x2 * x2 * x; // x^5
-    return F0 + (1.0f - F0) * x5;
+    return F0 + (1.0f - F0) * PLS_Pow5(x);
 }
 
 float3 PLS_ComputeDirectPBRLighting(
