@@ -76,8 +76,10 @@ float PLS_GeometrySmith( float NdotV, float NdotL, float roughness )
 
 float3 PLS_FresnelSchlick( float cosTheta, float3 F0 )
 {
-    float fresnel = pow( 1.0f - cosTheta, 5.0f );
-    return F0 + (1.0f - F0) * fresnel;
+    float x = saturate( 1.0f - cosTheta );
+    float x2 = x * x;
+    float x5 = x2 * x2 * x; // x^5
+    return F0 + (1.0f - F0) * x5;
 }
 
 float3 PLS_ComputeDirectPBRLighting(
