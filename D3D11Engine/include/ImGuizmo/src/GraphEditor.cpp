@@ -3,7 +3,7 @@
 //
 // The MIT License(MIT)
 //
-// Copyright(c) 2016-2021 Cedric Guillemet
+// Copyright(c) 2016-2026 Cedric Guillemet and contributors
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files(the "Software"), to deal
@@ -276,7 +276,11 @@ static void DisplayLinks(Delegate& delegate,
             float highLightFactor = factor * (highlightCons ? 2.0f : 1.f);
             for (int pass = 0; pass < 2; pass++)
             {
+#if IMGUI_VERSION_NUM < 19276
                 drawList->AddPolyline(pts.data(), ptCount, pass ? col : 0xFF000000, false, (pass ? options.mLineThickness : (options.mLineThickness * 1.5f)) * highLightFactor);
+#else
+                drawList->AddPolyline(pts.data(), ptCount, pass ? col : 0xFF000000, (pass ? options.mLineThickness : (options.mLineThickness * 1.5f)) * highLightFactor);
+#endif
             }
         }
     }
@@ -627,12 +631,21 @@ static bool DrawNode(ImDrawList* drawList,
     const bool currentSelectedNode = node.mSelected;
     const ImU32 node_bg_color = nodeHovered ? nodeTemplate.mBackgroundColorOver : nodeTemplate.mBackgroundColor;
 
+#if IMGUI_VERSION_NUM < 19276
     drawList->AddRect(nodeRectangleMin,
                       nodeRectangleMax,
                       currentSelectedNode ? options.mSelectedNodeBorderColor : options.mNodeBorderColor,
                       options.mRounding,
                       ImDrawFlags_RoundCornersAll,
                       currentSelectedNode ? options.mBorderSelectionThickness : options.mBorderThickness);
+#else
+    drawList->AddRect(nodeRectangleMin,
+                      nodeRectangleMax,
+                      currentSelectedNode ? options.mSelectedNodeBorderColor : options.mNodeBorderColor,
+                      options.mRounding,
+                      currentSelectedNode ? options.mBorderSelectionThickness : options.mBorderThickness,
+                      ImDrawFlags_RoundCornersAll);
+#endif
 
     ImVec2 imgPos = nodeRectangleMin + ImVec2(14, 25);
     ImVec2 imgSize = nodeRectangleMax + ImVec2(-5, -5) - imgPos;
@@ -878,7 +891,11 @@ void Show(Delegate& delegate, const Options& options, ViewState& viewState, bool
         // Focus rectangle
         if (ImGui::IsWindowFocused())
         {
+#if IMGUI_VERSION_NUM < 19276
            drawList->AddRect(regionRect.Min, regionRect.Max, options.mFrameFocus, 1.f, 0, 2.f);
+#else
+           drawList->AddRect(regionRect.Min, regionRect.Max, options.mFrameFocus, 1.f, 2.f);
+#endif
         }
 
         drawList->ChannelsSetCurrent(1); // Background
