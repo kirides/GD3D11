@@ -1058,6 +1058,12 @@ struct GothicRendererSettings {
             bool ForceFeatureLevel10;
         } FeatureSet;
     } DebugSettings;
+
+    bool GetIsTAAEnabled() const {
+        return AntiAliasingMode == E_AntiAliasingMode::AA_TAA
+            || AntiAliasingMode == E_AntiAliasingMode::AA_FSR
+            || AntiAliasingMode == E_AntiAliasingMode::AA_FSR3;
+    }
 };
 
 struct GothicRendererInfo {

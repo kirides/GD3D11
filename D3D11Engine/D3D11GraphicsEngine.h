@@ -362,6 +362,7 @@ public:
 
     D3D11PfxRenderer* GetPfxRenderer() const { return PfxRenderer.get(); }
     D3D11Texture* GetDistortionTexture() const { return DistortionTexture.get(); }
+    D3D11Texture* GetBlueNoiseTexture() const { return BlueNoise512BGRA.get(); }
     D3D11Texture* GetWhiteTexture() const { return WhiteTexture.get(); }
 
     RenderToTextureBuffer* GetVelocityBuffer() const { return VelocityBuffer.get(); }

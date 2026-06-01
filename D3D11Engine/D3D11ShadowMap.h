@@ -36,6 +36,7 @@ enum PS_DS_AtmosphericScatteringSlots {
     TX_ReflectionCube = 5,
     TX_Distortion = 6,
     TX_SI_SP = 7,
+    TX_BlueNoise512 = 8,
 };
 
 const int POINTLIGHT_SHADOWMAP_SIZE = 128;

@@ -56,6 +56,8 @@ Texture2D      TX_ShadowmapAtlas : register( t3 );
 Texture2DArray TX_ShadowmapArray : register( t3 );
 #endif
 
+Texture2D TX_ShadowBlueNoise : register( t8 );
+
 #include "ShadowSampling.h"
 #include "DepthReconstruction.h"
 

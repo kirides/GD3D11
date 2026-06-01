@@ -55,6 +55,7 @@ Texture2D TX_RainShadowmap : register(t4);
 TextureCube TX_ReflectionCube : register(t5);
 Texture2D TX_Distortion : register(t6);
 Texture2D TX_SI_SP : register(t7);
+Texture2D TX_ShadowBlueNoise : register(t8);
 
 #include "ShadowSampling.h"
 

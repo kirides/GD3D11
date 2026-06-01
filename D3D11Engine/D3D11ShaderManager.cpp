@@ -292,6 +292,8 @@ XRESULT D3D11ShaderManager::Init() {
     // Shadow macro builder shared by both atmospheric scattering shader variants
     ShaderInfo::MacroBuilder shadowMacroBuilder = [](std::vector<D3D_SHADER_MACRO>& list) {
         const auto& s = Engine::GAPI->GetRendererState().RendererSettings;
+        const bool isTaaEnabled = s.GetIsTAAEnabled();
+
         list.push_back( {"SHD_ENABLE",           s.EnableShadows ? "1" : "0"} );
         list.push_back( {"SHD_FILTER_16TAP_PCF", (s.ShadowFilterMode >= GothicRendererSettings::SHADOW_FILTER_SIMPLE) ? "1" : "0"} );
         list.push_back( {"SHD_FILTER_PCSS",      (s.ShadowFilterMode == GothicRendererSettings::SHADOW_FILTER_PCSS) ? "1" : "0"} );
@@ -300,6 +302,13 @@ XRESULT D3D11ShaderManager::Init() {
         list.push_back( {"CSM_PCF_LIMIT",        sNums[std::clamp<size_t>(s.ShadowCascadePCFLimit, 0, MAX_CSM_CASCADES)]} );
         list.push_back( {"SHADOW_ATLAS",         (FeatureLevel10Compatibility || s.DebugSettings.FeatureSet.UseShadowAtlas) ? "1" : "0"} );
         list.push_back( {"FP_USE_SHADOW_MASK",   s.DebugSettings.FeatureSet.UseScreenSpaceShadowMask ? "1" : "0"} );
+        // If we have TAA we reduce the number of samples for shadow filtering to save performance, since TAA will help smooth out the results. If we don't have TAA, we need to afford more samples to get better quality.
+        list.push_back( {"SHD_BLUE_NOISE",       isTaaEnabled ? "1" : "0"} );
+        list.push_back( {"PCSS_BLOCKER_TAPS",     isTaaEnabled ? "8" : "16"} );
+        list.push_back( {"PCSS_FILTER_TAPS_NEAR", isTaaEnabled ? "8" : "32"} );
+        list.push_back( {"PCSS_FILTER_TAPS_FAR",  isTaaEnabled ? "4" : "16"} );
+        list.push_back( {"PCF_FILTER_TAPS_NEAR",  isTaaEnabled ? "8" : "16"} );
+        list.push_back( {"PCF_FILTER_TAPS_FAR",   isTaaEnabled ? "4" : "8"} );
     };
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_DS_AtmosphericScattering>( "PS_DS_AtmosphericScattering.hlsl" )

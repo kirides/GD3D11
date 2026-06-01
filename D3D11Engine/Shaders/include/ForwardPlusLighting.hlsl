@@ -80,6 +80,8 @@ Texture2D TX_ShadowmapAtlas : register( t3 );
 Texture2DArray TX_ShadowmapArray : register( t3 );
 #endif
 
+Texture2D TX_ShadowBlueNoise : register( t6 );
+
 // Comparison sampler for shadow maps
 SamplerComparisonState SS_Comp : register( s2 );
 // Linear sampler for shadow map level sampling
