@@ -203,21 +203,22 @@ void ApplySceneWettness(float3 wsPosition, float3 vsPosition, float3 vsDir, inou
     float3 l1 = normalize(float3(0.0f, 0.5f, -1.0f));
     float3 l2 = normalize(mul(normalize(float3(-0.333f, 0.533f, 0.333f)), (float3x3) SQ_View));
     float3 l3 = normalize(mul(normalize(float3(0, 0.566f, -0.666f)), (float3x3) SQ_View));
-	
-    float3 H_1 = normalize(l1 + vsDir);
-    float3 H_2 = normalize(l2 + vsDir);
-    float3 H_3 = normalize(l3 + vsDir);
-    float spec1 = PLS_CalcBlinnPhongLighting(vsNormal, H_1);
-    float spec2 = PLS_CalcBlinnPhongLighting(vsNormal, H_2);
-    float spec3 = PLS_CalcBlinnPhongLighting(vsNormal, H_3);
 
-    float wetSpecPower = lerp(32.0f, 256.0f, 1.0f - roughness);
+    const float3 wetBaseColor = 0.0f;
+    const float3 wetLightColor = 1.0f;
+    const float wetMetallic = 0.0f;
+    const float wetAttenuation = 1.0f;
+    const float3 specLuma = float3(0.3333f, 0.3333f, 0.3333f);
+
+    float spec1 = dot(PLS_ComputeDirectPBRSpecularOnly(wetBaseColor, wetLightColor, vsNormal, vsDir, l1, roughness, wetMetallic, wetAttenuation), specLuma);
+    float spec2 = dot(PLS_ComputeDirectPBRSpecularOnly(wetBaseColor, wetLightColor, vsNormal, vsDir, l2, roughness, wetMetallic, wetAttenuation), specLuma);
+    float spec3 = dot(PLS_ComputeDirectPBRSpecularOnly(wetBaseColor, wetLightColor, vsNormal, vsDir, l3, roughness, wetMetallic, wetAttenuation), specLuma);
 		
 	// power the reflection 
     reflection = pow(reflection, 2.5f) * 1.0f;
     //reflection += fresnel * 0.1f;
 	
-    reflection += pow(spec1, wetSpecPower) * 0.7f + pow(spec2, wetSpecPower) * 0.7f + pow(spec3, wetSpecPower) * 0.6f;
+    reflection += spec1 * 0.7f + spec2 * 0.7f + spec3 * 0.6f;
 	
 	// Compute wet pixel color
     float diffuseLum = dot(diffuse, float3(0.3333f, 0.3333f, 0.3333f));

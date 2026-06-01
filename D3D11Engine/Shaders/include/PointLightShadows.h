@@ -123,6 +123,40 @@ float3 PLS_ComputeDirectPBRLighting(
     return (diffuse + specular) * lightColor * (NdotL * attenuation);
 }
 
+float3 PLS_ComputeDirectPBRSpecularOnly(
+    float3 baseColor,
+    float3 lightColor,
+    float3 N,
+    float3 V,
+    float3 L,
+    float roughness,
+    float metallic,
+    float attenuation )
+{
+    float NdotL = saturate( dot( N, L ) );
+    float NdotV = saturate( dot( N, V ) );
+    if ( NdotL <= 0.0f || NdotV <= 0.0f || attenuation <= 0.0f )
+        return 0.0f;
+
+    float3 H = normalize( V + L );
+    float NdotH = saturate( dot( N, H ) );
+    float VdotH = saturate( dot( V, H ) );
+
+    float clampedRoughness = PLS_SafeRoughness( roughness );
+    float clampedMetallic = saturate( metallic );
+    float3 F0 = lerp( float3( 0.04f, 0.04f, 0.04f ), baseColor, clampedMetallic );
+
+    float D = PLS_DistributionGGX( NdotH, clampedRoughness );
+    float G = PLS_GeometrySmith( NdotV, NdotL, clampedRoughness );
+    float3 F = PLS_FresnelSchlick( VdotH, F0 );
+
+    float3 numerator = D * G * F;
+    float denominator = max( 4.0f * NdotV * NdotL, 1e-4f );
+    float3 specular = numerator / denominator;
+
+    return specular * lightColor * (NdotL * attenuation);
+}
+
 float3 PLS_ComputePointLightLightingPBR(
     float3 baseColor,
     float3 lightColor,
