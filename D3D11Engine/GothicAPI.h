@@ -209,7 +209,7 @@ struct MaterialInfo {
     /** Loads this info from a file */
     void LoadFromFile( const std::string_view name );
 
-    struct Buffer {
+    struct BufferV1 {
         float SpecularIntensity;
         float SpecularPower;
         float NormalmapStrength;
@@ -222,6 +222,11 @@ struct MaterialInfo {
             NormalmapStrength = 1.0f;
             DisplacementFactor = 0.0f;
             Color = 0xFFFFFFFF;
+            
+            AOMultiplier = 1.0f;
+	        RoughnessMultiplier = 1.0f;
+	        MetallicMultiplier = 1.0f;
+	        PBRPadding = 0.0f;
         }
 
         void SetDefault() {
@@ -246,6 +251,31 @@ struct MaterialInfo {
                 Color == other.Color;
         }
     };
+
+    struct BufferVNext {
+        float SpecularIntensity;
+        float SpecularPower;
+        float NormalmapStrength;
+        float DisplacementFactor;
+        float4 Color;
+        float AOMultiplier;
+        float RoughnessMultiplier;
+        float MetallicMultiplier;
+        float PBRPadding;
+
+        bool operator==( const BufferVNext& other ) const noexcept {
+            return SpecularIntensity == other.SpecularIntensity &&
+                SpecularPower == other.SpecularPower &&
+                NormalmapStrength == other.NormalmapStrength &&
+                DisplacementFactor == other.DisplacementFactor &&
+                Color == other.Color &&
+                AOMultiplier == other.AOMultiplier &&
+                RoughnessMultiplier == other.RoughnessMultiplier &&
+                MetallicMultiplier == other.MetallicMultiplier;
+        }
+    };
+
+    typedef BufferVNext Buffer;
 
     PShaderID PixelShader;
     EMaterialType MaterialType;

@@ -9,6 +9,11 @@ cbuffer MI_MaterialInfo : register( b0 )
 	float MI_SpecularPower;
 	float MI_NormalmapStrength;
 	float MI_ParallaxOcclusionStrength;
+	float4 MI_Color;
+	float MI_AOMultiplier;
+	float MI_RoughnessMultiplier;
+	float MI_MetallicMultiplier;
+	float MI_PBRPadding;
 }
 
 
@@ -67,7 +72,11 @@ DEFERRED_PS_OUTPUT PSMain( PS_INPUT Input ) : SV_TARGET
 	
 	output.vNrm = EncodeNormalGBuffer(normalize(Input.vNormalVS));
 	
-	output.vSI_SP = float4(0.8f, 0.0f, 1.0f, 1.0f);
+	float3 orm = float3(0.8f, 0.6f, 0.0f);
+	float ao = saturate(orm.r * MI_AOMultiplier);
+	float roughness = max(saturate(orm.g * MI_RoughnessMultiplier), 0.045f);
+	float metallic = saturate(orm.b * MI_MetallicMultiplier);
+	output.vSI_SP = float4(ao, roughness, metallic, 1.0f);
 	
 	// Calculate velocity from clip positions
 	output.vVelocity = CalculateVelocity(Input.vCurrClipPos, Input.vPrevClipPos);

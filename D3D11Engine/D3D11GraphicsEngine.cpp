@@ -7436,6 +7436,9 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                             MaterialInfo::Buffer b = {};
 
                             b.Color = meshKey.Material->GetColor();
+                            b.AOMultiplier = 1.0f;
+                            b.RoughnessMultiplier = 1.0f;
+                            b.MetallicMultiplier = 1.0f;
                             ShaderManager->GetPShader( PShaderID::PS_DiffuseAlphaTest )->GetBuffer( "MI_MaterialInfo" ).Update( &b ).Bind();
 
                         } else {

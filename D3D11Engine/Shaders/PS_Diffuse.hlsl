@@ -29,6 +29,10 @@ cbuffer MI_MaterialInfo : register( b2 )
 	float MI_ParallaxOcclusionStrength;
 	
 	float4 MI_Color;
+	float MI_AOMultiplier;
+	float MI_RoughnessMultiplier;
+	float MI_MetallicMultiplier;
+	float MI_PBRPadding;
 }
 
 cbuffer DIST_Distance : register( b3 )
@@ -131,9 +135,9 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
 	orm = float3( 1.0f, 0.6f, 0.0f );
 #endif
 
-	float ao = orm.r;
-	float roughness = max( orm.g, 0.045f );
-	float metallic = orm.b;
+	float ao = saturate( orm.r * MI_AOMultiplier );
+	float roughness = max( saturate( orm.g * MI_RoughnessMultiplier ), 0.045f );
+	float metallic = saturate( orm.b * MI_MetallicMultiplier );
 	float3 baseColor = color.rgb;
 	float vertLighting = Input.vDiffuse.y;
 
@@ -258,9 +262,9 @@ DEFERRED_PS_OUTPUT PSMain( PS_INPUT Input ) : SV_TARGET
 	orm = float3( 1.0f, 0.6f, 0.0f );
 #endif
 
-	float ao = orm.r;
-	float roughness = max( orm.g, 0.045f );
-	float metallic = orm.b;
+	float ao = saturate( orm.r * MI_AOMultiplier );
+	float roughness = max( saturate( orm.g * MI_RoughnessMultiplier ), 0.045f );
+	float metallic = saturate( orm.b * MI_MetallicMultiplier );
 	
 	output.vDiffuse = float4(color.rgb, Input.vDiffuse.y);
 	//output.vDiffuse = float4(Input.vTexcoord2, 0, 1);
