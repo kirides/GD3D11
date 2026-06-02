@@ -151,6 +151,8 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
                 shadowMaps->BindToPixelShader( context.Get(), 3 );
                 shadowMaps->BindSampler( context.Get(), 2 );
 
+                engine.GetBlueNoiseTexture()->BindToPixelShader( 8 );
+
                 // Bind shadow mask RTV and clear to default (fully lit, sky depth)
                 auto* shadowMaskTex = graph.GetPhysicalTexture( shadowMaskResource );
                 ID3D11RenderTargetView* maskRTV = shadowMaskTex ? shadowMaskTex->GetRenderTargetView().Get() : nullptr;
@@ -172,6 +174,7 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
                 context->OMSetRenderTargets( 1, &nullRTV, nullptr );
                 context->PSSetShaderResources( 2, 1, s_nullSRVs );
                 context->PSSetShaderResources( 3, 1, s_nullSRVs );
+                context->PSSetShaderResources( 8, 1, s_nullSRVs );
             };
         } );
     }
@@ -262,6 +265,8 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
             shadowMaps->BindToPixelShader( context.Get(), 3 );
             shadowMaps->BindSampler( context.Get(), 2 );
 
+            engine.GetBlueNoiseTexture()->BindToPixelShader( 6 );
+
             // --- Bind atmosphere cbuffer at b1 ---
             GSky* sky = Engine::GAPI->GetSky();
             auto atmoCB = sky->GetAtmosphereCB();
@@ -299,6 +304,7 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
 
             // --- Unbind light SRVs and shadow mask ---
             context->PSSetShaderResources( 3, 1, s_nullSRVs );
+            context->PSSetShaderResources( 6, 1, s_nullSRVs );
             context->PSSetShaderResources( 8, 4, s_nullSRVs );
             context->PSSetShaderResources( 12, 1, s_nullSRVs );
 

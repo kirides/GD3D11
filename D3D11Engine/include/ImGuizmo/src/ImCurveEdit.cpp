@@ -3,7 +3,7 @@
 //
 // The MIT License(MIT)
 //
-// Copyright(c) 2016-2021 Cedric Guillemet
+// Copyright(c) 2016-2026 Cedric Guillemet and contributors
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files(the "Software"), to deal
@@ -123,13 +123,21 @@ namespace ImCurveEdit
          if (io.MouseDown[0])
             ret = 2;
       }
+#if IMGUI_VERSION_NUM < 19276
       if (edited)
          draw_list->AddPolyline(offsets, 4, 0xFFFFFFFF, true, 3.0f);
       else if (ret)
          draw_list->AddPolyline(offsets, 4, 0xFF80B0FF, true, 2.0f);
       else
          draw_list->AddPolyline(offsets, 4, 0xFF0080FF, true, 2.0f);
-
+#else
+      if (edited)
+         draw_list->AddPolyline(offsets, 4, 0xFFFFFFFF,  3.0f);
+      else if (ret)
+         draw_list->AddPolyline(offsets, 4, 0xFF80B0FF, 2.0f);
+      else
+         draw_list->AddPolyline(offsets, 4, 0xFF0080FF, 2.0f);
+#endif
       return ret;
    }
 
