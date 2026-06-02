@@ -412,7 +412,7 @@ XRESULT WorldConverter::LoadWorldMeshFromFile( const std::string& file, std::map
 
 static bool findStringIC( const std::string_view strHaystack, const std::string_view strNeedle )
 {
-    auto it = std::search(
+    const auto it = std::search(
       strHaystack.begin(), strHaystack.end(),
       strNeedle.begin(), strNeedle.end(),
       []( unsigned char ch1, unsigned char ch2 ) { return std::toupper( ch1 ) == std::toupper( ch2 ); }
@@ -427,8 +427,11 @@ bool AdditionalCheckWaterFall(zCTexture* texture)
     }
     const std::string_view textureName = texture->GetNameView();
 #ifdef BUILD_GOTHIC_2_6_fix
-    if ( findStringIC( textureName, "FALL" ) && !findStringIC( textureName, "SURFACE" ) && !findStringIC( textureName, "STONE" )
-        && findStringIC( textureName, "A0" ) ) {
+    if ( findStringIC( textureName, "FALL" )
+        && findStringIC( textureName, "A0" ) 
+        && !findStringIC( textureName, "SURFACE" )
+        && !findStringIC( textureName, "STONE" )
+    ) {
 #else
     if ( findStringIC( textureName, "FALL" ) && (findStringIC( textureName, "SURFACE" ) || findStringIC( textureName, "STONE" )) ) {
 #endif
