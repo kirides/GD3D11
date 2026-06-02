@@ -24,6 +24,8 @@ public:
     /** Initializes the texture from a file */
     XRESULT Init( const std::string& file );
 
+    XRESULT Init( const uint8_t* data, size_t size, const std::string& debugFileName );
+
     /** Updates the Texture-Object */
     XRESULT UpdateData( void* data, int mip = 0 );
 

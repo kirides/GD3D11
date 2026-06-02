@@ -1835,7 +1835,6 @@ void GothicAPI::OnVisualDeleted( zCVisual* visual ) {
                 if ( str.empty() ) { // Happens when the model has no skeletal-mesh
                     zSTRING mds = zmodel->GetModelName();
                     str = mds.ToChar();
-                    mds.Delete();
                 }
 
                 auto it = SkeletalMeshVisuals.find( str );

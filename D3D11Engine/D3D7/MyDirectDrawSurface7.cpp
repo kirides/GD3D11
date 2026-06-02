@@ -5,6 +5,7 @@
 #include "../D3D11Texture.h"
 #include "../zCTexture.h"
 #include "../D3D11_Helpers.h"
+#include "../zFILE_VDFS.h"
 
 #define DebugWriteTex(x)  DebugWrite(x)
 
@@ -114,10 +115,50 @@ void MyDirectDrawSurface7::LoadAdditionalResources( zCTexture* ownedTexture ) {
     D3D11Texture* fxMapTexture = nullptr;
     D3D11Texture* nrmmapTexture = nullptr;
 
+    auto file = zFILE_VDFS::Create( (R"(\_WORK\DATA\TEXTURES\REPLACEMENTS\)" + TextureName + "_NORMAL.DDS").c_str() );
+    if ( file->Exists() ) {
+        auto retOpen = file->Open( false );
+        if ( retOpen == 0 ) {
+            auto size = file->Size();
+
+            std::vector<uint8_t> storage( size );
+            // assume single op file read.
+            auto numRead = file->Read( storage.data(), size );
+            Engine::GraphicsEngine->CreateTexture( &nrmmapTexture );
+            if ( XR_SUCCESS != nrmmapTexture->Init( storage.data(), size, TextureName + "_NORMAL.DDS" ) ) {
+                SAFE_DELETE( nrmmapTexture );
+                LogWarn() << "Failed to load normalmap: " << TextureName;
+            }
+
+            auto retClose = file->Close();
+        }
+    }
+    file.reset();
+
+    file = zFILE_VDFS::Create( (R"(\_WORK\DATA\TEXTURES\REPLACEMENTS\)" + TextureName + "_ORM.DDS").c_str() );
+    if ( file->Exists() ) {
+        auto retOpen = file->Open( false );
+        if ( retOpen == 0 ) {
+            auto size = file->Size();
+
+            std::vector<uint8_t> storage( size );
+            // assume single op file read.
+            auto numRead = file->Read( storage.data(), size );
+            Engine::GraphicsEngine->CreateTexture( &ormMapTexture );
+            if ( XR_SUCCESS != ormMapTexture->Init( storage.data(), size, TextureName + "_ORM.DDS" ) ) {
+                SAFE_DELETE( ormMapTexture );
+                LogWarn() << "Failed to load ORM map: " << TextureName;
+            }
+
+            auto retClose = file->Close();
+        }
+    }
+    file.reset();
+
     // Check for normalmap in our mods folder first, then in the original games
     int j = 0;
     std::string replacementsFolder = "system\\GD3D11\\textures\\replacements\\Normalmaps_" + std::to_string( j );
-    while ( Toolbox::FolderExists( replacementsFolder ) ) {
+    while ( !nrmmapTexture && Toolbox::FolderExists( replacementsFolder ) ) {
         std::string normalmap = replacementsFolder + "\\" + TextureName + "_normal.dds";
         if ( Toolbox::FileExists( normalmap ) ) {
             // Create the texture object this is linked with

@@ -732,6 +732,7 @@ struct GothicMemoryLocations {
         static const unsigned int Close = 0x004493a0;
         static const unsigned int Read = 0x0044abf0;
         static const unsigned int Size = 0x00449410;
+        static const unsigned int SetPath = 0x004455d0;
         static const unsigned int zCObjectFactory__CreateZFile = 0x005ab940;
     };
 };

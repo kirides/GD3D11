@@ -5,18 +5,28 @@ typedef int zERROR_ID;
 
 class zFILE_VDFS {
 public:
+    zFILE_VDFS() = delete;
+    ~zFILE_VDFS() = delete;
 
-    static zFILE_VDFS* Create( const zSTRING& fileName ) {
-        auto file = (zFILE_VDFS*)malloc( GothicMemoryLocations::zFILE_VDFS::StructSize );
-        if ( file ) {
-            reinterpret_cast<void( __thiscall* )(zFILE_VDFS*, const zSTRING&)>(GothicMemoryLocations::zFILE_VDFS::Constructor2)(file, fileName);
+    // --- Lifetime Management ---
+    // Returns a managed unique_ptr with a custom deleter to prevent memory leaks
+    struct Deleter {
+        void operator()( zFILE_VDFS* file ) const {
+            if ( file ) {
+                reinterpret_cast<void( __thiscall* )(zFILE_VDFS*)>(GothicMemoryLocations::zFILE_VDFS::Destructor)(file);
+                std::free( file );
+            }
         }
-        return file;
-    }
+    };
+    using Ptr = std::unique_ptr<zFILE_VDFS, Deleter>;
 
-    static void Delete( zFILE_VDFS* _this ) {
-        reinterpret_cast<void( __thiscall* )(zFILE_VDFS*)>(GothicMemoryLocations::zFILE_VDFS::Destructor)(_this);
-        free( _this );
+    static Ptr Create( const zSTRING& fileName ) {
+        auto* memory = std::malloc( GothicMemoryLocations::zFILE_VDFS::StructSize );
+        if ( !memory ) return nullptr;
+
+        auto* file = reinterpret_cast<zFILE_VDFS*>(memory);
+        reinterpret_cast<void( __thiscall* )(zFILE_VDFS*, const zSTRING&)>(GothicMemoryLocations::zFILE_VDFS::Constructor2)(file, fileName);
+        return Ptr( file );
     }
 
     bool Exists() {
