@@ -16,14 +16,19 @@ public:
     }
 
     const char* ToChar() const {
-        const char* str = *reinterpret_cast<const char**>(reinterpret_cast<DWORD>(this) + GothicMemoryLocations::zSTRING::ToChar);
-        return (str ? str : "");
+        return _dataPtr ? _dataPtr : "";
     }
 
-    int Length() const
+    size_t Length() const
     {
-        return *reinterpret_cast<int*>(reinterpret_cast<DWORD>(this) + 0x0C);
+        return length;
     }
 
-    char data[20];
+private:
+    void* _vtblString;
+    void* _unknwn;
+    //---
+    char* _dataPtr;
+    size_t length;
+    size_t reserved;
 };

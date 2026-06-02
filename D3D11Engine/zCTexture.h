@@ -46,18 +46,35 @@ public:
     }
     */
 
-    std::string GetName() {
+    std::string GetName() const {
         const zSTRING& str = __GetName();
         return std::string( str.ToChar(), static_cast<size_t>( str.Length() ) );
     }
 
-    std::string GetNameWithoutExt() {
+    std::string GetNameWithoutExt() const {
         std::string n = GetName();
 
-        int p = n.find_last_of( '.' );
+        auto p = n.find_last_of( '.' );
 
         if ( p != std::string::npos )
             n.resize( p );
+
+        return n;
+    }
+
+    std::string_view GetNameView() const {
+        const zSTRING& str = __GetName();
+        std::string_view n = std::string_view( str.ToChar(), str.Length() );
+        return n;
+    }
+
+    std::string_view GetNameWithoutExtView() const {
+        std::string_view n = GetNameView();
+
+        auto p = n.find_last_of( '.' );
+
+        if ( p != std::string::npos )
+            return n.substr( 0, p );
 
         return n;
     }

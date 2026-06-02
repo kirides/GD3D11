@@ -4782,8 +4782,8 @@ MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCTexture* tex ) {
         MaterialInfos.emplace(tex, std::move(info));
         mi = MaterialInfos[tex].get();
         if ( tex ) {
-            mi->LoadFromFile( tex->GetNameWithoutExt() );
-            if ( std::string_view{ tex->__GetName().ToChar() } == "NW_MISC_FULLALPHA_01.TGA" ) {
+            mi->LoadFromFile( tex->GetNameWithoutExtView() );
+            if ( tex->GetNameView() == "NW_MISC_FULLALPHA_01.TGA" ) {
                 mi->MaterialType = MaterialInfo::MT_FullAlpha;
             }
         }

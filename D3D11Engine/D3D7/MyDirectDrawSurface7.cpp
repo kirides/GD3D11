@@ -83,7 +83,7 @@ void MyDirectDrawSurface7::BindToSlot( int slot ) {
 void MyDirectDrawSurface7::LoadAdditionalResources( zCTexture* ownedTexture ) {
     if ( !GothicTexture ) {
         GothicTexture = ownedTexture;
-        TextureName = GothicTexture->GetNameWithoutExt();
+        TextureName = GothicTexture->GetNameWithoutExtView();
 
         // Find texture type
         if ( Toolbox::StringContainsOneOf( TextureName, LEAF_SUBSTR, std::size( LEAF_SUBSTR ) ) ) {
