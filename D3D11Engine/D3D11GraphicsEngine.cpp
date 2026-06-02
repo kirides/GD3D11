@@ -55,6 +55,7 @@
 #include "zCOption.h"
 #include "RenderGraph.h"
 #include "D3D11Upscaling.h"
+#include "zFILE_VDFS.h"
 
 #ifdef BUILD_SPACER
 #define IS_SPACER_BUILD true
@@ -1415,6 +1416,9 @@ static const char* beginFrameEventName = "Frame";
 
 /** Called when the game wants to render a new frame */
 XRESULT D3D11GraphicsEngine::OnBeginFrame() {
+
+    zFILE_VDFS::Create( "_WORK\\DATA\\TEXTURES\\_COMPILED\\AL_D_CELLAR-C.TEX" );
+
     FrameMarkStart( beginFrameEventName );
 
     auto& rendererState = Engine::GAPI->GetRendererState();
