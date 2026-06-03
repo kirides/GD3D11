@@ -739,7 +739,7 @@ struct GothicMemoryLocations {
 #define zALLOCATOR_SUPPORTED
     struct zAllocator
     {
-        static const unsigned int Malloc = 0x0082e30c;
-        static const unsigned int Free = 0x0082e308;
+        static const unsigned int Malloc = 0x007b4460;
+        static const unsigned int Free = 0x007b446f;
     };
 };
