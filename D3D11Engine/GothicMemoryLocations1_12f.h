@@ -568,4 +568,25 @@ struct GothicMemoryLocations {
     protected:
         VobTypes() {}
     };
+    
+    struct zFILE_VDFS
+    {
+        static const unsigned int StructSize = 0x2a24;
+
+        static const unsigned int Constructor2 = 0;
+        static const unsigned int Destructor = 0;
+        static const unsigned int Exists = 0;
+        static const unsigned int Open = 0;
+        static const unsigned int Close = 0;
+        static const unsigned int Read = 0;
+        static const unsigned int Size = 0;
+        static const unsigned int SetPath = 0;
+        static const unsigned int zCObjectFactory__CreateZFile = 0;
+    };
+
+    struct zAllocator
+    {
+        static const unsigned int Malloc = 0;
+        static const unsigned int Free = 0;
+    };
 };

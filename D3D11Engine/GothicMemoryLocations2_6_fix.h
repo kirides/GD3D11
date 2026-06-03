@@ -736,6 +736,7 @@ struct GothicMemoryLocations {
         static const unsigned int zCObjectFactory__CreateZFile = 0x005ab940;
     };
 
+#define zALLOCATOR_SUPPORTED
     struct zAllocator
     {
         static const unsigned int Malloc = 0x0082e30c;
