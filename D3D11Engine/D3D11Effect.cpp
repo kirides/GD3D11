@@ -17,6 +17,7 @@
 // TODO: Remove this!
 #include "D3D11GraphicsEngine.h"
 #include "oCGame.h"
+#include "zFILE_VDFS.h"
 
 constexpr float snowSpeedFactor = 0.15f;
 
@@ -441,12 +442,22 @@ XRESULT D3D11Effect::LoadRainResources()
 {
     D3D11GraphicsEngineBase* e = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine);
 
+    std::string path;
+    path.resize( MAX_PATH );
+    path.resize(GetModuleFileNameA( nullptr, path.data(), path.size()-1 ));
+
+    std::filesystem::path basePath = std::filesystem::path( path ).parent_path() / "GD3D11" / "Textures";
+    
     if ( !RainTextureArray.Get() ) {
         HRESULT hr = S_OK;
         // Load textures...
         LogInfo() << "Loading rain-drop textures";
         ZoneScopedN( "LoadRainTextures" );
-        LE( LoadTextureArray( e->GetDevice().Get(), e->GetContext().Get(), "system\\GD3D11\\Textures\\Raindrops\\cv0_vPositive_", 370, &RainTextureArray, &RainTextureArraySRV ) );
+        LE( LoadTextureArray( e->GetDevice().Get(), e->GetContext().Get(), "\\_work\\Data\\Textures\\GD3D11\\Raindrops\\cv0_vPositive_", 370, &RainTextureArray, &RainTextureArraySRV ) );
+        if (!SUCCEEDED(hr)) {
+            // try old file paths
+            LE( LoadTextureArray( e->GetDevice().Get(), e->GetContext().Get(), (basePath / "Raindrops"/"cv0_vPositive_").string().c_str(), 370, &RainTextureArray, &RainTextureArraySRV ) );
+        }
     }
 
     if ( !SnowTextureArray.Get() ) {
@@ -454,7 +465,10 @@ XRESULT D3D11Effect::LoadRainResources()
         // Load textures...
         LogInfo() << "Loading snow flake textures";
         ZoneScopedN( "LoadSnowTextures" );
-        LE( LoadTextureArray( e->GetDevice().Get(), e->GetContext().Get(), "system\\GD3D11\\Textures\\Snowflakes\\Snow_", 256, &SnowTextureArray, &SnowTextureArraySRV ) );
+        LE( LoadTextureArray( e->GetDevice().Get(), e->GetContext().Get(), "\\_work\\Data\\Textures\\GD3D11\\Snowflakes\\Snow_", 256, &SnowTextureArray, &SnowTextureArraySRV ) );
+        if (!SUCCEEDED(hr)) {
+            LE( LoadTextureArray( e->GetDevice().Get(), e->GetContext().Get(), (basePath / "Snowflakes"/"Snow_").string().c_str(), 256, &SnowTextureArray, &SnowTextureArraySRV ) );
+        }
     }
 
     if ( !RainShadowmap.get() ) {
@@ -625,11 +639,33 @@ HRESULT LoadTextureArray( Microsoft::WRL::ComPtr<ID3D11Device1> pd3dDevice, Micr
 
     //	CHAR szTextureName[MAX_PATH];
     CHAR str[MAX_PATH];
+
+    std::vector<uint8_t> storage{};
     for ( int i = 0; i < iNumTextures; i++ ) {
         sprintf( str, "%s%.4d.dds", sTexturePrefix, i );
 
+        auto file = zFILE_VDFS::Create( str );
+        if ( !file->Exists() ) {
+            LogError() << "File does not exist: " << str;
+            return E_FAIL;
+        }
+        auto retOpen = file->Open( false );
+        if ( retOpen != 0 ) {
+            LogError() << "Failed to open filepath: " << str;
+            return E_FAIL;
+        }
+        auto size = file->Size();
+
+        if ( storage.size() < size ) {
+            storage.resize( size*2 );
+        }
+        // assume single op file read.
+        auto numRead = file->Read( storage.data(), size );
+        auto retClose = file->Close();
+
+
         Microsoft::WRL::ComPtr<ID3D11Resource> pRes;
-        LE( CreateDDSTextureFromFileEx( pd3dDevice.Get(), Toolbox::ToWideChar( str ).c_str(), 0, D3D11_USAGE_STAGING, 0, D3D11_CPU_ACCESS_WRITE, 0, DDS_LOADER_DEFAULT, pRes.GetAddressOf(), nullptr ) );
+        LE( CreateDDSTextureFromMemoryEx( pd3dDevice.Get(), storage.data(), size, 0, D3D11_USAGE_STAGING, 0, D3D11_CPU_ACCESS_WRITE, 0, DDS_LOADER_DEFAULT, pRes.GetAddressOf(), nullptr));
         if ( pRes.Get() ) {
             Microsoft::WRL::ComPtr<ID3D11Texture2D> pTemp;
             pRes.As( &pTemp );
