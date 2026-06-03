@@ -577,6 +577,7 @@ void ApplyGraphicsPresets( GothicRendererSettings& s ) {
     
     Engine::GAPI->UpdateTextureMaxSize();
     Engine::GraphicsEngine->ReloadShaders();
+    Engine::GAPI->UpdateCompressBackBuffer();
 }
 
 namespace

@@ -739,7 +739,9 @@ struct GothicMemoryLocations {
 #define zALLOCATOR_SUPPORTED
     struct zAllocator
     {
-        static const unsigned int Malloc = 0x007b4460;
-        static const unsigned int Free = 0x007b446f;
+        // pointer to shw32 shi_malloc func
+        static const unsigned int Malloc = 0x0082e30c;
+        // pointer to shw32 shi_delete func
+        static const unsigned int Free = 0x0082e308;
     };
 };
