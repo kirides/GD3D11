@@ -6730,7 +6730,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
         // Use default material info for now
         MaterialInfo defInfo = {};
         ActivePS->GetBuffer( "MI_MaterialInfo" )
-            .Update( &defInfo )
+            .Update( &defInfo.buffer )
             .Bind();
 
         XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
@@ -7439,9 +7439,9 @@ XRESULT D3D11GraphicsEngine::DrawPolyStrips( bool noTextures ) {
         .Bind();
 
     // Use default material info for now
-    MaterialInfo defInfo;
+    MaterialInfo defInfo{};
     ActivePS->GetBuffer( "MI_MaterialInfo" )
-        .Update( &defInfo )
+        .Update( &defInfo.buffer )
         .Bind();
 
     auto vsBufMPI = ActiveVS->GetBuffer( "Matrices_PerInstances" );

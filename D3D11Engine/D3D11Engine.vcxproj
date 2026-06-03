@@ -1088,6 +1088,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="Widget_TransRot.h" />
     <ClInclude Include="win32ClipboardWrapper.h" />
     <ClInclude Include="WorldObjects.h" />
+    <ClInclude Include="zAllocator.h" />
     <ClInclude Include="zCArray.h" />
     <ClInclude Include="zCArrayAdapt.h" />
     <ClInclude Include="zCCamera.h" />
@@ -1110,6 +1111,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="zCModelTexAniState.h" />
     <ClInclude Include="zCMorphMesh.h" />
     <ClInclude Include="zCObject.h" />
+    <ClInclude Include="zFILE_VDFS.h" />
     <ClInclude Include="zCOption.h" />
     <ClInclude Include="zCParser.h" />
     <ClInclude Include="zCParticleFX.h" />

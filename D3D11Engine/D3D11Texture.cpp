@@ -101,6 +101,33 @@ XRESULT D3D11Texture::Init( const std::string& file ) {
     return XR_SUCCESS;
 }
 
+XRESULT D3D11Texture::Init( const uint8_t* data, size_t size, const std::string& debugFileName ) {
+    HRESULT hr;
+    D3D11GraphicsEngineBase* engine = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine);
+
+    //LogInfo() << "Loading Engine-Texture: " << debugFileName;
+
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> res;
+    LE( CreateDDSTextureFromMemory( engine->GetDevice().Get(), data, size,
+        reinterpret_cast<ID3D11Resource**>(res.ReleaseAndGetAddressOf()), ShaderResourceView.GetAddressOf() ) );
+
+    if ( !ShaderResourceView.Get() || !res.Get() )
+        return XR_FAILED;
+
+    D3D11_TEXTURE2D_DESC desc;
+    res->GetDesc( &desc );
+
+    Texture = res;
+    TextureFormat = desc.Format;
+
+    TextureSize.x = desc.Width;
+    TextureSize.y = desc.Height;
+    SetDebugName( res.Get(), "D3D11Texture(\"" + debugFileName + "\")->Texture" );
+    SetDebugName( ShaderResourceView.Get(), "D3D11Texture(\"" + debugFileName + "\")->ShaderResourceView" );
+
+    return XR_SUCCESS;
+}
+
 /** Updates the Texture-Object */
 XRESULT D3D11Texture::UpdateData( void* data, int mip ) {
     D3D11GraphicsEngineBase* engine = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine);

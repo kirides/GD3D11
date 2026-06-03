@@ -410,19 +410,30 @@ XRESULT WorldConverter::LoadWorldMeshFromFile( const std::string& file, std::map
     return XR_SUCCESS;
 }
 
+static bool findStringIC( const std::string_view strHaystack, const std::string_view strNeedle )
+{
+    const auto it = std::search(
+      strHaystack.begin(), strHaystack.end(),
+      strNeedle.begin(), strNeedle.end(),
+      []( unsigned char ch1, unsigned char ch2 ) { return std::toupper( ch1 ) == std::toupper( ch2 ); }
+    );
+    return (it != strHaystack.end());
+}
+
 bool AdditionalCheckWaterFall(zCTexture* texture)
 {
     if ( !texture ) {
         return false;
     }
-
-    std::string textureName = texture->GetName();
-    std::transform( textureName.begin(), textureName.end(), textureName.begin(), toupper );
+    const std::string_view textureName = texture->GetNameView();
 #ifdef BUILD_GOTHIC_2_6_fix
-    if ( textureName.find( "FALL" ) != std::string::npos && textureName.find( "SURFACE" ) == std::string::npos && textureName.find( "STONE" ) == std::string::npos
-        && textureName.find( "A0" ) != std::string::npos ) {
+    if ( findStringIC( textureName, "FALL" )
+        && findStringIC( textureName, "A0" ) 
+        && !findStringIC( textureName, "SURFACE" )
+        && !findStringIC( textureName, "STONE" )
+    ) {
 #else
-    if ( textureName.find( "FALL" ) != std::string::npos && (textureName.find( "SURFACE" ) != std::string::npos || textureName.find( "STONE" ) != std::string::npos) ) {
+    if ( findStringIC( textureName, "FALL" ) && (findStringIC( textureName, "SURFACE" ) || findStringIC( textureName, "STONE" )) ) {
 #endif
         // Let's make it work at least with og waterfall foam
         return true;

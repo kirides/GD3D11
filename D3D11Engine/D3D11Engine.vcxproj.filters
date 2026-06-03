@@ -732,24 +732,6 @@
     <ClInclude Include="SMAA\D3D11SMAA.h">
       <Filter>Engine\D3D11\PFX</Filter>
     </ClInclude>
-    <ClInclude Include="include\ImGuizmo\GraphEditor.h">
-      <Filter>Librarys\ImGuizmo</Filter>
-    </ClInclude>
-    <ClInclude Include="include\ImGuizmo\ImCurveEdit.h">
-      <Filter>Librarys\ImGuizmo</Filter>
-    </ClInclude>
-    <ClInclude Include="include\ImGuizmo\ImGradient.h">
-      <Filter>Librarys\ImGuizmo</Filter>
-    </ClInclude>
-    <ClInclude Include="include\ImGuizmo\ImGuizmo.h">
-      <Filter>Librarys\ImGuizmo</Filter>
-    </ClInclude>
-    <ClInclude Include="include\ImGuizmo\ImSequencer.h">
-      <Filter>Librarys\ImGuizmo</Filter>
-    </ClInclude>
-    <ClInclude Include="include\ImGuizmo\ImZoomSlider.h">
-      <Filter>Librarys\ImGuizmo</Filter>
-    </ClInclude>
     <ClInclude Include="D3D11CascadedShadowMapBuffer.h">
       <Filter>Engine\D3D11</Filter>
     </ClInclude>
@@ -855,6 +837,18 @@
     <ClInclude Include="D3D11FileRelativeInclude.h" />
     <ClInclude Include="D3D11TracyDebug.h">
       <Filter>Engine\D3D11</Filter>
+    </ClInclude>
+    <ClInclude Include="include\ImGuizmo\src\GraphEditor.h" />
+    <ClInclude Include="include\ImGuizmo\src\ImCurveEdit.h" />
+    <ClInclude Include="include\ImGuizmo\src\ImGradient.h" />
+    <ClInclude Include="include\ImGuizmo\src\ImGuizmo.h" />
+    <ClInclude Include="include\ImGuizmo\src\ImSequencer.h" />
+    <ClInclude Include="include\ImGuizmo\src\ImZoomSlider.h" />
+    <ClInclude Include="zFILE_VDFS.h">
+      <Filter>Engine\GAPI</Filter>
+    </ClInclude>
+    <ClInclude Include="zAllocator.h">
+      <Filter>Engine\GAPI</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -1078,21 +1072,6 @@
     <ClCompile Include="SMAA\D3D11SMAA.cpp">
       <Filter>Engine\D3D11\PFX</Filter>
     </ClCompile>
-    <ClCompile Include="include\ImGuizmo\GraphEditor.cpp">
-      <Filter>Librarys\ImGuizmo</Filter>
-    </ClCompile>
-    <ClCompile Include="include\ImGuizmo\ImCurveEdit.cpp">
-      <Filter>Librarys\ImGuizmo</Filter>
-    </ClCompile>
-    <ClCompile Include="include\ImGuizmo\ImGradient.cpp">
-      <Filter>Librarys\ImGuizmo</Filter>
-    </ClCompile>
-    <ClCompile Include="include\ImGuizmo\ImGuizmo.cpp">
-      <Filter>Librarys\ImGuizmo</Filter>
-    </ClCompile>
-    <ClCompile Include="include\ImGuizmo\ImSequencer.cpp">
-      <Filter>Librarys\ImGuizmo</Filter>
-    </ClCompile>
     <ClCompile Include="D3D11CascadedShadowMapBuffer.cpp">
       <Filter>Engine\D3D11</Filter>
     </ClCompile>
@@ -1172,6 +1151,11 @@
     <ClCompile Include="include\meshoptimizer\src\quantization.cpp" />
     <ClCompile Include="include\meshoptimizer\src\vcacheoptimizer.cpp" />
     <ClCompile Include="include\meshoptimizer\src\vfetchoptimizer.cpp" />
+    <ClCompile Include="include\ImGuizmo\src\GraphEditor.cpp" />
+    <ClCompile Include="include\ImGuizmo\src\ImCurveEdit.cpp" />
+    <ClCompile Include="include\ImGuizmo\src\ImGradient.cpp" />
+    <ClCompile Include="include\ImGuizmo\src\ImGuizmo.cpp" />
+    <ClCompile Include="include\ImGuizmo\src\ImSequencer.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="ddraw.def">
