@@ -5,17 +5,30 @@
 typedef int zERROR_ID;
 
 class zFILE_VDFS {
-public:
-
-    zFILE_VDFS( const zSTRING& fileName ) {
-        reinterpret_cast<void( __thiscall* )(zFILE_VDFS*, const zSTRING&)>(GothicMemoryLocations::zFILE_VDFS::Constructor2)(this, fileName);
-    }
+private:
     ~zFILE_VDFS() {
         reinterpret_cast<void( __thiscall* )(zFILE_VDFS*)>(GothicMemoryLocations::zFILE_VDFS::Destructor)(this);
     }
+public:
+    zFILE_VDFS( const zSTRING& fileName ) {
+        reinterpret_cast<void( __thiscall* )(zFILE_VDFS*, const zSTRING&)>(GothicMemoryLocations::zFILE_VDFS::Constructor2)(this, fileName);
+    }
 
-    static std::unique_ptr<zFILE_VDFS> Create( const zSTRING& fileName ) {
-        return std::make_unique<zFILE_VDFS>( fileName );
+    struct Deleter {
+        void operator()( zFILE_VDFS* file ) const {
+            if ( file ) {
+                delete file;
+            }
+        }
+    };
+
+    using Ptr = std::unique_ptr<zFILE_VDFS, Deleter>;
+
+    static Ptr Create( const zSTRING& fileName ) {
+
+        auto ptr = new zFILE_VDFS( fileName );
+
+        return Ptr( ptr );
     }
 
     static void* operator new(std::size_t count) {
