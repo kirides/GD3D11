@@ -14,6 +14,10 @@
 #define DEBUG_D3D11
 #endif
 
+static auto GetPipelineState() -> auto& {
+    return Engine::GAPI->GetRendererState().PipelineState;
+}
+
 D3D11GraphicsEngineBase::D3D11GraphicsEngineBase() {
     OutputWindow = HWND( 0 );
     PresentPending = false;
@@ -34,23 +38,6 @@ XRESULT D3D11GraphicsEngineBase::SetWindow( HWND hWnd ) {
     OutputWindow = hWnd;
 
     OnResize( Resolution );
-
-    return XR_SUCCESS;
-}
-
-/** Called to set the current viewport */
-XRESULT D3D11GraphicsEngineBase::SetViewport( const ViewportInfo& viewportInfo ) {
-    // Set the viewport
-    D3D11_VIEWPORT viewport = {};
-
-    viewport.TopLeftX = static_cast<float>(viewportInfo.TopLeftX);
-    viewport.TopLeftY = static_cast<float>(viewportInfo.TopLeftY);
-    viewport.Width = static_cast<float>(viewportInfo.Width);
-    viewport.Height = static_cast<float>(viewportInfo.Height);
-    viewport.MinDepth = viewportInfo.MinZ;
-    viewport.MaxDepth = viewportInfo.MaxZ;
-
-    GetContext()->RSSetViewports( 1, &viewport );
 
     return XR_SUCCESS;
 }
@@ -166,25 +153,25 @@ void D3D11GraphicsEngineBase::SetDefaultStates() {
     Engine::GAPI->GetRendererState().DepthState.SetDirty();
     Engine::GAPI->GetRendererState().SamplerState.SetDirty();
 
-    GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
+    GetPipelineState().SetPsSamplers(0, 1, DefaultSamplerState.GetAddressOf());
 
     UpdateRenderStates();
+    GetPipelineState().Apply(GetContext().Get());
 }
 
 /** Draws a vertexarray, used for rendering gothics UI */
 XRESULT D3D11GraphicsEngineBase::DrawVertexArray( ExVertexStruct* vertices, unsigned int numVertices, unsigned int startVertex, unsigned int stride ) {
     UpdateRenderStates();
+    auto& pipeline = GetPipelineState();
     auto vShader = ShaderManager->GetVShader( VShaderID::VS_TransformedEx );
     auto pShader = ShaderManager->GetPShader( PShaderID::PS_FixedFunctionPipe );
 
     // Bind the FF-Info to the first PS slot
     pShader->GetBuffer( "FFPipelineConstantBuffer" ).Update( &Engine::GAPI->GetRendererState().GraphicsState ).Bind();
 
-    vShader->Apply();
-    pShader->Apply();
-
-    // Set vertex type
-    GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+    pipeline.SetPixelShader( pShader );
+    pipeline.SetVertexShader( vShader );
+    pipeline.SetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
     // Bind the viewport information to the shader
     D3D11_VIEWPORT vp;
@@ -222,6 +209,7 @@ XRESULT D3D11GraphicsEngineBase::DrawVertexArray( ExVertexStruct* vertices, unsi
     UINT uStride = stride;
     GetContext()->IASetVertexBuffers( 0, 1, TempVertexBuffer->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
 
+    pipeline.Apply(GetContext().Get());
     //Draw the mesh
     GetContext()->Draw( numVertices, startVertex );
 
@@ -230,12 +218,20 @@ XRESULT D3D11GraphicsEngineBase::DrawVertexArray( ExVertexStruct* vertices, unsi
 
 /** Sets the active pixel shader object */
 XRESULT D3D11GraphicsEngineBase::SetActivePixelShader( PShaderID shader ) {
-    ActivePS = ShaderManager->GetPShader( shader );
+
+    GetPipelineState().SetPixelShader( ShaderManager->GetPShader( shader ));
     return XR_SUCCESS;
 }
 
 XRESULT D3D11GraphicsEngineBase::SetActiveVertexShader( VShaderID shader ) {
-    ActiveVS = ShaderManager->GetVShader( shader );
+    auto& pipeline = GetPipelineState();
+    if ( auto vs = ShaderManager->GetVShader( shader ) ) {
+        pipeline.SetInputLayout( vs->GetInputLayout().Get());
+        pipeline.SetVertexShader( vs);
+    } else {
+        pipeline.SetInputLayout( nullptr );
+        pipeline.SetVertexShader( nullptr );
+    }
     return XR_SUCCESS;
 }
 
@@ -282,7 +278,7 @@ XRESULT D3D11GraphicsEngineBase::DrawVertexBufferFF( D3D11VertexBuffer* vb, unsi
     SetupVS_ExMeshDrawCall();
 
     // Bind the FF-Info to the first PS slot
-    ActivePS->GetBuffer( "FFPipelineConstantBuffer" ).Update( &Engine::GAPI->GetRendererState().GraphicsState ).Bind();
+    GetActivePS()->GetBuffer( "FFPipelineConstantBuffer" ).Update( &Engine::GAPI->GetRendererState().GraphicsState ).Bind();
 
     UINT offset = 0;
     UINT uStride = stride;

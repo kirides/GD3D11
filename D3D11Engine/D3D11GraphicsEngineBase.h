@@ -3,6 +3,9 @@
 #include "D3DGraphicsEventRecord.h"
 #include <dxgi1_5.h>
 
+#include "Engine.h"
+#include "GothicAPI.h"
+
 class D3D11DepthBufferState;
 class D3D11BlendStateInfo;
 class D3D11RasterizerStateInfo;
@@ -44,7 +47,7 @@ public:
     XRESULT OnEndFrame() override PURE;
 
     /** Called to set the current viewport */
-    XRESULT SetViewport( const ViewportInfo& viewportInfo ) override;
+    XRESULT SetViewport( const ViewportInfo& viewportInfo ) override PURE;
 
     /** Called when the game wants to clear the bound rendertarget */
     XRESULT Clear( const float4& color ) override PURE;
@@ -96,11 +99,9 @@ public:
     auto GetContext() -> const auto& { return Context; }
 
     /** Pixel Shader functions */
-    void UnbindActivePS() { ActivePS = nullptr; }
-    auto GetActivePS() -> auto& { return ActivePS; }
-    auto GetActiveVS() -> auto& { return ActiveVS; }
+    auto GetActivePS() -> auto { return Engine::GAPI->GetRendererState().PipelineState.GetCurrentPS(); }
+    auto GetActiveVS() -> auto { return Engine::GAPI->GetRendererState().PipelineState.GetCurrentVS(); }
     auto GetActiveGS() -> auto& { return ActiveGS; }
-    auto SetActivePS(std::shared_ptr<D3D11PShader>& ps) -> auto& { return ActivePS = ps; }
 
     /** Returns the current resolution */
     INT2 GetResolution() override { return Resolution; }
@@ -177,8 +178,8 @@ protected:
     PShaderID Resolved_DiffuseNormalmappedAlphatest;
     PShaderID Resolved_DiffuseNormalmappedAlphatestFxMap;
 
-    std::shared_ptr<D3D11VShader> ActiveVS;
-    std::shared_ptr<D3D11PShader> ActivePS;
+    // std::shared_ptr<D3D11VShader> ActiveVS;
+    // std::shared_ptr<D3D11PShader> ActivePS;
     std::shared_ptr<D3D11HDShader> ActiveHDS;
     std::shared_ptr<D3D11GShader> ActiveGS;
 

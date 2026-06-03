@@ -120,7 +120,7 @@ struct GothicGraphicsState {
     FixedFunctionStage FF_Stages[2];
 };
 
-__declspec(align(4)) struct GothicPipelineState {
+struct alignas(4) GothicPipelineState {
     /** Sets this state dirty, which means that it will be updated before next rendering */
     void SetDirty() {
         StateDirty = true;
@@ -398,6 +398,102 @@ struct GothicBlendStateInfo : public GothicPipelineState {
         c.StructSize = StructSize;
         c.SetDirty();
     }
+};
+
+class D3D11VShader;
+class D3D11PShader;
+class D3D11CShader;
+struct alignas(4) GothicPipelineStateInfo {
+    GothicPipelineStateInfo() = default;
+
+private:
+    template<typename T>
+    struct LastCurrent
+    {
+        T Last;
+        T Current;
+
+        void Update( T newCurrent ) {
+            Last = Current;
+            Current = newCurrent;
+        }
+        bool IsDirty() {
+            return Last != Current;
+        }
+    };
+    
+    LastCurrent<ID3D11InputLayout*> InputLayout;
+    LastCurrent<std::shared_ptr<D3D11PShader>> PixelShader;
+    LastCurrent<std::shared_ptr<D3D11VShader>> VertexShader;
+    LastCurrent<std::shared_ptr<D3D11CShader>> ComputeShader;
+    LastCurrent<D3D11_PRIMITIVE_TOPOLOGY> PrimitiveTopology;
+    LastCurrent<std::array<ID3D11RenderTargetView*, 8>> RenderTargets;
+    LastCurrent<ID3D11DepthStencilView*> DepthStencil;
+    LastCurrent<std::array<ID3D11SamplerState*, 8>> PsSamplers;
+    LastCurrent<std::array<ID3D11SamplerState*, 8>> VsSamplers;
+    LastCurrent<D3D11_VIEWPORT> Viewport;
+public:
+    void Apply( ID3D11DeviceContext* context );
+    void SetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY value ) {
+        if ( PrimitiveTopology.Last == value )
+            return;
+        PrimitiveTopology.Current = value;
+    }
+    
+    void SetVertexShader(const std::shared_ptr<D3D11VShader>& value ) {
+        if ( VertexShader.Last == value )
+            return;
+        VertexShader.Current = value;
+    }
+    void SetPixelShader(const std::shared_ptr<D3D11PShader>& value ) {
+        if ( PixelShader.Last == value )
+            return;
+        PixelShader.Current = value;
+    }
+    void SetComputShader(const std::shared_ptr<D3D11CShader>& value ) {
+        if ( ComputeShader.Last == value )
+            return;
+        ComputeShader.Current = value;
+    }
+     void SetInputLayout( ID3D11InputLayout* value ) {
+        if ( InputLayout.Last == value )
+            return;
+        InputLayout.Current = value;
+     }
+    
+    void SetRenderTargets(const std::array<ID3D11RenderTargetView*, 8>& renderTargetViews, ID3D11DepthStencilView* depthStencilView) {
+        if ( RenderTargets.Last != renderTargetViews || DepthStencil.Last != depthStencilView ) {
+            RenderTargets.Current = renderTargetViews;
+            DepthStencil.Current = depthStencilView;
+        }
+    }
+    
+    void SetPsSamplers(int slot, int count, ID3D11SamplerState** value) {
+        const auto topEnd = std::min(slot + count, static_cast<int>(std::size(PsSamplers.Last)));
+        for (int i = slot; i < topEnd; ++i) {
+            if (PsSamplers.Last[i] != value[i - slot]) {
+                PsSamplers.Current[i] = value[i - slot];
+            }
+        }
+    }
+    
+    void SetVsSamplers(int slot, int count, ID3D11SamplerState** value) {
+        const auto topEnd = std::min(slot + count, static_cast<int>(std::size(VsSamplers.Last)));
+        for (int i = slot; i < topEnd; ++i) {
+            if (VsSamplers.Last[i] != value[i - slot]) {
+                VsSamplers.Current[i] = value[i - slot];
+            }
+        }
+    }
+    
+    void SetViewport(const D3D11_VIEWPORT& vp) {
+        if (Viewport.Last == vp)
+            return;
+        Viewport.Current = vp;
+    }
+
+    auto GetCurrentPS() -> auto { return PixelShader.Current; };
+    auto GetCurrentVS() -> auto { return VertexShader.Current; };
 };
 
 /** Blend state information */
@@ -1166,5 +1262,6 @@ struct GothicRendererState {
     GothicTransformInfo TransformState;
     GothicRendererSettings RendererSettings;
     GothicRendererInfo RendererInfo;
+    GothicPipelineStateInfo PipelineState;
 };
 #pragma warning( pop )

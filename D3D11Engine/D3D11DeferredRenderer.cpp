@@ -165,10 +165,9 @@ bool D3D11DeferredRenderer::BindShaderForTexture( D3D11ShaderManager& shaderMana
             newShader = shaderManager.GetPShader( resolvedDiffuseNormalmapped );
         }
     }
-
+    Engine::GAPI->GetRendererState().PipelineState.SetPixelShader( newShader );
+    
     if ( active != newShader ) {
-        activePS = newShader;
-        activePS->Apply();
         return true;
     }
     return false;

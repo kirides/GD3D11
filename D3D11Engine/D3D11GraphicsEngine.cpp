@@ -98,6 +98,10 @@ extern bool userHaveAMDGPU;
 
 namespace
 {
+    auto GetPipelineState() -> auto& {
+        return Engine::GAPI->GetRendererState().PipelineState;
+    }
+    
     static ID3D11ShaderResourceView* s_nullSRVs[16] = { nullptr };
 
     bool EnsureStructuredMatrixBuffer(
@@ -1884,7 +1888,9 @@ XRESULT D3D11GraphicsEngine::SetViewport( const ViewportInfo& viewportInfo ) {
     viewport.MinDepth = viewportInfo.MinZ;
     viewport.MaxDepth = viewportInfo.MaxZ;
 
-    GetContext()->RSSetViewports( 1, &viewport );
+    auto& pipeline = GetPipelineState();
+    pipeline.SetViewport(viewport);
+    pipeline.Apply(GetContext().Get());
 
     return XR_SUCCESS;
 }
@@ -2233,6 +2239,7 @@ XRESULT D3D11GraphicsEngine::DrawVertexArray( ExVertexStruct* vertices,
     GetContext()->IASetVertexBuffers( 0, 1, TempHUDVertexBuffer->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
 
     // Draw the mesh
+    GetPipelineState().Apply(GetContext().Get());
     GetContext()->Draw( numVertices, startVertex );
 
     Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
@@ -2442,12 +2449,14 @@ XRESULT  D3D11GraphicsEngine::DrawSkeletalVertexNormals( SkeletalVobInfo* vi,
 /** Draws a skeletal mesh */
 XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
     const std::span<XMFLOAT4X4> transforms, float4 color, const XMFLOAT4X4& world, float fatness ) {
+    
+    auto& pipelineState = GetPipelineState();
+    
     if ( GetRenderingStage() == DES_SHADOWMAP_CUBE ) {
-        SetActiveVertexShader( VShaderID::VS_ExSkeletalCube );
+        pipelineState.SetVertexShader( GetShaderManager().GetVShader(VShaderID::VS_ExSkeletalCube) );
     } else {
-        SetActiveVertexShader( VShaderID::VS_ExSkeletal );
+        pipelineState.SetVertexShader( GetShaderManager().GetVShader(VShaderID::VS_ExSkeletal) );
     }
-
 
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
@@ -2461,7 +2470,7 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
     // Set PrevWorld for motion vectors (use current world if no previous is available)
     cb2.PrevWorld = vi->HasValidPrevTransforms ? vi->PrevWorldMatrix : world;
 
-    ActiveVS->GetBuffer("Matrices_PerInstances").Update( &cb2 ).Bind();
+    GetActiveVS()->GetBuffer("Matrices_PerInstances").Update( &cb2 ).Bind();
 
     bool useStructuredBones = !FeatureLevel10Compatibility;
     if ( useStructuredBones ) {
@@ -2488,19 +2497,19 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
             || !SkeletalPrevBoneTransformsBufferTransient->GetShaderResourceView().Get() ) {
             useStructuredBones = false;
         } else {
-            ActiveVS->BindResource( "BoneTransforms", SkeletalBoneTransformsBufferTransient->GetShaderResourceView().Get() );
-            ActiveVS->BindResource( "PrevBoneTransforms", SkeletalPrevBoneTransformsBufferTransient->GetShaderResourceView().Get() );
+            GetActiveVS()->BindResource( "BoneTransforms", SkeletalBoneTransformsBufferTransient->GetShaderResourceView().Get() );
+            GetActiveVS()->BindResource( "PrevBoneTransforms", SkeletalPrevBoneTransformsBufferTransient->GetShaderResourceView().Get() );
 
             VS_ExConstantBuffer_SkeletalBoneRange range = {};
             range.BoneCount = static_cast<unsigned int>(boneCount);
             range.UseStructuredBones = 1u;
-            ActiveVS->GetBuffer( "BoneTransformRange" ).Update( &range ).Bind();
+            GetActiveVS()->GetBuffer( "BoneTransformRange" ).Update( &range ).Bind();
         }
     }
 
     if ( !useStructuredBones ) {
         // Copy bones
-        ActiveVS->GetBuffer("BoneTransforms").Update( &transforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( transforms.size(), NUM_MAX_BONES ) ).Bind();
+        GetActiveVS()->GetBuffer("BoneTransforms").Update( &transforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( transforms.size(), NUM_MAX_BONES ) ).Bind();
 
         // Copy previous frame bone transforms for motion vectors (only for main scene rendering, not shadow maps)
         if ( GetRenderingStage() == DES_SHADOWMAP_CUBE ) {
@@ -2511,9 +2520,9 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
                 ? std::span(vi->PrevBoneTransforms)
                 : transforms;
 
-            ActiveVS->GetBuffer("PrevBoneTransforms").Update( &prevTransforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( prevTransforms.size(), NUM_MAX_BONES ) ).Bind();
+            GetActiveVS()->GetBuffer("PrevBoneTransforms").Update( &prevTransforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( prevTransforms.size(), NUM_MAX_BONES ) ).Bind();
         } else {
-            ActiveVS->GetBuffer("BoneTransforms").Bind( ActiveVS->GetInputIndex( "PrevBoneTransforms" ) ); // just bind the current bones again
+            GetActiveVS()->GetBuffer("BoneTransforms").Bind( GetActiveVS()->GetInputIndex( "PrevBoneTransforms" ) ); // just bind the current bones again
         }
     }
 
@@ -2522,21 +2531,20 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
             << NUM_MAX_BONES << " bones! (" << transforms.size() << ")Up this limit!";
     }
 
-    ActiveVS->Apply();
-
+    GetActiveVS()->Apply();
     if ( RenderingStage != DES_GHOST ) {
         bool linearDepth = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches & GSWITCH_LINEAR_DEPTH) != 0;
         if ( linearDepth ) {
             ActivePS = ShaderManager->GetPShader( PShaderID::PS_LinDepth );
-            ActivePS->Apply();
+            GetPipelineState().SetPixelShader( ActivePS );
         } else if ( RenderingStage == DES_SHADOWMAP ) {
             // Unbind PixelShader in this case
-            Context->PSSetShader( nullptr, nullptr, 0 );
-            ActivePS = nullptr;
+            GetPipelineState().SetPixelShader( nullptr );
         } else {
             // It is only to indicate that we want pixel shader(to populate gbuffer)
             // the actual shader will be activated before drawing
             ActivePS = ShaderManager->GetPShader( PShaderID::PS_LinDepth );
+            GetPipelineState().SetPixelShader( ActivePS );
         }
     }
 
@@ -2583,6 +2591,7 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
 XRESULT D3D11GraphicsEngine::DrawSkeletalMesh_Layered( SkeletalVobInfo* vi,
     const std::span<XMFLOAT4X4> transforms, float4 color, XMFLOAT4X4& world, float fatness ) {
     SetActiveVertexShader( VShaderID::VS_ExSkeletalLayered );
+    auto& pipeline = GetPipelineState();
 
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
@@ -2594,7 +2603,7 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh_Layered( SkeletalVobInfo* vi,
     cb2.PrevWorld = world;
     cb2.PI_ModelColor = color;
     cb2.PI_ModelFatness = fatness;
-    ActiveVS->GetBuffer("Matrices_PerInstances").Update( &cb2 ).Bind();
+    GetActiveVS()->GetBuffer("Matrices_PerInstances").Update( &cb2 ).Bind();
 
     bool useStructuredBones = !FeatureLevel10Compatibility;
     if ( useStructuredBones ) {
@@ -2604,17 +2613,17 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh_Layered( SkeletalVobInfo* vi,
             || !SkeletalBoneTransformsBufferTransient->GetShaderResourceView().Get() ) {
             useStructuredBones = false;
         } else {
-            ActiveVS->BindResource( "BoneTransforms", SkeletalBoneTransformsBufferTransient->GetShaderResourceView().Get() );
+            GetActiveVS()->BindResource( "BoneTransforms", SkeletalBoneTransformsBufferTransient->GetShaderResourceView().Get() );
             VS_ExConstantBuffer_SkeletalBoneRange range = {};
             range.BoneCount = static_cast<unsigned int>(packedCurrent.size());
             range.UseStructuredBones = 1u;
-            ActiveVS->GetBuffer( "BoneTransformRange" ).Update( &range ).Bind();
+            GetActiveVS()->GetBuffer( "BoneTransformRange" ).Update( &range ).Bind();
         }
     }
 
     if ( !useStructuredBones ) {
         // Copy bones
-        ActiveVS->GetBuffer("BoneTransforms").Update( &transforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( transforms.size(), NUM_MAX_BONES ) ).Bind();
+        GetActiveVS()->GetBuffer("BoneTransforms").Update( &transforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( transforms.size(), NUM_MAX_BONES ) ).Bind();
     }
 
     // Note: Slot b3 is used for cbPerCubeRender in VS_ExSkeletalLayered, not PrevBoneTransforms
@@ -2625,21 +2634,19 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh_Layered( SkeletalVobInfo* vi,
             << NUM_MAX_BONES << " bones! (" << transforms.size() << ")Up this limit!";
     }
 
-    ActiveVS->Apply();
+    GetActiveVS()->Apply();
 
     if ( RenderingStage != DES_GHOST ) {
         bool linearDepth = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches & GSWITCH_LINEAR_DEPTH) != 0;
         if ( linearDepth ) {
-            ActivePS = ShaderManager->GetPShader( PShaderID::PS_LinDepth );
-            ActivePS->Apply();
+            pipeline.SetPixelShader( ShaderManager->GetPShader( PShaderID::PS_LinDepth ));
         } else if ( RenderingStage == DES_SHADOWMAP ) {
             // Unbind PixelShader in this case
-            Context->PSSetShader( nullptr, nullptr, 0 );
-            ActivePS = nullptr;
+            pipeline.SetPixelShader( nullptr );
         } else {
             // It is only to indicate that we want pixel shader(to populate gbuffer)
             // the actual shader will be activated before drawing
-            ActivePS = ShaderManager->GetPShader( PShaderID::PS_LinDepth );
+            pipeline.SetPixelShader( ShaderManager->GetPShader( PShaderID::PS_LinDepth ));
         }
     }
 
@@ -2659,7 +2666,7 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh_Layered( SkeletalVobInfo* vi,
     for ( auto const& itm : dynamic_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->SkeletalMeshes ) {
         if ( zCMaterial* mat = itm.first ) {
             zCTexture* tex = nullptr;
-            if ( ActivePS && (tex = mat->GetAniTexture()) != nullptr ) {
+            if ( GetActivePS() && (tex = mat->GetAniTexture()) != nullptr ) {
                 if ( tex->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
                     continue; // we cant determine if we need to draw this, alpha data is only available after loading a texture.
                 }
@@ -2737,6 +2744,8 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     bool updateState,
     bool drawAttachments ) {
     ZoneScoped;
+    
+    auto& pipeline = GetPipelineState();
 
     //// Skeletal meshes use bone-driven animation that can change between passes.
     //// Skip them during the depth prepass to avoid depth mismatch in the lit pass.
@@ -2890,15 +2899,15 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         SetActiveVertexShader( VShaderID::VS_ExSkeletal );
     }
 
-    ActiveVS->Apply();
+    GetActiveVS()->Apply();
 
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
 
     Context->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
     
-    auto perInstanceCb = ActiveVS->GetBuffer("Matrices_PerInstances").Bind();
-    auto boneRangeCb = ActiveVS->GetBuffer( "BoneTransformRange" ).Bind();
+    auto perInstanceCb = GetActiveVS()->GetBuffer("Matrices_PerInstances").Bind();
+    auto boneRangeCb = GetActiveVS()->GetBuffer( "BoneTransformRange" ).Bind();
     auto boneTransformsCb = GraphicsShaderConstantBuffer();
     auto prevBoneTransformsCb = GraphicsShaderConstantBuffer();
 
@@ -2911,15 +2920,15 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             || !prevBuffer->GetShaderResourceView().Get() ) {
             useStructuredBones = false;
         } else {
-            ActiveVS->BindResource( "BoneTransforms", currentBuffer->GetShaderResourceView().Get() );
-            ActiveVS->BindResource( "PrevBoneTransforms", prevBuffer->GetShaderResourceView().Get() );
+            GetActiveVS()->BindResource( "BoneTransforms", currentBuffer->GetShaderResourceView().Get() );
+            GetActiveVS()->BindResource( "PrevBoneTransforms", prevBuffer->GetShaderResourceView().Get() );
         }
     }
 
     if ( !useStructuredBones ) {
         // Copy bones using the legacy cbuffer path.
-        boneTransformsCb = ActiveVS->GetBuffer("BoneTransforms").Bind();
-        prevBoneTransformsCb = ActiveVS->GetBuffer("PrevBoneTransforms").Bind();
+        boneTransformsCb = GetActiveVS()->GetBuffer("BoneTransforms").Bind();
+        prevBoneTransformsCb = GetActiveVS()->GetBuffer("PrevBoneTransforms").Bind();
 
         // Copy previous frame bone transforms for motion vectors (only for main scene rendering, not shadow maps)
         if ( GetRenderingStage() == DES_SHADOWMAP_CUBE ) {
@@ -2929,24 +2938,20 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             prevBoneTransformsCb.Bind(); // we actually should have previous bones
         } else {
             // must be shadowmap, bind current bones as previous
-            boneTransformsCb.Bind( ActiveVS->GetInputIndex( "PrevBoneTransforms" ) ); // just bind the current bones again
+            boneTransformsCb.Bind( GetActiveVS()->GetInputIndex( "PrevBoneTransforms" ) ); // just bind the current bones again
         }
     }
 
     const auto now = Engine::GAPI->GetTotalTimeDW();
-
+    
     bool wantShader = true;
     if ( RenderingStage != DES_GHOST ) {
         bool linearDepth = (graphicsState.FF_GSwitches & GSWITCH_LINEAR_DEPTH) != 0;
         if ( linearDepth ) {
-            ActivePS = ShaderManager->GetPShader( PShaderID::PS_LinDepth );
-            ActivePS->Apply();
+            pipeline.SetPixelShader( ShaderManager->GetPShader( PShaderID::PS_LinDepth ));
         } else if ( RenderingStage == DES_SHADOWMAP) {
             // Unbind PixelShader in this case
-            if (ActivePS) {
-                Context->PSSetShader( nullptr, nullptr, 0 );
-                ActivePS = nullptr;
-            }
+            pipeline.SetPixelShader( nullptr );
             wantShader = false;
         }
     }
@@ -2954,8 +2959,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     if ( isZPrepass ) {
         // Unbind PS for z-prepass, we need to try to ignore any textures that require alpha(testing)
         // as this otherwise slows down prepass too much.
-        Context->PSSetShader( nullptr, nullptr, 0 );
-        ActivePS = nullptr;
+        pipeline.SetPixelShader( nullptr );
         wantShader = true;
     }
 
@@ -2980,16 +2984,15 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                 // we need to ensure alpha tested visuals are properly alpha tested or depth go woooosh
                 tex->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
                 lastTex = tex;
-                if (!ActivePS) {
-                    ActivePS = ShaderManager->GetPShader( PShaderID::PS_DiffuseAlphaTestShadows );
-                    ActivePS->Apply();
+                if (!GetActivePS()) {
+                    pipeline.SetPixelShader( ShaderManager->GetPShader( PShaderID::PS_DiffuseAlphaTestShadows ) );
                 }
             } else if (lastTex != nullptr) {
                 Context->PSSetShaderResources( 0, 1, s_nullSRVs );
                 lastTex = nullptr;
-                Context->PSSetShader( nullptr, nullptr, 0 );
-                ActivePS = nullptr;
+                pipeline.SetPixelShader( nullptr );
             }
+            pipeline.Apply( GetContext().Get() );
             return true;
         } else {
             lastTex = tex;
@@ -3482,7 +3485,6 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         // Draw calls
 
         SetActiveVertexShader( VShaderID::VS_ExNodeInstanced );
-        ActiveVS->Apply();
         SetupVS_ExMeshDrawCall();
         SetupVS_ExConstantBuffer();
 
@@ -4522,14 +4524,12 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
 void D3D11GraphicsEngine::SetupVS_ExMeshDrawCall() {
     UpdateRenderStates();
 
-    if ( ActiveVS ) {
-        ActiveVS->Apply();
-    }
-    if ( ActivePS ) {
-        ActivePS->Apply();
-    }
+    auto& pipeline = GetPipelineState();
+    pipeline.SetVertexShader(ActiveVS);
+    pipeline.SetPixelShader(ActivePS);
+    pipeline.SetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-    GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+    pipeline.Apply(GetContext().Get());
 }
 
 void D3D11GraphicsEngine::SetupVS_ExConstantBuffer() {
@@ -4770,6 +4770,7 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
                 }
             }*/
 
+            GetPipelineState().Apply(GetContext().Get());
             // Draw the section-part
             DrawVertexBufferIndexedUINT( nullptr, nullptr, meshInfo->Indices.size(),
                 meshInfo->BaseIndexLocation );
@@ -4819,6 +4820,8 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
 
     SetActivePixelShader( PShaderID::PS_Diffuse );
     SetActiveVertexShader( VShaderID::VS_Ex );
+    
+    auto& graphicsPipeline = GetPipelineState();
 
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
@@ -4884,9 +4887,8 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
     std::vector<TransparencyWorldMeshEntry> portalTransparencyMeshes;
     std::vector<TransparencyWorldMeshEntry> waterfallTransparencyMeshes;
 
-    GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
-    GetContext()->DSSetShader( nullptr, nullptr, 0 );
-    GetContext()->HSSetShader( nullptr, nullptr, 0 );
+    graphicsPipeline.SetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+    graphicsPipeline.Apply(GetContext().Get());
 
     {
         ZoneScopedN( "DrawWorldMesh::BuildMeshList" );
@@ -5015,7 +5017,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
         || isZPrepass) {
         ZoneScopedN( "DrawWorldMesh::DepthPrepass" );
         auto _scopeDepthPrepass = RecordGraphicsEvent( GE_NAME( "DrawWorldMesh::DepthPrepass" ) );
-        GetContext()->PSSetShader( nullptr, nullptr, 0 );
+        graphicsPipeline.SetPixelShader( nullptr );
 
         for ( auto const& mesh : meshList ) {
             zCTexture* texture;
@@ -5044,7 +5046,8 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
 
             if ( mesh.first.Info->MaterialType == MaterialInfo::MT_Water )
                 continue;  // Don't pre-render water
-
+            
+            graphicsPipeline.Apply(GetContext().Get());
             DrawVertexBufferIndexedUINT( nullptr, nullptr, mesh.second->Indices.size(), mesh.second->BaseIndexLocation );
         }
         if ( isZPrepass ) {
@@ -5058,7 +5061,6 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
         : PShaderID::PS_Diffuse;
 
     SetActivePixelShader( defaultShader );
-    ActivePS->Apply();
 
     MaterialInfo defInfo = {};
     auto materialInfoBuffer = ActivePS->GetBuffer( "MI_MaterialInfo" )
@@ -5111,6 +5113,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
                 if ( BindShaderForTexture( mesh.first.Texture, false,
                     zMAT_ALPHA_FUNC_MAT_DEFAULT ) ) { // default alpha stuff, we defer blend/add
                     // shader changed? update buffers.
+                    graphicsPipeline.Apply( GetContext().Get() );
                     updatePSBuffers();
                 }
 
@@ -5142,6 +5145,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
             }
 
             if ( Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh > 2 ) {
+                GetPipelineState().Apply(GetContext().Get());
                 DrawVertexBufferIndexedUINT( nullptr, nullptr, mesh.second->Indices.size(), mesh.second->BaseIndexLocation );
             }
         }
@@ -6868,6 +6872,8 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
     static std::vector<VobInfo*> vobs;
     static std::vector<SkeletalVobInfo*> mobs;
 
+    auto& pipeline = GetPipelineState();
+
     const auto& renderSettings = Engine::GAPI->GetRendererState().RendererSettings;
 
     {
@@ -6925,7 +6931,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
         }
 
         if ( isZPrepass ) {
-            Context->PSSetShader( nullptr, nullptr, 0 );
+            pipeline.SetPixelShader( nullptr );
         }
 
         if ( renderSettings.DrawVOBs ||
@@ -7147,8 +7153,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
 
             if ( isZPrepass ) {
                 // force alpha testing for vobs in prepass.
-                SetActivePixelShader( PShaderID::PS_DiffuseAlphaTestShadows );
-                Context->PSSetShader( nullptr, nullptr, 0 );
+                pipeline.SetPixelShader( nullptr );
             }
 
             MaterialInfo* lastMatInfo = nullptr;
@@ -7323,6 +7328,8 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                         }
                     }
 
+                    pipeline.Apply( GetContext().Get() );
+
                     // Draw batch
                     DrawInstanced( meshInfo->MeshVertexBuffer, meshInfo->MeshIndexBuffer,
                         meshInfo->Indices.size(), instancingBuffer,
@@ -7374,10 +7381,10 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
             }
         }
 
-        GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
-        GetContext()->DSSetShader( nullptr, nullptr, 0 );
+        pipeline.SetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+        /*GetContext()->DSSetShader( nullptr, nullptr, 0 );
         GetContext()->HSSetShader( nullptr, nullptr, 0 );
-        ActiveHDS = nullptr;
+        ActiveHDS = nullptr;*/
 
         if ( renderSettings.WireframeVobs ) {
             Engine::GAPI->GetRendererState().RasterizerState.Wireframe = false;
@@ -7670,7 +7677,7 @@ XRESULT D3D11GraphicsEngine::DrawPolyStrips( bool noTextures ) {
             //Don't draw if texture is not yet cached (I have no idea how can I preload it in advance)
             continue;
         }
-
+        GetPipelineState().Apply(GetContext().Get());
         //Populate TempVertexBuffer and draw it
         EnsureTempVertexBufferSize( TempPolysVertexBuffer, sizeof( ExVertexStruct ) * vertices.size() );
         TempPolysVertexBuffer->UpdateBuffer( const_cast<ExVertexStruct*>(&vertices[0]), sizeof( ExVertexStruct ) * vertices.size() );
@@ -9241,12 +9248,11 @@ void D3D11GraphicsEngine::DrawString( const std::string& str, float x, float y, 
 
     // Bind the FF-Info to the first PS slot
     ActivePS->GetBuffer( "FFPipelineConstantBuffer" ).Update( &graphicState ).Bind();
+    auto& pipeline = GetPipelineState();
 
-    BindActiveVertexShader();
-    BindActivePixelShader();
+    pipeline.SetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
-    // Set vertex type
-    GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+    pipeline.Apply( GetContext().Get() );
 
     BindViewportInformation( VShaderID::VS_TransformedEx, 0 );
 
