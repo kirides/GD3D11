@@ -157,57 +157,67 @@ void MyDirectDrawSurface7::LoadAdditionalResources( zCTexture* ownedTexture ) {
 
     // Check for normalmap in our mods folder first, then in the original games
     int j = 0;
+    thread_local std::string replacementsFolder;
+    thread_local std::string tmpFilename;
     if ( !nrmmapTexture ) {
-        std::string replacementsFolder = "system\\GD3D11\\textures\\replacements\\Normalmaps_" + std::to_string( j );
+        replacementsFolder.resize( 0 );
+        replacementsFolder.append("system\\GD3D11\\textures\\replacements\\Normalmaps_").append(std::to_string(j));
         while ( !nrmmapTexture && Toolbox::FolderExists( replacementsFolder ) ) {
-            std::string normalmap = replacementsFolder + "\\" + TextureName + "_normal.dds";
-            if ( Toolbox::FileExists( normalmap ) ) {
+            tmpFilename.resize( 0 );
+            tmpFilename.append(replacementsFolder).append("\\").append(TextureName).append("_normal.dds");
+            if ( Toolbox::FileExists( tmpFilename ) ) {
                 // Create the texture object this is linked with
                 Engine::GraphicsEngine->CreateTexture( &nrmmapTexture );
-                if ( XR_SUCCESS != nrmmapTexture->Init( normalmap ) ) {
+                if ( XR_SUCCESS != nrmmapTexture->Init( tmpFilename ) ) {
                     SAFE_DELETE( nrmmapTexture );
-                    LogWarn() << "Failed to load normalmap: " << normalmap;
+                    LogWarn() << "Failed to load normalmap: " << tmpFilename;
                 }
                 break; // No need to check the other folders
             }
             j++;
-            replacementsFolder = "system\\GD3D11\\textures\\replacements\\Normalmaps_" + std::to_string( j );
+            replacementsFolder.resize( 0 );
+            replacementsFolder.append("system\\GD3D11\\textures\\replacements\\Normalmaps_").append(std::to_string(j));
         }
-        std::string normalmap = "system\\GD3D11\\textures\\replacements\\Normalmaps_" + Engine::GAPI->GetGameName() + "\\" + TextureName + "_normal.dds";
-        if ( !nrmmapTexture && Toolbox::FileExists( normalmap ) ) {
+        tmpFilename.resize( 0 );
+        tmpFilename.append("system\\GD3D11\\textures\\replacements\\Normalmaps_").append(Engine::GAPI->GetGameName()).append("\\").append(TextureName).append("_normal.dds");
+        if ( !nrmmapTexture && Toolbox::FileExists( tmpFilename ) ) {
             // Create the texture object this is linked with
             Engine::GraphicsEngine->CreateTexture( &nrmmapTexture );
-            if ( XR_SUCCESS != nrmmapTexture->Init( normalmap ) ) {
+            if ( XR_SUCCESS != nrmmapTexture->Init( tmpFilename ) ) {
                 SAFE_DELETE( nrmmapTexture );
-                LogWarn() << "Failed to load normalmap: " << normalmap;
+                LogWarn() << "Failed to load normalmap: " << tmpFilename;
             }
         }
     }
 
     if ( !fxMapTexture ) {
         j = 0;
-        replacementsFolder = "system\\GD3D11\\textures\\replacements\\Normalmaps_" + std::to_string( j );
+        replacementsFolder.resize( 0 );
+        replacementsFolder.append("system\\GD3D11\\textures\\replacements\\Normalmaps_").append(std::to_string(j));
         while ( !fxMapTexture && Toolbox::FolderExists( replacementsFolder ) ) {
-            std::string fxMap = replacementsFolder + "\\" + TextureName + "_fx.dds";
-            if ( Toolbox::FileExists( fxMap ) ) {
+            tmpFilename.resize( 0 );
+            tmpFilename.append(replacementsFolder).append("\\").append(TextureName).append("_fx.dds");
+            if ( Toolbox::FileExists( tmpFilename ) ) {
                 // Create the texture object this is linked with
                 Engine::GraphicsEngine->CreateTexture( &fxMapTexture );
-                if ( XR_SUCCESS != fxMapTexture->Init( fxMap ) ) {
+                if ( XR_SUCCESS != fxMapTexture->Init( tmpFilename ) ) {
                     SAFE_DELETE( fxMapTexture );
-                    LogWarn() << "Failed to load fxMap: " << fxMap;
+                    LogWarn() << "Failed to load fxMap: " << tmpFilename;
                 }
                 break; // No need to check the other folders
             }
             j++;
-            replacementsFolder = "system\\GD3D11\\textures\\replacements\\Normalmaps_" + std::to_string( j );
+            replacementsFolder.resize( 0 );
+            replacementsFolder.append("system\\GD3D11\\textures\\replacements\\Normalmaps_").append(std::to_string(j));
         }
-        std::string fxMap = "system\\GD3D11\\textures\\replacements\\Normalmaps_" + Engine::GAPI->GetGameName() + "\\" + TextureName + "_fx.dds";
-        if ( !fxMapTexture && Toolbox::FileExists( fxMap ) ) {
+        tmpFilename.resize( 0 );
+        tmpFilename.append("system\\GD3D11\\textures\\replacements\\Normalmaps_").append(Engine::GAPI->GetGameName()).append("\\").append(TextureName).append("_fx.dds");
+        if ( !fxMapTexture && Toolbox::FileExists( tmpFilename ) ) {
             // Create the texture object this is linked with
             Engine::GraphicsEngine->CreateTexture( &fxMapTexture );
-            if ( XR_SUCCESS != fxMapTexture->Init( fxMap ) ) {
+            if ( XR_SUCCESS != fxMapTexture->Init( tmpFilename ) ) {
                 SAFE_DELETE( fxMapTexture );
-                LogWarn() << "Failed to load fxMap: " << fxMap;
+                LogWarn() << "Failed to load fxMap: " << tmpFilename;
             }
         }
     }
