@@ -847,6 +847,9 @@
     <ClInclude Include="zFILE_VDFS.h">
       <Filter>Engine\GAPI</Filter>
     </ClInclude>
+    <ClInclude Include="zAllocator.h">
+      <Filter>Engine\GAPI</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp" />

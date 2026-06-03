@@ -735,4 +735,10 @@ struct GothicMemoryLocations {
         static const unsigned int SetPath = 0x004455d0;
         static const unsigned int zCObjectFactory__CreateZFile = 0x005ab940;
     };
+
+    struct zAllocator
+    {
+        static const unsigned int Malloc = 0x0082e30c;
+        static const unsigned int Free = 0x0082e308;
+    };
 };

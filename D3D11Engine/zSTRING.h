@@ -1,6 +1,7 @@
 #pragma once
 #include "pch.h"
 #include "GothicMemoryLocations.h"
+#include "zAllocator.h"
 
 class zSTRING {
 public:
@@ -16,15 +17,16 @@ public:
     }
 
     static void* operator new(std::size_t count) {
-        return malloc( std::max( count, sizeof( zSTRING ) ) );
+        return zAllocator::zNew( std::max( count, sizeof( zSTRING ) ) );
     }
 
     static void operator delete(void* ptr) {
-        free(ptr);
+        zAllocator::zFree(ptr);
     }
 
     void Delete() {
-        reinterpret_cast<void( __fastcall* )( zSTRING* )>( GothicMemoryLocations::zSTRING::DestructorCharPtr )( this );
+        // no-op, as we have a proper destructor now.
+        // reinterpret_cast<void( __fastcall* )( zSTRING* )>( GothicMemoryLocations::zSTRING::DestructorCharPtr )( this );
     }
 
     const char* ToChar() const {
