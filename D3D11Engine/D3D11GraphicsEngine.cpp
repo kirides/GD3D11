@@ -2364,7 +2364,6 @@ bool D3D11GraphicsEngine::BindTextureNRFX( zCTexture* tex, bool bindShader, bool
 
     if ( D3D11Texture* fxmap = tex->GetSurface()->GetFxMap() ) {
         srvs[2] = fxmap->GetShaderResourceView().Get();
-        fxmap->BindToPixelShader( 2 );
     }
 
     GetContext()->PSSetShaderResources( 0, 3, srvs );
@@ -2991,12 +2990,10 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                 lastTex = nullptr;
                 pipeline.SetPixelShader( nullptr );
             }
-            pipeline.Apply( );
             return true;
         } else {
             lastTex = tex;
             if ( BindTextureNRFX( tex, isMainPass ) ) {
-                pipeline.Apply();
                 return true;
             }
             return false;
@@ -3134,6 +3131,8 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                                 }
                             }
                         }
+
+                        pipeline.Apply();
                         for ( auto& mesh : itm.second ) {
 
                             auto& vb = mesh->MeshVertexBuffer;
@@ -3349,6 +3348,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                                     if ( !bindTextureForPass( texture ) )
                                         continue;
                                 }
+
                                 for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
                                     Engine::GAPI->DrawMeshInfo( itm.first, itm.second[m] );
                                 }
@@ -4606,6 +4606,7 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
     if ( list.empty() ) {
         return XR_SUCCESS;
     }
+    auto& pipeline = GetPipelineState();
 
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
     Engine::GAPI->SetViewTransformXM( view );
@@ -4753,7 +4754,7 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
                 }
             }*/
 
-            GetPipelineState().Apply();
+            pipeline.Apply();
             // Draw the section-part
             DrawVertexBufferIndexedUINT( nullptr, nullptr, meshInfo->Indices.size(),
                 meshInfo->BaseIndexLocation );
@@ -4871,7 +4872,6 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
     std::vector<TransparencyWorldMeshEntry> waterfallTransparencyMeshes;
 
     graphicsPipeline.SetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
-    graphicsPipeline.Apply();
 
     {
         ZoneScopedN( "DrawWorldMesh::BuildMeshList" );
@@ -5096,7 +5096,6 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
                 if ( BindShaderForTexture( mesh.first.Texture, false,
                     zMAT_ALPHA_FUNC_MAT_DEFAULT ) ) { // default alpha stuff, we defer blend/add
                     // shader changed? update buffers.
-                    graphicsPipeline.Apply( );
                     updatePSBuffers();
                 }
 
@@ -5148,6 +5147,7 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
     auto _scopeDrawWaterSurfaces = RecordGraphicsEvent( GE_NAME( "DrawWaterSurfaces" ) );
 
     SetDefaultStates();
+    auto& pipeline = GetPipelineState();
 
     auto tempBuffer = PfxRenderer->GetTempBuffer();
 
@@ -5162,7 +5162,7 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
     Engine::GAPI->SetViewTransformXM( view );  // Update view transform
 
     // Bind vertex water shader
-    GetPipelineState().SetPixelShader( nullptr );
+    pipeline.SetPixelShader( nullptr );
     SetActiveVertexShader( VShaderID::VS_ExWater );
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
@@ -5225,8 +5225,8 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
         Engine::GAPI->GetRendererState().BlendState.SetDirty();
         UpdateRenderStates();
 
-        GetPipelineState().SetPixelShader( nullptr );
-        GetPipelineState().Apply();
+        pipeline.SetPixelShader( nullptr );
+        pipeline.Apply();
 
         if ( !FeatureLevel10Compatibility ) {
             // MDI path: upload all draw args and dispatch in one call
@@ -5268,9 +5268,6 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
 
         // Bind pixel water shader
         SetActivePixelShader( PShaderID::PS_Water );
-        if ( GetActivePS() ) {
-            GetPipelineState().Apply();
-        }
 
         // Bind distortion texture
         DistortionTexture->BindToPixelShader( 4 );
@@ -5302,6 +5299,7 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
                 batch.texture->CacheIn( -1 );
                 batch.texture->Bind( 0 );
 
+                pipeline.Apply();
                 DrawMultiIndexedInstancedIndirect( Context.Get(),
                     batch.drawCount,
                     WaterIndirectBuffer->GetIndirectBuffer().Get(),
@@ -5312,7 +5310,8 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
             for ( const auto& batch : waterBatches ) {
                 batch.texture->CacheIn( -1 );
                 batch.texture->Bind( 0 );
-
+                
+                pipeline.Apply();
                 for ( unsigned int i = 0; i < batch.drawCount; i++ ) {
                     const auto& args = waterDrawArgs[batch.argsOffset + i];
                     DrawVertexBufferIndexedUINT( nullptr, nullptr,

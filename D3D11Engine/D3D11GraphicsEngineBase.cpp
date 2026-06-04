@@ -225,10 +225,8 @@ XRESULT D3D11GraphicsEngineBase::SetActivePixelShader( PShaderID shader ) {
 XRESULT D3D11GraphicsEngineBase::SetActiveVertexShader( VShaderID shader ) {
     auto& pipeline = GetPipelineState();
     if ( auto vs = ShaderManager->GetVShader( shader ) ) {
-        pipeline.SetInputLayout( vs->GetInputLayout().Get());
         pipeline.SetVertexShader( vs);
     } else {
-        pipeline.SetInputLayout( nullptr );
         pipeline.SetVertexShader( nullptr );
     }
     return XR_SUCCESS;

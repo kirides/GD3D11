@@ -457,12 +457,8 @@ public:
         PrimitiveTopology.Current = value;
     }
     
-    void SetVertexShader(const std::shared_ptr<D3D11VShader>& value ) {
-        if ( VertexShader.Last == value )
-            return;
-        _isDirty = true;
-        VertexShader.Current = value;
-    }
+    void SetVertexShader( const std::shared_ptr<D3D11VShader>& value );
+
     void SetPixelShader(const std::shared_ptr<D3D11PShader>& value ) {
         if ( PixelShader.Last == value )
             return;

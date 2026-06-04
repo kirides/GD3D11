@@ -1909,6 +1909,7 @@ void GothicAPI::DrawMeshInfo( zCMaterial* mat, MeshInfo* msh ) {
             RendererState.GraphicsState.FF_GSwitches &= ~GSWITCH_ALPHAREF;
     }
 
+    RendererState.PipelineState.Apply();
     if ( !msh->MeshIndexBuffer ) {
         Engine::GraphicsEngine->DrawVertexBuffer( msh->MeshVertexBuffer, msh->Vertices.size() );
     } else {

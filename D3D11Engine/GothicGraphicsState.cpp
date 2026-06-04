@@ -32,25 +32,34 @@ void GothicPipelineStateInfo::Apply( ID3D11DeviceContext* context )
         ComputeShader.Update( ComputeShader.Current );
     }
     if ( PsSamplers.IsDirty() ) {
-        context->PSSetSamplers( 0, 8, PsSamplers.Current.data() );
+        context->PSSetSamplers( 0, std::size( PsSamplers.Current ), PsSamplers.Current.data());
         PsSamplers.Update( PsSamplers.Current );
     }
     if ( VsSamplers.IsDirty() ) {
-        context->VSSetSamplers( 0, 8, VsSamplers.Current.data() );
+        context->VSSetSamplers( 0, std::size( VsSamplers.Current ), VsSamplers.Current.data() );
         VsSamplers.Update( VsSamplers.Current );
-    }
-    if ( RenderTargets.IsDirty() || DepthStencil.IsDirty() ) {
-        context->OMSetRenderTargets( 8, RenderTargets.Current.data(), DepthStencil.Current );
-        RenderTargets.Update( RenderTargets.Current );
-        DepthStencil.Update( DepthStencil.Current );
     }
     if ( Viewport.IsDirty() ) {
         context->RSSetViewports( 1, &Viewport.Current );
         Viewport.Update( Viewport.Current );
+    }
+    if ( RenderTargets.IsDirty() || DepthStencil.IsDirty() ) {
+        context->OMSetRenderTargets( std::size( RenderTargets.Current ), RenderTargets.Current.data(), DepthStencil.Current);
+        RenderTargets.Update( RenderTargets.Current );
+        DepthStencil.Update( DepthStencil.Current );
     }
 }
 
 void GothicPipelineStateInfo::Apply()
 {
     Apply(_context);
+}
+
+void GothicPipelineStateInfo::SetVertexShader( const std::shared_ptr<D3D11VShader>& value )
+{
+    SetInputLayout( value ? value->GetInputLayout().Get() : nullptr );
+    if ( VertexShader.Last == value )
+        return;
+    _isDirty = true;
+    VertexShader.Current = value;
 }
