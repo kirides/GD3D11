@@ -127,7 +127,7 @@ void D3D11DeferredRenderer::AddLightingPasses( RenderGraph& graph,
 }
 
 bool D3D11DeferredRenderer::BindShaderForTexture( D3D11ShaderManager& shaderManager,
-    std::shared_ptr<D3D11PShader>& activePS,
+    const std::shared_ptr<D3D11PShader>& currentPS,
     zCTexture* texture,
     bool forceAlphaTest,
     int zMatAlphaFunc,
@@ -137,8 +137,8 @@ bool D3D11DeferredRenderer::BindShaderForTexture( D3D11ShaderManager& shaderMana
     PShaderID resolvedDiffuseNormalmappedAlphatest,
     PShaderID resolvedDiffuseNormalmappedAlphatestFxMap ) {
 
-    auto active = activePS;
-    auto newShader = activePS;
+    auto active = currentPS;
+    auto newShader = currentPS;
 
     bool blendAdd = zMatAlphaFunc == zMAT_ALPHA_FUNC_ADD;
     bool blendBlend = zMatAlphaFunc == zMAT_ALPHA_FUNC_BLEND;

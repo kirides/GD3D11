@@ -687,6 +687,8 @@ XRESULT D3D11GraphicsEngine::Init() {
 
     Context.As( &m_UserDefinedAnnotation );
 
+    GetPipelineState().SetContext( Context.Get() );
+
     // Check for windows 10 - pretend 8 doesn't exist because I can't verify if they actually works on windows 8
     // and you can't trust Microsoft feature level documentation
     NativeSupport16BitTextures = Toolbox::IsWindowsVersionOrGreater( HIBYTE( _WIN32_WINNT_WIN10 ), LOBYTE( _WIN32_WINNT_WIN10 ), 0 );
@@ -1746,7 +1748,9 @@ void RenderVelocity(D3D11GraphicsEngine* engine,
     cb.Amplification = 100;
 
     ps->GetBuffer( "VelocityDebugCB" ).Update( &cb ).Bind();
-    ps->Apply();
+    auto& pipeline = Engine::GAPI->GetRendererState().PipelineState;
+    pipeline.SetPixelShader( ps );
+    pipeline.Apply();
     
     engine->GetPfxRenderer()->CopyTextureToRTV(
         !settings.DebugSettings.TAA.DepthMotionVectors
@@ -1773,14 +1777,14 @@ XRESULT D3D11GraphicsEngine::Present() {
 
         SetActivePixelShader( PShaderID::PS_PFX_GammaCorrectInv );
 
-        ActivePS->Apply();
+        GetPipelineState().Apply();
 
         // apply gamma and brightness at the end of processing the image
         GammaCorrectConstantBuffer gcb;
         gcb.G_Gamma = Engine::GAPI->GetGammaValue();
         gcb.G_Brightness = Engine::GAPI->GetBrightnessValue();
 
-        ActivePS->GetBuffer( "GammaCorrectConstantBuffer" ).Update( &gcb ).Bind();
+        GetActivePS()->GetBuffer( "GammaCorrectConstantBuffer" ).Update( &gcb ).Bind();
 
         PfxRenderer->CopyTextureToRTV( Backbuffer->GetShaderResView(), BackbufferRTV, {}, true );
         
@@ -1890,7 +1894,7 @@ XRESULT D3D11GraphicsEngine::SetViewport( const ViewportInfo& viewportInfo ) {
 
     auto& pipeline = GetPipelineState();
     pipeline.SetViewport(viewport);
-    pipeline.Apply(GetContext().Get());
+    pipeline.Apply();
 
     return XR_SUCCESS;
 }
@@ -2120,17 +2124,17 @@ XRESULT D3D11GraphicsEngine::DrawScreenFade( void* c ) {
         Engine::GAPI->GetRendererState().DepthState.SetDirty();
 
         SetActivePixelShader( PShaderID::PS_PFX_CinemaScope );
-        ActivePS->Apply();
+        GetPipelineState().Apply();
 
         SetActiveVertexShader( VShaderID::VS_CinemaScope );
-        ActiveVS->Apply();
+        GetPipelineState().Apply();
 
         ScreenFadeConstantBuffer colorBuffer;
         colorBuffer.GA_Alpha = cinemaScopeColor.bgra.alpha * inv255f;
         colorBuffer.GA_Pad.x = cinemaScopeColor.bgra.r * inv255f;
         colorBuffer.GA_Pad.y = cinemaScopeColor.bgra.g * inv255f;
         colorBuffer.GA_Pad.z = cinemaScopeColor.bgra.b * inv255f;
-        ActivePS->GetBuffer( "AlphaBlendInfo" ).Update( &colorBuffer ).Bind();
+        GetActivePS()->GetBuffer( "AlphaBlendInfo" ).Update( &colorBuffer ).Bind();
 
         UpdateRenderStates();
         GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
@@ -2189,17 +2193,17 @@ XRESULT D3D11GraphicsEngine::DrawScreenFade( void* c ) {
         else
             SetActivePixelShader( PShaderID::PS_PFX_CinemaScope );
 
-        ActivePS->Apply();
+        GetPipelineState().Apply();
 
         SetActiveVertexShader( VShaderID::VS_PFX );
-        ActiveVS->Apply();
+        GetPipelineState().Apply();
 
         ScreenFadeConstantBuffer colorBuffer;
         colorBuffer.GA_Alpha = screenFadeColor.bgra.alpha * inv255f;
         colorBuffer.GA_Pad.x = screenFadeColor.bgra.r * inv255f;
         colorBuffer.GA_Pad.y = screenFadeColor.bgra.g * inv255f;
         colorBuffer.GA_Pad.z = screenFadeColor.bgra.b * inv255f;
-        ActivePS->GetBuffer( "AlphaBlendInfo" ).Update( &colorBuffer ).Bind();
+        GetActivePS()->GetBuffer( "AlphaBlendInfo" ).Update( &colorBuffer ).Bind();
 
         PfxRenderer->DrawFullScreenQuad();
     }
@@ -2221,11 +2225,11 @@ XRESULT D3D11GraphicsEngine::DrawVertexArray( ExVertexStruct* vertices,
     unsigned int startVertex,
     unsigned int stride ) {
     UpdateRenderStates();
-    auto vShader = ActiveVS;
+    auto vShader = GetActiveVS();
     // ShaderManager->GetVShader("VS_TransformedEx");
 
     // Bind the FF-Info to the first PS slot
-    ActivePS->GetBuffer( "FFPipelineConstantBuffer" )
+    GetActivePS()->GetBuffer( "FFPipelineConstantBuffer" )
         .Update( &Engine::GAPI->GetRendererState().GraphicsState )
         .Bind();
 
@@ -2239,7 +2243,7 @@ XRESULT D3D11GraphicsEngine::DrawVertexArray( ExVertexStruct* vertices,
     GetContext()->IASetVertexBuffers( 0, 1, TempHUDVertexBuffer->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
 
     // Draw the mesh
-    GetPipelineState().Apply(GetContext().Get());
+    GetPipelineState().Apply();
     GetContext()->Draw( numVertices, startVertex );
 
     Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
@@ -2256,10 +2260,10 @@ XRESULT D3D11GraphicsEngine::DrawIndexedVertexArray( ExVertexStruct* vertices,
     unsigned int stride ) {
 
     UpdateRenderStates();
-    auto vShader = ActiveVS;  // ShaderManager->GetVShader("VS_TransformedEx");
+    auto vShader = GetActiveVS();  // ShaderManager->GetVShader("VS_TransformedEx");
 
     // Bind the FF-Info to the first PS slot
-    ActivePS->GetBuffer( "FFPipelineConstantBuffer" )
+    GetActivePS()->GetBuffer( "FFPipelineConstantBuffer" )
         .Update( &Engine::GAPI->GetRendererState().GraphicsState )
         .Bind();
 
@@ -2296,7 +2300,7 @@ XRESULT D3D11GraphicsEngine::DrawVertexBufferFF( D3D11VertexBuffer* vb,
     SetupVS_ExMeshDrawCall();
 
     // Bind the FF-Info to the first PS slot
-    ActivePS->GetBuffer( "FFPipelineConstantBuffer" )
+    GetActivePS()->GetBuffer( "FFPipelineConstantBuffer" )
         .Update( &Engine::GAPI->GetRendererState().GraphicsState )
         .Bind();
 
@@ -2390,7 +2394,7 @@ XRESULT  D3D11GraphicsEngine::DrawSkeletalVertexNormals( SkeletalVobInfo* vi,
     cb2.PI_ModelColor = color;
     cb2.PI_ModelFatness = fatness;
 
-    auto perInstanceBuf = ActiveVS->GetBuffer( "Matrices_PerInstances" );
+    auto perInstanceBuf = GetActiveVS()->GetBuffer( "Matrices_PerInstances" );
     perInstanceBuf.Update( &cb2 ).Bind();
     perInstanceBuf.GetRawBuffer()->BindToGeometryShader( 1 );
 
@@ -2402,17 +2406,17 @@ XRESULT  D3D11GraphicsEngine::DrawSkeletalVertexNormals( SkeletalVobInfo* vi,
             || !SkeletalBoneTransformsBufferTransient->GetShaderResourceView().Get() ) {
             useStructuredBones = false;
         } else {
-            ActiveVS->BindResource( "BoneTransforms", SkeletalBoneTransformsBufferTransient->GetShaderResourceView().Get() );
+            GetActiveVS()->BindResource( "BoneTransforms", SkeletalBoneTransformsBufferTransient->GetShaderResourceView().Get() );
             VS_ExConstantBuffer_SkeletalBoneRange range = {};
             range.BoneCount = static_cast<unsigned int>(packedCurrent.size());
             range.UseStructuredBones = 1u;
-            ActiveVS->GetBuffer( "BoneTransformRange" ).Update( &range ).Bind();
+            GetActiveVS()->GetBuffer( "BoneTransformRange" ).Update( &range ).Bind();
         }
     }
 
     if ( !useStructuredBones ) {
         // Copy bones using legacy cbuffer path.
-        ActiveVS->GetBuffer( "BoneTransforms" ).Update( &transforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( transforms.size(), NUM_MAX_BONES ) ).Bind();
+        GetActiveVS()->GetBuffer( "BoneTransforms" ).Update( &transforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( transforms.size(), NUM_MAX_BONES ) ).Bind();
     }
 
     if ( transforms.size() >= NUM_MAX_BONES ) {
@@ -2461,7 +2465,7 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
 
-    Context->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+    pipelineState.SetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
     VS_ExConstantBuffer_PerInstanceSkeletal cb2;
     cb2.World = world;
@@ -2531,20 +2535,17 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
             << NUM_MAX_BONES << " bones! (" << transforms.size() << ")Up this limit!";
     }
 
-    GetActiveVS()->Apply();
     if ( RenderingStage != DES_GHOST ) {
         bool linearDepth = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches & GSWITCH_LINEAR_DEPTH) != 0;
         if ( linearDepth ) {
-            ActivePS = ShaderManager->GetPShader( PShaderID::PS_LinDepth );
-            GetPipelineState().SetPixelShader( ActivePS );
+            GetPipelineState().SetPixelShader( ShaderManager->GetPShader( PShaderID::PS_LinDepth ) );
         } else if ( RenderingStage == DES_SHADOWMAP ) {
             // Unbind PixelShader in this case
             GetPipelineState().SetPixelShader( nullptr );
         } else {
             // It is only to indicate that we want pixel shader(to populate gbuffer)
             // the actual shader will be activated before drawing
-            ActivePS = ShaderManager->GetPShader( PShaderID::PS_LinDepth );
-            GetPipelineState().SetPixelShader( ActivePS );
+            GetPipelineState().SetPixelShader( ShaderManager->GetPShader( PShaderID::PS_LinDepth ) );
         }
     }
 
@@ -2556,10 +2557,11 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
         }
     }
 
+    pipelineState.Apply();
     for ( auto const& itm : dynamic_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->SkeletalMeshes ) {
         if ( zCMaterial* mat = itm.first ) {
             zCTexture* tex;
-            if ( ActivePS && (tex = mat->GetAniTexture()) != nullptr ) {
+            if ( GetActivePS() && (tex = mat->GetAniTexture()) != nullptr ) {
                 if ( !BindTextureNRFX( tex, (RenderingStage != DES_GHOST) ) ) {
                     continue;
                 }
@@ -2596,7 +2598,7 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh_Layered( SkeletalVobInfo* vi,
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
 
-    Context->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+    pipeline.SetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
     VS_ExConstantBuffer_PerInstanceSkeletal cb2;
     cb2.World = world;
@@ -2634,8 +2636,6 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh_Layered( SkeletalVobInfo* vi,
             << NUM_MAX_BONES << " bones! (" << transforms.size() << ")Up this limit!";
     }
 
-    GetActiveVS()->Apply();
-
     if ( RenderingStage != DES_GHOST ) {
         bool linearDepth = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches & GSWITCH_LINEAR_DEPTH) != 0;
         if ( linearDepth ) {
@@ -2663,6 +2663,7 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh_Layered( SkeletalVobInfo* vi,
     GetWhiteTexture()->BindToPixelShader( 0 );
     lastTex = GetWhiteTexture()->GetShaderResourceView().Get();
 
+    GetPipelineState().Apply();
     for ( auto const& itm : dynamic_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->SkeletalMeshes ) {
         if ( zCMaterial* mat = itm.first ) {
             zCTexture* tex = nullptr;
@@ -2899,12 +2900,10 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         SetActiveVertexShader( VShaderID::VS_ExSkeletal );
     }
 
-    GetActiveVS()->Apply();
-
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
 
-    Context->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+    pipeline.SetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
     
     auto perInstanceCb = GetActiveVS()->GetBuffer("Matrices_PerInstances").Bind();
     auto boneRangeCb = GetActiveVS()->GetBuffer( "BoneTransformRange" ).Bind();
@@ -2992,11 +2991,15 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                 lastTex = nullptr;
                 pipeline.SetPixelShader( nullptr );
             }
-            pipeline.Apply( GetContext().Get() );
+            pipeline.Apply( );
             return true;
         } else {
             lastTex = tex;
-            return BindTextureNRFX( tex, isMainPass );
+            if ( BindTextureNRFX( tex, isMainPass ) ) {
+                pipeline.Apply();
+                return true;
+            }
+            return false;
         }
     };
 
@@ -3217,7 +3220,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 
                 if ( isMainOrGhost ) {
                     SetActivePixelShader( PShaderID::PS_DiffuseAlphaTest );
-                    BindActivePixelShader();
+                    pipeline.Apply();
                 }
                 perDrawSetupDone = true;
             }
@@ -3490,10 +3493,9 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 
         if ( isMainOrGhost ) {
             SetActivePixelShader( PShaderID::PS_DiffuseAlphaTest );
-            BindActivePixelShader();
         }
 
-        Context->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+        pipeline.SetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
         // Bind instance buffer to slot 1 (persists across batches)
         UINT instOffset = 0;
@@ -3507,11 +3509,9 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         } else if ( isShadowPass ) {
             bool linearDepth = (graphicsState.FF_GSwitches & GSWITCH_LINEAR_DEPTH) != 0;
             if ( linearDepth ) {
-                ActivePS = ShaderManager->GetPShader( PShaderID::PS_LinDepth );
-                ActivePS->Apply();
+                pipeline.SetPixelShader( ShaderManager->GetPShader( PShaderID::PS_LinDepth ) );
             } else {
-                Context->PSSetShader( nullptr, nullptr, 0 );
-                ActivePS = nullptr;
+                pipeline.SetPixelShader( nullptr );
             }
             wantShader = false;
         }
@@ -3523,7 +3523,6 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 
         void* lastBatchTex = nullptr;
         auto lastSwitches = graphicsState.FF_GSwitches;
-        void* lastPs = nullptr;
 
         // otherwise shadows of streetlamps are not accurate
         const bool needsAlphaTesting = isShadowPass || isZPrepass;
@@ -3551,14 +3550,8 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                         lastBatchTex = batch.texture;
                     }
                     SetActivePixelShader( PShaderID::PS_DiffuseAlphaTestShadows );
-                    if ( ActivePS.get() != lastPs ) {
-                        ActivePS->Apply();
-                        lastPs = ActivePS.get();
-                    }
-                } else if ( lastPs != nullptr ) {
-                    ActivePS = nullptr;
-                    lastPs = nullptr;
-                    GetContext()->PSSetShader( nullptr, nullptr, 0 );
+                } else {
+                    pipeline.SetPixelShader( nullptr );
                 }
             } else if ( wantShader && batch.texture && batch.texture != lastBatchTex ) {
                 if ( !BindTextureNRFX( batch.texture, isMainOrGhost, info != lastMaterialInfo ) ) {
@@ -3596,6 +3589,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                 lastIB = mi->MeshIndexBuffer;
             }
 
+            pipeline.Apply();
             // Draw instanced
             if ( mi->MeshIndexBuffer ) {
                 const unsigned int numIndices = static_cast<unsigned int>(mi->Indices.size());
@@ -3619,17 +3613,6 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         Context->IASetVertexBuffers( 1, 1, &nullBuf, &nullStride, &nullOffset );
 
     }
-}
-
-/** Binds the active PixelShader */
-XRESULT D3D11GraphicsEngine::BindActivePixelShader() {
-    if ( ActivePS ) ActivePS->Apply();
-    return XR_SUCCESS;
-}
-
-XRESULT D3D11GraphicsEngine::BindActiveVertexShader() {
-    if ( ActiveVS ) ActiveVS->Apply();
-    return XR_SUCCESS;
 }
 
 /** Unbinds the texture at the given slot */
@@ -4525,11 +4508,11 @@ void D3D11GraphicsEngine::SetupVS_ExMeshDrawCall() {
     UpdateRenderStates();
 
     auto& pipeline = GetPipelineState();
-    pipeline.SetVertexShader(ActiveVS);
-    pipeline.SetPixelShader(ActivePS);
+    pipeline.SetVertexShader(GetActiveVS());
+    pipeline.SetPixelShader(GetActivePS());
     pipeline.SetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-    pipeline.Apply(GetContext().Get());
+    pipeline.Apply();
 }
 
 void D3D11GraphicsEngine::SetupVS_ExConstantBuffer() {
@@ -4550,7 +4533,7 @@ void D3D11GraphicsEngine::SetupVS_ExConstantBuffer() {
         cb.UnjitteredViewProj = cb.ViewProj;
     }
 
-    ActiveVS->GetBuffer(0).Update(&cb).Bind();
+    GetActiveVS()->GetBuffer(0).Update(&cb).Bind();
 }
 
 void D3D11GraphicsEngine::SetupVS_ExPerInstanceConstantBuffer() {
@@ -4559,7 +4542,7 @@ void D3D11GraphicsEngine::SetupVS_ExPerInstanceConstantBuffer() {
     VS_ExConstantBuffer_PerInstance cb = {};
     cb.World = world;
 
-    ActiveVS->GetBuffer(1).Update(&cb).Bind();
+    GetActiveVS()->GetBuffer(1).Update(&cb).Bind();
 }
 
 bool SectionRenderlistSortCmp( std::pair<float, WorldMeshSectionInfo*>& a,
@@ -4635,17 +4618,17 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
     SetupVS_ExConstantBuffer();
 
     // Set constant buffer
-    ActivePS->GetBuffer( "FFPipelineConstantBuffer" )
+    GetActivePS()->GetBuffer( "FFPipelineConstantBuffer" )
         .Update( &Engine::GAPI->GetRendererState().GraphicsState )
         .Bind();
 
     GSky* sky = Engine::GAPI->GetSky();
-    ActivePS->GetBuffer( "Atmosphere" )
+    GetActivePS()->GetBuffer( "Atmosphere" )
         .Update( &sky->GetAtmosphereCB() )
         .Bind();
 
     const XMMATRIX identityMatrix = XMMatrixIdentity();
-    ActiveVS->GetBuffer( "Matrices_PerInstances" ).Update( &identityMatrix ).Bind();
+    GetActiveVS()->GetBuffer( "Matrices_PerInstances" ).Update( &identityMatrix ).Bind();
 
     InfiniteRangeConstantBuffer->BindToPixelShader( 3 );
 
@@ -4758,7 +4741,7 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
                 }
             }
 
-            ActivePS->GetBuffer( "cbFFData" )
+            GetActivePS()->GetBuffer( "cbFFData" )
                 .Update( &ffdata )
                 .Bind();
 
@@ -4770,7 +4753,7 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
                 }
             }*/
 
-            GetPipelineState().Apply(GetContext().Get());
+            GetPipelineState().Apply();
             // Draw the section-part
             DrawVertexBufferIndexedUINT( nullptr, nullptr, meshInfo->Indices.size(),
                 meshInfo->BaseIndexLocation );
@@ -4831,25 +4814,25 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
 
     // Set constant buffer
     const XMMATRIX identityMatrix = XMMatrixIdentity();
-    ActiveVS->GetBuffer( "Matrices_PerInstances" )
+    GetActiveVS()->GetBuffer( "Matrices_PerInstances" )
         .Update( &identityMatrix )
         .Bind();
     
     auto updatePSBuffers = [this] {
-        ActivePS->GetBuffer( "FFPipelineConstantBuffer" )
+        GetActivePS()->GetBuffer( "FFPipelineConstantBuffer" )
             .Update( &Engine::GAPI->GetRendererState().GraphicsState )
             .Bind();
 
         GSky* sky = Engine::GAPI->GetSky();
-        ActivePS->GetBuffer( "Atmosphere" )
+        GetActivePS()->GetBuffer( "Atmosphere" )
             .Update( &sky->GetAtmosphereCB() )
             .Bind();
 
-        ActivePS->BindBuffer( "DIST_Distance", InfiniteRangeConstantBuffer.get() );
+        GetActivePS()->BindBuffer( "DIST_Distance", InfiniteRangeConstantBuffer.get() );
 
         PsSimpleFFdata ffdata = { };
         ffdata.textureFactor = float4( 1.0f, 1.0f, 1.0f, 1.0f );
-        ActivePS->GetBuffer( "cbFFData" )
+        GetActivePS()->GetBuffer( "cbFFData" )
             .Update( &ffdata )
             .Bind();
     };
@@ -4888,7 +4871,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
     std::vector<TransparencyWorldMeshEntry> waterfallTransparencyMeshes;
 
     graphicsPipeline.SetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
-    graphicsPipeline.Apply(GetContext().Get());
+    graphicsPipeline.Apply();
 
     {
         ZoneScopedN( "DrawWorldMesh::BuildMeshList" );
@@ -5047,7 +5030,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
             if ( mesh.first.Info->MaterialType == MaterialInfo::MT_Water )
                 continue;  // Don't pre-render water
             
-            graphicsPipeline.Apply(GetContext().Get());
+            graphicsPipeline.Apply();
             DrawVertexBufferIndexedUINT( nullptr, nullptr, mesh.second->Indices.size(), mesh.second->BaseIndexLocation );
         }
         if ( isZPrepass ) {
@@ -5113,7 +5096,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
                 if ( BindShaderForTexture( mesh.first.Texture, false,
                     zMAT_ALPHA_FUNC_MAT_DEFAULT ) ) { // default alpha stuff, we defer blend/add
                     // shader changed? update buffers.
-                    graphicsPipeline.Apply( GetContext().Get() );
+                    graphicsPipeline.Apply( );
                     updatePSBuffers();
                 }
 
@@ -5145,7 +5128,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
             }
 
             if ( Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh > 2 ) {
-                GetPipelineState().Apply(GetContext().Get());
+                GetPipelineState().Apply();
                 DrawVertexBufferIndexedUINT( nullptr, nullptr, mesh.second->Indices.size(), mesh.second->BaseIndexLocation );
             }
         }
@@ -5179,13 +5162,13 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
     Engine::GAPI->SetViewTransformXM( view );  // Update view transform
 
     // Bind vertex water shader
-    ActivePS = nullptr;
+    GetPipelineState().SetPixelShader( nullptr );
     SetActiveVertexShader( VShaderID::VS_ExWater );
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
 
     float totalTime = Engine::GAPI->GetTotalTime();
-    ActiveVS->GetBuffer( "Matrices_PerInstances" ).Update( &totalTime, 4 ).Bind();
+    GetActiveVS()->GetBuffer( "Matrices_PerInstances" ).Update( &totalTime, 4 ).Bind();
 
     GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(),
         DepthStencilBuffer->GetDepthStencilView().Get() );
@@ -5242,7 +5225,8 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
         Engine::GAPI->GetRendererState().BlendState.SetDirty();
         UpdateRenderStates();
 
-        GetContext()->PSSetShader( nullptr, nullptr, 0 );
+        GetPipelineState().SetPixelShader( nullptr );
+        GetPipelineState().Apply();
 
         if ( !FeatureLevel10Compatibility ) {
             // MDI path: upload all draw args and dispatch in one call
@@ -5284,8 +5268,8 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
 
         // Bind pixel water shader
         SetActivePixelShader( PShaderID::PS_Water );
-        if ( ActivePS ) {
-            ActivePS->Apply();
+        if ( GetActivePS() ) {
+            GetPipelineState().Apply();
         }
 
         // Bind distortion texture
@@ -5307,7 +5291,7 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
         ricb.RI_Time = Engine::GAPI->GetTimeSeconds();
         ricb.RI_CameraPosition = float3( Engine::GAPI->GetCameraPosition() );
 
-        ActivePS->GetBuffer( "RefractionInfo" ).Update( &ricb ).Bind();
+        GetActivePS()->GetBuffer( "RefractionInfo" ).Update( &ricb ).Bind();
 
         // Bind reflection cube
         GetContext()->PSSetShaderResources( 3, 1, ReflectionCube.GetAddressOf() );
@@ -5374,12 +5358,12 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
     }
 
     // Set constant buffer
-    ActivePS->GetBuffer( "FFPipelineConstantBuffer" )
+    GetActivePS()->GetBuffer( "FFPipelineConstantBuffer" )
         .Update( &Engine::GAPI->GetRendererState().GraphicsState )
         .Bind();
 
     GSky* sky = Engine::GAPI->GetSky();
-    ActivePS->GetBuffer( "Atmosphere" )
+    GetActivePS()->GetBuffer( "Atmosphere" )
         .Update( &sky->GetAtmosphereCB() )
         .Bind();
 
@@ -5388,17 +5372,17 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
     SetupVS_ExConstantBuffer();
 
     const XMMATRIX identityMatrix = XMMatrixIdentity();
-    ActiveVS->GetBuffer( "Matrices_PerInstances" ).Update( &identityMatrix ).Bind();
+    GetActiveVS()->GetBuffer( "Matrices_PerInstances" ).Update( &identityMatrix ).Bind();
 
     // Update and bind buffer of PS
     PerObjectState ocb;
     ocb.OS_AmbientColor = float3( 1, 1, 1 );
-    ActivePS->GetBuffer( "POS_MaterialInfo" ).Update( &ocb ).Bind();
+    GetActivePS()->GetBuffer( "POS_MaterialInfo" ).Update( &ocb ).Bind();
 
     WhiteTexture->BindToPixelShader( 0 );
     void* lastTex = WhiteTexture.get();
 
-    ActivePS->BindBuffer( "DIST_Distance", InfiniteRangeConstantBuffer.get() );
+    GetActivePS()->BindBuffer( "DIST_Distance", InfiniteRangeConstantBuffer.get() );
 
     UpdateRenderStates();
 
@@ -5409,7 +5393,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
 
     auto rangeSquared = range * range;
     auto vRangeSquared = XMVectorReplicate(rangeSquared);    
-    auto vsBufMPI = ActiveVS->GetBuffer( "Matrices_PerInstances" );
+    auto vsBufMPI = GetActiveVS()->GetBuffer( "Matrices_PerInstances" );
 
     const bool drawWorldCasters = (casterMask & SHADOW_CASTER_WORLD) != 0;
     const bool drawVobCasters = (casterMask & SHADOW_CASTER_VOBS) != 0;
@@ -5441,7 +5425,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                                 meshInfoByKey->first.Material->GetTexture()->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
                                 lastTex = engineTex;
                             }
-                            ActivePS->Apply();
+                            GetPipelineState().Apply();
                             isAlpha = true;
                         } else
                             continue;  // Don't render if not loaded
@@ -5449,7 +5433,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                         if ( !linearDepth )  // Only unbind when not rendering linear depth
                         {
                             // Unbind PS
-                            Context->PSSetShader( nullptr, nullptr, 0 );
+                            GetPipelineState().SetPixelShader( nullptr );
+                            GetPipelineState().Apply();
                         } else {
                             if ( lastTex != WhiteTexture.get() ) {
                                 WhiteTexture->BindToPixelShader( 0 );
@@ -5502,7 +5487,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                                         meshInfoByKey->first.Material->GetTexture()->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
                                         lastTex = engineTex;
                                     }
-                                    ActivePS->Apply();
+                                    GetPipelineState().Apply();
                                     isAlpha = true;
                                 } else
                                     continue;  // Don't render if not loaded
@@ -5511,7 +5496,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                                     // depth
                                 {
                                     // Unbind PS
-                                    Context->PSSetShader( nullptr, nullptr, 0 );
+                                    GetPipelineState().SetPixelShader( nullptr );
+                                    GetPipelineState().Apply();
                                 } else {
                                     if ( lastTex != WhiteTexture.get() ) {
                                         WhiteTexture->BindToPixelShader( 0 );
@@ -5719,12 +5705,12 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
     }
 
     // Set constant buffer
-    ActivePS->GetBuffer( "FFPipelineConstantBuffer" )
+    GetActivePS()->GetBuffer( "FFPipelineConstantBuffer" )
         .Update( &Engine::GAPI->GetRendererState().GraphicsState )
         .Bind();
 
     GSky* sky = Engine::GAPI->GetSky();
-    ActivePS->GetBuffer( "Atmosphere" )
+    GetActivePS()->GetBuffer( "Atmosphere" )
         .Update( &sky->GetAtmosphereCB() )
         .Bind();
 
@@ -5733,19 +5719,19 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
     SetupVS_ExConstantBuffer();
 
     const XMMATRIX identityMatrix = XMMatrixIdentity();
-    ActiveVS->GetBuffer( "Matrices_PerInstances" ).Update( &identityMatrix ).Bind();
+    GetActiveVS()->GetBuffer( "Matrices_PerInstances" ).Update( &identityMatrix ).Bind();
 
     // Update and bind buffer of PS
     PerObjectState ocb;
     ocb.OS_AmbientColor = float3( 1, 1, 1 );
-    ActivePS->GetBuffer( "POS_MaterialInfo" ).Update( &ocb ).Bind();
+    GetActivePS()->GetBuffer( "POS_MaterialInfo" ).Update( &ocb ).Bind();
 
     float3 pos; XMStoreFloat3( pos.toXMFLOAT3(), position );
     INT2 s = WorldConverter::GetSectionOfPos( pos );
 
     DistortionTexture->BindToPixelShader( 0 );
 
-    ActivePS->BindBuffer( "DIST_Distance", InfiniteRangeConstantBuffer.get() );
+    GetActivePS()->BindBuffer( "DIST_Distance", InfiniteRangeConstantBuffer.get() );
 
     UpdateRenderStates();
 
@@ -5767,7 +5753,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
 
     void* lastTex = nullptr;
     if ( drawWorldCasters && Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh ) { 
-        ActiveVS->GetBuffer( "Matrices_PerInstances" ).Update( &identityMatrix ).Bind();
+        GetActiveVS()->GetBuffer( "Matrices_PerInstances" ).Update( &identityMatrix ).Bind();
         auto _ = RecordGraphicsEvent( GE_NAME( "DrawWorldMesh::Layered" ) ); 
         // Only use cache if we haven't already collected the vobs
         // TODO: Collect vobs in a different way than using the drawn sections!
@@ -5789,7 +5775,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                             0.6f ) == zRES_CACHED_IN ) {
                             lastTex = meshInfoByKey->first.Material->GetTexture()->GetSurface()->GetEngineTexture();
                             meshInfoByKey->first.Material->GetTexture()->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
-                            ActivePS->Apply();
+                            GetPipelineState().Apply();
                             isAlpha = true;
                         } else
                             continue;  // Don't render if not loaded
@@ -5797,7 +5783,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                         if ( !linearDepth )  // Only unbind when not rendering linear depth
                         {
                             // Unbind PS
-                            Context->PSSetShader( nullptr, nullptr, 0 );
+                            GetPipelineState().SetPixelShader( nullptr );
+                            GetPipelineState().Apply();
                         } else {
                             if ( lastTex != WhiteTexture.get() ) {
                                 WhiteTexture->BindToPixelShader( 0 );
@@ -5849,7 +5836,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
 
                                     lastTex = meshInfoByKey->first.Material->GetTexture()->GetSurface()->GetEngineTexture();
                                     meshInfoByKey->first.Material->GetTexture()->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
-                                    ActivePS->Apply();
+                                    GetPipelineState().Apply();
                                     isAlpha = true;
                                 } else
                                     continue;  // Don't render if not loaded
@@ -5858,7 +5845,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                                     // depth
                                 {
                                     // Unbind PS
-                                    Context->PSSetShader( nullptr, nullptr, 0 );
+                                    GetPipelineState().SetPixelShader( nullptr );
+                                    GetPipelineState().Apply();
                                 } else {
                                     if ( lastTex != WhiteTexture.get() ) {
                                         WhiteTexture->BindToPixelShader( 0 );
@@ -6058,7 +6046,8 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<W
 
     if ( Engine::GAPI->GetRendererState().RendererSettings.FastShadows && !cullingFrustum ) {
         if ( !linearDepth ) {
-            Context->PSSetShader( nullptr, nullptr, 0 );
+            GetPipelineState().SetPixelShader( nullptr );
+            GetPipelineState().Apply();
         }
 
         for ( const WorldMeshSectionInfo* section : visibleSections ) {
@@ -6137,7 +6126,8 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<W
         TracyD3D11ZoneCGX( "ShadowPass_DrawWorldMesh_Indirect::OpaqueSubmission" );
         auto _scopeOpaqueSubmission = RecordGraphicsEvent( GE_NAME( "ShadowPass_DrawWorldMesh_Indirect::OpaqueSubmission" ) );
         if ( !linearDepth ) {
-            Context->PSSetShader( nullptr, nullptr, 0 );
+            GetPipelineState().SetPixelShader( nullptr );
+            GetPipelineState().Apply();
         }
 
         const size_t requiredSize = opaqueDrawArgs.size() * sizeof( D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS );
@@ -6163,7 +6153,7 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<W
         std::sort( alphaMeshes.begin(), alphaMeshes.end(),
             []( const auto& a, const auto& b ) { return a.first < b.first; } );
 
-        ActivePS->Apply();
+        GetPipelineState().Apply();
         zCTexture* lastTex = nullptr;
         Context->PSSetShaderResources( 0, 3, s_nullSRVs );
         Context->IASetIndexBuffer( wrappedWorldMesh->MeshIndexBuffer->GetVertexBuffer().Get(), DXGI_FORMAT_R32_UINT, 0 );
@@ -6248,7 +6238,8 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh( const std::vector<WorldMeshS
         if ( !linearDepth )  // Only unbind when not rendering linear depth
         {
             // Unbind PS
-            Context->PSSetShader( nullptr, nullptr, 0 );
+            GetPipelineState().SetPixelShader( nullptr );
+            GetPipelineState().Apply();
         }
         Context->IASetIndexBuffer( wrappedWorldMesh->MeshShadowIndexBuffer->GetVertexBuffer().Get(), DXGI_FORMAT_R32_UINT, 0 );
 
@@ -6267,7 +6258,7 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh( const std::vector<WorldMeshS
         std::sort( alphaMeshes.begin(), alphaMeshes.end(),
             []( const auto& a, const auto& b ) { return a.first < b.first; } );
 
-        ActivePS->Apply();
+        GetPipelineState().Apply();
         zCTexture* lastTex = nullptr;
 
         Context->PSSetShaderResources( 0, 3, s_nullSRVs );
@@ -6316,7 +6307,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
     // Set shader
     SetActivePixelShader( PShaderID::PS_DiffuseAlphaTestShadows );
-    auto defaultPS = ActivePS;
+    auto defaultPS = GetActivePS();
     SetActiveVertexShader( VShaderID::VS_Ex );
 
     bool linearDepth =
@@ -6328,12 +6319,12 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
     // Set constant buffer
     Engine::GAPI->GetRendererState().GraphicsState.FF_AlphaRef = 170.0f / 255.0f; // zRnd_D3D uses 0xb0 = 170 as default alpha ref
-    ActivePS->GetBuffer( "FFPipelineConstantBuffer" )
+    GetActivePS()->GetBuffer( "FFPipelineConstantBuffer" )
         .Update( &Engine::GAPI->GetRendererState().GraphicsState )
         .Bind();
 
     GSky* sky = Engine::GAPI->GetSky();
-    ActivePS->GetBuffer( "Atmosphere" )
+    GetActivePS()->GetBuffer( "Atmosphere" )
         .Update( &sky->GetAtmosphereCB() )
         .Bind();
 
@@ -6342,14 +6333,14 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
     SetupVS_ExConstantBuffer();
 
     const XMMATRIX identityMatrix = XMMatrixIdentity();
-    auto cbMatrices_PerInstances = ActiveVS->GetBuffer( "Matrices_PerInstances" )
+    auto cbMatrices_PerInstances = GetActiveVS()->GetBuffer( "Matrices_PerInstances" )
         .Update( &identityMatrix )
         .Bind();
 
     float3 fPosition; XMStoreFloat3( fPosition.toXMFLOAT3(), position );
     DistortionTexture->BindToPixelShader( 0 );
 
-    ActivePS->BindBuffer( "DIST_Distance", InfiniteRangeConstantBuffer.get() );
+    GetActivePS()->BindBuffer( "DIST_Distance", InfiniteRangeConstantBuffer.get() );
 
     UpdateRenderStates();
 
@@ -6492,7 +6483,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
         // Apply instancing shader early so metadata indexing can be prepared before instance upload.
         SetActiveVertexShader( VShaderID::VS_ExInstancedObj );
-        ActiveVS->Apply();
+        GetPipelineState().Apply();
         const bool useWindMetadata = PrepareAndBindWindMetadata( activeVisuals );
 
         byte* data;
@@ -6514,13 +6505,14 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         if ( !linearDepth )  // Only unbind when not rendering linear depth
         {
             // Unbind PS
-            Context->PSSetShader( nullptr, nullptr, 0 );
+            GetPipelineState().SetPixelShader( nullptr );
+            GetPipelineState().Apply();
         }
 
         GraphicsShaderConstantBuffer windBuffer = {};
-        if ( ActiveVS && 
+        if ( GetActiveVS() && 
             (Engine::GAPI->GetRendererState().RendererSettings.WindQuality > 0 || Engine::GAPI->GetRendererState().RendererSettings.HeroAffectsObjects) ) {
-            windBuffer = ActiveVS->GetBuffer( "WindParams" );
+            windBuffer = GetActiveVS()->GetBuffer( "WindParams" );
             windBuffer.Bind();
         }
 
@@ -6608,7 +6600,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                         auto nextPs = defaultPS.get();
                         if ( currPs != nextPs ) {
                             currPs = nextPs;
-                            currPs->Apply();
+                            GetPipelineState().SetPixelShader( defaultPS );
+                            GetPipelineState().Apply( );
                         }
                         previousTx = tx;
                     } else
@@ -6620,7 +6613,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                 {
                     // Unbind PS
                     if ( currPs != nullptr ) {
-                        Context->PSSetShader( nullptr, nullptr, 0 );
+                        GetPipelineState().SetPixelShader( nullptr );
+                        GetPipelineState().Apply();
                         currPs = nullptr;
                     }
                 }
@@ -6740,11 +6734,11 @@ namespace {
 }
 
 bool D3D11GraphicsEngine::PrepareAndBindWindMetadata( const std::vector<MeshVisualInfo*>& activeVisuals ) {
-    if ( !ActiveVS || activeVisuals.empty() ) {
+    if ( !GetActiveVS() || activeVisuals.empty() ) {
         return false;
     }
 
-    if ( ActiveVS->GetInputIndex( "WindMetaData" ) == -1 ) {
+    if ( GetActiveVS()->GetInputIndex( "WindMetaData" ) == -1 ) {
         return false;
     }
 
@@ -6795,13 +6789,13 @@ bool D3D11GraphicsEngine::PrepareAndBindWindMetadata( const std::vector<MeshVisu
         return false;
     }
 
-    ActiveVS->BindResource( "WindMetaData", WindMetadataBuffer->GetShaderResourceView().Get() );
+    GetActiveVS()->BindResource( "WindMetaData", WindMetadataBuffer->GetShaderResourceView().Get() );
     return true;
 }
 
 void D3D11GraphicsEngine::UnbindWindMetadata() {
-    if ( ActiveVS ) {
-        ActiveVS->BindResource( "WindMetaData", nullptr );
+    if ( GetActiveVS() ) {
+        GetActiveVS()->BindResource( "WindMetaData", nullptr );
     }
 }
 
@@ -6885,12 +6879,12 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
         SetActiveVertexShader( VShaderID::VS_ExInstancedObj );
 
         // Set constant buffer
-        ActivePS->GetBuffer( "FFPipelineConstantBuffer" )
+        GetActivePS()->GetBuffer( "FFPipelineConstantBuffer" )
             .Update( &Engine::GAPI->GetRendererState().GraphicsState )
             .Bind();
 
         if ( GSky* sky = Engine::GAPI->GetSky() ) {
-            ActivePS->GetBuffer( "Atmosphere" )
+            GetActivePS()->GetBuffer( "Atmosphere" )
                 .Update( &sky->GetAtmosphereCB() )
                 .Bind();
         }
@@ -6915,9 +6909,9 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
         SetupVS_ExConstantBuffer();
 
         GraphicsShaderConstantBuffer windBuffer = {};
-        if ( ActiveVS &&
+        if ( GetActiveVS() &&
             (Engine::GAPI->GetRendererState().RendererSettings.WindQuality > 0 || Engine::GAPI->GetRendererState().RendererSettings.HeroAffectsObjects) ) {
-            windBuffer = ActiveVS->GetBuffer( "WindParams" );
+            windBuffer = GetActiveVS()->GetBuffer( "WindParams" );
             windBuffer.Bind();
         }
 
@@ -7103,8 +7097,8 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
 
             bool useWindMetadata = false;
             if ( cache.vobWindMetadataPrepared
-                && ActiveVS
-                && ActiveVS->GetInputIndex( "WindMetaData" ) != -1
+                && GetActiveVS()
+                && GetActiveVS()->GetInputIndex( "WindMetaData" ) != -1
                 && !cache.vobWindMetadata.empty() ) {
                 const UINT requiredSize = static_cast<UINT>(cache.vobWindMetadata.size() * sizeof( VobWindMetadata ));
 
@@ -7128,7 +7122,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                 if ( WindMetadataBuffer
                     && XR_SUCCESS == WindMetadataBuffer->UpdateBuffer( cache.vobWindMetadata.data(), requiredSize )
                     && WindMetadataBuffer->GetShaderResourceView().Get() ) {
-                    ActiveVS->BindResource( "WindMetaData", WindMetadataBuffer->GetShaderResourceView().Get() );
+                    GetActiveVS()->BindResource( "WindMetaData", WindMetadataBuffer->GetShaderResourceView().Get() );
                     useWindMetadata = true;
                 } else {
                     UnbindWindMetadata();
@@ -7228,7 +7222,8 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
 #else
                         // This is most likely some spacer helper-vob
                         WhiteTexture->BindToPixelShader( 0 );
-                        ShaderManager->GetPShader( PShaderID::PS_Diffuse )->Apply();
+                        SetActivePixelShader( PShaderID::PS_Diffuse );
+                        GetPipelineState().Apply( );
 
                         /*// Apply colors for these meshes
                         MaterialInfo::Buffer b;
@@ -7245,7 +7240,8 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
 
                         if ( showHelpers ) {
                             WhiteTexture->BindToPixelShader( 0 );
-                            ShaderManager->GetPShader( PShaderID::PS_DiffuseAlphaTest )->Apply();
+                            SetActivePixelShader( PShaderID::PS_DiffuseAlphaTest );
+                            GetPipelineState().Apply( );
 
                             MaterialInfo::Buffer b = {};
 
@@ -7311,7 +7307,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                                     
                                     PsSimpleFFdata ffdata = { };
                                     ffdata.textureFactor = float4( 1.0f, 1.0f, 1.0f, 1.0f );
-                                    ActivePS->GetBuffer( "cbFFData" )
+                                    GetActivePS()->GetBuffer( "cbFFData" )
                                         .Update( &ffdata )
                                         .Bind();
                                 }
@@ -7328,7 +7324,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                         }
                     }
 
-                    pipeline.Apply( GetContext().Get() );
+                    pipeline.Apply( );
 
                     // Draw batch
                     DrawInstanced( meshInfo->MeshVertexBuffer, meshInfo->MeshIndexBuffer,
@@ -7421,7 +7417,7 @@ XRESULT D3D11GraphicsEngine::DrawFrameAlphaMeshes()
         DepthStencilBuffer->GetDepthStencilView().Get() );
 
     bool useWindMetadata = false;
-    if ( ActiveVS && ActiveVS->GetInputIndex( "WindMetaData" ) != -1 && !m_AlphaMeshes.empty() ) {
+    if ( GetActiveVS() && GetActiveVS()->GetInputIndex( "WindMetaData" ) != -1 && !m_AlphaMeshes.empty() ) {
         std::unordered_map<MeshVisualInfo*, DWORD> metadataByVisual;
         metadataByVisual.reserve( m_AlphaMeshes.size() );
 
@@ -7469,7 +7465,7 @@ XRESULT D3D11GraphicsEngine::DrawFrameAlphaMeshes()
 
             if ( WindMetadataBuffer
                 && XR_SUCCESS == WindMetadataBuffer->UpdateBuffer( m_WindMetadataStaging.data(), requiredSize ) ) {
-                ActiveVS->BindResource( "WindMetaData", WindMetadataBuffer->GetShaderResourceView().Get() );
+                GetActiveVS()->BindResource( "WindMetaData", WindMetadataBuffer->GetShaderResourceView().Get() );
                 useWindMetadata = true;
             }
         }
@@ -7483,9 +7479,9 @@ XRESULT D3D11GraphicsEngine::DrawFrameAlphaMeshes()
     }
 
     GraphicsShaderConstantBuffer windBuffer = {};
-    if ( ActiveVS &&
+    if ( GetActiveVS() &&
         (Engine::GAPI->GetRendererState().RendererSettings.WindQuality > 0 || Engine::GAPI->GetRendererState().RendererSettings.HeroAffectsObjects) ) {
-        windBuffer = ActiveVS->GetBuffer( "WindParams" );
+        windBuffer = GetActiveVS()->GetBuffer( "WindParams" );
         windBuffer.Bind();
         windBuffer.Update( &g_windBuffer );
     }
@@ -7600,12 +7596,12 @@ XRESULT D3D11GraphicsEngine::DrawPolyStrips( bool noTextures ) {
     SetupVS_ExConstantBuffer();
 
     // Set constant buffer
-    ActivePS->GetBuffer( "FFPipelineConstantBuffer" )
+    GetActivePS()->GetBuffer( "FFPipelineConstantBuffer" )
         .Update( &Engine::GAPI->GetRendererState().GraphicsState )
         .Bind();
 
     GSky* sky = Engine::GAPI->GetSky();
-    ActivePS->GetBuffer( "Atmosphere" )
+    GetActivePS()->GetBuffer( "Atmosphere" )
         .Update( &sky->GetAtmosphereCB() )
         .Bind();
 
@@ -7615,7 +7611,7 @@ XRESULT D3D11GraphicsEngine::DrawPolyStrips( bool noTextures ) {
         .Update( &defInfo.buffer, sizeof(defInfo.buffer) )
         .Bind();
 
-    auto vsBufMPI = ActiveVS->GetBuffer( "Matrices_PerInstances" );
+    auto vsBufMPI = GetActiveVS()->GetBuffer( "Matrices_PerInstances" );
 
     for ( auto it = polyStripInfos.begin(); it != polyStripInfos.end(); it++ ) {
         zCMaterial* mat = it->second.material;
@@ -7643,7 +7639,7 @@ XRESULT D3D11GraphicsEngine::DrawPolyStrips( bool noTextures ) {
             if ( BindShaderForTexture( tx, false, mat->GetAlphaFunc() ) ) {
                 PsSimpleFFdata ffdata = { };
                 ffdata.textureFactor = float4( 1.0f, 1.0f, 1.0f, 1.0f );
-                ActivePS->GetBuffer( "cbFFData" )
+                GetActivePS()->GetBuffer( "cbFFData" )
                     .Update( &ffdata )
                     .Bind();
             }
@@ -7677,7 +7673,7 @@ XRESULT D3D11GraphicsEngine::DrawPolyStrips( bool noTextures ) {
             //Don't draw if texture is not yet cached (I have no idea how can I preload it in advance)
             continue;
         }
-        GetPipelineState().Apply(GetContext().Get());
+        GetPipelineState().Apply();
         //Populate TempVertexBuffer and draw it
         EnsureTempVertexBufferSize( TempPolysVertexBuffer, sizeof( ExVertexStruct ) * vertices.size() );
         TempPolysVertexBuffer->UpdateBuffer( const_cast<ExVertexStruct*>(&vertices[0]), sizeof( ExVertexStruct ) * vertices.size() );
@@ -7775,13 +7771,13 @@ XRESULT D3D11GraphicsEngine::DrawSky() {
 
     SetActiveVertexShader( VShaderID::VS_ExWS );
 
-    ActivePS->GetBuffer("Atmosphere")
+    GetActivePS()->GetBuffer("Atmosphere")
         .Update(&sky->GetAtmosphereCB())
         .Bind();
 
     VS_ExConstantBuffer_PerInstance cbi;
     XMStoreFloat4x4( &cbi.World, world );
-    ActiveVS->GetBuffer("Matrices_PerInstances")
+    GetActiveVS()->GetBuffer("Matrices_PerInstances")
         .Update(&cbi)
         .Bind();
 
@@ -7962,7 +7958,7 @@ void D3D11GraphicsEngine::DrawVobSingle( VobInfo* vob, zCCamera& camera ) {
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
 
-    ActiveVS->GetBuffer( "Matrices_PerInstances" ).Update( vob->Vob->GetWorldMatrixPtr() ).Bind();
+    GetActiveVS()->GetBuffer( "Matrices_PerInstances" ).Update( vob->Vob->GetWorldMatrixPtr() ).Bind();
         
     for ( auto const& itm : vob->VisualInfo->Meshes ) {
         // Cache & bind texture
@@ -8111,13 +8107,13 @@ void D3D11GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& 
     SetDefaultStates();
 
     SetActivePixelShader( PShaderID::PS_PFX_GammaCorrectInv );
-    ActivePS->Apply();
+    GetPipelineState().Apply();
 
     GammaCorrectConstantBuffer gcb;
     gcb.G_Gamma = Engine::GAPI->GetGammaValue();
     gcb.G_Brightness = Engine::GAPI->GetBrightnessValue();
 
-    ActivePS->GetBuffer( "GammaCorrectConstantBuffer" ).Update( &gcb ).Bind();
+    GetActivePS()->GetBuffer( "GammaCorrectConstantBuffer" ).Update( &gcb ).Bind();
 
     HRESULT hr;
     auto rt = std::make_unique<RenderToTextureBuffer>(
@@ -8188,7 +8184,7 @@ bool D3D11GraphicsEngine::BindShaderForTexture( zCTexture* texture,
     bool forceAlphaTest,
     int zMatAlphaFunc,
     MaterialInfo::EMaterialType materialInfo ) {
-    return ActiveSceneRenderer->BindShaderForTexture( GetShaderManager(), ActivePS,
+    return ActiveSceneRenderer->BindShaderForTexture( GetShaderManager(), GetActivePS(),
         texture, forceAlphaTest, zMatAlphaFunc, materialInfo,
         Resolved_DiffuseNormalmapped,
         Resolved_DiffuseNormalmappedFxMap,
@@ -8219,8 +8215,6 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
     }
 
     SetActiveVertexShader( VShaderID::VS_DecalInstanced );
-    GetActivePS()->Apply();
-    GetActiveVS()->Apply();
 
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
@@ -8521,7 +8515,7 @@ void D3D11GraphicsEngine::DrawQuadMarks() {
     Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_NONE;
     Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
 
-    ActivePS->GetBuffer( "FFPipelineConstantBuffer" )
+    GetActivePS()->GetBuffer( "FFPipelineConstantBuffer" )
         .Update( &Engine::GAPI->GetRendererState().GraphicsState )
         .Bind();
 
@@ -8662,7 +8656,7 @@ void D3D11GraphicsEngine::DrawUnderwaterEffects() {
 
     // Set up water final copy
     SetActivePixelShader( PShaderID::PS_PFX_UnderwaterFinal );
-    ActivePS->GetBuffer( "RefractionInfo" ).Update( &ricb ).Bind();
+    GetActivePS()->GetBuffer( "RefractionInfo" ).Update( &ricb ).Bind();
 
     DistortionTexture->BindToPixelShader( 2 );
     DepthStencilBufferCopy->BindToPixelShader( GetContext().Get(), 3 );
@@ -8715,7 +8709,7 @@ void D3D11GraphicsEngine::DrawFrameParticleMeshes( std::unordered_map<zCVob*, Me
     int lastBlend = zRND_ALPHA_FUNC_NONE;
     auto vfxRadiusSq = state.RendererSettings.VisualFXDrawRadius * state.RendererSettings.VisualFXDrawRadius;
     auto vVfxRadiusSq = XMVectorReplicate(vfxRadiusSq);
-    auto vsBufMPI = ActiveVS->GetBuffer( "Matrices_PerInstances" );
+    auto vsBufMPI = GetActiveVS()->GetBuffer( "Matrices_PerInstances" );
     vsBufMPI.Bind();
 
     for ( auto const& it : progMeshes ) {
@@ -8833,8 +8827,8 @@ void D3D11GraphicsEngine::DrawFrameParticles(
     ricb.RI_Far = Engine::GAPI->GetFarPlane();
 
     SetActivePixelShader( PShaderID::PS_ParticleDistortion );
-    ActivePS->Apply();
-    ActivePS->GetBuffer("RefractionInfo").Update(&ricb).Bind();
+    GetPipelineState().Apply();
+    GetActivePS()->GetBuffer("RefractionInfo").Update(&ricb).Bind();
 
     GothicRendererState& state = Engine::GAPI->GetRendererState();
 
@@ -8869,11 +8863,11 @@ void D3D11GraphicsEngine::DrawFrameParticles(
 
     // Setup GS
     SetActiveVertexShader( VShaderID::VS_ParticlePoint );
-    ActiveVS->Apply();
+    GetPipelineState().Apply();
 
     ParticleGSInfoConstantBuffer gcb = {};
     gcb.CameraPosition = Engine::GAPI->GetCameraPosition();
-    ActiveVS->GetBuffer( "ParticleGSInfo" ).Update( &gcb ).Bind();
+    GetActiveVS()->GetBuffer( "ParticleGSInfo" ).Update( &gcb ).Bind();
 
     // Rendering points only
     Context->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP );
@@ -8901,7 +8895,7 @@ void D3D11GraphicsEngine::DrawFrameParticles(
 
     // Set usual rendering for everything else. Alphablending mostly.
     SetActivePixelShader( PShaderID::PS_Simple );
-    ShaderManager->GetPShader( PShaderID::PS_Simple )->Apply();
+    GetPipelineState().Apply( );
 
     Context->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(),
         DepthStencilBuffer->GetDepthStencilView().Get() );
@@ -8955,7 +8949,7 @@ void D3D11GraphicsEngine::DrawFrameParticles(
         GetResolution() );
 
     SetActivePixelShader( PShaderID::PS_PFX_ApplyParticleDistortion );
-    ActivePS->Apply();
+    GetPipelineState().Apply();
 
     // Copy it back, putting distortion behind it
     PfxRenderer->CopyTextureToRTV(
@@ -9247,12 +9241,12 @@ void D3D11GraphicsEngine::DrawString( const std::string& str, float x, float y, 
     graphicState.FF_Stages[0].ColorArg2 = FixedFunctionStage::ETextureArg::TA_DIFFUSE;
 
     // Bind the FF-Info to the first PS slot
-    ActivePS->GetBuffer( "FFPipelineConstantBuffer" ).Update( &graphicState ).Bind();
+    GetActivePS()->GetBuffer( "FFPipelineConstantBuffer" ).Update( &graphicState ).Bind();
     auto& pipeline = GetPipelineState();
 
     pipeline.SetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
-    pipeline.Apply( GetContext().Get() );
+    pipeline.Apply( );
 
     BindViewportInformation( VShaderID::VS_TransformedEx, 0 );
 

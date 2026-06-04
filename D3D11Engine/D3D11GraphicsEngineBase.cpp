@@ -156,7 +156,6 @@ void D3D11GraphicsEngineBase::SetDefaultStates() {
     GetPipelineState().SetPsSamplers(0, 1, DefaultSamplerState.GetAddressOf());
 
     UpdateRenderStates();
-    GetPipelineState().Apply(GetContext().Get());
 }
 
 /** Draws a vertexarray, used for rendering gothics UI */
@@ -209,7 +208,7 @@ XRESULT D3D11GraphicsEngineBase::DrawVertexArray( ExVertexStruct* vertices, unsi
     UINT uStride = stride;
     GetContext()->IASetVertexBuffers( 0, 1, TempVertexBuffer->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
 
-    pipeline.Apply(GetContext().Get());
+    pipeline.Apply();
     //Draw the mesh
     GetContext()->Draw( numVertices, startVertex );
 

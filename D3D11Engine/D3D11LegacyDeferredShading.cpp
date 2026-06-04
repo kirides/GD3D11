@@ -19,6 +19,7 @@ XRESULT D3D11LegacyDeferredShading::DrawPointlightLights(
     auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     auto _ = graphicsEngine->RecordGraphicsEvent( GE_NAME( "LegacyPointlightLights" ) );
     auto& context = graphicsEngine->GetContext();
+    auto& pipeline = Engine::GAPI->GetRendererState().PipelineState;
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
 
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
@@ -75,10 +76,12 @@ XRESULT D3D11LegacyDeferredShading::DrawPointlightLights(
 
             if ( pl && pl->IsInited() && pl->HasShadowMap( 0 ) ) {
                 if ( graphicsEngine->GetActivePS() != psPointLightDynShadow ) {
-                    graphicsEngine->SetActivePS( psPointLightDynShadow )->Apply();
+                    pipeline.SetPixelShader( psPointLightDynShadow );
+                    pipeline.Apply( );
                 }
             } else if ( graphicsEngine->GetActivePS() != psPointLight ) {
-                graphicsEngine->SetActivePS( psPointLight )->Apply();
+                pipeline.SetPixelShader( psPointLight );
+                pipeline.Apply();
             }
         }
 

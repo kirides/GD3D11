@@ -47,7 +47,7 @@ public:
     /** Select the appropriate pixel shader for a texture / material combination. */
     virtual bool BindShaderForTexture(
         D3D11ShaderManager& shaderManager,
-        std::shared_ptr<D3D11PShader>& activePS,
+        const std::shared_ptr<D3D11PShader>& currentPS,
         zCTexture* texture,
         bool forceAlphaTest,
         int zMatAlphaFunc,

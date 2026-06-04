@@ -3,9 +3,14 @@
 #include "D3D11PShader.h"
 #include "D3D11VShader.h"
 #include "D3D11CShader.h"
+#include "Engine.h"
+#include "D3D11GraphicsEngineBase.h"
 
 void GothicPipelineStateInfo::Apply( ID3D11DeviceContext* context )
 {
+    if ( !_isDirty )
+        return;
+    _isDirty = false;
     if ( PrimitiveTopology.IsDirty() ) {
         context->IASetPrimitiveTopology( PrimitiveTopology.Current );
         PrimitiveTopology.Update( PrimitiveTopology.Current );
@@ -43,4 +48,9 @@ void GothicPipelineStateInfo::Apply( ID3D11DeviceContext* context )
         context->RSSetViewports( 1, &Viewport.Current );
         Viewport.Update( Viewport.Current );
     }
+}
+
+void GothicPipelineStateInfo::Apply()
+{
+    Apply(_context);
 }

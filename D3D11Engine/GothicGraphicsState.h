@@ -406,6 +406,12 @@ class D3D11CShader;
 struct alignas(4) GothicPipelineStateInfo {
     GothicPipelineStateInfo() = default;
 
+    GothicPipelineStateInfo(const GothicPipelineStateInfo& other ) = delete;
+    GothicPipelineStateInfo& operator=( const GothicPipelineStateInfo& other) = delete;
+
+    GothicPipelineStateInfo( GothicPipelineStateInfo&& other ) = delete;
+    GothicPipelineStateInfo& operator=( GothicPipelineStateInfo&& other ) = delete;
+
 private:
     template<typename T>
     struct LastCurrent
@@ -422,6 +428,9 @@ private:
         }
     };
     
+    bool _isDirty;
+    ID3D11DeviceContext* _context;
+
     LastCurrent<ID3D11InputLayout*> InputLayout;
     LastCurrent<std::shared_ptr<D3D11PShader>> PixelShader;
     LastCurrent<std::shared_ptr<D3D11VShader>> VertexShader;
@@ -432,39 +441,69 @@ private:
     LastCurrent<std::array<ID3D11SamplerState*, 8>> PsSamplers;
     LastCurrent<std::array<ID3D11SamplerState*, 8>> VsSamplers;
     LastCurrent<D3D11_VIEWPORT> Viewport;
-public:
+private:
     void Apply( ID3D11DeviceContext* context );
+public:
+    void Apply();
+
+    void SetContext( ID3D11DeviceContext* context ) {
+        _context = context;
+    }
+
     void SetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY value ) {
         if ( PrimitiveTopology.Last == value )
             return;
+        _isDirty = true;
         PrimitiveTopology.Current = value;
     }
     
     void SetVertexShader(const std::shared_ptr<D3D11VShader>& value ) {
         if ( VertexShader.Last == value )
             return;
+        _isDirty = true;
         VertexShader.Current = value;
     }
     void SetPixelShader(const std::shared_ptr<D3D11PShader>& value ) {
         if ( PixelShader.Last == value )
             return;
+        _isDirty = true;
         PixelShader.Current = value;
     }
     void SetComputShader(const std::shared_ptr<D3D11CShader>& value ) {
         if ( ComputeShader.Last == value )
             return;
+        _isDirty = true;
         ComputeShader.Current = value;
     }
      void SetInputLayout( ID3D11InputLayout* value ) {
         if ( InputLayout.Last == value )
             return;
+        _isDirty = true;
         InputLayout.Current = value;
      }
     
+     void SetDepthStencil( ID3D11DepthStencilView* depthStencilView ) {
+         if ( DepthStencil.Last != depthStencilView ) {
+             DepthStencil.Current = depthStencilView;
+             _isDirty = true;
+         }
+     }
+
+     void SetRenderTargets( const std::array<ID3D11RenderTargetView*, 8>& renderTargetViews ) {
+         const auto topEnd = std::size( RenderTargets.Last );
+         for ( int i = 0; i < topEnd; ++i ) {
+             if ( RenderTargets.Last[i] != renderTargetViews[i] ) {
+                 RenderTargets.Current[i] = renderTargetViews[i];
+                 _isDirty = true;
+             }
+         }
+     }
+
     void SetRenderTargets(const std::array<ID3D11RenderTargetView*, 8>& renderTargetViews, ID3D11DepthStencilView* depthStencilView) {
         if ( RenderTargets.Last != renderTargetViews || DepthStencil.Last != depthStencilView ) {
             RenderTargets.Current = renderTargetViews;
             DepthStencil.Current = depthStencilView;
+            _isDirty = true;
         }
     }
     
@@ -473,6 +512,7 @@ public:
         for (int i = slot; i < topEnd; ++i) {
             if (PsSamplers.Last[i] != value[i - slot]) {
                 PsSamplers.Current[i] = value[i - slot];
+                _isDirty = true;
             }
         }
     }
@@ -482,6 +522,7 @@ public:
         for (int i = slot; i < topEnd; ++i) {
             if (VsSamplers.Last[i] != value[i - slot]) {
                 VsSamplers.Current[i] = value[i - slot];
+                _isDirty = true;
             }
         }
     }
@@ -489,6 +530,7 @@ public:
     void SetViewport(const D3D11_VIEWPORT& vp) {
         if (Viewport.Last == vp)
             return;
+        _isDirty = true;
         Viewport.Current = vp;
     }
 

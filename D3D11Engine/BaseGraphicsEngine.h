@@ -169,10 +169,6 @@ public:
     virtual XRESULT SetActivePixelShader( PShaderID shader ) { return XR_SUCCESS; };
     virtual XRESULT SetActiveVertexShader( VShaderID shader ) { return XR_SUCCESS; };
 
-    /** Binds the active PixelShader */
-    virtual XRESULT BindActivePixelShader() { return XR_SUCCESS; };
-    virtual XRESULT BindActiveVertexShader() { return XR_SUCCESS; };
-
     /** Binds viewport information to the given constantbuffer slot */
     virtual XRESULT BindViewportInformation( VShaderID vshader, int slot ) { return XR_SUCCESS; };
 

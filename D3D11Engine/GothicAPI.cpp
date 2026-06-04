@@ -2621,7 +2621,7 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
                 // Somehow BindShaderForTexture make normals to be inversed
                 if ( g->GetRenderingStage() == DES_MAIN ) {
                     g->SetActivePixelShader( PShaderID::PS_DiffuseAlphaTest );
-                    g->BindActivePixelShader();
+                    RendererState.PipelineState.Apply();
                 }
 
                 // Update animated textures
@@ -2644,7 +2644,7 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
                     instanceInfo.Scaling = 1.f;
                 }
 
-                auto& VShader = g->GetActiveVS();
+                auto VShader = g->GetActiveVS();
                 if ( distance < 1000 && isMMS ) {
                     zCMorphMesh* mm = reinterpret_cast<zCMorphMesh*>( mvi->Visual );
                     // Only draw this as a morphmesh when rendering the main scene or when rendering as ghost
@@ -2851,7 +2851,7 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
                 // Somehow BindShaderForTexture make normals to be inversed
                 if ( g->GetRenderingStage() == DES_MAIN ) {
                     g->SetActivePixelShader( PShaderID::PS_DiffuseAlphaTest );
-                    g->BindActivePixelShader();
+                    RendererState.PipelineState.Apply();
                 }
 
                 // Update animated textures
@@ -2879,7 +2879,7 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
                 // Update constantbuffer
                 vsBufMPI.Update( &instanceInfo );
 
-                auto& VShader = g->GetActiveVS();
+                auto VShader = g->GetActiveVS();
                 if ( distance < 1000 && isMMS ) {
                     zCMorphMesh* mm = reinterpret_cast<zCMorphMesh*>( mvi->Visual );
                     // Only draw this as a morphmesh when rendering the main scene or when rendering as ghost
@@ -2951,14 +2951,12 @@ void GothicAPI::DrawTransparencyVobs() {
 
         if ( TransVobInfo.skeletalVob ) {
             // We need to do Z-prepass first
-            g->UnbindActivePS();
-            g->GetContext()->PSSetShader( nullptr, nullptr, 0 );
+            RendererState.PipelineState.SetPixelShader( nullptr );
             DrawSkeletalMeshVob( TransVobInfo.skeletalVob, TransVobInfo.distance );
             RendererState.RendererInfo.FrameDrawnVobs--; // Don't calculate prepass as drawn vob
 
             // Now actually draw mesh using transparency pixel shader
             g->SetActivePixelShader( PShaderID::PS_TransparencySkel );
-            g->BindActivePixelShader();
 
             // Update transparency alpha information
             GhostAlphaConstantBuffer gacb;
@@ -2974,8 +2972,8 @@ void GothicAPI::DrawTransparencyVobs() {
             g->GetActiveVS()->GetBuffer( 1 ).Update(&cbPerInstance, sizeof(cbPerInstance)).Bind();
 
             // We need to do Z-prepass first
-            g->UnbindActivePS();
-            g->GetContext()->PSSetShader( nullptr, nullptr, 0 );
+            RendererState.PipelineState.SetPixelShader( nullptr );
+            RendererState.PipelineState.Apply();
 
             for ( auto const& materialMesh : TransVobInfo.normalVob->VisualInfo->Meshes ) {
                 if ( materialMesh.first && materialMesh.first->GetTexture() ) {
@@ -2995,7 +2993,7 @@ void GothicAPI::DrawTransparencyVobs() {
 
             // Now actually draw mesh using transparency pixel shader
             g->SetActivePixelShader( PShaderID::PS_Transparency );
-            g->BindActivePixelShader();
+            RendererState.PipelineState.Apply();
 
             // Update transparency alpha information
             GhostAlphaConstantBuffer gacb;
@@ -5571,6 +5569,7 @@ void GothicAPI::DrawMorphMesh( zCMorphMesh* msh, std::map<zCMaterial*, std::vect
             }
         }
 
+        RendererState.PipelineState.Apply();
         for ( auto const& it : meshes ) {
             for ( MeshInfo* mi : it.second ) {
                 if ( mi->MeshIndex == i ) {
@@ -5611,6 +5610,7 @@ void GothicAPI::DrawMorphMesh_Layered( zCMorphMesh* msh, std::map<zCMaterial*, s
                 continue;
         }
 
+        RendererState.PipelineState.Apply();
         for ( auto const& it : meshes ) {
             for ( MeshInfo* mi : it.second ) {
                 if ( mi->MeshIndex == i ) {

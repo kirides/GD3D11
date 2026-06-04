@@ -222,10 +222,6 @@ public:
     /** Called when a key got pressed */
     XRESULT OnKeyDown( unsigned int key ) override;
 
-    /** Binds the active PixelShader */
-    XRESULT BindActivePixelShader() override;
-    XRESULT BindActiveVertexShader() override;
-
     /** Draws quadmarks in a simple way */
     void DrawQuadMarks();
     void DrawMQuadMarks();

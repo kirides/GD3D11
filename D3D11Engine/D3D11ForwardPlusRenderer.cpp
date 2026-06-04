@@ -129,9 +129,9 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
                 TracyD3D11ZoneCGX( "D3D11ForwardPlusRenderer::ShadowMask" );
                 auto& context = engine.GetContext();
                 auto* shadowMaps = engine.GetShadowMaps();
+                auto& pipeline = Engine::GAPI->GetRendererState().PipelineState;
 
-                ID3D11RenderTargetView* nullRTV = nullptr;
-                context->OMSetRenderTargets( 1, &nullRTV, nullptr ); 
+                pipeline.SetRenderTargets( {} );
 
                 // Fill and bind the sun/CSM constant buffer at b0
                 DS_ScreenQuadConstantBuffer scb = shadowMaps->FillSunCSMConstantBuffer();
@@ -142,6 +142,9 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
                     m_SunCSMConstantBuffer->UpdateBuffer( &scb );
                 }
                 m_SunCSMConstantBuffer->BindToPixelShader( 0 );
+
+                pipeline.SetDepthStencil( nullptr );
+                pipeline.Apply();
 
                 // Bind depth copy as SRV at t2 (filled by the "FP Light Culling" pass)
                 auto* depthCopy = engine.GetDepthBufferCopy();
@@ -159,20 +162,19 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
                 ID3D11RenderTargetView* maskRTV = shadowMaskTex ? shadowMaskTex->GetRenderTargetView().Get() : nullptr;
                 constexpr float defaultMask[] { 1.f, 0.f, 0.f, 0.f };
                 if ( maskRTV ) context->ClearRenderTargetView( maskRTV, defaultMask );
-                context->OMSetRenderTargets( 1, &maskRTV, nullptr );
+                pipeline.SetRenderTargets( {maskRTV} );
 
                 // Draw fullscreen triangle with the shadow mask shader
                 engine.SetActiveVertexShader( VShaderID::VS_PFX );
-                engine.BindActiveVertexShader();
-
                 engine.SetActivePixelShader( PShaderID::PS_FP_ShadowMask );
-                engine.BindActivePixelShader();
 
                 engine.UpdateRenderStates();
+                pipeline.Apply();
                 engine.GetPfxRenderer()->DrawFullScreenQuad();
 
                 // Unbind RTVs and SRVs
-                context->OMSetRenderTargets( 1, &nullRTV, nullptr );
+                pipeline.SetRenderTargets( {} );
+                pipeline.Apply();
                 context->PSSetShaderResources( 2, 1, s_nullSRVs );
                 context->PSSetShaderResources( 3, 1, s_nullSRVs );
                 context->PSSetShaderResources( 8, 1, s_nullSRVs );
@@ -336,7 +338,7 @@ void D3D11ForwardPlusRenderer::AddLightingPasses(
 
 bool D3D11ForwardPlusRenderer::BindShaderForTexture(
     D3D11ShaderManager& shaderManager,
-    std::shared_ptr<D3D11PShader>& activePS,
+    const std::shared_ptr<D3D11PShader>& currentPS,
     zCTexture* texture,
     bool forceAlphaTest,
     int zMatAlphaFunc,
@@ -355,14 +357,14 @@ bool D3D11ForwardPlusRenderer::BindShaderForTexture(
          materialType == MaterialInfo::MT_WaterfallFoam ||
          linZ || blendAdd || blendBlend ) {
         // These don't participate in Forward+ lighting — use deferred fallback shaders
-        return m_DeferredFallback.BindShaderForTexture( shaderManager, activePS,
+        return m_DeferredFallback.BindShaderForTexture( shaderManager, currentPS,
             texture, forceAlphaTest, zMatAlphaFunc, materialType,
             resolvedDiffuseNormalmapped, resolvedDiffuseNormalmappedFxMap,
             resolvedDiffuseNormalmappedAlphatest, resolvedDiffuseNormalmappedAlphatestFxMap );
     }
 
-    auto active = activePS;
-    auto newShader = activePS;
+    auto active = currentPS;
+    auto newShader = currentPS;
 
     if ( texture->HasAlphaChannel() || forceAlphaTest ) {
         if ( texture->GetSurface()->GetFxMap() ) {
@@ -388,8 +390,7 @@ bool D3D11ForwardPlusRenderer::BindShaderForTexture(
     }
 
     if ( active != newShader ) {
-        activePS = newShader;
-        activePS->Apply();
+        Engine::GAPI->GetRendererState().PipelineState.SetPixelShader( newShader );
         return true;
     }
     return false;

@@ -1248,6 +1248,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="GMeshSimple.cpp" />
     <ClCompile Include="GothicAPI.cpp" />
     <ClCompile Include="GothicExternals.cpp" />
+    <ClCompile Include="GothicGraphicsState.cpp" />
     <ClCompile Include="GraphicsShader.cpp" />
     <ClCompile Include="GSky.cpp" />
     <ClCompile Include="GSpriteCloud.cpp" />
