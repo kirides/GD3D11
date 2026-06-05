@@ -8703,7 +8703,6 @@ void D3D11GraphicsEngine::UpdateOcclusion() {
         return;
     auto _ = RecordGraphicsEvent( GE_NAME( "D3D11GraphicsEngine::UpdateOcclusion" ) );
     TracyD3D11ZoneCGX( "D3D11GraphicsEngine::UpdateOcclusion" );
-    ZoneScopedN( "D3D11GraphicsEngine::UpdateOcclusion" );
 
     // Set up states
     Engine::GAPI->GetRendererState().RasterizerState.SetDefault();
