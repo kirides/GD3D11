@@ -44,7 +44,7 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
         builder.Write( backBufferHandle );
 
         pass.m_executeCallback = [&engine]( const RenderGraph& ) -> void {
-            ZoneScopedN( "FR Depth Prepass" );
+            TracyD3D11ZoneCGX( "D3D11ForwardPlusRenderer::Depth Prepass" );
             auto& context = engine.GetContext();
 
             // Clear all SRVs to avoid resource hazards
@@ -78,7 +78,7 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
         builder.Write( backBufferHandle );
 
         pass.m_executeCallback = [&engine]( const RenderGraph& ) -> void {
-            ZoneScopedN( "FR Light Culling" );
+            TracyD3D11ZoneCGX( "D3D11ForwardPlusRenderer::Light Culling" );
             // CopyDepthStencil so depth can be read as SRV
             engine.CopyDepthStencil();
 
@@ -95,7 +95,7 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
         builder.Write( backBufferHandle );
 
         pass.m_executeCallback = [&engine]( const RenderGraph& ) -> void {
-            ZoneScopedN( "FR Shadow Maps" );
+            TracyD3D11ZoneCGX( "D3D11ForwardPlusRenderer::Shadow Maps" );
             auto* shadowMaps = engine.GetShadowMaps();
             engine.SetDefaultStates();
             const auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
@@ -126,6 +126,7 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
             builder.Write( backBufferHandle );
 
             pass.m_executeCallback = [this, &engine, shadowMaskResource]( const RenderGraph& graph ) -> void {
+                TracyD3D11ZoneCGX( "D3D11ForwardPlusRenderer::ShadowMask" );
                 auto& context = engine.GetContext();
                 auto* shadowMaps = engine.GetShadowMaps();
 
@@ -196,6 +197,7 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
         }
 
         pass.m_executeCallback = [this, &engine, colorResource, normalsResource, specularResource, reactiveMaskResource, velocityBufferHandle, shadowMaskResource, useScreenSpaceShadowMask]( const RenderGraph& graph ) -> void {
+            TracyD3D11ZoneCGX( "D3D11ForwardPlusRenderer::Lit Geometry" );
             auto& context = engine.GetContext();
             auto* shadowMaps = engine.GetShadowMaps();
 

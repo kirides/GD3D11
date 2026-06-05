@@ -53,6 +53,7 @@ public:
 		if (!m_enabled) {
 			return;
 		}
+        ZoneScopedN("FpsLimiter::Wait");
 
 		auto timeNow = GetCounter();
 		auto frameDuration = timeNow - m_timeStart;

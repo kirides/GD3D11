@@ -1298,6 +1298,7 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
         wrl::ComPtr<IDXGISwapChain2> swapChain2;
         if ( m_lowlatency && SUCCEEDED( SwapChain.As( &swapChain2 ) ) ) {
             frameLatencyWaitableObject = swapChain2->GetFrameLatencyWaitableObject();
+            ZoneScopedN( "OnResize::frameLatencyWaitableObject" );
             WaitForSingleObjectEx( frameLatencyWaitableObject, INFINITE, true );
         }
     } else {
@@ -1715,6 +1716,7 @@ void RenderVelocity(D3D11GraphicsEngine* engine,
 
 /** Presents the current frame to the screen */
 XRESULT D3D11GraphicsEngine::Present() {
+    ZoneScoped;
     const auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
 
     SetViewport( ViewportInfo( 0, 0, GetBackbufferResolution() ) );
@@ -1818,6 +1820,7 @@ XRESULT D3D11GraphicsEngine::Present() {
             LogWarnBox() << "Device Removed! (Unknown reason)";
         }
     } else if ( hr == S_OK && frameLatencyWaitableObject ) {
+        ZoneScopedN( "Present::frameLatencyWaitableObject" );
         WaitForSingleObjectEx( frameLatencyWaitableObject, INFINITE, true );
     }
 
@@ -3837,6 +3840,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             builder.Write( colorResource );
 
             pass.m_executeCallback = [this, colorResource](const RenderGraph& graph)->void {
+                TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw Sky" );
                 // Draw back of the sky if outdoor
                 GetContext()->OMSetRenderTargets( 1, graph.GetPhysicalTexture( colorResource )->GetRenderTargetView().GetAddressOf(), nullptr );
                 
@@ -3862,6 +3866,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             if ( !Engine::GAPI->GetRendererState().RendererSettings.DrawParticleEffects ) {
                 return;
             }
+            TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw ParticleFX #1" );
             std::vector<zCVob*> decals;
             zCCamera::GetCamera()->Activate();
             // Camera->Activate breaks viewport
@@ -3884,6 +3889,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         builder.Write( backBufferHandle );
 
         pass.m_executeCallback = [this](const RenderGraph&)-> void {
+            TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw Frame AlphaMeshes" );
             DrawFrameAlphaMeshes();
             };
         }
@@ -3904,6 +3910,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             builder.Write( backBufferHandle );
 
             pass.m_executeCallback = [this, normalsResource, backBufferHandle](const RenderGraph& graph) {
+                TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw HBAO+" );
                 auto normalsTexture = graph.GetPhysicalTexture(normalsResource);
                 auto backBuffer = graph.GetPhysicalTexture(backBufferHandle);
 
@@ -3920,6 +3927,8 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             builder.Write( backBufferHandle );
 
             pass.m_executeCallback = [this, normalsResource, backBufferHandle]( const RenderGraph& graph ) {
+                TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw ASSAO" );
+
                 auto normalsTexture = graph.GetPhysicalTexture( normalsResource );
                 auto backBuffer = graph.GetPhysicalTexture( backBufferHandle );
 
@@ -3936,6 +3945,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             builder.Read( normalsResource );
 
             pass.m_executeCallback = [this, normalsResource](const RenderGraph& graph) {
+                TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw SAO (Compute)" );
                 auto normalsTexture = graph.GetPhysicalTexture(normalsResource);
 
                 PfxRenderer->RenderSAOCompute(
@@ -3961,6 +3971,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         builder.Write( backBufferHandle );
 
         pass.m_executeCallback = [this](const RenderGraph&) {
+            TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw FrameTransparencyMeshes" );
 
             SetDefaultStates();
 
@@ -3978,6 +3989,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             builder.Write( backBufferHandle );
 
             pass.m_executeCallback = [this](const RenderGraph&) {
+                TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw ForestPortals" );
 
                 SetDefaultStates();
 
@@ -3995,6 +4007,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         builder.Write( backBufferHandle );
 
         pass.m_executeCallback = [this](const RenderGraph&) {
+            TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw FrameTransparencyMeshesWaterfall" );
 
             SetDefaultStates();
 
@@ -4011,6 +4024,8 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         builder.Write( backBufferHandle );
 
         pass.m_executeCallback = [this](const RenderGraph&) {
+            TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw Ghosts" );
+
             D3D11ENGINE_RENDER_STAGE oldStage = RenderingStage;
             SetRenderingStage( DES_GHOST );
             Engine::GAPI->DrawTransparencyVobs();
@@ -4033,6 +4048,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             builder.Write( backBufferHandle );
 
             pass.m_executeCallback = [this](const RenderGraph&) {
+                TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw Heightfog" );
                 PfxRenderer->RenderHeightfog();
             };
         });
@@ -4045,6 +4061,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                 builder.Write( backBufferHandle );
 
                 pass.m_executeCallback = [this](const RenderGraph&) {
+                    TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw Rain" );
                     Effects->DrawRain();
                 };
             });
@@ -4054,6 +4071,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                 builder.Write( backBufferHandle );
 
                 pass.m_executeCallback = [this](const RenderGraph&) {
+                    TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw Rain (CS)" );
                     Effects->DrawRain_CS();
                 };
             });
@@ -4079,6 +4097,8 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             builder.Write( backBufferHandle );
 
             pass.m_executeCallback = [this](const RenderGraph&) {
+                TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw ParticleFX #2" );
+
                 // Draw unlit decals 
                 // TODO: Only get them once!
                 std::vector<zCVob*> decals;
@@ -4104,6 +4124,8 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                 builder.Read( backBufferHandle );
 
                 pass.m_executeCallback = [this, backBufferHandle, &compositionGodRaysSRV](const RenderGraph& graph) {
+                    TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw GodRays (Compute)" );
+
                     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv;
                     GetContext()->PSSetShaderResources( 5, 1, srv.GetAddressOf() );
 
@@ -4123,6 +4145,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                 builder.Write( backBufferHandle );
 
                 pass.m_executeCallback = [this, backBufferHandle, normalsResource](const RenderGraph& graph) {
+                    TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw GodRays" );
                     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv;
                     GetContext()->PSSetShaderResources( 5, 1, srv.GetAddressOf() );
 
@@ -4144,6 +4167,8 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
 
             pass.m_executeCallback = [this, backBufferHandle, compositionSAO, compositionHeightFog,
                                       &compositionGodRaysSRV](const RenderGraph& graph) {
+                TracyD3D11ZoneCGX( "D3D11GraphicsEngine::PostFX Composition" );
+
                 auto backBuffer = graph.GetPhysicalTexture(backBufferHandle);
 
                 // Copy backbuffer to a temp texture — we need to read it as SRV while writing to RTV
@@ -4172,6 +4197,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             builder.Write( backBufferHandle );
 
             pass.m_executeCallback = [this, backBufferHandle](const RenderGraph& graph) {
+                TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw DepthOfField" );
                 auto backbufferResource = graph.GetPhysicalTexture(backBufferHandle);
                 PfxRenderer->RenderDepthOfField(backbufferResource->GetShaderResView().Get());
             };
@@ -4191,6 +4217,8 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         builder.Write( backBufferHandle );
 
         pass.m_executeCallback = [particleColorHandle, particleDistortionHandle](const RenderGraph& graph) {
+            TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw ParticlesSimple" );
+
             Engine::GAPI->ResetRenderStates();
             Engine::GAPI->DrawParticlesSimple( 
                 graph.GetPhysicalTexture( particleColorHandle ), 
@@ -4204,6 +4232,8 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         builder.Write( backBufferHandle );
 
         pass.m_executeCallback = [this](const RenderGraph&) {
+            TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw PolyStrips" );
+
             // Calc weapon/effect trail mesh data
             Engine::GAPI->CalcPolyStripMeshes();
             // Calc lightning flashes mesh data
@@ -4222,6 +4252,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         builder.Write( backBufferHandle );
 
         pass.m_executeCallback = [this](const RenderGraph&) {
+            TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw Debug Lines" );
             LineRenderer->Flush();
             LineRenderer->FlushScreenSpace();
         };
@@ -4245,6 +4276,8 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             builder.Write( backBufferHandle );
 
             pass.m_executeCallback = [this, &rendererState, velocityBufferHandle](const RenderGraph& graph) {
+                TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Render TAA" );
+
                 auto velocityBufferTex = graph.GetPhysicalTexture( velocityBufferHandle );
                 PfxRenderer->RenderTAA( rendererState.RendererSettings.DebugSettings.TAA.DepthMotionVectors
                     ? nullptr
@@ -4260,6 +4293,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             builder.Write( backBufferHandle );
 
             pass.m_executeCallback = [this, backBufferHandle](const RenderGraph& graph) {
+                TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Render HDR" );
                 auto backbufferTex = graph.GetPhysicalTexture( backBufferHandle );
                 PfxRenderer->RenderHDR( backbufferTex->GetRenderTargetView().Get(), backbufferTex->GetShaderResView().Get() );
             };
@@ -4274,6 +4308,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             builder.Write( backBufferHandle );
 
             pass.m_executeCallback = [this, backBufferHandle](const RenderGraph& graph) {
+                TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Render SMAA" );
                 auto backbufferTex = graph.GetPhysicalTexture( backBufferHandle );
                 PfxRenderer->RenderSMAA(backbufferTex->GetShaderResView().Get());
                 GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
@@ -4297,6 +4332,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             builder.Write( backBufferHandle );
 
             pass.m_executeCallback = [this](const RenderGraph&) {
+                TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw UnderwaterFX" );
                 DrawUnderwaterEffects();
             };
         } );
@@ -4336,6 +4372,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                 builder.Write( backBufferHandle );
 
                 pass.m_executeCallback = [this, &rendererState, backBufferHandle](const RenderGraph& graph) {
+                    TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Sharpen" );
                     GetContext()->PSSetSamplers( 0, 1, LinearSamplerState.GetAddressOf() );
                     
                     auto backbufferTex = graph.GetPhysicalTexture( backBufferHandle );
