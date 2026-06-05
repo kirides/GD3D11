@@ -319,14 +319,18 @@ public:
         if ( !nodeList )
             return;
 
-        transforms->reserve( transforms->size() + nodeList->NumInArray );
-        for ( int i = 0; i < nodeList->NumInArray; i++ ) {
-            zCModelNodeInst* node = nodeList->Array[i];
-            zCModelNodeInst* parent = node->ParentNode;
+        const auto num = nodeList->NumInArray;
+        const auto array = nodeList->Array;
+
+        transforms->reserve( transforms->size() + num );
+
+        for ( int i = 0; i < num; i++ ) {
+            zCModelNodeInst* node = array[i];
+            const zCModelNodeInst* parent = node->ParentNode;
 
             // Calculate transform for this node
             if ( parent ) {
-                XMStoreFloat4x4( &node->TrafoObjToCam, XMLoadFloat4x4( &parent->TrafoObjToCam ) * XMLoadFloat4x4( &node->Trafo ) );
+                XMStoreFloat4x4( &node->TrafoObjToCam, XMMatrixMultiply(XMLoadFloat4x4( &parent->TrafoObjToCam ) , XMLoadFloat4x4( &node->Trafo ) ) );
             } else {
                 node->TrafoObjToCam = node->Trafo;
             }
