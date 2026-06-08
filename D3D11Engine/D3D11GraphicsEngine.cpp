@@ -3875,23 +3875,6 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     ActiveSceneRenderer->AddGeometryPasses( graph, *this,
         colorResource, velocityBufferHandle, backBufferHandle,
         normalsResource, specularResource, reactiveMaskResource );
-
-    if ( rendererState.RendererSettings.DrawSky ) {
-        graph.AddPass( RG_PASS_NAME( "Draw Sky" ), [&]( RGBuilder& builder, RenderPass& pass ) {
-            //// Setup / Declare
-            //RGTextureDesc albedoDesc{ 1920, 1080, 28 /* DXGI_FORMAT_R8G8B8A8_UNORM */, "Albedo" };
-            //albedoTarget = builder.CreateTexture( albedoDesc );
-            builder.Write( colorResource );
-
-            pass.m_executeCallback = [this, colorResource]( const RenderGraph& graph )->void {
-                TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw Sky" );
-                // Draw back of the sky if outdoor
-                GetContext()->OMSetRenderTargets( 1, graph.GetPhysicalTexture( colorResource )->GetRenderTargetView().GetAddressOf(), GetDepthBuffer()->GetDepthStencilView().Get() );
-
-                DrawSky();
-            };
-        } );
-    }
     
     graph.AddPass( RG_PASS_NAME("Draw ParticleFX #1"), [&]( RGBuilder& builder, RenderPass& pass ) {
         // Setup / Declare
@@ -3928,7 +3911,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             DrawFrameAlphaMeshes();
             };
         }
-    );    
+    );
 
     // Draw Ambient Occlusion
     // Shared state for PostFX composition pass
@@ -3989,6 +3972,23 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                 GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
             };
         });
+    }
+
+    if ( rendererState.RendererSettings.DrawSky ) {
+        graph.AddPass( RG_PASS_NAME( "Draw Sky" ), [&]( RGBuilder& builder, RenderPass& pass ) {
+            //// Setup / Declare
+            //RGTextureDesc albedoDesc{ 1920, 1080, 28 /* DXGI_FORMAT_R8G8B8A8_UNORM */, "Albedo" };
+            //albedoTarget = builder.CreateTexture( albedoDesc );
+            builder.Write( backBufferHandle );
+
+            pass.m_executeCallback = [this, backBufferHandle]( const RenderGraph& graph )->void {
+                TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw Sky" );
+                // Draw back of the sky if outdoor
+                GetContext()->OMSetRenderTargets( 1, graph.GetPhysicalTexture( backBufferHandle )->GetRenderTargetView().GetAddressOf(), GetDepthBuffer()->GetDepthStencilView().Get() );
+
+                DrawSky();
+            };
+        } );
     }
     
     graph.AddPass( RG_PASS_NAME("DrawWaterSurfaces"), [&]( RGBuilder& builder, RenderPass& pass ) {
