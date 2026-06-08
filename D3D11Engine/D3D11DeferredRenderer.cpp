@@ -41,7 +41,7 @@ void D3D11DeferredRenderer::AddGeometryPasses( RenderGraph& graph,
         builder.Write( backBufferHandle );
 
         pass.m_executeCallback = [&engine, colorResource, normalsResource, specularResource, reactiveMaskResource, velocityBufferHandle]( const RenderGraph& graph ) -> void {
-            ZoneScopedN( "DR GBuffer" );
+            TracyD3D11ZoneCGX( "D3D11DeferredRenderer::G-Buffer Pass" );
             const auto& context = engine.GetContext();
             context->VSSetShaderResources( 0, 8, s_nullSRVs );
             context->PSSetShaderResources( 0, 8, s_nullSRVs );
@@ -106,7 +106,7 @@ void D3D11DeferredRenderer::AddLightingPasses( RenderGraph& graph,
         builder.Write( backBufferHandle );
 
         pass.m_executeCallback = [&engine, &frameLights, colorResource, normalsResource, specularResource]( const RenderGraph& graph ) -> void {
-            ZoneScopedN( "DR Draw Lighting" );
+            TracyD3D11ZoneCGX( "D3D11DeferredRenderer::Draw Lighting" );
             auto colorTexture = graph.GetPhysicalTexture( colorResource );
             auto normalsTexture = graph.GetPhysicalTexture( normalsResource );
             auto specularTexture = graph.GetPhysicalTexture( specularResource );

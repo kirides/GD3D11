@@ -1407,6 +1407,7 @@ XRESULT D3D11ShadowMap::DrawWorldLights()
 {
     auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     auto _ = graphicsEngine->RecordGraphicsEvent( GE_NAME( "DrawWorldLights" ) );
+    TracyD3D11ZoneCGX( "D3D11ShadowMap::DrawWorldLights");
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
 
     Engine::GAPI->GetRendererState().BlendState.SetAdditiveBlending();
