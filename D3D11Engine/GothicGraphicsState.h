@@ -871,7 +871,7 @@ struct GothicRendererSettings {
     void SetupAddonWorldSpecificValues() {
         FogGlobalDensity = 0.00004f;
         FogHeightFalloff = 0.0005f;
-        FogColorMod = float3::FromColor( 180, 180, 255 );
+        FogColorMod = float3::FromColor( 128, 173, 239 );
         FogHeight = 0;
     }
 
