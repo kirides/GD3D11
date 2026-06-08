@@ -18,6 +18,7 @@ enum RenderStage {
     _STAGE_DRAW_DX11_START,
     STAGE_DRAW_WORLD,
     STAGE_DRAW_SKELETAL,
+    STAGE_DRAW_SKY,
     _STAGE_DRAW_DX11_END,
     STAGE_DRAW_HUD,
     STAGE_DRAW_SHADOWS,
@@ -123,7 +124,7 @@ __declspec(align(4)) struct GothicPipelineState {
     /** Sets this state dirty, which means that it will be updated before next rendering */
     void SetDirty() {
         StateDirty = true;
-        HashThis( reinterpret_cast<char*>(this), StructSize );
+        // HashThis( reinterpret_cast<char*>(this), StructSize );
     }
 
     /** Hashes the whole struct */
@@ -179,7 +180,7 @@ class BaseDepthBufferState;
 struct GothicDepthBufferStateInfo : public GothicPipelineState {
     GothicDepthBufferStateInfo() {
         StructSize = sizeof( GothicDepthBufferStateInfo );
-        Padding[0] = Padding[1] = false;
+        Padding0 = Padding1 = false;
     }
 
     /** Layed out for D3D11 */
@@ -201,12 +202,15 @@ struct GothicDepthBufferStateInfo : public GothicPipelineState {
         DepthBufferEnabled = true;
         DepthWriteEnabled = true;
         DepthBufferCompareFunc = DEFAULT_DEPTH_COMP_STATE;
+        Padding0 = false;
+        Padding1 = false;
     }
 
     /** Depthbuffer settings */
     bool DepthBufferEnabled;
     bool DepthWriteEnabled;
-    bool Padding[2];
+    bool Padding0;
+    bool Padding1;
     ECompareFunc DepthBufferCompareFunc;
 
     /** Deletes all cached states */

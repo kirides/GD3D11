@@ -157,12 +157,20 @@ XRESULT D3D11ShaderManager::Init() {
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_TransformedEx>( "VS_TransformedEx.hlsl" )
         .with_layout( VERTEX_INPUT_LAYOUT_1 ) );
+    
+    Shaders.push_back( ShaderInfo::make<VShaderID::VS_TransformedEx_MAX_Z>( "VS_TransformedEx.hlsl" )
+        .with_layout( VERTEX_INPUT_LAYOUT_1 )
+        .with_macros( { {"OVERRIDE_MAX_Z", "1"} } ) );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExPointLight>( "VS_ExPointLight.hlsl" )
         .with_layout( VERTEX_INPUT_LAYOUT_1 ) );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_XYZRHW_DIF_T1>( "VS_XYZRHW_DIF_T1.hlsl" )
         .with_layout( VERTEX_INPUT_LAYOUT_7_VS_XYZRHW_DIF_T1 ) );
+
+    Shaders.push_back( ShaderInfo::make<VShaderID::VS_XYZRHW_DIF_T1_MAX_Z>( "VS_XYZRHW_DIF_T1.hlsl" )
+        .with_layout( VERTEX_INPUT_LAYOUT_7_VS_XYZRHW_DIF_T1 )
+        .with_macros( { {"OVERRIDE_MAX_Z", "1"} }));
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExInstancedObj>( "VS_ExInstancedObj.hlsl" )
         .with_layout( VERTEX_INPUT_LAYOUT_10_VS_ExInstancedObj )

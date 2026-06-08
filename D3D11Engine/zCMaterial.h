@@ -5,19 +5,10 @@
 #include "Engine.h"
 #include "GothicAPI.h"
 #include "zCTexture.h"
+#include "zTypes.h"
 
 const int zMAT_GROUP_WATER = 5;
 const int zMAT_GROUP_SNOW = 6;
-
-const int zMAT_ALPHA_FUNC_MAT_DEFAULT = 0;
-const int zMAT_ALPHA_FUNC_NONE = 1;
-const int zMAT_ALPHA_FUNC_BLEND = 2;
-const int zMAT_ALPHA_FUNC_ADD = 3;
-const int zMAT_ALPHA_FUNC_SUB = 4;
-const int zMAT_ALPHA_FUNC_MUL = 5;
-const int zMAT_ALPHA_FUNC_MUL2 = 6;
-const int zMAT_ALPHA_FUNC_TEST = 7;
-const int zMAT_ALPHA_FUNC_BLEND_TEST = 8;
 
 class zCTexAniCtrl {
 private:
@@ -146,11 +137,31 @@ public:
         }
     }
 
-    int GetAlphaFunc() {
-        return static_cast<int>(*reinterpret_cast<unsigned char*>(THISPTR_OFFSET( GothicMemoryLocations::zCMaterial::Offset_AlphaFunc )));
+    struct MaterialFlags {
+        uint8_t smooth : 1;
+        uint8_t dontUseLightmaps : 1;
+        uint8_t texAniMap : 1;
+        uint8_t lodDontCollapse : 1;
+        uint8_t noCollDet : 1;
+        uint8_t forceOccluder : 1;
+        uint8_t m_bEnvironmentalMapping : 1;
+        uint8_t polyListNeedsSort : 1;
+        uint8_t matUsage : 8;
+        uint8_t libFlag : 8;
+        zTRnd_AlphaBlendFunc rndAlphaBlendFunc : 8;
+        uint8_t	 m_bIgnoreSun : 1;
+    };
+
+    __forceinline MaterialFlags& GetFlags() {
+        return *reinterpret_cast<MaterialFlags*>(THISPTR_OFFSET( GothicMemoryLocations::zCMaterial::Offset_Flags ));
     }
 
-    void SetAlphaFunc( int func ) {
+    zTRnd_AlphaBlendFunc GetAlphaFunc() {
+        MaterialFlags& flags = GetFlags();
+        return flags.rndAlphaBlendFunc;
+    }
+
+    void SetAlphaFunc( zTRnd_AlphaBlendFunc func ) {
         *reinterpret_cast<unsigned char*>(THISPTR_OFFSET( GothicMemoryLocations::zCMaterial::Offset_AlphaFunc )) = static_cast<unsigned char>(func);
     }
 
@@ -159,7 +170,7 @@ public:
     }
 
     bool HasAlphaTest() {
-        const int f = GetAlphaFunc();
+        const zTRnd_AlphaBlendFunc f = GetAlphaFunc();
         return f == zMAT_ALPHA_FUNC_TEST || f == zMAT_ALPHA_FUNC_BLEND_TEST;
     }
 

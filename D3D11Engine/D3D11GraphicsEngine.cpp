@@ -3605,66 +3605,97 @@ XRESULT D3D11GraphicsEngine::UnbindTexture( int slot ) {
 
 /** Recreates the renderstates */
 XRESULT D3D11GraphicsEngine::UpdateRenderStates() {
-    if ( Engine::GAPI->GetRendererState().BlendState.StateDirty &&
-        Engine::GAPI->GetRendererState().BlendState.Hash != FFBlendStateHash ) {
+
+    auto& states = Engine::GAPI->GetRendererState();
+    auto& blendState = states.BlendState;
+    auto& rasterState = states.RasterizerState;
+    auto& depthState = states.DepthState;
+
+    blendState.HashThis( reinterpret_cast<char*>(&blendState), blendState.StructSize );
+    rasterState.HashThis( reinterpret_cast<char*>(&rasterState), rasterState.StructSize );
+    depthState.HashThis( reinterpret_cast<char*>(&depthState), depthState.StructSize );
+
+    if ( blendState.StateDirty &&
+        blendState.Hash != FFBlendStateHash ) {
         D3D11BlendStateInfo* state = static_cast<D3D11BlendStateInfo*>
-            (GothicStateCache::s_BlendStateMap[Engine::GAPI->GetRendererState().BlendState]);
+            (GothicStateCache::s_BlendStateMap[blendState]);
 
         if ( !state ) {
             // Create new state
             state =
-                new D3D11BlendStateInfo( Engine::GAPI->GetRendererState().BlendState );
+                new D3D11BlendStateInfo( blendState );
 
-            GothicStateCache::s_BlendStateMap[Engine::GAPI->GetRendererState().BlendState] = state;
+            GothicStateCache::s_BlendStateMap[blendState] = state;
         }
 
         FFBlendState = state->State.Get();
-        FFBlendStateHash = Engine::GAPI->GetRendererState().BlendState.Hash;
+        FFBlendStateHash = blendState.Hash;
 
-        Engine::GAPI->GetRendererState().BlendState.StateDirty = false;
+        blendState.StateDirty = false;
         GetContext()->OMSetBlendState( FFBlendState.Get(), float4( 0, 0, 0, 0 ).toPtr(),
             0xFFFFFFFF );
     }
 
-    if ( Engine::GAPI->GetRendererState().RasterizerState.StateDirty &&
-        Engine::GAPI->GetRendererState().RasterizerState.Hash !=
+    if ( rasterState.StateDirty &&
+        rasterState.Hash !=
         FFRasterizerStateHash ) {
         D3D11RasterizerStateInfo* state = static_cast<D3D11RasterizerStateInfo*>
-            (GothicStateCache::s_RasterizerStateMap[Engine::GAPI->GetRendererState().RasterizerState]);
+            (GothicStateCache::s_RasterizerStateMap[rasterState]);
 
         if ( !state ) {
             // Create new state
             state = new D3D11RasterizerStateInfo(
-                Engine::GAPI->GetRendererState().RasterizerState );
+                rasterState );
 
-            GothicStateCache::s_RasterizerStateMap[Engine::GAPI->GetRendererState().RasterizerState] = state;
+            GothicStateCache::s_RasterizerStateMap[rasterState] = state;
         }
 
         FFRasterizerState = state->State.Get();
-        FFRasterizerStateHash = Engine::GAPI->GetRendererState().RasterizerState.Hash;
+        FFRasterizerStateHash = rasterState.Hash;
 
-        Engine::GAPI->GetRendererState().RasterizerState.StateDirty = false;
+        rasterState.StateDirty = false;
         GetContext()->RSSetState( FFRasterizerState.Get() );
     }
 
-    if ( Engine::GAPI->GetRendererState().DepthState.StateDirty &&
-        Engine::GAPI->GetRendererState().DepthState.Hash !=
+    if ( depthState.StateDirty &&
+        depthState.Hash !=
         FFDepthStencilStateHash ) {
+
         D3D11DepthBufferState* state = static_cast<D3D11DepthBufferState*>
-            (GothicStateCache::s_DepthBufferMap[Engine::GAPI->GetRendererState().DepthState]);
+            (GothicStateCache::s_DepthBufferMap[depthState]);
 
         if ( !state ) {
             // Create new state
             state = new D3D11DepthBufferState(
-                Engine::GAPI->GetRendererState().DepthState );
+                depthState );
 
-            GothicStateCache::s_DepthBufferMap[Engine::GAPI->GetRendererState().DepthState] = state;
+            GothicStateCache::s_DepthBufferMap[depthState] = state;
+#ifdef DEBUG_D3D11
+            std::stringstream ss;
+            ss << (state->Values.DepthBufferEnabled ? "E1" : "E0") << "|";
+            ss << (state->Values.DepthWriteEnabled ? "W1" : "W0") << "|";
+
+            static const char* strs[9]{
+                "NONE",
+                "NEVER",
+                "LESS",
+                "EQUAL",
+                "LESS_EQUAL",
+                "GREATER",
+                "NOT_EQUAL",
+                "GREATER_EQUAL",
+                "ALWAYS",
+            };
+            ss << strs[state->Values.DepthBufferCompareFunc];
+
+            SetDebugName( state->State.Get(), ss.str() );
+#endif
         }
 
         FFDepthStencilState = state->State.Get();
-        FFDepthStencilStateHash = Engine::GAPI->GetRendererState().DepthState.Hash;
+        FFDepthStencilStateHash = depthState.Hash;
 
-        Engine::GAPI->GetRendererState().DepthState.StateDirty = false;
+        depthState.StateDirty = false;
         GetContext()->OMSetDepthStencilState( FFDepthStencilState.Get(), 0 );
     }
 
@@ -3831,23 +3862,6 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             GetContext()->ClearRenderTargetView( graph.GetPhysicalTexture( colorResource )->GetRenderTargetView().Get(), reinterpret_cast<const float*>(&fogColor) );
         };
     });
-    
-    if ( rendererState.RendererSettings.DrawSky ) {
-        graph.AddPass( RG_PASS_NAME("Draw Sky"), [&]( RGBuilder& builder, RenderPass& pass ) {
-            //// Setup / Declare
-            //RGTextureDesc albedoDesc{ 1920, 1080, 28 /* DXGI_FORMAT_R8G8B8A8_UNORM */, "Albedo" };
-            //albedoTarget = builder.CreateTexture( albedoDesc );
-            builder.Write( colorResource );
-
-            pass.m_executeCallback = [this, colorResource](const RenderGraph& graph)->void {
-                TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw Sky" );
-                // Draw back of the sky if outdoor
-                GetContext()->OMSetRenderTargets( 1, graph.GetPhysicalTexture( colorResource )->GetRenderTargetView().GetAddressOf(), nullptr );
-                
-                DrawSky();
-            };
-        });
-    }
 
     RGResourceHandle normalsResource;
     RGResourceHandle specularResource;
@@ -3857,6 +3871,23 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     ActiveSceneRenderer->AddGeometryPasses( graph, *this,
         colorResource, velocityBufferHandle, backBufferHandle,
         normalsResource, specularResource, reactiveMaskResource );
+
+    if ( rendererState.RendererSettings.DrawSky ) {
+        graph.AddPass( RG_PASS_NAME( "Draw Sky" ), [&]( RGBuilder& builder, RenderPass& pass ) {
+            //// Setup / Declare
+            //RGTextureDesc albedoDesc{ 1920, 1080, 28 /* DXGI_FORMAT_R8G8B8A8_UNORM */, "Albedo" };
+            //albedoTarget = builder.CreateTexture( albedoDesc );
+            builder.Write( colorResource );
+
+            pass.m_executeCallback = [this, colorResource]( const RenderGraph& graph )->void {
+                TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw Sky" );
+                // Draw back of the sky if outdoor
+                GetContext()->OMSetRenderTargets( 1, graph.GetPhysicalTexture( colorResource )->GetRenderTargetView().GetAddressOf(), GetDepthBuffer()->GetDepthStencilView().Get() );
+
+                DrawSky();
+            };
+        } );
+    }
     
     graph.AddPass( RG_PASS_NAME("Draw ParticleFX #1"), [&]( RGBuilder& builder, RenderPass& pass ) {
         // Setup / Declare
@@ -4629,11 +4660,29 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
 
             // Check for alphablending on world mesh
             if ( lastAlphaFunc != alphaFunc ) {
-                if ( alphaFunc == zMAT_ALPHA_FUNC_BLEND )
+                switch ( alphaFunc ) {
+                case zMAT_ALPHA_FUNC_BLEND:
+                case zMAT_ALPHA_FUNC_BLEND_TEST:
                     Engine::GAPI->GetRendererState().BlendState.SetAlphaBlending();
+                    break;
 
-                if ( alphaFunc == zMAT_ALPHA_FUNC_ADD )
+                case zMAT_ALPHA_FUNC_ADD:
                     Engine::GAPI->GetRendererState().BlendState.SetAdditiveBlending();
+                    break;
+
+                case zMAT_ALPHA_FUNC_MUL:
+                    Engine::GAPI->GetRendererState().BlendState.SetModulateBlending();
+                    break;
+
+                case zMAT_ALPHA_FUNC_MUL2:
+                    Engine::GAPI->GetRendererState().BlendState.SetModulate2Blending();
+                    break;
+
+                default:
+                    auto _wtf = 1;
+                    break;
+                    // continue;
+                }
 
                 Engine::GAPI->GetRendererState().BlendState.SetDirty();
 
@@ -7581,9 +7630,23 @@ XRESULT D3D11GraphicsEngine::DrawSky() {
     GSky* sky = Engine::GAPI->GetSky();
     sky->RenderSky();
 
-    if ( !Engine::GAPI->GetRendererState().RendererSettings.AtmosphericScattering ) {
-        Engine::GAPI->GetRendererState().DepthState.DepthWriteEnabled = false;
-        Engine::GAPI->GetRendererState().DepthState.SetDirty();
+    auto& rendererState = Engine::GAPI->GetRendererState();
+    if ( !rendererState.RendererSettings.AtmosphericScattering ) {
+        // for engine sky to work with z-buffer after Geometry, we need to override Z-buffer usage and set custom TransformXYZRHW to always set max Z
+        auto oldStage = rendererState.RendererInfo.RenderStage;
+        rendererState.RendererInfo.RenderStage = STAGE_DRAW_SKY;
+
+        rendererState.DepthState.DepthBufferEnabled = true;
+
+        // Disable depth-writes so the sky always stays at max distance in the
+        rendererState.DepthState.DepthWriteEnabled = false;
+        rendererState.DepthState.DepthBufferCompareFunc = GothicDepthBufferStateInfo::CF_COMPARISON_GREATER_EQUAL;
+        rendererState.DepthState.SetDirty();
+
+
+        rendererState.RasterizerState.SetDefault();
+        rendererState.RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_BACK;
+        rendererState.RasterizerState.SetDirty();
         UpdateRenderStates();
 
 #if defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)
@@ -7598,8 +7661,10 @@ XRESULT D3D11GraphicsEngine::DrawSky() {
             ->RenderSkyPre();
 #endif
         Engine::GAPI->SetFarPlane(
-            Engine::GAPI->GetRendererState().RendererSettings.SectionDrawRadius *
+            rendererState.RendererSettings.SectionDrawRadius *
             WORLD_SECTION_SIZE );
+
+        rendererState.RendererInfo.RenderStage = oldStage;
         return XR_SUCCESS;
     }
     // Create a rotaion only view-matrix
@@ -7638,52 +7703,55 @@ XRESULT D3D11GraphicsEngine::DrawSky() {
         .Update(&cbi)
         .Bind();
 
-    Engine::GAPI->GetRendererState().BlendState.SetDefault();
-    Engine::GAPI->GetRendererState().BlendState.BlendEnabled = true;
+    rendererState.BlendState.SetDefault();
+    rendererState.BlendState.BlendEnabled = true;
 
-    Engine::GAPI->GetRendererState().DepthState.SetDefault();
+    rendererState.DepthState.SetDefault();
 
     // Allow z-testing
-    Engine::GAPI->GetRendererState().DepthState.DepthBufferEnabled = true;
+    rendererState.DepthState.DepthBufferEnabled = true;
 
     // Disable depth-writes so the sky always stays at max distance in the
     // DepthBuffer
-    Engine::GAPI->GetRendererState().DepthState.DepthWriteEnabled = false;
+    rendererState.DepthState.DepthWriteEnabled = false;
+    rendererState.DepthState.DepthBufferCompareFunc = GothicDepthBufferStateInfo::CF_COMPARISON_GREATER_EQUAL;
 
-    Engine::GAPI->GetRendererState().RasterizerState.SetDefault();
-    Engine::GAPI->GetRendererState().DepthState.SetDirty();
-    Engine::GAPI->GetRendererState().BlendState.SetDirty();
+    rendererState.RasterizerState.SetDefault();
+    rendererState.DepthState.SetDirty();
+    rendererState.BlendState.SetDirty();
 
-    Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_BACK;
-    Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
+    rendererState.RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_BACK;
+    rendererState.RasterizerState.SetDirty();
 
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
 
+    ID3D11ShaderResourceView* srvs[2]{};
     // Apply sky texture
     D3D11Texture* cloudsTex = Engine::GAPI->GetSky()->GetCloudTexture();
     if ( cloudsTex ) {
-        cloudsTex->BindToPixelShader( 0 );
+        srvs[0] = cloudsTex->GetShaderResourceView().Get();
     }
 
     D3D11Texture* nightTex = Engine::GAPI->GetSky()->GetNightTexture();
     if ( nightTex ) {
-        nightTex->BindToPixelShader( 1 );
+        srvs[1] = nightTex->GetShaderResourceView().Get();
     }
+    GetContext()->PSSetShaderResources( 0, std::size( srvs ), srvs);
 
     if ( sky->GetSkyDome() ) sky->GetSkyDome()->DrawMesh();
 
     #if defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)
     {
         SetDefaultStates();
-        Engine::GAPI->GetRendererState().DepthState.DepthWriteEnabled = false;
-        Engine::GAPI->GetRendererState().DepthState.SetDirty();
+        rendererState.DepthState.DepthWriteEnabled = false;
+        rendererState.DepthState.SetDirty();
         UpdateRenderStates();
 
         // Draw barrier after sky
-        reinterpret_cast<void( __fastcall* )( zCSkyController_Outdoor* )>( 0x632140 )( Engine::GAPI->GetLoadedWorldInfo()->MainWorld->GetSkyControllerOutdoor() );
+        reinterpret_cast<void( __fastcall* )(zCSkyController_Outdoor*)>(0x632140)(Engine::GAPI->GetLoadedWorldInfo()->MainWorld->GetSkyControllerOutdoor());
         Engine::GAPI->SetFarPlane(
-            Engine::GAPI->GetRendererState().RendererSettings.SectionDrawRadius *
+            rendererState.RendererSettings.SectionDrawRadius *
             WORLD_SECTION_SIZE );
     }
     #endif
