@@ -3860,7 +3860,9 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             context->ClearRenderTargetView( HDRBackBuffer->GetRenderTargetView().Get(), clearColor );
             context->ClearRenderTargetView( Backbuffer->GetRenderTargetView().Get(), clearColor );
 
-            float4 fogColor( rendererState.GraphicsState.FF_FogColor, 0.0f );
+            float4 fogColor( rendererState.RendererSettings.AtmosphericScattering
+                ? rendererState.RendererSettings.FogColorMod
+                : rendererState.GraphicsState.FF_FogColor, 0.0f );
             GetContext()->ClearRenderTargetView( graph.GetPhysicalTexture( colorResource )->GetRenderTargetView().Get(), reinterpret_cast<const float*>(&fogColor) );
         };
     });
