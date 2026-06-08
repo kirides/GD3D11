@@ -3611,9 +3611,11 @@ XRESULT D3D11GraphicsEngine::UpdateRenderStates() {
     auto& rasterState = states.RasterizerState;
     auto& depthState = states.DepthState;
 
+    /*
     blendState.HashThis( reinterpret_cast<char*>(&blendState), blendState.StructSize );
     rasterState.HashThis( reinterpret_cast<char*>(&rasterState), rasterState.StructSize );
     depthState.HashThis( reinterpret_cast<char*>(&depthState), depthState.StructSize );
+    */
 
     if ( blendState.StateDirty &&
         blendState.Hash != FFBlendStateHash ) {

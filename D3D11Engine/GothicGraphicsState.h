@@ -124,7 +124,7 @@ __declspec(align(4)) struct GothicPipelineState {
     /** Sets this state dirty, which means that it will be updated before next rendering */
     void SetDirty() {
         StateDirty = true;
-        // HashThis( reinterpret_cast<char*>(this), StructSize );
+        HashThis( reinterpret_cast<char*>(this), StructSize );
     }
 
     /** Hashes the whole struct */
