@@ -678,8 +678,8 @@ XRESULT D3D11ShadowMap::PrepareRender()
                 continue; // Skip culling for this cascade if we're not updating it this frame
             }
 
-            m_ShadowCullingJobs.push_back( Engine::WorkerThreadPool->enqueue( []( const CancellationToken& token, D3D11ShadowMap* _this, size_t idx ) {
-                if ( token.isCancelled() ) {
+            m_ShadowCullingJobs.push_back( Engine::WorkerThreadPool->enqueue( []( const std::stop_token& token, D3D11ShadowMap* _this, size_t idx ) {
+                if ( token.stop_requested() ) {
                     return;
                 }
                 ZoneScoped;
