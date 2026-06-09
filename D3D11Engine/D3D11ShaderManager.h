@@ -98,11 +98,11 @@ public:
     void UpdateShaderInfo( ShaderInfo& shader );
 
     /** Return a specific shader */
-    std::shared_ptr<D3D11VShader> GetVShader( VShaderID id ) { return VShaders[static_cast<size_t>(id)]; }
-    std::shared_ptr<D3D11PShader> GetPShader( PShaderID id ) { return PShaders[static_cast<size_t>(id)]; }
-    std::shared_ptr<D3D11HDShader> GetHDShader( HDShaderID id ) { return HDShaders[static_cast<size_t>(id)]; }
-    std::shared_ptr<D3D11GShader> GetGShader( GShaderID id ) { return GShaders[static_cast<size_t>(id)]; }
-    std::shared_ptr<D3D11CShader> GetCShader( CShaderID id ) { return CShaders[static_cast<size_t>(id)]; }
+    const std::shared_ptr<D3D11VShader>& GetVShader( VShaderID id ) { return VShaders[static_cast<size_t>(id)]; }
+    const std::shared_ptr<D3D11PShader>& GetPShader( PShaderID id ) { return PShaders[static_cast<size_t>(id)]; }
+    const std::shared_ptr<D3D11HDShader>& GetHDShader( HDShaderID id ) { return HDShaders[static_cast<size_t>(id)]; }
+    const std::shared_ptr<D3D11GShader>& GetGShader( GShaderID id ) { return GShaders[static_cast<size_t>(id)]; }
+    const std::shared_ptr<D3D11CShader>& GetCShader( CShaderID id ) { return CShaders[static_cast<size_t>(id)]; }
 
 private:
     XRESULT CompileShader( ShaderInfo& si );
@@ -121,11 +121,11 @@ private:
 
 private:
     std::vector<ShaderInfo> Shaders;							//Initial shader list for loading
-    std::vector<std::shared_ptr<D3D11VShader>> VShaders;
-    std::vector<std::shared_ptr<D3D11PShader>> PShaders;
-    std::vector<std::shared_ptr<D3D11HDShader>> HDShaders;
-    std::vector<std::shared_ptr<D3D11GShader>> GShaders;
-    std::vector<std::shared_ptr<D3D11CShader>> CShaders;
+    std::array<std::shared_ptr<D3D11VShader>, static_cast<size_t>( VShaderID::COUNT )> VShaders;
+    std::array<std::shared_ptr<D3D11PShader>, static_cast<size_t>( PShaderID::COUNT )> PShaders;
+    std::array<std::shared_ptr<D3D11HDShader>, static_cast<size_t>( HDShaderID::COUNT )> HDShaders;
+    std::array<std::shared_ptr<D3D11GShader>, static_cast<size_t>( GShaderID::COUNT )> GShaders;
+    std::array<std::shared_ptr<D3D11CShader>, static_cast<size_t>( CShaderID::COUNT )> CShaders;
 
     std::mutex _VShaderMutex;
     std::mutex _PShaderMutex;

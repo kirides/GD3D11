@@ -38,11 +38,11 @@ extern bool haveWindAnimations;
 #endif
 
 D3D11ShaderManager::D3D11ShaderManager()
-    : VShaders( static_cast<size_t>(VShaderID::COUNT) )
-    , PShaders( static_cast<size_t>(PShaderID::COUNT) )
-    , HDShaders( static_cast<size_t>(HDShaderID::COUNT) )
-    , GShaders( static_cast<size_t>(GShaderID::COUNT) )
-    , CShaders( static_cast<size_t>(CShaderID::COUNT) )
+    : VShaders()
+    , PShaders()
+    , HDShaders()
+    , GShaders()
+    , CShaders()
     , ShaderCategoriesToReloadNextFrame( ShaderCategory::None )
 {
 }
