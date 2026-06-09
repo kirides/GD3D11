@@ -144,8 +144,6 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
                 }
                 m_SunCSMConstantBuffer->BindToPixelShader( 0 );
 
-                pipeline.SetDepthStencil( nullptr );
-
                 // Bind depth copy as SRV at t2 (filled by the "FP Light Culling" pass)
                 auto* depthCopy = engine.GetDepthBufferCopy();
                 ID3D11ShaderResourceView* depthSRV = depthCopy ? depthCopy->GetShaderResView().Get() : nullptr;
@@ -174,7 +172,6 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
 
                 // Unbind RTVs and SRVs
                 context->OMSetRenderTargets( 1, &nullRTV, nullptr );
-                pipeline.Apply();
                 context->PSSetShaderResources( 2, 1, s_nullSRVs );
                 context->PSSetShaderResources( 3, 1, s_nullSRVs );
                 context->PSSetShaderResources( 8, 1, s_nullSRVs );
