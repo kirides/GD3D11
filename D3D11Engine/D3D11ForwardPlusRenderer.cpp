@@ -131,7 +131,8 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
                 auto* shadowMaps = engine.GetShadowMaps();
                 auto& pipeline = Engine::GAPI->GetRendererState().PipelineState;
 
-                pipeline.SetRenderTargets( {} );
+                ID3D11RenderTargetView* nullRTV = nullptr;
+                context->OMSetRenderTargets( 1, &nullRTV, nullptr );
 
                 // Fill and bind the sun/CSM constant buffer at b0
                 DS_ScreenQuadConstantBuffer scb = shadowMaps->FillSunCSMConstantBuffer();
@@ -144,7 +145,6 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
                 m_SunCSMConstantBuffer->BindToPixelShader( 0 );
 
                 pipeline.SetDepthStencil( nullptr );
-                pipeline.Apply();
 
                 // Bind depth copy as SRV at t2 (filled by the "FP Light Culling" pass)
                 auto* depthCopy = engine.GetDepthBufferCopy();
@@ -162,7 +162,7 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
                 ID3D11RenderTargetView* maskRTV = shadowMaskTex ? shadowMaskTex->GetRenderTargetView().Get() : nullptr;
                 constexpr float defaultMask[] { 1.f, 0.f, 0.f, 0.f };
                 if ( maskRTV ) context->ClearRenderTargetView( maskRTV, defaultMask );
-                pipeline.SetRenderTargets( {maskRTV} );
+                context->OMSetRenderTargets( 1, &maskRTV, nullptr );
 
                 // Draw fullscreen triangle with the shadow mask shader
                 engine.SetActiveVertexShader( VShaderID::VS_PFX );
@@ -173,7 +173,7 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
                 engine.GetPfxRenderer()->DrawFullScreenQuad();
 
                 // Unbind RTVs and SRVs
-                pipeline.SetRenderTargets( {} );
+                context->OMSetRenderTargets( 1, &nullRTV, nullptr );
                 pipeline.Apply();
                 context->PSSetShaderResources( 2, 1, s_nullSRVs );
                 context->PSSetShaderResources( 3, 1, s_nullSRVs );
