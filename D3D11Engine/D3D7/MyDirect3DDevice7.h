@@ -244,7 +244,15 @@ public:
 		}
 		break;
 
-		case D3DRENDERSTATE_ZENABLE: state.DepthState.DepthBufferEnabled = Value != 0; state.DepthState.SetDirty(); break;
+        case D3DRENDERSTATE_ZENABLE: {
+            if ( state.RendererInfo.RenderStage == STAGE_DRAW_SKY ) {
+                // we do custom Sky rendering behavior
+                break;
+            }
+            state.DepthState.DepthBufferEnabled = Value != 0;
+            state.DepthState.SetDirty();
+            break;
+        }
 		case D3DRENDERSTATE_ALPHATESTENABLE: state.GraphicsState.SetGraphicsSwitch( GSWITCH_ALPHAREF, Value != 0 );	break;
 		case D3DRENDERSTATE_SRCBLEND: state.BlendState.SrcBlend = static_cast<GothicBlendStateInfo::EBlendFunc>(Value); state.BlendState.SetDirty(); break;
 		case D3DRENDERSTATE_DESTBLEND: state.BlendState.DestBlend = static_cast<GothicBlendStateInfo::EBlendFunc>(Value); state.BlendState.SetDirty(); break;
@@ -497,7 +505,7 @@ public:
 		exv.resize( dwVertexCount );
 
 		switch ( dwVertexTypeDesc ) {
-		case GOTHIC_FVF_XYZRHW_DIF_T1:
+        case GOTHIC_FVF_XYZRHW_DIF_T1: {
 			//return S_OK; 
 			for ( unsigned int i = 0; i < dwVertexCount; i++ ) {
 				Gothic_XYZRHW_DIF_T1_Vertex* rhw = reinterpret_cast<Gothic_XYZRHW_DIF_T1_Vertex*>(lpvVertices);
@@ -509,13 +517,20 @@ public:
 			}
 
 			// Gothic wants that for the sky
-			Engine::GAPI->GetRendererState().RasterizerState.FrontCounterClockwise = true;
-			Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
-			Engine::GraphicsEngine->SetActiveVertexShader( VShaderID::VS_TransformedEx );
-			Engine::GraphicsEngine->BindViewportInformation( VShaderID::VS_TransformedEx, 0 );
-			break;
+            auto& state = Engine::GAPI->GetRendererState();
+            state.RasterizerState.FrontCounterClockwise = true;
+            state.RasterizerState.SetDirty();
 
-		case GOTHIC_FVF_XYZRHW_DIF_SPEC_T1:
+            const auto vs = state.RendererInfo.RenderStage == STAGE_DRAW_SKY
+                ? VShaderID::VS_TransformedEx_MAX_Z
+                : VShaderID::VS_TransformedEx;
+
+			Engine::GraphicsEngine->SetActiveVertexShader( vs );
+			Engine::GraphicsEngine->BindViewportInformation( vs, 0 );
+			break;
+        }
+
+        case GOTHIC_FVF_XYZRHW_DIF_SPEC_T1: {
 			for ( unsigned int i = 0; i < dwVertexCount; i++ ) {
 				Gothic_XYZRHW_DIF_SPEC_T1_Vertex* rhw = reinterpret_cast<Gothic_XYZRHW_DIF_SPEC_T1_Vertex*>(lpvVertices);
 
@@ -524,10 +539,14 @@ public:
 				exv[i].TexCoord = rhw[i].texCoord;
 				exv[i].Color = rhw[i].color;
 			}
+            const auto vs = Engine::GAPI->GetRendererState().RendererInfo.RenderStage == STAGE_DRAW_SKY
+                ? VShaderID::VS_TransformedEx_MAX_Z
+                : VShaderID::VS_TransformedEx;
 
 			Engine::GraphicsEngine->SetActiveVertexShader( VShaderID::VS_TransformedEx );
 			Engine::GraphicsEngine->BindViewportInformation( VShaderID::VS_TransformedEx, 0 );
 			break;
+        }
 
 		default:
 			return S_OK;
@@ -566,17 +585,24 @@ public:
 		lpd3dVertexBuffer->GetVertexBufferDesc( &desc );
 
 		switch ( desc.dwFVF ) {
-		case GOTHIC_FVF_XYZRHW_DIF_T1:
-			Engine::GraphicsEngine->SetActiveVertexShader( VShaderID::VS_XYZRHW_DIF_T1 );
-			Engine::GraphicsEngine->SetActivePixelShader( PShaderID::PS_FixedFunctionPipe );
+        case GOTHIC_FVF_XYZRHW_DIF_T1: {
+            const auto& state = Engine::GAPI->GetRendererState();
+            auto vshader =
+                state.RendererInfo.RenderStage == STAGE_DRAW_SKY
+                ? VShaderID::VS_XYZRHW_DIF_T1_MAX_Z
+                : VShaderID::VS_XYZRHW_DIF_T1;
 
-			Engine::GraphicsEngine->BindViewportInformation( VShaderID::VS_XYZRHW_DIF_T1, 0 );
+			Engine::GraphicsEngine->SetActiveVertexShader( vshader );
+            Engine::GraphicsEngine->SetActivePixelShader( PShaderID::PS_FixedFunctionPipe );
+
+            Engine::GraphicsEngine->BindViewportInformation( vshader, 0 );
 
 			// Gothic wants that for the sky
 			Engine::GAPI->GetRendererState().RasterizerState.FrontCounterClockwise = true;
 			Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
 			Engine::GraphicsEngine->DrawVertexBufferFF( static_cast<MyDirect3DVertexBuffer7*>(lpd3dVertexBuffer)->GetVertexBuffer(), dwNumVertices, dwStartVertex, sizeof( Gothic_XYZRHW_DIF_T1_Vertex ) );
 			break;
+        }
 
 		default:
 			return S_OK;

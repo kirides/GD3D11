@@ -111,7 +111,18 @@ enum zTRnd_AlphaBlendFunc {
     zRND_ALPHA_FUNC_MUL = 5,
     zRND_ALPHA_FUNC_MUL2 = 6,
     zRND_ALPHA_FUNC_TEST = 7,
-    zRND_ALPHA_FUNC_BLEND_TEST = 8
+    zRND_ALPHA_FUNC_BLEND_TEST = 8,
+
+    // aliases for material use
+    zMAT_ALPHA_FUNC_MAT_DEFAULT = 0,
+    zMAT_ALPHA_FUNC_NONE = 1,
+    zMAT_ALPHA_FUNC_BLEND = 2,
+    zMAT_ALPHA_FUNC_ADD = 3,
+    zMAT_ALPHA_FUNC_SUB = 4,
+    zMAT_ALPHA_FUNC_MUL = 5,
+    zMAT_ALPHA_FUNC_MUL2 = 6,
+    zMAT_ALPHA_FUNC_TEST = 7,
+    zMAT_ALPHA_FUNC_BLEND_TEST = 8,
 };
 
 struct float4;

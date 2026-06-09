@@ -18,6 +18,7 @@ enum RenderStage {
     _STAGE_DRAW_DX11_START,
     STAGE_DRAW_WORLD,
     STAGE_DRAW_SKELETAL,
+    STAGE_DRAW_SKY,
     _STAGE_DRAW_DX11_END,
     STAGE_DRAW_HUD,
     STAGE_DRAW_SHADOWS,
@@ -179,7 +180,7 @@ class BaseDepthBufferState;
 struct GothicDepthBufferStateInfo : public GothicPipelineState {
     GothicDepthBufferStateInfo() {
         StructSize = sizeof( GothicDepthBufferStateInfo );
-        Padding[0] = Padding[1] = false;
+        Padding0 = Padding1 = false;
     }
 
     /** Layed out for D3D11 */
@@ -201,12 +202,15 @@ struct GothicDepthBufferStateInfo : public GothicPipelineState {
         DepthBufferEnabled = true;
         DepthWriteEnabled = true;
         DepthBufferCompareFunc = DEFAULT_DEPTH_COMP_STATE;
+        Padding0 = false;
+        Padding1 = false;
     }
 
     /** Depthbuffer settings */
     bool DepthBufferEnabled;
     bool DepthWriteEnabled;
-    bool Padding[2];
+    bool Padding0;
+    bool Padding1;
     ECompareFunc DepthBufferCompareFunc;
 
     /** Deletes all cached states */
@@ -867,7 +871,7 @@ struct GothicRendererSettings {
     void SetupAddonWorldSpecificValues() {
         FogGlobalDensity = 0.00004f;
         FogHeightFalloff = 0.0005f;
-        FogColorMod = float3::FromColor( 180, 180, 255 );
+        FogColorMod = float3::FromColor( 128, 173, 239 );
         FogHeight = 0;
     }
 

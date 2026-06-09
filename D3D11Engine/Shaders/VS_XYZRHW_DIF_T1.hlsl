@@ -2,6 +2,10 @@
 // Simple vertex shader
 //--------------------------------------------------------------------------------------
 
+#ifndef OVERRIDE_MAX_Z
+#define OVERRIDE_MAX_Z 0
+#endif
+
 cbuffer Viewport : register( b0 )
 {
 	float2 V_ViewportPos;
@@ -39,7 +43,11 @@ float4 TransformXYZRHW(float4 xyzrhw)
 	float3 ndc;
 	ndc.x = ((2 * (xyzrhw.x - V_ViewportPos.x)) / V_ViewportSize.x) - 1;
 	ndc.y = 1 - ((2 * (xyzrhw.y - V_ViewportPos.y)) / V_ViewportSize.y);
+#ifdef OVERRIDE_MAX_Z
+	ndc.z = 0; // for sky we need to override this, so that the sky dome is properly depth clipped if behind geometry.
+#else
 	ndc.z = xyzrhw.z;
+#endif
 	
 	// Convert to clip-space. rhw is actually 1/w ("reciprocal"). So to undo the devide by w, devide by the given 1/w.
 	float actualW = 1.0f / xyzrhw.w;
