@@ -81,12 +81,10 @@ bool FeatureRTArrayIndexFromAnyShader = false;
 
 VS_ExConstantBuffer_Wind g_windBuffer;
 
-typedef void( __cdecl* PFN_DRAWMULTIINDEXEDINSTANCEDINDIRECT )(ID3D11DeviceContext* context, unsigned int drawCount,
-    ID3D11Buffer* buffer, unsigned int alignedByteOffsetForArgs, unsigned int alignedByteStrideForArgs);
 typedef void( __cdecl* PFN_BEGINUAVOVERLAP )(ID3D11DeviceContext* context);
 typedef void( __cdecl* PFN_ENDUAVOVERLAP )(ID3D11DeviceContext* context);
 
-PFN_DRAWMULTIINDEXEDINSTANCEDINDIRECT DrawMultiIndexedInstancedIndirect = nullptr;
+CommandList::PFN_DRAWMULTIINDEXEDINSTANCEDINDIRECT DrawMultiIndexedInstancedIndirect = nullptr;
 PFN_BEGINUAVOVERLAP BeginUAVOverlap = nullptr;
 PFN_ENDUAVOVERLAP EndUAVOverlap = nullptr;
 
@@ -558,7 +556,7 @@ XRESULT D3D11GraphicsEngine::Init() {
                 nvapiDevice.reset();
             } else {
                 if ( void* NvAPI_D3D11_MultiDrawIndexedInstancedIndirect = nvapiDevice->GetDrawMultiIndexedInstancedIndirect() ) {
-                    DrawMultiIndexedInstancedIndirect = reinterpret_cast<PFN_DRAWMULTIINDEXEDINSTANCEDINDIRECT>(NvAPI_D3D11_MultiDrawIndexedInstancedIndirect);
+                    DrawMultiIndexedInstancedIndirect = reinterpret_cast<CommandList::PFN_DRAWMULTIINDEXEDINSTANCEDINDIRECT>(NvAPI_D3D11_MultiDrawIndexedInstancedIndirect);
                 }
 
                 void* NvAPI_D3D11_BeginUAVOverlap = nvapiDevice->GetBeginUAVOverlap();
@@ -722,12 +720,15 @@ XRESULT D3D11GraphicsEngine::Init() {
         EndUAVOverlap = Stub_EndUAVOverlap;
     }
 
+
     D3D11_FEATURE_DATA_D3D11_OPTIONS3 options3;
     hr = Device->CheckFeatureSupport(D3D11_FEATURE_D3D11_OPTIONS3, &options3, sizeof( options3 ) );
     if ( SUCCEEDED( hr ) ) {
         FeatureRTArrayIndexFromAnyShader = options3.VPAndRTArrayIndexFromAnyShaderFeedingRasterizer;
         Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseLayeredRendering = FeatureRTArrayIndexFromAnyShader;
     }
+
+    m_CommandList = std::make_unique<CommandList>( Context.Get(), DrawMultiIndexedInstancedIndirect );
 
     LogInfo() << "Creating ShaderManager";
     ShaderManager = std::make_unique<D3D11ShaderManager>();

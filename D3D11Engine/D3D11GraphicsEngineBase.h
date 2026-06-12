@@ -5,6 +5,7 @@
 
 #include "Engine.h"
 #include "GothicAPI.h"
+#include "CommandList.h"
 
 class D3D11DepthBufferState;
 class D3D11BlendStateInfo;
@@ -97,6 +98,7 @@ public:
     /** Returns the Device/Context */
     auto GetDevice() -> const auto& { return Device; }
     auto GetContext() -> const auto& { return Context; }
+    auto GetCommandList() -> const auto { return m_CommandList.get(); }
 
     /** Pixel Shader functions */
     auto GetActivePS() -> auto { return Engine::GAPI->GetRendererState().PipelineState.GetCurrentPS(); }
@@ -196,4 +198,5 @@ protected:
 
     /** If true, we are still waiting for a present to happen. Don't draw everything twice! */
     bool PresentPending;
+    std::unique_ptr<CommandList> m_CommandList;
 };

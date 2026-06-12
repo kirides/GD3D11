@@ -850,6 +850,9 @@
     <ClInclude Include="zAllocator.h">
       <Filter>Engine\GAPI</Filter>
     </ClInclude>
+    <ClInclude Include="CommandList.h">
+      <Filter>Engine</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp" />
@@ -1157,6 +1160,9 @@
     <ClCompile Include="include\ImGuizmo\src\ImGuizmo.cpp" />
     <ClCompile Include="include\ImGuizmo\src\ImSequencer.cpp" />
     <ClCompile Include="GothicGraphicsState.cpp" />
+    <ClCompile Include="CommandList.cpp">
+      <Filter>Engine</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="ddraw.def">
