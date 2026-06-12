@@ -210,7 +210,7 @@ XRESULT D3D11GraphicsEngineBase::DrawVertexArray( ExVertexStruct* vertices, unsi
 
     pipeline.Apply();
     //Draw the mesh
-    GetContext()->Draw( numVertices, startVertex );
+    GetCommandList()->Draw( numVertices, startVertex );
 
     return XR_SUCCESS;
 }
@@ -282,7 +282,7 @@ XRESULT D3D11GraphicsEngineBase::DrawVertexBufferFF( D3D11VertexBuffer* vb, unsi
     GetContext()->IASetVertexBuffers( 0, 1, vb->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
 
     //Draw the mesh
-    GetContext()->Draw( numVertices, startVertex );
+    GetCommandList()->Draw( numVertices, startVertex );
 
     Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles += numVertices;
 

@@ -868,7 +868,7 @@ void EditorLinePrimitive::RenderVertexBuffer( const Microsoft::WRL::ComPtr<ID3D1
 
     engine->GetContext()->IASetPrimitiveTopology( Topology );
 
-    engine->GetContext()->Draw( NumVertices, 0 );
+    engine->GetCommandList()->Draw( NumVertices, 0 );
 }
 
 HRESULT EditorLinePrimitive::RenderPrimitive( int Pass ) {

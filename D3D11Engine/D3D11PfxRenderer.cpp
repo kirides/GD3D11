@@ -156,7 +156,7 @@ XRESULT D3D11PfxRenderer::DrawFullScreenQuad() {
     engine->GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
     //Draw the mesh
-    engine->GetContext()->Draw( 3, 0 );
+    engine->GetCommandList()->Draw( 3, 0 );
 
     return XR_SUCCESS;
 }

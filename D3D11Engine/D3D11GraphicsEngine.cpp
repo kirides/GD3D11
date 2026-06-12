@@ -728,7 +728,7 @@ XRESULT D3D11GraphicsEngine::Init() {
         Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseLayeredRendering = FeatureRTArrayIndexFromAnyShader;
     }
 
-    m_CommandList = std::make_unique<CommandList>( Context.Get(), DrawMultiIndexedInstancedIndirect );
+    m_CommandList = std::make_unique<CommandList>( Context.Get(), DrawMultiIndexedInstancedIndirect, &Engine::GAPI->GetRendererState().PipelineState  );
 
     LogInfo() << "Creating ShaderManager";
     ShaderManager = std::make_unique<D3D11ShaderManager>();
@@ -1915,7 +1915,7 @@ XRESULT D3D11GraphicsEngine::DrawVertexBuffer( D3D11VertexBuffer* vb, unsigned i
     Context->IASetVertexBuffers( 0, 1, vb->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
 
     // Draw the mesh
-    Context->Draw( numVertices, 0 );
+    GetCommandList()->Draw( numVertices, 0 );
 
     Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
         numVertices / 3;
@@ -1945,7 +1945,7 @@ XRESULT D3D11GraphicsEngine::DrawVertexBufferIndexed( D3D11VertexBuffer* vb,
 
     if ( numIndices ) {
         // Draw the mesh
-        Context->DrawIndexed( numIndices, indexOffset, 0 );
+        GetCommandList()->DrawIndexed( numIndices, indexOffset, 0 );
 
         Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
             numIndices / 3;
@@ -1973,7 +1973,7 @@ XRESULT D3D11GraphicsEngine::DrawVertexBufferIndexedUINT(
 
     if ( numIndices ) {
         // Draw the mesh
-        Context->DrawIndexed( numIndices, indexOffset, 0 );
+        GetCommandList()->DrawIndexed( numIndices, indexOffset, 0 );
 
         Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
             numIndices / 3;
@@ -2014,7 +2014,7 @@ XRESULT D3D11GraphicsEngine::DrawVertexBufferInstanced(
     Context->IASetVertexBuffers( 0, 1, vb->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
 
     // Draw the mesh
-    Context->DrawInstanced( numVertices, numInstances, 0, 0 );
+    GetCommandList()->DrawInstanced( numVertices, numInstances, 0, 0 );
 
     Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
         numVertices / 3;
@@ -2044,7 +2044,7 @@ XRESULT D3D11GraphicsEngine::DrawVertexBufferInstancedIndexed(
 
     if ( numIndices ) {
         // Draw the mesh
-        Context->DrawIndexedInstanced( numIndices, numInstances, indexOffset, 0, 0 );
+        GetCommandList()->DrawIndexedInstanced( numIndices, numInstances, indexOffset, 0, 0 );
 
         Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
             numIndices / 3;
@@ -2072,7 +2072,7 @@ XRESULT D3D11GraphicsEngine::DrawVertexBufferInstancedIndexedUINT(
 
     if ( numIndices ) {
         // Draw the mesh
-        Context->DrawIndexedInstanced( numIndices, numInstances, indexOffset, 0, 0 );
+        GetCommandList()->DrawIndexedInstanced( numIndices, numInstances, indexOffset, 0, 0 );
 
         Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
             numIndices / 3;
@@ -2140,7 +2140,7 @@ XRESULT D3D11GraphicsEngine::DrawScreenFade( void* c ) {
         pipelineState.SetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
         UpdateRenderStates();
         pipelineState.Apply();
-        GetContext()->Draw( 12, 0 );
+        GetCommandList()->Draw( 12, 0 );
     }
 
     if ( camera->HasScreenFadeEnabled() ) {
@@ -2244,7 +2244,7 @@ XRESULT D3D11GraphicsEngine::DrawVertexArray( ExVertexStruct* vertices,
 
     // Draw the mesh
     GetPipelineState().Apply();
-    GetContext()->Draw( numVertices, startVertex );
+    GetCommandList()->Draw( numVertices, startVertex );
 
     Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
         numVertices / 3;
@@ -2284,7 +2284,7 @@ XRESULT D3D11GraphicsEngine::DrawIndexedVertexArray( ExVertexStruct* vertices,
     GetContext()->IASetVertexBuffers( 0, 2, buffers, &uStride, &offset );
 
     // Draw the mesh
-    GetContext()->DrawIndexed( numIndices, 0, 0 );
+    GetCommandList()->DrawIndexed( numIndices, 0, 0 );
 
     Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
         numVertices / 3;
@@ -2309,7 +2309,7 @@ XRESULT D3D11GraphicsEngine::DrawVertexBufferFF( D3D11VertexBuffer* vb,
     GetContext()->IASetVertexBuffers( 0, 1, vb->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
 
     // Draw the mesh
-    GetContext()->Draw( numVertices, startVertex );
+    GetCommandList()->Draw( numVertices, startVertex );
 
     Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
         numVertices / 3;
@@ -2442,7 +2442,7 @@ XRESULT  D3D11GraphicsEngine::DrawSkeletalVertexNormals( SkeletalVobInfo* vi,
             Context->IASetIndexBuffer( ib->GetVertexBuffer().Get(), VERTEX_INDEX_DXGI_FORMAT, 0 );
 
             // Draw the mesh
-            GetContext()->DrawIndexed( numIndices, 0, 0 );
+            GetCommandList()->DrawIndexed( numIndices, 0, 0 );
 
             Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
                 numIndices / 3;
@@ -2583,7 +2583,7 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
             Context->IASetIndexBuffer( ib->GetVertexBuffer().Get(), VERTEX_INDEX_DXGI_FORMAT, 0 );
 
             // Draw the mesh
-            Context->DrawIndexed( numIndices, 0, 0 );
+            GetCommandList()->DrawIndexed( numIndices, 0, 0 );
 
             Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
                 numIndices / 3;
@@ -2699,7 +2699,7 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh_Layered( SkeletalVobInfo* vi,
             Context->IASetIndexBuffer( ib->GetVertexBuffer().Get(), VERTEX_INDEX_DXGI_FORMAT, 0 );
 
             // Draw the mesh
-            Context->DrawIndexedInstanced( numIndices, 6, 0, 0, 0 );
+            GetCommandList()->DrawIndexedInstanced( numIndices, 6, 0, 0, 0 );
 
             Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
                 numIndices / 3;
@@ -2731,7 +2731,7 @@ XRESULT D3D11GraphicsEngine::DrawInstanced(
     numIndices = max != 0 ? (numIndices < max ? numIndices : max) : numIndices;
 
     // Draw the batch
-    GetContext()->DrawIndexedInstanced( numIndices, numInstances, indexOffset, 0,
+    GetCommandList()->DrawIndexedInstanced( numIndices, numInstances, indexOffset, 0,
         startInstanceNum );
 
     Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
@@ -3150,7 +3150,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                             Context->IASetIndexBuffer( ib->GetVertexBuffer().Get(), VERTEX_INDEX_DXGI_FORMAT, 0 );
 
                             // Draw the mesh
-                            Context->DrawIndexed( numIndices, 0, 0 );
+                            GetCommandList()->DrawIndexed( numIndices, 0, 0 );
 
                             Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
                                 numIndices / 3;
@@ -3597,13 +3597,13 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             // Draw instanced
             if ( mi->MeshIndexBuffer ) {
                 const unsigned int numIndices = static_cast<unsigned int>(mi->Indices.size());
-                Context->DrawIndexedInstanced( numIndices, batch.instanceCount, 0, 0, batch.startInstance );
+                GetCommandList()->DrawIndexedInstanced( numIndices, batch.instanceCount, 0, 0, batch.startInstance );
 
                 Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
                     (numIndices / 3) * batch.instanceCount;
             } else {
                 const unsigned int numVertices = static_cast<unsigned int>(mi->Vertices.size());
-                Context->DrawInstanced( numVertices, batch.instanceCount, 0, batch.startInstance );
+                GetCommandList()->DrawInstanced( numVertices, batch.instanceCount, 0, batch.startInstance );
 
                 Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
                     (numVertices / 3) * batch.instanceCount;
@@ -6661,7 +6661,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             numIndices = max != 0 ? (numIndices < max ? numIndices : max) : numIndices;
 
             // Draw the batch
-            GetContext()->DrawIndexedInstanced( numIndices, numInstances, indexOffset, 0,
+            GetCommandList()->DrawIndexedInstanced( numIndices, numInstances, indexOffset, 0,
                 startInstanceNum );
 
             Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=

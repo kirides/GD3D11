@@ -206,7 +206,7 @@ XRESULT D3D11Effect::DrawRain() {
         e->UpdateRenderStates();
 
         // Advance particle system in VS and stream out the data
-        e->GetContext()->DrawInstanced( 1, numParticles, 0, 0 );
+        e->GetCommandList()->DrawInstanced( 1, numParticles, 0, 0 );
 
         // Unset streamout target
         Microsoft::WRL::ComPtr<ID3D11Buffer> bobjStream;
@@ -274,7 +274,7 @@ XRESULT D3D11Effect::DrawRain() {
         UINT stride = sizeof( RainParticleDynamic );
         UINT offset = 0;
         e->GetContext()->IASetVertexBuffers( 0, 1, RainBufferDrawFrom->GetVertexBuffer().GetAddressOf(), &stride, &offset );
-        e->GetContext()->DrawInstanced( 4, numParticles, 0, 0 );
+        e->GetCommandList()->DrawInstanced( 4, numParticles, 0, 0 );
     }
 
     // Reset this
@@ -430,7 +430,7 @@ XRESULT D3D11Effect::DrawRain_CS() {
         UINT stride = sizeof( RainParticleDynamic );
         UINT offset = 0;
         e->GetContext()->IASetVertexBuffers( 0, 1, RainBufferDrawFrom->GetVertexBuffer().GetAddressOf(), &stride, &offset );
-        e->GetContext()->DrawInstanced( 4, numParticles, 0, 0 );
+        e->GetCommandList()->DrawInstanced( 4, numParticles, 0, 0 );
     }
 
     // Reset primitive topology

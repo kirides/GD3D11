@@ -1,15 +1,27 @@
 #pragma once
 #include "pch.h"
+#include "GothicGraphicsState.h"
 
 class CommandList {
 public:
     typedef void( __cdecl* PFN_DRAWMULTIINDEXEDINSTANCEDINDIRECT )(ID3D11DeviceContext* context, unsigned int drawCount,
     ID3D11Buffer* buffer, unsigned int alignedByteOffsetForArgs, unsigned int alignedByteStrideForArgs);
 
+    enum ConstantBufferVisibility {
+        VS = 1 << 0,
+        PS = 1 << 1,
+        DS = 1 << 2,
+        HS = 1 << 3,
+        GS = 1 << 4,
+        CS = 1 << 5,
+    };
+
     CommandList( ID3D11DeviceContext* context,
-        PFN_DRAWMULTIINDEXEDINSTANCEDINDIRECT mdiFunc )
+        PFN_DRAWMULTIINDEXEDINSTANCEDINDIRECT mdiFunc,
+        GothicPipelineStateInfo* pipelineState)
         : _context( context ),
-        _mdiFunc( mdiFunc ) {
+        _mdiFunc( mdiFunc ),
+        _pipelineState( pipelineState ) {
     }
     CommandList() = delete;
 
@@ -47,7 +59,10 @@ public:
         ID3D11Buffer* buffer,
         unsigned int alignedByteOffsetForArgs,
         unsigned int alignedByteStrideForArgs );
+
+    void SetConstantBuffers( UINT StartSlot, UINT NumBuffers, ID3D11Buffer* const* ppConstantBuffers, ConstantBufferVisibility visibility );
 private:
     ID3D11DeviceContext* _context;
     PFN_DRAWMULTIINDEXEDINSTANCEDINDIRECT _mdiFunc;
+    GothicPipelineStateInfo* _pipelineState;
 };
