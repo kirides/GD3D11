@@ -138,10 +138,10 @@ struct float3 {
 
 struct float4 {
     float4( const DWORD& color ) {
-        x = ((color >> 16) & 0xFF) / 255.0f;
-        y = ((color >> 8) & 0xFF) / 255.0f;
-        z = (color & 0xFF) / 255.0f;
-        w = (color >> 24) / 255.0f;
+        x = static_cast<float>((color >> 16) & 0xFF) / 255.0f;
+        y = static_cast<float>((color >> 8) & 0xFF) / 255.0f;
+        z = static_cast<float>(color & 0xFF) / 255.0f;
+        w = static_cast<float>(color >> 24) / 255.0f;
     }
 
     float4( float x, float y, float z, float w ) {

@@ -2775,6 +2775,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             if ( !model || !vi->VisualInfo || !vi->Vob->GetShowVisual() ) {
                 continue;
             }
+            vi->UpdateState();
 
             const int currentBegin = static_cast<int>(BoneTransformCache.size());
             model->GetBoneTransforms( &BoneTransformCache );
@@ -3181,7 +3182,6 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         }
 
         for ( auto& data : tempVobList ) {
-
             auto vi = data.VobInfo;
             auto model = data.Model;
             auto modelColor = data.ModelColor;
@@ -3189,10 +3189,6 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             auto fatness = data.Fatness;
             auto& world = data.World;
             auto& prevWorld = data.PrevWorld;
-
-            // Init the constantbuffer if not already done
-            if ( !vi->VobConstantBuffer )
-                vi->UpdateVobConstantBuffer();
 
             auto& nodeAttachments = vi->NodeAttachments;
             for ( unsigned int i = 0; i < transforms.size(); i++ ) {
@@ -5504,9 +5500,13 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
         // At this point either renderedVobs or rndVob is filled with something
         D3D11Texture* lastBoundTexture = nullptr;
         std::list<VobInfo*>& rl = renderedVobs != nullptr ? *renderedVobs : rndVob;
+        VS_ExConstantBuffer_PerInstance cb;
+        
+        auto buffer = GetActiveVS()->GetBuffer(1).Bind();
         for ( auto const& vobInfo : rl ) {
             // Bind per-instance buffer
-            vobInfo->VobConstantBuffer->BindToVertexShader( 1 );
+            vobInfo->UpdateVobConstantBuffer(cb);
+            buffer.Update(&cb, sizeof(cb));
 
             // Draw the vob
             for ( auto const& materialMesh : vobInfo->VisualInfo->Meshes ) {
@@ -5850,10 +5850,14 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
         std::list<VobInfo*>& rl = renderedVobs != nullptr ? *renderedVobs : rndVob;
         auto _ = Engine::GraphicsEngine->RecordGraphicsEvent( GE_NAME( "Draw vobs (layered)" ) );
 
+        VS_ExConstantBuffer_PerInstance cb;
+        auto buffer = GetActiveVS()->GetBuffer(1).Bind();
+
         D3D11Texture* lastBoundTexture = nullptr;
         for ( auto const& vobInfo : rl ) {
             // Bind per-instance buffer
-            vobInfo->VobConstantBuffer->BindToVertexShader( 1 );
+            vobInfo->UpdateVobConstantBuffer(cb);
+            buffer.Update(&cb, sizeof(cb));
 
             // Draw the vob1
             for ( auto const& materialMesh : vobInfo->VisualInfo->Meshes ) {
