@@ -123,6 +123,9 @@ XRESULT D3D11ShaderManager::Init() {
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_Decal>( "VS_Decal.hlsl" )
         .with_layout( VERTEX_INPUT_LAYOUT_1 )  );
 
+    Shaders.push_back( ShaderInfo::make<VShaderID::VS_DecalInstanced>( "VS_DecalInstanced.hlsl" )
+        .with_layout( VERTEX_INPUT_LAYOUT_15_VS_DecalInstanced )  );
+
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExWater>( "VS_ExWater.hlsl" )
         .with_layout( VERTEX_INPUT_LAYOUT_1 )
         .with_macros( [](std::vector<D3D_SHADER_MACRO>& list) {
