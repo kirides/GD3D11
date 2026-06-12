@@ -784,7 +784,13 @@ XRESULT D3D11GraphicsEngine::Init() {
         nullptr, sizeof( NodeAttachmentInstanceData ) * 1024, D3D11VertexBuffer::B_VERTEXBUFFER,
         D3D11VertexBuffer::U_DYNAMIC, D3D11VertexBuffer::CA_WRITE );
     SetDebugName( NodeAttachmentInstancingBuffer->GetVertexBuffer().Get(), "NodeAttachmentInstancingBuffer" );
-    
+
+    DecalInstancingBuffer = std::make_unique<D3D11VertexBuffer>();
+    DecalInstancingBuffer->Init(
+        nullptr, sizeof( XMFLOAT4X4 ) * 1024, D3D11VertexBuffer::B_VERTEXBUFFER,
+        D3D11VertexBuffer::U_DYNAMIC, D3D11VertexBuffer::CA_WRITE );
+    SetDebugName( DecalInstancingBuffer->GetVertexBuffer().Get(), "DecalInstancingBuffer" );
+
     CreateAndBindDefaultSampler();
     
     D3D11_SAMPLER_DESC samplerDesc{};
@@ -8202,26 +8208,26 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
         SetActivePixelShader( PShaderID::PS_World_NoMV );
     }
 
-    SetActiveVertexShader( VShaderID::VS_Decal );
+    SetActiveVertexShader( VShaderID::VS_DecalInstanced );
+    GetActivePS()->Apply();
+    GetActiveVS()->Apply();
 
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
     XMFLOAT3 camPos = Engine::GAPI->GetCameraPosition();
 
-    int lastAlphaFunc = -1;
-    auto psBufGAI = ActivePS->GetBuffer( "GhostAlphaInfo" ).Bind();
+    // ---- Phase 1: build per-decal instance data (in original draw order) ----
+    // Each decal contributes a single world-view matrix. The remaining state (texture,
+    // blend mode, ghost-alpha) is derived from the zCMaterial*, so consecutive decals
+    // that share a material can be drawn together with one instanced draw call.
+    struct DecalInstance {
+        zCMaterial* material;
+        XMFLOAT4X4 worldView;
+    };
+    static std::vector<DecalInstance> instances;
+    instances.clear();
+    instances.reserve( decals.size() );
 
-    GhostAlphaConstantBuffer gacb = {};
-    gacb.GA_ViewportSize = float2( Engine::GraphicsEngine->GetResolution().x, Engine::GraphicsEngine->GetResolution().y );
-
-    zCTexture* lastTex = nullptr;
-    float lastGhostAlpha = gacb.GA_Alpha;
-
-    VS_ExConstantBuffer_PerInstance cb = {};
-    auto vsPerInstBuffer = ActiveVS->GetBuffer( 1 ).Bind();
-
-    void* lastVertexBuffer = nullptr;
-    void* lastIndexBuffer = nullptr;
     for ( unsigned int i = 0; i < decals.size(); i++ ) {
         zCDecal* d = static_cast<zCDecal*>(decals[i]->GetVisual());
         if ( !d ) {
@@ -8250,50 +8256,16 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
             continue;  // Only allow no alpha or alpha test
 
         if ( !lighting ) {
+            // Only keep decals with a supported blend mode (matches the draw-time switch below)
             switch ( alphaFunc ) {
             case zMAT_ALPHA_FUNC_BLEND:
             case zMAT_ALPHA_FUNC_BLEND_TEST:
-                Engine::GAPI->GetRendererState().BlendState.SetAlphaBlending();
-                break;
-
             case zMAT_ALPHA_FUNC_ADD:
-                Engine::GAPI->GetRendererState().BlendState.SetAdditiveBlending();
-                break;
-
             case zMAT_ALPHA_FUNC_MUL:
-                Engine::GAPI->GetRendererState().BlendState.SetModulateBlending();
-                break;
-
             case zMAT_ALPHA_FUNC_MUL2:
-                Engine::GAPI->GetRendererState().BlendState.SetModulate2Blending();
                 break;
-
             default:
                 continue;
-            }
-
-            if ( lastAlphaFunc != alphaFunc ) {
-                Engine::GAPI->GetRendererState().BlendState.SetDirty();
-                UpdateRenderStates();
-                lastAlphaFunc = alphaFunc;
-            }
-        }
-
-        if ( texture != lastTex ) {
-            if ( texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
-                continue;  // Don't render not cached surfaces
-            }
-            auto t = texture->GetSurface()->GetEngineTexture()->GetShaderResourceView().Get();
-            Context->PSSetShaderResources( 0, 1, &t );
-            lastTex = texture;
-        }
-
-        if ( !lighting ) {
-            const auto ghostAlpha = (material->GetColor() >> 24) * inv255f;
-            if ( lastGhostAlpha != ghostAlpha ) {
-                gacb.GA_Alpha = ghostAlpha;
-                psBufGAI.Update( &gacb );
-                lastGhostAlpha = gacb.GA_Alpha;
             }
         }
 
@@ -8376,18 +8348,146 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
             }
         }
 
-        XMMATRIX mat = view * world * offset * scale;
-
-        XMStoreFloat4x4( &cb.World, mat );
-        vsPerInstBuffer.Update( &cb );
-
-        if (QuadVertexBuffer != lastVertexBuffer || QuadIndexBuffer != lastIndexBuffer) {
-            DrawVertexBufferIndexed( QuadVertexBuffer, QuadIndexBuffer, 0 );
-            lastVertexBuffer = QuadVertexBuffer;
-            lastIndexBuffer = QuadIndexBuffer;
-        }
-        DrawVertexBufferIndexed( nullptr, nullptr, 6 );
+        DecalInstance inst;
+        inst.material = material;
+        XMStoreFloat4x4( &inst.worldView, view * world * offset * scale );
+        instances.push_back( inst );
     }
+
+    if ( instances.empty() ) {
+        return;
+    }
+
+    // NOTE: the decal order is preserved exactly as received - decals are alpha blended
+    // and rely on the painter's algorithm (back-to-front). We must NOT reorder them.
+    // Phase 3 below only collapses *consecutive* runs of the same material into a single
+    // instanced draw, which keeps the submission order identical to the per-decal path.
+
+    // ---- Phase 2: upload instance data ----
+    const size_t neededBytes = instances.size() * sizeof( XMFLOAT4X4 );
+    if ( DecalInstancingBuffer->GetSizeInBytes() < neededBytes ) {
+        if ( XR_FAILED == DecalInstancingBuffer->Init( nullptr, neededBytes,
+            D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_DYNAMIC, D3D11VertexBuffer::CA_WRITE ) ) {
+            LogError() << "Failed to (re)create decal instance buffer!";
+            return;
+        }
+        SetDebugName( DecalInstancingBuffer->GetVertexBuffer().Get(), "DecalInstancingBuffer" );
+    }
+
+    void* mappedData;
+    UINT mappedSize;
+    if ( XR_SUCCESS != DecalInstancingBuffer->Map( D3D11VertexBuffer::M_WRITE_DISCARD, &mappedData, &mappedSize ) ) {
+        LogError() << "Failed to map decal instance buffer!";
+        return;
+    }
+    auto* destData = static_cast<XMFLOAT4X4*>(mappedData);
+    for ( size_t i = 0; i < instances.size(); ++i ) {
+        destData[i] = instances[i].worldView;
+    }
+    DecalInstancingBuffer->Unmap();
+
+    // ---- Phase 3: issue one instanced draw per consecutive same-material run ----
+    UINT strides[2] = { sizeof( ExVertexStruct ), sizeof( XMFLOAT4X4 ) };
+    UINT offsets[2] = { 0, 0 };
+    ID3D11Buffer* vbs[2] = {
+        QuadVertexBuffer->GetVertexBuffer().Get(),
+        DecalInstancingBuffer->GetVertexBuffer().Get()
+    };
+    Context->IASetVertexBuffers( 0, 2, vbs, strides, offsets );
+    Context->IASetIndexBuffer( QuadIndexBuffer->GetVertexBuffer().Get(), VERTEX_INDEX_DXGI_FORMAT, 0 );
+
+    auto psBufGAI = GetActivePS()->GetBuffer( "GhostAlphaInfo" ).Bind();
+    GhostAlphaConstantBuffer gacb = {};
+    gacb.GA_ViewportSize = float2( Engine::GraphicsEngine->GetResolution().x, Engine::GraphicsEngine->GetResolution().y );
+
+    int lastAlphaFunc = -1;
+    zCTexture* lastTex = nullptr;
+    float lastGhostAlpha = gacb.GA_Alpha;
+
+    for ( size_t i = 0; i < instances.size(); ) {
+        auto material = instances[i].material; 
+        const auto& firstMatName = material->__GetName();
+        std::string_view firstMaterialName = { firstMatName.ToChar(), firstMatName.Length() };
+        const size_t start = i;
+        while ( i < instances.size() ) {
+            const auto& matName = instances[i].material->__GetName();
+            std::string_view materialName = { matName.ToChar(), matName.Length() };
+            if ( firstMaterialName.empty() && materialName.empty()
+                && material->GetAniTexture() != instances[i].material->GetAniTexture() ) {
+                break;
+            } else if ( materialName != firstMaterialName ) {
+                break;
+            }
+            ++i;
+        }
+        const unsigned int count = static_cast<unsigned int>(i - start);
+
+        zCTexture* texture = material->GetTexture();
+        int alphaFunc = material->GetAlphaFunc();
+        if ( alphaFunc == zMAT_ALPHA_FUNC_MAT_DEFAULT ) {
+            alphaFunc = zMAT_ALPHA_FUNC_BLEND;
+            if ( !texture->HasAlphaChannel() ) {
+                alphaFunc = zMAT_ALPHA_FUNC_NONE;
+            }
+        }
+
+        if ( !lighting ) {
+            switch ( alphaFunc ) {
+            case zMAT_ALPHA_FUNC_BLEND:
+            case zMAT_ALPHA_FUNC_BLEND_TEST:
+                Engine::GAPI->GetRendererState().BlendState.SetAlphaBlending();
+                break;
+
+            case zMAT_ALPHA_FUNC_ADD:
+                Engine::GAPI->GetRendererState().BlendState.SetAdditiveBlending();
+                break;
+
+            case zMAT_ALPHA_FUNC_MUL:
+                Engine::GAPI->GetRendererState().BlendState.SetModulateBlending();
+                break;
+
+            case zMAT_ALPHA_FUNC_MUL2:
+                Engine::GAPI->GetRendererState().BlendState.SetModulate2Blending();
+                break;
+
+            default:
+                continue;
+            }
+
+            if ( lastAlphaFunc != alphaFunc ) {
+                Engine::GAPI->GetRendererState().BlendState.SetDirty();
+                UpdateRenderStates();
+                lastAlphaFunc = alphaFunc;
+            }
+        }
+
+        if ( texture != lastTex ) {
+            if ( texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
+                continue;  // Don't render not cached surfaces
+            }
+            auto t = texture->GetSurface()->GetEngineTexture()->GetShaderResourceView().Get();
+            Context->PSSetShaderResources( 0, 1, &t );
+            lastTex = texture;
+        }
+
+        if ( !lighting ) {
+            const auto ghostAlpha = (material->GetColor() >> 24) * inv255f;
+            if ( lastGhostAlpha != ghostAlpha ) {
+                gacb.GA_Alpha = ghostAlpha;
+                psBufGAI.Update( &gacb );
+                lastGhostAlpha = gacb.GA_Alpha;
+            }
+        }
+
+        GetContext()->DrawIndexedInstanced( 6, count, 0, 0, static_cast<unsigned int>(start) );
+        Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles += 2 * count;
+    }
+
+    // Unbind the instance buffer from slot 1 again
+    ID3D11Buffer* nullBuf = nullptr;
+    UINT nullStride = 0;
+    UINT nullOffset = 0;
+    Context->IASetVertexBuffers( 1, 1, &nullBuf, &nullStride, &nullOffset );
 }
 
 /** Draws quadmarks in a simple way */

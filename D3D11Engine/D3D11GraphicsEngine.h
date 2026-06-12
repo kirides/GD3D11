@@ -474,6 +474,7 @@ protected:
     float2 Temp2Float2[2];
     std::unique_ptr<D3D11VertexBuffer> DynamicInstancingBuffer;
     std::unique_ptr<D3D11VertexBuffer> NodeAttachmentInstancingBuffer;
+    std::unique_ptr<D3D11VertexBuffer> DecalInstancingBuffer;
     std::unique_ptr<D3D11VertexBuffer> DynamicVertexBuffer;
 
     /** Post processing */
