@@ -240,6 +240,38 @@ namespace
     }
 }
 
+void ConstantBufferPool::BeginFrame( ID3D11DeviceContext* context ) {
+    D3D11_MAPPED_SUBRESOURCE mappedResource;
+    context->Map( m_poolBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedResource );
+    m_pMappedData = static_cast<uint8_t*>(mappedResource.pData);
+    m_currentOffset = 0;
+}
+
+ConstantBufferAllocation ConstantBufferPool::Allocate( const void* pData, uint32_t sizeInBytes ) {
+    uint32_t alignedSize = (sizeInBytes + 255) & ~255;
+
+    if ( m_currentOffset + alignedSize > m_bufferSize ) {
+        return { m_poolBuffer.Get(), 0, alignedSize }; // Out of memory in the pool
+    }
+
+    memcpy( m_pMappedData + m_currentOffset, pData, sizeInBytes );
+
+    ConstantBufferAllocation alloc;
+    alloc.pBuffer = m_poolBuffer.Get();
+    alloc.offsetInBytes = m_currentOffset;
+    alloc.sizeInBytes = alignedSize;
+
+    // 4. Advance the offset for the next allocation
+    m_currentOffset += alignedSize;
+
+    return alloc;
+}
+
+void ConstantBufferPool::EndFrame( ID3D11DeviceContext* context ) {
+    context->Unmap( m_poolBuffer.Get(), 0 );
+    m_pMappedData = nullptr;
+}
+
 D3D11GraphicsEngine::D3D11GraphicsEngine() :
     DebugPointlight(nullptr),
     m_LastFrameLimit(0),
@@ -823,6 +855,9 @@ XRESULT D3D11GraphicsEngine::Init() {
     InfiniteRangeConstantBuffer.reset( infiniteRangeConstantBuffer );
     OutdoorSmallVobsConstantBuffer.reset( outdoorSmallVobsConstantBuffer );
     OutdoorVobsConstantBuffer.reset(outdoorVobsConstantBuffer);
+
+    PerObjectMaterialInfoPooledBuffer = std::make_unique<ConstantBufferPool>();
+    PerObjectMaterialInfoPooledBuffer->Initialize( GetDevice().Get() );
 
     // Init inf-buffer now
     static const float4 infiniteRange( FLT_MAX, 0, 0, 0 );
@@ -2303,7 +2338,7 @@ bool D3D11GraphicsEngine::BindTextureNRFX( zCTexture* tex, bool bindShader, bool
         srvs[1] = DistortionTexture->GetShaderResourceView().Get();
     }
 
-    if ( info ) {
+    if ( info && GetActivePS() ) {
         GetActivePS()->GetBuffer( 2 ).Update( &info->buffer, sizeof( info->buffer ) ).Bind();
     }
 
@@ -5023,11 +5058,47 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
 
     // Now draw the actual pixels
     zCTexture* bound = nullptr;
-    MaterialInfo* boundInfo = nullptr;
     if ( !meshList.empty() ) {
         ZoneScopedN( "DrawWorldMesh::OpaqueSubmission" );
         auto _scopeOpaqueSubmission = RecordGraphicsEvent( GE_NAME( "DrawWorldMesh::OpaqueSubmission" ) );
-        for ( auto const& mesh : meshList ) {
+
+        const size_t numMeshes = meshList.size();
+        std::vector<UINT> materialInfoCbOffsets( numMeshes );
+        PerObjectMaterialInfoPooledBuffer->BeginFrame(GetContext().Get());
+
+        MaterialInfo* lastInfo = nullptr;
+        UINT INVALID_OFFSET = PerObjectMaterialInfoPooledBuffer->Allocate( &defInfo.buffer, sizeof( defInfo.buffer ) ).offsetInBytes;
+        for ( size_t i = 0; i < numMeshes; i++ ) {
+            auto needDefaultNormalsStrength = meshList[i].first.Texture->GetSurface()->GetNormalmap() == nullptr;
+            MaterialInfo* info = meshList[i].first.Info;
+
+            if ( info && 
+                needDefaultNormalsStrength &&
+                info->buffer.NormalmapStrength != DEFAULT_NORMALMAP_STRENGTH ) {
+                info->buffer.NormalmapStrength = DEFAULT_NORMALMAP_STRENGTH;
+                // Value override for non-normalmapped textures in case of rain
+            }
+
+            if ( info ) {
+                if ( info->IsSame( lastInfo ) ) {
+                    materialInfoCbOffsets[i] = materialInfoCbOffsets[i - 1];
+                } else {
+                    materialInfoCbOffsets[i] = PerObjectMaterialInfoPooledBuffer->Allocate( &info->buffer, sizeof( info->buffer ) ).offsetInBytes;
+                    lastInfo = info;
+                }
+            } else {
+                materialInfoCbOffsets[i] = INVALID_OFFSET;
+            }
+        }
+        PerObjectMaterialInfoPooledBuffer->EndFrame( GetContext().Get() );
+
+        auto materialInfoPoolBuffer = PerObjectMaterialInfoPooledBuffer->GetBuffer();
+        UINT lastOffsetId = -1;
+        for ( size_t i = 0; i < numMeshes; i++ ) {
+            auto const& mesh = meshList[i];
+            auto materialInfoOffset = materialInfoCbOffsets[i];
+            UINT firstConstant = materialInfoOffset / 16;
+            UINT numConstants = 256 / 16; // aligned size
 
             if ( mesh.first.Texture != bound &&
                 Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh > 1 ) {
@@ -5047,10 +5118,6 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
                 // Bind a default normalmap in case the scene is wet and we currently have
                 // none
                 if ( !srv[1] ) {
-                    // Modify the strength of that default normalmap for the material info
-                    if ( info && info->buffer.NormalmapStrength != DEFAULT_NORMALMAP_STRENGTH ) {
-                        info->buffer.NormalmapStrength = DEFAULT_NORMALMAP_STRENGTH;
-                    }
                     srv[1] = DistortionTexture->GetShaderResourceView().Get();
                 }
 
@@ -5064,12 +5131,9 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
                     updatePSBuffers();
                 }
 
-                if ( info && !info->IsSame( boundInfo) ) {
-                    materialInfoBuffer.Update( &info->buffer, sizeof( info->buffer ) );
-
-                    // Don't let the game unload the texture after some time
-                    //mesh.first.Texture->CacheIn( 0.6f );
-                    boundInfo = info;
+                if ( lastOffsetId != materialInfoOffset ) {
+                    GetContext()->PSSetConstantBuffers1( materialInfoBuffer.GetSlot(), 1, &materialInfoPoolBuffer, &firstConstant, &numConstants );
+                    lastOffsetId = materialInfoOffset;
                 }
                 bound = mesh.first.Texture;
             }
