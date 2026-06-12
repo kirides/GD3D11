@@ -6388,8 +6388,6 @@ void GothicAPI::CollectVisibleVobs( const RndCullContext& ctx ) {
     bool collectIndoor = ctx.stage != RenderStage::STAGE_DRAW_SHADOWS;
     auto cullingEnabled = RendererState.RendererSettings.DebugSettings.Culling.CullVobs;
 
-    std::list<VobInfo*> removeList; // TODO: This should not be needed!
-
     // Add visible dynamically added vobs
     if ( RendererState.RendererSettings.DrawVOBs ) {
         float dist;
@@ -6407,13 +6405,7 @@ void GothicAPI::CollectVisibleVobs( const RndCullContext& ctx ) {
                     )
                     )
                 ) ) {
-#ifdef BUILD_GOTHIC_1_08k
-                // TODO: This is sometimes nullptr, suggesting that the Vob is invalid. Why does this happen?
-                if ( !it->VobConstantBuffer ) {
-                    removeList.push_back( it );
-                    continue;
-                }
-#endif
+
                 if ( !it->Vob->GetShowVisual() ) {
                     continue;
                 }
@@ -6433,12 +6425,4 @@ void GothicAPI::CollectVisibleVobs( const RndCullContext& ctx ) {
     }
 
     bspVobVisitor.ClearForReuse();
-
-#ifdef BUILD_GOTHIC_1_08k
-    // TODO: See above for info on this
-    for ( VobInfo* vi : removeList ) {
-        RegisteredVobs.insert( vi->Vob ); // This vob isn't in this set anymore, but still in DynamicallyAddedVobs??
-        OnRemovedVob( vi->Vob, oCGame::GetGame()->_zCSession_world );
-    }
-#endif
 }
