@@ -5050,7 +5050,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
     SetActivePixelShader( defaultShader );
 
     MaterialInfo defInfo = {};
-    auto materialInfoBuffer = ActivePS->GetBuffer( "MI_MaterialInfo" )
+    auto materialInfoBuffer = GetActivePS()->GetBuffer( "MI_MaterialInfo" )
         .Update( &defInfo.buffer, sizeof(defInfo.buffer) )
         .Bind();
 
@@ -6928,7 +6928,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
             windBuffer.Bind();
         }
 
-        auto DIST_DistanceSlot = ActivePS->GetInputIndex( "DIST_Distance" );
+        auto DIST_DistanceSlot = GetActivePS()->GetInputIndex( "DIST_Distance" );
 
         bool isZPrepass = RenderingStage == D3D11ENGINE_RENDER_STAGE::DES_Z_PRE_PASS;
 
@@ -7620,7 +7620,7 @@ XRESULT D3D11GraphicsEngine::DrawPolyStrips( bool noTextures ) {
 
     // Use default material info for now
     MaterialInfo defInfo{};
-    auto materialInfoBuffer = ActivePS->GetBuffer( "MI_MaterialInfo" )
+    auto materialInfoBuffer = GetActivePS()->GetBuffer( "MI_MaterialInfo" )
         .Update( &defInfo.buffer, sizeof(defInfo.buffer) )
         .Bind();
 
