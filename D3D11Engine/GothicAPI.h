@@ -190,7 +190,6 @@ struct MaterialInfo {
 
     MaterialInfo() :
         PixelShader(static_cast<PShaderID>(0)),
-        Constantbuffer(nullptr),
         MaterialType(MT_None)
     {
         buffer.SpecularIntensity = 0.1f;
@@ -229,11 +228,6 @@ struct MaterialInfo {
                 Color == other.Color;
         }
     };
-
-    /** creates/updates the constantbuffer */
-    void UpdateConstantbuffer();
-
-    std::unique_ptr<D3D11ConstantBuffer> Constantbuffer;
 
     PShaderID PixelShader;
     EMaterialType MaterialType;

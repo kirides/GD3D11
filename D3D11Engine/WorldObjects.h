@@ -312,10 +312,8 @@ struct VobInfo : public BaseVobInfo {
     ~VobInfo() override = default;
 
     /** Updates the vobs constantbuffer */
-    void UpdateVobConstantBuffer();
-
-    /** Constantbuffer which holds this vobs world matrix */
-    std::unique_ptr<D3D11ConstantBuffer> VobConstantBuffer;
+    void UpdateVobConstantBuffer(VS_ExConstantBuffer_PerInstance& cb);
+    void UpdateState();
 
     /** Position the vob was at while being rendered last time */
     XMFLOAT3 LastRenderPosition;
@@ -420,8 +418,9 @@ struct SkeletalVobInfo : public BaseVobInfo {
     }
 
     /** Updates the vobs constantbuffer */
-    void UpdateVobConstantBuffer();
-
+    void UpdateVobConstantBuffer(VS_ExConstantBuffer_PerInstance& cb);
+    void UpdateState();
+    
     void StorePreviousTransforms( const std::vector<XMFLOAT4X4>& currentTransforms ) {
         PrevBoneTransforms = currentTransforms;
         // PrevWorldMatrix = WorldMatrix; // can't be trusted yet, as Instanced drawing doesn't set it.

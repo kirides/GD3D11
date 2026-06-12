@@ -9,14 +9,15 @@
 #include "D3D11_Helpers.h"
 
 /** Updates the vobs constantbuffer */
-void VobInfo::UpdateVobConstantBuffer() {
-    VS_ExConstantBuffer_PerInstance cb;
-    XMStoreFloat4x4( &cb.World, Vob->GetWorldMatrixXM() );
+void VobInfo::UpdateVobConstantBuffer(VS_ExConstantBuffer_PerInstance& cb) {
+    UpdateState();
+    cb.World = WorldMatrix;
+    cb.Color = {0.0f, 0.0f, 0.0f, 1.0f};
+}
 
-    VobConstantBuffer->UpdateBuffer( &cb );
-
-    XMStoreFloat3( &LastRenderPosition, Vob->GetPositionWorldXM() );
-    WorldMatrix = cb.World;
+void VobInfo::UpdateState() {
+    WorldMatrix = *Vob->GetWorldMatrixPtr();
+    LastRenderPosition = Vob->GetPositionWorld();
 
     // Colorize the vob according to the underlaying polygon
     if ( IsIndoorVob ) {
@@ -26,27 +27,17 @@ void VobInfo::UpdateVobConstantBuffer() {
         // Get the color of the first found feature of the ground poly
         GroundColor = Vob->GetGroundPoly() ? Vob->GetGroundPoly()->getFeatures()[0]->lightStatic : 0xFFFFFFFF;
     }
-
-    //&WorldMatrix = XMMatrixTranspose(XMLoadFloat4x4(&cb.World));
 }
 
 /** Updates the vobs constantbuffer */
-void SkeletalVobInfo::UpdateVobConstantBuffer() {
-    VS_ExConstantBuffer_PerInstance cb;
-    XMStoreFloat4x4( &cb.World, Vob->GetWorldMatrixXM() );
+void SkeletalVobInfo::UpdateVobConstantBuffer(VS_ExConstantBuffer_PerInstance& cb) {
+    UpdateState();
+    cb.World = WorldMatrix;
+    cb.Color = {0.0f, 0.0f, 0.0f, 1.0f};
+}
 
-    WorldMatrix = cb.World;
-
-    if ( !VobConstantBuffer ) {
-        D3D11ConstantBuffer* d3dcb;
-        Engine::GraphicsEngine->CreateConstantBuffer( &d3dcb, &cb, sizeof( cb ) );
-        VobConstantBuffer.reset(d3dcb);
-#ifdef DEBUG_D3D11
-        SetDebugName( VobConstantBuffer->Get().Get(), "VS_ExConstantBuffer_PerInstance::"+Vob->GetName());
-#endif
-    } else {
-        VobConstantBuffer->UpdateBuffer( &cb );
-    }
+void SkeletalVobInfo::UpdateState() {
+    WorldMatrix = *Vob->GetWorldMatrixPtr();
 }
 
 SectionInstanceCache::~SectionInstanceCache() {

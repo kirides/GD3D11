@@ -115,23 +115,6 @@ void MaterialInfo::LoadFromFile( const std::string_view name ) {
     fclose( f );
 
     buffer.Color = float4( 1, 1, 1, 1 );
-
-    UpdateConstantbuffer();
-}
-
-/** creates/updates the constantbuffer */
-void MaterialInfo::UpdateConstantbuffer() {
-    if ( Constantbuffer ) {
-        Constantbuffer->UpdateBuffer( &buffer );
-    } else {
-        D3D11ConstantBuffer* cb = nullptr;
-        Engine::GraphicsEngine->CreateConstantBuffer( &cb, &buffer, sizeof( buffer ) );
-#ifdef DEBUG_D3D11
-        SetDebugName( cb->Get().Get(), "ConstantBuffer::MaterialInfo" );
-#endif
-
-        Constantbuffer.reset(cb);
-    }
 }
 
 GothicAPI::GothicAPI() {
@@ -1748,7 +1731,7 @@ void GothicAPI::OnVobMoved( zCVob* vob ) {
             MoveVobFromBspToDynamic( vi );
         }
 
-        vi->UpdateVobConstantBuffer();
+        vi->UpdateState();
         Engine::GAPI->GetRendererState().RendererInfo.FrameVobUpdates++;
     } else {
         auto sit = SkeletalVobMap.find( vob );
@@ -1760,6 +1743,7 @@ void GothicAPI::OnVobMoved( zCVob* vob ) {
             }
             // This is a mob, remove it from the bsp-cache and add to dynamic list
             MoveVobFromBspToDynamic( vi );
+            vi->UpdateState();
         }
     }
 }
@@ -2225,15 +2209,7 @@ void GothicAPI::OnAddVob( zCVob* vob, zCWorld* world ) {
 
                 vi->VobSection = &WorldSections[section.x][section.y];
                 vi->VobSection->Vobs.push_back( vi );
-
-                // Create this constantbuffer only for non-inventory vobs because it would be recreated for each vob every frame
-                D3D11ConstantBuffer* cb;
-                Engine::GraphicsEngine->CreateConstantBuffer( &cb, nullptr, sizeof( VS_ExConstantBuffer_PerInstance ) );
-#ifdef DEBUG_D3D11
-                SetDebugName( cb->Get().Get(), "VS_ExConstantBuffer_PerInstance::"+vob->GetName());
-#endif
-                vi->VobConstantBuffer.reset(cb);
-                vi->UpdateVobConstantBuffer();
+                vi->UpdateState(); 
 
                 if ( !BspLeafVobLists.empty() ) { // Check if this is the initial loading
                     // It's not, chose this as a dynamically added vob
@@ -2555,10 +2531,6 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
     VS_ExConstantBuffer_PerInstanceNode instanceInfo;
     instanceInfo.Color = modelColor;
 
-    // Init the constantbuffer if not already done
-    if ( !vi->VobConstantBuffer )
-        vi->UpdateVobConstantBuffer();
-
     g->SetupVS_ExMeshDrawCall();
     g->SetupVS_ExConstantBuffer();
 
@@ -2572,6 +2544,7 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
     gtl::flat_hash_map<int, std::vector<MeshVisualInfo*>>& nodeAttachments = vi->NodeAttachments;
     auto vsBufMPI = g->GetActiveVS()->GetBuffer( "Matrices_PerInstances" );
     vsBufMPI.Bind();
+
     for ( unsigned int i = 0; i < transforms.size(); i++ ) {
         // Check for new visual
         zCModel* mvis = static_cast<zCModel*>( vi->Vob->GetVisual() );
@@ -2795,10 +2768,6 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
     VS_ExConstantBuffer_PerInstanceNode instanceInfo;
     instanceInfo.Color = modelColor;
 
-    // Init the constantbuffer if not already done
-    if ( !vi->VobConstantBuffer )
-        vi->UpdateVobConstantBuffer();
-
     g->SetupVS_ExMeshDrawCall();
     g->SetupVS_ExConstantBuffer();
 
@@ -2959,6 +2928,9 @@ void GothicAPI::DrawTransparencyVobs() {
     }
 
     auto psBufGAI = g->GetShaderManager().GetPShader( PShaderID::PS_Transparency )->GetBuffer( "GhostAlphaInfo" );
+
+
+    VS_ExConstantBuffer_PerInstance cbPerInstance;
     while ( !TransparencyVobs.empty() ) {
         auto const& TransVobInfo = TransparencyVobs.front();
 
@@ -2982,7 +2954,9 @@ void GothicAPI::DrawTransparencyVobs() {
         } else if ( TransVobInfo.normalVob ) {
             g->SetActiveVertexShader( VShaderID::VS_Ex );
             g->SetupVS_ExMeshDrawCall();
-            TransVobInfo.normalVob->VobConstantBuffer->BindToVertexShader( 1 );
+            
+            TransVobInfo.normalVob->UpdateVobConstantBuffer( cbPerInstance );
+            g->GetActiveVS()->GetBuffer( 1 ).Update(&cbPerInstance, sizeof(cbPerInstance)).Bind();
 
             // We need to do Z-prepass first
             g->UnbindActivePS();
@@ -6414,8 +6388,6 @@ void GothicAPI::CollectVisibleVobs( const RndCullContext& ctx ) {
     bool collectIndoor = ctx.stage != RenderStage::STAGE_DRAW_SHADOWS;
     auto cullingEnabled = RendererState.RendererSettings.DebugSettings.Culling.CullVobs;
 
-    std::list<VobInfo*> removeList; // TODO: This should not be needed!
-
     // Add visible dynamically added vobs
     if ( RendererState.RendererSettings.DrawVOBs ) {
         float dist;
@@ -6433,13 +6405,7 @@ void GothicAPI::CollectVisibleVobs( const RndCullContext& ctx ) {
                     )
                     )
                 ) ) {
-#ifdef BUILD_GOTHIC_1_08k
-                // TODO: This is sometimes nullptr, suggesting that the Vob is invalid. Why does this happen?
-                if ( !it->VobConstantBuffer ) {
-                    removeList.push_back( it );
-                    continue;
-                }
-#endif
+
                 if ( !it->Vob->GetShowVisual() ) {
                     continue;
                 }
@@ -6459,12 +6425,4 @@ void GothicAPI::CollectVisibleVobs( const RndCullContext& ctx ) {
     }
 
     bspVobVisitor.ClearForReuse();
-
-#ifdef BUILD_GOTHIC_1_08k
-    // TODO: See above for info on this
-    for ( VobInfo* vi : removeList ) {
-        RegisteredVobs.insert( vi->Vob ); // This vob isn't in this set anymore, but still in DynamicallyAddedVobs??
-        OnRemovedVob( vi->Vob, oCGame::GetGame()->_zCSession_world );
-    }
-#endif
 }

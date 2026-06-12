@@ -42,6 +42,43 @@ const unsigned int HUD_BUFFER_SIZE = 6 * sizeof( ExVertexStruct );
 const int NUM_MAX_BONES = 96;
 const int unsigned INSTANCING_BUFFER_SIZE = sizeof( VobInstanceInfo ) * 2048;
 
+struct ConstantBufferAllocation {
+    ID3D11Buffer* pBuffer;
+    uint32_t offsetInBytes;
+    uint32_t sizeInBytes;
+};
+
+class ConstantBufferPool {
+private:
+    Microsoft::WRL::ComPtr<ID3D11Buffer> m_poolBuffer;
+    uint32_t m_bufferSize;
+    uint32_t m_currentOffset;
+    uint8_t* m_pMappedData; // CPU pointer when mapped
+
+public:
+    void Initialize( ID3D11Device* device, uint32_t totalSizeInBytes = 4 * 1024 * 1024 ) {
+        m_bufferSize = totalSizeInBytes;
+        m_currentOffset = 0;
+        m_pMappedData = nullptr;
+
+        D3D11_BUFFER_DESC desc = {};
+        desc.ByteWidth = m_bufferSize;
+        desc.Usage = D3D11_USAGE_DYNAMIC;
+        desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+        desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+
+        device->CreateBuffer( &desc, nullptr, &m_poolBuffer );
+#ifdef DEBUG_D3D11
+        SetDebugName( m_poolBuffer.Get(), std::string( "ConstantBufferPool (size:" ) + std::to_string( totalSizeInBytes )+")");
+#endif
+    }
+
+    void BeginFrame( ID3D11DeviceContext* context );
+    ConstantBufferAllocation Allocate( const void* pData, uint32_t sizeInBytes );
+    void EndFrame( ID3D11DeviceContext* context );
+
+    ID3D11Buffer* GetBuffer() const { return m_poolBuffer.Get(); }
+};
 
 class D3D11PointLight;
 class D3D11VShader;
@@ -618,6 +655,7 @@ private:
     std::unique_ptr<D3D11ConstantBuffer> InfiniteRangeConstantBuffer;
     std::unique_ptr<D3D11ConstantBuffer> OutdoorSmallVobsConstantBuffer;
     std::unique_ptr<D3D11ConstantBuffer> OutdoorVobsConstantBuffer;
+    std::unique_ptr<ConstantBufferPool> PerObjectMaterialInfoPooledBuffer;
 
     /** Quads for decals/particles */
     D3D11VertexBuffer* QuadVertexBuffer;
