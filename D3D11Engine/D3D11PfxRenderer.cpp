@@ -150,10 +150,11 @@ XRESULT D3D11PfxRenderer::RenderSimpleSharpen( const Microsoft::WRL::ComPtr<ID3D
 
 /** Draws a fullscreenquad */
 XRESULT D3D11PfxRenderer::DrawFullScreenQuad() {
-    D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    auto engine = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine);
     engine->UpdateRenderStates();
-
-    engine->GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+    
+    auto& pipelineState = Engine::GAPI->GetRendererState().PipelineState;
+    pipelineState.SetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
     //Draw the mesh
     engine->GetCommandList()->Draw( 3, 0 );
@@ -174,7 +175,8 @@ XRESULT D3D11PfxRenderer::UnbindPSResources( int num ) {
 /** Copies the given texture to the given RTV */
 XRESULT D3D11PfxRenderer::CopyTextureToRTV( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& texture, const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& rtv, INT2 targetResolution, bool useCustomPS, INT2 offset ) {
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
-
+    auto& pipelineState = Engine::GAPI->GetRendererState().PipelineState;
+    
     D3D11_VIEWPORT oldVP;
     if ( targetResolution.x != 0 && targetResolution.y != 0 ) {
         UINT n = 1;
@@ -199,10 +201,10 @@ XRESULT D3D11PfxRenderer::CopyTextureToRTV( const Microsoft::WRL::ComPtr<ID3D11S
     // Bind shaders
     if ( !useCustomPS ) {
         auto simplePS = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_Simple );
-        simplePS->Apply();
+        pipelineState.SetPixelShader(simplePS);
     }
 
-    engine->GetShaderManager().GetVShader( VShaderID::VS_PFX )->Apply();
+    pipelineState.SetVertexShader(engine->GetShaderManager().GetVShader( VShaderID::VS_PFX ));
 
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv;
     engine->GetContext()->PSSetShaderResources( 0, 1, srv.GetAddressOf() );
