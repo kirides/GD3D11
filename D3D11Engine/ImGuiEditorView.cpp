@@ -256,7 +256,6 @@ void ImGuiEditorView::RenderTextureSelectionPanel() {
             MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom(Selection.SelectedMaterial->GetTexture());
             if (info) {
                 info->buffer.NormalmapStrength = SelectedTexNrmStr;
-                info->UpdateConstantbuffer();
                 info->WriteToFile(Selection.SelectedMaterial->GetTexture()->GetNameWithoutExt());
             }
         }
@@ -269,7 +268,6 @@ void ImGuiEditorView::RenderTextureSelectionPanel() {
             MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom(Selection.SelectedMaterial->GetTexture());
             if (info) {
                 info->buffer.SpecularIntensity = SelectedTexSpecIntens;
-                info->UpdateConstantbuffer();
                 info->WriteToFile(Selection.SelectedMaterial->GetTexture()->GetNameWithoutExt());
             }
         }
@@ -282,7 +280,6 @@ void ImGuiEditorView::RenderTextureSelectionPanel() {
             MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom(Selection.SelectedMaterial->GetTexture());
             if (info) {
                 info->buffer.SpecularPower = SelectedTexSpecPower;
-                info->UpdateConstantbuffer();
                 info->WriteToFile(Selection.SelectedMaterial->GetTexture()->GetNameWithoutExt());
             }
         }

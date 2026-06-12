@@ -115,23 +115,6 @@ void MaterialInfo::LoadFromFile( const std::string_view name ) {
     fclose( f );
 
     buffer.Color = float4( 1, 1, 1, 1 );
-
-    UpdateConstantbuffer();
-}
-
-/** creates/updates the constantbuffer */
-void MaterialInfo::UpdateConstantbuffer() {
-    if ( Constantbuffer ) {
-        Constantbuffer->UpdateBuffer( &buffer );
-    } else {
-        D3D11ConstantBuffer* cb = nullptr;
-        Engine::GraphicsEngine->CreateConstantBuffer( &cb, &buffer, sizeof( buffer ) );
-#ifdef DEBUG_D3D11
-        SetDebugName( cb->Get().Get(), "ConstantBuffer::MaterialInfo" );
-#endif
-
-        Constantbuffer.reset(cb);
-    }
 }
 
 GothicAPI::GothicAPI() {
