@@ -2,6 +2,7 @@
 #include "pch.h"
 #include "D3D11PShader.h"
 #include "D3D11VShader.h"
+#include "D3D11GShader.h"
 #include "D3D11CShader.h"
 #include "Engine.h"
 #include "D3D11GraphicsEngineBase.h"
@@ -26,6 +27,10 @@ void GothicPipelineStateInfo::Apply( ID3D11DeviceContext* context )
     if ( PixelShader.IsDirty() ) {
         context->PSSetShader( PixelShader.Current ? PixelShader.Current->GetShader().Get() : nullptr, nullptr, 0 );
         PixelShader.Update( PixelShader.Current );
+    }
+    if ( GeometryShader.IsDirty() ) {
+        context->GSSetShader( GeometryShader.Current ? GeometryShader.Current->GetShader().Get() : nullptr, nullptr, 0 );
+        GeometryShader.Update( GeometryShader.Current );
     }
     if ( ComputeShader.IsDirty() ) {
         context->CSSetShader( ComputeShader.Current ? ComputeShader.Current->GetShader().Get() : nullptr, nullptr, 0 );

@@ -17,6 +17,7 @@ D3D11PFX_Blur::~D3D11PFX_Blur() {}
 /** Draws this effect to the given buffer */
 XRESULT D3D11PFX_Blur::RenderBlur( RenderToTextureBuffer* fxbuffer, bool leaveResultInD4_2, float threshold, float scale, const XMFLOAT4& colorMod, PShaderID finalCopyShader ) {
 	D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    auto& pipelineState = Engine::GAPI->GetRendererState().PipelineState;
 
 	// Save old rendertargets
 	Microsoft::WRL::ComPtr<ID3D11RenderTargetView> oldRTV;
@@ -27,12 +28,12 @@ XRESULT D3D11PFX_Blur::RenderBlur( RenderToTextureBuffer* fxbuffer, bool leaveRe
 
 	/** Pass 1: Downscale/Blur-H */
 	// Apply PFX-VS
-	engine->GetShaderManager().GetVShader( VShaderID::VS_PFX )->Apply();
-	auto gaussPS = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_GaussBlur );
-	auto simplePS = engine->GetShaderManager().GetPShader( finalCopyShader );
+	pipelineState.SetVertexShader( engine->GetShaderManager().GetVShader( VShaderID::VS_PFX ) );
+	const auto& gaussPS = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_GaussBlur );
+	const auto& simplePS = engine->GetShaderManager().GetPShader( finalCopyShader );
 
 	// Apply blur-H shader
-	gaussPS->Apply();
+	pipelineState.SetPixelShader( gaussPS );
 
     auto tempBuffer = FxRenderer->GetTempBufferDS4();
     auto tempBuffer2 = FxRenderer->GetTempBufferDS4();
@@ -65,7 +66,7 @@ XRESULT D3D11PFX_Blur::RenderBlur( RenderToTextureBuffer* fxbuffer, bool leaveRe
     /** Pass 3: Copy back to FX-Buffer */
 
     if ( !leaveResultInD4_2 ) {
-        simplePS->Apply();
+        pipelineState.SetPixelShader( simplePS );
         FxRenderer->CopyTextureToRTV( tempBuffer2->GetShaderResView(), fxbuffer->GetRenderTargetView(), INT2( 0, 0 ), true );
 	}
 

@@ -138,7 +138,8 @@ XRESULT D3D11PFX_FSR1::ApplyEASU(
     context->PSSetSamplers( 0, 1, PointSampler.GetAddressOf() );
 
     // Apply shader
-    easuPS->Apply();
+    auto& pipelineState = Engine::GAPI->GetRendererState().PipelineState;
+    pipelineState.SetPixelShader( easuPS );
 
     // Draw fullscreen quad
     Renderer->DrawFullScreenQuad();
@@ -196,7 +197,8 @@ XRESULT D3D11PFX_FSR1::ApplyRCAS(
     context->PSSetSamplers( 0, 1, PointSampler.GetAddressOf() );
 
     // Apply shader
-    rcasPS->Apply();
+    auto& pipelineState = Engine::GAPI->GetRendererState().PipelineState;
+    pipelineState.SetPixelShader( rcasPS );
 
     // Draw fullscreen quad
     Renderer->DrawFullScreenQuad();

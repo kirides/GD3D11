@@ -35,8 +35,9 @@ XRESULT D3D11PFX_SimpleSharpen::ApplyPixelShader( const Microsoft::WRL::ComPtr<I
     UINT n = 1;
     context->RSGetViewports( &n, &oldVP );
 
-    auto sharpenPS = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_Sharpen );
-    sharpenPS->Apply();
+    const auto& sharpenPS = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_Sharpen );
+    auto& pipelineState = Engine::GAPI->GetRendererState().PipelineState;
+    pipelineState.SetPixelShader( sharpenPS );
 
     PfxSharpenConstantBuffer gcb;
     gcb.G_TextureSize = destSize;

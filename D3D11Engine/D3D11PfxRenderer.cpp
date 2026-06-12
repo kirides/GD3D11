@@ -98,6 +98,13 @@ XRESULT D3D11PfxRenderer::RenderHDR( ID3D11RenderTargetView* output, ID3D11Shade
 /** Renders the SMAA-Effect */
 XRESULT D3D11PfxRenderer::RenderSMAA(ID3D11ShaderResourceView* backbuffer) {
     FX_SMAA->RenderPostFX( backbuffer );
+
+    auto& rendererState = Engine::GAPI->GetRendererState();
+    // SMAA uses native library code thus we need to invalidate internal state.
+    rendererState.PipelineState.Invalidate();
+    rendererState.RasterizerState.Invalidate();
+    rendererState.BlendState.Invalidate();
+    rendererState.DepthState.Invalidate();
     return XR_SUCCESS;
 }
 
@@ -200,7 +207,7 @@ XRESULT D3D11PfxRenderer::CopyTextureToRTV( const Microsoft::WRL::ComPtr<ID3D11S
 
     // Bind shaders
     if ( !useCustomPS ) {
-        auto simplePS = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_Simple );
+        const auto& simplePS = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_Simple );
         pipelineState.SetPixelShader(simplePS);
     }
 
@@ -281,13 +288,14 @@ XRESULT D3D11PfxRenderer::RenderPostFXComposition(
     ID3D11ShaderResourceView* depthSRV ) {
 
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    auto& pipelineState = Engine::GAPI->GetRendererState().PipelineState;
     auto& context = engine->GetContext();
     auto res = engine->GetResolution();
 
     // Set up shaders
-    engine->GetShaderManager().GetVShader( VShaderID::VS_PFX )->Apply();
-    auto compositionPS = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_Composition );
-    compositionPS->Apply();
+    pipelineState.SetVertexShader(engine->GetShaderManager().GetVShader( VShaderID::VS_PFX ));
+    const auto& compositionPS = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_Composition );
+    pipelineState.SetPixelShader( compositionPS );
 
     // Update constant buffers for inline heightfog if active
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
@@ -398,6 +406,14 @@ XRESULT D3D11PfxRenderer::RenderASSAO( ID3D11RenderTargetView* outputRTV, ID3D11
     }
 
     PFX_ASSAO->Render( depthCopy, normals, outputRTV );
+    auto& rendererState = Engine::GAPI->GetRendererState();
+
+    // ASSAO uses native library code thus we need to invalidate internal state.
+    rendererState.PipelineState.Invalidate();
+    rendererState.RasterizerState.Invalidate();
+    rendererState.BlendState.Invalidate();
+    rendererState.DepthState.Invalidate();
+
     return XR_SUCCESS;
 }
 

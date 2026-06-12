@@ -27,6 +27,7 @@ XRESULT D3D11PFX_GodRays::Render(
     }
 
 	D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    auto& pipelineState = Engine::GAPI->GetRendererState().PipelineState;
 
 	engine->SetDefaultStates();
 
@@ -75,12 +76,12 @@ XRESULT D3D11PFX_GodRays::Render(
 	if ( abs( gcb.GR_Center.y - 0.5f ) > 0.5f )
 		gcb.GR_Weight *= std::max( 0.0f, 1.0f - (abs( gcb.GR_Center.y - 0.5f ) - 0.5f) / 0.5f );
 
-	auto vs = engine->GetShaderManager().GetVShader( VShaderID::VS_PFX );
-	auto maskPS = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_GodRayMask );
-	auto zoomPS = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_GodRayZoom );
+	const auto& vs = engine->GetShaderManager().GetVShader( VShaderID::VS_PFX );
+	const auto& maskPS = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_GodRayMask );
+	const auto& zoomPS = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_GodRayZoom );
 
-	maskPS->Apply();
-	vs->Apply();
+    pipelineState.SetPixelShader( maskPS );
+    pipelineState.SetVertexShader( vs );
 
     auto tempBuffer = FxRenderer->GetTempBufferDS4();
     auto tempBuffer2 = FxRenderer->GetTempBufferDS4();
@@ -99,7 +100,7 @@ XRESULT D3D11PFX_GodRays::Render(
     FxRenderer->DrawFullScreenQuad();
 
     // Zoom
-    zoomPS->Apply();
+    pipelineState.SetPixelShader( zoomPS );
 
     zoomPS->GetBuffer( "GodRayZoomConstantBuffer" ).Update( &gcb ).Bind();
 
@@ -133,7 +134,9 @@ XRESULT D3D11PFX_GodRays::RenderCS(
     ID3D11ShaderResourceView* depthCopy ) {
 
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
-    auto& context = engine->GetContext();
+    auto context = engine->GetContext().Get();
+    auto commandList = engine->GetCommandList();
+    auto& pipelineState = Engine::GAPI->GetRendererState().PipelineState;
 
     engine->SetDefaultStates();
 
@@ -194,8 +197,8 @@ XRESULT D3D11PFX_GodRays::RenderCS(
     auto clampSampler = engine->GetClampSamplerState();
 
     // --- Pass 1: Compute Shader Mask ---
-    auto maskCS = engine->GetShaderManager().GetCShader( CShaderID::CS_PFX_GodRayMask );
-    maskCS->Apply();
+    const auto& maskCS = engine->GetShaderManager().GetCShader( CShaderID::CS_PFX_GodRayMask );
+    pipelineState.SetComputeShader( maskCS );
 
     context->CSSetSamplers( 0, 1, &clampSampler );
 
@@ -203,7 +206,7 @@ XRESULT D3D11PFX_GodRays::RenderCS(
     context->CSSetShaderResources( 0, 2, maskSRVs );
     context->CSSetUnorderedAccessViews( 0, 1, maskBuffer->GetUnorderedAccessView().GetAddressOf(), nullptr );
 
-    context->Dispatch( (ds4Size.x + 7) / 8, (ds4Size.y + 7) / 8, 1 );
+    commandList->Dispatch( (ds4Size.x + 7) / 8, (ds4Size.y + 7) / 8, 1 );
 
     // Unbind UAV and SRVs
     ID3D11UnorderedAccessView* nullUAV = nullptr;
@@ -212,8 +215,8 @@ XRESULT D3D11PFX_GodRays::RenderCS(
     context->CSSetShaderResources( 0, 2, nullSRVs );
 
     // --- Pass 2: Compute Shader Zoom ---
-    auto zoomCS = engine->GetShaderManager().GetCShader( CShaderID::CS_PFX_GodRayZoom );
-    zoomCS->Apply();
+    const auto& zoomCS = engine->GetShaderManager().GetCShader( CShaderID::CS_PFX_GodRayZoom );
+    pipelineState.SetComputeShader( zoomCS );
 
     zoomCS->GetBuffer( "GodRayZoomConstantBuffer" ).Update( &gcb ).Bind();
 
@@ -223,13 +226,13 @@ XRESULT D3D11PFX_GodRays::RenderCS(
     context->CSSetShaderResources( 0, 1, &zoomSRV );
     context->CSSetUnorderedAccessViews( 0, 1, zoomBuffer->GetUnorderedAccessView().GetAddressOf(), nullptr );
 
-    context->Dispatch( (ds4Size.x + 7) / 8, (ds4Size.y + 7) / 8, 1 );
+    commandList->Dispatch( (ds4Size.x + 7) / 8, (ds4Size.y + 7) / 8, 1 );
 
     // Unbind
     context->CSSetUnorderedAccessViews( 0, 1, &nullUAV, nullptr );
     ID3D11ShaderResourceView* nullSRV1 = nullptr;
     context->CSSetShaderResources( 0, 1, &nullSRV1 );
-    context->CSSetShader( nullptr, nullptr, 0 );
+    pipelineState.SetComputeShader( nullptr );
 
     // --- Pass 3: Upscale and additive blend via pixel shader (reuse existing path) ---
     Engine::GAPI->GetRendererState().BlendState.SetAdditiveBlending();
@@ -258,6 +261,7 @@ XRESULT D3D11PFX_GodRays::RenderToTexture(
         return XR_SUCCESS;
 
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    auto& pipelineState = Engine::GAPI->GetRendererState().PipelineState;
     engine->SetDefaultStates();
 
     if ( !FeatureLevel10Compatibility ) {
@@ -295,12 +299,12 @@ XRESULT D3D11PFX_GodRays::RenderToTexture(
     if ( abs( gcb.GR_Center.y - 0.5f ) > 0.5f )
         gcb.GR_Weight *= std::max( 0.0f, 1.0f - (abs( gcb.GR_Center.y - 0.5f ) - 0.5f) / 0.5f );
 
-    auto vs = engine->GetShaderManager().GetVShader( VShaderID::VS_PFX );
-    auto maskPS = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_GodRayMask );
-    auto zoomPS = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_GodRayZoom );
+    const auto& vs = engine->GetShaderManager().GetVShader( VShaderID::VS_PFX );
+    const auto& maskPS = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_GodRayMask );
+    const auto& zoomPS = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_GodRayZoom );
 
-    maskPS->Apply();
-    vs->Apply();
+    pipelineState.SetPixelShader( maskPS );
+    pipelineState.SetVertexShader( vs );
 
     auto tempBuffer = FxRenderer->GetTempBufferDS4();
     auto tempBuffer2 = FxRenderer->GetTempBufferDS4();
@@ -312,7 +316,7 @@ XRESULT D3D11PFX_GodRays::RenderToTexture(
     engine->SetViewport({ 0, 0, INT2(tempBuffer->GetSizeX(), tempBuffer->GetSizeY()) });
     FxRenderer->DrawFullScreenQuad();
 
-    zoomPS->Apply();
+    pipelineState.SetPixelShader( zoomPS );
     zoomPS->GetBuffer( "GodRayZoomConstantBuffer" ).Update( &gcb ).Bind();
 
     auto clampSampler = engine->GetClampSamplerState();
@@ -340,7 +344,9 @@ XRESULT D3D11PFX_GodRays::RenderToTextureCS(
     ID3D11ShaderResourceView** outGodRaysSRV ) {
 
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
-    auto& context = engine->GetContext();
+    auto context = engine->GetContext().Get();
+    auto commandList = engine->GetCommandList();
+    auto& pipelineState = Engine::GAPI->GetRendererState().PipelineState;
 
     XMVECTOR xmSunPosition = XMLoadFloat3( Engine::GAPI->GetSky()->GetAtmosphereCB().AC_LightPos.toXMFLOAT3() );
     float outerRadius = Engine::GAPI->GetSky()->GetAtmosphereCB().AC_OuterRadius;
@@ -388,14 +394,14 @@ XRESULT D3D11PFX_GodRays::RenderToTextureCS(
     auto clampSampler = engine->GetClampSamplerState();
 
     // --- Pass 1: CS Mask ---
-    auto maskCS = engine->GetShaderManager().GetCShader( CShaderID::CS_PFX_GodRayMask );
-    maskCS->Apply();
+    const auto& maskCS = engine->GetShaderManager().GetCShader( CShaderID::CS_PFX_GodRayMask );
+    pipelineState.SetComputeShader( maskCS );
     context->CSSetSamplers( 0, 1, &clampSampler );
 
     ID3D11ShaderResourceView* maskSRVs[2] = { backbuffer, normals };
     context->CSSetShaderResources( 0, 2, maskSRVs );
     context->CSSetUnorderedAccessViews( 0, 1, maskBuffer->GetUnorderedAccessView().GetAddressOf(), nullptr );
-    context->Dispatch( (ds4Size.x + 7) / 8, (ds4Size.y + 7) / 8, 1 );
+    commandList->Dispatch( (ds4Size.x + 7) / 8, (ds4Size.y + 7) / 8, 1 );
 
     ID3D11UnorderedAccessView* nullUAV = nullptr;
     context->CSSetUnorderedAccessViews( 0, 1, &nullUAV, nullptr );
@@ -403,20 +409,20 @@ XRESULT D3D11PFX_GodRays::RenderToTextureCS(
     context->CSSetShaderResources( 0, 2, nullSRVs );
 
     // --- Pass 2: CS Zoom ---
-    auto zoomCS = engine->GetShaderManager().GetCShader( CShaderID::CS_PFX_GodRayZoom );
-    zoomCS->Apply();
+    const auto& zoomCS = engine->GetShaderManager().GetCShader( CShaderID::CS_PFX_GodRayZoom );
+    pipelineState.SetComputeShader( zoomCS );
     zoomCS->GetBuffer( "GodRayZoomConstantBuffer" ).Update( &gcb ).Bind();
     context->CSSetSamplers( 0, 1, &clampSampler );
 
     ID3D11ShaderResourceView* zoomSRV = maskBuffer->GetShaderResView().Get();
     context->CSSetShaderResources( 0, 1, &zoomSRV );
     context->CSSetUnorderedAccessViews( 0, 1, zoomBuffer->GetUnorderedAccessView().GetAddressOf(), nullptr );
-    context->Dispatch( (ds4Size.x + 7) / 8, (ds4Size.y + 7) / 8, 1 );
+    commandList->Dispatch( (ds4Size.x + 7) / 8, (ds4Size.y + 7) / 8, 1 );
 
     context->CSSetUnorderedAccessViews( 0, 1, &nullUAV, nullptr );
     ID3D11ShaderResourceView* nullSRV1 = nullptr;
     context->CSSetShaderResources( 0, 1, &nullSRV1 );
-    context->CSSetShader( nullptr, nullptr, 0 );
+    pipelineState.SetComputeShader( nullptr );
 
     // Keep the result texture alive until next frame by storing the handle as a member
     m_GodRaysResult = std::move( zoomBuffer );

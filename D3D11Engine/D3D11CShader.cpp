@@ -41,11 +41,6 @@ XRESULT D3D11CShader::LoadShader( const char* file, const char* entryPoint, cons
     return XR_SUCCESS;
 }
 
-/** Applys the shaders */
-XRESULT D3D11CShader::Apply() {
-    reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->CSSetShader( ComputeShader.Get(), nullptr, 0 );
-    return XR_SUCCESS;
-}
 
 void D3D11CShader::BindResource(StringID name, ID3D11ShaderResourceView* srv) {
     reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->CSSetShaderResources( GetInputIndex(name), 1, &srv );

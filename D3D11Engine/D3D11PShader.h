@@ -12,10 +12,7 @@ public:
 
     /** Loads shader */
     XRESULT LoadShader( const ShaderInfo& si, const std::vector<D3D_SHADER_MACRO>& macros, const char* filePath );
-
-    /** Applys the shader */
-    XRESULT Apply() override;
-
+    
     /** Returns the shader */
     Microsoft::WRL::ComPtr<ID3D11PixelShader> GetShader() const { return PixelShader.Get(); }
     

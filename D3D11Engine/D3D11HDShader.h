@@ -14,9 +14,6 @@ public:
     /** Loads shader */
     XRESULT LoadShader( const char* hullShader, const char* domainShader );
 
-    /** Applys the shader */
-    XRESULT Apply() override;
-
     /** Unbinds the currently bound hull/domain shaders */
     static void Unbind();
 

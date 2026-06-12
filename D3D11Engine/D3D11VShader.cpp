@@ -221,16 +221,6 @@ XRESULT D3D11VShader::LoadShader( const ShaderInfo& si, const std::vector<D3D_SH
     return XR_SUCCESS;
 }
 
-/** Applys the shaders */
-XRESULT D3D11VShader::Apply() {
-    auto context = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext().Get();
-
-    context->IASetInputLayout( InputLayout.Get() );
-    context->VSSetShader( VertexShader.Get(), nullptr, 0 );
-
-    return XR_SUCCESS;
-}
-
 void D3D11VShader::BindResource(StringID name, ID3D11ShaderResourceView* srv) {
     const int inputIndex = GetInputIndex(name);
     if (inputIndex != -1)

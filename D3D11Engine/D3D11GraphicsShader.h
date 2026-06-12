@@ -71,8 +71,6 @@ public:
     virtual void BindBuffer(UINT slot, D3D11ConstantBuffer* buffer) = 0;
     virtual GraphicsShaderConstantBuffer GetBuffer(StringID name);
     virtual GraphicsShaderConstantBuffer GetBuffer(UINT slot);
-    
-    virtual XRESULT Apply() = 0;
 protected:
     gtl::flat_hash_map<StringID, int32_t> InputSemanticToIndex;
     gtl::flat_hash_map<StringID, std::pair<D3D11ConstantBuffer*, int32_t>> ConstantBuffersByName;

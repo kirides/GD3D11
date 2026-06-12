@@ -71,11 +71,6 @@ XRESULT D3D11GShader::LoadShader( const char* geometryShader, const std::vector<
     return XR_SUCCESS;
 }
 
-/** Applys the shaders */
-XRESULT D3D11GShader::Apply() {
-    reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->GSSetShader( GeometryShader.Get(), nullptr, 0 );
-    return XR_SUCCESS;
-}
 
 void D3D11GShader::BindResource(StringID name, ID3D11ShaderResourceView* srv) {
     reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->GSSetShaderResources( GetInputIndex(name), 1, &srv );

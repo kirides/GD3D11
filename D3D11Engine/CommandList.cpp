@@ -42,6 +42,18 @@ void CommandList::MultiDrawInstancedIndirect( unsigned int drawCount, ID3D11Buff
     _mdiFunc( _context, drawCount, buffer, alignedByteOffsetForArgs, alignedByteStrideForArgs );
 }
 
+void CommandList::Dispatch( unsigned int ThreadGroupCountX, unsigned int ThreadGroupCountY, unsigned int ThreadGroupCountZ )
+{
+    _pipelineState->Apply();
+    _context->Dispatch( ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ );
+}
+
+void CommandList::DispatchIndirect( ID3D11Buffer* pBufferForArgs, unsigned int AlignedByteOffsetForArgs )
+{
+    _pipelineState->Apply();
+    _context->DispatchIndirect( pBufferForArgs, AlignedByteOffsetForArgs );
+}
+
 void CommandList::SetConstantBuffers( UINT StartSlot, UINT NumBuffers, ID3D11Buffer* const* ppConstantBuffers, ConstantBufferVisibility visibility )
 {
     if ( visibility & ConstantBufferVisibility::VS ) {

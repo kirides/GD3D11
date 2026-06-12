@@ -1591,7 +1591,7 @@ void XM_CALLCONV D3D11ShadowMap::RenderShadowCube(
         } else {
             // Set cubemap shader
             graphicsEngine->SetActiveGShader( GShaderID::GS_Cubemap );
-            graphicsEngine->GetActiveGS().get()->Apply();
+            Engine::GAPI->GetRendererState().PipelineState.SetGeometryShader( graphicsEngine->GetActiveGS() );
             face = targetCube.GetDepthStencilView().Get();
 
             graphicsEngine->SetActiveVertexShader( VShaderID::VS_ExCube );

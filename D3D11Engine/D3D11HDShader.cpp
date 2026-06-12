@@ -44,16 +44,6 @@ XRESULT D3D11HDShader::LoadShader( const char* hullShader, const char* domainSha
     return XR_SUCCESS;
 }
 
-/** Applys the shaders */
-XRESULT D3D11HDShader::Apply() {
-    D3D11GraphicsEngineBase* engine = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine);
-
-    engine->GetContext()->HSSetShader( HullShader.Get(), nullptr, 0 );
-    engine->GetContext()->DSSetShader( DomainShader.Get(), nullptr, 0 );
-
-    return XR_SUCCESS;
-}
-
 /** Unbinds the currently bound hull/domain shaders */
 void D3D11HDShader::Unbind() {
     D3D11GraphicsEngineBase* engine = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine);

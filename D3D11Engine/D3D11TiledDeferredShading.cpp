@@ -216,7 +216,9 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
 
     auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     auto _ = graphicsEngine->RecordGraphicsEvent( GE_NAME( "TiledPointlightLights" ) );
-    auto& context = graphicsEngine->GetContext();
+    auto context = graphicsEngine->GetContext().Get();
+    auto commandList = graphicsEngine->GetCommandList();
+    auto& pipelineState = Engine::GAPI->GetRendererState().PipelineState;
 
     // ---- Pass 1: Pack lights + cull ----
     auto cullResult = CullLights( lights, depthCopy );
@@ -234,8 +236,8 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
         ID3D11RenderTargetView* nullRTV = nullptr;
         context->OMSetRenderTargets( 1, &nullRTV, nullptr );
 
-        auto csTiledShading = graphicsEngine->GetShaderManager().GetCShader( CShaderID::CS_TiledShading );
-        csTiledShading->Apply();
+        const auto& csTiledShading = graphicsEngine->GetShaderManager().GetCShader( CShaderID::CS_TiledShading );
+        pipelineState.SetComputeShader( csTiledShading );
 
         // Fill and bind shading constant buffer
         TiledShadingConstantBuffer shadeCB = {};
@@ -267,7 +269,7 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
 
         // Bind comparison sampler unconditionally — the runtime validates at Dispatch
         // even if the shader branches around SampleCmpLevelZero
-        graphicsEngine->GetShadowMaps()->BindSamplerToCS( context.Get(), 2 );
+        graphicsEngine->GetShadowMaps()->BindSamplerToCS( context, 2 );
 
         // Bind shadow cubemap array SRV
         if ( cullResult.HasShadowedTiledLights && m_ShadowArrayCreated ) {
@@ -278,14 +280,14 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
         auto& hdrUAV = graphicsEngine->GetHDRBackBuffer().GetUnorderedAccessView();
         context->CSSetUnorderedAccessViews( 0, 1, hdrUAV.GetAddressOf(), nullptr );
 
-        context->Dispatch( numTilesX, numTilesY, 1 );
+        commandList->Dispatch( numTilesX, numTilesY, 1 );
 
         // Unbind everything
         ID3D11UnorderedAccessView* nullUAV = nullptr;
         context->CSSetUnorderedAccessViews( 0, 1, &nullUAV, nullptr );
         ID3D11ShaderResourceView* nullSRVs[12] = {};
         context->CSSetShaderResources( 0, 12, nullSRVs );
-        context->CSSetShader( nullptr, nullptr, 0 );
+        pipelineState.SetComputeShader( nullptr );
 
         // Restore HDR as RTV
         context->OMSetRenderTargets( 1, graphicsEngine->GetHDRBackBuffer().GetRenderTargetView().GetAddressOf(),
@@ -308,7 +310,10 @@ D3D11TiledDeferredShading::CullResult D3D11TiledDeferredShading::CullLights(
     auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     auto _ = graphicsEngine->RecordGraphicsEvent( GE_NAME( "CullLights" ) );
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
-    auto& context = graphicsEngine->GetContext();
+    
+    auto context = graphicsEngine->GetContext().Get();
+    auto commandList = graphicsEngine->GetCommandList();
+    auto& pipelineState = Engine::GAPI->GetRendererState().PipelineState;
 
     XMMATRIX viewRaw = Engine::GAPI->GetViewMatrixXM();
     XMMATRIX view = XMMatrixTranspose( viewRaw );
@@ -410,8 +415,8 @@ D3D11TiledDeferredShading::CullResult D3D11TiledDeferredShading::CullLights(
 
     // Dispatch CS_LightCulling if we have lights
     if ( result.TiledLightCount > 0 ) {
-        auto csLightCull = graphicsEngine->GetShaderManager().GetCShader( CShaderID::CS_LightCulling );
-        csLightCull->Apply();
+        const auto& csLightCull = graphicsEngine->GetShaderManager().GetCShader( CShaderID::CS_LightCulling );
+        pipelineState.SetComputeShader( csLightCull );
 
         LightCullingConstantBuffer cullCB = {};
         cullCB.Proj = Engine::GAPI->GetProjectionMatrix();
@@ -431,14 +436,14 @@ D3D11TiledDeferredShading::CullResult D3D11TiledDeferredShading::CullLights(
         ID3D11UnorderedAccessView* uavs[3] = { m_LightGridUAV.Get(), m_LightIndexListUAV.Get(), m_IndexCounterUAV.Get() };
         context->CSSetUnorderedAccessViews( 0, 3, uavs, nullptr );
 
-        context->Dispatch( numTilesX, numTilesY, 1 );
+        commandList->Dispatch( numTilesX, numTilesY, 1 );
 
         // Unbind
         ID3D11UnorderedAccessView* nullUAVs[3] = { nullptr, nullptr, nullptr };
         context->CSSetUnorderedAccessViews( 0, 3, nullUAVs, nullptr );
         ID3D11ShaderResourceView* nullSRVs[2] = { nullptr, nullptr };
         context->CSSetShaderResources( 0, 2, nullSRVs );
-        context->CSSetShader( nullptr, nullptr, 0 );
+        pipelineState.SetComputeShader( nullptr );
     }
 
     result.HasShadowedTiledLights = hasShadowedTiledLights;

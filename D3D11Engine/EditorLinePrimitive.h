@@ -108,7 +108,7 @@ private:
     float IntersectLineSegment( FXMVECTOR rayOrigin, FXMVECTOR rayVec, FXMVECTOR lineStart, GXMVECTOR lineEnd, float Epsilon );
 
     /** Renders a vertexbuffer with the given shader */
-    void RenderVertexBuffer( const Microsoft::WRL::ComPtr<ID3D11Buffer>& VB, UINT NumVertices, D3D11PShader* Shader, D3D11_PRIMITIVE_TOPOLOGY Topology, int Pass = -1 );
+    void RenderVertexBuffer( const Microsoft::WRL::ComPtr<ID3D11Buffer>& VB, UINT NumVertices, const std::shared_ptr<D3D11PShader>& Shader, D3D11_PRIMITIVE_TOPOLOGY Topology, int Pass = -1 );
 
     /** The bunch of vertices we have */
     LineVertex* Vertices;

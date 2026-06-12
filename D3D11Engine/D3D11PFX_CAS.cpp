@@ -49,7 +49,8 @@ XRESULT D3D11PFX_CAS::Apply( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceVi
         return XR_FAILED;
     }
     // Apply shader
-    casPS->Apply();
+    auto& pipelineState = Engine::GAPI->GetRendererState().PipelineState;
+    pipelineState.SetPixelShader( casPS );
 
     // Setup CAS constants
     CASConstantBuffer cb;

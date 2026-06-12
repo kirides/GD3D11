@@ -24,8 +24,9 @@ XRESULT D3D11PFX_HeightFog::Render( RenderToTextureBuffer* fxbuffer ) {
 	auto vs = engine->GetShaderManager().GetVShader( VShaderID::VS_PFX );
 	auto hfPS = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_Heightfog );
 
-	hfPS->Apply();
-	vs->Apply();
+	auto& pipelineState = Engine::GAPI->GetRendererState().PipelineState;
+	pipelineState.SetPixelShader( hfPS );
+	pipelineState.SetVertexShader( vs );
 
 	HeightfogConstantBuffer cb;
 	{

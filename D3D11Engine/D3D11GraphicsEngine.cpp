@@ -2376,11 +2376,11 @@ XRESULT  D3D11GraphicsEngine::DrawSkeletalVertexNormals( SkeletalVobInfo* vi,
     const XMFLOAT4X4& world,
     const std::span<XMFLOAT4X4> transforms, float4 color, float fatness ) {
 
-    std::shared_ptr<D3D11GShader> gshader = ShaderManager->GetGShader( GShaderID::GS_VertexNormals );
-    gshader->Apply();
+    const auto& gshader = ShaderManager->GetGShader( GShaderID::GS_VertexNormals );
 
     auto& pipelineState = GetPipelineState();
 
+    pipelineState.SetGeometryShader( gshader );
     SetActiveVertexShader( VShaderID::VS_ExSkeletalVN );
     SetActivePixelShader( PShaderID::PS_Simple );
 

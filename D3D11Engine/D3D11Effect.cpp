@@ -93,11 +93,12 @@ void D3D11Effect::FillRandomRaindropData( std::vector<RainParticleDynamic>& dyna
 XRESULT D3D11Effect::DrawRain() {
     D3D11GraphicsEngineBase* e = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine);
     GothicRendererState& state = Engine::GAPI->GetRendererState();
+    auto& pipelineState = Engine::GAPI->GetRendererState().PipelineState;
 
     // Get shaders
-    auto streamOutGS = e->GetShaderManager().GetGShader( GShaderID::GS_ParticleStreamOut );
-    auto particleAdvanceVS = e->GetShaderManager().GetVShader( VShaderID::VS_AdvanceRain );
-    auto particleVS = e->GetShaderManager().GetVShader( VShaderID::VS_ParticlePointShaded );
+    const auto& streamOutGS = e->GetShaderManager().GetGShader( GShaderID::GS_ParticleStreamOut );
+    const auto& particleAdvanceVS = e->GetShaderManager().GetVShader( VShaderID::VS_AdvanceRain );
+    const auto& particleVS = e->GetShaderManager().GetVShader( VShaderID::VS_ParticlePointShaded );
     
     bool isSnow = oCGame::GetGame()
         && oCGame::GetGame()->_zCSession_world
@@ -196,12 +197,12 @@ XRESULT D3D11Effect::DrawRain() {
         e->GetContext()->SOSetTargets( 1, RainBufferStreamTo->GetVertexBuffer().GetAddressOf(), &offset );
 
         // Apply shaders
-        e->GetContext()->PSSetShader( nullptr, nullptr, 0 );
-        particleAdvanceVS->Apply();
-        streamOutGS->Apply();
+        pipelineState.SetPixelShader( nullptr );
+        pipelineState.SetVertexShader( particleAdvanceVS );
+        pipelineState.SetGeometryShader( streamOutGS );
 
         // Rendering points only
-        e->GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_POINTLIST );
+        pipelineState.SetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_POINTLIST );
         e->SetDefaultStates();
         e->UpdateRenderStates();
 
@@ -231,13 +232,13 @@ XRESULT D3D11Effect::DrawRain() {
     state.RasterizerState.SetDirty();
 
     // Rendering instances only
-    e->GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP );
+    pipelineState.SetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP );
     e->UpdateRenderStates();
 
     // Apply particle shaders
-    e->GetContext()->GSSetShader( nullptr, 0, 0 );
-    particleVS->Apply();
-    rainPS->Apply();
+    pipelineState.SetGeometryShader( nullptr );
+    pipelineState.SetVertexShader( particleVS );
+    pipelineState.SetPixelShader( rainPS );
 
     // Setup constantbuffers
     ParticleGSInfoConstantBuffer gcb = {};
@@ -278,25 +279,26 @@ XRESULT D3D11Effect::DrawRain() {
     }
 
     // Reset this
-    e->GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
-    e->GetContext()->GSSetShader( nullptr, 0, 0 );
+    pipelineState.SetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+    pipelineState.SetGeometryShader( nullptr );
     return XR_SUCCESS;
 }
 
 XRESULT D3D11Effect::DrawRain_CS() {
     D3D11GraphicsEngineBase* e = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine);
     GothicRendererState& state = Engine::GAPI->GetRendererState();
+    auto& pipelineState = state.PipelineState;
 
     // Get shaders
-    auto advanceRainCS = e->GetShaderManager().GetCShader( CShaderID::CS_AdvanceRain );
-    auto particleVS = e->GetShaderManager().GetVShader( VShaderID::VS_ParticlePointShaded );
+    const auto& advanceRainCS = e->GetShaderManager().GetCShader( CShaderID::CS_AdvanceRain );
+    const auto& particleVS = e->GetShaderManager().GetVShader( VShaderID::VS_ParticlePointShaded );
 
     bool isSnow = oCGame::GetGame()
         && oCGame::GetGame()->_zCSession_world
         && oCGame::GetGame()->_zCSession_world->GetSkyControllerOutdoor()
         && oCGame::GetGame()->_zCSession_world->GetSkyControllerOutdoor()->GetWeatherType() == zTWEATHER_SNOW;
     
-    auto rainPS = e->GetShaderManager().GetPShader( isSnow ? PShaderID::PS_Rain_Snow : PShaderID::PS_Rain );
+    const auto& rainPS = e->GetShaderManager().GetPShader( isSnow ? PShaderID::PS_Rain_Snow : PShaderID::PS_Rain );
 
     // artificially increase the number of particles for snow, to make it look better.
     // Snowflakes are bigger and slower than raindrops, so we can get away with less particles for rain, but for snow we need more to make it look good.
@@ -356,12 +358,12 @@ XRESULT D3D11Effect::DrawRain_CS() {
     advanceRainCS->GetBuffer( "AdvanceRainConstantBuffer" ).Update( &acb );
     advanceRainCS->GetBuffer( "AdvanceRainConstantBuffer" ).GetRawBuffer()->BindToPixelShader( 1 );
     if ( state.RendererSettings.RainMoveParticles && !Engine::GAPI->IsGamePaused() ) {
-        advanceRainCS->Apply();
+        pipelineState.SetComputeShader( advanceRainCS );
         advanceRainCS->GetBuffer( "AdvanceRainConstantBuffer" ).Bind();
 
         e->GetContext()->CSSetShaderResources( 0, 1, RainBufferStatic->GetShaderResourceView().GetAddressOf() );
         e->GetContext()->CSSetUnorderedAccessViews( 0, 1, RainBufferDrawFrom->GetUnorderedAccessView().GetAddressOf(), nullptr );
-        e->GetContext()->Dispatch( (numParticles + 127) / 128, 1, 1 );
+        e->GetCommandList()->Dispatch( (numParticles + 127) / 128, 1, 1 );
 
         // Unbind compute shader elements
         Microsoft::WRL::ComPtr<ID3D11Buffer> emptyBuf;
@@ -370,7 +372,7 @@ XRESULT D3D11Effect::DrawRain_CS() {
         e->GetContext()->CSSetConstantBuffers( 0, 1, emptyBuf.GetAddressOf() );
         e->GetContext()->CSSetShaderResources( 0, 1, emptySRV.GetAddressOf() );
         e->GetContext()->CSSetUnorderedAccessViews( 0, 1, emptyUAV.GetAddressOf(), nullptr );
-        e->GetContext()->CSSetShader( nullptr, nullptr, 0 );
+        pipelineState.SetComputeShader( nullptr );
     }
 
     // ---- Draw the rain ----
@@ -388,12 +390,12 @@ XRESULT D3D11Effect::DrawRain_CS() {
     state.RasterizerState.SetDirty();
 
     // Rendering instances only
-    e->GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP );
+    pipelineState.SetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP );
     e->UpdateRenderStates();
 
     // Apply particle shaders
-    particleVS->Apply();
-    rainPS->Apply();
+    pipelineState.SetVertexShader( particleVS );
+    pipelineState.SetPixelShader( rainPS );
 
     // Setup constantbuffers
     ParticleGSInfoConstantBuffer gcb = {};
@@ -434,7 +436,7 @@ XRESULT D3D11Effect::DrawRain_CS() {
     }
 
     // Reset primitive topology
-    e->GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+    pipelineState.SetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
     return XR_SUCCESS;
 }
 

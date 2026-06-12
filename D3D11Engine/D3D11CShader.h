@@ -14,9 +14,6 @@ public:
     /** Loads shader */
     XRESULT LoadShader( const char* file, const char* entryPoint, const std::vector<D3D_SHADER_MACRO>& makros = std::vector<D3D_SHADER_MACRO>() );
 
-    /** Applys the shader */
-    XRESULT Apply() override;
-
     /** Returns the shader */
     Microsoft::WRL::ComPtr<ID3D11ComputeShader> GetShader() { return ComputeShader.Get(); }
     

@@ -68,7 +68,8 @@ XRESULT D3D11PFX_HDR::Render( ID3D11RenderTargetView* output, ID3D11ShaderResour
 
     // Draw the HDR-Shader
     auto hps = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_HDR );
-    hps->Apply();
+    auto& pipelineState = Engine::GAPI->GetRendererState().PipelineState;
+    pipelineState.SetPixelShader( hps );
 
     HDRSettingsConstantBuffer hcb;
     hcb.HDR_LumWhite = Engine::GAPI->GetRendererState().RendererSettings.HDRLumWhite;
@@ -95,9 +96,10 @@ void D3D11PFX_HDR::CreateBloom( RenderToTextureBuffer* lum, RenderToTextureBuffe
 	D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
 
 	INT2 dsRes = INT2( Engine::GraphicsEngine->GetResolution().x / 4, Engine::GraphicsEngine->GetResolution().y / 4 );
-	engine->GetShaderManager().GetVShader( VShaderID::VS_PFX )->Apply();
+	auto& pipelineState = Engine::GAPI->GetRendererState().PipelineState;
+	pipelineState.SetVertexShader( engine->GetShaderManager().GetVShader( VShaderID::VS_PFX ) );
 	auto tonemapPS = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_Tonemap );
-	tonemapPS->Apply();
+	pipelineState.SetPixelShader( tonemapPS );
 
 	HDRSettingsConstantBuffer hcb;
 	hcb.HDR_LumWhite = Engine::GAPI->GetRendererState().RendererSettings.HDRLumWhite;
@@ -116,7 +118,7 @@ void D3D11PFX_HDR::CreateBloom( RenderToTextureBuffer* lum, RenderToTextureBuffe
 	auto simplePS = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_Simple );
 
 	// Apply blur-H shader
-	gaussPS->Apply();
+	pipelineState.SetPixelShader( gaussPS );
 
 	// Update settings 
 	BlurConstantBuffer bcb;
@@ -174,7 +176,8 @@ RenderToTextureBuffer* D3D11PFX_HDR::CalcLuminance() {
 	}
 
 	auto lps = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_LumConvert );
-	lps->Apply();
+	auto& pipelineState = Engine::GAPI->GetRendererState().PipelineState;
+	pipelineState.SetPixelShader( lps );
 
 	// Convert the backbuffer to our luminance buffer
     FxRenderer->CopyTextureToRTV( engine->GetHDRBackBuffer().GetShaderResView(), currentLum->GetRenderTargetView(), INT2( LUM_SIZE, LUM_SIZE ), true );
@@ -183,7 +186,7 @@ RenderToTextureBuffer* D3D11PFX_HDR::CalcLuminance() {
 	engine->GetContext()->GenerateMips( currentLum->GetShaderResView().Get() );
 
 	auto aps = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_LumAdapt );
-	aps->Apply();
+	pipelineState.SetPixelShader( aps );
 
 	LumAdaptConstantBuffer lcb;
 	lcb.LC_DeltaTime = Engine::GAPI->GetDeltaTime();

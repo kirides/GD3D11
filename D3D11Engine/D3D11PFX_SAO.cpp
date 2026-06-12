@@ -33,7 +33,9 @@ XRESULT D3D11PFX_SAO::Render(
     ID3D11RenderTargetView* outputRTV ) {
 
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
-    auto& context = engine->GetContext();
+    auto context = engine->GetContext().Get();
+    auto commandList = engine->GetCommandList();
+    auto& pipelineState = Engine::GAPI->GetRendererState().PipelineState;
     auto res = engine->GetResolution();
 
     // Unbind RTVs for compute shader passes
@@ -70,8 +72,8 @@ XRESULT D3D11PFX_SAO::Render(
     saoCB.SAO_InvResolution = float2( 1.0f / res.x, 1.0f / res.y );
     saoCB.SAO_BlurSharpness = saoSettings.BlurSharpness;
 
-    auto saoCS = engine->GetShaderManager().GetCShader( CShaderID::CS_PFX_SAO );
-    saoCS->Apply();
+    const auto& saoCS = engine->GetShaderManager().GetCShader( CShaderID::CS_PFX_SAO );
+    pipelineState.SetComputeShader( saoCS );
     saoCS->GetBuffer( "SAOConstantBuffer" ).Update( &saoCB ).Bind();
 
     context->CSSetSamplers( 0, 1, &defaultSampler );
@@ -80,7 +82,7 @@ XRESULT D3D11PFX_SAO::Render(
     context->CSSetShaderResources( 0, 2, saoSRVs );
     context->CSSetUnorderedAccessViews( 0, 1, m_AOBuffer->GetUnorderedAccessView().GetAddressOf(), nullptr );
 
-    context->Dispatch( (res.x + 7) / 8, (res.y + 7) / 8, 1 );
+    commandList->Dispatch( (res.x + 7) / 8, (res.y + 7) / 8, 1 );
 
     context->CSSetUnorderedAccessViews( 0, 1, &nullUAV, nullptr );
     context->CSSetShaderResources( 0, 2, nullSRVs );
@@ -91,11 +93,11 @@ XRESULT D3D11PFX_SAO::Render(
     blurCB.SAO_Blur_Sharpness = saoSettings.BlurSharpness;
     blurCB.SAO_Blur_ProjParams = saoCB.SAO_ProjParams;
 
-    auto blurCS = engine->GetShaderManager().GetCShader( CShaderID::CS_PFX_SAO_Blur );
+    const auto& blurCS = engine->GetShaderManager().GetCShader( CShaderID::CS_PFX_SAO_Blur );
 
     // Horizontal pass: AO -> BlurTemp
     blurCB.SAO_Blur_Direction = float2( 1.0f, 0.0f );
-    blurCS->Apply();
+    pipelineState.SetComputeShader( blurCS );
     blurCS->GetBuffer( "SAOBlurConstantBuffer" ).Update( &blurCB ).Bind();
 
     context->CSSetSamplers( 0, 1, &defaultSampler );
@@ -104,7 +106,7 @@ XRESULT D3D11PFX_SAO::Render(
     context->CSSetShaderResources( 0, 2, blurHSRVs );
     context->CSSetUnorderedAccessViews( 0, 1, m_BlurTempBuffer->GetUnorderedAccessView().GetAddressOf(), nullptr );
 
-    context->Dispatch( (res.x + 7) / 8, (res.y + 7) / 8, 1 );
+    commandList->Dispatch( (res.x + 7) / 8, (res.y + 7) / 8, 1 );
 
     context->CSSetUnorderedAccessViews( 0, 1, &nullUAV, nullptr );
     context->CSSetShaderResources( 0, 2, nullSRVs );
@@ -112,7 +114,7 @@ XRESULT D3D11PFX_SAO::Render(
     // --- Pass 3: Bilateral Blur (vertical) ---
     // Vertical pass: BlurTemp -> AO
     blurCB.SAO_Blur_Direction = float2( 0.0f, 1.0f );
-    blurCS->Apply();
+    pipelineState.SetComputeShader( blurCS );
     blurCS->GetBuffer( "SAOBlurConstantBuffer" ).Update( &blurCB ).Bind();
 
     context->CSSetSamplers( 0, 1, &defaultSampler );
@@ -121,11 +123,11 @@ XRESULT D3D11PFX_SAO::Render(
     context->CSSetShaderResources( 0, 2, blurVSRVs );
     context->CSSetUnorderedAccessViews( 0, 1, m_AOBuffer->GetUnorderedAccessView().GetAddressOf(), nullptr );
 
-    context->Dispatch( (res.x + 7) / 8, (res.y + 7) / 8, 1 );
+    commandList->Dispatch( (res.x + 7) / 8, (res.y + 7) / 8, 1 );
 
     context->CSSetUnorderedAccessViews( 0, 1, &nullUAV, nullptr );
     context->CSSetShaderResources( 0, 2, nullSRVs );
-    context->CSSetShader( nullptr, nullptr, 0 );
+    pipelineState.SetComputeShader( nullptr );
 
     // --- Pass 4: Multiply-blend AO onto the scene ---
     // Follow the same pattern as DrawScreenFade()'s modulate blend path:
@@ -140,8 +142,8 @@ XRESULT D3D11PFX_SAO::Render(
     Engine::GAPI->GetRendererState().DepthState.SetDirty();
 
     // Apply VS_PFX + PS_PFX_Simple_R8
-    engine->GetShaderManager().GetVShader( VShaderID::VS_PFX )->Apply();
-    engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_Simple_R8 )->Apply();
+    pipelineState.SetVertexShader( engine->GetShaderManager().GetVShader( VShaderID::VS_PFX ) );
+    pipelineState.SetPixelShader( engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_Simple_R8 ) );
 
     // Set viewport to full resolution
     D3D11_VIEWPORT vp = {};
@@ -182,7 +184,10 @@ XRESULT D3D11PFX_SAO::RenderAO(
     ID3D11ShaderResourceView* normalsSRV ) {
 
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
-    auto& context = engine->GetContext();
+    auto context = engine->GetContext().Get();
+    auto commandList = engine->GetCommandList();
+    auto& pipelineState = Engine::GAPI->GetRendererState().PipelineState;
+
     auto res = engine->GetResolution();
 
     // Unbind RTVs for compute shader passes
@@ -219,8 +224,8 @@ XRESULT D3D11PFX_SAO::RenderAO(
     saoCB.SAO_InvResolution = float2( 1.0f / res.x, 1.0f / res.y );
     saoCB.SAO_BlurSharpness = saoSettings.BlurSharpness;
 
-    auto saoCS = engine->GetShaderManager().GetCShader( CShaderID::CS_PFX_SAO );
-    saoCS->Apply();
+    const auto& saoCS = engine->GetShaderManager().GetCShader( CShaderID::CS_PFX_SAO );
+    pipelineState.SetComputeShader( saoCS );
     saoCS->GetBuffer( "SAOConstantBuffer" ).Update( &saoCB ).Bind();
 
     context->CSSetSamplers( 0, 1, &defaultSampler );
@@ -229,7 +234,7 @@ XRESULT D3D11PFX_SAO::RenderAO(
     context->CSSetShaderResources( 0, 2, saoSRVs );
     context->CSSetUnorderedAccessViews( 0, 1, m_AOBuffer->GetUnorderedAccessView().GetAddressOf(), nullptr );
 
-    context->Dispatch( (res.x + 7) / 8, (res.y + 7) / 8, 1 );
+    commandList->Dispatch( (res.x + 7) / 8, (res.y + 7) / 8, 1 );
 
     context->CSSetUnorderedAccessViews( 0, 1, &nullUAV, nullptr );
     context->CSSetShaderResources( 0, 2, nullSRVs );
@@ -240,10 +245,10 @@ XRESULT D3D11PFX_SAO::RenderAO(
     blurCB.SAO_Blur_Sharpness = saoSettings.BlurSharpness;
     blurCB.SAO_Blur_ProjParams = saoCB.SAO_ProjParams;
 
-    auto blurCS = engine->GetShaderManager().GetCShader( CShaderID::CS_PFX_SAO_Blur );
+    const auto& blurCS = engine->GetShaderManager().GetCShader( CShaderID::CS_PFX_SAO_Blur );
 
     blurCB.SAO_Blur_Direction = float2( 1.0f, 0.0f );
-    blurCS->Apply();
+    pipelineState.SetComputeShader( blurCS );
     blurCS->GetBuffer( "SAOBlurConstantBuffer" ).Update( &blurCB ).Bind();
 
     context->CSSetSamplers( 0, 1, &defaultSampler );
@@ -252,14 +257,14 @@ XRESULT D3D11PFX_SAO::RenderAO(
     context->CSSetShaderResources( 0, 2, blurHSRVs );
     context->CSSetUnorderedAccessViews( 0, 1, m_BlurTempBuffer->GetUnorderedAccessView().GetAddressOf(), nullptr );
 
-    context->Dispatch( (res.x + 7) / 8, (res.y + 7) / 8, 1 );
+    commandList->Dispatch( (res.x + 7) / 8, (res.y + 7) / 8, 1 );
 
     context->CSSetUnorderedAccessViews( 0, 1, &nullUAV, nullptr );
     context->CSSetShaderResources( 0, 2, nullSRVs );
 
     // --- Pass 3: Bilateral Blur (vertical) ---
     blurCB.SAO_Blur_Direction = float2( 0.0f, 1.0f );
-    blurCS->Apply();
+    pipelineState.SetComputeShader( blurCS );
     blurCS->GetBuffer( "SAOBlurConstantBuffer" ).Update( &blurCB ).Bind();
 
     context->CSSetSamplers( 0, 1, &defaultSampler );
@@ -268,11 +273,11 @@ XRESULT D3D11PFX_SAO::RenderAO(
     context->CSSetShaderResources( 0, 2, blurVSRVs );
     context->CSSetUnorderedAccessViews( 0, 1, m_AOBuffer->GetUnorderedAccessView().GetAddressOf(), nullptr );
 
-    context->Dispatch( (res.x + 7) / 8, (res.y + 7) / 8, 1 );
+    commandList->Dispatch( (res.x + 7) / 8, (res.y + 7) / 8, 1 );
 
     context->CSSetUnorderedAccessViews( 0, 1, &nullUAV, nullptr );
     context->CSSetShaderResources( 0, 2, nullSRVs );
-    context->CSSetShader( nullptr, nullptr, 0 );
+    pipelineState.SetComputeShader( nullptr );
 
     return XR_SUCCESS;
 }

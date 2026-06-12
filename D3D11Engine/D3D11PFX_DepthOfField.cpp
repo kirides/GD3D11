@@ -44,6 +44,7 @@ D3D11PFX_DepthOfField::D3D11PFX_DepthOfField( D3D11PfxRenderer* rnd ) : D3D11PFX
 
 XRESULT D3D11PFX_DepthOfField::Render( ID3D11ShaderResourceView* backbuffer ) {
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    auto& pipelineState = Engine::GAPI->GetRendererState().PipelineState;
 
     engine->SetDefaultStates();
 
@@ -64,10 +65,9 @@ XRESULT D3D11PFX_DepthOfField::Render( ID3D11ShaderResourceView* backbuffer ) {
         rendererSettings.DoFGaussBlur
             ? PShaderID::PS_PFX_DoF_Gauss
             : PShaderID::PS_PFX_DoF );
-    auto compositePS = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_DoF_Composite );
+    const auto& compositePS = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_DoF_Composite );
 
-    vs->Apply();
-
+    pipelineState.SetPixelShader( compositePS );
 
     DepthOfFieldConstantBuffer cb = {};
     cb.DoF_FocusRange = rendererSettings.DoFFocusRange;
@@ -83,7 +83,7 @@ XRESULT D3D11PFX_DepthOfField::Render( ID3D11ShaderResourceView* backbuffer ) {
     int prevIdx = m_FocusIndex;
     int curIdx = 1 - m_FocusIndex;
 
-    focusPS->Apply();
+    pipelineState.SetPixelShader( focusPS );
     focusPS->GetBuffer( "DepthOfFieldConstantBuffer" ).Update( &cb ).Bind();
 
     D3D11_VIEWPORT oldVP;
@@ -113,7 +113,7 @@ XRESULT D3D11PFX_DepthOfField::Render( ID3D11ShaderResourceView* backbuffer ) {
     D3D11_VIEWPORT halfVP = { 0, 0, static_cast<float>(res.x / 2), static_cast<float>(res.y / 2), 0, 1 };
     engine->GetContext()->RSSetViewports( 1, &halfVP );
 
-    blurPS->Apply();
+    pipelineState.SetPixelShader( blurPS );
     blurPS->GetBuffer( "DepthOfFieldConstantBuffer" ).Update( &cb ).Bind();
 
     engine->GetContext()->OMSetRenderTargets( 1, halfBuffer->GetRenderTargetView().GetAddressOf(), nullptr );
@@ -132,7 +132,7 @@ XRESULT D3D11PFX_DepthOfField::Render( ID3D11ShaderResourceView* backbuffer ) {
     // --- Pass 2: Full-res composite (render to temp, then blit to avoid read-write hazard) ---
     auto compositeBuffer = FxRenderer->GetTempBuffer();
 
-    compositePS->Apply();
+    pipelineState.SetPixelShader( compositePS );
     compositePS->GetBuffer( "DepthOfFieldConstantBuffer" ).Update( &cb ).Bind();
 
     engine->GetContext()->OMSetRenderTargets( 1, compositeBuffer->GetRenderTargetView().GetAddressOf(), nullptr );
@@ -159,7 +159,9 @@ XRESULT D3D11PFX_DepthOfField::Render( ID3D11ShaderResourceView* backbuffer ) {
 /** Compute shader path for FL11+ */
 XRESULT D3D11PFX_DepthOfField::RenderCS( ID3D11ShaderResourceView* backbuffer ) {
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
-    auto& context = engine->GetContext();
+    auto context = engine->GetContext().Get();
+    auto commandList = engine->GetCommandList();
+    auto& pipelineState = Engine::GAPI->GetRendererState().PipelineState;
 
     engine->SetDefaultStates();
 
@@ -190,8 +192,8 @@ XRESULT D3D11PFX_DepthOfField::RenderCS( ID3D11ShaderResourceView* backbuffer ) 
     int prevIdx = m_FocusIndex;
     int curIdx = 1 - m_FocusIndex;
 
-    auto focusCS = engine->GetShaderManager().GetCShader( CShaderID::CS_PFX_DoF_FocusResolve );
-    focusCS->Apply();
+    const auto& focusCS = engine->GetShaderManager().GetCShader( CShaderID::CS_PFX_DoF_FocusResolve );
+    pipelineState.SetComputeShader( focusCS );
     focusCS->GetBuffer( "DepthOfFieldConstantBuffer" ).Update( &cb ).Bind();
 
     context->CSSetSamplers( 0, 1, &defaultSampler );
@@ -203,7 +205,7 @@ XRESULT D3D11PFX_DepthOfField::RenderCS( ID3D11ShaderResourceView* backbuffer ) 
     context->CSSetShaderResources( 0, 2, focusSRVs );
     context->CSSetUnorderedAccessViews( 0, 1, m_FocusUAV[curIdx].GetAddressOf(), nullptr );
 
-    context->Dispatch( 1, 1, 1 );
+    commandList->Dispatch( 1, 1, 1 );
 
     context->CSSetUnorderedAccessViews( 0, 1, &nullUAV, nullptr );
     context->CSSetShaderResources( 0, 2, nullSRVs );
@@ -217,11 +219,11 @@ XRESULT D3D11PFX_DepthOfField::RenderCS( ID3D11ShaderResourceView* backbuffer ) 
         TexturePool::Description{ res.x / 2, res.y / 2, bbufferFormat,
             D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE } );
 
-    auto blurCS = engine->GetShaderManager().GetCShader(
+    const auto& blurCS = engine->GetShaderManager().GetCShader(
         rendererSettings.DoFGaussBlur
             ? CShaderID::CS_PFX_DoF_Gauss
             : CShaderID::CS_PFX_DoF );
-    blurCS->Apply();
+    pipelineState.SetComputeShader( blurCS );
     blurCS->GetBuffer( "DepthOfFieldConstantBuffer" ).Update( &cb ).Bind();
 
     context->CSSetSamplers( 0, 1, &defaultSampler );
@@ -235,7 +237,7 @@ XRESULT D3D11PFX_DepthOfField::RenderCS( ID3D11ShaderResourceView* backbuffer ) 
     context->CSSetShaderResources( 0, 3, blurSRVs );
     context->CSSetUnorderedAccessViews( 0, 1, halfBuffer->GetUnorderedAccessView().GetAddressOf(), nullptr );
 
-    context->Dispatch( (res.x / 2 + 7) / 8, (res.y / 2 + 7) / 8, 1 );
+    commandList->Dispatch( (res.x / 2 + 7) / 8, (res.y / 2 + 7) / 8, 1 );
 
     context->CSSetUnorderedAccessViews( 0, 1, &nullUAV, nullptr );
     context->CSSetShaderResources( 0, 3, nullSRVs );
@@ -245,8 +247,8 @@ XRESULT D3D11PFX_DepthOfField::RenderCS( ID3D11ShaderResourceView* backbuffer ) 
         TexturePool::Description{ res.x, res.y, bbufferFormat,
             D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE } );
 
-    auto compositeCS = engine->GetShaderManager().GetCShader( CShaderID::CS_PFX_DoF_Composite );
-    compositeCS->Apply();
+    const auto& compositeCS = engine->GetShaderManager().GetCShader( CShaderID::CS_PFX_DoF_Composite );
+    pipelineState.SetComputeShader( compositeCS );
     compositeCS->GetBuffer( "DepthOfFieldConstantBuffer" ).Update( &cb ).Bind();
 
     context->CSSetSamplers( 0, 1, &defaultSampler );
@@ -261,11 +263,11 @@ XRESULT D3D11PFX_DepthOfField::RenderCS( ID3D11ShaderResourceView* backbuffer ) 
     context->CSSetShaderResources( 0, 4, compositeSRVs );
     context->CSSetUnorderedAccessViews( 0, 1, compositeBuffer->GetUnorderedAccessView().GetAddressOf(), nullptr );
 
-    context->Dispatch( (res.x + 7) / 8, (res.y + 7) / 8, 1 );
+    commandList->Dispatch( (res.x + 7) / 8, (res.y + 7) / 8, 1 );
 
     context->CSSetUnorderedAccessViews( 0, 1, &nullUAV, nullptr );
     context->CSSetShaderResources( 0, 4, nullSRVs );
-    context->CSSetShader( nullptr, nullptr, 0 );
+    pipelineState.SetComputeShader( nullptr );
 
     // Blit composite result to backbuffer
     FxRenderer->CopyTextureToRTV( compositeBuffer->GetShaderResView(), oldRTV, res );

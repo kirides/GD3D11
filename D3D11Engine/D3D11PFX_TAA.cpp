@@ -217,14 +217,15 @@ void D3D11PFX_TAA::RenderVelocityBuffer(
     context->ClearRenderTargetView(m_VelocityBuffer->GetRenderTargetView().Get(), clearColor);
     
     // Bind shaders
-    engine->GetShaderManager().GetVShader( VShaderID::VS_PFX )->Apply();
+    auto& pipelineState = Engine::GAPI->GetRendererState().PipelineState;
+    pipelineState.SetVertexShader( engine->GetShaderManager().GetVShader( VShaderID::VS_PFX ) );
     auto velocityPS = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_Velocity );
     if (!velocityPS) {
         // Shader not found, skip velocity buffer generation
         context->OMSetRenderTargets(1, oldRTV.GetAddressOf(), oldDSV.Get());
         return;
     }
-    velocityPS->Apply();
+    pipelineState.SetPixelShader( velocityPS );
     
     // Bind depth texture
     ID3D11ShaderResourceView* srvs[1] = { depthSRV.Get() };
@@ -313,14 +314,15 @@ void D3D11PFX_TAA::RenderPostFX(
     context->OMSetRenderTargets( 1, tempBuffer->GetRenderTargetView().GetAddressOf(), nullptr );
 
     // Bind shaders
-    engine->GetShaderManager().GetVShader( VShaderID::VS_PFX )->Apply();
+    auto& pipelineState = Engine::GAPI->GetRendererState().PipelineState;
+    pipelineState.SetVertexShader( engine->GetShaderManager().GetVShader( VShaderID::VS_PFX ) );
     auto taaPS = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_TAA );
     if (!taaPS) {
         FxRenderer->CopyTextureToRTV( currentFrameSRV, oldRTV );
         context->OMSetRenderTargets(1, oldRTV.GetAddressOf(), oldDSV.Get());
         return;
     }
-    taaPS->Apply();
+    pipelineState.SetPixelShader( taaPS );
 
     // Bind textures:
     // t0: Current frame

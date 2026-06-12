@@ -60,6 +60,15 @@ public:
         unsigned int alignedByteOffsetForArgs,
         unsigned int alignedByteStrideForArgs );
 
+    void Dispatch(
+            unsigned int ThreadGroupCountX,
+            unsigned int ThreadGroupCountY,
+            unsigned int ThreadGroupCountZ );
+
+    void DispatchIndirect(
+            ID3D11Buffer* pBufferForArgs,
+            unsigned int AlignedByteOffsetForArgs );
+
     void SetConstantBuffers( UINT StartSlot, UINT NumBuffers, ID3D11Buffer* const* ppConstantBuffers, ConstantBufferVisibility visibility );
 private:
     ID3D11DeviceContext* _context;

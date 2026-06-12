@@ -840,7 +840,7 @@ void EditorLinePrimitive::SetSolidShader( PShaderID SolidShaderID ) {
 }
 
 /** Renders a vertexbuffer with the given shader */
-void EditorLinePrimitive::RenderVertexBuffer( const Microsoft::WRL::ComPtr<ID3D11Buffer>& VB, UINT NumVertices, D3D11PShader* Shader, D3D11_PRIMITIVE_TOPOLOGY Topology, int Pass ) {
+void EditorLinePrimitive::RenderVertexBuffer( const Microsoft::WRL::ComPtr<ID3D11Buffer>& VB, UINT NumVertices, const std::shared_ptr<D3D11PShader>& Shader, D3D11_PRIMITIVE_TOPOLOGY Topology, int Pass ) {
     D3D11GraphicsEngineBase* engine = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine);
 
     XMMATRIX tr = XMMatrixTranspose( XMLoadFloat4x4( &WorldMatrix ) );;
@@ -857,8 +857,6 @@ void EditorLinePrimitive::RenderVertexBuffer( const Microsoft::WRL::ComPtr<ID3D1
     Engine::GAPI->GetRendererState().BlendState.SetAlphaBlending();
     Engine::GAPI->GetRendererState().BlendState.SetDirty();
     engine->UpdateRenderStates();
-
-    Shader->Apply();
 
     // Set vertex buffer
     UINT stride = sizeof( LineVertex );
@@ -877,11 +875,11 @@ HRESULT EditorLinePrimitive::RenderPrimitive( int Pass ) {
     }
 
     if ( NumVertices > 0 ) {
-        RenderVertexBuffer( PrimVB.Get(), NumVertices, reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetShaderManager().GetPShader( PrimShaderID ).get(), PrimitiveTopology, Pass );
+        RenderVertexBuffer( PrimVB.Get(), NumVertices, reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetShaderManager().GetPShader( PrimShaderID ), PrimitiveTopology, Pass );
     }
 
     if ( NumSolidVertices > 0 ) {
-        RenderVertexBuffer( SolidPrimVB.Get(), NumSolidVertices, reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetShaderManager().GetPShader( SolidPrimShaderID ).get(), SolidPrimitiveTopology, Pass );
+        RenderVertexBuffer( SolidPrimVB.Get(), NumSolidVertices, reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetShaderManager().GetPShader( SolidPrimShaderID ), SolidPrimitiveTopology, Pass );
     }
 
     return S_OK;

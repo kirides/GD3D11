@@ -6,6 +6,7 @@
 #include "BasePipelineStates.h"
 #include <ASSAO/ASSAO.h>
 
+class D3D11GShader;
 /** Struct handling all the graphical states set by the game. Can be used as Constantbuffer */
 const int GSWITCH_FOG = 1;
 const int GSWITCH_ALPHAREF = 2;
@@ -241,6 +242,12 @@ struct GothicDepthBufferStateInfo : public GothicPipelineState {
         c.StructSize = StructSize;
         c.SetDirty();
     }
+
+    void Invalidate() {
+        SetDefault();
+        StateDirty = true;
+        Hash = 0;
+    }
 };
 
 /** Blend state information */
@@ -366,6 +373,12 @@ struct GothicBlendStateInfo : public GothicPipelineState {
         GothicStateCache::s_BlendStateMap.clear();
     }
 
+    void Invalidate() {
+        SetDefault();
+        StateDirty = true;
+        Hash = 0;
+    }
+
     GothicBlendStateInfo Clone() {
         GothicBlendStateInfo c;
         c.SrcBlend = SrcBlend;
@@ -434,6 +447,7 @@ private:
     LastCurrent<ID3D11InputLayout*> InputLayout;
     LastCurrent<std::shared_ptr<D3D11PShader>> PixelShader;
     LastCurrent<std::shared_ptr<D3D11VShader>> VertexShader;
+    LastCurrent<std::shared_ptr<D3D11GShader>> GeometryShader;
     LastCurrent<std::shared_ptr<D3D11CShader>> ComputeShader;
     LastCurrent<D3D11_PRIMITIVE_TOPOLOGY> PrimitiveTopology;
     LastCurrent<std::array<ID3D11RenderTargetView*, 8>> RenderTargets;
@@ -444,6 +458,19 @@ private:
 private:
     void Apply( ID3D11DeviceContext* context );
 public:
+    void Invalidate() {
+        _isDirty = true;
+        InputLayout.Last = nullptr;
+        PixelShader.Last = nullptr;
+        VertexShader.Last = nullptr;
+        GeometryShader.Last = nullptr;
+        ComputeShader.Last = nullptr;
+        PrimitiveTopology.Last = {};
+        RenderTargets.Last = {};
+        DepthStencil.Last = nullptr;
+        PsSamplers.Last = {};
+        VsSamplers.Last = {};
+    }
     void Apply();
 
     void SetContext( ID3D11DeviceContext* context ) {
@@ -465,7 +492,13 @@ public:
         _isDirty = true;
         PixelShader.Current = value;
     }
-    void SetComputShader(const std::shared_ptr<D3D11CShader>& value ) {
+    void SetGeometryShader(const std::shared_ptr<D3D11GShader>& value ) {
+        if ( GeometryShader.Last == value )
+            return;
+        _isDirty = true;
+        GeometryShader.Current = value;
+    }
+    void SetComputeShader(const std::shared_ptr<D3D11CShader>& value ) {
         if ( ComputeShader.Last == value )
             return;
         _isDirty = true;
@@ -572,6 +605,12 @@ struct GothicRasterizerStateInfo : public GothicPipelineState {
             delete rasterizerState;
         }
         GothicStateCache::s_RasterizerStateMap.clear();
+    }
+
+    void Invalidate() {
+        SetDefault();
+        StateDirty = true;
+        Hash = 0;
     }
 };
 
