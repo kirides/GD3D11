@@ -4451,20 +4451,25 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                     GetContext()->PSSetSamplers( 0, 1, LinearSamplerState.GetAddressOf() );
                     
                     auto backbufferTex = graph.GetPhysicalTexture( backBufferHandle );
-                    {
-                        auto _ = RecordGraphicsEvent( GE_NAME( "Copy into native-size backbuffer" ) );
-                        PfxRenderer->CopyTextureToRTV( backbufferTex->GetShaderResView(), Backbuffer->GetRenderTargetView(), GetBackbufferResolution() );
-                    }
 
                     switch ( rendererState.RendererSettings.SharpeningMode ) {
                     case GothicRendererSettings::SHARPEN_SIMPLE:
-                        if ( !FeatureLevel10Compatibility ) {
+                        {
+                            // Sharpen reads the scene texture and writes Backbuffer directly
+                            // (compute UAV on FeatureLevel 11+, pixel-shader RTV fallback on
+                            // FeatureLevel 10 - selected inside RenderSimpleSharpen), so no
+                            // pre-copy into Backbuffer is needed.
                             auto _ = RecordGraphicsEvent( GE_NAME( "ApplySimpleSharpen" ) );
-                            PfxRenderer->RenderSimpleSharpen( Backbuffer->GetShaderResView(), GetBackbufferResolution(), Backbuffer->GetRenderTargetView(), GetBackbufferResolution(), *GetPfxRenderer()->GetBackbufferTempBuffer());
+                            PfxRenderer->RenderSimpleSharpen( backbufferTex->GetShaderResView(), GetBackbufferResolution(), Backbuffer.get(), GetBackbufferResolution() );
                         }
                         break;
 
                     case GothicRendererSettings::SHARPEN_CAS:
+                        {
+                            // CAS sharpens Backbuffer in place, so populate it first.
+                            auto _ = RecordGraphicsEvent( GE_NAME( "Copy into native-size backbuffer" ) );
+                            PfxRenderer->CopyTextureToRTV( backbufferTex->GetShaderResView(), Backbuffer->GetRenderTargetView(), GetBackbufferResolution() );
+                        }
                         if ( !FeatureLevel10Compatibility ) {
                             auto _ = RecordGraphicsEvent( GE_NAME( "ApplyCAS" ) );
                             PfxRenderer->RenderCAS( Backbuffer->GetShaderResView(), GetBackbufferResolution(), Backbuffer->GetRenderTargetView(), GetBackbufferResolution(), *GetPfxRenderer()->GetBackbufferTempBuffer());

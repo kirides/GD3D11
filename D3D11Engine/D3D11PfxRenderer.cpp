@@ -143,15 +143,8 @@ XRESULT D3D11PfxRenderer::RenderCAS( const Microsoft::WRL::ComPtr<ID3D11ShaderRe
     return XR_SUCCESS;
 }
 
-XRESULT D3D11PfxRenderer::RenderSimpleSharpen( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& input, INT2 inputSize, const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& output, INT2 outputSize, RenderToTextureBuffer& intermediateBuffer ) {
-    auto* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
-
-    PFX_SimpleSharpen->Apply(
-        input ? input : engine->GetHDRBackBuffer().GetShaderResView(),
-        input ? inputSize : engine->GetResolution(),
-        output ? output : engine->GetHDRBackBuffer().GetRenderTargetView(),
-        output ? outputSize : engine->GetResolution(),
-        intermediateBuffer);
+XRESULT D3D11PfxRenderer::RenderSimpleSharpen( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& source, INT2 sourceSize, RenderToTextureBuffer* dest, INT2 destSize ) {
+    PFX_SimpleSharpen->Apply( source, sourceSize, dest, destSize );
     return XR_SUCCESS;
 }
 

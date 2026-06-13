@@ -132,5 +132,6 @@ enum class CShaderID : size_t {
     CS_PFX_DoF_Composite,
     CS_PFX_SAO,
     CS_PFX_SAO_Blur,
+    CS_PFX_Sharpen,
     COUNT
 };
