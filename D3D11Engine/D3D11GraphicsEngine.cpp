@@ -6904,7 +6904,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
 
         // Use default material info for now
         MaterialInfo defInfo = {};
-        UINT materialInfoSlot = ActivePS->GetBuffer( "MI_MaterialInfo" ).GetSlot();
+        UINT materialInfoSlot = GetActivePS()->GetBuffer( "MI_MaterialInfo" ).GetSlot();
         auto defaultMaterialAllocation = PerObjectMaterialInfoPooledBuffer->Allocate( GetContext().Get(), &defInfo.buffer, sizeof( defInfo.buffer ) );
         UINT firstConstant = defaultMaterialAllocation.offsetInBytes / 16;
         UINT numConstants = defaultMaterialAllocation.sizeInBytes / 16;
