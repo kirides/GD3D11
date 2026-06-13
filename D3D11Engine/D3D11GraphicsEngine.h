@@ -46,6 +46,10 @@ struct ConstantBufferAllocation {
     ID3D11Buffer* pBuffer;
     uint32_t offsetInBytes;
     uint32_t sizeInBytes;
+
+    bool operator==( const ConstantBufferAllocation& other ) const {
+        return pBuffer == other.pBuffer && offsetInBytes == other.offsetInBytes && sizeInBytes == other.sizeInBytes;
+    }
 };
 
 class ConstantBufferPool {
@@ -53,13 +57,11 @@ private:
     Microsoft::WRL::ComPtr<ID3D11Buffer> m_poolBuffer;
     uint32_t m_bufferSize;
     uint32_t m_currentOffset;
-    uint8_t* m_pMappedData; // CPU pointer when mapped
 
 public:
     void Initialize( ID3D11Device* device, uint32_t totalSizeInBytes = 4 * 1024 * 1024 ) {
         m_bufferSize = totalSizeInBytes;
         m_currentOffset = 0;
-        m_pMappedData = nullptr;
 
         D3D11_BUFFER_DESC desc = {};
         desc.ByteWidth = m_bufferSize;
@@ -73,9 +75,9 @@ public:
 #endif
     }
 
-    void BeginFrame( ID3D11DeviceContext* context );
-    ConstantBufferAllocation Allocate( const void* pData, uint32_t sizeInBytes );
-    void EndFrame( ID3D11DeviceContext* context );
+    void BeginFrame();
+    ConstantBufferAllocation Allocate( ID3D11DeviceContext* context, const void* pData, uint32_t sizeInBytes );
+    void EndFrame();
 
     ID3D11Buffer* GetBuffer() const { return m_poolBuffer.Get(); }
 };
