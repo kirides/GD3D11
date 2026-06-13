@@ -240,21 +240,21 @@ namespace
     }
 }
 
-void ConstantBufferPool::BeginFrame( ID3D11DeviceContext* context ) {
-    D3D11_MAPPED_SUBRESOURCE mappedResource;
-    context->Map( m_poolBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedResource );
-    m_pMappedData = static_cast<uint8_t*>(mappedResource.pData);
+void ConstantBufferPool::BeginFrame() {
     m_currentOffset = 0;
 }
 
-ConstantBufferAllocation ConstantBufferPool::Allocate( const void* pData, uint32_t sizeInBytes ) {
+ConstantBufferAllocation ConstantBufferPool::Allocate( ID3D11DeviceContext* context, const void* pData, uint32_t sizeInBytes ) {
     uint32_t alignedSize = (sizeInBytes + 255) & ~255;
 
     if ( m_currentOffset + alignedSize > m_bufferSize ) {
-        return { m_poolBuffer.Get(), 0, alignedSize }; // Out of memory in the pool
+        m_currentOffset = 0; // Reset the offset if out of memory
     }
-
-    memcpy( m_pMappedData + m_currentOffset, pData, sizeInBytes );
+    D3D11_MAPPED_SUBRESOURCE mappedResource;
+    if ( SUCCEEDED( context->Map( m_poolBuffer.Get(), 0, m_currentOffset == 0 ? D3D11_MAP_WRITE_DISCARD : D3D11_MAP_WRITE_NO_OVERWRITE, 0, &mappedResource ) ) ) {
+        memcpy( static_cast<uint8_t*>(mappedResource.pData) + m_currentOffset, pData, sizeInBytes );
+        context->Unmap( m_poolBuffer.Get(), 0 );
+    }
 
     ConstantBufferAllocation alloc;
     alloc.pBuffer = m_poolBuffer.Get();
@@ -267,9 +267,7 @@ ConstantBufferAllocation ConstantBufferPool::Allocate( const void* pData, uint32
     return alloc;
 }
 
-void ConstantBufferPool::EndFrame( ID3D11DeviceContext* context ) {
-    context->Unmap( m_poolBuffer.Get(), 0 );
-    m_pMappedData = nullptr;
+void ConstantBufferPool::EndFrame( ) {
 }
 
 D3D11GraphicsEngine::D3D11GraphicsEngine() :
@@ -1380,6 +1378,7 @@ void D3D11GraphicsEngine::ResetFrameTransientBufferPools() {
     m_ShadowWorldIndirectPool.ResetFrame();
     m_MainVobInstancingPool.ResetFrame();
     m_ShadowVobInstancingPool.ResetFrame();
+    PerObjectMaterialInfoPooledBuffer->BeginFrame();
 }
 
 D3D11IndirectBuffer* D3D11GraphicsEngine::AcquireFrameIndirectBuffer( FrameIndirectBufferPool& pool,
@@ -1586,6 +1585,7 @@ XRESULT D3D11GraphicsEngine::OnEndFrame() {
     GetPfxRenderer()->OnEndFrame();
     ResetFrameTransientBufferPools();
     Engine::GAPI->ResetVobFrameStats();
+    PerObjectMaterialInfoPooledBuffer->EndFrame();
     FrameMarkEnd( beginFrameEventName );
 
     if ( !Engine::GAPI->GetRendererState().RendererSettings.BinkVideoRunning && !Engine::GAPI->IsInSavingLoadingState() ) {
@@ -2345,7 +2345,10 @@ bool D3D11GraphicsEngine::BindTextureNRFX( zCTexture* tex, bool bindShader, bool
     }
 
     if ( info && GetActivePS() ) {
-        GetActivePS()->GetBuffer( 2 ).Update( &info->buffer, sizeof( info->buffer ) ).Bind();
+        auto allocation = PerObjectMaterialInfoPooledBuffer->Allocate( GetContext().Get(), &info->buffer, sizeof( info->buffer ) );
+        UINT firstConstant = allocation.offsetInBytes / 16;
+        UINT numConstants = allocation.sizeInBytes / 16;
+        GetContext()->PSGetConstantBuffers1( 2, 1, &allocation.pBuffer, &firstConstant, &numConstants );
     }
 
     if ( D3D11Texture* fxmap = tex->GetSurface()->GetFxMap() ) {
@@ -5070,41 +5073,14 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
 
         const size_t numMeshes = meshList.size();
         std::vector<UINT> materialInfoCbOffsets( numMeshes );
-        PerObjectMaterialInfoPooledBuffer->BeginFrame(GetContext().Get());
 
+        ConstantBufferAllocation INVALID_MATERIAL = PerObjectMaterialInfoPooledBuffer->Allocate( GetContext().Get(), &defInfo.buffer, sizeof( defInfo.buffer ) );
+        ConstantBufferAllocation lastMatCbAllocation = INVALID_MATERIAL;
         MaterialInfo* lastInfo = nullptr;
-        UINT INVALID_OFFSET = PerObjectMaterialInfoPooledBuffer->Allocate( &defInfo.buffer, sizeof( defInfo.buffer ) ).offsetInBytes;
-        for ( size_t i = 0; i < numMeshes; i++ ) {
-            auto needDefaultNormalsStrength = meshList[i].first.Texture->GetSurface()->GetNormalmap() == nullptr;
-            MaterialInfo* info = meshList[i].first.Info;
 
-            if ( info && 
-                needDefaultNormalsStrength &&
-                info->buffer.NormalmapStrength != DEFAULT_NORMALMAP_STRENGTH ) {
-                info->buffer.NormalmapStrength = DEFAULT_NORMALMAP_STRENGTH;
-                // Value override for non-normalmapped textures in case of rain
-            }
-
-            if ( info ) {
-                if ( info->IsSame( lastInfo ) ) {
-                    materialInfoCbOffsets[i] = materialInfoCbOffsets[i - 1];
-                } else {
-                    materialInfoCbOffsets[i] = PerObjectMaterialInfoPooledBuffer->Allocate( &info->buffer, sizeof( info->buffer ) ).offsetInBytes;
-                    lastInfo = info;
-                }
-            } else {
-                materialInfoCbOffsets[i] = INVALID_OFFSET;
-            }
-        }
-        PerObjectMaterialInfoPooledBuffer->EndFrame( GetContext().Get() );
-
-        auto materialInfoPoolBuffer = PerObjectMaterialInfoPooledBuffer->GetBuffer();
-        UINT lastOffsetId = -1;
+        auto sceneIsWet = Engine::GAPI->GetSceneWetness() > 1e-6;
         for ( size_t i = 0; i < numMeshes; i++ ) {
             auto const& mesh = meshList[i];
-            auto materialInfoOffset = materialInfoCbOffsets[i];
-            UINT firstConstant = materialInfoOffset / 16;
-            UINT numConstants = 256 / 16; // aligned size
 
             if ( mesh.first.Texture != bound &&
                 Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh > 1 ) {
@@ -5121,9 +5097,10 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
                     ? surface->GetFxMap()->GetShaderResourceView().Get()
                     : nullptr;
 
+                auto needDefaultNormalsStrength = !srv[1] && sceneIsWet;
                 // Bind a default normalmap in case the scene is wet and we currently have
                 // none
-                if ( !srv[1] ) {
+                if ( needDefaultNormalsStrength ) {
                     srv[1] = DistortionTexture->GetShaderResourceView().Get();
                 }
 
@@ -5137,9 +5114,29 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
                     updatePSBuffers();
                 }
 
-                if ( lastOffsetId != materialInfoOffset ) {
-                    GetContext()->PSSetConstantBuffers1( materialInfoBuffer.GetSlot(), 1, &materialInfoPoolBuffer, &firstConstant, &numConstants );
-                    lastOffsetId = materialInfoOffset;
+                if ( info &&
+                    needDefaultNormalsStrength &&
+                    info->buffer.NormalmapStrength != DEFAULT_NORMALMAP_STRENGTH ) {
+                    info->buffer.NormalmapStrength = DEFAULT_NORMALMAP_STRENGTH;
+                    // Value override for non-normalmapped textures in case of rain
+                }
+
+                auto materialInfoBufferAllocation = lastMatCbAllocation;
+                if ( info ) {
+                    if ( info->IsSame( lastInfo ) ) {
+                        materialInfoBufferAllocation = lastMatCbAllocation;
+                    } else {
+                        materialInfoBufferAllocation = PerObjectMaterialInfoPooledBuffer->Allocate( GetContext().Get(), &info->buffer, sizeof( info->buffer ) );
+                    }
+                }
+                lastInfo = info;
+
+                UINT firstConstant = materialInfoBufferAllocation.offsetInBytes / 16;
+                UINT numConstants = materialInfoBufferAllocation.sizeInBytes / 16; // aligned size
+
+                if ( lastMatCbAllocation != materialInfoBufferAllocation ) {
+                    GetContext()->PSSetConstantBuffers1( materialInfoBuffer.GetSlot(), 1, &materialInfoBufferAllocation.pBuffer, &firstConstant, &numConstants );
+                    lastMatCbAllocation = materialInfoBufferAllocation;
                 }
                 bound = mesh.first.Texture;
             }
@@ -6894,9 +6891,11 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
 
         // Use default material info for now
         MaterialInfo defInfo = {};
-        auto materialInfoBuffer = ActivePS->GetBuffer( "MI_MaterialInfo" )
-            .Update( &defInfo.buffer, sizeof(defInfo.buffer) )
-            .Bind();
+        UINT materialInfoSlot = ActivePS->GetBuffer( "MI_MaterialInfo" ).GetSlot();
+        auto defaultMaterialAllocation = PerObjectMaterialInfoPooledBuffer->Allocate( GetContext().Get(), &defInfo.buffer, sizeof( defInfo.buffer ) );
+        UINT firstConstant = defaultMaterialAllocation.offsetInBytes / 16;
+        UINT numConstants = defaultMaterialAllocation.sizeInBytes / 16;
+        GetContext()->PSGetConstantBuffers1( materialInfoSlot, 1, &defaultMaterialAllocation.pBuffer, &firstConstant, &numConstants );
 
         XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
         Engine::GAPI->SetViewTransformXM( view );
@@ -7313,7 +7312,11 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                                 }
 
                                 if ( info && !info->IsSame( lastMatInfo ) ) {
-                                    materialInfoBuffer.Update( &info->buffer, sizeof( info->buffer ) );
+                                    auto matAllocation = PerObjectMaterialInfoPooledBuffer->Allocate( GetContext().Get(), &info->buffer, sizeof( info->buffer ) );
+                                    UINT firstConstant = matAllocation.offsetInBytes / 16;
+                                    UINT numConstants = matAllocation.sizeInBytes / 16;
+                                    GetContext()->PSGetConstantBuffers1( materialInfoSlot, 1, &matAllocation.pBuffer, &firstConstant, &numConstants );
+
                                     lastMatInfo = info;
                                 }
                             }
