@@ -432,9 +432,8 @@ private:
         T Last;
         T Current;
 
-        void Update( T newCurrent ) {
+        void Update() {
             Last = Current;
-            Current = newCurrent;
         }
         bool IsDirty() {
             return Last != Current;
