@@ -7104,7 +7104,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
             windBuffer.Bind();
         }
 
-        auto DIST_DistanceSlot = ActivePS->GetInputIndex( "DIST_Distance" );
+        auto DIST_DistanceSlot = ActivePS->GetBuffer( "DIST_Distance" ).GetRawSlot();
 
         bool isZPrepass = RenderingStage == D3D11ENGINE_RENDER_STAGE::DES_Z_PRE_PASS;
 
