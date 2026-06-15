@@ -284,14 +284,14 @@ public:
         bool cullFront = true,
         bool indoor = false,
         bool noNPCs = false,
-        std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::map<MeshKey, MeshInfo*, cmpMeshKey>* worldMeshCache = nullptr,
+        std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache = nullptr,
         unsigned int casterMask = SHADOW_CASTER_ALL );
     void XM_CALLCONV DrawWorldAround_Layered( FXMVECTOR position,
         float range,
         bool cullFront = true,
         bool indoor = false,
         bool noNPCs = false,
-        std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::map<MeshKey, MeshInfo*, cmpMeshKey>* worldMeshCache = nullptr,
+        std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache = nullptr,
         unsigned int casterMask = SHADOW_CASTER_ALL );
 
     /** Update morph mesh visual */
@@ -322,7 +322,7 @@ public:
         bool cullFront = true,
         bool indoor = false,
         bool noNPCs = false,
-        std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::map<MeshKey, MeshInfo*, cmpMeshKey>* worldMeshCache = nullptr,
+        std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache = nullptr,
         bool clearDepth = true,
         unsigned int casterMask = SHADOW_CASTER_ALL );
 

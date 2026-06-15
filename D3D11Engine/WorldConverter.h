@@ -28,7 +28,7 @@ public:
     virtual ~WorldConverter();
 
     /** Collects all world-polys in the specific range. Drops all materials that have no alphablending */
-    static void WorldMeshCollectPolyRange( const float3& position, float range, std::map<int, std::map<int, WorldMeshSectionInfo>>& inSections, std::map<MeshKey, MeshInfo*, cmpMeshKey>& outMeshes );
+    static void WorldMeshCollectPolyRange( const float3& position, float range, std::map<int, std::map<int, WorldMeshSectionInfo>>& inSections, std::vector<std::pair<MeshKey, MeshInfo*>>& outMeshes );
 
     /** Converts the worldmesh into a more usable format */
     static HRESULT ConvertWorldMesh( zCPolygon** polys, unsigned int numPolygons, std::map<int, std::map<int, WorldMeshSectionInfo>>* outSections, WorldInfo* info, MeshInfo** outWrappedMesh, bool indoorLocation );

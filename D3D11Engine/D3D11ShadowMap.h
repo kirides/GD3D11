@@ -160,9 +160,7 @@ public:
         bool noNPCs = false,
         std::list<VobInfo*>* renderedVobs = nullptr, 
         std::list<SkeletalVobInfo*>* renderedMobs = nullptr,
-        std::map<MeshKey,
-        MeshInfo*,
-        cmpMeshKey>* worldMeshCache = nullptr,
+        std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache = nullptr,
         bool clearDepth = true,
         unsigned int casterMask = 0xFFFFFFFFu );
 

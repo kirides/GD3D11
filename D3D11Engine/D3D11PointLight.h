@@ -91,7 +91,7 @@ protected:
 
     std::list<VobInfo*> VobCache;
     std::list<SkeletalVobInfo*> SkeletalVobCache;
-    std::map<MeshKey, MeshInfo*, cmpMeshKey> WorldMeshCache;
+    std::vector<std::pair<MeshKey, MeshInfo*>> WorldMeshCache;
     bool WorldCacheInvalid;
 
     VobLightInfo* LightInfo;

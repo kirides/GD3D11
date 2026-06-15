@@ -195,7 +195,7 @@ void D3D11PointLight::RenderStaticShadowPass( RenderToDepthStencilBuffer& target
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     const float range = LightInfo->Vob->GetLightRange();
 
-    std::map<MeshKey, MeshInfo*, cmpMeshKey>* wc = &WorldMeshCache;
+    auto wc = &WorldMeshCache;
     if ( WorldCacheInvalid ) {
         wc = nullptr;
     }
@@ -233,6 +233,9 @@ void D3D11PointLight::InitResources() {
     // Generate worldmesh cache if we aren't a dynamically added light
     if ( !DynamicLight ) {
         WorldConverter::WorldMeshCollectPolyRange( LightInfo->Vob->GetPositionWorld(), LightInfo->Vob->GetLightRange(), Engine::GAPI->GetWorldSections(), WorldMeshCache );
+        std::ranges::sort(WorldMeshCache, []( const auto& a, const auto& b ) {
+            return std::tie(a.first.Material, a.first.Texture) < std::tie(b.first.Material, b.first.Texture);
+        });
         WorldCacheInvalid = false;
     } else {
         WorldCacheInvalid = true;
@@ -438,7 +441,7 @@ void D3D11PointLight::RenderFullCubemap() {
         return;
     }
 
-    std::map<MeshKey, MeshInfo*, cmpMeshKey>* wc = &WorldMeshCache;
+    auto wc = &WorldMeshCache;
     if ( WorldCacheInvalid ) {
         wc = nullptr;
     }

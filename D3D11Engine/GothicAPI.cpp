@@ -1377,7 +1377,6 @@ void GothicAPI::DrawParticlesSimple(
 
     if ( RendererState.RendererSettings.DrawParticleEffects ) {
         std::vector<zCVob*> renderedParticleFXs;
-        zCCamera::GetCamera()->Activate();
         GetVisibleParticleEffectsList( renderedParticleFXs );
 
         // now it is save to render
@@ -1606,14 +1605,30 @@ void GothicAPI::GetVisibleParticleEffectsList( std::vector<zCVob*>& pfxList ) {
     if ( RendererState.RendererSettings.DrawParticleEffects ) {
         FXMVECTOR camPos = GetCameraPositionXM();
 
-        // now it is save to render
-        float dist;
-        for ( auto const& it : ParticleEffectVobs ) {
-            XMStoreFloat( &dist, XMVector3Length( it->GetPositionWorldXM() - camPos ) );
-            if ( dist > RendererState.RendererSettings.VisualFXDrawRadius )
-                continue;
+        auto sceneCam = reinterpret_cast<zCCamera*>(oCGame::GetGame()->_zCSession_camera);
+        if ( !sceneCam ) {
+            // No camera??
+            return;
+        }
 
-            if ( GetCameraBBox3DInFrustum( it->GetBBox(), EGothicCullFlags::CullSides ) == ZTCAM_CLIPTYPE_OUT ) {
+        const XMVECTOR vVfxRangeSq = XMVectorReplicate( RendererState.RendererSettings.VisualFXDrawRadius * RendererState.RendererSettings.VisualFXDrawRadius );
+
+        for ( auto const& it : ParticleEffectVobs ) {
+            if ( XMVector3Greater( XMVector3LengthSq( it->GetPositionWorldXM() - camPos ), vVfxRangeSq ) ) {
+                // too far? It's ok for particles to not update and restart.
+                continue;
+            }
+
+            INT clipFlags = EGothicCullFlags::CullSides;
+            if ( sceneCam->BBox3DInFrustum( it->GetBBox(), clipFlags ) == ZTCAM_CLIPTYPE_OUT ) {
+                if ( auto vis = it->GetVisual() ) {
+                    // Do update particle state, even if not in frustum, so that if player turns back to it, it doesn't restart.
+                    auto particleFx = reinterpret_cast<zCParticleFX*>(vis);
+                    particleFx->UpdateParticleFX();
+                    if ( !particleFx->GetVisualDied() ) {
+                        zCParticleFX::GetStaticPFXList()->TouchPfx( particleFx );
+                    }
+                }
                 continue;
             }
 
@@ -3200,7 +3215,7 @@ void GothicAPI::DrawParticleFX( zCVob* source, zCParticleFX* fx, ParticleFrameDa
             connectedVob->GetHomeWorld()->RemoveVob( connectedVob );
         }
     } else {
-        fx->GetStaticPFXList()->TouchPfx( fx );
+        zCParticleFX::GetStaticPFXList()->TouchPfx( fx );
     }
 }
 

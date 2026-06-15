@@ -5345,7 +5345,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
     FXMVECTOR position, float range, bool cullFront, bool indoor,
     bool noNPCs, std::list<VobInfo*>* renderedVobs,
     std::list<SkeletalVobInfo*>* renderedMobs,
-    std::map<MeshKey, MeshInfo*, cmpMeshKey>* worldMeshCache,
+    std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache,
     unsigned int casterMask ) {
 
     // Setup renderstates
@@ -5690,7 +5690,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
     FXMVECTOR position, float range, bool cullFront, bool indoor,
     bool noNPCs, std::list<VobInfo*>* renderedVobs,
     std::list<SkeletalVobInfo*>* renderedMobs,
-    std::map<MeshKey, MeshInfo*, cmpMeshKey>* worldMeshCache,
+    std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache,
     unsigned int casterMask ) {
 
     // Setup renderstates
@@ -7883,7 +7883,7 @@ void XM_CALLCONV D3D11GraphicsEngine::RenderShadowCube(
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> debugRTV, bool cullFront, bool indoor, bool noNPCs,
     std::list<VobInfo*>* renderedVobs,
     std::list<SkeletalVobInfo*>* renderedMobs,
-    std::map<MeshKey, MeshInfo*, cmpMeshKey>* worldMeshCache,
+    std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache,
     bool clearDepth,
     unsigned int casterMask ) {
     

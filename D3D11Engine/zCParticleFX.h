@@ -234,15 +234,15 @@ public:
         return reinterpret_cast<float*>(THISPTR_OFFSET( GothicMemoryLocations::zCParticleFX::Offset_PrivateTotalTime ));
     }
 
-    int UpdateParticleFX() {
-        return reinterpret_cast<int( __fastcall* )( zCParticleFX* )>( GothicMemoryLocations::zCParticleFX::UpdateParticleFX )( this );
+    void UpdateParticleFX() {
+        reinterpret_cast<void( __fastcall* )( zCParticleFX* )>( GothicMemoryLocations::zCParticleFX::UpdateParticleFX )( this );
     }
 
     void CheckDependentEmitter() {
         reinterpret_cast<void( __fastcall* )( zCParticleFX* )>( GothicMemoryLocations::zCParticleFX::CheckDependentEmitter )( this );
     }
 
-    zCStaticPfxList* GetStaticPFXList() {
+    static zCStaticPfxList* GetStaticPFXList() {
         return reinterpret_cast<zCStaticPfxList*>(GothicMemoryLocations::zCParticleFX::OBJ_s_pfxList);
     }
 

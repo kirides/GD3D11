@@ -123,11 +123,14 @@ namespace Toolbox {
     /** Checks if a folder exists */
     bool FolderExists( const std::string& dirName_in );
 
+    template<typename T>
+    inline size_t hash_value( T value ) { return std::hash<T>()( value ); }
+    
     /** Hashes the given float value */
-    void hash_combine( std::size_t& seed, float value );
-
-    /** Hashes the given DWORD value */
-    void hash_combine( std::size_t& seed, DWORD value );
+    template<typename T>
+    inline void hash_combine( std::size_t& seed, T value ) {
+        seed ^= std::hash<T>()( value ) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+    }
 
     /** Returns true if the given position is inside the box */
     bool PositionInsideBox( const XMFLOAT3& p, const XMFLOAT3& min, const XMFLOAT3& max );
