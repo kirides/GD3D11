@@ -8400,6 +8400,7 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
 
     for ( size_t i = 0; i < instances.size(); ) {
         auto material = instances[i].material; 
+
         const auto& firstMatName = material->__GetName();
         std::string_view firstMaterialName = { firstMatName.ToChar(), firstMatName.Length() };
         const size_t start = i;
@@ -8409,7 +8410,12 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
             if ( firstMaterialName.empty() && materialName.empty()
                 && material->GetAniTexture() != instances[i].material->GetAniTexture() ) {
                 break;
-            } else if ( materialName != firstMaterialName ) {
+            }
+            if ( materialName != firstMaterialName ) {
+                break;
+            }
+            if ( material->GetAlphaFunc() != instances[i].material->GetAlphaFunc()
+                || material->GetColor() != instances[i].material->GetColor() ) {
                 break;
             }
             ++i;
