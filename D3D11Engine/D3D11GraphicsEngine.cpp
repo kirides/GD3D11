@@ -8405,6 +8405,7 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
         if ( !lighting ) {
             const auto alphaPart = (material->GetColor() >> 24);
             if ( alphaPart == 0 ) {
+                i++;
                 continue;  // Don't render fully transparent decals
             }
         }
