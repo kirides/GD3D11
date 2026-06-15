@@ -1623,7 +1623,11 @@ void GothicAPI::GetVisibleParticleEffectsList( std::vector<zCVob*>& pfxList ) {
             if ( sceneCam->BBox3DInFrustum( it->GetBBox(), clipFlags ) == ZTCAM_CLIPTYPE_OUT ) {
                 if ( auto vis = it->GetVisual() ) {
                     // Do update particle state, even if not in frustum, so that if player turns back to it, it doesn't restart.
-                    reinterpret_cast<zCParticleFX*>(vis)->UpdateParticleFX();
+                    auto particleFx = reinterpret_cast<zCParticleFX*>(vis);
+                    particleFx->UpdateParticleFX();
+                    if ( !particleFx->GetVisualDied() ) {
+                        zCParticleFX::GetStaticPFXList()->TouchPfx( particleFx );
+                    }
                 }
                 continue;
             }
@@ -3211,7 +3215,7 @@ void GothicAPI::DrawParticleFX( zCVob* source, zCParticleFX* fx, ParticleFrameDa
             connectedVob->GetHomeWorld()->RemoveVob( connectedVob );
         }
     } else {
-        fx->GetStaticPFXList()->TouchPfx( fx );
+        zCParticleFX::GetStaticPFXList()->TouchPfx( fx );
     }
 }
 

@@ -242,7 +242,7 @@ public:
         reinterpret_cast<void( __fastcall* )( zCParticleFX* )>( GothicMemoryLocations::zCParticleFX::CheckDependentEmitter )( this );
     }
 
-    zCStaticPfxList* GetStaticPFXList() {
+    static zCStaticPfxList* GetStaticPFXList() {
         return reinterpret_cast<zCStaticPfxList*>(GothicMemoryLocations::zCParticleFX::OBJ_s_pfxList);
     }
 
