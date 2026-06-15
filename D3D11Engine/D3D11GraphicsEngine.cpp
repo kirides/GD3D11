@@ -8400,7 +8400,14 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
         .Bind();
 
     for ( size_t i = 0; i < instances.size(); ) {
-        auto material = instances[i].material; 
+        auto material = instances[i].material;
+
+        if ( !lighting ) {
+            const auto alphaPart = (material->GetColor() >> 24);
+            if ( alphaPart == 0 ) {
+                continue;  // Don't render fully transparent decals
+            }
+        }
 
         const auto& firstMatName = material->__GetName();
         std::string_view firstMaterialName = { firstMatName.ToChar(), firstMatName.Length() };
