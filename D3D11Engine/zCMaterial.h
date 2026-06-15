@@ -152,18 +152,16 @@ public:
         uint8_t	 m_bIgnoreSun : 1;
 
         bool operator ==( const MaterialFlags& other ) const {
-            return smooth == other.smooth &&
-                   dontUseLightmaps == other.dontUseLightmaps &&
-                   texAniMap == other.texAniMap &&
-                   lodDontCollapse == other.lodDontCollapse &&
-                   noCollDet == other.noCollDet &&
-                   forceOccluder == other.forceOccluder &&
-                   m_bEnvironmentalMapping == other.m_bEnvironmentalMapping &&
-                   polyListNeedsSort == other.polyListNeedsSort &&
-                   matUsage == other.matUsage &&
-                   libFlag == other.libFlag &&
-                   rndAlphaBlendFunc == other.rndAlphaBlendFunc &&
-                   m_bIgnoreSun == other.m_bIgnoreSun;
+            auto thisFirst4Bytes = reinterpret_cast<const uint32_t*>(this);
+            auto otherFirst4Bytes = reinterpret_cast<const uint32_t*>(&other);
+
+            // compare first 4 bytes using memory alias
+            if (*thisFirst4Bytes != *otherFirst4Bytes) {
+                return false;
+            }
+
+            // final bit flag compared manually. Why zEngine, why make this 33 bits ...
+            return m_bIgnoreSun == other.m_bIgnoreSun;
         }
     };
 

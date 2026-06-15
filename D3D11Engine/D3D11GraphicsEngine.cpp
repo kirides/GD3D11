@@ -8410,6 +8410,8 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
             if ( materialName != firstMaterialName ) {
                 break;
             }
+            // Some materials have identical properties, but are "unique" as in they have no name
+            // we should still be able to batch them if texture, flags and color match - i hope?
             if ( material->GetColor() != instances[i].material->GetColor()
                 || material->GetAniTexture() != instances[i].material->GetAniTexture()
                 || material->GetFlags() != instances[i].material->GetFlags()) {
