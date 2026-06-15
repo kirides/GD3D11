@@ -8390,26 +8390,39 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
     Context->IASetVertexBuffers( 0, 2, vbs, strides, offsets );
     Context->IASetIndexBuffer( QuadIndexBuffer->GetVertexBuffer().Get(), VERTEX_INDEX_DXGI_FORMAT, 0 );
 
-    auto psBufGAI = GetActivePS()->GetBuffer( "GhostAlphaInfo" ).Bind();
     GhostAlphaConstantBuffer gacb = {};
     gacb.GA_ViewportSize = float2( Engine::GraphicsEngine->GetResolution().x, Engine::GraphicsEngine->GetResolution().y );
-
     int lastAlphaFunc = -1;
     zCTexture* lastTex = nullptr;
     float lastGhostAlpha = gacb.GA_Alpha;
+    auto psBufGAI = GetActivePS()->GetBuffer( "GhostAlphaInfo" )
+        .Update( &gacb )
+        .Bind();
 
     for ( size_t i = 0; i < instances.size(); ) {
-        auto material = instances[i].material; 
+        auto material = instances[i].material;
+
+        if ( !lighting ) {
+            const auto alphaPart = (material->GetColor() >> 24);
+            if ( alphaPart == 0 ) {
+                continue;  // Don't render fully transparent decals
+            }
+        }
+
         const auto& firstMatName = material->__GetName();
         std::string_view firstMaterialName = { firstMatName.ToChar(), firstMatName.Length() };
         const size_t start = i;
         while ( i < instances.size() ) {
             const auto& matName = instances[i].material->__GetName();
             std::string_view materialName = { matName.ToChar(), matName.Length() };
-            if ( firstMaterialName.empty() && materialName.empty()
-                && material->GetAniTexture() != instances[i].material->GetAniTexture() ) {
+            if ( materialName != firstMaterialName ) {
                 break;
-            } else if ( materialName != firstMaterialName ) {
+            }
+            // Some materials have identical properties, but are "unique" as in they have no name
+            // we should still be able to batch them if texture, flags and color match - i hope?
+            if ( material->GetColor() != instances[i].material->GetColor()
+                || material->GetAniTexture() != instances[i].material->GetAniTexture()
+                || material->GetFlags() != instances[i].material->GetFlags()) {
                 break;
             }
             ++i;

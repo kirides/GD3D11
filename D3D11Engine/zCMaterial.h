@@ -150,6 +150,19 @@ public:
         uint8_t libFlag : 8;
         zTRnd_AlphaBlendFunc rndAlphaBlendFunc : 8;
         uint8_t	 m_bIgnoreSun : 1;
+
+        bool operator ==( const MaterialFlags& other ) const {
+            auto thisFirst4Bytes = reinterpret_cast<const uint32_t*>(this);
+            auto otherFirst4Bytes = reinterpret_cast<const uint32_t*>(&other);
+
+            // compare first 4 bytes using memory alias
+            if (*thisFirst4Bytes != *otherFirst4Bytes) {
+                return false;
+            }
+
+            // final bit flag compared manually. Why zEngine, why make this 33 bits ...
+            return m_bIgnoreSun == other.m_bIgnoreSun;
+        }
     };
 
     __forceinline MaterialFlags& GetFlags() {
