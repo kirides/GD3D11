@@ -3,66 +3,59 @@
 #include "D3D11PfxRenderer.h"
 #include "D3D11GraphicsEngine.h"
 #include "D3D11ShaderManager.h"
+#include "D3D11CShader.h"
 #include "D3D11PShader.h"
 #include "D3D11ConstantBuffer.h"
 #include "ConstantBufferStructs.h"
 
-XRESULT D3D11PFX_SimpleSharpen::Apply( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& inputTexture, INT2 inputSize,
-                                       const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& outputTexture,
-                                       INT2 outputSize,
-                                       RenderToTextureBuffer& intermediateBuffer ) {
-    D3D11GraphicsEngine* engine = (D3D11GraphicsEngine*)Engine::GraphicsEngine;
+extern bool FeatureLevel10Compatibility;
+
+XRESULT D3D11PFX_SimpleSharpen::Apply( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& source, INT2 sourceSize,
+                                       RenderToTextureBuffer* dest,
+                                       INT2 destSize ) {
+
+    return ApplyPixelShader( source, dest, destSize );
+}
+
+XRESULT D3D11PFX_SimpleSharpen::ApplyPixelShader( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& source,
+                                                  RenderToTextureBuffer* dest,
+                                                  INT2 destSize ) {
+    D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     auto context = engine->GetContext();
 
     engine->SetDefaultStates();
     engine->UpdateRenderStates();
 
-    // Save old render targets
+    // Save old render targets / viewport
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> oldRTV;
     Microsoft::WRL::ComPtr<ID3D11DepthStencilView> oldDSV;
     context->OMGetRenderTargets( 1, oldRTV.GetAddressOf(), oldDSV.GetAddressOf() );
-
-    // Get temp buffer to render into
-    RenderToTextureBuffer& tempBuffer = intermediateBuffer;
-
-    // update the temp buffer with the latest backbuffer data
-    Renderer->CopyTextureToRTV( inputTexture, tempBuffer.GetRenderTargetView(), outputSize );
-
-    auto sharpenPS = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_Sharpen );
-    sharpenPS->Apply();
-
-    PfxSharpenConstantBuffer gcb;
-    gcb.G_TextureSize = inputSize;
-    gcb.G_SharpenStrength = Engine::GAPI->GetRendererState().RendererSettings.SharpenFactor;
-
-    sharpenPS->GetBuffer( "PfxSharpenConstantBuffer" ).Update( &gcb ).Bind();
 
     D3D11_VIEWPORT oldVP;
     UINT n = 1;
     context->RSGetViewports( &n, &oldVP );
 
-    engine->SetViewport( ViewportInfo( 0, 0, outputSize.x, outputSize.y ) );
+    auto sharpenPS = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_Sharpen );
+    sharpenPS->Apply();
 
-    // Set render target
-    context->OMSetRenderTargets( 1, tempBuffer.GetRenderTargetView().GetAddressOf(), nullptr );
+    PfxSharpenConstantBuffer gcb;
+    gcb.G_TextureSize = destSize;
+    gcb.G_SharpenStrength = Engine::GAPI->GetRendererState().RendererSettings.SharpenFactor;
+    sharpenPS->GetBuffer( "PfxSharpenConstantBuffer" ).Update( &gcb ).Bind();
 
-    // Bind input texture
-    context->PSSetShaderResources( 0, 1, inputTexture.GetAddressOf() );
+    engine->SetViewport( ViewportInfo( 0, 0, destSize.x, destSize.y ) );
 
-    // Draw fullscreen quad
+    // Read source, write destination directly (source != destination, so no copy needed).
+    context->OMSetRenderTargets( 1, dest->GetRenderTargetView().GetAddressOf(), nullptr );
+    context->PSSetShaderResources( 0, 1, source.GetAddressOf() );
+
     Renderer->DrawFullScreenQuad();
 
-    // unbind resources
+    // Unbind and restore
     static ID3D11ShaderResourceView* nullSRV[1] = { nullptr };
     context->PSSetShaderResources( 0, 1, nullSRV );
-
-    Renderer->CopyTextureToRTV( tempBuffer.GetShaderResView(), outputTexture, INT2( 0, 0 ), true );
-
-    // restore old render targets
     context->OMSetRenderTargets( 1, oldRTV.GetAddressOf(), oldDSV.Get() );
-
     context->RSSetViewports( 1, &oldVP );
-
 
     return XR_SUCCESS;
 }
