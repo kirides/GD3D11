@@ -3406,13 +3406,8 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             }
         }
 
-        // ---- Phase 2: Sort collected items by (MeshVertexBuffer, texture) and upload ----
         if ( instancedDrawItems.empty() )
             return;
-
-        // Sort by required shaders first, then texture, then mesh to minimize state changes
-        // By sorting ->HasAlphaChannel() first, we ensure minimum shader changes
-        // then sorting by texture pointer groups nulls together for shadow passes, and also minimizes texture changes for main/ghost
 
         std::sort( instancedDrawItems.begin(), instancedDrawItems.end(),
             []( const NodeAttachmentDrawItem& a, const NodeAttachmentDrawItem& b ) {
@@ -3484,7 +3479,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 
         NodeAttachmentInstancingBuffer->Unmap();
 
-        // ---- Phase 3: Issue instanced draw calls ----
+        // Draw calls
 
         SetActiveVertexShader( VShaderID::VS_ExNodeInstanced );
         ActiveVS->Apply();
@@ -8224,10 +8219,6 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
     SetupVS_ExConstantBuffer();
     XMFLOAT3 camPos = Engine::GAPI->GetCameraPosition();
 
-    // ---- Phase 1: build per-decal instance data (in original draw order) ----
-    // Each decal contributes a single world-view matrix. The remaining state (texture,
-    // blend mode, ghost-alpha) is derived from the zCMaterial*, so consecutive decals
-    // that share a material can be drawn together with one instanced draw call.
     struct DecalInstance {
         zCMaterial* material;
         XMFLOAT4X4 worldView;
@@ -8366,12 +8357,7 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
         return;
     }
 
-    // NOTE: the decal order is preserved exactly as received - decals are alpha blended
-    // and rely on the painter's algorithm (back-to-front). We must NOT reorder them.
-    // Phase 3 below only collapses *consecutive* runs of the same material into a single
-    // instanced draw, which keeps the submission order identical to the per-decal path.
-
-    // ---- Phase 2: upload instance data ----
+    // upload instance data
     const size_t neededBytes = instances.size() * sizeof( XMFLOAT4X4 );
     if ( DecalInstancingBuffer->GetSizeInBytes() < neededBytes ) {
         if ( XR_FAILED == DecalInstancingBuffer->Init( nullptr, neededBytes,
@@ -8394,7 +8380,7 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
     }
     DecalInstancingBuffer->Unmap();
 
-    // ---- Phase 3: issue one instanced draw per consecutive same-material run ----
+    // draw per consecutive same-material
     UINT strides[2] = { sizeof( ExVertexStruct ), sizeof( XMFLOAT4X4 ) };
     UINT offsets[2] = { 0, 0 };
     ID3D11Buffer* vbs[2] = {

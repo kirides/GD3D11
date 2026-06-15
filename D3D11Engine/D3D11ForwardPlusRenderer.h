@@ -5,10 +5,6 @@
 class D3D11DeferredRenderer;
 class D3D11ConstantBuffer;
 
-/** Forward+ renderer skeleton.
-    Phase 2: delegates every call to the deferred renderer as a fallback.
-    Later phases will replace each method with true Forward+ implementations
-    (depth prepass, tile-based light culling, per-pixel lighting in the geometry pass). */
 class D3D11ForwardPlusRenderer final : public ISceneRenderer {
 public:
     explicit D3D11ForwardPlusRenderer( D3D11DeferredRenderer& deferredFallback );
