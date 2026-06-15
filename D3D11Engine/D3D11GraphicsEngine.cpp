@@ -8390,13 +8390,14 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
     Context->IASetVertexBuffers( 0, 2, vbs, strides, offsets );
     Context->IASetIndexBuffer( QuadIndexBuffer->GetVertexBuffer().Get(), VERTEX_INDEX_DXGI_FORMAT, 0 );
 
-    auto psBufGAI = GetActivePS()->GetBuffer( "GhostAlphaInfo" ).Bind();
     GhostAlphaConstantBuffer gacb = {};
     gacb.GA_ViewportSize = float2( Engine::GraphicsEngine->GetResolution().x, Engine::GraphicsEngine->GetResolution().y );
-
     int lastAlphaFunc = -1;
     zCTexture* lastTex = nullptr;
     float lastGhostAlpha = gacb.GA_Alpha;
+    auto psBufGAI = GetActivePS()->GetBuffer( "GhostAlphaInfo" )
+        .Update( &gacb )
+        .Bind();
 
     for ( size_t i = 0; i < instances.size(); ) {
         auto material = instances[i].material; 
