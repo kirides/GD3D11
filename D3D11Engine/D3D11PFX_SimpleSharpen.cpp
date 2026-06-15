@@ -14,46 +14,7 @@ XRESULT D3D11PFX_SimpleSharpen::Apply( const Microsoft::WRL::ComPtr<ID3D11Shader
                                        RenderToTextureBuffer* dest,
                                        INT2 destSize ) {
 
-    if ( !FeatureLevel10Compatibility && dest->GetUnorderedAccessView() ) {
-        return ApplyCompute( source, dest, destSize );
-    }
     return ApplyPixelShader( source, dest, destSize );
-}
-
-XRESULT D3D11PFX_SimpleSharpen::ApplyCompute( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& source,
-                                              RenderToTextureBuffer* dest,
-                                              INT2 destSize ) {
-    D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
-    auto& context = engine->GetContext();
-
-    // Detach render targets before binding UAVs.
-    ID3D11RenderTargetView* nullRtv = nullptr;
-    context->OMSetRenderTargets( 1, &nullRtv, nullptr );
-
-    auto sharpenCS = engine->GetShaderManager().GetCShader( CShaderID::CS_PFX_Sharpen );
-    sharpenCS->Apply();
-
-    PfxSharpenConstantBuffer gcb;
-    gcb.G_TextureSize = destSize; // sharpen kernel operates in destination-texel space
-    gcb.G_SharpenStrength = Engine::GAPI->GetRendererState().RendererSettings.SharpenFactor;
-    sharpenCS->GetBuffer( "PfxSharpenConstantBuffer" ).Update( &gcb ).Bind();
-
-    ID3D11SamplerState* linearSampler = engine->GetLinearSamplerState();
-    context->CSSetSamplers( 0, 1, &linearSampler );
-
-    context->CSSetShaderResources( 0, 1, source.GetAddressOf() );
-    context->CSSetUnorderedAccessViews( 0, 1, dest->GetUnorderedAccessView().GetAddressOf(), nullptr );
-
-    context->Dispatch( (destSize.x + 7) / 8, (destSize.y + 7) / 8, 1 );
-
-    // Unbind compute resources.
-    ID3D11UnorderedAccessView* nullUAV = nullptr;
-    ID3D11ShaderResourceView* nullSRV = nullptr;
-    context->CSSetUnorderedAccessViews( 0, 1, &nullUAV, nullptr );
-    context->CSSetShaderResources( 0, 1, &nullSRV );
-    context->CSSetShader( nullptr, nullptr, 0 );
-
-    return XR_SUCCESS;
 }
 
 XRESULT D3D11PFX_SimpleSharpen::ApplyPixelShader( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& source,

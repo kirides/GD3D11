@@ -22,11 +22,6 @@ public:
         INT2 destSize );
 
 private:
-    /** Compute-shader path (FeatureLevel 11+): reads source SRV, writes dest UAV. */
-    XRESULT ApplyCompute( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& source,
-        RenderToTextureBuffer* dest,
-        INT2 destSize );
-
     /** Pixel-shader fallback path (FeatureLevel 10): reads source SRV, writes dest RTV. */
     XRESULT ApplyPixelShader( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& source,
         RenderToTextureBuffer* dest,
