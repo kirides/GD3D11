@@ -150,6 +150,21 @@ public:
         uint8_t libFlag : 8;
         zTRnd_AlphaBlendFunc rndAlphaBlendFunc : 8;
         uint8_t	 m_bIgnoreSun : 1;
+
+        bool operator ==( const MaterialFlags& other ) const {
+            return smooth == other.smooth &&
+                   dontUseLightmaps == other.dontUseLightmaps &&
+                   texAniMap == other.texAniMap &&
+                   lodDontCollapse == other.lodDontCollapse &&
+                   noCollDet == other.noCollDet &&
+                   forceOccluder == other.forceOccluder &&
+                   m_bEnvironmentalMapping == other.m_bEnvironmentalMapping &&
+                   polyListNeedsSort == other.polyListNeedsSort &&
+                   matUsage == other.matUsage &&
+                   libFlag == other.libFlag &&
+                   rndAlphaBlendFunc == other.rndAlphaBlendFunc &&
+                   m_bIgnoreSun == other.m_bIgnoreSun;
+        }
     };
 
     __forceinline MaterialFlags& GetFlags() {
