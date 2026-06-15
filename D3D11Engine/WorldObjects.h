@@ -54,28 +54,26 @@ struct MeshKey {
     zCMaterial* Material;
     MaterialInfo* Info;
     //zCLightmap* Lightmap;
+    
+    bool operator==( const MeshKey& other ) const {
+        return Material == other.Material
+            && Texture == other.Texture;
+    }
 };
 
 struct cmpMeshKey {
     bool operator()( const MeshKey& a, const MeshKey& b ) const {
-        return (a.Material != b.Material) 
-            ? (a.Material < b.Material)
-            : (a.Texture < b.Texture);
+        return std::tie(a.Material, a.Texture) < std::tie(b.Material, b.Texture);
     }
 };
 
-/*struct MeshKey
-{
-    zCMaterial* Material;
-    zCLightmap* Lightmap;
-};
-
-struct cmpMeshKey {
-    bool operator()(const MeshKey& a, const MeshKey& b) const
-    {
-        return (a.Material<b.Material) || (a.Material == b.Material && a.Lightmap<b.Lightmap);
+struct meshKeyHasher {
+    size_t operator()( const MeshKey& a ) const {
+        size_t seed = reinterpret_cast<size_t>(a.Material);
+        Toolbox::hash_combine(seed, reinterpret_cast<size_t>(a.Texture));
+        return seed;
     }
-};*/
+};
 
 /** Holds information about a mesh, ready to be loaded into the renderer */
 struct MeshInfo {

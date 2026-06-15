@@ -70,7 +70,8 @@ namespace {
 }
 
 /** Collects all world-polys in the specific range. Drops all materials that have no alphablending */
-void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float range, std::map<int, std::map<int, WorldMeshSectionInfo>>& inSections, std::map<MeshKey, MeshInfo*, cmpMeshKey>& outMeshes ) {
+void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float range, std::map<int, std::map<int, WorldMeshSectionInfo>>& inSections, 
+    std::vector<std::pair<MeshKey, MeshInfo*>>& outMeshes ) {
     ZoneScoped;
 
     INT2 s = GetSectionOfPos( position );
@@ -80,7 +81,7 @@ void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float ra
     opaqueKey.Texture = nullptr;
 
     MeshInfo* opaqueMesh = new MeshInfo;
-    outMeshes[opaqueKey] = opaqueMesh;
+    outMeshes.emplace_back(opaqueKey, opaqueMesh);
 
     FXMVECTOR xmPosition = XMLoadFloat3( position.toXMFLOAT3() );
 
@@ -96,17 +97,27 @@ void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float ra
             if ( len < 2 ) {
                 // Check all polys from all meshes
                 for ( auto const& it : ity.second.WorldMeshes ) {
-                    MeshInfo* m;
+                    MeshInfo* m = nullptr;
 
                     // Create new mesh-part for alphatested surfaces
                     if ( it.first.Texture && it.first.Texture->HasAlphaChannel() ) {
-                        m = new MeshInfo;
-                        outMeshes[it.first] = m;
+                        for (auto [key, msh] : outMeshes) {
+                            if (it.first == key) {
+                                m = msh;
+                                break;
+                            }
+                        }
+                        if ( m == nullptr ) {
+                            m = new MeshInfo;
+                            outMeshes.emplace_back(it.first, m);
+                        }
                     } else {
                         // Just use the same mesh for opaque surfaces
                         m = opaqueMesh;
                     }
 
+                    // reserve required size beforehand to avoid multiple reallocations
+                    m->Vertices.reserve( it.second->Vertices.size() );
                     for ( unsigned int i = 0; i < it.second->Indices.size(); i += 3 ) {
                         // Check if one of them is in range
 
@@ -127,42 +138,48 @@ void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float ra
     }
 
     // Index all meshes
-    for ( auto it = outMeshes.begin(); it != outMeshes.end();) {
-        if ( it->second->Vertices.empty() ) {
-            it = outMeshes.erase( it );
+    for ( size_t i = 0; i < outMeshes.size(); ) {
+        auto it = outMeshes[i];
+
+        if ( it.second->Vertices.empty() ) {
+            delete it.second;
+            if ( i != outMeshes.size() - 1 ) {
+                outMeshes[i] = std::move( outMeshes.back() );
+            }
+            outMeshes.pop_back();
             continue;
         }
 
         std::vector<VERTEX_INDEX> indices;
         std::vector<ExVertexStruct> vertices;
-        IndexVertices( &it->second->Vertices[0], it->second->Vertices.size(), vertices, indices );
+        IndexVertices( &it.second->Vertices[0], it.second->Vertices.size(), vertices, indices );
 
-        it->second->Vertices = std::move( vertices );
-        it->second->Indices = std::move( indices );
+        it.second->Vertices = std::move( vertices );
+        it.second->Indices = std::move( indices );
 
         // Create the buffers
-        Engine::GraphicsEngine->CreateVertexBuffer( &it->second->MeshVertexBuffer );
-        Engine::GraphicsEngine->CreateVertexBuffer( &it->second->MeshIndexBuffer );
+        Engine::GraphicsEngine->CreateVertexBuffer( &it.second->MeshVertexBuffer );
+        Engine::GraphicsEngine->CreateVertexBuffer( &it.second->MeshIndexBuffer );
 
         // Optimize index and vertex locality before uploading immutable buffers.
-        it->second->MeshVertexBuffer->OptimizeFaces( it->second->Indices.data(),
-            reinterpret_cast<byte*>( it->second->Vertices.data() ),
-            it->second->Indices.size(),
-            it->second->Vertices.size(),
+        it.second->MeshVertexBuffer->OptimizeFaces( it.second->Indices.data(),
+            reinterpret_cast<byte*>( it.second->Vertices.data() ),
+            it.second->Indices.size(),
+            it.second->Vertices.size(),
             sizeof( ExVertexStruct ) );
-        it->second->MeshVertexBuffer->OptimizeVertices( it->second->Indices.data(),
-            reinterpret_cast<byte*>( it->second->Vertices.data() ),
-            it->second->Indices.size(),
-            it->second->Vertices.size(),
+        it.second->MeshVertexBuffer->OptimizeVertices( it.second->Indices.data(),
+            reinterpret_cast<byte*>( it.second->Vertices.data() ),
+            it.second->Indices.size(),
+            it.second->Vertices.size(),
             sizeof( ExVertexStruct ),
-            &it->second->ShadowIndices );
+            &it.second->ShadowIndices );
 
         // Init and fill them
-        it->second->MeshVertexBuffer->Init( &it->second->Vertices[0], it->second->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
-        it->second->MeshIndexBuffer->Init( &it->second->Indices[0], it->second->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
-        CreateShadowIndexBuffer( it->second );
-
-        ++it;
+        it.second->MeshVertexBuffer->Init( &it.second->Vertices[0], it.second->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
+        it.second->MeshIndexBuffer->Init( &it.second->Indices[0], it.second->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
+        CreateShadowIndexBuffer( it.second );
+        
+        ++i;
     }
 }
 
@@ -199,7 +216,7 @@ XRESULT WorldConverter::LoadWorldMeshFromFile( const std::string& file, std::map
     std::vector<MeshInfo*>& meshes = mesh->GetMeshes();
     std::vector<std::string>& textures = mesh->GetTextures();
     std::map<std::string, D3D11Texture*> loadedTextures;
-    std::set<std::string> missingTextures;
+    gtl::flat_hash_set<std::string> missingTextures;
 
     // run through meshes and pack them into sections
     for ( unsigned int m = 0; m < meshes.size(); m++ ) {
@@ -1578,7 +1595,7 @@ void WorldConverter::IndexVertices( ExVertexStruct* input, unsigned int numInput
     int index = 0;
 
     for ( unsigned int i = 0; i < numInputVertices; i++ ) {
-        std::set<std::pair<ExVertexStruct, int>>::iterator it = vertices.find( std::make_pair( input[i], 0/*this value doesn't matter*/ ) );
+        auto it = vertices.find( std::make_pair( input[i], 0/*this value doesn't matter*/ ) );
         if ( it != vertices.end() ) outIndices.emplace_back( it->second );
         else {
             vertices.insert( std::make_pair( input[i], index ) );
@@ -1586,30 +1603,10 @@ void WorldConverter::IndexVertices( ExVertexStruct* input, unsigned int numInput
         }
     }
 
-    // TODO: Remove this and fix it properly!
-    /*for (std::set<std::pair<ExVertexStruct, int>>::iterator it=vertices.begin(); it!=vertices.end(); it++)
-    {
-        if ( static_cast<size_t>(it->second) >= vertices.size() )
-        {
-             // TODO: Investigate!
-            it = vertices.erase(it);
-            continue;
-        }
-    }
-
-    for (std::vector<VERTEX_INDEX>::iterator it=outIndices.begin(); it!=outIndices.end(); it++)
-    {
-        if ( static_cast<size_t>(*it) >= vertices.size() )
-        {
-             // TODO: Investigate!
-            it = outIndices.erase(it);
-            continue;
-        }
-    }*/
-
     // Check for overlaying triangles and throw them out
     // Some mods do that for the worldmesh for example
-    std::set<std::tuple<VERTEX_INDEX, VERTEX_INDEX, VERTEX_INDEX>> triangles;
+    gtl::flat_hash_set<std::tuple<VERTEX_INDEX, VERTEX_INDEX, VERTEX_INDEX>> triangles;
+    triangles.reserve( outIndices.size() / 3 );
     for ( size_t i = 0; i < outIndices.size(); i += 3 ) {
         // Insert every combination of indices here. Duplicates will be ignored
         triangles.insert( std::make_tuple( outIndices[i + 0], outIndices[i + 1], outIndices[i + 2] ) );
@@ -1643,7 +1640,7 @@ void WorldConverter::IndexVertices( ExVertexStruct* input, unsigned int numInput
     unsigned int index = 0;
 
     for ( unsigned int i = 0; i < numInputVertices; i++ ) {
-        std::set<std::pair<ExVertexStruct, int>>::iterator it = vertices.find( std::make_pair( input[i], 0/*this value doesn't matter*/ ) );
+        auto it = vertices.find( std::make_pair( input[i], 0/*this value doesn't matter*/ ) );
         if ( it != vertices.end() ) outIndices.emplace_back( it->second );
         else {
             vertices.insert( std::make_pair( input[i], index ) );

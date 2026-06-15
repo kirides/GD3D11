@@ -108,25 +108,6 @@ namespace Toolbox {
         }
     }
 
-    static std::size_t hash_value( float value ) {
-        std::hash<float> hasher;
-        return hasher( value );
-    }
-
-    static std::size_t hash_value( DWORD value ) {
-        std::hash<DWORD> hasher;
-        return hasher( value );
-    }
-
-    static void hash_combine( std::size_t& seed, float value ) {
-        seed ^= hash_value( value ) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
-    }
-
-    /** Hashes the given DWORD value */
-    void hash_combine( std::size_t& seed, DWORD value ) {
-        seed ^= hash_value( value ) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
-    }
-
     /** Returns true if the given position is inside the box */
     bool PositionInsideBox( const XMFLOAT3& p, const XMFLOAT3& min, const XMFLOAT3& max ) {
         if ( p.x > min.x &&
