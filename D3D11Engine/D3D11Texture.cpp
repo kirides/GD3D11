@@ -57,9 +57,15 @@ XRESULT D3D11Texture::Init( INT2 size, ETextureFormat format, UINT mipMapCount, 
         size.y,
         1,
         mipMapCount,
-        D3D11_BIND_SHADER_RESOURCE, D3D11_USAGE_DEFAULT, 0, 1, 0, 0 );
+        D3D11_BIND_SHADER_RESOURCE, data ? D3D11_USAGE_IMMUTABLE : D3D11_USAGE_DEFAULT, 0, 1, 0, 0 );
 
-    LE( engine->GetDevice()->CreateTexture2D( &textureDesc, nullptr, Texture.ReleaseAndGetAddressOf() ) );
+    D3D11_SUBRESOURCE_DATA initialData = {};
+    initialData.pSysMem = data;
+    if ( format == ETextureFormat::TF_B8G8R8A8 ) {
+        initialData.SysMemPitch = size.x * 4;
+    }
+
+    LE( engine->GetDevice()->CreateTexture2D( &textureDesc, data ? &initialData : nullptr, Texture.ReleaseAndGetAddressOf() ) );
     SetDebugName( Texture.Get(), "D3D11Texture(\"" + fileName + "\")->Texture" );
 
     D3D11_SHADER_RESOURCE_VIEW_DESC descRV = {};
@@ -81,8 +87,17 @@ XRESULT D3D11Texture::Init( const std::string& file ) {
     //LogInfo() << "Loading Engine-Texture: " << file;
 
     Microsoft::WRL::ComPtr<ID3D11Texture2D> res;
-    LE( CreateDDSTextureFromFile( engine->GetDevice().Get(), Toolbox::ToWideChar( file.c_str() ).c_str(),
-        reinterpret_cast<ID3D11Resource**>(res.ReleaseAndGetAddressOf()), ShaderResourceView.GetAddressOf() ) );
+    LE( CreateDDSTextureFromFileEx(
+        engine->GetDevice().Get(),
+        Toolbox::ToWideChar( file.c_str() ).c_str(),
+        0,  // maxsize (0 means no limit)
+        D3D11_USAGE_IMMUTABLE,
+        D3D11_BIND_SHADER_RESOURCE,
+        0, // cpuAccessFlags (0 for immutable)
+        0, // miscFlags
+        DirectX::DDS_LOADER_DEFAULT,
+        reinterpret_cast<ID3D11Resource**>(res.ReleaseAndGetAddressOf()),
+        ShaderResourceView.GetAddressOf()) );
 
     if ( !ShaderResourceView.Get() || !res.Get() )
         return XR_FAILED;
