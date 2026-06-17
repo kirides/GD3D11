@@ -50,12 +50,18 @@
 #include "D3D11GraphicsEngine.h"
 #include "MeshManager.h"
 #include "ThreadPool.h"
+#include "zFILE.h"
+#include "zFILE_VDFS.h"
 
 #ifndef PUBLIC_RELEASE
 #define OPT_DBG_NOINLINE __declspec(noinline)
 #else
 #define OPT_DBG_NOINLINE
 #endif
+
+struct file_deleter {
+    void operator()( std::FILE* fp ) { std::fclose( fp ); }
+};
 
 // Duration how long the scene will stay wet, in MS
 const DWORD SCENE_WETNESS_DURATION_MS = 20 * 1000;
@@ -86,18 +92,27 @@ void MaterialInfo::WriteToFile( const std::string& name ) {
 
 /** Loads this info from a file */
 void MaterialInfo::LoadFromFile( const std::string_view name ) {
-    char filePath[MAX_PATH]{};
-    if (snprintf( filePath, MAX_PATH, R"(system\GD3D11\textures\infos\%.*s.mi)", static_cast<int>(name.size()), name.data() ) >= MAX_PATH) {
+    
+    bool foundFile = false;
+    char ReadBuffer[sizeof( int ) + sizeof( MaterialInfo::Buffer )];
+    
+    std::string filePath = R"(\system\GD3D11\textures\infos\)";
+    filePath = filePath.append( name.data(), name.size() );
+    filePath = filePath.append( ".mi" );
+    {
+        auto vdfsFile = zFILE_VDFS::Create(filePath.c_str());
+        if ( vdfsFile->Exists()
+            && vdfsFile->Open(false) == zERROR_NONE )
+        {
+            vdfsFile->Read(ReadBuffer, sizeof(ReadBuffer));
+            vdfsFile->Close();
+            foundFile = true;
+        }
+    }
+    
+    if (!foundFile) {
         return;
     }
-    FILE* f = fopen( filePath, "rb" );
-
-    if ( !f )
-        return;
-
-    char ReadBuffer[sizeof( int ) + sizeof( MaterialInfo::Buffer )];
-    fread( ReadBuffer, 1, sizeof( ReadBuffer ), f );
-
     // Write the version first
     int version;
     memcpy( &version, ReadBuffer, sizeof( int ) );
@@ -111,8 +126,6 @@ void MaterialInfo::LoadFromFile( const std::string_view name ) {
             buffer.DisplacementFactor = 0.7f;
         }
     }
-
-    fclose( f );
 
     buffer.Color = float4( 1, 1, 1, 1 );
 }
