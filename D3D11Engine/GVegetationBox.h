@@ -60,6 +60,12 @@ public:
     /** Refits the bounding-box around the grass-meshes. If there are none, the box will be set to 0. */
     void RefitBoundingBox();
 
+    /** Merges the vegetation of the given box into this one. Call RebuildInstancingBuffer() afterwards. */
+    void MergeVegetation( GVegetationBox* other );
+
+    /** Recreates the instancing buffer from the current spots and refits the bounding box. */
+    void RebuildInstancingBuffer();
+
     /** Re-sets the grass with the given density */
     void ResetVegetationWithDensity( float density );
 

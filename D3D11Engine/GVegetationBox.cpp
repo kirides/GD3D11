@@ -93,7 +93,7 @@ XRESULT GVegetationBox::InitVegetationBox( MeshInfo* mesh,
         trisInside.push_back( tri[2] );
     }
 
-    InitSpotsRandom( trisInside );
+    InitSpotsRandom( trisInside, S_None, density );
     TrisInside = trisInside;
 
     return XR_SUCCESS;
@@ -200,7 +200,7 @@ XRESULT GVegetationBox::InitVegetationBox( const XMFLOAT3& min,
     }
 
 
-    InitSpotsRandom( polysInside, shape );
+    InitSpotsRandom( polysInside, shape, density );
     TrisInside = polysInside;
 
     return XR_SUCCESS;
@@ -460,6 +460,26 @@ void GVegetationBox::RefitBoundingBox() {
         BoxMax.x = BoxMax.x < spot.x ? spot.x : BoxMax.x;
         BoxMax.y = BoxMax.y < spot.y ? spot.y : BoxMax.y;
         BoxMax.z = BoxMax.z < spot.z ? spot.z : BoxMax.z;
+    }
+}
+
+/** Merges the vegetation of the given box into this one. Call RebuildInstancingBuffer() afterwards. */
+void GVegetationBox::MergeVegetation( GVegetationBox* other ) {
+    VegetationSpots.insert( VegetationSpots.end(), other->VegetationSpots.begin(), other->VegetationSpots.end() );
+    TrisInside.insert( TrisInside.end(), other->TrisInside.begin(), other->TrisInside.end() );
+    Modified = true;
+}
+
+/** Recreates the instancing buffer from the current spots and refits the bounding box. */
+void GVegetationBox::RebuildInstancingBuffer() {
+    delete InstancingBuffer;
+    InstancingBuffer = nullptr;
+
+    RefitBoundingBox();
+
+    if ( !VegetationSpots.empty() ) {
+        Engine::GraphicsEngine->CreateVertexBuffer( &InstancingBuffer );
+        InstancingBuffer->Init( &VegetationSpots[0], VegetationSpots.size() * sizeof( XMFLOAT4X4 ) );
     }
 }
 
