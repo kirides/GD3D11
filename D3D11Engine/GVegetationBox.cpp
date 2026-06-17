@@ -10,7 +10,6 @@
 #include "D3D11Texture.h"
 #include "D3D11GraphicsEngine.h"
 #include "zCMaterial.h"
-
 GVegetationBox::GVegetationBox() {
     VegetationMesh = nullptr;
     VegetationTexture = nullptr;
@@ -513,14 +512,14 @@ void GVegetationBox::SaveToFILE( FILE* f, int version ) {
 }
 
 /** Loads this box from the given FILE* */
-void GVegetationBox::LoadFromFILE( FILE* f, int version ) {
+void GVegetationBox::LoadFromFILE( zFILE_VDFS* f, int version ) {
     // Save size of vegetation array
     int vsize;
-    fread( &vsize, sizeof( vsize ), 1, f );
+    f->Read( &vsize, sizeof( vsize ) );
 
     std::vector<XMFLOAT4> spots;
     spots.resize( vsize );
-    fread( &spots[0], sizeof( XMFLOAT4 ) * vsize, 1, f );
+    f->Read( &spots[0], sizeof( XMFLOAT4 ) * vsize );
 
     // Reconstruct spots
     for ( unsigned int i = 0; i < spots.size(); i++ ) {
@@ -536,13 +535,13 @@ void GVegetationBox::LoadFromFILE( FILE* f, int version ) {
 
     // Load tris inside
     int tsize;
-    fread( &tsize, sizeof( tsize ), 1, f );
+    f->Read( &tsize, sizeof( tsize ) );
     TrisInside.resize( tsize );
-    fread( &TrisInside[0], sizeof( XMFLOAT3 ) * tsize, 1, f );
+    f->Read( &TrisInside[0], sizeof( XMFLOAT3 ) * tsize );
 
     // Save wether this was using a mesh info or not
     bool hasMeshInfo = MeshPart != nullptr;
-    fread( &hasMeshInfo, sizeof( hasMeshInfo ), 1, f );
+    f->Read( &hasMeshInfo, sizeof( hasMeshInfo ) );
 
     MeshInfo* hitMesh = nullptr;
     zCMaterial* hitMaterial = nullptr;

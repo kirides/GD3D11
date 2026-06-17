@@ -5114,30 +5114,38 @@ XRESULT GothicAPI::SaveVegetation( const std::string& file ) {
 
 /** Saves vegetation to a file */
 XRESULT GothicAPI::LoadVegetation( const std::string& file ) {
-    FILE* f = fopen( file.c_str(), "rb" );
-
     LogInfo() << "Loading vegetation";
 
     // Reset first
     ResetVegetation();
 
-    if ( !f )
+    zFILE_VDFS::Ptr vdfsFile;
+    if ( std::filesystem::path( file ).is_absolute() ) {
+        vdfsFile = zFILE_VDFS::Create( file.c_str() );
+    } else if ( !file.empty() && file[0] != '\\' ) {
+        vdfsFile = zFILE_VDFS::Create( ("\\"+ file).c_str());
+    } else {
+        vdfsFile = zFILE_VDFS::Create( file.c_str() );
+    }
+
+    if ( !vdfsFile->Exists() || !vdfsFile->Open( false ) ) {
         return XR_FAILED;
+    }
 
     int version;
-    fread( &version, sizeof( version ), 1, f );
+    vdfsFile->Read( &version, sizeof( version ) );
 
     size_t num = VegetationBoxes.size();
-    fread( &num, sizeof( num ), 1, f );
+    vdfsFile->Read( &num, sizeof( num ) );
 
     for ( size_t i = 0; i < num; i++ ) {
         GVegetationBox* b = new GVegetationBox;
-        b->LoadFromFILE( f, version );
+        b->LoadFromFILE( vdfsFile.get(), version );
 
         AddVegetationBox( b );
     }
 
-    fclose( f );
+    vdfsFile->Close();
 
     return XR_SUCCESS;
 }

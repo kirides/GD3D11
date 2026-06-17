@@ -1,5 +1,6 @@
 #pragma once
 #include "pch.h"
+#include "zFILE_VDFS.h"
 
 class GMeshSimple;
 class D3D11Texture;
@@ -72,7 +73,7 @@ public:
     void SaveToFILE( FILE* f, int version );
 
     /** Loads this box from the given FILE* */
-    void LoadFromFILE( FILE* f, int version );
+    void LoadFromFILE( zFILE_VDFS* f, int version );
 
     /** Returns whether this has been modified or not */
     bool HasBeenModified();

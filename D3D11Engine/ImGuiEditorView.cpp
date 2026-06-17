@@ -314,7 +314,7 @@ void ImGuiEditorView::RenderVegetationSelectionPanel() {
     }
 
     ImGui::Text("Vegetation density:");
-    if (ImGui::SliderFloat("##VegAmount", &SelectedVegAmount, 0.0f, 3.0f, "%.2f")) {
+    if (ImGui::SliderFloat("##VegAmount", &SelectedVegAmount, 0.0f, 20.0f, "%.2f")) {
         if (Selection.SelectedVegetationBox) {
             XMFLOAT3 min, max;
             Selection.SelectedVegetationBox->GetBoundingBox(&min, &max);
