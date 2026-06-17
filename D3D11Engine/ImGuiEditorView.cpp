@@ -60,6 +60,7 @@ ImGuiEditorView::ImGuiEditorView() {
     // Vegetation settings
     VegRestrictByTexture = false;
     VegCircularShape = false;
+    VegBrushActive = false;
     SelectTrianglesOnly = false;
 
     // Slider defaults
@@ -180,7 +181,11 @@ void ImGuiEditorView::RenderMainPanel() {
 }
 
 void ImGuiEditorView::RenderVegetationTab() {
-    if (ImGui::Button("Place Volume", ImVec2(125, 30))) {
+    if (Mode == EM_PLACE_VEGETATION) {
+        if (ImGui::Button("Stop Painting", ImVec2(125, 30))) {
+            SetEditorMode(EM_IDLE);
+        }
+    } else if (ImGui::Button("Paint Vegetation", ImVec2(125, 30))) {
         MMWDelta = 0;
         SetEditorMode(EM_PLACE_VEGETATION);
     }
@@ -371,10 +376,13 @@ void ImGuiEditorView::Update(float deltaTime) {
     bool ctrlHeld = io.KeyCtrl;
 
     // Handle selection and placement modes
-    if (!MMovedAfterClick) {
-        if (Mode == EM_PLACE_VEGETATION) {
-            DoVegetationPlacement();
-        } else if (Mode == EM_SELECT_POLY || Mode == EM_IDLE) {
+    if (Mode == EM_PLACE_VEGETATION) {
+        // Acts like a paint brush: visualizes the brush and paints while LMB is
+        // held. Runs even while the mouse is moving (so dragging paints instead
+        // of moving the camera).
+        DoVegetationPlacement();
+    } else if (!MMovedAfterClick) {
+        if (Mode == EM_SELECT_POLY || Mode == EM_IDLE) {
             DoSelection();
         }
     } else if (Mode == EM_REMOVE_VEGETATION) {
@@ -434,17 +442,43 @@ void ImGuiEditorView::DoVegetationPlacement() {
     if (VegRestrictByTexture)
         rtp = &TracedTexture;
 
+    ImGuiIO& io = ImGui::GetIO();
+    bool leftDown = io.MouseDown[0];
+
     // Trace the worldmesh from the cursor
     if (Engine::GAPI->TraceWorldMesh(GetCameraPosition(), wDir, hit, rtp, hitTri)) {
         // Update the position if successful
         DraggedBoxCenter = hit;
 
-        // Visualize box
+        // Compute the brush footprint
         XMFLOAT3 minAABB;
         XMFLOAT3 maxAABB;
         XMStoreFloat3(&minAABB, XMLoadFloat3(&DraggedBoxCenter) + XMLoadFloat3(&DraggedBoxMinLocal) * (1 + MMWDelta * 0.01f));
         XMStoreFloat3(&maxAABB, XMLoadFloat3(&DraggedBoxCenter) + XMLoadFloat3(&DraggedBoxMaxLocal) * (1 + MMWDelta * 0.01f));
-        Engine::GraphicsEngine->GetLineRenderer()->AddAABBMinMax(minAABB, maxAABB);
+
+        // Paint while the left mouse button is held, but only where there is no
+        // vegetation yet so we don't over-draw existing regions.
+        XMFLOAT4 brushColor(1, 1, 1, 1);
+        if (leftDown) {
+            // Lock onto the texture under the cursor at the start of the stroke.
+            // When "texture aware" is enabled we only paint where the traced
+            // texture matches it, ignoring all others.
+            if (!VegBrushActive) {
+                VegBrushActive = true;
+                VegBrushTexture = TracedTexture;
+            }
+
+            bool textureMismatch = VegRestrictByTexture && TracedTexture != VegBrushTexture;
+
+            if (VegetationCoversPosition(hit) || textureMismatch) {
+                // Already covered or wrong texture - show red, don't paint here
+                brushColor = XMFLOAT4(1, 0, 0, 1);
+            } else {
+                PlaceVegetationBox(minAABB, maxAABB);
+                brushColor = XMFLOAT4(0, 1, 0, 1);
+            }
+        }
+        Engine::GraphicsEngine->GetLineRenderer()->AddAABBMinMax(minAABB, maxAABB, brushColor);
 
         // Visualize triangle
         FXMVECTOR nrm = Toolbox::ComputeNormal(hitTri[0], hitTri[1], hitTri[2]);
@@ -626,8 +660,8 @@ void ImGuiEditorView::OnMouseClick(int button) {
                 Engine::GAPI->SetPlayerPosition(pos);
             }
         } else if (Mode == EM_PLACE_VEGETATION) {
-            // Place the currently dragged vegetationbox
-            PlaceDraggedVegetationBox();
+            // Painting is handled continuously in DoVegetationPlacement while
+            // the left mouse button is held, so nothing to do on click release.
         } else if (Mode == EM_SELECT_POLY || Mode == EM_IDLE) {
             // Reset selection and apply what ever has the most priority
             MMWDelta = 0;
@@ -850,26 +884,28 @@ bool ImGuiEditorView::IsMouseInsideEditorWindow() {
     return io.WantCaptureMouse;
 }
 
-GVegetationBox* ImGuiEditorView::PlaceDraggedVegetationBox() {
-    SetEditorMode(EM_IDLE);
+bool ImGuiEditorView::VegetationCoversPosition(const XMFLOAT3& p) {
+    for (GVegetationBox* vegetationBox : Engine::GAPI->GetVegetationBoxes()) {
+        if (vegetationBox->PositionInsideBox(p))
+            return true;
+    }
 
+    return false;
+}
+
+GVegetationBox* ImGuiEditorView::PlaceVegetationBox(const XMFLOAT3& minp, const XMFLOAT3& maxp) {
     GVegetationBox::EShape shape = GVegetationBox::S_Box;
     if (VegCircularShape)
         shape = GVegetationBox::S_Circle;
 
     GVegetationBox* box = new GVegetationBox;
-    XMFLOAT3 minp;
-    XMFLOAT3 maxp;
-    XMStoreFloat3(&minp, XMLoadFloat3(&DraggedBoxCenter) + XMLoadFloat3(&DraggedBoxMinLocal) * (1 + MMWDelta));
-    XMStoreFloat3(&maxp, XMLoadFloat3(&DraggedBoxCenter) + XMLoadFloat3(&DraggedBoxMaxLocal) * (1 + MMWDelta));
     if (XR_SUCCESS == box->InitVegetationBox(minp, maxp, "", 1.0f, 1.0f, TracedTexture, shape)) {
         Engine::GAPI->AddVegetationBox(box);
-    } else {
-        SAFE_DELETE(box);
+        return box;
     }
 
-    Selection.SelectedVegetationBox = box;
-    return box;
+    SAFE_DELETE(box);
+    return nullptr;
 }
 
 bool ImGuiEditorView::OnWindowMessage(HWND hWnd, unsigned int msg, WPARAM wParam, LPARAM lParam) {
@@ -920,6 +956,7 @@ bool ImGuiEditorView::OnWindowMessage(HWND hWnd, unsigned int msg, WPARAM wParam
             OnMouseClick(0);
         }
         MMovedAfterClick = false;
+        VegBrushActive = false; // End the current paint stroke
         break;
 
     case WM_RBUTTONDOWN:

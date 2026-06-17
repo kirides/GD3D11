@@ -118,8 +118,11 @@ protected:
     /** Returns if the mouse is inside the editor window */
     bool IsMouseInsideEditorWindow();
 
-    /** Places the currently dragged vegetation box */
-    GVegetationBox* PlaceDraggedVegetationBox();
+    /** Places a vegetation box spanning the given world-space bounds */
+    GVegetationBox* PlaceVegetationBox(const XMFLOAT3& minp, const XMFLOAT3& maxp);
+
+    /** Returns true if any existing vegetation box already covers the position */
+    bool VegetationCoversPosition(const XMFLOAT3& p);
 
     /** Traces the set of placed vegetation boxes */
     GVegetationBox* TraceVegetationBoxes(const XMFLOAT3& wPos, const XMFLOAT3& wDir);
@@ -154,6 +157,10 @@ protected:
     /** Vegetation settings checkboxes */
     bool VegRestrictByTexture;
     bool VegCircularShape;
+
+    /** Paint-brush stroke state for EM_PLACE_VEGETATION */
+    bool VegBrushActive;        // true while the left button is held during a paint stroke
+    std::string VegBrushTexture; // texture locked at stroke start (used when "texture aware")
 
     /** Selection specific values */
     bool SelectTrianglesOnly;
