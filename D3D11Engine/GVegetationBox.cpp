@@ -375,15 +375,14 @@ void GVegetationBox::VisualizeGrass( const XMFLOAT4& color ) {
             continue; // Only render every 10th grassmesh
 
         XMFLOAT3 spot = XMFLOAT3( VegetationSpots[i]._14, VegetationSpots[i]._24, VegetationSpots[i]._34 );
-        XMFLOAT3 scale;
 
-        // Compute scale
-        //XMStoreFloat(&scale.x, XMVector3Length( XMVectorSet(VegetationSpots[i]._11, VegetationSpots[i]._21, VegetationSpots[i]._31, 0) ));
-        XMStoreFloat( &scale.y, XMVector3Length( XMVectorSet( VegetationSpots[i]._12, VegetationSpots[i]._22, VegetationSpots[i]._32, 0 ) ) );
-        //XMStoreFloat(&scale.z, XMVector3Length( XMVectorSet(VegetationSpots[i]._13, VegetationSpots[i]._23, VegetationSpots[i]._33, 0) ));
+        // Compute scale along the up-axis only. x/z are intentionally not used;
+        // they must not be left uninitialized since spot_scale is built from them.
+        float scaleY;
+        XMStoreFloat( &scaleY, XMVector3Length( XMVectorSet( VegetationSpots[i]._12, VegetationSpots[i]._22, VegetationSpots[i]._32, 0 ) ) );
 
-        XMFLOAT3 spot_scale;
-        XMStoreFloat3( &spot_scale, XMLoadFloat3( &spot ) + XMLoadFloat3( &scale ) * 2.0f );
+        // Draw a vertical tick from the spot upwards
+        XMFLOAT3 spot_scale = XMFLOAT3( spot.x, spot.y + scaleY * 2.0f, spot.z );
         Engine::GraphicsEngine->GetLineRenderer()->AddLine( LineVertex( spot, color ), LineVertex( spot_scale, color ) );
     }
 }
