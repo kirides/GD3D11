@@ -10,7 +10,6 @@
 #include "D3D11Texture.h"
 #include "D3D11GraphicsEngine.h"
 #include "zCMaterial.h"
-
 GVegetationBox::GVegetationBox() {
     VegetationMesh = nullptr;
     VegetationTexture = nullptr;
@@ -94,7 +93,7 @@ XRESULT GVegetationBox::InitVegetationBox( MeshInfo* mesh,
         trisInside.push_back( tri[2] );
     }
 
-    InitSpotsRandom( trisInside );
+    InitSpotsRandom( trisInside, S_None, density );
     TrisInside = trisInside;
 
     return XR_SUCCESS;
@@ -201,7 +200,7 @@ XRESULT GVegetationBox::InitVegetationBox( const XMFLOAT3& min,
     }
 
 
-    InitSpotsRandom( polysInside, shape );
+    InitSpotsRandom( polysInside, shape, density );
     TrisInside = polysInside;
 
     return XR_SUCCESS;
@@ -376,15 +375,14 @@ void GVegetationBox::VisualizeGrass( const XMFLOAT4& color ) {
             continue; // Only render every 10th grassmesh
 
         XMFLOAT3 spot = XMFLOAT3( VegetationSpots[i]._14, VegetationSpots[i]._24, VegetationSpots[i]._34 );
-        XMFLOAT3 scale;
 
-        // Compute scale
-        //XMStoreFloat(&scale.x, XMVector3Length( XMVectorSet(VegetationSpots[i]._11, VegetationSpots[i]._21, VegetationSpots[i]._31, 0) ));
-        XMStoreFloat( &scale.y, XMVector3Length( XMVectorSet( VegetationSpots[i]._12, VegetationSpots[i]._22, VegetationSpots[i]._32, 0 ) ) );
-        //XMStoreFloat(&scale.z, XMVector3Length( XMVectorSet(VegetationSpots[i]._13, VegetationSpots[i]._23, VegetationSpots[i]._33, 0) ));
+        // Compute scale along the up-axis only. x/z are intentionally not used;
+        // they must not be left uninitialized since spot_scale is built from them.
+        float scaleY;
+        XMStoreFloat( &scaleY, XMVector3Length( XMVectorSet( VegetationSpots[i]._12, VegetationSpots[i]._22, VegetationSpots[i]._32, 0 ) ) );
 
-        XMFLOAT3 spot_scale;
-        XMStoreFloat3( &spot_scale, XMLoadFloat3( &spot ) + XMLoadFloat3( &scale ) * 2.0f );
+        // Draw a vertical tick from the spot upwards
+        XMFLOAT3 spot_scale = XMFLOAT3( spot.x, spot.y + scaleY * 2.0f, spot.z );
         Engine::GraphicsEngine->GetLineRenderer()->AddLine( LineVertex( spot, color ), LineVertex( spot_scale, color ) );
     }
 }
@@ -464,6 +462,26 @@ void GVegetationBox::RefitBoundingBox() {
     }
 }
 
+/** Merges the vegetation of the given box into this one. Call RebuildInstancingBuffer() afterwards. */
+void GVegetationBox::MergeVegetation( GVegetationBox* other ) {
+    VegetationSpots.insert( VegetationSpots.end(), other->VegetationSpots.begin(), other->VegetationSpots.end() );
+    TrisInside.insert( TrisInside.end(), other->TrisInside.begin(), other->TrisInside.end() );
+    Modified = true;
+}
+
+/** Recreates the instancing buffer from the current spots and refits the bounding box. */
+void GVegetationBox::RebuildInstancingBuffer() {
+    delete InstancingBuffer;
+    InstancingBuffer = nullptr;
+
+    RefitBoundingBox();
+
+    if ( !VegetationSpots.empty() ) {
+        Engine::GraphicsEngine->CreateVertexBuffer( &InstancingBuffer );
+        InstancingBuffer->Init( &VegetationSpots[0], VegetationSpots.size() * sizeof( XMFLOAT4X4 ) );
+    }
+}
+
 /** Applys a uniform scaling to all vegetations */
 void GVegetationBox::ApplyUniformScaling( float scale ) {
     XMMATRIX s = XMMatrixScaling( scale, scale, scale );
@@ -513,14 +531,14 @@ void GVegetationBox::SaveToFILE( FILE* f, int version ) {
 }
 
 /** Loads this box from the given FILE* */
-void GVegetationBox::LoadFromFILE( FILE* f, int version ) {
+void GVegetationBox::LoadFromFILE( zFILE_VDFS* f, int version ) {
     // Save size of vegetation array
     int vsize;
-    fread( &vsize, sizeof( vsize ), 1, f );
+    f->Read( &vsize, sizeof( vsize ) );
 
     std::vector<XMFLOAT4> spots;
     spots.resize( vsize );
-    fread( &spots[0], sizeof( XMFLOAT4 ) * vsize, 1, f );
+    f->Read( &spots[0], sizeof( XMFLOAT4 ) * vsize );
 
     // Reconstruct spots
     for ( unsigned int i = 0; i < spots.size(); i++ ) {
@@ -536,13 +554,13 @@ void GVegetationBox::LoadFromFILE( FILE* f, int version ) {
 
     // Load tris inside
     int tsize;
-    fread( &tsize, sizeof( tsize ), 1, f );
+    f->Read( &tsize, sizeof( tsize ) );
     TrisInside.resize( tsize );
-    fread( &TrisInside[0], sizeof( XMFLOAT3 ) * tsize, 1, f );
+    f->Read( &TrisInside[0], sizeof( XMFLOAT3 ) * tsize );
 
     // Save wether this was using a mesh info or not
     bool hasMeshInfo = MeshPart != nullptr;
-    fread( &hasMeshInfo, sizeof( hasMeshInfo ), 1, f );
+    f->Read( &hasMeshInfo, sizeof( hasMeshInfo ) );
 
     MeshInfo* hitMesh = nullptr;
     zCMaterial* hitMaterial = nullptr;

@@ -23,15 +23,51 @@ struct ImGuiSelectionInfo {
         SelectedMesh = nullptr;
         SelectedMaterial = nullptr;
         SelectedVegetationBox = nullptr;
+        SelectedVegetationBoxes.clear();
         SelectedVobInfo = nullptr;
         SelectedSkeletalVob = nullptr;
+    }
+
+    /** Returns true if the given box is part of the current selection */
+    bool IsVegetationSelected(GVegetationBox* b) const {
+        for (GVegetationBox* v : SelectedVegetationBoxes)
+            if (v == b) return true;
+        return false;
+    }
+
+    /** Adds a box to the selection and makes it the primary */
+    void AddVegetationBox(GVegetationBox* b) {
+        if (!b || IsVegetationSelected(b)) return;
+        SelectedVegetationBoxes.push_back(b);
+        SelectedVegetationBox = b;
+    }
+
+    /** Removes a box from the selection, updating the primary if needed */
+    void RemoveVegetationBox(GVegetationBox* b) {
+        for (size_t i = 0; i < SelectedVegetationBoxes.size(); ++i) {
+            if (SelectedVegetationBoxes[i] == b) {
+                SelectedVegetationBoxes.erase(SelectedVegetationBoxes.begin() + i);
+                break;
+            }
+        }
+        if (SelectedVegetationBox == b)
+            SelectedVegetationBox = SelectedVegetationBoxes.empty() ? nullptr : SelectedVegetationBoxes.back();
+    }
+
+    /** Adds the box if not selected, otherwise removes it */
+    void ToggleVegetationBox(GVegetationBox* b) {
+        if (IsVegetationSelected(b)) RemoveVegetationBox(b);
+        else AddVegetationBox(b);
     }
 
     MeshInfo* SelectedMesh;
     zCMaterial* SelectedMaterial;
     VobInfo* SelectedVobInfo;
     SkeletalVobInfo* SelectedSkeletalVob;
+    /** Primary (most recently picked) selected box, or nullptr. Mirrors the back of SelectedVegetationBoxes. */
     GVegetationBox* SelectedVegetationBox;
+    /** All currently selected vegetation boxes (multi-selection) */
+    std::vector<GVegetationBox*> SelectedVegetationBoxes;
 };
 
 class ImGuiEditorView {
@@ -118,8 +154,14 @@ protected:
     /** Returns if the mouse is inside the editor window */
     bool IsMouseInsideEditorWindow();
 
-    /** Places the currently dragged vegetation box */
-    GVegetationBox* PlaceDraggedVegetationBox();
+    /** Places a vegetation box spanning the given world-space bounds */
+    GVegetationBox* PlaceVegetationBox(const XMFLOAT3& minp, const XMFLOAT3& maxp);
+
+    /** Consolidates all boxes painted during the current stroke into a single box */
+    void ConsolidateStrokeBoxes();
+
+    /** Returns true if any existing vegetation box already covers the position */
+    bool VegetationCoversPosition(const XMFLOAT3& p);
 
     /** Traces the set of placed vegetation boxes */
     GVegetationBox* TraceVegetationBoxes(const XMFLOAT3& wPos, const XMFLOAT3& wDir);
@@ -154,6 +196,11 @@ protected:
     /** Vegetation settings checkboxes */
     bool VegRestrictByTexture;
     bool VegCircularShape;
+
+    /** Paint-brush stroke state for EM_PLACE_VEGETATION */
+    bool VegBrushActive;        // true while the left button is held during a paint stroke
+    std::string VegBrushTexture; // texture locked at stroke start (used when "texture aware")
+    std::vector<GVegetationBox*> StrokeBoxes; // boxes placed during the current stroke, consolidated on release
 
     /** Selection specific values */
     bool SelectTrianglesOnly;

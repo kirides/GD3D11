@@ -843,8 +843,7 @@ XRESULT D3D11GraphicsEngine::Init() {
 
     WhiteTexture = std::make_unique<D3D11Texture>();
     uint32_t whitePixel = 0xFFFFFFFF;
-    WhiteTexture->Init( {1,1}, D3D11Texture::ETextureFormat::TF_B8G8R8A8, 1, nullptr, "FULL_WHITE_ALPHA_OPAQUE.static-memory");
-    WhiteTexture->UpdateData( &whitePixel, 0 );
+    WhiteTexture->Init( {1,1}, D3D11Texture::ETextureFormat::TF_B8G8R8A8, 1, &whitePixel, "FULL_WHITE_ALPHA_OPAQUE.static-memory");
 
     InverseUnitSphereMesh = new GMesh;
     InverseUnitSphereMesh->LoadMesh( "system\\GD3D11\\meshes\\icoSphere.obj" );

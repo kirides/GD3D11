@@ -7,6 +7,7 @@
 #include "RenderToTextureBuffer.h"
 #include "D3D11_Helpers.h"
 #include "TextureConversions.h"
+#include "zFILE_VDFS.h"
 
 extern bool NativeSupport16BitTextures;
 static unsigned char* ConvertedData = nullptr;
@@ -57,9 +58,15 @@ XRESULT D3D11Texture::Init( INT2 size, ETextureFormat format, UINT mipMapCount, 
         size.y,
         1,
         mipMapCount,
-        D3D11_BIND_SHADER_RESOURCE, D3D11_USAGE_DEFAULT, 0, 1, 0, 0 );
+        D3D11_BIND_SHADER_RESOURCE, data ? D3D11_USAGE_IMMUTABLE : D3D11_USAGE_DEFAULT, 0, 1, 0, 0 );
 
-    LE( engine->GetDevice()->CreateTexture2D( &textureDesc, nullptr, Texture.ReleaseAndGetAddressOf() ) );
+    D3D11_SUBRESOURCE_DATA initialData = {};
+    initialData.pSysMem = data;
+    if ( format == ETextureFormat::TF_B8G8R8A8 ) {
+        initialData.SysMemPitch = size.x * 4;
+    }
+
+    LE( engine->GetDevice()->CreateTexture2D( &textureDesc, data ? &initialData : nullptr, Texture.ReleaseAndGetAddressOf() ) );
     SetDebugName( Texture.Get(), "D3D11Texture(\"" + fileName + "\")->Texture" );
 
     D3D11_SHADER_RESOURCE_VIEW_DESC descRV = {};
@@ -79,10 +86,50 @@ XRESULT D3D11Texture::Init( const std::string& file ) {
     D3D11GraphicsEngineBase* engine = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine);
 
     //LogInfo() << "Loading Engine-Texture: " << file;
-
     Microsoft::WRL::ComPtr<ID3D11Texture2D> res;
-    LE( CreateDDSTextureFromFile( engine->GetDevice().Get(), Toolbox::ToWideChar( file.c_str() ).c_str(),
-        reinterpret_cast<ID3D11Resource**>(res.ReleaseAndGetAddressOf()), ShaderResourceView.GetAddressOf() ) );
+    if ( std::filesystem::path( file ).is_absolute() ) {
+        LE( CreateDDSTextureFromFileEx(
+            engine->GetDevice().Get(),
+            Toolbox::ToWideChar( file.c_str() ).c_str(),
+            0,  // maxsize (0 means no limit)
+            D3D11_USAGE_IMMUTABLE,
+            D3D11_BIND_SHADER_RESOURCE,
+            0, // cpuAccessFlags (0 for immutable)
+            0, // miscFlags
+            DirectX::DDS_LOADER_DEFAULT,
+            reinterpret_cast<ID3D11Resource**>(res.ReleaseAndGetAddressOf()),
+            ShaderResourceView.GetAddressOf()) );
+    } else {
+        std::vector<uint8_t> fileData;
+        
+        zFILE_VDFS::Ptr vdfsFile;
+        if ( !file.empty() && file[0] != '\\' ) {
+            vdfsFile = zFILE_VDFS::Create( ("\\" + file).c_str());
+        } else {
+            vdfsFile = zFILE_VDFS::Create( file.c_str() );
+        }
+        if ( !vdfsFile || !vdfsFile->Exists() || vdfsFile->Open(false) != zERROR_NONE ) {
+            LogError() << "Failed to load texture from VDFS: " << file;
+            return XR_FAILED;
+        }
+        fileData.resize( vdfsFile->Size() );
+        vdfsFile->Read( fileData.data(), fileData.size() );
+        vdfsFile->Close();
+
+        LE( CreateDDSTextureFromMemoryEx(
+            engine->GetDevice().Get(),
+            fileData.data(),
+            fileData.size(),
+            0,  // maxsize (0 means no limit)
+            D3D11_USAGE_IMMUTABLE,
+            D3D11_BIND_SHADER_RESOURCE,
+            0, // cpuAccessFlags (0 for immutable)
+            0, // miscFlags
+            DirectX::DDS_LOADER_DEFAULT,
+            reinterpret_cast<ID3D11Resource**>(res.ReleaseAndGetAddressOf()),
+            ShaderResourceView.GetAddressOf() ) );
+    }
+
 
     if ( !ShaderResourceView.Get() || !res.Get() )
         return XR_FAILED;

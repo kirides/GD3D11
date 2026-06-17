@@ -60,6 +60,7 @@ ImGuiEditorView::ImGuiEditorView() {
     // Vegetation settings
     VegRestrictByTexture = false;
     VegCircularShape = false;
+    VegBrushActive = false;
     SelectTrianglesOnly = false;
 
     // Slider defaults
@@ -180,7 +181,11 @@ void ImGuiEditorView::RenderMainPanel() {
 }
 
 void ImGuiEditorView::RenderVegetationTab() {
-    if (ImGui::Button("Place Volume", ImVec2(125, 30))) {
+    if (Mode == EM_PLACE_VEGETATION) {
+        if (ImGui::Button("Stop Painting", ImVec2(125, 30))) {
+            SetEditorMode(EM_IDLE);
+        }
+    } else if (ImGui::Button("Paint Vegetation", ImVec2(125, 30))) {
         MMWDelta = 0;
         SetEditorMode(EM_PLACE_VEGETATION);
     }
@@ -305,25 +310,39 @@ void ImGuiEditorView::RenderTextureSelectionPanel() {
 }
 
 void ImGuiEditorView::RenderVegetationSelectionPanel() {
+    const size_t selCount = Selection.SelectedVegetationBoxes.size();
+
+    if (selCount > 1) {
+        ImGui::Text("%zu patches selected", selCount);
+    }
+    ImGui::TextWrapped("Ctrl+Click a patch to add/remove it from the selection.");
+    ImGui::Spacing();
+
     ImGui::Text("Vegetation size:");
     if (ImGui::SliderFloat("##VegSize", &SelectedVegSize, 0.0f, 3.0f, "%.2f")) {
-        if (Selection.SelectedVegetationBox) {
-            Selection.SelectedVegetationBox->ApplyUniformScaling(1 + (SelectedVegSize - VegLastUniformScale));
+        if (!Selection.SelectedVegetationBoxes.empty()) {
+            float factor = 1 + (SelectedVegSize - VegLastUniformScale);
+            for (GVegetationBox* box : Selection.SelectedVegetationBoxes)
+                box->ApplyUniformScaling(factor);
             VegLastUniformScale = SelectedVegSize;
         }
     }
 
     ImGui::Text("Vegetation density:");
-    if (ImGui::SliderFloat("##VegAmount", &SelectedVegAmount, 0.0f, 3.0f, "%.2f")) {
-        if (Selection.SelectedVegetationBox) {
+    if (ImGui::SliderFloat("##VegAmount", &SelectedVegAmount, 0.0f, 20.0f, "%.2f")) {
+        for (GVegetationBox* box : Selection.SelectedVegetationBoxes) {
             XMFLOAT3 min, max;
-            Selection.SelectedVegetationBox->GetBoundingBox(&min, &max);
-            Selection.SelectedVegetationBox->ResetVegetationWithDensity(SelectedVegAmount);
-            Selection.SelectedVegetationBox->SetBoundingBox(min, max);
+            box->GetBoundingBox(&min, &max);
+            box->ResetVegetationWithDensity(SelectedVegAmount);
+            box->SetBoundingBox(min, max);
         }
     }
 
-    if (Selection.SelectedVegetationBox && Selection.SelectedVegetationBox->HasBeenModified()) {
+    bool anyModified = false;
+    for (GVegetationBox* box : Selection.SelectedVegetationBoxes) {
+        if (box->HasBeenModified()) { anyModified = true; break; }
+    }
+    if (anyModified) {
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1, 0, 0, 1));
         ImGui::TextWrapped("You may lose changes made to the volume after changing its density!");
         ImGui::PopStyleColor();
@@ -358,8 +377,11 @@ void ImGuiEditorView::Update(float deltaTime) {
         VisualizeMeshInfo(Selection.SelectedMesh, XMFLOAT4(1, 0, 0, 1));
     }
 
-    if (Selection.SelectedVegetationBox) {
-        Selection.SelectedVegetationBox->VisualizeGrass(XMFLOAT4(1, 0, 0, 1));
+    for (GVegetationBox* box : Selection.SelectedVegetationBoxes) {
+        // Highlight the primary box in red, the rest in orange so the user can
+        // tell which one drives the displayed slider values.
+        XMFLOAT4 c = (box == Selection.SelectedVegetationBox) ? XMFLOAT4(1, 0, 0, 1) : XMFLOAT4(1, 0.5f, 0, 1);
+        box->VisualizeGrass(c);
     }
 
     // Check if ImGui wants the mouse
@@ -371,10 +393,13 @@ void ImGuiEditorView::Update(float deltaTime) {
     bool ctrlHeld = io.KeyCtrl;
 
     // Handle selection and placement modes
-    if (!MMovedAfterClick) {
-        if (Mode == EM_PLACE_VEGETATION) {
-            DoVegetationPlacement();
-        } else if (Mode == EM_SELECT_POLY || Mode == EM_IDLE) {
+    if (Mode == EM_PLACE_VEGETATION) {
+        // Acts like a paint brush: visualizes the brush and paints while LMB is
+        // held. Runs even while the mouse is moving (so dragging paints instead
+        // of moving the camera).
+        DoVegetationPlacement();
+    } else if (!MMovedAfterClick) {
+        if (Mode == EM_SELECT_POLY || Mode == EM_IDLE) {
             DoSelection();
         }
     } else if (Mode == EM_REMOVE_VEGETATION) {
@@ -407,8 +432,9 @@ void ImGuiEditorView::DoVegetationRemove() {
 
                 // Delete if empty
                 if (Selection.SelectedVegetationBox->IsEmpty()) {
-                    Engine::GAPI->RemoveVegetationBox(Selection.SelectedVegetationBox);
-                    Selection.SelectedVegetationBox = nullptr;
+                    GVegetationBox* removed = Selection.SelectedVegetationBox;
+                    Engine::GAPI->RemoveVegetationBox(removed);
+                    Selection.RemoveVegetationBox(removed);
                     DoSelection();
                 }
 
@@ -434,17 +460,44 @@ void ImGuiEditorView::DoVegetationPlacement() {
     if (VegRestrictByTexture)
         rtp = &TracedTexture;
 
+    ImGuiIO& io = ImGui::GetIO();
+    bool leftDown = io.MouseDown[0];
+
     // Trace the worldmesh from the cursor
     if (Engine::GAPI->TraceWorldMesh(GetCameraPosition(), wDir, hit, rtp, hitTri)) {
         // Update the position if successful
         DraggedBoxCenter = hit;
 
-        // Visualize box
+        // Compute the brush footprint
         XMFLOAT3 minAABB;
         XMFLOAT3 maxAABB;
         XMStoreFloat3(&minAABB, XMLoadFloat3(&DraggedBoxCenter) + XMLoadFloat3(&DraggedBoxMinLocal) * (1 + MMWDelta * 0.01f));
         XMStoreFloat3(&maxAABB, XMLoadFloat3(&DraggedBoxCenter) + XMLoadFloat3(&DraggedBoxMaxLocal) * (1 + MMWDelta * 0.01f));
-        Engine::GraphicsEngine->GetLineRenderer()->AddAABBMinMax(minAABB, maxAABB);
+
+        // Paint while the left mouse button is held, but only where there is no
+        // vegetation yet so we don't over-draw existing regions.
+        XMFLOAT4 brushColor(1, 1, 1, 1);
+        if (leftDown) {
+            // Lock onto the texture under the cursor at the start of the stroke.
+            // When "texture aware" is enabled we only paint where the traced
+            // texture matches it, ignoring all others.
+            if (!VegBrushActive) {
+                VegBrushActive = true;
+                VegBrushTexture = TracedTexture;
+            }
+
+            bool textureMismatch = VegRestrictByTexture && TracedTexture != VegBrushTexture;
+
+            if (VegetationCoversPosition(hit) || textureMismatch) {
+                // Already covered or wrong texture - show red, don't paint here
+                brushColor = XMFLOAT4(1, 0, 0, 1);
+            } else {
+                if (GVegetationBox* placed = PlaceVegetationBox(minAABB, maxAABB))
+                    StrokeBoxes.push_back(placed);
+                brushColor = XMFLOAT4(0, 1, 0, 1);
+            }
+        }
+        Engine::GraphicsEngine->GetLineRenderer()->AddAABBMinMax(minAABB, maxAABB, brushColor);
 
         // Visualize triangle
         FXMVECTOR nrm = Toolbox::ComputeNormal(hitTri[0], hitTri[1], hitTri[2]);
@@ -626,18 +679,35 @@ void ImGuiEditorView::OnMouseClick(int button) {
                 Engine::GAPI->SetPlayerPosition(pos);
             }
         } else if (Mode == EM_PLACE_VEGETATION) {
-            // Place the currently dragged vegetationbox
-            PlaceDraggedVegetationBox();
+            // Painting is handled continuously in DoVegetationPlacement while
+            // the left mouse button is held, so nothing to do on click release.
         } else if (Mode == EM_SELECT_POLY || Mode == EM_IDLE) {
-            // Reset selection and apply what ever has the most priority
-            MMWDelta = 0;
-            Selection.Reset();
+            // Ctrl+Click on a vegetation box adds/removes it from the current
+            // multi-selection instead of replacing the whole selection.
+            bool multiSelectVeg = io.KeyCtrl && TracedVegetationBox;
 
-            VegLastUniformScale = 1.0f;
-            SelectedVegAmount = 1.0f;
-            SelectedVegSize = 1.0f;
+            if (!multiSelectVeg) {
+                // Reset selection and apply what ever has the most priority
+                MMWDelta = 0;
+                Selection.Reset();
 
-            if (TracedVobInfo) {
+                // VegLastUniformScale = 1.0f;
+                // SelectedVegAmount = 1.0f;
+                // SelectedVegSize = 1.0f;
+            }
+
+            if (multiSelectVeg) {
+                Selection.ToggleVegetationBox(TracedVegetationBox);
+
+                SelectionTabIndex = 1; // Vegetation tab
+
+                // Reflect the (new) primary box on the sliders. Scaling is
+                // relative, so reset its baseline; this does not modify the box.
+                VegLastUniformScale = 1.0f;
+                SelectedVegSize = 1.0f;
+                if (Selection.SelectedVegetationBox)
+                    SelectedVegAmount = Selection.SelectedVegetationBox->GetDensity();
+            } else if (TracedVobInfo) {
                 Selection.SelectedVobInfo = TracedVobInfo;
                 Selection.SelectedMaterial = TracedMaterial;
 
@@ -657,15 +727,12 @@ void ImGuiEditorView::OnMouseClick(int button) {
                 Widgets->ClearSelection();
                 Widgets->AddSelection(TracedSkeletalVobInfo);
             } else if (TracedVegetationBox) {
-                Selection.SelectedVegetationBox = TracedVegetationBox;
+                Selection.AddVegetationBox(TracedVegetationBox);
 
                 SelectionTabIndex = 1; // Vegetation tab
 
-                // Trick the slider into not updating the just selected volume
-                float d = Selection.SelectedVegetationBox->GetDensity();
-                Selection.SelectedVegetationBox = nullptr;
-                SelectedVegAmount = d;
-                Selection.SelectedVegetationBox = TracedVegetationBox;
+                // Show the selected volume's density on the slider
+                SelectedVegAmount = TracedVegetationBox->GetDensity();
             } else {
                 // Vegetation has priority over mesh
                 Selection.SelectedMesh = TracedMesh;
@@ -850,26 +917,46 @@ bool ImGuiEditorView::IsMouseInsideEditorWindow() {
     return io.WantCaptureMouse;
 }
 
-GVegetationBox* ImGuiEditorView::PlaceDraggedVegetationBox() {
-    SetEditorMode(EM_IDLE);
+bool ImGuiEditorView::VegetationCoversPosition(const XMFLOAT3& p) {
+    for (GVegetationBox* vegetationBox : Engine::GAPI->GetVegetationBoxes()) {
+        if (vegetationBox->PositionInsideBox(p))
+            return true;
+    }
 
+    return false;
+}
+
+GVegetationBox* ImGuiEditorView::PlaceVegetationBox(const XMFLOAT3& minp, const XMFLOAT3& maxp) {
     GVegetationBox::EShape shape = GVegetationBox::S_Box;
     if (VegCircularShape)
         shape = GVegetationBox::S_Circle;
 
     GVegetationBox* box = new GVegetationBox;
-    XMFLOAT3 minp;
-    XMFLOAT3 maxp;
-    XMStoreFloat3(&minp, XMLoadFloat3(&DraggedBoxCenter) + XMLoadFloat3(&DraggedBoxMinLocal) * (1 + MMWDelta));
-    XMStoreFloat3(&maxp, XMLoadFloat3(&DraggedBoxCenter) + XMLoadFloat3(&DraggedBoxMaxLocal) * (1 + MMWDelta));
-    if (XR_SUCCESS == box->InitVegetationBox(minp, maxp, "", 1.0f, 1.0f, TracedTexture, shape)) {
+    if (XR_SUCCESS == box->InitVegetationBox(minp, maxp, "", SelectedVegAmount, 1.0f, TracedTexture, shape)) {
+        // Apply the size set on the slider (the per-instance scale baseline is 1.0)
+        if (SelectedVegSize != 1.0f)
+            box->ApplyUniformScaling(SelectedVegSize);
         Engine::GAPI->AddVegetationBox(box);
-    } else {
-        SAFE_DELETE(box);
+        return box;
     }
 
-    Selection.SelectedVegetationBox = box;
-    return box;
+    SAFE_DELETE(box);
+    return nullptr;
+}
+
+void ImGuiEditorView::ConsolidateStrokeBoxes() {
+    // Merge every box painted during the stroke into the first one so a long
+    // stroke ends up as a single vegetation box instead of dozens of small ones.
+    if (StrokeBoxes.size() > 1) {
+        GVegetationBox* target = StrokeBoxes.front();
+        for (size_t i = 1; i < StrokeBoxes.size(); i++) {
+            target->MergeVegetation(StrokeBoxes[i]);
+            Engine::GAPI->RemoveVegetationBox(StrokeBoxes[i]); // removes from the world and deletes it
+        }
+        target->RebuildInstancingBuffer();
+    }
+
+    StrokeBoxes.clear();
 }
 
 bool ImGuiEditorView::OnWindowMessage(HWND hWnd, unsigned int msg, WPARAM wParam, LPARAM lParam) {
@@ -920,6 +1007,8 @@ bool ImGuiEditorView::OnWindowMessage(HWND hWnd, unsigned int msg, WPARAM wParam
             OnMouseClick(0);
         }
         MMovedAfterClick = false;
+        VegBrushActive = false; // End the current paint stroke
+        ConsolidateStrokeBoxes();
         break;
 
     case WM_RBUTTONDOWN:
@@ -970,7 +1059,8 @@ bool ImGuiEditorView::OnWindowMessage(HWND hWnd, unsigned int msg, WPARAM wParam
             if (Selection.SelectedVegetationBox) {
                 // Adjust size of grassblades if not in removing-mode
                 if (Mode == EM_IDLE) {
-                    Selection.SelectedVegetationBox->ApplyUniformScaling(delta < 0 ? 0.9f : 1.1f);
+                    for (GVegetationBox* box : Selection.SelectedVegetationBoxes)
+                        box->ApplyUniformScaling(delta < 0 ? 0.9f : 1.1f);
                 }
             } else if (!io.KeyCtrl) {
                 // no editor movement if we hold CTRL
@@ -1027,9 +1117,11 @@ void ImGuiEditorView::SetEditorMode(EditorMode mode) {
 void ImGuiEditorView::OnDelete() {
     // Find out what we have selected
     if (Selection.SelectedVegetationBox) {
-        // Delete all attachments to this mesh
-        Engine::GAPI->RemoveVegetationBox(Selection.SelectedVegetationBox);
+        // Delete all selected boxes and their attachments
+        for (GVegetationBox* box : Selection.SelectedVegetationBoxes)
+            Engine::GAPI->RemoveVegetationBox(box);
 
+        Selection.SelectedVegetationBoxes.clear();
         Selection.SelectedVegetationBox = nullptr;
         return;
     }

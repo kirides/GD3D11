@@ -1,5 +1,6 @@
 #pragma once
 #include "pch.h"
+#include "zFILE_VDFS.h"
 
 class GMeshSimple;
 class D3D11Texture;
@@ -59,6 +60,12 @@ public:
     /** Refits the bounding-box around the grass-meshes. If there are none, the box will be set to 0. */
     void RefitBoundingBox();
 
+    /** Merges the vegetation of the given box into this one. Call RebuildInstancingBuffer() afterwards. */
+    void MergeVegetation( GVegetationBox* other );
+
+    /** Recreates the instancing buffer from the current spots and refits the bounding box. */
+    void RebuildInstancingBuffer();
+
     /** Re-sets the grass with the given density */
     void ResetVegetationWithDensity( float density );
 
@@ -72,7 +79,7 @@ public:
     void SaveToFILE( FILE* f, int version );
 
     /** Loads this box from the given FILE* */
-    void LoadFromFILE( FILE* f, int version );
+    void LoadFromFILE( zFILE_VDFS* f, int version );
 
     /** Returns whether this has been modified or not */
     bool HasBeenModified();

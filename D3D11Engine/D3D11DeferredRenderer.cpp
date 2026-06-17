@@ -155,14 +155,18 @@ bool D3D11DeferredRenderer::BindShaderForTexture( D3D11ShaderManager& shaderMana
     } else if ( texture->HasAlphaChannel() || forceAlphaTest ) {
         if ( texture->GetSurface()->GetFxMap() ) {
             newShader = shaderManager.GetPShader( resolvedDiffuseNormalmappedAlphatestFxMap );
+        } else if ( texture->GetSurface()->GetNormalmap() || Engine::GAPI->GetSceneWetness() > 1e-6 ) {
+            newShader = shaderManager.GetPShader( resolvedDiffuseNormalmappedAlphatest ); 
         } else {
-            newShader = shaderManager.GetPShader( resolvedDiffuseNormalmappedAlphatest );
+            newShader = shaderManager.GetPShader( PShaderID::PS_DiffuseAlphaTest );
         }
     } else {
         if ( texture->GetSurface()->GetFxMap() ) {
             newShader = shaderManager.GetPShader( resolvedDiffuseNormalmappedFxMap );
-        } else {
+        } else if ( texture->GetSurface()->GetNormalmap() || Engine::GAPI->GetSceneWetness() > 1e-6 ) {
             newShader = shaderManager.GetPShader( resolvedDiffuseNormalmapped );
+        } else {
+            newShader = shaderManager.GetPShader( PShaderID::PS_Diffuse );
         }
     }
 
