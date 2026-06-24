@@ -1057,6 +1057,10 @@ void GothicAPI::LoadRendererWorldSettings( GothicRendererSettings& s, const char
     );
 
     GetPrivateProfileArray("Atmoshpere", "LightDirection", &aS.LightDirection.x, 3, &aS.LightDirection.x, ini);
+
+    s.GodRayDecay = GetPrivateProfileFloatA( "GodRays", "GodRayDecay", s.GodRayDecay, ini );
+    s.GodRayDensity = GetPrivateProfileFloatA( "GodRays", "GodRayDensity", s.GodRayDensity, ini );
+    s.GodRayWeight = GetPrivateProfileFloatA( "GodRays", "GodRayWeight", s.GodRayWeight, ini );
 }
 
 void GothicAPI::SaveRendererWorldSettings( const GothicRendererSettings& s )
@@ -1128,6 +1132,10 @@ void GothicAPI::SaveRendererWorldSettings( const GothicRendererSettings& s, cons
     WritePrivateProfileStringA( "Atmoshpere", "LightDirectionX", nullptr, ini.c_str() );
     WritePrivateProfileStringA( "Atmoshpere", "LightDirectionY", nullptr, ini.c_str() );
     WritePrivateProfileStringA( "Atmoshpere", "LightDirectionZ", nullptr, ini.c_str() );
+
+    WritePrivateProfileStringA( "GodRays", "GodRayDecay", std::to_string( s.GodRayDecay ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "GodRays", "GodRayDensity", std::to_string( s.GodRayDensity ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "GodRays", "GodRayWeight", std::to_string( s.GodRayWeight ).c_str(), ini.c_str() );    
 }
 
 /** Goes through the given zCTree and registers all found vobs */
