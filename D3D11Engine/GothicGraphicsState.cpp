@@ -31,10 +31,10 @@ static void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.DebugSettings.FeatureSet.UseShadowAtlas = true;
         s.ShadowMapSize = 1024;
         s.ShadowFrustumCullingMode = GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_AGGRESSIVE;
-        s.ShadowSoftness = 0.85f;
+        s.ShadowSoftness = 2.00f;
         s.SmoothShadowCameraUpdate = true;
         s.SmoothShadowFrequency = 500;
-        s.ShadowFilterMode = GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_DISABLED;
+        s.ShadowFilterMode = GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_SIMPLE;
 
         s.EnableDynamicLighting = false;
         s.EnablePointlightShadows = GothicRendererSettings::EPointLightShadowMode::PLS_DISABLED;
@@ -66,7 +66,7 @@ static void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.DebugSettings.FeatureSet.UseShadowAtlas = true;
         s.ShadowMapSize = 2048;
         s.ShadowFrustumCullingMode = GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_CONSERVATIVE;
-        s.ShadowSoftness = 0.85f;
+        s.ShadowSoftness = 2.00f;
         s.SmoothShadowCameraUpdate = true;
         s.SmoothShadowFrequency = 1000;
         s.ShadowFilterMode = GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_SIMPLE;
@@ -74,7 +74,8 @@ static void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.EnableDynamicLighting = true;
         s.EnablePointlightShadows = GothicRendererSettings::EPointLightShadowMode::PLS_STATIC_ONLY;
 
-        s.AoMode = AOMode::AO_NONE;
+        s.AoMode = AOMode::AO_ASSAO;
+        s.ApplyAssaoPreset( 0 );
 
         s.textureMaxSize = static_cast<int>(GothicRendererSettings::TX_QUALITY::Medium);
 
@@ -100,7 +101,7 @@ static void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.NumShadowCascades = 3;
         s.ShadowMapSize = 4096;
         s.ShadowFrustumCullingMode = GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_CONSERVATIVE;
-        s.ShadowSoftness = 1.0f;
+        s.ShadowSoftness = 2.0f;
         s.SmoothShadowCameraUpdate = false;
         s.SmoothShadowFrequency = 1000;
         s.ShadowFilterMode = GothicRendererSettings::E_ShadowFilterMode::SHADOW_FILTER_SIMPLE;
@@ -108,9 +109,8 @@ static void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.EnableDynamicLighting = true;
         s.EnablePointlightShadows = GothicRendererSettings::EPointLightShadowMode::PLS_UPDATE_DYNAMIC;
 
-        s.AoMode = AOMode::AO_HBAO;
-        s.HbaoSettings.SsaoStepCount = 4;
-        s.HbaoSettings.SsaoBlurRadius = 4;
+        s.AoMode = AOMode::AO_ASSAO;
+        s.ApplyAssaoPreset( 1 );
 
         s.textureMaxSize = static_cast<int>(GothicRendererSettings::TX_QUALITY::High);
 
@@ -144,9 +144,8 @@ static void ApplyGraphicsPresets( GothicRendererSettings& s ) {
         s.EnableDynamicLighting = true;
         s.EnablePointlightShadows = GothicRendererSettings::EPointLightShadowMode::PLS_UPDATE_DYNAMIC;
 
-        s.AoMode = AOMode::AO_HBAO;
-        s.HbaoSettings.SsaoStepCount = 8;
-        s.HbaoSettings.SsaoBlurRadius = 4;
+        s.AoMode = AOMode::AO_ASSAO;
+        s.ApplyAssaoPreset( 1 );
 
         s.textureMaxSize = static_cast<int>(GothicRendererSettings::TX_QUALITY::VeryHigh);
 
