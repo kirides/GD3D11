@@ -293,7 +293,7 @@ void D3D11ShadowMap::EnsureShadowMapBackend( int size ) {
         } else {
             m_shadowAtlas.reset();
             m_cascadedShadowMap = std::make_unique<D3D11CascadedShadowMapBuffer>();
-            m_cascadedShadowMap->Init( m_device, clampedSize, MAX_CSM_CASCADES );
+            m_cascadedShadowMap->Init( m_device, clampedSize, atlasNumCascades );
         }
 
         // Sampler addressing depends on atlas/array path.
@@ -316,9 +316,11 @@ void D3D11ShadowMap::EnsureShadowMapBackend( int size ) {
         const int maxAtlasCascade0Size = (atlasNumCascades <= 1) ? clampedSize : (clampedSize / 4);
         int atlasCascade0Size = std::min<int>( clampedSize, maxAtlasCascade0Size );
         m_shadowAtlas->Resize( atlasCascade0Size, atlasNumCascades );
-    } else if ( !m_useAtlas && !m_cascadedShadowMap ) {
-        m_cascadedShadowMap = std::make_unique<D3D11CascadedShadowMapBuffer>();
-        m_cascadedShadowMap->Init( m_device, clampedSize, MAX_CSM_CASCADES );
+    } else if ( !m_useAtlas ) {
+        if ( !m_cascadedShadowMap ) {
+            m_cascadedShadowMap = std::make_unique<D3D11CascadedShadowMapBuffer>();
+        }
+        m_cascadedShadowMap->Init( m_device, clampedSize, atlasNumCascades );
     }
 }
 

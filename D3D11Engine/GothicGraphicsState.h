@@ -420,6 +420,7 @@ struct GothicRasterizerStateInfo : public GothicPipelineState {
     void SetDefault() {
         CullMode = CM_CULL_BACK;
         ZBias = 0;
+        SlopeScaledDepthBias = 0.0f;
         FrontCounterClockwise = false;
         Wireframe = false;
         DepthClipEnable = false;
@@ -431,6 +432,7 @@ struct GothicRasterizerStateInfo : public GothicPipelineState {
     bool Wireframe;
     bool Padding;
     int ZBias;
+    float SlopeScaledDepthBias;
 
     /** Deletes all cached states */
     static void DeleteCachedObjects() {
@@ -849,6 +851,7 @@ struct GothicRendererSettings {
         DebugSettings.Culling.CullBspSections = true;
         DebugSettings.Culling.CullVobs = true;
         DebugSettings.ShadowCascades.LazyCascadeUpdate = true;
+        DebugSettings.ShadowCascades.ShadowDepthSlopeBias = 0.0f;
         DebugSettings.FeatureSet.EnableDriverExtensions = true;
         DebugSettings.FeatureSet.UseWorldSectionBVH = true;
         DebugSettings.FeatureSet.UseScreenSpaceShadowMask = false;
@@ -1047,6 +1050,7 @@ struct GothicRendererSettings {
             float ExtendSide;
             float Lambda;
             float Bias;
+            float ShadowDepthSlopeBias;
         } ShadowCascades;
         struct {
             bool CullVobs;

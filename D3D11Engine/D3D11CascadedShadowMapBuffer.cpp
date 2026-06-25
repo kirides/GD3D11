@@ -17,6 +17,8 @@ void D3D11CascadedShadowMapBuffer::Release() {
     }
     m_srv.Reset();
     m_texture.Reset();
+    m_size = 0;
+    m_numCascades = 0;
 }
 
 HRESULT D3D11CascadedShadowMapBuffer::Init(
@@ -25,10 +27,12 @@ HRESULT D3D11CascadedShadowMapBuffer::Init(
     UINT numCascades ) {
 
     m_device = device;
-    m_numCascades = std::min<UINT>( numCascades, MAX_CSM_CASCADES );
-    m_numCascades = std::max<UINT>( m_numCascades, 1 );
+    m_numCascades = std::clamp<UINT>( numCascades, 1, MAX_CSM_CASCADES );
 
-    return Resize( size );
+    if ( m_size != size || m_numCascades != numCascades ) {
+        return Resize( size );
+    }
+    return S_OK;
 }
 
 HRESULT D3D11CascadedShadowMapBuffer::Resize( UINT size ) {
@@ -40,7 +44,6 @@ HRESULT D3D11CascadedShadowMapBuffer::Resize( UINT size ) {
     // Clamp size to valid range
     m_size = std::max<UINT>( size, 512 );
 
-    Release();
 
     HRESULT hr = S_OK;
 
@@ -50,13 +53,17 @@ HRESULT D3D11CascadedShadowMapBuffer::Resize( UINT size ) {
     texDesc.Height = m_size;
     texDesc.MipLevels = 1;
     texDesc.ArraySize = m_numCascades;
-    texDesc.Format = DXGI_FORMAT_R16_TYPELESS;
+    texDesc.Format = DXGI_FORMAT_R32_TYPELESS;
     texDesc.SampleDesc.Count = 1;
     texDesc.SampleDesc.Quality = 0;
     texDesc.Usage = D3D11_USAGE_DEFAULT;
     texDesc.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
     texDesc.CPUAccessFlags = 0;
     texDesc.MiscFlags = 0;
+
+    Release();
+    m_size = texDesc.Width;
+    m_numCascades = texDesc.ArraySize;
 
     LE( m_device->CreateTexture2D( &texDesc, nullptr, m_texture.GetAddressOf() ) );
     if ( FAILED( hr ) || !m_texture ) {
@@ -68,7 +75,7 @@ HRESULT D3D11CascadedShadowMapBuffer::Resize( UINT size ) {
     // Create per-slice depth stencil views
     for ( UINT i = 0; i < m_numCascades; ++i ) {
         D3D11_DEPTH_STENCIL_VIEW_DESC dsvDesc = {};
-        dsvDesc.Format = DXGI_FORMAT_D16_UNORM;
+        dsvDesc.Format = DXGI_FORMAT_D32_FLOAT;
         dsvDesc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2DARRAY;
         dsvDesc.Texture2DArray.MipSlice = 0;
         dsvDesc.Texture2DArray.FirstArraySlice = i;
@@ -85,7 +92,7 @@ HRESULT D3D11CascadedShadowMapBuffer::Resize( UINT size ) {
 
     // Create shader resource view for the entire array
     D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-    srvDesc.Format = DXGI_FORMAT_R16_UNORM;
+    srvDesc.Format = DXGI_FORMAT_R32_FLOAT;
     srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
     srvDesc.Texture2DArray.MostDetailedMip = 0;
     srvDesc.Texture2DArray.MipLevels = 1;
