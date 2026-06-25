@@ -1401,7 +1401,7 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                 ImGui::SliderFloat("Extend Side", &settings.DebugSettings.ShadowCascades.ExtendSide, -10000, 20000, "%.0f");
                 ImGui::SliderFloat("Split Lambda", &settings.DebugSettings.ShadowCascades.Lambda, 0.0f, 1.00f, "%.2f");
                 ImGui::SliderFloat("Split Bias", &settings.DebugSettings.ShadowCascades.Bias, 0.0f, 10.0f, "%.1f");
-                ImGui::SliderFloat("Depth Slope Bias", &settings.DebugSettings.ShadowCascades.ShadowDepthSlopeBias, 0.0f, 8.0f, "%.2f");
+                ImGui::SliderFloat("Depth Slope Bias", &settings.DebugSettings.ShadowCascades.ShadowDepthSlopeBias, 0.0f, 8.0f, "%.6f");
                 ImGui::SetItemTooltip("Slope-scaled depth bias for the shadow caster pass. Higher removes shadow acne/stepping on thin geometry; too high detaches contact shadows (peter-panning)");
                 ImGui::EndTabItem();
             }
