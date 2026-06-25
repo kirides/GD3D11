@@ -201,6 +201,11 @@ struct DS_ScreenQuadConstantBuffer {
     // Shadow atlas: per-cascade UV rect (xy = offset, zw = scale)
     // Used when SHADOW_ATLAS is enabled (Feature Level 10 path)
     float4 SQ_CascadeAtlasRect[MAX_CSM_CASCADES];
+
+    // World-space units per texel for each cascade, precomputed on CPU.
+    // Packed into a float4 (x=cascade0 ... w=cascade3) to avoid cbuffer array padding.
+    // Replaces per-fragment GetCascadeWorldTexelSize() matrix math in shaders.
+    float4 SQ_CascadeTexelSize;
 };
 
 struct CloudConstantBuffer {

@@ -135,7 +135,7 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
 			float slopeScale = sqrt(saturate(1.0f - NoL * NoL));
 
 			int cascadeIndex = GetPrimaryCascadeIndex(wsPosition);
-			float texelWorldSize = GetCascadeWorldTexelSize(cascadeIndex);
+			float texelWorldSize = SQ_CascadeTexelSize[cascadeIndex];
 
 			const float normalBiasMultiplier = 1.5f;
 

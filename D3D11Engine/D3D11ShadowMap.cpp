@@ -1378,6 +1378,26 @@ DS_ScreenQuadConstantBuffer D3D11ShadowMap::FillSunCSMConstantBuffer() const {
         }
     }
 
+    // Precompute world-space units-per-texel for each cascade so shaders can read
+    // SQ_CascadeTexelSize[i] instead of running per-fragment matrix math.
+    {
+        const float mapSize = static_cast<float>( this->GetSizeX() );
+        float* ts = scb.SQ_CascadeTexelSize.toPtr();
+        for ( size_t i = 0; i < MAX_CSM_CASCADES; ++i ) {
+            const XMFLOAT4X4& m = scb.SQ_ShadowViewProj[i];
+            const float sx = sqrtf( m._11 * m._11 + m._21 * m._21 + m._31 * m._31 );
+            const float sy = sqrtf( m._12 * m._12 + m._22 * m._22 + m._32 * m._32 );
+            const float wx = ( sx > 1e-6f ) ? ( 2.0f / sx ) : 0.0f;
+            const float wy = ( sy > 1e-6f ) ? ( 2.0f / sy ) : 0.0f;
+            float res = mapSize;
+            if ( m_useAtlas && m_shadowAtlas ) {
+                const float4& r = scb.SQ_CascadeAtlasRect[i];
+                res *= std::max( r.z, r.w );
+            }
+            ts[i] = 0.5f * ( wx + wy ) / std::max( res, 1.0f );
+        }
+    }
+
     XMStoreFloat4x4( &scb.SQ_RainViewProj,
         XMLoadFloat4x4( &reinterpret_cast<D3D11GraphicsEngine*>( Engine::GraphicsEngine )->Effects->GetRainShadowmapCameraRepl().ProjectionReplacement ) *
         XMLoadFloat4x4( &reinterpret_cast<D3D11GraphicsEngine*>( Engine::GraphicsEngine )->Effects->GetRainShadowmapCameraRepl().ViewReplacement ) );
@@ -1492,6 +1512,26 @@ XRESULT D3D11ShadowMap::DrawWorldLights()
     if ( m_useAtlas && m_shadowAtlas ) {
         for ( size_t i = 0; i < MAX_CSM_CASCADES; ++i ) {
             scb.SQ_CascadeAtlasRect[i] = m_shadowAtlas->GetCascadeUVRect( static_cast<UINT>( i ) );
+        }
+    }
+
+    // Precompute world-space units-per-texel for each cascade so shaders can read
+    // SQ_CascadeTexelSize[i] instead of running per-fragment matrix math.
+    {
+        const float mapSize = static_cast<float>( this->GetSizeX() );
+        float* ts = scb.SQ_CascadeTexelSize.toPtr();
+        for ( size_t i = 0; i < MAX_CSM_CASCADES; ++i ) {
+            const XMFLOAT4X4& m = scb.SQ_ShadowViewProj[i];
+            const float sx = sqrtf( m._11 * m._11 + m._21 * m._21 + m._31 * m._31 );
+            const float sy = sqrtf( m._12 * m._12 + m._22 * m._22 + m._32 * m._32 );
+            const float wx = ( sx > 1e-6f ) ? ( 2.0f / sx ) : 0.0f;
+            const float wy = ( sy > 1e-6f ) ? ( 2.0f / sy ) : 0.0f;
+            float res = mapSize;
+            if ( m_useAtlas && m_shadowAtlas ) {
+                const float4& r = scb.SQ_CascadeAtlasRect[i];
+                res *= std::max( r.z, r.w );
+            }
+            ts[i] = 0.5f * ( wx + wy ) / std::max( res, 1.0f );
         }
     }
 

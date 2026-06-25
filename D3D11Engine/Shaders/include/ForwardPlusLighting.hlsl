@@ -59,6 +59,9 @@ cbuffer FP_ScreenQuadConstantBuffer : register( b4 )
     float SQ_LightSize;
     float2 SQ_Pad;
     float4 SQ_CascadeAtlasRect[MAX_CSM_CASCADES];
+
+    // World-space units per texel, precomputed on CPU (x=cascade0 ... w=cascade3).
+    float4 SQ_CascadeTexelSize;
 };
 
 // Forward+ tile data
