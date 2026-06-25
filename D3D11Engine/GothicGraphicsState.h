@@ -420,6 +420,7 @@ struct GothicRasterizerStateInfo : public GothicPipelineState {
     void SetDefault() {
         CullMode = CM_CULL_BACK;
         ZBias = 0;
+        SlopeScaledDepthBias = 0.0f;
         FrontCounterClockwise = false;
         Wireframe = false;
         DepthClipEnable = false;
@@ -431,6 +432,7 @@ struct GothicRasterizerStateInfo : public GothicPipelineState {
     bool Wireframe;
     bool Padding;
     int ZBias;
+    float SlopeScaledDepthBias;
 
     /** Deletes all cached states */
     static void DeleteCachedObjects() {
@@ -608,6 +610,15 @@ struct GothicRendererSettings {
     enum E_RendererMode {
         RM_Deferred = 0,
         RM_ForwardPlus = 1,
+    };
+
+    enum class TX_QUALITY : uint16_t {
+        VeryLow = 128,
+        Low = 256,
+        Medium = 512,
+        High = 1024,
+        VeryHigh = 2048,
+        MAX = 16384,
     };
 
     /** Sets the default values for this struct */
@@ -807,6 +818,9 @@ struct GothicRendererSettings {
         ResetDebugSettings();
     }
 
+    void ApplyGraphicsPreset();
+    void ApplyFeatureLevel10Downgrades();
+
     void ApplyAssaoPreset( int preset ) {
         AssaoSettings = ASSAO_Settings();
         // personal taste.
@@ -849,6 +863,7 @@ struct GothicRendererSettings {
         DebugSettings.Culling.CullBspSections = true;
         DebugSettings.Culling.CullVobs = true;
         DebugSettings.ShadowCascades.LazyCascadeUpdate = true;
+        DebugSettings.ShadowCascades.ShadowDepthSlopeBias = 0.0f;
         DebugSettings.FeatureSet.EnableDriverExtensions = true;
         DebugSettings.FeatureSet.UseWorldSectionBVH = true;
         DebugSettings.FeatureSet.UseScreenSpaceShadowMask = false;
@@ -1047,6 +1062,7 @@ struct GothicRendererSettings {
             float ExtendSide;
             float Lambda;
             float Bias;
+            float ShadowDepthSlopeBias;
         } ShadowCascades;
         struct {
             bool CullVobs;

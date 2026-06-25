@@ -6298,6 +6298,10 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         GothicRasterizerStateInfo::CM_CULL_NONE;
 
     Engine::GAPI->GetRendererState().RasterizerState.DepthClipEnable = true;
+    // Slope-scaled depth bias pushes caster depth away from the light along sloped
+    // surfaces, removing shadow acne/stepping on thin geometry and in crevices.
+    Engine::GAPI->GetRendererState().RasterizerState.SlopeScaledDepthBias =
+        Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ShadowDepthSlopeBias;
     Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
 
     Engine::GAPI->GetRendererState().DepthState.SetDefault();

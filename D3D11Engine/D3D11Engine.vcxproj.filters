@@ -1156,6 +1156,9 @@
     <ClCompile Include="include\ImGuizmo\src\ImGradient.cpp" />
     <ClCompile Include="include\ImGuizmo\src\ImGuizmo.cpp" />
     <ClCompile Include="include\ImGuizmo\src\ImSequencer.cpp" />
+    <ClCompile Include="GothicGraphicsState.cpp">
+      <Filter>Engine</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="ddraw.def">

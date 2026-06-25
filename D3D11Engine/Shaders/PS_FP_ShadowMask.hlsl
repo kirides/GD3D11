@@ -40,6 +40,9 @@ cbuffer DS_ScreenQuadConstantBuffer : register( b0 )
 
     // Shadow atlas: per-cascade UV rect (xy = offset, zw = scale)
     float4 SQ_CascadeAtlasRect[MAX_CSM_CASCADES];
+
+    // World-space units per texel, precomputed on CPU (x=cascade0 ... w=cascade3).
+    float4 SQ_CascadeTexelSize;
 };
 
 //--------------------------------------------------------------------------------------
@@ -105,7 +108,7 @@ float PSMain( PS_INPUT Input ) : SV_TARGET
     float slopeScale = sqrt( saturate( 1.0f - NoL * NoL ) );
 
     int cascadeIndex = GetPrimaryCascadeIndex( wsPosition );
-    float texelWorldSize = GetCascadeWorldTexelSize( cascadeIndex );
+    float texelWorldSize = SQ_CascadeTexelSize[cascadeIndex];
 
     const float normalBiasMultiplier = 1.5f;
 
