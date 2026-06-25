@@ -612,6 +612,15 @@ struct GothicRendererSettings {
         RM_ForwardPlus = 1,
     };
 
+    enum class TX_QUALITY : uint16_t {
+        VeryLow = 128,
+        Low = 256,
+        Medium = 512,
+        High = 1024,
+        VeryHigh = 2048,
+        MAX = 16384,
+    };
+
     /** Sets the default values for this struct */
     void SetDefault() {
         SectionDrawRadius = 4;
@@ -808,6 +817,9 @@ struct GothicRendererSettings {
 
         ResetDebugSettings();
     }
+
+    void ApplyGraphicsPreset();
+    void ApplyFeatureLevel10Downgrades();
 
     void ApplyAssaoPreset( int preset ) {
         AssaoSettings = ASSAO_Settings();
