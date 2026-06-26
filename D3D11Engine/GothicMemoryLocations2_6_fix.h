@@ -503,6 +503,14 @@ struct GothicMemoryLocations {
         static const unsigned int SetSleeping = 0x00602930;
     };
 
+    struct oCMob {
+        static const unsigned int GetName = 0x0071bc30;
+    };
+
+    struct oCMobInter {
+        static const unsigned int IsInteractingWith = 0x00721550;
+    };
+
     struct zCVisual {
         static const unsigned int VTBL_GetFileExtension = 17;
         static const unsigned int Destructor = 0x00606800;

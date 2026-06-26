@@ -37,6 +37,11 @@ class oCGame;
 extern bool haveWindAnimations;
 #endif
 
+template<typename T>
+concept HasGetStaticClassDef = requires {
+    { T::GetStaticClassDef() } -> std::same_as<const zCClassDef*>;
+};
+
 class zCVob {
 public:
     /** Hooks the functions of this Class */
@@ -366,7 +371,7 @@ public:
     };
     
     /** Checks the inheritance chain and casts to T* if possible. Returns nullptr otherwise */
-    template<class T>
+    template<HasGetStaticClassDef T>
     T* As() {
         zCClassDef* classDef = reinterpret_cast<zCObject*>(this)->_GetClassDef();
         if ( CheckInheritance( classDef, T::GetStaticClassDef() ) ) {

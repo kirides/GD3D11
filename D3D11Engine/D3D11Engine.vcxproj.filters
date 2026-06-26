@@ -850,6 +850,9 @@
     <ClInclude Include="zAllocator.h">
       <Filter>Engine\GAPI</Filter>
     </ClInclude>
+    <ClInclude Include="oCMobInter.h">
+      <Filter>ZenGin\Classes</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp" />
