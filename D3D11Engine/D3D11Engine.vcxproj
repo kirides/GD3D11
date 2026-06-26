@@ -1066,6 +1066,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="MeshManager.h" />
     <ClInclude Include="MeshModifier.h" />
     <ClInclude Include="oCGame.h" />
+    <ClInclude Include="oCMobInter.h" />
     <ClInclude Include="oCNPC.h" />
     <ClInclude Include="oCSpawnManager.h" />
     <ClInclude Include="oCVisFX.h" />

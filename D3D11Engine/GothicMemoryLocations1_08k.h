@@ -265,6 +265,14 @@ struct GothicMemoryLocations {
         static const unsigned int SetSleeping = 0x005D7250;
     };
 
+    struct oCMob {
+        static const unsigned int GetName = 0x0067aa50;
+    };
+
+    struct oCMobInter {
+        static const unsigned int IsInteractingWith = 0x0067fc70;
+    };
+
     struct zCInput {
         static const unsigned int GetDeviceEnabled = 0x004C8760;
         static const unsigned int SetDeviceEnabled = 0x004C8710;

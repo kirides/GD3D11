@@ -55,6 +55,7 @@
 #include "zCOption.h"
 #include "RenderGraph.h"
 #include "D3D11Upscaling.h"
+#include "oCMobInter.h"
 
 #ifdef BUILD_SPACER
 #define IS_SPACER_BUILD true
@@ -2998,15 +2999,30 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 
     const float focusedColorSentinel = 2.0f;
     const float interactiveFocusColor = oCGame::GetHighlightInteractFocus() ? focusedColorSentinel : 0.0f;
-    const float meleeFocusColor = oCGame::GetHighlightMeleeFocus() >= 2 && oCGame::GetNpcFocusIsHighlightActive() ? focusedColorSentinel : 0.0f;
-    const zCVob* playerFocusVob = oCGame::GetPlayer() ? oCGame::GetPlayer()->GetFocusVob() : nullptr;
-
-    static auto getFocusColor = []( zCVob* vob, const zCVob* playerFocusVob, float interactiveFocusColor, float meleeFocusColor ) -> float {
-        if ( vob == playerFocusVob ) {
-            if ( vob->As<oCNPC>() ) {
-                return meleeFocusColor;
+    const float meleeFocusEnabled = oCGame::GetHighlightMeleeFocus() >= 2 && oCGame::GetNpcFocusIsHighlightActive();
+    zCVob* playerFocusVob = oCGame::GetPlayer() ? oCGame::GetPlayer()->GetFocusVob() : nullptr;
+    if ( playerFocusVob ) {
+        if ( playerFocusVob->As<oCNPC>() ) {
+            if ( !meleeFocusEnabled ) {
+                playerFocusVob = nullptr;
             }
-            return interactiveFocusColor;
+        } else if ( oCMobInter* mobInter = playerFocusVob->As<oCMobInter>() ) {
+            // TODO: Also disable if this MOB has no "Name"
+            // TODO: Figure out how to properly call oCMob::GetName which populates a string on the stack.
+            if ( mobInter->IsInteractingWith( oCGame::GetPlayer()) || !mobInter->HasName() ) {
+                // disable focus if player is interacting with the mob.
+                playerFocusVob = nullptr;
+            }
+        } else if ( oCMob* mob = playerFocusVob->As<oCMob>() ) {
+            if ( !mob->HasName() ) {
+                playerFocusVob = nullptr; // disable highlight for unnamed MOBs
+            }
+        }
+    }
+
+    static auto getFocusColor = []( zCVob* vob, const zCVob* playerFocusVob ) -> float {
+        if ( vob == playerFocusVob ) {
+            return 2.0f;
         }
         return 0.0f;
     };
@@ -3088,7 +3104,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                     cb2.PI_ModelFatness = fatness;
                     // Set PrevWorld for motion vectors (use current world if no previous is available)
                     cb2.PrevWorld = vi->HasValidPrevTransforms ? vi->PrevWorldMatrix : world;
-                    cb2.PI_Pad1.x = getFocusColor(vi->Vob, playerFocusVob, interactiveFocusColor, meleeFocusColor);
+                    cb2.PI_Pad1.x = getFocusColor(vi->Vob, playerFocusVob);
 
                     perInstanceCb.Update( &cb2 );
 
@@ -3325,7 +3341,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 
                         VS_ExConstantBuffer_PerInstanceNode instanceInfo;
                         instanceInfo.Color = modelColor;
-                        instanceInfo.Color.w = getFocusColor( vi->Vob, playerFocusVob, interactiveFocusColor, meleeFocusColor );
+                        instanceInfo.Color.w = getFocusColor( vi->Vob, playerFocusVob );
                         instanceInfo.Fatness = std::max<float>( 0.f, fatness * 0.35f );
                         instanceInfo.Scaling = fatness * 0.02f + 1.f;
                         instanceInfo.World = finalWorld;
@@ -3390,7 +3406,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                     instData.World = finalWorld;
                     instData.PrevWorld = finalPrevWorld;
                     instData.Color = modelColor;
-                    instData.Color.w = getFocusColor( vi->Vob, playerFocusVob, interactiveFocusColor, meleeFocusColor );
+                    instData.Color.w = getFocusColor( vi->Vob, playerFocusVob );
 
                     for ( auto const& itm : mvi->Meshes ) {
                         zCTexture* texture = nullptr;
