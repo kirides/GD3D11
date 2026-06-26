@@ -13,11 +13,7 @@ cbuffer Matrices_PerFrame : register( b0 )
 
 cbuffer Matrices_PerInstances : register( b1 )
 {
-	matrix M_World;
-	matrix M_PrevWorld; // Helper for rigid motion of skeletal mesh
-	float4 PI_ModelColor;
-	float PI_ModelFatness;
-	float3 PI_Pad1;
+	VS_ExConstantBuffer_PerInstanceSkeletal cbInstance;
 };
 
 #if SKINNING_STRUCTURED
@@ -135,15 +131,16 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 	ApplySkinningPrevious( Input.vPosition, Input.vNormal, Input.BoneIndices, Input.Weights, prevPosition, prevNormal );
 
     // 3. Apply fatness and world transforms
-    float3 positionWorld = mul(float4(position + PI_ModelFatness * normal, 1), M_World).xyz;
-    float3 prevPositionWorld = mul(float4(prevPosition + PI_ModelFatness * prevNormal, 1), M_PrevWorld).xyz;
+    float3 positionWorld = mul(float4(position + cbInstance.PI_ModelFatness * normal, 1), cbInstance.M_World).xyz;
+    float3 prevPositionWorld = mul(float4(prevPosition + cbInstance.PI_ModelFatness * prevNormal, 1), cbInstance.M_PrevWorld).xyz;
 	
 	//Output.vPosition = float4(Input.vPosition, 1);
 	Output.vPosition = mul(float4(positionWorld,1), frame.M_ViewProj);
 	Output.vTexcoord2 = Input.vTex1;
 	Output.vTexcoord = Input.vTex1;
-	Output.vDiffuse  = PI_ModelColor;
-	Output.vNormalVS = mul(Input.vBindPoseNormal, (float3x3)mul(M_World, frame.M_View));
+	Output.vDiffuse  = cbInstance.PI_ModelColor;
+	Output.vDiffuse.w  = cbInstance.PI_Pad1.x;
+	Output.vNormalVS = mul(Input.vBindPoseNormal, (float3x3)mul(cbInstance.M_World, frame.M_View));
 	Output.vViewPosition = mul(float4(positionWorld,1), frame.M_View).xyz;
 
 	// Motion Vectors - use UNJITTERED matrices for correct velocity

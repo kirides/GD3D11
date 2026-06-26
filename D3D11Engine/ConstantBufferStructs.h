@@ -274,6 +274,7 @@ struct VS_ExConstantBuffer_PerInstanceSkeletal {
     XMFLOAT4X4 PrevWorld; // Added for motion vectors
     float4 PI_ModelColor;
     float PI_ModelFatness;
+    // Pad1.x holds flag if this is a focused vob
     float3 PI_Pad1;
 };
 
