@@ -274,7 +274,7 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
 	// CSM: Use soft cascaded shadow map with configurable softness
     float3 wsNormal = normalize(mul(float4(normal, 0.0f), SQ_InvView).xyz);
 
-    if(AC_LightPos.y > 0 && !focused) // only get shadow value if it isn't night-time
+    if(AC_LightPos.y > 0) // only get shadow value if it isn't night-time
 	{
         float3 wsLightDirection = normalize(mul(float4(SQ_LightDirectionVS, 0.0f), SQ_InvView).xyz);
 
@@ -290,7 +290,7 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
 
         // Use screen position for per-pixel rotation (TAA-friendly)
         shadow = ComputeCascadedShadowValueSoft(biasedWsPosition, vsPosition.z, vertLighting, 0.0f, Input.vPosition.xy);
-	} else if (!focused) {
+	} else {
         // Night-time sky ambient:
         // saturate(wsNormal.y) restricts the value to [0, 1].
         // Facing up = 1, Facing sides/down = 0.
@@ -365,7 +365,7 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
 	
 	//return float4(sun.rgb, 1);
 	//return float4(vertLighting.rrr, 1);
-	float focusBrightness = 1.0f + (focused ? 2.5f : 0.0f);
+	float focusBrightness = 1.0f + (focused ? 2.0f : 0.0f);
     return float4(litPixel.rgb * focusBrightness, 1);
 	//return float4(pow(spec, specPower) * specIntensity.xxx * diffuse.rgb * SQ_LightColor.rgb,1);
 	
