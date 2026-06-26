@@ -1051,7 +1051,7 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
 
     // Render the immediate priority lights
     for ( auto const& importantUpdate : importantUpdates ) {
-        static_cast<D3D11PointLight*>(importantUpdate->LightShadowBuffers.get())->RenderCubemap( true, m_PointLightCB.get() );
+        static_cast<D3D11PointLight*>(importantUpdate->LightShadowBuffers.get())->RenderCubemap( importantUpdate->UpdateShadows, m_PointLightCB.get() );
         importantUpdate->UpdateShadows = false;
     }
 
@@ -1074,11 +1074,11 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
             light->UpdateShadows = false;
             continue;
         }
-
+        bool force = light->UpdateShadows;
         light->UpdateShadows = false;
 
         // FORCE the render! It waited in line for its turn, it must draw.
-        l->RenderCubemap( true, m_PointLightCB.get() );
+        l->RenderCubemap( force, m_PointLightCB.get() );
         graphicsEngine->DebugPointlight = l;
 
         updatesDone++;

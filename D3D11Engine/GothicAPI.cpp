@@ -4060,20 +4060,36 @@ void GothicAPI::CollectVisibleVobs(
 
         float minDynamicUpdateLightRange = Engine::GAPI->GetRendererState().RendererSettings.MinLightShadowUpdateRange;
     
-        for ( auto vi : renderQueue.lights ) {
-            if ( vi->Vob->IsEnabled() /*&& vob->GetShowVisual()*/ ) {
-                vi->VisibleInFrame = true;
 
-                // Update the lights shadows if: Light is dynamic or full shadow-updates are set
-                if ( !vi->IsPFXVobLight ) {
-                    if ( RendererState.RendererSettings.EnablePointlightShadows >= GothicRendererSettings::PLS_FULL
-                        || (RendererState.RendererSettings.EnablePointlightShadows >= GothicRendererSettings::PLS_UPDATE_DYNAMIC && !vi->Vob->IsStatic()) ) {
-                        // Now check for distances, etc
-                        float lightPlayerDist;
-                        XMStoreFloat( &lightPlayerDist, XMVector3Length( playerPosition - vi->Vob->GetPositionWorldXM() ) );
-                        if ( vi->Vob->GetLightRange() > minDynamicUpdateLightRange && lightPlayerDist < vi->Vob->GetLightRange() * 1.5f )
-                            vi->UpdateShadows = true;
-                    }
+        std::vector<std::pair<float, VobLightInfo*>> lightWithDist;
+        lightWithDist.reserve( renderQueue.lights.size() );
+
+        const auto camPos = ctx.cameraPosition;
+        float lightPlayerDist;
+        for ( auto vi : renderQueue.lights ) {
+            if ( vi->Vob->IsEnabled() ) {
+                XMStoreFloat( &lightPlayerDist, XMVector3LengthSq( playerPosition - vi->Vob->GetPositionWorldXM() ) ); 
+                lightWithDist.emplace_back( lightPlayerDist, vi );
+            }
+        }
+
+        std::sort( lightWithDist.begin(), lightWithDist.end(), []( const std::pair<float, VobLightInfo*>& a, const std::pair<float, VobLightInfo*>& b ) {
+            return a.first < b.first;
+        });
+
+        renderQueue.lights.clear();
+
+        const bool lightUpdateEnabled = RendererState.RendererSettings.EnablePointlightShadows >= GothicRendererSettings::PLS_UPDATE_DYNAMIC;
+        for ( auto [distSq, vi] : lightWithDist ) {
+            renderQueue.lights.push_back( vi );
+            vi->VisibleInFrame = true;
+
+            // Update the lights shadows if: Light is dynamic or full shadow-updates are set
+            if ( !vi->IsPFXVobLight ) {
+                if ( lightUpdateEnabled && !vi->Vob->IsStatic() ) {
+                    const float lightRange = vi->Vob->GetLightRange();
+                    if ( lightRange > minDynamicUpdateLightRange && distSq < (lightRange * lightRange) )
+                        vi->UpdateShadows = true;
                 }
             }
         }
@@ -5289,6 +5305,8 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "SAO", "BlurSharpness", std::to_string( s.SaoSettings.BlurSharpness ).c_str(), ini.c_str() );
 
     WritePrivateProfileStringA( "FontRendering", "Enable", std::to_string( s.EnableCustomFontRendering ? TRUE : FALSE ).c_str(), ini.c_str() );
+
+    WritePrivateProfileStringA( "Debug", "ThreadedShadowCulling", std::to_string( s.ThreadedShadowCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Debug", "UseShadowAtlas", std::to_string( s.DebugSettings.FeatureSet.UseShadowAtlas ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Debug", "UseScreenSpaceShadowMask", std::to_string( s.DebugSettings.FeatureSet.UseScreenSpaceShadowMask ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Debug", "ForceFeatureLevel10", std::to_string( s.DebugSettings.FeatureSet.ForceFeatureLevel10 ? TRUE : FALSE ).c_str(), ini.c_str() );
@@ -5400,10 +5418,9 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.EnableRainEffects = GetPrivateProfileBoolA( "Display", "RainEffects", ds.EnableRainEffects, ini );
         s.LimitLightIntesity = GetPrivateProfileBoolA( "Display", "LimitLightIntesity", ds.LimitLightIntesity, ini );
 
-        // s.EnableTiledLighting = GetPrivateProfileBoolA( "Display", "TiledLighting", s.EnableTiledLighting, ini );
+        s.EnableTiledLighting = GetPrivateProfileBoolA( "Display", "TiledLighting", s.EnableTiledLighting, ini );
         // s.RendererMode = static_cast<GothicRendererSettings::E_RendererMode>(GetPrivateProfileIntA( "Display", "RendererMode", s.RendererMode, ini.c_str() ) );
-        // Force these two experimental settings OFF
-        s.EnableTiledLighting = false;
+        // Force experimental settings OFF
         s.RendererMode = GothicRendererSettings::E_RendererMode::RM_Deferred;
         // ....
 
@@ -5442,6 +5459,8 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.SaoSettings.BlurSharpness = GetPrivateProfileFloatA( "SAO", "BlurSharpness", defaultSAOSettings.BlurSharpness, ini );
 
         s.EnableCustomFontRendering = GetPrivateProfileBoolA( "FontRendering", "Enable", ds.EnableCustomFontRendering, ini );
+
+        s.ThreadedShadowCulling = GetPrivateProfileBoolA( "Debug", "ThreadedShadowCulling", ds.ThreadedShadowCulling, ini );
         s.DebugSettings.FeatureSet.UseShadowAtlas = GetPrivateProfileBoolA( "Debug", "UseShadowAtlas", ds.DebugSettings.FeatureSet.UseShadowAtlas, ini );
         s.DebugSettings.FeatureSet.UseScreenSpaceShadowMask = GetPrivateProfileBoolA( "Debug", "UseScreenSpaceShadowMask", ds.DebugSettings.FeatureSet.UseScreenSpaceShadowMask, ini );
         s.DebugSettings.FeatureSet.ForceFeatureLevel10 = GetPrivateProfileBoolA( "Debug", "ForceFeatureLevel10", ds.DebugSettings.FeatureSet.ForceFeatureLevel10, ini );
