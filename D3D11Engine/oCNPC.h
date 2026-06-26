@@ -67,7 +67,7 @@ public:
     }
 
     zCVob* GetFocusVob() const {
-#if defined(BUILD_GOTHIC_2_6_fix)
+#if defined(BUILD_GOTHIC_2_6_fix) || (defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F))
         return *reinterpret_cast<zCVob**>(THISPTR_OFFSET( GothicMemoryLocations::oCNPC::Offset_focus_vob ));
 #else
         return nullptr;

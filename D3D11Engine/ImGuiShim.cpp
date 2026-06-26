@@ -1191,6 +1191,7 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
         ImGui::Checkbox( "ForceFOV", &settings.ForceFOV );
 #ifdef BUILD_GOTHIC_1_08k
         ImGui::Checkbox( "DrawForestPortals", &settings.DrawG1ForestPortals );
+        ImGui::Checkbox( "Highlight interactive focus", &settings.G1HighlightInteractiveFocus );
 #endif
 
         ImGui::SeparatorText("Debugging");

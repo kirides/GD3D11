@@ -63,6 +63,8 @@ public:
     static bool GetHighlightInteractFocus() {
 #if defined(BUILD_GOTHIC_2_6_fix)
         return *reinterpret_cast<int*>(GothicMemoryLocations::oCGame::Var_InteractiveFocusEnabled) != 0;
+#elif (defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F))
+        return Engine::GAPI->GetRendererState().RendererSettings.G1HighlightInteractiveFocus;
 #else
         return false;
 #endif
@@ -72,7 +74,7 @@ public:
 #if defined(BUILD_GOTHIC_2_6_fix)
         return *reinterpret_cast<int*>(GothicMemoryLocations::oCGame::Var_HighlightMeleeFocus);
 #else
-        return 0;
+        return 2; // force npc highlight when focused
 #endif
     }
 
@@ -80,7 +82,7 @@ public:
 #if defined(BUILD_GOTHIC_2_6_fix)
         return *reinterpret_cast<int*>(GothicMemoryLocations::oCGame::Var_NpcFocusIsHighlightActive) != 0;
 #else
-        return false;
+        return GetHighlightInteractFocus();
 #endif
     }
 
