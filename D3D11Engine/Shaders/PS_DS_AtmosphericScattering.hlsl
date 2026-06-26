@@ -365,7 +365,7 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
 	
 	//return float4(sun.rgb, 1);
 	//return float4(vertLighting.rrr, 1);
-	float focusBrightness = 1.0f + (focused ? 2.0f : 0.0f);
+	float focusBrightness = 1.0f + (focused ? 1.0f : 0.0f);
     return float4(litPixel.rgb * focusBrightness, 1);
 	//return float4(pow(spec, specPower) * specIntensity.xxx * diffuse.rgb * SQ_LightColor.rgb,1);
 	
