@@ -2996,8 +2996,11 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         }
     };
 
-    const int interactiveFocusEnabled = distance > 100000 // only MOBs, not NPCs
-        && oCGame::GetHighlightInteractFocus();
+    const int interactiveFocusEnabled = (
+        // NPCs are only lit if combat focus is set to highlight and Npcfocus is active (whatever that means...)
+        (oCGame::GetHighlightMeleeFocus() >= 2 && oCGame::GetNpcFocusIsHighlightActive())
+        || distance > 100000 /*MOBs have FLT_MAX distance*/ 
+        ) && oCGame::GetHighlightInteractFocus();
     const zCVob* playerFocusVob = interactiveFocusEnabled && oCGame::GetPlayer() ? oCGame::GetPlayer()->GetFocusVob() : nullptr;
 
     {

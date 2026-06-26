@@ -157,6 +157,8 @@ struct GothicMemoryLocations {
         static const unsigned int TestKeys = 0x006FD560;
         static const unsigned int Var_Player = 0x00AB2684;
         static const unsigned int Var_InteractiveFocusEnabled = 0x008b20f4;
+        static const unsigned int Var_NpcFocusIsHighlightActive = 0x00ab0744;
+        static const unsigned int Var_HighlightMeleeFocus = 0x00ab073c;
         static const unsigned int Offset_GameView = 0x30;
         static const unsigned int Offset_SingleStep = 0x11C;
         static const unsigned int DefineExternals_Ulfi = 0x006D4780;

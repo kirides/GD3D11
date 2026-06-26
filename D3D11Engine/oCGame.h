@@ -61,7 +61,27 @@ public:
     }
 
     static bool GetHighlightInteractFocus() {
+#if defined(BUILD_GOTHIC_2_6_fix)
         return *reinterpret_cast<int*>(GothicMemoryLocations::oCGame::Var_InteractiveFocusEnabled) != 0;
+#else
+        return false;
+#endif
+    }
+
+    static int GetHighlightMeleeFocus() {
+#if defined(BUILD_GOTHIC_2_6_fix)
+        return *reinterpret_cast<int*>(GothicMemoryLocations::oCGame::Var_HighlightMeleeFocus);
+#else
+        return 0;
+#endif
+    }
+
+    static bool GetNpcFocusIsHighlightActive() {
+#if defined(BUILD_GOTHIC_2_6_fix)
+        return *reinterpret_cast<int*>(GothicMemoryLocations::oCGame::Var_NpcFocusIsHighlightActive) != 0;
+#else
+        return false;
+#endif
     }
 
     zCView* GetGameView() {
