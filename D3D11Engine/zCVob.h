@@ -253,7 +253,7 @@ public:
 
 #if BUILD_SPACER_NET
     /** Return whether all vobs are currently rendered or not */
-    static bool GetDrawVobs() const
+    static bool GetDrawVobs()
     {
         bool showHelpers = *reinterpret_cast<int*>(GothicMemoryLocations::zCVob::s_renderVobs) != 0;
         return showHelpers;
