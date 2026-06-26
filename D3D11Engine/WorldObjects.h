@@ -163,7 +163,14 @@ struct SkeletalMeshInfo {
 
 class zCVisual;
 struct BaseVisualInfo {
-    BaseVisualInfo() = default;
+    BaseVisualInfo() :
+        Meshes{},
+        MeshSize{},
+        BBox{},
+        MidPoint{},
+        Visual{},
+        VisualName{}
+    {};
     BaseVisualInfo(BaseVisualInfo&& other) = default;
     BaseVisualInfo& operator=( BaseVisualInfo&& ) noexcept = default;
     BaseVisualInfo(const BaseVisualInfo& other) = delete;
@@ -199,15 +206,14 @@ struct BaseVisualInfo {
 class zCProgMeshProto;
 class zCTexture;
 struct MeshVisualInfo : public BaseVisualInfo {
-    MeshVisualInfo() {
-        Visual = nullptr;
-        MorphMeshVisual = nullptr;
-        UnloadedSomething = false;
-        StartInstanceNum = 0;
-        FullMesh = nullptr;
-        LastAniUpdateFrame = 0;
-        NeedsAlphaTesting = false;
-    }
+    MeshVisualInfo(): 
+        StartInstanceNum{},
+        FullMesh{},
+        UnloadedSomething{},
+        MorphMeshVisual{},
+        NeedsAlphaTesting{},
+        LastAniUpdateFrame{}
+    {}
     
     MeshVisualInfo(MeshVisualInfo&& other) = default;
     MeshVisualInfo& operator=( MeshVisualInfo&& ) = default;
@@ -252,7 +258,9 @@ struct MeshVisualInfo : public BaseVisualInfo {
 class zCMeshSoftSkin;
 class zCModel;
 struct SkeletalMeshVisualInfo : public BaseVisualInfo {
-    SkeletalMeshVisualInfo() = default;
+    SkeletalMeshVisualInfo() :
+        SkeletalMeshes{}
+    {};
     SkeletalMeshVisualInfo(SkeletalMeshVisualInfo&& other) = default;
     SkeletalMeshVisualInfo& operator=( SkeletalMeshVisualInfo&& ) = default;
     SkeletalMeshVisualInfo(const SkeletalMeshVisualInfo& other) = delete;
@@ -285,7 +293,10 @@ struct SkeletalMeshVisualInfo : public BaseVisualInfo {
 };
 
 struct BaseVobInfo {
-    BaseVobInfo() = default;
+    BaseVobInfo() : 
+        VisualInfo{},
+        Vob{}
+    {}
     BaseVobInfo(BaseVobInfo&& other) = default;
     BaseVobInfo& operator=( BaseVobInfo&& ) = default;
     BaseVobInfo(const BaseVobInfo& other) = delete;
@@ -301,7 +312,18 @@ struct BaseVobInfo {
 
 struct WorldMeshSectionInfo;
 struct VobInfo : public BaseVobInfo {
-    VobInfo() = default;
+    VobInfo() :
+        LastRenderPosition{},
+        IsIndoorVob{},
+        VisibleInRenderPass{},
+        VobSection{},
+        WorldMatrix{},
+        ParentBSPNodes{},
+        GroundColor{},
+        PrevWorldMatrix{},
+        HasValidPrevMatrix{}
+    {
+    }
     VobInfo(VobInfo&& other) = delete;
     VobInfo& operator=( VobInfo&& ) = delete;
     VobInfo(const VobInfo& other) = delete;
@@ -320,7 +342,7 @@ struct VobInfo : public BaseVobInfo {
     bool IsIndoorVob;
 
     /** Flag to see if this vob was drawn in the current render pass. Used to collect the same vob only once. */
-    std::atomic<size_t> VisibleInRenderPass{};
+    std::atomic<size_t> VisibleInRenderPass;
 
     /** Section this vob is in */
     WorldMeshSectionInfo* VobSection;
@@ -329,7 +351,7 @@ struct VobInfo : public BaseVobInfo {
     XMFLOAT4X4 WorldMatrix;
 
     /** BSP-Node this is stored in */
-    std::vector<BspInfo*> ParentBSPNodes{};
+    std::vector<BspInfo*> ParentBSPNodes;
 
     /** Color the underlaying polygon has */
     DWORD GroundColor;
@@ -346,7 +368,19 @@ struct VobInfo : public BaseVobInfo {
 class zCVobLight;
 class BaseShadowedPointLight;
 struct VobLightInfo {
-    VobLightInfo() = default;
+    VobLightInfo() : 
+        Vob{},
+        VisibleInRenderPass{},
+        IsPFXVobLight{},
+        IsIndoorVob{},
+        ParentBSPNodes{},
+        LightShadowBuffers{},
+        DynamicShadows{},
+        UpdateShadows{},
+        LastRenderedPosition{},
+        VisibleInFrame{}
+    {}
+
     VobLightInfo(VobLightInfo&& other) = delete;
     VobLightInfo& operator=( VobLightInfo&& ) = delete;
     VobLightInfo(const VobLightInfo& other) = delete;
@@ -358,14 +392,14 @@ struct VobLightInfo {
     zCVobLight* Vob;
 
     /** Flag to see if this vob was drawn in the current render pass. Used to collect the same vob only once. Cleared immediately. */
-    std::atomic<size_t> VisibleInRenderPass{};
+    std::atomic<size_t> VisibleInRenderPass;
     bool IsPFXVobLight;
 
     /** True if this is an indoor-vob */
     bool IsIndoorVob;
 
     /** BSP-Node this is stored in */
-    std::vector<BspInfo*> ParentBSPNodes{};
+    std::vector<BspInfo*> ParentBSPNodes;
 
     /** Buffers for doing shadows on this light */
     std::unique_ptr<BaseShadowedPointLight> LightShadowBuffers;
@@ -387,14 +421,17 @@ static auto g_MatIdentity = XMFLOAT4X4(
 );
 /** Holds the converted mesh of a VOB */
 struct SkeletalVobInfo : public BaseVobInfo {
-    SkeletalVobInfo() : WorldMatrix(g_MatIdentity), PrevWorldMatrix(g_MatIdentity)
+    SkeletalVobInfo() : 
+        NodeAttachments{},
+        IndoorVob{},
+        VisibleInRenderPass{},
+        WorldMatrix{},
+        ParentBSPNodes{},
+        PrevBoneTransforms{},
+        PrevWorldMatrix{},
+        HasValidPrevTransforms{},
+        LastAniUpdateFrame{}
     {
-        Vob = nullptr;
-        VisualInfo = nullptr;
-        IndoorVob = false;
-        VobConstantBuffer = nullptr;
-        HasValidPrevTransforms = false;
-        LastAniUpdateFrame = 0;
     }
 
     SkeletalVobInfo(SkeletalVobInfo&& other) = delete;
@@ -404,15 +441,11 @@ struct SkeletalVobInfo : public BaseVobInfo {
 
     ~SkeletalVobInfo() override
     {
-        //delete VisualInfo;
-
         for ( auto& [k, meshes] : NodeAttachments ) {
             for ( MeshVisualInfo* mvi : meshes ) {
                 delete mvi;
             }
         }
-
-        VobConstantBuffer.reset();
     }
 
     /** Updates the vobs constantbuffer */
@@ -425,26 +458,22 @@ struct SkeletalVobInfo : public BaseVobInfo {
         HasValidPrevTransforms = true;
     }
 
-    /** Constantbuffer which holds this vobs world matrix */
-    D3D11ConstantBuffer* GetVobConstantBuffer() const { return VobConstantBuffer.get(); };
-    std::unique_ptr<D3D11ConstantBuffer> VobConstantBuffer;
-
     /** Map of visuals attached to nodes */
-    gtl::flat_hash_map<int, std::vector<MeshVisualInfo*>> NodeAttachments{};
+    gtl::flat_hash_map<int, std::vector<MeshVisualInfo*>> NodeAttachments;
 
     /** Indoor* */
     bool IndoorVob;
 
     /** Flag to see if this vob was drawn in the current render pass. Used to collect the same vob only once. */
-    std::atomic<size_t> VisibleInRenderPass{};
+    std::atomic<size_t> VisibleInRenderPass;
 
     /** Current world transform */
     XMFLOAT4X4 WorldMatrix;
 
     /** BSP-Node this is stored in */
-    std::vector<BspInfo*> ParentBSPNodes{};
+    std::vector<BspInfo*> ParentBSPNodes;
 
-    std::vector<XMFLOAT4X4> PrevBoneTransforms{};
+    std::vector<XMFLOAT4X4> PrevBoneTransforms;
     XMFLOAT4X4 PrevWorldMatrix;
     bool HasValidPrevTransforms;
     size_t LastAniUpdateFrame;
@@ -466,12 +495,15 @@ class D3D11Texture;
 
 /** Describes a world-section for the renderer */
 struct WorldMeshSectionInfo {
-    WorldMeshSectionInfo() {
-        BoundingBox.Min = XMFLOAT3( FLT_MAX, FLT_MAX, FLT_MAX );
-        BoundingBox.Max = XMFLOAT3( -FLT_MAX, -FLT_MAX, -FLT_MAX );
-        FullStaticMesh = nullptr;
+    WorldMeshSectionInfo() : 
+    FullStaticMesh{},
+    BaseIndexLocation{},
+    NumIndices{}
+    {
+        BoundingBox.Min = XMFLOAT3(FLT_MAX, FLT_MAX, FLT_MAX);
+        BoundingBox.Max = XMFLOAT3(-FLT_MAX, -FLT_MAX, -FLT_MAX);
     }
-    
+
     WorldMeshSectionInfo(WorldMeshSectionInfo&& other) = default;
     WorldMeshSectionInfo& operator=( WorldMeshSectionInfo&& ) = default;
     WorldMeshSectionInfo(const WorldMeshSectionInfo& other) = delete;
@@ -530,11 +562,16 @@ struct WorldMeshSectionInfo {
 class zCBspTree;
 class zCWorld;
 struct WorldInfo {
-    WorldInfo() {
-        BspTree = nullptr;
-        CustomWorldLoaded = false;
+    WorldInfo() :
+        MidPoint{},
+        LowestVertex{},
+        HighestVertex{},
+        BspTree{},
+        MainWorld{},
+        CustomWorldLoaded{}
+    {
     }
-    
+
     WorldInfo(WorldInfo&& other) = default;
     WorldInfo& operator=(WorldInfo&& other) = default;
     WorldInfo(const WorldInfo& other) = delete;
@@ -558,6 +595,7 @@ struct TransparencyVobInfo {
     TransparencyVobInfo(TransparencyVobInfo&& other) = default;
     TransparencyVobInfo& operator=( TransparencyVobInfo&& ) = default;
     TransparencyVobInfo(const TransparencyVobInfo& other) = delete;
+    TransparencyVobInfo& operator=(const TransparencyVobInfo& other) = delete;
 
     float distance;
     float alpha;
