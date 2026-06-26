@@ -4060,20 +4060,36 @@ void GothicAPI::CollectVisibleVobs(
 
         float minDynamicUpdateLightRange = Engine::GAPI->GetRendererState().RendererSettings.MinLightShadowUpdateRange;
     
-        for ( auto vi : renderQueue.lights ) {
-            if ( vi->Vob->IsEnabled() /*&& vob->GetShowVisual()*/ ) {
-                vi->VisibleInFrame = true;
 
-                // Update the lights shadows if: Light is dynamic or full shadow-updates are set
-                if ( !vi->IsPFXVobLight ) {
-                    if ( RendererState.RendererSettings.EnablePointlightShadows >= GothicRendererSettings::PLS_FULL
-                        || (RendererState.RendererSettings.EnablePointlightShadows >= GothicRendererSettings::PLS_UPDATE_DYNAMIC && !vi->Vob->IsStatic()) ) {
-                        // Now check for distances, etc
-                        float lightPlayerDist;
-                        XMStoreFloat( &lightPlayerDist, XMVector3Length( playerPosition - vi->Vob->GetPositionWorldXM() ) );
-                        if ( vi->Vob->GetLightRange() > minDynamicUpdateLightRange && lightPlayerDist < vi->Vob->GetLightRange() * 1.5f )
-                            vi->UpdateShadows = true;
-                    }
+        std::vector<std::pair<float, VobLightInfo*>> lightWithDist;
+        lightWithDist.reserve( renderQueue.lights.size() );
+
+        const auto camPos = ctx.cameraPosition;
+        float lightPlayerDist;
+        for ( auto vi : renderQueue.lights ) {
+            if ( vi->Vob->IsEnabled() ) {
+                XMStoreFloat( &lightPlayerDist, XMVector3LengthSq( playerPosition - vi->Vob->GetPositionWorldXM() ) ); 
+                lightWithDist.emplace_back( lightPlayerDist, vi );
+            }
+        }
+
+        std::sort( lightWithDist.begin(), lightWithDist.end(), []( const std::pair<float, VobLightInfo*>& a, const std::pair<float, VobLightInfo*>& b ) {
+            return a.first < b.first;
+        });
+
+        renderQueue.lights.clear();
+
+        const bool lightUpdateEnabled = RendererState.RendererSettings.EnablePointlightShadows >= GothicRendererSettings::PLS_UPDATE_DYNAMIC;
+        for ( auto [distSq, vi] : lightWithDist ) {
+            renderQueue.lights.push_back( vi );
+            vi->VisibleInFrame = true;
+
+            // Update the lights shadows if: Light is dynamic or full shadow-updates are set
+            if ( !vi->IsPFXVobLight ) {
+                if ( lightUpdateEnabled && !vi->Vob->IsStatic() ) {
+                    const float lightRange = vi->Vob->GetLightRange();
+                    if ( lightRange > minDynamicUpdateLightRange && distSq < (lightRange * lightRange) )
+                        vi->UpdateShadows = true;
                 }
             }
         }
