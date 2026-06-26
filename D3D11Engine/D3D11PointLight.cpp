@@ -423,10 +423,9 @@ void D3D11PointLight::RenderFullCubemap() {
     }
 
     const int shadowMode = GetCurrentShadowMode();
-    if ( shadowMode == GothicRendererSettings::PLS_STATIC_ONLY ) {
+    if ( shadowMode >= GothicRendererSettings::PLS_STATIC_ONLY ) {
         RenderStaticShadowPass( *activeTarget, true );
         m_StaticShadowReady = true;
-        return;
     }
 
     if ( shadowMode == GothicRendererSettings::PLS_UPDATE_DYNAMIC ) {
@@ -448,16 +447,15 @@ void D3D11PointLight::RenderFullCubemap() {
         }
 
         RenderAnimatedShadowPass( *activeTarget, false );
-        return;
-    }
+    } else if ( shadowMode == GothicRendererSettings::PLS_FULL ) {
+        auto wc = &WorldMeshCache;
+        if ( WorldCacheInvalid ) {
+            wc = nullptr;
+        }
 
-    auto wc = &WorldMeshCache;
-    if ( WorldCacheInvalid ) {
-        wc = nullptr;
+        engine->RenderShadowCube( LightInfo->Vob->GetPositionWorldXM(), LightInfo->Vob->GetLightRange(), *activeTarget,
+            nullptr, nullptr, false, LightInfo->IsIndoorVob, false, &VobCache, &SkeletalVobCache, wc, true, SHADOW_CASTER_ALL );
     }
-
-    engine->RenderShadowCube( LightInfo->Vob->GetPositionWorldXM(), LightInfo->Vob->GetLightRange(), *activeTarget,
-        nullptr, nullptr, false, LightInfo->IsIndoorVob, false, &VobCache, &SkeletalVobCache, wc, true, SHADOW_CASTER_ALL );
 }
 
 bool D3D11PointLight::IsReady()
