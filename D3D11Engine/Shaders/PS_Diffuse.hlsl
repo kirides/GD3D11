@@ -232,7 +232,7 @@ DEFERRED_PS_OUTPUT PSMain( PS_INPUT Input ) : SV_TARGET
 
 	// Encode focused flag as negative specIntensity so it survives into the deferred lighting pass.
 	// PS_DS_AtmosphericScattering decodes it and applies the brightness boost post-lighting.
-	float rawSpecIntensity = abs(MI_SpecularIntensity) * fx.r; // fix negative specular intensity here.
+	float rawSpecIntensity = MI_SpecularIntensity * fx.r; // fix negative specular intensity here.
 	bool focused = Input.vDiffuse.w > 1.5f;
 	output.vSI_SP.x = focused ? -(rawSpecIntensity + 0.001f) : rawSpecIntensity;
 	output.vSI_SP.y = MI_SpecularPower * fx.g;

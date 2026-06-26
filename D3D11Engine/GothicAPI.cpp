@@ -4784,6 +4784,12 @@ void GothicAPI::ResetMaterialInfo() {
     MaterialInfos.clear();
 }
 
+static void FixUpMaterial( MaterialInfo::Buffer& buffer ) {
+    if ( buffer.SpecularIntensity < 0.0f ) {
+        buffer.SpecularIntensity = 0.0f;
+    }
+}
+
 /** Returns the material info associated with the given material */
 MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCTexture* tex ) {
     auto it = MaterialInfos.find( tex );
@@ -4804,6 +4810,8 @@ MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCTexture* tex ) {
         mi = it->second.get();
     }
 
+    FixUpMaterial( mi->buffer );
+
     return mi;
 }
 
@@ -4823,6 +4831,8 @@ MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCTexture* tex, const std::string_
         } else {
             mi = it->second.get();
         }
+
+        FixUpMaterial( mi->buffer );
 
         return mi;
 }
