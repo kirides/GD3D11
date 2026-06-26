@@ -259,7 +259,9 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
 	
 	// Get specular parameters
     float4 gb3 = TX_SI_SP.Sample(SS_Linear, uv);
-    float specIntensity = gb3.x;
+	// Negative specIntensity signals a focused VOB (encoded in PS_Diffuse GBuffer fill).
+	bool focused = gb3.x < 0.0f;
+    float specIntensity = focused ? (-gb3.x - 0.001f) : gb3.x;
     float specPower = gb3.y;
 	
 	// Reconstruct VS World Position from depth
@@ -363,7 +365,8 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
 	
 	//return float4(sun.rgb, 1);
 	//return float4(vertLighting.rrr, 1);
-    return float4(litPixel.rgb, 1);
+	float focusBrightness = 1.0f + (focused ? 1.0f : 0.0f);
+    return float4(litPixel.rgb * focusBrightness, 1);
 	//return float4(pow(spec, specPower) * specIntensity.xxx * diffuse.rgb * SQ_LightColor.rgb,1);
 	
 }

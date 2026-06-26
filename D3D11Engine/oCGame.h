@@ -60,6 +60,32 @@ public:
         return *reinterpret_cast<oCNPC**>(GothicMemoryLocations::oCGame::Var_Player);
     }
 
+    static bool GetHighlightInteractFocus() {
+#if defined(BUILD_GOTHIC_2_6_fix)
+        return *reinterpret_cast<int*>(GothicMemoryLocations::oCGame::Var_InteractiveFocusEnabled) != 0;
+#elif (defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F))
+        return Engine::GAPI->GetRendererState().RendererSettings.G1HighlightInteractiveFocus;
+#else
+        return false;
+#endif
+    }
+
+    static int GetHighlightMeleeFocus() {
+#if defined(BUILD_GOTHIC_2_6_fix)
+        return *reinterpret_cast<int*>(GothicMemoryLocations::oCGame::Var_HighlightMeleeFocus);
+#else
+        return 2; // force npc highlight when focused
+#endif
+    }
+
+    static bool GetNpcFocusIsHighlightActive() {
+#if defined(BUILD_GOTHIC_2_6_fix)
+        return *reinterpret_cast<int*>(GothicMemoryLocations::oCGame::Var_NpcFocusIsHighlightActive) != 0;
+#else
+        return GetHighlightInteractFocus();
+#endif
+    }
+
     zCView* GetGameView() {
         return *reinterpret_cast<zCView**>(THISPTR_OFFSET( GothicMemoryLocations::oCGame::Offset_GameView ));
     }

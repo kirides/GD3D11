@@ -49,7 +49,7 @@ struct VS_INPUT
     float4x4 InstancePrevWorldMatrix : INSTANCE_PREV_WORLD_MATRIX;
     float4 InstanceColor : INSTANCE_COLOR;
     float2 InstanceWind : INSTANCE_WINDFLUENCE;
-    uint InstanceWindMetaIndex : INSTANCE_WIND_META_INDEX;
+    uint InstanceWindMetaIndex : INSTANCE_WIND_META_INDEX; // first 31 bits are index into structure buffer, 32 bit is flag if its "focused"
 };
 
 struct VS_OUTPUT
@@ -170,7 +170,7 @@ VS_OUTPUT VSMain( VS_INPUT Input )
     float localMinHeight = minHeight;
     float localMaxHeight = maxHeight;
 #if WIND_META_SRV
-    WindMetaDataEntry meta = WindMetaData[Input.InstanceWindMetaIndex];
+    WindMetaDataEntry meta = WindMetaData[Input.InstanceWindMetaIndex & 0x7FFFFFFF];
     localMinHeight = meta.minHeight;
     localMaxHeight = meta.maxHeight;
 #endif
@@ -216,6 +216,9 @@ VS_OUTPUT VSMain( VS_INPUT Input )
     Output.vTexcoord = Input.vTex1;
     Output.vTexcoord2 = Input.vTex2;
     Output.vDiffuse = Input.InstanceColor;
+    // 2.0 = focused, 0.0 = not focused. Value >1.0 is impossible from UNORM hardware inputs,
+    // so step(1.5) in the PS can distinguish this from other shaders that output alpha=1.0.
+    Output.vDiffuse.w = (Input.InstanceWindMetaIndex >> 31u) ? 2.0f : 0.0f;
     Output.vNormalVS = mul(Input.vNormal, mul((float3x3)Input.InstanceWorldMatrix, (float3x3)frame.M_View));
     Output.vViewPosition = mul(float4(worldPos, 1.0), frame.M_View);
     

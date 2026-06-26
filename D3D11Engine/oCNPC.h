@@ -66,6 +66,14 @@ public:
         HookedFunctions::OriginalFunctions.original_oCNPCDisable( thisptr );
     }
 
+    zCVob* GetFocusVob() const {
+#if defined(BUILD_GOTHIC_2_6_fix) || (defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F))
+        return *reinterpret_cast<zCVob**>(THISPTR_OFFSET( GothicMemoryLocations::oCNPC::Offset_focus_vob ));
+#else
+        return nullptr;
+#endif
+    }
+
     void ResetPos( const XMFLOAT3& pos ) {
         reinterpret_cast<void( __fastcall* )( oCNPC*, int, const XMFLOAT3& )>( GothicMemoryLocations::oCNPC::ResetPos )( this, 0, pos );
     }

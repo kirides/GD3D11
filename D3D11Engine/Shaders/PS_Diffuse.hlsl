@@ -164,7 +164,8 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
 		litPixel += FP_ComputePointLighting(wsPosition, vsPosition, nrm, color.rgb, specIntensity, specPower, Input.vPosition.xy);
 	}
 
-	output.vColor = float4(litPixel, 1);
+	float focusBrightness = 1.0f + step(1.5f, Input.vDiffuse.w) * 1.0f;
+	output.vColor = float4(litPixel * focusBrightness, 1);
 	output.vNrm = EncodeNormalGBuffer(nrm);
 	output.vSI_SP = float2(specIntensity, specPower);
 	output.vVelocity = CalculateVelocity(Input.vCurrClipPos, Input.vPrevClipPos);
@@ -226,10 +227,14 @@ DEFERRED_PS_OUTPUT PSMain( PS_INPUT Input ) : SV_TARGET
 	output.vDiffuse = float4(color.rgb, Input.vDiffuse.y);
 	//output.vDiffuse = float4(Input.vTexcoord2, 0, 1);
 	//output.vDiffuse = float4(Input.vNormalVS, 1);
-	
+
 	output.vNrm = EncodeNormalGBuffer(nrm);
-	
-	output.vSI_SP.x = MI_SpecularIntensity * fx.r;
+
+	// Encode focused flag as negative specIntensity so it survives into the deferred lighting pass.
+	// PS_DS_AtmosphericScattering decodes it and applies the brightness boost post-lighting.
+	float rawSpecIntensity = MI_SpecularIntensity * fx.r; // fix negative specular intensity here.
+	bool focused = Input.vDiffuse.w > 1.5f;
+	output.vSI_SP.x = focused ? -(rawSpecIntensity + 0.001f) : rawSpecIntensity;
 	output.vSI_SP.y = MI_SpecularPower * fx.g;
 	
 	// Calculate velocity for motion vectors

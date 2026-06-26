@@ -1912,7 +1912,7 @@ void GothicAPI::OnVisualDeleted( zCVisual* visual ) {
     if ( list.size() > 0 ) {
 #ifndef PUBLIC_RELEASE
         if ( RendererState.RendererSettings.EnableDebugLog )
-            LogInfo() << std::string( className ) << " had " + std::to_string( list.size() ) << " vobs";
+            LogInfo() << className << " had " << list.size() << " vobs";
 #endif
 
         VobsByVisual[visual].clear();
@@ -4028,6 +4028,9 @@ void GothicAPI::CollectVisibleVobs(
     // they should be unique at this point.
 
     if ( collectFlags & COLLECT_MUTATE ) {
+        const int interactiveFocusEnabled = oCGame::GetHighlightInteractFocus();
+        const zCVob* playerFocusVob = interactiveFocusEnabled && oCGame::GetPlayer() ? oCGame::GetPlayer()->GetFocusVob() : nullptr;
+
         for ( auto it : renderQueue.vobs ) {
             VobInstanceInfo vii = {};
             vii.world = it->WorldMatrix;
@@ -4035,6 +4038,7 @@ void GothicAPI::CollectVisibleVobs(
             vii.color = it->GroundColor;
             vii.windStrenth = 0.0f;
             vii.canBeAffectedByPlayer = 0;
+            vii.GP_Slot |= playerFocusVob == it->Vob ? 1 << 31 : 0;
 
             zTAnimationMode aniMode = it->Vob->GetVisualAniMode();
             if ( aniMode != zVISUAL_ANIMODE_NONE ) {
@@ -4780,6 +4784,13 @@ void GothicAPI::ResetMaterialInfo() {
     MaterialInfos.clear();
 }
 
+static void FixUpMaterial( MaterialInfo::Buffer& buffer ) {
+    if ( buffer.SpecularIntensity < 0.0f ) {
+        // we abuse negative specular intensity to mark a pixel as "focused", thus materials must never have negative specular intensity.
+        buffer.SpecularIntensity = 0.0f;
+    }
+}
+
 /** Returns the material info associated with the given material */
 MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCTexture* tex ) {
     auto it = MaterialInfos.find( tex );
@@ -4800,6 +4811,8 @@ MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCTexture* tex ) {
         mi = it->second.get();
     }
 
+    FixUpMaterial( mi->buffer );
+
     return mi;
 }
 
@@ -4819,6 +4832,8 @@ MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCTexture* tex, const std::string_
         } else {
             mi = it->second.get();
         }
+
+        FixUpMaterial( mi->buffer );
 
         return mi;
 }
@@ -5192,7 +5207,10 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "General", "AnimateStaticVobs", std::to_string( s.AnimateStaticVobs ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "DrawWorldSectionIntersections", std::to_string( s.DrawSectionIntersections ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "SunLightStrength", std::to_string( s.SunLightStrength ).c_str(), ini.c_str() );
+#ifdef BUILD_GOTHIC_1_08k
     WritePrivateProfileStringA( "General", "DrawG1ForestPortals", std::to_string( s.DrawG1ForestPortals ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "G1HighlightInteractiveFocus", std::to_string( s.G1HighlightInteractiveFocus ? TRUE : FALSE ).c_str(), ini.c_str() );
+#endif
     WritePrivateProfileStringA( "General", "DrawRainThroughTransformFeedback", std::to_string( s.DrawRainThroughTransformFeedback ? TRUE : FALSE ).c_str(), ini.c_str() );
 
     /*
@@ -5318,7 +5336,10 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.AnimateStaticVobs = GetPrivateProfileBoolA( "General", "AnimateStaticVobs", ds.AnimateStaticVobs, ini );
         s.DrawSectionIntersections = GetPrivateProfileBoolA( "General", "DrawWorldSectionIntersections", ds.DrawSectionIntersections, ini );
         s.SunLightStrength = GetPrivateProfileFloatA( "General", "SunLightStrength", ds.SunLightStrength, ini );
+#ifdef BUILD_GOTHIC_1_08k
         s.DrawG1ForestPortals = GetPrivateProfileBoolA( "General", "DrawG1ForestPortals", ds.DrawG1ForestPortals, ini );
+        s.G1HighlightInteractiveFocus = GetPrivateProfileBoolA( "General", "G1HighlightInteractiveFocus", ds.G1HighlightInteractiveFocus, ini );
+#endif
         s.DrawRainThroughTransformFeedback = GetPrivateProfileBoolA( "General", "DrawRainThroughTransformFeedback", ds.DrawRainThroughTransformFeedback, ini );
 
         /*

@@ -2996,6 +2996,21 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         }
     };
 
+    const float focusedColorSentinel = 2.0f;
+    const float interactiveFocusColor = oCGame::GetHighlightInteractFocus() ? focusedColorSentinel : 0.0f;
+    const float meleeFocusColor = oCGame::GetHighlightMeleeFocus() >= 2 && oCGame::GetNpcFocusIsHighlightActive() ? focusedColorSentinel : 0.0f;
+    const zCVob* playerFocusVob = oCGame::GetPlayer() ? oCGame::GetPlayer()->GetFocusVob() : nullptr;
+
+    static auto getFocusColor = []( zCVob* vob, const zCVob* playerFocusVob, float interactiveFocusColor, float meleeFocusColor ) -> float {
+        if ( vob == playerFocusVob ) {
+            if ( vob->As<oCNPC>() ) {
+                return meleeFocusColor;
+            }
+            return interactiveFocusColor;
+        }
+        return 0.0f;
+    };
+
     {
         auto _scopeBaseMeshes = RecordGraphicsEvent( GE_NAME( "DrawSkeletalMeshVobs::BaseMeshes" ) );
         TracyD3D11ZoneCGX( "DrawSkeletalMeshVobs::BaseMeshes" );
@@ -3073,6 +3088,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                     cb2.PI_ModelFatness = fatness;
                     // Set PrevWorld for motion vectors (use current world if no previous is available)
                     cb2.PrevWorld = vi->HasValidPrevTransforms ? vi->PrevWorldMatrix : world;
+                    cb2.PI_Pad1.x = getFocusColor(vi->Vob, playerFocusVob, interactiveFocusColor, meleeFocusColor);
 
                     perInstanceCb.Update( &cb2 );
 
@@ -3309,6 +3325,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 
                         VS_ExConstantBuffer_PerInstanceNode instanceInfo;
                         instanceInfo.Color = modelColor;
+                        instanceInfo.Color.w = getFocusColor( vi->Vob, playerFocusVob, interactiveFocusColor, meleeFocusColor );
                         instanceInfo.Fatness = std::max<float>( 0.f, fatness * 0.35f );
                         instanceInfo.Scaling = fatness * 0.02f + 1.f;
                         instanceInfo.World = finalWorld;
@@ -3373,6 +3390,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                     instData.World = finalWorld;
                     instData.PrevWorld = finalPrevWorld;
                     instData.Color = modelColor;
+                    instData.Color.w = getFocusColor( vi->Vob, playerFocusVob, interactiveFocusColor, meleeFocusColor );
 
                     for ( auto const& itm : mvi->Meshes ) {
                         zCTexture* texture = nullptr;
@@ -6762,7 +6780,7 @@ bool D3D11GraphicsEngine::PrepareAndBindWindMetadata( const std::vector<MeshVisu
         m_WindMetadataStaging.push_back( metadata );
 
         for ( auto& instance : visual->Instances ) {
-            instance.GP_Slot = metadataIndex;
+            instance.GP_Slot |= metadataIndex & 0x7FFFFFFF;
         }
     }
 
@@ -7439,7 +7457,7 @@ XRESULT D3D11GraphicsEngine::DrawFrameAlphaMeshes()
             }
 
             for ( auto& instance : alphaData.instances ) {
-                instance.GP_Slot = it->second;
+                instance.GP_Slot |= it->second & 0x7FFFFFFF;
             }
         }
 

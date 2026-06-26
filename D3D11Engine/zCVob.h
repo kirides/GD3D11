@@ -132,7 +132,7 @@ public:
     }
 #else
     /** Returns the visual saved in this vob */
-    zCVisual* GetVisual() {
+    zCVisual* GetVisual() const {
         return GetMainVisual();
     }
 #endif
@@ -151,12 +151,12 @@ public:
     }
 
     /** Returns the visual saved in this vob */
-    zCVisual* GetMainVisual() {
-        return reinterpret_cast<zCVisual*( __fastcall* )( zCVob* )>( GothicMemoryLocations::zCVob::GetVisual )( this );
+    zCVisual* GetMainVisual() const {
+        return reinterpret_cast<zCVisual*( __fastcall* )( const zCVob* )>( GothicMemoryLocations::zCVob::GetVisual )( this );
     }
 
     /** Returns the name of this vob */
-    std::string GetName() {
+    std::string GetName() const {
         return __GetObjectName().ToChar();
     }
 
@@ -220,17 +220,17 @@ public:
     }
 
     /** Returns a copy of the world matrix */
-    XMMATRIX GetWorldMatrixXM() {
+    XMMATRIX GetWorldMatrixXM() const {
         return XMLoadFloat4x4( reinterpret_cast<XMFLOAT4X4*>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_WorldMatrixPtr )) );
     }
 
     /** Returns the world-polygon right under this vob */
-    zCPolygon* GetGroundPoly() {
+    zCPolygon* GetGroundPoly() const {
         return *reinterpret_cast<zCPolygon**>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_GroundPoly ));
     }
 
     /** Returns whether this vob is currently in an indoor-location or not */
-    bool IsIndoorVob() {
+    bool IsIndoorVob() const {
         if ( !GetGroundPoly() )
             return false;
 
@@ -238,12 +238,12 @@ public:
     }
 
     /** Returns the world this vob resists in */
-    zCWorld* GetHomeWorld() {
+    zCWorld* GetHomeWorld() const {
         return *reinterpret_cast<zCWorld**>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_HomeWorld ));
     }
 
     /** Returns whether this vob is currently in sleeping state or not. Sleeping state is something like a waiting (cached out) NPC */
-    int GetSleepingMode() {
+    int GetSleepingMode() const {
         unsigned int flags = *reinterpret_cast<unsigned int*>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_SleepingMode ));
         return (flags & GothicMemoryLocations::zCVob::MASK_SkeepingMode);
     }
@@ -262,7 +262,7 @@ public:
 
 #ifndef BUILD_SPACER_NET
     /** Returns whether the visual of this vob is visible */
-    bool GetShowVisual() {
+    bool GetShowVisual() const {
 #ifndef BUILD_SPACER
         return GetShowMainVisual();
 #else
@@ -291,35 +291,35 @@ public:
 #endif
 
     /** Returns whether to show the main visual or not. Only used for the spacer */
-    bool GetShowMainVisual() {
+    bool GetShowMainVisual() const {
         unsigned int flags = *reinterpret_cast<unsigned int*>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_Flags ));
         return (flags & GothicMemoryLocations::zCVob::MASK_ShowVisual);
     }
 
     /** Returns whether vob is transparent */
-    bool GetVisualAlpha() {
+    bool GetVisualAlpha() const {
         unsigned int flags = *reinterpret_cast<unsigned int*>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_Flags ));
         return (flags & GothicMemoryLocations::zCVob::MASK_VisualAlpha);
     }
 
     /** Returns dynamic collision of the vob */
-    bool GetDynColl() {
+    bool GetDynColl() const {
         unsigned int flags = *reinterpret_cast<unsigned int*>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_Flags ));
         return (flags & GothicMemoryLocations::zCVob::MASK_DynColl);
     }
 
     /** Vob transparency */
-    float GetVobTransparency() {
+    float GetVobTransparency() const {
         return *reinterpret_cast<float*>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_VobAlpha ));
     }
 
     /** Vob type */
-    EVobType GetVobType() {
+    EVobType GetVobType() const {
         return *reinterpret_cast<EVobType*>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_Type ));
     }
 
     /** Vob parent */
-    zCVob* GetVobParent() {
+    zCVob* GetVobParent() const {
         if ( DWORD vobTree = *reinterpret_cast<DWORD*>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_VobTree )) ) {
             if ( ( vobTree = *reinterpret_cast<DWORD*>(vobTree + 0x00) ) != 0 ) { // Read parent from vobtree
                 return *reinterpret_cast<zCVob**>(vobTree + 0x10);
@@ -329,7 +329,7 @@ public:
     }
 
     /** Alignemt to the camera */
-    EVisualCamAlignType GetAlignment() {
+    EVisualCamAlignType GetAlignment() const {
         unsigned int flags = *reinterpret_cast<unsigned int*>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_CameraAlignment ));
 
         //.text:00601652                 shl     eax, 1Eh
@@ -341,7 +341,7 @@ public:
         return static_cast<EVisualCamAlignType>(flags);
     }
 
-    zTAnimationMode GetVisualAniMode() {
+    zTAnimationMode GetVisualAniMode() const {
 #ifdef BUILD_GOTHIC_1_08k
 #ifdef BUILD_1_12F
         return zVISUAL_ANIMODE_NONE;
@@ -386,7 +386,7 @@ protected:
         return false;
     }
 
-    zSTRING& __GetObjectName() {
-        return reinterpret_cast<zSTRING&( __fastcall* )( zCVob* )>( GothicMemoryLocations::zCObject::GetObjectName )( this );
+    zSTRING& __GetObjectName() const {
+        return reinterpret_cast<zSTRING&( __fastcall* )( const zCVob* )>( GothicMemoryLocations::zCObject::GetObjectName )( this );
     }
 };

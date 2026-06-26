@@ -504,6 +504,7 @@ struct GothicMemoryLocations {
         static const unsigned int IsAPlayer = 0x0069E9D0;
         static const unsigned int GetName = 0x0068D0B0;
         static const unsigned int HasFlag = 0x0068E150;
+        static const unsigned int Offset_focus_vob = 0x9e4;
     };
 
     struct oCGame {
