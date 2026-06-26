@@ -2996,7 +2996,8 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         }
     };
 
-    const int interactiveFocusEnabled = oCGame::GetHighlightInteractFocus();
+    const int interactiveFocusEnabled = distance > 100000 // only MOBs, not NPCs
+        && oCGame::GetHighlightInteractFocus();
     const zCVob* playerFocusVob = interactiveFocusEnabled && oCGame::GetPlayer() ? oCGame::GetPlayer()->GetFocusVob() : nullptr;
 
     {
