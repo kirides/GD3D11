@@ -224,14 +224,17 @@ DEFERRED_PS_OUTPUT PSMain( PS_INPUT Input ) : SV_TARGET
 	fx = 1.0f;
 #endif
 	
-	float focusBrightness = 1.0f + step(1.5f, Input.vDiffuse.w) * 0.85f;
-	output.vDiffuse = float4(color.rgb * focusBrightness, Input.vDiffuse.y);
+	output.vDiffuse = float4(color.rgb, Input.vDiffuse.y);
 	//output.vDiffuse = float4(Input.vTexcoord2, 0, 1);
 	//output.vDiffuse = float4(Input.vNormalVS, 1);
-	
+
 	output.vNrm = EncodeNormalGBuffer(nrm);
-	
-	output.vSI_SP.x = MI_SpecularIntensity * fx.r;
+
+	// Encode focused flag as negative specIntensity so it survives into the deferred lighting pass.
+	// PS_DS_AtmosphericScattering decodes it and applies the brightness boost post-lighting.
+	float rawSpecIntensity = abs(MI_SpecularIntensity) * fx.r; // fix negative specular intensity here.
+	bool focused = Input.vDiffuse.w > 1.5f;
+	output.vSI_SP.x = focused ? -(rawSpecIntensity + 0.001f) : rawSpecIntensity;
 	output.vSI_SP.y = MI_SpecularPower * fx.g;
 	
 	// Calculate velocity for motion vectors
