@@ -4786,6 +4786,7 @@ void GothicAPI::ResetMaterialInfo() {
 
 static void FixUpMaterial( MaterialInfo::Buffer& buffer ) {
     if ( buffer.SpecularIntensity < 0.0f ) {
+        // we abuse negative specular intensity to mark a pixel as "focused", thus materials must never have negative specular intensity.
         buffer.SpecularIntensity = 0.0f;
     }
 }
