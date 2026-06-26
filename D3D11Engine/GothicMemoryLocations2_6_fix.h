@@ -156,12 +156,14 @@ struct GothicMemoryLocations {
         static const unsigned int EnterWorld = 0x006C96F0;
         static const unsigned int TestKeys = 0x006FD560;
         static const unsigned int Var_Player = 0x00AB2684;
+        static const unsigned int Var_InteractiveFocusEnabled = 0x008b20f4;
         static const unsigned int Offset_GameView = 0x30;
         static const unsigned int Offset_SingleStep = 0x11C;
         static const unsigned int DefineExternals_Ulfi = 0x006D4780;
     };
 
     struct oCNPC {
+        static const unsigned int Offset_focus_vob = 0x9ac;
         static const unsigned int ResetPos = 0x006824D0;
         static const unsigned int InitModel = 0x00738480;
         static const unsigned int Enable = 0x00745D40;

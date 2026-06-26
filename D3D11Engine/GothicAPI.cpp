@@ -1912,7 +1912,7 @@ void GothicAPI::OnVisualDeleted( zCVisual* visual ) {
     if ( list.size() > 0 ) {
 #ifndef PUBLIC_RELEASE
         if ( RendererState.RendererSettings.EnableDebugLog )
-            LogInfo() << std::string( className ) << " had " + std::to_string( list.size() ) << " vobs";
+            LogInfo() << className << " had " << list.size() << " vobs";
 #endif
 
         VobsByVisual[visual].clear();
@@ -4028,6 +4028,9 @@ void GothicAPI::CollectVisibleVobs(
     // they should be unique at this point.
 
     if ( collectFlags & COLLECT_MUTATE ) {
+        const int interactiveFocusEnabled = oCGame::GetHighlightInteractFocus();
+        const zCVob* playerFocusVob = interactiveFocusEnabled && oCGame::GetPlayer() ? oCGame::GetPlayer()->GetFocusVob() : nullptr;
+
         for ( auto it : renderQueue.vobs ) {
             VobInstanceInfo vii = {};
             vii.world = it->WorldMatrix;
@@ -4035,6 +4038,7 @@ void GothicAPI::CollectVisibleVobs(
             vii.color = it->GroundColor;
             vii.windStrenth = 0.0f;
             vii.canBeAffectedByPlayer = 0;
+            vii.GP_Slot |= playerFocusVob == it->Vob ? 1 << 31 : 0;
 
             zTAnimationMode aniMode = it->Vob->GetVisualAniMode();
             if ( aniMode != zVISUAL_ANIMODE_NONE ) {

@@ -60,6 +60,10 @@ public:
         return *reinterpret_cast<oCNPC**>(GothicMemoryLocations::oCGame::Var_Player);
     }
 
+    static bool GetHighlightInteractFocus() {
+        return *reinterpret_cast<int*>(GothicMemoryLocations::oCGame::Var_InteractiveFocusEnabled) != 0;
+    }
+
     zCView* GetGameView() {
         return *reinterpret_cast<zCView**>(THISPTR_OFFSET( GothicMemoryLocations::oCGame::Offset_GameView ));
     }

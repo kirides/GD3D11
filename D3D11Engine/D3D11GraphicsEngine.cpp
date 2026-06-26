@@ -6762,7 +6762,7 @@ bool D3D11GraphicsEngine::PrepareAndBindWindMetadata( const std::vector<MeshVisu
         m_WindMetadataStaging.push_back( metadata );
 
         for ( auto& instance : visual->Instances ) {
-            instance.GP_Slot = metadataIndex;
+            instance.GP_Slot |= metadataIndex & 0x7FFFFFFF;
         }
     }
 
@@ -7439,7 +7439,7 @@ XRESULT D3D11GraphicsEngine::DrawFrameAlphaMeshes()
             }
 
             for ( auto& instance : alphaData.instances ) {
-                instance.GP_Slot = it->second;
+                instance.GP_Slot |= it->second & 0x7FFFFFFF;
             }
         }
 

@@ -164,7 +164,8 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
 		litPixel += FP_ComputePointLighting(wsPosition, vsPosition, nrm, color.rgb, specIntensity, specPower, Input.vPosition.xy);
 	}
 
-	output.vColor = float4(litPixel, 1);
+	float focusBrightness = 1.0f + step(1.5f, Input.vDiffuse.w) * 0.35f;
+	output.vColor = float4(litPixel * focusBrightness, 1);
 	output.vNrm = EncodeNormalGBuffer(nrm);
 	output.vSI_SP = float2(specIntensity, specPower);
 	output.vVelocity = CalculateVelocity(Input.vCurrClipPos, Input.vPrevClipPos);
@@ -223,7 +224,8 @@ DEFERRED_PS_OUTPUT PSMain( PS_INPUT Input ) : SV_TARGET
 	fx = 1.0f;
 #endif
 	
-	output.vDiffuse = float4(color.rgb, Input.vDiffuse.y);
+	float focusBrightness = 1.0f + step(1.5f, Input.vDiffuse.w) * 0.85f;
+	output.vDiffuse = float4(color.rgb * focusBrightness, Input.vDiffuse.y);
 	//output.vDiffuse = float4(Input.vTexcoord2, 0, 1);
 	//output.vDiffuse = float4(Input.vNormalVS, 1);
 	
