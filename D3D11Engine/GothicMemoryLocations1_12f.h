@@ -543,6 +543,8 @@ struct GothicMemoryLocations {
         static const unsigned int oCNpc = 0x00922830;
         static const unsigned int zCTexture = 0x00914FE0;
         static const unsigned int oCVisualFX = 0x008AF438;
+        static const unsigned int oCMobInter = 0;
+        static const unsigned int oCMOB = 0;
     };
 
     struct oCInformationManager
