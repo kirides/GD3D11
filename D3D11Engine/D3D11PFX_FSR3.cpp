@@ -9,6 +9,7 @@
 #include <FidelityFX/host/ffx_fsr3upscaler.h>
 
 #pragma comment(lib, "ffx_backend_dx11_x86.lib")
+#pragma comment(lib, "ffx_fsr3_x86.lib")
 #pragma comment(lib, "ffx_fsr3upscaler_x86.lib")
 
 namespace {
@@ -239,7 +240,9 @@ XRESULT D3D11PFX_FSR3::Apply(
 
     // Optional Resources (Passing nullptr handles them internally, e.g., Auto Exposure)
     // dispatchDesc.exposure = ffxGetResourceDX11_Fsr31_( nullptr, GetFfxResourceDescriptionDX11(nullptr), L"" );
-    // dispatchDesc.reactive = ffxGetResourceDX11_Fsr31_( tncRes, GetFfxResourceDescriptionDX11( tncRes ), L"" );
+    if ( reactiveMask ) {
+        dispatchDesc.reactive = GetAsFfxResource( reactiveMask, L"FSR3_ReactiveMask" );
+    }
     // dispatchDesc.transparencyAndComposition = GetAsFfxResource( reactiveMask, L"FSR3_TNC" );
 
     // Set Dispatch Properties

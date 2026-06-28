@@ -45,7 +45,6 @@
 #include <dxgi1_6.h>
 
 #include "D3D11PFX_FSR1.h"
-#include "D3D11PFX_FSR2.h"
 #include "D3D11PFX_FSR3.h"
 #include "D3D11PFX_TAA.h"
 #include "ImGuiShim.h"
@@ -6322,25 +6321,27 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
     float sectionRange,
     const RenderShadowmapsParams& params ) {
 
+    auto& renderState = Engine::GAPI->GetRendererState();
     // Setup renderstates
-    Engine::GAPI->GetRendererState().RasterizerState.SetDefault();
-    Engine::GAPI->GetRendererState().RasterizerState.CullMode =
+    renderState.RasterizerState.SetDefault();
+    renderState.RasterizerState.CullMode =
         params.CullFront ? GothicRasterizerStateInfo::CM_CULL_FRONT
         : GothicRasterizerStateInfo::CM_CULL_BACK;
     if ( params.DontCull )
-        Engine::GAPI->GetRendererState().RasterizerState.CullMode =
+        renderState.RasterizerState.CullMode =
         GothicRasterizerStateInfo::CM_CULL_NONE;
 
-    Engine::GAPI->GetRendererState().RasterizerState.DepthClipEnable = true;
+    renderState.RasterizerState.DepthClipEnable = true;
     // Slope-scaled depth bias pushes caster depth away from the light along sloped
     // surfaces, removing shadow acne/stepping on thin geometry and in crevices.
-    Engine::GAPI->GetRendererState().RasterizerState.SlopeScaledDepthBias =
-        Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ShadowDepthSlopeBias;
-    Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
+    renderState.RasterizerState.SlopeScaledDepthBias =
+        renderState.RendererSettings.DebugSettings.ShadowCascades.ShadowDepthSlopeBias;
+    // renderState.RasterizerState.ZBias = 0.12;
+    renderState.RasterizerState.SetDirty();
 
-    Engine::GAPI->GetRendererState().DepthState.SetDefault();
-    Engine::GAPI->GetRendererState().DepthState.DepthBufferCompareFunc = GothicDepthBufferStateInfo::ECompareFunc::CF_COMPARISON_LESS_EQUAL;
-    Engine::GAPI->GetRendererState().DepthState.SetDirty();
+    renderState.DepthState.SetDefault();
+    renderState.DepthState.DepthBufferCompareFunc = GothicDepthBufferStateInfo::ECompareFunc::CF_COMPARISON_LESS_EQUAL;
+    renderState.DepthState.SetDirty();
 
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
 
@@ -6353,16 +6354,16 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
     SetActiveVertexShader( VShaderID::VS_Ex );
 
     bool linearDepth =
-        (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches &
+        (renderState.GraphicsState.FF_GSwitches &
             GSWITCH_LINEAR_DEPTH) != 0;
     if ( linearDepth ) {
         SetActivePixelShader( PShaderID::PS_LinDepth );
     }
 
     // Set constant buffer
-    Engine::GAPI->GetRendererState().GraphicsState.FF_AlphaRef = 170.0f / 255.0f; // zRnd_D3D uses 0xb0 = 170 as default alpha ref
+    renderState.GraphicsState.FF_AlphaRef = 170.0f / 255.0f; // zRnd_D3D uses 0xb0 = 170 as default alpha ref
     ActivePS->GetBuffer( "FFPipelineConstantBuffer" )
-        .Update( &Engine::GAPI->GetRendererState().GraphicsState )
+        .Update( &renderState.GraphicsState )
         .Bind();
 
     GSky* sky = Engine::GAPI->GetSky();
@@ -6386,11 +6387,11 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
     UpdateRenderStates();
 
-    auto enableCulling = Engine::GAPI->GetRendererState().RendererSettings.IsShadowFrustumCullingEnabled();
+    auto enableCulling = renderState.RendererSettings.IsShadowFrustumCullingEnabled();
 
     bool colorWritesEnabled =
-        Engine::GAPI->GetRendererState().BlendState.ColorWritesEnabled;
-    float alphaRef = Engine::GAPI->GetRendererState().GraphicsState.FF_AlphaRef;
+        renderState.BlendState.ColorWritesEnabled;
+    float alphaRef = renderState.GraphicsState.FF_AlphaRef;
     const Frustum* currentFrustum = nullptr;
     Frustum alwaysContainingFrustum;
 
@@ -6405,7 +6406,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         currentFrustum = &alwaysContainingFrustum;
     }
 
-    if ( Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh ) {
+    if ( renderState.RendererSettings.DrawWorldMesh ) {
         TracyD3D11ZoneCGX( "Shadows::DrawWorldMesh" );
         auto _1 = RecordGraphicsEvent( GE_NAME( "Shadows::DrawWorldMesh" ) );
         cbMatrices_PerInstances.Update( &identityMatrix ).Bind();
@@ -6414,7 +6415,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         visibleSections.clear();
         Engine::GAPI->CollectVisibleSections( visibleSections, currentFrustum, false );
 
-        if ( Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseMDI ) {
+        if ( renderState.RendererSettings.DebugSettings.FeatureSet.UseMDI ) {
             MeshInfo* wrappedWorldMesh = Engine::GAPI->GetWrappedWorldMesh();
             if ( wrappedWorldMesh
                 && wrappedWorldMesh->MeshVertexBuffer
@@ -6428,14 +6429,14 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         } else {
             ShadowPass_DrawWorldMesh( visibleSections, currentFrustum );
         }
-    }    
-    
-    if ( Engine::GAPI->GetRendererState().RendererSettings.DrawVOBs ) {
+    }
+
+    if ( renderState.RendererSettings.DrawVOBs ) {
         ZoneScopedN( "Shadows::DrawVOBs" );
 
         static std::vector<VobInfo*> potentialCasters;
         std::vector<VobInfo*>& vobs = potentialCasters;
-        if (params.CascadeIndex != -1) {
+        if ( params.CascadeIndex != -1 ) {
             auto renderQueue = ShadowMaps->GetRenderQueue( params.CascadeIndex );
             renderQueue->ProcessQueue();
 
@@ -6443,16 +6444,16 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         } else {
             static std::vector<VobLightInfo*> _1;
             static std::vector<SkeletalVobInfo*> _2;
-            potentialCasters.reserve(1024);
+            potentialCasters.reserve( 1024 );
             potentialCasters.clear();
 
-            LegacyRenderQueueProxy q(potentialCasters, _1, _2);
+            LegacyRenderQueueProxy q( potentialCasters, _1, _2 );
             RndCullContext ctx;
             ctx.queue = &q;
             ctx.cameraPosition = Engine::GAPI->GetCameraPosition();
             ctx.stage = RenderStage::STAGE_DRAW_WORLD;
             ctx.frustum = *currentFrustum;
-            const auto& rs = Engine::GAPI->GetRendererState().RendererSettings;
+            const auto& rs = renderState.RendererSettings;
             ctx.drawDistances.OutdoorVobs = rs.OutdoorVobDrawRadius;
             ctx.drawDistances.OutdoorVobsSmall = rs.OutdoorSmallVobDrawRadius;
             ctx.drawDistances.IndoorVobs = rs.IndoorVobDrawRadius;
@@ -6476,17 +6477,17 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         for ( auto const& staticMeshVisual : Engine::GAPI->GetStaticMeshVisuals() ) {
             staticMeshVisual.second->StartNewFrame();
         }
-        
-        for ( auto& it : vobs) {
+
+        for ( auto& it : vobs ) {
             // process any vobs only visible in this cascade
             VobInstanceInfo vii = {};
             vii.world = it->WorldMatrix;
             vii.prevWorld = it->HasValidPrevMatrix ? it->PrevWorldMatrix : it->WorldMatrix;
-            vii.color = it->GroundColor; 
+            vii.color = it->GroundColor;
             vii.windStrenth = 0.0f;
             vii.canBeAffectedByPlayer = 0;
 
-            zTAnimationMode aniMode = it->Vob->GetVisualAniMode(); 
+            zTAnimationMode aniMode = it->Vob->GetVisualAniMode();
             if ( aniMode != zVISUAL_ANIMODE_NONE ) {
                 vii.canBeAffectedByPlayer = (!it->Vob->GetDynColl() ? 1.0f : 0.0f);
                 GothicAPI::ProcessVobAnimation( it->Vob, aniMode, vii );
@@ -6500,7 +6501,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
         const size_t shadowInstanceCount = vobs.empty() ? 1 : vobs.size();
         const unsigned int shadowInstancingBytes = static_cast<unsigned int>(
-            shadowInstanceCount * sizeof( VobInstanceInfo ) );
+            shadowInstanceCount * sizeof( VobInstanceInfo ));
         D3D11VertexBuffer* shadowInstancingBuffer = AcquireFrameInstancingBuffer(
             m_ShadowVobInstancingPool, shadowInstancingBytes, "ShadowVobInstancingBuffer" );
         if ( !shadowInstancingBuffer ) {
@@ -6514,12 +6515,12 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                     "ShadowVobInstancingBufferFallback" );
             }
         }
-        
+
         std::vector<MeshVisualInfo*> activeVisuals;
-        activeVisuals.reserve(256); // Reserve enough memory to avoid allocations
+        activeVisuals.reserve( 256 ); // Reserve enough memory to avoid allocations
         for ( auto const& pair : Engine::GAPI->GetStaticMeshVisuals() ) {
             if ( !pair.second->Instances.empty() ) {
-                activeVisuals.push_back(pair.second);
+                activeVisuals.push_back( pair.second );
             }
         }
 
@@ -6551,8 +6552,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         }
 
         GraphicsShaderConstantBuffer windBuffer = {};
-        if ( ActiveVS && 
-            (Engine::GAPI->GetRendererState().RendererSettings.WindQuality > 0 || Engine::GAPI->GetRendererState().RendererSettings.HeroAffectsObjects) ) {
+        if ( ActiveVS &&
+            (renderState.RendererSettings.WindQuality > 0 || renderState.RendererSettings.HeroAffectsObjects) ) {
             windBuffer = ActiveVS->GetBuffer( "WindParams" );
             windBuffer.Bind();
         }
@@ -6683,17 +6684,17 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             Context->IASetIndexBuffer( ib->GetVertexBuffer().Get(), VERTEX_INDEX_DXGI_FORMAT, 0 );
 
             unsigned int max =
-                Engine::GAPI->GetRendererState().RendererSettings.MaxNumFaces * 3;
+                renderState.RendererSettings.MaxNumFaces * 3;
             numIndices = max != 0 ? (numIndices < max ? numIndices : max) : numIndices;
 
             // Draw the batch
             GetContext()->DrawIndexedInstanced( numIndices, numInstances, indexOffset, 0,
                 startInstanceNum );
 
-            Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
+            renderState.RendererInfo.FrameDrawnTriangles +=
                 (numIndices / 3) * numInstances;
 
-            Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnVobs++;
+            renderState.RendererInfo.FrameDrawnVobs++;
         }
 
         if ( useWindMetadata ) {
@@ -6705,19 +6706,19 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         }
     }
 
-    if ( Engine::GAPI->GetRendererState().RendererSettings.DrawSkeletalMeshes ) {
+    if ( renderState.RendererSettings.DrawSkeletalMeshes ) {
         ZoneScopedN( "Shadows::DrawSkeletalMeshes" );
         auto _1 = RecordGraphicsEvent( GE_NAME( "Shadows::DrawSkeletalMeshes" ) );
 
-        auto skeletalRadiusSq = Engine::GAPI->GetRendererState().RendererSettings.SkeletalMeshDrawRadius
-            * Engine::GAPI->GetRendererState().RendererSettings.SkeletalMeshDrawRadius;
-        XMVECTOR vSkeletalRadiusSq = XMVectorReplicate(skeletalRadiusSq);
+        auto skeletalRadiusSq = renderState.RendererSettings.SkeletalMeshDrawRadius
+            * renderState.RendererSettings.SkeletalMeshDrawRadius;
+        XMVECTOR vSkeletalRadiusSq = XMVectorReplicate( skeletalRadiusSq );
 
         // Draw skeletal meshes
 
         static std::vector<SkeletalVobInfo*> animatedSkeletalMeshVobs;
         animatedSkeletalMeshVobs.clear();
-        
+
         for ( auto const& skeletalMeshVob : Engine::GAPI->GetSkeletalMeshVobs() ) {
             if ( !skeletalMeshVob->VisualInfo ) continue;
 
@@ -6725,13 +6726,13 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             if ( skeletalMeshVob->Vob->GetVisualAlpha() && skeletalMeshVob->Vob->GetVobTransparency() < 0.7f ) {
                 continue;
             }
-            
-            if ( XMVector3Greater(XMVector3LengthSq( skeletalMeshVob->Vob->GetPositionWorldXM() - position ), vSkeletalRadiusSq) ) {
+
+            if ( XMVector3Greater( XMVector3LengthSq( skeletalMeshVob->Vob->GetPositionWorldXM() - position ), vSkeletalRadiusSq ) ) {
                 continue;  // Skip out of range
             }
 
             if ( enableCulling ) {
-                if ( !currentFrustum->Intersects( skeletalMeshVob->Vob->GetBBox()) ) {
+                if ( !currentFrustum->Intersects( skeletalMeshVob->Vob->GetBBox() ) ) {
                     // Not hitting our frustum and not the active view.
                     continue;
                 }
@@ -6740,7 +6741,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             animatedSkeletalMeshVobs.push_back( skeletalMeshVob );
         }
         bool drawAttachments = true;
-        if ( Engine::GAPI->GetRendererState().RendererSettings.ShadowFrustumCullingMode
+        if ( renderState.RendererSettings.ShadowFrustumCullingMode
             == GothicRendererSettings::E_ShadowFrustumCulling::SHD_FRUSTUM_CULLING_AGGRESSIVE ) {
             drawAttachments = params.CascadeIndex <= 1; // skip attachments on higher cascades, player won't notice, hopefully
         }
@@ -6748,8 +6749,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         DrawSkeletalMeshVobs( animatedSkeletalMeshVobs, FLT_MAX, false, drawAttachments );
     }
 
-    Engine::GAPI->GetRendererState().BlendState.ColorWritesEnabled = true;
-    Engine::GAPI->GetRendererState().BlendState.SetDirty();
+    renderState.BlendState.ColorWritesEnabled = true;
+    renderState.BlendState.SetDirty();
 }
 
 /** Update morph mesh visual */

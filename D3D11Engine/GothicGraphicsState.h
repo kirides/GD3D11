@@ -572,7 +572,6 @@ struct GothicRendererSettings {
         AA_SMAA = 1,
         AA_TAA = 2,
         AA_FSR = 3,
-        AA_FSR3 = 4, // Dummy value! only used for settings!
         _AA_NUM_MODES
     };
 
@@ -596,7 +595,7 @@ struct GothicRendererSettings {
     enum E_Upscaler {
         UPSCALER_DEFAULT = 0,
         UPSCALER_FSR_1 = 1,
-        UPSCALER_FSR_2 = 2,
+        // UPSCALER_FSR_2 = 2, // removed
         UPSCALER_FSR_3 = 3,
         _UPSCALER_NUM_MODES
     };
@@ -1083,8 +1082,7 @@ struct GothicRendererSettings {
 
     bool GetIsTAAEnabled() const {
         return AntiAliasingMode == E_AntiAliasingMode::AA_TAA
-            || AntiAliasingMode == E_AntiAliasingMode::AA_FSR
-            || AntiAliasingMode == E_AntiAliasingMode::AA_FSR3;
+            || AntiAliasingMode == E_AntiAliasingMode::AA_FSR;
     }
 };
 

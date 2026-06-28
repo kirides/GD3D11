@@ -135,12 +135,13 @@ typedef enum FfxFsr3InitializationFlagBits {
     FFX_FSR3_ENABLE_INTERPOLATION_ONLY                  = (1<<13),
 } FfxFsr3InitializationFlagBits;
 
+#ifdef FFX_OF
 typedef enum FfxFsr3FrameGenerationFlags
 {
     FFX_FSR3_FRAME_GENERATION_FLAG_DRAW_DEBUG_TEAR_LINES    = FFX_FRAMEINTERPOLATION_DISPATCH_DRAW_DEBUG_TEAR_LINES,  ///< A bit indicating that the debug tear lines will be drawn to the interpolated output.
     FFX_FSR3_FRAME_GENERATION_FLAG_DRAW_DEBUG_VIEW          = FFX_FRAMEINTERPOLATION_DISPATCH_DRAW_DEBUG_VIEW,  ///< A bit indicating that the interpolated output resource will contain debug views with relevant information.
 } FfxFsr3FrameGenerationFlags;
-
+#endif
 typedef enum FfxFsr3UpscalingFlags
 {
     FFX_FSR3_UPSCALER_FLAG_DRAW_DEBUG_VIEW = FFX_FSR3UPSCALER_DISPATCH_DRAW_DEBUG_VIEW,  ///< A bit indicating that the upscaled output resource will contain debug views with relevant information.

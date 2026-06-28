@@ -905,7 +905,6 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="D3D11PFX_DistanceBlur.h" />
     <ClInclude Include="D3D11PFX_Effect.h" />
     <ClInclude Include="D3D11PFX_FSR1.h" />
-    <ClInclude Include="D3D11PFX_FSR2.h" />
     <ClInclude Include="D3D11PFX_FSR3.h" />
     <ClInclude Include="D3D11PFX_GodRays.h" />
     <ClInclude Include="D3D11PFX_DepthOfField.h" />
@@ -1173,7 +1172,6 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="D3D11PFX_CAS.cpp" />
     <ClCompile Include="D3D11PFX_DistanceBlur.cpp" />
     <ClCompile Include="D3D11PFX_FSR1.cpp" />
-    <ClCompile Include="D3D11PFX_FSR2.cpp" />
     <ClCompile Include="D3D11PFX_FSR3.cpp" />
     <ClCompile Include="D3D11PFX_GodRays.cpp" />
     <ClCompile Include="D3D11PFX_DepthOfField.cpp" />

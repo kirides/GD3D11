@@ -778,9 +778,6 @@
     <ClInclude Include="D3D11PFX_FSR3.h">
       <Filter>Engine\D3D11\PFX\Effects</Filter>
     </ClInclude>
-    <ClInclude Include="D3D11PFX_FSR2.h">
-      <Filter>Engine\D3D11\PFX\Effects</Filter>
-    </ClInclude>
     <ClInclude Include="D3D11ShadowMap.h">
       <Filter>Engine\D3D11</Filter>
     </ClInclude>
@@ -1102,9 +1099,6 @@
       <Filter>Engine\Graph</Filter>
     </ClCompile>
     <ClCompile Include="D3D11PFX_FSR3.cpp">
-      <Filter>Engine\D3D11\PFX\Effects</Filter>
-    </ClCompile>
-    <ClCompile Include="D3D11PFX_FSR2.cpp">
       <Filter>Engine\D3D11\PFX\Effects</Filter>
     </ClCompile>
     <ClCompile Include="D3D11ShadowMap.cpp">

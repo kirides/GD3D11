@@ -401,8 +401,7 @@ bool ImGuizmoDirectionEdit( const char* label, XMFLOAT3& direction, float widget
 namespace
 {
     bool IsFSRUpscaler( GothicRendererSettings::E_Upscaler v ) {
-        return v == GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3
-            || v == GothicRendererSettings::E_Upscaler::UPSCALER_FSR_2;
+        return v == GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3;
     }
     void FixupSettings(GothicRendererSettings& s) {
         if (s.AntiAliasingMode == GothicRendererSettings::E_AntiAliasingMode::AA_FSR) {
@@ -411,7 +410,7 @@ namespace
             }
         }
         if (s.AntiAliasingMode == GothicRendererSettings::E_AntiAliasingMode::AA_TAA
-            && (s.Upscaler == GothicRendererSettings::E_Upscaler::UPSCALER_FSR_2 || s.Upscaler == GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3)) {
+            && ( s.Upscaler == GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3)) {
             // don't allow TAA and FSR2 at the same time.
             s.Upscaler = GothicRendererSettings::E_Upscaler::UPSCALER_FSR_1;
         }
@@ -498,22 +497,15 @@ void ImGuiShim::RenderSettingsWindow()
                 {"Disabled", GothicRendererSettings::E_AntiAliasingMode::AA_NONE, nullptr },
                 {"SMAA", GothicRendererSettings::E_AntiAliasingMode::AA_SMAA, nullptr },
                 {"TAA", GothicRendererSettings::E_AntiAliasingMode::AA_TAA, "Temporal Anti-Aliasing" },
-                {"FSR 2", GothicRendererSettings::E_AntiAliasingMode::AA_FSR, "FidelityFX Super Resolution 2" },
-                {"FSR 3", GothicRendererSettings::E_AntiAliasingMode::AA_FSR3, "FidelityFX Super Resolution 3"},
+                {"FSR 3", GothicRendererSettings::E_AntiAliasingMode::AA_FSR, "FidelityFX Super Resolution 3"},
 
             };
             {
                 ImGui::PushID( "AntiAliasingSettings" );
                 auto selectedMode = settings.AntiAliasingMode;
-                if ( selectedMode == GothicRendererSettings::E_AntiAliasingMode::AA_FSR && settings.Upscaler == GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3 ) {
-                    selectedMode = GothicRendererSettings::E_AntiAliasingMode::AA_FSR3;
-                }
                 if ( ImComboBoxCT( "Anti Aliasing", antiAliasing, &selectedMode, [&selectedMode, &settings] {
-                    if ( selectedMode == GothicRendererSettings::E_AntiAliasingMode::AA_FSR3 ) {
-                        selectedMode = GothicRendererSettings::E_AntiAliasingMode::AA_FSR;
+                    if ( selectedMode == GothicRendererSettings::E_AntiAliasingMode::AA_FSR ) {
                         settings.Upscaler = GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3;
-                    } else if ( selectedMode == GothicRendererSettings::E_AntiAliasingMode::AA_FSR ) {
-                        settings.Upscaler = GothicRendererSettings::E_Upscaler::UPSCALER_FSR_2;
                     }
                     settings.AntiAliasingMode = selectedMode;
                     } ) ) {
@@ -627,7 +619,7 @@ void ImGuiShim::RenderSettingsWindow()
             }
 
             ImText( "Resolution Scale", buttonWidth ); ImGui::SameLine();
-            if ( settings.Upscaler == GothicRendererSettings::UPSCALER_FSR_2 || settings.Upscaler == GothicRendererSettings::UPSCALER_FSR_3 ) {
+            if ( settings.Upscaler == GothicRendererSettings::UPSCALER_FSR_3 ) {
                 settings.ResolutionScalePercent = std::clamp( settings.ResolutionScalePercent, 33, 100 );
                 // Display "levels" as typical for FSR
                 static std::vector<std::pair<const char*, int>> fsrLevels = {
@@ -661,7 +653,6 @@ void ImGuiShim::RenderSettingsWindow()
             static std::vector<std::pair<const char*, GothicRendererSettings::E_Upscaler>> upscalers = {
                 { "Simple", GothicRendererSettings::E_Upscaler::UPSCALER_DEFAULT },
                 { "FSR 1", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_1 },
-                { "FSR 2", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_2 },
                 { "FSR 3", GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3 },
             };
             if ( ImComboBox( "##Upscaler", upscalers, &settings.Upscaler ) ) {
@@ -1461,19 +1452,12 @@ void RenderAdvancedColumn4( GothicRendererSettings& settings, GothicAPI* gapi ) 
                 {"Disabled", GothicRendererSettings::E_AntiAliasingMode::AA_NONE},
                 {"SMAA", GothicRendererSettings::E_AntiAliasingMode::AA_SMAA},
                 {"TAA", GothicRendererSettings::E_AntiAliasingMode::AA_TAA},
-                {"FSR 2", GothicRendererSettings::E_AntiAliasingMode::AA_FSR},
-                {"FSR 3", GothicRendererSettings::E_AntiAliasingMode::AA_FSR3},
+                {"FSR 3", GothicRendererSettings::E_AntiAliasingMode::AA_FSR},
             };
             auto selectedMode = settings.AntiAliasingMode;
-            if ( selectedMode == GothicRendererSettings::E_AntiAliasingMode::AA_FSR && settings.Upscaler == GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3 ) {
-                selectedMode = GothicRendererSettings::E_AntiAliasingMode::AA_FSR3;
-            }
             if ( ImComboBoxC( "Anti Aliasing", antiAliasing, &selectedMode, [&selectedMode, &settings] {
-                if ( selectedMode == GothicRendererSettings::E_AntiAliasingMode::AA_FSR3 ) {
-                    selectedMode = GothicRendererSettings::E_AntiAliasingMode::AA_FSR;
+                if ( selectedMode == GothicRendererSettings::E_AntiAliasingMode::AA_FSR ) {
                     settings.Upscaler = GothicRendererSettings::E_Upscaler::UPSCALER_FSR_3;
-                } else if ( selectedMode == GothicRendererSettings::E_AntiAliasingMode::AA_FSR ) {
-                    settings.Upscaler = GothicRendererSettings::E_Upscaler::UPSCALER_FSR_2;
                 }
                 settings.AntiAliasingMode = selectedMode;
                 } ) ) {

@@ -56,8 +56,7 @@ void D3D11DeferredRenderer::AddGeometryPasses( RenderGraph& graph,
 
             const auto aaMode = Engine::GAPI->GetRendererState().RendererSettings.AntiAliasingMode;
             if ( aaMode != GothicRendererSettings::AA_TAA
-                && aaMode != GothicRendererSettings::AA_FSR
-                && aaMode != GothicRendererSettings::AA_FSR3 ) {
+                && aaMode != GothicRendererSettings::AA_FSR ) {
                 velocityBuffer = nullptr; // don't write velocity if not needed.
                 // NOTE: we should automate this, by putting the velocity 
                 // buffer creation INTO the rendergraph instead of passing it in via external handle
@@ -76,6 +75,7 @@ void D3D11DeferredRenderer::AddGeometryPasses( RenderGraph& graph,
                 if ( rtvs[i] )
                     context->ClearRenderTargetView( rtvs[i], black );
             }
+            rtvs[4] = nullptr; // don't populate the reactive mask. Just prevent FSR3 from creating one internally.
             context->OMSetRenderTargets( 5, rtvs, engine.GetDepthBuffer()->GetDepthStencilView().Get() );
 
             Engine::GAPI->DrawWorldMeshNaive();
