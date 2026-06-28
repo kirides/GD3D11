@@ -18,7 +18,6 @@
 #include "D3D11PFX_SimpleSharpen.h"
 #include "D3D11PFX_CAS.h"
 #include "D3D11PFX_FSR1.h"
-#include "D3D11PFX_FSR2.h"
 #include "D3D11PFX_FSR3.h"
 #include "D3D11PFX_SAO.h"
 #include "D3D11PFX_ASSAO.h"
@@ -46,7 +45,6 @@ D3D11PfxRenderer::D3D11PfxRenderer() {
         NvHBAO = std::make_unique<D3D11NVHBAO>();
         FX_SAO = std::make_unique<D3D11PFX_SAO>( this );
         PFX_FSR1 = std::make_unique<D3D11PFX_FSR1>( this );
-        PFX_FSR2 = std::make_unique<D3D11PFX_FSR2>( this );
         PFX_FSR3 = std::make_unique<D3D11PFX_FSR3>( this );
         PFX_ASSAO = std::make_unique<D3D11PFX_ASSAO>(
             engine->GetDevice().Get(),
@@ -435,12 +433,6 @@ void D3D11PfxRenderer::FreeResources()
     if ( this->FX_TAA 
         && settings.AntiAliasingMode != GothicRendererSettings::AA_TAA ) {
         this->FX_TAA->ReleaseResources();
-    }
-
-    if ( this->PFX_FSR2
-        && settings.AntiAliasingMode != GothicRendererSettings::AA_FSR
-        && !(settings.Upscaler == GothicRendererSettings::UPSCALER_FSR_2) && settings.ResolutionScalePercent < 100) {
-        this->PFX_FSR2->ReleaseResources();
     }
 
     if ( this->PFX_FSR1

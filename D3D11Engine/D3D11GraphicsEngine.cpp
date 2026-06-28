@@ -45,7 +45,6 @@
 #include <dxgi1_6.h>
 
 #include "D3D11PFX_FSR1.h"
-#include "D3D11PFX_FSR2.h"
 #include "D3D11PFX_FSR3.h"
 #include "D3D11PFX_TAA.h"
 #include "ImGuiShim.h"

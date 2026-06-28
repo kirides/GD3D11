@@ -9,6 +9,7 @@
 #include <FidelityFX/host/ffx_fsr3upscaler.h>
 
 #pragma comment(lib, "ffx_backend_dx11_x86.lib")
+#pragma comment(lib, "ffx_fsr3_x86.lib")
 #pragma comment(lib, "ffx_fsr3upscaler_x86.lib")
 
 namespace {

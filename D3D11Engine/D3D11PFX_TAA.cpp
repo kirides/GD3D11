@@ -1,7 +1,7 @@
 #include "pch.h"
 #include "D3D11PFX_TAA.h"
 
-#include <FidelityFX/host/ffx_fsr2.h>
+#include <FidelityFX/host/ffx_fsr3.h>
 
 #include "Engine.h"
 #include "D3D11GraphicsEngine.h"
@@ -117,7 +117,7 @@ void D3D11PFX_TAA::AdvanceJitter() {
     // Advance to next jitter sample
     auto renderWidth = Engine::GraphicsEngine->GetResolution().x;
     auto displayWidth = Engine::GraphicsEngine->GetBackbufferResolution().x;
-    const int32_t phaseCount = ffxFsr2GetJitterPhaseCount( renderWidth, displayWidth );
+    const int32_t phaseCount = ffxFsr3GetJitterPhaseCount( renderWidth, displayWidth );
 
     // 2. Advance index safely
     if ( phaseCount > 0 ) {
@@ -130,7 +130,7 @@ void D3D11PFX_TAA::AdvanceJitter() {
     float jitterX = 0.0f;
     float jitterY = 0.0f;
     if ( phaseCount > 0 ) {
-        ffxFsr2GetJitterOffset( &jitterX, &jitterY, m_JitterIndex, phaseCount );
+        ffxFsr3GetJitterOffset( &jitterX, &jitterY, m_JitterIndex, phaseCount );
     }
 
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
