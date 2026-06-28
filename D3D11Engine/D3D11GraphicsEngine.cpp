@@ -2347,7 +2347,7 @@ bool D3D11GraphicsEngine::BindTextureNRFX( zCTexture* tex, bool bindShader, bool
         auto allocation = PerObjectMaterialInfoPooledBuffer->Allocate( GetContext().Get(), &info->buffer, sizeof( info->buffer ) );
         UINT firstConstant = allocation.offsetInBytes / 16;
         UINT numConstants = allocation.sizeInBytes / 16;
-        GetContext()->PSGetConstantBuffers1( 2, 1, &allocation.pBuffer, &firstConstant, &numConstants );
+        GetContext()->PSSetConstantBuffers1( 2, 1, &allocation.pBuffer, &firstConstant, &numConstants );
     }
 
     if ( D3D11Texture* fxmap = tex->GetSurface()->GetFxMap() ) {
@@ -6933,7 +6933,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
         auto defaultMaterialAllocation = PerObjectMaterialInfoPooledBuffer->Allocate( GetContext().Get(), &defInfo.buffer, sizeof( defInfo.buffer ) );
         UINT firstConstant = defaultMaterialAllocation.offsetInBytes / 16;
         UINT numConstants = defaultMaterialAllocation.sizeInBytes / 16;
-        GetContext()->PSGetConstantBuffers1( materialInfoSlot, 1, &defaultMaterialAllocation.pBuffer, &firstConstant, &numConstants );
+        GetContext()->PSSetConstantBuffers1( materialInfoSlot, 1, &defaultMaterialAllocation.pBuffer, &firstConstant, &numConstants );
 
         XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
         Engine::GAPI->SetViewTransformXM( view );
@@ -7321,7 +7321,6 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                                 != DEFAULT_NORMALMAP_STRENGTH ) {
                                 // update values for distortion texture
                                 info->buffer.NormalmapStrength = DEFAULT_NORMALMAP_STRENGTH;
-                                lastMatInfo = info;
                             }
                             srv[1] = DistortionTexture->GetShaderResourceView().Get();
                         }
@@ -7348,16 +7347,14 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                                         .Update( &ffdata )
                                         .Bind();
                                 }
-
-                                if ( info && !info->IsSame( lastMatInfo ) ) {
-                                    auto matAllocation = PerObjectMaterialInfoPooledBuffer->Allocate( GetContext().Get(), &info->buffer, sizeof( info->buffer ) );
-                                    UINT firstConstant = matAllocation.offsetInBytes / 16;
-                                    UINT numConstants = matAllocation.sizeInBytes / 16;
-                                    GetContext()->PSGetConstantBuffers1( materialInfoSlot, 1, &matAllocation.pBuffer, &firstConstant, &numConstants );
-
-                                    lastMatInfo = info;
-                                }
                             }
+                        }
+                        if ( info && !info->IsSame( lastMatInfo ) ) {
+                            auto matAllocation = PerObjectMaterialInfoPooledBuffer->Allocate( GetContext().Get(), &info->buffer, sizeof( info->buffer ) );
+                            UINT firstConstant = matAllocation.offsetInBytes / 16;
+                            UINT numConstants = matAllocation.sizeInBytes / 16;   
+                            GetContext()->PSSetConstantBuffers1( materialInfoSlot, 1, &matAllocation.pBuffer, &firstConstant, &numConstants );
+                            lastMatInfo = info;
                         }
                     }
 
