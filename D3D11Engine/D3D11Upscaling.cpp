@@ -47,7 +47,7 @@ namespace {
     {
         graph.AddPass( RG_PASS_NAME("FSR 3"), [&]( RGBuilder& builder, RenderPass& pass ) {
             builder.Read( velocityBufferHandle );
-            // builder.Read( reactiveMaskResource );
+            builder.Read( reactiveMaskResource );
             builder.Read( backBufferHandle );
 
             builder.Write( backBufferHandle );
@@ -87,7 +87,7 @@ namespace {
                     backbufferTex->GetShaderResView().Get(),
                     depth,
                     velocityBufferTex->GetShaderResView().Get(),
-                    nullptr, // reactiveMask->GetShaderResView().Get(),
+                    reactiveMask->GetShaderResView().Get(),
                     outputRTV,
                     inputSize,
                     engine.GetBackbufferResolution(),
