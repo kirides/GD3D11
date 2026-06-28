@@ -122,29 +122,32 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
 	// CSM shadow source is toggleable in Forward+: precomputed screen-space mask or direct CSM.
 	float shadow = vertLighting;
 #if SHD_ENABLE
+	float3 wsNormal = normalize(mul(float4(nrm, 0.0f), SQ_InvView).xyz);
 	if (AC_LightPos.y > 0)
 	{
 		#if FP_USE_SHADOW_MASK
 			float2 screenUV = Input.vPosition.xy / FP_ViewportSize;
 			shadow = FP_ShadowMask.SampleLevel( SS_Linear, screenUV, 0 ).r;
 		#else
-			float3 wsNormal = normalize(mul(float4(nrm, 0.0f), SQ_InvView).xyz);
 			float3 wsLightDirection = normalize(mul(float4(SQ_LightDirectionVS, 0.0f), SQ_InvView).xyz);
 
-			float NoL = saturate(abs(dot(wsNormal, wsLightDirection)));
-			float slopeScale = sqrt(saturate(1.0f - NoL * NoL));
+			float rawNoL = dot(wsNormal, wsLightDirection);
 
 			int cascadeIndex = GetPrimaryCascadeIndex(wsPosition);
 			float texelWorldSize = SQ_CascadeTexelSize[cascadeIndex];
 
-			const float normalBiasMultiplier = 1.5f;
-
+			float shadowNoL = saturate(rawNoL); 
+			float slopeScale = sqrt(saturate(1.0f - shadowNoL * shadowNoL));
+			
+			const float normalBiasMultiplier = 1.0f;
 			float3 biasedWsPosition = wsPosition + wsNormal * (slopeScale * texelWorldSize * normalBiasMultiplier);
 
-			shadow = ComputeCascadedShadowValueSoft(biasedWsPosition, vsPosition.z, vertLighting, 0.0f, Input.vPosition.xy);
+			float constantDepthBias = 0.000003f;
+
+			shadow = ComputeCascadedShadowValueSoft(biasedWsPosition, vsPosition.z, vertLighting, constantDepthBias, Input.vPosition.xy);
+
 		#endif
 	} else {
-		float3 wsNormal = normalize(mul(float4(nrm, 0.0f), SQ_InvView).xyz);
         // Night-time sky ambient:
         // saturate(wsNormal.y) restricts the value to [0, 1].
         // Facing up = 1, Facing sides/down = 0.
