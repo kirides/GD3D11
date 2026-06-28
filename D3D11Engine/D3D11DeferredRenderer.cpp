@@ -66,11 +66,22 @@ void D3D11DeferredRenderer::AddGeometryPasses( RenderGraph& graph,
                 velocityBuffer ? velocityBuffer->GetRenderTargetView().Get() : nullptr,
             };
 
-            constexpr float black[] { 0.f, 0.f, 0.f, 0.f };
+            constexpr float black[]{ 0.f, 0.f, 0.f, 0.f };
+            constexpr float clearSpecular[]{ 1.f, 1.f, 1.f, 0.f };
+
+            const float* clearColors[] = {
+                &black[0],
+                &black[0],
+                &clearSpecular[0],
+                &black[0],
+                &black[0],
+            };
+
             // skip color target, clear all others.
             for ( size_t i = 1; i < std::size( rtvs ); i++ ) {
-                if ( rtvs[i] )
+                if ( rtvs[i] ) {
                     context->ClearRenderTargetView( rtvs[i], black );
+                }
             }
             context->OMSetRenderTargets( std::size( rtvs ), rtvs, engine.GetDepthBuffer()->GetDepthStencilView().Get());
 
