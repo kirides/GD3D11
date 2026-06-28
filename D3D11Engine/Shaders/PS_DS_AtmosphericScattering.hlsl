@@ -260,7 +260,7 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
     float ao = gb3.x;
     float roughness = gb3.y;
     float metallic = gb3.z;
-	bool focused = gb3.w;
+	bool focused = gb3.w > 0.5f;
 	
 	// Reconstruct VS World Position from depth
     float3 vsPosition = VSPositionFromDepth(expDepth, uv);
