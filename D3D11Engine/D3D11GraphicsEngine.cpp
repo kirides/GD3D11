@@ -7457,7 +7457,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
 
                         MyDirectDrawSurface7* surface = tx->GetSurface();
                         ID3D11ShaderResourceView* srv[3];
-                        MaterialInfo* info = meshKey.Info;
+                        MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( tx );
 
                         // Get diffuse and normalmap
                         srv[0] = surface->GetEngineTexture()->GetShaderResourceView().Get();

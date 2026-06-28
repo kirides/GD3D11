@@ -225,7 +225,7 @@ struct MaterialInfo {
             
             AOMultiplier = 1.0f;
 	        RoughnessMultiplier = 1.0f;
-	        MetallicMultiplier = 1.0f;
+	        MetallicMultiplier = 0.0f;
 	        PBRPadding = 0.0f;
         }
 
@@ -256,6 +256,7 @@ struct MaterialInfo {
         float SpecularIntensity;
         float SpecularPower;
         float NormalmapStrength;
+        // unused, but kept due to file persistence
         float DisplacementFactor;
         float4 Color;
         float AOMultiplier;
@@ -263,11 +264,11 @@ struct MaterialInfo {
         float MetallicMultiplier;
         float PBRPadding;
 
-        bool operator==( const BufferVNext& other ) const noexcept {
+        bool operator==( const Buffer& other ) const noexcept {
             return SpecularIntensity == other.SpecularIntensity &&
                 SpecularPower == other.SpecularPower &&
                 NormalmapStrength == other.NormalmapStrength &&
-                DisplacementFactor == other.DisplacementFactor &&
+                // DisplacementFactor == other.DisplacementFactor && // unused
                 Color == other.Color &&
                 AOMultiplier == other.AOMultiplier &&
                 RoughnessMultiplier == other.RoughnessMultiplier &&
@@ -275,13 +276,11 @@ struct MaterialInfo {
         }
     };
 
-    typedef BufferVNext Buffer;
-
     PShaderID PixelShader;
     EMaterialType MaterialType;
     Buffer buffer;
 
-    bool IsSame(const MaterialInfo* other ) const {
+    bool IsSame( const MaterialInfo* other ) const noexcept {
         if ( other == nullptr ) return false;
         return PixelShader == other->PixelShader
             && MaterialType == other->MaterialType

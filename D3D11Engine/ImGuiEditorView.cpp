@@ -287,19 +287,19 @@ void ImGuiEditorView::RenderTextureSelectionPanel() {
 
     ImGui::Text("AO:");
     ImGui::SameLine(80);
-    if (ImGui::SliderFloat("##AOMult", &SelectedTexAOMultiplier, 0.0f, 2.0f, "%.2f")) {
+    if (ImGui::SliderFloat("##AOMult", &SelectedTexAOMultiplier, 0.0f, 1.0f, "%.2f")) {
         updateMaterial = true;
     }
 
     ImGui::Text("Roughness:");
     ImGui::SameLine(80);
-    if (ImGui::SliderFloat("##RoughMult", &SelectedTexRoughnessMultiplier, 0.0f, 2.0f, "%.2f")) {
+    if (ImGui::SliderFloat("##RoughMult", &SelectedTexRoughnessMultiplier, 0.0f, 1.0f, "%.2f")) {
         updateMaterial = true;
     }
 
     ImGui::Text("Metallic:");
     ImGui::SameLine(80);
-    if (ImGui::SliderFloat("##MetalMult", &SelectedTexMetallicMultiplier, 0.0f, 2.0f, "%.2f")) {
+    if (ImGui::SliderFloat("##MetalMult", &SelectedTexMetallicMultiplier, 0.0f, 1.0f, "%.2f")) {
         updateMaterial = true;
     }
 
