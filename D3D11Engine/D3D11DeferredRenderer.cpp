@@ -75,7 +75,6 @@ void D3D11DeferredRenderer::AddGeometryPasses( RenderGraph& graph,
                 if ( rtvs[i] )
                     context->ClearRenderTargetView( rtvs[i], black );
             }
-            rtvs[4] = nullptr; // don't populate the reactive mask. Just prevent FSR3 from creating one internally.
             context->OMSetRenderTargets( 5, rtvs, engine.GetDepthBuffer()->GetDepthStencilView().Get() );
 
             Engine::GAPI->DrawWorldMeshNaive();
