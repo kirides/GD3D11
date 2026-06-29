@@ -31,8 +31,6 @@ MyDirectDrawSurface7::MyDirectDrawSurface7() {
 }
 
 MyDirectDrawSurface7::~MyDirectDrawSurface7() {
-    Engine::GAPI->RemoveSurface( this );
-
     // Release mip-map chain first
     for ( LPDIRECTDRAWSURFACE7 mipmap : attachedSurfaces ) {
         mipmap->Release();
@@ -90,8 +88,6 @@ void MyDirectDrawSurface7::LoadAdditionalResources( zCTexture* ownedTexture ) {
         if ( Toolbox::StringContainsOneOf( TextureName, LEAF_SUBSTR, std::size( LEAF_SUBSTR ) ) ) {
             TextureType = ETextureType::TX_LEAF;
         }
-
-        Engine::GAPI->AddSurface( TextureName, this );
 
         // Set texture name
         if ( EngineTexture ) {

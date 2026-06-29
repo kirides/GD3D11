@@ -686,15 +686,6 @@ public:
     MaterialInfo* GetMaterialInfoFrom( zCTexture* tex );
     MaterialInfo* GetMaterialInfoFrom( zCTexture* tex, const std::string_view textureName );
 
-    /** Adds a surface */
-    void AddSurface( const std::string& name, MyDirectDrawSurface7* surface );
-
-    /** Gets a surface by texturename */
-    MyDirectDrawSurface7* GetSurface( const std::string& name );
-
-    /** Removes a surface */
-    void RemoveSurface( MyDirectDrawSurface7* surface );
-
     /** Returns a texture from the given surface */
     zCTexture* GetTextureBySurface( MyDirectDrawSurface7* surface );
 

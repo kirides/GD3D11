@@ -4854,21 +4854,6 @@ MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCTexture* tex, const std::string_
         return mi;
 }
 
-/** Adds a surface */
-void GothicAPI::AddSurface( const std::string& name, MyDirectDrawSurface7* surface ) {
-    SurfacesByName[name] = surface;
-}
-
-/** Gets a surface by texturename */
-MyDirectDrawSurface7* GothicAPI::GetSurface( const std::string& name ) {
-    return SurfacesByName[name];
-}
-
-/** Removes a surface */
-void GothicAPI::RemoveSurface( MyDirectDrawSurface7* surface ) {
-    SurfacesByName.erase( surface->GetTextureName() );
-}
-
 /** Returns the loaded skeletal mesh vobs */
 std::vector<SkeletalVobInfo*>& GothicAPI::GetSkeletalMeshVobs() {
     return SkeletalMeshVobs;

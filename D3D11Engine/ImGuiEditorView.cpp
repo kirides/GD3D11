@@ -756,13 +756,13 @@ void ImGuiEditorView::OnMouseClick(int button) {
 void ImGuiEditorView::UpdateSelectionPanel() {
     // Update selection panel
     if (Selection.SelectedMaterial && Selection.SelectedMaterial->GetTexture()) {
+        auto tx = Selection.SelectedMaterial->GetTexture();
         // Select preferred texture for the texture settings
-        // Engine::AntTweakBar->SetPreferredTextureForSettings(Selection.SelectedMaterial->GetTexture()->GetNameWithoutExt());
+        // Engine::AntTweakBar->SetPreferredTextureForSettings(tx->GetNameWithoutExt());
 
         // Update thumbnail
-        MyDirectDrawSurface7* surface = Engine::GAPI->GetSurface(Selection.SelectedMaterial->GetTexture()->GetNameWithoutExt());
 
-        if (surface) {
+        if (MyDirectDrawSurface7* surface = tx->GetSurface()) {
             auto& thumb = surface->GetEngineTexture()->GetThumbnailSRV();
             if (!thumb.Get()) {
                 XLE((surface->GetEngineTexture())->CreateThumbnail());
@@ -777,7 +777,7 @@ void ImGuiEditorView::UpdateSelectionPanel() {
         }
 
         // Load texture settings
-        MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom(Selection.SelectedMaterial->GetTexture());
+        MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom(tx);
         if (info) {
             SelectedTexNrmStr = info->buffer.NormalmapStrength;
             SelectedTexSpecIntens = info->buffer.SpecularIntensity;
