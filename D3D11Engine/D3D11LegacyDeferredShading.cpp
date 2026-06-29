@@ -55,6 +55,8 @@ XRESULT D3D11LegacyDeferredShading::DrawPointlightLights(
     {
         auto& proj = Engine::GAPI->GetProjectionMatrix();
         plcb.PL_ProjParams = float4( 1.0f / proj._11, 1.0f / proj._22, proj._43, proj._33 );
+        // Camera jitter (TAA/FSR) in UV space, subtracted before depth->world reconstruction.
+        plcb.PL_JitterOffset = float2( proj._13 * 0.5f, -proj._23 * 0.5f );
     }
     XMStoreFloat4x4( &plcb.PL_InvView, XMMatrixInverse( nullptr, XMLoadFloat4x4( &Engine::GAPI->GetRendererState().TransformState.TransformView ) ) );
 

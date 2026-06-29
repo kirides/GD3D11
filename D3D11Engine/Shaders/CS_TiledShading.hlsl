@@ -19,7 +19,7 @@ struct LightGrid {
 
 cbuffer TiledShadingConstantBuffer : register( b0 ) {
     float2 ViewportSize;
-    float2 Pad0;
+    float2 JitterOffset;
     float4 ProjParams; // x = 1/P._11, y = 1/P._22, z = P._43, w = P._33
     uint LimitLightIntensity;
     uint NumTilesX;
@@ -42,7 +42,9 @@ TextureCubeArray TX_ShadowCubeArray : register( t11 );
 RWTexture2D<float4> RW_HDR : register( u0 );
 
 float3 VSPositionFromDepth( float depth, uint2 pixelCoord ) {
-    return ReconstructVSPositionFromDepthReverseZInfinite( depth, pixelCoord, ViewportSize, ProjParams.xy );
+    // Remove camera jitter (TAA/FSR) baked into the depth buffer's projection.
+    float2 texcoord = (float2( pixelCoord ) + 0.5f) / ViewportSize - JitterOffset;
+    return ReconstructVSPositionFromDepthReverseZInfinite( depth, texcoord, ProjParams.xy );
 }
 
 [numthreads( TILE_SIZE, TILE_SIZE, 1 )]

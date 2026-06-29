@@ -1354,6 +1354,10 @@ DS_ScreenQuadConstantBuffer D3D11ShadowMap::FillSunCSMConstantBuffer() const {
         scb.SQ_FrameIndex = frameCounter++;
     }
 
+    // Camera jitter (TAA/FSR) baked into the projection, in UV space. Subtracted in the
+    // shader before depth->world reconstruction so shadows don't crawl/flicker each frame.
+    scb.SQ_JitterOffset = float2( proj._13 * 0.5f, -proj._23 * 0.5f );
+
     XMStoreFloat3( scb.SQ_LightDirectionVS.toXMFLOAT3(),
         XMVector3TransformNormal( XMLoadFloat3( sky->GetAtmosphereCB().AC_LightPos.toXMFLOAT3() ), view ) );
 
@@ -1482,6 +1486,10 @@ XRESULT D3D11ShadowMap::DrawWorldLights()
         // only when we have jitter in the frame
         scb.SQ_FrameIndex = frameCounter++;
     }
+
+    // Camera jitter (TAA/FSR) baked into the projection, in UV space. Subtracted in the
+    // shader before depth->world reconstruction so shadows don't crawl/flicker each frame.
+    scb.SQ_JitterOffset = float2( proj._13 * 0.5f, -proj._23 * 0.5f );
 
     XMStoreFloat3( scb.SQ_LightDirectionVS.toXMFLOAT3(),
         XMVector3TransformNormal( XMLoadFloat3( sky->GetAtmosphereCB().AC_LightPos.toXMFLOAT3() ), view ) );

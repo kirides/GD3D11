@@ -93,7 +93,7 @@ struct HeightfogConstantBuffer {
     float HF_pad2;
 
     float2 HF_ProjAB;
-    float2 HF_Pad3;
+    float2 HF_JitterOffset;
 };
 
 struct LumAdaptConstantBuffer {
@@ -164,7 +164,7 @@ struct DS_PointLightConstantBuffer {
     float3 Pl_PositionView;
 
     float2 PL_ViewportSize;
-    float2 PL_Pad2;
+    float2 PL_JitterOffset;
 
     float4 PL_ProjParams; // x = 1/P._11, y = 1/P._22, z = P._43, w = P._33
     XMFLOAT4X4 PL_InvView;
@@ -196,7 +196,7 @@ struct DS_ScreenQuadConstantBuffer {
     float SQ_ShadowSoftness;
     uint32_t SQ_FrameIndex;
     float SQ_LightSize;
-    float2 SQ_Pad;
+    float2 SQ_JitterOffset;
 
     // Shadow atlas: per-cascade UV rect (xy = offset, zw = scale)
     // Used when SHADOW_ATLAS is enabled (Feature Level 10 path)
@@ -414,7 +414,7 @@ struct LightCullingConstantBuffer {
 
 struct TiledShadingConstantBuffer {
     float2 ViewportSize;
-    float2 Pad0;
+    float2 JitterOffset;
     float4 ProjParams; // x = 1/P._11, y = 1/P._22, z = P._43, w = P._33
     uint32_t LimitLightIntensity;
     uint32_t NumTilesX;

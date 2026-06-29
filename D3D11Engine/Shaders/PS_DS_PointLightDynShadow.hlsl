@@ -16,7 +16,7 @@ cbuffer DS_PointLightConstantBuffer : register( b0 )
 	float3 Pl_PositionView;
 	
 	float2 PL_ViewportSize;
-	float2 PL_Pad2;
+	float2 PL_JitterOffset;
 	
 	float4 PL_ProjParams; // x = 1/P._11, y = 1/P._22, z = P._43, w = P._33
 	matrix PL_InvView; // Optimize out!
@@ -47,7 +47,7 @@ struct PS_INPUT
 
 float3 VSPositionFromDepth(float depth, float2 vTexCoord)
 {
-	return ReconstructVSPositionFromDepthReverseZInfinite( depth, vTexCoord, PL_ProjParams.xy );
+	return ReconstructVSPositionFromDepthReverseZInfinite( depth, vTexCoord - PL_JitterOffset, PL_ProjParams.xy );
 }
 
 //--------------------------------------------------------------------------------------
