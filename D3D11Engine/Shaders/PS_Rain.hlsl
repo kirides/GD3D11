@@ -25,6 +25,12 @@ struct PS_INPUT
 	float4 vPosition		: SV_POSITION;
 };
 
+struct PS_OUTPUT
+{
+	float4 Color : SV_TARGET0;
+	float ReactiveMask : SV_TARGET1;  // reactive mask for FSR
+};
+
 cbuffer AdvanceRainConstantBuffer : register( b1 )
 {
 	float3 AR_LightPosition;
@@ -236,21 +242,14 @@ void rainResponse(PS_INPUT input, float3 lightVector, float lightIntensity, floa
 //--------------------------------------------------------------------------------------
 // Pixel Shader
 //--------------------------------------------------------------------------------------
-float4 PSMain( PS_INPUT Input ) : SV_TARGET
+PS_OUTPUT PSMain( PS_INPUT Input ) 
 {
-	//float4 color = pow(TX_Texture0.Sample(SS_Linear, Input.vTexcoord), 1.0f);
-	float4 color = float4(1,1,1, 0.2f);
-	
-	//float dirLightIntensity = 0.5f * max(0.5f, pow(AR_LightDirection.y, 1/4.0f));
-	
 	float globalLighting = 1.0f;//lerp(0.2f, 1.0f, saturate(pow(abs(AR_LightDirection.y), 1/1.5f)));
 	
 	float4 directionalLight;
 	float3 lightPos = normalize(float3(0.333f,0.433f,0.333f)) * 10000.0f;
     rainResponse(Input, lightPos, globalLighting * Input.vDiffuse.a, float3(1.0,1.0,1.0), AR_CameraPosition - Input.vWorldPosition, false, directionalLight);
-	
-	//float tx = TX_RainTextureArray.Sample(SS_Anisotropic, float3(Input.vTexcoord, 0)).r;
-	
+
 	// if snow, then white-ish
 #ifdef SNOW_FEATURE
 	directionalLight = float4(
@@ -259,31 +258,9 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 		1.0-(1.0/250.0),
 		directionalLight.w);
 #endif	
-	return directionalLight;
+
+    PS_OUTPUT output;
+    output.Color = directionalLight;
+    output.ReactiveMask = 1.0f;
+	return output;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

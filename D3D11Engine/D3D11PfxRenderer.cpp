@@ -292,6 +292,7 @@ XRESULT D3D11PfxRenderer::RenderPostFXComposition(
         {
             auto& proj = Engine::GAPI->GetProjectionMatrix();
             cb.HF_ProjParams = float4( 1.0f / proj._11, 1.0f / proj._22, proj._43, proj._33 );
+            cb.HF_JitterOffset = float2( proj._13 * 0.5f, -proj._23 * 0.5f );
         }
         XMStoreFloat4x4( &cb.InvView, XMMatrixInverse( nullptr, Engine::GAPI->GetViewMatrixXM() ) );
         cb.CameraPosition = Engine::GAPI->GetCameraPosition();

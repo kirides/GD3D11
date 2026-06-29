@@ -31,7 +31,7 @@ cbuffer DS_ScreenQuadConstantBuffer : register(b0)
     
     uint SQ_FrameIndex;
     float SQ_LightSize;
-    float2 SQ_Pad;
+    float2 SQ_JitterOffset;
 
     // Shadow atlas: per-cascade UV rect (xy = offset, zw = scale)
     float4 SQ_CascadeAtlasRect[MAX_CSM_CASCADES];
@@ -75,7 +75,9 @@ struct PS_INPUT
 
 float3 VSPositionFromDepth(float depth, float2 vTexCoord)
 {
-    return ReconstructVSPositionFromDepthReverseZInfinite( depth, vTexCoord, SQ_ProjParams.xy );
+    // Remove the camera jitter (TAA/FSR) that was baked into the depth buffer's
+    // projection, so the reconstructed world position is stable across frames.
+    return ReconstructVSPositionFromDepthReverseZInfinite( depth, vTexCoord - SQ_JitterOffset, SQ_ProjParams.xy );
 }
 
 //--------------------------------------------------------------------------------------

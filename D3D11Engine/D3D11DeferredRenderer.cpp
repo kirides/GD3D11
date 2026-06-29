@@ -37,10 +37,9 @@ void D3D11DeferredRenderer::AddGeometryPasses( RenderGraph& graph,
         builder.Write( normalsResource );
         builder.Write( specularResource );
         builder.Write( velocityBufferHandle );
-        builder.Write( reactiveMaskResource );
         builder.Write( backBufferHandle );
 
-        pass.m_executeCallback = [&engine, colorResource, normalsResource, specularResource, reactiveMaskResource, velocityBufferHandle]( const RenderGraph& graph ) -> void {
+        pass.m_executeCallback = [&engine, colorResource, normalsResource, specularResource, velocityBufferHandle]( const RenderGraph& graph ) -> void {
             TracyD3D11ZoneCGX( "D3D11DeferredRenderer::G-Buffer Pass" );
             const auto& context = engine.GetContext();
             context->VSSetShaderResources( 0, 8, s_nullSRVs );
@@ -51,7 +50,6 @@ void D3D11DeferredRenderer::AddGeometryPasses( RenderGraph& graph,
 
             auto normals = graph.GetPhysicalTexture( normalsResource );
             auto specular = graph.GetPhysicalTexture( specularResource );
-            auto reactiveMask = graph.GetPhysicalTexture( reactiveMaskResource );
             auto velocityBuffer = graph.GetPhysicalTexture( velocityBufferHandle );
 
             const auto aaMode = Engine::GAPI->GetRendererState().RendererSettings.AntiAliasingMode;
@@ -66,7 +64,6 @@ void D3D11DeferredRenderer::AddGeometryPasses( RenderGraph& graph,
                 normals ? normals->GetRenderTargetView().Get() : nullptr,
                 specular ? specular->GetRenderTargetView().Get() : nullptr,
                 velocityBuffer ? velocityBuffer->GetRenderTargetView().Get() : nullptr,
-                reactiveMask ? reactiveMask->GetRenderTargetView().Get() : nullptr,
             };
 
             constexpr float black[] { 0.f, 0.f, 0.f, 0.f };
@@ -75,8 +72,7 @@ void D3D11DeferredRenderer::AddGeometryPasses( RenderGraph& graph,
                 if ( rtvs[i] )
                     context->ClearRenderTargetView( rtvs[i], black );
             }
-            rtvs[4] = nullptr; // don't populate the reactive mask. Just prevent FSR3 from creating one internally.
-            context->OMSetRenderTargets( 5, rtvs, engine.GetDepthBuffer()->GetDepthStencilView().Get() );
+            context->OMSetRenderTargets( std::size( rtvs ), rtvs, engine.GetDepthBuffer()->GetDepthStencilView().Get());
 
             Engine::GAPI->DrawWorldMeshNaive();
 

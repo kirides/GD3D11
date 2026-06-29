@@ -243,6 +243,7 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
         {
             auto& proj = Engine::GAPI->GetProjectionMatrix();
             shadeCB.ProjParams = float4( 1.0f / proj._11, 1.0f / proj._22, proj._43, proj._33 );
+            shadeCB.JitterOffset = float2( proj._13 * 0.5f, -proj._23 * 0.5f );
         }
         shadeCB.LimitLightIntensity = settings.LimitLightIntesity ? 1 : 0;
         shadeCB.NumTilesX = numTilesX;

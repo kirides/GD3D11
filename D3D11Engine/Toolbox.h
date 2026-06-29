@@ -12,8 +12,19 @@
 struct zTBBox3D;
 struct zTPlane;
 
+static bool ichar_equals(char a, char b)
+{
+    return std::tolower(static_cast<unsigned char>(a)) ==
+           std::tolower(static_cast<unsigned char>(b));
+}
+
 namespace Toolbox {
-    FORCEINLINE float GetRecommendedWorldShadowRangeScaleForSize( int size ) {
+    
+    inline bool EqualsIgnoreCase(std::string_view a, std::string_view b) {
+        return std::ranges::equal(a, b, ichar_equals);
+    }
+    
+    inline FORCEINLINE float GetRecommendedWorldShadowRangeScaleForSize( int size ) {
         constexpr int MAX_SHADOWMAP_SIZE = 16384;
         return static_cast<float>(MAX_SHADOWMAP_SIZE / size);
 

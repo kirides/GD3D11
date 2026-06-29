@@ -85,7 +85,6 @@ float2 CalculateVelocity(float4 currClipPos, float4 prevClipPos)
 FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
 {
 	FORWARD_PLUS_PS_OUTPUT output;
-	output.vReactiveMask = 0.0f;
 
 	float4 color = TX_Texture0.Sample(SS_Linear, Input.vTexcoord);
 
@@ -94,7 +93,6 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
 
 #if ALPHATEST == 1
 	DoAlphaTest(color.a);
-	output.vReactiveMask = 0.1f;
 #endif
 
 #if NORMALMAPPING == 1
@@ -199,7 +197,6 @@ DEFERRED_PS_OUTPUT PSMain( PS_INPUT Input ) : SV_TARGET
 #endif
 {
 	DEFERRED_PS_OUTPUT output;
-	output.vReactiveMask = 0.0f;
 
 	float4 color = TX_Texture0.Sample(SS_Linear, Input.vTexcoord);
 	
@@ -210,7 +207,6 @@ DEFERRED_PS_OUTPUT PSMain( PS_INPUT Input ) : SV_TARGET
 	
 	// WorldMesh can always do the alphatest
 	DoAlphaTest(color.a);
-	output.vReactiveMask = 0.1f; // 0.1f seemed fine, no blur and just tiiiiiny bit of flickering
 #endif
 	
 	// Apply normalmapping if wanted

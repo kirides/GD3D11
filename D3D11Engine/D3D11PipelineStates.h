@@ -57,7 +57,7 @@ public:
         D3D11_BLEND_DESC blendDesc;
         // Set to default
         blendDesc.AlphaToCoverageEnable = bs.AlphaToCoverage;
-        blendDesc.IndependentBlendEnable = FALSE;
+        blendDesc.IndependentBlendEnable = TRUE;
 
         blendDesc.RenderTarget[0].RenderTargetWriteMask = bs.ColorWritesEnabled ? (D3D11_COLOR_WRITE_ENABLE_RED |
             D3D11_COLOR_WRITE_ENABLE_BLUE |
@@ -71,6 +71,14 @@ public:
         blendDesc.RenderTarget[0].DestBlendAlpha = static_cast<D3D11_BLEND>(bs.DestBlendAlpha);
         blendDesc.RenderTarget[0].BlendOpAlpha = static_cast<D3D11_BLEND_OP>(bs.BlendOpAlpha);
         blendDesc.RenderTarget[0].BlendEnable = bs.BlendEnabled;
+
+        for (int i = 1; i < std::size(blendDesc.RenderTarget); ++i) {
+            blendDesc.RenderTarget[i].BlendEnable = FALSE;
+            blendDesc.RenderTarget[i].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_RED |
+                D3D11_COLOR_WRITE_ENABLE_BLUE |
+                D3D11_COLOR_WRITE_ENABLE_GREEN |
+                D3D11_COLOR_WRITE_ENABLE_ALPHA;
+        }
 
         reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetDevice()->CreateBlendState( &blendDesc, State.ReleaseAndGetAddressOf() );
     }

@@ -29,7 +29,7 @@ cbuffer PFXBuffer : register( b0 )
     float HF_pad2;
 
     float2 HF_ProjAB;
-    float2 HF_Pad3;
+    float2 HF_JitterOffset;
 };
 #endif
 
@@ -58,7 +58,7 @@ Texture2D TX_Depth : register( t3 );
 #if COMPOSE_HEIGHTFOG
 float3 VSPositionFromDepth( float depth, float2 vTexCoord )
 {
-    return ReconstructVSPositionFromDepthReverseZInfinite( depth, vTexCoord, HF_ProjParams.xy );
+    return ReconstructVSPositionFromDepthReverseZInfinite( depth, vTexCoord - HF_JitterOffset, HF_ProjParams.xy );
 }
 
 float ComputeVolumetricFog( float3 cameraToWorldPos, float3 posOriginal )

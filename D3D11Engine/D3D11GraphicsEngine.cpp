@@ -2996,8 +2996,8 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         }
     };
 
-    const float focusedColorSentinel = 2.0f;
-    const float interactiveFocusColor = oCGame::GetHighlightInteractFocus() ? focusedColorSentinel : 0.0f;
+    static const float focusedColorSentinel = 2.0f;
+    const float interactiveFocusEnabled = oCGame::GetHighlightInteractFocus();
     const float meleeFocusEnabled = oCGame::GetHighlightMeleeFocus() >= 2 && oCGame::GetNpcFocusIsHighlightActive();
     zCVob* playerFocusVob = oCGame::GetPlayer() ? oCGame::GetPlayer()->GetFocusVob() : nullptr;
     if ( playerFocusVob ) {
@@ -3005,23 +3005,26 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             if ( !meleeFocusEnabled ) {
                 playerFocusVob = nullptr;
             }
-        } else if ( oCMobInter* mobInter = playerFocusVob->As<oCMobInter>() ) {
-            // TODO: Also disable if this MOB has no "Name"
-            // TODO: Figure out how to properly call oCMob::GetName which populates a string on the stack.
-            if ( mobInter->IsInteractingWith( oCGame::GetPlayer()) || !mobInter->HasName() ) {
-                // disable focus if player is interacting with the mob.
-                playerFocusVob = nullptr;
-            }
-        } else if ( oCMob* mob = playerFocusVob->As<oCMob>() ) {
-            if ( !mob->HasName() ) {
-                playerFocusVob = nullptr; // disable highlight for unnamed MOBs
+        } 
+        else if ( !interactiveFocusEnabled ) {
+            playerFocusVob = nullptr;
+        } else {
+            if ( oCMobInter* mobInter = playerFocusVob->As<oCMobInter>() ) {
+                if ( mobInter->IsInteractingWith( oCGame::GetPlayer() ) || !mobInter->HasName() ) {
+                    // disable focus if player is interacting with the mob.
+                    playerFocusVob = nullptr;
+                }
+            } else if ( oCMob* mob = playerFocusVob->As<oCMob>() ) {
+                if ( !mob->HasName() ) {
+                    playerFocusVob = nullptr; // disable highlight for unnamed MOBs
+                }
             }
         }
     }
 
     static auto getFocusColor = []( zCVob* vob, const zCVob* playerFocusVob ) -> float {
         if ( vob == playerFocusVob ) {
-            return 2.0f;
+            return focusedColorSentinel;
         }
         return 0.0f;
     };
@@ -3701,7 +3704,8 @@ XRESULT D3D11GraphicsEngine::UpdateRenderStates() {
         FFBlendStateHash = blendState.Hash;
 
         blendState.StateDirty = false;
-        GetContext()->OMSetBlendState( FFBlendState.Get(), float4( 0, 0, 0, 0 ).toPtr(),
+        const FLOAT blendFactor[4] = {0,0,0,0};
+        GetContext()->OMSetBlendState( FFBlendState.Get(), blendFactor,
             0xFFFFFFFF );
     }
 
@@ -4043,16 +4047,21 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
 
     if ( rendererState.RendererSettings.DrawSky ) {
         graph.AddPass( RG_PASS_NAME( "Draw Sky" ), [&]( RGBuilder& builder, RenderPass& pass ) {
-            //// Setup / Declare
-            //RGTextureDesc albedoDesc{ 1920, 1080, 28 /* DXGI_FORMAT_R8G8B8A8_UNORM */, "Albedo" };
-            //albedoTarget = builder.CreateTexture( albedoDesc );
             builder.Write( backBufferHandle );
+            builder.Write( velocityBufferHandle );
 
-            pass.m_executeCallback = [this, backBufferHandle]( const RenderGraph& graph )->void {
+            pass.m_executeCallback = [this, backBufferHandle, velocityBufferHandle]( const RenderGraph& graph )->void {
                 TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw Sky" );
                 // Draw back of the sky if outdoor
-                GetContext()->OMSetRenderTargets( 1, graph.GetPhysicalTexture( backBufferHandle )->GetRenderTargetView().GetAddressOf(), GetDepthBuffer()->GetDepthStencilView().Get() );
 
+                auto velocityBuffer = graph.GetPhysicalTexture( velocityBufferHandle );
+                ID3D11RenderTargetView* rtvs[] = {
+                    graph.GetPhysicalTexture(backBufferHandle)->GetRenderTargetView().Get(),
+                    velocityBuffer ? velocityBuffer->GetRenderTargetView().Get() : nullptr,
+                };
+                GetContext()->OMSetRenderTargets(std::size(rtvs), rtvs, GetDepthBuffer()->GetDepthStencilView().Get());
+
+                SetupVS_ExConstantBuffer(); // required for motion vectors
                 DrawSky();
             };
         } );
@@ -4160,20 +4169,36 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         if ( FeatureLevel10Compatibility || Engine::GAPI->GetRendererState().RendererSettings.DrawRainThroughTransformFeedback ) {
             graph.AddPass( RG_PASS_NAME("Draw Rain"), [&]( RGBuilder& builder, RenderPass& pass ) {
                 builder.Read( backBufferHandle );
+                builder.Write( reactiveMaskResource );
                 builder.Write( backBufferHandle );
 
-                pass.m_executeCallback = [this](const RenderGraph&) {
+                pass.m_executeCallback = [this, backBufferHandle, reactiveMaskResource](const RenderGraph& g) {
                     TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw Rain" );
+                    
+                    auto reactiveMask = g.GetPhysicalTexture(reactiveMaskResource);
+                    ID3D11RenderTargetView* rtvs[] = {
+                        g.GetPhysicalTexture(backBufferHandle)->GetRenderTargetView().Get(),
+                        reactiveMask ? reactiveMask->GetRenderTargetView().Get() : nullptr,
+                    };
+                    Context->OMSetRenderTargets(std::size(rtvs), rtvs, nullptr);
+
                     Effects->DrawRain();
                 };
             });
         } else {
             graph.AddPass( RG_PASS_NAME("Draw Rain CS"), [&]( RGBuilder& builder, RenderPass& pass ) {
                 builder.Read( backBufferHandle );
+                builder.Write( reactiveMaskResource );
                 builder.Write( backBufferHandle );
 
-                pass.m_executeCallback = [this](const RenderGraph&) {
+                pass.m_executeCallback = [this, backBufferHandle, reactiveMaskResource](const RenderGraph& g) {
                     TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw Rain (CS)" );
+                    auto reactiveMask = g.GetPhysicalTexture( reactiveMaskResource );
+                    ID3D11RenderTargetView* rtvs[] = {
+                        g.GetPhysicalTexture(backBufferHandle)->GetRenderTargetView().Get(),
+                        reactiveMask ? reactiveMask->GetRenderTargetView().Get() : nullptr,
+                    };
+                    Context->OMSetRenderTargets(std::size(rtvs), rtvs, nullptr);
                     Effects->DrawRain_CS();
                 };
             });
