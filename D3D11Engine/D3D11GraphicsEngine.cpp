@@ -7209,7 +7209,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
 
             if ( isZPrepass ) {
                 // force alpha testing for vobs in prepass.
-                SetActivePixelShader( PShaderID::PS_DiffuseAlphaTestShadows );
+                ActivePS = nullptr;
                 Context->PSSetShader( nullptr, nullptr, 0 );
             }
 
@@ -8240,6 +8240,19 @@ bool D3D11GraphicsEngine::BindShaderForTexture( zCTexture* texture,
     bool forceAlphaTest,
     int zMatAlphaFunc,
     MaterialInfo::EMaterialType materialInfo ) {
+    
+    if (GetRenderingStage() == DES_Z_PRE_PASS) {
+        const auto& active = ActivePS;
+        // in Z_PRE_PASS the only way time someone wants a PS is when alpha testing is needed.
+        auto& newShader = GetShaderManager().GetPShader( PShaderID::PS_DiffuseAlphaTestShadows );
+        
+        if (active != newShader) {
+            SetActivePS(newShader)->Apply();
+            return true;
+        }
+        return false;
+    }
+    
     return ActiveSceneRenderer->BindShaderForTexture( GetShaderManager(), ActivePS,
         texture, forceAlphaTest, zMatAlphaFunc, materialInfo,
         Resolved_DiffuseNormalmapped,

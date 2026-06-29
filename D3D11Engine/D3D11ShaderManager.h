@@ -98,11 +98,11 @@ public:
     void UpdateShaderInfo( ShaderInfo& shader );
 
     /** Return a specific shader */
-    std::shared_ptr<D3D11VShader> GetVShader( VShaderID id ) { return VShaders[static_cast<size_t>(id)]; }
-    std::shared_ptr<D3D11PShader> GetPShader( PShaderID id ) { return PShaders[static_cast<size_t>(id)]; }
-    std::shared_ptr<D3D11HDShader> GetHDShader( HDShaderID id ) { return HDShaders[static_cast<size_t>(id)]; }
-    std::shared_ptr<D3D11GShader> GetGShader( GShaderID id ) { return GShaders[static_cast<size_t>(id)]; }
-    std::shared_ptr<D3D11CShader> GetCShader( CShaderID id ) { return CShaders[static_cast<size_t>(id)]; }
+    std::shared_ptr<D3D11VShader>& GetVShader( VShaderID id ) { return VShaders[static_cast<size_t>(id)]; }
+    std::shared_ptr<D3D11PShader>& GetPShader( PShaderID id ) { return PShaders[static_cast<size_t>(id)]; }
+    std::shared_ptr<D3D11HDShader>& GetHDShader( HDShaderID id ) { return HDShaders[static_cast<size_t>(id)]; }
+    std::shared_ptr<D3D11GShader>& GetGShader( GShaderID id ) { return GShaders[static_cast<size_t>(id)]; }
+    std::shared_ptr<D3D11CShader>& GetCShader( CShaderID id ) { return CShaders[static_cast<size_t>(id)]; }
 
 private:
     XRESULT CompileShader( ShaderInfo& si );
