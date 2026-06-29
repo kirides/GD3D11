@@ -126,6 +126,8 @@ XRESULT GVegetationBox::InitVegetationBox( const XMFLOAT3& min,
         zCMaterial* m = Engine::GAPI->GetMaterialByTextureName( restrictByTexture );
         MeshTexture = m ? m->GetTexture() : nullptr;
     }
+    
+    std::string_view restrictByTextureView = restrictByTexture;
 
     BoxMax = max;
     BoxMin = min;
@@ -150,14 +152,14 @@ XRESULT GVegetationBox::InitVegetationBox( const XMFLOAT3& min,
 
                 if ( PositionInsideBox( *p[i]->getVertices()[v]->Position.toXMFLOAT3() ) ) {
                     // Restrict by texture
-                    if ( restrictByTexture.length() &&
+                    if (!restrictByTextureView.empty() &&
                         p[i]->GetMaterial() &&
                         p[i]->GetMaterial()->GetTexture() &&
-                        p[i]->GetMaterial()->GetTexture()->GetNameWithoutExt() == restrictByTexture ) {
+                        p[i]->GetMaterial()->GetTexture()->GetNameWithoutExtView() == restrictByTextureView ) {
                         polysInside.push_back( tri[0] );
                         polysInside.push_back( tri[1] );
                         polysInside.push_back( tri[2] );
-                    } else if ( !restrictByTexture.length() ) {
+                    } else if (restrictByTextureView.empty()) {
                         polysInside.push_back( tri[0] );
                         polysInside.push_back( tri[1] );
                         polysInside.push_back( tri[2] );
@@ -177,14 +179,14 @@ XRESULT GVegetationBox::InitVegetationBox( const XMFLOAT3& min,
                                         *p[i]->getVertices()[2]->Position.toXMFLOAT3() };
 
                 // Restrict by texture
-                if ( restrictByTexture.length() &&
+                if (!restrictByTextureView.empty() &&
                     p[i]->GetMaterial() &&
                     p[i]->GetMaterial()->GetTexture() &&
-                    p[i]->GetMaterial()->GetTexture()->GetNameWithoutExt() == restrictByTexture ) {
+                    p[i]->GetMaterial()->GetTexture()->GetNameWithoutExtView() == restrictByTextureView ) {
                     polysInside.push_back( tri[0] );
                     polysInside.push_back( tri[1] );
                     polysInside.push_back( tri[2] );
-                } else if ( !restrictByTexture.length() ) {
+                } else if (restrictByTextureView.empty()) {
                     polysInside.push_back( tri[0] );
                     polysInside.push_back( tri[1] );
                     polysInside.push_back( tri[2] );
