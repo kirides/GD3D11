@@ -4745,10 +4745,11 @@ float GothicAPI::GetNearPlane() {
 
 /** Get material by texture name */
 zCMaterial* GothicAPI::GetMaterialByTextureName( const std::string& name ) {
+    const std::string_view nameView = name;
     for ( auto const& it : LoadedMaterials ) {
         if ( it->GetTexture() ) {
-            std::string tn = it->GetTexture()->GetNameWithoutExt();
-            if ( _strnicmp( name.c_str(), tn.c_str(), 255 ) == 0 )
+            const std::string_view tn = it->GetTexture()->GetNameWithoutExtView();
+            if ( Toolbox::EqualsIgnoreCase(nameView, tn ) )
                 return it;
         }
     }
@@ -4757,10 +4758,11 @@ zCMaterial* GothicAPI::GetMaterialByTextureName( const std::string& name ) {
 }
 
 void GothicAPI::GetMaterialListByTextureName( const std::string& name, std::list<zCMaterial*>& list ) {
+    const std::string_view nameView = name;
     for ( auto const& it : LoadedMaterials ) {
         if ( it->GetTexture() ) {
-            std::string tn = it->GetTexture()->GetNameWithoutExt();
-            if ( _strnicmp( name.c_str(), tn.c_str(), 255 ) == 0 )
+            const std::string_view tn = it->GetTexture()->GetNameWithoutExtView();
+            if ( Toolbox::EqualsIgnoreCase(nameView, tn ) )
                 list.push_back( it );
         }
     }
@@ -4970,14 +4972,19 @@ void GothicAPI::ApplySuppressedSectionTextures() {
         // Look into each mesh of this section and find the texture
         for ( auto mit = section->WorldMeshes.begin(); mit != section->WorldMeshes.end(); ) {
             bool movedToSuppressed = false;
-            for ( unsigned int i = 0; i < it.second.size(); i++ ) {
-                // Is this the texture we are looking for?
-                if ( (*mit).first.Material && (*mit).first.Material->GetTexture() && (*mit).first.Material->GetTexture()->GetNameWithoutExt() == it.second[i] ) {
-                    // Yes, move it to the suppressed map
-                    section->SuppressedMeshes[(*mit).first] = (*mit).second;
-                    mit = section->WorldMeshes.erase( mit );
-                    movedToSuppressed = true;
-                    break;
+            if (auto mat = mit->first.Material ) {
+                if ( auto tx = mat->GetTexture()) {
+                    auto txName = tx->GetNameWithoutExtView();
+                    for ( unsigned int i = 0; i < it.second.size(); i++ ) {
+                        // Is this the texture we are looking for?
+                        if ( txName == it.second[i] ) {
+                            // Yes, move it to the suppressed map
+                            section->SuppressedMeshes[mit->first] = mit->second;
+                            mit = section->WorldMeshes.erase( mit );
+                            movedToSuppressed = true;
+                            break;
+                        }
+                    }
                 }
             }
 
