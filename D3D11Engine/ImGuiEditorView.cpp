@@ -249,7 +249,8 @@ void ImGuiEditorView::RenderTextureSelectionPanel() {
 
     // Texture name
     if (Selection.SelectedMaterial && Selection.SelectedMaterial->GetTexture()) {
-        ImGui::TextUnformatted(Selection.SelectedMaterial->GetTexture()->GetNameWithoutExt().c_str());
+        auto name = Selection.SelectedMaterial->GetTexture()->GetNameWithoutExtView();
+        ImGui::TextUnformatted(name.data(), name.data() + name.length());
     } else {
         ImGui::TextUnformatted("No texture selected");
     }
@@ -283,21 +284,21 @@ void ImGuiEditorView::RenderTextureSelectionPanel() {
     }
 
     ImGui::Separator();
-    ImGui::Text("PBR multipliers:");
+    ImGui::TextUnformatted("PBR multipliers:");
 
-    ImGui::Text("AO:");
+    ImGui::TextUnformatted("AO:");
     ImGui::SameLine(80);
     if (ImGui::SliderFloat("##AOMult", &SelectedTexAOMultiplier, 0.0f, 1.0f, "%.2f")) {
         updateMaterial = true;
     }
 
-    ImGui::Text("Roughness:");
+    ImGui::TextUnformatted("Roughness:");
     ImGui::SameLine(80);
     if (ImGui::SliderFloat("##RoughMult", &SelectedTexRoughnessMultiplier, 0.0f, 1.0f, "%.2f")) {
         updateMaterial = true;
     }
 
-    ImGui::Text("Metallic:");
+    ImGui::TextUnformatted("Metallic:");
     ImGui::SameLine(80);
     if (ImGui::SliderFloat("##MetalMult", &SelectedTexMetallicMultiplier, 0.0f, 1.0f, "%.2f")) {
         updateMaterial = true;
@@ -321,17 +322,17 @@ void ImGuiEditorView::RenderTextureSelectionPanel() {
 
     /* per (World) Mesh settings are obsolete and not used. (tesselation  etc.) 
     ImGui::Separator();
-    ImGui::Text("WorldMesh-Settings:");
+    ImGui::TextUnformatted("WorldMesh-Settings:");
 
-    ImGui::Text("Displacement:");
+    ImGui::TextUnformatted("Displacement:");
     ImGui::SameLine(80);
     ImGui::SliderFloat("##Displacement", &SelectedTexDisplacement, -2.0f, 2.0f, "%.2f");
 
-    ImGui::Text("Tesselation:");
+    ImGui::TextUnformatted("Tesselation:");
     ImGui::SameLine(80);
     ImGui::SliderFloat("##TessAmount", &SelectedMeshTessAmount, 0.0f, 2.0f, "%.2f");
 
-    ImGui::Text("Roundness:");
+    ImGui::TextUnformatted("Roundness:");
     ImGui::SameLine(80);
     ImGui::SliderFloat("##Roundness", &SelectedMeshRoundness, 0.0f, 1.0f, "%.2f");
 
@@ -349,7 +350,7 @@ void ImGuiEditorView::RenderVegetationSelectionPanel() {
     ImGui::TextWrapped("Ctrl+Click a patch to add/remove it from the selection.");
     ImGui::Spacing();
 
-    ImGui::Text("Vegetation size:");
+    ImGui::TextUnformatted("Vegetation size:");
     if (ImGui::SliderFloat("##VegSize", &SelectedVegSize, 0.0f, 3.0f, "%.2f")) {
         if (!Selection.SelectedVegetationBoxes.empty()) {
             float factor = 1 + (SelectedVegSize - VegLastUniformScale);
@@ -359,7 +360,7 @@ void ImGuiEditorView::RenderVegetationSelectionPanel() {
         }
     }
 
-    ImGui::Text("Vegetation density:");
+    ImGui::TextUnformatted("Vegetation density:");
     if (ImGui::SliderFloat("##VegAmount", &SelectedVegAmount, 0.0f, 20.0f, "%.2f")) {
         for (GVegetationBox* box : Selection.SelectedVegetationBoxes) {
             XMFLOAT3 min, max;
@@ -393,7 +394,7 @@ void ImGuiEditorView::RenderVobSettingsDialog() {
                 ImGui::Text("Skeletal Vob: %s", Selection.SelectedSkeletalVob->Vob->GetName().c_str());
                 // Add more skeletal vob settings here as needed
             } else {
-                ImGui::Text("No vob selected");
+                ImGui::TextUnformatted("No vob selected");
             }
         }
         ImGui::End();

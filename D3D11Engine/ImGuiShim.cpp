@@ -557,7 +557,7 @@ void ImGuiShim::RenderSettingsWindow()
                 }
                 ImGui::SetItemTooltip( "Enables trees, grass and wheats to wave with the wind" );
 
-                ImGui::Text( "Wind strength" ); ImGui::SameLine();
+                ImGui::TextUnformatted( "Wind strength" ); ImGui::SameLine();
 
                 ImGui::BeginDisabled( settings.WindQuality == GothicRendererSettings::EWindQuality::WIND_QUALITY_NONE );
                 ImGui::SliderFloat( "##Wind strength", &settings.GlobalWindStrength, 0.1f, 5.0f, "%.2f" );
