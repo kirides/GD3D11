@@ -2996,8 +2996,8 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         }
     };
 
-    const float focusedColorSentinel = 2.0f;
-    const float interactiveFocusColor = oCGame::GetHighlightInteractFocus() ? focusedColorSentinel : 0.0f;
+    static const float focusedColorSentinel = 2.0f;
+    const float interactiveFocusEnabled = oCGame::GetHighlightInteractFocus();
     const float meleeFocusEnabled = oCGame::GetHighlightMeleeFocus() >= 2 && oCGame::GetNpcFocusIsHighlightActive();
     zCVob* playerFocusVob = oCGame::GetPlayer() ? oCGame::GetPlayer()->GetFocusVob() : nullptr;
     if ( playerFocusVob ) {
@@ -3005,23 +3005,26 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             if ( !meleeFocusEnabled ) {
                 playerFocusVob = nullptr;
             }
-        } else if ( oCMobInter* mobInter = playerFocusVob->As<oCMobInter>() ) {
-            // TODO: Also disable if this MOB has no "Name"
-            // TODO: Figure out how to properly call oCMob::GetName which populates a string on the stack.
-            if ( mobInter->IsInteractingWith( oCGame::GetPlayer()) || !mobInter->HasName() ) {
-                // disable focus if player is interacting with the mob.
-                playerFocusVob = nullptr;
-            }
-        } else if ( oCMob* mob = playerFocusVob->As<oCMob>() ) {
-            if ( !mob->HasName() ) {
-                playerFocusVob = nullptr; // disable highlight for unnamed MOBs
+        } 
+        else if ( !interactiveFocusEnabled ) {
+            playerFocusVob = nullptr;
+        } else {
+            if ( oCMobInter* mobInter = playerFocusVob->As<oCMobInter>() ) {
+                if ( mobInter->IsInteractingWith( oCGame::GetPlayer() ) || !mobInter->HasName() ) {
+                    // disable focus if player is interacting with the mob.
+                    playerFocusVob = nullptr;
+                }
+            } else if ( oCMob* mob = playerFocusVob->As<oCMob>() ) {
+                if ( !mob->HasName() ) {
+                    playerFocusVob = nullptr; // disable highlight for unnamed MOBs
+                }
             }
         }
     }
 
     static auto getFocusColor = []( zCVob* vob, const zCVob* playerFocusVob ) -> float {
         if ( vob == playerFocusVob ) {
-            return 2.0f;
+            return focusedColorSentinel;
         }
         return 0.0f;
     };
