@@ -73,10 +73,17 @@ extern float vobAnimation_WindStrength;
 
 /** Writes this info to a file */
 void MaterialInfo::WriteToFile( const std::string& name ) {
-    FILE* f = fopen( ("system\\GD3D11\\textures\\infos\\" + name + ".mi").c_str(), "wb" );
+    thread_local std::string infoPath{};
+    infoPath.reserve( 255 );
+    infoPath.clear();
+
+    infoPath.append(R"(system\GD3D11\textures\infos\)");
+    infoPath.append(name);
+    infoPath.append(".mi");
+    FILE* f = fopen( infoPath.c_str(), "wb" );
 
     if ( !f ) {
-        LogError() << "Failed to open file '" << ("system\\GD3D11\\textures\\infos\\" + name + ".mi") << "' for writing! Make sure the game runs in Admin mode "
+        LogError() << "Failed to open file '" << infoPath << "' for writing! Make sure the game runs in Admin mode "
             " to get the rights to write to that directory!";
 
         return;
@@ -96,9 +103,13 @@ void MaterialInfo::LoadFromFile( const std::string_view name ) {
     bool foundFile = false;
     char ReadBuffer[sizeof( int ) + sizeof( MaterialInfo::Buffer )];
     
-    std::string filePath = R"(\system\GD3D11\textures\infos\)";
-    filePath = filePath.append( name.data(), name.size() );
-    filePath = filePath.append( ".mi" );
+    thread_local std::string filePath{};
+    filePath.reserve( 255 );
+    filePath.clear();
+
+    filePath.append(R"(\system\GD3D11\textures\infos\)");
+    filePath.append( name.data(), name.size() );
+    filePath.append( ".mi" );
     {
         auto vdfsFile = zFILE_VDFS::Create(filePath.c_str());
         if ( vdfsFile->Exists()
@@ -5808,7 +5819,7 @@ bool GothicAPI::CheckNormalmapFilesOld() {
         the directory itself (".") and FindNextFile() will fail with ERROR_FILE_NOT_FOUND. **/
 
     WIN32_FIND_DATAA data;
-    HANDLE f = FindFirstFile( "system\\GD3D11\\Textures\\Replacements\\*.dds", &data );
+    HANDLE f = FindFirstFile(R"(system\GD3D11\Textures\Replacements\*.dds)", &data );
     if ( !FindNextFile( f, &data ) ) {
         /*
                 // Inform the user that he is missing normalmaps
@@ -5834,8 +5845,8 @@ bool GothicAPI::CheckNormalmapFilesOld() {
         "The old normalmaps will be moved to the new location. You should however go and delete everything in the replacements-folder"
         " if you have installed normalmaps for any Mod (Like L'Hiver) and let GD3D11 download them again for you.", "Something has changed...", MB_OK | MB_TOPMOST );
 
-    system( "mkdir system\\GD3D11\\Textures\\Replacements\\Normalmaps_Original" );
-    system( "move /Y system\\GD3D11\\Textures\\Replacements\\*.dds system\\GD3D11\\Textures\\Replacements\\Normalmaps_Original" );
+    system(R"(mkdir system\GD3D11\Textures\Replacements\Normalmaps_Original)");
+    system(R"(move /Y system\GD3D11\Textures\Replacements\*.dds system\GD3D11\Textures\Replacements\Normalmaps_Original)");
 
     return true;
 }
