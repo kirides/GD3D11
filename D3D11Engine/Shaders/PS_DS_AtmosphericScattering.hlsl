@@ -257,7 +257,7 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
 	
 	// Get specular parameters
     float4 gb3 = TX_SI_SP.Sample(SS_Linear, uv);
-    float ao = gb3.x;
+    float ao = gb3.x;  
     float roughness = gb3.y;
     float metallic = gb3.z;
 	bool focused = gb3.w > 0.5f;
@@ -306,7 +306,6 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
 	specWet += specWet * shadow;
 #endif
 
-    roughness = PLS_SafeRoughness( roughness );
 
     float3 L = normalize(SQ_LightDirectionVS);
 	

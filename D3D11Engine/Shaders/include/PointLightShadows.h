@@ -105,7 +105,8 @@ float3 PLS_ComputeDirectPBRLighting(
     float NdotH = saturate( dot( N, H ) );
     float VdotH = saturate( dot( V, H ) );
 
-    float clampedRoughness = PLS_SafeRoughness( roughness );
+    // convert perceptual roughness to physics roughness by squaring it
+    float clampedRoughness = PLS_SafeRoughness( roughness * roughness );
     float clampedMetallic = saturate( metallic );
     float3 F0 = lerp( float3( 0.04f, 0.04f, 0.04f ), baseColor, clampedMetallic );
 
@@ -142,7 +143,8 @@ float3 PLS_ComputeDirectPBRSpecularOnly(
     float NdotH = saturate( dot( N, H ) );
     float VdotH = saturate( dot( V, H ) );
 
-    float clampedRoughness = PLS_SafeRoughness( roughness );
+    // convert perceptual roughness to physics roughness by squaring it
+    float clampedRoughness = PLS_SafeRoughness( roughness * roughness );
     float clampedMetallic = saturate( metallic );
     float3 F0 = lerp( float3( 0.04f, 0.04f, 0.04f ), baseColor, clampedMetallic );
 
