@@ -94,7 +94,7 @@ void CSMain( uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID, uint
         lightDir /= distance;
 
         float falloff = PLS_ComputeRangeFalloff( distance, light.Range );
-        float3 lighting = PLS_ComputePointLightLightingPBR( diffuse.rgb, light.Color.rgb, normal, V, lightDir, falloff, roughness, metallic );
+        float3 lighting = PLS_ComputePointLightLightingPBR( diffuse.rgb, light.Color.rgb, normal, V, lightDir, falloff, roughness, metallic, light.Color.w );
 
         // Apply shadow if this light has a shadow cubemap and contribution is non-negligible
         if ( light.ShadowCubeIndex >= 0 && any( lighting > 0.001f ) ) {

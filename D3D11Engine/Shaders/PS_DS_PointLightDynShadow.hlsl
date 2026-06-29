@@ -105,7 +105,7 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	
 	// Compute physically-based direct lighting
 	float3 V = normalize(-Pl_PositionView);
-	float3 lighting = PLS_ComputePointLightLightingPBR(diffuse.rgb, PL_Color.rgb, normal, V, lightDir, falloff, roughness, metallic);
+	float3 lighting = PLS_ComputePointLightLightingPBR(diffuse.rgb, PL_Color.rgb, normal, V, lightDir, falloff, roughness, metallic, PL_Color.w);
 	
 	lighting *= shadow;
 	

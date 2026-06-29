@@ -165,7 +165,7 @@ float3 FP_ComputePointLighting(
         // instead of pow(..., 1.2f) we use a fast quadratic-like approach.
         float falloff = PLS_ComputeRangeFalloff( distance, light.Range );
 
-        float3 lighting = PLS_ComputePointLightLightingPBR( diffuseColor, light.Color.rgb, normal, V, lightDir, falloff, roughness, metallic );
+        float3 lighting = PLS_ComputePointLightLightingPBR( diffuseColor, light.Color.rgb, normal, V, lightDir, falloff, roughness, metallic, light.Color.w );
 
         // Don't fetch shadows if the light contribution is effectively zero.
         if ( light.ShadowCubeIndex >= 0 && any(lighting > 0.001f) )

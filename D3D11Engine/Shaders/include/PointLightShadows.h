@@ -94,7 +94,8 @@ float3 PLS_ComputeDirectPBRLighting(
     float3 L,
     float roughness,
     float metallic,
-    float attenuation )
+    float attenuation,
+    float specularScale = 1.0f )
 {
     float NdotL = saturate( dot( N, L ) );
     float NdotV = saturate( dot( N, V ) );
@@ -116,7 +117,7 @@ float3 PLS_ComputeDirectPBRLighting(
 
     float3 numerator = D * G * F;
     float denominator = max( 4.0f * NdotV * NdotL, 1e-4f );
-    float3 specular = numerator / denominator;
+    float3 specular = (numerator / denominator) * specularScale;
 
     float3 kD = (1.0f - F) * (1.0f - clampedMetallic);
     float3 diffuse = kD * baseColor / PLS_PI;
@@ -167,9 +168,10 @@ float3 PLS_ComputePointLightLightingPBR(
     float3 L,
     float falloff,
     float roughness,
-    float metallic )
+    float metallic,
+    float specularScale = 1.0f )
 {
-    return PLS_ComputeDirectPBRLighting( baseColor, lightColor, N, V, L, roughness, metallic, falloff );
+    return PLS_ComputeDirectPBRLighting( baseColor, lightColor, N, V, L, roughness, metallic, falloff, specularScale );
 }
 
 float PLS_ApplyShadowDistanceFade( float finalShadow, float normalizedDist )
