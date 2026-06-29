@@ -109,7 +109,7 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	// Compute specular lighting
 	float3 V = normalize(-vsPosition);
 	float3 H = normalize(lightDir + V);
-	float spec = PLS_CalcBlinnPhongLighting(normal, H);
+	float spec = PLS_CalcBlinnPhongLighting(normal, H) * PL_Color.w;
 	float specMod = PLS_ComputeSpecMod(diffuse.rgb);
 	float3 lighting = PLS_ComputePointLightLighting(diffuse.rgb, PL_Color.rgb, ndl, falloff, spec, specIntensity, specPower, specMod);
 	
