@@ -3701,7 +3701,8 @@ XRESULT D3D11GraphicsEngine::UpdateRenderStates() {
         FFBlendStateHash = blendState.Hash;
 
         blendState.StateDirty = false;
-        GetContext()->OMSetBlendState( FFBlendState.Get(), float4( 0, 0, 0, 0 ).toPtr(),
+        const FLOAT blendFactor[4] = {0,0,0,0};
+        GetContext()->OMSetBlendState( FFBlendState.Get(), blendFactor,
             0xFFFFFFFF );
     }
 
@@ -4160,20 +4161,36 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         if ( FeatureLevel10Compatibility || Engine::GAPI->GetRendererState().RendererSettings.DrawRainThroughTransformFeedback ) {
             graph.AddPass( RG_PASS_NAME("Draw Rain"), [&]( RGBuilder& builder, RenderPass& pass ) {
                 builder.Read( backBufferHandle );
+                builder.Write( reactiveMaskResource );
                 builder.Write( backBufferHandle );
 
-                pass.m_executeCallback = [this](const RenderGraph&) {
+                pass.m_executeCallback = [this, backBufferHandle, reactiveMaskResource](const RenderGraph& g) {
                     TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw Rain" );
+                    
+                    auto reactiveMask = g.GetPhysicalTexture(reactiveMaskResource);
+                    ID3D11RenderTargetView* rtvs[] = {
+                        g.GetPhysicalTexture(backBufferHandle)->GetRenderTargetView().Get(),
+                        reactiveMask ? reactiveMask->GetRenderTargetView().Get() : nullptr,
+                    };
+                    Context->OMSetRenderTargets(std::size(rtvs), rtvs, nullptr);
+
                     Effects->DrawRain();
                 };
             });
         } else {
             graph.AddPass( RG_PASS_NAME("Draw Rain CS"), [&]( RGBuilder& builder, RenderPass& pass ) {
                 builder.Read( backBufferHandle );
+                builder.Write( reactiveMaskResource );
                 builder.Write( backBufferHandle );
 
-                pass.m_executeCallback = [this](const RenderGraph&) {
+                pass.m_executeCallback = [this, backBufferHandle, reactiveMaskResource](const RenderGraph& g) {
                     TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw Rain (CS)" );
+                    auto reactiveMask = g.GetPhysicalTexture( reactiveMaskResource );
+                    ID3D11RenderTargetView* rtvs[] = {
+                        g.GetPhysicalTexture(backBufferHandle)->GetRenderTargetView().Get(),
+                        reactiveMask ? reactiveMask->GetRenderTargetView().Get() : nullptr,
+                    };
+                    Context->OMSetRenderTargets(std::size(rtvs), rtvs, nullptr);
                     Effects->DrawRain_CS();
                 };
             });
