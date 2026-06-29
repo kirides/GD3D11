@@ -204,16 +204,30 @@ namespace
         const float nDefault,
         const std::string& lpFileName
     ) {
-        const int float_str_max = 30;
+        constexpr int float_str_max = 30;
         TCHAR nFloat[float_str_max];
         if ( auto count = ::GetPrivateProfileStringA( lpAppName, lpKeyName, nullptr, nFloat, float_str_max, lpFileName.c_str() ) ) {
-            try {
-                return std::stof( std::string( nFloat, count ) );
-            } catch ( const std::exception& ) {
-                return nDefault;
+            float flt;
+            auto dataPtr = &nFloat[0];
+            auto [_, ec] = std::from_chars(dataPtr, dataPtr+count, flt);
+
+            if (ec == std::errc{}) {
+                return flt;
             }
+            return nDefault;
         }
         return nDefault;
+    }
+    
+    template<typename T>
+    std::string to_string_locale_independent(const T value) {
+        std::array<char, 255> buffer;
+        auto [ptr, ec] = std::to_chars(buffer.data(), buffer.data() + buffer.size(), value);
+
+        if (ec == std::errc{}) {
+            return std::string(buffer.data(), ptr);
+        }
+        return "";
     }
 
     // Helper function to trim leading/trailing whitespace
@@ -351,6 +365,7 @@ namespace
         const std::string& lpFileName
     ) {
         std::stringstream ss;
+        ss.imbue(std::locale::classic());
 
         for (size_t i = 0; i < count; i++)
         {
@@ -397,6 +412,8 @@ namespace
     static std::string float_to_string(const float val, int precision = 6)
     {
         std::stringstream ss;
+        ss.imbue(std::locale::classic());
+
         ss << std::fixed << std::setprecision(precision) << val;
         return ss.str();
     }
@@ -553,6 +570,7 @@ void GothicAPI::OnWorldUpdate() {
 
     // Do rain-effects
     zCSkyController_Outdoor* skyController;
+
     if ( world && (skyController = world->GetSkyControllerOutdoor()) != nullptr && _canRain ) {
         bool outdoor = (LoadedWorldInfo->BspTree->GetBspTreeMode() == zBSP_MODE_OUTDOOR);
         if ( RendererState.RendererSettings.AtmosphericScattering && outdoor ) {
@@ -1055,7 +1073,7 @@ void GothicAPI::LoadRendererWorldSettings( GothicRendererSettings& s, const char
         s.OutdoorSmallVobDrawRadius = GetPrivateProfileFloatA( "General", "OutdoorSmallVobDrawRadius", s.OutdoorSmallVobDrawRadius, ini );
         s.IndoorVobDrawRadius = GetPrivateProfileFloatA( "General", "IndoorVobDrawRadius", s.IndoorVobDrawRadius, ini );
 	    s.SkeletalMeshDrawRadius = GetPrivateProfileFloatA( "General", "SkeletalMeshDrawRadius", s.SkeletalMeshDrawRadius, ini );
-	    s.SectionDrawRadius = GetPrivateProfileFloatA( "General", "SectionDrawRadius", s.SectionDrawRadius, ini );
+	    s.SectionDrawRadius = GetPrivateProfileIntA( "General", "SectionDrawRadius", s.SectionDrawRadius, ini.c_str() );
     }
 
     s.RainRadiusRange = GetPrivateProfileFloatA( "Rain", "RadiusRange", s.RainRadiusRange, ini );
@@ -1110,31 +1128,31 @@ void GothicAPI::SaveRendererWorldSettings( const GothicRendererSettings& s )
 void GothicAPI::SaveRendererWorldSettings( const GothicRendererSettings& s, const char* iniFile ) {
     const std::string ini = iniFile;
 
-    WritePrivateProfileStringA( "Fog", "Height", std::to_string( s.FogHeight ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Fog", "HeightFalloff", std::to_string( s.FogHeightFalloff ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Fog", "GlobalDensity", std::to_string( s.FogGlobalDensity ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Fog", "Height", to_string_locale_independent( s.FogHeight ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Fog", "HeightFalloff", to_string_locale_independent( s.FogHeightFalloff ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Fog", "GlobalDensity", to_string_locale_independent( s.FogGlobalDensity ).c_str(), ini.c_str() );
 
     WritePrivateProfileRGB("Atmoshpere", "SunLightColor", s.SunLightColor, ini);
     WritePrivateProfileRGB("Atmoshpere", "FogColorMod", s.FogColorMod, ini);
 
-    WritePrivateProfileStringA( "General", "GraphicsPreset", std::to_string( (int)s.GraphicsPreset ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "General", "VisualFXDrawRadius", std::to_string( s.VisualFXDrawRadius ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "General", "OutdoorVobDrawRadius", std::to_string( s.OutdoorVobDrawRadius ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "General", "OutdoorSmallVobDrawRadius", std::to_string( s.OutdoorSmallVobDrawRadius ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "General", "IndoorVobDrawRadius", std::to_string( s.IndoorVobDrawRadius ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "General", "SkeletalMeshDrawRadius", std::to_string( s.SkeletalMeshDrawRadius ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "General", "SectionDrawRadius", std::to_string( s.SectionDrawRadius ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "GraphicsPreset", to_string_locale_independent( (int)s.GraphicsPreset ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "VisualFXDrawRadius", to_string_locale_independent( s.VisualFXDrawRadius ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "OutdoorVobDrawRadius", to_string_locale_independent( s.OutdoorVobDrawRadius ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "OutdoorSmallVobDrawRadius", to_string_locale_independent( s.OutdoorSmallVobDrawRadius ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "IndoorVobDrawRadius", to_string_locale_independent( s.IndoorVobDrawRadius ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "SkeletalMeshDrawRadius", to_string_locale_independent( s.SkeletalMeshDrawRadius ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "SectionDrawRadius", to_string_locale_independent( s.SectionDrawRadius ).c_str(), ini.c_str() );
 
-    WritePrivateProfileStringA( "Rain", "RadiusRange", std::to_string( s.RainRadiusRange ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Rain", "HeightRange", std::to_string( s.RainHeightRange ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Rain", "NumParticles", std::to_string( s.RainNumParticles ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Rain", "RadiusRange", to_string_locale_independent( s.RainRadiusRange ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Rain", "HeightRange", to_string_locale_independent( s.RainHeightRange ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Rain", "NumParticles", to_string_locale_independent( s.RainNumParticles ).c_str(), ini.c_str() );
     WritePrivateProfileArray( "Rain", "GlobalVelocity", &s.RainGlobalVelocity.x, 3, ini.c_str() );
-    WritePrivateProfileStringA( "Rain", "SceneWettness", std::to_string( s.RainSceneWettness ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Rain", "SunLightStrength", std::to_string( s.RainSunLightStrength ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Rain", "SceneWettness", to_string_locale_independent( s.RainSceneWettness ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Rain", "SunLightStrength", to_string_locale_independent( s.RainSunLightStrength ).c_str(), ini.c_str() );
     WritePrivateProfileRGB( "Rain", "FogColor", s.RainFogColor, ini );
-    WritePrivateProfileStringA( "Rain", "FogDensity", std::to_string( s.RainFogDensity ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Rain", "FogDensity", to_string_locale_independent( s.RainFogDensity ).c_str(), ini.c_str() );
 
-    WritePrivateProfileStringA( "Atmoshpere", "ReplaceSunDirection", std::to_string( s.ReplaceSunDirection ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Atmoshpere", "ReplaceSunDirection", to_string_locale_independent( s.ReplaceSunDirection ? TRUE : FALSE ).c_str(), ini.c_str() );
 
     AtmosphereSettings& aS = GetSky()->GetAtmoshpereSettings();
 
@@ -1154,9 +1172,9 @@ void GothicAPI::SaveRendererWorldSettings( const GothicRendererSettings& s, cons
     WritePrivateProfileStringA( "Atmoshpere", "LightDirectionY", nullptr, ini.c_str() );
     WritePrivateProfileStringA( "Atmoshpere", "LightDirectionZ", nullptr, ini.c_str() );
 
-    WritePrivateProfileStringA( "GodRays", "GodRayDecay", std::to_string( s.GodRayDecay ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "GodRays", "GodRayDensity", std::to_string( s.GodRayDensity ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "GodRays", "GodRayWeight", std::to_string( s.GodRayWeight ).c_str(), ini.c_str() );    
+    WritePrivateProfileStringA( "GodRays", "GodRayDecay", to_string_locale_independent( s.GodRayDecay ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "GodRays", "GodRayDensity", to_string_locale_independent( s.GodRayDensity ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "GodRays", "GodRayWeight", to_string_locale_independent( s.GodRayWeight ).c_str(), ini.c_str() );    
 }
 
 /** Goes through the given zCTree and registers all found vobs */
@@ -2508,7 +2526,6 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
     D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
 
     zCModel* model = static_cast<zCModel*>(vi->Vob->GetVisual());
-    SkeletalMeshVisualInfo* visual = static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo);
 
     if ( !model || !vi->VisualInfo )
         return; // Gothic fortunately sets this to 0 when it throws the model out of the cache
@@ -2686,7 +2703,6 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
                     instanceInfo.Scaling = 1.f;
                 }
 
-                auto& VShader = g->GetActiveVS();
                 if ( distance < 1000 && isMMS ) {
                     zCMorphMesh* mm = reinterpret_cast<zCMorphMesh*>( mvi->Visual );
                     // Only draw this as a morphmesh when rendering the main scene or when rendering as ghost
@@ -2749,7 +2765,6 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
     D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
 
     zCModel* model = static_cast<zCModel*>(vi->Vob->GetVisual());
-    SkeletalMeshVisualInfo* visual = static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo);
 
     if ( !model || !vi->VisualInfo )
         return; // Gothic fortunately sets this to 0 when it throws the model out of the cache
@@ -2921,7 +2936,6 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
                 // Update constantbuffer
                 vsBufMPI.Update( &instanceInfo );
 
-                auto& VShader = g->GetActiveVS();
                 if ( distance < 1000 && isMMS ) {
                     zCMorphMesh* mm = reinterpret_cast<zCMorphMesh*>( mvi->Visual );
                     // Only draw this as a morphmesh when rendering the main scene or when rendering as ghost
@@ -4933,18 +4947,18 @@ zCVob* GothicAPI::GetPlayerVob() {
 /** Loads resources created for this .ZEN */
 void GothicAPI::LoadCustomZENResources() {
     auto gameName = GetGameName();
-    std::string zenFolder;
+    std::string zenFolder; zenFolder.reserve(255);
     if ( gameName == "Original" ) {
-        zenFolder = "system\\GD3D11\\ZENResources\\";
+        zenFolder.append("system\\GD3D11\\ZENResources\\");
     } else {
-        zenFolder = "system\\GD3D11\\ZENResources\\" + gameName + "\\";
+        zenFolder.append("system\\GD3D11\\ZENResources\\").append(gameName).append("\\");
     }
     if ( !Toolbox::FolderExists( zenFolder ) ) {
         LogInfo() << "Custom ZEN-Resources. Directory not found: " << zenFolder;
         return;
     }
 
-    std::string zen = zenFolder + LoadedWorldInfo->WorldName;
+    std::string& zen = zenFolder.append(LoadedWorldInfo->WorldName);
 
     LogInfo() << "Loading custom ZEN-Resources from: " << zen;
 
@@ -4958,11 +4972,11 @@ void GothicAPI::LoadCustomZENResources() {
 /** Saves resources created for this .ZEN */
 void GothicAPI::SaveCustomZENResources() {
     auto gameName = GetGameName();
-    std::string zenFolder;
+    std::string zenFolder; zenFolder.reserve(255);
     if ( gameName == "Original" ) {
-        zenFolder = "system\\GD3D11\\ZENResources\\";
+        zenFolder.append(R"(system\GD3D11\ZENResources\)");
     } else {
-        zenFolder = "system\\GD3D11\\ZENResources\\" + gameName + "\\";
+        zenFolder.append(R"(system\GD3D11\ZENResources\)").append(gameName).append("\\");
     }
 
     bool mkDirErr = false;
@@ -4975,7 +4989,7 @@ void GothicAPI::SaveCustomZENResources() {
         return;
     }
 
-    std::string zen = zenFolder + LoadedWorldInfo->WorldName;
+    std::string& zen = zenFolder.append(LoadedWorldInfo->WorldName);
 
     LogInfo() << "Saving custom ZEN-Resources to: " << zen;
 
@@ -5214,117 +5228,117 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     LogInfo() << "Saving menu settings to " << ini;
     GothicRendererSettings& s = RendererState.RendererSettings;
 
-    WritePrivateProfileStringA( "General", "ChangeToMode", std::to_string( s.ChangeWindowPreset ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "General", "AtmosphericScattering", std::to_string( s.AtmosphericScattering ? TRUE : FALSE ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "General", "EnableFog", std::to_string( s.DrawFog ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "ChangeToMode", to_string_locale_independent( s.ChangeWindowPreset ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "AtmosphericScattering", to_string_locale_independent( s.AtmosphericScattering ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "EnableFog", to_string_locale_independent( s.DrawFog ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "FogRange", float_to_string( s.FogRange , 2).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "General", "EnableHDR", std::to_string( s.EnableHDR ? TRUE : FALSE ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "General", "HDRToneMap", std::to_string( s.HDRToneMap ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "General", "EnableDebugLog", std::to_string( s.EnableDebugLog ? TRUE : FALSE ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "General", "EnableAutoupdates", std::to_string( s.EnableAutoupdates ? TRUE : FALSE ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "General", "EnableGodRays", std::to_string( s.EnableGodRays ? TRUE : FALSE ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "General", "EnableDoF", std::to_string( s.EnableDoF ? TRUE : FALSE ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "General", "DoFGaussBlur", std::to_string( s.DoFGaussBlur ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "EnableHDR", to_string_locale_independent( s.EnableHDR ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "HDRToneMap", to_string_locale_independent( s.HDRToneMap ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "EnableDebugLog", to_string_locale_independent( s.EnableDebugLog ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "EnableAutoupdates", to_string_locale_independent( s.EnableAutoupdates ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "EnableGodRays", to_string_locale_independent( s.EnableGodRays ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "EnableDoF", to_string_locale_independent( s.EnableDoF ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "DoFGaussBlur", to_string_locale_independent( s.DoFGaussBlur ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "DoFFocusDistance", float_to_string( s.DoFFocusDistance, 1 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "DoFFocusRange", float_to_string( s.DoFFocusRange, 1 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "DoFBokehRadius", float_to_string( s.DoFBokehRadius, 1 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "DoFMaxBlur", float_to_string( s.DoFMaxBlur, 1 ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "General", "AllowNormalmaps", std::to_string( s.AllowNormalmaps ? TRUE : FALSE ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "General", "AllowNumpadKeys", std::to_string( s.AllowNumpadKeys ? TRUE : FALSE ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "General", "EnableInactiveFpsLock", std::to_string( s.EnableInactiveFpsLock ? TRUE : FALSE ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "General", "MultiThreadResourceManager", std::to_string( s.MTResoureceManager ? TRUE : FALSE ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "General", "CompressBackBuffer", std::to_string( s.CompressBackBuffer ? TRUE : FALSE ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "General", "AnimateStaticVobs", std::to_string( s.AnimateStaticVobs ? TRUE : FALSE ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "General", "DrawWorldSectionIntersections", std::to_string( s.DrawSectionIntersections ? TRUE : FALSE ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "General", "SunLightStrength", std::to_string( s.SunLightStrength ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "AllowNormalmaps", to_string_locale_independent( s.AllowNormalmaps ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "AllowNumpadKeys", to_string_locale_independent( s.AllowNumpadKeys ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "EnableInactiveFpsLock", to_string_locale_independent( s.EnableInactiveFpsLock ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "MultiThreadResourceManager", to_string_locale_independent( s.MTResoureceManager ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "CompressBackBuffer", to_string_locale_independent( s.CompressBackBuffer ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "AnimateStaticVobs", to_string_locale_independent( s.AnimateStaticVobs ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "DrawWorldSectionIntersections", to_string_locale_independent( s.DrawSectionIntersections ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "SunLightStrength", to_string_locale_independent( s.SunLightStrength ).c_str(), ini.c_str() );
 #ifdef BUILD_GOTHIC_1_08k
-    WritePrivateProfileStringA( "General", "DrawG1ForestPortals", std::to_string( s.DrawG1ForestPortals ? TRUE : FALSE ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "General", "G1HighlightInteractiveFocus", std::to_string( s.G1HighlightInteractiveFocus ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "DrawG1ForestPortals", to_string_locale_independent( s.DrawG1ForestPortals ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "G1HighlightInteractiveFocus", to_string_locale_independent( s.G1HighlightInteractiveFocus ? TRUE : FALSE ).c_str(), ini.c_str() );
 #endif
-    WritePrivateProfileStringA( "General", "DrawRainThroughTransformFeedback", std::to_string( s.DrawRainThroughTransformFeedback ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "DrawRainThroughTransformFeedback", to_string_locale_independent( s.DrawRainThroughTransformFeedback ? TRUE : FALSE ).c_str(), ini.c_str() );
 
     /*
     * Draw-distance is saved on a per World basis using SaveRendererWorldSettings
     */
 
-    WritePrivateProfileStringA( "General", "EnableOcclusionCulling", std::to_string( s.EnableOcclusionCulling ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "General", "FpsLimit", std::to_string( s.FpsLimit ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "EnableOcclusionCulling", to_string_locale_independent( s.EnableOcclusionCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "FpsLimit", to_string_locale_independent( s.FpsLimit ).c_str(), ini.c_str() );
     
     auto res = Engine::GraphicsEngine->GetBackbufferResolution();
-    WritePrivateProfileStringA( "Display", "TextureQuality", std::to_string( s.textureMaxSize ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Display", "Width", std::to_string( res.x ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Display", "Height", std::to_string( res.y ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Display", "ResolutionScale", std::to_string( s.ResolutionScalePercent ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Display", "Upscaler", std::to_string( static_cast<int>(s.Upscaler) ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Display", "VSync", std::to_string( s.EnableVSync ? TRUE : FALSE ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Display", "ForceFOV", std::to_string( s.ForceFOV ? TRUE : FALSE ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Display", "FOVHoriz", std::to_string( static_cast<int>(s.FOVHoriz) ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Display", "FOVVert", std::to_string( static_cast<int>(s.FOVVert) ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Display", "Gamma", std::to_string( s.GammaValue ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Display", "Brightness", std::to_string( s.BrightnessValue ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Display", "DisplayFlip", std::to_string( s.DisplayFlip ? TRUE : FALSE ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Display", "LowLatency", std::to_string( s.LowLatency ? TRUE : FALSE ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Display", "HDR_Monitor", std::to_string( s.HDR_Monitor ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "TextureQuality", to_string_locale_independent( s.textureMaxSize ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "Width", to_string_locale_independent( res.x ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "Height", to_string_locale_independent( res.y ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "ResolutionScale", to_string_locale_independent( s.ResolutionScalePercent ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "Upscaler", to_string_locale_independent( static_cast<int>(s.Upscaler) ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "VSync", to_string_locale_independent( s.EnableVSync ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "ForceFOV", to_string_locale_independent( s.ForceFOV ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "FOVHoriz", to_string_locale_independent( static_cast<int>(s.FOVHoriz) ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "FOVVert", to_string_locale_independent( static_cast<int>(s.FOVVert) ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "Gamma", to_string_locale_independent( s.GammaValue ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "Brightness", to_string_locale_independent( s.BrightnessValue ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "DisplayFlip", to_string_locale_independent( s.DisplayFlip ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "LowLatency", to_string_locale_independent( s.LowLatency ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "HDR_Monitor", to_string_locale_independent( s.HDR_Monitor ? TRUE : FALSE ).c_str(), ini.c_str() );
 
-    WritePrivateProfileStringA( "Display", "StretchWindow", std::to_string( s.StretchWindow ? TRUE : FALSE ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Display", "UIScale", std::to_string( s.GothicUIScale ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Display", "Rain", std::to_string( s.EnableRain ? TRUE : FALSE ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Display", "RainEffects", std::to_string( s.EnableRainEffects ? TRUE : FALSE ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Display", "LimitLightIntesity", std::to_string( s.LimitLightIntesity ? TRUE : FALSE ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Display", "TiledLighting", std::to_string( s.EnableTiledLighting ? TRUE : FALSE ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Display", "RendererMode", std::to_string( static_cast<int>(s.RendererMode) ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Display", "WindQuality", std::to_string( s.WindQuality ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Display", "WindStrength", std::to_string( s.GlobalWindStrength ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Display", "WaterWaveAnimation", std::to_string( s.EnableWaterAnimation ? TRUE : FALSE ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Display", "HeroAffectsObjects", std::to_string( s.HeroAffectsObjects ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "StretchWindow", to_string_locale_independent( s.StretchWindow ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "UIScale", to_string_locale_independent( s.GothicUIScale ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "Rain", to_string_locale_independent( s.EnableRain ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "RainEffects", to_string_locale_independent( s.EnableRainEffects ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "LimitLightIntesity", to_string_locale_independent( s.LimitLightIntesity ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "TiledLighting", to_string_locale_independent( s.EnableTiledLighting ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "RendererMode", to_string_locale_independent( static_cast<int>(s.RendererMode) ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "WindQuality", to_string_locale_independent( s.WindQuality ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "WindStrength", to_string_locale_independent( s.GlobalWindStrength ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "WaterWaveAnimation", to_string_locale_independent( s.EnableWaterAnimation ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "HeroAffectsObjects", to_string_locale_independent( s.HeroAffectsObjects ? TRUE : FALSE ).c_str(), ini.c_str() );
     
 
-    WritePrivateProfileStringA( "Shadows", "EnableShadows", std::to_string( s.EnableShadows ? TRUE : FALSE ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Shadows", "ShadowFilterMode", std::to_string( static_cast<int>(s.ShadowFilterMode) ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Shadows", "ShadowMapSize", std::to_string( s.ShadowMapSize ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Shadows", "WorldShadowRangeScale", std::to_string( s.WorldShadowRangeScale ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Shadows", "NumShadowCascades", std::to_string( s.NumShadowCascades ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Shadows", "ShadowCascadePCFLimit", std::to_string( s.ShadowCascadePCFLimit ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Shadows", "ShadowFrustumCullingMode", std::to_string( static_cast<int>(s.ShadowFrustumCullingMode) ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Shadows", "PointlightShadows", std::to_string( s.EnablePointlightShadows ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Shadows", "EnableDynamicLighting", std::to_string( s.EnableDynamicLighting ? TRUE : FALSE ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Shadows", "SmoothCameraUpdate", std::to_string( s.SmoothShadowCameraUpdate ? TRUE : FALSE ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Shadows", "SmoothShadowFrequency", std::to_string( s.SmoothShadowFrequency ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Shadows", "ShadowStrength", std::to_string( s.ShadowStrength ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Shadows", "ShadowSoftness", std::to_string( s.ShadowSoftness ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Shadows", "ShadowAOStrength", std::to_string( s.ShadowAOStrength ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Shadows", "WorldAOStrength", std::to_string( s.WorldAOStrength ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Shadows", "ShadowDepthSlopeBias", std::to_string( s.DebugSettings.ShadowCascades.ShadowDepthSlopeBias ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Shadows", "EnableShadows", to_string_locale_independent( s.EnableShadows ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Shadows", "ShadowFilterMode", to_string_locale_independent( static_cast<int>(s.ShadowFilterMode) ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Shadows", "ShadowMapSize", to_string_locale_independent( s.ShadowMapSize ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Shadows", "WorldShadowRangeScale", to_string_locale_independent( s.WorldShadowRangeScale ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Shadows", "NumShadowCascades", to_string_locale_independent( s.NumShadowCascades ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Shadows", "ShadowCascadePCFLimit", to_string_locale_independent( s.ShadowCascadePCFLimit ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Shadows", "ShadowFrustumCullingMode", to_string_locale_independent( static_cast<int>(s.ShadowFrustumCullingMode) ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Shadows", "PointlightShadows", to_string_locale_independent( s.EnablePointlightShadows ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Shadows", "EnableDynamicLighting", to_string_locale_independent( s.EnableDynamicLighting ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Shadows", "SmoothCameraUpdate", to_string_locale_independent( s.SmoothShadowCameraUpdate ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Shadows", "SmoothShadowFrequency", to_string_locale_independent( s.SmoothShadowFrequency ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Shadows", "ShadowStrength", to_string_locale_independent( s.ShadowStrength ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Shadows", "ShadowSoftness", to_string_locale_independent( s.ShadowSoftness ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Shadows", "ShadowAOStrength", to_string_locale_independent( s.ShadowAOStrength ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Shadows", "WorldAOStrength", to_string_locale_independent( s.WorldAOStrength ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Shadows", "ShadowDepthSlopeBias", to_string_locale_independent( s.DebugSettings.ShadowCascades.ShadowDepthSlopeBias ).c_str(), ini.c_str() );
 
-    // WritePrivateProfileStringA( "SMAA", "Enabled", std::to_string( s.EnableSMAA ? TRUE : FALSE ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "General", "AntiAliasing", std::to_string( (int)s.AntiAliasingMode ).c_str(), ini.c_str() );
+    // WritePrivateProfileStringA( "SMAA", "Enabled", to_string_locale_independent( s.EnableSMAA ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "AntiAliasing", to_string_locale_independent( (int)s.AntiAliasingMode ).c_str(), ini.c_str() );
 
-    WritePrivateProfileStringA( "SMAA", "SharpenFactor", std::to_string( s.SharpenFactor ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "SMAA", "SharpenFactor", to_string_locale_independent( s.SharpenFactor ).c_str(), ini.c_str() );
 
-    WritePrivateProfileStringA( "HBAO", "Enabled", std::to_string( s.HbaoSettings.Enabled ? TRUE : FALSE ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "HBAO", "Bias", std::to_string( s.HbaoSettings.Bias ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "HBAO", "Radius", std::to_string( s.HbaoSettings.Radius ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "HBAO", "PowerExponent", std::to_string( s.HbaoSettings.PowerExponent ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "HBAO", "BlurSharpness", std::to_string( s.HbaoSettings.BlurSharpness ).c_str(), ini.c_str() );
-    //WritePrivateProfileStringA( "HBAO", "EnableDualLayerAO", std::to_string( s.HbaoSettings.EnableDualLayerAO ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "HBAO", "EnableBlur", std::to_string( s.HbaoSettings.EnableBlur ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "HBAO", "SsaoBlurRadius", std::to_string( s.HbaoSettings.SsaoBlurRadius ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "HBAO", "SsaoStepCount", std::to_string( s.HbaoSettings.SsaoStepCount ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "HBAO", "Enabled", to_string_locale_independent( s.HbaoSettings.Enabled ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "HBAO", "Bias", to_string_locale_independent( s.HbaoSettings.Bias ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "HBAO", "Radius", to_string_locale_independent( s.HbaoSettings.Radius ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "HBAO", "PowerExponent", to_string_locale_independent( s.HbaoSettings.PowerExponent ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "HBAO", "BlurSharpness", to_string_locale_independent( s.HbaoSettings.BlurSharpness ).c_str(), ini.c_str() );
+    //WritePrivateProfileStringA( "HBAO", "EnableDualLayerAO", to_string_locale_independent( s.HbaoSettings.EnableDualLayerAO ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "HBAO", "EnableBlur", to_string_locale_independent( s.HbaoSettings.EnableBlur ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "HBAO", "SsaoBlurRadius", to_string_locale_independent( s.HbaoSettings.SsaoBlurRadius ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "HBAO", "SsaoStepCount", to_string_locale_independent( s.HbaoSettings.SsaoStepCount ).c_str(), ini.c_str() );
 
-    WritePrivateProfileStringA( "AO", "Mode", std::to_string( static_cast<int>(s.AoMode) ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "SAO", "Radius", std::to_string( s.SaoSettings.Radius ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "SAO", "Bias", std::to_string( s.SaoSettings.Bias ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "SAO", "Intensity", std::to_string( s.SaoSettings.Intensity ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "SAO", "NumSamples", std::to_string( s.SaoSettings.NumSamples ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "SAO", "BlurSharpness", std::to_string( s.SaoSettings.BlurSharpness ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "AO", "Mode", to_string_locale_independent( static_cast<int>(s.AoMode) ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "SAO", "Radius", to_string_locale_independent( s.SaoSettings.Radius ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "SAO", "Bias", to_string_locale_independent( s.SaoSettings.Bias ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "SAO", "Intensity", to_string_locale_independent( s.SaoSettings.Intensity ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "SAO", "NumSamples", to_string_locale_independent( s.SaoSettings.NumSamples ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "SAO", "BlurSharpness", to_string_locale_independent( s.SaoSettings.BlurSharpness ).c_str(), ini.c_str() );
 
-    WritePrivateProfileStringA( "FontRendering", "Enable", std::to_string( s.EnableCustomFontRendering ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "FontRendering", "Enable", to_string_locale_independent( s.EnableCustomFontRendering ? TRUE : FALSE ).c_str(), ini.c_str() );
 
-    WritePrivateProfileStringA( "Debug", "ThreadedShadowCulling", std::to_string( s.ThreadedShadowCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Debug", "UseShadowAtlas", std::to_string( s.DebugSettings.FeatureSet.UseShadowAtlas ? TRUE : FALSE ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Debug", "UseScreenSpaceShadowMask", std::to_string( s.DebugSettings.FeatureSet.UseScreenSpaceShadowMask ? TRUE : FALSE ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Debug", "ForceFeatureLevel10", std::to_string( s.DebugSettings.FeatureSet.ForceFeatureLevel10 ? TRUE : FALSE ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "Debug", "EnableDriverExtensions", std::to_string( s.DebugSettings.FeatureSet.EnableDriverExtensions ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Debug", "ThreadedShadowCulling", to_string_locale_independent( s.ThreadedShadowCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Debug", "UseShadowAtlas", to_string_locale_independent( s.DebugSettings.FeatureSet.UseShadowAtlas ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Debug", "UseScreenSpaceShadowMask", to_string_locale_independent( s.DebugSettings.FeatureSet.UseScreenSpaceShadowMask ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Debug", "ForceFeatureLevel10", to_string_locale_independent( s.DebugSettings.FeatureSet.ForceFeatureLevel10 ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Debug", "EnableDriverExtensions", to_string_locale_independent( s.DebugSettings.FeatureSet.EnableDriverExtensions ? TRUE : FALSE ).c_str(), ini.c_str() );
 
     return XR_SUCCESS;
 }
