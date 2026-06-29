@@ -4044,23 +4044,17 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
 
     if ( rendererState.RendererSettings.DrawSky ) {
         graph.AddPass( RG_PASS_NAME( "Draw Sky" ), [&]( RGBuilder& builder, RenderPass& pass ) {
-            //// Setup / Declare
-            //RGTextureDesc albedoDesc{ 1920, 1080, 28 /* DXGI_FORMAT_R8G8B8A8_UNORM */, "Albedo" };
-            //albedoTarget = builder.CreateTexture( albedoDesc );
             builder.Write( backBufferHandle );
             builder.Write( velocityBufferHandle );
-            builder.Write( reactiveMaskResource );
 
-            pass.m_executeCallback = [this, backBufferHandle, reactiveMaskResource, velocityBufferHandle]( const RenderGraph& graph )->void {
+            pass.m_executeCallback = [this, backBufferHandle, velocityBufferHandle]( const RenderGraph& graph )->void {
                 TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw Sky" );
                 // Draw back of the sky if outdoor
 
-                auto reactiveMask = graph.GetPhysicalTexture( reactiveMaskResource );
                 auto velocityBuffer = graph.GetPhysicalTexture( velocityBufferHandle );
                 ID3D11RenderTargetView* rtvs[] = {
                     graph.GetPhysicalTexture(backBufferHandle)->GetRenderTargetView().Get(),
                     velocityBuffer ? velocityBuffer->GetRenderTargetView().Get() : nullptr,
-                    reactiveMask ? reactiveMask->GetRenderTargetView().Get() : nullptr,
                 };
                 GetContext()->OMSetRenderTargets(std::size(rtvs), rtvs, GetDepthBuffer()->GetDepthStencilView().Get());
 

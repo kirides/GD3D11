@@ -39,7 +39,6 @@ struct PS_OUTPUT
 {
 	float4 Color : SV_TARGET0;
 	float2 MotionVectors : SV_TARGET1;  // motion vectors
-	float ReactiveMask : SV_TARGET2;  // reactive mask for FSR
 };
 
 float2 CalculateVelocity(float4 currClipPos, float4 prevClipPos)
@@ -92,7 +91,6 @@ PS_OUTPUT PSMain( PS_INPUT Input )
 	PS_OUTPUT output;
 	output.Color = float4(atmoColor,1);
 	output.MotionVectors = CalculateVelocity(curPosClip, prevPosClip);
-	output.ReactiveMask = 1.0f;
 
 	return output;
 }
