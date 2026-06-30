@@ -1039,7 +1039,7 @@ void GothicAPI::LoadRendererWorldSettings( GothicRendererSettings& s, const char
     GetPrivateProfileRGB("Atmoshpere", "FogColorMod", s.FogColorMod, ini);
 
 	s.GraphicsPreset = (GothicRendererSettings::E_GraphicsPreset)GetPrivateProfileIntA( "General", "GraphicsPreset", s.GraphicsPreset, ini.c_str() );
-    if ( !GMPModeActive ) {
+    if ( true ) {
 	    s.VisualFXDrawRadius = GetPrivateProfileFloatA( "General", "VisualFXDrawRadius", s.VisualFXDrawRadius, ini );
 	    s.OutdoorVobDrawRadius = GetPrivateProfileFloatA( "General", "OutdoorVobDrawRadius", s.OutdoorVobDrawRadius, ini );
         s.OutdoorSmallVobDrawRadius = GetPrivateProfileFloatA( "General", "OutdoorSmallVobDrawRadius", s.OutdoorSmallVobDrawRadius, ini );
@@ -3807,7 +3807,7 @@ LRESULT GothicAPI::OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
        
 #endif
         case VK_F11:
-            if ( ( GetAsyncKeyState( VK_CONTROL ) & 0x8000 ) && !GMPModeActive ) {
+            if ( ( GetAsyncKeyState( VK_CONTROL ) & 0x8000 ) ) {
                 Engine::GraphicsEngine->OnUIEvent( BaseGraphicsEngine::EUIEvent::UI_ToggleAdvancedSettings );
             } else {
                 Engine::GraphicsEngine->OnUIEvent( BaseGraphicsEngine::EUIEvent::UI_OpenSettings );
@@ -5375,7 +5375,6 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
             s.OutdoorVobDrawRadius = std::max( 20000.f, s.OutdoorVobDrawRadius );
             s.OutdoorSmallVobDrawRadius = std::max( 20000.f, s.OutdoorSmallVobDrawRadius );
             s.SectionDrawRadius = std::max( 3, s.SectionDrawRadius );
-            s.EnableHDR = false;
         }
 
         static XMFLOAT3 defaultLightDirection = XMFLOAT3( 1, 1, 1 );
