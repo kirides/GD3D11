@@ -676,22 +676,24 @@ XRESULT D3D11ShadowMap::PrepareRender()
                 }
                 ZoneScoped;
                 ZoneNameF( "Shadow Cascade %zu", idx );
-
+                const auto& rs = Engine::GAPI->GetRendererState().RendererSettings;
+                
+                const float shadowDistance = 8000 + (12000.0f * std::max( 0.1f, rs.WorldShadowRangeScale ));
+                
                 RndCullContext ctx;
                 ctx.queue = _this->m_RenderQueues[idx].get();
                 ctx.frustum = _this->m_CascadeCRs[idx].frustum;
                 ctx.cameraPosition = _this->m_WorldShadowPos;
                 ctx.stage = RenderStage::STAGE_DRAW_SHADOWS;
-                ctx.drawDistances.OutdoorVobs = 20000;
-                ctx.drawDistances.OutdoorVobsSmall = 20000;
-                ctx.drawDistances.IndoorVobs = 20000;
+                ctx.drawDistances.OutdoorVobs = std::max(20000.0f, shadowDistance);
+                ctx.drawDistances.OutdoorVobsSmall = std::max(20000.0f, shadowDistance);
+                ctx.drawDistances.IndoorVobs = std::max(20000.0f, shadowDistance);
                 ctx.drawDistances.VisualFX = 0.0f;
                 ctx.drawDistancesSq.OutdoorVobs = ctx.drawDistances.OutdoorVobs * ctx.drawDistances.OutdoorVobs;
                 ctx.drawDistancesSq.OutdoorVobsSmall = ctx.drawDistances.OutdoorVobsSmall * ctx.drawDistances.OutdoorVobsSmall;
                 ctx.drawDistancesSq.IndoorVobs = ctx.drawDistances.IndoorVobs * ctx.drawDistances.IndoorVobs;
                 ctx.drawDistancesSq.VisualFX = 0.0f;
 
-                const auto& rs = Engine::GAPI->GetRendererState().RendererSettings;
                 ctx.drawFlags.DrawVOBs = rs.DrawVOBs;
                 ctx.drawFlags.DrawMobs = rs.DrawMobs;
                 ctx.drawFlags.EnableDynamicLighting = rs.EnableDynamicLighting;
@@ -767,20 +769,22 @@ XRESULT D3D11ShadowMap::PrepareRender()
         RndCullContext ctx;
         LegacyRenderQueueProxy q(potentialCasters, _1, _2);
 
+        const auto& rs = Engine::GAPI->GetRendererState().RendererSettings;
+        const float shadowDistance = 8000 + (12000.0f * std::max( 0.1f, rs.WorldShadowRangeScale ));
+
         ctx.queue = &q;
         ctx.frustum = frustum;
         ctx.cameraPosition = m_WorldShadowPos;
         ctx.stage = RenderStage::STAGE_DRAW_SHADOWS;
-        ctx.drawDistances.OutdoorVobs = 20000;
-        ctx.drawDistances.OutdoorVobsSmall = 20000;
-        ctx.drawDistances.IndoorVobs = 20000;
+        ctx.drawDistances.OutdoorVobs = std::max(20000.0f, shadowDistance);
+        ctx.drawDistances.OutdoorVobsSmall = std::max(20000.0f, shadowDistance);
+        ctx.drawDistances.IndoorVobs = std::max(20000.0f, shadowDistance);
         ctx.drawDistances.VisualFX = 0.0f;
         ctx.drawDistancesSq.OutdoorVobs = ctx.drawDistances.OutdoorVobs * ctx.drawDistances.OutdoorVobs;
         ctx.drawDistancesSq.OutdoorVobsSmall = ctx.drawDistances.OutdoorVobsSmall * ctx.drawDistances.OutdoorVobsSmall;
         ctx.drawDistancesSq.IndoorVobs = ctx.drawDistances.IndoorVobs * ctx.drawDistances.IndoorVobs;
         ctx.drawDistancesSq.VisualFX = 0.0f;
 
-        const auto& rs = Engine::GAPI->GetRendererState().RendererSettings;
         ctx.drawFlags.DrawVOBs = rs.DrawVOBs;
         ctx.drawFlags.DrawMobs = rs.DrawMobs;
         ctx.drawFlags.EnableDynamicLighting = rs.EnableDynamicLighting;
