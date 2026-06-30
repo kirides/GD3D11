@@ -84,6 +84,10 @@ PS_OUTPUT PSMain( PS_INPUT Input )
 	atmoColor += night * 0.4f;
 
 
+	// The sky world matrix uses XMMatrixTranspose(scale * translation), which strips the
+	// camera-position translation out of positionWorld.  What's left is v_local * OuterRadius,
+	// so normalize gives the unit sphere direction — correct for use with w=0 in ViewProj
+	// (w=0 already ignores translation; only the rotation delta between frames matters).
 	float4 viewDir = float4(normalize(Input.vWorldPosition), 0.0f);
 	float4 curPosClip = mul(viewDir, Frame_UnjitteredViewProj);
 	float4 prevPosClip = mul(viewDir, Frame_PrevViewProj);

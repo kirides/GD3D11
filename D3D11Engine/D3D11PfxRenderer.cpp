@@ -28,6 +28,7 @@
 
 D3D11PfxRenderer::D3D11PfxRenderer() {
 
+    m_Samplers = {};
     auto engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     m_texturePool = std::make_unique<TexturePool>( engine->GetDevice().Get() );
     m_depthStencilPool = std::make_unique<DepthStencilPool>( engine->GetDevice().Get() );
@@ -118,7 +119,7 @@ XRESULT D3D11PfxRenderer::RenderTAA(const Microsoft::WRL::ComPtr<ID3D11ShaderRes
     
     // Then render TAA using the velocity buffer
     FX_TAA->RenderPostFX(
-        engine->GetHDRBackBuffer().GetShaderResView(),
+        engine->GetHDRBackBuffer(),
         engine->GetDepthBuffer()->GetShaderResView(),
         velocityBuffer.Get() ? velocityBuffer : FX_TAA->GetVelocityBufferSRV()
     );
@@ -422,6 +423,39 @@ TextureHandle D3D11PfxRenderer::GetTempBufferDS4()
     auto res = engine->GetResolution();
 
     return m_texturePool->Acquire( TexturePool::Description{ res.x / 4, res.y / 4, bbufferFormat } );
+}
+
+Microsoft::WRL::ComPtr<ID3D11SamplerState>& D3D11PfxRenderer::GetSampler(const D3D11_SAMPLER_DESC& desc) {
+    size_t hash = Toolbox::hash_value(desc.Filter);
+    Toolbox::hash_combine(hash, desc.AddressU);
+    Toolbox::hash_combine(hash, desc.AddressV);
+    Toolbox::hash_combine(hash, desc.AddressW);
+    Toolbox::hash_combine(hash, desc.MipLODBias);
+    Toolbox::hash_combine(hash, desc.MaxAnisotropy);
+    Toolbox::hash_combine(hash, desc.ComparisonFunc);
+    Toolbox::hash_combine(hash, desc.BorderColor[0]);
+    Toolbox::hash_combine(hash, desc.BorderColor[1]);
+    Toolbox::hash_combine(hash, desc.BorderColor[2]);
+    Toolbox::hash_combine(hash, desc.BorderColor[3]);
+    Toolbox::hash_combine(hash, desc.MinLOD);
+    Toolbox::hash_combine(hash, desc.MaxLOD);
+
+    if (auto found = m_Samplers.find(hash); found != m_Samplers.end()) {
+        return found->second;
+    }
+    
+    D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    auto device = engine->GetDevice().Get();
+
+    ComPtr<ID3D11SamplerState> sampler;
+    HRESULT hr = device->CreateSamplerState( &desc, sampler.ReleaseAndGetAddressOf() );
+    if ( FAILED( hr ) ) {
+        LogError() << "Failed to create sampler";
+        static ComPtr<ID3D11SamplerState> null{};
+        return null;
+    }
+    
+    return m_Samplers.emplace(hash, sampler).first->second;
 }
 
 void D3D11PfxRenderer::FreeResources()

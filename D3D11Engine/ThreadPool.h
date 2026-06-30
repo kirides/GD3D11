@@ -14,36 +14,15 @@
 #include <algorithm>
 #include <utility>
 
-class CancellationToken
-{
-private:
-    std::shared_ptr<std::atomic<bool>> cancelledFlag;
-
-public:
-    CancellationToken() : cancelledFlag(std::make_shared<std::atomic<bool>>(false))
-    {
-    }
-
-    bool isCancelled() const
-    {
-        return cancelledFlag->load(std::memory_order_acquire);
-    }
-
-    void cancel()
-    {
-        cancelledFlag->store(true, std::memory_order_release);
-    }
-};
-
 template <typename T>
 struct TaskHandle
 {
     std::future<T> future;
-    CancellationToken token;
+    std::stop_source token;
 
     void cancel()
     {
-        token.cancel();
+        token.request_stop();
     }
 };
 
@@ -52,21 +31,21 @@ class ThreadPool
 public:
     ThreadPool(
         const wchar_t* poolIdentifier,
-        size_t threads = std::clamp(static_cast<size_t>(std::thread::hardware_concurrency()), static_cast<size_t>(1),
-                                    static_cast<size_t>(6)));
+        size_t threads = std::clamp( static_cast<size_t>(std::thread::hardware_concurrency()), static_cast<size_t>(1),
+            static_cast<size_t>(6) ) );
 
-    //  enqueue returns a TaskHandle and expects 'F' to accept CancellationToken as its first param
+    //  enqueue returns a TaskHandle and expects 'F' to accept std::stop_source as its first param
     template <typename F, typename... Args>
     auto enqueue( F&& f, Args&&... args ) {
-        using ReturnType = std::invoke_result_t<F, CancellationToken, Args...>;
+        using ReturnType = std::invoke_result_t<F, std::stop_token, Args...>;
 
-        CancellationToken token;
+        std::stop_source token;
 
         auto task = std::make_shared<std::packaged_task<ReturnType()>>(
             [f = std::forward<F>( f ),
              token,
              ...args = std::forward<Args>( args )]() mutable {
-                     return std::invoke( std::move( f ), token, std::forward<Args>( args )... );
+                 return std::invoke( std::move( f ), token.get_token(), std::forward<Args>(args)...);
             }
         );
 
@@ -78,9 +57,9 @@ public:
                 throw std::runtime_error( "enqueue on stopped ThreadPool" );
             }
 
-            tasks.emplace( [task]() 
-            { 
-                (*task)(); 
+            tasks.emplace( [task]()
+            {
+                (*task)();
             }, token );
         }
         condition.notify_one();
@@ -94,37 +73,36 @@ public:
 
     bool getIsBusy()
     {
-        std::unique_lock<std::mutex> lock(queue_mutex);
+        std::unique_lock<std::mutex> lock( queue_mutex );
         return !tasks.empty() || activeTasks.load() > 0;
     }
 
     void clearAndFlush()
     {
         // Swap out the tasks quickly to minimize mutex lock time
-        std::queue<std::pair<std::function<void()>, CancellationToken>> pending_tasks;
+        std::queue<std::pair<std::function<void()>, std::stop_source>> pending_tasks;
         {
-            std::unique_lock<std::mutex> lock(queue_mutex);
-            std::swap(tasks, pending_tasks);
+            std::unique_lock<std::mutex> lock( queue_mutex );
+            std::swap( tasks, pending_tasks );
         }
 
         // Cancel and invoke all pending tasks so promises are fulfilled gracefully
-        while (!pending_tasks.empty())
-        {
+        while ( !pending_tasks.empty() ) {
             auto& taskItem = pending_tasks.front();
-            taskItem.second.cancel(); // Trigger the cancellation state
+            taskItem.second.request_stop(); // Trigger the cancellation state
             taskItem.first(); // Invoke the task, assume it will immediately return.
             pending_tasks.pop();
         }
 
         // Wait for actively running tasks to finish
-        while (getIsBusy()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        while ( getIsBusy() ) {
+            std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
         }
     }
 
 private:
     std::vector<std::thread> workers;
-    std::queue<std::pair<std::function<void()>, CancellationToken>> tasks;
+    std::queue<std::pair<std::function<void()>, std::stop_source>> tasks;
 
     std::atomic_int activeTasks{0};
     std::mutex queue_mutex;

@@ -426,7 +426,7 @@ void D3D11GraphicsEngine::CreateAndBindDefaultSampler() {
     samplerDesc.MinLOD = -3.402823466e+38F;  // -FLT_MAX
     samplerDesc.MaxLOD = D3D11_FLOAT32_MAX;   // FLT_MAX
     
-    LE( GetDevice()->CreateSamplerState( &samplerDesc, DefaultSamplerState.GetAddressOf() ) );
+    DefaultSamplerState = GetPfxRenderer()->GetSampler(samplerDesc);
     GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
     GetContext()->VSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
     GetContext()->DSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
@@ -727,6 +727,8 @@ XRESULT D3D11GraphicsEngine::Init() {
     ShaderManager = std::make_unique<D3D11ShaderManager>();
     ShaderManager->Init();
     ShaderManager->LoadShaders();
+    
+    PfxRenderer = std::make_unique<D3D11PfxRenderer>();
 
     TempVertexBuffer = std::make_unique<D3D11VertexBuffer>();
     TempVertexBuffer->Init(
@@ -806,7 +808,7 @@ XRESULT D3D11GraphicsEngine::Init() {
     samplerDesc.MinLOD = -3.402823466e+38F;  // -FLT_MAX
     samplerDesc.MaxLOD = D3D11_FLOAT32_MAX;   // FLT_MAX
 
-    LE( GetDevice()->CreateSamplerState( &samplerDesc, LinearSamplerState.GetAddressOf() ) );
+    LinearSamplerState = GetPfxRenderer()->GetSampler(samplerDesc);
     SetDebugName( LinearSamplerState.Get(), "LinearSamplerState" );
 
     samplerDesc.Filter = D3D11_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR;
@@ -819,14 +821,14 @@ XRESULT D3D11GraphicsEngine::Init() {
     samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
     samplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
     samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
-    GetDevice()->CreateSamplerState( &samplerDesc, ClampSamplerState.GetAddressOf() );
+    ClampSamplerState = GetPfxRenderer()->GetSampler(samplerDesc);
     SetDebugName( ClampSamplerState.Get(), "ClampSamplerState" );
 
     samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
     samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
     samplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_WRAP;
     samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
-    GetDevice()->CreateSamplerState( &samplerDesc, CubeSamplerState.GetAddressOf() );
+    CubeSamplerState = GetPfxRenderer()->GetSampler(samplerDesc);
     SetDebugName( CubeSamplerState.Get(), "CubeSamplerState" );
 
     SetActivePixelShader( PShaderID::PS_Simple );
@@ -1109,6 +1111,11 @@ XRESULT D3D11GraphicsEngine::RecreateBuffers() {
     }
     lastRoundedTextureResolution = roundedTextureResolution;
     
+    // Create PFX-Renderer
+    if ( !PfxRenderer ) PfxRenderer = std::make_unique<D3D11PfxRenderer>();
+
+    PfxRenderer->OnResize( roundedTextureResolution );
+    
     // Adjust DefaultSampler with negative LOD bias for upscaling
     CreateAndBindDefaultSampler();
     
@@ -1120,11 +1127,6 @@ XRESULT D3D11GraphicsEngine::RecreateBuffers() {
     DepthStencilBufferCopy = std::make_unique<RenderToTextureBuffer>(
         GetDevice().Get(), roundedTextureResolution.x, roundedTextureResolution.y, DXGI_FORMAT_R32_TYPELESS, nullptr,
         DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32_FLOAT );
-
-    // Create PFX-Renderer
-    if ( !PfxRenderer ) PfxRenderer = std::make_unique<D3D11PfxRenderer>();
-
-    PfxRenderer->OnResize( roundedTextureResolution );
 
     VelocityBuffer = std::make_unique<RenderToTextureBuffer>(
         GetDevice().Get(), roundedTextureResolution.x, roundedTextureResolution.y, DXGI_FORMAT_R16G16_FLOAT );
@@ -4544,6 +4546,9 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
 
         graph.Compile();
         graph.Execute();
+
+        // Store view-projection matrix only after the rendergraph, or else parts after geometry have wrong motion vectors
+        StorePrevViewProjMatrix();
         
         GetContext()->ClearDepthStencilView( DepthStencilBuffer->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
         GetContext()->ClearDepthStencilView( m_SwapchainDepthStencilBuffer->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
@@ -7209,7 +7214,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
 
             if ( isZPrepass ) {
                 // force alpha testing for vobs in prepass.
-                SetActivePixelShader( PShaderID::PS_DiffuseAlphaTestShadows );
+                ActivePS = nullptr;
                 Context->PSSetShader( nullptr, nullptr, 0 );
             }
 
@@ -7859,6 +7864,8 @@ XRESULT D3D11GraphicsEngine::DrawSky() {
 
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
+    // PS_Atmosphere uses the same VS_ExConstantBuffer_PerFrame for motion vectors
+    ActiveVS->GetBuffer(0).GetRawBuffer()->BindToPixelShader(0);
 
     ID3D11ShaderResourceView* srvs[2]{};
     // Apply sky texture
@@ -8240,6 +8247,19 @@ bool D3D11GraphicsEngine::BindShaderForTexture( zCTexture* texture,
     bool forceAlphaTest,
     int zMatAlphaFunc,
     MaterialInfo::EMaterialType materialInfo ) {
+    
+    if (GetRenderingStage() == DES_Z_PRE_PASS) {
+        const auto& active = ActivePS;
+        // in Z_PRE_PASS the only way time someone wants a PS is when alpha testing is needed.
+        auto& newShader = GetShaderManager().GetPShader( PShaderID::PS_DiffuseAlphaTestShadows );
+        
+        if (active != newShader) {
+            SetActivePS(newShader)->Apply();
+            return true;
+        }
+        return false;
+    }
+    
     return ActiveSceneRenderer->BindShaderForTexture( GetShaderManager(), ActivePS,
         texture, forceAlphaTest, zMatAlphaFunc, materialInfo,
         Resolved_DiffuseNormalmapped,
@@ -9390,8 +9410,6 @@ void D3D11GraphicsEngine::StoreVobPreviousTransforms() {
     for (auto dynVob : Engine::GAPI->GetDynamicallyAddedVobs()) {
         dynVob->StorePreviousTransform();
     }
-
-    // Store view-projection matrix
-    StorePrevViewProjMatrix();
+    
 }
 

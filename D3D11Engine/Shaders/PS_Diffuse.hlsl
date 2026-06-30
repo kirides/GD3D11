@@ -164,7 +164,6 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
 	float focusBrightness = 1.0f + step(1.5f, Input.vDiffuse.w) * 1.0f;
 	output.vColor = float4(litPixel * focusBrightness, 1);
 	output.vNrm = EncodeNormalGBuffer(nrm);
-	output.vSI_SP = float2(specIntensity, specPower);
 	output.vVelocity = CalculateVelocity(Input.vCurrClipPos, Input.vPrevClipPos);
 
 	return output;

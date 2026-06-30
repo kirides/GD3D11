@@ -99,6 +99,7 @@ public:
     TextureHandle GetTempBuffer();
     TextureHandle GetBackbufferTempBuffer();
     TextureHandle GetTempBufferDS4();
+    Microsoft::WRL::ComPtr<ID3D11SamplerState>& GetSampler(const D3D11_SAMPLER_DESC& desc);
 
     D3D11PFX_TAA* GetTAAEffect() { return FX_TAA.get(); }
     D3D11PFX_CAS* GetCAS() { return PFX_CAS.get(); }
@@ -141,5 +142,7 @@ private:
     std::unique_ptr<D3D11PFX_ASSAO> PFX_ASSAO;
     std::unique_ptr<TexturePool> m_texturePool;
     std::unique_ptr<DepthStencilPool> m_depthStencilPool;
+    
+    std::unordered_map<size_t, Microsoft::WRL::ComPtr<ID3D11SamplerState>> m_Samplers;
 };
 

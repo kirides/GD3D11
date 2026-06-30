@@ -31,9 +31,6 @@ bool D3D11PFX_FSR1::Init() {
         return true;
     }
 
-    D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
-    auto device = engine->GetDevice();
-
     // Create point sampler for Gather operations (FSR1 requires point sampling)
     D3D11_SAMPLER_DESC samplerDesc = {};
     samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
@@ -46,8 +43,8 @@ bool D3D11PFX_FSR1::Init() {
     samplerDesc.MinLOD = 0;
     samplerDesc.MaxLOD = D3D11_FLOAT32_MAX;
 
-    HRESULT hr = device->CreateSamplerState( &samplerDesc, PointSampler.GetAddressOf() );
-    if ( FAILED( hr ) ) {
+    PointSampler = Renderer->GetSampler(samplerDesc);
+    if ( !PointSampler ) {
         LogError() << "Failed to create FSR1 point sampler";
         return false;
     }
@@ -72,7 +69,7 @@ void D3D11PFX_FSR1::SetSharpness( float sharpness ) {
 }
 
 void D3D11PFX_FSR1::ReleaseResources() {
-    PointSampler.Reset();
+    Initialized = false;
 }
 
 XRESULT D3D11PFX_FSR1::ApplyEASU(
@@ -97,6 +94,7 @@ XRESULT D3D11PFX_FSR1::ApplyEASU(
         LogError() << "FSR1 EASU shader not found";
         return XR_FAILED;
     }
+    engine->GetShaderManager().GetVShader( VShaderID::VS_PFX )->Apply();
 
     // Setup EASU constants
     FSR1EASUConstantBuffer cb = {};

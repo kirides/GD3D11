@@ -41,7 +41,7 @@ public:
 
     /** Renders the TAA effect */
     void RenderPostFX(
-        const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& currentFrameSRV,
+        RenderToTextureBuffer& renderTarget,
         const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& depthSRV,
         const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& velocitySRV);
 

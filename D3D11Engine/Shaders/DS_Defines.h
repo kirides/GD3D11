@@ -17,8 +17,7 @@ struct FORWARD_PLUS_PS_OUTPUT
 {
 	float4 vColor : SV_TARGET0;
 	float2 vNrm : SV_TARGET1;
-	float2 vSI_SP : SV_TARGET2;
-	float2 vVelocity : SV_TARGET3;
+	float2 vVelocity : SV_TARGET2;
 };
 
 
