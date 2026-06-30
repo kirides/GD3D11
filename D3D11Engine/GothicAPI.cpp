@@ -400,6 +400,16 @@ namespace
         ss << std::fixed << std::setprecision(precision) << val;
         return ss.str();
     }
+    
+    zCCamera* GetSceneCamera() {
+        if ( !oCGame::GetGame()->_zCSession_camVob )
+            return zCCamera::GetCamera();
+        
+        if (auto cam = static_cast<zCCamera*>(oCGame::GetGame()->_zCSession_camera); cam) {
+            return cam;
+        }
+        return zCCamera::GetCamera();
+    }
 }
 
 void GothicAPI::ProcessVobAnimation( zCVob* vob, zTAnimationMode aniMode, VobInstanceInfo& vobInstance ) {
@@ -512,11 +522,11 @@ void GothicAPI::OnWorldUpdate() {
     RendererState.RendererInfo.FPS = GetFramesPerSecond();
     RendererState.GraphicsState.FF_Time = GetTimeSeconds();
 
-    if ( zCCamera* camera = zCCamera::GetCamera() ) {
+    if ( zCCamera* camera = GetSceneCamera() ) {
         RendererState.RendererInfo.FarPlane = camera->GetFarPlane();
         RendererState.RendererInfo.NearPlane = camera->GetNearPlane();
 
-        //zCCamera::GetCamera()->Activate();
+        //GetSceneCamera()->Activate();
         SetViewTransform( camera->GetTransformDX( zCCamera::ETransformType::TT_VIEW ), false );
     }
 
@@ -1255,7 +1265,7 @@ static bool GetShouldRenderAsMorphMesh(SkeletalVobInfo* vi, zCModel* model) {
 /** Draws the world-mesh */
 void GothicAPI::DrawWorldMeshNaive() {
     ZoneScopedN( "GothicAPI::DrawWorldMeshNaive" );
-    if ( !zCCamera::GetCamera() || !oCGame::GetGame() )
+    if ( !GetSceneCamera() || !oCGame::GetGame() )
         return;
 
     static float setfovH = RendererState.RendererSettings.FOVHoriz;
@@ -1268,15 +1278,15 @@ void GothicAPI::DrawWorldMeshNaive() {
         setfovV = RendererState.RendererSettings.FOVVert;
 
         // Fix camera FOV-Bug
-        zCCamera::GetCamera()->SetFOV( RendererState.RendererSettings.FOVHoriz, (Engine::GraphicsEngine->GetResolution().y / static_cast<float>(Engine::GraphicsEngine->GetResolution().x)) * RendererState.RendererSettings.FOVVert );
+        GetSceneCamera()->SetFOV( RendererState.RendererSettings.FOVHoriz, (Engine::GraphicsEngine->GetResolution().y / static_cast<float>(Engine::GraphicsEngine->GetResolution().x)) * RendererState.RendererSettings.FOVVert );
 
-        CurrentCamera = zCCamera::GetCamera();
+        CurrentCamera = GetSceneCamera();
     }
 #else
 */
 #if defined(BUILD_GOTHIC_1_08k) || defined(BUILD_1_12F) || defined(BUILD_GOTHIC_2_6_fix)
     if ( RendererState.RendererSettings.ForceFOV ) {
-        zCCamera* camera = zCCamera::GetCamera();
+        zCCamera* camera = GetSceneCamera();
         if ( camera )
             camera->GetFOV( setfovH, setfovV );
 
@@ -1325,7 +1335,7 @@ void GothicAPI::DrawWorldMeshNaive() {
         // Set up frustum for the camera
         RendererState.RasterizerState.SetDefault();
         RendererState.RasterizerState.SetDirty();
-        zCCamera::GetCamera()->Activate();
+        GetSceneCamera()->Activate();
 
         auto drawRadius = RendererState.RendererSettings.SkeletalMeshDrawRadius;
 
@@ -1343,7 +1353,7 @@ void GothicAPI::DrawWorldMeshNaive() {
             if ( dist > drawRadius )
                 continue; // Skip out of range
 
-            zCCamera::GetCamera()->SetTransform( zCCamera::ETransformType::TT_WORLD, *vobInfo->Vob->GetWorldMatrixPtr() );
+            GetSceneCamera()->SetTransform( zCCamera::ETransformType::TT_WORLD, *vobInfo->Vob->GetWorldMatrixPtr() );
 
             //Engine::GraphicsEngine->GetLineRenderer()->AddAABBMinMax(bb.Min, bb.Max, XMFLOAT4(1, 1, 1, 1));
 
@@ -3547,7 +3557,7 @@ void XM_CALLCONV GothicAPI::UnprojectXM(float2 p, XMVECTOR& worldPos, XMVECTOR& 
     const auto res = Engine::GraphicsEngine->GetBackbufferResolution();
 
     XMMATRIX proj    = XMMatrixTranspose(XMLoadFloat4x4(&RendererState.TransformState.TransformProj));
-    XMMATRIX invView = XMMatrixTranspose(XMLoadFloat4x4(&zCCamera::GetCamera()->GetTransformDX( zCCamera::ETransformType::TT_VIEW_INV )));
+    XMMATRIX invView = XMMatrixTranspose(XMLoadFloat4x4(&GetSceneCamera()->GetTransformDX( zCCamera::ETransformType::TT_VIEW_INV )));
 
     const float ux = (((2.0f * p.x) / res.x) - 1.0f) / XMVectorGetX(proj.r[0]);
     const float uy = -(((2.0f * p.y) / res.y) - 1.0f) / XMVectorGetY(proj.r[1]);
@@ -3604,7 +3614,7 @@ zTCam_ClipType GothicAPI::GetCameraBBox3DInFrustum( const zTBBox3D& box, int cli
             return zTCam_ClipType::ZTCAM_CLIPTYPE_CROSSING;
         return zTCam_ClipType::ZTCAM_CLIPTYPE_IN;
     }
-    if (auto cam = zCCamera::GetCamera(); cam) {
+    if (auto cam = static_cast<zCCamera*>(oCGame::GetGame()->_zCSession_camera); cam) {
         return cam->BBox3DInFrustum(box, clipFlags);
     }
     
@@ -3616,7 +3626,7 @@ zTCam_ClipType GothicAPI::GetCameraBBox3DInFrustum( const zCVob* vob, int clipFl
         auto box = vob->GetBBox();
         return GetCameraBBox3DInFrustum(box, clipFlags);
     }
-    if (auto cam = zCCamera::GetCamera(); cam) {
+    if (auto cam = GetSceneCamera(); cam) {
         auto box = isLocalCamera ? vob->GetBBoxLocal() : vob->GetBBox();
         return GetCameraBBox3DInFrustum(box, clipFlags);
     }
@@ -3632,7 +3642,7 @@ void GothicAPI::GetViewMatrix( XMFLOAT4X4* view ) {
         return;
     }
 
-    *view = zCCamera::GetCamera()->GetTransformDX( zCCamera::ETransformType::TT_VIEW );
+    *view = GetSceneCamera()->GetTransformDX( zCCamera::ETransformType::TT_VIEW );
 }
 
 /** Returns the view matrix */
@@ -3640,7 +3650,7 @@ XMMATRIX GothicAPI::GetViewMatrixXM() {
     if ( CameraReplacementPtr ) {
         return XMLoadFloat4x4( &CameraReplacementPtr->ViewReplacement );
     }
-    return XMLoadFloat4x4( &zCCamera::GetCamera()->GetTransformDX( zCCamera::ETransformType::TT_VIEW ) );
+    return XMLoadFloat4x4( &GetSceneCamera()->GetTransformDX( zCCamera::ETransformType::TT_VIEW ) );
 }
 
 /** Returns the view matrix */
@@ -3650,7 +3660,7 @@ void GothicAPI::GetInverseViewMatrixXM( XMFLOAT4X4* invView ) {
         return;
     }
 
-    *invView = zCCamera::GetCamera()->GetTransformDX( zCCamera::ETransformType::TT_VIEW_INV );
+    *invView = GetSceneCamera()->GetTransformDX( zCCamera::ETransformType::TT_VIEW_INV );
 }
 
 /** Returns the projection-matrix in Column-Major format, with reversed depth buffer */
@@ -3949,7 +3959,7 @@ void GothicAPI::CollectVisibleVobs(
 
     zCBspBase* rootBsp = tree->GetRootNode();
     Frustum frustum = Frustum::AlwaysContainingFrustum();
-    if ( auto cam = zCCamera::GetCamera() ) {
+    if ( auto cam = GetSceneCamera() ) {
         cam->Activate();
 
         // Row-Major view
@@ -4737,12 +4747,13 @@ BspInfo* GothicAPI::GetNewBspNode( zCBspBase* base ) {
 
 /** Sets/Gets the far-plane */
 void GothicAPI::SetFarPlane( float value ) {
-    zCCamera::GetCamera()->SetFarPlane( value );
-    zCCamera::GetCamera()->Activate();
+    auto cam = GetSceneCamera();    
+    cam->SetFarPlane( value );
+    cam->Activate();
 }
 
 float GothicAPI::GetFarPlane() {
-    return zCCamera::GetCamera()->GetFarPlane();
+    return GetSceneCamera()->GetFarPlane();
 }
 
 /** Sets/Gets the far-plane */
@@ -4751,7 +4762,7 @@ void GothicAPI::SetNearPlane( float value ) {
 }
 
 float GothicAPI::GetNearPlane() {
-    return zCCamera::GetCamera()->GetNearPlane();
+    return GetSceneCamera()->GetNearPlane();
 }
 
 /** Get material by texture name */
@@ -4805,7 +4816,7 @@ bool GothicAPI::IsInTextureTestBindMode( std::string& currentBoundTexture ) {
 
 /** Lets Gothic draw its sky */
 void GothicAPI::DrawSkyGothicOriginal() {
-    HookedFunctions::OriginalFunctions.original_zCWorldRender( oCGame::GetGame()->_zCSession_world, *zCCamera::GetCamera() );
+    HookedFunctions::OriginalFunctions.original_zCWorldRender( oCGame::GetGame()->_zCSession_world, *GetSceneCamera() );
 }
 
 /** Reset's the material info that were previously gathered */
