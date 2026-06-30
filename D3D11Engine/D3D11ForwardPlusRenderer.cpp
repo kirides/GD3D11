@@ -34,7 +34,7 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
     RGResourceHandle& outReactiveMaskResource ) {
 
     RGResourceHandle normalsResource = {};
-    RGResourceHandle specularResource = {};
+    RGResourceHandle specularResource = RG_INVALID_HANDLE;
     RGResourceHandle reactiveMaskResource = {};
     RGResourceHandle shadowMaskResource = RG_INVALID_HANDLE;
     const bool useScreenSpaceShadowMask = Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseScreenSpaceShadowMask;
@@ -184,24 +184,21 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
     graph.AddPass( RG_PASS_NAME("FP Lit Geometry"), [&]( RGBuilder& builder, RenderPass& pass ) {
         auto size = engine.GetResolution();
         normalsResource = builder.CreateTexture( { static_cast<uint32_t>( size.x ), static_cast<uint32_t>( size.y ), DXGI_FORMAT_R16G16_FLOAT, L"GBufferNormals" } );
-        specularResource = builder.CreateTexture( { static_cast<uint32_t>( size.x ), static_cast<uint32_t>( size.y ), DXGI_FORMAT_R16G16_FLOAT, L"GBufferSpecular" } );
         reactiveMaskResource = builder.CreateTexture( { static_cast<uint32_t>( size.x ), static_cast<uint32_t>( size.y ), DXGI_FORMAT_R8_UNORM, L"ReactiveMask" } );
         builder.Write( velocityBufferHandle );
         builder.Write( colorResource );
         builder.Write( normalsResource );
-        builder.Write( specularResource );
         builder.Write( backBufferHandle );
         if ( useScreenSpaceShadowMask && shadowMaskResource != RG_INVALID_HANDLE ) {
             builder.Read( shadowMaskResource );
         }
 
-        pass.m_executeCallback = [this, &engine, colorResource, normalsResource, specularResource, velocityBufferHandle, shadowMaskResource, useScreenSpaceShadowMask]( const RenderGraph& graph ) -> void {
+        pass.m_executeCallback = [this, &engine, colorResource, normalsResource, velocityBufferHandle, shadowMaskResource, useScreenSpaceShadowMask]( const RenderGraph& graph ) -> void {
             TracyD3D11ZoneCGX( "D3D11ForwardPlusRenderer::Lit Geometry" );
             auto& context = engine.GetContext();
             auto* shadowMaps = engine.GetShadowMaps();
 
             auto normals = graph.GetPhysicalTexture( normalsResource );
-            auto specular = graph.GetPhysicalTexture( specularResource );
             auto velocityBuffer = graph.GetPhysicalTexture( velocityBufferHandle );
             auto* shadowMask = ( useScreenSpaceShadowMask && shadowMaskResource != RG_INVALID_HANDLE )
                 ? graph.GetPhysicalTexture( shadowMaskResource )
@@ -216,7 +213,6 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
             ID3D11RenderTargetView* rtvs[] = {
                 graph.GetPhysicalTexture( colorResource )->GetRenderTargetView().Get(),
                 normals ? normals->GetRenderTargetView().Get() : nullptr,
-                specular ? specular->GetRenderTargetView().Get() : nullptr,
                 velocityBuffer ? velocityBuffer->GetRenderTargetView().Get() : nullptr,
             };
 
