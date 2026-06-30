@@ -253,15 +253,23 @@ void D3D11ShadowMap::RecreateShadowSampler() {
     // Create sampler
     D3D11_SAMPLER_DESC samplerDesc = {};
     samplerDesc.Filter = D3D11_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR;
-    // Atlas path uses CLAMP to prevent seam bleeding at cascade boundaries.
-    // Texture array path uses WRAP for compatibility with previous behavior.
-    auto addressMode = m_useAtlas ? D3D11_TEXTURE_ADDRESS_CLAMP : D3D11_TEXTURE_ADDRESS_WRAP;
+    // Atlas path uses CLAMP to prevent seam bleeding at cascade boundaries (it also
+    // insets sampling by half a texel per sub-rect).
+    // Texture array path uses BORDER with a white (1.0 = far) border: each cascade is its
+    // own slice with its own [0,1], so PCF/PCSS taps that spill past a cascade edge read
+    // the border depth of 1.0 and compare as "lit" instead of WRAPping to the opposite
+    // side of the slice (which fabricated shadow and produced dark bars between cascades).
+    auto addressMode = m_useAtlas ? D3D11_TEXTURE_ADDRESS_CLAMP : D3D11_TEXTURE_ADDRESS_BORDER;
     samplerDesc.AddressU = addressMode;
     samplerDesc.AddressV = addressMode;
     samplerDesc.AddressW = addressMode;
     samplerDesc.MipLODBias = 0;
     samplerDesc.MaxAnisotropy = 1;
     samplerDesc.ComparisonFunc = D3D11_COMPARISON_LESS_EQUAL;
+    samplerDesc.BorderColor[0] = 1.0f;
+    samplerDesc.BorderColor[1] = 1.0f;
+    samplerDesc.BorderColor[2] = 1.0f;
+    samplerDesc.BorderColor[3] = 1.0f;
     samplerDesc.MinLOD = -FLT_MAX;
     samplerDesc.MaxLOD = FLT_MAX;
 
