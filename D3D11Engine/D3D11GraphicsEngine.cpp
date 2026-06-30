@@ -426,7 +426,7 @@ void D3D11GraphicsEngine::CreateAndBindDefaultSampler() {
     samplerDesc.MinLOD = -3.402823466e+38F;  // -FLT_MAX
     samplerDesc.MaxLOD = D3D11_FLOAT32_MAX;   // FLT_MAX
     
-    LE( GetDevice()->CreateSamplerState( &samplerDesc, DefaultSamplerState.GetAddressOf() ) );
+    DefaultSamplerState = GetPfxRenderer()->GetSampler(samplerDesc);
     GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
     GetContext()->VSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
     GetContext()->DSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
@@ -727,6 +727,8 @@ XRESULT D3D11GraphicsEngine::Init() {
     ShaderManager = std::make_unique<D3D11ShaderManager>();
     ShaderManager->Init();
     ShaderManager->LoadShaders();
+    
+    PfxRenderer = std::make_unique<D3D11PfxRenderer>();
 
     TempVertexBuffer = std::make_unique<D3D11VertexBuffer>();
     TempVertexBuffer->Init(
@@ -806,7 +808,7 @@ XRESULT D3D11GraphicsEngine::Init() {
     samplerDesc.MinLOD = -3.402823466e+38F;  // -FLT_MAX
     samplerDesc.MaxLOD = D3D11_FLOAT32_MAX;   // FLT_MAX
 
-    LE( GetDevice()->CreateSamplerState( &samplerDesc, LinearSamplerState.GetAddressOf() ) );
+    LinearSamplerState = GetPfxRenderer()->GetSampler(samplerDesc);
     SetDebugName( LinearSamplerState.Get(), "LinearSamplerState" );
 
     samplerDesc.Filter = D3D11_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR;
@@ -819,14 +821,14 @@ XRESULT D3D11GraphicsEngine::Init() {
     samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
     samplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
     samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
-    GetDevice()->CreateSamplerState( &samplerDesc, ClampSamplerState.GetAddressOf() );
+    ClampSamplerState = GetPfxRenderer()->GetSampler(samplerDesc);
     SetDebugName( ClampSamplerState.Get(), "ClampSamplerState" );
 
     samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
     samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
     samplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_WRAP;
     samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
-    GetDevice()->CreateSamplerState( &samplerDesc, CubeSamplerState.GetAddressOf() );
+    CubeSamplerState = GetPfxRenderer()->GetSampler(samplerDesc);
     SetDebugName( CubeSamplerState.Get(), "CubeSamplerState" );
 
     SetActivePixelShader( PShaderID::PS_Simple );
@@ -1109,6 +1111,11 @@ XRESULT D3D11GraphicsEngine::RecreateBuffers() {
     }
     lastRoundedTextureResolution = roundedTextureResolution;
     
+    // Create PFX-Renderer
+    if ( !PfxRenderer ) PfxRenderer = std::make_unique<D3D11PfxRenderer>();
+
+    PfxRenderer->OnResize( roundedTextureResolution );
+    
     // Adjust DefaultSampler with negative LOD bias for upscaling
     CreateAndBindDefaultSampler();
     
@@ -1120,11 +1127,6 @@ XRESULT D3D11GraphicsEngine::RecreateBuffers() {
     DepthStencilBufferCopy = std::make_unique<RenderToTextureBuffer>(
         GetDevice().Get(), roundedTextureResolution.x, roundedTextureResolution.y, DXGI_FORMAT_R32_TYPELESS, nullptr,
         DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32_FLOAT );
-
-    // Create PFX-Renderer
-    if ( !PfxRenderer ) PfxRenderer = std::make_unique<D3D11PfxRenderer>();
-
-    PfxRenderer->OnResize( roundedTextureResolution );
 
     VelocityBuffer = std::make_unique<RenderToTextureBuffer>(
         GetDevice().Get(), roundedTextureResolution.x, roundedTextureResolution.y, DXGI_FORMAT_R16G16_FLOAT );
