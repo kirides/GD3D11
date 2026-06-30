@@ -7859,6 +7859,8 @@ XRESULT D3D11GraphicsEngine::DrawSky() {
 
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
+    // PS_Atmosphere uses the same VS_ExConstantBuffer_PerFrame for motion vectors
+    ActiveVS->GetBuffer(0).GetRawBuffer()->BindToPixelShader(0);
 
     ID3D11ShaderResourceView* srvs[2]{};
     // Apply sky texture
