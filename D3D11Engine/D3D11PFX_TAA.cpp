@@ -251,7 +251,7 @@ Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> D3D11PFX_TAA::GetVelocityBuffer
 }
 
 void D3D11PFX_TAA::RenderPostFX(
-    const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& currentFrameSRV,
+    RenderToTextureBuffer& renderTarget,
     const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& depthSRV,
     const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& velocitySRV) {
     
@@ -278,7 +278,7 @@ void D3D11PFX_TAA::RenderPostFX(
     auto tempBuffer = FxRenderer->GetTempBuffer();
 
     // update the temp buffer with the latest backbuffer data
-    FxRenderer->CopyTextureToRTV( currentFrameSRV, tempBuffer->GetRenderTargetView(), engine->GetResolution() );
+    FxRenderer->CopyTextureToRTV( renderTarget.GetShaderResView(), tempBuffer->GetRenderTargetView(), engine->GetResolution() );
     
     // Build constant buffer
     TAAConstantBuffer cb;
@@ -310,16 +310,11 @@ void D3D11PFX_TAA::RenderPostFX(
     m_PrevCameraPosition = Engine::GAPI->GetCameraPosition();
 
     // Set render target
-    context->OMSetRenderTargets( 1, tempBuffer->GetRenderTargetView().GetAddressOf(), nullptr );
+    context->OMSetRenderTargets( 1, oldRTV.GetAddressOf(), nullptr );
 
     // Bind shaders
     engine->GetShaderManager().GetVShader( VShaderID::VS_PFX )->Apply();
     auto taaPS = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_TAA );
-    if (!taaPS) {
-        FxRenderer->CopyTextureToRTV( currentFrameSRV, oldRTV );
-        context->OMSetRenderTargets(1, oldRTV.GetAddressOf(), oldDSV.Get());
-        return;
-    }
     taaPS->Apply();
 
     // Bind textures:
@@ -328,8 +323,8 @@ void D3D11PFX_TAA::RenderPostFX(
     // t2: Depth buffer
     // t3: Velocity buffer
     ID3D11ShaderResourceView* srvs[4] = {
-        currentFrameSRV.Get(),
-        m_FirstFrame ? currentFrameSRV.Get() : m_HistoryBuffer->GetShaderResView().Get(),
+        tempBuffer->GetShaderResView().Get(),
+        m_FirstFrame ? renderTarget.GetShaderResView().Get() : m_HistoryBuffer->GetShaderResView().Get(),
         depthSRV.Get(),
         velocitySRV.Get()
     };
@@ -344,14 +339,11 @@ void D3D11PFX_TAA::RenderPostFX(
     
     // Copy output to history buffer for next frame
     context->CopyResource(m_HistoryBuffer->GetTexture().Get(), 
-                          tempBuffer->GetTexture().Get());
+                          renderTarget.GetTexture().Get());
 
     // Cleanup shader resources
     ID3D11ShaderResourceView* nullSRVs[4] = { nullptr, nullptr, nullptr, nullptr };
     context->PSSetShaderResources( 0, 4, nullSRVs );
-
-    // Copy result back to the original render target
-    FxRenderer->CopyTextureToRTV( tempBuffer->GetShaderResView(), oldRTV );
 
     // Restore original render targets
     context->OMSetRenderTargets(1, oldRTV.GetAddressOf(), oldDSV.Get());

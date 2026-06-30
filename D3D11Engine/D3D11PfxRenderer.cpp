@@ -118,7 +118,7 @@ XRESULT D3D11PfxRenderer::RenderTAA(const Microsoft::WRL::ComPtr<ID3D11ShaderRes
     
     // Then render TAA using the velocity buffer
     FX_TAA->RenderPostFX(
-        engine->GetHDRBackBuffer().GetShaderResView(),
+        engine->GetHDRBackBuffer(),
         engine->GetDepthBuffer()->GetShaderResView(),
         velocityBuffer.Get() ? velocityBuffer : FX_TAA->GetVelocityBufferSRV()
     );
