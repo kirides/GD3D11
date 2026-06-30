@@ -32,12 +32,16 @@ unsigned char* ConvertTextureData( UINT TextureWidth, UINT TextureHeight, DXGI_F
     return ConvertedData;
 }
 
-D3D11Texture::D3D11Texture() {}
+D3D11Texture::D3D11Texture() {
+    TracyAllocN( this, 1, "Textures" );
+}
 
 D3D11Texture::~D3D11Texture() {
     Thumbnail.Reset();
     Texture.Reset();
     ShaderResourceView.Reset();
+
+    TracyFreeN( this, "Textures" );
 }
 
 /** Initializes the texture object */

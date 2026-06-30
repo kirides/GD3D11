@@ -312,10 +312,19 @@ void GetCascadeUVAndBounds(float3 wsPosition, int cascadeIndex,
     vShadowSamplingPos = mul(float4(wsPosition, 1), viewProj);
     projectedTexCoords = vShadowSamplingPos.xy * float2(0.5f, -0.5f) + float2(0.5f, 0.5f);
 
-    // Check if within bounds (with margin for blend zone)
-    const float margin = 0.02f;
+    // XY inset of ~1.5 texels: only reject the literal edge texel (no valid filter
+    // neighbourhood there). Edge taps that spill past [0,1] are handled by the shadow
+    // sampler's BORDER addressing (border = lit), so a wide inset isn't needed.
+    const float margin = 1.5f / SQ_ShadowmapSize;
+    // Depth (Z) bounds matter too: a fragment can land inside this cascade's XY footprint
+    // while being deeper than its far plane (z > 1) -- e.g. terrain plunging away under a
+    // grazing sun when viewed from above. A LESS_EQUAL comparison sampler always fails for
+    // z > stored and would force the fragment fully into shadow. Excluding out-of-depth-
+    // range fragments lets selection fall through to a larger cascade whose far plane
+    // reaches scene-deep, instead of painting a false dark blob.
     bool isInBounds = projectedTexCoords.x > margin && projectedTexCoords.x < (1.0f - margin) &&
-                      projectedTexCoords.y > margin && projectedTexCoords.y < (1.0f - margin);
+                      projectedTexCoords.y > margin && projectedTexCoords.y < (1.0f - margin) &&
+                      vShadowSamplingPos.z >= 0.0f && vShadowSamplingPos.z <= 1.0f;
     inBounds = isInBounds ? 1.0f : 0.0f;
 
     // Calculate blend factor based on distance to edge
@@ -324,27 +333,6 @@ void GetCascadeUVAndBounds(float3 wsPosition, int cascadeIndex,
     float distToEdge = min(min(projectedTexCoords.x, 1.0f - projectedTexCoords.x),
                            min(projectedTexCoords.y, 1.0f - projectedTexCoords.y));
     blendFactor = 1.0f - smoothstep(margin, blendZoneStart, distToEdge);
-}
-
-//--------------------------------------------------------------------------------------
-// Returns the first cascade that contains wsPosition. If no cascade contains the
-// position, returns -1.
-//--------------------------------------------------------------------------------------
-int GetPrimaryCascadeIndex(float3 wsPosition)
-{
-    float4 vShadowPos;
-    float2 projCoords;
-    float inBounds;
-    float blendFactor;
-
-    for (int c = 0; c < NUM_CSM_CASCADES; c++)
-    {
-        GetCascadeUVAndBounds(wsPosition, c, vShadowPos, projCoords, inBounds, blendFactor);
-        if (inBounds > 0.5f)
-            return c;
-    }
-
-    return -1;
 }
 
 //--------------------------------------------------------------------------------------
@@ -542,20 +530,30 @@ float ComputeShadowValue(float2 uv, float3 wsPosition, Texture2D shadowmap, Samp
 //--------------------------------------------------------------------------------------
 // CSM: Shadow-Sampling with soft shadows and cascade blending
 // Uses SQ_ShadowSoftness for configurable shadow edge softness
+//
+// Takes the UN-biased world position plus the world-space normal and slope factor. The
+// normal-offset bias is applied PER CASCADE using that cascade's own world texel size
+// (SQ_CascadeTexelSize[c]). This matters in the blend region: the primary and the next
+// (coarser) cascade need different offsets, and biasing once for the primary leaves the
+// next cascade under-biased -> self-shadowing -> a dark bar exactly at the boundary.
 //--------------------------------------------------------------------------------------
-float ComputeCascadedShadowValueSoft(float3 wsPosition, float viewSpaceZ, float vertLighting, float bias, float2 screenPos)
+float ComputeCascadedShadowValueSoft(float3 wsPosition, float3 wsNormal, float slopeScale,
+                                     float viewSpaceZ, float vertLighting, float bias, float2 screenPos)
 {
+    const float normalBiasMultiplier = 1.0f;
+
     float shadow = vertLighting;
 
     int selectedCascade = -1;
     float4 vShadowPos;
     float2 projCoords;
+    float inBounds;
     float blendFactor = 0.0f;
 
-    // 1. Find the primary cascade WITHOUT sampling textures
+    // 1. Find the primary cascade using the UN-biased position (selection/bounds must be
+    //    consistent across cascades; only the sampled position gets the per-cascade offset).
     for (int c = 0; c < NUM_CSM_CASCADES; c++)
     {
-        float inBounds;
         GetCascadeUVAndBounds(wsPosition, c, vShadowPos, projCoords, inBounds, blendFactor);
 
         if (inBounds > 0.5f)
@@ -573,21 +571,34 @@ float ComputeCascadedShadowValueSoft(float3 wsPosition, float viewSpaceZ, float 
         float distanceFactor = saturate(abs(viewSpaceZ) / 5000.0f);
         float softness = SQ_ShadowSoftness * (1.0f + distanceFactor * 0.5f);
 
-        shadow = SampleCascadeShadowSoft(vShadowPos, projCoords, selectedCascade, bias, screenPos, softness);
+        // Bias matched to the PRIMARY cascade's texel size.
+        float3 biasedPos = wsPosition + wsNormal * (slopeScale * SQ_CascadeTexelSize[selectedCascade] * normalBiasMultiplier);
+        float4 cShadowPos;
+        float2 cProjCoords;
+        float cInBounds;
+        float cBlendFactor;
+        GetCascadeUVAndBounds(biasedPos, selectedCascade, cShadowPos, cProjCoords, cInBounds, cBlendFactor);
+
+        shadow = SampleCascadeShadowSoft(cShadowPos, cProjCoords, selectedCascade, bias, screenPos, softness);
 
         // 3. Check if we need to blend with the next cascade
         if (selectedCascade < NUM_CSM_CASCADES - 1 && blendFactor > 0.0f)
         {
+            int nextCascade = selectedCascade + 1;
+
+            // Bias matched to the NEXT (coarser) cascade's texel size so the blended
+            // sample isn't under-biased.
+            float3 nextBiasedPos = wsPosition + wsNormal * (slopeScale * SQ_CascadeTexelSize[nextCascade] * normalBiasMultiplier);
             float4 nextShadowPos;
             float2 nextProjCoords;
             float nextInBounds;
             float nextBlendFactor;
 
-            GetCascadeUVAndBounds(wsPosition, selectedCascade + 1, nextShadowPos, nextProjCoords, nextInBounds, nextBlendFactor);
+            GetCascadeUVAndBounds(nextBiasedPos, nextCascade, nextShadowPos, nextProjCoords, nextInBounds, nextBlendFactor);
 
             if (nextInBounds > 0.5f)
             {
-                float shadowNext = SampleCascadeShadowSoft(nextShadowPos, nextProjCoords, selectedCascade + 1, bias, screenPos, softness);
+                float shadowNext = SampleCascadeShadowSoft(nextShadowPos, nextProjCoords, nextCascade, bias, screenPos, softness);
                 shadow = lerp(shadow, shadowNext, blendFactor);
             }
         }

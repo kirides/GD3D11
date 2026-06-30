@@ -4968,10 +4968,6 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
                         continue;
                     }
 
-                    if ( aniTex->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
-                        continue;
-                    }
-
                     const float distanceSq = ComputeWorldMeshDistanceSqFromCamera( renderItem, worldMesh.second, cameraPosition );
                     const std::pair<MeshKey, MeshInfo*> transparencyMesh = { worldMesh.first, worldMesh.second };
 
@@ -4998,6 +4994,9 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
                         continue;
                     } else {
 
+                        if ( aniTex->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
+                            continue;
+                        }
                         int alphaLevel = 0;
                         if ( worldMesh.first.Texture && worldMesh.first.Texture->HasAlphaChannel() ) {
                             alphaLevel = 2;
