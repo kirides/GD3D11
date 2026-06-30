@@ -115,7 +115,7 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	//float falloff = saturate(1.0f / (pow(distance / PL_Range * 2, 2)));
 
 	// Compute physically-based direct lighting
-	float3 V = normalize(-Pl_PositionView);
+	float3 V = normalize(-vsPosition);
 	float3 lighting = PLS_ComputePointLightLightingPBR(diffuse.rgb, PL_Color.rgb, normal, V, lightDir, falloff, roughness, metallic, PL_Color.w);
 	
 	return float4(saturate(lighting),1);
