@@ -65,7 +65,7 @@ WINEPREFIX=~/.wine-gothic WINEARCH=win32 winecfg
 WINEPREFIX=~/.wine-gothic WINEARCH=win32 winetricks -q directmusic dxvk vcrun2022
 ```
 
-using `winecfg` above, add `dinput` and `ddraw` as dll overrides (native, then built-in)
+using `winecfg` above, add `dinput`, `ddraw` and (optionally, see [#390](https://github.com/kirides/GD3D11/issues/390)) `d3dcompiler_47` as dll overrides (native, then built-in)
 and remove `dsound` from overrides as that breaks Gothic 2.
 
 Afterward launch your game(s) like this
