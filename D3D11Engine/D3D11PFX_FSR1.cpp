@@ -73,6 +73,7 @@ void D3D11PFX_FSR1::SetSharpness( float sharpness ) {
 
 void D3D11PFX_FSR1::ReleaseResources() {
     PointSampler.Reset();
+    Initialized = false;
 }
 
 XRESULT D3D11PFX_FSR1::ApplyEASU(
@@ -97,6 +98,7 @@ XRESULT D3D11PFX_FSR1::ApplyEASU(
         LogError() << "FSR1 EASU shader not found";
         return XR_FAILED;
     }
+    engine->GetShaderManager().GetVShader( VShaderID::VS_PFX )->Apply();
 
     // Setup EASU constants
     FSR1EASUConstantBuffer cb = {};
