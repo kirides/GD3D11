@@ -106,19 +106,15 @@ float PSMain( PS_INPUT Input ) : SV_TARGET
 
 	float rawNoL = dot(wsNormal, wsLightDirection);
 
-	int cascadeIndex = GetPrimaryCascadeIndex(wsPosition);
-	float texelWorldSize = SQ_CascadeTexelSize[cascadeIndex];
-
-	float shadowNoL = saturate(rawNoL); 
+	float shadowNoL = saturate(rawNoL);
 	float slopeScale = sqrt(saturate(1.0f - shadowNoL * shadowNoL));
-	
-	const float normalBiasMultiplier = 1.0f;
-	float3 biasedWsPosition = wsPosition + wsNormal * (slopeScale * texelWorldSize * normalBiasMultiplier);
 
 	float constantDepthBias = 0.000003f;
 
     // ComputeCascadedShadowValueSoft is defined in ShadowSampling.h.
     // Pass 1.0 for vertLighting (the shadow mask carries only the cascade shadow;
     // vertex-AO is applied separately in FP_ComputeSunLighting).
-    return ComputeCascadedShadowValueSoft( biasedWsPosition, vsPosition.z, 1.0f, constantDepthBias, Input.vPosition.xy );
+    // Pass the UN-biased position plus normal/slope; the normal-offset bias is applied
+    // per cascade inside the function so the blended (coarser) cascade isn't under-biased.
+    return ComputeCascadedShadowValueSoft( wsPosition, wsNormal, slopeScale, vsPosition.z, 1.0f, constantDepthBias, Input.vPosition.xy );
 }

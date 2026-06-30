@@ -131,18 +131,14 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
 
 			float rawNoL = dot(wsNormal, wsLightDirection);
 
-			int cascadeIndex = GetPrimaryCascadeIndex(wsPosition);
-			float texelWorldSize = SQ_CascadeTexelSize[cascadeIndex];
-
-			float shadowNoL = saturate(rawNoL); 
+			float shadowNoL = saturate(rawNoL);
 			float slopeScale = sqrt(saturate(1.0f - shadowNoL * shadowNoL));
-			
-			const float normalBiasMultiplier = 1.0f;
-			float3 biasedWsPosition = wsPosition + wsNormal * (slopeScale * texelWorldSize * normalBiasMultiplier);
 
 			float constantDepthBias = 0.000003f;
 
-			shadow = ComputeCascadedShadowValueSoft(biasedWsPosition, vsPosition.z, vertLighting, constantDepthBias, Input.vPosition.xy);
+			// Pass the UN-biased position plus normal/slope; the normal-offset bias is applied
+			// per cascade inside the function so the blended (coarser) cascade isn't under-biased.
+			shadow = ComputeCascadedShadowValueSoft(wsPosition, wsNormal, slopeScale, vsPosition.z, vertLighting, constantDepthBias, Input.vPosition.xy);
 
 		#endif
 	} else {
