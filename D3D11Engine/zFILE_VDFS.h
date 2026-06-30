@@ -80,20 +80,24 @@ public:
     }
 
     struct Deleter {
-        void operator()( zFILE_VDFS* file ) const {
-            if ( file ) {
-                delete file;
-            }
+        void operator()(const zFILE_VDFS* file ) const {
+            delete file;
         }
     };
 
     using Ptr = std::unique_ptr<zFILE_VDFS, Deleter>;
 
     static Ptr Create( const zSTRING& fileName ) {
-
         auto ptr = new zFILE_VDFS( fileName );
-
         return Ptr( ptr );
+    }
+    
+    static Ptr Create( const std::string& fileName ) {
+        return Create( zSTRING(fileName.c_str()) );
+    }
+
+    static Ptr Create( const char* fileName ) {
+        return Create( zSTRING( fileName ) );
     }
 
     static void* operator new(std::size_t count) {
