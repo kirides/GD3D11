@@ -4546,6 +4546,9 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
 
         graph.Compile();
         graph.Execute();
+
+        // Store view-projection matrix only after the rendergraph, or else parts after geometry have wrong motion vectors
+        StorePrevViewProjMatrix();
         
         GetContext()->ClearDepthStencilView( DepthStencilBuffer->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
         GetContext()->ClearDepthStencilView( m_SwapchainDepthStencilBuffer->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
@@ -9407,8 +9410,6 @@ void D3D11GraphicsEngine::StoreVobPreviousTransforms() {
     for (auto dynVob : Engine::GAPI->GetDynamicallyAddedVobs()) {
         dynVob->StorePreviousTransform();
     }
-
-    // Store view-projection matrix
-    StorePrevViewProjMatrix();
+    
 }
 
