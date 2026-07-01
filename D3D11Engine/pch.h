@@ -38,6 +38,7 @@
 #include <filesystem>
 #include <gtl/phmap.hpp>
 
+#include "serde.h"
 #include "Logger.h"
 #include "Types.h"
 #include "VertexTypes.h"

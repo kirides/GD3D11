@@ -850,6 +850,7 @@
     <ClInclude Include="oCMobInter.h">
       <Filter>ZenGin\Classes</Filter>
     </ClInclude>
+    <ClInclude Include="serde.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp" />

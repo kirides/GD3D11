@@ -3,6 +3,7 @@
 #include <sstream>
 #include <Windows.h>
 #include <DirectXMath.h>
+#include "serde.h"
 
 using namespace DirectX;
 
@@ -251,4 +252,52 @@ struct float2 {
     }
 
     float x, y;
+};
+
+namespace serde {
+    template<typename ReaderFunc>
+    inline size_t DeserializeFrom( ReaderFunc&& read, float2& value ) {
+        return DeserializeFrom( read, value.x )
+            + DeserializeFrom( read, value.y )
+            ;
+    };
+    template<typename ReaderFunc>
+    inline size_t DeserializeFrom( ReaderFunc&& read, float3& value ) {
+        return DeserializeFrom( read, value.x )
+            + DeserializeFrom( read, value.y )
+            + DeserializeFrom( read, value.z )
+            ;
+    };
+    template<typename ReaderFunc>
+    inline size_t DeserializeFrom( ReaderFunc&& read, float4& value ) {
+        return DeserializeFrom( read, value.x )
+            + DeserializeFrom( read, value.y )
+            + DeserializeFrom( read, value.z )
+            + DeserializeFrom( read, value.w )
+            ;
+    };
+
+    template<typename WriterFunc>
+    inline size_t SerializeTo( WriterFunc&& write, const float2& value ) {
+        return SerializeTo( write, value.x )
+            + SerializeTo( write, value.y )
+            ;
+    };
+
+    template<typename WriterFunc>
+    inline size_t SerializeTo( WriterFunc&& write, const float3& value ) {
+        return SerializeTo( write, value.x )
+            + SerializeTo( write, value.y )
+            + SerializeTo( write, value.z )
+            ;
+    };
+
+    template<typename WriterFunc>
+    inline size_t SerializeTo( WriterFunc&& write, const float4& value ) {
+        return SerializeTo( write, value.x )
+            + SerializeTo( write, value.y )
+            + SerializeTo( write, value.z )
+            + SerializeTo( write, value.w )
+            ;
+    };
 };

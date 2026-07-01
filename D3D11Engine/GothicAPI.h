@@ -192,11 +192,7 @@ struct MaterialInfo {
         PixelShader(static_cast<PShaderID>(0)),
         MaterialType(MT_None)
     {
-        buffer.SpecularIntensity = 0.1f;
-        buffer.SpecularPower = 60.0f;
-        buffer.NormalmapStrength = 1.0f;
-        buffer.DisplacementFactor = 1.0f;
-        buffer.Color = 0xFFFFFFFF;
+        buffer.SetDefaults();
     }
 
     ~MaterialInfo() = default;
@@ -219,6 +215,14 @@ struct MaterialInfo {
         float NormalmapStrength;
         float DisplacementFactor;
         float4 Color;
+
+        void SetDefaults() {
+            SpecularIntensity = 0.1f;
+            SpecularPower = 60.0f;
+            NormalmapStrength = 1.0f;
+            DisplacementFactor = 1.0f;
+            Color = 0xFFFFFFFF;
+        }
 
         bool operator==( const Buffer& other ) const noexcept {
             return SpecularIntensity == other.SpecularIntensity &&

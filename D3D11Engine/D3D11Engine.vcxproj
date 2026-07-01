@@ -1075,6 +1075,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="RenderPass.h" />
     <ClInclude Include="RenderQueue.h" />
     <ClInclude Include="RGTextureDesc.h" />
+    <ClInclude Include="serde.h" />
     <ClInclude Include="ShaderCategory.h" />
     <ClInclude Include="StringID.h" />
     <ClInclude Include="SMAA\D3D11SMAA.h" />
