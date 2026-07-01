@@ -20,8 +20,8 @@ class zCTexture {
 public:
     /** Hooks the functions of this Class */
     static void Hook() {
-        //DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCTex_D3DXTEX_BuildSurfaces, hooked_XTEX_BuildSurfaces  );
-        DetourAttachTyped( &HookedFunctions::OriginalFunctions.ofiginal_zCTextureLoadResourceData, hooked_LoadResourceData  );
+        //HookedFunctions::OriginalFunctions.original_zCTex_D3DXTEX_BuildSurfaces.Detour( hooked_XTEX_BuildSurfaces  );
+        HookedFunctions::OriginalFunctions.ofiginal_zCTextureLoadResourceData.Detour( hooked_LoadResourceData  );
 
         zCTextureCacheHack::NumNotCachedTexturesInFrame = 0;
         zCTextureCacheHack::ForceCacheIn = false;

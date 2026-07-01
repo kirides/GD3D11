@@ -31,9 +31,9 @@ public:
 
     /** Hooks the functions of this Class */
     static void Hook() {
-        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_oCNPCEnable, hooked_oCNPCEnable  );
-        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_oCNPCDisable, hooked_oCNPCDisable  );
-        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_oCNPCInitModel, hooked_oCNPCInitModel  );
+        HookedFunctions::OriginalFunctions.original_oCNPCEnable.Detour( hooked_oCNPCEnable  );
+        HookedFunctions::OriginalFunctions.original_oCNPCDisable.Detour( hooked_oCNPCDisable  );
+        HookedFunctions::OriginalFunctions.original_oCNPCInitModel.Detour( hooked_oCNPCInitModel  );
     }
 
     static void __fastcall hooked_oCNPCInitModel( zCVob* thisptr, void* unknwn ) {

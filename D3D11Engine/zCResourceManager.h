@@ -19,7 +19,7 @@ public:
 
     /** Hooks the functions of this Class */
     static void Hook() {
-        //DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCResourceManagerCacheOut, hooked_CacheOut  );
+        //HookedFunctions::OriginalFunctions.original_zCResourceManagerCacheOut.Detour( hooked_CacheOut  );
     }
 
     /*

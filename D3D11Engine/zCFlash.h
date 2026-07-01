@@ -8,8 +8,8 @@ class zCFlash {
 public:
     /** Hooks the functions of this Class */
     static void Hook() {
-        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCFlashSetVisualUsedBy, Hooked_SetVisualUsedBy  );
-        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCFlashDestructor, Hooked_Destructor  );
+        HookedFunctions::OriginalFunctions.original_zCFlashSetVisualUsedBy.Detour( Hooked_SetVisualUsedBy  );
+        HookedFunctions::OriginalFunctions.original_zCFlashDestructor.Detour( Hooked_Destructor  );
     }
 
     // We use SetVisualUsedBy instead of Create here because we need connect visual to vob to avoid leaks
