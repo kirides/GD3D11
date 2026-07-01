@@ -1,4 +1,6 @@
+#ifdef __clang__
 #pragma clang diagnostic ignored "-Wignored-attributes"
+#endif
 
 //
 // Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
