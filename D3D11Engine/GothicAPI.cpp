@@ -1,4 +1,5 @@
 #include <Windows.h>
+#include <algorithm>
 #include <string>
 #include <sstream>
 #include "pch.h"
@@ -1392,7 +1393,7 @@ void GothicAPI::DrawWorldMeshNaive() {
             // Schedule for drawing in later stage if this vob is ghost
             if ( vobInfo->Vob->GetVisualAlpha() ) {
                 TransparencyVobs.emplace_back( dist, vobInfo->Vob->GetVobTransparency(), vobInfo, nullptr );
-                std::push_heap( TransparencyVobs.begin(), TransparencyVobs.end(), CompareGhostDistance );
+                std::ranges::push_heap(TransparencyVobs, CompareGhostDistance );
                 continue;
             }
 
@@ -1726,7 +1727,7 @@ void GothicAPI::GetVisibleDecalList( std::vector<zCVob*>& decals ) {
     }
 
     // Sort back to front
-    std::sort( decalDistances.begin(), decalDistances.end(), DecalSortcmpFunc );
+    std::ranges::sort(decalDistances, DecalSortcmpFunc );
 
     // Put into output list
     decals.reserve(decalDistances.size());
@@ -2064,13 +2065,13 @@ void GothicAPI::OnRemovedVob( zCVob* vob, zCWorld* world ) {
     VobLightInfo* li = VobLightMap[static_cast<zCVobLight*>(vob)];
 
     // Erase it from the particle-effect list
-    auto pit = std::find( ParticleEffectVobs.begin(), ParticleEffectVobs.end(), vob );
+    auto pit = std::ranges::find(ParticleEffectVobs, vob );
     if ( pit != ParticleEffectVobs.end() ) {
         DestroyParticleEffect( *pit );
         *pit = ParticleEffectVobs.back();
         ParticleEffectVobs.pop_back();
     }
-    auto dit = std::find( DecalVobs.begin(), DecalVobs.end(), vob );
+    auto dit = std::ranges::find(DecalVobs, vob );
     if ( dit != DecalVobs.end() ) {
         *dit = DecalVobs.back();
         DecalVobs.pop_back();
@@ -3075,7 +3076,7 @@ void GothicAPI::DrawTransparencyVobs() {
             }
         }
 
-        std::pop_heap( TransparencyVobs.begin(), TransparencyVobs.end(), CompareGhostDistance );
+        std::ranges::pop_heap(TransparencyVobs, CompareGhostDistance );
         TransparencyVobs.pop_back();
     }
 }
@@ -4036,7 +4037,7 @@ void GothicAPI::CollectVisibleVobs(
             sortList.push_back( { v, d } );
         }
 
-        std::sort( sortList.begin(), sortList.end(), []( const SortableVob& a, const SortableVob& b ) {
+        std::ranges::sort(sortList, []( const SortableVob& a, const SortableVob& b ) {
             return a.distSq < b.distSq;
         } );
         for ( size_t i = 0; i < vobs.size(); ++i ) vobs[i] = sortList[i].vob;
@@ -4053,7 +4054,7 @@ void GothicAPI::CollectVisibleVobs(
             skelsortList.push_back( { v, d } );
         }
 
-        std::sort( skelsortList.begin(), skelsortList.end(), []( const SortableSkeletalVob& a, const SortableSkeletalVob& b ) {
+        std::ranges::sort(skelsortList, []( const SortableSkeletalVob& a, const SortableSkeletalVob& b ) {
             return a.distSq < b.distSq;
         } );
         for ( size_t i = 0; i < mobs.size(); ++i ) mobs[i] = skelsortList[i].vob;
@@ -4090,7 +4091,7 @@ void GothicAPI::CollectVisibleVobs(
             // ignore dead items in renderQueue.transparent after move-insert
 
             // sort back to front
-            std::sort( TransparencyVobs.begin(), TransparencyVobs.end(), CompareGhostDistance );
+            std::ranges::sort(TransparencyVobs, CompareGhostDistance );
         }
 
         float minDynamicUpdateLightRange = Engine::GAPI->GetRendererState().RendererSettings.MinLightShadowUpdateRange;
@@ -4108,7 +4109,7 @@ void GothicAPI::CollectVisibleVobs(
             }
         }
 
-        std::sort( lightWithDist.begin(), lightWithDist.end(), []( const std::pair<float, VobLightInfo*>& a, const std::pair<float, VobLightInfo*>& b ) {
+        std::ranges::sort(lightWithDist, []( const std::pair<float, VobLightInfo*>& a, const std::pair<float, VobLightInfo*>& b ) {
             return a.first < b.first;
         });
 
@@ -4608,20 +4609,20 @@ void GothicAPI::BuildBspVobMapCacheHelper( zCBspBase* base ) {
                     // Treat indoor vobs as indoor vobs only in outdoor locations
                     if ( outdoorLocation && vob->IsIndoorVob() ) {
                         // Only add once
-                        if ( std::find( bvi.IndoorVobs.begin(), bvi.IndoorVobs.end(), v ) == bvi.IndoorVobs.end() ) {
+                        if (std::ranges::find(bvi.IndoorVobs, v ) == bvi.IndoorVobs.end() ) {
                             v->ParentBSPNodes.push_back( &bvi );
                             bvi.IndoorVobs.push_back( v );
                             v->IsIndoorVob = true;
                         }
                     } else if ( v->VisualInfo->MeshSize < vobSmallSize ) {
                         // Only add once
-                        if ( std::find( bvi.SmallVobs.begin(), bvi.SmallVobs.end(), v ) == bvi.SmallVobs.end() ) {
+                        if (std::ranges::find(bvi.SmallVobs, v ) == bvi.SmallVobs.end() ) {
                             v->ParentBSPNodes.push_back( &bvi );
                             bvi.SmallVobs.push_back( v );
                         }
                     } else {
                         // Only add once
-                        if ( std::find( bvi.Vobs.begin(), bvi.Vobs.end(), v ) == bvi.Vobs.end() ) {
+                        if (std::ranges::find(bvi.Vobs, v ) == bvi.Vobs.end() ) {
                             v->ParentBSPNodes.push_back( &bvi );
                             bvi.Vobs.push_back( v );
                         }
@@ -4635,7 +4636,7 @@ void GothicAPI::BuildBspVobMapCacheHelper( zCBspBase* base ) {
                 SkeletalVobInfo* v = sit->second;
                 if ( v ) {
                     // Only add once
-                    if ( std::find( bvi.Mobs.begin(), bvi.Mobs.end(), v ) == bvi.Mobs.end() ) {
+                    if (std::ranges::find(bvi.Mobs, v ) == bvi.Mobs.end() ) {
                         v->ParentBSPNodes.push_back( &bvi );
                         bvi.Mobs.push_back( v );
                     }
