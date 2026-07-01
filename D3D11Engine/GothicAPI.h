@@ -209,12 +209,16 @@ struct MaterialInfo {
     /** Loads this info from a file */
     void LoadFromFile( const std::string_view name );
 
-    struct BufferV1 {
+    struct Buffer {
         float SpecularIntensity;
         float SpecularPower;
         float NormalmapStrength;
         float DisplacementFactor;
         float4 Color;
+        float AOMultiplier;
+        float RoughnessMultiplier;
+        float MetallicMultiplier;
+        float PBRPadding;
         
         void SetDefault() {
             SpecularIntensity = 0.2f;
@@ -224,17 +228,9 @@ struct MaterialInfo {
             Color = 0xFFFFFFFF;
             
             AOMultiplier = 1.0f;
-	        RoughnessMultiplier = 1.0f;
-	        MetallicMultiplier = 0.0f;
-	        PBRPadding = 0.0f;
-        }
-
-        void SetDefault() {
-            SpecularIntensity = 0.2f;
-            SpecularPower = 60.0f;
-            NormalmapStrength = 1.0f;
-            DisplacementFactor = 0.1f;
-            Color = 0xFFFFFFFF;
+            RoughnessMultiplier = 1.0f;
+            MetallicMultiplier = 0.0f;
+            PBRPadding = 0.0f;
         }
         
         template<typename T>
@@ -247,32 +243,11 @@ struct MaterialInfo {
             return AreEqual(SpecularIntensity, other.SpecularIntensity) &&
                 AreEqual(SpecularPower, other.SpecularPower) &&
                 AreEqual(NormalmapStrength, other.NormalmapStrength) &&
-                AreEqual(DisplacementFactor, other.DisplacementFactor) && // currently unused.
+                AreEqual(DisplacementFactor, other.DisplacementFactor) &&
+                AreEqual(AOMultiplier, other.AOMultiplier) &&
+                AreEqual(RoughnessMultiplier, other.RoughnessMultiplier) &&
+                AreEqual(MetallicMultiplier, other.MetallicMultiplier) &&
                 Color == other.Color;
-        }
-    };
-
-    struct BufferVNext {
-        float SpecularIntensity;
-        float SpecularPower;
-        float NormalmapStrength;
-        // unused, but kept due to file persistence
-        float DisplacementFactor;
-        float4 Color;
-        float AOMultiplier;
-        float RoughnessMultiplier;
-        float MetallicMultiplier;
-        float PBRPadding;
-
-        bool operator==( const Buffer& other ) const noexcept {
-            return SpecularIntensity == other.SpecularIntensity &&
-                SpecularPower == other.SpecularPower &&
-                NormalmapStrength == other.NormalmapStrength &&
-                // DisplacementFactor == other.DisplacementFactor && // unused
-                Color == other.Color &&
-                AOMultiplier == other.AOMultiplier &&
-                RoughnessMultiplier == other.RoughnessMultiplier &&
-                MetallicMultiplier == other.MetallicMultiplier;
         }
     };
 
