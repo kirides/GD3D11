@@ -52,10 +52,9 @@ void CalculateTemporalInterpolatedPosition(
     // Additionally apply quantization for sub-texel stability
     // This snaps the direction to discrete steps to prevent micro-flickering
     XMVECTOR scale = XMVectorReplicate( frequency );
-    dir = XMVectorDivide(
-        _mm_cvtepi32_ps( _mm_cvtps_epi32( XMVectorMultiply( dir, scale ) ) ),
-        scale
-    );
+    dir = XMVectorMultiply( dir, scale );
+    dir = XMVectorRound( dir );
+    dir = XMVectorDivide( dir, scale );
     outDir = XMVector3Normalize( dir );
 }
 
