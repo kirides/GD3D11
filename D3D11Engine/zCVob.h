@@ -174,9 +174,9 @@ public:
     }
 
     /** Returns the world-position of this vob */
-    FXMVECTOR XM_CALLCONV GetPositionWorldXM() const {
+    XMVECTOR XM_CALLCONV GetPositionWorldXM() const {
         // Get the data right off the memory to save a function call
-        FXMVECTOR pos = XMVectorSet( *reinterpret_cast<float*>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_WorldPosX )),
+        XMVECTOR pos = XMVectorSet( *reinterpret_cast<float*>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_WorldPosX )),
             *reinterpret_cast<float*>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_WorldPosY )),
             *reinterpret_cast<float*>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_WorldPosZ )), 0 );
         return pos;
@@ -210,7 +210,7 @@ public:
     }
 
     /** Return the world/global bbox of the vob */
-    zTBBox3D GetBBox() const {
+    const zTBBox3D& GetBBox() const {
         return *reinterpret_cast<zTBBox3D*>(THISPTR_OFFSET( GothicMemoryLocations::zCVob::Offset_WorldBBOX ));
     }
 
@@ -220,8 +220,8 @@ public:
     }
 
     /** Copys the world matrix into the given memory location */
-    void GetWorldMatrix( XMFLOAT4X4* m ) const {
-        *m = *GetWorldMatrixPtr();
+    void GetWorldMatrix( XMFLOAT4X4& m ) const {
+        m = *GetWorldMatrixPtr();
     }
 
     /** Returns a copy of the world matrix */

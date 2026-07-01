@@ -3606,7 +3606,7 @@ XMFLOAT3 GothicAPI::GetCameraPosition() {
     return oCGame::GetGame()->_zCSession_camVob->GetPositionWorld();
 }
 /** Returns the current cameraposition */
-FXMVECTOR GothicAPI::GetCameraPositionXM() {
+XMVECTOR GothicAPI::GetCameraPositionXM() {
     if ( !oCGame::GetGame()->_zCSession_camVob )
         return g_XMZero;
 
@@ -3708,10 +3708,10 @@ float GothicAPI::GetFarZ() {
 }
 
 /** Returns the fog-color */
-FXMVECTOR GothicAPI::GetFogColor() {
+XMVECTOR GothicAPI::GetFogColor() {
     zCSkyController_Outdoor* sc = oCGame::GetGame()->_zCSession_world->GetSkyControllerOutdoor();
 
-    FXMVECTOR FogColorMod = XMLoadFloat3( RendererState.RendererSettings.FogColorMod.toXMFLOAT3() );
+    XMVECTOR FogColorMod = XMLoadFloat3( RendererState.RendererSettings.FogColorMod.toXMFLOAT3() );
 
     // Only give the overridden color out if the flag is set
     if ( !sc || !sc->GetOverrideFlag() )
@@ -6137,7 +6137,7 @@ static void CollectLeafVobs(
     const float vobOutdoorSmallDistSq = ctx.drawDistancesSq.OutdoorVobsSmall;
     const float visualFXDrawRadius = ctx.drawDistances.VisualFX;
     const float visualFXDrawRadiusSq = ctx.drawDistancesSq.VisualFX;
-    const FXMVECTOR cameraPosition = XMLoadFloat3( &ctx.cameraPosition );
+    const XMVECTOR cameraPosition = XMLoadFloat3( &ctx.cameraPosition );
     const bool collectIndoorVobs = ctx.drawFlags.CollectIndoorVobs;
     const bool collectMobs = ctx.drawFlags.CollectMobs;
     const bool collectLights = ctx.drawFlags.CollectLights;
@@ -6229,7 +6229,7 @@ static void CollectVisibleVobsHelper( BspInfo* base,
 ) {
     const float vobOutdoorDist = ctx.drawDistances.OutdoorVobs;
     const XMFLOAT3 camPos = ctx.cameraPosition;
-    const FXMVECTOR cameraPosition = XMLoadFloat3( &camPos );
+    const XMVECTOR cameraPosition = XMLoadFloat3( &camPos );
     const bool enableOcclusionCulling = ctx.drawFlags.EnableOcclusionCulling;
     while ( base->OriginalNode ) {
         // Check for occlusion-culling

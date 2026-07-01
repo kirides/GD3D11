@@ -476,7 +476,7 @@ public:
 
     /** Returns the current cameraposition */
     XMFLOAT3 GetCameraPosition();
-    FXMVECTOR XM_CALLCONV GetCameraPositionXM();
+    XMVECTOR XM_CALLCONV GetCameraPositionXM();
     zTCam_ClipType GetCameraBBox3DInFrustum(const zTBBox3D& box, int clipFlags = EGothicCullFlags::CullAll);
     zTCam_ClipType GetCameraBBox3DInFrustum(const zCVob* vob, int clipFlags, bool isLocalCamera);
 
@@ -513,7 +513,7 @@ public:
     float GetFarZ();
 
     /** Returns the fog-color */
-    FXMVECTOR GetFogColor();
+    XMVECTOR GetFogColor();
 
     /** Returns true if the game is overwriting the fog color with a fog-zone */
     float GetFogOverride();

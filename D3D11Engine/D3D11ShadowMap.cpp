@@ -569,8 +569,8 @@ XRESULT D3D11ShadowMap::PrepareRender()
     // Array für alle Cascade-Matrizen
     bool isOutdoor = Engine::GAPI->GetLoadedWorldInfo()->BspTree->GetBspTreeMode() == zBSP_MODE_OUTDOOR;
 
-    const FXMVECTOR p = WorldShadowCP + dir * 10000.0f;
-    const FXMVECTOR lookAt = WorldShadowCP;
+    const XMVECTOR p = WorldShadowCP + dir * 10000.0f;
+    const XMVECTOR lookAt = WorldShadowCP;
 
     const XMVECTOR lastCascadeP = lastCascadeData.Position + lastCascadeData.LightDir * 10000.0f;
     const XMVECTOR lastCascadeLookAt = lastCascadeData.Position;
