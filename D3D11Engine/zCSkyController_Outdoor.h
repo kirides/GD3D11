@@ -292,6 +292,12 @@ public:
         p.z = _mm_cvtss_f32( R2 );
     }
 
+    XMMATRIX XM_CALLCONV Alg_Rotation3DNRad( FXMVECTOR Axis, const float angleRad ) {
+        // requires axis to be normalized
+        // Engine takes in angleRad and calculates it reverse
+        return XMMatrixRotationNormal( Axis, -angleRad );
+    }
+
     /** Returns the sun position in world coords */
     XMFLOAT3 GetSunWorldPosition( float timeScale = 1.0f ) {
         float skyTime = GetMasterTime();
@@ -312,14 +318,15 @@ public:
             angle = skyTime * timeScale * XM_2PI + XM_PIDIV2;
         }
 
-        constexpr XMVECTORF32 sunPos = { -60, 0, 100, 0 };
-        XMFLOAT3 rotAxis = XMFLOAT3( 1, 0, 0 );
+        // constexpr XMVECTORF32 sunPos = { -60, 0, 100, 0 };
+        // pre-calculated using XMVector3Normalize
+        constexpr XMVECTORF32 sunPosNormalized = { -0.514495730, 0.00000000, 0.857492924, 0 };
+        constexpr XMVECTORF32 rotAxis = { 1, 0, 0, 0 };
 
         XMFLOAT3 pos;
         //XMVector3NormalizeEst leads to jumping shadows dueto reduced accuracy in combination with XMStoreFloat3( &LightDir, XMVector3NormalizeEst( XMLoadFloat3( &LightDir ) ) ); but setting this mentioned code line in this comment to non Est does not influence if this active code line before the comment is Est or not
-        const XMFLOAT4X4 sunRotation = HookedFunctions::OriginalFunctions.original_Alg_Rotation3DNRad( rotAxis, -angle );
-        MatrixVector3Multiply( pos, XMVector3Normalize( sunPos ), XMLoadFloat4x4( &sunRotation ) );
-
+        const XMMATRIX sunRotation = Alg_Rotation3DNRad( rotAxis, -angle );
+        MatrixVector3Multiply( pos, sunPosNormalized, sunRotation );
         return pos;
     }
 
