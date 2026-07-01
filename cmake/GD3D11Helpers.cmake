@@ -251,6 +251,7 @@ function(gd3d11_apply_common_compile_settings target_name)
         $<$<OR:$<COMPILE_LANGUAGE:C>,$<COMPILE_LANGUAGE:CXX>>:-fms-extensions>
         -Wno-switch
         -Wno-defaulted-function-deleted # DirectXMath uses = default for XMFLOAT4X4 which causes this warning
+        -fno-strict-aliasing # disable strict aliasing
       )
       target_link_options(${target_name} PRIVATE -m32)
     endif()
@@ -260,7 +261,7 @@ function(gd3d11_apply_common_compile_settings target_name)
     if(GD3D11_SIMD STREQUAL "AVX")
       target_compile_options(${target_name} PRIVATE -mavx)
     elseif(GD3D11_SIMD STREQUAL "AVX2")
-      target_compile_options(${target_name} PRIVATE -mavx2)
+      target_compile_options(${target_name} PRIVATE -mavx2 -mfma -mf16c)
     else()
       target_compile_options(${target_name} PRIVATE -msse2)
     endif()
