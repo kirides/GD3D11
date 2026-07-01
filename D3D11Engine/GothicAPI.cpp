@@ -102,6 +102,9 @@ void MaterialInfo::WriteToFile( const std::string_view name ) {
     serde::SerializeTo( writer, buffer.NormalmapStrength );
     serde::SerializeTo( writer, buffer.DisplacementFactor );
     serde::SerializeTo( writer, buffer.Color );
+    serde::SerializeTo( writer, buffer.AOMultiplier );
+    serde::SerializeTo( writer, buffer.RoughnessMultiplier );
+    serde::SerializeTo( writer, buffer.MetallicMultiplier );
 
     std::fwrite( WriteBuffer, 1, std::size( WriteBuffer ), f );
     fclose( f );
@@ -154,9 +157,17 @@ void MaterialInfo::LoadFromFile( const std::string_view name ) {
     serde::DeserializeFrom( reader, buffer.NormalmapStrength );
     serde::DeserializeFrom( reader, buffer.DisplacementFactor );
     serde::DeserializeFrom( reader, buffer.Color );
+    serde::DeserializeFrom( reader, buffer.AOMultiplier );
+    serde::DeserializeFrom( reader, buffer.RoughnessMultiplier );
+    serde::DeserializeFrom( reader, buffer.MetallicMultiplier );
 
     if ( version < 2 ) {
         buffer.DisplacementFactor = 0.0f;
+    }
+    if ( version < 6 ) {
+        buffer.AOMultiplier = 1.0f;
+        buffer.RoughnessMultiplier = 1.0f;
+        buffer.MetallicMultiplier = 0.0f;
     }
 
     buffer.Color = float4( 1, 1, 1, 1 );
