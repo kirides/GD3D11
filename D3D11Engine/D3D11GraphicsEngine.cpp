@@ -55,6 +55,7 @@
 #include "RenderGraph.h"
 #include "D3D11Upscaling.h"
 #include "oCMobInter.h"
+#include "zCParser.h"
 
 #ifdef BUILD_SPACER
 #define IS_SPACER_BUILD true
@@ -3001,7 +3002,14 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     const float meleeFocusEnabled = oCGame::GetHighlightMeleeFocus() >= 2 && oCGame::GetNpcFocusIsHighlightActive();
     zCVob* playerFocusVob = oCGame::GetPlayer() ? oCGame::GetPlayer()->GetFocusVob() : nullptr;
     if ( playerFocusVob ) {
-        if ( playerFocusVob->As<oCNPC>() ) {
+        if ( auto npc = playerFocusVob->As<oCNPC>() ) {
+#ifdef BUILD_GOTHIC_1_CLASSIC
+            static int idxZsTalk = -2;
+            if (idxZsTalk == -2) { idxZsTalk = zCParser::GetParser()->GetIndex("ZS_TALK"); }
+            if ( npc->GetStates()->IsInState( idxZsTalk ) ) {
+                playerFocusVob = nullptr;
+            } else
+#endif
             if ( !meleeFocusEnabled ) {
                 playerFocusVob = nullptr;
             }

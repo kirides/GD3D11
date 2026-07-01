@@ -14,6 +14,15 @@ enum oCNPCFlags : int
     NPC_FLAG_GHOST = (1 << 2)
 };
 
+class oCNPC;
+struct oCNpc_States {
+#ifdef BUILD_GOTHIC_1_CLASSIC
+    bool IsInState(int state) const {
+        return 0 != reinterpret_cast<int( __thiscall* )( const oCNpc_States*, int )>( GothicMemoryLocations::oCNpc_States::IsInState )( this, state );
+    }
+#endif
+};
+
 class oCNPC : public zCVob {
 public:
     static const zCClassDef* GetStaticClassDef() {
@@ -67,7 +76,7 @@ public:
     }
 
     zCVob* GetFocusVob() const {
-#if defined(BUILD_GOTHIC_2_6_fix) || (defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F))
+#if defined(BUILD_GOTHIC_2_6_fix) || defined(BUILD_GOTHIC_1_CLASSIC)
         return *reinterpret_cast<zCVob**>(THISPTR_OFFSET( GothicMemoryLocations::oCNPC::Offset_focus_vob ));
 #else
         return nullptr;
@@ -86,6 +95,12 @@ public:
         reinterpret_cast<void( __fastcall* )( oCNPC*, int, zSTRING&, int )>( GothicMemoryLocations::oCNPC::GetName )( this, 0, str, i );
         return str;
     }
+    
+#ifdef BUILD_GOTHIC_1_CLASSIC
+    oCNpc_States* GetStates() {
+        return reinterpret_cast<oCNpc_States*>(THISPTR_OFFSET( GothicMemoryLocations::oCNPC::Offset_states ));
+    }
+#endif
 #ifndef BUILD_SPACER
     bool HasFlag( oCNPCFlags flag ) {
         return reinterpret_cast<bool( __fastcall* )( oCNPC*, int, oCNPCFlags )>( GothicMemoryLocations::oCNPC::HasFlag )( this, 0, flag );
