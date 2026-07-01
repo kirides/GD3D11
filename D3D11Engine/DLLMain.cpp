@@ -27,7 +27,7 @@ ZUnquantizeHalfFloat_X4 UnquantizeHalfFloat_X8;
 
 static HINSTANCE hLThis = 0;
 static bool comInitialized = false;
-#if defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)
+#if defined(BUILD_GOTHIC_1_CLASSIC)
 bool haveWindAnimations = false;
 #endif
 bool userHaveAMDGPU = false;
@@ -307,7 +307,7 @@ extern "C" void WINAPI LoadCustomZENResources() {
 }
 
 extern "C" void WINAPI EnableWindAnimations( void ) {
-#if defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)
+#if defined(BUILD_GOTHIC_1_CLASSIC)
     haveWindAnimations = true;
 #endif
 }

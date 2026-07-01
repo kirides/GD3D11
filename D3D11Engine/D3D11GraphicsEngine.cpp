@@ -55,6 +55,7 @@
 #include "RenderGraph.h"
 #include "D3D11Upscaling.h"
 #include "oCMobInter.h"
+#include "zCParser.h"
 
 #ifdef BUILD_SPACER
 #define IS_SPACER_BUILD true
@@ -3001,7 +3002,14 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     const float meleeFocusEnabled = oCGame::GetHighlightMeleeFocus() >= 2 && oCGame::GetNpcFocusIsHighlightActive();
     zCVob* playerFocusVob = oCGame::GetPlayer() ? oCGame::GetPlayer()->GetFocusVob() : nullptr;
     if ( playerFocusVob ) {
-        if ( playerFocusVob->As<oCNPC>() ) {
+        if ( auto npc = playerFocusVob->As<oCNPC>() ) {
+#ifdef BUILD_GOTHIC_1_CLASSIC
+            static int idxZsTalk = -2;
+            if (idxZsTalk == -2) { idxZsTalk = zCParser::GetParser()->GetIndex("ZS_TALK"); }
+            if ( npc->GetStates()->IsInState( idxZsTalk ) ) {
+                playerFocusVob = nullptr;
+            } else
+#endif
             if ( !meleeFocusEnabled ) {
                 playerFocusVob = nullptr;
             }
@@ -7786,7 +7794,7 @@ XRESULT D3D11GraphicsEngine::DrawSky() {
         rendererState.RasterizerState.SetDirty();
         UpdateRenderStates();
 
-#if defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)
+#if defined(BUILD_GOTHIC_1_CLASSIC)
         // Draw sky first
         reinterpret_cast<void( __fastcall* )(zCSkyController_Outdoor*)>(0x5C0900)(Engine::GAPI->GetLoadedWorldInfo()->MainWorld->GetSkyControllerOutdoor());
 
@@ -7880,7 +7888,7 @@ XRESULT D3D11GraphicsEngine::DrawSky() {
 
     if ( sky->GetSkyDome() ) sky->GetSkyDome()->DrawMesh();
 
-    #if defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)
+    #if defined(BUILD_GOTHIC_1_CLASSIC)
     {
         SetDefaultStates();
         rendererState.DepthState.DepthWriteEnabled = false;

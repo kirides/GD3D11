@@ -22,7 +22,7 @@ namespace ImGui {
     }
 }
 
-#if defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)
+#if defined(BUILD_GOTHIC_1_CLASSIC)
 extern bool haveWindAnimations;
 #endif
 
@@ -536,8 +536,8 @@ void ImGuiShim::RenderSettingsWindow()
             }
             ImGui::Checkbox( "Animate Static Vobs", &settings.AnimateStaticVobs );
 
-#if defined(BUILD_GOTHIC_2_6_fix) || (defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F))
-#if defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)
+#if defined(BUILD_GOTHIC_2_6_fix) || defined(BUILD_GOTHIC_1_CLASSIC)
+#if defined(BUILD_GOTHIC_1_CLASSIC)
             if ( haveWindAnimations )
 #endif
             {
@@ -1166,8 +1166,8 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
         ImGui::DragFloat( "BloomThreshold", &settings.BloomThreshold, 0.01f, 0.0f, 0.0f, "%.2f" );
         ImGui::DragFloat( "BloomStrength", &settings.BloomStrength, 0.01f, 0.0f, 0.0f, "%.2f" );
 
-#if defined(BUILD_GOTHIC_2_6_fix) || (defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F))
-#if defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)
+#if defined(BUILD_GOTHIC_2_6_fix) || defined(BUILD_GOTHIC_1_CLASSIC)
+#if defined(BUILD_GOTHIC_1_CLASSIC)
         if ( haveWindAnimations )
 #endif
         {

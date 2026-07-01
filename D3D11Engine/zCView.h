@@ -35,7 +35,7 @@ public:
             REPLACE_RANGE( GothicMemoryLocations::zCView::REPL_SetMode_ModechangeStart, GothicMemoryLocations::zCView::REPL_SetMode_ModechangeEnd - 1, INST_NOP );
         }
 
-#if (defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)) || defined(BUILD_GOTHIC_2_6_fix)
+#if defined(BUILD_GOTHIC_1_CLASSIC) || defined(BUILD_GOTHIC_2_6_fix)
         DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCViewPrintChars, hooked_PrintChars  );
 #endif
     }
@@ -49,7 +49,7 @@ public:
         _zCView::SetVirtualMode( x, y, bpp );
     }
 
-#if (defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)) || defined(BUILD_GOTHIC_2_6_fix)
+#if defined(BUILD_GOTHIC_1_CLASSIC) || defined(BUILD_GOTHIC_2_6_fix)
     static void __fastcall hooked_PrintChars( _zCView* thisptr, void* unknwn, int x, int y, const zSTRING& s ) {
         if ( !Engine::GAPI->GetRendererState().RendererSettings.EnableCustomFontRendering ) {
             HookedFunctions::OriginalFunctions.original_zCViewPrintChars( thisptr, x, y, s );

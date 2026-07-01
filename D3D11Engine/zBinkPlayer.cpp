@@ -467,7 +467,7 @@ int __fastcall BinkPlayerPlayDeinit(DWORD BinkPlayer)
 int __fastcall BinkPlayerOpenVideo(DWORD BinkPlayer, DWORD _EDX, zSTRING videoName)
 {
     DWORD zCOption = *reinterpret_cast<DWORD*>(GothicMemoryLocations::GlobalObjects::zCOption);
-#if defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)
+#if defined(BUILD_GOTHIC_1_CLASSIC)
 	zSTRING& directoryRoot = reinterpret_cast<zSTRING&(__thiscall*)(DWORD, int)>(GothicMemoryLocations::zCOption::GetDirectory)(zCOption, 23);
 #else
 	zSTRING& directoryRoot = reinterpret_cast<zSTRING&(__thiscall*)(DWORD, int)>(GothicMemoryLocations::zCOption::GetDirectory)(zCOption, 24);

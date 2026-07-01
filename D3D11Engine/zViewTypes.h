@@ -124,14 +124,14 @@ public:
     }
 
     void CheckAutoScroll() {
-#if defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)
+#if defined(BUILD_GOTHIC_1_CLASSIC)
         reinterpret_cast<void( __fastcall* )( _zCView* )>( 0x006FC480 )( this );
 #elif defined(BUILD_GOTHIC_2_6_fix)
         reinterpret_cast<void( __fastcall* )( _zCView* )>( 0x007A5F60 )( this );
 #endif
     }
     void CheckTimedText() {
-#if defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)
+#if defined(BUILD_GOTHIC_1_CLASSIC)
         reinterpret_cast<void( __fastcall* )( _zCView* )>( 0x006FE0E0 )( this );
 #elif defined(BUILD_GOTHIC_2_6_fix)
         reinterpret_cast<void( __fastcall* )( _zCView* )>( 0x007A7C50 )( this );

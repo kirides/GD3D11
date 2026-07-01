@@ -12,7 +12,7 @@ public:
     }
 
     bool HasName() {
-#if defined(BUILD_GOTHIC_2_6_fix) || (defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F))
+#if defined(BUILD_GOTHIC_2_6_fix) || defined(BUILD_GOTHIC_1_CLASSIC)
         zSTRING str;
         auto* _ = reinterpret_cast<zSTRING* (__fastcall*)(void* object, void* edx, zSTRING * retBuffer)>(GothicMemoryLocations::oCMob::GetName)(this, nullptr, &str);
         return str.Length() > 0;
@@ -30,7 +30,7 @@ public:
     }
 
     bool IsInteractingWith( oCNPC* other ) {
-#if defined(BUILD_GOTHIC_2_6_fix) || (defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F))
+#if defined(BUILD_GOTHIC_2_6_fix) || defined(BUILD_GOTHIC_1_CLASSIC)
         return reinterpret_cast<int( __thiscall* )(oCMobInter*, oCNPC*)>(GothicMemoryLocations::oCMobInter::IsInteractingWith)(this, other) != 0;
 #else
         return false;
