@@ -4188,7 +4188,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                         g.GetPhysicalTexture(backBufferHandle)->GetRenderTargetView().Get(),
                         reactiveMask ? reactiveMask->GetRenderTargetView().Get() : nullptr,
                     };
-                    Context->OMSetRenderTargets(std::size(rtvs), rtvs, nullptr);
+                    Context->OMSetRenderTargets(std::size(rtvs), rtvs, DepthStencilBuffer->GetDepthStencilView().Get() );
 
                     Effects->DrawRain();
                 };
@@ -4206,7 +4206,7 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                         g.GetPhysicalTexture(backBufferHandle)->GetRenderTargetView().Get(),
                         reactiveMask ? reactiveMask->GetRenderTargetView().Get() : nullptr,
                     };
-                    Context->OMSetRenderTargets(std::size(rtvs), rtvs, nullptr);
+                    Context->OMSetRenderTargets(std::size(rtvs), rtvs, DepthStencilBuffer->GetDepthStencilView().Get() );
                     Effects->DrawRain_CS();
                 };
             });

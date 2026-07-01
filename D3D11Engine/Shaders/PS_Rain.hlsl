@@ -261,6 +261,6 @@ PS_OUTPUT PSMain( PS_INPUT Input )
 
     PS_OUTPUT output;
     output.Color = directionalLight;
-    output.ReactiveMask = 1.0f;
+    output.ReactiveMask = saturate(directionalLight.w * 20.0f);
 	return output;
 }
