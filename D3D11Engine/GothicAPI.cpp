@@ -482,7 +482,7 @@ void GothicAPI::OnGameStart() {
 
     UpdateMTResourceManager();
 
-#if defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)
+#if defined(BUILD_GOTHIC_1_CLASSIC)
     HookedFunctions::OriginalFunctions.InitAnimatedInventoryHooks();
 #endif
     void RegisterBinkPlayerHooks();

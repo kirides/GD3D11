@@ -33,7 +33,7 @@ public:
     /** Hooks the functions of this Class */
     static void Hook() {
         DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_oCGameEnterWorld, hooked_EnterWorld  );
-#if defined(BUILD_GOTHIC_2_6_fix) || (defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F))
+#if defined(BUILD_GOTHIC_2_6_fix) || defined(BUILD_GOTHIC_1_CLASSIC)
         DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_oCGameDefineExternals_Ulfi, hooked_DefineExternals_Ulfi  );
 #endif
     }
@@ -44,7 +44,7 @@ public:
         Engine::GAPI->OnWorldLoaded();
     }
 
-#if defined(BUILD_GOTHIC_2_6_fix) || (defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F))
+#if defined(BUILD_GOTHIC_2_6_fix) || defined(BUILD_GOTHIC_1_CLASSIC)
     static void __fastcall hooked_DefineExternals_Ulfi( void* thisptr, void* unknwn, zCParser* parser ) {
         HookedFunctions::OriginalFunctions.original_oCGameDefineExternals_Ulfi( thisptr, parser );
 
@@ -63,7 +63,7 @@ public:
     static bool GetHighlightInteractFocus() {
 #if defined(BUILD_GOTHIC_2_6_fix)
         return *reinterpret_cast<int*>(GothicMemoryLocations::oCGame::Var_InteractiveFocusEnabled) != 0;
-#elif (defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F))
+#elif defined(BUILD_GOTHIC_1_CLASSIC)
         return Engine::GAPI->GetRendererState().RendererSettings.G1HighlightInteractiveFocus;
 #else
         return false;

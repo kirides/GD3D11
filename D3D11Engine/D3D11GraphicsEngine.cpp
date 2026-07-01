@@ -7794,7 +7794,7 @@ XRESULT D3D11GraphicsEngine::DrawSky() {
         rendererState.RasterizerState.SetDirty();
         UpdateRenderStates();
 
-#if defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)
+#if defined(BUILD_GOTHIC_1_CLASSIC)
         // Draw sky first
         reinterpret_cast<void( __fastcall* )(zCSkyController_Outdoor*)>(0x5C0900)(Engine::GAPI->GetLoadedWorldInfo()->MainWorld->GetSkyControllerOutdoor());
 
@@ -7888,7 +7888,7 @@ XRESULT D3D11GraphicsEngine::DrawSky() {
 
     if ( sky->GetSkyDome() ) sky->GetSkyDome()->DrawMesh();
 
-    #if defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)
+    #if defined(BUILD_GOTHIC_1_CLASSIC)
     {
         SetDefaultStates();
         rendererState.DepthState.DepthWriteEnabled = false;

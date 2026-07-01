@@ -52,14 +52,6 @@ using namespace DirectX;
 #define BUILD_DATE __DATE__
 #endif
 
-#ifdef BUILD_GOTHIC_1_08k
-#ifdef BUILD_1_12F
-#define BUILD_GOTHIC_1_SEQUEL
-#else
-#define BUILD_GOTHIC_1_CLASSIC
-#endif
-#endif
-
 __declspec(selectany) const char* VERSION_NUMBER_STR = VERSION_NUMBER;
 
 extern bool FeatureLevel10Compatibility;

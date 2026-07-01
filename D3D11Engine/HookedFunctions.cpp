@@ -430,7 +430,7 @@ FARPROC WINAPI HookedFunctionInfo::hooked_GetProcAddress( HMODULE mod, const cha
     return GetProcAddress( mod, procName );
 }
 
-#if defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)
+#if defined(BUILD_GOTHIC_1_CLASSIC)
 void HookedFunctionInfo::InitAnimatedInventoryHooks() {
     if ( *reinterpret_cast<BYTE*>(0x67303D) != 0xD8 ) {
         // Remove Animated_Inventory SystemPack memory jump and insert our function instead that doesn't fuckup items world matrix

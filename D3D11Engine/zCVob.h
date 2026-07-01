@@ -33,7 +33,7 @@ class zCVisual;
 class zCWorld;
 class oCGame;
 
-#if defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)
+#if defined(BUILD_GOTHIC_1_CLASSIC)
 extern bool haveWindAnimations;
 #endif
 

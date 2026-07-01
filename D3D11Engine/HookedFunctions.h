@@ -35,7 +35,7 @@ typedef void( __thiscall* oCNPCEnable )(void*, XMFLOAT3&);
 typedef void( __thiscall* zCBspTreeAddVob )(void*, zCVob*);
 typedef void( __thiscall* zCWorldLoadWorld )(void*, const zSTRING& fileName, const int loadMode);
 typedef void( __thiscall* oCGameEnterWorld )(void*, oCNPC* playerVob, int changePlayerPos, const zSTRING& startpoint);
-#if defined(BUILD_GOTHIC_2_6_fix) || (defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F))
+#if defined(BUILD_GOTHIC_2_6_fix) || defined(BUILD_GOTHIC_1_CLASSIC)
 typedef void( __thiscall* oCGameDefineExternals_Ulfi )(void*, zCParser* parser);
 #endif
 typedef void( __thiscall* zCWorldVobRemovedFromWorld )(void*, zCVob*);
@@ -136,7 +136,7 @@ struct HookedFunctionInfo {
     zCBspTreeAddVob original_zCBspTreeAddVob = reinterpret_cast<zCBspTreeAddVob>(GothicMemoryLocations::zCBspTree::AddVob);
     zCWorldLoadWorld original_zCWorldLoadWorld = reinterpret_cast<zCWorldLoadWorld>(GothicMemoryLocations::zCWorld::LoadWorld);
     oCGameEnterWorld original_oCGameEnterWorld = reinterpret_cast<oCGameEnterWorld>(GothicMemoryLocations::oCGame::EnterWorld);
-#if defined(BUILD_GOTHIC_2_6_fix) || (defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F))
+#if defined(BUILD_GOTHIC_2_6_fix) || defined(BUILD_GOTHIC_1_CLASSIC)
     oCGameDefineExternals_Ulfi original_oCGameDefineExternals_Ulfi = reinterpret_cast<oCGameDefineExternals_Ulfi>(GothicMemoryLocations::oCGame::DefineExternals_Ulfi);
 #endif
     zCWorldVobRemovedFromWorld original_zCWorldVobRemovedFromWorld = reinterpret_cast<zCWorldVobRemovedFromWorld>(GothicMemoryLocations::zCWorld::VobRemovedFromWorld);
@@ -158,7 +158,7 @@ struct HookedFunctionInfo {
     zCOptionReadInt original_zCOptionReadInt = reinterpret_cast<zCOptionReadInt>(GothicMemoryLocations::zCOption::ReadInt);
     zCOptionReadBool original_zCOptionReadBool = reinterpret_cast<zCOptionReadBool>(GothicMemoryLocations::zCOption::ReadBool);
     zCOptionReadDWORD original_zCOptionReadDWORD = reinterpret_cast<zCOptionReadDWORD>(GothicMemoryLocations::zCOption::ReadDWORD);
-#if (defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)) || defined(BUILD_GOTHIC_2_6_fix)
+#if defined(BUILD_GOTHIC_1_CLASSIC) || defined(BUILD_GOTHIC_2_6_fix)
     zCViewBlitText original_zCViewBlit = reinterpret_cast<zCViewBlitText>(GothicMemoryLocations::zCView::Blit);
     zCViewBlitText original_zCViewBlitText = reinterpret_cast<zCViewBlitText>(GothicMemoryLocations::zCView::BlitText);
     zCViewPrint original_zCViewPrint = reinterpret_cast<zCViewPrint>(GothicMemoryLocations::zCView::Print);
@@ -216,7 +216,7 @@ struct HookedFunctionInfo {
 
     static FARPROC WINAPI hooked_GetProcAddress( HMODULE mod, const char* procName );
 
-#if defined(BUILD_GOTHIC_1_08k) && !defined(BUILD_1_12F)
+#if defined(BUILD_GOTHIC_1_CLASSIC)
     void InitAnimatedInventoryHooks();
     static void __fastcall hooked_RotateInInventory( DWORD oCItem );
 #endif
