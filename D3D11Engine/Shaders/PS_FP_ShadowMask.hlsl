@@ -118,6 +118,6 @@ float2 PSMain( PS_INPUT Input ) : SV_TARGET
     // vertex-AO is applied separately in FP_ComputeSunLighting).    
     // Pass the UN-biased position plus normal/slope; the normal-offset bias is applied
     // per cascade inside the function so the blended (coarser) cascade isn't under-biased.
-    float shadow ComputeCascadedShadowValueSoft( wsPosition, wsNormal, slopeScale, vsPosition.z, 1.0f, constantDepthBias, Input.vPosition.xy );
+    float shadow = ComputeCascadedShadowValueSoft( wsPosition, wsNormal, slopeScale, vsPosition.z, 1.0f, constantDepthBias, Input.vPosition.xy );
     return float2( shadow, saturate( depth ) );
 }
