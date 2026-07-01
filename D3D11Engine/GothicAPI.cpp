@@ -4146,7 +4146,7 @@ void GothicAPI::BuildWorldSectionBVH() {
 
             WorldSectionBVHBuildPrimitive primitive;
             primitive.Section = &section;
-            primitive.Bounds = Frustum::BBoxFromzTBBox3D( section.BoundingBox );
+            Frustum::BBoxFromzTBBox3D( section.BoundingBox, primitive.Bounds);
             primitive.Center = primitive.Bounds.Center;
             primitives.push_back( primitive );
         }
@@ -4538,9 +4538,11 @@ static void CVVH_AddNotDrawnVobToList(
         if ( vdSq > distSq ) continue;
 
         if ( bspContainment != ContainmentType::CONTAINS // only do frustum check if previously "INTERSECTS"
-            && cullingEnabled
-            && !ctx.frustum.Intersects( it->Vob->GetBBox() ) ) {
-            continue;
+            && cullingEnabled ) {
+            auto& bb = it->Vob->GetBBox();
+            if ( !ctx.frustum.Intersects( bb ) ) {
+                continue;
+            }
         }
         if ( it->Vob->GetVisualAlpha() ) {
             ctx.queue->PushTransparencyVob( TransparencyVobInfo{ std::sqrtf( vdSq ), it->Vob->GetVobTransparency(), nullptr, it } );
@@ -6232,6 +6234,9 @@ static void CollectVisibleVobsHelper( BspInfo* base,
     const XMFLOAT3 camPos = ctx.cameraPosition;
     const XMVECTOR cameraPosition = XMLoadFloat3( &camPos );
     const bool enableOcclusionCulling = ctx.drawFlags.EnableOcclusionCulling;
+        
+    BoundingBox bb;
+
     while ( base->OriginalNode ) {
         // Check for occlusion-culling
         if ( enableOcclusionCulling && !base->OcclusionInfo.VisibleLastFrame ) {
@@ -6248,7 +6253,8 @@ static void CollectVisibleVobsHelper( BspInfo* base,
         if ( dist < vobOutdoorDist ) {
             if ( !enableOcclusionCulling ) {
                 if ( clipResult != ContainmentType::CONTAINS ) {
-                    clipResult = ctx.frustum.Contains( Frustum::BBoxFromzTBBox3D( nodeBox ) );
+                    Frustum::BBoxFromzTBBox3D( nodeBox, bb);
+                    clipResult = ctx.frustum.Contains( bb );
                 }
             } else {
                 // If we are using occlusion-clipping, this test has already been done

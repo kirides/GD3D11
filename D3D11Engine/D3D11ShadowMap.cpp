@@ -805,6 +805,7 @@ XRESULT D3D11ShadowMap::PrepareRender()
     }
     
     {
+        BoundingSphere boundingSphere;
         ZoneScopedN("CascadeFrustumCulling");
 
         for ( int i = 0; i < numCascades; ++i ) {
@@ -812,9 +813,8 @@ XRESULT D3D11ShadowMap::PrepareRender()
         }
 
         if ( numCascades > 3 ) {
-            for ( auto vob : potentialCasters ) {
-
-                auto boundingSphere = Frustum::BSphereFromzTBBox3D( vob->Vob->GetBBox() );
+            for ( auto vob : potentialCasters ) { 
+                Frustum::BSphereFromzTBBox3D( vob->Vob->GetBBox(), boundingSphere );
                 if ( m_CascadeCRs[0].frustum.Intersects( boundingSphere ) ) {
                     m_RenderQueues[0]->GetVobs().push_back( vob );
                     m_RenderQueues[1]->GetVobs().push_back( vob );
@@ -841,7 +841,7 @@ XRESULT D3D11ShadowMap::PrepareRender()
             }
         } else if ( numCascades > 2 ) {
             for ( auto vob : potentialCasters ) {
-                auto boundingSphere = Frustum::BSphereFromzTBBox3D( vob->Vob->GetBBox() );
+                Frustum::BSphereFromzTBBox3D( vob->Vob->GetBBox(), boundingSphere );
                 if ( m_CascadeCRs[0].frustum.Intersects( boundingSphere ) ) {
                     m_RenderQueues[0]->GetVobs().push_back( vob );
                     m_RenderQueues[1]->GetVobs().push_back( vob );
@@ -859,7 +859,7 @@ XRESULT D3D11ShadowMap::PrepareRender()
             }
         } else if ( numCascades > 1 ) {
             for ( auto vob : potentialCasters ) {
-                auto boundingSphere = Frustum::BSphereFromzTBBox3D( vob->Vob->GetBBox() );
+                Frustum::BSphereFromzTBBox3D( vob->Vob->GetBBox(), boundingSphere );
                 if ( m_CascadeCRs[0].frustum.Intersects( boundingSphere ) )                     {
                     m_RenderQueues[0]->GetVobs().push_back( vob );
                     m_RenderQueues[1]->GetVobs().push_back( vob );
@@ -871,7 +871,7 @@ XRESULT D3D11ShadowMap::PrepareRender()
             }
         } else if ( numCascades > 0 ) {
             for ( auto vob : potentialCasters ) {
-                auto boundingSphere = Frustum::BSphereFromzTBBox3D( vob->Vob->GetBBox() );
+                Frustum::BSphereFromzTBBox3D( vob->Vob->GetBBox(), boundingSphere );
                 if ( m_CascadeCRs[0].frustum.Intersects( boundingSphere ) )
                     m_RenderQueues[0]->GetVobs().push_back( vob );
             }
