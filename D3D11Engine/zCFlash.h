@@ -55,14 +55,14 @@ public:
     }
 
     /** Returns the world-position of this visual */
-    FXMVECTOR XM_CALLCONV GetStartPositionWorld() const {
+    XMVECTOR XM_CALLCONV GetStartPositionWorld() const {
         return XMVectorSet( *reinterpret_cast<float*>(THISPTR_OFFSET( GothicMemoryLocations::zCFlash::Offset_StartPosX )),
             *reinterpret_cast<float*>(THISPTR_OFFSET( GothicMemoryLocations::zCFlash::Offset_StartPosY )),
             *reinterpret_cast<float*>(THISPTR_OFFSET( GothicMemoryLocations::zCFlash::Offset_StartPosZ )),
             0.0f );
     }
 
-    FXMVECTOR XM_CALLCONV GetEndPositionWorld() const {
+    XMVECTOR XM_CALLCONV GetEndPositionWorld() const {
         return XMVectorSet( *reinterpret_cast<float*>(THISPTR_OFFSET( GothicMemoryLocations::zCFlash::Offset_EndPosX )),
             *reinterpret_cast<float*>(THISPTR_OFFSET( GothicMemoryLocations::zCFlash::Offset_EndPosY )),
             *reinterpret_cast<float*>(THISPTR_OFFSET( GothicMemoryLocations::zCFlash::Offset_EndPosZ )),

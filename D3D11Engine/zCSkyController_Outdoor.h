@@ -238,7 +238,7 @@ public:
             ( GothicMemoryLocations::zCSkyController_Outdoor::GetUnderwaterFX )( this );
     }
 
-    zColor ChangeSaturation( zColor color, float sat )
+    static zColor ChangeSaturation( zColor color, float sat )
     {
         float avg = (color.bgra.r + color.bgra.g + color.bgra.b) / 3.0f;
 
@@ -282,14 +282,15 @@ public:
 #endif
     }
 
-    __forceinline void __vectorcall MatrixVector3Multiply( XMFLOAT3& p, FXMVECTOR V, FXMMATRIX M ) noexcept
+    static __forceinline void __vectorcall MatrixVector3Multiply( XMFLOAT3& p, FXMVECTOR V, FXMMATRIX M ) noexcept
     {
-        __m128 R0 = _mm_add_ss( XMVector3Dot( M.r[0], V ), _mm_shuffle_ps( M.r[0], M.r[0], _MM_SHUFFLE( 3, 3, 3, 3 ) ) );
-        __m128 R1 = _mm_add_ss( XMVector3Dot( M.r[1], V ), _mm_shuffle_ps( M.r[1], M.r[1], _MM_SHUFFLE( 3, 3, 3, 3 ) ) );
-        __m128 R2 = _mm_add_ss( XMVector3Dot( M.r[2], V ), _mm_shuffle_ps( M.r[2], M.r[2], _MM_SHUFFLE( 3, 3, 3, 3 ) ) );
-        p.x = _mm_cvtss_f32( R0 );
-        p.y = _mm_cvtss_f32( R1 );
-        p.z = _mm_cvtss_f32( R2 );
+        XMVECTOR result = XMVector3Transform( V, M );
+        XMStoreFloat3( &p, result );
+    }
+
+    static XMMATRIX XM_CALLCONV Alg_Rotation3DNRad( FXMVECTOR Axis, const float angleRad ) {
+        // requires axis to be normalized
+        return XMMatrixRotationNormal( Axis, angleRad );
     }
 
     /** Returns the sun position in world coords */
@@ -312,14 +313,15 @@ public:
             angle = skyTime * timeScale * XM_2PI + XM_PIDIV2;
         }
 
-        constexpr XMVECTORF32 sunPos = { -60, 0, 100, 0 };
-        XMFLOAT3 rotAxis = XMFLOAT3( 1, 0, 0 );
+        // constexpr XMVECTORF32 sunPos = { -60, 0, 100, 0 };
+        // pre-calculated using XMVector3Normalize
+        constexpr XMVECTORF32 sunPosNormalized = { -0.514495730f, 0.0f, 0.857492924f, 0.0f };
+        constexpr XMVECTORF32 rotAxis = { 1.0f, 0.0f, 0.0f, 0.0f };
 
         XMFLOAT3 pos;
         //XMVector3NormalizeEst leads to jumping shadows dueto reduced accuracy in combination with XMStoreFloat3( &LightDir, XMVector3NormalizeEst( XMLoadFloat3( &LightDir ) ) ); but setting this mentioned code line in this comment to non Est does not influence if this active code line before the comment is Est or not
-        const XMFLOAT4X4 sunRotation = HookedFunctions::OriginalFunctions.original_Alg_Rotation3DNRad( rotAxis, -angle );
-        MatrixVector3Multiply( pos, XMVector3Normalize( sunPos ), XMLoadFloat4x4( &sunRotation ) );
-
+        const XMMATRIX sunRotation = Alg_Rotation3DNRad( rotAxis, -angle );
+        MatrixVector3Multiply( pos, sunPosNormalized, sunRotation );
         return pos;
     }
 

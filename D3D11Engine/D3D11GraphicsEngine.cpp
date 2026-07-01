@@ -404,9 +404,7 @@ void __cdecl AGS_EndUAVOverlap( ID3D11DeviceContext* context ) {
     agsDevice->EndUAVOverlap( context );
 }
 
-void D3D11GraphicsEngine::CreateAndBindDefaultSampler() {
-    HRESULT hr;
-    
+void D3D11GraphicsEngine::CreateAndBindDefaultSampler() {   
     float scaleRatio = static_cast<float>(GetScaledResolution().x) / static_cast<float>(GetBackbufferResolution().x);
     // Calculate raw bias, but clamp it to a maximum of 0.0f to protect Supersampling
     float mipBias = std::min(0.0f, std::log2(scaleRatio));

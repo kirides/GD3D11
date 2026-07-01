@@ -780,8 +780,7 @@ void WorldConverter::GenerateFullSectionMesh( WorldMeshSectionInfo& section ) {
         if ( it->IsIndoorVob )
             continue;
 
-        XMFLOAT4X4 world;
-        it->Vob->GetWorldMatrix( &world );
+        XMFLOAT4X4 world; it->Vob->GetWorldMatrix( world );
         XMMATRIX XMM_world = XMMatrixTranspose( XMLoadFloat4x4( &world ) );
 
         // Insert the vob

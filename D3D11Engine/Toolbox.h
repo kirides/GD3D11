@@ -180,7 +180,7 @@ namespace Toolbox {
     bool IntersectTri( const XMFLOAT3& v0, const XMFLOAT3& v1, const XMFLOAT3& v2, const XMFLOAT3& origin, const XMFLOAT3& direction, float& u, float& v, float& t );
 
     /** Computes the normal of a triangle */
-    FXMVECTOR ComputeNormal( const XMFLOAT3& v0, const XMFLOAT3& v1, const XMFLOAT3& v2 );
+    XMVECTOR ComputeNormal( const XMFLOAT3& v0, const XMFLOAT3& v1, const XMFLOAT3& v2 );
 
     /** Computes the distance of a point to an AABB */
     float ComputePointAABBDistance( const XMFLOAT3& p, const XMFLOAT3& min, const XMFLOAT3& max );

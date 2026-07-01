@@ -130,8 +130,8 @@ namespace Toolbox {
     }
 
     /** Computes the Normal of a triangle */
-    FXMVECTOR ComputeNormal( const XMFLOAT3& v0, const XMFLOAT3& v1, const XMFLOAT3& v2 ) {
-        FXMVECTOR Normal = XMVector3Normalize( XMVector3Cross( (XMLoadFloat3( &v1 ) - XMLoadFloat3( &v0 )), (XMLoadFloat3( &v2 ) - XMLoadFloat3( &v0 )) ) );
+    XMVECTOR ComputeNormal( const XMFLOAT3& v0, const XMFLOAT3& v1, const XMFLOAT3& v2 ) {
+        XMVECTOR Normal = XMVector3Normalize( XMVector3Cross( (XMLoadFloat3( &v1 ) - XMLoadFloat3( &v0 )), (XMLoadFloat3( &v2 ) - XMLoadFloat3( &v0 )) ) );
 
         return Normal;
     }
