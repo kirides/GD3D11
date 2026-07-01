@@ -29,25 +29,25 @@ public:
     static void Hook() {
 
         if ( HookedFunctions::OriginalFunctions.original_ContainerDraw ) {
-            DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_ContainerDraw, hooked_ContainerDraw  );
+            HookedFunctions::OriginalFunctions.original_ContainerDraw.Detour( hooked_ContainerDraw  );
         }
 
-        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCWorldRender, hooked_Render  );
-        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCWorldVobAddedToWorld, hooked_VobAddedToWorld  );
+        HookedFunctions::OriginalFunctions.original_zCWorldRender.Detour( hooked_Render  );
+        HookedFunctions::OriginalFunctions.original_zCWorldVobAddedToWorld.Detour( hooked_VobAddedToWorld  );
 
-        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCWorldLoadWorld, hooked_LoadWorld  );
-        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCWorldVobRemovedFromWorld, hooked_zCWorldVobRemovedFromWorld  );
-        //DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCWorldDisposeWorld, hooked_zCWorldDisposeWorld  );
-        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCWorldDisposeVobs, hooked_zCWorldDisposeVobs  );
+        HookedFunctions::OriginalFunctions.original_zCWorldLoadWorld.Detour( hooked_LoadWorld  );
+        HookedFunctions::OriginalFunctions.original_zCWorldVobRemovedFromWorld.Detour( hooked_zCWorldVobRemovedFromWorld  );
+        //HookedFunctions::OriginalFunctions.original_zCWorldDisposeWorld.Detour( hooked_zCWorldDisposeWorld  );
+        HookedFunctions::OriginalFunctions.original_zCWorldDisposeVobs.Detour( hooked_zCWorldDisposeVobs  );
 
-        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_oCWorldRemoveFromLists, hooked_oCWorldRemoveFromLists  );
-        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_oCWorldEnableVob, hooked_oCWorldEnableVob  );
-        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_oCWorldDisableVob, hooked_oCWorldDisableVob  );
-        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_oCWorldRemoveVob, hooked_oCWorldRemoveVob  );
+        HookedFunctions::OriginalFunctions.original_oCWorldRemoveFromLists.Detour( hooked_oCWorldRemoveFromLists  );
+        HookedFunctions::OriginalFunctions.original_oCWorldEnableVob.Detour( hooked_oCWorldEnableVob  );
+        HookedFunctions::OriginalFunctions.original_oCWorldDisableVob.Detour( hooked_oCWorldDisableVob  );
+        HookedFunctions::OriginalFunctions.original_oCWorldRemoveVob.Detour( hooked_oCWorldRemoveVob  );
 
 #ifdef BUILD_SPACER_NET
-        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCWorldCompileWorld, hooked_zCWorldCompileWorld  );
-        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCWorldGenerateStaticWorldLighting, hooked_zCWorldGenerateStaticWorldLighting  );
+        HookedFunctions::OriginalFunctions.original_zCWorldCompileWorld.Detour( hooked_zCWorldCompileWorld  );
+        HookedFunctions::OriginalFunctions.original_zCWorldGenerateStaticWorldLighting.Detour( hooked_zCWorldGenerateStaticWorldLighting  );
 #endif
     }
 

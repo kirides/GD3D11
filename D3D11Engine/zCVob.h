@@ -46,9 +46,9 @@ class zCVob {
 public:
     /** Hooks the functions of this Class */
     static void Hook() {
-        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCVobSetVisual, Hooked_SetVisual  );
-        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCVobDestructor, Hooked_Destructor  );
-        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCVobEndMovement, Hooked_EndMovement  );
+        HookedFunctions::OriginalFunctions.original_zCVobSetVisual.Detour( Hooked_SetVisual  );
+        HookedFunctions::OriginalFunctions.original_zCVobDestructor.Detour( Hooked_Destructor  );
+        HookedFunctions::OriginalFunctions.original_zCVobEndMovement.Detour( Hooked_EndMovement  );
     }
     
     /** Called when this vob got it's world-matrix changed */

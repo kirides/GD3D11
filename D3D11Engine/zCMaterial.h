@@ -31,9 +31,9 @@ class zCMaterial {
 public:
     /** Hooks the functions of this Class */
     static void Hook() {
-        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCMaterialDestructor, Hooked_Destructor  );
-        //DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCMaterialConstruktor, Hooked_Constructor  );
-        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCMaterialInitValues, Hooked_InitValues  );
+        HookedFunctions::OriginalFunctions.original_zCMaterialDestructor.Detour( Hooked_Destructor  );
+        //HookedFunctions::OriginalFunctions.original_zCMaterialConstruktor.Detour( Hooked_Constructor  );
+        HookedFunctions::OriginalFunctions.original_zCMaterialInitValues.Detour( Hooked_InitValues  );
 
     }
 

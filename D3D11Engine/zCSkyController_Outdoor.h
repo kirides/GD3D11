@@ -139,7 +139,7 @@ public:
 #endif
 
         if ( HookedFunctions::OriginalFunctions.original_zCSkyControler_ClearBackground )
-            DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCSkyControler_ClearBackground, &zCSkyController_Outdoor::hooked_zCSkyControler_ClearBackground  );
+            HookedFunctions::OriginalFunctions.original_zCSkyControler_ClearBackground.Detour( &zCSkyController_Outdoor::hooked_zCSkyControler_ClearBackground  );
     }
 
     static void __fastcall hooked_zCSkyControler_ClearBackground( void* thisPtr, void* vtbl, zColor color ) {

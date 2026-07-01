@@ -11,7 +11,7 @@ class zFILE {
 public:
     /** Hooks the functions of this Class */
     static void Hook() {
-        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zFILEOpen, hooked_Open  );
+        HookedFunctions::OriginalFunctions.original_zFILEOpen.Detour( hooked_Open  );
     }
 
     static int __fastcall hooked_Open( void* thisptr, void* unknwn, zSTRING& str, bool b ) {

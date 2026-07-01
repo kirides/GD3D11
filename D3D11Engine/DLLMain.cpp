@@ -39,7 +39,7 @@ typedef HRESULT( WINAPI* DirectDrawCreateEx_type )(GUID FAR*, LPVOID*, REFIID, I
 
 #if defined(BUILD_GOTHIC_2_6_fix)
 using WinMainFunc = decltype(&WinMain);
-WinMainFunc originalWinMain = reinterpret_cast<WinMainFunc>(GothicMemoryLocations::Functions::WinMain);
+static HookFunc<WinMainFunc> originalWinMain = GothicMemoryLocations::Functions::WinMain;
 #endif
 
 bool GMPModeActive = false;
@@ -438,7 +438,7 @@ int WINAPI hooked_WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR l
     // TODO: Implement!
     if ( !GMPModeActive ) {
         DetourTransactionBegin();
-        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCActiveSndAutoCalcObstruction, HookedFunctionInfo::hooked_zCActiveSndAutoCalcObstruction  );
+        HookedFunctions::OriginalFunctions.original_zCActiveSndAutoCalcObstruction.Detour( HookedFunctionInfo::hooked_zCActiveSndAutoCalcObstruction  );
         DetourTransactionCommit();
     }
     return originalWinMain( hInstance, hPrevInstance, lpCmdLine, nShowCmd );
@@ -498,7 +498,7 @@ BOOL WINAPI DllMain( HINSTANCE hInst, DWORD reason, LPVOID ) {
         Engine::PassThrough = false;
 
 #if defined(BUILD_GOTHIC_2_6_fix)
-        DetourAttachTyped( &originalWinMain, hooked_WinMain  );
+        originalWinMain.Detour( hooked_WinMain  );
 #endif
 
         //_CrtSetDbgFlag (_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);

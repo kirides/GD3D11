@@ -36,7 +36,7 @@ public:
         }
 
 #if defined(BUILD_GOTHIC_1_CLASSIC) || defined(BUILD_GOTHIC_2_6_fix)
-        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCViewPrintChars, hooked_PrintChars  );
+        HookedFunctions::OriginalFunctions.original_zCViewPrintChars.Detour( hooked_PrintChars  );
 #endif
     }
 

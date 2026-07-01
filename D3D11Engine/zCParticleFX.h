@@ -181,7 +181,7 @@ class zCParticleFX {
 public:
     /** Hooks the functions of this Class */
     static void Hook() {
-        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCParticleFXDestructor, Hooked_Destructor  );
+        HookedFunctions::OriginalFunctions.original_zCParticleFXDestructor.Detour( Hooked_Destructor  );
     }
 
     static void __fastcall Hooked_Destructor( zCParticleFX* thisptr, void* unknwn ) {
