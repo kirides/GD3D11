@@ -238,7 +238,7 @@ public:
             ( GothicMemoryLocations::zCSkyController_Outdoor::GetUnderwaterFX )( this );
     }
 
-    zColor ChangeSaturation( zColor color, float sat )
+    static zColor ChangeSaturation( zColor color, float sat )
     {
         float avg = (color.bgra.r + color.bgra.g + color.bgra.b) / 3.0f;
 
@@ -282,13 +282,13 @@ public:
 #endif
     }
 
-    __forceinline void __vectorcall MatrixVector3Multiply( XMFLOAT3& p, FXMVECTOR V, FXMMATRIX M ) noexcept
+    static __forceinline void __vectorcall MatrixVector3Multiply( XMFLOAT3& p, FXMVECTOR V, FXMMATRIX M ) noexcept
     {
         XMVECTOR result = XMVector3Transform( V, M );
         XMStoreFloat3( &p, result );
     }
 
-    XMMATRIX XM_CALLCONV Alg_Rotation3DNRad( FXMVECTOR Axis, const float angleRad ) {
+    static XMMATRIX XM_CALLCONV Alg_Rotation3DNRad( FXMVECTOR Axis, const float angleRad ) {
         // requires axis to be normalized
         return XMMatrixRotationNormal( Axis, angleRad );
     }
