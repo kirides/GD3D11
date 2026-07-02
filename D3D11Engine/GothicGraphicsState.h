@@ -150,18 +150,6 @@ __declspec(align(4)) struct GothicPipelineState {
 };
 
 struct GothicPipelineKeyHasher {
-    static const size_t bucket_size = 10; // mean bucket size that the container should try not to exceed
-    static const size_t min_buckets = (1 << 10); // minimum number of buckets, power of 2, >0
-
-    static std::size_t hash_value( float value ) {
-        std::hash<float> hasher;
-        return hasher( value );
-    }
-
-    static void hash_combine( std::size_t& seed, float value ) {
-        seed ^= hash_value( value ) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
-    }
-
     std::size_t operator()( const GothicPipelineState& k ) const {
         return k.Hash;
     }
