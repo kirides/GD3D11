@@ -36,6 +36,13 @@ public:
     static_assert(std::is_pointer<T>::value&& std::is_function<typename std::remove_pointer<T>::type>::value,
                   "HookFunc requires a function pointer type.");
 
+    HookFunc() = delete;
+    HookFunc(const HookFunc&) = delete;
+    HookFunc& operator=(const HookFunc&) = delete;
+
+    HookFunc( HookFunc&& ) = delete;
+    HookFunc& operator=(HookFunc&&) = delete;
+
     HookFunc(DWORD_PTR p) : func_ptr(reinterpret_cast<PVOID>(p)) {}
     HookFunc(T f = nullptr) : func_ptr(reinterpret_cast<PVOID>(f)) {}
 
@@ -238,5 +245,5 @@ struct HookedFunctionInfo {
 
 namespace HookedFunctions {
     /** Holds all the original functions */
-    __declspec(selectany) HookedFunctionInfo OriginalFunctions;
+    inline HookedFunctionInfo OriginalFunctions = {};
 };

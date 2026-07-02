@@ -14,22 +14,22 @@ __declspec(selectany) const char* VERSION_STRING = "Version " VERSION_NUMBER " (
 
 namespace Engine {
     /** If true, we will just pass everything to the usual ddraw.dll */
-    __declspec(selectany) bool PassThrough;
+    inline bool PassThrough;
 
     /** Global engine object */
-    __declspec(selectany) BaseGraphicsEngine* GraphicsEngine;
+    inline BaseGraphicsEngine* GraphicsEngine;
 
     /** Global GothicAPI object */
-    __declspec(selectany) GothicAPI* GAPI;
+    inline GothicAPI* GAPI;
 
     /** Global ImGui object */
-    __declspec(selectany) ImGuiShim* ImGuiHandle;
+    inline ImGuiShim* ImGuiHandle;
 
     /** Global rendering threadpool */
-    __declspec(selectany) ThreadPool* RenderingThreadPool;
+    inline ThreadPool* RenderingThreadPool;
 
     /** Global worker threadpool */
-    __declspec(selectany) ThreadPool* WorkerThreadPool;
+    inline ThreadPool* WorkerThreadPool;
 
     /** Refresh worker threadpool */
     void RefreshWorkerThreadpool();
