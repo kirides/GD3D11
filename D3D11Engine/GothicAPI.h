@@ -232,10 +232,16 @@ struct MaterialInfo {
             Color = 0xFFFFFFFF;
         }
         
+        template<typename T>
+        static bool AreEqual(T f1, T f2) {
+            return f1 == f2; // NOTE: do we need "proper" float comparsion?
+            // return (std::fabs(f1 - f2) <= std::numeric_limits<T>::epsilon() * std::fmax(std::fabs(f1), std::fabs(f2)));
+        }
+        
         bool operator==( const Buffer& other ) const noexcept {
-            return SpecularIntensity == other.SpecularIntensity &&
-                SpecularPower == other.SpecularPower &&
-                NormalmapStrength == other.NormalmapStrength &&
+            return AreEqual(SpecularIntensity, other.SpecularIntensity) &&
+                AreEqual(SpecularPower, other.SpecularPower) &&
+                AreEqual(NormalmapStrength, other.NormalmapStrength) &&
                 // DisplacementFactor == other.DisplacementFactor && // currently unused.
                 Color == other.Color;
         }
