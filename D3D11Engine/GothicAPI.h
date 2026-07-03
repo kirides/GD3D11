@@ -233,7 +233,7 @@ struct MaterialInfo {
     EMaterialType MaterialType;
     Buffer buffer;
 
-    bool IsSame( MaterialInfo* other ) {
+    bool IsSame(const MaterialInfo* other ) const {
         if ( other == nullptr ) return false;
         return PixelShader == other->PixelShader
             && MaterialType == other->MaterialType
