@@ -215,6 +215,14 @@ struct MaterialInfo {
         float NormalmapStrength;
         float DisplacementFactor;
         float4 Color;
+        
+        void SetDefault() {
+            SpecularIntensity = 0.2f;
+            SpecularPower = 60.0f;
+            NormalmapStrength = 1.0f;
+            DisplacementFactor = 1.0f;
+            Color = 0xFFFFFFFF;
+        }
 
         void SetDefault() {
             SpecularIntensity = 0.2f;
@@ -228,7 +236,7 @@ struct MaterialInfo {
             return SpecularIntensity == other.SpecularIntensity &&
                 SpecularPower == other.SpecularPower &&
                 NormalmapStrength == other.NormalmapStrength &&
-                DisplacementFactor == other.DisplacementFactor &&
+                // DisplacementFactor == other.DisplacementFactor && // currently unused.
                 Color == other.Color;
         }
     };
