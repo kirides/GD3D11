@@ -38,7 +38,8 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
     velocity *= VD_Amplification;
     
     float4 output;
-    
+
+    [branch]
     if (VD_ShowMagnitude > 0.5)
     {
         // Magnitude mode: show velocity length as grayscale
@@ -64,6 +65,7 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
     else
     {
         // Direction mode: show velocity as color
+        [branch]
         if (VD_AbsoluteMode > 0.5)
         {
             // Absolute mode: R = |velocity.x|, G = |velocity.y|
