@@ -67,6 +67,7 @@ ImGuiEditorView::ImGuiEditorView() {
     SelectedVegSize = 1.0f;
     SelectedVegAmount = 1.0f;
     SelectedTexNrmStr = 1.0f;
+    SelectedTexNrmParallax = 1.0f;
     SelectedTexSpecIntens = 1.0f;
     SelectedTexSpecPower = 90.0f;
     SelectedTexDisplacement = 1.0f;
@@ -260,6 +261,18 @@ void ImGuiEditorView::RenderTextureSelectionPanel() {
             MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom(Selection.SelectedMaterial->GetTexture());
             if (info) {
                 info->buffer.NormalmapStrength = SelectedTexNrmStr;
+                info->WriteToFile(Selection.SelectedMaterial->GetTexture()->GetNameWithoutExt());
+            }
+        }
+    }
+    
+    ImGui::Text("Parallax Occlusion:");
+    ImGui::SameLine(80);
+    if (ImGui::SliderFloat("##NrmParallax", &SelectedTexNrmParallax, -2.0f, 2.0f, "%.2f")) {
+        if (Selection.SelectedMaterial && Selection.SelectedMaterial->GetTexture()) {
+            MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom(Selection.SelectedMaterial->GetTexture());
+            if (info) {
+                info->buffer.DisplacementFactor = SelectedTexNrmParallax;
                 info->WriteToFile(Selection.SelectedMaterial->GetTexture()->GetNameWithoutExt());
             }
         }
@@ -821,6 +834,7 @@ void ImGuiEditorView::UpdateSelectionPanel() {
         MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom(tx);
         if (info) {
             SelectedTexNrmStr = info->buffer.NormalmapStrength;
+            SelectedTexNrmParallax = info->buffer.DisplacementFactor;
             SelectedTexSpecIntens = info->buffer.SpecularIntensity;
             SelectedTexSpecPower = info->buffer.SpecularPower;
         }

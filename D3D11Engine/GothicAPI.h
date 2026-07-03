@@ -242,7 +242,7 @@ struct MaterialInfo {
             return AreEqual(SpecularIntensity, other.SpecularIntensity) &&
                 AreEqual(SpecularPower, other.SpecularPower) &&
                 AreEqual(NormalmapStrength, other.NormalmapStrength) &&
-                // DisplacementFactor == other.DisplacementFactor && // currently unused.
+                AreEqual(DisplacementFactor, other.DisplacementFactor) && // currently unused.
                 Color == other.Color;
         }
     };

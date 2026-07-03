@@ -94,3 +94,48 @@ float3 perturb_normal( float3 N, float3 V, Texture2D normalmap, float2 texcoord,
     return perturb_normal_rgb(N, V, normalmap, texcoord, samplerState, normalmapDepth);
 #endif
 }
+
+
+// Base UV displacement at MI_ParallaxOcclusionStrength == 1.0. Material strength scales this.
+static const float PARALLAX_HEIGHT_SCALE = 0.04f;
+
+/** Parallax Occlusion Mapping: marches along the view ray in tangent space using the height stored
+    in the normalmap's alpha channel, and returns the displaced texcoord where the ray meets the
+    surface. Callers should re-sample albedo/fx maps with this texcoord too - otherwise the height
+    data only nudges shading and never visibly "pops". */
+float2 parallax_occlusion_offset( float3 N, float3 V, Texture2D heightMap, float2 texcoord, SamplerState samplerState, float heightScale)
+{
+    float3x3 TBN = cotangent_frame( N, -V, texcoord );
+    float3 Vts = normalize( mul(TBN, V) );
+
+    const float minLayers = 8.0f;
+    const float maxLayers = 32.0f;
+    float numLayers = lerp( maxLayers, minLayers, abs(Vts.z) );
+    float layerDepth = 1.0f / numLayers;
+    float currentLayerDepth = 0.0f;
+
+    // Direction to step the texcoord per layer, scaled by how much the surface should be displaced
+    float2 P = (Vts.xy / max(abs(Vts.z), 0.2f)) * heightScale;
+    float2 deltaTexcoord = P / numLayers;
+
+    float2 currentTexcoord = texcoord;
+    float currentDepth = 1.0f - heightMap.SampleLevel(samplerState, currentTexcoord, 0).w;
+
+    int maxLayerCount = 32;
+    for (int i = 0; i < maxLayerCount; i++)
+    {
+        if (currentLayerDepth >= currentDepth)
+            break;
+
+        currentTexcoord -= deltaTexcoord;
+        currentDepth = 1.0f - heightMap.SampleLevel(samplerState, currentTexcoord, 0).w;
+        currentLayerDepth += layerDepth;
+    }
+
+    // Interpolate between the layer that pierced the surface and the previous one for a smooth result
+    float2 prevTexcoord = currentTexcoord + deltaTexcoord;
+    float afterDepth = currentDepth - currentLayerDepth;
+    float beforeDepth = (1.0f - heightMap.SampleLevel(samplerState, prevTexcoord, 0).w) - currentLayerDepth + layerDepth;
+    float weight = afterDepth / (afterDepth - beforeDepth);
+    return prevTexcoord * weight + currentTexcoord * (1.0f - weight);
+}

@@ -1,6 +1,15 @@
 //--------------------------------------------------------------------------------------
 // World/VOB-Pixelshader for G2D3D11 by Degenerated
 //--------------------------------------------------------------------------------------
+
+#ifndef NORMALMAPPING
+#define NORMALMAPPING 0
+#endif
+
+#ifndef DISPLACEMENT_MAPPING
+#define DISPLACEMENT_MAPPING 1
+#endif
+
 #include <AtmosphericScattering.h>
 #include <FFFog.h>
 #include <DS_Defines.h>
@@ -88,7 +97,13 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
 {
 	FORWARD_PLUS_PS_OUTPUT output;
 
-	float4 color = TX_Texture0.Sample(SS_Linear, Input.vTexcoord);
+	float2 texcoord = Input.vTexcoord;
+
+#if NORMALMAPPING == 1 && DISPLACEMENT_MAPPING == 1
+	texcoord = parallax_occlusion_offset(Input.vNormalVS, Input.vViewPosition, TX_Texture1, texcoord, SS_Linear, PARALLAX_HEIGHT_SCALE * MI_ParallaxOcclusionStrength);
+#endif
+
+	float4 color = TX_Texture0.Sample(SS_Linear, texcoord);
 
 	// clip but only use z approximation
 	ClipDistanceEffect(abs(Input.vViewPosition.z), DIST_DrawDistance, color.r * 2 - 1, 500.0f);
@@ -98,14 +113,14 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
 #endif
 
 #if NORMALMAPPING == 1
-	float3 nrm = perturb_normal(Input.vNormalVS, Input.vViewPosition, TX_Texture1, Input.vTexcoord, SS_Linear, MI_NormalmapStrength);
+	float3 nrm = perturb_normal(Input.vNormalVS, Input.vViewPosition, TX_Texture1, texcoord, SS_Linear, MI_NormalmapStrength);
 #else
 	float3 nrm = normalize(Input.vNormalVS);
 #endif
 
 	float4 fx;
 #if FXMAP == 1
-	fx = TX_Texture2.Sample(SS_Linear, Input.vTexcoord);
+	fx = TX_Texture2.Sample(SS_Linear, texcoord);
 #else
 	fx = 1.0f;
 #endif
@@ -193,34 +208,40 @@ void PSMain( PS_INPUT Input )
 
 
 // Disable regular shader
-DEFERRED_PS_OUTPUT PSMainDISABLED( PS_INPUT Input ) : SV_TARGET
+DEFERRED_PS_OUTPUT PSMainDISABLED( PS_INPUT Input ) : SV_TARGET 
 #else
 DEFERRED_PS_OUTPUT PSMain( PS_INPUT Input ) : SV_TARGET
 #endif
 {
 	DEFERRED_PS_OUTPUT output;
 
-	float4 color = TX_Texture0.Sample(SS_Linear, Input.vTexcoord);
-	
+	float2 texcoord = Input.vTexcoord;
+
+#if NORMALMAPPING == 1 && DISPLACEMENT_MAPPING == 1
+	texcoord = parallax_occlusion_offset(Input.vNormalVS, Input.vViewPosition, TX_Texture1, texcoord, SS_Linear, PARALLAX_HEIGHT_SCALE * MI_ParallaxOcclusionStrength);
+#endif
+
+	float4 color = TX_Texture0.Sample(SS_Linear, texcoord);
+
 	// Do alphatest if wanted
 #if ALPHATEST == 1
 	// clip but only use z approximation
 	ClipDistanceEffect(abs(Input.vViewPosition.z), DIST_DrawDistance, color.r * 2 - 1, 500.0f);
-	
+
 	// WorldMesh can always do the alphatest
 	DoAlphaTest(color.a);
 #endif
-	
+
 	// Apply normalmapping if wanted
 #if NORMALMAPPING == 1
-	float3 nrm = perturb_normal(Input.vNormalVS, Input.vViewPosition, TX_Texture1, Input.vTexcoord, SS_Linear, MI_NormalmapStrength);
+	float3 nrm = perturb_normal(Input.vNormalVS, Input.vViewPosition, TX_Texture1, texcoord, SS_Linear, MI_NormalmapStrength);
 #else
 	float3 nrm = normalize(Input.vNormalVS);
 #endif
-	
+
 	float4 fx;
 #if FXMAP == 1
-	fx = TX_Texture2.Sample(SS_Linear, Input.vTexcoord);
+	fx = TX_Texture2.Sample(SS_Linear, texcoord);
 #else
 	fx = 1.0f;
 #endif

@@ -231,6 +231,7 @@ protected:
 
     /** Texture settings */
     float SelectedTexNrmStr;
+    float SelectedTexNrmParallax;
     float SelectedTexSpecIntens;
     float SelectedTexSpecPower;
     float SelectedTexDisplacement;
