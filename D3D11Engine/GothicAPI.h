@@ -208,7 +208,7 @@ struct MaterialInfo {
     MaterialInfo& operator=( const MaterialInfo& ) = delete;
 
     /** Writes this info to a file */
-    void WriteToFile( const std::string& name );
+    void WriteToFile( const std::string_view name );
 
     /** Loads this info from a file */
     void LoadFromFile( const std::string_view name );

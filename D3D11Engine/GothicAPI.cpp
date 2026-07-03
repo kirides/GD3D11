@@ -73,7 +73,7 @@ auto CompareGhostDistance = []( const TransparencyVobInfo& a, const Transparency
 extern float vobAnimation_WindStrength;
 
 /** Writes this info to a file */
-void MaterialInfo::WriteToFile( const std::string& name ) {
+void MaterialInfo::WriteToFile( const std::string_view name ) {
     thread_local std::string infoPath{};
     infoPath.reserve( 255 );
     infoPath.clear();
