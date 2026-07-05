@@ -146,11 +146,10 @@ void MaterialInfo::LoadFromFile( const std::string_view name ) {
     }
     
 
-    int version;
     auto reader = serde::ByteBufferReader(ReadBuffer, std::size(ReadBuffer));
     serde::DeserializeFrom( reader, version );
 
-    buffer.SetDefaults();
+    buffer.SetDefault();
     // Then the data
     serde::DeserializeFrom( reader, buffer.SpecularIntensity );
     serde::DeserializeFrom( reader, buffer.SpecularPower );
