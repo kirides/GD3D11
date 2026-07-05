@@ -133,14 +133,16 @@ float4 __runStage(int colorop, int colorarg1, int colorarg2, float4 current, flo
 float4 GetColorFromStates(float4 diffuse, float2 uv, float2 uv2, SamplerState samplerState)
 {		
 	float4 color = __runStage(FF_Stages[0].colorop, FF_Stages[0].colorarg1, FF_Stages[0].colorarg2, diffuse, diffuse, texture0, uv, samplerState);
-	
+
+	[branch]
 	if(FF_Stages[1].colorop != D3DTOP_DISABLE)
 	{
 		color = __runStage(FF_Stages[1].colorop, FF_Stages[1].colorarg1, FF_Stages[1].colorarg2, color, diffuse, texture1, uv2, samplerState);
 	}
-	
+
 	float4 alpha = color;//__runStage(FF_Stages[0].alphaop, FF_Stages[0].alphaarg1, FF_Stages[0].alphaarg2, diffuse, diffuse, texture0, uv, samplerState);
 
+	[branch]
 	if(FF_AlphaTestEnabled())
 		DoAlphaTest(alpha.a);
 	

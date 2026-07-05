@@ -121,6 +121,7 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
 	float shadow = vertLighting;
 #if SHD_ENABLE
 	float3 wsNormal = normalize(mul(float4(nrm, 0.0f), SQ_InvView).xyz);
+	[branch]
 	if (AC_LightPos.y > 0)
 	{
 		#if FP_USE_SHADOW_MASK

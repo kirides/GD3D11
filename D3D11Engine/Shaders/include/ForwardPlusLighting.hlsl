@@ -167,7 +167,7 @@ float3 FP_ComputePointLighting(
         float falloff = PLS_ComputeRangeFalloff( distance, light.Range );
 
         float3 H = normalize( lightDir + V );
-        float spec = PLS_CalcBlinnPhongLighting( normal, H );
+        float spec = PLS_CalcBlinnPhongLighting( normal, H ) * light.Color.w;
         float3 lighting = PLS_ComputePointLightLighting( diffuseColor, light.Color.rgb, ndl, falloff, spec, specIntensity, specPower, specMod );
 
         // Don't fetch shadows if the light contribution is effectively zero.

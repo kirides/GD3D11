@@ -73,7 +73,7 @@ auto CompareGhostDistance = []( const TransparencyVobInfo& a, const Transparency
 extern float vobAnimation_WindStrength;
 
 /** Writes this info to a file */
-void MaterialInfo::WriteToFile( const std::string& name ) {
+void MaterialInfo::WriteToFile( const std::string_view name ) {
     thread_local std::string infoPath{};
     infoPath.reserve( 255 );
     infoPath.clear();
@@ -4122,6 +4122,8 @@ void GothicAPI::CollectVisibleVobs(
 
             // Update the lights shadows if: Light is dynamic or full shadow-updates are set
             if ( !vi->IsPFXVobLight ) {
+                // TODO: should things like "light-spell" also cast shadows?
+                // i mean, we make torches cast them, why not also spells?
                 if ( lightUpdateEnabled && !vi->Vob->IsStatic() ) {
                     const float lightRange = vi->Vob->GetLightRange();
                     if ( lightRange > minDynamicUpdateLightRange && distSq < (lightRange * lightRange) )

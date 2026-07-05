@@ -191,6 +191,7 @@ float2 RotationSCFromNoise(float rawNoise)
 float2 GetPoissonRotationSCForCascade(float2 screenPos, int cascadeIndex)
 {
     // If TAA is disabled return identity (standard unrotated PCF, no noise).
+    [branch]
     if (SQ_FrameIndex == 0)
         return float2(1.0f, 0.0f);
 
@@ -204,6 +205,7 @@ float2 GetPoissonRotationSC(float2 screenPos)
 
 float2 GetPoissonRotationSCRForCascade(float2 screenPos, int cascadeIndex, out float rawNoise)
 {
+    [branch]
     if (SQ_FrameIndex == 0)
     {
         rawNoise = 0.5f;

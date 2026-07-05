@@ -162,7 +162,7 @@ public:
 
     /** Returns the name of this vob */
     std::string GetName() const {
-        return __GetObjectName().ToChar();
+        return GetObjectName().ToChar();
     }
 
     /** Returns the world-position of this vob */
@@ -390,8 +390,8 @@ protected:
         }
         return false;
     }
-
-    zSTRING& __GetObjectName() const {
+public:
+    zSTRING& GetObjectName() const {
         return reinterpret_cast<zSTRING&( __fastcall* )( const zCVob* )>( GothicMemoryLocations::zCObject::GetObjectName )( this );
     }
 };

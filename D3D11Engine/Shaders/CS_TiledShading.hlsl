@@ -98,7 +98,7 @@ void CSMain( uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID, uint
         float falloff = PLS_ComputeRangeFalloff( distance, light.Range );
 
         float3 H = normalize( lightDir + V );
-        float spec = PLS_CalcBlinnPhongLighting( normal, H );
+        float spec = PLS_CalcBlinnPhongLighting( normal, H ) * light.Color.w;
         float3 lighting = PLS_ComputePointLightLighting( diffuse.rgb, light.Color.rgb, ndl, falloff, spec, specIntensity, specPower, specMod );
 
         // Apply shadow if this light has a shadow cubemap and contribution is non-negligible
@@ -113,9 +113,17 @@ void CSMain( uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID, uint
         maxLighting = max( maxLighting, lighting );
     }
 
-    float3 activeLighting = LimitLightIntensity ? maxLighting : totalLighting;
+    float3 activeLighting;
+    [branch]
+    if ( LimitLightIntensity ) {
+        activeLighting = maxLighting;
+    } else {
+        activeLighting = totalLighting;
+    }
+
     if ( any( activeLighting > 0 ) ) {
         float4 existing = RW_HDR[pixelCoord];
+        [branch]
         if ( LimitLightIntensity ) {
             // Match legacy MAX blend: each light uses max(light, existing) individually.
             // Since we see all lights at once, take the per-light max.

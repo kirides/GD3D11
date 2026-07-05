@@ -276,6 +276,7 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
 	// CSM: Use soft cascaded shadow map with configurable softness
     float3 wsNormal = normalize(mul(float4(normal, 0.0f), SQ_InvView).xyz);
 
+    [branch]
     if(AC_LightPos.y > 0) // only get shadow value if it isn't night-time
 	{
         float3 wsLightDirection = normalize(mul(float4(SQ_LightDirectionVS, 0.0f), SQ_InvView).xyz);

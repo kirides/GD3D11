@@ -393,7 +393,7 @@ D3D11TiledDeferredShading::CullResult D3D11TiledDeferredShading::CullLights(
         TiledPointLight& tl = lightData[result.TiledLightCount];
         tl.PositionView = posView;
         tl.Range = lightRange;
-        tl.Color = XMFLOAT4( lightColor.x, lightColor.y, lightColor.z, lightColor.w );
+        tl.Color = XMFLOAT4( lightColor.x, lightColor.y, lightColor.z, vob->IsStatic() ? 0.0f : 1.0f );
         tl.PositionWorld = XMFLOAT3( posWorld.x, posWorld.y, posWorld.z );
 
         if ( hasShadow ) {
