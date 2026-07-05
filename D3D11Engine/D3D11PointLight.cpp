@@ -17,6 +17,16 @@ D3D11PointLight::D3D11PointLight( VobLightInfo* info, bool dynamicLight ) {
     LightInfo = info;
     DynamicLight = dynamicLight;
     
+    if ( !info->IsPFXVobLight ) {
+        const auto vob = info->Vob;
+        const auto& lightFlags = vob->GetLightInfoFlags();
+        if ( lightFlags.m_bCanMove && !info->IsPFXVobLight ) {
+            if ( auto parent = vob->GetVobParent(); parent->GetObjectName().Length() > 0 ) {
+                m_ForceRealtimeShadows = true;
+            }
+        }
+    }
+    
     // Ensure this light is actually in the VobLightMap
     // some lights don't seem to be in here!
     Engine::GAPI->VobLightMap[info->Vob] = info;
@@ -111,8 +121,12 @@ void D3D11PointLight::ClearTiledSlot() {
 int D3D11PointLight::GetCurrentShadowMode() const {
     auto mode = static_cast<int>(Engine::GAPI->GetRendererState().RendererSettings.EnablePointlightShadows);
     if ( mode > 1 ) {
+        if ( m_ForceRealtimeShadows ) {
+            // movable fire sources like torches, not just any dynamic light.
+            return GothicRendererSettings::EPointLightShadowMode::PLS_FULL;
+        }
         if ( LightInfo->Vob->GetLightInfoFlags().isStatic ) {
-            return GothicRendererSettings::EPointLightShadowMode::PLS_STATIC_ONLY; 
+            return GothicRendererSettings::EPointLightShadowMode::PLS_STATIC_ONLY;
         }
     }
     return mode;

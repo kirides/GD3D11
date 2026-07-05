@@ -4122,6 +4122,8 @@ void GothicAPI::CollectVisibleVobs(
 
             // Update the lights shadows if: Light is dynamic or full shadow-updates are set
             if ( !vi->IsPFXVobLight ) {
+                // TODO: should things like "light-spell" also cast shadows?
+                // i mean, we make torches cast them, why not also spells?
                 if ( lightUpdateEnabled && !vi->Vob->IsStatic() ) {
                     const float lightRange = vi->Vob->GetLightRange();
                     if ( lightRange > minDynamicUpdateLightRange && distSq < (lightRange * lightRange) )
