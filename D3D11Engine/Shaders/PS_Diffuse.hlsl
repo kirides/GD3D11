@@ -6,12 +6,18 @@
 #define NORMALMAPPING 0
 #endif
 
+#ifndef NORMAL_MAP_MODE
+// 1 = OpenGL (Y+)
+// 2 = DirectX (Y-)
+#define NORMAL_MAP_MODE 1
+#endif
+
 #ifndef DISPLACEMENT_MAPPING
-#define DISPLACEMENT_MAPPING 1
+#define DISPLACEMENT_MAPPING 0
 #endif
 
 #include <AtmosphericScattering.h>
-#include <FFFog.h>
+#include <FFFog.h> 
 #include <DS_Defines.h>
 #include <Toolbox.h>
 
@@ -112,7 +118,7 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
 	DoAlphaTest(color.a);
 #endif
 
-#if NORMALMAPPING == 1
+#if NORMALMAPPING == 1 
 	float3 nrm = perturb_normal(Input.vNormalVS, Input.vViewPosition, TX_Texture1, texcoord, SS_Linear, MI_NormalmapStrength);
 #else
 	float3 nrm = normalize(Input.vNormalVS);

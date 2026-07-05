@@ -220,7 +220,7 @@ struct MaterialInfo {
             SpecularIntensity = 0.2f;
             SpecularPower = 60.0f;
             NormalmapStrength = 1.0f;
-            DisplacementFactor = 1.0f;
+            DisplacementFactor = 0.0f;
             Color = 0xFFFFFFFF;
         }
 

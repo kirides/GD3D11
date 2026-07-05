@@ -789,6 +789,8 @@ struct GothicRendererSettings {
         LimitLightIntesity = false;
         AllowNormalmaps = 0;
         CompressedNormalsSupport = true;
+        EnableMaterialMapping = true;
+        EnableDisplacementMapping = false; // default values for displacement may cause distracting visual issues.
 
         AllowNumpadKeys = false;
         EnableDebugLog = true;
@@ -1056,7 +1058,9 @@ struct GothicRendererSettings {
     E_SharpeningMode SharpeningMode;
     E_GraphicsPreset GraphicsPreset;
     bool CompressedNormalsSupport;
-
+    int EnableDisplacementMapping;
+    bool EnableMaterialMapping;
+    
     struct {
         struct {
             bool DepthMotionVectors;

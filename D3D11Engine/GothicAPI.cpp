@@ -138,9 +138,7 @@ void MaterialInfo::LoadFromFile( const std::string_view name ) {
     memcpy( &buffer, ReadBuffer + sizeof( int ), sizeof( MaterialInfo::Buffer ) );
 
     if ( version < 2 ) {
-        if ( buffer.DisplacementFactor == 0.0f ) {
-            buffer.DisplacementFactor = 0.7f;
-        }
+        buffer.DisplacementFactor = 0.0f;
     }
 
     buffer.Color = float4( 1, 1, 1, 1 );

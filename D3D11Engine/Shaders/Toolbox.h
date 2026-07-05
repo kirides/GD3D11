@@ -99,11 +99,31 @@ float3 perturb_normal( float3 N, float3 V, Texture2D normalmap, float2 texcoord,
 // Base UV displacement at MI_ParallaxOcclusionStrength == 1.0. Material strength scales this.
 static const float PARALLAX_HEIGHT_SCALE = 0.04f;
 
+// Mode 1: simple parallax
+// Mode 2: ray marching
+
+#ifndef PARALLAX_MODE
+#define PARALLAX_MODE 1
+#endif
+
+/** Simple (offset-limiting) parallax mapping: single-sample approximation that shifts the texcoord
+    along the view direction by the height at the unshifted texcoord. Cheap, but shows swimming/
+    warping at grazing angles and doesn't self-occlude. */
+float2 parallax_simple_offset( float3 N, float3 V, Texture2D heightMap, float2 texcoord, SamplerState samplerState, float heightScale)
+{
+    float3x3 TBN = cotangent_frame( N, -V, texcoord );
+    float3 Vts = normalize( mul(TBN, V) );
+
+    float height = heightMap.SampleLevel(samplerState, texcoord, 0).w;
+    float2 offset = (Vts.xy / max(abs(Vts.z), 0.2f)) * (height - 1.0f) * heightScale;
+    return texcoord + offset;
+}
+
 /** Parallax Occlusion Mapping: marches along the view ray in tangent space using the height stored
     in the normalmap's alpha channel, and returns the displaced texcoord where the ray meets the
     surface. Callers should re-sample albedo/fx maps with this texcoord too - otherwise the height
     data only nudges shading and never visibly "pops". */
-float2 parallax_occlusion_offset( float3 N, float3 V, Texture2D heightMap, float2 texcoord, SamplerState samplerState, float heightScale)
+float2 parallax_raymarch_offset( float3 N, float3 V, Texture2D heightMap, float2 texcoord, SamplerState samplerState, float heightScale)
 {
     float3x3 TBN = cotangent_frame( N, -V, texcoord );
     float3 Vts = normalize( mul(TBN, V) );
@@ -138,4 +158,14 @@ float2 parallax_occlusion_offset( float3 N, float3 V, Texture2D heightMap, float
     float beforeDepth = (1.0f - heightMap.SampleLevel(samplerState, prevTexcoord, 0).w) - currentLayerDepth + layerDepth;
     float weight = afterDepth / (afterDepth - beforeDepth);
     return prevTexcoord * weight + currentTexcoord * (1.0f - weight);
+}
+
+/** Dispatches to the parallax implementation selected by PARALLAX_MODE (1 = simple, 2 = ray marching). */
+float2 parallax_occlusion_offset( float3 N, float3 V, Texture2D heightMap, float2 texcoord, SamplerState samplerState, float heightScale)
+{
+#if PARALLAX_MODE == 1
+    return parallax_simple_offset( N, V, heightMap, texcoord, samplerState, heightScale );
+#else
+    return parallax_raymarch_offset( N, V, heightMap, texcoord, samplerState, heightScale );
+#endif
 }
