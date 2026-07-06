@@ -339,9 +339,9 @@ bool D3D11ForwardPlusRenderer::BindShaderForTexture(
     PShaderID resolvedDiffuseNormalmappedAlphatestFxMap ) {
 
     // Special material types fall through to deferred (non-lit) shaders
-    bool blendAdd = zMatAlphaFunc == zMAT_ALPHA_FUNC_ADD; 
-    bool blendBlend = zMatAlphaFunc == zMAT_ALPHA_FUNC_BLEND;
-    bool linZ = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches & GSWITCH_LINEAR_DEPTH) != 0;
+    const bool blendAdd = zMatAlphaFunc == zMAT_ALPHA_FUNC_ADD; 
+    const bool blendBlend = zMatAlphaFunc == zMAT_ALPHA_FUNC_BLEND;
+    const bool linZ = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches & GSWITCH_LINEAR_DEPTH) != 0;
 
     if ( materialType == MaterialInfo::MT_Portal ||
          materialType == MaterialInfo::MT_WaterfallFoam ||
@@ -353,7 +353,7 @@ bool D3D11ForwardPlusRenderer::BindShaderForTexture(
             resolvedDiffuseNormalmappedAlphatest, resolvedDiffuseNormalmappedAlphatestFxMap );
     }
 
-    auto active = activePS;
+    const auto& active = activePS;
     auto newShader = activePS;
     if ( texture->HasAlphaChannel() || forceAlphaTest ) {
         if ( texture->GetSurface()->GetFxMap() ) {

@@ -321,6 +321,12 @@ XRESULT D3D11ShaderManager::Init() {
         list.push_back( {"PCF_FILTER_TAPS_NEAR",  isTaaEnabled ? "8" : "16"} );
         list.push_back( {"PCF_FILTER_TAPS_FAR",   isTaaEnabled ? "4" : "8"} );
     };
+    
+    ShaderInfo::MacroBuilder normalmappingConfigurationBuilder = [](std::vector<D3D_SHADER_MACRO>& list) {
+        const auto& s = Engine::GAPI->GetRendererState().RendererSettings;
+        list.push_back( {"NORMAL_MAP_RESTORE_Z", s.CompressedNormalsSupport > 0 ? "1" : "0"} );
+		list.push_back( {"NORMAL_MAP_MODE", sNums[std::clamp<size_t>(s.AllowNormalmaps, 1, 2)]} );
+    };
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_DS_AtmosphericScattering>( "PS_DS_AtmosphericScattering.hlsl" )
         .with_macros( shadowMacroBuilder )
@@ -345,12 +351,14 @@ XRESULT D3D11ShaderManager::Init() {
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_LinDepth>( "PS_LinDepth.hlsl" )  );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_DiffuseNormalmapped>( "PS_Diffuse.hlsl" )
+        .with_macros(normalmappingConfigurationBuilder)
         .with_macros( {
             {"NORMALMAPPING", "1"},
             {"ALPHATEST", "0"},
         } ) );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_DiffuseNormalmappedFxMap>( "PS_Diffuse.hlsl" )
+        .with_macros(normalmappingConfigurationBuilder)
         .with_macros( {
             {"NORMALMAPPING", "1"},
             {"ALPHATEST", "0"},
@@ -371,12 +379,14 @@ XRESULT D3D11ShaderManager::Init() {
             } ) );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_DiffuseNormalmappedAlphaTest>( "PS_Diffuse.hlsl" )
+        .with_macros(normalmappingConfigurationBuilder)
         .with_macros( {
             {"NORMALMAPPING", "1"},
             {"ALPHATEST", "1"},
         } ) );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_DiffuseNormalmappedAlphaTestFxMap>( "PS_Diffuse.hlsl" )
+        .with_macros(normalmappingConfigurationBuilder)
         .with_macros( {
             {"NORMALMAPPING", "1"},
             {"ALPHATEST", "1"},
@@ -500,6 +510,7 @@ XRESULT D3D11ShaderManager::Init() {
 
         Shaders.push_back( ShaderInfo::make<PShaderID::PS_FP_DiffuseNormalmapped>( "PS_Diffuse.hlsl" )
             .with_macros(shadowMacroBuilder)
+            .with_macros(normalmappingConfigurationBuilder)
             .with_macros( {
                 { "FORWARD_PLUS", "1" },
                 { "NORMALMAPPING", "1" },
@@ -508,6 +519,7 @@ XRESULT D3D11ShaderManager::Init() {
 
         Shaders.push_back( ShaderInfo::make<PShaderID::PS_FP_DiffuseNormalmappedFxMap>( "PS_Diffuse.hlsl" )
             .with_macros(shadowMacroBuilder)
+            .with_macros(normalmappingConfigurationBuilder)
             .with_macros( {
                 { "FORWARD_PLUS", "1" },
                 { "NORMALMAPPING", "1" },
@@ -525,6 +537,7 @@ XRESULT D3D11ShaderManager::Init() {
 
         Shaders.push_back( ShaderInfo::make<PShaderID::PS_FP_DiffuseNormalmappedAlphaTest>( "PS_Diffuse.hlsl" )
             .with_macros(shadowMacroBuilder)
+            .with_macros(normalmappingConfigurationBuilder)
             .with_macros( {
                 { "FORWARD_PLUS", "1" },
                 { "NORMALMAPPING", "1" },
@@ -533,6 +546,7 @@ XRESULT D3D11ShaderManager::Init() {
 
         Shaders.push_back( ShaderInfo::make<PShaderID::PS_FP_DiffuseNormalmappedAlphaTestFxMap>( "PS_Diffuse.hlsl" )
             .with_macros(shadowMacroBuilder)
+            .with_macros(normalmappingConfigurationBuilder)
             .with_macros( {
                 { "FORWARD_PLUS", "1" },
                 { "NORMALMAPPING", "1" },

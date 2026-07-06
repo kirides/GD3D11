@@ -133,12 +133,12 @@ bool D3D11DeferredRenderer::BindShaderForTexture( D3D11ShaderManager& shaderMana
     PShaderID resolvedDiffuseNormalmappedAlphatest,
     PShaderID resolvedDiffuseNormalmappedAlphatestFxMap ) {
 
-    auto active = activePS;
+    const auto& active = activePS;
     auto newShader = activePS;
 
-    bool blendAdd = zMatAlphaFunc == zMAT_ALPHA_FUNC_ADD;
-    bool blendBlend = zMatAlphaFunc == zMAT_ALPHA_FUNC_BLEND;
-    bool linZ = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches & GSWITCH_LINEAR_DEPTH) != 0;
+    const bool blendAdd = zMatAlphaFunc == zMAT_ALPHA_FUNC_ADD;
+    const bool blendBlend = zMatAlphaFunc == zMAT_ALPHA_FUNC_BLEND;
+    const bool linZ = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches & GSWITCH_LINEAR_DEPTH) != 0;
 
     if ( materialType == MaterialInfo::MT_Portal ) {
         newShader = shaderManager.GetPShader( PShaderID::PS_PortalDiffuse );

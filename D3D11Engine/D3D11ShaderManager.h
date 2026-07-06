@@ -46,7 +46,18 @@ public:
     /** Chainable setters for builder pattern */
     ShaderInfo& with_layout( EVERTEX_INPUT_LAYOUT l ) { layout = l; return *this; }
     ShaderInfo& with_macros( std::vector<D3D_SHADER_MACRO> m ) { shaderMakros = std::move(m); return *this; }
-    ShaderInfo& with_macros( MacroBuilder b ) { macroBuilder = std::move( b ); return *this; }
+    ShaderInfo& with_macros( MacroBuilder b ) {
+        if (macroBuilder) {
+            macroBuilder = [previous = std::move(macroBuilder), current = std::move( b )](std::vector<D3D_SHADER_MACRO>& m)
+            {
+               previous(m);
+                current(m);
+            };
+        } else {
+            macroBuilder = std::move( b );
+        }
+        return *this;
+    }
     ShaderInfo& with_category( ShaderCategory c ) { contentCategory = c; return *this; }
     ShaderInfo& with_entrypoint( std::string ep ) { entryPoint = std::move( ep ); return *this; }
 

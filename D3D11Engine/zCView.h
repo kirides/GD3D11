@@ -60,10 +60,10 @@ public:
             return;
         }
 
-        int len = s.Length();
+        auto len = s.Length();
         if ( len > 0 ) {
             Engine::GraphicsEngine->DrawString(
-                std::string( s.ToChar(), len ),
+                std::string_view{ s.ToChar(), len },
                 static_cast<float>( x ),
                 static_cast<float>( y ),
                 thisptr->font, thisptr->fontColor );

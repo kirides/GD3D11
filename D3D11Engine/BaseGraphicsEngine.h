@@ -231,7 +231,7 @@ public:
         RenderToTextureBuffer* bufferParticleColor,
         RenderToTextureBuffer* bufferParticleDistortion) {}
 
-    virtual void DrawString( const std::string& str, float x, float y, const zFont* font, zColor& fontColor ) {};
+    virtual void DrawString( std::string_view str, float x, float y, const zFont* font, zColor& fontColor ) {};
     
     virtual XRESULT UpdateRenderStates() { return XR_SUCCESS; };
 
