@@ -18,12 +18,17 @@ float3x3 cotangent_frame( float3 N, float3 p, float2 uv )
     float3 dp1perp = cross( N, dp1 );
     float3 T = dp2perp * duv1.x + dp1perp * duv2.x;
     float3 B = dp2perp * duv1.y + dp1perp * duv2.y;
- 
-	// Negate because of left-handedness
-	//T *= -1;
-	//B *= -1;
- 
-    // construct a scale-invariant frame 
+
+    // Handedness of the derived (T, B) frame flips per-triangle for mirrored UV islands.
+    // Detect it from the signed area of the UV-space triangle so mirrored islands get the
+    // opposite correction instead of relying on one hardcoded global flip.
+    // NOTE: the comparison direction below is our pipeline's calibrated convention bias
+    // (previously expressed as an unconditional X-negate on the sampled normal map).
+    // If specular highlights look mirrored after this change, flip "< 0" to "> 0" here.
+    float handedness = ( duv1.x * duv2.y - duv1.y * duv2.x ) < 0.0f ? 1.0f : -1.0f;
+    T *= handedness;
+
+    // construct a scale-invariant frame
     float invmax = rsqrt( max( dot(T,T), dot(B,B) ) );
     return float3x3( T * invmax, B * invmax, N );
 }
@@ -50,7 +55,6 @@ float3 perturb_normal_rgb( float3 N, float3 V, Texture2D normalmap, float2 texco
     // flip G channel in DirectX Normals
 	nrmmap.y = -nrmmap.y;
 #endif
-    nrmmap.x = -nrmmap.x; // we require inverted x or specular shading will be incorrect in some angles
 	nrmmap.xy *= normalmapDepth;
 	nrmmap = normalize(nrmmap);
 	
@@ -68,7 +72,6 @@ float3 perturb_normal_restore_z( float3 N, float3 V, Texture2D normalmap, float2
     // flip G channel in DirectX Normals
 	nrmmap_xy.y = -nrmmap_xy.y;
 #endif
-    nrmmap_xy.x = -nrmmap_xy.x; // we require inverted x or specular shading will be incorrect in some angles
 	nrmmap_xy.xy *= normalmapDepth;
 
     // Reconstruct the Z (Blue) channel using the Pythagorean theorem
