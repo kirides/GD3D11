@@ -128,12 +128,8 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 {
     float4 color = TX_Backbuffer.Sample( SS_Linear, Input.vTexcoord );
 
-    // Composition order: SAO (multiply) -> HeightFog (alpha blend) -> GodRays (additive)
-
-#if COMPOSE_SAO
-    float ao = TX_SAO.Sample( SS_Linear, Input.vTexcoord ).r;
-    color.rgb *= ao;
-#endif
+    // Composition order: HeightFog (alpha blend) -> GodRays (additive)
+    // (Ambient occlusion is applied in the lighting pass, on indirect light only.)
 
 #if COMPOSE_HEIGHTFOG
     float4 fog = ComputeHeightFog( Input.vTexcoord );

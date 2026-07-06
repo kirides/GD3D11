@@ -272,7 +272,7 @@ XRESULT D3D11ShaderManager::Init() {
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_Composition>( "PS_PFX_Composition.hlsl" )
         .with_macros( [](std::vector<D3D_SHADER_MACRO>& list) {
             const auto& s = Engine::GAPI->GetRendererState().RendererSettings;
-            list.push_back( { "COMPOSE_SAO", (s.AoMode == AOMode::AO_SAO) ? "1" : "0" } );
+            // AO is now applied in the lighting pass (indirect light only), not in composition.
             list.push_back( { "COMPOSE_GODRAYS", s.EnableGodRays ? "1" : "0" } );
             list.push_back( { "COMPOSE_HEIGHTFOG", s.DrawFog ? "1" : "0" } );
         } ) );
@@ -495,9 +495,16 @@ XRESULT D3D11ShaderManager::Init() {
 
         Shaders.push_back( ShaderInfo::make<CShaderID::CS_PFX_SAO>( "CS_PFX_SAO.hlsl" ));
 
+        // Depth-only SAO variant: reconstructs view normals from depth (Forward+ fallback)
+        Shaders.push_back( ShaderInfo::make<CShaderID::CS_PFX_SAO_DepthNormals>( "CS_PFX_SAO.hlsl" )
+            .with_macros( {{ "SAO_RECONSTRUCT_NORMALS", "1" }} ) );
+
         Shaders.push_back( ShaderInfo::make<CShaderID::CS_PFX_SAO_Blur>( "CS_PFX_SAO_Blur.hlsl" ));
 
         Shaders.push_back( ShaderInfo::make<CShaderID::CS_PFX_Sharpen>( "CS_PFX_Sharpen.hlsl" ));
+
+        // Optional Forward+ smooth-normals-from-depth pass (feeds SAO/ASSAO AO producers)
+        Shaders.push_back( ShaderInfo::make<CShaderID::CS_GenerateNormalsFromDepth>( "CS_GenerateNormalsFromDepth.hlsl" ));
 
         // Forward+ pixel shader variants
         Shaders.push_back( ShaderInfo::make<PShaderID::PS_FP_Diffuse>( "PS_Diffuse.hlsl" )

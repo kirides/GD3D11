@@ -856,6 +856,7 @@ struct GothicRendererSettings {
         DebugSettings.FeatureSet.EnableDriverExtensions = true;
         DebugSettings.FeatureSet.UseWorldSectionBVH = true;
         DebugSettings.FeatureSet.UseScreenSpaceShadowMask = false;
+        DebugSettings.FeatureSet.GenerateAONormalsFromDepth = true;
     }
 
     void SetupOldWorldSpecificValues() {
@@ -1066,6 +1067,7 @@ struct GothicRendererSettings {
             bool UseLayeredRendering;
             bool UseShadowAtlas;
             bool UseScreenSpaceShadowMask;
+            bool GenerateAONormalsFromDepth; // Forward+: build smooth normals from depth for SAO/ASSAO
             bool ForceFeatureLevel10;
         } FeatureSet;
     } DebugSettings;

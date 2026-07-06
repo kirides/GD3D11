@@ -24,6 +24,11 @@ public:
         RGResourceHandle& outSpecularResource,
         RGResourceHandle& outReactiveMaskResource ) override;
 
+    RGResourceHandle AddAmbientOcclusionPass(
+        RenderGraph& graph,
+        D3D11GraphicsEngine& engine,
+        RGResourceHandle normalsResource ) override;
+
     void AddLightingPasses(
         RenderGraph& graph,
         D3D11GraphicsEngine& engine,
@@ -31,6 +36,7 @@ public:
         RGResourceHandle normalsResource,
         RGResourceHandle specularResource,
         RGResourceHandle backBufferHandle,
+        RGResourceHandle aoMaskResource,
         std::vector<VobLightInfo*>& frameLights ) override;
 
     bool BindShaderForTexture(

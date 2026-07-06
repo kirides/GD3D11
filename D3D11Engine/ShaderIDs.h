@@ -131,7 +131,9 @@ enum class CShaderID : size_t {
     CS_PFX_DoF_Gauss,
     CS_PFX_DoF_Composite,
     CS_PFX_SAO,
+    CS_PFX_SAO_DepthNormals,
     CS_PFX_SAO_Blur,
     CS_PFX_Sharpen,
+    CS_GenerateNormalsFromDepth,
     COUNT
 };

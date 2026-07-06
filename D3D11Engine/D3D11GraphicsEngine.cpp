@@ -3989,10 +3989,16 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         };
     });    
     
+    // Screen-space AO producer (fills an R8 mask sampled by the lighting pass, applied to
+    // indirect light only). Deferred builds it here from GBuffer normals; Forward+ builds it
+    // inside AddGeometryPasses and returns RG_INVALID_HANDLE.
+    RGResourceHandle aoMaskResource = ActiveSceneRenderer->AddAmbientOcclusionPass(
+        graph, *this, normalsResource );
+
     ActiveSceneRenderer->AddLightingPasses( graph, *this,
         colorResource, normalsResource, specularResource,
-        backBufferHandle, m_FrameLights );
-    
+        backBufferHandle, aoMaskResource, m_FrameLights );
+
     graph.AddPass( RG_PASS_NAME("Draw Frame AlphaMeshes"), [&]( RGBuilder& builder, RenderPass& pass ) {
         // Setup / Declare
         builder.Write( backBufferHandle );
@@ -4004,66 +4010,14 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         }
     );
 
-    // Draw Ambient Occlusion
+    // Ambient occlusion is now produced before lighting (AddAmbientOcclusionPass) and applied
+    // to indirect light inside the lighting shaders — no post-lighting darkening pass here.
     // Shared state for PostFX composition pass
     ID3D11ShaderResourceView* compositionGodRaysSRV = nullptr;
     bool isOutdoor = Engine::GAPI->GetLoadedWorldInfo()->BspTree->GetBspTreeMode() == zBSP_MODE_OUTDOOR;
-    bool compositionSAO = (rendererState.RendererSettings.AoMode == AOMode::AO_SAO);
     bool compositionGodRays = (rendererState.RendererSettings.EnableGodRays && isOutdoor);
     bool compositionHeightFog = (rendererState.RendererSettings.DrawFog && isOutdoor);
-    bool compositionActive = compositionSAO || compositionGodRays || compositionHeightFog;
-
-    if ( rendererState.RendererSettings.AoMode == AOMode::AO_HBAO ) {
-        graph.AddPass( RG_PASS_NAME("HBAO+"), [&]( RGBuilder& builder, RenderPass& pass ) {
-            builder.Read( normalsResource );
-            builder.Write( backBufferHandle );
-
-            pass.m_executeCallback = [this, normalsResource, backBufferHandle](const RenderGraph& graph) {
-                TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw HBAO+" );
-                auto normalsTexture = graph.GetPhysicalTexture(normalsResource);
-                auto backBuffer = graph.GetPhysicalTexture(backBufferHandle);
-
-                PfxRenderer->DrawHBAO( backBuffer->GetRenderTargetView(),
-                    GetDepthBufferCopy()->GetShaderResView(),
-                    normalsTexture->GetShaderResView());
-                GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
-            };
-        });
-    }
-    else if ( rendererState.RendererSettings.AoMode == AOMode::AO_ASSAO ) {
-        graph.AddPass( RG_PASS_NAME("ASSAO"), [&]( RGBuilder& builder, RenderPass& pass ) {
-            builder.Read( normalsResource );
-            builder.Write( backBufferHandle );
-
-            pass.m_executeCallback = [this, normalsResource, backBufferHandle]( const RenderGraph& graph ) {
-                TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw ASSAO" );
-
-                auto normalsTexture = graph.GetPhysicalTexture( normalsResource );
-                auto backBuffer = graph.GetPhysicalTexture( backBufferHandle );
-
-                PfxRenderer->RenderASSAO( backBuffer->GetRenderTargetView().Get(),
-                    GetDepthBufferCopy()->GetShaderResView().Get(),
-                    normalsTexture->GetShaderResView().Get() );
-                GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
-            };
-        } );
-    }
-    else if ( compositionSAO ) {
-        // SAO compute-only pass — skips the final modulate blit (composition handles it)
-        graph.AddPass( RG_PASS_NAME("SAO Compute"), [&]( RGBuilder& builder, RenderPass& pass ) {
-            builder.Read( normalsResource );
-
-            pass.m_executeCallback = [this, normalsResource](const RenderGraph& graph) {
-                TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw SAO (Compute)" );
-                auto normalsTexture = graph.GetPhysicalTexture(normalsResource);
-
-                PfxRenderer->RenderSAOCompute(
-                    GetDepthBufferCopy()->GetShaderResView().Get(),
-                    normalsTexture->GetShaderResView().Get());
-                GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
-            };
-        });
-    }
+    bool compositionActive = compositionGodRays || compositionHeightFog;
 
     if ( rendererState.RendererSettings.DrawSky ) {
         graph.AddPass( RG_PASS_NAME( "Draw Sky" ), [&]( RGBuilder& builder, RenderPass& pass ) {
@@ -4306,13 +4260,13 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         }
     }
 
-    // PostFX Composition pass — merges SAO, HeightFog, and GodRays in a single full-screen blit
+    // PostFX Composition pass — merges HeightFog and GodRays in a single full-screen blit
     if ( compositionActive ) {
         graph.AddPass( RG_PASS_NAME("PostFX Composition"), [&]( RGBuilder& builder, RenderPass& pass ) {
             builder.Read( backBufferHandle );
             builder.Write( backBufferHandle );
 
-            pass.m_executeCallback = [this, backBufferHandle, compositionSAO, compositionHeightFog,
+            pass.m_executeCallback = [this, backBufferHandle, compositionHeightFog,
                                       &compositionGodRaysSRV](const RenderGraph& graph) {
                 TracyD3D11ZoneCGX( "D3D11GraphicsEngine::PostFX Composition" );
 
@@ -4322,14 +4276,13 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
                 auto tempBuffer = PfxRenderer->GetTempBuffer();
                 GetContext()->CopyResource( tempBuffer->GetTexture().Get(), backBuffer->GetTexture().Get() );
 
-                // Gather SRVs for composition
-                ID3D11ShaderResourceView* saoSRV = compositionSAO ? PfxRenderer->GetSAOResultSRV() : nullptr;
+                // Gather SRVs for composition (AO is applied in the lighting pass now)
                 ID3D11ShaderResourceView* depthSRV = compositionHeightFog ? GetDepthBuffer()->GetShaderResView().Get() : nullptr;
 
                 PfxRenderer->RenderPostFXComposition(
                     backBuffer->GetRenderTargetView().Get(),
                     tempBuffer->GetShaderResView().Get(),
-                    saoSRV,
+                    nullptr,
                     compositionGodRaysSRV,
                     depthSRV );
 
@@ -8732,6 +8685,113 @@ void D3D11GraphicsEngine::DrawMQuadMarks() {
 /** Copies the depth stencil buffer to DepthStencilBufferCopy */
 void D3D11GraphicsEngine::CopyDepthStencil() {
     GetContext()->CopyResource( DepthStencilBufferCopy->GetTexture().Get(), DepthStencilBuffer->GetTexture().Get() );
+}
+
+RGResourceHandle D3D11GraphicsEngine::AddAONormalsFromDepthPass( RenderGraph& graph ) {
+    RGResourceHandle normalsHandle = RG_INVALID_HANDLE;
+    graph.AddPass( RG_PASS_NAME( "AO Normals From Depth" ), [&]( RGBuilder& builder, RenderPass& pass ) {
+        auto size = GetResolution();
+        normalsHandle = builder.CreateTexture( {
+            static_cast<uint32_t>( size.x ), static_cast<uint32_t>( size.y ),
+            DXGI_FORMAT_R16G16_FLOAT, L"AONormals",
+            D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE } );
+        builder.Write( normalsHandle );
+
+        pass.m_executeCallback = [this, normalsHandle]( const RenderGraph& graph ) -> void {
+            TracyD3D11ZoneCGX( "D3D11GraphicsEngine::AO Normals From Depth" );
+            const auto& context = GetContext();
+            auto res = GetResolution();
+
+            // Depth copy must reflect the current frame's depth prepass.
+            CopyDepthStencil();
+
+            auto* normalsTex = graph.GetPhysicalTexture( normalsHandle );
+
+            auto& proj = Engine::GAPI->GetProjectionMatrix();
+            AONormalsConstantBuffer cb = {};
+            cb.AON_ProjParams = float4( 1.0f / proj._11, 1.0f / proj._22, proj._34, proj._33 );
+            cb.AON_InvResolution = float2( 1.0f / res.x, 1.0f / res.y );
+
+            auto cs = GetShaderManager().GetCShader( CShaderID::CS_GenerateNormalsFromDepth );
+            cs->Apply();
+            cs->GetBuffer( "AONormalsConstantBuffer" ).Update( &cb ).Bind();
+
+            context->CSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
+            ID3D11ShaderResourceView* depthSRV = GetDepthBufferCopy()->GetShaderResView().Get();
+            context->CSSetShaderResources( 0, 1, &depthSRV );
+            context->CSSetUnorderedAccessViews( 0, 1, normalsTex->GetUnorderedAccessView().GetAddressOf(), nullptr );
+
+            context->Dispatch( (res.x + 7) / 8, (res.y + 7) / 8, 1 );
+
+            ID3D11UnorderedAccessView* nullUAV = nullptr;
+            ID3D11ShaderResourceView* nullSRV = nullptr;
+            context->CSSetUnorderedAccessViews( 0, 1, &nullUAV, nullptr );
+            context->CSSetShaderResources( 0, 1, &nullSRV );
+            context->CSSetShader( nullptr, nullptr, 0 );
+        };
+    } );
+    return normalsHandle;
+}
+
+RGResourceHandle D3D11GraphicsEngine::AddAOMaskPass( RenderGraph& graph, RGResourceHandle normalsResource, bool depthOnlyNormals ) {
+    const AOMode aoMode = Engine::GAPI->GetRendererState().RendererSettings.AoMode;
+    RGResourceHandle aoMask = RG_INVALID_HANDLE;
+    graph.AddPass( RG_PASS_NAME( "AO Mask" ), [&]( RGBuilder& builder, RenderPass& pass ) {
+        auto size = GetResolution();
+        aoMask = builder.CreateTexture( {
+            static_cast<uint32_t>( size.x ), static_cast<uint32_t>( size.y ),
+            DXGI_FORMAT_R8_UNORM, L"AOMask",
+            D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS } );
+        if ( normalsResource != RG_INVALID_HANDLE ) builder.Read( normalsResource );
+        builder.Write( aoMask );
+
+        pass.m_executeCallback = [this, aoMask, normalsResource, aoMode, depthOnlyNormals]( const RenderGraph& graph ) -> void {
+            TracyD3D11ZoneCGX( "D3D11GraphicsEngine::AO Mask" );
+            auto* aoTex = graph.GetPhysicalTexture( aoMask );
+
+            // Ensure the depth copy is current (deferred hasn't copied it yet at this point).
+            CopyDepthStencil();
+
+            // White-clear: "no occlusion" default. HBAO+/ASSAO modulate into this, and when
+            // AO is disabled the mask stays white so the lighting multiply is a no-op.
+            const float white[4] = { 1.f, 1.f, 1.f, 1.f };
+            GetContext()->ClearRenderTargetView( aoTex->GetRenderTargetView().Get(), white );
+
+            ID3D11ShaderResourceView* normalsSRV = nullptr;
+            if ( normalsResource != RG_INVALID_HANDLE ) {
+                auto* n = graph.GetPhysicalTexture( normalsResource );
+                normalsSRV = n ? n->GetShaderResView().Get() : nullptr;
+            }
+            const auto& depthSRV = GetDepthBufferCopy()->GetShaderResView();
+
+            switch ( aoMode ) {
+            case AOMode::AO_HBAO: {
+                // HBAO+ always reconstructs normals from depth internally; normals unused.
+                Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> unusedNormals;
+                PfxRenderer->DrawHBAO( aoTex->GetRenderTargetView(), depthSRV, unusedNormals );
+                break;
+            }
+            case AOMode::AO_ASSAO:
+                // Null normals => ASSAO generates them from depth (depth-only fallback).
+                PfxRenderer->RenderASSAO( aoTex->GetRenderTargetView().Get(),
+                    depthSRV.Get(), depthOnlyNormals ? nullptr : normalsSRV );
+                break;
+            case AOMode::AO_SAO:
+                PfxRenderer->RenderSAOCompute( depthSRV.Get(), normalsSRV,
+                    aoTex->GetUnorderedAccessView().Get(), depthOnlyNormals );
+                break;
+            default:
+                // AO_NONE: mask stays white.
+                break;
+            }
+
+            // Unbind the mask as RTV before the lighting pass binds it as an SRV.
+            ID3D11RenderTargetView* nullRTV = nullptr;
+            GetContext()->OMSetRenderTargets( 1, &nullRTV, nullptr );
+            GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
+        };
+    } );
+    return aoMask;
 }
 
 /** Draws underwater effects */

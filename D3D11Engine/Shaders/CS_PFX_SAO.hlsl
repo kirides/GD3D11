@@ -41,6 +41,34 @@ float3 DecodeNormal( float4 enc )
     return DecodeNormalGBuffer( enc.xy );
 }
 
+#if SAO_RECONSTRUCT_NORMALS
+// Depth-only fallback (Forward+ without the smooth-normals pre-pass): reconstruct a
+// view-space normal from neighbouring depth samples, picking the closest neighbour per
+// axis to keep silhouettes crisp.
+float3 VSPositionAtOffset( float2 texcoord, float2 offset )
+{
+    float2 uv = texcoord + offset * SAO_InvResolution;
+    float rawDepth = TX_Depth.SampleLevel( SS_Linear, uv, 0 ).r;
+    return VSPositionFromDepth( rawDepth, uv );
+}
+
+float3 ReconstructViewNormal( float3 centerPos, float2 texcoord )
+{
+    float3 l = VSPositionAtOffset( texcoord, float2( -1,  0 ) );
+    float3 r = VSPositionAtOffset( texcoord, float2(  1,  0 ) );
+    float3 d = VSPositionAtOffset( texcoord, float2(  0, -1 ) );
+    float3 u = VSPositionAtOffset( texcoord, float2(  0,  1 ) );
+
+    float3 dpdx = ( abs( r.z - centerPos.z ) < abs( centerPos.z - l.z ) ) ? ( r - centerPos ) : ( centerPos - l );
+    float3 dpdy = ( abs( u.z - centerPos.z ) < abs( centerPos.z - d.z ) ) ? ( u - centerPos ) : ( centerPos - d );
+
+    float3 n = normalize( cross( dpdx, dpdy ) );
+    if ( dot( n, -normalize( centerPos ) ) < 0.0 )
+        n = -n;
+    return n;
+}
+#endif
+
 // Golden-angle spiral sampling
 float2 GetSpiralSample( int index, int count )
 {
@@ -78,9 +106,13 @@ void CSMain( uint3 DTid : SV_DispatchThreadID )
         return;
     }
 
-    // Decode view-space normal from GBuffer
+    // Decode view-space normal from GBuffer, or reconstruct from depth (Forward+ fallback)
+#if SAO_RECONSTRUCT_NORMALS
+    float3 viewNormal = ReconstructViewNormal( viewPos, texcoord );
+#else
     float4 normalSample = TX_Normals.SampleLevel( SS_Linear, texcoord, 0 );
     float3 viewNormal = DecodeNormal( normalSample );
+#endif
 
     // Project world-space radius to screen-space pixel radius
     float projScale = float(outSize.y) / ( 2.0 * SAO_ProjParams.y );

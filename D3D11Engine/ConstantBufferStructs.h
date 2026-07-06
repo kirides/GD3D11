@@ -142,6 +142,13 @@ struct SAOBlurConstantBuffer {
     float4 SAO_Blur_ProjParams;
 };
 
+// Used by CS_GenerateNormalsFromDepth (Forward+ optional smooth-normals-from-depth pass)
+struct AONormalsConstantBuffer {
+    float4 AON_ProjParams;    // x = 1/P._11, y = 1/P._22, z = P._34, w = P._33
+    float2 AON_InvResolution; // 1/width, 1/height
+    float2 AON_Pad;
+};
+
 struct HDRSettingsConstantBuffer {
     float HDR_MiddleGray;
     float HDR_LumWhite;

@@ -59,6 +59,8 @@ TextureCube TX_ReflectionCube : register(t5);
 Texture2D TX_Distortion : register(t6);
 Texture2D TX_SI_SP : register(t7);
 Texture2D TX_ShadowBlueNoise : register(t8);
+// Screen-space AO mask (R8). Applied to indirect/ambient light only. White = no occlusion.
+Texture2D TX_AO : register(t9);
 
 #include "ShadowSampling.h"
 
@@ -329,6 +331,9 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
 	float vertAO = lerp(vl * vl, 1.0f, 0.5f);
 
     float sun = saturate(dot(normalize(SQ_LightDirectionVS), normal) * shadow) * 1.0f;
+    
+    // Screen-space AO: applied to indirect/ambient light only (not direct sun).
+    float ssao = TX_AO.Sample(SS_Linear, uv).r;
 
     spec = pow(spec, specPower) * specIntensity;
     float3 specBare = spec * lightColor.rgb * sun + specWet * lightColor.rgb;
@@ -337,7 +342,7 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
     float shadowAO = lerp(1.0f, vertLighting, SQ_ShadowAOStrength);
     float worldAO = lerp(1.0f, vertLighting, SQ_WorldAOStrength);
 	
-    float3 litPixel = lerp(diffuse.rgb * SQ_ShadowStrength * sunStrength * shadowAO,
+    float3 litPixel = lerp(diffuse.rgb * SQ_ShadowStrength * sunStrength * shadowAO * ssao,
 							diffuse.rgb * lightColor.rgb * lightColor.a * worldAO, sun)
 				  + specColored;
 	

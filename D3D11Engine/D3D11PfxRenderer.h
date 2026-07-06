@@ -72,9 +72,12 @@ public:
                        ID3D11ShaderResourceView* normalsSRV,
                        ID3D11RenderTargetView* outputRTV );
 
-    /** Computes SAO into internal buffer, skipping the final modulate blit */
+    /** Computes SAO and writes the final R8_UNORM AO mask into outputUAV, skipping the
+        modulate blit. reconstructNormals derives view normals from depth (Forward+). */
     XRESULT RenderSAOCompute( ID3D11ShaderResourceView* depthSRV,
-                              ID3D11ShaderResourceView* normalsSRV );
+                              ID3D11ShaderResourceView* normalsSRV,
+                              ID3D11UnorderedAccessView* outputUAV,
+                              bool reconstructNormals = false );
 
     /** Returns the SRV of the last computed SAO result (R8_UNORM) */
     ID3D11ShaderResourceView* GetSAOResultSRV() const;

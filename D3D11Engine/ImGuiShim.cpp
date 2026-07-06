@@ -1260,6 +1260,9 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                 }
                 ImGui::SetItemTooltip( "Forward+ debug option: precompute sun shadows in a separate screen-space pass. Changing this reloads light/shadow shaders." );
 
+                ImGui::Checkbox( "Generate AO Normals From Depth", &settings.DebugSettings.FeatureSet.GenerateAONormalsFromDepth );
+                ImGui::SetItemTooltip( "Forward+ only: run a compute pass that builds smooth normals from depth for SAO/ASSAO. Off = depth-only AO fallback." );
+
                 ImGui::Checkbox("Use World Section BVH", &settings.DebugSettings.FeatureSet.UseWorldSectionBVH );
                 ImGui::SetItemTooltip("Use Bounding Volume Hierarchy for world sections. Improves culling performance.");
 
