@@ -778,6 +778,7 @@ struct GothicRendererSettings {
 
         LimitLightIntesity = false;
         AllowNormalmaps = false;
+        CompressedNormalsSupport = true;
 
         AllowNumpadKeys = false;
         EnableDebugLog = true;
@@ -1038,7 +1039,8 @@ struct GothicRendererSettings {
     E_AntiAliasingMode AntiAliasingMode;
     E_SharpeningMode SharpeningMode;
     E_GraphicsPreset GraphicsPreset;
-    
+    bool CompressedNormalsSupport;
+
     struct {
         struct {
             bool DepthMotionVectors;

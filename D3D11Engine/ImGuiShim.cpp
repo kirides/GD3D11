@@ -1256,6 +1256,9 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                 ImGui::Checkbox("Use World Section BVH", &settings.DebugSettings.FeatureSet.UseWorldSectionBVH );
                 ImGui::SetItemTooltip("Use Bounding Volume Hierarchy for world sections. Improves culling performance.");
 
+                ImGui::Checkbox("Compressed Normalmaps support", &settings.CompressedNormalsSupport );
+                ImGui::SetItemTooltip("Enables support for BC5 compressed Normalmaps.");
+
                 ImGui::Checkbox("Force Feature Level 10", &settings.DebugSettings.FeatureSet.ForceFeatureLevel10 );
                 ImGui::SetItemTooltip("Force DirectX 10 era feature support. Requires restart.");
                 ImGui::EndTabItem();
