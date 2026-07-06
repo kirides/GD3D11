@@ -46,7 +46,10 @@ float3 perturb_normal_rgb( float3 N, float3 V, Texture2D normalmap, float2 texco
     // assume N, the interpolated vertex normal and 
     // V, the view vector (vertex to eye)
     float3 nrmmap = normalmap.Sample(samplerState, texcoord).xyz * 2 - 1;
-	nrmmap.xy *= -1.0f;
+#if NORMAL_MAP_MODE == 2
+    // flip G channel in DirectX Normals
+	nrmmap.y = -nrmmap.y;
+#endif
 	nrmmap.xy *= normalmapDepth;
 	nrmmap = normalize(nrmmap);
 	
