@@ -88,6 +88,7 @@ typedef void( __cdecl* PFN_BEGINUAVOVERLAP )(ID3D11DeviceContext* context);
 typedef void( __cdecl* PFN_ENDUAVOVERLAP )(ID3D11DeviceContext* context);
 
 PFN_DRAWMULTIINDEXEDINSTANCEDINDIRECT DrawMultiIndexedInstancedIndirect = nullptr;
+PFN_DRAWMULTIINDEXEDINSTANCEDINDIRECT ResolvedDrawMultiIndexedInstancedIndirect = nullptr;
 PFN_BEGINUAVOVERLAP BeginUAVOverlap = nullptr;
 PFN_ENDUAVOVERLAP EndUAVOverlap = nullptr;
 
@@ -553,7 +554,7 @@ XRESULT D3D11GraphicsEngine::Init() {
                 nvapiDevice.reset();
             } else {
                 if ( void* NvAPI_D3D11_MultiDrawIndexedInstancedIndirect = nvapiDevice->GetDrawMultiIndexedInstancedIndirect() ) {
-                    DrawMultiIndexedInstancedIndirect = reinterpret_cast<PFN_DRAWMULTIINDEXEDINSTANCEDINDIRECT>(NvAPI_D3D11_MultiDrawIndexedInstancedIndirect);
+                    ResolvedDrawMultiIndexedInstancedIndirect = reinterpret_cast<PFN_DRAWMULTIINDEXEDINSTANCEDINDIRECT>(NvAPI_D3D11_MultiDrawIndexedInstancedIndirect);
                 }
 
                 void* NvAPI_D3D11_BeginUAVOverlap = nvapiDevice->GetBeginUAVOverlap();
@@ -638,7 +639,7 @@ XRESULT D3D11GraphicsEngine::Init() {
         Microsoft::WRL::ComPtr<ID3D11VkExtDevice> DXVKDevice;
         if ( SUCCEEDED( Device11.As( &DXVKDevice ) ) ) {
             if ( DXVKDevice->GetExtensionSupport( D3D11_VK_EXT_MULTI_DRAW_INDIRECT ) ) {
-                DrawMultiIndexedInstancedIndirect = DXVK_DrawMultiIndexedInstancedIndirect;
+                ResolvedDrawMultiIndexedInstancedIndirect = DXVK_DrawMultiIndexedInstancedIndirect;
             }
 
             if ( DXVKDevice->GetExtensionSupport( D3D11_VK_EXT_BARRIER_CONTROL ) ) {
@@ -650,7 +651,7 @@ XRESULT D3D11GraphicsEngine::Init() {
         nvapiDevice->RegisterDevice( Device11.Get() );
     } else if ( agsDevice ) {
         if ( agsDevice->IsDrawMultiIndexedInstancedIndirectAvailable() ) {
-            DrawMultiIndexedInstancedIndirect = AGS_DrawMultiIndexedInstancedIndirect;
+            ResolvedDrawMultiIndexedInstancedIndirect = AGS_DrawMultiIndexedInstancedIndirect;
         }
 
         if ( agsDevice->IsUAVOverlapAvailable() ) {
@@ -665,7 +666,7 @@ XRESULT D3D11GraphicsEngine::Init() {
             igdextDevice.reset();
         } else {
             if ( igdextDevice->IsDrawMultiIndexedInstancedIndirectAvailable() ) {
-                DrawMultiIndexedInstancedIndirect = IGDEXT_DrawMultiIndexedInstancedIndirect;
+                ResolvedDrawMultiIndexedInstancedIndirect = IGDEXT_DrawMultiIndexedInstancedIndirect;
             }
 
             if ( igdextDevice->IsUAVOverlapAvailable() ) {
@@ -697,18 +698,22 @@ XRESULT D3D11GraphicsEngine::Init() {
     if ( SUCCEEDED( result ) ) {
         // Don't use extensions if they are available
         // renderdoc doesn't like them
-        DrawMultiIndexedInstancedIndirect = Stub_DrawMultiIndexedInstancedIndirect;
+        ResolvedDrawMultiIndexedInstancedIndirect = Stub_DrawMultiIndexedInstancedIndirect;
         BeginUAVOverlap = Stub_BeginUAVOverlap;
         EndUAVOverlap = Stub_EndUAVOverlap;
     }
 
-    if ( !DrawMultiIndexedInstancedIndirect ) {
-        DrawMultiIndexedInstancedIndirect = Stub_DrawMultiIndexedInstancedIndirect;
+    if ( !ResolvedDrawMultiIndexedInstancedIndirect ) {
+        ResolvedDrawMultiIndexedInstancedIndirect = Stub_DrawMultiIndexedInstancedIndirect;
     }
 
-    Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseMDI = 
+    Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseMDI =
         !FeatureLevel10Compatibility
-        && DrawMultiIndexedInstancedIndirect != Stub_DrawMultiIndexedInstancedIndirect;
+        && ResolvedDrawMultiIndexedInstancedIndirect != Stub_DrawMultiIndexedInstancedIndirect;
+
+    DrawMultiIndexedInstancedIndirect = Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseMDI
+        ? ResolvedDrawMultiIndexedInstancedIndirect
+        : Stub_DrawMultiIndexedInstancedIndirect;
 
     if ( !BeginUAVOverlap || !EndUAVOverlap ) {
         BeginUAVOverlap = Stub_BeginUAVOverlap;
@@ -1469,6 +1474,10 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
     
     rendererState.RendererInfo.RenderStage = STAGE_DRAW_UNKNOWN;
     ResetFrameTransientBufferPools();
+
+    DrawMultiIndexedInstancedIndirect = rendererState.RendererSettings.DebugSettings.FeatureSet.UseMDI
+        ? ResolvedDrawMultiIndexedInstancedIndirect
+        : Stub_DrawMultiIndexedInstancedIndirect;
 
     if (NewResolution != Resolution) {
         OnResize(NewResolution);
@@ -5298,7 +5307,7 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
     }
 
     constexpr unsigned int argStride = sizeof( D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS );
-
+    
     // === Z-Prepass ===
     {
         ZoneScopedN( "DrawWaterSurfaces::ZPrepass" );
@@ -6118,10 +6127,6 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<W
     bool linearDepth = (Engine::GAPI->GetRendererState().GraphicsState.FF_GSwitches &
                 GSWITCH_LINEAR_DEPTH) != 0;
 
-    auto drawMultiIndexedInstancedIndirect = Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseMDI
-        ? DrawMultiIndexedInstancedIndirect
-        : Stub_DrawMultiIndexedInstancedIndirect;
-
     if ( Engine::GAPI->GetRendererState().RendererSettings.FastShadows && !cullingFrustum ) {
         if ( !linearDepth ) {
             Context->PSSetShader( nullptr, nullptr, 0 );
@@ -6215,7 +6220,7 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<W
         if ( shadowIndirectBuffer ) {
             Context->IASetIndexBuffer( wrappedWorldMesh->MeshShadowIndexBuffer->GetVertexBuffer().Get(), DXGI_FORMAT_R32_UINT, 0 );
 
-            drawMultiIndexedInstancedIndirect( Context.Get(),
+            DrawMultiIndexedInstancedIndirect( Context.Get(),
                 static_cast<unsigned int>( opaqueDrawArgs.size() ),
                 shadowIndirectBuffer->GetIndirectBuffer().Get(),
                 0,
