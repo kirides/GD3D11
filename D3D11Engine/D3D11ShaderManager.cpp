@@ -227,6 +227,10 @@ XRESULT D3D11ShaderManager::Init() {
 
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_Water>( "PS_Water.hlsl" )
+        .with_macros( []( std::vector<D3D_SHADER_MACRO>& list ) {
+            const auto& s = Engine::GAPI->GetRendererState().RendererSettings;
+            list.push_back( { "SSR_QUALITY", sNums[std::clamp<size_t>( s.WaterSSRQuality, 0, 3 )] } );
+        } )
         .with_category( ShaderCategory::Water )  );
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_ParticleDistortion>( "PS_ParticleDistortion.hlsl" )  );

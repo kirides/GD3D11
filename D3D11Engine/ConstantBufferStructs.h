@@ -353,6 +353,8 @@ struct RefractionInfoConstantBuffer {
 
     float3 RI_CameraPosition;
     float RI_Pad2;
+
+    XMFLOAT4X4 RI_View; // World->view, for screen-space reflection ray marching
 };
 
 struct AtmosphereConstantBuffer {

@@ -332,7 +332,8 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
 
     float sun = saturate(dot(normalize(SQ_LightDirectionVS), normal) * shadow) * 1.0f;
     
-    // Screen-space AO: applied to indirect/ambient light only (not direct sun).
+    // Screen-space AO: applied to indirect/ambient light only (not direct sun),
+    // so it doesn't produce deep shadows on ground/objects that are lit strongly by the sun.
     float ssao = TX_AO.Sample(SS_Linear, uv).r;
 
     spec = pow(spec, specPower) * specIntensity;

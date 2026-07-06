@@ -5334,6 +5334,8 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
         ricb.RI_ViewportSize = float2( Resolution.x, Resolution.y );
         ricb.RI_Time = Engine::GAPI->GetTimeSeconds();
         ricb.RI_CameraPosition = float3( Engine::GAPI->GetCameraPosition() );
+        ricb.RI_Pad2 = 0.0f;
+        ricb.RI_View = Engine::GAPI->GetRendererState().TransformState.TransformView; // not transposed, PS takes care of proper mul-order
 
         ActivePS->GetBuffer( "RefractionInfo" ).Update( &ricb ).Bind();
 

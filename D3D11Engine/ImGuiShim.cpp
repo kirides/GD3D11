@@ -575,6 +575,14 @@ void ImGuiShim::RenderSettingsWindow()
             if ( ImGui::Checkbox( "Enable Water waves", &settings.EnableWaterAnimation ) ) {
                 shadersToReload |= ShaderCategory::Water;
             }
+            {
+                const char* ssrLevels[] = { "Disabled", "Low", "Medium", "High" };
+                int ssr = settings.WaterSSRQuality;
+                if ( ImGui::Combo( "Water Reflections (SSR)", &ssr, ssrLevels, IM_ARRAYSIZE( ssrLevels ) ) ) {
+                    settings.WaterSSRQuality = (GothicRendererSettings::E_WaterSSRQuality)ssr;
+                    shadersToReload |= ShaderCategory::Water; // recompile PS_Water with the new SSR_QUALITY
+                }
+            }
             ImGui::Checkbox( "Limit Light Intensity", &settings.LimitLightIntesity );
             ImGui::Checkbox( "Draw World Section Intersections", &settings.DrawSectionIntersections );
             ImGui::SetItemTooltip( "This option draws every world chunk that intersect with GD3D11 world draw distance." );

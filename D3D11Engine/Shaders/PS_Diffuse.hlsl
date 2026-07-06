@@ -143,7 +143,7 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
 			// per cascade inside the function so the blended (coarser) cascade isn't under-biased.
 			shadow = ComputeCascadedShadowValueSoft(wsPosition, wsNormal, slopeScale, vsPosition.z, vertLighting, constantDepthBias, Input.vPosition.xy);
 
-		#endif
+		#endif 
 	} else {
         // Night-time sky ambient:
         // saturate(wsNormal.y) restricts the value to [0, 1].
@@ -152,7 +152,8 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
     }
 #endif
 
-	// Screen-space AO mask (indirect light only)
+	// Screen-space AO mask, applied to indirect/ambient light only (not direct sun),
+	// so it doesn't produce deep shadows on ground/objects that are lit strongly by the sun.
 	float ssao = FP_AOMask.Load( int3( int2( Input.vPosition.xy ), 0 ) ).r;
 
 	// Sun lighting
