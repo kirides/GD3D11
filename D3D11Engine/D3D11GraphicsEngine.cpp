@@ -1104,8 +1104,11 @@ XRESULT D3D11GraphicsEngine::RecreateBuffers() {
     }
 
     auto roundedTextureResolution = GetResolution( );
-    if ( lastRoundedTextureResolution == roundedTextureResolution ) {
+    if ( DepthStencilBuffer 
+        && lastRoundedTextureResolution == roundedTextureResolution ) {
         // same resolution, just adjusting the viewport
+        // if DepthStencilBuffer is missing, we're likely changing display mode.
+        // thus continue with the work.
         return XR_SUCCESS;
     }
     lastRoundedTextureResolution = roundedTextureResolution;

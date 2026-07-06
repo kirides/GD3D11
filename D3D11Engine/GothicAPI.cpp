@@ -6196,7 +6196,7 @@ static void CollectLeafVobs(
                 if ( vit == VobLightMap.end() ) {
                     bool PFXVobLight = false;
                     if ( zCVob* parent = vob->GetVobParent() ) {
-                        if ( parent->As<oCVisualFX>() ) {
+                        if ( parent && parent->As<oCVisualFX>() ) {
                             PFXVobLight = true;
                         }
                     }
