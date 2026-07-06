@@ -5299,6 +5299,8 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
 
     constexpr unsigned int argStride = sizeof( D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS );
 
+    const bool useMdiEnabled = Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseMDI;
+    
     // === Z-Prepass ===
     {
         ZoneScopedN( "DrawWaterSurfaces::ZPrepass" );
@@ -5310,7 +5312,7 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
 
         GetContext()->PSSetShader( nullptr, nullptr, 0 );
 
-        if ( !FeatureLevel10Compatibility ) {
+        if ( useMdiEnabled && !FeatureLevel10Compatibility ) {
             // MDI path: upload all draw args and dispatch in one call
             const size_t requiredSize = waterDrawArgs.size() * argStride;
 
@@ -5378,7 +5380,7 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
         // Bind reflection cube
         GetContext()->PSSetShaderResources( 3, 1, ReflectionCube.GetAddressOf() );
 
-        if ( !FeatureLevel10Compatibility ) {
+        if ( useMdiEnabled && !FeatureLevel10Compatibility ) {
             // MDI path: one MDI call per texture batch
             for ( const auto& batch : waterBatches ) {
                 batch.texture->CacheIn( -1 );
