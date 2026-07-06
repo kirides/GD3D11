@@ -21,7 +21,7 @@ D3D11PointLight::D3D11PointLight( VobLightInfo* info, bool dynamicLight ) {
         const auto vob = info->Vob;
         const auto& lightFlags = vob->GetLightInfoFlags();
         if ( lightFlags.m_bCanMove && !info->IsPFXVobLight ) {
-            if ( auto parent = vob->GetVobParent(); parent->GetObjectName().Length() > 0 ) {
+            if ( auto parent = vob->GetVobParent(); parent && parent->GetObjectName().Length() > 0 ) {
                 m_ForceRealtimeShadows = true;
             }
         }
