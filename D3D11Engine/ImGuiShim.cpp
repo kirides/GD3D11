@@ -469,7 +469,14 @@ void ImGuiShim::RenderSettingsWindow()
         {
             ImGui::BeginGroup();
             ImGui::Checkbox( "Vsync", &settings.EnableVSync );
-            if ( ImGui::Checkbox( "NormalMaps", &settings.AllowNormalmaps ) ) {
+            bool enabled = settings.AllowNormalmaps > 0; 
+            if ( ImGui::Checkbox( "NormalMaps", &enabled ) ) {
+                if (enabled) {
+                    settings.AllowNormalmaps = 1;
+                } else {
+                    settings.AllowNormalmaps = 0;
+                }
+                Engine::GraphicsEngine->ReloadShaders();
                 Engine::GAPI->UpdateTextureMaxSize();
             }
 
@@ -1260,6 +1267,20 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                     Engine::GraphicsEngine->ReloadShaders();
                 }
                 ImGui::SetItemTooltip("Enables support for BC5 compressed Normalmaps.");
+
+                static const std::vector<std::pair<const char*, int>> normalMapType = {
+                    { "Disabled",   0 },
+                    { "OpenGL (Y+)",   1 }, 
+                    { "DirectX (Y-)",   2 },
+                };
+                if ( ImComboBoxC( "Normalmapping texture mode", normalMapType, &settings.AllowNormalmaps, []
+                {
+                    Engine::GraphicsEngine->ReloadShaders();
+                    Engine::GAPI->UpdateTextureMaxSize();
+                } ) ) {
+                    ImGui::EndCombo();
+                }
+                ImGui::SetItemTooltip("Enable Normalmapping.\nIf in doubt ask the creator of the Normalmaps you use.\nRequires Normalmaps with RGB channel layout.");
 
                 ImGui::Checkbox("Force Feature Level 10", &settings.DebugSettings.FeatureSet.ForceFeatureLevel10 );
                 ImGui::SetItemTooltip("Force DirectX 10 era feature support. Requires restart.");

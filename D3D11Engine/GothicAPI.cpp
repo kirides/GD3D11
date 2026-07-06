@@ -128,7 +128,7 @@ void MaterialInfo::LoadFromFile( const std::string_view name ) {
     // Write the version first
     int version;
     memcpy( &version, ReadBuffer, sizeof( int ) );
-
+    
     // Then the data
     ZeroMemory( &buffer, sizeof( MaterialInfo::Buffer ) );
     memcpy( &buffer, ReadBuffer + sizeof( int ), sizeof( MaterialInfo::Buffer ) );
@@ -5246,7 +5246,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "General", "DoFFocusRange", float_to_string( s.DoFFocusRange, 1 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "DoFBokehRadius", float_to_string( s.DoFBokehRadius, 1 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "DoFMaxBlur", float_to_string( s.DoFMaxBlur, 1 ).c_str(), ini.c_str() );
-    WritePrivateProfileStringA( "General", "AllowNormalmaps", to_string_locale_independent( s.AllowNormalmaps ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "AllowNormalmaps", to_string_locale_independent( s.AllowNormalmaps ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "AllowNumpadKeys", to_string_locale_independent( s.AllowNumpadKeys ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "EnableInactiveFpsLock", to_string_locale_independent( s.EnableInactiveFpsLock ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "MultiThreadResourceManager", to_string_locale_independent( s.MTResoureceManager ? TRUE : FALSE ).c_str(), ini.c_str() );
@@ -5377,7 +5377,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.DoFFocusRange = GetPrivateProfileFloatA( "General", "DoFFocusRange", ds.DoFFocusRange, ini );
         s.DoFBokehRadius = GetPrivateProfileFloatA( "General", "DoFBokehRadius", ds.DoFBokehRadius, ini );
         s.DoFMaxBlur = GetPrivateProfileFloatA( "General", "DoFMaxBlur", ds.DoFMaxBlur, ini );
-        s.AllowNormalmaps = GetPrivateProfileBoolA( "General", "AllowNormalmaps", ds.AllowNormalmaps, ini );
+        s.AllowNormalmaps = GetPrivateProfileIntA( "General", "AllowNormalmaps", ds.AllowNormalmaps, ini.c_str() );
         s.AllowNumpadKeys = GetPrivateProfileBoolA( "General", "AllowNumpadKeys", ds.AllowNumpadKeys, ini );
         s.EnableInactiveFpsLock = GetPrivateProfileBoolA( "General", "EnableInactiveFpsLock", ds.EnableInactiveFpsLock, ini );
         s.MTResoureceManager = GetPrivateProfileBoolA( "General", "MultiThreadResourceManager", ds.MTResoureceManager, ini );

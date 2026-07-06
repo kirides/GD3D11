@@ -777,7 +777,7 @@ struct GothicRendererSettings {
         //DisableEverything();
 
         LimitLightIntesity = false;
-        AllowNormalmaps = false;
+        AllowNormalmaps = 0;
         CompressedNormalsSupport = true;
 
         AllowNumpadKeys = false;
@@ -1015,7 +1015,7 @@ struct GothicRendererSettings {
     bool EnableRainEffects;
 
     bool LimitLightIntesity;
-    bool AllowNormalmaps;
+    int AllowNormalmaps;
 
     bool AllowNumpadKeys;
     bool EnableDebugLog;
