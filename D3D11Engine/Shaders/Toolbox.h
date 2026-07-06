@@ -50,6 +50,7 @@ float3 perturb_normal_rgb( float3 N, float3 V, Texture2D normalmap, float2 texco
     // flip G channel in DirectX Normals
 	nrmmap.y = -nrmmap.y;
 #endif
+    nrmmap.x = -nrmmap.x; // we require inverted x or specular shading will be incorrect in some angles
 	nrmmap.xy *= normalmapDepth;
 	nrmmap = normalize(nrmmap);
 	
@@ -67,6 +68,7 @@ float3 perturb_normal_restore_z( float3 N, float3 V, Texture2D normalmap, float2
     // flip G channel in DirectX Normals
 	nrmmap_xy.y = -nrmmap_xy.y;
 #endif
+    nrmmap_xy.x = -nrmmap_xy.x; // we require inverted x or specular shading will be incorrect in some angles
 	nrmmap_xy.xy *= normalmapDepth;
 
     // Reconstruct the Z (Blue) channel using the Pythagorean theorem
