@@ -290,6 +290,7 @@ void ImGuiEditorView::RenderTextureSelectionPanel() {
         }
     }
 
+    /* per (World) Mesh settings are obsolete and not used. (tesselation  etc.) 
     ImGui::Separator();
     ImGui::Text("WorldMesh-Settings:");
 
@@ -307,6 +308,7 @@ void ImGuiEditorView::RenderTextureSelectionPanel() {
 
     ImGui::Spacing();
     ImGui::TextWrapped("Press Space to subdivide the selected surface. (Not saved yet)");
+    */
 }
 
 void ImGuiEditorView::RenderVegetationSelectionPanel() {
