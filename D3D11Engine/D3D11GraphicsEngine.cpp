@@ -9171,7 +9171,7 @@ void D3D11GraphicsEngine::SaveScreenshot() {
 namespace UI::zFont {
     void AppendGlyphs(
         std::vector<ExVertexStruct>& vertices,
-        const std::string& str, size_t strLen,
+        std::string_view str,
         float x, float y,
         const ::zFont* font,
         zColor fontColor, float scale = 1.0f, zCCamera* camera = nullptr ) {
@@ -9184,8 +9184,8 @@ namespace UI::zFont {
         if ( camera ) farZ = camera->GetNearPlane() + 1.0f;
         else                       farZ = 1.0f;
 
-        vertices.resize( strLen * 6 );
-        for ( size_t i = 0; i < strLen; ++i ) {
+        vertices.resize( str.size() * 6 );
+        for ( size_t i = 0; i < str.size(); ++i ) {
             const unsigned char& c = str[i];
 
             auto topLeft = font->fontuv1[c];
@@ -9258,7 +9258,7 @@ float  D3D11GraphicsEngine::UpdateCustomFontMultiplierFontRendering( float multi
     return res; 
 }
 
-void D3D11GraphicsEngine::DrawString( const std::string& str, float x, float y, const zFont* font, zColor& fontColor ) {
+void D3D11GraphicsEngine::DrawString( std::string_view str, float x, float y, const zFont* font, zColor& fontColor ) {
     if ( !font ) return;
     if ( !font->tex ) return;
 
@@ -9271,6 +9271,7 @@ void D3D11GraphicsEngine::DrawString( const std::string& str, float x, float y, 
         --maxLen;
     }
     if ( !maxLen ) return;
+    str = str.substr(0, maxLen);
 
     float UIScale = 1.0f;
     static int savedBarSize = -1;
@@ -9293,11 +9294,11 @@ void D3D11GraphicsEngine::DrawString( const std::string& str, float x, float y, 
     //
     // Set alpha blending
     //
-    DWORD zrenderer = *reinterpret_cast<DWORD*>(GothicMemoryLocations::GlobalObjects::zRenderer);
-    reinterpret_cast<void( __thiscall* )(DWORD, int, int)>(GothicMemoryLocations::zCRndD3D::XD3D_SetRenderState)(zrenderer, 27, 1);
-    reinterpret_cast<void( __thiscall* )(DWORD, int, int)>(GothicMemoryLocations::zCRndD3D::XD3D_SetRenderState)(zrenderer, 15, 0);
-    reinterpret_cast<void( __thiscall* )(DWORD, int, int)>(GothicMemoryLocations::zCRndD3D::XD3D_SetRenderState)(zrenderer, 19, 5);
-    reinterpret_cast<void( __thiscall* )(DWORD, int, int)>(GothicMemoryLocations::zCRndD3D::XD3D_SetRenderState)(zrenderer, 20, 6);
+    DWORD_PTR zrenderer = *reinterpret_cast<DWORD_PTR*>(GothicMemoryLocations::GlobalObjects::zRenderer);
+    reinterpret_cast<void( __thiscall* )(DWORD_PTR, int, int)>(GothicMemoryLocations::zCRndD3D::XD3D_SetRenderState)(zrenderer, 27, 1); // D3DRENDERSTATE_ALPHABLENDENABLE
+    reinterpret_cast<void( __thiscall* )(DWORD_PTR, int, int)>(GothicMemoryLocations::zCRndD3D::XD3D_SetRenderState)(zrenderer, 15, 0); // D3DRENDERSTATE_ALPHATESTENABLE
+    reinterpret_cast<void( __thiscall* )(DWORD_PTR, int, int)>(GothicMemoryLocations::zCRndD3D::XD3D_SetRenderState)(zrenderer, 19, 5); // D3DRENDERSTATE_SRCBLEND
+    reinterpret_cast<void( __thiscall* )(DWORD_PTR, int, int)>(GothicMemoryLocations::zCRndD3D::XD3D_SetRenderState)(zrenderer, 20, 6); // D3DRENDERSTATE_DESTBLEND
 
     //
     // Backup old renderstates, BlendState can be ignored here.
@@ -9345,7 +9346,7 @@ void D3D11GraphicsEngine::DrawString( const std::string& str, float x, float y, 
     static std::vector<ExVertexStruct> vertices;
     vertices.clear();
 
-    UI::zFont::AppendGlyphs( vertices, str, maxLen, x, y, font, fontColor, UIScale, zCCamera::GetCamera() );
+    UI::zFont::AppendGlyphs( vertices, str, x, y, font, fontColor, UIScale, zCCamera::GetCamera() );
 
     // Bind the texture.
     tx->Bind( 0 );
@@ -9354,7 +9355,7 @@ void D3D11GraphicsEngine::DrawString( const std::string& str, float x, float y, 
     // Populate TempVertexBuffer
     //
     EnsureTempVertexBufferSize( TempVertexBuffer, sizeof( ExVertexStruct ) * vertices.size() );
-    TempVertexBuffer->UpdateBuffer( &vertices[0], sizeof( ExVertexStruct ) * vertices.size() );
+    TempVertexBuffer->UpdateBuffer(vertices.data(), sizeof( ExVertexStruct ) * vertices.size() );
 
     //
     // Draw the verticies

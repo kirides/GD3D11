@@ -163,7 +163,7 @@ public:
     /** Saves a screenshot */
     void SaveScreenshot() override;
 
-    void DrawString( const std::string& str, float x, float y, const zFont* font, zColor& fontColor ) override;
+    void DrawString( std::string_view str, float x, float y, const zFont* font, zColor& fontColor ) override;
 
     //virtual int MeasureString(std::string str, zFont* zFont) override;
 
