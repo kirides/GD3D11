@@ -176,7 +176,7 @@ struct CameraReplacement {
 };
 
 /** Version of this struct */
-const int MATERIALINFO_VERSION = 6;
+const int MATERIALINFO_VERSION = 7;
 
 struct MaterialInfo {
     enum EMaterialType {

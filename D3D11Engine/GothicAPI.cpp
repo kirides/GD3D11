@@ -90,11 +90,20 @@ void MaterialInfo::WriteToFile( const std::string_view name ) {
         return;
     }
 
+    uint8_t WriteBuffer[sizeof( int ) + sizeof( MaterialInfo::Buffer )];
+
+    auto writer = serde::ByteBufferWriter( WriteBuffer, std::size( WriteBuffer ) );
     // Write the version first
-    fwrite( &MATERIALINFO_VERSION, sizeof( MATERIALINFO_VERSION ), 1, f );
+    serde::SerializeTo( writer, MATERIALINFO_VERSION );
 
     // Then the data
-    fwrite( &buffer, sizeof( MaterialInfo::Buffer ), 1, f );
+    serde::SerializeTo( writer, buffer.SpecularIntensity );
+    serde::SerializeTo( writer, buffer.SpecularPower );
+    serde::SerializeTo( writer, buffer.NormalmapStrength );
+    serde::SerializeTo( writer, buffer.DisplacementFactor );
+    serde::SerializeTo( writer, buffer.Color );
+
+    std::fwrite( WriteBuffer, 1, std::size( WriteBuffer ), f );
     fclose( f );
 }
 
@@ -102,7 +111,7 @@ void MaterialInfo::WriteToFile( const std::string_view name ) {
 void MaterialInfo::LoadFromFile( const std::string_view name ) {
     
     bool foundFile = false;
-    char ReadBuffer[sizeof( int ) + sizeof( MaterialInfo::Buffer )];
+    uint8_t ReadBuffer[sizeof( int ) + sizeof( MaterialInfo::Buffer )]{};
     
     thread_local std::string filePath{};
     filePath.reserve( 255 );
@@ -133,9 +142,18 @@ void MaterialInfo::LoadFromFile( const std::string_view name ) {
         return;
     }
     
+
+    int version;
+    auto reader = serde::ByteBufferReader(ReadBuffer, std::size(ReadBuffer));
+    serde::DeserializeFrom( reader, version );
+
+    buffer.SetDefaults();
     // Then the data
-    ZeroMemory( &buffer, sizeof( MaterialInfo::Buffer ) );
-    memcpy( &buffer, ReadBuffer + sizeof( int ), sizeof( MaterialInfo::Buffer ) );
+    serde::DeserializeFrom( reader, buffer.SpecularIntensity );
+    serde::DeserializeFrom( reader, buffer.SpecularPower );
+    serde::DeserializeFrom( reader, buffer.NormalmapStrength );
+    serde::DeserializeFrom( reader, buffer.DisplacementFactor );
+    serde::DeserializeFrom( reader, buffer.Color );
 
     if ( version < 2 ) {
         buffer.DisplacementFactor = 0.0f;
