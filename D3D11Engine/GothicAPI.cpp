@@ -1897,14 +1897,15 @@ void GothicAPI::GetVisibleDecalList( std::vector<zCVob*>& decals ) {
 
 /** Called when a material got removed */
 void GothicAPI::OnMaterialDeleted( zCMaterial* mat ) {
+    auto matHandle = GetMaterialManager().FindMaterialHandle(mat);
     GetMaterialManager().DeleteMaterial(mat);
     LoadedMaterials.erase( mat );
     if ( !mat )
         return;
 
-    auto eraseMeshKeyEntries = [mat]( auto& cont ) {
+    auto eraseMeshKeyEntries = [matHandle]( auto& cont ) {
         for ( auto it = cont.begin(); it != cont.end(); ) {
-            if ( it->first.Material == mat ) {
+            if ( it->first.Material == matHandle ) {
                 it = cont.erase( it );
             } else {
                 ++it;
@@ -1912,10 +1913,10 @@ void GothicAPI::OnMaterialDeleted( zCMaterial* mat ) {
         }
     };
 
-    auto eraseCachedMeshKeyEntries = [mat]( auto& cont ) {
+    auto eraseCachedMeshKeyEntries = [matHandle]( auto& cont ) {
         cont.erase( std::remove_if( cont.begin(), cont.end(),
-            [mat]( const auto& entry ) {
-                return entry.first.Material == mat;
+            [matHandle]( const auto& entry ) {
+                return entry.first.Material == matHandle;
             } ), cont.end() );
     };
 
@@ -1961,7 +1962,7 @@ void GothicAPI::OnMaterialDeleted( zCMaterial* mat ) {
             WorldMeshSectionInfo& section = sectionY.second;
 
             for ( auto it = section.WorldMeshes.begin(); it != section.WorldMeshes.end(); ) {
-                if ( it->first.Material == mat ) {
+                if ( it->first.Material == matHandle ) {
                     delete it->second;
                     it = section.WorldMeshes.erase( it );
                 } else {
@@ -1970,7 +1971,7 @@ void GothicAPI::OnMaterialDeleted( zCMaterial* mat ) {
             }
 
             for ( auto it = section.SuppressedMeshes.begin(); it != section.SuppressedMeshes.end(); ) {
-                if ( it->first.Material == mat ) {
+                if ( it->first.Material == matHandle ) {
                     delete it->second;
                     it = section.SuppressedMeshes.erase( it );
                 } else {
