@@ -11,6 +11,7 @@
 #include "zCPolygon.h"
 #include "BaseShadowedPointLight.h"
 #include "D3D11VertexBuffer.h"
+#include "MaterialHandle.h"
 
 class zCMaterial;
 class zCPolygon;
@@ -51,7 +52,7 @@ struct RainParticleStatic {
 
 struct MeshKey {
     zCTexture* Texture;
-    zCMaterial* Material;
+    MaterialHandle Material;
     MaterialInfo* Info;
     //zCLightmap* Lightmap;
     
@@ -69,7 +70,7 @@ struct cmpMeshKey {
 
 struct meshKeyHasher {
     size_t operator()( const MeshKey& a ) const {
-        size_t seed = reinterpret_cast<size_t>(a.Material);
+        size_t seed = a.Material.handle;
         Toolbox::hash_combine(seed, reinterpret_cast<size_t>(a.Texture));
         return seed;
     }

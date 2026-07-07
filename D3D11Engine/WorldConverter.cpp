@@ -76,7 +76,7 @@ void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float ra
 
     INT2 s = GetSectionOfPos( position );
     MeshKey opaqueKey;
-    opaqueKey.Material = nullptr;
+    opaqueKey.Material = {};
     opaqueKey.Info = nullptr;
     opaqueKey.Texture = nullptr;
 
@@ -217,13 +217,17 @@ XRESULT WorldConverter::LoadWorldMeshFromFile( const std::string& file, std::map
     std::vector<std::string>& textures = mesh->GetTextures();
     std::map<std::string, D3D11Texture*> loadedTextures;
     gtl::flat_hash_set<std::string> missingTextures;
+    
+    auto& materialManager = Engine::GAPI->GetMaterialManager();
 
     // run through meshes and pack them into sections
     for ( unsigned int m = 0; m < meshes.size(); m++ ) {
-        D3D11Texture* customTexture = nullptr;
         zCMaterial* mat = Engine::GAPI->GetMaterialByTextureName( textures[m] );
+        
+        auto materialHandle = materialManager.FindMaterialHandle(mat);
+        
         MeshKey key;
-        key.Material = mat;
+        key.Material = materialHandle;
         key.Texture = mat != nullptr ? mat->GetTextureSingle() : nullptr;
 
         // Save missing textures
@@ -471,6 +475,10 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
     
     // Go through every polygon and put it into its section
     std::vector<ExVertexStruct> polyVertices;
+    
+    std::unordered_map<zCMaterial*, MaterialHandle> materialMap;
+    auto& materialManager = Engine::GAPI->GetMaterialManager();
+    
     for ( unsigned int i = 0; i < numPolygons; i++ ) {
         zCPolygon* poly = polys[i];
 
@@ -483,6 +491,8 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
         if ( !mat ) {
             continue;
         }
+        auto materialHandle = materialManager.FindMaterialHandle(mat);
+        
         std::string_view matName = mat->__GetName().ToChar();
         // std::string_view textureName = mat->GetTextureSingle() ? mat->GetTextureSingle()->__GetName().ToChar() : "";
 
@@ -524,7 +534,7 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
         // Use the map to put the polygon to those using the same material
         MeshKey key;
         key.Texture = _tex ? _tex : mat->GetTextureSingle();
-        key.Material = mat;
+        key.Material = materialHandle;
 
         auto it = sectionInfo.WorldMeshes.find( key );
         if ( it == sectionInfo.WorldMeshes.end() ) {
@@ -745,11 +755,14 @@ void WorldConverter::GenerateFullSectionMesh( WorldMeshSectionInfo& section ) {
     ZoneScoped;
 
     std::vector<ExVertexStruct> vx;
-
+    
+    auto& materialManager = Engine::GAPI->GetMaterialManager();
+    
     // Pre-calculate total triangle count to avoid reallocations
     size_t totalVerts = 0;
     for ( auto const& it : section.WorldMeshes ) {
-        if ( !it.first.Material || it.first.Material->HasAlphaTest() ) continue;
+        auto material = materialManager.GetMaterial(it.first.Material);
+        if ( !material || material->HasAlphaTest() ) continue;
         totalVerts += it.second->Indices.size();
     }
     for ( auto const& it : section.Vobs ) {
@@ -763,8 +776,10 @@ void WorldConverter::GenerateFullSectionMesh( WorldMeshSectionInfo& section ) {
     vx.reserve( totalVerts );
 
     for ( auto const& it : section.WorldMeshes ) {
-        if ( !it.first.Material ||
-            it.first.Material->HasAlphaTest() )
+        auto material = materialManager.GetMaterial(it.first.Material);
+
+        if ( !material ||
+            material->HasAlphaTest() )
             continue;
 
         for ( unsigned int i = 0; i < it.second->Indices.size(); i += 3 ) {
@@ -1095,6 +1110,9 @@ void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualIn
     zSTRING mds = model->GetModelName();
     const char* visualName = mds.ToChar();
     zCArray<zCModelNodeInst*>* nodeList = model->GetNodeList();
+
+    auto& materialManager = Engine::GAPI->GetMaterialManager();
+    
     for ( int i = 0; i < nodeList->NumInArray; i++ ) {
         zCModelNodeInst* node = nodeList->Array[i];
         if ( !node->NodeVisual )
@@ -1190,12 +1208,15 @@ void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualIn
 
             Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize += mi->Vertices.size() * sizeof( ExVertexStruct );
             Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize += mi->Indices.size() * sizeof( VERTEX_INDEX );
-
+            
             zCMaterial* mat = m->Material;
+
+            auto materialHandle = materialManager.FindMaterialHandle(mat);
+            
             meshInfo->Meshes[mat].emplace_back( mi );
 
             MeshKey key;
-            key.Material = mat;
+            key.Material = materialHandle;
             key.Texture = mat->GetTextureSingle();
             key.Info = Engine::GAPI->GetMaterialInfoFrom( key.Texture );
 
@@ -1430,6 +1451,8 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
     std::list<std::vector<VERTEX_INDEX>*> indexBuffers;
     std::list<MeshInfo*> meshInfos;
 
+    auto& materialManager = Engine::GAPI->GetMaterialManager();
+    
     // Construct unindexed mesh
     std::vector<ExVertexStruct> vertices;
     std::vector<VERTEX_INDEX> indices;
@@ -1519,10 +1542,13 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
         Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize += mi->Indices.size() * sizeof( VERTEX_INDEX );
 
         zCMaterial* mat = s->Material;
+        
+        auto materialHandle = materialManager.FindMaterialHandle(mat);
+        
         meshInfo->Meshes[mat].emplace_back( mi );
 
         MeshKey key;
-        key.Material = mat;
+        key.Material = materialHandle;
         key.Texture = mat->GetTextureSingle();
         key.Info = Engine::GAPI->GetMaterialInfoFrom( key.Texture );
 

@@ -3752,7 +3752,9 @@ bool GothicAPI::TraceWorldMesh( const XMFLOAT3& origin, const XMFLOAT3& dir, XMF
     }
     // Distance-sort
     hitSections.sort( TraceWorldMeshBoxCmp );
-
+    
+    auto& materialManager = Engine::GAPI->GetMaterialManager();
+    
     int numProcessed = 0;
     for ( auto const& bit : hitSections ) {
         for ( auto it = bit.first->WorldMeshes.begin(); it != bit.first->WorldMeshes.end(); ++it ) {
@@ -3775,13 +3777,15 @@ bool GothicAPI::TraceWorldMesh( const XMFLOAT3& origin, const XMFLOAT3& dir, XMF
                         if ( hitMesh ) {
                             *hitMesh = it->second;
                         }
-
-                        if ( hitMaterial ) {
-                            *hitMaterial = it->first.Material;
+                        
+                        auto material = materialManager.GetMaterial(it->first.Material);
+                        
+                        if ( hitMaterial ) { 
+                            *hitMaterial = material;
                         }
 
-                        if ( hitTextureName && it->first.Material && it->first.Material->GetTexture() )
-                            *hitTextureName = it->first.Material->GetTexture()->GetNameWithoutExt();
+                        if ( hitTextureName && material && material->GetTexture() )
+                            *hitTextureName = material->GetTexture()->GetNameWithoutExt();
                     }
                 }
             }
@@ -5240,13 +5244,15 @@ void GothicAPI::SaveCustomZENResources() {
 
 /** Applys the suppressed textures */
 void GothicAPI::ApplySuppressedSectionTextures() {
+    auto& materialManager = Engine::GAPI->GetMaterialManager();
+
     for ( auto const& it : SuppressedTexturesBySection ) {
         WorldMeshSectionInfo* section = it.first;
 
         // Look into each mesh of this section and find the texture
         for ( auto mit = section->WorldMeshes.begin(); mit != section->WorldMeshes.end(); ) {
             bool movedToSuppressed = false;
-            if (auto mat = mit->first.Material ) {
+            if (auto mat = materialManager.GetMaterial((mit->first.Material)) ) {
                 if ( auto tx = mat->GetTexture()) {
                     auto txName = tx->GetNameWithoutExtView();
                     for ( unsigned int i = 0; i < it.second.size(); i++ ) {
@@ -6187,18 +6193,22 @@ void GothicAPI::GetIntersectingSections( const XMFLOAT3& min, const XMFLOAT3& ma
 
 /** Generates zCPolygons for the loaded sections */
 void GothicAPI::CreatezCPolygonsForSections() {
+    auto& materialManager = Engine::GAPI->GetMaterialManager();
+
     for ( std::map<int, std::map<int, WorldMeshSectionInfo>>::iterator itx = Engine::GAPI->GetWorldSections().begin(); itx != Engine::GAPI->GetWorldSections().end(); itx++ ) {
         for ( std::map<int, WorldMeshSectionInfo>::iterator ity = itx->second.begin(); ity != itx->second.end(); ity++ ) {
             WorldMeshSectionInfo& section = ity->second;
 
             for ( auto it = section.WorldMeshes.begin(); it != section.WorldMeshes.end(); ++it ) {
-                if ( !it->first.Material ||
-                    it->first.Material->HasAlphaTest() )
+                auto material = materialManager.GetMaterial(it->first.Material);
+                
+                if ( !material || 
+                    material->HasAlphaTest() )
                     continue;
 
-                it->first.Material->SetAlphaFunc( zMAT_ALPHA_FUNC_NONE );
+                material->SetAlphaFunc( zMAT_ALPHA_FUNC_NONE );
 
-                WorldConverter::ConvertExVerticesTozCPolygons( it->second->Vertices, it->second->Indices, it->first.Material, section.SectionPolygons );
+                WorldConverter::ConvertExVerticesTozCPolygons( it->second->Vertices, it->second->Indices, material, section.SectionPolygons );
             }
         }
     }
