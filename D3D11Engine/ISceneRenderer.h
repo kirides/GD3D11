@@ -33,8 +33,18 @@ public:
         RGResourceHandle& outSpecularResource,
         RGResourceHandle& outReactiveMaskResource ) = 0;
 
+    /** Add the screen-space AO producer pass (fills an R8 AO mask sampled by the lighting
+        pass, applied to indirect light only).
+        Deferred: builds the mask from the GBuffer normals and returns its handle.
+        Forward+: AO is produced inside AddGeometryPasses; returns RG_INVALID_HANDLE. */
+    virtual RGResourceHandle AddAmbientOcclusionPass(
+        RenderGraph& graph,
+        D3D11GraphicsEngine& engine,
+        RGResourceHandle normalsResource ) = 0;
+
     /** Add the lighting resolution pass(es) to the render graph.
-        Deferred: tiled / legacy deferred shading.  Forward+: no-op. */
+        Deferred: tiled / legacy deferred shading.  Forward+: no-op.
+        aoMaskResource is the R8 AO mask (RG_INVALID_HANDLE if none). */
     virtual void AddLightingPasses(
         RenderGraph& graph,
         D3D11GraphicsEngine& engine,
@@ -42,6 +52,7 @@ public:
         RGResourceHandle normalsResource,
         RGResourceHandle specularResource,
         RGResourceHandle backBufferHandle,
+        RGResourceHandle aoMaskResource,
         std::vector<VobLightInfo*>& frameLights ) = 0;
 
     /** Select the appropriate pixel shader for a texture / material combination. */

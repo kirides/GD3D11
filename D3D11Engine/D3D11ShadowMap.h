@@ -37,6 +37,7 @@ enum PS_DS_AtmosphericScatteringSlots {
     TX_Distortion = 6,
     TX_SI_SP = 7,
     TX_BlueNoise512 = 8,
+    TX_AOMask = 9,
 };
 
 const int POINTLIGHT_SHADOWMAP_SIZE = 128;
@@ -143,10 +144,10 @@ public:
     /** Renders the shadowmaps for the sun using parameter struct */
     void RenderShadowmaps( const RenderShadowmapsParams& params );
 
-    XRESULT DrawWorldLights();
+    XRESULT DrawWorldLights( ID3D11ShaderResourceView* aoMaskSRV = nullptr );
     DS_ScreenQuadConstantBuffer FillSunCSMConstantBuffer() const;
     XRESULT DrawLighting(std::vector<VobLightInfo*>& lights, RenderToTextureBuffer& color, RenderToTextureBuffer& normals, RenderToTextureBuffer
-                         & specular, RenderToTextureBuffer& depthCopy);
+                         & specular, RenderToTextureBuffer& depthCopy, ID3D11ShaderResourceView* aoMaskSRV = nullptr);
 
     D3D11TiledDeferredShading* GetTiledDeferred() const { return m_TiledDeferred.get(); }
 

@@ -17,9 +17,13 @@ public:
                     ID3D11ShaderResourceView* normalsSRV,
                     ID3D11RenderTargetView* outputRTV );
 
-    /** Computes AO into m_AOBuffer but skips the final modulate blit */
+    /** Computes AO and writes the final blurred result into the provided R8_UNORM UAV
+        (skips the modulate blit). When reconstructNormals is true, view normals are
+        derived from depth (Forward+ depth-only path) and normalsSRV is ignored. */
     XRESULT RenderAO( ID3D11ShaderResourceView* depthSRV,
-                      ID3D11ShaderResourceView* normalsSRV );
+                      ID3D11ShaderResourceView* normalsSRV,
+                      ID3D11UnorderedAccessView* outputUAV,
+                      bool reconstructNormals = false );
 
     /** Returns the SRV of the computed AO buffer (R8_UNORM) for composition */
     ID3D11ShaderResourceView* GetAOResultSRV() const;

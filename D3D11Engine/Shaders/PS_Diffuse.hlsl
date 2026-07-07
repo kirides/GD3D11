@@ -36,6 +36,8 @@ TextureCube	TX_ReflectionCube : register( t4 );
 #include <include/ForwardPlusLighting.hlsl>
 // Pre-computed screen-space CSM shadow mask from the shadow mask pre-pass (bound at t12)
 Texture2D FP_ShadowMask : register( t12 );
+// Screen-space AO mask (R8). Applied to indirect light only. White = no occlusion.
+Texture2D FP_AOMask : register( t13 );
 #endif
 
 //--------------------------------------------------------------------------------------
@@ -141,7 +143,7 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
 			// per cascade inside the function so the blended (coarser) cascade isn't under-biased.
 			shadow = ComputeCascadedShadowValueSoft(wsPosition, wsNormal, slopeScale, vsPosition.z, vertLighting, constantDepthBias, Input.vPosition.xy);
 
-		#endif
+		#endif 
 	} else {
         // Night-time sky ambient:
         // saturate(wsNormal.y) restricts the value to [0, 1].
@@ -150,8 +152,12 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
     }
 #endif
 
+	// Screen-space AO mask, applied to indirect/ambient light only (not direct sun),
+	// so it doesn't produce deep shadows on ground/objects that are lit strongly by the sun.
+	float ssao = FP_AOMask.Load( int3( int2( Input.vPosition.xy ), 0 ) ).r;
+
 	// Sun lighting
-	float3 litPixel = FP_ComputeSunLighting(wsPosition, vsPosition, nrm, color.rgb, specIntensity, specPower, shadow, vertLighting);
+	float3 litPixel = FP_ComputeSunLighting(wsPosition, vsPosition, nrm, color.rgb, specIntensity, specPower, shadow, vertLighting, ssao);
 	
 	// Atmospheric scattering
 	litPixel = ApplyAtmosphericScatteringGround(wsPosition, litPixel);

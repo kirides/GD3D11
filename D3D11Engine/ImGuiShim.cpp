@@ -575,6 +575,14 @@ void ImGuiShim::RenderSettingsWindow()
             if ( ImGui::Checkbox( "Enable Water waves", &settings.EnableWaterAnimation ) ) {
                 shadersToReload |= ShaderCategory::Water;
             }
+            {
+                const char* ssrLevels[] = { "Disabled", "Low", "Medium", "High" };
+                int ssr = settings.WaterSSRQuality;
+                if ( ImGui::Combo( "Water Reflections (SSR)", &ssr, ssrLevels, IM_ARRAYSIZE( ssrLevels ) ) ) {
+                    settings.WaterSSRQuality = (GothicRendererSettings::E_WaterSSRQuality)ssr;
+                    shadersToReload |= ShaderCategory::Water; // recompile PS_Water with the new SSR_QUALITY
+                }
+            }
             ImGui::Checkbox( "Limit Light Intensity", &settings.LimitLightIntesity );
             ImGui::Checkbox( "Draw World Section Intersections", &settings.DrawSectionIntersections );
             ImGui::SetItemTooltip( "This option draws every world chunk that intersect with GD3D11 world draw distance." );
@@ -1259,6 +1267,9 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                     Engine::GraphicsEngine->ReloadShaders( ShaderCategory::LightsAndShadows );
                 }
                 ImGui::SetItemTooltip( "Forward+ debug option: precompute sun shadows in a separate screen-space pass. Changing this reloads light/shadow shaders." );
+
+                ImGui::Checkbox( "Generate AO Normals From Depth", &settings.DebugSettings.FeatureSet.GenerateAONormalsFromDepth );
+                ImGui::SetItemTooltip( "Forward+ only: run a compute pass that builds smooth normals from depth for SAO/ASSAO. Off = depth-only AO fallback." );
 
                 ImGui::Checkbox("Use World Section BVH", &settings.DebugSettings.FeatureSet.UseWorldSectionBVH );
                 ImGui::SetItemTooltip("Use Bounding Volume Hierarchy for world sections. Improves culling performance.");

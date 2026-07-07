@@ -1196,12 +1196,13 @@ XRESULT D3D11ShadowMap::DrawPointlightLights(
     return m_LegacyDeferred.DrawPointlightLights( lights, color, normals, specular, depthCopy );
 }
 
-XRESULT D3D11ShadowMap::DrawLighting( 
+XRESULT D3D11ShadowMap::DrawLighting(
     std::vector<VobLightInfo*>& lights,
     RenderToTextureBuffer& color,
     RenderToTextureBuffer& normals,
-    RenderToTextureBuffer& specular,    
-    RenderToTextureBuffer& depthCopy) {
+    RenderToTextureBuffer& specular,
+    RenderToTextureBuffer& depthCopy,
+    ID3D11ShaderResourceView* aoMaskSRV) {
     auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
 
@@ -1235,7 +1236,7 @@ XRESULT D3D11ShadowMap::DrawLighting(
     srvs[0] = specular.GetShaderResView().Get();
     m_context->PSSetShaderResources( 7, 1, srvs );
 
-    DrawWorldLights();
+    DrawWorldLights( aoMaskSRV );
 
     m_context->OMSetRenderTargets( 1, graphicsEngine->GetHDRBackBuffer().GetRenderTargetView().GetAddressOf(),
         graphicsEngine->GetDepthBuffer()->GetDepthStencilView().Get() );
@@ -1440,7 +1441,7 @@ DS_ScreenQuadConstantBuffer D3D11ShadowMap::FillSunCSMConstantBuffer() const {
     return scb;
 }
 
-XRESULT D3D11ShadowMap::DrawWorldLights()
+XRESULT D3D11ShadowMap::DrawWorldLights( ID3D11ShaderResourceView* aoMaskSRV )
 {
     auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     auto _ = graphicsEngine->RecordGraphicsEvent( GE_NAME( "DrawWorldLights" ) );
@@ -1602,6 +1603,11 @@ XRESULT D3D11ShadowMap::DrawWorldLights()
 
     graphicsEngine->GetDistortionTexture()->BindToPixelShader( TX_Distortion );
     graphicsEngine->GetBlueNoiseTexture()->BindToPixelShader( TX_BlueNoise512 );
+
+    // Screen-space AO mask (applied to indirect light only). White fallback when disabled.
+    ID3D11ShaderResourceView* aoSRV = aoMaskSRV ? aoMaskSRV
+        : graphicsEngine->GetWhiteTexture()->GetShaderResourceView().Get();
+    m_context->PSSetShaderResources( TX_AOMask, 1, &aoSRV );
 
     // CSM: Nur 1x rendern!
     graphicsEngine->GetPfxRenderer()->DrawFullScreenQuad();

@@ -4,6 +4,7 @@
 #include <AtmosphericScattering.h>
 #include <FFFog.h>
 #include <DS_Defines.h>
+#include <DepthReconstruction.h>
 
 static const float DIST_SMALL_SPEED = -0.01f;
 static const float DIST_SMALL_AMOUNT = 0.01f;
@@ -21,9 +22,11 @@ cbuffer RefractionInfo : register( b2 )
 	float2 RI_ViewportSize;
 	float RI_Time;
 	float RI_Pad1;
-	
+
 	float3 RI_CameraPosition;
-	float RI_Pad2;
+	float RI_SSRIntensity; // reserved/unused (SSR quality is a compile-time permutation)
+
+	float4x4 RI_View; // World->view, for screen-space reflections
 };
 
 //--------------------------------------------------------------------------------------
@@ -51,6 +54,144 @@ struct PS_INPUT
 	float4 vPosition		: SV_POSITION;
 };
 
+
+//--------------------------------------------------------------------------------------
+// Screen-space reflections
+// Marches the (wave-perturbed) reflection ray in view space against the copied scene
+// depth (TX_Depth) and returns the scene color (TX_Scene) at the hit. On a miss the
+// confidence is 0 so the caller falls back to the static reflection cube.
+//--------------------------------------------------------------------------------------
+// SSR_QUALITY is a compile-time permutation macro: 0=Disabled, 1=Low, 2=Medium, 3=High.
+// Default to Medium if the macro isn't supplied (e.g. standalone compile).
+#ifndef SSR_QUALITY
+#define SSR_QUALITY 2
+#endif
+
+#if SSR_QUALITY > 0
+
+#if SSR_QUALITY == 1        // Low
+	#define SSR_MAX_STEPS    12
+	#define SSR_REFINE_STEPS 4
+#elif SSR_QUALITY == 2      // Medium (balanced quality)
+	#define SSR_MAX_STEPS    24
+	#define SSR_REFINE_STEPS 5
+#else                       // High
+	#define SSR_MAX_STEPS    48
+	#define SSR_REFINE_STEPS 6
+#endif
+
+#define SSR_MAX_DISTANCE    30000.0f  // view-space units the ray may travel
+#define SSR_THICKNESS       350.0f    // max depth gap that still counts as a hit
+#define SSR_START_BIAS      15.0f     // push off the surface to avoid self-intersection
+
+// Project a view-space position to screen UV. Returns false if behind the camera.
+bool SSR_ProjectToUV( float3 posVS, out float2 uv )
+{
+	float4 clip = mul( float4(posVS, 1.0f), RI_Projection );
+	if ( clip.w <= 0.0f )
+	{
+		uv = float2(0.0f, 0.0f);
+		return false;
+	}
+	uv = (clip.xy / clip.w) * float2(0.5f, -0.5f) + 0.5f;
+	return true;
+}
+
+// Linear view-space Z of the scene at a screen UV. The main camera writes reversed-Z
+// with an infinite far plane (depth == 1/viewZ), so linear Z is the reciprocal. Using
+// the shared helper avoids relying on projection-matrix element/packing conventions.
+float SSR_SceneZ( float2 uv )
+{
+	float raw = TX_Depth.Sample( SS_Linear, uv ).r;
+	return LinearizeDepthReverseZInfinite( raw );
+}
+
+float3 TraceWaterSSR( float3 worldPos, float3 reflectDirWS, out float confidence )
+{
+	confidence = 0.0f;
+
+	float3 originVS = mul( float4(worldPos, 1.0f), RI_View ).xyz;
+	float3 dirVS = normalize( mul( float4(reflectDirWS, 0.0f), RI_View ).xyz );
+
+	// Uniform march; binary search recovers precision at the hit.
+	const float stepLen = SSR_MAX_DISTANCE / (float)SSR_MAX_STEPS;
+
+	float3 prevPos = originVS + dirVS * SSR_START_BIAS;
+	float2 prevUV;
+	if ( !SSR_ProjectToUV( prevPos, prevUV ) )
+		return float3(0.0f, 0.0f, 0.0f);
+	// delta < 0 => ray is in front of the scene surface at this pixel.
+	// Sky/far pixels have a huge sceneZ, so delta stays very negative there.
+	float prevDelta = prevPos.z - SSR_SceneZ( prevUV );
+	float travelled = SSR_START_BIAS;
+
+	[loop]
+	for ( int i = 0; i < SSR_MAX_STEPS; ++i )
+	{
+		float3 curPos = prevPos + dirVS * stepLen;
+		travelled += stepLen;
+
+		float2 uv;
+		if ( !SSR_ProjectToUV( curPos, uv ) )
+			return float3(0.0f, 0.0f, 0.0f); // behind camera -> fall back to cube
+		if ( any(uv < 0.0f) || any(uv > 1.0f) )
+			return float3(0.0f, 0.0f, 0.0f); // left the screen -> fall back to cube
+
+		float sceneZ = SSR_SceneZ( uv );
+		float curDelta = curPos.z - sceneZ;
+
+		// Front -> behind crossing between prevPos and curPos: we hit a surface.
+		if ( prevDelta < 0.0f && curDelta >= 0.0f )
+		{
+			// Binary-search refine between prevPos (in front) and curPos (behind).
+			float3 lo = prevPos;
+			float3 hi = curPos;
+			float2 hitUV = uv;
+			float hitGap = curDelta;
+			[unroll]
+			for ( int j = 0; j < SSR_REFINE_STEPS; ++j )
+			{
+				float3 mid = (lo + hi) * 0.5f;
+				float2 midUV;
+				if ( !SSR_ProjectToUV( mid, midUV ) )
+					break;
+				float midGap = mid.z - SSR_SceneZ( midUV );
+				if ( midGap >= 0.0f )
+				{
+					hi = mid;
+					hitUV = midUV;
+					hitGap = midGap;
+				}
+				else
+				{
+					lo = mid;
+				}
+			}
+
+			// After refinement a real surface converges to a small residual gap.
+			// A large residual means the ray passed behind a thin object into empty
+			// space (its far side); reject so we don't smear background over water.
+			if ( hitGap < SSR_THICKNESS )
+			{
+				// Fade only in the outermost sliver near the screen borders (where the
+				// reflected data genuinely runs out), plus at the end of the ray.
+				float2 edge = smoothstep( 0.0f, 0.001f, hitUV ) * smoothstep( 0.0f, 0.001f, 1.0f - hitUV );
+				float edgeFade = edge.x * edge.y;
+				float distFade = saturate( 1.0f - travelled / SSR_MAX_DISTANCE );
+
+				confidence = edgeFade * distFade;
+				return TX_Scene.Sample( SS_Linear, hitUV ).rgb;
+			}
+		}
+
+		prevPos = curPos;
+		prevDelta = curDelta;
+	}
+
+	return float3(0.0f, 0.0f, 0.0f); // nothing hit -> fall back to cube
+}
+
+#endif // SSR_QUALITY > 0
 
 //--------------------------------------------------------------------------------------
 // Pixel Shader
@@ -106,10 +247,25 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	float fresnel = min(0.5f, saturate(pow(1.0f - saturate(dot(-viewDirection, wavesFres)), 10.0f)));
 	
 	// Reflection
-	float3 reflect_vec = reflect(-viewDirection, wavesFres);	
-	
-	// sample reflection cube
+	float3 reflect_vec = reflect(-viewDirection, wavesFres);
+
+	// sample reflection cube (fallback for off-screen / missed rays)
 	float3 reflection = TX_ReflectionCube.Sample(SS_Linear, reflect_vec).xyz;
+	float ssrConfidence = 0.0f;
+	float3 ssrColor = float3(0.0f, 0.0f, 0.0f);
+#if SSR_QUALITY > 0
+	{
+		// reflect_vec above is negated (reflect(-viewDirection,N)) for the cube lookup.
+		// The true eye-reflection direction, which marches UP into the scene, is
+		// reflect(viewDirection, N). Flatten the wave normal so reflection rays stay
+		// coherent (mirror-like) instead of scattering into many off-screen misses.
+		float3 ssrNormal = normalize(lerp(float3(0.0f, 1.0f, 0.0f), wavesFres, 0.5f));
+		float3 ssrDir = reflect(viewDirection, ssrNormal);
+		// Screen-space reflection of nearby on-screen geometry; falls back to the cube on a miss
+		ssrColor = TraceWaterSSR(Input.vWorldPosition, ssrDir, ssrConfidence);
+		reflection = lerp(reflection, ssrColor, saturate(ssrConfidence));
+	}
+#endif
 	
 	// Darken the scene, to make a wet surface
 	float f = 1-saturate(pow(1-shallowDepth, 8.0f) + clamp(pow(distortionSmall.y, 2), 0.5f, 1.0f));
@@ -119,9 +275,21 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	
 	float pxDistance = Input.vTexcoord2.y;
 	scene = lerp(scene, diffuse, 0.73f * max(pow(fresnel,8.0f), 0.5f));
-	scene.rgb += reflection * 1.0f * fresnel * lerp(1.0f, diffuse, 0.6f);
 	float3 color = lerp(scene, sceneClean, pow(saturate(pxDistance / 35000.0f), 4.0f));
 	color = lerp(color, sceneWet, (1-shallowDepth));
+
+	// Reflection compositing.
+	// SSR hits (real on-screen geometry) drive the reflection strongly and directly,
+	// independent of view angle - so geometry near the screen edges is still mirrored.
+	// The ray-hit proximity to the screen edge is already faded inside TraceWaterSSR
+	// (ssrConfidence), which is the correct place for it. On a miss we keep only a very
+	// faint Fresnel cube sheen so open water isn't dead flat, without washing edges to
+	// a pale skybox.
+	float NdotV = saturate(dot(-viewDirection, wavesFres));
+	float reflectFresnel = pow(1.0f - NdotV, 3.0f);
+
+	float reflectAmount = saturate(max(saturate(ssrConfidence), reflectFresnel * 0.05f));
+	color = lerp(color, reflection * lerp(1.0f, diffuse, 0.3f), reflectAmount);
 	
 	color.rgb = ApplyAtmosphericScatteringGround(Input.vWorldPosition, color.rgb);
 	

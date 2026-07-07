@@ -254,9 +254,11 @@ XRESULT D3D11PfxRenderer::RenderSAO(
 
 XRESULT D3D11PfxRenderer::RenderSAOCompute(
     ID3D11ShaderResourceView* depthSRV,
-    ID3D11ShaderResourceView* normalsSRV ) {
+    ID3D11ShaderResourceView* normalsSRV,
+    ID3D11UnorderedAccessView* outputUAV,
+    bool reconstructNormals ) {
     if ( !FX_SAO ) return XR_FAILED;
-    return FX_SAO->RenderAO( depthSRV, normalsSRV );
+    return FX_SAO->RenderAO( depthSRV, normalsSRV, outputUAV, reconstructNormals );
 }
 
 ID3D11ShaderResourceView* D3D11PfxRenderer::GetSAOResultSRV() const {

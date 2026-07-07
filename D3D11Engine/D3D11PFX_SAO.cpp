@@ -179,7 +179,9 @@ XRESULT D3D11PFX_SAO::Render(
 
 XRESULT D3D11PFX_SAO::RenderAO(
     ID3D11ShaderResourceView* depthSRV,
-    ID3D11ShaderResourceView* normalsSRV ) {
+    ID3D11ShaderResourceView* normalsSRV,
+    ID3D11UnorderedAccessView* outputUAV,
+    bool reconstructNormals ) {
 
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     auto& context = engine->GetContext();
@@ -219,7 +221,8 @@ XRESULT D3D11PFX_SAO::RenderAO(
     saoCB.SAO_InvResolution = float2( 1.0f / res.x, 1.0f / res.y );
     saoCB.SAO_BlurSharpness = saoSettings.BlurSharpness;
 
-    auto saoCS = engine->GetShaderManager().GetCShader( CShaderID::CS_PFX_SAO );
+    auto saoCS = engine->GetShaderManager().GetCShader(
+        reconstructNormals ? CShaderID::CS_PFX_SAO_DepthNormals : CShaderID::CS_PFX_SAO );
     saoCS->Apply();
     saoCS->GetBuffer( "SAOConstantBuffer" ).Update( &saoCB ).Bind();
 
@@ -257,7 +260,7 @@ XRESULT D3D11PFX_SAO::RenderAO(
     context->CSSetUnorderedAccessViews( 0, 1, &nullUAV, nullptr );
     context->CSSetShaderResources( 0, 2, nullSRVs );
 
-    // --- Pass 3: Bilateral Blur (vertical) ---
+    // --- Pass 3: Bilateral Blur (vertical) — writes the final AO into the caller's UAV ---
     blurCB.SAO_Blur_Direction = float2( 0.0f, 1.0f );
     blurCS->Apply();
     blurCS->GetBuffer( "SAOBlurConstantBuffer" ).Update( &blurCB ).Bind();
@@ -266,7 +269,7 @@ XRESULT D3D11PFX_SAO::RenderAO(
 
     ID3D11ShaderResourceView* blurVSRVs[2] = { m_BlurTempBuffer->GetShaderResView().Get(), depthSRV };
     context->CSSetShaderResources( 0, 2, blurVSRVs );
-    context->CSSetUnorderedAccessViews( 0, 1, m_AOBuffer->GetUnorderedAccessView().GetAddressOf(), nullptr );
+    context->CSSetUnorderedAccessViews( 0, 1, &outputUAV, nullptr );
 
     context->Dispatch( (res.x + 7) / 8, (res.y + 7) / 8, 1 );
 

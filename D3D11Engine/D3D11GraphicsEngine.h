@@ -373,6 +373,18 @@ public:
     /** Copies the depth stencil buffer to DepthStencilBufferCopy */
     void CopyDepthStencil();
 
+    /** Adds a pass that fills an R8_UNORM screen-space AO mask (HBAO+/ASSAO/SAO per AoMode),
+        white-cleared so it reads as "no occlusion" when AO is disabled. The mask is later
+        sampled in the lighting pass and applied to indirect light only.
+        normalsResource may be RG_INVALID_HANDLE; depthOnlyNormals selects the depth-only
+        producer path (Forward+ without the smooth-normals pre-pass). Returns the mask handle. */
+    RGResourceHandle AddAOMaskPass( RenderGraph& graph, RGResourceHandle normalsResource, bool depthOnlyNormals );
+
+    /** Adds an optional compute pass that reconstructs smooth view-space normals from the
+        depth copy into a transient R16G16_FLOAT (octahedral) texture, for Forward+ AO.
+        Returns the normals handle. */
+    RGResourceHandle AddAONormalsFromDepthPass( RenderGraph& graph );
+
     /** Draws particle meshes */
     void DrawFrameParticleMeshes( std::unordered_map<zCVob*, MeshVisualInfo*>& progMeshes ) override;
 

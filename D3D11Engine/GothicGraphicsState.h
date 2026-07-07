@@ -599,6 +599,13 @@ struct GothicRendererSettings {
         RM_ForwardPlus = 1,
     };
 
+    enum E_WaterSSRQuality {
+        WATER_SSR_DISABLED = 0,
+        WATER_SSR_LOW      = 1,
+        WATER_SSR_MEDIUM   = 2,
+        WATER_SSR_HIGH     = 3,
+    };
+
     enum class TX_QUALITY : uint16_t {
         VeryLow = 128,
         Low = 256,
@@ -800,6 +807,7 @@ struct GothicRendererSettings {
         RunInSpacerNet = false;
         BinkVideoRunning = false;
         EnableWaterAnimation = false;
+        WaterSSRQuality = WATER_SSR_MEDIUM;
 
         GraphicsPreset = E_GraphicsPreset::GRAPHICS_CUSTOM;
         ApplyAssaoPreset(1);
@@ -856,6 +864,7 @@ struct GothicRendererSettings {
         DebugSettings.FeatureSet.EnableDriverExtensions = true;
         DebugSettings.FeatureSet.UseWorldSectionBVH = true;
         DebugSettings.FeatureSet.UseScreenSpaceShadowMask = false;
+        DebugSettings.FeatureSet.GenerateAONormalsFromDepth = true;
     }
 
     void SetupOldWorldSpecificValues() {
@@ -1036,6 +1045,7 @@ struct GothicRendererSettings {
     bool RunInSpacerNet;
     bool BinkVideoRunning;
     bool EnableWaterAnimation;
+    E_WaterSSRQuality WaterSSRQuality;
     E_AntiAliasingMode AntiAliasingMode;
     E_SharpeningMode SharpeningMode;
     E_GraphicsPreset GraphicsPreset;
@@ -1066,6 +1076,7 @@ struct GothicRendererSettings {
             bool UseLayeredRendering;
             bool UseShadowAtlas;
             bool UseScreenSpaceShadowMask;
+            bool GenerateAONormalsFromDepth; // Forward+: build smooth normals from depth for SAO/ASSAO
             bool ForceFeatureLevel10;
         } FeatureSet;
     } DebugSettings;

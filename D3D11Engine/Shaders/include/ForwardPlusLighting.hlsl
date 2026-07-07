@@ -192,7 +192,7 @@ float3 FP_ComputePointLighting(
 float3 FP_ComputeSunLighting(
     float3 wsPosition, float3 vsPosition, float3 normal,
     float3 diffuseColor, float specIntensity, float specPower,
-    float shadow, float vertLighting )
+    float shadow, float vertLighting, float ssao)
 {
     float3 V = normalize( -vsPosition );
     float3 H = normalize( SQ_LightDirectionVS + V );
@@ -210,7 +210,7 @@ float3 FP_ComputeSunLighting(
     float shadowAO = lerp( 1.0f, vertLighting, SQ_ShadowAOStrength );
     float worldAO = lerp( 1.0f, vertLighting, SQ_WorldAOStrength );
 
-    float3 litPixel = lerp( diffuseColor * SQ_ShadowStrength * sunStrength * shadowAO,
+    float3 litPixel = lerp( diffuseColor * SQ_ShadowStrength * sunStrength * shadowAO * ssao,
                             diffuseColor * lightColor.rgb * lightColor.a * worldAO, sun )
                     + specColored;
 

@@ -180,6 +180,20 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
         } );
     }
 
+    // --- Screen-space AO producer ---
+    // Forward+ has no GBuffer normals before lighting, so optionally reconstruct smooth
+    // normals from depth (feeds SAO/ASSAO); otherwise the producers fall back to depth-only.
+    // The resulting R8 mask is sampled by the lit-geometry pass and applied to indirect light.
+    const auto& aoRs = Engine::GAPI->GetRendererState().RendererSettings;
+    const AOMode aoMode = aoRs.AoMode;
+    const bool aoUsesNormals = ( aoMode == AOMode::AO_SAO || aoMode == AOMode::AO_ASSAO );
+    RGResourceHandle aoNormalsResource = RG_INVALID_HANDLE;
+    if ( aoRs.DebugSettings.FeatureSet.GenerateAONormalsFromDepth && aoUsesNormals ) {
+        aoNormalsResource = engine.AddAONormalsFromDepthPass( graph );
+    }
+    RGResourceHandle aoMaskResource = engine.AddAOMaskPass( graph, aoNormalsResource,
+        /*depthOnlyNormals*/ ( aoNormalsResource == RG_INVALID_HANDLE ) );
+
     // --- Forward+ lit geometry pass ---
     graph.AddPass( RG_PASS_NAME("FP Lit Geometry"), [&]( RGBuilder& builder, RenderPass& pass ) {
         auto size = engine.GetResolution();
@@ -192,8 +206,11 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
         if ( useScreenSpaceShadowMask && shadowMaskResource != RG_INVALID_HANDLE ) {
             builder.Read( shadowMaskResource );
         }
+        if ( aoMaskResource != RG_INVALID_HANDLE ) {
+            builder.Read( aoMaskResource );
+        }
 
-        pass.m_executeCallback = [this, &engine, colorResource, normalsResource, velocityBufferHandle, shadowMaskResource, useScreenSpaceShadowMask]( const RenderGraph& graph ) -> void {
+        pass.m_executeCallback = [this, &engine, colorResource, normalsResource, velocityBufferHandle, shadowMaskResource, useScreenSpaceShadowMask, aoMaskResource]( const RenderGraph& graph ) -> void {
             TracyD3D11ZoneCGX( "D3D11ForwardPlusRenderer::Lit Geometry" );
             auto& context = engine.GetContext();
             auto* shadowMaps = engine.GetShadowMaps();
@@ -290,17 +307,24 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
                 : nullptr;
             context->PSSetShaderResources( 12, 1, &shadowMaskSRV );
 
+            // --- Bind screen-space AO mask at t13 (indirect light only; white = no occlusion) ---
+            auto* aoMaskTex = ( aoMaskResource != RG_INVALID_HANDLE )
+                ? graph.GetPhysicalTexture( aoMaskResource ) : nullptr;
+            ID3D11ShaderResourceView* aoMaskSRV = aoMaskTex ? aoMaskTex->GetShaderResView().Get()
+                : engine.GetWhiteTexture()->GetShaderResourceView().Get();
+            context->PSSetShaderResources( 13, 1, &aoMaskSRV );
+
             // Draw all world geometry with Forward+ shaders
             Engine::GAPI->DrawWorldMeshNaive();
             engine.SetViewport( ViewportInfo( 0, 0, engine.GetResolution() ) );
 
             engine.StoreVobPreviousTransforms();
 
-            // --- Unbind light SRVs and shadow mask ---
+            // --- Unbind light SRVs, shadow mask and AO mask ---
             context->PSSetShaderResources( 3, 1, s_nullSRVs );
             context->PSSetShaderResources( 6, 1, s_nullSRVs );
             context->PSSetShaderResources( 8, 4, s_nullSRVs );
-            context->PSSetShaderResources( 12, 1, s_nullSRVs );
+            context->PSSetShaderResources( 12, 2, s_nullSRVs );
 
             // Restore default depth comparison
             depthState.SetDefault();
@@ -313,6 +337,15 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
     outReactiveMaskResource = reactiveMaskResource;
 }
 
+RGResourceHandle D3D11ForwardPlusRenderer::AddAmbientOcclusionPass(
+    RenderGraph& graph,
+    D3D11GraphicsEngine& engine,
+    RGResourceHandle normalsResource ) {
+    // Forward+ produces the AO mask inside AddGeometryPasses (before "FP Lit Geometry"),
+    // because no GBuffer normals exist beforehand. Nothing to do at the top level.
+    return RG_INVALID_HANDLE;
+}
+
 void D3D11ForwardPlusRenderer::AddLightingPasses(
     RenderGraph& graph,
     D3D11GraphicsEngine& engine,
@@ -320,6 +353,7 @@ void D3D11ForwardPlusRenderer::AddLightingPasses(
     RGResourceHandle normalsResource,
     RGResourceHandle specularResource,
     RGResourceHandle backBufferHandle,
+    RGResourceHandle aoMaskResource,
     std::vector<VobLightInfo*>& frameLights ) {
     // Forward+ performs lighting in the geometry pass — no separate lighting pass needed.
     // Point light shadows are rendered in the "FP Shadow Maps" pass.
