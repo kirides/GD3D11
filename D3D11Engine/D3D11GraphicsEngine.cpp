@@ -4980,6 +4980,10 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
         for ( auto const& renderItem : renderList ) {
             for ( auto const& worldMesh : renderItem->WorldMeshes ) {
                 if ( worldMesh.first.Material ) {
+                    if ( !Engine::GAPI->IsMaterialActive( worldMesh.first.Material ) ) {
+                        continue;
+                    }
+
                     zCTexture* aniTex = worldMesh.first.Material->GetTexture();
                     if ( !aniTex ) continue;
 
@@ -5560,6 +5564,10 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                 } else {
                     for ( auto&& meshInfoByKey = section->WorldMeshes.begin();
                         meshInfoByKey != section->WorldMeshes.end(); ++meshInfoByKey ) {
+                        if ( !meshInfoByKey->first.Material || !Engine::GAPI->IsMaterialActive( meshInfoByKey->first.Material ) ) {
+                            continue;
+                        }
+
                         // Check surface type
                         if ( meshInfoByKey->first.Info->MaterialType != MaterialInfo::MT_None ) {
                             continue;
@@ -5909,6 +5917,10 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                 } else {
                     for ( auto&& meshInfoByKey = section->WorldMeshes.begin();
                         meshInfoByKey != section->WorldMeshes.end(); ++meshInfoByKey ) {
+                        if ( !meshInfoByKey->first.Material || !Engine::GAPI->IsMaterialActive( meshInfoByKey->first.Material ) ) {
+                            continue;
+                        }
+
                         // Check surface type
                         if ( meshInfoByKey->first.Info->MaterialType != MaterialInfo::MT_None ) {
                             continue;
@@ -6155,6 +6167,10 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<W
         auto _scopeClassify = RecordGraphicsEvent( GE_NAME( "ShadowPass_DrawWorldMesh_Indirect::Classify" ) );
         for ( const WorldMeshSectionInfo* section : visibleSections ) {
             for ( const auto& meshPair : section->WorldMeshes ) {
+                if ( !meshPair.first.Material || !Engine::GAPI->IsMaterialActive( meshPair.first.Material ) ) {
+                    continue;
+                }
+
                 if ( meshPair.first.Info->MaterialType != MaterialInfo::MT_None )
                     continue;
 
@@ -6274,6 +6290,10 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh( const std::vector<WorldMeshS
         auto _scopeClassify = RecordGraphicsEvent( GE_NAME( "ShadowPass_DrawWorldMesh::Classify" ) );
         for ( const WorldMeshSectionInfo* section : visibleSections ) {
             for ( const auto& meshPair : section->WorldMeshes ) {
+                if ( !meshPair.first.Material || !Engine::GAPI->IsMaterialActive( meshPair.first.Material ) ) {
+                    continue;
+                }
+
                 // Skip non-standard materials (water, portals, etc.)
                 if ( meshPair.first.Info->MaterialType != MaterialInfo::MT_None )
                     continue;
