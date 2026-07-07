@@ -328,7 +328,7 @@ XRESULT D3D11ShaderManager::Init() {
     
     ShaderInfo::MacroBuilder normalmappingConfigurationBuilder = [](std::vector<D3D_SHADER_MACRO>& list) {
         const auto& s = Engine::GAPI->GetRendererState().RendererSettings;
-        list.push_back( {"NORMAL_MAP_RESTORE_Z", s.CompressedNormalsSupport > 0 ? "1" : "0"} );
+        list.push_back( {"NORMAL_MAP_RESTORE_Z", s.CompressedNormalsSupport ? "1" : "0"} );
 		list.push_back( {"NORMAL_MAP_MODE", sNums[std::clamp<size_t>(s.AllowNormalmaps, 1, 2)]} );
     };
 
