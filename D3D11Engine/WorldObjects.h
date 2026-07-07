@@ -483,6 +483,9 @@ struct SectionInstanceCache {
     SectionInstanceCache() = default;
     ~SectionInstanceCache();
 
+    /** Releases all cached instance buffers and cached per-instance data */
+    void Clear();
+
     /** Clears the cache for the given progmesh */
     void ClearCacheForStatic( MeshVisualInfo* pm );
 
