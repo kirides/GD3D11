@@ -14,7 +14,7 @@ MaterialHandle zCMaterialManager::FindMaterialHandle(zCMaterial* material) const
 
 MaterialHandle zCMaterialManager::InsertMaterial(zCMaterial* material)
 {
-    const size_t numGen = materials.generations.size();
+    const size_t numGen = materials.size();
     for (size_t i = 0; i < numGen; ++i) {
         // free slot, eg after clear, or at the start
         if (materials.generations[i] == 0
@@ -25,12 +25,10 @@ MaterialHandle zCMaterialManager::InsertMaterial(zCMaterial* material)
         }
     }
     // no slot, re-allocate and provide more space.
-    materials.resize(materials.size()*2);
+    materials.resize(numGen*2);
 
-    // append it to the end of the vector
-    materials.generations[numGen] = 1;
-    materials.items[numGen] = material;
-    return {numGen, 1};
+    const auto generation = UpdateSlot(numGen, material);
+    return {numGen, generation};
 }
 
 uint8_t zCMaterialManager::UpdateSlot(uint32_t slot, zCMaterial* material) {
