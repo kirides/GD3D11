@@ -82,7 +82,7 @@ struct PS_INPUT
 
 #define SSR_MAX_DISTANCE    30000.0f  // view-space units the ray may travel
 #define SSR_THICKNESS       350.0f    // max depth gap that still counts as a hit
-#define SSR_START_BIAS      15.0f     // push off the surface to avoid self-intersection
+#define SSR_START_BIAS      2.0f     // push off the surface to avoid self-intersection
 
 // Project a view-space position to screen UV. Returns false if behind the camera.
 bool SSR_ProjectToUV( float3 posVS, out float2 uv )
@@ -100,9 +100,16 @@ bool SSR_ProjectToUV( float3 posVS, out float2 uv )
 // Linear view-space Z of the scene at a screen UV. The main camera writes reversed-Z
 // with an infinite far plane (depth == 1/viewZ), so linear Z is the reciprocal. Using
 // the shared helper avoids relying on projection-matrix element/packing conventions.
+//
+// Point-sample (Load), never bilinear: at silhouette edges of thin geometry (masts,
+// poles) bilinear filtering blends foreground and far-background raw depth into a
+// phantom Z that matches no real surface. The ray "hits" that phantom depth and then
+// samples the bright sky behind the edge -> sparse blue/white speckles. Nearest-texel
+// depth removes those false intersections.
 float SSR_SceneZ( float2 uv )
 {
-	float raw = TX_Depth.Sample( SS_Linear, uv ).r;
+	int2 px = clamp( int2( uv * RI_ViewportSize ), int2(0, 0), int2( RI_ViewportSize ) - 1 );
+	float raw = TX_Depth.Load( int3( px, 0 ) ).r;
 	return LinearizeDepthReverseZInfinite( raw );
 }
 
@@ -115,15 +122,16 @@ float3 TraceWaterSSR( float3 worldPos, float3 reflectDirWS, out float confidence
 
 	// Uniform march; binary search recovers precision at the hit.
 	const float stepLen = SSR_MAX_DISTANCE / (float)SSR_MAX_STEPS;
+	float startBias = max( SSR_START_BIAS, originVS.z * 0.002f );
 
-	float3 prevPos = originVS + dirVS * SSR_START_BIAS;
+	float3 prevPos = originVS + dirVS * startBias;
 	float2 prevUV;
 	if ( !SSR_ProjectToUV( prevPos, prevUV ) )
 		return float3(0.0f, 0.0f, 0.0f);
 	// delta < 0 => ray is in front of the scene surface at this pixel.
 	// Sky/far pixels have a huge sceneZ, so delta stays very negative there.
 	float prevDelta = prevPos.z - SSR_SceneZ( prevUV );
-	float travelled = SSR_START_BIAS;
+	float travelled = startBias;
 
 	[loop]
 	for ( int i = 0; i < SSR_MAX_STEPS; ++i )
@@ -141,7 +149,17 @@ float3 TraceWaterSSR( float3 worldPos, float3 reflectDirWS, out float confidence
 		float curDelta = curPos.z - sceneZ;
 
 		// Front -> behind crossing between prevPos and curPos: we hit a surface.
-		if ( prevDelta < 0.0f && curDelta >= 0.0f )
+		//
+		// ...but only if the surface sits at or behind where the ray was already in
+		// front (prevPos.z). A genuine continuous surface satisfies sceneZ >= prevPos.z.
+		// If curUV's sceneZ is much NEARER than prevPos.z, the screen-space ray merely
+		// swept BEHIND a foreground silhouette (e.g. the player standing between the
+		// water and the far shore): sceneZ teleports from far-background to near-player,
+		// firing a false crossing. Rejecting these (and continuing the march) stops the
+		// player's dark silhouette from smearing into the water. This must gate the
+		// crossing itself, not the post-refine gap, which binary search always shrinks.
+		if ( prevDelta < 0.0f && curDelta >= 0.0f &&
+		     sceneZ >= prevPos.z - SSR_THICKNESS )
 		{
 			// Binary-search refine between prevPos (in front) and curPos (behind).
 			float3 lo = prevPos;
