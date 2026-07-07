@@ -7,10 +7,56 @@
 #include "BaseGraphicsEngine.h"
 #include "zViewTypes.h"
 
+inline float cachedNearPlaneFor_CorrectPosForNearClip = 1.0f;
 
+constexpr uintptr_t kPatchStart  = 0x004AF8BF;  // push 0x934 (operator new size)
+constexpr uintptr_t kPatchEnd    = 0x004AF911;  // fnstsw ax  (kept, continues here)
+constexpr uint32_t  kRealOneAddr = 0x0082ED70;  // __real@3f800000 (same one the original fcomp uses)
+
+inline bool PatchCorrectPosForNearClip()
+{
+    static_assert(sizeof(void*) == 4, "x86 (32-bit) build required");
+
+    uint8_t* target = reinterpret_cast<uint8_t*>(kPatchStart);
+
+    // Guard against double-patching / wrong binary version.
+    static const uint8_t expected[] = { 0x68, 0x34, 0x09, 0x00, 0x00 }; // push 0x934
+    if (memcmp(target, expected, sizeof(expected)) != 0)
+        return false;
+
+    uint8_t code[kPatchEnd - kPatchStart];   // 0x52 bytes
+    memset(code, 0x90, sizeof(code));        // nop filler
+    uint8_t* p = code;
+
+    // fld dword ptr [&cachedNearPlaneFor_CorrectPosForNearClip]
+    *p++ = 0xD9; *p++ = 0x05;
+    const float* src = &cachedNearPlaneFor_CorrectPosForNearClip;
+    memcpy(p, &src, 4); p += 4;
+
+    // fst dword ptr [esp+0x10]   ; local_68 — non-popping, value stays on ST0 for the compare
+    *p++ = 0xD9; *p++ = 0x54; *p++ = 0x24; *p++ = 0x10;
+
+    // fcomp dword ptr [__real@3f800000]      ; pops ST0 — FPU stack balanced
+    *p++ = 0xD8; *p++ = 0x1D;
+    memcpy(p, &kRealOneAddr, 4); p += 4;
+
+    // jmp short 0x004AF911 (fnstsw ax) — hop over the nop pad
+    uint8_t rel = static_cast<uint8_t>(kPatchEnd - (kPatchStart + (p - code) + 2));
+    *p++ = 0xEB; *p++ = rel;
+
+    DWORD oldProt;
+    if (!VirtualProtect(target, sizeof(code), PAGE_EXECUTE_READWRITE, &oldProt))
+        return false;
+    memcpy(target, code, sizeof(code));
+    VirtualProtect(target, sizeof(code), oldProt, &oldProt);
+    FlushInstructionCache(GetCurrentProcess(), target, sizeof(code));
+    return true;
+}
+
+typedef void*( __fastcall* zCCameraCtor)(void*, void*);
 class zCCamera {
 public:
-
+    inline static zCCameraCtor original_zCCameraConstructor = reinterpret_cast<zCCameraCtor>(static_cast<unsigned int>(0x00549e60)); 
     enum ETransformType {
         TT_WORLD,
         TT_VIEW,
@@ -22,8 +68,23 @@ public:
     static void Hook() {
         DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCCamera__Activate, Activate_Hook  );
         DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCCamera__UpdateViewport, UpdateViewport_Hook  );
+        
+#ifdef BUILD_GOTHIC_2_6_fix
+        // Fix engine constantly creating zCCamera just to call GetNearPlane to get the engine default INI value
+        DetourAttachTyped( &original_zCCameraConstructor, Constructor_Hook  );
+        PatchCorrectPosForNearClip();
+#endif
     }
 
+    static void* __fastcall Constructor_Hook(zCCamera* thisPtr, void* _) {
+        auto result = original_zCCameraConstructor(thisPtr, _ );
+
+        // copy the default near plane, as zCPathSearch::CorrectPosForNearClip wants this
+        cachedNearPlaneFor_CorrectPosForNearClip = thisPtr->GetNearPlane(); 
+        
+        return result;
+    }
+    
     static bool IsFreeLookActive() {
 #ifdef BUILD_GOTHIC_2_6_fix
         return *reinterpret_cast<int*>(GothicMemoryLocations::zCCamera::Var_FreeLook) != 0;
