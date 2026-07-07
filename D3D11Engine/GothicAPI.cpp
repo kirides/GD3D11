@@ -2002,8 +2002,10 @@ void GothicAPI::OnMaterialDeleted( zCMaterial* mat ) {
 
 /** Called when a material got created */
 void GothicAPI::OnMaterialCreated( zCMaterial* mat ) {
-    GetMaterialManager().AddMaterial(mat);
-    LoadedMaterials.insert( mat );
+    auto handle = GetMaterialManager().AddMaterial(mat);
+    if ( handle.isValid()) {
+        LoadedMaterials.insert( mat );
+    }
 }
 
 /** Returns if the material is currently active */
