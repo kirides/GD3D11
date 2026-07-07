@@ -65,7 +65,8 @@
 
 namespace wrl = Microsoft::WRL;
 
-const float DEFAULT_NORMALMAP_STRENGTH = 0.10f;
+const float DEFAULT_NOISE_NORMALMAP_STRENGTH = 0.10f;
+const float DEFAULT_NOISE_SPECULAR_STRENGTH = 0.05f;
 const XMFLOAT4 UNDERWATER_COLOR_MOD = XMFLOAT4( 0.5f, 0.7f, 1.0f, 1.0f );
 
 static const GUID IID_IDXGIVkInteropAdapter = { 0x3A6D8F2C, 0xB0E8, 0x4AB4, { 0xB4, 0xDC, 0x4F, 0xD2, 0x48, 0x91, 0xBF, 0xA5 } };
@@ -2338,21 +2339,13 @@ bool D3D11GraphicsEngine::BindTextureNRFX( zCTexture* tex, bool bindShader, bool
     MaterialInfo* info = nullptr;
     if ( updateMaterialInfo ) {
         info = Engine::GAPI->GetMaterialInfoFrom( tex );
-
-        if ( info->buffer.SpecularIntensity != 0.05f ) {
-            info->buffer.SpecularIntensity = 0.05f;
-        }
     }
 
     // Bind a default normalmap in case the scene is wet and we currently have none
     if ( D3D11Texture* nrm = tex->GetSurface()->GetNormalmap() ) {
         // Modify the strength of that default normalmap for the material info
         srvs[1] = nrm->GetShaderResourceView().Get();
-    } else {
-        if ( info &&
-            info->buffer.NormalmapStrength != DEFAULT_NORMALMAP_STRENGTH ) {
-            info->buffer.NormalmapStrength = DEFAULT_NORMALMAP_STRENGTH;
-        }
+    } else if ( Engine::GAPI->GetSceneWetness() > 1e-6 ) {
         srvs[1] = DistortionTexture->GetShaderResourceView().Get();
     }
 
@@ -5110,7 +5103,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
         ConstantBufferAllocation lastMatCbAllocation = INVALID_MATERIAL;
         MaterialInfo* lastInfo = nullptr;
 
-        auto sceneIsWet = Engine::GAPI->GetSceneWetness() > 1e-6;
+        const auto sceneIsWet = Engine::GAPI->GetSceneWetness() > 1e-6;
         for ( size_t i = 0; i < numMeshes; i++ ) {
             auto const& mesh = meshList[i];
 
@@ -5147,10 +5140,10 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
                 }
 
                 if ( info &&
-                    needDefaultNormalsStrength &&
-                    info->buffer.NormalmapStrength != DEFAULT_NORMALMAP_STRENGTH ) {
-                    info->buffer.NormalmapStrength = DEFAULT_NORMALMAP_STRENGTH;
+                    needDefaultNormalsStrength ) {
                     // Value override for non-normalmapped textures in case of rain
+                    info->buffer.NormalmapStrength = DEFAULT_NOISE_NORMALMAP_STRENGTH;
+                    info->buffer.SpecularIntensity = DEFAULT_NOISE_SPECULAR_STRENGTH;
                 }
 
                 auto materialInfoBufferAllocation = lastMatCbAllocation;
@@ -7194,6 +7187,8 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
             ID3D11ShaderResourceView* lastFxTex = nullptr;
             MeshVisualInfo* lastWindVisual = nullptr;
 
+            const auto sceneIsWet = Engine::GAPI->GetSceneWetness() > 1e-6;
+            
             if ( !cache.sortedInstancedMeshes.empty() ) {
                 TracyD3D11ZoneCGX( "DrawVOBsInstanced::OpaqueSubmission" );
                 auto _scopeOpaqueSubmission = RecordGraphicsEvent( GE_NAME( "DrawVOBsInstanced::OpaqueSubmission" ) );
@@ -7312,13 +7307,13 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
 
                         // Bind a default normalmap in case the scene is wet and we
                         // currently have none
-                        if ( !srv[1] && (wantShader && !isZPrepass) ) {
+                        if ( !srv[1] && (wantShader && !isZPrepass) && sceneIsWet) {
                             // Modify the strength of that default normalmap for the
                             // material info
-                            if ( info && info->buffer.NormalmapStrength
-                                != DEFAULT_NORMALMAP_STRENGTH ) {
+                            if ( info ) {
                                 // update values for distortion texture
-                                info->buffer.NormalmapStrength = DEFAULT_NORMALMAP_STRENGTH;
+                                info->buffer.NormalmapStrength = DEFAULT_NOISE_NORMALMAP_STRENGTH;
+                                info->buffer.SpecularIntensity = DEFAULT_NOISE_SPECULAR_STRENGTH;
                             }
                             srv[1] = DistortionTexture->GetShaderResourceView().Get();
                         }
