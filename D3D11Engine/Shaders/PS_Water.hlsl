@@ -100,9 +100,16 @@ bool SSR_ProjectToUV( float3 posVS, out float2 uv )
 // Linear view-space Z of the scene at a screen UV. The main camera writes reversed-Z
 // with an infinite far plane (depth == 1/viewZ), so linear Z is the reciprocal. Using
 // the shared helper avoids relying on projection-matrix element/packing conventions.
+//
+// Point-sample (Load), never bilinear: at silhouette edges of thin geometry (masts,
+// poles) bilinear filtering blends foreground and far-background raw depth into a
+// phantom Z that matches no real surface. The ray "hits" that phantom depth and then
+// samples the bright sky behind the edge -> sparse blue/white speckles. Nearest-texel
+// depth removes those false intersections.
 float SSR_SceneZ( float2 uv )
 {
-	float raw = TX_Depth.Sample( SS_Linear, uv ).r;
+	int2 px = clamp( int2( uv * RI_ViewportSize ), int2(0, 0), int2( RI_ViewportSize ) - 1 );
+	float raw = TX_Depth.Load( int3( px, 0 ) ).r;
 	return LinearizeDepthReverseZInfinite( raw );
 }
 
