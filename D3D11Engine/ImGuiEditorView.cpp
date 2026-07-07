@@ -992,7 +992,7 @@ bool ImGuiEditorView::OnWindowMessage(HWND hWnd, unsigned int msg, WPARAM wParam
             TracedSkeletalVobInfo = nullptr;
             SetEditorMode(EM_IDLE);
         }
-        if (wParam == VK_DELETE) {
+        if (wParam == VK_DELETE && !io.WantCaptureKeyboard) {
             OnDelete();
         }
         break;
