@@ -1,7 +1,6 @@
 #pragma once
 #include "pch.h"
 #include "HookedFunctions.h"
-#include "zCPolygon.h"
 #include "Engine.h"
 #include "GothicAPI.h"
 #include "zCTexture.h"

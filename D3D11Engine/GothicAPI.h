@@ -11,6 +11,7 @@
 #include "RenderQueue.h"
 #include "RenderToTextureBuffer.h"
 #include "ShaderIDs.h"
+#include "zCMaterialManager.h"
 
 static const char* MENU_SETTINGS_FILE = "system\\GD3D11\\UserSettings.ini";
 const float INDOOR_LIGHT_DISTANCE_SCALE_FACTOR = 0.5f;
@@ -662,6 +663,8 @@ public:
     zCMaterial* GetMaterialByTextureName( const std::string& name );
     void GetMaterialListByTextureName( const std::string& name, std::list<zCMaterial*>& list );
 
+    zCMaterialManager& GetMaterialManager() const { return *materialManager; }
+    
     /** Returns the time since the last frame */
     float GetDeltaTime();
 
@@ -1011,6 +1014,8 @@ private:
 
     /** Internal list of futures, so they can run until they are finished */
     std::vector<std::future<void>> FutureList;
+    
+    std::unique_ptr<zCMaterialManager> materialManager;
 
     bool _canRain;
 

@@ -4,7 +4,6 @@
 #include "zCPolygon.h"
 #include "Engine.h"
 #include "GothicAPI.h"
-#include "zCMaterial.h"
 #include "zSTRING.h"
 
 class zFILE {

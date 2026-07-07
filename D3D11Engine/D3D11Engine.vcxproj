@@ -1061,6 +1061,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="include\imgui\imstb_truetype.h" />
     <ClInclude Include="InstructionSet.h" />
     <ClInclude Include="Logger.h" />
+    <ClInclude Include="MaterialHandle.h" />
     <ClInclude Include="MemoryTracker.h" />
     <ClInclude Include="MeshManager.h" />
     <ClInclude Include="MeshModifier.h" />
@@ -1105,6 +1106,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="VertexTypes.h" />
     <ClInclude Include="WorldConverter.h" />
     <ClInclude Include="zCBspTree.h" />
+    <ClInclude Include="zCMaterialManager.h" />
     <ClInclude Include="zCMesh.h" />
     <ClInclude Include="zCMeshSoftSkin.h" />
     <ClInclude Include="zCModel.h" />
@@ -1305,6 +1307,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
       <PrecompiledHeaderFile Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt_G1|Win32'">pch.h</PrecompiledHeaderFile>
     </ClCompile>
     <ClCompile Include="BaseShadowedPointLight.cpp" />
+    <ClCompile Include="zCMaterialManager.cpp" />
     <ClCompile Include="zSndMss.cpp" />
     <None Include="Shaders\PS_Grass.hlsl" />
     <None Include="Shaders\VS_GrassInstanced.hlsl" />

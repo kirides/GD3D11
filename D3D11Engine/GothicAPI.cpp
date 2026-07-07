@@ -154,6 +154,8 @@ GothicAPI::GothicAPI() {
     CurrentCamera = nullptr;
 
     MainThreadID = GetCurrentThreadId();
+    
+    materialManager = std::make_unique<zCMaterialManager>();
 
     _canRain = false;
     _canClearVobsByVisual = false;
@@ -1895,6 +1897,7 @@ void GothicAPI::GetVisibleDecalList( std::vector<zCVob*>& decals ) {
 
 /** Called when a material got removed */
 void GothicAPI::OnMaterialDeleted( zCMaterial* mat ) {
+    GetMaterialManager().DeleteMaterial(mat);
     LoadedMaterials.erase( mat );
     if ( !mat )
         return;
@@ -1998,6 +2001,7 @@ void GothicAPI::OnMaterialDeleted( zCMaterial* mat ) {
 
 /** Called when a material got created */
 void GothicAPI::OnMaterialCreated( zCMaterial* mat ) {
+    GetMaterialManager().AddMaterial(mat);
     LoadedMaterials.insert( mat );
 }
 
