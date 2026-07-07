@@ -112,7 +112,7 @@ public:
         ZoneScoped;
         // Reset only if this is the main world, inventory worlds are handled differently
         if ( thisptr == Engine::GAPI->GetLoadedWorldInfo()->MainWorld )
-            Engine::GAPI->ResetVobs( false );
+            Engine::GAPI->ResetVobs();
 
         HookedFunctions::OriginalFunctions.original_zCWorldDisposeVobs( thisptr, tree );
     }

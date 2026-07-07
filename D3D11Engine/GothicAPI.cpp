@@ -781,91 +781,19 @@ void GothicAPI::RemoveVegetationBox( GVegetationBox* box ) {
     delete box;
 }
 
-namespace {
-    std::unordered_set<MeshVisualInfo*> PendingMeshVisuals;
-    std::unordered_set<SkeletalMeshVisualInfo*> PendingSkeletalVisuals;
-    std::unordered_set<VobInfo*> PendingVobInfos;
-    std::unordered_set<SkeletalVobInfo*> PendingSkeletalVobInfos;
-    std::unordered_set<VobLightInfo*> PendingVobLightInfos;
-
-    void PrepareMeshVisualForDelete( MeshVisualInfo* visual ) {
-        if ( !visual )
-            return;
-
-        visual->MorphMeshVisual = nullptr;
-    }
-
-    void PrepareSkeletalVobForDelete( SkeletalVobInfo* vobInfo ) {
-        if ( !vobInfo )
-            return;
-
-        for ( auto& [_, meshes] : vobInfo->NodeAttachments ) {
-            for ( MeshVisualInfo* visual : meshes ) {
-                PrepareMeshVisualForDelete( visual );
-            }
-        }
-    }
-
-    template <class T, class PrepareFn>
-    void DeletePendingSet( std::unordered_set<T*>& set, PrepareFn prepare ) {
-        for ( T* ptr : set ) {
-            prepare( ptr );
-            delete ptr;
-        }
-        set.clear();
-    }
-
-    void ReleasePendingRendererResources() {
-        DeletePendingSet( PendingMeshVisuals, PrepareMeshVisualForDelete );
-        DeletePendingSet( PendingSkeletalVisuals, []( SkeletalMeshVisualInfo* ) {} );
-        DeletePendingSet( PendingVobInfos, []( VobInfo* ) {} );
-        DeletePendingSet( PendingSkeletalVobInfos, PrepareSkeletalVobForDelete );
-        DeletePendingSet( PendingVobLightInfos, []( VobLightInfo* ) {} );
-    }
-
-    void QueueMeshVisualForRelease( MeshVisualInfo* visual ) {
-        if ( visual )
-            PendingMeshVisuals.insert( visual );
-    }
-
-    void QueueSkeletalVisualForRelease( SkeletalMeshVisualInfo* visual ) {
-        if ( visual )
-            PendingSkeletalVisuals.insert( visual );
-    }
-
-    void QueueVobInfoForRelease( VobInfo* vobInfo ) {
-        if ( vobInfo )
-            PendingVobInfos.insert( vobInfo );
-    }
-
-    void QueueSkeletalVobInfoForRelease( SkeletalVobInfo* vobInfo ) {
-        if ( vobInfo )
-            PendingSkeletalVobInfos.insert( vobInfo );
-    }
-
-    void QueueVobLightInfoForRelease( VobLightInfo* vobInfo ) {
-        if ( vobInfo )
-            PendingVobLightInfos.insert( vobInfo );
-    }
-}
-
 /** Resets the object, like at level load */
 void GothicAPI::ResetWorld() {
-    ReleasePendingRendererResources();
-
-    ResetVobs( false );
+    ResetVobs();
     ClearWorldSectionBVH();
     WorldSections.clear();
 
     SAFE_DELETE( WrappedWorldMesh );
-    ReleasePendingRendererResources();
 
     // Clear inventory too?
 }
 
 void GothicAPI::ReloadVobs() {
-    ResetVobs( false );
-    ReleasePendingRendererResources();
+    ResetVobs();
     OnWorldLoaded();
 }
 void GothicAPI::ReloadPlayerVob() {
@@ -878,47 +806,7 @@ void GothicAPI::ReloadPlayerVob() {
     OnAddVob( player, playerHomeworld );
 }
 /** Resets only the vobs */
-void GothicAPI::ResetVobs( bool releaseRendererResources ) {
-    std::unordered_set<void*> deletedVisuals;
-    std::unordered_set<void*> deletedVobInfos;
-
-    auto deleteOnce = []( auto* ptr, std::unordered_set<void*>& deletedPtrs ) {
-        if ( !ptr )
-            return false;
-
-        auto [_, inserted] = deletedPtrs.insert( ptr );
-        if ( inserted ) {
-            delete ptr;
-        }
-
-        return inserted;
-    };
-
-    auto deleteMeshVisualOnce = [&deletedVisuals]( MeshVisualInfo* ptr ) {
-        if ( !ptr )
-            return false;
-
-        auto [_, inserted] = deletedVisuals.insert( ptr );
-        if ( inserted ) {
-            PrepareMeshVisualForDelete( ptr );
-            delete ptr;
-        }
-
-        return inserted;
-    };
-
-    auto deleteSkeletalVobInfoOnce = [&deletedVobInfos]( SkeletalVobInfo* ptr ) {
-        if ( !ptr )
-            return false;
-
-        auto [_, inserted] = deletedVobInfos.insert( ptr );
-        if ( inserted ) {
-            PrepareSkeletalVobForDelete( ptr );
-            delete ptr;
-        }
-
-        return inserted;
-    };
+void GothicAPI::ResetVobs() {
     
     // complete what ever is currently working, and clear everything else.
     Engine::WorkerThreadPool->clearAndFlush();
@@ -927,11 +815,7 @@ void GothicAPI::ResetVobs( bool releaseRendererResources ) {
     // by deleting them first we block the thread until the destructor finished
     for ( auto const& it : VobLightMap ) {
         Engine::GraphicsEngine->OnVobRemovedFromWorld( it.first );
-        if ( releaseRendererResources ) {
-            delete it.second;
-        } else {
-            QueueVobLightInfoForRelease( it.second );
-        }
+        delete it.second;
     }
     VobLightMap.clear();
     
@@ -939,7 +823,6 @@ void GothicAPI::ResetVobs( bool releaseRendererResources ) {
     for ( auto&& itx : Engine::GAPI->GetWorldSections() ) {
         for ( auto&& ity : itx.second ) {
             ity.second.Vobs.clear();
-            ity.second.InstanceCache.Clear();
         }
     }
 
@@ -947,15 +830,12 @@ void GothicAPI::ResetVobs( bool releaseRendererResources ) {
     ResetVegetation();
 
     // Clear helper-lists
-    if ( releaseRendererResources ) {
-        for ( zCVob* vob : ParticleEffectVobs ) {
-            DestroyParticleEffect( vob );
-        }
+    for ( zCVob* vob : ParticleEffectVobs ) {
+        DestroyParticleEffect( vob );
     }
 
     FrameThunderPolyStrips.clear();
     FlashVisuals.clear();
-    FrameMeshInstances.clear();
     ParticleEffectVobs.clear();
     RegisteredVobs.clear();
     BspLeafVobLists.clear();
@@ -965,66 +845,31 @@ void GothicAPI::ResetVobs( bool releaseRendererResources ) {
     VobsByVisual.clear();
     SkeletalVobMap.clear();
 
-    if ( !releaseRendererResources ) {
-        for ( auto const& it : StaticMeshVisuals ) {
-            QueueMeshVisualForRelease( it.second );
-        }
-        for ( auto const& it : ParticleEffectProgMeshes ) {
-            QueueMeshVisualForRelease( it.second );
-        }
-        for ( auto const& it : SkeletalMeshVisuals ) {
-            QueueSkeletalVisualForRelease( it.second );
-        }
-        for ( auto const& it : SkeletalMeshNpcs ) {
-            QueueSkeletalVisualForRelease( it.second );
-        }
-        for ( auto const& it : VobMap ) {
-            QueueVobInfoForRelease( it.second );
-        }
-        for ( auto it : SkeletalMeshVobs ) {
-            QueueSkeletalVobInfoForRelease( it );
-        }
-
-        StaticMeshVisuals.clear();
-        ParticleEffectProgMeshes.clear();
-        SkeletalMeshVisuals.clear();
-        SkeletalMeshNpcs.clear();
-        VobMap.clear();
-        SkeletalMeshVobs.clear();
-        AnimatedSkeletalVobs.clear();
-        return;
-    }
-
     // Delete static mesh visuals
     for ( auto const& it : StaticMeshVisuals ) {
-        deleteMeshVisualOnce( it.second );
+        delete it.second;
     }
     StaticMeshVisuals.clear();
 
-    for ( auto const& it : ParticleEffectProgMeshes ) {
-        deleteMeshVisualOnce( it.second );
-    }
-    ParticleEffectProgMeshes.clear();
-
     // Delete skeletal mesh visuals
     for ( auto const& it : SkeletalMeshVisuals ) {
-        deleteOnce( it.second, deletedVisuals );
+        delete it.second;
     }
     for ( auto const& it : SkeletalMeshNpcs ) {
-        deleteOnce( it.second, deletedVisuals );
+        delete it.second;
     }
     SkeletalMeshVisuals.clear();
     SkeletalMeshNpcs.clear();
 
     // Delete static mesh vobs
     for ( auto const& it : VobMap ) {
-        deleteOnce( it.second, deletedVobInfos );
+        delete it.second;
     }
     VobMap.clear();
 
     // Delete skeletal mesh vobs
     for ( auto it : SkeletalMeshVobs ) {
-        deleteSkeletalVobInfoOnce( it );
+        delete it;
     }
     SkeletalMeshVobs.clear();
     AnimatedSkeletalVobs.clear();
@@ -1895,105 +1740,29 @@ void GothicAPI::GetVisibleDecalList( std::vector<zCVob*>& decals ) {
 
 /** Called when a material got removed */
 void GothicAPI::OnMaterialDeleted( zCMaterial* mat ) {
+#define UnloadMaterial(cont, m) \
+do { \
+    auto mit = cont.find(m); \
+    if ( mit != cont.end() ) { \
+        for ( auto& mi : mit->second ) { \
+            delete mi; \
+        } \
+        cont.erase(mit); \
+    } \
+} while (0)
+
     LoadedMaterials.erase( mat );
     if ( !mat )
         return;
-
-    auto eraseMeshKeyEntries = [mat]( auto& cont ) {
-        for ( auto it = cont.begin(); it != cont.end(); ) {
-            if ( it->first.Material == mat ) {
-                it = cont.erase( it );
-            } else {
-                ++it;
-            }
-        }
-    };
-
-    auto eraseCachedMeshKeyEntries = [mat]( auto& cont ) {
-        cont.erase( std::remove_if( cont.begin(), cont.end(),
-            [mat]( const auto& entry ) {
-                return entry.first.Material == mat;
-            } ), cont.end() );
-    };
-
-    auto unloadStaticMaterial = [mat, &eraseMeshKeyEntries, &eraseCachedMeshKeyEntries]( MeshVisualInfo* visual ) {
-        if ( !visual )
-            return;
-
-        auto mit = visual->Meshes.find( mat );
-        if ( mit != visual->Meshes.end() ) {
-            for ( MeshInfo* mi : mit->second ) {
-                delete mi;
-            }
-            visual->Meshes.erase( mit );
-        }
-
-        eraseMeshKeyEntries( visual->MeshesByTexture );
-        eraseCachedMeshKeyEntries( visual->MeshesCached );
-    };
-
-    auto unloadSkeletalMaterial = [mat]( SkeletalMeshVisualInfo* visual ) {
-        if ( !visual )
-            return;
-
-        auto meshIt = visual->Meshes.find( mat );
-        if ( meshIt != visual->Meshes.end() ) {
-            for ( MeshInfo* mi : meshIt->second ) {
-                delete mi;
-            }
-            visual->Meshes.erase( meshIt );
-        }
-
-        auto skelIt = visual->SkeletalMeshes.find( mat );
-        if ( skelIt != visual->SkeletalMeshes.end() ) {
-            for ( SkeletalMeshInfo* smi : skelIt->second ) {
-                delete smi;
-            }
-            visual->SkeletalMeshes.erase( skelIt );
-        }
-    };
-
-    for ( auto&& sectionX : WorldSections ) {
-        for ( auto&& sectionY : sectionX.second ) {
-            WorldMeshSectionInfo& section = sectionY.second;
-
-            for ( auto it = section.WorldMeshes.begin(); it != section.WorldMeshes.end(); ) {
-                if ( it->first.Material == mat ) {
-                    delete it->second;
-                    it = section.WorldMeshes.erase( it );
-                } else {
-                    ++it;
-                }
-            }
-
-            for ( auto it = section.SuppressedMeshes.begin(); it != section.SuppressedMeshes.end(); ) {
-                if ( it->first.Material == mat ) {
-                    delete it->second;
-                    it = section.SuppressedMeshes.erase( it );
-                } else {
-                    ++it;
-                }
-            }
-
-            section.WorldMeshesByCustomTextureOriginal.erase( mat );
-            section.InstanceCache.Clear();
-        }
-    }
-
-    for ( auto&& it : StaticMeshVisuals ) {
-        unloadStaticMaterial( it.second );
-    }
-
-    for ( auto&& it : ParticleEffectProgMeshes ) {
-        unloadStaticMaterial( it.second );
-    }
-
     for ( auto&& it : SkeletalMeshVisuals ) {
-        unloadSkeletalMaterial( it.second );
+        UnloadMaterial( it.second->Meshes, mat );
+        UnloadMaterial( it.second->SkeletalMeshes, mat );
     }
     for ( auto&& it : SkeletalMeshNpcs ) {
-        unloadSkeletalMaterial( it.second );
+        UnloadMaterial( it.second->Meshes, mat );
+        UnloadMaterial( it.second->SkeletalMeshes, mat );
     }
+#undef UnloadMaterial
 }
 
 /** Called when a material got created */

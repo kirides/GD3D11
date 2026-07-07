@@ -41,12 +41,7 @@ void SkeletalVobInfo::UpdateState() {
 }
 
 SectionInstanceCache::~SectionInstanceCache() {
-    Clear();
-}
-
-void SectionInstanceCache::Clear() {
     InstanceCache.clear();
-    InstanceCacheData.clear();
 }
 
 MeshInfo::~MeshInfo() {

@@ -656,7 +656,7 @@ public:
     void ResetWorld();
 
     /** Resets only the vobs */
-    void ResetVobs( bool releaseRendererResources = true );
+    void ResetVobs();
 
     /** Get material by texture name */
     zCMaterial* GetMaterialByTextureName( const std::string& name );
