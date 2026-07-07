@@ -7310,13 +7310,13 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                         }
                         bool showHelpers = *reinterpret_cast<int*>(GothicMemoryLocations::zCVob::s_ShowHelperVisuals) != 0;
 
-                        if ( showHelpers ) {
+                        if ( showHelpers && material ) {
                             WhiteTexture->BindToPixelShader( 0 );
                             ShaderManager->GetPShader( PShaderID::PS_DiffuseAlphaTest )->Apply();
 
                             MaterialInfo::Buffer b = {};
 
-                            b.Color = meshKey.Material->GetColor();
+                            b.Color = material->GetColor();
                             ShaderManager->GetPShader( PShaderID::PS_DiffuseAlphaTest )->GetBuffer( "MI_MaterialInfo" ).Update( &b ).Bind();
 
                         } else {
