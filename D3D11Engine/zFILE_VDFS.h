@@ -123,7 +123,7 @@ public:
         return vftable->Read( this, scr, bytes );
     }
 
-    long Size() {
-        return vftable->Size( this );
+    size_t Size() {
+        return static_cast<size_t>(vftable->Size( this ));
     }
 };
