@@ -1898,7 +1898,7 @@ void GothicAPI::GetVisibleDecalList( std::vector<zCVob*>& decals ) {
 /** Called when a material got removed */
 void GothicAPI::OnMaterialDeleted( zCMaterial* mat ) {
     auto matHandle = GetMaterialManager().FindMaterialHandle(mat);
-    GetMaterialManager().DeleteMaterial(mat);
+    GetMaterialManager().DeleteMaterial(matHandle);
     LoadedMaterials.erase( mat );
     if ( !mat )
         return;
