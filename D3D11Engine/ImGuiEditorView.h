@@ -243,6 +243,7 @@ protected:
 
     /** Panel visibility */
     bool ShowVobSettingsDialog;
+    bool ShowMaterialInfoDialog;
 
     /** Thumbnail texture */
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> SelectedImageThumbnail;
