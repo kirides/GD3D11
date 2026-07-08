@@ -50,7 +50,6 @@ public:
     XRESULT Clear( const float4& color ) override PURE;
 
     /** Creates a vertexbuffer object (Not registered inside) */
-    XRESULT CreateVertexBuffer( D3D11VertexBuffer** outBuffer ) override;
     XRESULT CreateVertexBuffer( std::unique_ptr<D3D11VertexBuffer>& outBuffer ) override;
 
     /** Creates a texture object (Not registered inside) */

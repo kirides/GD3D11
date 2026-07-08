@@ -34,10 +34,10 @@ D3D11Effect::D3D11Effect() {
 }
 
 D3D11Effect::~D3D11Effect() {
-    delete RainBufferStatic;
-    delete RainBufferInitial;
-    delete RainBufferDrawFrom;
-    delete RainBufferStreamTo;
+    RainBufferStatic.reset();
+    RainBufferInitial.reset();
+    RainBufferDrawFrom.reset();
+    RainBufferStreamTo.reset();
 }
 
 /** Loads a texturearray. Use like the following: Put path and prefix as parameter. The files must then be called name_xxxx.dds */
@@ -119,15 +119,15 @@ XRESULT D3D11Effect::DrawRain() {
     if ( !RainBufferDrawFrom || lastHeight != state.RendererSettings.RainHeightRange
         || lastRadius != state.RendererSettings.RainRadiusRange ||
         lastNumParticles != numParticles ) {
-        delete RainBufferStatic;
-        delete RainBufferDrawFrom;
-        delete RainBufferStreamTo;
-        delete RainBufferInitial;
+        RainBufferStatic.reset();
+        RainBufferDrawFrom.reset();
+        RainBufferStreamTo.reset();
+        RainBufferInitial.reset();
 
-        e->CreateVertexBuffer( &RainBufferStatic );
-        e->CreateVertexBuffer( &RainBufferDrawFrom );
-        e->CreateVertexBuffer( &RainBufferStreamTo );
-        e->CreateVertexBuffer( &RainBufferInitial );
+        e->CreateVertexBuffer( RainBufferStatic );
+        e->CreateVertexBuffer( RainBufferDrawFrom );
+        e->CreateVertexBuffer( RainBufferStreamTo );
+        e->CreateVertexBuffer( RainBufferInitial );
 
         // Fill the vectors with random raindrop data
         std::vector<RainParticleDynamic> dynamicParticles( numParticles );
@@ -177,9 +177,9 @@ XRESULT D3D11Effect::DrawRain() {
 
         // Use initial-data if we don't have something in the stream-buffers yet
         if ( firstFrame )
-            b = RainBufferInitial;
+            b = RainBufferInitial.get();
         else
-            b = RainBufferDrawFrom;
+            b = RainBufferDrawFrom.get();
 
         firstFrame = false;
 
@@ -309,11 +309,11 @@ XRESULT D3D11Effect::DrawRain_CS() {
     if ( !RainBufferDrawFrom || lastHeight != state.RendererSettings.RainHeightRange
         || lastRadius != state.RendererSettings.RainRadiusRange ||
         (lastNumParticles + 127) / 128 != (numParticles + 127) / 128 ) {
-        delete RainBufferStatic;
-        delete RainBufferDrawFrom;
+        RainBufferStatic.reset();
+        RainBufferDrawFrom.reset();
 
-        e->CreateVertexBuffer( &RainBufferStatic );
-        e->CreateVertexBuffer( &RainBufferDrawFrom );
+        e->CreateVertexBuffer( RainBufferStatic );
+        e->CreateVertexBuffer( RainBufferDrawFrom );
 
         UINT alignedCount = ((numParticles + 127) / 128) * 128;
 

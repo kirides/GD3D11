@@ -17,8 +17,8 @@ public:
     void DrawBatch( D3D11VertexBuffer* instances, int numInstances, int instanceDataStride );
 
 private:
-    D3D11VertexBuffer* VertexBuffer;
-    D3D11VertexBuffer* IndexBuffer;
+    std::unique_ptr<D3D11VertexBuffer> VertexBuffer;
+    std::unique_ptr<D3D11VertexBuffer> IndexBuffer;
     unsigned int NumVertices;
     unsigned int NumIndices;
 };

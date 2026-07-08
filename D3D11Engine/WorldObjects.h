@@ -97,13 +97,18 @@ struct MeshInfo {
     /** Creates buffers for this mesh info */
     XRESULT Create( ExVertexStruct* vertices, unsigned int numVertices, VERTEX_INDEX* indices, unsigned int numIndices );
 
-    D3D11VertexBuffer* MeshVertexBuffer;
+    D3D11VertexBuffer* GetMeshVertexBuffer() const { return MeshVertexBuffer.get(); }
+    D3D11VertexBuffer* GetMeshPositionBuffer() const { return MeshPositionBuffer.get(); }
+    D3D11VertexBuffer* GetMeshIndexBuffer() const { return MeshIndexBuffer.get(); }
+    D3D11VertexBuffer* GetMeshShadowIndexBuffer() const { return MeshShadowIndexBuffer.get(); }
+    
+    std::unique_ptr<D3D11VertexBuffer> MeshVertexBuffer;
     // Optional position-only (float3, 12 bytes) copy of MeshVertexBuffer, in the same vertex
     // ordering. Bound for opaque depth/shadow passes to cut vertex-fetch bandwidth (~3.6x vs the
     // full 44-byte stream). Currently only populated for the wrapped world mesh. May be nullptr.
-    D3D11VertexBuffer* MeshPositionBuffer;
-    D3D11VertexBuffer* MeshIndexBuffer;
-    D3D11VertexBuffer* MeshShadowIndexBuffer;
+    std::unique_ptr<D3D11VertexBuffer> MeshPositionBuffer;
+    std::unique_ptr<D3D11VertexBuffer> MeshIndexBuffer;
+    std::unique_ptr<D3D11VertexBuffer> MeshShadowIndexBuffer;
     std::vector<ExVertexStruct> Vertices;
     std::vector<VERTEX_INDEX> Indices;
     std::vector<VERTEX_INDEX> ShadowIndices;
@@ -156,8 +161,8 @@ struct SkeletalMeshInfo {
 
     ~SkeletalMeshInfo();
 
-    D3D11VertexBuffer* MeshVertexBuffer;
-    D3D11VertexBuffer* MeshIndexBuffer;
+    std::unique_ptr<D3D11VertexBuffer> MeshVertexBuffer;
+    std::unique_ptr<D3D11VertexBuffer> MeshIndexBuffer;
     std::vector<ExSkelVertexStruct> Vertices;
     std::vector<VERTEX_INDEX> Indices;
 

@@ -112,7 +112,6 @@ public:
     virtual XRESULT Clear( const float4& color ) PURE;
 
     /** Creates a vertexbuffer object (Not registered inside) */
-    virtual XRESULT CreateVertexBuffer( D3D11VertexBuffer** outBuffer ) PURE;
     virtual XRESULT CreateVertexBuffer( std::unique_ptr<D3D11VertexBuffer>& outBuffer ) PURE;
 
     /** Creates a texture object (Not registered inside) */

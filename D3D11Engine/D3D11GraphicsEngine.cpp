@@ -313,8 +313,8 @@ D3D11GraphicsEngine::~D3D11GraphicsEngine() {
 
     SAFE_DELETE( InverseUnitSphereMesh );
 
-    SAFE_DELETE( QuadVertexBuffer );
-    SAFE_DELETE( QuadIndexBuffer );
+    QuadVertexBuffer.reset();
+    QuadIndexBuffer.reset();
 
     ID3D11Debug* d3dDebug;
     Device->QueryInterface( __uuidof(ID3D11Debug), reinterpret_cast<void**>(&d3dDebug) );
@@ -919,13 +919,13 @@ XRESULT D3D11GraphicsEngine::Init() {
     vx[4].Color = 0xFFFFFFFF;
     vx[5].Color = 0xFFFFFFFF;
 
-    CreateVertexBuffer( &QuadVertexBuffer );
+    CreateVertexBuffer( QuadVertexBuffer );
     QuadVertexBuffer->Init( vx, 6 * sizeof( ExVertexStruct ),
         D3D11VertexBuffer::EBindFlags::B_VERTEXBUFFER,
         D3D11VertexBuffer::EUsageFlags::U_IMMUTABLE );
 
     VERTEX_INDEX indices[] = { 0, 1, 2, 3, 4, 5 };
-    CreateVertexBuffer( &QuadIndexBuffer );
+    CreateVertexBuffer( QuadIndexBuffer );
     QuadIndexBuffer->Init( indices, sizeof( indices ),
         D3D11VertexBuffer::EBindFlags::B_INDEXBUFFER,
         D3D11VertexBuffer::EUsageFlags::U_IMMUTABLE );
@@ -3643,17 +3643,17 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             }
 
             // Bind mesh VB to slot 0 (only when changed)
-            if ( mi->MeshVertexBuffer != lastVB ) {
+            if ( mi->GetMeshVertexBuffer() != lastVB ) {
                 UINT vbOffset = 0;
                 UINT vbStride = sizeof( ExVertexStruct );
                 Context->IASetVertexBuffers( 0, 1, mi->MeshVertexBuffer->GetVertexBuffer().GetAddressOf(), &vbStride, &vbOffset );
-                lastVB = mi->MeshVertexBuffer;
+                lastVB = mi->GetMeshVertexBuffer();
             }
 
             // Bind IB (only when changed)
-            if ( mi->MeshIndexBuffer && mi->MeshIndexBuffer != lastIB ) {
-                Context->IASetIndexBuffer( mi->MeshIndexBuffer->GetVertexBuffer().Get(), VERTEX_INDEX_DXGI_FORMAT, 0 );
-                lastIB = mi->MeshIndexBuffer;
+            if ( auto idxBuffer = mi->GetMeshIndexBuffer(); idxBuffer && idxBuffer != lastIB ) {
+                Context->IASetIndexBuffer( idxBuffer->GetVertexBuffer().Get(), VERTEX_INDEX_DXGI_FORMAT, 0 );
+                lastIB = idxBuffer;
             }
 
             // Draw instanced
@@ -3817,13 +3817,13 @@ namespace {
         }
 
         if ( isAlpha ) {
-            return mesh->MeshIndexBuffer;
+            return mesh->GetMeshIndexBuffer();
         }
 
         if ( mesh->MeshShadowIndexBuffer && !mesh->ShadowIndices.empty() ) {
-            return mesh->MeshShadowIndexBuffer;
+            return mesh->GetMeshShadowIndexBuffer();
         }
-        return mesh->MeshIndexBuffer;
+        return mesh->GetMeshIndexBuffer();
     }
 
     unsigned int GetShadowAwareIndexCount( const MeshInfo* mesh, bool isAlpha ) {
@@ -4731,8 +4731,8 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
 
     // Bind wrapped mesh vertex buffers
     DrawVertexBufferIndexedUINT(
-        Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer,
-        Engine::GAPI->GetWrappedWorldMesh()->MeshIndexBuffer, 0, 0 );
+        Engine::GAPI->GetWrappedWorldMesh()->GetMeshVertexBuffer(),
+        Engine::GAPI->GetWrappedWorldMesh()->GetMeshIndexBuffer(), 0, 0 );
 
     int lastAlphaFunc = 0;
 
@@ -4940,7 +4940,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
     renderList = m_FrameGeometryCache.visibleSections; // shallow copy of pointers — O(N_sections), not O(BSP)
 
     MeshInfo* meshInfo = Engine::GAPI->GetWrappedWorldMesh();
-    DrawVertexBufferIndexedUINT( meshInfo->MeshVertexBuffer, meshInfo->MeshIndexBuffer, 0, 0 );
+    DrawVertexBufferIndexedUINT( meshInfo->GetMeshVertexBuffer(), meshInfo->GetMeshIndexBuffer(), 0, 0 );
 
     struct WorldMeshKey {
         zCTexture* Texture;
@@ -5297,8 +5297,8 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
 
     // Bind wrapped mesh vertex buffers
     DrawVertexBufferIndexedUINT(
-        Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer,
-        Engine::GAPI->GetWrappedWorldMesh()->MeshIndexBuffer, 0, 0 );
+        Engine::GAPI->GetWrappedWorldMesh()->GetMeshVertexBuffer(),
+        Engine::GAPI->GetWrappedWorldMesh()->GetMeshIndexBuffer(), 0, 0 );
 
     // Build per-texture batch descriptors and flat indirect draw args
     struct WaterTextureBatch {
@@ -5573,7 +5573,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
 
                 // Draw from wrapped mesh
                 MeshInfo* mesh = meshInfoByKey->second;
-                DrawVertexBufferIndexed( mesh->MeshVertexBuffer,
+                DrawVertexBufferIndexed( mesh->GetMeshVertexBuffer(),
                     GetShadowAwareIndexBuffer( mesh, isAlpha ),
                     GetShadowAwareIndexCount( mesh, isAlpha ) );
             }
@@ -5635,7 +5635,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
 
                         // Draw from wrapped mesh
                         MeshInfo* mesh = meshInfoByKey->second;
-                        DrawVertexBufferIndexed( mesh->MeshVertexBuffer,
+                        DrawVertexBufferIndexed( mesh->GetMeshVertexBuffer(),
                             GetShadowAwareIndexBuffer( mesh, isAlpha ),
                             GetShadowAwareIndexCount( mesh, isAlpha ) );
                     }
@@ -5711,7 +5711,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                 for ( auto const& meshInfo : materialMesh.second ) {
                     const auto mesh = meshInfo.get();
                     DrawVertexBufferIndexed(
-                        meshInfo->MeshVertexBuffer,
+                        meshInfo->GetMeshVertexBuffer(),
                         GetShadowAwareIndexBuffer( mesh, isAlpha ),
                         GetShadowAwareIndexCount( mesh, isAlpha ) );
                 }
@@ -5922,7 +5922,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
 
                 // Draw from wrapped mesh
                 MeshInfo* mesh = meshInfoByKey->second;
-                DrawVertexBufferInstancedIndexed( mesh->MeshVertexBuffer,
+                DrawVertexBufferInstancedIndexed( mesh->GetMeshVertexBuffer(),
                     GetShadowAwareIndexBuffer( mesh, isAlpha ),
                     GetShadowAwareIndexCount( mesh, isAlpha ),
                     6 );
@@ -5983,7 +5983,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
 
                         // Draw from wrapped mesh
                         MeshInfo* mesh = meshInfoByKey->second;
-                        DrawVertexBufferInstancedIndexed( mesh->MeshVertexBuffer,
+                        DrawVertexBufferInstancedIndexed( mesh->GetMeshVertexBuffer(),
                             GetShadowAwareIndexBuffer( mesh, isAlpha ),
                             GetShadowAwareIndexCount( mesh, isAlpha ),
                             6 );
@@ -6064,7 +6064,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                     const auto mesh = meshInfo.get();
 
                     DrawVertexBufferInstancedIndexed(
-                        meshInfo->MeshVertexBuffer,
+                        meshInfo->GetMeshVertexBuffer(),
                         GetShadowAwareIndexBuffer( mesh, isAlpha ),
                         GetShadowAwareIndexCount( mesh, isAlpha ),
                         6 );
@@ -6799,7 +6799,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             // Draw batch
 
             /* Dont re-bind buffer all the time*/
-            const auto vb = mi->MeshVertexBuffer;
+            const auto vb = mi->GetMeshVertexBuffer();
             const auto ib = GetShadowAwareIndexBuffer( mi, isAlpha );
 
             UINT offset[] = { 0 };
@@ -7495,7 +7495,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                     }
 
                     // Draw batch
-                    DrawInstanced( meshInfo->MeshVertexBuffer, meshInfo->MeshIndexBuffer,
+                    DrawInstanced( meshInfo->GetMeshVertexBuffer(), meshInfo->GetMeshIndexBuffer(),
                         meshInfo->Indices.size(), instancingBuffer,
                         sizeof( VobInstanceInfo ), cachedVisual->Instances.size(),
                         sizeof( ExVertexStruct ), cachedVisual->StartInstanceNum );
@@ -7715,7 +7715,7 @@ XRESULT D3D11GraphicsEngine::DrawFrameAlphaMeshes()
             }
 
             // Draw batch
-            DrawInstanced( mi->MeshVertexBuffer, mi->MeshIndexBuffer, mi->Indices.size(),
+            DrawInstanced( mi->GetMeshVertexBuffer(), mi->GetMeshIndexBuffer(), mi->Indices.size(),
                 instancingBuffer, sizeof( VobInstanceInfo ),
                 instances.size(), sizeof( ExVertexStruct ),
                 alphaMesh.StartInstanceNum );
@@ -8145,7 +8145,7 @@ void D3D11GraphicsEngine::DrawVobSingle( VobInfo* vob, zCCamera& camera ) {
         for ( auto const& itm2nd : itm.second ) {
             // Draw instances
             DrawVertexBufferIndexed(
-                itm2nd->MeshVertexBuffer, itm2nd->MeshIndexBuffer,
+                itm2nd->GetMeshVertexBuffer(), itm2nd->GetMeshIndexBuffer(),
                 itm2nd->Indices.size() );
         }
     }
@@ -9071,14 +9071,14 @@ void D3D11GraphicsEngine::DrawFrameParticleMeshes( std::unordered_map<zCVob*, Me
                 continue;
             }
             for ( auto const& itm2nd : itm.second ) {
-                if (itm2nd->MeshVertexBuffer != lastMeshBuffer
-                    || itm2nd->MeshIndexBuffer != lastIndexBuffer) {
+                if (itm2nd->GetMeshVertexBuffer() != lastMeshBuffer
+                    || itm2nd->GetMeshIndexBuffer() != lastIndexBuffer) {
                     // Bind them 
                     DrawVertexBufferIndexed(
-                        itm2nd->MeshVertexBuffer, itm2nd->MeshIndexBuffer,
+                        itm2nd->GetMeshVertexBuffer(), itm2nd->GetMeshIndexBuffer(),
                         0 );
-                    lastMeshBuffer = itm2nd->MeshVertexBuffer;
-                    lastIndexBuffer = itm2nd->MeshIndexBuffer;
+                    lastMeshBuffer = itm2nd->GetMeshVertexBuffer();
+                    lastIndexBuffer = itm2nd->GetMeshIndexBuffer();
                 }
                 
                 // Draw instances

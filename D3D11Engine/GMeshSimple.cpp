@@ -18,8 +18,8 @@ GMeshSimple::GMeshSimple() {
 }
 
 GMeshSimple::~GMeshSimple() {
-    delete VertexBuffer;
-    delete IndexBuffer;
+    VertexBuffer.reset();
+    IndexBuffer.reset();
 }
 
 /** Load a mesh from file */
@@ -82,8 +82,8 @@ XRESULT GMeshSimple::LoadMesh( const std::string& file ) {
             //LogInfo() << "Got file name: " << name;
         }
 
-        Engine::GraphicsEngine->CreateVertexBuffer( &VertexBuffer );
-        Engine::GraphicsEngine->CreateVertexBuffer( &IndexBuffer );
+        Engine::GraphicsEngine->CreateVertexBuffer( VertexBuffer );
+        Engine::GraphicsEngine->CreateVertexBuffer( IndexBuffer );
 
         // Init and fill buffers
         VertexBuffer->Init( vertices, s->mMeshes[i]->mNumVertices * sizeof( SimpleObjectVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
@@ -108,10 +108,10 @@ XRESULT GMeshSimple::LoadMesh( const std::string& file ) {
 
 /** Draws all buffers this holds */
 void GMeshSimple::DrawMesh() {
-    Engine::GraphicsEngine->DrawVertexBufferIndexed( VertexBuffer, IndexBuffer, NumIndices );
+    Engine::GraphicsEngine->DrawVertexBufferIndexed( VertexBuffer.get(), IndexBuffer.get(), NumIndices );
 }
 
 /** Draws a batch of instances */
 void GMeshSimple::DrawBatch( D3D11VertexBuffer* instances, int numInstances, int instanceDataStride ) {
-    Engine::GraphicsEngine->DrawInstanced( VertexBuffer, IndexBuffer, NumIndices, instances, instanceDataStride, numInstances, sizeof( SimpleObjectVertexStruct ) );
+    Engine::GraphicsEngine->DrawInstanced( VertexBuffer.get(), IndexBuffer.get(), NumIndices, instances, instanceDataStride, numInstances, sizeof( SimpleObjectVertexStruct ) );
 }

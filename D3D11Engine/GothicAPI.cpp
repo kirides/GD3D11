@@ -1958,9 +1958,9 @@ void GothicAPI::DrawMeshInfo( zCMaterial* mat, MeshInfo* msh ) {
     }
 
     if ( !msh->MeshIndexBuffer ) {
-        Engine::GraphicsEngine->DrawVertexBuffer( msh->MeshVertexBuffer, msh->Vertices.size() );
+        Engine::GraphicsEngine->DrawVertexBuffer( msh->GetMeshVertexBuffer(), msh->Vertices.size() );
     } else {
-        Engine::GraphicsEngine->DrawVertexBufferIndexed( msh->MeshVertexBuffer, msh->MeshIndexBuffer, msh->Indices.size() );
+        Engine::GraphicsEngine->DrawVertexBufferIndexed( msh->GetMeshVertexBuffer(), msh->GetMeshIndexBuffer(), msh->Indices.size() );
     }
 }
 
@@ -1976,9 +1976,9 @@ void GothicAPI::DrawMeshInfo_Layered( zCMaterial* mat, MeshInfo* msh ) {
 
     D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     if ( !msh->MeshIndexBuffer ) {
-        g->DrawVertexBufferInstanced( msh->MeshVertexBuffer, msh->Vertices.size(), 6 );
+        g->DrawVertexBufferInstanced( msh->GetMeshVertexBuffer(), msh->Vertices.size(), 6 );
     } else {
-        g->DrawVertexBufferInstancedIndexed( msh->MeshVertexBuffer, msh->MeshIndexBuffer, msh->Indices.size(), 6 );
+        g->DrawVertexBufferInstancedIndexed( msh->GetMeshVertexBuffer(), msh->GetMeshIndexBuffer(), msh->Indices.size(), 6 );
     }
 }
 
@@ -3030,8 +3030,8 @@ void GothicAPI::DrawTransparencyVobs() {
 
                 for ( auto const& meshInfo : materialMesh.second ) {
                     g->DrawVertexBufferIndexed(
-                        meshInfo->MeshVertexBuffer,
-                        meshInfo->MeshIndexBuffer,
+                        meshInfo->GetMeshVertexBuffer(),
+                        meshInfo->GetMeshIndexBuffer(),
                         meshInfo->Indices.size() );
                 }
             }
@@ -3056,8 +3056,8 @@ void GothicAPI::DrawTransparencyVobs() {
 
                 for ( auto const& meshInfo : materialMesh.second ) {
                     g->DrawVertexBufferIndexed(
-                        meshInfo->MeshVertexBuffer,
-                        meshInfo->MeshIndexBuffer,
+                        meshInfo->GetMeshVertexBuffer(),
+                        meshInfo->GetMeshIndexBuffer(),
                         meshInfo->Indices.size() );
                 }
             }
@@ -3265,8 +3265,8 @@ void GothicAPI::DrawParticleFX( zCVob* source, zCParticleFX* fx, ParticleFrameDa
 
 /** Debugging */
 void GothicAPI::DrawTriangle( float3 pos = { 0.0f,0.0f,0.0f } ) {
-    D3D11VertexBuffer* vxb;
-    Engine::GraphicsEngine->CreateVertexBuffer( &vxb );
+    std::unique_ptr<D3D11VertexBuffer> vxb;
+    Engine::GraphicsEngine->CreateVertexBuffer( vxb );
     vxb->Init( nullptr, 6 * sizeof( ExVertexStruct ), D3D11VertexBuffer::EBindFlags::B_VERTEXBUFFER, D3D11VertexBuffer::EUsageFlags::U_DYNAMIC, D3D11VertexBuffer::CA_WRITE );
 
     ExVertexStruct vx[6];
@@ -3297,9 +3297,7 @@ void GothicAPI::DrawTriangle( float3 pos = { 0.0f,0.0f,0.0f } ) {
 
     vxb->UpdateBuffer( vx );
 
-    Engine::GraphicsEngine->DrawVertexBuffer( vxb, 6 );
-
-    delete vxb;
+    Engine::GraphicsEngine->DrawVertexBuffer( vxb.get(), 6 );
 }
 
 /** Sets the Projection matrix */
@@ -5678,7 +5676,7 @@ void GothicAPI::DrawMorphMesh( zCMorphMesh* msh, std::map<zCMaterial*, std::vect
         for ( auto const& it : meshes ) {
             for ( auto& mi : it.second ) {
                 if ( mi->MeshIndex == i ) {
-                    Engine::GraphicsEngine->DrawVertexBufferIndexed( mi->MeshVertexBuffer, mi->MeshIndexBuffer, mi->Indices.size() );
+                    Engine::GraphicsEngine->DrawVertexBufferIndexed( mi->GetMeshVertexBuffer(), mi->GetMeshIndexBuffer(), mi->Indices.size() );
                     goto Out_Of_Nested_Loop;
                 }
             }
@@ -5719,7 +5717,7 @@ void GothicAPI::DrawMorphMesh_Layered( zCMorphMesh* msh, std::map<zCMaterial*, s
             for ( auto& mi : it.second ) {
                 if ( mi->MeshIndex == i ) {
                     mi->MeshVertexBuffer->UpdateBuffer( &vertices[0], vertices.size() * sizeof( ExVertexStruct ) );
-                    g->DrawVertexBufferInstancedIndexed( mi->MeshVertexBuffer, mi->MeshIndexBuffer, mi->Indices.size(), 6 );
+                    g->DrawVertexBufferInstancedIndexed( mi->GetMeshVertexBuffer(), mi->GetMeshIndexBuffer(), mi->Indices.size(), 6 );
                     goto Out_Of_Nested_Loop;
                 }
             }

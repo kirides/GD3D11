@@ -673,8 +673,8 @@ private:
     std::unique_ptr<ConstantBufferPool> PerObjectMaterialInfoPooledBuffer;
 
     /** Quads for decals/particles */
-    D3D11VertexBuffer* QuadVertexBuffer;
-    D3D11VertexBuffer* QuadIndexBuffer;
+    std::unique_ptr<D3D11VertexBuffer> QuadVertexBuffer;
+    std::unique_ptr<D3D11VertexBuffer> QuadIndexBuffer;
 
     /** Occlusion query manager */
     std::unique_ptr<D3D11OcclusionQuerry> Occlusion;

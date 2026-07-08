@@ -24,7 +24,7 @@ GVegetationBox::GVegetationBox() {
 
 GVegetationBox::~GVegetationBox() {
     delete VegetationMesh;
-    delete InstancingBuffer;
+    InstancingBuffer.reset();
     VegetationTexture.reset();
     delete GrassCB;
 }
@@ -216,7 +216,7 @@ void GVegetationBox::InitSpotsRandom( const std::vector<XMFLOAT3>& trisInside, E
     XMStoreFloat3( &bs, (XMLoadFloat3( &BoxMax ) - XMLoadFloat3( &BoxMin )) );
     float rad = std::min( bs.x, bs.z ) / 2.0f;
 
-    delete InstancingBuffer; InstancingBuffer = nullptr;
+    InstancingBuffer.reset();
     delete GrassCB; GrassCB = nullptr;
     VegetationSpots.clear();
 
@@ -273,7 +273,7 @@ void GVegetationBox::InitSpotsRandom( const std::vector<XMFLOAT3>& trisInside, E
     }
 
     // Create instancing buffer for this box
-    Engine::GraphicsEngine->CreateVertexBuffer( &InstancingBuffer );
+    Engine::GraphicsEngine->CreateVertexBuffer( InstancingBuffer );
     InstancingBuffer->Init( &VegetationSpots[0], VegetationSpots.size() * sizeof( XMFLOAT4X4 ) );
 
     // Create constant buffer
@@ -340,7 +340,7 @@ void GVegetationBox::RenderVegetation( const XMFLOAT3& eye ) {
     GrassCB->BindToVertexShader( 1 );
 
     // Draw the batch
-    VegetationMesh->DrawBatch( InstancingBuffer, VegetationSpots.size(), sizeof( XMFLOAT4X4 ) );
+    VegetationMesh->DrawBatch( InstancingBuffer.get(), VegetationSpots.size(), sizeof( XMFLOAT4X4 ) );
 
     /*for(int i=0;i<VegetationSpots.size();i++)
     {
@@ -424,11 +424,11 @@ void GVegetationBox::RemoveVegetationAt( const XMFLOAT3& position, float range )
     VegetationSpots.assign( s.begin(), s.end() );
 
     // Recreate instancing buffer
-    delete InstancingBuffer;
+    InstancingBuffer.reset();
     InstancingBuffer = nullptr;
 
     if ( !IsEmpty() ) {
-        Engine::GraphicsEngine->CreateVertexBuffer( &InstancingBuffer );
+        Engine::GraphicsEngine->CreateVertexBuffer( InstancingBuffer );
         InstancingBuffer->Init( &VegetationSpots[0], VegetationSpots.size() * sizeof( XMFLOAT4X4 ) );
     }
 
@@ -473,13 +473,13 @@ void GVegetationBox::MergeVegetation( GVegetationBox* other ) {
 
 /** Recreates the instancing buffer from the current spots and refits the bounding box. */
 void GVegetationBox::RebuildInstancingBuffer() {
-    delete InstancingBuffer;
+    InstancingBuffer.reset();
     InstancingBuffer = nullptr;
 
     RefitBoundingBox();
 
     if ( !VegetationSpots.empty() ) {
-        Engine::GraphicsEngine->CreateVertexBuffer( &InstancingBuffer );
+        Engine::GraphicsEngine->CreateVertexBuffer( InstancingBuffer );
         InstancingBuffer->Init( &VegetationSpots[0], VegetationSpots.size() * sizeof( XMFLOAT4X4 ) );
     }
 }
@@ -493,8 +493,8 @@ void GVegetationBox::ApplyUniformScaling( float scale ) {
         XMStoreFloat4x4( &VegetationSpots[i], XMMatrixTranspose( s * w ) );
     }
 
-    delete InstancingBuffer;
-    Engine::GraphicsEngine->CreateVertexBuffer( &InstancingBuffer );
+    InstancingBuffer.reset();
+    Engine::GraphicsEngine->CreateVertexBuffer( InstancingBuffer );
     InstancingBuffer->Init( &VegetationSpots[0], VegetationSpots.size() * sizeof( XMFLOAT4X4 ) );
 }
 
@@ -616,7 +616,7 @@ void GVegetationBox::LoadFromFILE( zFILE_VDFS* f, int version ) {
     RefitBoundingBox();
 
     // Create instancing buffer for this box
-    Engine::GraphicsEngine->CreateVertexBuffer( &InstancingBuffer );
+    Engine::GraphicsEngine->CreateVertexBuffer( InstancingBuffer );
     InstancingBuffer->Init( &VegetationSpots[0], VegetationSpots.size() * sizeof( XMFLOAT4X4 ) );
 
     // Create constant buffer
