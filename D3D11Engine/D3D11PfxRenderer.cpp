@@ -14,6 +14,7 @@
 #include "D3D11PFX_SMAA.h"
 #include "D3D11PFX_GodRays.h"
 #include "D3D11PFX_DepthOfField.h"
+#include "D3D11PFX_Bloom.h"
 #include "D3D11PFX_TAA.h"
 #include "D3D11PFX_SimpleSharpen.h"
 #include "D3D11PFX_CAS.h"
@@ -45,6 +46,7 @@ D3D11PfxRenderer::D3D11PfxRenderer() {
         FX_TAA = std::make_unique<D3D11PFX_TAA>( this );
         NvHBAO = std::make_unique<D3D11NVHBAO>();
         FX_SAO = std::make_unique<D3D11PFX_SAO>( this );
+        FX_Bloom = std::make_unique<D3D11PFX_Bloom>( this );
         PFX_FSR1 = std::make_unique<D3D11PFX_FSR1>( this );
         PFX_FSR3 = std::make_unique<D3D11PFX_FSR3>( this );
         PFX_ASSAO = std::make_unique<D3D11PFX_ASSAO>(
@@ -85,13 +87,19 @@ XRESULT D3D11PfxRenderer::RenderGodRays(ID3D11ShaderResourceView* backbuffer, ID
 }
 
 /** Renders the depth-of-field effect */
-XRESULT D3D11PfxRenderer::RenderDepthOfField(ID3D11ShaderResourceView* backbuffer) {
-    return FX_DepthOfField->Render( backbuffer );
+XRESULT D3D11PfxRenderer::RenderDepthOfField(ID3D11RenderTargetView* output, ID3D11ShaderResourceView* backbuffer, ID3D11ShaderResourceView* depthSrv, INT2 resolution) {
+    return FX_DepthOfField->Render( output, backbuffer, depthSrv, resolution );
+}
+
+/** Renders the standalone bloom effect */
+XRESULT D3D11PfxRenderer::RenderBloom(ID3D11RenderTargetView* output, ID3D11ShaderResourceView* sceneSrv, INT2 resolution) {
+    if ( !FX_Bloom ) return XR_FAILED;
+    return FX_Bloom->Render( output, sceneSrv, resolution );
 }
 
 /** Renders the HDR-Effect */
-XRESULT D3D11PfxRenderer::RenderHDR( ID3D11RenderTargetView* output, ID3D11ShaderResourceView* backbuffer ) {
-    return FX_HDR->Render( output, backbuffer );
+XRESULT D3D11PfxRenderer::RenderHDR( ID3D11RenderTargetView* output, ID3D11ShaderResourceView* backbuffer, INT2 resolution ) {
+    return FX_HDR->Render( output, backbuffer, resolution );
 }
 
 /** Renders the SMAA-Effect */

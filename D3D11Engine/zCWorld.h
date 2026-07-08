@@ -8,6 +8,7 @@
 #include "zCCamera.h"
 #include "zCVob.h"
 #include "zCSkyController_Outdoor.h"
+#include "ThreadPool.h"
 
 class zCSkyController_Outdoor;
 class zCSkyController;
@@ -155,7 +156,7 @@ public:
         HookedFunctions::OriginalFunctions.original_zCWorldCompileWorld( thisptr, a2, a3, a4, a5, a6 );
 
         // Make sure worker thread don't work on any point light
-        Engine::RefreshWorkerThreadpool();
+        Engine::WorkerThreadPool->clearAndFlush();
 
         LogInfo() << "Loading world!";
         Engine::GAPI->GetLoadedWorldInfo()->MainWorld = thisptr;
@@ -166,7 +167,7 @@ public:
         HookedFunctions::OriginalFunctions.original_zCWorldGenerateStaticWorldLighting( thisptr, a2, a3 );
 
         // Make sure worker thread don't work on any point light
-        Engine::RefreshWorkerThreadpool();
+        Engine::WorkerThreadPool->clearAndFlush();
 
         LogInfo() << "Loading world!";
         Engine::GAPI->GetLoadedWorldInfo()->MainWorld = thisptr;

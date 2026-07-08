@@ -42,7 +42,7 @@ D3D11PFX_DepthOfField::D3D11PFX_DepthOfField( D3D11PfxRenderer* rnd ) : D3D11PFX
     }
 }
 
-XRESULT D3D11PFX_DepthOfField::Render( ID3D11ShaderResourceView* backbuffer ) {
+XRESULT D3D11PFX_DepthOfField::Render( ID3D11RenderTargetView* output, ID3D11ShaderResourceView* backbuffer, ID3D11ShaderResourceView* depthSrv, INT2 resolution ) {
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
 
     engine->SetDefaultStates();
@@ -53,7 +53,7 @@ XRESULT D3D11PFX_DepthOfField::Render( ID3D11ShaderResourceView* backbuffer ) {
     auto& rendererSettings = Engine::GAPI->GetRendererState().RendererSettings;
 
     if ( !FeatureLevel10Compatibility ) {
-        auto res = RenderCS( backbuffer );
+        auto res = RenderCS( output, backbuffer, depthSrv, resolution );
         engine->GetContext()->OMSetRenderTargets( 1, oldRTV.GetAddressOf(), oldDSV.Get() );
         return res;
     }
@@ -93,7 +93,7 @@ XRESULT D3D11PFX_DepthOfField::Render( ID3D11ShaderResourceView* backbuffer ) {
     engine->GetContext()->RSSetViewports( 1, &focusVP );
 
     engine->GetContext()->OMSetRenderTargets( 1, m_FocusRTV[curIdx].GetAddressOf(), nullptr );
-    engine->GetDepthBuffer()->BindToPixelShader( engine->GetContext().Get(), 0 );
+    engine->GetContext()->PSSetShaderResources( 0, 1, &depthSrv );
     engine->GetContext()->PSSetShaderResources( 1, 1, m_FocusSRV[prevIdx].GetAddressOf() );
 
     FxRenderer->DrawFullScreenQuad();
@@ -105,7 +105,7 @@ XRESULT D3D11PFX_DepthOfField::Render( ID3D11ShaderResourceView* backbuffer ) {
     engine->GetContext()->PSSetShaderResources( 0, 2, nullSRV2 );
 
     // --- Pass 1: Half-res bokeh blur ---
-    auto res = engine->GetResolution();
+    auto res = resolution;
     DXGI_FORMAT bbufferFormat = engine->GetBackBufferFormat();
     auto halfBuffer = FxRenderer->GetTexturePool()->Acquire(
         TexturePool::Description{ res.x / 2, res.y / 2, bbufferFormat } );
@@ -118,9 +118,9 @@ XRESULT D3D11PFX_DepthOfField::Render( ID3D11ShaderResourceView* backbuffer ) {
 
     engine->GetContext()->OMSetRenderTargets( 1, halfBuffer->GetRenderTargetView().GetAddressOf(), nullptr );
 
-    // t0 = full-res scene, t1 = full-res depth, t2 = focus (1x1)
+    // t0 = scene, t1 = depth (normalized-UV sampled), t2 = focus (1x1)
     engine->GetContext()->PSSetShaderResources( 0, 1, &backbuffer );
-    engine->GetDepthBuffer()->BindToPixelShader( engine->GetContext().Get(), 1 );
+    engine->GetContext()->PSSetShaderResources( 1, 1, &depthSrv );
     engine->GetContext()->PSSetShaderResources( 2, 1, m_FocusSRV[m_FocusIndex].GetAddressOf() );
 
     FxRenderer->DrawFullScreenQuad();
@@ -130,26 +130,27 @@ XRESULT D3D11PFX_DepthOfField::Render( ID3D11ShaderResourceView* backbuffer ) {
     engine->GetContext()->RSSetViewports( 1, &oldVP );
 
     // --- Pass 2: Full-res composite (render to temp, then blit to avoid read-write hazard) ---
-    auto compositeBuffer = FxRenderer->GetTempBuffer();
+    auto compositeBuffer = FxRenderer->GetTexturePool()->Acquire(
+        TexturePool::Description{ res.x, res.y, bbufferFormat } );
 
     compositePS->Apply();
     compositePS->GetBuffer( "DepthOfFieldConstantBuffer" ).Update( &cb ).Bind();
 
     engine->GetContext()->OMSetRenderTargets( 1, compositeBuffer->GetRenderTargetView().GetAddressOf(), nullptr );
 
-    // t0 = full-res scene, t1 = half-res blur, t2 = full-res depth, t3 = focus (1x1)
+    // t0 = scene, t1 = half-res blur, t2 = depth (normalized-UV sampled), t3 = focus (1x1)
     engine->GetContext()->PSSetShaderResources( 0, 1, &backbuffer );
     ID3D11ShaderResourceView* halfSRV = halfBuffer->GetShaderResView().Get();
     engine->GetContext()->PSSetShaderResources( 1, 1, &halfSRV );
-    engine->GetDepthBuffer()->BindToPixelShader( engine->GetContext().Get(), 2 );
+    engine->GetContext()->PSSetShaderResources( 2, 1, &depthSrv );
     engine->GetContext()->PSSetShaderResources( 3, 1, m_FocusSRV[m_FocusIndex].GetAddressOf() );
 
     FxRenderer->DrawFullScreenQuad();
 
     engine->GetContext()->PSSetShaderResources( 0, 4, nullSRVs );
 
-    // Blit composite result to backbuffer
-    FxRenderer->CopyTextureToRTV( compositeBuffer->GetShaderResView(), oldRTV, res );
+    // Blit composite result to the output RTV
+    FxRenderer->CopyTextureToRTV( compositeBuffer->GetShaderResView(), output, res );
 
     engine->GetContext()->OMSetRenderTargets( 1, oldRTV.GetAddressOf(), oldDSV.Get() );
 
@@ -157,7 +158,7 @@ XRESULT D3D11PFX_DepthOfField::Render( ID3D11ShaderResourceView* backbuffer ) {
 }
 
 /** Compute shader path for FL11+ */
-XRESULT D3D11PFX_DepthOfField::RenderCS( ID3D11ShaderResourceView* backbuffer ) {
+XRESULT D3D11PFX_DepthOfField::RenderCS( ID3D11RenderTargetView* output, ID3D11ShaderResourceView* backbuffer, ID3D11ShaderResourceView* depthSrv, INT2 resolution ) {
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     auto& context = engine->GetContext();
 
@@ -197,7 +198,7 @@ XRESULT D3D11PFX_DepthOfField::RenderCS( ID3D11ShaderResourceView* backbuffer ) 
     context->CSSetSamplers( 0, 1, &defaultSampler );
 
     ID3D11ShaderResourceView* focusSRVs[2] = {
-        engine->GetDepthBuffer()->GetShaderResView().Get(),
+        depthSrv,
         m_FocusSRV[prevIdx].Get()
     };
     context->CSSetShaderResources( 0, 2, focusSRVs );
@@ -211,7 +212,7 @@ XRESULT D3D11PFX_DepthOfField::RenderCS( ID3D11ShaderResourceView* backbuffer ) 
     m_FocusIndex = curIdx;
 
     // --- Pass 1: Half-res bokeh blur ---
-    auto res = engine->GetResolution();
+    auto res = resolution;
     DXGI_FORMAT bbufferFormat = engine->GetBackBufferFormat();
     auto halfBuffer = FxRenderer->GetTexturePool()->Acquire(
         TexturePool::Description{ res.x / 2, res.y / 2, bbufferFormat,
@@ -226,10 +227,10 @@ XRESULT D3D11PFX_DepthOfField::RenderCS( ID3D11ShaderResourceView* backbuffer ) 
 
     context->CSSetSamplers( 0, 1, &defaultSampler );
 
-    // t0 = full-res scene, t1 = full-res depth, t2 = focus (1x1)
+    // t0 = scene, t1 = depth (normalized-UV sampled), t2 = focus (1x1)
     ID3D11ShaderResourceView* blurSRVs[3] = {
         backbuffer,
-        engine->GetDepthBuffer()->GetShaderResView().Get(),
+        depthSrv,
         m_FocusSRV[m_FocusIndex].Get()
     };
     context->CSSetShaderResources( 0, 3, blurSRVs );
@@ -251,11 +252,11 @@ XRESULT D3D11PFX_DepthOfField::RenderCS( ID3D11ShaderResourceView* backbuffer ) 
 
     context->CSSetSamplers( 0, 1, &defaultSampler );
 
-    // t0 = full-res scene, t1 = half-res blur, t2 = full-res depth, t3 = focus (1x1)
+    // t0 = scene, t1 = half-res blur, t2 = depth (normalized-UV sampled), t3 = focus (1x1)
     ID3D11ShaderResourceView* compositeSRVs[4] = {
         backbuffer,
         halfBuffer->GetShaderResView().Get(),
-        engine->GetDepthBuffer()->GetShaderResView().Get(),
+        depthSrv,
         m_FocusSRV[m_FocusIndex].Get()
     };
     context->CSSetShaderResources( 0, 4, compositeSRVs );
@@ -267,8 +268,8 @@ XRESULT D3D11PFX_DepthOfField::RenderCS( ID3D11ShaderResourceView* backbuffer ) 
     context->CSSetShaderResources( 0, 4, nullSRVs );
     context->CSSetShader( nullptr, nullptr, 0 );
 
-    // Blit composite result to backbuffer
-    FxRenderer->CopyTextureToRTV( compositeBuffer->GetShaderResView(), oldRTV, res );
+    // Blit composite result to the output RTV
+    FxRenderer->CopyTextureToRTV( compositeBuffer->GetShaderResView(), output, res );
 
     engine->GetContext()->OMSetRenderTargets( 1, oldRTV.GetAddressOf(), oldDSV.Get() );
 

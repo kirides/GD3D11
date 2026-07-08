@@ -13,6 +13,7 @@
 #include "zCModel.h"
 #include "zCMorphMesh.h"
 #include <set>
+#include <unordered_map>
 #include "ConstantBufferStructs.h"
 #include "D3D11ConstantBuffer.h"
 #include "zCMesh.h"
@@ -24,6 +25,7 @@
 #include "zCQuadMark.h"
 #include <meshoptimizer/src/meshoptimizer.h>
 #include "MeshManager.h"
+#include "ThreadPool.h"
 
 extern MeshManager* s_MeshManager;
 
@@ -66,6 +68,44 @@ namespace {
         meshInfo->BoundingBox.Min = bbMin;
         meshInfo->BoundingBox.Max = bbMax;
         meshInfo->HasBoundingBox = true;
+    }
+
+    void BuildWorldMeshBuffers( WorldMeshInfo* mesh ) {
+        ZoneScoped;
+        std::vector<ExVertexStruct> indexedVertices;
+        std::vector<VERTEX_INDEX> indices;
+        WorldConverter::IndexVertices( &mesh->Vertices[0], mesh->Vertices.size(), indexedVertices, indices );
+
+        mesh->Vertices = std::move( indexedVertices );
+        mesh->Indices = std::move( indices );
+        ComputeWorldMeshBounds( mesh );
+
+        // Create the buffers
+        Engine::GraphicsEngine->CreateVertexBuffer( &mesh->MeshVertexBuffer );
+        Engine::GraphicsEngine->CreateVertexBuffer( &mesh->MeshIndexBuffer );
+
+        // Generate normals
+        WorldConverter::GenerateVertexNormals( mesh->Vertices, mesh->Indices );
+
+        // Optimize faces
+        mesh->MeshVertexBuffer->OptimizeFaces( &mesh->Indices[0],
+            reinterpret_cast<byte*>(&mesh->Vertices[0]),
+            mesh->Indices.size(),
+            mesh->Vertices.size(),
+            sizeof( ExVertexStruct ) );
+
+        // Then optimize vertices
+        mesh->MeshVertexBuffer->OptimizeVertices( &mesh->Indices[0],
+            reinterpret_cast<byte*>(&mesh->Vertices[0]),
+            mesh->Indices.size(),
+            mesh->Vertices.size(),
+            sizeof( ExVertexStruct ),
+            &mesh->ShadowIndices );
+
+        // Init and fill them
+        mesh->MeshVertexBuffer->Init( &mesh->Vertices[0], mesh->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
+        mesh->MeshIndexBuffer->Init( &mesh->Indices[0], mesh->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
+        CreateShadowIndexBuffer( mesh );
     }
 }
 
@@ -462,9 +502,10 @@ static bool AdditionalCheckWaterFall(const zCTexture* texture)
 
 static bool IsPortalMaterial( std::string_view matName )
 {
-    return matName.starts_with( "P:" )
+    return matName.starts_with( "P" ) &&
+        (matName.starts_with( "P:" )
         || matName.starts_with( "PN:" )
-        || matName.starts_with( "PI:" );
+        || matName.starts_with( "PI:" ));
 }
 
 /** Converts the worldmesh into a more usable format */
@@ -473,6 +514,16 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
     
     // Go through every polygon and put it into its section
     std::vector<ExVertexStruct> polyVertices;
+
+    std::unordered_map<const zCTexture*, bool> waterFallCheckCache;
+    auto checkWaterFallCached = [&waterFallCheckCache]( const zCTexture* texture ) -> bool {
+        auto [it, inserted] = waterFallCheckCache.try_emplace( texture, false );
+        if ( inserted ) {
+            it->second = AdditionalCheckWaterFall( texture );
+        }
+        return it->second;
+    };
+
     for ( unsigned int i = 0; i < numPolygons; i++ ) {
         zCPolygon* poly = polys[i];
 
@@ -485,14 +536,15 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
         if ( !mat ) {
             continue;
         }
-        std::string_view matName = mat->__GetName().ToChar();
+
+        std::string_view matName = mat->GetNameView();
         // std::string_view textureName = mat->GetTextureSingle() ? mat->GetTextureSingle()->__GetName().ToChar() : "";
 
         // Flag portals so that we can apply a different PS shader later
         zCTexture* _tex = nullptr;
         if ( poly->GetPolyFlags()->PortalPoly || IsPortalMaterial( matName ) ) {
             if ( const zCTexture* tex = mat->GetTextureSingle() ) {
-                std::string_view textureName = tex->__GetName().ToChar();
+                std::string_view textureName = tex->GetNameView();
                 if ( textureName.starts_with("OWODFLWOODGROUND.") ) {
                     continue; // this is a ground texture that is sometimes re-used for visual tricks to darken tunnels, etc. We don't want to treat this as a portal.
                 } else {
@@ -537,7 +589,7 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
         int matGroup = mat->GetMatGroup();
 #ifdef BUILD_GOTHIC_2_6_fix
         if ( matGroup != zMAT_GROUP_WATER && !_tex ) {
-            if ( AdditionalCheckWaterFall( key.Texture ) ) {
+            if ( checkWaterFallCached( key.Texture ) ) {
                 matGroup = zMAT_GROUP_WATER;
             }
         }
@@ -601,7 +653,7 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
         if ( matGroup == zMAT_GROUP_WATER && !mat->HasAlphaTest() ) {
 #ifdef BUILD_GOTHIC_1_08k
             MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( key.Texture );
-            if ( !(AdditionalCheckWaterFall( key.Texture )) ) { 
+            if ( !(checkWaterFallCached( key.Texture )) ) {
                 // Give water surfaces a water-shader
                 if ( info ) {
                     info->PixelShader = PShaderID::PS_Water;
@@ -633,56 +685,58 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
     std::list<std::vector<VERTEX_INDEX>*> indexBuffers;
     std::list<std::vector<VERTEX_INDEX>*> shadowIndexBuffers;
 
-    // Create the vertexbuffers for every material
+    // Flatten all meshes into a single list in deterministic map-iteration order.
+    // The buffer-collection order below must match this order, because WrapVertexBuffers
+    // returns offsets in insertion order and they get propagated back by re-iterating
+    // the section maps in the same order.
+    std::vector<WorldMeshInfo*> allMeshes;
     for ( auto const& itx : *outSections ) {
         for ( auto const& ity : itx.second ) {
             numSections++;
             avgSections += XMVectorSet( (float)itx.first, (float)ity.first, 0, 0 );
 
             for ( auto const& it : ity.second.WorldMeshes ) {
-                std::vector<ExVertexStruct> indexedVertices;
-                std::vector<VERTEX_INDEX> indices;
-                IndexVertices( &it.second->Vertices[0], it.second->Vertices.size(), indexedVertices, indices );
-
-                it.second->Vertices = std::move( indexedVertices );
-                it.second->Indices = std::move( indices );
-                ComputeWorldMeshBounds( it.second );
-
-                // Create the buffers
-                Engine::GraphicsEngine->CreateVertexBuffer( &it.second->MeshVertexBuffer );
-                Engine::GraphicsEngine->CreateVertexBuffer( &it.second->MeshIndexBuffer );
-
-                // Generate normals
-                GenerateVertexNormals( it.second->Vertices, it.second->Indices );
-
-                // Optimize faces
-                it.second->MeshVertexBuffer->OptimizeFaces( &it.second->Indices[0],
-                    reinterpret_cast<byte*>(&it.second->Vertices[0]),
-                    it.second->Indices.size(),
-                    it.second->Vertices.size(),
-                    sizeof( ExVertexStruct ) );
-
-                // Then optimize vertices
-                it.second->MeshVertexBuffer->OptimizeVertices( &it.second->Indices[0],
-                    reinterpret_cast<byte*>(&it.second->Vertices[0]),
-                    it.second->Indices.size(),
-                    it.second->Vertices.size(),
-                    sizeof( ExVertexStruct ),
-                    &it.second->ShadowIndices );
-
-                // Init and fill them
-                it.second->MeshVertexBuffer->Init( &it.second->Vertices[0], it.second->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
-                it.second->MeshIndexBuffer->Init( &it.second->Indices[0], it.second->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
-                CreateShadowIndexBuffer( it.second );
-
-                // Remember them, to wrap then up later
-                vertexBuffers.emplace_back( &it.second->Vertices );
-                indexBuffers.emplace_back( &it.second->Indices );
-                shadowIndexBuffers.emplace_back( it.second->ShadowIndices.empty()
-                    ? &it.second->Indices
-                    : &it.second->ShadowIndices );
+                allMeshes.emplace_back( it.second );
             }
         }
+    }
+
+    // Build the vertex/index buffers for every mesh concurrently. Each mesh only
+    // touches its own data, so we batch them into a small number of contiguous
+    // chunks to keep the pool busy without drowning it in tiny tasks
+    const size_t total = allMeshes.size();
+    if ( total > 0 ) {
+        const size_t numThreads = std::max<size_t>( 1, Engine::WorkerThreadPool->getNumThreads() );
+        constexpr size_t MIN_BATCH = 32; // don't create tasks smaller than this
+        size_t batches = std::min<size_t>( numThreads * 2, (total + MIN_BATCH - 1) / MIN_BATCH );
+        batches = std::max<size_t>( 1, batches );
+        const size_t chunk = (total + batches - 1) / batches;
+
+        std::vector<std::future<void>> jobs;
+        jobs.reserve( batches );
+        for ( size_t start = 0; start < total; start += chunk ) {
+            const size_t end = std::min( start + chunk, total );
+            jobs.emplace_back( Engine::WorkerThreadPool->enqueue(
+                [&allMeshes, start, end]( const std::stop_token& ) {
+                    ZoneScopedN( "WorldMesh buffer batch" );
+                    for ( size_t i = start; i < end; ++i ) {
+                        BuildWorldMeshBuffers( allMeshes[i] );
+                    }
+                } ).future );
+        }
+        for ( auto& j : jobs ) {
+            if ( j.valid() ) {
+                j.wait();
+            }
+        }
+    }
+
+    for ( WorldMeshInfo* mesh : allMeshes ) {
+        vertexBuffers.emplace_back( &mesh->Vertices );
+        indexBuffers.emplace_back( &mesh->Indices );
+        shadowIndexBuffers.emplace_back( mesh->ShadowIndices.empty()
+            ? &mesh->Indices
+            : &mesh->ShadowIndices );
     }
 
     std::vector<ExVertexStruct> wrappedVertices;

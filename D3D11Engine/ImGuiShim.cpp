@@ -1023,6 +1023,16 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
         }
         ImGui::EndDisabled();
 
+        ImGui::Checkbox( "Bloom", &settings.EnableBloom );
+        ImGui::BeginDisabled( !settings.EnableBloom );
+        {
+            ImGui::DragFloat( "Bloom Threshold", &settings.BloomThreshold, 0.01f, 0.0f, 10.0f, "%.2f" );
+            ImGui::DragFloat( "Bloom Strength", &settings.BloomStrength, 0.01f, 0.0f, 10.0f, "%.2f" );
+            ImGui::DragFloat( "Bloom Knee", &settings.BloomKnee, 0.01f, 0.0f, 1.0f, "%.2f" );
+            ImGui::DragFloat( "Bloom Radius", &settings.BloomRadius, 0.01f, 0.0f, 5.0f, "%.2f" );
+        }
+        ImGui::EndDisabled();
+
         ImGui::Checkbox( "DynamicLighting", &settings.EnableDynamicLighting );
         ImGui::BeginDisabled( !settings.EnableDynamicLighting );
         {

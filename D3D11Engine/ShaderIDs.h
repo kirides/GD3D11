@@ -99,6 +99,7 @@ enum class PShaderID : size_t {
     PS_PFX_FSR1_EASU,
     PS_PFX_FSR1_RCAS,
     PS_PFX_Composition,
+    PS_PFX_BloomComposite,
     PS_FP_Diffuse,
     PS_FP_DiffuseNormalmapped,
     PS_FP_DiffuseNormalmappedFxMap,
@@ -134,6 +135,9 @@ enum class CShaderID : size_t {
     CS_PFX_SAO_DepthNormals,
     CS_PFX_SAO_Blur,
     CS_PFX_Sharpen,
+    CS_PFX_Bloom_Prefilter,
+    CS_PFX_Bloom_Downsample,
+    CS_PFX_Bloom_Upsample,
     CS_GenerateNormalsFromDepth,
     COUNT
 };

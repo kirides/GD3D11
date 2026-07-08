@@ -4851,11 +4851,11 @@ MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCTexture* tex ) {
                 mi->MaterialType = MaterialInfo::MT_FullAlpha;
             }
         }
+        FixUpMaterial( mi->buffer );
     } else {
         mi = it->second.get();
     }
 
-    FixUpMaterial( mi->buffer );
 
     return mi;
 }
@@ -4873,11 +4873,11 @@ MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCTexture* tex, const std::string_
                     mi->MaterialType = MaterialInfo::MT_FullAlpha;
                 }
             }
+            FixUpMaterial( mi->buffer );
         } else {
             mi = it->second.get();
         }
 
-        FixUpMaterial( mi->buffer );
 
         return mi;
 }
@@ -5224,6 +5224,11 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "General", "FogRange", float_to_string( s.FogRange , 2).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "EnableHDR", to_string_locale_independent( s.EnableHDR ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "HDRToneMap", to_string_locale_independent( s.HDRToneMap ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "EnableBloom", to_string_locale_independent( s.EnableBloom ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "BloomThreshold", float_to_string( s.BloomThreshold, 2 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "BloomStrength", float_to_string( s.BloomStrength, 2 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "BloomKnee", float_to_string( s.BloomKnee, 2 ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "BloomRadius", float_to_string( s.BloomRadius, 2 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "EnableDebugLog", to_string_locale_independent( s.EnableDebugLog ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "EnableAutoupdates", to_string_locale_independent( s.EnableAutoupdates ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "EnableGodRays", to_string_locale_independent( s.EnableGodRays ? TRUE : FALSE ).c_str(), ini.c_str() );
@@ -5357,6 +5362,11 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.AtmosphericScattering = GetPrivateProfileBoolA( "General", "AtmosphericScattering", ds.AtmosphericScattering, ini );
         s.EnableHDR = GetPrivateProfileBoolA( "General", "EnableHDR", ds.EnableHDR, ini );
         s.HDRToneMap = GothicRendererSettings::E_HDRToneMap( GetPrivateProfileIntA( "General", "HDRToneMap", ds.HDRToneMap, ini.c_str() ) );
+        s.EnableBloom = GetPrivateProfileBoolA( "General", "EnableBloom", ds.EnableBloom, ini );
+        s.BloomThreshold = GetPrivateProfileFloatA( "General", "BloomThreshold", ds.BloomThreshold, ini );
+        s.BloomStrength = GetPrivateProfileFloatA( "General", "BloomStrength", ds.BloomStrength, ini );
+        s.BloomKnee = GetPrivateProfileFloatA( "General", "BloomKnee", ds.BloomKnee, ini );
+        s.BloomRadius = GetPrivateProfileFloatA( "General", "BloomRadius", ds.BloomRadius, ini );
         s.EnableDebugLog = GetPrivateProfileBoolA( "General", "EnableDebugLog", ds.EnableDebugLog, ini );
         s.EnableAutoupdates = GetPrivateProfileBoolA( "General", "EnableAutoupdates", ds.EnableAutoupdates, ini );
         s.EnableGodRays = GetPrivateProfileBoolA( "General", "EnableGodRays", ds.EnableGodRays, ini );

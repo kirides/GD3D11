@@ -148,6 +148,10 @@ protected:
     /** Swapchain and resources */
     Microsoft::WRL::ComPtr<IDXGISwapChain1> SwapChain;
     std::unique_ptr<RenderToTextureBuffer> Backbuffer;
+    /** Native-resolution HDR (pre-tonemap) buffer the upscaler writes into.
+        Post-processing B effects (DoF, Bloom, tonemapping) operate on this at
+        presentation resolution before the final LDR image is produced in Backbuffer. */
+    std::unique_ptr<RenderToTextureBuffer> UpscaledHDRBuffer;
     std::unique_ptr<RenderToDepthStencilBuffer> m_SwapchainDepthStencilBuffer;
 
     std::unique_ptr<RenderToDepthStencilBuffer> DepthStencilBuffer;

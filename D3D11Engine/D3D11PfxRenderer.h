@@ -16,6 +16,7 @@ class D3D11PFX_HDR;
 class D3D11PFX_SMAA;
 class D3D11PFX_GodRays;
 class D3D11PFX_DepthOfField;
+class D3D11PFX_Bloom;
 class D3D11NVHBAO;
 class D3D11PFX_SAO;
 class D3D11PFX_SimpleSharpen;
@@ -38,8 +39,8 @@ public:
     /** Renders the distance blur effect */
     XRESULT RenderDistanceBlur(ID3D11ShaderResourceView* diffuse );
 
-    /** Renders the HDR-Effect */
-    XRESULT RenderHDR(ID3D11RenderTargetView* output, ID3D11ShaderResourceView* backbuffer);
+    /** Renders the HDR-Effect (tonemaps the HDR scene SRV into the LDR output RTV) */
+    XRESULT RenderHDR(ID3D11RenderTargetView* output, ID3D11ShaderResourceView* backbuffer, INT2 resolution);
 
     /** Renders the SMAA-Effect */
     XRESULT RenderSMAA(ID3D11ShaderResourceView* backbuffer);
@@ -51,8 +52,12 @@ public:
     /** Renders the godrays-Effect */
     XRESULT RenderGodRays(ID3D11ShaderResourceView* backbuffer, ID3D11ShaderResourceView* depth);
 
-    /** Renders the depth-of-field effect */
-    XRESULT RenderDepthOfField(ID3D11ShaderResourceView* backbuffer);
+    /** Renders the depth-of-field effect. backbuffer = scene SRV, depthSrv sampled with normalized
+        UVs, output = result RTV, resolution = working (output) resolution. */
+    XRESULT RenderDepthOfField(ID3D11RenderTargetView* output, ID3D11ShaderResourceView* backbuffer, ID3D11ShaderResourceView* depthSrv, INT2 resolution);
+
+    /** Renders the standalone bloom effect (compute, FL11+) */
+    XRESULT RenderBloom(ID3D11RenderTargetView* output, ID3D11ShaderResourceView* sceneSrv, INT2 resolution);
 
     /** Copies the given texture to the given RTV */
     XRESULT CopyTextureToRTV( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& texture, const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& rtv, INT2 targetResolution = INT2( 0, 0 ), bool useCustomPS = false, INT2 offset = INT2( 0, 0 ) );
@@ -129,6 +134,9 @@ private:
     std::unique_ptr<D3D11PFX_SMAA> FX_SMAA;
     std::unique_ptr<D3D11PFX_GodRays> FX_GodRays;
     std::unique_ptr<D3D11PFX_DepthOfField> FX_DepthOfField;
+
+    /** Standalone bloom effect (FL11+ only) */
+    std::unique_ptr<D3D11PFX_Bloom> FX_Bloom;
 
     /** SAO effect (FL11+ only) */
     std::unique_ptr<D3D11PFX_SAO> FX_SAO;

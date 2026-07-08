@@ -41,7 +41,7 @@ float3 ToneMap_jafEq4(float3 vColor, Texture2D lumTex, SamplerState samplerState
 	// Apply the modified operator (Eq. 4)
 	float fLumScaled = (fLumPixel * HDR_MiddleGray) / fLumAvg;
 	float fLumCompressed = (fLumScaled * (1 + (fLumScaled / (HDR_LumWhite * HDR_LumWhite)))) / (1 + fLumScaled);
-	return pow(fLumCompressed * vColor, 1/2.2f); 
+	return pow(max(0.0f, fLumCompressed * vColor), 1/2.2f);
 	//return pow( vColor, 2.2f );
 } 
 

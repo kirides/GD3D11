@@ -458,6 +458,8 @@ XRESULT D3D11ShaderManager::Init() {
 
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_DoF_Composite>( "PS_PFX_DoF_Composite.hlsl" )  );
 
+    Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_BloomComposite>( "PS_PFX_BloomComposite.hlsl" ) );
+
     // TAA Shader
     Shaders.push_back( ShaderInfo::make<PShaderID::PS_PFX_TAA>( "PS_PFX_TAA.hlsl" )  );
 
@@ -506,6 +508,14 @@ XRESULT D3D11ShaderManager::Init() {
         Shaders.push_back( ShaderInfo::make<CShaderID::CS_PFX_SAO_Blur>( "CS_PFX_SAO_Blur.hlsl" ));
 
         Shaders.push_back( ShaderInfo::make<CShaderID::CS_PFX_Sharpen>( "CS_PFX_Sharpen.hlsl" ));
+
+        // Bloom pyramid (FL11+): prefilter (bright-pass) + plain downsample share one shader
+        Shaders.push_back( ShaderInfo::make<CShaderID::CS_PFX_Bloom_Prefilter>( "CS_PFX_Bloom_Downsample.hlsl" )
+            .with_macros( {{ "BLOOM_PREFILTER", "1" }} ) );
+
+        Shaders.push_back( ShaderInfo::make<CShaderID::CS_PFX_Bloom_Downsample>( "CS_PFX_Bloom_Downsample.hlsl" ));
+
+        Shaders.push_back( ShaderInfo::make<CShaderID::CS_PFX_Bloom_Upsample>( "CS_PFX_Bloom_Upsample.hlsl" ));
 
         // Optional Forward+ smooth-normals-from-depth pass (feeds SAO/ASSAO AO producers)
         Shaders.push_back( ShaderInfo::make<CShaderID::CS_GenerateNormalsFromDepth>( "CS_GenerateNormalsFromDepth.hlsl" ));
