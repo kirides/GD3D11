@@ -256,6 +256,11 @@ public:
 #endif
     }
     
+    std::string_view GetNameView() const {
+        auto& name = __GetName();
+        return std::string_view(name.ToChar(), name.Length());
+    }
+
     const zSTRING& __GetName() const {
         return reinterpret_cast<zSTRING&(__fastcall*)( const zCMaterial* )>( GothicMemoryLocations::zCObject::GetObjectName )( this );
     }

@@ -525,14 +525,14 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
             continue;
         }
 
-        std::string_view matName = mat->__GetName().ToChar();
+        std::string_view matName = mat->GetNameView();
         // std::string_view textureName = mat->GetTextureSingle() ? mat->GetTextureSingle()->__GetName().ToChar() : "";
 
         // Flag portals so that we can apply a different PS shader later
         zCTexture* _tex = nullptr;
         if ( poly->GetPolyFlags()->PortalPoly || IsPortalMaterial( matName ) ) {
             if ( const zCTexture* tex = mat->GetTextureSingle() ) {
-                std::string_view textureName = tex->__GetName().ToChar();
+                std::string_view textureName = tex->GetNameView();
                 if ( textureName.starts_with("OWODFLWOODGROUND.") ) {
                     continue; // this is a ground texture that is sometimes re-used for visual tricks to darken tunnels, etc. We don't want to treat this as a portal.
                 } else {
