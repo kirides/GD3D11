@@ -4851,11 +4851,11 @@ MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCTexture* tex ) {
                 mi->MaterialType = MaterialInfo::MT_FullAlpha;
             }
         }
+        FixUpMaterial( mi->buffer );
     } else {
         mi = it->second.get();
     }
 
-    FixUpMaterial( mi->buffer );
 
     return mi;
 }
@@ -4873,11 +4873,11 @@ MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCTexture* tex, const std::string_
                     mi->MaterialType = MaterialInfo::MT_FullAlpha;
                 }
             }
+            FixUpMaterial( mi->buffer );
         } else {
             mi = it->second.get();
         }
 
-        FixUpMaterial( mi->buffer );
 
         return mi;
 }
