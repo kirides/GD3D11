@@ -87,19 +87,19 @@ XRESULT D3D11PfxRenderer::RenderGodRays(ID3D11ShaderResourceView* backbuffer, ID
 }
 
 /** Renders the depth-of-field effect */
-XRESULT D3D11PfxRenderer::RenderDepthOfField(ID3D11ShaderResourceView* backbuffer) {
-    return FX_DepthOfField->Render( backbuffer );
+XRESULT D3D11PfxRenderer::RenderDepthOfField(ID3D11RenderTargetView* output, ID3D11ShaderResourceView* backbuffer, ID3D11ShaderResourceView* depthSrv, INT2 resolution) {
+    return FX_DepthOfField->Render( output, backbuffer, depthSrv, resolution );
 }
 
 /** Renders the standalone bloom effect */
-XRESULT D3D11PfxRenderer::RenderBloom(ID3D11RenderTargetView* output, ID3D11ShaderResourceView* sceneSrv) {
+XRESULT D3D11PfxRenderer::RenderBloom(ID3D11RenderTargetView* output, ID3D11ShaderResourceView* sceneSrv, INT2 resolution) {
     if ( !FX_Bloom ) return XR_FAILED;
-    return FX_Bloom->Render( output, sceneSrv );
+    return FX_Bloom->Render( output, sceneSrv, resolution );
 }
 
 /** Renders the HDR-Effect */
-XRESULT D3D11PfxRenderer::RenderHDR( ID3D11RenderTargetView* output, ID3D11ShaderResourceView* backbuffer ) {
-    return FX_HDR->Render( output, backbuffer );
+XRESULT D3D11PfxRenderer::RenderHDR( ID3D11RenderTargetView* output, ID3D11ShaderResourceView* backbuffer, INT2 resolution ) {
+    return FX_HDR->Render( output, backbuffer, resolution );
 }
 
 /** Renders the SMAA-Effect */

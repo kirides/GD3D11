@@ -15,11 +15,15 @@ public:
 
     /** Draws this effect to the given buffer */
     XRESULT Render( RenderToTextureBuffer* fxbuffer ) override { return XR_FAILED; }
-    XRESULT Render( ID3D11ShaderResourceView* backbuffer );
+
+    /** Applies depth-of-field. backbuffer is the scene SRV, depthSrv the (possibly lower-res) depth
+        sampled with normalized UVs, output the RTV that receives the result, resolution the working
+        (output) resolution. */
+    XRESULT Render( ID3D11RenderTargetView* output, ID3D11ShaderResourceView* backbuffer, ID3D11ShaderResourceView* depthSrv, INT2 resolution );
 
 private:
     /** Compute shader path for FL11+ */
-    XRESULT RenderCS( ID3D11ShaderResourceView* backbuffer );
+    XRESULT RenderCS( ID3D11RenderTargetView* output, ID3D11ShaderResourceView* backbuffer, ID3D11ShaderResourceView* depthSrv, INT2 resolution );
 
     // Ping-pong 1x1 R32_FLOAT textures for temporal focus smoothing
     Microsoft::WRL::ComPtr<ID3D11Texture2D> m_FocusTexture[2];

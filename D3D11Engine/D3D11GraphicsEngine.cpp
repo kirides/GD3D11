@@ -1149,6 +1149,14 @@ XRESULT D3D11GraphicsEngine::RecreateBuffers() {
     Backbuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), Resolution.x, Resolution.y, DXGI_FORMAT_ENGINE_SWAPCHAIN, nullptr, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, 1, 1,
     D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE | (Device->GetFeatureLevel() >= D3D_FEATURE_LEVEL_11_0 ? D3D11_BIND_UNORDERED_ACCESS : 0) );
 
+    // Native-resolution HDR (pre-tonemap) buffer that the upscaler writes into. Post-processing B
+    // (DoF, Bloom, tonemapping) runs on this at presentation resolution before the LDR Backbuffer is
+    // produced. Uses the HDR intermediate format; needs a UAV for the FSR3 compute dispatch output and
+    // for the Bloom/DoF compute passes on FL11+.
+    UpscaledHDRBuffer = std::make_unique<RenderToTextureBuffer>( GetDevice().Get(), Resolution.x, Resolution.y, GetBackBufferFormat(), nullptr, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, 1, 1,
+    D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE | (Device->GetFeatureLevel() >= D3D_FEATURE_LEVEL_11_0 ? D3D11_BIND_UNORDERED_ACCESS : 0) );
+    SetDebugName( UpscaledHDRBuffer->GetTexture().Get(), "UpscaledHDRBuffer->TEX" );
+
     m_SwapchainDepthStencilBuffer = std::make_unique<RenderToDepthStencilBuffer>(
         GetDevice().Get(), Resolution.x, Resolution.y, DXGI_FORMAT_R32_TYPELESS, nullptr,
         DXGI_FORMAT_D32_FLOAT, DXGI_FORMAT_R32_FLOAT );
@@ -4290,19 +4298,10 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         });
     }
     
-    if (rendererState.RendererSettings.EnableDoF) {
-        graph.AddPass( RG_PASS_NAME("Draw DepthOfField"), [&]( RGBuilder& builder, RenderPass& pass ) {
-            builder.Read( backBufferHandle );
-            builder.Write( backBufferHandle );
+    // NOTE: Depth of Field, Bloom and HDR/Tonemapping are Post-processing "B" effects and now run
+    // AFTER upscaling (at presentation resolution) — see the relocated passes near the end of this
+    // function, after the upscaling pass.
 
-            pass.m_executeCallback = [this, backBufferHandle](const RenderGraph& graph) {
-                TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw DepthOfField" );
-                auto backbufferResource = graph.GetPhysicalTexture(backBufferHandle);
-                PfxRenderer->RenderDepthOfField(backbufferResource->GetShaderResView().Get());
-            };
-        });
-    }
-    
     graph.AddPass( RG_PASS_NAME("Draw ParticlesSimple"), [&]( RGBuilder& builder, RenderPass& pass ) {
         auto size = GetResolution();
 
@@ -4386,34 +4385,10 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         } );
     }
 
-    if ( rendererState.RendererSettings.EnableBloom && !FeatureLevel10Compatibility ) {
-        graph.AddPass( RG_PASS_NAME("Render Bloom"), [&]( RGBuilder& builder, RenderPass& pass ) {
-            builder.Read( backBufferHandle );
-            builder.Write( backBufferHandle );
-
-            pass.m_executeCallback = [this, backBufferHandle](const RenderGraph& graph) {
-                TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Render Bloom" );
-                auto backbufferTex = graph.GetPhysicalTexture( backBufferHandle );
-                PfxRenderer->RenderBloom( backbufferTex->GetRenderTargetView().Get(), backbufferTex->GetShaderResView().Get() );
-            };
-        } );
-    }
-
-    if ( rendererState.RendererSettings.EnableHDR ) {
-        graph.AddPass( RG_PASS_NAME("Render HDR"), [&]( RGBuilder& builder, RenderPass& pass ) {
-            builder.Read( backBufferHandle );
-            builder.Write( backBufferHandle );
-
-            pass.m_executeCallback = [this, backBufferHandle](const RenderGraph& graph) {
-                TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Render HDR" );
-                auto backbufferTex = graph.GetPhysicalTexture( backBufferHandle );
-                PfxRenderer->RenderHDR( backbufferTex->GetRenderTargetView().Get(), backbufferTex->GetShaderResView().Get() );
-            };
-        } );
-    }
+    // Bloom and HDR/Tonemapping relocated to after upscaling (Post-processing B) — see below.
 
     if ( rendererState.RendererSettings.AntiAliasingMode
-        == GothicRendererSettings::AA_SMAA ) {       
+        == GothicRendererSettings::AA_SMAA ) {
         // SMAA should be applied before any sharpening
         graph.AddPass( RG_PASS_NAME("Render SMAA"), [&]( RGBuilder& builder, RenderPass& pass ) {
             builder.Read( backBufferHandle );
@@ -4463,66 +4438,126 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         };
     } );
 
+    // Upscaling writes the (native-resolution) pre-tonemap HDR scene into UpscaledHDRBuffer.
     const bool isUpscaling = u.AddUpscalingPass( graph,
         *this,
-        Backbuffer->GetRenderTargetView().Get(), 
-        backBufferHandle, 
+        UpscaledHDRBuffer->GetRenderTargetView().Get(),
+        backBufferHandle,
         DepthStencilBufferCopy->GetShaderResView().Get(),
-        velocityBufferHandle, 
+        velocityBufferHandle,
         reactiveMaskResource );
 
     // Before returning to gothics UI, set render target to backbuffer
     {
-        // Copy HDR scene to backbuffer
-        if ( isUpscaling ) {
-            // do don't sharpen, scale or blit. Upscalers do the work themselves.
-        } else if (rendererState.RendererSettings.SharpeningMode
+        // Determine the native-resolution HDR buffer that Post-processing B (DoF, Bloom, HDR tonemap)
+        // runs on, per AMD's FSR frame-placement guidance:
+        //   - upscaling active            -> FSR already wrote UpscaledHDRBuffer
+        //   - scaled but no FSR upscaler  -> bilinear (re)scale HDRBackBuffer into UpscaledHDRBuffer
+        //   - 100% and no upscaling       -> operate directly on the render-res HDRBackBuffer
+        const bool scaled = rendererState.RendererSettings.ResolutionScalePercent != 100;
+        RenderToTextureBuffer* sceneHDR = (isUpscaling || scaled) ? UpscaledHDRBuffer.get() : HDRBackBuffer.get();
+
+        if ( !isUpscaling && scaled ) {
+            graph.AddPass( RG_PASS_NAME("Scale into HDR buffer"), [&]( RGBuilder& builder, RenderPass& pass ) {
+                builder.Read( backBufferHandle );
+                builder.Write( backBufferHandle );
+
+                pass.m_executeCallback = [this, backBufferHandle](const RenderGraph& graph) {
+                    TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Scale into HDR buffer" );
+                    auto backbufferTex = graph.GetPhysicalTexture( backBufferHandle );
+                    GetContext()->PSSetSamplers( 0, 1, LinearSamplerState.GetAddressOf() );
+                    PfxRenderer->CopyTextureToRTV( backbufferTex->GetShaderResView(), UpscaledHDRBuffer->GetRenderTargetView(), GetBackbufferResolution() );
+                };
+            } );
+        }
+
+        // --- Post-processing B: runs at presentation resolution, in pre-tonemap HDR space ---
+        if ( rendererState.RendererSettings.EnableDoF ) {
+            graph.AddPass( RG_PASS_NAME("Draw DepthOfField"), [&]( RGBuilder& builder, RenderPass& pass ) {
+                builder.Read( backBufferHandle );
+                builder.Write( backBufferHandle );
+
+                pass.m_executeCallback = [this, sceneHDR](const RenderGraph&) {
+                    TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw DepthOfField" );
+                    // Depth is render-resolution; DoF samples it with normalized UVs.
+                    PfxRenderer->RenderDepthOfField(
+                        sceneHDR->GetRenderTargetView().Get(),
+                        sceneHDR->GetShaderResView().Get(),
+                        DepthStencilBufferCopy->GetShaderResView().Get(),
+                        GetBackbufferResolution() );
+                };
+            } );
+        }
+
+        if ( rendererState.RendererSettings.EnableBloom && !FeatureLevel10Compatibility ) {
+            graph.AddPass( RG_PASS_NAME("Render Bloom"), [&]( RGBuilder& builder, RenderPass& pass ) {
+                builder.Read( backBufferHandle );
+                builder.Write( backBufferHandle );
+
+                pass.m_executeCallback = [this, sceneHDR](const RenderGraph&) {
+                    TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Render Bloom" );
+                    PfxRenderer->RenderBloom( sceneHDR->GetRenderTargetView().Get(), sceneHDR->GetShaderResView().Get(), GetBackbufferResolution() );
+                };
+            } );
+        }
+
+        // HDR/Tonemapping resolves the HDR scene into the LDR Backbuffer. With HDR disabled we still
+        // convert the HDR scene into the LDR backbuffer with a plain copy.
+        if ( rendererState.RendererSettings.EnableHDR ) {
+            graph.AddPass( RG_PASS_NAME("Render HDR"), [&]( RGBuilder& builder, RenderPass& pass ) {
+                builder.Read( backBufferHandle );
+                builder.Write( backBufferHandle );
+
+                pass.m_executeCallback = [this, sceneHDR](const RenderGraph&) {
+                    TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Render HDR" );
+                    PfxRenderer->RenderHDR( Backbuffer->GetRenderTargetView().Get(), sceneHDR->GetShaderResView().Get(), GetBackbufferResolution() );
+                };
+            } );
+        } else {
+            graph.AddPass( RG_PASS_NAME("Copy HDR into native-size backbuffer"), [&]( RGBuilder& builder, RenderPass& pass ) {
+                builder.Read( backBufferHandle );
+                builder.Write( backBufferHandle );
+
+                pass.m_executeCallback = [this, sceneHDR](const RenderGraph&) {
+                    PfxRenderer->CopyTextureToRTV( sceneHDR->GetShaderResView(), Backbuffer->GetRenderTargetView(), GetBackbufferResolution() );
+                };
+            } );
+        }
+
+        // Sharpen the final LDR backbuffer. Skipped when an FSR upscaler is active, since FSR
+        // performs its own (RCAS) sharpening.
+        if ( !isUpscaling
+                && rendererState.RendererSettings.SharpeningMode
                 && rendererState.RendererSettings.SharpenFactor > 0.0f ) {
 
             graph.AddPass( RG_PASS_NAME("Sharpen"), [&]( RGBuilder& builder, RenderPass& pass ) {
                 builder.Read( backBufferHandle );
                 builder.Write( backBufferHandle );
 
-                pass.m_executeCallback = [this, &rendererState, backBufferHandle](const RenderGraph& graph) {
+                pass.m_executeCallback = [this, &rendererState](const RenderGraph&) {
                     TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Sharpen" );
                     GetContext()->PSSetSamplers( 0, 1, LinearSamplerState.GetAddressOf() );
-                    
-                    auto backbufferTex = graph.GetPhysicalTexture( backBufferHandle );
 
                     switch ( rendererState.RendererSettings.SharpeningMode ) {
                     case GothicRendererSettings::SHARPEN_SIMPLE:
                         {
-                            // Sharpen reads the scene texture and writes Backbuffer directly
-                            // (compute UAV on FeatureLevel 11+, pixel-shader RTV fallback on
-                            // FeatureLevel 10 - selected inside RenderSimpleSharpen), so no
-                            // pre-copy into Backbuffer is needed.
+                            // SimpleSharpen can't read and write the same texture, so sharpen a copy
+                            // of the backbuffer back into the backbuffer (which owns the UAV).
                             auto _ = RecordGraphicsEvent( GE_NAME( "ApplySimpleSharpen" ) );
-                            PfxRenderer->RenderSimpleSharpen( backbufferTex->GetShaderResView(), GetBackbufferResolution(), Backbuffer.get(), GetBackbufferResolution() );
+                            auto tmp = GetPfxRenderer()->GetBackbufferTempBuffer();
+                            PfxRenderer->CopyTextureToRTV( Backbuffer->GetShaderResView(), tmp->GetRenderTargetView(), GetBackbufferResolution() );
+                            PfxRenderer->RenderSimpleSharpen( tmp->GetShaderResView(), GetBackbufferResolution(), Backbuffer.get(), GetBackbufferResolution() );
                         }
                         break;
 
                     case GothicRendererSettings::SHARPEN_CAS:
-                        {
-                            // CAS sharpens Backbuffer in place, so populate it first.
-                            auto _ = RecordGraphicsEvent( GE_NAME( "Copy into native-size backbuffer" ) );
-                            PfxRenderer->CopyTextureToRTV( backbufferTex->GetShaderResView(), Backbuffer->GetRenderTargetView(), GetBackbufferResolution() );
-                        }
                         if ( !FeatureLevel10Compatibility ) {
+                            // CAS sharpens the backbuffer in place using an intermediate buffer.
                             auto _ = RecordGraphicsEvent( GE_NAME( "ApplyCAS" ) );
-                            PfxRenderer->RenderCAS( Backbuffer->GetShaderResView(), GetBackbufferResolution(), Backbuffer->GetRenderTargetView(), GetBackbufferResolution(), *GetPfxRenderer()->GetBackbufferTempBuffer());
+                            PfxRenderer->RenderCAS( Backbuffer->GetShaderResView(), GetBackbufferResolution(), Backbuffer->GetRenderTargetView(), GetBackbufferResolution(), *GetPfxRenderer()->GetBackbufferTempBuffer() );
                         }
                         break;
                     }
-                };
-            } );
-        } else {
-            graph.AddPass( RG_PASS_NAME("Copy into native-size backbuffer"), [&]( RGBuilder& builder, RenderPass& pass ) {
-                builder.Read( backBufferHandle );
-                builder.Write( backBufferHandle );
-
-                pass.m_executeCallback = [this, backBufferHandle](const RenderGraph& graph) {
-                    auto backbufferTex = graph.GetPhysicalTexture( backBufferHandle );
-                    PfxRenderer->CopyTextureToRTV( backbufferTex->GetShaderResView(), Backbuffer->GetRenderTargetView(), GetBackbufferResolution() );
                 };
             } );
         }

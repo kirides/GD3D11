@@ -34,7 +34,7 @@ D3D11PFX_Bloom::D3D11PFX_Bloom( D3D11PfxRenderer* rnd ) : D3D11PFX_Effect( rnd )
     m_ClampSampler = FxRenderer->GetSampler( sd );
 }
 
-XRESULT D3D11PFX_Bloom::Render( ID3D11RenderTargetView* output, ID3D11ShaderResourceView* sceneSrv ) {
+XRESULT D3D11PFX_Bloom::Render( ID3D11RenderTargetView* output, ID3D11ShaderResourceView* sceneSrv, INT2 resolution ) {
     // Compute-only effect (no FeatureLevel 10 fallback).
     if ( FeatureLevel10Compatibility )
         return XR_FAILED;
@@ -42,7 +42,7 @@ XRESULT D3D11PFX_Bloom::Render( ID3D11RenderTargetView* output, ID3D11ShaderReso
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     auto& context = engine->GetContext();
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
-    INT2 res = engine->GetResolution();
+    INT2 res = resolution;
 
     if ( res.x < 4 || res.y < 4 )
         return XR_FAILED;

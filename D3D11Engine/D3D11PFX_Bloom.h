@@ -17,8 +17,9 @@ public:
 
     XRESULT Render( RenderToTextureBuffer* fxbuffer ) override { return XR_FAILED; }
 
-    /** Builds the bloom pyramid from the scene SRV and additively composites it onto rtv. */
-    XRESULT Render( ID3D11RenderTargetView* output, ID3D11ShaderResourceView* sceneSrv );
+    /** Builds the bloom pyramid from the scene SRV and additively composites it onto rtv.
+        resolution is the working (output) resolution; the pyramid and composite are sized to it. */
+    XRESULT Render( ID3D11RenderTargetView* output, ID3D11ShaderResourceView* sceneSrv, INT2 resolution );
 
 private:
     // Linear sampler with clamp addressing (avoids opposite-edge bleeding in the blur).
