@@ -110,6 +110,12 @@ namespace {
         { "INSTANCE_WORLD_MATRIX", 3, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
     };
 
+    // Position-only stream (stride 12) for opaque depth/shadow passes. See VS_ExDepth.hlsl.
+    static const D3D11_INPUT_ELEMENT_DESC layoutPosOnly[] =
+    {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+    };
+
     static const D3D11_INPUT_ELEMENT_DESC layout11[] =
     {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
@@ -158,6 +164,7 @@ namespace {
         { VERTEX_INPUT_LAYOUT_13, {layout13, std::size( layout13 )} },
         { VERTEX_INPUT_LAYOUT_14_VS_ExNodeInstanced, {layout14, std::size( layout14 )} },
         { VERTEX_INPUT_LAYOUT_15_VS_DecalInstanced, {layout15, std::size( layout15 )} },
+        { VERTEX_INPUT_LAYOUT_POS_ONLY, {layoutPosOnly, std::size( layoutPosOnly )} },
     };
 }
 

@@ -79,6 +79,7 @@ struct meshKeyHasher {
 struct MeshInfo {
     MeshInfo() {
         MeshVertexBuffer = nullptr;
+        MeshPositionBuffer = nullptr;
         MeshIndexBuffer = nullptr;
         MeshShadowIndexBuffer = nullptr;
         BaseIndexLocation = 0;
@@ -97,6 +98,10 @@ struct MeshInfo {
     XRESULT Create( ExVertexStruct* vertices, unsigned int numVertices, VERTEX_INDEX* indices, unsigned int numIndices );
 
     D3D11VertexBuffer* MeshVertexBuffer;
+    // Optional position-only (float3, 12 bytes) copy of MeshVertexBuffer, in the same vertex
+    // ordering. Bound for opaque depth/shadow passes to cut vertex-fetch bandwidth (~3.6x vs the
+    // full 44-byte stream). Currently only populated for the wrapped world mesh. May be nullptr.
+    D3D11VertexBuffer* MeshPositionBuffer;
     D3D11VertexBuffer* MeshIndexBuffer;
     D3D11VertexBuffer* MeshShadowIndexBuffer;
     std::vector<ExVertexStruct> Vertices;

@@ -5096,33 +5096,63 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
         auto _scopeDepthPrepass = RecordGraphicsEvent( GE_NAME( "DrawWorldMesh::DepthPrepass" ) );
         GetContext()->PSSetShader( nullptr, nullptr, 0 );
 
+        auto isAlphaMesh = []( const auto& mesh ) {
+            zCTexture* texture = mesh.first.Texture;
+            return texture->HasAlphaChannel() || (mesh.first.Material && mesh.first.Material->HasAlphaTest());
+        };
+        auto isSkipped = []( const auto& mesh ) {
+            const auto alphaFunc = mesh.first.Material->GetAlphaFunc();
+            const auto isBlend = alphaFunc > zRND_ALPHA_FUNC_NONE && alphaFunc != zRND_ALPHA_FUNC_TEST;
+            // Skip blended meshes (rendered in the main pass) and water (not pre-rendered).
+            return isBlend || zColor( mesh.first.Material->GetColor() ).bgra.alpha < 255
+                || mesh.first.Info->MaterialType == MaterialInfo::MT_Water;
+        };
+
+        // Opaque geometry is depth-only (null PS) and needs only Position, so feed the slim
+        // 12-byte position-only stream + position-only VS. Alpha-tested geometry still needs
+        // TexCoord and is drawn below from the full 44-byte stream with VS_Ex.
+        const bool usePositionStream = meshInfo->MeshPositionBuffer != nullptr;
+        UINT vbOffset = 0;
+        if ( usePositionStream ) {
+            SetActiveVertexShader( VShaderID::VS_ExDepth );
+            ActiveVS->Apply();
+            UINT posStride = sizeof( float3 );
+            GetContext()->IASetVertexBuffers( 0, 1, meshInfo->MeshPositionBuffer->GetVertexBuffer().GetAddressOf(), &posStride, &vbOffset );
+        }
+
+        for ( auto const& mesh : meshList ) {
+            if ( mesh.first.Texture == nullptr ) continue;
+            if ( isSkipped( mesh ) || isAlphaMesh( mesh ) ) continue;
+
+            DrawVertexBufferIndexedUINT( nullptr, nullptr, mesh.second->Indices.size(), mesh.second->BaseIndexLocation );
+        }
+
+        // Alpha-tested geometry: restore the full stream + VS_Ex (also restores state for the
+        // color pass / the forward+ prepass early-return below).
+        if ( usePositionStream ) {
+            SetActiveVertexShader( VShaderID::VS_Ex );
+            ActiveVS->Apply();
+            UINT uStride = sizeof( ExVertexStruct );
+            GetContext()->IASetVertexBuffers( 0, 1, meshInfo->MeshVertexBuffer->GetVertexBuffer().GetAddressOf(), &uStride, &vbOffset );
+        }
+
         for ( auto const& mesh : meshList ) {
             zCTexture* texture;
             if ( ( texture = mesh.first.Texture ) == nullptr ) continue;
-            const auto alphaFunc = mesh.first.Material->GetAlphaFunc();
-            const auto isBlend = alphaFunc > zRND_ALPHA_FUNC_NONE && alphaFunc != zRND_ALPHA_FUNC_TEST;
-            if (isBlend || zColor( mesh.first.Material->GetColor() ).bgra.alpha < 255) {
-                // Skip blended meshes in z-prepass, they will be rendered in main pass
+            if ( isSkipped( mesh ) || !isAlphaMesh( mesh ) ) continue;
+
+            if ( texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
                 continue;
             }
 
-            if ( texture->HasAlphaChannel() || (mesh.first.Material && mesh.first.Material->HasAlphaTest()) ) {
-                if ( texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
-                    continue;
-                }
+            texture->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
 
-                texture->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
-
-                // Get the right shader for it
-                if ( BindShaderForTexture( mesh.first.Texture, false,
-                    zMAT_ALPHA_FUNC_MAT_DEFAULT ) ) { // default alpha stuff, we defer blend/add
-                    // shader changed? update buffers.
-                    updatePSBuffers();
-                }
+            // Get the right shader for it
+            if ( BindShaderForTexture( mesh.first.Texture, false,
+                zMAT_ALPHA_FUNC_MAT_DEFAULT ) ) { // default alpha stuff, we defer blend/add
+                // shader changed? update buffers.
+                updatePSBuffers();
             }
-
-            if ( mesh.first.Info->MaterialType == MaterialInfo::MT_Water )
-                continue;  // Don't pre-render water
 
             DrawVertexBufferIndexedUINT( nullptr, nullptr, mesh.second->Indices.size(), mesh.second->BaseIndexLocation );
         }
@@ -6206,14 +6236,26 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<W
     }
 
     UINT offset = 0;
-    UINT uStride = sizeof( ExVertexStruct );
-    Context->IASetVertexBuffers( 0, 1, wrappedWorldMesh->MeshVertexBuffer->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
+    bool swappedToDepthVS = false;
 
     if ( !opaqueDrawArgs.empty() ) {
         TracyD3D11ZoneCGX( "ShadowPass_DrawWorldMesh_Indirect::OpaqueSubmission" );
         auto _scopeOpaqueSubmission = RecordGraphicsEvent( GE_NAME( "ShadowPass_DrawWorldMesh_Indirect::OpaqueSubmission" ) );
         if ( !linearDepth ) {
             Context->PSSetShader( nullptr, nullptr, 0 );
+        }
+
+        // Depth-only opaque geometry needs only Position: feed the slim 12-byte stream + VS_ExDepth.
+        const bool usePositionStream = !linearDepth && wrappedWorldMesh->MeshPositionBuffer != nullptr;
+        if ( usePositionStream ) {
+            SetActiveVertexShader( VShaderID::VS_ExDepth );
+            ActiveVS->Apply();
+            swappedToDepthVS = true;
+            UINT posStride = sizeof( float3 );
+            Context->IASetVertexBuffers( 0, 1, wrappedWorldMesh->MeshPositionBuffer->GetVertexBuffer().GetAddressOf(), &posStride, &offset );
+        } else {
+            UINT uStride = sizeof( ExVertexStruct );
+            Context->IASetVertexBuffers( 0, 1, wrappedWorldMesh->MeshVertexBuffer->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
         }
 
         const size_t requiredSize = opaqueDrawArgs.size() * sizeof( D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS );
@@ -6239,6 +6281,14 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<W
         std::sort( alphaMeshes.begin(), alphaMeshes.end(),
             []( const auto& a, const auto& b ) { return a.first < b.first; } );
 
+        // Alpha-test needs TexCoord: restore the full stream + VS_Ex (the opaque pass above may
+        // have swapped in the position-only shader).
+        SetActiveVertexShader( VShaderID::VS_Ex );
+        ActiveVS->Apply();
+        swappedToDepthVS = false;
+        UINT uStride = sizeof( ExVertexStruct );
+        Context->IASetVertexBuffers( 0, 1, wrappedWorldMesh->MeshVertexBuffer->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
+
         ActivePS->Apply();
         zCTexture* lastTex = nullptr;
         Context->PSSetShaderResources( 0, 3, s_nullSRVs );
@@ -6257,6 +6307,12 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<W
                 GetShadowAwareIndexCount( mesh, true ),
                 mesh->BaseIndexLocation );
         }
+    }
+
+    // Restore the full-attribute shader (the opaque-only path may have left VS_ExDepth active).
+    if ( swappedToDepthVS ) {
+        SetActiveVertexShader( VShaderID::VS_Ex );
+        ActiveVS->Apply();
     }
 }
 
@@ -6314,9 +6370,8 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh( const std::vector<WorldMeshS
     
     MeshInfo* wrappedWorldMesh = Engine::GAPI->GetWrappedWorldMesh();
     UINT offset = 0;
-    UINT uStride = sizeof( ExVertexStruct );
-    Context->IASetVertexBuffers( 0, 1, wrappedWorldMesh->MeshVertexBuffer->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
-    
+    bool swappedToDepthVS = false;
+
     // Draw all opaque meshes without pixel shader (depth only)
     if ( !opaqueMeshes.empty() ) {
         TracyD3D11ZoneCGX( "ShadowPass_DrawWorldMesh::OpaqueSubmission" );
@@ -6326,6 +6381,22 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh( const std::vector<WorldMeshS
             // Unbind PS
             Context->PSSetShader( nullptr, nullptr, 0 );
         }
+
+        // For pure depth output (null PS) the transform only needs Position, so feed the slim
+        // 12-byte position-only stream + a position-only vertex shader. When rendering linear depth
+        // the pixel shader stays bound and may need the full attributes, so keep the 44-byte stream.
+        const bool usePositionStream = !linearDepth && wrappedWorldMesh->MeshPositionBuffer != nullptr;
+        if ( usePositionStream ) {
+            SetActiveVertexShader( VShaderID::VS_ExDepth );
+            ActiveVS->Apply();
+            swappedToDepthVS = true;
+            UINT posStride = sizeof( float3 );
+            Context->IASetVertexBuffers( 0, 1, wrappedWorldMesh->MeshPositionBuffer->GetVertexBuffer().GetAddressOf(), &posStride, &offset );
+        } else {
+            UINT uStride = sizeof( ExVertexStruct );
+            Context->IASetVertexBuffers( 0, 1, wrappedWorldMesh->MeshVertexBuffer->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
+        }
+
         Context->IASetIndexBuffer( wrappedWorldMesh->MeshShadowIndexBuffer->GetVertexBuffer().Get(), DXGI_FORMAT_R32_UINT, 0 );
 
         for ( auto mesh : opaqueMeshes ) {
@@ -6342,6 +6413,14 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh( const std::vector<WorldMeshS
         // Sort by texture to minimize binding changes
         std::sort( alphaMeshes.begin(), alphaMeshes.end(),
             []( const auto& a, const auto& b ) { return a.first < b.first; } );
+
+        // Alpha-test needs TexCoord, so use the full interleaved stream + VS_Ex (the opaque pass
+        // above may have swapped in the position-only shader).
+        SetActiveVertexShader( VShaderID::VS_Ex );
+        ActiveVS->Apply();
+        swappedToDepthVS = false;
+        UINT uStride = sizeof( ExVertexStruct );
+        Context->IASetVertexBuffers( 0, 1, wrappedWorldMesh->MeshVertexBuffer->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
 
         ActivePS->Apply();
         zCTexture* lastTex = nullptr;
@@ -6361,6 +6440,13 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh( const std::vector<WorldMeshS
                 GetShadowAwareIndexCount( mesh, true ),
                 mesh->BaseIndexLocation );
         }
+    }
+
+    // Restore the full-attribute shader for the rest of the shadow pass (the opaque-only path may
+    // have left the position-only shader active).
+    if ( swappedToDepthVS ) {
+        SetActiveVertexShader( VShaderID::VS_Ex );
+        ActiveVS->Apply();
     }
 }
 

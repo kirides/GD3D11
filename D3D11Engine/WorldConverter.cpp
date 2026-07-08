@@ -46,6 +46,27 @@ namespace {
             D3D11VertexBuffer::U_IMMUTABLE );
     }
 
+    /** Builds a position-only (float3) companion buffer in the same vertex ordering as the source
+        interleaved vertices. Bound for opaque depth/shadow passes; indices remain valid because the
+        ordering matches the mesh/shadow index buffers built from the same array. */
+    void BuildWrappedPositionBuffer( MeshInfo* meshInfo, const std::vector<ExVertexStruct>& vertices ) {
+        if ( !meshInfo || vertices.empty() ) {
+            return;
+        }
+
+        std::vector<float3> positions;
+        positions.reserve( vertices.size() );
+        for ( const auto& v : vertices ) {
+            positions.emplace_back( v.Position );
+        }
+
+        Engine::GraphicsEngine->CreateVertexBuffer( &meshInfo->MeshPositionBuffer );
+        meshInfo->MeshPositionBuffer->Init( positions.data(),
+            static_cast<unsigned int>(positions.size() * sizeof( float3 )),
+            D3D11VertexBuffer::B_VERTEXBUFFER,
+            D3D11VertexBuffer::U_IMMUTABLE );
+    }
+
     void ComputeWorldMeshBounds( WorldMeshInfo* meshInfo ) {
         if ( !meshInfo || meshInfo->Vertices.empty() ) {
             if ( meshInfo ) {
@@ -449,6 +470,9 @@ XRESULT WorldConverter::LoadWorldMeshFromFile( const std::string& file, std::map
     wmi->MeshIndexBuffer->Init( &wrappedIndices[0], wrappedIndices.size() * sizeof( unsigned int ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
     wmi->MeshShadowIndexBuffer->Init( &wrappedShadowIndices[0], wrappedShadowIndices.size() * sizeof( unsigned int ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
 
+    // Position-only companion stream for opaque depth/shadow passes (same ordering as above).
+    BuildWrappedPositionBuffer( wmi, wrappedVertices );
+
     *outWrappedMesh = wmi;
 
     // Calculate the approx midpoint of the world
@@ -773,6 +797,9 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
     wmi->MeshVertexBuffer->Init( &wrappedVertices[0], wrappedVertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
     wmi->MeshIndexBuffer->Init( &wrappedIndices[0], wrappedIndices.size() * sizeof( unsigned int ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
     wmi->MeshShadowIndexBuffer->Init( &wrappedShadowIndices[0], wrappedShadowIndices.size() * sizeof( unsigned int ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
+
+    // Position-only companion stream for opaque depth/shadow passes (same ordering as above).
+    BuildWrappedPositionBuffer( wmi, wrappedVertices );
 
     *outWrappedMesh = wmi;
 

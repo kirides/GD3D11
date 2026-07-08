@@ -117,6 +117,10 @@ XRESULT D3D11ShaderManager::Init() {
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_Ex>( "VS_Ex.hlsl" )
         .with_layout( VERTEX_INPUT_LAYOUT_1 )  );
 
+    // Position-only variant used by opaque depth/shadow passes (12-byte vertex stream).
+    Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExDepth>( "VS_ExDepth.hlsl" )
+        .with_layout( VERTEX_INPUT_LAYOUT_POS_ONLY )  );
+
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExNode>( "VS_ExNode.hlsl" )
         .with_layout( VERTEX_INPUT_LAYOUT_1 ) );
 

@@ -49,6 +49,7 @@ MeshInfo::~MeshInfo() {
     //Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize -= Vertices.size() * sizeof(ExVertexStruct);
 
     delete MeshVertexBuffer;
+    delete MeshPositionBuffer;
     delete MeshIndexBuffer;
     delete MeshShadowIndexBuffer;
 }
