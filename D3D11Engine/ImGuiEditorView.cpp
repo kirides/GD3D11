@@ -76,6 +76,7 @@ ImGuiEditorView::ImGuiEditorView() {
     MainTabIndex = 0;
     SelectionTabIndex = 0;
     ShowVobSettingsDialog = false;
+    ShowMaterialInfoDialog = false;
 
     Widgets = new WidgetContainer;
 }
@@ -91,9 +92,7 @@ void ImGuiEditorView::Render() {
 
     RenderMainPanel();
 
-    if (ShowVobSettingsDialog) {
-        RenderVobSettingsDialog();
-    }
+    RenderVobSettingsDialog();
 }
 
 void ImGuiEditorView::RenderMainPanel() {
@@ -246,15 +245,15 @@ void ImGuiEditorView::RenderTextureSelectionPanel() {
 
     // Texture name
     if (Selection.SelectedMaterial && Selection.SelectedMaterial->GetTexture()) {
-        ImGui::Text("%s", Selection.SelectedMaterial->GetTexture()->GetNameWithoutExt().c_str());
+        ImGui::TextUnformatted(Selection.SelectedMaterial->GetTexture()->GetNameWithoutExt().c_str());
     } else {
-        ImGui::Text("No texture selected");
+        ImGui::TextUnformatted("No texture selected");
     }
 
     ImGui::Separator();
 
     // Texture properties
-    ImGui::Text("Normalmap:");
+    ImGui::TextUnformatted("Normalmap:");
     ImGui::SameLine(80);
     if (ImGui::SliderFloat("##NrmStr", &SelectedTexNrmStr, -2.0f, 2.0f, "%.2f")) {
         if (Selection.SelectedMaterial && Selection.SelectedMaterial->GetTexture()) {
@@ -266,7 +265,7 @@ void ImGuiEditorView::RenderTextureSelectionPanel() {
         }
     }
 
-    ImGui::Text("Spec intens:");
+    ImGui::TextUnformatted("Spec intens:");
     ImGui::SameLine(80);
     if (ImGui::SliderFloat("##SpecIntens", &SelectedTexSpecIntens, 0.0f, 5.0f, "%.2f")) {
         if (Selection.SelectedMaterial && Selection.SelectedMaterial->GetTexture()) {
@@ -278,7 +277,7 @@ void ImGuiEditorView::RenderTextureSelectionPanel() {
         }
     }
 
-    ImGui::Text("Spec power:");
+    ImGui::TextUnformatted("Spec power:");
     ImGui::SameLine(80);
     if (ImGui::SliderFloat("##SpecPower", &SelectedTexSpecPower, 0.1f, 200.0f, "%.1f")) {
         if (Selection.SelectedMaterial && Selection.SelectedMaterial->GetTexture()) {
@@ -352,21 +351,58 @@ void ImGuiEditorView::RenderVegetationSelectionPanel() {
 }
 
 void ImGuiEditorView::RenderVobSettingsDialog() {
-    ImGui::SetNextWindowPos(ImVec2(320, 10), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(300, 400), ImGuiCond_FirstUseEver);
-
-    if (ImGui::Begin("Vob Settings", &ShowVobSettingsDialog, ImGuiWindowFlags_NoCollapse)) {
-        if (Selection.SelectedVobInfo) {
-            ImGui::Text("Vob: %s", Selection.SelectedVobInfo->Vob->GetName().c_str());
-            // Add more vob settings here as needed
-        } else if (Selection.SelectedSkeletalVob) {
-            ImGui::Text("Skeletal Vob: %s", Selection.SelectedSkeletalVob->Vob->GetName().c_str());
-            // Add more skeletal vob settings here as needed
-        } else {
-            ImGui::Text("No vob selected");
+    
+    if (Selection.SelectedVobInfo || Selection.SelectedSkeletalVob) {
+        ImGui::SetNextWindowPos(ImVec2(320, 10), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(300, 400), ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("Vob Settings", &ShowVobSettingsDialog, ImGuiWindowFlags_NoCollapse)) {
+            if (Selection.SelectedVobInfo) {
+                ImGui::Text("Vob: %s", Selection.SelectedVobInfo->Vob->GetName().c_str());
+                // Add more vob settings here as needed
+            } else if (Selection.SelectedSkeletalVob) {
+                ImGui::Text("Skeletal Vob: %s", Selection.SelectedSkeletalVob->Vob->GetName().c_str());
+                // Add more skeletal vob settings here as needed
+            } else {
+                ImGui::Text("No vob selected");
+            }
         }
+        ImGui::End();
     }
-    ImGui::End();
+    if (Selection.SelectedMaterial) {
+        ImGui::SetNextWindowPos(ImVec2(320, 10), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(300, 400), ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("Material Info", &ShowMaterialInfoDialog, ImGuiWindowFlags_NoCollapse)) {
+            const auto mat = Selection.SelectedMaterial;
+            static std::string builder = "__________________________________________________";
+
+            ImGui::Text("%s: %s", "Name", mat->__GetName().Length() ? mat->__GetName().ToChar() : "<NO NAME>");
+            builder.clear();
+            builder.append(magic_enum::enum_name(static_cast<zTMat_Group>(mat->GetMatGroup())));
+            ImGui::Text("%s: %s", "Group", builder.c_str());
+            builder.clear();
+            builder.append(magic_enum::enum_name(mat->GetWaveMode()));
+            ImGui::Text("%s: %s", "Wave Mode", builder.c_str());
+            ImGui::Text("%s: %f", "Wave Speed", mat->GetWaveSpeed());
+            ImGui::Text("%s: %f", "Wave Max Amplitude", mat->GetWaveMaxAmplitude());
+            ImGui::SeparatorText("Flags");
+            const auto& flags = mat->GetFlags();
+            ImGui::Text("%s: %d", "smooth", flags.smooth);
+            ImGui::Text("%s: %d", "dontUseLightmaps", flags.dontUseLightmaps);
+            ImGui::Text("%s: %d", "texAniMap", flags.texAniMap);
+            ImGui::Text("%s: %d", "lodDontCollapse", flags.lodDontCollapse);
+            ImGui::Text("%s: %d", "noCollDet", flags.noCollDet);
+            ImGui::Text("%s: %d", "forceOccluder", flags.forceOccluder);
+            ImGui::Text("%s: %d", "m_bEnvironmentalMapping", flags.m_bEnvironmentalMapping);
+            ImGui::Text("%s: %d", "polyListNeedsSort", flags.polyListNeedsSort);
+            ImGui::Text("%s: %d", "matUsage", flags.matUsage);
+            ImGui::Text("%s: %d", "libFlag", flags.libFlag);
+            builder.clear();
+            builder.append(magic_enum::enum_name(flags.rndAlphaBlendFunc));
+            ImGui::Text("%s: %s", "rndAlphaBlendFunc", builder.c_str());
+            ImGui::Text("%s: %d", "m_bIgnoreSun", flags.m_bIgnoreSun);
+        }
+        ImGui::End();
+    }
 }
 
 void ImGuiEditorView::Update(float deltaTime) {
@@ -757,6 +793,9 @@ void ImGuiEditorView::OnMouseClick(int button) {
 
 void ImGuiEditorView::UpdateSelectionPanel() {
     // Update selection panel
+    ShowMaterialInfoDialog = Selection.SelectedMaterial != nullptr;
+    ShowVobSettingsDialog = Selection.SelectedSkeletalVob != nullptr || Selection.SelectedVobInfo != nullptr;
+    
     if (Selection.SelectedMaterial && Selection.SelectedMaterial->GetTexture()) {
         auto tx = Selection.SelectedMaterial->GetTexture();
         // Select preferred texture for the texture settings

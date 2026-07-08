@@ -7,8 +7,16 @@
 #include "zCTexture.h"
 #include "zTypes.h"
 
-const int zMAT_GROUP_WATER = 5;
-const int zMAT_GROUP_SNOW = 6;
+enum zTMat_Group {
+    zMAT_GROUP_UNDEF,
+    zMAT_GROUP_METAL,
+    zMAT_GROUP_STONE,
+    zMAT_GROUP_WOOD,
+    zMAT_GROUP_EARTH,
+    zMAT_GROUP_WATER,
+    zMAT_GROUP_SNOW,
+    zMAT_NUM_MAT_GROUP
+  };
 
 class zCTexAniCtrl {
 private:
@@ -219,12 +227,19 @@ public:
 #endif
     }
 
+    zTMat_WaveSpeed GetRawWaveSpeed() {
+#ifdef BUILD_GOTHIC_1_08k
+        return zTSpeed_NONE;
+#else
+        return *reinterpret_cast<zTMat_WaveSpeed*>(THISPTR_OFFSET( GothicMemoryLocations::zCMaterial::Offset_WaveSpeed ));
+#endif
+    }
+    
     float GetWaveSpeed() {
 #ifdef BUILD_GOTHIC_1_08k
         return 1.0f;
 #else
-        zTMat_WaveSpeed waveSpeed = *reinterpret_cast<zTMat_WaveSpeed*>(THISPTR_OFFSET( GothicMemoryLocations::zCMaterial::Offset_WaveSpeed ));
-        switch ( waveSpeed ) {
+        switch ( GetRawWaveSpeed() ) {
             case zTSpeed_SLOW: return 0.4f;
             case zTSpeed_NORMAL: return 1.0f;
             case zTSpeed_FAST: return 4.0f;
