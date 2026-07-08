@@ -37,6 +37,19 @@ float LinearizeDepth( float d )
     return LinearizeDepthReverseZInfinite( d );
 }
 
+// Point-sample (nearest texel) the center depth. This pass runs at half-res, so a
+// half-res texel center falls between full-res depth texels; bilinear filtering would
+// blend foreground and background there into a phantom depth, skewing the center CoC at
+// silhouettes. Load has no address clamping, so clamp to the depth texture extent.
+// (The spiral taps stay bilinear - they feed a blur and don't need per-texel precision.)
+float SampleCenterDepthPoint( float2 uv )
+{
+    uint2 dim;
+    TX_Depth.GetDimensions( dim.x, dim.y );
+    int2 px = clamp( int2( uv * float2( dim ) ), int2( 0, 0 ), int2( dim ) - 1 );
+    return TX_Depth.Load( int3( px, 0 ) ).r;
+}
+
 float ComputeCoC( float linearDepth, float focusDepth )
 {
     return saturate( ( linearDepth - focusDepth ) / DoF_FocusRange );
@@ -60,7 +73,7 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 
     float focusDepth = TX_Focus.SampleLevel( SS_Linear, float2( 0.5, 0.5 ), 0 ).r;
 
-    float centerDepth = TX_Depth.Sample( SS_Linear, Input.vTexcoord ).r;
+    float centerDepth = SampleCenterDepthPoint( Input.vTexcoord );
     float centerLinear = LinearizeDepth( centerDepth );
     float centerCoC = ComputeCoC( centerLinear, focusDepth );
 
