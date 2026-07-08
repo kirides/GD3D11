@@ -1,6 +1,8 @@
 #include "pch.h"
 
+#if defined(__clang__)
 #pragma clang diagnostic ignored "-Wwritable-strings"
+#endif
 
 #include "ddraw.h"
 #include "D3D7/MyDirectDraw.h"
