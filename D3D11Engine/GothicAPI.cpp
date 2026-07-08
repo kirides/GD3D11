@@ -128,6 +128,10 @@ void MaterialInfo::LoadFromFile( const std::string_view name ) {
     // Write the version first
     int version;
     memcpy( &version, ReadBuffer, sizeof( int ) );
+    if (version < 6) {
+        buffer.SetDefault();
+        return;
+    }
     
     // Then the data
     ZeroMemory( &buffer, sizeof( MaterialInfo::Buffer ) );
