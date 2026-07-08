@@ -8,6 +8,7 @@
 #include "zCCamera.h"
 #include "zCVob.h"
 #include "zCSkyController_Outdoor.h"
+#include "ThreadPool.h"
 
 class zCSkyController_Outdoor;
 class zCSkyController;
