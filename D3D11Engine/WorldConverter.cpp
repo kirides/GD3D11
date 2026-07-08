@@ -13,6 +13,7 @@
 #include "zCModel.h"
 #include "zCMorphMesh.h"
 #include <set>
+#include <unordered_map>
 #include "ConstantBufferStructs.h"
 #include "D3D11ConstantBuffer.h"
 #include "zCMesh.h"
@@ -512,6 +513,16 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
     
     // Go through every polygon and put it into its section
     std::vector<ExVertexStruct> polyVertices;
+
+    std::unordered_map<const zCTexture*, bool> waterFallCheckCache;
+    auto checkWaterFallCached = [&waterFallCheckCache]( const zCTexture* texture ) -> bool {
+        auto [it, inserted] = waterFallCheckCache.try_emplace( texture, false );
+        if ( inserted ) {
+            it->second = AdditionalCheckWaterFall( texture );
+        }
+        return it->second;
+    };
+
     for ( unsigned int i = 0; i < numPolygons; i++ ) {
         zCPolygon* poly = polys[i];
 
@@ -577,7 +588,7 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
         int matGroup = mat->GetMatGroup();
 #ifdef BUILD_GOTHIC_2_6_fix
         if ( matGroup != zMAT_GROUP_WATER && !_tex ) {
-            if ( AdditionalCheckWaterFall( key.Texture ) ) {
+            if ( checkWaterFallCached( key.Texture ) ) {
                 matGroup = zMAT_GROUP_WATER;
             }
         }
@@ -641,7 +652,7 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
         if ( matGroup == zMAT_GROUP_WATER && !mat->HasAlphaTest() ) {
 #ifdef BUILD_GOTHIC_1_08k
             MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( key.Texture );
-            if ( !(AdditionalCheckWaterFall( key.Texture )) ) { 
+            if ( !(checkWaterFallCached( key.Texture )) ) {
                 // Give water surfaces a water-shader
                 if ( info ) {
                     info->PixelShader = PShaderID::PS_Water;
