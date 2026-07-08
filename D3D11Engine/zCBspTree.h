@@ -12,6 +12,7 @@
 #include "Logger.h"
 #include "BaseGraphicsEngine.h"
 #include "BaseLineRenderer.h"
+#include "ThreadPool.h"
 
 class zCFileBIN;
 class zCVob;
@@ -227,7 +228,7 @@ public:
         LogInfo() << "Loading world!";
 
         // Make sure worker thread don't work on any point light
-        Engine::RefreshWorkerThreadpool();
+        Engine::WorkerThreadPool->clearAndFlush();
 
         int r = HookedFunctions::OriginalFunctions.original_zCBspTreeLoadBIN( thisptr, file, skip );
         Engine::GAPI->OnGeometryLoaded( reinterpret_cast<zCBspTree*>(thisptr) );
