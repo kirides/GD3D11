@@ -128,6 +128,10 @@ void MaterialInfo::LoadFromFile( const std::string_view name ) {
     // Write the version first
     int version;
     memcpy( &version, ReadBuffer, sizeof( int ) );
+    if (version < 6) {
+        buffer.SetDefault();
+        return;
+    }
     
     // Then the data
     ZeroMemory( &buffer, sizeof( MaterialInfo::Buffer ) );
@@ -1740,29 +1744,17 @@ void GothicAPI::GetVisibleDecalList( std::vector<zCVob*>& decals ) {
 
 /** Called when a material got removed */
 void GothicAPI::OnMaterialDeleted( zCMaterial* mat ) {
-#define UnloadMaterial(cont, m) \
-do { \
-    auto mit = cont.find(m); \
-    if ( mit != cont.end() ) { \
-        for ( auto& mi : mit->second ) { \
-            delete mi; \
-        } \
-        cont.erase(mit); \
-    } \
-} while (0)
-
     LoadedMaterials.erase( mat );
     if ( !mat )
         return;
     for ( auto&& it : SkeletalMeshVisuals ) {
-        UnloadMaterial( it.second->Meshes, mat );
-        UnloadMaterial( it.second->SkeletalMeshes, mat );
+        it.second->Meshes.erase(mat);
+        it.second->SkeletalMeshes.erase(mat);
     }
     for ( auto&& it : SkeletalMeshNpcs ) {
-        UnloadMaterial( it.second->Meshes, mat );
-        UnloadMaterial( it.second->SkeletalMeshes, mat );
+        it.second->Meshes.erase(mat);
+        it.second->SkeletalMeshes.erase(mat);
     }
-#undef UnloadMaterial
 }
 
 /** Called when a material got created */
@@ -1771,13 +1763,8 @@ void GothicAPI::OnMaterialCreated( zCMaterial* mat ) {
 }
 
 /** Returns if the material is currently active */
-bool GothicAPI::IsMaterialActive( zCMaterial* mat ) {
-    std::set<zCMaterial*>::iterator it = LoadedMaterials.find( mat );
-    if ( it != LoadedMaterials.end() ) {
-        return true;
-    }
-
-    return false;
+bool GothicAPI::IsMaterialActive( zCMaterial* mat ) const {
+    return LoadedMaterials.contains(mat);
 }
 
 /** Called when a vob moved */
@@ -2737,7 +2724,7 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
 
                         // Go through all meshes using that material
                         for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
-                            DrawMeshInfo( itm.first, itm.second[m] );
+                            DrawMeshInfo( itm.first, itm.second[m].get() );
                         }
                     }
                 } else {
@@ -2750,7 +2737,7 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
 
                         // Go through all meshes using that material
                         for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
-                            DrawMeshInfo( itm.first, itm.second[m] );
+                            DrawMeshInfo( itm.first, itm.second[m].get() );
                         }
                     }
                 }
@@ -2975,7 +2962,7 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
 
                     // Go through all meshes using that material
                     for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
-                        DrawMeshInfo_Layered( itm.first, itm.second[m] );
+                        DrawMeshInfo_Layered( itm.first, itm.second[m].get() );
                     }
                 }
             }
@@ -3473,7 +3460,7 @@ float GothicAPI::TraceVisualInfo( const XMFLOAT3& origin, const XMFLOAT3& dir, B
 
     for ( auto const& it : visual->Meshes ) {
         for ( unsigned int m = 0; m < it.second.size(); m++ ) {
-            MeshInfo* mesh = it.second[m];
+            auto& mesh = it.second[m];
 
             for ( unsigned int i = 0; i < mesh->Indices.size(); i += 3 ) {
                 if ( Toolbox::IntersectTri( *mesh->Vertices[mesh->Indices[i]].Position.toXMFLOAT3(),
@@ -5649,7 +5636,7 @@ void GothicAPI::SetFrameProcessedTexturesReady() {
 }
 
 /** Draws a morphmesh */
-void GothicAPI::DrawMorphMesh( zCMorphMesh* msh, std::map<zCMaterial*, std::vector<MeshInfo*>>& meshes ) {
+void GothicAPI::DrawMorphMesh( zCMorphMesh* msh, std::map<zCMaterial*, std::vector<std::unique_ptr<MeshInfo>>>& meshes ) {
     zCProgMeshProto* morphMesh = msh->GetMorphMesh();
     if ( !morphMesh )
         return;
@@ -5679,7 +5666,7 @@ void GothicAPI::DrawMorphMesh( zCMorphMesh* msh, std::map<zCMaterial*, std::vect
         }
 
         for ( auto const& it : meshes ) {
-            for ( MeshInfo* mi : it.second ) {
+            for ( auto& mi : it.second ) {
                 if ( mi->MeshIndex == i ) {
                     Engine::GraphicsEngine->DrawVertexBufferIndexed( mi->MeshVertexBuffer, mi->MeshIndexBuffer, mi->Indices.size() );
                     goto Out_Of_Nested_Loop;
@@ -5690,7 +5677,7 @@ void GothicAPI::DrawMorphMesh( zCMorphMesh* msh, std::map<zCMaterial*, std::vect
     }
 }
 
-void GothicAPI::DrawMorphMesh_Layered( zCMorphMesh* msh, std::map<zCMaterial*, std::vector<MeshInfo*>>& meshes ) {
+void GothicAPI::DrawMorphMesh_Layered( zCMorphMesh* msh, std::map<zCMaterial*, std::vector<std::unique_ptr<MeshInfo>>>& meshes ) {
     zCProgMeshProto* morphMesh = msh->GetMorphMesh();
     if ( !morphMesh )
         return;
@@ -5719,7 +5706,7 @@ void GothicAPI::DrawMorphMesh_Layered( zCMorphMesh* msh, std::map<zCMaterial*, s
         }
 
         for ( auto const& it : meshes ) {
-            for ( MeshInfo* mi : it.second ) {
+            for ( auto& mi : it.second ) {
                 if ( mi->MeshIndex == i ) {
                     mi->MeshVertexBuffer->UpdateBuffer( &vertices[0], vertices.size() * sizeof( ExVertexStruct ) );
                     g->DrawVertexBufferInstancedIndexed( mi->MeshVertexBuffer, mi->MeshIndexBuffer, mi->Indices.size(), 6 );

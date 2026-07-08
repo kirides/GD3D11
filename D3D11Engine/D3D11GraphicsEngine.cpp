@@ -2347,6 +2347,12 @@ bool D3D11GraphicsEngine::BindTextureNRFX( zCTexture* tex, bool bindShader, bool
         srvs[1] = nrm->GetShaderResourceView().Get();
     } else if ( Engine::GAPI->GetSceneWetness() > 1e-6 ) {
         srvs[1] = DistortionTexture->GetShaderResourceView().Get();
+        if (!info) { info = Engine::GAPI->GetMaterialInfoFrom( tex ); }
+        if (info) {
+            // Value override for non-normalmapped textures in case of rain
+            info->buffer.NormalmapStrength = DEFAULT_NOISE_NORMALMAP_STRENGTH;
+            info->buffer.SpecularIntensity = DEFAULT_NOISE_SPECULAR_STRENGTH;
+        }
     }
 
     if ( info && GetActivePS() ) {
@@ -3380,7 +3386,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                         if ( isShadowPass ) {
                             for ( auto const& itm : mvi->Meshes ) {
                                 for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
-                                    Engine::GAPI->DrawMeshInfo( itm.first, itm.second[m] );
+                                    Engine::GAPI->DrawMeshInfo( itm.first, itm.second[m].get() );
                                 }
                             }
                         } else {
@@ -3391,7 +3397,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                                         continue;
                                 }
                                 for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
-                                    Engine::GAPI->DrawMeshInfo( itm.first, itm.second[m] );
+                                    Engine::GAPI->DrawMeshInfo( itm.first, itm.second[m].get() );
                                 }
                             }
                         }
@@ -3410,7 +3416,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 
                         for ( auto const& itm : mvi->Meshes ) {
                             for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
-                                Engine::GAPI->DrawMeshInfo( itm.first, itm.second[m] );
+                                Engine::GAPI->DrawMeshInfo( itm.first, itm.second[m].get() );
                             }
                         }
                         continue;
@@ -3445,7 +3451,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                             FrameGeometryCache::SortKeyBuilder meshSortKey = sortKeyBase;
                             meshSortKey.withMesh( itm.second[m]->meshId );
 
-                            instancedDrawItems.emplace_back( meshSortKey.sortKey, itm.second[m], texture, itm.first, instData,
+                            instancedDrawItems.emplace_back( meshSortKey.sortKey, itm.second[m].get(), texture, itm.first, instData,
                                 (texture && texture->HasAlphaChannel()) || (itm.first && itm.first->HasAlphaTest())
                             );
                         }
@@ -5625,10 +5631,11 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                     }
                 }
                 for ( auto const& meshInfo : materialMesh.second ) {
+                    const auto mesh = meshInfo.get();
                     DrawVertexBufferIndexed(
                         meshInfo->MeshVertexBuffer,
-                        GetShadowAwareIndexBuffer( meshInfo, isAlpha ),
-                        GetShadowAwareIndexCount( meshInfo, isAlpha ) );
+                        GetShadowAwareIndexBuffer( mesh, isAlpha ),
+                        GetShadowAwareIndexCount( mesh, isAlpha ) );
                 }
             }
         }
@@ -5976,10 +5983,12 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                     }
                 }
                 for ( auto const& meshInfo : materialMesh.second ) {
+                    const auto mesh = meshInfo.get();
+
                     DrawVertexBufferInstancedIndexed(
                         meshInfo->MeshVertexBuffer,
-                        GetShadowAwareIndexBuffer( meshInfo, isAlpha ),
-                        GetShadowAwareIndexCount( meshInfo, isAlpha ),
+                        GetShadowAwareIndexBuffer( mesh, isAlpha ),
+                        GetShadowAwareIndexCount( mesh, isAlpha ),
                         6 );
                 }
             }

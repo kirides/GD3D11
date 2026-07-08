@@ -176,7 +176,7 @@ struct CameraReplacement {
 };
 
 /** Version of this struct */
-const int MATERIALINFO_VERSION = 5;
+const int MATERIALINFO_VERSION = 6;
 
 struct MaterialInfo {
     enum EMaterialType {
@@ -192,11 +192,7 @@ struct MaterialInfo {
         PixelShader(static_cast<PShaderID>(0)),
         MaterialType(MT_None)
     {
-        buffer.SpecularIntensity = 0.1f;
-        buffer.SpecularPower = 60.0f;
-        buffer.NormalmapStrength = 1.0f;
-        buffer.DisplacementFactor = 1.0f;
-        buffer.Color = 0xFFFFFFFF;
+        buffer.SetDefault();
     }
 
     ~MaterialInfo() = default;
@@ -220,6 +216,14 @@ struct MaterialInfo {
         float DisplacementFactor;
         float4 Color;
 
+        void SetDefault() {
+            SpecularIntensity = 0.2f;
+            SpecularPower = 60.0f;
+            NormalmapStrength = 1.0f;
+            DisplacementFactor = 0.1f;
+            Color = 0xFFFFFFFF;
+        }
+        
         bool operator==( const Buffer& other ) const noexcept {
             return SpecularIntensity == other.SpecularIntensity &&
                 SpecularPower == other.SpecularPower &&
@@ -374,8 +378,8 @@ public:
     void DrawInventory( zCWorld* world, zCCamera& camera );
 
     /** Draws a morphmesh */
-    void DrawMorphMesh( zCMorphMesh* msh, std::map<zCMaterial*, std::vector<MeshInfo*>>& meshes );
-    void DrawMorphMesh_Layered( zCMorphMesh* msh, std::map<zCMaterial*, std::vector<MeshInfo*>>& meshes );
+    void DrawMorphMesh( zCMorphMesh* msh, std::map<zCMaterial*, std::vector<std::unique_ptr<MeshInfo>>>& meshes );
+    void DrawMorphMesh_Layered( zCMorphMesh* msh, std::map<zCMaterial*, std::vector<std::unique_ptr<MeshInfo>>>& meshes );
 
     /** Locks the resource CriticalSection */
     void EnterResourceCriticalSection();
@@ -522,7 +526,7 @@ public:
     GInventory* GetInventory();
 
     /** Returns if the material is currently active */
-    bool IsMaterialActive( zCMaterial* mat );
+    bool IsMaterialActive( zCMaterial* mat ) const;
 
     /** Sets the current input state. Keeps an internal count of how many times it was disabled. */
     void SetEnableGothicInput( bool value );

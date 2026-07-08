@@ -659,7 +659,7 @@ void ImGuiEditorView::DoSelection() {
         if (Selection.SelectedVobInfo != TracedVobInfo && hitMaterialVob) {
             XMFLOAT4X4 world;
             XMStoreFloat4x4(&world, XMMatrixTranspose(XMLoadFloat4x4(TracedVobInfo->Vob->GetWorldMatrixPtr())));
-            VisualizeMeshInfo(TracedVobInfo->VisualInfo->Meshes[hitMaterialVob][0], XMFLOAT4(1, 1, 1, 1), false, &world);
+            VisualizeMeshInfo(TracedVobInfo->VisualInfo->Meshes[hitMaterialVob][0].get(), XMFLOAT4(1, 1, 1, 1), false, &world);
         }
 
         return;
