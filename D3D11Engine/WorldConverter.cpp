@@ -437,7 +437,7 @@ static bool findStringIC( const std::string_view strHaystack, const std::string_
     return (it != strHaystack.end());
 }
 
-bool AdditionalCheckWaterFall(zCTexture* texture)
+static bool AdditionalCheckWaterFall(const zCTexture* texture)
 {
     if ( !texture ) {
         return false;
@@ -445,9 +445,11 @@ bool AdditionalCheckWaterFall(zCTexture* texture)
     const std::string_view textureName = texture->GetNameView();
 #ifdef BUILD_GOTHIC_2_6_fix
     if ( findStringIC( textureName, "FALL" )
-        && findStringIC( textureName, "A0" ) 
+        && findStringIC( textureName, "_A0" ) 
         && !findStringIC( textureName, "SURFACE" )
         && !findStringIC( textureName, "STONE" )
+        // Fix for "Waterfalls" in snow areas, else they get the water shader
+        && !findStringIC( textureName, "WINTER" ) 
     ) {
 #else
     if ( findStringIC( textureName, "FALL" ) && (findStringIC( textureName, "SURFACE" ) || findStringIC( textureName, "STONE" )) ) {
