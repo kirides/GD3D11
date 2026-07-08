@@ -4386,7 +4386,20 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         } );
     }
 
-    if ( rendererState.RendererSettings.EnableHDR ) {       
+    if ( rendererState.RendererSettings.EnableBloom && !FeatureLevel10Compatibility ) {
+        graph.AddPass( RG_PASS_NAME("Render Bloom"), [&]( RGBuilder& builder, RenderPass& pass ) {
+            builder.Read( backBufferHandle );
+            builder.Write( backBufferHandle );
+
+            pass.m_executeCallback = [this, backBufferHandle](const RenderGraph& graph) {
+                TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Render Bloom" );
+                auto backbufferTex = graph.GetPhysicalTexture( backBufferHandle );
+                PfxRenderer->RenderBloom( backbufferTex->GetRenderTargetView().Get(), backbufferTex->GetShaderResView().Get() );
+            };
+        } );
+    }
+
+    if ( rendererState.RendererSettings.EnableHDR ) {
         graph.AddPass( RG_PASS_NAME("Render HDR"), [&]( RGBuilder& builder, RenderPass& pass ) {
             builder.Read( backBufferHandle );
             builder.Write( backBufferHandle );

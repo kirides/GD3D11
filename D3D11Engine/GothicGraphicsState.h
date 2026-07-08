@@ -710,6 +710,9 @@ struct GothicRendererSettings {
         PCSSLightSize = 0.140f; // Shadow-UV light radius used by PCSS blocker search
 
         BloomStrength = 1.0f;
+        EnableBloom = false;
+        BloomKnee = 0.5f;
+        BloomRadius = 1.0f;
         GlobalWindStrength = 1.0f;
         VegetationAlphaToCoverage = true;
 
@@ -978,6 +981,9 @@ struct GothicRendererSettings {
     float HDRMiddleGray;
     float BloomThreshold;
     float BloomStrength;
+    bool EnableBloom;
+    float BloomKnee;
+    float BloomRadius;
     float GothicUIScale;
     float FOVHoriz;
     float FOVVert;

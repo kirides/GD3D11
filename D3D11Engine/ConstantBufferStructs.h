@@ -149,6 +149,15 @@ struct AONormalsConstantBuffer {
     float2 AON_Pad;
 };
 
+struct BloomConstantBuffer {
+    float2 B_TexelSize;    // 1 / source dimensions
+    float B_Threshold;     // brightness threshold (prefilter)
+    float B_Knee;          // soft-knee width (prefilter)
+    float B_Intensity;     // composite strength
+    float B_FilterRadius;  // upsample tent radius
+    float2 B_Pad;
+};
+
 struct HDRSettingsConstantBuffer {
     float HDR_MiddleGray;
     float HDR_LumWhite;

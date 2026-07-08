@@ -16,6 +16,7 @@ class D3D11PFX_HDR;
 class D3D11PFX_SMAA;
 class D3D11PFX_GodRays;
 class D3D11PFX_DepthOfField;
+class D3D11PFX_Bloom;
 class D3D11NVHBAO;
 class D3D11PFX_SAO;
 class D3D11PFX_SimpleSharpen;
@@ -53,6 +54,9 @@ public:
 
     /** Renders the depth-of-field effect */
     XRESULT RenderDepthOfField(ID3D11ShaderResourceView* backbuffer);
+
+    /** Renders the standalone bloom effect (compute, FL11+) */
+    XRESULT RenderBloom(ID3D11RenderTargetView* output, ID3D11ShaderResourceView* sceneSrv);
 
     /** Copies the given texture to the given RTV */
     XRESULT CopyTextureToRTV( const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& texture, const Microsoft::WRL::ComPtr<ID3D11RenderTargetView>& rtv, INT2 targetResolution = INT2( 0, 0 ), bool useCustomPS = false, INT2 offset = INT2( 0, 0 ) );
@@ -129,6 +133,9 @@ private:
     std::unique_ptr<D3D11PFX_SMAA> FX_SMAA;
     std::unique_ptr<D3D11PFX_GodRays> FX_GodRays;
     std::unique_ptr<D3D11PFX_DepthOfField> FX_DepthOfField;
+
+    /** Standalone bloom effect (FL11+ only) */
+    std::unique_ptr<D3D11PFX_Bloom> FX_Bloom;
 
     /** SAO effect (FL11+ only) */
     std::unique_ptr<D3D11PFX_SAO> FX_SAO;
