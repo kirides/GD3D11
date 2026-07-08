@@ -2347,6 +2347,12 @@ bool D3D11GraphicsEngine::BindTextureNRFX( zCTexture* tex, bool bindShader, bool
         srvs[1] = nrm->GetShaderResourceView().Get();
     } else if ( Engine::GAPI->GetSceneWetness() > 1e-6 ) {
         srvs[1] = DistortionTexture->GetShaderResourceView().Get();
+        if (!info) { info = Engine::GAPI->GetMaterialInfoFrom( tex ); }
+        if (info) {
+            // Value override for non-normalmapped textures in case of rain
+            info->buffer.NormalmapStrength = DEFAULT_NOISE_NORMALMAP_STRENGTH;
+            info->buffer.SpecularIntensity = DEFAULT_NOISE_SPECULAR_STRENGTH;
+        }
     }
 
     if ( info && GetActivePS() ) {
