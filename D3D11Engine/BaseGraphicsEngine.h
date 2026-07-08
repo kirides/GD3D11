@@ -113,9 +113,11 @@ public:
 
     /** Creates a vertexbuffer object (Not registered inside) */
     virtual XRESULT CreateVertexBuffer( D3D11VertexBuffer** outBuffer ) PURE;
+    virtual XRESULT CreateVertexBuffer( std::unique_ptr<D3D11VertexBuffer>& outBuffer ) PURE;
 
     /** Creates a texture object (Not registered inside) */
     virtual XRESULT CreateTexture( D3D11Texture** outTexture ) PURE;
+    virtual XRESULT CreateTexture( std::unique_ptr<D3D11Texture>& outTexture ) PURE;
 
     /** Creates a constantbuffer object (Not registered inside) */
     virtual XRESULT CreateConstantBuffer( D3D11ConstantBuffer** outCB, void* data, int size ) PURE;

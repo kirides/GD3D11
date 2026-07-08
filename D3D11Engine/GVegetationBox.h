@@ -100,7 +100,7 @@ private:
 
     XMFLOAT3 BoxMin;
     XMFLOAT3 BoxMax;
-    D3D11Texture* VegetationTexture;
+    std::unique_ptr<D3D11Texture> VegetationTexture;
     D3D11VertexBuffer* InstancingBuffer;
     D3D11ConstantBuffer* GrassCB;
     bool DrawBoundingBox;

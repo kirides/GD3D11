@@ -25,7 +25,7 @@ GVegetationBox::GVegetationBox() {
 GVegetationBox::~GVegetationBox() {
     delete VegetationMesh;
     delete InstancingBuffer;
-    delete VegetationTexture;
+    VegetationTexture.reset();
     delete GrassCB;
 }
 
@@ -60,7 +60,7 @@ XRESULT GVegetationBox::InitVegetationBox( MeshInfo* mesh,
         return XR_FAILED;
     }
 
-    Engine::GraphicsEngine->CreateTexture( &VegetationTexture );
+    Engine::GraphicsEngine->CreateTexture( VegetationTexture );
     VegetationTexture->Init( "system\\GD3D11\\Meshes\\grass02.dds" );
 
     MeshPart = mesh;
@@ -119,7 +119,7 @@ XRESULT GVegetationBox::InitVegetationBox( const XMFLOAT3& min,
         return XR_FAILED;
     }
 
-    Engine::GraphicsEngine->CreateTexture( &VegetationTexture );
+    Engine::GraphicsEngine->CreateTexture( VegetationTexture );
     VegetationTexture->Init( "system\\GD3D11\\Meshes\\grass02.dds" );
 
     if ( restrictByTexture != "" ) {
@@ -636,7 +636,7 @@ void GVegetationBox::LoadFromFILE( zFILE_VDFS* f, int version ) {
         delete VegetationMesh;
     }
 
-    Engine::GraphicsEngine->CreateTexture( &VegetationTexture );
+    Engine::GraphicsEngine->CreateTexture( VegetationTexture );
     VegetationTexture->Init( "system\\GD3D11\\Meshes\\grass02.dds" );
 
     Modified = true;

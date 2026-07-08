@@ -115,9 +115,7 @@ XRESULT GSky::LoadSkyResources() {
 
     LogInfo() << "Loading sky textures...";
 
-    D3D11Texture* cloudTex;
-    XLE( Engine::GraphicsEngine->CreateTexture( &cloudTex ) );
-    CloudTexture.reset( cloudTex );
+    XLE( Engine::GraphicsEngine->CreateTexture( CloudTexture ) );
 
 #ifdef BUILD_GOTHIC_1_08k
     XLE( CloudTexture->Init( "system\\GD3D11\\Textures\\SkyDay_G1.dds" ) );
@@ -125,9 +123,7 @@ XRESULT GSky::LoadSkyResources() {
     XLE( CloudTexture->Init( "system\\GD3D11\\Textures\\SkyDay.dds" ) );
 #endif
 
-    D3D11Texture* nightTex;
-    XLE( Engine::GraphicsEngine->CreateTexture( &nightTex ) );
-    NightTexture.reset( nightTex );
+    XLE( Engine::GraphicsEngine->CreateTexture( NightTexture ) );
 
     XLE( NightTexture->Init( "system\\GD3D11\\Textures\\starsh.dds" ) );
 
@@ -140,9 +136,7 @@ XRESULT GSky::LoadSkyResources() {
 
 /** Sets the current sky texture */
 void GSky::SetSkyTexture( ESkyTexture texture ) {
-    D3D11Texture* cloudTex;
-    XLE( Engine::GraphicsEngine->CreateTexture( &cloudTex ) );
-    CloudTexture.reset( cloudTex );
+    XLE( Engine::GraphicsEngine->CreateTexture( CloudTexture ) );
 
     // Load the specific new texture
     switch ( texture ) {
@@ -162,9 +156,7 @@ void GSky::SetSkyTexture( ESkyTexture texture ) {
 void GSky::SetCustomCloudAndNightTexture( int idx, bool isNightTexture, bool isOldWorld ) {
     if ( idx == -1 ) {
         if ( isNightTexture) {
-            D3D11Texture* nightTex;
-            XLE( Engine::GraphicsEngine->CreateTexture( &nightTex ) );
-            NightTexture.reset( nightTex );
+            XLE( Engine::GraphicsEngine->CreateTexture( NightTexture ) );
             XLE( NightTexture->Init( "system\\GD3D11\\Textures\\starsh.dds" ) );
         } else {
             SetSkyTexture( isOldWorld ? ESkyTexture::ST_OldWorld : ESkyTexture::ST_NewWorld );
@@ -180,14 +172,10 @@ void GSky::SetCustomCloudAndNightTexture( int idx, bool isNightTexture, bool isO
 
         if ( _access( textureFile.c_str(), 0 ) != -1 ) {
             if ( isNightTexture ) {
-                D3D11Texture* nightTex;
-                XLE( Engine::GraphicsEngine->CreateTexture( &nightTex ) );
-                NightTexture.reset( nightTex );
+                XLE( Engine::GraphicsEngine->CreateTexture( NightTexture ) );
                 XLE( NightTexture->Init( textureFile ) );
             } else {
-                D3D11Texture* cloudTex;
-                XLE( Engine::GraphicsEngine->CreateTexture( &cloudTex ) );
-                CloudTexture.reset( cloudTex );
+                XLE( Engine::GraphicsEngine->CreateTexture( CloudTexture ) );
                 XLE( CloudTexture->Init( textureFile ) );
                 Atmosphere.WaveLengths = isOldWorld ? float3( 0.54f, 0.56f, 0.60f ) : float3( 0.63f, 0.57f, 0.50f );
             }
@@ -199,9 +187,7 @@ void GSky::SetCustomCloudAndNightTexture( int idx, bool isNightTexture, bool isO
 void GSky::SetCustomSkyTexture_ZenGin( bool isNightTexture, zCTexture* texture, bool isOldWorld ) {
     if ( !texture ) {
         if ( isNightTexture ) {
-            D3D11Texture* nightTex;
-            XLE( Engine::GraphicsEngine->CreateTexture( &nightTex ) );
-            NightTexture.reset( nightTex );
+            XLE( Engine::GraphicsEngine->CreateTexture( NightTexture ) );
             XLE( NightTexture->Init( "system\\GD3D11\\Textures\\starsh.dds" ) );
             NightTexture_Zen = nullptr;
         } else {
