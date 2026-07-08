@@ -502,9 +502,10 @@ static bool AdditionalCheckWaterFall(const zCTexture* texture)
 
 static bool IsPortalMaterial( std::string_view matName )
 {
-    return matName.starts_with( "P:" )
+    return matName.starts_with( "P" ) &&
+        (matName.starts_with( "P:" )
         || matName.starts_with( "PN:" )
-        || matName.starts_with( "PI:" );
+        || matName.starts_with( "PI:" ));
 }
 
 /** Converts the worldmesh into a more usable format */
