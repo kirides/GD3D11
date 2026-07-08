@@ -1408,7 +1408,7 @@ void WorldConverter::UpdateMorphMeshVisual( void* v, MeshVisualInfo* meshInfo ) 
         }
 
         for ( auto const& it : meshInfo->Meshes ) {
-            for ( MeshInfo* mi : it.second ) {
+            for ( auto& mi : it.second ) {
                 if ( mi->MeshIndex == i ) {
                     mi->MeshVertexBuffer->UpdateBuffer( &vertices[0], vertices.size() * sizeof( ExVertexStruct ) );
                     goto Out_Of_Nested_Loop;

@@ -3380,7 +3380,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                         if ( isShadowPass ) {
                             for ( auto const& itm : mvi->Meshes ) {
                                 for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
-                                    Engine::GAPI->DrawMeshInfo( itm.first, itm.second[m] );
+                                    Engine::GAPI->DrawMeshInfo( itm.first, itm.second[m].get() );
                                 }
                             }
                         } else {
@@ -3391,7 +3391,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                                         continue;
                                 }
                                 for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
-                                    Engine::GAPI->DrawMeshInfo( itm.first, itm.second[m] );
+                                    Engine::GAPI->DrawMeshInfo( itm.first, itm.second[m].get() );
                                 }
                             }
                         }
@@ -3410,7 +3410,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 
                         for ( auto const& itm : mvi->Meshes ) {
                             for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
-                                Engine::GAPI->DrawMeshInfo( itm.first, itm.second[m] );
+                                Engine::GAPI->DrawMeshInfo( itm.first, itm.second[m].get() );
                             }
                         }
                         continue;
@@ -3445,7 +3445,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                             FrameGeometryCache::SortKeyBuilder meshSortKey = sortKeyBase;
                             meshSortKey.withMesh( itm.second[m]->meshId );
 
-                            instancedDrawItems.emplace_back( meshSortKey.sortKey, itm.second[m], texture, itm.first, instData,
+                            instancedDrawItems.emplace_back( meshSortKey.sortKey, itm.second[m].get(), texture, itm.first, instData,
                                 (texture && texture->HasAlphaChannel()) || (itm.first && itm.first->HasAlphaTest())
                             );
                         }
@@ -5625,10 +5625,11 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                     }
                 }
                 for ( auto const& meshInfo : materialMesh.second ) {
+                    const auto mesh = meshInfo.get();
                     DrawVertexBufferIndexed(
                         meshInfo->MeshVertexBuffer,
-                        GetShadowAwareIndexBuffer( meshInfo, isAlpha ),
-                        GetShadowAwareIndexCount( meshInfo, isAlpha ) );
+                        GetShadowAwareIndexBuffer( mesh, isAlpha ),
+                        GetShadowAwareIndexCount( mesh, isAlpha ) );
                 }
             }
         }
@@ -5976,10 +5977,12 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                     }
                 }
                 for ( auto const& meshInfo : materialMesh.second ) {
+                    const auto mesh = meshInfo.get();
+
                     DrawVertexBufferInstancedIndexed(
                         meshInfo->MeshVertexBuffer,
-                        GetShadowAwareIndexBuffer( meshInfo, isAlpha ),
-                        GetShadowAwareIndexCount( meshInfo, isAlpha ),
+                        GetShadowAwareIndexBuffer( mesh, isAlpha ),
+                        GetShadowAwareIndexCount( mesh, isAlpha ),
                         6 );
                 }
             }

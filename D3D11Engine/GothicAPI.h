@@ -374,8 +374,8 @@ public:
     void DrawInventory( zCWorld* world, zCCamera& camera );
 
     /** Draws a morphmesh */
-    void DrawMorphMesh( zCMorphMesh* msh, std::map<zCMaterial*, std::vector<MeshInfo*>>& meshes );
-    void DrawMorphMesh_Layered( zCMorphMesh* msh, std::map<zCMaterial*, std::vector<MeshInfo*>>& meshes );
+    void DrawMorphMesh( zCMorphMesh* msh, std::map<zCMaterial*, std::vector<std::unique_ptr<MeshInfo>>>& meshes );
+    void DrawMorphMesh_Layered( zCMorphMesh* msh, std::map<zCMaterial*, std::vector<std::unique_ptr<MeshInfo>>>& meshes );
 
     /** Locks the resource CriticalSection */
     void EnterResourceCriticalSection();
@@ -522,7 +522,7 @@ public:
     GInventory* GetInventory();
 
     /** Returns if the material is currently active */
-    bool IsMaterialActive( zCMaterial* mat );
+    bool IsMaterialActive( zCMaterial* mat ) const;
 
     /** Sets the current input state. Keeps an internal count of how many times it was disabled. */
     void SetEnableGothicInput( bool value );
