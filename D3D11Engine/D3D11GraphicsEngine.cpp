@@ -313,8 +313,8 @@ D3D11GraphicsEngine::~D3D11GraphicsEngine() {
 
     SAFE_DELETE( InverseUnitSphereMesh );
 
-    SAFE_DELETE( QuadVertexBuffer );
-    SAFE_DELETE( QuadIndexBuffer );
+    QuadVertexBuffer.reset();
+    QuadIndexBuffer.reset();
 
     ID3D11Debug* d3dDebug;
     Device->QueryInterface( __uuidof(ID3D11Debug), reinterpret_cast<void**>(&d3dDebug) );
@@ -919,13 +919,13 @@ XRESULT D3D11GraphicsEngine::Init() {
     vx[4].Color = 0xFFFFFFFF;
     vx[5].Color = 0xFFFFFFFF;
 
-    CreateVertexBuffer( &QuadVertexBuffer );
+    CreateVertexBuffer( QuadVertexBuffer );
     QuadVertexBuffer->Init( vx, 6 * sizeof( ExVertexStruct ),
         D3D11VertexBuffer::EBindFlags::B_VERTEXBUFFER,
         D3D11VertexBuffer::EUsageFlags::U_IMMUTABLE );
 
     VERTEX_INDEX indices[] = { 0, 1, 2, 3, 4, 5 };
-    CreateVertexBuffer( &QuadIndexBuffer );
+    CreateVertexBuffer( QuadIndexBuffer );
     QuadIndexBuffer->Init( indices, sizeof( indices ),
         D3D11VertexBuffer::EBindFlags::B_INDEXBUFFER,
         D3D11VertexBuffer::EUsageFlags::U_IMMUTABLE );
@@ -3643,17 +3643,17 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             }
 
             // Bind mesh VB to slot 0 (only when changed)
-            if ( mi->MeshVertexBuffer != lastVB ) {
+            if ( mi->GetMeshVertexBuffer() != lastVB ) {
                 UINT vbOffset = 0;
                 UINT vbStride = sizeof( ExVertexStruct );
                 Context->IASetVertexBuffers( 0, 1, mi->MeshVertexBuffer->GetVertexBuffer().GetAddressOf(), &vbStride, &vbOffset );
-                lastVB = mi->MeshVertexBuffer;
+                lastVB = mi->GetMeshVertexBuffer();
             }
 
             // Bind IB (only when changed)
-            if ( mi->MeshIndexBuffer && mi->MeshIndexBuffer != lastIB ) {
-                Context->IASetIndexBuffer( mi->MeshIndexBuffer->GetVertexBuffer().Get(), VERTEX_INDEX_DXGI_FORMAT, 0 );
-                lastIB = mi->MeshIndexBuffer;
+            if ( auto idxBuffer = mi->GetMeshIndexBuffer(); idxBuffer && idxBuffer != lastIB ) {
+                Context->IASetIndexBuffer( idxBuffer->GetVertexBuffer().Get(), VERTEX_INDEX_DXGI_FORMAT, 0 );
+                lastIB = idxBuffer;
             }
 
             // Draw instanced
@@ -3817,13 +3817,13 @@ namespace {
         }
 
         if ( isAlpha ) {
-            return mesh->MeshIndexBuffer;
+            return mesh->GetMeshIndexBuffer();
         }
 
         if ( mesh->MeshShadowIndexBuffer && !mesh->ShadowIndices.empty() ) {
-            return mesh->MeshShadowIndexBuffer;
+            return mesh->GetMeshShadowIndexBuffer();
         }
-        return mesh->MeshIndexBuffer;
+        return mesh->GetMeshIndexBuffer();
     }
 
     unsigned int GetShadowAwareIndexCount( const MeshInfo* mesh, bool isAlpha ) {
@@ -4731,8 +4731,8 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
 
     // Bind wrapped mesh vertex buffers
     DrawVertexBufferIndexedUINT(
-        Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer,
-        Engine::GAPI->GetWrappedWorldMesh()->MeshIndexBuffer, 0, 0 );
+        Engine::GAPI->GetWrappedWorldMesh()->GetMeshVertexBuffer(),
+        Engine::GAPI->GetWrappedWorldMesh()->GetMeshIndexBuffer(), 0, 0 );
 
     int lastAlphaFunc = 0;
 
@@ -4940,7 +4940,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
     renderList = m_FrameGeometryCache.visibleSections; // shallow copy of pointers — O(N_sections), not O(BSP)
 
     MeshInfo* meshInfo = Engine::GAPI->GetWrappedWorldMesh();
-    DrawVertexBufferIndexedUINT( meshInfo->MeshVertexBuffer, meshInfo->MeshIndexBuffer, 0, 0 );
+    DrawVertexBufferIndexedUINT( meshInfo->GetMeshVertexBuffer(), meshInfo->GetMeshIndexBuffer(), 0, 0 );
 
     struct WorldMeshKey {
         zCTexture* Texture;
@@ -5096,33 +5096,63 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
         auto _scopeDepthPrepass = RecordGraphicsEvent( GE_NAME( "DrawWorldMesh::DepthPrepass" ) );
         GetContext()->PSSetShader( nullptr, nullptr, 0 );
 
+        auto isAlphaMesh = []( const auto& mesh ) {
+            zCTexture* texture = mesh.first.Texture;
+            return texture->HasAlphaChannel() || (mesh.first.Material && mesh.first.Material->HasAlphaTest());
+        };
+        auto isSkipped = []( const auto& mesh ) {
+            const auto alphaFunc = mesh.first.Material->GetAlphaFunc();
+            const auto isBlend = alphaFunc > zRND_ALPHA_FUNC_NONE && alphaFunc != zRND_ALPHA_FUNC_TEST;
+            // Skip blended meshes (rendered in the main pass) and water (not pre-rendered).
+            return isBlend || zColor( mesh.first.Material->GetColor() ).bgra.alpha < 255
+                || mesh.first.Info->MaterialType == MaterialInfo::MT_Water;
+        };
+
+        // Opaque geometry is depth-only (null PS) and needs only Position, so feed the slim
+        // 12-byte position-only stream + position-only VS. Alpha-tested geometry still needs
+        // TexCoord and is drawn below from the full 44-byte stream with VS_Ex.
+        const bool usePositionStream = meshInfo->MeshPositionBuffer != nullptr;
+        UINT vbOffset = 0;
+        if ( usePositionStream ) {
+            SetActiveVertexShader( VShaderID::VS_ExDepth );
+            ActiveVS->Apply();
+            UINT posStride = sizeof( float3 );
+            GetContext()->IASetVertexBuffers( 0, 1, meshInfo->MeshPositionBuffer->GetVertexBuffer().GetAddressOf(), &posStride, &vbOffset );
+        }
+
+        for ( auto const& mesh : meshList ) {
+            if ( mesh.first.Texture == nullptr ) continue;
+            if ( isSkipped( mesh ) || isAlphaMesh( mesh ) ) continue;
+
+            DrawVertexBufferIndexedUINT( nullptr, nullptr, mesh.second->Indices.size(), mesh.second->BaseIndexLocation );
+        }
+
+        // Alpha-tested geometry: restore the full stream + VS_Ex (also restores state for the
+        // color pass / the forward+ prepass early-return below).
+        if ( usePositionStream ) {
+            SetActiveVertexShader( VShaderID::VS_Ex );
+            ActiveVS->Apply();
+            UINT uStride = sizeof( ExVertexStruct );
+            GetContext()->IASetVertexBuffers( 0, 1, meshInfo->MeshVertexBuffer->GetVertexBuffer().GetAddressOf(), &uStride, &vbOffset );
+        }
+
         for ( auto const& mesh : meshList ) {
             zCTexture* texture;
             if ( ( texture = mesh.first.Texture ) == nullptr ) continue;
-            const auto alphaFunc = mesh.first.Material->GetAlphaFunc();
-            const auto isBlend = alphaFunc > zRND_ALPHA_FUNC_NONE && alphaFunc != zRND_ALPHA_FUNC_TEST;
-            if (isBlend || zColor( mesh.first.Material->GetColor() ).bgra.alpha < 255) {
-                // Skip blended meshes in z-prepass, they will be rendered in main pass
+            if ( isSkipped( mesh ) || !isAlphaMesh( mesh ) ) continue;
+
+            if ( texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
                 continue;
             }
 
-            if ( texture->HasAlphaChannel() || (mesh.first.Material && mesh.first.Material->HasAlphaTest()) ) {
-                if ( texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
-                    continue;
-                }
+            texture->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
 
-                texture->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
-
-                // Get the right shader for it
-                if ( BindShaderForTexture( mesh.first.Texture, false,
-                    zMAT_ALPHA_FUNC_MAT_DEFAULT ) ) { // default alpha stuff, we defer blend/add
-                    // shader changed? update buffers.
-                    updatePSBuffers();
-                }
+            // Get the right shader for it
+            if ( BindShaderForTexture( mesh.first.Texture, false,
+                zMAT_ALPHA_FUNC_MAT_DEFAULT ) ) { // default alpha stuff, we defer blend/add
+                // shader changed? update buffers.
+                updatePSBuffers();
             }
-
-            if ( mesh.first.Info->MaterialType == MaterialInfo::MT_Water )
-                continue;  // Don't pre-render water
 
             DrawVertexBufferIndexedUINT( nullptr, nullptr, mesh.second->Indices.size(), mesh.second->BaseIndexLocation );
         }
@@ -5267,8 +5297,8 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
 
     // Bind wrapped mesh vertex buffers
     DrawVertexBufferIndexedUINT(
-        Engine::GAPI->GetWrappedWorldMesh()->MeshVertexBuffer,
-        Engine::GAPI->GetWrappedWorldMesh()->MeshIndexBuffer, 0, 0 );
+        Engine::GAPI->GetWrappedWorldMesh()->GetMeshVertexBuffer(),
+        Engine::GAPI->GetWrappedWorldMesh()->GetMeshIndexBuffer(), 0, 0 );
 
     // Build per-texture batch descriptors and flat indirect draw args
     struct WaterTextureBatch {
@@ -5427,7 +5457,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
     bool noNPCs, std::list<VobInfo*>* renderedVobs,
     std::list<SkeletalVobInfo*>* renderedMobs,
     std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache,
-    unsigned int casterMask ) {
+    unsigned int casterMask,
+    const std::function<bool(zCVob*)>& ignoreVob ) {
 
     // Setup renderstates
     Engine::GAPI->GetRendererState().RasterizerState.SetDefault();
@@ -5543,7 +5574,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
 
                 // Draw from wrapped mesh
                 MeshInfo* mesh = meshInfoByKey->second;
-                DrawVertexBufferIndexed( mesh->MeshVertexBuffer,
+                DrawVertexBufferIndexed( mesh->GetMeshVertexBuffer(),
                     GetShadowAwareIndexBuffer( mesh, isAlpha ),
                     GetShadowAwareIndexCount( mesh, isAlpha ) );
             }
@@ -5605,7 +5636,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
 
                         // Draw from wrapped mesh
                         MeshInfo* mesh = meshInfoByKey->second;
-                        DrawVertexBufferIndexed( mesh->MeshVertexBuffer,
+                        DrawVertexBufferIndexed( mesh->GetMeshVertexBuffer(),
                             GetShadowAwareIndexBuffer( mesh, isAlpha ),
                             GetShadowAwareIndexCount( mesh, isAlpha ) );
                     }
@@ -5681,7 +5712,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                 for ( auto const& meshInfo : materialMesh.second ) {
                     const auto mesh = meshInfo.get();
                     DrawVertexBufferIndexed(
-                        meshInfo->MeshVertexBuffer,
+                        meshInfo->GetMeshVertexBuffer(),
                         GetShadowAwareIndexBuffer( mesh, isAlpha ),
                         GetShadowAwareIndexCount( mesh, isAlpha ) );
                 }
@@ -5705,20 +5736,26 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                     continue;
                 }
 
-                // Check vob range
-                if ( XMVector3Greater(XMVector3LengthSq( position - it->Vob->GetPositionWorldXM() ), vRangeSquared) ) {
-                    continue;
-                }
-
                 // Check for inside vob. Don't render inside-vobs when the light is
                 // outside and vice-versa.
                 if ( isOutdoor && it->Vob->IsIndoorVob() != indoor ) {
                     continue;
                 }
-
+                
                 // Assume everything that doesn't have a skeletal-mesh won't move very
                 // much This applies to usable things like chests, chairs, beds, etc
-                if ( !static_cast<SkeletalMeshVisualInfo*>(it->VisualInfo)->SkeletalMeshes.empty() ) {
+                if (auto skelInfo = dynamic_cast<SkeletalMeshVisualInfo*>(it->VisualInfo)) {
+                    if ( !skelInfo->SkeletalMeshes.empty() ) {
+                        continue;
+                    }
+                }
+
+                // Check vob range
+                if ( XMVector3Greater(XMVector3LengthSq( position - it->Vob->GetPositionWorldXM() ), vRangeSquared) ) {
+                    continue;
+                }
+                
+                if (ignoreVob && ignoreVob(it->Vob)) {
                     continue;
                 }
 
@@ -5733,7 +5770,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
         // At this point eiter renderedMobs or rndVob is filled with something
         std::list<SkeletalVobInfo*>& rl = renderedMobs != nullptr ? *renderedMobs : rndVob;
         for ( auto it : rl ) {
-            Engine::GAPI->DrawSkeletalMeshVob( it, FLT_MAX );
+            Engine::GAPI->DrawSkeletalMeshVob( it, FLT_MAX, true, ignoreVob );
         }
     }
 
@@ -5762,7 +5799,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                     continue;
                 }
 
-                Engine::GAPI->DrawSkeletalMeshVob( skeletalMeshVob, FLT_MAX );
+                Engine::GAPI->DrawSkeletalMeshVob( skeletalMeshVob, FLT_MAX, true, ignoreVob );
             }
         }
     }
@@ -5773,7 +5810,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
     bool noNPCs, std::list<VobInfo*>* renderedVobs,
     std::list<SkeletalVobInfo*>* renderedMobs,
     std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache,
-    unsigned int casterMask ) {
+    unsigned int casterMask,
+    const std::function<bool(zCVob*)>& ignoreVob ) {
 
     // Setup renderstates
     Engine::GAPI->GetRendererState().RasterizerState.SetDefault();
@@ -5892,7 +5930,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
 
                 // Draw from wrapped mesh
                 MeshInfo* mesh = meshInfoByKey->second;
-                DrawVertexBufferInstancedIndexed( mesh->MeshVertexBuffer,
+                DrawVertexBufferInstancedIndexed( mesh->GetMeshVertexBuffer(),
                     GetShadowAwareIndexBuffer( mesh, isAlpha ),
                     GetShadowAwareIndexCount( mesh, isAlpha ),
                     6 );
@@ -5953,7 +5991,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
 
                         // Draw from wrapped mesh
                         MeshInfo* mesh = meshInfoByKey->second;
-                        DrawVertexBufferInstancedIndexed( mesh->MeshVertexBuffer,
+                        DrawVertexBufferInstancedIndexed( mesh->GetMeshVertexBuffer(),
                             GetShadowAwareIndexBuffer( mesh, isAlpha ),
                             GetShadowAwareIndexCount( mesh, isAlpha ),
                             6 );
@@ -5978,15 +6016,18 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                         continue;
                     }
 
-                    // Check vob range
-
-                    if ( XMVector3Greater(XMVector3LengthSq( position - XMLoadFloat3( &it->LastRenderPosition ) ), vRangeSquared) ) {
+                    // Check for inside vob. Don't render inside-vobs when the light is
+                    // outside and vice-versa.
+                    if ( isOutdoor && it->Vob->IsIndoorVob() != indoor ) {
                         continue;
                     }
 
-                    // Check for inside vob. Don't render inside-vobs when the light is
-                    // outside and vice-versa.
-                    if ( isOutdoor && it->IsIndoorVob != indoor ) {
+                    // Check vob range
+                    if ( XMVector3Greater(XMVector3LengthSq( position - it->Vob->GetPositionWorldXM() ), vRangeSquared) ) {
+                        continue;
+                    }
+                
+                    if (ignoreVob && ignoreVob(it->Vob)) {
                         continue;
                     }
                     rndVob.emplace_back( it );
@@ -6034,7 +6075,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                     const auto mesh = meshInfo.get();
 
                     DrawVertexBufferInstancedIndexed(
-                        meshInfo->MeshVertexBuffer,
+                        meshInfo->GetMeshVertexBuffer(),
                         GetShadowAwareIndexBuffer( mesh, isAlpha ),
                         GetShadowAwareIndexCount( mesh, isAlpha ),
                         6 );
@@ -6059,11 +6100,6 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                     continue;
                 }
 
-                // Check vob range
-                if ( XMVector3Greater(XMVector3LengthSq( position - it->Vob->GetPositionWorldXM() ), vRangeSquared) ) {
-                    continue;
-                }
-
                 // Check for inside vob. Don't render inside-vobs when the light is
                 // outside and vice-versa.
                 if ( isOutdoor && it->Vob->IsIndoorVob() != indoor ) {
@@ -6072,7 +6108,18 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
 
                 // Assume everything that doesn't have a skeletal-mesh won't move very
                 // much This applies to usable things like chests, chairs, beds, etc
-                if ( !static_cast<SkeletalMeshVisualInfo*>(it->VisualInfo)->SkeletalMeshes.empty() ) {
+                if (auto skelInfo = dynamic_cast<SkeletalMeshVisualInfo*>(it->VisualInfo)) {
+                    if ( !skelInfo->SkeletalMeshes.empty() ) {
+                        continue;
+                    }
+                }
+
+                // Check vob range
+                if ( XMVector3Greater(XMVector3LengthSq( position - it->Vob->GetPositionWorldXM() ), vRangeSquared) ) {
+                    continue;
+                }
+                
+                if (ignoreVob && ignoreVob(it->Vob)) {
                     continue;
                 }
 
@@ -6088,7 +6135,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
         std::list<SkeletalVobInfo*>& rl = renderedMobs != nullptr ? *renderedMobs : rndVob;
         auto _ = Engine::GraphicsEngine->RecordGraphicsEvent( GE_NAME( "Draw static skeletal meshes (layered)" ) );
         for ( auto it : rl ) {
-            Engine::GAPI->DrawSkeletalMeshVob_Layered( it, FLT_MAX );
+            Engine::GAPI->DrawSkeletalMeshVob_Layered( it, FLT_MAX, true, ignoreVob );
         }
     }
 
@@ -6117,7 +6164,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                     continue;
                 }
 
-                Engine::GAPI->DrawSkeletalMeshVob_Layered( skeletalMeshVob, FLT_MAX );
+                Engine::GAPI->DrawSkeletalMeshVob_Layered( skeletalMeshVob, FLT_MAX, true, ignoreVob );
             }
         }
     }
@@ -6206,14 +6253,26 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<W
     }
 
     UINT offset = 0;
-    UINT uStride = sizeof( ExVertexStruct );
-    Context->IASetVertexBuffers( 0, 1, wrappedWorldMesh->MeshVertexBuffer->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
+    bool swappedToDepthVS = false;
 
     if ( !opaqueDrawArgs.empty() ) {
         TracyD3D11ZoneCGX( "ShadowPass_DrawWorldMesh_Indirect::OpaqueSubmission" );
         auto _scopeOpaqueSubmission = RecordGraphicsEvent( GE_NAME( "ShadowPass_DrawWorldMesh_Indirect::OpaqueSubmission" ) );
         if ( !linearDepth ) {
             Context->PSSetShader( nullptr, nullptr, 0 );
+        }
+
+        // Depth-only opaque geometry needs only Position: feed the slim 12-byte stream + VS_ExDepth.
+        const bool usePositionStream = !linearDepth && wrappedWorldMesh->MeshPositionBuffer != nullptr;
+        if ( usePositionStream ) {
+            SetActiveVertexShader( VShaderID::VS_ExDepth );
+            ActiveVS->Apply();
+            swappedToDepthVS = true;
+            UINT posStride = sizeof( float3 );
+            Context->IASetVertexBuffers( 0, 1, wrappedWorldMesh->MeshPositionBuffer->GetVertexBuffer().GetAddressOf(), &posStride, &offset );
+        } else {
+            UINT uStride = sizeof( ExVertexStruct );
+            Context->IASetVertexBuffers( 0, 1, wrappedWorldMesh->MeshVertexBuffer->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
         }
 
         const size_t requiredSize = opaqueDrawArgs.size() * sizeof( D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS );
@@ -6239,6 +6298,14 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<W
         std::sort( alphaMeshes.begin(), alphaMeshes.end(),
             []( const auto& a, const auto& b ) { return a.first < b.first; } );
 
+        // Alpha-test needs TexCoord: restore the full stream + VS_Ex (the opaque pass above may
+        // have swapped in the position-only shader).
+        SetActiveVertexShader( VShaderID::VS_Ex );
+        ActiveVS->Apply();
+        swappedToDepthVS = false;
+        UINT uStride = sizeof( ExVertexStruct );
+        Context->IASetVertexBuffers( 0, 1, wrappedWorldMesh->MeshVertexBuffer->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
+
         ActivePS->Apply();
         zCTexture* lastTex = nullptr;
         Context->PSSetShaderResources( 0, 3, s_nullSRVs );
@@ -6257,6 +6324,12 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<W
                 GetShadowAwareIndexCount( mesh, true ),
                 mesh->BaseIndexLocation );
         }
+    }
+
+    // Restore the full-attribute shader (the opaque-only path may have left VS_ExDepth active).
+    if ( swappedToDepthVS ) {
+        SetActiveVertexShader( VShaderID::VS_Ex );
+        ActiveVS->Apply();
     }
 }
 
@@ -6314,9 +6387,8 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh( const std::vector<WorldMeshS
     
     MeshInfo* wrappedWorldMesh = Engine::GAPI->GetWrappedWorldMesh();
     UINT offset = 0;
-    UINT uStride = sizeof( ExVertexStruct );
-    Context->IASetVertexBuffers( 0, 1, wrappedWorldMesh->MeshVertexBuffer->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
-    
+    bool swappedToDepthVS = false;
+
     // Draw all opaque meshes without pixel shader (depth only)
     if ( !opaqueMeshes.empty() ) {
         TracyD3D11ZoneCGX( "ShadowPass_DrawWorldMesh::OpaqueSubmission" );
@@ -6326,6 +6398,22 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh( const std::vector<WorldMeshS
             // Unbind PS
             Context->PSSetShader( nullptr, nullptr, 0 );
         }
+
+        // For pure depth output (null PS) the transform only needs Position, so feed the slim
+        // 12-byte position-only stream + a position-only vertex shader. When rendering linear depth
+        // the pixel shader stays bound and may need the full attributes, so keep the 44-byte stream.
+        const bool usePositionStream = !linearDepth && wrappedWorldMesh->MeshPositionBuffer != nullptr;
+        if ( usePositionStream ) {
+            SetActiveVertexShader( VShaderID::VS_ExDepth );
+            ActiveVS->Apply();
+            swappedToDepthVS = true;
+            UINT posStride = sizeof( float3 );
+            Context->IASetVertexBuffers( 0, 1, wrappedWorldMesh->MeshPositionBuffer->GetVertexBuffer().GetAddressOf(), &posStride, &offset );
+        } else {
+            UINT uStride = sizeof( ExVertexStruct );
+            Context->IASetVertexBuffers( 0, 1, wrappedWorldMesh->MeshVertexBuffer->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
+        }
+
         Context->IASetIndexBuffer( wrappedWorldMesh->MeshShadowIndexBuffer->GetVertexBuffer().Get(), DXGI_FORMAT_R32_UINT, 0 );
 
         for ( auto mesh : opaqueMeshes ) {
@@ -6342,6 +6430,14 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh( const std::vector<WorldMeshS
         // Sort by texture to minimize binding changes
         std::sort( alphaMeshes.begin(), alphaMeshes.end(),
             []( const auto& a, const auto& b ) { return a.first < b.first; } );
+
+        // Alpha-test needs TexCoord, so use the full interleaved stream + VS_Ex (the opaque pass
+        // above may have swapped in the position-only shader).
+        SetActiveVertexShader( VShaderID::VS_Ex );
+        ActiveVS->Apply();
+        swappedToDepthVS = false;
+        UINT uStride = sizeof( ExVertexStruct );
+        Context->IASetVertexBuffers( 0, 1, wrappedWorldMesh->MeshVertexBuffer->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
 
         ActivePS->Apply();
         zCTexture* lastTex = nullptr;
@@ -6361,6 +6457,13 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh( const std::vector<WorldMeshS
                 GetShadowAwareIndexCount( mesh, true ),
                 mesh->BaseIndexLocation );
         }
+    }
+
+    // Restore the full-attribute shader for the rest of the shadow pass (the opaque-only path may
+    // have left the position-only shader active).
+    if ( swappedToDepthVS ) {
+        SetActiveVertexShader( VShaderID::VS_Ex );
+        ActiveVS->Apply();
     }
 }
 
@@ -6713,7 +6816,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             // Draw batch
 
             /* Dont re-bind buffer all the time*/
-            const auto vb = mi->MeshVertexBuffer;
+            const auto vb = mi->GetMeshVertexBuffer();
             const auto ib = GetShadowAwareIndexBuffer( mi, isAlpha );
 
             UINT offset[] = { 0 };
@@ -7409,7 +7512,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                     }
 
                     // Draw batch
-                    DrawInstanced( meshInfo->MeshVertexBuffer, meshInfo->MeshIndexBuffer,
+                    DrawInstanced( meshInfo->GetMeshVertexBuffer(), meshInfo->GetMeshIndexBuffer(),
                         meshInfo->Indices.size(), instancingBuffer,
                         sizeof( VobInstanceInfo ), cachedVisual->Instances.size(),
                         sizeof( ExVertexStruct ), cachedVisual->StartInstanceNum );
@@ -7629,7 +7732,7 @@ XRESULT D3D11GraphicsEngine::DrawFrameAlphaMeshes()
             }
 
             // Draw batch
-            DrawInstanced( mi->MeshVertexBuffer, mi->MeshIndexBuffer, mi->Indices.size(),
+            DrawInstanced( mi->GetMeshVertexBuffer(), mi->GetMeshIndexBuffer(), mi->Indices.size(),
                 instancingBuffer, sizeof( VobInstanceInfo ),
                 instances.size(), sizeof( ExVertexStruct ),
                 alphaMesh.StartInstanceNum );
@@ -7972,10 +8075,12 @@ void XM_CALLCONV D3D11GraphicsEngine::RenderShadowCube(
     std::list<SkeletalVobInfo*>* renderedMobs,
     std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache,
     bool clearDepth,
-    unsigned int casterMask ) {
+    unsigned int casterMask,
+    const std::function<bool(zCVob*)>& ignoreVob ) {
     
     ShadowMaps->RenderShadowCube( position, range, targetCube, face, debugRTV,
-        cullFront, indoor, noNPCs, renderedVobs, renderedMobs, worldMeshCache, clearDepth, casterMask );
+        cullFront, indoor, noNPCs, renderedVobs, renderedMobs, worldMeshCache, clearDepth, casterMask,
+        ignoreVob);
 }
 
 /** Renders the shadowmaps for the sun */
@@ -8059,7 +8164,7 @@ void D3D11GraphicsEngine::DrawVobSingle( VobInfo* vob, zCCamera& camera ) {
         for ( auto const& itm2nd : itm.second ) {
             // Draw instances
             DrawVertexBufferIndexed(
-                itm2nd->MeshVertexBuffer, itm2nd->MeshIndexBuffer,
+                itm2nd->GetMeshVertexBuffer(), itm2nd->GetMeshIndexBuffer(),
                 itm2nd->Indices.size() );
         }
     }
@@ -8985,14 +9090,14 @@ void D3D11GraphicsEngine::DrawFrameParticleMeshes( std::unordered_map<zCVob*, Me
                 continue;
             }
             for ( auto const& itm2nd : itm.second ) {
-                if (itm2nd->MeshVertexBuffer != lastMeshBuffer
-                    || itm2nd->MeshIndexBuffer != lastIndexBuffer) {
+                if (itm2nd->GetMeshVertexBuffer() != lastMeshBuffer
+                    || itm2nd->GetMeshIndexBuffer() != lastIndexBuffer) {
                     // Bind them 
                     DrawVertexBufferIndexed(
-                        itm2nd->MeshVertexBuffer, itm2nd->MeshIndexBuffer,
+                        itm2nd->GetMeshVertexBuffer(), itm2nd->GetMeshIndexBuffer(),
                         0 );
-                    lastMeshBuffer = itm2nd->MeshVertexBuffer;
-                    lastIndexBuffer = itm2nd->MeshIndexBuffer;
+                    lastMeshBuffer = itm2nd->GetMeshVertexBuffer();
+                    lastIndexBuffer = itm2nd->GetMeshIndexBuffer();
                 }
                 
                 // Draw instances

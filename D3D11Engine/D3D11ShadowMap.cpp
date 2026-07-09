@@ -1629,7 +1629,8 @@ void XM_CALLCONV D3D11ShadowMap::RenderShadowCube(
     std::list<SkeletalVobInfo*>* renderedMobs,
     std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache,
     bool clearDepth,
-    unsigned int casterMask ) {
+    unsigned int casterMask,
+    const std::function<bool(zCVob*)>& ignoreVob ) {
 
     auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
 
@@ -1692,10 +1693,10 @@ void XM_CALLCONV D3D11ShadowMap::RenderShadowCube(
     // Draw the world mesh without textures
     if ( useLayeredPath ) {
         graphicsEngine->DrawWorldAround_Layered( position, range, cullFront, indoor, noNPCs, renderedVobs,
-            renderedMobs, worldMeshCache, casterMask );
+            renderedMobs, worldMeshCache, casterMask, ignoreVob );
     } else {
         graphicsEngine->DrawWorldAround( position, range, cullFront, indoor, noNPCs, renderedVobs,
-            renderedMobs, worldMeshCache, casterMask );
+            renderedMobs, worldMeshCache, casterMask, ignoreVob );
     }
 
     // Restore state

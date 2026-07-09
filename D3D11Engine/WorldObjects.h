@@ -79,6 +79,7 @@ struct meshKeyHasher {
 struct MeshInfo {
     MeshInfo() {
         MeshVertexBuffer = nullptr;
+        MeshPositionBuffer = nullptr;
         MeshIndexBuffer = nullptr;
         MeshShadowIndexBuffer = nullptr;
         BaseIndexLocation = 0;
@@ -96,9 +97,18 @@ struct MeshInfo {
     /** Creates buffers for this mesh info */
     XRESULT Create( ExVertexStruct* vertices, unsigned int numVertices, VERTEX_INDEX* indices, unsigned int numIndices );
 
-    D3D11VertexBuffer* MeshVertexBuffer;
-    D3D11VertexBuffer* MeshIndexBuffer;
-    D3D11VertexBuffer* MeshShadowIndexBuffer;
+    D3D11VertexBuffer* GetMeshVertexBuffer() const { return MeshVertexBuffer.get(); }
+    D3D11VertexBuffer* GetMeshPositionBuffer() const { return MeshPositionBuffer.get(); }
+    D3D11VertexBuffer* GetMeshIndexBuffer() const { return MeshIndexBuffer.get(); }
+    D3D11VertexBuffer* GetMeshShadowIndexBuffer() const { return MeshShadowIndexBuffer.get(); }
+    
+    std::unique_ptr<D3D11VertexBuffer> MeshVertexBuffer;
+    // Optional position-only (float3, 12 bytes) copy of MeshVertexBuffer, in the same vertex
+    // ordering. Bound for opaque depth/shadow passes to cut vertex-fetch bandwidth (~3.6x vs the
+    // full 44-byte stream). Currently only populated for the wrapped world mesh. May be nullptr.
+    std::unique_ptr<D3D11VertexBuffer> MeshPositionBuffer;
+    std::unique_ptr<D3D11VertexBuffer> MeshIndexBuffer;
+    std::unique_ptr<D3D11VertexBuffer> MeshShadowIndexBuffer;
     std::vector<ExVertexStruct> Vertices;
     std::vector<VERTEX_INDEX> Indices;
     std::vector<VERTEX_INDEX> ShadowIndices;
@@ -151,8 +161,8 @@ struct SkeletalMeshInfo {
 
     ~SkeletalMeshInfo();
 
-    D3D11VertexBuffer* MeshVertexBuffer;
-    D3D11VertexBuffer* MeshIndexBuffer;
+    std::unique_ptr<D3D11VertexBuffer> MeshVertexBuffer;
+    std::unique_ptr<D3D11VertexBuffer> MeshIndexBuffer;
     std::vector<ExSkelVertexStruct> Vertices;
     std::vector<VERTEX_INDEX> Indices;
 
@@ -255,9 +265,11 @@ struct MeshVisualInfo : public BaseVisualInfo {
 class zCMeshSoftSkin;
 class zCModel;
 struct SkeletalMeshVisualInfo : public BaseVisualInfo {
-    SkeletalMeshVisualInfo() :
-        SkeletalMeshes{}
-    {}
+    SkeletalMeshVisualInfo()
+    {
+        SkeletalMeshes.clear();
+        Meshes.clear();
+    }
 
     SkeletalMeshVisualInfo(SkeletalMeshVisualInfo&& other) noexcept = default;
     SkeletalMeshVisualInfo& operator=( SkeletalMeshVisualInfo&& ) = default;
@@ -364,7 +376,8 @@ struct VobLightInfo {
         DynamicShadows{},
         UpdateShadows{},
         LastRenderedPosition{},
-        VisibleInFrame{}
+        VisibleInFrame{},
+        OriginVob{}
     {}
 
     VobLightInfo(VobLightInfo&& other) = delete;
@@ -376,6 +389,8 @@ struct VobLightInfo {
 
     /** Vob the data came from */
     zCVobLight* Vob;
+    // In case the light originally is a oCVisualFX, this will be the "origin" vob. Exclude from self shadowing
+    zCVob* OriginVob;
 
     /** Flag to see if this vob was drawn in the current render pass. Used to collect the same vob only once. Cleared immediately. */
     std::atomic<size_t> VisibleInRenderPass;

@@ -59,14 +59,19 @@ XRESULT D3D11GraphicsEngineBase::SetViewport( const ViewportInfo& viewportInfo )
 D3D11ShaderManager& D3D11GraphicsEngineBase::GetShaderManager() { return *ShaderManager; }
 
 /** Creates a vertexbuffer object (Not registered inside) */
-XRESULT D3D11GraphicsEngineBase::CreateVertexBuffer( D3D11VertexBuffer** outBuffer ) {
-    *outBuffer = new D3D11VertexBuffer;
+XRESULT D3D11GraphicsEngineBase::CreateVertexBuffer( std::unique_ptr<D3D11VertexBuffer>& outBuffer ) {
+    outBuffer.reset(new D3D11VertexBuffer);
     return XR_SUCCESS;
 }
 
 /** Creates a texture object (Not registered inside) */
 XRESULT D3D11GraphicsEngineBase::CreateTexture( D3D11Texture** outTexture ) {
     *outTexture = new D3D11Texture;
+    return XR_SUCCESS;
+}
+
+XRESULT D3D11GraphicsEngineBase::CreateTexture( std::unique_ptr<D3D11Texture>& outTexture ) {
+    outTexture.reset(new D3D11Texture);
     return XR_SUCCESS;
 }
 

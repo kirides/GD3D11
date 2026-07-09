@@ -1958,9 +1958,9 @@ void GothicAPI::DrawMeshInfo( zCMaterial* mat, MeshInfo* msh ) {
     }
 
     if ( !msh->MeshIndexBuffer ) {
-        Engine::GraphicsEngine->DrawVertexBuffer( msh->MeshVertexBuffer, msh->Vertices.size() );
+        Engine::GraphicsEngine->DrawVertexBuffer( msh->GetMeshVertexBuffer(), msh->Vertices.size() );
     } else {
-        Engine::GraphicsEngine->DrawVertexBufferIndexed( msh->MeshVertexBuffer, msh->MeshIndexBuffer, msh->Indices.size() );
+        Engine::GraphicsEngine->DrawVertexBufferIndexed( msh->GetMeshVertexBuffer(), msh->GetMeshIndexBuffer(), msh->Indices.size() );
     }
 }
 
@@ -1976,9 +1976,9 @@ void GothicAPI::DrawMeshInfo_Layered( zCMaterial* mat, MeshInfo* msh ) {
 
     D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     if ( !msh->MeshIndexBuffer ) {
-        g->DrawVertexBufferInstanced( msh->MeshVertexBuffer, msh->Vertices.size(), 6 );
+        g->DrawVertexBufferInstanced( msh->GetMeshVertexBuffer(), msh->Vertices.size(), 6 );
     } else {
-        g->DrawVertexBufferInstancedIndexed( msh->MeshVertexBuffer, msh->MeshIndexBuffer, msh->Indices.size(), 6 );
+        g->DrawVertexBufferInstancedIndexed( msh->GetMeshVertexBuffer(), msh->GetMeshIndexBuffer(), msh->Indices.size(), 6 );
     }
 }
 
@@ -2509,7 +2509,12 @@ void GothicAPI::UpdateCompressBackBuffer() {
 }
 
 /** Draws a skeletal mesh-vob */
-void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool updateState ) {
+void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool updateState, const std::function<bool(zCVob*)>& ignoreVob ) {
+
+    if (ignoreVob && ignoreVob(vi->Vob)){
+        // Dont draw main mesh if vob is ignored.
+        return;
+    }
     // TODO: Put this into the renderer!!
     D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
 
@@ -2607,10 +2612,26 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
     auto vsBufMPI = g->GetActiveVS()->GetBuffer( "Matrices_PerInstances" );
     vsBufMPI.Bind();
 
+    oCNPC* npc = vi->Vob->As<oCNPC>();
+    zCModel* mvis = static_cast<zCModel*>( vi->Vob->GetVisual() );
+    auto nodeList = mvis->GetNodeList();
     for ( unsigned int i = 0; i < transforms.size(); i++ ) {
         // Check for new visual
-        zCModel* mvis = static_cast<zCModel*>( vi->Vob->GetVisual() );
-        zCModelNodeInst* node = mvis->GetNodeList()->Array[i];
+        zCModelNodeInst* node = nodeList->Array[i];
+
+        if ( !node->NodeVisual )
+            continue; // Happens when you pull your sword for example
+
+        if (npc
+            && ignoreVob
+            && node->ProtoNode
+            && node->ProtoNode->NodeName.Length()) {
+            if (auto slot = npc->GetInvSlot(node->ProtoNode->NodeName)) {
+                if (slot->vob && ignoreVob(slot->vob)) {
+                    continue;
+                }
+            }
+        }
 
         if ( !node->NodeVisual )
             continue; // Happens when you pull your sword for example
@@ -2748,7 +2769,12 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
     RendererState.RendererInfo.FrameDrawnVobs++;
 }
 
-void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distance, bool updateState ) {
+void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distance, bool updateState, const std::function<bool(zCVob*)>& ignoreVob ) {
+    if (ignoreVob && ignoreVob(vi->Vob)){
+        // Dont draw main mesh if vob is ignored.
+        return;
+    }
+    
     // TODO: Put this into the renderer!!
     D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
 
@@ -2838,14 +2864,27 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
     g->GetWhiteTexture()->BindToPixelShader( 0 );
     void* lastTex = g->GetWhiteTexture()->GetShaderResourceView().Get();
 
+    oCNPC* npc = vi->Vob->As<oCNPC>();
+    zCModel* mvis = static_cast<zCModel*>( vi->Vob->GetVisual() );
+    auto nodeList = mvis->GetNodeList();
     for ( unsigned int i = 0; i < transforms.size(); i++ ) {
         // Check for new visual
-        zCModel* mvis = static_cast<zCModel*>( vi->Vob->GetVisual() );
-        zCModelNodeInst* node = mvis->GetNodeList()->Array[i];
+        zCModelNodeInst* node = nodeList->Array[i];
 
         if ( !node->NodeVisual )
             continue; // Happens when you pull your sword for example
 
+        if (npc
+            && ignoreVob
+            && node->ProtoNode
+            && node->ProtoNode->NodeName.Length()) {
+            if (auto slot = npc->GetInvSlot(node->ProtoNode->NodeName)) {
+                if (slot->vob && ignoreVob(slot->vob)) {
+                    continue;
+                }
+            }
+        }
+        
         // Check if this is loaded
         if ( node->NodeVisual && nodeAttachments.find( i ) == nodeAttachments.end() ) {
             // It's not, extract it
@@ -2869,11 +2908,11 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
         }
 
         if ( model->GetDrawHandVisualsOnly() ) {
-            std::string NodeName = node->ProtoNode->NodeName.ToChar();
+            std::string_view NodeName = node->ProtoNode->NodeName.ToView();
 #ifdef BUILD_GOTHIC_2_6_fix
-            if ( NodeName.find( "HAND" ) == std::string::npos && (*reinterpret_cast<BYTE*>(0x57A694) != 0x90 || NodeName.find( "ARM" ) == std::string::npos) ) {
+            if ( NodeName.find( "HAND" ) == std::string_view::npos && (*reinterpret_cast<BYTE*>(0x57A694) != 0x90 || NodeName.find( "ARM" ) == std::string_view::npos) ) {
 #else
-            if ( NodeName.find( "HAND" ) == std::string::npos ) {
+            if ( NodeName.find( "HAND" ) == std::string_view::npos ) {
 #endif
                 continue;
             }
@@ -3030,8 +3069,8 @@ void GothicAPI::DrawTransparencyVobs() {
 
                 for ( auto const& meshInfo : materialMesh.second ) {
                     g->DrawVertexBufferIndexed(
-                        meshInfo->MeshVertexBuffer,
-                        meshInfo->MeshIndexBuffer,
+                        meshInfo->GetMeshVertexBuffer(),
+                        meshInfo->GetMeshIndexBuffer(),
                         meshInfo->Indices.size() );
                 }
             }
@@ -3056,8 +3095,8 @@ void GothicAPI::DrawTransparencyVobs() {
 
                 for ( auto const& meshInfo : materialMesh.second ) {
                     g->DrawVertexBufferIndexed(
-                        meshInfo->MeshVertexBuffer,
-                        meshInfo->MeshIndexBuffer,
+                        meshInfo->GetMeshVertexBuffer(),
+                        meshInfo->GetMeshIndexBuffer(),
                         meshInfo->Indices.size() );
                 }
             }
@@ -3265,8 +3304,8 @@ void GothicAPI::DrawParticleFX( zCVob* source, zCParticleFX* fx, ParticleFrameDa
 
 /** Debugging */
 void GothicAPI::DrawTriangle( float3 pos = { 0.0f,0.0f,0.0f } ) {
-    D3D11VertexBuffer* vxb;
-    Engine::GraphicsEngine->CreateVertexBuffer( &vxb );
+    std::unique_ptr<D3D11VertexBuffer> vxb;
+    Engine::GraphicsEngine->CreateVertexBuffer( vxb );
     vxb->Init( nullptr, 6 * sizeof( ExVertexStruct ), D3D11VertexBuffer::EBindFlags::B_VERTEXBUFFER, D3D11VertexBuffer::EUsageFlags::U_DYNAMIC, D3D11VertexBuffer::CA_WRITE );
 
     ExVertexStruct vx[6];
@@ -3297,9 +3336,7 @@ void GothicAPI::DrawTriangle( float3 pos = { 0.0f,0.0f,0.0f } ) {
 
     vxb->UpdateBuffer( vx );
 
-    Engine::GraphicsEngine->DrawVertexBuffer( vxb, 6 );
-
-    delete vxb;
+    Engine::GraphicsEngine->DrawVertexBuffer( vxb.get(), 6 );
 }
 
 /** Sets the Projection matrix */
@@ -5678,7 +5715,7 @@ void GothicAPI::DrawMorphMesh( zCMorphMesh* msh, std::map<zCMaterial*, std::vect
         for ( auto const& it : meshes ) {
             for ( auto& mi : it.second ) {
                 if ( mi->MeshIndex == i ) {
-                    Engine::GraphicsEngine->DrawVertexBufferIndexed( mi->MeshVertexBuffer, mi->MeshIndexBuffer, mi->Indices.size() );
+                    Engine::GraphicsEngine->DrawVertexBufferIndexed( mi->GetMeshVertexBuffer(), mi->GetMeshIndexBuffer(), mi->Indices.size() );
                     goto Out_Of_Nested_Loop;
                 }
             }
@@ -5719,7 +5756,7 @@ void GothicAPI::DrawMorphMesh_Layered( zCMorphMesh* msh, std::map<zCMaterial*, s
             for ( auto& mi : it.second ) {
                 if ( mi->MeshIndex == i ) {
                     mi->MeshVertexBuffer->UpdateBuffer( &vertices[0], vertices.size() * sizeof( ExVertexStruct ) );
-                    g->DrawVertexBufferInstancedIndexed( mi->MeshVertexBuffer, mi->MeshIndexBuffer, mi->Indices.size(), 6 );
+                    g->DrawVertexBufferInstancedIndexed( mi->GetMeshVertexBuffer(), mi->GetMeshIndexBuffer(), mi->Indices.size(), 6 );
                     goto Out_Of_Nested_Loop;
                 }
             }
@@ -6197,24 +6234,22 @@ static void CollectLeafVobs(
                 // Check if we already have this light
                 auto vit = VobLightMap.find( vob );
                 if ( vit == VobLightMap.end() ) {
+                    // Add if not. This light must have been added during gameplay
+                    VobLightInfo* vi = new VobLightInfo;
+                    vi->Vob = vob;                    
                     bool PFXVobLight = false;
-                    if ( zCVob* parent = vob->GetVobParent() ) {
-                        if ( parent && parent->As<oCVisualFX>() ) {
+                    
+                    if ( zCVob* parent = vob->GetVobParent(); parent ) {
+                        if ( auto visFx = parent->As<oCVisualFX>() ) {
                             PFXVobLight = true;
-                            
-                            // returning NB workaround: torch is not a torch, but a "SPELLFX_FIRE_TORCH VOB"
-                            const auto& parentName = parent->GetObjectName();
-                            const std::string_view parentNameView(parentName.ToChar(), parentName.Length());
-                            if ( parentNameView.find("TORCH") != std::string_view::npos) {
-                                // for now, assume any PFX whose parent contains "torch" is likely a a torch
-                                PFXVobLight = false;
-                            }
+                            if (auto origin = visFx->GetOrigin()) {
+                                vi->OriginVob = origin;
+                                // any PFX that stems from an ITEM should be counted as simple light.
+                                PFXVobLight = !origin->As<oCItem>();
+                            }                            
                         }
                     }
 
-                    // Add if not. This light must have been added during gameplay
-                    VobLightInfo* vi = new VobLightInfo;
-                    vi->Vob = vob;
                     vi->IsPFXVobLight = PFXVobLight;
                     vi->UpdateShadows = !PFXVobLight;
                     vit = VobLightMap.emplace( vob, vi ).first;

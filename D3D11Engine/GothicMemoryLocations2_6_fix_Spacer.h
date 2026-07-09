@@ -79,6 +79,7 @@ struct GothicMemoryLocations {
         static const unsigned int Enable = 0x0059FBF0;
         static const unsigned int Disable = 0x0059F8D0;
         static const unsigned int IsAPlayer = 0x0059C450;
+        static const unsigned int GetInvSlot_zString = 0;
     };
 
     struct zCView {
@@ -469,6 +470,7 @@ struct GothicMemoryLocations {
 
     struct zCClassDef {
         static const unsigned int oCNpc = 0x009A7978;
+        static const unsigned int oCItem = 0;
         static const unsigned int zCTexture = 0x00B18D18;
         static const unsigned int oCMobInter = 0;
         static const unsigned int oCMOB = 0;
@@ -494,6 +496,11 @@ struct GothicMemoryLocations {
         static const unsigned int zCObjectFactory__CreateZFile = 0;
     };
 
+    struct oCVisualFX
+    {
+        static const unsigned int Offset_origin = 0x4a8;
+    };
+    
     struct zAllocator
     {
         static const unsigned int Malloc = 0;

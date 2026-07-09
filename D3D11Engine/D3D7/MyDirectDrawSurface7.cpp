@@ -39,14 +39,14 @@ MyDirectDrawSurface7::~MyDirectDrawSurface7() {
     // Sometimes gothic doesn't unlock a surface or this is a movie-buffer
     delete[] LockedData;
 
-    delete EngineTexture;
+    EngineTexture.reset();
     delete Normalmap;
     delete FxMap;
 }
 
 /** Returns the engine texture of this surface */
 D3D11Texture* MyDirectDrawSurface7::GetEngineTexture() {
-    return EngineTexture;
+    return EngineTexture.get();
 }
 
 /** Returns the engine texture of this surface */
@@ -513,7 +513,7 @@ HRESULT MyDirectDrawSurface7::SetSurfaceDesc( LPDDSURFACEDESC2 lpDDSurfaceDesc, 
     }
 
     // Create the texture object this is linked with
-    Engine::GraphicsEngine->CreateTexture( &EngineTexture );
+    Engine::GraphicsEngine->CreateTexture( EngineTexture );
 
 
     int redBits = Toolbox::GetNumberOfBits( lpDDSurfaceDesc->ddpfPixelFormat.dwRBitMask );

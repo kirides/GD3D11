@@ -39,10 +39,31 @@ namespace {
             return;
         }
 
-        Engine::GraphicsEngine->CreateVertexBuffer( &meshInfo->MeshShadowIndexBuffer );
+        Engine::GraphicsEngine->CreateVertexBuffer( meshInfo->MeshShadowIndexBuffer );
         meshInfo->MeshShadowIndexBuffer->Init( meshInfo->ShadowIndices.data(),
             meshInfo->ShadowIndices.size() * sizeof( VERTEX_INDEX ),
             D3D11VertexBuffer::B_INDEXBUFFER,
+            D3D11VertexBuffer::U_IMMUTABLE );
+    }
+
+    /** Builds a position-only (float3) companion buffer in the same vertex ordering as the source
+        interleaved vertices. Bound for opaque depth/shadow passes; indices remain valid because the
+        ordering matches the mesh/shadow index buffers built from the same array. */
+    void BuildWrappedPositionBuffer( MeshInfo* meshInfo, const std::vector<ExVertexStruct>& vertices ) {
+        if ( !meshInfo || vertices.empty() ) {
+            return;
+        }
+
+        std::vector<float3> positions;
+        positions.reserve( vertices.size() );
+        for ( const auto& v : vertices ) {
+            positions.emplace_back( v.Position );
+        }
+
+        Engine::GraphicsEngine->CreateVertexBuffer( meshInfo->MeshPositionBuffer );
+        meshInfo->MeshPositionBuffer->Init( positions.data(),
+            static_cast<unsigned int>(positions.size() * sizeof( float3 )),
+            D3D11VertexBuffer::B_VERTEXBUFFER,
             D3D11VertexBuffer::U_IMMUTABLE );
     }
 
@@ -81,8 +102,8 @@ namespace {
         ComputeWorldMeshBounds( mesh );
 
         // Create the buffers
-        Engine::GraphicsEngine->CreateVertexBuffer( &mesh->MeshVertexBuffer );
-        Engine::GraphicsEngine->CreateVertexBuffer( &mesh->MeshIndexBuffer );
+        Engine::GraphicsEngine->CreateVertexBuffer( mesh->MeshVertexBuffer );
+        Engine::GraphicsEngine->CreateVertexBuffer( mesh->MeshIndexBuffer );
 
         // Generate normals
         WorldConverter::GenerateVertexNormals( mesh->Vertices, mesh->Indices );
@@ -198,8 +219,8 @@ void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float ra
         it.second->Indices = std::move( indices );
 
         // Create the buffers
-        Engine::GraphicsEngine->CreateVertexBuffer( &it.second->MeshVertexBuffer );
-        Engine::GraphicsEngine->CreateVertexBuffer( &it.second->MeshIndexBuffer );
+        Engine::GraphicsEngine->CreateVertexBuffer( it.second->MeshVertexBuffer );
+        Engine::GraphicsEngine->CreateVertexBuffer( it.second->MeshIndexBuffer );
 
         // Optimize index and vertex locality before uploading immutable buffers.
         it.second->MeshVertexBuffer->OptimizeFaces( it.second->Indices.data(),
@@ -374,8 +395,8 @@ XRESULT WorldConverter::LoadWorldMeshFromFile( const std::string& file, std::map
                 ComputeWorldMeshBounds( it.second );
 
                 // Create the buffers
-                Engine::GraphicsEngine->CreateVertexBuffer( &it.second->MeshVertexBuffer );
-                Engine::GraphicsEngine->CreateVertexBuffer( &it.second->MeshIndexBuffer );
+                Engine::GraphicsEngine->CreateVertexBuffer( it.second->MeshVertexBuffer );
+                Engine::GraphicsEngine->CreateVertexBuffer( it.second->MeshIndexBuffer );
 
                 // Optimize faces
                 it.second->MeshVertexBuffer->OptimizeFaces( &it.second->Indices[0],
@@ -440,14 +461,17 @@ XRESULT WorldConverter::LoadWorldMeshFromFile( const std::string& file, std::map
 
     // Create the buffers for wrapped mesh
     MeshInfo* wmi = new MeshInfo;
-    Engine::GraphicsEngine->CreateVertexBuffer( &wmi->MeshVertexBuffer );
-    Engine::GraphicsEngine->CreateVertexBuffer( &wmi->MeshIndexBuffer );
-    Engine::GraphicsEngine->CreateVertexBuffer( &wmi->MeshShadowIndexBuffer );
+    Engine::GraphicsEngine->CreateVertexBuffer( wmi->MeshVertexBuffer );
+    Engine::GraphicsEngine->CreateVertexBuffer( wmi->MeshIndexBuffer );
+    Engine::GraphicsEngine->CreateVertexBuffer( wmi->MeshShadowIndexBuffer );
 
     // Init and fill them
     wmi->MeshVertexBuffer->Init( &wrappedVertices[0], wrappedVertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
     wmi->MeshIndexBuffer->Init( &wrappedIndices[0], wrappedIndices.size() * sizeof( unsigned int ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
     wmi->MeshShadowIndexBuffer->Init( &wrappedShadowIndices[0], wrappedShadowIndices.size() * sizeof( unsigned int ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
+
+    // Position-only companion stream for opaque depth/shadow passes (same ordering as above).
+    BuildWrappedPositionBuffer( wmi, wrappedVertices );
 
     *outWrappedMesh = wmi;
 
@@ -765,14 +789,17 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
 
     // Create the buffers for wrapped mesh
     MeshInfo* wmi = new MeshInfo();
-    Engine::GraphicsEngine->CreateVertexBuffer( &wmi->MeshVertexBuffer );
-    Engine::GraphicsEngine->CreateVertexBuffer( &wmi->MeshIndexBuffer );
-    Engine::GraphicsEngine->CreateVertexBuffer( &wmi->MeshShadowIndexBuffer );
+    Engine::GraphicsEngine->CreateVertexBuffer( wmi->MeshVertexBuffer );
+    Engine::GraphicsEngine->CreateVertexBuffer( wmi->MeshIndexBuffer );
+    Engine::GraphicsEngine->CreateVertexBuffer( wmi->MeshShadowIndexBuffer );
 
     // Init and fill them
     wmi->MeshVertexBuffer->Init( &wrappedVertices[0], wrappedVertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
     wmi->MeshIndexBuffer->Init( &wrappedIndices[0], wrappedIndices.size() * sizeof( unsigned int ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
     wmi->MeshShadowIndexBuffer->Init( &wrappedShadowIndices[0], wrappedShadowIndices.size() * sizeof( unsigned int ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
+
+    // Position-only companion stream for opaque depth/shadow passes (same ordering as above).
+    BuildWrappedPositionBuffer( wmi, wrappedVertices );
 
     *outWrappedMesh = wmi;
 
@@ -874,7 +901,7 @@ void WorldConverter::GenerateFullSectionMesh( WorldMeshSectionInfo& section ) {
     section.FullStaticMesh->Vertices = std::move( vx );
 
     // Create the buffers
-    Engine::GraphicsEngine->CreateVertexBuffer( &section.FullStaticMesh->MeshVertexBuffer );
+    Engine::GraphicsEngine->CreateVertexBuffer( section.FullStaticMesh->MeshVertexBuffer );
 
     // Init and fill them
     section.FullStaticMesh->MeshVertexBuffer->Init( &section.FullStaticMesh->Vertices[0], section.FullStaticMesh->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
@@ -972,8 +999,8 @@ void WorldConverter::Extract3DSMeshFromVisual( zCProgMeshProto* visual, MeshVisu
         mi->meshId = s_MeshManager->RecordMesh( m );
 
         // Create the buffers
-        Engine::GraphicsEngine->CreateVertexBuffer( &mi->MeshVertexBuffer );
-        Engine::GraphicsEngine->CreateVertexBuffer( &mi->MeshIndexBuffer );
+        Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshVertexBuffer );
+        Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshIndexBuffer );
 
         // Optimize static submesh ordering for better cache and vertex fetch locality.
         mi->MeshVertexBuffer->OptimizeFaces( mi->Indices.data(),
@@ -1106,8 +1133,8 @@ void WorldConverter::ExtractSkeletalMeshFromVob( zCModel* model, SkeletalMeshVis
             mi->meshId = s_MeshManager->RecordMesh( m );
 
             // Create the buffers
-            Engine::GraphicsEngine->CreateVertexBuffer( &mi->MeshVertexBuffer );
-            Engine::GraphicsEngine->CreateVertexBuffer( &mi->MeshIndexBuffer );
+            Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshVertexBuffer );
+            Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshIndexBuffer );
 
             // Init and fill it
             mi->MeshVertexBuffer->Init( &mi->Vertices[0], mi->Vertices.size() * sizeof( ExSkelVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
@@ -1117,8 +1144,8 @@ void WorldConverter::ExtractSkeletalMeshFromVob( zCModel* model, SkeletalMeshVis
             bmi->Indices = mi->Indices; // copy them
             bmi->Vertices = std::move(bindPoseVertices);
 
-            Engine::GraphicsEngine->CreateVertexBuffer( &bmi->MeshVertexBuffer );
-            Engine::GraphicsEngine->CreateVertexBuffer( &bmi->MeshIndexBuffer );
+            Engine::GraphicsEngine->CreateVertexBuffer( bmi->MeshVertexBuffer );
+            Engine::GraphicsEngine->CreateVertexBuffer( bmi->MeshIndexBuffer );
 
             bmi->MeshVertexBuffer->Init( &bmi->Vertices[0], bmi->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
             bmi->MeshIndexBuffer->Init( &bmi->Indices[0], bmi->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
@@ -1221,8 +1248,8 @@ void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualIn
             mi->meshId = s_MeshManager->RecordMesh( m );
 
             // Create the buffers
-            Engine::GraphicsEngine->CreateVertexBuffer( &mi->MeshVertexBuffer );
-            Engine::GraphicsEngine->CreateVertexBuffer( &mi->MeshIndexBuffer );
+            Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshVertexBuffer );
+            Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshIndexBuffer );
 
             // Optimize faces
             mi->MeshVertexBuffer->OptimizeFaces( &mi->Indices[0],
@@ -1281,8 +1308,8 @@ void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualIn
         }
 
         MeshInfo* wmi = new MeshInfo;
-        Engine::GraphicsEngine->CreateVertexBuffer( &wmi->MeshVertexBuffer );
-        Engine::GraphicsEngine->CreateVertexBuffer( &wmi->MeshIndexBuffer );
+        Engine::GraphicsEngine->CreateVertexBuffer( wmi->MeshVertexBuffer );
+        Engine::GraphicsEngine->CreateVertexBuffer( wmi->MeshIndexBuffer );
 
         // Init and fill them
         wmi->MeshVertexBuffer->Init( &wrappedVertices[0], wrappedVertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
@@ -1355,8 +1382,8 @@ void WorldConverter::ExtractProgMeshProtoFromMesh( zCMesh* mesh, MeshVisualInfo*
     mi->Indices = std::move(indices);
 
     // Create the buffers
-    Engine::GraphicsEngine->CreateVertexBuffer( &mi->MeshVertexBuffer );
-    Engine::GraphicsEngine->CreateVertexBuffer( &mi->MeshIndexBuffer );
+    Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshVertexBuffer );
+    Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshIndexBuffer );
 
     // Optimize static mesh ordering for better cache and vertex fetch locality.
     mi->MeshVertexBuffer->OptimizeFaces( mi->Indices.data(),
@@ -1540,8 +1567,8 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
         mi->meshId = s_MeshManager->RecordMesh( s );
 
         // Create the buffers
-        Engine::GraphicsEngine->CreateVertexBuffer( &mi->MeshVertexBuffer );
-        Engine::GraphicsEngine->CreateVertexBuffer( &mi->MeshIndexBuffer );
+        Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshVertexBuffer );
+        Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshIndexBuffer );
 
         if ( meshInfo->MorphMeshVisual ) {
             // We need to keep original indices so that we can reuse them(we can't optimize them)
@@ -1609,8 +1636,8 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
         }
 
         MeshInfo* wmi = new MeshInfo;
-        Engine::GraphicsEngine->CreateVertexBuffer( &wmi->MeshVertexBuffer );
-        Engine::GraphicsEngine->CreateVertexBuffer( &wmi->MeshIndexBuffer );
+        Engine::GraphicsEngine->CreateVertexBuffer( wmi->MeshVertexBuffer );
+        Engine::GraphicsEngine->CreateVertexBuffer( wmi->MeshIndexBuffer );
 
         // Init and fill them
         wmi->MeshVertexBuffer->Init( &wrappedVertices[0], wrappedVertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
@@ -1869,9 +1896,7 @@ void WorldConverter::UpdateQuadMarkInfo( QuadMarkInfo* info, zCQuadMark* mark, c
         return;
 
     info->Mesh.reset();
-    D3D11VertexBuffer* vb;
-    Engine::GraphicsEngine->CreateVertexBuffer( &vb );
-    info->Mesh.reset( vb );
+    Engine::GraphicsEngine->CreateVertexBuffer( info->Mesh );
 
     // Init and fill it
     info->Mesh->Init( &quadVertices[0], quadVertices.size() * sizeof( ExVertexStruct ) );

@@ -12,7 +12,7 @@ D3D11LineRenderer::D3D11LineRenderer() {
 }
 
 D3D11LineRenderer::~D3D11LineRenderer() {
-    delete LineBuffer;
+    LineBuffer.reset();
 }
 
 /** Adds a line to the list */
@@ -47,9 +47,9 @@ XRESULT D3D11LineRenderer::Flush() {
     // Check buffersize and create a new one if needed
     if ( !LineBuffer || LineCache.size() > LineBufferSize ) {
         // Create a new buffer
-        delete LineBuffer;
+        LineBuffer.reset();
 
-        XLE( engine->CreateVertexBuffer( &LineBuffer ) );
+        XLE( engine->CreateVertexBuffer( LineBuffer ) );
         XLE( LineBuffer->Init( &LineCache[0], LineCache.size() * sizeof( LineVertex ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_DYNAMIC, D3D11VertexBuffer::CA_WRITE ) );
         LineBufferSize = LineCache.size();
     } else {
@@ -95,9 +95,9 @@ XRESULT D3D11LineRenderer::FlushScreenSpace() {
     // Check buffersize and create a new one if needed
     if ( !LineBuffer || ScreenSpaceLineCache.size() > LineBufferSize ) {
         // Create a new buffer
-        delete LineBuffer;
+        LineBuffer.reset();
 
-        XLE( engine->CreateVertexBuffer( &LineBuffer ) );
+        XLE( engine->CreateVertexBuffer( LineBuffer ) );
         XLE( LineBuffer->Init( &ScreenSpaceLineCache[0], ScreenSpaceLineCache.size() * sizeof( LineVertex ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_DYNAMIC, D3D11VertexBuffer::CA_WRITE ) );
         LineBufferSize = ScreenSpaceLineCache.size();
     } else {

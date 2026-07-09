@@ -42,6 +42,12 @@ struct zCModelNode {
     XMFLOAT4X4 TransformObjToWorld;
     XMFLOAT4X4* NodeTransformList;
     zCModelNodeInst* LastInstNode;
+    
+    bool IsSlot() const {
+        if (NodeName.Length() < 3) { return false; }
+        const auto name = NodeName.ToChar();
+        return (name[0]=='Z') && (name[1]=='S') && (name[2]=='_');
+    }
 };
 
 struct zTMdl_NodeVobAttachment {

@@ -16,7 +16,7 @@ public:
 		OriginalDesc = originalDesc;
 
 		// Create our own buffer
-		XLE( Engine::GraphicsEngine->CreateVertexBuffer( &VertexBuffer ) );
+		XLE( Engine::GraphicsEngine->CreateVertexBuffer( VertexBuffer ) );
 
 		// Initialize it
 		XLE( VertexBuffer->Init( nullptr, OriginalDesc.dwNumVertices * ComputeFVFSize( OriginalDesc.dwFVF ), D3D11VertexBuffer::EBindFlags::B_VERTEXBUFFER, D3D11VertexBuffer::EUsageFlags::U_DYNAMIC, D3D11VertexBuffer::ECPUAccessFlags::CA_WRITE ) );
@@ -26,7 +26,7 @@ public:
 	}
 
     virtual ~MyDirect3DVertexBuffer7() {
-        delete VertexBuffer;
+        VertexBuffer.reset();
     }
 
 	/*** IUnknown methods ***/
@@ -101,7 +101,7 @@ public:
 
 	/** Returns the actual vertex buffer */
 	D3D11VertexBuffer* GetVertexBuffer() {
-		return VertexBuffer;
+		return VertexBuffer.get();
 	}
 
 private:
@@ -110,7 +110,7 @@ private:
 	D3DVERTEXBUFFERDESC OriginalDesc;
 
 	/** Our own vertex buffer */
-	D3D11VertexBuffer* VertexBuffer;
+	std::unique_ptr<D3D11VertexBuffer> VertexBuffer;
 
 	/** Referencecount on this */
 	int RefCount;

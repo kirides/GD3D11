@@ -6,6 +6,7 @@
 #include "GothicAPI.h"
 #include "D3D11ShadowMap.h"
 #include "D3D11ShaderManager.h"
+#include <functional>
 #include "D3D11TracyDebug.h"
 
 struct RenderToDepthStencilBuffer;
@@ -285,14 +286,16 @@ public:
         bool indoor = false,
         bool noNPCs = false,
         std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache = nullptr,
-        unsigned int casterMask = SHADOW_CASTER_ALL );
+        unsigned int casterMask = SHADOW_CASTER_ALL,
+        const std::function<bool(zCVob*)>& ignoreVob = nullptr );
     void XM_CALLCONV DrawWorldAround_Layered( FXMVECTOR position,
         float range,
         bool cullFront = true,
         bool indoor = false,
         bool noNPCs = false,
         std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache = nullptr,
-        unsigned int casterMask = SHADOW_CASTER_ALL );
+        unsigned int casterMask = SHADOW_CASTER_ALL,
+        const std::function<bool(zCVob*)>& ignoreVob = nullptr );
 
     /** Update morph mesh visual */
     void UpdateMorphMeshVisual();
@@ -324,7 +327,8 @@ public:
         bool noNPCs = false,
         std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache = nullptr,
         bool clearDepth = true,
-        unsigned int casterMask = SHADOW_CASTER_ALL );
+        unsigned int casterMask = SHADOW_CASTER_ALL,
+        const std::function<bool(zCVob*)>& ignoreVob = nullptr);
 
     /** Updates the occlusion for the bsp-tree */
     void UpdateOcclusion();
@@ -673,8 +677,8 @@ private:
     std::unique_ptr<ConstantBufferPool> PerObjectMaterialInfoPooledBuffer;
 
     /** Quads for decals/particles */
-    D3D11VertexBuffer* QuadVertexBuffer;
-    D3D11VertexBuffer* QuadIndexBuffer;
+    std::unique_ptr<D3D11VertexBuffer> QuadVertexBuffer;
+    std::unique_ptr<D3D11VertexBuffer> QuadIndexBuffer;
 
     /** Occlusion query manager */
     std::unique_ptr<D3D11OcclusionQuerry> Occlusion;

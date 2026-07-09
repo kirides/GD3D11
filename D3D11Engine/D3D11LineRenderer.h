@@ -27,7 +27,7 @@ private:
     std::vector<LineVertex> ScreenSpaceLineCache;
 
     /** Buffer to hold the lines on the GPU */
-    D3D11VertexBuffer* LineBuffer;
+    std::unique_ptr<D3D11VertexBuffer> LineBuffer;
     unsigned int LineBufferSize; // Size in elements the line buffer can hold
 };
 

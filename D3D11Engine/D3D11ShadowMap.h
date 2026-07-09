@@ -163,7 +163,8 @@ public:
         std::list<SkeletalVobInfo*>* renderedMobs = nullptr,
         std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache = nullptr,
         bool clearDepth = true,
-        unsigned int casterMask = 0xFFFFFFFFu );
+        unsigned int casterMask = 0xFFFFFFFFu,
+        const std::function<bool(zCVob*)>& ignoreVob = nullptr );
 
     inline static struct { float lambda; float bias; } lambdaBiasTable[] {
         /* 0 */ { 0, 0 },
