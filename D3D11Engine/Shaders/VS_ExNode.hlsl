@@ -36,6 +36,7 @@ struct VS_OUTPUT
 	float3 vViewPosition	: TEXCOORD5;
 	float4 vCurrClipPos     : TEXCOORD6;  // Current clip position for velocity
 	float4 vPrevClipPos     : TEXCOORD7;  // Previous clip position for velocity
+	float4 vTangent			: TEXCOORD3;  // no precomputed tangent -> zero (PS falls back to ddx/ddy)
 	float4 vPosition		: SV_POSITION;
 };
 
@@ -62,7 +63,8 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 	Output.vCurrClipPos = mul(float4(positionWorld, 1), frame.M_UnjitteredViewProj);
 	float3 prevPositionWorld = mul(float4(localPos, 1), cbInstance.M_PrevWorld).xyz;
 	Output.vPrevClipPos = mul(float4(prevPositionWorld, 1), frame.M_PrevViewProj);
-	
+	Output.vTangent = float4(0,0,0,0);
+
 	return Output;
 }
 

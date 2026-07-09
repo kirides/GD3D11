@@ -47,6 +47,7 @@ struct PS_INPUT
 	float4 vCurrClipPos     : TEXCOORD6;  // Current clip position for velocity
 	float4 vPrevClipPos     : TEXCOORD7;  // Previous clip position for velocity
 #endif
+	float4 vTangent			: TEXCOORD3;  // present so the signature matches the VS_Ex family (unused here)
 	float4 vPosition		: SV_POSITION;
 };
 

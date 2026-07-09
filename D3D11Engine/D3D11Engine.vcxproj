@@ -1153,6 +1153,8 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="zTypes.h" />
     <ClInclude Include="zViewTypes.h" />
     <ClInclude Include="D3D11PFX_CAS.h" />
+    <ClInclude Include="vendor\mikktspace.h" />
+    <ClInclude Include="VertexPacking.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="BaseLineRenderer.cpp" />
@@ -1284,6 +1286,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="include\meshoptimizer\src\quantization.cpp" />
     <ClCompile Include="include\meshoptimizer\src\vcacheoptimizer.cpp" />
     <ClCompile Include="include\meshoptimizer\src\vfetchoptimizer.cpp" />
+    <ClCompile Include="vendor\mikktspace.c" />
     <ClCompile Include="include\tracy\public\TracyClient.cpp" />
     <ClCompile Include="MeshManager.cpp" />
     <ClCompile Include="MeshModifier.cpp" />

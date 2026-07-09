@@ -26,6 +26,7 @@ struct PS_INPUT
 	float3 vViewPosition	: TEXCOORD5;
 	float4 vCurrClipPos     : TEXCOORD6;
 	float4 vPrevClipPos     : TEXCOORD7;
+	float4 vTangent			: TEXCOORD3;  // present so the signature matches the VS_Ex family (unused here)
 	float4 vPosition		: SV_POSITION;
 };
 

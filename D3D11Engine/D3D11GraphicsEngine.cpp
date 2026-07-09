@@ -1954,6 +1954,13 @@ XRESULT D3D11GraphicsEngine::DrawVertexBufferIndexedUINT(
     return XR_SUCCESS;
 }
 
+void D3D11GraphicsEngine::BindWrappedWorldMeshPacked( MeshInfo* wrappedWorldMesh ) {
+    UINT stride = sizeof( ExVertexStructGPU );
+    UINT offset = 0;
+    Context->IASetVertexBuffers( 0, 1, wrappedWorldMesh->GetMeshVertexBuffer()->GetVertexBuffer().GetAddressOf(), &stride, &offset );
+    Context->IASetIndexBuffer( wrappedWorldMesh->GetMeshIndexBuffer()->GetVertexBuffer().Get(), DXGI_FORMAT_R32_UINT, 0 );
+}
+
 XRESULT D3D11GraphicsEngine::DrawDynamicVertexBufferIndexed(std::vector<ExVertexStruct>& vertices,
     D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int indexOffset)
 {
@@ -4666,7 +4673,8 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
     Engine::GAPI->ResetWorldTransform();
 
     SetActivePixelShader( PShaderID::PS_Diffuse );
-    SetActiveVertexShader( VShaderID::VS_Ex );
+    // Wrapped world mesh is packed (36 B) — decode with VS_ExPacked.
+    SetActiveVertexShader( VShaderID::VS_ExPacked );
 
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
@@ -4682,10 +4690,8 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
 
     BindDynamicCBToPixelShader( 3, InfiniteRangeCB );
 
-    // Bind wrapped mesh vertex buffers
-    DrawVertexBufferIndexedUINT(
-        Engine::GAPI->GetWrappedWorldMesh()->GetMeshVertexBuffer(),
-        Engine::GAPI->GetWrappedWorldMesh()->GetMeshIndexBuffer(), 0, 0 );
+    // Bind wrapped mesh vertex buffers (packed 36-byte stream + 32-bit indices)
+    BindWrappedWorldMeshPacked( Engine::GAPI->GetWrappedWorldMesh() );
 
     int lastAlphaFunc = 0;
 
@@ -4853,7 +4859,10 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
     Engine::GAPI->ResetWorldTransform();
 
     SetActivePixelShader( PShaderID::PS_Diffuse );
-    SetActiveVertexShader( VShaderID::VS_Ex );
+    // The wrapped world mesh is stored in the packed 36-byte format (ExVertexStructGPU);
+    // VS_ExPacked decodes it. Opaque depth/shadow sub-passes below swap to VS_ExDepth + the
+    // position-only stream and restore VS_ExPacked for the alpha/color submissions.
+    SetActiveVertexShader( VShaderID::VS_ExPacked );
 
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
@@ -4887,7 +4896,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
     renderList = m_FrameGeometryCache.visibleSections; // shallow copy of pointers — O(N_sections), not O(BSP)
 
     MeshInfo* meshInfo = Engine::GAPI->GetWrappedWorldMesh();
-    DrawVertexBufferIndexedUINT( meshInfo->GetMeshVertexBuffer(), meshInfo->GetMeshIndexBuffer(), 0, 0 );
+    BindWrappedWorldMeshPacked( meshInfo );
 
     struct WorldMeshKey {
         zCTexture* Texture;
@@ -5074,13 +5083,12 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
             DrawVertexBufferIndexedUINT( nullptr, nullptr, mesh.second->Indices.size(), mesh.second->BaseIndexLocation );
         }
 
-        // Alpha-tested geometry: restore the full stream + VS_Ex (also restores state for the
-        // color pass / the forward+ prepass early-return below).
+        // Alpha-tested geometry: restore the packed full stream + VS_ExPacked (also restores state
+        // for the color pass / the forward+ prepass early-return below).
         if ( usePositionStream ) {
-            SetActiveVertexShader( VShaderID::VS_Ex );
+            SetActiveVertexShader( VShaderID::VS_ExPacked );
             ActiveVS->Apply();
-            UINT uStride = sizeof( ExVertexStruct );
-            GetContext()->IASetVertexBuffers( 0, 1, meshInfo->MeshVertexBuffer->GetVertexBuffer().GetAddressOf(), &uStride, &vbOffset );
+            BindWrappedWorldMeshPacked( meshInfo );
         }
 
         for ( auto const& mesh : meshList ) {
@@ -5242,10 +5250,8 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
     GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(),
         DepthStencilBuffer->GetDepthStencilView().Get() );
 
-    // Bind wrapped mesh vertex buffers
-    DrawVertexBufferIndexedUINT(
-        Engine::GAPI->GetWrappedWorldMesh()->GetMeshVertexBuffer(),
-        Engine::GAPI->GetWrappedWorldMesh()->GetMeshIndexBuffer(), 0, 0 );
+    // Bind wrapped mesh vertex buffers (packed 36-byte stream; VS_ExWater decodes it)
+    BindWrappedWorldMeshPacked( Engine::GAPI->GetWrappedWorldMesh() );
 
     // Build per-texture batch descriptors and flat indirect draw args
     struct WaterTextureBatch {
@@ -6211,7 +6217,12 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<W
             UINT posStride = sizeof( float3 );
             Context->IASetVertexBuffers( 0, 1, wrappedWorldMesh->MeshPositionBuffer->GetVertexBuffer().GetAddressOf(), &posStride, &offset );
         } else {
-            UINT uStride = sizeof( ExVertexStruct );
+            // linearDepth keeps the PS bound and needs full attributes: the wrapped buffer is packed,
+            // so decode it with VS_ExPacked (stride 36).
+            SetActiveVertexShader( VShaderID::VS_ExPacked );
+            ActiveVS->Apply();
+            swappedToDepthVS = true;
+            UINT uStride = sizeof( ExVertexStructGPU );
             Context->IASetVertexBuffers( 0, 1, wrappedWorldMesh->MeshVertexBuffer->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
         }
 
@@ -6238,18 +6249,16 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<W
         std::sort( alphaMeshes.begin(), alphaMeshes.end(),
             []( const auto& a, const auto& b ) { return a.first < b.first; } );
 
-        // Alpha-test needs TexCoord: restore the full stream + VS_Ex (the opaque pass above may
-        // have swapped in the position-only shader).
-        SetActiveVertexShader( VShaderID::VS_Ex );
+        // Alpha-test needs TexCoord: use the packed full stream + VS_ExPacked (the opaque pass above
+        // may have swapped in the position-only shader).
+        SetActiveVertexShader( VShaderID::VS_ExPacked );
         ActiveVS->Apply();
-        swappedToDepthVS = false;
-        UINT uStride = sizeof( ExVertexStruct );
-        Context->IASetVertexBuffers( 0, 1, wrappedWorldMesh->MeshVertexBuffer->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
+        swappedToDepthVS = true;
+        BindWrappedWorldMeshPacked( wrappedWorldMesh );  // packed VB + 32-bit MeshIndexBuffer
 
         ActivePS->Apply();
         zCTexture* lastTex = nullptr;
         Context->PSSetShaderResources( 0, 3, s_nullSRVs );
-        Context->IASetIndexBuffer( wrappedWorldMesh->MeshIndexBuffer->GetVertexBuffer().Get(), DXGI_FORMAT_R32_UINT, 0 );
 
         for ( const auto& [tex, mesh] : alphaMeshes ) {
             if ( tex != lastTex ) {
@@ -6266,7 +6275,8 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<W
         }
     }
 
-    // Restore the full-attribute shader (the opaque-only path may have left VS_ExDepth active).
+    // Restore the neutral VS_Ex for whatever the caller draws next (e.g. VOBs); the world-mesh
+    // submissions may have left VS_ExDepth or VS_ExPacked active.
     if ( swappedToDepthVS ) {
         SetActiveVertexShader( VShaderID::VS_Ex );
         ActiveVS->Apply();
@@ -6350,7 +6360,12 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh( const std::vector<WorldMeshS
             UINT posStride = sizeof( float3 );
             Context->IASetVertexBuffers( 0, 1, wrappedWorldMesh->MeshPositionBuffer->GetVertexBuffer().GetAddressOf(), &posStride, &offset );
         } else {
-            UINT uStride = sizeof( ExVertexStruct );
+            // linearDepth keeps the PS bound and needs full attributes: the wrapped buffer is packed,
+            // so decode it with VS_ExPacked (stride 36).
+            SetActiveVertexShader( VShaderID::VS_ExPacked );
+            ActiveVS->Apply();
+            swappedToDepthVS = true;
+            UINT uStride = sizeof( ExVertexStructGPU );
             Context->IASetVertexBuffers( 0, 1, wrappedWorldMesh->MeshVertexBuffer->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
         }
 
@@ -6371,19 +6386,17 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh( const std::vector<WorldMeshS
         std::sort( alphaMeshes.begin(), alphaMeshes.end(),
             []( const auto& a, const auto& b ) { return a.first < b.first; } );
 
-        // Alpha-test needs TexCoord, so use the full interleaved stream + VS_Ex (the opaque pass
+        // Alpha-test needs TexCoord, so use the packed full stream + VS_ExPacked (the opaque pass
         // above may have swapped in the position-only shader).
-        SetActiveVertexShader( VShaderID::VS_Ex );
+        SetActiveVertexShader( VShaderID::VS_ExPacked );
         ActiveVS->Apply();
-        swappedToDepthVS = false;
-        UINT uStride = sizeof( ExVertexStruct );
-        Context->IASetVertexBuffers( 0, 1, wrappedWorldMesh->MeshVertexBuffer->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
+        swappedToDepthVS = true;
+        BindWrappedWorldMeshPacked( wrappedWorldMesh );  // packed VB + 32-bit MeshIndexBuffer
 
         ActivePS->Apply();
         zCTexture* lastTex = nullptr;
 
         Context->PSSetShaderResources( 0, 3, s_nullSRVs );
-        Context->IASetIndexBuffer( wrappedWorldMesh->MeshIndexBuffer->GetVertexBuffer().Get(), DXGI_FORMAT_R32_UINT, 0 );
 
         for ( const auto& [tex, mesh] : alphaMeshes ) {
             if ( tex != lastTex ) {

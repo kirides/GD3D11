@@ -120,6 +120,10 @@ XRESULT D3D11ShaderManager::Init() {
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExDepth>( "VS_ExDepth.hlsl" )
         .with_layout( VERTEX_INPUT_LAYOUT_POS_ONLY )  );
 
+    // Packed variant for the wrapped world mesh (36-byte vertex stream; forwards precomputed tangent).
+    Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExPacked>( "VS_ExPacked.hlsl" )
+        .with_layout( VERTEX_INPUT_LAYOUT_PACKED_EX )  );
+
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExNode>( "VS_ExNode.hlsl" )
         .with_layout( VERTEX_INPUT_LAYOUT_1 ) );
 
@@ -130,7 +134,7 @@ XRESULT D3D11ShaderManager::Init() {
         .with_layout( VERTEX_INPUT_LAYOUT_15_VS_DecalInstanced )  );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExWater>( "VS_ExWater.hlsl" )
-        .with_layout( VERTEX_INPUT_LAYOUT_1 )
+        .with_layout( VERTEX_INPUT_LAYOUT_PACKED_EX )
         .with_macros( [](std::vector<D3D_SHADER_MACRO>& list) {
             const auto& s = Engine::GAPI->GetRendererState().RendererSettings;
 #ifdef BUILD_GOTHIC_2_6_fix

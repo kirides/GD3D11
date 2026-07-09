@@ -1,17 +1,47 @@
 #pragma once
 
 #include "Types.h"
+#include <cstdint>
 
 typedef unsigned short VERTEX_INDEX;
 
-/** We pack most of Gothics FVF-formats into this vertex-struct */
+// Bump whenever the on-disk ExVertexStruct layout changes so stale .mcache files are rejected
+// (see WorldConverter::CacheMesh / GMesh::LoadCached). v2 added the trailing Tangent field.
+constexpr int MESH_CACHE_VERSION = 2;
+
+/** We pack most of Gothics FVF-formats into this vertex-struct.
+    This is the full-precision CPU-side authoring/serialization struct. Before upload
+    to the GPU it is packed into ExVertexStructGPU (see VertexPacking.h). */
 struct ExVertexStruct {
     float3 Position;
     float3 Normal;
     float2 TexCoord;
     float2 TexCoord2;
     DWORD Color;
+    // Tangent is appended AFTER Color so the first 44 bytes remain byte-identical to the legacy
+    // layout. That keeps layout1 (VOBs, per-section meshes, HUD, etc. — still drawn with the
+    // 44-byte-attribute layout at the new 60-byte stride) reading Position/Normal/TexCoord/
+    // TexCoord2/Color correctly, treating the trailing tangent as padding.
+    float4 Tangent;   // xyz = tangent, w = bitangent handedness sign (+1/-1). Precomputed (MikkTSpace).
 };
+
+/** Packed 36-byte GPU representation of ExVertexStruct, produced at buffer-upload time.
+    Field order/sizes MUST match layout1 (and its slot-0-prefix siblings) in D3D11VShader.cpp:
+      Position   R32G32B32_FLOAT    (12)
+      Normal     R16G16_SNORM       ( 4)  octahedral-encoded unit normal
+      Tangent    R10G10B10A2_UNORM  ( 4)  xyz in [0,1]->[-1,1], w (2 bits) = handedness
+      TexCoord   R32G32_FLOAT       ( 8)  UV0 kept full precision (tiling texture coords)
+      TexCoord2  R16G16_FLOAT       ( 4)  lightmap UV as half2
+      Color      R8G8B8A8_UNORM     ( 4) */
+struct ExVertexStructGPU {
+    float3 Position;
+    int16_t Normal[2];
+    uint32_t Tangent;
+    float2 TexCoord;
+    uint16_t TexCoord2[2];
+    DWORD Color;
+};
+static_assert( sizeof( ExVertexStructGPU ) == 36, "ExVertexStructGPU must be 36 bytes to match layout1" );
 
 struct SimpleObjectVertexStruct {
     float3 Position;

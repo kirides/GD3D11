@@ -35,6 +35,7 @@ struct VS_OUTPUT
 	float3 vViewPosition	: TEXCOORD5;
 	float4 vCurrClipPos     : TEXCOORD6;
 	float4 vPrevClipPos     : TEXCOORD7;
+	float4 vTangent			: TEXCOORD3;   // no precomputed tangent -> zero (PS falls back to ddx/ddy)
 	float4 vPosition		: SV_POSITION;
 };
 
@@ -57,7 +58,8 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 	// Motion Vectors - static for instanced objects (no previous frame data available)
 	Output.vCurrClipPos = Output.vPosition;
 	Output.vPrevClipPos = Output.vPosition;
-	
+	Output.vTangent = float4(0,0,0,0);
+
 	return Output;
 }
 

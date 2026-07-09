@@ -25,6 +25,8 @@
 #include <meshoptimizer/src/meshoptimizer.h>
 #include "MeshManager.h"
 #include "ThreadPool.h"
+#include "vendor/mikktspace.h"
+#include "VertexPacking.h"
 
 extern MeshManager* s_MeshManager;
 
@@ -64,6 +66,63 @@ namespace {
             static_cast<unsigned int>(positions.size() * sizeof( float3 )),
             D3D11VertexBuffer::B_VERTEXBUFFER,
             D3D11VertexBuffer::U_IMMUTABLE );
+    }
+
+    // --- MikkTSpace tangent generation ---------------------------------------------------
+    // Operates on an indexed triangle mesh. MikkTSpace welds internally; because our index
+    // buffer only merges vertices that already share position/normal/UV (see the meshopt key
+    // buffer), writing per-corner results back through the shared index is safe here.
+    struct MikkMeshData {
+        std::vector<ExVertexStruct>* Vertices;
+        const std::vector<VERTEX_INDEX>* Indices;
+    };
+
+    inline ExVertexStruct& MikkVert( const SMikkTSpaceContext* ctx, int face, int vert ) {
+        auto* d = static_cast<MikkMeshData*>(ctx->m_pUserData);
+        return (*d->Vertices)[(*d->Indices)[face * 3 + vert]];
+    }
+
+    int Mikk_GetNumFaces( const SMikkTSpaceContext* ctx ) {
+        auto* d = static_cast<MikkMeshData*>(ctx->m_pUserData);
+        return static_cast<int>(d->Indices->size() / 3);
+    }
+    int Mikk_GetNumVerticesOfFace( const SMikkTSpaceContext*, const int ) { return 3; }
+    void Mikk_GetPosition( const SMikkTSpaceContext* ctx, float out[], const int f, const int v ) {
+        const float3& p = MikkVert( ctx, f, v ).Position;
+        out[0] = p.x; out[1] = p.y; out[2] = p.z;
+    }
+    void Mikk_GetNormal( const SMikkTSpaceContext* ctx, float out[], const int f, const int v ) {
+        const float3& n = MikkVert( ctx, f, v ).Normal;
+        out[0] = n.x; out[1] = n.y; out[2] = n.z;
+    }
+    void Mikk_GetTexCoord( const SMikkTSpaceContext* ctx, float out[], const int f, const int v ) {
+        const float2& t = MikkVert( ctx, f, v ).TexCoord;  // UV0 (the texture UV used for normal mapping)
+        out[0] = t.x; out[1] = t.y;
+    }
+    void Mikk_SetTSpaceBasic( const SMikkTSpaceContext* ctx, const float tangent[], const float sign, const int f, const int v ) {
+        MikkVert( ctx, f, v ).Tangent = float4( tangent[0], tangent[1], tangent[2], sign );
+    }
+
+    /** Fills ExVertexStruct::Tangent for an indexed mesh using MikkTSpace. */
+    void GenerateTangents( std::vector<ExVertexStruct>& vertices, const std::vector<VERTEX_INDEX>& indices ) {
+        if ( indices.size() < 3 || vertices.empty() ) {
+            return;
+        }
+
+        MikkMeshData data{ &vertices, &indices };
+
+        SMikkTSpaceInterface iface = {};
+        iface.m_getNumFaces = Mikk_GetNumFaces;
+        iface.m_getNumVerticesOfFace = Mikk_GetNumVerticesOfFace;
+        iface.m_getPosition = Mikk_GetPosition;
+        iface.m_getNormal = Mikk_GetNormal;
+        iface.m_getTexCoord = Mikk_GetTexCoord;
+        iface.m_setTSpaceBasic = Mikk_SetTSpaceBasic;
+
+        SMikkTSpaceContext ctx = {};
+        ctx.m_pInterface = &iface;
+        ctx.m_pUserData = &data;
+        genTangSpaceDefault( &ctx );
     }
 
     void ComputeWorldMeshBounds( WorldMeshInfo* meshInfo ) {
@@ -106,6 +165,10 @@ namespace {
 
         // Generate normals
         WorldConverter::GenerateVertexNormals( mesh->Vertices, mesh->Indices );
+
+        // Precompute MikkTSpace tangents (after final normals; survives the remap passes below
+        // because they move the whole ExVertexStruct stride, including Tangent).
+        GenerateTangents( mesh->Vertices, mesh->Indices );
 
         // Optimize faces
         mesh->MeshVertexBuffer->OptimizeFaces( &mesh->Indices[0],
@@ -312,10 +375,19 @@ XRESULT WorldConverter::LoadWorldMeshFromFile( const std::string& file, std::map
     const float worldScale = 100.0f;
 
     // Check if we have this file cached
+    bool loadedFromCache = false;
     if ( Toolbox::FileExists( (file + ".mcache").c_str() ) ) {
         // Load the meshfile, cached
-        mesh->LoadMesh( (file + ".mcache").c_str(), worldScale );
-    } else {
+        if ( mesh->LoadMesh( (file + ".mcache").c_str(), worldScale ) == XR_SUCCESS ) {
+            loadedFromCache = true;
+        } else {
+            // Incompatible/stale cache (e.g. vertex-format version bump): discard and rebuild.
+            delete mesh;
+            mesh = new GMesh();
+        }
+    }
+
+    if ( !loadedFromCache ) {
         // Create cache-file
         mesh->LoadMesh( file, worldScale );
 
@@ -453,6 +525,9 @@ XRESULT WorldConverter::LoadWorldMeshFromFile( const std::string& file, std::map
                 it.second->Indices = std::move( indices );
                 ComputeWorldMeshBounds( it.second );
 
+                // Precompute MikkTSpace tangents (cached-mesh load path; normals come from the cache).
+                GenerateTangents( it.second->Vertices, it.second->Indices );
+
                 // Create the buffers
                 Engine::GraphicsEngine->CreateVertexBuffer( it.second->MeshVertexBuffer );
                 Engine::GraphicsEngine->CreateVertexBuffer( it.second->MeshIndexBuffer );
@@ -524,8 +599,12 @@ XRESULT WorldConverter::LoadWorldMeshFromFile( const std::string& file, std::map
     Engine::GraphicsEngine->CreateVertexBuffer( wmi->MeshIndexBuffer );
     Engine::GraphicsEngine->CreateVertexBuffer( wmi->MeshShadowIndexBuffer );
 
-    // Init and fill them
-    wmi->MeshVertexBuffer->Init( &wrappedVertices[0], wrappedVertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
+    // Init and fill them. The wrapped world mesh is uploaded in the packed 36-byte GPU format
+    // (see VertexPacking.h); it is drawn by VS_ExPacked (color) / the packed alpha depth-shadow path.
+    {
+        std::vector<ExVertexStructGPU> packed = VertexPacking::Pack( wrappedVertices.data(), wrappedVertices.size() );
+        wmi->MeshVertexBuffer->Init( packed.data(), static_cast<unsigned int>(packed.size() * sizeof( ExVertexStructGPU )), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
+    }
     wmi->MeshIndexBuffer->Init( &wrappedIndices[0], wrappedIndices.size() * sizeof( unsigned int ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
     wmi->MeshShadowIndexBuffer->Init( &wrappedShadowIndices[0], wrappedShadowIndices.size() * sizeof( unsigned int ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
 
@@ -852,8 +931,12 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
     Engine::GraphicsEngine->CreateVertexBuffer( wmi->MeshIndexBuffer );
     Engine::GraphicsEngine->CreateVertexBuffer( wmi->MeshShadowIndexBuffer );
 
-    // Init and fill them
-    wmi->MeshVertexBuffer->Init( &wrappedVertices[0], wrappedVertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
+    // Init and fill them. The wrapped world mesh is uploaded in the packed 36-byte GPU format
+    // (see VertexPacking.h); it is drawn by VS_ExPacked (color) / the packed alpha depth-shadow path.
+    {
+        std::vector<ExVertexStructGPU> packed = VertexPacking::Pack( wrappedVertices.data(), wrappedVertices.size() );
+        wmi->MeshVertexBuffer->Init( packed.data(), static_cast<unsigned int>(packed.size() * sizeof( ExVertexStructGPU )), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
+    }
     wmi->MeshIndexBuffer->Init( &wrappedIndices[0], wrappedIndices.size() * sizeof( unsigned int ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
     wmi->MeshShadowIndexBuffer->Init( &wrappedShadowIndices[0], wrappedShadowIndices.size() * sizeof( unsigned int ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
 
@@ -1902,7 +1985,7 @@ void WorldConverter::WrapVertexBuffers( const std::list<std::vector<ExVertexStru
 void WorldConverter::CacheMesh( const std::map<std::string, std::vector<std::pair<std::vector<ExVertexStruct>, std::vector<VERTEX_INDEX>>>> geometry, const std::string& file ) {
     FILE* f = fopen( file.c_str(), "wb" );
     // Write version
-    int Version = 1;
+    int Version = MESH_CACHE_VERSION;
     fwrite( &Version, sizeof( Version ), 1, f );
 
     // Write num textures

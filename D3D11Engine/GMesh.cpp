@@ -153,6 +153,14 @@ XRESULT GMesh::LoadCached( const std::string& file ) {
     int Version;
     fread( &Version, sizeof( Version ), 1, f );
 
+    // Reject incompatible caches (e.g. after a vertex-format change) so the caller regenerates.
+    if ( Version != MESH_CACHE_VERSION ) {
+        LogWarn() << "Mesh cache version mismatch (" << Version << " != " << MESH_CACHE_VERSION
+            << "), regenerating: " << file;
+        fclose( f );
+        return XR_FAILED;
+    }
+
     // Read num textures
     int numTextures;
     fread( &numTextures, sizeof( numTextures ), 1, f );
