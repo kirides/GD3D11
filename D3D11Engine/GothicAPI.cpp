@@ -163,7 +163,7 @@ void MaterialInfo::LoadFromFile( const std::string_view name ) {
     if ( version < 2 ) {
         buffer.DisplacementFactor = 0.0f;
     }
-    if ( version < 6 ) {
+    if ( version < 7 ) {
         buffer.AOMultiplier = 1.0f;
         buffer.RoughnessMultiplier = 1.0f;
         buffer.MetallicMultiplier = 0.0f;
