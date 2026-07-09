@@ -1049,6 +1049,9 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
 
             ImGui::EndDisabled();
         }
+        ImGui::Checkbox( "Allow Pointlights self-shadowing", &settings.AllowSelfShadowingPointlights );
+        ImGui::SetItemTooltip("Lets things like torches and lights from players also cast shadow for players.");
+
         // ImGui::Checkbox("FastShadows", &settings.FastShadows );	
         ImGui::Checkbox( "DrawShadowGeometry", &settings.DrawShadowGeometry );
         if ( settings.RendererMode != GothicRendererSettings::RM_ForwardPlus) {

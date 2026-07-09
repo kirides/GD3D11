@@ -813,6 +813,8 @@ struct GothicRendererSettings {
         WaterSSRQuality = WATER_SSR_MEDIUM;
 
         GraphicsPreset = E_GraphicsPreset::GRAPHICS_CUSTOM;
+        AllowSelfShadowingPointlights = false;
+        
         ApplyAssaoPreset(1);
 
         ResetDebugSettings();
@@ -1056,7 +1058,8 @@ struct GothicRendererSettings {
     E_SharpeningMode SharpeningMode;
     E_GraphicsPreset GraphicsPreset;
     bool CompressedNormalsSupport;
-
+    bool AllowSelfShadowingPointlights;
+    
     struct {
         struct {
             bool DepthMotionVectors;

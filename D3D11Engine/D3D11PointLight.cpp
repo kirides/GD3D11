@@ -41,6 +41,9 @@ namespace
 // draws a huge shadow from the player all around and 
 static void SetupVobsToExclude(const VobLightInfo* LightInfo)
 {
+    if (Engine::GAPI->GetRendererState().RendererSettings.AllowSelfShadowingPointlights) {
+        return;
+    }
     vobsToExclude.clear();
     
     CollectVobTreeToExclude(LightInfo->Vob);
