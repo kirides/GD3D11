@@ -5735,20 +5735,22 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                     continue;
                 }
 
-                // Check vob range
-                if ( XMVector3Greater(XMVector3LengthSq( position - it->Vob->GetPositionWorldXM() ), vRangeSquared) ) {
-                    continue;
-                }
-
                 // Check for inside vob. Don't render inside-vobs when the light is
                 // outside and vice-versa.
                 if ( isOutdoor && it->Vob->IsIndoorVob() != indoor ) {
                     continue;
                 }
-
+                
                 // Assume everything that doesn't have a skeletal-mesh won't move very
                 // much This applies to usable things like chests, chairs, beds, etc
-                if ( !static_cast<SkeletalMeshVisualInfo*>(it->VisualInfo)->SkeletalMeshes.empty() ) {
+                if (auto skelInfo = dynamic_cast<SkeletalMeshVisualInfo*>(it->VisualInfo)) {
+                    if ( !skelInfo->SkeletalMeshes.empty() ) {
+                        continue;
+                    }
+                }
+
+                // Check vob range
+                if ( XMVector3Greater(XMVector3LengthSq( position - it->Vob->GetPositionWorldXM() ), vRangeSquared) ) {
                     continue;
                 }
 
@@ -6008,12 +6010,17 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                         continue;
                     }
 
-                    // Check vob range
-
-                    if ( XMVector3Greater(XMVector3LengthSq( position - XMLoadFloat3( &it->LastRenderPosition ) ), vRangeSquared) ) {
+                    // Check for inside vob. Don't render inside-vobs when the light is
+                    // outside and vice-versa.
+                    if ( isOutdoor && it->Vob->IsIndoorVob() != indoor ) {
                         continue;
                     }
 
+                    // Check vob range
+                    if ( XMVector3Greater(XMVector3LengthSq( position - it->Vob->GetPositionWorldXM() ), vRangeSquared) ) {
+                        continue;
+                    }
+                
                     // Check for inside vob. Don't render inside-vobs when the light is
                     // outside and vice-versa.
                     if ( isOutdoor && it->IsIndoorVob != indoor ) {
@@ -6089,11 +6096,6 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                     continue;
                 }
 
-                // Check vob range
-                if ( XMVector3Greater(XMVector3LengthSq( position - it->Vob->GetPositionWorldXM() ), vRangeSquared) ) {
-                    continue;
-                }
-
                 // Check for inside vob. Don't render inside-vobs when the light is
                 // outside and vice-versa.
                 if ( isOutdoor && it->Vob->IsIndoorVob() != indoor ) {
@@ -6102,7 +6104,14 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
 
                 // Assume everything that doesn't have a skeletal-mesh won't move very
                 // much This applies to usable things like chests, chairs, beds, etc
-                if ( !static_cast<SkeletalMeshVisualInfo*>(it->VisualInfo)->SkeletalMeshes.empty() ) {
+                if (auto skelInfo = dynamic_cast<SkeletalMeshVisualInfo*>(it->VisualInfo)) {
+                    if ( !skelInfo->SkeletalMeshes.empty() ) {
+                        continue;
+                    }
+                }
+
+                // Check vob range
+                if ( XMVector3Greater(XMVector3LengthSq( position - it->Vob->GetPositionWorldXM() ), vRangeSquared) ) {
                     continue;
                 }
 
