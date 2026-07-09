@@ -24,6 +24,45 @@ class zCTree;
 
 class zCVisual;
 
+template<typename T>
+struct HookFunc {
+private:
+    PVOID func_ptr = nullptr;
+
+    // Helper to cast internal PVOID back to the usable function pointer type
+    T get_func() const { return reinterpret_cast<T>(func_ptr); }
+
+public:
+    static_assert(std::is_pointer<T>::value&& std::is_function<typename std::remove_pointer<T>::type>::value,
+                  "HookFunc requires a function pointer type.");
+
+    HookFunc() = delete;
+    HookFunc(const HookFunc&) = delete;
+    HookFunc& operator=(const HookFunc&) = delete;
+
+    HookFunc( HookFunc&& ) = delete;
+    HookFunc& operator=(HookFunc&&) = delete;
+
+    HookFunc(DWORD_PTR p) : func_ptr(reinterpret_cast<PVOID>(p)) {}
+    HookFunc(T f = nullptr) : func_ptr(reinterpret_cast<PVOID>(f)) {}
+
+    template <typename THook>
+    LONG Detour( THook hookFn ) {
+        static_assert(std::is_pointer<THook>::value&& std::is_function<typename std::remove_pointer<THook>::type>::value,
+                  "Detour THook requires a function pointer type.");
+
+        return DetourAttach( &func_ptr, reinterpret_cast<PVOID>(hookFn) );
+    }
+
+    // perfect forward any arguments matching what T expects
+    template<typename... Args>
+    auto operator()( Args&&... args ) -> decltype(std::declval<T>()( std::forward<Args>( args )... )) {
+        return get_func()( std::forward<Args>( args )... );
+    }
+
+    explicit operator bool() { return func_ptr != nullptr; }
+};
+
 typedef int( __thiscall* zCBspTreeLoadBIN )(void*, zCFileBIN&, int);
 typedef void( __thiscall* zCWorldRender )(void*, zCCamera&);
 typedef void( __thiscall* zCWorldVobAddedToWorld )(void*, zCVob*);
@@ -102,109 +141,91 @@ typedef void( __thiscall* zCSkyControler_ClearBackground )(void*, zColor);
 
 struct zTRndSurfaceDesc;
 
-template <typename TOriginal, typename THook>
-inline LONG DetourAttachTyped( TOriginal* originalFunction, THook hookFunction ) {
-    static_assert( sizeof( TOriginal ) == sizeof( PVOID ), "Unexpected original function pointer size" );
-    static_assert( sizeof( THook ) == sizeof( PVOID ), "Unexpected hook function pointer size" );
-
-    PVOID* ppOriginal = reinterpret_cast<PVOID*>(originalFunction);
-
-    // 2. Cast the hook function safely.
-    // Standard C++ forbids reinterpret_cast from a function pointer to a void pointer.
-    union {
-        THook func;
-        PVOID ptr;
-    } hookCast;
-    hookCast.func = hookFunction;
-
-    return DetourAttach( ppOriginal, hookCast.ptr );
-}
-
 struct HookedFunctionInfo {
 
     /** Init all hooks here */
     void InitHooks();
 
-    zCBspTreeLoadBIN original_zCBspTreeLoadBIN = reinterpret_cast<zCBspTreeLoadBIN>(GothicMemoryLocations::zCBspTree::LoadBIN);
-    zCWorldRender original_zCWorldRender = reinterpret_cast<zCWorldRender>(GothicMemoryLocations::zCWorld::Render);
-    oCItemContainer__Container_Draw original_ContainerDraw = reinterpret_cast<oCItemContainer__Container_Draw>(GothicMemoryLocations::oCItemContainer::s_Container_Draw);
-    zCWorldVobAddedToWorld original_zCWorldVobAddedToWorld = reinterpret_cast<zCWorldVobAddedToWorld>(GothicMemoryLocations::zCWorld::VobAddedToWorld);
+    HookFunc<zCBspTreeLoadBIN> original_zCBspTreeLoadBIN = GothicMemoryLocations::zCBspTree::LoadBIN;
+    HookFunc<zCWorldRender> original_zCWorldRender = GothicMemoryLocations::zCWorld::Render;
+    HookFunc<oCItemContainer__Container_Draw> original_ContainerDraw = GothicMemoryLocations::oCItemContainer::s_Container_Draw;
+    HookFunc<zCWorldVobAddedToWorld> original_zCWorldVobAddedToWorld = GothicMemoryLocations::zCWorld::VobAddedToWorld;
 #ifdef BUILD_SPACER_NET
-    zCWorldCompileWorld original_zCWorldCompileWorld = reinterpret_cast<zCWorldCompileWorld>(GothicMemoryLocations::zCWorld::CompileWorld);
-    zCWorldGenerateStaticWorldLighting original_zCWorldGenerateStaticWorldLighting = reinterpret_cast<zCWorldGenerateStaticWorldLighting>(GothicMemoryLocations::zCWorld::GenerateStaticWorldLighting);
+    HookFunc<zCWorldCompileWorld> original_zCWorldCompileWorld = GothicMemoryLocations::zCWorld::CompileWorld;
+    HookFunc<zCWorldGenerateStaticWorldLighting> original_zCWorldGenerateStaticWorldLighting = GothicMemoryLocations::zCWorld::GenerateStaticWorldLighting;
 #endif
-    zCBspTreeAddVob original_zCBspTreeAddVob = reinterpret_cast<zCBspTreeAddVob>(GothicMemoryLocations::zCBspTree::AddVob);
-    zCWorldLoadWorld original_zCWorldLoadWorld = reinterpret_cast<zCWorldLoadWorld>(GothicMemoryLocations::zCWorld::LoadWorld);
-    oCGameEnterWorld original_oCGameEnterWorld = reinterpret_cast<oCGameEnterWorld>(GothicMemoryLocations::oCGame::EnterWorld);
+    HookFunc<zCBspTreeAddVob> original_zCBspTreeAddVob = GothicMemoryLocations::zCBspTree::AddVob;
+    HookFunc<zCWorldLoadWorld> original_zCWorldLoadWorld = GothicMemoryLocations::zCWorld::LoadWorld;
+    HookFunc<oCGameEnterWorld> original_oCGameEnterWorld = GothicMemoryLocations::oCGame::EnterWorld;
 #if defined(BUILD_GOTHIC_2_6_fix) || defined(BUILD_GOTHIC_1_CLASSIC)
-    oCGameDefineExternals_Ulfi original_oCGameDefineExternals_Ulfi = reinterpret_cast<oCGameDefineExternals_Ulfi>(GothicMemoryLocations::oCGame::DefineExternals_Ulfi);
+    HookFunc<oCGameDefineExternals_Ulfi> original_oCGameDefineExternals_Ulfi = GothicMemoryLocations::oCGame::DefineExternals_Ulfi;
 #endif
-    zCWorldVobRemovedFromWorld original_zCWorldVobRemovedFromWorld = reinterpret_cast<zCWorldVobRemovedFromWorld>(GothicMemoryLocations::zCWorld::VobRemovedFromWorld);
-    Alg_Rotation3DNRad original_Alg_Rotation3DNRad = reinterpret_cast<Alg_Rotation3DNRad>(GothicMemoryLocations::Functions::Alg_Rotation3DNRad);
-    GenericDestructor original_zCMaterialDestructor = reinterpret_cast<GenericDestructor>(GothicMemoryLocations::zCMaterial::Destructor);
-    GenericDestructor original_zCParticleFXDestructor = reinterpret_cast<GenericDestructor>(GothicMemoryLocations::zCParticleFX::Destructor);
-    GenericDestructor original_zCVisualDestructor = reinterpret_cast<GenericDestructor>(GothicMemoryLocations::zCVisual::Destructor);
-    zCMaterialConstruktor original_zCMaterialConstruktor = reinterpret_cast<zCMaterialConstruktor>(GothicMemoryLocations::zCMaterial::Constructor);
-    zCMaterialInitValues original_zCMaterialInitValues = reinterpret_cast<zCMaterialInitValues>(GothicMemoryLocations::zCMaterial::InitValues);
-    zFILEOpen original_zFILEOpen = reinterpret_cast<zFILEOpen>(GothicMemoryLocations::zFILE::Open);
-    GenericThiscall original_zCRnd_D3D_DrawLineZ = reinterpret_cast<GenericThiscall>(GothicMemoryLocations::zCRndD3D::DrawLineZ); // Not usable - only for hooking
-    GenericThiscall original_zCRnd_D3D_DrawLine = reinterpret_cast<GenericThiscall>(GothicMemoryLocations::zCRndD3D::DrawLine); // Not usable - only for hooking
-    zCRnd_D3D_DrawPoly original_zCRnd_D3D_DrawPoly = reinterpret_cast<zCRnd_D3D_DrawPoly>(GothicMemoryLocations::zCRndD3D::DrawPoly);
-    zCRnd_D3D_DrawPolySimple original_zCRnd_D3D_DrawPolySimple = reinterpret_cast<zCRnd_D3D_DrawPolySimple>(GothicMemoryLocations::zCRndD3D::DrawPolySimple);
-    GenericThiscall original_zCRnd_D3D_CacheInSurface = reinterpret_cast<GenericThiscall>(GothicMemoryLocations::zCRndD3D::CacheInSurface); // Not usable - only for hooking
-    GenericThiscall original_zCRnd_D3D_CacheOutSurface = reinterpret_cast<GenericThiscall>(GothicMemoryLocations::zCRndD3D::CacheOutSurface); // Not usable - only for hooking
-    GenericThiscall original_zCRnd_D3D_RenderScreenFade = reinterpret_cast<GenericThiscall>(GothicMemoryLocations::zCRndD3D::RenderScreenFade); // Not usable - only for hooking
-    GenericThiscall original_zCRnd_D3D_RenderCinemaScope = reinterpret_cast<GenericThiscall>(GothicMemoryLocations::zCRndD3D::RenderCinemaScope); // Not usable - only for hooking
-    zCOptionReadInt original_zCOptionReadInt = reinterpret_cast<zCOptionReadInt>(GothicMemoryLocations::zCOption::ReadInt);
-    zCOptionReadBool original_zCOptionReadBool = reinterpret_cast<zCOptionReadBool>(GothicMemoryLocations::zCOption::ReadBool);
-    zCOptionReadDWORD original_zCOptionReadDWORD = reinterpret_cast<zCOptionReadDWORD>(GothicMemoryLocations::zCOption::ReadDWORD);
+    HookFunc<zCWorldVobRemovedFromWorld> original_zCWorldVobRemovedFromWorld = GothicMemoryLocations::zCWorld::VobRemovedFromWorld;
+    HookFunc<Alg_Rotation3DNRad> original_Alg_Rotation3DNRad = GothicMemoryLocations::Functions::Alg_Rotation3DNRad;
+    HookFunc<GenericDestructor> original_zCMaterialDestructor = GothicMemoryLocations::zCMaterial::Destructor;
+    HookFunc<GenericDestructor> original_zCParticleFXDestructor = GothicMemoryLocations::zCParticleFX::Destructor;
+    HookFunc<GenericDestructor> original_zCVisualDestructor = GothicMemoryLocations::zCVisual::Destructor;
+    HookFunc<zCMaterialConstruktor> original_zCMaterialConstruktor = GothicMemoryLocations::zCMaterial::Constructor;
+    HookFunc<zCMaterialInitValues> original_zCMaterialInitValues = GothicMemoryLocations::zCMaterial::InitValues;
+    HookFunc<zFILEOpen> original_zFILEOpen = GothicMemoryLocations::zFILE::Open;
+    HookFunc<GenericThiscall> original_zCRnd_D3D_DrawLineZ = GothicMemoryLocations::zCRndD3D::DrawLineZ; // Not usable - only for hooking
+    HookFunc<GenericThiscall> original_zCRnd_D3D_DrawLine = GothicMemoryLocations::zCRndD3D::DrawLine; // Not usable - only for hooking
+    HookFunc<zCRnd_D3D_DrawPoly> original_zCRnd_D3D_DrawPoly = GothicMemoryLocations::zCRndD3D::DrawPoly;
+    HookFunc<zCRnd_D3D_DrawPolySimple> original_zCRnd_D3D_DrawPolySimple = GothicMemoryLocations::zCRndD3D::DrawPolySimple;
+    HookFunc<GenericThiscall> original_zCRnd_D3D_CacheInSurface = GothicMemoryLocations::zCRndD3D::CacheInSurface; // Not usable - only for hooking
+    HookFunc<GenericThiscall> original_zCRnd_D3D_CacheOutSurface = GothicMemoryLocations::zCRndD3D::CacheOutSurface; // Not usable - only for hooking
+    HookFunc<GenericThiscall> original_zCRnd_D3D_RenderScreenFade = GothicMemoryLocations::zCRndD3D::RenderScreenFade; // Not usable - only for hooking
+    HookFunc<GenericThiscall> original_zCRnd_D3D_RenderCinemaScope = GothicMemoryLocations::zCRndD3D::RenderCinemaScope; // Not usable - only for hooking
+    HookFunc<zCOptionReadInt> original_zCOptionReadInt = GothicMemoryLocations::zCOption::ReadInt;
+    HookFunc<zCOptionReadBool> original_zCOptionReadBool = GothicMemoryLocations::zCOption::ReadBool;
+    HookFunc<zCOptionReadDWORD> original_zCOptionReadDWORD = GothicMemoryLocations::zCOption::ReadDWORD;
 #if defined(BUILD_GOTHIC_1_CLASSIC) || defined(BUILD_GOTHIC_2_6_fix)
-    zCViewBlitText original_zCViewBlit = reinterpret_cast<zCViewBlitText>(GothicMemoryLocations::zCView::Blit);
-    zCViewBlitText original_zCViewBlitText = reinterpret_cast<zCViewBlitText>(GothicMemoryLocations::zCView::BlitText);
-    zCViewPrint original_zCViewPrint = reinterpret_cast<zCViewPrint>(GothicMemoryLocations::zCView::Print);
-    zCViewPrint original_zCViewPrintChars = reinterpret_cast<zCViewPrint>(GothicMemoryLocations::zCView::PrintChars);
+    HookFunc<zCViewBlitText> original_zCViewBlit = GothicMemoryLocations::zCView::Blit;
+    HookFunc<zCViewBlitText> original_zCViewBlitText = GothicMemoryLocations::zCView::BlitText;
+    HookFunc<zCViewPrint> original_zCViewPrint = GothicMemoryLocations::zCView::Print;
+    HookFunc<zCViewPrint> original_zCViewPrintChars = GothicMemoryLocations::zCView::PrintChars;
 #endif
-    zCCamera__Activate original_zCCamera__Activate = reinterpret_cast<zCCamera__Activate>(GothicMemoryLocations::zCCamera::Activate);
-    zCCamera__UpdateViewport original_zCCamera__UpdateViewport = reinterpret_cast<zCCamera__UpdateViewport>(GothicMemoryLocations::zCCamera::UpdateViewport);
+    HookFunc<zCCamera__Activate> original_zCCamera__Activate = GothicMemoryLocations::zCCamera::Activate;
+    HookFunc<zCCamera__UpdateViewport> original_zCCamera__UpdateViewport = GothicMemoryLocations::zCCamera::UpdateViewport;
     //CGameManagerExitGame original_CGameManagerExitGame = reinterpret_cast<CGameManagerExitGame>(GothicMemoryLocations::CGameManager::ExitGame);
     //GenericThiscall original_zCWorldDisposeWorld = reinterpret_cast<GenericThiscall>(GothicMemoryLocations::zCWorld::DisposeWorld);
-    zCWorldDisposeVobs original_zCWorldDisposeVobs = reinterpret_cast<zCWorldDisposeVobs>(GothicMemoryLocations::zCWorld::DisposeVobs);
-    oCSpawnManagerSpawnNpc original_oCSpawnManagerSpawnNpc = reinterpret_cast<oCSpawnManagerSpawnNpc>(GothicMemoryLocations::oCSpawnManager::SpawnNpc);
-    oCSpawnManagerCheckRemoveNpc original_oCSpawnManagerCheckRemoveNpc = reinterpret_cast<oCSpawnManagerCheckRemoveNpc>(GothicMemoryLocations::oCSpawnManager::CheckRemoveNpc);
-    oCSpawnManagerCheckInsertNpc original_oCSpawnManagerCheckInsertNpc = reinterpret_cast<oCSpawnManagerCheckInsertNpc>(GothicMemoryLocations::oCSpawnManager::CheckInsertNpc);
-    zCVobSetVisual original_zCVobSetVisual = reinterpret_cast<zCVobSetVisual>(GothicMemoryLocations::zCVob::SetVisual);
-    GenericDestructor original_zCVobDestructor = reinterpret_cast<GenericDestructor>(GothicMemoryLocations::zCVob::Destructor);
-    //zCTex_D3DXTEX_BuildSurfaces original_zCTex_D3DXTEX_BuildSurfaces = reinterpret_cast<zCTex_D3DXTEX_BuildSurfaces>(GothicMemoryLocations::zCTexture::XTEX_BuildSurfaces);
-    zCTextureLoadResourceData ofiginal_zCTextureLoadResourceData = reinterpret_cast<zCTextureLoadResourceData>(GothicMemoryLocations::zCTexture::LoadResourceData);
-    zCThreadSuspendThread original_zCThreadSuspendThread = reinterpret_cast<zCThreadSuspendThread>(GothicMemoryLocations::zCThread::SuspendThread);
-    //zCResourceManagerCacheOut original_zCResourceManagerCacheOut = reinterpret_cast<zCResourceManagerCacheOut>(GothicMemoryLocations::zCResourceManager::CacheOut);
-    zCQuadMarkCreateQuadMark original_zCQuadMarkCreateQuadMark = reinterpret_cast<zCQuadMarkCreateQuadMark>(GothicMemoryLocations::zCQuadMark::CreateQuadMark);
-    GenericDestructor original_zCQuadMarkDestructor = reinterpret_cast<GenericDestructor>(GothicMemoryLocations::zCQuadMark::Destructor);
-    GenericThiscall original_zCQuadMarkConstructor = reinterpret_cast<GenericThiscall>(GothicMemoryLocations::zCQuadMark::Constructor);
-    zCFlashSetVisualUsedBy original_zCFlashSetVisualUsedBy = reinterpret_cast<zCFlashSetVisualUsedBy>(GothicMemoryLocations::zCFlash::SetVisualUsedBy);
-    GenericDestructor original_zCFlashDestructor = reinterpret_cast<GenericDestructor>(GothicMemoryLocations::zCFlash::Destructor);
-    oCNPCEnable original_oCNPCEnable = reinterpret_cast<oCNPCEnable>(GothicMemoryLocations::oCNPC::Enable);
-    GenericThiscall original_oCNPCDisable = reinterpret_cast<GenericThiscall>(GothicMemoryLocations::oCNPC::Disable);
-    GenericThiscall original_oCNPCInitModel = reinterpret_cast<GenericThiscall>(GothicMemoryLocations::oCNPC::InitModel);
-    oCWorldDisableVob original_oCWorldDisableVob = reinterpret_cast<oCWorldDisableVob>(GothicMemoryLocations::oCWorld::DisableVob);
-    oCWorldEnableVob original_oCWorldEnableVob = reinterpret_cast<oCWorldEnableVob>(GothicMemoryLocations::oCWorld::EnableVob);
-    oCWorldRemoveVob original_oCWorldRemoveVob = reinterpret_cast<oCWorldRemoveVob>(GothicMemoryLocations::oCWorld::RemoveVob);
-    oCWorldRemoveFromLists original_oCWorldRemoveFromLists = reinterpret_cast<oCWorldRemoveFromLists>(GothicMemoryLocations::oCWorld::RemoveFromLists);
-    zCVobEndMovement original_zCVobEndMovement = reinterpret_cast<zCVobEndMovement>(GothicMemoryLocations::zCVob::EndMovement);
-    GenericThiscall original_zCBspNodeRender = reinterpret_cast<GenericThiscall>(GothicMemoryLocations::zCBspTree::Render); // Not usable - only for hooking
+    HookFunc<zCWorldDisposeVobs> original_zCWorldDisposeVobs = GothicMemoryLocations::zCWorld::DisposeVobs;
+    HookFunc<oCSpawnManagerSpawnNpc> original_oCSpawnManagerSpawnNpc = GothicMemoryLocations::oCSpawnManager::SpawnNpc;
+    HookFunc<oCSpawnManagerCheckRemoveNpc> original_oCSpawnManagerCheckRemoveNpc = GothicMemoryLocations::oCSpawnManager::CheckRemoveNpc;
+    HookFunc<oCSpawnManagerCheckInsertNpc> original_oCSpawnManagerCheckInsertNpc = GothicMemoryLocations::oCSpawnManager::CheckInsertNpc;
+    HookFunc<zCVobSetVisual> original_zCVobSetVisual = GothicMemoryLocations::zCVob::SetVisual;
+    HookFunc<GenericDestructor> original_zCVobDestructor = GothicMemoryLocations::zCVob::Destructor;
+    //zCTex_D3DXTEX_BuildSurfaces original_zCTex_D3DXTEX_BuildSurfaces = GothicMemoryLocations::zCTexture::XTEX_BuildSurfaces);
+    HookFunc<zCTextureLoadResourceData> ofiginal_zCTextureLoadResourceData = GothicMemoryLocations::zCTexture::LoadResourceData;
+    HookFunc<zCThreadSuspendThread> original_zCThreadSuspendThread = GothicMemoryLocations::zCThread::SuspendThread;
+    //zCResourceManagerCacheOut original_zCResourceManagerCacheOut = GothicMemoryLocations::zCResourceManager::CacheOut);
+    HookFunc<zCQuadMarkCreateQuadMark> original_zCQuadMarkCreateQuadMark = GothicMemoryLocations::zCQuadMark::CreateQuadMark;
+    HookFunc<GenericDestructor> original_zCQuadMarkDestructor = GothicMemoryLocations::zCQuadMark::Destructor;
+    HookFunc<GenericThiscall> original_zCQuadMarkConstructor = GothicMemoryLocations::zCQuadMark::Constructor;
+    HookFunc<zCFlashSetVisualUsedBy> original_zCFlashSetVisualUsedBy = GothicMemoryLocations::zCFlash::SetVisualUsedBy;
+    HookFunc<GenericDestructor> original_zCFlashDestructor = GothicMemoryLocations::zCFlash::Destructor;
+    HookFunc<oCNPCEnable> original_oCNPCEnable = GothicMemoryLocations::oCNPC::Enable;
+    HookFunc<GenericThiscall> original_oCNPCDisable = GothicMemoryLocations::oCNPC::Disable;
+    HookFunc<GenericThiscall> original_oCNPCInitModel = GothicMemoryLocations::oCNPC::InitModel;
+    HookFunc<oCWorldDisableVob> original_oCWorldDisableVob = GothicMemoryLocations::oCWorld::DisableVob;
+    HookFunc<oCWorldEnableVob> original_oCWorldEnableVob = GothicMemoryLocations::oCWorld::EnableVob;
+    HookFunc<oCWorldRemoveVob> original_oCWorldRemoveVob = GothicMemoryLocations::oCWorld::RemoveVob;
+    HookFunc<oCWorldRemoveFromLists> original_oCWorldRemoveFromLists = GothicMemoryLocations::oCWorld::RemoveFromLists;
+    HookFunc<zCVobEndMovement> original_zCVobEndMovement = GothicMemoryLocations::zCVob::EndMovement;
+    HookFunc<GenericThiscall> original_zCBspNodeRender = GothicMemoryLocations::zCBspTree::Render; // Not usable - only for hooking
 #ifdef BUILD_GOTHIC_1_08k
-    zCBspBaseCollectPolysInBBox3D original_zCBspBaseCollectPolysInBBox3D = reinterpret_cast<zCBspBaseCollectPolysInBBox3D>(GothicMemoryLocations::zCBspBase::CollectPolysInBBox3D);
-    zCBspBaseCheckRayAgainstPolys original_zCBspBaseCheckRayAgainstPolys = reinterpret_cast<zCBspBaseCheckRayAgainstPolys>(GothicMemoryLocations::zCBspBase::CheckRayAgainstPolys);
-    zCBspBaseCheckRayAgainstPolys original_zCBspBaseCheckRayAgainstPolysCache = reinterpret_cast<zCBspBaseCheckRayAgainstPolys>(GothicMemoryLocations::zCBspBase::CheckRayAgainstPolysCache);
-    zCBspBaseCheckRayAgainstPolys original_zCBspBaseCheckRayAgainstPolysNearestHit = reinterpret_cast<zCBspBaseCheckRayAgainstPolys>(GothicMemoryLocations::zCBspBase::CheckRayAgainstPolysNearestHit);
+    HookFunc<zCBspBaseCollectPolysInBBox3D> original_zCBspBaseCollectPolysInBBox3D = GothicMemoryLocations::zCBspBase::CollectPolysInBBox3D;
+    HookFunc<zCBspBaseCheckRayAgainstPolys> original_zCBspBaseCheckRayAgainstPolys = GothicMemoryLocations::zCBspBase::CheckRayAgainstPolys;
+    HookFunc<zCBspBaseCheckRayAgainstPolys> original_zCBspBaseCheckRayAgainstPolysCache = GothicMemoryLocations::zCBspBase::CheckRayAgainstPolysCache;
+    HookFunc<zCBspBaseCheckRayAgainstPolys> original_zCBspBaseCheckRayAgainstPolysNearestHit = GothicMemoryLocations::zCBspBase::CheckRayAgainstPolysNearestHit;
 #endif
 #ifdef BUILD_GOTHIC_2_6_fix
-    GenericThiscall original_zCActiveSndAutoCalcObstruction = reinterpret_cast<GenericThiscall>(GothicMemoryLocations::zCActiveSnd::AutoCalcObstruction); // Not usable - only for hooking
-    zCModelGetLowestLODNumPolys original_zCModelGetLowestLODNumPolys = reinterpret_cast<zCModelGetLowestLODNumPolys>(GothicMemoryLocations::zCModel::GetLowestLODNumPolys);
-    zCModelGetLowestLODPoly original_zCModelGetLowestLODPoly = reinterpret_cast<zCModelGetLowestLODPoly>(GothicMemoryLocations::zCModel::GetLowestLODPoly);
+    HookFunc<void( __thiscall* )(void*, int)> original_zCActiveSndAutoCalcObstruction = GothicMemoryLocations::zCActiveSnd::AutoCalcObstruction; // Not usable - only for hooking
+    HookFunc<zCModelGetLowestLODNumPolys> original_zCModelGetLowestLODNumPolys = GothicMemoryLocations::zCModel::GetLowestLODNumPolys;
+    HookFunc<zCModelGetLowestLODPoly> original_zCModelGetLowestLODPoly = GothicMemoryLocations::zCModel::GetLowestLODPoly;
 #endif
-    zCInput_Win32__GetKey original_zCInput_Win32__GetKey = reinterpret_cast<zCInput_Win32__GetKey>(GothicMemoryLocations::zCInput_Win32::GetKey);
-    zCSkyControler_ClearBackground original_zCSkyControler_ClearBackground = reinterpret_cast<zCSkyControler_ClearBackground>(GothicMemoryLocations::zCSkyController::ClearBackground);
+    HookFunc<zCInput_Win32__GetKey> original_zCInput_Win32__GetKey = GothicMemoryLocations::zCInput_Win32::GetKey;
+    HookFunc<zCSkyControler_ClearBackground> original_zCSkyControler_ClearBackground = GothicMemoryLocations::zCSkyController::ClearBackground;
     //zCModelPrototypeLoadModelASC original_zCModelPrototypeLoadModelASC = reinterpret_cast<zCModelPrototypeLoadModelASC>(GothicMemoryLocations::zCModelPrototype::LoadModelASC);
     //zCModelPrototypeReadMeshAndTreeMSB original_zCModelPrototypeReadMeshAndTreeMSB = reinterpret_cast<zCModelPrototypeReadMeshAndTreeMSB>(GothicMemoryLocations::zCModelPrototype::ReadMeshAndTreeMSB);
 
@@ -224,5 +245,5 @@ struct HookedFunctionInfo {
 
 namespace HookedFunctions {
     /** Holds all the original functions */
-    __declspec(selectany) HookedFunctionInfo OriginalFunctions;
+    inline HookedFunctionInfo OriginalFunctions = {};
 };

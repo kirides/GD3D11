@@ -11,7 +11,7 @@ public:
 
     /** Hooks the functions of this Class */
     static void Hook() {
-        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCThreadSuspendThread, hooked_SuspendThread  );
+        HookedFunctions::OriginalFunctions.original_zCThreadSuspendThread.Detour( hooked_SuspendThread  );
     }
 
     /** Reads config stuff */

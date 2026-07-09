@@ -11,6 +11,11 @@ cbuffer MI_MaterialInfo : register( b2 )
 	float MI_SpecularPower;
 	float MI_NormalmapStrength;
 	float MI_ParallaxOcclusionStrength;
+	float4 MI_Color;
+	float MI_AOMultiplier;
+	float MI_RoughnessMultiplier;
+	float MI_MetallicMultiplier;
+	float MI_PBRPadding;
 }
 
 /*cbuffer POS_MaterialInfo : register( b3 )
@@ -88,9 +93,12 @@ DEFERRED_PS_OUTPUT PSMain( PS_INPUT Input ) : SV_TARGET
 	output.vDiffuse = float4(color.rgb, Input.vDiffuse.y);
 	
 	output.vNrm = EncodeNormalGBuffer(normalize(Input.vNormalVS));
-
-	output.vSI_SP.x = MI_SpecularIntensity;
-	output.vSI_SP.y = MI_SpecularPower;
+	
+	float3 orm = float3(1.0f, 0.6f, 0.0f);
+	float ao = saturate(orm.r * MI_AOMultiplier);
+	float roughness = max(saturate(orm.g * MI_RoughnessMultiplier), 0.045f);
+	float metallic = saturate(orm.b * MI_MetallicMultiplier);
+	output.vSI_SP = float4(ao, roughness, metallic, 1.0f);
 	
 #if MOTION_VECTORS == 1
 	// Calculate velocity for motion vectors

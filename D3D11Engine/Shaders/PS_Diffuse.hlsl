@@ -1,8 +1,23 @@
 //--------------------------------------------------------------------------------------
 // World/VOB-Pixelshader for G2D3D11 by Degenerated
 //--------------------------------------------------------------------------------------
+
+#ifndef NORMALMAPPING
+#define NORMALMAPPING 0
+#endif
+
+#ifndef NORMAL_MAP_MODE
+// 1 = OpenGL (Y+)
+// 2 = DirectX (Y-)
+#define NORMAL_MAP_MODE 1
+#endif
+
+#ifndef DISPLACEMENT_MAPPING
+#define DISPLACEMENT_MAPPING 0
+#endif
+
 #include <AtmosphericScattering.h>
-#include <FFFog.h>
+#include <FFFog.h> 
 #include <DS_Defines.h>
 #include <Toolbox.h>
 
@@ -14,6 +29,10 @@ cbuffer MI_MaterialInfo : register( b2 )
 	float MI_ParallaxOcclusionStrength;
 	
 	float4 MI_Color;
+	float MI_AOMultiplier;
+	float MI_RoughnessMultiplier;
+	float MI_MetallicMultiplier;
+	float MI_PBRPadding;
 }
 
 cbuffer DIST_Distance : register( b3 )
@@ -88,7 +107,13 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
 {
 	FORWARD_PLUS_PS_OUTPUT output;
 
-	float4 color = TX_Texture0.Sample(SS_Linear, Input.vTexcoord);
+	float2 texcoord = Input.vTexcoord;
+
+#if NORMALMAPPING == 1 && DISPLACEMENT_MAPPING == 1
+	texcoord = parallax_occlusion_offset(Input.vNormalVS, Input.vViewPosition, TX_Texture1, texcoord, SS_Linear, PARALLAX_HEIGHT_SCALE * MI_ParallaxOcclusionStrength);
+#endif
+
+	float4 color = TX_Texture0.Sample(SS_Linear, texcoord);
 
 	// clip but only use z approximation
 	ClipDistanceEffect(abs(Input.vViewPosition.z), DIST_DrawDistance, color.r * 2 - 1, 500.0f);
@@ -97,21 +122,20 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
 	DoAlphaTest(color.a);
 #endif
 
-#if NORMALMAPPING == 1
-	float3 nrm = perturb_normal(Input.vNormalVS, Input.vViewPosition, TX_Texture1, Input.vTexcoord, SS_Linear, MI_NormalmapStrength);
+#if NORMALMAPPING == 1 
+	float3 nrm = perturb_normal(Input.vNormalVS, Input.vViewPosition, TX_Texture1, texcoord, SS_Linear, MI_NormalmapStrength);
 #else
 	float3 nrm = normalize(Input.vNormalVS);
 #endif
 
-	float4 fx;
+	float3 orm;
 #if FXMAP == 1
-	fx = TX_Texture2.Sample(SS_Linear, Input.vTexcoord);
+	orm = saturate( TX_Texture2.Sample(SS_Linear, Input.vTexcoord).rgb );
 #else
-	fx = 1.0f;
+	orm = float3( MI_AOMultiplier, MI_RoughnessMultiplier, MI_MetallicMultiplier );
 #endif
 
-	float specIntensity = MI_SpecularIntensity * fx.r;
-	float specPower = MI_SpecularPower * fx.g;
+	float3 baseColor = color.rgb;
 	float vertLighting = Input.vDiffuse.y;
 
 	float3 vsPosition = Input.vViewPosition;
@@ -127,8 +151,12 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
 	if (AC_LightPos.y > 0)
 	{
 		#if FP_USE_SHADOW_MASK
-			float2 screenUV = Input.vPosition.xy / FP_ViewportSize;
-			shadow = FP_ShadowMask.SampleLevel( SS_Linear, screenUV, 0 ).r;
+			float2 shadowMaskSample = FP_ShadowMask.Load( int3( int2( Input.vPosition.xy ), 0 ) ).rg;
+			float currentDepth = saturate( Input.vPosition.z );
+			const float depthEpsilon = 2.0f / 255.0f;
+			shadow = (abs( shadowMaskSample.g - currentDepth ) <= depthEpsilon)
+				? shadowMaskSample.r
+				: vertLighting;
 		#else
 			float3 wsLightDirection = normalize(mul(float4(SQ_LightDirectionVS, 0.0f), SQ_InvView).xyz);
 
@@ -157,7 +185,7 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
 	float ssao = FP_AOMask.Load( int3( int2( Input.vPosition.xy ), 0 ) ).r;
 
 	// Sun lighting
-	float3 litPixel = FP_ComputeSunLighting(wsPosition, vsPosition, nrm, color.rgb, specIntensity, specPower, shadow, vertLighting, ssao);
+	float3 litPixel = FP_ComputeSunLighting(wsPosition, vsPosition, nrm, baseColor, orm.g, orm.b, orm.r, shadow, vertLighting, ssao);
 	
 	// Atmospheric scattering
 	litPixel = ApplyAtmosphericScatteringGround(wsPosition, litPixel);
@@ -165,7 +193,7 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
 	// Point lights, only when close enough
 	if (pixelDistZ < 6000.0f) 
 	{
-		litPixel += FP_ComputePointLighting(wsPosition, vsPosition, nrm, color.rgb, specIntensity, specPower, Input.vPosition.xy);
+		litPixel += FP_ComputePointLighting(wsPosition, vsPosition, nrm, baseColor, orm.g, orm.b, Input.vPosition.xy);
 	}
 
 	float focusBrightness = 1.0f + step(1.5f, Input.vDiffuse.w) * 1.0f;
@@ -193,36 +221,42 @@ void PSMain( PS_INPUT Input )
 
 
 // Disable regular shader
-DEFERRED_PS_OUTPUT PSMainDISABLED( PS_INPUT Input ) : SV_TARGET
+DEFERRED_PS_OUTPUT PSMainDISABLED( PS_INPUT Input ) : SV_TARGET 
 #else
 DEFERRED_PS_OUTPUT PSMain( PS_INPUT Input ) : SV_TARGET
 #endif
 {
 	DEFERRED_PS_OUTPUT output;
 
-	float4 color = TX_Texture0.Sample(SS_Linear, Input.vTexcoord);
-	
+	float2 texcoord = Input.vTexcoord;
+
+#if NORMALMAPPING == 1 && DISPLACEMENT_MAPPING == 1
+	texcoord = parallax_occlusion_offset(Input.vNormalVS, Input.vViewPosition, TX_Texture1, texcoord, SS_Linear, PARALLAX_HEIGHT_SCALE * MI_ParallaxOcclusionStrength);
+#endif
+
+	float4 color = TX_Texture0.Sample(SS_Linear, texcoord);
+
 	// Do alphatest if wanted
 #if ALPHATEST == 1
 	// clip but only use z approximation
 	ClipDistanceEffect(abs(Input.vViewPosition.z), DIST_DrawDistance, color.r * 2 - 1, 500.0f);
-	
+
 	// WorldMesh can always do the alphatest
 	DoAlphaTest(color.a);
 #endif
-	
+
 	// Apply normalmapping if wanted
 #if NORMALMAPPING == 1
-	float3 nrm = perturb_normal(Input.vNormalVS, Input.vViewPosition, TX_Texture1, Input.vTexcoord, SS_Linear, MI_NormalmapStrength);
+	float3 nrm = perturb_normal(Input.vNormalVS, Input.vViewPosition, TX_Texture1, texcoord, SS_Linear, MI_NormalmapStrength);
 #else
 	float3 nrm = normalize(Input.vNormalVS);
 #endif
 	
-	float4 fx;
+	float3 orm;
 #if FXMAP == 1
-	fx = TX_Texture2.Sample(SS_Linear, Input.vTexcoord);
+	orm = saturate( TX_Texture2.Sample(SS_Linear, Input.vTexcoord).rgb );
 #else
-	fx = 1.0f;
+	orm = float3( MI_AOMultiplier, MI_RoughnessMultiplier, MI_MetallicMultiplier );
 #endif
 	
 	output.vDiffuse = float4(color.rgb, Input.vDiffuse.y);
@@ -231,12 +265,8 @@ DEFERRED_PS_OUTPUT PSMain( PS_INPUT Input ) : SV_TARGET
 
 	output.vNrm = EncodeNormalGBuffer(nrm);
 
-	// Encode focused flag as negative specIntensity so it survives into the deferred lighting pass.
-	// PS_DS_AtmosphericScattering decodes it and applies the brightness boost post-lighting.
-	float rawSpecIntensity = MI_SpecularIntensity * fx.r; // fix negative specular intensity here.
 	bool focused = Input.vDiffuse.w > 1.5f;
-	output.vSI_SP.x = focused ? -(rawSpecIntensity + 0.001f) : rawSpecIntensity;
-	output.vSI_SP.y = MI_SpecularPower * fx.g;
+	output.vSI_SP = float4(orm.r, orm.g, orm.b, focused ? 1.0f : 0.0f);
 	
 	// Calculate velocity for motion vectors
 	// For instanced objects (VOBs, skeletal meshes), vCurrClipPos/vPrevClipPos come from VS

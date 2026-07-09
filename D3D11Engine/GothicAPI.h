@@ -176,7 +176,7 @@ struct CameraReplacement {
 };
 
 /** Version of this struct */
-const int MATERIALINFO_VERSION = 6;
+const int MATERIALINFO_VERSION = 7;
 
 struct MaterialInfo {
     enum EMaterialType {
@@ -215,20 +215,38 @@ struct MaterialInfo {
         float NormalmapStrength;
         float DisplacementFactor;
         float4 Color;
-
+        float AOMultiplier;
+        float RoughnessMultiplier;
+        float MetallicMultiplier;
+        float PBRPadding;
+        
         void SetDefault() {
             SpecularIntensity = 0.2f;
             SpecularPower = 60.0f;
             NormalmapStrength = 1.0f;
-            DisplacementFactor = 0.1f;
+            DisplacementFactor = 0.0f;
             Color = 0xFFFFFFFF;
+            
+            AOMultiplier = 1.0f;
+            RoughnessMultiplier = 1.0f;
+            MetallicMultiplier = 0.0f;
+            PBRPadding = 0.0f;
+        }
+        
+        template<typename T>
+        static bool AreEqual(T f1, T f2) {
+            return f1 == f2; // NOTE: do we need "proper" float comparsion?
+            // return (std::fabs(f1 - f2) <= std::numeric_limits<T>::epsilon() * std::fmax(std::fabs(f1), std::fabs(f2)));
         }
         
         bool operator==( const Buffer& other ) const noexcept {
-            return SpecularIntensity == other.SpecularIntensity &&
-                SpecularPower == other.SpecularPower &&
-                NormalmapStrength == other.NormalmapStrength &&
-                DisplacementFactor == other.DisplacementFactor &&
+            return AreEqual(SpecularIntensity, other.SpecularIntensity) &&
+                AreEqual(SpecularPower, other.SpecularPower) &&
+                AreEqual(NormalmapStrength, other.NormalmapStrength) &&
+                AreEqual(DisplacementFactor, other.DisplacementFactor) &&
+                AreEqual(AOMultiplier, other.AOMultiplier) &&
+                AreEqual(RoughnessMultiplier, other.RoughnessMultiplier) &&
+                AreEqual(MetallicMultiplier, other.MetallicMultiplier) &&
                 Color == other.Color;
         }
     };
@@ -237,7 +255,7 @@ struct MaterialInfo {
     EMaterialType MaterialType;
     Buffer buffer;
 
-    bool IsSame(const MaterialInfo* other ) const {
+    bool IsSame( const MaterialInfo* other ) const noexcept {
         if ( other == nullptr ) return false;
         return PixelShader == other->PixelShader
             && MaterialType == other->MaterialType

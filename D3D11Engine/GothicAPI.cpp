@@ -90,11 +90,23 @@ void MaterialInfo::WriteToFile( const std::string_view name ) {
         return;
     }
 
+    uint8_t WriteBuffer[sizeof( int ) + sizeof( MaterialInfo::Buffer )];
+
+    auto writer = serde::ByteBufferWriter( WriteBuffer, std::size( WriteBuffer ) );
     // Write the version first
-    fwrite( &MATERIALINFO_VERSION, sizeof( MATERIALINFO_VERSION ), 1, f );
+    serde::SerializeTo( writer, MATERIALINFO_VERSION );
 
     // Then the data
-    fwrite( &buffer, sizeof( MaterialInfo::Buffer ), 1, f );
+    serde::SerializeTo( writer, buffer.SpecularIntensity );
+    serde::SerializeTo( writer, buffer.SpecularPower );
+    serde::SerializeTo( writer, buffer.NormalmapStrength );
+    serde::SerializeTo( writer, buffer.DisplacementFactor );
+    serde::SerializeTo( writer, buffer.Color );
+    serde::SerializeTo( writer, buffer.AOMultiplier );
+    serde::SerializeTo( writer, buffer.RoughnessMultiplier );
+    serde::SerializeTo( writer, buffer.MetallicMultiplier );
+
+    std::fwrite( WriteBuffer, 1, std::size( WriteBuffer ), f );
     fclose( f );
 }
 
@@ -102,7 +114,7 @@ void MaterialInfo::WriteToFile( const std::string_view name ) {
 void MaterialInfo::LoadFromFile( const std::string_view name ) {
     
     bool foundFile = false;
-    char ReadBuffer[sizeof( int ) + sizeof( MaterialInfo::Buffer )];
+    uint8_t ReadBuffer[sizeof( int ) + sizeof( MaterialInfo::Buffer )]{};
     
     thread_local std::string filePath{};
     filePath.reserve( 255 );
@@ -133,14 +145,28 @@ void MaterialInfo::LoadFromFile( const std::string_view name ) {
         return;
     }
     
+
+    auto reader = serde::ByteBufferReader(ReadBuffer, std::size(ReadBuffer));
+    serde::DeserializeFrom( reader, version );
+
+    buffer.SetDefault();
     // Then the data
-    ZeroMemory( &buffer, sizeof( MaterialInfo::Buffer ) );
-    memcpy( &buffer, ReadBuffer + sizeof( int ), sizeof( MaterialInfo::Buffer ) );
+    serde::DeserializeFrom( reader, buffer.SpecularIntensity );
+    serde::DeserializeFrom( reader, buffer.SpecularPower );
+    serde::DeserializeFrom( reader, buffer.NormalmapStrength );
+    serde::DeserializeFrom( reader, buffer.DisplacementFactor );
+    serde::DeserializeFrom( reader, buffer.Color );
+    serde::DeserializeFrom( reader, buffer.AOMultiplier );
+    serde::DeserializeFrom( reader, buffer.RoughnessMultiplier );
+    serde::DeserializeFrom( reader, buffer.MetallicMultiplier );
 
     if ( version < 2 ) {
-        if ( buffer.DisplacementFactor == 0.0f ) {
-            buffer.DisplacementFactor = 0.7f;
-        }
+        buffer.DisplacementFactor = 0.0f;
+    }
+    if ( version < 7 ) {
+        buffer.AOMultiplier = 1.0f;
+        buffer.RoughnessMultiplier = 1.0f;
+        buffer.MetallicMultiplier = 0.0f;
     }
 
     buffer.Color = float4( 1, 1, 1, 1 );
@@ -4172,7 +4198,7 @@ void GothicAPI::BuildWorldSectionBVH() {
 
             WorldSectionBVHBuildPrimitive primitive;
             primitive.Section = &section;
-            primitive.Bounds = Frustum::BBoxFromzTBBox3D( section.BoundingBox );
+            Frustum::BBoxFromzTBBox3D( section.BoundingBox, primitive.Bounds);
             primitive.Center = primitive.Bounds.Center;
             primitives.push_back( primitive );
         }
@@ -4564,9 +4590,11 @@ static void CVVH_AddNotDrawnVobToList(
         if ( vdSq > distSq ) continue;
 
         if ( bspContainment != ContainmentType::CONTAINS // only do frustum check if previously "INTERSECTS"
-            && cullingEnabled
-            && !ctx.frustum.Intersects( it->Vob->GetBBox() ) ) {
-            continue;
+            && cullingEnabled ) {
+            auto& bb = it->Vob->GetBBox();
+            if ( !ctx.frustum.Intersects( bb ) ) {
+                continue;
+            }
         }
         if ( it->Vob->GetVisualAlpha() ) {
             ctx.queue->PushTransparencyVob( TransparencyVobInfo{ std::sqrtf( vdSq ), it->Vob->GetVobTransparency(), nullptr, it } );
@@ -4866,10 +4894,12 @@ void GothicAPI::ResetMaterialInfo() {
 }
 
 static void FixUpMaterial( MaterialInfo::Buffer& buffer ) {
-    if ( buffer.SpecularIntensity < 0.0f ) {
-        // we abuse negative specular intensity to mark a pixel as "focused", thus materials must never have negative specular intensity.
-        buffer.SpecularIntensity = 0.0f;
-    }
+    // we abuse negative specular intensity to mark a pixel as "focused", thus materials must never have negative specular intensity.
+    buffer.SpecularIntensity = std::max(buffer.SpecularIntensity, 0.0f);
+
+    buffer.AOMultiplier = std::clamp( buffer.AOMultiplier, 0.0f, 1.0f ); 
+    buffer.RoughnessMultiplier = std::clamp( buffer.RoughnessMultiplier, 0.0f, 1.0f );
+    buffer.MetallicMultiplier = std::clamp( buffer.MetallicMultiplier, 0.0f, 1.0f );
 }
 
 /** Returns the material info associated with the given material */
@@ -4892,7 +4922,6 @@ MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCTexture* tex ) {
     } else {
         mi = it->second.get();
     }
-
 
     return mi;
 }
@@ -6280,6 +6309,9 @@ static void CollectVisibleVobsHelper( BspInfo* base,
     const XMFLOAT3 camPos = ctx.cameraPosition;
     const XMVECTOR cameraPosition = XMLoadFloat3( &camPos );
     const bool enableOcclusionCulling = ctx.drawFlags.EnableOcclusionCulling;
+        
+    BoundingBox bb;
+
     while ( base->OriginalNode ) {
         // Check for occlusion-culling
         if ( enableOcclusionCulling && !base->OcclusionInfo.VisibleLastFrame ) {
@@ -6296,7 +6328,8 @@ static void CollectVisibleVobsHelper( BspInfo* base,
         if ( dist < vobOutdoorDist ) {
             if ( !enableOcclusionCulling ) {
                 if ( clipResult != ContainmentType::CONTAINS ) {
-                    clipResult = ctx.frustum.Contains( Frustum::BBoxFromzTBBox3D( nodeBox ) );
+                    Frustum::BBoxFromzTBBox3D( nodeBox, bb);
+                    clipResult = ctx.frustum.Contains( bb );
                 }
             } else {
                 // If we are using occlusion-clipping, this test has already been done

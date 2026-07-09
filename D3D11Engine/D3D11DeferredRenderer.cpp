@@ -30,7 +30,7 @@ void D3D11DeferredRenderer::AddGeometryPasses( RenderGraph& graph,
     graph.AddPass( RG_PASS_NAME("G-Buffer Pass"), [&, colorResource, velocityBufferHandle, backBufferHandle]( RGBuilder& builder, RenderPass& pass ) {
         auto size = engine.GetResolution();
         normalsResource = builder.CreateTexture( { static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y), DXGI_FORMAT_R16G16_FLOAT, L"GBufferNormals" } );
-        specularResource = builder.CreateTexture( { static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y), DXGI_FORMAT_R16G16_FLOAT, L"GBufferSpecular" } );
+        specularResource = builder.CreateTexture( { static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y), DXGI_FORMAT_R10G10B10A2_UNORM, L"GBufferMaterial" } );
         reactiveMaskResource = builder.CreateTexture( { static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y), DXGI_FORMAT_R8_UNORM, L"ReactiveMask" } );
 
         builder.Write( colorResource );
@@ -66,11 +66,22 @@ void D3D11DeferredRenderer::AddGeometryPasses( RenderGraph& graph,
                 velocityBuffer ? velocityBuffer->GetRenderTargetView().Get() : nullptr,
             };
 
-            constexpr float black[] { 0.f, 0.f, 0.f, 0.f };
+            constexpr float black[]{ 0.f, 0.f, 0.f, 0.f };
+            constexpr float clearSpecular[]{ 1.f, 1.f, 1.f, 0.f };
+
+            const float* clearColors[] = {
+                &black[0],
+                &black[0],
+                &clearSpecular[0],
+                &black[0],
+                &black[0],
+            };
+
             // skip color target, clear all others.
             for ( size_t i = 1; i < std::size( rtvs ); i++ ) {
-                if ( rtvs[i] )
+                if ( rtvs[i] ) {
                     context->ClearRenderTargetView( rtvs[i], black );
+                }
             }
             context->OMSetRenderTargets( std::size( rtvs ), rtvs, engine.GetDepthBuffer()->GetDepthStencilView().Get());
 
@@ -162,7 +173,7 @@ bool D3D11DeferredRenderer::BindShaderForTexture( D3D11ShaderManager& shaderMana
     } else if ( blendAdd || blendBlend ) {
         newShader = shaderManager.GetPShader( PShaderID::PS_Simple_FF );
     } else if ( texture->HasAlphaChannel() || forceAlphaTest ) {
-        if ( texture->GetSurface()->GetFxMap() ) {
+        if ( texture->GetSurface()->GetOrmMap() ) {
             newShader = shaderManager.GetPShader( resolvedDiffuseNormalmappedAlphatestFxMap );
         } else if ( texture->GetSurface()->GetNormalmap() || Engine::GAPI->GetSceneWetness() > 1e-6 ) {
             newShader = shaderManager.GetPShader( resolvedDiffuseNormalmappedAlphatest ); 
@@ -170,7 +181,7 @@ bool D3D11DeferredRenderer::BindShaderForTexture( D3D11ShaderManager& shaderMana
             newShader = shaderManager.GetPShader( PShaderID::PS_DiffuseAlphaTest );
         }
     } else {
-        if ( texture->GetSurface()->GetFxMap() ) {
+        if ( texture->GetSurface()->GetOrmMap() ) {
             newShader = shaderManager.GetPShader( resolvedDiffuseNormalmappedFxMap );
         } else if ( texture->GetSurface()->GetNormalmap() || Engine::GAPI->GetSceneWetness() > 1e-6 ) {
             newShader = shaderManager.GetPShader( resolvedDiffuseNormalmapped );

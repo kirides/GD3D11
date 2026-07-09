@@ -84,16 +84,18 @@ float3 VSPositionFromDepth( float depth, float2 vTexCoord )
 
 //--------------------------------------------------------------------------------------
 // Pixel Shader
-// Returns a single shadow factor in [0, 1]:  0 = fully in shadow, 1 = fully lit.
+// Returns shadow mask + depth in [0, 1]:
+// R = shadow factor, G = source depth from z-prepass.
 //--------------------------------------------------------------------------------------
-float PSMain( PS_INPUT Input ) : SV_TARGET
+float2 PSMain( PS_INPUT Input ) : SV_TARGET
 {
     float2 uv = Input.vTexCoord;
+    uint2 pixelCoord = uint2( Input.vPosition.xy );
 
     // Sample depth.  Reversed-Z: sky pixels have depth == 0 (no geometry written).
-    float depth = TX_Depth.Sample( SS_Linear, uv ).r;
+    float depth = TX_Depth.Load( int3( pixelCoord, 0 ) ).r;
     if ( !(depth > 0.0f) )
-        return 1.0f; // Sky — treat as fully lit
+        return float2( 1.0f, 0.0f ); // Sky — treat as fully lit
 
     // Reconstruct positions
     float3 vsPosition = VSPositionFromDepth( depth, uv );
@@ -113,8 +115,9 @@ float PSMain( PS_INPUT Input ) : SV_TARGET
 
     // ComputeCascadedShadowValueSoft is defined in ShadowSampling.h.
     // Pass 1.0 for vertLighting (the shadow mask carries only the cascade shadow;
-    // vertex-AO is applied separately in FP_ComputeSunLighting).
+    // vertex-AO is applied separately in FP_ComputeSunLighting).    
     // Pass the UN-biased position plus normal/slope; the normal-offset bias is applied
     // per cascade inside the function so the blended (coarser) cascade isn't under-biased.
-    return ComputeCascadedShadowValueSoft( wsPosition, wsNormal, slopeScale, vsPosition.z, 1.0f, constantDepthBias, Input.vPosition.xy );
+    float shadow = ComputeCascadedShadowValueSoft( wsPosition, wsNormal, slopeScale, vsPosition.z, 1.0f, constantDepthBias, Input.vPosition.xy );
+    return float2( shadow, saturate( depth ) );
 }

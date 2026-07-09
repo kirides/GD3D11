@@ -69,8 +69,8 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	
 	// Get specular parameters
 	float4 gb3 = TX_SI_SP.Sample(SS_Linear, uv);
-	float specIntensity = gb3.x;
-	float specPower = gb3.y;
+	float roughness = gb3.y;
+	float metallic = gb3.z;
 	
 	// Reconstruct VS World Position from depth
 	float expDepth = TX_Depth.Sample(SS_Linear, uv).r;
@@ -93,9 +93,6 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	float distance = length(lightDir);
 	lightDir /= distance; // Normalize the direction
 	
-	// Do some simple NdL-Lighting
-	float ndl = max(0, dot(lightDir, normal));
-	
 	// Apply dynamic shadow
 	float shadow = PLS_SampleShadowCube(TX_ShadowCube, SS_Comp, wsPosition, wsNormal, Pl_PositionWorld, PL_Range);
 	//return float4(ndl.rrr,1);
@@ -106,12 +103,9 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	// Compute range falloff
 	float falloff = PLS_ComputeRangeFalloff(distance, PL_Range);
 	
-	// Compute specular lighting
+	// Compute physically-based direct lighting
 	float3 V = normalize(-vsPosition);
-	float3 H = normalize(lightDir + V);
-	float spec = PLS_CalcBlinnPhongLighting(normal, H) * PL_Color.w;
-	float specMod = PLS_ComputeSpecMod(diffuse.rgb);
-	float3 lighting = PLS_ComputePointLightLighting(diffuse.rgb, PL_Color.rgb, ndl, falloff, spec, specIntensity, specPower, specMod);
+	float3 lighting = PLS_ComputePointLightLightingPBR(diffuse.rgb, PL_Color.rgb, normal, V, lightDir, falloff, roughness, metallic, PL_Color.w);
 	
 	lighting *= shadow;
 	

@@ -63,6 +63,7 @@ enum class PShaderID : size_t {
     PS_PFX_LumConvert,
     PS_PFX_LumAdapt,
     PS_PFX_HDR,
+    PS_PFX_TonemapSimple,
     PS_PFX_GodRayMask,
     PS_PFX_GodRayZoom,
     PS_PFX_Tonemap,

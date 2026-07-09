@@ -13,10 +13,10 @@ public:
 
     /** Hooks the functions of this Class */
     static void Hook() {
-        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_oCSpawnManagerSpawnNpc, hooked_oCSpawnManagerSpawnNpc  );
+        HookedFunctions::OriginalFunctions.original_oCSpawnManagerSpawnNpc.Detour( hooked_oCSpawnManagerSpawnNpc  );
 
-        //DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_oCSpawnManagerCheckInsertNpc, hooked_oCSpawnManagerCheckInsertNpc  );
-        //DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_oCSpawnManagerCheckRemoveNpc, hooked_oCSpawnManagerCheckRemoveNpc  );
+        //HookedFunctions::OriginalFunctions.original_oCSpawnManagerCheckInsertNpc.Detour( hooked_oCSpawnManagerCheckInsertNpc  );
+        //HookedFunctions::OriginalFunctions.original_oCSpawnManagerCheckRemoveNpc.Detour( hooked_oCSpawnManagerCheckRemoveNpc  );
     }
 
     /** Reads config stuff */

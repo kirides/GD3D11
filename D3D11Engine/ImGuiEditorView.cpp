@@ -67,8 +67,12 @@ ImGuiEditorView::ImGuiEditorView() {
     SelectedVegSize = 1.0f;
     SelectedVegAmount = 1.0f;
     SelectedTexNrmStr = 1.0f;
+    SelectedTexNrmParallax = 1.0f;
     SelectedTexSpecIntens = 1.0f;
     SelectedTexSpecPower = 90.0f;
+    SelectedTexAOMultiplier = 1.0f;
+    SelectedTexRoughnessMultiplier = 1.0f;
+    SelectedTexMetallicMultiplier = 1.0f;
     SelectedTexDisplacement = 1.0f;
     SelectedMeshTessAmount = 0.0f;
     SelectedMeshRoundness = 1.0f;
@@ -245,7 +249,8 @@ void ImGuiEditorView::RenderTextureSelectionPanel() {
 
     // Texture name
     if (Selection.SelectedMaterial && Selection.SelectedMaterial->GetTexture()) {
-        ImGui::TextUnformatted(Selection.SelectedMaterial->GetTexture()->GetNameWithoutExt().c_str());
+        auto name = Selection.SelectedMaterial->GetTexture()->GetNameWithoutExtView();
+        ImGui::TextUnformatted(name.data(), name.data() + name.length());
     } else {
         ImGui::TextUnformatted("No texture selected");
     }
@@ -253,37 +258,63 @@ void ImGuiEditorView::RenderTextureSelectionPanel() {
     ImGui::Separator();
 
     // Texture properties
+    bool updateMaterial = false;
     ImGui::TextUnformatted("Normalmap:");
     ImGui::SameLine(80);
     if (ImGui::SliderFloat("##NrmStr", &SelectedTexNrmStr, -2.0f, 2.0f, "%.2f")) {
+        updateMaterial = true;
+    }
+    
+    ImGui::Text("Parallax Occlusion:");
+    ImGui::SameLine(80);
+    if (ImGui::SliderFloat("##NrmParallax", &SelectedTexNrmParallax, -2.0f, 2.0f, "%.2f")) {
+        updateMaterial = true;
+    }
+
+    ImGui::TextUnformatted("Spec intens (Legacy):");
+    ImGui::SameLine(80);
+    if (ImGui::SliderFloat("##SpecIntens", &SelectedTexSpecIntens, 0.0f, 5.0f, "%.2f")) {
+        updateMaterial = true;
+    }
+
+    ImGui::TextUnformatted("Spec power (Legacy):");
+    ImGui::SameLine(80);
+    if (ImGui::SliderFloat("##SpecPower", &SelectedTexSpecPower, 0.1f, 200.0f, "%.1f")) {
+        updateMaterial = true;
+    }
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("PBR multipliers:");
+
+    ImGui::TextUnformatted("AO:");
+    ImGui::SameLine(80);
+    if (ImGui::SliderFloat("##AOMult", &SelectedTexAOMultiplier, 0.0f, 1.0f, "%.2f")) {
+        updateMaterial = true;
+    }
+
+    ImGui::TextUnformatted("Roughness:");
+    ImGui::SameLine(80);
+    if (ImGui::SliderFloat("##RoughMult", &SelectedTexRoughnessMultiplier, 0.0f, 1.0f, "%.2f")) {
+        updateMaterial = true;
+    }
+
+    ImGui::TextUnformatted("Metallic:");
+    ImGui::SameLine(80);
+    if (ImGui::SliderFloat("##MetalMult", &SelectedTexMetallicMultiplier, 0.0f, 1.0f, "%.2f")) {
+        updateMaterial = true;
+    }
+
+    if (updateMaterial) {
         if (Selection.SelectedMaterial && Selection.SelectedMaterial->GetTexture()) {
             MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom(Selection.SelectedMaterial->GetTexture());
             if (info) {
                 info->buffer.NormalmapStrength = SelectedTexNrmStr;
-                info->WriteToFile(Selection.SelectedMaterial->GetTexture()->GetNameWithoutExt());
-            }
-        }
-    }
-
-    ImGui::TextUnformatted("Spec intens:");
-    ImGui::SameLine(80);
-    if (ImGui::SliderFloat("##SpecIntens", &SelectedTexSpecIntens, 0.0f, 5.0f, "%.2f")) {
-        if (Selection.SelectedMaterial && Selection.SelectedMaterial->GetTexture()) {
-            MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom(Selection.SelectedMaterial->GetTexture());
-            if (info) {
+                info->buffer.DisplacementFactor = SelectedTexNrmParallax;
                 info->buffer.SpecularIntensity = SelectedTexSpecIntens;
-                info->WriteToFile(Selection.SelectedMaterial->GetTexture()->GetNameWithoutExt());
-            }
-        }
-    }
-
-    ImGui::TextUnformatted("Spec power:");
-    ImGui::SameLine(80);
-    if (ImGui::SliderFloat("##SpecPower", &SelectedTexSpecPower, 0.1f, 200.0f, "%.1f")) {
-        if (Selection.SelectedMaterial && Selection.SelectedMaterial->GetTexture()) {
-            MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom(Selection.SelectedMaterial->GetTexture());
-            if (info) {
                 info->buffer.SpecularPower = SelectedTexSpecPower;
+                info->buffer.AOMultiplier = SelectedTexAOMultiplier;
+                info->buffer.RoughnessMultiplier = SelectedTexRoughnessMultiplier;
+                info->buffer.MetallicMultiplier = SelectedTexMetallicMultiplier;
                 info->WriteToFile(Selection.SelectedMaterial->GetTexture()->GetNameWithoutExt());
             }
         }
@@ -291,17 +322,17 @@ void ImGuiEditorView::RenderTextureSelectionPanel() {
 
     /* per (World) Mesh settings are obsolete and not used. (tesselation  etc.) 
     ImGui::Separator();
-    ImGui::Text("WorldMesh-Settings:");
+    ImGui::TextUnformatted("WorldMesh-Settings:");
 
-    ImGui::Text("Displacement:");
+    ImGui::TextUnformatted("Displacement:");
     ImGui::SameLine(80);
     ImGui::SliderFloat("##Displacement", &SelectedTexDisplacement, -2.0f, 2.0f, "%.2f");
 
-    ImGui::Text("Tesselation:");
+    ImGui::TextUnformatted("Tesselation:");
     ImGui::SameLine(80);
     ImGui::SliderFloat("##TessAmount", &SelectedMeshTessAmount, 0.0f, 2.0f, "%.2f");
 
-    ImGui::Text("Roundness:");
+    ImGui::TextUnformatted("Roundness:");
     ImGui::SameLine(80);
     ImGui::SliderFloat("##Roundness", &SelectedMeshRoundness, 0.0f, 1.0f, "%.2f");
 
@@ -319,7 +350,7 @@ void ImGuiEditorView::RenderVegetationSelectionPanel() {
     ImGui::TextWrapped("Ctrl+Click a patch to add/remove it from the selection.");
     ImGui::Spacing();
 
-    ImGui::Text("Vegetation size:");
+    ImGui::TextUnformatted("Vegetation size:");
     if (ImGui::SliderFloat("##VegSize", &SelectedVegSize, 0.0f, 3.0f, "%.2f")) {
         if (!Selection.SelectedVegetationBoxes.empty()) {
             float factor = 1 + (SelectedVegSize - VegLastUniformScale);
@@ -329,7 +360,7 @@ void ImGuiEditorView::RenderVegetationSelectionPanel() {
         }
     }
 
-    ImGui::Text("Vegetation density:");
+    ImGui::TextUnformatted("Vegetation density:");
     if (ImGui::SliderFloat("##VegAmount", &SelectedVegAmount, 0.0f, 20.0f, "%.2f")) {
         for (GVegetationBox* box : Selection.SelectedVegetationBoxes) {
             XMFLOAT3 min, max;
@@ -363,7 +394,7 @@ void ImGuiEditorView::RenderVobSettingsDialog() {
                 ImGui::Text("Skeletal Vob: %s", Selection.SelectedSkeletalVob->Vob->GetName().c_str());
                 // Add more skeletal vob settings here as needed
             } else {
-                ImGui::Text("No vob selected");
+                ImGui::TextUnformatted("No vob selected");
             }
         }
         ImGui::End();
@@ -821,8 +852,12 @@ void ImGuiEditorView::UpdateSelectionPanel() {
         MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom(tx);
         if (info) {
             SelectedTexNrmStr = info->buffer.NormalmapStrength;
+            SelectedTexNrmParallax = info->buffer.DisplacementFactor;
             SelectedTexSpecIntens = info->buffer.SpecularIntensity;
             SelectedTexSpecPower = info->buffer.SpecularPower;
+            SelectedTexAOMultiplier = info->buffer.AOMultiplier;
+            SelectedTexRoughnessMultiplier = info->buffer.RoughnessMultiplier;
+            SelectedTexMetallicMultiplier = info->buffer.MetallicMultiplier;
         }
     }
 

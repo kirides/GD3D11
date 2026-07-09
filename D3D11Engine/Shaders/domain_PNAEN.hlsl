@@ -17,6 +17,10 @@ cbuffer MI_MaterialInfo : register( b2 )
 	
 	float MI_TextureScale;
 	float3 MI_Pad;
+	float MI_AOMultiplier;
+	float MI_RoughnessMultiplier;
+	float MI_MetallicMultiplier;
+	float MI_PBRPadding;
 }
 
 

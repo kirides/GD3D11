@@ -15,7 +15,7 @@ MyDirectDrawSurface7::MyDirectDrawSurface7() {
     refCount = 1;
     EngineTexture = nullptr;
     Normalmap = nullptr;
-    FxMap = nullptr;
+    OrmMap = nullptr;
     LockedData = nullptr;
     GothicTexture = nullptr;
     IsReady = false;
@@ -41,7 +41,7 @@ MyDirectDrawSurface7::~MyDirectDrawSurface7() {
 
     EngineTexture.reset();
     delete Normalmap;
-    delete FxMap;
+    delete OrmMap;
 }
 
 /** Returns the engine texture of this surface */
@@ -54,9 +54,9 @@ D3D11Texture* MyDirectDrawSurface7::GetNormalmap() {
     return Normalmap;
 }
 
-/** Returns the fx-map for this surface */
-D3D11Texture* MyDirectDrawSurface7::GetFxMap() {
-    return FxMap;
+/** Returns the ORM map for this surface */
+D3D11Texture* MyDirectDrawSurface7::GetOrmMap() {
+    return OrmMap;
 }
 
 /** Binds this texture */
@@ -134,15 +134,15 @@ void MyDirectDrawSurface7::LoadAdditionalResources( zCTexture* ownedTexture ) {
         SAFE_DELETE( Normalmap );
     }
 
-    if ( FxMap ) {
-        SAFE_DELETE( FxMap );
+    if ( OrmMap ) {
+        SAFE_DELETE( OrmMap );
     }
 
-    if ( TextureName.empty() || Normalmap || FxMap || !Engine::GAPI->GetRendererState().RendererSettings.AllowNormalmaps ) {
+    if ( TextureName.empty() || Normalmap || OrmMap || !Engine::GAPI->GetRendererState().RendererSettings.AllowNormalmaps ) {
         return;
     }
 
-    D3D11Texture* fxMapTexture = nullptr;
+    D3D11Texture* ormMapTexture = nullptr;
     D3D11Texture* nrmmapTexture = nullptr;
 
     static constexpr char vdfsWorkPath[] { R"(\_WORK\DATA\TEXTURES\REPLACEMENTS\)" };
@@ -155,7 +155,7 @@ void MyDirectDrawSurface7::LoadAdditionalResources( zCTexture* ownedTexture ) {
     
     const std::pair<const char*, D3D11Texture** const> resourcesToLoad[] = {
         {"_NORMAL.DDS", &nrmmapTexture},
-        {"_FX.DDS", &fxMapTexture},
+        {"_ORM.DDS", &ormMapTexture},
     };
 
     for (const auto [suffix, texture] : resourcesToLoad) {
@@ -174,7 +174,7 @@ void MyDirectDrawSurface7::LoadAdditionalResources( zCTexture* ownedTexture ) {
     }
 
     Normalmap = nrmmapTexture;
-    FxMap = fxMapTexture;
+    OrmMap = ormMapTexture;
 }
 
 HRESULT MyDirectDrawSurface7::QueryInterface( REFIID riid, LPVOID* ppvObj ) {

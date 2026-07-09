@@ -557,7 +557,7 @@ void ImGuiShim::RenderSettingsWindow()
                 }
                 ImGui::SetItemTooltip( "Enables trees, grass and wheats to wave with the wind" );
 
-                ImGui::Text( "Wind strength" ); ImGui::SameLine();
+                ImGui::TextUnformatted( "Wind strength" ); ImGui::SameLine();
 
                 ImGui::BeginDisabled( settings.WindQuality == GothicRendererSettings::EWindQuality::WIND_QUALITY_NONE );
                 ImGui::SliderFloat( "##Wind strength", &settings.GlobalWindStrength, 0.1f, 5.0f, "%.2f" );
@@ -1303,6 +1303,25 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                 }
                 ImGui::SetItemTooltip("Enable Normalmapping.\nIf in doubt ask the creator of the Normalmaps you use.\nRequires Normalmaps with RGB channel layout.");
 
+                
+                static const std::vector<std::pair<const char*, int>> heightMappingLevels = {
+                    { "disabled",   0 },
+                    { "low quality",   1 }, // simple parallax
+                    { "high quality",   2 }, // raymarched
+                };
+                if ( ImComboBoxC( "Heightmapping Mode", heightMappingLevels, &settings.EnableDisplacementMapping, []
+                {
+                    Engine::GraphicsEngine->ReloadShaders();
+                } ) ) {
+                    ImGui::EndCombo();
+                }
+                ImGui::SetItemTooltip("Enables Heightmap/Displacementmap support for Normalmaps.\nIf in doubt ask the creator of the Normalmaps you use.\nRequires Normalmaps '_normal.dds' with Alpha channel = Heightmap.");
+                
+                if (ImGui::Checkbox("Enable Material mapping", &settings.EnableMaterialMapping )) {
+                    Engine::GraphicsEngine->ReloadShaders();
+                }
+                ImGui::SetItemTooltip("Enables FX-map support for Normalmaps.\nOptional, but may massively improve lighting quality when available.\nRequires additional per Texture '_fx.dds' file");
+                
                 ImGui::Checkbox("Force Feature Level 10", &settings.DebugSettings.FeatureSet.ForceFeatureLevel10 );
                 ImGui::SetItemTooltip("Force DirectX 10 era feature support. Requires restart.");
                 ImGui::EndTabItem();

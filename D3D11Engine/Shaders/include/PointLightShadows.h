@@ -7,6 +7,7 @@
 #if !defined(__cplusplus)
 
 static const int PLS_SHADOW_BLUR_COUNT = 8;
+static const float PLS_PI = 3.14159265f;
 static const float2 PLS_SHADOW_BLUR_OFFSETS[PLS_SHADOW_BLUR_COUNT] = {
     float2( 0.076849f, -0.078216f),
     float2(-0.165415f,  0.370808f),
@@ -46,6 +47,131 @@ float PLS_ComputeRangeFalloff( float distance, float lightRange )
 {
     float normalizedDist = saturate( 1.0f - (distance / lightRange) );
     return normalizedDist * (normalizedDist * 0.2f + 0.8f);
+}
+
+float PLS_SafeRoughness( float roughness )
+{
+    return max( saturate( roughness ), 0.045f );
+}
+
+float PLS_DistributionGGX( float NdotH, float roughness )
+{
+    float alpha = roughness * roughness;
+    float alpha2 = alpha * alpha;
+    float denom = NdotH * NdotH * (alpha2 - 1.0f) + 1.0f;
+    return alpha2 / max( PLS_PI * denom * denom, 1e-4f );
+}
+
+float PLS_GeometrySchlickGGX( float NdotX, float roughness )
+{
+    float r = roughness + 1.0f;
+    float k = (r * r) / 8.0f;
+    return NdotX / max( NdotX * (1.0f - k) + k, 1e-4f );
+}
+
+float PLS_GeometrySmith( float NdotV, float NdotL, float roughness )
+{
+    return PLS_GeometrySchlickGGX( NdotV, roughness ) * PLS_GeometrySchlickGGX( NdotL, roughness );
+}
+
+float PLS_Pow5( float x )
+{
+    float x2 = x * x;
+    return x2 * x2 * x; // x^5
+}
+
+float3 PLS_FresnelSchlick( float cosTheta, float3 F0 )
+{
+    float x = saturate( 1.0f - cosTheta );
+    return F0 + (1.0f - F0) * PLS_Pow5(x);
+}
+
+float3 PLS_ComputeDirectPBRLighting(
+    float3 baseColor,
+    float3 lightColor,
+    float3 N,
+    float3 V,
+    float3 L,
+    float roughness,
+    float metallic,
+    float attenuation,
+    float specularScale = 1.0f )
+{
+    float NdotL = saturate( dot( N, L ) );
+    float NdotV = saturate( dot( N, V ) );
+    if ( NdotL <= 0.0f || NdotV <= 0.0f || attenuation <= 0.0f )
+        return 0.0f;
+
+    float3 H = normalize( V + L );
+    float NdotH = saturate( dot( N, H ) );
+    float VdotH = saturate( dot( V, H ) );
+
+    // convert perceptual roughness to physics roughness by squaring it
+    float clampedRoughness = PLS_SafeRoughness( roughness * roughness );
+    float clampedMetallic = saturate( metallic );
+    float3 F0 = lerp( float3( 0.04f, 0.04f, 0.04f ), baseColor, clampedMetallic );
+
+    float D = PLS_DistributionGGX( NdotH, clampedRoughness );
+    float G = PLS_GeometrySmith( NdotV, NdotL, clampedRoughness );
+    float3 F = PLS_FresnelSchlick( VdotH, F0 );
+
+    float3 numerator = D * G * F;
+    float denominator = max( 4.0f * NdotV * NdotL, 1e-4f );
+    float3 specular = (numerator / denominator) * specularScale;
+
+    float3 kD = (1.0f - F) * (1.0f - clampedMetallic);
+    float3 diffuse = kD * baseColor / PLS_PI;
+
+    return (diffuse + specular) * lightColor * (NdotL * attenuation);
+}
+
+float3 PLS_ComputeDirectPBRSpecularOnly(
+    float3 baseColor,
+    float3 lightColor,
+    float3 N,
+    float3 V,
+    float3 L,
+    float roughness,
+    float metallic,
+    float attenuation )
+{
+    float NdotL = saturate( dot( N, L ) );
+    float NdotV = saturate( dot( N, V ) );
+    if ( NdotL <= 0.0f || NdotV <= 0.0f || attenuation <= 0.0f )
+        return 0.0f;
+
+    float3 H = normalize( V + L );
+    float NdotH = saturate( dot( N, H ) );
+    float VdotH = saturate( dot( V, H ) );
+
+    // convert perceptual roughness to physics roughness by squaring it
+    float clampedRoughness = PLS_SafeRoughness( roughness * roughness );
+    float clampedMetallic = saturate( metallic );
+    float3 F0 = lerp( float3( 0.04f, 0.04f, 0.04f ), baseColor, clampedMetallic );
+
+    float D = PLS_DistributionGGX( NdotH, clampedRoughness );
+    float G = PLS_GeometrySmith( NdotV, NdotL, clampedRoughness );
+    float3 F = PLS_FresnelSchlick( VdotH, F0 );
+
+    float3 numerator = D * G * F;
+    float denominator = max( 4.0f * NdotV * NdotL, 1e-4f );
+    float3 specular = numerator / denominator;
+
+    return specular * lightColor * (NdotL * attenuation);
+}
+
+float3 PLS_ComputePointLightLightingPBR(
+    float3 baseColor,
+    float3 lightColor,
+    float3 N,
+    float3 V,
+    float3 L,
+    float falloff,
+    float roughness,
+    float metallic,
+    float specularScale = 1.0f )
+{
+    return PLS_ComputeDirectPBRLighting( baseColor, lightColor, N, V, L, roughness, metallic, falloff, specularScale );
 }
 
 float PLS_ApplyShadowDistanceFade( float finalShadow, float normalizedDist )

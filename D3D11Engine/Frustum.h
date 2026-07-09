@@ -207,12 +207,16 @@ public:
 
     bool Intersects( const zTBBox3D& aabb ) const {
         if ( m_always_containing ) return true;
-        return Intersects( BBoxFromzTBBox3D( aabb ) );
+        BoundingBox bb;
+        BBoxFromzTBBox3D( aabb , bb );
+        return Intersects( bb );
     }
 
     DirectX::ContainmentType Contains(const zTBBox3D& aabb) const {
         if (m_always_containing) return ContainmentType::CONTAINS;
-        return Contains(BBoxFromzTBBox3D(aabb));
+        BoundingBox bb;
+        BBoxFromzTBBox3D(aabb, bb);
+        return Contains(bb);
     }
     
     // Schneller Sphere-Test für VOBs
@@ -242,18 +246,17 @@ public:
         return Contains(bb);
     }
 
-    static BoundingBox BBoxFromzTBBox3D(const zTBBox3D& box) {
-        BoundingBox bb;
+    static void BBoxFromzTBBox3D(const zTBBox3D& box, BoundingBox& bb) {
         XMVECTOR bbMin = XMLoadFloat3(&box.Min);
         XMVECTOR bbMax = XMLoadFloat3(&box.Max);
         XMStoreFloat3(&bb.Center, XMVectorScale(XMVectorAdd(bbMin, bbMax), 0.5f));
         XMStoreFloat3(&bb.Extents, XMVectorScale(XMVectorSubtract(bbMax, bbMin), 0.5f));
-        return bb;
     }
     
-    static BoundingSphere BSphereFromzTBBox3D(const zTBBox3D& box) {
-        BoundingSphere sp;
-        sp.CreateFromBoundingBox(sp, BBoxFromzTBBox3D(box));
+    static BoundingSphere BSphereFromzTBBox3D(const zTBBox3D& box, BoundingSphere& sp) {
+        BoundingBox bb;
+        BBoxFromzTBBox3D(box, bb);
+        BoundingSphere::CreateFromBoundingBox(sp, bb);
         return sp;
     }
 

@@ -11,9 +11,9 @@ public:
 
     /** Hooks the functions of this Class */
     static void Hook() {
-        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCQuadMarkCreateQuadMark, Hooked_CreateQuadMark  );
-        //DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCQuadMarkConstructor, Hooked_Constructor  );
-        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCQuadMarkDestructor, Hooked_Destructor  );
+        HookedFunctions::OriginalFunctions.original_zCQuadMarkCreateQuadMark.Detour( Hooked_CreateQuadMark  );
+        //HookedFunctions::OriginalFunctions.original_zCQuadMarkConstructor.Detour( Hooked_Constructor  );
+        HookedFunctions::OriginalFunctions.original_zCQuadMarkDestructor.Detour( Hooked_Destructor  );
     }
 
     static void __fastcall Hooked_CreateQuadMark( zCQuadMark* thisptr, void* unknwn, zCPolygon* poly, const float3& position, const float2& size, struct zTEffectParams* params ) {

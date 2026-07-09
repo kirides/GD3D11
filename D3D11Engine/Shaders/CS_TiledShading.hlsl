@@ -58,8 +58,8 @@ void CSMain( uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID, uint
     float4 diffuse = TX_Diffuse.Load( int3( pixelCoord, 0 ) );
     float3 normal = DecodeNormalGBuffer( TX_Nrm.Load( int3( pixelCoord, 0 ) ).xy );
     float4 gb3 = TX_SI_SP.Load( int3( pixelCoord, 0 ) );
-    float specIntensity = gb3.x;
-    float specPower = gb3.y;
+    float roughness = gb3.y;
+    float metallic = gb3.z;
 
     float expDepth = TX_Depth.Load( int3( pixelCoord, 0 ) ).r;
     float3 vsPosition = VSPositionFromDepth( expDepth, pixelCoord );
@@ -77,7 +77,6 @@ void CSMain( uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID, uint
 
     // Hoist per-pixel constants outside the light loop
     float3 V = normalize( -vsPosition );
-    float specMod = PLS_ComputeSpecMod( diffuse.rgb );
 
     float3 totalLighting = float3( 0, 0, 0 );
     float3 maxLighting = float3( 0, 0, 0 );
@@ -94,12 +93,8 @@ void CSMain( uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID, uint
 
         lightDir /= distance;
 
-        float ndl = max( 0, dot( lightDir, normal ) );
         float falloff = PLS_ComputeRangeFalloff( distance, light.Range );
-
-        float3 H = normalize( lightDir + V );
-        float spec = PLS_CalcBlinnPhongLighting( normal, H ) * light.Color.w;
-        float3 lighting = PLS_ComputePointLightLighting( diffuse.rgb, light.Color.rgb, ndl, falloff, spec, specIntensity, specPower, specMod );
+        float3 lighting = PLS_ComputePointLightLightingPBR( diffuse.rgb, light.Color.rgb, normal, V, lightDir, falloff, roughness, metallic, light.Color.w );
 
         // Apply shadow if this light has a shadow cubemap and contribution is non-negligible
         if ( light.ShadowCubeIndex >= 0 && any( lighting > 0.001f ) ) {

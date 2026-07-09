@@ -25,7 +25,7 @@ int32_t D3D11GraphicsShader::GetInputIndex( StringID name )
 #ifdef DEBUG_D3D11
     // LogError() << "Tried to find input index for semantic '" << name << "' but it was not found in the shader!";
 #endif
-    return -1;
+    return INVALID_SHADER_CB_SLOT;
 }
 
 GraphicsShaderConstantBuffer D3D11GraphicsShader::GetBuffer(StringID name) {
@@ -111,4 +111,16 @@ void D3D11GraphicsShader::OnReflectShaderResource(
     const D3D11_SHADER_INPUT_BIND_DESC& resourceDesc)
 {
     InputSemanticToIndex[StringID::make(resourceDesc.Name)] = resourceDesc.BindPoint;
+}
+
+void GraphicsShaderConstantBufferSlot::Bind( D3D11ConstantBuffer* buffer ) const
+{
+    if ( shader && slot != INVALID_SHADER_CB_SLOT ) {
+        shader->BindBuffer( slot, buffer );
+    }
+}
+
+bool GraphicsShaderConstantBufferSlot::IsValid() const
+{
+    return shader != nullptr && slot != INVALID_SHADER_CB_SLOT;
 }
