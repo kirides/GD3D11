@@ -965,7 +965,6 @@ void WorldConverter::Extract3DSMeshFromVisual( zCProgMeshProto* visual, MeshVisu
     std::vector<ExVertexStruct> vertices;
 
     // Get the data out for all submeshes
-    vertices.clear();
     visual->ConstructVertexBuffer( &vertices );
 
     // This visual can hold multiple submeshes, each with it's own indices
@@ -974,28 +973,33 @@ void WorldConverter::Extract3DSMeshFromVisual( zCProgMeshProto* visual, MeshVisu
 
         // Get the data from the indices
         for ( int n = 0; n < m->WedgeList.NumInArray; n++ ) {
-            int idx = m->WedgeList.Get( n ).position;
+            const auto& wedge = m->WedgeList.Get( n );
+            int idx = wedge.position;
 
-            vertices[idx].TexCoord.x = m->WedgeList.Get( n ).texUV.x; // This produces wrong results
-            vertices[idx].TexCoord.y = m->WedgeList.Get( n ).texUV.y;
+            vertices[idx].TexCoord.x = wedge.texUV.x; // This produces wrong results
+            vertices[idx].TexCoord.y = wedge.texUV.y;
             vertices[idx].Color = 0xFFFFFFFF;
-            *vertices[idx].Normal.toXMFLOAT3() = (*m->WedgeList.Get( n ).normal.toXMFLOAT3());
+            vertices[idx].Normal = wedge.normal;
         }
 
         // Get indices
         std::vector<VERTEX_INDEX> indices;
+        indices.reserve( m->TriList.NumInArray * 3 );
         for ( int n = 0; n < m->TriList.NumInArray; n++ ) {
-            indices.emplace_back( m->WedgeList.Get( m->TriList.Get( n ).wedge[0] ).position );
-            indices.emplace_back( m->WedgeList.Get( m->TriList.Get( n ).wedge[1] ).position );
-            indices.emplace_back( m->WedgeList.Get( m->TriList.Get( n ).wedge[2] ).position );
+            const auto& triWedge = m->TriList.Get( n ).wedge;
+            indices.emplace_back( m->WedgeList.Get( triWedge[0] ).position );
+            indices.emplace_back( m->WedgeList.Get( triWedge[1] ).position );
+            indices.emplace_back( m->WedgeList.Get( triWedge[2] ).position );
         }
 
         zCMaterial* mat = m->Material;
 
         MeshInfo* mi = new MeshInfo;
 
+        // WTF. These meshes all have incrementally MORE vertices the further this goes.
+        // all meshes share the same vertex-vector
         mi->Vertices = vertices;
-        mi->Indices = indices;
+        mi->Indices = std::move(indices);
         mi->meshId = s_MeshManager->RecordMesh( m );
 
         // Create the buffers
@@ -1046,7 +1050,7 @@ void WorldConverter::ExtractSkeletalMeshFromVob( zCModel* model, SkeletalMeshVis
             int numNodes = *reinterpret_cast<int*>(stream);
             stream += 4;
 
-            ExSkelVertexStruct vx;
+            ExSkelVertexStruct& vx = posList.emplace_back();
             //vx.Position = s->GetPositionList()->Array[i];
             vx.Normal = float3( 0, 0, 0 );
             ZeroMemory( vx.weights, sizeof( vx.weights ) );
@@ -1075,8 +1079,6 @@ void WorldConverter::ExtractSkeletalMeshFromVob( zCModel* model, SkeletalMeshVis
                     vx.Position[n][2] = halfs[2];
                 }
             }
-
-            posList.emplace_back( vx );
         }
 
         // The rest is the same as a zCProgMeshProto, but with a different vertex type
@@ -1116,8 +1118,7 @@ void WorldConverter::ExtractSkeletalMeshFromVob( zCModel* model, SkeletalMeshVis
                 vx.TexCoord = wedge.texUV;
 
                 // Save vertexpos in bind pose, to run PNAEN on it
-                bindPoseVertices.emplace_back();
-                ExVertexStruct& pvx = bindPoseVertices.back();
+                ExVertexStruct& pvx = bindPoseVertices.emplace_back();
                 pvx.Position = s->GetPositionList()->Array[wedge.position];
                 pvx.Normal = vx.Normal;
                 pvx.TexCoord = vx.TexCoord;
@@ -1351,17 +1352,19 @@ void WorldConverter::ExtractProgMeshProtoFromMesh( zCMesh* mesh, MeshVisualInfo*
 
     for ( int i = 0; i < numPolys; i++ ) {
         zCPolygon* poly = polys[i];
+        zCVertex** const polyVerticies = poly->getVertices();
+        zCVertFeature** const polyFeatures = poly->getFeatures();
 
         // Extract poly vertices
         polyVertices.clear();
-        polyVertices.reserve( poly->GetNumPolyVertices() );
+        const auto numPolyVeritcies = poly->GetNumPolyVertices();
+        polyVertices.reserve( numPolyVeritcies );
 
-        for ( int v = 0; v < poly->GetNumPolyVertices(); v++ ) {
-            zCVertex* vertex = poly->getVertices()[v];
-            zCVertFeature* feature = poly->getFeatures()[v];
+        for ( int v = 0; v < numPolyVeritcies; v++ ) {
+            const zCVertex* vertex = polyVerticies[v];
+            const zCVertFeature* feature = poly->getFeatures()[v];
 
-            polyVertices.emplace_back();
-            ExVertexStruct& t = polyVertices.back();
+            ExVertexStruct& t = polyVertices.emplace_back();
             t.Position = vertex->Position;
             t.TexCoord = feature->texCoord;
             t.Normal = feature->normal;
@@ -1480,8 +1483,8 @@ void WorldConverter::UpdateMorphMeshVisual( void* v, MeshVisualInfo* meshInfo ) 
         vertices.reserve( s->WedgeList.NumInArray );
         for ( int v = 0; v < s->WedgeList.NumInArray; v++ ) {
             zTPMWedge& wedge = s->WedgeList.Array[v];
-            vertices.emplace_back();
-            ExVertexStruct& vx = vertices.back();
+
+            ExVertexStruct& vx = vertices.emplace_back();
             vx.Position = posList[wedge.position];
             vx.Normal = wedge.normal;
             vx.TexCoord = wedge.texUV;
@@ -1516,7 +1519,8 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
     // Construct unindexed mesh
     std::vector<ExVertexStruct> vertices;
     std::vector<VERTEX_INDEX> indices;
-    for ( int i = 0; i < visual->GetNumSubmeshes(); i++ ) {
+    const auto numSubmeshes = visual->GetNumSubmeshes();
+    for ( int i = 0; i < numSubmeshes; i++ ) {
         zCSubMesh* s = visual->GetSubmesh( i );
         vertices.clear();
         indices.clear();
