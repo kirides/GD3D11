@@ -7446,7 +7446,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                     }
                     else {
                         // Bind texture
-                        if ( tx->CacheIn( 0.6f ) == zRES_CACHED_OUT ) {
+                        if ( tx->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
                             continue;
                         }
                         // Previously this forced alpha testing, now we need to check material flags as well for that and only enable the shader if absolutely necessery
