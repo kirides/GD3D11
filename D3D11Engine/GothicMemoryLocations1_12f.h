@@ -458,6 +458,7 @@ struct GothicMemoryLocations {
         static const unsigned int IsAPlayer = 0x006D0D70;
         static const unsigned int GetName = 0x006BD8F0;
         static const unsigned int HasFlag = 0x006BEB10;
+        static const unsigned int GetInvSlot_zString = 0;
     };
 
     struct oCGame {
@@ -586,6 +587,11 @@ struct GothicMemoryLocations {
         static const unsigned int zCObjectFactory__CreateZFile = 0;
     };
 
+    struct oCVisualFX
+    {
+        static const unsigned int Offset_origin = 0x458;
+    };
+    
     struct zAllocator
     {
         static const unsigned int Malloc = 0;

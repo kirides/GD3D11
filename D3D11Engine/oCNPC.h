@@ -14,6 +14,15 @@ enum oCNPCFlags : int
     NPC_FLAG_GHOST = (1 << 2)
 };
 
+struct TNpcSlot {
+    zSTRING name;
+    int inInventory;
+    int tmpLevel;
+    zSTRING itemName;
+    zCVob* vob;
+    int _rest;
+};
+
 class oCNPC;
 struct oCNpc_States {
 #ifdef BUILD_GOTHIC_1_CLASSIC
@@ -94,6 +103,10 @@ public:
         zSTRING str;
         reinterpret_cast<void( __fastcall* )( oCNPC*, int, zSTRING&, int )>( GothicMemoryLocations::oCNPC::GetName )( this, 0, str, i );
         return str;
+    }
+    
+    TNpcSlot* GetInvSlot(const zSTRING& name) {
+        return reinterpret_cast<TNpcSlot*( __fastcall* )( oCNPC*, int, const zSTRING& )>( GothicMemoryLocations::oCNPC::GetInvSlot_zString )( this, 0, name );
     }
     
 #ifdef BUILD_GOTHIC_1_CLASSIC

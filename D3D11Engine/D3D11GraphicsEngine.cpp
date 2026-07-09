@@ -5457,7 +5457,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
     bool noNPCs, std::list<VobInfo*>* renderedVobs,
     std::list<SkeletalVobInfo*>* renderedMobs,
     std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache,
-    unsigned int casterMask ) {
+    unsigned int casterMask,
+    const std::function<bool(zCVob*)>& ignoreVob ) {
 
     // Setup renderstates
     Engine::GAPI->GetRendererState().RasterizerState.SetDefault();
@@ -5753,6 +5754,10 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                 if ( XMVector3Greater(XMVector3LengthSq( position - it->Vob->GetPositionWorldXM() ), vRangeSquared) ) {
                     continue;
                 }
+                
+                if (ignoreVob && ignoreVob(it->Vob)) {
+                    continue;
+                }
 
                 rndVob.emplace_back( it );
             }
@@ -5765,7 +5770,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
         // At this point eiter renderedMobs or rndVob is filled with something
         std::list<SkeletalVobInfo*>& rl = renderedMobs != nullptr ? *renderedMobs : rndVob;
         for ( auto it : rl ) {
-            Engine::GAPI->DrawSkeletalMeshVob( it, FLT_MAX );
+            Engine::GAPI->DrawSkeletalMeshVob( it, FLT_MAX, true, ignoreVob );
         }
     }
 
@@ -5794,7 +5799,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                     continue;
                 }
 
-                Engine::GAPI->DrawSkeletalMeshVob( skeletalMeshVob, FLT_MAX );
+                Engine::GAPI->DrawSkeletalMeshVob( skeletalMeshVob, FLT_MAX, true, ignoreVob );
             }
         }
     }
@@ -5805,7 +5810,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
     bool noNPCs, std::list<VobInfo*>* renderedVobs,
     std::list<SkeletalVobInfo*>* renderedMobs,
     std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache,
-    unsigned int casterMask ) {
+    unsigned int casterMask,
+    const std::function<bool(zCVob*)>& ignoreVob ) {
 
     // Setup renderstates
     Engine::GAPI->GetRendererState().RasterizerState.SetDefault();
@@ -6021,9 +6027,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                         continue;
                     }
                 
-                    // Check for inside vob. Don't render inside-vobs when the light is
-                    // outside and vice-versa.
-                    if ( isOutdoor && it->IsIndoorVob != indoor ) {
+                    if (ignoreVob && ignoreVob(it->Vob)) {
                         continue;
                     }
                     rndVob.emplace_back( it );
@@ -6114,6 +6118,10 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                 if ( XMVector3Greater(XMVector3LengthSq( position - it->Vob->GetPositionWorldXM() ), vRangeSquared) ) {
                     continue;
                 }
+                
+                if (ignoreVob && ignoreVob(it->Vob)) {
+                    continue;
+                }
 
                 rndVob.emplace_back( it );
             }
@@ -6127,7 +6135,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
         std::list<SkeletalVobInfo*>& rl = renderedMobs != nullptr ? *renderedMobs : rndVob;
         auto _ = Engine::GraphicsEngine->RecordGraphicsEvent( GE_NAME( "Draw static skeletal meshes (layered)" ) );
         for ( auto it : rl ) {
-            Engine::GAPI->DrawSkeletalMeshVob_Layered( it, FLT_MAX );
+            Engine::GAPI->DrawSkeletalMeshVob_Layered( it, FLT_MAX, true, ignoreVob );
         }
     }
 
@@ -6156,7 +6164,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                     continue;
                 }
 
-                Engine::GAPI->DrawSkeletalMeshVob_Layered( skeletalMeshVob, FLT_MAX );
+                Engine::GAPI->DrawSkeletalMeshVob_Layered( skeletalMeshVob, FLT_MAX, true, ignoreVob );
             }
         }
     }
@@ -8067,10 +8075,12 @@ void XM_CALLCONV D3D11GraphicsEngine::RenderShadowCube(
     std::list<SkeletalVobInfo*>* renderedMobs,
     std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache,
     bool clearDepth,
-    unsigned int casterMask ) {
+    unsigned int casterMask,
+    const std::function<bool(zCVob*)>& ignoreVob ) {
     
     ShadowMaps->RenderShadowCube( position, range, targetCube, face, debugRTV,
-        cullFront, indoor, noNPCs, renderedVobs, renderedMobs, worldMeshCache, clearDepth, casterMask );
+        cullFront, indoor, noNPCs, renderedVobs, renderedMobs, worldMeshCache, clearDepth, casterMask,
+        ignoreVob);
 }
 
 /** Renders the shadowmaps for the sun */

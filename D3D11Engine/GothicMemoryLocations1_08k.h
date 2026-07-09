@@ -514,6 +514,7 @@ struct GothicMemoryLocations {
         static const unsigned int HasFlag = 0x0068E150;
         static const unsigned int Offset_focus_vob = 0x9e4;
         static const unsigned int Offset_states = 0x470;
+        static const unsigned int GetInvSlot_zString = 0x006a5770;
     };
     
     struct oCNpc_States {
@@ -682,6 +683,11 @@ struct GothicMemoryLocations {
         static const unsigned int Constructor2 = 0x00444d90;
         static const unsigned int Destructor = 0x00444e40;
         static const unsigned int zCObjectFactory__CreateZFile = 0x0058bd60;
+    };
+
+    struct oCVisualFX
+    {
+        static const unsigned int Offset_origin = 0x458;
     };
     
 #define zALLOCATOR_SUPPORTED

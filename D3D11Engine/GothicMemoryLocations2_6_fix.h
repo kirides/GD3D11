@@ -173,6 +173,7 @@ struct GothicMemoryLocations {
         static const unsigned int IsAPlayer = 0x007425A0;
         static const unsigned int GetName = 0x0072F820;
         static const unsigned int HasFlag = 0x007309E0;
+        static const unsigned int GetInvSlot_zString = 0x00749ae0;
     };
     
     struct zCViewDraw {
@@ -746,6 +747,11 @@ struct GothicMemoryLocations {
         static const unsigned int Size = 0x00449410;
         static const unsigned int SetPath = 0x004455d0;
         static const unsigned int zCObjectFactory__CreateZFile = 0x005ab940;
+    };
+
+    struct oCVisualFX
+    {
+        static const unsigned int Offset_origin = 0x4a8;
     };
 
 #define zALLOCATOR_SUPPORTED
