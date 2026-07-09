@@ -6201,6 +6201,14 @@ static void CollectLeafVobs(
                     if ( zCVob* parent = vob->GetVobParent() ) {
                         if ( parent && parent->As<oCVisualFX>() ) {
                             PFXVobLight = true;
+                            
+                            // returning NB workaround: torch is not a torch, but a "SPELLFX_FIRE_TORCH VOB"
+                            const auto& parentName = parent->GetObjectName();
+                            const std::string_view parentNameView(parentName.ToChar(), parentName.Length());
+                            if ( parentNameView.find("TORCH") != std::string_view::npos) {
+                                // for now, assume any PFX whose parent contains "torch" is likely a a torch
+                                PFXVobLight = false;
+                            }
                         }
                     }
 
