@@ -67,6 +67,7 @@ struct VS_OUTPUT
 	float3 vViewPosition	: TEXCOORD5;
 	float4 vCurrClipPos     : TEXCOORD6;
 	float4 vPrevClipPos     : TEXCOORD7;
+	float4 vTangent			: TEXCOORD3;  // no precomputed tangent -> zero (PS falls back to ddx/ddy)
 	float4 vPosition		: SV_POSITION;
 };
 
@@ -146,8 +147,9 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 	// Motion Vectors - use UNJITTERED matrices for correct velocity
 	Output.vCurrClipPos = mul(float4(positionWorld, 1.0), frame.M_UnjitteredViewProj);
 	Output.vPrevClipPos = mul(float4(prevPositionWorld, 1.0), frame.M_PrevViewProj);
-	
+	Output.vTangent = float4(0,0,0,0);
+
 	//Output.vWorldPosition = positionWorld;
-	
+
 	return Output;
 }

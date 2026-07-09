@@ -116,6 +116,18 @@ namespace {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
     };
 
+    // Packed 36-byte Ex vertex (ExVertexStructGPU) for the wrapped world mesh. See VS_ExPacked.hlsl
+    // and VertexPacking.h. Normal = octahedral (R16G16_SNORM), Tangent = R10G10B10A2, UV1 = half2.
+    static const D3D11_INPUT_ELEMENT_DESC layoutPackedEx[] =
+    {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        { "NORMAL", 0, DXGI_FORMAT_R16G16_SNORM, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        { "TANGENT", 0, DXGI_FORMAT_R10G10B10A2_UNORM, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 1, DXGI_FORMAT_R16G16_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        { "DIFFUSE", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+    };
+
     static const D3D11_INPUT_ELEMENT_DESC layout11[] =
     {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
@@ -165,6 +177,7 @@ namespace {
         { VERTEX_INPUT_LAYOUT_14_VS_ExNodeInstanced, {layout14, std::size( layout14 )} },
         { VERTEX_INPUT_LAYOUT_15_VS_DecalInstanced, {layout15, std::size( layout15 )} },
         { VERTEX_INPUT_LAYOUT_POS_ONLY, {layoutPosOnly, std::size( layoutPosOnly )} },
+        { VERTEX_INPUT_LAYOUT_PACKED_EX, {layoutPackedEx, std::size( layoutPackedEx )} },
     };
 }
 

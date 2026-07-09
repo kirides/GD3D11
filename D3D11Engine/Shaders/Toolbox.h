@@ -94,3 +94,53 @@ float3 perturb_normal( float3 N, float3 V, Texture2D normalmap, float2 texcoord,
     return perturb_normal_rgb(N, V, normalmap, texcoord, samplerState, normalmapDepth);
 #endif
 }
+
+// Samples the normal map into tangent space, honoring the NORMAL_MAP_MODE / NORMAL_MAP_RESTORE_Z
+// conventions used above.
+float3 sample_normal_ts( Texture2D normalmap, float2 texcoord, SamplerState samplerState, float normalmapDepth )
+{
+#if NORMAL_MAP_RESTORE_Z == 1
+    float2 nrmmap_xy = normalmap.Sample( samplerState, texcoord ).xy * 2 - 1;
+  #if NORMAL_MAP_MODE == 2
+    nrmmap_xy.y = -nrmmap_xy.y;
+  #endif
+    nrmmap_xy *= normalmapDepth;
+    float nrmmap_z = sqrt( saturate( 1.0f - dot( nrmmap_xy, nrmmap_xy ) ) );
+    return normalize( float3( nrmmap_xy, nrmmap_z ) );
+#else
+    float3 nrmmap = normalmap.Sample( samplerState, texcoord ).xyz * 2 - 1;
+  #if NORMAL_MAP_MODE == 2
+    nrmmap.y = -nrmmap.y;
+  #endif
+    nrmmap.xy *= normalmapDepth;
+    return normalize( nrmmap );
+#endif
+}
+
+// Builds a TBN from a precomputed (MikkTSpace) vertex tangent. tangent.w = bitangent handedness.
+// N and tangent.xyz must be in the same space (view space here).
+float3x3 tangent_frame_explicit( float3 N, float3 T, float sign )
+{
+    // Gram-Schmidt: re-orthonormalize the interpolated tangent against the interpolated normal.
+    T = normalize( T - N * dot( N, T ) );
+    // Handedness is controlled in ONE place: the packer stores -tangent.w (OpenGL Y+ convention).
+    // If normal maps still look inverted vs the ddx/ddy path, flip the sign in VertexPacking.h
+    // (EncodeTangent call) rather than adding a second negation here.
+    float3 B = cross( N, T ) * sign;
+    return float3x3( T, B, N );
+}
+
+// perturb_normal variant that prefers a precomputed vertex tangent and falls back to the
+// screen-space-derivative frame when the tangent is absent (degenerate / zero) — this lets
+// geometry that doesn't yet supply a tangent (e.g. VOBs) keep the old behavior.
+float3 perturb_normal( float3 N, float3 V, float4 vertexTangent, Texture2D normalmap, float2 texcoord, SamplerState samplerState, float normalmapDepth = 1.0f )
+{
+    [branch] if ( dot( vertexTangent.xyz, vertexTangent.xyz ) < 0.25f )
+    {
+        return perturb_normal( N, V, normalmap, texcoord, samplerState, normalmapDepth );
+    }
+
+    float3 nrmmap = sample_normal_ts( normalmap, texcoord, samplerState, normalmapDepth );
+    float3x3 TBN = tangent_frame_explicit( normalize( N ), vertexTangent.xyz, vertexTangent.w );
+    return normalize( mul( nrmmap, TBN ) );
+}

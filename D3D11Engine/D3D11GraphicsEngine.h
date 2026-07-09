@@ -135,6 +135,11 @@ public:
     XRESULT DrawVertexBuffer( D3D11VertexBuffer* vb, unsigned int numVertices, unsigned int stride = sizeof( ExVertexStruct ) ) override;
     XRESULT DrawVertexBufferIndexed( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int indexOffset = 0 ) override;
     XRESULT DrawVertexBufferIndexedUINT( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int indexOffset ) override;
+
+    /** Binds the wrapped world mesh's packed (36-byte / ExVertexStructGPU) vertex buffer + its
+        32-bit index buffer to the IA. Used by the world-mesh color / alpha submissions that drive
+        the packed buffer with VS_ExPacked. */
+    void BindWrappedWorldMeshPacked( MeshInfo* wrappedWorldMesh );
     XRESULT DrawDynamicVertexBufferIndexed( std::vector<ExVertexStruct>& vertices, D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int indexOffset ) override;
 
     /** Draws a vertexbuffer, instanced */
