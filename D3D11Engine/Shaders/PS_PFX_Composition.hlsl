@@ -58,7 +58,21 @@ Texture2D TX_Depth : register( t3 );
 #if COMPOSE_HEIGHTFOG
 float3 VSPositionFromDepth( float depth, float2 vTexCoord )
 {
-    return ReconstructVSPositionFromDepthReverseZInfinite( depth, vTexCoord - HF_JitterOffset, HF_ProjParams.xy );
+    float3 pos = ReconstructVSPositionFromDepthReverseZInfinite( depth, vTexCoord - HF_JitterOffset, HF_ProjParams.xy );
+
+    // Sky pixels (depth == 0, reversed-Z "infinite") reconstruct to an
+    // extremely large (~1e8) view-space position. Right at the horizon its
+    // vertical component swings between huge positive/negative values across
+    // adjacent pixels, destabilizing the height-falloff term below. Clamp to
+    // a bound comfortably beyond HF_WeightZFar (where fog weight w already
+    // saturates to 1.0) so far/sky pixels get smooth, fully-saturated fog
+    // instead of a discontinuity.
+    float len = length( pos );
+    float maxLen = HF_WeightZFar * 2.0f;
+    if ( len > maxLen )
+        pos *= maxLen / len;
+
+    return pos;
 }
 
 float ComputeVolumetricFog( float3 cameraToWorldPos, float3 posOriginal )
