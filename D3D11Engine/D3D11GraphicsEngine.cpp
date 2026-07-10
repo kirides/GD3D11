@@ -4744,8 +4744,12 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
     void* lastMat = nullptr;
     MaterialInfo* lastInfo = nullptr;
     for ( auto const& [meshKey, meshInfo] : list ) {
-        if ( zCTexture* texture = meshKey.Material->GetAniTexture() ) {
-            if (texture->CacheIn( 0.6f ) != zRES_CACHED_IN) {
+        zCMaterial* const mat = meshKey.Material;
+        if ( mat ) {
+            continue;
+        }
+        if ( zCTexture* texture = mat->GetAniTexture() ) {
+            if ( texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
                 // Draw what? black? :)
                 continue;
             }
@@ -4762,24 +4766,24 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
             srv[2] = surface->GetFxMap()
                 ? surface->GetFxMap()->GetShaderResourceView().Get()
                 : nullptr;
-            
-            int alphaFunc = meshKey.Material->GetAlphaFunc();
+
+            int alphaFunc = mat->GetAlphaFunc();
 
             if ( alphaFunc == 0 ) {
-                alphaFunc = zColor( meshKey.Material->GetColor() ).bgra.alpha < 255
+                alphaFunc = zColor( mat->GetColor() ).bgra.alpha < 255
                     ? zMAT_ALPHA_FUNC_BLEND
                     : zMAT_ALPHA_FUNC_MAT_DEFAULT;
             }
 
-            if (lastTex != texture) {
-                GetContext()->PSSetShaderResources( 0, 3, srv  );
+            if ( lastTex != texture ) {
+                GetContext()->PSSetShaderResources( 0, 3, srv );
                 lastTex = texture;
             }
-            
-            if (lastMat != meshKey.Material) {
+
+            if ( lastMat != mat ) {
                 //Get the right shader for it
                 BindShaderForTexture( texture, false, alphaFunc, meshKey.Info->MaterialType );
-                lastMat = meshKey.Material;
+                lastMat = mat;
             }
 
             // Check for alphablending on world mesh
@@ -4816,8 +4820,8 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
                 UpdateRenderStates();
                 lastAlphaFunc = alphaFunc;
             }
-            
-            if (meshKey.Material->GetEnvMapEnabled()) {
+
+            if ( mat->GetEnvMapEnabled()) {
                 if (Engine::GAPI->GetSky()->GetAtmosphereCB().AC_LightPos.y > 0) {
                     // sun is up
 
