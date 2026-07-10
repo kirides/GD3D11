@@ -1476,8 +1476,9 @@ void WorldConverter::UpdateMorphMeshVisual( void* v, MeshVisualInfo* meshInfo ) 
         return;
 
     XMFLOAT3* posList = morphMesh->GetPositionList()->Array->toXMFLOAT3();
+    static std::vector<ExVertexStruct> vertices;
     for ( int i = 0; i < morphMesh->GetNumSubmeshes(); i++ ) {
-        std::vector<ExVertexStruct> vertices;
+        vertices.clear();
 
         zCSubMesh* s = morphMesh->GetSubmesh( i );
         vertices.reserve( s->WedgeList.NumInArray );
