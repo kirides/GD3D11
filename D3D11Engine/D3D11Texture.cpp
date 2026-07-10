@@ -7,6 +7,7 @@
 #include "RenderToTextureBuffer.h"
 #include "D3D11_Helpers.h"
 #include "TextureConversions.h"
+#include "zCTexture.h"
 #include "zFILE_VDFS.h"
 
 extern bool NativeSupport16BitTextures;
@@ -52,7 +53,8 @@ XRESULT D3D11Texture::Init( INT2 size, ETextureFormat format, UINT mipMapCount, 
     TextureFormat = static_cast<DXGI_FORMAT>(format);
     TextureSize = size;
     MipMapCount = mipMapCount;
-    if ( Is16BitTexture() && !NativeSupport16BitTextures ) {
+    bool convert16Bit = Is16BitTexture() && !NativeSupport16BitTextures;
+    if ( convert16Bit ) {
         format = ETextureFormat::TF_B8G8R8A8;
     }
 
@@ -64,13 +66,27 @@ XRESULT D3D11Texture::Init( INT2 size, ETextureFormat format, UINT mipMapCount, 
         mipMapCount,
         D3D11_BIND_SHADER_RESOURCE, data ? D3D11_USAGE_IMMUTABLE : D3D11_USAGE_DEFAULT, 0, 1, 0, 0 );
 
-    D3D11_SUBRESOURCE_DATA initialData = {};
-    initialData.pSysMem = data;
-    if ( format == ETextureFormat::TF_B8G8R8A8 ) {
-        initialData.SysMemPitch = size.x * 4;
+    // Build one subresource per mip level, since data holds the full, concatenated mip chain
+    std::vector<D3D11_SUBRESOURCE_DATA> initialDataMips;
+    if ( data ) {
+        initialDataMips.resize( mipMapCount );
+        UINT8* srcBytes = reinterpret_cast<UINT8*>( data );
+        UINT offset = 0;
+        for ( UINT i = 0; i < mipMapCount; ++i ) {
+            UINT rowPitch = GetRowPitchBytes( i );
+            UINT mipSize = GetSizeInBytes( i );
+            if ( convert16Bit ) {
+                rowPitch *= 2;
+                mipSize *= 2;
+            }
+            initialDataMips[i].pSysMem = srcBytes + offset;
+            initialDataMips[i].SysMemPitch = rowPitch;
+            initialDataMips[i].SysMemSlicePitch = 0;
+            offset += mipSize;
+        }
     }
 
-    LE( engine->GetDevice()->CreateTexture2D( &textureDesc, data ? &initialData : nullptr, Texture.ReleaseAndGetAddressOf() ) );
+    LE( engine->GetDevice()->CreateTexture2D( &textureDesc, data ? initialDataMips.data() : nullptr, Texture.ReleaseAndGetAddressOf() ) );
     SetDebugName( Texture.Get(), "D3D11Texture(\"" + fileName + "\")->Texture" );
 
     D3D11_SHADER_RESOURCE_VIEW_DESC descRV = {};
@@ -179,23 +195,49 @@ XRESULT D3D11Texture::Init( const uint8_t* data, size_t size, const std::string&
     return XR_SUCCESS;
 }
 
+static std::vector<uint8_t> stagingBuffer;
+
 /** Updates the Texture-Object */
 XRESULT D3D11Texture::UpdateData( void* data, int mip ) {
-    D3D11GraphicsEngineBase* engine = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine);
-
     UINT TextureWidth = (TextureSize.x >> mip);
     UINT TextureHeight = (TextureSize.y >> mip);
 
     void* srcData = data;
-    UINT rowPitch = GetRowPitchBytes( mip );
+    UINT mipSize = GetSizeInBytes( mip );
+    bool convert16Bit = Is16BitTexture() && !NativeSupport16BitTextures;
 
-    if ( Is16BitTexture() && !NativeSupport16BitTextures ) {
+    if ( convert16Bit ) {
         srcData = ConvertTextureData( TextureWidth, TextureHeight, TextureFormat, reinterpret_cast<unsigned char*>( data ) );
-        rowPitch = GetRowPitchBytes( mip ) * 2;
+        mipSize *= 2;
     }
 
-    // UpdateSubresource directly into the DEFAULT texture — no staging texture needed
-    engine->GetContext()->UpdateSubresource( Texture.Get(), mip, nullptr, srcData, rowPitch, 0 );
+    // Reserve the staging buffer for the whole mip chain up front, on the first mip
+    if ( mip == 0 ) {
+        UINT totalSize = 0;
+        for ( int i = 0; i < MipMapCount; ++i ) {
+            totalSize += GetSizeInBytes( i );
+        }
+        if ( convert16Bit ) {
+            totalSize *= 2;
+        }
+        stagingBuffer.resize( totalSize );
+    }
+
+    UINT mipOffset = 0;
+    for ( int i = 0; i < mip; ++i ) {
+        mipOffset += GetSizeInBytes( i );
+    }
+    if ( convert16Bit ) {
+        mipOffset *= 2;
+    }
+
+    memcpy( stagingBuffer.data() + mipOffset, srcData, mipSize );
+
+    // Once the last mip has arrived, build the final IMMUTABLE texture from the full mip chain
+    if ( mip + 1 == MipMapCount ) {
+        return Init( TextureSize, static_cast<ETextureFormat>(TextureFormat), MipMapCount, stagingBuffer.data(), "dummy name" );
+    }
+
     return XR_SUCCESS;
 }
 
