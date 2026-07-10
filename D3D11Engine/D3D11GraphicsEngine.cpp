@@ -4745,7 +4745,7 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
     MaterialInfo* lastInfo = nullptr;
     for ( auto const& [meshKey, meshInfo] : list ) {
         zCMaterial* const mat = meshKey.Material;
-        if ( mat ) {
+        if ( !mat ) {
             continue;
         }
         if ( zCTexture* texture = mat->GetAniTexture() ) {
