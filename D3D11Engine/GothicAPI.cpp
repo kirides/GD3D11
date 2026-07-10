@@ -60,10 +60,6 @@
 #define OPT_DBG_NOINLINE
 #endif
 
-struct file_deleter {
-    void operator()( std::FILE* fp ) { std::fclose( fp ); }
-};
-
 // Duration how long the scene will stay wet, in MS
 const DWORD SCENE_WETNESS_DURATION_MS = 20 * 1000;
 
@@ -4123,7 +4119,6 @@ void GothicAPI::CollectVisibleVobs(
         std::vector<std::pair<float, VobLightInfo*>> lightWithDist;
         lightWithDist.reserve( renderQueue.lights.size() );
 
-        const auto camPos = ctx.cameraPosition;
         float lightPlayerDist;
         for ( auto vi : renderQueue.lights ) {
             if ( vi->Vob->IsEnabled() ) {
@@ -4874,7 +4869,7 @@ static void FixUpMaterial( MaterialInfo::Buffer& buffer ) {
 /** Returns the material info associated with the given material */
 MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCTexture* tex ) {
     auto it = MaterialInfos.find( tex );
-    MaterialInfo* mi = nullptr;
+    MaterialInfo* mi;
     if ( it == MaterialInfos.end() ) {
 
         // Make a new one and try to load it
@@ -4898,7 +4893,7 @@ MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCTexture* tex ) {
 
 MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCTexture* tex, const std::string_view textureName ) {
         auto it = MaterialInfos.find( tex );
-        MaterialInfo* mi = nullptr;
+        MaterialInfo* mi;
         if ( it == MaterialInfos.end() ) {
             auto info = std::make_unique<MaterialInfo>();
             MaterialInfos.emplace( tex, std::move( info ) );
@@ -5441,7 +5436,6 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
             s.SectionDrawRadius = std::max( 3, s.SectionDrawRadius );
         }
 
-        static XMFLOAT3 defaultLightDirection = XMFLOAT3( 1, 1, 1 );
         s.EnableShadows = GetPrivateProfileBoolA( "Shadows", "EnableShadows", ds.EnableShadows, ini );
         s.ShadowFilterMode = static_cast<GothicRendererSettings::E_ShadowFilterMode>(
             GetPrivateProfileIntA( "Shadows", "ShadowFilterMode",
@@ -5740,8 +5734,6 @@ void GothicAPI::DrawMorphMesh_Layered( zCMorphMesh* msh, std::map<zCMaterial*, s
     void* lastTex = whiteTexture;
 
     for ( int i = 0; i < morphMesh->GetNumSubmeshes(); i++ ) {
-        zCSubMesh* s = morphMesh->GetSubmesh( i );
-
         for ( auto const& it : meshes ) {
             zCTexture* texture;
             if ( it.first && (texture = it.first->GetAniTexture()) != nullptr ) {
