@@ -1,7 +1,6 @@
 #pragma once
 #include "pch.h"
 #include "D3D11PFX_Effect.h"
-#include "D3D11ConstantBuffer.h"
 
 struct RenderToTextureBuffer;
 

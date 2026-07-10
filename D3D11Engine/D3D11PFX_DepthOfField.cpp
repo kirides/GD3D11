@@ -8,7 +8,6 @@
 #include "D3D11VShader.h"
 #include "D3D11PShader.h"
 #include "D3D11CShader.h"
-#include "D3D11ConstantBuffer.h"
 #include "ConstantBufferStructs.h"
 #include "GothicAPI.h"
 #include "TexturePool.h"
@@ -84,7 +83,7 @@ XRESULT D3D11PFX_DepthOfField::Render( ID3D11RenderTargetView* output, ID3D11Sha
     int curIdx = 1 - m_FocusIndex;
 
     focusPS->Apply();
-    focusPS->GetBuffer( "DepthOfFieldConstantBuffer" ).Update( &cb ).Bind();
+    focusPS->UpdateBuffer("DepthOfFieldConstantBuffer", &cb, sizeof(cb));
 
     D3D11_VIEWPORT oldVP;
     UINT numVP = 1;
@@ -114,7 +113,7 @@ XRESULT D3D11PFX_DepthOfField::Render( ID3D11RenderTargetView* output, ID3D11Sha
     engine->GetContext()->RSSetViewports( 1, &halfVP );
 
     blurPS->Apply();
-    blurPS->GetBuffer( "DepthOfFieldConstantBuffer" ).Update( &cb ).Bind();
+    blurPS->UpdateBuffer("DepthOfFieldConstantBuffer", &cb, sizeof(cb));
 
     engine->GetContext()->OMSetRenderTargets( 1, halfBuffer->GetRenderTargetView().GetAddressOf(), nullptr );
 
@@ -134,7 +133,7 @@ XRESULT D3D11PFX_DepthOfField::Render( ID3D11RenderTargetView* output, ID3D11Sha
         TexturePool::Description{ res.x, res.y, bbufferFormat } );
 
     compositePS->Apply();
-    compositePS->GetBuffer( "DepthOfFieldConstantBuffer" ).Update( &cb ).Bind();
+    compositePS->UpdateBuffer("DepthOfFieldConstantBuffer", &cb, sizeof(cb));
 
     engine->GetContext()->OMSetRenderTargets( 1, compositeBuffer->GetRenderTargetView().GetAddressOf(), nullptr );
 
@@ -193,7 +192,7 @@ XRESULT D3D11PFX_DepthOfField::RenderCS( ID3D11RenderTargetView* output, ID3D11S
 
     auto focusCS = engine->GetShaderManager().GetCShader( CShaderID::CS_PFX_DoF_FocusResolve );
     focusCS->Apply();
-    focusCS->GetBuffer( "DepthOfFieldConstantBuffer" ).Update( &cb ).Bind();
+    focusCS->UpdateBuffer("DepthOfFieldConstantBuffer", &cb, sizeof(cb));
 
     context->CSSetSamplers( 0, 1, &defaultSampler );
 
@@ -223,7 +222,7 @@ XRESULT D3D11PFX_DepthOfField::RenderCS( ID3D11RenderTargetView* output, ID3D11S
             ? CShaderID::CS_PFX_DoF_Gauss
             : CShaderID::CS_PFX_DoF );
     blurCS->Apply();
-    blurCS->GetBuffer( "DepthOfFieldConstantBuffer" ).Update( &cb ).Bind();
+    blurCS->UpdateBuffer("DepthOfFieldConstantBuffer", &cb, sizeof(cb));
 
     context->CSSetSamplers( 0, 1, &defaultSampler );
 
@@ -248,7 +247,7 @@ XRESULT D3D11PFX_DepthOfField::RenderCS( ID3D11RenderTargetView* output, ID3D11S
 
     auto compositeCS = engine->GetShaderManager().GetCShader( CShaderID::CS_PFX_DoF_Composite );
     compositeCS->Apply();
-    compositeCS->GetBuffer( "DepthOfFieldConstantBuffer" ).Update( &cb ).Bind();
+    compositeCS->UpdateBuffer("DepthOfFieldConstantBuffer", &cb, sizeof(cb));
 
     context->CSSetSamplers( 0, 1, &defaultSampler );
 

@@ -249,7 +249,7 @@ XRESULT D3D11TiledDeferredShading::DrawPointlightLights(
         shadeCB.NumTilesX = numTilesX;
         XMStoreFloat4x4( &shadeCB.InvView, XMMatrixInverse( nullptr, viewRaw ) );
 
-        csTiledShading->GetBuffer( "TiledShadingConstantBuffer" ).Update( &shadeCB ).Bind();
+        csTiledShading->UpdateBuffer("TiledShadingConstantBuffer", &shadeCB, sizeof(shadeCB));
 
         // Bind GBuffer SRVs to CS
         context->CSSetShaderResources( 0, 1, color.GetShaderResView().GetAddressOf() );
@@ -421,7 +421,7 @@ D3D11TiledDeferredShading::CullResult D3D11TiledDeferredShading::CullLights(
         cullCB.TotalLights = result.TiledLightCount;
         cullCB.MaxBufferIndices = (numTilesX * numTilesY) * MAX_LIGHTS_PER_TILE;
 
-        csLightCull->GetBuffer( "LightCullingConstantBuffer" ).Update( &cullCB ).Bind();
+        csLightCull->UpdateBuffer("LightCullingConstantBuffer", &cullCB, sizeof(cullCB));
 
         context->CSSetShaderResources( 0, 1, depthCopy.GetShaderResView().GetAddressOf() );
         context->CSSetShaderResources( 1, 1, m_LightBufferSRV.GetAddressOf() );

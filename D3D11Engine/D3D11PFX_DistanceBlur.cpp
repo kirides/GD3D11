@@ -7,7 +7,6 @@
 #include "D3D11ShaderManager.h"
 #include "D3D11VShader.h"
 #include "D3D11PShader.h"
-#include "D3D11ConstantBuffer.h"
 #include "ConstantBufferStructs.h"
 #include "GothicAPI.h"
 

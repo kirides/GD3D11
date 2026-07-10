@@ -220,9 +220,6 @@
     <ClInclude Include="D3D11VShader.h">
       <Filter>Engine\D3D11</Filter>
     </ClInclude>
-    <ClInclude Include="D3D11ConstantBuffer.h">
-      <Filter>Engine\D3D11</Filter>
-    </ClInclude>
     <ClInclude Include="D3D11VertexBuffer.h">
       <Filter>Engine\D3D11</Filter>
     </ClInclude>
@@ -853,6 +850,7 @@
     <ClInclude Include="oCMobInter.h">
       <Filter>ZenGin\Classes</Filter>
     </ClInclude>
+    <ClInclude Include="ConstantBufferPool.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp" />
@@ -887,9 +885,6 @@
       <Filter>Engine\D3D11</Filter>
     </ClCompile>
     <ClCompile Include="D3D11VShader.cpp">
-      <Filter>Engine\D3D11</Filter>
-    </ClCompile>
-    <ClCompile Include="D3D11ConstantBuffer.cpp">
       <Filter>Engine\D3D11</Filter>
     </ClCompile>
     <ClCompile Include="D3D11VertexBuffer.cpp">
@@ -1162,6 +1157,7 @@
     <ClCompile Include="GothicGraphicsState.cpp">
       <Filter>Engine</Filter>
     </ClCompile>
+    <ClCompile Include="ConstantBufferPool.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="ddraw.def">

@@ -6,7 +6,6 @@
 
 class BaseLineRenderer;
 class BaseShadowedPointLight;
-class D3D11ConstantBuffer;
 class D3D11Texture;
 class D3D11VertexBuffer;
 struct RenderToTextureBuffer;
@@ -117,10 +116,7 @@ public:
     /** Creates a texture object (Not registered inside) */
     virtual XRESULT CreateTexture( D3D11Texture** outTexture ) PURE;
     virtual XRESULT CreateTexture( std::unique_ptr<D3D11Texture>& outTexture ) PURE;
-
-    /** Creates a constantbuffer object (Not registered inside) */
-    virtual XRESULT CreateConstantBuffer( D3D11ConstantBuffer** outCB, void* data, int size ) PURE;
-
+    
     /** Creates a bufferobject for a shadowed point light */
     virtual XRESULT CreateShadowedPointLight( BaseShadowedPointLight** outPL, VobLightInfo* lightInfo, bool dynamic = false ) { return XR_SUCCESS; }
 

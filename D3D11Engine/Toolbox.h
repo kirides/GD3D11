@@ -7,6 +7,7 @@
 
 #include "Types.h"
 #include "zTypes.h"
+#include <algorithm>
 
 /** Misc. tools */
 struct zTBBox3D;

@@ -8,7 +8,6 @@
 #include "D3D11PfxRenderer.h"
 #include "D3D11ShaderManager.h"
 #include "RenderToTextureBuffer.h"
-#include "D3D11ConstantBuffer.h"
 #include "GothicAPI.h"
 
 D3D11PFX_TAA::D3D11PFX_TAA(D3D11PfxRenderer* rnd) 
