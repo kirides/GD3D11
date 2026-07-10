@@ -211,6 +211,11 @@ XRESULT D3D11Texture::UpdateData( void* data, int mip ) {
         mipSize *= 2;
     }
 
+    if ( MipMapCount == 1 ) {
+        // skip staging buffer for single mips
+        return Init( TextureSize, static_cast<ETextureFormat>(TextureFormat), 1, srcData, "dummy name" );
+    }
+    
     // Reserve the staging buffer for the whole mip chain up front, on the first mip
     if ( mip == 0 ) {
         UINT totalSize = 0;
