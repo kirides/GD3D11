@@ -1,5 +1,7 @@
 //--------------------------------------------------------------------------------------
-// Simple vertex shader
+// Packed variant of VS_ExCube.hlsl for the 36-byte VOB vertex (ExVertexStructGPU).
+// Same output signature as VS_ExCube (so it links with the same cube-shadow GS/PS);
+// only the vertex input decode differs. See VertexPacking.h.
 //--------------------------------------------------------------------------------------
 
 #include "Globals_VS_ExConstants.h"
@@ -12,7 +14,7 @@ cbuffer Matrices_PerFrame : register( b0 )
 
 cbuffer Matrices_PerInstances : register( b1 )
 {
-	VS_ExConstantBuffer_PerInstanceNode cbInstance;
+	matrix M_World;
 };
 
 
@@ -47,15 +49,13 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 
 	float3 vNormal = DecodeOctNormal( Input.vNormalOct );
 
-	float3 positionWorld = mul(float4((Input.vPosition + cbInstance.M_Fatness * vNormal) * cbInstance.M_Scaling, 1), cbInstance.M_World).xyz;
+	float3 positionWorld = mul(float4(Input.vPosition,1), M_World).xyz;
 
-	//Output.vPosition = float4(Input.vPosition, 1);
 	Output.vTexcoord2 = Input.vTex2;
 	Output.vTexcoord = Input.vTex1;
-	Output.vDiffuse  = cbInstance.M_Color;
-	Output.vNormalWS = mul(vNormal, (float3x3)cbInstance.M_World);
+	Output.vDiffuse  = Input.vDiffuse;
+	Output.vNormalWS = mul(vNormal, (float3x3)M_World);
 	Output.vWorldPosition = positionWorld;
 
 	return Output;
 }
-

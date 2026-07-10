@@ -8,6 +8,7 @@
 #include "BaseGraphicsEngine.h"
 #include "zCPolygon.h"
 #include "WorldConverter.h"
+#include "VertexPacking.h"
 #include "HookedFunctions.h"
 #include "zCMaterial.h"
 #include "zCTexture.h"
@@ -1973,6 +1974,35 @@ void GothicAPI::DrawMeshInfo_Layered( zCMaterial* mat, MeshInfo* msh ) {
     }
 }
 
+/** DrawMeshInfo for packed (36-byte ExVertexStructGPU) VOB/node-attachment meshes. */
+void GothicAPI::DrawMeshInfoPacked( zCMaterial* mat, MeshInfo* msh ) {
+    if ( mat ) {
+        if ( mat->GetAlphaFunc() == zRND_ALPHA_FUNC_TEST )
+            RendererState.GraphicsState.FF_GSwitches |= GSWITCH_ALPHAREF;
+        else
+            RendererState.GraphicsState.FF_GSwitches &= ~GSWITCH_ALPHAREF;
+    }
+
+    D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    if ( msh->MeshIndexBuffer ) {
+        g->DrawVertexBufferIndexedPacked( msh->GetMeshVertexBuffer(), msh->GetMeshIndexBuffer(), msh->Indices.size() );
+    }
+}
+
+void GothicAPI::DrawMeshInfo_LayeredPacked( zCMaterial* mat, MeshInfo* msh ) {
+    if ( mat ) {
+        if ( mat->GetAlphaFunc() == zRND_ALPHA_FUNC_TEST )
+            RendererState.GraphicsState.FF_GSwitches |= GSWITCH_ALPHAREF;
+        else
+            RendererState.GraphicsState.FF_GSwitches &= ~GSWITCH_ALPHAREF;
+    }
+
+    D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    if ( msh->MeshIndexBuffer ) {
+        g->DrawVertexBufferInstancedIndexedPacked( msh->GetMeshVertexBuffer(), msh->GetMeshIndexBuffer(), msh->Indices.size(), 6 );
+    }
+}
+
 /** Locks the resource CriticalSection */
 void GothicAPI::EnterResourceCriticalSection() {
 
@@ -2737,7 +2767,7 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
 
                         // Go through all meshes using that material
                         for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
-                            DrawMeshInfo( itm.first, itm.second[m].get() );
+                            DrawMeshInfoPacked( itm.first, itm.second[m].get() );
                         }
                     }
                 } else {
@@ -2750,7 +2780,7 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
 
                         // Go through all meshes using that material
                         for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
-                            DrawMeshInfo( itm.first, itm.second[m].get() );
+                            DrawMeshInfoPacked( itm.first, itm.second[m].get() );
                         }
                     }
                 }
@@ -2992,7 +3022,7 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
 
                     // Go through all meshes using that material
                     for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
-                        DrawMeshInfo_Layered( itm.first, itm.second[m].get() );
+                        DrawMeshInfo_LayeredPacked( itm.first, itm.second[m].get() );
                     }
                 }
             }
@@ -3042,7 +3072,7 @@ void GothicAPI::DrawTransparencyVobs() {
             cbPool->BindPS(psBufGAI , cbPool->Allocate(&gacb, sizeof(gacb)));
             DrawSkeletalMeshVob( TransVobInfo.skeletalVob, TransVobInfo.distance, false );
         } else if ( TransVobInfo.normalVob ) {
-            g->SetActiveVertexShader( VShaderID::VS_Ex );
+            g->SetActiveVertexShader( VShaderID::VS_ExPacked );  // VOB meshes are packed (36-byte)
             g->SetupVS_ExMeshDrawCall();
             
             TransVobInfo.normalVob->UpdateVobConstantBuffer( cbPerInstance );
@@ -3060,7 +3090,7 @@ void GothicAPI::DrawTransparencyVobs() {
                 }
 
                 for ( auto const& meshInfo : materialMesh.second ) {
-                    g->DrawVertexBufferIndexed(
+                    g->DrawVertexBufferIndexedPacked(
                         meshInfo->GetMeshVertexBuffer(),
                         meshInfo->GetMeshIndexBuffer(),
                         meshInfo->Indices.size() );
@@ -3086,7 +3116,7 @@ void GothicAPI::DrawTransparencyVobs() {
                 }
 
                 for ( auto const& meshInfo : materialMesh.second ) {
-                    g->DrawVertexBufferIndexed(
+                    g->DrawVertexBufferIndexedPacked(
                         meshInfo->GetMeshVertexBuffer(),
                         meshInfo->GetMeshIndexBuffer(),
                         meshInfo->Indices.size() );
@@ -5718,7 +5748,7 @@ void GothicAPI::DrawMorphMesh( zCMorphMesh* msh, std::map<zCMaterial*, std::vect
         for ( auto const& it : meshes ) {
             for ( auto& mi : it.second ) {
                 if ( mi->MeshIndex == i ) {
-                    Engine::GraphicsEngine->DrawVertexBufferIndexed( mi->GetMeshVertexBuffer(), mi->GetMeshIndexBuffer(), mi->Indices.size() );
+                    g->DrawVertexBufferIndexedPacked( mi->GetMeshVertexBuffer(), mi->GetMeshIndexBuffer(), mi->Indices.size() );
                     goto Out_Of_Nested_Loop;
                 }
             }
@@ -5763,7 +5793,7 @@ void GothicAPI::DrawMorphMesh_Layered( zCMorphMesh* msh, std::map<zCMaterial*, s
 
             for ( auto& mi : it.second ) {
                 if ( mi->MeshIndex == i ) {
-                    g->DrawVertexBufferInstancedIndexed( mi->GetMeshVertexBuffer(), mi->GetMeshIndexBuffer(), mi->Indices.size(), 6 );
+                    g->DrawVertexBufferInstancedIndexedPacked( mi->GetMeshVertexBuffer(), mi->GetMeshIndexBuffer(), mi->Indices.size(), 6 );
                     goto Out_Of_Nested_Loop;
                 }
             }

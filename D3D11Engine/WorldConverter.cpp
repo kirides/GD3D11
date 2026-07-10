@@ -104,7 +104,7 @@ namespace {
     }
 
     /** Fills ExVertexStruct::Tangent for an indexed mesh using MikkTSpace. */
-    void GenerateTangents( std::vector<ExVertexStruct>& vertices, const std::vector<VERTEX_INDEX>& indices ) {
+    void GenerateTangentsImpl( std::vector<ExVertexStruct>& vertices, const std::vector<VERTEX_INDEX>& indices ) {
         if ( indices.size() < 3 || vertices.empty() ) {
             return;
         }
@@ -168,7 +168,7 @@ namespace {
 
         // Precompute MikkTSpace tangents (after final normals; survives the remap passes below
         // because they move the whole ExVertexStruct stride, including Tangent).
-        GenerateTangents( mesh->Vertices, mesh->Indices );
+        GenerateTangentsImpl(mesh->Vertices, mesh->Indices );
 
         // Optimize faces
         mesh->MeshVertexBuffer->OptimizeFaces( &mesh->Indices[0],
@@ -526,7 +526,7 @@ XRESULT WorldConverter::LoadWorldMeshFromFile( const std::string& file, std::map
                 ComputeWorldMeshBounds( it.second );
 
                 // Precompute MikkTSpace tangents (cached-mesh load path; normals come from the cache).
-                GenerateTangents( it.second->Vertices, it.second->Indices );
+                GenerateTangentsImpl(it.second->Vertices, it.second->Indices );
 
                 // Create the buffers
                 Engine::GraphicsEngine->CreateVertexBuffer( it.second->MeshVertexBuffer );
@@ -1100,6 +1100,11 @@ void WorldConverter::SaveSectionsToObjUnindexed( const char* file, const std::ma
     fclose( f );
 }
 
+/** Public entry to MikkTSpace tangent generation (used by GothicAPI dynamic morph paths). */
+void WorldConverter::GenerateTangents( std::vector<ExVertexStruct>& vertices, const std::vector<VERTEX_INDEX>& indices ) {
+    GenerateTangentsImpl( vertices, indices );
+}
+
 /** Extracts a 3DS-Mesh from a zCVisual */
 void WorldConverter::Extract3DSMeshFromVisual( zCProgMeshProto* visual, MeshVisualInfo* meshInfo ) {
     ZoneScoped;
@@ -1146,6 +1151,10 @@ void WorldConverter::Extract3DSMeshFromVisual( zCProgMeshProto* visual, MeshVisu
         mi->Indices = std::move(indices);
         mi->meshId = s_MeshManager->RecordMesh( m );
 
+        // Precompute MikkTSpace tangents on the indexed mesh (tangents travel with the
+        // vertices through the meshopt reordering below and into the packed upload).
+        GenerateTangentsImpl(mi->Vertices, mi->Indices );
+
         // Create the buffers
         Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshVertexBuffer );
         Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshIndexBuffer );
@@ -1163,8 +1172,9 @@ void WorldConverter::Extract3DSMeshFromVisual( zCProgMeshProto* visual, MeshVisu
             sizeof( ExVertexStruct ),
             &mi->ShadowIndices );
 
-        // Init and fill it
-        mi->MeshVertexBuffer->Init( &mi->Vertices[0], mi->Vertices.size() * sizeof( ExVertexStruct ) );
+        // Init and fill it (packed 36-byte GPU vertex)
+        std::vector<ExVertexStructGPU> packedGpu = VertexPacking::Pack( mi->Vertices.data(), mi->Vertices.size() );
+        mi->MeshVertexBuffer->Init( packedGpu.data(), packedGpu.size() * sizeof( ExVertexStructGPU ) );
         mi->MeshIndexBuffer->Init( &mi->Indices[0], mi->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER );
         CreateShadowIndexBuffer( mi );
 
@@ -1292,7 +1302,11 @@ void WorldConverter::ExtractSkeletalMeshFromVob( zCModel* model, SkeletalMeshVis
             Engine::GraphicsEngine->CreateVertexBuffer( bmi->MeshVertexBuffer );
             Engine::GraphicsEngine->CreateVertexBuffer( bmi->MeshIndexBuffer );
 
-            bmi->MeshVertexBuffer->Init( &bmi->Vertices[0], bmi->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
+            // Bind-pose MeshInfo shares MeshVisualInfo::Meshes with static VOBs, so it is packed
+            // the same way (drawn via VS_ExPacked). Tangents from the bind pose.
+            GenerateTangentsImpl(bmi->Vertices, bmi->Indices );
+            std::vector<ExVertexStructGPU> packedBmi = VertexPacking::Pack( bmi->Vertices.data(), bmi->Vertices.size() );
+            bmi->MeshVertexBuffer->Init( packedBmi.data(), packedBmi.size() * sizeof( ExVertexStructGPU ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
             bmi->MeshIndexBuffer->Init( &bmi->Indices[0], bmi->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
 
             Engine::GAPI->GetRendererState().RendererInfo.SkeletalVerticesDataSize += mi->Vertices.size() * sizeof( ExVertexStruct );
@@ -1394,6 +1408,9 @@ void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualIn
             mi->Indices = indices;
             mi->meshId = s_MeshManager->RecordMesh( m );
 
+            // Precompute MikkTSpace tangents on the indexed mesh before meshopt reorders it.
+            GenerateTangentsImpl(mi->Vertices, mi->Indices );
+
             // Create the buffers
             Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshVertexBuffer );
             Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshIndexBuffer );
@@ -1413,12 +1430,13 @@ void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualIn
                 sizeof( ExVertexStruct ),
                 &mi->ShadowIndices );
 
-            // Init and fill it
-            mi->MeshVertexBuffer->Init( &mi->Vertices[0], mi->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
+            // Init and fill it (packed 36-byte GPU vertex)
+            std::vector<ExVertexStructGPU> packedGpu = VertexPacking::Pack( mi->Vertices.data(), mi->Vertices.size() );
+            mi->MeshVertexBuffer->Init( packedGpu.data(), packedGpu.size() * sizeof( ExVertexStructGPU ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
             mi->MeshIndexBuffer->Init( &mi->Indices[0], mi->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
             CreateShadowIndexBuffer( mi );
 
-            Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize += mi->Vertices.size() * sizeof( ExVertexStruct );
+            Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize += packedGpu.size() * sizeof( ExVertexStructGPU );
             Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize += mi->Indices.size() * sizeof( VERTEX_INDEX );
 
             zCMaterial* mat = m->Material;
@@ -1458,8 +1476,9 @@ void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualIn
         Engine::GraphicsEngine->CreateVertexBuffer( wmi->MeshVertexBuffer );
         Engine::GraphicsEngine->CreateVertexBuffer( wmi->MeshIndexBuffer );
 
-        // Init and fill them
-        wmi->MeshVertexBuffer->Init( &wrappedVertices[0], wrappedVertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
+        // Init and fill them (packed 36-byte GPU vertex)
+        std::vector<ExVertexStructGPU> packedWrapped = VertexPacking::Pack( wrappedVertices.data(), wrappedVertices.size() );
+        wmi->MeshVertexBuffer->Init( packedWrapped.data(), packedWrapped.size() * sizeof( ExVertexStructGPU ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
         wmi->MeshIndexBuffer->Init( &wrappedIndices[0], wrappedIndices.size() * sizeof( unsigned int ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
 
         meshInfo->FullMesh = wmi;
@@ -1532,6 +1551,9 @@ void WorldConverter::ExtractProgMeshProtoFromMesh( zCMesh* mesh, MeshVisualInfo*
     mi->Vertices = std::move(vertices);
     mi->Indices = std::move(indices);
 
+    // Precompute MikkTSpace tangents on the indexed mesh before meshopt reorders it.
+    GenerateTangentsImpl(mi->Vertices, mi->Indices );
+
     // Create the buffers
     Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshVertexBuffer );
     Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshIndexBuffer );
@@ -1549,8 +1571,9 @@ void WorldConverter::ExtractProgMeshProtoFromMesh( zCMesh* mesh, MeshVisualInfo*
         sizeof( ExVertexStruct ),
         &mi->ShadowIndices );
 
-    // Init and fill it
-    mi->MeshVertexBuffer->Init( &mi->Vertices[0], mi->Vertices.size() * sizeof( ExVertexStruct ) );
+    // Init and fill it (packed 36-byte GPU vertex)
+    std::vector<ExVertexStructGPU> packedGpu = VertexPacking::Pack( mi->Vertices.data(), mi->Vertices.size() );
+    mi->MeshVertexBuffer->Init( packedGpu.data(), packedGpu.size() * sizeof( ExVertexStructGPU ) );
     mi->MeshIndexBuffer->Init( &mi->Indices[0], mi->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER );
     CreateShadowIndexBuffer( mi );
 
@@ -1643,7 +1666,11 @@ void WorldConverter::UpdateMorphMeshVisual( void* v, MeshVisualInfo* meshInfo ) 
         for ( auto const& it : meshInfo->Meshes ) {
             for ( auto& mi : it.second ) {
                 if ( mi->MeshIndex == i ) {
-                    mi->MeshVertexBuffer->UpdateBuffer( &vertices[0], vertices.size() * sizeof( ExVertexStruct ) );
+                    // Regenerate tangents for the morphed positions, then reupload the packed
+                    // 36-byte vertices (the dynamic buffer was created packed in Extract3DSMeshFromVisual2).
+                    GenerateTangentsImpl(vertices, mi->Indices );
+                    std::vector<ExVertexStructGPU> packedGpu = VertexPacking::Pack( vertices.data(), vertices.size() );
+                    mi->MeshVertexBuffer->UpdateBuffer( packedGpu.data(), packedGpu.size() * sizeof( ExVertexStructGPU ) );
                     goto Out_Of_Nested_Loop;
                 }
             }
@@ -1721,17 +1748,15 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
         mi->MeshIndex = i;
         mi->meshId = s_MeshManager->RecordMesh( s );
 
+        // Precompute MikkTSpace tangents on the indexed mesh before meshopt reorders it
+        // (morph meshes skip the reorder but still get an initial tangent set here).
+        GenerateTangentsImpl(mi->Vertices, mi->Indices );
+
         // Create the buffers
         Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshVertexBuffer );
         Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshIndexBuffer );
 
-        if ( meshInfo->MorphMeshVisual ) {
-            // We need to keep original indices so that we can reuse them(we can't optimize them)
-            // Use dynamic buffer since we'll reupload it every frame we see this visual
-
-            // Init and fill it
-            mi->MeshVertexBuffer->Init( &mi->Vertices[0], mi->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_DYNAMIC, D3D11VertexBuffer::CA_WRITE );
-        } else {
+        if ( !meshInfo->MorphMeshVisual ) {
             // Optimize faces
             mi->MeshVertexBuffer->OptimizeFaces(&mi->Indices[0],
                 reinterpret_cast<byte*>(&mi->Vertices[0]),
@@ -1746,14 +1771,20 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
                 mi->Vertices.size(),
                 sizeof( ExVertexStruct ),
                 &mi->ShadowIndices );
+        }
 
-            // Init and fill it
-            mi->MeshVertexBuffer->Init( &mi->Vertices[0], mi->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
+        // Init and fill it (packed 36-byte GPU vertex). Morph meshes keep a DYNAMIC buffer that
+        // UpdateMorphMeshVisual reuploads (also packed) each frame; static meshes are IMMUTABLE.
+        std::vector<ExVertexStructGPU> packedGpu = VertexPacking::Pack( mi->Vertices.data(), mi->Vertices.size() );
+        if ( meshInfo->MorphMeshVisual ) {
+            mi->MeshVertexBuffer->Init( packedGpu.data(), packedGpu.size() * sizeof( ExVertexStructGPU ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_DYNAMIC, D3D11VertexBuffer::CA_WRITE );
+        } else {
+            mi->MeshVertexBuffer->Init( packedGpu.data(), packedGpu.size() * sizeof( ExVertexStructGPU ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
         }
         mi->MeshIndexBuffer->Init( &mi->Indices[0], mi->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
         CreateShadowIndexBuffer( mi );
 
-        Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize += mi->Vertices.size() * sizeof( ExVertexStruct );
+        Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize += packedGpu.size() * sizeof( ExVertexStructGPU );
         Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize += mi->Indices.size() * sizeof( VERTEX_INDEX );
 
         zCMaterial* mat = s->Material;
@@ -1794,8 +1825,9 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
         Engine::GraphicsEngine->CreateVertexBuffer( wmi->MeshVertexBuffer );
         Engine::GraphicsEngine->CreateVertexBuffer( wmi->MeshIndexBuffer );
 
-        // Init and fill them
-        wmi->MeshVertexBuffer->Init( &wrappedVertices[0], wrappedVertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
+        // Init and fill them (packed 36-byte GPU vertex)
+        std::vector<ExVertexStructGPU> packedWrapped = VertexPacking::Pack( wrappedVertices.data(), wrappedVertices.size() );
+        wmi->MeshVertexBuffer->Init( packedWrapped.data(), packedWrapped.size() * sizeof( ExVertexStructGPU ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
         wmi->MeshIndexBuffer->Init( &wrappedIndices[0], wrappedIndices.size() * sizeof( unsigned int ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
 
         meshInfo->FullMesh = wmi;
