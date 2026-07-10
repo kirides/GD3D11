@@ -44,9 +44,9 @@ const int NUM_MAX_BONES = 96;
 const int unsigned INSTANCING_BUFFER_SIZE = sizeof( VobInstanceInfo ) * 2048;
 
 struct ConstantBufferAllocation {
-    ID3D11Buffer* pBuffer;
-    uint32_t offsetInBytes;
-    uint32_t sizeInBytes;
+    ID3D11Buffer* pBuffer = nullptr;
+    uint32_t offsetInBytes = 0;
+    uint32_t sizeInBytes = 0;
 
     bool operator==( const ConstantBufferAllocation& other ) const {
         return pBuffer == other.pBuffer && offsetInBytes == other.offsetInBytes && sizeInBytes == other.sizeInBytes;
@@ -58,11 +58,15 @@ private:
     Microsoft::WRL::ComPtr<ID3D11Buffer> m_poolBuffer;
     uint32_t m_bufferSize;
     uint32_t m_currentOffset;
+    bool m_firstMapThisFrame = true; // first Map of the frame gets DISCARD; the rest NO_OVERWRITE
+    bool m_wrapWarned = false;        // warn only once if the ring wraps mid-frame
 
 public:
     void Initialize( ID3D11Device* device, uint32_t totalSizeInBytes = 4 * 1024 * 1024 ) {
         m_bufferSize = totalSizeInBytes;
         m_currentOffset = 0;
+        m_firstMapThisFrame = true;
+        m_wrapWarned = false;
 
         D3D11_BUFFER_DESC desc = {};
         desc.ByteWidth = m_bufferSize;
@@ -429,6 +433,32 @@ public:
     std::unique_ptr<D3D11Effect> Effects;
 
     D3D11PfxRenderer* GetPfxRenderer() const { return PfxRenderer.get(); }
+
+    // --- Per-frame dynamic constant-buffer ring API ----------------------
+    // For small per-draw/per-object/per-frame CBs (grass, view-distances, Forward+
+    // sun/tile/atmosphere, TAA, point-light cubemap view matrices, ...). Each call
+    // sub-allocates a transient slot from a per-frame ring (DYNAMIC buffer mapped
+    // with DISCARD/NO_OVERWRITE) and binds it by offset, so callers don't need their
+    // own ID3D11Buffer. The allocation is only valid for the current frame.
+    ConstantBufferAllocation AllocateDynamicCB( const void* data, uint32_t size ) {
+        return DynamicConstantBufferPool->Allocate( GetContext().Get(), data, size );
+    }
+    void BindDynamicCBToVertexShader( int slot, const ConstantBufferAllocation& a ) {
+        if ( slot < 0 || !a.pBuffer ) return;
+        UINT first = a.offsetInBytes / 16; UINT num = a.sizeInBytes / 16;
+        GetContext()->VSSetConstantBuffers1( static_cast<UINT>( slot ), 1, &a.pBuffer, &first, &num );
+    }
+    void BindDynamicCBToPixelShader( int slot, const ConstantBufferAllocation& a ) {
+        if ( slot < 0 || !a.pBuffer ) return;
+        UINT first = a.offsetInBytes / 16; UINT num = a.sizeInBytes / 16;
+        GetContext()->PSSetConstantBuffers1( static_cast<UINT>( slot ), 1, &a.pBuffer, &first, &num );
+    }
+    void BindDynamicCBToGeometryShader( int slot, const ConstantBufferAllocation& a ) {
+        if ( slot < 0 || !a.pBuffer ) return;
+        UINT first = a.offsetInBytes / 16; UINT num = a.sizeInBytes / 16;
+        GetContext()->GSSetConstantBuffers1( static_cast<UINT>( slot ), 1, &a.pBuffer, &first, &num );
+    }
+
     D3D11Texture* GetDistortionTexture() const { return DistortionTexture.get(); }
     D3D11Texture* GetBlueNoiseTexture() const { return BlueNoise512BGRA.get(); }
     D3D11Texture* GetWhiteTexture() const { return WhiteTexture.get(); }
@@ -683,11 +713,17 @@ private:
     /** Cached bone transforms for batched skeletal mesh drawing */
     std::vector<XMFLOAT4X4> BoneTransformCache;
 
-    /** Constantbuffers for view-distances */
-    std::unique_ptr<D3D11ConstantBuffer> InfiniteRangeConstantBuffer;
-    std::unique_ptr<D3D11ConstantBuffer> OutdoorSmallVobsConstantBuffer;
-    std::unique_ptr<D3D11ConstantBuffer> OutdoorVobsConstantBuffer;
+    /** View-distance constant buffers. These are re-allocated from the per-frame
+        dynamic ring each frame (bound at many draw sites, updated rarely), so the
+        allocation handle is kept between the frame-start update and the binds. */
+    ConstantBufferAllocation InfiniteRangeCB;
+    ConstantBufferAllocation OutdoorSmallVobsCB;
+    ConstantBufferAllocation OutdoorVobsCB;
     std::unique_ptr<ConstantBufferPool> PerObjectMaterialInfoPooledBuffer;
+
+    /** Per-frame ring for small per-draw/per-object dynamic constant buffers
+        (grass, and other buffers migrated off their own ID3D11Buffer). */
+    std::unique_ptr<ConstantBufferPool> DynamicConstantBufferPool;
 
     /** Quads for decals/particles */
     std::unique_ptr<D3D11VertexBuffer> QuadVertexBuffer;

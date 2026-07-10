@@ -54,6 +54,4 @@ public:
 
 private:
     D3D11DeferredRenderer& m_DeferredFallback;
-    std::unique_ptr<D3D11ConstantBuffer> m_SunCSMConstantBuffer;
-    std::unique_ptr<D3D11ConstantBuffer> m_TileConstantBuffer;
 };

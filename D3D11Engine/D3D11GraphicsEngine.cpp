@@ -246,16 +246,40 @@ namespace
 
 void ConstantBufferPool::BeginFrame() {
     m_currentOffset = 0;
+    m_firstMapThisFrame = true;
 }
 
 ConstantBufferAllocation ConstantBufferPool::Allocate( ID3D11DeviceContext* context, const void* pData, uint32_t sizeInBytes ) {
     uint32_t alignedSize = (sizeInBytes + 255) & ~255;
 
-    if ( m_currentOffset + alignedSize > m_bufferSize ) {
-        m_currentOffset = 0; // Reset the offset if out of memory
+    // Choose the map mode carefully:
+    //  - The very first Map of the frame uses DISCARD so the driver can hand us a
+    //    fresh buffer while the GPU may still be reading last frame's copy.
+    //  - Every subsequent Map uses NO_OVERWRITE (we only ever write untouched
+    //    regions ahead of m_currentOffset).
+    //  - If we run out of room mid-frame we wrap to 0 but keep NO_OVERWRITE:
+    //    a DISCARD here would invalidate data that earlier draws THIS frame still
+    //    reference. NO_OVERWRITE risks overwriting still-in-flight data only if the
+    //    ring is genuinely full within a frame, so warn once - the pool should be
+    //    sized so this never happens.
+    D3D11_MAP mapMode;
+    if ( m_firstMapThisFrame ) {
+        mapMode = D3D11_MAP_WRITE_DISCARD;
+        m_firstMapThisFrame = false;
+    } else {
+        if ( m_currentOffset + alignedSize > m_bufferSize ) {
+            m_currentOffset = 0; // wrap
+            if ( !m_wrapWarned ) {
+                m_wrapWarned = true;
+                LogWarn() << "ConstantBufferPool wrapped mid-frame (size " << m_bufferSize
+                    << " bytes); increase the pool size to avoid potential overwrite hazards.";
+            }
+        }
+        mapMode = D3D11_MAP_WRITE_NO_OVERWRITE;
     }
+
     D3D11_MAPPED_SUBRESOURCE mappedResource;
-    if ( SUCCEEDED( context->Map( m_poolBuffer.Get(), 0, m_currentOffset == 0 ? D3D11_MAP_WRITE_DISCARD : D3D11_MAP_WRITE_NO_OVERWRITE, 0, &mappedResource ) ) ) {
+    if ( SUCCEEDED( context->Map( m_poolBuffer.Get(), 0, mapMode, 0, &mappedResource ) ) ) {
         memcpy( static_cast<uint8_t*>(mappedResource.pData) + m_currentOffset, pData, sizeInBytes );
         context->Unmap( m_poolBuffer.Get(), 0 );
     }
@@ -265,7 +289,7 @@ ConstantBufferAllocation ConstantBufferPool::Allocate( ID3D11DeviceContext* cont
     alloc.offsetInBytes = m_currentOffset;
     alloc.sizeInBytes = alignedSize;
 
-    // 4. Advance the offset for the next allocation
+    // Advance the offset for the next allocation
     m_currentOffset += alignedSize;
 
     return alloc;
@@ -856,26 +880,13 @@ XRESULT D3D11GraphicsEngine::Init() {
     InverseUnitSphereMesh = new GMesh;
     InverseUnitSphereMesh->LoadMesh( "system\\GD3D11\\meshes\\icoSphere.obj" );
 
-    // Create distance-buffers
-    D3D11ConstantBuffer* infiniteRangeConstantBuffer;
-    D3D11ConstantBuffer* outdoorSmallVobsConstantBuffer;
-    D3D11ConstantBuffer* outdoorVobsConstantBuffer;
-    CreateConstantBuffer( &infiniteRangeConstantBuffer, nullptr, sizeof( float4 ) );
-    CreateConstantBuffer( &outdoorSmallVobsConstantBuffer, nullptr, sizeof( float4 ) );
-    CreateConstantBuffer( &outdoorVobsConstantBuffer, nullptr, sizeof( float4 ) );
-    InfiniteRangeConstantBuffer.reset( infiniteRangeConstantBuffer );
-    OutdoorSmallVobsConstantBuffer.reset( outdoorSmallVobsConstantBuffer );
-    OutdoorVobsConstantBuffer.reset(outdoorVobsConstantBuffer);
-
+    // View-distance constant buffers are now allocated per-frame from the dynamic
+    // ring pool (see OnStartWorldRendering); no dedicated ID3D11Buffers needed.
     PerObjectMaterialInfoPooledBuffer = std::make_unique<ConstantBufferPool>();
     PerObjectMaterialInfoPooledBuffer->Initialize( GetDevice().Get() );
 
-    // Init inf-buffer now
-    static const float4 infiniteRange( FLT_MAX, 0, 0, 0 );
-    InfiniteRangeConstantBuffer->UpdateBuffer( &infiniteRange );
-    SetDebugName( InfiniteRangeConstantBuffer->Get().Get(), "InfiniteRangeConstantBuffer" );
-    SetDebugName( OutdoorSmallVobsConstantBuffer->Get().Get(), "OutdoorSmallVobsConstantBuffer" );
-    SetDebugName( OutdoorVobsConstantBuffer->Get().Get(), "OutdoorVobsConstantBuffer" );
+    DynamicConstantBufferPool = std::make_unique<ConstantBufferPool>();
+    DynamicConstantBufferPool->Initialize( GetDevice().Get() );
     // Load reflectioncube
 
     if ( S_OK != CreateDDSTextureFromFile(
@@ -1470,6 +1481,7 @@ void D3D11GraphicsEngine::ResetFrameTransientBufferPools() {
     m_MainVobInstancingPool.ResetFrame();
     m_ShadowVobInstancingPool.ResetFrame();
     PerObjectMaterialInfoPooledBuffer->BeginFrame();
+    DynamicConstantBufferPool->BeginFrame();
 }
 
 D3D11IndirectBuffer* D3D11GraphicsEngine::AcquireFrameIndirectBuffer( FrameIndirectBufferPool& pool,
@@ -2476,7 +2488,7 @@ XRESULT  D3D11GraphicsEngine::DrawSkeletalVertexNormals( SkeletalVobInfo* vi,
     SetActiveVertexShader( VShaderID::VS_ExSkeletalVN );
     SetActivePixelShader( PShaderID::PS_Simple );
 
-    InfiniteRangeConstantBuffer->BindToPixelShader( 3 );
+    BindDynamicCBToPixelShader( 3, InfiniteRangeCB );
     
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
@@ -4008,15 +4020,16 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
     GetContext()->CSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
 
-    // Update view distances
+    // Update view distances (allocate fresh dynamic-ring slots for this frame;
+    // the handles are stored and re-bound at the many later draw sites)
     static const float4 defaultInfiniteRange = float4( FLT_MAX, 0, 0, 0 );
-    InfiniteRangeConstantBuffer->UpdateBuffer( &defaultInfiniteRange );
+    InfiniteRangeCB = AllocateDynamicCB( &defaultInfiniteRange, sizeof( defaultInfiniteRange ) );
 
     const float4 outdoorSmallRange( rendererState.RendererSettings.OutdoorSmallVobDrawRadius, 0, 0, 0 );
-    OutdoorSmallVobsConstantBuffer->UpdateBuffer( &outdoorSmallRange );
+    OutdoorSmallVobsCB = AllocateDynamicCB( &outdoorSmallRange, sizeof( outdoorSmallRange ) );
 
     const float4 outdoorRange( rendererState.RendererSettings.OutdoorVobDrawRadius, 0, 0, 0 );
-    OutdoorVobsConstantBuffer->UpdateBuffer( &outdoorRange );
+    OutdoorVobsCB = AllocateDynamicCB( &outdoorRange, sizeof( outdoorRange ) );
 
     rendererState.RasterizerState.FrontCounterClockwise = false;
     rendererState.RasterizerState.SetDirty();
@@ -4823,7 +4836,7 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
     const XMMATRIX identityMatrix = XMMatrixIdentity();
     ActiveVS->GetBuffer( "Matrices_PerInstances" ).Update( &identityMatrix ).Bind();
 
-    InfiniteRangeConstantBuffer->BindToPixelShader( 3 );
+    BindDynamicCBToPixelShader( 3, InfiniteRangeCB );
 
     // Bind wrapped mesh vertex buffers
     DrawVertexBufferIndexedUINT(
@@ -5022,7 +5035,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
             .Update( &sky->GetAtmosphereCB() )
             .Bind();
 
-        ActivePS->BindBuffer( "DIST_Distance", InfiniteRangeConstantBuffer.get() );
+        BindDynamicCBToPixelShader( ActivePS->GetInputIndex( "DIST_Distance" ), InfiniteRangeCB );
 
         PsSimpleFFdata ffdata = { };
         ffdata.textureFactor = float4( 1.0f, 1.0f, 1.0f, 1.0f );
@@ -5607,7 +5620,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
     WhiteTexture->BindToPixelShader( 0 );
     void* lastTex = WhiteTexture.get();
 
-    ActivePS->BindBuffer( "DIST_Distance", InfiniteRangeConstantBuffer.get() );
+    BindDynamicCBToPixelShader( ActivePS->GetInputIndex( "DIST_Distance" ), InfiniteRangeCB );
 
     UpdateRenderStates();
 
@@ -5962,7 +5975,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
 
     DistortionTexture->BindToPixelShader( 0 );
 
-    ActivePS->BindBuffer( "DIST_Distance", InfiniteRangeConstantBuffer.get() );
+    BindDynamicCBToPixelShader( ActivePS->GetInputIndex( "DIST_Distance" ), InfiniteRangeCB );
 
     UpdateRenderStates();
 
@@ -6635,7 +6648,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
     float3 fPosition; XMStoreFloat3( fPosition.toXMFLOAT3(), position );
     DistortionTexture->BindToPixelShader( 0 );
 
-    ActivePS->BindBuffer( "DIST_Distance", InfiniteRangeConstantBuffer.get() );
+    BindDynamicCBToPixelShader( ActivePS->GetInputIndex( "DIST_Distance" ), InfiniteRangeCB );
 
     UpdateRenderStates();
 
@@ -7577,15 +7590,17 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                         if ( cachedVisual->Visual->MeshSize < renderSettings.SmallVobSize ) {
                             // Only update if it changed
                             if ( std::abs( cachedSmallVobRadius - expectedSmallRadius ) > 0.1f ) {
-                                OutdoorSmallVobsConstantBuffer->UpdateBuffer( float4( expectedSmallRadius, 0, 0, 0 ).toPtr() );
-                                OutdoorSmallVobsConstantBuffer->BindToPixelShader( DIST_DistanceSlot );
+                                const float4 smallRange( expectedSmallRadius, 0, 0, 0 );
+                                OutdoorSmallVobsCB = AllocateDynamicCB( &smallRange, sizeof( smallRange ) );
+                                BindDynamicCBToPixelShader( DIST_DistanceSlot, OutdoorSmallVobsCB );
                                 cachedSmallVobRadius = expectedSmallRadius;
                             }
                         } else {
                             // Only update if it changed
                             if ( std::abs( cachedVobRadius - expectedVobRadius ) > 0.1f ) {
-                                OutdoorVobsConstantBuffer->UpdateBuffer( float4( expectedVobRadius, 0, 0, 0 ).toPtr() );
-                                OutdoorVobsConstantBuffer->BindToPixelShader( DIST_DistanceSlot );
+                                const float4 vobRange( expectedVobRadius, 0, 0, 0 );
+                                OutdoorVobsCB = AllocateDynamicCB( &vobRange, sizeof( vobRange ) );
+                                BindDynamicCBToPixelShader( DIST_DistanceSlot, OutdoorVobsCB );
                                 cachedVobRadius = expectedVobRadius;
                             }
                         }
