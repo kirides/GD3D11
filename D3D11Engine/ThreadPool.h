@@ -41,7 +41,7 @@ public:
 
         std::stop_source token;
 
-        auto task = std::make_shared<std::packaged_task<ReturnType()>>(
+        auto task = std::packaged_task<ReturnType()>(
             [f = std::forward<F>( f ),
              token,
              ...args = std::forward<Args>( args )]() mutable {
@@ -49,7 +49,7 @@ public:
             }
         );
 
-        std::future<ReturnType> future = task->get_future();
+        std::future<ReturnType> future = task.get_future();
         {
             std::scoped_lock lock( queue_mutex );
 
@@ -57,9 +57,9 @@ public:
                 throw std::runtime_error( "enqueue on stopped ThreadPool" );
             }
 
-            tasks.emplace( [task]()
+            tasks.emplace( [task = std::move(task)]() mutable
             {
-                (*task)();
+                task();
             }, token );
         }
         condition.notify_one();
@@ -80,7 +80,7 @@ public:
     void clearAndFlush()
     {
         // Swap out the tasks quickly to minimize mutex lock time
-        std::queue<std::pair<std::function<void()>, std::stop_source>> pending_tasks;
+        std::queue<std::pair<std::move_only_function<void()>, std::stop_source>> pending_tasks;
         {
             std::unique_lock<std::mutex> lock( queue_mutex );
             std::swap( tasks, pending_tasks );
@@ -102,7 +102,7 @@ public:
 
 private:
     std::vector<std::thread> workers;
-    std::queue<std::pair<std::function<void()>, std::stop_source>> tasks;
+    std::queue<std::pair<std::move_only_function<void()>, std::stop_source>> tasks;
 
     std::atomic_int activeTasks{0};
     std::mutex queue_mutex;
@@ -124,7 +124,7 @@ inline ThreadPool::ThreadPool(const wchar_t* poolIdentifier, size_t threads)
                 SetThreadDescription( GetCurrentThread(), (descriptionPrefix+std::to_wstring(workerId)).c_str() );
                 for (;;)
                 {
-                    std::function<void()> task;
+                    std::move_only_function<void()> task;
 
                     {
                         std::unique_lock<std::mutex> lock(pool->queue_mutex);
