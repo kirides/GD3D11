@@ -135,13 +135,7 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
 
                 // Fill and bind the sun/CSM constant buffer at b0
                 DS_ScreenQuadConstantBuffer scb = shadowMaps->FillSunCSMConstantBuffer();
-                if ( !m_SunCSMConstantBuffer ) {
-                    m_SunCSMConstantBuffer = std::make_unique<D3D11ConstantBuffer>(
-                        sizeof( DS_ScreenQuadConstantBuffer ), &scb );
-                } else {
-                    m_SunCSMConstantBuffer->UpdateBuffer( &scb );
-                }
-                m_SunCSMConstantBuffer->BindToPixelShader( 0 );
+                engine.BindDynamicCBToPixelShader( 0, engine.AllocateDynamicCB( &scb, sizeof( scb ) ) );
 
                 // Bind depth copy as SRV at t2 (filled by the "FP Light Culling" pass)
                 auto* depthCopy = engine.GetDepthBufferCopy();
@@ -250,13 +244,7 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
 
             // --- Bind sun/CSM constant buffer at b4 ---
             DS_ScreenQuadConstantBuffer scb = shadowMaps->FillSunCSMConstantBuffer();
-            if ( !m_SunCSMConstantBuffer ) {
-                m_SunCSMConstantBuffer = std::make_unique<D3D11ConstantBuffer>(
-                    sizeof( DS_ScreenQuadConstantBuffer ), &scb );
-            } else {
-                m_SunCSMConstantBuffer->UpdateBuffer( &scb );
-            }
-            m_SunCSMConstantBuffer->BindToPixelShader( 4 );
+            engine.BindDynamicCBToPixelShader( 4, engine.AllocateDynamicCB( &scb, sizeof( scb ) ) );
 
             // --- Bind tile constant buffer at b5 ---
             auto res = engine.GetResolution();
@@ -264,13 +252,7 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
             tileCB.ViewportSize = float2( static_cast<float>( res.x ), static_cast<float>( res.y ) );
             tileCB.NumTilesX = ( static_cast<uint32_t>( res.x ) + 15 ) / 16;
             tileCB.LimitLightIntensity = Engine::GAPI->GetRendererState().RendererSettings.LimitLightIntesity ? 1u : 0u;
-            if ( !m_TileConstantBuffer ) {
-                m_TileConstantBuffer = std::make_unique<D3D11ConstantBuffer>(
-                    sizeof( ForwardPlusTileConstantBuffer ), &tileCB );
-            } else {
-                m_TileConstantBuffer->UpdateBuffer( &tileCB );
-            }
-            m_TileConstantBuffer->BindToPixelShader( 5 );
+            engine.BindDynamicCBToPixelShader( 5, engine.AllocateDynamicCB( &tileCB, sizeof( tileCB ) ) );
              
             // --- Bind CSM shadow map at t3 ---
             shadowMaps->BindToPixelShader( context.Get(), 3 );
@@ -281,13 +263,7 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
             // --- Bind atmosphere cbuffer at b1 ---
             GSky* sky = Engine::GAPI->GetSky();
             auto atmoCB = sky->GetAtmosphereCB();
-            static std::unique_ptr<D3D11ConstantBuffer> s_atmoCB;
-            if ( !s_atmoCB ) {
-                s_atmoCB = std::make_unique<D3D11ConstantBuffer>( sizeof( atmoCB ), &atmoCB );
-            } else {
-                s_atmoCB->UpdateBuffer( &atmoCB );
-            }
-            s_atmoCB->BindToPixelShader( 1 );
+            engine.BindDynamicCBToPixelShader( 1, engine.AllocateDynamicCB( &atmoCB, sizeof( atmoCB ) ) );
 
             // --- Bind light SRVs (t8-t11) from tiled deferred ---
             auto* tiledDeferred = shadowMaps->GetTiledDeferred();

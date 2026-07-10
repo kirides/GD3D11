@@ -25,7 +25,7 @@ public:
     void InitResources();
 
     /** Draws the surrounding scene into the cubemap */
-    void RenderCubemap( bool forceUpdate, D3D11ConstantBuffer* ViewMatricesCB );
+    void RenderCubemap( bool forceUpdate );
 
     /** Binds the shadowmap to the pixelshader */
     void OnRenderLight();

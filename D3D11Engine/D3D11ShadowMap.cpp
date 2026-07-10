@@ -343,7 +343,6 @@ void D3D11ShadowMap::WaitShadowCullingComplete()
 }
 
 void D3D11ShadowMap::Init( Microsoft::WRL::ComPtr<ID3D11Device1>& device, Microsoft::WRL::ComPtr<ID3D11DeviceContext1>& context, int size ) {
-    HRESULT hr;
     m_device = device;
     m_context = context;
 
@@ -360,13 +359,6 @@ void D3D11ShadowMap::Init( Microsoft::WRL::ComPtr<ID3D11Device1>& device, Micros
     for ( int i = 0; i < MAX_CSM_CASCADES; ++i ) {
         m_RenderQueues[i] = std::make_unique<D3D11RenderQueue>( device.Get(), context.Get() );
     }
-
-    D3D11GraphicsEngineBase* engine = reinterpret_cast<D3D11GraphicsEngineBase*>( Engine::GraphicsEngine );
-
-    // Create constantbuffer for the view-matrices
-    D3D11ConstantBuffer* cb = nullptr;
-    LE(engine->CreateConstantBuffer( &cb, nullptr, sizeof( CubemapGSConstantBuffer ) ));
-    m_PointLightCB.reset( cb );
 
     Resize( s );
 
@@ -1062,7 +1054,7 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
 
     // Render the immediate priority lights
     for ( auto const& importantUpdate : importantUpdates ) {
-        static_cast<D3D11PointLight*>(importantUpdate->LightShadowBuffers.get())->RenderCubemap( importantUpdate->UpdateShadows, m_PointLightCB.get() );
+        static_cast<D3D11PointLight*>(importantUpdate->LightShadowBuffers.get())->RenderCubemap( importantUpdate->UpdateShadows );
         importantUpdate->UpdateShadows = false;
     }
 
@@ -1089,7 +1081,7 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
         light->UpdateShadows = false;
 
         // FORCE the render! It waited in line for its turn, it must draw.
-        l->RenderCubemap( force, m_PointLightCB.get() );
+        l->RenderCubemap( force );
         graphicsEngine->DebugPointlight = l;
 
         updatesDone++;

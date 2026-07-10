@@ -28,15 +28,8 @@ D3D11PFX_TAA::D3D11PFX_TAA(D3D11PfxRenderer* rnd)
 bool D3D11PFX_TAA::Init() {
     auto* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     
-    // Create TAA constant buffer
-    TAAConstantBuffer cb = {};
-    m_TAAConstantBuffer = std::make_unique<D3D11ConstantBuffer>(
-        sizeof(TAAConstantBuffer), &cb);
-    
-    // Create velocity constant buffer
-    VelocityBufferConstantBuffer vcb = {};
-    m_VelocityConstantBuffer = std::make_unique<D3D11ConstantBuffer>(
-        sizeof(VelocityBufferConstantBuffer), &vcb);
+    // TAA/velocity constant buffers now come from the per-frame dynamic ring pool
+    // (allocated at bind time in RenderVelocityBuffer / RenderPostFX).
     
     // Linear sampler for color sampling
     D3D11_SAMPLER_DESC sampDesc = {};
@@ -104,8 +97,7 @@ void D3D11PFX_TAA::ReleaseResources() {
 
     m_HistoryBuffer.reset();
     m_VelocityBuffer.reset();
-    m_TAAConstantBuffer.reset();
-    m_VelocityConstantBuffer.reset();
+    // m_TAACB / m_VelocityCB are persistent-pool slots; keep them across recreations.
     m_samplerLinear.Reset();
     m_samplerPoint.Reset();
 }
@@ -206,8 +198,7 @@ void D3D11PFX_TAA::RenderVelocityBuffer(
     vcb.PrevJitterOffset = m_PreviousJitter;
     vcb.Resolution = XMFLOAT2(static_cast<float>(m_Width), static_cast<float>(m_Height));
     
-    m_VelocityConstantBuffer->UpdateBuffer(&vcb);
-    m_VelocityConstantBuffer->BindToPixelShader(0);
+    engine->BindDynamicCBToPixelShader( 0, engine->AllocateDynamicCB( &vcb, sizeof( vcb ) ) );
     
     // Set velocity buffer as render target
     context->OMSetRenderTargets(1, m_VelocityBuffer->GetRenderTargetView().GetAddressOf(), nullptr);
@@ -301,8 +292,7 @@ void D3D11PFX_TAA::RenderPostFX(
 
     cb.MotionScale = 1.0f;
     
-    m_TAAConstantBuffer->UpdateBuffer(&cb);
-    m_TAAConstantBuffer->BindToPixelShader(0);
+    engine->BindDynamicCBToPixelShader( 0, engine->AllocateDynamicCB( &cb, sizeof( cb ) ) );
     
     m_PrevViewProj = m_UnjitteredViewProj;
 
