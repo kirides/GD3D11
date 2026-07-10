@@ -306,7 +306,14 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	float NdotV = saturate(dot(-viewDirection, wavesFres));
 	float reflectFresnel = pow(1.0f - NdotV, 3.0f);
 
-	float reflectAmount = saturate(max(saturate(ssrConfidence), reflectFresnel * 0.05f));
+	// Waterfalls (surface normal pointing mostly sideways rather than up) get a
+	// strong, distracting reflection because the geometry is nearly vertical while
+	// the shader still treats it like flat, horizontal water. Use the true geometric
+	// normal (not the wave-perturbed one) to detect this and fade the reflection out.
+	float waterfallFactor = 1.0f - saturate(abs(normalize(Input.vNormalWS).y));
+	float reflectSuppress = lerp(1.0f, 0.12f, waterfallFactor);
+
+	float reflectAmount = saturate(max(saturate(ssrConfidence), reflectFresnel * 0.05f)) * reflectSuppress;
 	color = lerp(color, reflection * lerp(1.0f, diffuse, 0.3f), reflectAmount);
 	
 	color.rgb = ApplyAtmosphericScatteringGround(Input.vWorldPosition, color.rgb);

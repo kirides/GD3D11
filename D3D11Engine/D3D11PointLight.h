@@ -106,8 +106,6 @@ protected:
     bool DrawnOnce;
     bool m_StaticShadowReady = false;
     int m_LastShadowMode = -1;
-    // used to denote things like torches which move with NPCs
-    bool m_ForceRealtimeShadows = false;
 
     // Tiled deferred slot (non-owning, owned by D3D11TiledDeferredShading)
     int m_TiledSlotIndex = -1;

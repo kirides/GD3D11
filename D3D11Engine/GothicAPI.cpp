@@ -60,10 +60,6 @@
 #define OPT_DBG_NOINLINE
 #endif
 
-struct file_deleter {
-    void operator()( std::FILE* fp ) { std::fclose( fp ); }
-};
-
 // Duration how long the scene will stay wet, in MS
 const DWORD SCENE_WETNESS_DURATION_MS = 20 * 1000;
 
@@ -2969,9 +2965,8 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
                     if ( g->GetRenderingStage() == DES_MAIN || g->GetRenderingStage() == DES_GHOST ) {
                         if ( updateState ) {
                             if ( mvi->LastAniUpdateFrame != now ) {
+                                WorldConverter::UpdateMorphMeshVisual( mm, mvi );
                                 mvi->LastAniUpdateFrame = now;
-                                mm->AdvanceAnis();
-                                mm->CalcVertexPositions();
                             }
                         }
                         DrawMorphMesh_Layered( mm, mvi->Meshes );
@@ -4124,7 +4119,6 @@ void GothicAPI::CollectVisibleVobs(
         std::vector<std::pair<float, VobLightInfo*>> lightWithDist;
         lightWithDist.reserve( renderQueue.lights.size() );
 
-        const auto camPos = ctx.cameraPosition;
         float lightPlayerDist;
         for ( auto vi : renderQueue.lights ) {
             if ( vi->Vob->IsEnabled() ) {
@@ -4875,7 +4869,7 @@ static void FixUpMaterial( MaterialInfo::Buffer& buffer ) {
 /** Returns the material info associated with the given material */
 MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCTexture* tex ) {
     auto it = MaterialInfos.find( tex );
-    MaterialInfo* mi = nullptr;
+    MaterialInfo* mi;
     if ( it == MaterialInfos.end() ) {
 
         // Make a new one and try to load it
@@ -4899,7 +4893,7 @@ MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCTexture* tex ) {
 
 MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCTexture* tex, const std::string_view textureName ) {
         auto it = MaterialInfos.find( tex );
-        MaterialInfo* mi = nullptr;
+        MaterialInfo* mi;
         if ( it == MaterialInfos.end() ) {
             auto info = std::make_unique<MaterialInfo>();
             MaterialInfos.emplace( tex, std::move( info ) );
@@ -5442,7 +5436,6 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
             s.SectionDrawRadius = std::max( 3, s.SectionDrawRadius );
         }
 
-        static XMFLOAT3 defaultLightDirection = XMFLOAT3( 1, 1, 1 );
         s.EnableShadows = GetPrivateProfileBoolA( "Shadows", "EnableShadows", ds.EnableShadows, ini );
         s.ShadowFilterMode = static_cast<GothicRendererSettings::E_ShadowFilterMode>(
             GetPrivateProfileIntA( "Shadows", "ShadowFilterMode",
@@ -5727,43 +5720,47 @@ void GothicAPI::DrawMorphMesh( zCMorphMesh* msh, std::map<zCMaterial*, std::vect
 }
 
 void GothicAPI::DrawMorphMesh_Layered( zCMorphMesh* msh, std::map<zCMaterial*, std::vector<std::unique_ptr<MeshInfo>>>& meshes ) {
+    // layered draw always has WhiteTexture bound to PS Slot 0
+    // no need to bind a texture! Just used for shadows
     zCProgMeshProto* morphMesh = msh->GetMorphMesh();
     if ( !morphMesh )
         return;
 
+    // Ensure to call `WorldConverter::UpdateMorphMeshVisual( ... );` once per frame for this mesh to update the vertex buffers before drawing.
+
     D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
-    XMFLOAT3* posList = morphMesh->GetPositionList()->Array->toXMFLOAT3();
-    std::vector<ExVertexStruct> vertices;
+
+    D3D11Texture* whiteTexture = g->GetWhiteTexture();
+    void* lastTex = whiteTexture;
+
     for ( int i = 0; i < morphMesh->GetNumSubmeshes(); i++ ) {
-
-        zCSubMesh* s = morphMesh->GetSubmesh( i );
-        vertices.clear();
-        vertices.reserve( s->WedgeList.NumInArray );
-        for ( int v = 0; v < s->WedgeList.NumInArray; v++ ) {
-            zTPMWedge& wedge = s->WedgeList.Array[v];
-            vertices.emplace_back();
-            ExVertexStruct& vx = vertices.back();
-            vx.Position = posList[wedge.position];
-            vx.Normal = wedge.normal;
-            vx.TexCoord = wedge.texUV;
-            vx.Color = 0xFFFFFFFF;
-        }
-
-        if ( zCTexture* texture = s->Material->GetAniTexture() ) {
-            if ( !g->BindTextureNRFX( texture, (g->GetRenderingStage() == DES_MAIN) ) )
-                continue;
-        }
-
         for ( auto const& it : meshes ) {
+            zCTexture* texture;
+            if ( it.first && (texture = it.first->GetAniTexture()) != nullptr ) {
+                if ( texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
+                    continue; // we cant determine if we need to draw this, alpha data is only available after loading a texture.
+                }
+
+                const bool needTex = texture != lastTex
+                    && (texture->HasAlphaChannel() || it.first->HasAlphaTest());
+
+                if ( needTex ) {
+                    texture->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
+                    lastTex = texture;
+                } else if ( lastTex != whiteTexture ) {
+                    whiteTexture->BindToPixelShader( 0 );
+                    lastTex = whiteTexture;
+                }
+            }
+
             for ( auto& mi : it.second ) {
                 if ( mi->MeshIndex == i ) {
-                    mi->MeshVertexBuffer->UpdateBuffer( &vertices[0], vertices.size() * sizeof( ExVertexStruct ) );
                     g->DrawVertexBufferInstancedIndexed( mi->GetMeshVertexBuffer(), mi->GetMeshIndexBuffer(), mi->Indices.size(), 6 );
                     goto Out_Of_Nested_Loop;
                 }
             }
         }
-        Out_Of_Nested_Loop:;
+    Out_Of_Nested_Loop:;
     }
 }
 

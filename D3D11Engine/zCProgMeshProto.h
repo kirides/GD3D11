@@ -80,12 +80,11 @@ public:
         vertices->reserve( pl->NumInArray );
 
         for ( int i = 0; i < pl->NumInArray; i++ ) {
-            ExVertexStruct vx;
+            ExVertexStruct& vx = vertices->emplace_back();
             vx.Position = pl->Get( i );
             vx.Normal = float3( 0, 0, 0 );
             vx.TexCoord = float2( 0, 0 );
             vx.Color = 0xFFFFFFFF;
-            vertices->push_back( vx );
         }
     }
 };

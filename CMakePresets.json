@@ -13,7 +13,7 @@
       "architecture": "Win32",
       "binaryDir": "${sourceDir}/out/build/${presetName}",
       "cacheVariables": {
-        "CMAKE_CXX_STANDARD": "20",
+        "CMAKE_CXX_STANDARD": "23",
         "GD3D11_BUILD_ENGINE": "ON",
         "GD3D11_BUILD_LAUNCHER": "ON",
         "GD3D11_GAME": "G2",
@@ -37,7 +37,7 @@
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "CMAKE_C_COMPILER": "clang",
         "CMAKE_CXX_COMPILER": "clang++",
-        "CMAKE_CXX_STANDARD": "20",
+        "CMAKE_CXX_STANDARD": "23",
         "GD3D11_BUILD_ENGINE": "ON",
         "GD3D11_BUILD_LAUNCHER": "ON",
         "GD3D11_GAME": "G2",
