@@ -496,7 +496,7 @@ void D3D11PointLight::RenderFullCubemap() {
     }
 
     const int shadowMode = GetCurrentShadowMode();
-    if ( shadowMode >= GothicRendererSettings::PLS_STATIC_ONLY && shadowMode != GothicRendererSettings::PLS_FULL ) {
+    if ( !m_StaticShadowReady && shadowMode >= GothicRendererSettings::PLS_STATIC_ONLY && shadowMode != GothicRendererSettings::PLS_FULL ) {
         RenderStaticShadowPass( *activeTarget, true );
         m_StaticShadowReady = true;
     }
