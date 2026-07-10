@@ -4,7 +4,6 @@
 #include "D3D11GraphicsEngine.h"
 #include "D3D11ShadowMap.h"
 #include "D3D11TiledDeferredShading.h"
-#include "D3D11ConstantBuffer.h"
 #include "D3D11Effect.h"
 #include "D3D11PfxRenderer.h"
 #include "RenderGraph.h"

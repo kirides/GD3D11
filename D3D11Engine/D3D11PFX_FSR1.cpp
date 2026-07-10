@@ -5,7 +5,6 @@
 #include "D3D11GraphicsEngine.h"
 #include "D3D11ShaderManager.h"
 #include "D3D11PShader.h"
-#include "D3D11ConstantBuffer.h"
 #include "RenderToTextureBuffer.h"
 #include "ConstantBufferStructs.h"
 #include "Engine.h"
@@ -113,7 +112,7 @@ XRESULT D3D11PFX_FSR1::ApplyEASU(
     );
 
     // Update constant buffer
-    easuPS->GetBuffer( "FSR1Constants" ).Update( &cb ).Bind();
+    easuPS->UpdateBuffer("FSR1Constants", &cb, sizeof(cb));
 
     // Save old render targets
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> oldRTV;
@@ -179,7 +178,7 @@ XRESULT D3D11PFX_FSR1::ApplyRCAS(
     FsrRcasCon( cb.RCASConst, sharpness );
 
     // Update constant buffer
-    rcasPS->GetBuffer( "FSR1RCASConstants" ).Update( &cb ).Bind();
+    rcasPS->UpdateBuffer("FSR1RCASConstants", &cb, sizeof(cb));
 
     // Save old render targets
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView> oldRTV;

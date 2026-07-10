@@ -5,7 +5,6 @@
 struct GrassConstantBuffer;
 class GMeshSimple;
 class D3D11Texture;
-class D3D11ConstantBuffer;
 class D3D11VertexBuffer;
 class zCTexture;
 class Frustum;

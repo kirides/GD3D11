@@ -30,8 +30,8 @@ XRESULT D3D11LegacyDeferredShading::DrawPointlightLights(
 
     auto psPointLight = graphicsEngine->GetShaderManager().GetPShader( PShaderID::PS_DS_PointLight );
     auto psPointLightDynShadow = graphicsEngine->GetShaderManager().GetPShader( PShaderID::PS_DS_PointLightDynShadow );
-    auto plBuf = psPointLight->GetBuffer( "DS_PointLightConstantBuffer" );
-    auto plDynBuf = psPointLightDynShadow->GetBuffer( "DS_PointLightConstantBuffer" );
+    auto plBuf = psPointLight->GetInputIndex( "DS_PointLightConstantBuffer" );
+    auto plDynBuf = psPointLightDynShadow->GetInputIndex( "DS_PointLightConstantBuffer" );
 
     Engine::GAPI->GetRendererState().BlendState.SetAdditiveBlending();
     if ( settings.LimitLightIntesity ) {
@@ -67,6 +67,7 @@ XRESULT D3D11LegacyDeferredShading::DrawPointlightLights(
     specular.BindToPixelShader( context.Get(), 7 );
     depthCopy.BindToPixelShader( context.Get(), 2 );
 
+    auto cbPool = graphicsEngine->GetConstantBufferPool();
     for ( auto const& light : lights ) {
         zCVobLight* vob = light->Vob;
 
@@ -143,8 +144,9 @@ XRESULT D3D11LegacyDeferredShading::DrawPointlightLights(
         plcb.PL_LightScreenPos.y = plcb.PL_LightScreenPos.y / -2.0f + 0.5f;
 
         auto& activePlBuf = (graphicsEngine->GetActivePS() == psPointLightDynShadow) ? plDynBuf : plBuf;
-        activePlBuf.Update( &plcb ).Bind();
-        activePlBuf.GetRawBuffer()->BindToVertexShader( 1 );
+        auto rainBufAllocation = cbPool->Allocate(&plcb, sizeof(plcb));
+        cbPool->BindPS(activePlBuf, rainBufAllocation);
+        cbPool->BindVS(1, rainBufAllocation);
 
         if ( settings.EnablePointlightShadows > 0 ) {
             if ( light->LightShadowBuffers )

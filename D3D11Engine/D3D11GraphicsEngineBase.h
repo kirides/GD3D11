@@ -18,7 +18,7 @@ class D3D11ShaderManager;
 
 class D3D11VertexBuffer;
 class D3D11LineRenderer;
-class D3D11ConstantBuffer;
+class ConstantBufferPool;
 
 class D3D11GraphicsEngineBase : public BaseGraphicsEngine {
 public:
@@ -55,10 +55,7 @@ public:
     /** Creates a texture object (Not registered inside) */
     XRESULT CreateTexture( D3D11Texture** outTexture ) override;
     XRESULT CreateTexture( std::unique_ptr<D3D11Texture>& outTexture ) override;
-
-    /** Creates a constantbuffer object (Not registered inside) */
-    XRESULT CreateConstantBuffer( D3D11ConstantBuffer** outCB, void* data, int size ) override;
-
+    
     /** Creates a bufferobject for a shadowed point light */
     XRESULT CreateShadowedPointLight( BaseShadowedPointLight** outPL, VobLightInfo* lightInfo, bool dynamic = false ) override;
 
@@ -67,9 +64,6 @@ public:
 
     /** Presents the current frame to the screen */
     XRESULT Present() override;
-
-    /** Called when we started to render the world */
-    XRESULT OnStartWorldRendering() override;
 
     /** Returns the line renderer object */
     BaseLineRenderer* GetLineRenderer() override;
@@ -132,11 +126,10 @@ public:
     std::unique_ptr<GraphicsEventRecord> RecordGraphicsEvent( GraphicsEventName region ) override {
         return std::make_unique<GraphicsEventRecord>();
     }
+    
+    virtual ConstantBufferPool* GetConstantBufferPool() PURE;
 
 protected:
-    /** Updates the transformsCB with new values from the GAPI */
-    void UpdateTransformsCB();
-
     /** Device-objects */
     Microsoft::WRL::ComPtr<IDXGIFactory2> DXGIFactory2;
     Microsoft::WRL::ComPtr<IDXGIAdapter2> DXGIAdapter2;
@@ -172,9 +165,6 @@ protected:
 
     /** Dynamic buffer for vertex array rendering */
     std::unique_ptr<D3D11VertexBuffer> TempVertexBuffer;
-
-    /** Constantbuffers */
-    std::unique_ptr<D3D11ConstantBuffer> TransformsCB; // Holds View/Proj-Transforms
 
     /** Resolved shader IDs (may point to different actual shaders based on settings like AllowNormalmaps) */
     PShaderID Resolved_DiffuseNormalmapped;

@@ -12,7 +12,6 @@
 struct RenderToDepthStencilBuffer;
 
 class D3D11IndirectBuffer;
-class D3D11ConstantBuffer;
 class D3D11VertexBuffer;
 class D3D11ShaderManager;
 
@@ -42,50 +41,6 @@ const unsigned int MORPHEDMESH_HIGH_BUFFER_SIZE = 20480 * sizeof( ExVertexStruct
 const unsigned int HUD_BUFFER_SIZE = 6 * sizeof( ExVertexStruct );
 const int NUM_MAX_BONES = 96;
 const int unsigned INSTANCING_BUFFER_SIZE = sizeof( VobInstanceInfo ) * 2048;
-
-struct ConstantBufferAllocation {
-    ID3D11Buffer* pBuffer = nullptr;
-    uint32_t offsetInBytes = 0;
-    uint32_t sizeInBytes = 0;
-
-    bool operator==( const ConstantBufferAllocation& other ) const {
-        return pBuffer == other.pBuffer && offsetInBytes == other.offsetInBytes && sizeInBytes == other.sizeInBytes;
-    }
-};
-
-class ConstantBufferPool {
-private:
-    Microsoft::WRL::ComPtr<ID3D11Buffer> m_poolBuffer;
-    uint32_t m_bufferSize;
-    uint32_t m_currentOffset;
-    bool m_firstMapThisFrame = true; // first Map of the frame gets DISCARD; the rest NO_OVERWRITE
-    bool m_wrapWarned = false;        // warn only once if the ring wraps mid-frame
-
-public:
-    void Initialize( ID3D11Device* device, uint32_t totalSizeInBytes = 4 * 1024 * 1024 ) {
-        m_bufferSize = totalSizeInBytes;
-        m_currentOffset = 0;
-        m_firstMapThisFrame = true;
-        m_wrapWarned = false;
-
-        D3D11_BUFFER_DESC desc = {};
-        desc.ByteWidth = m_bufferSize;
-        desc.Usage = D3D11_USAGE_DYNAMIC;
-        desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-        desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-
-        device->CreateBuffer( &desc, nullptr, &m_poolBuffer );
-#ifdef DEBUG_D3D11
-        SetDebugName( m_poolBuffer.Get(), std::string( "ConstantBufferPool (size:" ) + std::to_string( totalSizeInBytes )+")");
-#endif
-    }
-
-    void BeginFrame();
-    ConstantBufferAllocation Allocate( ID3D11DeviceContext* context, const void* pData, uint32_t sizeInBytes );
-    void EndFrame();
-
-    ID3D11Buffer* GetBuffer() const { return m_poolBuffer.Get(); }
-};
 
 class D3D11PointLight;
 class D3D11VShader;
@@ -191,6 +146,7 @@ public:
 
     /** Sets up a draw call for a VS_Ex-Mesh */
     void SetupVS_ExMeshDrawCall() override;
+    void PreparePerFrameConstantBuffer(VS_ExConstantBuffer_PerFrame& cb);
     void SetupVS_ExConstantBuffer() override;
     void SetupVS_ExPerInstanceConstantBuffer() override;
 
@@ -429,8 +385,18 @@ public:
     // with DISCARD/NO_OVERWRITE) and binds it by offset, so callers don't need their
     // own ID3D11Buffer. The allocation is only valid for the current frame.
     ConstantBufferAllocation AllocateDynamicCB( const void* data, uint32_t size ) {
-        return DynamicConstantBufferPool->Allocate( GetContext().Get(), data, size );
+        return DynamicConstantBufferPool->Allocate( data, size );
     }
+    
+    template<typename T>
+    ConstantBufferAllocation AllocateDynamicCB( const T* data ) {
+        return DynamicConstantBufferPool->Allocate( data, sizeof(T) );
+    }
+    
+    ConstantBufferPool* GetConstantBufferPool() override {
+        return DynamicConstantBufferPool.get();
+    };
+    
     void BindDynamicCBToVertexShader( int slot, const ConstantBufferAllocation& a ) {
         if ( slot < 0 || !a.pBuffer ) return;
         UINT first = a.offsetInBytes / 16; UINT num = a.sizeInBytes / 16;

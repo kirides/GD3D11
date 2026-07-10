@@ -75,12 +75,6 @@ XRESULT D3D11GraphicsEngineBase::CreateTexture( std::unique_ptr<D3D11Texture>& o
     return XR_SUCCESS;
 }
 
-/** Creates a constantbuffer object (Not registered inside) */
-XRESULT D3D11GraphicsEngineBase::CreateConstantBuffer( D3D11ConstantBuffer** outCB, void* data, int size ) {
-    *outCB = new D3D11ConstantBuffer( size, data );
-    return XR_SUCCESS;
-}
-
 /** Presents the current frame to the screen */
 XRESULT D3D11GraphicsEngineBase::Present() {
     // Set default viewport
@@ -138,22 +132,6 @@ XRESULT D3D11GraphicsEngineBase::Present() {
     return XR_SUCCESS;
 }
 
-/** Called when we started to render the world */
-XRESULT D3D11GraphicsEngineBase::OnStartWorldRendering() {
-    if ( PresentPending )
-        return XR_FAILED;
-
-    PresentPending = true;
-
-    // Update transforms
-    UpdateTransformsCB();
-
-    // Force farplane
-    Engine::GAPI->SetFarPlane( Engine::GAPI->GetRendererState().RendererSettings.SectionDrawRadius * WORLD_SECTION_SIZE );
-
-    return XR_SUCCESS;
-}
-
 /** Returns the line renderer object */
 BaseLineRenderer* D3D11GraphicsEngineBase::GetLineRenderer() {
     return LineRenderer.get();
@@ -183,7 +161,7 @@ XRESULT D3D11GraphicsEngineBase::DrawVertexArray( ExVertexStruct* vertices, unsi
     auto pShader = ShaderManager->GetPShader( PShaderID::PS_FixedFunctionPipe );
 
     // Bind the FF-Info to the first PS slot
-    pShader->GetBuffer( "FFPipelineConstantBuffer" ).Update( &Engine::GAPI->GetRendererState().GraphicsState ).Bind();
+    pShader->UpdateBuffer("FFPipelineConstantBuffer", &Engine::GAPI->GetRendererState().GraphicsState, sizeof(Engine::GAPI->GetRendererState().GraphicsState));
 
     vShader->Apply();
     pShader->Apply();
@@ -204,7 +182,7 @@ XRESULT D3D11GraphicsEngineBase::DrawVertexArray( ExVertexStruct* vertices, unsi
     temp2Float2[1].x = vp.Width / scale;
     temp2Float2[1].y = vp.Height / scale;
 
-    vShader->GetBuffer( "Viewport" ).Update( temp2Float2 ).Bind();
+    vShader->UpdateBuffer( "Viewport" , &temp2Float2, sizeof(float2) * 2 );
 
     D3D11_BUFFER_DESC desc;
     TempVertexBuffer->GetVertexBuffer().Get()->GetDesc( &desc );
@@ -259,19 +237,6 @@ XRESULT D3D11GraphicsEngineBase::SetActiveGShader( GShaderID shader ) {
 //	return 0;
 //}
 
-/** Updates the transformsCB with new values from the GAPI */
-void D3D11GraphicsEngineBase::UpdateTransformsCB() {
-    const XMFLOAT4X4& view = Engine::GAPI->GetRendererState().TransformState.TransformView;
-    const XMFLOAT4X4& proj = Engine::GAPI->GetProjectionMatrix();
-
-    VS_ExConstantBuffer_PerFrame cb = {};
-    cb.View = view;
-    cb.Projection = proj;
-    XMStoreFloat4x4( &cb.ViewProj, XMMatrixMultiply( XMLoadFloat4x4( &proj ), XMLoadFloat4x4( &view ) ) );
-
-    TransformsCB->UpdateBuffer( &cb );
-}
-
 /** Creates a bufferobject for a shadowed point light */
 XRESULT D3D11GraphicsEngineBase::CreateShadowedPointLight( BaseShadowedPointLight** outPL, VobLightInfo* lightInfo, bool dynamic ) {
     if ( Engine::GAPI->GetRendererState().RendererSettings.EnablePointlightShadows > 0 )
@@ -287,7 +252,7 @@ XRESULT D3D11GraphicsEngineBase::DrawVertexBufferFF( D3D11VertexBuffer* vb, unsi
     SetupVS_ExMeshDrawCall();
 
     // Bind the FF-Info to the first PS slot
-    ActivePS->GetBuffer( "FFPipelineConstantBuffer" ).Update( &Engine::GAPI->GetRendererState().GraphicsState ).Bind();
+    ActivePS->UpdateBuffer("FFPipelineConstantBuffer", &Engine::GAPI->GetRendererState().GraphicsState, sizeof(Engine::GAPI->GetRendererState().GraphicsState));
 
     UINT offset = 0;
     UINT uStride = stride;
@@ -318,7 +283,7 @@ XRESULT D3D11GraphicsEngineBase::BindViewportInformation( VShaderID shader, int 
     auto vs = ShaderManager->GetVShader( shader );
 
     if ( vs ) {
-        vs->GetBuffer( "Viewport" ).Update( f2 ).Bind();
+        vs->UpdateBuffer( "Viewport" , &f2, sizeof(float2) * 2 );
     }
 
     return XR_SUCCESS;

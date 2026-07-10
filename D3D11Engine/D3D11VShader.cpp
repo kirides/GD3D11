@@ -250,12 +250,14 @@ void D3D11VShader::BindSampler(StringID name, ID3D11SamplerState* sampler) {
         reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->VSSetSamplers( inputIndex, 1, &sampler );
 }
 
-void D3D11VShader::BindBuffer(StringID name, D3D11ConstantBuffer* buffer) {
-    if (auto idx = GetInputIndex(name); idx != -1) {
-        buffer->BindToVertexShader(idx);
+void D3D11VShader::UpdateBuffer(StringID name, const void* data, size_t size) {
+    if (const auto idx = GetInputIndex(name); idx != -1) {
+        const auto pool = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetConstantBufferPool();
+        pool->BindVS(idx, pool->Allocate(data, size));
     }
 }
 
-void D3D11VShader::BindBuffer(UINT slot, D3D11ConstantBuffer* buffer) {
-    buffer->BindToVertexShader(slot);
+void D3D11VShader::UpdateBuffer(UINT slot, const void* data, size_t size) {
+    const auto pool = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetConstantBufferPool();
+    pool->BindVS(slot, pool->Allocate(data, size));
 }

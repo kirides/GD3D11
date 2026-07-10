@@ -8,7 +8,6 @@
 #include "D3D11CShader.h"
 #include "D3D11PShader.h"
 #include "D3D11VShader.h"
-#include "D3D11ConstantBuffer.h"
 #include "ConstantBufferStructs.h"
 #include "GothicAPI.h"
 
@@ -72,7 +71,7 @@ XRESULT D3D11PFX_SAO::Render(
 
     auto saoCS = engine->GetShaderManager().GetCShader( CShaderID::CS_PFX_SAO );
     saoCS->Apply();
-    saoCS->GetBuffer( "SAOConstantBuffer" ).Update( &saoCB ).Bind();
+    saoCS->UpdateBuffer("SAOConstantBuffer", &saoCB, sizeof(saoCB));
 
     context->CSSetSamplers( 0, 1, &defaultSampler );
 
@@ -96,7 +95,7 @@ XRESULT D3D11PFX_SAO::Render(
     // Horizontal pass: AO -> BlurTemp
     blurCB.SAO_Blur_Direction = float2( 1.0f, 0.0f );
     blurCS->Apply();
-    blurCS->GetBuffer( "SAOBlurConstantBuffer" ).Update( &blurCB ).Bind();
+    blurCS->UpdateBuffer("SAOBlurConstantBuffer", &blurCB, sizeof(blurCB));
 
     context->CSSetSamplers( 0, 1, &defaultSampler );
 
@@ -113,7 +112,7 @@ XRESULT D3D11PFX_SAO::Render(
     // Vertical pass: BlurTemp -> AO
     blurCB.SAO_Blur_Direction = float2( 0.0f, 1.0f );
     blurCS->Apply();
-    blurCS->GetBuffer( "SAOBlurConstantBuffer" ).Update( &blurCB ).Bind();
+    blurCS->UpdateBuffer("SAOBlurConstantBuffer", &blurCB, sizeof(blurCB));
 
     context->CSSetSamplers( 0, 1, &defaultSampler );
 
@@ -224,7 +223,7 @@ XRESULT D3D11PFX_SAO::RenderAO(
     auto saoCS = engine->GetShaderManager().GetCShader(
         reconstructNormals ? CShaderID::CS_PFX_SAO_DepthNormals : CShaderID::CS_PFX_SAO );
     saoCS->Apply();
-    saoCS->GetBuffer( "SAOConstantBuffer" ).Update( &saoCB ).Bind();
+    saoCS->UpdateBuffer("SAOConstantBuffer", &saoCB, sizeof(saoCB));
 
     context->CSSetSamplers( 0, 1, &defaultSampler );
 
@@ -247,7 +246,7 @@ XRESULT D3D11PFX_SAO::RenderAO(
 
     blurCB.SAO_Blur_Direction = float2( 1.0f, 0.0f );
     blurCS->Apply();
-    blurCS->GetBuffer( "SAOBlurConstantBuffer" ).Update( &blurCB ).Bind();
+    blurCS->UpdateBuffer("SAOBlurConstantBuffer", &blurCB, sizeof(blurCB));
 
     context->CSSetSamplers( 0, 1, &defaultSampler );
 
@@ -263,7 +262,7 @@ XRESULT D3D11PFX_SAO::RenderAO(
     // --- Pass 3: Bilateral Blur (vertical) — writes the final AO into the caller's UAV ---
     blurCB.SAO_Blur_Direction = float2( 0.0f, 1.0f );
     blurCS->Apply();
-    blurCS->GetBuffer( "SAOBlurConstantBuffer" ).Update( &blurCB ).Bind();
+    blurCS->UpdateBuffer("SAOBlurConstantBuffer", &blurCB, sizeof(blurCB));
 
     context->CSSetSamplers( 0, 1, &defaultSampler );
 

@@ -2600,8 +2600,9 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
         : XMLoadFloat4x4( &world );
     
     gtl::flat_hash_map<int, std::vector<MeshVisualInfo*>>& nodeAttachments = vi->NodeAttachments;
-    auto vsBufMPI = g->GetActiveVS()->GetBuffer( "Matrices_PerInstances" );
-    vsBufMPI.Bind();
+    
+    auto cbPool = g->GetConstantBufferPool();
+    auto vsBufMPI = g->GetActiveVS()->GetInputIndex( "Matrices_PerInstances" );
 
     oCNPC* npc = vi->Vob->As<oCNPC>();
     zCModel* mvis = static_cast<zCModel*>( vi->Vob->GetVisual() );
@@ -2710,7 +2711,7 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
                         // Update constantbuffer
                         instanceInfo.World = finalWorld;
                         XMStoreFloat4x4( &instanceInfo.PrevWorld, prevWorldNode );
-                        vsBufMPI.Update( &instanceInfo );
+                        cbPool->BindVS(vsBufMPI , cbPool->Allocate(&instanceInfo, sizeof(instanceInfo)));
 
                         if ( updateState ) {
                             if ( mvi->LastAniUpdateFrame != now ) {
@@ -2725,7 +2726,7 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
 
                 instanceInfo.World = finalWorld;
                 XMStoreFloat4x4( &instanceInfo.PrevWorld, prevWorldNode );
-                vsBufMPI.Update( &instanceInfo );
+                cbPool->BindVS(vsBufMPI, cbPool->Allocate(&instanceInfo, sizeof(instanceInfo)));
 
                 // Go through all materials registered here
 
@@ -2849,8 +2850,8 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
     g->SetupVS_ExConstantBuffer();
 
     auto& nodeAttachments = vi->NodeAttachments;
-    auto vsBufMPI = g->GetActiveVS()->GetBuffer( "Matrices_PerInstances" );
-    vsBufMPI.Bind();
+    auto vsBufMPI = g->GetActiveVS()->GetInputIndex( "Matrices_PerInstances" );
+    auto cbPool = g->GetConstantBufferPool();
 
     g->GetWhiteTexture()->BindToPixelShader( 0 );
     void* lastTex = g->GetWhiteTexture()->GetShaderResourceView().Get();
@@ -2952,7 +2953,7 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
                 instanceInfo.World = finalWorld;
                 instanceInfo.PrevWorld = finalWorld;
                 // Update constantbuffer
-                vsBufMPI.Update( &instanceInfo );
+                cbPool->BindVS(vsBufMPI , cbPool->Allocate(&instanceInfo, sizeof(instanceInfo)));
 
                 if ( distance < 1000 && isMMS ) {
                     zCMorphMesh* mm = reinterpret_cast<zCMorphMesh*>( mvi->Visual );
@@ -3015,7 +3016,8 @@ void GothicAPI::DrawTransparencyVobs() {
         RendererState.DepthState.SetDirty();
     }
 
-    auto psBufGAI = g->GetShaderManager().GetPShader( PShaderID::PS_Transparency )->GetBuffer( "GhostAlphaInfo" );
+    auto cbPool = g->GetConstantBufferPool();
+    auto psBufGAI = g->GetShaderManager().GetPShader( PShaderID::PS_Transparency )->GetInputIndex( "GhostAlphaInfo" );
 
 
     VS_ExConstantBuffer_PerInstance cbPerInstance;
@@ -3037,14 +3039,14 @@ void GothicAPI::DrawTransparencyVobs() {
             GhostAlphaConstantBuffer gacb;
             gacb.GA_ViewportSize = float2( Engine::GraphicsEngine->GetResolution().x, Engine::GraphicsEngine->GetResolution().y );
             gacb.GA_Alpha = TransVobInfo.alpha;
-            psBufGAI.Update( &gacb ).Bind();
+            cbPool->BindPS(psBufGAI , cbPool->Allocate(&gacb, sizeof(gacb)));
             DrawSkeletalMeshVob( TransVobInfo.skeletalVob, TransVobInfo.distance, false );
         } else if ( TransVobInfo.normalVob ) {
             g->SetActiveVertexShader( VShaderID::VS_Ex );
             g->SetupVS_ExMeshDrawCall();
             
             TransVobInfo.normalVob->UpdateVobConstantBuffer( cbPerInstance );
-            g->GetActiveVS()->GetBuffer( 1 ).Update(&cbPerInstance, sizeof(cbPerInstance)).Bind();
+            cbPool->BindVS(1 , cbPool->Allocate(&cbPerInstance, sizeof(cbPerInstance)));
 
             // We need to do Z-prepass first
             g->UnbindActivePS();
@@ -3074,7 +3076,7 @@ void GothicAPI::DrawTransparencyVobs() {
             GhostAlphaConstantBuffer gacb;
             gacb.GA_ViewportSize = float2( Engine::GraphicsEngine->GetResolution().x, Engine::GraphicsEngine->GetResolution().y );
             gacb.GA_Alpha = TransVobInfo.alpha;
-            psBufGAI.Update( &gacb ).Bind();
+            cbPool->BindPS(psBufGAI , cbPool->Allocate(&gacb, sizeof(gacb)));
 
             for ( auto const& materialMesh : TransVobInfo.normalVob->VisualInfo->Meshes ) {
                 if ( materialMesh.first && materialMesh.first->GetTexture() ) {

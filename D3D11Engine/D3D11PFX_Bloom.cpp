@@ -8,7 +8,6 @@
 #include "D3D11VShader.h"
 #include "D3D11PShader.h"
 #include "D3D11CShader.h"
-#include "D3D11ConstantBuffer.h"
 #include "ConstantBufferStructs.h"
 #include "GothicAPI.h"
 #include "TexturePool.h"
@@ -98,7 +97,7 @@ XRESULT D3D11PFX_Bloom::Render( ID3D11RenderTargetView* output, ID3D11ShaderReso
         auto cs = engine->GetShaderManager().GetCShader( CShaderID::CS_PFX_Bloom_Prefilter );
         cs->Apply();
         cb.B_TexelSize = float2( 1.0f / res.x, 1.0f / res.y );
-        cs->GetBuffer( "BloomConstantBuffer" ).Update( &cb ).Bind();
+        cs->UpdateBuffer("BloomConstantBuffer", &cb, sizeof(cb));
 
         context->CSSetSamplers( 0, 1, &sampler );
         context->CSSetShaderResources( 0, 1, &sceneSrv );
@@ -118,7 +117,7 @@ XRESULT D3D11PFX_Bloom::Render( ID3D11RenderTargetView* output, ID3D11ShaderReso
 
         for ( int i = 1; i < mipCount; i++ ) {
             cb.B_TexelSize = float2( 1.0f / down[i - 1]->GetSizeX(), 1.0f / down[i - 1]->GetSizeY() );
-            cs->GetBuffer( "BloomConstantBuffer" ).Update( &cb ).Bind();
+            cs->UpdateBuffer("BloomConstantBuffer", &cb, sizeof(cb));
 
             ID3D11ShaderResourceView* srv = down[i - 1]->GetShaderResView().Get();
             context->CSSetShaderResources( 0, 1, &srv );
@@ -150,7 +149,7 @@ XRESULT D3D11PFX_Bloom::Render( ID3D11RenderTargetView* output, ID3D11ShaderReso
                 TexturePool::Description{ mw, mh, fmt, bindFlags } );
 
             cb.B_TexelSize = float2( 1.0f / source->GetSizeX(), 1.0f / source->GetSizeY() );
-            cs->GetBuffer( "BloomConstantBuffer" ).Update( &cb ).Bind();
+            cs->UpdateBuffer("BloomConstantBuffer", &cb, sizeof(cb));
 
             ID3D11ShaderResourceView* upSRVs[2] = {
                 source->GetShaderResView().Get(),   // t0 = lower mip to upsample
@@ -181,7 +180,7 @@ XRESULT D3D11PFX_Bloom::Render( ID3D11RenderTargetView* output, ID3D11ShaderReso
     engine->GetShaderManager().GetVShader( VShaderID::VS_PFX )->Apply();
     auto compositePS = engine->GetShaderManager().GetPShader( PShaderID::PS_PFX_BloomComposite );
     compositePS->Apply();
-    compositePS->GetBuffer( "BloomConstantBuffer" ).Update( &cb ).Bind();
+    compositePS->UpdateBuffer("BloomConstantBuffer", &cb, sizeof(cb));
 
     D3D11_VIEWPORT vp = {};
     vp.Width = static_cast<float>(res.x);

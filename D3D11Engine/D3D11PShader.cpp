@@ -6,7 +6,6 @@
 #include "D3D11GraphicsEngineBase.h"
 #include "Engine.h"
 #include "GothicAPI.h"
-#include "D3D11ConstantBuffer.h"
 #include "D3D11ShaderManager.h"
 #include "D3D11_Helpers.h"
 #include "StringID.h"
@@ -67,12 +66,17 @@ void D3D11PShader::BindSampler(StringID name, ID3D11SamplerState* sampler)
         reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->PSSetSamplers( inputIndex, 1, &sampler );
 }
 
-void D3D11PShader::BindBuffer(StringID name, D3D11ConstantBuffer* buffer) {
-    if (auto idx = GetInputIndex(name); idx != -1) {
-        buffer->BindToPixelShader(idx);
+void D3D11PShader::UpdateBuffer(StringID name, const void* data, size_t size) {
+    if (const auto idx = GetInputIndex(name); idx != -1) {
+        const auto pool = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetConstantBufferPool();
+        pool->BindPS(idx, pool->Allocate(data, size));
     }
 }
 
-void D3D11PShader::BindBuffer(UINT slot, D3D11ConstantBuffer* buffer) {
-    buffer->BindToPixelShader(slot);
+void D3D11PShader::UpdateBuffer(UINT slot, const void* data, size_t size) {
+    if (slot > 16) {
+        return; // likely went negative
+    }
+    const auto pool = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetConstantBufferPool();
+    pool->BindPS(slot, pool->Allocate(data, size));
 }

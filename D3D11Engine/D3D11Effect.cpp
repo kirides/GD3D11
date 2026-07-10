@@ -8,7 +8,6 @@
 #include "D3D11VShader.h"
 #include "D3D11GShader.h"
 #include "D3D11PShader.h"
-#include "D3D11ConstantBuffer.h"
 #include "GSky.h"
 #include <DDSTextureLoader.h>
 #include "RenderToTextureBuffer.h"
@@ -168,9 +167,10 @@ XRESULT D3D11Effect::DrawRain() {
     acb.AR_CameraPosition = Engine::GAPI->GetCameraPosition();
     acb.AR_GlobalVelocity = velocity;
     acb.AR_MoveRainParticles = state.RendererSettings.RainMoveParticles ? 1 : 0;
-    auto advRainBuf = particleAdvanceVS->GetBuffer( "AdvanceRainConstantBuffer" );
-    advRainBuf.Update( &acb ).Bind();
-    advRainBuf.GetRawBuffer()->BindToPixelShader( 1 );
+    auto advRainBuf = particleAdvanceVS->GetInputIndex( "AdvanceRainConstantBuffer" );
+    auto rainBufAllocation = e->GetConstantBufferPool()->Allocate(&acb, sizeof(acb));
+    e->GetConstantBufferPool()->BindVS(advRainBuf, rainBufAllocation);
+    e->GetConstantBufferPool()->BindPS(1, rainBufAllocation);
 
     if ( firstFrame || (state.RendererSettings.RainMoveParticles && !Engine::GAPI->IsGamePaused()) ) {
         D3D11VertexBuffer* b = nullptr;
@@ -246,12 +246,12 @@ XRESULT D3D11Effect::DrawRain() {
     gcb.PGS_RainHeight = state.RendererSettings.RainHeightRange;
     gcb.PGS_RainScale = isSnow ? snowScale : rainScale;
 
-    particleVS->GetBuffer( "ParticleGSInfo" ).Update( &gcb ).Bind();
+    particleVS->UpdateBuffer("ParticleGSInfo", &gcb, sizeof(gcb));
 
     ParticlePointShadingConstantBuffer scb = {};
     scb.View = GetRainShadowmapCameraRepl().ViewReplacement;
     scb.Projection = GetRainShadowmapCameraRepl().ProjectionReplacement;
-    particleVS->GetBuffer( "ParticlePointShadingConstantBuffer" ).Update( &scb ).Bind();
+    particleVS->UpdateBuffer("ParticlePointShadingConstantBuffer", &scb, sizeof(scb));
 
     RainShadowmap->BindToVertexShader( e->GetContext().Get(), 0 );
 
@@ -353,11 +353,13 @@ XRESULT D3D11Effect::DrawRain_CS() {
     acb.AR_GlobalVelocity = velocity;
     acb.AR_MoveRainParticles = numParticles;
 
-    advanceRainCS->GetBuffer( "AdvanceRainConstantBuffer" ).Update( &acb );
-    advanceRainCS->GetBuffer( "AdvanceRainConstantBuffer" ).GetRawBuffer()->BindToPixelShader( 1 );
+    auto advRainBuf = advanceRainCS->GetInputIndex( "AdvanceRainConstantBuffer" );
+    auto rainBufAllocation = e->GetConstantBufferPool()->Allocate(&acb, sizeof(acb));
+    e->GetConstantBufferPool()->BindCS(advRainBuf, rainBufAllocation);
+    e->GetConstantBufferPool()->BindPS(1, rainBufAllocation);
+
     if ( state.RendererSettings.RainMoveParticles && !Engine::GAPI->IsGamePaused() ) {
         advanceRainCS->Apply();
-        advanceRainCS->GetBuffer( "AdvanceRainConstantBuffer" ).Bind();
 
         e->GetContext()->CSSetShaderResources( 0, 1, RainBufferStatic->GetShaderResourceView().GetAddressOf() );
         e->GetContext()->CSSetUnorderedAccessViews( 0, 1, RainBufferDrawFrom->GetUnorderedAccessView().GetAddressOf(), nullptr );
@@ -402,12 +404,12 @@ XRESULT D3D11Effect::DrawRain_CS() {
     gcb.PGS_RainHeight = state.RendererSettings.RainHeightRange;
     gcb.PGS_RainScale = isSnow ? snowScale : rainScale;
 
-    particleVS->GetBuffer( "ParticleGSInfo" ).Update( &gcb ).Bind();
+    particleVS->UpdateBuffer("ParticleGSInfo", &gcb, sizeof(gcb));
 
     ParticlePointShadingConstantBuffer scb = {};
     scb.View = GetRainShadowmapCameraRepl().ViewReplacement;
     scb.Projection = GetRainShadowmapCameraRepl().ProjectionReplacement;
-    particleVS->GetBuffer( "ParticlePointShadingConstantBuffer" ).Update( &scb ).Bind();
+    particleVS->UpdateBuffer("ParticlePointShadingConstantBuffer", &scb, sizeof(scb));
 
     RainShadowmap->BindToVertexShader( e->GetContext().Get(), 0 );
 
@@ -589,9 +591,9 @@ XRESULT D3D11Effect::DrawRainShadowmap() {
     Engine::GAPI->GetRendererState().GraphicsState.FF_AlphaRef = -1.0f;
 
     // Bind the FF-Info to the first PS slot
-    auto PS_Diffuse = e->GetShaderManager().GetPShader( PShaderID::PS_Diffuse );
+    auto& PS_Diffuse = e->GetShaderManager().GetPShader( PShaderID::PS_Diffuse );
     if ( PS_Diffuse ) {
-        PS_Diffuse->GetBuffer( "FFPipelineConstantBuffer" ).Update( &Engine::GAPI->GetRendererState().GraphicsState ).Bind();
+        PS_Diffuse->UpdateBuffer("FFPipelineConstantBuffer", &Engine::GAPI->GetRendererState().GraphicsState, sizeof(Engine::GAPI->GetRendererState().GraphicsState));
     }
 
     // Disable stuff like NPCs and usable things as they don't need to cast rain-shadows
@@ -612,7 +614,7 @@ XRESULT D3D11Effect::DrawRainShadowmap() {
     Engine::GAPI->GetRendererState().RendererSettings.DrawSkeletalMeshes = oldDrawSkel;
     Engine::GAPI->GetRendererState().GraphicsState.FF_AlphaRef = oldAlphaRef;
     if ( PS_Diffuse ) {
-        PS_Diffuse->GetBuffer( "FFPipelineConstantBuffer" ).Update( &Engine::GAPI->GetRendererState().GraphicsState );
+        PS_Diffuse->UpdateBuffer("FFPipelineConstantBuffer", &Engine::GAPI->GetRendererState().GraphicsState, sizeof(Engine::GAPI->GetRendererState().GraphicsState));
     }
 
     e->SetDefaultStates();

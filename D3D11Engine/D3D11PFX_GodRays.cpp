@@ -8,7 +8,6 @@
 #include "D3D11VShader.h"
 #include "D3D11PShader.h"
 #include "D3D11CShader.h"
-#include "D3D11ConstantBuffer.h"
 #include "ConstantBufferStructs.h"
 #include "GothicAPI.h"
 #include "GSky.h"
@@ -101,7 +100,7 @@ XRESULT D3D11PFX_GodRays::Render(
     // Zoom
     zoomPS->Apply();
 
-    zoomPS->GetBuffer( "GodRayZoomConstantBuffer" ).Update( &gcb ).Bind();
+    zoomPS->UpdateBuffer("GodRayZoomConstantBuffer", &gcb, sizeof(gcb));
 
     auto clampSampler = engine->GetClampSamplerState();
     engine->GetContext()->PSSetSamplers( 0, 1, &clampSampler );
@@ -215,7 +214,7 @@ XRESULT D3D11PFX_GodRays::RenderCS(
     auto zoomCS = engine->GetShaderManager().GetCShader( CShaderID::CS_PFX_GodRayZoom );
     zoomCS->Apply();
 
-    zoomCS->GetBuffer( "GodRayZoomConstantBuffer" ).Update( &gcb ).Bind();
+    zoomCS->UpdateBuffer("GodRayZoomConstantBuffer", &gcb, sizeof(gcb));
 
     context->CSSetSamplers( 0, 1, &clampSampler );
 
@@ -313,7 +312,7 @@ XRESULT D3D11PFX_GodRays::RenderToTexture(
     FxRenderer->DrawFullScreenQuad();
 
     zoomPS->Apply();
-    zoomPS->GetBuffer( "GodRayZoomConstantBuffer" ).Update( &gcb ).Bind();
+    zoomPS->UpdateBuffer("GodRayZoomConstantBuffer", &gcb, sizeof(gcb));
 
     auto clampSampler = engine->GetClampSamplerState();
     engine->GetContext()->PSSetSamplers( 0, 1, &clampSampler );
@@ -405,7 +404,7 @@ XRESULT D3D11PFX_GodRays::RenderToTextureCS(
     // --- Pass 2: CS Zoom ---
     auto zoomCS = engine->GetShaderManager().GetCShader( CShaderID::CS_PFX_GodRayZoom );
     zoomCS->Apply();
-    zoomCS->GetBuffer( "GodRayZoomConstantBuffer" ).Update( &gcb ).Bind();
+    zoomCS->UpdateBuffer("GodRayZoomConstantBuffer", &gcb, sizeof(gcb));
     context->CSSetSamplers( 0, 1, &clampSampler );
 
     ID3D11ShaderResourceView* zoomSRV = maskBuffer->GetShaderResView().Get();

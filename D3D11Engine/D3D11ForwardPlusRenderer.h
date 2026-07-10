@@ -3,7 +3,6 @@
 #include <memory>
 
 class D3D11DeferredRenderer;
-class D3D11ConstantBuffer;
 
 class D3D11ForwardPlusRenderer final : public ISceneRenderer {
 public:

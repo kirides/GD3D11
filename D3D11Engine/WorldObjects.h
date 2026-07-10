@@ -4,7 +4,6 @@
 
 #include "pch.h"
 #include "GothicGraphicsState.h"
-#include "D3D11ConstantBuffer.h"
 #include "D3D11Texture.h"
 #include "zTypes.h"
 #include "ConstantBufferStructs.h"
