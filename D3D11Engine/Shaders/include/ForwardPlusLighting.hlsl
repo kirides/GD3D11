@@ -215,7 +215,12 @@ float3 FP_ComputeSunLighting(
     float3 wsNormal = normalize( mul( float4( normal, 0.0f ), SQ_InvView ).xyz );
     float3 hemiAmbient = GetHemisphericAmbient( wsNormal );
 
-    float3 litPixel = lerp( diffuseColor * SQ_ShadowStrength * sunStrength * shadowAO * ssao * hemiAmbient,
+    // Ambient fill rig: adds bump-level contrast on top of the coarse hemispheric tint, so
+    // normal-map detail still "pops" on surfaces facing away from the sun (see GetAmbientFillFactor).
+    float ambientFill = GetAmbientFillFactor( normal, (float3x3) SQ_View );
+    float fillContrast = lerp( 0.5f, 1.6f, ambientFill );
+
+    float3 litPixel = lerp( diffuseColor * SQ_ShadowStrength * sunStrength * shadowAO * ssao * hemiAmbient * fillContrast,
                             diffuseColor * lightColor.rgb * lightColor.a * worldAO, sun )
                     + specColored;
 
