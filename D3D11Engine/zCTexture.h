@@ -217,19 +217,55 @@ public:
                 return false;
             }
             
-            std::vector<uint8_t> imgBuf(len-36);
+            thread_local std::vector<uint8_t> imgBuf;
+            imgBuf.reserve(len*2);
+            
+            imgBuf.resize(len-36);
             if (file->Read(imgBuf.data(), imgBuf.size()) != imgBuf.size()) {
                 file->Close();
                 return false;
             }
             file->Close();
-            
+
+            // .TEX stores the mip chain reversed (smallest mip first, mip 0 last).
+            // D3D11 expects mip 0 (largest) first, so rebuild the chain in that order.
+            auto mipSizeBytes = [&]( UINT mip ) -> size_t {
+                UINT px = header.width >> mip;
+                UINT py = header.height >> mip;
+                switch ( mappedFormat ) {
+                case DXGI_FORMAT::DXGI_FORMAT_R8_UNORM:
+                    return static_cast<size_t>(px) * py;
+                case DXGI_FORMAT::DXGI_FORMAT_B5G6R5_UNORM:
+                case DXGI_FORMAT::DXGI_FORMAT_B5G5R5A1_UNORM:
+                case DXGI_FORMAT::DXGI_FORMAT_B4G4R4A4_UNORM:
+                    return static_cast<size_t>(px) * py * 2;
+                case DXGI_FORMAT::DXGI_FORMAT_BC1_UNORM:
+                case DXGI_FORMAT::DXGI_FORMAT_BC2_UNORM:
+                case DXGI_FORMAT::DXGI_FORMAT_BC3_UNORM:
+                    return Toolbox::GetDDSStorageRequirements( px, py, mappedFormat == DXGI_FORMAT::DXGI_FORMAT_BC1_UNORM );
+                default: // 32-bit RGBA/BGRA
+                    return static_cast<size_t>(px) * py * 4;
+                }
+            };
+
+            thread_local std::vector<uint8_t> reordered;
+            reordered.reserve(imgBuf.capacity());
+            reordered.resize( imgBuf.size() );
+            size_t srcOffset = imgBuf.size();
+            size_t dstOffset = 0;
+            for ( UINT mip = 0; mip < header.mipmap_count; ++mip ) {
+                size_t mipSize = mipSizeBytes( mip );
+                srcOffset -= mipSize;
+                memcpy( reordered.data() + dstOffset, imgBuf.data() + srcOffset, mipSize );
+                dstOffset += mipSize;
+            }
+
             std::unique_ptr<D3D11Texture> tex;
             Engine::GraphicsEngine->CreateTexture(tex);
             if (XR_SUCCESS != tex->Init(INT2(header.width, header.height),
                 static_cast<D3D11Texture::ETextureFormat>(mappedFormat),
                 header.mipmap_count,
-                imgBuf.data(),
+                reordered.data(),
                 GetName()
             ))
             {
