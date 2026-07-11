@@ -274,10 +274,9 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
     float3 V = normalize(-vsPosition);
 	
 	float shadow = vertLighting;
+    float3 wsNormal = normalize(mul(float4(normal, 0.0f), SQ_InvView).xyz);
 #if SHD_ENABLE
 	// CSM: Use soft cascaded shadow map with configurable softness
-    float3 wsNormal = normalize(mul(float4(normal, 0.0f), SQ_InvView).xyz);
-
     [branch]
     if(AC_LightPos.y > 0) // only get shadow value if it isn't night-time
 	{
@@ -342,8 +341,12 @@ float4 PSMain(PS_INPUT Input) : SV_TARGET
 	
     float shadowAO = lerp(1.0f, vertLighting, SQ_ShadowAOStrength);
     float worldAO = lerp(1.0f, vertLighting, SQ_WorldAOStrength);
-	
-    float3 litPixel = lerp(diffuse.rgb * SQ_ShadowStrength * sunStrength * shadowAO * ssao,
+
+    // Hemispheric ambient: gives the ambient/indirect term a sky-vs-ground gradient so
+    // normal-mapped detail remains visible where the sun contributes nothing (shadow, indoors).
+    float3 hemiAmbient = GetHemisphericAmbient(wsNormal);
+
+    float3 litPixel = lerp(diffuse.rgb * SQ_ShadowStrength * sunStrength * shadowAO * ssao * hemiAmbient,
 							diffuse.rgb * lightColor.rgb * lightColor.a * worldAO, sun)
 				  + specColored;
 	

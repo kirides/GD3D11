@@ -73,6 +73,19 @@ float3 GetAtmosphericSunTerm(float3 normal)
 	return saturate(dot(normal, AC_LightPos));
 }
 
+// Cheap hemispheric ambient: tints ambient/indirect light toward a "sky" color for
+// upward-facing normals and a "ground" color for downward-facing ones, so normal-mapped
+// detail stays visible even where the sun/CSM contribution is zero (e.g. in shadow, indoors).
+// Averages out close to 1.0 so it doesn't shift overall scene brightness, just its gradient.
+static const float3 AC_HemisphereSkyColor = float3(1.15f, 1.2f, 1.3f);
+static const float3 AC_HemisphereGroundColor = float3(0.55f, 0.5f, 0.45f);
+
+float3 GetHemisphericAmbient(float3 wsNormal)
+{
+	float hemiFactor = wsNormal.y * 0.5f + 0.5f;
+	return lerp(AC_HemisphereGroundColor, AC_HemisphereSkyColor, hemiFactor);
+}
+
 
 
 float3 ApplyAtmosphericScatteringGround(float3 worldPosition, float3 in_color, bool applyNightshade=true)

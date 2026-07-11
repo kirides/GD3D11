@@ -210,7 +210,12 @@ float3 FP_ComputeSunLighting(
     float shadowAO = lerp( 1.0f, vertLighting, SQ_ShadowAOStrength );
     float worldAO = lerp( 1.0f, vertLighting, SQ_WorldAOStrength );
 
-    float3 litPixel = lerp( diffuseColor * SQ_ShadowStrength * sunStrength * shadowAO * ssao,
+    // Hemispheric ambient: gives the ambient/indirect term a sky-vs-ground gradient so
+    // normal-mapped detail remains visible where the sun contributes nothing (shadow, indoors).
+    float3 wsNormal = normalize( mul( float4( normal, 0.0f ), SQ_InvView ).xyz );
+    float3 hemiAmbient = GetHemisphericAmbient( wsNormal );
+
+    float3 litPixel = lerp( diffuseColor * SQ_ShadowStrength * sunStrength * shadowAO * ssao * hemiAmbient,
                             diffuseColor * lightColor.rgb * lightColor.a * worldAO, sun )
                     + specColored;
 
