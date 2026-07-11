@@ -909,7 +909,7 @@ private:
     std::unordered_map<zCVob*, std::string> tempParticleNames;
 
     /** List of Meshes derived from a zCParticleFX-Visual */
-    std::unordered_map<zCVob*, MeshVisualInfo*> ParticleEffectProgMeshes;
+    std::unordered_map<zCVob*, std::unique_ptr<MeshVisualInfo>> ParticleEffectProgMeshes;
 
     /** Poly strip Visuals */
     std::set<zCPolyStrip*> PolyStripVisuals;

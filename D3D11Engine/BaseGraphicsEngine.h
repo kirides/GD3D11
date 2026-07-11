@@ -224,7 +224,7 @@ public:
     virtual void OnUIEvent( EUIEvent uiEvent ) {}
 
     /** Draws particle meshes */
-    virtual void DrawFrameParticleMeshes( std::unordered_map<zCVob*, MeshVisualInfo*>& progMeshes ) {}
+    virtual void DrawFrameParticleMeshes( std::unordered_map<zCVob*, std::unique_ptr<MeshVisualInfo>>& progMeshes ) {}
 
     /** Draws particle effects */
     virtual void DrawFrameParticles(std::map<zCTexture*, std::vector<ParticleInstanceInfo>>& particles,

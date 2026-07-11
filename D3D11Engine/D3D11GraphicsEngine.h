@@ -390,7 +390,7 @@ public:
     RGResourceHandle AddAONormalsFromDepthPass( RenderGraph& graph );
 
     /** Draws particle meshes */
-    void DrawFrameParticleMeshes( std::unordered_map<zCVob*, MeshVisualInfo*>& progMeshes ) override;
+    void DrawFrameParticleMeshes( std::unordered_map<zCVob*, std::unique_ptr<MeshVisualInfo>>& progMeshes ) override;
 
     /** Draws particle effects */
     void DrawFrameParticles(std::map<zCTexture*, std::vector<ParticleInstanceInfo>>& particles, std::map<zCTexture*, ParticleRenderInfo>& info, RenderToTextureBuffer
