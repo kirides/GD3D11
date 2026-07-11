@@ -73,6 +73,47 @@ float3 GetAtmosphericSunTerm(float3 normal)
 	return saturate(dot(normal, AC_LightPos));
 }
 
+// Cheap hemispheric ambient: tints ambient/indirect light toward a "sky" color for
+// upward-facing normals and a "ground" color for downward-facing ones, so normal-mapped
+// detail stays visible even where the sun/CSM contribution is zero (e.g. in shadow, indoors).
+// Averages out close to 1.0 so it doesn't shift overall scene brightness, just its gradient.
+static const float3 AC_HemisphereSkyColor = float3(1.15f, 1.2f, 1.3f);
+static const float3 AC_HemisphereGroundColor = float3(0.55f, 0.5f, 0.45f);
+
+float3 GetHemisphericAmbient(float3 wsNormal)
+{
+	float hemiFactor = wsNormal.y * 0.5f + 0.5f;
+	return lerp(AC_HemisphereGroundColor, AC_HemisphereSkyColor, hemiFactor);
+}
+
+// Ambient fill-light rig: N.L against the *full* per-pixel (normal-mapped) normal from a handful
+// of fixed sky-probe directions. GetHemisphericAmbient alone only reacts to wsNormal.y, so a mostly
+// vertical surface (a wall, a cliff face) barely changes it across its normal-map bumps and the
+// map goes flat exactly on its shadowed side. Sampling several oblique directions instead means
+// some probe is always roughly aligned with any given bump facet, so crevices still darken and
+// raised detail still catches light even when the macro surface faces away from the sun.
+// normalVS: view-space per-pixel normal. viewRotation: 3x3 of the view matrix (world -> view),
+// used to keep the probe directions fixed relative to the world/sky rather than to the camera.
+float GetAmbientFillFactor(float3 normalVS, float3x3 viewRotation)
+{
+	static const float3 dirs[4] =
+	{
+		float3( 0.0f,  1.0f,  0.0f),
+		float3( 0.85f, 0.3f, -0.3f),
+		float3(-0.85f, 0.3f, -0.3f),
+		float3( 0.0f,  0.3f,  0.9f),
+	};
+
+	float total = 0.0f;
+	[unroll]
+	for (int i = 0; i < 4; i++)
+	{
+		float3 lightDirVS = normalize(mul(normalize(dirs[i]), viewRotation));
+		total += saturate(dot(normalVS, lightDirVS));
+	}
+	return total * 0.25f;
+}
+
 
 
 float3 ApplyAtmosphericScatteringGround(float3 worldPosition, float3 in_color, bool applyNightshade=true)
