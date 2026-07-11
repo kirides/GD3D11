@@ -387,6 +387,15 @@ HRESULT MyDirectDrawSurface7::Lock( LPRECT lpDestRect, LPDDSURFACEDESC2 lpDDSurf
     return S_OK;
 }
 
+void MyDirectDrawSurface7::AttachEngineTexture(
+zCTexture* tex,    
+std::unique_ptr<D3D11Texture>&& texture)
+{
+    EngineTexture = std::move(texture); 
+    LoadAdditionalResources(tex);
+    SetReady( true );
+}
+
 #pragma warning(push)
 #pragma warning(disable: 6386)
 HRESULT MyDirectDrawSurface7::Unlock( LPRECT lpRect ) {

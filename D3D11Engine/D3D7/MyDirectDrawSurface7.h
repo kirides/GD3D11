@@ -48,6 +48,7 @@ public:
     HRESULT __declspec(nothrow) __stdcall Initialize( LPDIRECTDRAW lpDD, LPDDSURFACEDESC2 lpDDSurfaceDesc ) override;
     HRESULT __declspec(nothrow) __stdcall IsLost() override;
     HRESULT __declspec(nothrow) __stdcall Lock( LPRECT lpDestRect, LPDDSURFACEDESC2 lpDDSurfaceDesc, DWORD dwFlags, HANDLE hEvent ) override;
+    void AttachEngineTexture(zCTexture* tex, std::unique_ptr<D3D11Texture>&& texture);
     HRESULT __declspec(nothrow) __stdcall ReleaseDC( HDC hDC ) override;
     HRESULT __declspec(nothrow) __stdcall Restore() override;
     HRESULT __declspec(nothrow) __stdcall SetClipper( LPDIRECTDRAWCLIPPER lpDDClipper ) override;

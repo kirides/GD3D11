@@ -4,6 +4,7 @@
 #include "Engine.h"
 #include "GothicAPI.h"
 #include "zCResourceManager.h"
+#include "zFILE_VDFS.h"
 #include "zSTRING.h"
 #include "D3D7\MyDirectDrawSurface7.h"
 
@@ -69,9 +70,9 @@ public:
     }
 
     std::string_view GetNameWithoutExtView() const {
-        std::string_view n = GetNameView();
+        const std::string_view n = GetNameView();
 
-        auto p = n.find_last_of( '.' );
+        const auto p = n.find_last_of( '.' );
 
         if ( p != std::string_view::npos )
             return n.substr( 0, p );
@@ -84,10 +85,15 @@ public:
     }
 
     void Bind( int slot = 0 ) {
-        Engine::GAPI->SetBoundTexture( slot, this );
-
-        reinterpret_cast<void(__fastcall*)( zCTexture*, int, bool, int )>
-            ( GothicMemoryLocations::zCTexture::zCTex_D3DInsertTexture )( this, 0, false, slot );
+        if (auto surface = GetSurface(); surface && surface->IsSurfaceReady()) {
+            surface->GetEngineTexture()->BindToPixelShader(slot);
+            surface->GetEngineTexture()->BindToVertexShader(slot);
+        }
+        
+        // Engine::GAPI->SetBoundTexture( slot, this );
+        //
+        // reinterpret_cast<void(__fastcall*)( zCTexture*, int, bool, int )>
+        //     ( GothicMemoryLocations::zCTexture::zCTex_D3DInsertTexture )( this, 0, false, slot );
     }
 
     int LoadResourceData() {
@@ -97,6 +103,156 @@ public:
     zTResourceCacheState GetCacheState() {
         unsigned char state = *reinterpret_cast<unsigned char*>(THISPTR_OFFSET( GothicMemoryLocations::zCTexture::Offset_CacheState ));
         return (zTResourceCacheState)(state & GothicMemoryLocations::zCTexture::Mask_CacheState);
+    }
+    
+    enum zTexFormat : DWORD
+    {
+        ARGB_8888 = 0,  // 32-bit ARGB pixel format with alpha, using 8 bits per channel
+        ABGR_8888 = 1,  // 32-bit ARGB pixel format with alpha, using 8 bits per channel
+        RGBA_8888 = 2,  // 32-bit ARGB pixel format with alpha, using 8 bits per channel
+        BGRA_8888 = 3,  // 32-bit ARGB pixel format with alpha, using 8 bits per channel
+        RGB_888 = 4,  // 24-bit RGB pixel format with 8 bits per channel
+        BGR_888 = 5,  // 24-bit RGB pixel format with 8 bits per channel
+        ARGB_4444 = 6,  // 16-bit ARGB pixel format with 4 bits for each channel
+        ARGB_1555 = 7,  // 16-bit pixel format where 5 bits are reserved for each color and 1 bit is reserved for alpha
+        RGB_565 = 8,  // 16-bit RGB pixel format with 5 bits for red, 6 bits for green and 5 bits for blue
+        PAL_8 = 9,  // 8-bit color indexed
+        DXT1 = 10,  // DXT1 compression texture format
+        DXT2 = 11,  // DXT2 compression texture format
+        DXT3 = 12,  // DXT3 compression texture format
+        DXT4 = 13,  // DXT4 compression texture format
+        DXT5 = 14,  // DXT5 compression texture format
+    };
+    
+    struct zTexHeader {
+        DWORD magicHeaderZTEX;
+        DWORD version;
+        zTexFormat format;
+        DWORD width;
+        DWORD height;
+        DWORD mipmap_count;
+        DWORD refwidth;
+        DWORD refheight;
+        DWORD average_color;
+    };
+    
+    DXGI_FORMAT mapFormat(zTexFormat format)
+    {
+        switch (format)
+        {
+        case ARGB_8888:
+        case ABGR_8888:
+        case RGB_888:
+        case BGR_888:
+            return DXGI_FORMAT::DXGI_FORMAT_UNKNOWN;
+        case RGBA_8888:
+            return DXGI_FORMAT::DXGI_FORMAT_R8G8B8A8_UNORM;
+        case BGRA_8888:
+            return DXGI_FORMAT::DXGI_FORMAT_B8G8R8A8_UNORM;
+        case ARGB_4444:
+            return DXGI_FORMAT::DXGI_FORMAT_B4G4R4A4_UNORM;
+        case ARGB_1555:
+            return DXGI_FORMAT::DXGI_FORMAT_B5G5R5A1_UNORM;
+        case RGB_565:
+            return DXGI_FORMAT::DXGI_FORMAT_B5G6R5_UNORM;
+        case PAL_8:
+            return DXGI_FORMAT::DXGI_FORMAT_P8;
+        case DXT1:
+            return DXGI_FORMAT::DXGI_FORMAT_BC1_UNORM;
+        case DXT2:
+        case DXT3:
+            return DXGI_FORMAT::DXGI_FORMAT_BC2_UNORM;
+        case DXT4:
+        case DXT5:
+            return DXGI_FORMAT::DXGI_FORMAT_BC3_UNORM;
+        }
+        
+        return DXGI_FORMAT::DXGI_FORMAT_UNKNOWN;
+    }
+    
+    struct texFlags {					
+        uint8_t					cacheState		: 2;
+        uint8_t					cacheOutLock	: 1;
+        uint8_t					cacheClassIndex	: 8;
+        uint8_t					managedByResMan	: 1;
+        uint16_t				cacheInPriority	: 16;
+        uint8_t					canBeCachedOut	: 1;
+    };
+    
+    struct texFlags0 {
+        //		zUINT8				inMemory			: 1;				// .. or on hard-disk 
+        uint8_t				hasAlpha			: 1;
+        uint8_t				isAnimated			: 1;				// texture ani => frame Animation
+        uint8_t				changingRealtime	: 1;				// is changing realtime ? (procedural texture)
+        uint8_t				isTextureTile		: 1;				// a 'texture-tile', these textures are sliced into separate textures if they are bigger than the maxSize the renderer permits
+    };
+    
+    bool LoadTexture()
+    {
+        std::string b(255, ' ');
+        b.clear();
+        b.append(R"(/_work/Data/Textures/_Compiled/)");
+        b.append(GetNameWithoutExtView());
+        b.append("-C.TEX");
+        
+        if (auto file = zFILE_VDFS::Create(b.c_str())) {
+            if (!file->Exists()) {
+                return false;
+            }
+            if (file->Open(false) != 0) {
+             return false;
+            }
+            long len = file->Size();
+            
+            zTexHeader header;
+            // careful: needs to be run on little endian machine!
+            if (file->Read(&header, sizeof(header)) != 36) {
+                file->Close();
+                return false;
+            }
+            
+            auto mappedFormat = mapFormat(header.format);
+            if (mappedFormat == DXGI_FORMAT::DXGI_FORMAT_UNKNOWN) {
+                file->Close();
+                return false;
+            }
+            
+            std::vector<uint8_t> imgBuf(len-36);
+            if (file->Read(imgBuf.data(), imgBuf.size()) != imgBuf.size()) {
+                file->Close();
+                return false;
+            }
+            file->Close();
+            
+            std::unique_ptr<D3D11Texture> tex;
+            Engine::GraphicsEngine->CreateTexture(tex);
+            if (XR_SUCCESS != tex->Init(INT2(header.width, header.height),
+                static_cast<D3D11Texture::ETextureFormat>(mappedFormat),
+                header.mipmap_count,
+                imgBuf.data(),
+                GetName()
+            ))
+            {
+                tex.reset();
+                return  false;
+            }
+            texFlags0* selfFlags = reinterpret_cast<texFlags0*>(THISPTR_OFFSET( GothicMemoryLocations::zCTexture::Offset_Flags ));
+            selfFlags->hasAlpha = mappedFormat == DXGI_FORMAT::DXGI_FORMAT_BC2_UNORM;
+
+            auto surface = new MyDirectDrawSurface7();
+            IDirectDrawSurface7** ppSurface = reinterpret_cast<IDirectDrawSurface7**>(THISPTR_OFFSET(0xd4));
+            if (*ppSurface)
+            {
+                (*ppSurface)->Release();
+            }
+            *ppSurface = surface;
+            surface->AttachEngineTexture(this, std::move(tex));
+            
+            texFlags* flags = reinterpret_cast<texFlags*>(THISPTR_OFFSET(0x4c));
+            flags->cacheState = 3;
+            return true;
+        }
+        return false;
     }
 
     static constexpr int zTEX_MAX_ANIS = 3;
@@ -137,6 +293,11 @@ public:
         if ( cacheState == zRES_CACHED_IN ) {
             TouchTimeStamp();
         } else/* if ( cacheState == zRES_CACHED_OUT || zCTextureCacheHack::ForceCacheIn )*/ {
+            if (LoadTexture()) {
+                return zRES_CACHED_IN;
+            } else if (GetSurface() && GetSurface()->IsSurfaceReady()) {
+                return zRES_CACHED_IN;
+            }
             TouchTimeStampLocal();
             /*zCTextureCacheHack::NumNotCachedTexturesInFrame++;
 
