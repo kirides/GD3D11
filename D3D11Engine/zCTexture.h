@@ -6,6 +6,7 @@
 #include "zCResourceManager.h"
 #include "zFILE_VDFS.h"
 #include "zSTRING.h"
+#include "ThreadPool.h"
 #include "D3D7\MyDirectDrawSurface7.h"
 
 namespace zCTextureCacheHack {
@@ -170,7 +171,7 @@ public:
         return DXGI_FORMAT::DXGI_FORMAT_UNKNOWN;
     }
     
-    struct texFlags {					
+    struct texCacheFlags {					
         uint8_t					cacheState		: 2;
         uint8_t					cacheOutLock	: 1;
         uint8_t					cacheClassIndex	: 8;
@@ -179,13 +180,21 @@ public:
         uint8_t					canBeCachedOut	: 1;
     };
     
-    struct texFlags0 {
+    struct texFlags {
         //		zUINT8				inMemory			: 1;				// .. or on hard-disk 
         uint8_t				hasAlpha			: 1;
         uint8_t				isAnimated			: 1;				// texture ani => frame Animation
         uint8_t				changingRealtime	: 1;				// is changing realtime ? (procedural texture)
         uint8_t				isTextureTile		: 1;				// a 'texture-tile', these textures are sliced into separate textures if they are bigger than the maxSize the renderer permits
     };
+    
+    texFlags& GetFlags() {
+        return *reinterpret_cast<texFlags*>(THISPTR_OFFSET(GothicMemoryLocations::zCTexture::Offset_Flags));
+    }
+    
+    texCacheFlags& GetCacheFlags() {
+        return *reinterpret_cast<texCacheFlags*>(THISPTR_OFFSET(0x4c));
+    }
     
     bool LoadTexture()
     {
@@ -194,101 +203,143 @@ public:
         b.append(R"(/_work/Data/Textures/_Compiled/)");
         b.append(GetNameWithoutExtView());
         b.append("-C.TEX");
-        
-        if (auto file = zFILE_VDFS::Create(b.c_str())) {
-            if (!file->Exists()) {
-                return false;
-            }
-            if (file->Open(false) != 0) {
-             return false;
-            }
-            long len = file->Size();
-            
-            zTexHeader header;
-            // careful: needs to be run on little endian machine!
-            if (file->Read(&header, sizeof(header)) != 36) {
-                file->Close();
-                return false;
-            }
-            
-            auto mappedFormat = mapFormat(header.format);
-            if (mappedFormat == DXGI_FORMAT::DXGI_FORMAT_UNKNOWN) {
-                file->Close();
-                return false;
-            }
-            
-            thread_local std::vector<uint8_t> imgBuf;
-            imgBuf.reserve(len*2);
-            
-            imgBuf.resize(len-36);
-            if (file->Read(imgBuf.data(), imgBuf.size()) != imgBuf.size()) {
-                file->Close();
-                return false;
-            }
+
+        auto file = zFILE_VDFS::Create(b.c_str());
+        if (!file) {
+            return false;
+        }
+        if (!file->Exists()) {
+            return false;
+        }
+        if (file->Open(false) != 0) {
+            return false;
+        }
+        long len = file->Size();
+
+        zTexHeader header;
+        // careful: needs to be run on little endian machine!
+        if (file->Read(&header, sizeof(header)) != 36) {
             file->Close();
+            return false;
+        }
 
-            // .TEX stores the mip chain reversed (smallest mip first, mip 0 last).
-            // D3D11 expects mip 0 (largest) first, so rebuild the chain in that order.
-            auto mipSizeBytes = [&]( UINT mip ) -> size_t {
-                UINT px = header.width >> mip;
-                UINT py = header.height >> mip;
-                switch ( mappedFormat ) {
-                case DXGI_FORMAT::DXGI_FORMAT_R8_UNORM:
-                    return static_cast<size_t>(px) * py;
-                case DXGI_FORMAT::DXGI_FORMAT_B5G6R5_UNORM:
-                case DXGI_FORMAT::DXGI_FORMAT_B5G5R5A1_UNORM:
-                case DXGI_FORMAT::DXGI_FORMAT_B4G4R4A4_UNORM:
-                    return static_cast<size_t>(px) * py * 2;
-                case DXGI_FORMAT::DXGI_FORMAT_BC1_UNORM:
-                case DXGI_FORMAT::DXGI_FORMAT_BC2_UNORM:
-                case DXGI_FORMAT::DXGI_FORMAT_BC3_UNORM:
-                    return Toolbox::GetDDSStorageRequirements( px, py, mappedFormat == DXGI_FORMAT::DXGI_FORMAT_BC1_UNORM );
-                default: // 32-bit RGBA/BGRA
-                    return static_cast<size_t>(px) * py * 4;
-                }
-            };
+        auto mappedFormat = mapFormat(header.format);
+        if (mappedFormat == DXGI_FORMAT::DXGI_FORMAT_UNKNOWN) {
+            // Not a format we can upload directly - let zENGINE handle it.
+            file->Close();
+            return false;
+        }
 
-            thread_local std::vector<uint8_t> reordered;
-            reordered.reserve(imgBuf.capacity());
-            reordered.resize( imgBuf.size() );
-            size_t srcOffset = imgBuf.size();
-            size_t dstOffset = 0;
-            for ( UINT mip = 0; mip < header.mipmap_count; ++mip ) {
-                size_t mipSize = mipSizeBytes( mip );
-                srcOffset -= mipSize;
-                memcpy( reordered.data() + dstOffset, imgBuf.data() + srcOffset, mipSize );
-                dstOffset += mipSize;
-            }
+        // The format is supported, so we take over the load. Reading the pixel
+        // data, reordering the mip chain and uploading to the GPU only touches
+        // the free-threaded D3D11 device and this texture's own data, so we defer
+        // it to a background worker to keep it off the render thread. The header
+        // is already consumed, so the worker continues reading from that offset.
+        if ( Engine::WorkerThreadPool ) {
+            // Claim the texture as "loading" so the engine neither re-dispatches
+            // it nor hands it back to zENGINE while the worker is running.
+            GetCacheFlags().cacheState = zRES_LOADING;
 
-            std::unique_ptr<D3D11Texture> tex;
-            Engine::GraphicsEngine->CreateTexture(tex);
-            if (XR_SUCCESS != tex->Init(INT2(header.width, header.height),
-                static_cast<D3D11Texture::ETextureFormat>(mappedFormat),
-                header.mipmap_count,
-                reordered.data(),
-                GetName()
-            ))
-            {
-                tex.reset();
-                return  false;
-            }
-            texFlags0* selfFlags = reinterpret_cast<texFlags0*>(THISPTR_OFFSET( GothicMemoryLocations::zCTexture::Offset_Flags ));
-            selfFlags->hasAlpha = mappedFormat == DXGI_FORMAT::DXGI_FORMAT_BC2_UNORM;
-
-            auto surface = new MyDirectDrawSurface7();
-            IDirectDrawSurface7** ppSurface = reinterpret_cast<IDirectDrawSurface7**>(THISPTR_OFFSET(0xd4));
-            if (*ppSurface)
-            {
-                (*ppSurface)->Release();
-            }
-            *ppSurface = surface;
-            surface->AttachEngineTexture(this, std::move(tex));
-            
-            texFlags* flags = reinterpret_cast<texFlags*>(THISPTR_OFFSET(0x4c));
-            flags->cacheState = 3;
+            Engine::WorkerThreadPool->enqueue(
+                [this, file = std::move( file ), header, mappedFormat, len]
+                ( const std::stop_token& token ) mutable {
+                    if ( token.stop_requested() ) {
+                        // Pool is shutting down - drop the claim so we don't stay stuck loading.
+                        GetCacheFlags().cacheState = zRES_CACHED_OUT;
+                        return;
+                    }
+                    if ( !FinishLoadTexture( std::move( file ), header, mappedFormat, len ) ) {
+                        // Loading failed - revert to cached-out so a later frame can retry.
+                        GetCacheFlags().cacheState = zRES_CACHED_OUT;
+                    }
+                } );
             return true;
         }
-        return false;
+
+        // No worker pool available: load synchronously on the calling thread.
+        return FinishLoadTexture( std::move( file ), header, mappedFormat, len );
+    }
+
+    /** Reads the pixel data, rebuilds the mip chain and uploads the texture,
+        finally publishing the surface and marking the texture cached-in.
+        Runs on the render thread or a worker thread - it only uses the
+        free-threaded D3D11 device and this texture's own data. Takes ownership
+        of the already-opened file (its header has been consumed by the caller). */
+    bool FinishLoadTexture( zFILE_VDFS::Ptr file, const zTexHeader& header, DXGI_FORMAT mappedFormat, long len )
+    {
+        thread_local std::vector<uint8_t> imgBuf;
+        imgBuf.reserve(len*2);
+
+        imgBuf.resize(len-36);
+        if (file->Read(imgBuf.data(), imgBuf.size()) != imgBuf.size()) {
+            file->Close();
+            return false;
+        }
+        file->Close();
+
+        // .TEX stores the mip chain reversed (smallest mip first, mip 0 last).
+        // D3D11 expects mip 0 (largest) first, so rebuild the chain in that order.
+        auto mipSizeBytes = [&]( UINT mip ) -> size_t {
+            UINT px = header.width >> mip;
+            UINT py = header.height >> mip;
+            switch ( mappedFormat ) {
+            case DXGI_FORMAT::DXGI_FORMAT_R8_UNORM:
+                return static_cast<size_t>(px) * py;
+            case DXGI_FORMAT::DXGI_FORMAT_B5G6R5_UNORM:
+            case DXGI_FORMAT::DXGI_FORMAT_B5G5R5A1_UNORM:
+            case DXGI_FORMAT::DXGI_FORMAT_B4G4R4A4_UNORM:
+                return static_cast<size_t>(px) * py * 2;
+            case DXGI_FORMAT::DXGI_FORMAT_BC1_UNORM:
+            case DXGI_FORMAT::DXGI_FORMAT_BC2_UNORM:
+            case DXGI_FORMAT::DXGI_FORMAT_BC3_UNORM:
+                return Toolbox::GetDDSStorageRequirements( px, py, mappedFormat == DXGI_FORMAT::DXGI_FORMAT_BC1_UNORM );
+            default: // 32-bit RGBA/BGRA
+                return static_cast<size_t>(px) * py * 4;
+            }
+        };
+
+        thread_local std::vector<uint8_t> reordered;
+        reordered.reserve(imgBuf.capacity());
+        reordered.resize( imgBuf.size() );
+        size_t srcOffset = imgBuf.size();
+        size_t dstOffset = 0;
+        for ( UINT mip = 0; mip < header.mipmap_count; ++mip ) {
+            size_t mipSize = mipSizeBytes( mip );
+            srcOffset -= mipSize;
+            memcpy( reordered.data() + dstOffset, imgBuf.data() + srcOffset, mipSize );
+            dstOffset += mipSize;
+        }
+
+        std::unique_ptr<D3D11Texture> tex;
+        Engine::GraphicsEngine->CreateTexture(tex);
+        if (XR_SUCCESS != tex->Init(INT2(header.width, header.height),
+            static_cast<D3D11Texture::ETextureFormat>(mappedFormat),
+            header.mipmap_count,
+            reordered.data(),
+            GetName()
+        ))
+        {
+            tex.reset();
+            return  false;
+        }
+        texFlags& selfFlags = GetFlags();
+        selfFlags.hasAlpha = mappedFormat == DXGI_FORMAT::DXGI_FORMAT_BC2_UNORM;
+
+        auto surface = new MyDirectDrawSurface7();
+        IDirectDrawSurface7** ppSurface = reinterpret_cast<IDirectDrawSurface7**>(THISPTR_OFFSET(0xd4));
+        if (*ppSurface)
+        {
+            (*ppSurface)->Release();
+        }
+        *ppSurface = surface;
+        surface->AttachEngineTexture(this, std::move(tex));
+
+        // Publish last: on x86 stores aren't reordered, so once a reader observes
+        // cacheState == zRES_CACHED_IN the surface pointer and its ready flag are
+        // visible too.
+        auto& cacheFlags = GetCacheFlags();
+        cacheFlags.cacheState = zRES_CACHED_IN;
+        return true;
     }
 
     static constexpr int zTEX_MAX_ANIS = 3;
@@ -328,9 +379,15 @@ public:
         zTResourceCacheState cacheState = GetCacheState();
         if ( cacheState == zRES_CACHED_IN ) {
             TouchTimeStamp();
+        } else if ( cacheState == zRES_LOADING ) {
+            // A background worker is already loading this texture. Don't dispatch
+            // it again or hand it to zENGINE - report it as not-yet-ready.
+            return zRES_LOADING;
         } else/* if ( cacheState == zRES_CACHED_OUT || zCTextureCacheHack::ForceCacheIn )*/ {
             if (LoadTexture()) {
-                return zRES_CACHED_IN;
+                // Either finished synchronously (zRES_CACHED_IN) or was dispatched
+                // to a worker (zRES_LOADING); report whichever state we're now in.
+                return GetCacheState();
             } else if (GetSurface() && GetSurface()->IsSurfaceReady()) {
                 return zRES_CACHED_IN;
             }
