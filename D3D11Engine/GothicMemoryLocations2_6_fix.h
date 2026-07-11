@@ -608,6 +608,7 @@ struct GothicMemoryLocations {
         static const unsigned int Offset_NextFrame = 0x58;
         static const unsigned int Offset_ActAniFrame = 0x70;
         static const unsigned int Offset_AniFrames = 0x7C;
+        static const unsigned int Offset_CacheStateFlags = 0x4c;
         static const unsigned int Mask_CacheState = 3;
 
         static const unsigned int Offset_Flags = 0x88;

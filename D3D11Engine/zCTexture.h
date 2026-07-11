@@ -193,7 +193,7 @@ public:
     }
     
     texCacheFlags& GetCacheFlags() {
-        return *reinterpret_cast<texCacheFlags*>(THISPTR_OFFSET(0x4c));
+        return *reinterpret_cast<texCacheFlags*>(THISPTR_OFFSET(GothicMemoryLocations::zCTexture::Offset_CacheStateFlags)); // same offset in G1
     }
     
     bool LoadTexture()
