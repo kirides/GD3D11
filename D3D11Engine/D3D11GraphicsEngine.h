@@ -401,6 +401,7 @@ public:
     }
     
     template<typename T>
+        requires (!std::is_pointer_v<T> && std::is_trivially_copyable_v<T>)
     ConstantBufferAllocation AllocateDynamicCB( const T* data ) {
         return DynamicConstantBufferPool->Allocate( data, sizeof(T) );
     }
