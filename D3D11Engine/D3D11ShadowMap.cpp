@@ -1370,8 +1370,10 @@ DS_ScreenQuadConstantBuffer D3D11ShadowMap::FillSunCSMConstantBuffer() const {
     // shader before depth->world reconstruction so shadows don't crawl/flicker each frame.
     scb.SQ_JitterOffset = float2( proj._13 * 0.5f, -proj._23 * 0.5f );
 
+    XMVECTOR lightDirWorld = XMLoadFloat3( sky->GetAtmosphereCB().AC_LightPos.toXMFLOAT3() );
+    XMStoreFloat3( scb.SQ_LightDirectionWS.toXMFLOAT3(), lightDirWorld );
     XMStoreFloat3( scb.SQ_LightDirectionVS.toXMFLOAT3(),
-        XMVector3TransformNormal( XMLoadFloat3( sky->GetAtmosphereCB().AC_LightPos.toXMFLOAT3() ), view ) );
+        XMVector3TransformNormal( lightDirWorld, view ) );
 
     float3 sunColor = settings.SunLightColor;
     float sunStrength = Toolbox::lerp(
@@ -1503,8 +1505,10 @@ XRESULT D3D11ShadowMap::DrawWorldLights( ID3D11ShaderResourceView* aoMaskSRV )
     // shader before depth->world reconstruction so shadows don't crawl/flicker each frame.
     scb.SQ_JitterOffset = float2( proj._13 * 0.5f, -proj._23 * 0.5f );
 
+    XMVECTOR lightDirWorld = XMLoadFloat3( sky->GetAtmosphereCB().AC_LightPos.toXMFLOAT3() );
+    XMStoreFloat3( scb.SQ_LightDirectionWS.toXMFLOAT3(), lightDirWorld );
     XMStoreFloat3( scb.SQ_LightDirectionVS.toXMFLOAT3(),
-        XMVector3TransformNormal( XMLoadFloat3( sky->GetAtmosphereCB().AC_LightPos.toXMFLOAT3() ), view ) );
+        XMVector3TransformNormal( lightDirWorld, view ) );
 
     float3 sunColor =
         settings.SunLightColor;

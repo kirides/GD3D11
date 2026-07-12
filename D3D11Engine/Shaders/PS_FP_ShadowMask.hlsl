@@ -26,6 +26,9 @@ cbuffer DS_ScreenQuadConstantBuffer : register( b0 )
     float3 SQ_LightDirectionVS;
     float  SQ_ShadowmapSize;
 
+    float3 SQ_LightDirectionWS;
+    float  SQ_Pad0;
+
     float4 SQ_LightColor;
     matrix SQ_ShadowViewProj[MAX_CSM_CASCADES];
 
@@ -102,7 +105,7 @@ float PSMain( PS_INPUT Input ) : SV_TARGET
     float3 wsDx = ddx( wsPosition );
     float3 wsDy = ddy( wsPosition );
     float3 wsNormal = normalize( cross( wsDx, wsDy ) );
-    float3 wsLightDirection = normalize( mul( float4( SQ_LightDirectionVS, 0.0f ), SQ_InvView ).xyz );
+    float3 wsLightDirection = SQ_LightDirectionWS;
 
 	float rawNoL = dot(wsNormal, wsLightDirection);
 

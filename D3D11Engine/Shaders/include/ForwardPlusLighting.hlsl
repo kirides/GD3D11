@@ -49,6 +49,8 @@ cbuffer FP_ScreenQuadConstantBuffer : register( b4 )
     matrix SQ_RainViewProj;
     float3 SQ_LightDirectionVS;
     float SQ_ShadowmapSize;
+    float3 SQ_LightDirectionWS;
+    float SQ_Pad0;
     float4 SQ_LightColor;
     matrix SQ_ShadowViewProj[MAX_CSM_CASCADES];
     float SQ_ShadowStrength;
