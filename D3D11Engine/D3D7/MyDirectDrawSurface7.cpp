@@ -61,21 +61,22 @@ D3D11Texture* MyDirectDrawSurface7::GetFxMap() {
 
 /** Binds this texture */
 void MyDirectDrawSurface7::BindToSlot( int slot ) {
+    ID3D11ShaderResourceView* srvs[2] = {
+        nullptr, nullptr
+    };
+    
     if ( !IsReady ) {
-        Engine::GraphicsEngine->UnbindTexture( 0 );
+        reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->PSSetShaderResources( slot, 1, srvs );
         return; // Don't bind half-loaded textures!
     }
 
-    if ( EngineTexture ) // Needed sometimes
-        EngineTexture->BindToPixelShader( slot );
-
-    if ( Normalmap ) {
-        Normalmap->BindToPixelShader( slot + 1 );
-        Normalmap->BindToVertexShader( 0 );
-    } else {
-        //EngineTexture->BindToPixelShader(slot + 1);
-        Engine::GraphicsEngine->UnbindTexture( slot + 1 );
+    if ( EngineTexture ) {// Needed sometimes
+        srvs[0] = EngineTexture->GetShaderResourceView().Get();
     }
+    if ( Normalmap ) {
+        srvs[1] = Normalmap->GetShaderResourceView().Get();
+    }
+    reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->PSSetShaderResources( slot, 2, srvs );
 }
 
 static bool LoadResource(
