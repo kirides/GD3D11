@@ -9003,7 +9003,7 @@ void D3D11GraphicsEngine::EnsureTempVertexBufferSize( std::unique_ptr<D3D11Verte
 }
 
 /** Draws particle meshes */
-void D3D11GraphicsEngine::DrawFrameParticleMeshes( std::unordered_map<zCVob*, MeshVisualInfo*>& progMeshes ) {
+void D3D11GraphicsEngine::DrawFrameParticleMeshes( std::unordered_map<zCVob*, std::unique_ptr<MeshVisualInfo>>& progMeshes ) {
     if ( progMeshes.empty() ) return;
     SetDefaultStates();
 

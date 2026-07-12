@@ -297,12 +297,13 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	color = lerp(color, sceneWet, (1-shallowDepth));
 
 	// Reflection compositing.
-	// SSR hits (real on-screen geometry) drive the reflection strongly and directly,
-	// independent of view angle - so geometry near the screen edges is still mirrored.
-	// The ray-hit proximity to the screen edge is already faded inside TraceWaterSSR
-	// (ssrConfidence), which is the correct place for it. On a miss we keep only a very
-	// faint Fresnel cube sheen so open water isn't dead flat, without washing edges to
-	// a pale skybox.
+	// Fresnel (view angle) is the primary driver of how much reflection shows, same as
+	// real water: looking straight down mostly shows the water body's own color, looking
+	// at a grazing angle mostly shows the reflection. ssrConfidence only picks *which*
+	// reflection source to use (real on-screen geometry vs the static cube, chosen above
+	// at line 284) and gives it a modest boost - it must not override the angle-based
+	// blend entirely, or the water reads as a flat mirror regardless of how you're
+	// looking at it.
 	float NdotV = saturate(dot(-viewDirection, wavesFres));
 	float reflectFresnel = pow(1.0f - NdotV, 3.0f);
 
@@ -313,8 +314,8 @@ float4 PSMain( PS_INPUT Input ) : SV_TARGET
 	float waterfallFactor = 1.0f - saturate(abs(normalize(Input.vNormalWS).y));
 	float reflectSuppress = lerp(1.0f, 0.12f, waterfallFactor);
 
-	float reflectAmount = saturate(max(saturate(ssrConfidence), reflectFresnel * 0.05f)) * reflectSuppress;
-	color = lerp(color, reflection * lerp(1.0f, diffuse, 0.3f), reflectAmount);
+	float reflectAmount = saturate(lerp(0.35f, 1.0f, reflectFresnel) * lerp(0.5f, 1.0f, saturate(ssrConfidence)) * reflectFresnel) * reflectSuppress;
+	color = lerp(color, reflection * lerp(1.0f, diffuse, 0.6f), reflectAmount);
 	
 	color.rgb = ApplyAtmosphericScatteringGround(Input.vWorldPosition, color.rgb);
 	

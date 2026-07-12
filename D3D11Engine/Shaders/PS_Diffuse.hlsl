@@ -130,7 +130,7 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
 			float2 screenUV = Input.vPosition.xy / FP_ViewportSize;
 			shadow = FP_ShadowMask.SampleLevel( SS_Linear, screenUV, 0 ).r;
 		#else
-			float3 wsLightDirection = normalize(mul(float4(SQ_LightDirectionVS, 0.0f), SQ_InvView).xyz);
+			float3 wsLightDirection = SQ_LightDirectionWS;
 
 			float rawNoL = dot(wsNormal, wsLightDirection);
 

@@ -5770,17 +5770,14 @@ void GothicAPI::AddParticleEffect( zCVob* vob ) {
         if ( zCParticleEmitter* emitter = particle->GetEmitter() ) {
             if ( emitter->GetVisShpType() == 5 ) {
                 if ( zCModel* model = emitter->GetVisShpModel() ) {
-                    MeshVisualInfo* mi = new MeshVisualInfo;
+                    MeshVisualInfo* mi = ParticleEffectProgMeshes.emplace(vob, std::make_unique<MeshVisualInfo>()).first->second.get();
                     WorldConverter::ExtractProgMeshProtoFromModel( model, mi );
-                    ParticleEffectProgMeshes[vob] = mi;
                 } else if ( zCProgMeshProto* progMesh = emitter->GetVisShpProgMesh() ) {
-                    MeshVisualInfo* mi = new MeshVisualInfo;
+                    MeshVisualInfo* mi = ParticleEffectProgMeshes.emplace(vob, std::make_unique<MeshVisualInfo>()).first->second.get();
                     WorldConverter::Extract3DSMeshFromVisual2( progMesh, mi );
-                    ParticleEffectProgMeshes[vob] = mi;
                 } else if ( zCMesh* mesh = emitter->GetVisShpMesh() ) {
-                    MeshVisualInfo* mi = new MeshVisualInfo;
+                    MeshVisualInfo* mi = ParticleEffectProgMeshes.emplace(vob, std::make_unique<MeshVisualInfo>()).first->second.get();
                     WorldConverter::ExtractProgMeshProtoFromMesh( mesh, mi );
-                    ParticleEffectProgMeshes[vob] = mi;
                 }
             }
         }
@@ -5791,7 +5788,6 @@ void GothicAPI::AddParticleEffect( zCVob* vob ) {
 void GothicAPI::DestroyParticleEffect( zCVob* vob ) {
     auto it = ParticleEffectProgMeshes.find(vob);
     if ( it != ParticleEffectProgMeshes.end() ) {
-        delete it->second;
         ParticleEffectProgMeshes.erase( it );
     }
 }

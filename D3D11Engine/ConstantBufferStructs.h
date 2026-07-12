@@ -201,6 +201,11 @@ struct DS_ScreenQuadConstantBuffer {
     float3 SQ_LightDirectionVS;
     float SQ_ShadowmapSize;
 
+    // World-space sun direction, precomputed on CPU (== normalize(AC_LightPos)).
+    // Avoids re-deriving it per-pixel via normalize(mul(SQ_LightDirectionVS, SQ_InvView)).
+    float3 SQ_LightDirectionWS;
+    float SQ_Pad0;
+
     float4 SQ_LightColor;
     
     // CSM: Cascade 0 (f�r Kompatibilit�t mit bestehenden Shadern)
