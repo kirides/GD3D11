@@ -1752,9 +1752,21 @@ void WorldConverter::GenerateVertexNormals( std::vector<ExVertexStruct>& vertice
         FXMVECTOR normal = XMVector3Cross( (XMLoadFloat3( &v[1] ) - XMLoadFloat3( &v[0] )), (XMLoadFloat3( &v[2] ) - XMLoadFloat3( &v[0] )) );
 
         for ( int j = 0; j < 3; ++j ) {
-            FXMVECTOR a = XMLoadFloat3( &v[(j + 1) % 3] ) - XMLoadFloat3( &v[j] );
-            FXMVECTOR b = XMLoadFloat3( &v[(j + 2) % 3] ) - XMLoadFloat3( &v[j] );
-            FXMVECTOR weight = XMVectorACos( XMVector3Dot( a, b ) / (XMVector3Length( a ) * XMVector3Length( b )) );
+            XMVECTOR a = XMLoadFloat3( &v[(j + 1) % 3] ) - XMLoadFloat3( &v[j] );
+            XMVECTOR b = XMLoadFloat3( &v[(j + 2) % 3] ) - XMLoadFloat3( &v[j] );
+            float lenA = XMVectorGetX( XMVector3Length( a ) );
+            float lenB = XMVectorGetX( XMVector3Length( b ) );
+
+            // Degenerate edge (duplicate/collapsed vertices): dividing by a
+            // zero length turns the ACos argument into NaN, which then
+            // poisons this vertex's accumulated normal (and every other
+            // triangle sharing it, since they add into the same slot).
+            // Skip the contribution instead.
+            if ( lenA <= 1e-8f || lenB <= 1e-8f )
+                continue;
+
+            float cosAngle = std::clamp( XMVectorGetX( XMVector3Dot( a, b ) ) / (lenA * lenB), -1.0f, 1.0f );
+            XMVECTOR weight = XMVectorReplicate( acosf( cosAngle ) );
             XMVECTOR XMV_normals_indices = XMLoadFloat3( &normals[indices[(i + j)]] );
             XMV_normals_indices += weight * normal;
             XMStoreFloat3( &normals[indices[(i + j)]], XMV_normals_indices );
@@ -1764,7 +1776,12 @@ void WorldConverter::GenerateVertexNormals( std::vector<ExVertexStruct>& vertice
     // Normalize everything and store it into the vertices
     XMFLOAT3 Normal;
     for ( unsigned int i = 0; i < normals.size(); i++ ) {
-        XMStoreFloat3( &Normal, XMVector3Normalize( XMLoadFloat3( &normals[i] ) ) );
+        XMVECTOR n = XMLoadFloat3( &normals[i] );
+        // Isolated vertex or all contributing triangles were degenerate:
+        // fall back to a safe default instead of normalizing a zero vector into NaN.
+        if ( XMVectorGetX( XMVector3LengthSq( n ) ) <= 1e-12f )
+            n = XMVectorSet( 0.0f, 1.0f, 0.0f, 0.0f );
+        XMStoreFloat3( &Normal, XMVector3Normalize( n ) );
         vertices[i].Normal = Normal;
     }
 }
