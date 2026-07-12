@@ -95,6 +95,7 @@ typedef void( __thiscall* zCVobEndMovement )(void*, int);
 #endif
 
 typedef void( __cdecl* oCItemContainer__Container_Draw )();
+typedef void( __fastcall* GenericFastCall)();
 typedef void( __thiscall* zCCamera__Activate )(void*);
 typedef void( __thiscall* zCCamera__UpdateViewport )(void*);
 
@@ -128,6 +129,7 @@ struct HookedFunctionInfo {
     zCBspTreeLoadBIN original_zCBspTreeLoadBIN = reinterpret_cast<zCBspTreeLoadBIN>(GothicMemoryLocations::zCBspTree::LoadBIN);
     zCWorldRender original_zCWorldRender = reinterpret_cast<zCWorldRender>(GothicMemoryLocations::zCWorld::Render);
     oCItemContainer__Container_Draw original_ContainerDraw = reinterpret_cast<oCItemContainer__Container_Draw>(GothicMemoryLocations::oCItemContainer::s_Container_Draw);
+    GenericThiscall original_zCViewDrawRender = reinterpret_cast<GenericThiscall>(GothicMemoryLocations::zCViewDraw::s_Render);
     zCWorldVobAddedToWorld original_zCWorldVobAddedToWorld = reinterpret_cast<zCWorldVobAddedToWorld>(GothicMemoryLocations::zCWorld::VobAddedToWorld);
 #ifdef BUILD_SPACER_NET
     zCWorldCompileWorld original_zCWorldCompileWorld = reinterpret_cast<zCWorldCompileWorld>(GothicMemoryLocations::zCWorld::CompileWorld);

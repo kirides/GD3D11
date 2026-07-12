@@ -50,6 +50,7 @@ XRESULT D3D11Texture::Init( INT2 size, ETextureFormat format, UINT mipMapCount, 
     HRESULT hr;
     D3D11GraphicsEngineBase* engine = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine);
 
+    name = fileName;
     TextureFormat = static_cast<DXGI_FORMAT>(format);
     TextureSize = size;
     MipMapCount = mipMapCount;
@@ -108,6 +109,7 @@ XRESULT D3D11Texture::Init( const std::string& file ) {
     HRESULT hr;
     D3D11GraphicsEngineBase* engine = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine);
 
+    name = file;
     //LogInfo() << "Loading Engine-Texture: " << file;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> res;
     if ( std::filesystem::path( file ).is_absolute() ) {
@@ -195,6 +197,8 @@ XRESULT D3D11Texture::Init( const uint8_t* data, size_t size, const std::string&
 
     TextureSize.x = desc.Width;
     TextureSize.y = desc.Height;
+
+	name = debugFileName;
     if ( !debugFileName.empty() ) {
         SetDebugName( Texture.Get(), "D3D11Texture(\"" + debugFileName + "\")->Texture" );
         SetDebugName( ShaderResourceView.Get(), "D3D11Texture(\"" + debugFileName + "\")->ShaderResourceView" );
@@ -221,7 +225,8 @@ XRESULT D3D11Texture::UpdateData( void* data, int mip ) {
 
     if ( MipMapCount == 1 ) {
         // skip staging buffer for single mips
-        return Init( TextureSize, static_cast<ETextureFormat>(TextureFormat), 1, srcData, "");
+        const std::string& n = name.empty() ? "dummy name" : name;
+        return Init( TextureSize, static_cast<ETextureFormat>(TextureFormat), 1, srcData,  n );
     }
     
     // Reserve the staging buffer for the whole mip chain up front, on the first mip
@@ -248,7 +253,8 @@ XRESULT D3D11Texture::UpdateData( void* data, int mip ) {
 
     // Once the last mip has arrived, build the final IMMUTABLE texture from the full mip chain
     if ( mip + 1 == MipMapCount ) {
-        return Init( TextureSize, static_cast<ETextureFormat>(TextureFormat), MipMapCount, stagingBuffer.data(), "");
+        const std::string& n = name.empty() ? "dummy name" : name;
+        return Init( TextureSize, static_cast<ETextureFormat>(TextureFormat), MipMapCount, stagingBuffer.data(), n );
     }
 
     return XR_SUCCESS;

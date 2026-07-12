@@ -179,6 +179,7 @@ struct GothicMemoryLocations {
     struct zCViewDraw {
         static const unsigned int GetScreen = 0x006905c0;
         static const unsigned int SetVirtualSize = 0x00691f60;
+        static const unsigned int s_Render = 0x006900e0;
     };
 
     struct zCView {
@@ -608,6 +609,7 @@ struct GothicMemoryLocations {
     struct zCTexture {
         static const unsigned int zCTex_D3DInsertTexture = 0x00656120;
         static const unsigned int LoadResourceData = 0x005F54D0;
+        static const unsigned int AddAniTex = 0x005f3620;
         static const unsigned int GetName = 0x005A9CD0;
         static const unsigned int Offset_CacheState = 0x4C;
         static const unsigned int Offset_NextFrame = 0x58;

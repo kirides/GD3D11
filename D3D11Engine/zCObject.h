@@ -24,5 +24,15 @@ public:
     VERTEX_INDEX hashIndex;
     zCObject* hashNext;
     zSTRING objectName;
+
+    bool CheckInheritance( const zCClassDef* def, const zCClassDef* target ) const {
+        while ( def ) {
+            if ( def == target ) {
+                return true;
+            }
+            def = def->baseClassDef;
+        }
+        return false;
+    }
 };
 

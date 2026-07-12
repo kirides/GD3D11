@@ -30,6 +30,7 @@ public:
 
         if ( HookedFunctions::OriginalFunctions.original_ContainerDraw ) {
             DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_ContainerDraw, hooked_ContainerDraw  );
+            DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCViewDrawRender, hooked_zCViewDrawRender );
         }
 
         DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCWorldRender, hooked_Render  );
@@ -61,6 +62,13 @@ public:
         HookedFunctions::OriginalFunctions.original_ContainerDraw();
 
         isDrawingContainers = false;
+    }
+
+    static void __fastcall hooked_zCViewDrawRender(void* view, void* unkn) {
+        ZoneScoped;
+        auto _ = Engine::GraphicsEngine->RecordGraphicsEvent( GE_NAME( "Draw zCViewDraw" ) );
+
+        HookedFunctions::OriginalFunctions.original_zCViewDrawRender(view);
     }
 
     static void __fastcall hooked_oCWorldEnableVob( zCWorld* thisptr, void* unknwn, zCVob* vob, zCVob* parent ) {

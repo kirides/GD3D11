@@ -72,6 +72,7 @@ public:
     UINT16 GetID() { return ID; };
 
 private:
+    std::string name;
     /** The ID of this texture */
     UINT16 ID;
 

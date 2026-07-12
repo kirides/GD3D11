@@ -20,14 +20,36 @@ namespace zCTextureCacheHack {
 };
 
 class zCTexture: public zCResource {
+    inline static zTResourceCacheState( __thiscall* original_zCResourceManager_CacheIn )(void* _this, zCResource* res, float prio)
+        = reinterpret_cast<zTResourceCacheState(__thiscall*)(void*, zCResource*, float)>(0x005dd040);
 public:
+    static const zCClassDef* GetStaticClassDef() {
+        return reinterpret_cast<const zCClassDef*>(GothicMemoryLocations::zCClassDef::zCTexture);
+    }
+
     /** Hooks the functions of this Class */
     static void Hook() {
         //DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCTex_D3DXTEX_BuildSurfaces, hooked_XTEX_BuildSurfaces  );
         DetourAttachTyped( &HookedFunctions::OriginalFunctions.ofiginal_zCTextureLoadResourceData, hooked_LoadResourceData  );
+        DetourAttachTyped( &original_zCResourceManager_CacheIn, hooked_zCResourceManager_CacheIn );
 
         zCTextureCacheHack::NumNotCachedTexturesInFrame = 0;
         zCTextureCacheHack::ForceCacheIn = false;
+    }
+
+    static zTResourceCacheState __fastcall hooked_zCResourceManager_CacheIn( void* _this, void* _, zCResource* res, float prio ) {
+        if ( auto tex = res->As<zCTexture>() ) {
+            // Try load texture by ourselfs.
+
+            if ( tex->LoadTexture(prio) ) {
+                // Either finished synchronously (zRES_CACHED_IN) or was dispatched
+                // to a worker (zRES_LOADING); report whichever state we're now in.
+                return tex->GetCacheState();
+            }
+        }
+        zTResourceCacheState ret = original_zCResourceManager_CacheIn( _this, res, prio );
+
+        return ret;
     }
 
     static int __fastcall hooked_LoadResourceData( zCTexture* thisptr ) {
@@ -186,7 +208,7 @@ public:
         return *reinterpret_cast<texFlags*>(THISPTR_OFFSET(GothicMemoryLocations::zCTexture::Offset_Flags));
     }
         
-    bool LoadTexture()
+    bool LoadTexture(float prio)
     {
         std::string b(255, ' ');
         b.clear();
@@ -220,6 +242,10 @@ public:
             return false;
         }
 
+        if ( prio < 0.0f ) {
+            return FinishLoadTexture( std::move( file ), header, mappedFormat, len );
+        }
+
         // The format is supported, so we take over the load. Reading the pixel
         // data, reordering the mip chain and uploading to the GPU only touches
         // the free-threaded D3D11 device and this texture's own data, so we defer
@@ -228,6 +254,7 @@ public:
         // 
         // Claim the texture as "loading" so the engine neither re-dispatches
         // it nor hands it back to zENGINE while the worker is running.
+
         GetCriticalSection().Lock();
         GetCacheFlags().cacheState = zRES_LOADING;
         GetCriticalSection().Unlock();
@@ -248,8 +275,63 @@ public:
                 GetCacheFlags().cacheState = zRES_CACHED_OUT;
                 GetCriticalSection().Unlock();
             }
-            } );
+        } );
         return true;
+    }
+
+#include <string_view>
+#include <array>
+#include <cctype>
+
+    bool IsAnimatedTexture( std::string_view filepath, int* numAniTex, std::array<std::string_view, 5>* aniPrefix ) {
+        // Keep the original full view for prefix slicing relative to the source string
+        std::string_view workingPath = filepath;
+
+        // 1. Isolate the filename from path and extension
+        size_t lastSlash = workingPath.find_last_of( "/\\" );
+        if ( lastSlash != std::string_view::npos ) {
+            workingPath.remove_prefix( lastSlash + 1 );
+        }
+        size_t lastDot = workingPath.find_last_of( '.' );
+        if ( lastDot != std::string_view::npos ) {
+            workingPath.remove_suffix( workingPath.size() - lastDot );
+        }
+
+        int numAnis = 0;
+        size_t start = 0;
+
+        // 2. Tokenize by '_' and evaluate components inline
+        while ( start < workingPath.size() ) {
+            size_t end = workingPath.find( '_', start );
+            if ( end == std::string_view::npos ) {
+                end = workingPath.size();
+            }
+
+            std::string_view token = workingPath.substr( start, end - start );
+
+            if ( !token.empty() ) {
+                // Check ZenGin rule: length >= 2, first is NOT digit, second IS digit
+                if ( token.length() >= 2 && !std::isdigit( token[0] ) && std::isdigit( token[1] ) ) {
+                    if ( aniPrefix && numAnis < static_cast<int>( aniPrefix->size() ) ) {
+                        // Replicate ZenGin behavior: include the underscore and the first character (e.g., "_A")
+                        // token.data() points right after the '_', so we step back 1 byte to include it.
+                        (*aniPrefix)[numAnis] = std::string_view( token.data() - 1, 2 );
+                    }
+                    numAnis++;
+                } else {
+                    // A non-matching token trailing an animation token breaks the chain
+                    if ( numAnis > 0 ) {
+                        if ( numAniTex ) *numAniTex = 0;
+                        return false;
+                    }
+                }
+            }
+
+            start = end + 1; // Move past the underscore
+        }
+
+        if ( numAniTex ) *numAniTex = numAnis;
+        return numAnis > 0;
     }
 
     /** Reads the pixel data, rebuilds the mip chain and uploads the texture,
@@ -314,8 +396,17 @@ public:
             tex.reset();
             return  false;
         }
+
+        std::string_view name = GetNameWithoutExtView();
         texFlags& selfFlags = GetFlags();
+
         selfFlags.hasAlpha = mappedFormat == DXGI_FORMAT::DXGI_FORMAT_BC2_UNORM;
+        
+        int numAnis = 0;
+        std::array<std::string_view, 5> aniPrefix;
+        if ( IsAnimatedTexture( name, &numAnis, &aniPrefix ) ) {
+            selfFlags.isAnimated = true;
+        }
 
         auto surface = new MyDirectDrawSurface7();
         IDirectDrawSurface7** ppSurface = reinterpret_cast<IDirectDrawSurface7**>(THISPTR_OFFSET(0xd4));
@@ -375,13 +466,6 @@ public:
             // it again or hand it to zENGINE - report it as not-yet-ready.
             return zRES_LOADING;
         } else/* if ( cacheState == zRES_CACHED_OUT || zCTextureCacheHack::ForceCacheIn )*/ {
-            if (LoadTexture()) {
-                // Either finished synchronously (zRES_CACHED_IN) or was dispatched
-                // to a worker (zRES_LOADING); report whichever state we're now in.
-                return GetCacheState();
-            } else if (GetSurface() && GetSurface()->IsSurfaceReady()) {
-                return zRES_CACHED_IN;
-            }
             TouchTimeStampLocal();
             /*zCTextureCacheHack::NumNotCachedTexturesInFrame++;
 
