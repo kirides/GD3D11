@@ -856,6 +856,7 @@
     <ClInclude Include="ConstantBufferPool.h" />
     <ClInclude Include="vendor\mikktspace.h" />
     <ClInclude Include="VertexPacking.h" />
+    <ClInclude Include="zCResource.h" />
     <ClInclude Include="DDSArrayLoader.h" />
     <ClInclude Include="vendor\stb\stb_image.h">
       <Filter>Librarys\stb</Filter>

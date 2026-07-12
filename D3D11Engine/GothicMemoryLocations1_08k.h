@@ -379,6 +379,11 @@ struct GothicMemoryLocations {
         static const unsigned int GetObjectName = 0x0058A160;
     };
 
+    struct zCResource {
+        static const unsigned int Offset_zCCriticalSection = 0x30;
+        static const unsigned int Offset_CacheStateFlags = 0x4c;
+    };
+
     struct zCTexture {
         static const unsigned int zCTex_D3DInsertTexture = 0x0071D7D0;
         static const unsigned int LoadResourceData = 0x005CA5E0;

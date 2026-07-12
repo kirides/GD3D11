@@ -811,6 +811,7 @@ void GothicAPI::ResetVobs() {
     
     // complete what ever is currently working, and clear everything else.
     Engine::WorkerThreadPool->clearAndFlush();
+    Engine::RenderingThreadPool->clearAndFlush();
     
     // Delete light vobs, those depend on world sections and load stuff in the background.
     // by deleting them first we block the thread until the destructor finished

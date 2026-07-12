@@ -417,6 +417,11 @@ struct GothicMemoryLocations {
 
     };
 
+    struct zCResource {
+        static const unsigned int Offset_zCCriticalSection = 0x30;
+        static const unsigned int Offset_CacheStateFlags = 0x4c;
+    };
+
     struct zCTexture {
         static const unsigned int zCTex_D3DInsertTexture = 0x007DE7E0;
         static const unsigned int LoadResourceData = 0x007801D0;

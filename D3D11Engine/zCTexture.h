@@ -6,6 +6,7 @@
 #include "zCResourceManager.h"
 #include "zFILE_VDFS.h"
 #include "zSTRING.h"
+#include "zCResource.h"
 #include "ThreadPool.h"
 #include "D3D7\MyDirectDrawSurface7.h"
 
@@ -18,7 +19,7 @@ namespace zCTextureCacheHack {
     inline __declspec(selectany) bool ForceCacheIn;
 };
 
-class zCTexture {
+class zCTexture: public zCResource {
 public:
     /** Hooks the functions of this Class */
     static void Hook() {
@@ -171,14 +172,7 @@ public:
         return DXGI_FORMAT::DXGI_FORMAT_UNKNOWN;
     }
     
-    struct texCacheFlags {					
-        uint8_t					cacheState		: 2;
-        uint8_t					cacheOutLock	: 1;
-        uint8_t					cacheClassIndex	: 8;
-        uint8_t					managedByResMan	: 1;
-        uint16_t				cacheInPriority	: 16;
-        uint8_t					canBeCachedOut	: 1;
-    };
+    
     
     struct texFlags {
         //		zUINT8				inMemory			: 1;				// .. or on hard-disk 
@@ -191,11 +185,7 @@ public:
     texFlags& GetFlags() {
         return *reinterpret_cast<texFlags*>(THISPTR_OFFSET(GothicMemoryLocations::zCTexture::Offset_Flags));
     }
-    
-    texCacheFlags& GetCacheFlags() {
-        return *reinterpret_cast<texCacheFlags*>(THISPTR_OFFSET(GothicMemoryLocations::zCTexture::Offset_CacheStateFlags)); // same offset in G1
-    }
-    
+        
     bool LoadTexture()
     {
         std::string b(255, ' ');
@@ -235,29 +225,31 @@ public:
         // the free-threaded D3D11 device and this texture's own data, so we defer
         // it to a background worker to keep it off the render thread. The header
         // is already consumed, so the worker continues reading from that offset.
-        if ( Engine::WorkerThreadPool ) {
-            // Claim the texture as "loading" so the engine neither re-dispatches
-            // it nor hands it back to zENGINE while the worker is running.
-            GetCacheFlags().cacheState = zRES_LOADING;
+        // 
+        // Claim the texture as "loading" so the engine neither re-dispatches
+        // it nor hands it back to zENGINE while the worker is running.
+        GetCriticalSection().Lock();
+        GetCacheFlags().cacheState = zRES_LOADING;
+        GetCriticalSection().Unlock();
 
-            Engine::WorkerThreadPool->enqueue(
-                [this, file = std::move( file ), header, mappedFormat, len]
-                ( const std::stop_token& token ) mutable {
-                    if ( token.stop_requested() ) {
-                        // Pool is shutting down - drop the claim so we don't stay stuck loading.
-                        GetCacheFlags().cacheState = zRES_CACHED_OUT;
-                        return;
-                    }
-                    if ( !FinishLoadTexture( std::move( file ), header, mappedFormat, len ) ) {
-                        // Loading failed - revert to cached-out so a later frame can retry.
-                        GetCacheFlags().cacheState = zRES_CACHED_OUT;
-                    }
-                } );
-            return true;
-        }
-
-        // No worker pool available: load synchronously on the calling thread.
-        return FinishLoadTexture( std::move( file ), header, mappedFormat, len );
+        Engine::RenderingThreadPool->enqueue(
+            [this, file = std::move( file ), header, mappedFormat, len]
+            ( const std::stop_token& token ) mutable {
+            if ( token.stop_requested() ) {
+                // Pool is shutting down - drop the claim so we don't stay stuck loading.
+                GetCriticalSection().Lock();
+                GetCacheFlags().cacheState = zRES_CACHED_OUT;
+                GetCriticalSection().Unlock();
+                return;
+            }
+            if ( !FinishLoadTexture( std::move( file ), header, mappedFormat, len ) ) {
+                // Loading failed - revert to cached-out so a later frame can retry.
+                GetCriticalSection().Lock();
+                GetCacheFlags().cacheState = zRES_CACHED_OUT;
+                GetCriticalSection().Unlock();
+            }
+            } );
+        return true;
     }
 
     /** Reads the pixel data, rebuilds the mip chain and uploads the texture,
@@ -334,11 +326,10 @@ public:
         *ppSurface = surface;
         surface->AttachEngineTexture(this, std::move(tex));
 
-        // Publish last: on x86 stores aren't reordered, so once a reader observes
-        // cacheState == zRES_CACHED_IN the surface pointer and its ready flag are
-        // visible too.
-        auto& cacheFlags = GetCacheFlags();
-        cacheFlags.cacheState = zRES_CACHED_IN;
+        // Publish last
+        GetCriticalSection().Lock();
+        GetCacheFlags().cacheState = zRES_CACHED_IN;
+        GetCriticalSection().Unlock();
         return true;
     }
 

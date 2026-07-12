@@ -229,6 +229,8 @@ public:
 
         // Make sure worker thread don't work on any point light
         Engine::WorkerThreadPool->clearAndFlush();
+        // and doesn't try to load any textures or other resources
+        Engine::RenderingThreadPool->clearAndFlush();
 
         int r = HookedFunctions::OriginalFunctions.original_zCBspTreeLoadBIN( thisptr, file, skip );
         Engine::GAPI->OnGeometryLoaded( reinterpret_cast<zCBspTree*>(thisptr) );
