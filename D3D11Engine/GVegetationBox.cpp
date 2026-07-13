@@ -11,6 +11,10 @@
 #include "D3D11GraphicsEngine.h"
 #include "zCMaterial.h"
 #include "Frustum.h"
+GMeshSimple* GVegetationBox::SharedVegetationMesh = nullptr;
+std::unique_ptr<D3D11Texture> GVegetationBox::SharedVegetationTexture;
+int GVegetationBox::SharedResourceRefCount = 0;
+
 GVegetationBox::GVegetationBox() {
     VegetationMesh = nullptr;
     VegetationTexture = nullptr;
@@ -23,9 +27,39 @@ GVegetationBox::GVegetationBox() {
 }
 
 GVegetationBox::~GVegetationBox() {
-    delete VegetationMesh;
     InstancingBuffer.reset();
-    VegetationTexture.reset();
+
+    if ( VegetationMesh )
+        ReleaseSharedResources();
+}
+
+/** Loads the shared grass mesh/texture on first use; every subsequent box just takes a reference. */
+bool GVegetationBox::AcquireSharedResources() {
+    if ( SharedResourceRefCount == 0 ) {
+        SharedVegetationMesh = new GMeshSimple;
+        if ( XR_SUCCESS != SharedVegetationMesh->LoadMesh( "system\\GD3D11\\Meshes\\grass02.3ds" ) ) {
+            delete SharedVegetationMesh;
+            SharedVegetationMesh = nullptr;
+            return false;
+        }
+
+        Engine::GraphicsEngine->CreateTexture( SharedVegetationTexture );
+        SharedVegetationTexture->Init( "system\\GD3D11\\Meshes\\grass02.dds" );
+    }
+
+    SharedResourceRefCount++;
+    return true;
+}
+
+void GVegetationBox::ReleaseSharedResources() {
+    if ( SharedResourceRefCount == 0 )
+        return;
+
+    if ( --SharedResourceRefCount == 0 ) {
+        delete SharedVegetationMesh;
+        SharedVegetationMesh = nullptr;
+        SharedVegetationTexture.reset();
+    }
 }
 
 /** Returns true if the given position is inside the box */
@@ -51,16 +85,11 @@ XRESULT GVegetationBox::InitVegetationBox( MeshInfo* mesh,
         return XR_FAILED;
     }
 
-    // Load vegetationmesh
-    VegetationMesh = new GMeshSimple;
-    if ( XR_SUCCESS != VegetationMesh->LoadMesh( "system\\GD3D11\\Meshes\\grass02.3ds" ) ) {
-        delete VegetationMesh;
-        VegetationMesh = nullptr;
+    if ( !AcquireSharedResources() )
         return XR_FAILED;
-    }
 
-    Engine::GraphicsEngine->CreateTexture( VegetationTexture );
-    VegetationTexture->Init( "system\\GD3D11\\Meshes\\grass02.dds" );
+    VegetationMesh = SharedVegetationMesh;
+    VegetationTexture = SharedVegetationTexture.get();
 
     MeshPart = mesh;
     MeshTexture = meshTexture;
@@ -111,15 +140,11 @@ XRESULT GVegetationBox::InitVegetationBox( const XMFLOAT3& min,
         return XR_FAILED;
     }
 
-    // Load vegetationmesh
-    VegetationMesh = new GMeshSimple;
-    if ( XR_SUCCESS != VegetationMesh->LoadMesh( "system\\GD3D11\\Meshes\\grass02.3ds" ) ) {
-        delete VegetationMesh;
+    if ( !AcquireSharedResources() )
         return XR_FAILED;
-    }
 
-    Engine::GraphicsEngine->CreateTexture( VegetationTexture );
-    VegetationTexture->Init( "system\\GD3D11\\Meshes\\grass02.dds" );
+    VegetationMesh = SharedVegetationMesh;
+    VegetationTexture = SharedVegetationTexture.get();
 
     if ( restrictByTexture != "" ) {
         zCMaterial* m = Engine::GAPI->GetMaterialByTextureName( restrictByTexture );
@@ -631,19 +656,14 @@ void GVegetationBox::LoadFromFILE( zFILE_VDFS* f, int version ) {
     Engine::GraphicsEngine->CreateVertexBuffer( InstancingBuffer );
     InstancingBuffer->Init( &VegetationSpots[0], VegetationSpots.size() * sizeof( XMFLOAT4X4 ) );
 
-    // TODO: Make resource-load method!
     if ( VegetationMesh ) {
         LogWarn() << "Tried to init GVegetationBox twice!";
     }
 
-    // Load vegetationmesh
-    VegetationMesh = new GMeshSimple;
-    if ( XR_SUCCESS != VegetationMesh->LoadMesh( "system\\GD3D11\\Meshes\\grass02.3ds" ) ) {
-        delete VegetationMesh;
+    if ( AcquireSharedResources() ) {
+        VegetationMesh = SharedVegetationMesh;
+        VegetationTexture = SharedVegetationTexture.get();
     }
-
-    Engine::GraphicsEngine->CreateTexture( VegetationTexture );
-    VegetationTexture->Init( "system\\GD3D11\\Meshes\\grass02.dds" );
 
     Modified = true;
 }

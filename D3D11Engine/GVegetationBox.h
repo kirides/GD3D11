@@ -103,6 +103,8 @@ private:
 
     std::vector<XMFLOAT3> TrisInside;
     std::vector<XMFLOAT4X4> VegetationSpots;
+
+    /** Non-owning; all instances share a single grass mesh/texture. See Acquire/ReleaseSharedResources. */
     GMeshSimple* VegetationMesh;
     zCTexture* MeshTexture;
     MeshInfo* MeshPart;
@@ -111,9 +113,19 @@ private:
 
     XMFLOAT3 BoxMin;
     XMFLOAT3 BoxMax;
-    std::unique_ptr<D3D11Texture> VegetationTexture;
+    D3D11Texture* VegetationTexture;
     std::unique_ptr<D3D11VertexBuffer> InstancingBuffer;
     bool DrawBoundingBox;
     bool Modified;
+
+    /** Loads the shared grass mesh/texture on first use and bumps the refcount. Returns false if loading failed. */
+    static bool AcquireSharedResources();
+
+    /** Drops this instance's reference; frees the shared mesh/texture once the last box releases it. */
+    static void ReleaseSharedResources();
+
+    static GMeshSimple* SharedVegetationMesh;
+    static std::unique_ptr<D3D11Texture> SharedVegetationTexture;
+    static int SharedResourceRefCount;
 };
 
