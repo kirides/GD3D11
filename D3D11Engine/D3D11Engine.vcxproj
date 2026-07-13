@@ -1318,7 +1318,9 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="BaseShadowedPointLight.cpp" />
     <ClCompile Include="zSndMss.cpp" />
     <None Include="Shaders\PS_Grass.hlsl" />
+    <None Include="Shaders\PS_GrassShadow.hlsl" />
     <None Include="Shaders\VS_GrassInstanced.hlsl" />
+    <None Include="Shaders\VS_GrassInstancedShadow.hlsl" />
     <None Include="Shaders\VS_DecalInstanced.hlsl" />
     <None Include="Shaders\PS_PFX_VelocityDebug.hlsl" />
     <ClCompile Include="RenderGraph.cpp" />

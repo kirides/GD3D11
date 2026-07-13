@@ -7,6 +7,7 @@ class D3D11Texture;
 class D3D11ConstantBuffer;
 class D3D11VertexBuffer;
 class zCTexture;
+class Frustum;
 struct MeshInfo;
 
 class GVegetationBox {
@@ -37,6 +38,9 @@ public:
 
     /** Draws this vegetation box */
     void RenderVegetation( const XMFLOAT3& eye );
+
+    /** Draws this vegetation box into the active shadowmap, so grass casts shadows */
+    void RenderVegetationShadow( const XMFLOAT3& eye, const Frustum* frustum );
 
     /** Returns true if the given position is inside the box */
     bool PositionInsideBox( const XMFLOAT3& p );

@@ -10,6 +10,7 @@
 #include "D3D11Texture.h"
 #include "D3D11GraphicsEngine.h"
 #include "zCMaterial.h"
+#include "Frustum.h"
 GVegetationBox::GVegetationBox() {
     VegetationMesh = nullptr;
     VegetationTexture = nullptr;
@@ -359,6 +360,55 @@ void GVegetationBox::RenderVegetation( const XMFLOAT3& eye ) {
         Engine::GAPI->GetRendererState().BlendState.SetDefault();
         Engine::GAPI->GetRendererState().BlendState.SetDirty();
     }
+}
+
+void GVegetationBox::RenderVegetationShadow( const XMFLOAT3& eye, const Frustum* frustum ) {
+    float drawRadius = Engine::GAPI->GetRendererState().RendererSettings.OutdoorSmallVobDrawRadius;
+
+    float dist = Toolbox::ComputePointAABBDistance( eye, BoxMin, BoxMax );
+    if ( dist > drawRadius )
+        return;
+
+    if ( VegetationSpots.empty() ) {
+        return;
+    }
+
+    if ( frustum ) {
+        XMFLOAT3 center( (BoxMin.x + BoxMax.x) * 0.5f, (BoxMin.y + BoxMax.y) * 0.5f, (BoxMin.z + BoxMax.z) * 0.5f );
+        XMFLOAT3 extents( (BoxMax.x - BoxMin.x) * 0.5f, (BoxMax.y - BoxMin.y) * 0.5f, (BoxMax.z - BoxMin.z) * 0.5f );
+        DirectX::BoundingBox aabb( center, extents );
+        if ( !frustum->Intersects( aabb ) )
+            return;
+    }
+
+    if ( MeshTexture ) {
+        if ( MeshTexture->CacheIn( 0.6f ) == zRES_CACHED_IN )
+            MeshTexture->Bind( 0 );
+        else
+            return;
+    }
+
+    VegetationTexture->BindToPixelShader( 1 );
+
+    // Grass blades are single-sided planes; cull-none casts shadows from both faces
+    // instead of losing half of them depending on which way a blade happens to face.
+    Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_NONE;
+    Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
+
+    Engine::GraphicsEngine->SetActiveVertexShader( VShaderID::VS_GrassInstancedShadow );
+    Engine::GraphicsEngine->SetActivePixelShader( PShaderID::PS_GrassShadow );
+
+    reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine)->SetupVS_ExMeshDrawCall();
+    reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine)->SetupVS_ExConstantBuffer();
+
+    GrassConstantBuffer gcb;
+    gcb.G_NormalVS = float3( 0, 0, 0 );
+    gcb.G_Time = Engine::GAPI->GetTimeSeconds();
+    gcb.G_WindStrength = Engine::GAPI->GetRendererState().RendererSettings.GlobalWindStrength;
+    GrassCB->UpdateBuffer( &gcb );
+    GrassCB->BindToVertexShader( 1 );
+
+    VegetationMesh->DrawBatch( InstancingBuffer.get(), VegetationSpots.size(), sizeof( XMFLOAT4X4 ) );
 }
 
 /** Sets bounding box rendering */

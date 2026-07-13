@@ -1341,8 +1341,9 @@ void GothicAPI::DrawWorldMeshNaive() {
     }
     
 
+    const auto& camPos = GetCameraPosition();
     for ( auto const& vegetationBox : VegetationBoxes ) {
-        vegetationBox->RenderVegetation( GetCameraPosition() );
+        vegetationBox->RenderVegetation( camPos );
     }
 
     const auto cameraPosXm = GetCameraPositionXM();

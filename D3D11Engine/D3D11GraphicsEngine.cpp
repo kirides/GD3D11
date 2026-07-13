@@ -17,6 +17,7 @@
 #include "D3D11IndirectBuffer.h"
 #include "GMesh.h"
 #include "GSky.h"
+#include "GVegetationBox.h"
 #include "RenderToTextureBuffer.h"
 #include "zCParticleFX.h"
 #include "zCDecal.h"
@@ -6902,6 +6903,15 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         }
         // we should not need to update the skeletal meshes again, as they were updated before drawing the main scene
         DrawSkeletalMeshVobs( animatedSkeletalMeshVobs, FLT_MAX, false, drawAttachments );
+    }
+
+    if ( renderState.RendererSettings.DrawVOBs ) {
+        ZoneScopedN( "Shadows::DrawVegetation" );
+        auto _1 = RecordGraphicsEvent( GE_NAME( "Shadows::DrawVegetation" ) );
+
+        for ( auto const& vegetationBox : Engine::GAPI->GetVegetationBoxes() ) {
+            vegetationBox->RenderVegetationShadow( *fPosition.toXMFLOAT3(), enableCulling ? currentFrustum : nullptr );
+        }
     }
 
     renderState.BlendState.ColorWritesEnabled = true;
