@@ -6867,7 +6867,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                     GVegetationBox::PrepareRenderShadowPipeline();
 
                     GVegetationBox::PopulateConstantBuffer(view, gcb);
-                    auto cbAllocation = PerObjectMaterialInfoPooledBuffer->Allocate(Context.Get(), &gcb, sizeof(gcb));
+                    auto cbAllocation = PerObjectMaterialInfoPooledBuffer->Allocate(&gcb, sizeof(gcb));
                 
                     UINT firstConstant = cbAllocation.offsetInBytes / 16;
                     UINT numConstants = cbAllocation.sizeInBytes / 16;
@@ -6912,7 +6912,7 @@ void D3D11GraphicsEngine::DrawVegetationGeometryPass(const std::list<GVegetation
                 GVegetationBox::PrepareRenderGeometryPipeline();
 
                 GVegetationBox::PopulateConstantBuffer(view, gcb);
-                auto cbAllocation = PerObjectMaterialInfoPooledBuffer->Allocate(Context.Get(), &gcb, sizeof(gcb));
+                auto cbAllocation = PerObjectMaterialInfoPooledBuffer->Allocate(&gcb, sizeof(gcb));
                 
                 UINT firstConstant = cbAllocation.offsetInBytes / 16;
                 UINT numConstants = cbAllocation.sizeInBytes / 16;
