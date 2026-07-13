@@ -141,8 +141,12 @@ float3 CalculatePlayerInfluence(
     
     float3 vertexWorldPos = mul(float4(vertexLocalPos, 1.0), instWorldMatrix).xyz;
     float3 toVertex = vertexWorldPos - playerPos;
-    
-    float3 displaceDirWorld = lerp(float3(0, 1, 0), normalize(toVertex), step(0.001, length(toVertex)));
+
+    // Branch instead of lerp: normalize(toVertex) is Inf/NaN when toVertex is ~0
+    // (vertex on top of the player), and lerp(a, NaN, 0) still evaluates to NaN
+    // since 0 * NaN = NaN in IEEE float, not 0.
+    float toVertexLen = length(toVertex);
+    float3 displaceDirWorld = toVertexLen >= 0.001 ? (toVertex / toVertexLen) : float3(0, 1, 0);
     
     float distanceXZ = length(toVertex.xz);
     float distanceFactor = exp(-(distanceXZ*distanceXZ)/(1.8*heroAffectRange*heroAffectRange));

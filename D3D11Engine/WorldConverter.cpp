@@ -128,6 +128,66 @@ namespace {
         mesh->MeshIndexBuffer->Init( &mesh->Indices[0], mesh->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
         CreateShadowIndexBuffer( mesh );
     }
+
+    /** Some authored VOB meshes (eg. tree/foliage assets) contain wedges with a
+ *  zero-length normal (degenerate source data). Unlike world-section geometry,
+ *  VOB normals are copied verbatim from the original mesh data and never
+ *  regenerated, so a zero vector survives untouched through the whole
+ *  pipeline and shades as pure black. Recompute a geometric fallback from the
+ *  surrounding triangles' face normals for just those vertices; anything with
+ *  a valid authored normal is left untouched. */
+    // True for zero-length, NaN or infinite normals - anything unsafe to light with.
+    // Written as "not > threshold" (rather than "<= threshold") so NaN, which
+    // compares false against everything, is also caught as bad instead of slipping through.
+    bool IsDegenerateNormal( FXMVECTOR n ) {
+        float len2 = XMVectorGetX( XMVector3LengthSq( n ) );
+        return !(len2 > 1e-12f) || !(len2 < 1e12f);
+    }
+
+    void RepairZeroLengthVertexNormals( std::vector<ExVertexStruct>& vertices, const std::vector<VERTEX_INDEX>& indices ) {
+        bool anyZero = false;
+        for ( auto const& vx : vertices ) {
+            if ( IsDegenerateNormal( XMLoadFloat3( vx.Normal.toXMFLOAT3() ) ) ) {
+                anyZero = true;
+                break;
+            }
+        }
+        if ( !anyZero )
+            return;
+
+        std::vector<XMFLOAT3> accum( vertices.size(), XMFLOAT3( 0, 0, 0 ) );
+        for ( size_t i = 0; i + 2 < indices.size(); i += 3 ) {
+            VERTEX_INDEX i0 = indices[i], i1 = indices[i + 1], i2 = indices[i + 2];
+            XMVECTOR p0 = XMLoadFloat3( vertices[i0].Position.toXMFLOAT3() );
+            XMVECTOR p1 = XMLoadFloat3( vertices[i1].Position.toXMFLOAT3() );
+            XMVECTOR p2 = XMLoadFloat3( vertices[i2].Position.toXMFLOAT3() );
+            XMVECTOR faceNormal = XMVector3Cross( p1 - p0, p2 - p0 );
+            if ( IsDegenerateNormal( faceNormal ) )
+                continue;
+
+            for ( VERTEX_INDEX idx : { i0, i1, i2 } ) {
+                if ( IsDegenerateNormal( XMLoadFloat3( vertices[idx].Normal.toXMFLOAT3() ) ) ) {
+                    XMFLOAT3 sum;
+                    XMStoreFloat3( &sum, XMLoadFloat3( &accum[idx] ) + faceNormal );
+                    accum[idx] = sum;
+                }
+            }
+        }
+
+        for ( size_t i = 0; i < vertices.size(); i++ ) {
+            if ( !IsDegenerateNormal( XMLoadFloat3( vertices[i].Normal.toXMFLOAT3() ) ) )
+                continue;
+
+            XMVECTOR n = XMLoadFloat3( &accum[i] );
+            n = IsDegenerateNormal( n )
+                ? XMVectorSet( 0.0f, 1.0f, 0.0f, 0.0f )
+                : XMVector3Normalize( n );
+
+            XMFLOAT3 result;
+            XMStoreFloat3( &result, n );
+            vertices[i].Normal = result;
+        }
+    }
 }
 
 /** Collects all world-polys in the specific range. Drops all materials that have no alphablending */
@@ -992,6 +1052,8 @@ void WorldConverter::Extract3DSMeshFromVisual( zCProgMeshProto* visual, MeshVisu
             indices.emplace_back( m->WedgeList.Get( triWedge[2] ).position );
         }
 
+        RepairZeroLengthVertexNormals( vertices, indices );
+
         zCMaterial* mat = m->Material;
 
         MeshInfo* mi = new MeshInfo;
@@ -1242,6 +1304,8 @@ void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualIn
                 continue;
             }
 
+            RepairZeroLengthVertexNormals( vertices, indices );
+
             // Create the buffers and sort the mesh into the structure
             MeshInfo* mi = new MeshInfo;
             mi->Vertices = vertices;
@@ -1379,6 +1443,8 @@ void WorldConverter::ExtractProgMeshProtoFromMesh( zCMesh* mesh, MeshVisualInfo*
     for ( VERTEX_INDEX i = 0; i < static_cast<VERTEX_INDEX>(vertices.size()); ++i ) {
         indices.push_back( i );
     }
+
+    RepairZeroLengthVertexNormals( vertices, indices );
 
     MeshInfo* mi = new MeshInfo;
     mi->Vertices = std::move(vertices);
@@ -1563,6 +1629,8 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
             LogWarn() << "Empty submesh (#" << i << ") on Visual " << visual->GetObjectName();
             continue;
         }
+
+        RepairZeroLengthVertexNormals( vertices, indices );
 
         // Create the buffers and sort the mesh into the structure
         MeshInfo* mi = new MeshInfo;
