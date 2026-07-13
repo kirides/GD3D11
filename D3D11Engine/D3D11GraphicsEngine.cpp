@@ -6937,17 +6937,16 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                 }
                 
                 if (!inView) {
-                    GVegetationBox::PrepareRenderShadowPipeline();
                     inView = true;
-                }
-                
-                vegetationBox->PopulateConstantBuffer(view, gcb);
-                auto cbAllocation = PerObjectMaterialInfoPooledBuffer->Allocate(Context.Get(), &gcb, sizeof(gcb));
-            
-                UINT firstConstant = cbAllocation.offsetInBytes / 16;
-                UINT numConstants = cbAllocation.sizeInBytes / 16;
-                GetContext()->VSSetConstantBuffers1( 1, 1, &cbAllocation.pBuffer, &firstConstant, &numConstants );
+                    GVegetationBox::PrepareRenderShadowPipeline();
 
+                    GVegetationBox::PopulateConstantBuffer(view, gcb);
+                    auto cbAllocation = PerObjectMaterialInfoPooledBuffer->Allocate(Context.Get(), &gcb, sizeof(gcb));
+                
+                    UINT firstConstant = cbAllocation.offsetInBytes / 16;
+                    UINT numConstants = cbAllocation.sizeInBytes / 16;
+                    GetContext()->VSSetConstantBuffers1( 1, 1, &cbAllocation.pBuffer, &firstConstant, &numConstants );
+                }
                 
                 vegetationBox->RenderVegetationShadow( );
             }
@@ -6983,15 +6982,16 @@ void D3D11GraphicsEngine::DrawVegetationGeometryPass(const std::list<GVegetation
                 continue;
             
             if (!inView) {
-                GVegetationBox::PrepareRenderGeometryPipeline();
                 inView = true;
+                GVegetationBox::PrepareRenderGeometryPipeline();
+
+                GVegetationBox::PopulateConstantBuffer(view, gcb);
+                auto cbAllocation = PerObjectMaterialInfoPooledBuffer->Allocate(Context.Get(), &gcb, sizeof(gcb));
+                
+                UINT firstConstant = cbAllocation.offsetInBytes / 16;
+                UINT numConstants = cbAllocation.sizeInBytes / 16;
+                GetContext()->VSSetConstantBuffers1( 1, 1, &cbAllocation.pBuffer, &firstConstant, &numConstants );
             }
-            vegetationBox->PopulateConstantBuffer(view, gcb);
-            auto cbAllocation = PerObjectMaterialInfoPooledBuffer->Allocate(Context.Get(), &gcb, sizeof(gcb));
-            
-            UINT firstConstant = cbAllocation.offsetInBytes / 16;
-            UINT numConstants = cbAllocation.sizeInBytes / 16;
-            GetContext()->VSSetConstantBuffers1( 1, 1, &cbAllocation.pBuffer, &firstConstant, &numConstants );
 
             vegetationBox->RenderVegetation( );
         }

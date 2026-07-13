@@ -95,7 +95,7 @@ public:
     static void ResetRenderGeometryPipeline();
     static void PrepareRenderShadowPipeline();
 
-    void PopulateConstantBuffer(FXMMATRIX view, GrassConstantBuffer& cb);
+    static void PopulateConstantBuffer(FXMMATRIX view, GrassConstantBuffer& cb);
     
 private:
     /** Puts trasformation for the given spots */
