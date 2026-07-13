@@ -303,7 +303,7 @@ void GVegetationBox::RenderVegetation( const XMFLOAT3& eye ) {
 
     if ( MeshTexture ) {
         if ( MeshTexture->CacheIn( 0.6f ) == zRES_CACHED_IN )
-            MeshTexture->Bind( 0 );
+            MeshTexture->GetSurface()->GetEngineTexture()->BindToPixelShader(0);
         else
             return;
     }
