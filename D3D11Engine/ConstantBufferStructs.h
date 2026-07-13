@@ -321,7 +321,10 @@ struct GrassConstantBuffer {
     float3 G_NormalVS;
     float G_Time;
     float G_WindStrength;
-    float3 G_Pad1;
+    float G_HeroAffectStrength;
+    float2 G_Pad1;
+    float3 G_PlayerPosWS;
+    float G_Pad2;
 };
 
 struct DefaultHullShaderConstantBuffer {

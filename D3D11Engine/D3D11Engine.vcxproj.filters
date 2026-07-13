@@ -1210,10 +1210,16 @@
     <None Include="Shaders\VS_GrassInstanced.hlsl">
       <Filter>Engine\Shaders</Filter>
     </None>
+    <None Include="Shaders\VS_GrassInstancedShadow.hlsl">
+      <Filter>Engine\Shaders</Filter>
+    </None>
     <None Include="Shaders\VS_DecalInstanced.hlsl">
       <Filter>Engine\Shaders</Filter>
     </None>
     <None Include="Shaders\PS_Grass.hlsl">
+      <Filter>Engine\Shaders</Filter>
+    </None>
+    <None Include="Shaders\PS_GrassShadow.hlsl">
       <Filter>Engine\Shaders</Filter>
     </None>
     <None Include="Shaders\PS_PFX_VelocityDebug.hlsl">

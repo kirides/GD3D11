@@ -10,11 +10,15 @@
 #include "D3D11Texture.h"
 #include "D3D11GraphicsEngine.h"
 #include "zCMaterial.h"
+#include "Frustum.h"
+GMeshSimple* GVegetationBox::SharedVegetationMesh = nullptr;
+std::unique_ptr<D3D11Texture> GVegetationBox::SharedVegetationTexture;
+int GVegetationBox::SharedResourceRefCount = 0;
+
 GVegetationBox::GVegetationBox() {
     VegetationMesh = nullptr;
     VegetationTexture = nullptr;
     InstancingBuffer = nullptr;
-    GrassCB = nullptr;
     MeshTexture = nullptr;
     MeshPart = nullptr;
     DrawBoundingBox = false;
@@ -23,10 +27,39 @@ GVegetationBox::GVegetationBox() {
 }
 
 GVegetationBox::~GVegetationBox() {
-    delete VegetationMesh;
     InstancingBuffer.reset();
-    VegetationTexture.reset();
-    delete GrassCB;
+
+    if ( VegetationMesh )
+        ReleaseSharedResources();
+}
+
+/** Loads the shared grass mesh/texture on first use; every subsequent box just takes a reference. */
+bool GVegetationBox::AcquireSharedResources() {
+    if ( SharedResourceRefCount == 0 ) {
+        SharedVegetationMesh = new GMeshSimple;
+        if ( XR_SUCCESS != SharedVegetationMesh->LoadMesh( "system\\GD3D11\\Meshes\\grass02.3ds" ) ) {
+            delete SharedVegetationMesh;
+            SharedVegetationMesh = nullptr;
+            return false;
+        }
+
+        Engine::GraphicsEngine->CreateTexture( SharedVegetationTexture );
+        SharedVegetationTexture->Init( "system\\GD3D11\\Meshes\\grass02.dds" );
+    }
+
+    SharedResourceRefCount++;
+    return true;
+}
+
+void GVegetationBox::ReleaseSharedResources() {
+    if ( SharedResourceRefCount == 0 )
+        return;
+
+    if ( --SharedResourceRefCount == 0 ) {
+        delete SharedVegetationMesh;
+        SharedVegetationMesh = nullptr;
+        SharedVegetationTexture.reset();
+    }
 }
 
 /** Returns true if the given position is inside the box */
@@ -52,16 +85,11 @@ XRESULT GVegetationBox::InitVegetationBox( MeshInfo* mesh,
         return XR_FAILED;
     }
 
-    // Load vegetationmesh
-    VegetationMesh = new GMeshSimple;
-    if ( XR_SUCCESS != VegetationMesh->LoadMesh( "system\\GD3D11\\Meshes\\grass02.3ds" ) ) {
-        delete VegetationMesh;
-        VegetationMesh = nullptr;
+    if ( !AcquireSharedResources() )
         return XR_FAILED;
-    }
 
-    Engine::GraphicsEngine->CreateTexture( VegetationTexture );
-    VegetationTexture->Init( "system\\GD3D11\\Meshes\\grass02.dds" );
+    VegetationMesh = SharedVegetationMesh;
+    VegetationTexture = SharedVegetationTexture.get();
 
     MeshPart = mesh;
     MeshTexture = meshTexture;
@@ -112,15 +140,11 @@ XRESULT GVegetationBox::InitVegetationBox( const XMFLOAT3& min,
         return XR_FAILED;
     }
 
-    // Load vegetationmesh
-    VegetationMesh = new GMeshSimple;
-    if ( XR_SUCCESS != VegetationMesh->LoadMesh( "system\\GD3D11\\Meshes\\grass02.3ds" ) ) {
-        delete VegetationMesh;
+    if ( !AcquireSharedResources() )
         return XR_FAILED;
-    }
 
-    Engine::GraphicsEngine->CreateTexture( VegetationTexture );
-    VegetationTexture->Init( "system\\GD3D11\\Meshes\\grass02.dds" );
+    VegetationMesh = SharedVegetationMesh;
+    VegetationTexture = SharedVegetationTexture.get();
 
     if ( restrictByTexture != "" ) {
         zCMaterial* m = Engine::GAPI->GetMaterialByTextureName( restrictByTexture );
@@ -217,7 +241,6 @@ void GVegetationBox::InitSpotsRandom( const std::vector<XMFLOAT3>& trisInside, E
     float rad = std::min( bs.x, bs.z ) / 2.0f;
 
     InstancingBuffer.reset();
-    delete GrassCB; GrassCB = nullptr;
     VegetationSpots.clear();
 
     // Find random spots on the polygons (TODO: This is still based off the size of the polygons!)
@@ -276,39 +299,14 @@ void GVegetationBox::InitSpotsRandom( const std::vector<XMFLOAT3>& trisInside, E
     Engine::GraphicsEngine->CreateVertexBuffer( InstancingBuffer );
     InstancingBuffer->Init( &VegetationSpots[0], VegetationSpots.size() * sizeof( XMFLOAT4X4 ) );
 
-    // Create constant buffer
-    Engine::GraphicsEngine->CreateConstantBuffer( &GrassCB, nullptr, sizeof( GrassConstantBuffer ) );
-#ifdef DEBUG_D3D11
-    SetDebugName( GrassCB->Get().Get(), "ConstantBuffer::GrassConstantBuffer" );
-#endif
-
     RefitBoundingBox();
 
     Density = density;
     return;
 }
 
-/** Draws this vegetation box */
-void GVegetationBox::RenderVegetation( const XMFLOAT3& eye ) {
-    float drawRadius = Engine::GAPI->GetRendererState().RendererSettings.OutdoorSmallVobDrawRadius;
-
-    float dist = Toolbox::ComputePointAABBDistance( eye, BoxMin, BoxMax );
-    if ( dist > drawRadius )
-        return;
-
-    if ( VegetationSpots.empty() ) {
-        return;
-    }
-
-    if ( MeshTexture ) {
-        if ( MeshTexture->CacheIn( 0.6f ) == zRES_CACHED_IN )
-            MeshTexture->Bind( 0 );
-        else
-            return;
-    }
-
-    VegetationTexture->BindToPixelShader( 1 );
-
+void GVegetationBox::PrepareRenderGeometryPipeline()
+{
     Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_NONE;
     Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
 
@@ -326,39 +324,87 @@ void GVegetationBox::RenderVegetation( const XMFLOAT3& eye ) {
 
     reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine)->SetupVS_ExMeshDrawCall();
     reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine)->SetupVS_ExConstantBuffer();
+}
 
-    // Unseed randomizer to always have the same set of scales/rotations
-    //srand(0);
-
-    GrassConstantBuffer gcb;
-    XMFLOAT3 G_NormalVS;
-    XMStoreFloat3( &G_NormalVS, XMVector3TransformNormal( XMVectorSet( 0.0f, 1.0f, 0.0f, 0.0f ), XMMatrixTranspose( Engine::GAPI->GetViewMatrixXM() ) ) );
-    gcb.G_NormalVS = G_NormalVS;
-    gcb.G_Time = Engine::GAPI->GetTimeSeconds();
-    gcb.G_WindStrength = Engine::GAPI->GetRendererState().RendererSettings.GlobalWindStrength;
-    GrassCB->UpdateBuffer( &gcb );
-    GrassCB->BindToVertexShader( 1 );
-
-    // Draw the batch
-    VegetationMesh->DrawBatch( InstancingBuffer.get(), VegetationSpots.size(), sizeof( XMFLOAT4X4 ) );
-
-    /*for(int i=0;i<VegetationSpots.size();i++)
-    {
-        //float sizeMod = 1 - powf((dist / drawRadius), 2.0f);
-
-        //Engine::GraphicsEngine->GetLineRenderer()->AddPointLocator(VegetationSpots[i], 5.0f);
-    }*/
-
-    // Seed randomizer again
-    //srand(Toolbox::timeSinceStartMs());
-
-    if ( DrawBoundingBox )
-        Engine::GraphicsEngine->GetLineRenderer()->AddAABBMinMax( BoxMin, BoxMax );
-
+void GVegetationBox::ResetRenderGeometryPipeline()
+{
     if ( Engine::GAPI->GetRendererState().RendererSettings.VegetationAlphaToCoverage ) {
         Engine::GAPI->GetRendererState().BlendState.SetDefault();
         Engine::GAPI->GetRendererState().BlendState.SetDirty();
     }
+}
+
+void GVegetationBox::PrepareRenderShadowPipeline() {
+    // Grass blades are single-sided planes; cull-none casts shadows from both faces
+    // instead of losing half of them depending on which way a blade happens to face.
+    Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_NONE;
+    Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
+
+    Engine::GraphicsEngine->SetActiveVertexShader( VShaderID::VS_GrassInstancedShadow );
+    Engine::GraphicsEngine->SetActivePixelShader( PShaderID::PS_GrassShadow );
+
+    reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine)->SetupVS_ExMeshDrawCall();
+    reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine)->SetupVS_ExConstantBuffer();
+}
+
+void GVegetationBox::PopulateConstantBuffer(FXMMATRIX view, GrassConstantBuffer& gcb)
+{
+    // XMMatrixTranspose( Engine::GAPI->GetViewMatrixXM() )
+    XMFLOAT3 G_NormalVS;
+    XMStoreFloat3( &G_NormalVS, XMVector3TransformNormal( XMVectorSet( 0.0f, 1.0f, 0.0f, 0.0f ), view) );
+    gcb.G_NormalVS = G_NormalVS;
+    gcb.G_Time = Engine::GAPI->GetTimeSeconds();
+    gcb.G_WindStrength = Engine::GAPI->GetRendererState().RendererSettings.WindQuality > 0
+        ? Engine::GAPI->GetRendererState().RendererSettings.GlobalWindStrength
+        : 0;
+
+    if ( Engine::GAPI->GetRendererState().RendererSettings.HeroAffectsObjects ) {
+        XMFLOAT3 vPlayerPosition = Engine::GAPI->GetPlayerVob() ? Engine::GAPI->GetPlayerVob()->GetPositionWorld() : XMFLOAT3( 0, 0, 0 );
+        gcb.G_PlayerPosWS = vPlayerPosition;
+        gcb.G_HeroAffectStrength = 1.0f;
+    } else {
+        gcb.G_PlayerPosWS = XMFLOAT3( 0, 0, 0 );
+        gcb.G_HeroAffectStrength = 0.0f;
+    }
+}
+
+/** Draws this vegetation box */
+void GVegetationBox::RenderVegetation() {
+    if ( VegetationSpots.empty() ) {
+        return;
+    }
+
+    if ( MeshTexture ) {
+        if ( MeshTexture->CacheIn( 0.6f ) == zRES_CACHED_IN )
+            MeshTexture->GetSurface()->GetEngineTexture()->BindToPixelShader(0);
+        else
+            return;
+    }
+
+    VegetationTexture->BindToPixelShader( 1 );
+    
+    // Draw the batch
+    VegetationMesh->DrawBatch( InstancingBuffer.get(), VegetationSpots.size(), sizeof( XMFLOAT4X4 ) );
+
+    if ( DrawBoundingBox )
+        Engine::GraphicsEngine->GetLineRenderer()->AddAABBMinMax( BoxMin, BoxMax );
+}
+
+void GVegetationBox::RenderVegetationShadow( ) {
+    if ( VegetationSpots.empty() ) {
+        return;
+    }
+
+    if ( MeshTexture ) {
+        if ( MeshTexture->CacheIn( 0.6f ) == zRES_CACHED_IN )
+            MeshTexture->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
+        else
+            return;
+    }
+
+    VegetationTexture->BindToPixelShader( 1 );
+
+    VegetationMesh->DrawBatch( InstancingBuffer.get(), VegetationSpots.size(), sizeof( XMFLOAT4X4 ) );
 }
 
 /** Sets bounding box rendering */
@@ -619,25 +665,14 @@ void GVegetationBox::LoadFromFILE( zFILE_VDFS* f, int version ) {
     Engine::GraphicsEngine->CreateVertexBuffer( InstancingBuffer );
     InstancingBuffer->Init( &VegetationSpots[0], VegetationSpots.size() * sizeof( XMFLOAT4X4 ) );
 
-    // Create constant buffer
-    Engine::GraphicsEngine->CreateConstantBuffer( &GrassCB, nullptr, sizeof( GrassConstantBuffer ) );
-#ifdef DEBUG_D3D11
-    SetDebugName( GrassCB->Get().Get(), "ConstantBuffer::GrassConstantBuffer" );
-#endif
-
-    // TODO: Make resource-load method!
     if ( VegetationMesh ) {
         LogWarn() << "Tried to init GVegetationBox twice!";
     }
 
-    // Load vegetationmesh
-    VegetationMesh = new GMeshSimple;
-    if ( XR_SUCCESS != VegetationMesh->LoadMesh( "system\\GD3D11\\Meshes\\grass02.3ds" ) ) {
-        delete VegetationMesh;
+    if ( AcquireSharedResources() ) {
+        VegetationMesh = SharedVegetationMesh;
+        VegetationTexture = SharedVegetationTexture.get();
     }
-
-    Engine::GraphicsEngine->CreateTexture( VegetationTexture );
-    VegetationTexture->Init( "system\\GD3D11\\Meshes\\grass02.dds" );
 
     Modified = true;
 }

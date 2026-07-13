@@ -2,11 +2,13 @@
 #include "pch.h"
 #include "zFILE_VDFS.h"
 
+struct GrassConstantBuffer;
 class GMeshSimple;
 class D3D11Texture;
 class D3D11ConstantBuffer;
 class D3D11VertexBuffer;
 class zCTexture;
+class Frustum;
 struct MeshInfo;
 
 class GVegetationBox {
@@ -36,7 +38,10 @@ public:
         zCTexture* meshTexture = nullptr );
 
     /** Draws this vegetation box */
-    void RenderVegetation( const XMFLOAT3& eye );
+    void RenderVegetation();
+
+    /** Draws this vegetation box into the active shadowmap, so grass casts shadows */
+    void RenderVegetationShadow();
 
     /** Returns true if the given position is inside the box */
     bool PositionInsideBox( const XMFLOAT3& p );
@@ -86,12 +91,20 @@ public:
 
     /** Returns the current density of this volume */
     float GetDensity();
+    static void PrepareRenderGeometryPipeline();
+    static void ResetRenderGeometryPipeline();
+    static void PrepareRenderShadowPipeline();
+
+    static void PopulateConstantBuffer(FXMMATRIX view, GrassConstantBuffer& cb);
+    
 private:
     /** Puts trasformation for the given spots */
     void InitSpotsRandom( const std::vector<XMFLOAT3>& trisInside, EShape shape = S_None, float density = 1.0f );
 
     std::vector<XMFLOAT3> TrisInside;
     std::vector<XMFLOAT4X4> VegetationSpots;
+
+    /** Non-owning; all instances share a single grass mesh/texture. See Acquire/ReleaseSharedResources. */
     GMeshSimple* VegetationMesh;
     zCTexture* MeshTexture;
     MeshInfo* MeshPart;
@@ -100,10 +113,19 @@ private:
 
     XMFLOAT3 BoxMin;
     XMFLOAT3 BoxMax;
-    std::unique_ptr<D3D11Texture> VegetationTexture;
+    D3D11Texture* VegetationTexture;
     std::unique_ptr<D3D11VertexBuffer> InstancingBuffer;
-    D3D11ConstantBuffer* GrassCB;
     bool DrawBoundingBox;
     bool Modified;
+
+    /** Loads the shared grass mesh/texture on first use and bumps the refcount. Returns false if loading failed. */
+    static bool AcquireSharedResources();
+
+    /** Drops this instance's reference; frees the shared mesh/texture once the last box releases it. */
+    static void ReleaseSharedResources();
+
+    static GMeshSimple* SharedVegetationMesh;
+    static std::unique_ptr<D3D11Texture> SharedVegetationTexture;
+    static int SharedResourceRefCount;
 };
 

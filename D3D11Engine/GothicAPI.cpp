@@ -1339,11 +1339,6 @@ void GothicAPI::DrawWorldMeshNaive() {
         auto _1 = Engine::GraphicsEngine->RecordGraphicsEvent( GE_NAME( "World Mesh" ) );
         Engine::GraphicsEngine->DrawWorldMesh();
     }
-    
-
-    for ( auto const& vegetationBox : VegetationBoxes ) {
-        vegetationBox->RenderVegetation( GetCameraPosition() );
-    }
 
     const auto cameraPosXm = GetCameraPositionXM();
 
@@ -5216,7 +5211,7 @@ XRESULT GothicAPI::LoadVegetation( const std::string& file ) {
         vdfsFile = zFILE_VDFS::Create( file.c_str() );
     }
 
-    if ( !vdfsFile->Exists() || !vdfsFile->Open( false ) ) {
+    if ( !vdfsFile->Exists() || vdfsFile->Open( false ) != zERROR_NONE ) {
         return XR_FAILED;
     }
 
