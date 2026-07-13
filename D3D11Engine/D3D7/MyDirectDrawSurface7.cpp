@@ -88,7 +88,7 @@ static bool LoadResource(
         return false;
     }
     auto retOpen = file->Open( false );
-    if ( retOpen != 0 ) {
+    if ( retOpen != zERROR_NONE ) {
         return false;
     }
     auto size = file->Size();
