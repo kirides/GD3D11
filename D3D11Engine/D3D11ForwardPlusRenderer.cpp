@@ -277,6 +277,15 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
             depthState.DepthWriteEnabled = false;
             depthState.SetDirty();
 
+            // Alpha-tested world mesh/vobs output a sharpened per-pixel coverage value into the
+            // color target's alpha channel (see DoAlphaTestCoverage in FFConstantBuffer.h) instead
+            // of a hard binary clip when MSAA is active; enabling alpha-to-coverage here lets the
+            // hardware dither that coverage across subsamples for an anti-aliased cutout edge.
+            // Non-alpha-tested materials always output alpha=1, so this is a no-op for them.
+            auto& blendState = Engine::GAPI->GetRendererState().BlendState;
+            blendState.AlphaToCoverage = msaaActive;
+            blendState.SetDirty();
+
             // --- Bind sun/CSM constant buffer at b4 ---
             DS_ScreenQuadConstantBuffer scb = shadowMaps->FillSunCSMConstantBuffer();
             if ( !m_SunCSMConstantBuffer ) {
@@ -358,6 +367,9 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
             // Restore default depth comparison
             depthState.SetDefault();
             depthState.SetDirty();
+
+            blendState.AlphaToCoverage = false;
+            blendState.SetDirty();
         };
     } );
 

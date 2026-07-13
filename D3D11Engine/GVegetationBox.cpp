@@ -366,6 +366,8 @@ void GVegetationBox::PopulateConstantBuffer(FXMMATRIX view, GrassConstantBuffer&
         gcb.G_PlayerPosWS = XMFLOAT3( 0, 0, 0 );
         gcb.G_HeroAffectStrength = 0.0f;
     }
+
+    gcb.G_UseAlphaToCoverage = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine)->GetMSAADepthBuffer() != nullptr ? 1u : 0u;
 }
 
 /** Draws this vegetation box */

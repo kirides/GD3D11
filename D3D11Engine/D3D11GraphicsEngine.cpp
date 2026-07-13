@@ -1594,7 +1594,11 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
         s_oldMSAASamples = rendererState.RendererSettings.MSAASamples;
         s_oldRendererModeForMSAA = rendererState.RendererSettings.RendererMode;
     }
-    
+
+    // Lets alpha-tested pixel shaders know whether to sharpen their alpha test into a per-pixel
+    // coverage value (for the MSAA alpha-to-coverage blend mode) instead of a hard binary clip.
+    rendererState.GraphicsState.SetGraphicsSwitch( GSWITCH_MSAA_ALPHATOCOVERAGE, MSAAColorBuffer != nullptr );
+
 #ifdef BUILD_SPACER_NET
     rendererState.RendererSettings.EnableInactiveFpsLock = false;
 #endif //  BUILD_SPACERNET
@@ -7082,6 +7086,7 @@ void D3D11GraphicsEngine::DrawVegetationGeometryPass(const std::list<GVegetation
                 UINT firstConstant = cbAllocation.offsetInBytes / 16;
                 UINT numConstants = cbAllocation.sizeInBytes / 16;
                 GetContext()->VSSetConstantBuffers1( 1, 1, &cbAllocation.pBuffer, &firstConstant, &numConstants );
+                GetContext()->PSSetConstantBuffers1( 1, 1, &cbAllocation.pBuffer, &firstConstant, &numConstants );
             }
 
             vegetationBox->RenderVegetation( );

@@ -94,7 +94,7 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
 	ClipDistanceEffect(abs(Input.vViewPosition.z), DIST_DrawDistance, color.r * 2 - 1, 500.0f);
 
 #if ALPHATEST == 1
-	DoAlphaTest(color.a);
+	float alphaCoverage = DoAlphaTestCoverage(color.a);
 #endif
 
 #if NORMALMAPPING == 1
@@ -169,7 +169,11 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
 	}
 
 	float focusBrightness = 1.0f + step(1.5f, Input.vDiffuse.w) * 1.0f;
+#if ALPHATEST == 1
+	output.vColor = float4(litPixel * focusBrightness, alphaCoverage);
+#else
 	output.vColor = float4(litPixel * focusBrightness, 1);
+#endif
 	output.vNrm = EncodeNormalGBuffer(nrm);
 	output.vVelocity = CalculateVelocity(Input.vCurrClipPos, Input.vPrevClipPos);
 
