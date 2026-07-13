@@ -1343,6 +1343,12 @@ void GothicAPI::DrawWorldMeshNaive() {
 
     const auto& camPos = GetCameraPosition();
     for ( auto const& vegetationBox : VegetationBoxes ) {
+        XMFLOAT3 bbMin, bbMax;
+        vegetationBox->GetBoundingBox( &bbMin, &bbMax );
+        zTBBox3D box{ bbMin, bbMax };
+        if ( GetCameraBBox3DInFrustum( box, EGothicCullFlags::CullSidesNear ) == ZTCAM_CLIPTYPE_OUT )
+            continue;
+
         vegetationBox->RenderVegetation( camPos );
     }
 
