@@ -15,7 +15,6 @@ GVegetationBox::GVegetationBox() {
     VegetationMesh = nullptr;
     VegetationTexture = nullptr;
     InstancingBuffer = nullptr;
-    GrassCB = nullptr;
     MeshTexture = nullptr;
     MeshPart = nullptr;
     DrawBoundingBox = false;
@@ -27,7 +26,6 @@ GVegetationBox::~GVegetationBox() {
     delete VegetationMesh;
     InstancingBuffer.reset();
     VegetationTexture.reset();
-    delete GrassCB;
 }
 
 /** Returns true if the given position is inside the box */
@@ -218,7 +216,6 @@ void GVegetationBox::InitSpotsRandom( const std::vector<XMFLOAT3>& trisInside, E
     float rad = std::min( bs.x, bs.z ) / 2.0f;
 
     InstancingBuffer.reset();
-    delete GrassCB; GrassCB = nullptr;
     VegetationSpots.clear();
 
     // Find random spots on the polygons (TODO: This is still based off the size of the polygons!)
@@ -277,12 +274,6 @@ void GVegetationBox::InitSpotsRandom( const std::vector<XMFLOAT3>& trisInside, E
     Engine::GraphicsEngine->CreateVertexBuffer( InstancingBuffer );
     InstancingBuffer->Init( &VegetationSpots[0], VegetationSpots.size() * sizeof( XMFLOAT4X4 ) );
 
-    // Create constant buffer
-    Engine::GraphicsEngine->CreateConstantBuffer( &GrassCB, nullptr, sizeof( GrassConstantBuffer ) );
-#ifdef DEBUG_D3D11
-    SetDebugName( GrassCB->Get().Get(), "ConstantBuffer::GrassConstantBuffer" );
-#endif
-
     RefitBoundingBox();
 
     Density = density;
@@ -331,6 +322,16 @@ void GVegetationBox::PrepareRenderShadowPipeline() {
     reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine)->SetupVS_ExConstantBuffer();
 }
 
+void GVegetationBox::PopulateConstantBuffer(FXMMATRIX view, GrassConstantBuffer& gcb)
+{
+    // XMMatrixTranspose( Engine::GAPI->GetViewMatrixXM() )
+    XMFLOAT3 G_NormalVS;
+    XMStoreFloat3( &G_NormalVS, XMVector3TransformNormal( XMVectorSet( 0.0f, 1.0f, 0.0f, 0.0f ), view) );
+    gcb.G_NormalVS = G_NormalVS;
+    gcb.G_Time = Engine::GAPI->GetTimeSeconds();
+    gcb.G_WindStrength = Engine::GAPI->GetRendererState().RendererSettings.GlobalWindStrength;
+}
+
 /** Draws this vegetation box */
 void GVegetationBox::RenderVegetation() {
     if ( VegetationSpots.empty() ) {
@@ -345,31 +346,9 @@ void GVegetationBox::RenderVegetation() {
     }
 
     VegetationTexture->BindToPixelShader( 1 );
-
-    // Unseed randomizer to always have the same set of scales/rotations
-    //srand(0);
-
-    GrassConstantBuffer gcb;
-    XMFLOAT3 G_NormalVS;
-    XMStoreFloat3( &G_NormalVS, XMVector3TransformNormal( XMVectorSet( 0.0f, 1.0f, 0.0f, 0.0f ), XMMatrixTranspose( Engine::GAPI->GetViewMatrixXM() ) ) );
-    gcb.G_NormalVS = G_NormalVS;
-    gcb.G_Time = Engine::GAPI->GetTimeSeconds();
-    gcb.G_WindStrength = Engine::GAPI->GetRendererState().RendererSettings.GlobalWindStrength;
-    GrassCB->UpdateBuffer( &gcb );
-    GrassCB->BindToVertexShader( 1 );
-
+    
     // Draw the batch
     VegetationMesh->DrawBatch( InstancingBuffer.get(), VegetationSpots.size(), sizeof( XMFLOAT4X4 ) );
-
-    /*for(int i=0;i<VegetationSpots.size();i++)
-    {
-        //float sizeMod = 1 - powf((dist / drawRadius), 2.0f);
-
-        //Engine::GraphicsEngine->GetLineRenderer()->AddPointLocator(VegetationSpots[i], 5.0f);
-    }*/
-
-    // Seed randomizer again
-    //srand(Toolbox::timeSinceStartMs());
 
     if ( DrawBoundingBox )
         Engine::GraphicsEngine->GetLineRenderer()->AddAABBMinMax( BoxMin, BoxMax );
@@ -388,13 +367,6 @@ void GVegetationBox::RenderVegetationShadow( ) {
     }
 
     VegetationTexture->BindToPixelShader( 1 );
-
-    GrassConstantBuffer gcb;
-    gcb.G_NormalVS = float3( 0, 0, 0 );
-    gcb.G_Time = Engine::GAPI->GetTimeSeconds();
-    gcb.G_WindStrength = Engine::GAPI->GetRendererState().RendererSettings.GlobalWindStrength;
-    GrassCB->UpdateBuffer( &gcb );
-    GrassCB->BindToVertexShader( 1 );
 
     VegetationMesh->DrawBatch( InstancingBuffer.get(), VegetationSpots.size(), sizeof( XMFLOAT4X4 ) );
 }
@@ -656,12 +628,6 @@ void GVegetationBox::LoadFromFILE( zFILE_VDFS* f, int version ) {
     // Create instancing buffer for this box
     Engine::GraphicsEngine->CreateVertexBuffer( InstancingBuffer );
     InstancingBuffer->Init( &VegetationSpots[0], VegetationSpots.size() * sizeof( XMFLOAT4X4 ) );
-
-    // Create constant buffer
-    Engine::GraphicsEngine->CreateConstantBuffer( &GrassCB, nullptr, sizeof( GrassConstantBuffer ) );
-#ifdef DEBUG_D3D11
-    SetDebugName( GrassCB->Get().Get(), "ConstantBuffer::GrassConstantBuffer" );
-#endif
 
     // TODO: Make resource-load method!
     if ( VegetationMesh ) {

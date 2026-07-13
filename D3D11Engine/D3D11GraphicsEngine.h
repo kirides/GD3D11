@@ -280,14 +280,15 @@ public:
     void ShadowPass_DrawWorldMesh( const std::vector<WorldMeshSectionInfo*>& visibleSections, const Frustum* cullingFrustum = nullptr );
 
     void XM_CALLCONV DrawWorldAroundForWorldShadow( FXMVECTOR position, float sectionRange, const RenderShadowmapsParams& params );
+    void DrawVegetationGeometryPass(const std::list<GVegetationBox*>& vegetationBoxes);
     void XM_CALLCONV DrawWorldAround( FXMVECTOR position,
-        float range,
-        bool cullFront = true,
-        bool indoor = false,
-        bool noNPCs = false,
-        std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache = nullptr,
-        unsigned int casterMask = SHADOW_CASTER_ALL,
-        const std::function<bool(zCVob*)>& ignoreVob = nullptr );
+                                      float range,
+                                      bool cullFront = true,
+                                      bool indoor = false,
+                                      bool noNPCs = false,
+                                      std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache = nullptr,
+                                      unsigned int casterMask = SHADOW_CASTER_ALL,
+                                      const std::function<bool(zCVob*)>& ignoreVob = nullptr );
     void XM_CALLCONV DrawWorldAround_Layered( FXMVECTOR position,
         float range,
         bool cullFront = true,

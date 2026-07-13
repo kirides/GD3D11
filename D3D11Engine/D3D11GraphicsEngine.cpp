@@ -5261,6 +5261,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
         }
     }
 
+    DrawVegetationGeometryPass(Engine::GAPI->GetVegetationBoxes());
     UpdateOcclusion();
     return XR_SUCCESS;
 }
@@ -6917,6 +6918,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             
             XMFLOAT3 bbMin, bbMax;
             DirectX::BoundingBox aabb;
+            GrassConstantBuffer gcb;
+
             for ( auto const& vegetationBox : Engine::GAPI->GetVegetationBoxes() ) {
                 vegetationBox->GetBoundingBox( &bbMin, &bbMax );
 
@@ -6938,6 +6941,14 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                     inView = true;
                 }
                 
+                vegetationBox->PopulateConstantBuffer(view, gcb);
+                auto cbAllocation = PerObjectMaterialInfoPooledBuffer->Allocate(Context.Get(), &gcb, sizeof(gcb));
+            
+                UINT firstConstant = cbAllocation.offsetInBytes / 16;
+                UINT numConstants = cbAllocation.sizeInBytes / 16;
+                GetContext()->VSSetConstantBuffers1( 1, 1, &cbAllocation.pBuffer, &firstConstant, &numConstants );
+
+                
                 vegetationBox->RenderVegetationShadow( );
             }
         }
@@ -6945,6 +6956,49 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
     renderState.BlendState.ColorWritesEnabled = true;
     renderState.BlendState.SetDirty();
+}
+
+void D3D11GraphicsEngine::DrawVegetationGeometryPass(const std::list<GVegetationBox*>& vegetationBoxes)
+{
+    if (!vegetationBoxes.empty()) {
+        ZoneScopedN( "Additonal Vegetation" );
+        auto _1 = Engine::GraphicsEngine->RecordGraphicsEvent( GE_NAME( "Additonal Vegetation" ) );
+        
+        const auto& camPos = Engine::GAPI->GetCameraPosition();
+        const float drawRadius = Engine::GAPI->GetRendererState().RendererSettings.OutdoorSmallVobDrawRadius;
+
+        bool inView = false;
+        XMFLOAT3 bbMin, bbMax;
+        const XMMATRIX view = XMMatrixTranspose( Engine::GAPI->GetViewMatrixXM() );
+        GrassConstantBuffer gcb;
+        for ( auto const& vegetationBox : vegetationBoxes ) {
+            vegetationBox->GetBoundingBox( &bbMin, &bbMax );
+
+            float dist = Toolbox::ComputePointAABBDistance( camPos, bbMin, bbMax );
+            if ( dist > drawRadius )
+                continue;
+            
+            zTBBox3D box{ bbMin, bbMax };
+            if ( Engine::GAPI->GetCameraBBox3DInFrustum( box, EGothicCullFlags::CullSidesNear ) == ZTCAM_CLIPTYPE_OUT )
+                continue;
+            
+            if (!inView) {
+                GVegetationBox::PrepareRenderGeometryPipeline();
+                inView = true;
+            }
+            vegetationBox->PopulateConstantBuffer(view, gcb);
+            auto cbAllocation = PerObjectMaterialInfoPooledBuffer->Allocate(Context.Get(), &gcb, sizeof(gcb));
+            
+            UINT firstConstant = cbAllocation.offsetInBytes / 16;
+            UINT numConstants = cbAllocation.sizeInBytes / 16;
+            GetContext()->VSSetConstantBuffers1( 1, 1, &cbAllocation.pBuffer, &firstConstant, &numConstants );
+
+            vegetationBox->RenderVegetation( );
+        }
+        if (inView) {
+            GVegetationBox::ResetRenderGeometryPipeline();
+        }
+    }
 }
 
 /** Update morph mesh visual */

@@ -2,6 +2,7 @@
 #include "pch.h"
 #include "zFILE_VDFS.h"
 
+struct GrassConstantBuffer;
 class GMeshSimple;
 class D3D11Texture;
 class D3D11ConstantBuffer;
@@ -94,6 +95,8 @@ public:
     static void ResetRenderGeometryPipeline();
     static void PrepareRenderShadowPipeline();
 
+    void PopulateConstantBuffer(FXMMATRIX view, GrassConstantBuffer& cb);
+    
 private:
     /** Puts trasformation for the given spots */
     void InitSpotsRandom( const std::vector<XMFLOAT3>& trisInside, EShape shape = S_None, float density = 1.0f );
@@ -110,7 +113,6 @@ private:
     XMFLOAT3 BoxMax;
     std::unique_ptr<D3D11Texture> VegetationTexture;
     std::unique_ptr<D3D11VertexBuffer> InstancingBuffer;
-    D3D11ConstantBuffer* GrassCB;
     bool DrawBoundingBox;
     bool Modified;
 };
