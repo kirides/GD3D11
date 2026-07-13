@@ -158,6 +158,13 @@ protected:
     std::unique_ptr<RenderToDepthStencilBuffer> DepthStencilBuffer;
     std::unique_ptr<RenderToTextureBuffer> HDRBackBuffer;
 
+    /** Multisampled resources used only by the Forward+ renderer's opaque geometry pass when MSAA is enabled.
+        Null (or 1-sample) whenever MSAA is off or the Deferred renderer is active. Resolved into
+        DepthStencilBuffer/HDRBackBuffer immediately after the opaque pass, so every other pass keeps
+        operating on the regular single-sample resources. */
+    std::unique_ptr<RenderToTextureBuffer> MSAAColorBuffer;
+    std::unique_ptr<RenderToDepthStencilBuffer> MSAADepthStencilBuffer;
+
     /** States */
     Microsoft::WRL::ComPtr<ID3D11SamplerState> DefaultSamplerState;
 

@@ -130,6 +130,10 @@ public:
     int GetWindowMode();
 
     XRESULT RecreateBuffers();
+
+    /** (Re-)creates or releases the Forward+ MSAA color/depth buffers based on current settings */
+    void RecreateMSAABuffers( INT2 resolution );
+
     /** Called on window resize/resolution change */
     XRESULT OnResize( INT2 newSize ) override;
 
@@ -237,6 +241,14 @@ public:
 
     /** Returns the HDRBackbuffer for regular geometry and effects */
     RenderToTextureBuffer& GetHDRBackBuffer() const { return *HDRBackBuffer; }
+
+    /** MSAA resources for the Forward+ renderer's opaque geometry pass (null/1 sample when MSAA is off or Deferred is active) */
+    RenderToTextureBuffer* GetMSAAColorBuffer() const { return MSAAColorBuffer.get(); }
+    RenderToDepthStencilBuffer* GetMSAADepthBuffer() const { return MSAADepthStencilBuffer.get(); }
+    UINT GetActiveMSAASampleCount() const { return MSAAColorBuffer ? MSAAColorBuffer->GetSampleCount() : 1; }
+
+    /** Resolves MSAADepthStencilBuffer's sample 0 into the single-sample DepthStencilBuffer via a fullscreen pixel shader (no-op if MSAA is inactive) */
+    void ResolveMSAADepth();
 
     /** Unbinds the texture at the given slot */
     XRESULT UnbindTexture( int slot ) override;

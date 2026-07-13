@@ -5308,6 +5308,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Display", "LimitLightIntesity", to_string_locale_independent( s.LimitLightIntesity ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "TiledLighting", to_string_locale_independent( s.EnableTiledLighting ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "RendererMode", to_string_locale_independent( static_cast<int>(s.RendererMode) ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "MSAASamples", to_string_locale_independent( s.MSAASamples ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WindQuality", to_string_locale_independent( s.WindQuality ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WindStrength", to_string_locale_independent( s.GlobalWindStrength ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterWaveAnimation", to_string_locale_independent( s.EnableWaterAnimation ? TRUE : FALSE ).c_str(), ini.c_str() );
@@ -5479,6 +5480,16 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         // Force experimental settings OFF
         s.RendererMode = GothicRendererSettings::E_RendererMode::RM_Deferred;
         // ....
+
+        {
+            // MSAA is only valid for the Forward+ renderer; clamp to the nearest supported power-of-two (1/2/4/8).
+            int msaaSamples = GetPrivateProfileIntA( "Display", "MSAASamples", ds.MSAASamples, ini.c_str() );
+            if ( msaaSamples >= 8 ) msaaSamples = 8;
+            else if ( msaaSamples >= 4 ) msaaSamples = 4;
+            else if ( msaaSamples >= 2 ) msaaSamples = 2;
+            else msaaSamples = 1;
+            s.MSAASamples = msaaSamples;
+        }
 
         s.WindQuality = GetPrivateProfileIntA( "Display", "WindQuality", 0, ini.c_str() );
         s.GlobalWindStrength = GetPrivateProfileFloatA( "Display", "WindStrength", ds.GlobalWindStrength, ini );

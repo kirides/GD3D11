@@ -587,6 +587,9 @@ XRESULT D3D11ShaderManager::Init() {
         Shaders.push_back( ShaderInfo::make<PShaderID::PS_FP_ShadowMask>( "PS_FP_ShadowMask.hlsl" )
             .with_macros(shadowMacroBuilder)
             .with_category( ShaderCategory::LightsAndShadows ) );
+
+        Shaders.push_back( ShaderInfo::make<PShaderID::PS_ResolveDepthMSAA>( "PS_ResolveDepthMSAA.hlsl" )
+            .with_category( ShaderCategory::LightsAndShadows ) );
     }
 
     return XR_SUCCESS;

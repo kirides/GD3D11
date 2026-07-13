@@ -736,6 +736,7 @@ struct GothicRendererSettings {
         PartialDynamicShadowUpdates = true;
         EnableTiledLighting = false;
         RendererMode = RM_Deferred;
+        MSAASamples = 1;
         DrawSectionIntersections = true;
 
         EnableGodRays = true;
@@ -946,6 +947,8 @@ struct GothicRendererSettings {
     bool PartialDynamicShadowUpdates;
     bool EnableTiledLighting;
     E_RendererMode RendererMode;
+    /** Hardware MSAA sample count (1/2/4/8). Only applied by the Forward+ renderer; Deferred always stays single-sample. */
+    int MSAASamples;
     bool DrawSectionIntersections;
 
     int MaxNumFaces;

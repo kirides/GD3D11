@@ -20,9 +20,11 @@ struct RenderToTextureBuffer {
         HRESULT* Result = nullptr, 
         DXGI_FORMAT RTVFormat = DXGI_FORMAT_UNKNOWN, 
         DXGI_FORMAT SRVFormat = DXGI_FORMAT_UNKNOWN, 
-        int MipLevels = 1, 
+        int MipLevels = 1,
         UINT arraySize = 1,
-        uint32_t bindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE) {
+        uint32_t bindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE,
+        UINT sampleCount = 1,
+        UINT sampleQuality = 0) {
         HRESULT hr = S_OK;
 
         ZeroMemory( CubeMapRTVs, sizeof( CubeMapRTVs ) );
@@ -30,7 +32,7 @@ struct RenderToTextureBuffer {
         if ( SizeX == 0 || SizeY == 0 ) {
             LogError() << "SizeX or SizeY can't be 0";
         }
-        
+
         if (bindFlags == 0) {
             // default to RTV and SRV
             bindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
@@ -38,9 +40,15 @@ struct RenderToTextureBuffer {
 
         this->SizeX = SizeX;
         this->SizeY = SizeY;
+        this->SampleCount = sampleCount;
 
         if ( Format == 0 ) {
             LogError() << "DXGI_FORMAT_UNKNOWN (0) isn't a valid texture format";
+        }
+
+        if ( sampleCount > 1 && (bindFlags & (D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS)) ) {
+            LogError() << "Multisampled RenderToTextureBuffer only supports D3D11_BIND_RENDER_TARGET; stripping SRV/UAV bind flags";
+            bindFlags &= ~(D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS);
         }
 
         //Create a new render target texture
@@ -51,6 +59,9 @@ struct RenderToTextureBuffer {
             arraySize,
             MipLevels,
             (D3D11_BIND_FLAG)bindFlags );
+
+        Desc.SampleDesc.Count = sampleCount;
+        Desc.SampleDesc.Quality = sampleQuality;
 
         if ( arraySize > 1 )
             Desc.MiscFlags |= D3D11_RESOURCE_MISC_TEXTURECUBE;
@@ -70,7 +81,9 @@ struct RenderToTextureBuffer {
             DescRT.Texture2D.MipSlice = 0;
             DescRT.Texture2DArray.ArraySize = arraySize;
 
-            if ( arraySize == 1 )
+            if ( sampleCount > 1 )
+                DescRT.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DMS;
+            else if ( arraySize == 1 )
                 DescRT.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
             else {
                 DescRT.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DARRAY;
@@ -152,6 +165,7 @@ struct RenderToTextureBuffer {
 
     UINT GetSizeX() { return SizeX; }
     UINT GetSizeY() { return SizeY; }
+    UINT GetSampleCount() { return SampleCount; }
 private:
 
     /** The Texture object */
@@ -167,6 +181,7 @@ private:
 
     UINT SizeX;
     UINT SizeY;
+    UINT SampleCount = 1;
 
     void ReleaseAll() {
         Texture.Reset();
@@ -192,9 +207,10 @@ struct RenderToDepthStencilBuffer {
     }
 
     /** Creates the render-to-texture buffers */
-    RenderToDepthStencilBuffer( ID3D11Device* device, UINT SizeX, UINT SizeY, DXGI_FORMAT Format, HRESULT* Result = nullptr, DXGI_FORMAT DSVFormat = DXGI_FORMAT_UNKNOWN, DXGI_FORMAT SRVFormat = DXGI_FORMAT_UNKNOWN, UINT arraySize = 1 )
+    RenderToDepthStencilBuffer( ID3D11Device* device, UINT SizeX, UINT SizeY, DXGI_FORMAT Format, HRESULT* Result = nullptr, DXGI_FORMAT DSVFormat = DXGI_FORMAT_UNKNOWN, DXGI_FORMAT SRVFormat = DXGI_FORMAT_UNKNOWN, UINT arraySize = 1, UINT sampleCount = 1, UINT sampleQuality = 0 )
         :SizeX(SizeX),
-        SizeY( SizeY )
+        SizeY( SizeY ),
+        SampleCount( sampleCount )
     {
         HRESULT hr = S_OK;
 
@@ -211,6 +227,11 @@ struct RenderToDepthStencilBuffer {
             LogError() << "DXGI_FORMAT_UNKNOWN (0) isn't a valid texture format";
         }
 
+        if ( sampleCount > 1 && arraySize > 1 ) {
+            LogError() << "Multisampled RenderToDepthStencilBuffer doesn't support array/cubemap resources";
+            return;
+        }
+
         //Create a new render target texture
         D3D11_TEXTURE2D_DESC Desc = CD3D11_TEXTURE2D_DESC(
             Format,
@@ -219,6 +240,9 @@ struct RenderToDepthStencilBuffer {
             arraySize,
             1,
             D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE);
+
+        Desc.SampleDesc.Count = sampleCount;
+        Desc.SampleDesc.Quality = sampleQuality;
 
         if ( arraySize > 1 )
             Desc.MiscFlags |= D3D11_RESOURCE_MISC_TEXTURECUBE;
@@ -235,7 +259,9 @@ struct RenderToDepthStencilBuffer {
         ZeroMemory( &DescDSV, sizeof( DescDSV ) );
         DescDSV.Format = (DSVFormat != DXGI_FORMAT_UNKNOWN ? DSVFormat : Desc.Format);
 
-        if ( arraySize == 1 )
+        if ( sampleCount > 1 )
+            DescDSV.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2DMS;
+        else if ( arraySize == 1 )
             DescDSV.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
         else {
             DescDSV.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2DARRAY;
@@ -260,13 +286,15 @@ struct RenderToDepthStencilBuffer {
         // Create the resource view
         D3D11_SHADER_RESOURCE_VIEW_DESC DescRV = CD3D11_SHADER_RESOURCE_VIEW_DESC();
         DescRV.Format = (SRVFormat != DXGI_FORMAT_UNKNOWN ? SRVFormat : Desc.Format);
-        if ( arraySize > 1 )
+        if ( sampleCount > 1 ) {
+            DescRV.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DMS;
+        } else if ( arraySize > 1 ) {
             DescRV.ViewDimension = D3D11_SRV_DIMENSION_TEXTURECUBE;
-        else
+        } else {
             DescRV.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-
-        DescRV.Texture2D.MipLevels = 1;
-        DescRV.Texture2D.MostDetailedMip = 0;
+            DescRV.Texture2D.MipLevels = 1;
+            DescRV.Texture2D.MostDetailedMip = 0;
+        }
 
         LE( device->CreateShaderResourceView( Texture.Get(), &DescRV, ShaderResView.GetAddressOf() ) );
 
@@ -294,6 +322,7 @@ struct RenderToDepthStencilBuffer {
     const Microsoft::WRL::ComPtr<ID3D11DepthStencilView>& GetDepthStencilView() const { return DepthStencilView; }
     UINT GetSizeX() const { return SizeX; }
     UINT GetSizeY() const { return SizeY; }
+    UINT GetSampleCount() const { return SampleCount; }
 
     Microsoft::WRL::ComPtr<ID3D11DepthStencilView> GetDSVCubemapFace( UINT i ) { return CubeMapDSVs[i].Get(); }
 
@@ -308,6 +337,7 @@ private:
 
     UINT SizeX;
     UINT SizeY;
+    UINT SampleCount = 1;
 
     // Shader and rendertarget resource views
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> ShaderResView;

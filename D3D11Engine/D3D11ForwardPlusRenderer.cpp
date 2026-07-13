@@ -39,11 +39,15 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
     RGResourceHandle shadowMaskResource = RG_INVALID_HANDLE;
     const bool useScreenSpaceShadowMask = Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseScreenSpaceShadowMask;
 
+    // MSAA (Forward+ only): opaque Z-prepass + lit geometry render into multisampled targets,
+    // then get resolved back into the regular single-sample buffers before any other pass runs.
+    const bool msaaActive = engine.GetMSAADepthBuffer() != nullptr;
+
     // --- Depth prepass ---
     graph.AddPass( RG_PASS_NAME("FP Depth Prepass"), [&]( RGBuilder& builder, RenderPass& pass ) {
         builder.Write( backBufferHandle );
 
-        pass.m_executeCallback = [&engine]( const RenderGraph& ) -> void {
+        pass.m_executeCallback = [&engine, msaaActive]( const RenderGraph& ) -> void {
             TracyD3D11ZoneCGX( "D3D11ForwardPlusRenderer::Depth Prepass" );
             auto& context = engine.GetContext();
 
@@ -56,8 +60,9 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
 
             // Bind only DSV (no color targets) — pure depth fill
             ID3D11RenderTargetView* nullRTV = nullptr;
-            context->OMSetRenderTargets( 1, &nullRTV,
-                engine.GetDepthBuffer()->GetDepthStencilView().Get() );
+            auto* dsv = msaaActive ? engine.GetMSAADepthBuffer()->GetDepthStencilView().Get()
+                                   : engine.GetDepthBuffer()->GetDepthStencilView().Get();
+            context->OMSetRenderTargets( 1, &nullRTV, dsv );
 
             // Disable pixel shader for depth-only rendering
             context->PSSetShader( nullptr, nullptr, 0 );
@@ -72,6 +77,21 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
             engine.SetRenderingStage( D3D11ENGINE_RENDER_STAGE::DES_MAIN );
         };
     } );
+
+    // --- Resolve MSAA depth ---
+    // Resolves MSAADepthStencilBuffer into the regular single-sample DepthStencilBuffer so every
+    // existing depth consumer below (light culling, shadow mask, AO, godrays, height fog) keeps
+    // working unmodified.
+    if ( msaaActive ) {
+        graph.AddPass( RG_PASS_NAME("FP Resolve MSAA Depth"), [&]( RGBuilder& builder, RenderPass& pass ) {
+            builder.Write( backBufferHandle );
+
+            pass.m_executeCallback = [&engine]( const RenderGraph& ) -> void {
+                TracyD3D11ZoneCGX( "D3D11ForwardPlusRenderer::Resolve MSAA Depth" );
+                engine.ResolveMSAADepth();
+            };
+        } );
+    }
 
     // --- Light culling ---
     graph.AddPass( RG_PASS_NAME("FP Light Culling"), [&]( RGBuilder& builder, RenderPass& pass ) {
@@ -188,7 +208,9 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
     const AOMode aoMode = aoRs.AoMode;
     const bool aoUsesNormals = ( aoMode == AOMode::AO_SAO || aoMode == AOMode::AO_ASSAO );
     RGResourceHandle aoNormalsResource = RG_INVALID_HANDLE;
-    if ( aoRs.DebugSettings.FeatureSet.GenerateAONormalsFromDepth && aoUsesNormals ) {
+    // MSAA: the lit-geometry pass can't also output a GBuffer normals RTV (bound RTVs/DSV must
+    // share sample count), so always fall back to reconstructing normals from the resolved depth.
+    if ( msaaActive || (aoRs.DebugSettings.FeatureSet.GenerateAONormalsFromDepth && aoUsesNormals) ) {
         aoNormalsResource = engine.AddAONormalsFromDepthPass( graph );
     }
     RGResourceHandle aoMaskResource = engine.AddAOMaskPass( graph, aoNormalsResource,
@@ -197,11 +219,13 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
     // --- Forward+ lit geometry pass ---
     graph.AddPass( RG_PASS_NAME("FP Lit Geometry"), [&]( RGBuilder& builder, RenderPass& pass ) {
         auto size = engine.GetResolution();
-        normalsResource = builder.CreateTexture( { static_cast<uint32_t>( size.x ), static_cast<uint32_t>( size.y ), DXGI_FORMAT_R16G16_FLOAT, L"GBufferNormals" } );
+        if ( !msaaActive ) {
+            normalsResource = builder.CreateTexture( { static_cast<uint32_t>( size.x ), static_cast<uint32_t>( size.y ), DXGI_FORMAT_R16G16_FLOAT, L"GBufferNormals" } );
+            builder.Write( normalsResource );
+        }
         reactiveMaskResource = builder.CreateTexture( { static_cast<uint32_t>( size.x ), static_cast<uint32_t>( size.y ), DXGI_FORMAT_R8_UNORM, L"ReactiveMask" } );
         builder.Write( velocityBufferHandle );
         builder.Write( colorResource );
-        builder.Write( normalsResource );
         builder.Write( backBufferHandle );
         if ( useScreenSpaceShadowMask && shadowMaskResource != RG_INVALID_HANDLE ) {
             builder.Read( shadowMaskResource );
@@ -210,25 +234,28 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
             builder.Read( aoMaskResource );
         }
 
-        pass.m_executeCallback = [this, &engine, colorResource, normalsResource, velocityBufferHandle, shadowMaskResource, useScreenSpaceShadowMask, aoMaskResource]( const RenderGraph& graph ) -> void {
+        pass.m_executeCallback = [this, &engine, colorResource, normalsResource, velocityBufferHandle, shadowMaskResource, useScreenSpaceShadowMask, aoMaskResource, msaaActive]( const RenderGraph& graph ) -> void {
             TracyD3D11ZoneCGX( "D3D11ForwardPlusRenderer::Lit Geometry" );
             auto& context = engine.GetContext();
             auto* shadowMaps = engine.GetShadowMaps();
 
-            auto normals = graph.GetPhysicalTexture( normalsResource );
-            auto velocityBuffer = graph.GetPhysicalTexture( velocityBufferHandle );
+            auto normals = msaaActive ? nullptr : graph.GetPhysicalTexture( normalsResource );
+            auto velocityBuffer = msaaActive ? nullptr : graph.GetPhysicalTexture( velocityBufferHandle );
             auto* shadowMask = ( useScreenSpaceShadowMask && shadowMaskResource != RG_INVALID_HANDLE )
                 ? graph.GetPhysicalTexture( shadowMaskResource )
                 : nullptr;
             const auto aaMode = Engine::GAPI->GetRendererState().RendererSettings.AntiAliasingMode;
-            if (aaMode != GothicRendererSettings::AA_TAA
+            if (!msaaActive && aaMode != GothicRendererSettings::AA_TAA
                 && aaMode != GothicRendererSettings::AA_FSR) {
                 velocityBuffer = nullptr; // don't write velocity if not needed.
-                // NOTE: we should automate this, by putting the velocity 
+                // NOTE: we should automate this, by putting the velocity
                 // buffer creation INTO the rendergraph instead of passing it in via external handle
             }
+            ID3D11RenderTargetView* colorRTV = msaaActive
+                ? engine.GetMSAAColorBuffer()->GetRenderTargetView().Get()
+                : graph.GetPhysicalTexture( colorResource )->GetRenderTargetView().Get();
             ID3D11RenderTargetView* rtvs[] = {
-                graph.GetPhysicalTexture( colorResource )->GetRenderTargetView().Get(),
+                colorRTV,
                 normals ? normals->GetRenderTargetView().Get() : nullptr,
                 velocityBuffer ? velocityBuffer->GetRenderTargetView().Get() : nullptr,
             };
@@ -240,7 +267,9 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
                     context->ClearRenderTargetView( rtvs[i], black );
             }
 
-            context->OMSetRenderTargets( std::size( rtvs ), rtvs, engine.GetDepthBuffer()->GetDepthStencilView().Get() );
+            auto* dsv = msaaActive ? engine.GetMSAADepthBuffer()->GetDepthStencilView().Get()
+                                   : engine.GetDepthBuffer()->GetDepthStencilView().Get();
+            context->OMSetRenderTargets( std::size( rtvs ), rtvs, dsv );
 
             // Use LESS_EQUAL depth test to leverage the depth prepass
             auto& depthState = Engine::GAPI->GetRendererState().DepthState;
@@ -332,7 +361,26 @@ void D3D11ForwardPlusRenderer::AddGeometryPasses(
         };
     } );
 
-    outNormalsResource = normalsResource;
+    // --- Resolve MSAA color ---
+    // Standard box-filter resolve of the multisampled HDR color into the regular single-sample
+    // HDRBackBuffer. Everything downstream (transparent/alpha meshes, particles, sky, post-FX)
+    // keeps operating on the single-sample buffer exactly as in the non-MSAA path.
+    if ( msaaActive ) {
+        graph.AddPass( RG_PASS_NAME("FP Resolve MSAA Color"), [&]( RGBuilder& builder, RenderPass& pass ) {
+            builder.Write( backBufferHandle );
+
+            pass.m_executeCallback = [&engine, backBufferHandle]( const RenderGraph& graph ) -> void {
+                TracyD3D11ZoneCGX( "D3D11ForwardPlusRenderer::Resolve MSAA Color" );
+                auto* backBufferTex = graph.GetPhysicalTexture( backBufferHandle );
+                engine.GetContext()->ResolveSubresource(
+                    backBufferTex->GetTexture().Get(), 0,
+                    engine.GetMSAAColorBuffer()->GetTexture().Get(), 0,
+                    engine.GetBackBufferFormat() );
+            };
+        } );
+    }
+
+    outNormalsResource = msaaActive ? aoNormalsResource : normalsResource;
     outSpecularResource = specularResource;
     outReactiveMaskResource = reactiveMaskResource;
 }

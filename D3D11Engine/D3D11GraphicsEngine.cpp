@@ -1090,6 +1090,77 @@ int D3D11GraphicsEngine::GetWindowMode() {
     return WINDOW_MODE_WINDOWED;
 }
 
+/** (Re-)creates MSAAColorBuffer/MSAADepthStencilBuffer for the Forward+ renderer, or releases them
+    when MSAA is off / Deferred is active. Validates the requested sample count against the device's
+    actual multisample support for both the depth and HDR back-buffer formats, clamping down (with a
+    log warning) if unsupported. */
+void D3D11GraphicsEngine::RecreateMSAABuffers( INT2 resolution ) {
+    auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+
+    int requestedSamples = settings.MSAASamples;
+    bool wantMSAA = settings.RendererMode == GothicRendererSettings::E_RendererMode::RM_ForwardPlus
+        && requestedSamples > 1;
+
+    if ( !wantMSAA ) {
+        MSAAColorBuffer.reset();
+        MSAADepthStencilBuffer.reset();
+        return;
+    }
+
+    // Pre-filter against CheckMultisampleQualityLevels (query the concrete depth view format,
+    // D32_FLOAT, rather than the typeless resource format, since typeless formats can report
+    // unreliable multisample support on some drivers), then fall through each candidate sample
+    // count and attempt the actual allocation — some drivers report a sample count as supported
+    // via the query but still reject it at texture-creation time, so the real creation result is
+    // the authoritative check.
+    const DXGI_FORMAT colorFormat = GetBackBufferFormat();
+    const DXGI_FORMAT depthFormat = DXGI_FORMAT_R32_TYPELESS;
+    const DXGI_FORMAT depthQueryFormat = DXGI_FORMAT_D32_FLOAT;
+
+    for ( int samples = requestedSamples; samples > 1; samples /= 2 ) {
+        UINT colorQualityLevels = 0;
+        UINT depthQualityLevels = 0;
+        GetDevice()->CheckMultisampleQualityLevels( colorFormat, samples, &colorQualityLevels );
+        GetDevice()->CheckMultisampleQualityLevels( depthQueryFormat, samples, &depthQualityLevels );
+
+        if ( colorQualityLevels == 0 || depthQualityLevels == 0 )
+            continue;
+
+        HRESULT colorResult = S_OK;
+        auto colorBuffer = std::make_unique<RenderToTextureBuffer>(
+            GetDevice().Get(), resolution.x, resolution.y, colorFormat, &colorResult, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN,
+            1, 1, D3D11_BIND_RENDER_TARGET, static_cast<UINT>( samples ), 0 );
+
+        HRESULT depthResult = S_OK;
+        auto depthBuffer = std::make_unique<RenderToDepthStencilBuffer>(
+            GetDevice().Get(), resolution.x, resolution.y, depthFormat, &depthResult,
+            DXGI_FORMAT_D32_FLOAT, DXGI_FORMAT_R32_FLOAT, 1, static_cast<UINT>( samples ), 0 );
+
+        if ( FAILED( colorResult ) || !colorBuffer->GetRenderTargetView()
+            || FAILED( depthResult ) || !depthBuffer->GetDepthStencilView() ) {
+            continue;
+        }
+
+        if ( samples != requestedSamples ) {
+            LogWarn() << "MSAA x" << requestedSamples << " isn't supported by this device/format combination; falling back to x" << samples;
+            settings.MSAASamples = samples;
+        }
+
+        MSAAColorBuffer = std::move( colorBuffer );
+        SetDebugName( MSAAColorBuffer->GetTexture().Get(), "MSAAColorBuffer->TEX" );
+        SetDebugName( MSAAColorBuffer->GetRenderTargetView().Get(), "MSAAColorBuffer->RTV" );
+
+        MSAADepthStencilBuffer = std::move( depthBuffer );
+        return;
+    }
+
+    // Nothing worked, not even 2x — disable MSAA entirely.
+    LogWarn() << "MSAA isn't supported by this device/format combination; disabling it.";
+    settings.MSAASamples = 1;
+    MSAAColorBuffer.reset();
+    MSAADepthStencilBuffer.reset();
+}
+
 XRESULT D3D11GraphicsEngine::RecreateBuffers() {
     INT2 bbres = GetBackbufferResolution();
 
@@ -1136,6 +1207,8 @@ XRESULT D3D11GraphicsEngine::RecreateBuffers() {
     DepthStencilBufferCopy = std::make_unique<RenderToTextureBuffer>(
         GetDevice().Get(), roundedTextureResolution.x, roundedTextureResolution.y, DXGI_FORMAT_R32_TYPELESS, nullptr,
         DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32_FLOAT );
+
+    RecreateMSAABuffers( roundedTextureResolution );
 
     VelocityBuffer = std::make_unique<RenderToTextureBuffer>(
         GetDevice().Get(), roundedTextureResolution.x, roundedTextureResolution.y, DXGI_FORMAT_R16G16_FLOAT );
@@ -1481,7 +1554,9 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
     WindowModes currentWindowMode = (WindowModes)rendererState.RendererSettings.ChangeWindowPreset;
 
     static int s_oldResolutionScalePercent = rendererState.RendererSettings.ResolutionScalePercent;
-    
+    static int s_oldMSAASamples = rendererState.RendererSettings.MSAASamples;
+    static GothicRendererSettings::E_RendererMode s_oldRendererModeForMSAA = rendererState.RendererSettings.RendererMode;
+
     rendererState.RendererInfo.RenderStage = STAGE_DRAW_UNKNOWN;
     ResetFrameTransientBufferPools();
 
@@ -1512,6 +1587,12 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
     } else if ( rendererState.RendererSettings.ResolutionScalePercent != s_oldResolutionScalePercent ) {
         RecreateBuffers();
         s_oldResolutionScalePercent = rendererState.RendererSettings.ResolutionScalePercent;
+    } else if ( rendererState.RendererSettings.MSAASamples != s_oldMSAASamples
+        || rendererState.RendererSettings.RendererMode != s_oldRendererModeForMSAA ) {
+        // MSAA buffers depend on both the sample count and the active renderer (Deferred never gets them)
+        RecreateMSAABuffers( GetResolution() );
+        s_oldMSAASamples = rendererState.RendererSettings.MSAASamples;
+        s_oldRendererModeForMSAA = rendererState.RendererSettings.RendererMode;
     }
     
 #ifdef BUILD_SPACER_NET
@@ -3958,6 +4039,16 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             const float clearColor[4] = { 0.f, 0.f, 0.f, 0.f };
             context->ClearRenderTargetView( HDRBackBuffer->GetRenderTargetView().Get(), clearColor );
             context->ClearRenderTargetView( Backbuffer->GetRenderTargetView().Get(), clearColor );
+
+            // MSAA buffers (Forward+ only) aren't part of the RenderGraph and so aren't covered by
+            // the clears above; without this, subsamples never touched by opaque geometry this frame
+            // (i.e. every edge/silhouette pixel) would keep resolving in stale data from past frames.
+            if ( MSAADepthStencilBuffer ) {
+                context->ClearDepthStencilView( MSAADepthStencilBuffer->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
+            }
+            if ( MSAAColorBuffer ) {
+                context->ClearRenderTargetView( MSAAColorBuffer->GetRenderTargetView().Get(), clearColor );
+            }
 
             float4 fogColor( rendererState.RendererSettings.AtmosphericScattering
                 ? rendererState.RendererSettings.FogColorMod
@@ -8941,6 +9032,44 @@ void D3D11GraphicsEngine::DrawMQuadMarks() {
 /** Copies the depth stencil buffer to DepthStencilBufferCopy */
 void D3D11GraphicsEngine::CopyDepthStencil() {
     GetContext()->CopyResource( DepthStencilBufferCopy->GetTexture().Get(), DepthStencilBuffer->GetTexture().Get() );
+}
+
+/** Resolves MSAADepthStencilBuffer (sample 0) into the single-sample DepthStencilBuffer via a
+    fullscreen pixel shader writing SV_Depth. No-op when MSAA isn't active. */
+void D3D11GraphicsEngine::ResolveMSAADepth() {
+    if ( !MSAADepthStencilBuffer )
+        return;
+
+    auto& context = GetContext();
+
+    ID3D11ShaderResourceView* nullSRV = nullptr;
+    context->PSSetShaderResources( 0, 1, &nullSRV );
+
+    ID3D11RenderTargetView* nullRTV = nullptr;
+    context->OMSetRenderTargets( 1, &nullRTV, DepthStencilBuffer->GetDepthStencilView().Get() );
+
+    auto& depthState = Engine::GAPI->GetRendererState().DepthState;
+    depthState.DepthWriteEnabled = true;
+    depthState.DepthBufferCompareFunc = GothicDepthBufferStateInfo::CF_COMPARISON_ALWAYS;
+    depthState.SetDirty();
+
+    SetActiveVertexShader( VShaderID::VS_PFX );
+    BindActiveVertexShader();
+
+    SetActivePixelShader( PShaderID::PS_ResolveDepthMSAA );
+    BindActivePixelShader();
+
+    UpdateRenderStates();
+
+    context->PSSetShaderResources( 0, 1, MSAADepthStencilBuffer->GetShaderResView().GetAddressOf() );
+
+    PfxRenderer->DrawFullScreenQuad();
+
+    context->PSSetShaderResources( 0, 1, &nullSRV );
+    context->OMSetRenderTargets( 1, &nullRTV, nullptr );
+
+    depthState.SetDefault();
+    depthState.SetDirty();
 }
 
 RGResourceHandle D3D11GraphicsEngine::AddAONormalsFromDepthPass( RenderGraph& graph ) {
