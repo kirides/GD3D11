@@ -1340,16 +1340,36 @@ void GothicAPI::DrawWorldMeshNaive() {
         Engine::GraphicsEngine->DrawWorldMesh();
     }
     
+    if (!VegetationBoxes.empty()) {
+        ZoneScopedN( "Additonal Vegetation" );
+        auto _1 = Engine::GraphicsEngine->RecordGraphicsEvent( GE_NAME( "Additonal Vegetation" ) );
+        
+        const auto& camPos = GetCameraPosition();
+        const float drawRadius = Engine::GAPI->GetRendererState().RendererSettings.OutdoorSmallVobDrawRadius;
 
-    const auto& camPos = GetCameraPosition();
-    for ( auto const& vegetationBox : VegetationBoxes ) {
+        bool inView = false;
         XMFLOAT3 bbMin, bbMax;
-        vegetationBox->GetBoundingBox( &bbMin, &bbMax );
-        zTBBox3D box{ bbMin, bbMax };
-        if ( GetCameraBBox3DInFrustum( box, EGothicCullFlags::CullSidesNear ) == ZTCAM_CLIPTYPE_OUT )
-            continue;
+        for ( auto const& vegetationBox : VegetationBoxes ) {
+            vegetationBox->GetBoundingBox( &bbMin, &bbMax );
 
-        vegetationBox->RenderVegetation( camPos );
+            float dist = Toolbox::ComputePointAABBDistance( camPos, bbMin, bbMax );
+            if ( dist > drawRadius )
+                continue;
+            
+            zTBBox3D box{ bbMin, bbMax };
+            if ( GetCameraBBox3DInFrustum( box, EGothicCullFlags::CullSidesNear ) == ZTCAM_CLIPTYPE_OUT )
+                continue;
+            
+            if (!inView) {
+                GVegetationBox::PrepareRenderGeometryPipeline();
+                inView = true;
+            }
+
+            vegetationBox->RenderVegetation( );
+        }
+        if (inView) {
+            GVegetationBox::ResetRenderGeometryPipeline();
+        }
     }
 
     const auto cameraPosXm = GetCameraPositionXM();

@@ -37,10 +37,10 @@ public:
         zCTexture* meshTexture = nullptr );
 
     /** Draws this vegetation box */
-    void RenderVegetation( const XMFLOAT3& eye );
+    void RenderVegetation();
 
     /** Draws this vegetation box into the active shadowmap, so grass casts shadows */
-    void RenderVegetationShadow( const XMFLOAT3& eye, const Frustum* frustum );
+    void RenderVegetationShadow();
 
     /** Returns true if the given position is inside the box */
     bool PositionInsideBox( const XMFLOAT3& p );
@@ -90,6 +90,10 @@ public:
 
     /** Returns the current density of this volume */
     float GetDensity();
+    static void PrepareRenderGeometryPipeline();
+    static void ResetRenderGeometryPipeline();
+    static void PrepareRenderShadowPipeline();
+
 private:
     /** Puts trasformation for the given spots */
     void InitSpotsRandom( const std::vector<XMFLOAT3>& trisInside, EShape shape = S_None, float density = 1.0f );

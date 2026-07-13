@@ -6909,8 +6909,37 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         ZoneScopedN( "Shadows::DrawVegetation" );
         auto _1 = RecordGraphicsEvent( GE_NAME( "Shadows::DrawVegetation" ) );
 
-        for ( auto const& vegetationBox : Engine::GAPI->GetVegetationBoxes() ) {
-            vegetationBox->RenderVegetationShadow( *fPosition.toXMFLOAT3(), enableCulling ? currentFrustum : nullptr );
+        if ( !Engine::GAPI->GetVegetationBoxes().empty()) {
+            const float drawRadius = Engine::GAPI->GetRendererState().RendererSettings.OutdoorSmallVobDrawRadius;
+            const XMFLOAT3 camPos = *fPosition.toXMFLOAT3();
+            
+            bool inView = false;
+            
+            XMFLOAT3 bbMin, bbMax;
+            DirectX::BoundingBox aabb;
+            for ( auto const& vegetationBox : Engine::GAPI->GetVegetationBoxes() ) {
+                vegetationBox->GetBoundingBox( &bbMin, &bbMax );
+
+                const float dist = Toolbox::ComputePointAABBDistance( camPos, bbMin, bbMax );
+                if ( dist > drawRadius )
+                    continue;
+
+                if ( enableCulling ) {
+                    aabb.Center = XMFLOAT3( (bbMin.x + bbMax.x) * 0.5f, (bbMin.y + bbMax.y) * 0.5f, (bbMin.z + bbMax.z) * 0.5f );
+                    aabb.Extents = XMFLOAT3( (bbMax.x - bbMin.x) * 0.5f, (bbMax.y - bbMin.y) * 0.5f, (bbMax.z - bbMin.z) * 0.5f );
+                    if ( !currentFrustum->Intersects( aabb ) ) {
+                        // Not hitting our frustum and not the active view.
+                        continue;
+                    }
+                }
+                
+                if (!inView) {
+                    GVegetationBox::PrepareRenderShadowPipeline();
+                    inView = true;
+                }
+                
+                vegetationBox->RenderVegetationShadow( );
+            }
         }
     }
 
