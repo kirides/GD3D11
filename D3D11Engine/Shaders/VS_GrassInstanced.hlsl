@@ -14,8 +14,26 @@ cbuffer GrassCB : register( b1 )
 	float3 G_NormalVS;
 	float G_Time;
 	float G_WindStrength;
-	float3 G_Pad1;
+	float G_HeroAffectStrength;
+	float2 G_Pad1;
+	float3 G_PlayerPosWS;
+	float G_Pad2;
 };
+
+// HERO AFFECTS CONST
+static const float grassHeroAffectRange = 45.0f;
+static const float grassHeroAffectStrength = 35.0f;
+
+// Pushes grass away from the player, same falloff shape as the bush/tree hero-influence effect.
+float2 GrassHeroAffectOffsetXZ(float3 wpos, float vertexY)
+{
+	float3 toGrass = wpos - G_PlayerPosWS;
+	float distSqXZ = dot(toGrass.xz, toGrass.xz);
+	float distanceFactor = exp(-distSqXZ / (2.0f * grassHeroAffectRange * grassHeroAffectRange));
+	float2 pushDirXZ = distSqXZ > 0.0001f ? toGrass.xz * rsqrt(distSqXZ) : float2(1, 0);
+
+	return pushDirXZ * distanceFactor * vertexY * grassHeroAffectStrength * G_HeroAffectStrength;
+}
 
 //--------------------------------------------------------------------------------------
 // Input / Output structures
@@ -54,7 +72,12 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 	wpos.xz += sin(G_Time + wind) * 2.0f * Input.vPosition.y * G_WindStrength;
 	wpos.xz += sin(G_Time * 3.0f + wind) * 1.55f * Input.vPosition.y * G_WindStrength;
 	wpos.xz += sin(G_Time * 5.0f + wind) * 1.2f * Input.vPosition.y * G_WindStrength;
-	
+
+	if (G_HeroAffectStrength > 0)
+	{
+		wpos.xz += GrassHeroAffectOffsetXZ(wpos, Input.vPosition.y);
+	}
+
 	Output.vPosition = mul( float4(wpos,1), frame.M_ViewProj);
 	Output.vTexcoord = Input.vTex1;
 	Output.vNormalVS = G_NormalVS;

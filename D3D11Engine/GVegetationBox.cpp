@@ -354,9 +354,18 @@ void GVegetationBox::PopulateConstantBuffer(FXMMATRIX view, GrassConstantBuffer&
     XMStoreFloat3( &G_NormalVS, XMVector3TransformNormal( XMVectorSet( 0.0f, 1.0f, 0.0f, 0.0f ), view) );
     gcb.G_NormalVS = G_NormalVS;
     gcb.G_Time = Engine::GAPI->GetTimeSeconds();
-    gcb.G_WindStrength = Engine::GAPI->GetRendererState().RendererSettings.WindQuality > 0 
+    gcb.G_WindStrength = Engine::GAPI->GetRendererState().RendererSettings.WindQuality > 0
         ? Engine::GAPI->GetRendererState().RendererSettings.GlobalWindStrength
         : 0;
+
+    if ( Engine::GAPI->GetRendererState().RendererSettings.HeroAffectsObjects ) {
+        XMFLOAT3 vPlayerPosition = Engine::GAPI->GetPlayerVob() ? Engine::GAPI->GetPlayerVob()->GetPositionWorld() : XMFLOAT3( 0, 0, 0 );
+        gcb.G_PlayerPosWS = vPlayerPosition;
+        gcb.G_HeroAffectStrength = 1.0f;
+    } else {
+        gcb.G_PlayerPosWS = XMFLOAT3( 0, 0, 0 );
+        gcb.G_HeroAffectStrength = 0.0f;
+    }
 }
 
 /** Draws this vegetation box */
