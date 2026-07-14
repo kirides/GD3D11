@@ -7,6 +7,7 @@
 #include "D3D11ShadowMap.h"
 #include "D3D11ShaderManager.h"
 #include <functional>
+#include <array>
 #include "D3D11TracyDebug.h"
 
 struct RenderToDepthStencilBuffer;
@@ -188,7 +189,7 @@ public:
     XRESULT DrawIndexedVertexArray( ExVertexStruct* vertices, unsigned int numVertices, D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int stride = sizeof( ExVertexStruct ) ) override;
 
     /** Draws a batch of instanced geometry */
-    XRESULT DrawInstanced( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, D3D11VertexBuffer* instanceData, unsigned int instanceDataStride, unsigned int numInstances, unsigned int vertexStride = sizeof( ExVertexStruct ), unsigned int startInstanceNum = 0, unsigned int indexOffset = 0 ) override;
+    XRESULT DrawInstanced( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, D3D11VertexBuffer* instanceData, unsigned int instanceDataStride, unsigned int numInstances, unsigned int vertexStride = sizeof( ExVertexStruct ), unsigned int startInstanceNum = 0, unsigned int indexOffset = 0, unsigned int instanceDataByteOffset = 0 ) override;
 
     /** Called when a vob was removed from the world */
     XRESULT OnVobRemovedFromWorld( zCVob* vob ) override;
@@ -460,27 +461,54 @@ public:
     }
 
 private:
-    struct FrameIndirectBufferPool {
-        std::vector<std::unique_ptr<D3D11IndirectBuffer>> Buffers;
-        size_t NextBuffer = 0;
+    // Ring of FrameCount slots, one used per frame-in-flight - mirrors ConstantBufferPool's
+    // design. Each slot owns one growable buffer plus an ID3D11Query fence; BeginFrame() waits
+    // on the fence of the slot it's about to reuse (guaranteeing the GPU is done reading whatever
+    // that slot held FrameCount frames ago) so every sub-allocation can use NO_OVERWRITE instead
+    // of relying on MAP_DISCARD to rename the backing allocation.
+    static constexpr uint32_t kTransientPoolFrameCount = 3;
 
-        void ResetFrame() {
-            NextBuffer = 0;
-        }
+    struct FrameIndirectBufferPool {
+        struct Slot {
+            std::unique_ptr<D3D11IndirectBuffer> Buffer;
+            Microsoft::WRL::ComPtr<ID3D11Query> Fence;
+            bool FencePending = false;
+            uint32_t Capacity = 0;
+            uint32_t Offset = 0;
+        };
+
+        std::array<Slot, kTransientPoolFrameCount> Slots;
+        uint32_t FrameIndex = 0;
     };
 
     struct FrameInstancingBufferPool {
-        std::vector<std::unique_ptr<D3D11VertexBuffer>> Buffers;
-        size_t NextBuffer = 0;
+        struct Slot {
+            std::unique_ptr<D3D11VertexBuffer> Buffer;
+            Microsoft::WRL::ComPtr<ID3D11Query> Fence;
+            bool FencePending = false;
+            uint32_t Capacity = 0;
+            uint32_t Offset = 0;
+        };
 
-        void ResetFrame() {
-            NextBuffer = 0;
-        }
+        std::array<Slot, kTransientPoolFrameCount> Slots;
+        uint32_t FrameIndex = 0;
     };
 
-    void ResetFrameTransientBufferPools();
-    D3D11IndirectBuffer* AcquireFrameIndirectBuffer( FrameIndirectBufferPool& pool, const void* initData, unsigned int sizeInBytes, const char* debugName );
-    D3D11VertexBuffer* AcquireFrameInstancingBuffer( FrameInstancingBufferPool& pool, unsigned int sizeInBytes, const char* debugName );
+    struct FrameIndirectAllocation {
+        D3D11IndirectBuffer* Buffer = nullptr;
+        uint32_t OffsetInBytes = 0;
+    };
+
+    struct FrameInstancingAllocation {
+        D3D11VertexBuffer* Buffer = nullptr;
+        uint32_t OffsetInBytes = 0;
+    };
+
+    void BeginFrameTransientBufferPools();
+    void EndFrameTransientBufferPools();
+    void WaitForTransientPoolFence( Microsoft::WRL::ComPtr<ID3D11Query>& fence, bool& fencePending );
+    FrameIndirectAllocation AcquireFrameIndirectAllocation( FrameIndirectBufferPool& pool, const void* initData, unsigned int sizeInBytes, const char* debugName );
+    FrameInstancingAllocation AcquireFrameInstancingAllocation( FrameInstancingBufferPool& pool, unsigned int sizeInBytes, const char* debugName );
 
 protected:
 
@@ -511,7 +539,6 @@ protected:
     /** Temp-Arrays for storing data to be put in constant buffers */
     float2 Temp2Float2[2];
     std::unique_ptr<D3D11VertexBuffer> DynamicInstancingBuffer;
-    std::unique_ptr<D3D11VertexBuffer> NodeAttachmentInstancingBuffer;
     std::unique_ptr<D3D11VertexBuffer> DecalInstancingBuffer;
     std::unique_ptr<D3D11VertexBuffer> DynamicVertexBuffer;
 
@@ -634,39 +661,63 @@ private:
             MeshInfo* MeshEntry = nullptr;
         };
 
+        /// Snapshot of one texture/mesh instanced-draw batch built while collecting
+        /// node attachments, so a later stage in the same frame (e.g. the lit pass
+        /// reusing the Z-prepass' work) can replay it without rebuilding.
+        struct CachedNodeAttachmentBatch {
+            MeshInfo* Mesh = nullptr;
+            zCTexture* Texture = nullptr;
+            zCMaterial* Material = nullptr;
+            unsigned int StartInstance = 0;
+            unsigned int InstanceCount = 0;
+            bool NeedAlpha = false;
+        };
+
         bool worldMeshBuilt    = false;  ///< CollectVisibleSections + MDI arg build + buffer upload done
         bool vobInstancesUploaded = false; ///< CollectVisibleVobs + DynamicInstancingBuffer upload done
         bool vobWindMetadataPrepared = false; ///< Wind metadata prepared for cached vob visuals
         bool skeletalBonesUploaded = false; ///< FL11 packed skeletal bone buffers uploaded for main/z-prepass reuse
+        bool nodeAttachmentInstancesUploaded = false; ///< Node-attachment instance buffer uploaded for main/z-prepass reuse
 
         std::vector<WorldMeshSectionInfo*> visibleSections;
         std::vector<D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS> drawIndirectArgs;
         std::vector<CachedWorldMeshDraw> sortedDepthWorldMeshes;
         D3D11IndirectBuffer*           MainWorldIndirectArgsBuffer = nullptr;
         D3D11VertexBuffer*             MainVobInstancingBuffer = nullptr;
+        uint32_t                       MainVobInstancingBufferOffset = 0; ///< byte offset of this frame's sub-allocation within MainVobInstancingBuffer
         std::vector<VobWindMetadata>   vobWindMetadata;
         std::vector<CachedVobVisual>    vobVisuals;
         std::vector<CachedInstancedMeshDraw> sortedInstancedMeshes;
         std::vector<SkeletalVobInfo*>   cachedMobs;
         std::vector<SkeletalVobInfo*> skeletalBoneVisOrder;
         std::vector<VS_ExConstantBuffer_SkeletalBoneRange> skeletalBoneRanges;
+        std::vector<SkeletalVobInfo*> nodeAttachmentVisOrder;
+        std::vector<CachedNodeAttachmentBatch> nodeAttachmentBatches;
+        D3D11VertexBuffer*             NodeAttachmentInstancingBuffer = nullptr;
+        uint32_t                       NodeAttachmentInstancingBufferOffset = 0; ///< byte offset of this frame's sub-allocation within NodeAttachmentInstancingBuffer
 
         void Reset() {
             worldMeshBuilt      = false;
             vobInstancesUploaded = false;
             vobWindMetadataPrepared = false;
             skeletalBonesUploaded = false;
+            nodeAttachmentInstancesUploaded = false;
             visibleSections.clear();
             drawIndirectArgs.clear();
             sortedDepthWorldMeshes.clear();
             MainWorldIndirectArgsBuffer = nullptr;
             MainVobInstancingBuffer = nullptr;
+            MainVobInstancingBufferOffset = 0;
             vobWindMetadata.clear();
             vobVisuals.clear();
             sortedInstancedMeshes.clear();
             cachedMobs.clear();
             skeletalBoneVisOrder.clear();
             skeletalBoneRanges.clear();
+            nodeAttachmentVisOrder.clear();
+            nodeAttachmentBatches.clear();
+            NodeAttachmentInstancingBuffer = nullptr;
+            NodeAttachmentInstancingBufferOffset = 0;
         }
     };
     FrameGeometryCache m_FrameGeometryCache;
@@ -675,6 +726,8 @@ private:
     FrameIndirectBufferPool m_ShadowWorldIndirectPool;
     FrameInstancingBufferPool m_MainVobInstancingPool;
     FrameInstancingBufferPool m_ShadowVobInstancingPool;
+    FrameInstancingBufferPool m_MainNodeAttachmentInstancingPool;
+    FrameInstancingBufferPool m_ShadowNodeAttachmentInstancingPool;
 
     /** Water surface indirect buffer */
     std::unique_ptr<D3D11IndirectBuffer> WaterIndirectBuffer;

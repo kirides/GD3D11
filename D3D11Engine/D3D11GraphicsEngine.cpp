@@ -756,12 +756,6 @@ XRESULT D3D11GraphicsEngine::Init() {
     SetDebugName( DynamicInstancingBuffer->GetShaderResourceView().Get(), "DynamicInstancingBuffer->ShaderResourceView" );
     SetDebugName( DynamicInstancingBuffer->GetVertexBuffer().Get(), "DynamicInstancingBuffer->VertexBuffer" );
 
-    NodeAttachmentInstancingBuffer = std::make_unique<D3D11VertexBuffer>();
-    NodeAttachmentInstancingBuffer->Init(
-        nullptr, sizeof( NodeAttachmentInstanceData ) * 1024, D3D11VertexBuffer::B_VERTEXBUFFER,
-        D3D11VertexBuffer::U_DYNAMIC, D3D11VertexBuffer::CA_WRITE );
-    SetDebugName( NodeAttachmentInstancingBuffer->GetVertexBuffer().Get(), "NodeAttachmentInstancingBuffer" );
-
     DecalInstancingBuffer = std::make_unique<D3D11VertexBuffer>();
     DecalInstancingBuffer->Init(
         nullptr, sizeof( XMFLOAT4X4 ) * 1024, D3D11VertexBuffer::B_VERTEXBUFFER,
@@ -1422,85 +1416,157 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
     return XR_SUCCESS;
 }
 
-void D3D11GraphicsEngine::ResetFrameTransientBufferPools() {
-    m_MainWorldIndirectPool.ResetFrame();
-    m_ShadowWorldIndirectPool.ResetFrame();
-    m_MainVobInstancingPool.ResetFrame();
-    m_ShadowVobInstancingPool.ResetFrame();
+void D3D11GraphicsEngine::WaitForTransientPoolFence( Microsoft::WRL::ComPtr<ID3D11Query>& fence, bool& fencePending ) {
+    if ( !fencePending ) {
+        return; // never used yet - nothing the GPU could still be reading
+    }
+
+    BOOL signaled = FALSE;
+    while ( GetContext()->GetData( fence.Get(), &signaled, sizeof( signaled ), 0 ) != S_OK ) {
+        Sleep( 0 ); // yield until the GPU catches up to the frame that last used this slot
+    }
+
+    fencePending = false;
+}
+
+void D3D11GraphicsEngine::BeginFrameTransientBufferPools() {
+    for ( FrameIndirectBufferPool* pool : { &m_MainWorldIndirectPool, &m_ShadowWorldIndirectPool } ) {
+        pool->FrameIndex = (pool->FrameIndex + 1) % kTransientPoolFrameCount;
+        auto& slot = pool->Slots[pool->FrameIndex];
+        WaitForTransientPoolFence( slot.Fence, slot.FencePending );
+        slot.Offset = 0;
+    }
+
+    for ( FrameInstancingBufferPool* pool : { &m_MainVobInstancingPool, &m_ShadowVobInstancingPool,
+        &m_MainNodeAttachmentInstancingPool, &m_ShadowNodeAttachmentInstancingPool } ) {
+        pool->FrameIndex = (pool->FrameIndex + 1) % kTransientPoolFrameCount;
+        auto& slot = pool->Slots[pool->FrameIndex];
+        WaitForTransientPoolFence( slot.Fence, slot.FencePending );
+        slot.Offset = 0;
+    }
+
     PerObjectMaterialInfoPooledBuffer->BeginFrame();
     DynamicConstantBufferPool->BeginFrame();
 }
 
-D3D11IndirectBuffer* D3D11GraphicsEngine::AcquireFrameIndirectBuffer( FrameIndirectBufferPool& pool,
+void D3D11GraphicsEngine::EndFrameTransientBufferPools() {
+    D3D11_QUERY_DESC queryDesc = {};
+    queryDesc.Query = D3D11_QUERY_EVENT;
+
+    for ( FrameIndirectBufferPool* pool : { &m_MainWorldIndirectPool, &m_ShadowWorldIndirectPool } ) {
+        auto& slot = pool->Slots[pool->FrameIndex];
+        if ( !slot.Buffer ) {
+            continue; // this slot was never allocated from - nothing to fence
+        }
+        if ( !slot.Fence ) {
+            GetDevice()->CreateQuery( &queryDesc, &slot.Fence );
+        }
+        GetContext()->End( slot.Fence.Get() );
+        slot.FencePending = true;
+    }
+
+    for ( FrameInstancingBufferPool* pool : { &m_MainVobInstancingPool, &m_ShadowVobInstancingPool,
+        &m_MainNodeAttachmentInstancingPool, &m_ShadowNodeAttachmentInstancingPool } ) {
+        auto& slot = pool->Slots[pool->FrameIndex];
+        if ( !slot.Buffer ) {
+            continue;
+        }
+        if ( !slot.Fence ) {
+            GetDevice()->CreateQuery( &queryDesc, &slot.Fence );
+        }
+        GetContext()->End( slot.Fence.Get() );
+        slot.FencePending = true;
+    }
+}
+
+D3D11GraphicsEngine::FrameIndirectAllocation D3D11GraphicsEngine::AcquireFrameIndirectAllocation( FrameIndirectBufferPool& pool,
     const void* initData,
     unsigned int sizeInBytes,
     const char* debugName ) {
     if ( sizeInBytes == 0 ) {
-        return nullptr;
+        return {};
     }
 
-    if ( pool.NextBuffer >= pool.Buffers.size() ) {
-        pool.Buffers.push_back( std::make_unique<D3D11IndirectBuffer>() );
-    }
+    auto& slot = pool.Slots[pool.FrameIndex];
 
-    auto& buffer = pool.Buffers[pool.NextBuffer++];
-    if ( !buffer ) {
-        buffer = std::make_unique<D3D11IndirectBuffer>();
-    }
-
-    const bool needsRecreate = buffer->GetSizeInBytes() < sizeInBytes;
-    if ( needsRecreate ) {
-        if ( buffer->Init( const_cast<void*>(initData), sizeInBytes,
+    // Grow with headroom (1.5x) so a one-off large frame doesn't force a resize every frame after.
+    const uint32_t requiredCapacity = slot.Offset + sizeInBytes;
+    if ( !slot.Buffer || slot.Capacity < requiredCapacity ) {
+        const uint32_t newCapacity = std::max<uint32_t>( requiredCapacity + requiredCapacity / 2, 4 * 1024 * 1024 );
+        auto newBuffer = std::make_unique<D3D11IndirectBuffer>();
+        if ( newBuffer->Init( nullptr, newCapacity,
             D3D11IndirectBuffer::B_INDEXBUFFER,
             D3D11IndirectBuffer::U_DYNAMIC,
             D3D11IndirectBuffer::CA_WRITE,
-            debugName ? debugName : "" ) != XR_SUCCESS ) {
-            return nullptr;
+            (debugName ? debugName : "") + std::to_string(pool.FrameIndex) ) != XR_SUCCESS ) {
+            return {};
         }
 
         if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog ) {
-            LogInfo() << "(Re-)created new frame indirect buffer: " << (debugName ? debugName : "<unnamed>");
+            LogInfo() << "(Re-)created frame indirect ring buffer: " << (debugName ? debugName : "<unnamed>") << pool.FrameIndex
+                << " (" << newCapacity << " bytes)";
         }
-    } else {
-        if ( buffer->UpdateBuffer( const_cast<void*>(initData), sizeInBytes ) != XR_SUCCESS ) {
-            return nullptr;
-        }
+
+        slot.Buffer = std::move( newBuffer );
+        slot.Capacity = newCapacity;
     }
 
-    return buffer.get();
+    void* mappedData;
+    UINT mappedSize;
+    if ( slot.Buffer->Map( D3D11IndirectBuffer::M_WRITE_NO_OVERWRITE, &mappedData, &mappedSize ) != XR_SUCCESS ) {
+        return {};
+    }
+    memcpy( static_cast<uint8_t*>(mappedData) + slot.Offset, initData, sizeInBytes );
+    slot.Buffer->Unmap();
+
+    FrameIndirectAllocation alloc;
+    alloc.Buffer = slot.Buffer.get();
+    alloc.OffsetInBytes = slot.Offset;
+
+    // 4-byte alignment is enough for D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS offsets.
+    slot.Offset = (slot.Offset + sizeInBytes + 3) & ~3u;
+
+    return alloc;
 }
 
-D3D11VertexBuffer* D3D11GraphicsEngine::AcquireFrameInstancingBuffer( FrameInstancingBufferPool& pool,
+D3D11GraphicsEngine::FrameInstancingAllocation D3D11GraphicsEngine::AcquireFrameInstancingAllocation( FrameInstancingBufferPool& pool,
     unsigned int sizeInBytes,
     const char* debugName ) {
     if ( sizeInBytes == 0 ) {
-        return nullptr;
+        return {};
     }
 
-    if ( pool.NextBuffer >= pool.Buffers.size() ) {
-        pool.Buffers.push_back( std::make_unique<D3D11VertexBuffer>() );
-    }
+    auto& slot = pool.Slots[pool.FrameIndex];
 
-    auto& buffer = pool.Buffers[pool.NextBuffer++];
-    if ( !buffer ) {
-        buffer = std::make_unique<D3D11VertexBuffer>();
-    }
-
-    if ( buffer->GetSizeInBytes() < sizeInBytes ) {
-        if ( buffer->Init( nullptr, sizeInBytes,
+    const uint32_t requiredCapacity = slot.Offset + sizeInBytes;
+    if ( !slot.Buffer || slot.Capacity < requiredCapacity ) {
+        const uint32_t newCapacity = std::max<uint32_t>( requiredCapacity + requiredCapacity / 2, 4 * 1024 * 1024 );
+        auto newBuffer = std::make_unique<D3D11VertexBuffer>();
+        if ( newBuffer->Init( nullptr, newCapacity,
             D3D11VertexBuffer::B_VERTEXBUFFER,
             D3D11VertexBuffer::U_DYNAMIC,
             D3D11VertexBuffer::CA_WRITE,
-            debugName ? debugName : "" ) != XR_SUCCESS ) {
-            return nullptr;
+            (debugName ? debugName : "FrameInstancingBuffer") + std::to_string(pool.FrameIndex) ) != XR_SUCCESS ) {
+            return {};
         }
+
         if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog ) {
-            LogInfo() << "(Re-)created new frame instancing buffer: " << (debugName ? debugName : "FrameInstancingBuffer");
+            LogInfo() << "(Re-)created frame instancing ring buffer: " << (debugName ? debugName : "FrameInstancingBuffer") << pool.FrameIndex
+                << " (" << newCapacity << " bytes)";
         }
-        SetDebugName( buffer->GetVertexBuffer().Get(), debugName ? debugName : "FrameInstancingBuffer" );
+
+        slot.Buffer = std::move( newBuffer );
+        slot.Capacity = newCapacity;
     }
 
-    return buffer.get();
+    FrameInstancingAllocation alloc;
+    alloc.Buffer = slot.Buffer.get();
+    alloc.OffsetInBytes = slot.Offset;
+
+    // Keep sub-allocations 16-byte aligned (VobInstanceInfo is a multiple of 16 bytes).
+    slot.Offset = (slot.Offset + sizeInBytes + 15) & ~15u;
+
+    return alloc;
 }
 static const char* beginFrameEventName = "Frame";
 
@@ -1517,7 +1583,7 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
     static GothicRendererSettings::E_RendererMode s_oldRendererModeForMSAA = rendererState.RendererSettings.RendererMode;
 
     rendererState.RendererInfo.RenderStage = STAGE_DRAW_UNKNOWN;
-    ResetFrameTransientBufferPools();
+    BeginFrameTransientBufferPools();
 
     DrawMultiIndexedInstancedIndirect = rendererState.RendererSettings.DebugSettings.FeatureSet.UseMDI
         ? ResolvedDrawMultiIndexedInstancedIndirect
@@ -1650,6 +1716,7 @@ XRESULT D3D11GraphicsEngine::OnEndFrame() {
     RenderedVobs.clear();
     GetPfxRenderer()->OnEndFrame();
     Engine::GAPI->ResetVobFrameStats();
+    EndFrameTransientBufferPools();
     PerObjectMaterialInfoPooledBuffer->EndFrame();
     DynamicConstantBufferPool->EndFrame();
     FrameMarkEnd( beginFrameEventName );
@@ -2812,9 +2879,10 @@ XRESULT D3D11GraphicsEngine::DrawInstanced(
     D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices,
     D3D11VertexBuffer* instanceData, unsigned int instanceDataStride,
     unsigned int numInstances, unsigned int vertexStride,
-    unsigned int startInstanceNum, unsigned int indexOffset ) {
+    unsigned int startInstanceNum, unsigned int indexOffset,
+    unsigned int instanceDataByteOffset ) {
     // Bind shader and pipeline flags
-    UINT offset[] = { 0, 0 };
+    UINT offset[] = { 0, instanceDataByteOffset };
     UINT uStride[] = { vertexStride, instanceDataStride };
     ID3D11Buffer* buffers[2] = {
         vb->GetVertexBuffer().Get(),
@@ -3318,7 +3386,15 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         const bool isMainOrGhost = (GetRenderingStage() == DES_MAIN || GetRenderingStage() == DES_GHOST);
         const bool requiresMorphMeshSameAsMain = (GetRenderingStage() == DES_MAIN || GetRenderingStage() == DES_GHOST || GetRenderingStage() == DES_Z_PRE_PASS);
 
-        // Collect all non-MorphMesh draws and handle MorphMesh/Cube per-draw 
+        // The Z-prepass and the main pass see the exact same set of vobs/attachments in the
+        // same frame, so let the main pass reuse the Z-prepass' instance buffer + batch list
+        // instead of rebuilding and re-uploading it a second time (mirrors the skeletal bone
+        // buffer reuse above).
+        const bool reuseNodeAttachments = isMainStage
+            && m_FrameGeometryCache.nodeAttachmentInstancesUploaded
+            && HasMatchingSkeletalVisOrder( vis, m_FrameGeometryCache.nodeAttachmentVisOrder );
+
+        // Collect all non-MorphMesh draws and handle MorphMesh/Cube per-draw
 
         struct NodeAttachmentDrawItem {
             uint64_t sortKey;
@@ -3512,116 +3588,138 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                         continue;
                     }
 
-                    // Non-MMS, non-cube: collect for instanced drawing
-                    NodeAttachmentInstanceData instData;
-                    instData.World = finalWorld;
-                    instData.PrevWorld = finalPrevWorld;
-                    instData.Color = modelColor;
-                    instData.Color.w = getFocusColor( vi->Vob, playerFocusVob );
+                    // Non-MMS, non-cube: collect for instanced drawing.
+                    // Skipped entirely when reusing the Z-prepass' already-built batch list below.
+                    if ( !reuseNodeAttachments ) {
+                        NodeAttachmentInstanceData instData;
+                        instData.World = finalWorld;
+                        instData.PrevWorld = finalPrevWorld;
+                        instData.Color = modelColor;
+                        instData.Color.w = getFocusColor( vi->Vob, playerFocusVob );
 
-                    for ( auto const& itm : mvi->Meshes ) {
-                        zCTexture* texture = nullptr;
-                        FrameGeometryCache::SortKeyBuilder sortKeyBase = { 0 };
-                        if ( itm.first ) {
-                            texture = itm.first->GetAniTexture();
-                            if ( !texture
-                                // don't draw certain textures in the shadow pass, like human teeth, those will never be visible anyway.
-                                || (isShadowPass && (strncmp(texture->__GetName().ToChar(), "HUM_TEETH_V0.TGA", std::size("HUM_TEETH_V0.TGA") - 1) == 0))
-                                || texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
-                                // need to cache in in order to know its alpha/material state
-                                continue;
+                        for ( auto const& itm : mvi->Meshes ) {
+                            zCTexture* texture = nullptr;
+                            FrameGeometryCache::SortKeyBuilder sortKeyBase = { 0 };
+                            if ( itm.first ) {
+                                texture = itm.first->GetAniTexture();
+                                if ( !texture
+                                    // don't draw certain textures in the shadow pass, like human teeth, those will never be visible anyway.
+                                    || (isShadowPass && (strncmp(texture->__GetName().ToChar(), "HUM_TEETH_V0.TGA", std::size("HUM_TEETH_V0.TGA") - 1) == 0))
+                                    || texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
+                                    // need to cache in in order to know its alpha/material state
+                                    continue;
+                                }
+                                if ( texture->HasAlphaChannel() ) {
+                                    sortKeyBase.withAlphaType( 1 );
+                                }
+                                sortKeyBase.withTexture(reinterpret_cast<size_t>(texture));
                             }
-                            if ( texture->HasAlphaChannel() ) {
-                                sortKeyBase.withAlphaType( 1 );
+
+                            for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
+                                FrameGeometryCache::SortKeyBuilder meshSortKey = sortKeyBase;
+                                meshSortKey.withMesh( itm.second[m]->meshId );
+
+                                instancedDrawItems.emplace_back( meshSortKey.sortKey, itm.second[m].get(), texture, itm.first, instData,
+                                    (texture && texture->HasAlphaChannel()) || (itm.first && itm.first->HasAlphaTest())
+                                );
                             }
-                            sortKeyBase.withTexture(reinterpret_cast<size_t>(texture));
-                        }
-
-                        for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
-                            FrameGeometryCache::SortKeyBuilder meshSortKey = sortKeyBase;
-                            meshSortKey.withMesh( itm.second[m]->meshId );
-
-                            instancedDrawItems.emplace_back( meshSortKey.sortKey, itm.second[m].get(), texture, itm.first, instData,
-                                (texture && texture->HasAlphaChannel()) || (itm.first && itm.first->HasAlphaTest())
-                            );
                         }
                     }
                 }
             }
         }
 
-        if ( instancedDrawItems.empty() )
-            return;
+        D3D11VertexBuffer* nodeAttachmentBuffer = nullptr;
+        uint32_t nodeAttachmentBufferOffset = 0;
+        static std::vector<FrameGeometryCache::CachedNodeAttachmentBatch> batches;
+        const std::vector<FrameGeometryCache::CachedNodeAttachmentBatch>* drawBatches = nullptr;
 
-        std::sort( instancedDrawItems.begin(), instancedDrawItems.end(),
-            []( const NodeAttachmentDrawItem& a, const NodeAttachmentDrawItem& b ) {
-                    return a.sortKey < b.sortKey;
-            } );
+        if ( reuseNodeAttachments ) {
+            if ( m_FrameGeometryCache.nodeAttachmentBatches.empty() )
+                return;
 
-        // Ensure instance buffer is large enough
-        const size_t neededBytes = instancedDrawItems.size() * sizeof( NodeAttachmentInstanceData );
-        if ( NodeAttachmentInstancingBuffer->GetSizeInBytes() < neededBytes ) {
-            if ( XR_FAILED == NodeAttachmentInstancingBuffer->Init(
-                nullptr, neededBytes,
-                D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_DYNAMIC, D3D11VertexBuffer::CA_WRITE ) ) {
-                LogError() << "Failed to create instance buffer for node attachments!";
+            nodeAttachmentBuffer = m_FrameGeometryCache.NodeAttachmentInstancingBuffer;
+            nodeAttachmentBufferOffset = m_FrameGeometryCache.NodeAttachmentInstancingBufferOffset;
+            drawBatches = &m_FrameGeometryCache.nodeAttachmentBatches;
+        } else {
+            if ( instancedDrawItems.empty() )
+                return;
+
+            std::sort( instancedDrawItems.begin(), instancedDrawItems.end(),
+                []( const NodeAttachmentDrawItem& a, const NodeAttachmentDrawItem& b ) {
+                        return a.sortKey < b.sortKey;
+                } );
+
+            const unsigned int neededBytes = static_cast<unsigned int>(instancedDrawItems.size() * sizeof( NodeAttachmentInstanceData ));
+            FrameInstancingBufferPool& nodeAttachmentPool = isShadowPass
+                ? m_ShadowNodeAttachmentInstancingPool
+                : m_MainNodeAttachmentInstancingPool;
+            FrameInstancingAllocation nodeAttachmentAlloc = AcquireFrameInstancingAllocation( nodeAttachmentPool, neededBytes,
+                isShadowPass ? "ShadowNodeAttachmentInstancingBuffer" : "MainNodeAttachmentInstancingBuffer" );
+            nodeAttachmentBuffer = nodeAttachmentAlloc.Buffer;
+            if ( !nodeAttachmentBuffer ) {
+                LogError() << "Failed to acquire node attachment instancing buffer.";
                 return;
             }
-            SetDebugName( NodeAttachmentInstancingBuffer->GetVertexBuffer().Get(), "NodeAttachmentInstancingBuffer" );
-        }
+            nodeAttachmentBufferOffset = nodeAttachmentAlloc.OffsetInBytes;
 
-        // Build batch list and upload instance data
-        struct InstanceBatch {
-            MeshInfo* mesh;
-            zCTexture* texture;
-            zCMaterial* material;
-            unsigned int startInstance;
-            unsigned int instanceCount;
-            bool needAlpha;
-        };
+            // Build batch list and upload instance data
+            batches.clear();
 
-        static std::vector<InstanceBatch> batches;
-        batches.clear();
-
-        void* mappedData;
-        UINT mappedSize;
-        if ( XR_SUCCESS != NodeAttachmentInstancingBuffer->Map( D3D11VertexBuffer::M_WRITE_DISCARD,
-            &mappedData, &mappedSize ) ) {
-            LogError() << "Failed to map instance buffer for node attachments!";
-            return;
-        }
-
-        auto* destData = static_cast<NodeAttachmentInstanceData*>(mappedData);
-        unsigned int currentIdx = 0;
-
-        for ( size_t i = 0; i < instancedDrawItems.size(); ) {
-            // Find the end of this batch (same mesh + texture)
-            size_t batchStart = i;
-            auto batchMesh = instancedDrawItems[i].mesh;
-            auto meshId = batchMesh->meshId;
-            zCTexture* batchTex = instancedDrawItems[i].texture;
-            zCMaterial* batchMat = instancedDrawItems[i].material;
-
-            bool needAlpha = false;
-            while ( i < instancedDrawItems.size()
-                    && meshId > 0 // assume meshId 0 means "not batch-able"
-                    && instancedDrawItems[i].mesh->meshId == meshId
-                    && instancedDrawItems[i].texture == batchTex ) {
-                // Some of them have needAlpha false, even though they share the same texture!
-                // thus we now just walk all batch items and assume if one needs alpha, all do.
-                needAlpha |= instancedDrawItems[i].needAlpha;
-                destData[currentIdx] = instancedDrawItems[i].instanceData;
-                ++currentIdx;
-                ++i;
+            void* mappedData;
+            UINT mappedSize;
+            if ( XR_SUCCESS != nodeAttachmentBuffer->Map( D3D11VertexBuffer::M_WRITE_NO_OVERWRITE,
+                &mappedData, &mappedSize ) ) {
+                LogError() << "Failed to map instance buffer for node attachments!";
+                return;
             }
 
-            batches.push_back( { batchMesh, batchTex, batchMat,
-                static_cast<unsigned int>(batchStart),
-                static_cast<unsigned int>(i - batchStart),
-                needAlpha } );
+            auto* destData = reinterpret_cast<NodeAttachmentInstanceData*>(static_cast<byte*>(mappedData) + nodeAttachmentBufferOffset);
+            unsigned int currentIdx = 0;
+
+            for ( size_t i = 0; i < instancedDrawItems.size(); ) {
+                // Find the end of this batch (same mesh + texture)
+                size_t batchStart = i;
+                auto batchMesh = instancedDrawItems[i].mesh;
+                auto meshId = batchMesh->meshId;
+                zCTexture* batchTex = instancedDrawItems[i].texture;
+                zCMaterial* batchMat = instancedDrawItems[i].material;
+
+                bool needAlpha = false;
+                while ( i < instancedDrawItems.size()
+                        && meshId > 0 // assume meshId 0 means "not batch-able"
+                        && instancedDrawItems[i].mesh->meshId == meshId
+                        && instancedDrawItems[i].texture == batchTex ) {
+                    // Some of them have needAlpha false, even though they share the same texture!
+                    // thus we now just walk all batch items and assume if one needs alpha, all do.
+                    needAlpha |= instancedDrawItems[i].needAlpha;
+                    destData[currentIdx] = instancedDrawItems[i].instanceData;
+                    ++currentIdx;
+                    ++i;
+                }
+
+                batches.push_back( { batchMesh, batchTex, batchMat,
+                    static_cast<unsigned int>(batchStart),
+                    static_cast<unsigned int>(i - batchStart),
+                    needAlpha } );
+            }
+
+            nodeAttachmentBuffer->Unmap();
+            drawBatches = &batches;
+
+            if ( isMainReuseStage ) {
+                m_FrameGeometryCache.nodeAttachmentInstancesUploaded = true;
+                m_FrameGeometryCache.nodeAttachmentVisOrder = vis;
+                m_FrameGeometryCache.nodeAttachmentBatches = batches;
+                m_FrameGeometryCache.NodeAttachmentInstancingBuffer = nodeAttachmentBuffer;
+                m_FrameGeometryCache.NodeAttachmentInstancingBufferOffset = nodeAttachmentBufferOffset;
+            }
         }
 
-        NodeAttachmentInstancingBuffer->Unmap();
+        if ( !nodeAttachmentBuffer ) {
+            LogError() << "Missing node attachment instancing buffer.";
+            return;
+        }
 
         // Draw calls
 
@@ -3638,9 +3736,9 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         Context->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
         // Bind instance buffer to slot 1 (persists across batches)
-        UINT instOffset = 0;
+        UINT instOffset = nodeAttachmentBufferOffset;
         UINT instStride = sizeof( NodeAttachmentInstanceData );
-        Context->IASetVertexBuffers( 1, 1, NodeAttachmentInstancingBuffer->GetVertexBuffer().GetAddressOf(), &instStride, &instOffset );
+        Context->IASetVertexBuffers( 1, 1, nodeAttachmentBuffer->GetVertexBuffer().GetAddressOf(), &instStride, &instOffset );
 
         wantShader = true;
 
@@ -3670,12 +3768,12 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         // otherwise shadows of streetlamps are not accurate
         const bool needsAlphaTesting = isShadowPass || isZPrepass;
 
-        for ( const auto& batch : batches ) {
-            MeshInfo* mi = batch.mesh;
+        for ( const auto& batch : *drawBatches ) {
+            MeshInfo* mi = batch.Mesh;
 
             MaterialInfo* info = nullptr;
-            if ( batch.texture ) {
-                info = Engine::GAPI->GetMaterialInfoFrom( batch.texture );
+            if ( batch.Texture ) {
+                info = Engine::GAPI->GetMaterialInfoFrom( batch.Texture );
                 if ( needsAlphaTesting && info->MaterialType == MaterialInfo::MT_FullAlpha ) {
                     continue;
                 }
@@ -3683,14 +3781,14 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 
             // Bind texture for non-shadow passes
             if ( needsAlphaTesting ) {
-                if ( batch.needAlpha ) {
-                    if ( !batch.texture || batch.texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
+                if ( batch.NeedAlpha ) {
+                    if ( !batch.Texture || batch.Texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
                         // can't do alpha without a texture
                         continue;
                     }
-                    if ( lastBatchTex != batch.texture ) {
-                        batch.texture->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
-                        lastBatchTex = batch.texture;
+                    if ( lastBatchTex != batch.Texture ) {
+                        batch.Texture->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
+                        lastBatchTex = batch.Texture;
                     }
                     SetActivePixelShader( PShaderID::PS_DiffuseAlphaTestShadows );
                     if ( ActivePS.get() != lastPs ) {
@@ -3702,17 +3800,17 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                     lastPs = nullptr;
                     GetContext()->PSSetShader( nullptr, nullptr, 0 );
                 }
-            } else if ( wantShader && batch.texture && batch.texture != lastBatchTex ) {
-                if ( !BindTextureNRFX( batch.texture, isMainOrGhost, info != lastMaterialInfo ) ) {
+            } else if ( wantShader && batch.Texture && batch.Texture != lastBatchTex ) {
+                if ( !BindTextureNRFX( batch.Texture, isMainOrGhost, info != lastMaterialInfo ) ) {
                     continue;
                 }
                 lastMaterialInfo = info;
-                lastBatchTex = batch.texture;
+                lastBatchTex = batch.Texture;
             }
 
             // Set up alpha test state from material
-            if ( batch.material ) {
-                if ( batch.material->GetAlphaFunc() == zRND_ALPHA_FUNC_TEST )
+            if ( batch.Material ) {
+                if ( batch.Material->GetAlphaFunc() == zRND_ALPHA_FUNC_TEST )
                     graphicsState.FF_GSwitches |= GSWITCH_ALPHAREF;
                 else
                     graphicsState.FF_GSwitches &= ~GSWITCH_ALPHAREF;
@@ -3741,16 +3839,16 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             // Draw instanced
             if ( mi->MeshIndexBuffer ) {
                 const unsigned int numIndices = static_cast<unsigned int>(mi->Indices.size());
-                Context->DrawIndexedInstanced( numIndices, batch.instanceCount, 0, 0, batch.startInstance );
+                Context->DrawIndexedInstanced( numIndices, batch.InstanceCount, 0, 0, batch.StartInstance );
 
                 Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
-                    (numIndices / 3) * batch.instanceCount;
+                    (numIndices / 3) * batch.InstanceCount;
             } else {
                 const unsigned int numVertices = static_cast<unsigned int>(mi->Vertices.size());
-                Context->DrawInstanced( numVertices, batch.instanceCount, 0, batch.startInstance );
+                Context->DrawInstanced( numVertices, batch.InstanceCount, 0, batch.StartInstance );
 
                 Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
-                    (numVertices / 3) * batch.instanceCount;
+                    (numVertices / 3) * batch.InstanceCount;
             }
         }
 
@@ -6459,18 +6557,18 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<W
         }
 
         const size_t requiredSize = opaqueDrawArgs.size() * sizeof( D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS );
-        D3D11IndirectBuffer* shadowIndirectBuffer = AcquireFrameIndirectBuffer( m_ShadowWorldIndirectPool,
+        FrameIndirectAllocation shadowIndirectAlloc = AcquireFrameIndirectAllocation( m_ShadowWorldIndirectPool,
             opaqueDrawArgs.data(),
             static_cast<unsigned int>( requiredSize ),
             "ShadowWorldMeshIndirectArgs" );
 
-        if ( shadowIndirectBuffer ) {
+        if ( shadowIndirectAlloc.Buffer ) {
             Context->IASetIndexBuffer( wrappedWorldMesh->MeshShadowIndexBuffer->GetVertexBuffer().Get(), DXGI_FORMAT_R32_UINT, 0 );
 
             DrawMultiIndexedInstancedIndirect( Context.Get(),
                 static_cast<unsigned int>( opaqueDrawArgs.size() ),
-                shadowIndirectBuffer->GetIndirectBuffer().Get(),
-                0,
+                shadowIndirectAlloc.Buffer->GetIndirectBuffer().Get(),
+                shadowIndirectAlloc.OffsetInBytes,
                 sizeof( D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS ) );
         }
     }
@@ -6831,11 +6929,15 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         const size_t shadowInstanceCount = vobs.empty() ? 1 : vobs.size();
         const unsigned int shadowInstancingBytes = static_cast<unsigned int>(
             shadowInstanceCount * sizeof( VobInstanceInfo ));
-        D3D11VertexBuffer* shadowInstancingBuffer = AcquireFrameInstancingBuffer(
+        FrameInstancingAllocation shadowInstancingAlloc = AcquireFrameInstancingAllocation(
             m_ShadowVobInstancingPool, shadowInstancingBytes, "ShadowVobInstancingBuffer" );
+        D3D11VertexBuffer* shadowInstancingBuffer = shadowInstancingAlloc.Buffer;
+        int shadowInstancingMapFlag = D3D11VertexBuffer::M_WRITE_NO_OVERWRITE;
         if ( !shadowInstancingBuffer ) {
             LogError() << "Failed to acquire shadow vob instancing buffer.";
             shadowInstancingBuffer = DynamicInstancingBuffer.get();
+            shadowInstancingAlloc.OffsetInBytes = 0;
+            shadowInstancingMapFlag = D3D11VertexBuffer::M_WRITE_DISCARD;
             if ( shadowInstancingBuffer && shadowInstancingBuffer->GetSizeInBytes() < shadowInstancingBytes ) {
                 shadowInstancingBuffer->Init( nullptr, shadowInstancingBytes,
                     D3D11VertexBuffer::B_VERTEXBUFFER,
@@ -6860,12 +6962,12 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
         byte* data;
         UINT size;
-        if ( SUCCEEDED( shadowInstancingBuffer->Map( D3D11VertexBuffer::M_WRITE_DISCARD,
+        if ( shadowInstancingBuffer && SUCCEEDED( shadowInstancingBuffer->Map( shadowInstancingMapFlag,
             reinterpret_cast<void**>(&data), &size ) ) ) {
             UINT loc = 0;
             for ( auto const& staticMeshVisual : activeVisuals ) {
                 staticMeshVisual->StartInstanceNum = loc;
-                memcpy( data + loc * sizeof( VobInstanceInfo ), staticMeshVisual->Instances.data(),
+                memcpy( data + shadowInstancingAlloc.OffsetInBytes + loc * sizeof( VobInstanceInfo ), staticMeshVisual->Instances.data(),
                     sizeof( VobInstanceInfo ) * staticMeshVisual->Instances.size() );
                 loc += staticMeshVisual->Instances.size();
             }
@@ -6892,7 +6994,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             BindDynamicCBToVertexShader(windBuffer, AllocateDynamicCB(&g_windBuffer));
         }
 
-        UINT dynOffset[] = { 0 };
+        UINT dynOffset[] = { shadowInstancingAlloc.OffsetInBytes };
         UINT dynuStride[] = { sizeof( VobInstanceInfo ) };
 
         ID3D11Buffer* buffers[1] = {
@@ -7457,8 +7559,9 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
 
                 const unsigned int requiredBytes = (totalInstances > 0 ? totalInstances : 1u)
                     * static_cast<unsigned int>(sizeof( VobInstanceInfo ));
-                instancingBuffer = AcquireFrameInstancingBuffer( m_MainVobInstancingPool,
+                FrameInstancingAllocation mainInstancingAlloc = AcquireFrameInstancingAllocation( m_MainVobInstancingPool,
                     requiredBytes, "MainVobInstancingBuffer" );
+                instancingBuffer = mainInstancingAlloc.Buffer;
                 if ( !instancingBuffer ) {
                     LogError() << "Failed to acquire main vob instancing buffer.";
                     return XR_FAILED;
@@ -7467,10 +7570,10 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                 byte* data;
                 UINT size;
 
-                if ( SUCCEEDED( instancingBuffer->Map( D3D11VertexBuffer::M_WRITE_DISCARD,
+                if ( SUCCEEDED( instancingBuffer->Map( D3D11VertexBuffer::M_WRITE_NO_OVERWRITE,
                     reinterpret_cast<void**>(&data), &size ) ) ) {
                     for ( auto const& cv : cache.vobVisuals ) {
-                        memcpy( data + cv.StartInstanceNum * sizeof( VobInstanceInfo ),
+                        memcpy( data + mainInstancingAlloc.OffsetInBytes + cv.StartInstanceNum * sizeof( VobInstanceInfo ),
                             cv.Instances.data(),
                             sizeof( VobInstanceInfo ) * cv.Instances.size() );
                     }
@@ -7480,6 +7583,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                 }
 
                 cache.MainVobInstancingBuffer = instancingBuffer;
+                cache.MainVobInstancingBufferOffset = mainInstancingAlloc.OffsetInBytes;
 
                 size_t numMeshesToDraw = 0;
                 for ( auto const& cv : cache.vobVisuals ) {
@@ -7779,7 +7883,8 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                     DrawInstanced( meshInfo->GetMeshVertexBuffer(), meshInfo->GetMeshIndexBuffer(),
                         meshInfo->Indices.size(), instancingBuffer,
                         sizeof( VobInstanceInfo ), cachedVisual->Instances.size(),
-                        sizeof( ExVertexStructGPU ), cachedVisual->StartInstanceNum );
+                        sizeof( ExVertexStructGPU ), cachedVisual->StartInstanceNum, 0,
+                        cache.MainVobInstancingBufferOffset );
                 }
             }
             if ( !isZPrepass ) {
@@ -7998,7 +8103,8 @@ XRESULT D3D11GraphicsEngine::DrawFrameAlphaMeshes()
             DrawInstanced( mi->GetMeshVertexBuffer(), mi->GetMeshIndexBuffer(), mi->Indices.size(),
                 instancingBuffer, sizeof( VobInstanceInfo ),
                 instances.size(), sizeof( ExVertexStructGPU ),
-                alphaMesh.StartInstanceNum );
+                alphaMesh.StartInstanceNum, 0,
+                m_FrameGeometryCache.MainVobInstancingBufferOffset );
 
             // Reset visual
             vi->StartNewFrame();
