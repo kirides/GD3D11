@@ -100,7 +100,7 @@ struct MeshInfo {
     D3D11VertexBuffer* GetMeshPositionBuffer() const { return MeshPositionBuffer.get(); }
     D3D11VertexBuffer* GetMeshIndexBuffer() const { return MeshIndexBuffer.get(); }
     D3D11VertexBuffer* GetMeshShadowIndexBuffer() const { return MeshShadowIndexBuffer.get(); }
-    
+
     std::unique_ptr<D3D11VertexBuffer> MeshVertexBuffer;
     // Optional position-only (float3, 12 bytes) copy of MeshVertexBuffer, in the same vertex
     // ordering. Bound for opaque depth/shadow passes to cut vertex-fetch bandwidth (~3.6x vs the

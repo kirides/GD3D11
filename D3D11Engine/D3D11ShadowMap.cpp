@@ -1645,15 +1645,17 @@ void XM_CALLCONV D3D11ShadowMap::RenderShadowCube(
     m_context->RSSetViewports( 1, &vp );
 
     bool useLayeredPath = false;
+    bool usesCubeGeometryShader = false;
     if ( !face.Get() ) {
         if ( Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseLayeredRendering ) {
             useLayeredPath = true;
             face = targetCube.GetDepthStencilView().Get();
 
             // Set layered shader
-            graphicsEngine->SetActiveVertexShader( VShaderID::VS_ExLayered );
+            graphicsEngine->SetActiveVertexShader( VShaderID::VS_ExLayeredPacked );
         } else {
             // Set cubemap shader
+            usesCubeGeometryShader = true;
             graphicsEngine->SetActiveGShader( GShaderID::GS_Cubemap );
             graphicsEngine->GetActiveGS().get()->Apply();
             face = targetCube.GetDepthStencilView().Get();
@@ -1692,7 +1694,7 @@ void XM_CALLCONV D3D11ShadowMap::RenderShadowCube(
             renderedMobs, worldMeshCache, casterMask, ignoreVob );
     } else {
         graphicsEngine->DrawWorldAround( position, range, cullFront, indoor, noNPCs, renderedVobs,
-            renderedMobs, worldMeshCache, casterMask, ignoreVob );
+            renderedMobs, worldMeshCache, casterMask, ignoreVob, usesCubeGeometryShader );
     }
 
     // Restore state

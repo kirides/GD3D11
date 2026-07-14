@@ -166,19 +166,17 @@ namespace {
         meshInfo->HasBoundingBox = true;
     }
 
-    /** Builds this mesh's GPU buffers from its collected RawVertices (see ConvertWorldMesh).
+    /** Builds this mesh's index data from its collected RawVertices (see ConvertWorldMesh).
         On return RawVertices is cleared; the final full-attribute, indexed & optimized vertex
-        array is written to outFullVertices instead, so the caller can still use it (e.g. to
-        assemble the wrapped world mesh) without keeping it around on WorldMeshInfo itself. */
+        array is written to outFullVertices instead, so the caller can still use it to assemble
+        the wrapped world mesh. WorldMeshInfo no longer owns a private GPU buffer - it's drawn
+        from the wrapped world mesh via BaseIndexLocation/BaseShadowIndexLocation instead - so
+        only mesh->Indices/ShadowIndices and the CPU-side scratch arrays below are kept. */
     void BuildWorldMeshBuffers( WorldMeshInfo* mesh, std::vector<ExVertexStruct>& outFullVertices ) {
         ZoneScoped;
         WorldConverter::IndexVertices( mesh->RawVertices.data(), static_cast<unsigned int>(mesh->RawVertices.size()), outFullVertices, mesh->Indices );
         mesh->RawVertices.clear();
         mesh->RawVertices.shrink_to_fit();
-
-        // Create the buffers
-        Engine::GraphicsEngine->CreateVertexBuffer( mesh->MeshVertexBuffer );
-        Engine::GraphicsEngine->CreateVertexBuffer( mesh->MeshIndexBuffer );
 
         // Generate normals
         WorldConverter::GenerateVertexNormals( outFullVertices, mesh->Indices );
@@ -187,25 +185,22 @@ namespace {
         // because they move the whole ExVertexStruct stride, including Tangent).
         GenerateTangentsImpl( outFullVertices, mesh->Indices );
 
-        // Optimize faces
-        mesh->MeshVertexBuffer->OptimizeFaces( &mesh->Indices[0],
+        // Reorder for GPU cache locality and derive the shadow-index remap. Neither call reads
+        // or writes any state on the D3D11VertexBuffer instance itself, so a throwaway scratch
+        // object (never Init()'d) is enough - this mesh has no private GPU buffer to run it on.
+        D3D11VertexBuffer optimizerScratch;
+        optimizerScratch.OptimizeFaces( &mesh->Indices[0],
             reinterpret_cast<byte*>(&outFullVertices[0]),
             mesh->Indices.size(),
             outFullVertices.size(),
             sizeof( ExVertexStruct ) );
 
-        // Then optimize vertices
-        mesh->MeshVertexBuffer->OptimizeVertices( &mesh->Indices[0],
+        optimizerScratch.OptimizeVertices( &mesh->Indices[0],
             reinterpret_cast<byte*>(&outFullVertices[0]),
             mesh->Indices.size(),
             outFullVertices.size(),
             sizeof( ExVertexStruct ),
             &mesh->ShadowIndices );
-
-        // Init and fill them
-        mesh->MeshVertexBuffer->Init( &outFullVertices[0], outFullVertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
-        mesh->MeshIndexBuffer->Init( &mesh->Indices[0], mesh->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
-        CreateShadowIndexBuffer( mesh );
 
         // Keep only what later consumers need long-term: positions for raycasting/mesh tracing,
         // and position+UV0 for point-light shadow range-culling (WorldMeshCollectPolyRange).
@@ -595,7 +590,7 @@ XRESULT WorldConverter::LoadWorldMeshFromFile( const std::string& file, std::map
 
     // Full-attribute vertex data per mesh (index-aligned with allMeshes), needed below to
     // assemble the wrapped world mesh; BuildWorldMeshBuffers only keeps position (and
-    // position+UV0) data on the WorldMeshInfo itself once its own GPU buffers are built.
+    // position+UV0) data on the WorldMeshInfo itself - it no longer owns a private GPU buffer.
     std::vector<std::vector<ExVertexStruct>> allMeshFullVertices( allMeshes.size() );
     for ( size_t i = 0; i < allMeshes.size(); ++i ) {
         BuildWorldMeshBuffers( allMeshes[i], allMeshFullVertices[i] );
@@ -917,7 +912,7 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
     const size_t total = allMeshes.size();
     // Full-attribute vertex data per mesh (index-aligned with allMeshes), needed below to
     // assemble the wrapped world mesh. BuildWorldMeshBuffers only keeps position (and
-    // position+UV0) data on the WorldMeshInfo itself once its own GPU buffers are built.
+    // position+UV0) data on the WorldMeshInfo itself - it no longer owns a private GPU buffer.
     std::vector<std::vector<ExVertexStruct>> allMeshFullVertices( total );
     if ( total > 0 ) {
         const size_t numThreads = std::max<size_t>( 1, Engine::WorkerThreadPool->getNumThreads() );
