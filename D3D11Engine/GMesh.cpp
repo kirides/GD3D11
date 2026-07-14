@@ -185,11 +185,17 @@ XRESULT GMesh::LoadCached( const std::string& file ) {
         for ( int i = 0; i < numSubmeshes; i++ ) {
             MeshInfo* mi = new MeshInfo;
 
-            // Read vertices
+            // Read vertices. The cache stores full ExVertexStruct data, but MeshInfo::Vertices
+            // is position-only (used for raycasting/mesh tracing); read into a temporary buffer
+            // and keep only the positions.
             int numVertices;
             fread( &numVertices, sizeof( numVertices ), 1, f );
+            std::vector<ExVertexStruct> fullVertices( numVertices );
+            fread( fullVertices.data(), sizeof( ExVertexStruct ) * numVertices, 1, f );
             mi->Vertices.resize( numVertices );
-            fread( &mi->Vertices[0], sizeof( ExVertexStruct ) * numVertices, 1, f );
+            for ( int v = 0; v < numVertices; ++v ) {
+                mi->Vertices[v].Position = fullVertices[v].Position;
+            }
 
             // Read indices
             int numIndices;

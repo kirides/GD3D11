@@ -103,6 +103,23 @@ namespace {
         MikkVert( ctx, f, v ).Tangent = float4( tangent[0], tangent[1], tangent[2], sign );
     }
 
+    void CopyPositionVerticies( const std::vector<ExVertexStruct>& ex, std::vector<BasicVertexStruct>& vxPos ) {
+        vxPos.resize( ex.size() );
+        for ( size_t i = 0; i < ex.size(); i++ ) {
+            vxPos[i].Position = ex[i].Position;
+        }
+    }
+
+    /** Position+UV0 copy, used for the small range-limited shadow-caster meshes rebuilt from
+        WorldMeshInfo long after the initial GPU upload (see WorldMeshCollectPolyRange). */
+    void CopyShadowVerticies( const std::vector<ExVertexStruct>& ex, std::vector<SimpleObjectVertexStruct>& vxShadow ) {
+        vxShadow.resize( ex.size() );
+        for ( size_t i = 0; i < ex.size(); i++ ) {
+            vxShadow[i].Position = ex[i].Position;
+            vxShadow[i].TexCoord = ex[i].TexCoord;
+        }
+    }
+
     /** Fills ExVertexStruct::Tangent for an indexed mesh using MikkTSpace. */
     void GenerateTangentsImpl( std::vector<ExVertexStruct>& vertices, const std::vector<VERTEX_INDEX>& indices ) {
         if ( indices.size() < 3 || vertices.empty() ) {
@@ -149,46 +166,53 @@ namespace {
         meshInfo->HasBoundingBox = true;
     }
 
-    void BuildWorldMeshBuffers( WorldMeshInfo* mesh ) {
+    /** Builds this mesh's GPU buffers from its collected RawVertices (see ConvertWorldMesh).
+        On return RawVertices is cleared; the final full-attribute, indexed & optimized vertex
+        array is written to outFullVertices instead, so the caller can still use it (e.g. to
+        assemble the wrapped world mesh) without keeping it around on WorldMeshInfo itself. */
+    void BuildWorldMeshBuffers( WorldMeshInfo* mesh, std::vector<ExVertexStruct>& outFullVertices ) {
         ZoneScoped;
-        std::vector<ExVertexStruct> indexedVertices;
-        std::vector<VERTEX_INDEX> indices;
-        WorldConverter::IndexVertices( &mesh->Vertices[0], mesh->Vertices.size(), indexedVertices, indices );
-
-        mesh->Vertices = std::move( indexedVertices );
-        mesh->Indices = std::move( indices );
-        ComputeWorldMeshBounds( mesh );
+        WorldConverter::IndexVertices( mesh->RawVertices.data(), static_cast<unsigned int>(mesh->RawVertices.size()), outFullVertices, mesh->Indices );
+        mesh->RawVertices.clear();
+        mesh->RawVertices.shrink_to_fit();
 
         // Create the buffers
         Engine::GraphicsEngine->CreateVertexBuffer( mesh->MeshVertexBuffer );
         Engine::GraphicsEngine->CreateVertexBuffer( mesh->MeshIndexBuffer );
 
         // Generate normals
-        WorldConverter::GenerateVertexNormals( mesh->Vertices, mesh->Indices );
+        WorldConverter::GenerateVertexNormals( outFullVertices, mesh->Indices );
 
         // Precompute MikkTSpace tangents (after final normals; survives the remap passes below
         // because they move the whole ExVertexStruct stride, including Tangent).
-        GenerateTangentsImpl(mesh->Vertices, mesh->Indices );
+        GenerateTangentsImpl( outFullVertices, mesh->Indices );
 
         // Optimize faces
         mesh->MeshVertexBuffer->OptimizeFaces( &mesh->Indices[0],
-            reinterpret_cast<byte*>(&mesh->Vertices[0]),
+            reinterpret_cast<byte*>(&outFullVertices[0]),
             mesh->Indices.size(),
-            mesh->Vertices.size(),
+            outFullVertices.size(),
             sizeof( ExVertexStruct ) );
 
         // Then optimize vertices
         mesh->MeshVertexBuffer->OptimizeVertices( &mesh->Indices[0],
-            reinterpret_cast<byte*>(&mesh->Vertices[0]),
+            reinterpret_cast<byte*>(&outFullVertices[0]),
             mesh->Indices.size(),
-            mesh->Vertices.size(),
+            outFullVertices.size(),
             sizeof( ExVertexStruct ),
             &mesh->ShadowIndices );
 
         // Init and fill them
-        mesh->MeshVertexBuffer->Init( &mesh->Vertices[0], mesh->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
+        mesh->MeshVertexBuffer->Init( &outFullVertices[0], outFullVertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
         mesh->MeshIndexBuffer->Init( &mesh->Indices[0], mesh->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
         CreateShadowIndexBuffer( mesh );
+
+        // Keep only what later consumers need long-term: positions for raycasting/mesh tracing,
+        // and position+UV0 for point-light shadow range-culling (WorldMeshCollectPolyRange).
+        CopyPositionVerticies( outFullVertices, mesh->Vertices );
+        CopyShadowVerticies( outFullVertices, mesh->ShadowVertices );
+
+        ComputeWorldMeshBounds( mesh );
     }
 
     /** Some authored VOB meshes (eg. tree/foliage assets) contain wedges with a
@@ -266,6 +290,11 @@ void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float ra
     MeshInfo* opaqueMesh = new MeshInfo;
     outMeshes.emplace_back(opaqueKey, opaqueMesh);
 
+    // Position+UV0 scratch per output mesh (index-aligned with outMeshes). WorldMeshInfo no
+    // longer keeps full per-vertex attributes around, so range-culled triangles are collected
+    // in this slim format and only expanded to a full ExVertexStruct right before GPU upload.
+    std::vector<std::vector<SimpleObjectVertexStruct>> collectedVerts( 1 );
+
     FXMVECTOR xmPosition = XMLoadFloat3( position.toXMFLOAT3() );
 
 
@@ -280,39 +309,44 @@ void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float ra
             if ( len < 2 ) {
                 // Check all polys from all meshes
                 for ( auto const& it : ity.second.WorldMeshes ) {
-                    MeshInfo* m = nullptr;
+                    size_t mIdx = 0;
 
                     // Create new mesh-part for alphatested surfaces
                     if ( it.first.Texture && it.first.Texture->HasAlphaChannel() ) {
-                        for (auto [key, msh] : outMeshes) {
-                            if (it.first == key) {
-                                m = msh;
+                        bool found = false;
+                        for ( size_t k = 0; k < outMeshes.size(); ++k ) {
+                            if ( it.first == outMeshes[k].first ) {
+                                mIdx = k;
+                                found = true;
                                 break;
                             }
                         }
-                        if ( m == nullptr ) {
-                            m = new MeshInfo;
-                            outMeshes.emplace_back(it.first, m);
+                        if ( !found ) {
+                            outMeshes.emplace_back( it.first, new MeshInfo );
+                            collectedVerts.emplace_back();
+                            mIdx = outMeshes.size() - 1;
                         }
                     } else {
                         // Just use the same mesh for opaque surfaces
-                        m = opaqueMesh;
+                        mIdx = 0;
                     }
 
+                    auto& vxOut = collectedVerts[mIdx];
+
                     // reserve required size beforehand to avoid multiple reallocations
-                    m->Vertices.reserve( it.second->Vertices.size() );
+                    vxOut.reserve( vxOut.size() + it.second->ShadowVertices.size() );
                     for ( unsigned int i = 0; i < it.second->Indices.size(); i += 3 ) {
                         // Check if one of them is in range
 
-                        XMVECTOR v0 = XMLoadFloat3( it.second->Vertices[it.second->Indices[i + 0]].Position.toXMFLOAT3() );
-                        XMVECTOR v1 = XMLoadFloat3( it.second->Vertices[it.second->Indices[i + 1]].Position.toXMFLOAT3() );
-                        XMVECTOR v2 = XMLoadFloat3( it.second->Vertices[it.second->Indices[i + 2]].Position.toXMFLOAT3() );
+                        XMVECTOR v0 = XMLoadFloat3( it.second->ShadowVertices[it.second->Indices[i + 0]].Position.toXMFLOAT3() );
+                        XMVECTOR v1 = XMLoadFloat3( it.second->ShadowVertices[it.second->Indices[i + 1]].Position.toXMFLOAT3() );
+                        XMVECTOR v2 = XMLoadFloat3( it.second->ShadowVertices[it.second->Indices[i + 2]].Position.toXMFLOAT3() );
 
                         if ( XMVector3Less( XMVector3LengthSq( XMVectorSubtract( xmPosition, v0 ) ), vRange2 ) ||
                             XMVector3Less( XMVector3LengthSq( XMVectorSubtract( xmPosition, v1 ) ), vRange2 ) ||
                             XMVector3Less( XMVector3LengthSq( XMVectorSubtract( xmPosition, v2 ) ), vRange2 ) ) {
                             for ( int v = 0; v < 3; v++ )
-                                m->Vertices.emplace_back( it.second->Vertices[it.second->Indices[i + v]] );
+                                vxOut.emplace_back( it.second->ShadowVertices[it.second->Indices[i + v]] );
                         }
                     }
                 }
@@ -320,48 +354,66 @@ void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float ra
         }
     }
 
-    // Index all meshes
+    // Index all meshes and build their GPU buffers
     for ( size_t i = 0; i < outMeshes.size(); ) {
-        auto it = outMeshes[i];
+        MeshInfo* m = outMeshes[i].second;
+        std::vector<SimpleObjectVertexStruct>& vxSrc = collectedVerts[i];
 
-        if ( it.second->Vertices.empty() ) {
-            delete it.second;
+        if ( vxSrc.empty() ) {
+            delete m;
             if ( i != outMeshes.size() - 1 ) {
                 outMeshes[i] = std::move( outMeshes.back() );
+                collectedVerts[i] = std::move( collectedVerts.back() );
             }
             outMeshes.pop_back();
+            collectedVerts.pop_back();
             continue;
         }
 
-        std::vector<VERTEX_INDEX> indices;
-        std::vector<ExVertexStruct> vertices;
-        IndexVertices( &it.second->Vertices[0], it.second->Vertices.size(), vertices, indices );
+        // Expand to a full ExVertexStruct for upload. VS_Ex/VS_ExCube/VS_ExLayered structurally
+        // require the full 60-byte layout, but the pixel shaders active for these draws (none,
+        // or the alpha-test/linear-depth variants) only ever read Position and TexCoord0, so
+        // Normal/TexCoord2/Color/Tangent are harmless, unused padding here.
+        std::vector<ExVertexStruct> fullVertices( vxSrc.size() );
+        for ( size_t v = 0; v < vxSrc.size(); ++v ) {
+            fullVertices[v].Position = vxSrc[v].Position;
+            fullVertices[v].TexCoord = vxSrc[v].TexCoord;
+            fullVertices[v].Normal = float3( 0.0f, 1.0f, 0.0f );
+            fullVertices[v].TexCoord2 = float2( 0.0f, 0.0f );
+            fullVertices[v].Color = 0xFFFFFFFF;
+            fullVertices[v].Tangent = float4( 1.0f, 0.0f, 0.0f, 1.0f );
+        }
 
-        it.second->Vertices = std::move( vertices );
-        it.second->Indices = std::move( indices );
+        std::vector<VERTEX_INDEX> indices;
+        std::vector<ExVertexStruct> indexedVertices;
+        IndexVertices( fullVertices.data(), static_cast<unsigned int>(fullVertices.size()), indexedVertices, indices );
+
+        m->Indices = std::move( indices );
 
         // Create the buffers
-        Engine::GraphicsEngine->CreateVertexBuffer( it.second->MeshVertexBuffer );
-        Engine::GraphicsEngine->CreateVertexBuffer( it.second->MeshIndexBuffer );
+        Engine::GraphicsEngine->CreateVertexBuffer( m->MeshVertexBuffer );
+        Engine::GraphicsEngine->CreateVertexBuffer( m->MeshIndexBuffer );
 
         // Optimize index and vertex locality before uploading immutable buffers.
-        it.second->MeshVertexBuffer->OptimizeFaces( it.second->Indices.data(),
-            reinterpret_cast<byte*>( it.second->Vertices.data() ),
-            it.second->Indices.size(),
-            it.second->Vertices.size(),
+        m->MeshVertexBuffer->OptimizeFaces( m->Indices.data(),
+            reinterpret_cast<byte*>( indexedVertices.data() ),
+            m->Indices.size(),
+            indexedVertices.size(),
             sizeof( ExVertexStruct ) );
-        it.second->MeshVertexBuffer->OptimizeVertices( it.second->Indices.data(),
-            reinterpret_cast<byte*>( it.second->Vertices.data() ),
-            it.second->Indices.size(),
-            it.second->Vertices.size(),
+        m->MeshVertexBuffer->OptimizeVertices( m->Indices.data(),
+            reinterpret_cast<byte*>( indexedVertices.data() ),
+            m->Indices.size(),
+            indexedVertices.size(),
             sizeof( ExVertexStruct ),
-            &it.second->ShadowIndices );
+            &m->ShadowIndices );
 
         // Init and fill them
-        it.second->MeshVertexBuffer->Init( &it.second->Vertices[0], it.second->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
-        it.second->MeshIndexBuffer->Init( &it.second->Indices[0], it.second->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
-        CreateShadowIndexBuffer( it.second );
-        
+        m->MeshVertexBuffer->Init( indexedVertices.data(), indexedVertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
+        m->MeshIndexBuffer->Init( &m->Indices[0], m->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
+        CreateShadowIndexBuffer( m );
+
+        CopyPositionVerticies( indexedVertices, m->Vertices );
+
         ++i;
     }
 }
@@ -395,10 +447,22 @@ XRESULT WorldConverter::LoadWorldMeshFromFile( const std::string& file, std::map
         std::vector<std::string>& textures = mesh->GetTextures();
         std::map<std::string, std::vector<std::pair<std::vector<ExVertexStruct>, std::vector<VERTEX_INDEX>>>> gm;
 
+        // MeshInfo::Vertices is position-only (used for raycasting/mesh tracing); this legacy
+        // custom-mesh import (superseded, no longer a supported scenario) never had real
+        // normal/UV data surviving this far anyway, so the cache stores defaulted attributes.
         for ( unsigned int m = 0; m < meshes.size(); m++ ) {
             auto& meshData = gm[textures[m]];
 
-            meshData.emplace_back( std::make_pair( meshes[m]->Vertices, meshes[m]->Indices ) );
+            std::vector<ExVertexStruct> fullVertices( meshes[m]->Vertices.size() );
+            for ( size_t v = 0; v < meshes[m]->Vertices.size(); ++v ) {
+                fullVertices[v].Position = meshes[m]->Vertices[v].Position;
+                fullVertices[v].Normal = float3( 0.0f, 1.0f, 0.0f );
+                fullVertices[v].TexCoord = float2( 0.0f, 0.0f );
+                fullVertices[v].TexCoord2 = float2( 0.0f, 0.0f );
+                fullVertices[v].Color = 0xFFFFFFFF;
+                fullVertices[v].Tangent = float4( 1.0f, 0.0f, 0.0f, 1.0f );
+            }
+            meshData.emplace_back( std::make_pair( std::move( fullVertices ), meshes[m]->Indices ) );
         }
 
         CacheMesh( gm, file + ".mcache" );
@@ -439,9 +503,6 @@ XRESULT WorldConverter::LoadWorldMeshFromFile( const std::string& file, std::map
             meshes[m]->Vertices[i].Position = float3( meshes[m]->Vertices[i].Position.x,
                 meshes[m]->Vertices[i].Position.y,
                 -meshes[m]->Vertices[i].Position.z );
-
-            // Fix disoriented texcoords
-            meshes[m]->Vertices[i].TexCoord = float2( meshes[m]->Vertices[i].TexCoord.x, -meshes[m]->Vertices[i].TexCoord.y );
         }
 
         for ( unsigned int i = 0; i < meshes[m]->Indices.size(); i += 3 ) {
@@ -451,7 +512,7 @@ XRESULT WorldConverter::LoadWorldMeshFromFile( const std::string& file, std::map
                 meshes[m]->Indices[i + 2] > meshes[m]->Vertices.size() )
                 break; // Catch broken meshes
 
-            ExVertexStruct* v[3] = { &meshes[m]->Vertices[meshes[m]->Indices[i]],
+            BasicVertexStruct* v[3] = { &meshes[m]->Vertices[meshes[m]->Indices[i]],
                                         &meshes[m]->Vertices[meshes[m]->Indices[i + 2]],
                                         &meshes[m]->Vertices[meshes[m]->Indices[i + 1]] };
 
@@ -483,8 +544,17 @@ XRESULT WorldConverter::LoadWorldMeshFromFile( const std::string& file, std::map
 
             }
 
-            for ( int i = 0; i < 3; i++ ) {
-                section.WorldMeshes[key]->Vertices.emplace_back( *v[i] );
+            // Custom-mesh import (superseded, no longer a supported scenario) no longer carries
+            // real per-vertex normal/UV data this far, so RawVertices gets Position plus
+            // harmless defaults for the rest -- consumed identically to ConvertWorldMesh below.
+            for ( int i2 = 0; i2 < 3; i2++ ) {
+                ExVertexStruct& rv = section.WorldMeshes[key]->RawVertices.emplace_back();
+                rv.Position = v[i2]->Position;
+                rv.Normal = float3( 0.0f, 1.0f, 0.0f );
+                rv.TexCoord = float2( 0.0f, 0.0f );
+                rv.TexCoord2 = float2( 0.0f, 0.0f );
+                rv.Color = 0xFFFFFFFF;
+                rv.Tangent = float4( 1.0f, 0.0f, 0.0f, 1.0f );
             }
         }
     }
@@ -510,56 +580,34 @@ XRESULT WorldConverter::LoadWorldMeshFromFile( const std::string& file, std::map
     std::list<std::vector<VERTEX_INDEX>*> indexBuffers;
     std::list<std::vector<VERTEX_INDEX>*> shadowIndexBuffers;
 
-    // Create the vertexbuffers for every material
+    // Flatten all meshes into a single list, mirroring ConvertWorldMesh below.
+    std::vector<WorldMeshInfo*> allMeshes;
     for ( auto const& itx : *outSections ) {
         for ( auto const& ity : itx.second ) {
             numSections++;
             avgSections += XMVectorSet( static_cast<float>(itx.first), static_cast<float>(ity.first), 0, 0 );
 
             for ( auto const& it : ity.second.WorldMeshes ) {
-                std::vector<ExVertexStruct> indexedVertices;
-                std::vector<VERTEX_INDEX> indices;
-                IndexVertices( &it.second->Vertices[0], it.second->Vertices.size(), indexedVertices, indices );
-
-                it.second->Vertices = std::move( indexedVertices );
-                it.second->Indices = std::move( indices );
-                ComputeWorldMeshBounds( it.second );
-
-                // Precompute MikkTSpace tangents (cached-mesh load path; normals come from the cache).
-                GenerateTangentsImpl(it.second->Vertices, it.second->Indices );
-
-                // Create the buffers
-                Engine::GraphicsEngine->CreateVertexBuffer( it.second->MeshVertexBuffer );
-                Engine::GraphicsEngine->CreateVertexBuffer( it.second->MeshIndexBuffer );
-
-                // Optimize faces
-                it.second->MeshVertexBuffer->OptimizeFaces( &it.second->Indices[0],
-                    reinterpret_cast<byte*>(&it.second->Vertices[0]),
-                    it.second->Indices.size(),
-                    it.second->Vertices.size(),
-                    sizeof( ExVertexStruct ) );
-
-                // Then optimize vertices
-                it.second->MeshVertexBuffer->OptimizeVertices( &it.second->Indices[0],
-                    reinterpret_cast<byte*>(&it.second->Vertices[0]),
-                    it.second->Indices.size(),
-                    it.second->Vertices.size(),
-                    sizeof( ExVertexStruct ),
-                    &it.second->ShadowIndices );
-
-                // Init and fill them
-                it.second->MeshVertexBuffer->Init( &it.second->Vertices[0], it.second->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
-                it.second->MeshIndexBuffer->Init( &it.second->Indices[0], it.second->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
-                CreateShadowIndexBuffer( it.second );
-
-                // Remember them, to wrap then up later
-                vertexBuffers.emplace_back( &it.second->Vertices );
-                indexBuffers.emplace_back( &it.second->Indices );
-                shadowIndexBuffers.emplace_back( it.second->ShadowIndices.empty()
-                    ? &it.second->Indices
-                    : &it.second->ShadowIndices );
+                allMeshes.emplace_back( it.second );
             }
         }
+    }
+
+    // Full-attribute vertex data per mesh (index-aligned with allMeshes), needed below to
+    // assemble the wrapped world mesh; BuildWorldMeshBuffers only keeps position (and
+    // position+UV0) data on the WorldMeshInfo itself once its own GPU buffers are built.
+    std::vector<std::vector<ExVertexStruct>> allMeshFullVertices( allMeshes.size() );
+    for ( size_t i = 0; i < allMeshes.size(); ++i ) {
+        BuildWorldMeshBuffers( allMeshes[i], allMeshFullVertices[i] );
+    }
+
+    for ( size_t i = 0; i < allMeshes.size(); ++i ) {
+        WorldMeshInfo* mesh = allMeshes[i];
+        vertexBuffers.emplace_back( &allMeshFullVertices[i] );
+        indexBuffers.emplace_back( &mesh->Indices );
+        shadowIndexBuffers.emplace_back( mesh->ShadowIndices.empty()
+            ? &mesh->Indices
+            : &mesh->ShadowIndices );
     }
 
     std::vector<ExVertexStruct> wrappedVertices;
@@ -810,8 +858,8 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
             }
         }
 
-        it->second->Vertices.reserve( polyVertices.size() * 3 );
-        TriangleFanToList( &polyVertices[0], polyVertices.size(), &it->second->Vertices );
+        it->second->RawVertices.reserve( polyVertices.size() * 3 );
+        TriangleFanToList( &polyVertices[0], polyVertices.size(), &it->second->RawVertices );
         if ( matGroup == zMAT_GROUP_WATER && !mat->HasAlphaTest() ) {
 #ifdef BUILD_GOTHIC_1_08k
             MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( key.Texture );
@@ -867,6 +915,10 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
     // touches its own data, so we batch them into a small number of contiguous
     // chunks to keep the pool busy without drowning it in tiny tasks
     const size_t total = allMeshes.size();
+    // Full-attribute vertex data per mesh (index-aligned with allMeshes), needed below to
+    // assemble the wrapped world mesh. BuildWorldMeshBuffers only keeps position (and
+    // position+UV0) data on the WorldMeshInfo itself once its own GPU buffers are built.
+    std::vector<std::vector<ExVertexStruct>> allMeshFullVertices( total );
     if ( total > 0 ) {
         const size_t numThreads = std::max<size_t>( 1, Engine::WorkerThreadPool->getNumThreads() );
         constexpr size_t MIN_BATCH = 32; // don't create tasks smaller than this
@@ -879,10 +931,10 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
         for ( size_t start = 0; start < total; start += chunk ) {
             const size_t end = std::min( start + chunk, total );
             jobs.emplace_back( Engine::WorkerThreadPool->enqueue(
-                [&allMeshes, start, end]( const std::stop_token& ) {
+                [&allMeshes, &allMeshFullVertices, start, end]( const std::stop_token& ) {
                     ZoneScopedN( "WorldMesh buffer batch" );
                     for ( size_t i = start; i < end; ++i ) {
-                        BuildWorldMeshBuffers( allMeshes[i] );
+                        BuildWorldMeshBuffers( allMeshes[i], allMeshFullVertices[i] );
                     }
                 } ).future );
         }
@@ -893,8 +945,9 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
         }
     }
 
-    for ( WorldMeshInfo* mesh : allMeshes ) {
-        vertexBuffers.emplace_back( &mesh->Vertices );
+    for ( size_t i = 0; i < allMeshes.size(); ++i ) {
+        WorldMeshInfo* mesh = allMeshes[i];
+        vertexBuffers.emplace_back( &allMeshFullVertices[i] );
         indexBuffers.emplace_back( &mesh->Indices );
         shadowIndexBuffers.emplace_back( mesh->ShadowIndices.empty()
             ? &mesh->Indices
@@ -969,6 +1022,11 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
 void WorldConverter::GenerateFullSectionMesh( WorldMeshSectionInfo& section ) {
     ZoneScoped;
 
+    // FullStaticMesh is drawn through the generic DrawMeshInfo path (VS_Ex, default stride =
+    // sizeof(ExVertexStruct)) for the point-light "FastShadows" depth pass, which only ever
+    // reads Position downstream. WorldMeshInfo/VOB MeshInfo no longer carry full per-vertex
+    // attributes though, so this still has to upload a full ExVertexStruct to satisfy VS_Ex's
+    // input layout -- filled with harmless defaults for everything but Position.
     std::vector<ExVertexStruct> vx;
 
     // Pre-calculate total triangle count to avoid reallocations
@@ -987,6 +1045,16 @@ void WorldConverter::GenerateFullSectionMesh( WorldMeshSectionInfo& section ) {
     }
     vx.reserve( totalVerts );
 
+    auto pushPosition = [&vx]( const XMFLOAT3& pos ) {
+        ExVertexStruct& v = vx.emplace_back();
+        v.Position = pos;
+        v.Normal = float3( 0.0f, 1.0f, 0.0f );
+        v.TexCoord = float2( 0.0f, 0.0f );
+        v.TexCoord2 = float2( 0.0f, 0.0f );
+        v.Color = 0xFFFFFFFF;
+        v.Tangent = float4( 1.0f, 0.0f, 0.0f, 1.0f );
+    };
+
     for ( auto const& it : section.WorldMeshes ) {
         if ( !it.first.Material ||
             it.first.Material->HasAlphaTest() )
@@ -994,9 +1062,9 @@ void WorldConverter::GenerateFullSectionMesh( WorldMeshSectionInfo& section ) {
 
         for ( unsigned int i = 0; i < it.second->Indices.size(); i += 3 ) {
             // Push all triangles
-            vx.emplace_back( it.second->Vertices[it.second->Indices[i]] );
-            vx.emplace_back( it.second->Vertices[it.second->Indices[i + 1]] );
-            vx.emplace_back( it.second->Vertices[it.second->Indices[i + 2]] );
+            pushPosition( *it.second->Vertices[it.second->Indices[i]].Position.toXMFLOAT3() );
+            pushPosition( *it.second->Vertices[it.second->Indices[i + 1]].Position.toXMFLOAT3() );
+            pushPosition( *it.second->Vertices[it.second->Indices[i + 2]].Position.toXMFLOAT3() );
         }
     }
 
@@ -1016,16 +1084,11 @@ void WorldConverter::GenerateFullSectionMesh( WorldMeshSectionInfo& section ) {
 
             for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
                 for ( unsigned int i = 0; i < itm.second[m]->Indices.size(); i++ ) {
-                    ExVertexStruct v = itm.second[m]->Vertices[itm.second[m]->Indices[i]];
+                    XMFLOAT3 position = *itm.second[m]->Vertices[itm.second[m]->Indices[i]].Position.toXMFLOAT3();
 
                     // Transform everything into world space
-                    XMFLOAT3 Position;
-                    Position.x = v.Position.x;
-                    Position.y = v.Position.y;
-                    Position.z = v.Position.z;
-                    XMStoreFloat3( &Position, XMVector3TransformCoord( XMLoadFloat3( &Position ), XMM_world ) );
-                    v.Position = Position;
-                    vx.emplace_back( v );
+                    XMStoreFloat3( &position, XMVector3TransformCoord( XMLoadFloat3( &position ), XMM_world ) );
+                    pushPosition( position );
                 }
             }
         }
@@ -1035,19 +1098,16 @@ void WorldConverter::GenerateFullSectionMesh( WorldMeshSectionInfo& section ) {
     if ( vx.empty() )
         return;
 
-    // Index the mesh
-    std::vector<ExVertexStruct> indexedVertices;
-    std::vector<VERTEX_INDEX> indices;
-
     section.FullStaticMesh = new MeshInfo;
-    section.FullStaticMesh->Vertices = std::move( vx );
 
     // Create the buffers
     Engine::GraphicsEngine->CreateVertexBuffer( section.FullStaticMesh->MeshVertexBuffer );
 
     // Init and fill them
-    section.FullStaticMesh->MeshVertexBuffer->Init( &section.FullStaticMesh->Vertices[0], section.FullStaticMesh->Vertices.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
-    Engine::GAPI->GetRendererState().RendererInfo.SkeletalVerticesDataSize += section.FullStaticMesh->Vertices.size() * sizeof( ExVertexStruct );
+    section.FullStaticMesh->MeshVertexBuffer->Init( vx.data(), vx.size() * sizeof( ExVertexStruct ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
+    Engine::GAPI->GetRendererState().RendererInfo.SkeletalVerticesDataSize += vx.size() * sizeof( ExVertexStruct );
+
+    CopyPositionVerticies( vx, section.FullStaticMesh->Vertices );
 }
 
 /** Returns what section the given position is in */
@@ -1147,13 +1207,13 @@ void WorldConverter::Extract3DSMeshFromVisual( zCProgMeshProto* visual, MeshVisu
 
         // WTF. These meshes all have incrementally MORE vertices the further this goes.
         // all meshes share the same vertex-vector
-        mi->Vertices = vertices;
+        std::vector<ExVertexStruct> meshVertices = vertices;
         mi->Indices = std::move(indices);
         mi->meshId = s_MeshManager->RecordMesh( m );
 
         // Precompute MikkTSpace tangents on the indexed mesh (tangents travel with the
         // vertices through the meshopt reordering below and into the packed upload).
-        GenerateTangentsImpl(mi->Vertices, mi->Indices );
+        GenerateTangentsImpl(meshVertices, mi->Indices );
 
         // Create the buffers
         Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshVertexBuffer );
@@ -1161,22 +1221,24 @@ void WorldConverter::Extract3DSMeshFromVisual( zCProgMeshProto* visual, MeshVisu
 
         // Optimize static submesh ordering for better cache and vertex fetch locality.
         mi->MeshVertexBuffer->OptimizeFaces( mi->Indices.data(),
-            reinterpret_cast<byte*>( mi->Vertices.data() ),
+            reinterpret_cast<byte*>( meshVertices.data() ),
             mi->Indices.size(),
-            mi->Vertices.size(),
+            meshVertices.size(),
             sizeof( ExVertexStruct ) );
         mi->MeshVertexBuffer->OptimizeVertices( mi->Indices.data(),
-            reinterpret_cast<byte*>( mi->Vertices.data() ),
+            reinterpret_cast<byte*>( meshVertices.data() ),
             mi->Indices.size(),
-            mi->Vertices.size(),
+            meshVertices.size(),
             sizeof( ExVertexStruct ),
             &mi->ShadowIndices );
 
         // Init and fill it (packed 36-byte GPU vertex)
-        std::vector<ExVertexStructGPU> packedGpu = VertexPacking::Pack( mi->Vertices.data(), mi->Vertices.size() );
+        std::vector<ExVertexStructGPU> packedGpu = VertexPacking::Pack( meshVertices.data(), meshVertices.size() );
         mi->MeshVertexBuffer->Init( packedGpu.data(), packedGpu.size() * sizeof( ExVertexStructGPU ) );
         mi->MeshIndexBuffer->Init( &mi->Indices[0], mi->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER );
         CreateShadowIndexBuffer( mi );
+
+        CopyPositionVerticies( meshVertices, mi->Vertices );
 
         meshInfo->Meshes[mat].emplace_back( mi );
     }
@@ -1297,17 +1359,18 @@ void WorldConverter::ExtractSkeletalMeshFromVob( zCModel* model, SkeletalMeshVis
 
             MeshInfo* bmi = new MeshInfo;
             bmi->Indices = mi->Indices; // copy them
-            bmi->Vertices = std::move(bindPoseVertices);
 
             Engine::GraphicsEngine->CreateVertexBuffer( bmi->MeshVertexBuffer );
             Engine::GraphicsEngine->CreateVertexBuffer( bmi->MeshIndexBuffer );
 
             // Bind-pose MeshInfo shares MeshVisualInfo::Meshes with static VOBs, so it is packed
             // the same way (drawn via VS_ExPacked). Tangents from the bind pose.
-            GenerateTangentsImpl(bmi->Vertices, bmi->Indices );
-            std::vector<ExVertexStructGPU> packedBmi = VertexPacking::Pack( bmi->Vertices.data(), bmi->Vertices.size() );
+            GenerateTangentsImpl(bindPoseVertices, bmi->Indices );
+            std::vector<ExVertexStructGPU> packedBmi = VertexPacking::Pack( bindPoseVertices.data(), bindPoseVertices.size() );
             bmi->MeshVertexBuffer->Init( packedBmi.data(), packedBmi.size() * sizeof( ExVertexStructGPU ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
             bmi->MeshIndexBuffer->Init( &bmi->Indices[0], bmi->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
+
+            CopyPositionVerticies( bindPoseVertices, bmi->Vertices );
 
             Engine::GAPI->GetRendererState().RendererInfo.SkeletalVerticesDataSize += mi->Vertices.size() * sizeof( ExVertexStruct );
             Engine::GAPI->GetRendererState().RendererInfo.SkeletalVerticesDataSize += mi->Indices.size() * sizeof( VERTEX_INDEX );
@@ -1327,6 +1390,9 @@ void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualIn
     XMFLOAT3 bbmin = XMFLOAT3( FLT_MAX, FLT_MAX, FLT_MAX );
     XMFLOAT3 bbmax = XMFLOAT3( -FLT_MAX, -FLT_MAX, -FLT_MAX );
 
+    // Full-attribute vertex data per submesh, kept alive only long enough to assemble the
+    // wrapped mesh below (MeshInfo::Vertices itself only keeps positions, for raycasting).
+    std::list<std::vector<ExVertexStruct>> fullVertexStore;
     std::list<std::vector<ExVertexStruct>*> vertexBuffers;
     std::list<std::vector<VERTEX_INDEX>*> indexBuffers;
     std::list<MeshInfo*> meshInfos;
@@ -1404,12 +1470,13 @@ void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualIn
 
             // Create the buffers and sort the mesh into the structure
             MeshInfo* mi = new MeshInfo;
-            mi->Vertices = vertices;
+            fullVertexStore.emplace_back( vertices );
+            std::vector<ExVertexStruct>& meshVertices = fullVertexStore.back();
             mi->Indices = indices;
             mi->meshId = s_MeshManager->RecordMesh( m );
 
             // Precompute MikkTSpace tangents on the indexed mesh before meshopt reorders it.
-            GenerateTangentsImpl(mi->Vertices, mi->Indices );
+            GenerateTangentsImpl(meshVertices, mi->Indices );
 
             // Create the buffers
             Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshVertexBuffer );
@@ -1417,24 +1484,26 @@ void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualIn
 
             // Optimize faces
             mi->MeshVertexBuffer->OptimizeFaces( &mi->Indices[0],
-                reinterpret_cast<byte*>(&mi->Vertices[0]),
+                reinterpret_cast<byte*>(&meshVertices[0]),
                 mi->Indices.size(),
-                mi->Vertices.size(),
+                meshVertices.size(),
                 sizeof( ExVertexStruct ) );
 
             // Then optimize vertices
             mi->MeshVertexBuffer->OptimizeVertices( &mi->Indices[0],
-                reinterpret_cast<byte*>(&mi->Vertices[0]),
+                reinterpret_cast<byte*>(&meshVertices[0]),
                 mi->Indices.size(),
-                mi->Vertices.size(),
+                meshVertices.size(),
                 sizeof( ExVertexStruct ),
                 &mi->ShadowIndices );
 
             // Init and fill it (packed 36-byte GPU vertex)
-            std::vector<ExVertexStructGPU> packedGpu = VertexPacking::Pack( mi->Vertices.data(), mi->Vertices.size() );
+            std::vector<ExVertexStructGPU> packedGpu = VertexPacking::Pack( meshVertices.data(), meshVertices.size() );
             mi->MeshVertexBuffer->Init( packedGpu.data(), packedGpu.size() * sizeof( ExVertexStructGPU ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
             mi->MeshIndexBuffer->Init( &mi->Indices[0], mi->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
             CreateShadowIndexBuffer( mi );
+
+            CopyPositionVerticies( meshVertices, mi->Vertices );
 
             Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize += packedGpu.size() * sizeof( ExVertexStructGPU );
             Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize += mi->Indices.size() * sizeof( VERTEX_INDEX );
@@ -1452,7 +1521,7 @@ void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualIn
                 meshInfo->NeedsAlphaTesting = true;
             }
 
-            vertexBuffers.emplace_back( &mi->Vertices );
+            vertexBuffers.emplace_back( &meshVertices );
             indexBuffers.emplace_back( &mi->Indices );
             meshInfos.emplace_back( mi );
         }
@@ -1548,11 +1617,10 @@ void WorldConverter::ExtractProgMeshProtoFromMesh( zCMesh* mesh, MeshVisualInfo*
     RepairZeroLengthVertexNormals( vertices, indices );
 
     MeshInfo* mi = new MeshInfo;
-    mi->Vertices = std::move(vertices);
     mi->Indices = std::move(indices);
 
     // Precompute MikkTSpace tangents on the indexed mesh before meshopt reorders it.
-    GenerateTangentsImpl(mi->Vertices, mi->Indices );
+    GenerateTangentsImpl(vertices, mi->Indices );
 
     // Create the buffers
     Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshVertexBuffer );
@@ -1560,22 +1628,24 @@ void WorldConverter::ExtractProgMeshProtoFromMesh( zCMesh* mesh, MeshVisualInfo*
 
     // Optimize static mesh ordering for better cache and vertex fetch locality.
     mi->MeshVertexBuffer->OptimizeFaces( mi->Indices.data(),
-        reinterpret_cast<byte*>( mi->Vertices.data() ),
+        reinterpret_cast<byte*>( vertices.data() ),
         mi->Indices.size(),
-        mi->Vertices.size(),
+        vertices.size(),
         sizeof( ExVertexStruct ) );
     mi->MeshVertexBuffer->OptimizeVertices( mi->Indices.data(),
-        reinterpret_cast<byte*>( mi->Vertices.data() ),
+        reinterpret_cast<byte*>( vertices.data() ),
         mi->Indices.size(),
-        mi->Vertices.size(),
+        vertices.size(),
         sizeof( ExVertexStruct ),
         &mi->ShadowIndices );
 
     // Init and fill it (packed 36-byte GPU vertex)
-    std::vector<ExVertexStructGPU> packedGpu = VertexPacking::Pack( mi->Vertices.data(), mi->Vertices.size() );
+    std::vector<ExVertexStructGPU> packedGpu = VertexPacking::Pack( vertices.data(), vertices.size() );
     mi->MeshVertexBuffer->Init( packedGpu.data(), packedGpu.size() * sizeof( ExVertexStructGPU ) );
     mi->MeshIndexBuffer->Init( &mi->Indices[0], mi->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER );
     CreateShadowIndexBuffer( mi );
+
+    CopyPositionVerticies( vertices, mi->Vertices );
 
     meshInfo->Meshes[mat].emplace_back( mi );
     meshInfo->Visual = reinterpret_cast<zCVisual*>(mesh);
@@ -1688,6 +1758,9 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
 
     XMFLOAT3* posList = visual->GetPositionList()->Array->toXMFLOAT3();
 
+    // Full-attribute vertex data per submesh, kept alive only long enough to assemble the
+    // wrapped mesh below (MeshInfo::Vertices itself only keeps positions, for raycasting).
+    std::list<std::vector<ExVertexStruct>> fullVertexStore;
     std::list<std::vector<ExVertexStruct>*> vertexBuffers;
     std::list<std::vector<VERTEX_INDEX>*> indexBuffers;
     std::list<MeshInfo*> meshInfos;
@@ -1743,14 +1816,15 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
 
         // Create the buffers and sort the mesh into the structure
         MeshInfo* mi = new MeshInfo;
-        mi->Vertices = std::move( vertices );
+        fullVertexStore.emplace_back( std::move( vertices ) );
+        std::vector<ExVertexStruct>& meshVertices = fullVertexStore.back();
         mi->Indices = std::move( indices );
         mi->MeshIndex = i;
         mi->meshId = s_MeshManager->RecordMesh( s );
 
         // Precompute MikkTSpace tangents on the indexed mesh before meshopt reorders it
         // (morph meshes skip the reorder but still get an initial tangent set here).
-        GenerateTangentsImpl(mi->Vertices, mi->Indices );
+        GenerateTangentsImpl(meshVertices, mi->Indices );
 
         // Create the buffers
         Engine::GraphicsEngine->CreateVertexBuffer( mi->MeshVertexBuffer );
@@ -1759,23 +1833,23 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
         if ( !meshInfo->MorphMeshVisual ) {
             // Optimize faces
             mi->MeshVertexBuffer->OptimizeFaces(&mi->Indices[0],
-                reinterpret_cast<byte*>(&mi->Vertices[0]),
+                reinterpret_cast<byte*>(&meshVertices[0]),
                 mi->Indices.size(),
-                mi->Vertices.size(),
+                meshVertices.size(),
                 sizeof( ExVertexStruct ) );
 
             // Then optimize vertices
             mi->MeshVertexBuffer->OptimizeVertices( &mi->Indices[0],
-                reinterpret_cast<byte*>(&mi->Vertices[0]),
+                reinterpret_cast<byte*>(&meshVertices[0]),
                 mi->Indices.size(),
-                mi->Vertices.size(),
+                meshVertices.size(),
                 sizeof( ExVertexStruct ),
                 &mi->ShadowIndices );
         }
 
         // Init and fill it (packed 36-byte GPU vertex). Morph meshes keep a DYNAMIC buffer that
         // UpdateMorphMeshVisual reuploads (also packed) each frame; static meshes are IMMUTABLE.
-        std::vector<ExVertexStructGPU> packedGpu = VertexPacking::Pack( mi->Vertices.data(), mi->Vertices.size() );
+        std::vector<ExVertexStructGPU> packedGpu = VertexPacking::Pack( meshVertices.data(), meshVertices.size() );
         if ( meshInfo->MorphMeshVisual ) {
             mi->MeshVertexBuffer->Init( packedGpu.data(), packedGpu.size() * sizeof( ExVertexStructGPU ), D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_DYNAMIC, D3D11VertexBuffer::CA_WRITE );
         } else {
@@ -1783,6 +1857,8 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
         }
         mi->MeshIndexBuffer->Init( &mi->Indices[0], mi->Indices.size() * sizeof( VERTEX_INDEX ), D3D11VertexBuffer::B_INDEXBUFFER, D3D11VertexBuffer::U_IMMUTABLE );
         CreateShadowIndexBuffer( mi );
+
+        CopyPositionVerticies( meshVertices, mi->Vertices );
 
         Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize += packedGpu.size() * sizeof( ExVertexStructGPU );
         Engine::GAPI->GetRendererState().RendererInfo.VOBVerticesDataSize += mi->Indices.size() * sizeof( VERTEX_INDEX );
@@ -1800,7 +1876,7 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
             meshInfo->NeedsAlphaTesting = true;
         }
 
-        vertexBuffers.emplace_back( &mi->Vertices );
+        vertexBuffers.emplace_back( &meshVertices );
         indexBuffers.emplace_back( &mi->Indices );
         meshInfos.emplace_back( mi );
     }
