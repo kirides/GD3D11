@@ -830,12 +830,10 @@ XRESULT D3D11GraphicsEngine::Init() {
     // View-distance constant buffers are now allocated per-frame from the dynamic
     // ring pool (see OnStartWorldRendering); no dedicated ID3D11Buffers needed.
     PerObjectMaterialInfoPooledBuffer = std::make_unique<ConstantBufferPool>();
-    PerObjectMaterialInfoPooledBuffer->Initialize( GetDevice().Get() );
-    SetDebugName(PerObjectMaterialInfoPooledBuffer->GetBuffer(), "PerObjectMaterialInfoPooledBuffer");
-    
+    PerObjectMaterialInfoPooledBuffer->Initialize( GetDevice().Get(), 4 * 1024 * 1024, "PerObjectMaterialInfoPooledBuffer" );
+
     DynamicConstantBufferPool = std::make_unique<ConstantBufferPool>();
-    DynamicConstantBufferPool->Initialize( GetDevice().Get() );
-    SetDebugName(DynamicConstantBufferPool->GetBuffer(), "DynamicConstantBufferPool");
+    DynamicConstantBufferPool->Initialize( GetDevice().Get(), 4 * 1024 * 1024, "DynamicConstantBufferPool" );
     // Load reflectioncube
 
     if ( S_OK != CreateDDSTextureFromFile(
@@ -1651,9 +1649,9 @@ XRESULT D3D11GraphicsEngine::OnEndFrame() {
 
     RenderedVobs.clear();
     GetPfxRenderer()->OnEndFrame();
-    ResetFrameTransientBufferPools();
     Engine::GAPI->ResetVobFrameStats();
     PerObjectMaterialInfoPooledBuffer->EndFrame();
+    DynamicConstantBufferPool->EndFrame();
     FrameMarkEnd( beginFrameEventName );
 
     if ( !Engine::GAPI->GetRendererState().RendererSettings.BinkVideoRunning && !Engine::GAPI->IsInSavingLoadingState() ) {

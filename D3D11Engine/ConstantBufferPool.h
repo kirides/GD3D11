@@ -2,6 +2,7 @@
 #include <wrl/client.h>
 #include <d3d11_1.h>
 #include <cstdint>
+#include <array>
 
 struct ConstantBufferAllocation {
     ID3D11Buffer* pBuffer = nullptr;
@@ -13,37 +14,33 @@ struct ConstantBufferAllocation {
     }
 };
 
+// Ring of FrameCount independently-owned DYNAMIC buffers, one slot used per frame-in-flight.
+// Each slot has its own ID3D11Query fence: before a slot is reused (FrameCount frames after it
+// was last written), we wait for its fence so we know the GPU is done reading it. This replaces
+// relying on D3D11_MAP_WRITE_DISCARD to let the driver rename the backing allocation, which made
+// memory usage unpredictable under load.
 class ConstantBufferPool {
+public:
+    static constexpr uint32_t FrameCount = 3;
+
 private:
-    Microsoft::WRL::ComPtr<ID3D11Buffer> m_poolBuffer;
+    struct FrameSlot {
+        Microsoft::WRL::ComPtr<ID3D11Buffer> Buffer;
+        Microsoft::WRL::ComPtr<ID3D11Query> FrameFence;
+        bool FencePending = false;
+    };
+
+    std::array<FrameSlot, FrameCount> m_frames;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext1> m_Context;
-    uint32_t m_bufferSize;
-    uint32_t m_currentOffset;
-    bool m_firstMapThisFrame = true; // first Map of the frame gets DISCARD; the rest NO_OVERWRITE
-    bool m_wrapWarned = false;        // warn only once if the ring wraps mid-frame
+    uint32_t m_bufferSize = 0;   // size of a single slot's buffer
+    uint32_t m_currentOffset = 0;
+    uint32_t m_frameIndex = 0;   // slot currently being written to
+    bool m_wrapWarned = false;   // warn only once if the ring wraps mid-frame
+
+    void WaitForSlot( FrameSlot& slot );
 
 public:
-    void Initialize( ID3D11Device* device, uint32_t totalSizeInBytes = 4 * 1024 * 1024 ) {
-        m_bufferSize = totalSizeInBytes;
-        m_currentOffset = 0;
-        m_firstMapThisFrame = true;
-        m_wrapWarned = false;
-
-        D3D11_BUFFER_DESC desc = {};
-        desc.ByteWidth = m_bufferSize;
-        desc.Usage = D3D11_USAGE_DYNAMIC;
-        desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-        desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-
-        device->CreateBuffer( &desc, nullptr, &m_poolBuffer );
-        
-        Microsoft::WRL::ComPtr<ID3D11DeviceContext> context;
-        device->GetImmediateContext(&context);
-        context.As(&m_Context);
-//#ifdef DEBUG_D3D11
-//        SetDebugName( m_poolBuffer.Get(), std::string( "ConstantBufferPool (size:" ) + std::to_string( totalSizeInBytes ) + ")" );
-//#endif
-    }
+    void Initialize( ID3D11Device* device, uint32_t totalSizeInBytes = 4 * 1024 * 1024, const char* debugName = nullptr );
 
     void BeginFrame();
     ConstantBufferAllocation Allocate( const void* pData, uint32_t sizeInBytes );
@@ -55,6 +52,5 @@ public:
     void BindHS( uint32_t slot, const ConstantBufferAllocation& allocation );
     void EndFrame();
 
-    ID3D11Buffer* GetBuffer() const { return m_poolBuffer.Get(); }
+    ID3D11Buffer* GetBuffer() const { return m_frames[m_frameIndex].Buffer.Get(); }
 };
-

@@ -1,6 +1,7 @@
 #pragma once
 #include <d3d11_4.h>
 #include <string>
+#include "Logger.h"
 
 #if !PUBLIC_RELEASE
 #define DEBUG_D3D11
