@@ -290,6 +290,8 @@ struct RenderToDepthStencilBuffer {
             DescRV.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DMS;
         } else if ( arraySize > 1 ) {
             DescRV.ViewDimension = D3D11_SRV_DIMENSION_TEXTURECUBE;
+            DescRV.TextureCube.MostDetailedMip = 0;
+            DescRV.TextureCube.MipLevels = 1;
         } else {
             DescRV.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
             DescRV.Texture2D.MipLevels = 1;
