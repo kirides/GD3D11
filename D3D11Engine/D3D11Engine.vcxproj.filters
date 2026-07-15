@@ -851,6 +851,9 @@
       <Filter>ZenGin\Classes</Filter>
     </ClInclude>
     <ClInclude Include="ConstantBufferPool.h" />
+    <ClInclude Include="vendor\mikktspace.h" />
+    <ClInclude Include="VertexPacking.h" />
+    <ClInclude Include="DDSArrayLoader.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp" />
@@ -1158,6 +1161,7 @@
       <Filter>Engine</Filter>
     </ClCompile>
     <ClCompile Include="ConstantBufferPool.cpp" />
+    <ClCompile Include="vendor\mikktspace.c" />
   </ItemGroup>
   <ItemGroup>
     <None Include="ddraw.def">
