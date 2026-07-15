@@ -114,10 +114,33 @@ namespace {
     }
 }
 
+typedef HRESULT( *VirtualFileReader )(const char* path, std::vector<uint8_t> buffer, long* numRead);
+
+inline HRESULT zVdfsReadFile( const char* str, std::vector<uint8_t> buffer, long* numRead ) {
+    auto file = zFILE_VDFS::Create( str );
+    if ( !file->Exists() ) {
+        LogError() << "File does not exist: " << str;
+        return E_FAIL;
+    }
+    if ( file->Open( false ) != 0 ) {
+        LogError() << "Failed to open filepath: " << str;
+        return E_FAIL;
+    }
+
+    const auto size = file->Size();
+    buffer.resize( size );
+    const auto actuallyRead = file->Read( buffer.data(), size );
+    file->Close();
+    if ( numRead ) {
+        *numRead = actuallyRead;
+    }
+}
+
 inline HRESULT LoadTextureArray(
     ID3D11Device* pd3dDevice,
     const char* sTexturePrefix,
     int iNumTextures,
+    VirtualFileReader fileReader,
     ID3D11Texture2D** ppTex2D,
     ID3D11ShaderResourceView** ppSRV )
 {
@@ -136,23 +159,15 @@ inline HRESULT LoadTextureArray(
     std::vector<D3D11_SUBRESOURCE_DATA> initData;
 
     // Step 1: Read raw files from the VFS
+    long numRead;
     for ( int i = 0; i < iNumTextures; i++ ) {
         sprintf( str, "%s%.4d.dds", sTexturePrefix, i );
 
-        auto file = zFILE_VDFS::Create( str );
-        if ( !file->Exists() ) {
-            LogError() << "File does not exist: " << str;
+        hr = fileReader( str, fileBuffers[i], &numRead );
+        if ( !SUCCEEDED( hr) ) {
+            LogError() << "Failed to read file: " << str;
             return E_FAIL;
         }
-        if ( file->Open( false ) != 0 ) {
-            LogError() << "Failed to open filepath: " << str;
-            return E_FAIL;
-        }
-
-        auto size = file->Size();
-        fileBuffers[i].resize( size );
-        file->Read( fileBuffers[i].data(), size );
-        file->Close();
     }
 
     // Step 2: Parse raw memory streams entirely on CPU (thread-safe)
@@ -288,3 +303,20 @@ inline HRESULT LoadTextureArray(
 
     return hr;
 }
+
+inline HRESULT LoadTextureArray(
+    ID3D11Device* pd3dDevice,
+    const char* sTexturePrefix,
+    int iNumTextures,
+    ID3D11Texture2D** ppTex2D,
+    ID3D11ShaderResourceView** ppSRV )
+{
+    return LoadTextureArray(
+        pd3dDevice,
+        sTexturePrefix,
+        iNumTextures,
+        zVdfsReadFile,
+        ppTex2D,
+        ppSRV );
+}
+
