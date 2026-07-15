@@ -2480,13 +2480,9 @@ XRESULT D3D11GraphicsEngine::DrawVertexBufferFF( D3D11VertexBuffer* vb,
     return XR_SUCCESS;
 }
 
-/** Sets up texture with normalmap and fxmap for rendering */
-bool D3D11GraphicsEngine::BindTextureNRFX( zCMaterial* mat, bool bindShader, bool updateMaterialInfo ) {
-    auto tex = mat->GetAniTexture();
-    if ( tex->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
-        return false;
-    }
-
+// Need to be able to pass in a texture, otherwise when batch-drawing node attachments, the zCMaterial* AniTexture will be wrong!
+bool D3D11GraphicsEngine::BindTextureNRFX(zCMaterial* mat, zCTexture* tex, bool bindShader, bool updateMaterialInfo)
+{
     ID3D11ShaderResourceView* srvs[3] = {
         tex->GetSurface()->GetEngineTexture()->GetShaderResourceView().Get(),
         nullptr, 
@@ -2533,6 +2529,15 @@ bool D3D11GraphicsEngine::BindTextureNRFX( zCMaterial* mat, bool bindShader, boo
 
     
     return true;
+}
+
+/** Sets up texture with normalmap and fxmap for rendering */
+bool D3D11GraphicsEngine::BindTextureNRFX( zCMaterial* mat, bool bindShader, bool updateMaterialInfo ) {
+    auto tex = mat->GetAniTexture();
+    if ( tex->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
+        return false;
+    }
+    return BindTextureNRFX(mat, tex, bindShader, updateMaterialInfo);
 }
 
 XRESULT  D3D11GraphicsEngine::DrawSkeletalVertexNormals( SkeletalVobInfo* vi,
@@ -3800,7 +3805,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                     GetContext()->PSSetShader( nullptr, nullptr, 0 );
                 }
             } else if ( wantShader && batch.Texture && batch.Texture != lastBatchTex ) {
-                if ( !BindTextureNRFX( batch.Material, isMainOrGhost, info != lastMaterialInfo ) ) {
+                if ( !BindTextureNRFX( batch.Material, batch.Texture, isMainOrGhost, info != lastMaterialInfo ) ) {
                     continue;
                 }
                 lastMaterialInfo = info;

@@ -168,6 +168,7 @@ public:
     void UpdateColorSpace_SwapChain();
 
     /** Sets up texture with normalmap and fxmap for rendering */
+    bool BindTextureNRFX( zCMaterial* mat, zCTexture* tex, bool bindShader, bool updateMaterialInfo = true );
     bool BindTextureNRFX( zCMaterial* mat, bool bindShader, bool updateMaterialInfo = true );
 
     /** Draws a skeletal mesh */
