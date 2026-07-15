@@ -2518,10 +2518,13 @@ bool D3D11GraphicsEngine::BindTextureNRFX(zCMaterial* mat, zCTexture* tex, bool 
     }
 
     if ( info && GetActivePS() ) {
-        auto allocation = PerObjectMaterialInfoPooledBuffer->Allocate( &info->buffer, sizeof( info->buffer ) );
-        UINT firstConstant = allocation.offsetInBytes / 16;
-        UINT numConstants = allocation.sizeInBytes / 16;
-        GetContext()->PSSetConstantBuffers1( 2, 1, &allocation.pBuffer, &firstConstant, &numConstants );
+        if ( !info->IsSame( m_LastMaterialInfo ) ) {
+            auto allocation = PerObjectMaterialInfoPooledBuffer->Allocate( &info->buffer, sizeof( info->buffer ) );
+            UINT firstConstant = allocation.offsetInBytes / 16;
+            UINT numConstants = allocation.sizeInBytes / 16;
+            GetContext()->PSSetConstantBuffers1( 2, 1, &allocation.pBuffer, &firstConstant, &numConstants );
+            m_LastMaterialInfo = info;
+        }
     }
 
     if ( D3D11Texture* fxmap = tex->GetSurface()->GetFxMap() ) {
@@ -2923,6 +2926,8 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     bool updateState,
     bool drawAttachments ) {
     ZoneScoped;
+
+    m_LastMaterialInfo = nullptr;
 
     //// Skeletal meshes use bone-driven animation that can change between passes.
     //// Skip them during the depth prepass to avoid depth mismatch in the lit pass.
@@ -3794,8 +3799,6 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         D3D11VertexBuffer* lastVB = nullptr;
         D3D11VertexBuffer* lastIB = nullptr;
 
-        MaterialInfo* lastMaterialInfo = nullptr;
-
         void* lastBatchTex = nullptr;
         auto lastSwitches = graphicsState.FF_GSwitches;
         void* lastPs = nullptr;
@@ -3836,10 +3839,9 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                     GetContext()->PSSetShader( nullptr, nullptr, 0 );
                 }
             } else if ( wantShader && batch.Texture && batch.Texture != lastBatchTex ) {
-                if ( !BindTextureNRFX( batch.Material, batch.Texture, isMainOrGhost, info != lastMaterialInfo ) ) {
+                if ( !BindTextureNRFX( batch.Material, batch.Texture, isMainOrGhost, true ) ) {
                     continue;
                 }
-                lastMaterialInfo = info;
                 lastBatchTex = batch.Texture;
             }
 
@@ -5112,6 +5114,8 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
     ZoneScopedN( "DrawWorldMesh" );
     auto _scopeDrawWorldMesh = RecordGraphicsEvent( GE_NAME( "DrawWorldMesh" ) );
 
+    m_LastMaterialInfo = nullptr;
+
     const bool isZPrepass = RenderingStage == DES_Z_PRE_PASS;
     if ( isZPrepass ) {
         noTextures = true;
@@ -5405,7 +5409,6 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
 
         ConstantBufferAllocation INVALID_MATERIAL = PerObjectMaterialInfoPooledBuffer->Allocate( &defInfo.buffer, sizeof( defInfo.buffer ) );
         ConstantBufferAllocation lastMatCbAllocation = INVALID_MATERIAL;
-        MaterialInfo* lastInfo = nullptr;
 
         const auto sceneIsWet = Engine::GAPI->GetSceneWetness() > 1e-6;
         for ( size_t i = 0; i < numMeshes; i++ ) {
@@ -5452,13 +5455,13 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
 
                 auto materialInfoBufferAllocation = lastMatCbAllocation;
                 if ( info ) {
-                    if ( info->IsSame( lastInfo ) ) {
+                    if ( info->IsSame( m_LastMaterialInfo ) ) {
                         materialInfoBufferAllocation = lastMatCbAllocation;
                     } else {
                         materialInfoBufferAllocation = PerObjectMaterialInfoPooledBuffer->Allocate( &info->buffer, sizeof( info->buffer ) );
                     }
                 }
-                lastInfo = info;
+                m_LastMaterialInfo = info;
 
                 UINT firstConstant = materialInfoBufferAllocation.offsetInBytes / 16;
                 UINT numConstants = materialInfoBufferAllocation.sizeInBytes / 16; // aligned size
@@ -7477,6 +7480,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
     {
         TracyD3D11ZoneCGX( "DrawVOBsInstanced" );
         auto _scopeDrawVOBsInstanced = RecordGraphicsEvent( GE_NAME( "DrawVOBsInstanced" ) );
+        m_LastMaterialInfo = nullptr;
         SetDefaultStates();
 
         SetActivePixelShader( PShaderID::PS_Diffuse );
@@ -7752,8 +7756,6 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                 Context->PSSetShader( nullptr, nullptr, 0 );
             }
 
-            MaterialInfo* lastMatInfo = nullptr;
-
             zCTexture* lastTex = nullptr;
             ID3D11ShaderResourceView* lastNrmTex = nullptr;
             ID3D11ShaderResourceView* lastFxTex = nullptr;
@@ -7914,12 +7916,12 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                                 }
                             }
                         }
-                        if ( info && !info->IsSame( lastMatInfo ) ) {
+                        if ( info && !info->IsSame( m_LastMaterialInfo ) ) {
                             auto matAllocation = PerObjectMaterialInfoPooledBuffer->Allocate( &info->buffer, sizeof( info->buffer ) );
                             UINT firstConstant = matAllocation.offsetInBytes / 16;
-                            UINT numConstants = matAllocation.sizeInBytes / 16;   
+                            UINT numConstants = matAllocation.sizeInBytes / 16;
                             GetContext()->PSSetConstantBuffers1( materialInfoSlot, 1, &matAllocation.pBuffer, &firstConstant, &numConstants );
-                            lastMatInfo = info;
+                            m_LastMaterialInfo = info;
                         }
                     }
 

@@ -223,12 +223,16 @@ struct MaterialInfo {
             DisplacementFactor = 0.1f;
             Color = 0xFFFFFFFF;
         }
+
+        static bool FloatEqualEps(float a, float b, float epsilon = 0.0001f) noexcept{
+            return std::abs(a - b) <= epsilon;
+        }
         
         bool operator==( const Buffer& other ) const noexcept {
-            return SpecularIntensity == other.SpecularIntensity &&
-                SpecularPower == other.SpecularPower &&
-                NormalmapStrength == other.NormalmapStrength &&
-                DisplacementFactor == other.DisplacementFactor &&
+            return FloatEqualEps(SpecularIntensity, other.SpecularIntensity) &&
+                FloatEqualEps(SpecularPower, other.SpecularPower) &&
+                FloatEqualEps(NormalmapStrength, other.NormalmapStrength) &&
+                FloatEqualEps(DisplacementFactor, other.DisplacementFactor) &&
                 Color == other.Color;
         }
     };

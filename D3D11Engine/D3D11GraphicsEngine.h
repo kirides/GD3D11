@@ -753,6 +753,12 @@ private:
     ConstantBufferAllocation OutdoorVobsCB;
     std::unique_ptr<ConstantBufferPool> PerObjectMaterialInfoPooledBuffer;
 
+    /** Last MaterialInfo whose constant buffer is known to be bound. Reset to nullptr
+        at the start of DrawVOBsInstanced, DrawSkeletalMeshVobs and DrawWorldMesh, since
+        we can't otherwise be sure what any given draw path last bound. Checked via
+        MaterialInfo::IsSame() to skip re-allocating/re-binding an identical buffer. */
+    MaterialInfo* m_LastMaterialInfo = nullptr;
+
     /** Per-frame ring for small per-draw/per-object dynamic constant buffers
         (grass, and other buffers migrated off their own ID3D11Buffer). */
     std::unique_ptr<ConstantBufferPool> DynamicConstantBufferPool;
