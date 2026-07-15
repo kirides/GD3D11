@@ -550,6 +550,7 @@ protected:
     std::unique_ptr<D3D11Texture> DistortionTexture;
     std::unique_ptr<D3D11Texture> NoiseTexture;
     std::unique_ptr<D3D11Texture> WhiteTexture;
+    std::unique_ptr<D3D11Texture> BlackTexture;
     std::unique_ptr<D3D11Texture> BlueNoise512BGRA;
 
     /** Shadowing */

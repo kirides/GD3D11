@@ -87,7 +87,6 @@ XRESULT D3D11Texture::Init( INT2 size, ETextureFormat format, UINT mipMapCount, 
     }
 
     LE( engine->GetDevice()->CreateTexture2D( &textureDesc, data ? initialDataMips.data() : nullptr, Texture.ReleaseAndGetAddressOf() ) );
-    SetDebugName( Texture.Get(), "D3D11Texture(\"" + fileName + "\")->Texture" );
 
     D3D11_SHADER_RESOURCE_VIEW_DESC descRV = {};
     descRV.Format = DXGI_FORMAT_UNKNOWN;
@@ -95,7 +94,11 @@ XRESULT D3D11Texture::Init( INT2 size, ETextureFormat format, UINT mipMapCount, 
     descRV.Texture2D.MipLevels = mipMapCount;
     descRV.Texture2D.MostDetailedMip = 0;
     LE( engine->GetDevice()->CreateShaderResourceView( Texture.Get(), &descRV, ShaderResourceView.ReleaseAndGetAddressOf() ) );
-    SetDebugName( ShaderResourceView.Get(), "D3D11Texture(\"" + fileName + "\")->ShaderResourceView" );
+    
+    if ( !fileName.empty() ) {
+        SetDebugName( Texture.Get(), "D3D11Texture(\"" + fileName + "\")->Texture" );
+        SetDebugName( ShaderResourceView.Get(), "D3D11Texture(\"" + fileName + "\")->ShaderResourceView" );
+    }
 
     return XR_SUCCESS;
 }
@@ -162,8 +165,11 @@ XRESULT D3D11Texture::Init( const std::string& file ) {
 
     TextureSize.x = desc.Width;
     TextureSize.y = desc.Height;
-    SetDebugName( res.Get(), "D3D11Texture(\"" + file + "\")->Texture" );
-    SetDebugName( ShaderResourceView.Get(), "D3D11Texture(\"" + file + "\")->ShaderResourceView" );
+    
+    if ( !file.empty() ) {
+        SetDebugName( Texture.Get(), "D3D11Texture(\"" + file + "\")->Texture" );
+        SetDebugName( ShaderResourceView.Get(), "D3D11Texture(\"" + file + "\")->ShaderResourceView" );
+    }
 
     return XR_SUCCESS;
 }
@@ -189,8 +195,10 @@ XRESULT D3D11Texture::Init( const uint8_t* data, size_t size, const std::string&
 
     TextureSize.x = desc.Width;
     TextureSize.y = desc.Height;
-    SetDebugName( res.Get(), "D3D11Texture(\"" + debugFileName + "\")->Texture" );
-    SetDebugName( ShaderResourceView.Get(), "D3D11Texture(\"" + debugFileName + "\")->ShaderResourceView" );
+    if ( !debugFileName.empty() ) {
+        SetDebugName( Texture.Get(), "D3D11Texture(\"" + debugFileName + "\")->Texture" );
+        SetDebugName( ShaderResourceView.Get(), "D3D11Texture(\"" + debugFileName + "\")->ShaderResourceView" );
+    }
 
     return XR_SUCCESS;
 }
@@ -213,7 +221,7 @@ XRESULT D3D11Texture::UpdateData( void* data, int mip ) {
 
     if ( MipMapCount == 1 ) {
         // skip staging buffer for single mips
-        return Init( TextureSize, static_cast<ETextureFormat>(TextureFormat), 1, srcData, "dummy name" );
+        return Init( TextureSize, static_cast<ETextureFormat>(TextureFormat), 1, srcData, "");
     }
     
     // Reserve the staging buffer for the whole mip chain up front, on the first mip
@@ -240,7 +248,7 @@ XRESULT D3D11Texture::UpdateData( void* data, int mip ) {
 
     // Once the last mip has arrived, build the final IMMUTABLE texture from the full mip chain
     if ( mip + 1 == MipMapCount ) {
-        return Init( TextureSize, static_cast<ETextureFormat>(TextureFormat), MipMapCount, stagingBuffer.data(), "dummy name" );
+        return Init( TextureSize, static_cast<ETextureFormat>(TextureFormat), MipMapCount, stagingBuffer.data(), "");
     }
 
     return XR_SUCCESS;

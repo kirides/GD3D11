@@ -52,14 +52,14 @@ public:
     }
 
     std::string GetNameWithoutExt() const {
-        std::string n = GetName();
+        std::string_view n = GetNameView();
 
         auto p = n.find_last_of( '.' );
 
         if ( p != std::string::npos )
-            n.resize( p );
+            return std::string(n.data(), p);
 
-        return n;
+        return std::string( n.data(), n.length() );
     }
 
     std::string_view GetNameView() const {
@@ -73,7 +73,7 @@ public:
 
         auto p = n.find_last_of( '.' );
 
-        if ( p != std::string::npos )
+        if ( p != std::string_view::npos )
             return n.substr( 0, p );
 
         return n;
@@ -149,8 +149,7 @@ public:
 #ifndef PUBLIC_RELEASE
             if ( 1 == 0 ) // Small debugger-only section to get the name of currently cachedin texture
             {
-                std::string name = GetName();
-                LogInfo() << "CacheIn on Texture: " << name;
+                LogInfo() << "CacheIn on Texture: " << GetNameView();
             }
 #endif
             Engine::GAPI->SetBoundTexture( 7, this ); // Index 7 is reserved for cacheIn

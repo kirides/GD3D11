@@ -818,6 +818,10 @@ XRESULT D3D11GraphicsEngine::Init() {
     uint32_t whitePixel = 0xFFFFFFFF;
     WhiteTexture->Init( {1,1}, D3D11Texture::ETextureFormat::TF_B8G8R8A8, 1, &whitePixel, "FULL_WHITE_ALPHA_OPAQUE.static-memory");
 
+    BlackTexture = std::make_unique<D3D11Texture>();
+    uint32_t blackPixel = 0xFF000000;
+    BlackTexture->Init( { 1,1 }, D3D11Texture::ETextureFormat::TF_B8G8R8A8, 1, & blackPixel, "FULL_BLACK_ALPHA_OPAQUE.static-memory" );
+
     InverseUnitSphereMesh = new GMesh;
     InverseUnitSphereMesh->LoadMesh( "system\\GD3D11\\meshes\\icoSphere.obj" );
 
@@ -3104,6 +3108,8 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         prevBoneTransformsCb = ActiveVS->GetInputIndex("PrevBoneTransforms");
     }
 
+    ConstantBufferAllocation defaultMaterialInfoAllocation = {};
+
     const auto now = Engine::GAPI->GetTotalTimeDW();
 
     bool wantShader = true;
@@ -3139,8 +3145,8 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     const bool enableShadows = Engine::GAPI->GetRendererState().RendererSettings.EnableShadows;
     const bool isMainPass = RenderingStage == DES_MAIN;
     zCTexture* lastTex = nullptr;
-    auto bindTextureForPass = [&]( zCMaterial* mat ) {
-        auto tex = mat->GetAniTexture();
+    auto bindTextureForPass = [&]( zCMaterial* mat, zCTexture* tex ) {
+        tex = tex != nullptr ? tex : mat->GetAniTexture();
         if (tex == lastTex) 
             return true;
 
@@ -3336,11 +3342,35 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 
                     for ( auto const& itm : dynamic_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->SkeletalMeshes ) {
                         if ( zCMaterial* mat = itm.first ) {
-                            if ( wantShader && (mat->GetAniTexture()) != nullptr ) {
-                                if ( !bindTextureForPass( mat ) ) {
-                                    continue;
+                            if ( wantShader ) {
+                                if ( (mat->GetAniTexture()) != nullptr ) {
+                                    if ( !bindTextureForPass( mat, mat->GetAniTexture() ) ) {
+                                        continue;
+                                    }
+                                } else {
+                                    // Workaround missing textures, like for example Gregs hat in original G2 not having a texture assigned.
+                                    ID3D11ShaderResourceView* srvs[3] = {
+                                        BlackTexture->GetShaderResourceView().Get(),
+                                        DistortionTexture->GetShaderResourceView().Get(),
+                                        nullptr,
+                                    };
+                                    Context->PSSetShaderResources(0, std::size(srvs), srvs);
+                                    
+                                    if ( !defaultMaterialInfoAllocation.pBuffer ) {
+                                        MaterialInfo::Buffer d;
+                                        d.SetDefault();
+                                        d.NormalmapStrength = 0.05f;
+                                        d.SpecularIntensity = 0.10f;
+
+                                        defaultMaterialInfoAllocation = PerObjectMaterialInfoPooledBuffer->Allocate( &d, sizeof( d ) );
+                                    }
+                                    UINT firstConstant = defaultMaterialInfoAllocation.offsetInBytes / 16;
+                                    UINT numConstants = defaultMaterialInfoAllocation.sizeInBytes / 16;
+                                    GetContext()->PSSetConstantBuffers1( 2, 1, &defaultMaterialInfoAllocation.pBuffer, &firstConstant, &numConstants );
                                 }
                             }
+                        } else {
+                            continue;
                         }
                         for ( auto& mesh : itm.second ) {
 
@@ -3562,8 +3592,9 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                             }
                         } else {
                             for ( auto const& itm : mvi->Meshes ) {
-                                if ( itm.first && (itm.first->GetAniTexture()) != nullptr ) {
-                                    if ( !bindTextureForPass( itm.first ) )
+                                zCTexture* aniTex;
+                                if ( itm.first && (aniTex = itm.first->GetAniTexture()) != nullptr ) {
+                                    if ( !bindTextureForPass( itm.first, aniTex ) )
                                         continue;
                                 }
                                 for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
