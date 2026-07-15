@@ -126,8 +126,7 @@ void MyDirectDrawSurface7::LoadAdditionalResources( zCTexture* ownedTexture ) {
     }
     // Set texture name
     if ( EngineTexture ) {
-        SetDebugName( D3D11Texture::From( EngineTexture.get() )->GetTextureObject().Get(), "D3D11Texture(\"" + TextureName + "\")->Texture" );
-        SetDebugName( D3D11Texture::From( EngineTexture.get() )->GetShaderResourceView().Get(), "D3D11Texture(\"" + TextureName + "\")->ShaderResourceView" );
+        EngineTexture->SetDebugName( TextureName.c_str() );
     }
 
     if ( TextureName.empty() || Normalmap || FxMap || !Engine::GAPI->GetRendererState().RendererSettings.AllowNormalmaps ) {

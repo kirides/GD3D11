@@ -37,6 +37,9 @@
     <Filter Include="Engine\D3D11">
       <UniqueIdentifier>{2c8b46b4-d862-4873-964d-9fb082f86e57}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Engine\D3D12">
+      <UniqueIdentifier>{4a7f1e2b-9c3d-4e5a-8b6f-1d2c3e4f5a6b}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Engine\GAPI\Objects">
       <UniqueIdentifier>{291c93a2-0f93-4a10-b857-0d8b86186ca0}</UniqueIdentifier>
     </Filter>
@@ -753,6 +756,21 @@
     <ClInclude Include="ShaderRegistry.h">
       <Filter>Engine</Filter>
     </ClInclude>
+    <ClInclude Include="D3D12Engine\D3D12Device.h">
+      <Filter>Engine\D3D12</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D12Engine\D3D12GraphicsEngine.h">
+      <Filter>Engine\D3D12</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D12Engine\D3D12VertexBuffer.h">
+      <Filter>Engine\D3D12</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D12Engine\D3D12Texture.h">
+      <Filter>Engine\D3D12</Filter>
+    </ClInclude>
+    <ClInclude Include="D3D12Engine\D3D12LineRenderer.h">
+      <Filter>Engine\D3D12</Filter>
+    </ClInclude>
     <ClInclude Include="GothicExternals.h" />
     <ClInclude Include="TAAConstantBuffer.h" />
     <ClInclude Include="D3D11PFX_TAA.h">
@@ -907,6 +925,15 @@
     </ClCompile>
     <ClCompile Include="ShaderRegistry.cpp">
       <Filter>Engine</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12Device.cpp">
+      <Filter>Engine\D3D12</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12GraphicsEngine.cpp">
+      <Filter>Engine\D3D12</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12Texture.cpp">
+      <Filter>Engine\D3D12</Filter>
     </ClCompile>
     <ClCompile Include="GSky.cpp">
       <Filter>Engine\GAPI\Objects</Filter>

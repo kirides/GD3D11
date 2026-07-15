@@ -63,4 +63,6 @@ public:
 
     /** Returns this texture's ID */
     virtual uint16_t GetID() = 0;
+
+    virtual void SetDebugName( const char* name ) {}
 };

@@ -5,6 +5,8 @@
 #include "HookExceptionFilter.h"
 #include "ThreadPool.h"
 #include "ImGuiShim.h"
+#include "D3D12Engine/D3D12Device.h"
+#include "D3D12Engine/D3D12GraphicsEngine.h"
 
 #include <algorithm>
 
@@ -43,6 +45,9 @@ namespace Engine {
                 requested = GothicRendererSettings::GRAPHICS_API_D3D11;
         }
 
+        // For implementation purposes force dx12
+        requested = GothicRendererSettings::GRAPHICS_API_D3D12;
+        
         return requested;
     }
 
@@ -50,14 +55,27 @@ namespace Engine {
     void CreateGraphicsEngine() {
         LogInfo() << "Creating Main graphics engine";
 
-        // Backend selection (Phase 0: inert). D3D11 is the only implemented backend; a D3D12
-        // request is logged and falls back to D3D11 until the D3D12 backend lands.
+        // Backend selection. D3D11 is the default and the fallback. When D3D12 is requested we
+        // probe it (real FL11_0 device-creation check); if available we create the D3D12 backend
+        // (Phase 1: first-light — device + swapchain + per-frame clear/present, rest stubbed),
+        // otherwise we log + show a one-time notice and fall back to D3D11.
+        GraphicsEngine = nullptr;
         if ( ReadRequestedGraphicsAPI() == GothicRendererSettings::GRAPHICS_API_D3D12 ) {
-            LogWarn() << "Direct3D 12 backend was requested (GraphicsAPI=D3D12 / -GD3D12) but is "
-                         "not available in this build. Falling back to Direct3D 11.";
+            std::string deviceDesc, reason;
+            if ( D3D12Device::IsAvailable( &deviceDesc, &reason ) ) {
+                LogInfo() << "Direct3D 12 is available on this system (GPU: " << deviceDesc << "). Creating the Direct3D 12 backend.";
+                GraphicsEngine = new D3D12GraphicsEngine;
+            } else {
+                LogWarn() << "Direct3D 12 was requested but is unavailable: " << reason << ". Using Direct3D 11.";
+                MessageBoxA( nullptr,
+                    ("Direct3D 12 is unavailable: " + reason + "\n\nFalling back to Direct3D 11.").c_str(),
+                    "GD3D11 - Direct3D 12 unavailable", MB_OK | MB_ICONINFORMATION );
+            }
         }
 
-        GraphicsEngine = new D3D11GraphicsEngine;
+        if ( !GraphicsEngine ) {
+            GraphicsEngine = new D3D11GraphicsEngine;
+        }
 
         if ( !GraphicsEngine ) {
             LogErrorBox() << "Failed to create GraphicsEngine! Out of memory!";

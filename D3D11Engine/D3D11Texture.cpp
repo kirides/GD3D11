@@ -96,8 +96,8 @@ XRESULT D3D11Texture::Init( INT2 size, ETextureFormat format, UINT mipMapCount, 
     LE( engine->GetDevice()->CreateShaderResourceView( Texture.Get(), &descRV, ShaderResourceView.ReleaseAndGetAddressOf() ) );
     
     if ( !fileName.empty() ) {
-        SetDebugName( Texture.Get(), "D3D11Texture(\"" + fileName + "\")->Texture" );
-        SetDebugName( ShaderResourceView.Get(), "D3D11Texture(\"" + fileName + "\")->ShaderResourceView" );
+        ::SetDebugName( Texture.Get(), "D3D11Texture(\"" + fileName + "\")->Texture" );
+        ::SetDebugName( ShaderResourceView.Get(), "D3D11Texture(\"" + fileName + "\")->ShaderResourceView" );
     }
 
     return XR_SUCCESS;
@@ -167,8 +167,8 @@ XRESULT D3D11Texture::Init( const std::string& file ) {
     TextureSize.y = desc.Height;
     
     if ( !file.empty() ) {
-        SetDebugName( Texture.Get(), "D3D11Texture(\"" + file + "\")->Texture" );
-        SetDebugName( ShaderResourceView.Get(), "D3D11Texture(\"" + file + "\")->ShaderResourceView" );
+        ::SetDebugName( Texture.Get(), "D3D11Texture(\"" + file + "\")->Texture" );
+        ::SetDebugName( ShaderResourceView.Get(), "D3D11Texture(\"" + file + "\")->ShaderResourceView" );
     }
 
     return XR_SUCCESS;
@@ -196,8 +196,8 @@ XRESULT D3D11Texture::Init( const uint8_t* data, size_t size, const std::string&
     TextureSize.x = desc.Width;
     TextureSize.y = desc.Height;
     if ( !debugFileName.empty() ) {
-        SetDebugName( Texture.Get(), "D3D11Texture(\"" + debugFileName + "\")->Texture" );
-        SetDebugName( ShaderResourceView.Get(), "D3D11Texture(\"" + debugFileName + "\")->ShaderResourceView" );
+        ::SetDebugName( Texture.Get(), "D3D11Texture(\"" + debugFileName + "\")->Texture" );
+        ::SetDebugName( ShaderResourceView.Get(), "D3D11Texture(\"" + debugFileName + "\")->ShaderResourceView" );
     }
 
     return XR_SUCCESS;
@@ -285,7 +285,7 @@ XRESULT D3D11Texture::UpdateDataDeferred( void* data, int mip ) {
     HRESULT result = engine->GetDevice()->CreateTexture2D( &stagingTextureDesc, &stagingTextureData, &stagingTexture );
     if ( FAILED( result ) )
         return XR_FAILED;
-    SetDebugName( stagingTexture, "D3D11Texture->UpdateDataDeferred->stagingTexture" );
+    ::SetDebugName( stagingTexture, "D3D11Texture->UpdateDataDeferred->stagingTexture" );
 
     Engine::GAPI->AddStagingTexture( mip, stagingTexture, Texture.Get() );
     return XR_SUCCESS;
