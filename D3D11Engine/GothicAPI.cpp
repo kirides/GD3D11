@@ -2772,9 +2772,8 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
                     }
                 } else {
                     for ( auto const& itm : mvi->Meshes ) {
-                        zCTexture* texture;
-                        if ( itm.first && (texture = itm.first->GetAniTexture()) != nullptr ) {
-                            if ( !g->BindTextureNRFX( texture, (g->GetRenderingStage() == DES_MAIN) ) )
+                        if ( itm.first && (itm.first->GetAniTexture()) != nullptr ) {
+                            if ( !g->BindTextureNRFX( itm.first, (g->GetRenderingStage() == DES_MAIN) ) )
                                 continue;
                         }
 
@@ -3083,9 +3082,11 @@ void GothicAPI::DrawTransparencyVobs() {
             g->GetContext()->PSSetShader( nullptr, nullptr, 0 );
 
             for ( auto const& materialMesh : TransVobInfo.normalVob->VisualInfo->Meshes ) {
-                if ( materialMesh.first && materialMesh.first->GetTexture() ) {
-                    if ( materialMesh.first->GetTexture()->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
-                        materialMesh.first->GetTexture()->Bind( 0 );
+                if ( materialMesh.first ) {
+                    if ( zCTexture* aniTex = materialMesh.first->GetAniTexture() ) {
+                        if ( aniTex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                            aniTex->Bind( 0 );
+                        }
                     }
                 }
 
@@ -3109,9 +3110,11 @@ void GothicAPI::DrawTransparencyVobs() {
             cbPool->BindPS(psBufGAI , cbPool->Allocate(&gacb, sizeof(gacb)));
 
             for ( auto const& materialMesh : TransVobInfo.normalVob->VisualInfo->Meshes ) {
-                if ( materialMesh.first && materialMesh.first->GetTexture() ) {
-                    if ( materialMesh.first->GetTexture()->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
-                        materialMesh.first->GetTexture()->Bind( 0 );
+                if ( materialMesh.first ) {
+                    if ( zCTexture* aniTex = materialMesh.first->GetAniTexture() ) {
+                        if ( aniTex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                            aniTex->Bind( 0 );
+                        }
                     }
                 }
 
@@ -3591,8 +3594,8 @@ bool GothicAPI::TraceWorldMesh( const XMFLOAT3& origin, const XMFLOAT3& dir, XMF
                             *hitMaterial = it->first.Material;
                         }
 
-                        if ( hitTextureName && it->first.Material && it->first.Material->GetTexture() )
-                            *hitTextureName = it->first.Material->GetTexture()->GetNameWithoutExt();
+                        if ( hitTextureName && it->first.Material && it->first.Material->GetTextureSingle() )
+                            *hitTextureName = it->first.Material->GetTextureSingle()->GetNameWithoutExt();
                     }
                 }
             }
@@ -4831,8 +4834,8 @@ float GothicAPI::GetNearPlane() {
 zCMaterial* GothicAPI::GetMaterialByTextureName( const std::string& name ) {
     const std::string_view nameView = name;
     for ( auto const& it : LoadedMaterials ) {
-        if ( it->GetTexture() ) {
-            const std::string_view tn = it->GetTexture()->GetNameWithoutExtView();
+        if ( it->GetTextureSingle() ) {
+            const std::string_view tn = it->GetTextureSingle()->GetNameWithoutExtView();
             if ( Toolbox::EqualsIgnoreCase(nameView, tn ) )
                 return it;
         }
@@ -4844,8 +4847,8 @@ zCMaterial* GothicAPI::GetMaterialByTextureName( const std::string& name ) {
 void GothicAPI::GetMaterialListByTextureName( const std::string& name, std::list<zCMaterial*>& list ) {
     const std::string_view nameView = name;
     for ( auto const& it : LoadedMaterials ) {
-        if ( it->GetTexture() ) {
-            const std::string_view tn = it->GetTexture()->GetNameWithoutExtView();
+        if ( it->GetTextureSingle() ) {
+            const std::string_view tn = it->GetTextureSingle()->GetNameWithoutExtView();
             if ( Toolbox::EqualsIgnoreCase(nameView, tn ) )
                 list.push_back( it );
         }
@@ -4916,17 +4919,33 @@ MaterialInfo* GothicAPI::GetMaterialInfoFrom(void* any, std::string_view materia
     
 MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCMaterial* mat ) {
     const auto name = mat->GetNameView();
-    if (!name.empty()) {
+    if (!name.empty() && !name.contains( ':' )) {
+        // colons are mosly used for poly <-> sector <-> texture mapping
+        // such as S:ADANOS013_NW_PATHWAY_04
+        // as such, we should not use the original name, but fall back to the texture
         return GetMaterialInfoFrom(mat, name);
     }
+
     // MaterialInfo only from the main texture.
-    return GetMaterialInfoFrom(mat->GetTextureSingle()); 
+    auto tex = mat->GetTextureSingle();
+    if ( !tex ) {
+        // unless its un-set...?
+        tex = mat->GetAniTexture();
+    }
+
+    if (tex)
+    {
+        return GetMaterialInfoFrom( mat, tex->GetNameWithoutExtView() );
+    }
+    // maybe its not yet loaded.
+    // store a dummy and maybe retry again on InitValues
+    // shouldn't actually happen, but eh.
+    return GetMaterialInfoFrom( mat, "MAT_DUMMY" ); 
 }
     
 /** Returns the material info associated with the given material */
 MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCTexture* tex ) {
     const auto it = MaterialInfos.find( tex );
-    MaterialInfo* mi;
     if ( it == MaterialInfos.end() ) {
         return GetMaterialInfoFrom(tex, tex->GetNameWithoutExtView());
     }
@@ -4973,7 +4992,7 @@ std::vector<VobInfo*>& GothicAPI::GetDynamicallyAddedVobs() {
 /** Returns a texture from the given surface */
 zCTexture* GothicAPI::GetTextureBySurface( MyDirectDrawSurface7* surface ) {
     for ( auto const& it : LoadedMaterials ) {
-        auto const texture = it->GetTexture();
+        auto const texture = it->GetTextureSingle();
         if ( texture && texture->GetSurface() == surface )
             return texture;
     }
@@ -5073,7 +5092,7 @@ void GothicAPI::ApplySuppressedSectionTextures() {
         for ( auto mit = section->WorldMeshes.begin(); mit != section->WorldMeshes.end(); ) {
             bool movedToSuppressed = false;
             if (auto mat = mit->first.Material ) {
-                if ( auto tx = mat->GetTexture()) {
+                if ( auto tx = mat->GetTextureSingle()) {
                     auto txName = tx->GetNameWithoutExtView();
                     for ( unsigned int i = 0; i < it.second.size(); i++ ) {
                         // Is this the texture we are looking for?
@@ -5755,7 +5774,7 @@ void GothicAPI::DrawMorphMesh( zCMorphMesh* msh, std::map<zCMaterial*, std::vect
                 lastTex = texture;
                 if ( isZPrepass ) {
                     texture->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
-                } else if ( !g->BindTextureNRFX( texture, bindShader ) ) {
+                } else if ( !g->BindTextureNRFX( s->Material, bindShader ) ) {
                     continue;
                 }
             }

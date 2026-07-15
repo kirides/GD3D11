@@ -483,7 +483,7 @@ XRESULT WorldConverter::LoadWorldMeshFromFile( const std::string& file, std::map
         } else {
             if ( mat->GetMatGroup() == zMAT_GROUP_WATER ) {
                 // Give water surfaces a water-shader
-                MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( mat->GetTextureSingle() );
+                MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( mat);
                 if ( info ) {
                     info->PixelShader = PShaderID::PS_Water;
                     info->MaterialType = MaterialInfo::MT_Water;
@@ -533,7 +533,7 @@ XRESULT WorldConverter::LoadWorldMeshFromFile( const std::string& file, std::map
             bbmax.z = bbmax.z < v[0]->Position.z ? v[0]->Position.z : bbmax.z;
 
             if ( section.WorldMeshes.find( key ) == section.WorldMeshes.end() ) {
-                key.Info = Engine::GAPI->GetMaterialInfoFrom( key.Texture );
+                key.Info = Engine::GAPI->GetMaterialInfoFrom( key.Material );
 
                 section.WorldMeshes[key] = new WorldMeshInfo;
 
@@ -757,7 +757,7 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
                     // it only work because DrawMeshInfoListAlphablended use texture from material
                     _tex = reinterpret_cast<zCTexture*>(reinterpret_cast<DWORD>(tex) + 1);
 
-                    MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( _tex, textureName );
+                    MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( mat );
                     info->MaterialType = MaterialInfo::MT_Portal;
                 }
             } else {
@@ -787,7 +787,7 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
 
         auto it = sectionInfo.WorldMeshes.find( key );
         if ( it == sectionInfo.WorldMeshes.end() ) {
-            key.Info = Engine::GAPI->GetMaterialInfoFrom( key.Texture );
+            key.Info = Engine::GAPI->GetMaterialInfoFrom( mat );
             it = sectionInfo.WorldMeshes.emplace( key, new WorldMeshInfo ).first;
         }
 
@@ -857,7 +857,7 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
         TriangleFanToList( &polyVertices[0], polyVertices.size(), &it->second->RawVertices );
         if ( matGroup == zMAT_GROUP_WATER && !mat->HasAlphaTest() ) {
 #ifdef BUILD_GOTHIC_1_08k
-            MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( key.Texture );
+            MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( mat );
             if ( !(checkWaterFallCached( key.Texture )) ) {
                 // Give water surfaces a water-shader
                 if ( info ) {
@@ -874,7 +874,7 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
             }
 #else
             // Give water surfaces a water-shader
-            MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( key.Texture );
+            MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( mat );
             if ( info ) {
                 info->PixelShader = PShaderID::PS_Water;
                 info->MaterialType = MaterialInfo::MT_Water;
@@ -1509,7 +1509,7 @@ void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualIn
             MeshKey key;
             key.Material = mat;
             key.Texture = mat->GetTextureSingle();
-            key.Info = Engine::GAPI->GetMaterialInfoFrom( key.Texture );
+            key.Info = Engine::GAPI->GetMaterialInfoFrom( mat );
 
             meshInfo->MeshesByTexture[key].emplace_back( mi );
             if (key.Texture && key.Texture->HasAlphaChannel()) {
@@ -1864,7 +1864,7 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
         MeshKey key;
         key.Material = mat;
         key.Texture = mat->GetTextureSingle();
-        key.Info = Engine::GAPI->GetMaterialInfoFrom( key.Texture );
+        key.Info = Engine::GAPI->GetMaterialInfoFrom( mat );
 
         meshInfo->MeshesByTexture[key].emplace_back( mi );
         if (key.Texture && key.Texture->HasAlphaChannel()) {

@@ -168,7 +168,7 @@ public:
     void UpdateColorSpace_SwapChain();
 
     /** Sets up texture with normalmap and fxmap for rendering */
-    bool BindTextureNRFX( zCTexture* tex, bool bindShader, bool updateMaterialInfo = true );
+    bool BindTextureNRFX( zCMaterial* mat, bool bindShader, bool updateMaterialInfo = true );
 
     /** Draws a skeletal mesh */
     XRESULT DrawSkeletalVertexNormals(SkeletalVobInfo* vi, const XMFLOAT4X4& world, const std::span<XMFLOAT4X4> transforms, float4 color, float fatness =

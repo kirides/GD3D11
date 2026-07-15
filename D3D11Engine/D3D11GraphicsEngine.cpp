@@ -2481,7 +2481,8 @@ XRESULT D3D11GraphicsEngine::DrawVertexBufferFF( D3D11VertexBuffer* vb,
 }
 
 /** Sets up texture with normalmap and fxmap for rendering */
-bool D3D11GraphicsEngine::BindTextureNRFX( zCTexture* tex, bool bindShader, bool updateMaterialInfo ) {
+bool D3D11GraphicsEngine::BindTextureNRFX( zCMaterial* mat, bool bindShader, bool updateMaterialInfo ) {
+    auto tex = mat->GetAniTexture();
     if ( tex->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
         return false;
     }
@@ -2499,7 +2500,7 @@ bool D3D11GraphicsEngine::BindTextureNRFX( zCTexture* tex, bool bindShader, bool
 
     MaterialInfo* info = nullptr;
     if ( updateMaterialInfo ) {
-        info = Engine::GAPI->GetMaterialInfoFrom( tex );
+        info = Engine::GAPI->GetMaterialInfoFrom( mat );
     }
 
     // Bind a default normalmap in case the scene is wet and we currently have none
@@ -2508,7 +2509,7 @@ bool D3D11GraphicsEngine::BindTextureNRFX( zCTexture* tex, bool bindShader, bool
         srvs[1] = nrm->GetShaderResourceView().Get();
     } else if ( Engine::GAPI->GetSceneWetness() > 1e-6 ) {
         srvs[1] = DistortionTexture->GetShaderResourceView().Get();
-        if (!info) { info = Engine::GAPI->GetMaterialInfoFrom( tex ); }
+        if (!info) { info = Engine::GAPI->GetMaterialInfoFrom( mat ); }
         if (info) {
             // Value override for non-normalmapped textures in case of rain
             info->buffer.NormalmapStrength = DEFAULT_NOISE_NORMALMAP_STRENGTH;
@@ -2726,9 +2727,8 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
 
     for ( auto const& itm : dynamic_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->SkeletalMeshes ) {
         if ( zCMaterial* mat = itm.first ) {
-            zCTexture* tex;
-            if ( ActivePS && (tex = mat->GetAniTexture()) != nullptr ) {
-                if ( !BindTextureNRFX( tex, (RenderingStage != DES_GHOST) ) ) {
+            if ( ActivePS && (mat->GetAniTexture()) != nullptr ) {
+                if ( !BindTextureNRFX( mat, (RenderingStage != DES_GHOST) ) ) {
                     continue;
                 }
             }
@@ -3134,7 +3134,8 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     const bool enableShadows = Engine::GAPI->GetRendererState().RendererSettings.EnableShadows;
     const bool isMainPass = RenderingStage == DES_MAIN;
     zCTexture* lastTex = nullptr;
-    auto bindTextureForPass = [&]( zCTexture* tex ) {
+    auto bindTextureForPass = [&]( zCMaterial* mat ) {
+        auto tex = mat->GetAniTexture();
         if (tex == lastTex) 
             return true;
 
@@ -3159,7 +3160,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             return true;
         } else {
             lastTex = tex;
-            return BindTextureNRFX( tex, isMainPass );
+            return BindTextureNRFX( mat, isMainPass );
         }
     };
 
@@ -3330,9 +3331,8 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 
                     for ( auto const& itm : dynamic_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->SkeletalMeshes ) {
                         if ( zCMaterial* mat = itm.first ) {
-                            zCTexture* tex;
-                            if ( wantShader && (tex = mat->GetAniTexture()) != nullptr ) {
-                                if ( !bindTextureForPass( tex ) ) {
+                            if ( wantShader && (mat->GetAniTexture()) != nullptr ) {
+                                if ( !bindTextureForPass( mat ) ) {
                                     continue;
                                 }
                             }
@@ -3557,9 +3557,8 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                             }
                         } else {
                             for ( auto const& itm : mvi->Meshes ) {
-                                zCTexture* texture;
-                                if ( itm.first && (texture = itm.first->GetAniTexture()) != nullptr ) {
-                                    if ( !bindTextureForPass( texture ) )
+                                if ( itm.first && (itm.first->GetAniTexture()) != nullptr ) {
+                                    if ( !bindTextureForPass( itm.first ) )
                                         continue;
                                 }
                                 for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
@@ -3772,8 +3771,8 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             MeshInfo* mi = batch.Mesh;
 
             MaterialInfo* info = nullptr;
-            if ( batch.Texture ) {
-                info = Engine::GAPI->GetMaterialInfoFrom( batch.Texture );
+            if ( batch.Material ) {
+                info = Engine::GAPI->GetMaterialInfoFrom( batch.Material );
                 if ( needsAlphaTesting && info->MaterialType == MaterialInfo::MT_FullAlpha ) {
                     continue;
                 }
@@ -3801,7 +3800,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                     GetContext()->PSSetShader( nullptr, nullptr, 0 );
                 }
             } else if ( wantShader && batch.Texture && batch.Texture != lastBatchTex ) {
-                if ( !BindTextureNRFX( batch.Texture, isMainOrGhost, info != lastMaterialInfo ) ) {
+                if ( !BindTextureNRFX( batch.Material, isMainOrGhost, info != lastMaterialInfo ) ) {
                     continue;
                 }
                 lastMaterialInfo = info;
@@ -5167,13 +5166,13 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
         for ( auto const& renderItem : renderList ) {
             for ( auto const& worldMesh : renderItem->WorldMeshes ) {
                 if ( worldMesh.first.Material ) {
-                    zCTexture* aniTex = worldMesh.first.Material->GetTexture();
-                    if ( !aniTex ) continue;
+                    zCTexture* matTex = worldMesh.first.Material->GetTextureSingle();
+                    if ( !matTex ) continue;
 
                     // Check surface type
                     if ( worldMesh.first.Info->MaterialType == MaterialInfo::MT_Water ) {
                         if ( !isZPrepass ) {
-                            FrameWaterSurfaces[aniTex].push_back( worldMesh.second );
+                            FrameWaterSurfaces[matTex].push_back( worldMesh.second );
                         }
                         continue;
                     }
@@ -5204,18 +5203,18 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
                         continue;
                     } else {
 
-                        if ( aniTex->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
+                        if ( matTex->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
                             continue;
                         }
                         int alphaLevel = 0;
-                        if ( worldMesh.first.Texture && worldMesh.first.Texture->HasAlphaChannel() ) {
+                        if ( matTex && matTex->HasAlphaChannel() ) {
                             alphaLevel = 2;
                         } else if ( worldMesh.first.Material && worldMesh.first.Material->HasAlphaTest() ) {
                             alphaLevel = 1;
                         }
 
                         WorldMeshKey key = {
-                            aniTex,
+                            matTex,
                             worldMesh.first.Material,
                             worldMesh.first.Info,
                             alphaLevel,
@@ -5718,18 +5717,19 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
             for ( auto&& meshInfoByKey = worldMeshCache->begin(); meshInfoByKey != worldMeshCache->end(); ++meshInfoByKey ) {
                 bool isAlpha = false;
                 // Bind texture
-                if ( meshInfoByKey->first.Material && meshInfoByKey->first.Material->GetTexture() ) {
+                if ( meshInfoByKey->first.Material && meshInfoByKey->first.Material->GetTextureSingle() ) {
                     // Check surface type
 
                     if ( meshInfoByKey->first.Info->MaterialType != MaterialInfo::MT_None ) {
                         continue;
                     }
 
-                    if ( meshInfoByKey->first.Material->HasAlphaTest() || meshInfoByKey->first.Material->GetTexture()->HasAlphaChannel() ) {
-                        if ( alphaRef > 0.0f && meshInfoByKey->first.Material->GetTexture()->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
-                            void* engineTex = meshInfoByKey->first.Material->GetTexture()->GetSurface()->GetEngineTexture();
+                    if ( meshInfoByKey->first.Material->HasAlphaTest() || meshInfoByKey->first.Material->GetTextureSingle()->HasAlphaChannel() ) {
+                        zCTexture* aniTex = alphaRef > 0.0f ? meshInfoByKey->first.Material->GetAniTexture() : nullptr;
+                        if ( aniTex && aniTex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                            void* engineTex = aniTex->GetSurface()->GetEngineTexture();
                             if ( lastTex != engineTex ) {
-                                meshInfoByKey->first.Material->GetTexture()->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
+                                aniTex->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
                                 lastTex = engineTex;
                             }
                             ActivePS->Apply();
@@ -5786,13 +5786,14 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
 
                         WorldMeshInfo* mesh = meshInfoByKey.second;
 
-                        if ( meshInfoByKey.first.Material && meshInfoByKey.first.Material->GetTexture()
+                        if ( meshInfoByKey.first.Material && meshInfoByKey.first.Material->GetTextureSingle()
                             && (meshInfoByKey.first.Material->HasAlphaTest()
-                                || meshInfoByKey.first.Material->GetTexture()->HasAlphaChannel()) ) {
-                            if ( alphaRef > 0.0f &&
-                                meshInfoByKey.first.Material->GetTexture()->CacheIn( 0.6f ) ==
-                                zRES_CACHED_IN ) {
-                                alphaMeshes.emplace_back( meshInfoByKey.first.Material->GetTexture(), mesh );
+                                || meshInfoByKey.first.Material->GetTextureSingle()->HasAlphaChannel()) ) {
+                            if ( alphaRef > 0.0f ) {
+                                zCTexture* aniTex = meshInfoByKey.first.Material->GetAniTexture();
+                                if ( aniTex && aniTex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                                    alphaMeshes.emplace_back( aniTex, mesh );
+                                }
                             } // else: texture not loaded yet, skip
                             continue;
                         }
@@ -5924,18 +5925,20 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
             // Draw the vob
             for ( auto const& materialMesh : vobInfo->VisualInfo->Meshes ) {
                 bool isAlpha = false;
-                if ( materialMesh.first && materialMesh.first->GetTexture() ) {
-                    if ( materialMesh.first->GetTexture()->CacheIn( 0.6f ) == zRES_CACHED_IN
-                        && (
-                            (materialMesh.first->GetAlphaFunc() != zMAT_ALPHA_FUNC_NONE && materialMesh.first->GetAlphaFunc() != zMAT_ALPHA_FUNC_MAT_DEFAULT)
-                            || materialMesh.first->GetTexture()->HasAlphaChannel())
+                if ( materialMesh.first && materialMesh.first->GetTextureSingle() ) {
+                    if ( (materialMesh.first->GetAlphaFunc() != zMAT_ALPHA_FUNC_NONE && materialMesh.first->GetAlphaFunc() != zMAT_ALPHA_FUNC_MAT_DEFAULT)
+                            || materialMesh.first->GetTextureSingle()->HasAlphaChannel()
                         ) {
-                        isAlpha = true;
-                        if ( lastBoundTexture != materialMesh.first->GetTexture()->GetSurface()->GetEngineTexture() ) {
-                            lastBoundTexture = materialMesh.first->GetTexture()->GetSurface()->GetEngineTexture(); 
-                            lastBoundTexture->BindToPixelShader( 0 );
+                        zCTexture* aniTex = materialMesh.first->GetAniTexture();
+                        if ( aniTex && aniTex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                            isAlpha = true;
+                            if ( lastBoundTexture != aniTex->GetSurface()->GetEngineTexture() ) {
+                                lastBoundTexture = aniTex->GetSurface()->GetEngineTexture();
+                                lastBoundTexture->BindToPixelShader( 0 );
+                            }
                         }
-                    } else {
+                    }
+                    if ( !isAlpha ) {
                         if (lastBoundTexture != WhiteTexture.get()) {
                             WhiteTexture->BindToPixelShader( 0 );
                             lastBoundTexture = WhiteTexture.get();
@@ -6122,18 +6125,18 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
             for ( auto&& meshInfoByKey = worldMeshCache->begin(); meshInfoByKey != worldMeshCache->end(); ++meshInfoByKey ) {
                 // Bind texture
                 bool isAlpha = false;
-                if ( meshInfoByKey->first.Material && meshInfoByKey->first.Material->GetTexture() ) {
+                if ( meshInfoByKey->first.Material && meshInfoByKey->first.Material->GetTextureSingle() ) {
                     // Check surface type
 
                     if ( meshInfoByKey->first.Info->MaterialType != MaterialInfo::MT_None ) {
                         continue;
                     }
 
-                    if ( meshInfoByKey->first.Material->HasAlphaTest() || meshInfoByKey->first.Material->GetTexture()->HasAlphaChannel() ) {
-                        if ( alphaRef > 0.0f && meshInfoByKey->first.Material->GetTexture()->CacheIn(
-                            0.6f ) == zRES_CACHED_IN ) {
-                            lastTex = meshInfoByKey->first.Material->GetTexture()->GetSurface()->GetEngineTexture();
-                            meshInfoByKey->first.Material->GetTexture()->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
+                    if ( meshInfoByKey->first.Material->HasAlphaTest() || meshInfoByKey->first.Material->GetTextureSingle()->HasAlphaChannel() ) {
+                        zCTexture* aniTex = alphaRef > 0.0f ? meshInfoByKey->first.Material->GetAniTexture() : nullptr;
+                        if ( aniTex && aniTex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                            lastTex = aniTex->GetSurface()->GetEngineTexture();
+                            aniTex->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
                             ActivePS->Apply();
                             isAlpha = true;
                         } else
@@ -6189,13 +6192,14 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
 
                         WorldMeshInfo* mesh = meshInfoByKey.second;
 
-                        if ( meshInfoByKey.first.Material && meshInfoByKey.first.Material->GetTexture()
+                        if ( meshInfoByKey.first.Material && meshInfoByKey.first.Material->GetTextureSingle()
                             && (meshInfoByKey.first.Material->HasAlphaTest()
-                                || meshInfoByKey.first.Material->GetTexture()->HasAlphaChannel()) ) {
-                            if ( alphaRef > 0.0f &&
-                                meshInfoByKey.first.Material->GetTexture()->CacheIn( 0.6f ) ==
-                                zRES_CACHED_IN ) {
-                                alphaMeshes.emplace_back( meshInfoByKey.first.Material->GetTexture(), mesh );
+                                || meshInfoByKey.first.Material->GetTextureSingle()->HasAlphaChannel()) ) {
+                            if ( alphaRef > 0.0f ) {
+                                zCTexture* aniTex = meshInfoByKey.first.Material->GetAniTexture();
+                                if ( aniTex && aniTex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                                    alphaMeshes.emplace_back( aniTex, mesh );
+                                }
                             } // else: texture not loaded yet, skip
                             continue;
                         }
@@ -6329,18 +6333,20 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
             // Draw the vob1
             for ( auto const& materialMesh : vobInfo->VisualInfo->Meshes ) {
                 bool isAlpha = false;
-                if ( materialMesh.first && materialMesh.first->GetTexture() ) {
-                    if ( materialMesh.first->GetTexture()->CacheIn( 0.6f ) == zRES_CACHED_IN
-                        && (
-                            (materialMesh.first->GetAlphaFunc() != zMAT_ALPHA_FUNC_NONE && materialMesh.first->GetAlphaFunc() != zMAT_ALPHA_FUNC_MAT_DEFAULT)
-                            || materialMesh.first->GetTexture()->HasAlphaChannel())
+                if ( materialMesh.first && materialMesh.first->GetTextureSingle() ) {
+                    if ( (materialMesh.first->GetAlphaFunc() != zMAT_ALPHA_FUNC_NONE && materialMesh.first->GetAlphaFunc() != zMAT_ALPHA_FUNC_MAT_DEFAULT)
+                            || materialMesh.first->GetTextureSingle()->HasAlphaChannel()
                         ) {
-                        isAlpha = true;
-                        if ( lastBoundTexture != materialMesh.first->GetTexture()->GetSurface()->GetEngineTexture() ) {
-                            lastBoundTexture = materialMesh.first->GetTexture()->GetSurface()->GetEngineTexture();
-                            lastBoundTexture->BindToPixelShader( 0 );
+                        zCTexture* aniTex = materialMesh.first->GetAniTexture();
+                        if ( aniTex && aniTex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                            isAlpha = true;
+                            if ( lastBoundTexture != aniTex->GetSurface()->GetEngineTexture() ) {
+                                lastBoundTexture = aniTex->GetSurface()->GetEngineTexture();
+                                lastBoundTexture->BindToPixelShader( 0 );
+                            }
                         }
-                    } else {
+                    }
+                    if ( !isAlpha ) {
                         if ( lastBoundTexture != WhiteTexture.get() ) {
                             WhiteTexture->BindToPixelShader( 0 );
                             lastBoundTexture = WhiteTexture.get();
@@ -6498,11 +6504,12 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<W
                     continue;
                 }
 
-                zCTexture* tex = meshPair.first.Material ? meshPair.first.Material->GetTexture() : nullptr;
+                zCTexture* texSingle = meshPair.first.Material ? meshPair.first.Material->GetTextureSingle() : nullptr;
                 unsigned int indexCount = 0;
 
-                if ( tex && tex->HasAlphaChannel() && alphaRef > 0.0f ) {
-                    if ( tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                if ( texSingle && texSingle->HasAlphaChannel() && alphaRef > 0.0f ) {
+                    zCTexture* tex = meshPair.first.Material->GetAniTexture();
+                    if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
                         alphaMeshes.emplace_back( tex, mesh );
                     }
                     indexCount = GetShadowAwareIndexCount( mesh, true );
@@ -6647,11 +6654,12 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh( const std::vector<WorldMeshS
                     continue;
                 }
 
-                zCTexture* tex = meshPair.first.Material ? meshPair.first.Material->GetTexture() : nullptr;
+                zCTexture* texSingle = meshPair.first.Material ? meshPair.first.Material->GetTextureSingle() : nullptr;
 
-                if ( tex && tex->HasAlphaChannel() && alphaRef > 0.0f ) {
+                if ( texSingle && texSingle->HasAlphaChannel() && alphaRef > 0.0f ) {
                     // Need alpha testing - cache texture
-                    if ( tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                    zCTexture* tex = meshPair.first.Material->GetAniTexture();
+                    if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
                         alphaMeshes.emplace_back( tex, meshPair.second );
                     }
                 } else {
@@ -8164,6 +8172,7 @@ XRESULT D3D11GraphicsEngine::DrawPolyStrips( bool noTextures ) {
     const XMMATRIX identityMatrix = XMMatrixIdentity();
     ActiveVS->UpdateBuffer(vsBufMPI, &identityMatrix, sizeof(identityMatrix) );
 
+    zCMaterial* lastMat = nullptr;
     for ( auto it = polyStripInfos.begin(); it != polyStripInfos.end(); it++ ) {
         zCMaterial* mat = it->second.material;
         zCTexture* tx = it->first;
@@ -8213,8 +8222,11 @@ XRESULT D3D11GraphicsEngine::DrawPolyStrips( bool noTextures ) {
                 UpdateRenderStates();
             }
 
-            MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( tx );
-            ActivePS->UpdateBuffer(materialInfoBuffer, &info->buffer, sizeof( info->buffer ));
+            if (lastMat != mat) {
+                MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( mat );
+                ActivePS->UpdateBuffer(materialInfoBuffer, &info->buffer, sizeof( info->buffer ));
+                lastMat = mat;
+            }
 
         } else {
             //Don't draw if texture is not yet cached (I have no idea how can I preload it in advance)
@@ -8512,7 +8524,7 @@ void D3D11GraphicsEngine::DrawVobSingle( VobInfo* vob, zCCamera& camera ) {
     for ( auto const& itm : vob->VisualInfo->Meshes ) {
         // Cache & bind texture
         zCTexture* texture;
-        if ( itm.first && ( texture = itm.first->GetTexture() ) != nullptr ) {
+        if ( itm.first && ( texture = itm.first->GetAniTexture() ) != nullptr ) {
             if ( texture->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
                 texture->Bind( 0 );
             } else {
@@ -8803,7 +8815,7 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
             continue;
         }
 
-        zCTexture* texture = material->GetTexture();
+        zCTexture* texture = material->GetTextureSingle();
         if ( !texture ) {
             continue;
         }
@@ -8994,7 +9006,7 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
         }
         const unsigned int count = static_cast<unsigned int>(i - start);
 
-        zCTexture* texture = material->GetTexture();
+        zCTexture* texture = material->GetAniTexture();
         int alphaFunc = material->GetAlphaFunc();
         if ( alphaFunc == zMAT_ALPHA_FUNC_MAT_DEFAULT ) {
             alphaFunc = zMAT_ALPHA_FUNC_BLEND;
@@ -9474,7 +9486,7 @@ void D3D11GraphicsEngine::DrawFrameParticleMeshes( std::unordered_map<zCVob*, st
         for ( auto const& itm : it.second->Meshes ) {
             // Cache & bind texture
             zCTexture* texture;
-            if ( itm.first && (texture = itm.first->GetTexture()) != nullptr ) {
+            if ( itm.first && (texture = itm.first->GetAniTexture()) != nullptr ) {
                 if ( texture->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
                     texture->Bind( 0 );
                 } else {
