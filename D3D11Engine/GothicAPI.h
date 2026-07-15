@@ -688,6 +688,8 @@ public:
 
     /** Reset's the material info that were previously gathered */
     void ResetMaterialInfo();
+    MaterialInfo* GetMaterialInfoFrom(void* any, std::string_view materialName);
+    MaterialInfo* GetMaterialInfoFrom(zCMaterial* mat);
 
     /** Returns the material info associated with the given material */
     MaterialInfo* GetMaterialInfoFrom( zCTexture* tex );
@@ -957,7 +959,7 @@ private:
     std::unordered_map<zCBspBase*, BspInfo> BspLeafVobLists;
 
     /** Map for the material infos */
-    gtl::flat_hash_map<zCTexture*, std::unique_ptr<MaterialInfo>> MaterialInfos;
+    gtl::flat_hash_map<void*, std::unique_ptr<MaterialInfo>> MaterialInfos;
 
     /** Maps visuals to vobs */
     gtl::flat_hash_map<zCVisual*, std::vector<BaseVobInfo*>> VobsByVisual;

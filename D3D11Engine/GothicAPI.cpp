@@ -4893,19 +4893,17 @@ static void FixUpMaterial( MaterialInfo::Buffer& buffer ) {
     }
 }
 
-/** Returns the material info associated with the given material */
-MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCTexture* tex ) {
-    auto it = MaterialInfos.find( tex );
+MaterialInfo* GothicAPI::GetMaterialInfoFrom(void* any, std::string_view materialName) {
+    auto it = MaterialInfos.find( any );
     MaterialInfo* mi;
     if ( it == MaterialInfos.end() ) {
-
         // Make a new one and try to load it
         auto info = std::make_unique<MaterialInfo>();
-        MaterialInfos.emplace(tex, std::move(info));
-        mi = MaterialInfos[tex].get();
-        if ( tex ) {
-            mi->LoadFromFile( tex->GetNameWithoutExtView() );
-            if ( tex->GetNameView() == "NW_MISC_FULLALPHA_01.TGA" ) {
+        MaterialInfos.emplace(any, std::move(info));
+        mi = MaterialInfos[any].get();
+        if ( any ) {
+            mi->LoadFromFile( materialName );
+            if ( materialName.contains("FULLALPHA" )) {
                 mi->MaterialType = MaterialInfo::MT_FullAlpha;
             }
         }
@@ -4913,9 +4911,27 @@ MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCTexture* tex ) {
     } else {
         mi = it->second.get();
     }
-
-
     return mi;
+}
+    
+MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCMaterial* mat ) {
+    const auto name = mat->GetNameView();
+    if (!name.empty()) {
+        return GetMaterialInfoFrom(mat, name);
+    }
+    // MaterialInfo only from the main texture.
+    return GetMaterialInfoFrom(mat->GetTextureSingle()); 
+}
+    
+/** Returns the material info associated with the given material */
+MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCTexture* tex ) {
+    const auto it = MaterialInfos.find( tex );
+    MaterialInfo* mi;
+    if ( it == MaterialInfos.end() ) {
+        return GetMaterialInfoFrom(tex, tex->GetNameWithoutExtView());
+    }
+
+    return it->second.get();
 }
 
 MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCTexture* tex, const std::string_view textureName ) {
