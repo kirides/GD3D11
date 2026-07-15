@@ -45,17 +45,17 @@ MyDirectDrawSurface7::~MyDirectDrawSurface7() {
 }
 
 /** Returns the engine texture of this surface */
-D3D11Texture* MyDirectDrawSurface7::GetEngineTexture() {
+GfxTexture* MyDirectDrawSurface7::GetEngineTexture() {
     return EngineTexture.get();
 }
 
 /** Returns the engine texture of this surface */
-D3D11Texture* MyDirectDrawSurface7::GetNormalmap() {
+GfxTexture* MyDirectDrawSurface7::GetNormalmap() {
     return Normalmap;
 }
 
 /** Returns the fx-map for this surface */
-D3D11Texture* MyDirectDrawSurface7::GetFxMap() {
+GfxTexture* MyDirectDrawSurface7::GetFxMap() {
     return FxMap;
 }
 
@@ -74,7 +74,7 @@ static bool LoadResource(
     const std::string& path,
     const std::string& name,
     std::vector<uint8_t>& storage,
-    D3D11Texture** ppTexture) {
+    GfxTexture** ppTexture) {
     auto file = zFILE_VDFS::Create( path );
     if ( !file->Exists() ) {
         return false;
@@ -126,16 +126,16 @@ void MyDirectDrawSurface7::LoadAdditionalResources( zCTexture* ownedTexture ) {
     }
     // Set texture name
     if ( EngineTexture ) {
-        SetDebugName( EngineTexture->GetTextureObject().Get(), "D3D11Texture(\"" + TextureName + "\")->Texture" );
-        SetDebugName( EngineTexture->GetShaderResourceView().Get(), "D3D11Texture(\"" + TextureName + "\")->ShaderResourceView" );
+        SetDebugName( D3D11Texture::From( EngineTexture.get() )->GetTextureObject().Get(), "D3D11Texture(\"" + TextureName + "\")->Texture" );
+        SetDebugName( D3D11Texture::From( EngineTexture.get() )->GetShaderResourceView().Get(), "D3D11Texture(\"" + TextureName + "\")->ShaderResourceView" );
     }
 
     if ( TextureName.empty() || Normalmap || FxMap || !Engine::GAPI->GetRendererState().RendererSettings.AllowNormalmaps ) {
         return;
     }
 
-    D3D11Texture* fxMapTexture = nullptr;
-    D3D11Texture* nrmmapTexture = nullptr;
+    GfxTexture* fxMapTexture = nullptr;
+    GfxTexture* nrmmapTexture = nullptr;
 
     static constexpr char vdfsWorkPath[] { R"(\_WORK\DATA\TEXTURES\REPLACEMENTS\)" };
     static constexpr char systemWorkPath[] {R"(\SYSTEM\GD3D11\TEXTURES\REPLACEMENTS\)"};
@@ -145,7 +145,7 @@ void MyDirectDrawSurface7::LoadAdditionalResources( zCTexture* ownedTexture ) {
 
     const auto& gameName = Engine::GAPI->GetGameName();
     
-    const std::pair<const char*, D3D11Texture** const> resourcesToLoad[] = {
+    const std::pair<const char*, GfxTexture** const> resourcesToLoad[] = {
         {"_NORMAL.DDS", &nrmmapTexture},
         {"_FX.DDS", &fxMapTexture},
     };
@@ -522,20 +522,20 @@ HRESULT MyDirectDrawSurface7::SetSurfaceDesc( LPDDSURFACEDESC2 lpDDSurfaceDesc, 
     int bpp = redBits + greenBits + blueBits + alphaBits;
 
     // Find out format
-    D3D11Texture::ETextureFormat format = D3D11Texture::ETextureFormat::TF_B8G8R8A8;
+    GfxTexture::ETextureFormat format = GfxTexture::ETextureFormat::TF_B8G8R8A8;
     switch ( bpp ) {
     case 16:
     {
         switch ( OriginalSurfaceDesc.ddpfPixelFormat.dwFourCC ) {
-        case 1: format = D3D11Texture::ETextureFormat::TF_B5G5R5A1; break;
-        case 2: format = D3D11Texture::ETextureFormat::TF_B4G4R4A4; break;
-        default: format = D3D11Texture::ETextureFormat::TF_B5G6R5; break;
+        case 1: format = GfxTexture::ETextureFormat::TF_B5G5R5A1; break;
+        case 2: format = GfxTexture::ETextureFormat::TF_B4G4R4A4; break;
+        default: format = GfxTexture::ETextureFormat::TF_B5G6R5; break;
         }
         break;
     }
     case 24:
     case 32:
-        format = D3D11Texture::ETextureFormat::TF_B8G8R8A8;
+        format = GfxTexture::ETextureFormat::TF_B8G8R8A8;
         break;
 
     case 0:
@@ -544,17 +544,17 @@ HRESULT MyDirectDrawSurface7::SetSurfaceDesc( LPDDSURFACEDESC2 lpDDSurfaceDesc, 
         if ( (lpDDSurfaceDesc->ddpfPixelFormat.dwFlags & DDPF_FOURCC) == DDPF_FOURCC ) {
             switch ( lpDDSurfaceDesc->ddpfPixelFormat.dwFourCC ) {
             case FOURCC_DXT1:
-                format = D3D11Texture::ETextureFormat::TF_DXT1;
+                format = GfxTexture::ETextureFormat::TF_DXT1;
                 break;
 
             case FOURCC_DXT2:
             case FOURCC_DXT3:
-                format = D3D11Texture::ETextureFormat::TF_DXT3;
+                format = GfxTexture::ETextureFormat::TF_DXT3;
                 break;
 
             case FOURCC_DXT4:
             case FOURCC_DXT5:
-                format = D3D11Texture::ETextureFormat::TF_DXT5;
+                format = GfxTexture::ETextureFormat::TF_DXT5;
                 break;
             }
         }

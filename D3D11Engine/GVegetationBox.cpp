@@ -12,7 +12,7 @@
 #include "zCMaterial.h"
 #include "Frustum.h"
 GMeshSimple* GVegetationBox::SharedVegetationMesh = nullptr;
-std::unique_ptr<D3D11Texture> GVegetationBox::SharedVegetationTexture;
+std::unique_ptr<GfxTexture> GVegetationBox::SharedVegetationTexture;
 int GVegetationBox::SharedResourceRefCount = 0;
 
 GVegetationBox::GVegetationBox() {

@@ -6,6 +6,8 @@ struct GrassConstantBuffer;
 class GMeshSimple;
 class D3D11Texture;
 class D3D11VertexBuffer;
+class GfxTexture;
+class GfxVertexBuffer;
 class zCTexture;
 class Frustum;
 struct MeshInfo;
@@ -112,8 +114,8 @@ private:
 
     XMFLOAT3 BoxMin;
     XMFLOAT3 BoxMax;
-    D3D11Texture* VegetationTexture;
-    std::unique_ptr<D3D11VertexBuffer> InstancingBuffer;
+    GfxTexture* VegetationTexture;
+    std::unique_ptr<GfxVertexBuffer> InstancingBuffer;
     bool DrawBoundingBox;
     bool Modified;
 
@@ -124,7 +126,7 @@ private:
     static void ReleaseSharedResources();
 
     static GMeshSimple* SharedVegetationMesh;
-    static std::unique_ptr<D3D11Texture> SharedVegetationTexture;
+    static std::unique_ptr<GfxTexture> SharedVegetationTexture;
     static int SharedResourceRefCount;
 };
 

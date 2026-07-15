@@ -779,10 +779,10 @@ public:
     std::list<std::pair<std::pair<UINT, ID3D11Texture2D*>, ID3D11Texture2D*>>& GetStagingTextures() {return FrameStagingTextures;}
 
     /** Adds a mip map generation deferred command */
-    void AddMipMapGeneration( D3D11Texture* texture );
+    void AddMipMapGeneration( GfxTexture* texture );
 
     /** Gets a list of the mip map generation commands for this frame */
-    std::list<D3D11Texture*>& GetMipMapGeneration() {return FrameMipMapGenerations;}
+    std::list<GfxTexture*>& GetMipMapGeneration() {return FrameMipMapGenerations;}
 
     /** Adds a texture to the list of the loaded textures for this frame */
     void AddFrameLoadedTexture( MyDirectDrawSurface7* srf );
@@ -1007,7 +1007,7 @@ private:
 
     /** Textures loaded this frame */
     std::list<std::pair<std::pair<UINT, ID3D11Texture2D*>, ID3D11Texture2D*>> FrameStagingTextures;
-    std::list<D3D11Texture*> FrameMipMapGenerations;
+    std::list<GfxTexture*> FrameMipMapGenerations;
     std::list<MyDirectDrawSurface7*> FrameLoadedTextures;
 
     /** Quad marks loaded in the world */

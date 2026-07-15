@@ -14,7 +14,7 @@ enum ETextureType {
 };
 
 class zCTexture;
-class D3D11Texture;
+class GfxTexture;
 class MyDirectDrawSurface7 : public IDirectDrawSurface7 {
 public:
     MyDirectDrawSurface7();
@@ -80,13 +80,13 @@ public:
     void BindToSlot( int slot );
 
     /** Returns the engine texture of this surface */
-    D3D11Texture* GetEngineTexture();
+    GfxTexture* GetEngineTexture();
 
     /** Returns the normalmap of this surface */
-    D3D11Texture* GetNormalmap();
+    GfxTexture* GetNormalmap();
 
     /** Returns the fx-map for this surface */
-    D3D11Texture* GetFxMap();
+    GfxTexture* GetFxMap();
 
     /** Loads additional resources if possible */
     void LoadAdditionalResources( zCTexture* ownedTexture );
@@ -119,15 +119,15 @@ private:
     DDSURFACEDESC2 OriginalSurfaceDesc;
 
     /** Attached texture */
-    std::unique_ptr<D3D11Texture> EngineTexture;
+    std::unique_ptr<GfxTexture> EngineTexture;
 
     /** Associated Name */
     std::string TextureName;
     ETextureType TextureType;
 
     /** Additional maps */
-    D3D11Texture* Normalmap;
-    D3D11Texture* FxMap;
+    GfxTexture* Normalmap;
+    GfxTexture* FxMap;
 
     /** Locktype */
     DWORD LockType;

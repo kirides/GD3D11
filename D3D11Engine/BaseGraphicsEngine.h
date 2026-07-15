@@ -3,11 +3,11 @@
 #include "GraphicsEventRecord.h"
 #include "ShaderCategory.h"
 #include "ShaderIDs.h"
+#include "GfxVertexBuffer.h"
+#include "GfxTexture.h"
 
 class BaseLineRenderer;
 class BaseShadowedPointLight;
-class D3D11Texture;
-class D3D11VertexBuffer;
 struct RenderToTextureBuffer;
 class zCTexture;
 class zCMaterial;
@@ -136,11 +136,11 @@ public:
     virtual XRESULT Clear( const float4& color ) PURE;
 
     /** Creates a vertexbuffer object (Not registered inside) */
-    virtual XRESULT CreateVertexBuffer( std::unique_ptr<D3D11VertexBuffer>& outBuffer ) PURE;
+    virtual XRESULT CreateVertexBuffer( std::unique_ptr<GfxVertexBuffer>& outBuffer ) PURE;
 
     /** Creates a texture object (Not registered inside) */
-    virtual XRESULT CreateTexture( D3D11Texture** outTexture ) PURE;
-    virtual XRESULT CreateTexture( std::unique_ptr<D3D11Texture>& outTexture ) PURE;
+    virtual XRESULT CreateTexture( GfxTexture** outTexture ) PURE;
+    virtual XRESULT CreateTexture( std::unique_ptr<GfxTexture>& outTexture ) PURE;
     
     /** Creates a bufferobject for a shadowed point light */
     virtual XRESULT CreateShadowedPointLight( BaseShadowedPointLight** outPL, VobLightInfo* lightInfo, bool dynamic = false ) { return XR_SUCCESS; }
@@ -167,31 +167,31 @@ public:
     virtual XRESULT DrawVertexArray( ExVertexStruct* vertices, unsigned int numVertices, unsigned int startVertex PURE, unsigned int stride = sizeof( ExVertexStruct ) ) PURE;
 
     /** Draws a vertexbuffer, non-indexed */
-    virtual XRESULT DrawVertexBuffer( D3D11VertexBuffer* vb, unsigned int numVertices, unsigned int stride = sizeof( ExVertexStruct ) ) { return XR_SUCCESS; };
+    virtual XRESULT DrawVertexBuffer( GfxVertexBuffer* vb, unsigned int numVertices, unsigned int stride = sizeof( ExVertexStruct ) ) { return XR_SUCCESS; };
 
     /** Draws a vertexbuffer, non-indexed, binding the FF-Pipe values */
-    virtual XRESULT DrawVertexBufferFF( D3D11VertexBuffer* vb, unsigned int numVertices, unsigned int startVertex, unsigned int stride = sizeof( ExVertexStruct ) ) { return XR_SUCCESS; };
+    virtual XRESULT DrawVertexBufferFF( GfxVertexBuffer* vb, unsigned int numVertices, unsigned int startVertex, unsigned int stride = sizeof( ExVertexStruct ) ) { return XR_SUCCESS; };
 
     /** Draws a vertexbuffer, non-indexed */
-    virtual XRESULT DrawVertexBufferIndexed( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int indexOffset = 0 ) { return XR_SUCCESS; };
-    virtual XRESULT DrawVertexBufferIndexedUINT( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int indexOffset ) { return XR_SUCCESS; };
-    
-    virtual XRESULT DrawDynamicVertexBufferIndexed( std::vector<ExVertexStruct>& vertices, D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int indexOffset = 0 ) { return XR_SUCCESS; };
+    virtual XRESULT DrawVertexBufferIndexed( GfxVertexBuffer* vb, GfxVertexBuffer* ib, unsigned int numIndices, unsigned int indexOffset = 0 ) { return XR_SUCCESS; };
+    virtual XRESULT DrawVertexBufferIndexedUINT( GfxVertexBuffer* vb, GfxVertexBuffer* ib, unsigned int numIndices, unsigned int indexOffset ) { return XR_SUCCESS; };
+
+    virtual XRESULT DrawDynamicVertexBufferIndexed( std::vector<ExVertexStruct>& vertices, GfxVertexBuffer* ib, unsigned int numIndices, unsigned int indexOffset = 0 ) { return XR_SUCCESS; };
 
     /** Draws a skeletal mesh */
     virtual XRESULT DrawSkeletalMesh( SkeletalVobInfo* vi, const std::span<XMFLOAT4X4> transforms, float4 color, const XMFLOAT4X4& world, float fatness = 1.0f ) { return XR_SUCCESS; };
 
     /** Draws a vertexarray, non-indexed */
-    virtual XRESULT DrawIndexedVertexArray( ExVertexStruct* vertices, unsigned int numVertices, D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int stride = sizeof( ExVertexStruct ) ) { return XR_SUCCESS; };
+    virtual XRESULT DrawIndexedVertexArray( ExVertexStruct* vertices, unsigned int numVertices, GfxVertexBuffer* ib, unsigned int numIndices, unsigned int stride = sizeof( ExVertexStruct ) ) { return XR_SUCCESS; };
 
     /** Draws a batch of instanced geometry */
-    virtual XRESULT DrawInstanced( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, D3D11VertexBuffer* instanceData, unsigned int instanceDataStride, unsigned int numInstances, unsigned int vertexStride = sizeof( ExVertexStruct ), unsigned int startInstanceNum = 0, unsigned int indexOffset = 0, unsigned int instanceDataByteOffset = 0 ) { return XR_SUCCESS; };
+    virtual XRESULT DrawInstanced( GfxVertexBuffer* vb, GfxVertexBuffer* ib, unsigned int numIndices, GfxVertexBuffer* instanceData, unsigned int instanceDataStride, unsigned int numInstances, unsigned int vertexStride = sizeof( ExVertexStruct ), unsigned int startInstanceNum = 0, unsigned int indexOffset = 0, unsigned int instanceDataByteOffset = 0 ) { return XR_SUCCESS; };
 
     /** Packed-stride VOB draws (36-byte ExVertexStructGPU; paired with VS_ExPacked). */
-    virtual XRESULT DrawVertexBufferIndexedPacked( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int indexOffset = 0 ) { return XR_SUCCESS; };
-    virtual XRESULT DrawVertexBufferInstanced( D3D11VertexBuffer* vb, unsigned int numVertices, unsigned int numInstances, unsigned int stride = sizeof( ExVertexStruct ) ) { return XR_SUCCESS; };
-    virtual XRESULT DrawVertexBufferInstancedIndexed( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int numInstances, unsigned int indexOffset = 0 ) { return XR_SUCCESS; };
-    virtual XRESULT DrawVertexBufferInstancedIndexedPacked( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int numInstances, unsigned int indexOffset = 0 ) { return XR_SUCCESS; };
+    virtual XRESULT DrawVertexBufferIndexedPacked( GfxVertexBuffer* vb, GfxVertexBuffer* ib, unsigned int numIndices, unsigned int indexOffset = 0 ) { return XR_SUCCESS; };
+    virtual XRESULT DrawVertexBufferInstanced( GfxVertexBuffer* vb, unsigned int numVertices, unsigned int numInstances, unsigned int stride = sizeof( ExVertexStruct ) ) { return XR_SUCCESS; };
+    virtual XRESULT DrawVertexBufferInstancedIndexed( GfxVertexBuffer* vb, GfxVertexBuffer* ib, unsigned int numIndices, unsigned int numInstances, unsigned int indexOffset = 0 ) { return XR_SUCCESS; };
+    virtual XRESULT DrawVertexBufferInstancedIndexedPacked( GfxVertexBuffer* vb, GfxVertexBuffer* ib, unsigned int numIndices, unsigned int numInstances, unsigned int indexOffset = 0 ) { return XR_SUCCESS; };
 
     /** Sets up a draw call for a VS_Ex-Mesh (FF-pipe emulation state). Default no-op. */
     virtual void SetupVS_ExMeshDrawCall() {}
@@ -235,7 +235,7 @@ public:
         1 to clear just the diffuse slot for a not-yet-loaded surface. Either texture may be null.
         This is the hot texture-bind seam used by the DDraw surface wrapper; the backend extracts
         the native views internally so the interface stays API-neutral. */
-    virtual void BindSurfaceTextures( int slot, D3D11Texture* diffuse, D3D11Texture* normalmap, unsigned int numTextures = 2 ) {}
+    virtual void BindSurfaceTextures( int slot, GfxTexture* diffuse, GfxTexture* normalmap, unsigned int numTextures = 2 ) {}
 
     /** Draws the world mesh */
     virtual XRESULT DrawWorldMesh( bool noTextures = false ) { return XR_SUCCESS; };

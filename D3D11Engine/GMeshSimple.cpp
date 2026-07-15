@@ -112,6 +112,6 @@ void GMeshSimple::DrawMesh() {
 }
 
 /** Draws a batch of instances */
-void GMeshSimple::DrawBatch( D3D11VertexBuffer* instances, int numInstances, int instanceDataStride ) {
+void GMeshSimple::DrawBatch( GfxVertexBuffer* instances, int numInstances, int instanceDataStride ) {
     Engine::GraphicsEngine->DrawInstanced( VertexBuffer.get(), IndexBuffer.get(), NumIndices, instances, instanceDataStride, numInstances, sizeof( SimpleObjectVertexStruct ) );
 }

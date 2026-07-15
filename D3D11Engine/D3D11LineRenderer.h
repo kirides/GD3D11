@@ -2,6 +2,7 @@
 #include "BaseLineRenderer.h"
 
 class D3D11VertexBuffer;
+class GfxVertexBuffer;
 class D3D11LineRenderer :
     public BaseLineRenderer {
 public:
@@ -27,7 +28,7 @@ private:
     std::vector<LineVertex> ScreenSpaceLineCache;
 
     /** Buffer to hold the lines on the GPU */
-    std::unique_ptr<D3D11VertexBuffer> LineBuffer;
+    std::unique_ptr<GfxVertexBuffer> LineBuffer;
     unsigned int LineBufferSize; // Size in elements the line buffer can hold
 };
 

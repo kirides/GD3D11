@@ -54,11 +54,11 @@ public:
     XRESULT Clear( const float4& color ) override PURE;
 
     /** Creates a vertexbuffer object (Not registered inside) */
-    XRESULT CreateVertexBuffer( std::unique_ptr<D3D11VertexBuffer>& outBuffer ) override;
+    XRESULT CreateVertexBuffer( std::unique_ptr<GfxVertexBuffer>& outBuffer ) override;
 
     /** Creates a texture object (Not registered inside) */
-    XRESULT CreateTexture( D3D11Texture** outTexture ) override;
-    XRESULT CreateTexture( std::unique_ptr<D3D11Texture>& outTexture ) override;
+    XRESULT CreateTexture( GfxTexture** outTexture ) override;
+    XRESULT CreateTexture( std::unique_ptr<GfxTexture>& outTexture ) override;
     
     /** Creates a bufferobject for a shadowed point light */
     XRESULT CreateShadowedPointLight( BaseShadowedPointLight** outPL, VobLightInfo* lightInfo, bool dynamic = false ) override;
@@ -85,10 +85,10 @@ public:
     XRESULT DrawVertexArray( ExVertexStruct* vertices, unsigned int numVertices, unsigned int startVertex = 0, unsigned int stride = sizeof( ExVertexStruct ) ) override;
 
     /** Binds a surface's diffuse/normalmap textures to consecutive PS slots (see base). */
-    void BindSurfaceTextures( int slot, D3D11Texture* diffuse, D3D11Texture* normalmap, unsigned int numTextures = 2 ) override;
+    void BindSurfaceTextures( int slot, GfxTexture* diffuse, GfxTexture* normalmap, unsigned int numTextures = 2 ) override;
 
     /** Draws a vertexbuffer, non-indexed, binding the FF-Pipe values */
-    XRESULT DrawVertexBufferFF( D3D11VertexBuffer* vb, unsigned int numVertices, unsigned int startVertex, unsigned int stride = sizeof( ExVertexStruct ) ) override;
+    XRESULT DrawVertexBufferFF( GfxVertexBuffer* vb, unsigned int numVertices, unsigned int startVertex, unsigned int stride = sizeof( ExVertexStruct ) ) override;
 
     /** Binds viewport information to the given constantbuffer slot */
     XRESULT BindViewportInformation( VShaderID shader, int slot ) override;

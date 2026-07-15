@@ -29,6 +29,7 @@ class zCSkyLayer;
 class zCSkyState;
 class GMesh;
 class D3D11Texture;
+class GfxTexture;
 
 class GSky {
 public:
@@ -95,10 +96,10 @@ protected:
         1=0	0.25	0.5	  0.75	  1=0
         Day	Evening	Night Morning Day
     */
-    std::vector<D3D11Texture*> SkyTextures;
+    std::vector<GfxTexture*> SkyTextures;
 
-    std::unique_ptr<D3D11Texture> CloudTexture;
-    std::unique_ptr<D3D11Texture> NightTexture;
+    std::unique_ptr<GfxTexture> CloudTexture;
+    std::unique_ptr<GfxTexture> NightTexture;
 
     zCTexture* CloudTexture_Zen = nullptr;
     zCTexture* NightTexture_Zen = nullptr;

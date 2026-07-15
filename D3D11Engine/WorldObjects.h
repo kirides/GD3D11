@@ -4,16 +4,15 @@
 
 #include "pch.h"
 #include "GothicGraphicsState.h"
-#include "D3D11Texture.h"
+#include "GfxTexture.h"
 #include "zTypes.h"
 #include "ConstantBufferStructs.h"
 #include "zCPolygon.h"
 #include "BaseShadowedPointLight.h"
-#include "D3D11VertexBuffer.h"
+#include "GfxVertexBuffer.h"
 
 class zCMaterial;
 class zCPolygon;
-class D3D11VertexBuffer;
 class zCVob;
 class zCTexture;
 class zCLightmap;
@@ -96,18 +95,18 @@ struct MeshInfo {
     /** Creates buffers for this mesh info */
     XRESULT Create( ExVertexStruct* vertices, unsigned int numVertices, VERTEX_INDEX* indices, unsigned int numIndices );
 
-    D3D11VertexBuffer* GetMeshVertexBuffer() const { return MeshVertexBuffer.get(); }
-    D3D11VertexBuffer* GetMeshPositionBuffer() const { return MeshPositionBuffer.get(); }
-    D3D11VertexBuffer* GetMeshIndexBuffer() const { return MeshIndexBuffer.get(); }
-    D3D11VertexBuffer* GetMeshShadowIndexBuffer() const { return MeshShadowIndexBuffer.get(); }
-    
-    std::unique_ptr<D3D11VertexBuffer> MeshVertexBuffer;
+    GfxVertexBuffer* GetMeshVertexBuffer() const { return MeshVertexBuffer.get(); }
+    GfxVertexBuffer* GetMeshPositionBuffer() const { return MeshPositionBuffer.get(); }
+    GfxVertexBuffer* GetMeshIndexBuffer() const { return MeshIndexBuffer.get(); }
+    GfxVertexBuffer* GetMeshShadowIndexBuffer() const { return MeshShadowIndexBuffer.get(); }
+
+    std::unique_ptr<GfxVertexBuffer> MeshVertexBuffer;
     // Optional position-only (float3, 12 bytes) copy of MeshVertexBuffer, in the same vertex
     // ordering. Bound for opaque depth/shadow passes to cut vertex-fetch bandwidth (~3.6x vs the
     // full 44-byte stream). Currently only populated for the wrapped world mesh. May be nullptr.
-    std::unique_ptr<D3D11VertexBuffer> MeshPositionBuffer;
-    std::unique_ptr<D3D11VertexBuffer> MeshIndexBuffer;
-    std::unique_ptr<D3D11VertexBuffer> MeshShadowIndexBuffer;
+    std::unique_ptr<GfxVertexBuffer> MeshPositionBuffer;
+    std::unique_ptr<GfxVertexBuffer> MeshIndexBuffer;
+    std::unique_ptr<GfxVertexBuffer> MeshShadowIndexBuffer;
     std::vector<ExVertexStruct> Vertices;
     std::vector<VERTEX_INDEX> Indices;
     std::vector<VERTEX_INDEX> ShadowIndices;
@@ -142,7 +141,7 @@ struct QuadMarkInfo {
 
     ~QuadMarkInfo() = default;
 
-    std::unique_ptr<D3D11VertexBuffer> Mesh;
+    std::unique_ptr<GfxVertexBuffer> Mesh;
     int NumVertices;
 
     zCQuadMark* Visual;
@@ -160,8 +159,8 @@ struct SkeletalMeshInfo {
 
     ~SkeletalMeshInfo();
 
-    std::unique_ptr<D3D11VertexBuffer> MeshVertexBuffer;
-    std::unique_ptr<D3D11VertexBuffer> MeshIndexBuffer;
+    std::unique_ptr<GfxVertexBuffer> MeshVertexBuffer;
+    std::unique_ptr<GfxVertexBuffer> MeshIndexBuffer;
     std::vector<ExSkelVertexStruct> Vertices;
     std::vector<VERTEX_INDEX> Indices;
 
@@ -485,10 +484,8 @@ struct SectionInstanceCache {
 
     
     std::map<MeshVisualInfo*, std::vector<VS_ExConstantBuffer_PerInstance>> InstanceCacheData;
-    std::map<MeshVisualInfo*, std::unique_ptr<D3D11VertexBuffer>> InstanceCache;
+    std::map<MeshVisualInfo*, std::unique_ptr<GfxVertexBuffer>> InstanceCache;
 };
-
-class D3D11Texture;
 
 /** Describes a world-section for the renderer */
 struct WorldMeshSectionInfo {
@@ -533,7 +530,7 @@ struct WorldMeshSectionInfo {
     void SaveSectionMeshToFile( const std::string& name );
 
     std::map<MeshKey, WorldMeshInfo*, cmpMeshKey> WorldMeshes;
-    std::map<D3D11Texture*, std::vector<MeshInfo*>> WorldMeshesByCustomTexture;
+    std::map<GfxTexture*, std::vector<MeshInfo*>> WorldMeshesByCustomTexture;
     std::map<zCMaterial*, std::vector<MeshInfo*>> WorldMeshesByCustomTextureOriginal;
     std::map<MeshKey, WorldMeshInfo*, cmpMeshKey> SuppressedMeshes;
     std::list<VobInfo*> Vobs;

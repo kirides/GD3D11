@@ -14,11 +14,11 @@ public:
     void DrawMesh();
 
     /** Draws a batch of instances */
-    void DrawBatch( D3D11VertexBuffer* instances, int numInstances, int instanceDataStride );
+    void DrawBatch( GfxVertexBuffer* instances, int numInstances, int instanceDataStride );
 
 private:
-    std::unique_ptr<D3D11VertexBuffer> VertexBuffer;
-    std::unique_ptr<D3D11VertexBuffer> IndexBuffer;
+    std::unique_ptr<GfxVertexBuffer> VertexBuffer;
+    std::unique_ptr<GfxVertexBuffer> IndexBuffer;
     unsigned int NumVertices;
     unsigned int NumIndices;
 };

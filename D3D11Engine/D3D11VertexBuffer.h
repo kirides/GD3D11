@@ -5,80 +5,53 @@
 #include <vector>
 
 #include "VertexTypes.h"
+#include "GfxVertexBuffer.h"
 
 #include <wrl/client.h>
 
 enum XRESULT : int;
 
-class D3D11VertexBuffer {
+class D3D11VertexBuffer : public GfxVertexBuffer {
 public:
     D3D11VertexBuffer()
         : SizeInBytes( 0 )
     {}
 
-    ~D3D11VertexBuffer() = default;
-
-    /** Layed out for D3D11*/
-    enum ECPUAccessFlags {
-        CA_NONE = 0,
-        CA_WRITE = 0x10000L,
-        CA_READ = 0x20000L,
-    };
-
-    /** Layed out for D3D11*/
-    enum EUsageFlags {
-        U_DEFAULT = 0,
-        U_DYNAMIC = 2,
-        U_IMMUTABLE = 1
-    };
-
-    /** Layed out for D3D11*/
-    enum EMapFlags {
-        M_READ = 1,
-        M_WRITE = 2,
-        M_READ_WRITE = 3,
-        M_WRITE_DISCARD = 4,
-        M_WRITE_NO_OVERWRITE = 5,
-    };
-
-    /** Layed out for D3D11*/
-    enum EBindFlags {
-        B_VERTEXBUFFER = D3D11_BIND_VERTEX_BUFFER,
-        B_INDEXBUFFER = D3D11_BIND_INDEX_BUFFER,
-        B_STREAM_OUT = D3D11_BIND_STREAM_OUTPUT,
-        B_SHADER_RESOURCE = D3D11_BIND_SHADER_RESOURCE,
-        B_UNORDERED_ACCESS = D3D11_BIND_UNORDERED_ACCESS,
-    };
+    ~D3D11VertexBuffer() override = default;
 
     /** Creates the vertexbuffer with the given arguments */
-    XRESULT Init( void* initData, unsigned int sizeInBytes, EBindFlags EBindFlags = B_VERTEXBUFFER, EUsageFlags usage = EUsageFlags::U_DEFAULT, ECPUAccessFlags cpuAccess = ECPUAccessFlags::CA_NONE, const std::string& fileName = "", unsigned int structuredByteSize = 0 );
+    XRESULT Init( void* initData, unsigned int sizeInBytes, EBindFlags EBindFlags = B_VERTEXBUFFER, EUsageFlags usage = EUsageFlags::U_DEFAULT, ECPUAccessFlags cpuAccess = ECPUAccessFlags::CA_NONE, const std::string& fileName = "", unsigned int structuredByteSize = 0 ) override;
 
     /** Updates the vertexbuffer with the given data */
-    XRESULT UpdateBuffer( void* data, UINT size = 0 );
+    XRESULT UpdateBuffer( void* data, UINT size = 0 ) override;
 
     /** Maps the buffer */
-    XRESULT Map( int flags, void** dataPtr, UINT* size );
+    XRESULT Map( int flags, void** dataPtr, UINT* size ) override;
 
     /** Unmaps the buffer */
-    XRESULT Unmap();
+    XRESULT Unmap() override;
 
     /** Optimizes the given set of vertices */
-    XRESULT OptimizeVertices( VERTEX_INDEX* indices, byte* vertices, unsigned int numIndices, unsigned int numVertices, unsigned int stride, std::vector<VERTEX_INDEX>* outShadowIndices = nullptr );
+    XRESULT OptimizeVertices( VERTEX_INDEX* indices, byte* vertices, unsigned int numIndices, unsigned int numVertices, unsigned int stride, std::vector<VERTEX_INDEX>* outShadowIndices = nullptr ) override;
 
     /** Optimizes the given set of vertices */
-    XRESULT OptimizeFaces( VERTEX_INDEX* indices, byte* vertices, unsigned int numIndices, unsigned int numVertices, unsigned int stride );
+    XRESULT OptimizeFaces( VERTEX_INDEX* indices, byte* vertices, unsigned int numIndices, unsigned int numVertices, unsigned int stride ) override;
 
     /** Returns the D3D11-Buffer object */
     Microsoft::WRL::ComPtr <ID3D11Buffer>& GetVertexBuffer();
 
     /** Returns the size in bytes of this buffer */
-    unsigned int GetSizeInBytes() const;
+    unsigned int GetSizeInBytes() const override;
 
     /** Returns the SRV of this buffer, if it represents a structured buffer */
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& GetShaderResourceView();
 
     /** Returns the UAV of this buffer */
     Microsoft::WRL::ComPtr<ID3D11UnorderedAccessView>& GetUnorderedAccessView() { return UnorderedAccessView; }
+
+    /** Backend downcast from the neutral base. Safe by construction: the only concrete
+        GfxVertexBuffer implementation is D3D11VertexBuffer while the D3D11 backend is active. */
+    static D3D11VertexBuffer* From( GfxVertexBuffer* buffer ) { return static_cast<D3D11VertexBuffer*>( buffer ); }
 
 private:
     /** Vertex buffer object */

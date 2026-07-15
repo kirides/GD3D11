@@ -75,7 +75,7 @@ XRESULT D3D11LineRenderer::Flush() {
     // Draw the lines
     UINT offset = 0;
     UINT uStride = sizeof( LineVertex );
-    engine->GetContext()->IASetVertexBuffers( 0, 1, LineBuffer->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
+    engine->GetContext()->IASetVertexBuffers( 0, 1, D3D11VertexBuffer::From( LineBuffer.get() )->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
 
     //Draw the mesh
     engine->GetContext()->Draw( LineCache.size(), 0 );
@@ -120,7 +120,7 @@ XRESULT D3D11LineRenderer::FlushScreenSpace() {
     // Draw the lines
     UINT offset = 0;
     UINT uStride = sizeof( LineVertex );
-    engine->GetContext()->IASetVertexBuffers( 0, 1, LineBuffer->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
+    engine->GetContext()->IASetVertexBuffers( 0, 1, D3D11VertexBuffer::From( LineBuffer.get() )->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
 
     //Draw the mesh
     engine->GetContext()->Draw( ScreenSpaceLineCache.size(), 0 );

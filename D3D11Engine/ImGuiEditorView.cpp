@@ -804,16 +804,17 @@ void ImGuiEditorView::UpdateSelectionPanel() {
         // Update thumbnail
 
         if (MyDirectDrawSurface7* surface = tx->GetSurface()) {
-            auto& thumb = surface->GetEngineTexture()->GetThumbnailSRV();
+            D3D11Texture* engineTex = D3D11Texture::From( surface->GetEngineTexture() );
+            auto& thumb = engineTex->GetThumbnailSRV();
             if (!thumb.Get()) {
-                XLE((surface->GetEngineTexture())->CreateThumbnail());
+                XLE(engineTex->CreateThumbnail());
                 SelectedImageThumbnail = nullptr;
-                if (surface->GetEngineTexture()->GetThumbnailSRV().Get()) {
-                    auto& thumb2 = surface->GetEngineTexture()->GetThumbnailSRV();
+                if (engineTex->GetThumbnailSRV().Get()) {
+                    auto& thumb2 = engineTex->GetThumbnailSRV();
                     SelectedImageThumbnail = thumb2;
                 }
             } else {
-                SelectedImageThumbnail = surface->GetEngineTexture()->GetShaderResourceView();
+                SelectedImageThumbnail = engineTex->GetShaderResourceView();
             }
         }
 

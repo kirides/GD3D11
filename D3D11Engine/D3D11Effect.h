@@ -32,10 +32,10 @@ protected:
     void FillRandomRaindropData( std::vector<RainParticleDynamic>& dynamicData, std::vector<RainParticleStatic>& staticData );
 
     /** Rain */
-    std::unique_ptr<D3D11VertexBuffer> RainBufferStatic;
-    std::unique_ptr<D3D11VertexBuffer> RainBufferInitial;
-    std::unique_ptr<D3D11VertexBuffer> RainBufferDrawFrom;
-    std::unique_ptr<D3D11VertexBuffer> RainBufferStreamTo;
+    std::unique_ptr<GfxVertexBuffer> RainBufferStatic;
+    std::unique_ptr<GfxVertexBuffer> RainBufferInitial;
+    std::unique_ptr<GfxVertexBuffer> RainBufferDrawFrom;
+    std::unique_ptr<GfxVertexBuffer> RainBufferStreamTo;
 
     Microsoft::WRL::ComPtr<ID3D11Texture2D> RainTextureArray;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> RainTextureArraySRV;

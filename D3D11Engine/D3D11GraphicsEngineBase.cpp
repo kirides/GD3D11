@@ -32,13 +32,13 @@ D3D11GraphicsEngineBase::~D3D11GraphicsEngineBase() {
 /** Binds a surface's diffuse/normalmap textures to consecutive PS slots. The neutral
     seam for MyDirectDrawSurface7::BindToSlot: callers pass texture objects, the backend
     extracts the native SRVs so no ID3D11* view leaks through the base interface. */
-void D3D11GraphicsEngineBase::BindSurfaceTextures( int slot, D3D11Texture* diffuse, D3D11Texture* normalmap, unsigned int numTextures ) {
+void D3D11GraphicsEngineBase::BindSurfaceTextures( int slot, GfxTexture* diffuse, GfxTexture* normalmap, unsigned int numTextures ) {
     ID3D11ShaderResourceView* srvs[2] = { nullptr, nullptr };
     if ( diffuse ) {
-        srvs[0] = diffuse->GetShaderResourceView().Get();
+        srvs[0] = D3D11Texture::From( diffuse )->GetShaderResourceView().Get();
     }
     if ( normalmap ) {
-        srvs[1] = normalmap->GetShaderResourceView().Get();
+        srvs[1] = D3D11Texture::From( normalmap )->GetShaderResourceView().Get();
     }
     GetContext()->PSSetShaderResources( slot, numTextures, srvs );
 }
@@ -74,18 +74,18 @@ XRESULT D3D11GraphicsEngineBase::SetViewport( const ViewportInfo& viewportInfo )
 D3D11ShaderManager& D3D11GraphicsEngineBase::GetShaderManager() { return *ShaderManager; }
 
 /** Creates a vertexbuffer object (Not registered inside) */
-XRESULT D3D11GraphicsEngineBase::CreateVertexBuffer( std::unique_ptr<D3D11VertexBuffer>& outBuffer ) {
+XRESULT D3D11GraphicsEngineBase::CreateVertexBuffer( std::unique_ptr<GfxVertexBuffer>& outBuffer ) {
     outBuffer.reset(new D3D11VertexBuffer);
     return XR_SUCCESS;
 }
 
 /** Creates a texture object (Not registered inside) */
-XRESULT D3D11GraphicsEngineBase::CreateTexture( D3D11Texture** outTexture ) {
+XRESULT D3D11GraphicsEngineBase::CreateTexture( GfxTexture** outTexture ) {
     *outTexture = new D3D11Texture;
     return XR_SUCCESS;
 }
 
-XRESULT D3D11GraphicsEngineBase::CreateTexture( std::unique_ptr<D3D11Texture>& outTexture ) {
+XRESULT D3D11GraphicsEngineBase::CreateTexture( std::unique_ptr<GfxTexture>& outTexture ) {
     outTexture.reset(new D3D11Texture);
     return XR_SUCCESS;
 }
@@ -263,7 +263,7 @@ XRESULT D3D11GraphicsEngineBase::CreateShadowedPointLight( BaseShadowedPointLigh
 }
 
 /** Draws a vertexbuffer, non-indexed, binding the FF-Pipe values */
-XRESULT D3D11GraphicsEngineBase::DrawVertexBufferFF( D3D11VertexBuffer* vb, unsigned int numVertices, unsigned int startVertex, unsigned int stride ) {
+XRESULT D3D11GraphicsEngineBase::DrawVertexBufferFF( GfxVertexBuffer* vb, unsigned int numVertices, unsigned int startVertex, unsigned int stride ) {
     SetupVS_ExMeshDrawCall();
 
     // Bind the FF-Info to the first PS slot
@@ -271,7 +271,7 @@ XRESULT D3D11GraphicsEngineBase::DrawVertexBufferFF( D3D11VertexBuffer* vb, unsi
 
     UINT offset = 0;
     UINT uStride = stride;
-    GetContext()->IASetVertexBuffers( 0, 1, vb->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
+    GetContext()->IASetVertexBuffers( 0, 1, D3D11VertexBuffer::From( vb )->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
 
     //Draw the mesh
     GetContext()->Draw( numVertices, startVertex );

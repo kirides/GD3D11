@@ -1,55 +1,43 @@
 #pragma once
 #include <wrl/client.h>
+#include "GfxTexture.h"
 
-class D3D11Texture {
+class D3D11Texture : public GfxTexture {
 public:
     D3D11Texture();
-    ~D3D11Texture();
-
-    /** Layec out for DXGI */
-    enum ETextureFormat {
-        TF_R8 = DXGI_FORMAT_R8_UNORM,
-        TF_B8G8R8A8 = DXGI_FORMAT_B8G8R8A8_UNORM,
-        TF_R8G8B8A8 = DXGI_FORMAT_R8G8B8A8_UNORM,
-        TF_B5G6R5 = DXGI_FORMAT_B5G6R5_UNORM,
-        TF_B5G5R5A1 = DXGI_FORMAT_B5G5R5A1_UNORM,
-        TF_B4G4R4A4 = DXGI_FORMAT_B4G4R4A4_UNORM,
-        TF_DXT1 = DXGI_FORMAT_BC1_UNORM,
-        TF_DXT3 = DXGI_FORMAT_BC2_UNORM,
-        TF_DXT5 = DXGI_FORMAT_BC3_UNORM
-    };
+    ~D3D11Texture() override;
 
     /** Initializes the texture object */
-    XRESULT Init( INT2 size, ETextureFormat format, UINT mipMapCount = 1, void* data = nullptr, const std::string& fileName = "" );
+    XRESULT Init( INT2 size, ETextureFormat format, UINT mipMapCount = 1, void* data = nullptr, const std::string& fileName = "" ) override;
 
     /** Initializes the texture from a file */
-    XRESULT Init( const std::string& file );
+    XRESULT Init( const std::string& file ) override;
 
-    XRESULT Init( const uint8_t* data, size_t size, const std::string& debugFileName );
+    XRESULT Init( const uint8_t* data, size_t size, const std::string& debugFileName ) override;
 
     /** Updates the Texture-Object */
-    XRESULT UpdateData( void* data, int mip = 0 );
+    XRESULT UpdateData( void* data, int mip = 0 ) override;
 
     /** Updates the Texture-Object using the deferred context (For loading in an other thread) */
-    XRESULT UpdateDataDeferred( void* data, int mip );
+    XRESULT UpdateDataDeferred( void* data, int mip ) override;
 
     /** Returns the RowPitch-Bytes */
-    UINT GetRowPitchBytes( int mip );
+    UINT GetRowPitchBytes( int mip ) override;
 
     /** Returns the size of the texture in bytes */
-    UINT GetSizeInBytes( int mip );
+    UINT GetSizeInBytes( int mip ) override;
 
     /** Returns if texture is 16bit type */
-    bool Is16BitTexture();
+    bool Is16BitTexture() override;
 
     /** Binds this texture to a pixelshader */
-    XRESULT BindToPixelShader( int slot );
+    XRESULT BindToPixelShader( int slot ) override;
 
     /** Binds this texture to a pixelshader */
-    XRESULT BindToVertexShader( int slot );
+    XRESULT BindToVertexShader( int slot ) override;
 
     /** Binds this texture to a domainshader */
-    XRESULT BindToDomainShader( int slot );
+    XRESULT BindToDomainShader( int slot ) override;
 
     /** Returns the texture-object */
     const Microsoft::WRL::ComPtr<ID3D11Texture2D>& GetTextureObject() { return Texture; }
@@ -58,18 +46,22 @@ public:
     const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& GetShaderResourceView() { return ShaderResourceView; }
 
     /** Creates a thumbnail for this */
-    XRESULT CreateThumbnail();
+    XRESULT CreateThumbnail() override;
 
     /** Returns the thumbnail of this texture. If this returns nullptr, you need to create one first */
     const Microsoft::WRL::ComPtr<ID3D11Texture2D>& GetThumbnail();
     const Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& GetThumbnailSRV() { return ThumbnailSRV;}
 
     /** Generates mipmaps for this texture (may be slow!) */
-    XRESULT GenerateMipMaps();
-    XRESULT GenerateMipMapsDeferred();
+    XRESULT GenerateMipMaps() override;
+    XRESULT GenerateMipMapsDeferred() override;
 
     /** Returns this textures ID */
-    UINT16 GetID() { return ID; };
+    UINT16 GetID() override { return ID; };
+
+    /** Backend downcast from the neutral base. Safe by construction: the only concrete
+        GfxTexture implementation is D3D11Texture while the D3D11 backend is active. */
+    static D3D11Texture* From( GfxTexture* texture ) { return static_cast<D3D11Texture*>( texture ); }
 
 private:
     /** The ID of this texture */

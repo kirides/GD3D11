@@ -3300,9 +3300,9 @@ void GothicAPI::DrawParticleFX( zCVob* source, zCParticleFX* fx, ParticleFrameDa
 
 /** Debugging */
 void GothicAPI::DrawTriangle( float3 pos = { 0.0f,0.0f,0.0f } ) {
-    std::unique_ptr<D3D11VertexBuffer> vxb;
+    std::unique_ptr<GfxVertexBuffer> vxb;
     Engine::GraphicsEngine->CreateVertexBuffer( vxb );
-    vxb->Init( nullptr, 6 * sizeof( ExVertexStruct ), D3D11VertexBuffer::EBindFlags::B_VERTEXBUFFER, D3D11VertexBuffer::EUsageFlags::U_DYNAMIC, D3D11VertexBuffer::CA_WRITE );
+    vxb->Init( nullptr, 6 * sizeof( ExVertexStruct ), GfxVertexBuffer::EBindFlags::B_VERTEXBUFFER, GfxVertexBuffer::EUsageFlags::U_DYNAMIC, GfxVertexBuffer::CA_WRITE );
 
     ExVertexStruct vx[6];
     ZeroMemory( vx, sizeof( vx ) );
@@ -5664,7 +5664,7 @@ void GothicAPI::AddStagingTexture( UINT mip, ID3D11Texture2D* stagingTexture, ID
 }
 
 /** Adds a mip map generation deferred command */
-void GothicAPI::AddMipMapGeneration( D3D11Texture* texture ) {
+void GothicAPI::AddMipMapGeneration( GfxTexture* texture ) {
     Engine::GAPI->EnterResourceCriticalSection();
     FrameMipMapGenerations.push_back( texture );
     Engine::GAPI->LeaveResourceCriticalSection();
@@ -5742,7 +5742,7 @@ void GothicAPI::DrawMorphMesh_Layered( zCMorphMesh* msh, std::map<zCMaterial*, s
 
     D3D11GraphicsEngine* g = AsD3D11Engine(Engine::GraphicsEngine);
 
-    D3D11Texture* whiteTexture = g->GetWhiteTexture();
+    GfxTexture* whiteTexture = g->GetWhiteTexture();
     void* lastTex = whiteTexture;
 
     for ( int i = 0; i < morphMesh->GetNumSubmeshes(); i++ ) {
