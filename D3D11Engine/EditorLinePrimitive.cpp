@@ -5,7 +5,8 @@
 #include "D3D11PShader.h"
 #include "BaseLineRenderer.h"
 #include "GothicAPI.h"
-#include "D3D11ShaderManager.h"
+#include "GfxVertexBuffer.h"
+#include "D3D11VertexBuffer.h"
 
 EditorLinePrimitive::EditorLinePrimitive() {
     Vertices = nullptr;
@@ -299,20 +300,9 @@ HRESULT EditorLinePrimitive::CreateSolidPrimitive( LineVertex* PrimVerts, UINT N
     memcpy( SolidVertices, PrimVerts, sizeof( LineVertex ) * NumVertices );
     this->NumSolidVertices = NumVertices;
 
-    //Create the vertex buffer
-    D3D11_BUFFER_DESC bufferDesc;
-    bufferDesc.ByteWidth = NumVertices * sizeof( LineVertex );
-    bufferDesc.Usage = D3D11_USAGE_DEFAULT;
-    bufferDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-    bufferDesc.CPUAccessFlags = 0;
-    bufferDesc.MiscFlags = 0;
-
-    D3D11_SUBRESOURCE_DATA InitData;
-    InitData.pSysMem = &SolidVertices[0];
-    InitData.SysMemPitch = 0;
-    InitData.SysMemSlicePitch = 0;
-
-    LE( AsD3D11EngineBase(Engine::GraphicsEngine)->GetDevice()->CreateBuffer( &bufferDesc, &InitData, SolidPrimVB.GetAddressOf() ) );
+    // Create the vertex buffer through the backend-neutral factory
+    Engine::GraphicsEngine->CreateVertexBuffer( SolidPrimVB );
+    SolidPrimVB->Init( SolidVertices, NumVertices * sizeof( LineVertex ) );
 
     SolidPrimitiveTopology = Topology;
 
@@ -809,20 +799,9 @@ HRESULT EditorLinePrimitive::CreatePrimitive( LineVertex* PrimVerts, UINT NumVer
     memcpy( Vertices, PrimVerts, sizeof( LineVertex ) * NumVertices );
     this->NumVertices = NumVertices;
 
-    //Create the vertex buffer
-    D3D11_BUFFER_DESC bufferDesc;
-    bufferDesc.ByteWidth = NumVertices * sizeof( LineVertex );
-    bufferDesc.Usage = D3D11_USAGE_DEFAULT;
-    bufferDesc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-    bufferDesc.CPUAccessFlags = 0;
-    bufferDesc.MiscFlags = 0;
-
-    D3D11_SUBRESOURCE_DATA InitData;
-    InitData.pSysMem = &Vertices[0];
-    InitData.SysMemPitch = 0;
-    InitData.SysMemSlicePitch = 0;
-
-    LE( AsD3D11EngineBase(Engine::GraphicsEngine)->GetDevice()->CreateBuffer( &bufferDesc, &InitData, PrimVB.GetAddressOf() ) );
+    // Create the vertex buffer through the backend-neutral factory
+    Engine::GraphicsEngine->CreateVertexBuffer( PrimVB );
+    PrimVB->Init( Vertices, NumVertices * sizeof( LineVertex ) );
 
     PrimitiveTopology = Topology;
 
@@ -839,15 +818,15 @@ void EditorLinePrimitive::SetSolidShader( PShaderID SolidShaderID ) {
     SolidPrimShaderID = SolidShaderID;
 }
 
-/** Renders a vertexbuffer with the given shader */
-void EditorLinePrimitive::RenderVertexBuffer( const Microsoft::WRL::ComPtr<ID3D11Buffer>& VB, UINT NumVertices, D3D11PShader* Shader, D3D11_PRIMITIVE_TOPOLOGY Topology, int Pass ) {
+/** Renders a vertexbuffer with the given pixel shader (resolved+applied through the engine) */
+void EditorLinePrimitive::RenderVertexBuffer( const std::unique_ptr<GfxVertexBuffer>& VB, UINT NumVertices, PShaderID psID, D3D11_PRIMITIVE_TOPOLOGY Topology, int Pass ) {
     D3D11GraphicsEngineBase* engine = AsD3D11EngineBase(Engine::GraphicsEngine);
 
     XMMATRIX tr = XMMatrixTranspose( XMLoadFloat4x4( &WorldMatrix ) );;
     Engine::GAPI->SetWorldTransformXM( tr );
 
     engine->SetActiveVertexShader( VShaderID::VS_Lines );
-    engine->SetActivePixelShader( PShaderID::PS_Lines );
+    engine->SetActivePixelShader( psID );
 
     engine->SetupVS_ExMeshDrawCall();
     engine->SetupVS_ExConstantBuffer();
@@ -858,12 +837,13 @@ void EditorLinePrimitive::RenderVertexBuffer( const Microsoft::WRL::ComPtr<ID3D1
     Engine::GAPI->GetRendererState().BlendState.SetDirty();
     engine->UpdateRenderStates();
 
-    Shader->Apply();
+    engine->GetActivePS()->Apply();
 
-    // Set vertex buffer
+    // Bind the backend-neutral vertex buffer via its native D3D11 handle
     UINT stride = sizeof( LineVertex );
     UINT offset = 0;
-    engine->GetContext()->IASetVertexBuffers( 0, 1, VB.GetAddressOf(), &stride, &offset );
+    ID3D11Buffer* nativeVB = D3D11VertexBuffer::From( VB.get() )->GetVertexBuffer().Get();
+    engine->GetContext()->IASetVertexBuffers( 0, 1, &nativeVB, &stride, &offset );
     engine->GetContext()->IASetIndexBuffer( nullptr, DXGI_FORMAT_UNKNOWN, 0 );
 
     engine->GetContext()->IASetPrimitiveTopology( Topology );
@@ -877,11 +857,11 @@ HRESULT EditorLinePrimitive::RenderPrimitive( int Pass ) {
     }
 
     if ( NumVertices > 0 ) {
-        RenderVertexBuffer( PrimVB.Get(), NumVertices, AsD3D11EngineBase(Engine::GraphicsEngine)->GetShaderManager().GetPShader( PrimShaderID ).get(), PrimitiveTopology, Pass );
+        RenderVertexBuffer( PrimVB, NumVertices, PrimShaderID, PrimitiveTopology, Pass );
     }
 
     if ( NumSolidVertices > 0 ) {
-        RenderVertexBuffer( SolidPrimVB.Get(), NumSolidVertices, AsD3D11EngineBase(Engine::GraphicsEngine)->GetShaderManager().GetPShader( SolidPrimShaderID ).get(), SolidPrimitiveTopology, Pass );
+        RenderVertexBuffer( SolidPrimVB, NumSolidVertices, SolidPrimShaderID, SolidPrimitiveTopology, Pass );
     }
 
     return S_OK;

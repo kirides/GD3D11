@@ -368,9 +368,10 @@ public:
     /** Draws particle meshes */
     void DrawFrameParticleMeshes( std::unordered_map<zCVob*, std::unique_ptr<MeshVisualInfo>>& progMeshes ) override;
 
-    /** Draws particle effects */
+    /** Draws particle effects into the given engine-owned refraction targets. Backend-internal:
+        the render graph creates the two targets and calls this directly (not via the base interface). */
     void DrawFrameParticles(std::map<zCTexture*, std::vector<ParticleInstanceInfo>>& particles, std::map<zCTexture*, ParticleRenderInfo>& info, RenderToTextureBuffer
-                            * bufferParticleColor, RenderToTextureBuffer* bufferParticleDistortion) override;
+                            * bufferParticleColor, RenderToTextureBuffer* bufferParticleDistortion);
 
     /** Returns the settings window availability */
     bool HasSettingsWindow();

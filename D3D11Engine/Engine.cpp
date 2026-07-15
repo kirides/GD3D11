@@ -6,6 +6,8 @@
 #include "ThreadPool.h"
 #include "ImGuiShim.h"
 
+#include <algorithm>
+
 //#define TESTING
 
 namespace Engine {
@@ -16,9 +18,44 @@ namespace Engine {
         WorkerThreadPool = new ThreadPool(L"GD3D11-Worker");
     }
 
+    /** Reads the requested graphics backend before the full settings load runs.
+        INI: [Display] GraphicsAPI=D3D11|D3D12 (absent -> D3D11). CLI: -GD3D12 / -GD3D11 override. */
+    static GothicRendererSettings::E_GraphicsAPI ReadRequestedGraphicsAPI() {
+        auto requested = GothicRendererSettings::GRAPHICS_API_D3D11;
+
+        // INI (mirrors GothicAPI's LoadMenuSettings path resolution)
+        char NPath[MAX_PATH];
+        if ( int len = GetCurrentDirectoryA( MAX_PATH, NPath ) ) {
+            std::string ini = std::string( NPath, len ).append( "\\" ).append( MENU_SETTINGS_FILE );
+            char apiBuf[64] = {};
+            ::GetPrivateProfileStringA( "Display", "GraphicsAPI", "D3D11", apiBuf, sizeof( apiBuf ), ini.c_str() );
+            if ( _stricmp( apiBuf, "D3D12" ) == 0 )
+                requested = GothicRendererSettings::GRAPHICS_API_D3D12;
+        }
+
+        // CLI override (parity with the other -G* switches). Uppercase-normalized substring match.
+        if ( const char* cmdLine = GetCommandLineA() ) {
+            std::string upper = cmdLine;
+            std::transform( upper.begin(), upper.end(), upper.begin(), ::toupper );
+            if ( upper.find( "-GD3D12" ) != std::string::npos )
+                requested = GothicRendererSettings::GRAPHICS_API_D3D12;
+            else if ( upper.find( "-GD3D11" ) != std::string::npos )
+                requested = GothicRendererSettings::GRAPHICS_API_D3D11;
+        }
+
+        return requested;
+    }
+
     /** Creates main graphics engine */
     void CreateGraphicsEngine() {
         LogInfo() << "Creating Main graphics engine";
+
+        // Backend selection (Phase 0: inert). D3D11 is the only implemented backend; a D3D12
+        // request is logged and falls back to D3D11 until the D3D12 backend lands.
+        if ( ReadRequestedGraphicsAPI() == GothicRendererSettings::GRAPHICS_API_D3D12 ) {
+            LogWarn() << "Direct3D 12 backend was requested (GraphicsAPI=D3D12 / -GD3D12) but is "
+                         "not available in this build. Falling back to Direct3D 11.";
+        }
 
         GraphicsEngine = new D3D11GraphicsEngine;
 

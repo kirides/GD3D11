@@ -603,6 +603,14 @@ struct GothicRendererSettings {
         RM_ForwardPlus = 1,
     };
 
+    /** Selects which graphics backend the engine creates on startup. Read very early
+        (before the full settings load) in Engine::CreateGraphicsEngine(). D3D12 is inert
+        until the D3D12 backend lands; requesting it currently falls back to D3D11. */
+    enum E_GraphicsAPI {
+        GRAPHICS_API_D3D11 = 0,
+        GRAPHICS_API_D3D12 = 1,
+    };
+
     enum E_WaterSSRQuality {
         WATER_SSR_DISABLED = 0,
         WATER_SSR_LOW      = 1,
@@ -740,6 +748,7 @@ struct GothicRendererSettings {
         PartialDynamicShadowUpdates = true;
         EnableTiledLighting = false;
         RendererMode = RM_Deferred;
+        GraphicsAPI = GRAPHICS_API_D3D11;
         MSAASamples = 1;
         DrawSectionIntersections = true;
 
@@ -951,6 +960,8 @@ struct GothicRendererSettings {
     bool PartialDynamicShadowUpdates;
     bool EnableTiledLighting;
     E_RendererMode RendererMode;
+    /** Requested graphics backend (see E_GraphicsAPI). Inert until the D3D12 backend lands. */
+    E_GraphicsAPI GraphicsAPI;
     /** Hardware MSAA sample count (1/2/4/8). Only applied by the Forward+ renderer; Deferred always stays single-sample. */
     int MSAASamples;
     bool DrawSectionIntersections;

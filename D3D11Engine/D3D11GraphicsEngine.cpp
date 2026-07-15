@@ -4554,12 +4554,19 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
         builder.Read( particleDistortionHandle );
         builder.Write( backBufferHandle );
 
-        pass.m_executeCallback = [particleColorHandle, particleDistortionHandle](const RenderGraph& graph) {
+        pass.m_executeCallback = [this, particleColorHandle, particleDistortionHandle](const RenderGraph& graph) {
             TracyD3D11ZoneCGX( "D3D11GraphicsEngine::Draw ParticlesSimple" );
 
+            // GothicAPI collects this frame's particles (backend-neutral) and draws the prog-meshes.
             Engine::GAPI->ResetRenderStates();
-            Engine::GAPI->DrawParticlesSimple( 
-                graph.GetPhysicalTexture( particleColorHandle ), 
+            Engine::GAPI->DrawParticlesSimple();
+
+            // The two refraction targets are engine-owned (render-graph physical textures); draw the
+            // collected particle instances into them directly instead of routing them through GothicAPI.
+            DrawFrameParticles(
+                Engine::GAPI->GetFrameParticles(),
+                Engine::GAPI->GetFrameParticleInfo(),
+                graph.GetPhysicalTexture( particleColorHandle ),
                 graph.GetPhysicalTexture( particleDistortionHandle ) );
         };
     });

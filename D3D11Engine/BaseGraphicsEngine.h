@@ -8,7 +8,6 @@
 
 class BaseLineRenderer;
 class BaseShadowedPointLight;
-struct RenderToTextureBuffer;
 class zCTexture;
 class zCMaterial;
 class zCVob;
@@ -282,12 +281,6 @@ public:
 
     /** Draws particle meshes */
     virtual void DrawFrameParticleMeshes( std::unordered_map<zCVob*, std::unique_ptr<MeshVisualInfo>>& progMeshes ) {}
-
-    /** Draws particle effects */
-    virtual void DrawFrameParticles(std::map<zCTexture*, std::vector<ParticleInstanceInfo>>& particles,
-        std::map<zCTexture*, ParticleRenderInfo>& info,
-        RenderToTextureBuffer* bufferParticleColor,
-        RenderToTextureBuffer* bufferParticleDistortion) {}
 
     virtual void DrawString( std::string_view str, float x, float y, const zFont* font, zColor& fontColor ) {};
     

@@ -9,7 +9,6 @@
 #include "zCPolyStrip.h"
 #include "zTypes.h"
 #include "RenderQueue.h"
-#include "RenderToTextureBuffer.h"
 #include "ShaderIDs.h"
 
 static const char* MENU_SETTINGS_FILE = "system\\GD3D11\\UserSettings.ini";
@@ -601,10 +600,10 @@ public:
     /** Recursive helper function to draw the BSP-Tree */
     void DebugDrawTreeNode( zCBspBase* base, zTBBox3D boxCell, int clipFlags = 63 );
 
-    /** Draws particles, in a simple way */
-    void DrawParticlesSimple(
-        RenderToTextureBuffer* bufferParticleColor,
-        RenderToTextureBuffer* bufferParticleDistortion);
+    /** Prepares this frame's particle draw data (visibility + FX collection) and draws the
+        particle prog-meshes. Backend-neutral: the concrete engine draws the collected
+        FrameParticles into its own refraction targets afterwards. */
+    void DrawParticlesSimple();
 
     /** Prepares poly strips for feeding into renderer (weapon and effect trails) */
     void CalcPolyStripMeshes();
@@ -795,6 +794,9 @@ public:
 
     /** Returns the frame particle info collected from all DrawParticleFX-Calls */
     std::map<zCTexture*, ParticleRenderInfo>& GetFrameParticleInfo();
+
+    /** Returns this frame's collected particle instances (populated by DrawParticlesSimple). */
+    std::map<zCTexture*, std::vector<ParticleInstanceInfo>>& GetFrameParticles() { return FrameParticles; }
 
     /** Checks if the normalmaps are there */
     bool CheckNormalmapFilesOld();

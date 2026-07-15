@@ -1087,6 +1087,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="RenderQueue.h" />
     <ClInclude Include="RGTextureDesc.h" />
     <ClInclude Include="ShaderCategory.h" />
+    <ClInclude Include="ShaderRegistry.h" />
     <ClInclude Include="StringID.h" />
     <ClInclude Include="SMAA\D3D11SMAA.h" />
     <ClInclude Include="SteamOverlay.h" />
@@ -1205,6 +1206,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="D3D11PShader.cpp" />
     <ClCompile Include="D3D11RenderQueue.cpp" />
     <ClCompile Include="D3D11ShaderManager.cpp" />
+    <ClCompile Include="ShaderRegistry.cpp" />
     <ClCompile Include="D3D11ShadowMap.cpp" />
     <ClCompile Include="D3D11TiledDeferredShading.cpp" />
     <ClCompile Include="D3D11DeferredRenderer.cpp" />
