@@ -99,6 +99,39 @@ public:
         return (zTResourceCacheState)(state & GothicMemoryLocations::zCTexture::Mask_CacheState);
     }
 
+    static constexpr int zTEX_MAX_ANIS = 3;
+    
+    // offset into zTEX_MAX_ANIS-count of animation frames
+    int* GetNumAniFrames() {
+        return *reinterpret_cast<int**>(THISPTR_OFFSET(GothicMemoryLocations::zCTexture::Offset_AniFrames));
+    }
+    
+    int* GetActAniFrame() {
+        return *reinterpret_cast<int**>(THISPTR_OFFSET(GothicMemoryLocations::zCTexture::Offset_ActAniFrame));
+    }
+    zCTexture** GetNextAni() {
+        return *reinterpret_cast<zCTexture***>(THISPTR_OFFSET(GothicMemoryLocations::zCTexture::Offset_NextFrame));
+    }
+    
+    zCTexture* GetAniTexture() {
+        const int* numAniFrames = GetNumAniFrames();
+        const int* actAniFrame = GetActAniFrame();
+
+        zCTexture* tex = this;
+        for ( int i = 0; i < zTEX_MAX_ANIS; ++i ) {
+            if (numAniFrames[i] == 0) continue;
+            
+            for (int j = 0; j < actAniFrame[i]; ++j) {
+                const auto nextAni = tex->GetNextAni();
+                if (!nextAni[i]) {
+                    break;
+                }
+                tex = nextAni[i];
+            }
+        }
+        return tex;
+    }
+    
     zTResourceCacheState CacheIn( float priority ) {
         zTResourceCacheState cacheState = GetCacheState();
         if ( cacheState == zRES_CACHED_IN ) {
@@ -159,4 +192,3 @@ public:
         return reinterpret_cast<zSTRING&(__fastcall*)( const zCTexture* )>( GothicMemoryLocations::zCObject::GetObjectName )( this );
     }
 };
-
