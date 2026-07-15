@@ -161,7 +161,7 @@ extern "C"
 
     /** Gets a ID3D11DeviceContext1 rendering context */
     __declspec(dllexport) ID3D11DeviceContext1* __cdecl GDX_GetDX11RenderingContext( void ) {
-        D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+        D3D11GraphicsEngine* g = AsD3D11Engine(Engine::GraphicsEngine);
         return g->GetContext().Get();
     }
 

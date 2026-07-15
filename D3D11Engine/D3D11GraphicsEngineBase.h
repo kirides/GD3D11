@@ -2,6 +2,7 @@
 #include "BaseGraphicsEngine.h"
 #include "D3DGraphicsEventRecord.h"
 #include <dxgi1_5.h>
+#include <cassert>
 
 class D3D11DepthBufferState;
 class D3D11BlendStateInfo;
@@ -26,6 +27,9 @@ public:
 
     D3D11GraphicsEngineBase();
     ~D3D11GraphicsEngineBase() override;
+
+    /** This whole hierarchy is the Direct3D 11 backend. */
+    EGraphicsEngineBackend GetBackendAPI() const override { return EGraphicsEngineBackend::D3D11; }
 
     /** Called after the fake-DDraw-Device got created */
     XRESULT Init() override PURE;
@@ -80,6 +84,9 @@ public:
     /** Draws a vertexarray, used for rendering gothics UI */
     XRESULT DrawVertexArray( ExVertexStruct* vertices, unsigned int numVertices, unsigned int startVertex = 0, unsigned int stride = sizeof( ExVertexStruct ) ) override;
 
+    /** Binds a surface's diffuse/normalmap textures to consecutive PS slots (see base). */
+    void BindSurfaceTextures( int slot, D3D11Texture* diffuse, D3D11Texture* normalmap, unsigned int numTextures = 2 ) override;
+
     /** Draws a vertexbuffer, non-indexed, binding the FF-Pipe values */
     XRESULT DrawVertexBufferFF( D3D11VertexBuffer* vb, unsigned int numVertices, unsigned int startVertex, unsigned int stride = sizeof( ExVertexStruct ) ) override;
 
@@ -91,7 +98,7 @@ public:
     auto GetContext() -> const auto& { return Context; }
 
     /** Pixel Shader functions */
-    void UnbindActivePS() { ActivePS = nullptr; }
+    void UnbindActivePS() override { ActivePS = nullptr; }
     auto GetActivePS() -> auto& { return ActivePS; }
     auto GetActiveVS() -> auto& { return ActiveVS; }
     auto GetActiveGS() -> auto& { return ActiveGS; }
@@ -198,3 +205,13 @@ protected:
     /** If true, we are still waiting for a present to happen. Don't draw everything twice! */
     bool PresentPending;
 };
+
+/** Checked downcast of the global engine to the D3D11 backend base. Replaces the
+    blind reinterpret_cast pattern: asserts the backend tag in debug builds, then
+    performs a proper (inheritance-aware) static_cast. Returns nullptr for null. */
+inline D3D11GraphicsEngineBase* AsD3D11EngineBase( BaseGraphicsEngine* engine ) {
+    if ( !engine ) return nullptr;
+    assert( engine->GetBackendAPI() == EGraphicsEngineBackend::D3D11
+        && "AsD3D11EngineBase called on a non-D3D11 graphics engine" );
+    return static_cast<D3D11GraphicsEngineBase*>( engine );
+}

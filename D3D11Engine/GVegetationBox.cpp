@@ -322,8 +322,8 @@ void GVegetationBox::PrepareRenderGeometryPipeline()
     Engine::GraphicsEngine->SetActiveVertexShader( VShaderID::VS_GrassInstanced );
     Engine::GraphicsEngine->SetActivePixelShader( PShaderID::PS_Grass );
 
-    reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine)->SetupVS_ExMeshDrawCall();
-    reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine)->SetupVS_ExConstantBuffer();
+    AsD3D11Engine(Engine::GraphicsEngine)->SetupVS_ExMeshDrawCall();
+    AsD3D11Engine(Engine::GraphicsEngine)->SetupVS_ExConstantBuffer();
 }
 
 void GVegetationBox::ResetRenderGeometryPipeline()
@@ -343,8 +343,8 @@ void GVegetationBox::PrepareRenderShadowPipeline() {
     Engine::GraphicsEngine->SetActiveVertexShader( VShaderID::VS_GrassInstancedShadow );
     Engine::GraphicsEngine->SetActivePixelShader( PShaderID::PS_GrassShadow );
 
-    reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine)->SetupVS_ExMeshDrawCall();
-    reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine)->SetupVS_ExConstantBuffer();
+    AsD3D11Engine(Engine::GraphicsEngine)->SetupVS_ExMeshDrawCall();
+    AsD3D11Engine(Engine::GraphicsEngine)->SetupVS_ExConstantBuffer();
 }
 
 void GVegetationBox::PopulateConstantBuffer(FXMMATRIX view, GrassConstantBuffer& gcb)
@@ -367,7 +367,7 @@ void GVegetationBox::PopulateConstantBuffer(FXMMATRIX view, GrassConstantBuffer&
         gcb.G_HeroAffectStrength = 0.0f;
     }
 
-    gcb.G_UseAlphaToCoverage = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine)->GetMSAADepthBuffer() != nullptr ? 1u : 0u;
+    gcb.G_UseAlphaToCoverage = AsD3D11Engine(Engine::GraphicsEngine)->GetMSAADepthBuffer() != nullptr ? 1u : 0u;
 }
 
 /** Draws this vegetation box */

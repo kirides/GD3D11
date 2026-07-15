@@ -5,6 +5,7 @@
 #include "D3D11PointLight.h"
 #include "D3D11PShader.h"
 #include "D3D11ShaderManager.h"
+#include "D3D11Texture.h"
 #include "D3D11VShader.h"
 #include "RenderToTextureBuffer.h"
 #include "zCView.h"
@@ -26,6 +27,20 @@ D3D11GraphicsEngineBase::~D3D11GraphicsEngineBase() {
     GothicDepthBufferStateInfo::DeleteCachedObjects();
     GothicBlendStateInfo::DeleteCachedObjects();
     GothicRasterizerStateInfo::DeleteCachedObjects();
+}
+
+/** Binds a surface's diffuse/normalmap textures to consecutive PS slots. The neutral
+    seam for MyDirectDrawSurface7::BindToSlot: callers pass texture objects, the backend
+    extracts the native SRVs so no ID3D11* view leaks through the base interface. */
+void D3D11GraphicsEngineBase::BindSurfaceTextures( int slot, D3D11Texture* diffuse, D3D11Texture* normalmap, unsigned int numTextures ) {
+    ID3D11ShaderResourceView* srvs[2] = { nullptr, nullptr };
+    if ( diffuse ) {
+        srvs[0] = diffuse->GetShaderResourceView().Get();
+    }
+    if ( normalmap ) {
+        srvs[1] = normalmap->GetShaderResourceView().Get();
+    }
+    GetContext()->PSSetShaderResources( slot, numTextures, srvs );
 }
 
 /** Called when the game created its window */

@@ -1401,7 +1401,7 @@ void GothicAPI::DrawWorldMeshNaive() {
             if( RendererState.RendererSettings.ShowSkeletalVertexNormals )
                 VNSkeletalVobs.emplace_back( vobInfo );
         }
-        D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+        D3D11GraphicsEngine* g = AsD3D11Engine(Engine::GraphicsEngine);
 
         if (!drawAsMorphMesh.empty()) {
             auto _ = Engine::GraphicsEngine->RecordGraphicsEvent( GE_NAME( "Draw Skeletal Morph Meshes" ) ); 
@@ -1966,7 +1966,7 @@ void GothicAPI::DrawMeshInfo_Layered( zCMaterial* mat, MeshInfo* msh ) {
             RendererState.GraphicsState.FF_GSwitches &= ~GSWITCH_ALPHAREF;
     }
 
-    D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    D3D11GraphicsEngine* g = AsD3D11Engine(Engine::GraphicsEngine);
     if ( !msh->MeshIndexBuffer ) {
         g->DrawVertexBufferInstanced( msh->GetMeshVertexBuffer(), msh->Vertices.size(), 6 );
     } else {
@@ -2497,7 +2497,7 @@ float3* GothicAPI::GetLowestLODPoly_SkeletalMesh( zCModel* model, const int poly
 
 /** Called to update the compress backbuffer state */
 void GothicAPI::UpdateCompressBackBuffer() {
-    reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine)->OnResetBackBuffer();
+    AsD3D11Engine(Engine::GraphicsEngine)->OnResetBackBuffer();
 }
 
 /** Draws a skeletal mesh-vob */
@@ -2508,7 +2508,7 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
         return;
     }
     // TODO: Put this into the renderer!!
-    D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    D3D11GraphicsEngine* g = AsD3D11Engine(Engine::GraphicsEngine);
 
     zCModel* model = static_cast<zCModel*>(vi->Vob->GetVisual());
 
@@ -2768,7 +2768,7 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
     }
     
     // TODO: Put this into the renderer!!
-    D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    D3D11GraphicsEngine* g = AsD3D11Engine(Engine::GraphicsEngine);
 
     zCModel* model = static_cast<zCModel*>(vi->Vob->GetVisual());
 
@@ -3005,7 +3005,7 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
 
 void GothicAPI::DrawTransparencyVobs() {
     ZoneScopedN( "GothicAPI::DrawTransparencyVobs" );
-    D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    D3D11GraphicsEngine* g = AsD3D11Engine(Engine::GraphicsEngine);
     if ( !TransparencyVobs.empty() ) {
         // Setup alpha blending
         RendererState.RasterizerState.SetDefault();
@@ -3114,7 +3114,7 @@ void GothicAPI::DrawSkeletalVN() {
         RendererState.DepthState.SetDefault();
         RendererState.DepthState.SetDirty();
 
-        D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+        D3D11GraphicsEngine* g = AsD3D11Engine(Engine::GraphicsEngine);
 
         zCModel* model = static_cast<zCModel*>(vi->Vob->GetVisual());
 
@@ -5697,7 +5697,7 @@ void GothicAPI::DrawMorphMesh( zCMorphMesh* msh, std::map<zCMaterial*, std::vect
         
     // Ensure to call `WorldConverter::UpdateMorphMeshVisual( ... );` once per frame for this mesh to update the vertex buffers before drawing.
 
-    D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    D3D11GraphicsEngine* g = AsD3D11Engine(Engine::GraphicsEngine);
 
     const bool isZPrepass = g->GetRenderingStage() == DES_Z_PRE_PASS;
     const bool bindShader = g->GetRenderingStage() == DES_MAIN || isZPrepass;
@@ -5740,7 +5740,7 @@ void GothicAPI::DrawMorphMesh_Layered( zCMorphMesh* msh, std::map<zCMaterial*, s
 
     // Ensure to call `WorldConverter::UpdateMorphMeshVisual( ... );` once per frame for this mesh to update the vertex buffers before drawing.
 
-    D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    D3D11GraphicsEngine* g = AsD3D11Engine(Engine::GraphicsEngine);
 
     D3D11Texture* whiteTexture = g->GetWhiteTexture();
     void* lastTex = whiteTexture;

@@ -61,22 +61,13 @@ D3D11Texture* MyDirectDrawSurface7::GetFxMap() {
 
 /** Binds this texture */
 void MyDirectDrawSurface7::BindToSlot( int slot ) {
-    ID3D11ShaderResourceView* srvs[2] = {
-        nullptr, nullptr
-    };
-    
     if ( !IsReady ) {
-        reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->PSSetShaderResources( slot, 1, srvs );
-        return; // Don't bind half-loaded textures!
+        // Don't bind half-loaded textures! Clear just the diffuse slot.
+        Engine::GraphicsEngine->BindSurfaceTextures( slot, nullptr, nullptr, 1 );
+        return;
     }
 
-    if ( EngineTexture ) {// Needed sometimes
-        srvs[0] = EngineTexture->GetShaderResourceView().Get();
-    }
-    if ( Normalmap ) {
-        srvs[1] = Normalmap->GetShaderResourceView().Get();
-    }
-    reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->PSSetShaderResources( slot, 2, srvs );
+    Engine::GraphicsEngine->BindSurfaceTextures( slot, EngineTexture.get(), Normalmap, 2 );
 }
 
 static bool LoadResource(
@@ -337,10 +328,10 @@ HRESULT MyDirectDrawSurface7::Lock( LPRECT lpDestRect, LPDDSURFACEDESC2 lpDDSurf
         byte* data;
         INT2 buffersize;
         int pixelSize;
-        reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->ResetPresentPending();
+        AsD3D11EngineBase(Engine::GraphicsEngine)->ResetPresentPending();
         Engine::GraphicsEngine->OnStartWorldRendering();
         Engine::GraphicsEngine->GetBackbufferData( CreatingThumbnail, &data, buffersize, pixelSize );
-        reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->ResetPresentPending();
+        AsD3D11EngineBase(Engine::GraphicsEngine)->ResetPresentPending();
 
         lpDDSurfaceDesc->ddpfPixelFormat.dwRGBBitCount = 32;
         lpDDSurfaceDesc->ddpfPixelFormat.dwRBitMask = 0x00FF0000;

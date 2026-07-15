@@ -10,6 +10,7 @@ class D3D11Texture;
 class D3D11VertexBuffer;
 struct RenderToTextureBuffer;
 class zCTexture;
+class zCMaterial;
 class zCVob;
 struct SkeletalMeshVisualInfo;
 struct VobInfo;
@@ -36,6 +37,26 @@ enum WindowModes {
     WINDOW_MODE_FULLSCREEN_BORDERLESS = 2,
     WINDOW_MODE_FULLSCREEN_LOWLATENCY = 3,
     WINDOW_MODE_WINDOWED = 4,
+};
+
+/** Identifies which concrete graphics backend Engine::GraphicsEngine points at.
+    Used to gate the (few) external downcasts to a concrete backend type so a
+    blind reinterpret_cast can be replaced by a checked static_cast. */
+enum class EGraphicsEngineBackend {
+    D3D11,
+    D3D12,
+};
+
+/** Backend-neutral rendering stage. Scene code (GothicAPI) queries the active engine
+    for this to branch on Z-prepass / main / shadow passes. Kept as an unscoped enum with
+    the historical DES_* enumerators so existing call sites are unchanged; the D3D11 backend
+    aliases its old D3D11ENGINE_RENDER_STAGE name to this. */
+enum ERenderStage {
+    DES_Z_PRE_PASS,
+    DES_MAIN,
+    DES_SHADOWMAP,
+    DES_SHADOWMAP_CUBE,
+    DES_GHOST
 };
 
 struct ViewportInfo {
@@ -86,6 +107,10 @@ public:
     BaseGraphicsEngine() = default;
     virtual ~BaseGraphicsEngine() = default;
     
+    /** Returns which concrete backend this engine is. Lets external code replace
+        blind reinterpret_casts of Engine::GraphicsEngine with a checked downcast. */
+    virtual EGraphicsEngineBackend GetBackendAPI() const PURE;
+
     /* Trigger resize on next frame */
     virtual XRESULT TriggerResize(INT2 resolution) PURE;
 
@@ -162,6 +187,35 @@ public:
     /** Draws a batch of instanced geometry */
     virtual XRESULT DrawInstanced( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, D3D11VertexBuffer* instanceData, unsigned int instanceDataStride, unsigned int numInstances, unsigned int vertexStride = sizeof( ExVertexStruct ), unsigned int startInstanceNum = 0, unsigned int indexOffset = 0, unsigned int instanceDataByteOffset = 0 ) { return XR_SUCCESS; };
 
+    /** Packed-stride VOB draws (36-byte ExVertexStructGPU; paired with VS_ExPacked). */
+    virtual XRESULT DrawVertexBufferIndexedPacked( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int indexOffset = 0 ) { return XR_SUCCESS; };
+    virtual XRESULT DrawVertexBufferInstanced( D3D11VertexBuffer* vb, unsigned int numVertices, unsigned int numInstances, unsigned int stride = sizeof( ExVertexStruct ) ) { return XR_SUCCESS; };
+    virtual XRESULT DrawVertexBufferInstancedIndexed( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int numInstances, unsigned int indexOffset = 0 ) { return XR_SUCCESS; };
+    virtual XRESULT DrawVertexBufferInstancedIndexedPacked( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int numInstances, unsigned int indexOffset = 0 ) { return XR_SUCCESS; };
+
+    /** Sets up a draw call for a VS_Ex-Mesh (FF-pipe emulation state). Default no-op. */
+    virtual void SetupVS_ExMeshDrawCall() {}
+    virtual void SetupVS_ExConstantBuffer() {}
+    virtual void SetupVS_ExPerInstanceConstantBuffer() {}
+
+    /** Returns the current rendering stage (Z-prepass / main / shadow / ghost). */
+    virtual ERenderStage GetRenderingStage() { return DES_MAIN; }
+
+    /** Sets up a texture with normalmap and fxmap for rendering. Returns true if bound. */
+    virtual bool BindTextureNRFX( zCMaterial* mat, zCTexture* tex, bool bindShader, bool updateMaterialInfo = true ) { return true; }
+    virtual bool BindTextureNRFX( zCMaterial* mat, bool bindShader, bool updateMaterialInfo = true ) { return true; }
+
+    /** Skeletal-mesh draws. */
+    virtual XRESULT DrawSkeletalVertexNormals( SkeletalVobInfo* vi, const XMFLOAT4X4& world, const std::span<XMFLOAT4X4> transforms, float4 color, float fatness = 1.0f ) { return XR_SUCCESS; };
+    virtual XRESULT DrawSkeletalMesh_Layered( SkeletalVobInfo* vi, const std::span<XMFLOAT4X4> transforms, float4 color, XMFLOAT4X4& world, float fatness = 1.0f ) { return XR_SUCCESS; };
+    virtual void DrawSkeletalMeshVobs( const std::vector<SkeletalVobInfo*>& vis, float distance, bool updateState, bool drawAttachments ) {};
+
+    /** Unbinds the active pixel shader object. */
+    virtual void UnbindActivePS() {}
+
+    /** Called when the backbuffer is (re)created after a resize/reset. */
+    virtual void OnResetBackBuffer() {}
+
     /** Sets the active pixel shader object */
     virtual XRESULT SetActivePixelShader( PShaderID shader ) { return XR_SUCCESS; };
     virtual XRESULT SetActiveVertexShader( VShaderID shader ) { return XR_SUCCESS; };
@@ -175,6 +229,13 @@ public:
 
     /** Unbinds the texture at the given slot */
     virtual XRESULT UnbindTexture( int slot ) { return XR_SUCCESS; };
+
+    /** Binds a surface's diffuse (at 'slot') and normalmap (at 'slot'+1) textures to the pixel
+        shader. numTextures selects how many consecutive slots are written: 2 for a ready surface,
+        1 to clear just the diffuse slot for a not-yet-loaded surface. Either texture may be null.
+        This is the hot texture-bind seam used by the DDraw surface wrapper; the backend extracts
+        the native views internally so the interface stays API-neutral. */
+    virtual void BindSurfaceTextures( int slot, D3D11Texture* diffuse, D3D11Texture* normalmap, unsigned int numTextures = 2 ) {}
 
     /** Draws the world mesh */
     virtual XRESULT DrawWorldMesh( bool noTextures = false ) { return XR_SUCCESS; };

@@ -312,7 +312,7 @@ HRESULT EditorLinePrimitive::CreateSolidPrimitive( LineVertex* PrimVerts, UINT N
     InitData.SysMemPitch = 0;
     InitData.SysMemSlicePitch = 0;
 
-    LE( reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetDevice()->CreateBuffer( &bufferDesc, &InitData, SolidPrimVB.GetAddressOf() ) );
+    LE( AsD3D11EngineBase(Engine::GraphicsEngine)->GetDevice()->CreateBuffer( &bufferDesc, &InitData, SolidPrimVB.GetAddressOf() ) );
 
     SolidPrimitiveTopology = Topology;
 
@@ -822,7 +822,7 @@ HRESULT EditorLinePrimitive::CreatePrimitive( LineVertex* PrimVerts, UINT NumVer
     InitData.SysMemPitch = 0;
     InitData.SysMemSlicePitch = 0;
 
-    LE( reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetDevice()->CreateBuffer( &bufferDesc, &InitData, PrimVB.GetAddressOf() ) );
+    LE( AsD3D11EngineBase(Engine::GraphicsEngine)->GetDevice()->CreateBuffer( &bufferDesc, &InitData, PrimVB.GetAddressOf() ) );
 
     PrimitiveTopology = Topology;
 
@@ -841,7 +841,7 @@ void EditorLinePrimitive::SetSolidShader( PShaderID SolidShaderID ) {
 
 /** Renders a vertexbuffer with the given shader */
 void EditorLinePrimitive::RenderVertexBuffer( const Microsoft::WRL::ComPtr<ID3D11Buffer>& VB, UINT NumVertices, D3D11PShader* Shader, D3D11_PRIMITIVE_TOPOLOGY Topology, int Pass ) {
-    D3D11GraphicsEngineBase* engine = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine);
+    D3D11GraphicsEngineBase* engine = AsD3D11EngineBase(Engine::GraphicsEngine);
 
     XMMATRIX tr = XMMatrixTranspose( XMLoadFloat4x4( &WorldMatrix ) );;
     Engine::GAPI->SetWorldTransformXM( tr );
@@ -877,11 +877,11 @@ HRESULT EditorLinePrimitive::RenderPrimitive( int Pass ) {
     }
 
     if ( NumVertices > 0 ) {
-        RenderVertexBuffer( PrimVB.Get(), NumVertices, reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetShaderManager().GetPShader( PrimShaderID ).get(), PrimitiveTopology, Pass );
+        RenderVertexBuffer( PrimVB.Get(), NumVertices, AsD3D11EngineBase(Engine::GraphicsEngine)->GetShaderManager().GetPShader( PrimShaderID ).get(), PrimitiveTopology, Pass );
     }
 
     if ( NumSolidVertices > 0 ) {
-        RenderVertexBuffer( SolidPrimVB.Get(), NumSolidVertices, reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetShaderManager().GetPShader( SolidPrimShaderID ).get(), SolidPrimitiveTopology, Pass );
+        RenderVertexBuffer( SolidPrimVB.Get(), NumSolidVertices, AsD3D11EngineBase(Engine::GraphicsEngine)->GetShaderManager().GetPShader( SolidPrimShaderID ).get(), SolidPrimitiveTopology, Pass );
     }
 
     return S_OK;

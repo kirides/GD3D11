@@ -18,13 +18,9 @@ class D3D11ShaderManager;
 
 class D3D11NVAPI;
 
-enum D3D11ENGINE_RENDER_STAGE {
-    DES_Z_PRE_PASS,
-    DES_MAIN,
-    DES_SHADOWMAP,
-    DES_SHADOWMAP_CUBE,
-    DES_GHOST
-};
+/** The render-stage enum is now the backend-neutral ERenderStage (BaseGraphicsEngine.h).
+    This alias keeps the historical D3D11-side spelling working unchanged. */
+using D3D11ENGINE_RENDER_STAGE = ERenderStage;
 
 enum ShadowCubeCasterMask : unsigned int {
     SHADOW_CASTER_WORLD = 1u << 0,
@@ -81,7 +77,7 @@ public:
     XRESULT SetWindow( HWND hWnd ) override;
 
     /** Reset BackBuffer */
-    void OnResetBackBuffer();
+    void OnResetBackBuffer() override;
 
     /** Get BackBuffer Format */
     DXGI_FORMAT GetBackBufferFormat();
@@ -144,8 +140,8 @@ public:
     XRESULT DrawDynamicVertexBufferIndexed( std::vector<ExVertexStruct>& vertices, D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int indexOffset ) override;
 
     /** Draws a vertexbuffer, instanced */
-    XRESULT DrawVertexBufferInstanced( D3D11VertexBuffer* vb, unsigned int numVertices, unsigned int numInstances, unsigned int stride = sizeof( ExVertexStruct ) );
-    XRESULT DrawVertexBufferInstancedIndexed( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int numInstances, unsigned int indexOffset = 0 );
+    XRESULT DrawVertexBufferInstanced( D3D11VertexBuffer* vb, unsigned int numVertices, unsigned int numInstances, unsigned int stride = sizeof( ExVertexStruct ) ) override;
+    XRESULT DrawVertexBufferInstancedIndexed( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int numInstances, unsigned int indexOffset = 0 ) override;
     XRESULT DrawVertexBufferInstancedIndexedUINT( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int numInstances, unsigned int indexOffset );
 
     /** Draws a vertexbuffer, non-indexed, binding the FF-Pipe values */
@@ -164,17 +160,17 @@ public:
     void UpdateColorSpace_SwapChain();
 
     /** Sets up texture with normalmap and fxmap for rendering */
-    bool BindTextureNRFX( zCMaterial* mat, zCTexture* tex, bool bindShader, bool updateMaterialInfo = true );
-    bool BindTextureNRFX( zCMaterial* mat, bool bindShader, bool updateMaterialInfo = true );
+    bool BindTextureNRFX( zCMaterial* mat, zCTexture* tex, bool bindShader, bool updateMaterialInfo = true ) override;
+    bool BindTextureNRFX( zCMaterial* mat, bool bindShader, bool updateMaterialInfo = true ) override;
 
     /** Draws a skeletal mesh */
     XRESULT DrawSkeletalVertexNormals(SkeletalVobInfo* vi, const XMFLOAT4X4& world, const std::span<XMFLOAT4X4> transforms, float4 color, float fatness =
-                                          1.0f);
+                                          1.0f) override;
     XRESULT DrawSkeletalMesh( SkeletalVobInfo* vi, const std::span<XMFLOAT4X4> transforms, float4 color, const XMFLOAT4X4& world, float fatness = 1.0f ) override;
-    XRESULT DrawSkeletalMesh_Layered(SkeletalVobInfo* vi, const std::span<XMFLOAT4X4> transforms, float4 color, XMFLOAT4X4& world, float fatness = 1.0f);
+    XRESULT DrawSkeletalMesh_Layered(SkeletalVobInfo* vi, const std::span<XMFLOAT4X4> transforms, float4 color, XMFLOAT4X4& world, float fatness = 1.0f) override;
 
     /** Draws a batch of skeletal mesh vobs */
-    void DrawSkeletalMeshVobs( const std::vector<SkeletalVobInfo*>& vis, float distance, bool updateState, bool drawAttachments );
+    void DrawSkeletalMeshVobs( const std::vector<SkeletalVobInfo*>& vis, float distance, bool updateState, bool drawAttachments ) override;
 
     /** Draws a screen fade effects */
     XRESULT DrawScreenFade( void* camera ) override;
@@ -323,7 +319,7 @@ public:
     void SetRenderingStage( D3D11ENGINE_RENDER_STAGE stage );
 
     /** Returns the current rendering stage */
-    D3D11ENGINE_RENDER_STAGE GetRenderingStage();
+    D3D11ENGINE_RENDER_STAGE GetRenderingStage() override;
 
     /** Update focus window state */
     void UpdateFocus( HWND hWnd, bool focus_state );
@@ -795,6 +791,16 @@ private:
     XMFLOAT4X4 m_PrevViewProjMatrix;
     
     INT2 NewResolution;
-    
+
     void CreateAndBindDefaultSampler();
 };
+
+/** Checked downcast of the global engine to the concrete D3D11 engine. Replaces the
+    blind reinterpret_cast pattern: asserts the backend tag in debug builds, then
+    performs a proper (inheritance-aware) static_cast. Returns nullptr for null. */
+inline D3D11GraphicsEngine* AsD3D11Engine( BaseGraphicsEngine* engine ) {
+    if ( !engine ) return nullptr;
+    assert( engine->GetBackendAPI() == EGraphicsEngineBackend::D3D11
+        && "AsD3D11Engine called on a non-D3D11 graphics engine" );
+    return static_cast<D3D11GraphicsEngine*>( engine );
+}
