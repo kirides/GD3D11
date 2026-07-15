@@ -4942,38 +4942,6 @@ MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCMaterial* mat ) {
     // shouldn't actually happen, but eh.
     return GetMaterialInfoFrom( mat, "MAT_DUMMY" ); 
 }
-    
-/** Returns the material info associated with the given material */
-MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCTexture* tex ) {
-    const auto it = MaterialInfos.find( tex );
-    if ( it == MaterialInfos.end() ) {
-        return GetMaterialInfoFrom(tex, tex->GetNameWithoutExtView());
-    }
-
-    return it->second.get();
-}
-
-MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCTexture* tex, const std::string_view textureName ) {
-        auto it = MaterialInfos.find( tex );
-        MaterialInfo* mi;
-        if ( it == MaterialInfos.end() ) {
-            auto info = std::make_unique<MaterialInfo>();
-            MaterialInfos.emplace( tex, std::move( info ) );
-            mi = MaterialInfos[tex].get();
-            if ( tex ) {
-                mi->LoadFromFile( textureName );
-                if ( textureName == "NW_MISC_FULLALPHA_01" ) {
-                    mi->MaterialType = MaterialInfo::MT_FullAlpha;
-                }
-            }
-            FixUpMaterial( mi->buffer );
-        } else {
-            mi = it->second.get();
-        }
-
-
-        return mi;
-}
 
 /** Returns the loaded skeletal mesh vobs */
 std::vector<SkeletalVobInfo*>& GothicAPI::GetSkeletalMeshVobs() {

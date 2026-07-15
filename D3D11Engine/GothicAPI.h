@@ -688,12 +688,9 @@ public:
 
     /** Reset's the material info that were previously gathered */
     void ResetMaterialInfo();
+    /** Returns the material info associated with the given material */
     MaterialInfo* GetMaterialInfoFrom(void* any, std::string_view materialName);
     MaterialInfo* GetMaterialInfoFrom(zCMaterial* mat);
-
-    /** Returns the material info associated with the given material */
-    MaterialInfo* GetMaterialInfoFrom( zCTexture* tex );
-    MaterialInfo* GetMaterialInfoFrom( zCTexture* tex, const std::string_view textureName );
 
     /** Returns a texture from the given surface */
     zCTexture* GetTextureBySurface( MyDirectDrawSurface7* surface );
