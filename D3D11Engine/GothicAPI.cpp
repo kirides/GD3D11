@@ -1737,6 +1737,7 @@ void GothicAPI::GetVisibleDecalList( std::vector<zCVob*>& decals ) {
 /** Called when a material got removed */
 void GothicAPI::OnMaterialDeleted( zCMaterial* mat ) {
     LoadedMaterials.erase( mat );
+    MaterialInfos.erase( mat );
     if ( !mat )
         return;
     for ( auto&& it : SkeletalMeshVisuals ) {
