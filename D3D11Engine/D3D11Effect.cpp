@@ -455,10 +455,10 @@ XRESULT D3D11Effect::LoadRainResources()
         // Load textures...
         LogInfo() << "Loading rain-drop textures";
         ZoneScopedN( "LoadRainTextures" );
-        LE( LoadTextureArray( e->GetDevice().Get(), e->GetContext().Get(), "\\_work\\Data\\Textures\\GD3D11\\Raindrops\\cv0_vPositive_", 370, &RainTextureArray, &RainTextureArraySRV ) );
+        LE( LoadTextureArray( e->GetDevice().Get(), e->GetContext().Get(), R"(\_work\Data\Textures\GD3D11\Raindrops\cv0_vPositive_)", 370, &RainTextureArray, &RainTextureArraySRV ) );
         if (!SUCCEEDED(hr)) {
             // try old file paths
-            LE( LoadTextureArray( e->GetDevice().Get(), e->GetContext().Get(), (basePath / "Raindrops"/"cv0_vPositive_").string().c_str(), 370, &RainTextureArray, &RainTextureArraySRV ) );
+            LE( LoadTextureArray( e->GetDevice().Get(), e->GetContext().Get(), R"(\System\GD3D11\Textures\Raindrops\cv0_vPositive_)", 370, &RainTextureArray, &RainTextureArraySRV ) );
         }
     }
 
@@ -467,9 +467,9 @@ XRESULT D3D11Effect::LoadRainResources()
         // Load textures...
         LogInfo() << "Loading snow flake textures";
         ZoneScopedN( "LoadSnowTextures" );
-        LE( LoadTextureArray( e->GetDevice().Get(), e->GetContext().Get(), "\\_work\\Data\\Textures\\GD3D11\\Snowflakes\\Snow_", 256, &SnowTextureArray, &SnowTextureArraySRV ) );
+        LE( LoadTextureArray( e->GetDevice().Get(), e->GetContext().Get(), R"(\_work\Data\Textures\GD3D11\Snowflakes\Snow_)", 256, &SnowTextureArray, &SnowTextureArraySRV ) );
         if (!SUCCEEDED(hr)) {
-            LE( LoadTextureArray( e->GetDevice().Get(), e->GetContext().Get(), (basePath / "Snowflakes"/"Snow_").string().c_str(), 256, &SnowTextureArray, &SnowTextureArraySRV ) );
+            LE( LoadTextureArray( e->GetDevice().Get(), e->GetContext().Get(), R"(\System\GD3D11\Textures\Snowflakes\Snow_)", 256, &SnowTextureArray, &SnowTextureArraySRV ) );
         }
     }
 
@@ -629,20 +629,37 @@ XRESULT D3D11Effect::DrawRainShadowmap() {
 // LoadTextureArray loads a texture array and associated view from a series
 // of textures on disk.
 //--------------------------------------------------------------------------------------
-HRESULT LoadTextureArray( Microsoft::WRL::ComPtr<ID3D11Device1> pd3dDevice, Microsoft::WRL::ComPtr<ID3D11DeviceContext1> context, const char* sTexturePrefix, int iNumTextures, ID3D11Texture2D** ppTex2D, ID3D11ShaderResourceView** ppSRV ) {
-    if ( !ppTex2D ) {
-        LogError() << "invalid argument: ppTex2D. should not be null";
+HRESULT LoadTextureArray( 
+    Microsoft::WRL::ComPtr<ID3D11Device1> pd3dDevice, 
+    Microsoft::WRL::ComPtr<ID3D11DeviceContext1> context, 
+    const char* sTexturePrefix, 
+    int iNumTextures, 
+    ID3D11Texture2D** ppTex2D, 
+    ID3D11ShaderResourceView** ppSRV ) 
+{
+    if ( !ppTex2D || !ppSRV ) {
+        LogError() << "invalid argument: ppTex2D or ppSRV should not be null";
         return E_FAIL;
     }
 
     HRESULT hr = S_OK;
     D3D11_TEXTURE2D_DESC desc = {};
     DXGI_FORMAT texFormat = DXGI_FORMAT_UNKNOWN;
-
-    //	CHAR szTextureName[MAX_PATH];
     CHAR str[MAX_PATH];
 
-    std::vector<uint8_t> storage{};
+    // Struct to keep raw VFS bytes alive in memory, alongside 
+    // ComPtr pointers to staging textures which represent our "CPU handles" to the parsed data.
+    struct TextureDataStage {
+        std::vector<uint8_t> fileBuffer;
+        Microsoft::WRL::ComPtr<ID3D11Resource> pStagingRes;
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> pStagingTex;
+    };
+
+    std::vector<TextureDataStage> textureStages(iNumTextures);
+
+    // Step 1: Read all textures from your VFS and create "Staging" textures.
+    // Staging textures reside in CPU-accessible memory. No physical VRAM/GPU allocations are made here,
+    // which allows the driver to skip heavy synchronization or pipeline stalls.
     for ( int i = 0; i < iNumTextures; i++ ) {
         sprintf( str, "%s%.4d.dds", sTexturePrefix, i );
 
@@ -656,70 +673,117 @@ HRESULT LoadTextureArray( Microsoft::WRL::ComPtr<ID3D11Device1> pd3dDevice, Micr
             LogError() << "Failed to open filepath: " << str;
             return E_FAIL;
         }
+        
         auto size = file->Size();
+        textureStages[i].fileBuffer.resize(size);
+        file->Read( textureStages[i].fileBuffer.data(), size );
+        file->Close();
 
-        if ( storage.size() < size ) {
-            storage.resize( size*2 );
-        }
-        // assume single op file read.
-        auto numRead = file->Read( storage.data(), size );
-        auto retClose = file->Close();
+        // Load the texture directly into CPU-readable staging space. 
+        // Notice we explicitly pass 0 to bindFlags because a staging texture has no GPU pipeline bindings.
+        hr = DirectX::CreateDDSTextureFromMemoryEx(
+            pd3dDevice.Get(), 
+            textureStages[i].fileBuffer.data(), 
+            size, 
+            0, // maxsize
+            D3D11_USAGE_STAGING, 
+            0, // bindFlags (0 for staging)
+            D3D11_CPU_ACCESS_READ, // We only need to read this to copy to our initialization struct
+            0, // miscFlags
+            DirectX::DDS_LOADER_DEFAULT, 
+            textureStages[i].pStagingRes.GetAddressOf(), 
+            nullptr
+        );
 
-
-        Microsoft::WRL::ComPtr<ID3D11Resource> pRes;
-        LE( CreateDDSTextureFromMemoryEx( pd3dDevice.Get(), storage.data(), size, 0, D3D11_USAGE_STAGING, 0, D3D11_CPU_ACCESS_WRITE, 0, DDS_LOADER_DEFAULT, pRes.GetAddressOf(), nullptr));
-        if ( pRes.Get() ) {
-            Microsoft::WRL::ComPtr<ID3D11Texture2D> pTemp;
-            pRes.As( &pTemp );
-            if ( !pTemp.Get() ) {
-                LogError() << "Could not get ID3D11Texture2D!";
-                return E_FAIL;
-            }
-            pTemp->GetDesc( &desc );
-
-            if ( !(*ppTex2D) ) {
-                if ( desc.Format == DXGI_FORMAT_BC4_UNORM || desc.Format == DXGI_FORMAT_R8_UNORM ) {
-                    texFormat = desc.Format;
-                } else {
-                    return E_FAIL;
-                }
-
-                desc.Usage = D3D11_USAGE_DEFAULT;
-                desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-                desc.CPUAccessFlags = 0;
-                desc.ArraySize = iNumTextures;
-                LE( pd3dDevice->CreateTexture2D( &desc, nullptr, ppTex2D ) );
-                if ( !(*ppTex2D) )
-                    return E_FAIL;
-            }
-
-            if ( texFormat != desc.Format )
-                return E_FAIL;
-
-            for ( UINT iMip = 0; iMip < desc.MipLevels; iMip++ ) {
-                context->CopySubresourceRegion( (*ppTex2D),
-                    D3D11CalcSubresource( iMip, i, desc.MipLevels ),
-                    0,
-                    0,
-                    0,
-                    pTemp.Get(),
-                    iMip,
-                    nullptr );
-            }
-
-            pRes.Reset();
-            pTemp.Reset();
-        } else {
+        if ( FAILED(hr) || !textureStages[i].pStagingRes.Get() ) {
+            LogError() << "Failed to parse DDS memory stage for: " << str;
             return E_FAIL;
+        }
+
+        hr = textureStages[i].pStagingRes.As( &textureStages[i].pStagingTex );
+        if ( FAILED(hr) || !textureStages[i].pStagingTex.Get() ) {
+            LogError() << "Could not query ID3D11Texture2D interface for: " << str;
+            return E_FAIL;
+        }
+
+        // Validate formats & dimensions using the first texture as the baseline descriptor
+        D3D11_TEXTURE2D_DESC tempDesc = {};
+        textureStages[i].pStagingTex->GetDesc( &tempDesc );
+
+        if ( i == 0 ) {
+            desc = tempDesc; // Use the first texture to define our overall Array's properties
+            if ( desc.Format == DXGI_FORMAT_BC4_UNORM || desc.Format == DXGI_FORMAT_R8_UNORM ) {
+                texFormat = desc.Format;
+            } else {
+                LogError() << "Unsupported format in texture array: " << desc.Format;
+                return E_FAIL;
+            }
+        } else {
+            // Confirm consistency across all files in the array
+            if ( tempDesc.Width != desc.Width || 
+                 tempDesc.Height != desc.Height || 
+                 tempDesc.MipLevels != desc.MipLevels || 
+                 tempDesc.Format != texFormat ) 
+            {
+                LogError() << "Texture index " << i << " does not match dimensions/format of index 0.";
+                return E_FAIL;
+            }
         }
     }
 
+    // Step 2: Extract subresource pointers and map them to D3D11's array layout.
+    // The driver expects subresources in the following exact sequence:
+    // [Slice 0, Mip 0], [Slice 0, Mip 1]... [Slice 1, Mip 0], [Slice 1, Mip 1]...
+    std::vector<D3D11_SUBRESOURCE_DATA> initData;
+    initData.reserve(iNumTextures * desc.MipLevels);
+
+    for ( int i = 0; i < iNumTextures; i++ ) {
+        for ( UINT iMip = 0; iMip < desc.MipLevels; iMip++ ) {
+            D3D11_SUBRESOURCE_DATA subData = {};
+            
+            // Map the staging resource to retrieve a raw CPU pointer to the subresource data.
+            D3D11_MAPPED_SUBRESOURCE mapped = {};
+            hr = context->Map( textureStages[i].pStagingTex.Get(), iMip, D3D11_MAP_READ, 0, &mapped );
+            if ( FAILED(hr) ) {
+                LogError() << "Failed to map subresource for texture index: " << i << " at mip: " << iMip;
+                return E_FAIL;
+            }
+
+            subData.pSysMem = mapped.pData;
+            subData.SysMemPitch = mapped.RowPitch;
+            subData.SysMemSlicePitch = mapped.DepthPitch;
+            initData.push_back(subData);
+        }
+    }
+
+    // Step 3: Set up the final Texture2DArray parameters
+    desc.Usage = D3D11_USAGE_IMMUTABLE; // Immutable is highly optimized; read-only for GPU, 0 CPU overhead.
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    desc.CPUAccessFlags = 0;
+    desc.ArraySize = iNumTextures;
+
+    // Allocate and upload all 256 textures in a single, atomic GPU call
+    hr = pd3dDevice->CreateTexture2D( &desc, initData.data(), ppTex2D );
+    
+    // Step 4: Cleanup & Unmap staging resources immediately
+    for ( int i = 0; i < iNumTextures; i++ ) {
+        for ( UINT iMip = 0; iMip < desc.MipLevels; iMip++ ) {
+            context->Unmap( textureStages[i].pStagingTex.Get(), iMip );
+        }
+    }
+
+    if ( FAILED(hr) || !(*ppTex2D) ) {
+        LogError() << "Failed to create final ID3D11Texture2D array.";
+        return E_FAIL;
+    }
+
+    // Step 5: Create your Shader Resource View
     D3D11_SHADER_RESOURCE_VIEW_DESC SRVDesc = {};
     SRVDesc.Format = desc.Format;
     SRVDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
     SRVDesc.Texture2DArray.MipLevels = desc.MipLevels;
     SRVDesc.Texture2DArray.ArraySize = iNumTextures;
-    LE( pd3dDevice->CreateShaderResourceView( *ppTex2D, &SRVDesc, ppSRV ) );
+    hr = pd3dDevice->CreateShaderResourceView( *ppTex2D, &SRVDesc, ppSRV );
 
     return hr;
 }
