@@ -19,6 +19,27 @@ public:
     }
 };
 
+class zCRenderer {
+public:
+    void* vtbl;
+    DWORD polySortMode;
+    DWORD polyDrawMode;
+    int vid_xdim;
+    int vid_ydim;
+    int vid_bpp;
+    int vid_pitch;
+    int vid_rpos;
+    int vid_gpos;
+    int vid_bpos;
+    int vid_rsize;
+    int vid_gsize;
+    int vid_bsize;
+public:
+    void SetXD3D_scrWidth( int v ) { *reinterpret_cast<int*>(THISPTR_OFFSET( (DWORD)0x98c )) = v; }
+    void SetXD3D_scrHeight( int v ) { *reinterpret_cast<int*>(THISPTR_OFFSET( (DWORD)0x990 )) = v; }
+    void SetXD3D_scrBpp( int v ) { *reinterpret_cast<int*>(THISPTR_OFFSET( (DWORD)0x994 )) = v; }
+};
+
 class zCView {
 public:
 
@@ -41,8 +62,14 @@ public:
     }
 
     static void SetWindowMode( int x, int y, int bpp ) {
-        reinterpret_cast<void( __fastcall* )( DWORD, DWORD, int, int, int, void* )>
-            ( GothicMemoryLocations::zCView::Vid_SetMode )( *reinterpret_cast<DWORD*>(GothicMemoryLocations::GlobalObjects::zRenderer), 0, x, y, bpp, nullptr );
+        auto renderer = *reinterpret_cast<zCRenderer**>(GothicMemoryLocations::GlobalObjects::zRenderer);
+        renderer->vid_xdim = x;
+        renderer->vid_ydim = y;
+        renderer->vid_bpp = bpp;
+        renderer->vid_pitch = x * (renderer->vid_bpp>>3);
+        renderer->SetXD3D_scrWidth( x );
+        renderer->SetXD3D_scrHeight( y );
+        renderer->SetXD3D_scrBpp( bpp );
     }
 
     static void SetVirtualMode( int x, int y, int bpp ) {

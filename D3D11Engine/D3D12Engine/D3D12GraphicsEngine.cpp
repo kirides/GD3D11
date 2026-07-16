@@ -523,11 +523,12 @@ void D3D12GraphicsEngine::ResizeOutputWindow( INT2 size ) {
         if ( GetWindowRect( m_OutputWindow, &cur ) ) { x = cur.left; y = cur.top; }
         SetWindowPos( m_OutputWindow, nullptr, x, y, wr.right - wr.left, wr.bottom - wr.top, SWP_SHOWWINDOW | SWP_FRAMECHANGED );
     }
-    // zCView::SetWindowMode( size.x, size.y, 32 );
+
+    zCView::SetWindowMode( size.x, size.y, 32 );
     // Inform Gothic of the resolution (drives its virtual UI coordinate space).
     zCView::SetVirtualMode( size.x, size.y, 32 );
     POINT virtualSize = { 8192, 8192 };
-    // zCViewDraw::GetScreen().SetVirtualSize( virtualSize );
+    zCViewDraw::GetScreen().SetVirtualSize( virtualSize );
 #endif
 }
 
