@@ -69,6 +69,7 @@ public:
     INT2 GetBackbufferResolution() override { return m_Resolution; }
 
 private:
+    void ResizeOutputWindow( INT2 size );  // size the OS window + inform Gothic (zCView) of the mode
     bool CreateSwapChain( INT2 size );
     bool CreateFrameResources();      // RTV heap + allocators + command list + fence + event
     bool CreateUploadObjects();       // dedicated allocator + command list + fence for synchronous uploads

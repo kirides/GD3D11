@@ -5,6 +5,7 @@
 #include "D3D12Texture.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
+#include "../zCView.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -143,18 +144,62 @@ bool D3D12GraphicsEngine::UploadTextureSubresources( ID3D12Resource* dst, const 
 }
 
 XRESULT D3D12GraphicsEngine::SetWindow( HWND hWnd ) {
+    LogInfo() << "D3D12: Creating swapchain";
     m_OutputWindow = hWnd;
 
-    RECT rc = {};
-    GetClientRect( hWnd, &rc );
-    INT2 size( std::max<int>( 1, rc.right - rc.left ), std::max<int>( 1, rc.bottom - rc.top ) );
-
-    if ( !CreateSwapChain( size ) ) {
-        LogWarn() << "D3D12GraphicsEngine::SetWindow: swapchain creation failed.";
-        return XR_FAILED;
+    // Use the configured target resolution (NOT the current client rect — Gothic creates its window
+    // tiny, so GetClientRect here would size the swapchain to a few pixels). Mirrors the D3D11 path,
+    // which takes RendererSettings.LoadedResolution. OnResize sizes the OS window + builds the swapchain.
+    INT2 size = Engine::GAPI->GetRendererState().RendererSettings.LoadedResolution;
+    if ( size.x <= 0 || size.y <= 0 ) {
+        RECT rc = {};
+        GetClientRect( hWnd, &rc );
+        size = INT2( std::max<int>( 800, rc.right - rc.left ), std::max<int>( 600, rc.bottom - rc.top ) );
     }
-    LogInfo() << "D3D12 swapchain created (" << size.x << "x" << size.y << ").";
-    return XR_SUCCESS;
+
+    return OnResize( size );
+}
+
+/** Sizes the actual OS window to the target resolution and tells Gothic about the mode so its 2D
+    UI coordinate space matches. Mirrors the windowed / borderless branch of the D3D11 backend. */
+void D3D12GraphicsEngine::ResizeOutputWindow( INT2 size ) {
+    if ( !m_OutputWindow || size.x <= 0 || size.y <= 0 ) return;
+
+#ifndef BUILD_SPACER
+    // Inform Gothic of the resolution (drives its virtual UI coordinate space).
+    zCView::SetWindowMode( size.x, size.y, 32 );
+    zCView::SetVirtualMode( size.x, size.y, 32 );
+    POINT virtualSize = { 8192, 8192 };
+    zCViewDraw::GetScreen().SetVirtualSize( virtualSize );
+
+    RECT desktopRect = {};
+    GetClientRect( GetDesktopWindow(), &desktopRect );
+    const bool borderless = ( size.x >= desktopRect.right && size.y >= desktopRect.bottom );
+
+    if ( borderless ) {
+        // Fullscreen-borderless: strip the frame and cover the desktop.
+        LONG style = GetWindowLong( m_OutputWindow, GWL_STYLE );
+        style &= ~( WS_CAPTION | WS_THICKFRAME );
+        SetWindowLong( m_OutputWindow, GWL_STYLE, style );
+        LONG exStyle = GetWindowLong( m_OutputWindow, GWL_EXSTYLE );
+        exStyle &= ~( WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE | WS_EX_CLIENTEDGE | WS_EX_STATICEDGE );
+        SetWindowLong( m_OutputWindow, GWL_EXSTYLE, exStyle );
+        SetWindowPos( m_OutputWindow, nullptr, 0, 0, desktopRect.right, desktopRect.bottom, SWP_SHOWWINDOW | SWP_FRAMECHANGED );
+    } else {
+        // Windowed: fixed-size window whose CLIENT area equals the target resolution.
+        LONG style = ( WS_OVERLAPPEDWINDOW | WS_VISIBLE ) & ~( WS_MAXIMIZEBOX | WS_THICKFRAME );
+        SetWindowLong( m_OutputWindow, GWL_STYLE, style );
+        SetWindowLong( m_OutputWindow, GWL_EXSTYLE, WS_EX_APPWINDOW );
+
+        RECT wr = { 0, 0, size.x, size.y };
+        AdjustWindowRectEx( &wr, style, FALSE, WS_EX_APPWINDOW );
+
+        RECT cur = {};
+        int x = 0, y = 0;
+        if ( GetWindowRect( m_OutputWindow, &cur ) ) { x = cur.left; y = cur.top; }
+        SetWindowPos( m_OutputWindow, nullptr, x, y, wr.right - wr.left, wr.bottom - wr.top, SWP_SHOWWINDOW | SWP_FRAMECHANGED );
+    }
+#endif
 }
 
 bool D3D12GraphicsEngine::CreateSwapChain( INT2 size ) {
@@ -344,6 +389,21 @@ bool D3D12GraphicsEngine::ResizeSwapChain( INT2 size ) {
 }
 
 XRESULT D3D12GraphicsEngine::OnResize( INT2 newSize ) {
+    if ( newSize.x <= 0 || newSize.y <= 0 ) return XR_SUCCESS;
+    if ( m_SwapChainReady && newSize.x == m_Resolution.x && newSize.y == m_Resolution.y )
+        return XR_SUCCESS; // nothing to do
+
+    ResizeOutputWindow( newSize );
+
+    if ( !m_SwapChainReady ) {
+        if ( !CreateSwapChain( newSize ) ) {
+            LogWarn() << "D3D12GraphicsEngine::OnResize: swapchain creation failed.";
+            return XR_FAILED;
+        }
+        LogInfo() << "D3D12 swapchain created (" << newSize.x << "x" << newSize.y << ").";
+        return XR_SUCCESS;
+    }
+
     ResizeSwapChain( newSize );
     return XR_SUCCESS;
 }
