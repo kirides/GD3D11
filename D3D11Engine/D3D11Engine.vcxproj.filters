@@ -938,6 +938,9 @@
     <ClCompile Include="D3D12Engine\D3D12Texture.cpp">
       <Filter>Engine\D3D12</Filter>
     </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12VertexBuffer.cpp">
+      <Filter>Engine\D3D12</Filter>
+    </ClCompile>
     <ClCompile Include="GSky.cpp">
       <Filter>Engine\GAPI\Objects</Filter>
     </ClCompile>

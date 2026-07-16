@@ -608,6 +608,35 @@ XRESULT D3D12GraphicsEngine::DrawVertexArray( ExVertexStruct* vertices, unsigned
     return XR_SUCCESS;
 }
 
+XRESULT D3D12GraphicsEngine::DrawVertexBufferFF( GfxVertexBuffer* vb, unsigned int numVertices, unsigned int startVertex, unsigned int stride ) {
+    if ( !vb || numVertices == 0 ) return XR_SUCCESS;
+
+    // The D3D7 fixed-function vertex-buffer path (MyDirect3DDevice7::DrawPrimitiveVB) only ever feeds
+    // Gothic_XYZRHW_DIF_T1_Vertex (28 bytes) — the sky dome + a few HUD strips. Rather than a second
+    // input layout + VS variant, snapshot the CPU-side verts (the buffer is a persistently-mapped
+    // upload resource, never GPU-bound here), convert to ExVertexStruct, and reuse the validated 2D/UI
+    // draw path — exactly what DrawPrimitive does for the immediate (non-VB) case.
+    if ( stride != sizeof( Gothic_XYZRHW_DIF_T1_Vertex ) )
+        return XR_SUCCESS; // unknown FF-VB format — nothing else is emitted through this path
+
+    const uint8_t* base = static_cast<const uint8_t*>( D3D12VertexBuffer::From( vb )->GetMappedData() );
+    if ( !base ) return XR_SUCCESS;
+
+    const Gothic_XYZRHW_DIF_T1_Vertex* src =
+        reinterpret_cast<const Gothic_XYZRHW_DIF_T1_Vertex*>( base + static_cast<size_t>( startVertex ) * stride );
+
+    static std::vector<ExVertexStruct> exv; // reused; the render path is single-threaded (matches DrawPrimitive)
+    exv.resize( numVertices );
+    for ( unsigned int i = 0; i < numVertices; ++i ) {
+        exv[i].Position = src[i].xyz;
+        exv[i].Normal.x = src[i].rhw;
+        exv[i].TexCoord = src[i].texCoord;
+        exv[i].Color    = src[i].color;
+    }
+
+    return DrawVertexArray( exv.data(), numVertices, 0, sizeof( ExVertexStruct ) );
+}
+
 XRESULT D3D12GraphicsEngine::SetWindow( HWND hWnd ) {
     LogInfo() << "D3D12: Creating swapchain";
     m_OutputWindow = hWnd;
