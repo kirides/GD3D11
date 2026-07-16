@@ -5,6 +5,7 @@
 #include "D3D12Texture.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
+#include "../WorldObjects.h"
 #include "../zCView.h"
 #include "../VertexTypes.h"
 #include "../ImGuiShim.h"
@@ -121,6 +122,38 @@ float4 PSMain( VS_OUT i ) : SV_TARGET {
 }
 )";
 
+    // Phase-2 first-light world shader. The wrapped world mesh is the packed 36-byte ExVertexStructGPU;
+    // we bind ONLY its Position (float3 at offset 0, stride 36) and ignore the packed normal/tangent/uv.
+    // World-mesh verts are already in world space, so the transform is just ViewProj (identity world).
+    // Matches the D3D11 path's math: mul(float4(pos,1), ViewProj), reversed-Z projection. No textures /
+    // no G-buffer: the PS derives a face normal from screen-space position derivatives for a legible
+    // flat shade, so geometry is visible without needing the vertex normal stream decoded yet.
+    constexpr char kWorldShaderSource[] = R"(
+// Default (column-major) matrix packing — matches D3D11's VS_ExPacked, which reads the same
+// row-major XMFLOAT4X4 bytes we upload here, so mul(float4(pos,1), ViewProj) is byte-for-byte identical.
+cbuffer WorldCB : register(b0) { float4x4 ViewProj; };
+
+struct VS_IN  { float3 pos : POSITION; };
+struct VS_OUT { float4 clip : SV_POSITION; float3 wpos : TEXCOORD0; };
+
+VS_OUT VSMain( VS_IN i )
+{
+    VS_OUT o;
+    o.clip = mul( float4( i.pos, 1.0 ), ViewProj );
+    o.wpos = i.pos;
+    return o;
+}
+
+float4 PSMain( VS_OUT i ) : SV_TARGET
+{
+    float3 n = normalize( cross( ddx( i.wpos ), ddy( i.wpos ) ) );
+    float3 L = normalize( float3( 0.3, 0.9, 0.4 ) );
+    float ndl = saturate( abs( dot( n, L ) ) );   // abs: winding-agnostic, both faces lit
+    float shade = ndl * 0.75 + 0.25;
+    return float4( shade.xxx, 1.0 );
+}
+)";
+
     D3D12_RESOURCE_BARRIER TransitionBarrier( ID3D12Resource* res, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after ) {
         D3D12_RESOURCE_BARRIER b = {};
         b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -164,7 +197,11 @@ XRESULT D3D12GraphicsEngine::Init() {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the white fallback texture.";
         return XR_FAILED;
     }
-    LogInfo() << "D3D12GraphicsEngine initialized (device + 2D pipeline up). Swapchain is created once the game window is set.";
+    if ( !CreateWorldPipeline() ) {
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the world-mesh pipeline.";
+        return XR_FAILED;
+    }
+    LogInfo() << "D3D12GraphicsEngine initialized (device + 2D + world pipeline up). Swapchain is created once the game window is set.";
     return XR_SUCCESS;
 }
 
@@ -525,6 +562,135 @@ void D3D12GraphicsEngine::BindSurfaceTextures( int /*slot*/, GfxTexture* diffuse
     m_CurrentTexture = diffuse;
 }
 
+bool D3D12GraphicsEngine::CreateDepthBuffer( INT2 size ) {
+    if ( size.x <= 0 || size.y <= 0 ) return false;
+    ID3D12Device* device = m_Device.GetDevice();
+
+    // DSV heap (single descriptor) — created once, reused across resizes.
+    if ( !m_DsvHeap ) {
+        D3D12_DESCRIPTOR_HEAP_DESC dsvHeapDesc = {};
+        dsvHeapDesc.NumDescriptors = 1;
+        dsvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+        dsvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+        if ( FAILED( device->CreateDescriptorHeap( &dsvHeapDesc, IID_PPV_ARGS( m_DsvHeap.ReleaseAndGetAddressOf() ) ) ) )
+            return false;
+        m_DsvDescriptorSize = device->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_DSV );
+    }
+
+    D3D12_HEAP_PROPERTIES heapDefault = {};
+    heapDefault.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    D3D12_RESOURCE_DESC dd = {};
+    dd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    dd.Width = static_cast<UINT64>( size.x );
+    dd.Height = static_cast<UINT>( size.y );
+    dd.DepthOrArraySize = 1;
+    dd.MipLevels = 1;
+    dd.Format = DXGI_FORMAT_D32_FLOAT;
+    dd.SampleDesc.Count = 1;
+    dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+
+    // Reversed-Z: the world clears depth to 0.0, so make that the optimized clear value.
+    D3D12_CLEAR_VALUE clear = {};
+    clear.Format = DXGI_FORMAT_D32_FLOAT;
+    clear.DepthStencil.Depth = 0.0f;
+
+    // Lives in DEPTH_WRITE for its whole lifetime (only ever written/tested; no SRV read yet).
+    if ( FAILED( device->CreateCommittedResource( &heapDefault, D3D12_HEAP_FLAG_NONE, &dd,
+        D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear, IID_PPV_ARGS( m_DepthBuffer.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: failed to create the depth buffer (" << size.x << "x" << size.y << ").";
+        return false;
+    }
+
+    D3D12_DEPTH_STENCIL_VIEW_DESC dsv = {};
+    dsv.Format = DXGI_FORMAT_D32_FLOAT;
+    dsv.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+    device->CreateDepthStencilView( m_DepthBuffer.Get(), &dsv, m_DsvHeap->GetCPUDescriptorHandleForHeapStart() );
+    return true;
+}
+
+bool D3D12GraphicsEngine::CreateWorldPipeline() {
+    ID3D12Device* device = m_Device.GetDevice();
+
+    // Root signature: b0 = ViewProj (16 root 32-bit constants, VS only). No textures (flat first-light).
+    D3D12_ROOT_PARAMETER param = {};
+    param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    param.Constants.ShaderRegister = 0;   // b0
+    param.Constants.Num32BitValues = 16;  // float4x4
+    param.ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+
+    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+    rsDesc.NumParameters = 1;
+    rsDesc.pParameters = &param;
+    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
+    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (world)."; return false; }
+
+    ComPtr<ID3DBlob> rsBlob, rsErr;
+    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
+        if ( rsErr ) LogWarn() << "D3D12: world root signature serialize error: " << static_cast<const char*>( rsErr->GetBufferPointer() );
+        return false;
+    }
+    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
+        IID_PPV_ARGS( m_WorldRootSig.ReleaseAndGetAddressOf() ) ) ) )
+        return false;
+
+    UINT compileFlags = 0;
+#ifdef _DEBUG
+    compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+#endif
+    ComPtr<ID3DBlob> err;
+    if ( FAILED( D3DCompile( kWorldShaderSource, sizeof( kWorldShaderSource ) - 1, "WorldShader", nullptr, nullptr,
+        "VSMain", "vs_5_0", compileFlags, 0, m_WorldVsBlob.ReleaseAndGetAddressOf(), err.GetAddressOf() ) ) ) {
+        if ( err ) LogWarn() << "D3D12: world VS compile error: " << static_cast<const char*>( err->GetBufferPointer() );
+        return false;
+    }
+    if ( FAILED( D3DCompile( kWorldShaderSource, sizeof( kWorldShaderSource ) - 1, "WorldShader", nullptr, nullptr,
+        "PSMain", "ps_5_0", compileFlags, 0, m_WorldPsBlob.ReleaseAndGetAddressOf(), err.ReleaseAndGetAddressOf() ) ) ) {
+        if ( err ) LogWarn() << "D3D12: world PS compile error: " << static_cast<const char*>( err->GetBufferPointer() );
+        return false;
+    }
+
+    // Bind only Position from the packed 36-byte ExVertexStructGPU (offset 0). The rest of the packed
+    // stream (normal/tangent/uv) is ignored for the flat pass — the stride (set on the VBV) skips it.
+    const D3D12_INPUT_ELEMENT_DESC layout[] = {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    };
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+    pso.pRootSignature = m_WorldRootSig.Get();
+    pso.VS = { m_WorldVsBlob->GetBufferPointer(), m_WorldVsBlob->GetBufferSize() };
+    pso.PS = { m_WorldPsBlob->GetBufferPointer(), m_WorldPsBlob->GetBufferSize() };
+    pso.InputLayout = { layout, _countof( layout ) };
+    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pso.NumRenderTargets = 1;
+    pso.RTVFormats[0] = kBackBufferFormat;
+    pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+    pso.SampleDesc.Count = 1;
+    pso.SampleMask = UINT_MAX;
+
+    pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    // Cull NONE for first-light so a wrong winding assumption can't hide the whole world.
+    pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    pso.RasterizerState.DepthClipEnable = TRUE;
+
+    pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+    // Reversed-Z: test + write depth, pass on GREATER_EQUAL (matches Gothic's infinite-far projection).
+    pso.DepthStencilState.DepthEnable = TRUE;
+    pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
+    pso.DepthStencilState.StencilEnable = FALSE;
+
+    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_WorldPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (world).";
+        return false;
+    }
+    return true;
+}
+
 XRESULT D3D12GraphicsEngine::SetViewport( const ViewportInfo& vp ) {
     m_CurrentViewport.TopLeftX = static_cast<float>( vp.TopLeftX );
     m_CurrentViewport.TopLeftY = static_cast<float>( vp.TopLeftY );
@@ -637,6 +803,60 @@ XRESULT D3D12GraphicsEngine::DrawVertexBufferFF( GfxVertexBuffer* vb, unsigned i
     return DrawVertexArray( exv.data(), numVertices, 0, sizeof( ExVertexStruct ) );
 }
 
+XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
+    // zCBspNodeRender hook — Gothic's BSP traversal is replaced; we draw the world ourselves.
+    DrawWorldMesh();
+    return XR_SUCCESS;
+}
+
+XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
+    if ( !m_FrameOpen || !m_WorldPSO || !m_WorldRootSig || !m_DepthBuffer )
+        return XR_SUCCESS;
+
+    MeshInfo* wm = Engine::GAPI->GetWrappedWorldMesh();
+    if ( !wm || !wm->GetMeshVertexBuffer() || !wm->GetMeshIndexBuffer() )
+        return XR_SUCCESS;
+
+    D3D12VertexBuffer* vb = D3D12VertexBuffer::From( wm->GetMeshVertexBuffer() );
+    D3D12VertexBuffer* ib = D3D12VertexBuffer::From( wm->GetMeshIndexBuffer() );
+    if ( !vb->GetResource() || !ib->GetResource() ) return XR_SUCCESS;
+
+    // The wrapped world index buffer is a single merged 32-bit buffer (bound R32_UINT, like D3D11).
+    const UINT numIndices = ib->GetSizeInBytes() / sizeof( uint32_t );
+    if ( numIndices == 0 ) return XR_SUCCESS;
+
+    // Camera matrices — replicate the D3D11 DrawWorldMesh setup exactly so ViewProj is byte-identical:
+    // world verts are already world-space (identity world), transform is proj*view (reversed-Z).
+    XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
+    Engine::GAPI->SetViewTransformXM( view );
+    Engine::GAPI->ResetWorldTransform();
+    const XMFLOAT4X4& viewM = Engine::GAPI->GetRendererState().TransformState.TransformView;
+    const XMFLOAT4X4& projM = Engine::GAPI->GetProjectionMatrix();
+    XMFLOAT4X4 viewProj;
+    XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
+
+    m_CmdList->SetPipelineState( m_WorldPSO.Get() );
+    m_CmdList->SetGraphicsRootSignature( m_WorldRootSig.Get() );
+    m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
+
+    D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
+    D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
+    m_CmdList->RSSetViewports( 1, &vp );
+    m_CmdList->RSSetScissorRects( 1, &sc );
+
+    D3D12_VERTEX_BUFFER_VIEW vbv = { vb->GetGpuVirtualAddress(), vb->GetSizeInBytes(), sizeof( ExVertexStructGPU ) };
+    D3D12_INDEX_BUFFER_VIEW  ibv = { ib->GetGpuVirtualAddress(), ib->GetSizeInBytes(), DXGI_FORMAT_R32_UINT };
+    m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
+    m_CmdList->IASetIndexBuffer( &ibv );
+    m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+
+    // First-light: draw the entire merged world mesh in one call (no per-section culling yet).
+    m_CmdList->DrawIndexedInstanced( numIndices, 1, 0, 0, 0 );
+
+    Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles += numIndices / 3;
+    return XR_SUCCESS;
+}
+
 XRESULT D3D12GraphicsEngine::SetWindow( HWND hWnd ) {
     LogInfo() << "D3D12: Creating swapchain";
     m_OutputWindow = hWnd;
@@ -729,6 +949,7 @@ bool D3D12GraphicsEngine::CreateSwapChain( INT2 size ) {
 
     if ( !CreateFrameResources() ) return false;
     if ( !AcquireBackBufferRTVs() ) return false;
+    if ( !CreateDepthBuffer( size ) ) return false;
 
     m_SwapChainReady = true;
 
@@ -804,8 +1025,16 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
     D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
     rtv.ptr += static_cast<SIZE_T>( m_FrameIndex ) * m_RtvDescriptorSize;
 
-    m_CmdList->OMSetRenderTargets( 1, &rtv, FALSE, nullptr );
+    // Bind the backbuffer + depth target for the frame. The 3D world pass (OnStartWorldRendering) uses
+    // the depth buffer; the 2D/UI PSO has depth disabled, so it draws over the result regardless.
+    const bool haveDepth = m_DepthBuffer && m_DsvHeap;
+    D3D12_CPU_DESCRIPTOR_HANDLE dsv = {};
+    if ( haveDepth ) dsv = m_DsvHeap->GetCPUDescriptorHandleForHeapStart();
+
+    m_CmdList->OMSetRenderTargets( 1, &rtv, FALSE, haveDepth ? &dsv : nullptr );
     m_CmdList->ClearRenderTargetView( rtv, m_ClearColor, 0, nullptr );
+    if ( haveDepth )  // reversed-Z: clear to 0.0
+        m_CmdList->ClearDepthStencilView( dsv, D3D12_CLEAR_FLAG_DEPTH, 0.0f, 0, 0, nullptr );
 
     // Bind the shader-visible SRV heap for this frame's 2D draws (descriptor tables reference it).
     ID3D12DescriptorHeap* heaps[] = { m_SrvHeap.Get() };
@@ -920,7 +1149,8 @@ bool D3D12GraphicsEngine::ResizeSwapChain( INT2 size ) {
 
     m_Resolution = size;
     m_FrameIndex = m_SwapChain->GetCurrentBackBufferIndex();
-    return AcquireBackBufferRTVs();
+    if ( !AcquireBackBufferRTVs() ) return false;
+    return CreateDepthBuffer( size );  // GPU is idle (WaitForGpuIdle above), safe to recreate
 }
 
 XRESULT D3D12GraphicsEngine::OnResize( INT2 newSize ) {

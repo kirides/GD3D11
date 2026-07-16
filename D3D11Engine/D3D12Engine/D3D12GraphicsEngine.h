@@ -51,8 +51,13 @@ public:
     /** Presents the current backbuffer. Invoked at the end of OnEndFrame. */
     XRESULT Present() override;
 
-    /** In-game world render entry (zCBspNodeRender hook). Stubbed until the D3D12 scene path lands. */
-    XRESULT OnStartWorldRendering() override { return XR_SUCCESS; }
+    /** In-game world render entry (zCBspNodeRender hook). Draws the static world mesh (Phase 2). */
+    XRESULT OnStartWorldRendering() override;
+
+    /** Draws the wrapped static world mesh. Phase-2 first-light: flat-shaded (screen-space derivative
+        normal), depth-tested, no textures / no G-buffer — just the backbuffer + a depth target.
+        `noTextures` is accepted for interface parity but currently always effectively true. */
+    XRESULT DrawWorldMesh( bool noTextures = false ) override;
 
     BaseLineRenderer* GetLineRenderer() override;
     const std::string& GetGraphicsDeviceName() override { return m_Device.GetDeviceDescription(); }
@@ -97,6 +102,8 @@ private:
     ID3D12PipelineState* GetOrCreateUIPipeline( const GothicBlendStateInfo& blend );
     bool CreateUIVertexBuffers();     // per-frame dynamic (upload-heap) vertex ring buffers
     bool CreateWhiteTexture();        // 1x1 white fallback (untextured colored 2D draws)
+    bool CreateDepthBuffer( INT2 size ); // D32_FLOAT depth target + DSV (reversed-Z world rendering)
+    bool CreateWorldPipeline();       // root sig + inline shaders + PSO for the flat world-mesh pass
     bool AcquireBackBufferRTVs();     // (re)fetch swapchain buffers + build their RTVs
     bool ResizeSwapChain( INT2 size );
     void WaitForGpuIdle();            // full CPU/GPU flush (used on resize / teardown)
@@ -154,6 +161,16 @@ private:
     GfxTexture* m_CurrentTexture = nullptr;                        // diffuse bound for the next 2D draw
     D3D12_VIEWPORT m_CurrentViewport = {};                        // pixel-space viewport (drives transform + RSSetViewports)
     D3D12_RECT     m_CurrentScissor = {};
+
+    // --- 3D world mesh path (Phase 2 first-light: flat-shaded, depth-tested, no G-buffer) ---
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_DsvHeap;         // single DSV
+    Microsoft::WRL::ComPtr<ID3D12Resource>       m_DepthBuffer;     // D32_FLOAT, reversed-Z
+    UINT m_DsvDescriptorSize = 0;
+
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> m_WorldRootSig;     // b0 = ViewProj (16 root constants, VS)
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_WorldPSO;
+    Microsoft::WRL::ComPtr<ID3DBlob> m_WorldVsBlob;
+    Microsoft::WRL::ComPtr<ID3DBlob> m_WorldPsBlob;
 
     std::unique_ptr<D3D12LineRenderer> m_LineRenderer;
 };
