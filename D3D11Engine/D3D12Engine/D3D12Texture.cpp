@@ -26,7 +26,7 @@ D3D12Texture::~D3D12Texture()
     D3D12GraphicsEngine* engine = Engine12();
     //engine->UglySyncrhonizationWorkaroundWaitForGpuIdle();
     //engine->FreeSrvSlot( m_SrvSlot );
-
+    m_HasSrv = false;
 
     if ( m_Texture && m_SrvSlot != 0xFFFFFFFFu ) {
         engine->QueueSrvResourceForRelease( m_SrvSlot, m_Texture );

@@ -6,12 +6,14 @@
 #include "../Engine.h"
 #include "../GothicAPI.h"
 #include "../WorldObjects.h"
+#include "../zCMorphMesh.h"
 #include "../zCTexture.h"
 #include "../D3D7/MyDirectDrawSurface7.h"
 #include "../zCView.h"
 #include "../zCModel.h"
 #include "../zCMaterial.h"
 #include "../zCVob.h"
+#include "../WorldConverter.h"
 #include "../VertexTypes.h"
 #include "../ImGuiShim.h"
 
@@ -1476,6 +1478,13 @@ XRESULT D3D12GraphicsEngine::DrawSkeletalMeshes() {
     unsigned int drawnTris = 0;
     static std::vector<XMFLOAT4X4> boneCache;
 
+    // Node attachments (weapons, heads, lamps, held items) are static packed meshes placed at a bone
+    // node's object-space transform. They're collected here (with the bone pose live) and drawn in a
+    // second pass via the VOB pipeline, whose packed-vertex + per-instance-world-matrix format matches.
+    struct AttachmentDraw { MeshInfo* mesh; zCTexture* tex; XMFLOAT4X4 world; };
+    static std::vector<AttachmentDraw> attachmentDraws;
+    attachmentDraws.clear();
+
     for ( SkeletalVobInfo* vi : vobs ) {
         if ( !vi || !vi->Vob || !vi->VisualInfo ) continue;
         if ( !vi->Vob->GetShowVisual() ) continue;
@@ -1488,6 +1497,9 @@ XRESULT D3D12GraphicsEngine::DrawSkeletalMeshes() {
 
         if ( XMVector3Greater( XMVector3LengthSq( camPos - vi->Vob->GetPositionWorldXM() ), radiusSq ) )
             continue;   // out of skeletal-draw range
+
+        model->UpdateAttachedVobs();
+        model->UpdateMeshLibTexAniState();
 
         // Bone palette (object-space matrices) for the model's current animation pose.
         boneCache.clear();
@@ -1557,6 +1569,106 @@ XRESULT D3D12GraphicsEngine::DrawSkeletalMeshes() {
                 m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mesh->Indices.size() ), 1, 0, 0, 0 );
                 drawnTris += static_cast<unsigned int>( mesh->Indices.size() ) / 3;
             }
+        }
+
+        // Collect this vob's node attachments while its bone pose (boneCache) is live. Each attachment's
+        // world = modelWorld * boneMatrix[node] (mirrors D3D11 `world * curTransform`). Lazily convert the
+        // node visual on first sight (and re-convert if the node's visual changed, e.g. a weapon drawn).
+        gtl::flat_hash_map<int, std::vector<MeshVisualInfo*>>& nodeAttachments = vi->NodeAttachments;
+        zCArray<zCModelNodeInst*>* nodeList = model->GetNodeList();
+        const int nodeCount = nodeList ? std::min<int>( static_cast<int>( boneCache.size() ), nodeList->NumInArray ) : 0;
+        for ( int n = 0; n < nodeCount; ++n ) {
+            zCModelNodeInst* node = nodeList->Array[n];
+            if ( !node || !node->NodeVisual ) continue;   // no attachment on this node (e.g. sheathed weapon)
+
+            auto it = nodeAttachments.find( n );
+            if ( it == nodeAttachments.end() ) {
+                WorldConverter::ExtractNodeVisual( n, node, nodeAttachments );
+                it = nodeAttachments.find( n );
+            } else if ( !it->second.empty() && it->second[0] && it->second[0]->Visual != node->NodeVisual ) {
+                WorldConverter::ExtractNodeVisual( n, node, nodeAttachments );  // visual changed
+                it = nodeAttachments.find( n );
+            }
+            if ( it == nodeAttachments.end() ) continue;
+
+            XMFLOAT4X4 attWorld;
+            XMStoreFloat4x4( &attWorld, xmWorld * XMLoadFloat4x4( &boneCache[n] ) );
+            for ( MeshVisualInfo* mvi : it->second ) {
+                if ( !mvi ) continue;
+                bool isMMS = strcmp( mvi->Visual->GetFileExtension( 0 ), ".MMS" ) == 0;
+                if ( true ) {
+                    node->TexAniState.UpdateTexList();
+                    if ( isMMS ) {
+                        zCMorphMesh* mm = reinterpret_cast<zCMorphMesh*>(mvi->Visual);
+                        mm->GetTexAniState()->UpdateTexList();
+                    }
+                }
+                for ( auto const& [attMat, attMeshes] : mvi->Meshes ) {
+                    zCTexture* attTex = attMat ? attMat->GetAniTexture() : nullptr;
+                    for ( auto const& attMesh : attMeshes ) {
+                        if ( !attMesh || attMesh->Indices.empty() ) continue;
+                        attachmentDraws.push_back( { attMesh.get(), attTex, attWorld } );
+                    }
+                }
+            }
+        }
+    }
+
+    // Second pass: draw node attachments through the VOB pipeline (packed 36-byte vertex slot 0 +
+    // per-instance world matrix slot 1). One instance per attachment; reuses the VOB instance ring,
+    // which DrawVobsInstanced (running right after) continues to fill — the offset advances across both.
+    if ( !attachmentDraws.empty() && m_VobPSO && m_WorldRootSig ) {
+        m_CmdList->SetPipelineState( m_VobPSO.Get() );
+        m_CmdList->SetGraphicsRootSignature( m_WorldRootSig.Get() );
+        m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
+        m_CmdList->RSSetViewports( 1, &vp );
+        m_CmdList->RSSetScissorRects( 1, &sc );
+        m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+
+        for ( const AttachmentDraw& a : attachmentDraws ) {
+            if ( !a.mesh || !a.mesh->GetMeshVertexBuffer() || !a.mesh->GetMeshIndexBuffer() ) continue;
+            D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( a.mesh->GetMeshVertexBuffer() );
+            D3D12VertexBuffer* mib = D3D12VertexBuffer::From( a.mesh->GetMeshIndexBuffer() );
+            if ( !mvb->GetResource() || !mib->GetResource() ) continue;
+
+            const UINT instBytes = static_cast<UINT>( sizeof( VobInstanceInfo ) );
+            if ( m_VobInstanceBufferOffset + instBytes > m_VobInstanceBufferCapacity ) {
+                if ( !m_VobInstanceOverflowLogged ) {
+                    LogWarn() << "D3D12: VOB instance ring overflow (skeletal attachments dropped this frame).";
+                    m_VobInstanceOverflowLogged = true;
+                }
+                break;
+            }
+
+            VobInstanceInfo vii = {};
+            vii.world = a.world;
+            vii.color = 0xFFFFFFFF;   // first-light: white (baked ground-light tint is a later step)
+            const UINT instOffset = m_VobInstanceBufferOffset;
+            memcpy( m_VobInstanceBufferPtr[frame] + instOffset, &vii, instBytes );
+            m_VobInstanceBufferOffset += instBytes;
+
+            D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
+            if ( a.tex && a.tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                if ( MyDirectDrawSurface7* surface = a.tex->GetSurface() ) {
+                    if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
+                        D3D12Texture* d12 = D3D12Texture::From( gfx );
+                        if ( d12->HasSRV() ) srv = d12->GetSrvGpuHandle();
+                    }
+                }
+            }
+            m_CmdList->SetGraphicsRootDescriptorTable( 1, srv );
+
+            const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStructGPU ) };
+            const D3D12_VERTEX_BUFFER_VIEW instView = {
+                m_VobInstanceBuffer[frame]->GetGPUVirtualAddress() + instOffset, instBytes, sizeof( VobInstanceInfo ) };
+            const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, instView };
+            m_CmdList->IASetVertexBuffers( 0, 2, views );
+
+            const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
+            m_CmdList->IASetIndexBuffer( &ibv );
+
+            m_CmdList->DrawIndexedInstanced( static_cast<UINT>( a.mesh->Indices.size() ), 1, 0, 0, 0 );
+            drawnTris += static_cast<unsigned int>( a.mesh->Indices.size() ) / 3;
         }
     }
 
@@ -1819,7 +1931,10 @@ XRESULT D3D12GraphicsEngine::Present() {
     const bool vsync = Engine::GAPI->GetRendererState().RendererSettings.EnableVSync;
     HRESULT hr = m_SwapChain->Present( vsync ? 1 : 0, 0 );
     if ( FAILED( hr ) ) {
+        auto msg = std::format( "D3D12 Present failed (0x{:X})", hr );
         LogWarn() << "D3D12 Present failed (0x" << std::hex << hr << ").";
+        MessageBoxA( NULL, msg.c_str(), "GD3D11 (DX12): Error", MB_OK);
+        exit( hr );
         return XR_FAILED;
     }
 
