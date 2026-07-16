@@ -52,6 +52,8 @@ public:
     /** Backend downcast from the neutral base. Safe by construction while the D3D12 backend is active. */
     static D3D12Texture* From( GfxTexture* texture ) { return static_cast<D3D12Texture*>( texture ); }
 
+    void SetDebugName( const char* debugName ) override;
+
 private:
     XRESULT InitFromDDS( const uint8_t* bytes, size_t size, const std::string& name );
     bool CreateAndUpload( void* data );   // committed resource (+ synchronous upload when data != null)

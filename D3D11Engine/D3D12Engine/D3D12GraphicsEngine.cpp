@@ -32,14 +32,46 @@ namespace {
     }
 
     // Inline HLSL for the 2D UI path. VS mirrors VS_TransformedEx (screen-space xyzrhw -> clip space,
-    // rhw packed in Normal.x); PS does the dominant MODULATE case (texture * diffuse.bgra). The full
-    // fixed-function stage/blend emulation lands with the D3D12 shader-backend increment.
+    // rhw packed in Normal.x). PS emulates the fixed-function texture-stage pipeline (mirrors
+    // Shaders/FixedFunctionPipeline.h): FF_Stages[0/1] color ops + args + diffuse-alpha test, driven by
+    // the FFPipelineConstantBuffer (b1) which receives Gothic's GraphicsState each draw. Per-draw BLEND
+    // modes (opaque/alpha/additive/modulate/...) are handled by selecting a matching PSO, not here.
+    // Limitation: only texture0 is bound, so a 2nd stage samples texture0 (menus use 1 stage -> exact;
+    // the world's 2-texture lightmap path is a Phase-2 concern).
     constexpr char kUIShaderSource[] = R"(
 cbuffer Viewport : register(b0) { float2 V_ViewportPos; float2 V_ViewportSize; };
+
+struct TextureStage { int colorop; int colorarg1; int colorarg2; int alphaop; int alphaarg1; int alphaarg2; int2 pad; };
+cbuffer FFPipelineConstantBuffer : register(b1)
+{
+    float  FF_FogWeight;   float3 FF_FogColor;
+    float  FF_FogNear;     float  FF_FogFar;   float FF_zNear; float FF_zFar;
+    float3 FF_AmbientLighting; float FF_Time;
+    float4 FF_TextureFactor;
+    float  FF_AlphaRef;    uint   FF_GSwitches; float2 ggs_Pad3;
+    TextureStage FF_Stages[2];
+};
+
 Texture2D    tx  : register(t0);
 SamplerState smp : register(s0);
+
+#define TA_DIFFUSE 0
+#define TA_CURRENT 1
+#define TA_TEXTURE 2
+#define TA_TFACTOR 3
+#define TOP_DISABLE    1
+#define TOP_SELECTARG1 2
+#define TOP_SELECTARG2 3
+#define TOP_MODULATE   4
+#define TOP_MODULATE2X 5
+#define TOP_MODULATE4X 6
+#define TOP_ADD        7
+#define TOP_SUBTRACT   10
+#define GSWITCH_ALPHAREF 2
+
 struct VS_IN  { float3 pos:POSITION; float3 nrm:NORMAL; float2 t0:TEXCOORD0; float2 t1:TEXCOORD1; float4 dif:DIFFUSE; };
-struct VS_OUT { float4 pos:SV_POSITION; float2 uv:TEXCOORD0; float4 dif:TEXCOORD1; };
+struct VS_OUT { float4 pos:SV_POSITION; float2 uv:TEXCOORD0; float2 uv2:TEXCOORD1; float4 dif:TEXCOORD2; };
+
 VS_OUT VSMain( VS_IN i ) {
     VS_OUT o;
     float rhw = i.nrm.x;                 // rhw stored in Normal.x
@@ -49,11 +81,43 @@ VS_OUT VSMain( VS_IN i ) {
     float actualW = 1.0 / rhw;
     o.pos = float4(float3(ndc, i.pos.z) * actualW, actualW);
     o.uv  = i.t0;
+    o.uv2 = i.t1;
     o.dif = i.dif;
     return o;
 }
+
+float4 SelectArg( int arg, float4 current, float4 diffuse, float2 uv ) {
+    switch ( arg ) {
+    case TA_DIFFUSE: return diffuse;
+    case TA_CURRENT: return current;
+    case TA_TEXTURE: return tx.Sample( smp, uv );
+    case TA_TFACTOR: return FF_TextureFactor;
+    }
+    return float4( 0, 1, 0, 0 );
+}
+
+float4 RunStage( int op, int a1, int a2, float4 current, float4 diffuse, float2 uv ) {
+    switch ( op ) {
+    case TOP_DISABLE:    return 0;
+    case TOP_SELECTARG1: return SelectArg( a1, current, diffuse, uv );
+    case TOP_SELECTARG2: return SelectArg( a2, current, diffuse, uv );
+    case TOP_MODULATE:   return SelectArg( a1, current, diffuse, uv ) * SelectArg( a2, current, diffuse, uv );
+    case TOP_MODULATE2X: return SelectArg( a1, current, diffuse, uv ) * SelectArg( a2, current, diffuse, uv ) * 2;
+    case TOP_MODULATE4X: return SelectArg( a1, current, diffuse, uv ) * SelectArg( a2, current, diffuse, uv ) * 4;
+    case TOP_ADD:        return SelectArg( a1, current, diffuse, uv ) + SelectArg( a2, current, diffuse, uv );
+    case TOP_SUBTRACT:   return SelectArg( a1, current, diffuse, uv ) - SelectArg( a2, current, diffuse, uv );
+    }
+    return SelectArg( a1, current, diffuse, uv );   // graceful fallback for unhandled ops
+}
+
 float4 PSMain( VS_OUT i ) : SV_TARGET {
-    return tx.Sample(smp, i.uv) * i.dif.bgra;
+    float4 diffuse = i.dif.bgra;         // vertex color 0xAARRGGBB read as RGBA -> swizzle back to RGBA
+    float4 color = RunStage( FF_Stages[0].colorop, FF_Stages[0].colorarg1, FF_Stages[0].colorarg2, diffuse, diffuse, i.uv );
+    [branch] if ( FF_Stages[1].colorop != TOP_DISABLE )
+        color = RunStage( FF_Stages[1].colorop, FF_Stages[1].colorarg1, FF_Stages[1].colorarg2, color, diffuse, i.uv2 );
+    [branch] if ( ( FF_GSwitches & GSWITCH_ALPHAREF ) != 0 )
+        clip( color.a - FF_AlphaRef );
+    return color;
 }
 )";
 
@@ -244,7 +308,11 @@ bool D3D12GraphicsEngine::CreateUIPipeline() {
     srvRange.BaseShaderRegister = 0;         // t0
     srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-    D3D12_ROOT_PARAMETER params[2] = {};
+    // FFPipelineConstantBuffer (b1) is fed Gothic's GraphicsState each draw as root constants — the
+    // struct layout matches the HLSL cbuffer 1:1 (same reason D3D11 memcpy's it into the CB).
+    static_assert( sizeof( GothicGraphicsState ) == 144, "FF constant layout must match FFPipelineConstantBuffer" );
+
+    D3D12_ROOT_PARAMETER params[3] = {};
     params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     params[0].Constants.ShaderRegister = 0;  // b0
     params[0].Constants.Num32BitValues = 4;  // float2 pos + float2 size
@@ -253,6 +321,10 @@ bool D3D12GraphicsEngine::CreateUIPipeline() {
     params[1].DescriptorTable.NumDescriptorRanges = 1;
     params[1].DescriptorTable.pDescriptorRanges = &srvRange;
     params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[2].Constants.ShaderRegister = 1;  // b1
+    params[2].Constants.Num32BitValues = sizeof( GothicGraphicsState ) / 4;  // 36 DWORDs
+    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_STATIC_SAMPLER_DESC sampler = {};
     sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
@@ -262,7 +334,7 @@ bool D3D12GraphicsEngine::CreateUIPipeline() {
     sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-    rsDesc.NumParameters = 2;
+    rsDesc.NumParameters = 3;
     rsDesc.pParameters = params;
     rsDesc.NumStaticSamplers = 1;
     rsDesc.pStaticSamplers = &sampler;
@@ -285,17 +357,53 @@ bool D3D12GraphicsEngine::CreateUIPipeline() {
 #ifdef _DEBUG
     compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
 #endif
-    ComPtr<ID3DBlob> vs, ps, err;
+    ComPtr<ID3DBlob> err;
     if ( FAILED( D3DCompile( kUIShaderSource, sizeof( kUIShaderSource ) - 1, "UIShader", nullptr, nullptr,
-        "VSMain", "vs_5_0", compileFlags, 0, vs.GetAddressOf(), err.GetAddressOf() ) ) ) {
+        "VSMain", "vs_5_0", compileFlags, 0, m_UIVsBlob.ReleaseAndGetAddressOf(), err.GetAddressOf() ) ) ) {
         if ( err ) LogWarn() << "D3D12: UI VS compile error: " << static_cast<const char*>( err->GetBufferPointer() );
         return false;
     }
     if ( FAILED( D3DCompile( kUIShaderSource, sizeof( kUIShaderSource ) - 1, "UIShader", nullptr, nullptr,
-        "PSMain", "ps_5_0", compileFlags, 0, ps.GetAddressOf(), err.ReleaseAndGetAddressOf() ) ) ) {
+        "PSMain", "ps_5_0", compileFlags, 0, m_UIPsBlob.ReleaseAndGetAddressOf(), err.ReleaseAndGetAddressOf() ) ) ) {
         if ( err ) LogWarn() << "D3D12: UI PS compile error: " << static_cast<const char*>( err->GetBufferPointer() );
         return false;
     }
+
+    // PSOs are built per blend state on demand (GetOrCreateUIPipeline). Warm the default (opaque) one so
+    // any Init-time failure surfaces here rather than mid-frame.
+    GothicBlendStateInfo defaultBlend;
+    defaultBlend.SetDefault();
+    if ( !GetOrCreateUIPipeline( defaultBlend ) ) {
+        LogWarn() << "D3D12: failed to create the default 2D/UI pipeline state.";
+        return false;
+    }
+
+    return CreateUIVertexBuffers();
+}
+
+namespace {
+    // Packs the blend-relevant fields of a Gothic blend state into a stable key for the PSO cache.
+    // Gothic's EBlendFunc/EBlendOp are "laid out for D3D11" and D3D12_BLEND/_OP share those numeric
+    // values, so they slot straight into the packed key (and cast directly into the PSO below).
+    uint32_t BlendKey( const GothicBlendStateInfo& b ) {
+        uint32_t k = 0;
+        k |= ( b.BlendEnabled ? 1u : 0u );
+        k |= ( b.ColorWritesEnabled ? 1u : 0u ) << 1;
+        k |= ( b.AlphaToCoverage ? 1u : 0u ) << 2;
+        k |= ( static_cast<uint32_t>( b.SrcBlend )      & 0x1F ) << 3;
+        k |= ( static_cast<uint32_t>( b.DestBlend )     & 0x1F ) << 8;
+        k |= ( static_cast<uint32_t>( b.BlendOp )       & 0x07 ) << 13;
+        k |= ( static_cast<uint32_t>( b.SrcBlendAlpha ) & 0x1F ) << 16;
+        k |= ( static_cast<uint32_t>( b.DestBlendAlpha )& 0x1F ) << 21;
+        k |= ( static_cast<uint32_t>( b.BlendOpAlpha )  & 0x07 ) << 26;
+        return k;
+    }
+}
+
+ID3D12PipelineState* D3D12GraphicsEngine::GetOrCreateUIPipeline( const GothicBlendStateInfo& blend ) {
+    const uint32_t key = BlendKey( blend );
+    auto it = m_UIPipelines.find( key );
+    if ( it != m_UIPipelines.end() ) return it->second.Get();
 
     // --- Input layout: mirrors layout1 (the ExVertexStruct HUD layout; tangent treated as padding) ---
     const D3D12_INPUT_ELEMENT_DESC layout[] = {
@@ -306,11 +414,11 @@ bool D3D12GraphicsEngine::CreateUIPipeline() {
         { "DIFFUSE",  0, DXGI_FORMAT_R8G8B8A8_UNORM,  0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
     };
 
-    // --- PSO: alpha-blended, no depth, cull-none, triangle list ---
+    // --- PSO: no depth (2D), cull-none, triangle list; blend emulates Gothic's per-draw state ---
     D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
     pso.pRootSignature = m_UIRootSig.Get();
-    pso.VS = { vs->GetBufferPointer(), vs->GetBufferSize() };
-    pso.PS = { ps->GetBufferPointer(), ps->GetBufferSize() };
+    pso.VS = { m_UIVsBlob->GetBufferPointer(), m_UIVsBlob->GetBufferSize() };
+    pso.PS = { m_UIPsBlob->GetBufferPointer(), m_UIPsBlob->GetBufferSize() };
     pso.InputLayout = { layout, _countof( layout ) };
     pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     pso.NumRenderTargets = 1;
@@ -322,22 +430,28 @@ bool D3D12GraphicsEngine::CreateUIPipeline() {
     pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
     pso.RasterizerState.DepthClipEnable = TRUE;
 
-    pso.BlendState.RenderTarget[0].BlendEnable = TRUE;
-    pso.BlendState.RenderTarget[0].SrcBlend = D3D12_BLEND_SRC_ALPHA;
-    pso.BlendState.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
-    pso.BlendState.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
-    pso.BlendState.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
-    pso.BlendState.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
-    pso.BlendState.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
-    pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    D3D12_RENDER_TARGET_BLEND_DESC& rt = pso.BlendState.RenderTarget[0];
+    rt.BlendEnable = blend.BlendEnabled ? TRUE : FALSE;
+    rt.SrcBlend       = static_cast<D3D12_BLEND>( blend.SrcBlend );
+    rt.DestBlend      = static_cast<D3D12_BLEND>( blend.DestBlend );
+    rt.BlendOp        = static_cast<D3D12_BLEND_OP>( blend.BlendOp );
+    rt.SrcBlendAlpha  = static_cast<D3D12_BLEND>( blend.SrcBlendAlpha );
+    rt.DestBlendAlpha = static_cast<D3D12_BLEND>( blend.DestBlendAlpha );
+    rt.BlendOpAlpha   = static_cast<D3D12_BLEND_OP>( blend.BlendOpAlpha );
+    rt.RenderTargetWriteMask = blend.ColorWritesEnabled ? D3D12_COLOR_WRITE_ENABLE_ALL : 0;
+    pso.BlendState.AlphaToCoverageEnable = blend.AlphaToCoverage ? TRUE : FALSE;
 
     pso.DepthStencilState.DepthEnable = FALSE;
     pso.DepthStencilState.StencilEnable = FALSE;
 
-    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_UIPipeline.ReleaseAndGetAddressOf() ) ) ) )
-        return false;
-
-    return CreateUIVertexBuffers();
+    ComPtr<ID3D12PipelineState> state;
+    if ( FAILED( m_Device.GetDevice()->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( state.GetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateGraphicsPipelineState failed for UI blend key 0x" << std::hex << key << ".";
+        return nullptr;
+    }
+    ID3D12PipelineState* raw = state.Get();
+    m_UIPipelines.emplace( key, std::move( state ) );
+    return raw;
 }
 
 bool D3D12GraphicsEngine::CreateUIVertexBuffers() {
@@ -425,8 +539,14 @@ XRESULT D3D12GraphicsEngine::SetViewport( const ViewportInfo& vp ) {
 }
 
 XRESULT D3D12GraphicsEngine::DrawVertexArray( ExVertexStruct* vertices, unsigned int numVertices, unsigned int startVertex, unsigned int stride ) {
-    if ( !m_SwapChainReady || !m_FrameOpen || !m_UIPipeline || numVertices == 0 || !vertices )
+    if ( !m_SwapChainReady || !m_FrameOpen || !m_UIRootSig || numVertices == 0 || !vertices )
         return XR_SUCCESS;
+
+    GothicRendererState& rs = Engine::GAPI->GetRendererState();
+
+    // Emulate Gothic's per-draw fixed-function blend mode by selecting the matching PSO.
+    ID3D12PipelineState* pso = GetOrCreateUIPipeline( rs.BlendState );
+    if ( !pso ) return XR_SUCCESS;
 
     const UINT frame = m_FrameIndex;
     const UINT bytes = stride * numVertices;
@@ -443,15 +563,30 @@ XRESULT D3D12GraphicsEngine::DrawVertexArray( ExVertexStruct* vertices, unsigned
     const D3D12_GPU_VIRTUAL_ADDRESS gpuVA = m_UIVertexBuffer[frame]->GetGPUVirtualAddress() + m_UIVertexBufferOffset;
     m_UIVertexBufferOffset += bytes;
 
-    m_CmdList->SetPipelineState( m_UIPipeline.Get() );
+    m_CmdList->SetPipelineState( pso );
     m_CmdList->SetGraphicsRootSignature( m_UIRootSig.Get() );
 
+    // The 2D/UI path is inherently full-screen: D3D11 forces a full-backbuffer viewport in OnBeginFrame
+    // ("otherwise Gothic can't render its initial menu UI") and its BindViewportInformation reads that
+    // live viewport. Gothic can leave a tiny/degenerate D3D7 viewport set at the menu (observed 1x1),
+    // which would collapse the whole UI into a single pixel. Fall back to the full backbuffer when the
+    // tracked viewport is degenerate, so the transform + rasterizer cover the screen like on D3D11.
+    D3D12_VIEWPORT vp = m_CurrentViewport;
+    D3D12_RECT     sc = m_CurrentScissor;
+    if ( vp.Width < 2.0f || vp.Height < 2.0f ) {
+        vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
+        sc = { 0, 0, m_Resolution.x, m_Resolution.y };
+    }
+
     // Viewport transform constants (pixels / GothicUIScale), mirroring D3D11 BindViewportInformation.
-    const float scale = std::max<float>( 0.001f, Engine::GAPI->GetRendererState().RendererSettings.GothicUIScale );
+    const float scale = std::max<float>( 0.001f, rs.RendererSettings.GothicUIScale );
     const float vpConsts[4] = {
-        m_CurrentViewport.TopLeftX / scale, m_CurrentViewport.TopLeftY / scale,
-        m_CurrentViewport.Width / scale,    m_CurrentViewport.Height / scale };
+        vp.TopLeftX / scale, vp.TopLeftY / scale,
+        vp.Width / scale,    vp.Height / scale };
     m_CmdList->SetGraphicsRoot32BitConstants( 0, 4, vpConsts, 0 );
+
+    // Fixed-function stage state (b1) — same struct D3D11 binds as FFPipelineConstantBuffer.
+    m_CmdList->SetGraphicsRoot32BitConstants( 2, sizeof( GothicGraphicsState ) / 4, &rs.GraphicsState, 0 );
 
     // Diffuse texture (fall back to 1x1 white for untextured colored draws / failed uploads).
     D3D12_GPU_DESCRIPTOR_HANDLE srv = GetSrvGpuHandle( m_WhiteSrvSlot );
@@ -461,8 +596,8 @@ XRESULT D3D12GraphicsEngine::DrawVertexArray( ExVertexStruct* vertices, unsigned
     }
     m_CmdList->SetGraphicsRootDescriptorTable( 1, srv );
 
-    m_CmdList->RSSetViewports( 1, &m_CurrentViewport );
-    m_CmdList->RSSetScissorRects( 1, &m_CurrentScissor );
+    m_CmdList->RSSetViewports( 1, &vp );
+    m_CmdList->RSSetScissorRects( 1, &sc );
     m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
     D3D12_VERTEX_BUFFER_VIEW vbv = { gpuVA, bytes, stride };
@@ -653,6 +788,22 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
     m_CurrentTexture = nullptr;
     m_CurrentViewport = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
     m_CurrentScissor = { 0, 0, m_Resolution.x, m_Resolution.y };
+
+    // this seems to do nothing on its own - CURRENTLY. But who knows what will happen when we do 3d.
+    zCView::SetWindowMode(
+        m_Resolution.x,
+        m_Resolution.y,
+        32 );
+
+    // This ensures any 2D UI is rendered with the proper resolution.
+    // needs to be per-frame or it won't do anything.
+    zCView::SetVirtualMode(
+        static_cast<int>(m_Resolution.x),
+        static_cast<int>(m_Resolution.y),
+        32 );
+
+    //POINT virtualSize = { 8192, 8192 };
+    //zCViewDraw::GetScreen().SetVirtualSize( virtualSize );
 
     m_FrameOpen = true;
     return XR_SUCCESS;

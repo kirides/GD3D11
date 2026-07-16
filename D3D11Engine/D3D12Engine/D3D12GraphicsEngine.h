@@ -2,8 +2,10 @@
 #include "../BaseGraphicsEngine.h"
 #include "D3D12Device.h"
 #include <memory>
+#include <unordered_map>
 
 class D3D12LineRenderer;
+struct GothicBlendStateInfo;
 
 /** Direct3D 12 backend — Phase 1 first-light.
 
@@ -85,7 +87,10 @@ private:
     bool CreateFrameResources();      // RTV heap + allocators + command list + fence + event
     bool CreateUploadObjects();       // dedicated allocator + command list + fence for synchronous uploads
     bool CreateSrvHeap();             // shader-visible CBV_SRV_UAV heap for texture SRVs
-    bool CreateUIPipeline();          // root signature + PSO + inline shaders for the 2D UI path
+    bool CreateUIPipeline();          // root signature + inline shaders (compiled once); PSOs built per blend state
+    // Returns a PSO for the 2D UI shaders matching the given Gothic blend state, creating + caching it on
+    // first use. Emulates Gothic's per-draw fixed-function blend modes (opaque/alpha/additive/modulate/...).
+    ID3D12PipelineState* GetOrCreateUIPipeline( const GothicBlendStateInfo& blend );
     bool CreateUIVertexBuffers();     // per-frame dynamic (upload-heap) vertex ring buffers
     bool CreateWhiteTexture();        // 1x1 white fallback (untextured colored 2D draws)
     bool AcquireBackBufferRTVs();     // (re)fetch swapchain buffers + build their RTVs
@@ -128,7 +133,10 @@ private:
     UINT m_SrvAllocated = 0;                                        // bump allocator (no free-list yet)
 
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_UIRootSig;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_UIPipeline;
+    Microsoft::WRL::ComPtr<ID3DBlob> m_UIVsBlob;                    // compiled once; reused for every blend PSO
+    Microsoft::WRL::ComPtr<ID3DBlob> m_UIPsBlob;
+    // One PSO per distinct Gothic blend state (opaque/alpha/additive/modulate/...), built lazily.
+    std::unordered_map<uint32_t, Microsoft::WRL::ComPtr<ID3D12PipelineState>> m_UIPipelines;
 
     Microsoft::WRL::ComPtr<ID3D12Resource> m_UIVertexBuffer[kBackBufferCount]; // persistently-mapped upload ring
     uint8_t* m_UIVertexBufferPtr[kBackBufferCount] = {};

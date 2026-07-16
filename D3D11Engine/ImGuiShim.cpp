@@ -1076,10 +1076,9 @@ void ImGuiShim::RenderSettingsWindow()
                     CurrentResolution.y * settings.ResolutionScalePercent / 100
                 );
             } else {
-                static float previousResolutionScale = static_cast<float>(settings.ResolutionScalePercent);
-                if ( ImGui::SliderFloat( "##ResolutionScalePercent", &previousResolutionScale, 25.0f, 200.0f, "%.0f%%" ) ) {
-                    previousResolutionScale = std::clamp( previousResolutionScale, 25.0f, 200.0f );
-                    settings.ResolutionScalePercent = static_cast<int>(previousResolutionScale);
+                auto previousResolutionScale = settings.ResolutionScalePercent;
+                if ( ImGui::SliderInt( "##ResolutionScalePercent", &previousResolutionScale, 25, 200, "%d %%" ) ) {
+                    settings.ResolutionScalePercent = std::clamp( previousResolutionScale, 25, 200 );
                 }
                 ImGui::SetItemTooltip("Effective resolution: %d x %d",
                     CurrentResolution.x * settings.ResolutionScalePercent / 100,

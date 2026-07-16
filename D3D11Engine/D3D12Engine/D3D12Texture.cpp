@@ -58,6 +58,13 @@ XRESULT D3D12Texture::Init( const std::string& file ) {
     return InitFromDDS( bytes.data(), bytes.size(), file );
 }
 
+void D3D12Texture::SetDebugName( const char* debugName )
+{
+    if ( m_Texture ) {
+        m_Texture->SetPrivateData( WKPDID_D3DDebugObjectName, std::strlen( debugName ), debugName );
+    }
+}
+
 /** Minimal DDS parser: enough for Gothic's textures (DXT1/3/5, DX10-extended, 32-bit uncompressed).
     Sets format/size/mips, then creates + uploads. Unknown formats fail gracefully (texture skipped). */
 XRESULT D3D12Texture::InitFromDDS( const uint8_t* bytes, size_t size, const std::string& /*name*/ ) {

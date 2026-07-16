@@ -124,11 +124,11 @@ public:
 
         if ( _stricmp( var, "zVidResFullscreenX" ) == 0 ) {
             if ( engine ) {
-                return engine->GetResolution().x;
+                return std::max(engine->GetResolution().x, def);
             }
         } else if ( _stricmp( var, "zVidResFullscreenY" ) == 0 ) {
             if ( engine ) {
-                return engine->GetResolution().y;
+                return std::max(engine->GetResolution().y, def);
             }
         } else if ( _stricmp( var, "zVidResFullscreenBPP" ) == 0 ) {
             return 32;
