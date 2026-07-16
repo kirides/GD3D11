@@ -141,12 +141,13 @@ float4 PSMain( VS_OUT i ) : SV_TARGET {
 // Default (column-major) matrix packing — matches D3D11's VS_ExPacked, which reads the same
 // row-major XMFLOAT4X4 bytes we upload here, so mul(float4(pos,1), ViewProj) is byte-for-byte identical.
 cbuffer WorldCB : register(b0) { float4x4 ViewProj; };
+cbuffer FogCB   : register(b1) { float3 FogColor; float FogNear; float3 CamPosWS; float FogFar; };
 
 Texture2D    tx  : register(t0);
 SamplerState smp : register(s0);
 
 struct VS_IN  { float3 pos : POSITION; float2 uv : TEXCOORD0; float4 col : DIFFUSE; };
-struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : TEXCOORD1; };
+struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : TEXCOORD1; float fogDist : TEXCOORD2; };
 
 VS_OUT VSMain( VS_IN i )
 {
@@ -154,6 +155,7 @@ VS_OUT VSMain( VS_IN i )
     o.clip = mul( float4( i.pos, 1.0 ), ViewProj );
     o.uv  = i.uv;
     o.col = i.col;
+    o.fogDist = length( i.pos - CamPosWS );   // world verts are already world-space
     return o;
 }
 
@@ -162,6 +164,9 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     float4 t = tx.Sample( smp, i.uv );
     clip( t.a - 0.5 );                    // fixed alpha-test cutout (opaque textures have a==1 -> kept)
     float3 rgb = t.rgb * i.col.bgr;       // baked vertex lighting; .bgr recovers Gothic's RGB
+    // Linear distance fog toward the atmosphere color (matches Gothic's FFFog / the sky-clear color).
+    float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
+    rgb = lerp( rgb, FogColor, f );
     return float4( rgb, 1.0 );
 }
 )";
@@ -173,6 +178,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     // color. Wind / player-influence / motion-vectors / normalmap are skipped for first-light.
     constexpr char kVobShaderSource[] = R"(
 cbuffer WorldCB : register(b0) { float4x4 ViewProj; };   // default column-major packing (see world shader)
+cbuffer FogCB   : register(b1) { float3 FogColor; float FogNear; float3 CamPosWS; float FogFar; };
 
 Texture2D    tx  : register(t0);
 SamplerState smp : register(s0);
@@ -184,7 +190,7 @@ struct VS_IN
     float4x4 iworld  : INSTANCE_WORLD_MATRIX;   // 4 per-instance rows (semantic index 0..3)
     float4   icolor  : INSTANCE_COLOR;
 };
-struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : TEXCOORD1; };
+struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : TEXCOORD1; float fogDist : TEXCOORD2; };
 
 VS_OUT VSMain( VS_IN i )
 {
@@ -193,6 +199,7 @@ VS_OUT VSMain( VS_IN i )
     o.clip = mul( float4( worldPos, 1.0 ), ViewProj );
     o.uv  = i.uv;
     o.col = i.icolor;
+    o.fogDist = length( worldPos - CamPosWS );
     return o;
 }
 
@@ -200,7 +207,9 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
 {
     float4 t = tx.Sample( smp, i.uv );
     clip( t.a - 0.5 );
-    return float4( t.rgb * i.col.bgr, 1.0 );
+    float3 rgb = t.rgb * i.col.bgr;
+    float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
+    return float4( lerp( rgb, FogColor, f ), 1.0 );
 }
 )";
 
@@ -229,6 +238,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
 cbuffer FrameCB    : register(b0) { float4x4 ViewProj; };
 cbuffer InstanceCB : register(b1) { float4x4 M_World; float4 ModelColor; float Fatness; float3 _pad; };
 cbuffer BonesCB    : register(b2) { float4x4 Bones[96]; };
+cbuffer FogCB      : register(b3) { float3 FogColor; float FogNear; float3 CamPosWS; float FogFar; };
 
 Texture2D    tx  : register(t0);
 SamplerState smp : register(s0);
@@ -242,7 +252,7 @@ struct VS_IN
     uint4  boneIndices    : BONEIDS;
     float4 weights        : WEIGHTS;
 };
-struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : TEXCOORD1; };
+struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : TEXCOORD1; float fogDist : TEXCOORD2; };
 
 VS_OUT VSMain( VS_IN i )
 {
@@ -262,6 +272,7 @@ VS_OUT VSMain( VS_IN i )
     o.clip = mul( float4( worldPos, 1.0 ), ViewProj );
     o.uv  = i.uv;
     o.col = ModelColor;
+    o.fogDist = length( worldPos - CamPosWS );
     return o;
 }
 
@@ -269,13 +280,47 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
 {
     float4 t = tx.Sample( smp, i.uv );
     clip( t.a - 0.5 );
-    return float4( t.rgb * i.col.rgb, 1.0 );   // ModelColor is an RGBA float (white for first-light)
+    float3 rgb = t.rgb * i.col.rgb;            // ModelColor is an RGBA float (white for first-light)
+    float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
+    return float4( lerp( rgb, FogColor, f ), 1.0 );
 }
 )";
 
     // Round a ring offset up so the next allocation starts on a 256-byte boundary (D3D12 requires root
     // CBV addresses to be 256-byte aligned).
     UINT AlignCB( UINT offset ) { return ( offset + 255u ) & ~255u; }
+
+    // Per-frame linear-fog parameters, bound to the 3D shaders as 8 root 32-bit constants. Field order
+    // MUST match the HLSL `cbuffer FogCB { float3 FogColor; float FogNear; float3 CamPosWS; float FogFar; }`
+    // (root constants map by DWORD offset). The VS computes distance(worldPos, CamPosWS) (== view-space
+    // distance for a rigid view transform), the PS lerps toward FogColor over [FogNear, FogFar].
+    struct FogConstants {
+        float FogColor[3];
+        float FogNear;
+        float CamPos[3];
+        float FogFar;
+    };
+    static_assert( sizeof( FogConstants ) == 32, "FogConstants must be 8 DWORDs to match the fog root constants" );
+
+    // Builds this frame's fog constants from Gothic's sky state. FogColor = GetFogColor() (0..1, weather /
+    // sky-override correct — the same color used to clear the sky); FogFar = the sky controller's far-Z,
+    // FogNear = 0.3*FarZ (mirrors Gothic's own 0.3 factor). Safe only in-game (world loaded).
+    FogConstants MakeFogConstants() {
+        FogConstants fog = {};
+        DirectX::XMFLOAT3 fc;
+        DirectX::XMStoreFloat3( &fc, Engine::GAPI->GetFogColor() );
+        fog.FogColor[0] = fc.x; fog.FogColor[1] = fc.y; fog.FogColor[2] = fc.z;
+
+        float farZ = Engine::GAPI->GetFarZ();
+        if ( !( farZ > 1.0f ) ) farZ = 40000.0f;   // fallback if the controller reports 0 / invalid
+        fog.FogFar = farZ;
+        fog.FogNear = 0.3f * farZ;
+
+        DirectX::XMFLOAT3 cp;
+        DirectX::XMStoreFloat3( &cp, Engine::GAPI->GetCameraPositionXM() );
+        fog.CamPos[0] = cp.x; fog.CamPos[1] = cp.y; fog.CamPos[2] = cp.z;
+        return fog;
+    }
 
     D3D12_RESOURCE_BARRIER TransitionBarrier( ID3D12Resource* res, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after ) {
         D3D12_RESOURCE_BARRIER b = {};
@@ -796,14 +841,14 @@ bool D3D12GraphicsEngine::CreateWorldPipeline() {
     ID3D12Device* device = m_Device.GetDevice();
 
     // Root signature: b0 = ViewProj (16 root 32-bit constants, VS); t0 = diffuse SRV table (PS);
-    // static linear-wrap sampler s0 (PS).
+    // b1 = fog (8 root 32-bit constants, VS reads CamPosWS, PS reads color/near/far); static sampler s0.
     D3D12_DESCRIPTOR_RANGE srvRange = {};
     srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
     srvRange.NumDescriptors = 1;
     srvRange.BaseShaderRegister = 0;         // t0
     srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-    D3D12_ROOT_PARAMETER params[2] = {};
+    D3D12_ROOT_PARAMETER params[3] = {};
     params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     params[0].Constants.ShaderRegister = 0;   // b0
     params[0].Constants.Num32BitValues = 16;  // float4x4
@@ -812,6 +857,10 @@ bool D3D12GraphicsEngine::CreateWorldPipeline() {
     params[1].DescriptorTable.NumDescriptorRanges = 1;
     params[1].DescriptorTable.pDescriptorRanges = &srvRange;
     params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[2].Constants.ShaderRegister = 1;   // b1 fog
+    params[2].Constants.Num32BitValues = 8;   // FogConstants (8 DWORDs)
+    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;  // VS: CamPosWS; PS: color/near/far
 
     D3D12_STATIC_SAMPLER_DESC sampler = {};
     sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
@@ -821,7 +870,7 @@ bool D3D12GraphicsEngine::CreateWorldPipeline() {
     sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-    rsDesc.NumParameters = 2;
+    rsDesc.NumParameters = 3;
     rsDesc.pParameters = params;
     rsDesc.NumStaticSamplers = 1;
     rsDesc.pStaticSamplers = &sampler;
@@ -1001,7 +1050,7 @@ bool D3D12GraphicsEngine::CreateSkeletalPipeline() {
     srvRange.BaseShaderRegister = 0;         // t0
     srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-    D3D12_ROOT_PARAMETER params[4] = {};
+    D3D12_ROOT_PARAMETER params[5] = {};
     params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     params[0].Constants.ShaderRegister = 0;   // b0 ViewProj
     params[0].Constants.Num32BitValues = 16;
@@ -1016,6 +1065,10 @@ bool D3D12GraphicsEngine::CreateSkeletalPipeline() {
     params[3].DescriptorTable.NumDescriptorRanges = 1;
     params[3].DescriptorTable.pDescriptorRanges = &srvRange;
     params[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    params[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[4].Constants.ShaderRegister = 3;   // b3 fog
+    params[4].Constants.Num32BitValues = 8;   // FogConstants (8 DWORDs)
+    params[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;  // VS: CamPosWS; PS: color/near/far
 
     D3D12_STATIC_SAMPLER_DESC sampler = {};
     sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
@@ -1248,11 +1301,31 @@ XRESULT D3D12GraphicsEngine::DrawVertexBufferFF( GfxVertexBuffer* vb, unsigned i
 
 XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
     // zCBspNodeRender hook — Gothic's BSP traversal is replaced; we draw the world ourselves.
-    // Order mirrors D3D11's DrawWorldMeshNaive: world mesh, then skeletal (NPCs/monsters), then
-    // instanced static VOBs.
+    // Order mirrors D3D11's DrawWorldMeshNaive: sky background, world mesh, skeletal (NPCs/monsters),
+    // then instanced static VOBs. The sky is a fog-colored fill so the horizon dissolves into the
+    // per-pixel distance fog of the geometry.
+    DrawSky();
     DrawWorldMesh();
     DrawSkeletalMeshes( Engine::GAPI->GetAnimatedSkeletalMeshVobs(), false);
     DrawVobsInstanced();
+    return XR_SUCCESS;
+}
+
+XRESULT D3D12GraphicsEngine::DrawSky() {
+    if ( !m_FrameOpen ) return XR_SUCCESS;
+
+    // Forward-renderer sky MVP: fill the backbuffer with Gothic's atmosphere (fog) color. Runs at the
+    // start of the world pass — after OnBeginFrame's black clear, before any 3D geometry — so wherever
+    // no geometry draws (above the horizon) the sky shows this color, and the geometry shaders' distance
+    // fog fades into the same color so the horizon dissolves seamlessly. Depth (cleared to 0.0 = far in
+    // OnBeginFrame) is left untouched, so geometry still depth-tests / occludes normally.
+    XMFLOAT3 fc;
+    XMStoreFloat3( &fc, Engine::GAPI->GetFogColor() );
+    const float clear[4] = { fc.x, fc.y, fc.z, 1.0f };
+
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
+    rtv.ptr += static_cast<SIZE_T>( m_FrameIndex ) * m_RtvDescriptorSize;
+    m_CmdList->ClearRenderTargetView( rtv, clear, 0, nullptr );
     return XR_SUCCESS;
 }
 
@@ -1282,9 +1355,12 @@ XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
     XMFLOAT4X4 viewProj;
     XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
 
+    const FogConstants fog = MakeFogConstants();
+
     m_CmdList->SetPipelineState( m_WorldPSO.Get() );
     m_CmdList->SetGraphicsRootSignature( m_WorldRootSig.Get() );
     m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
+    m_CmdList->SetGraphicsRoot32BitConstants( 2, 8, &fog, 0 );   // b1 fog
 
     D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
     D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
@@ -1363,9 +1439,12 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
     XMFLOAT4X4 viewProj;
     XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
 
+    const FogConstants fog = MakeFogConstants();
+
     m_CmdList->SetPipelineState( m_VobPSO.Get() );
     m_CmdList->SetGraphicsRootSignature( m_WorldRootSig.Get() );
     m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
+    m_CmdList->SetGraphicsRoot32BitConstants( 2, 8, &fog, 0 );   // b1 fog
 
     D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
     D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
@@ -1463,9 +1542,12 @@ XRESULT D3D12GraphicsEngine::DrawSkeletalMeshes( std::vector<SkeletalVobInfo*>& 
     XMFLOAT4X4 viewProj;
     XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
 
+    const FogConstants fog = MakeFogConstants();
+
     m_CmdList->SetPipelineState( m_SkeletalPSO.Get() );
     m_CmdList->SetGraphicsRootSignature( m_SkeletalRootSig.Get() );
     m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
+    m_CmdList->SetGraphicsRoot32BitConstants( 4, 8, &fog, 0 );   // b3 fog
 
     D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
     D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
@@ -1625,6 +1707,7 @@ XRESULT D3D12GraphicsEngine::DrawSkeletalMeshes( std::vector<SkeletalVobInfo*>& 
         m_CmdList->SetPipelineState( m_VobPSO.Get() );
         m_CmdList->SetGraphicsRootSignature( m_WorldRootSig.Get() );
         m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
+        m_CmdList->SetGraphicsRoot32BitConstants( 2, 8, &fog, 0 );   // b1 fog (VOB root sig)
         m_CmdList->RSSetViewports( 1, &vp );
         m_CmdList->RSSetScissorRects( 1, &sc );
         m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );

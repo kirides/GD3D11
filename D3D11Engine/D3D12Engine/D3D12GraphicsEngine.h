@@ -59,6 +59,11 @@ public:
         `noTextures` is accepted for interface parity but currently always effectively true. */
     XRESULT DrawWorldMesh( bool noTextures = false ) override;
 
+    /** Fills the sky/background with Gothic's atmosphere (fog) color. Forward-renderer MVP: a color
+        clear at the start of the world pass; distance fog in the geometry shaders fades into the same
+        color so the horizon dissolves seamlessly. No sky dome/scattering yet. */
+    XRESULT DrawSky() override;
+
     BaseLineRenderer* GetLineRenderer() override;
     const std::string& GetGraphicsDeviceName() override { return m_Device.GetDeviceDescription(); }
 
