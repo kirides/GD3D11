@@ -16,6 +16,9 @@
 #include "../WorldConverter.h"
 #include "../VertexTypes.h"
 #include "../ImGuiShim.h"
+#include "../zFont.h"
+#include "../zCCamera.h"
+#include "../oCGame.h"
 
 #include <d3dcompiler.h>
 
@@ -213,6 +216,50 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
 }
 )";
 
+    // Phase-2 water shader (MVP). Same wrapped-world-mesh vertex as the opaque pass, but the packed
+    // TexCoord2 (@28, half2) carries the per-material UV-scroll delta (set in WorldConverter for water
+    // materials); the VS scrolls the diffuse UV by (delta * totalTime) exactly like VS_ExWater. The PS
+    // samples the scrolled diffuse, applies distance fog, and outputs a constant alpha so the surface
+    // blends translucently over the already-drawn opaque scene beneath it. Refraction / reflection /
+    // scene-color + depth sampling + Gerstner waves (the full D3D11 PS_Water/VS_ExWater) are out of MVP.
+    constexpr char kWaterShaderSource[] = R"(
+cbuffer WorldCB : register(b0) { float4x4 ViewProj; };   // default column-major packing (see world shader)
+cbuffer FogCB   : register(b1) { float3 FogColor; float FogNear; float3 CamPosWS; float FogFar; };
+cbuffer WaterCB : register(b2) { float TotalTime; float WaterAlpha; float2 _wpad; };
+
+Texture2D    tx  : register(t0);
+SamplerState smp : register(s0);
+
+struct VS_IN  { float3 pos : POSITION; float2 uv : TEXCOORD0; float2 scroll : TEXCOORD1; float4 col : DIFFUSE; };
+struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : TEXCOORD1; float fogDist : TEXCOORD2; };
+
+VS_OUT VSMain( VS_IN i )
+{
+    VS_OUT o;
+    o.clip = mul( float4( i.pos, 1.0 ), ViewProj );
+    float2 ani = i.scroll * TotalTime;   // scroll delta (TexCoord2) * total time (ms), like VS_ExWater
+    ani -= floor( ani );                 // wrap to [0,1) so the float stays precise over long sessions
+    o.uv = i.uv + ani;
+    o.col = i.col;
+    o.fogDist = length( i.pos - CamPosWS );
+    return o;
+}
+
+float4 PSMain( VS_OUT i ) : SV_TARGET
+{
+    float4 t = tx.Sample( smp, i.uv );
+    float3 rgb = t.rgb * i.col.bgr;
+    float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
+    rgb = lerp( rgb, FogColor, f );
+    return float4( rgb, WaterAlpha );
+}
+)";
+
+    // Water surfaces peeled out of the opaque world pass (DrawWorldMesh) and drawn later, alpha-blended,
+    // by DrawWaterSurfaces. Both run on the same thread within one frame (OnStartWorldRendering), so a
+    // file-scope scratch map is safe — grouped by texture to minimize SRV binds. Cleared each frame.
+    std::unordered_map<zCTexture*, std::vector<MeshInfo*>> g_FrameWaterSurfaces;
+
     constexpr UINT kSkeletalConstantBufferBytes = 8 * 1024 * 1024; // per-frame skeletal CB ring (instance + bone palettes)
     constexpr UINT kSkeletalMaxBones = 96;                         // NUM_MAX_BONES — matches every skeletal HLSL
 
@@ -386,7 +433,11 @@ XRESULT D3D12GraphicsEngine::Init() {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the skeletal pipeline.";
         return XR_FAILED;
     }
-    LogInfo() << "D3D12GraphicsEngine initialized (device + 2D + world + VOB + skeletal pipelines up). Swapchain is created once the game window is set.";
+    if ( !CreateWaterPipeline() ) {
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the water pipeline.";
+        return XR_FAILED;
+    }
+    LogInfo() << "D3D12GraphicsEngine initialized (device + 2D + world + VOB + skeletal + water pipelines up). Swapchain is created once the game window is set.";
     return XR_SUCCESS;
 }
 
@@ -634,7 +685,10 @@ bool D3D12GraphicsEngine::CreateUIPipeline() {
     // any Init-time failure surfaces here rather than mid-frame.
     GothicBlendStateInfo defaultBlend;
     defaultBlend.SetDefault();
-    if ( !GetOrCreateUIPipeline( defaultBlend ) ) {
+
+    GothicDepthBufferStateInfo defaultDepth;
+    defaultDepth.SetDefault();
+    if ( !GetOrCreateUIPipeline( defaultBlend, defaultDepth ) ) {
         LogWarn() << "D3D12: failed to create the default 2D/UI pipeline state.";
         return false;
     }
@@ -659,10 +713,22 @@ namespace {
         k |= ( static_cast<uint32_t>( b.BlendOpAlpha )  & 0x07 ) << 26;
         return k;
     }
+
+    // Packs the depth-relevant fields into a stable key. ECompareFunc is "laid out for D3D11" and
+    // D3D12_COMPARISON_FUNC shares those numeric values, so it casts straight into the PSO below.
+    uint32_t DepthKey( const GothicDepthBufferStateInfo& d ) {
+        uint32_t k = 0;
+        k |= ( d.DepthBufferEnabled ? 1u : 0u );
+        k |= ( d.DepthWriteEnabled ? 1u : 0u ) << 1;
+        k |= ( static_cast<uint32_t>( d.DepthBufferCompareFunc ) & 0x0F ) << 2;
+        return k;
+    }
 }
 
-ID3D12PipelineState* D3D12GraphicsEngine::GetOrCreateUIPipeline( const GothicBlendStateInfo& blend ) {
-    const uint32_t key = BlendKey( blend );
+ID3D12PipelineState* D3D12GraphicsEngine::GetOrCreateUIPipeline( 
+    const GothicBlendStateInfo& blend,
+    const GothicDepthBufferStateInfo& depth ) {
+    const uint64_t key = static_cast<uint64_t>( BlendKey( blend ) ) | ( static_cast<uint64_t>( DepthKey( depth ) ) << 32 );
     auto it = m_UIPipelines.find( key );
     if ( it != m_UIPipelines.end() ) return it->second.Get();
 
@@ -689,7 +755,10 @@ ID3D12PipelineState* D3D12GraphicsEngine::GetOrCreateUIPipeline( const GothicBle
 
     pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
     pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-    pso.RasterizerState.DepthClipEnable = TRUE;
+    // Depth clip OFF for the 2D path (matches GothicRasterizerStateInfo::SetDefault's D3D11 default). The
+    // pre-transformed UI/glyph verts carry z = camera near+1 (AppendGlyphs), which exceeds the [0,1] clip
+    // range — with clipping enabled the driver discards them ("depth clipped"); disabled, z is just clamped.
+    pso.RasterizerState.DepthClipEnable = FALSE;
 
     D3D12_RENDER_TARGET_BLEND_DESC& rt = pso.BlendState.RenderTarget[0];
     rt.BlendEnable = blend.BlendEnabled ? TRUE : FALSE;
@@ -702,12 +771,23 @@ ID3D12PipelineState* D3D12GraphicsEngine::GetOrCreateUIPipeline( const GothicBle
     rt.RenderTargetWriteMask = blend.ColorWritesEnabled ? D3D12_COLOR_WRITE_ENABLE_ALL : 0;
     pso.BlendState.AlphaToCoverageEnable = blend.AlphaToCoverage ? TRUE : FALSE;
 
-    pso.DepthStencilState.DepthEnable = FALSE;
+    // Honor the caller's depth state. A DSV is bound for the whole frame (OnBeginFrame), so DSVFormat must
+    // match it (D32_FLOAT) even when the test is disabled — otherwise the bound-DSV/PSO-format mismatch makes
+    // the driver reject the draw ("depth test failed"). DrawString forces this state off so text never tests.
+    if ( depth.DepthBufferEnabled ) {
+        pso.DepthStencilState.DepthEnable    = TRUE;
+        pso.DepthStencilState.DepthWriteMask = depth.DepthWriteEnabled ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO;
+        pso.DepthStencilState.DepthFunc      = static_cast<D3D12_COMPARISON_FUNC>( depth.DepthBufferCompareFunc );
+    } else {
+        pso.DepthStencilState.DepthEnable    = FALSE;
+        pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+    }
     pso.DepthStencilState.StencilEnable = FALSE;
+    pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
 
     ComPtr<ID3D12PipelineState> state;
     if ( FAILED( m_Device.GetDevice()->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( state.GetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed for UI blend key 0x" << std::hex << key << ".";
+        LogWarn() << "D3D12: CreateGraphicsPipelineState failed for UI pipeline key 0x" << std::hex << key << ".";
         return nullptr;
     }
     ID3D12PipelineState* raw = state.Get();
@@ -786,6 +866,81 @@ bool D3D12GraphicsEngine::CreateWhiteTexture() {
 void D3D12GraphicsEngine::BindSurfaceTextures( int /*slot*/, GfxTexture* diffuse, GfxTexture* /*normalmap*/, unsigned int /*numTextures*/ ) {
     // Record the diffuse texture for the next 2D draw. Slot 0 only for now (normalmap unused in the UI path).
     m_CurrentTexture = diffuse;
+}
+
+// Glyph-quad builder — shared with the D3D11 backend (external linkage, defined in D3D11GraphicsEngine.cpp).
+// Pure geometry (font atlas -> ExVertexStruct triangle list), no backend dependency, so we reuse it verbatim.
+namespace UI::zFont {
+    void AppendGlyphs( std::vector<ExVertexStruct>& vertices, std::string_view str, float x, float y,
+        const ::zFont* font, zColor fontColor, float scale, zCCamera* camera );
+}
+
+void D3D12GraphicsEngine::DrawString( std::string_view str, float x, float y, const zFont* font, zColor& fontColor ) {
+    if ( !m_FrameOpen || !font || !font->tex )
+        return;
+
+    // Strip trailing '/' markers (Gothic control chars), like D3D11 DrawString.
+    size_t maxLen = str.size();
+    while ( maxLen > 0 && str[maxLen - 1] == '/' ) --maxLen;
+    if ( !maxLen ) return;
+    str = str.substr( 0, maxLen );
+
+    constexpr float FONT_CACHE_PRIO = -1.0f;
+    zCTexture* tx = font->tex;
+    if ( tx->CacheIn( FONT_CACHE_PRIO ) != zRES_CACHED_IN )
+        return;
+
+    // UIScale mirrors D3D11 DrawString: swim-bar width / 180 (the custom-font multiplier defaults to 1).
+    float UIScale = 1.0f;
+    static int savedBarSize = -1;
+    if ( oCGame::GetGame() ) {
+        if ( savedBarSize == -1 && oCGame::GetGame()->swimBar )
+            savedBarSize = oCGame::GetGame()->swimBar->psizex;
+        if ( savedBarSize > 0 )
+            UIScale = static_cast<float>( savedBarSize ) / 180.f;
+    }
+
+    // Build glyph quads over the font atlas (screen-space xyzrhw ExVertexStruct triangle list).
+    static std::vector<ExVertexStruct> vertices;
+    vertices.clear();
+    UI::zFont::AppendGlyphs( vertices, str, x, y, font, fontColor, UIScale, zCCamera::GetCamera() );
+    if ( vertices.empty() )
+        return;
+
+    // Text = texture * vertex color, alpha-blended. Force the FF stage + blend that DrawVertexArray reads,
+    // save/restore so Gothic's tracked 2D state is undisturbed (mirrors D3D11 DrawString exactly).
+    GothicRendererState& rs = Engine::GAPI->GetRendererState();
+    GothicBlendStateInfo savedBlend = rs.BlendState.Clone();
+    GothicDepthBufferStateInfo savedDepth = rs.DepthState.Clone();
+    FixedFunctionStage::EColorOp    savedOp0 = rs.GraphicsState.FF_Stages[0].ColorOp;
+    FixedFunctionStage::EColorOp    savedOp1 = rs.GraphicsState.FF_Stages[1].ColorOp;
+    FixedFunctionStage::ETextureArg savedA1  = rs.GraphicsState.FF_Stages[0].ColorArg1;
+    FixedFunctionStage::ETextureArg savedA2  = rs.GraphicsState.FF_Stages[0].ColorArg2;
+
+    rs.BlendState.SetAlphaBlending();
+    // Text is drawn over the finished scene (during the world pass the depth buffer holds scene depth); the
+    // glyph quads must never depth-test, so force depth off — GetOrCreateUIPipeline picks the no-test PSO.
+    rs.DepthState.DepthBufferEnabled = false;
+    rs.DepthState.DepthWriteEnabled  = false;
+    rs.GraphicsState.FF_Stages[0].ColorOp   = FixedFunctionStage::EColorOp::CO_MODULATE;
+    rs.GraphicsState.FF_Stages[1].ColorOp   = FixedFunctionStage::EColorOp::CO_DISABLE;
+    rs.GraphicsState.FF_Stages[0].ColorArg1 = FixedFunctionStage::ETextureArg::TA_TEXTURE;
+    rs.GraphicsState.FF_Stages[0].ColorArg2 = FixedFunctionStage::ETextureArg::TA_DIFFUSE;
+
+    // Bind the font atlas as the diffuse texture for this draw only.
+    GfxTexture* prevTex = m_CurrentTexture;
+    if ( MyDirectDrawSurface7* surface = tx->GetSurface() )
+        m_CurrentTexture = surface->GetEngineTexture();
+
+    DrawVertexArray( vertices.data(), static_cast<unsigned int>( vertices.size() ), 0, sizeof( ExVertexStruct ) );
+
+    m_CurrentTexture = prevTex;
+    rs.BlendState = savedBlend;
+    rs.DepthState = savedDepth;
+    rs.GraphicsState.FF_Stages[0].ColorOp   = savedOp0;
+    rs.GraphicsState.FF_Stages[1].ColorOp   = savedOp1;
+    rs.GraphicsState.FF_Stages[0].ColorArg1 = savedA1;
+    rs.GraphicsState.FF_Stages[0].ColorArg2 = savedA2;
 }
 
 bool D3D12GraphicsEngine::CreateDepthBuffer( INT2 size ) {
@@ -1037,6 +1192,192 @@ bool D3D12GraphicsEngine::CreateVobInstanceBuffers() {
     return true;
 }
 
+bool D3D12GraphicsEngine::CreateWaterPipeline() {
+    ID3D12Device* device = m_Device.GetDevice();
+
+    // Root signature = the world layout + one extra param: b0 ViewProj (16 consts, VS), t0 diffuse SRV
+    // (PS), b1 fog (8 consts, ALL), b2 water { time, alpha } (4 consts, ALL — VS reads time, PS alpha).
+    D3D12_DESCRIPTOR_RANGE srvRange = {};
+    srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    srvRange.NumDescriptors = 1;
+    srvRange.BaseShaderRegister = 0;         // t0
+    srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    D3D12_ROOT_PARAMETER params[4] = {};
+    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[0].Constants.ShaderRegister = 0;   // b0 ViewProj
+    params[0].Constants.Num32BitValues = 16;
+    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[1].DescriptorTable.NumDescriptorRanges = 1;
+    params[1].DescriptorTable.pDescriptorRanges = &srvRange;
+    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[2].Constants.ShaderRegister = 1;   // b1 fog
+    params[2].Constants.Num32BitValues = 8;
+    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[3].Constants.ShaderRegister = 2;   // b2 water { time, alpha }
+    params[3].Constants.Num32BitValues = 4;
+    params[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    D3D12_STATIC_SAMPLER_DESC sampler = {};
+    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler.MaxLOD = D3D12_FLOAT32_MAX;
+    sampler.ShaderRegister = 0;              // s0
+    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+    rsDesc.NumParameters = _countof( params );
+    rsDesc.pParameters = params;
+    rsDesc.NumStaticSamplers = 1;
+    rsDesc.pStaticSamplers = &sampler;
+    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
+    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (water)."; return false; }
+
+    ComPtr<ID3DBlob> rsBlob, rsErr;
+    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
+        if ( rsErr ) LogWarn() << "D3D12: water root signature serialize error: " << static_cast<const char*>( rsErr->GetBufferPointer() );
+        return false;
+    }
+    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
+        IID_PPV_ARGS( m_WaterRootSig.ReleaseAndGetAddressOf() ) ) ) )
+        return false;
+
+    UINT compileFlags = 0;
+#ifdef DEBUG_D3D11
+    compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+#endif
+    ComPtr<ID3DBlob> err;
+    if ( FAILED( D3DCompile( kWaterShaderSource, sizeof( kWaterShaderSource ) - 1, "WaterShader", nullptr, nullptr,
+        "VSMain", "vs_5_0", compileFlags, 0, m_WaterVsBlob.ReleaseAndGetAddressOf(), err.GetAddressOf() ) ) ) {
+        if ( err ) LogWarn() << "D3D12: water VS compile error: " << static_cast<const char*>( err->GetBufferPointer() );
+        return false;
+    }
+    if ( FAILED( D3DCompile( kWaterShaderSource, sizeof( kWaterShaderSource ) - 1, "WaterShader", nullptr, nullptr,
+        "PSMain", "ps_5_0", compileFlags, 0, m_WaterPsBlob.ReleaseAndGetAddressOf(), err.ReleaseAndGetAddressOf() ) ) ) {
+        if ( err ) LogWarn() << "D3D12: water PS compile error: " << static_cast<const char*>( err->GetBufferPointer() );
+        return false;
+    }
+
+    // Same packed 36-byte ExVertexStructGPU as the world mesh; here TexCoord2 (@28, half2) is the water
+    // UV-scroll delta (bound as TEXCOORD1), and DIFFUSE (@32) is the baked vertex tint.
+    const D3D12_INPUT_ELEMENT_DESC layout[] = {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 1, DXGI_FORMAT_R16G16_FLOAT,    0, 28, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "DIFFUSE",  0, DXGI_FORMAT_R8G8B8A8_UNORM,  0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    };
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+    pso.pRootSignature = m_WaterRootSig.Get();
+    pso.VS = { m_WaterVsBlob->GetBufferPointer(), m_WaterVsBlob->GetBufferSize() };
+    pso.PS = { m_WaterPsBlob->GetBufferPointer(), m_WaterPsBlob->GetBufferSize() };
+    pso.InputLayout = { layout, _countof( layout ) };
+    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pso.NumRenderTargets = 1;
+    pso.RTVFormats[0] = kBackBufferFormat;
+    pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+    pso.SampleDesc.Count = 1;
+    pso.SampleMask = UINT_MAX;
+
+    pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    pso.RasterizerState.DepthClipEnable = TRUE;
+
+    // Straight alpha blend over the opaque scene: src.rgb*a + dst.rgb*(1-a); keep dst alpha.
+    D3D12_RENDER_TARGET_BLEND_DESC& rt = pso.BlendState.RenderTarget[0];
+    rt.BlendEnable = TRUE;
+    rt.SrcBlend = D3D12_BLEND_SRC_ALPHA;
+    rt.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+    rt.BlendOp = D3D12_BLEND_OP_ADD;
+    rt.SrcBlendAlpha = D3D12_BLEND_ONE;
+    rt.DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+    rt.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+    // Reversed-Z: test GREATER_EQUAL, but DO NOT write depth — transparent water must not occlude, and
+    // overlapping water blends painter-style over whatever opaque depth is already there.
+    pso.DepthStencilState.DepthEnable = TRUE;
+    pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+    pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
+    pso.DepthStencilState.StencilEnable = FALSE;
+
+    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_WaterPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (water).";
+        return false;
+    }
+    return true;
+}
+
+void D3D12GraphicsEngine::DrawWaterSurfaces() {
+    if ( !m_FrameOpen || !m_WaterPSO || !m_WaterRootSig || !m_DepthBuffer || g_FrameWaterSurfaces.empty() )
+        return;
+
+    MeshInfo* wm = Engine::GAPI->GetWrappedWorldMesh();
+    if ( !wm || !wm->GetMeshVertexBuffer() || !wm->GetMeshIndexBuffer() ) { g_FrameWaterSurfaces.clear(); return; }
+    D3D12VertexBuffer* vb = D3D12VertexBuffer::From( wm->GetMeshVertexBuffer() );
+    D3D12VertexBuffer* ib = D3D12VertexBuffer::From( wm->GetMeshIndexBuffer() );
+    if ( !vb->GetResource() || !ib->GetResource() ) { g_FrameWaterSurfaces.clear(); return; }
+
+    // ViewProj — identical derivation to DrawWorldMesh (water verts are already world-space).
+    XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
+    Engine::GAPI->SetViewTransformXM( view );
+    Engine::GAPI->ResetWorldTransform();
+    const XMFLOAT4X4& viewM = Engine::GAPI->GetRendererState().TransformState.TransformView;
+    const XMFLOAT4X4& projM = Engine::GAPI->GetProjectionMatrix();
+    XMFLOAT4X4 viewProj;
+    XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
+
+    const FogConstants fog = MakeFogConstants();
+    // b2: { totalTime (ms, drives UV scroll), water alpha (translucency), pad, pad }.
+    const float water[4] = { Engine::GAPI->GetTotalTime(), 0.7f, 0.0f, 0.0f };
+
+    m_CmdList->SetPipelineState( m_WaterPSO.Get() );
+    m_CmdList->SetGraphicsRootSignature( m_WaterRootSig.Get() );
+    m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
+    m_CmdList->SetGraphicsRoot32BitConstants( 2, 8, &fog, 0 );
+    m_CmdList->SetGraphicsRoot32BitConstants( 3, 4, water, 0 );
+
+    D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
+    D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
+    m_CmdList->RSSetViewports( 1, &vp );
+    m_CmdList->RSSetScissorRects( 1, &sc );
+
+    D3D12_VERTEX_BUFFER_VIEW vbv = { vb->GetGpuVirtualAddress(), vb->GetSizeInBytes(), sizeof( ExVertexStructGPU ) };
+    D3D12_INDEX_BUFFER_VIEW  ibv = { ib->GetGpuVirtualAddress(), ib->GetSizeInBytes(), DXGI_FORMAT_R32_UINT };
+    m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
+    m_CmdList->IASetIndexBuffer( &ibv );
+    m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+
+    const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_WhiteSrvSlot );
+    unsigned int drawnIndices = 0;
+    for ( auto const& [tex, meshes] : g_FrameWaterSurfaces ) {
+        D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
+        if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+            if ( MyDirectDrawSurface7* surface = tex->GetSurface() ) {
+                if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
+                    D3D12Texture* d12 = D3D12Texture::From( gfx );
+                    if ( d12->HasSRV() ) srv = d12->GetSrvGpuHandle();
+                }
+            }
+        }
+        m_CmdList->SetGraphicsRootDescriptorTable( 1, srv );
+        for ( MeshInfo* mesh : meshes ) {
+            if ( !mesh || mesh->Indices.empty() ) continue;
+            m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mesh->Indices.size() ), 1,
+                mesh->BaseIndexLocation, 0, 0 );
+            drawnIndices += static_cast<unsigned int>( mesh->Indices.size() );
+        }
+    }
+
+    Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles += drawnIndices / 3;
+    g_FrameWaterSurfaces.clear();
+}
+
 bool D3D12GraphicsEngine::CreateSkeletalPipeline() {
     ID3D12Device* device = m_Device.GetDevice();
 
@@ -1207,7 +1548,7 @@ XRESULT D3D12GraphicsEngine::DrawVertexArray( ExVertexStruct* vertices, unsigned
     GothicRendererState& rs = Engine::GAPI->GetRendererState();
 
     // Emulate Gothic's per-draw fixed-function blend mode by selecting the matching PSO.
-    ID3D12PipelineState* pso = GetOrCreateUIPipeline( rs.BlendState );
+    ID3D12PipelineState* pso = GetOrCreateUIPipeline( rs.BlendState, rs.DepthState );
     if ( !pso ) return XR_SUCCESS;
 
     const UINT frame = m_FrameIndex;
@@ -1306,14 +1647,19 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
     // per-pixel distance fog of the geometry.
     DrawSky();
     DrawWorldMesh();
-    DrawSkeletalMeshes( Engine::GAPI->GetAnimatedSkeletalMeshVobs(), false);
+    {
+        auto _ = RecordGraphicsEvent(GE_NAME("Draw animated skeletal"));
+        DrawSkeletalMeshes( Engine::GAPI->GetAnimatedSkeletalMeshVobs(), false);
+    }
     DrawVobsInstanced();
+    // Water last: it is alpha-blended over the finished opaque scene (world + NPCs + VOBs).
+    DrawWaterSurfaces();
     return XR_SUCCESS;
 }
 
 XRESULT D3D12GraphicsEngine::DrawSky() {
     if ( !m_FrameOpen ) return XR_SUCCESS;
-
+    auto _ = RecordGraphicsEvent(GE_NAME("Draw sky"));
     // Forward-renderer sky MVP: fill the backbuffer with Gothic's atmosphere (fog) color. Runs at the
     // start of the world pass — after OnBeginFrame's black clear, before any 3D geometry — so wherever
     // no geometry draws (above the horizon) the sky shows this color, and the geometry shaders' distance
@@ -1344,6 +1690,8 @@ XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
     // The wrapped world index buffer is a single merged 32-bit buffer (bound R32_UINT, like D3D11).
     const UINT numIndices = ib->GetSizeInBytes() / sizeof( uint32_t );
     if ( numIndices == 0 ) return XR_SUCCESS;
+    
+    auto _ = RecordGraphicsEvent(GE_NAME("Draw World Mesh"));
 
     // Camera matrices — replicate the D3D11 DrawWorldMesh setup exactly so ViewProj is byte-identical:
     // world verts are already world-space (identity world), transform is proj*view (reversed-Z).
@@ -1380,6 +1728,10 @@ XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
     sections.clear();
     Engine::GAPI->CollectVisibleSections( sections, nullptr, true );
 
+    // Start the water collection fresh; water meshes are peeled out below and drawn in DrawWaterSurfaces
+    // after all opaque geometry (they share this same VB/IB, so no separate binding is needed there).
+    g_FrameWaterSurfaces.clear();
+
     const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_WhiteSrvSlot );
     zCTexture* boundTex = nullptr;
     unsigned int drawnIndices = 0;
@@ -1388,6 +1740,12 @@ XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
         if ( !section ) continue;
         for ( auto const& [meshKey, mesh] : section->WorldMeshes ) {
             if ( !mesh || mesh->Indices.empty() ) continue;
+
+            // Water is transparent — bucket it by texture for the later alpha-blended pass, skip here.
+            if ( meshKey.Info && meshKey.Info->MaterialType == MaterialInfo::MT_Water ) {
+                g_FrameWaterSurfaces[meshKey.Texture].push_back( mesh );
+                continue;
+            }
 
             zCTexture* tex = meshKey.Texture;
             if ( tex != boundTex ) {
@@ -1456,63 +1814,69 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
     const UINT frame = m_FrameIndex;
     unsigned int drawnTris = 0;
 
-    for ( auto const& [visualPtr, visual] : Engine::GAPI->GetStaticMeshVisuals() ) {
-        if ( !visual || visual->Instances.empty() ) continue;
+    {
+        auto _ = RecordGraphicsEvent(GE_NAME("Draw vobs"));
+        for ( auto const& [visualPtr, visual] : Engine::GAPI->GetStaticMeshVisuals() ) {
+            if ( !visual || visual->Instances.empty() ) continue;
 
-        const UINT numInstances = static_cast<UINT>( visual->Instances.size() );
-        const UINT instBytes = numInstances * static_cast<UINT>( sizeof( VobInstanceInfo ) );
+            const UINT numInstances = static_cast<UINT>( visual->Instances.size() );
+            const UINT instBytes = numInstances * static_cast<UINT>( sizeof( VobInstanceInfo ) );
 
-        if ( m_VobInstanceBufferOffset + instBytes > m_VobInstanceBufferCapacity ) {
-            if ( !m_VobInstanceOverflowLogged ) {
-                LogWarn() << "D3D12: VOB instance ring overflow (" << m_VobInstanceBufferCapacity
-                          << " bytes/frame). Some VOBs dropped this frame.";
-                m_VobInstanceOverflowLogged = true;
+            if ( m_VobInstanceBufferOffset + instBytes > m_VobInstanceBufferCapacity ) {
+                if ( !m_VobInstanceOverflowLogged ) {
+                    LogWarn() << "D3D12: VOB instance ring overflow (" << m_VobInstanceBufferCapacity
+                              << " bytes/frame). Some VOBs dropped this frame.";
+                    m_VobInstanceOverflowLogged = true;
+                }
+                break;
             }
-            break;
-        }
 
-        // Snapshot this visual's instances into the per-frame ring; bind as the slot-1 stream.
-        const UINT instOffset = m_VobInstanceBufferOffset;
-        memcpy( m_VobInstanceBufferPtr[frame] + instOffset, visual->Instances.data(), instBytes );
-        m_VobInstanceBufferOffset += instBytes;
-        const D3D12_VERTEX_BUFFER_VIEW instView = {
-            m_VobInstanceBuffer[frame]->GetGPUVirtualAddress() + instOffset, instBytes, sizeof( VobInstanceInfo ) };
+            // Snapshot this visual's instances into the per-frame ring; bind as the slot-1 stream.
+            const UINT instOffset = m_VobInstanceBufferOffset;
+            memcpy( m_VobInstanceBufferPtr[frame] + instOffset, visual->Instances.data(), instBytes );
+            m_VobInstanceBufferOffset += instBytes;
+            const D3D12_VERTEX_BUFFER_VIEW instView = {
+                m_VobInstanceBuffer[frame]->GetGPUVirtualAddress() + instOffset, instBytes, sizeof( VobInstanceInfo ) };
 
-        for ( auto const& [meshKey, meshList] : visual->MeshesByTexture ) {
-            zCTexture* tex = meshKey.Texture;
-            D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
-            if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
-                if ( MyDirectDrawSurface7* surface = tex->GetSurface() ) {
-                    if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
-                        D3D12Texture* d12 = D3D12Texture::From( gfx );
-                        if ( d12->HasSRV() ) srv = d12->GetSrvGpuHandle();
+            for ( auto const& [meshKey, meshList] : visual->MeshesByTexture ) {
+                zCTexture* tex = meshKey.Texture;
+                D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
+                if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                    if ( MyDirectDrawSurface7* surface = tex->GetSurface() ) {
+                        if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
+                            D3D12Texture* d12 = D3D12Texture::From( gfx );
+                            if ( d12->HasSRV() ) srv = d12->GetSrvGpuHandle();
+                        }
                     }
                 }
-            }
-            m_CmdList->SetGraphicsRootDescriptorTable( 1, srv );
+                m_CmdList->SetGraphicsRootDescriptorTable( 1, srv );
 
-            for ( MeshInfo* mi : meshList ) {
-                if ( !mi || mi->Indices.empty() || !mi->GetMeshVertexBuffer() || !mi->GetMeshIndexBuffer() )
-                    continue;
-                D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mi->GetMeshVertexBuffer() );
-                D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mi->GetMeshIndexBuffer() );
-                if ( !mvb->GetResource() || !mib->GetResource() ) continue;
+                for ( MeshInfo* mi : meshList ) {
+                    if ( !mi || mi->Indices.empty() || !mi->GetMeshVertexBuffer() || !mi->GetMeshIndexBuffer() )
+                        continue;
+                    D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mi->GetMeshVertexBuffer() );
+                    D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mi->GetMeshIndexBuffer() );
+                    if ( !mvb->GetResource() || !mib->GetResource() ) continue;
 
-                const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStructGPU ) };
-                const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, instView };
-                m_CmdList->IASetVertexBuffers( 0, 2, views );
+                    const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStructGPU ) };
+                    const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, instView };
+                    m_CmdList->IASetVertexBuffers( 0, 2, views );
 
-                // VOB sub-mesh index buffers are 16-bit (VERTEX_INDEX), unlike the 32-bit wrapped world mesh.
-                const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
-                m_CmdList->IASetIndexBuffer( &ibv );
+                    // VOB sub-mesh index buffers are 16-bit (VERTEX_INDEX), unlike the 32-bit wrapped world mesh.
+                    const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
+                    m_CmdList->IASetIndexBuffer( &ibv );
 
-                m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mi->Indices.size() ), numInstances, 0, 0, 0 );
-                drawnTris += ( static_cast<unsigned int>( mi->Indices.size() ) / 3 ) * numInstances;
+                    m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mi->Indices.size() ), numInstances, 0, 0, 0 );
+                    drawnTris += ( static_cast<unsigned int>( mi->Indices.size() ) / 3 ) * numInstances;
+                }
             }
         }
     }
 
-    DrawSkeletalMeshes( mobs, false );
+    {
+        auto _ = RecordGraphicsEvent(GE_NAME("Draw static skeletal"));
+        DrawSkeletalMeshes( mobs, false );
+    }
 
     // Clear the per-visual instance lists so next frame's CollectVisibleVobs starts fresh (mirrors D3D11).
     for ( auto const& [visualPtr, visual] : Engine::GAPI->GetStaticMeshVisuals() ) {

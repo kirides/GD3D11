@@ -86,6 +86,10 @@ public:
     /** Records the currently-bound diffuse texture for the next 2D draw (SetTexture -> BindToSlot). */
     void BindSurfaceTextures( int slot, GfxTexture* diffuse, GfxTexture* normalmap, unsigned int numTextures = 2 ) override;
 
+    /** Custom-font text (menu strings, subtitles). Builds glyph quads over the font atlas and routes
+        them through the validated 2D/UI path (VS_TransformedEx + FF-stage PS + alpha blend). */
+    void DrawString( std::string_view str, float x, float y, const zFont* font, zColor& fontColor ) override;
+
     INT2 GetResolution() override { return m_Resolution; }
     INT2 GetBackbufferResolution() override { return m_Resolution; }
 
@@ -102,12 +106,14 @@ public:
 
     void QueueSrvResourceForRelease( UINT slot, Microsoft::WRL::ComPtr<ID3D12Resource> resource );
 
-    /** Defers release of a GPU resource until the GPU is provably done with the frames that may
+    /*
+     Defers release of a GPU resource until the GPU is provably done with the frames that may
         reference it (drained in MoveToNextFrame after that frame's fence). Unlike
         QueueSrvResourceForRelease it does NOT free an SRV slot — used when a texture recreates its
-        backing resource (animated textures) but keeps its descriptor slot. */
+        backing resource (animated textures) but keeps its descriptor slot.
+        */
     void QueueResourceForRelease( Microsoft::WRL::ComPtr<ID3D12Resource> resource );
-
+    
 private:
     void ResizeOutputWindow( INT2 size );  // size the OS window + inform Gothic (zCView) of the mode
     bool CreateSwapChain( INT2 size );
@@ -117,7 +123,7 @@ private:
     bool CreateUIPipeline();          // root signature + inline shaders (compiled once); PSOs built per blend state
     // Returns a PSO for the 2D UI shaders matching the given Gothic blend state, creating + caching it on
     // first use. Emulates Gothic's per-draw fixed-function blend modes (opaque/alpha/additive/modulate/...).
-    ID3D12PipelineState* GetOrCreateUIPipeline( const GothicBlendStateInfo& blend );
+    ID3D12PipelineState* GetOrCreateUIPipeline( const GothicBlendStateInfo& blend, const GothicDepthBufferStateInfo& depth );
     bool CreateUIVertexBuffers();     // per-frame dynamic (upload-heap) vertex ring buffers
     bool CreateWhiteTexture();        // 1x1 white fallback (untextured colored 2D draws)
     bool CreateDepthBuffer( INT2 size ); // D32_FLOAT depth target + DSV (reversed-Z world rendering)
@@ -125,6 +131,8 @@ private:
     bool CreateVobPipeline();         // instanced VOB PSO (reuses the world root sig) + inline shaders
     bool CreateVobInstanceBuffers();  // per-frame dynamic (upload-heap) VOB instance ring buffers
     XRESULT DrawVobsInstanced();      // collect visible VOBs + draw each visual instanced (textured)
+    bool CreateWaterPipeline();       // alpha-blended water PSO + own root sig (adds b2 time) + inline shaders
+    void DrawWaterSurfaces() override; // draw water peeled out of the opaque world pass (scrolled UV, blended)
     bool CreateSkeletalPipeline();    // skeletal (animated NPC/monster) root sig + inline shaders + PSO
     bool CreateSkeletalConstantBuffers(); // per-frame dynamic (upload-heap) skeletal CB ring (instance + bones)
     XRESULT DrawSkeletalMeshes( std::vector<SkeletalVobInfo*>& vobs, bool asMorphMeshes = false );     // draw animated skeletal vobs (matrix-palette skinning)
@@ -171,8 +179,9 @@ private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_UIRootSig;
     Microsoft::WRL::ComPtr<ID3DBlob> m_UIVsBlob;                    // compiled once; reused for every blend PSO
     Microsoft::WRL::ComPtr<ID3DBlob> m_UIPsBlob;
-    // One PSO per distinct Gothic blend state (opaque/alpha/additive/modulate/...), built lazily.
-    std::unordered_map<uint32_t, Microsoft::WRL::ComPtr<ID3D12PipelineState>> m_UIPipelines;
+    // One PSO per distinct Gothic blend+depth state (opaque/alpha/additive/modulate/... x depth on/off),
+    // built lazily. Key = BlendKey | (DepthKey << 32).
+    std::unordered_map<uint64_t, Microsoft::WRL::ComPtr<ID3D12PipelineState>> m_UIPipelines;
 
     Microsoft::WRL::ComPtr<ID3D12Resource> m_UIVertexBuffer[kBackBufferCount]; // persistently-mapped upload ring
     uint8_t* m_UIVertexBufferPtr[kBackBufferCount] = {};
@@ -206,6 +215,15 @@ private:
     UINT m_VobInstanceBufferCapacity = 0;
     UINT m_VobInstanceBufferOffset = 0;                            // reset each OnBeginFrame
     bool m_VobInstanceOverflowLogged = false;
+
+    // Water (transparent world surfaces). Own root sig = the world layout + b2 = { time, alpha } (VS
+    // scrolls the UV by time; PS uses alpha for the blend). Alpha-blended PSO: depth-test ON, write OFF.
+    // Water geometry lives in the SAME wrapped world VB/IB (36-byte packed vertex, R32 indices); it is
+    // peeled out of DrawWorldMesh's opaque loop and drawn here after all opaque geometry.
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> m_WaterRootSig;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_WaterPSO;
+    Microsoft::WRL::ComPtr<ID3DBlob> m_WaterVsBlob;
+    Microsoft::WRL::ComPtr<ID3DBlob> m_WaterPsBlob;
 
     // Skeletal (animated NPC/monster) path — matrix-palette skinning. Own root sig (b0 ViewProj root
     // consts + b1 per-instance CBV + b2 bone-palette CBV + t0 SRV + s0). Per-frame CB ring holds each
