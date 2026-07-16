@@ -25,6 +25,7 @@ namespace {
     constexpr DXGI_FORMAT kBackBufferFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
     constexpr UINT kSrvHeapCapacity = 65536;                  // texture SRVs (tier-1 max is 1M; bump-allocated)
     constexpr UINT kUIVertexBufferBytes = 16 * 1024 * 1024;   // per-frame 2D vertex ring (~280k ExVertex)
+    constexpr UINT kVobInstanceBufferBytes = 8 * 1024 * 1024; // per-frame VOB instance ring (~58k instances @144B)
 
     // D3D12SerializeRootSignature is exported from the already-loaded d3d12.dll (we don't link d3d12.lib).
     typedef HRESULT( WINAPI* PFN_SERIALIZE_ROOT_SIG )( const D3D12_ROOT_SIGNATURE_DESC*, D3D_ROOT_SIGNATURE_VERSION, ID3DBlob**, ID3DBlob** );
@@ -160,6 +161,44 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
 }
 )";
 
+    // Phase-2 instanced VOB shader. Slot 0 = packed vertex (Position@0, TexCoord0@20); slot 1 =
+    // per-instance data (world matrix as 4 rows + instance color) from VobInstanceInfo. Mirrors
+    // VS_ExInstancedObj.hlsl's core: worldPos = mul(pos, InstanceWorldMatrix); clip = mul(worldPos,
+    // ViewProj). PS samples the diffuse, alpha-tests, modulates by the per-instance (ground-light)
+    // color. Wind / player-influence / motion-vectors / normalmap are skipped for first-light.
+    constexpr char kVobShaderSource[] = R"(
+cbuffer WorldCB : register(b0) { float4x4 ViewProj; };   // default column-major packing (see world shader)
+
+Texture2D    tx  : register(t0);
+SamplerState smp : register(s0);
+
+struct VS_IN
+{
+    float3   pos     : POSITION;
+    float2   uv      : TEXCOORD0;
+    float4x4 iworld  : INSTANCE_WORLD_MATRIX;   // 4 per-instance rows (semantic index 0..3)
+    float4   icolor  : INSTANCE_COLOR;
+};
+struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : TEXCOORD1; };
+
+VS_OUT VSMain( VS_IN i )
+{
+    VS_OUT o;
+    float3 worldPos = mul( float4( i.pos, 1.0 ), i.iworld ).xyz;
+    o.clip = mul( float4( worldPos, 1.0 ), ViewProj );
+    o.uv  = i.uv;
+    o.col = i.icolor;
+    return o;
+}
+
+float4 PSMain( VS_OUT i ) : SV_TARGET
+{
+    float4 t = tx.Sample( smp, i.uv );
+    clip( t.a - 0.5 );
+    return float4( t.rgb * i.col.bgr, 1.0 );
+}
+)";
+
     D3D12_RESOURCE_BARRIER TransitionBarrier( ID3D12Resource* res, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after ) {
         D3D12_RESOURCE_BARRIER b = {};
         b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -207,7 +246,11 @@ XRESULT D3D12GraphicsEngine::Init() {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the world-mesh pipeline.";
         return XR_FAILED;
     }
-    LogInfo() << "D3D12GraphicsEngine initialized (device + 2D + world pipeline up). Swapchain is created once the game window is set.";
+    if ( !CreateVobPipeline() ) {
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the VOB pipeline.";
+        return XR_FAILED;
+    }
+    LogInfo() << "D3D12GraphicsEngine initialized (device + 2D + world + VOB pipelines up). Swapchain is created once the game window is set.";
     return XR_SUCCESS;
 }
 
@@ -397,7 +440,7 @@ bool D3D12GraphicsEngine::CreateUIPipeline() {
 
     // --- Compile inline shaders ---
     UINT compileFlags = 0;
-#ifdef _DEBUG
+#ifdef DEBUG_D3D11
     compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
 #endif
     ComPtr<ID3DBlob> err;
@@ -664,7 +707,7 @@ bool D3D12GraphicsEngine::CreateWorldPipeline() {
         return false;
 
     UINT compileFlags = 0;
-#ifdef _DEBUG
+#ifdef DEBUG_D3D11
     compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
 #endif
     ComPtr<ID3DBlob> err;
@@ -721,6 +764,93 @@ bool D3D12GraphicsEngine::CreateWorldPipeline() {
         LogWarn() << "D3D12: CreateGraphicsPipelineState failed (world).";
         return false;
     }
+    return true;
+}
+
+bool D3D12GraphicsEngine::CreateVobPipeline() {
+    ID3D12Device* device = m_Device.GetDevice();
+
+    UINT compileFlags = 0;
+#ifdef DEBUG_D3D11
+    compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+#endif
+    ComPtr<ID3DBlob> err;
+    if ( FAILED( D3DCompile( kVobShaderSource, sizeof( kVobShaderSource ) - 1, "VobShader", nullptr, nullptr,
+        "VSMain", "vs_5_0", compileFlags, 0, m_VobVsBlob.ReleaseAndGetAddressOf(), err.GetAddressOf() ) ) ) {
+        if ( err ) LogWarn() << "D3D12: VOB VS compile error: " << static_cast<const char*>( err->GetBufferPointer() );
+        return false;
+    }
+    if ( FAILED( D3DCompile( kVobShaderSource, sizeof( kVobShaderSource ) - 1, "VobShader", nullptr, nullptr,
+        "PSMain", "ps_5_0", compileFlags, 0, m_VobPsBlob.ReleaseAndGetAddressOf(), err.ReleaseAndGetAddressOf() ) ) ) {
+        if ( err ) LogWarn() << "D3D12: VOB PS compile error: " << static_cast<const char*>( err->GetBufferPointer() );
+        return false;
+    }
+
+    // Slot 0 = packed 36-byte ExVertexStructGPU (Position@0, TexCoord0@20); slot 1 = per-instance data
+    // read from VobInstanceInfo (stride 144): world matrix rows @0/16/32/48, instance color @128.
+    const D3D12_INPUT_ELEMENT_DESC layout[] = {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "INSTANCE_WORLD_MATRIX", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,   0, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "INSTANCE_WORLD_MATRIX", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  16, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "INSTANCE_WORLD_MATRIX", 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  32, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "INSTANCE_WORLD_MATRIX", 3, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  48, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "INSTANCE_COLOR",        0, DXGI_FORMAT_R8G8B8A8_UNORM,     1, 128, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+    };
+
+    // Reuse the world root signature (b0 ViewProj + t0 SRV + static sampler s0 — identical needs).
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+    pso.pRootSignature = m_WorldRootSig.Get();
+    pso.VS = { m_VobVsBlob->GetBufferPointer(), m_VobVsBlob->GetBufferSize() };
+    pso.PS = { m_VobPsBlob->GetBufferPointer(), m_VobPsBlob->GetBufferSize() };
+    pso.InputLayout = { layout, _countof( layout ) };
+    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pso.NumRenderTargets = 1;
+    pso.RTVFormats[0] = kBackBufferFormat;
+    pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+    pso.SampleDesc.Count = 1;
+    pso.SampleMask = UINT_MAX;
+
+    pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;   // first-light; VOB winding varies
+    pso.RasterizerState.DepthClipEnable = TRUE;
+    pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    pso.DepthStencilState.DepthEnable = TRUE;
+    pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;  // reversed-Z
+    pso.DepthStencilState.StencilEnable = FALSE;
+
+    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_VobPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB).";
+        return false;
+    }
+    return CreateVobInstanceBuffers();
+}
+
+bool D3D12GraphicsEngine::CreateVobInstanceBuffers() {
+    ID3D12Device* device = m_Device.GetDevice();
+    D3D12_HEAP_PROPERTIES uploadHeap = {};
+    uploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
+
+    D3D12_RESOURCE_DESC bufDesc = {};
+    bufDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bufDesc.Width = kVobInstanceBufferBytes;
+    bufDesc.Height = 1;
+    bufDesc.DepthOrArraySize = 1;
+    bufDesc.MipLevels = 1;
+    bufDesc.Format = DXGI_FORMAT_UNKNOWN;
+    bufDesc.SampleDesc.Count = 1;
+    bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+    for ( UINT i = 0; i < kBackBufferCount; ++i ) {
+        if ( FAILED( device->CreateCommittedResource( &uploadHeap, D3D12_HEAP_FLAG_NONE, &bufDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS( m_VobInstanceBuffer[i].ReleaseAndGetAddressOf() ) ) ) )
+            return false;
+        D3D12_RANGE noRead = { 0, 0 };
+        if ( FAILED( m_VobInstanceBuffer[i]->Map( 0, &noRead, reinterpret_cast<void**>( &m_VobInstanceBufferPtr[i] ) ) ) )
+            return false;
+    }
+    m_VobInstanceBufferCapacity = kVobInstanceBufferBytes;
     return true;
 }
 
@@ -839,6 +969,7 @@ XRESULT D3D12GraphicsEngine::DrawVertexBufferFF( GfxVertexBuffer* vb, unsigned i
 XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
     // zCBspNodeRender hook — Gothic's BSP traversal is replaced; we draw the world ourselves.
     DrawWorldMesh();
+    DrawVobsInstanced();
     return XR_SUCCESS;
 }
 
@@ -921,6 +1052,110 @@ XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
     }
 
     Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles += drawnIndices / 3;
+    return XR_SUCCESS;
+}
+
+XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
+    if ( !m_FrameOpen || !m_VobPSO || !m_WorldRootSig || !m_DepthBuffer )
+        return XR_SUCCESS;
+
+    GothicRendererState& rs = Engine::GAPI->GetRendererState();
+    if ( !rs.RendererSettings.DrawVOBs )
+        return XR_SUCCESS;
+
+    // Collect visible VOBs — this fills each visual's Instances list (world matrices grouped by
+    // visual). COLLECT_ALL_MUTATE + CullAll are the defaults; mirrors D3D11's DrawVOBsInstanced.
+    static std::vector<VobInfo*> vobs;
+    static std::vector<VobLightInfo*> lights;
+    static std::vector<SkeletalVobInfo*> mobs;
+    vobs.clear(); lights.clear(); mobs.clear();
+    Engine::GAPI->CollectVisibleVobs( vobs, lights, mobs );
+
+    // Reversed-Z ViewProj (recomputed; identical derivation to DrawWorldMesh).
+    XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
+    Engine::GAPI->SetViewTransformXM( view );
+    Engine::GAPI->ResetWorldTransform();
+    const XMFLOAT4X4& viewM = rs.TransformState.TransformView;
+    const XMFLOAT4X4& projM = Engine::GAPI->GetProjectionMatrix();
+    XMFLOAT4X4 viewProj;
+    XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
+
+    m_CmdList->SetPipelineState( m_VobPSO.Get() );
+    m_CmdList->SetGraphicsRootSignature( m_WorldRootSig.Get() );
+    m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
+
+    D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
+    D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
+    m_CmdList->RSSetViewports( 1, &vp );
+    m_CmdList->RSSetScissorRects( 1, &sc );
+    m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+
+    const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_WhiteSrvSlot );
+    const UINT frame = m_FrameIndex;
+    unsigned int drawnTris = 0;
+
+    for ( auto const& [visualPtr, visual] : Engine::GAPI->GetStaticMeshVisuals() ) {
+        if ( !visual || visual->Instances.empty() ) continue;
+
+        const UINT numInstances = static_cast<UINT>( visual->Instances.size() );
+        const UINT instBytes = numInstances * static_cast<UINT>( sizeof( VobInstanceInfo ) );
+
+        if ( m_VobInstanceBufferOffset + instBytes > m_VobInstanceBufferCapacity ) {
+            if ( !m_VobInstanceOverflowLogged ) {
+                LogWarn() << "D3D12: VOB instance ring overflow (" << m_VobInstanceBufferCapacity
+                          << " bytes/frame). Some VOBs dropped this frame.";
+                m_VobInstanceOverflowLogged = true;
+            }
+            break;
+        }
+
+        // Snapshot this visual's instances into the per-frame ring; bind as the slot-1 stream.
+        const UINT instOffset = m_VobInstanceBufferOffset;
+        memcpy( m_VobInstanceBufferPtr[frame] + instOffset, visual->Instances.data(), instBytes );
+        m_VobInstanceBufferOffset += instBytes;
+        const D3D12_VERTEX_BUFFER_VIEW instView = {
+            m_VobInstanceBuffer[frame]->GetGPUVirtualAddress() + instOffset, instBytes, sizeof( VobInstanceInfo ) };
+
+        for ( auto const& [meshKey, meshList] : visual->MeshesByTexture ) {
+            zCTexture* tex = meshKey.Texture;
+            D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
+            if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                if ( MyDirectDrawSurface7* surface = tex->GetSurface() ) {
+                    if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
+                        D3D12Texture* d12 = D3D12Texture::From( gfx );
+                        if ( d12->HasSRV() ) srv = d12->GetSrvGpuHandle();
+                    }
+                }
+            }
+            m_CmdList->SetGraphicsRootDescriptorTable( 1, srv );
+
+            for ( MeshInfo* mi : meshList ) {
+                if ( !mi || mi->Indices.empty() || !mi->GetMeshVertexBuffer() || !mi->GetMeshIndexBuffer() )
+                    continue;
+                D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mi->GetMeshVertexBuffer() );
+                D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mi->GetMeshIndexBuffer() );
+                if ( !mvb->GetResource() || !mib->GetResource() ) continue;
+
+                const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStructGPU ) };
+                const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, instView };
+                m_CmdList->IASetVertexBuffers( 0, 2, views );
+
+                // VOB sub-mesh index buffers are 16-bit (VERTEX_INDEX), unlike the 32-bit wrapped world mesh.
+                const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
+                m_CmdList->IASetIndexBuffer( &ibv );
+
+                m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mi->Indices.size() ), numInstances, 0, 0, 0 );
+                drawnTris += ( static_cast<unsigned int>( mi->Indices.size() ) / 3 ) * numInstances;
+            }
+        }
+    }
+
+    // Clear the per-visual instance lists so next frame's CollectVisibleVobs starts fresh (mirrors D3D11).
+    for ( auto const& [visualPtr, visual] : Engine::GAPI->GetStaticMeshVisuals() ) {
+        if ( visual ) visual->Instances.clear();
+    }
+
+    rs.RendererInfo.FrameDrawnTriangles += drawnTris;
     return XR_SUCCESS;
 }
 
@@ -1107,9 +1342,11 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
     ID3D12DescriptorHeap* heaps[] = { m_SrvHeap.Get() };
     m_CmdList->SetDescriptorHeaps( 1, heaps );
 
-    // Reset the per-frame 2D vertex ring + default the viewport to the full backbuffer.
+    // Reset the per-frame 2D vertex ring + VOB instance ring + default the viewport to the full backbuffer.
     m_UIVertexBufferOffset = 0;
     m_UIOverflowLogged = false;
+    m_VobInstanceBufferOffset = 0;
+    m_VobInstanceOverflowLogged = false;
     m_CurrentTexture = nullptr;
     m_CurrentViewport = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
     m_CurrentScissor = { 0, 0, m_Resolution.x, m_Resolution.y };

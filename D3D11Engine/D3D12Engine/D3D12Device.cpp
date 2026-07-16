@@ -91,7 +91,7 @@ namespace {
         if ( !CreateDXGIFactory1Func && !CreateDXGIFactory2Func ) return false;
 
         UINT flags = 0;
-#ifdef _DEBUG
+#ifdef DEBUG_D3D11
         flags |= DXGI_CREATE_FACTORY_DEBUG;
 #endif
         HRESULT hr = CreateDXGIFactory2Func
@@ -203,7 +203,7 @@ bool D3D12Device::Init() {
         return false;
     }
 
-#ifdef _DEBUG
+#ifdef DEBUG_D3D11
     // Enable the debug layer before device creation when available (best-effort).
     if ( HMODULE d3d12 = GetModuleHandleA( "d3d12.dll" ) ) {
         auto getDebug = reinterpret_cast<PFN_D3D12_GET_DEBUG_INTERFACE>( GetProcAddress( d3d12, "D3D12GetDebugInterface" ) );

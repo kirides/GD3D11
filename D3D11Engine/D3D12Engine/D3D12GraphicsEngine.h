@@ -103,7 +103,10 @@ private:
     bool CreateUIVertexBuffers();     // per-frame dynamic (upload-heap) vertex ring buffers
     bool CreateWhiteTexture();        // 1x1 white fallback (untextured colored 2D draws)
     bool CreateDepthBuffer( INT2 size ); // D32_FLOAT depth target + DSV (reversed-Z world rendering)
-    bool CreateWorldPipeline();       // root sig + inline shaders + PSO for the flat world-mesh pass
+    bool CreateWorldPipeline();       // root sig + inline shaders + PSO for the textured world-mesh pass
+    bool CreateVobPipeline();         // instanced VOB PSO (reuses the world root sig) + inline shaders
+    bool CreateVobInstanceBuffers();  // per-frame dynamic (upload-heap) VOB instance ring buffers
+    XRESULT DrawVobsInstanced();      // collect visible VOBs + draw each visual instanced (textured)
     bool AcquireBackBufferRTVs();     // (re)fetch swapchain buffers + build their RTVs
     bool ResizeSwapChain( INT2 size );
     void WaitForGpuIdle();            // full CPU/GPU flush (used on resize / teardown)
@@ -167,10 +170,20 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource>       m_DepthBuffer;     // D32_FLOAT, reversed-Z
     UINT m_DsvDescriptorSize = 0;
 
-    Microsoft::WRL::ComPtr<ID3D12RootSignature> m_WorldRootSig;     // b0 = ViewProj (16 root constants, VS)
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> m_WorldRootSig;     // b0 = ViewProj (16 root constants, VS); t0 SRV; s0
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_WorldPSO;
     Microsoft::WRL::ComPtr<ID3DBlob> m_WorldVsBlob;
     Microsoft::WRL::ComPtr<ID3DBlob> m_WorldPsBlob;
+
+    // Instanced static VOBs (reuses m_WorldRootSig; slot 0 = packed vertex, slot 1 = per-instance data).
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_VobPSO;
+    Microsoft::WRL::ComPtr<ID3DBlob> m_VobVsBlob;
+    Microsoft::WRL::ComPtr<ID3DBlob> m_VobPsBlob;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_VobInstanceBuffer[kBackBufferCount]; // persistently-mapped upload ring
+    uint8_t* m_VobInstanceBufferPtr[kBackBufferCount] = {};
+    UINT m_VobInstanceBufferCapacity = 0;
+    UINT m_VobInstanceBufferOffset = 0;                            // reset each OnBeginFrame
+    bool m_VobInstanceOverflowLogged = false;
 
     std::unique_ptr<D3D12LineRenderer> m_LineRenderer;
 };
