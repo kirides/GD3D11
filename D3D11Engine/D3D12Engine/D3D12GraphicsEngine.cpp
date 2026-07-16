@@ -6,6 +6,8 @@
 #include "../Engine.h"
 #include "../GothicAPI.h"
 #include "../WorldObjects.h"
+#include "../zCTexture.h"
+#include "../D3D7/MyDirectDrawSurface7.h"
 #include "../zCView.h"
 #include "../VertexTypes.h"
 #include "../ImGuiShim.h"
@@ -122,35 +124,39 @@ float4 PSMain( VS_OUT i ) : SV_TARGET {
 }
 )";
 
-    // Phase-2 first-light world shader. The wrapped world mesh is the packed 36-byte ExVertexStructGPU;
-    // we bind ONLY its Position (float3 at offset 0, stride 36) and ignore the packed normal/tangent/uv.
-    // World-mesh verts are already in world space, so the transform is just ViewProj (identity world).
-    // Matches the D3D11 path's math: mul(float4(pos,1), ViewProj), reversed-Z projection. No textures /
-    // no G-buffer: the PS derives a face normal from screen-space position derivatives for a legible
-    // flat shade, so geometry is visible without needing the vertex normal stream decoded yet.
+    // Phase-2 world shader (textured). The wrapped world mesh is the packed 36-byte ExVertexStructGPU;
+    // we bind Position (float3 @0), TexCoord0 (float2 @20) and Color (R8G8B8A8 @32), ignoring the packed
+    // normal/tangent/uv2 for now. World-mesh verts are already in world space, so the transform is just
+    // ViewProj (identity world) — matches D3D11 VS_ExPacked: mul(float4(pos,1), ViewProj), reversed-Z.
+    // PS samples the diffuse texture, modulates by the baked vertex color (Gothic packs a DWORD read as
+    // R8G8B8A8 -> .bgr recovers RGB), and does a fixed alpha-test cutout (foliage/fences). No G-buffer /
+    // no deferred lighting yet: the baked vertex color stands in for lighting.
     constexpr char kWorldShaderSource[] = R"(
 // Default (column-major) matrix packing — matches D3D11's VS_ExPacked, which reads the same
 // row-major XMFLOAT4X4 bytes we upload here, so mul(float4(pos,1), ViewProj) is byte-for-byte identical.
 cbuffer WorldCB : register(b0) { float4x4 ViewProj; };
 
-struct VS_IN  { float3 pos : POSITION; };
-struct VS_OUT { float4 clip : SV_POSITION; float3 wpos : TEXCOORD0; };
+Texture2D    tx  : register(t0);
+SamplerState smp : register(s0);
+
+struct VS_IN  { float3 pos : POSITION; float2 uv : TEXCOORD0; float4 col : DIFFUSE; };
+struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : TEXCOORD1; };
 
 VS_OUT VSMain( VS_IN i )
 {
     VS_OUT o;
     o.clip = mul( float4( i.pos, 1.0 ), ViewProj );
-    o.wpos = i.pos;
+    o.uv  = i.uv;
+    o.col = i.col;
     return o;
 }
 
 float4 PSMain( VS_OUT i ) : SV_TARGET
 {
-    float3 n = normalize( cross( ddx( i.wpos ), ddy( i.wpos ) ) );
-    float3 L = normalize( float3( 0.3, 0.9, 0.4 ) );
-    float ndl = saturate( abs( dot( n, L ) ) );   // abs: winding-agnostic, both faces lit
-    float shade = ndl * 0.75 + 0.25;
-    return float4( shade.xxx, 1.0 );
+    float4 t = tx.Sample( smp, i.uv );
+    clip( t.a - 0.5 );                    // fixed alpha-test cutout (opaque textures have a==1 -> kept)
+    float3 rgb = t.rgb * i.col.bgr;       // baked vertex lighting; .bgr recovers Gothic's RGB
+    return float4( rgb, 1.0 );
 }
 )";
 
@@ -613,16 +619,36 @@ bool D3D12GraphicsEngine::CreateDepthBuffer( INT2 size ) {
 bool D3D12GraphicsEngine::CreateWorldPipeline() {
     ID3D12Device* device = m_Device.GetDevice();
 
-    // Root signature: b0 = ViewProj (16 root 32-bit constants, VS only). No textures (flat first-light).
-    D3D12_ROOT_PARAMETER param = {};
-    param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    param.Constants.ShaderRegister = 0;   // b0
-    param.Constants.Num32BitValues = 16;  // float4x4
-    param.ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    // Root signature: b0 = ViewProj (16 root 32-bit constants, VS); t0 = diffuse SRV table (PS);
+    // static linear-wrap sampler s0 (PS).
+    D3D12_DESCRIPTOR_RANGE srvRange = {};
+    srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    srvRange.NumDescriptors = 1;
+    srvRange.BaseShaderRegister = 0;         // t0
+    srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    D3D12_ROOT_PARAMETER params[2] = {};
+    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[0].Constants.ShaderRegister = 0;   // b0
+    params[0].Constants.Num32BitValues = 16;  // float4x4
+    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[1].DescriptorTable.NumDescriptorRanges = 1;
+    params[1].DescriptorTable.pDescriptorRanges = &srvRange;
+    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_STATIC_SAMPLER_DESC sampler = {};
+    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler.MaxLOD = D3D12_FLOAT32_MAX;
+    sampler.ShaderRegister = 0;              // s0
+    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-    rsDesc.NumParameters = 1;
-    rsDesc.pParameters = &param;
+    rsDesc.NumParameters = 2;
+    rsDesc.pParameters = params;
+    rsDesc.NumStaticSamplers = 1;
+    rsDesc.pStaticSamplers = &sampler;
     rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
     PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
@@ -653,10 +679,17 @@ bool D3D12GraphicsEngine::CreateWorldPipeline() {
         return false;
     }
 
-    // Bind only Position from the packed 36-byte ExVertexStructGPU (offset 0). The rest of the packed
-    // stream (normal/tangent/uv) is ignored for the flat pass — the stride (set on the VBV) skips it.
+    // Bind Position/TexCoord0/Color from the packed 36-byte ExVertexStructGPU via explicit offsets;
+    // the packed normal (@12), tangent (@16) and uv2 (@28) are skipped (not read by this PS yet).
+    //   Position float3   @ 0
+    //   [Normal  i16x2    @12]   [Tangent R10G10B10A2 @16]  (skipped)
+    //   TexCoord float2   @20
+    //   [TexCoord2 half2  @28]                              (skipped)
+    //   Color    R8G8B8A8 @32
     const D3D12_INPUT_ELEMENT_DESC layout[] = {
-        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "DIFFUSE",  0, DXGI_FORMAT_R8G8B8A8_UNORM,  0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
     };
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
@@ -850,10 +883,44 @@ XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
     m_CmdList->IASetIndexBuffer( &ibv );
     m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
-    // First-light: draw the entire merged world mesh in one call (no per-section culling yet).
-    m_CmdList->DrawIndexedInstanced( numIndices, 1, 0, 0, 0 );
+    // Per-material submission: frustum-cull to the visible sections, then draw each material's index
+    // range into the shared buffer (BaseIndexLocation), binding its diffuse texture. Mirrors D3D11's
+    // opaque loop minus the water/portal/transparency bucketing + material-CB pooling (later steps).
+    static std::vector<WorldMeshSectionInfo*> sections;
+    sections.clear();
+    Engine::GAPI->CollectVisibleSections( sections, nullptr, true );
 
-    Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles += numIndices / 3;
+    const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_WhiteSrvSlot );
+    zCTexture* boundTex = nullptr;
+    unsigned int drawnIndices = 0;
+
+    for ( WorldMeshSectionInfo* section : sections ) {
+        if ( !section ) continue;
+        for ( auto const& [meshKey, mesh] : section->WorldMeshes ) {
+            if ( !mesh || mesh->Indices.empty() ) continue;
+
+            zCTexture* tex = meshKey.Texture;
+            if ( tex != boundTex ) {
+                D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
+                if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                    if ( MyDirectDrawSurface7* surface = tex->GetSurface() ) {
+                        if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
+                            D3D12Texture* d12 = D3D12Texture::From( gfx );
+                            if ( d12->HasSRV() ) srv = d12->GetSrvGpuHandle();
+                        }
+                    }
+                }
+                m_CmdList->SetGraphicsRootDescriptorTable( 1, srv );
+                boundTex = tex;
+            }
+
+            m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mesh->Indices.size() ), 1,
+                mesh->BaseIndexLocation, 0, 0 );
+            drawnIndices += static_cast<unsigned int>( mesh->Indices.size() );
+        }
+    }
+
+    Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles += drawnIndices / 3;
     return XR_SUCCESS;
 }
 
