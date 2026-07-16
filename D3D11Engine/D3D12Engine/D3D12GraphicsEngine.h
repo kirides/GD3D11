@@ -107,6 +107,9 @@ private:
     bool CreateVobPipeline();         // instanced VOB PSO (reuses the world root sig) + inline shaders
     bool CreateVobInstanceBuffers();  // per-frame dynamic (upload-heap) VOB instance ring buffers
     XRESULT DrawVobsInstanced();      // collect visible VOBs + draw each visual instanced (textured)
+    bool CreateSkeletalPipeline();    // skeletal (animated NPC/monster) root sig + inline shaders + PSO
+    bool CreateSkeletalConstantBuffers(); // per-frame dynamic (upload-heap) skeletal CB ring (instance + bones)
+    XRESULT DrawSkeletalMeshes();     // draw animated skeletal vobs (matrix-palette skinning)
     bool AcquireBackBufferRTVs();     // (re)fetch swapchain buffers + build their RTVs
     bool ResizeSwapChain( INT2 size );
     void WaitForGpuIdle();            // full CPU/GPU flush (used on resize / teardown)
@@ -184,6 +187,19 @@ private:
     UINT m_VobInstanceBufferCapacity = 0;
     UINT m_VobInstanceBufferOffset = 0;                            // reset each OnBeginFrame
     bool m_VobInstanceOverflowLogged = false;
+
+    // Skeletal (animated NPC/monster) path — matrix-palette skinning. Own root sig (b0 ViewProj root
+    // consts + b1 per-instance CBV + b2 bone-palette CBV + t0 SRV + s0). Per-frame CB ring holds each
+    // vob's instance CB + bone matrices (root CBVs into it, 256-byte aligned).
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> m_SkeletalRootSig;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_SkeletalPSO;
+    Microsoft::WRL::ComPtr<ID3DBlob> m_SkeletalVsBlob;
+    Microsoft::WRL::ComPtr<ID3DBlob> m_SkeletalPsBlob;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_SkeletalCBBuffer[kBackBufferCount]; // persistently-mapped upload ring
+    uint8_t* m_SkeletalCBBufferPtr[kBackBufferCount] = {};
+    UINT m_SkeletalCBBufferCapacity = 0;
+    UINT m_SkeletalCBBufferOffset = 0;                             // reset each OnBeginFrame
+    bool m_SkeletalCBOverflowLogged = false;
 
     std::unique_ptr<D3D12LineRenderer> m_LineRenderer;
 };

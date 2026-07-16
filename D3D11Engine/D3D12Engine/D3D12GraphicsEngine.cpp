@@ -9,6 +9,9 @@
 #include "../zCTexture.h"
 #include "../D3D7/MyDirectDrawSurface7.h"
 #include "../zCView.h"
+#include "../zCModel.h"
+#include "../zCMaterial.h"
+#include "../zCVob.h"
 #include "../VertexTypes.h"
 #include "../ImGuiShim.h"
 
@@ -199,6 +202,79 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
 }
 )";
 
+    constexpr UINT kSkeletalConstantBufferBytes = 8 * 1024 * 1024; // per-frame skeletal CB ring (instance + bone palettes)
+    constexpr UINT kSkeletalMaxBones = 96;                         // NUM_MAX_BONES — matches every skeletal HLSL
+
+    // Per-instance skeletal constant buffer (register b1). A minimal subset of the D3D11
+    // VS_ExConstantBuffer_PerInstanceSkeletal — just what the first-light skeletal shader reads
+    // (world matrix + model color + fatness). PrevWorld / motion vectors are a later step.
+    struct SkeletalInstanceCB {
+        DirectX::XMFLOAT4X4 World;
+        DirectX::XMFLOAT4   ModelColor;
+        float               Fatness;
+        float               Pad[3];
+    };
+    static_assert( sizeof( SkeletalInstanceCB ) == 96, "SkeletalInstanceCB must stay 16-byte-aligned" );
+
+    // Phase-2 skeletal (animated) mesh shader — NPCs, monsters, animated MOBs. Matrix-palette skinning:
+    // each vertex stores its position baked into up to 4 influencing bones' local spaces (half4 each),
+    // plus per-influence bone index + weight, so skinnedPos = sum_i weight_i * mul(pos_i, Bones[idx_i]).
+    // Mirrors VS_ExSkeletal.hlsl's ApplySkinningCurrent core (minus motion vectors / view-space normal /
+    // prev-frame bones). b0 = ViewProj (root consts), b1 = per-instance (world + color + fatness), b2 =
+    // bone-matrix palette (<=96). Default column-major packing: matrices are uploaded as row-major
+    // XMFLOAT4X4 and read the same way the D3D11 skeletal VS does, so mul() is byte-for-byte identical.
+    constexpr char kSkeletalShaderSource[] = R"(
+cbuffer FrameCB    : register(b0) { float4x4 ViewProj; };
+cbuffer InstanceCB : register(b1) { float4x4 M_World; float4 ModelColor; float Fatness; float3 _pad; };
+cbuffer BonesCB    : register(b2) { float4x4 Bones[96]; };
+
+Texture2D    tx  : register(t0);
+SamplerState smp : register(s0);
+
+struct VS_IN
+{
+    float4 pos[4]         : POSITION;    // 4 per-bone-space positions (half4)
+    float3 normal         : NORMAL;
+    float3 bindPoseNormal : TEXCOORD0;   // unused (view-space normal is a later step)
+    float2 uv             : TEXCOORD1;
+    uint4  boneIndices    : BONEIDS;
+    float4 weights        : WEIGHTS;
+};
+struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : TEXCOORD1; };
+
+VS_OUT VSMain( VS_IN i )
+{
+    float3 skinnedPos    = float3( 0, 0, 0 );
+    float3 skinnedNormal = float3( 0, 0, 0 );
+    [unroll]
+    for ( int b = 0; b < 4; ++b )
+    {
+        float4x4 bone = Bones[i.boneIndices[b]];
+        float    w    = i.weights[b];
+        skinnedPos    += w * mul( float4( i.pos[b].xyz, 1.0 ), bone ).xyz;
+        skinnedNormal += w * mul( i.normal, (float3x3)bone );
+    }
+    float3 worldPos = mul( float4( skinnedPos + Fatness * skinnedNormal, 1.0 ), M_World ).xyz;
+
+    VS_OUT o;
+    o.clip = mul( float4( worldPos, 1.0 ), ViewProj );
+    o.uv  = i.uv;
+    o.col = ModelColor;
+    return o;
+}
+
+float4 PSMain( VS_OUT i ) : SV_TARGET
+{
+    float4 t = tx.Sample( smp, i.uv );
+    clip( t.a - 0.5 );
+    return float4( t.rgb * i.col.rgb, 1.0 );   // ModelColor is an RGBA float (white for first-light)
+}
+)";
+
+    // Round a ring offset up so the next allocation starts on a 256-byte boundary (D3D12 requires root
+    // CBV addresses to be 256-byte aligned).
+    UINT AlignCB( UINT offset ) { return ( offset + 255u ) & ~255u; }
+
     D3D12_RESOURCE_BARRIER TransitionBarrier( ID3D12Resource* res, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after ) {
         D3D12_RESOURCE_BARRIER b = {};
         b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -250,7 +326,11 @@ XRESULT D3D12GraphicsEngine::Init() {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the VOB pipeline.";
         return XR_FAILED;
     }
-    LogInfo() << "D3D12GraphicsEngine initialized (device + 2D + world + VOB pipelines up). Swapchain is created once the game window is set.";
+    if ( !CreateSkeletalPipeline() ) {
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the skeletal pipeline.";
+        return XR_FAILED;
+    }
+    LogInfo() << "D3D12GraphicsEngine initialized (device + 2D + world + VOB + skeletal pipelines up). Swapchain is created once the game window is set.";
     return XR_SUCCESS;
 }
 
@@ -854,6 +934,151 @@ bool D3D12GraphicsEngine::CreateVobInstanceBuffers() {
     return true;
 }
 
+bool D3D12GraphicsEngine::CreateSkeletalPipeline() {
+    ID3D12Device* device = m_Device.GetDevice();
+
+    // Root signature: b0 = ViewProj (16 root 32-bit constants, VS); b1 = per-instance CBV (VS);
+    // b2 = bone-palette CBV (VS); t0 = diffuse SRV table (PS); static linear-wrap sampler s0 (PS).
+    // b1/b2 are root CBVs (raw GPU VAs into the per-frame skeletal ring) rather than root constants —
+    // the bone palette (up to 96 matrices = 6 KB) far exceeds the 64-DWORD root-constant budget.
+    D3D12_DESCRIPTOR_RANGE srvRange = {};
+    srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    srvRange.NumDescriptors = 1;
+    srvRange.BaseShaderRegister = 0;         // t0
+    srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    D3D12_ROOT_PARAMETER params[4] = {};
+    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[0].Constants.ShaderRegister = 0;   // b0 ViewProj
+    params[0].Constants.Num32BitValues = 16;
+    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    params[1].Descriptor.ShaderRegister = 1;  // b1 per-instance
+    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    params[2].Descriptor.ShaderRegister = 2;  // b2 bone palette
+    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[3].DescriptorTable.NumDescriptorRanges = 1;
+    params[3].DescriptorTable.pDescriptorRanges = &srvRange;
+    params[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_STATIC_SAMPLER_DESC sampler = {};
+    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler.MaxLOD = D3D12_FLOAT32_MAX;
+    sampler.ShaderRegister = 0;              // s0
+    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+    rsDesc.NumParameters = _countof( params );
+    rsDesc.pParameters = params;
+    rsDesc.NumStaticSamplers = 1;
+    rsDesc.pStaticSamplers = &sampler;
+    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
+    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (skeletal)."; return false; }
+
+    ComPtr<ID3DBlob> rsBlob, rsErr;
+    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
+        if ( rsErr ) LogWarn() << "D3D12: skeletal root signature serialize error: " << static_cast<const char*>( rsErr->GetBufferPointer() );
+        return false;
+    }
+    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
+        IID_PPV_ARGS( m_SkeletalRootSig.ReleaseAndGetAddressOf() ) ) ) )
+        return false;
+
+    UINT compileFlags = 0;
+#ifdef DEBUG_D3D11
+    compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+#endif
+    ComPtr<ID3DBlob> err;
+    if ( FAILED( D3DCompile( kSkeletalShaderSource, sizeof( kSkeletalShaderSource ) - 1, "SkeletalShader", nullptr, nullptr,
+        "VSMain", "vs_5_0", compileFlags, 0, m_SkeletalVsBlob.ReleaseAndGetAddressOf(), err.GetAddressOf() ) ) ) {
+        if ( err ) LogWarn() << "D3D12: skeletal VS compile error: " << static_cast<const char*>( err->GetBufferPointer() );
+        return false;
+    }
+    if ( FAILED( D3DCompile( kSkeletalShaderSource, sizeof( kSkeletalShaderSource ) - 1, "SkeletalShader", nullptr, nullptr,
+        "PSMain", "ps_5_0", compileFlags, 0, m_SkeletalPsBlob.ReleaseAndGetAddressOf(), err.ReleaseAndGetAddressOf() ) ) ) {
+        if ( err ) LogWarn() << "D3D12: skeletal PS compile error: " << static_cast<const char*>( err->GetBufferPointer() );
+        return false;
+    }
+
+    // Input layout = D3D11's layout3, explicit offsets into the 76-byte ExSkelVertexStruct:
+    //   Position[4]   4x half4  (R16G16B16A16_FLOAT) @0/8/16/24  — vertex baked into each bone's space
+    //   Normal        float3    @32
+    //   BindPoseNormal float3   @44 (TEXCOORD0)
+    //   TexCoord      float2    @56 (TEXCOORD1)
+    //   boneIndices   uint8x4   @64 (BONEIDS)
+    //   weights       half4     @68 (WEIGHTS)
+    const D3D12_INPUT_ELEMENT_DESC layout[] = {
+        { "POSITION", 0, DXGI_FORMAT_R16G16B16A16_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "POSITION", 1, DXGI_FORMAT_R16G16B16A16_FLOAT, 0,  8, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "POSITION", 2, DXGI_FORMAT_R16G16B16A16_FLOAT, 0, 16, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "POSITION", 3, DXGI_FORMAT_R16G16B16A16_FLOAT, 0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 44, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 1, DXGI_FORMAT_R32G32_FLOAT,       0, 56, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "BONEIDS",  0, DXGI_FORMAT_R8G8B8A8_UINT,      0, 64, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "WEIGHTS",  0, DXGI_FORMAT_R16G16B16A16_FLOAT, 0, 68, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    };
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+    pso.pRootSignature = m_SkeletalRootSig.Get();
+    pso.VS = { m_SkeletalVsBlob->GetBufferPointer(), m_SkeletalVsBlob->GetBufferSize() };
+    pso.PS = { m_SkeletalPsBlob->GetBufferPointer(), m_SkeletalPsBlob->GetBufferSize() };
+    pso.InputLayout = { layout, _countof( layout ) };
+    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pso.NumRenderTargets = 1;
+    pso.RTVFormats[0] = kBackBufferFormat;
+    pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+    pso.SampleDesc.Count = 1;
+    pso.SampleMask = UINT_MAX;
+
+    pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;   // first-light; skinned winding varies
+    pso.RasterizerState.DepthClipEnable = TRUE;
+    pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    pso.DepthStencilState.DepthEnable = TRUE;
+    pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;  // reversed-Z
+    pso.DepthStencilState.StencilEnable = FALSE;
+
+    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_SkeletalPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (skeletal).";
+        return false;
+    }
+    return CreateSkeletalConstantBuffers();
+}
+
+bool D3D12GraphicsEngine::CreateSkeletalConstantBuffers() {
+    ID3D12Device* device = m_Device.GetDevice();
+    D3D12_HEAP_PROPERTIES uploadHeap = {};
+    uploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
+
+    D3D12_RESOURCE_DESC bufDesc = {};
+    bufDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bufDesc.Width = kSkeletalConstantBufferBytes;
+    bufDesc.Height = 1;
+    bufDesc.DepthOrArraySize = 1;
+    bufDesc.MipLevels = 1;
+    bufDesc.Format = DXGI_FORMAT_UNKNOWN;
+    bufDesc.SampleDesc.Count = 1;
+    bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+    for ( UINT i = 0; i < kBackBufferCount; ++i ) {
+        if ( FAILED( device->CreateCommittedResource( &uploadHeap, D3D12_HEAP_FLAG_NONE, &bufDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS( m_SkeletalCBBuffer[i].ReleaseAndGetAddressOf() ) ) ) )
+            return false;
+        D3D12_RANGE noRead = { 0, 0 };
+        if ( FAILED( m_SkeletalCBBuffer[i]->Map( 0, &noRead, reinterpret_cast<void**>( &m_SkeletalCBBufferPtr[i] ) ) ) )
+            return false;
+    }
+    m_SkeletalCBBufferCapacity = kSkeletalConstantBufferBytes;
+    return true;
+}
+
 XRESULT D3D12GraphicsEngine::SetViewport( const ViewportInfo& vp ) {
     m_CurrentViewport.TopLeftX = static_cast<float>( vp.TopLeftX );
     m_CurrentViewport.TopLeftY = static_cast<float>( vp.TopLeftY );
@@ -968,7 +1193,10 @@ XRESULT D3D12GraphicsEngine::DrawVertexBufferFF( GfxVertexBuffer* vb, unsigned i
 
 XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
     // zCBspNodeRender hook — Gothic's BSP traversal is replaced; we draw the world ourselves.
+    // Order mirrors D3D11's DrawWorldMeshNaive: world mesh, then skeletal (NPCs/monsters), then
+    // instanced static VOBs.
     DrawWorldMesh();
+    DrawSkeletalMeshes();
     DrawVobsInstanced();
     return XR_SUCCESS;
 }
@@ -1153,6 +1381,135 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
     // Clear the per-visual instance lists so next frame's CollectVisibleVobs starts fresh (mirrors D3D11).
     for ( auto const& [visualPtr, visual] : Engine::GAPI->GetStaticMeshVisuals() ) {
         if ( visual ) visual->Instances.clear();
+    }
+
+    rs.RendererInfo.FrameDrawnTriangles += drawnTris;
+    return XR_SUCCESS;
+}
+
+XRESULT D3D12GraphicsEngine::DrawSkeletalMeshes() {
+    if ( !m_FrameOpen || !m_SkeletalPSO || !m_SkeletalRootSig || !m_DepthBuffer )
+        return XR_SUCCESS;
+
+    GothicRendererState& rs = Engine::GAPI->GetRendererState();
+    if ( !rs.RendererSettings.DrawSkeletalMeshes )
+        return XR_SUCCESS;
+
+    // Skeletal vobs are a standing list (NPCs/monsters), not collected per-frame; we cull inline by the
+    // configured draw radius. (Frustum culling + morph-mesh split + node attachments are later steps.)
+    std::vector<SkeletalVobInfo*>& vobs = Engine::GAPI->GetAnimatedSkeletalMeshVobs();
+    if ( vobs.empty() ) return XR_SUCCESS;
+
+    // Reversed-Z ViewProj (identical derivation to DrawWorldMesh / DrawVobsInstanced).
+    XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
+    Engine::GAPI->SetViewTransformXM( view );
+    Engine::GAPI->ResetWorldTransform();
+    const XMFLOAT4X4& viewM = rs.TransformState.TransformView;
+    const XMFLOAT4X4& projM = Engine::GAPI->GetProjectionMatrix();
+    XMFLOAT4X4 viewProj;
+    XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
+
+    m_CmdList->SetPipelineState( m_SkeletalPSO.Get() );
+    m_CmdList->SetGraphicsRootSignature( m_SkeletalRootSig.Get() );
+    m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
+
+    D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
+    D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
+    m_CmdList->RSSetViewports( 1, &vp );
+    m_CmdList->RSSetScissorRects( 1, &sc );
+    m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+
+    const float radius = rs.RendererSettings.SkeletalMeshDrawRadius;
+    const XMVECTOR camPos = Engine::GAPI->GetCameraPositionXM();
+    const XMVECTOR radiusSq = XMVectorReplicate( radius * radius );
+
+    const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_WhiteSrvSlot );
+    const UINT frame = m_FrameIndex;
+    unsigned int drawnTris = 0;
+    static std::vector<XMFLOAT4X4> boneCache;
+
+    for ( SkeletalVobInfo* vi : vobs ) {
+        if ( !vi || !vi->Vob || !vi->VisualInfo ) continue;
+        if ( !vi->Vob->GetShowVisual() ) continue;
+
+        SkeletalMeshVisualInfo* visual = static_cast<SkeletalMeshVisualInfo*>( vi->VisualInfo );
+        if ( visual->SkeletalMeshes.empty() ) continue;   // interactive MOBs (no base skeletal mesh): skip
+
+        zCModel* model = static_cast<zCModel*>( vi->Vob->GetVisual() );
+        if ( !model ) continue;
+
+        if ( XMVector3Greater( XMVector3LengthSq( camPos - vi->Vob->GetPositionWorldXM() ), radiusSq ) )
+            continue;   // out of skeletal-draw range
+
+        // Bone palette (object-space matrices) for the model's current animation pose.
+        boneCache.clear();
+        model->GetBoneTransforms( &boneCache );
+        UINT numBones = static_cast<UINT>( boneCache.size() );
+        if ( numBones == 0 ) continue;
+        if ( numBones > kSkeletalMaxBones ) numBones = kSkeletalMaxBones;
+
+        // Allocate the per-instance CB + bone CB from the per-frame ring (each 256-byte aligned so it can
+        // be bound as a root CBV). Both live in one committed upload resource, so any offset is valid GPU
+        // memory — the shader only indexes Bones[idx] for idx < numBones, so numBones matrices suffice.
+        const UINT instSize = static_cast<UINT>( sizeof( SkeletalInstanceCB ) );
+        const UINT boneSize = numBones * static_cast<UINT>( sizeof( XMFLOAT4X4 ) );
+        const UINT instOff = AlignCB( m_SkeletalCBBufferOffset );
+        const UINT boneOff = AlignCB( instOff + instSize );
+        if ( boneOff + boneSize > m_SkeletalCBBufferCapacity ) {
+            if ( !m_SkeletalCBOverflowLogged ) {
+                LogWarn() << "D3D12: skeletal CB ring overflow (" << m_SkeletalCBBufferCapacity
+                          << " bytes/frame). Some skeletal meshes dropped this frame.";
+                m_SkeletalCBOverflowLogged = true;
+            }
+            break;
+        }
+
+        SkeletalInstanceCB inst = {};
+        XMMATRIX xmWorld = vi->Vob->GetWorldMatrixXM() * XMMatrixScalingFromVector( model->GetModelScaleXM() );
+        XMStoreFloat4x4( &inst.World, xmWorld );
+        inst.ModelColor = XMFLOAT4( 1.0f, 1.0f, 1.0f, 1.0f );   // first-light: white; ground-light color is a later step
+        inst.Fatness = model->GetModelFatness();
+
+        uint8_t* ringBase = m_SkeletalCBBufferPtr[frame];
+        memcpy( ringBase + instOff, &inst, instSize );
+        memcpy( ringBase + boneOff, boneCache.data(), boneSize );
+        m_SkeletalCBBufferOffset = boneOff + boneSize;
+
+        const D3D12_GPU_VIRTUAL_ADDRESS ringGpu = m_SkeletalCBBuffer[frame]->GetGPUVirtualAddress();
+        m_CmdList->SetGraphicsRootConstantBufferView( 1, ringGpu + instOff );
+        m_CmdList->SetGraphicsRootConstantBufferView( 2, ringGpu + boneOff );
+
+        for ( auto const& [mat, meshList] : visual->SkeletalMeshes ) {
+            D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
+            zCTexture* tex = mat ? mat->GetAniTexture() : nullptr;
+            if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                if ( MyDirectDrawSurface7* surface = tex->GetSurface() ) {
+                    if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
+                        D3D12Texture* d12 = D3D12Texture::From( gfx );
+                        if ( d12->HasSRV() ) srv = d12->GetSrvGpuHandle();
+                    }
+                }
+            }
+            m_CmdList->SetGraphicsRootDescriptorTable( 3, srv );
+
+            for ( auto const& mesh : meshList ) {
+                if ( !mesh || mesh->Indices.empty() || !mesh->MeshVertexBuffer || !mesh->MeshIndexBuffer )
+                    continue;
+                D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mesh->MeshVertexBuffer.get() );
+                D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mesh->MeshIndexBuffer.get() );
+                if ( !mvb->GetResource() || !mib->GetResource() ) continue;
+
+                const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExSkelVertexStruct ) };
+                m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
+
+                // Skeletal sub-mesh index buffers are 16-bit (VERTEX_INDEX = unsigned short).
+                const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
+                m_CmdList->IASetIndexBuffer( &ibv );
+
+                m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mesh->Indices.size() ), 1, 0, 0, 0 );
+                drawnTris += static_cast<unsigned int>( mesh->Indices.size() ) / 3;
+            }
+        }
     }
 
     rs.RendererInfo.FrameDrawnTriangles += drawnTris;
@@ -1347,6 +1704,8 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
     m_UIOverflowLogged = false;
     m_VobInstanceBufferOffset = 0;
     m_VobInstanceOverflowLogged = false;
+    m_SkeletalCBBufferOffset = 0;
+    m_SkeletalCBOverflowLogged = false;
     m_CurrentTexture = nullptr;
     m_CurrentViewport = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
     m_CurrentScissor = { 0, 0, m_Resolution.x, m_Resolution.y };
