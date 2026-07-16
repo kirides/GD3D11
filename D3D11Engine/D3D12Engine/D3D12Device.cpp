@@ -7,6 +7,67 @@ using Microsoft::WRL::ComPtr;
 
 namespace {
 
+    UINT agilitySdkVersion = 0;
+    const char* agilitySdkDeployPath = "GD3D11\\D3D12\\";
+
+    UINT GetD3D12CoreSDKVersion( const std::string& dllDirectory ) {
+        std::string coreDllPath = dllDirectory + "d3d12Core.dll";
+
+        // Load your custom d3d12Core.dll temporarily to read its metadata
+        HMODULE hCore = LoadLibraryExA( coreDllPath.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS );
+        if ( !hCore ) {
+            return 0; // File not found or failed to load
+        }
+
+        // Retrieve the exported version symbol
+        auto pSDKVersion = reinterpret_cast<const UINT*>(GetProcAddress( hCore, "D3D12SDKVersion" ));
+        UINT version = pSDKVersion ? *pSDKVersion : 0;
+
+        FreeLibrary( hCore );
+        return version;
+    }
+
+    std::string GetAgilitySdkPath() {
+        std::string sdkPath;
+        sdkPath.resize( MAX_PATH );
+        sdkPath.resize( GetModuleFileNameA( nullptr, sdkPath.data(), sdkPath.size() - 1 ) );
+        auto lastTerminator = sdkPath.find_last_of( '\\' );
+        if ( lastTerminator != std::string::npos ) {
+            sdkPath.erase( lastTerminator+1 ); // keep the \, so we can just append agilitySdkDeployPath
+        }
+        sdkPath.append( agilitySdkDeployPath );
+        return sdkPath;
+    }
+
+    void InitAgilitySdkVersion() {
+        agilitySdkVersion = GetD3D12CoreSDKVersion( GetAgilitySdkPath() );
+    }
+
+    void InitAgilitySdk() {
+        InitAgilitySdkVersion();
+        if ( agilitySdkVersion != 0 ) {
+
+            if ( auto hD3d12 = LoadLibraryA( "d3d12.dll" ) ) {
+                auto pfnD3D12GetInterface = reinterpret_cast<PFN_D3D12_GET_INTERFACE>(GetProcAddress( hD3d12, "D3D12GetInterface" ));
+
+                if ( pfnD3D12GetInterface ) {
+                    Microsoft::WRL::ComPtr<ID3D12SDKConfiguration> sdkConfig;
+                    HRESULT hr = pfnD3D12GetInterface( CLSID_D3D12SDKConfiguration, IID_PPV_ARGS( &sdkConfig ) );
+                    if ( SUCCEEDED( hr ) && sdkConfig ) {
+                        hr = sdkConfig->SetSDKVersion( agilitySdkVersion, agilitySdkDeployPath );
+                        if ( !SUCCEEDED( hr ) ) {
+                            LogWarn() << "Failed to initialize agility SDK (version " << agilitySdkVersion << "); using system D3D12.";
+                        } else {
+                            LogInfo() << "D3D12 Agility SDK " << agilitySdkVersion << " activated from " << agilitySdkDeployPath;
+                        }
+                    }
+                }
+            }
+        } else {
+            LogInfo() << "D3D12 Agility SDK core not deployed; using the system D3D12 runtime.";
+        }
+    }
+
     // dxgi.dll factory-creation function pointers (dynamically resolved, like the D3D11 backend).
     typedef HRESULT( WINAPI* PFN_CREATE_DXGI_FACTORY1 )( REFIID riid, void** ppFactory );
     typedef HRESULT( WINAPI* PFN_CREATE_DXGI_FACTORY2 )( UINT flags, REFIID riid, void** ppFactory );
@@ -42,7 +103,17 @@ namespace {
     /** Returns true if the adapter supports a FL11_0 D3D12 device (capability check only — passing
         nullptr for the device output means "test support without creating"). */
     bool AdapterSupportsD3D12( PFN_D3D12_CREATE_DEVICE createDevice, IDXGIAdapter1* adapter ) {
-        return SUCCEEDED( createDevice( adapter, D3D_FEATURE_LEVEL_11_0, __uuidof( ID3D12Device ), nullptr ) );
+        Microsoft::WRL::ComPtr<ID3D12Device> tempDevice;
+
+        // Actually attempt to create a temporary device instance
+        HRESULT hr = createDevice(
+            adapter,
+            D3D_FEATURE_LEVEL_11_0,
+            __uuidof(ID3D12Device),
+            IID_PPV_ARGS_Helper( &tempDevice )
+        );
+
+        return SUCCEEDED( hr );
     }
 
     std::string DescriptionToNarrow( const DXGI_ADAPTER_DESC1& desc ) {
@@ -97,6 +168,8 @@ namespace {
 } // namespace
 
 bool D3D12Device::IsAvailable( std::string* outDescription, std::string* outReason ) {
+    InitAgilitySdk();
+
     auto setReason = [&]( const char* r ) { if ( outReason ) *outReason = r; };
 
     PFN_D3D12_CREATE_DEVICE createDevice = LoadD3D12CreateDevice();
@@ -122,55 +195,12 @@ bool D3D12Device::IsAvailable( std::string* outDescription, std::string* outReas
     return true;
 }
 
-static UINT GetD3D12CoreSDKVersion( const std::string& pluginDirectory ) {
-    std::string coreDllPath = pluginDirectory + "d3d12Core.dll";
-
-    // Load your custom d3d12Core.dll temporarily to read its metadata
-    HMODULE hCore = LoadLibraryExA( coreDllPath.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS );
-    if ( !hCore ) {
-        return 0; // File not found or failed to load
-    }
-
-    // Retrieve the exported version symbol
-    auto pSDKVersion = reinterpret_cast<const UINT*>(GetProcAddress( hCore, "D3D12SDKVersion" ));
-    UINT version = pSDKVersion ? *pSDKVersion : 0;
-
-    FreeLibrary( hCore );
-    return version;
-}
-
 bool D3D12Device::Init() {
-    std::string sdkPath;
-    sdkPath.resize( MAX_PATH );
-    sdkPath.resize( GetModuleFileNameA( nullptr, sdkPath.data(), sdkPath.size() - 1 ) );
-    auto lastTerminator = sdkPath.find_last_of( '\\' );
-    if ( lastTerminator != std::string::npos ) {
-        sdkPath.erase( lastTerminator );
-    }
-    sdkPath.append( "\\GD3D11\\D3D12\\" );
-    UINT agilitySdkVersion = GetD3D12CoreSDKVersion( sdkPath );
 
     PFN_D3D12_CREATE_DEVICE createDevice = LoadD3D12CreateDevice();
     if ( !createDevice ) {
         LogWarn() << "D3D12Device::Init: d3d12.dll / D3D12CreateDevice unavailable.";
         return false;
-    }
-
-    // 2. Get the D3D12GetInterface export from the loader
-
-    if ( auto hD3d12 = LoadLibraryA( "d3d12.dll" ) ) {
-        auto pfnD3D12GetInterface = reinterpret_cast<PFN_D3D12_GET_INTERFACE>(GetProcAddress( hD3d12, "D3D12GetInterface" ) );
-
-        if ( pfnD3D12GetInterface ) {
-            Microsoft::WRL::ComPtr<ID3D12SDKConfiguration> sdkConfig;
-            HRESULT hr = pfnD3D12GetInterface( CLSID_D3D12SDKConfiguration, IID_PPV_ARGS( &sdkConfig ) );
-            if ( SUCCEEDED( hr ) && sdkConfig ) {
-                hr = sdkConfig->SetSDKVersion( agilitySdkVersion, sdkPath.c_str() );
-                if ( !SUCCEEDED( hr ) ) {
-                    LogWarn() << "Failed to initialize agility SDK";
-                }
-            }
-        }
     }
 
 #ifdef _DEBUG
