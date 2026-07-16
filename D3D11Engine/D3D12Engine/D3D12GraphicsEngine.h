@@ -97,6 +97,12 @@ public:
 
     void QueueSrvResourceForRelease( UINT slot, Microsoft::WRL::ComPtr<ID3D12Resource> resource );
 
+    /** Defers release of a GPU resource until the GPU is provably done with the frames that may
+        reference it (drained in MoveToNextFrame after that frame's fence). Unlike
+        QueueSrvResourceForRelease it does NOT free an SRV slot — used when a texture recreates its
+        backing resource (animated textures) but keeps its descriptor slot. */
+    void QueueResourceForRelease( Microsoft::WRL::ComPtr<ID3D12Resource> resource );
+
 private:
     void ResizeOutputWindow( INT2 size );  // size the OS window + inform Gothic (zCView) of the mode
     bool CreateSwapChain( INT2 size );
@@ -116,7 +122,7 @@ private:
     XRESULT DrawVobsInstanced();      // collect visible VOBs + draw each visual instanced (textured)
     bool CreateSkeletalPipeline();    // skeletal (animated NPC/monster) root sig + inline shaders + PSO
     bool CreateSkeletalConstantBuffers(); // per-frame dynamic (upload-heap) skeletal CB ring (instance + bones)
-    XRESULT DrawSkeletalMeshes();     // draw animated skeletal vobs (matrix-palette skinning)
+    XRESULT DrawSkeletalMeshes( std::vector<SkeletalVobInfo*>& vobs, bool asMorphMeshes = false );     // draw animated skeletal vobs (matrix-palette skinning)
     bool AcquireBackBufferRTVs();     // (re)fetch swapchain buffers + build their RTVs
     bool ResizeSwapChain( INT2 size );
     void WaitForGpuIdle();            // full CPU/GPU flush (used on resize / teardown)

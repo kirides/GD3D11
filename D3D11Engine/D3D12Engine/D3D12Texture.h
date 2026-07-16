@@ -64,6 +64,7 @@ private:
     INT2         m_Size = {};
     unsigned int m_MipMapCount = 1;
     uint16_t     m_ID = 0;
+    std::string  m_DebugName;             // source file / debug label; applied to every (re)created resource
     std::vector<uint8_t> m_Staging;       // multi-mip UpdateData accumulation
 
     unsigned int m_SrvSlot = 0xFFFFFFFFu;                 // persistent slot in the engine's SRV heap (UINT_MAX = none)

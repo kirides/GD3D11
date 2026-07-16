@@ -75,10 +75,21 @@ namespace {
 }
 
 D3D12VertexBuffer::~D3D12VertexBuffer() {
-    Engine12()->UglySyncrhonizationWorkaroundWaitForGpuIdle();
     if ( m_Resource && m_MappedPtr ) {
         m_Resource->Unmap( 0, nullptr );
         m_MappedPtr = nullptr;
+    }
+    // Defer the GPU resource release. This buffer may still be referenced by an in-flight command list
+    // OR by the currently-open (unsubmitted) command list — Gothic can evict a mesh visual mid-frame
+    // (LRU cache / changed node attachment), freeing all its VB+IB at once. A synchronous free deletes
+    // a resource the GPU still references -> OBJECT_DELETED_WHILE_STILL_IN_USE -> device hang. Note the
+    // old WaitForGpuIdle here did NOT prevent this: it only flushes *submitted* work, not the open list
+    // the caller is still recording into. The engine drops the resource once its frame fence has passed.
+    if ( m_Resource ) {
+        if ( D3D12GraphicsEngine* engine = Engine12() ) {
+            engine->QueueResourceForRelease( std::move( m_Resource ) );
+        }
+        m_Resource.Reset();
     }
 }
 
@@ -133,9 +144,10 @@ XRESULT D3D12VertexBuffer::Init( void* initData, unsigned int sizeInBytes, EBind
         memset( m_MappedPtr, 0, sizeInBytes );
     }
 
-    if ( !fileName.empty() ) {
-        m_Resource->SetPrivateData( WKPDID_D3DDebugObjectName, static_cast<UINT>( fileName.size() ), fileName.c_str() );
-    }
+    // Name the resource so the D3D12 debug layer identifies it (e.g. in OBJECT_DELETED_WHILE_STILL_IN_USE
+    // reports) as a vertex/index buffer + its source mesh, instead of 'Unnamed Object'.
+    const std::string debugName = "VB:" + ( fileName.empty() ? std::string( "unnamed" ) : fileName );
+    m_Resource->SetPrivateData( WKPDID_D3DDebugObjectName, static_cast<UINT>( debugName.size() ), debugName.c_str() );
 
     return XR_SUCCESS;
 }

@@ -39,18 +39,21 @@ D3D12Texture::~D3D12Texture()
     m_Texture.Reset();*/
 }
 
-XRESULT D3D12Texture::Init( INT2 size, ETextureFormat format, unsigned int mipMapCount, void* data, const std::string& /*fileName*/ ) {
+XRESULT D3D12Texture::Init( INT2 size, ETextureFormat format, unsigned int mipMapCount, void* data, const std::string& fileName ) {
     m_Format = static_cast<DXGI_FORMAT>( format );
     m_Size = size;
     m_MipMapCount = std::max<unsigned int>( 1, mipMapCount );
+    if ( !fileName.empty() ) m_DebugName = fileName;
     return CreateAndUpload( data ) ? XR_SUCCESS : XR_FAILED;
 }
 
 XRESULT D3D12Texture::Init( const uint8_t* data, size_t size, const std::string& debugFileName ) {
+    if ( !debugFileName.empty() ) m_DebugName = debugFileName;
     return InitFromDDS( data, size, debugFileName );
 }
 
 XRESULT D3D12Texture::Init( const std::string& file ) {
+    if ( !file.empty() ) m_DebugName = file;
     std::vector<uint8_t> bytes;
 
     if ( std::filesystem::path( file ).is_absolute() ) {
@@ -160,12 +163,29 @@ bool D3D12Texture::CreateAndUpload( void* data ) {
     td.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
     td.Flags = D3D12_RESOURCE_FLAG_NONE;
 
+    // Recreate case (animated textures call UpdateData every frame): the old resource may still be
+    // referenced by an in-flight (or the currently-recording) command list. Releasing it synchronously
+    // — as ReleaseAndGetAddressOf would — deletes a resource the GPU isn't done with, triggering
+    // OBJECT_DELETED_WHILE_STILL_IN_USE and a device hang. Defer it until its frame's fence has passed.
+    // The SRV slot is kept (CreateSRV reuses it), so only the resource is deferred.
+    if ( m_Texture ) {
+        engine->QueueResourceForRelease( m_Texture );
+        m_Texture.Reset();
+    }
+
     const D3D12_RESOURCE_STATES initState = data ? D3D12_RESOURCE_STATE_COPY_DEST : D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
     if ( FAILED( device->CreateCommittedResource( &heapDefault, D3D12_HEAP_FLAG_NONE, &td, initState,
         nullptr, IID_PPV_ARGS( m_Texture.ReleaseAndGetAddressOf() ) ) ) ) {
         LogWarn() << "D3D12Texture: CreateCommittedResource failed (format " << static_cast<int>( m_Format )
                   << ", " << m_Size.x << "x" << m_Size.y << ", mips " << m_MipMapCount << ").";
         return false;
+    }
+
+    // Name the resource so the D3D12 debug layer identifies it (e.g. in OBJECT_DELETED_WHILE_STILL_IN_USE
+    // reports) as a texture + its source file, instead of 'Unnamed Object'.
+    {
+        const std::string debugName = "Tex:" + ( m_DebugName.empty() ? std::string( "unnamed" ) : m_DebugName );
+        m_Texture->SetPrivateData( WKPDID_D3DDebugObjectName, static_cast<UINT>( debugName.size() ), debugName.c_str() );
     }
 
     if ( !data ) {

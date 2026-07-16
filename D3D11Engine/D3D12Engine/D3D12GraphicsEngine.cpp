@@ -689,6 +689,7 @@ bool D3D12GraphicsEngine::CreateUIVertexBuffers() {
         if ( FAILED( device->CreateCommittedResource( &uploadHeap, D3D12_HEAP_FLAG_NONE, &bufDesc,
             D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS( m_UIVertexBuffer[i].ReleaseAndGetAddressOf() ) ) ) )
             return false;
+        m_UIVertexBuffer[i]->SetName( i == 0 ? L"UIVertexRing0" : L"UIVertexRing1" );
         D3D12_RANGE noRead = { 0, 0 };
         if ( FAILED( m_UIVertexBuffer[i]->Map( 0, &noRead, reinterpret_cast<void**>( &m_UIVertexBufferPtr[i] ) ) ) )
             return false;
@@ -715,6 +716,7 @@ bool D3D12GraphicsEngine::CreateWhiteTexture() {
     if ( FAILED( device->CreateCommittedResource( &heapDefault, D3D12_HEAP_FLAG_NONE, &td,
         D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS( m_WhiteTexture.ReleaseAndGetAddressOf() ) ) ) )
         return false;
+    m_WhiteTexture->SetName( L"WhiteFallbackTexture" );
 
     const uint32_t white = 0xFFFFFFFFu;
     D3D12_SUBRESOURCE_DATA sub = {};
@@ -781,6 +783,7 @@ bool D3D12GraphicsEngine::CreateDepthBuffer( INT2 size ) {
         LogWarn() << "D3D12: failed to create the depth buffer (" << size.x << "x" << size.y << ").";
         return false;
     }
+    m_DepthBuffer->SetName( L"DepthBuffer(D32)" );
 
     D3D12_DEPTH_STENCIL_VIEW_DESC dsv = {};
     dsv.Format = DXGI_FORMAT_D32_FLOAT;
@@ -976,6 +979,7 @@ bool D3D12GraphicsEngine::CreateVobInstanceBuffers() {
         if ( FAILED( device->CreateCommittedResource( &uploadHeap, D3D12_HEAP_FLAG_NONE, &bufDesc,
             D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS( m_VobInstanceBuffer[i].ReleaseAndGetAddressOf() ) ) ) )
             return false;
+        m_VobInstanceBuffer[i]->SetName( i == 0 ? L"VobInstanceRing0" : L"VobInstanceRing1" );
         D3D12_RANGE noRead = { 0, 0 };
         if ( FAILED( m_VobInstanceBuffer[i]->Map( 0, &noRead, reinterpret_cast<void**>( &m_VobInstanceBufferPtr[i] ) ) ) )
             return false;
@@ -1121,6 +1125,7 @@ bool D3D12GraphicsEngine::CreateSkeletalConstantBuffers() {
         if ( FAILED( device->CreateCommittedResource( &uploadHeap, D3D12_HEAP_FLAG_NONE, &bufDesc,
             D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS( m_SkeletalCBBuffer[i].ReleaseAndGetAddressOf() ) ) ) )
             return false;
+        m_SkeletalCBBuffer[i]->SetName( i == 0 ? L"SkeletalCBRing0" : L"SkeletalCBRing1" );
         D3D12_RANGE noRead = { 0, 0 };
         if ( FAILED( m_SkeletalCBBuffer[i]->Map( 0, &noRead, reinterpret_cast<void**>( &m_SkeletalCBBufferPtr[i] ) ) ) )
             return false;
@@ -1246,7 +1251,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
     // Order mirrors D3D11's DrawWorldMeshNaive: world mesh, then skeletal (NPCs/monsters), then
     // instanced static VOBs.
     DrawWorldMesh();
-    DrawSkeletalMeshes();
+    DrawSkeletalMeshes( Engine::GAPI->GetAnimatedSkeletalMeshVobs(), false);
     DrawVobsInstanced();
     return XR_SUCCESS;
 }
@@ -1428,6 +1433,8 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
         }
     }
 
+    DrawSkeletalMeshes( mobs, false );
+
     // Clear the per-visual instance lists so next frame's CollectVisibleVobs starts fresh (mirrors D3D11).
     for ( auto const& [visualPtr, visual] : Engine::GAPI->GetStaticMeshVisuals() ) {
         if ( visual ) visual->Instances.clear();
@@ -1437,7 +1444,7 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
     return XR_SUCCESS;
 }
 
-XRESULT D3D12GraphicsEngine::DrawSkeletalMeshes() {
+XRESULT D3D12GraphicsEngine::DrawSkeletalMeshes( std::vector<SkeletalVobInfo*>& vobs, bool asMorphMeshes ) {
     if ( !m_FrameOpen || !m_SkeletalPSO || !m_SkeletalRootSig || !m_DepthBuffer )
         return XR_SUCCESS;
 
@@ -1445,9 +1452,6 @@ XRESULT D3D12GraphicsEngine::DrawSkeletalMeshes() {
     if ( !rs.RendererSettings.DrawSkeletalMeshes )
         return XR_SUCCESS;
 
-    // Skeletal vobs are a standing list (NPCs/monsters), not collected per-frame; we cull inline by the
-    // configured draw radius. (Frustum culling + morph-mesh split + node attachments are later steps.)
-    std::vector<SkeletalVobInfo*>& vobs = Engine::GAPI->GetAnimatedSkeletalMeshVobs();
     if ( vobs.empty() ) return XR_SUCCESS;
 
     // Reversed-Z ViewProj (identical derivation to DrawWorldMesh / DrawVobsInstanced).
@@ -1703,6 +1707,15 @@ void D3D12GraphicsEngine::QueueSrvResourceForRelease( UINT slot, Microsoft::WRL:
     } );
 }
 
+void D3D12GraphicsEngine::QueueResourceForRelease( Microsoft::WRL::ComPtr<ID3D12Resource> resource )
+{
+    if ( !resource ) return;
+    // No slot to recycle — just hold a reference until this frame index comes back around (after its
+    // fence is waited on in MoveToNextFrame), then drop it. The capture keeps the resource alive until
+    // every command list that could reference it has finished on the GPU.
+    m_PerFrameCleanupItems[m_FrameIndex].emplace_back( [resource = std::move(resource)]() {} );
+}
+
 /** Sizes the actual OS window to the target resolution and tells Gothic about the mode so its 2D
     UI coordinate space matches. Mirrors the windowed / borderless branch of the D3D11 backend. */
 void D3D12GraphicsEngine::ResizeOutputWindow( INT2 size ) {
@@ -1835,6 +1848,7 @@ bool D3D12GraphicsEngine::AcquireBackBufferRTVs() {
     for ( UINT i = 0; i < kBackBufferCount; ++i ) {
         if ( FAILED( m_SwapChain->GetBuffer( i, IID_PPV_ARGS( m_BackBuffers[i].ReleaseAndGetAddressOf() ) ) ) )
             return false;
+        m_BackBuffers[i]->SetName( i == 0 ? L"BackBuffer0" : L"BackBuffer1" );
         device->CreateRenderTargetView( m_BackBuffers[i].Get(), nullptr, rtvHandle );
         rtvHandle.ptr += m_RtvDescriptorSize;
     }
