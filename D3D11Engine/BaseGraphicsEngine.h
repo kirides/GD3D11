@@ -1,4 +1,5 @@
 #pragma once
+#include "Engine.h"
 #include "WorldObjects.h"
 #include "GraphicsEventRecord.h"
 #include "ShaderCategory.h"
@@ -15,6 +16,8 @@ struct SkeletalMeshVisualInfo;
 struct VobInfo;
 struct VobLightInfo;
 class zFont;
+
+static void UpdateShouldBlockGameInput();
 
 struct GraphicsEventName {
     const wchar_t* wide;
@@ -277,7 +280,7 @@ public:
     virtual void DrawWaterSurfaces() {}
 
     /** Handles an UI-Event */
-    virtual void OnUIEvent( EUIEvent uiEvent ) {}
+    virtual void OnUIEvent( EUIEvent uiEvent );
 
     /** Draws particle meshes */
     virtual void DrawFrameParticleMeshes( std::unordered_map<zCVob*, std::unique_ptr<MeshVisualInfo>>& progMeshes ) {}

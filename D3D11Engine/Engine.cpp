@@ -60,11 +60,21 @@ namespace Engine {
         // (Phase 1: first-light — device + swapchain + per-frame clear/present, rest stubbed),
         // otherwise we log + show a one-time notice and fall back to D3D11.
         GraphicsEngine = nullptr;
+        bool initialized = false;   // set when the chosen backend's Init() has already run below
         if ( ReadRequestedGraphicsAPI() == GothicRendererSettings::GRAPHICS_API_D3D12 ) {
             std::string deviceDesc, reason;
             if ( D3D12Device::IsAvailable( &deviceDesc, &reason ) ) {
                 LogInfo() << "Direct3D 12 is available on this system (GPU: " << deviceDesc << "). Creating the Direct3D 12 backend.";
-                GraphicsEngine = new D3D12GraphicsEngine;
+                // Init the D3D12 backend up front so a failure (device/swapchain/pipeline) cleanly falls
+                // back to D3D11 instead of leaving a half-initialized engine that crashes at render time.
+                BaseGraphicsEngine* d3d12 = new D3D12GraphicsEngine;
+                if ( d3d12->Init() == XRESULT::XR_SUCCESS ) {
+                    GraphicsEngine = d3d12;
+                    initialized = true;
+                } else {
+                    LogWarn() << "The Direct3D 12 backend failed to initialize. Falling back to Direct3D 11.";
+                    delete d3d12;
+                }
             } else {
                 LogWarn() << "Direct3D 12 was requested but is unavailable: " << reason << ". Using Direct3D 11.";
                 MessageBoxA( nullptr,
@@ -84,7 +94,9 @@ namespace Engine {
 
         ImGuiHandle = new ImGuiShim;
 
-        XLE( GraphicsEngine->Init() );
+        if ( !initialized ) {
+            XLE( GraphicsEngine->Init() );
+        }
 
         // Create threadpool
         RenderingThreadPool = new ThreadPool(L"GD3D11-Render");

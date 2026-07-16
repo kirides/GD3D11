@@ -63,16 +63,31 @@ public:
         copy completes. Used by D3D12Texture (load-time uploads; the async copy-queue path is later). */
     bool UploadTextureSubresources( ID3D12Resource* dst, const D3D12_SUBRESOURCE_DATA* subresources, UINT numSubresources );
 
-    XRESULT DrawVertexArray( ExVertexStruct* vertices, unsigned int numVertices, unsigned int startVertex = 0, unsigned int stride = sizeof( ExVertexStruct ) ) override { return XR_SUCCESS; }
+    /** Gothic's 2D/UI draw entry (menus, fonts, HUD). Uploads the transformed ExVertexStruct verts to
+        a per-frame ring, binds the UI PSO + current texture + viewport constants, and draws. */
+    XRESULT DrawVertexArray( ExVertexStruct* vertices, unsigned int numVertices, unsigned int startVertex = 0, unsigned int stride = sizeof( ExVertexStruct ) ) override;
+
+    /** Records the currently-bound diffuse texture for the next 2D draw (SetTexture -> BindToSlot). */
+    void BindSurfaceTextures( int slot, GfxTexture* diffuse, GfxTexture* normalmap, unsigned int numTextures = 2 ) override;
 
     INT2 GetResolution() override { return m_Resolution; }
     INT2 GetBackbufferResolution() override { return m_Resolution; }
+
+    /** Allocates a persistent slot in the shader-visible SRV heap. Returns UINT_MAX if exhausted.
+        Used by D3D12Texture to create its SRV once at load time. */
+    UINT AllocateSrvSlot();
+    D3D12_CPU_DESCRIPTOR_HANDLE GetSrvCpuHandle( UINT slot ) const;
+    D3D12_GPU_DESCRIPTOR_HANDLE GetSrvGpuHandle( UINT slot ) const;
 
 private:
     void ResizeOutputWindow( INT2 size );  // size the OS window + inform Gothic (zCView) of the mode
     bool CreateSwapChain( INT2 size );
     bool CreateFrameResources();      // RTV heap + allocators + command list + fence + event
     bool CreateUploadObjects();       // dedicated allocator + command list + fence for synchronous uploads
+    bool CreateSrvHeap();             // shader-visible CBV_SRV_UAV heap for texture SRVs
+    bool CreateUIPipeline();          // root signature + PSO + inline shaders for the 2D UI path
+    bool CreateUIVertexBuffers();     // per-frame dynamic (upload-heap) vertex ring buffers
+    bool CreateWhiteTexture();        // 1x1 white fallback (untextured colored 2D draws)
     bool AcquireBackBufferRTVs();     // (re)fetch swapchain buffers + build their RTVs
     bool ResizeSwapChain( INT2 size );
     void WaitForGpuIdle();            // full CPU/GPU flush (used on resize / teardown)
@@ -104,7 +119,29 @@ private:
     INT2  m_Resolution = {};
     bool  m_SwapChainReady = false;
     bool  m_FrameOpen = false;        // true between OnBeginFrame and OnEndFrame
-    float m_ClearColor[4] = { 0.39f, 0.58f, 0.93f, 1.0f }; // cornflower blue — first-light sentinel
+    float m_ClearColor[4] = { 0.0f, 0.0f, 0.0f, 1.0f }; // black — the 2D UI draws over it
+
+    // --- 2D / UI draw path (Gothic menus, fonts, HUD) ---
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_SrvHeap;         // shader-visible CBV_SRV_UAV heap (texture SRVs)
+    UINT m_SrvDescriptorSize = 0;
+    UINT m_SrvHeapCapacity = 0;
+    UINT m_SrvAllocated = 0;                                        // bump allocator (no free-list yet)
+
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> m_UIRootSig;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_UIPipeline;
+
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_UIVertexBuffer[kBackBufferCount]; // persistently-mapped upload ring
+    uint8_t* m_UIVertexBufferPtr[kBackBufferCount] = {};
+    UINT m_UIVertexBufferCapacity = 0;
+    UINT m_UIVertexBufferOffset = 0;                               // reset each OnBeginFrame
+    bool m_UIOverflowLogged = false;
+
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_WhiteTexture;         // 1x1 white fallback for untextured draws
+    UINT m_WhiteSrvSlot = UINT_MAX;
+
+    GfxTexture* m_CurrentTexture = nullptr;                        // diffuse bound for the next 2D draw
+    D3D12_VIEWPORT m_CurrentViewport = {};                        // pixel-space viewport (drives transform + RSSetViewports)
+    D3D12_RECT     m_CurrentScissor = {};
 
     std::unique_ptr<D3D12LineRenderer> m_LineRenderer;
 };

@@ -1,5 +1,6 @@
 #include "ImGuiShim.h"
 #include "GSky.h"
+#include "D3D12Engine/D3D12GraphicsEngine.h"
 #include <VersionHelpers.h>
 #include <ShellScalingApi.h>
 
@@ -68,12 +69,76 @@ int GetDpi( HWND hWnd )
     return ydpi;
 }
 
+namespace {
+    // SRV-descriptor callbacks for imgui_impl_dx12: it needs to allocate/free shader-visible
+    // descriptors for its textures (font atlas + any user textures). We route these through the
+    // D3D12GraphicsEngine's shader-visible heap (passed via ImGui_ImplDX12_InitInfo::UserData).
+    void ImGuiDX12_SrvAlloc( ImGui_ImplDX12_InitInfo* info, D3D12_CPU_DESCRIPTOR_HANDLE* outCpu, D3D12_GPU_DESCRIPTOR_HANDLE* outGpu ) {
+        auto* engine = static_cast<D3D12GraphicsEngine*>( info->UserData );
+        const UINT slot = engine->AllocateSrvSlot();
+        *outCpu = engine->GetSrvCpuHandle( slot );
+        *outGpu = engine->GetSrvGpuHandle( slot );
+    }
+    // Bump allocator has no free-list yet: freeing is a no-op. ImGui frees are rare (font-atlas
+    // recreation on DPI/font change), so leaked slots are bounded — acceptable for now.
+    void ImGuiDX12_SrvFree( ImGui_ImplDX12_InitInfo* /*info*/, D3D12_CPU_DESCRIPTOR_HANDLE /*cpu*/, D3D12_GPU_DESCRIPTOR_HANDLE /*gpu*/ ) {
+    }
+
+    // Shared post-backend-init setup (DPI-scaled font, resolution list, editor view). The DX11 and
+    // DX12 init paths differ only in which ImGui_ImplXXXX_Init they call; everything else is common.
+    void FinishImGuiInit( HWND window, std::vector<std::pair<INT2, std::string>>& resolutions, std::unique_ptr<ImGuiEditorView>& editorView ) {
+        const auto actualDPI = GetDpi( window );
+
+        std::vector<DisplayModeInfo> modes;
+        Engine::GraphicsEngine->GetDisplayModeList( &modes );
+        resolutions.clear();
+        for ( auto it = modes.rbegin(); it != modes.rend(); ++it ) {
+            std::string s = std::to_string( (*it).Width ) + "x" + std::to_string( (*it).Height );
+            resolutions.emplace_back( std::make_pair( INT2( (*it).Width, (*it).Height ), s ) );
+        }
+
+        ImFontConfig config = {};
+
+        config.MergeMode = true;
+        //config.GlyphRanges = euroGlyphRanges;
+        const auto path = std::filesystem::current_path();
+        std::filesystem::path fonts[] = {
+            // path / "system" / "GD3D11" / "Fonts" / "GII_-_Die_Nacht_des_Raben.ttf",
+            path / "system" / "GD3D11" / "Fonts" / "Lato-Semibold.ttf",
+        };
+
+        bool firstFont = true;
+        for ( auto fontpath : fonts ) {
+            if ( std::filesystem::exists( fontpath ) ) {
+                config.MergeMode = !firstFont;
+                const auto font = ImGui::GetIO().Fonts->AddFontFromFileTTF( fontpath.string().c_str(), 20.0f, &config );
+                if ( font && firstFont ) {
+                    firstFont = false;
+                }
+            }
+        }
+
+        auto dpiScale = actualDPI / 96.0f;
+    
+        auto& style = ImGui::GetStyle();
+        style.FontScaleDpi = dpiScale;
+
+        style.Alpha = 1.0f;
+        style.Colors[ImGuiCol_Text] = ImVec4( 1.f, 0.87f, 0.68f, 1.f );
+        style.Colors[ImGuiCol_TextDisabled] = ImVec4( 1.f, 0.87f, 0.68f, 0.28f );
+        style.Colors[ImGuiCol_Border] = ImVec4( 0.84f, 0.54f, 0.15f, 1.0f );
+        style.Colors[ImGuiCol_BorderShadow] = ImVec4( 0.00f, 0.00f, 0.00f, 0.00f );
+        
+        editorView = std::make_unique<ImGuiEditorView>();
+    }
+}
+
 void ImGuiShim::Init(
     HWND Window,
     const Microsoft::WRL::ComPtr<ID3D11Device1>& device,
     const Microsoft::WRL::ComPtr<ID3D11DeviceContext1>& context
 )
-{ 
+{
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
@@ -83,99 +148,84 @@ void ImGuiShim::Init(
     OutputWindow = Window;
     ImGui_ImplWin32_Init( OutputWindow );
     ImGui_ImplDX11_Init( device.Get(), context.Get() );
+    m_Backend = Backend::D3D11;
 
-    const auto actualDPI = GetDpi( Window );
     Initiated = true;
+    FinishImGuiInit( Window, Resolutions, m_EditorView );
+}
 
-    std::vector<DisplayModeInfo> modes;
-    Engine::GraphicsEngine->GetDisplayModeList( &modes );
-    Resolutions.clear();
-    for ( auto it = modes.rbegin(); it != modes.rend(); ++it ) {
-        std::string s = std::to_string( (*it).Width ) + "x" + std::to_string( (*it).Height );
-        Resolutions.emplace_back( std::make_pair(INT2((*it).Width, (*it).Height), s) );
-    }
+void ImGuiShim::InitD3D12(
+    HWND Window,
+    D3D12GraphicsEngine* engine,
+    ID3D12Device* device,
+    ID3D12CommandQueue* queue,
+    int numFramesInFlight,
+    DXGI_FORMAT rtvFormat,
+    ID3D12DescriptorHeap* srvHeap
+)
+{
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.IniFilename = NULL;
+    io.LogFilename = NULL;
+    OutputWindow = Window;
+    ImGui_ImplWin32_Init( OutputWindow );
 
-    //static const ImWchar euroGlyphRanges[] = {
-    //    0x0020, 0x007E, // Basic Latin
-    //    0x00A0, 0x00FF, // Latin-1 Supplement
-    //    0x0100, 0x017F, // Latin Extended-A
-    //    0x0180, 0x018F, // Latin Extended-B
-    //    0x0400, 0x04FF, // Cyrillic
-    //    0x2010, 0x2015, // Various dashes
-    //    0x201E, 0x201E, // low-9 quotation mark
-    //    0x201C, 0x201D, // high-9 quotation marks
-    //    0,              // End of ranges
-    //};
-    ImFontConfig config = { };
-    config.MergeMode = true;
-    //config.GlyphRanges = euroGlyphRanges;
-    const auto path = std::filesystem::current_path();
-    std::filesystem::path fonts[] = {
-        // path / "system" / "GD3D11" / "Fonts" / "GII_-_Die_Nacht_des_Raben.ttf",
-        path / "system" / "GD3D11" / "Fonts" / "Lato-Semibold.ttf",
-    };
+    ImGui_ImplDX12_InitInfo initInfo = {};
+    initInfo.Device = device;
+    initInfo.CommandQueue = queue;
+    initInfo.NumFramesInFlight = numFramesInFlight;
+    initInfo.RTVFormat = rtvFormat;
+    initInfo.DSVFormat = DXGI_FORMAT_UNKNOWN;
+    initInfo.UserData = engine;
+    initInfo.SrvDescriptorHeap = srvHeap;
+    initInfo.SrvDescriptorAllocFn = &ImGuiDX12_SrvAlloc;
+    initInfo.SrvDescriptorFreeFn = &ImGuiDX12_SrvFree;
+    ImGui_ImplDX12_Init( &initInfo );
+    m_Backend = Backend::D3D12;
 
-    bool firstFont = true;
-    for ( auto fontpath : fonts ) {
-        if ( std::filesystem::exists( fontpath ) ) {
-            config.MergeMode = !firstFont;
-            const auto font = io.Fonts->AddFontFromFileTTF( fontpath.string().c_str(), 20.0f, &config );
-            if ( font && firstFont ) {
-                firstFont = false;
-            }
-        }
-    }
-
-    auto dpiScale = actualDPI / 96.0f;
-    
-    auto& style = ImGui::GetStyle();
-    style.FontScaleDpi = dpiScale;
-
-    style.Alpha = 1.0f;
-    style.Colors[ImGuiCol_Text] = ImVec4( 1.f, 0.87f, 0.68f, 1.f );
-    style.Colors[ImGuiCol_TextDisabled] = ImVec4( 1.f, 0.87f, 0.68f, 0.28f );
-    style.Colors[ImGuiCol_Border] = ImVec4( 0.84f, 0.54f, 0.15f, 1.0f );
-    style.Colors[ImGuiCol_BorderShadow] = ImVec4( 0.00f, 0.00f, 0.00f, 0.00f );
-    
-    m_EditorView = std::make_unique<ImGuiEditorView>();
+    Initiated = true;
+    FinishImGuiInit( Window, Resolutions, m_EditorView );
 }
 
 
 ImGuiShim::~ImGuiShim()
 {
     if ( Initiated ) {
-        ImGui_ImplWin32_Shutdown();
+        if ( m_Backend == Backend::D3D12 ) {
+            ImGui_ImplDX12_Shutdown();
+        } else {
+            ImGui_ImplDX11_Shutdown();
+        }
         ImGui_ImplWin32_Shutdown();
         ImGui::DestroyContext();
     }
 }
 
-void ImGuiShim::RenderLoop()
+void ImGuiShim::BuildFrameUI()
 {
-    ImGui_ImplDX11_NewFrame();
-    ImGui_ImplWin32_NewFrame();
-    ImGui::NewFrame();
-
     ImGui::GetIO().MouseDrawCursor = GetIsActive() && INT2( ImGui::GetMainViewport()->Size.x, ImGui::GetMainViewport()->Size.y ) != Engine::GraphicsEngine->GetResolution();
 
     static zSTRING GDX_IMGUI_BEGINFRAME = "GDX_IMGUI_BEGINFRAME";
     static zSTRING GDX_IMGUI_ENDFRAME = "GDX_IMGUI_ENDFRAME";
-    static int beginFrameFn = zCParser::GetParser()->GetIndex( GDX_IMGUI_BEGINFRAME );
-    static int endFrameFn = zCParser::GetParser()->GetIndex( GDX_IMGUI_ENDFRAME );
-
-    static int retryFindFuncs = 0;
-    if ( retryFindFuncs > 120 ) {
-        if ( beginFrameFn == -1 ) { beginFrameFn = zCParser::GetParser()->GetIndex( GDX_IMGUI_BEGINFRAME ); }
-        if ( endFrameFn == -1 ) { endFrameFn = zCParser::GetParser()->GetIndex( GDX_IMGUI_ENDFRAME ); }
-        retryFindFuncs = 0;
+    if ( !m_scriptFnsResolved ) {
+        m_beginFrameFn = zCParser::GetParser()->GetIndex( GDX_IMGUI_BEGINFRAME );
+        m_endFrameFn = zCParser::GetParser()->GetIndex( GDX_IMGUI_ENDFRAME );
+        m_scriptFnsResolved = true;
+    }
+    if ( m_retryFindFuncs > 120 ) {
+        if ( m_beginFrameFn == -1 ) { m_beginFrameFn = zCParser::GetParser()->GetIndex( GDX_IMGUI_BEGINFRAME ); }
+        if ( m_endFrameFn == -1 ) { m_endFrameFn = zCParser::GetParser()->GetIndex( GDX_IMGUI_ENDFRAME ); }
+        m_retryFindFuncs = 0;
     }
 
     LibShowBlockingThisFrame = false;
     LibShowNonBlockingThisFrame = false;
-    if ( beginFrameFn != -1 ) {
-        zCParser::GetParser()->CallFunc( beginFrameFn );
+    if ( m_beginFrameFn != -1 ) {
+        zCParser::GetParser()->CallFunc( m_beginFrameFn );
     } else {
-        retryFindFuncs++;
+        m_retryFindFuncs++;
     }
 
     auto oldSettings = Engine::GAPI->GetRendererState().RendererSettings;
@@ -205,13 +255,41 @@ void ImGuiShim::RenderLoop()
         m_lastFrameBlockGameInput = GetBlockGameInput();
         D3D11GraphicsEngine::UpdateShouldBlockGameInput();
     }
+}
+
+void ImGuiShim::CallEndFrameScript()
+{
+    if ( m_endFrameFn != -1 ) {
+        zCParser::GetParser()->CallFunc( m_endFrameFn );
+    }
+}
+
+void ImGuiShim::RenderLoop()
+{
+    ImGui_ImplDX11_NewFrame();
+    ImGui_ImplWin32_NewFrame();
+    ImGui::NewFrame();
+
+    BuildFrameUI();
 
     ImGui::Render();
     ImGui_ImplDX11_RenderDrawData( ImGui::GetDrawData() );
 
-    if ( endFrameFn != -1 ) {
-        zCParser::GetParser()->CallFunc( endFrameFn );
-    };
+    CallEndFrameScript();
+}
+
+void ImGuiShim::RenderLoopD3D12( ID3D12GraphicsCommandList* commandList )
+{
+    ImGui_ImplDX12_NewFrame();
+    ImGui_ImplWin32_NewFrame();
+    ImGui::NewFrame();
+
+    BuildFrameUI();
+
+    ImGui::Render();
+    ImGui_ImplDX12_RenderDrawData( ImGui::GetDrawData(), commandList );
+
+    CallEndFrameScript();
 }
 
 bool ImGuiShim::GetIsActive() {

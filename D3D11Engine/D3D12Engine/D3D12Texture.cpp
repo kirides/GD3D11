@@ -143,7 +143,11 @@ bool D3D12Texture::CreateAndUpload( void* data ) {
         return false;
     }
 
-    if ( !data ) return true;
+    if ( !data ) {
+        // No pixel data yet: the resource is already in PIXEL_SHADER_RESOURCE state, so it's bindable.
+        CreateSRV();
+        return true;
+    }
 
     std::vector<D3D12_SUBRESOURCE_DATA> subs( m_MipMapCount );
     const uint8_t* src = reinterpret_cast<const uint8_t*>( data );
@@ -154,7 +158,33 @@ bool D3D12Texture::CreateAndUpload( void* data ) {
         subs[i].SlicePitch = GetSizeInBytes( static_cast<int>( i ) );
         offset += GetSizeInBytes( static_cast<int>( i ) );
     }
-    return engine->UploadTextureSubresources( m_Texture.Get(), subs.data(), m_MipMapCount );
+    if ( !engine->UploadTextureSubresources( m_Texture.Get(), subs.data(), m_MipMapCount ) )
+        return false;
+
+    CreateSRV();
+    return true;
+}
+
+/** (Re)creates the shader-visible SRV for the current resource. The heap slot is allocated once and
+    reused across resource recreations (UpdateData), so a texture's GPU descriptor handle is stable. */
+void D3D12Texture::CreateSRV() {
+    D3D12GraphicsEngine* engine = Engine12();
+    ID3D12Device* device = engine ? engine->GetD3DDevice() : nullptr;
+    if ( !device || !m_Texture ) return;
+
+    if ( m_SrvSlot == 0xFFFFFFFFu ) {
+        m_SrvSlot = engine->AllocateSrvSlot();
+        if ( m_SrvSlot == 0xFFFFFFFFu ) return; // heap exhausted — stays unbindable (white fallback used)
+    }
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC srvd = {};
+    srvd.Format = m_Format;
+    srvd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srvd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srvd.Texture2D.MipLevels = m_MipMapCount;
+    device->CreateShaderResourceView( m_Texture.Get(), &srvd, engine->GetSrvCpuHandle( m_SrvSlot ) );
+    m_SrvGpu = engine->GetSrvGpuHandle( m_SrvSlot );
+    m_HasSrv = true;
 }
 
 XRESULT D3D12Texture::UpdateData( void* data, int mip ) {

@@ -729,6 +729,9 @@
     <ClInclude Include="include\imgui\backends\imgui_impl_dx11.h">
       <Filter>Librarys\imgui\backends</Filter>
     </ClInclude>
+    <ClInclude Include="include\imgui\backends\imgui_impl_dx12.h">
+      <Filter>Librarys\imgui\backends</Filter>
+    </ClInclude>
     <ClInclude Include="include\imgui\backends\imgui_impl_win32.h">
       <Filter>Librarys\imgui\backends</Filter>
     </ClInclude>
@@ -1107,6 +1110,9 @@
       <Filter>Librarys\imgui</Filter>
     </ClCompile>
     <ClCompile Include="include\imgui\backends\imgui_impl_dx11.cpp">
+      <Filter>Librarys\imgui\backends</Filter>
+    </ClCompile>
+    <ClCompile Include="include\imgui\backends\imgui_impl_dx12.cpp">
       <Filter>Librarys\imgui\backends</Filter>
     </ClCompile>
     <ClCompile Include="include\imgui\backends\imgui_impl_win32.cpp">

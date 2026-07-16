@@ -45,12 +45,17 @@ public:
     INT2 GetSize() const { return m_Size; }
     unsigned int GetMipMapCount() const { return m_MipMapCount; }
 
+    /** True once a shader-visible SRV has been created for the current resource (bindable in a draw). */
+    bool HasSRV() const { return m_HasSrv; }
+    D3D12_GPU_DESCRIPTOR_HANDLE GetSrvGpuHandle() const { return m_SrvGpu; }
+
     /** Backend downcast from the neutral base. Safe by construction while the D3D12 backend is active. */
     static D3D12Texture* From( GfxTexture* texture ) { return static_cast<D3D12Texture*>( texture ); }
 
 private:
     XRESULT InitFromDDS( const uint8_t* bytes, size_t size, const std::string& name );
     bool CreateAndUpload( void* data );   // committed resource (+ synchronous upload when data != null)
+    void CreateSRV();                     // (re)creates the shader-visible SRV for the current resource
 
     Microsoft::WRL::ComPtr<ID3D12Resource> m_Texture;
     DXGI_FORMAT  m_Format = DXGI_FORMAT_UNKNOWN;
@@ -58,4 +63,8 @@ private:
     unsigned int m_MipMapCount = 1;
     uint16_t     m_ID = 0;
     std::vector<uint8_t> m_Staging;       // multi-mip UpdateData accumulation
+
+    unsigned int m_SrvSlot = 0xFFFFFFFFu;                 // persistent slot in the engine's SRV heap (UINT_MAX = none)
+    D3D12_GPU_DESCRIPTOR_HANDLE m_SrvGpu = {};            // cached GPU handle for that slot
+    bool m_HasSrv = false;
 };

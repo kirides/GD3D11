@@ -1064,6 +1064,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="include\ImGuizmo\src\ImSequencer.h" />
     <ClInclude Include="include\ImGuizmo\src\ImZoomSlider.h" />
     <ClInclude Include="include\imgui\backends\imgui_impl_dx11.h" />
+    <ClInclude Include="include\imgui\backends\imgui_impl_dx12.h" />
     <ClInclude Include="include\imgui\backends\imgui_impl_win32.h" />
     <ClInclude Include="include\imgui\imconfig.h" />
     <ClInclude Include="include\imgui\imgui.h" />
@@ -1166,6 +1167,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="VertexPacking.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="BaseGraphicsEngine.cpp" />
     <ClCompile Include="BaseLineRenderer.cpp" />
     <ClCompile Include="BaseWidget.cpp" />
     <ClCompile Include="ConstantBufferPool.cpp" />
@@ -1330,6 +1332,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="include\ImGuizmo\src\ImGuizmo.cpp" />
     <ClCompile Include="include\ImGuizmo\src\ImSequencer.cpp" />
     <ClCompile Include="include\imgui\backends\imgui_impl_dx11.cpp" />
+    <ClCompile Include="include\imgui\backends\imgui_impl_dx12.cpp" />
     <ClCompile Include="include\imgui\backends\imgui_impl_win32.cpp" />
     <ClCompile Include="include\imgui\imgui.cpp" />
     <ClCompile Include="include\imgui\imgui_draw.cpp" />
