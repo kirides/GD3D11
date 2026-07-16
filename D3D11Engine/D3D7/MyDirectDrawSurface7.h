@@ -119,7 +119,7 @@ private:
     DDSURFACEDESC2 OriginalSurfaceDesc;
 
     /** Attached texture */
-    std::unique_ptr<GfxTexture> EngineTexture;
+    GfxTexture* EngineTexture;
 
     /** Associated Name */
     std::string TextureName;

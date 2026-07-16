@@ -24,5 +24,16 @@ public:
     VERTEX_INDEX hashIndex;
     zCObject* hashNext;
     zSTRING objectName;
+
+    int Release() {
+        const auto c = --refCtr;
+        if ( c < 1 ) {
+            delete this;
+        }
+        return c;
+    }
+    int AddRef() {
+        return ++refCtr;
+    }
 };
 

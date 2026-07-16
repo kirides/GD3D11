@@ -292,7 +292,16 @@ D3D12GraphicsEngine::D3D12GraphicsEngine() {
 }
 
 D3D12GraphicsEngine::~D3D12GraphicsEngine() {
-    if ( m_SwapChainReady ) WaitForGpuIdle();
+    if ( m_SwapChainReady ) {
+        WaitForGpuIdle();
+        // Force-run all remaining cleanups
+        for ( UINT i = 0; i < kBackBufferCount; ++i ) {
+            for ( auto& cleanupCallback : m_PerFrameCleanupItems[i] ) {
+                cleanupCallback();
+            }
+            m_PerFrameCleanupItems[i].clear();
+        }
+    }
     if ( m_FenceEvent ) CloseHandle( m_FenceEvent );
     if ( m_UploadEvent ) CloseHandle( m_UploadEvent );
 }
@@ -445,20 +454,59 @@ bool D3D12GraphicsEngine::CreateSrvHeap() {
 }
 
 UINT D3D12GraphicsEngine::AllocateSrvSlot() {
+    // Try to reuse a freed slot first
+    if ( !m_FreeSrvSlots.empty() ) {
+        UINT slot = m_FreeSrvSlots.back();
+        m_FreeSrvSlots.pop_back();
+        return slot;
+    }
+
+    // Fall back to bump allocation
     if ( m_SrvAllocated >= m_SrvHeapCapacity ) {
-        LogWarn() << "D3D12: SRV heap exhausted (" << m_SrvHeapCapacity << " descriptors). Further textures won't bind.";
+        LogWarn() << "D3D12: SRV heap exhausted (" << m_SrvHeapCapacity << " descriptors).";
         return UINT_MAX;
     }
     return m_SrvAllocated++;
 }
 
+void D3D12GraphicsEngine::FreeSrvSlot( UINT slot ) {
+    if ( slot == UINT_MAX || slot == m_WhiteSrvSlot ) return;
+
+    // Nullify the descriptor to prevent pointing to dead memory
+    ID3D12Device* device = m_Device.GetDevice();
+    D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = GetSrvCpuHandle( slot );
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC nullDesc = {};
+    nullDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    nullDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    nullDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    nullDesc.Texture2D.MipLevels = 1;
+
+    // Bind white texture to free slot.
+
+    // Writing a null resource view to this descriptor slot safely clears it
+    device->CreateShaderResourceView( m_WhiteTexture.Get(), &nullDesc, cpuHandle);
+
+    m_FreeSrvSlots.push_back( slot );
+}
+
 D3D12_CPU_DESCRIPTOR_HANDLE D3D12GraphicsEngine::GetSrvCpuHandle( UINT slot ) const {
+    if ( std::ranges::contains( m_FreeSrvSlots, slot ) ) {
+        // Ensure invalid slots provide some texture instead of breaking
+        return GetSrvCpuHandle( m_WhiteSrvSlot );
+    }
+
     D3D12_CPU_DESCRIPTOR_HANDLE h = m_SrvHeap->GetCPUDescriptorHandleForHeapStart();
     h.ptr += static_cast<SIZE_T>( slot ) * m_SrvDescriptorSize;
     return h;
 }
 
 D3D12_GPU_DESCRIPTOR_HANDLE D3D12GraphicsEngine::GetSrvGpuHandle( UINT slot ) const {
+    if ( std::ranges::contains( m_FreeSrvSlots, slot ) ) {
+        // Ensure invalid slots provide some texture instead of breaking
+        return GetSrvGpuHandle( m_WhiteSrvSlot );
+    }
+
     D3D12_GPU_DESCRIPTOR_HANDLE h = m_SrvHeap->GetGPUDescriptorHandleForHeapStart();
     h.ptr += static_cast<UINT64>( slot ) * m_SrvDescriptorSize;
     return h;
@@ -1533,6 +1581,16 @@ XRESULT D3D12GraphicsEngine::SetWindow( HWND hWnd ) {
     return OnResize( size );
 }
 
+void D3D12GraphicsEngine::QueueSrvResourceForRelease( UINT slot, Microsoft::WRL::ComPtr<ID3D12Resource> resource )
+{
+    m_PerFrameCleanupItems[m_FrameIndex].emplace_back( [this, slot, resource = std::move(resource)]() {
+        // Recycle the descriptor slot safely
+        this->FreeSrvSlot( slot );
+
+        // The ComPtr 'resource' capture naturally dies here, releasing the ID3D12Resource;
+    } );
+}
+
 /** Sizes the actual OS window to the target resolution and tells Gothic about the mode so its 2D
     UI coordinate space matches. Mirrors the windowed / borderless branch of the D3D11 backend. */
 void D3D12GraphicsEngine::ResizeOutputWindow( INT2 size ) {
@@ -1780,19 +1838,50 @@ void D3D12GraphicsEngine::MoveToNextFrame() {
         WaitForSingleObject( m_FenceEvent, INFINITE );
     }
     m_FenceValues[m_FrameIndex] = currentFenceValue + 1;
+
+    // Clean up all resources slated for deletion from its last pass.
+    for ( auto& cleanupCallback : m_PerFrameCleanupItems[m_FrameIndex] ) {
+        cleanupCallback(); // Calls FreeSrvSlot() and drops the captured ComPtrs
+    }
+    m_PerFrameCleanupItems[m_FrameIndex].clear(); // Empty the list for the new frame
 }
 
 void D3D12GraphicsEngine::WaitForGpuIdle() {
     if ( !m_Fence || !m_Device.GetDirectQueue() ) return;
 
-    const UINT64 value = m_FenceValues[m_FrameIndex];
-    if ( FAILED( m_Device.GetDirectQueue()->Signal( m_Fence.Get(), value ) ) ) return;
+    // Calculate a "one-off" future value beyond all active frames.
+    // This avoids colliding with any m_FenceValues currently in flight.
+    UINT64 completedValue = m_Fence->GetCompletedValue();
+    UINT64 idleValue = completedValue + 1;
 
-    if ( m_Fence->GetCompletedValue() < value ) {
-        m_Fence->SetEventOnCompletion( value, m_FenceEvent );
-        WaitForSingleObject( m_FenceEvent, INFINITE );
+    // Scan all active frames to ensure we choose a value strictly greater 
+    // than any pending fence signals.
+    for ( UINT i = 0; i < kBackBufferCount; ++i ) {
+        if ( m_FenceValues[i] >= idleValue ) {
+            idleValue = m_FenceValues[i] + 1;
+        }
     }
-    m_FenceValues[m_FrameIndex]++;
+
+    // Queue the signal command on the GPU timeline.
+    // Because GPU execution is sequential, this milestone is only reached 
+    // when ALL work previously queued has finished.
+    if ( FAILED( m_Device.GetDirectQueue()->Signal( m_Fence.Get(), idleValue ) ) ) return;
+
+    // Perform a CPU wait using a transient local event.
+    if ( m_Fence->GetCompletedValue() < idleValue ) {
+        // Create an anonymous, auto-reset event
+        HANDLE eventHandle = CreateEventEx( nullptr, nullptr, 0, EVENT_ALL_ACCESS );
+        if ( eventHandle ) {
+            m_Fence->SetEventOnCompletion( idleValue, eventHandle );
+            WaitForSingleObject( eventHandle, INFINITE );
+            CloseHandle( eventHandle );
+        }
+    }
+
+    // Update our CPU-side trackers so they know the GPU is completely caught up.
+    for ( UINT i = 0; i < kBackBufferCount; ++i ) {
+        m_FenceValues[i] = idleValue;
+    }
 }
 
 bool D3D12GraphicsEngine::ResizeSwapChain( INT2 size ) {

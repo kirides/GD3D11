@@ -75,6 +75,7 @@ namespace {
 }
 
 D3D12VertexBuffer::~D3D12VertexBuffer() {
+    Engine12()->UglySyncrhonizationWorkaroundWaitForGpuIdle();
     if ( m_Resource && m_MappedPtr ) {
         m_Resource->Unmap( 0, nullptr );
         m_MappedPtr = nullptr;

@@ -31,6 +31,7 @@ MyDirectDrawSurface7::MyDirectDrawSurface7() {
 }
 
 MyDirectDrawSurface7::~MyDirectDrawSurface7() {
+    IsReady = false;
     // Release mip-map chain first
     for ( LPDIRECTDRAWSURFACE7 mipmap : attachedSurfaces ) {
         mipmap->Release();
@@ -39,14 +40,14 @@ MyDirectDrawSurface7::~MyDirectDrawSurface7() {
     // Sometimes gothic doesn't unlock a surface or this is a movie-buffer
     delete[] LockedData;
 
-    EngineTexture.reset();
+    delete EngineTexture;
     delete Normalmap;
     delete FxMap;
 }
 
 /** Returns the engine texture of this surface */
 GfxTexture* MyDirectDrawSurface7::GetEngineTexture() {
-    return EngineTexture.get();
+    return EngineTexture;
 }
 
 /** Returns the engine texture of this surface */
@@ -67,7 +68,7 @@ void MyDirectDrawSurface7::BindToSlot( int slot ) {
         return;
     }
 
-    Engine::GraphicsEngine->BindSurfaceTextures( slot, EngineTexture.get(), Normalmap, 2 );
+    Engine::GraphicsEngine->BindSurfaceTextures( slot, EngineTexture, Normalmap, 2 );
 }
 
 static bool LoadResource(
@@ -510,7 +511,7 @@ HRESULT MyDirectDrawSurface7::SetSurfaceDesc( LPDDSURFACEDESC2 lpDDSurfaceDesc, 
     }
 
     // Create the texture object this is linked with
-    Engine::GraphicsEngine->CreateTexture( EngineTexture );
+    Engine::GraphicsEngine->CreateTexture( &EngineTexture );
 
 
     int redBits = Toolbox::GetNumberOfBits( lpDDSurfaceDesc->ddpfPixelFormat.dwRBitMask );

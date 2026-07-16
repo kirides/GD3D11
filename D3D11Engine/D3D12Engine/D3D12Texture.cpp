@@ -21,6 +21,24 @@ namespace {
     }
 }
 
+D3D12Texture::~D3D12Texture()
+{
+    D3D12GraphicsEngine* engine = Engine12();
+    //engine->UglySyncrhonizationWorkaroundWaitForGpuIdle();
+    //engine->FreeSrvSlot( m_SrvSlot );
+
+
+    if ( m_Texture && m_SrvSlot != 0xFFFFFFFFu ) {
+        engine->QueueSrvResourceForRelease( m_SrvSlot, m_Texture );
+    }
+
+    m_Texture.Reset();
+
+    /*engine->QueueSrvResourceForRelease( m_SrvSlot, m_Texture );
+    engine->QueueSrvResourceForRelease( m_SrvSlot, m_Texture );
+    m_Texture.Reset();*/
+}
+
 XRESULT D3D12Texture::Init( INT2 size, ETextureFormat format, unsigned int mipMapCount, void* data, const std::string& /*fileName*/ ) {
     m_Format = static_cast<DXGI_FORMAT>( format );
     m_Size = size;

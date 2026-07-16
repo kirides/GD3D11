@@ -87,8 +87,15 @@ public:
     /** Allocates a persistent slot in the shader-visible SRV heap. Returns UINT_MAX if exhausted.
         Used by D3D12Texture to create its SRV once at load time. */
     UINT AllocateSrvSlot();
+    void FreeSrvSlot( UINT slot );
     D3D12_CPU_DESCRIPTOR_HANDLE GetSrvCpuHandle( UINT slot ) const;
     D3D12_GPU_DESCRIPTOR_HANDLE GetSrvGpuHandle( UINT slot ) const;
+
+    void UglySyncrhonizationWorkaroundWaitForGpuIdle() {
+        WaitForGpuIdle();
+    }
+
+    void QueueSrvResourceForRelease( UINT slot, Microsoft::WRL::ComPtr<ID3D12Resource> resource );
 
 private:
     void ResizeOutputWindow( INT2 size );  // size the OS window + inform Gothic (zCView) of the mode
@@ -148,6 +155,7 @@ private:
     UINT m_SrvDescriptorSize = 0;
     UINT m_SrvHeapCapacity = 0;
     UINT m_SrvAllocated = 0;                                        // bump allocator (no free-list yet)
+    std::vector<UINT> m_FreeSrvSlots; // Recycled descriptor indices
 
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_UIRootSig;
     Microsoft::WRL::ComPtr<ID3DBlob> m_UIVsBlob;                    // compiled once; reused for every blend PSO
@@ -202,4 +210,5 @@ private:
     bool m_SkeletalCBOverflowLogged = false;
 
     std::unique_ptr<D3D12LineRenderer> m_LineRenderer;
+    std::vector<std::move_only_function<void()>> m_PerFrameCleanupItems[kBackBufferCount] = {};
 };

@@ -17,7 +17,7 @@
 class D3D12Texture : public GfxTexture {
 public:
     D3D12Texture() = default;
-    ~D3D12Texture() override = default;
+    ~D3D12Texture() override;
 
     XRESULT Init( INT2 size, ETextureFormat format, unsigned int mipMapCount = 1, void* data = nullptr, const std::string& fileName = "" ) override;
     XRESULT Init( const std::string& file ) override;

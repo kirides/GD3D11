@@ -100,8 +100,8 @@ public:
 	}
 
 	/** Returns the actual vertex buffer */
-	D3D11VertexBuffer* GetVertexBuffer() {
-		return D3D11VertexBuffer::From( VertexBuffer.get() );
+    GfxVertexBuffer* GetVertexBuffer() {
+		return VertexBuffer.get();
 	}
 
 private:
