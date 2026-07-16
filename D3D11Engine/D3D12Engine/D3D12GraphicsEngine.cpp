@@ -1743,11 +1743,11 @@ XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
 
             // Water is transparent — bucket it by texture for the later alpha-blended pass, skip here.
             if ( meshKey.Info && meshKey.Info->MaterialType == MaterialInfo::MT_Water ) {
-                g_FrameWaterSurfaces[meshKey.Texture].push_back( mesh );
+                g_FrameWaterSurfaces[meshKey.Material->GetAniTexture()].push_back(mesh);
                 continue;
             }
 
-            zCTexture* tex = meshKey.Texture;
+            zCTexture* tex = meshKey.Material->GetAniTexture();
             if ( tex != boundTex ) {
                 D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
                 if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
@@ -1839,7 +1839,7 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
                 m_VobInstanceBuffer[frame]->GetGPUVirtualAddress() + instOffset, instBytes, sizeof( VobInstanceInfo ) };
 
             for ( auto const& [meshKey, meshList] : visual->MeshesByTexture ) {
-                zCTexture* tex = meshKey.Texture;
+                zCTexture* tex = meshKey.Material->GetAniTexture();
                 D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
                 if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
                     if ( MyDirectDrawSurface7* surface = tex->GetSurface() ) {
@@ -1948,6 +1948,7 @@ XRESULT D3D12GraphicsEngine::DrawSkeletalMeshes( std::vector<SkeletalVobInfo*>& 
         if ( XMVector3Greater( XMVector3LengthSq( camPos - vi->Vob->GetPositionWorldXM() ), radiusSq ) )
             continue;   // out of skeletal-draw range
 
+        model->SetDistanceToCamera( 500 );
         model->UpdateAttachedVobs();
         model->UpdateMeshLibTexAniState();
 
