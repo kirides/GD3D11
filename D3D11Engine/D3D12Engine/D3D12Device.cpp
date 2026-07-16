@@ -122,11 +122,55 @@ bool D3D12Device::IsAvailable( std::string* outDescription, std::string* outReas
     return true;
 }
 
+static UINT GetD3D12CoreSDKVersion( const std::string& pluginDirectory ) {
+    std::string coreDllPath = pluginDirectory + "d3d12Core.dll";
+
+    // Load your custom d3d12Core.dll temporarily to read its metadata
+    HMODULE hCore = LoadLibraryExA( coreDllPath.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS );
+    if ( !hCore ) {
+        return 0; // File not found or failed to load
+    }
+
+    // Retrieve the exported version symbol
+    auto pSDKVersion = reinterpret_cast<const UINT*>(GetProcAddress( hCore, "D3D12SDKVersion" ));
+    UINT version = pSDKVersion ? *pSDKVersion : 0;
+
+    FreeLibrary( hCore );
+    return version;
+}
+
 bool D3D12Device::Init() {
+    std::string sdkPath;
+    sdkPath.resize( MAX_PATH );
+    sdkPath.resize( GetModuleFileNameA( nullptr, sdkPath.data(), sdkPath.size() - 1 ) );
+    auto lastTerminator = sdkPath.find_last_of( '\\' );
+    if ( lastTerminator != std::string::npos ) {
+        sdkPath.erase( lastTerminator );
+    }
+    sdkPath.append( "\\GD3D11\\D3D12\\" );
+    UINT agilitySdkVersion = GetD3D12CoreSDKVersion( sdkPath );
+
     PFN_D3D12_CREATE_DEVICE createDevice = LoadD3D12CreateDevice();
     if ( !createDevice ) {
         LogWarn() << "D3D12Device::Init: d3d12.dll / D3D12CreateDevice unavailable.";
         return false;
+    }
+
+    // 2. Get the D3D12GetInterface export from the loader
+
+    if ( auto hD3d12 = LoadLibraryA( "d3d12.dll" ) ) {
+        auto pfnD3D12GetInterface = reinterpret_cast<PFN_D3D12_GET_INTERFACE>(GetProcAddress( hD3d12, "D3D12GetInterface" ) );
+
+        if ( pfnD3D12GetInterface ) {
+            Microsoft::WRL::ComPtr<ID3D12SDKConfiguration> sdkConfig;
+            HRESULT hr = pfnD3D12GetInterface( CLSID_D3D12SDKConfiguration, IID_PPV_ARGS( &sdkConfig ) );
+            if ( SUCCEEDED( hr ) && sdkConfig ) {
+                hr = sdkConfig->SetSDKVersion( agilitySdkVersion, sdkPath.c_str() );
+                if ( !SUCCEEDED( hr ) ) {
+                    LogWarn() << "Failed to initialize agility SDK";
+                }
+            }
+        }
     }
 
 #ifdef _DEBUG
