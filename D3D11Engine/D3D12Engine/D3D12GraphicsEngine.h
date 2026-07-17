@@ -131,6 +131,9 @@ private:
     bool CreateVobPipeline();         // instanced VOB PSO (reuses the world root sig) + inline shaders
     bool CreateVobInstanceBuffers();  // per-frame dynamic (upload-heap) VOB instance ring buffers
     XRESULT DrawVobsInstanced();      // collect visible VOBs + draw each visual instanced (textured)
+    bool CreateLightBuffer();         // per-frame point-light structured buffers (Forward+ MVP: brute-force)
+    void BuildFrameLightBuffer();     // (re)fill this frame's light buffer from the collected visible lights
+    void BindFrameLights();           // bind light SRV (param 3/t1) + count (param 4/b2) on m_WorldRootSig draws
     bool CreateWaterPipeline();       // alpha-blended water PSO + own root sig (adds b2 time) + inline shaders
     void DrawWaterSurfaces() override; // draw water peeled out of the opaque world pass (scrolled UV, blended)
     bool CreateSkeletalPipeline();    // skeletal (animated NPC/monster) root sig + inline shaders + PSO
@@ -231,6 +234,16 @@ private:
     UINT m_VobInstanceBufferCapacity = 0;
     UINT m_VobInstanceBufferOffset = 0;                            // reset each OnBeginFrame
     bool m_VobInstanceOverflowLogged = false;
+
+    // --- Forward+ dynamic point lights (P2.9a: per-frame brute-force light buffer, no tiling yet) ---
+    // StructuredBuffer of the frame's visible point lights, rebuilt each frame from CollectVisibleVobs and
+    // bound as a root SRV (t1) to the world/VOB pixel shaders, which loop it per pixel (N.L + attenuation)
+    // on top of the baked vertex lighting. Root SRV => no descriptor-heap slot consumed.
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_LightBuffer[kBackBufferCount]; // persistently-mapped UPLOAD, GPULight[]
+    uint8_t* m_LightBufferPtr[kBackBufferCount] = {};
+    UINT m_LightBufferCapacity = 0;                               // max lights per frame
+    UINT m_FrameLightCount = 0;                                   // lights written this frame
+    bool m_LightOverflowLogged = false;
 
     // Water (transparent world surfaces). Own root sig = the world layout + b2 = { time, alpha } (VS
     // scrolls the UV by time; PS uses alpha for the blend). Alpha-blended PSO: depth-test ON, write OFF.

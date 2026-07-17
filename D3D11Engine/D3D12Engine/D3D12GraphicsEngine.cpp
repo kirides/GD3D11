@@ -13,6 +13,7 @@
 #include "../zCModel.h"
 #include "../zCMaterial.h"
 #include "../zCVob.h"
+#include "../zCVobLight.h"
 #include "../zCDecal.h"
 #include "../WorldConverter.h"
 #include "../VertexTypes.h"
@@ -21,14 +22,71 @@
 #include "../zCCamera.h"
 #include "../oCGame.h"
 
-#include <d3dcompiler.h>
+#include <dxcapi.h>
 
 // imgui_impl_dx12 calls CreateDXGIFactory1 directly (for tearing detection). dxgi.dll is present on
 // every Windows 7+ and the D3D11 fallback swapchain already needs it at runtime, so a load-time link
 // here is safe — it does NOT reintroduce the D3D12 soft-dependency that lets old systems fall back.
 #pragma comment(lib, "dxgi.lib")
 
+// TODO: Replace dependency with runtime dynamic load of dxcompiler.dll (like D3D12CreateDevice) to avoid shipping it on systems that don't support D3D12.
+#pragma comment(lib, "dxcompiler.lib")
+
 using Microsoft::WRL::ComPtr;
+
+
+// Why is BeginEvent not working as intended with Context on debugging this 32 bit app !!
+// A global ring-buffer tracking recent recording phases mapped directly to command list slots
+struct CPUBreadcrumbContext {
+    UINT opIndex = 0;
+    const wchar_t* pContextText = nullptr;
+};
+
+// Allocate space for tracking up to 2048 sequential draw states per frame execution
+inline thread_local std::array<CPUBreadcrumbContext, 2048> g_CpuContextHistory;
+inline thread_local UINT g_CurrentRecordingOpIndex = 0;
+
+struct DXMarker {
+    DXMarker( const Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList>& commandList, const wchar_t* text ) :
+        c( commandList.Get() )
+    {
+        if ( c && text ) {
+            // Track exactly what string context we are assigning to the CURRENT command slot
+            if ( g_CurrentRecordingOpIndex < g_CpuContextHistory.size() ) {
+                g_CpuContextHistory[g_CurrentRecordingOpIndex] = { g_CurrentRecordingOpIndex, text };
+            }
+
+            UINT byteSize = static_cast<UINT>( (wcslen( text ) + 1) * sizeof( wchar_t ) );
+            c->BeginEvent( 0, text, byteSize );
+
+            // Increment tracking slot to match what DRED maps under the hood
+            g_CurrentRecordingOpIndex++;
+        }
+    }
+
+    ~DXMarker() {
+        if ( c ) {
+            c->EndEvent();
+            g_CurrentRecordingOpIndex++;
+        }
+    }
+
+    DXMarker( const DXMarker& ) = delete;
+    DXMarker& operator=( const DXMarker& ) = delete;
+
+private:
+    ID3D12GraphicsCommandList* c;
+};
+
+// Reset this counter to 0 EVERY TIME you call Reset() on your command list!
+inline void ResetCpuContextTracker() {
+    g_CurrentRecordingOpIndex = 0;
+    for ( auto& slot : g_CpuContextHistory ) {
+        slot.pContextText = nullptr;
+    }
+}
+
+#define DX_ZONE(cmdList, nameStr) DXMarker marker_local_evt_##__LINE__(cmdList, L##nameStr)
 
 namespace {
     constexpr DXGI_FORMAT kBackBufferFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -44,6 +102,140 @@ namespace {
         HMODULE d3d12 = LoadLibraryA( "d3d12.dll" );
         if ( !d3d12 ) return nullptr;
         return reinterpret_cast<PFN_SERIALIZE_ROOT_SIG>( GetProcAddress( d3d12, "D3D12SerializeRootSignature" ) );
+    }
+
+    // TODO: in the future make this depend on device capabilities.
+    constexpr const char* Shadermodel_PS = "ps_6_6";
+    constexpr const char* Shadermodel_VS = "vs_6_6";
+
+    static std::wstring ToWideString( LPCSTR str ) {
+        if ( !str ) return L"";
+        int size_needed = MultiByteToWideChar( CP_UTF8, 0, str, -1, NULL, 0 );
+        std::wstring wstr( size_needed, 0 );
+        MultiByteToWideChar( CP_UTF8, 0, str, -1, &wstr[0], size_needed );
+        // Trim internal null-terminator sizing artifacts from MultiByteToWideChar
+        if ( !wstr.empty() && wstr.back() == L'\0' ) {
+            wstr.pop_back();
+        }
+        return wstr;
+    }
+
+    bool CompileShaderD3D12(
+    _In_reads_bytes_( SrcDataSize ) LPCVOID pSrcData,
+    _In_ SIZE_T SrcDataSize,
+    _In_opt_ LPCSTR pSourceName,
+    _In_reads_opt_( _Inexpressible_( pDefines->Name != NULL ) ) CONST D3D_SHADER_MACRO* pDefines,
+    _In_opt_ ID3DInclude* pInclude, // Note: Modern DXC uses IDxcIncludeHandler instead of ID3DInclude!
+    _In_opt_ LPCSTR pEntrypoint,
+    _In_ LPCSTR pTarget,
+    _In_ UINT Flags1,
+    _In_ UINT Flags2,
+    _Out_ ID3DBlob** ppCode )
+    {
+        using Microsoft::WRL::ComPtr;
+
+        // 1. Initialize DXC Compiler Instances
+        ComPtr<IDxcCompiler3> compiler;
+        ComPtr<IDxcUtils> dxcUtils;
+
+        if ( FAILED( DxcCreateInstance( CLSID_DxcCompiler, IID_PPV_ARGS( compiler.GetAddressOf() ) ) ) ||
+            FAILED( DxcCreateInstance( CLSID_DxcUtils, IID_PPV_ARGS( dxcUtils.GetAddressOf() ) ) ) ) {
+            LogWarn() << "D3D12: Failed to create DXC compiler instances. Make sure dxcompiler.dll is loaded.";
+            return false;
+        }
+
+        // 2. Wrap the source memory block into a DXC Buffer
+        DxcBuffer sourceBuffer;
+        sourceBuffer.Ptr = pSrcData;
+        sourceBuffer.Size = SrcDataSize;
+        sourceBuffer.Encoding = DXC_CP_ACP; // Standard ANSI/UTF-8 codepage
+
+        // 3. Build up the DXC CLI argument array
+        std::vector<LPCWSTR> arguments;
+
+        // Source filename (for debug/error tracking symbols)
+        std::wstring wSourceName = ToWideString( pSourceName ? pSourceName : "ShaderSource" );
+        arguments.push_back( wSourceName.c_str() );
+
+        // Entrypoint function name (e.g., -E main)
+        std::wstring wEntrypoint = ToWideString( pEntrypoint ? pEntrypoint : "main" );
+        arguments.push_back( L"-E" );
+        arguments.push_back( wEntrypoint.c_str() );
+
+        // Target Profile / Shader Model (e.g., -T vs_6_0, ps_6_6)
+        std::wstring wTarget = ToWideString( pTarget );
+        arguments.push_back( L"-T" );
+        arguments.push_back( wTarget.c_str() );
+
+        // Handle Debug Configuration Flags
+#ifdef DEBUG_D3D11
+        arguments.push_back( DXC_ARG_DEBUG );                 // -Zi (Enable debug information)
+        arguments.push_back( DXC_ARG_SKIP_OPTIMIZATIONS );    // -Od (Disable optimizations)
+#else
+        arguments.push_back( DXC_ARG_OPTIMIZATION_LEVEL3 );   // -O3 (Maximum optimization for release)
+#endif
+
+        // Translate any legacy macro preprocessors into modern DXC -D parameters
+        std::vector<std::wstring> wDefinesStore;
+        if ( pDefines ) {
+            for ( const D3D_SHADER_MACRO* macro = pDefines; macro->Name != nullptr; ++macro ) {
+                std::wstring defineArg = ToWideString( macro->Name );
+                if ( macro->Definition ) {
+                    defineArg += L"=";
+                    defineArg += ToWideString( macro->Definition );
+                }
+                wDefinesStore.push_back( defineArg );
+            }
+            for ( const auto& wDef : wDefinesStore ) {
+                arguments.push_back( L"-D" );
+                arguments.push_back( wDef.c_str() );
+            }
+        }
+
+        // 4. Run the DXIL compilation pipeline
+        ComPtr<IDxcResult> compileResult;
+        HRESULT hr = compiler->Compile(
+            &sourceBuffer,
+            arguments.data(),
+            static_cast<UINT32>(arguments.size()),
+            nullptr, // Default include handler. Pass a custom IDxcIncludeHandler here if needed.
+            IID_PPV_ARGS( compileResult.GetAddressOf() )
+        );
+
+        if ( FAILED( hr ) ) {
+            LogWarn() << "D3D12: HRESULT compilation failure.";
+            return false;
+        }
+
+        // 5. Inspect and intercept potential compile errors
+        ComPtr<IDxcBlobUtf8> errorBuffer;
+        if ( SUCCEEDED( compileResult->GetOutput( DXC_OUT_ERRORS, IID_PPV_ARGS( errorBuffer.GetAddressOf() ), nullptr ) ) ) {
+            if ( errorBuffer && errorBuffer->GetStringLength() > 0 ) {
+                LogWarn() << "D3D12: DXC Shader Compilation warning/error:\n" << errorBuffer->GetStringPointer();
+            }
+        }
+
+        // Check if the overall operation succeeded or failed
+        HRESULT status;
+        if ( FAILED( compileResult->GetStatus( &status ) ) || FAILED( status ) ) {
+            return false;
+        }
+
+        // 6. Extract the compiled byte code blob and translate it to an ID3DBlob container
+        ComPtr<IDxcBlob> shaderCodeBlob;
+        if ( SUCCEEDED( compileResult->GetOutput( DXC_OUT_OBJECT, IID_PPV_ARGS( shaderCodeBlob.GetAddressOf() ), nullptr ) ) ) {
+            // Since your graphics core architecture expects ID3DBlob interfaces down the stream, 
+            // query the DXC utilities layer to cast/wrap the compiled DXC blob back into standard ID3DBlob memory block!
+            if ( SUCCEEDED( dxcUtils->CreateBlobFromBlob(
+                shaderCodeBlob.Get(),
+                0,
+                static_cast<UINT32>(shaderCodeBlob->GetBufferSize()),
+                reinterpret_cast<IDxcBlob**>(ppCode) ) ) ) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     // Inline HLSL for the 2D UI path. VS mirrors VS_TransformedEx (screen-space xyzrhw -> clip space,
@@ -148,12 +340,56 @@ float4 PSMain( VS_OUT i ) : SV_TARGET {
 // row-major XMFLOAT4X4 bytes we upload here, so mul(float4(pos,1), ViewProj) is byte-for-byte identical.
 cbuffer WorldCB : register(b0) { float4x4 ViewProj; };
 cbuffer FogCB   : register(b1) { float3 FogColor; float FogNear; float3 CamPosWS; float FogFar; };
+cbuffer LightCB : register(b2) { uint LightCount; uint3 _lpad; };   // Forward+ MVP: brute-force point-light count
+
+// Per-frame visible point light (torches/campfires/spells). Byte-identical to D3D11 TiledPointLight (48 B);
+// this brute-force MVP only reads PositionWorld/Range/Color — PositionView/ShadowCubeIndex land with tiling.
+// Bound as a ROOT descriptor SRV (no descriptor-table slot). LightCount comes from a root constant that the
+// draw MUST bind (BindFrameLights) — the loop is additionally clamped to LIGHT_CAP as a hard safety net so a
+// stray unbound/garbage count can never run the loop away (that reads as a GPU timeout, not a clean error).
+struct GPULight { float3 PositionView; float Range; float4 Color; float3 PositionWorld; int ShadowCubeIndex; };
+StructuredBuffer<GPULight> Lights : register(t1);   // bound as a root SRV (no descriptor slot consumed)
+#define LIGHT_CAP 400u
 
 Texture2D    tx  : register(t0);
 SamplerState smp : register(s0);
 
-struct VS_IN  { float3 pos : POSITION; float2 uv : TEXCOORD0; float4 col : DIFFUSE; };
-struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : TEXCOORD1; float fogDist : TEXCOORD2; };
+// Octahedral normal decode — matches Shaders/VertexPacking.h DecodeOctNormal (the packed 36-byte vertex
+// stores the normal as R16G16_SNORM at offset 12; world-mesh normals are already world-space).
+float3 DecodeOctNormal( float2 e )
+{
+    float3 n = float3( e.xy, 1.0 - abs( e.x ) - abs( e.y ) );
+    float t = saturate( -n.z );
+    n.xy += select(n.xy >= 0., -t, t);
+    return normalize( n );
+}
+
+// Accumulate dynamic point lights at a world-space surface point. Ports D3D11's FP_ComputePointLighting /
+// PLS_ComputePointLightLighting (world-space here instead of view-space): range cull, N.L, the exact
+// falloff = nd*(nd*0.2+0.8), per-light saturate, additive accumulate. Specular is deferred (needs material
+// spec params); the point term modulates the *texture* color (not the baked vertex color) like D3D11.
+float3 AccumPointLights( float3 wpos, float3 N, float3 diffuse )
+{
+    float3 total = 0;
+    uint n = min( LightCount, LIGHT_CAP );   // hard clamp: never trust the count enough to loop away
+    for ( uint k = 0; k < n; k++ )
+    {
+        GPULight L = Lights[k];
+        float3 dir = L.PositionWorld - wpos;
+        float dist = length( dir );
+        if ( dist >= L.Range ) continue;
+        dir /= dist;
+        float ndl = max( 0.0, dot( dir, N ) );
+        float nd  = saturate( 1.0 - dist / L.Range );
+        float falloff = nd * (nd * 0.2 + 0.8);
+        float3 c = saturate( falloff * ndl * L.Color.rgb );
+        total += saturate( c * diffuse );
+    }
+    return total;
+}
+
+struct VS_IN  { float3 pos : POSITION; float2 nrm : NORMAL; float2 uv : TEXCOORD0; float4 col : DIFFUSE; };
+struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : TEXCOORD1; float fogDist : TEXCOORD2; float3 wpos : TEXCOORD3; float3 wnrm : TEXCOORD4; };
 
 VS_OUT VSMain( VS_IN i )
 {
@@ -161,7 +397,9 @@ VS_OUT VSMain( VS_IN i )
     o.clip = mul( float4( i.pos, 1.0 ), ViewProj );
     o.uv  = i.uv;
     o.col = i.col;
-    o.fogDist = length( i.pos - CamPosWS );   // world verts are already world-space
+    o.wpos = i.pos;                          // world verts are already world-space
+    o.wnrm = DecodeOctNormal( i.nrm );       // already world-space
+    o.fogDist = length( i.pos - CamPosWS );
     return o;
 }
 
@@ -169,7 +407,8 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
 {
     float4 t = tx.Sample( smp, i.uv );
     clip( t.a - 0.5 );                    // fixed alpha-test cutout (opaque textures have a==1 -> kept)
-    float3 rgb = t.rgb * i.col.bgr;       // baked vertex lighting; .bgr recovers Gothic's RGB
+    float3 baseLit = t.rgb * i.col.bgr;   // baked vertex lighting (ambient/sun/GI); .bgr recovers Gothic's RGB
+    float3 rgb = baseLit + AccumPointLights( i.wpos, normalize( i.wnrm ), t.rgb );
     // Linear distance fog toward the atmosphere color (matches Gothic's FFFog / the sky-clear color).
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
     rgb = lerp( rgb, FogColor, f );
@@ -185,18 +424,53 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     constexpr char kVobShaderSource[] = R"(
 cbuffer WorldCB : register(b0) { float4x4 ViewProj; };   // default column-major packing (see world shader)
 cbuffer FogCB   : register(b1) { float3 FogColor; float FogNear; float3 CamPosWS; float FogFar; };
+cbuffer LightCB : register(b2) { uint LightCount; uint3 _lpad; };
+
+// Root-descriptor SRV point-light buffer + hard loop clamp — see the world shader for the full rationale.
+struct GPULight { float3 PositionView; float Range; float4 Color; float3 PositionWorld; int ShadowCubeIndex; };
+StructuredBuffer<GPULight> Lights : register(t1);
+#define LIGHT_CAP 400u
 
 Texture2D    tx  : register(t0);
 SamplerState smp : register(s0);
 
+float3 DecodeOctNormal( float2 e )
+{
+    float3 n = float3( e.xy, 1.0 - abs( e.x ) - abs( e.y ) );
+    float t = saturate( -n.z );
+    n.xy += select(n.xy >= 0., -t, t);
+    return normalize( n );
+}
+
+float3 AccumPointLights( float3 wpos, float3 N, float3 diffuse )
+{
+    float3 total = 0;
+    uint n = min( LightCount, LIGHT_CAP );
+    for ( uint k = 0; k < n; k++ )
+    {
+        GPULight L = Lights[k];
+        float3 dir = L.PositionWorld - wpos;
+        float dist = length( dir );
+        if ( dist >= L.Range ) continue;
+        dir /= dist;
+        float ndl = max( 0.0, dot( dir, N ) );
+        float nd  = saturate( 1.0 - dist / L.Range );
+        float falloff = nd * (nd * 0.2 + 0.8);
+        float3 c = saturate( falloff * ndl * L.Color.rgb );
+        total += saturate( c * diffuse );
+    }
+    return total;
+}
+
 struct VS_IN
 {
     float3   pos     : POSITION;
+    float2   nrm     : NORMAL;                  // packed object-space normal (R16G16_SNORM @12)
     float2   uv      : TEXCOORD0;
     float4x4 iworld  : INSTANCE_WORLD_MATRIX;   // 4 per-instance rows (semantic index 0..3)
     float4   icolor  : INSTANCE_COLOR;
 };
-struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : TEXCOORD1; float fogDist : TEXCOORD2; };
+struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : TEXCOORD1; float fogDist : TEXCOORD2; float3 wpos : TEXCOORD3; float3 wnrm : TEXCOORD4; };
 
 VS_OUT VSMain( VS_IN i )
 {
@@ -205,6 +479,9 @@ VS_OUT VSMain( VS_IN i )
     o.clip = mul( float4( worldPos, 1.0 ), ViewProj );
     o.uv  = i.uv;
     o.col = i.icolor;
+    o.wpos = worldPos;
+    // Object->world normal (rigid + ~uniform-scale VOB matrices; inverse-transpose not needed for MVP).
+    o.wnrm = mul( DecodeOctNormal( i.nrm ), (float3x3)i.iworld );
     o.fogDist = length( worldPos - CamPosWS );
     return o;
 }
@@ -213,7 +490,8 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
 {
     float4 t = tx.Sample( smp, i.uv );
     clip( t.a - 0.5 );
-    float3 rgb = t.rgb * i.col.bgr;
+    float3 baseLit = t.rgb * i.col.bgr;
+    float3 rgb = baseLit + AccumPointLights( i.wpos, normalize( i.wnrm ), t.rgb );
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
     return float4( lerp( rgb, FogColor, f ), 1.0 );
 }
@@ -262,6 +540,28 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     // by DrawWaterSurfaces. Both run on the same thread within one frame (OnStartWorldRendering), so a
     // file-scope scratch map is safe — grouped by texture to minimize SRV binds. Cleared each frame.
     std::unordered_map<zCTexture*, std::vector<MeshInfo*>> g_FrameWaterSurfaces;
+
+    // Per-frame visible-vob/light/mob collection, hoisted out of DrawVobsInstanced so ALL geometry passes
+    // (world, VOBs, skeletal) light against the same set. CollectVisibleVobs has side effects (fills each
+    // visual's Instances list) and must run EXACTLY ONCE per frame. Single-threaded within OnStartWorldRendering.
+    std::vector<VobInfo*>         g_FrameVobs;
+    std::vector<VobLightInfo*>    g_FrameLights;
+    std::vector<SkeletalVobInfo*> g_FrameMobs;
+
+    // Forward+ MVP light buffer (P2.9a): the whole visible-light list is rebuilt from offset 0 each frame,
+    // so the ring is just kBackBufferCount snapshots (no per-draw offset). Cap matches D3D11 MAX_TILED_LIGHTS.
+    constexpr UINT kMaxFrameLights = 400;
+
+    // Per-frame GPU point light — byte-identical to D3D11 TiledPointLight (48 B) so the layout is reusable
+    // when the compute tiled-culling step (P2.9b) lands. Brute-force MVP fills PositionWorld/Range/Color only.
+    struct GPULight {
+        DirectX::XMFLOAT3 PositionView;    // 0  (filled with tiling; world-space shading for now)
+        float             Range;           // 12
+        DirectX::XMFLOAT4 Color;           // 16 (.w = static flag 0/1)
+        DirectX::XMFLOAT3 PositionWorld;   // 32
+        int32_t           ShadowCubeIndex; // 44 (-1 = no shadow)
+    };
+    static_assert( sizeof( GPULight ) == 48, "GPULight must match D3D11 TiledPointLight (48 bytes)" );
 
     constexpr UINT kSkeletalConstantBufferBytes = 8 * 1024 * 1024; // per-frame skeletal CB ring (instance + bone palettes)
     constexpr UINT kSkeletalMaxBones = 96;                         // NUM_MAX_BONES — matches every skeletal HLSL
@@ -566,6 +866,10 @@ XRESULT D3D12GraphicsEngine::Init() {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the VOB pipeline.";
         return XR_FAILED;
     }
+    if ( !CreateLightBuffer() ) {
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the point-light buffer.";
+        return XR_FAILED;
+    }
     if ( !CreateSkeletalPipeline() ) {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the skeletal pipeline.";
         return XR_FAILED;
@@ -811,18 +1115,13 @@ bool D3D12GraphicsEngine::CreateUIPipeline() {
 
     // --- Compile inline shaders ---
     UINT compileFlags = 0;
-#ifdef DEBUG_D3D11
-    compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
-#endif
     ComPtr<ID3DBlob> err;
-    if ( FAILED( D3DCompile( kUIShaderSource, sizeof( kUIShaderSource ) - 1, "UIShader", nullptr, nullptr,
-        "VSMain", "vs_5_0", compileFlags, 0, m_UIVsBlob.ReleaseAndGetAddressOf(), err.GetAddressOf() ) ) ) {
-        if ( err ) LogWarn() << "D3D12: UI VS compile error: " << static_cast<const char*>( err->GetBufferPointer() );
+    if ( !CompileShaderD3D12( kUIShaderSource, sizeof( kUIShaderSource ) - 1, "UIShader", nullptr, nullptr,
+        "VSMain", Shadermodel_VS, compileFlags, 0, m_UIVsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
-    if ( FAILED( D3DCompile( kUIShaderSource, sizeof( kUIShaderSource ) - 1, "UIShader", nullptr, nullptr,
-        "PSMain", "ps_5_0", compileFlags, 0, m_UIPsBlob.ReleaseAndGetAddressOf(), err.ReleaseAndGetAddressOf() ) ) ) {
-        if ( err ) LogWarn() << "D3D12: UI PS compile error: " << static_cast<const char*>( err->GetBufferPointer() );
+    if ( !CompileShaderD3D12( kUIShaderSource, sizeof( kUIShaderSource ) - 1, "UIShader", nullptr, nullptr,
+        "PSMain", Shadermodel_PS, compileFlags, 0, m_UIPsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
 
@@ -847,15 +1146,15 @@ namespace {
     // values, so they slot straight into the packed key (and cast directly into the PSO below).
     uint32_t BlendKey( const GothicBlendStateInfo& b ) {
         uint32_t k = 0;
-        k |= ( b.BlendEnabled ? 1u : 0u );
-        k |= ( b.ColorWritesEnabled ? 1u : 0u ) << 1;
-        k |= ( b.AlphaToCoverage ? 1u : 0u ) << 2;
-        k |= ( static_cast<uint32_t>( b.SrcBlend )      & 0x1F ) << 3;
-        k |= ( static_cast<uint32_t>( b.DestBlend )     & 0x1F ) << 8;
-        k |= ( static_cast<uint32_t>( b.BlendOp )       & 0x07 ) << 13;
-        k |= ( static_cast<uint32_t>( b.SrcBlendAlpha ) & 0x1F ) << 16;
-        k |= ( static_cast<uint32_t>( b.DestBlendAlpha )& 0x1F ) << 21;
-        k |= ( static_cast<uint32_t>( b.BlendOpAlpha )  & 0x07 ) << 26;
+        k |= (b.BlendEnabled ? 1u : 0u);
+        k |= (b.ColorWritesEnabled ? 1u : 0u) << 1;
+        k |= (b.AlphaToCoverage ? 1u : 0u) << 2;
+        k |= (static_cast<uint32_t>(b.SrcBlend) & 0x1F) << 3;
+        k |= (static_cast<uint32_t>(b.DestBlend) & 0x1F) << 8;
+        k |= (static_cast<uint32_t>(b.BlendOp) & 0x07) << 13;
+        k |= (static_cast<uint32_t>(b.SrcBlendAlpha) & 0x1F) << 16;
+        k |= (static_cast<uint32_t>(b.DestBlendAlpha) & 0x1F) << 21;
+        k |= (static_cast<uint32_t>(b.BlendOpAlpha) & 0x07) << 26;
         return k;
     }
 
@@ -863,17 +1162,17 @@ namespace {
     // D3D12_COMPARISON_FUNC shares those numeric values, so it casts straight into the PSO below.
     uint32_t DepthKey( const GothicDepthBufferStateInfo& d ) {
         uint32_t k = 0;
-        k |= ( d.DepthBufferEnabled ? 1u : 0u );
-        k |= ( d.DepthWriteEnabled ? 1u : 0u ) << 1;
-        k |= ( static_cast<uint32_t>( d.DepthBufferCompareFunc ) & 0x0F ) << 2;
+        k |= (d.DepthBufferEnabled ? 1u : 0u);
+        k |= (d.DepthWriteEnabled ? 1u : 0u) << 1;
+        k |= (static_cast<uint32_t>(d.DepthBufferCompareFunc) & 0x0F) << 2;
         return k;
     }
 }
 
-ID3D12PipelineState* D3D12GraphicsEngine::GetOrCreateUIPipeline( 
+ID3D12PipelineState* D3D12GraphicsEngine::GetOrCreateUIPipeline(
     const GothicBlendStateInfo& blend,
     const GothicDepthBufferStateInfo& depth ) {
-    const uint64_t key = static_cast<uint64_t>( BlendKey( blend ) ) | ( static_cast<uint64_t>( DepthKey( depth ) ) << 32 );
+    const uint64_t key = static_cast<uint64_t>(BlendKey( blend )) | (static_cast<uint64_t>(DepthKey( depth )) << 32);
     auto it = m_UIPipelines.find( key );
     if ( it != m_UIPipelines.end() ) return it->second.Get();
 
@@ -907,12 +1206,12 @@ ID3D12PipelineState* D3D12GraphicsEngine::GetOrCreateUIPipeline(
 
     D3D12_RENDER_TARGET_BLEND_DESC& rt = pso.BlendState.RenderTarget[0];
     rt.BlendEnable = blend.BlendEnabled ? TRUE : FALSE;
-    rt.SrcBlend       = static_cast<D3D12_BLEND>( blend.SrcBlend );
-    rt.DestBlend      = static_cast<D3D12_BLEND>( blend.DestBlend );
-    rt.BlendOp        = static_cast<D3D12_BLEND_OP>( blend.BlendOp );
-    rt.SrcBlendAlpha  = static_cast<D3D12_BLEND>( blend.SrcBlendAlpha );
-    rt.DestBlendAlpha = static_cast<D3D12_BLEND>( blend.DestBlendAlpha );
-    rt.BlendOpAlpha   = static_cast<D3D12_BLEND_OP>( blend.BlendOpAlpha );
+    rt.SrcBlend = static_cast<D3D12_BLEND>(blend.SrcBlend);
+    rt.DestBlend = static_cast<D3D12_BLEND>(blend.DestBlend);
+    rt.BlendOp = static_cast<D3D12_BLEND_OP>(blend.BlendOp);
+    rt.SrcBlendAlpha = static_cast<D3D12_BLEND>(blend.SrcBlendAlpha);
+    rt.DestBlendAlpha = static_cast<D3D12_BLEND>(blend.DestBlendAlpha);
+    rt.BlendOpAlpha = static_cast<D3D12_BLEND_OP>(blend.BlendOpAlpha);
     rt.RenderTargetWriteMask = blend.ColorWritesEnabled ? D3D12_COLOR_WRITE_ENABLE_ALL : 0;
     pso.BlendState.AlphaToCoverageEnable = blend.AlphaToCoverage ? TRUE : FALSE;
 
@@ -920,11 +1219,11 @@ ID3D12PipelineState* D3D12GraphicsEngine::GetOrCreateUIPipeline(
     // match it (D32_FLOAT) even when the test is disabled — otherwise the bound-DSV/PSO-format mismatch makes
     // the driver reject the draw ("depth test failed"). DrawString forces this state off so text never tests.
     if ( depth.DepthBufferEnabled ) {
-        pso.DepthStencilState.DepthEnable    = TRUE;
+        pso.DepthStencilState.DepthEnable = TRUE;
         pso.DepthStencilState.DepthWriteMask = depth.DepthWriteEnabled ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO;
-        pso.DepthStencilState.DepthFunc      = static_cast<D3D12_COMPARISON_FUNC>( depth.DepthBufferCompareFunc );
+        pso.DepthStencilState.DepthFunc = static_cast<D3D12_COMPARISON_FUNC>(depth.DepthBufferCompareFunc);
     } else {
-        pso.DepthStencilState.DepthEnable    = FALSE;
+        pso.DepthStencilState.DepthEnable = FALSE;
         pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
     }
     pso.DepthStencilState.StencilEnable = FALSE;
@@ -1042,7 +1341,7 @@ void D3D12GraphicsEngine::DrawString( std::string_view str, float x, float y, co
         if ( savedBarSize == -1 && oCGame::GetGame()->swimBar )
             savedBarSize = oCGame::GetGame()->swimBar->psizex;
         if ( savedBarSize > 0 )
-            UIScale = static_cast<float>( savedBarSize ) / 180.f;
+            UIScale = static_cast<float>(savedBarSize) / 180.f;
     }
 
     // Build glyph quads over the font atlas (screen-space xyzrhw ExVertexStruct triangle list).
@@ -1059,16 +1358,16 @@ void D3D12GraphicsEngine::DrawString( std::string_view str, float x, float y, co
     GothicDepthBufferStateInfo savedDepth = rs.DepthState.Clone();
     FixedFunctionStage::EColorOp    savedOp0 = rs.GraphicsState.FF_Stages[0].ColorOp;
     FixedFunctionStage::EColorOp    savedOp1 = rs.GraphicsState.FF_Stages[1].ColorOp;
-    FixedFunctionStage::ETextureArg savedA1  = rs.GraphicsState.FF_Stages[0].ColorArg1;
-    FixedFunctionStage::ETextureArg savedA2  = rs.GraphicsState.FF_Stages[0].ColorArg2;
+    FixedFunctionStage::ETextureArg savedA1 = rs.GraphicsState.FF_Stages[0].ColorArg1;
+    FixedFunctionStage::ETextureArg savedA2 = rs.GraphicsState.FF_Stages[0].ColorArg2;
 
     rs.BlendState.SetAlphaBlending();
     // Text is drawn over the finished scene (during the world pass the depth buffer holds scene depth); the
     // glyph quads must never depth-test, so force depth off — GetOrCreateUIPipeline picks the no-test PSO.
     rs.DepthState.DepthBufferEnabled = false;
-    rs.DepthState.DepthWriteEnabled  = false;
-    rs.GraphicsState.FF_Stages[0].ColorOp   = FixedFunctionStage::EColorOp::CO_MODULATE;
-    rs.GraphicsState.FF_Stages[1].ColorOp   = FixedFunctionStage::EColorOp::CO_DISABLE;
+    rs.DepthState.DepthWriteEnabled = false;
+    rs.GraphicsState.FF_Stages[0].ColorOp = FixedFunctionStage::EColorOp::CO_MODULATE;
+    rs.GraphicsState.FF_Stages[1].ColorOp = FixedFunctionStage::EColorOp::CO_DISABLE;
     rs.GraphicsState.FF_Stages[0].ColorArg1 = FixedFunctionStage::ETextureArg::TA_TEXTURE;
     rs.GraphicsState.FF_Stages[0].ColorArg2 = FixedFunctionStage::ETextureArg::TA_DIFFUSE;
 
@@ -1077,13 +1376,13 @@ void D3D12GraphicsEngine::DrawString( std::string_view str, float x, float y, co
     if ( MyDirectDrawSurface7* surface = tx->GetSurface() )
         m_CurrentTexture = surface->GetEngineTexture();
 
-    DrawVertexArray( vertices.data(), static_cast<unsigned int>( vertices.size() ), 0, sizeof( ExVertexStruct ) );
+    DrawVertexArray( vertices.data(), static_cast<unsigned int>(vertices.size()), 0, sizeof( ExVertexStruct ) );
 
     m_CurrentTexture = prevTex;
     rs.BlendState = savedBlend;
     rs.DepthState = savedDepth;
-    rs.GraphicsState.FF_Stages[0].ColorOp   = savedOp0;
-    rs.GraphicsState.FF_Stages[1].ColorOp   = savedOp1;
+    rs.GraphicsState.FF_Stages[0].ColorOp = savedOp0;
+    rs.GraphicsState.FF_Stages[1].ColorOp = savedOp1;
     rs.GraphicsState.FF_Stages[0].ColorArg1 = savedA1;
     rs.GraphicsState.FF_Stages[0].ColorArg2 = savedA2;
 }
@@ -1108,8 +1407,8 @@ bool D3D12GraphicsEngine::CreateDepthBuffer( INT2 size ) {
 
     D3D12_RESOURCE_DESC dd = {};
     dd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    dd.Width = static_cast<UINT64>( size.x );
-    dd.Height = static_cast<UINT>( size.y );
+    dd.Width = static_cast<UINT64>(size.x);
+    dd.Height = static_cast<UINT>(size.y);
     dd.DepthOrArraySize = 1;
     dd.MipLevels = 1;
     dd.Format = DXGI_FORMAT_D32_FLOAT;
@@ -1148,7 +1447,11 @@ bool D3D12GraphicsEngine::CreateWorldPipeline() {
     srvRange.BaseShaderRegister = 0;         // t0
     srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-    D3D12_ROOT_PARAMETER params[3] = {};
+    // params[3] = point-light StructuredBuffer as a ROOT SRV at t1 (no descriptor slot consumed — a GPU VA
+    // straight in the root; aligns with the CPU-offload/bindless direction). params[4] = b2 light count.
+    // Both params MUST be bound (BindFrameLights) by every draw that uses this root sig with a light-reading
+    // PSO (m_WorldPSO/m_VobPSO), else LightCount is an undefined root value and the shader loops away.
+    D3D12_ROOT_PARAMETER params[5] = {};
     params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     params[0].Constants.ShaderRegister = 0;   // b0
     params[0].Constants.Num32BitValues = 16;  // float4x4
@@ -1161,6 +1464,13 @@ bool D3D12GraphicsEngine::CreateWorldPipeline() {
     params[2].Constants.ShaderRegister = 1;   // b1 fog
     params[2].Constants.Num32BitValues = 8;   // FogConstants (8 DWORDs)
     params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;  // VS: CamPosWS; PS: color/near/far
+    params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+    params[3].Descriptor.ShaderRegister = 1;  // t1 light StructuredBuffer
+    params[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    params[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[4].Constants.ShaderRegister = 2;   // b2 light count
+    params[4].Constants.Num32BitValues = 4;   // { LightCount, pad, pad, pad }
+    params[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_STATIC_SAMPLER_DESC sampler = {};
     sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
@@ -1170,7 +1480,7 @@ bool D3D12GraphicsEngine::CreateWorldPipeline() {
     sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-    rsDesc.NumParameters = 3;
+    rsDesc.NumParameters = _countof( params );
     rsDesc.pParameters = params;
     rsDesc.NumStaticSamplers = 1;
     rsDesc.pStaticSamplers = &sampler;
@@ -1181,7 +1491,7 @@ bool D3D12GraphicsEngine::CreateWorldPipeline() {
 
     ComPtr<ID3DBlob> rsBlob, rsErr;
     if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-        if ( rsErr ) LogWarn() << "D3D12: world root signature serialize error: " << static_cast<const char*>( rsErr->GetBufferPointer() );
+        if ( rsErr ) LogWarn() << "D3D12: world root signature serialize error: " << static_cast<const char*>(rsErr->GetBufferPointer());
         return false;
     }
     if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
@@ -1189,18 +1499,12 @@ bool D3D12GraphicsEngine::CreateWorldPipeline() {
         return false;
 
     UINT compileFlags = 0;
-#ifdef DEBUG_D3D11
-    compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
-#endif
-    ComPtr<ID3DBlob> err;
-    if ( FAILED( D3DCompile( kWorldShaderSource, sizeof( kWorldShaderSource ) - 1, "WorldShader", nullptr, nullptr,
-        "VSMain", "vs_5_0", compileFlags, 0, m_WorldVsBlob.ReleaseAndGetAddressOf(), err.GetAddressOf() ) ) ) {
-        if ( err ) LogWarn() << "D3D12: world VS compile error: " << static_cast<const char*>( err->GetBufferPointer() );
+    if ( !CompileShaderD3D12( kWorldShaderSource, sizeof( kWorldShaderSource ) - 1, "WorldShader", nullptr, nullptr,
+        "VSMain", Shadermodel_VS, compileFlags, 0, m_WorldVsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
-    if ( FAILED( D3DCompile( kWorldShaderSource, sizeof( kWorldShaderSource ) - 1, "WorldShader", nullptr, nullptr,
-        "PSMain", "ps_5_0", compileFlags, 0, m_WorldPsBlob.ReleaseAndGetAddressOf(), err.ReleaseAndGetAddressOf() ) ) ) {
-        if ( err ) LogWarn() << "D3D12: world PS compile error: " << static_cast<const char*>( err->GetBufferPointer() );
+    if ( !CompileShaderD3D12( kWorldShaderSource, sizeof( kWorldShaderSource ) - 1, "WorldShader", nullptr, nullptr,
+        "PSMain", Shadermodel_PS, compileFlags, 0, m_WorldPsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
 
@@ -1213,6 +1517,7 @@ bool D3D12GraphicsEngine::CreateWorldPipeline() {
     //   Color    R8G8B8A8 @32
     const D3D12_INPUT_ELEMENT_DESC layout[] = {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "NORMAL",   0, DXGI_FORMAT_R16G16_SNORM,    0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },  // octahedral, world-space
         { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         { "DIFFUSE",  0, DXGI_FORMAT_R8G8B8A8_UNORM,  0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
     };
@@ -1253,25 +1558,20 @@ bool D3D12GraphicsEngine::CreateVobPipeline() {
     ID3D12Device* device = m_Device.GetDevice();
 
     UINT compileFlags = 0;
-#ifdef DEBUG_D3D11
-    compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
-#endif
-    ComPtr<ID3DBlob> err;
-    if ( FAILED( D3DCompile( kVobShaderSource, sizeof( kVobShaderSource ) - 1, "VobShader", nullptr, nullptr,
-        "VSMain", "vs_5_0", compileFlags, 0, m_VobVsBlob.ReleaseAndGetAddressOf(), err.GetAddressOf() ) ) ) {
-        if ( err ) LogWarn() << "D3D12: VOB VS compile error: " << static_cast<const char*>( err->GetBufferPointer() );
-        return false;
+    if ( !CompileShaderD3D12( kVobShaderSource, sizeof( kVobShaderSource ) - 1, "VobShader", nullptr, nullptr,
+        "VSMain", Shadermodel_VS, compileFlags, 0, m_VobVsBlob.ReleaseAndGetAddressOf() ) ) {
+            return false;
     }
-    if ( FAILED( D3DCompile( kVobShaderSource, sizeof( kVobShaderSource ) - 1, "VobShader", nullptr, nullptr,
-        "PSMain", "ps_5_0", compileFlags, 0, m_VobPsBlob.ReleaseAndGetAddressOf(), err.ReleaseAndGetAddressOf() ) ) ) {
-        if ( err ) LogWarn() << "D3D12: VOB PS compile error: " << static_cast<const char*>( err->GetBufferPointer() );
-        return false;
+    if ( !CompileShaderD3D12( kVobShaderSource, sizeof( kVobShaderSource ) - 1, "VobShader", nullptr, nullptr,
+        "PSMain", Shadermodel_PS, compileFlags, 0, m_VobPsBlob.ReleaseAndGetAddressOf() ) ) {
+            return false;
     }
 
     // Slot 0 = packed 36-byte ExVertexStructGPU (Position@0, TexCoord0@20); slot 1 = per-instance data
     // read from VobInstanceInfo (stride 144): world matrix rows @0/16/32/48, instance color @128.
     const D3D12_INPUT_ELEMENT_DESC layout[] = {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "NORMAL",   0, DXGI_FORMAT_R16G16_SNORM,    0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },  // octahedral, object-space
         { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         { "INSTANCE_WORLD_MATRIX", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,   0, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
         { "INSTANCE_WORLD_MATRIX", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  16, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
@@ -1337,6 +1637,88 @@ bool D3D12GraphicsEngine::CreateVobInstanceBuffers() {
     return true;
 }
 
+bool D3D12GraphicsEngine::CreateLightBuffer() {
+    // Per-frame point-light StructuredBuffers (one per in-flight frame). The whole visible-light list is
+    // rewritten from offset 0 each frame, so these are plain persistently-mapped UPLOAD snapshots, bound
+    // as a root SRV. Sized kMaxFrameLights * sizeof(GPULight).
+    ID3D12Device* device = m_Device.GetDevice();
+    D3D12_HEAP_PROPERTIES uploadHeap = {};
+    uploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
+
+    D3D12_RESOURCE_DESC bufDesc = {};
+    bufDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bufDesc.Width = static_cast<UINT64>(kMaxFrameLights) * sizeof( GPULight );
+    bufDesc.Height = 1;
+    bufDesc.DepthOrArraySize = 1;
+    bufDesc.MipLevels = 1;
+    bufDesc.Format = DXGI_FORMAT_UNKNOWN;
+    bufDesc.SampleDesc.Count = 1;
+    bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+    for ( UINT i = 0; i < kBackBufferCount; ++i ) {
+        if ( FAILED( device->CreateCommittedResource( &uploadHeap, D3D12_HEAP_FLAG_NONE, &bufDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS( m_LightBuffer[i].ReleaseAndGetAddressOf() ) ) ) )
+            return false;
+        m_LightBuffer[i]->SetName( i == 0 ? L"PointLightBuffer0" : L"PointLightBuffer1" );
+        D3D12_RANGE noRead = { 0, 0 };
+        if ( FAILED( m_LightBuffer[i]->Map( 0, &noRead, reinterpret_cast<void**>( &m_LightBufferPtr[i] ) ) ) )
+            return false;
+    }
+    m_LightBufferCapacity = kMaxFrameLights;
+    return true;
+}
+
+void D3D12GraphicsEngine::BuildFrameLightBuffer() {
+    // Rebuild this frame's point-light buffer from the visible-light set collected in OnStartWorldRendering.
+    // Mirrors D3D11 D3D11TiledDeferredShading::CullLights' CPU fill: skip disabled lights, unpack the color
+    // DWORD (0xAARRGGBB), apply the fixed 1.2 lightFactor, store world-space position + range. View-space
+    // position / shadow index are left defaulted (world-space shading in the MVP; tiling fills them later).
+    m_FrameLightCount = 0;
+    const UINT frame = m_FrameIndex;
+    if ( !m_LightBuffer[frame] || !m_LightBufferPtr[frame] ) return;
+
+    GPULight* dst = reinterpret_cast<GPULight*>(m_LightBufferPtr[frame]);
+    UINT count = 0;
+    constexpr float lightFactor = 1.2f;   // matches D3D11 CullLights RGB scale
+    for ( VobLightInfo* li : g_FrameLights ) {
+        if ( !li || !li->Vob ) continue;
+        zCVobLight* vob = li->Vob;
+        if ( !vob->IsEnabled() ) continue;
+        if ( count >= m_LightBufferCapacity ) {
+            if ( !m_LightOverflowLogged ) {
+                LogWarn() << "D3D12: point-light buffer overflow (" << m_LightBufferCapacity
+                    << " lights/frame). Excess lights dropped this frame.";
+                m_LightOverflowLogged = true;
+            }
+            break;
+        }
+        const DWORD c = vob->GetLightColor();   // 0xAARRGGBB
+        const float r = ((c >> 16) & 0xFF) / 255.0f;
+        const float g = ((c >> 8) & 0xFF) / 255.0f;
+        const float b = (c & 0xFF) / 255.0f;
+        const XMFLOAT3 pw = vob->GetPositionWorld();
+
+        GPULight& L = dst[count];
+        L.PositionView = XMFLOAT3( 0.0f, 0.0f, 0.0f );
+        L.Range = vob->GetLightRange();
+        L.Color = XMFLOAT4( r * lightFactor, g * lightFactor, b * lightFactor, vob->IsStatic() ? 0.0f : 1.0f );
+        L.PositionWorld = pw;
+        L.ShadowCubeIndex = -1;
+        ++count;
+    }
+    m_FrameLightCount = count;
+}
+
+void D3D12GraphicsEngine::BindFrameLights() {
+    // Bind the Forward+ point-light root params on m_WorldRootSig: param 3 = the light StructuredBuffer as a
+    // root SRV (t1), param 4 = the light count (b2). EVERY draw that uses m_WorldRootSig with a light-reading
+    // PSO (m_WorldPSO / m_VobPSO — world mesh, instanced VOBs, node attachments) MUST call this after setting
+    // the root signature, or the pixel shader's light loop bound (LightCount) is an UNDEFINED root value and
+    // can run billions of iterations → GPU timeout/removal. Root args are cleared on every SetGraphicsRootSignature.
+    m_CmdList->SetGraphicsRootShaderResourceView( 3, m_LightBuffer[m_FrameIndex]->GetGPUVirtualAddress() );
+    m_CmdList->SetGraphicsRoot32BitConstant( 4, m_FrameLightCount, 0 );
+}
+
 bool D3D12GraphicsEngine::CreateWaterPipeline() {
     ID3D12Device* device = m_Device.GetDevice();
 
@@ -1385,7 +1767,7 @@ bool D3D12GraphicsEngine::CreateWaterPipeline() {
 
     ComPtr<ID3DBlob> rsBlob, rsErr;
     if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-        if ( rsErr ) LogWarn() << "D3D12: water root signature serialize error: " << static_cast<const char*>( rsErr->GetBufferPointer() );
+        if ( rsErr ) LogWarn() << "D3D12: water root signature serialize error: " << static_cast<const char*>(rsErr->GetBufferPointer());
         return false;
     }
     if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
@@ -1393,19 +1775,13 @@ bool D3D12GraphicsEngine::CreateWaterPipeline() {
         return false;
 
     UINT compileFlags = 0;
-#ifdef DEBUG_D3D11
-    compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
-#endif
-    ComPtr<ID3DBlob> err;
-    if ( FAILED( D3DCompile( kWaterShaderSource, sizeof( kWaterShaderSource ) - 1, "WaterShader", nullptr, nullptr,
-        "VSMain", "vs_5_0", compileFlags, 0, m_WaterVsBlob.ReleaseAndGetAddressOf(), err.GetAddressOf() ) ) ) {
-        if ( err ) LogWarn() << "D3D12: water VS compile error: " << static_cast<const char*>( err->GetBufferPointer() );
-        return false;
+    if ( !CompileShaderD3D12( kWaterShaderSource, sizeof( kWaterShaderSource ) - 1, "WaterShader", nullptr, nullptr,
+        "VSMain", Shadermodel_VS, compileFlags, 0, m_WaterVsBlob.ReleaseAndGetAddressOf() ) ) {
+            return false;
     }
-    if ( FAILED( D3DCompile( kWaterShaderSource, sizeof( kWaterShaderSource ) - 1, "WaterShader", nullptr, nullptr,
-        "PSMain", "ps_5_0", compileFlags, 0, m_WaterPsBlob.ReleaseAndGetAddressOf(), err.ReleaseAndGetAddressOf() ) ) ) {
-        if ( err ) LogWarn() << "D3D12: water PS compile error: " << static_cast<const char*>( err->GetBufferPointer() );
-        return false;
+    if ( !CompileShaderD3D12( kWaterShaderSource, sizeof( kWaterShaderSource ) - 1, "WaterShader", nullptr, nullptr,
+        "PSMain", Shadermodel_PS, compileFlags, 0, m_WaterPsBlob.ReleaseAndGetAddressOf() ) ) {
+            return false;
     }
 
     // Same packed 36-byte ExVertexStructGPU as the world mesh; here TexCoord2 (@28, half2) is the water
@@ -1462,6 +1838,8 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
     if ( !m_FrameOpen || !m_WaterPSO || !m_WaterRootSig || !m_DepthBuffer || g_FrameWaterSurfaces.empty() )
         return;
 
+    DX_ZONE( m_CmdList, "DrawWaterSurfaces" );
+
     MeshInfo* wm = Engine::GAPI->GetWrappedWorldMesh();
     if ( !wm || !wm->GetMeshVertexBuffer() || !wm->GetMeshIndexBuffer() ) { g_FrameWaterSurfaces.clear(); return; }
     D3D12VertexBuffer* vb = D3D12VertexBuffer::From( wm->GetMeshVertexBuffer() );
@@ -1487,7 +1865,7 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
     m_CmdList->SetGraphicsRoot32BitConstants( 2, 8, &fog, 0 );
     m_CmdList->SetGraphicsRoot32BitConstants( 3, 4, water, 0 );
 
-    D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
+    D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_Resolution.x), static_cast<float>(m_Resolution.y), 0.0f, 1.0f };
     D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
     m_CmdList->RSSetViewports( 1, &vp );
     m_CmdList->RSSetScissorRects( 1, &sc );
@@ -1513,9 +1891,9 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
         m_CmdList->SetGraphicsRootDescriptorTable( 1, srv );
         for ( MeshInfo* mesh : meshes ) {
             if ( !mesh || mesh->Indices.empty() ) continue;
-            m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mesh->Indices.size() ), 1,
+            m_CmdList->DrawIndexedInstanced( static_cast<UINT>(mesh->Indices.size()), 1,
                 mesh->BaseIndexLocation, 0, 0 );
-            drawnIndices += static_cast<unsigned int>( mesh->Indices.size() );
+            drawnIndices += static_cast<unsigned int>(mesh->Indices.size());
         }
     }
 
@@ -1568,7 +1946,7 @@ bool D3D12GraphicsEngine::CreateParticlePipeline() {
 
     ComPtr<ID3DBlob> rsBlob, rsErr;
     if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-        if ( rsErr ) LogWarn() << "D3D12: particle root signature serialize error: " << static_cast<const char*>( rsErr->GetBufferPointer() );
+        if ( rsErr ) LogWarn() << "D3D12: particle root signature serialize error: " << static_cast<const char*>(rsErr->GetBufferPointer());
         return false;
     }
     if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
@@ -1576,18 +1954,12 @@ bool D3D12GraphicsEngine::CreateParticlePipeline() {
         return false;
 
     UINT compileFlags = 0;
-#ifdef DEBUG_D3D11
-    compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
-#endif
-    ComPtr<ID3DBlob> err;
-    if ( FAILED( D3DCompile( kParticleShaderSource, sizeof( kParticleShaderSource ) - 1, "ParticleShader", nullptr, nullptr,
-        "VSMain", "vs_5_0", compileFlags, 0, m_ParticleVsBlob.ReleaseAndGetAddressOf(), err.GetAddressOf() ) ) ) {
-        if ( err ) LogWarn() << "D3D12: particle VS compile error: " << static_cast<const char*>( err->GetBufferPointer() );
+    if ( !CompileShaderD3D12( kParticleShaderSource, sizeof( kParticleShaderSource ) - 1, "ParticleShader", nullptr, nullptr,
+        "VSMain", Shadermodel_VS, compileFlags, 0, m_ParticleVsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
-    if ( FAILED( D3DCompile( kParticleShaderSource, sizeof( kParticleShaderSource ) - 1, "ParticleShader", nullptr, nullptr,
-        "PSMain", "ps_5_0", compileFlags, 0, m_ParticlePsBlob.ReleaseAndGetAddressOf(), err.ReleaseAndGetAddressOf() ) ) ) {
-        if ( err ) LogWarn() << "D3D12: particle PS compile error: " << static_cast<const char*>( err->GetBufferPointer() );
+    if ( !CompileShaderD3D12( kParticleShaderSource, sizeof( kParticleShaderSource ) - 1, "ParticleShader", nullptr, nullptr,
+        "PSMain", Shadermodel_PS, compileFlags, 0, m_ParticlePsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
 
@@ -1664,12 +2036,12 @@ ID3D12PipelineState* D3D12GraphicsEngine::GetOrCreateParticlePipeline( const Got
 
     D3D12_RENDER_TARGET_BLEND_DESC& rt = pso.BlendState.RenderTarget[0];
     rt.BlendEnable = blend.BlendEnabled ? TRUE : FALSE;
-    rt.SrcBlend       = static_cast<D3D12_BLEND>( blend.SrcBlend );
-    rt.DestBlend      = static_cast<D3D12_BLEND>( blend.DestBlend );
-    rt.BlendOp        = static_cast<D3D12_BLEND_OP>( blend.BlendOp );
-    rt.SrcBlendAlpha  = static_cast<D3D12_BLEND>( blend.SrcBlendAlpha );
-    rt.DestBlendAlpha = static_cast<D3D12_BLEND>( blend.DestBlendAlpha );
-    rt.BlendOpAlpha   = static_cast<D3D12_BLEND_OP>( blend.BlendOpAlpha );
+    rt.SrcBlend = static_cast<D3D12_BLEND>(blend.SrcBlend);
+    rt.DestBlend = static_cast<D3D12_BLEND>(blend.DestBlend);
+    rt.BlendOp = static_cast<D3D12_BLEND_OP>(blend.BlendOp);
+    rt.SrcBlendAlpha = static_cast<D3D12_BLEND>(blend.SrcBlendAlpha);
+    rt.DestBlendAlpha = static_cast<D3D12_BLEND>(blend.DestBlendAlpha);
+    rt.BlendOpAlpha = static_cast<D3D12_BLEND_OP>(blend.BlendOpAlpha);
     rt.RenderTargetWriteMask = blend.ColorWritesEnabled ? D3D12_COLOR_WRITE_ENABLE_ALL : 0;
 
     // Reversed-Z: test GREATER_EQUAL against the opaque scene depth, but DO NOT write — particles are
@@ -1726,7 +2098,7 @@ XRESULT D3D12GraphicsEngine::DrawParticleEffects() {
     m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
     m_CmdList->SetGraphicsRoot32BitConstants( 1, 4, camConsts, 0 );
 
-    D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
+    D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_Resolution.x), static_cast<float>(m_Resolution.y), 0.0f, 1.0f };
     D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
     m_CmdList->RSSetViewports( 1, &vp );
     m_CmdList->RSSetScissorRects( 1, &sc );
@@ -1752,12 +2124,12 @@ XRESULT D3D12GraphicsEngine::DrawParticleEffects() {
         if ( !pso ) continue;
         if ( pso != lastPso ) { m_CmdList->SetPipelineState( pso ); lastPso = pso; }
 
-        const UINT numInstances = static_cast<UINT>( instances.size() );
-        const UINT instBytes = numInstances * static_cast<UINT>( sizeof( ParticleInstanceInfo ) );
+        const UINT numInstances = static_cast<UINT>(instances.size());
+        const UINT instBytes = numInstances * static_cast<UINT>(sizeof( ParticleInstanceInfo ));
         if ( m_ParticleInstanceBufferOffset + instBytes > m_ParticleInstanceBufferCapacity ) {
             if ( !m_ParticleInstanceOverflowLogged ) {
                 LogWarn() << "D3D12: particle instance ring overflow (" << m_ParticleInstanceBufferCapacity
-                          << " bytes/frame). Some particles dropped this frame.";
+                    << " bytes/frame). Some particles dropped this frame.";
                 m_ParticleInstanceOverflowLogged = true;
             }
             break;
@@ -1843,7 +2215,7 @@ bool D3D12GraphicsEngine::CreateDecalPipeline() {
 
     ComPtr<ID3DBlob> rsBlob, rsErr;
     if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-        if ( rsErr ) LogWarn() << "D3D12: decal root signature serialize error: " << static_cast<const char*>( rsErr->GetBufferPointer() );
+        if ( rsErr ) LogWarn() << "D3D12: decal root signature serialize error: " << static_cast<const char*>(rsErr->GetBufferPointer());
         return false;
     }
     if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
@@ -1851,23 +2223,16 @@ bool D3D12GraphicsEngine::CreateDecalPipeline() {
         return false;
 
     UINT compileFlags = 0;
-#ifdef DEBUG_D3D11
-    compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
-#endif
-    ComPtr<ID3DBlob> err;
-    if ( FAILED( D3DCompile( kDecalShaderSource, sizeof( kDecalShaderSource ) - 1, "DecalShader", nullptr, nullptr,
-        "VSMain", "vs_5_0", compileFlags, 0, m_DecalVsBlob.ReleaseAndGetAddressOf(), err.GetAddressOf() ) ) ) {
-        if ( err ) LogWarn() << "D3D12: decal VS compile error: " << static_cast<const char*>( err->GetBufferPointer() );
+    if ( !CompileShaderD3D12( kDecalShaderSource, sizeof( kDecalShaderSource ) - 1, "DecalShader", nullptr, nullptr,
+        "VSMain", Shadermodel_VS, compileFlags, 0, m_DecalVsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
-    if ( FAILED( D3DCompile( kDecalShaderSource, sizeof( kDecalShaderSource ) - 1, "DecalShader", nullptr, nullptr,
-        "PSMainLit", "ps_5_0", compileFlags, 0, m_DecalLitPsBlob.ReleaseAndGetAddressOf(), err.ReleaseAndGetAddressOf() ) ) ) {
-        if ( err ) LogWarn() << "D3D12: decal lit PS compile error: " << static_cast<const char*>( err->GetBufferPointer() );
+    if ( !CompileShaderD3D12( kDecalShaderSource, sizeof( kDecalShaderSource ) - 1, "DecalShader", nullptr, nullptr,
+        "PSMainLit", Shadermodel_PS, compileFlags, 0, m_DecalLitPsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
-    if ( FAILED( D3DCompile( kDecalShaderSource, sizeof( kDecalShaderSource ) - 1, "DecalShader", nullptr, nullptr,
-        "PSMainBlend", "ps_5_0", compileFlags, 0, m_DecalBlendPsBlob.ReleaseAndGetAddressOf(), err.ReleaseAndGetAddressOf() ) ) ) {
-        if ( err ) LogWarn() << "D3D12: decal blend PS compile error: " << static_cast<const char*>( err->GetBufferPointer() );
+    if ( !CompileShaderD3D12( kDecalShaderSource, sizeof( kDecalShaderSource ) - 1, "DecalShader", nullptr, nullptr,
+        "PSMainBlend", Shadermodel_PS, compileFlags, 0, m_DecalBlendPsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
 
@@ -1990,12 +2355,12 @@ ID3D12PipelineState* D3D12GraphicsEngine::GetOrCreateDecalBlendPipeline( const G
     // Gothic blend enums are laid out for D3D11, whose _BLEND/_OP values equal D3D12's — cast directly.
     D3D12_RENDER_TARGET_BLEND_DESC& rt = pso.BlendState.RenderTarget[0];
     rt.BlendEnable = blend.BlendEnabled ? TRUE : FALSE;
-    rt.SrcBlend       = static_cast<D3D12_BLEND>( blend.SrcBlend );
-    rt.DestBlend      = static_cast<D3D12_BLEND>( blend.DestBlend );
-    rt.BlendOp        = static_cast<D3D12_BLEND_OP>( blend.BlendOp );
-    rt.SrcBlendAlpha  = static_cast<D3D12_BLEND>( blend.SrcBlendAlpha );
-    rt.DestBlendAlpha = static_cast<D3D12_BLEND>( blend.DestBlendAlpha );
-    rt.BlendOpAlpha   = static_cast<D3D12_BLEND_OP>( blend.BlendOpAlpha );
+    rt.SrcBlend = static_cast<D3D12_BLEND>(blend.SrcBlend);
+    rt.DestBlend = static_cast<D3D12_BLEND>(blend.DestBlend);
+    rt.BlendOp = static_cast<D3D12_BLEND_OP>(blend.BlendOp);
+    rt.SrcBlendAlpha = static_cast<D3D12_BLEND>(blend.SrcBlendAlpha);
+    rt.DestBlendAlpha = static_cast<D3D12_BLEND>(blend.DestBlendAlpha);
+    rt.BlendOpAlpha = static_cast<D3D12_BLEND_OP>(blend.BlendOpAlpha);
     rt.RenderTargetWriteMask = blend.ColorWritesEnabled ? D3D12_COLOR_WRITE_ENABLE_ALL : 0;
 
     // Reversed-Z: test GREATER_EQUAL against the opaque scene, DO NOT write depth (transparent overlay).
@@ -2032,7 +2397,7 @@ void D3D12GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals, bool
     gpu.reserve( decals.size() ); meta.reserve( decals.size() );
 
     for ( zCVob* vob : decals ) {
-        zCDecal* d = static_cast<zCDecal*>( vob->GetVisual() );
+        zCDecal* d = static_cast<zCDecal*>(vob->GetVisual());
         if ( !d ) continue;
         zCMaterial* material = d->GetDecalSettings()->DecalMaterial;
         if ( !material ) continue;
@@ -2047,7 +2412,7 @@ void D3D12GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals, bool
 
         if ( lighting ) {
             // Opaque pass: only decals with no alpha or alpha test (blood, arrows).
-            if ( !( alphaFunc == zMAT_ALPHA_FUNC_NONE || alphaFunc == zMAT_ALPHA_FUNC_TEST ) ) continue;
+            if ( !(alphaFunc == zMAT_ALPHA_FUNC_NONE || alphaFunc == zMAT_ALPHA_FUNC_TEST) ) continue;
         } else {
             // Transparent pass: only the supported blend modes; skip fully-transparent decals.
             switch ( alphaFunc ) {
@@ -2060,7 +2425,7 @@ void D3D12GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals, bool
             default:
                 continue;
             }
-            if ( ( material->GetColor() >> 24 ) == 0 ) continue;
+            if ( (material->GetColor() >> 24) == 0 ) continue;
         }
 
         // Camera-alignment / world matrix — verbatim from D3D11 DrawDecalList (view is NOT applied here).
@@ -2134,7 +2499,7 @@ void D3D12GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals, bool
 
         DecalInstanceInfo inst;
         XMStoreFloat4x4( &inst.World, world * offset * scale );
-        const float ghostAlpha = lighting ? 1.0f : ( ( material->GetColor() >> 24 ) * ( 1.0f / 255.0f ) );
+        const float ghostAlpha = lighting ? 1.0f : ((material->GetColor() >> 24) * (1.0f / 255.0f));
         inst.Color = XMFLOAT4( 1.0f, 1.0f, 1.0f, ghostAlpha );
         gpu.push_back( inst );
         meta.push_back( { material->GetAniTexture(), alphaFunc } );
@@ -2145,11 +2510,11 @@ void D3D12GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals, bool
     // Snapshot the instances into this frame's ring; bind as the slot-1 stream (StartInstanceLocation picks
     // each decal, so we keep the exact submission order without splitting the memcpy).
     const UINT frame = m_FrameIndex;
-    const UINT instBytes = static_cast<UINT>( gpu.size() * sizeof( DecalInstanceInfo ) );
+    const UINT instBytes = static_cast<UINT>(gpu.size() * sizeof( DecalInstanceInfo ));
     if ( m_DecalInstanceBufferOffset + instBytes > m_DecalInstanceBufferCapacity ) {
         if ( !m_DecalInstanceOverflowLogged ) {
             LogWarn() << "D3D12: decal instance ring overflow (" << m_DecalInstanceBufferCapacity
-                      << " bytes/frame). Some decals dropped this frame.";
+                << " bytes/frame). Some decals dropped this frame.";
             m_DecalInstanceOverflowLogged = true;
         }
         return;
@@ -2170,7 +2535,7 @@ void D3D12GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals, bool
     m_CmdList->SetGraphicsRootSignature( m_DecalRootSig.Get() );
     m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
 
-    D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
+    D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_Resolution.x), static_cast<float>(m_Resolution.y), 0.0f, 1.0f };
     D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
     m_CmdList->RSSetViewports( 1, &vp );
     m_CmdList->RSSetScissorRects( 1, &sc );
@@ -2185,7 +2550,7 @@ void D3D12GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals, bool
     if ( lighting ) { m_CmdList->SetPipelineState( m_DecalLitPSO.Get() ); lastPso = m_DecalLitPSO.Get(); }
 
     const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_WhiteSrvSlot );
-    zCTexture* lastTex = reinterpret_cast<zCTexture*>( ~static_cast<uintptr_t>( 0 ) );  // force first bind
+    zCTexture* lastTex = reinterpret_cast<zCTexture*>(~static_cast<uintptr_t>(0));  // force first bind
     unsigned int drawnTris = 0;
 
     for ( size_t i = 0; i < gpu.size(); ++i ) {
@@ -2217,7 +2582,7 @@ void D3D12GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals, bool
             lastTex = tex;
         }
 
-        m_CmdList->DrawInstanced( 6, 1, 0, static_cast<UINT>( i ) );
+        m_CmdList->DrawInstanced( 6, 1, 0, static_cast<UINT>(i) );
         drawnTris += 2;
     }
 
@@ -2276,7 +2641,7 @@ bool D3D12GraphicsEngine::CreateSkeletalPipeline() {
 
     ComPtr<ID3DBlob> rsBlob, rsErr;
     if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-        if ( rsErr ) LogWarn() << "D3D12: skeletal root signature serialize error: " << static_cast<const char*>( rsErr->GetBufferPointer() );
+        if ( rsErr ) LogWarn() << "D3D12: skeletal root signature serialize error: " << static_cast<const char*>(rsErr->GetBufferPointer());
         return false;
     }
     if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
@@ -2284,18 +2649,12 @@ bool D3D12GraphicsEngine::CreateSkeletalPipeline() {
         return false;
 
     UINT compileFlags = 0;
-#ifdef DEBUG_D3D11
-    compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
-#endif
-    ComPtr<ID3DBlob> err;
-    if ( FAILED( D3DCompile( kSkeletalShaderSource, sizeof( kSkeletalShaderSource ) - 1, "SkeletalShader", nullptr, nullptr,
-        "VSMain", "vs_5_0", compileFlags, 0, m_SkeletalVsBlob.ReleaseAndGetAddressOf(), err.GetAddressOf() ) ) ) {
-        if ( err ) LogWarn() << "D3D12: skeletal VS compile error: " << static_cast<const char*>( err->GetBufferPointer() );
+    if ( !CompileShaderD3D12( kSkeletalShaderSource, sizeof( kSkeletalShaderSource ) - 1, "SkeletalShader", nullptr, nullptr,
+        "VSMain", Shadermodel_VS, compileFlags, 0, m_SkeletalVsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
-    if ( FAILED( D3DCompile( kSkeletalShaderSource, sizeof( kSkeletalShaderSource ) - 1, "SkeletalShader", nullptr, nullptr,
-        "PSMain", "ps_5_0", compileFlags, 0, m_SkeletalPsBlob.ReleaseAndGetAddressOf(), err.ReleaseAndGetAddressOf() ) ) ) {
-        if ( err ) LogWarn() << "D3D12: skeletal PS compile error: " << static_cast<const char*>( err->GetBufferPointer() );
+    if ( !CompileShaderD3D12( kSkeletalShaderSource, sizeof( kSkeletalShaderSource ) - 1, "SkeletalShader", nullptr, nullptr,
+        "PSMain", Shadermodel_PS, compileFlags, 0, m_SkeletalPsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
 
@@ -2375,15 +2734,15 @@ bool D3D12GraphicsEngine::CreateSkeletalConstantBuffers() {
 }
 
 XRESULT D3D12GraphicsEngine::SetViewport( const ViewportInfo& vp ) {
-    m_CurrentViewport.TopLeftX = static_cast<float>( vp.TopLeftX );
-    m_CurrentViewport.TopLeftY = static_cast<float>( vp.TopLeftY );
-    m_CurrentViewport.Width    = static_cast<float>( vp.Width );
-    m_CurrentViewport.Height   = static_cast<float>( vp.Height );
+    m_CurrentViewport.TopLeftX = static_cast<float>(vp.TopLeftX);
+    m_CurrentViewport.TopLeftY = static_cast<float>(vp.TopLeftY);
+    m_CurrentViewport.Width = static_cast<float>(vp.Width);
+    m_CurrentViewport.Height = static_cast<float>(vp.Height);
     m_CurrentViewport.MinDepth = vp.MinZ;
     m_CurrentViewport.MaxDepth = vp.MaxZ;
     m_CurrentScissor = {
-        static_cast<LONG>( vp.TopLeftX ), static_cast<LONG>( vp.TopLeftY ),
-        static_cast<LONG>( vp.TopLeftX + vp.Width ), static_cast<LONG>( vp.TopLeftY + vp.Height ) };
+        static_cast<LONG>(vp.TopLeftX), static_cast<LONG>(vp.TopLeftY),
+        static_cast<LONG>(vp.TopLeftX + vp.Width), static_cast<LONG>(vp.TopLeftY + vp.Height) };
     return XR_SUCCESS;
 }
 
@@ -2402,7 +2761,7 @@ XRESULT D3D12GraphicsEngine::DrawVertexArray( ExVertexStruct* vertices, unsigned
     if ( m_UIVertexBufferOffset + bytes > m_UIVertexBufferCapacity ) {
         if ( !m_UIOverflowLogged ) {
             LogWarn() << "D3D12: 2D vertex ring overflow (" << m_UIVertexBufferCapacity
-                      << " bytes/frame). Some UI geometry dropped this frame.";
+                << " bytes/frame). Some UI geometry dropped this frame.";
             m_UIOverflowLogged = true;
         }
         return XR_SUCCESS;
@@ -2468,11 +2827,11 @@ XRESULT D3D12GraphicsEngine::DrawVertexBufferFF( GfxVertexBuffer* vb, unsigned i
     if ( stride != sizeof( Gothic_XYZRHW_DIF_T1_Vertex ) )
         return XR_SUCCESS; // unknown FF-VB format — nothing else is emitted through this path
 
-    const uint8_t* base = static_cast<const uint8_t*>( D3D12VertexBuffer::From( vb )->GetMappedData() );
+    const uint8_t* base = static_cast<const uint8_t*>(D3D12VertexBuffer::From( vb )->GetMappedData());
     if ( !base ) return XR_SUCCESS;
 
     const Gothic_XYZRHW_DIF_T1_Vertex* src =
-        reinterpret_cast<const Gothic_XYZRHW_DIF_T1_Vertex*>( base + static_cast<size_t>( startVertex ) * stride );
+        reinterpret_cast<const Gothic_XYZRHW_DIF_T1_Vertex*>(base + static_cast<size_t>(startVertex) * stride);
 
     static std::vector<ExVertexStruct> exv; // reused; the render path is single-threaded (matches DrawPrimitive)
     exv.resize( numVertices );
@@ -2480,7 +2839,7 @@ XRESULT D3D12GraphicsEngine::DrawVertexBufferFF( GfxVertexBuffer* vb, unsigned i
         exv[i].Position = src[i].xyz;
         exv[i].Normal.x = src[i].rhw;
         exv[i].TexCoord = src[i].texCoord;
-        exv[i].Color    = src[i].color;
+        exv[i].Color = src[i].color;
     }
 
     return DrawVertexArray( exv.data(), numVertices, 0, sizeof( ExVertexStruct ) );
@@ -2491,11 +2850,20 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
     // Order mirrors D3D11's DrawWorldMeshNaive: sky background, world mesh, skeletal (NPCs/monsters),
     // then instanced static VOBs. The sky is a fog-colored fill so the horizon dissolves into the
     // per-pixel distance fog of the geometry.
+
+    // Collect the frame's visible vobs/lights/mobs ONCE (CollectVisibleVobs has side effects — it fills each
+    // visual's Instances list — so it must run exactly once), then rebuild the per-frame point-light buffer so
+    // every geometry pass (world, VOBs, skeletal) lights against the same visible-light set. Mirrors D3D11
+    // filling m_FrameLights during collection.
+    g_FrameVobs.clear(); g_FrameLights.clear(); g_FrameMobs.clear();
+    Engine::GAPI->CollectVisibleVobs( g_FrameVobs, g_FrameLights, g_FrameMobs );
+    BuildFrameLightBuffer();
+
     DrawSky();
     DrawWorldMesh();
     {
-        auto _ = RecordGraphicsEvent(GE_NAME("Draw animated skeletal"));
-        DrawSkeletalMeshes( Engine::GAPI->GetAnimatedSkeletalMeshVobs(), false);
+        DX_ZONE( m_CmdList, "Draw animated skeletal" );
+        DrawSkeletalMeshes( Engine::GAPI->GetAnimatedSkeletalMeshVobs(), false );
     }
     DrawVobsInstanced();
 
@@ -2506,7 +2874,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
     decals.clear();
     Engine::GAPI->GetVisibleDecalList( decals );
     {
-        auto _ = RecordGraphicsEvent( GE_NAME( "Draw decals (opaque)" ) );
+        DX_ZONE( m_CmdList, "Draw decals (opaque)" );
         DrawDecalList( decals, true );
     }
 
@@ -2514,22 +2882,28 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
     DrawWaterSurfaces();
 
     {
-        auto _ = RecordGraphicsEvent( GE_NAME( "Draw decals (transparent)" ) );
+        DX_ZONE( m_CmdList, "Draw decals (transparent)" );
         DrawDecalList( decals, false );
     }
 
     // Particles last: billboarded PFX (fire, smoke, magic, dust) blended over everything, depth-tested
     // against the opaque scene but not writing depth. Mirrors D3D11's late DrawParticlesSimple pass.
     {
-        auto _ = RecordGraphicsEvent( GE_NAME( "Draw particles" ) );
+        DX_ZONE( m_CmdList, "Draw particles" );
         DrawParticleEffects();
+    }
+
+    // Clear the per-visual instance lists so next frame's CollectVisibleVobs starts fresh (mirrors D3D11).
+    // Done here (not in DrawVobsInstanced) so it runs even when DrawVOBs is off and that pass early-outs.
+    for ( auto const& [visualPtr, visual] : Engine::GAPI->GetStaticMeshVisuals() ) {
+        if ( visual ) visual->Instances.clear();
     }
     return XR_SUCCESS;
 }
 
 XRESULT D3D12GraphicsEngine::DrawSky() {
     if ( !m_FrameOpen ) return XR_SUCCESS;
-    auto _ = RecordGraphicsEvent(GE_NAME("Draw sky"));
+    DX_ZONE( m_CmdList, "Draw sky" );
     // Forward-renderer sky MVP: fill the backbuffer with Gothic's atmosphere (fog) color. Runs at the
     // start of the world pass — after OnBeginFrame's black clear, before any 3D geometry — so wherever
     // no geometry draws (above the horizon) the sky shows this color, and the geometry shaders' distance
@@ -2540,7 +2914,7 @@ XRESULT D3D12GraphicsEngine::DrawSky() {
     const float clear[4] = { fc.x, fc.y, fc.z, 1.0f };
 
     D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
-    rtv.ptr += static_cast<SIZE_T>( m_FrameIndex ) * m_RtvDescriptorSize;
+    rtv.ptr += static_cast<SIZE_T>(m_FrameIndex) * m_RtvDescriptorSize;
     m_CmdList->ClearRenderTargetView( rtv, clear, 0, nullptr );
     return XR_SUCCESS;
 }
@@ -2560,8 +2934,8 @@ XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
     // The wrapped world index buffer is a single merged 32-bit buffer (bound R32_UINT, like D3D11).
     const UINT numIndices = ib->GetSizeInBytes() / sizeof( uint32_t );
     if ( numIndices == 0 ) return XR_SUCCESS;
-    
-    auto _ = RecordGraphicsEvent(GE_NAME("Draw World Mesh"));
+
+    DX_ZONE( m_CmdList, "Draw World Mesh" );
 
     // Camera matrices — replicate the D3D11 DrawWorldMesh setup exactly so ViewProj is byte-identical:
     // world verts are already world-space (identity world), transform is proj*view (reversed-Z).
@@ -2579,8 +2953,10 @@ XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
     m_CmdList->SetGraphicsRootSignature( m_WorldRootSig.Get() );
     m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
     m_CmdList->SetGraphicsRoot32BitConstants( 2, 8, &fog, 0 );   // b1 fog
+    BindFrameLights();   // param 3 = light SRV (t1), param 4 = light count (b2) — MUST set both or the
+                         // shader's light loop reads a garbage count and runs away (GPU TDR hang).
 
-    D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
+    D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_Resolution.x), static_cast<float>(m_Resolution.y), 0.0f, 1.0f };
     D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
     m_CmdList->RSSetViewports( 1, &vp );
     m_CmdList->RSSetScissorRects( 1, &sc );
@@ -2613,7 +2989,7 @@ XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
 
             // Water is transparent — bucket it by texture for the later alpha-blended pass, skip here.
             if ( meshKey.Info && meshKey.Info->MaterialType == MaterialInfo::MT_Water ) {
-                g_FrameWaterSurfaces[meshKey.Material->GetAniTexture()].push_back(mesh);
+                g_FrameWaterSurfaces[meshKey.Material->GetAniTexture()].push_back( mesh );
                 continue;
             }
 
@@ -2632,9 +3008,9 @@ XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
                 boundTex = tex;
             }
 
-            m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mesh->Indices.size() ), 1,
+            m_CmdList->DrawIndexedInstanced( static_cast<UINT>(mesh->Indices.size()), 1,
                 mesh->BaseIndexLocation, 0, 0 );
-            drawnIndices += static_cast<unsigned int>( mesh->Indices.size() );
+            drawnIndices += static_cast<unsigned int>(mesh->Indices.size());
         }
     }
 
@@ -2650,13 +3026,8 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
     if ( !rs.RendererSettings.DrawVOBs )
         return XR_SUCCESS;
 
-    // Collect visible VOBs — this fills each visual's Instances list (world matrices grouped by
-    // visual). COLLECT_ALL_MUTATE + CullAll are the defaults; mirrors D3D11's DrawVOBsInstanced.
-    static std::vector<VobInfo*> vobs;
-    static std::vector<VobLightInfo*> lights;
-    static std::vector<SkeletalVobInfo*> mobs;
-    vobs.clear(); lights.clear(); mobs.clear();
-    Engine::GAPI->CollectVisibleVobs( vobs, lights, mobs );
+    // Visible VOBs/lights/mobs were already collected once in OnStartWorldRendering (g_FrameVobs/Lights/Mobs);
+    // this pass just consumes them (each visual's Instances list was filled by that collection).
 
     // Reversed-Z ViewProj (recomputed; identical derivation to DrawWorldMesh).
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
@@ -2673,8 +3044,9 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
     m_CmdList->SetGraphicsRootSignature( m_WorldRootSig.Get() );
     m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
     m_CmdList->SetGraphicsRoot32BitConstants( 2, 8, &fog, 0 );   // b1 fog
+    BindFrameLights();   // param 3 = light SRV (t1), param 4 = light count (b2) — see DrawWorldMesh.
 
-    D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
+    D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_Resolution.x), static_cast<float>(m_Resolution.y), 0.0f, 1.0f };
     D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
     m_CmdList->RSSetViewports( 1, &vp );
     m_CmdList->RSSetScissorRects( 1, &sc );
@@ -2685,17 +3057,17 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
     unsigned int drawnTris = 0;
 
     {
-        auto _ = RecordGraphicsEvent(GE_NAME("Draw vobs"));
+        DX_ZONE( m_CmdList, "Draw Vobs" );
         for ( auto const& [visualPtr, visual] : Engine::GAPI->GetStaticMeshVisuals() ) {
             if ( !visual || visual->Instances.empty() ) continue;
 
-            const UINT numInstances = static_cast<UINT>( visual->Instances.size() );
-            const UINT instBytes = numInstances * static_cast<UINT>( sizeof( VobInstanceInfo ) );
+            const UINT numInstances = static_cast<UINT>(visual->Instances.size());
+            const UINT instBytes = numInstances * static_cast<UINT>(sizeof( VobInstanceInfo ));
 
             if ( m_VobInstanceBufferOffset + instBytes > m_VobInstanceBufferCapacity ) {
                 if ( !m_VobInstanceOverflowLogged ) {
                     LogWarn() << "D3D12: VOB instance ring overflow (" << m_VobInstanceBufferCapacity
-                              << " bytes/frame). Some VOBs dropped this frame.";
+                        << " bytes/frame). Some VOBs dropped this frame.";
                     m_VobInstanceOverflowLogged = true;
                 }
                 break;
@@ -2736,22 +3108,20 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
                     const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
                     m_CmdList->IASetIndexBuffer( &ibv );
 
-                    m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mi->Indices.size() ), numInstances, 0, 0, 0 );
-                    drawnTris += ( static_cast<unsigned int>( mi->Indices.size() ) / 3 ) * numInstances;
+                    m_CmdList->DrawIndexedInstanced( static_cast<UINT>(mi->Indices.size()), numInstances, 0, 0, 0 );
+                    drawnTris += (static_cast<unsigned int>(mi->Indices.size()) / 3) * numInstances;
                 }
             }
         }
     }
 
     {
-        auto _ = RecordGraphicsEvent(GE_NAME("Draw static skeletal"));
-        DrawSkeletalMeshes( mobs, false );
+        DX_ZONE( m_CmdList, "Draw static skeletal" );
+        DrawSkeletalMeshes( g_FrameMobs, false );
     }
 
-    // Clear the per-visual instance lists so next frame's CollectVisibleVobs starts fresh (mirrors D3D11).
-    for ( auto const& [visualPtr, visual] : Engine::GAPI->GetStaticMeshVisuals() ) {
-        if ( visual ) visual->Instances.clear();
-    }
+    // NOTE: the per-visual Instances lists are cleared once at the end of OnStartWorldRendering (not here),
+    // so they still get reset even when DrawVOBs is off and this pass early-outs above.
 
     rs.RendererInfo.FrameDrawnTriangles += drawnTris;
     return XR_SUCCESS;
@@ -2943,6 +3313,9 @@ XRESULT D3D12GraphicsEngine::DrawSkeletalMeshes( std::vector<SkeletalVobInfo*>& 
         m_CmdList->SetGraphicsRootSignature( m_WorldRootSig.Get() );
         m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
         m_CmdList->SetGraphicsRoot32BitConstants( 2, 8, &fog, 0 );   // b1 fog (VOB root sig)
+        BindFrameLights();   // param 3 = light SRV (t1), param 4 = light count (b2) — the VOB PSO's shader
+                             // reads both; omitting them here (as this attachment pass previously did) makes
+                             // the light loop run on a garbage count → GPU TDR hang.
         m_CmdList->RSSetViewports( 1, &vp );
         m_CmdList->RSSetScissorRects( 1, &sc );
         m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
@@ -3178,6 +3551,7 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
 
     m_CmdAllocators[m_FrameIndex]->Reset();
     m_CmdList->Reset( m_CmdAllocators[m_FrameIndex].Get(), nullptr );
+    ResetCpuContextTracker();
 
     auto toRT = TransitionBarrier( m_BackBuffers[m_FrameIndex].Get(),
         D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET );
@@ -3212,6 +3586,7 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
     m_ParticleInstanceOverflowLogged = false;
     m_DecalInstanceBufferOffset = 0;
     m_DecalInstanceOverflowLogged = false;
+    m_LightOverflowLogged = false;   // light buffer is rebuilt from 0 each frame in BuildFrameLightBuffer
     m_CurrentTexture = nullptr;
     m_CurrentViewport = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
     m_CurrentScissor = { 0, 0, m_Resolution.x, m_Resolution.y };
@@ -3243,6 +3618,123 @@ XRESULT D3D12GraphicsEngine::OnEndFrame() {
     return XR_SUCCESS;
 }
 
+#ifdef DEBUG_D3D11
+
+static const wchar_t* GetOpName( D3D12_AUTO_BREADCRUMB_OP op ) {
+    switch ( op ) {
+    case D3D12_AUTO_BREADCRUMB_OP_SETMARKER: return L"SetMarker";
+    case D3D12_AUTO_BREADCRUMB_OP_BEGINEVENT: return L"BeginEvent";
+    case D3D12_AUTO_BREADCRUMB_OP_ENDEVENT: return L"EndEvent";
+    case D3D12_AUTO_BREADCRUMB_OP_DRAWINSTANCED: return L"DrawInstanced";
+    case D3D12_AUTO_BREADCRUMB_OP_DRAWINDEXEDINSTANCED: return L"DrawIndexedInstanced";
+    case D3D12_AUTO_BREADCRUMB_OP_EXECUTEINDIRECT: return L"ExecuteIndirect";
+    case D3D12_AUTO_BREADCRUMB_OP_DISPATCH: return L"Dispatch";
+    case D3D12_AUTO_BREADCRUMB_OP_COPYBUFFERREGION: return L"CopyBufferRegion";
+    case D3D12_AUTO_BREADCRUMB_OP_COPYTEXTUREREGION: return L"CopyTextureRegion";
+    case D3D12_AUTO_BREADCRUMB_OP_COPYRESOURCE: return L"CopyResource";
+    case D3D12_AUTO_BREADCRUMB_OP_COPYTILES: return L"CopyTiles";
+    case D3D12_AUTO_BREADCRUMB_OP_RESOLVESUBRESOURCE: return L"ResolveSubresource";
+    case D3D12_AUTO_BREADCRUMB_OP_CLEARRENDERTARGETVIEW: return L"ClearRenderTargetView";
+    case D3D12_AUTO_BREADCRUMB_OP_CLEARUNORDEREDACCESSVIEW: return L"ClearUnorderedAccessView";
+    case D3D12_AUTO_BREADCRUMB_OP_CLEARDEPTHSTENCILVIEW: return L"ClearDepthStencilView";
+    case D3D12_AUTO_BREADCRUMB_OP_RESOURCEBARRIER: return L"ResourceBarrier";
+    case D3D12_AUTO_BREADCRUMB_OP_EXECUTEBUNDLE: return L"ExecuteBundle";
+    case D3D12_AUTO_BREADCRUMB_OP_PRESENT: return L"Present";
+    case D3D12_AUTO_BREADCRUMB_OP_BUILDRAYTRACINGACCELERATIONSTRUCTURE: return L"BuildRaytracingAccelerationStructure";
+    case D3D12_AUTO_BREADCRUMB_OP_EMITRAYTRACINGACCELERATIONSTRUCTUREPOSTBUILDINFO: return L"EmitRaytracingAccelerationStructurePostBuildInfo";
+    case D3D12_AUTO_BREADCRUMB_OP_COPYRAYTRACINGACCELERATIONSTRUCTURE: return L"CopyRaytracingAccelerationStructure";
+    case D3D12_AUTO_BREADCRUMB_OP_DISPATCHRAYS: return L"DispatchRays";
+    case D3D12_AUTO_BREADCRUMB_OP_INITIALIZEMETACOMMAND: return L"InitializeMetaCommand";
+    case D3D12_AUTO_BREADCRUMB_OP_EXECUTEMETACOMMAND: return L"ExecuteMetaCommand";
+    case D3D12_AUTO_BREADCRUMB_OP_ESTIMATEMOTION: return L"EstimateMotion";
+    case D3D12_AUTO_BREADCRUMB_OP_BARRIER: return L"EnhancedBarrier";
+    default: return L"Unknown D3D12 Command";
+    }
+}
+
+static const wchar_t* SafeWideString( const wchar_t* str ) {
+    return str ? str : L"[Unnamed Object]";
+}
+
+static const wchar_t* FindCpuRecordedContext( UINT crashIndex ) {
+    const wchar_t* lastKnownContext = L"Unknown/Outside Scopes";
+
+    // Look back through what the CPU logged during recording up to the crash point
+    for ( UINT i = 0; i <= crashIndex; ++i ) {
+        if ( i < g_CpuContextHistory.size() && g_CpuContextHistory[i].pContextText != nullptr ) {
+            lastKnownContext = g_CpuContextHistory[i].pContextText;
+        }
+    }
+    return lastKnownContext;
+}
+
+static void PrintNode( const D3D12_AUTO_BREADCRUMB_NODE1* node ) {
+    std::wstring builder{};
+    builder.reserve(1024);
+
+    builder.append( L"--- Outstanding Command List GPU Breadcrumbs ---\n" );
+    builder.append( L"Command List Debug Name: " ).append( SafeWideString( node->pCommandListDebugNameW ) ).append( L"\n" );
+    builder.append( L"Command Queue Debug Name: " ).append( SafeWideString( node->pCommandQueueDebugNameW ) ).append( L"\n" );
+    OutputDebugStringW( builder.c_str() );
+
+    // Log out the History of GPU Operations recorded
+    // Note: pLastBreadcrumbValue points to the number of completed operations.
+    // Operations *up to* (*node->pLastBreadcrumbValue) finished. Anything past failed or hung.
+    UINT completedOps = node->pLastBreadcrumbValue ? *node->pLastBreadcrumbValue : 0;
+
+    builder.clear();
+    builder.append( L"Completed Op Count: " ).append( std::to_wstring( completedOps ) ).append( L" / " ).append( std::to_wstring( node->BreadcrumbCount ) ).append( L"\n" );
+    OutputDebugStringW( builder.c_str() );
+
+    for ( UINT i = 0; i < node->BreadcrumbCount; ++i ) {
+        builder.clear();
+
+        if ( i < completedOps ) {
+            builder.append( L" [ok] " );
+        } else if ( i == completedOps ) {
+            builder.append( L" [ERR] " );
+        } else {
+            builder.append( L" [ ] " );
+        }
+
+        builder.append( L"Op #" ).append( std::to_wstring( i ) ).append( L": " );
+        builder.append( GetOpName( node->pCommandHistory[i] ) );
+
+        if ( i == completedOps ) {
+            builder.append( L"   <=== !!! HARDWARE HANG DETECTED AT THIS OPERATION !!!" );
+
+            // Pull the exact recorded context step tied directly to this operation cluster!
+            const wchar_t* contextAtCrash = FindCpuRecordedContext( completedOps );
+            builder.append( L"\n   <=== !!! ACTIVE SCOPE AT TIME OF HARDWARE CRASH: \"" )
+                .append( contextAtCrash ).append( L"\" !!!" );
+        }
+
+        builder.append( L"\n" );
+        OutputDebugStringW( builder.c_str() );
+    }
+
+    if ( node->pNext ) {
+        PrintNode( node->pNext );
+    }
+#undef PRINT_NODE_FIELD
+}
+
+static void DiagnoseErrors(ID3D12Device* device) {
+    // Enable the debug layer before device creation when available (best-effort).
+    if ( HMODULE d3d12 = GetModuleHandleA( "d3d12.dll" ) ) {
+        auto getDebug = reinterpret_cast<PFN_D3D12_GET_DEBUG_INTERFACE>(GetProcAddress( d3d12, "D3D12GetDebugInterface" ));
+
+        ComPtr<ID3D12DeviceRemovedExtendedData1> pRemovedExtendedData;
+        if ( SUCCEEDED( device->QueryInterface( IID_PPV_ARGS( pRemovedExtendedData.ReleaseAndGetAddressOf() ) ) ) ) {
+            D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT1 output;
+            if (SUCCEEDED( pRemovedExtendedData->GetAutoBreadcrumbsOutput1( &output ) )) {
+                PrintNode( output.pHeadAutoBreadcrumbNode );
+            }
+        }
+    }
+}
+#endif
+
 XRESULT D3D12GraphicsEngine::Present() {
     if ( !m_SwapChainReady || !m_FrameOpen ) return XR_SUCCESS;
 
@@ -3267,9 +3759,20 @@ XRESULT D3D12GraphicsEngine::Present() {
     const bool vsync = Engine::GAPI->GetRendererState().RendererSettings.EnableVSync;
     HRESULT hr = m_SwapChain->Present( vsync ? 1 : 0, 0 );
     if ( FAILED( hr ) ) {
-        auto msg = std::format( "D3D12 Present failed (0x{:X})", hr );
-        LogWarn() << "D3D12 Present failed (0x" << std::hex << hr << ").";
-        MessageBoxA( NULL, msg.c_str(), "GD3D11 (DX12): Error", MB_OK);
+        auto r = static_cast<uint32_t>(hr);
+        if ( hr == DXGI_ERROR_DEVICE_REMOVED) {
+#ifdef DEBUG_D3D11
+            DiagnoseErrors( m_Device.GetDevice() );
+#endif
+            auto removedReason = m_Device.GetDevice()->GetDeviceRemovedReason();
+            auto msg = std::format( "D3D12 Present failed (0x{:08X}, reason: 0x{:08X})", r, static_cast<uint32_t>(removedReason) );
+            LogWarn() << "D3D12 Present failed (0x" << std::hex << r << ").";
+            MessageBoxA( NULL, msg.c_str(), "GD3D11 (DX12): Error", MB_OK );
+        } else {
+            auto msg = std::format( "D3D12 Present failed (0x{:08X})", r );
+            LogWarn() << "D3D12 Present failed (0x" << std::hex << r << ").";
+            MessageBoxA( NULL, msg.c_str(), "GD3D11 (DX12): Error", MB_OK);
+        }
         exit( hr );
         return XR_FAILED;
     }

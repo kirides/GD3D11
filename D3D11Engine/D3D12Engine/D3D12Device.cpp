@@ -108,7 +108,7 @@ namespace {
         // Actually attempt to create a temporary device instance
         HRESULT hr = createDevice(
             adapter,
-            D3D_FEATURE_LEVEL_11_0,
+            D3D_FEATURE_LEVEL_12_0,
             __uuidof(ID3D12Device),
             IID_PPV_ARGS_Helper( &tempDevice )
         );
@@ -212,6 +212,16 @@ bool D3D12Device::Init() {
             debug->EnableDebugLayer();
             LogInfo() << "D3D12 debug layer enabled.";
         }
+
+        // Enable DRED
+        ComPtr<ID3D12DeviceRemovedExtendedDataSettings1> pDredSettings;
+        if ( getDebug && SUCCEEDED( getDebug( IID_PPV_ARGS( pDredSettings.ReleaseAndGetAddressOf() ) ) ) ) {
+            // Turn on auto-breadcrumbs and page fault reporting
+            pDredSettings->SetAutoBreadcrumbsEnablement( D3D12_DRED_ENABLEMENT_FORCED_ON );
+            pDredSettings->SetBreadcrumbContextEnablement( D3D12_DRED_ENABLEMENT_FORCED_ON );
+            pDredSettings->SetPageFaultEnablement( D3D12_DRED_ENABLEMENT_FORCED_ON );
+            pDredSettings->Release();
+        }
     }
 #endif
 
@@ -221,11 +231,11 @@ bool D3D12Device::Init() {
     }
 
     if ( !SelectAdapter( m_Factory.Get(), createDevice, m_Adapter, m_DeviceDescription ) ) {
-        LogWarn() << "D3D12Device::Init: no Feature-Level-11_0-capable GPU found.";
+        LogWarn() << "D3D12Device::Init: no Feature-Level-12_0-capable GPU found.";
         return false;
     }
 
-    HRESULT hr = createDevice( m_Adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS( m_Device.ReleaseAndGetAddressOf() ) );
+    HRESULT hr = createDevice( m_Adapter.Get(), D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS( m_Device.ReleaseAndGetAddressOf() ) );
     if ( FAILED( hr ) ) {
         LogWarn() << "D3D12Device::Init: D3D12CreateDevice failed with code 0x" << std::hex << hr << ".";
         return false;
