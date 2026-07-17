@@ -589,9 +589,37 @@ cbuffer FrameCB    : register(b0) { float4x4 ViewProj; };
 cbuffer InstanceCB : register(b1) { float4x4 M_World; float4 ModelColor; float Fatness; float3 _pad; };
 cbuffer BonesCB    : register(b2) { float4x4 Bones[96]; };
 cbuffer FogCB      : register(b3) { float3 FogColor; float FogNear; float3 CamPosWS; float FogFar; };
+cbuffer LightCB    : register(b4) { uint LightCount; uint3 _lpad; };   // Forward+ MVP brute-force point-light count
+
+// Root-descriptor SRV point-light buffer + hard loop clamp — see the world shader for the full rationale.
+struct GPULight { float3 PositionView; float Range; float4 Color; float3 PositionWorld; int ShadowCubeIndex; };
+StructuredBuffer<GPULight> Lights : register(t1);
+#define LIGHT_CAP 400u
 
 Texture2D    tx  : register(t0);
 SamplerState smp : register(s0);
+
+// Accumulate dynamic point lights at a world-space surface point (identical math to the world/VOB shaders:
+// range cull, N.L, falloff = nd*(nd*0.2+0.8), per-light saturate, additive; specular/shadows are later).
+float3 AccumPointLights( float3 wpos, float3 N, float3 diffuse )
+{
+    float3 total = 0;
+    uint n = min( LightCount, LIGHT_CAP );
+    for ( uint k = 0; k < n; k++ )
+    {
+        GPULight L = Lights[k];
+        float3 dir = L.PositionWorld - wpos;
+        float dist = length( dir );
+        if ( dist >= L.Range ) continue;
+        dir /= dist;
+        float ndl = max( 0.0, dot( dir, N ) );
+        float nd  = saturate( 1.0 - dist / L.Range );
+        float falloff = nd * (nd * 0.2 + 0.8);
+        float3 c = saturate( falloff * ndl * L.Color.rgb );
+        total += saturate( c * diffuse );
+    }
+    return total;
+}
 
 struct VS_IN
 {
@@ -602,7 +630,7 @@ struct VS_IN
     uint4  boneIndices    : BONEIDS;
     float4 weights        : WEIGHTS;
 };
-struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : TEXCOORD1; float fogDist : TEXCOORD2; };
+struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : TEXCOORD1; float fogDist : TEXCOORD2; float3 wpos : TEXCOORD3; float3 wnrm : TEXCOORD4; };
 
 VS_OUT VSMain( VS_IN i )
 {
@@ -622,6 +650,9 @@ VS_OUT VSMain( VS_IN i )
     o.clip = mul( float4( worldPos, 1.0 ), ViewProj );
     o.uv  = i.uv;
     o.col = ModelColor;
+    o.wpos = worldPos;
+    // skinnedNormal is in model space (bone-rotated); rotate into world by M_World (rigid + ~uniform scale).
+    o.wnrm = mul( skinnedNormal, (float3x3)M_World );
     o.fogDist = length( worldPos - CamPosWS );
     return o;
 }
@@ -631,6 +662,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     float4 t = tx.Sample( smp, i.uv );
     clip( t.a - 0.5 );
     float3 rgb = t.rgb * i.col.rgb;            // ModelColor is an RGBA float (white for first-light)
+    rgb += AccumPointLights( i.wpos, normalize( i.wnrm ), t.rgb );   // dynamic point lights on top
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
     return float4( lerp( rgb, FogColor, f ), 1.0 );
 }
@@ -1709,14 +1741,15 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
     m_FrameLightCount = count;
 }
 
-void D3D12GraphicsEngine::BindFrameLights() {
-    // Bind the Forward+ point-light root params on m_WorldRootSig: param 3 = the light StructuredBuffer as a
-    // root SRV (t1), param 4 = the light count (b2). EVERY draw that uses m_WorldRootSig with a light-reading
-    // PSO (m_WorldPSO / m_VobPSO — world mesh, instanced VOBs, node attachments) MUST call this after setting
-    // the root signature, or the pixel shader's light loop bound (LightCount) is an UNDEFINED root value and
-    // can run billions of iterations → GPU timeout/removal. Root args are cleared on every SetGraphicsRootSignature.
-    m_CmdList->SetGraphicsRootShaderResourceView( 3, m_LightBuffer[m_FrameIndex]->GetGPUVirtualAddress() );
-    m_CmdList->SetGraphicsRoot32BitConstant( 4, m_FrameLightCount, 0 );
+void D3D12GraphicsEngine::BindFrameLights( UINT srvParam, UINT countParam ) {
+    // Bind the Forward+ point-light root params: srvParam = the light StructuredBuffer as a root SRV (t1),
+    // countParam = the light count (LightCB). EVERY draw whose bound PSO reads the light loop MUST call this
+    // after setting its root signature, or the pixel shader's loop bound (LightCount) is an UNDEFINED root
+    // value and can run billions of iterations → GPU timeout/removal. Root args are cleared on every
+    // SetGraphicsRootSignature. The param indices differ per root sig: m_WorldRootSig uses (3,4) — the default —
+    // for the world mesh / instanced VOBs / node attachments; m_SkeletalRootSig uses (5,6).
+    m_CmdList->SetGraphicsRootShaderResourceView( srvParam, m_LightBuffer[m_FrameIndex]->GetGPUVirtualAddress() );
+    m_CmdList->SetGraphicsRoot32BitConstant( countParam, m_FrameLightCount, 0 );
 }
 
 bool D3D12GraphicsEngine::CreateWaterPipeline() {
@@ -2602,7 +2635,7 @@ bool D3D12GraphicsEngine::CreateSkeletalPipeline() {
     srvRange.BaseShaderRegister = 0;         // t0
     srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-    D3D12_ROOT_PARAMETER params[5] = {};
+    D3D12_ROOT_PARAMETER params[7] = {};
     params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     params[0].Constants.ShaderRegister = 0;   // b0 ViewProj
     params[0].Constants.Num32BitValues = 16;
@@ -2621,6 +2654,15 @@ bool D3D12GraphicsEngine::CreateSkeletalPipeline() {
     params[4].Constants.ShaderRegister = 3;   // b3 fog
     params[4].Constants.Num32BitValues = 8;   // FogConstants (8 DWORDs)
     params[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;  // VS: CamPosWS; PS: color/near/far
+    // Forward+ point lights (mirrors m_WorldRootSig params 3/4, here at 5/6 — see BindFrameLights). Both MUST
+    // be bound at every skeletal draw or the PS light-loop bound is undefined → GPU hang.
+    params[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+    params[5].Descriptor.ShaderRegister = 1;  // t1 light StructuredBuffer (root SRV, no descriptor slot)
+    params[5].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    params[6].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[6].Constants.ShaderRegister = 4;   // b4 light count
+    params[6].Constants.Num32BitValues = 4;   // LightCB { uint LightCount; uint3 _lpad; }
+    params[6].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_STATIC_SAMPLER_DESC sampler = {};
     sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
@@ -3152,6 +3194,7 @@ XRESULT D3D12GraphicsEngine::DrawSkeletalMeshes( std::vector<SkeletalVobInfo*>& 
     m_CmdList->SetGraphicsRootSignature( m_SkeletalRootSig.Get() );
     m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
     m_CmdList->SetGraphicsRoot32BitConstants( 4, 8, &fog, 0 );   // b3 fog
+    BindFrameLights( 5, 6 );   // param 5 = light SRV (t1), param 6 = light count (b4) — MUST set both (see BindFrameLights)
 
     D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
     D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };

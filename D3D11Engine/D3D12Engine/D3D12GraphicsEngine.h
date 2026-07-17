@@ -133,7 +133,7 @@ private:
     XRESULT DrawVobsInstanced();      // collect visible VOBs + draw each visual instanced (textured)
     bool CreateLightBuffer();         // per-frame point-light structured buffers (Forward+ MVP: brute-force)
     void BuildFrameLightBuffer();     // (re)fill this frame's light buffer from the collected visible lights
-    void BindFrameLights();           // bind light SRV (param 3/t1) + count (param 4/b2) on m_WorldRootSig draws
+    void BindFrameLights( UINT srvParam = 3, UINT countParam = 4 );   // bind light SRV (t1) + count; (3,4)=m_WorldRootSig, (5,6)=m_SkeletalRootSig
     bool CreateWaterPipeline();       // alpha-blended water PSO + own root sig (adds b2 time) + inline shaders
     void DrawWaterSurfaces() override; // draw water peeled out of the opaque world pass (scrolled UV, blended)
     bool CreateSkeletalPipeline();    // skeletal (animated NPC/monster) root sig + inline shaders + PSO
