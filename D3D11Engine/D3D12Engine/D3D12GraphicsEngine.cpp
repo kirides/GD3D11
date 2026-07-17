@@ -497,6 +497,39 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
 }
 )";
 
+    // Forward+ opaque DEPTH PREPASS shader (P2.9b-1). Lays down the opaque world-mesh depth before the
+    // lit color passes so the later tiled light-culling compute (P2.9b-2) has a per-pixel depth to tighten
+    // each tile's frustum. Writes DEPTH ONLY — the PSO sets the color write mask to 0, so the float4 the PS
+    // returns is discarded (it exists solely to run the alpha-test clip). The clip cutoff matches the opaque
+    // world PS's clip( t.a - 0.5 ) exactly, so cutout foliage/fence gaps do NOT write depth (otherwise the
+    // main pass would see background occluded through the gaps). Reuses m_WorldRootSig: only b0 (ViewProj)
+    // and t0/s0 are referenced — fog/light params are NOT bound (no light loop here, so no hang risk).
+    constexpr char kDepthPrepassShaderSource[] = R"(
+cbuffer WorldCB : register(b0) { float4x4 ViewProj; };   // default column-major packing (see world shader)
+Texture2D    tx  : register(t0);
+SamplerState smp : register(s0);
+
+// World mesh: single stream, packed 36-byte ExVertexStructGPU. Only Position (@0) + TexCoord0 (@20) are
+// fetched here; the normal/tangent/uv2/color fields are not needed for a depth+alpha-clip pass.
+struct VS_IN  { float3 pos : POSITION; float2 uv : TEXCOORD0; };
+struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; };
+
+VS_OUT VSWorld( VS_IN i )
+{
+    VS_OUT o;
+    o.clip = mul( float4( i.pos, 1.0 ), ViewProj );   // world verts are already world-space (identity world)
+    o.uv   = i.uv;
+    return o;
+}
+
+float4 PSClip( VS_OUT i ) : SV_TARGET
+{
+    float4 t = tx.Sample( smp, i.uv );
+    clip( t.a - 0.5 );          // same cutout as the opaque world PS so gaps don't lay down depth
+    return float4( 0, 0, 0, 1 );   // discarded: the PSO's color write mask is 0 (depth-only pass)
+}
+)";
+
     // Phase-2 water shader (MVP). Same wrapped-world-mesh vertex as the opaque pass, but the packed
     // TexCoord2 (@28, half2) carries the per-material UV-scroll delta (set in WorldConverter for water
     // materials); the VS scrolls the diffuse UV by (delta * totalTime) exactly like VS_ExWater. The PS
@@ -892,6 +925,10 @@ XRESULT D3D12GraphicsEngine::Init() {
     }
     if ( !CreateWorldPipeline() ) {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the world-mesh pipeline.";
+        return XR_FAILED;
+    }
+    if ( !CreateDepthPrepassPipeline() ) {
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the depth prepass pipeline.";
         return XR_FAILED;
     }
     if ( !CreateVobPipeline() ) {
@@ -1581,6 +1618,63 @@ bool D3D12GraphicsEngine::CreateWorldPipeline() {
 
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_WorldPSO.ReleaseAndGetAddressOf() ) ) ) ) {
         LogWarn() << "D3D12: CreateGraphicsPipelineState failed (world).";
+        return false;
+    }
+    return true;
+}
+
+bool D3D12GraphicsEngine::CreateDepthPrepassPipeline() {
+    // Forward+ opaque depth prepass (P2.9b-1): a depth-only variant of the world-mesh pass. Reuses
+    // m_WorldRootSig (only b0 ViewProj + t0/s0 are referenced by the prepass shaders) and the world's
+    // packed 36-byte vertex, but binds just Position + TexCoord0, writes NO color (write mask 0), and
+    // keeps the exact reversed-Z GREATER_EQUAL depth-write state so the depth it lays down is bit-identical
+    // to what the opaque world pass would write. Must run AFTER CreateWorldPipeline (needs m_WorldRootSig).
+    ID3D12Device* device = m_Device.GetDevice();
+    if ( !m_WorldRootSig ) { LogWarn() << "D3D12: depth prepass needs the world root sig."; return false; }
+
+    UINT compileFlags = 0;
+    if ( !CompileShaderD3D12( kDepthPrepassShaderSource, sizeof( kDepthPrepassShaderSource ) - 1, "DepthPrepass",
+        nullptr, nullptr, "VSWorld", Shadermodel_VS, compileFlags, 0, m_DepthPrepassWorldVsBlob.ReleaseAndGetAddressOf() ) ) {
+        return false;
+    }
+    if ( !CompileShaderD3D12( kDepthPrepassShaderSource, sizeof( kDepthPrepassShaderSource ) - 1, "DepthPrepass",
+        nullptr, nullptr, "PSClip", Shadermodel_PS, compileFlags, 0, m_DepthPrepassPsBlob.ReleaseAndGetAddressOf() ) ) {
+        return false;
+    }
+
+    // Only Position (@0) + TexCoord0 (@20) from the packed 36-byte ExVertexStructGPU (stride comes from the VBV).
+    const D3D12_INPUT_ELEMENT_DESC layout[] = {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    };
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+    pso.pRootSignature = m_WorldRootSig.Get();
+    pso.VS = { m_DepthPrepassWorldVsBlob->GetBufferPointer(), m_DepthPrepassWorldVsBlob->GetBufferSize() };
+    pso.PS = { m_DepthPrepassPsBlob->GetBufferPointer(), m_DepthPrepassPsBlob->GetBufferSize() };
+    pso.InputLayout = { layout, _countof( layout ) };
+    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    // Keep NumRenderTargets=1 with the backbuffer format so the PSO matches the RTV bound in OnBeginFrame
+    // (no OMSetRenderTargets change needed) — but mask off all color writes so only depth is touched.
+    pso.NumRenderTargets = 1;
+    pso.RTVFormats[0] = kBackBufferFormat;
+    pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+    pso.SampleDesc.Count = 1;
+    pso.SampleMask = UINT_MAX;
+
+    pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;   // match the world PSO's winding treatment
+    pso.RasterizerState.DepthClipEnable = TRUE;
+
+    pso.BlendState.RenderTarget[0].RenderTargetWriteMask = 0;   // DEPTH ONLY — discard color
+
+    pso.DepthStencilState.DepthEnable = TRUE;
+    pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;   // reversed-Z
+    pso.DepthStencilState.StencilEnable = FALSE;
+
+    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_DepthPrepassWorldPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (depth prepass).";
         return false;
     }
     return true;
@@ -2902,6 +2996,10 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
     BuildFrameLightBuffer();
 
     DrawSky();
+    // Forward+ opaque depth prepass (world mesh) — lays down depth before the lit passes so the upcoming
+    // tiled light-culling compute has a populated depth buffer. Visually a no-op (the color passes re-pass
+    // on GREATER_EQUAL and rewrite the same depth).
+    DrawDepthPrepass();
     DrawWorldMesh();
     {
         DX_ZONE( m_CmdList, "Draw animated skeletal" );
@@ -2959,6 +3057,93 @@ XRESULT D3D12GraphicsEngine::DrawSky() {
     rtv.ptr += static_cast<SIZE_T>(m_FrameIndex) * m_RtvDescriptorSize;
     m_CmdList->ClearRenderTargetView( rtv, clear, 0, nullptr );
     return XR_SUCCESS;
+}
+
+void D3D12GraphicsEngine::DrawDepthPrepass() {
+    // Forward+ opaque depth prepass (P2.9b-1). Lays down the opaque WORLD-MESH depth before the lit color
+    // passes, so the tiled light-culling compute (P2.9b-2) can read a populated depth buffer to tighten each
+    // tile's frustum. Writes depth only (color write mask 0). Runs after DrawSky (color cleared, depth still
+    // at the OnBeginFrame clear of 0.0) and before DrawWorldMesh. The main opaque passes keep GREATER_EQUAL +
+    // depth-write, so they re-pass on equal depth and rewrite the same value — the frame is visually identical.
+    //
+    // Scope: WORLD MESH ONLY this increment. Instanced VOBs + skeletal NPCs still get their depth from their
+    // own (unchanged) color passes; they'll be added to the prepass alongside the cull consumer (P2.9b-2),
+    // where the VOB instance-ring offset sharing gets designed together with the tile grid. Water is skipped
+    // (transparent — it never writes depth, same as the opaque pass peels it out).
+    if ( !m_FrameOpen || !m_DepthPrepassWorldPSO || !m_WorldRootSig || !m_DepthBuffer )
+        return;
+
+    MeshInfo* wm = Engine::GAPI->GetWrappedWorldMesh();
+    if ( !wm || !wm->GetMeshVertexBuffer() || !wm->GetMeshIndexBuffer() )
+        return;
+
+    D3D12VertexBuffer* vb = D3D12VertexBuffer::From( wm->GetMeshVertexBuffer() );
+    D3D12VertexBuffer* ib = D3D12VertexBuffer::From( wm->GetMeshIndexBuffer() );
+    if ( !vb->GetResource() || !ib->GetResource() ) return;
+    if ( ib->GetSizeInBytes() / sizeof( uint32_t ) == 0 ) return;
+
+    DX_ZONE( m_CmdList, "Depth Prepass (world)" );
+
+    // ViewProj — identical derivation to DrawWorldMesh so the prepass depth matches the opaque pass exactly.
+    XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
+    Engine::GAPI->SetViewTransformXM( view );
+    Engine::GAPI->ResetWorldTransform();
+    const XMFLOAT4X4& viewM = Engine::GAPI->GetRendererState().TransformState.TransformView;
+    const XMFLOAT4X4& projM = Engine::GAPI->GetProjectionMatrix();
+    XMFLOAT4X4 viewProj;
+    XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
+
+    m_CmdList->SetPipelineState( m_DepthPrepassWorldPSO.Get() );
+    m_CmdList->SetGraphicsRootSignature( m_WorldRootSig.Get() );
+    m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );   // b0 ViewProj (fog/lights not referenced)
+
+    D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_Resolution.x), static_cast<float>(m_Resolution.y), 0.0f, 1.0f };
+    D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
+    m_CmdList->RSSetViewports( 1, &vp );
+    m_CmdList->RSSetScissorRects( 1, &sc );
+
+    D3D12_VERTEX_BUFFER_VIEW vbv = { vb->GetGpuVirtualAddress(), vb->GetSizeInBytes(), sizeof( ExVertexStructGPU ) };
+    D3D12_INDEX_BUFFER_VIEW  ibv = { ib->GetGpuVirtualAddress(), ib->GetSizeInBytes(), DXGI_FORMAT_R32_UINT };
+    m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
+    m_CmdList->IASetIndexBuffer( &ibv );
+    m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+
+    // Own frustum collection (DrawWorldMesh collects again for its color pass; a redundant BSP walk for now —
+    // hoisting to a shared per-frame collection is a follow-up when the passes get factored). Bind each
+    // material's diffuse for the alpha-test clip; skip water (transparent, peeled to DrawWaterSurfaces).
+    static std::vector<WorldMeshSectionInfo*> sections;
+    sections.clear();
+    Engine::GAPI->CollectVisibleSections( sections, nullptr, true );
+
+    const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_WhiteSrvSlot );
+    zCTexture* boundTex = nullptr;
+
+    for ( WorldMeshSectionInfo* section : sections ) {
+        if ( !section ) continue;
+        for ( auto const& [meshKey, mesh] : section->WorldMeshes ) {
+            if ( !mesh || mesh->Indices.empty() ) continue;
+            if ( meshKey.Info && meshKey.Info->MaterialType == MaterialInfo::MT_Water )
+                continue;   // transparent — never writes depth (matches the opaque pass peel-out)
+
+            zCTexture* tex = meshKey.Material->GetAniTexture();
+            if ( tex != boundTex ) {
+                D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
+                if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                    if ( MyDirectDrawSurface7* surface = tex->GetSurface() ) {
+                        if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
+                            D3D12Texture* d12 = D3D12Texture::From( gfx );
+                            if ( d12->HasSRV() ) srv = d12->GetSrvGpuHandle();
+                        }
+                    }
+                }
+                m_CmdList->SetGraphicsRootDescriptorTable( 1, srv );
+                boundTex = tex;
+            }
+
+            m_CmdList->DrawIndexedInstanced( static_cast<UINT>(mesh->Indices.size()), 1,
+                mesh->BaseIndexLocation, 0, 0 );
+        }
+    }
 }
 
 XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {

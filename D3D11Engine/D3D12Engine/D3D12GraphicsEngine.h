@@ -128,6 +128,8 @@ private:
     bool CreateWhiteTexture();        // 1x1 white fallback (untextured colored 2D draws)
     bool CreateDepthBuffer( INT2 size ); // D32_FLOAT depth target + DSV (reversed-Z world rendering)
     bool CreateWorldPipeline();       // root sig + inline shaders + PSO for the textured world-mesh pass
+    bool CreateDepthPrepassPipeline(); // Forward+ opaque depth prepass PSO (depth-only world mesh; reuses m_WorldRootSig)
+    void DrawDepthPrepass();          // lay down opaque world-mesh depth before the lit passes (Forward+ prepass)
     bool CreateVobPipeline();         // instanced VOB PSO (reuses the world root sig) + inline shaders
     bool CreateVobInstanceBuffers();  // per-frame dynamic (upload-heap) VOB instance ring buffers
     XRESULT DrawVobsInstanced();      // collect visible VOBs + draw each visual instanced (textured)
@@ -224,6 +226,11 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_WorldPSO;
     Microsoft::WRL::ComPtr<ID3DBlob> m_WorldVsBlob;
     Microsoft::WRL::ComPtr<ID3DBlob> m_WorldPsBlob;
+
+    // Forward+ opaque depth prepass (P2.9b-1): depth-only world-mesh PSO (color write mask 0), reuses m_WorldRootSig.
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_DepthPrepassWorldPSO;
+    Microsoft::WRL::ComPtr<ID3DBlob> m_DepthPrepassWorldVsBlob;
+    Microsoft::WRL::ComPtr<ID3DBlob> m_DepthPrepassPsBlob;
 
     // Instanced static VOBs (reuses m_WorldRootSig; slot 0 = packed vertex, slot 1 = per-instance data).
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_VobPSO;
