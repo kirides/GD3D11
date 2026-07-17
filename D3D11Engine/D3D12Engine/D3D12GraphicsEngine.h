@@ -142,6 +142,16 @@ private:
     // creating + caching it on first use. Keyed by BlendKey.
     ID3D12PipelineState* GetOrCreateParticlePipeline( const GothicBlendStateInfo& blend );
     XRESULT DrawParticleEffects();    // collect visible PFX (backend-neutral) + draw billboards, blended over the scene
+    bool CreateDecalPipeline();       // decal root sig + shared unit-quad VB + inline shaders + lit/blend PSOs
+    bool CreateDecalInstanceBuffers(); // per-frame dynamic (upload-heap) decal instance ring
+    // Returns a transparent-decal PSO matching the given Gothic blend state (alpha/additive/modulate), created
+    // + cached on first use. Keyed by BlendKey. The opaque/alpha-test path uses the fixed m_DecalLitPSO instead.
+    ID3D12PipelineState* GetOrCreateDecalBlendPipeline( const GothicBlendStateInfo& blend );
+    // Draw the visible decals (blood, arrows, sprites) as instanced camera/surface-aligned quads. lighting=true
+    // = the opaque/alpha-test pass (depth-write, drawn with the opaque geometry); lighting=false = the
+    // transparent pass (per-material blend, depth-read-only, drawn over the finished scene). Mirrors D3D11's
+    // two-pass DrawDecalList; preserves the received back-to-front order (painter's algorithm, no batching).
+    void DrawDecalList( const std::vector<zCVob*>& decals, bool lighting );
     bool AcquireBackBufferRTVs();     // (re)fetch swapchain buffers + build their RTVs
     bool ResizeSwapChain( INT2 size );
     void WaitForGpuIdle();            // full CPU/GPU flush (used on resize / teardown)
@@ -256,6 +266,24 @@ private:
     UINT m_ParticleInstanceBufferCapacity = 0;
     UINT m_ParticleInstanceBufferOffset = 0;                       // reset each OnBeginFrame
     bool m_ParticleInstanceOverflowLogged = false;
+
+    // Decal path — blood splats, arrows, sprites. Every decal is the same unit quad (m_DecalQuadVB),
+    // instanced with a per-decal world matrix (world*offset*scale; ViewProj applies view+proj) + ghost
+    // alpha. Own root sig (b0 ViewProj + t0 SRV + s0 clamp). Two PS: opaque/alpha-test (m_DecalLitPSO,
+    // depth-write) and transparent (m_DecalBlendPipelines, per Gothic blend mode, depth-read-only).
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> m_DecalRootSig;
+    Microsoft::WRL::ComPtr<ID3DBlob> m_DecalVsBlob;
+    Microsoft::WRL::ComPtr<ID3DBlob> m_DecalLitPsBlob;
+    Microsoft::WRL::ComPtr<ID3DBlob> m_DecalBlendPsBlob;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_DecalLitPSO;      // opaque/alpha-test decals, depth-write on
+    std::unordered_map<uint32_t, Microsoft::WRL::ComPtr<ID3D12PipelineState>> m_DecalBlendPipelines; // key = BlendKey
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_DecalQuadVB;          // shared unit quad (6 verts), static
+    D3D12_VERTEX_BUFFER_VIEW m_DecalQuadVBV = {};
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_DecalInstanceBuffer[kBackBufferCount]; // persistently-mapped upload ring
+    uint8_t* m_DecalInstanceBufferPtr[kBackBufferCount] = {};
+    UINT m_DecalInstanceBufferCapacity = 0;
+    UINT m_DecalInstanceBufferOffset = 0;                          // reset each OnBeginFrame
+    bool m_DecalInstanceOverflowLogged = false;
 
     std::unique_ptr<D3D12LineRenderer> m_LineRenderer;
     std::vector<std::move_only_function<void()>> m_PerFrameCleanupItems[kBackBufferCount] = {};

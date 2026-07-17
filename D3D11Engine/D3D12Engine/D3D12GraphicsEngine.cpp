@@ -13,6 +13,7 @@
 #include "../zCModel.h"
 #include "../zCMaterial.h"
 #include "../zCVob.h"
+#include "../zCDecal.h"
 #include "../WorldConverter.h"
 #include "../VertexTypes.h"
 #include "../ImGuiShim.h"
@@ -35,6 +36,7 @@ namespace {
     constexpr UINT kUIVertexBufferBytes = 16 * 1024 * 1024;   // per-frame 2D vertex ring (~280k ExVertex)
     constexpr UINT kVobInstanceBufferBytes = 8 * 1024 * 1024; // per-frame VOB instance ring (~58k instances @144B)
     constexpr UINT kParticleInstanceBufferBytes = 8 * 1024 * 1024; // per-frame particle instance ring (~150k @56B)
+    constexpr UINT kDecalInstanceBufferBytes = 4 * 1024 * 1024; // per-frame decal instance ring (~52k decals @80B)
 
     // D3D12SerializeRootSignature is exported from the already-loaded d3d12.dll (we don't link d3d12.lib).
     typedef HRESULT( WINAPI* PFN_SERIALIZE_ROOT_SIG )( const D3D12_ROOT_SIGNATURE_DESC*, D3D_ROOT_SIGNATURE_VERSION, ID3DBlob**, ID3DBlob** );
@@ -412,6 +414,62 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
 }
 )";
 
+    // Per-decal instance data (per-instance vertex stream, slot 1). World = world*offset*scale (view NOT
+    // baked in — unlike D3D11, the D3D12 decal VS applies the standard ViewProj, so the CPU only needs the
+    // model matrix). Color.a = the material's ghost alpha ((GetColor()>>24)/255); rgb is unused. 80 bytes.
+    struct DecalInstanceInfo {
+        DirectX::XMFLOAT4X4 World;
+        DirectX::XMFLOAT4   Color;
+    };
+    static_assert( sizeof( DecalInstanceInfo ) == 80, "DecalInstanceInfo layout must match the decal input layout" );
+
+    // Shared unit-quad vertex (per-vertex stream, slot 0). Matches D3D11's decal QuadVertexBuffer verts.
+    struct DecalQuadVertex { float px, py, pz; float u, v; };
+    static_assert( sizeof( DecalQuadVertex ) == 20, "DecalQuadVertex must be tightly packed (stride 20)" );
+
+    // Decal shader. The quad is expanded by the per-instance world matrix (built on the CPU from the vob's
+    // world matrix + DecalOffset/DecalSize + camera-alignment, exactly like D3D11's DrawDecalList), then
+    // transformed by the standard ViewProj. Two pixel shaders: PSMainLit (opaque/alpha-test cutout — blood,
+    // arrows) and PSMainBlend (texture * material alpha; the PSO blend state does add/alpha/modulate).
+    constexpr char kDecalShaderSource[] = R"(
+cbuffer FrameCB : register(b0) { float4x4 ViewProj; };   // default column-major packing (see world shader)
+
+Texture2D    tx  : register(t0);
+SamplerState smp : register(s0);
+
+struct VS_IN
+{
+    float3   pos    : POSITION;
+    float2   uv     : TEXCOORD0;
+    float4x4 iworld : INSTANCE_WORLD_MATRIX;   // per-instance model matrix (world*offset*scale)
+    float4   icolor : INSTANCE_COLOR;          // .a = ghost alpha, .rgb unused
+};
+struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float alpha : TEXCOORD1; };
+
+VS_OUT VSMain( VS_IN i )
+{
+    VS_OUT o;
+    float3 worldPos = mul( float4( i.pos, 1.0 ), i.iworld ).xyz;
+    o.clip  = mul( float4( worldPos, 1.0 ), ViewProj );
+    o.uv    = i.uv;
+    o.alpha = i.icolor.a;
+    return o;
+}
+
+float4 PSMainLit( VS_OUT i ) : SV_TARGET   // opaque / alpha-test cutout, fully opaque output
+{
+    float4 t = tx.Sample( smp, i.uv );
+    clip( t.a - 0.5 );
+    return float4( t.rgb, 1.0 );
+}
+
+float4 PSMainBlend( VS_OUT i ) : SV_TARGET // transparent — the PSO blend state picks add/alpha/modulate
+{
+    float4 t = tx.Sample( smp, i.uv );
+    return float4( t.rgb, t.a * i.alpha );
+}
+)";
+
     // Round a ring offset up so the next allocation starts on a 256-byte boundary (D3D12 requires root
     // CBV addresses to be 256-byte aligned).
     UINT AlignCB( UINT offset ) { return ( offset + 255u ) & ~255u; }
@@ -520,7 +578,11 @@ XRESULT D3D12GraphicsEngine::Init() {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the particle pipeline.";
         return XR_FAILED;
     }
-    LogInfo() << "D3D12GraphicsEngine initialized (device + 2D + world + VOB + skeletal + water + particle pipelines up). Swapchain is created once the game window is set.";
+    if ( !CreateDecalPipeline() ) {
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the decal pipeline.";
+        return XR_FAILED;
+    }
+    LogInfo() << "D3D12GraphicsEngine initialized (device + 2D + world + VOB + skeletal + water + particle + decal pipelines up). Swapchain is created once the game window is set.";
     return XR_SUCCESS;
 }
 
@@ -1728,6 +1790,440 @@ XRESULT D3D12GraphicsEngine::DrawParticleEffects() {
     return XR_SUCCESS;
 }
 
+// The decal input layout is shared by the lit + every transparent PSO: slot 0 = the unit quad
+// (POSITION @0, TEXCOORD0 @12, stride 20), slot 1 = per-instance DecalInstanceInfo (world rows
+// @0/16/32/48, color @64, stride 80).
+static const D3D12_INPUT_ELEMENT_DESC kDecalInputLayout[] = {
+    { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    { "INSTANCE_WORLD_MATRIX", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  0, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+    { "INSTANCE_WORLD_MATRIX", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 16, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+    { "INSTANCE_WORLD_MATRIX", 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 32, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+    { "INSTANCE_WORLD_MATRIX", 3, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 48, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+    { "INSTANCE_COLOR",        0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 64, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+};
+
+bool D3D12GraphicsEngine::CreateDecalPipeline() {
+    ID3D12Device* device = m_Device.GetDevice();
+
+    // Root signature: b0 = ViewProj (16 root consts, VS), t0 = diffuse SRV table (PS), static linear-clamp
+    // sampler s0 (PS). CLAMP because a decal is a single [0,1] sprite; wrap would bleed the opposite edge.
+    D3D12_DESCRIPTOR_RANGE srvRange = {};
+    srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    srvRange.NumDescriptors = 1;
+    srvRange.BaseShaderRegister = 0;         // t0
+    srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    D3D12_ROOT_PARAMETER params[2] = {};
+    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[0].Constants.ShaderRegister = 0;   // b0 ViewProj
+    params[0].Constants.Num32BitValues = 16;
+    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[1].DescriptorTable.NumDescriptorRanges = 1;
+    params[1].DescriptorTable.pDescriptorRanges = &srvRange;
+    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_STATIC_SAMPLER_DESC sampler = {};
+    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.MaxLOD = D3D12_FLOAT32_MAX;
+    sampler.ShaderRegister = 0;              // s0
+    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+    rsDesc.NumParameters = _countof( params );
+    rsDesc.pParameters = params;
+    rsDesc.NumStaticSamplers = 1;
+    rsDesc.pStaticSamplers = &sampler;
+    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
+    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (decals)."; return false; }
+
+    ComPtr<ID3DBlob> rsBlob, rsErr;
+    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
+        if ( rsErr ) LogWarn() << "D3D12: decal root signature serialize error: " << static_cast<const char*>( rsErr->GetBufferPointer() );
+        return false;
+    }
+    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
+        IID_PPV_ARGS( m_DecalRootSig.ReleaseAndGetAddressOf() ) ) ) )
+        return false;
+
+    UINT compileFlags = 0;
+#ifdef DEBUG_D3D11
+    compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+#endif
+    ComPtr<ID3DBlob> err;
+    if ( FAILED( D3DCompile( kDecalShaderSource, sizeof( kDecalShaderSource ) - 1, "DecalShader", nullptr, nullptr,
+        "VSMain", "vs_5_0", compileFlags, 0, m_DecalVsBlob.ReleaseAndGetAddressOf(), err.GetAddressOf() ) ) ) {
+        if ( err ) LogWarn() << "D3D12: decal VS compile error: " << static_cast<const char*>( err->GetBufferPointer() );
+        return false;
+    }
+    if ( FAILED( D3DCompile( kDecalShaderSource, sizeof( kDecalShaderSource ) - 1, "DecalShader", nullptr, nullptr,
+        "PSMainLit", "ps_5_0", compileFlags, 0, m_DecalLitPsBlob.ReleaseAndGetAddressOf(), err.ReleaseAndGetAddressOf() ) ) ) {
+        if ( err ) LogWarn() << "D3D12: decal lit PS compile error: " << static_cast<const char*>( err->GetBufferPointer() );
+        return false;
+    }
+    if ( FAILED( D3DCompile( kDecalShaderSource, sizeof( kDecalShaderSource ) - 1, "DecalShader", nullptr, nullptr,
+        "PSMainBlend", "ps_5_0", compileFlags, 0, m_DecalBlendPsBlob.ReleaseAndGetAddressOf(), err.ReleaseAndGetAddressOf() ) ) ) {
+        if ( err ) LogWarn() << "D3D12: decal blend PS compile error: " << static_cast<const char*>( err->GetBufferPointer() );
+        return false;
+    }
+
+    // Shared unit quad (two triangles, corners +/-0.5, UV 0..1) — same 6 verts as D3D11's decal quad, so
+    // the per-decal scale matrix's Y-flip (-DecalSize.y*2) lands the sprite the same way.
+    const DecalQuadVertex quad[6] = {
+        { -0.5f, -0.5f, 0.0f, 0.0f, 0.0f },
+        {  0.5f, -0.5f, 0.0f, 1.0f, 0.0f },
+        { -0.5f,  0.5f, 0.0f, 0.0f, 1.0f },
+        {  0.5f, -0.5f, 0.0f, 1.0f, 0.0f },
+        {  0.5f,  0.5f, 0.0f, 1.0f, 1.0f },
+        { -0.5f,  0.5f, 0.0f, 0.0f, 1.0f },
+    };
+    D3D12_HEAP_PROPERTIES uploadHeap = {};
+    uploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
+    D3D12_RESOURCE_DESC bufDesc = {};
+    bufDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bufDesc.Width = sizeof( quad );
+    bufDesc.Height = 1;
+    bufDesc.DepthOrArraySize = 1;
+    bufDesc.MipLevels = 1;
+    bufDesc.Format = DXGI_FORMAT_UNKNOWN;
+    bufDesc.SampleDesc.Count = 1;
+    bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    if ( FAILED( device->CreateCommittedResource( &uploadHeap, D3D12_HEAP_FLAG_NONE, &bufDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS( m_DecalQuadVB.ReleaseAndGetAddressOf() ) ) ) )
+        return false;
+    m_DecalQuadVB->SetName( L"DecalQuadVB" );
+    void* mapped = nullptr;
+    D3D12_RANGE noRead = { 0, 0 };
+    if ( FAILED( m_DecalQuadVB->Map( 0, &noRead, &mapped ) ) ) return false;
+    memcpy( mapped, quad, sizeof( quad ) );
+    m_DecalQuadVB->Unmap( 0, nullptr );
+    m_DecalQuadVBV = { m_DecalQuadVB->GetGPUVirtualAddress(), sizeof( quad ), sizeof( DecalQuadVertex ) };
+
+    // Lit / opaque PSO: alpha-test cutout, depth test GREATER_EQUAL + WRITE (draws with the opaque scene).
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+    pso.pRootSignature = m_DecalRootSig.Get();
+    pso.VS = { m_DecalVsBlob->GetBufferPointer(), m_DecalVsBlob->GetBufferSize() };
+    pso.PS = { m_DecalLitPsBlob->GetBufferPointer(), m_DecalLitPsBlob->GetBufferSize() };
+    pso.InputLayout = { kDecalInputLayout, _countof( kDecalInputLayout ) };
+    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pso.NumRenderTargets = 1;
+    pso.RTVFormats[0] = kBackBufferFormat;
+    pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+    pso.SampleDesc.Count = 1;
+    pso.SampleMask = UINT_MAX;
+    pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;   // decals are double-sided
+    pso.RasterizerState.DepthClipEnable = TRUE;
+    pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    pso.DepthStencilState.DepthEnable = TRUE;
+    pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;   // reversed-Z; coplanar decals win ties
+    pso.DepthStencilState.StencilEnable = FALSE;
+    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_DecalLitPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (decal lit).";
+        return false;
+    }
+
+    // Warm the common transparent (alpha) PSO so the first blended decal never stalls.
+    GothicBlendStateInfo defaultBlend;
+    defaultBlend.SetAlphaBlending();
+    if ( !GetOrCreateDecalBlendPipeline( defaultBlend ) ) {
+        LogWarn() << "D3D12: failed to create the default decal blend pipeline.";
+        return false;
+    }
+
+    return CreateDecalInstanceBuffers();
+}
+
+bool D3D12GraphicsEngine::CreateDecalInstanceBuffers() {
+    ID3D12Device* device = m_Device.GetDevice();
+    D3D12_HEAP_PROPERTIES uploadHeap = {};
+    uploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
+
+    D3D12_RESOURCE_DESC bufDesc = {};
+    bufDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bufDesc.Width = kDecalInstanceBufferBytes;
+    bufDesc.Height = 1;
+    bufDesc.DepthOrArraySize = 1;
+    bufDesc.MipLevels = 1;
+    bufDesc.Format = DXGI_FORMAT_UNKNOWN;
+    bufDesc.SampleDesc.Count = 1;
+    bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+    for ( UINT i = 0; i < kBackBufferCount; ++i ) {
+        if ( FAILED( device->CreateCommittedResource( &uploadHeap, D3D12_HEAP_FLAG_NONE, &bufDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS( m_DecalInstanceBuffer[i].ReleaseAndGetAddressOf() ) ) ) )
+            return false;
+        m_DecalInstanceBuffer[i]->SetName( i == 0 ? L"DecalInstanceRing0" : L"DecalInstanceRing1" );
+        D3D12_RANGE noRead = { 0, 0 };
+        if ( FAILED( m_DecalInstanceBuffer[i]->Map( 0, &noRead, reinterpret_cast<void**>( &m_DecalInstanceBufferPtr[i] ) ) ) )
+            return false;
+    }
+    m_DecalInstanceBufferCapacity = kDecalInstanceBufferBytes;
+    return true;
+}
+
+ID3D12PipelineState* D3D12GraphicsEngine::GetOrCreateDecalBlendPipeline( const GothicBlendStateInfo& blend ) {
+    const uint32_t key = BlendKey( blend );
+    auto it = m_DecalBlendPipelines.find( key );
+    if ( it != m_DecalBlendPipelines.end() ) return it->second.Get();
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+    pso.pRootSignature = m_DecalRootSig.Get();
+    pso.VS = { m_DecalVsBlob->GetBufferPointer(), m_DecalVsBlob->GetBufferSize() };
+    pso.PS = { m_DecalBlendPsBlob->GetBufferPointer(), m_DecalBlendPsBlob->GetBufferSize() };
+    pso.InputLayout = { kDecalInputLayout, _countof( kDecalInputLayout ) };
+    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pso.NumRenderTargets = 1;
+    pso.RTVFormats[0] = kBackBufferFormat;
+    pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+    pso.SampleDesc.Count = 1;
+    pso.SampleMask = UINT_MAX;
+    pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    pso.RasterizerState.DepthClipEnable = TRUE;
+
+    // Gothic blend enums are laid out for D3D11, whose _BLEND/_OP values equal D3D12's — cast directly.
+    D3D12_RENDER_TARGET_BLEND_DESC& rt = pso.BlendState.RenderTarget[0];
+    rt.BlendEnable = blend.BlendEnabled ? TRUE : FALSE;
+    rt.SrcBlend       = static_cast<D3D12_BLEND>( blend.SrcBlend );
+    rt.DestBlend      = static_cast<D3D12_BLEND>( blend.DestBlend );
+    rt.BlendOp        = static_cast<D3D12_BLEND_OP>( blend.BlendOp );
+    rt.SrcBlendAlpha  = static_cast<D3D12_BLEND>( blend.SrcBlendAlpha );
+    rt.DestBlendAlpha = static_cast<D3D12_BLEND>( blend.DestBlendAlpha );
+    rt.BlendOpAlpha   = static_cast<D3D12_BLEND_OP>( blend.BlendOpAlpha );
+    rt.RenderTargetWriteMask = blend.ColorWritesEnabled ? D3D12_COLOR_WRITE_ENABLE_ALL : 0;
+
+    // Reversed-Z: test GREATER_EQUAL against the opaque scene, DO NOT write depth (transparent overlay).
+    pso.DepthStencilState.DepthEnable = TRUE;
+    pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+    pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
+    pso.DepthStencilState.StencilEnable = FALSE;
+
+    ComPtr<ID3D12PipelineState> state;
+    if ( FAILED( m_Device.GetDevice()->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( state.GetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateGraphicsPipelineState failed for decal blend key 0x" << std::hex << key << ".";
+        return nullptr;
+    }
+    ID3D12PipelineState* raw = state.Get();
+    m_DecalBlendPipelines.emplace( key, std::move( state ) );
+    return raw;
+}
+
+void D3D12GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals, bool lighting ) {
+    if ( !m_FrameOpen || !m_DecalRootSig || !m_DecalLitPSO || !m_DepthBuffer ) return;
+    if ( decals.empty() ) return;
+
+    GothicRendererState& rs = Engine::GAPI->GetRendererState();
+    XMFLOAT3 camPos;
+    XMStoreFloat3( &camPos, Engine::GAPI->GetCameraPositionXM() );
+
+    // Build the per-decal instance data on the CPU (filter + camera alignment) — a direct port of D3D11's
+    // DrawDecalList, minus the baked-in view matrix (the VS applies the standard ViewProj). The received
+    // list is already sorted back-to-front; we keep that order (painter's algorithm) and DON'T batch.
+    struct DecalMeta { zCTexture* texture; int alphaFunc; };
+    static std::vector<DecalInstanceInfo> gpu;
+    static std::vector<DecalMeta> meta;
+    gpu.clear(); meta.clear();
+    gpu.reserve( decals.size() ); meta.reserve( decals.size() );
+
+    for ( zCVob* vob : decals ) {
+        zCDecal* d = static_cast<zCDecal*>( vob->GetVisual() );
+        if ( !d ) continue;
+        zCMaterial* material = d->GetDecalSettings()->DecalMaterial;
+        if ( !material ) continue;
+        zCTexture* texture = material->GetTextureSingle();
+        if ( !texture ) continue;
+
+        int alphaFunc = material->GetAlphaFunc();
+        if ( alphaFunc == zMAT_ALPHA_FUNC_MAT_DEFAULT ) {
+            alphaFunc = zMAT_ALPHA_FUNC_BLEND;
+            if ( !texture->HasAlphaChannel() ) alphaFunc = zMAT_ALPHA_FUNC_NONE;
+        }
+
+        if ( lighting ) {
+            // Opaque pass: only decals with no alpha or alpha test (blood, arrows).
+            if ( !( alphaFunc == zMAT_ALPHA_FUNC_NONE || alphaFunc == zMAT_ALPHA_FUNC_TEST ) ) continue;
+        } else {
+            // Transparent pass: only the supported blend modes; skip fully-transparent decals.
+            switch ( alphaFunc ) {
+            case zMAT_ALPHA_FUNC_BLEND:
+            case zMAT_ALPHA_FUNC_BLEND_TEST:
+            case zMAT_ALPHA_FUNC_ADD:
+            case zMAT_ALPHA_FUNC_MUL:
+            case zMAT_ALPHA_FUNC_MUL2:
+                break;
+            default:
+                continue;
+            }
+            if ( ( material->GetColor() >> 24 ) == 0 ) continue;
+        }
+
+        // Camera-alignment / world matrix — verbatim from D3D11 DrawDecalList (view is NOT applied here).
+        int alignment = vob->GetAlignment();
+        XMMATRIX world = vob->GetWorldMatrixXM();
+        XMMATRIX offset =
+            XMMatrixTranslation( d->GetDecalSettings()->DecalOffset.x, -d->GetDecalSettings()->DecalOffset.y, 0 );
+        XMMATRIX scale =
+            XMMatrixTranspose( XMMatrixScaling( d->GetDecalSettings()->DecalSize.x * 2,
+                -d->GetDecalSettings()->DecalSize.y * 2, 1 ) );
+
+        if ( alignment == zVISUAL_CAM_ALIGN_YAW ) {
+            XMFLOAT3 decalPos = vob->GetPositionWorld();
+            XMVECTOR at = XMVectorSet( decalPos.x - camPos.x, 0.0f, decalPos.z - camPos.z, 0.0f );
+            XMFLOAT4 atLengthSq = {};
+            XMStoreFloat4( &atLengthSq, XMVector3LengthSq( at ) );
+
+            if ( atLengthSq.x > 1e-6f ) {
+                XMMATRIX worldObj = XMMatrixTranspose( world );
+                XMVECTOR translation = worldObj.r[3];
+
+                at = XMVector3Normalize( at );
+                XMVECTOR up = XMVectorSet( 0.0f, 1.0f, 0.0f, 0.0f );
+                XMVECTOR right = XMVector3Normalize( XMVector3Cross( up, at ) );
+                up = XMVector3Normalize( XMVector3Cross( at, right ) );
+
+                XMFLOAT3 right3 = {}, up3 = {}, at3 = {}, translation3 = {};
+                XMStoreFloat3( &right3, right );
+                XMStoreFloat3( &up3, up );
+                XMStoreFloat3( &at3, at );
+                XMStoreFloat3( &translation3, translation );
+
+                worldObj.r[0] = XMVectorSet( right3.x, right3.y, right3.z, 0.0f );
+                worldObj.r[1] = XMVectorSet( up3.x, up3.y, up3.z, 0.0f );
+                worldObj.r[2] = XMVectorSet( at3.x, at3.y, at3.z, 0.0f );
+                worldObj.r[3] = XMVectorSet( translation3.x, translation3.y, translation3.z, 1.0f );
+
+                world = XMMatrixTranspose( worldObj );
+            }
+        } else if ( alignment == zVISUAL_CAM_ALIGN_FULL ) {
+            XMFLOAT3 decalPos = vob->GetPositionWorld();
+            XMVECTOR at = XMVectorSet( decalPos.x - camPos.x, decalPos.y - camPos.y, decalPos.z - camPos.z, 0.0f );
+            XMFLOAT4 atLengthSq = {};
+            XMStoreFloat4( &atLengthSq, XMVector3LengthSq( at ) );
+
+            if ( atLengthSq.x > 1e-6f ) {
+                at = XMVector3Normalize( at );
+                XMVECTOR upRef = XMVectorSet( 0.0f, 1.0f, 0.0f, 0.0f );
+                XMFLOAT4 upDot = {};
+                XMStoreFloat4( &upDot, XMVector3Dot( at, upRef ) );
+                if ( fabsf( upDot.x ) > 0.999f ) upRef = XMVectorSet( 0.0f, 0.0f, 1.0f, 0.0f );
+
+                XMVECTOR right = XMVector3Normalize( XMVector3Cross( upRef, at ) );
+                XMVECTOR up = XMVector3Normalize( XMVector3Cross( at, right ) );
+
+                XMFLOAT3 right3 = {}, up3 = {}, at3 = {};
+                XMStoreFloat3( &right3, right );
+                XMStoreFloat3( &up3, up );
+                XMStoreFloat3( &at3, at );
+
+                XMMATRIX worldObj;
+                worldObj.r[0] = XMVectorSet( right3.x, right3.y, right3.z, 0.0f );
+                worldObj.r[1] = XMVectorSet( up3.x, up3.y, up3.z, 0.0f );
+                worldObj.r[2] = XMVectorSet( at3.x, at3.y, at3.z, 0.0f );
+                worldObj.r[3] = XMVectorSet( decalPos.x, decalPos.y, decalPos.z, 1.0f );
+                world = XMMatrixTranspose( worldObj );
+            } else {
+                world = XMMatrixTranspose( XMMatrixTranslation( decalPos.x, decalPos.y, decalPos.z ) );
+            }
+        }
+
+        DecalInstanceInfo inst;
+        XMStoreFloat4x4( &inst.World, world * offset * scale );
+        const float ghostAlpha = lighting ? 1.0f : ( ( material->GetColor() >> 24 ) * ( 1.0f / 255.0f ) );
+        inst.Color = XMFLOAT4( 1.0f, 1.0f, 1.0f, ghostAlpha );
+        gpu.push_back( inst );
+        meta.push_back( { material->GetAniTexture(), alphaFunc } );
+    }
+
+    if ( gpu.empty() ) return;
+
+    // Snapshot the instances into this frame's ring; bind as the slot-1 stream (StartInstanceLocation picks
+    // each decal, so we keep the exact submission order without splitting the memcpy).
+    const UINT frame = m_FrameIndex;
+    const UINT instBytes = static_cast<UINT>( gpu.size() * sizeof( DecalInstanceInfo ) );
+    if ( m_DecalInstanceBufferOffset + instBytes > m_DecalInstanceBufferCapacity ) {
+        if ( !m_DecalInstanceOverflowLogged ) {
+            LogWarn() << "D3D12: decal instance ring overflow (" << m_DecalInstanceBufferCapacity
+                      << " bytes/frame). Some decals dropped this frame.";
+            m_DecalInstanceOverflowLogged = true;
+        }
+        return;
+    }
+    const UINT instOffset = m_DecalInstanceBufferOffset;
+    memcpy( m_DecalInstanceBufferPtr[frame] + instOffset, gpu.data(), instBytes );
+    m_DecalInstanceBufferOffset += instBytes;
+
+    // ViewProj — identical derivation to the opaque passes (decal instance matrices are model-space).
+    XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
+    Engine::GAPI->SetViewTransformXM( view );
+    Engine::GAPI->ResetWorldTransform();
+    const XMFLOAT4X4& viewM = rs.TransformState.TransformView;
+    const XMFLOAT4X4& projM = Engine::GAPI->GetProjectionMatrix();
+    XMFLOAT4X4 viewProj;
+    XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
+
+    m_CmdList->SetGraphicsRootSignature( m_DecalRootSig.Get() );
+    m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
+
+    D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
+    D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
+    m_CmdList->RSSetViewports( 1, &vp );
+    m_CmdList->RSSetScissorRects( 1, &sc );
+    m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+
+    const D3D12_VERTEX_BUFFER_VIEW instView = {
+        m_DecalInstanceBuffer[frame]->GetGPUVirtualAddress() + instOffset, instBytes, sizeof( DecalInstanceInfo ) };
+    const D3D12_VERTEX_BUFFER_VIEW views[2] = { m_DecalQuadVBV, instView };
+    m_CmdList->IASetVertexBuffers( 0, 2, views );
+
+    ID3D12PipelineState* lastPso = nullptr;
+    if ( lighting ) { m_CmdList->SetPipelineState( m_DecalLitPSO.Get() ); lastPso = m_DecalLitPSO.Get(); }
+
+    const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_WhiteSrvSlot );
+    zCTexture* lastTex = reinterpret_cast<zCTexture*>( ~static_cast<uintptr_t>( 0 ) );  // force first bind
+    unsigned int drawnTris = 0;
+
+    for ( size_t i = 0; i < gpu.size(); ++i ) {
+        if ( !lighting ) {
+            GothicBlendStateInfo blend;
+            switch ( meta[i].alphaFunc ) {
+            case zMAT_ALPHA_FUNC_ADD:  blend.SetAdditiveBlending();  break;
+            case zMAT_ALPHA_FUNC_MUL:  blend.SetModulateBlending();  break;
+            case zMAT_ALPHA_FUNC_MUL2: blend.SetModulate2Blending(); break;
+            default:                   blend.SetAlphaBlending();     break;  // BLEND / BLEND_TEST
+            }
+            ID3D12PipelineState* pso = GetOrCreateDecalBlendPipeline( blend );
+            if ( !pso ) continue;
+            if ( pso != lastPso ) { m_CmdList->SetPipelineState( pso ); lastPso = pso; }
+        }
+
+        zCTexture* tex = meta[i].texture;
+        if ( tex != lastTex ) {
+            D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
+            if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                if ( MyDirectDrawSurface7* surface = tex->GetSurface() ) {
+                    if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
+                        D3D12Texture* d12 = D3D12Texture::From( gfx );
+                        if ( d12->HasSRV() ) srv = d12->GetSrvGpuHandle();
+                    }
+                }
+            }
+            m_CmdList->SetGraphicsRootDescriptorTable( 1, srv );
+            lastTex = tex;
+        }
+
+        m_CmdList->DrawInstanced( 6, 1, 0, static_cast<UINT>( i ) );
+        drawnTris += 2;
+    }
+
+    rs.RendererInfo.FrameDrawnTriangles += drawnTris;
+}
+
 bool D3D12GraphicsEngine::CreateSkeletalPipeline() {
     ID3D12Device* device = m_Device.GetDevice();
 
@@ -2002,8 +2498,26 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
         DrawSkeletalMeshes( Engine::GAPI->GetAnimatedSkeletalMeshVobs(), false);
     }
     DrawVobsInstanced();
-    // Water: alpha-blended over the finished opaque scene (world + NPCs + VOBs).
+
+    // Decals (blood, arrows, sprites): collect the visible, back-to-front-sorted list once, then draw the
+    // opaque/alpha-test ones here (with the opaque scene, depth-write) and the transparent ones after water
+    // (blended over the finished scene). Mirrors D3D11's two-pass DrawDecalList.
+    static std::vector<zCVob*> decals;
+    decals.clear();
+    Engine::GAPI->GetVisibleDecalList( decals );
+    {
+        auto _ = RecordGraphicsEvent( GE_NAME( "Draw decals (opaque)" ) );
+        DrawDecalList( decals, true );
+    }
+
+    // Water: alpha-blended over the finished opaque scene (world + NPCs + VOBs + opaque decals).
     DrawWaterSurfaces();
+
+    {
+        auto _ = RecordGraphicsEvent( GE_NAME( "Draw decals (transparent)" ) );
+        DrawDecalList( decals, false );
+    }
+
     // Particles last: billboarded PFX (fire, smoke, magic, dust) blended over everything, depth-tested
     // against the opaque scene but not writing depth. Mirrors D3D11's late DrawParticlesSimple pass.
     {
@@ -2696,6 +3210,8 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
     m_SkeletalCBOverflowLogged = false;
     m_ParticleInstanceBufferOffset = 0;
     m_ParticleInstanceOverflowLogged = false;
+    m_DecalInstanceBufferOffset = 0;
+    m_DecalInstanceOverflowLogged = false;
     m_CurrentTexture = nullptr;
     m_CurrentViewport = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
     m_CurrentScissor = { 0, 0, m_Resolution.x, m_Resolution.y };
