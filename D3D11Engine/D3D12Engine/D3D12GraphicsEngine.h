@@ -130,6 +130,9 @@ private:
     bool CreateWorldPipeline();       // root sig + inline shaders + PSO for the textured world-mesh pass
     bool CreateDepthPrepassPipeline(); // Forward+ opaque depth prepass PSO (depth-only world mesh; reuses m_WorldRootSig)
     void DrawDepthPrepass();          // lay down opaque world-mesh depth before the lit passes (Forward+ prepass)
+    bool CreateLightCullPipeline();   // Forward+ tiled light-cull compute root sig + PSO (one global compute root sig)
+    bool CreateLightCullBuffers( INT2 size ); // per-resolution tile grid + index-list UAV buffers (rebuilt on resize)
+    void DispatchLightCulling();      // dispatch the tiled light cull (writes the per-tile light grid; not yet consumed)
     bool CreateVobPipeline();         // instanced VOB PSO (reuses the world root sig) + inline shaders
     bool CreateVobInstanceBuffers();  // per-frame dynamic (upload-heap) VOB instance ring buffers
     XRESULT DrawVobsInstanced();      // collect visible VOBs + draw each visual instanced (textured)
@@ -231,6 +234,18 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_DepthPrepassWorldPSO;
     Microsoft::WRL::ComPtr<ID3DBlob> m_DepthPrepassWorldVsBlob;
     Microsoft::WRL::ComPtr<ID3DBlob> m_DepthPrepassPsBlob;
+
+    // Forward+ tiled light culling (P2.9b-2): one global compute root sig + PSO; two resolution-sized
+    // DEFAULT-heap UAV buffers holding the per-tile {Offset,Count} grid and the per-tile light-index slices
+    // (fixed 32/tile, no global counter). All live permanently in UNORDERED_ACCESS. m_NumTilesX/Y = tile
+    // grid dimensions for the current resolution.
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> m_LightCullRootSig;  // b0 consts; t0 lights SRV; u0 grid; u1 index list
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_LightCullPSO;
+    Microsoft::WRL::ComPtr<ID3DBlob> m_LightCullCsBlob;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_LightGridBuffer;    // RWStructuredBuffer<LightGrid> (numTiles * 8 B)
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_LightIndexBuffer;   // RWStructuredBuffer<uint>  (numTiles * 32 * 4 B)
+    UINT m_NumTilesX = 0;
+    UINT m_NumTilesY = 0;
 
     // Instanced static VOBs (reuses m_WorldRootSig; slot 0 = packed vertex, slot 1 = per-instance data).
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_VobPSO;

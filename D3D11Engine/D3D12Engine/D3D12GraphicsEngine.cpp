@@ -107,6 +107,7 @@ namespace {
     // TODO: in the future make this depend on device capabilities.
     constexpr const char* Shadermodel_PS = "ps_6_6";
     constexpr const char* Shadermodel_VS = "vs_6_6";
+    constexpr const char* Shadermodel_CS = "cs_6_6";
 
     static std::wstring ToWideString( LPCSTR str ) {
         if ( !str ) return L"";
@@ -530,6 +531,111 @@ float4 PSClip( VS_OUT i ) : SV_TARGET
 }
 )";
 
+    // Forward+ tiled light-culling COMPUTE shader (P2.9b-2). One thread group per 16x16 screen tile; each
+    // group builds its tile's view-space frustum AABB and records which point lights touch it into a
+    // per-tile slice of RW_LightIndexList (fixed MAX_LIGHTS_PER_TILE stride — no global atomic counter, so
+    // no counter buffer/clear), with the per-tile {Offset,Count} landing in RW_LightGrid. Adapted from the
+    // D3D11 reference Shaders/CS_LightCulling.hlsl with two deliberate divergences for this backend:
+    //   1. DEPTH-INDEPENDENT frustum. The reference derives each tile's near/far view-Z by inverting the
+    //      depth buffer through the projection (z_view = Proj[3][2]/(depth-Proj[2][2])). That inverse is
+    //      only valid for a finite standard-Z projection; our camera is reversed-Z infinite-far, so the
+    //      formula does not transfer. Instead we build the tile AABB between FIXED conservative view-Z
+    //      bounds [zNear, zFar] — the cull then includes every light whose sphere intersects the tile's
+    //      screen cone at ANY depth. This is conservative (never drops a light that should light a pixel),
+    //      which is exactly what a Forward+ consumer needs for correctness; depth-buffer tightening (fewer
+    //      lights/tile) is a later optimization that will read the prepass depth.
+    //   2. Fixed per-tile index slice instead of a compacted global list, dropping RW_IndexCounter and its
+    //      per-frame clear. At 1080p this is ~1 MB (8160 tiles * 32 * 4 B) — negligible, and simpler/safer.
+    // PositionView is filled CPU-side in BuildFrameLightBuffer using the same transpose(view) transform the
+    // D3D11 CullLights uses, so this shader's view space matches. SM6.6: no ternary (use min()/select()).
+    constexpr char kLightCullShaderSource[] = R"(
+#define TILE_SIZE 16
+#define MAX_LIGHTS_PER_TILE 32
+
+struct TiledPointLight { float3 PositionView; float Range; float4 Color; float3 PositionWorld; int ShadowCubeIndex; };
+struct LightGrid { uint Offset; uint Count; };
+
+StructuredBuffer<TiledPointLight> SB_Lights       : register(t0);
+RWStructuredBuffer<LightGrid>     RW_LightGrid     : register(u0);
+RWStructuredBuffer<uint>          RW_LightIndexList : register(u1);
+
+cbuffer CullCB : register(b0) {
+    float2 ProjScale;    // (Proj._11, Proj._22): view->clip x/y scale (diagonal terms, layout-invariant)
+    uint2  ScreenDim;    // render-target pixel size
+    uint   TotalLights;  // valid light count in SB_Lights (<= light buffer capacity)
+    uint   NumTilesX;    // ceil(ScreenDim.x / TILE_SIZE)
+    uint2  _pad;
+};
+
+groupshared uint gs_Count;
+groupshared uint gs_Indices[MAX_LIGHTS_PER_TILE];
+
+// View-space position of a screen pixel at a chosen view depth. Reversed-Z agnostic: we pick zView directly
+// rather than inverting a depth-buffer sample (see header note). ndc.y flipped (screen +y is downward).
+float3 ViewCornerAtZ( float2 pixel, float zView ) {
+    float2 ndc;
+    ndc.x = pixel.x / (float)ScreenDim.x * 2.0 - 1.0;
+    ndc.y = -(pixel.y / (float)ScreenDim.y * 2.0 - 1.0);
+    return float3( ndc.x / ProjScale.x * zView, ndc.y / ProjScale.y * zView, zView );
+}
+
+bool SphereInsideAABB( float3 c, float r, float3 mn, float3 mx ) {
+    float3 closest = clamp( c, mn, mx );
+    float3 d = closest - c;
+    return dot( d, d ) <= r * r;
+}
+
+[numthreads( TILE_SIZE, TILE_SIZE, 1 )]
+void CSMain( uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID ) {
+    uint ti = threadID.y * TILE_SIZE + threadID.x;
+    if ( ti == 0 ) gs_Count = 0;
+    GroupMemoryBarrierWithGroupSync();
+
+    // Tile frustum AABB in view space between fixed conservative view-Z bounds (depth-independent cull).
+    const float zNear = 1.0;
+    const float zFar  = 100000.0;
+    float2 tileMin = float2( groupID.xy ) * TILE_SIZE;
+    float2 tileMax = float2( groupID.xy + uint2( 1, 1 ) ) * TILE_SIZE;
+    float3 corners[8];
+    corners[0] = ViewCornerAtZ( float2( tileMin.x, tileMin.y ), zNear );
+    corners[1] = ViewCornerAtZ( float2( tileMax.x, tileMin.y ), zNear );
+    corners[2] = ViewCornerAtZ( float2( tileMin.x, tileMax.y ), zNear );
+    corners[3] = ViewCornerAtZ( float2( tileMax.x, tileMax.y ), zNear );
+    corners[4] = ViewCornerAtZ( float2( tileMin.x, tileMin.y ), zFar );
+    corners[5] = ViewCornerAtZ( float2( tileMax.x, tileMin.y ), zFar );
+    corners[6] = ViewCornerAtZ( float2( tileMin.x, tileMax.y ), zFar );
+    corners[7] = ViewCornerAtZ( float2( tileMax.x, tileMax.y ), zFar );
+    float3 aabbMin = corners[0];
+    float3 aabbMax = corners[0];
+    [unroll]
+    for ( uint c = 1; c < 8; ++c ) { aabbMin = min( aabbMin, corners[c] ); aabbMax = max( aabbMax, corners[c] ); }
+
+    // Distribute the light test across the group's threads. Clamp the external count (root constant) to the
+    // buffer capacity so a garbage TotalLights can never spin the loop (lasting D3D12 rule).
+    uint total = min( TotalLights, 4096u );
+    uint numThreads = TILE_SIZE * TILE_SIZE;
+    for ( uint i = ti; i < total; i += numThreads ) {
+        TiledPointLight L = SB_Lights[i];
+        if ( SphereInsideAABB( L.PositionView, L.Range * 1.05, aabbMin, aabbMax ) ) {
+            uint idx;
+            InterlockedAdd( gs_Count, 1, idx );
+            if ( idx < MAX_LIGHTS_PER_TILE ) gs_Indices[idx] = i;
+        }
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    if ( ti == 0 ) {
+        uint count = min( gs_Count, (uint)MAX_LIGHTS_PER_TILE );
+        uint tileIndex = groupID.y * NumTilesX + groupID.x;
+        uint offset = tileIndex * MAX_LIGHTS_PER_TILE;   // fixed per-tile slice (no global counter)
+        RW_LightGrid[tileIndex].Offset = offset;
+        RW_LightGrid[tileIndex].Count  = count;
+        for ( uint j = 0; j < count; ++j )
+            RW_LightIndexList[offset + j] = gs_Indices[j];
+    }
+}
+)";
+
     // Phase-2 water shader (MVP). Same wrapped-world-mesh vertex as the opaque pass, but the packed
     // TexCoord2 (@28, half2) carries the per-material UV-scroll delta (set in WorldConverter for water
     // materials); the VS scrolls the diffuse UV by (delta * totalTime) exactly like VS_ExWater. The PS
@@ -929,6 +1035,10 @@ XRESULT D3D12GraphicsEngine::Init() {
     }
     if ( !CreateDepthPrepassPipeline() ) {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the depth prepass pipeline.";
+        return XR_FAILED;
+    }
+    if ( !CreateLightCullPipeline() ) {
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the light-culling compute pipeline.";
         return XR_FAILED;
     }
     if ( !CreateVobPipeline() ) {
@@ -1502,6 +1612,10 @@ bool D3D12GraphicsEngine::CreateDepthBuffer( INT2 size ) {
     dsv.Format = DXGI_FORMAT_D32_FLOAT;
     dsv.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
     device->CreateDepthStencilView( m_DepthBuffer.Get(), &dsv, m_DsvHeap->GetCPUDescriptorHandleForHeapStart() );
+
+    // Forward+ tile grid storage is resolution-dependent too — (re)build it here so it always tracks the
+    // depth buffer's size (called from both init and the resize path). GPU is idle at both call sites.
+    if ( !CreateLightCullBuffers( size ) ) return false;
     return true;
 }
 
@@ -1680,6 +1794,108 @@ bool D3D12GraphicsEngine::CreateDepthPrepassPipeline() {
     return true;
 }
 
+bool D3D12GraphicsEngine::CreateLightCullPipeline() {
+    // Forward+ tiled light-culling compute pipeline (P2.9b-2). One GLOBAL compute root signature + PSO,
+    // created once. All four bindings are ROOT descriptors (no descriptor tables → no shader-visible-heap
+    // plumbing for this pass): b0 = cull constants (8 root 32-bit values); t0 = the point-light
+    // StructuredBuffer as a root SRV (same UPLOAD buffer the world PS reads); u0/u1 = the light grid /
+    // index-list DEFAULT-heap UAVs as root UAVs. RWStructuredBuffers are valid as root UAVs (stride comes
+    // from the HLSL declaration). Mirrors the world path's "structured buffers straight in the root" style.
+    ID3D12Device* device = m_Device.GetDevice();
+
+    D3D12_ROOT_PARAMETER params[4] = {};
+    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[0].Constants.ShaderRegister = 0;   // b0 CullCB
+    params[0].Constants.Num32BitValues = 8;   // ProjScale(2) + ScreenDim(2) + TotalLights + NumTilesX + pad(2)
+    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+    params[1].Descriptor.ShaderRegister = 0;  // t0 SB_Lights
+    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+    params[2].Descriptor.ShaderRegister = 0;  // u0 RW_LightGrid
+    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+    params[3].Descriptor.ShaderRegister = 1;  // u1 RW_LightIndexList
+    params[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+    rsDesc.NumParameters = _countof( params );
+    rsDesc.pParameters = params;
+    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;   // compute: no IA input layout
+
+    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
+    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (light cull)."; return false; }
+
+    ComPtr<ID3DBlob> rsBlob, rsErr;
+    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
+        if ( rsErr ) LogWarn() << "D3D12: light-cull root signature serialize error: " << static_cast<const char*>(rsErr->GetBufferPointer());
+        return false;
+    }
+    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
+        IID_PPV_ARGS( m_LightCullRootSig.ReleaseAndGetAddressOf() ) ) ) )
+        return false;
+
+    UINT compileFlags = 0;
+    if ( !CompileShaderD3D12( kLightCullShaderSource, sizeof( kLightCullShaderSource ) - 1, "LightCull",
+        nullptr, nullptr, "CSMain", Shadermodel_CS, compileFlags, 0, m_LightCullCsBlob.ReleaseAndGetAddressOf() ) ) {
+        return false;
+    }
+
+    D3D12_COMPUTE_PIPELINE_STATE_DESC pso = {};
+    pso.pRootSignature = m_LightCullRootSig.Get();
+    pso.CS = { m_LightCullCsBlob->GetBufferPointer(), m_LightCullCsBlob->GetBufferSize() };
+    if ( FAILED( device->CreateComputePipelineState( &pso, IID_PPV_ARGS( m_LightCullPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateComputePipelineState failed (light cull).";
+        return false;
+    }
+    return true;
+}
+
+bool D3D12GraphicsEngine::CreateLightCullBuffers( INT2 size ) {
+    // Per-resolution Forward+ tile grid storage (P2.9b-2). Recreated on resize alongside the depth buffer.
+    // RW_LightGrid: one {Offset,Count} (8 B) per 16x16 tile. RW_LightIndexList: a fixed MAX_LIGHTS_PER_TILE
+    // (=32) uint slice per tile (no compaction/global counter — see the shader header). Both are DEFAULT-heap
+    // UAV buffers that live permanently in UNORDERED_ACCESS (only the cull CS writes them; the lit PS will
+    // read them next increment), so no state transitions are ever needed. ~1 MB total at 1080p.
+    if ( size.x <= 0 || size.y <= 0 ) return false;
+    ID3D12Device* device = m_Device.GetDevice();
+
+    constexpr UINT kTileSize = 16;
+    constexpr UINT kMaxLightsPerTile = 32;
+    m_NumTilesX = ( static_cast<UINT>( size.x ) + kTileSize - 1 ) / kTileSize;
+    m_NumTilesY = ( static_cast<UINT>( size.y ) + kTileSize - 1 ) / kTileSize;
+    const UINT numTiles = m_NumTilesX * m_NumTilesY;
+    if ( numTiles == 0 ) return false;
+
+    D3D12_HEAP_PROPERTIES heapDefault = {};
+    heapDefault.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    auto makeUavBuffer = [&]( UINT64 bytes, const wchar_t* name, ComPtr<ID3D12Resource>& out ) -> bool {
+        D3D12_RESOURCE_DESC bd = {};
+        bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        bd.Width = bytes;
+        bd.Height = 1;
+        bd.DepthOrArraySize = 1;
+        bd.MipLevels = 1;
+        bd.SampleDesc.Count = 1;
+        bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        bd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+        if ( FAILED( device->CreateCommittedResource( &heapDefault, D3D12_HEAP_FLAG_NONE, &bd,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS( out.ReleaseAndGetAddressOf() ) ) ) ) {
+            LogWarn() << "D3D12: failed to create a light-cull UAV buffer.";
+            return false;
+        }
+        out->SetName( name );
+        return true;
+    };
+
+    if ( !makeUavBuffer( static_cast<UINT64>( numTiles ) * 2u * sizeof( uint32_t ), L"LightGrid", m_LightGridBuffer ) )
+        return false;
+    if ( !makeUavBuffer( static_cast<UINT64>( numTiles ) * kMaxLightsPerTile * sizeof( uint32_t ), L"LightIndexList", m_LightIndexBuffer ) )
+        return false;
+    return true;
+}
+
 bool D3D12GraphicsEngine::CreateVobPipeline() {
     ID3D12Device* device = m_Device.GetDevice();
 
@@ -1806,6 +2022,12 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
     GPULight* dst = reinterpret_cast<GPULight*>(m_LightBufferPtr[frame]);
     UINT count = 0;
     constexpr float lightFactor = 1.2f;   // matches D3D11 CullLights RGB scale
+
+    // View-space transform for PositionView (consumed by the tiled light-culling CS). Mirrors D3D11
+    // CullLights EXACTLY: transpose(GetViewMatrixXM()) then a row-vector transform of the world position,
+    // so the view space this fills matches what the cull shader's frustum is built in.
+    const XMMATRIX view = XMMatrixTranspose( Engine::GAPI->GetViewMatrixXM() );
+
     for ( VobLightInfo* li : g_FrameLights ) {
         if ( !li || !li->Vob ) continue;
         zCVobLight* vob = li->Vob;
@@ -1825,7 +2047,7 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
         const XMFLOAT3 pw = vob->GetPositionWorld();
 
         GPULight& L = dst[count];
-        L.PositionView = XMFLOAT3( 0.0f, 0.0f, 0.0f );
+        XMStoreFloat3( &L.PositionView, XMVector3TransformCoord( XMLoadFloat3( &pw ), view ) );
         L.Range = vob->GetLightRange();
         L.Color = XMFLOAT4( r * lightFactor, g * lightFactor, b * lightFactor, vob->IsStatic() ? 0.0f : 1.0f );
         L.PositionWorld = pw;
@@ -3000,6 +3222,9 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
     // tiled light-culling compute has a populated depth buffer. Visually a no-op (the color passes re-pass
     // on GREATER_EQUAL and rewrite the same depth).
     DrawDepthPrepass();
+    // Forward+ tiled light cull: consume this frame's light buffer + the tile grid geometry to record which
+    // point lights touch each 16x16 screen tile. Produces the grid only (no lit-output change yet).
+    DispatchLightCulling();
     DrawWorldMesh();
     {
         DX_ZONE( m_CmdList, "Draw animated skeletal" );
@@ -3144,6 +3369,51 @@ void D3D12GraphicsEngine::DrawDepthPrepass() {
                 mesh->BaseIndexLocation, 0, 0 );
         }
     }
+}
+
+void D3D12GraphicsEngine::DispatchLightCulling() {
+    // Forward+ tiled light cull (P2.9b-2). Runs after the depth prepass, before the lit passes: one 16x16
+    // thread group per screen tile writes {Offset,Count} into m_LightGridBuffer and the touching light
+    // indices into m_LightIndexBuffer. This increment only PRODUCES the grid — nothing consumes it yet, so
+    // the frame is visually unchanged; verify by inspecting the two buffers in RenderDoc (per-tile Count
+    // should be non-zero where torches/spells are on screen, zero for empty sky). The lit pixel shaders swap
+    // their brute-force light loop for this grid in the next increment. The cull is depth-independent
+    // (reversed-Z agnostic — see the shader header), so it does NOT sample the prepass depth here.
+    if ( !m_FrameOpen || !m_LightCullPSO || !m_LightCullRootSig || !m_LightGridBuffer || !m_LightIndexBuffer )
+        return;
+    if ( !m_LightBuffer[m_FrameIndex] || m_NumTilesX == 0 || m_NumTilesY == 0 )
+        return;
+
+    DX_ZONE( m_CmdList, "Light Culling (compute)" );
+
+    // ProjScale = the projection's x/y view->clip scale (diagonal terms; layout-invariant so no transpose
+    // worry). Same projection the geometry passes use.
+    const XMFLOAT4X4& projM = Engine::GAPI->GetProjectionMatrix();
+
+    struct LightCullConstants {
+        float    ProjScaleX, ProjScaleY;
+        uint32_t ScreenX, ScreenY;
+        uint32_t TotalLights;
+        uint32_t NumTilesX;
+        uint32_t Pad0, Pad1;
+    } cb{};
+    cb.ProjScaleX = projM._11;
+    cb.ProjScaleY = projM._22;
+    cb.ScreenX = static_cast<uint32_t>( m_Resolution.x );
+    cb.ScreenY = static_cast<uint32_t>( m_Resolution.y );
+    cb.TotalLights = m_FrameLightCount;
+    cb.NumTilesX = m_NumTilesX;
+
+    m_CmdList->SetPipelineState( m_LightCullPSO.Get() );
+    m_CmdList->SetComputeRootSignature( m_LightCullRootSig.Get() );
+    m_CmdList->SetComputeRoot32BitConstants( 0, 8, &cb, 0 );
+    m_CmdList->SetComputeRootShaderResourceView( 1, m_LightBuffer[m_FrameIndex]->GetGPUVirtualAddress() );
+    m_CmdList->SetComputeRootUnorderedAccessView( 2, m_LightGridBuffer->GetGPUVirtualAddress() );
+    m_CmdList->SetComputeRootUnorderedAccessView( 3, m_LightIndexBuffer->GetGPUVirtualAddress() );
+    m_CmdList->Dispatch( m_NumTilesX, m_NumTilesY, 1 );
+
+    // No UAV barrier yet — nothing reads these buffers this increment. It'll be added when the lit pixel
+    // shaders consume the grid (P2.9b-3), so their reads are ordered after these writes.
 }
 
 XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
