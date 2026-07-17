@@ -26,14 +26,6 @@ struct GraphicsEventName {
 
 #define GE_NAME(nameLiteral) GraphicsEventName{ L##nameLiteral, nameLiteral }
 
-struct DisplayModeInfo {
-    DisplayModeInfo(): DisplayModeInfo(0,0) {}
-    DisplayModeInfo( int w, int h ) : Width(static_cast<DWORD>(w)), Height(static_cast<DWORD>(h)) {}
-
-    DWORD Height;
-    DWORD Width;
-};
-
 enum WindowModes {
     WINDOW_MODE_FULLSCREEN_EXCLUSIVE = 1,
     WINDOW_MODE_FULLSCREEN_BORDERLESS = 2,

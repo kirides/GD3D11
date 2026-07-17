@@ -84,18 +84,26 @@ namespace {
     void ImGuiDX12_SrvFree( ImGui_ImplDX12_InitInfo* /*info*/, D3D12_CPU_DESCRIPTOR_HANDLE /*cpu*/, D3D12_GPU_DESCRIPTOR_HANDLE /*gpu*/ ) {
     }
 
-    // Shared post-backend-init setup (DPI-scaled font, resolution list, editor view). The DX11 and
-    // DX12 init paths differ only in which ImGui_ImplXXXX_Init they call; everything else is common.
-    void FinishImGuiInit( HWND window, std::vector<std::pair<INT2, std::string>>& resolutions, std::unique_ptr<ImGuiEditorView>& editorView ) {
-        const auto actualDPI = GetDpi( window );
+    void ImGuiCollectResolutions( std::vector<std::pair<INT2, std::string>>& resolutions ) {
 
         std::vector<DisplayModeInfo> modes;
         Engine::GraphicsEngine->GetDisplayModeList( &modes );
         resolutions.clear();
         for ( auto it = modes.rbegin(); it != modes.rend(); ++it ) {
-            std::string s = std::to_string( (*it).Width ) + "x" + std::to_string( (*it).Height );
+            std::string s = std::to_string( (*it).Width ) + "x" + std::to_string( (*it).Height )
+                // disable Hz display until we implement exclusive fullscreen mode. If we ever do.
+                // + " (" + std::to_string( (*it).refreshRateNumerator / std::max<unsigned int>( 1, (*it).refreshRateDenominator ) ) + " Hz)"
+                ;
             resolutions.emplace_back( std::make_pair( INT2( (*it).Width, (*it).Height ), s ) );
         }
+    }
+
+    // Shared post-backend-init setup (DPI-scaled font, resolution list, editor view). The DX11 and
+    // DX12 init paths differ only in which ImGui_ImplXXXX_Init they call; everything else is common.
+    void FinishImGuiInit( HWND window, std::vector<std::pair<INT2, std::string>>& resolutions, std::unique_ptr<ImGuiEditorView>& editorView ) {
+        const auto actualDPI = GetDpi( window );
+
+        ImGuiCollectResolutions( resolutions );
 
         ImFontConfig config = {};
 
@@ -205,7 +213,9 @@ ImGuiShim::~ImGuiShim()
 
 void ImGuiShim::BuildFrameUI()
 {
-    ImGui::GetIO().MouseDrawCursor = GetIsActive() && INT2( ImGui::GetMainViewport()->Size.x, ImGui::GetMainViewport()->Size.y ) != Engine::GraphicsEngine->GetResolution();
+    const auto bbres = Engine::GraphicsEngine->GetResolution();
+    ImGui::GetIO().MouseDrawCursor = GetIsActive() && INT2( ImGui::GetMainViewport()->Size.x, ImGui::GetMainViewport()->Size.y ) != bbres;
+    ImGui::GetIO().FontGlobalScale = bbres.y < 1080 ? static_cast<float>( bbres.y ) / 1080.0f : 1.0f;
 
     static zSTRING GDX_IMGUI_BEGINFRAME = "GDX_IMGUI_BEGINFRAME";
     static zSTRING GDX_IMGUI_ENDFRAME = "GDX_IMGUI_ENDFRAME";
@@ -332,13 +342,7 @@ void ImGuiShim::OnResize( INT2 newSize )
 {
     CurrentResolution = newSize;
 
-    std::vector<DisplayModeInfo> modes;
-    Engine::GraphicsEngine->GetDisplayModeList( &modes );
-    Resolutions.clear();
-    for ( auto it = modes.rbegin(); it != modes.rend(); ++it ) {
-        std::string s = std::to_string( (*it).Width ) + "x" + std::to_string( (*it).Height );
-        Resolutions.emplace_back( std::make_pair(INT2((*it).Width, (*it).Height), s) );
-    }
+    ImGuiCollectResolutions( Resolutions );
 }
 
 template <typename T>

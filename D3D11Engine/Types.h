@@ -193,3 +193,14 @@ struct float2 {
 
     float x, y;
 };
+
+struct DisplayModeInfo {
+    int Width;
+    int Height;
+    unsigned int refreshRateNumerator;
+    unsigned int refreshRateDenominator;
+
+    DisplayModeInfo( int w, int h, unsigned int num = 0, unsigned int den = 0 )
+        : Width( w ), Height( h ), refreshRateNumerator( num ), refreshRateDenominator( den ) {
+    }
+};

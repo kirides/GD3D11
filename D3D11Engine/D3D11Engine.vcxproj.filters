@@ -97,6 +97,9 @@
     <Filter Include="Librarys\stb">
       <UniqueIdentifier>{b0119c3a-7a6b-4406-a285-2a8b05760c74}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Engine\DXGI">
+      <UniqueIdentifier>{eb8840c8-8ff4-48d1-898b-20540a0f0a18}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="pch.h" />
@@ -881,6 +884,7 @@
     <ClInclude Include="vendor\mikktspace.h" />
     <ClInclude Include="VertexPacking.h" />
     <ClInclude Include="DDSArrayLoader.h" />
+    <ClInclude Include="DXGIHelpers.h" />
     <ClInclude Include="vendor\stb\stb_image.h">
       <Filter>Librarys\stb</Filter>
     </ClInclude>
@@ -1210,6 +1214,7 @@
     </ClCompile>
     <ClCompile Include="ConstantBufferPool.cpp" />
     <ClCompile Include="vendor\mikktspace.c" />
+    <ClCompile Include="BaseGraphicsEngine.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="ddraw.def">

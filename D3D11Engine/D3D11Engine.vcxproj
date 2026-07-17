@@ -941,6 +941,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="D3D11ForwardPlusRenderer.h" />
     <ClInclude Include="D3D11TracyDebug.h" />
     <ClInclude Include="DDSArrayLoader.h" />
+    <ClInclude Include="DXGIHelpers.h" />
     <ClInclude Include="ISceneRenderer.h" />
     <ClInclude Include="D3D11LegacyDeferredShading.h" />
     <ClInclude Include="D3D11Texture.h" />

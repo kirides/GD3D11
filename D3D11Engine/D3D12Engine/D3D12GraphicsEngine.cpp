@@ -4370,15 +4370,21 @@ XRESULT D3D12GraphicsEngine::OnResize( INT2 newSize ) {
             return XR_FAILED;
         }
         LogInfo() << "D3D12 swapchain created (" << newSize.x << "x" << newSize.y << ").";
-        return XR_SUCCESS;
+    } else {
+        ResizeSwapChain( newSize );
     }
 
-    ResizeSwapChain( newSize );
+    if ( Engine::ImGuiHandle && Engine::ImGuiHandle->Initiated ) {
+        Engine::ImGuiHandle->OnResize( newSize );
+    }
     return XR_SUCCESS;
 }
 
 XRESULT D3D12GraphicsEngine::TriggerResize( INT2 resolution ) {
-    return OnResize( resolution );
+    m_PerFrameCleanupItems[m_FrameIndex].emplace_back( [this, resolution]() {
+        OnResize( resolution );
+    } );
+    return XR_SUCCESS;
 }
 
 XRESULT D3D12GraphicsEngine::Clear( const float4& /*color*/ ) {
@@ -4402,10 +4408,12 @@ XRESULT D3D12GraphicsEngine::CreateTexture( std::unique_ptr<GfxTexture>& outText
 
 XRESULT D3D12GraphicsEngine::GetDisplayModeList( std::vector<DisplayModeInfo>* modeList, bool /*includeSuperSampling*/ ) {
     if ( !modeList ) return XR_SUCCESS;
-    // Minimal: report the current backbuffer resolution. Full enumeration lands with the
-    // shared DXGIHelper / settings-UI work.
+
     modeList->clear();
-    modeList->push_back( DisplayModeInfo( std::max<int>( 1, m_Resolution.x ), std::max<int>( 1, m_Resolution.y ) ) );
+    if ( XR_SUCCESS != DXGI_GetDisplayModeList( m_Device.GetDevice()->GetAdapterLuid(), m_OutputWindow, modeList) ) {
+    modeList->clear();
+        modeList->push_back( DisplayModeInfo( std::max<int>( 1, m_Resolution.x ), std::max<int>( 1, m_Resolution.y ), 60, 1 ) );
+    }
     return XR_SUCCESS;
 }
 
