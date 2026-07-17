@@ -136,6 +136,12 @@ private:
     bool CreateSkeletalPipeline();    // skeletal (animated NPC/monster) root sig + inline shaders + PSO
     bool CreateSkeletalConstantBuffers(); // per-frame dynamic (upload-heap) skeletal CB ring (instance + bones)
     XRESULT DrawSkeletalMeshes( std::vector<SkeletalVobInfo*>& vobs, bool asMorphMeshes = false );     // draw animated skeletal vobs (matrix-palette skinning)
+    bool CreateParticlePipeline();    // particle (PFX) root sig + inline billboard shaders (PSOs built per blend)
+    bool CreateParticleInstanceBuffers(); // per-frame dynamic (upload-heap) particle instance ring
+    // Returns a PSO for the particle shaders matching the given Gothic blend state (alpha/additive/modulate),
+    // creating + caching it on first use. Keyed by BlendKey.
+    ID3D12PipelineState* GetOrCreateParticlePipeline( const GothicBlendStateInfo& blend );
+    XRESULT DrawParticleEffects();    // collect visible PFX (backend-neutral) + draw billboards, blended over the scene
     bool AcquireBackBufferRTVs();     // (re)fetch swapchain buffers + build their RTVs
     bool ResizeSwapChain( INT2 size );
     void WaitForGpuIdle();            // full CPU/GPU flush (used on resize / teardown)
@@ -237,6 +243,19 @@ private:
     UINT m_SkeletalCBBufferCapacity = 0;
     UINT m_SkeletalCBBufferOffset = 0;                             // reset each OnBeginFrame
     bool m_SkeletalCBOverflowLogged = false;
+
+    // Particle (PFX) path — instanced camera-facing billboards, one instance per live particle. Own root
+    // sig (b0 ViewProj root consts + b1 camera pos + t0 SRV + s0). PSOs are built per Gothic blend mode
+    // (alpha/additive/modulate) and cached by BlendKey. Per-frame instance ring holds ParticleInstanceInfo.
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> m_ParticleRootSig;
+    Microsoft::WRL::ComPtr<ID3DBlob> m_ParticleVsBlob;             // compiled once; reused for every blend PSO
+    Microsoft::WRL::ComPtr<ID3DBlob> m_ParticlePsBlob;
+    std::unordered_map<uint32_t, Microsoft::WRL::ComPtr<ID3D12PipelineState>> m_ParticlePipelines; // key = BlendKey
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_ParticleInstanceBuffer[kBackBufferCount]; // persistently-mapped upload ring
+    uint8_t* m_ParticleInstanceBufferPtr[kBackBufferCount] = {};
+    UINT m_ParticleInstanceBufferCapacity = 0;
+    UINT m_ParticleInstanceBufferOffset = 0;                       // reset each OnBeginFrame
+    bool m_ParticleInstanceOverflowLogged = false;
 
     std::unique_ptr<D3D12LineRenderer> m_LineRenderer;
     std::vector<std::move_only_function<void()>> m_PerFrameCleanupItems[kBackBufferCount] = {};

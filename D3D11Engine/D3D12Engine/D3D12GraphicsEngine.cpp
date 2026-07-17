@@ -34,6 +34,7 @@ namespace {
     constexpr UINT kSrvHeapCapacity = 65536;                  // texture SRVs (tier-1 max is 1M; bump-allocated)
     constexpr UINT kUIVertexBufferBytes = 16 * 1024 * 1024;   // per-frame 2D vertex ring (~280k ExVertex)
     constexpr UINT kVobInstanceBufferBytes = 8 * 1024 * 1024; // per-frame VOB instance ring (~58k instances @144B)
+    constexpr UINT kParticleInstanceBufferBytes = 8 * 1024 * 1024; // per-frame particle instance ring (~150k @56B)
 
     // D3D12SerializeRootSignature is exported from the already-loaded d3d12.dll (we don't link d3d12.lib).
     typedef HRESULT( WINAPI* PFN_SERIALIZE_ROOT_SIG )( const D3D12_ROOT_SIGNATURE_DESC*, D3D_ROOT_SIGNATURE_VERSION, ID3DBlob**, ID3DBlob** );
@@ -333,6 +334,84 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
 }
 )";
 
+    // Phase-2 particle (PFX) shader — instanced camera-facing billboards. One instance per live particle
+    // (ParticleInstanceInfo, 56B, all PER_INSTANCE); the VS expands a 4-vertex triangle strip from
+    // SV_VertexID, doing all billboard orientation itself (mirrors VS_ParticlePoint.hlsl). `type` encodes
+    // the alignment: >=10 => quad-poly (half size); the low digit selects camera / y-locked / plane /
+    // velocity-aligned. DIFFUSE is a full float4 here (unlike the packed DWORD paths) so no swizzle. b0 =
+    // ViewProj (root consts, default column-major packing, same as the world shader); b1 = camera world pos.
+    constexpr char kParticleShaderSource[] = R"(
+cbuffer FrameCB    : register(b0) { float4x4 ViewProj; };
+cbuffer ParticleCB : register(b1) { float3 CameraPosition; float _ppad; };
+
+Texture2D    tx  : register(t0);
+SamplerState smp : register(s0);
+
+struct VS_IN {
+    uint   vertexID : SV_VertexID;
+    float3 pos      : POSITION;
+    float4 dif      : DIFFUSE;
+    float3 size     : SIZE;
+    uint   type     : TYPE;
+    float3 vel      : VELOCITY;
+};
+struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 dif : TEXCOORD1; };
+
+static const float tu[4] = { 0.0, 1.0, 0.0, 1.0 };
+static const float tv[4] = { 1.0, 1.0, 0.0, 0.0 };
+static const float vr[4] = { -1.0,  1.0, -1.0, 1.0 };
+static const float vu[4] = { -1.0, -1.0,  1.0, 1.0 };
+
+VS_OUT VSMain( VS_IN i )
+{
+    float3 planeNormal = normalize( -( i.pos - CameraPosition ) );
+    float3 position = i.pos;
+    float3 upVector;
+    float3 rightVector;
+
+    int visIsQuadPoly = int( step( 10.0, float( i.type ) ) );
+    int visOrientation = int( i.type ) - ( 10 * visIsQuadPoly );
+    float sizeScale = ( 0.5 * float( visIsQuadPoly ) ) + 0.5;
+
+    if ( visOrientation == 2 ) {
+        rightVector = i.size;
+        upVector = i.vel;
+    } else if ( visOrientation == 3 ) {
+        float3 velY = normalize( i.vel );
+        float3 velX = normalize( cross( planeNormal, velY ) );
+        rightVector = velX * i.size.x * sizeScale;
+        upVector = velY * i.size.y * sizeScale;
+    } else if ( visOrientation == 1 ) {
+        float3 velY = normalize( i.vel );
+        float3 velX = normalize( cross( planeNormal, velY ) );
+        velY = normalize( cross( planeNormal, velX ) );
+        rightVector = velX * i.size.x * sizeScale;
+        upVector = velY * i.size.y * sizeScale;
+    } else {
+        upVector = float3( 0.0, 1.0, 0.0 );
+        rightVector = normalize( cross( planeNormal, upVector ) );
+        upVector = normalize( cross( planeNormal, rightVector ) );
+        rightVector = rightVector * i.size.x * sizeScale;
+        upVector = upVector * i.size.y * sizeScale;
+        position += float3( i.size.x * 0.5, -i.size.y * 0.5, 0.0 ) * float( 1 - visIsQuadPoly );
+    }
+
+    position += rightVector * vr[i.vertexID];
+    position += upVector * vu[i.vertexID];
+
+    VS_OUT o;
+    o.clip = mul( float4( position, 1.0 ), ViewProj );
+    o.uv   = float2( tu[i.vertexID], tv[i.vertexID] );
+    o.dif  = float4( i.dif.rgb, pow( i.dif.a, 2.2 ) );   // gamma the alpha, like VS_ParticlePoint
+    return o;
+}
+
+float4 PSMain( VS_OUT i ) : SV_TARGET
+{
+    return tx.Sample( smp, i.uv ) * i.dif;   // color = texture * particle diffuse (blend picks add/alpha/mul)
+}
+)";
+
     // Round a ring offset up so the next allocation starts on a 256-byte boundary (D3D12 requires root
     // CBV addresses to be 256-byte aligned).
     UINT AlignCB( UINT offset ) { return ( offset + 255u ) & ~255u; }
@@ -437,7 +516,11 @@ XRESULT D3D12GraphicsEngine::Init() {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the water pipeline.";
         return XR_FAILED;
     }
-    LogInfo() << "D3D12GraphicsEngine initialized (device + 2D + world + VOB + skeletal + water pipelines up). Swapchain is created once the game window is set.";
+    if ( !CreateParticlePipeline() ) {
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the particle pipeline.";
+        return XR_FAILED;
+    }
+    LogInfo() << "D3D12GraphicsEngine initialized (device + 2D + world + VOB + skeletal + water + particle pipelines up). Swapchain is created once the game window is set.";
     return XR_SUCCESS;
 }
 
@@ -1378,6 +1461,273 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
     g_FrameWaterSurfaces.clear();
 }
 
+bool D3D12GraphicsEngine::CreateParticlePipeline() {
+    ID3D12Device* device = m_Device.GetDevice();
+
+    // Root signature: b0 = ViewProj (16 root consts, VS), b1 = camera world pos (4 consts, VS), t0 =
+    // diffuse SRV table (PS), static linear-clamp sampler s0 (PS). Particles sample [0,1] UVs, so CLAMP
+    // avoids the billboard edge bleeding into the opposite side of the atlas frame.
+    D3D12_DESCRIPTOR_RANGE srvRange = {};
+    srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    srvRange.NumDescriptors = 1;
+    srvRange.BaseShaderRegister = 0;         // t0
+    srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    D3D12_ROOT_PARAMETER params[3] = {};
+    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[0].Constants.ShaderRegister = 0;   // b0 ViewProj
+    params[0].Constants.Num32BitValues = 16;
+    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[1].Constants.ShaderRegister = 1;   // b1 camera pos
+    params[1].Constants.Num32BitValues = 4;
+    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[2].DescriptorTable.NumDescriptorRanges = 1;
+    params[2].DescriptorTable.pDescriptorRanges = &srvRange;
+    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_STATIC_SAMPLER_DESC sampler = {};
+    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.MaxLOD = D3D12_FLOAT32_MAX;
+    sampler.ShaderRegister = 0;              // s0
+    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+    rsDesc.NumParameters = _countof( params );
+    rsDesc.pParameters = params;
+    rsDesc.NumStaticSamplers = 1;
+    rsDesc.pStaticSamplers = &sampler;
+    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
+    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (particles)."; return false; }
+
+    ComPtr<ID3DBlob> rsBlob, rsErr;
+    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
+        if ( rsErr ) LogWarn() << "D3D12: particle root signature serialize error: " << static_cast<const char*>( rsErr->GetBufferPointer() );
+        return false;
+    }
+    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
+        IID_PPV_ARGS( m_ParticleRootSig.ReleaseAndGetAddressOf() ) ) ) )
+        return false;
+
+    UINT compileFlags = 0;
+#ifdef DEBUG_D3D11
+    compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+#endif
+    ComPtr<ID3DBlob> err;
+    if ( FAILED( D3DCompile( kParticleShaderSource, sizeof( kParticleShaderSource ) - 1, "ParticleShader", nullptr, nullptr,
+        "VSMain", "vs_5_0", compileFlags, 0, m_ParticleVsBlob.ReleaseAndGetAddressOf(), err.GetAddressOf() ) ) ) {
+        if ( err ) LogWarn() << "D3D12: particle VS compile error: " << static_cast<const char*>( err->GetBufferPointer() );
+        return false;
+    }
+    if ( FAILED( D3DCompile( kParticleShaderSource, sizeof( kParticleShaderSource ) - 1, "ParticleShader", nullptr, nullptr,
+        "PSMain", "ps_5_0", compileFlags, 0, m_ParticlePsBlob.ReleaseAndGetAddressOf(), err.ReleaseAndGetAddressOf() ) ) ) {
+        if ( err ) LogWarn() << "D3D12: particle PS compile error: " << static_cast<const char*>( err->GetBufferPointer() );
+        return false;
+    }
+
+    // PSOs are built per blend state on demand (GetOrCreateParticlePipeline). Warm the alpha-blend one so
+    // the common case never stalls at first draw.
+    GothicBlendStateInfo defaultBlend;
+    defaultBlend.SetAlphaBlending();
+    if ( !GetOrCreateParticlePipeline( defaultBlend ) ) {
+        LogWarn() << "D3D12: failed to create the default particle pipeline.";
+        return false;
+    }
+
+    return CreateParticleInstanceBuffers();
+}
+
+bool D3D12GraphicsEngine::CreateParticleInstanceBuffers() {
+    ID3D12Device* device = m_Device.GetDevice();
+    D3D12_HEAP_PROPERTIES uploadHeap = {};
+    uploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
+
+    D3D12_RESOURCE_DESC bufDesc = {};
+    bufDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bufDesc.Width = kParticleInstanceBufferBytes;
+    bufDesc.Height = 1;
+    bufDesc.DepthOrArraySize = 1;
+    bufDesc.MipLevels = 1;
+    bufDesc.Format = DXGI_FORMAT_UNKNOWN;
+    bufDesc.SampleDesc.Count = 1;
+    bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+    for ( UINT i = 0; i < kBackBufferCount; ++i ) {
+        if ( FAILED( device->CreateCommittedResource( &uploadHeap, D3D12_HEAP_FLAG_NONE, &bufDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS( m_ParticleInstanceBuffer[i].ReleaseAndGetAddressOf() ) ) ) )
+            return false;
+        m_ParticleInstanceBuffer[i]->SetName( i == 0 ? L"ParticleInstanceRing0" : L"ParticleInstanceRing1" );
+        D3D12_RANGE noRead = { 0, 0 };
+        if ( FAILED( m_ParticleInstanceBuffer[i]->Map( 0, &noRead, reinterpret_cast<void**>( &m_ParticleInstanceBufferPtr[i] ) ) ) )
+            return false;
+    }
+    m_ParticleInstanceBufferCapacity = kParticleInstanceBufferBytes;
+    return true;
+}
+
+ID3D12PipelineState* D3D12GraphicsEngine::GetOrCreateParticlePipeline( const GothicBlendStateInfo& blend ) {
+    const uint32_t key = BlendKey( blend );
+    auto it = m_ParticlePipelines.find( key );
+    if ( it != m_ParticlePipelines.end() ) return it->second.Get();
+
+    // Fully per-instance layout: one ParticleInstanceInfo (56B) per particle, the VS expands the quad from
+    // SV_VertexID. DIFFUSE is a real float4 here (not a packed DWORD), so R32G32B32A32_FLOAT.
+    const D3D12_INPUT_ELEMENT_DESC layout[] = {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "DIFFUSE",  0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "SIZE",     0, DXGI_FORMAT_R32G32B32_FLOAT,    0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "TYPE",     0, DXGI_FORMAT_R32_UINT,           0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "VELOCITY", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+    };
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+    pso.pRootSignature = m_ParticleRootSig.Get();
+    pso.VS = { m_ParticleVsBlob->GetBufferPointer(), m_ParticleVsBlob->GetBufferSize() };
+    pso.PS = { m_ParticlePsBlob->GetBufferPointer(), m_ParticlePsBlob->GetBufferSize() };
+    pso.InputLayout = { layout, _countof( layout ) };
+    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;   // strips still use the TRIANGLE type
+    pso.NumRenderTargets = 1;
+    pso.RTVFormats[0] = kBackBufferFormat;
+    pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+    pso.SampleDesc.Count = 1;
+    pso.SampleMask = UINT_MAX;
+
+    pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    pso.RasterizerState.DepthClipEnable = TRUE;
+
+    D3D12_RENDER_TARGET_BLEND_DESC& rt = pso.BlendState.RenderTarget[0];
+    rt.BlendEnable = blend.BlendEnabled ? TRUE : FALSE;
+    rt.SrcBlend       = static_cast<D3D12_BLEND>( blend.SrcBlend );
+    rt.DestBlend      = static_cast<D3D12_BLEND>( blend.DestBlend );
+    rt.BlendOp        = static_cast<D3D12_BLEND_OP>( blend.BlendOp );
+    rt.SrcBlendAlpha  = static_cast<D3D12_BLEND>( blend.SrcBlendAlpha );
+    rt.DestBlendAlpha = static_cast<D3D12_BLEND>( blend.DestBlendAlpha );
+    rt.BlendOpAlpha   = static_cast<D3D12_BLEND_OP>( blend.BlendOpAlpha );
+    rt.RenderTargetWriteMask = blend.ColorWritesEnabled ? D3D12_COLOR_WRITE_ENABLE_ALL : 0;
+
+    // Reversed-Z: test GREATER_EQUAL against the opaque scene depth, but DO NOT write — particles are
+    // transparent, must not occlude, and blend painter-style over whatever depth is already there.
+    pso.DepthStencilState.DepthEnable = TRUE;
+    pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+    pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
+    pso.DepthStencilState.StencilEnable = FALSE;
+
+    ComPtr<ID3D12PipelineState> state;
+    if ( FAILED( m_Device.GetDevice()->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( state.GetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateGraphicsPipelineState failed for particle blend key 0x" << std::hex << key << ".";
+        return nullptr;
+    }
+    ID3D12PipelineState* raw = state.Get();
+    m_ParticlePipelines.emplace( key, std::move( state ) );
+    return raw;
+}
+
+XRESULT D3D12GraphicsEngine::DrawParticleEffects() {
+    if ( !m_FrameOpen || !m_ParticleRootSig || !m_DepthBuffer )
+        return XR_SUCCESS;
+
+    auto& particles = Engine::GAPI->GetFrameParticles();
+    auto& info = Engine::GAPI->GetFrameParticleInfo();
+
+    // Clear the per-frame buckets BEFORE collecting. On D3D11 this happens in DrawWorldMeshNaive
+    // (GothicAPI.cpp:1334) — but the D3D12 world pass never routes through it, so we must clear here or
+    // the buckets accumulate every frame (particles smear, then the instance ring overflows and nothing
+    // draws). DrawParticlesSimple appends into these, mirroring D3D11's clear-then-fill contract.
+    particles.clear();
+    info.clear();
+
+    // Collect this frame's visible particle effects (backend-neutral). Fills FrameParticles (instances
+    // bucketed by texture) + FrameParticleInfo (blend mode per texture). The mesh-PFX sub-call inside
+    // (DrawFrameParticleMeshes) is a no-op on D3D12 — mesh-shaped effects are a later step.
+    Engine::GAPI->DrawParticlesSimple();
+    if ( particles.empty() ) return XR_SUCCESS;
+
+    // ViewProj — identical derivation to DrawWorldMesh (particle positions are world-space).
+    XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
+    Engine::GAPI->SetViewTransformXM( view );
+    Engine::GAPI->ResetWorldTransform();
+    const XMFLOAT4X4& viewM = Engine::GAPI->GetRendererState().TransformState.TransformView;
+    const XMFLOAT4X4& projM = Engine::GAPI->GetProjectionMatrix();
+    XMFLOAT4X4 viewProj;
+    XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
+
+    XMFLOAT3 camPos;
+    XMStoreFloat3( &camPos, Engine::GAPI->GetCameraPositionXM() );
+    const float camConsts[4] = { camPos.x, camPos.y, camPos.z, 0.0f };
+
+    m_CmdList->SetGraphicsRootSignature( m_ParticleRootSig.Get() );
+    m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
+    m_CmdList->SetGraphicsRoot32BitConstants( 1, 4, camConsts, 0 );
+
+    D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
+    D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
+    m_CmdList->RSSetViewports( 1, &vp );
+    m_CmdList->RSSetScissorRects( 1, &sc );
+    m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP );
+
+    const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_WhiteSrvSlot );
+    const UINT frame = m_FrameIndex;
+    ID3D12PipelineState* lastPso = nullptr;
+    unsigned int drawnTris = 0;
+
+    for ( auto& [tex, instances] : particles ) {
+        if ( instances.empty() ) continue;
+
+        // Blend mode for this texture bucket (falls back to alpha blend if somehow unlisted).
+        auto infoIt = info.find( tex );
+        ID3D12PipelineState* pso = infoIt != info.end()
+            ? GetOrCreateParticlePipeline( infoIt->second.BlendState )
+            : nullptr;
+        if ( !pso ) {
+            GothicBlendStateInfo alpha; alpha.SetAlphaBlending();
+            pso = GetOrCreateParticlePipeline( alpha );
+        }
+        if ( !pso ) continue;
+        if ( pso != lastPso ) { m_CmdList->SetPipelineState( pso ); lastPso = pso; }
+
+        const UINT numInstances = static_cast<UINT>( instances.size() );
+        const UINT instBytes = numInstances * static_cast<UINT>( sizeof( ParticleInstanceInfo ) );
+        if ( m_ParticleInstanceBufferOffset + instBytes > m_ParticleInstanceBufferCapacity ) {
+            if ( !m_ParticleInstanceOverflowLogged ) {
+                LogWarn() << "D3D12: particle instance ring overflow (" << m_ParticleInstanceBufferCapacity
+                          << " bytes/frame). Some particles dropped this frame.";
+                m_ParticleInstanceOverflowLogged = true;
+            }
+            break;
+        }
+
+        const UINT instOffset = m_ParticleInstanceBufferOffset;
+        memcpy( m_ParticleInstanceBufferPtr[frame] + instOffset, instances.data(), instBytes );
+        m_ParticleInstanceBufferOffset += instBytes;
+        const D3D12_VERTEX_BUFFER_VIEW instView = {
+            m_ParticleInstanceBuffer[frame]->GetGPUVirtualAddress() + instOffset, instBytes, sizeof( ParticleInstanceInfo ) };
+        m_CmdList->IASetVertexBuffers( 0, 1, &instView );
+
+        D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
+        if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+            if ( MyDirectDrawSurface7* surface = tex->GetSurface() ) {
+                if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
+                    D3D12Texture* d12 = D3D12Texture::From( gfx );
+                    if ( d12->HasSRV() ) srv = d12->GetSrvGpuHandle();
+                }
+            }
+        }
+        m_CmdList->SetGraphicsRootDescriptorTable( 2, srv );
+
+        // 4-vertex triangle-strip quad, one draw per particle instance.
+        m_CmdList->DrawInstanced( 4, numInstances, 0, 0 );
+        drawnTris += 2 * numInstances;
+    }
+
+    Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles += drawnTris;
+    return XR_SUCCESS;
+}
+
 bool D3D12GraphicsEngine::CreateSkeletalPipeline() {
     ID3D12Device* device = m_Device.GetDevice();
 
@@ -1652,8 +2002,14 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
         DrawSkeletalMeshes( Engine::GAPI->GetAnimatedSkeletalMeshVobs(), false);
     }
     DrawVobsInstanced();
-    // Water last: it is alpha-blended over the finished opaque scene (world + NPCs + VOBs).
+    // Water: alpha-blended over the finished opaque scene (world + NPCs + VOBs).
     DrawWaterSurfaces();
+    // Particles last: billboarded PFX (fire, smoke, magic, dust) blended over everything, depth-tested
+    // against the opaque scene but not writing depth. Mirrors D3D11's late DrawParticlesSimple pass.
+    {
+        auto _ = RecordGraphicsEvent( GE_NAME( "Draw particles" ) );
+        DrawParticleEffects();
+    }
     return XR_SUCCESS;
 }
 
@@ -2338,6 +2694,8 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
     m_VobInstanceOverflowLogged = false;
     m_SkeletalCBBufferOffset = 0;
     m_SkeletalCBOverflowLogged = false;
+    m_ParticleInstanceBufferOffset = 0;
+    m_ParticleInstanceOverflowLogged = false;
     m_CurrentTexture = nullptr;
     m_CurrentViewport = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
     m_CurrentScissor = { 0, 0, m_Resolution.x, m_Resolution.y };
