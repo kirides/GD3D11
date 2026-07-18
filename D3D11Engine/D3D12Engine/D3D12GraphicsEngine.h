@@ -269,9 +269,16 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_ShadowCasterSkeletalPSO;
     Microsoft::WRL::ComPtr<ID3DBlob> m_ShadowCasterSkeletalPsBlob;
     DirectX::XMFLOAT4X4 m_CascadeViewProj[kShadowCascades] = {};   // light-space view*proj per cascade (this frame)
-    bool CreateShadowMap();            // shadow Texture2DArray + per-slice DSVs + array SRV + caster PSO (once, at init)
-    void ComputeCascadeMatrices();     // fill m_CascadeViewProj from the sun direction + camera (simple ortho for now)
-    void RenderSunShadows();           // render the opaque casters into each cascade slice from the sun's POV
+    float m_CascadeTexelWorld[kShadowCascades] = {};   // world units / shadow texel per cascade (for the sampling normal bias)
+    DirectX::XMFLOAT3 m_SunDirWS = { 0.0f, 1.0f, 0.0f };   // normalized world-space dir TOWARD the sun (this frame)
+    // Per-frame-in-flight shadow-sampling constant buffer (b3 in the lit passes): the cascade view-projs +
+    // sun dir + strength + texel sizes, uploaded once per frame in RenderSunShadows and bound by DrawWorldMesh.
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_ShadowCB[kBackBufferCount];
+    uint8_t* m_ShadowCBMapped[kBackBufferCount] = {};
+    D3D12_GPU_VIRTUAL_ADDRESS m_ShadowCBGpu[kBackBufferCount] = {};
+    bool CreateShadowMap();            // shadow Texture2DArray + per-slice DSVs + array SRV + caster PSOs + CB ring (once, at init)
+    void ComputeCascadeMatrices();     // fill m_CascadeViewProj/m_CascadeTexelWorld/m_SunDirWS from the sun + camera (simple ortho for now)
+    void RenderSunShadows();           // render the opaque casters into each cascade slice from the sun's POV + upload the sampling CB
 
     // Forward+ tiled light culling (P2.9b-2): one global compute root sig + PSO; two resolution-sized
     // DEFAULT-heap UAV buffers holding the per-tile {Offset,Count} grid and the per-tile light-index slices

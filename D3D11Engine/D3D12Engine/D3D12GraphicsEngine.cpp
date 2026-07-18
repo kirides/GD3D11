@@ -359,6 +359,47 @@ StructuredBuffer<uint>      LightIndexBuf : register(t3);   // root SRV — per-
 Texture2D    tx  : register(t0);
 SamplerState smp : register(s0);
 
+// CSM sun-shadow sampling (P2.9c-4a). b3 = the per-frame shadow constants (cascade view-projs + sun dir +
+// darkening strength + per-cascade world texel size); t4 = the D32 cascade array (normal-Z, 1.0 == far);
+// s2 = a LESS_EQUAL PCF comparison sampler. Uploaded row-major, read column-major → mul(pos, CascadeVP[c])
+// matches the caster exactly. Shadow modulates the BAKED vertex lighting (darken sun-facing surfaces the
+// sun can't reach); replacing baked lighting with a full computed sun term (FP_ComputeSunLighting) is later.
+#define NUM_CSM_CASCADES 3
+cbuffer ShadowCB : register(b3)
+{
+    float4x4 CascadeViewProj[NUM_CSM_CASCADES];
+    float3   SunDirWS;         float ShadowStrength;      // dir TOWARD sun; darkening amount (0 = off)
+    float    ShadowMapSize;    float3 CascadeTexelWorld;  // texel; world units/texel for cascades 0..2
+};
+Texture2DArray          ShadowMap : register(t4);
+SamplerComparisonState  shadowCmp : register(s2);
+
+// Returns 1.0 = fully lit, 0.0 = fully occluded. Picks the first cascade whose footprint contains the point
+// (0 tightest), applies a per-cascade world-space normal bias, and does a 3x3 PCF tap. Mirrors the D3D11
+// ComputeCascadedShadowValueSoft selection/bounds (GetCascadeUVAndBounds) minus the blue-noise/PCSS machinery.
+float ComputeSunShadow( float3 wpos, float3 N )
+{
+    const float margin = 1.5 / ShadowMapSize;
+    const float texel  = 1.0 / ShadowMapSize;
+    [unroll]
+    for ( int c = 0; c < NUM_CSM_CASCADES; ++c )
+    {
+        float3 biased = wpos + N * ( CascadeTexelWorld[c] * 1.5 );   // normal bias scaled to this cascade's texel
+        float4 sp = mul( float4( biased, 1.0 ), CascadeViewProj[c] );
+        float2 uv = sp.xy * float2( 0.5, -0.5 ) + 0.5;
+        if ( uv.x > margin && uv.x < 1.0 - margin && uv.y > margin && uv.y < 1.0 - margin &&
+             sp.z >= 0.0 && sp.z <= 1.0 )
+        {
+            float sh = 0.0;
+            [unroll] for ( int y = -1; y <= 1; ++y )
+            [unroll] for ( int x = -1; x <= 1; ++x )
+                sh += ShadowMap.SampleCmpLevelZero( shadowCmp, float3( uv + float2( x, y ) * texel, c ), sp.z - 0.0015 );
+            return sh / 9.0;
+        }
+    }
+    return 1.0;   // outside all cascades → treat as lit
+}
+
 // Octahedral normal decode — matches Shaders/VertexPacking.h DecodeOctNormal (the packed 36-byte vertex
 // stores the normal as R16G16_SNORM at offset 12; world-mesh normals are already world-space).
 float3 DecodeOctNormal( float2 e )
@@ -416,8 +457,14 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
 {
     float4 t = tx.Sample( smp, i.uv );
     clip( t.a - 0.5 );                    // fixed alpha-test cutout (opaque textures have a==1 -> kept)
+    float3 N = normalize( i.wnrm );
     float3 baseLit = t.rgb * i.col.bgr;   // baked vertex lighting (ambient/sun/GI); .bgr recovers Gothic's RGB
-    float3 rgb = baseLit + AccumTiledPointLights( i.clip.xy, i.wpos, normalize( i.wnrm ), t.rgb );
+    // CSM: darken the baked lighting only where the SUN-FACING surface is occluded (sunNdl weights out
+    // back-faces already dark in the bake; ShadowStrength is 0 when the sun is down → no-op).
+    float sunNdl = saturate( dot( SunDirWS, N ) );
+    float occ    = sunNdl * ( 1.0 - ComputeSunShadow( i.wpos, N ) );
+    baseLit *= ( 1.0 - occ * ShadowStrength );
+    float3 rgb = baseLit + AccumTiledPointLights( i.clip.xy, i.wpos, N, t.rgb );
     // Linear distance fog toward the atmosphere color (matches Gothic's FFFog / the sky-clear color).
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
     rgb = lerp( rgb, FogColor, f );
@@ -1197,9 +1244,11 @@ XRESULT D3D12GraphicsEngine::Init() {
         return XR_FAILED;
     }
     if ( !CreateShadowMap() ) {
-        // Non-fatal: without the sun shadow map the scene renders unshadowed (as it did before P2.9c). Runs after
-        // the depth-prepass + VOB + skeletal pipelines so the caster PSOs can reuse all three depth VS blobs.
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the sun shadow map (continuing unshadowed).";
+        // Fatal: the lit world PSO samples the shadow map (t4) + CB (b3) unconditionally, so a missing map would
+        // leave those root slots unbound. Failing here cleanly falls back to D3D11 (D3D12 is dev-forced/opt-in).
+        // Runs after the depth-prepass + VOB + skeletal pipelines so the caster PSOs can reuse all three depth VS blobs.
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the sun shadow map.";
+        return XR_FAILED;
     }
     if ( !CreateWaterPipeline() ) {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the water pipeline.";
@@ -1797,7 +1846,17 @@ bool D3D12GraphicsEngine::CreateWorldPipeline() {
     // NumTilesX }. params[5]/[6] = the Forward+ per-tile grid + index-list root SRVs at t2/t3. All four MUST
     // be bound (BindFrameLights) by every draw using this root sig with a light-reading PSO (m_WorldPSO/
     // m_VobPSO), else the count/grid are undefined root values and the shader loops away.
-    D3D12_ROOT_PARAMETER params[7] = {};
+    // params[7] = shadow-sampling CB (b3) as a ROOT CBV (cascade view-projs are too big for root constants).
+    // params[8] = the CSM shadow-map Texture2DArray SRV (t4) via a one-entry descriptor table off the shared
+    // SRV heap. Both are read only by the lit world PS (PSMain); the depth-prepass/caster PSOs sharing this
+    // root sig don't reference them, so those draws simply leave the slots unbound.
+    D3D12_DESCRIPTOR_RANGE shadowSrvRange = {};
+    shadowSrvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    shadowSrvRange.NumDescriptors = 1;
+    shadowSrvRange.BaseShaderRegister = 4;   // t4
+    shadowSrvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    D3D12_ROOT_PARAMETER params[9] = {};
     params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     params[0].Constants.ShaderRegister = 0;   // b0
     params[0].Constants.Num32BitValues = 16;  // float4x4
@@ -1823,19 +1882,36 @@ bool D3D12GraphicsEngine::CreateWorldPipeline() {
     params[6].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
     params[6].Descriptor.ShaderRegister = 3;  // t3 per-tile light-index list
     params[6].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    params[7].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    params[7].Descriptor.ShaderRegister = 3;  // b3 shadow-sampling CB (cascade view-projs + sun + strength)
+    params[7].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    params[8].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[8].DescriptorTable.NumDescriptorRanges = 1;
+    params[8].DescriptorTable.pDescriptorRanges = &shadowSrvRange;
+    params[8].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
-    D3D12_STATIC_SAMPLER_DESC sampler = {};
-    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler.MaxLOD = D3D12_FLOAT32_MAX;
-    sampler.ShaderRegister = 0;              // s0
-    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    D3D12_STATIC_SAMPLER_DESC samplers[2] = {};
+    samplers[0].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    samplers[0].AddressU = samplers[0].AddressV = samplers[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    samplers[0].MaxLOD = D3D12_FLOAT32_MAX;
+    samplers[0].ShaderRegister = 0;          // s0 diffuse
+    samplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    // s2: PCF comparison sampler for the CSM depth. Normal-Z map (LESS_EQUAL): SampleCmp returns 1 where the
+    // fragment is closer-or-equal to the light than the stored occluder (lit), 0 where behind it (shadowed).
+    // BORDER address + opaque-white border → taps past a cascade's edge read as far (lit), not spurious shadow.
+    samplers[1].Filter = D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT;
+    samplers[1].AddressU = samplers[1].AddressV = samplers[1].AddressW = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+    samplers[1].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
+    samplers[1].ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+    samplers[1].MaxLOD = D3D12_FLOAT32_MAX;
+    samplers[1].ShaderRegister = 2;          // s2 shadow comparison
+    samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
     rsDesc.NumParameters = _countof( params );
     rsDesc.pParameters = params;
-    rsDesc.NumStaticSamplers = 1;
-    rsDesc.pStaticSamplers = &sampler;
+    rsDesc.NumStaticSamplers = _countof( samplers );
+    rsDesc.pStaticSamplers = samplers;
     rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
     PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
@@ -2144,6 +2220,32 @@ bool D3D12GraphicsEngine::CreateShadowMap() {
             return false;
         }
     }
+
+    // Per-frame-in-flight shadow-sampling CB (b3 in the lit passes): cascade view-projs + sun dir + strength +
+    // texel sizes. Small + written once per frame, so a persistently-mapped UPLOAD buffer per frame context
+    // (no ring offset needed — one struct per frame). Filled in RenderSunShadows, bound by the lit draws.
+    D3D12_HEAP_PROPERTIES uploadHeap = {};
+    uploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
+    D3D12_RESOURCE_DESC cbDesc = {};
+    cbDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    cbDesc.Width = 256;   // one 256-aligned CB (cascade matrices + sun data fit well under 256B)
+    cbDesc.Height = 1;
+    cbDesc.DepthOrArraySize = 1;
+    cbDesc.MipLevels = 1;
+    cbDesc.Format = DXGI_FORMAT_UNKNOWN;
+    cbDesc.SampleDesc.Count = 1;
+    cbDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    for ( UINT i = 0; i < kBackBufferCount; ++i ) {
+        if ( FAILED( device->CreateCommittedResource( &uploadHeap, D3D12_HEAP_FLAG_NONE, &cbDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS( m_ShadowCB[i].ReleaseAndGetAddressOf() ) ) ) )
+            return false;
+        m_ShadowCB[i]->SetName( L"ShadowSamplingCB" );
+        D3D12_RANGE noRead = { 0, 0 };
+        void* mapped = nullptr;
+        if ( FAILED( m_ShadowCB[i]->Map( 0, &noRead, &mapped ) ) ) return false;
+        m_ShadowCBMapped[i] = static_cast<uint8_t*>( mapped );
+        m_ShadowCBGpu[i] = m_ShadowCB[i]->GetGPUVirtualAddress();
+    }
     return true;
 }
 
@@ -2158,6 +2260,7 @@ void D3D12GraphicsEngine::ComputeCascadeMatrices() {
 
     float3 lp = Engine::GAPI->GetSky()->GetAtmosphereCB().AC_LightPos;
     XMVECTOR toSun = XMVector3Normalize( XMVectorSet( lp.x, lp.y, lp.z, 0.0f ) );
+    XMStoreFloat3( &m_SunDirWS, toSun );   // world-space dir TOWARD the sun (for the lit-pass N.L term)
     XMVECTOR lightDir = XMVectorNegate( toSun );   // sun -> scene (the caster's look direction)
     XMVECTOR camPos = Engine::GAPI->GetCameraPositionXM();
     XMVECTOR up = ( fabsf( lp.y ) > 0.95f ) ? XMVectorSet( 0, 0, 1, 0 ) : XMVectorSet( 0, 1, 0, 0 );
@@ -2165,6 +2268,7 @@ void D3D12GraphicsEngine::ComputeCascadeMatrices() {
     const float halfExtents[kShadowCascades] = { 1500.0f, 5000.0f, 16000.0f };
     const float depthRange = 20000.0f;   // light-space near..far span (world units); camPos sits at its midpoint
     for ( UINT c = 0; c < kShadowCascades; ++c ) {
+        m_CascadeTexelWorld[c] = ( 2.0f * halfExtents[c] ) / static_cast<float>( kShadowMapSize );   // for the sampling normal bias
         XMVECTOR eye = camPos - lightDir * ( depthRange * 0.5f );   // pull back toward the sun so the box is in front
         XMMATRIX view = XMMatrixLookToLH( eye, lightDir, up );
         XMMATRIX proj = XMMatrixOrthographicLH( 2.0f * halfExtents[c], 2.0f * halfExtents[c], 0.0f, depthRange );
@@ -2202,6 +2306,22 @@ void D3D12GraphicsEngine::RenderSunShadows() {
     // Sun below the horizon → clear each slice to far (1.0 = unshadowed) and skip ALL casting.
     const float3 lp = Engine::GAPI->GetSky()->GetAtmosphereCB().AC_LightPos;
     const bool sunUp = ( lp.y > 0.0f );
+
+    // Upload this frame's shadow-sampling CB (b3 for the lit passes): cascade view-projs + sun dir + darkening
+    // strength + per-cascade texel size. Layout MUST match the HLSL ShadowCB (row-major matrices, HLSL packing).
+    if ( m_ShadowCBMapped[m_FrameIndex] ) {
+        struct ShadowCBData {
+            XMFLOAT4X4 CascadeViewProj[kShadowCascades];
+            XMFLOAT3   SunDirWS;      float ShadowStrength;
+            float      ShadowMapSize; XMFLOAT3 CascadeTexelWorld;
+        } cb;
+        for ( UINT c = 0; c < kShadowCascades; ++c ) cb.CascadeViewProj[c] = m_CascadeViewProj[c];
+        cb.SunDirWS = m_SunDirWS;
+        cb.ShadowStrength = sunUp ? 0.6f : 0.0f;   // darkening amount (tunable; 0 disables when the sun is down)
+        cb.ShadowMapSize = static_cast<float>( kShadowMapSize );
+        cb.CascadeTexelWorld = XMFLOAT3( m_CascadeTexelWorld[0], m_CascadeTexelWorld[1], m_CascadeTexelWorld[2] );
+        memcpy( m_ShadowCBMapped[m_FrameIndex], &cb, sizeof( cb ) );
+    }
 
     MeshInfo* wm = Engine::GAPI->GetWrappedWorldMesh();
     D3D12VertexBuffer* vb = wm ? D3D12VertexBuffer::From( wm->GetMeshVertexBuffer() ) : nullptr;
@@ -4122,6 +4242,10 @@ XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
     m_CmdList->SetGraphicsRoot32BitConstants( 2, 8, &fog, 0 );   // b1 fog
     BindFrameLights();   // param 3 = light SRV (t1), param 4 = light count (b2) — MUST set both or the
                          // shader's light loop reads a garbage count and runs away (GPU TDR hang).
+    // CSM sampling: param 7 = shadow CB (b3), param 8 = shadow-map array SRV (t4). The map was left in
+    // PIXEL_SHADER_RESOURCE by RenderSunShadows; the PS samples it to darken sun-occluded surfaces.
+    m_CmdList->SetGraphicsRootConstantBufferView( 7, m_ShadowCBGpu[m_FrameIndex] );
+    m_CmdList->SetGraphicsRootDescriptorTable( 8, GetSrvGpuHandle( m_ShadowSrvSlot ) );
 
     D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_Resolution.x), static_cast<float>(m_Resolution.y), 0.0f, 1.0f };
     D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
