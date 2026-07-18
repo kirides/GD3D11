@@ -285,6 +285,43 @@ private:
     void ComputeCascadeMatrices();     // fill m_CascadeViewProj/m_CascadeTexelWorld/m_SunDirWS from the sun + camera (simple ortho for now)
     void RenderSunShadows();           // render the opaque casters into each cascade slice from the sun's POV + upload the sampling CB
 
+    // ---- Point-light shadow cubes (P2.10) — mirrors D3D11's shared TextureCubeArray Forward+ path. Up to
+    // kMaxShadowCubes shadowed point lights, each a 6-face 128^2 cube slot in one array. NORMAL-Z (clear 1.0,
+    // LESS_EQUAL) like the CSM. Faces rendered single-pass via an instanced layered VS (6 instances → the 6
+    // faces via SV_RenderTargetArrayIndex, no geometry shader — needs VPAndRTArrayIndexFromAnyShaderFeeding
+    // Rasterizer, present on the target AMD GPU). Sampled in the tiled point-light loop when ShadowCubeIndex>=0.
+    static constexpr UINT kPointShadowCubeSize = 128;
+    static constexpr UINT kMaxShadowCubes      = 32;    // tunable up to D3D11's 128; each = 6 slices @128^2 R16 (~6MB@32)
+    Microsoft::WRL::ComPtr<ID3D12Resource>       m_PointShadowCube;      // Texture2DArray(R16_TYPELESS), kMaxShadowCubes*6 slices
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_PointShadowDsvHeap;   // one D16 Texture2DArray DSV (6 slices) per cube slot
+    UINT m_PointShadowDsvSize = 0;
+    UINT m_PointShadowSrvSlot = UINT_MAX;   // R16_UNORM TextureCubeArray SRV (all cubes), for the point-light sampler
+    bool m_PointShadowInPixelState = false; // DEPTH_WRITE (caster) <-> PIXEL_SHADER_RESOURCE (lit) round-trip
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> m_PointShadowRootSig;    // b0 = PCR_ViewProj[6] CBV (VS); t0 diffuse (PS); s0
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> m_PointShadowSkeletalRootSig; // b0 faces + b1 instance + b2 bones (VS); t0 (PS); s0
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_PointShadowCasterWorldPSO;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_PointShadowCasterVobPSO;      // VSCubeVob (step-rate-6 instance stream)
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_PointShadowCasterSkeletalPSO; // VSCubeSkel (matrix-palette skinning)
+    Microsoft::WRL::ComPtr<ID3DBlob> m_PointShadowVsBlob;      // VSCube (layered, instanceID→face)
+    Microsoft::WRL::ComPtr<ID3DBlob> m_PointShadowVobVsBlob;   // VSCubeVob (per-instance world + face = iid%6)
+    Microsoft::WRL::ComPtr<ID3DBlob> m_PointShadowSkelVsBlob;  // VSCubeSkel (skinned; face = iid)
+    Microsoft::WRL::ComPtr<ID3DBlob> m_PointShadowPsBlob;      // PSCubeClip (void, alpha-clip)
+    // Per-frame ring of the 6-face view-proj CB, one 512-aligned slot per shadowed light (bound as root CBV b0).
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_PointShadowCB[kBackBufferCount];
+    uint8_t* m_PointShadowCBMapped[kBackBufferCount] = {};
+    D3D12_GPU_VIRTUAL_ADDRESS m_PointShadowCBGpu[kBackBufferCount] = {};
+    // Per-frame TIGHT (64-byte world matrix) VOB-instance ring for the point-shadow VOB caster: only the instances
+    // range-culled into a shadowed light's sphere get packed here, so cube draws stay proportional to near casters.
+    static constexpr UINT kPointShadowMaxVobInstances = 8192;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_PointShadowVobInst[kBackBufferCount];
+    uint8_t* m_PointShadowVobInstPtr[kBackBufferCount] = {};
+    D3D12_GPU_VIRTUAL_ADDRESS m_PointShadowVobInstGpu[kBackBufferCount] = {};
+    UINT m_PointShadowVobInstCapacity = 0;         // bytes
+    UINT m_PointShadowVobInstOffset = 0;           // reset each frame at the top of RenderPointShadows
+    bool m_PointShadowVobInstOverflowLogged = false;
+    bool CreatePointShadowCubes();     // cube array + per-slot DSVs + array SRV + world caster PSO + root sig + CB ring (once, at init)
+    void RenderPointShadows();         // render each selected light's 6 cube faces (selection/ShadowCubeIndex done in BuildFrameLightBuffer)
+
     // Forward+ tiled light culling (P2.9b-2): one global compute root sig + PSO; two resolution-sized
     // DEFAULT-heap UAV buffers holding the per-tile {Offset,Count} grid and the per-tile light-index slices
     // (fixed 32/tile, no global counter). All live permanently in UNORDERED_ACCESS. m_NumTilesX/Y = tile
