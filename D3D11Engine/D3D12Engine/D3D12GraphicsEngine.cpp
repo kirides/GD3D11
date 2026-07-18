@@ -391,11 +391,15 @@ float ComputeSunShadow( float3 wpos, float3 N )
         if ( uv.x > margin && uv.x < 1.0 - margin && uv.y > margin && uv.y < 1.0 - margin &&
              sp.z >= 0.0 && sp.z <= 1.0 )
         {
+            // Wider, cascade-scaled PCF (P2.9c-3c): far cascades cover more world per texel (sub-texel foliage
+            // → temporal "blinking"), so widen the kernel step with the cascade index to spatially average that
+            // flicker into a soft, stable penumbra. 5x5 taps; near cascade stays near-1-texel (crisp).
+            float pcfStep = texel * ( 1.0 + float( c ) * 1.5 );
             float sh = 0.0;
-            [unroll] for ( int y = -1; y <= 1; ++y )
-            [unroll] for ( int x = -1; x <= 1; ++x )
-                sh += ShadowMap.SampleCmpLevelZero( shadowCmp, float3( uv + float2( x, y ) * texel, c ), sp.z - 0.0015 );
-            return sh / 9.0;
+            [unroll] for ( int y = -2; y <= 2; ++y )
+            [unroll] for ( int x = -2; x <= 2; ++x )
+                sh += ShadowMap.SampleCmpLevelZero( shadowCmp, float3( uv + float2( x, y ) * pcfStep, c ), sp.z - 0.0015 );
+            return sh / 25.0;
         }
     }
     return 1.0;   // outside all cascades → treat as lit
@@ -519,11 +523,15 @@ float ComputeSunShadow( float3 wpos, float3 N )
         if ( uv.x > margin && uv.x < 1.0 - margin && uv.y > margin && uv.y < 1.0 - margin &&
              sp.z >= 0.0 && sp.z <= 1.0 )
         {
+            // Wider, cascade-scaled PCF (P2.9c-3c): far cascades cover more world per texel (sub-texel foliage
+            // → temporal "blinking"), so widen the kernel step with the cascade index to spatially average that
+            // flicker into a soft, stable penumbra. 5x5 taps; near cascade stays near-1-texel (crisp).
+            float pcfStep = texel * ( 1.0 + float( c ) * 1.5 );
             float sh = 0.0;
-            [unroll] for ( int y = -1; y <= 1; ++y )
-            [unroll] for ( int x = -1; x <= 1; ++x )
-                sh += ShadowMap.SampleCmpLevelZero( shadowCmp, float3( uv + float2( x, y ) * texel, c ), sp.z - 0.0015 );
-            return sh / 9.0;
+            [unroll] for ( int y = -2; y <= 2; ++y )
+            [unroll] for ( int x = -2; x <= 2; ++x )
+                sh += ShadowMap.SampleCmpLevelZero( shadowCmp, float3( uv + float2( x, y ) * pcfStep, c ), sp.z - 0.0015 );
+            return sh / 25.0;
         }
     }
     return 1.0;
@@ -954,11 +962,15 @@ float ComputeSunShadow( float3 wpos, float3 N )
         if ( uv.x > margin && uv.x < 1.0 - margin && uv.y > margin && uv.y < 1.0 - margin &&
              sp.z >= 0.0 && sp.z <= 1.0 )
         {
+            // Wider, cascade-scaled PCF (P2.9c-3c): far cascades cover more world per texel (sub-texel foliage
+            // → temporal "blinking"), so widen the kernel step with the cascade index to spatially average that
+            // flicker into a soft, stable penumbra. 5x5 taps; near cascade stays near-1-texel (crisp).
+            float pcfStep = texel * ( 1.0 + float( c ) * 1.5 );
             float sh = 0.0;
-            [unroll] for ( int y = -1; y <= 1; ++y )
-            [unroll] for ( int x = -1; x <= 1; ++x )
-                sh += ShadowMap.SampleCmpLevelZero( shadowCmp, float3( uv + float2( x, y ) * texel, c ), sp.z - 0.0015 );
-            return sh / 9.0;
+            [unroll] for ( int y = -2; y <= 2; ++y )
+            [unroll] for ( int x = -2; x <= 2; ++x )
+                sh += ShadowMap.SampleCmpLevelZero( shadowCmp, float3( uv + float2( x, y ) * pcfStep, c ), sp.z - 0.0015 );
+            return sh / 25.0;
         }
     }
     return 1.0;
@@ -2157,13 +2169,19 @@ bool D3D12GraphicsEngine::CreateShadowMap() {
     ID3D12Device* device = m_Device.GetDevice();
     if ( !m_WorldRootSig || !m_DepthPrepassWorldVsBlob ) return false;
 
+    // Resolution from the shared quality setting (same knob D3D11 uses), clamped to a sane range. Bigger = smaller
+    // world-units/texel = far less sub-texel foliage flicker + tighter near shadows. DEFAULT-heap (GPU) memory, so
+    // 4096 (~192MB across 3 D32 slices) barely touches the 32-bit CPU address space.
+    int desired = Engine::GAPI->GetRendererState().RendererSettings.ShadowMapSize;
+    m_ShadowMapSize = static_cast<UINT>( std::min( std::max( desired, 1024 ), 4096 ) );
+
     D3D12_HEAP_PROPERTIES heapDefault = {};
     heapDefault.Type = D3D12_HEAP_TYPE_DEFAULT;
 
     D3D12_RESOURCE_DESC dd = {};
     dd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    dd.Width = kShadowMapSize;
-    dd.Height = kShadowMapSize;
+    dd.Width = m_ShadowMapSize;
+    dd.Height = m_ShadowMapSize;
     dd.DepthOrArraySize = static_cast<UINT16>( kShadowCascades );
     dd.MipLevels = 1;
     dd.Format = DXGI_FORMAT_R32_TYPELESS;   // D32 DSV per slice + one R32_FLOAT array SRV for the lit-pass sampler
@@ -2330,33 +2348,144 @@ bool D3D12GraphicsEngine::CreateShadowMap() {
 
 void D3D12GraphicsEngine::ComputeCascadeMatrices() {
     using namespace DirectX;
-    // AC_LightPos is the normalized world-space direction TOWARD the sun (see GSky). Light travels the opposite
-    // way. Simple camera-centered cascades: concentric sun-aligned ortho boxes of increasing half-extent, camPos
-    // at the middle of a fixed light-space depth slab. (Stable texel-snapped frustum-fit is a later increment;
-    // this is enough to render + inspect the shadow map.)
-    
+    // P2.9c-3a: stable, frustum-fit + texel-snapped cascades — mirrors D3D11 CalculateCascadeMatrices
+    // (D3D11ShadowMap.cpp). Per cascade: fit a bounding SPHERE to the camera's frustum SLICE [splitNear,splitFar]
+    // (rotation-invariant → no shimmer from turning), quantize the radius, snap the sphere centre to the shadow
+    // texel grid anchored at the world origin (→ no crawl when translating), pull the light back, and derive the
+    // ortho Z bounds from the slice + the scene BBox. Replaces the old camera-centred concentric boxes.
     Engine::GAPI->GetSky()->RenderSky(); // <-- does not render, but calculates atmosphere data like AC_LightPos
 
     float3 lp = Engine::GAPI->GetSky()->GetAtmosphereCB().AC_LightPos;
-    XMVECTOR toSun = XMVector3Normalize( XMVectorSet( lp.x, lp.y, lp.z, 0.0f ) );
+    XMVECTOR rawToSun = XMVector3Normalize( XMVectorSet( lp.x, lp.y, lp.z, 0.0f ) );
+    // Temporal smoothing (P2.9c-3c): lerp toward the live sun dir so the origin-anchored snap grid rotates
+    // gradually instead of jittering per frame (the lever arm from origin to a distant player turns tiny
+    // sun drift into visible texel crawl). alpha small = strong smoothing; the day cycle is minutes-long so
+    // a ~1s time constant lags imperceptibly while killing per-frame jitter.
+    XMVECTOR toSun;
+    if ( !m_SunDirInitialized ) {
+        toSun = rawToSun;
+        m_SunDirInitialized = true;
+    } else {
+        constexpr float alpha = 0.03f;
+        toSun = XMVector3Normalize( XMVectorLerp( XMLoadFloat3( &m_SmoothedSunDir ), rawToSun, alpha ) );
+    }
+    XMStoreFloat3( &m_SmoothedSunDir, toSun );
     XMStoreFloat3( &m_SunDirWS, toSun );   // world-space dir TOWARD the sun (for the lit-pass N.L term)
-    XMVECTOR lightDir = XMVectorNegate( toSun );   // sun -> scene (the caster's look direction)
-    XMVECTOR camPos = Engine::GAPI->GetCameraPositionXM();
-    XMVECTOR up = ( fabsf( lp.y ) > 0.95f ) ? XMVectorSet( 0, 0, 1, 0 ) : XMVectorSet( 0, 1, 0, 0 );
+    const XMVECTOR lightDir = XMVectorNegate( toSun );   // sun -> scene (the caster's look direction)
+    const XMVECTOR worldUp  = XMVectorSet( 0, 1, 0, 0 );
+    const XMVECTOR up = ( fabsf( lp.y ) > 0.95f ) ? XMVectorSet( 0, 0, 1, 0 ) : worldUp;
 
-    const float halfExtents[kShadowCascades] = { 1500.0f, 5000.0f, 16000.0f };
-    const float depthRange = 20000.0f;   // light-space near..far span (world units); camPos sits at its midpoint
+    // Camera basis for reconstructing world-space frustum-slice corners: inverse(view) is camera->world, and the
+    // projection diagonal gives the half-angle scales (_11 = 1/tan(fovX/2), _22 = 1/tan(fovY/2)). GothicAPI's
+    // getters are column-major but the proj DIAGONAL is transpose-invariant, so we read _11/_22 straight off it.
+    const XMMATRIX viewStd = XMMatrixTranspose( Engine::GAPI->GetViewMatrixXM() );   // row-vector standard view
+    const XMMATRIX invView = XMMatrixInverse( nullptr, viewStd );
+    const XMFLOAT4X4& projCM = Engine::GAPI->GetProjectionMatrix();
+    const float projXScale = projCM._11;
+    const float projYScale = projCM._22;
+
+    // Practical split scheme (blend of uniform + logarithmic), from shadowNear..shadowFar in world units.
+    const float shadowNear = 15.0f;
+    const float shadowFar  = 20000.0f;
+    const float lambda     = 0.85f;
+    float splits[kShadowCascades + 1];
+    splits[0] = shadowNear;
+    splits[kShadowCascades] = shadowFar;
+    for ( UINT i = 1; i < kShadowCascades; ++i ) {
+        float p    = static_cast<float>( i ) / static_cast<float>( kShadowCascades );
+        float logS = shadowNear * powf( shadowFar / shadowNear, p );
+        float uniS = shadowNear + ( shadowFar - shadowNear ) * p;
+        splits[i]  = uniS + lambda * ( logS - uniS );
+    }
+
+    // Scene-BBox light-space Z extent (tightens the ortho depth so casters between the light and the slice are
+    // captured without shooting miles past the level). Recomputed per cascade against that cascade's lightView.
+    zTBBox3D sceneBox = {};
+    bool haveScene = false;
+    if ( auto wi = Engine::GAPI->GetLoadedWorldInfo() )
+        if ( wi->BspTree && wi->BspTree->GetRootNode() ) { sceneBox = wi->BspTree->GetRootNode()->BBox3D; haveScene = true; }
+
+    const float lightDotUp = std::max( fabsf( XMVectorGetX( XMVector3Dot( lightDir, worldUp ) ) ), 0.05f );
+    const float dynamicPullback = std::clamp( 4000.0f / lightDotUp, 2000.0f, 15000.0f );
+
     for ( UINT c = 0; c < kShadowCascades; ++c ) {
-        m_CascadeTexelWorld[c] = ( 2.0f * halfExtents[c] ) / static_cast<float>( kShadowMapSize );   // for the sampling normal bias
-        XMVECTOR eye = camPos - lightDir * ( depthRange * 0.5f );   // pull back toward the sun so the box is in front
-        XMMATRIX view = XMMatrixLookToLH( eye, lightDir, up );
-        XMMATRIX proj = XMMatrixOrthographicLH( 2.0f * halfExtents[c], 2.0f * halfExtents[c], 0.0f, depthRange );
-        // Store (View*Proj)^T. The working passes multiply GothicAPI's projM*viewM, but those getters return the
-        // matrices ALREADY column-major (pre-transposed) — GetProjectionMatrix() is documented "Column-Major" and
-        // the light-cull path transposes GetViewMatrixXM() for CPU row-vector math. So working stored = Proj^T*View^T
-        // = (View*Proj)^T. Our view/proj come straight from XMMatrixLookToLH/OrthographicLH (standard, NON-transposed),
-        // so we must transpose the product ourselves to match. (mul(pos, ViewProj) then reads it back as View*Proj.)
-        XMStoreFloat4x4( &m_CascadeViewProj[c], XMMatrixTranspose( XMMatrixMultiply( view, proj ) ) );
+        // 8 world-space corners of the camera frustum slice [splits[c], splits[c+1]].
+        XMFLOAT3 corners[8];
+        int ci = 0;
+        for ( int f = 0; f < 2; ++f ) {
+            float d = splits[c + f];
+            float xe = d / projXScale, ye = d / projYScale;
+            for ( int sy = -1; sy <= 1; sy += 2 )
+                for ( int sx = -1; sx <= 1; sx += 2 ) {
+                    XMVECTOR vVS = XMVectorSet( sx * xe, sy * ye, d, 1.0f );
+                    XMStoreFloat3( &corners[ci++], XMVector3TransformCoord( vVS, invView ) );
+                }
+        }
+
+        // Minimal bounding sphere of the slice: slide the centre along the near->far axis so near/far radii equal.
+        XMVECTOR nearC = XMVectorZero(), farC = XMVectorZero();
+        for ( int i = 0; i < 4; ++i ) nearC += XMLoadFloat3( &corners[i] );
+        for ( int i = 4; i < 8; ++i ) farC  += XMLoadFloat3( &corners[i] );
+        nearC *= 0.25f; farC *= 0.25f;
+        XMVECTOR axis = XMVectorSubtract( farC, nearC );
+        float L = XMVectorGetX( XMVector3Length( axis ) );
+        XMVECTOR viewDir = ( L > 1e-4f ) ? XMVectorScale( axis, 1.0f / L ) : lightDir;
+        float nearRSq = XMVectorGetX( XMVector3LengthSq( XMVectorSubtract( XMLoadFloat3( &corners[0] ), nearC ) ) );
+        float farRSq  = XMVectorGetX( XMVector3LengthSq( XMVectorSubtract( XMLoadFloat3( &corners[4] ), farC ) ) );
+        float optimalX = std::clamp( ( L * L + farRSq - nearRSq ) / std::max( 2.0f * L, 1e-4f ), 0.0f, L );
+        XMVECTOR frustumCenter = XMVectorAdd( nearC, XMVectorScale( viewDir, optimalX ) );
+
+        float radius = 0.0f;
+        for ( int i = 0; i < 8; ++i )
+            radius = std::max( radius, XMVectorGetX( XMVector3Length( XMVectorSubtract( XMLoadFloat3( &corners[i] ), frustumCenter ) ) ) );
+        radius = std::ceil( radius * 16.0f ) / 16.0f;   // quantize → no micro-scaling from FOV/aspect rounding
+        const float cascadeSize = radius * 2.0f;
+        const float texelSize   = cascadeSize / static_cast<float>( m_ShadowMapSize );
+        m_CascadeTexelWorld[c]  = texelSize;   // world units/texel → the lit-pass normal bias
+
+        // Texel-snap the centre on a GLOBAL light-space grid anchored at the world origin (unmoving as the player
+        // translates), then transform back to world.
+        XMMATRIX gridView = XMMatrixLookToLH( XMVectorZero(), lightDir, up );
+        XMVECTOR cLS = XMVector3TransformCoord( frustumCenter, gridView );
+        float snapX = std::floor( XMVectorGetX( cLS ) / texelSize ) * texelSize;
+        float snapY = std::floor( XMVectorGetY( cLS ) / texelSize ) * texelSize;
+        XMVECTOR snappedLS = XMVectorSet( snapX, snapY, XMVectorGetZ( cLS ), 1.0f );
+        XMVECTOR snappedWS = XMVector3TransformCoord( snappedLS, XMMatrixInverse( nullptr, gridView ) );
+
+        const float pullBack = std::max( 10000.0f, radius * 2.0f );
+        XMVECTOR lightPos = XMVectorSubtract( snappedWS, XMVectorScale( lightDir, pullBack ) );
+        XMMATRIX lightView = XMMatrixLookToLH( lightPos, lightDir, up );
+
+        // Ortho Z from the slice corners' light-space depth, widened by the dynamic (sun-angle) pullback and the
+        // scene BBox so occluders above/behind the slice still lie within the depth range.
+        float minZ = FLT_MAX, maxZ = -FLT_MAX;
+        for ( int i = 0; i < 8; ++i ) {
+            float z = XMVectorGetZ( XMVector3TransformCoord( XMLoadFloat3( &corners[i] ), lightView ) );
+            minZ = std::min( minZ, z ); maxZ = std::max( maxZ, z );
+        }
+        float orthoNear = std::max( 1.0f, minZ - dynamicPullback );
+        float orthoFar  = maxZ + 5000.0f;
+        if ( haveScene ) {
+            const XMFLOAT3 sc[8] = {
+                { sceneBox.Min.x, sceneBox.Min.y, sceneBox.Min.z }, { sceneBox.Max.x, sceneBox.Min.y, sceneBox.Min.z },
+                { sceneBox.Min.x, sceneBox.Max.y, sceneBox.Min.z }, { sceneBox.Max.x, sceneBox.Max.y, sceneBox.Min.z },
+                { sceneBox.Min.x, sceneBox.Min.y, sceneBox.Max.z }, { sceneBox.Max.x, sceneBox.Min.y, sceneBox.Max.z },
+                { sceneBox.Min.x, sceneBox.Max.y, sceneBox.Max.z }, { sceneBox.Max.x, sceneBox.Max.y, sceneBox.Max.z } };
+            float sMinZ = FLT_MAX, sMaxZ = -FLT_MAX;
+            for ( int i = 0; i < 8; ++i ) {
+                float z = XMVectorGetZ( XMVector3TransformCoord( XMLoadFloat3( &sc[i] ), lightView ) );
+                sMinZ = std::min( sMinZ, z ); sMaxZ = std::max( sMaxZ, z );
+            }
+            orthoNear = std::min( orthoNear, sMinZ - 100.0f );
+            orthoFar  = std::min( orthoFar,  sMaxZ + 500.0f );
+        }
+        orthoNear = std::max( 1.0f, orthoNear );
+        if ( orthoFar <= orthoNear + 1.0f ) orthoFar = orthoNear + 1.0f;
+
+        XMMATRIX proj = XMMatrixOrthographicLH( cascadeSize, cascadeSize, orthoNear, orthoFar );
+        // Store (View*Proj)^T (see the c-1 convention note): our lightView/proj are standard row-vector matrices,
+        // so we transpose the product to match the column-major bytes the caster VS + sampling PS read back.
+        XMStoreFloat4x4( &m_CascadeViewProj[c], XMMatrixTranspose( XMMatrixMultiply( lightView, proj ) ) );
     }
 }
 
@@ -2397,7 +2526,7 @@ void D3D12GraphicsEngine::RenderSunShadows() {
         for ( UINT c = 0; c < kShadowCascades; ++c ) cb.CascadeViewProj[c] = m_CascadeViewProj[c];
         cb.SunDirWS = m_SunDirWS;
         cb.ShadowStrength = sunUp ? 0.6f : 0.0f;   // darkening amount (tunable; 0 disables when the sun is down)
-        cb.ShadowMapSize = static_cast<float>( kShadowMapSize );
+        cb.ShadowMapSize = static_cast<float>( m_ShadowMapSize );
         cb.CascadeTexelWorld = XMFLOAT3( m_CascadeTexelWorld[0], m_CascadeTexelWorld[1], m_CascadeTexelWorld[2] );
         memcpy( m_ShadowCBMapped[m_FrameIndex], &cb, sizeof( cb ) );
     }
@@ -2417,8 +2546,8 @@ void D3D12GraphicsEngine::RenderSunShadows() {
         Engine::GAPI->CollectVisibleSections( sections, nullptr, true );
     }
 
-    const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( kShadowMapSize ), static_cast<float>( kShadowMapSize ), 0.0f, 1.0f };
-    const D3D12_RECT     sc = { 0, 0, static_cast<LONG>( kShadowMapSize ), static_cast<LONG>( kShadowMapSize ) };
+    const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_ShadowMapSize ), static_cast<float>( m_ShadowMapSize ), 0.0f, 1.0f };
+    const D3D12_RECT     sc = { 0, 0, static_cast<LONG>( m_ShadowMapSize ), static_cast<LONG>( m_ShadowMapSize ) };
     m_CmdList->RSSetViewports( 1, &vp );
     m_CmdList->RSSetScissorRects( 1, &sc );
     m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );

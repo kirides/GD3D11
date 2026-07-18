@@ -252,7 +252,7 @@ private:
     // so each slice serves a D32_FLOAT DSV and the whole array serves one R32_FLOAT SRV for later PCF sampling.
     // NORMAL-Z here (clear 1.0, LESS_EQUAL) — NOT reversed-Z like the main camera (mirrors the D3D11 caster).
     static constexpr UINT kShadowCascades = 3;
-    static constexpr UINT kShadowMapSize  = 2048;
+    UINT m_ShadowMapSize = 2048;   // per-cascade slice resolution; read from RendererSettings.ShadowMapSize at init (clamp 1024..4096)
     Microsoft::WRL::ComPtr<ID3D12Resource>       m_ShadowMap;        // Texture2DArray(R32_TYPELESS), kShadowCascades slices
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_ShadowDsvHeap;    // one D32 DSV per cascade slice
     UINT m_ShadowDsvSize = 0;
@@ -270,7 +270,12 @@ private:
     Microsoft::WRL::ComPtr<ID3DBlob> m_ShadowCasterSkeletalPsBlob;
     DirectX::XMFLOAT4X4 m_CascadeViewProj[kShadowCascades] = {};   // light-space view*proj per cascade (this frame)
     float m_CascadeTexelWorld[kShadowCascades] = {};   // world units / shadow texel per cascade (for the sampling normal bias)
-    DirectX::XMFLOAT3 m_SunDirWS = { 0.0f, 1.0f, 0.0f };   // normalized world-space dir TOWARD the sun (this frame)
+    DirectX::XMFLOAT3 m_SunDirWS = { 0.0f, 1.0f, 0.0f };   // normalized world-space dir TOWARD the sun (this frame, smoothed)
+    // Temporal light-direction smoothing (P2.9c-3c): the origin-anchored texel-snap grid amplifies tiny per-frame
+    // sun-direction drift into a large lateral texel shift for players far from the origin (lever arm) → crawl.
+    // Lerp the sun direction toward the live value so the grid orientation changes gradually, not per-frame.
+    DirectX::XMFLOAT3 m_SmoothedSunDir = { 0.0f, 1.0f, 0.0f };
+    bool m_SunDirInitialized = false;
     // Per-frame-in-flight shadow-sampling constant buffer (b3 in the lit passes): the cascade view-projs +
     // sun dir + strength + texel sizes, uploaded once per frame in RenderSunShadows and bound by DrawWorldMesh.
     Microsoft::WRL::ComPtr<ID3D12Resource> m_ShadowCB[kBackBufferCount];
