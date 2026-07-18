@@ -3705,6 +3705,15 @@ void D3D12GraphicsEngine::ComputeCascadeMatrices() {
         // Store (View*Proj)^T (see the c-1 convention note): our lightView/proj are standard row-vector matrices,
         // so we transpose the product to match the column-major bytes the caster VS + sampling PS read back.
         XMStoreFloat4x4( &m_CascadeViewProj[c], XMMatrixTranspose( XMMatrixMultiply( lightView, proj ) ) );
+        
+        m_CascadeFrustum[c].BuildOrthographic( lightView,
+            cascadeSize,
+            cascadeSize,
+            orthoNear,
+            orthoFar,
+            Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendBack,
+            Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendFront,
+            Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.ExtendSide );
     }
 }
 
@@ -3793,12 +3802,6 @@ void D3D12GraphicsEngine::RenderSunShadows() {
     const bool haveSkel   = m_ShadowCasterSkeletalPSO && m_SkeletalRootSig && !g_FrameSkelDraws.empty();
     const bool haveAttach = m_ShadowCasterVobPSO && !g_FrameAttachDraws.empty();
 
-    static std::vector<WorldMeshSectionInfo*> sections;
-    if ( sunUp && haveWorld ) {
-        sections.clear();
-        Engine::GAPI->CollectVisibleSections( sections, nullptr, true );
-    }
-
     const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_ShadowMapSize ), static_cast<float>( m_ShadowMapSize ), 0.0f, 1.0f };
     const D3D12_RECT     sc = { 0, 0, static_cast<LONG>( m_ShadowMapSize ), static_cast<LONG>( m_ShadowMapSize ) };
     m_CmdList->RSSetViewports( 1, &vp );
@@ -3831,6 +3834,12 @@ void D3D12GraphicsEngine::RenderSunShadows() {
 
         // --- World mesh (root sig: m_WorldRootSig; b0 = cascade view-proj; t0 diffuse table @1) ---
         if ( haveWorld ) {
+            DX_ZONE(m_CmdList, "World Mesh");
+            
+            static std::vector<WorldMeshSectionInfo*> sections;
+            sections.clear();
+            Engine::GAPI->CollectVisibleSections( sections, &m_CascadeFrustum[c], false );
+            
             m_CmdList->SetPipelineState( m_ShadowCasterWorldPSO.Get() );
             m_CmdList->SetGraphicsRootSignature( m_WorldRootSig.Get() );
             m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
@@ -3845,7 +3854,20 @@ void D3D12GraphicsEngine::RenderSunShadows() {
                 if ( !section ) continue;
                 for ( auto const& [meshKey, mesh] : section->WorldMeshes ) {
                     if ( !mesh || mesh->Indices.empty() ) continue;
-                    if ( meshKey.Info && meshKey.Info->MaterialType == MaterialInfo::MT_Water ) continue;
+                    if ( meshKey.Info && meshKey.Info->MaterialType != MaterialInfo::MT_None ) continue;
+
+                    // frustum cull meshes inside the large sections. drastically reduces draw calls.
+                    if ( !Engine::GAPI->IsWorldMeshVisibleInFrustum( mesh, m_CascadeFrustum[c] ) ) {
+                        continue;
+                    }
+
+                    // we don't draw alpha stuff into shadowmaps.
+                    if ( (meshKey.Material->GetAlphaFunc() > zMAT_ALPHA_FUNC_NONE &&
+                        meshKey.Material->GetAlphaFunc() != zMAT_ALPHA_FUNC_TEST)
+                            || (meshKey.Material->GetAlphaFunc() == 0 && zColor( meshKey.Material->GetColor() ).bgra.alpha < 255) ) {
+                        continue;
+                    }
+                    
                     zCTexture* tex = meshKey.Material->GetAniTexture();
                     if ( tex != boundTex ) { bindDiffuse( tex, 1 ); boundTex = tex; }
                     m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mesh->Indices.size() ), 1, mesh->BaseIndexLocation, 0, 0 );
@@ -3855,6 +3877,8 @@ void D3D12GraphicsEngine::RenderSunShadows() {
 
         // --- Instanced VOBs (same root sig; two streams: packed vertex slot 0 + per-instance world slot 1) ---
         if ( haveVobs ) {
+            DX_ZONE(m_CmdList, "Vobs");
+            
             m_CmdList->SetPipelineState( m_ShadowCasterVobPSO.Get() );
             m_CmdList->SetGraphicsRootSignature( m_WorldRootSig.Get() );
             m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
@@ -3881,6 +3905,8 @@ void D3D12GraphicsEngine::RenderSunShadows() {
 
         // --- Skinned skeletals (root sig: m_SkeletalRootSig; b0 cascade view-proj, b1 instance, b2 bones) ---
         if ( haveSkel ) {
+            DX_ZONE(m_CmdList, "Skeletals");
+            
             m_CmdList->SetPipelineState( m_ShadowCasterSkeletalPSO.Get() );
             m_CmdList->SetGraphicsRootSignature( m_SkeletalRootSig.Get() );
             m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
@@ -3912,6 +3938,8 @@ void D3D12GraphicsEngine::RenderSunShadows() {
 
         // --- Node attachments (weapons/heads) through the VOB caster PSO (packed vertex + single instance) ---
         if ( haveAttach ) {
+            DX_ZONE(m_CmdList, "Skeletal Nodes");
+
             m_CmdList->SetPipelineState( m_ShadowCasterVobPSO.Get() );
             m_CmdList->SetGraphicsRootSignature( m_WorldRootSig.Get() );
             m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
