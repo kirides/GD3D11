@@ -239,6 +239,8 @@ private:
 
     Microsoft::WRL::ComPtr<ID3D12Resource> m_WhiteTexture;         // 1x1 white fallback for untextured draws
     UINT m_WhiteSrvSlot = UINT_MAX;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_BlackTexture;         // 1x1 black fallback for untextured draws
+    UINT m_BlackSrvSlot = UINT_MAX;
     Microsoft::WRL::ComPtr<ID3D12Resource> m_DefaultOrmTexture;    // 1x1 ORM default (AO 1, rough 0.5, metal 0)
     UINT m_DefaultOrmSrvSlot = UINT_MAX;                           // bindless index bound when a material has no _FX map
 
@@ -256,6 +258,29 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_WorldPSO;
     Microsoft::WRL::ComPtr<ID3DBlob> m_WorldVsBlob;
     Microsoft::WRL::ComPtr<ID3DBlob> m_WorldPsBlob;
+
+    // ---- GPU-driven world mesh (P2.11): ExecuteIndirect + bindless diffuse. The per-material draws of BOTH the
+    // depth prepass and the color pass are collapsed into ONE ExecuteIndirect each, over a per-frame command
+    // buffer built once from the shared visible-section set (BuildWorldDrawCommands). One command = per-material
+    // b6 { normal, orm, diffuse } bindless indices (root consts @ param 10) + DrawIndexedArguments. This removes
+    // the thousands of per-draw SetGraphicsRootDescriptorTable + DrawIndexedInstanced calls (the ~70%-of-pass CPU
+    // cost) and the duplicate BSP walk. The UPLOAD arg ring stays in GENERIC_READ (which includes INDIRECT_ARGUMENT).
+    struct WorldDrawCommand {                       // 8 DWORDs = 32 bytes; MUST match the command signature layout
+        uint32_t MatNormalIndex;
+        uint32_t MatOrmIndex;
+        uint32_t MatDiffuseIndex;
+        D3D12_DRAW_INDEXED_ARGUMENTS Draw;          // IndexCountPerInstance, InstanceCount, Start*, BaseVertex, StartInstance
+    };
+    static constexpr UINT kMaxWorldDrawCommands = 16384;
+    Microsoft::WRL::ComPtr<ID3D12CommandSignature> m_WorldIndirectCmdSig;   // b6(3 consts)@param10 + DrawIndexed
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_WorldDrawArgs[kBackBufferCount]; // persistently-mapped UPLOAD ring
+    uint8_t* m_WorldDrawArgsPtr[kBackBufferCount] = {};
+    D3D12_GPU_VIRTUAL_ADDRESS m_WorldDrawArgsGpu[kBackBufferCount] = {};
+    UINT m_WorldDrawCount = 0;                       // commands built this frame (shared by both world passes)
+    unsigned int m_WorldDrawnIndices = 0;            // total indices in this frame's command set (triangle counter)
+    bool m_WorldDrawArgsOverflowLogged = false;
+    bool CreateWorldIndirect();                      // command signature + per-frame arg ring (once, at init)
+    void BuildWorldDrawCommands();                   // collect visible sections + fill arg ring (once/frame, pre-prepass)
 
     // Forward+ opaque depth prepass (P2.9b-1): depth-only world-mesh PSO (color write mask 0), reuses m_WorldRootSig.
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_DepthPrepassWorldPSO;

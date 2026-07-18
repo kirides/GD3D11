@@ -384,9 +384,10 @@ cbuffer ShadowCB : register(b3)
 Texture2DArray          ShadowMap : register(t4);
 SamplerComparisonState  shadowCmp : register(s2);
 // Per-material bindless indices (root consts b6): SM6.6 ResourceDescriptorHeap[...] indices for this material's
-// normal + ORM maps. MatNormalIndex == 0xFFFFFFFF -> no normal map (skip perturb); MatOrmIndex is always valid
-// (the 1x1 default ORM = AO 1 / rough 0.5 / metal 0 when the material has no _FX map), so ORM is sampled branchlessly.
-cbuffer MaterialCB : register(b6) { uint MatNormalIndex; uint MatOrmIndex; };
+// diffuse + normal + ORM maps. The world mesh is drawn via ExecuteIndirect (P2.11), which sets these three per
+// draw — so the diffuse is sampled bindless too (no per-draw descriptor table). MatNormalIndex == 0xFFFFFFFF ->
+// no normal map (skip perturb); MatOrmIndex is always valid (1x1 default = AO 1 / rough 0.5 / metal 0).
+cbuffer MaterialCB : register(b6) { uint MatNormalIndex; uint MatOrmIndex; uint MatDiffuseIndex; };
 TextureCubeArray        PointShadowCubes : register(t5);   // point-light shadow cubes (P2.10d), R16 linear depth
 
 // Point-light shadow: returns 1 = lit, 0 = occluded. The cube stores the NATURAL hyperbolic z of the caster's
@@ -636,7 +637,8 @@ VS_OUT VSMain( VS_IN i )
 
 float4 PSMain( VS_OUT i ) : SV_TARGET
 {
-    float4 t = tx.Sample( smp, i.uv );
+    Texture2D difTex = ResourceDescriptorHeap[MatDiffuseIndex];   // bindless diffuse (ExecuteIndirect, P2.11)
+    float4 t = difTex.Sample( smp, i.uv );
     clip( t.a - 0.5 );                        // fixed alpha-test cutout (opaque textures have a==1 -> kept)
     float3 N = normalize( i.wnrm );
     if ( MatNormalIndex != 0xffffffff )       // bindless normal map (BC5/BC1, Z reconstructed) if this material has one
@@ -999,8 +1001,12 @@ void PSShadowClip( VS_DEPTH_OUT i )
     // and t0/s0 are referenced — fog/light params are NOT bound (no light loop here, so no hang risk).
     constexpr char kDepthPrepassShaderSource[] = R"(
 cbuffer WorldCB : register(b0) { float4x4 ViewProj; };   // default column-major packing (see world shader)
-Texture2D    tx  : register(t0);
+Texture2D    tx  : register(t0);                          // CSM shadow caster (PSShadowClip) still binds diffuse here
 SamplerState smp : register(s0);
+// b6 material indices (ExecuteIndirect, P2.11): the world depth prepass (PSClip) samples its diffuse bindless so
+// it can be driven by ExecuteIndirect like the color pass. Only MatDiffuseIndex (DWORD 2) is read here; the
+// normal/ORM slots share the layout with the world color shader's MaterialCB so ONE command signature drives both.
+cbuffer MaterialCB : register(b6) { uint _matN; uint _matO; uint MatDiffuseIndex; };
 
 // World mesh: single stream, packed 36-byte ExVertexStructGPU. Only Position (@0) + TexCoord0 (@20) are
 // fetched here; the normal/tangent/uv2/color fields are not needed for a depth+alpha-clip pass.
@@ -1017,7 +1023,8 @@ VS_OUT VSWorld( VS_IN i )
 
 float4 PSClip( VS_OUT i ) : SV_TARGET
 {
-    float4 t = tx.Sample( smp, i.uv );
+    Texture2D difTex = ResourceDescriptorHeap[MatDiffuseIndex];   // bindless diffuse (ExecuteIndirect, P2.11)
+    float4 t = difTex.Sample( smp, i.uv );
     clip( t.a - 0.5 );          // same cutout as the opaque world PS so gaps don't lay down depth
     return float4( 0, 0, 0, 1 );   // discarded: the PSO's color write mask is 0 (depth-only pass)
 }
@@ -1860,6 +1867,10 @@ XRESULT D3D12GraphicsEngine::Init() {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the depth prepass pipeline.";
         return XR_FAILED;
     }
+    if ( !CreateWorldIndirect() ) {
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the world ExecuteIndirect resources.";
+        return XR_FAILED;
+    }
     if ( !CreateLightCullPipeline() ) {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the light-culling compute pipeline.";
         return XR_FAILED;
@@ -2038,7 +2049,7 @@ UINT D3D12GraphicsEngine::AllocateSrvSlot() {
 }
 
 void D3D12GraphicsEngine::FreeSrvSlot( UINT slot ) {
-    if ( slot == UINT_MAX || slot == m_WhiteSrvSlot ) return;
+    if ( slot == UINT_MAX || slot == m_WhiteSrvSlot || slot == m_BlackSrvSlot ) return;
 
     // Nullify the descriptor to prevent pointing to dead memory
     ID3D12Device* device = m_Device.GetDevice();
@@ -2325,6 +2336,24 @@ bool D3D12GraphicsEngine::CreateWhiteTexture() {
     srvd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     srvd.Texture2D.MipLevels = 1;
     device->CreateShaderResourceView( m_WhiteTexture.Get(), &srvd, GetSrvCpuHandle( m_WhiteSrvSlot ) );
+
+    // Black texture
+    if ( FAILED( device->CreateCommittedResource( &heapDefault, D3D12_HEAP_FLAG_NONE, &td,
+        D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS( m_BlackTexture.ReleaseAndGetAddressOf() ) ) ) )
+        return false;
+    m_BlackTexture->SetName( L"BlackFallbackTexture" );
+
+    const uint32_t black = 0xFF000000;
+    D3D12_SUBRESOURCE_DATA blackSub = {};
+    blackSub.pData = &black;
+    blackSub.RowPitch = 4;
+    blackSub.SlicePitch = 4;
+    if ( !UploadTextureSubresources( m_BlackTexture.Get(), &blackSub, 1 ) )
+        return false;
+
+    m_BlackSrvSlot = AllocateSrvSlot();
+    if ( m_BlackSrvSlot == UINT_MAX ) return false;
+    device->CreateShaderResourceView( m_BlackTexture.Get(), &srvd, GetSrvCpuHandle( m_BlackSrvSlot ) );
 
     // Default ORM (Occlusion-Roughness-Metallic) texture: AO=1.0, Roughness=0.5, Metallic=0.0. Materials without an
     // _FX.DDS map bind THIS slot bindlessly, so the PBR PS samples ORM branchlessly (no per-material permutation).
@@ -2781,8 +2810,8 @@ bool D3D12GraphicsEngine::CreateWorldPipeline() {
     // tables. normalIndex == 0xFFFFFFFF means "no normal map" (skip the TBN/perturb); ormIndex is always valid
     // (the default ORM slot when a material has no _FX map), so ORM is sampled branchlessly.
     params[10].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[10].Constants.ShaderRegister = 6;   // b6 MaterialCB { MatNormalIndex, MatOrmIndex }
-    params[10].Constants.Num32BitValues = 2;
+    params[10].Constants.ShaderRegister = 6;   // b6 MaterialCB { MatNormalIndex, MatOrmIndex, MatDiffuseIndex }
+    params[10].Constants.Num32BitValues = 3;   // 3rd = bindless diffuse index (world mesh ExecuteIndirect, P2.11)
     params[10].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_STATIC_SAMPLER_DESC samplers[2] = {};
@@ -5691,7 +5720,7 @@ XRESULT D3D12GraphicsEngine::DrawVertexArray( ExVertexStruct* vertices, unsigned
     m_CmdList->SetGraphicsRoot32BitConstants( 2, sizeof( GothicGraphicsState ) / 4, &rs.GraphicsState, 0 );
 
     // Diffuse texture (fall back to 1x1 white for untextured colored draws / failed uploads).
-    D3D12_GPU_DESCRIPTOR_HANDLE srv = GetSrvGpuHandle( m_WhiteSrvSlot );
+    D3D12_GPU_DESCRIPTOR_HANDLE srv = GetSrvGpuHandle( m_BlackSrvSlot );
     if ( m_CurrentTexture ) {
         D3D12Texture* t = D3D12Texture::From( m_CurrentTexture );
         if ( t->HasSRV() ) srv = t->GetSrvGpuHandle();
@@ -5783,6 +5812,10 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
     // Forward+ opaque depth prepass — lays down ALL opaque depth before the lit passes so the tiled light cull
     // bounds each tile to real geometry: world mesh, then instanced VOBs, then skeletal (NPCs/monsters) + node
     // attachments. Visually a no-op (the color passes re-pass on GREATER_EQUAL and rewrite the same depth).
+    // Build the world-mesh ExecuteIndirect command set ONCE (P2.11) — the shared visible-section collection +
+    // per-material bindless-index resolution + water peel-out. Both the depth prepass and the color pass draw
+    // from it, so the BSP walk happens once (was per-pass) and neither pass issues per-material CPU draw calls.
+    BuildWorldDrawCommands();
     DrawDepthPrepass();
     DrawVobDepthPrepass();
     DrawSkeletalDepthPrepass();
@@ -5866,6 +5899,137 @@ XRESULT D3D12GraphicsEngine::DrawSky() {
     return XR_SUCCESS;
 }
 
+bool D3D12GraphicsEngine::CreateWorldIndirect() {
+    // Command signature + per-frame UPLOAD arg ring for the GPU-driven world mesh (P2.11). One command sets the
+    // b6 material bindless indices (3 root constants @ param 10 of m_WorldRootSig) then issues a DrawIndexed. Both
+    // the depth prepass and the color pass ExecuteIndirect over the SAME per-frame buffer (identical opaque draw
+    // set — water peeled at build time). The arg buffer is UPLOAD (permanently GENERIC_READ, which INCLUDES
+    // INDIRECT_ARGUMENT), rebuilt each frame by BuildWorldDrawCommands — no DEFAULT-heap copy needed.
+    ID3D12Device* device = m_Device.GetDevice();
+    if ( !device || !m_WorldRootSig ) return false;
+
+    D3D12_INDIRECT_ARGUMENT_DESC args[2] = {};
+    args[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT;
+    args[0].Constant.RootParameterIndex = 10;                 // b6 MaterialCB (world root sig)
+    args[0].Constant.DestOffsetIn32BitValues = 0;
+    args[0].Constant.Num32BitValuesToSet = 3;                 // normal, orm, diffuse
+    args[1].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
+
+    D3D12_COMMAND_SIGNATURE_DESC sigDesc = {};
+    sigDesc.ByteStride = sizeof( WorldDrawCommand );          // 32 B; MUST match the struct + shader layout
+    sigDesc.NumArgumentDescs = _countof( args );
+    sigDesc.pArgumentDescs = args;
+    // A command that sets root constants must carry the root signature its param index refers to.
+    if ( FAILED( device->CreateCommandSignature( &sigDesc, m_WorldRootSig.Get(),
+        IID_PPV_ARGS( m_WorldIndirectCmdSig.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: failed to create the world indirect command signature.";
+        return false;
+    }
+
+    D3D12_HEAP_PROPERTIES upload = {};
+    upload.Type = D3D12_HEAP_TYPE_UPLOAD;
+    D3D12_RESOURCE_DESC bd = {};
+    bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bd.Width = static_cast<UINT64>( kMaxWorldDrawCommands ) * sizeof( WorldDrawCommand );
+    bd.Height = 1; bd.DepthOrArraySize = 1; bd.MipLevels = 1;
+    bd.Format = DXGI_FORMAT_UNKNOWN; bd.SampleDesc.Count = 1;
+    bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    for ( UINT i = 0; i < kBackBufferCount; ++i ) {
+        if ( FAILED( device->CreateCommittedResource( &upload, D3D12_HEAP_FLAG_NONE, &bd,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS( m_WorldDrawArgs[i].ReleaseAndGetAddressOf() ) ) ) )
+            return false;
+        m_WorldDrawArgs[i]->SetName( L"WorldDrawArgsRing" );
+        D3D12_RANGE noRead = { 0, 0 };
+        void* mapped = nullptr;
+        if ( FAILED( m_WorldDrawArgs[i]->Map( 0, &noRead, &mapped ) ) ) return false;
+        m_WorldDrawArgsPtr[i] = static_cast<uint8_t*>( mapped );
+        m_WorldDrawArgsGpu[i] = m_WorldDrawArgs[i]->GetGPUVirtualAddress();
+    }
+    return true;
+}
+
+void D3D12GraphicsEngine::BuildWorldDrawCommands() {
+    // Build this frame's world-mesh ExecuteIndirect command set ONCE (P2.11): frustum-collect the visible sections,
+    // then per non-water material append { bindless material indices, DrawIndexedArguments (its index range into
+    // the shared world VB/IB) }. Water is peeled here into g_FrameWaterSurfaces (drawn later, alpha-blended). Both
+    // world passes then consume the result, so the BSP walk + per-material CacheIn happen once/frame (was 2-3x).
+    m_WorldDrawCount = 0;
+    m_WorldDrawnIndices = 0;
+    g_FrameWaterSurfaces.clear();
+    if ( !m_FrameOpen || !m_WorldIndirectCmdSig || !m_WorldDrawArgsPtr[m_FrameIndex] ) return;
+
+    MeshInfo* wm = Engine::GAPI->GetWrappedWorldMesh();
+    if ( !wm || !wm->GetMeshVertexBuffer() || !wm->GetMeshIndexBuffer() ) return;
+
+    // Camera setup identical to the passes so CollectVisibleSections culls against the same frustum.
+    Engine::GAPI->SetViewTransformXM( Engine::GAPI->GetViewMatrixXM() );
+    Engine::GAPI->ResetWorldTransform();
+
+    static std::vector<WorldMeshSectionInfo*> sections;
+    sections.clear();
+    Engine::GAPI->CollectVisibleSections( sections, nullptr, true );
+
+    WorldDrawCommand* cmds = reinterpret_cast<WorldDrawCommand*>( m_WorldDrawArgsPtr[m_FrameIndex] );
+    UINT count = 0;
+
+    for ( WorldMeshSectionInfo* section : sections ) {
+        if ( !section ) continue;
+        for ( auto const& [meshKey, mesh] : section->WorldMeshes ) {
+            if ( !mesh || mesh->Indices.empty() ) continue;
+
+            // Water is transparent — bucket it by texture for the later alpha-blended pass, skip the opaque command set.
+            if ( meshKey.Info && meshKey.Info->MaterialType == MaterialInfo::MT_Water ) {
+                g_FrameWaterSurfaces[meshKey.Material->GetAniTexture()].push_back( mesh );
+                continue;
+            }
+            if ( count >= kMaxWorldDrawCommands ) {
+                if ( !m_WorldDrawArgsOverflowLogged ) {
+                    LogWarn() << "D3D12: world draw-command ring overflow (" << kMaxWorldDrawCommands
+                        << " draws/frame); some world materials dropped this frame.";
+                    m_WorldDrawArgsOverflowLogged = true;
+                }
+                break;
+            }
+
+            // Resolve this material's bindless SRV heap indices — diffuse (CacheIn triggers load + its normal/ORM
+            // side-loads), normal (0xFFFFFFFF = none → PS skips perturb), ORM (1x1 default when the material has no _FX).
+            zCTexture* tex = meshKey.Material->GetAniTexture();
+            uint32_t diffuseIdx = m_BlackSrvSlot;
+            uint32_t normalIdx  = 0xFFFFFFFFu;
+            uint32_t ormIdx     = m_DefaultOrmSrvSlot;
+            if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                if ( MyDirectDrawSurface7* s = tex->GetSurface() ) {
+                    if ( GfxTexture* gfx = s->GetEngineTexture() ) {
+                        D3D12Texture* d = D3D12Texture::From( gfx );
+                        if ( d->HasSRV() ) diffuseIdx = d->GetSrvSlot();
+                    }
+                    if ( GfxTexture* n = s->GetNormalmap() ) {
+                        D3D12Texture* d = D3D12Texture::From( n );
+                        if ( d->HasSRV() ) normalIdx = d->GetSrvSlot();
+                    }
+                    if ( GfxTexture* o = s->GetFxMap() ) {
+                        D3D12Texture* d = D3D12Texture::From( o );
+                        if ( d->HasSRV() ) ormIdx = d->GetSrvSlot();
+                    }
+                }
+            }
+
+            WorldDrawCommand& c = cmds[count];
+            c.MatNormalIndex  = normalIdx;
+            c.MatOrmIndex     = ormIdx;
+            c.MatDiffuseIndex = diffuseIdx;
+            c.Draw.IndexCountPerInstance = static_cast<UINT>( mesh->Indices.size() );
+            c.Draw.InstanceCount = 1;
+            c.Draw.StartIndexLocation = mesh->BaseIndexLocation;
+            c.Draw.BaseVertexLocation = 0;
+            c.Draw.StartInstanceLocation = 0;
+            ++count;
+            m_WorldDrawnIndices += static_cast<unsigned int>( mesh->Indices.size() );
+        }
+    }
+    m_WorldDrawCount = count;
+}
+
 void D3D12GraphicsEngine::DrawDepthPrepass() {
     // Forward+ opaque depth prepass (P2.9b-1). Lays down the opaque WORLD-MESH depth before the lit color
     // passes, so the tiled light-culling compute (P2.9b-2) can read a populated depth buffer to tighten each
@@ -5915,43 +6079,13 @@ void D3D12GraphicsEngine::DrawDepthPrepass() {
     m_CmdList->IASetIndexBuffer( &ibv );
     m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
-    // Own frustum collection (DrawWorldMesh collects again for its color pass; a redundant BSP walk for now —
-    // hoisting to a shared per-frame collection is a follow-up when the passes get factored). Bind each
-    // material's diffuse for the alpha-test clip; skip water (transparent, peeled to DrawWaterSurfaces).
-    static std::vector<WorldMeshSectionInfo*> sections;
-    sections.clear();
-    Engine::GAPI->CollectVisibleSections( sections, nullptr, true );
-
-    const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_WhiteSrvSlot );
-    zCTexture* boundTex = nullptr;
-
-    for ( WorldMeshSectionInfo* section : sections ) {
-        if ( !section ) continue;
-        for ( auto const& [meshKey, mesh] : section->WorldMeshes ) {
-            if ( !mesh || mesh->Indices.empty() ) continue;
-            if ( meshKey.Info && meshKey.Info->MaterialType == MaterialInfo::MT_Water )
-                continue;   // transparent — never writes depth (matches the opaque pass peel-out)
-
-            zCTexture* tex = meshKey.Material->GetAniTexture();
-            if ( tex != boundTex ) {
-                D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
-                if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
-                    if ( MyDirectDrawSurface7* surface = tex->GetSurface() ) {
-                        if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
-                            D3D12Texture* d12 = D3D12Texture::From( gfx );
-                            if ( d12->HasSRV() ) srv = d12->GetSrvGpuHandle();
-                        }
-                    }
-                }
-                m_CmdList->SetGraphicsRootDescriptorTable( 1, srv );
-                BindMaterialMaps( tex, 10 );   // b6 bindless normal/ORM indices (no-op in the depth prepass)
-                boundTex = tex;
-            }
-
-            m_CmdList->DrawIndexedInstanced( static_cast<UINT>(mesh->Indices.size()), 1,
-                mesh->BaseIndexLocation, 0, 0 );
-        }
-    }
+    // GPU-driven submit (P2.11): one ExecuteIndirect over the shared per-frame command buffer that
+    // BuildWorldDrawCommands filled (same opaque draw set as the color pass; water already peeled). Each command
+    // sets the b6 diffuse index (PSClip alpha-clips bindless) then draws its material's index range. Replaces the
+    // per-material descriptor-table binds + DrawIndexedInstanced calls (the CPU cost this optimization targets).
+    if ( m_WorldDrawCount == 0 ) return;
+    m_CmdList->ExecuteIndirect( m_WorldIndirectCmdSig.Get(), m_WorldDrawCount,
+        m_WorldDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
 }
 
 void D3D12GraphicsEngine::DispatchLightCulling() {
@@ -6119,55 +6253,16 @@ XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
     m_CmdList->IASetIndexBuffer( &ibv );
     m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
-    // Per-material submission: frustum-cull to the visible sections, then draw each material's index
-    // range into the shared buffer (BaseIndexLocation), binding its diffuse texture. Mirrors D3D11's
-    // opaque loop minus the water/portal/transparency bucketing + material-CB pooling (later steps).
-    static std::vector<WorldMeshSectionInfo*> sections;
-    sections.clear();
-    Engine::GAPI->CollectVisibleSections( sections, nullptr, true );
+    // GPU-driven submit (P2.11): one ExecuteIndirect over the shared per-frame command buffer (built by
+    // BuildWorldDrawCommands before the depth prepass; water already peeled into g_FrameWaterSurfaces). Each
+    // command sets this material's b6 { normal, orm, diffuse } bindless indices then draws its index range — so
+    // the whole opaque world is one API call with zero per-draw descriptor binds (the CPU cost this targets).
+    // Frame-constant root args (b0 ViewProj, b1 fog, lights, CSM, point-shadow cubes) are already set above.
+    if ( m_WorldDrawCount == 0 ) return XR_SUCCESS;
+    m_CmdList->ExecuteIndirect( m_WorldIndirectCmdSig.Get(), m_WorldDrawCount,
+        m_WorldDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
 
-    // Start the water collection fresh; water meshes are peeled out below and drawn in DrawWaterSurfaces
-    // after all opaque geometry (they share this same VB/IB, so no separate binding is needed there).
-    g_FrameWaterSurfaces.clear();
-
-    const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_WhiteSrvSlot );
-    zCTexture* boundTex = nullptr;
-    unsigned int drawnIndices = 0;
-
-    for ( WorldMeshSectionInfo* section : sections ) {
-        if ( !section ) continue;
-        for ( auto const& [meshKey, mesh] : section->WorldMeshes ) {
-            if ( !mesh || mesh->Indices.empty() ) continue;
-
-            // Water is transparent — bucket it by texture for the later alpha-blended pass, skip here.
-            if ( meshKey.Info && meshKey.Info->MaterialType == MaterialInfo::MT_Water ) {
-                g_FrameWaterSurfaces[meshKey.Material->GetAniTexture()].push_back( mesh );
-                continue;
-            }
-
-            zCTexture* tex = meshKey.Material->GetAniTexture();
-            if ( tex != boundTex ) {
-                D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
-                if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
-                    if ( MyDirectDrawSurface7* surface = tex->GetSurface() ) {
-                        if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
-                            D3D12Texture* d12 = D3D12Texture::From( gfx );
-                            if ( d12->HasSRV() ) srv = d12->GetSrvGpuHandle();
-                        }
-                    }
-                }
-                m_CmdList->SetGraphicsRootDescriptorTable( 1, srv );
-                BindMaterialMaps( tex, 10 );   // b6 bindless normal/ORM indices (no-op in the depth prepass)
-                boundTex = tex;
-            }
-
-            m_CmdList->DrawIndexedInstanced( static_cast<UINT>(mesh->Indices.size()), 1,
-                mesh->BaseIndexLocation, 0, 0 );
-            drawnIndices += static_cast<unsigned int>(mesh->Indices.size());
-        }
-    }
-
-    Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles += drawnIndices / 3;
+    Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles += m_WorldDrawnIndices / 3;
     return XR_SUCCESS;
 }
 
@@ -6321,7 +6416,7 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
     m_CmdList->RSSetScissorRects( 1, &sc );
     m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
-    const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_WhiteSrvSlot );
+    const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_BlackSrvSlot );
     unsigned int drawnTris = 0;
 
     {
@@ -6652,7 +6747,7 @@ void D3D12GraphicsEngine::DrawSkeletalColor() {
     XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
 
     const FogConstants fog = MakeFogConstants();
-    const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_WhiteSrvSlot );
+    const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_BlackSrvSlot );
     D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
     D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
     unsigned int drawnTris = 0;
