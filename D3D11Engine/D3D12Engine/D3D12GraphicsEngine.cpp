@@ -376,8 +376,10 @@ SamplerState smp : register(s0);
 cbuffer ShadowCB : register(b3)
 {
     float4x4 CascadeViewProj[NUM_CSM_CASCADES];
-    float3   SunDirWS;         float ShadowStrength;      // dir TOWARD sun; darkening amount (0 = off)
-    float    ShadowMapSize;    float3 CascadeTexelWorld;  // texel; world units/texel for cascades 0..2
+    float3   SunDirWS;          float ShadowMapSize;    // dir TOWARD sun; shadow-map resolution
+    float3   SunColor;          float SunIntensity;     // sun color (sRGB) + strength (0 when sun below horizon)
+    float3   CascadeTexelWorld; float AmbientStrength;  // world units/texel; SQ_ShadowStrength (ambient/sky term)
+    float    ShadowAOStrength;  float WorldAOStrength;  float2 _shpad;   // vertLighting -> AO modulation weights
 };
 Texture2DArray          ShadowMap : register(t4);
 SamplerComparisonState  shadowCmp : register(s2);
@@ -538,11 +540,23 @@ float3 PBR_DirectSpecularOnly( float3 baseColor, float3 lightColor, float3 N, fl
     return specular * lightColor * ( NdotL * attenuation );
 }
 
-// PBR sun SPECULAR glint (staged: baked vertex lighting still provides sun/sky diffuse). shadow = 1 lit / 0 occluded.
-float3 ComputeSunSpecular( float3 wpos, float3 N, float3 albedo, float shadow )
+// PBR sun lighting (stage 2 — ports feat/pbr FP_ComputeSunLighting): ambient (sky/GI) + direct Cook-Torrance
+// (diffuse + specular). vertLighting = Gothic's baked vertex-light scalar, now used as an AO modulator (NOT as
+// the diffuse light itself). shadow = 1 lit / 0 occluded. No ORM AO map / SSAO yet (ao = ssao = 1).
+float3 ComputeSunLightingPBR( float3 wpos, float3 N, float3 albedo, float vertLighting, float shadow )
 {
     float3 V = normalize( CamPosWS - wpos );
-    return PBR_DirectSpecularOnly( albedo, float3( 1.0, 1.0, 1.0 ) * SunSpecIntensity, N, V, SunDirWS, MI_Roughness, MI_Metallic, shadow );
+    float3 L = SunDirWS;                            // dir toward the sun (world space)
+    float3 sunCol = SrgbToLinear( SunColor );
+    float  sunLum = dot( sunCol, float3( 0.3333, 0.3333, 0.3333 ) );
+    const float ao = 1.0, ssao = 1.0;
+    float sun      = saturate( dot( L, N ) * shadow );
+    float shadowAO = lerp( 1.0, vertLighting, ShadowAOStrength ) * ao;
+    float worldAO  = lerp( 1.0, vertLighting, WorldAOStrength ) * ao;
+    float sunAtten = sun * worldAO * SunIntensity;
+    float3 directSun  = PBR_DirectLighting( albedo, sunCol, N, V, L, MI_Roughness, MI_Metallic, sunAtten );
+    float3 ambientSun = albedo * AmbientStrength * sunLum * shadowAO * ssao;   // ambient/sky term
+    return ambientSun + directSun;
 }
 
 // Tiled point lights via the Forward+ grid, now with the full Cook-Torrance BRDF. `albedo` is LINEAR (sRGB-decoded
@@ -598,14 +612,10 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     clip( t.a - 0.5 );                        // fixed alpha-test cutout (opaque textures have a==1 -> kept)
     float3 N = normalize( i.wnrm );
     float3 albedo = SrgbToLinear( t.rgb );    // linearize for PBR (all HDR-buffer values are linear now)
-    float3 baseLit = albedo * i.col.bgr;      // baked vertex lighting as the diffuse/ambient base; .bgr recovers RGB
-    // CSM: darken the baked lighting only where the SUN-FACING surface is occluded (ShadowStrength 0 when sun down).
+    float vertLighting = i.col.g;             // Gothic baked vertex lighting (green channel) as the AO modulator
     float shadow = ComputeSunShadow( i.wpos, N );
-    float sunNdl = saturate( dot( SunDirWS, N ) );
-    baseLit *= ( 1.0 - sunNdl * ( 1.0 - shadow ) * ShadowStrength );
-    float3 rgb = baseLit;
-    rgb += ComputeSunSpecular( i.wpos, N, albedo, shadow );          // PBR sun glint (specular only)
-    rgb += AccumTiledPointLights( i.clip.xy, i.wpos, N, albedo );    // PBR point lights (diffuse + specular)
+    float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow );   // ambient (sky) + PBR direct sun
+    rgb += AccumTiledPointLights( i.clip.xy, i.wpos, N, albedo );                     // PBR point lights (diffuse + spec)
     // Linear distance fog toward the (linearized) atmosphere color — keeps the HDR buffer consistently linear.
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
     rgb = lerp( rgb, SrgbToLinear( FogColor ), f );
@@ -640,8 +650,10 @@ SamplerState smp : register(s0);
 cbuffer ShadowCB : register(b3)
 {
     float4x4 CascadeViewProj[NUM_CSM_CASCADES];
-    float3   SunDirWS;         float ShadowStrength;
-    float    ShadowMapSize;    float3 CascadeTexelWorld;
+    float3   SunDirWS;          float ShadowMapSize;
+    float3   SunColor;          float SunIntensity;
+    float3   CascadeTexelWorld; float AmbientStrength;
+    float    ShadowAOStrength;  float WorldAOStrength;  float2 _shpad;
 };
 Texture2DArray          ShadowMap : register(t4);
 SamplerComparisonState  shadowCmp : register(s2);
@@ -792,11 +804,23 @@ float3 PBR_DirectSpecularOnly( float3 baseColor, float3 lightColor, float3 N, fl
     return specular * lightColor * ( NdotL * attenuation );
 }
 
-// PBR sun SPECULAR glint (staged: baked vertex lighting still provides sun/sky diffuse). shadow = 1 lit / 0 occluded.
-float3 ComputeSunSpecular( float3 wpos, float3 N, float3 albedo, float shadow )
+// PBR sun lighting (stage 2 — ports feat/pbr FP_ComputeSunLighting): ambient (sky/GI) + direct Cook-Torrance
+// (diffuse + specular). vertLighting = Gothic's baked vertex-light scalar, now used as an AO modulator (NOT as
+// the diffuse light itself). shadow = 1 lit / 0 occluded. No ORM AO map / SSAO yet (ao = ssao = 1).
+float3 ComputeSunLightingPBR( float3 wpos, float3 N, float3 albedo, float vertLighting, float shadow )
 {
     float3 V = normalize( CamPosWS - wpos );
-    return PBR_DirectSpecularOnly( albedo, float3( 1.0, 1.0, 1.0 ) * SunSpecIntensity, N, V, SunDirWS, MI_Roughness, MI_Metallic, shadow );
+    float3 L = SunDirWS;                            // dir toward the sun (world space)
+    float3 sunCol = SrgbToLinear( SunColor );
+    float  sunLum = dot( sunCol, float3( 0.3333, 0.3333, 0.3333 ) );
+    const float ao = 1.0, ssao = 1.0;
+    float sun      = saturate( dot( L, N ) * shadow );
+    float shadowAO = lerp( 1.0, vertLighting, ShadowAOStrength ) * ao;
+    float worldAO  = lerp( 1.0, vertLighting, WorldAOStrength ) * ao;
+    float sunAtten = sun * worldAO * SunIntensity;
+    float3 directSun  = PBR_DirectLighting( albedo, sunCol, N, V, L, MI_Roughness, MI_Metallic, sunAtten );
+    float3 ambientSun = albedo * AmbientStrength * sunLum * shadowAO * ssao;   // ambient/sky term
+    return ambientSun + directSun;
 }
 
 // Tiled point lights via the Forward+ grid, now with the full Cook-Torrance BRDF. `albedo` is LINEAR (sRGB-decoded
@@ -861,12 +885,9 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     clip( t.a - 0.5 );
     float3 N = normalize( i.wnrm );
     float3 albedo = SrgbToLinear( t.rgb );
-    float3 baseLit = albedo * i.col.bgr;   // baked/ground vertex lighting as the diffuse base
+    float vertLighting = i.col.g;          // per-instance ground light (green channel) as the AO modulator
     float shadow = ComputeSunShadow( i.wpos, N );
-    float sunNdl = saturate( dot( SunDirWS, N ) );
-    baseLit *= ( 1.0 - sunNdl * ( 1.0 - shadow ) * ShadowStrength );
-    float3 rgb = baseLit;
-    rgb += ComputeSunSpecular( i.wpos, N, albedo, shadow );
+    float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow );
     rgb += AccumTiledPointLights( i.clip.xy, i.wpos, N, albedo );
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
     return float4( lerp( rgb, SrgbToLinear( FogColor ), f ), 1.0 );
@@ -1215,8 +1236,10 @@ SamplerState smp : register(s0);
 cbuffer ShadowCB : register(b5)
 {
     float4x4 CascadeViewProj[NUM_CSM_CASCADES];
-    float3   SunDirWS;         float ShadowStrength;
-    float    ShadowMapSize;    float3 CascadeTexelWorld;
+    float3   SunDirWS;          float ShadowMapSize;
+    float3   SunColor;          float SunIntensity;
+    float3   CascadeTexelWorld; float AmbientStrength;
+    float    ShadowAOStrength;  float WorldAOStrength;  float2 _shpad;
 };
 Texture2DArray          ShadowMap : register(t4);
 SamplerComparisonState  shadowCmp : register(s2);
@@ -1361,11 +1384,23 @@ float3 PBR_DirectSpecularOnly( float3 baseColor, float3 lightColor, float3 N, fl
     return specular * lightColor * ( NdotL * attenuation );
 }
 
-// PBR sun SPECULAR glint (staged: baked vertex lighting still provides sun/sky diffuse). shadow = 1 lit / 0 occluded.
-float3 ComputeSunSpecular( float3 wpos, float3 N, float3 albedo, float shadow )
+// PBR sun lighting (stage 2 — ports feat/pbr FP_ComputeSunLighting): ambient (sky/GI) + direct Cook-Torrance
+// (diffuse + specular). vertLighting = Gothic's baked vertex-light scalar, now used as an AO modulator (NOT as
+// the diffuse light itself). shadow = 1 lit / 0 occluded. No ORM AO map / SSAO yet (ao = ssao = 1).
+float3 ComputeSunLightingPBR( float3 wpos, float3 N, float3 albedo, float vertLighting, float shadow )
 {
     float3 V = normalize( CamPosWS - wpos );
-    return PBR_DirectSpecularOnly( albedo, float3( 1.0, 1.0, 1.0 ) * SunSpecIntensity, N, V, SunDirWS, MI_Roughness, MI_Metallic, shadow );
+    float3 L = SunDirWS;                            // dir toward the sun (world space)
+    float3 sunCol = SrgbToLinear( SunColor );
+    float  sunLum = dot( sunCol, float3( 0.3333, 0.3333, 0.3333 ) );
+    const float ao = 1.0, ssao = 1.0;
+    float sun      = saturate( dot( L, N ) * shadow );
+    float shadowAO = lerp( 1.0, vertLighting, ShadowAOStrength ) * ao;
+    float worldAO  = lerp( 1.0, vertLighting, WorldAOStrength ) * ao;
+    float sunAtten = sun * worldAO * SunIntensity;
+    float3 directSun  = PBR_DirectLighting( albedo, sunCol, N, V, L, MI_Roughness, MI_Metallic, sunAtten );
+    float3 ambientSun = albedo * AmbientStrength * sunLum * shadowAO * ssao;   // ambient/sky term
+    return ambientSun + directSun;
 }
 
 // Tiled point lights via the Forward+ grid, now with the full Cook-Torrance BRDF. `albedo` is LINEAR (sRGB-decoded
@@ -1442,13 +1477,9 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     clip( t.a - 0.5 );
     float3 N = normalize( i.wnrm );
     float3 albedo = SrgbToLinear( t.rgb );
-    float3 baseLit = albedo * i.col.rgb;       // ModelColor is an RGBA float (white for first-light)
-    // CSM: darken the sun-facing side of the model where it's occluded (NPC/monster self- & cast-shadows).
+    float vertLighting = i.col.g;               // ModelColor green (white=1 for NPCs → no baked AO reduction)
     float shadow = ComputeSunShadow( i.wpos, N );
-    float sunNdl = saturate( dot( SunDirWS, N ) );
-    baseLit *= ( 1.0 - sunNdl * ( 1.0 - shadow ) * ShadowStrength );
-    float3 rgb = baseLit;
-    rgb += ComputeSunSpecular( i.wpos, N, albedo, shadow );
+    float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow );
     rgb += AccumTiledPointLights( i.clip.xy, i.wpos, N, albedo );   // dynamic point lights on top (PBR)
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
     return float4( lerp( rgb, SrgbToLinear( FogColor ), f ), 1.0 );
@@ -3513,16 +3544,27 @@ void D3D12GraphicsEngine::RenderSunShadows() {
     // Upload this frame's shadow-sampling CB (b3 for the lit passes): cascade view-projs + sun dir + darkening
     // strength + per-cascade texel size. Layout MUST match the HLSL ShadowCB (row-major matrices, HLSL packing).
     if ( m_ShadowCBMapped[m_FrameIndex] ) {
+        // Layout MUST match the HLSL ShadowCB (256B, row-major matrices). Stage-2 PBR sun params come from the
+        // shared RendererSettings (same knobs D3D11 feeds SQ_LightColor/SQ_ShadowStrength/SQ_*AOStrength from).
         struct ShadowCBData {
             XMFLOAT4X4 CascadeViewProj[kShadowCascades];
-            XMFLOAT3   SunDirWS;      float ShadowStrength;
-            float      ShadowMapSize; XMFLOAT3 CascadeTexelWorld;
+            XMFLOAT3   SunDirWS;          float ShadowMapSize;
+            XMFLOAT3   SunColor;          float SunIntensity;
+            XMFLOAT3   CascadeTexelWorld; float AmbientStrength;
+            float ShadowAOStrength; float WorldAOStrength; float _pad0; float _pad1;
         } cb;
+        const auto& set = Engine::GAPI->GetRendererState().RendererSettings;
         for ( UINT c = 0; c < kShadowCascades; ++c ) cb.CascadeViewProj[c] = m_CascadeViewProj[c];
         cb.SunDirWS = m_SunDirWS;
-        cb.ShadowStrength = sunUp ? 0.6f : 0.0f;   // darkening amount (tunable; 0 disables when the sun is down)
         cb.ShadowMapSize = static_cast<float>( m_ShadowMapSize );
+        cb.SunColor = XMFLOAT3( set.SunLightColor.x, set.SunLightColor.y, set.SunLightColor.z );
+        cb.SunIntensity = sunUp ? set.SunLightStrength : 0.0f;   // no direct sun when it's below the horizon
         cb.CascadeTexelWorld = XMFLOAT3( m_CascadeTexelWorld[0], m_CascadeTexelWorld[1], m_CascadeTexelWorld[2] );
+        // Ambient/sky strength (SQ_ShadowStrength). Dimmed at night — interiors are additionally darkened by the
+        // baked vertLighting used as AO (shadowAO/worldAO), so no explicit BSP indoor override yet (a later parity nicety).
+        cb.AmbientStrength = sunUp ? set.ShadowStrength : set.ShadowStrength * 0.3f;
+        cb.ShadowAOStrength = set.ShadowAOStrength;
+        cb.WorldAOStrength = set.WorldAOStrength;
         memcpy( m_ShadowCBMapped[m_FrameIndex], &cb, sizeof( cb ) );
     }
 
