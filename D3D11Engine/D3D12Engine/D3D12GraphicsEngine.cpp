@@ -564,6 +564,13 @@ float4 PSClip( VS_OUT i ) : SV_TARGET
     clip( t.a - 0.5 );          // same cutout as the opaque world PS so gaps don't lay down depth
     return float4( 0, 0, 0, 1 );   // discarded: the PSO's color write mask is 0 (depth-only pass)
 }
+
+// Shadow caster (P2.9c): void PS (no SV_Target) so the depth-only shadow PSO binds NO render target without a
+// validation warning. Only alpha-clips foliage/fence cutouts so their gaps don't cast solid shadows.
+void PSShadowClip( VS_OUT i )
+{
+    clip( tx.Sample( smp, i.uv ).a - 0.5 );
+}
 )";
 
     // Forward+ tiled light-culling COMPUTE shader (P2.9b-2). One thread group per 16x16 screen tile; each
@@ -1160,6 +1167,10 @@ XRESULT D3D12GraphicsEngine::Init() {
     if ( !CreateDepthPrepassPipeline() ) {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the depth prepass pipeline.";
         return XR_FAILED;
+    }
+    if ( !CreateShadowMap() ) {
+        // Non-fatal: without the sun shadow map the scene renders unshadowed (as it did before P2.9c).
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the sun shadow map (continuing unshadowed).";
     }
     if ( !CreateLightCullPipeline() ) {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the light-culling compute pipeline.";
@@ -1968,6 +1979,234 @@ bool D3D12GraphicsEngine::CreateDepthPrepassPipeline() {
         return false;
     }
     return true;
+}
+
+bool D3D12GraphicsEngine::CreateShadowMap() {
+    // CSM sun shadow map (P2.9c-1): a Texture2DArray of kShadowCascades D32 slices + a caster PSO. Reuses the
+    // depth-prepass world VS (b0 = a view-proj, t0 diffuse for alpha-clip) but with NORMAL-Z (LESS_EQUAL, clear
+    // 1.0) state — the directional caster is NOT reversed-Z (mirrors the D3D11 shadow map). Created once at init
+    // (fixed resolution, not swapchain-sized). Needs the depth-prepass shaders + m_WorldRootSig to exist.
+    ID3D12Device* device = m_Device.GetDevice();
+    if ( !m_WorldRootSig || !m_DepthPrepassWorldVsBlob ) return false;
+
+    D3D12_HEAP_PROPERTIES heapDefault = {};
+    heapDefault.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    D3D12_RESOURCE_DESC dd = {};
+    dd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    dd.Width = kShadowMapSize;
+    dd.Height = kShadowMapSize;
+    dd.DepthOrArraySize = static_cast<UINT16>( kShadowCascades );
+    dd.MipLevels = 1;
+    dd.Format = DXGI_FORMAT_R32_TYPELESS;   // D32 DSV per slice + one R32_FLOAT array SRV for the lit-pass sampler
+    dd.SampleDesc.Count = 1;
+    dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+
+    D3D12_CLEAR_VALUE clear = {};
+    clear.Format = DXGI_FORMAT_D32_FLOAT;
+    clear.DepthStencil.Depth = 1.0f;        // normal-Z: 1.0 == far (NOT reversed-Z)
+
+    // Born in DEPTH_WRITE; each frame RenderSunShadows writes then transitions to PIXEL_SHADER_RESOURCE and back.
+    if ( FAILED( device->CreateCommittedResource( &heapDefault, D3D12_HEAP_FLAG_NONE, &dd,
+        D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear, IID_PPV_ARGS( m_ShadowMap.ReleaseAndGetAddressOf() ) ) ) )
+        return false;
+    m_ShadowMap->SetName( L"SunShadowMap(D32 array)" );
+    m_ShadowInPixelState = false;
+
+    // DSV heap: one D32 DSV per cascade slice.
+    D3D12_DESCRIPTOR_HEAP_DESC dsvHeapDesc = {};
+    dsvHeapDesc.NumDescriptors = kShadowCascades;
+    dsvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+    if ( FAILED( device->CreateDescriptorHeap( &dsvHeapDesc, IID_PPV_ARGS( m_ShadowDsvHeap.ReleaseAndGetAddressOf() ) ) ) )
+        return false;
+    m_ShadowDsvSize = device->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_DSV );
+    D3D12_CPU_DESCRIPTOR_HANDLE dsvH = m_ShadowDsvHeap->GetCPUDescriptorHandleForHeapStart();
+    for ( UINT c = 0; c < kShadowCascades; ++c ) {
+        D3D12_DEPTH_STENCIL_VIEW_DESC dsv = {};
+        dsv.Format = DXGI_FORMAT_D32_FLOAT;
+        dsv.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DARRAY;
+        dsv.Texture2DArray.FirstArraySlice = c;
+        dsv.Texture2DArray.ArraySize = 1;
+        device->CreateDepthStencilView( m_ShadowMap.Get(), &dsv, dsvH );
+        dsvH.ptr += m_ShadowDsvSize;
+    }
+
+    // Array SRV (R32_FLOAT) covering all cascades — bound by the lit passes in a later increment.
+    m_ShadowSrvSlot = AllocateSrvSlot();
+    if ( m_ShadowSrvSlot == UINT_MAX ) return false;
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+    srv.Format = DXGI_FORMAT_R32_FLOAT;
+    srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srv.Texture2DArray.MipLevels = 1;
+    srv.Texture2DArray.ArraySize = kShadowCascades;
+    device->CreateShaderResourceView( m_ShadowMap.Get(), &srv, GetSrvCpuHandle( m_ShadowSrvSlot ) );
+
+    // Caster PSO. Void PS (PSShadowClip) so no RTV is needed; front-face cull + slope-scaled depth bias fight
+    // shadow acne (front-culling casts back faces, standard for opaque shadow maps).
+    UINT compileFlags = 0;
+    if ( !CompileShaderD3D12( kDepthPrepassShaderSource, sizeof( kDepthPrepassShaderSource ) - 1, "DepthPrepass",
+        nullptr, nullptr, "PSShadowClip", Shadermodel_PS, compileFlags, 0, m_ShadowCasterPsBlob.ReleaseAndGetAddressOf() ) )
+        return false;
+
+    const D3D12_INPUT_ELEMENT_DESC layout[] = {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    };
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+    pso.pRootSignature = m_WorldRootSig.Get();
+    pso.VS = { m_DepthPrepassWorldVsBlob->GetBufferPointer(), m_DepthPrepassWorldVsBlob->GetBufferSize() };
+    pso.PS = { m_ShadowCasterPsBlob->GetBufferPointer(), m_ShadowCasterPsBlob->GetBufferSize() };
+    pso.InputLayout = { layout, _countof( layout ) };
+    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pso.NumRenderTargets = 0;                    // depth-only shadow pass (no color target bound)
+    pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+    pso.SampleDesc.Count = 1;
+    pso.SampleMask = UINT_MAX;
+    pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    pso.RasterizerState.CullMode = D3D12_CULL_MODE_FRONT;   // cast back faces
+    pso.RasterizerState.DepthClipEnable = TRUE;
+    pso.RasterizerState.DepthBias = 2000;                   // normal-Z: positive bias pushes casters away from the light
+    pso.RasterizerState.SlopeScaledDepthBias = 2.5f;
+    pso.RasterizerState.DepthBiasClamp = 0.0f;
+    pso.BlendState.RenderTarget[0].RenderTargetWriteMask = 0;
+    pso.DepthStencilState.DepthEnable = TRUE;
+    pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;   // normal-Z
+    pso.DepthStencilState.StencilEnable = FALSE;
+    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_ShadowCasterWorldPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (shadow caster).";
+        return false;
+    }
+    return true;
+}
+
+void D3D12GraphicsEngine::ComputeCascadeMatrices() {
+    using namespace DirectX;
+    // AC_LightPos is the normalized world-space direction TOWARD the sun (see GSky). Light travels the opposite
+    // way. Simple camera-centered cascades: concentric sun-aligned ortho boxes of increasing half-extent, camPos
+    // at the middle of a fixed light-space depth slab. (Stable texel-snapped frustum-fit is a later increment;
+    // this is enough to render + inspect the shadow map.)
+    
+    Engine::GAPI->GetSky()->RenderSky(); // <-- does not render, but calculates atmosphere data like AC_LightPos
+
+    float3 lp = Engine::GAPI->GetSky()->GetAtmosphereCB().AC_LightPos;
+    XMVECTOR toSun = XMVector3Normalize( XMVectorSet( lp.x, lp.y, lp.z, 0.0f ) );
+    XMVECTOR lightDir = XMVectorNegate( toSun );   // sun -> scene (the caster's look direction)
+    XMVECTOR camPos = Engine::GAPI->GetCameraPositionXM();
+    XMVECTOR up = ( fabsf( lp.y ) > 0.95f ) ? XMVectorSet( 0, 0, 1, 0 ) : XMVectorSet( 0, 1, 0, 0 );
+
+    const float halfExtents[kShadowCascades] = { 1500.0f, 5000.0f, 16000.0f };
+    const float depthRange = 20000.0f;   // light-space near..far span (world units); camPos sits at its midpoint
+    for ( UINT c = 0; c < kShadowCascades; ++c ) {
+        XMVECTOR eye = camPos - lightDir * ( depthRange * 0.5f );   // pull back toward the sun so the box is in front
+        XMMATRIX view = XMMatrixLookToLH( eye, lightDir, up );
+        XMMATRIX proj = XMMatrixOrthographicLH( 2.0f * halfExtents[c], 2.0f * halfExtents[c], 0.0f, depthRange );
+        // Store (View*Proj)^T. The working passes multiply GothicAPI's projM*viewM, but those getters return the
+        // matrices ALREADY column-major (pre-transposed) — GetProjectionMatrix() is documented "Column-Major" and
+        // the light-cull path transposes GetViewMatrixXM() for CPU row-vector math. So working stored = Proj^T*View^T
+        // = (View*Proj)^T. Our view/proj come straight from XMMatrixLookToLH/OrthographicLH (standard, NON-transposed),
+        // so we must transpose the product ourselves to match. (mul(pos, ViewProj) then reads it back as View*Proj.)
+        XMStoreFloat4x4( &m_CascadeViewProj[c], XMMatrixTranspose( XMMatrixMultiply( view, proj ) ) );
+    }
+}
+
+void D3D12GraphicsEngine::RenderSunShadows() {
+    // P2.9c-1: render the opaque WORLD MESH into each cascade slice from the sun's POV. This increment only
+    // PRODUCES the shadow map — nothing samples it yet, so the frame is visually unchanged; inspect the D32
+    // Texture2DArray in RenderDoc (each slice should show the scene depth from the sun angle). VOBs + skeletal
+    // casters, stable cascades, and the lit-pass PCF sampling are later increments.
+    if ( !m_FrameOpen || !m_ShadowMap || !m_ShadowCasterWorldPSO || !m_ShadowDsvHeap || !m_WorldRootSig )
+        return;
+
+    DX_ZONE( m_CmdList, "Sun Shadows (cascades)" );
+
+    // Return the map to DEPTH_WRITE if last frame's (future) lit sampling left it in PIXEL_SHADER_RESOURCE.
+    if ( m_ShadowInPixelState ) {
+        auto toDepth = TransitionBarrier( m_ShadowMap.Get(),
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE );
+        m_CmdList->ResourceBarrier( 1, &toDepth );
+        m_ShadowInPixelState = false;
+    }
+
+    ComputeCascadeMatrices();
+
+    // Sun below the horizon → clear each slice to far (1.0 = unshadowed) and skip casting.
+    const float3 lp = Engine::GAPI->GetSky()->GetAtmosphereCB().AC_LightPos;
+    MeshInfo* wm = Engine::GAPI->GetWrappedWorldMesh();
+    D3D12VertexBuffer* vb = wm ? D3D12VertexBuffer::From( wm->GetMeshVertexBuffer() ) : nullptr;
+    D3D12VertexBuffer* ib = wm ? D3D12VertexBuffer::From( wm->GetMeshIndexBuffer() ) : nullptr;
+    const bool haveWorld = ( lp.y > 0.0f ) && vb && ib && vb->GetResource() && ib->GetResource()
+                        && ( ib->GetSizeInBytes() / sizeof( uint32_t ) ) > 0;
+
+    static std::vector<WorldMeshSectionInfo*> sections;
+    if ( haveWorld ) { 
+        sections.clear();
+        Engine::GAPI->CollectVisibleSections( sections, nullptr, true );
+    }
+
+    const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( kShadowMapSize ), static_cast<float>( kShadowMapSize ), 0.0f, 1.0f };
+    const D3D12_RECT     sc = { 0, 0, static_cast<LONG>( kShadowMapSize ), static_cast<LONG>( kShadowMapSize ) };
+    m_CmdList->SetPipelineState( m_ShadowCasterWorldPSO.Get() );
+    m_CmdList->SetGraphicsRootSignature( m_WorldRootSig.Get() );
+    m_CmdList->RSSetViewports( 1, &vp );
+    m_CmdList->RSSetScissorRects( 1, &sc );
+    m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+
+    const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_WhiteSrvSlot );
+    D3D12_CPU_DESCRIPTOR_HANDLE dsvBase = m_ShadowDsvHeap->GetCPUDescriptorHandleForHeapStart();
+
+    for ( UINT c = 0; c < kShadowCascades; ++c ) {
+        D3D12_CPU_DESCRIPTOR_HANDLE dsv = dsvBase;
+        dsv.ptr += static_cast<SIZE_T>( c ) * m_ShadowDsvSize;
+        m_CmdList->OMSetRenderTargets( 0, nullptr, FALSE, &dsv );
+        m_CmdList->ClearDepthStencilView( dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr );   // normal-Z far
+        if ( !haveWorld ) continue;   // still leaves a valid (unshadowed) slice
+
+        m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
+
+        const D3D12_VERTEX_BUFFER_VIEW vbv = { vb->GetGpuVirtualAddress(), vb->GetSizeInBytes(), sizeof( ExVertexStructGPU ) };
+        const D3D12_INDEX_BUFFER_VIEW  ibv = { ib->GetGpuVirtualAddress(), ib->GetSizeInBytes(), DXGI_FORMAT_R32_UINT };
+        m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
+        m_CmdList->IASetIndexBuffer( &ibv );
+
+        zCTexture* boundTex = nullptr;
+        for ( WorldMeshSectionInfo* section : sections ) {
+            if ( !section ) continue;
+            for ( auto const& [meshKey, mesh] : section->WorldMeshes ) {
+                if ( !mesh || mesh->Indices.empty() ) continue;
+                if ( meshKey.Info && meshKey.Info->MaterialType == MaterialInfo::MT_Water ) continue;
+                zCTexture* tex = meshKey.Material->GetAniTexture();
+                if ( tex != boundTex ) {
+                    D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
+                    if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                        if ( MyDirectDrawSurface7* surface = tex->GetSurface() ) {
+                            if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
+                                D3D12Texture* d12 = D3D12Texture::From( gfx );
+                                if ( d12->HasSRV() ) srv = d12->GetSrvGpuHandle();
+                            }
+                        }
+                    }
+                    m_CmdList->SetGraphicsRootDescriptorTable( 1, srv );
+                    boundTex = tex;
+                }
+                m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mesh->Indices.size() ), 1, mesh->BaseIndexLocation, 0, 0 );
+            }
+        }
+    }
+
+    // Hand the whole array to PIXEL_SHADER_RESOURCE for the (future) lit-pass PCF sampling; reverted at the top
+    // of next frame's shadow pass. Also re-binds the main RT/DSV so subsequent passes draw to the backbuffer.
+    auto toSrv = TransitionBarrier( m_ShadowMap.Get(),
+        D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
+    m_CmdList->ResourceBarrier( 1, &toSrv );
+    m_ShadowInPixelState = true;
+
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
+    rtv.ptr += static_cast<SIZE_T>( m_FrameIndex ) * m_RtvDescriptorSize;
+    D3D12_CPU_DESCRIPTOR_HANDLE mainDsv = m_DsvHeap->GetCPUDescriptorHandleForHeapStart();
+    m_CmdList->OMSetRenderTargets( 1, &rtv, FALSE, m_DepthBuffer ? &mainDsv : nullptr );
 }
 
 bool D3D12GraphicsEngine::CreateLightCullPipeline() {
@@ -3442,6 +3681,10 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
     PrepareFrameSkeletals( g_FrameMobs );
 
     DrawSky();
+    // CSM sun shadows (P2.9c): render the opaque casters into the cascade shadow map from the sun's POV. Runs
+    // before the main geometry; rebinds the backbuffer RT/DSV when done. Nothing samples the map yet (later
+    // increment), so this is visually a no-op — inspect the shadow Texture2DArray in RenderDoc.
+    RenderSunShadows();
     // Forward+ opaque depth prepass — lays down ALL opaque depth before the lit passes so the tiled light cull
     // bounds each tile to real geometry: world mesh, then instanced VOBs, then skeletal (NPCs/monsters) + node
     // attachments. Visually a no-op (the color passes re-pass on GREATER_EQUAL and rewrite the same depth).
@@ -4035,7 +4278,10 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
             vi->LastAniUpdateFrame = now;
             model->UpdateAttachedVobs();   // once/frame — this is why the pass can't just re-run in a prepass
         }
-        model->UpdateMeshLibTexAniState();
+        // NOTE: UpdateMeshLibTexAniState is intentionally NOT called here. It mutates the model's SHARED texture
+        // slots, so it's only meaningful immediately before drawing a specific instance's meshes (all instances
+        // of a model share the slots). The draw paths (DrawSkeletalDepthPrepass / DrawSkeletalColor) call it
+        // per-record right before reading the materials — which is why FrameSkelDraw carries vobInfo.
 
         // Bone palette (object-space matrices) for the model's current animation pose. Needed for BOTH the base
         // skinned mesh AND the node-attachment world matrices, so compute it (and xmWorld) before either.

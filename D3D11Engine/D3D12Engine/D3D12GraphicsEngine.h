@@ -248,6 +248,25 @@ private:
     Microsoft::WRL::ComPtr<ID3DBlob> m_DepthPrepassSkeletalVsBlob;
     Microsoft::WRL::ComPtr<ID3DBlob> m_DepthPrepassSkeletalPsBlob;
 
+    // CSM sun shadows (P2.9c). Directional shadow map = a Texture2DArray (one slice per cascade), R32_TYPELESS
+    // so each slice serves a D32_FLOAT DSV and the whole array serves one R32_FLOAT SRV for later PCF sampling.
+    // NORMAL-Z here (clear 1.0, LESS_EQUAL) — NOT reversed-Z like the main camera (mirrors the D3D11 caster).
+    static constexpr UINT kShadowCascades = 3;
+    static constexpr UINT kShadowMapSize  = 2048;
+    Microsoft::WRL::ComPtr<ID3D12Resource>       m_ShadowMap;        // Texture2DArray(R32_TYPELESS), kShadowCascades slices
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_ShadowDsvHeap;    // one D32 DSV per cascade slice
+    UINT m_ShadowDsvSize = 0;
+    UINT m_ShadowSrvSlot = UINT_MAX;    // R32_FLOAT Texture2DArray SRV (all cascades), for the lit-pass sampler (later increment)
+    bool m_ShadowInPixelState = false;  // DEPTH_WRITE (caster writes) <-> PIXEL_SHADER_RESOURCE (lit reads) round-trip
+    // Reuses the depth-prepass world VS/PS (VSWorld + PSClip, b0 = a view-proj) with a normal-Z, front-cull,
+    // depth-biased state. Fed the per-cascade light view-proj instead of the camera's.
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_ShadowCasterWorldPSO;
+    Microsoft::WRL::ComPtr<ID3DBlob> m_ShadowCasterPsBlob;   // PSShadowClip (void PS, alpha-clip only)
+    DirectX::XMFLOAT4X4 m_CascadeViewProj[kShadowCascades] = {};   // light-space view*proj per cascade (this frame)
+    bool CreateShadowMap();            // shadow Texture2DArray + per-slice DSVs + array SRV + caster PSO (once, at init)
+    void ComputeCascadeMatrices();     // fill m_CascadeViewProj from the sun direction + camera (simple ortho for now)
+    void RenderSunShadows();           // render the opaque casters into each cascade slice from the sun's POV
+
     // Forward+ tiled light culling (P2.9b-2): one global compute root sig + PSO; two resolution-sized
     // DEFAULT-heap UAV buffers holding the per-tile {Offset,Count} grid and the per-tile light-index slices
     // (fixed 32/tile, no global counter). All live permanently in UNORDERED_ACCESS. m_NumTilesX/Y = tile
