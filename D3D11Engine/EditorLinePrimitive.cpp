@@ -820,6 +820,11 @@ void EditorLinePrimitive::SetSolidShader( PShaderID SolidShaderID ) {
 
 /** Renders a vertexbuffer with the given pixel shader (resolved+applied through the engine) */
 void EditorLinePrimitive::RenderVertexBuffer( const std::unique_ptr<GfxVertexBuffer>& VB, UINT NumVertices, PShaderID psID, D3D11_PRIMITIVE_TOPOLOGY Topology, int Pass ) {
+    if ( Engine::GraphicsEngine->GetBackendAPI() != EGraphicsEngineBackend::D3D11 ) {
+        // TODO: Not implemented: d3d12-parity
+        return;
+    }
+
     D3D11GraphicsEngineBase* engine = AsD3D11EngineBase(Engine::GraphicsEngine);
 
     XMMATRIX tr = XMMatrixTranspose( XMLoadFloat4x4( &WorldMatrix ) );;
