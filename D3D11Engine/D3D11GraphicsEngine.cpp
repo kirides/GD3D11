@@ -3500,6 +3500,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             auto fatness = data.Fatness;
             auto& world = data.World;
             auto& prevWorld = data.PrevWorld;
+            const auto handsOnly = model->GetDrawHandVisualsOnly();
 
             auto& nodeAttachments = vi->NodeAttachments;
             for ( unsigned int i = 0; i < transforms.size(); i++ ) {
@@ -3509,6 +3510,17 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 
                 if ( !node->NodeVisual )
                     continue; // Happens when you pull your sword for example
+
+                if ( handsOnly ) {
+                    std::string_view NodeName = node->ProtoNode->NodeName.ToView();
+#ifdef BUILD_GOTHIC_2_6_fix
+                    if ( !NodeName.contains( "HAND" ) && (*reinterpret_cast<BYTE*>(0x57A694) != 0x90 || !NodeName.contains( "ARM" ) ) ) {
+#else
+                    if ( !NodeName.contains( "HAND" ) ) {
+#endif
+                        continue;
+                    }
+                }
 
                 // Check if this is loaded
                 if ( node->NodeVisual && nodeAttachments.find( i ) == nodeAttachments.end() ) {
@@ -3533,17 +3545,6 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                 auto nodeAttachment = nodeAttachments.find( i );
                 if ( nodeAttachment == nodeAttachments.end() ) {
                     continue;
-                }
-
-                if ( model->GetDrawHandVisualsOnly() ) {
-                    std::string NodeName = node->ProtoNode->NodeName.ToChar();
-#ifdef BUILD_GOTHIC_2_6_fix
-                    if ( NodeName.find( "HAND" ) == std::string::npos && (*reinterpret_cast<BYTE*>(0x57A694) != 0x90 || NodeName.find( "ARM" ) == std::string::npos) ) {
-#else
-                    if ( NodeName.find( "HAND" ) == std::string::npos ) {
-#endif
-                        continue;
-                    }
                 }
 
                 const XMMATRIX curTransform = XMLoadFloat4x4( &transforms[i] );
