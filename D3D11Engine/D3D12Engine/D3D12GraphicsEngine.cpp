@@ -3557,14 +3557,37 @@ void D3D12GraphicsEngine::RenderSunShadows() {
         for ( UINT c = 0; c < kShadowCascades; ++c ) cb.CascadeViewProj[c] = m_CascadeViewProj[c];
         cb.SunDirWS = m_SunDirWS;
         cb.ShadowMapSize = static_cast<float>( m_ShadowMapSize );
-        cb.SunColor = XMFLOAT3( set.SunLightColor.x, set.SunLightColor.y, set.SunLightColor.z );
-        cb.SunIntensity = sunUp ? set.SunLightStrength : 0.0f;   // no direct sun when it's below the horizon
         cb.CascadeTexelWorld = XMFLOAT3( m_CascadeTexelWorld[0], m_CascadeTexelWorld[1], m_CascadeTexelWorld[2] );
-        // Ambient/sky strength (SQ_ShadowStrength). Dimmed at night — interiors are additionally darkened by the
-        // baked vertLighting used as AO (shadowAO/worldAO), so no explicit BSP indoor override yet (a later parity nicety).
-        cb.AmbientStrength = sunUp ? set.ShadowStrength : set.ShadowStrength * 0.3f;
+
+        // Rain dims the sun toward RainSunLightStrength (parity with D3D11's SQ_LightColor.a lerp).
+        const float rain = Engine::GAPI->GetRainFXWeight();
+        const float sunStrength = set.SunLightStrength
+            + ( set.RainSunLightStrength - set.SunLightStrength ) * std::min( 1.0f, rain * 2.0f );
+
+        // Ambient/sky strength (SQ_ShadowStrength). Night is a bit brighter than before (0.3 -> 0.5, per user)
+        // so interiors aren't too dark after dusk; interiors also self-darken via baked vertLighting-as-AO.
+        float ambient = sunUp ? set.ShadowStrength : set.ShadowStrength * 0.5f;
+
+        // BSP-indoor override (parity with D3D11): interiors use a NEUTRAL white sun (no warm outdoor tint) at a
+        // softened intensity (no hard raking sun through a cave), and worldAO fully tracks the baked light. We keep
+        // a non-zero ambient (D3D11 zeroes it for G2 -> torch-only) so interiors that already look fine don't go dark.
+        bool indoor = false;
+        if ( auto* wi = Engine::GAPI->GetLoadedWorldInfo() )
+            if ( wi->BspTree )
+                indoor = ( wi->BspTree->GetBspTreeMode() == zBSP_MODE_INDOOR );
+
+        if ( indoor ) {
+            cb.SunColor = XMFLOAT3( 1.0f, 1.0f, 1.0f );
+            cb.SunIntensity = sunUp ? sunStrength * 0.5f : 0.0f;
+            cb.AmbientStrength = ambient;
+            cb.WorldAOStrength = 1.0f;
+        } else {
+            cb.SunColor = XMFLOAT3( set.SunLightColor.x, set.SunLightColor.y, set.SunLightColor.z );
+            cb.SunIntensity = sunUp ? sunStrength : 0.0f;   // no direct sun when it's below the horizon
+            cb.AmbientStrength = ambient;
+            cb.WorldAOStrength = set.WorldAOStrength;
+        }
         cb.ShadowAOStrength = set.ShadowAOStrength;
-        cb.WorldAOStrength = set.WorldAOStrength;
         memcpy( m_ShadowCBMapped[m_FrameIndex], &cb, sizeof( cb ) );
     }
 
