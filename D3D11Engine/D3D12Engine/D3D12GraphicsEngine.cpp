@@ -5999,11 +5999,25 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
 
     WorldDrawCommand* cmds = reinterpret_cast<WorldDrawCommand*>( m_WorldDrawArgsPtr[m_FrameIndex] );
     UINT count = 0;
+    
+    Frustum playerFrustum = Frustum::AlwaysContainingFrustum();
+    if ( auto cam = (zCCamera*)oCGame::GetGame()->_zCSession_camera ) {
+        const auto& view = cam->trafoView; // Column-Major, needs Transpose for DxMath
+        const auto& proj = cam->trafoProjection; // Row-Major, does not need transpose.
+        playerFrustum.BuildPerspective(
+            XMMatrixTranspose( XMLoadFloat4x4( &view ) ),
+            XMLoadFloat4x4( &proj )
+        );
+    }
 
     for ( WorldMeshSectionInfo* section : sections ) {
         if ( !section ) continue;
         for ( auto const& [meshKey, mesh] : section->WorldMeshes ) {
             if ( !mesh || mesh->Indices.empty() ) continue;
+            
+            if ( !Engine::GAPI->IsWorldMeshVisibleInFrustum( mesh, playerFrustum ) ) {
+                continue;
+            }            
 
             // Water is transparent — bucket it by texture for the later alpha-blended pass, skip the opaque command set.
             if ( meshKey.Info && meshKey.Info->MaterialType == MaterialInfo::MT_Water ) {
