@@ -6,6 +6,7 @@
 
 class D3D12LineRenderer;
 struct GothicBlendStateInfo;
+class zCVobLight;
 
 /** Direct3D 12 backend — Phase 1 first-light.
 
@@ -340,6 +341,25 @@ private:
     UINT m_PointShadowVobInstCapacity = 0;         // bytes
     UINT m_PointShadowVobInstOffset = 0;           // reset each frame at the top of RenderPointShadows
     bool m_PointShadowVobInstOverflowLogged = false;
+
+    // ---- Static-aside cube caching + round-robin (P2.10f) — mirrors D3D11 DrawPointlightShadows. The cube
+    // array is a PERSISTENT resource, so a slot's rendered content survives across frames until we redraw it.
+    // A slot is owned by a specific light (by Vob identity) and kept across frames — NOT reassigned by proximity
+    // every frame — so a STATIC light whose casters didn't move need not re-render its 6 faces + re-cull all
+    // world/VOB/skeletal geometry each frame (the old behavior, "unbearable" at up to 32 lights). Dynamic
+    // (moving) lights still redraw every frame; cached static cubes are refreshed a few per frame (round-robin)
+    // so moving casters near a torch update within a handful of frames instead of freezing.
+    struct PointShadowSlot {
+        zCVobLight*       owner = nullptr;   // light identity owning this slot (nullptr = free)
+        DirectX::XMFLOAT3 pos = {};          // last-rendered light position (move detection)
+        float             range = 0.0f;      // last-rendered range (range-change detection)
+        bool              isStatic = false;  // Vob->IsStatic(): static lights cache; dynamic redraw every frame
+        bool              valid = false;     // slot holds valid rendered content (else must render)
+        uint32_t          lastRenderFrame = 0; // frame counter at last render — round-robin staleness ordering
+    };
+    PointShadowSlot m_PointShadowSlots[kMaxShadowCubes];
+    uint32_t        m_PointShadowFrameCounter = 0;
+    static constexpr int kPointShadowBackgroundUpdatesPerFrame = 2; // cached static cubes refreshed per frame
     bool CreatePointShadowCubes();     // cube array + per-slot DSVs + array SRV + world caster PSO + root sig + CB ring (once, at init)
     void RenderPointShadows();         // render each selected light's 6 cube faces (selection/ShadowCubeIndex done in BuildFrameLightBuffer)
 

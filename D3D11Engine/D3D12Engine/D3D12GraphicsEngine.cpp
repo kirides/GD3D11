@@ -1225,7 +1225,9 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     // Point-light shadow selection (P2.10b/c): the shadowed lights chosen this frame (closest-in-range, capped
     // at kMaxShadowCubes) — filled by BuildFrameLightBuffer (which also writes ShadowCubeIndex into the GPU light
     // struct), consumed by RenderPointShadows to render each light's 6 cube faces.
-    struct FramePointShadow { DirectX::XMFLOAT3 posWS; float range; UINT slot; };
+    // render=false → this slot's cube content is cached and reused this frame (static-aside, P2.10f); the lit
+    // pass still samples it (persistent resource), but RenderPointShadows skips re-drawing its 6 faces.
+    struct FramePointShadow { DirectX::XMFLOAT3 posWS; float range; UINT slot; bool render; };
     std::vector<FramePointShadow> g_FramePointShadows;
 
     // Per-frame VOB instance-ring snapshot (P2.9b-4a). UploadFrameVobInstances memcpys each visible visual's
@@ -2329,7 +2331,7 @@ bool D3D12GraphicsEngine::CreateWhiteTexture() {
         D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS( m_DefaultOrmTexture.ReleaseAndGetAddressOf() ) ) ) )
         return false;
     m_DefaultOrmTexture->SetName( L"DefaultOrmTexture(1,0.5,0)" );
-    const uint32_t orm = 0xFF00CCFFu;   // R8G8B8A8 little-endian: R=255(AO) G=204(rough~0.8) B=0(metal) A=255
+    const uint32_t orm = 0xFF00BBFFu;   // R8G8B8A8 little-endian: R=255(AO) G=187(rough~0.73) B=0(metal) A=255
     D3D12_SUBRESOURCE_DATA ormSub = {};
     ormSub.pData = &orm;
     ormSub.RowPitch = 4;
@@ -2783,7 +2785,10 @@ bool D3D12GraphicsEngine::CreateWorldPipeline() {
     params[10].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_STATIC_SAMPLER_DESC samplers[2] = {};
-    samplers[0].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    // s0 diffuse: 16x anisotropic (matches D3D11's main texture sampler) — sharpens surfaces at grazing
+    // angles and in the distance, which trilinear alone smears badly.
+    samplers[0].Filter = D3D12_FILTER_ANISOTROPIC;
+    samplers[0].MaxAnisotropy = 16;
     samplers[0].AddressU = samplers[0].AddressV = samplers[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
     samplers[0].MaxLOD = D3D12_FLOAT32_MAX;
     samplers[0].ShaderRegister = 0;          // s0 diffuse
@@ -3895,6 +3900,13 @@ void D3D12GraphicsEngine::RenderPointShadows() {
         return;
     if ( g_FramePointShadows.empty() ) return;
 
+    // Static-aside (P2.10f): if every shadowed light is cached this frame, reuse the persistent cube content
+    // untouched — the resource already sits in PIXEL_SHADER_RESOURCE from a prior render (a slot only becomes
+    // cacheable AFTER it has rendered once), so the lit pass samples it directly with no barrier flip.
+    bool anyRender = false;
+    for ( const FramePointShadow& ps : g_FramePointShadows ) if ( ps.render ) { anyRender = true; break; }
+    if ( !anyRender ) return;
+
     DX_ZONE( m_CmdList, "Point Shadows (cubes)" );
 
     if ( m_PointShadowInPixelState ) {
@@ -3949,6 +3961,13 @@ void D3D12GraphicsEngine::RenderPointShadows() {
 
     for ( const FramePointShadow& ps : g_FramePointShadows ) {
         if ( ps.slot >= kMaxShadowCubes ) continue;
+        if ( !ps.render ) continue;   // cached this frame (static-aside) — its persistent cube slice is reused
+
+        DX_ZONE( m_CmdList, "FramePointShadow" );
+
+        // Mark this slot's content valid + stamp the render frame (round-robin staleness ordering, P2.10f).
+        m_PointShadowSlots[ps.slot].valid = true;
+        m_PointShadowSlots[ps.slot].lastRenderFrame = m_PointShadowFrameCounter;
         const XMVECTOR eye = XMLoadFloat3( &ps.posWS );
         const XMMATRIX proj = XMMatrixPerspectiveFovLH( XM_PIDIV2, 1.0f, 15.0f, ps.range * 2.0f );
 
@@ -3971,6 +3990,7 @@ void D3D12GraphicsEngine::RenderPointShadows() {
 
         // --- World mesh: range-cull sections (AABB nearest-point to the light), draw all 6 faces in one call. ---
         if ( haveWorld ) {
+            DX_ZONE( m_CmdList, "World Mesh" );
             m_CmdList->SetPipelineState( m_PointShadowCasterWorldPSO.Get() );
             m_CmdList->SetGraphicsRootSignature( m_PointShadowRootSig.Get() );
             m_CmdList->SetGraphicsRootConstantBufferView( 0, faceCbGpu );
@@ -4002,6 +4022,7 @@ void D3D12GraphicsEngine::RenderPointShadows() {
         // in-range ones' 64-byte world matrices into the tight ring, then draw count*6 (InstanceDataStepRate=6 →
         // 6 faces per real instance). Same root sig as world, so only the PSO changes (b0 face CB stays bound). ---
         if ( haveVobs ) {
+            DX_ZONE( m_CmdList, "Vobs" );
             m_CmdList->SetPipelineState( m_PointShadowCasterVobPSO.Get() );
             m_CmdList->SetGraphicsRootSignature( m_PointShadowRootSig.Get() );
             m_CmdList->SetGraphicsRootConstantBufferView( 0, faceCbGpu );
@@ -4055,6 +4076,7 @@ void D3D12GraphicsEngine::RenderPointShadows() {
         // --- Skinned skeletals (P2.10e): cull by the vob's world position (+ visual extent), then draw 6 faces.
         // Uses the dedicated skeletal root sig (b0 faces, b1 instance, b2 bones) + the shared per-frame CBs. ---
         if ( haveSkel ) {
+            DX_ZONE( m_CmdList, "Skeletals" );
             m_CmdList->SetPipelineState( m_PointShadowCasterSkeletalPSO.Get() );
             m_CmdList->SetGraphicsRootSignature( m_PointShadowSkeletalRootSig.Get() );
             m_CmdList->SetGraphicsRootConstantBufferView( 0, faceCbGpu );
@@ -4341,6 +4363,11 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
     UINT count = 0;
     constexpr float lightFactor = 1.2f;   // matches D3D11 CullLights RGB scale
 
+    // Parallel to dst[]: the owning light Vob per GPULight index, so the shadow selection below can map a
+    // chosen light back to its identity for STABLE per-light cube-slot ownership (static-aside cache, P2.10f).
+    static std::vector<zCVobLight*> s_lightVobs;
+    s_lightVobs.clear();
+
     // View-space transform for PositionView (consumed by the tiled light-culling CS). Mirrors D3D11
     // CullLights EXACTLY: transpose(GetViewMatrixXM()) then a row-vector transform of the world position,
     // so the view space this fills matches what the cull shader's frustum is built in.
@@ -4370,18 +4397,23 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
         L.Color = XMFLOAT4( r * lightFactor, g * lightFactor, b * lightFactor, vob->IsStatic() ? 0.0f : 1.0f );
         L.PositionWorld = pw;
         L.ShadowCubeIndex = -1;
+        s_lightVobs.push_back( vob );
         ++count;
     }
     m_FrameLightCount = count;
 
-    // Point-light shadow selection (P2.10c): pick the closest-to-camera in-range lights (up to kMaxShadowCubes),
-    // assign each a cube slot + write ShadowCubeIndex into its GPU struct, and record them for RenderPointShadows.
-    // Mirrors D3D11 DrawPointlightShadows' distance/range gating (it keys off the player; camera is close enough
-    // for the MVP). Deferred D3D11 niceties (static-aside caching, round-robin staggering) are later work.
+    // Point-light shadow selection (P2.10c + static-aside/round-robin P2.10f). Pick the closest-to-camera
+    // in-range lights (up to kMaxShadowCubes) as this frame's "winners", but assign each winner a STABLE cube
+    // slot keyed by its light Vob identity (kept across frames, not reassigned by proximity every frame). A
+    // slot's rendered content persists in the cube array, so a STATIC winner whose light didn't move can reuse
+    // its cached cube (render=false) instead of re-culling + re-rendering all world/VOB/skeletal casters each
+    // frame. Dynamic (moving) lights, newly-assigned slots, and moved/range-changed lights render (render=true).
+    // Mirrors D3D11 DrawPointlightShadows' distance/range gating (it keys off the player; camera is close enough).
     g_FramePointShadows.clear();
     if ( m_PointShadowCube && count > 0 ) {
+        ++m_PointShadowFrameCounter;
         const XMVECTOR camPos = Engine::GAPI->GetCameraPositionXM();
-        struct Cand { UINT dstIdx; float distSq; };
+        struct Cand { UINT dstIdx; zCVobLight* vob; float distSq; bool isStatic; };
         static std::vector<Cand> cands;
         cands.clear();
         for ( UINT i = 0; i < count; ++i ) {
@@ -4392,14 +4424,63 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
             float distSq = XMVectorGetX( XMVector3LengthSq( d ) );
             const float maxSq = ( range * 9.0f ) * ( range * 9.0f );   // D3D11 distMaxShadowSq
             if ( distSq >= maxSq ) continue;
-            cands.push_back( { i, distSq } );
+            cands.push_back( { i, s_lightVobs[i], distSq, L.Color.w == 0.0f } );   // Color.w: 0 = static light
         }
         std::sort( cands.begin(), cands.end(), []( const Cand& a, const Cand& b ) { return a.distSq < b.distSq; } );
-        const UINT n = std::min<UINT>( static_cast<UINT>( cands.size() ), kMaxShadowCubes );
-        for ( UINT s = 0; s < n; ++s ) {
-            GPULight& L = dst[cands[s].dstIdx];
-            L.ShadowCubeIndex = static_cast<int32_t>( s );
-            g_FramePointShadows.push_back( { L.PositionWorld, L.Range, s } );
+        if ( cands.size() > kMaxShadowCubes ) cands.resize( kMaxShadowCubes );
+
+        // Release slots whose owner is no longer a winner (frees them + invalidates their cached content).
+        for ( UINT s = 0; s < kMaxShadowCubes; ++s ) {
+            zCVobLight* o = m_PointShadowSlots[s].owner;
+            if ( !o ) continue;
+            bool stillWinner = false;
+            for ( const Cand& c : cands ) if ( c.vob == o ) { stillWinner = true; break; }
+            if ( !stillWinner ) m_PointShadowSlots[s] = PointShadowSlot{};
+        }
+
+        // Assign each winner a stable slot (keep its existing one, else grab a free one) and decide render vs cache.
+        for ( const Cand& c : cands ) {
+            int slot = -1;
+            for ( UINT s = 0; s < kMaxShadowCubes; ++s )
+                if ( m_PointShadowSlots[s].owner == c.vob ) { slot = static_cast<int>( s ); break; }
+            if ( slot < 0 ) {
+                for ( UINT s = 0; s < kMaxShadowCubes; ++s )
+                    if ( !m_PointShadowSlots[s].owner ) { slot = static_cast<int>( s ); break; }
+                if ( slot < 0 ) continue;   // no free slot (can't happen: winners <= kMaxShadowCubes)
+                m_PointShadowSlots[slot].owner = c.vob;
+                m_PointShadowSlots[slot].valid = false;   // fresh occupant → must render
+            }
+            PointShadowSlot& ss = m_PointShadowSlots[slot];
+            ss.isStatic = c.isStatic;
+
+            GPULight& L = dst[c.dstIdx];
+            const XMFLOAT3& np = L.PositionWorld;
+            const float moveEps = 0.5f;   // Gothic world units; below this the light hasn't meaningfully moved
+            bool moved = std::fabs( np.x - ss.pos.x ) > moveEps
+                      || std::fabs( np.y - ss.pos.y ) > moveEps
+                      || std::fabs( np.z - ss.pos.z ) > moveEps;
+            bool rangeChanged = std::fabs( L.Range - ss.range ) > 1.0f;
+            // Dynamic lights always redraw; static lights redraw only when new / moved / resized.
+            bool render = !ss.valid || !ss.isStatic || moved || rangeChanged;
+
+            L.ShadowCubeIndex = static_cast<int32_t>( slot );
+            g_FramePointShadows.push_back( { np, L.Range, static_cast<UINT>( slot ), render } );
+            if ( render ) { ss.pos = np; ss.range = L.Range; }   // valid/lastRenderFrame set once actually drawn
+        }
+
+        // Round-robin: refresh up to K otherwise-cached (static) cubes per frame — oldest first — so dynamic
+        // casters (NPCs walking near a torch) update within a few frames instead of freezing in a stale cube.
+        int budget = kPointShadowBackgroundUpdatesPerFrame;
+        while ( budget > 0 ) {
+            int pick = -1; uint32_t oldest = 0xFFFFFFFFu;
+            for ( size_t k = 0; k < g_FramePointShadows.size(); ++k ) {
+                if ( g_FramePointShadows[k].render ) continue;
+                uint32_t lrf = m_PointShadowSlots[g_FramePointShadows[k].slot].lastRenderFrame;
+                if ( lrf < oldest ) { oldest = lrf; pick = static_cast<int>( k ); }
+            }
+            if ( pick < 0 ) break;   // nothing left to refresh
+            g_FramePointShadows[pick].render = true;
+            --budget;
         }
     }
 }
@@ -5366,7 +5447,10 @@ bool D3D12GraphicsEngine::CreateSkeletalPipeline() {
     params[12].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_STATIC_SAMPLER_DESC samplers[2] = {};
-    samplers[0].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    // s0 diffuse: 16x anisotropic (matches D3D11's main texture sampler) — sharpens surfaces at grazing
+    // angles and in the distance, which trilinear alone smears badly.
+    samplers[0].Filter = D3D12_FILTER_ANISOTROPIC;
+    samplers[0].MaxAnisotropy = 16;
     samplers[0].AddressU = samplers[0].AddressV = samplers[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
     samplers[0].MaxLOD = D3D12_FLOAT32_MAX;
     samplers[0].ShaderRegister = 0;          // s0 diffuse
