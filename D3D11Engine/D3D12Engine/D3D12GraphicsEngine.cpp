@@ -765,6 +765,16 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     struct FrameVobUpload { MeshVisualInfo* visual; D3D12_VERTEX_BUFFER_VIEW instView; UINT numInstances; };
     std::vector<FrameVobUpload> g_FrameVobUploads;
 
+    // Per-frame skeletal shared-upload records (P2.9b-4b). PrepareFrameSkeletals runs the once-per-frame
+    // animation update and uploads each vob's bone/instance CBs (base meshes) and its node attachments'
+    // VOB-instance data (into the VOB ring) BEFORE the cull, recording GPU addresses here. Then
+    // DrawSkeletalDepthPrepass (pre-cull, depth-only) and DrawSkeletalColor (post-cull, lit) both draw from
+    // these — so the animation update is never run twice and nothing is uploaded twice. Rebuilt each frame.
+    struct FrameSkelDraw   { SkeletalVobInfo* vobInfo;  SkeletalMeshVisualInfo* visual; D3D12_GPU_VIRTUAL_ADDRESS instCb; D3D12_GPU_VIRTUAL_ADDRESS boneCb; };
+    struct FrameAttachDraw { MeshInfo* mesh; zCTexture* tex; D3D12_VERTEX_BUFFER_VIEW instView; };
+    std::vector<FrameSkelDraw>   g_FrameSkelDraws;
+    std::vector<FrameAttachDraw> g_FrameAttachDraws;
+
     // Forward+ MVP light buffer (P2.9a): the whole visible-light list is rebuilt from offset 0 each frame,
     // so the ring is just kBackBufferCount snapshots (no per-draw offset). Cap matches D3D11 MAX_TILED_LIGHTS.
     constexpr UINT kMaxFrameLights = 400;
@@ -889,6 +899,35 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     rgb += AccumTiledPointLights( i.clip.xy, i.wpos, normalize( i.wnrm ), t.rgb );   // dynamic point lights on top
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
     return float4( lerp( rgb, FogColor, f ), 1.0 );
+}
+
+// --- Depth-prepass variant (P2.9b-4b: adds skinned NPC/monster meshes to the Forward+ opaque depth prepass) ---
+// Same matrix-palette skinning as VSMain (so the depth matches the color pass bit-for-bit) but outputs only
+// clip + uv; reads b0/b1/b2 + t0/s0, NOT fog/light CBs — so it needs no BindFrameLights (no light-loop hang).
+struct VS_DEPTH_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; };
+VS_DEPTH_OUT VSDepth( VS_IN i )
+{
+    float3 skinnedPos    = float3( 0, 0, 0 );
+    float3 skinnedNormal = float3( 0, 0, 0 );
+    [unroll]
+    for ( int b = 0; b < 4; ++b )
+    {
+        float4x4 bone = Bones[i.boneIndices[b]];
+        float    w    = i.weights[b];
+        skinnedPos    += w * mul( float4( i.pos[b].xyz, 1.0 ), bone ).xyz;
+        skinnedNormal += w * mul( i.normal, (float3x3)bone );
+    }
+    float3 worldPos = mul( float4( skinnedPos + Fatness * skinnedNormal, 1.0 ), M_World ).xyz;
+    VS_DEPTH_OUT o;
+    o.clip = mul( float4( worldPos, 1.0 ), ViewProj );
+    o.uv = i.uv;
+    return o;
+}
+float4 PSDepthClip( VS_DEPTH_OUT i ) : SV_TARGET
+{
+    float4 t = tx.Sample( smp, i.uv );
+    clip( t.a - 0.5 );          // same cutout as PSMain so alpha edges don't lay down depth
+    return float4( 0, 0, 0, 1 );   // discarded: the PSO's color write mask is 0 (depth-only pass)
 }
 )";
 
@@ -3218,6 +3257,25 @@ bool D3D12GraphicsEngine::CreateSkeletalPipeline() {
         LogWarn() << "D3D12: CreateGraphicsPipelineState failed (skeletal).";
         return false;
     }
+
+    // Skeletal depth-prepass PSO (P2.9b-4b): same root sig + skinned input layout + depth state, but VSDepth/
+    // PSDepthClip and color writes masked off. Lays down NPC/monster depth so the light cull bounds tiles to
+    // them (fixing the near-skeletal cutoff). Same layout as the color PSO (VSDepth reads the same VS_IN).
+    if ( !CompileShaderD3D12( kSkeletalShaderSource, sizeof( kSkeletalShaderSource ) - 1, "SkeletalShader",
+        nullptr, nullptr, "VSDepth", Shadermodel_VS, compileFlags, 0, m_DepthPrepassSkeletalVsBlob.ReleaseAndGetAddressOf() ) ) {
+        return false;
+    }
+    if ( !CompileShaderD3D12( kSkeletalShaderSource, sizeof( kSkeletalShaderSource ) - 1, "SkeletalShader",
+        nullptr, nullptr, "PSDepthClip", Shadermodel_PS, compileFlags, 0, m_DepthPrepassSkeletalPsBlob.ReleaseAndGetAddressOf() ) ) {
+        return false;
+    }
+    pso.VS = { m_DepthPrepassSkeletalVsBlob->GetBufferPointer(), m_DepthPrepassSkeletalVsBlob->GetBufferSize() };
+    pso.PS = { m_DepthPrepassSkeletalPsBlob->GetBufferPointer(), m_DepthPrepassSkeletalPsBlob->GetBufferSize() };
+    pso.BlendState.RenderTarget[0].RenderTargetWriteMask = 0;   // DEPTH ONLY — discard color
+    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_DepthPrepassSkeletalPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (skeletal depth prepass).";
+        return false;
+    }
     return CreateSkeletalConstantBuffers();
 }
 
@@ -3374,24 +3432,29 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
     g_FrameVobs.clear(); g_FrameLights.clear(); g_FrameMobs.clear();
     Engine::GAPI->CollectVisibleVobs( g_FrameVobs, g_FrameLights, g_FrameMobs );
     BuildFrameLightBuffer();
-    // Snapshot visible VOB instances into the ring ONCE (before the prepass + cull); the VOB depth prepass and
-    // the VOB color pass both draw from this shared snapshot (g_FrameVobUploads).
+    // Snapshot ALL opaque instanced geometry ONCE, before the depth prepass + cull, so every geometry pass draws
+    // from one shared upload: VOB instances (g_FrameVobUploads), then skeletal base/attachment CBs + instances
+    // (g_FrameSkelDraws/g_FrameAttachDraws — PrepareFrameSkeletals also runs the once/frame animation update, so
+    // it MUST run exactly once). Both skeletal lists (animated + static mobs) are prepared here up front.
     UploadFrameVobInstances();
+    g_FrameSkelDraws.clear(); g_FrameAttachDraws.clear();
+    PrepareFrameSkeletals( Engine::GAPI->GetAnimatedSkeletalMeshVobs() );
+    PrepareFrameSkeletals( g_FrameMobs );
 
     DrawSky();
-    // Forward+ opaque depth prepass — lays down opaque depth before the lit passes so the upcoming tiled
-    // light-culling compute bounds each tile to real geometry. World mesh THEN instanced VOBs (so lights on
-    // objects in front of distant world aren't culled). Visually a no-op (the color passes re-pass on
-    // GREATER_EQUAL and rewrite the same depth). Skeletal/NPC depth joins next (P2.9b-4b).
+    // Forward+ opaque depth prepass — lays down ALL opaque depth before the lit passes so the tiled light cull
+    // bounds each tile to real geometry: world mesh, then instanced VOBs, then skeletal (NPCs/monsters) + node
+    // attachments. Visually a no-op (the color passes re-pass on GREATER_EQUAL and rewrite the same depth).
     DrawDepthPrepass();
     DrawVobDepthPrepass();
-    // Forward+ tiled light cull: consume this frame's light buffer + the tile grid geometry to record which
-    // point lights touch each 16x16 screen tile. Produces the grid only (no lit-output change yet).
+    DrawSkeletalDepthPrepass();
+    // Forward+ tiled light cull: consume this frame's light buffer + the prepass depth to record which point
+    // lights touch each 16x16 screen tile (bounded to real geometry on both the near and far side).
     DispatchLightCulling();
     DrawWorldMesh();
     {
-        DX_ZONE( m_CmdList, "Draw animated skeletal" );
-        DrawSkeletalMeshes( Engine::GAPI->GetAnimatedSkeletalMeshVobs(), false );
+        DX_ZONE( m_CmdList, "Draw skeletal (color)" );
+        DrawSkeletalColor();   // base meshes + node attachments, lit through the tile grid (both lists)
     }
     DrawVobsInstanced();
 
@@ -3919,10 +3982,8 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
         }
     }
 
-    {
-        DX_ZONE( m_CmdList, "Draw static skeletal" );
-        DrawSkeletalMeshes( g_FrameMobs, false );
-    }
+    // Static skeletal MOBs (g_FrameMobs) are now prepared up front (PrepareFrameSkeletals) and drawn by
+    // DrawSkeletalColor alongside the animated NPCs — no longer a nested call here (see OnStartWorldRendering).
 
     // NOTE: the per-visual Instances lists are cleared once at the end of OnStartWorldRendering (not here),
     // so they still get reset even when DrawVOBs is off and this pass early-outs above.
@@ -3931,77 +3992,56 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
     return XR_SUCCESS;
 }
 
-XRESULT D3D12GraphicsEngine::DrawSkeletalMeshes( std::vector<SkeletalVobInfo*>& vobs, bool asMorphMeshes ) {
-    if ( !m_FrameOpen || !m_SkeletalPSO || !m_SkeletalRootSig || !m_DepthBuffer )
-        return XR_SUCCESS;
-
+void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& vobs ) {
+    // P2.9b-4b (pre-cull): run each visible skeletal vob's once-per-frame animation update, upload its instance +
+    // bone CBs (base meshes) and its node attachments' VOB-instance data into the per-frame rings, and RECORD
+    // the GPU addresses in g_FrameSkelDraws / g_FrameAttachDraws. NO draws here — DrawSkeletalDepthPrepass
+    // (pre-cull, depth) and DrawSkeletalColor (post-cull, lit) both draw from these records, so the animation
+    // update never runs twice and nothing is uploaded twice. Appends (called once per list: animated + mobs).
+    if ( !m_FrameOpen || !m_SkeletalCBBuffer[m_FrameIndex] || !m_SkeletalCBBufferPtr[m_FrameIndex] )
+        return;
     GothicRendererState& rs = Engine::GAPI->GetRendererState();
     if ( !rs.RendererSettings.DrawSkeletalMeshes )
-        return XR_SUCCESS;
-
-    if ( vobs.empty() ) return XR_SUCCESS;
-
-    // Reversed-Z ViewProj (identical derivation to DrawWorldMesh / DrawVobsInstanced).
-    XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
-    Engine::GAPI->SetViewTransformXM( view );
-    Engine::GAPI->ResetWorldTransform();
-    const XMFLOAT4X4& viewM = rs.TransformState.TransformView;
-    const XMFLOAT4X4& projM = Engine::GAPI->GetProjectionMatrix();
-    XMFLOAT4X4 viewProj;
-    XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
-
-    const FogConstants fog = MakeFogConstants();
-
-    m_CmdList->SetPipelineState( m_SkeletalPSO.Get() );
-    m_CmdList->SetGraphicsRootSignature( m_SkeletalRootSig.Get() );
-    m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
-    m_CmdList->SetGraphicsRoot32BitConstants( 4, 8, &fog, 0 );   // b3 fog
-    BindFrameLights( 5, 6, 7, 8 );   // light SRV(t1)+count(b4)+grid(t2)+index(t3) — MUST set all (see BindFrameLights)
-
-    D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
-    D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
-    m_CmdList->RSSetViewports( 1, &vp );
-    m_CmdList->RSSetScissorRects( 1, &sc );
-    m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+        return;
+    if ( vobs.empty() ) return;
 
     const float radius = rs.RendererSettings.SkeletalMeshDrawRadius;
     const XMVECTOR camPos = Engine::GAPI->GetCameraPositionXM();
     const XMVECTOR radiusSq = XMVectorReplicate( radius * radius );
-
-    const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_WhiteSrvSlot );
     const UINT frame = m_FrameIndex;
-    unsigned int drawnTris = 0;
-    static std::vector<XMFLOAT4X4> boneCache;
-
-    // Node attachments (weapons, heads, lamps, held items) are static packed meshes placed at a bone
-    // node's object-space transform. They're collected here (with the bone pose live) and drawn in a
-    // second pass via the VOB pipeline, whose packed-vertex + per-instance-world-matrix format matches.
-    struct AttachmentDraw { MeshInfo* mesh; zCTexture* tex; XMFLOAT4X4 world; };
-    static std::vector<AttachmentDraw> attachmentDraws;
-    attachmentDraws.clear();
-
     const auto now = Engine::GAPI->GetTotalTimeDW();
+    static std::vector<XMFLOAT4X4> boneCache;
 
     for ( SkeletalVobInfo* vi : vobs ) {
         if ( !vi || !vi->Vob || !vi->VisualInfo ) continue;
         if ( !vi->Vob->GetShowVisual() ) continue;
 
         SkeletalMeshVisualInfo* visual = static_cast<SkeletalMeshVisualInfo*>( vi->VisualInfo );
-        if ( visual->SkeletalMeshes.empty() ) continue;   // interactive MOBs (no base skeletal mesh): skip
+        // Note: we also need to draw static interactive MOBs (e.g. doors) that have no base skeletal mesh, so don't skip them here.
+        // They work in D3d11 but not in d3d12 currently. need to figure that out.
 
         zCModel* model = static_cast<zCModel*>( vi->Vob->GetVisual() );
         if ( !model ) continue;
 
+        if ( visual->SkeletalMeshes.empty() ) {
+            if ( model->GetMeshSoftSkinList()->NumInArray > 0 ) {
+                // how?
+                WorldConverter::ExtractSkeletalMeshFromVob( model, visual );
+                if ( visual->SkeletalMeshes.empty() ) {
+                    continue;
+                }
+            } else {
+                continue;
+            }
+        }
         if ( XMVector3Greater( XMVector3LengthSq( camPos - vi->Vob->GetPositionWorldXM() ), radiusSq ) )
             continue;   // out of skeletal-draw range
 
         model->SetDistanceToCamera( 500 );
         if ( vi->LastAniUpdateFrame != now ) {
             vi->LastAniUpdateFrame = now;
-            // Update attachments
-            model->UpdateAttachedVobs();
+            model->UpdateAttachedVobs();   // once/frame — this is why the pass can't just re-run in a prepass
         }
-        model->UpdateMeshLibTexAniState();
 
         // Bone palette (object-space matrices) for the model's current animation pose.
         boneCache.clear();
@@ -4010,9 +4050,8 @@ XRESULT D3D12GraphicsEngine::DrawSkeletalMeshes( std::vector<SkeletalVobInfo*>& 
         if ( numBones == 0 ) continue;
         if ( numBones > kSkeletalMaxBones ) numBones = kSkeletalMaxBones;
 
-        // Allocate the per-instance CB + bone CB from the per-frame ring (each 256-byte aligned so it can
-        // be bound as a root CBV). Both live in one committed upload resource, so any offset is valid GPU
-        // memory — the shader only indexes Bones[idx] for idx < numBones, so numBones matrices suffice.
+        // Allocate the per-instance CB + bone CB from the per-frame ring (each 256-byte aligned so it can be
+        // bound as a root CBV). Uploaded ONCE here; the prepass + color pass reuse these two GPU addresses.
         const UINT instSize = static_cast<UINT>( sizeof( SkeletalInstanceCB ) );
         const UINT boneSize = numBones * static_cast<UINT>( sizeof( XMFLOAT4X4 ) );
         const UINT instOff = AlignCB( m_SkeletalCBBufferOffset );
@@ -4038,44 +4077,11 @@ XRESULT D3D12GraphicsEngine::DrawSkeletalMeshes( std::vector<SkeletalVobInfo*>& 
         m_SkeletalCBBufferOffset = boneOff + boneSize;
 
         const D3D12_GPU_VIRTUAL_ADDRESS ringGpu = m_SkeletalCBBuffer[frame]->GetGPUVirtualAddress();
-        m_CmdList->SetGraphicsRootConstantBufferView( 1, ringGpu + instOff );
-        m_CmdList->SetGraphicsRootConstantBufferView( 2, ringGpu + boneOff );
+        g_FrameSkelDraws.push_back( { vi, visual, ringGpu + instOff, ringGpu + boneOff } );
 
-        for ( auto const& [mat, meshList] : visual->SkeletalMeshes ) {
-            D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
-            zCTexture* tex = mat ? mat->GetAniTexture() : nullptr;
-            if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
-                if ( MyDirectDrawSurface7* surface = tex->GetSurface() ) {
-                    if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
-                        D3D12Texture* d12 = D3D12Texture::From( gfx );
-                        if ( d12->HasSRV() ) srv = d12->GetSrvGpuHandle();
-                    }
-                }
-            }
-            m_CmdList->SetGraphicsRootDescriptorTable( 3, srv );
-
-            for ( auto const& mesh : meshList ) {
-                if ( !mesh || mesh->Indices.empty() || !mesh->MeshVertexBuffer || !mesh->MeshIndexBuffer )
-                    continue;
-                D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mesh->MeshVertexBuffer.get() );
-                D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mesh->MeshIndexBuffer.get() );
-                if ( !mvb->GetResource() || !mib->GetResource() ) continue;
-
-                const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExSkelVertexStruct ) };
-                m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
-
-                // Skeletal sub-mesh index buffers are 16-bit (VERTEX_INDEX = unsigned short).
-                const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
-                m_CmdList->IASetIndexBuffer( &ibv );
-
-                m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mesh->Indices.size() ), 1, 0, 0, 0 );
-                drawnTris += static_cast<unsigned int>( mesh->Indices.size() ) / 3;
-            }
-        }
-
-        // Collect this vob's node attachments while its bone pose (boneCache) is live. Each attachment's
-        // world = modelWorld * boneMatrix[node] (mirrors D3D11 `world * curTransform`). Lazily convert the
-        // node visual on first sight (and re-convert if the node's visual changed, e.g. a weapon drawn).
+        // Node attachments (weapons/heads/lamps/held items): world = modelWorld * boneMatrix[node]. Upload each
+        // as a VOB instance into the VOB ring NOW (pre-cull) so it can be depth-prepassed AND color-drawn from
+        // one snapshot. Lazily convert the node visual on first sight (or if the node's visual changed).
         gtl::flat_hash_map<int, std::vector<MeshVisualInfo*>>& nodeAttachments = vi->NodeAttachments;
         zCArray<zCModelNodeInst*>* nodeList = model->GetNodeList();
         const int nodeCount = nodeList ? std::min<int>( static_cast<int>( boneCache.size() ), nodeList->NumInArray ) : 0;
@@ -4098,60 +4104,121 @@ XRESULT D3D12GraphicsEngine::DrawSkeletalMeshes( std::vector<SkeletalVobInfo*>& 
             for ( MeshVisualInfo* mvi : it->second ) {
                 if ( !mvi ) continue;
                 bool isMMS = strcmp( mvi->Visual->GetFileExtension( 0 ), ".MMS" ) == 0;
-                if ( true ) {
-                    node->TexAniState.UpdateTexList();
-                    if ( isMMS ) {
-                        zCMorphMesh* mm = reinterpret_cast<zCMorphMesh*>(mvi->Visual);
-                        mm->GetTexAniState()->UpdateTexList();
-                    }
+                node->TexAniState.UpdateTexList();
+                if ( isMMS ) {
+                    zCMorphMesh* mm = reinterpret_cast<zCMorphMesh*>(mvi->Visual);
+                    mm->GetTexAniState()->UpdateTexList();
                 }
                 for ( auto const& [attMat, attMeshes] : mvi->Meshes ) {
                     zCTexture* attTex = attMat ? attMat->GetAniTexture() : nullptr;
                     for ( auto const& attMesh : attMeshes ) {
                         if ( !attMesh || attMesh->Indices.empty() ) continue;
-                        attachmentDraws.push_back( { attMesh.get(), attTex, attWorld } );
+                        if ( !attMesh->GetMeshVertexBuffer() || !attMesh->GetMeshIndexBuffer() ) continue;
+
+                        const UINT instBytes = static_cast<UINT>( sizeof( VobInstanceInfo ) );
+                        if ( m_VobInstanceBufferOffset + instBytes > m_VobInstanceBufferCapacity ) {
+                            if ( !m_VobInstanceOverflowLogged ) {
+                                LogWarn() << "D3D12: VOB instance ring overflow (skeletal attachments dropped this frame).";
+                                m_VobInstanceOverflowLogged = true;
+                            }
+                            break;
+                        }
+                        VobInstanceInfo vii = {};
+                        vii.world = attWorld;
+                        vii.color = 0xFFFFFFFF;   // first-light: white (baked ground-light tint is a later step)
+                        const UINT instOffset = m_VobInstanceBufferOffset;
+                        memcpy( m_VobInstanceBufferPtr[frame] + instOffset, &vii, instBytes );
+                        m_VobInstanceBufferOffset += instBytes;
+                        const D3D12_VERTEX_BUFFER_VIEW attInstView = {
+                            m_VobInstanceBuffer[frame]->GetGPUVirtualAddress() + instOffset, instBytes, sizeof( VobInstanceInfo ) };
+                        g_FrameAttachDraws.push_back( { attMesh.get(), attTex, attInstView } );
                     }
                 }
             }
         }
     }
+}
 
-    // Second pass: draw node attachments through the VOB pipeline (packed 36-byte vertex slot 0 +
-    // per-instance world matrix slot 1). One instance per attachment; reuses the VOB instance ring,
-    // which DrawVobsInstanced (running right after) continues to fill — the offset advances across both.
-    if ( !attachmentDraws.empty() && m_VobPSO && m_WorldRootSig ) {
-        m_CmdList->SetPipelineState( m_VobPSO.Get() );
-        m_CmdList->SetGraphicsRootSignature( m_WorldRootSig.Get() );
+void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
+    // P2.9b-4b (pre-cull): lay down skeletal base-mesh + node-attachment depth into the Forward+ opaque prepass
+    // so the tiled light cull bounds tiles to NPCs/monsters (fixing the static near-skeletal cutoff). Depth-only;
+    // consumes the shared records. Base meshes via m_DepthPrepassSkeletalPSO (skinned), attachments via
+    // m_DepthPrepassVobPSO (packed vertex + instance) — both read only b0 + t0/s0, so no BindFrameLights.
+    if ( !m_FrameOpen || !m_DepthBuffer ) return;
+    if ( g_FrameSkelDraws.empty() && g_FrameAttachDraws.empty() ) return;
+
+    XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
+    Engine::GAPI->SetViewTransformXM( view );
+    Engine::GAPI->ResetWorldTransform();
+    const XMFLOAT4X4& viewM = Engine::GAPI->GetRendererState().TransformState.TransformView;
+    const XMFLOAT4X4& projM = Engine::GAPI->GetProjectionMatrix();
+    XMFLOAT4X4 viewProj;
+    XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
+
+    D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
+    D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
+    const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_WhiteSrvSlot );
+
+    // Base skinned meshes (depth only).
+    if ( !g_FrameSkelDraws.empty() && m_DepthPrepassSkeletalPSO && m_SkeletalRootSig ) {
+        DX_ZONE( m_CmdList, "Depth Prepass (skeletal)" );
+        m_CmdList->SetPipelineState( m_DepthPrepassSkeletalPSO.Get() );
+        m_CmdList->SetGraphicsRootSignature( m_SkeletalRootSig.Get() );
         m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
-        m_CmdList->SetGraphicsRoot32BitConstants( 2, 8, &fog, 0 );   // b1 fog (VOB root sig)
-        BindFrameLights();   // param 3 = light SRV (t1), param 4 = light count (b2) — the VOB PSO's shader
-                             // reads both; omitting them here (as this attachment pass previously did) makes
-                             // the light loop run on a garbage count → GPU TDR hang.
         m_CmdList->RSSetViewports( 1, &vp );
         m_CmdList->RSSetScissorRects( 1, &sc );
         m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
-        for ( const AttachmentDraw& a : attachmentDraws ) {
+        for ( const FrameSkelDraw& d : g_FrameSkelDraws ) {
+            if ( !d.visual ) continue;
+            zCModel* model = static_cast<zCModel*>(d.vobInfo->Vob->GetVisual());
+            model->UpdateMeshLibTexAniState(); // before drawing we NEED to TexAni, the models share the same textures, causing incorrect textures if not done correctly.
+
+            m_CmdList->SetGraphicsRootConstantBufferView( 1, d.instCb );
+            m_CmdList->SetGraphicsRootConstantBufferView( 2, d.boneCb );
+            for ( auto const& [mat, meshList] : d.visual->SkeletalMeshes ) {
+                D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
+                zCTexture* tex = mat ? mat->GetAniTexture() : nullptr;
+                if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                    if ( MyDirectDrawSurface7* surface = tex->GetSurface() ) {
+                        if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
+                            D3D12Texture* d12 = D3D12Texture::From( gfx );
+                            if ( d12->HasSRV() ) srv = d12->GetSrvGpuHandle();
+                        }
+                    }
+                }
+                m_CmdList->SetGraphicsRootDescriptorTable( 3, srv );
+                for ( auto const& mesh : meshList ) {
+                    if ( !mesh || mesh->Indices.empty() || !mesh->MeshVertexBuffer || !mesh->MeshIndexBuffer )
+                        continue;
+                    D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mesh->MeshVertexBuffer.get() );
+                    D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mesh->MeshIndexBuffer.get() );
+                    if ( !mvb->GetResource() || !mib->GetResource() ) continue;
+                    const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExSkelVertexStruct ) };
+                    m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
+                    const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
+                    m_CmdList->IASetIndexBuffer( &ibv );
+                    m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mesh->Indices.size() ), 1, 0, 0, 0 );
+                }
+            }
+        }
+    }
+
+    // Node attachments (depth only) through the VOB depth PSO (packed vertex slot 0 + per-instance world slot 1).
+    if ( !g_FrameAttachDraws.empty() && m_DepthPrepassVobPSO && m_WorldRootSig ) {
+        DX_ZONE( m_CmdList, "Depth Prepass (attachments)" );
+        m_CmdList->SetPipelineState( m_DepthPrepassVobPSO.Get() );
+        m_CmdList->SetGraphicsRootSignature( m_WorldRootSig.Get() );
+        m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
+        m_CmdList->RSSetViewports( 1, &vp );
+        m_CmdList->RSSetScissorRects( 1, &sc );
+        m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+
+        for ( const FrameAttachDraw& a : g_FrameAttachDraws ) {
             if ( !a.mesh || !a.mesh->GetMeshVertexBuffer() || !a.mesh->GetMeshIndexBuffer() ) continue;
             D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( a.mesh->GetMeshVertexBuffer() );
             D3D12VertexBuffer* mib = D3D12VertexBuffer::From( a.mesh->GetMeshIndexBuffer() );
             if ( !mvb->GetResource() || !mib->GetResource() ) continue;
-
-            const UINT instBytes = static_cast<UINT>( sizeof( VobInstanceInfo ) );
-            if ( m_VobInstanceBufferOffset + instBytes > m_VobInstanceBufferCapacity ) {
-                if ( !m_VobInstanceOverflowLogged ) {
-                    LogWarn() << "D3D12: VOB instance ring overflow (skeletal attachments dropped this frame).";
-                    m_VobInstanceOverflowLogged = true;
-                }
-                break;
-            }
-
-            VobInstanceInfo vii = {};
-            vii.world = a.world;
-            vii.color = 0xFFFFFFFF;   // first-light: white (baked ground-light tint is a later step)
-            const UINT instOffset = m_VobInstanceBufferOffset;
-            memcpy( m_VobInstanceBufferPtr[frame] + instOffset, &vii, instBytes );
-            m_VobInstanceBufferOffset += instBytes;
 
             D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
             if ( a.tex && a.tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
@@ -4165,21 +4232,128 @@ XRESULT D3D12GraphicsEngine::DrawSkeletalMeshes( std::vector<SkeletalVobInfo*>& 
             m_CmdList->SetGraphicsRootDescriptorTable( 1, srv );
 
             const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStructGPU ) };
-            const D3D12_VERTEX_BUFFER_VIEW instView = {
-                m_VobInstanceBuffer[frame]->GetGPUVirtualAddress() + instOffset, instBytes, sizeof( VobInstanceInfo ) };
-            const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, instView };
+            const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, a.instView };
             m_CmdList->IASetVertexBuffers( 0, 2, views );
-
             const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
             m_CmdList->IASetIndexBuffer( &ibv );
+            m_CmdList->DrawIndexedInstanced( static_cast<UINT>( a.mesh->Indices.size() ), 1, 0, 0, 0 );
+        }
+    }
+}
 
+void D3D12GraphicsEngine::DrawSkeletalColor() {
+    // P2.9b-4b (post-cull): draw the skeletal base meshes + node attachments collected by PrepareFrameSkeletals,
+    // lit through the tile grid. Base via m_SkeletalPSO, attachments via m_VobPSO — same PSOs/binds as before the
+    // 4b split, just consuming the shared records (no re-upload, no re-run of the once/frame animation update).
+    if ( !m_FrameOpen || !m_SkeletalPSO || !m_SkeletalRootSig || !m_DepthBuffer ) return;
+    if ( g_FrameSkelDraws.empty() && g_FrameAttachDraws.empty() ) return;
+
+    GothicRendererState& rs = Engine::GAPI->GetRendererState();
+
+    // Reversed-Z ViewProj (identical derivation to DrawWorldMesh / DrawVobsInstanced).
+    XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
+    Engine::GAPI->SetViewTransformXM( view );
+    Engine::GAPI->ResetWorldTransform();
+    const XMFLOAT4X4& viewM = rs.TransformState.TransformView;
+    const XMFLOAT4X4& projM = Engine::GAPI->GetProjectionMatrix();
+    XMFLOAT4X4 viewProj;
+    XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
+
+    const FogConstants fog = MakeFogConstants();
+    const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_WhiteSrvSlot );
+    D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
+    D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
+    unsigned int drawnTris = 0;
+
+    // Base skinned meshes (lit).
+    if ( !g_FrameSkelDraws.empty() ) {
+        DX_ZONE( m_CmdList, "Draw skeletal" );
+        m_CmdList->SetPipelineState( m_SkeletalPSO.Get() );
+        m_CmdList->SetGraphicsRootSignature( m_SkeletalRootSig.Get() );
+        m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
+        m_CmdList->SetGraphicsRoot32BitConstants( 4, 8, &fog, 0 );   // b3 fog
+        BindFrameLights( 5, 6, 7, 8 );   // light SRV(t1)+count(b4)+grid(t2)+index(t3) — MUST set all (see BindFrameLights)
+        m_CmdList->RSSetViewports( 1, &vp );
+        m_CmdList->RSSetScissorRects( 1, &sc );
+        m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+
+        for ( const FrameSkelDraw& d : g_FrameSkelDraws ) {
+            if ( !d.visual ) continue;
+            zCModel* model = static_cast<zCModel*>(d.vobInfo->Vob->GetVisual());
+            model->UpdateMeshLibTexAniState(); // before drawing we NEED to TexAni, the models share the same textures, causing incorrect textures if not done correctly.
+
+            m_CmdList->SetGraphicsRootConstantBufferView( 1, d.instCb );
+            m_CmdList->SetGraphicsRootConstantBufferView( 2, d.boneCb );
+            for ( auto const& [mat, meshList] : d.visual->SkeletalMeshes ) {
+                D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
+                zCTexture* tex = mat ? mat->GetAniTexture() : nullptr;
+                if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                    if ( MyDirectDrawSurface7* surface = tex->GetSurface() ) {
+                        if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
+                            D3D12Texture* d12 = D3D12Texture::From( gfx );
+                            if ( d12->HasSRV() ) srv = d12->GetSrvGpuHandle();
+                        }
+                    }
+                }
+                m_CmdList->SetGraphicsRootDescriptorTable( 3, srv );
+                for ( auto const& mesh : meshList ) {
+                    if ( !mesh || mesh->Indices.empty() || !mesh->MeshVertexBuffer || !mesh->MeshIndexBuffer )
+                        continue;
+                    D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mesh->MeshVertexBuffer.get() );
+                    D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mesh->MeshIndexBuffer.get() );
+                    if ( !mvb->GetResource() || !mib->GetResource() ) continue;
+                    const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExSkelVertexStruct ) };
+                    m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
+                    const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
+                    m_CmdList->IASetIndexBuffer( &ibv );
+                    m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mesh->Indices.size() ), 1, 0, 0, 0 );
+                    drawnTris += static_cast<unsigned int>( mesh->Indices.size() ) / 3;
+                }
+            }
+        }
+    }
+
+    // Node attachments (lit) through the VOB pipeline. BindFrameLights() is REQUIRED — the VOB PS reads the
+    // light count/grid, so an unbound count would run the loop on garbage → GPU TDR hang.
+    if ( !g_FrameAttachDraws.empty() && m_VobPSO && m_WorldRootSig ) {
+        DX_ZONE( m_CmdList, "Draw attachments" );
+        m_CmdList->SetPipelineState( m_VobPSO.Get() );
+        m_CmdList->SetGraphicsRootSignature( m_WorldRootSig.Get() );
+        m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
+        m_CmdList->SetGraphicsRoot32BitConstants( 2, 8, &fog, 0 );   // b1 fog (VOB root sig)
+        BindFrameLights();
+        m_CmdList->RSSetViewports( 1, &vp );
+        m_CmdList->RSSetScissorRects( 1, &sc );
+        m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+
+        for ( const FrameAttachDraw& a : g_FrameAttachDraws ) {
+            if ( !a.mesh || !a.mesh->GetMeshVertexBuffer() || !a.mesh->GetMeshIndexBuffer() ) continue;
+            D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( a.mesh->GetMeshVertexBuffer() );
+            D3D12VertexBuffer* mib = D3D12VertexBuffer::From( a.mesh->GetMeshIndexBuffer() );
+            if ( !mvb->GetResource() || !mib->GetResource() ) continue;
+
+            D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
+            if ( a.tex && a.tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                if ( MyDirectDrawSurface7* surface = a.tex->GetSurface() ) {
+                    if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
+                        D3D12Texture* d12 = D3D12Texture::From( gfx );
+                        if ( d12->HasSRV() ) srv = d12->GetSrvGpuHandle();
+                    }
+                }
+            }
+            m_CmdList->SetGraphicsRootDescriptorTable( 1, srv );
+
+            const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStructGPU ) };
+            const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, a.instView };
+            m_CmdList->IASetVertexBuffers( 0, 2, views );
+            const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
+            m_CmdList->IASetIndexBuffer( &ibv );
             m_CmdList->DrawIndexedInstanced( static_cast<UINT>( a.mesh->Indices.size() ), 1, 0, 0, 0 );
             drawnTris += static_cast<unsigned int>( a.mesh->Indices.size() ) / 3;
         }
     }
 
     rs.RendererInfo.FrameDrawnTriangles += drawnTris;
-    return XR_SUCCESS;
 }
 
 XRESULT D3D12GraphicsEngine::SetWindow( HWND hWnd ) {

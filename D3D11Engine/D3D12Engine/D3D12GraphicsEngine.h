@@ -145,7 +145,9 @@ private:
     void DrawWaterSurfaces() override; // draw water peeled out of the opaque world pass (scrolled UV, blended)
     bool CreateSkeletalPipeline();    // skeletal (animated NPC/monster) root sig + inline shaders + PSO
     bool CreateSkeletalConstantBuffers(); // per-frame dynamic (upload-heap) skeletal CB ring (instance + bones)
-    XRESULT DrawSkeletalMeshes( std::vector<SkeletalVobInfo*>& vobs, bool asMorphMeshes = false );     // draw animated skeletal vobs (matrix-palette skinning)
+    void PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& vobs );   // once/frame anim update + upload bone/inst CBs + attachment instances (pre-cull)
+    void DrawSkeletalDepthPrepass();  // lay down skeletal base + node-attachment depth into the Forward+ prepass
+    void DrawSkeletalColor();         // draw the collected skeletal base meshes + node attachments (post-cull, lit)
     bool CreateParticlePipeline();    // particle (PFX) root sig + inline billboard shaders (PSOs built per blend)
     bool CreateParticleInstanceBuffers(); // per-frame dynamic (upload-heap) particle instance ring
     // Returns a PSO for the particle shaders matching the given Gothic blend state (alpha/additive/modulate),
@@ -241,6 +243,10 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_DepthPrepassVobPSO;
     Microsoft::WRL::ComPtr<ID3DBlob> m_DepthPrepassVobVsBlob;
     Microsoft::WRL::ComPtr<ID3DBlob> m_DepthPrepassVobPsBlob;
+    // Skeletal depth prepass (P2.9b-4b): depth-only skinned PSO (color write mask 0), reuses m_SkeletalRootSig.
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_DepthPrepassSkeletalPSO;
+    Microsoft::WRL::ComPtr<ID3DBlob> m_DepthPrepassSkeletalVsBlob;
+    Microsoft::WRL::ComPtr<ID3DBlob> m_DepthPrepassSkeletalPsBlob;
 
     // Forward+ tiled light culling (P2.9b-2): one global compute root sig + PSO; two resolution-sized
     // DEFAULT-heap UAV buffers holding the per-tile {Offset,Count} grid and the per-tile light-index slices
