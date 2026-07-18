@@ -91,7 +91,14 @@ inline void ResetCpuContextTracker() {
 #define DX_ZONE(cmdList, nameStr) DXMarker marker_local_evt_##__LINE__(cmdList, L##nameStr)
 
 namespace {
-    constexpr DXGI_FORMAT kBackBufferFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+    // Swapchain / final-output format. R10G10B10A2 (10-bit) instead of R8: the tonemapped output has much
+    // finer gradients (kills banding in sky/fog/soft shadows) at the same 32bpp. Also the format the 2D UI +
+    // ImGui + the tonemap resolve write to. Flip-model swapchains support R10G10B10A2_UNORM natively.
+    constexpr DXGI_FORMAT kBackBufferFormat = DXGI_FORMAT_R10G10B10A2_UNORM;
+    // HDR scene-color format: the 3D world/VOB/skeletal/water/decal/particle passes accumulate lighting here in
+    // linear-ish FLOAT (values may exceed 1.0 — bright sun + additive point lights no longer clip to white), then
+    // a fullscreen tonemap resolves it into the swapchain. R16F 4-channel = 64bpp intermediate (recreated on resize).
+    constexpr DXGI_FORMAT kSceneColorFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
     constexpr UINT kSrvHeapCapacity = 65536;                  // texture SRVs (tier-1 max is 1M; bump-allocated)
     constexpr UINT kUIVertexBufferBytes = 16 * 1024 * 1024;   // per-frame 2D vertex ring (~280k ExVertex)
     constexpr UINT kVobInstanceBufferBytes = 8 * 1024 * 1024; // per-frame VOB instance ring (~58k instances @144B)
@@ -454,12 +461,99 @@ float3 DecodeOctNormal( float2 e )
 // (indices into the global Lights buffer). Lighting math ports D3D11's FP_ComputePointLighting: range cull,
 // N.L, the exact falloff = nd*(nd*0.2+0.8), per-light saturate, additive. The count is clamped to the
 // per-tile capacity so a garbage grid entry can never spin the loop away (that reads as a GPU timeout).
-float3 AccumTiledPointLights( float2 svpos, float3 wpos, float3 N, float3 diffuse )
+// --- Cook-Torrance GGX PBR (ported verbatim from the D3D11 feat/pbr branch: Shaders/include/PointLightShadows.h) ---
+// Staged PBR (P3-PBR-1): albedo is sRGB-decoded to LINEAR in the PS; Gothic's baked vertex lighting is kept as the
+// diffuse/ambient base; the SUN adds a specular-only glint and the tiled POINT lights use the full BRDF. Material
+// params are constant defaults for now (no ORM/normal maps yet — that's a later increment with texture-loading infra).
+static const float PBR_PI = 3.14159265;
+static const float MI_Roughness = 0.9;   // default perceptual roughness (Gothic surfaces are mostly rough dielectrics)
+static const float MI_Metallic  = 0.0;   // default metallic (dielectric)
+static const float SunSpecIntensity = 1.0;
+
+float3 SrgbToLinear( float3 c )   // accurate sRGB EOTF — linearize gamma-encoded albedo so lighting is done in linear space
+{
+    return select( c <= 0.04045, c / 12.92, pow( ( c + 0.055 ) / 1.055, 2.4 ) );
+}
+
+float  PBR_SafeRoughness( float r ) { return max( saturate( r ), 0.045 ); }
+float  PBR_DistributionGGX( float NdotH, float roughness )
+{
+    float a = roughness * roughness;
+    float a2 = a * a;
+    float denom = NdotH * NdotH * ( a2 - 1.0 ) + 1.0;
+    return a2 / max( PBR_PI * denom * denom, 1e-4 );
+}
+float  PBR_GeometrySchlickGGX( float NdotX, float roughness )
+{
+    float r = roughness + 1.0;
+    float k = ( r * r ) / 8.0;
+    return NdotX / max( NdotX * ( 1.0 - k ) + k, 1e-4 );
+}
+float  PBR_GeometrySmith( float NdotV, float NdotL, float roughness )
+{
+    return PBR_GeometrySchlickGGX( NdotV, roughness ) * PBR_GeometrySchlickGGX( NdotL, roughness );
+}
+float  PBR_Pow5( float x ) { float x2 = x * x; return x2 * x2 * x; }
+float3 PBR_FresnelSchlick( float cosTheta, float3 F0 ) { return F0 + ( 1.0 - F0 ) * PBR_Pow5( saturate( 1.0 - cosTheta ) ); }
+
+// Full Cook-Torrance (energy-conserving diffuse + specular). attenuation folds in falloff/shadow; NdotL applied here.
+float3 PBR_DirectLighting( float3 baseColor, float3 lightColor, float3 N, float3 V, float3 L,
+                           float roughness, float metallic, float attenuation )
+{
+    float NdotL = saturate( dot( N, L ) );
+    float NdotV = saturate( dot( N, V ) );
+    if ( NdotL <= 0.0 || NdotV <= 0.0 || attenuation <= 0.0 ) return 0.0;
+    float3 H = normalize( V + L );
+    float NdotH = saturate( dot( N, H ) );
+    float VdotH = saturate( dot( V, H ) );
+    float  cr = PBR_SafeRoughness( roughness * roughness );   // perceptual->physical (the branch squares here)
+    float  cm = saturate( metallic );
+    float3 F0 = lerp( float3( 0.04, 0.04, 0.04 ), baseColor, cm );
+    float  D = PBR_DistributionGGX( NdotH, cr );
+    float  G = PBR_GeometrySmith( NdotV, NdotL, cr );
+    float3 F = PBR_FresnelSchlick( VdotH, F0 );
+    float3 specular = ( D * G * F ) / max( 4.0 * NdotV * NdotL, 1e-4 );
+    float3 kD = ( 1.0 - F ) * ( 1.0 - cm );
+    float3 diffuse = kD * baseColor / PBR_PI;
+    return ( diffuse + specular ) * lightColor * ( NdotL * attenuation );
+}
+
+// Specular-only variant — used for the SUN so we don't double-count Gothic's baked diffuse sun.
+float3 PBR_DirectSpecularOnly( float3 baseColor, float3 lightColor, float3 N, float3 V, float3 L,
+                               float roughness, float metallic, float attenuation )
+{
+    float NdotL = saturate( dot( N, L ) );
+    float NdotV = saturate( dot( N, V ) );
+    if ( NdotL <= 0.0 || NdotV <= 0.0 || attenuation <= 0.0 ) return 0.0;
+    float3 H = normalize( V + L );
+    float NdotH = saturate( dot( N, H ) );
+    float VdotH = saturate( dot( V, H ) );
+    float  cr = PBR_SafeRoughness( roughness * roughness );
+    float  cm = saturate( metallic );
+    float3 F0 = lerp( float3( 0.04, 0.04, 0.04 ), baseColor, cm );
+    float  D = PBR_DistributionGGX( NdotH, cr );
+    float  G = PBR_GeometrySmith( NdotV, NdotL, cr );
+    float3 F = PBR_FresnelSchlick( VdotH, F0 );
+    float3 specular = ( D * G * F ) / max( 4.0 * NdotV * NdotL, 1e-4 );
+    return specular * lightColor * ( NdotL * attenuation );
+}
+
+// PBR sun SPECULAR glint (staged: baked vertex lighting still provides sun/sky diffuse). shadow = 1 lit / 0 occluded.
+float3 ComputeSunSpecular( float3 wpos, float3 N, float3 albedo, float shadow )
+{
+    float3 V = normalize( CamPosWS - wpos );
+    return PBR_DirectSpecularOnly( albedo, float3( 1.0, 1.0, 1.0 ) * SunSpecIntensity, N, V, SunDirWS, MI_Roughness, MI_Metallic, shadow );
+}
+
+// Tiled point lights via the Forward+ grid, now with the full Cook-Torrance BRDF. `albedo` is LINEAR (sRGB-decoded
+// in the PS). Ports D3D11 feat/pbr FP_ComputePointLighting (PLS_ComputePointLightLightingPBR).
+float3 AccumTiledPointLights( float2 svpos, float3 wpos, float3 N, float3 albedo )
 {
     uint2 tile = uint2( svpos ) / TILE_SIZE;
     uint  tileIndex = tile.y * NumTilesX + tile.x;
     LightGrid g = LightGridBuf[tileIndex];
     uint n = min( g.Count, MAX_LIGHTS_PER_TILE );
+    float3 V = normalize( CamPosWS - wpos );
     float3 total = 0;
     for ( uint k = 0; k < n; k++ )
     {
@@ -468,21 +562,17 @@ float3 AccumTiledPointLights( float2 svpos, float3 wpos, float3 N, float3 diffus
         float dist = length( dir );
         if ( dist >= L.Range ) continue;
         dir /= dist;
-        float ndl = max( 0.0, dot( dir, N ) );
         float nd  = saturate( 1.0 - dist / L.Range );
-        float falloff = nd * (nd * 0.2 + 0.8);
-        float3 c = saturate( falloff * ndl * L.Color.rgb );
+        float falloff = nd * ( nd * 0.2 + 0.8 );   // PLS_ComputeRangeFalloff
+        float3 lit = PBR_DirectLighting( albedo, L.Color.rgb, N, V, dir, MI_Roughness, MI_Metallic, falloff );
         if ( L.ShadowCubeIndex >= 0 )
         {
-            float sh = SamplePointShadow( L.ShadowCubeIndex, wpos, N, L.PositionWorld, L.Range );   // P2.10d/e
-            // Distance fade (P2.10e): PositionView length = camera→light distance. Fade the shadow term back to
-            // lit as the light approaches the selection cutoff (range*9) so far cubes (low-res, staggered later)
-            // don't pop hard — mirrors D3D11 PLS_ApplyShadowDistanceFade's intent.
+            float sh = SamplePointShadow( L.ShadowCubeIndex, wpos, N, L.PositionWorld, L.Range );
             float camDist = length( L.PositionView );
             float fade    = saturate( ( camDist - L.Range * 6.0 ) / ( L.Range * 3.0 ) );
-            c *= lerp( sh, 1.0, fade );
+            lit *= lerp( sh, 1.0, fade );
         }
-        total += saturate( c * diffuse );
+        total += lit;
     }
     return total;
 }
@@ -505,18 +595,20 @@ VS_OUT VSMain( VS_IN i )
 float4 PSMain( VS_OUT i ) : SV_TARGET
 {
     float4 t = tx.Sample( smp, i.uv );
-    clip( t.a - 0.5 );                    // fixed alpha-test cutout (opaque textures have a==1 -> kept)
+    clip( t.a - 0.5 );                        // fixed alpha-test cutout (opaque textures have a==1 -> kept)
     float3 N = normalize( i.wnrm );
-    float3 baseLit = t.rgb * i.col.bgr;   // baked vertex lighting (ambient/sun/GI); .bgr recovers Gothic's RGB
-    // CSM: darken the baked lighting only where the SUN-FACING surface is occluded (sunNdl weights out
-    // back-faces already dark in the bake; ShadowStrength is 0 when the sun is down → no-op).
+    float3 albedo = SrgbToLinear( t.rgb );    // linearize for PBR (all HDR-buffer values are linear now)
+    float3 baseLit = albedo * i.col.bgr;      // baked vertex lighting as the diffuse/ambient base; .bgr recovers RGB
+    // CSM: darken the baked lighting only where the SUN-FACING surface is occluded (ShadowStrength 0 when sun down).
+    float shadow = ComputeSunShadow( i.wpos, N );
     float sunNdl = saturate( dot( SunDirWS, N ) );
-    float occ    = sunNdl * ( 1.0 - ComputeSunShadow( i.wpos, N ) );
-    baseLit *= ( 1.0 - occ * ShadowStrength );
-    float3 rgb = baseLit + AccumTiledPointLights( i.clip.xy, i.wpos, N, t.rgb );
-    // Linear distance fog toward the atmosphere color (matches Gothic's FFFog / the sky-clear color).
+    baseLit *= ( 1.0 - sunNdl * ( 1.0 - shadow ) * ShadowStrength );
+    float3 rgb = baseLit;
+    rgb += ComputeSunSpecular( i.wpos, N, albedo, shadow );          // PBR sun glint (specular only)
+    rgb += AccumTiledPointLights( i.clip.xy, i.wpos, N, albedo );    // PBR point lights (diffuse + specular)
+    // Linear distance fog toward the (linearized) atmosphere color — keeps the HDR buffer consistently linear.
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
-    rgb = lerp( rgb, FogColor, f );
+    rgb = lerp( rgb, SrgbToLinear( FogColor ), f );
     return float4( rgb, 1.0 );
 }
 )";
@@ -623,12 +715,99 @@ float3 DecodeOctNormal( float2 e )
     return normalize( n );
 }
 
-float3 AccumTiledPointLights( float2 svpos, float3 wpos, float3 N, float3 diffuse )
+// --- Cook-Torrance GGX PBR (ported verbatim from the D3D11 feat/pbr branch: Shaders/include/PointLightShadows.h) ---
+// Staged PBR (P3-PBR-1): albedo is sRGB-decoded to LINEAR in the PS; Gothic's baked vertex lighting is kept as the
+// diffuse/ambient base; the SUN adds a specular-only glint and the tiled POINT lights use the full BRDF. Material
+// params are constant defaults for now (no ORM/normal maps yet — that's a later increment with texture-loading infra).
+static const float PBR_PI = 3.14159265;
+static const float MI_Roughness = 0.9;   // default perceptual roughness (Gothic surfaces are mostly rough dielectrics)
+static const float MI_Metallic  = 0.0;   // default metallic (dielectric)
+static const float SunSpecIntensity = 1.0;
+
+float3 SrgbToLinear( float3 c )   // accurate sRGB EOTF — linearize gamma-encoded albedo so lighting is done in linear space
+{
+    return select( c <= 0.04045, c / 12.92, pow( ( c + 0.055 ) / 1.055, 2.4 ) );
+}
+
+float  PBR_SafeRoughness( float r ) { return max( saturate( r ), 0.045 ); }
+float  PBR_DistributionGGX( float NdotH, float roughness )
+{
+    float a = roughness * roughness;
+    float a2 = a * a;
+    float denom = NdotH * NdotH * ( a2 - 1.0 ) + 1.0;
+    return a2 / max( PBR_PI * denom * denom, 1e-4 );
+}
+float  PBR_GeometrySchlickGGX( float NdotX, float roughness )
+{
+    float r = roughness + 1.0;
+    float k = ( r * r ) / 8.0;
+    return NdotX / max( NdotX * ( 1.0 - k ) + k, 1e-4 );
+}
+float  PBR_GeometrySmith( float NdotV, float NdotL, float roughness )
+{
+    return PBR_GeometrySchlickGGX( NdotV, roughness ) * PBR_GeometrySchlickGGX( NdotL, roughness );
+}
+float  PBR_Pow5( float x ) { float x2 = x * x; return x2 * x2 * x; }
+float3 PBR_FresnelSchlick( float cosTheta, float3 F0 ) { return F0 + ( 1.0 - F0 ) * PBR_Pow5( saturate( 1.0 - cosTheta ) ); }
+
+// Full Cook-Torrance (energy-conserving diffuse + specular). attenuation folds in falloff/shadow; NdotL applied here.
+float3 PBR_DirectLighting( float3 baseColor, float3 lightColor, float3 N, float3 V, float3 L,
+                           float roughness, float metallic, float attenuation )
+{
+    float NdotL = saturate( dot( N, L ) );
+    float NdotV = saturate( dot( N, V ) );
+    if ( NdotL <= 0.0 || NdotV <= 0.0 || attenuation <= 0.0 ) return 0.0;
+    float3 H = normalize( V + L );
+    float NdotH = saturate( dot( N, H ) );
+    float VdotH = saturate( dot( V, H ) );
+    float  cr = PBR_SafeRoughness( roughness * roughness );   // perceptual->physical (the branch squares here)
+    float  cm = saturate( metallic );
+    float3 F0 = lerp( float3( 0.04, 0.04, 0.04 ), baseColor, cm );
+    float  D = PBR_DistributionGGX( NdotH, cr );
+    float  G = PBR_GeometrySmith( NdotV, NdotL, cr );
+    float3 F = PBR_FresnelSchlick( VdotH, F0 );
+    float3 specular = ( D * G * F ) / max( 4.0 * NdotV * NdotL, 1e-4 );
+    float3 kD = ( 1.0 - F ) * ( 1.0 - cm );
+    float3 diffuse = kD * baseColor / PBR_PI;
+    return ( diffuse + specular ) * lightColor * ( NdotL * attenuation );
+}
+
+// Specular-only variant — used for the SUN so we don't double-count Gothic's baked diffuse sun.
+float3 PBR_DirectSpecularOnly( float3 baseColor, float3 lightColor, float3 N, float3 V, float3 L,
+                               float roughness, float metallic, float attenuation )
+{
+    float NdotL = saturate( dot( N, L ) );
+    float NdotV = saturate( dot( N, V ) );
+    if ( NdotL <= 0.0 || NdotV <= 0.0 || attenuation <= 0.0 ) return 0.0;
+    float3 H = normalize( V + L );
+    float NdotH = saturate( dot( N, H ) );
+    float VdotH = saturate( dot( V, H ) );
+    float  cr = PBR_SafeRoughness( roughness * roughness );
+    float  cm = saturate( metallic );
+    float3 F0 = lerp( float3( 0.04, 0.04, 0.04 ), baseColor, cm );
+    float  D = PBR_DistributionGGX( NdotH, cr );
+    float  G = PBR_GeometrySmith( NdotV, NdotL, cr );
+    float3 F = PBR_FresnelSchlick( VdotH, F0 );
+    float3 specular = ( D * G * F ) / max( 4.0 * NdotV * NdotL, 1e-4 );
+    return specular * lightColor * ( NdotL * attenuation );
+}
+
+// PBR sun SPECULAR glint (staged: baked vertex lighting still provides sun/sky diffuse). shadow = 1 lit / 0 occluded.
+float3 ComputeSunSpecular( float3 wpos, float3 N, float3 albedo, float shadow )
+{
+    float3 V = normalize( CamPosWS - wpos );
+    return PBR_DirectSpecularOnly( albedo, float3( 1.0, 1.0, 1.0 ) * SunSpecIntensity, N, V, SunDirWS, MI_Roughness, MI_Metallic, shadow );
+}
+
+// Tiled point lights via the Forward+ grid, now with the full Cook-Torrance BRDF. `albedo` is LINEAR (sRGB-decoded
+// in the PS). Ports D3D11 feat/pbr FP_ComputePointLighting (PLS_ComputePointLightLightingPBR).
+float3 AccumTiledPointLights( float2 svpos, float3 wpos, float3 N, float3 albedo )
 {
     uint2 tile = uint2( svpos ) / TILE_SIZE;
     uint  tileIndex = tile.y * NumTilesX + tile.x;
     LightGrid g = LightGridBuf[tileIndex];
     uint n = min( g.Count, MAX_LIGHTS_PER_TILE );
+    float3 V = normalize( CamPosWS - wpos );
     float3 total = 0;
     for ( uint k = 0; k < n; k++ )
     {
@@ -637,21 +816,17 @@ float3 AccumTiledPointLights( float2 svpos, float3 wpos, float3 N, float3 diffus
         float dist = length( dir );
         if ( dist >= L.Range ) continue;
         dir /= dist;
-        float ndl = max( 0.0, dot( dir, N ) );
         float nd  = saturate( 1.0 - dist / L.Range );
-        float falloff = nd * (nd * 0.2 + 0.8);
-        float3 c = saturate( falloff * ndl * L.Color.rgb );
+        float falloff = nd * ( nd * 0.2 + 0.8 );   // PLS_ComputeRangeFalloff
+        float3 lit = PBR_DirectLighting( albedo, L.Color.rgb, N, V, dir, MI_Roughness, MI_Metallic, falloff );
         if ( L.ShadowCubeIndex >= 0 )
         {
-            float sh = SamplePointShadow( L.ShadowCubeIndex, wpos, N, L.PositionWorld, L.Range );   // P2.10d/e
-            // Distance fade (P2.10e): PositionView length = camera→light distance. Fade the shadow term back to
-            // lit as the light approaches the selection cutoff (range*9) so far cubes (low-res, staggered later)
-            // don't pop hard — mirrors D3D11 PLS_ApplyShadowDistanceFade's intent.
+            float sh = SamplePointShadow( L.ShadowCubeIndex, wpos, N, L.PositionWorld, L.Range );
             float camDist = length( L.PositionView );
             float fade    = saturate( ( camDist - L.Range * 6.0 ) / ( L.Range * 3.0 ) );
-            c *= lerp( sh, 1.0, fade );
+            lit *= lerp( sh, 1.0, fade );
         }
-        total += saturate( c * diffuse );
+        total += lit;
     }
     return total;
 }
@@ -685,13 +860,16 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     float4 t = tx.Sample( smp, i.uv );
     clip( t.a - 0.5 );
     float3 N = normalize( i.wnrm );
-    float3 baseLit = t.rgb * i.col.bgr;
+    float3 albedo = SrgbToLinear( t.rgb );
+    float3 baseLit = albedo * i.col.bgr;   // baked/ground vertex lighting as the diffuse base
+    float shadow = ComputeSunShadow( i.wpos, N );
     float sunNdl = saturate( dot( SunDirWS, N ) );
-    float occ    = sunNdl * ( 1.0 - ComputeSunShadow( i.wpos, N ) );
-    baseLit *= ( 1.0 - occ * ShadowStrength );
-    float3 rgb = baseLit + AccumTiledPointLights( i.clip.xy, i.wpos, N, t.rgb );
+    baseLit *= ( 1.0 - sunNdl * ( 1.0 - shadow ) * ShadowStrength );
+    float3 rgb = baseLit;
+    rgb += ComputeSunSpecular( i.wpos, N, albedo, shadow );
+    rgb += AccumTiledPointLights( i.clip.xy, i.wpos, N, albedo );
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
-    return float4( lerp( rgb, FogColor, f ), 1.0 );
+    return float4( lerp( rgb, SrgbToLinear( FogColor ), f ), 1.0 );
 }
 
 // --- Depth-prepass variant (P2.9b-4a: adds instanced VOBs to the Forward+ opaque depth prepass) ---
@@ -934,9 +1112,9 @@ VS_OUT VSMain( VS_IN i )
 float4 PSMain( VS_OUT i ) : SV_TARGET
 {
     float4 t = tx.Sample( smp, i.uv );
-    float3 rgb = t.rgb * i.col.bgr;
+    float3 rgb = pow( t.rgb, 2.2 ) * i.col.bgr;   // linearize (HDR buffer is linear; ~pow2.2 approximates sRGB)
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
-    rgb = lerp( rgb, FogColor, f );
+    rgb = lerp( rgb, pow( FogColor, 2.2 ), f );
     return float4( rgb, WaterAlpha );
 }
 )";
@@ -1106,12 +1284,99 @@ float ComputeSunShadow( float3 wpos, float3 N )
 
 // Accumulate dynamic point lights via the Forward+ tile grid (identical math to the world/VOB shaders:
 // range cull, N.L, falloff = nd*(nd*0.2+0.8), per-light saturate, additive; specular/shadows are later).
-float3 AccumTiledPointLights( float2 svpos, float3 wpos, float3 N, float3 diffuse )
+// --- Cook-Torrance GGX PBR (ported verbatim from the D3D11 feat/pbr branch: Shaders/include/PointLightShadows.h) ---
+// Staged PBR (P3-PBR-1): albedo is sRGB-decoded to LINEAR in the PS; Gothic's baked vertex lighting is kept as the
+// diffuse/ambient base; the SUN adds a specular-only glint and the tiled POINT lights use the full BRDF. Material
+// params are constant defaults for now (no ORM/normal maps yet — that's a later increment with texture-loading infra).
+static const float PBR_PI = 3.14159265;
+static const float MI_Roughness = 0.9;   // default perceptual roughness (Gothic surfaces are mostly rough dielectrics)
+static const float MI_Metallic  = 0.0;   // default metallic (dielectric)
+static const float SunSpecIntensity = 1.0;
+
+float3 SrgbToLinear( float3 c )   // accurate sRGB EOTF — linearize gamma-encoded albedo so lighting is done in linear space
+{
+    return select( c <= 0.04045, c / 12.92, pow( ( c + 0.055 ) / 1.055, 2.4 ) );
+}
+
+float  PBR_SafeRoughness( float r ) { return max( saturate( r ), 0.045 ); }
+float  PBR_DistributionGGX( float NdotH, float roughness )
+{
+    float a = roughness * roughness;
+    float a2 = a * a;
+    float denom = NdotH * NdotH * ( a2 - 1.0 ) + 1.0;
+    return a2 / max( PBR_PI * denom * denom, 1e-4 );
+}
+float  PBR_GeometrySchlickGGX( float NdotX, float roughness )
+{
+    float r = roughness + 1.0;
+    float k = ( r * r ) / 8.0;
+    return NdotX / max( NdotX * ( 1.0 - k ) + k, 1e-4 );
+}
+float  PBR_GeometrySmith( float NdotV, float NdotL, float roughness )
+{
+    return PBR_GeometrySchlickGGX( NdotV, roughness ) * PBR_GeometrySchlickGGX( NdotL, roughness );
+}
+float  PBR_Pow5( float x ) { float x2 = x * x; return x2 * x2 * x; }
+float3 PBR_FresnelSchlick( float cosTheta, float3 F0 ) { return F0 + ( 1.0 - F0 ) * PBR_Pow5( saturate( 1.0 - cosTheta ) ); }
+
+// Full Cook-Torrance (energy-conserving diffuse + specular). attenuation folds in falloff/shadow; NdotL applied here.
+float3 PBR_DirectLighting( float3 baseColor, float3 lightColor, float3 N, float3 V, float3 L,
+                           float roughness, float metallic, float attenuation )
+{
+    float NdotL = saturate( dot( N, L ) );
+    float NdotV = saturate( dot( N, V ) );
+    if ( NdotL <= 0.0 || NdotV <= 0.0 || attenuation <= 0.0 ) return 0.0;
+    float3 H = normalize( V + L );
+    float NdotH = saturate( dot( N, H ) );
+    float VdotH = saturate( dot( V, H ) );
+    float  cr = PBR_SafeRoughness( roughness * roughness );   // perceptual->physical (the branch squares here)
+    float  cm = saturate( metallic );
+    float3 F0 = lerp( float3( 0.04, 0.04, 0.04 ), baseColor, cm );
+    float  D = PBR_DistributionGGX( NdotH, cr );
+    float  G = PBR_GeometrySmith( NdotV, NdotL, cr );
+    float3 F = PBR_FresnelSchlick( VdotH, F0 );
+    float3 specular = ( D * G * F ) / max( 4.0 * NdotV * NdotL, 1e-4 );
+    float3 kD = ( 1.0 - F ) * ( 1.0 - cm );
+    float3 diffuse = kD * baseColor / PBR_PI;
+    return ( diffuse + specular ) * lightColor * ( NdotL * attenuation );
+}
+
+// Specular-only variant — used for the SUN so we don't double-count Gothic's baked diffuse sun.
+float3 PBR_DirectSpecularOnly( float3 baseColor, float3 lightColor, float3 N, float3 V, float3 L,
+                               float roughness, float metallic, float attenuation )
+{
+    float NdotL = saturate( dot( N, L ) );
+    float NdotV = saturate( dot( N, V ) );
+    if ( NdotL <= 0.0 || NdotV <= 0.0 || attenuation <= 0.0 ) return 0.0;
+    float3 H = normalize( V + L );
+    float NdotH = saturate( dot( N, H ) );
+    float VdotH = saturate( dot( V, H ) );
+    float  cr = PBR_SafeRoughness( roughness * roughness );
+    float  cm = saturate( metallic );
+    float3 F0 = lerp( float3( 0.04, 0.04, 0.04 ), baseColor, cm );
+    float  D = PBR_DistributionGGX( NdotH, cr );
+    float  G = PBR_GeometrySmith( NdotV, NdotL, cr );
+    float3 F = PBR_FresnelSchlick( VdotH, F0 );
+    float3 specular = ( D * G * F ) / max( 4.0 * NdotV * NdotL, 1e-4 );
+    return specular * lightColor * ( NdotL * attenuation );
+}
+
+// PBR sun SPECULAR glint (staged: baked vertex lighting still provides sun/sky diffuse). shadow = 1 lit / 0 occluded.
+float3 ComputeSunSpecular( float3 wpos, float3 N, float3 albedo, float shadow )
+{
+    float3 V = normalize( CamPosWS - wpos );
+    return PBR_DirectSpecularOnly( albedo, float3( 1.0, 1.0, 1.0 ) * SunSpecIntensity, N, V, SunDirWS, MI_Roughness, MI_Metallic, shadow );
+}
+
+// Tiled point lights via the Forward+ grid, now with the full Cook-Torrance BRDF. `albedo` is LINEAR (sRGB-decoded
+// in the PS). Ports D3D11 feat/pbr FP_ComputePointLighting (PLS_ComputePointLightLightingPBR).
+float3 AccumTiledPointLights( float2 svpos, float3 wpos, float3 N, float3 albedo )
 {
     uint2 tile = uint2( svpos ) / TILE_SIZE;
     uint  tileIndex = tile.y * NumTilesX + tile.x;
     LightGrid g = LightGridBuf[tileIndex];
     uint n = min( g.Count, MAX_LIGHTS_PER_TILE );
+    float3 V = normalize( CamPosWS - wpos );
     float3 total = 0;
     for ( uint k = 0; k < n; k++ )
     {
@@ -1120,21 +1385,17 @@ float3 AccumTiledPointLights( float2 svpos, float3 wpos, float3 N, float3 diffus
         float dist = length( dir );
         if ( dist >= L.Range ) continue;
         dir /= dist;
-        float ndl = max( 0.0, dot( dir, N ) );
         float nd  = saturate( 1.0 - dist / L.Range );
-        float falloff = nd * (nd * 0.2 + 0.8);
-        float3 c = saturate( falloff * ndl * L.Color.rgb );
+        float falloff = nd * ( nd * 0.2 + 0.8 );   // PLS_ComputeRangeFalloff
+        float3 lit = PBR_DirectLighting( albedo, L.Color.rgb, N, V, dir, MI_Roughness, MI_Metallic, falloff );
         if ( L.ShadowCubeIndex >= 0 )
         {
-            float sh = SamplePointShadow( L.ShadowCubeIndex, wpos, N, L.PositionWorld, L.Range );   // P2.10d/e
-            // Distance fade (P2.10e): PositionView length = camera→light distance. Fade the shadow term back to
-            // lit as the light approaches the selection cutoff (range*9) so far cubes (low-res, staggered later)
-            // don't pop hard — mirrors D3D11 PLS_ApplyShadowDistanceFade's intent.
+            float sh = SamplePointShadow( L.ShadowCubeIndex, wpos, N, L.PositionWorld, L.Range );
             float camDist = length( L.PositionView );
             float fade    = saturate( ( camDist - L.Range * 6.0 ) / ( L.Range * 3.0 ) );
-            c *= lerp( sh, 1.0, fade );
+            lit *= lerp( sh, 1.0, fade );
         }
-        total += saturate( c * diffuse );
+        total += lit;
     }
     return total;
 }
@@ -1180,14 +1441,17 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     float4 t = tx.Sample( smp, i.uv );
     clip( t.a - 0.5 );
     float3 N = normalize( i.wnrm );
-    float3 baseLit = t.rgb * i.col.rgb;        // ModelColor is an RGBA float (white for first-light)
+    float3 albedo = SrgbToLinear( t.rgb );
+    float3 baseLit = albedo * i.col.rgb;       // ModelColor is an RGBA float (white for first-light)
     // CSM: darken the sun-facing side of the model where it's occluded (NPC/monster self- & cast-shadows).
+    float shadow = ComputeSunShadow( i.wpos, N );
     float sunNdl = saturate( dot( SunDirWS, N ) );
-    float occ    = sunNdl * ( 1.0 - ComputeSunShadow( i.wpos, N ) );
-    baseLit *= ( 1.0 - occ * ShadowStrength );
-    float3 rgb = baseLit + AccumTiledPointLights( i.clip.xy, i.wpos, N, t.rgb );   // dynamic point lights on top
+    baseLit *= ( 1.0 - sunNdl * ( 1.0 - shadow ) * ShadowStrength );
+    float3 rgb = baseLit;
+    rgb += ComputeSunSpecular( i.wpos, N, albedo, shadow );
+    rgb += AccumTiledPointLights( i.clip.xy, i.wpos, N, albedo );   // dynamic point lights on top (PBR)
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
-    return float4( lerp( rgb, FogColor, f ), 1.0 );
+    return float4( lerp( rgb, SrgbToLinear( FogColor ), f ), 1.0 );
 }
 
 // --- Depth-prepass variant (P2.9b-4b: adds skinned NPC/monster meshes to the Forward+ opaque depth prepass) ---
@@ -1300,7 +1564,8 @@ VS_OUT VSMain( VS_IN i )
 
 float4 PSMain( VS_OUT i ) : SV_TARGET
 {
-    return tx.Sample( smp, i.uv ) * i.dif;   // color = texture * particle diffuse (blend picks add/alpha/mul)
+    float4 c = tx.Sample( smp, i.uv ) * i.dif;   // color = texture * particle diffuse (blend picks add/alpha/mul)
+    return float4( pow( saturate( c.rgb ), 2.2 ), c.a );   // linearize rgb for the linear HDR buffer (emissive)
 }
 )";
 
@@ -1350,13 +1615,13 @@ float4 PSMainLit( VS_OUT i ) : SV_TARGET   // opaque / alpha-test cutout, fully 
 {
     float4 t = tx.Sample( smp, i.uv );
     clip( t.a - 0.5 );
-    return float4( t.rgb, 1.0 );
+    return float4( pow( t.rgb, 2.2 ), 1.0 );   // linearize for the linear HDR buffer
 }
 
 float4 PSMainBlend( VS_OUT i ) : SV_TARGET // transparent — the PSO blend state picks add/alpha/modulate
 {
     float4 t = tx.Sample( smp, i.uv );
-    return float4( t.rgb, t.a * i.alpha );
+    return float4( pow( t.rgb, 2.2 ), t.a * i.alpha );   // linearize rgb; alpha unchanged
 }
 )";
 
@@ -1497,7 +1762,13 @@ XRESULT D3D12GraphicsEngine::Init() {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the decal pipeline.";
         return XR_FAILED;
     }
-    LogInfo() << "D3D12GraphicsEngine initialized (device + 2D + world + VOB + skeletal + water + particle + decal pipelines up). Swapchain is created once the game window is set.";
+    if ( !CreateTonemapPipeline() ) {
+        // Fatal: the 3D scene PSOs now target the HDR scene-color RT (kSceneColorFormat), so without the tonemap
+        // resolve nothing reaches the swapchain. Failing here cleanly falls back to D3D11 (D3D12 is dev-forced).
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the tonemap pipeline.";
+        return XR_FAILED;
+    }
+    LogInfo() << "D3D12GraphicsEngine initialized (device + 2D + world + VOB + skeletal + water + particle + decal + HDR tonemap pipelines up). Swapchain is created once the game window is set.";
     return XR_SUCCESS;
 }
 
@@ -1804,7 +2075,7 @@ ID3D12PipelineState* D3D12GraphicsEngine::GetOrCreateUIPipeline(
     pso.InputLayout = { layout, _countof( layout ) };
     pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     pso.NumRenderTargets = 1;
-    pso.RTVFormats[0] = kBackBufferFormat;
+    pso.RTVFormats[0] = kBackBufferFormat;   // 2D UI draws straight to the swapchain (after the tonemap resolve)
     pso.SampleDesc.Count = 1;
     pso.SampleMask = UINT_MAX;
 
@@ -2065,6 +2336,221 @@ bool D3D12GraphicsEngine::CreateDepthBuffer( INT2 size ) {
     return true;
 }
 
+bool D3D12GraphicsEngine::CreateSceneColorTarget( INT2 size ) {
+    // HDR scene-color render target (Phase 3): the 3D world/VOB/skeletal/water/decal/particle passes render into
+    // this R16F target so lighting can exceed 1.0 (bright sun + stacked additive point lights keep their detail
+    // instead of clipping to white). ResolveSceneToBackBuffer then tonemaps it into the swapchain. Resolution-
+    // sized → (re)created here on init and every resize (RTV heap + SRV slot persist; only the resource + views
+    // are rebuilt). DEFAULT-heap GPU memory (64bpp), so it barely touches the 32-bit CPU address space.
+    if ( size.x <= 0 || size.y <= 0 ) return false;
+    ID3D12Device* device = m_Device.GetDevice();
+    if ( !device || !m_RtvHeap ) return false;
+
+    D3D12_HEAP_PROPERTIES heapDefault = {};
+    heapDefault.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    D3D12_RESOURCE_DESC dd = {};
+    dd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    dd.Width  = static_cast<UINT64>( size.x );
+    dd.Height = static_cast<UINT>( size.y );
+    dd.DepthOrArraySize = 1;
+    dd.MipLevels = 1;
+    dd.Format = kSceneColorFormat;
+    dd.SampleDesc.Count = 1;
+    dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+
+    D3D12_CLEAR_VALUE clear = {};
+    clear.Format = kSceneColorFormat;   // matches DrawSky's fog-color clear (values set at clear time)
+
+    // Born in RENDER_TARGET (the world pass renders straight into it; ResolveSceneToBackBuffer flips it to
+    // PIXEL_SHADER_RESOURCE and back next frame). GPU is idle at every call site (init / post-WaitForGpuIdle resize).
+    if ( FAILED( device->CreateCommittedResource( &heapDefault, D3D12_HEAP_FLAG_NONE, &dd,
+        D3D12_RESOURCE_STATE_RENDER_TARGET, &clear, IID_PPV_ARGS( m_SceneColor.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: failed to create the HDR scene-color target (" << size.x << "x" << size.y << ").";
+        return false;
+    }
+    m_SceneColor->SetName( L"SceneColorHDR(R16F)" );
+    m_SceneColorInPixelState = false;
+
+    // RTV in the extra heap slot (index kBackBufferCount, past the swapchain RTVs).
+    m_SceneColorRtv = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
+    m_SceneColorRtv.ptr += static_cast<SIZE_T>( kBackBufferCount ) * m_RtvDescriptorSize;
+    device->CreateRenderTargetView( m_SceneColor.Get(), nullptr, m_SceneColorRtv );
+
+    // SRV for the tonemap resolve (slot allocated once; view re-created each call to point at the current resource).
+    if ( m_SceneColorSrvSlot == UINT_MAX ) {
+        m_SceneColorSrvSlot = AllocateSrvSlot();
+        if ( m_SceneColorSrvSlot == UINT_MAX ) return false;
+    }
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+    srv.Format = kSceneColorFormat;
+    srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srv.Texture2D.MipLevels = 1;
+    device->CreateShaderResourceView( m_SceneColor.Get(), &srv, GetSrvCpuHandle( m_SceneColorSrvSlot ) );
+    return true;
+}
+
+bool D3D12GraphicsEngine::CreateTonemapPipeline() {
+    // Fullscreen HDR->swapchain resolve (Phase 3). Exposure * scene HDR -> ACES filmic curve -> R10G10B10A2. Runs
+    // once per world frame after all 3D. No vertex buffer (SV_VertexID fullscreen triangle), no depth. Created once.
+    ID3D12Device* device = m_Device.GetDevice();
+    if ( !device ) return false;
+
+    D3D12_DESCRIPTOR_RANGE srvRange = {};
+    srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    srvRange.NumDescriptors = 1;
+    srvRange.BaseShaderRegister = 0;   // t0 scene HDR
+    srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    D3D12_ROOT_PARAMETER params[2] = {};
+    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[0].DescriptorTable.NumDescriptorRanges = 1;
+    params[0].DescriptorTable.pDescriptorRanges = &srvRange;
+    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[1].Constants.ShaderRegister = 0;   // b0 { Exposure }
+    params[1].Constants.Num32BitValues = 1;
+    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_STATIC_SAMPLER_DESC sampler = {};
+    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.MaxLOD = D3D12_FLOAT32_MAX;
+    sampler.ShaderRegister = 0;   // s0
+    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+    rsDesc.NumParameters = _countof( params );
+    rsDesc.pParameters = params;
+    rsDesc.NumStaticSamplers = 1;
+    rsDesc.pStaticSamplers = &sampler;
+    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
+    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (tonemap)."; return false; }
+    ComPtr<ID3DBlob> rsBlob, rsErr;
+    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
+        if ( rsErr ) LogWarn() << "D3D12: tonemap root sig error: " << static_cast<const char*>( rsErr->GetBufferPointer() );
+        return false;
+    }
+    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
+        IID_PPV_ARGS( m_TonemapRootSig.ReleaseAndGetAddressOf() ) ) ) )
+        return false;
+
+    constexpr char kTonemapShaderSource[] = R"(
+cbuffer TonemapCB : register(b0) { float Exposure; };
+Texture2D    SceneHDR : register(t0);
+SamplerState smp      : register(s0);
+
+struct VS_OUT { float4 pos : SV_POSITION; float2 uv : TEXCOORD0; };
+VS_OUT VSFullscreen( uint vid : SV_VertexID )
+{
+    VS_OUT o;
+    o.uv  = float2( ( vid << 1 ) & 2, vid & 2 );          // (0,0)(2,0)(0,2) covering the screen with one triangle
+    o.pos = float4( o.uv * float2( 2, -2 ) + float2( -1, 1 ), 0, 1 );
+    return o;
+}
+
+// Narkowicz ACES filmic fit: compresses linear HDR into [0,1] with a filmic highlight rolloff, so bright sun +
+// stacked additive point lights keep their color/detail instead of clipping to flat white.
+float3 ACESFilm( float3 x )
+{
+    const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
+    return saturate( ( x * ( a * x + b ) ) / ( x * ( c * x + d ) + e ) );
+}
+// The scene HDR buffer is LINEAR (albedo is sRGB-decoded in the lit passes). Re-encode to sRGB/gamma on the way to
+// the UNORM swapchain (which stores plain gamma-encoded values, same space as the 2D UI that composites on top).
+float3 LinearToSrgb( float3 c )
+{
+    return select( c <= 0.0031308, c * 12.92, 1.055 * pow( c, 1.0 / 2.4 ) - 0.055 );
+}
+float4 PSTonemap( VS_OUT i ) : SV_TARGET
+{
+    float3 hdr = SceneHDR.Sample( smp, i.uv ).rgb * Exposure;
+    return float4( LinearToSrgb( ACESFilm( hdr ) ), 1.0 );
+}
+)";
+    UINT compileFlags = 0;
+    if ( !CompileShaderD3D12( kTonemapShaderSource, sizeof( kTonemapShaderSource ) - 1, "Tonemap",
+        nullptr, nullptr, "VSFullscreen", Shadermodel_VS, compileFlags, 0, m_TonemapVsBlob.ReleaseAndGetAddressOf() ) )
+        return false;
+    if ( !CompileShaderD3D12( kTonemapShaderSource, sizeof( kTonemapShaderSource ) - 1, "Tonemap",
+        nullptr, nullptr, "PSTonemap", Shadermodel_PS, compileFlags, 0, m_TonemapPsBlob.ReleaseAndGetAddressOf() ) )
+        return false;
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+    pso.pRootSignature = m_TonemapRootSig.Get();
+    pso.VS = { m_TonemapVsBlob->GetBufferPointer(), m_TonemapVsBlob->GetBufferSize() };
+    pso.PS = { m_TonemapPsBlob->GetBufferPointer(), m_TonemapPsBlob->GetBufferSize() };
+    pso.InputLayout = { nullptr, 0 };
+    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pso.NumRenderTargets = 1;
+    pso.RTVFormats[0] = kBackBufferFormat;   // resolves to the swapchain
+    pso.DSVFormat = DXGI_FORMAT_UNKNOWN;
+    pso.SampleDesc.Count = 1;
+    pso.SampleMask = UINT_MAX;
+    pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    pso.RasterizerState.DepthClipEnable = TRUE;
+    pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    pso.DepthStencilState.DepthEnable = FALSE;
+    pso.DepthStencilState.StencilEnable = FALSE;
+    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_TonemapPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (tonemap).";
+        return false;
+    }
+    return true;
+}
+
+void D3D12GraphicsEngine::BindSceneColorTarget() {
+    // Make the HDR scene-color target the world pass's render target (+ keep the shared depth buffer). Transitions
+    // it back from PIXEL_SHADER_RESOURCE (last frame's resolve left it there) to RENDER_TARGET when needed.
+    if ( !m_SceneColor || !m_CmdList ) return;
+    if ( m_SceneColorInPixelState ) {
+        auto toRT = TransitionBarrier( m_SceneColor.Get(),
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET );
+        m_CmdList->ResourceBarrier( 1, &toRT );
+        m_SceneColorInPixelState = false;
+    }
+    const bool haveDepth = m_DepthBuffer && m_DsvHeap;
+    D3D12_CPU_DESCRIPTOR_HANDLE dsv = {};
+    if ( haveDepth ) dsv = m_DsvHeap->GetCPUDescriptorHandleForHeapStart();
+    m_CmdList->OMSetRenderTargets( 1, &m_SceneColorRtv, FALSE, haveDepth ? &dsv : nullptr );
+}
+
+void D3D12GraphicsEngine::ResolveSceneToBackBuffer() {
+    // Tonemap the finished HDR scene into the swapchain backbuffer, then leave the backbuffer bound so the 2D UI
+    // (drawn after OnStartWorldRendering) composites on top in LDR. If HDR is unavailable, no-op (nothing to show).
+    if ( !m_SceneColor || !m_TonemapPSO || !m_TonemapRootSig || !m_CmdList ) return;
+    DX_ZONE( m_CmdList, "Tonemap resolve (HDR->swapchain)" );
+
+    if ( !m_SceneColorInPixelState ) {
+        auto toSrv = TransitionBarrier( m_SceneColor.Get(),
+            D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
+        m_CmdList->ResourceBarrier( 1, &toSrv );
+        m_SceneColorInPixelState = true;
+    }
+
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
+    rtv.ptr += static_cast<SIZE_T>( m_FrameIndex ) * m_RtvDescriptorSize;
+    m_CmdList->OMSetRenderTargets( 1, &rtv, FALSE, nullptr );   // no depth for the fullscreen resolve
+
+    const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
+    const D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
+    m_CmdList->RSSetViewports( 1, &vp );
+    m_CmdList->RSSetScissorRects( 1, &sc );
+    m_CmdList->SetPipelineState( m_TonemapPSO.Get() );
+    m_CmdList->SetGraphicsRootSignature( m_TonemapRootSig.Get() );
+    m_CmdList->SetGraphicsRootDescriptorTable( 0, GetSrvGpuHandle( m_SceneColorSrvSlot ) );
+    const float exposure = m_Exposure > 0.0f ? m_Exposure : 1.0f;
+    m_CmdList->SetGraphicsRoot32BitConstant( 1, *reinterpret_cast<const UINT*>( &exposure ), 0 );
+    m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+    m_CmdList->IASetVertexBuffers( 0, 0, nullptr );
+    m_CmdList->DrawInstanced( 3, 1, 0, 0 );
+}
+
 bool D3D12GraphicsEngine::CreateWorldPipeline() {
     ID3D12Device* device = m_Device.GetDevice();
 
@@ -2202,7 +2688,7 @@ bool D3D12GraphicsEngine::CreateWorldPipeline() {
     pso.InputLayout = { layout, _countof( layout ) };
     pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     pso.NumRenderTargets = 1;
-    pso.RTVFormats[0] = kBackBufferFormat;
+    pso.RTVFormats[0] = kSceneColorFormat;
     pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
     pso.SampleDesc.Count = 1;
     pso.SampleMask = UINT_MAX;
@@ -2258,10 +2744,10 @@ bool D3D12GraphicsEngine::CreateDepthPrepassPipeline() {
     pso.PS = { m_DepthPrepassPsBlob->GetBufferPointer(), m_DepthPrepassPsBlob->GetBufferSize() };
     pso.InputLayout = { layout, _countof( layout ) };
     pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    // Keep NumRenderTargets=1 with the backbuffer format so the PSO matches the RTV bound in OnBeginFrame
-    // (no OMSetRenderTargets change needed) — but mask off all color writes so only depth is touched.
+    // Keep NumRenderTargets=1 with the HDR scene-color format so the PSO matches the RTV bound during the world
+    // pass (OnStartWorldRendering) — but mask off all color writes so only depth is touched.
     pso.NumRenderTargets = 1;
-    pso.RTVFormats[0] = kBackBufferFormat;
+    pso.RTVFormats[0] = kSceneColorFormat;
     pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
     pso.SampleDesc.Count = 1;
     pso.SampleMask = UINT_MAX;
@@ -3194,10 +3680,10 @@ void D3D12GraphicsEngine::RenderSunShadows() {
     m_CmdList->ResourceBarrier( 1, &toSrv );
     m_ShadowInPixelState = true;
 
-    D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
-    rtv.ptr += static_cast<SIZE_T>( m_FrameIndex ) * m_RtvDescriptorSize;
+    // Restore the HDR scene-color RT (+ shared depth) for the lit passes that follow — the world pass renders
+    // into the HDR target, not the swapchain (Phase 3); the tonemap resolve composites it at the end of the frame.
     D3D12_CPU_DESCRIPTOR_HANDLE mainDsv = m_DsvHeap->GetCPUDescriptorHandleForHeapStart();
-    m_CmdList->OMSetRenderTargets( 1, &rtv, FALSE, m_DepthBuffer ? &mainDsv : nullptr );
+    m_CmdList->OMSetRenderTargets( 1, &m_SceneColorRtv, FALSE, m_DepthBuffer ? &mainDsv : nullptr );
 }
 
 void D3D12GraphicsEngine::RenderPointShadows() {
@@ -3411,10 +3897,10 @@ void D3D12GraphicsEngine::RenderPointShadows() {
     m_CmdList->ResourceBarrier( 1, &toSrv );
     m_PointShadowInPixelState = true;
 
-    D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
-    rtv.ptr += static_cast<SIZE_T>( m_FrameIndex ) * m_RtvDescriptorSize;
+    // Restore the HDR scene-color RT (+ shared depth) for the lit passes that follow — the world pass renders
+    // into the HDR target, not the swapchain (Phase 3); the tonemap resolve composites it at the end of the frame.
     D3D12_CPU_DESCRIPTOR_HANDLE mainDsv = m_DsvHeap->GetCPUDescriptorHandleForHeapStart();
-    m_CmdList->OMSetRenderTargets( 1, &rtv, FALSE, m_DepthBuffer ? &mainDsv : nullptr );
+    m_CmdList->OMSetRenderTargets( 1, &m_SceneColorRtv, FALSE, m_DepthBuffer ? &mainDsv : nullptr );
 }
 
 bool D3D12GraphicsEngine::CreateLightCullPipeline() {
@@ -3564,7 +4050,7 @@ bool D3D12GraphicsEngine::CreateVobPipeline() {
     pso.InputLayout = { layout, _countof( layout ) };
     pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     pso.NumRenderTargets = 1;
-    pso.RTVFormats[0] = kBackBufferFormat;
+    pso.RTVFormats[0] = kSceneColorFormat;
     pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
     pso.SampleDesc.Count = 1;
     pso.SampleMask = UINT_MAX;
@@ -3816,7 +4302,7 @@ bool D3D12GraphicsEngine::CreateWaterPipeline() {
     pso.InputLayout = { layout, _countof( layout ) };
     pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     pso.NumRenderTargets = 1;
-    pso.RTVFormats[0] = kBackBufferFormat;
+    pso.RTVFormats[0] = kSceneColorFormat;
     pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
     pso.SampleDesc.Count = 1;
     pso.SampleMask = UINT_MAX;
@@ -4041,7 +4527,7 @@ ID3D12PipelineState* D3D12GraphicsEngine::GetOrCreateParticlePipeline( const Got
     pso.InputLayout = { layout, _countof( layout ) };
     pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;   // strips still use the TRIANGLE type
     pso.NumRenderTargets = 1;
-    pso.RTVFormats[0] = kBackBufferFormat;
+    pso.RTVFormats[0] = kSceneColorFormat;
     pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
     pso.SampleDesc.Count = 1;
     pso.SampleMask = UINT_MAX;
@@ -4292,7 +4778,7 @@ bool D3D12GraphicsEngine::CreateDecalPipeline() {
     pso.InputLayout = { kDecalInputLayout, _countof( kDecalInputLayout ) };
     pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     pso.NumRenderTargets = 1;
-    pso.RTVFormats[0] = kBackBufferFormat;
+    pso.RTVFormats[0] = kSceneColorFormat;
     pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
     pso.SampleDesc.Count = 1;
     pso.SampleMask = UINT_MAX;
@@ -4360,7 +4846,7 @@ ID3D12PipelineState* D3D12GraphicsEngine::GetOrCreateDecalBlendPipeline( const G
     pso.InputLayout = { kDecalInputLayout, _countof( kDecalInputLayout ) };
     pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     pso.NumRenderTargets = 1;
-    pso.RTVFormats[0] = kBackBufferFormat;
+    pso.RTVFormats[0] = kSceneColorFormat;
     pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
     pso.SampleDesc.Count = 1;
     pso.SampleMask = UINT_MAX;
@@ -4746,7 +5232,7 @@ bool D3D12GraphicsEngine::CreateSkeletalPipeline() {
     pso.InputLayout = { layout, _countof( layout ) };
     pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     pso.NumRenderTargets = 1;
-    pso.RTVFormats[0] = kBackBufferFormat;
+    pso.RTVFormats[0] = kSceneColorFormat;
     pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
     pso.SampleDesc.Count = 1;
     pso.SampleMask = UINT_MAX;
@@ -4954,6 +5440,10 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
     PrepareFrameSkeletals( Engine::GAPI->GetAnimatedSkeletalMeshVobs() );
     PrepareFrameSkeletals( g_FrameMobs );
 
+    // Phase 3 HDR: redirect the whole 3D scene into the R16F scene-color target (OnBeginFrame bound the
+    // swapchain for 2D-only/menu frames; here we switch to HDR so lighting can exceed 1.0). Depth is shared.
+    BindSceneColorTarget();
+
     DrawSky();
     // CSM sun shadows (P2.9c): render the opaque casters into the cascade shadow map from the sun's POV. Runs
     // before the main geometry; rebinds the backbuffer RT/DSV when done. Nothing samples the map yet (later
@@ -5011,6 +5501,9 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
         if ( visual ) visual->Instances.clear();
     }
 
+    // Phase 3 HDR: the 3D scene is complete — tonemap the HDR target into the swapchain and rebind the backbuffer
+    // so Gothic's subsequent 2D UI/HUD draws (and the ImGui overlay in Present) composite on top in LDR.
+    ResolveSceneToBackBuffer();
 
     // Do any remaining dx12 stuff BEFORE setting PresentPending
 
@@ -5033,11 +5526,16 @@ XRESULT D3D12GraphicsEngine::DrawSky() {
     // OnBeginFrame) is left untouched, so geometry still depth-tests / occludes normally.
     XMFLOAT3 fc;
     XMStoreFloat3( &fc, Engine::GAPI->GetFogColor() );
-    const float clear[4] = { fc.x, fc.y, fc.z, 1.0f };
 
-    D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
-    rtv.ptr += static_cast<SIZE_T>(m_FrameIndex) * m_RtvDescriptorSize;
-    m_CmdList->ClearRenderTargetView( rtv, clear, 0, nullptr );
+    // The HDR scene target is LINEAR (the lit passes sRGB-decode their albedo + linearize FogColor), so the sky
+    // fill must be linear too — otherwise the tonemap (ACES + sRGB-encode) would double-process the sky/fog and it
+    // wouldn't match the geometry's distance-fog fade. sRGB->linear each channel on the CPU before clearing.
+    auto srgbToLinear = []( float c ) { return c <= 0.04045f ? c / 12.92f : std::pow( ( c + 0.055f ) / 1.055f, 2.4f ); };
+    const float clear[4] = { srgbToLinear( fc.x ), srgbToLinear( fc.y ), srgbToLinear( fc.z ), 1.0f };
+
+    // Clear the HDR scene-color target (bound by BindSceneColorTarget just before this) to the fog color — the
+    // geometry's distance fog fades into the same value so the horizon dissolves; the tonemap resolves it later.
+    m_CmdList->ClearRenderTargetView( m_SceneColorRtv, clear, 0, nullptr );
     return XR_SUCCESS;
 }
 
@@ -6016,6 +6514,7 @@ bool D3D12GraphicsEngine::CreateSwapChain( INT2 size ) {
     if ( !CreateFrameResources() ) return false;
     if ( !AcquireBackBufferRTVs() ) return false;
     if ( !CreateDepthBuffer( size ) ) return false;
+    if ( !CreateSceneColorTarget( size ) ) return false;   // HDR scene RT (RTV heap now exists with the extra slot)
 
     m_SwapChainReady = true;
 
@@ -6031,9 +6530,9 @@ bool D3D12GraphicsEngine::CreateSwapChain( INT2 size ) {
 bool D3D12GraphicsEngine::CreateFrameResources() {
     ID3D12Device* device = m_Device.GetDevice();
 
-    // RTV descriptor heap (one per backbuffer)
+    // RTV descriptor heap: one per backbuffer + 1 for the HDR scene-color target (slot kBackBufferCount).
     D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
-    rtvHeapDesc.NumDescriptors = kBackBufferCount;
+    rtvHeapDesc.NumDescriptors = kBackBufferCount + 1;
     rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
     rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
     if ( FAILED( device->CreateDescriptorHeap( &rtvHeapDesc, IID_PPV_ARGS( m_RtvHeap.ReleaseAndGetAddressOf() ) ) ) )
@@ -6390,7 +6889,8 @@ bool D3D12GraphicsEngine::ResizeSwapChain( INT2 size ) {
     m_Resolution = size;
     m_FrameIndex = m_SwapChain->GetCurrentBackBufferIndex();
     if ( !AcquireBackBufferRTVs() ) return false;
-    return CreateDepthBuffer( size );  // GPU is idle (WaitForGpuIdle above), safe to recreate
+    if ( !CreateDepthBuffer( size ) ) return false;   // GPU is idle (WaitForGpuIdle above), safe to recreate
+    return CreateSceneColorTarget( size );            // HDR scene RT tracks the new resolution too
 }
 
 XRESULT D3D12GraphicsEngine::OnResize( INT2 newSize ) {

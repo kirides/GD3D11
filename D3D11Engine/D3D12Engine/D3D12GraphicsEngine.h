@@ -127,6 +127,10 @@ private:
     bool CreateUIVertexBuffers();     // per-frame dynamic (upload-heap) vertex ring buffers
     bool CreateWhiteTexture();        // 1x1 white fallback (untextured colored 2D draws)
     bool CreateDepthBuffer( INT2 size ); // R32_TYPELESS depth target + DSV(D32) + SRV(R32) (reversed-Z world rendering)
+    bool CreateSceneColorTarget( INT2 size ); // R16F HDR scene-color RT (+RTV +SRV) the 3D passes render into; recreated on resize
+    bool CreateTonemapPipeline();     // fullscreen HDR->swapchain resolve (exposure + ACES); created once at init
+    void BindSceneColorTarget();      // transition HDR RT -> RENDER_TARGET (if needed) + bind it (+ depth) as the world-pass RTV
+    void ResolveSceneToBackBuffer();  // tonemap the HDR scene into the swapchain backbuffer, then rebind the backbuffer for the 2D UI
     bool CreateWorldPipeline();       // root sig + inline shaders + PSO for the textured world-mesh pass
     bool CreateDepthPrepassPipeline(); // Forward+ opaque depth prepass PSO (depth-only world mesh; reuses m_WorldRootSig)
     void DrawDepthPrepass();          // lay down opaque world-mesh depth before the lit passes (Forward+ prepass)
@@ -172,8 +176,20 @@ private:
     D3D12Device m_Device;
 
     Microsoft::WRL::ComPtr<IDXGISwapChain3>        m_SwapChain;
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap>   m_RtvHeap;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap>   m_RtvHeap;   // kBackBufferCount swapchain RTVs + 1 HDR scene-color RTV
     UINT m_RtvDescriptorSize = 0;
+
+    // HDR scene-color pipeline (Phase 3): the 3D world passes render into m_SceneColor (R16F, values >1 allowed —
+    // sun + additive point lights no longer clip), then ResolveSceneToBackBuffer tonemaps it into the swapchain.
+    Microsoft::WRL::ComPtr<ID3D12Resource>       m_SceneColor;           // R16G16B16A16_FLOAT, resolution-sized
+    D3D12_CPU_DESCRIPTOR_HANDLE                  m_SceneColorRtv = {};    // RTV heap slot kBackBufferCount
+    UINT m_SceneColorSrvSlot = UINT_MAX;                                  // SRV read by the tonemap resolve
+    bool m_SceneColorInPixelState = false;                               // RENDER_TARGET (world) <-> PIXEL_SHADER_RESOURCE (resolve)
+    Microsoft::WRL::ComPtr<ID3D12RootSignature>  m_TonemapRootSig;       // t0 scene SRV table + b0 exposure root const + s0
+    Microsoft::WRL::ComPtr<ID3D12PipelineState>  m_TonemapPSO;
+    Microsoft::WRL::ComPtr<ID3DBlob>             m_TonemapVsBlob;        // fullscreen-triangle VS (SV_VertexID)
+    Microsoft::WRL::ComPtr<ID3DBlob>             m_TonemapPsBlob;        // exposure + ACES filmic -> swapchain
+    float m_Exposure = 1.0f;                                             // tonemap exposure multiplier (tunable)
 
     Microsoft::WRL::ComPtr<ID3D12Resource>         m_BackBuffers[kBackBufferCount];
     Microsoft::WRL::ComPtr<ID3D12CommandAllocator> m_CmdAllocators[kBackBufferCount];
