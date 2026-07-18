@@ -495,6 +495,40 @@ StructuredBuffer<uint>      LightIndexBuf : register(t3);
 Texture2D    tx  : register(t0);
 SamplerState smp : register(s0);
 
+// CSM sun-shadow sampling (P2.9c-4b) — identical to the world shader's block (b3/t4/s2 free here too).
+#define NUM_CSM_CASCADES 3
+cbuffer ShadowCB : register(b3)
+{
+    float4x4 CascadeViewProj[NUM_CSM_CASCADES];
+    float3   SunDirWS;         float ShadowStrength;
+    float    ShadowMapSize;    float3 CascadeTexelWorld;
+};
+Texture2DArray          ShadowMap : register(t4);
+SamplerComparisonState  shadowCmp : register(s2);
+
+float ComputeSunShadow( float3 wpos, float3 N )
+{
+    const float margin = 1.5 / ShadowMapSize;
+    const float texel  = 1.0 / ShadowMapSize;
+    [unroll]
+    for ( int c = 0; c < NUM_CSM_CASCADES; ++c )
+    {
+        float3 biased = wpos + N * ( CascadeTexelWorld[c] * 1.5 );
+        float4 sp = mul( float4( biased, 1.0 ), CascadeViewProj[c] );
+        float2 uv = sp.xy * float2( 0.5, -0.5 ) + 0.5;
+        if ( uv.x > margin && uv.x < 1.0 - margin && uv.y > margin && uv.y < 1.0 - margin &&
+             sp.z >= 0.0 && sp.z <= 1.0 )
+        {
+            float sh = 0.0;
+            [unroll] for ( int y = -1; y <= 1; ++y )
+            [unroll] for ( int x = -1; x <= 1; ++x )
+                sh += ShadowMap.SampleCmpLevelZero( shadowCmp, float3( uv + float2( x, y ) * texel, c ), sp.z - 0.0015 );
+            return sh / 9.0;
+        }
+    }
+    return 1.0;
+}
+
 float3 DecodeOctNormal( float2 e )
 {
     float3 n = float3( e.xy, 1.0 - abs( e.x ) - abs( e.y ) );
@@ -554,8 +588,12 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
 {
     float4 t = tx.Sample( smp, i.uv );
     clip( t.a - 0.5 );
+    float3 N = normalize( i.wnrm );
     float3 baseLit = t.rgb * i.col.bgr;
-    float3 rgb = baseLit + AccumTiledPointLights( i.clip.xy, i.wpos, normalize( i.wnrm ), t.rgb );
+    float sunNdl = saturate( dot( SunDirWS, N ) );
+    float occ    = sunNdl * ( 1.0 - ComputeSunShadow( i.wpos, N ) );
+    baseLit *= ( 1.0 - occ * ShadowStrength );
+    float3 rgb = baseLit + AccumTiledPointLights( i.clip.xy, i.wpos, N, t.rgb );
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
     return float4( lerp( rgb, FogColor, f ), 1.0 );
 }
@@ -891,6 +929,41 @@ StructuredBuffer<uint>      LightIndexBuf : register(t3);
 Texture2D    tx  : register(t0);
 SamplerState smp : register(s0);
 
+// CSM sun-shadow sampling (P2.9c-4b). Skeletal already uses b3 (fog) + b4 (light count), so the shadow CB
+// lands at b5 here (world/VOB use b3); t4/s2 are free. Same select+PCF math as the world/VOB block.
+#define NUM_CSM_CASCADES 3
+cbuffer ShadowCB : register(b5)
+{
+    float4x4 CascadeViewProj[NUM_CSM_CASCADES];
+    float3   SunDirWS;         float ShadowStrength;
+    float    ShadowMapSize;    float3 CascadeTexelWorld;
+};
+Texture2DArray          ShadowMap : register(t4);
+SamplerComparisonState  shadowCmp : register(s2);
+
+float ComputeSunShadow( float3 wpos, float3 N )
+{
+    const float margin = 1.5 / ShadowMapSize;
+    const float texel  = 1.0 / ShadowMapSize;
+    [unroll]
+    for ( int c = 0; c < NUM_CSM_CASCADES; ++c )
+    {
+        float3 biased = wpos + N * ( CascadeTexelWorld[c] * 1.5 );
+        float4 sp = mul( float4( biased, 1.0 ), CascadeViewProj[c] );
+        float2 uv = sp.xy * float2( 0.5, -0.5 ) + 0.5;
+        if ( uv.x > margin && uv.x < 1.0 - margin && uv.y > margin && uv.y < 1.0 - margin &&
+             sp.z >= 0.0 && sp.z <= 1.0 )
+        {
+            float sh = 0.0;
+            [unroll] for ( int y = -1; y <= 1; ++y )
+            [unroll] for ( int x = -1; x <= 1; ++x )
+                sh += ShadowMap.SampleCmpLevelZero( shadowCmp, float3( uv + float2( x, y ) * texel, c ), sp.z - 0.0015 );
+            return sh / 9.0;
+        }
+    }
+    return 1.0;
+}
+
 // Accumulate dynamic point lights via the Forward+ tile grid (identical math to the world/VOB shaders:
 // range cull, N.L, falloff = nd*(nd*0.2+0.8), per-light saturate, additive; specular/shadows are later).
 float3 AccumTiledPointLights( float2 svpos, float3 wpos, float3 N, float3 diffuse )
@@ -956,8 +1029,13 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
 {
     float4 t = tx.Sample( smp, i.uv );
     clip( t.a - 0.5 );
-    float3 rgb = t.rgb * i.col.rgb;            // ModelColor is an RGBA float (white for first-light)
-    rgb += AccumTiledPointLights( i.clip.xy, i.wpos, normalize( i.wnrm ), t.rgb );   // dynamic point lights on top
+    float3 N = normalize( i.wnrm );
+    float3 baseLit = t.rgb * i.col.rgb;        // ModelColor is an RGBA float (white for first-light)
+    // CSM: darken the sun-facing side of the model where it's occluded (NPC/monster self- & cast-shadows).
+    float sunNdl = saturate( dot( SunDirWS, N ) );
+    float occ    = sunNdl * ( 1.0 - ComputeSunShadow( i.wpos, N ) );
+    baseLit *= ( 1.0 - occ * ShadowStrength );
+    float3 rgb = baseLit + AccumTiledPointLights( i.clip.xy, i.wpos, N, t.rgb );   // dynamic point lights on top
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
     return float4( lerp( rgb, FogColor, f ), 1.0 );
 }
@@ -3656,7 +3734,14 @@ bool D3D12GraphicsEngine::CreateSkeletalPipeline() {
     srvRange.BaseShaderRegister = 0;         // t0
     srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-    D3D12_ROOT_PARAMETER params[9] = {};
+    // CSM sampling (P2.9c-4b): shadow-map array SRV at t4 (skeletal PS samples it like world/VOB).
+    D3D12_DESCRIPTOR_RANGE shadowSrvRange = {};
+    shadowSrvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    shadowSrvRange.NumDescriptors = 1;
+    shadowSrvRange.BaseShaderRegister = 4;    // t4
+    shadowSrvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    D3D12_ROOT_PARAMETER params[11] = {};
     params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     params[0].Constants.ShaderRegister = 0;   // b0 ViewProj
     params[0].Constants.Num32BitValues = 16;
@@ -3690,19 +3775,33 @@ bool D3D12GraphicsEngine::CreateSkeletalPipeline() {
     params[8].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
     params[8].Descriptor.ShaderRegister = 3;  // t3 per-tile light-index list
     params[8].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    params[9].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    params[9].Descriptor.ShaderRegister = 5;  // b5 shadow-sampling CB (skeletal's b3/b4 are fog/light count)
+    params[9].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    params[10].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[10].DescriptorTable.NumDescriptorRanges = 1;
+    params[10].DescriptorTable.pDescriptorRanges = &shadowSrvRange;
+    params[10].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
-    D3D12_STATIC_SAMPLER_DESC sampler = {};
-    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler.MaxLOD = D3D12_FLOAT32_MAX;
-    sampler.ShaderRegister = 0;              // s0
-    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    D3D12_STATIC_SAMPLER_DESC samplers[2] = {};
+    samplers[0].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    samplers[0].AddressU = samplers[0].AddressV = samplers[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    samplers[0].MaxLOD = D3D12_FLOAT32_MAX;
+    samplers[0].ShaderRegister = 0;          // s0 diffuse
+    samplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    samplers[1].Filter = D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT;   // s2 PCF (see world root sig)
+    samplers[1].AddressU = samplers[1].AddressV = samplers[1].AddressW = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+    samplers[1].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
+    samplers[1].ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+    samplers[1].MaxLOD = D3D12_FLOAT32_MAX;
+    samplers[1].ShaderRegister = 2;          // s2 shadow comparison
+    samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
     rsDesc.NumParameters = _countof( params );
     rsDesc.pParameters = params;
-    rsDesc.NumStaticSamplers = 1;
-    rsDesc.pStaticSamplers = &sampler;
+    rsDesc.NumStaticSamplers = _countof( samplers );
+    rsDesc.pStaticSamplers = samplers;
     rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
     PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
@@ -3934,6 +4033,12 @@ XRESULT D3D12GraphicsEngine::DrawVertexBufferFF( GfxVertexBuffer* vb, unsigned i
 }
 
 XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
+
+    // m_PresentPending prevents inventory-world from rendering the whole game scenery for every inventory tile.
+    // The engine sadly works like that.
+    // the first OnStartWorldRendering after a Present() will be the correct one to draw the world.
+    if ( m_PresentPending ) return XR_SUCCESS;
+
     // zCBspNodeRender hook — Gothic's BSP traversal is replaced; we draw the world ourselves.
     // Order mirrors D3D11's DrawWorldMeshNaive: sky background, world mesh, skeletal (NPCs/monsters),
     // then instanced static VOBs. The sky is a fog-colored fill so the horizon dissolves into the
@@ -4007,6 +4112,16 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
     for ( auto const& [visualPtr, visual] : Engine::GAPI->GetStaticMeshVisuals() ) {
         if ( visual ) visual->Instances.clear();
     }
+
+
+    // Do any remaining dx12 stuff BEFORE setting PresentPending
+
+    m_PresentPending = true;
+
+    // After this point, we hand over to Gothics UI rendering
+
+    // TODO: the inventory rendering code requires DrawVobSingle which is currently not implemented in dx12
+
     return XR_SUCCESS;
 }
 
@@ -4450,6 +4565,8 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
     m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
     m_CmdList->SetGraphicsRoot32BitConstants( 2, 8, &fog, 0 );   // b1 fog
     BindFrameLights();   // param 3 = light SRV (t1), param 4 = light count (b2) — see DrawWorldMesh.
+    m_CmdList->SetGraphicsRootConstantBufferView( 7, m_ShadowCBGpu[m_FrameIndex] );          // b3 shadow CB
+    m_CmdList->SetGraphicsRootDescriptorTable( 8, GetSrvGpuHandle( m_ShadowSrvSlot ) );      // t4 shadow map
 
     D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_Resolution.x), static_cast<float>(m_Resolution.y), 0.0f, 1.0f };
     D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
@@ -4798,6 +4915,8 @@ void D3D12GraphicsEngine::DrawSkeletalColor() {
         m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
         m_CmdList->SetGraphicsRoot32BitConstants( 4, 8, &fog, 0 );   // b3 fog
         BindFrameLights( 5, 6, 7, 8 );   // light SRV(t1)+count(b4)+grid(t2)+index(t3) — MUST set all (see BindFrameLights)
+        m_CmdList->SetGraphicsRootConstantBufferView( 9, m_ShadowCBGpu[m_FrameIndex] );        // b5 shadow CB
+        m_CmdList->SetGraphicsRootDescriptorTable( 10, GetSrvGpuHandle( m_ShadowSrvSlot ) );   // t4 shadow map
         m_CmdList->RSSetViewports( 1, &vp );
         m_CmdList->RSSetScissorRects( 1, &sc );
         m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
@@ -4847,6 +4966,8 @@ void D3D12GraphicsEngine::DrawSkeletalColor() {
         m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
         m_CmdList->SetGraphicsRoot32BitConstants( 2, 8, &fog, 0 );   // b1 fog (VOB root sig)
         BindFrameLights();
+        m_CmdList->SetGraphicsRootConstantBufferView( 7, m_ShadowCBGpu[m_FrameIndex] );        // b3 shadow CB
+        m_CmdList->SetGraphicsRootDescriptorTable( 8, GetSrvGpuHandle( m_ShadowSrvSlot ) );    // t4 shadow map
         m_CmdList->RSSetViewports( 1, &vp );
         m_CmdList->RSSetScissorRects( 1, &sc );
         m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
@@ -5125,6 +5246,7 @@ XRESULT D3D12GraphicsEngine::OnEndFrame() {
     if ( !m_SwapChainReady || !m_FrameOpen ) return XR_SUCCESS;
     Present();
     m_FrameOpen = false;
+    m_PresentPending = false;
     return XR_SUCCESS;
 }
 

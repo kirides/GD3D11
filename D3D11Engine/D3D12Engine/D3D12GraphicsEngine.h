@@ -371,4 +371,5 @@ private:
 
     std::unique_ptr<D3D12LineRenderer> m_LineRenderer;
     std::vector<std::move_only_function<void()>> m_PerFrameCleanupItems[kBackBufferCount] = {};
+    bool m_PresentPending = false;
 };
