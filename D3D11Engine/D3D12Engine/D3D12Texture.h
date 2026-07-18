@@ -48,6 +48,9 @@ public:
     /** True once a shader-visible SRV has been created for the current resource (bindable in a draw). */
     bool HasSRV() const { return m_HasSrv; }
     D3D12_GPU_DESCRIPTOR_HANDLE GetSrvGpuHandle() const { return m_SrvGpu; }
+    /** Index of this texture's SRV in the engine's shader-visible heap — the value SM6.6 shaders pass to
+        ResourceDescriptorHeap[...] for bindless sampling (UINT_MAX when unbindable). */
+    unsigned int GetSrvSlot() const { return m_SrvSlot; }
 
     /** Backend downcast from the neutral base. Safe by construction while the D3D12 backend is active. */
     static D3D12Texture* From( GfxTexture* texture ) { return static_cast<D3D12Texture*>( texture ); }

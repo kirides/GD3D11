@@ -142,6 +142,9 @@ private:
     void UploadFrameVobInstances();   // snapshot visible VOB instances into the ring ONCE (prepass + color share it)
     void DrawVobDepthPrepass();       // lay down instanced VOB depth (alpha-clipped) into the Forward+ prepass
     XRESULT DrawVobsInstanced();      // collect visible VOBs + draw each visual instanced (textured)
+    // Set a lit draw's per-material bindless normal/ORM indices (b6 root consts). matRootParam = 10 (world/VOB
+    // root sig) or 12 (skeletal). Call once per material change, right after binding its diffuse SRV.
+    void BindMaterialMaps( class zCTexture* tex, UINT matRootParam );
     bool CreateLightBuffer();         // per-frame point-light structured buffers (Forward+ MVP: brute-force)
     void BuildFrameLightBuffer();     // (re)fill this frame's light buffer from the collected visible lights
     void BindFrameLights( UINT srvParam = 3, UINT countParam = 4, UINT gridParam = 5, UINT indexParam = 6 );   // light SRV(t1)+count+grid(t2)+index(t3); (3,4,5,6)=world, (5,6,7,8)=skeletal
@@ -235,6 +238,8 @@ private:
 
     Microsoft::WRL::ComPtr<ID3D12Resource> m_WhiteTexture;         // 1x1 white fallback for untextured draws
     UINT m_WhiteSrvSlot = UINT_MAX;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_DefaultOrmTexture;    // 1x1 ORM default (AO 1, rough 0.5, metal 0)
+    UINT m_DefaultOrmSrvSlot = UINT_MAX;                           // bindless index bound when a material has no _FX map
 
     GfxTexture* m_CurrentTexture = nullptr;                        // diffuse bound for the next 2D draw
     D3D12_VIEWPORT m_CurrentViewport = {};                        // pixel-space viewport (drives transform + RSSetViewports)
