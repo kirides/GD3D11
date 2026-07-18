@@ -282,9 +282,10 @@ void ImGuiEditorView::RenderTextureSelectionPanel() {
                 
                 auto matName = Selection.SelectedMaterial->GetNameView();
                 if (matName.empty()) {
-                    matName = Selection.SelectedMaterial->GetTextureSingle()->GetNameWithoutExt();
+                    // TODO: see how its loaded and then compute the same write-path
+                    matName = Selection.SelectedMaterial->GetTextureSingle()->GetNameWithoutExtView();
                 }
-                info->WriteToFile(Selection.SelectedMaterial->GetTextureSingle()->GetNameWithoutExt());
+                info->WriteToFile(Selection.SelectedMaterial->GetTextureSingle()->GetNameWithoutExtView());
             }
         }
     }

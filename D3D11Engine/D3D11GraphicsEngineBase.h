@@ -113,11 +113,6 @@ public:
     /** Sets up the default rendering state */
     void SetDefaultStates();
 
-    /** Sets up a draw call for a VS_Ex-Mesh */
-    virtual void SetupVS_ExMeshDrawCall() PURE;
-    virtual void SetupVS_ExConstantBuffer() PURE;
-    virtual void SetupVS_ExPerInstanceConstantBuffer() PURE;
-
     /** Sets the active pixel shader object */
     XRESULT SetActivePixelShader( PShaderID shader ) override;
     XRESULT SetActiveVertexShader( VShaderID shader ) override;
@@ -127,7 +122,7 @@ public:
 
     void ResetPresentPending() { PresentPending = false; }
 
-    auto GetOutputWindow() -> auto { return OutputWindow; }
+    auto GetOutputWindow() const -> auto { return OutputWindow; }
     ID3D11SamplerState* GetDefaultSamplerState() const { return DefaultSamplerState.Get(); }
 
     std::unique_ptr<GraphicsEventRecord> RecordGraphicsEvent( GraphicsEventName region ) override {

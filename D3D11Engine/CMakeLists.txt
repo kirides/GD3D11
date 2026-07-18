@@ -54,6 +54,8 @@ set_target_properties(D3D11Engine PROPERTIES
 target_include_directories(D3D11Engine PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${CMAKE_CURRENT_SOURCE_DIR}/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/include/tracy
+  ${CMAKE_CURRENT_SOURCE_DIR}/vendor/D3D12MemoryAllocator/include
   ${CMAKE_CURRENT_SOURCE_DIR}/include/imgui
   ${CMAKE_CURRENT_SOURCE_DIR}/include/imgui/backends
 )
