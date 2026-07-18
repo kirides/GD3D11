@@ -342,26 +342,30 @@ private:
     UINT m_PointShadowVobInstOffset = 0;           // reset each frame at the top of RenderPointShadows
     bool m_PointShadowVobInstOverflowLogged = false;
 
-    // ---- Static-aside cube caching + round-robin (P2.10f) — mirrors D3D11 DrawPointlightShadows. The cube
-    // array is a PERSISTENT resource, so a slot's rendered content survives across frames until we redraw it.
-    // A slot is owned by a specific light (by Vob identity) and kept across frames — NOT reassigned by proximity
-    // every frame — so a STATIC light whose casters didn't move need not re-render its 6 faces + re-cull all
-    // world/VOB/skeletal geometry each frame (the old behavior, "unbearable" at up to 32 lights). Dynamic
-    // (moving) lights still redraw every frame; cached static cubes are refreshed a few per frame (round-robin)
-    // so moving casters near a torch update within a handful of frames instead of freezing.
+    // ---- Static/dynamic split point-shadow caching (P2.10g) — the D3D11 static-aside model that lets hundreds
+    // of shadowed lights update their MOVING casters every frame without re-rendering static geometry. Two
+    // persistent cube arrays: m_PointShadowStaticCube holds ONLY static-caster depth (world mesh + instanced
+    // VOBs), rendered per slot at most once (on slot assign / light move / range change). m_PointShadowCube is
+    // the ACTIVE cube the lit pass samples: each frame it is CopyResource'd from the static cube, then the
+    // DYNAMIC casters (skeletal NPCs) are overlaid (depth LESS_EQUAL, no clear). So the per-frame cost is one
+    // whole-array depth copy + the handful of near dynamic draws — the expensive static cull/draw is amortized.
+    // Slots are owned by light Vob identity and kept stable across frames (not reassigned by proximity).
     struct PointShadowSlot {
         zCVobLight*       owner = nullptr;   // light identity owning this slot (nullptr = free)
-        DirectX::XMFLOAT3 pos = {};          // last-rendered light position (move detection)
-        float             range = 0.0f;      // last-rendered range (range-change detection)
-        bool              isStatic = false;  // Vob->IsStatic(): static lights cache; dynamic redraw every frame
-        bool              valid = false;     // slot holds valid rendered content (else must render)
-        uint32_t          lastRenderFrame = 0; // frame counter at last render — round-robin staleness ordering
+        DirectX::XMFLOAT3 pos = {};          // last static-rendered light position (move detection)
+        float             range = 0.0f;      // last static-rendered range (range-change detection)
+        bool              isStatic = false;  // Vob->IsStatic() (informational; moving lights re-render static each frame)
+        bool              staticValid = false; // static-aside slot holds valid static-only depth (else must re-render static)
     };
     PointShadowSlot m_PointShadowSlots[kMaxShadowCubes];
-    uint32_t        m_PointShadowFrameCounter = 0;
-    static constexpr int kPointShadowBackgroundUpdatesPerFrame = 2; // cached static cubes refreshed per frame
-    bool CreatePointShadowCubes();     // cube array + per-slot DSVs + array SRV + world caster PSO + root sig + CB ring (once, at init)
-    void RenderPointShadows();         // render each selected light's 6 cube faces (selection/ShadowCubeIndex done in BuildFrameLightBuffer)
+    // Static-aside cube (P2.10g): second persistent cube array, static-caster depth only. No SRV (never sampled);
+    // its content is CopyResource'd into the active cube each frame. m_PointShadowStaticState tracks its resource
+    // state across frames (DEPTH_WRITE when rendering static, COPY_SOURCE while feeding the per-frame copy).
+    Microsoft::WRL::ComPtr<ID3D12Resource>       m_PointShadowStaticCube;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_PointShadowStaticDsvHeap; // one D16 6-slice DSV per slot (mirrors active)
+    D3D12_RESOURCE_STATES m_PointShadowStaticState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    bool CreatePointShadowCubes();     // both cube arrays + per-slot DSVs + array SRV + caster PSOs + root sigs + CB ring (once, at init)
+    void RenderPointShadows();         // static pass (dirty slots) -> copy static->active -> dynamic overlay -> PSR
 
     // Forward+ tiled light culling (P2.9b-2): one global compute root sig + PSO; two resolution-sized
     // DEFAULT-heap UAV buffers holding the per-tile {Offset,Count} grid and the per-tile light-index slices

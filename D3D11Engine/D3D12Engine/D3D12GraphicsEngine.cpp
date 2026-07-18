@@ -1225,9 +1225,10 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     // Point-light shadow selection (P2.10b/c): the shadowed lights chosen this frame (closest-in-range, capped
     // at kMaxShadowCubes) — filled by BuildFrameLightBuffer (which also writes ShadowCubeIndex into the GPU light
     // struct), consumed by RenderPointShadows to render each light's 6 cube faces.
-    // render=false → this slot's cube content is cached and reused this frame (static-aside, P2.10f); the lit
-    // pass still samples it (persistent resource), but RenderPointShadows skips re-drawing its 6 faces.
-    struct FramePointShadow { DirectX::XMFLOAT3 posWS; float range; UINT slot; bool render; };
+    // Static/dynamic split (P2.10g): every winner gets its active cube = (static-aside copy) + dynamic overlay
+    // each frame. renderStatic=true → also re-render the STATIC casters into the static-aside slot first (only
+    // when the slot is fresh / the light moved / range changed); otherwise the cached static depth is reused.
+    struct FramePointShadow { DirectX::XMFLOAT3 posWS; float range; UINT slot; bool renderStatic; };
     std::vector<FramePointShadow> g_FramePointShadows;
 
     // Per-frame VOB instance-ring snapshot (P2.9b-4a). UploadFrameVobInstances memcpys each visible visual's
@@ -3329,6 +3330,31 @@ void PSCubeClip( VS_OUT i ) { clip( tx.Sample( smp, i.uv ).a - 0.5 ); }
         dsvH.ptr += m_PointShadowDsvSize;
     }
 
+    // --- Static-aside cube (P2.10g): a SECOND identical cube array holding static-caster depth only. Same desc
+    // (so CopyResource into the active cube is legal), born in DEPTH_WRITE, with its own per-slot 6-slice DSV heap.
+    // No SRV — it's never sampled; its depth is copied into the active cube each frame before the dynamic overlay.
+    if ( FAILED( device->CreateCommittedResource( &heapDefault, D3D12_HEAP_FLAG_NONE, &dd,
+        D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear, IID_PPV_ARGS( m_PointShadowStaticCube.ReleaseAndGetAddressOf() ) ) ) )
+        return false;
+    m_PointShadowStaticCube->SetName( L"PointShadowStaticCubeArray(D16)" );
+    m_PointShadowStaticState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+
+    D3D12_DESCRIPTOR_HEAP_DESC staticDsvHeapDesc = {};
+    staticDsvHeapDesc.NumDescriptors = kMaxShadowCubes;
+    staticDsvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+    if ( FAILED( device->CreateDescriptorHeap( &staticDsvHeapDesc, IID_PPV_ARGS( m_PointShadowStaticDsvHeap.ReleaseAndGetAddressOf() ) ) ) )
+        return false;
+    D3D12_CPU_DESCRIPTOR_HANDLE sdsvH = m_PointShadowStaticDsvHeap->GetCPUDescriptorHandleForHeapStart();
+    for ( UINT s = 0; s < kMaxShadowCubes; ++s ) {
+        D3D12_DEPTH_STENCIL_VIEW_DESC dsv = {};
+        dsv.Format = DXGI_FORMAT_D16_UNORM;
+        dsv.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DARRAY;
+        dsv.Texture2DArray.FirstArraySlice = s * 6;
+        dsv.Texture2DArray.ArraySize = 6;
+        device->CreateDepthStencilView( m_PointShadowStaticCube.Get(), &dsv, sdsvH );
+        sdsvH.ptr += m_PointShadowDsvSize;
+    }
+
     // TextureCubeArray SRV (R16_UNORM) over all cubes — sampled by the tiled point-light loop in P2.10d.
     m_PointShadowSrvSlot = AllocateSrvSlot();
     if ( m_PointShadowSrvSlot == UINT_MAX ) return false;
@@ -3890,31 +3916,22 @@ void D3D12GraphicsEngine::RenderSunShadows() {
 }
 
 void D3D12GraphicsEngine::RenderPointShadows() {
-    // P2.10b/e: render each selected shadowed point light's 6 cube faces in ONE instanced draw (6 instances →
-    // faces via SV_RenderTargetArrayIndex). Casters = world mesh + instanced VOBs + skinned skeletals, each
-    // range-culled to the light sphere (360° around the light, not the camera frustum): world by section AABB,
-    // VOBs per-instance (packed into the tight ring), skeletals by vob origin. NORMAL-Z depth; the map is handed
-    // to PIXEL_SHADER_RESOURCE for the lit pass and back next frame.
-    if ( !m_FrameOpen || !m_PointShadowCube || !m_PointShadowCasterWorldPSO || !m_PointShadowDsvHeap
-        || !m_PointShadowRootSig )
+    // P2.10g — static/dynamic split (the D3D11 static-aside model). Per shadowed light, the active cube is built
+    // each frame as (cached static-only depth) + (this frame's dynamic casters overlaid). Three phases:
+    //   A) STATIC pass — for slots whose light is fresh / moved / resized (renderStatic), (re)render the STATIC
+    //      casters (world mesh + instanced VOBs) into the static-aside cube slot. Amortized: usually a no-op.
+    //   B) COPY — CopyResource the whole static-aside cube into the active cube (cheap ~6MB depth copy).
+    //   C) DYNAMIC overlay — render the moving casters (skeletal NPCs) into the active cube over the copied
+    //      static depth (LESS_EQUAL, no clear), every frame for every shadowed light.
+    // So per-frame cost is one depth copy + the few near dynamic draws — the expensive static cull/draw is paid
+    // once. Casters are range-culled to each light's sphere (360°, not the camera frustum). NORMAL-Z depth; the
+    // active cube round-trips DEPTH_WRITE/COPY_DEST -> PIXEL_SHADER_RESOURCE for the lit pass and back next frame.
+    if ( !m_FrameOpen || !m_PointShadowCube || !m_PointShadowStaticCube || !m_PointShadowCasterWorldPSO
+        || !m_PointShadowDsvHeap || !m_PointShadowStaticDsvHeap || !m_PointShadowRootSig )
         return;
     if ( g_FramePointShadows.empty() ) return;
 
-    // Static-aside (P2.10f): if every shadowed light is cached this frame, reuse the persistent cube content
-    // untouched — the resource already sits in PIXEL_SHADER_RESOURCE from a prior render (a slot only becomes
-    // cacheable AFTER it has rendered once), so the lit pass samples it directly with no barrier flip.
-    bool anyRender = false;
-    for ( const FramePointShadow& ps : g_FramePointShadows ) if ( ps.render ) { anyRender = true; break; }
-    if ( !anyRender ) return;
-
     DX_ZONE( m_CmdList, "Point Shadows (cubes)" );
-
-    if ( m_PointShadowInPixelState ) {
-        auto toDepth = TransitionBarrier( m_PointShadowCube.Get(),
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE );
-        m_CmdList->ResourceBarrier( 1, &toDepth );
-        m_PointShadowInPixelState = false;
-    }
 
     MeshInfo* wm = Engine::GAPI->GetWrappedWorldMesh();
     D3D12VertexBuffer* vb = wm ? D3D12VertexBuffer::From( wm->GetMeshVertexBuffer() ) : nullptr;
@@ -3923,7 +3940,6 @@ void D3D12GraphicsEngine::RenderPointShadows() {
     const bool haveVobs  = m_PointShadowCasterVobPSO && !g_FrameVobUploads.empty()
                         && m_PointShadowVobInstPtr[m_FrameIndex];
     const bool haveSkel  = m_PointShadowCasterSkeletalPSO && m_PointShadowSkeletalRootSig && !g_FrameSkelDraws.empty();
-    if ( !haveWorld && !haveVobs && !haveSkel ) return;
 
     const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( kPointShadowCubeSize ), static_cast<float>( kPointShadowCubeSize ), 0.0f, 1.0f };
     const D3D12_RECT     sc = { 0, 0, static_cast<LONG>( kPointShadowCubeSize ), static_cast<LONG>( kPointShadowCubeSize ) };
@@ -3951,135 +3967,173 @@ void D3D12GraphicsEngine::RenderPointShadows() {
         { { { 0, 1, 0, 0 } } }, { { { 0, 1, 0, 0 } } }, { { { 0, 0, -1, 0 } } },
         { { { 0, 0, 1, 0 } } }, { { { 0, 1, 0, 0 } } }, { { { 0, 1, 0, 0 } } } };
 
-    D3D12_CPU_DESCRIPTOR_HANDLE dsvBase = m_PointShadowDsvHeap->GetCPUDescriptorHandleForHeapStart();
+    const D3D12_CPU_DESCRIPTOR_HANDLE activeDsvBase = m_PointShadowDsvHeap->GetCPUDescriptorHandleForHeapStart();
+    const D3D12_CPU_DESCRIPTOR_HANDLE staticDsvBase = m_PointShadowStaticDsvHeap->GetCPUDescriptorHandleForHeapStart();
     auto& worldSections = Engine::GAPI->GetWorldSections();
 
-    // Reset the tight VOB-instance ring for this frame's point-shadow gathers (persistently-mapped UPLOAD).
-    m_PointShadowVobInstOffset = 0;
-    uint8_t* const viBase = m_PointShadowVobInstPtr[m_FrameIndex];
-    const D3D12_GPU_VIRTUAL_ADDRESS viGpu = m_PointShadowVobInstGpu[m_FrameIndex];
-
+    // Precompute each winner's 6 face view-projs into its per-frame CB slot (transpose(view*proj) — same
+    // column-major convention the world/CSM shaders read back). Both the static and dynamic passes bind this.
     for ( const FramePointShadow& ps : g_FramePointShadows ) {
         if ( ps.slot >= kMaxShadowCubes ) continue;
-        if ( !ps.render ) continue;   // cached this frame (static-aside) — its persistent cube slice is reused
-
-        DX_ZONE( m_CmdList, "FramePointShadow" );
-
-        // Mark this slot's content valid + stamp the render frame (round-robin staleness ordering, P2.10f).
-        m_PointShadowSlots[ps.slot].valid = true;
-        m_PointShadowSlots[ps.slot].lastRenderFrame = m_PointShadowFrameCounter;
         const XMVECTOR eye = XMLoadFloat3( &ps.posWS );
         const XMMATRIX proj = XMMatrixPerspectiveFovLH( XM_PIDIV2, 1.0f, 15.0f, ps.range * 2.0f );
-
-        // Upload this light's 6 face view-projs into its ring slot (transpose(view*proj) — same column-major
-        // convention the world/CSM shaders read back; see ComputeCascadeMatrices).
-        uint8_t* cbSlot = m_PointShadowCBMapped[m_FrameIndex] + static_cast<size_t>( ps.slot ) * 512;
-        XMFLOAT4X4* faceVP = reinterpret_cast<XMFLOAT4X4*>( cbSlot );
+        XMFLOAT4X4* faceVP = reinterpret_cast<XMFLOAT4X4*>( m_PointShadowCBMapped[m_FrameIndex] + static_cast<size_t>( ps.slot ) * 512 );
         for ( int f = 0; f < 6; ++f ) {
             XMMATRIX vw = XMMatrixLookAtLH( eye, XMVectorAdd( eye, kFaceDir[f] ), kFaceUp[f] );
             XMStoreFloat4x4( &faceVP[f], XMMatrixTranspose( XMMatrixMultiply( vw, proj ) ) );
         }
-        const D3D12_GPU_VIRTUAL_ADDRESS faceCbGpu = m_PointShadowCBGpu[m_FrameIndex] + static_cast<UINT64>( ps.slot ) * 512;
+    }
+    auto faceCb = [&]( UINT slot ) { return m_PointShadowCBGpu[m_FrameIndex] + static_cast<UINT64>( slot ) * 512; };
 
-        D3D12_CPU_DESCRIPTOR_HANDLE dsv = dsvBase;
-        dsv.ptr += static_cast<SIZE_T>( ps.slot ) * m_PointShadowDsvSize;
-        m_CmdList->OMSetRenderTargets( 0, nullptr, FALSE, &dsv );
-        m_CmdList->ClearDepthStencilView( dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr );
+    // ============================ Phase A — STATIC pass (into the static-aside cube) ============================
+    bool anyStatic = false;
+    for ( const FramePointShadow& ps : g_FramePointShadows ) if ( ps.renderStatic && ps.slot < kMaxShadowCubes ) { anyStatic = true; break; }
 
-        const float rangeSq = ps.range * ps.range;
-
-        // --- World mesh: range-cull sections (AABB nearest-point to the light), draw all 6 faces in one call. ---
-        if ( haveWorld ) {
-            DX_ZONE( m_CmdList, "World Mesh" );
-            m_CmdList->SetPipelineState( m_PointShadowCasterWorldPSO.Get() );
-            m_CmdList->SetGraphicsRootSignature( m_PointShadowRootSig.Get() );
-            m_CmdList->SetGraphicsRootConstantBufferView( 0, faceCbGpu );
-            const D3D12_VERTEX_BUFFER_VIEW vbv = { vb->GetGpuVirtualAddress(), vb->GetSizeInBytes(), sizeof( ExVertexStructGPU ) };
-            const D3D12_INDEX_BUFFER_VIEW  ibv = { ib->GetGpuVirtualAddress(), ib->GetSizeInBytes(), DXGI_FORMAT_R32_UINT };
-            m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
-            m_CmdList->IASetIndexBuffer( &ibv );
-            zCTexture* boundTex = nullptr;
-            for ( auto& [sx, col] : worldSections ) {
-                for ( auto& [sy, section] : col ) {
-                    const zTBBox3D& bb = section.BoundingBox;
-                    float cx = std::min( std::max( ps.posWS.x, bb.Min.x ), bb.Max.x );
-                    float cy = std::min( std::max( ps.posWS.y, bb.Min.y ), bb.Max.y );
-                    float cz = std::min( std::max( ps.posWS.z, bb.Min.z ), bb.Max.z );
-                    float dx = ps.posWS.x - cx, dy = ps.posWS.y - cy, dz = ps.posWS.z - cz;
-                    if ( dx * dx + dy * dy + dz * dz >= rangeSq ) continue;   // section outside the light sphere
-                    for ( auto const& [meshKey, mesh] : section.WorldMeshes ) {
-                        if ( !mesh || mesh->Indices.empty() ) continue;
-                        if ( meshKey.Info && meshKey.Info->MaterialType == MaterialInfo::MT_Water ) continue;
-                        zCTexture* tex = meshKey.Material->GetAniTexture();
-                        if ( tex != boundTex ) { bindDiffuse( tex, 1 ); boundTex = tex; }
-                        m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mesh->Indices.size() ), 6, mesh->BaseIndexLocation, 0, 0 );
-                    }
-                }
-            }
+    if ( anyStatic ) {
+        DX_ZONE( m_CmdList, "Static Pass" );
+        if ( m_PointShadowStaticState != D3D12_RESOURCE_STATE_DEPTH_WRITE ) {
+            auto b = TransitionBarrier( m_PointShadowStaticCube.Get(), m_PointShadowStaticState, D3D12_RESOURCE_STATE_DEPTH_WRITE );
+            m_CmdList->ResourceBarrier( 1, &b );
+            m_PointShadowStaticState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
         }
 
-        // --- Instanced VOBs (P2.10e): range-cull each visible visual's instances to this light's sphere, pack the
-        // in-range ones' 64-byte world matrices into the tight ring, then draw count*6 (InstanceDataStepRate=6 →
-        // 6 faces per real instance). Same root sig as world, so only the PSO changes (b0 face CB stays bound). ---
-        if ( haveVobs ) {
-            DX_ZONE( m_CmdList, "Vobs" );
-            m_CmdList->SetPipelineState( m_PointShadowCasterVobPSO.Get() );
-            m_CmdList->SetGraphicsRootSignature( m_PointShadowRootSig.Get() );
-            m_CmdList->SetGraphicsRootConstantBufferView( 0, faceCbGpu );
-            for ( const FrameVobUpload& up : g_FrameVobUploads ) {
-                MeshVisualInfo* visual = up.visual;
-                if ( !visual || visual->Instances.empty() ) continue;
-                const float cullR   = ps.range + visual->MeshSize * 0.5f;   // sphere test allows for VOB extent
-                const float cullRSq = cullR * cullR;
+        // Reset the tight VOB-instance ring — only static-VOB gathers use it now (dynamic pass has no VOBs).
+        m_PointShadowVobInstOffset = 0;
+        uint8_t* const viBase = m_PointShadowVobInstPtr[m_FrameIndex];
+        const D3D12_GPU_VIRTUAL_ADDRESS viGpu = m_PointShadowVobInstGpu[m_FrameIndex];
 
-                const UINT gatherStart = m_PointShadowVobInstOffset;
-                UINT count = 0;
-                bool overflow = false;
-                for ( const VobInstanceInfo& inst : visual->Instances ) {
-                    float dx = inst.world._41 - ps.posWS.x, dy = inst.world._42 - ps.posWS.y, dz = inst.world._43 - ps.posWS.z;
-                    if ( dx * dx + dy * dy + dz * dz >= cullRSq ) continue;
-                    if ( m_PointShadowVobInstOffset + sizeof( XMFLOAT4X4 ) > m_PointShadowVobInstCapacity ) {
-                        if ( !m_PointShadowVobInstOverflowLogged ) {
-                            LogWarn() << "D3D12: point-shadow VOB instance ring overflow ("
-                                << m_PointShadowVobInstCapacity << " bytes/frame); some cube casters dropped.";
-                            m_PointShadowVobInstOverflowLogged = true;
+        for ( const FramePointShadow& ps : g_FramePointShadows ) {
+            if ( ps.slot >= kMaxShadowCubes || !ps.renderStatic ) continue;
+            m_PointShadowSlots[ps.slot].staticValid = true;   // static-aside now holds this slot's static depth
+
+            D3D12_CPU_DESCRIPTOR_HANDLE dsv = staticDsvBase;
+            dsv.ptr += static_cast<SIZE_T>( ps.slot ) * m_PointShadowDsvSize;
+            m_CmdList->OMSetRenderTargets( 0, nullptr, FALSE, &dsv );
+            m_CmdList->ClearDepthStencilView( dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr );
+
+            const float rangeSq = ps.range * ps.range;
+
+            // --- World mesh: range-cull sections (AABB nearest-point), draw all 6 faces in one call. ---
+            if ( haveWorld ) {
+                DX_ZONE( m_CmdList, "World Mesh" );
+                m_CmdList->SetPipelineState( m_PointShadowCasterWorldPSO.Get() );
+                m_CmdList->SetGraphicsRootSignature( m_PointShadowRootSig.Get() );
+                m_CmdList->SetGraphicsRootConstantBufferView( 0, faceCb( ps.slot ) );
+                const D3D12_VERTEX_BUFFER_VIEW vbv = { vb->GetGpuVirtualAddress(), vb->GetSizeInBytes(), sizeof( ExVertexStructGPU ) };
+                const D3D12_INDEX_BUFFER_VIEW  ibv = { ib->GetGpuVirtualAddress(), ib->GetSizeInBytes(), DXGI_FORMAT_R32_UINT };
+                m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
+                m_CmdList->IASetIndexBuffer( &ibv );
+                zCTexture* boundTex = nullptr;
+                for ( auto& [sx, col] : worldSections ) {
+                    for ( auto& [sy, section] : col ) {
+                        const zTBBox3D& bb = section.BoundingBox;
+                        float cx = std::min( std::max( ps.posWS.x, bb.Min.x ), bb.Max.x );
+                        float cy = std::min( std::max( ps.posWS.y, bb.Min.y ), bb.Max.y );
+                        float cz = std::min( std::max( ps.posWS.z, bb.Min.z ), bb.Max.z );
+                        float dx = ps.posWS.x - cx, dy = ps.posWS.y - cy, dz = ps.posWS.z - cz;
+                        if ( dx * dx + dy * dy + dz * dz >= rangeSq ) continue;   // section outside the light sphere
+                        for ( auto const& [meshKey, mesh] : section.WorldMeshes ) {
+                            if ( !mesh || mesh->Indices.empty() ) continue;
+                            if ( meshKey.Info && meshKey.Info->MaterialType == MaterialInfo::MT_Water ) continue;
+                            zCTexture* tex = meshKey.Material->GetAniTexture();
+                            if ( tex != boundTex ) { bindDiffuse( tex, 1 ); boundTex = tex; }
+                            m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mesh->Indices.size() ), 6, mesh->BaseIndexLocation, 0, 0 );
                         }
-                        overflow = true;
-                        break;
                     }
-                    memcpy( viBase + m_PointShadowVobInstOffset, &inst.world, sizeof( XMFLOAT4X4 ) );
-                    m_PointShadowVobInstOffset += sizeof( XMFLOAT4X4 );
-                    ++count;
                 }
-                if ( count == 0 ) { if ( overflow ) break; continue; }
+            }
 
-                const D3D12_VERTEX_BUFFER_VIEW instView = { viGpu + gatherStart, count * static_cast<UINT>( sizeof( XMFLOAT4X4 ) ), static_cast<UINT>( sizeof( XMFLOAT4X4 ) ) };
-                for ( auto const& [meshKey, meshList] : visual->MeshesByTexture ) {
-                    bindDiffuse( meshKey.Material->GetAniTexture(), 1 );
-                    for ( MeshInfo* mi : meshList ) {
-                        if ( !mi || mi->Indices.empty() || !mi->GetMeshVertexBuffer() || !mi->GetMeshIndexBuffer() ) continue;
-                        D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mi->GetMeshVertexBuffer() );
-                        D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mi->GetMeshIndexBuffer() );
-                        if ( !mvb->GetResource() || !mib->GetResource() ) continue;
-                        const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStructGPU ) };
-                        const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, instView };
-                        m_CmdList->IASetVertexBuffers( 0, 2, views );
-                        const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
-                        m_CmdList->IASetIndexBuffer( &ibv );
-                        m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mi->Indices.size() ), count * 6, 0, 0, 0 );
+            // --- Instanced VOBs (static decoration): range-cull instances, pack 64B world matrices into the tight
+            // ring, draw count*6 (InstanceDataStepRate=6 → 6 faces per real instance). Same root sig as world. ---
+            if ( haveVobs ) {
+                DX_ZONE( m_CmdList, "Vobs" );
+                m_CmdList->SetPipelineState( m_PointShadowCasterVobPSO.Get() );
+                m_CmdList->SetGraphicsRootSignature( m_PointShadowRootSig.Get() );
+                m_CmdList->SetGraphicsRootConstantBufferView( 0, faceCb( ps.slot ) );
+                for ( const FrameVobUpload& up : g_FrameVobUploads ) {
+                    MeshVisualInfo* visual = up.visual;
+                    if ( !visual || visual->Instances.empty() ) continue;
+                    const float cullR   = ps.range + visual->MeshSize * 0.5f;   // sphere test allows for VOB extent
+                    const float cullRSq = cullR * cullR;
+
+                    const UINT gatherStart = m_PointShadowVobInstOffset;
+                    UINT count = 0;
+                    bool overflow = false;
+                    for ( const VobInstanceInfo& inst : visual->Instances ) {
+                        float dx = inst.world._41 - ps.posWS.x, dy = inst.world._42 - ps.posWS.y, dz = inst.world._43 - ps.posWS.z;
+                        if ( dx * dx + dy * dy + dz * dz >= cullRSq ) continue;
+                        if ( m_PointShadowVobInstOffset + sizeof( XMFLOAT4X4 ) > m_PointShadowVobInstCapacity ) {
+                            if ( !m_PointShadowVobInstOverflowLogged ) {
+                                LogWarn() << "D3D12: point-shadow VOB instance ring overflow ("
+                                    << m_PointShadowVobInstCapacity << " bytes/frame); some cube casters dropped.";
+                                m_PointShadowVobInstOverflowLogged = true;
+                            }
+                            overflow = true;
+                            break;
+                        }
+                        memcpy( viBase + m_PointShadowVobInstOffset, &inst.world, sizeof( XMFLOAT4X4 ) );
+                        m_PointShadowVobInstOffset += sizeof( XMFLOAT4X4 );
+                        ++count;
                     }
+                    if ( count == 0 ) { if ( overflow ) break; continue; }
+
+                    const D3D12_VERTEX_BUFFER_VIEW instView = { viGpu + gatherStart, count * static_cast<UINT>( sizeof( XMFLOAT4X4 ) ), static_cast<UINT>( sizeof( XMFLOAT4X4 ) ) };
+                    for ( auto const& [meshKey, meshList] : visual->MeshesByTexture ) {
+                        bindDiffuse( meshKey.Material->GetAniTexture(), 1 );
+                        for ( MeshInfo* mi : meshList ) {
+                            if ( !mi || mi->Indices.empty() || !mi->GetMeshVertexBuffer() || !mi->GetMeshIndexBuffer() ) continue;
+                            D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mi->GetMeshVertexBuffer() );
+                            D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mi->GetMeshIndexBuffer() );
+                            if ( !mvb->GetResource() || !mib->GetResource() ) continue;
+                            const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStructGPU ) };
+                            const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, instView };
+                            m_CmdList->IASetVertexBuffers( 0, 2, views );
+                            const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
+                            m_CmdList->IASetIndexBuffer( &ibv );
+                            m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mi->Indices.size() ), count * 6, 0, 0, 0 );
+                        }
+                    }
+                    if ( overflow ) break;
                 }
-                if ( overflow ) break;
             }
         }
+    }
 
-        // --- Skinned skeletals (P2.10e): cull by the vob's world position (+ visual extent), then draw 6 faces.
-        // Uses the dedicated skeletal root sig (b0 faces, b1 instance, b2 bones) + the shared per-frame CBs. ---
-        if ( haveSkel ) {
-            DX_ZONE( m_CmdList, "Skeletals" );
-            m_CmdList->SetPipelineState( m_PointShadowCasterSkeletalPSO.Get() );
-            m_CmdList->SetGraphicsRootSignature( m_PointShadowSkeletalRootSig.Get() );
-            m_CmdList->SetGraphicsRootConstantBufferView( 0, faceCbGpu );
+    // ============================ Phase B — COPY static-aside -> active cube ============================
+    {
+        DX_ZONE( m_CmdList, "Copy Static->Active" );
+        D3D12_RESOURCE_BARRIER pre[2];
+        UINT n = 0;
+        if ( m_PointShadowStaticState != D3D12_RESOURCE_STATE_COPY_SOURCE ) {
+            pre[n++] = TransitionBarrier( m_PointShadowStaticCube.Get(), m_PointShadowStaticState, D3D12_RESOURCE_STATE_COPY_SOURCE );
+            m_PointShadowStaticState = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        }
+        const D3D12_RESOURCE_STATES activeCur = m_PointShadowInPixelState
+            ? D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_DEPTH_WRITE;
+        pre[n++] = TransitionBarrier( m_PointShadowCube.Get(), activeCur, D3D12_RESOURCE_STATE_COPY_DEST );
+        m_CmdList->ResourceBarrier( n, pre );
+
+        m_CmdList->CopyResource( m_PointShadowCube.Get(), m_PointShadowStaticCube.Get() );
+
+        auto toDepth = TransitionBarrier( m_PointShadowCube.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_DEPTH_WRITE );
+        m_CmdList->ResourceBarrier( 1, &toDepth );
+        m_PointShadowInPixelState = false;   // active cube now in DEPTH_WRITE for the dynamic overlay
+    }
+
+    // ============================ Phase C — DYNAMIC overlay (skeletal NPCs into active cube) ============================
+    // Rendered over the copied static depth (LESS_EQUAL, NO clear) so moving casters composite with the cached
+    // static occluders. Runs every frame for every shadowed light — this is the real-time part of the split.
+    if ( haveSkel ) {
+        DX_ZONE( m_CmdList, "Dynamic Overlay (skeletals)" );
+        m_CmdList->SetPipelineState( m_PointShadowCasterSkeletalPSO.Get() );
+        m_CmdList->SetGraphicsRootSignature( m_PointShadowSkeletalRootSig.Get() );
+        for ( const FramePointShadow& ps : g_FramePointShadows ) {
+            if ( ps.slot >= kMaxShadowCubes ) continue;
+            D3D12_CPU_DESCRIPTOR_HANDLE dsv = activeDsvBase;
+            dsv.ptr += static_cast<SIZE_T>( ps.slot ) * m_PointShadowDsvSize;
+            m_CmdList->OMSetRenderTargets( 0, nullptr, FALSE, &dsv );   // no clear — keep the copied static depth
+            m_CmdList->SetGraphicsRootConstantBufferView( 0, faceCb( ps.slot ) );
+
             for ( const FrameSkelDraw& d : g_FrameSkelDraws ) {
                 if ( !d.visual || !d.vobInfo || !d.vobInfo->Vob ) continue;
                 const XMFLOAT3 pos = d.vobInfo->Vob->GetPositionWorld();
@@ -4112,6 +4166,7 @@ void D3D12GraphicsEngine::RenderPointShadows() {
         }
     }
 
+    // ============================ Phase D — active cube -> PIXEL_SHADER_RESOURCE for the lit pass ============================
     auto toSrv = TransitionBarrier( m_PointShadowCube.Get(),
         D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
     m_CmdList->ResourceBarrier( 1, &toSrv );
@@ -4411,7 +4466,6 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
     // Mirrors D3D11 DrawPointlightShadows' distance/range gating (it keys off the player; camera is close enough).
     g_FramePointShadows.clear();
     if ( m_PointShadowCube && count > 0 ) {
-        ++m_PointShadowFrameCounter;
         const XMVECTOR camPos = Engine::GAPI->GetCameraPositionXM();
         struct Cand { UINT dstIdx; zCVobLight* vob; float distSq; bool isStatic; };
         static std::vector<Cand> cands;
@@ -4448,7 +4502,7 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
                     if ( !m_PointShadowSlots[s].owner ) { slot = static_cast<int>( s ); break; }
                 if ( slot < 0 ) continue;   // no free slot (can't happen: winners <= kMaxShadowCubes)
                 m_PointShadowSlots[slot].owner = c.vob;
-                m_PointShadowSlots[slot].valid = false;   // fresh occupant → must render
+                m_PointShadowSlots[slot].staticValid = false;   // fresh occupant → must render static
             }
             PointShadowSlot& ss = m_PointShadowSlots[slot];
             ss.isStatic = c.isStatic;
@@ -4460,27 +4514,13 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
                       || std::fabs( np.y - ss.pos.y ) > moveEps
                       || std::fabs( np.z - ss.pos.z ) > moveEps;
             bool rangeChanged = std::fabs( L.Range - ss.range ) > 1.0f;
-            // Dynamic lights always redraw; static lights redraw only when new / moved / resized.
-            bool render = !ss.valid || !ss.isStatic || moved || rangeChanged;
+            // Static-aside is re-rendered only when fresh / the light moved / range changed; otherwise reused.
+            // The DYNAMIC (skeletal) overlay + the static->active copy run every frame regardless (see RenderPointShadows).
+            bool renderStatic = !ss.staticValid || moved || rangeChanged;
 
             L.ShadowCubeIndex = static_cast<int32_t>( slot );
-            g_FramePointShadows.push_back( { np, L.Range, static_cast<UINT>( slot ), render } );
-            if ( render ) { ss.pos = np; ss.range = L.Range; }   // valid/lastRenderFrame set once actually drawn
-        }
-
-        // Round-robin: refresh up to K otherwise-cached (static) cubes per frame — oldest first — so dynamic
-        // casters (NPCs walking near a torch) update within a few frames instead of freezing in a stale cube.
-        int budget = kPointShadowBackgroundUpdatesPerFrame;
-        while ( budget > 0 ) {
-            int pick = -1; uint32_t oldest = 0xFFFFFFFFu;
-            for ( size_t k = 0; k < g_FramePointShadows.size(); ++k ) {
-                if ( g_FramePointShadows[k].render ) continue;
-                uint32_t lrf = m_PointShadowSlots[g_FramePointShadows[k].slot].lastRenderFrame;
-                if ( lrf < oldest ) { oldest = lrf; pick = static_cast<int>( k ); }
-            }
-            if ( pick < 0 ) break;   // nothing left to refresh
-            g_FramePointShadows[pick].render = true;
-            --budget;
+            g_FramePointShadows.push_back( { np, L.Range, static_cast<UINT>( slot ), renderStatic } );
+            if ( renderStatic ) { ss.pos = np; ss.range = L.Range; }   // staticValid stamped once actually drawn
         }
     }
 }
