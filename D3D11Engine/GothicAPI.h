@@ -841,6 +841,7 @@ public:
     float GetSkyTimeScale();
     
     static void ProcessVobAnimation( zCVob* vob, zTAnimationMode aniMode, VobInstanceInfo& vobInstance );
+    static void UpdateShouldBlockGameInput();
 
 private:
     struct WorldSectionBVHNode {

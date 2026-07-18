@@ -3849,6 +3849,16 @@ LRESULT GothicAPI::OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM l
             break;
        
 #endif
+        case VK_F1:
+#ifdef BUILD_SPACER
+#define IS_SPACER_BUILD true
+#else
+#define IS_SPACER_BUILD false
+#endif
+            if (zCOption::GetOptions()->IsParameter("XEnableEditorPanel") || IS_SPACER_BUILD) {
+                Engine::GraphicsEngine->OnUIEvent( BaseGraphicsEngine::EUIEvent::UI_OpenEditor );
+            }
+            break;
         case VK_F11:
             if ( ( GetAsyncKeyState( VK_CONTROL ) & 0x8000 ) ) {
                 Engine::GraphicsEngine->OnUIEvent( BaseGraphicsEngine::EUIEvent::UI_ToggleAdvancedSettings );
@@ -4324,6 +4334,18 @@ bool GothicAPI::UseWorldSectionBVH() const {
     return RendererState.RendererSettings.DebugSettings.FeatureSet.UseWorldSectionBVH;
 }
 
+void GothicAPI::UpdateShouldBlockGameInput( ) {
+    if ( auto hImgui = Engine::ImGuiHandle ) {
+        auto oldIsActive = hImgui->IsActive;
+        hImgui->IsActive = hImgui->SettingsVisible || hImgui->GetIsEditorVisible() || hImgui->AdvancedSettingsVisible || hImgui->LibShowBlockingThisFrame;
+        hImgui->UpdateBlockGameInput();
+
+        if ( oldIsActive != hImgui->IsActive ) {
+            Engine::GAPI->SetEnableGothicInput( !hImgui->IsActive );
+        }
+    }
+}
+    
 /** Collects visible sections from the current camera perspective */
 void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sections,
     const Frustum* queryFrustum,

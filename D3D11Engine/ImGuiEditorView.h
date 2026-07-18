@@ -112,7 +112,7 @@ public:
             // Enable free-cam, the easy way
             oCGame::GetGame()->TestKey(GOTHIC_KEY::F6);
 
-            D3D11GraphicsEngine::UpdateShouldBlockGameInput();
+            GothicAPI::UpdateShouldBlockGameInput();
             ResetEditorCamera();
 
             // Reset the selection, so it doesn't crash on levelchange
@@ -121,7 +121,7 @@ public:
             // Disable free-cam, the easy way
             oCGame::GetGame()->TestKey(GOTHIC_KEY::F4);
 
-            D3D11GraphicsEngine::UpdateShouldBlockGameInput();
+            GothicAPI::UpdateShouldBlockGameInput();
         }
     }
 

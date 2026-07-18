@@ -263,7 +263,7 @@ void ImGuiShim::BuildFrameUI()
 
     if ( GetBlockGameInput() != m_lastFrameBlockGameInput ) {
         m_lastFrameBlockGameInput = GetBlockGameInput();
-        D3D11GraphicsEngine::UpdateShouldBlockGameInput();
+        GothicAPI::UpdateShouldBlockGameInput();
     }
 }
 

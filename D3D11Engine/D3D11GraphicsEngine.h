@@ -329,9 +329,7 @@ public:
 
     /** Message-Callback for the main window */
     LRESULT OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam ) override;
-
-    static void UpdateShouldBlockGameInput();
-
+    
     /** Reloads shaders */
     XRESULT ReloadShaders( ShaderCategory categories = ShaderCategory::All) override;
 
