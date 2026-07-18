@@ -21,6 +21,7 @@
 #include "../zFont.h"
 #include "../zCCamera.h"
 #include "../oCGame.h"
+#include "../DXGIHelpers.h"
 
 #include <dxcapi.h>
 
@@ -341,16 +342,19 @@ float4 PSMain( VS_OUT i ) : SV_TARGET {
 // row-major XMFLOAT4X4 bytes we upload here, so mul(float4(pos,1), ViewProj) is byte-for-byte identical.
 cbuffer WorldCB : register(b0) { float4x4 ViewProj; };
 cbuffer FogCB   : register(b1) { float3 FogColor; float FogNear; float3 CamPosWS; float FogFar; };
-cbuffer LightCB : register(b2) { uint LightCount; uint3 _lpad; };   // Forward+ MVP: brute-force point-light count
+cbuffer LightCB : register(b2) { uint LightCount; uint NumTilesX; uint2 _lpad; };   // Forward+ tiled: light count + tiles/row
 
 // Per-frame visible point light (torches/campfires/spells). Byte-identical to D3D11 TiledPointLight (48 B);
-// this brute-force MVP only reads PositionWorld/Range/Color — PositionView/ShadowCubeIndex land with tiling.
-// Bound as a ROOT descriptor SRV (no descriptor-table slot). LightCount comes from a root constant that the
-// draw MUST bind (BindFrameLights) — the loop is additionally clamped to LIGHT_CAP as a hard safety net so a
-// stray unbound/garbage count can never run the loop away (that reads as a GPU timeout, not a clean error).
+// this pass reads PositionWorld/Range/Color — PositionView/ShadowCubeIndex feed the cull/shadow paths.
+// Bound as a ROOT descriptor SRV (no descriptor-table slot). The per-tile grid produced by the light-cull
+// compute (DispatchLightCulling) narrows this loop to only the lights that touch each 16x16 screen tile.
 struct GPULight { float3 PositionView; float Range; float4 Color; float3 PositionWorld; int ShadowCubeIndex; };
-StructuredBuffer<GPULight> Lights : register(t1);   // bound as a root SRV (no descriptor slot consumed)
-#define LIGHT_CAP 400u
+struct LightGrid { uint Offset; uint Count; };
+StructuredBuffer<GPULight>  Lights        : register(t1);   // root SRV — all visible lights, indexed by the grid
+StructuredBuffer<LightGrid> LightGridBuf  : register(t2);   // root SRV — per-tile {Offset,Count}
+StructuredBuffer<uint>      LightIndexBuf : register(t3);   // root SRV — per-tile light-index slices
+#define TILE_SIZE 16u
+#define MAX_LIGHTS_PER_TILE 32u
 
 Texture2D    tx  : register(t0);
 SamplerState smp : register(s0);
@@ -365,17 +369,21 @@ float3 DecodeOctNormal( float2 e )
     return normalize( n );
 }
 
-// Accumulate dynamic point lights at a world-space surface point. Ports D3D11's FP_ComputePointLighting /
-// PLS_ComputePointLightLighting (world-space here instead of view-space): range cull, N.L, the exact
-// falloff = nd*(nd*0.2+0.8), per-light saturate, additive accumulate. Specular is deferred (needs material
-// spec params); the point term modulates the *texture* color (not the baked vertex color) like D3D11.
-float3 AccumPointLights( float3 wpos, float3 N, float3 diffuse )
+// Accumulate dynamic point lights at a world-space surface point using the Forward+ tile grid: derive the
+// tile from SV_Position.xy, read its {Offset,Count} slice, and loop ONLY the lights culled into that tile
+// (indices into the global Lights buffer). Lighting math ports D3D11's FP_ComputePointLighting: range cull,
+// N.L, the exact falloff = nd*(nd*0.2+0.8), per-light saturate, additive. The count is clamped to the
+// per-tile capacity so a garbage grid entry can never spin the loop away (that reads as a GPU timeout).
+float3 AccumTiledPointLights( float2 svpos, float3 wpos, float3 N, float3 diffuse )
 {
+    uint2 tile = uint2( svpos ) / TILE_SIZE;
+    uint  tileIndex = tile.y * NumTilesX + tile.x;
+    LightGrid g = LightGridBuf[tileIndex];
+    uint n = min( g.Count, MAX_LIGHTS_PER_TILE );
     float3 total = 0;
-    uint n = min( LightCount, LIGHT_CAP );   // hard clamp: never trust the count enough to loop away
     for ( uint k = 0; k < n; k++ )
     {
-        GPULight L = Lights[k];
+        GPULight L = Lights[ LightIndexBuf[g.Offset + k] ];
         float3 dir = L.PositionWorld - wpos;
         float dist = length( dir );
         if ( dist >= L.Range ) continue;
@@ -409,7 +417,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     float4 t = tx.Sample( smp, i.uv );
     clip( t.a - 0.5 );                    // fixed alpha-test cutout (opaque textures have a==1 -> kept)
     float3 baseLit = t.rgb * i.col.bgr;   // baked vertex lighting (ambient/sun/GI); .bgr recovers Gothic's RGB
-    float3 rgb = baseLit + AccumPointLights( i.wpos, normalize( i.wnrm ), t.rgb );
+    float3 rgb = baseLit + AccumTiledPointLights( i.clip.xy, i.wpos, normalize( i.wnrm ), t.rgb );
     // Linear distance fog toward the atmosphere color (matches Gothic's FFFog / the sky-clear color).
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
     rgb = lerp( rgb, FogColor, f );
@@ -425,12 +433,16 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     constexpr char kVobShaderSource[] = R"(
 cbuffer WorldCB : register(b0) { float4x4 ViewProj; };   // default column-major packing (see world shader)
 cbuffer FogCB   : register(b1) { float3 FogColor; float FogNear; float3 CamPosWS; float FogFar; };
-cbuffer LightCB : register(b2) { uint LightCount; uint3 _lpad; };
+cbuffer LightCB : register(b2) { uint LightCount; uint NumTilesX; uint2 _lpad; };
 
-// Root-descriptor SRV point-light buffer + hard loop clamp — see the world shader for the full rationale.
+// Forward+ tiled point lights (root-descriptor SRVs + per-tile grid) — see the world shader for the rationale.
 struct GPULight { float3 PositionView; float Range; float4 Color; float3 PositionWorld; int ShadowCubeIndex; };
-StructuredBuffer<GPULight> Lights : register(t1);
-#define LIGHT_CAP 400u
+struct LightGrid { uint Offset; uint Count; };
+StructuredBuffer<GPULight>  Lights        : register(t1);
+StructuredBuffer<LightGrid> LightGridBuf  : register(t2);
+StructuredBuffer<uint>      LightIndexBuf : register(t3);
+#define TILE_SIZE 16u
+#define MAX_LIGHTS_PER_TILE 32u
 
 Texture2D    tx  : register(t0);
 SamplerState smp : register(s0);
@@ -443,13 +455,16 @@ float3 DecodeOctNormal( float2 e )
     return normalize( n );
 }
 
-float3 AccumPointLights( float3 wpos, float3 N, float3 diffuse )
+float3 AccumTiledPointLights( float2 svpos, float3 wpos, float3 N, float3 diffuse )
 {
+    uint2 tile = uint2( svpos ) / TILE_SIZE;
+    uint  tileIndex = tile.y * NumTilesX + tile.x;
+    LightGrid g = LightGridBuf[tileIndex];
+    uint n = min( g.Count, MAX_LIGHTS_PER_TILE );
     float3 total = 0;
-    uint n = min( LightCount, LIGHT_CAP );
     for ( uint k = 0; k < n; k++ )
     {
-        GPULight L = Lights[k];
+        GPULight L = Lights[ LightIndexBuf[g.Offset + k] ];
         float3 dir = L.PositionWorld - wpos;
         float dist = length( dir );
         if ( dist >= L.Range ) continue;
@@ -492,7 +507,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     float4 t = tx.Sample( smp, i.uv );
     clip( t.a - 0.5 );
     float3 baseLit = t.rgb * i.col.bgr;
-    float3 rgb = baseLit + AccumPointLights( i.wpos, normalize( i.wnrm ), t.rgb );
+    float3 rgb = baseLit + AccumTiledPointLights( i.clip.xy, i.wpos, normalize( i.wnrm ), t.rgb );
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
     return float4( lerp( rgb, FogColor, f ), 1.0 );
 }
@@ -532,18 +547,22 @@ float4 PSClip( VS_OUT i ) : SV_TARGET
 )";
 
     // Forward+ tiled light-culling COMPUTE shader (P2.9b-2). One thread group per 16x16 screen tile; each
-    // group builds its tile's view-space frustum AABB and records which point lights touch it into a
-    // per-tile slice of RW_LightIndexList (fixed MAX_LIGHTS_PER_TILE stride — no global atomic counter, so
-    // no counter buffer/clear), with the per-tile {Offset,Count} landing in RW_LightGrid. Adapted from the
-    // D3D11 reference Shaders/CS_LightCulling.hlsl with two deliberate divergences for this backend:
-    //   1. DEPTH-INDEPENDENT frustum. The reference derives each tile's near/far view-Z by inverting the
-    //      depth buffer through the projection (z_view = Proj[3][2]/(depth-Proj[2][2])). That inverse is
-    //      only valid for a finite standard-Z projection; our camera is reversed-Z infinite-far, so the
-    //      formula does not transfer. Instead we build the tile AABB between FIXED conservative view-Z
-    //      bounds [zNear, zFar] — the cull then includes every light whose sphere intersects the tile's
-    //      screen cone at ANY depth. This is conservative (never drops a light that should light a pixel),
-    //      which is exactly what a Forward+ consumer needs for correctness; depth-buffer tightening (fewer
-    //      lights/tile) is a later optimization that will read the prepass depth.
+    // group builds its tile's view-space AABB from the prepass depth and records which point lights touch it
+    // into a per-tile slice of RW_LightIndexList (fixed MAX_LIGHTS_PER_TILE stride — no global atomic counter,
+    // so no counter buffer/clear), with the per-tile {Offset,Count} landing in RW_LightGrid. This is the D3D11
+    // reference Shaders/CS_LightCulling.hlsl (min/max-depth AABB + SphereInsideAABB) with two divergences:
+    //   1. Reversed-Z + world-only prepass. The reference's ScreenToView z-inverse is written for finite
+    //      standard-Z; we feed it the ACTUAL projection z-row terms (viewZ = Proj._43/(depth-Proj._33)), which
+    //      is correct for our reversed-Z infinite-far camera. And because our depth prepass lays down WORLD
+    //      MESH ONLY, an "empty" tile (no world depth — sky, or a VOB/NPC in front of nothing) falls back to an
+    //      all-encompassing AABB (stay conservatively lit) rather than the reference's collapse-to-near-plane,
+    //      which would unlight characters against the sky. The bounded near+far AABB is the whole point: it
+    //      pulls in only lights whose sphere actually reaches the tile's geometry, so a wall at 15m no longer
+    //      overflows the 32-light cap the way the earlier camera-origin cone (near fixed at 1) did. NOTE prior
+    //      retired versions here: an unbounded [1,100000] AABB (far corners blew up off-axis), then side-planes
+    //      with a fixed [1,100000] slab and then a far-only slab — all still over-included and overflowed.
+    //      Residual: a short-range light on a VOB/NPC that pokes in front of distant world geometry and can't
+    //      reach that world can still be culled; completing the prepass (VOB+skeletal depth) removes it.
     //   2. Fixed per-tile index slice instead of a compacted global list, dropping RW_IndexCounter and its
     //      per-frame clear. At 1080p this is ~1 MB (8160 tiles * 32 * 4 B) — negligible, and simpler/safer.
     // PositionView is filled CPU-side in BuildFrameLightBuffer using the same transpose(view) transform the
@@ -558,57 +577,89 @@ struct LightGrid { uint Offset; uint Count; };
 StructuredBuffer<TiledPointLight> SB_Lights       : register(t0);
 RWStructuredBuffer<LightGrid>     RW_LightGrid     : register(u0);
 RWStructuredBuffer<uint>          RW_LightIndexList : register(u1);
+Texture2D<float>                  DepthTex          : register(t1);   // prepass depth (reversed-Z); per-tile far-Z
 
 cbuffer CullCB : register(b0) {
     float2 ProjScale;    // (Proj._11, Proj._22): view->clip x/y scale (diagonal terms, layout-invariant)
     uint2  ScreenDim;    // render-target pixel size
     uint   TotalLights;  // valid light count in SB_Lights (<= light buffer capacity)
     uint   NumTilesX;    // ceil(ScreenDim.x / TILE_SIZE)
-    uint2  _pad;
+    float2 ProjZ;        // (Proj._33, Proj._43): reversed-Z depth->viewZ  (viewZ = ProjZ.y / (depth - ProjZ.x))
 };
 
 groupshared uint gs_Count;
 groupshared uint gs_Indices[MAX_LIGHTS_PER_TILE];
+groupshared uint gs_MinDepthInt;   // nearest/farthest opaque depth in the tile, as sortable float bits
+groupshared uint gs_MaxDepthInt;
 
-// View-space position of a screen pixel at a chosen view depth. Reversed-Z agnostic: we pick zView directly
-// rather than inverting a depth-buffer sample (see header note). ndc.y flipped (screen +y is downward).
-float3 ViewCornerAtZ( float2 pixel, float zView ) {
+// View-space position of a screen pixel at a given reversed-Z depth. The four packed projection scalars
+// (ProjScale = _11/_22, ProjZ = _33/_43) are exactly the terms D3D11's ScreenToView uses; the z inverse is
+// valid for our reversed-Z infinite-far camera because they are the actual matrix entries. ndc.y flipped.
+float3 ScreenToView( float2 pixel, float depth ) {
     float2 ndc;
     ndc.x = pixel.x / (float)ScreenDim.x * 2.0 - 1.0;
     ndc.y = -(pixel.y / (float)ScreenDim.y * 2.0 - 1.0);
+    float zView = ProjZ.y / ( depth - ProjZ.x );
     return float3( ndc.x / ProjScale.x * zView, ndc.y / ProjScale.y * zView, zView );
 }
 
-bool SphereInsideAABB( float3 c, float r, float3 mn, float3 mx ) {
-    float3 closest = clamp( c, mn, mx );
-    float3 d = closest - c;
-    return dot( d, d ) <= r * r;
+// Closest-point sphere/AABB overlap (view space). Keeps a light iff its sphere touches the box.
+bool SphereInsideAABB( float3 center, float radius, float3 aabbMin, float3 aabbMax ) {
+    float3 closest = clamp( center, aabbMin, aabbMax );
+    float3 delta = closest - center;
+    return dot( delta, delta ) <= radius * radius;
 }
 
 [numthreads( TILE_SIZE, TILE_SIZE, 1 )]
 void CSMain( uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID ) {
     uint ti = threadID.y * TILE_SIZE + threadID.x;
-    if ( ti == 0 ) gs_Count = 0;
+    if ( ti == 0 ) { gs_Count = 0; gs_MinDepthInt = 0x7F7FFFFF; gs_MaxDepthInt = 0; }
     GroupMemoryBarrierWithGroupSync();
 
-    // Tile frustum AABB in view space between fixed conservative view-Z bounds (depth-independent cull).
-    const float zNear = 1.0;
-    const float zFar  = 100000.0;
+    // Per-tile depth bounds from the prepass. Each of the 256 threads owns exactly one tile pixel and folds
+    // its reversed-Z depth into the group min/max (asuint keeps float ordering for depth in [0,1]). Sky /
+    // cleared pixels read 0 and are skipped. This is the D3D11 CS_LightCulling min/max; the AABB it builds is
+    // bounded on BOTH the near and far side by real geometry, so the tile only pulls in lights whose sphere
+    // actually reaches the surfaces in it — the earlier camera-origin cone (near fixed at 1) instead counted
+    // every light between the camera and the geometry, so a wall at 15m still overflowed the 32-light cap.
+    {
+        uint2 px = uint2( groupID.xy ) * TILE_SIZE + threadID.xy;
+        if ( px.x < ScreenDim.x && px.y < ScreenDim.y ) {
+            float d = DepthTex.Load( int3( int2( px ), 0 ) );
+            if ( d > 0.0 ) {   // reversed-Z: 0 == cleared (sky / no opaque geometry)
+                uint di = asuint( d );
+                InterlockedMin( gs_MinDepthInt, di );
+                InterlockedMax( gs_MaxDepthInt, di );
+            }
+        }
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    // Tile AABB in view space, spanning the near..far corners of the tile's screen rect at the min/max depth.
     float2 tileMin = float2( groupID.xy ) * TILE_SIZE;
     float2 tileMax = float2( groupID.xy + uint2( 1, 1 ) ) * TILE_SIZE;
-    float3 corners[8];
-    corners[0] = ViewCornerAtZ( float2( tileMin.x, tileMin.y ), zNear );
-    corners[1] = ViewCornerAtZ( float2( tileMax.x, tileMin.y ), zNear );
-    corners[2] = ViewCornerAtZ( float2( tileMin.x, tileMax.y ), zNear );
-    corners[3] = ViewCornerAtZ( float2( tileMax.x, tileMax.y ), zNear );
-    corners[4] = ViewCornerAtZ( float2( tileMin.x, tileMin.y ), zFar );
-    corners[5] = ViewCornerAtZ( float2( tileMax.x, tileMin.y ), zFar );
-    corners[6] = ViewCornerAtZ( float2( tileMin.x, tileMax.y ), zFar );
-    corners[7] = ViewCornerAtZ( float2( tileMax.x, tileMax.y ), zFar );
-    float3 aabbMin = corners[0];
-    float3 aabbMax = corners[0];
-    [unroll]
-    for ( uint c = 1; c < 8; ++c ) { aabbMin = min( aabbMin, corners[c] ); aabbMax = max( aabbMax, corners[c] ); }
+    float3 aabbMin, aabbMax;
+    if ( gs_MinDepthInt == 0x7F7FFFFF ) {
+        // No world-mesh depth in this tile (sky, or a VOB/NPC the world-only prepass didn't lay down). Fall
+        // back to an all-encompassing box so those tiles stay conservatively lit — DELIBERATELY divergent from
+        // D3D11 (which collapses empty tiles to the near plane), because our prepass is world-mesh only and
+        // collapsing here would unlight characters standing against the sky. (Complete the prepass to remove.)
+        aabbMin = float3( -1e9, -1e9, -1e9 );
+        aabbMax = float3(  1e9,  1e9,  1e9 );
+    } else {
+        float minDepth = asfloat( gs_MinDepthInt );   // reversed-Z: smaller depth == farther
+        float maxDepth = asfloat( gs_MaxDepthInt );
+        float3 c0 = ScreenToView( float2( tileMin.x, tileMin.y ), minDepth );
+        float3 c1 = ScreenToView( float2( tileMax.x, tileMin.y ), minDepth );
+        float3 c2 = ScreenToView( float2( tileMin.x, tileMax.y ), minDepth );
+        float3 c3 = ScreenToView( float2( tileMax.x, tileMax.y ), minDepth );
+        float3 c4 = ScreenToView( float2( tileMin.x, tileMin.y ), maxDepth );
+        float3 c5 = ScreenToView( float2( tileMax.x, tileMin.y ), maxDepth );
+        float3 c6 = ScreenToView( float2( tileMin.x, tileMax.y ), maxDepth );
+        float3 c7 = ScreenToView( float2( tileMax.x, tileMax.y ), maxDepth );
+        aabbMin = min( min( min( c0, c1 ), min( c2, c3 ) ), min( min( c4, c5 ), min( c6, c7 ) ) );
+        aabbMax = max( max( max( c0, c1 ), max( c2, c3 ) ), max( max( c4, c5 ), max( c6, c7 ) ) );
+    }
 
     // Distribute the light test across the group's threads. Clamp the external count (root constant) to the
     // buffer capacity so a garbage TotalLights can never spin the loop (lasting D3D12 rule).
@@ -728,25 +779,32 @@ cbuffer FrameCB    : register(b0) { float4x4 ViewProj; };
 cbuffer InstanceCB : register(b1) { float4x4 M_World; float4 ModelColor; float Fatness; float3 _pad; };
 cbuffer BonesCB    : register(b2) { float4x4 Bones[96]; };
 cbuffer FogCB      : register(b3) { float3 FogColor; float FogNear; float3 CamPosWS; float FogFar; };
-cbuffer LightCB    : register(b4) { uint LightCount; uint3 _lpad; };   // Forward+ MVP brute-force point-light count
+cbuffer LightCB    : register(b4) { uint LightCount; uint NumTilesX; uint2 _lpad; };   // Forward+ tiled: light count + tiles/row
 
-// Root-descriptor SRV point-light buffer + hard loop clamp — see the world shader for the full rationale.
+// Forward+ tiled point lights (root-descriptor SRVs + per-tile grid) — see the world shader for the rationale.
 struct GPULight { float3 PositionView; float Range; float4 Color; float3 PositionWorld; int ShadowCubeIndex; };
-StructuredBuffer<GPULight> Lights : register(t1);
-#define LIGHT_CAP 400u
+struct LightGrid { uint Offset; uint Count; };
+StructuredBuffer<GPULight>  Lights        : register(t1);
+StructuredBuffer<LightGrid> LightGridBuf  : register(t2);
+StructuredBuffer<uint>      LightIndexBuf : register(t3);
+#define TILE_SIZE 16u
+#define MAX_LIGHTS_PER_TILE 32u
 
 Texture2D    tx  : register(t0);
 SamplerState smp : register(s0);
 
-// Accumulate dynamic point lights at a world-space surface point (identical math to the world/VOB shaders:
+// Accumulate dynamic point lights via the Forward+ tile grid (identical math to the world/VOB shaders:
 // range cull, N.L, falloff = nd*(nd*0.2+0.8), per-light saturate, additive; specular/shadows are later).
-float3 AccumPointLights( float3 wpos, float3 N, float3 diffuse )
+float3 AccumTiledPointLights( float2 svpos, float3 wpos, float3 N, float3 diffuse )
 {
+    uint2 tile = uint2( svpos ) / TILE_SIZE;
+    uint  tileIndex = tile.y * NumTilesX + tile.x;
+    LightGrid g = LightGridBuf[tileIndex];
+    uint n = min( g.Count, MAX_LIGHTS_PER_TILE );
     float3 total = 0;
-    uint n = min( LightCount, LIGHT_CAP );
     for ( uint k = 0; k < n; k++ )
     {
-        GPULight L = Lights[k];
+        GPULight L = Lights[ LightIndexBuf[g.Offset + k] ];
         float3 dir = L.PositionWorld - wpos;
         float dist = length( dir );
         if ( dist >= L.Range ) continue;
@@ -801,7 +859,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     float4 t = tx.Sample( smp, i.uv );
     clip( t.a - 0.5 );
     float3 rgb = t.rgb * i.col.rgb;            // ModelColor is an RGBA float (white for first-light)
-    rgb += AccumPointLights( i.wpos, normalize( i.wnrm ), t.rgb );   // dynamic point lights on top
+    rgb += AccumTiledPointLights( i.clip.xy, i.wpos, normalize( i.wnrm ), t.rgb );   // dynamic point lights on top
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
     return float4( lerp( rgb, FogColor, f ), 1.0 );
 }
@@ -1590,7 +1648,7 @@ bool D3D12GraphicsEngine::CreateDepthBuffer( INT2 size ) {
     dd.Height = static_cast<UINT>(size.y);
     dd.DepthOrArraySize = 1;
     dd.MipLevels = 1;
-    dd.Format = DXGI_FORMAT_D32_FLOAT;
+    dd.Format = DXGI_FORMAT_R32_TYPELESS;   // typeless so the same texels serve a D32_FLOAT DSV and an R32_FLOAT SRV
     dd.SampleDesc.Count = 1;
     dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
     dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
@@ -1600,7 +1658,8 @@ bool D3D12GraphicsEngine::CreateDepthBuffer( INT2 size ) {
     clear.Format = DXGI_FORMAT_D32_FLOAT;
     clear.DepthStencil.Depth = 0.0f;
 
-    // Lives in DEPTH_WRITE for its whole lifetime (only ever written/tested; no SRV read yet).
+    // Born in DEPTH_WRITE. Now also SRV-readable: DispatchLightCulling brackets a NON_PIXEL_SHADER_RESOURCE
+    // read of it (per-tile far-Z) and transitions back to DEPTH_WRITE, so it is DEPTH_WRITE at every other point.
     if ( FAILED( device->CreateCommittedResource( &heapDefault, D3D12_HEAP_FLAG_NONE, &dd,
         D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear, IID_PPV_ARGS( m_DepthBuffer.ReleaseAndGetAddressOf() ) ) ) ) {
         LogWarn() << "D3D12: failed to create the depth buffer (" << size.x << "x" << size.y << ").";
@@ -1609,9 +1668,22 @@ bool D3D12GraphicsEngine::CreateDepthBuffer( INT2 size ) {
     m_DepthBuffer->SetName( L"DepthBuffer(D32)" );
 
     D3D12_DEPTH_STENCIL_VIEW_DESC dsv = {};
-    dsv.Format = DXGI_FORMAT_D32_FLOAT;
+    dsv.Format = DXGI_FORMAT_D32_FLOAT;   // typeless resource viewed as depth here
     dsv.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
     device->CreateDepthStencilView( m_DepthBuffer.Get(), &dsv, m_DsvHeap->GetCPUDescriptorHandleForHeapStart() );
+
+    // R32_FLOAT SRV of the same texels for the light cull's per-tile far-Z read. Slot allocated once; the view is
+    // (re)created every call so it always points at the current (post-resize) resource.
+    if ( m_DepthSrvSlot == UINT_MAX ) {
+        m_DepthSrvSlot = AllocateSrvSlot();
+        if ( m_DepthSrvSlot == UINT_MAX ) return false;
+    }
+    D3D12_SHADER_RESOURCE_VIEW_DESC dsrv = {};
+    dsrv.Format = DXGI_FORMAT_R32_FLOAT;   // typeless resource viewed as a single float channel
+    dsrv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    dsrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    dsrv.Texture2D.MipLevels = 1;
+    device->CreateShaderResourceView( m_DepthBuffer.Get(), &dsrv, GetSrvCpuHandle( m_DepthSrvSlot ) );
 
     // Forward+ tile grid storage is resolution-dependent too — (re)build it here so it always tracks the
     // depth buffer's size (called from both init and the resize path). GPU is idle at both call sites.
@@ -1631,10 +1703,11 @@ bool D3D12GraphicsEngine::CreateWorldPipeline() {
     srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
     // params[3] = point-light StructuredBuffer as a ROOT SRV at t1 (no descriptor slot consumed — a GPU VA
-    // straight in the root; aligns with the CPU-offload/bindless direction). params[4] = b2 light count.
-    // Both params MUST be bound (BindFrameLights) by every draw that uses this root sig with a light-reading
-    // PSO (m_WorldPSO/m_VobPSO), else LightCount is an undefined root value and the shader loops away.
-    D3D12_ROOT_PARAMETER params[5] = {};
+    // straight in the root; aligns with the CPU-offload/bindless direction). params[4] = b2 { light count,
+    // NumTilesX }. params[5]/[6] = the Forward+ per-tile grid + index-list root SRVs at t2/t3. All four MUST
+    // be bound (BindFrameLights) by every draw using this root sig with a light-reading PSO (m_WorldPSO/
+    // m_VobPSO), else the count/grid are undefined root values and the shader loops away.
+    D3D12_ROOT_PARAMETER params[7] = {};
     params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     params[0].Constants.ShaderRegister = 0;   // b0
     params[0].Constants.Num32BitValues = 16;  // float4x4
@@ -1651,9 +1724,15 @@ bool D3D12GraphicsEngine::CreateWorldPipeline() {
     params[3].Descriptor.ShaderRegister = 1;  // t1 light StructuredBuffer
     params[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     params[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[4].Constants.ShaderRegister = 2;   // b2 light count
-    params[4].Constants.Num32BitValues = 4;   // { LightCount, pad, pad, pad }
+    params[4].Constants.ShaderRegister = 2;   // b2 { LightCount, NumTilesX, pad, pad }
+    params[4].Constants.Num32BitValues = 4;
     params[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    params[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+    params[5].Descriptor.ShaderRegister = 2;  // t2 per-tile LightGrid {Offset,Count}
+    params[5].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    params[6].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+    params[6].Descriptor.ShaderRegister = 3;  // t3 per-tile light-index list
+    params[6].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_STATIC_SAMPLER_DESC sampler = {};
     sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
@@ -1796,17 +1875,23 @@ bool D3D12GraphicsEngine::CreateDepthPrepassPipeline() {
 
 bool D3D12GraphicsEngine::CreateLightCullPipeline() {
     // Forward+ tiled light-culling compute pipeline (P2.9b-2). One GLOBAL compute root signature + PSO,
-    // created once. All four bindings are ROOT descriptors (no descriptor tables → no shader-visible-heap
-    // plumbing for this pass): b0 = cull constants (8 root 32-bit values); t0 = the point-light
-    // StructuredBuffer as a root SRV (same UPLOAD buffer the world PS reads); u0/u1 = the light grid /
-    // index-list DEFAULT-heap UAVs as root UAVs. RWStructuredBuffers are valid as root UAVs (stride comes
-    // from the HLSL declaration). Mirrors the world path's "structured buffers straight in the root" style.
+    // created once. b0 = cull constants (8 root 32-bit values); t0 = the point-light StructuredBuffer as a
+    // root SRV (same UPLOAD buffer the world PS reads); u0/u1 = the light grid / index-list DEFAULT-heap UAVs
+    // as root UAVs (RWStructuredBuffers are valid as root UAVs; stride comes from the HLSL declaration). t1 =
+    // the depth buffer SRV, which (being a Texture2D) can't be a root SRV, so it rides a one-entry descriptor
+    // table off the shared SRV heap — used to tighten each tile's far-Z bound (P2.9b-3 flicker fix).
     ID3D12Device* device = m_Device.GetDevice();
 
-    D3D12_ROOT_PARAMETER params[4] = {};
+    D3D12_DESCRIPTOR_RANGE depthRange = {};
+    depthRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    depthRange.NumDescriptors = 1;
+    depthRange.BaseShaderRegister = 1;        // t1 DepthTex
+    depthRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    D3D12_ROOT_PARAMETER params[5] = {};
     params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     params[0].Constants.ShaderRegister = 0;   // b0 CullCB
-    params[0].Constants.Num32BitValues = 8;   // ProjScale(2) + ScreenDim(2) + TotalLights + NumTilesX + pad(2)
+    params[0].Constants.Num32BitValues = 8;   // ProjScale(2) + ScreenDim(2) + TotalLights + NumTilesX + ProjA + ProjB
     params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
     params[1].Descriptor.ShaderRegister = 0;  // t0 SB_Lights
@@ -1817,6 +1902,10 @@ bool D3D12GraphicsEngine::CreateLightCullPipeline() {
     params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
     params[3].Descriptor.ShaderRegister = 1;  // u1 RW_LightIndexList
     params[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    params[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[4].DescriptorTable.NumDescriptorRanges = 1;
+    params[4].DescriptorTable.pDescriptorRanges = &depthRange;   // t1 DepthTex (SRV heap)
+    params[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
     D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
     rsDesc.NumParameters = _countof( params );
@@ -1855,8 +1944,8 @@ bool D3D12GraphicsEngine::CreateLightCullBuffers( INT2 size ) {
     // Per-resolution Forward+ tile grid storage (P2.9b-2). Recreated on resize alongside the depth buffer.
     // RW_LightGrid: one {Offset,Count} (8 B) per 16x16 tile. RW_LightIndexList: a fixed MAX_LIGHTS_PER_TILE
     // (=32) uint slice per tile (no compaction/global counter — see the shader header). Both are DEFAULT-heap
-    // UAV buffers that live permanently in UNORDERED_ACCESS (only the cull CS writes them; the lit PS will
-    // read them next increment), so no state transitions are ever needed. ~1 MB total at 1080p.
+    // UAV buffers created in UNORDERED_ACCESS; each frame DispatchLightCulling writes them (UAV) then transitions
+    // them to PIXEL_SHADER_RESOURCE for the lit geometry passes to read, then back. ~1 MB total at 1080p.
     if ( size.x <= 0 || size.y <= 0 ) return false;
     ID3D12Device* device = m_Device.GetDevice();
 
@@ -1893,6 +1982,7 @@ bool D3D12GraphicsEngine::CreateLightCullBuffers( INT2 size ) {
         return false;
     if ( !makeUavBuffer( static_cast<UINT64>( numTiles ) * kMaxLightsPerTile * sizeof( uint32_t ), L"LightIndexList", m_LightIndexBuffer ) )
         return false;
+    m_LightGridInPixelState = false;   // freshly created in UNORDERED_ACCESS (see DispatchLightCulling round-trip)
     return true;
 }
 
@@ -2057,15 +2147,19 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
     m_FrameLightCount = count;
 }
 
-void D3D12GraphicsEngine::BindFrameLights( UINT srvParam, UINT countParam ) {
-    // Bind the Forward+ point-light root params: srvParam = the light StructuredBuffer as a root SRV (t1),
-    // countParam = the light count (LightCB). EVERY draw whose bound PSO reads the light loop MUST call this
-    // after setting its root signature, or the pixel shader's loop bound (LightCount) is an UNDEFINED root
-    // value and can run billions of iterations → GPU timeout/removal. Root args are cleared on every
-    // SetGraphicsRootSignature. The param indices differ per root sig: m_WorldRootSig uses (3,4) — the default —
-    // for the world mesh / instanced VOBs / node attachments; m_SkeletalRootSig uses (5,6).
+void D3D12GraphicsEngine::BindFrameLights( UINT srvParam, UINT countParam, UINT gridParam, UINT indexParam ) {
+    // Bind the Forward+ tiled point-light root params: srvParam = the light StructuredBuffer as a root SRV
+    // (t1), countParam = LightCB { LightCount, NumTilesX }, gridParam/indexParam = the per-tile grid (t2) and
+    // light-index list (t3) root SRVs produced by DispatchLightCulling. EVERY draw whose bound PSO reads the
+    // tiled light loop MUST call this after setting its root signature, or the loop bound (Count) and grid are
+    // UNDEFINED root values and can run billions of iterations → GPU timeout/removal. Root args are cleared on
+    // every SetGraphicsRootSignature. The param indices differ per root sig: m_WorldRootSig uses (3,4,5,6) —
+    // the default — for the world mesh / instanced VOBs / node attachments; m_SkeletalRootSig uses (5,6,7,8).
     m_CmdList->SetGraphicsRootShaderResourceView( srvParam, m_LightBuffer[m_FrameIndex]->GetGPUVirtualAddress() );
-    m_CmdList->SetGraphicsRoot32BitConstant( countParam, m_FrameLightCount, 0 );
+    m_CmdList->SetGraphicsRoot32BitConstant( countParam, m_FrameLightCount, 0 );   // LightCount @ b*.x
+    m_CmdList->SetGraphicsRoot32BitConstant( countParam, m_NumTilesX, 1 );         // NumTilesX  @ b*.y
+    m_CmdList->SetGraphicsRootShaderResourceView( gridParam, m_LightGridBuffer->GetGPUVirtualAddress() );
+    m_CmdList->SetGraphicsRootShaderResourceView( indexParam, m_LightIndexBuffer->GetGPUVirtualAddress() );
 }
 
 bool D3D12GraphicsEngine::CreateWaterPipeline() {
@@ -2951,7 +3045,7 @@ bool D3D12GraphicsEngine::CreateSkeletalPipeline() {
     srvRange.BaseShaderRegister = 0;         // t0
     srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-    D3D12_ROOT_PARAMETER params[7] = {};
+    D3D12_ROOT_PARAMETER params[9] = {};
     params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     params[0].Constants.ShaderRegister = 0;   // b0 ViewProj
     params[0].Constants.Num32BitValues = 16;
@@ -2970,15 +3064,21 @@ bool D3D12GraphicsEngine::CreateSkeletalPipeline() {
     params[4].Constants.ShaderRegister = 3;   // b3 fog
     params[4].Constants.Num32BitValues = 8;   // FogConstants (8 DWORDs)
     params[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;  // VS: CamPosWS; PS: color/near/far
-    // Forward+ point lights (mirrors m_WorldRootSig params 3/4, here at 5/6 — see BindFrameLights). Both MUST
-    // be bound at every skeletal draw or the PS light-loop bound is undefined → GPU hang.
+    // Forward+ point lights (mirrors m_WorldRootSig params 3/4/5/6, here at 5..8 — see BindFrameLights). All
+    // MUST be bound at every skeletal draw or the PS light-loop bound/grid is undefined → GPU hang.
     params[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
     params[5].Descriptor.ShaderRegister = 1;  // t1 light StructuredBuffer (root SRV, no descriptor slot)
     params[5].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     params[6].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[6].Constants.ShaderRegister = 4;   // b4 light count
-    params[6].Constants.Num32BitValues = 4;   // LightCB { uint LightCount; uint3 _lpad; }
+    params[6].Constants.ShaderRegister = 4;   // b4 { LightCount, NumTilesX, pad, pad }
+    params[6].Constants.Num32BitValues = 4;
     params[6].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    params[7].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+    params[7].Descriptor.ShaderRegister = 2;  // t2 per-tile LightGrid {Offset,Count}
+    params[7].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    params[8].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+    params[8].Descriptor.ShaderRegister = 3;  // t3 per-tile light-index list
+    params[8].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_STATIC_SAMPLER_DESC sampler = {};
     sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
@@ -3376,9 +3476,9 @@ void D3D12GraphicsEngine::DispatchLightCulling() {
     // thread group per screen tile writes {Offset,Count} into m_LightGridBuffer and the touching light
     // indices into m_LightIndexBuffer. This increment only PRODUCES the grid — nothing consumes it yet, so
     // the frame is visually unchanged; verify by inspecting the two buffers in RenderDoc (per-tile Count
-    // should be non-zero where torches/spells are on screen, zero for empty sky). The lit pixel shaders swap
-    // their brute-force light loop for this grid in the next increment. The cull is depth-independent
-    // (reversed-Z agnostic — see the shader header), so it does NOT sample the prepass depth here.
+    // should be non-zero where torches/spells are on screen, zero for empty sky). The lit pixel shaders read
+    // this grid instead of looping all lights. The cull reads the prepass depth (transitioned to a compute SRV
+    // and back below) to clamp each tile's FAR-Z to real geometry — see the shader header for why far-only.
     if ( !m_FrameOpen || !m_LightCullPSO || !m_LightCullRootSig || !m_LightGridBuffer || !m_LightIndexBuffer )
         return;
     if ( !m_LightBuffer[m_FrameIndex] || m_NumTilesX == 0 || m_NumTilesY == 0 )
@@ -3386,8 +3486,26 @@ void D3D12GraphicsEngine::DispatchLightCulling() {
 
     DX_ZONE( m_CmdList, "Light Culling (compute)" );
 
+    // The lit geometry passes left the grid/index buffers in PIXEL_SHADER_RESOURCE last frame; transition them
+    // back to UNORDERED_ACCESS so the cull CS can write them as root UAVs. Skipped on the first dispatch after
+    // (re)creation, when they're already in UAV (see CreateLightCullBuffers / m_LightGridInPixelState).
+    if ( m_LightGridInPixelState ) {
+        D3D12_RESOURCE_BARRIER toUav[2] = {};
+        for ( int i = 0; i < 2; ++i ) {
+            toUav[i].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            toUav[i].Transition.pResource = ( i == 0 ? m_LightGridBuffer : m_LightIndexBuffer ).Get();
+            toUav[i].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            toUav[i].Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+            toUav[i].Transition.StateAfter  = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        }
+        m_CmdList->ResourceBarrier( 2, toUav );
+        m_LightGridInPixelState = false;
+    }
+
     // ProjScale = the projection's x/y view->clip scale (diagonal terms; layout-invariant so no transpose
-    // worry). Same projection the geometry passes use.
+    // worry). ProjA/ProjB = the z-row terms (_33, _43) the CS inverts to turn a reversed-Z depth sample into
+    // a view-space Z (viewZ = ProjB / (depth - ProjA)); same scalars read straight off the CPU matrix, so no
+    // transpose concern either. Same projection the geometry passes use.
     const XMFLOAT4X4& projM = Engine::GAPI->GetProjectionMatrix();
 
     struct LightCullConstants {
@@ -3395,7 +3513,7 @@ void D3D12GraphicsEngine::DispatchLightCulling() {
         uint32_t ScreenX, ScreenY;
         uint32_t TotalLights;
         uint32_t NumTilesX;
-        uint32_t Pad0, Pad1;
+        float    ProjA, ProjB;   // projM._33, projM._43 (reversed-Z depth -> viewZ reconstruction)
     } cb{};
     cb.ProjScaleX = projM._11;
     cb.ProjScaleY = projM._22;
@@ -3403,6 +3521,18 @@ void D3D12GraphicsEngine::DispatchLightCulling() {
     cb.ScreenY = static_cast<uint32_t>( m_Resolution.y );
     cb.TotalLights = m_FrameLightCount;
     cb.NumTilesX = m_NumTilesX;
+    cb.ProjA = projM._33;
+    cb.ProjB = projM._43;
+
+    // The depth prepass left the depth buffer in DEPTH_WRITE; make it readable by this compute pass, then hand
+    // it back to DEPTH_WRITE below so the lit passes (GREATER_EQUAL depth-write) see it exactly as before.
+    D3D12_RESOURCE_BARRIER depthToSrv = {};
+    depthToSrv.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    depthToSrv.Transition.pResource = m_DepthBuffer.Get();
+    depthToSrv.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    depthToSrv.Transition.StateBefore = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    depthToSrv.Transition.StateAfter  = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    m_CmdList->ResourceBarrier( 1, &depthToSrv );
 
     m_CmdList->SetPipelineState( m_LightCullPSO.Get() );
     m_CmdList->SetComputeRootSignature( m_LightCullRootSig.Get() );
@@ -3410,10 +3540,27 @@ void D3D12GraphicsEngine::DispatchLightCulling() {
     m_CmdList->SetComputeRootShaderResourceView( 1, m_LightBuffer[m_FrameIndex]->GetGPUVirtualAddress() );
     m_CmdList->SetComputeRootUnorderedAccessView( 2, m_LightGridBuffer->GetGPUVirtualAddress() );
     m_CmdList->SetComputeRootUnorderedAccessView( 3, m_LightIndexBuffer->GetGPUVirtualAddress() );
+    m_CmdList->SetComputeRootDescriptorTable( 4, GetSrvGpuHandle( m_DepthSrvSlot ) );   // t1 DepthTex (SRV heap already bound)
     m_CmdList->Dispatch( m_NumTilesX, m_NumTilesY, 1 );
 
-    // No UAV barrier yet — nothing reads these buffers this increment. It'll be added when the lit pixel
-    // shaders consume the grid (P2.9b-3), so their reads are ordered after these writes.
+    D3D12_RESOURCE_BARRIER depthToWrite = depthToSrv;
+    depthToWrite.Transition.StateBefore = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    depthToWrite.Transition.StateAfter  = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    m_CmdList->ResourceBarrier( 1, &depthToWrite );
+
+    // Transition both buffers UNORDERED_ACCESS -> PIXEL_SHADER_RESOURCE so the lit world/VOB/skeletal passes
+    // can read them as root SRVs. The transition barrier also orders those reads after these UAV writes (no
+    // separate UAV barrier needed). Reverted at the top of next frame's dispatch.
+    D3D12_RESOURCE_BARRIER toSrv[2] = {};
+    for ( int i = 0; i < 2; ++i ) {
+        toSrv[i].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        toSrv[i].Transition.pResource = ( i == 0 ? m_LightGridBuffer : m_LightIndexBuffer ).Get();
+        toSrv[i].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        toSrv[i].Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        toSrv[i].Transition.StateAfter  = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    }
+    m_CmdList->ResourceBarrier( 2, toSrv );
+    m_LightGridInPixelState = true;
 }
 
 XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
@@ -3649,7 +3796,7 @@ XRESULT D3D12GraphicsEngine::DrawSkeletalMeshes( std::vector<SkeletalVobInfo*>& 
     m_CmdList->SetGraphicsRootSignature( m_SkeletalRootSig.Get() );
     m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
     m_CmdList->SetGraphicsRoot32BitConstants( 4, 8, &fog, 0 );   // b3 fog
-    BindFrameLights( 5, 6 );   // param 5 = light SRV (t1), param 6 = light count (b4) — MUST set both (see BindFrameLights)
+    BindFrameLights( 5, 6, 7, 8 );   // light SRV(t1)+count(b4)+grid(t2)+index(t3) — MUST set all (see BindFrameLights)
 
     D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
     D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
@@ -4411,7 +4558,7 @@ XRESULT D3D12GraphicsEngine::GetDisplayModeList( std::vector<DisplayModeInfo>* m
 
     modeList->clear();
     if ( XR_SUCCESS != DXGI_GetDisplayModeList( m_Device.GetDevice()->GetAdapterLuid(), m_OutputWindow, modeList) ) {
-    modeList->clear();
+        modeList->clear();
         modeList->push_back( DisplayModeInfo( std::max<int>( 1, m_Resolution.x ), std::max<int>( 1, m_Resolution.y ), 60, 1 ) );
     }
     return XR_SUCCESS;

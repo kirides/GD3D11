@@ -126,7 +126,7 @@ private:
     ID3D12PipelineState* GetOrCreateUIPipeline( const GothicBlendStateInfo& blend, const GothicDepthBufferStateInfo& depth );
     bool CreateUIVertexBuffers();     // per-frame dynamic (upload-heap) vertex ring buffers
     bool CreateWhiteTexture();        // 1x1 white fallback (untextured colored 2D draws)
-    bool CreateDepthBuffer( INT2 size ); // D32_FLOAT depth target + DSV (reversed-Z world rendering)
+    bool CreateDepthBuffer( INT2 size ); // R32_TYPELESS depth target + DSV(D32) + SRV(R32) (reversed-Z world rendering)
     bool CreateWorldPipeline();       // root sig + inline shaders + PSO for the textured world-mesh pass
     bool CreateDepthPrepassPipeline(); // Forward+ opaque depth prepass PSO (depth-only world mesh; reuses m_WorldRootSig)
     void DrawDepthPrepass();          // lay down opaque world-mesh depth before the lit passes (Forward+ prepass)
@@ -138,7 +138,7 @@ private:
     XRESULT DrawVobsInstanced();      // collect visible VOBs + draw each visual instanced (textured)
     bool CreateLightBuffer();         // per-frame point-light structured buffers (Forward+ MVP: brute-force)
     void BuildFrameLightBuffer();     // (re)fill this frame's light buffer from the collected visible lights
-    void BindFrameLights( UINT srvParam = 3, UINT countParam = 4 );   // bind light SRV (t1) + count; (3,4)=m_WorldRootSig, (5,6)=m_SkeletalRootSig
+    void BindFrameLights( UINT srvParam = 3, UINT countParam = 4, UINT gridParam = 5, UINT indexParam = 6 );   // light SRV(t1)+count+grid(t2)+index(t3); (3,4,5,6)=world, (5,6,7,8)=skeletal
     bool CreateWaterPipeline();       // alpha-blended water PSO + own root sig (adds b2 time) + inline shaders
     void DrawWaterSurfaces() override; // draw water peeled out of the opaque world pass (scrolled UV, blended)
     bool CreateSkeletalPipeline();    // skeletal (animated NPC/monster) root sig + inline shaders + PSO
@@ -222,8 +222,9 @@ private:
 
     // --- 3D world mesh path (Phase 2 first-light: flat-shaded, depth-tested, no G-buffer) ---
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_DsvHeap;         // single DSV
-    Microsoft::WRL::ComPtr<ID3D12Resource>       m_DepthBuffer;     // D32_FLOAT, reversed-Z
+    Microsoft::WRL::ComPtr<ID3D12Resource>       m_DepthBuffer;     // R32_TYPELESS (DSV D32_FLOAT / SRV R32_FLOAT), reversed-Z
     UINT m_DsvDescriptorSize = 0;
+    UINT m_DepthSrvSlot = UINT_MAX;   // R32_FLOAT SRV of m_DepthBuffer, read by the light cull for per-tile far-Z tightening
 
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_WorldRootSig;     // b0 = ViewProj (16 root constants, VS); t0 SRV; s0
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_WorldPSO;
@@ -246,6 +247,10 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> m_LightIndexBuffer;   // RWStructuredBuffer<uint>  (numTiles * 32 * 4 B)
     UINT m_NumTilesX = 0;
     UINT m_NumTilesY = 0;
+    // Grid/index buffers round-trip UNORDERED_ACCESS (cull CS writes) -> PIXEL_SHADER_RESOURCE (lit PS reads)
+    // each frame. Tracks whether they're currently in the PS-read state so DispatchLightCulling knows whether
+    // it must transition them back to UAV before the next dispatch (false right after (re)creation in UAV).
+    bool m_LightGridInPixelState = false;
 
     // Instanced static VOBs (reuses m_WorldRootSig; slot 0 = packed vertex, slot 1 = per-instance data).
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_VobPSO;
