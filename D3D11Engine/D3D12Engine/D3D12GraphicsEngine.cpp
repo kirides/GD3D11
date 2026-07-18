@@ -4017,67 +4017,67 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
         if ( !vi->Vob->GetShowVisual() ) continue;
 
         SkeletalMeshVisualInfo* visual = static_cast<SkeletalMeshVisualInfo*>( vi->VisualInfo );
-        // Note: we also need to draw static interactive MOBs (e.g. doors) that have no base skeletal mesh, so don't skip them here.
-        // They work in D3d11 but not in d3d12 currently. need to figure that out.
-
         zCModel* model = static_cast<zCModel*>( vi->Vob->GetVisual() );
         if ( !model ) continue;
 
-        if ( visual->SkeletalMeshes.empty() ) {
-            if ( model->GetMeshSoftSkinList()->NumInArray > 0 ) {
-                // how?
-                WorldConverter::ExtractSkeletalMeshFromVob( model, visual );
-                if ( visual->SkeletalMeshes.empty() ) {
-                    continue;
-                }
-            } else {
-                continue;
-            }
-        }
         if ( XMVector3Greater( XMVector3LengthSq( camPos - vi->Vob->GetPositionWorldXM() ), radiusSq ) )
             continue;   // out of skeletal-draw range
+
+        // Some skeletal vobs arrive with their base mesh not yet extracted (SkeletalMeshes empty but the model
+        // does carry soft-skin geometry) — build it lazily. Interactive MOBs whose ONLY renderable content is a
+        // node attachment (a lamp post's lamp, some doors) legitimately stay empty and fall through to the
+        // attachment loop below — they must NOT be skipped (this was the "MOBs don't render" bug).
+        if ( visual->SkeletalMeshes.empty() && model->GetMeshSoftSkinList()->NumInArray > 0 )
+            WorldConverter::ExtractSkeletalMeshFromVob( model, visual );
 
         model->SetDistanceToCamera( 500 );
         if ( vi->LastAniUpdateFrame != now ) {
             vi->LastAniUpdateFrame = now;
             model->UpdateAttachedVobs();   // once/frame — this is why the pass can't just re-run in a prepass
         }
+        model->UpdateMeshLibTexAniState();
 
-        // Bone palette (object-space matrices) for the model's current animation pose.
+        // Bone palette (object-space matrices) for the model's current animation pose. Needed for BOTH the base
+        // skinned mesh AND the node-attachment world matrices, so compute it (and xmWorld) before either.
         boneCache.clear();
         model->GetBoneTransforms( &boneCache );
         UINT numBones = static_cast<UINT>( boneCache.size() );
         if ( numBones == 0 ) continue;
         if ( numBones > kSkeletalMaxBones ) numBones = kSkeletalMaxBones;
 
-        // Allocate the per-instance CB + bone CB from the per-frame ring (each 256-byte aligned so it can be
-        // bound as a root CBV). Uploaded ONCE here; the prepass + color pass reuse these two GPU addresses.
-        const UINT instSize = static_cast<UINT>( sizeof( SkeletalInstanceCB ) );
-        const UINT boneSize = numBones * static_cast<UINT>( sizeof( XMFLOAT4X4 ) );
-        const UINT instOff = AlignCB( m_SkeletalCBBufferOffset );
-        const UINT boneOff = AlignCB( instOff + instSize );
-        if ( boneOff + boneSize > m_SkeletalCBBufferCapacity ) {
-            if ( !m_SkeletalCBOverflowLogged ) {
-                LogWarn() << "D3D12: skeletal CB ring overflow (" << m_SkeletalCBBufferCapacity
-                          << " bytes/frame). Some skeletal meshes dropped this frame.";
-                m_SkeletalCBOverflowLogged = true;
+        const XMMATRIX xmWorld = vi->Vob->GetWorldMatrixXM() * XMMatrixScalingFromVector( model->GetModelScaleXM() );
+
+        // Base skinned mesh — skipped entirely for attachment-only MOBs (empty SkeletalMeshes). Mirrors D3D11
+        // DrawSkeletalMeshVobs, which guards its base pass on !SkeletalMeshes.empty() but always runs attachments.
+        if ( !visual->SkeletalMeshes.empty() ) {
+            // Allocate the per-instance CB + bone CB from the per-frame ring (each 256-byte aligned so it can be
+            // bound as a root CBV). Uploaded ONCE here; the prepass + color pass reuse these two GPU addresses.
+            const UINT instSize = static_cast<UINT>( sizeof( SkeletalInstanceCB ) );
+            const UINT boneSize = numBones * static_cast<UINT>( sizeof( XMFLOAT4X4 ) );
+            const UINT instOff = AlignCB( m_SkeletalCBBufferOffset );
+            const UINT boneOff = AlignCB( instOff + instSize );
+            if ( boneOff + boneSize > m_SkeletalCBBufferCapacity ) {
+                if ( !m_SkeletalCBOverflowLogged ) {
+                    LogWarn() << "D3D12: skeletal CB ring overflow (" << m_SkeletalCBBufferCapacity
+                              << " bytes/frame). Some skeletal meshes dropped this frame.";
+                    m_SkeletalCBOverflowLogged = true;
+                }
+                break;
             }
-            break;
+
+            SkeletalInstanceCB inst = {};
+            XMStoreFloat4x4( &inst.World, xmWorld );
+            inst.ModelColor = XMFLOAT4( 1.0f, 1.0f, 1.0f, 1.0f );   // first-light: white; ground-light color is a later step
+            inst.Fatness = model->GetModelFatness();
+
+            uint8_t* ringBase = m_SkeletalCBBufferPtr[frame];
+            memcpy( ringBase + instOff, &inst, instSize );
+            memcpy( ringBase + boneOff, boneCache.data(), boneSize );
+            m_SkeletalCBBufferOffset = boneOff + boneSize;
+
+            const D3D12_GPU_VIRTUAL_ADDRESS ringGpu = m_SkeletalCBBuffer[frame]->GetGPUVirtualAddress();
+            g_FrameSkelDraws.push_back( { vi, visual, ringGpu + instOff, ringGpu + boneOff } );
         }
-
-        SkeletalInstanceCB inst = {};
-        XMMATRIX xmWorld = vi->Vob->GetWorldMatrixXM() * XMMatrixScalingFromVector( model->GetModelScaleXM() );
-        XMStoreFloat4x4( &inst.World, xmWorld );
-        inst.ModelColor = XMFLOAT4( 1.0f, 1.0f, 1.0f, 1.0f );   // first-light: white; ground-light color is a later step
-        inst.Fatness = model->GetModelFatness();
-
-        uint8_t* ringBase = m_SkeletalCBBufferPtr[frame];
-        memcpy( ringBase + instOff, &inst, instSize );
-        memcpy( ringBase + boneOff, boneCache.data(), boneSize );
-        m_SkeletalCBBufferOffset = boneOff + boneSize;
-
-        const D3D12_GPU_VIRTUAL_ADDRESS ringGpu = m_SkeletalCBBuffer[frame]->GetGPUVirtualAddress();
-        g_FrameSkelDraws.push_back( { vi, visual, ringGpu + instOff, ringGpu + boneOff } );
 
         // Node attachments (weapons/heads/lamps/held items): world = modelWorld * boneMatrix[node]. Upload each
         // as a VOB instance into the VOB ring NOW (pre-cull) so it can be depth-prepassed AND color-drawn from
