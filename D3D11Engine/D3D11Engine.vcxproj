@@ -206,7 +206,7 @@
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <LinkIncremental>false</LinkIncremental>
-    <IncludePath>$(IncludePath);include;include/imgui/;include/imgui/backends/</IncludePath>
+    <IncludePath>$(IncludePath);vendor/D3D12MemoryAllocator/include;include;include/imgui/;include/imgui/backends/</IncludePath>
     <LibraryPath>$(directxtk-LibPath);lib;$(LibraryPath)</LibraryPath>
     <TargetName>ddraw</TargetName>
     <CodeAnalysisRuleSet>NativeRecommendedRules.ruleset</CodeAnalysisRuleSet>
@@ -215,7 +215,7 @@
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Spacer_NET|Win32'">
     <LinkIncremental>false</LinkIncremental>
-    <IncludePath>$(IncludePath);include;include/imgui/;include/imgui/backends/</IncludePath>
+    <IncludePath>$(IncludePath);vendor/D3D12MemoryAllocator/include;include;include/imgui/;include/imgui/backends/</IncludePath>
     <LibraryPath>$(directxtk-LibPath);lib;$(LibraryPath)</LibraryPath>
     <TargetName>ddraw</TargetName>
     <CodeAnalysisRuleSet>NativeRecommendedRules.ruleset</CodeAnalysisRuleSet>
@@ -224,7 +224,7 @@
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Spacer_NET_G1|Win32'">
     <LinkIncremental>false</LinkIncremental>
-    <IncludePath>$(IncludePath);include;include/imgui/;include/imgui/backends/</IncludePath>
+    <IncludePath>$(IncludePath);vendor/D3D12MemoryAllocator/include;include;include/imgui/;include/imgui/backends/</IncludePath>
     <LibraryPath>$(directxtk-LibPath);lib;$(LibraryPath)</LibraryPath>
     <TargetName>ddraw</TargetName>
     <CodeAnalysisRuleSet>NativeRecommendedRules.ruleset</CodeAnalysisRuleSet>
@@ -233,7 +233,7 @@
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release_AVX|Win32'">
     <LinkIncremental>false</LinkIncremental>
-    <IncludePath>$(IncludePath);include;include/imgui/;include/imgui/backends/</IncludePath>
+    <IncludePath>$(IncludePath);vendor/D3D12MemoryAllocator/include;include;include/imgui/;include/imgui/backends/</IncludePath>
     <LibraryPath>$(directxtk-LibPath);lib;$(LibraryPath)</LibraryPath>
     <TargetName>ddraw</TargetName>
     <CodeAnalysisRuleSet>NativeRecommendedRules.ruleset</CodeAnalysisRuleSet>
@@ -242,7 +242,7 @@
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release_AVX2|Win32'">
     <LinkIncremental>false</LinkIncremental>
-    <IncludePath>$(IncludePath);include;include/imgui/;include/imgui/backends/</IncludePath>
+    <IncludePath>$(IncludePath);vendor/D3D12MemoryAllocator/include;include;include/imgui/;include/imgui/backends/</IncludePath>
     <LibraryPath>$(directxtk-LibPath);lib;$(LibraryPath)</LibraryPath>
     <TargetName>ddraw</TargetName>
     <CodeAnalysisRuleSet>NativeRecommendedRules.ruleset</CodeAnalysisRuleSet>
@@ -251,48 +251,48 @@
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release_G1|Win32'">
     <LinkIncremental>false</LinkIncremental>
-    <IncludePath>$(IncludePath);include;include/imgui/;include/imgui/backends/</IncludePath>
+    <IncludePath>$(IncludePath);vendor/D3D12MemoryAllocator/include;include;include/imgui/;include/imgui/backends/</IncludePath>
     <LibraryPath>$(directxtk-LibPath);lib;$(LibraryPath)</LibraryPath>
     <TargetName>ddraw</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release_G1_12f|Win32'">
     <LinkIncremental>false</LinkIncremental>
-    <IncludePath>$(IncludePath);include;include/imgui/;include/imgui/backends/</IncludePath>
+    <IncludePath>$(IncludePath);vendor/D3D12MemoryAllocator/include;include;include/imgui/;include/imgui/backends/</IncludePath>
     <LibraryPath>$(directxtk-LibPath);lib;$(LibraryPath)</LibraryPath>
     <TargetName>ddraw</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release_G1_AVX|Win32'">
     <LinkIncremental>false</LinkIncremental>
-    <IncludePath>$(IncludePath);include;include/imgui/;include/imgui/backends/</IncludePath>
+    <IncludePath>$(IncludePath);vendor/D3D12MemoryAllocator/include;include;include/imgui/;include/imgui/backends/</IncludePath>
     <LibraryPath>$(directxtk-LibPath);lib;$(LibraryPath)</LibraryPath>
     <TargetName>ddraw</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release_G1_AVX2|Win32'">
     <LinkIncremental>false</LinkIncremental>
-    <IncludePath>$(IncludePath);include;include/imgui/;include/imgui/backends/</IncludePath>
+    <IncludePath>$(IncludePath);vendor/D3D12MemoryAllocator/include;include;include/imgui/;include/imgui/backends/</IncludePath>
     <LibraryPath>$(directxtk-LibPath);lib;$(LibraryPath)</LibraryPath>
     <TargetName>ddraw</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt|Win32'">
-    <IncludePath>$(IncludePath);include;include/imgui/;include/imgui/backends/</IncludePath>
+    <IncludePath>$(IncludePath);vendor/D3D12MemoryAllocator/include;include;include/imgui/;include/imgui/backends/</IncludePath>
     <LibraryPath>$(directxtk-LibPath);lib;$(LibraryPath)</LibraryPath>
     <TargetName>ddraw</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='G2_Debug|Win32'">
     <LinkIncremental>true</LinkIncremental>
-    <IncludePath>$(IncludePath);include;include/imgui/;include/imgui/backends/</IncludePath>
+    <IncludePath>$(IncludePath);vendor/D3D12MemoryAllocator/include;include;include/imgui/;include/imgui/backends/</IncludePath>
     <LibraryPath>$(directxtk-LibPath);lib;$(LibraryPath)</LibraryPath>
     <TargetName>ddraw</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt_Spacer|Win32'">
     <LinkIncremental>false</LinkIncremental>
-    <IncludePath>$(IncludePath);include;include/imgui/;include/imgui/backends/</IncludePath>
+    <IncludePath>$(IncludePath);vendor/D3D12MemoryAllocator/include;include;include/imgui/;include/imgui/backends/</IncludePath>
     <LibraryPath>$(directxtk-LibPath);lib;$(LibraryPath)</LibraryPath>
     <TargetName>ddraw</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release_NoOpt_G1|Win32'">
     <LinkIncremental>true</LinkIncremental>
-    <IncludePath>$(IncludePath);include;include/imgui/;include/imgui/backends/</IncludePath>
+    <IncludePath>$(IncludePath);vendor/D3D12MemoryAllocator/include;include;include/imgui/;include/imgui/backends/</IncludePath>
     <LibraryPath>$(directxtk-LibPath);lib;$(LibraryPath)</LibraryPath>
     <TargetName>ddraw</TargetName>
   </PropertyGroup>
@@ -1104,6 +1104,8 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="TexturePool.h" />
     <ClInclude Include="ThreadPool.h" />
     <ClInclude Include="vendor\stb\stb_image.h" />
+    <ClInclude Include="vendor\D3D12MemoryAllocator\include\D3D12MemAlloc.h" />
+    <ClInclude Include="vendor\D3D12MemoryAllocator\src\Common.h" />
     <ClInclude Include="VersionCheck.h" />
     <ClInclude Include="WidgetContainer.h" />
     <ClInclude Include="Widget_TransRot.h" />
@@ -1360,6 +1362,8 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="include\meshoptimizer\src\quantization.cpp" />
     <ClCompile Include="include\meshoptimizer\src\vcacheoptimizer.cpp" />
     <ClCompile Include="include\meshoptimizer\src\vfetchoptimizer.cpp" />
+    <ClCompile Include="vendor\D3D12MemoryAllocator\src\Common.cpp" />
+    <ClCompile Include="vendor\D3D12MemoryAllocator\src\D3D12MemAlloc.cpp" />
     <ClCompile Include="vendor\mikktspace.c" />
     <ClCompile Include="include\tracy\public\TracyClient.cpp" />
     <ClCompile Include="MeshManager.cpp" />

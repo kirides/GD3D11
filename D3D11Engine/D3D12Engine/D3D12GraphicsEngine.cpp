@@ -1,4 +1,5 @@
 #include "../pch.h"
+#include <D3D12MemAlloc.h>
 #include "D3D12GraphicsEngine.h"
 #include "D3D12LineRenderer.h"
 #include "D3D12VertexBuffer.h"

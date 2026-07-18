@@ -100,6 +100,9 @@
     <Filter Include="Engine\DXGI">
       <UniqueIdentifier>{eb8840c8-8ff4-48d1-898b-20540a0f0a18}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Librarys\D3D12MemoryAllocator">
+      <UniqueIdentifier>{c0a8cc76-71b8-489a-8078-86f1dc39635d}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="pch.h" />
@@ -888,6 +891,12 @@
     <ClInclude Include="vendor\stb\stb_image.h">
       <Filter>Librarys\stb</Filter>
     </ClInclude>
+    <ClInclude Include="vendor\D3D12MemoryAllocator\src\Common.h">
+      <Filter>Librarys\D3D12MemoryAllocator</Filter>
+    </ClInclude>
+    <ClInclude Include="vendor\D3D12MemoryAllocator\include\D3D12MemAlloc.h">
+      <Filter>Librarys\D3D12MemoryAllocator</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp" />
@@ -1215,6 +1224,12 @@
     <ClCompile Include="ConstantBufferPool.cpp" />
     <ClCompile Include="vendor\mikktspace.c" />
     <ClCompile Include="BaseGraphicsEngine.cpp" />
+    <ClCompile Include="vendor\D3D12MemoryAllocator\src\Common.cpp">
+      <Filter>Librarys\D3D12MemoryAllocator</Filter>
+    </ClCompile>
+    <ClCompile Include="vendor\D3D12MemoryAllocator\src\D3D12MemAlloc.cpp">
+      <Filter>Librarys\D3D12MemoryAllocator</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="ddraw.def">
