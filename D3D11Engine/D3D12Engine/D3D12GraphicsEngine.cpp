@@ -511,6 +511,26 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
     return float4( lerp( rgb, FogColor, f ), 1.0 );
 }
+
+// --- Depth-prepass variant (P2.9b-4a: adds instanced VOBs to the Forward+ opaque depth prepass) ---
+// Minimal: transform by the instance world matrix and carry uv for the same alpha cutout; write depth only
+// (the PSO masks color). Reads only b0 (ViewProj) + t0/s0 — NOT fog/light CBs — so it needs no BindFrameLights.
+struct VS_DEPTH_IN  { float3 pos : POSITION; float2 uv : TEXCOORD0; float4x4 iworld : INSTANCE_WORLD_MATRIX; };
+struct VS_DEPTH_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; };
+VS_DEPTH_OUT VSDepth( VS_DEPTH_IN i )
+{
+    VS_DEPTH_OUT o;
+    float3 worldPos = mul( float4( i.pos, 1.0 ), i.iworld ).xyz;
+    o.clip = mul( float4( worldPos, 1.0 ), ViewProj );
+    o.uv = i.uv;
+    return o;
+}
+float4 PSDepthClip( VS_DEPTH_OUT i ) : SV_TARGET
+{
+    float4 t = tx.Sample( smp, i.uv );
+    clip( t.a - 0.5 );          // same cutout as PSMain so foliage/fence gaps don't lay down depth
+    return float4( 0, 0, 0, 1 );   // discarded: the PSO's color write mask is 0 (depth-only pass)
+}
 )";
 
     // Forward+ opaque DEPTH PREPASS shader (P2.9b-1). Lays down the opaque world-mesh depth before the
@@ -737,6 +757,13 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     std::vector<VobInfo*>         g_FrameVobs;
     std::vector<VobLightInfo*>    g_FrameLights;
     std::vector<SkeletalVobInfo*> g_FrameMobs;
+
+    // Per-frame VOB instance-ring snapshot (P2.9b-4a). UploadFrameVobInstances memcpys each visible visual's
+    // instances into the ring ONCE (before the light cull), recording the resulting stream view + count here.
+    // The depth prepass (DrawVobDepthPrepass) and the color pass (DrawVobsInstanced) then BOTH draw from these
+    // records — no second upload, so the color pass's ring usage is unchanged. Rebuilt every frame.
+    struct FrameVobUpload { MeshVisualInfo* visual; D3D12_VERTEX_BUFFER_VIEW instView; UINT numInstances; };
+    std::vector<FrameVobUpload> g_FrameVobUploads;
 
     // Forward+ MVP light buffer (P2.9a): the whole visible-light list is rebuilt from offset 0 each frame,
     // so the ring is just kBackBufferCount snapshots (no per-draw offset). Cap matches D3D11 MAX_TILED_LIGHTS.
@@ -1868,6 +1895,37 @@ bool D3D12GraphicsEngine::CreateDepthPrepassPipeline() {
 
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_DepthPrepassWorldPSO.ReleaseAndGetAddressOf() ) ) ) ) {
         LogWarn() << "D3D12: CreateGraphicsPipelineState failed (depth prepass).";
+        return false;
+    }
+
+    // Instanced-VOB depth prepass PSO (P2.9b-4a): same depth-only state, but the VOB two-stream input layout
+    // (packed vertex slot 0 + per-instance world matrix slot 1) and the VOB shader's VSDepth/PSDepthClip.
+    if ( !CompileShaderD3D12( kVobShaderSource, sizeof( kVobShaderSource ) - 1, "VobShader",
+        nullptr, nullptr, "VSDepth", Shadermodel_VS, compileFlags, 0, m_DepthPrepassVobVsBlob.ReleaseAndGetAddressOf() ) ) {
+        return false;
+    }
+    if ( !CompileShaderD3D12( kVobShaderSource, sizeof( kVobShaderSource ) - 1, "VobShader",
+        nullptr, nullptr, "PSDepthClip", Shadermodel_PS, compileFlags, 0, m_DepthPrepassVobPsBlob.ReleaseAndGetAddressOf() ) ) {
+        return false;
+    }
+
+    // Position (@0) + TexCoord0 (@20) from the packed vertex (slot 0); the 4 instance world-matrix rows (slot 1).
+    // Normal + instance color are dropped — VSDepth doesn't read them.
+    const D3D12_INPUT_ELEMENT_DESC vobLayout[] = {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "INSTANCE_WORLD_MATRIX", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  0, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "INSTANCE_WORLD_MATRIX", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 16, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "INSTANCE_WORLD_MATRIX", 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 32, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "INSTANCE_WORLD_MATRIX", 3, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 48, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+    };
+
+    // pso still carries the depth-only state (color mask 0, GREATER_EQUAL depth-write) — only swap VS/PS/layout.
+    pso.VS = { m_DepthPrepassVobVsBlob->GetBufferPointer(), m_DepthPrepassVobVsBlob->GetBufferSize() };
+    pso.PS = { m_DepthPrepassVobPsBlob->GetBufferPointer(), m_DepthPrepassVobPsBlob->GetBufferSize() };
+    pso.InputLayout = { vobLayout, _countof( vobLayout ) };
+    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_DepthPrepassVobPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB depth prepass).";
         return false;
     }
     return true;
@@ -3316,12 +3374,17 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
     g_FrameVobs.clear(); g_FrameLights.clear(); g_FrameMobs.clear();
     Engine::GAPI->CollectVisibleVobs( g_FrameVobs, g_FrameLights, g_FrameMobs );
     BuildFrameLightBuffer();
+    // Snapshot visible VOB instances into the ring ONCE (before the prepass + cull); the VOB depth prepass and
+    // the VOB color pass both draw from this shared snapshot (g_FrameVobUploads).
+    UploadFrameVobInstances();
 
     DrawSky();
-    // Forward+ opaque depth prepass (world mesh) — lays down depth before the lit passes so the upcoming
-    // tiled light-culling compute has a populated depth buffer. Visually a no-op (the color passes re-pass
-    // on GREATER_EQUAL and rewrite the same depth).
+    // Forward+ opaque depth prepass — lays down opaque depth before the lit passes so the upcoming tiled
+    // light-culling compute bounds each tile to real geometry. World mesh THEN instanced VOBs (so lights on
+    // objects in front of distant world aren't culled). Visually a no-op (the color passes re-pass on
+    // GREATER_EQUAL and rewrite the same depth). Skeletal/NPC depth joins next (P2.9b-4b).
     DrawDepthPrepass();
+    DrawVobDepthPrepass();
     // Forward+ tiled light cull: consume this frame's light buffer + the tile grid geometry to record which
     // point lights touch each 16x16 screen tile. Produces the grid only (no lit-output change yet).
     DispatchLightCulling();
@@ -3662,6 +3725,119 @@ XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
     return XR_SUCCESS;
 }
 
+void D3D12GraphicsEngine::UploadFrameVobInstances() {
+    // P2.9b-4a: snapshot every visible VOB visual's instances into the per-frame instance ring ONCE, before the
+    // depth prepass and the light cull. DrawVobDepthPrepass and DrawVobsInstanced both draw from g_FrameVobUploads,
+    // so the ring is filled a single time (the color pass adds no upload → its ring usage is unchanged). Gated on
+    // DrawVOBs so that with VOBs disabled neither their depth nor their color is laid down (the cull must never
+    // tighten a tile to geometry that isn't actually drawn). The per-frame ring offset was reset in OnBeginFrame.
+    g_FrameVobUploads.clear();
+    if ( !m_FrameOpen || !m_VobInstanceBuffer[m_FrameIndex] || !m_VobInstanceBufferPtr[m_FrameIndex] )
+        return;
+
+    GothicRendererState& rs = Engine::GAPI->GetRendererState();
+    if ( !rs.RendererSettings.DrawVOBs )
+        return;
+
+    const UINT frame = m_FrameIndex;
+    for ( auto const& [visualPtr, visual] : Engine::GAPI->GetStaticMeshVisuals() ) {
+        if ( !visual || visual->Instances.empty() ) continue;
+
+        const UINT numInstances = static_cast<UINT>( visual->Instances.size() );
+        const UINT instBytes = numInstances * static_cast<UINT>( sizeof( VobInstanceInfo ) );
+
+        if ( m_VobInstanceBufferOffset + instBytes > m_VobInstanceBufferCapacity ) {
+            if ( !m_VobInstanceOverflowLogged ) {
+                LogWarn() << "D3D12: VOB instance ring overflow (" << m_VobInstanceBufferCapacity
+                    << " bytes/frame). Some VOBs dropped this frame.";
+                m_VobInstanceOverflowLogged = true;
+            }
+            break;
+        }
+
+        const UINT instOffset = m_VobInstanceBufferOffset;
+        memcpy( m_VobInstanceBufferPtr[frame] + instOffset, visual->Instances.data(), instBytes );
+        m_VobInstanceBufferOffset += instBytes;
+
+        FrameVobUpload up;
+        up.visual = visual;
+        up.instView = { m_VobInstanceBuffer[frame]->GetGPUVirtualAddress() + instOffset, instBytes, sizeof( VobInstanceInfo ) };
+        up.numInstances = numInstances;
+        g_FrameVobUploads.push_back( up );
+    }
+}
+
+void D3D12GraphicsEngine::DrawVobDepthPrepass() {
+    // P2.9b-4a: lay down instanced-VOB depth (alpha-clipped) into the Forward+ opaque prepass so the tiled light
+    // cull sees VOB surfaces and bounds each tile's near plane to them — fixing the static 16x16 cutoff where a
+    // light on an object in front of distant world geometry got dropped (the tile AABB used to sit at the far
+    // world, missing the near VOB). Depth-only via m_DepthPrepassVobPSO; consumes the shared g_FrameVobUploads.
+    // Same per-material diffuse bind as the color pass for the alpha cutout. Node attachments (weapons/heads) are
+    // NOT here — they upload during the skeletal color pass, after the cull; they'll join once skeletal does.
+    if ( !m_FrameOpen || !m_DepthPrepassVobPSO || !m_WorldRootSig || !m_DepthBuffer )
+        return;
+    if ( g_FrameVobUploads.empty() ) return;
+
+    DX_ZONE( m_CmdList, "Depth Prepass (vobs)" );
+
+    // ViewProj — identical derivation to DrawVobsInstanced so the prepass depth matches the color pass exactly.
+    XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
+    Engine::GAPI->SetViewTransformXM( view );
+    Engine::GAPI->ResetWorldTransform();
+    const XMFLOAT4X4& viewM = Engine::GAPI->GetRendererState().TransformState.TransformView;
+    const XMFLOAT4X4& projM = Engine::GAPI->GetProjectionMatrix();
+    XMFLOAT4X4 viewProj;
+    XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
+
+    m_CmdList->SetPipelineState( m_DepthPrepassVobPSO.Get() );
+    m_CmdList->SetGraphicsRootSignature( m_WorldRootSig.Get() );
+    m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );   // b0 ViewProj (fog/lights not referenced)
+
+    D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_Resolution.x), static_cast<float>(m_Resolution.y), 0.0f, 1.0f };
+    D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
+    m_CmdList->RSSetViewports( 1, &vp );
+    m_CmdList->RSSetScissorRects( 1, &sc );
+    m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+
+    const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_WhiteSrvSlot );
+    for ( const FrameVobUpload& up : g_FrameVobUploads ) {
+        MeshVisualInfo* visual = up.visual;
+        if ( !visual ) continue;
+        const UINT numInstances = up.numInstances;
+
+        for ( auto const& [meshKey, meshList] : visual->MeshesByTexture ) {
+            zCTexture* tex = meshKey.Material->GetAniTexture();
+            D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
+            if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                if ( MyDirectDrawSurface7* surface = tex->GetSurface() ) {
+                    if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
+                        D3D12Texture* d12 = D3D12Texture::From( gfx );
+                        if ( d12->HasSRV() ) srv = d12->GetSrvGpuHandle();
+                    }
+                }
+            }
+            m_CmdList->SetGraphicsRootDescriptorTable( 1, srv );
+
+            for ( MeshInfo* mi : meshList ) {
+                if ( !mi || mi->Indices.empty() || !mi->GetMeshVertexBuffer() || !mi->GetMeshIndexBuffer() )
+                    continue;
+                D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mi->GetMeshVertexBuffer() );
+                D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mi->GetMeshIndexBuffer() );
+                if ( !mvb->GetResource() || !mib->GetResource() ) continue;
+
+                const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStructGPU ) };
+                const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, up.instView };
+                m_CmdList->IASetVertexBuffers( 0, 2, views );
+
+                const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
+                m_CmdList->IASetIndexBuffer( &ibv );
+
+                m_CmdList->DrawIndexedInstanced( static_cast<UINT>(mi->Indices.size()), numInstances, 0, 0, 0 );
+            }
+        }
+    }
+}
+
 XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
     if ( !m_FrameOpen || !m_VobPSO || !m_WorldRootSig || !m_DepthBuffer )
         return XR_SUCCESS;
@@ -3697,32 +3873,16 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
     m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
     const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_WhiteSrvSlot );
-    const UINT frame = m_FrameIndex;
     unsigned int drawnTris = 0;
 
     {
         DX_ZONE( m_CmdList, "Draw Vobs" );
-        for ( auto const& [visualPtr, visual] : Engine::GAPI->GetStaticMeshVisuals() ) {
-            if ( !visual || visual->Instances.empty() ) continue;
-
-            const UINT numInstances = static_cast<UINT>(visual->Instances.size());
-            const UINT instBytes = numInstances * static_cast<UINT>(sizeof( VobInstanceInfo ));
-
-            if ( m_VobInstanceBufferOffset + instBytes > m_VobInstanceBufferCapacity ) {
-                if ( !m_VobInstanceOverflowLogged ) {
-                    LogWarn() << "D3D12: VOB instance ring overflow (" << m_VobInstanceBufferCapacity
-                        << " bytes/frame). Some VOBs dropped this frame.";
-                    m_VobInstanceOverflowLogged = true;
-                }
-                break;
-            }
-
-            // Snapshot this visual's instances into the per-frame ring; bind as the slot-1 stream.
-            const UINT instOffset = m_VobInstanceBufferOffset;
-            memcpy( m_VobInstanceBufferPtr[frame] + instOffset, visual->Instances.data(), instBytes );
-            m_VobInstanceBufferOffset += instBytes;
-            const D3D12_VERTEX_BUFFER_VIEW instView = {
-                m_VobInstanceBuffer[frame]->GetGPUVirtualAddress() + instOffset, instBytes, sizeof( VobInstanceInfo ) };
+        // Instances were snapshotted into the ring once by UploadFrameVobInstances (before the cull); draw from
+        // those shared records so the color pass adds no second upload (its ring usage is unchanged).
+        for ( const FrameVobUpload& up : g_FrameVobUploads ) {
+            MeshVisualInfo* visual = up.visual;
+            if ( !visual ) continue;
+            const UINT numInstances = up.numInstances;
 
             for ( auto const& [meshKey, meshList] : visual->MeshesByTexture ) {
                 zCTexture* tex = meshKey.Material->GetAniTexture();
@@ -3745,7 +3905,7 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
                     if ( !mvb->GetResource() || !mib->GetResource() ) continue;
 
                     const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStructGPU ) };
-                    const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, instView };
+                    const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, up.instView };
                     m_CmdList->IASetVertexBuffers( 0, 2, views );
 
                     // VOB sub-mesh index buffers are 16-bit (VERTEX_INDEX), unlike the 32-bit wrapped world mesh.
@@ -3820,6 +3980,8 @@ XRESULT D3D12GraphicsEngine::DrawSkeletalMeshes( std::vector<SkeletalVobInfo*>& 
     static std::vector<AttachmentDraw> attachmentDraws;
     attachmentDraws.clear();
 
+    const auto now = Engine::GAPI->GetTotalTimeDW();
+
     for ( SkeletalVobInfo* vi : vobs ) {
         if ( !vi || !vi->Vob || !vi->VisualInfo ) continue;
         if ( !vi->Vob->GetShowVisual() ) continue;
@@ -3834,7 +3996,11 @@ XRESULT D3D12GraphicsEngine::DrawSkeletalMeshes( std::vector<SkeletalVobInfo*>& 
             continue;   // out of skeletal-draw range
 
         model->SetDistanceToCamera( 500 );
-        model->UpdateAttachedVobs();
+        if ( vi->LastAniUpdateFrame != now ) {
+            vi->LastAniUpdateFrame = now;
+            // Update attachments
+            model->UpdateAttachedVobs();
+        }
         model->UpdateMeshLibTexAniState();
 
         // Bone palette (object-space matrices) for the model's current animation pose.

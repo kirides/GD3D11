@@ -135,6 +135,8 @@ private:
     void DispatchLightCulling();      // dispatch the tiled light cull (writes the per-tile light grid; not yet consumed)
     bool CreateVobPipeline();         // instanced VOB PSO (reuses the world root sig) + inline shaders
     bool CreateVobInstanceBuffers();  // per-frame dynamic (upload-heap) VOB instance ring buffers
+    void UploadFrameVobInstances();   // snapshot visible VOB instances into the ring ONCE (prepass + color share it)
+    void DrawVobDepthPrepass();       // lay down instanced VOB depth (alpha-clipped) into the Forward+ prepass
     XRESULT DrawVobsInstanced();      // collect visible VOBs + draw each visual instanced (textured)
     bool CreateLightBuffer();         // per-frame point-light structured buffers (Forward+ MVP: brute-force)
     void BuildFrameLightBuffer();     // (re)fill this frame's light buffer from the collected visible lights
@@ -235,6 +237,10 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_DepthPrepassWorldPSO;
     Microsoft::WRL::ComPtr<ID3DBlob> m_DepthPrepassWorldVsBlob;
     Microsoft::WRL::ComPtr<ID3DBlob> m_DepthPrepassPsBlob;
+    // Instanced-VOB depth prepass (P2.9b-4a): depth-only VOB PSO (color write mask 0), reuses m_WorldRootSig.
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_DepthPrepassVobPSO;
+    Microsoft::WRL::ComPtr<ID3DBlob> m_DepthPrepassVobVsBlob;
+    Microsoft::WRL::ComPtr<ID3DBlob> m_DepthPrepassVobPsBlob;
 
     // Forward+ tiled light culling (P2.9b-2): one global compute root sig + PSO; two resolution-sized
     // DEFAULT-heap UAV buffers holding the per-tile {Offset,Count} grid and the per-tile light-index slices
