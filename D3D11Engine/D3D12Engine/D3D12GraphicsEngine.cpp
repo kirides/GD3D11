@@ -531,6 +531,12 @@ float4 PSDepthClip( VS_DEPTH_OUT i ) : SV_TARGET
     clip( t.a - 0.5 );          // same cutout as PSMain so foliage/fence gaps don't lay down depth
     return float4( 0, 0, 0, 1 );   // discarded: the PSO's color write mask is 0 (depth-only pass)
 }
+// Shadow caster (P2.9c-2): void PS so the depth-only shadow PSO binds NO render target without a validation
+// warning; only alpha-clips the cutout so foliage/fence gaps don't cast solid shadows.
+void PSShadowClip( VS_DEPTH_OUT i )
+{
+    clip( tx.Sample( smp, i.uv ).a - 0.5 );
+}
 )";
 
     // Forward+ opaque DEPTH PREPASS shader (P2.9b-1). Lays down the opaque world-mesh depth before the
@@ -936,6 +942,12 @@ float4 PSDepthClip( VS_DEPTH_OUT i ) : SV_TARGET
     clip( t.a - 0.5 );          // same cutout as PSMain so alpha edges don't lay down depth
     return float4( 0, 0, 0, 1 );   // discarded: the PSO's color write mask is 0 (depth-only pass)
 }
+// Shadow caster (P2.9c-2): void PS so the depth-only shadow PSO binds NO render target without a validation
+// warning; only alpha-clips the cutout so alpha edges don't cast solid shadows.
+void PSShadowClip( VS_DEPTH_OUT i )
+{
+    clip( tx.Sample( smp, i.uv ).a - 0.5 );
+}
 )";
 
     // Phase-2 particle (PFX) shader — instanced camera-facing billboards. One instance per live particle
@@ -1168,10 +1180,6 @@ XRESULT D3D12GraphicsEngine::Init() {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the depth prepass pipeline.";
         return XR_FAILED;
     }
-    if ( !CreateShadowMap() ) {
-        // Non-fatal: without the sun shadow map the scene renders unshadowed (as it did before P2.9c).
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the sun shadow map (continuing unshadowed).";
-    }
     if ( !CreateLightCullPipeline() ) {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the light-culling compute pipeline.";
         return XR_FAILED;
@@ -1187,6 +1195,11 @@ XRESULT D3D12GraphicsEngine::Init() {
     if ( !CreateSkeletalPipeline() ) {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the skeletal pipeline.";
         return XR_FAILED;
+    }
+    if ( !CreateShadowMap() ) {
+        // Non-fatal: without the sun shadow map the scene renders unshadowed (as it did before P2.9c). Runs after
+        // the depth-prepass + VOB + skeletal pipelines so the caster PSOs can reuse all three depth VS blobs.
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the sun shadow map (continuing unshadowed).";
     }
     if ( !CreateWaterPipeline() ) {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the water pipeline.";
@@ -2079,6 +2092,58 @@ bool D3D12GraphicsEngine::CreateShadowMap() {
         LogWarn() << "D3D12: CreateGraphicsPipelineState failed (shadow caster).";
         return false;
     }
+
+    // VOB caster PSO (P2.9c-2): reuse the VOB depth-prepass VSDepth (two-stream: packed vertex + per-instance
+    // world matrix) + m_WorldRootSig, with the same caster state (front cull, bias, LESS_EQUAL, no RTV). Also
+    // used for node attachments (weapons/heads) which are packed vertex + instance like ordinary VOBs.
+    if ( m_DepthPrepassVobVsBlob ) {
+        if ( !CompileShaderD3D12( kVobShaderSource, sizeof( kVobShaderSource ) - 1, "VobShader",
+            nullptr, nullptr, "PSShadowClip", Shadermodel_PS, compileFlags, 0, m_ShadowCasterVobPsBlob.ReleaseAndGetAddressOf() ) )
+            return false;
+        const D3D12_INPUT_ELEMENT_DESC vobLayout[] = {
+            { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "INSTANCE_WORLD_MATRIX", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  0, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+            { "INSTANCE_WORLD_MATRIX", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 16, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+            { "INSTANCE_WORLD_MATRIX", 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 32, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+            { "INSTANCE_WORLD_MATRIX", 3, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 48, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        };
+        pso.pRootSignature = m_WorldRootSig.Get();
+        pso.VS = { m_DepthPrepassVobVsBlob->GetBufferPointer(), m_DepthPrepassVobVsBlob->GetBufferSize() };
+        pso.PS = { m_ShadowCasterVobPsBlob->GetBufferPointer(), m_ShadowCasterVobPsBlob->GetBufferSize() };
+        pso.InputLayout = { vobLayout, _countof( vobLayout ) };
+        if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_ShadowCasterVobPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+            LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB shadow caster).";
+            return false;
+        }
+    }
+
+    // Skeletal caster PSO (P2.9c-2): reuse the skeletal depth-prepass VSDepth (matrix-palette skinning) +
+    // m_SkeletalRootSig + the skinned input layout, same caster state.
+    if ( m_DepthPrepassSkeletalVsBlob && m_SkeletalRootSig ) {
+        if ( !CompileShaderD3D12( kSkeletalShaderSource, sizeof( kSkeletalShaderSource ) - 1, "SkeletalShader",
+            nullptr, nullptr, "PSShadowClip", Shadermodel_PS, compileFlags, 0, m_ShadowCasterSkeletalPsBlob.ReleaseAndGetAddressOf() ) )
+            return false;
+        const D3D12_INPUT_ELEMENT_DESC skelLayout[] = {
+            { "POSITION", 0, DXGI_FORMAT_R16G16B16A16_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "POSITION", 1, DXGI_FORMAT_R16G16B16A16_FLOAT, 0,  8, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "POSITION", 2, DXGI_FORMAT_R16G16B16A16_FLOAT, 0, 16, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "POSITION", 3, DXGI_FORMAT_R16G16B16A16_FLOAT, 0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "TEXCOORD", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 44, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "TEXCOORD", 1, DXGI_FORMAT_R32G32_FLOAT,       0, 56, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "BONEIDS",  0, DXGI_FORMAT_R8G8B8A8_UINT,      0, 64, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "WEIGHTS",  0, DXGI_FORMAT_R16G16B16A16_FLOAT, 0, 68, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        };
+        pso.pRootSignature = m_SkeletalRootSig.Get();
+        pso.VS = { m_DepthPrepassSkeletalVsBlob->GetBufferPointer(), m_DepthPrepassSkeletalVsBlob->GetBufferSize() };
+        pso.PS = { m_ShadowCasterSkeletalPsBlob->GetBufferPointer(), m_ShadowCasterSkeletalPsBlob->GetBufferSize() };
+        pso.InputLayout = { skelLayout, _countof( skelLayout ) };
+        if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_ShadowCasterSkeletalPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+            LogWarn() << "D3D12: CreateGraphicsPipelineState failed (skeletal shadow caster).";
+            return false;
+        }
+    }
     return true;
 }
 
@@ -2113,10 +2178,12 @@ void D3D12GraphicsEngine::ComputeCascadeMatrices() {
 }
 
 void D3D12GraphicsEngine::RenderSunShadows() {
-    // P2.9c-1: render the opaque WORLD MESH into each cascade slice from the sun's POV. This increment only
-    // PRODUCES the shadow map — nothing samples it yet, so the frame is visually unchanged; inspect the D32
-    // Texture2DArray in RenderDoc (each slice should show the scene depth from the sun angle). VOBs + skeletal
-    // casters, stable cascades, and the lit-pass PCF sampling are later increments.
+    // P2.9c-1/-2: render the opaque casters (world mesh + instanced VOBs + skinned skeletals + node attachments)
+    // into each cascade slice from the sun's POV. Still PRODUCES the shadow map only — nothing samples it yet, so
+    // the frame is visually unchanged; inspect the D32 Texture2DArray in RenderDoc (each slice should show the
+    // scene depth from the sun angle, now including VOB/NPC silhouettes). Stable cascades + the lit-pass PCF
+    // sampling are later increments. Casters reuse the shared per-frame records built before the cull
+    // (g_FrameVobUploads / g_FrameSkelDraws / g_FrameAttachDraws) — no second upload or animation update.
     if ( !m_FrameOpen || !m_ShadowMap || !m_ShadowCasterWorldPSO || !m_ShadowDsvHeap || !m_WorldRootSig )
         return;
 
@@ -2132,66 +2199,153 @@ void D3D12GraphicsEngine::RenderSunShadows() {
 
     ComputeCascadeMatrices();
 
-    // Sun below the horizon → clear each slice to far (1.0 = unshadowed) and skip casting.
+    // Sun below the horizon → clear each slice to far (1.0 = unshadowed) and skip ALL casting.
     const float3 lp = Engine::GAPI->GetSky()->GetAtmosphereCB().AC_LightPos;
+    const bool sunUp = ( lp.y > 0.0f );
+
     MeshInfo* wm = Engine::GAPI->GetWrappedWorldMesh();
     D3D12VertexBuffer* vb = wm ? D3D12VertexBuffer::From( wm->GetMeshVertexBuffer() ) : nullptr;
     D3D12VertexBuffer* ib = wm ? D3D12VertexBuffer::From( wm->GetMeshIndexBuffer() ) : nullptr;
-    const bool haveWorld = ( lp.y > 0.0f ) && vb && ib && vb->GetResource() && ib->GetResource()
+    const bool haveWorld = vb && ib && vb->GetResource() && ib->GetResource()
                         && ( ib->GetSizeInBytes() / sizeof( uint32_t ) ) > 0;
+    const bool haveVobs   = m_ShadowCasterVobPSO && !g_FrameVobUploads.empty();
+    const bool haveSkel   = m_ShadowCasterSkeletalPSO && m_SkeletalRootSig && !g_FrameSkelDraws.empty();
+    const bool haveAttach = m_ShadowCasterVobPSO && !g_FrameAttachDraws.empty();
 
     static std::vector<WorldMeshSectionInfo*> sections;
-    if ( haveWorld ) { 
+    if ( sunUp && haveWorld ) {
         sections.clear();
         Engine::GAPI->CollectVisibleSections( sections, nullptr, true );
     }
 
     const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( kShadowMapSize ), static_cast<float>( kShadowMapSize ), 0.0f, 1.0f };
     const D3D12_RECT     sc = { 0, 0, static_cast<LONG>( kShadowMapSize ), static_cast<LONG>( kShadowMapSize ) };
-    m_CmdList->SetPipelineState( m_ShadowCasterWorldPSO.Get() );
-    m_CmdList->SetGraphicsRootSignature( m_WorldRootSig.Get() );
     m_CmdList->RSSetViewports( 1, &vp );
     m_CmdList->RSSetScissorRects( 1, &sc );
     m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
     const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_WhiteSrvSlot );
+    // Resolve + bind a material's diffuse to a root descriptor-table slot (white fallback) for the alpha cutout.
+    auto bindDiffuse = [&]( zCTexture* tex, UINT rootParam ) {
+        D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
+        if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+            if ( MyDirectDrawSurface7* surface = tex->GetSurface() ) {
+                if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
+                    D3D12Texture* d12 = D3D12Texture::From( gfx );
+                    if ( d12->HasSRV() ) srv = d12->GetSrvGpuHandle();
+                }
+            }
+        }
+        m_CmdList->SetGraphicsRootDescriptorTable( rootParam, srv );
+    };
+
     D3D12_CPU_DESCRIPTOR_HANDLE dsvBase = m_ShadowDsvHeap->GetCPUDescriptorHandleForHeapStart();
 
     for ( UINT c = 0; c < kShadowCascades; ++c ) {
         D3D12_CPU_DESCRIPTOR_HANDLE dsv = dsvBase;
         dsv.ptr += static_cast<SIZE_T>( c ) * m_ShadowDsvSize;
-        m_CmdList->OMSetRenderTargets( 0, nullptr, FALSE, &dsv );
+        m_CmdList->OMSetRenderTargets( 0, nullptr, FALSE, &dsv );   // DSV stays bound across the PSO switches below
         m_CmdList->ClearDepthStencilView( dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr );   // normal-Z far
-        if ( !haveWorld ) continue;   // still leaves a valid (unshadowed) slice
+        if ( !sunUp ) continue;   // still leaves a valid (unshadowed) slice
 
-        m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
+        // --- World mesh (root sig: m_WorldRootSig; b0 = cascade view-proj; t0 diffuse table @1) ---
+        if ( haveWorld ) {
+            m_CmdList->SetPipelineState( m_ShadowCasterWorldPSO.Get() );
+            m_CmdList->SetGraphicsRootSignature( m_WorldRootSig.Get() );
+            m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
 
-        const D3D12_VERTEX_BUFFER_VIEW vbv = { vb->GetGpuVirtualAddress(), vb->GetSizeInBytes(), sizeof( ExVertexStructGPU ) };
-        const D3D12_INDEX_BUFFER_VIEW  ibv = { ib->GetGpuVirtualAddress(), ib->GetSizeInBytes(), DXGI_FORMAT_R32_UINT };
-        m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
-        m_CmdList->IASetIndexBuffer( &ibv );
+            const D3D12_VERTEX_BUFFER_VIEW vbv = { vb->GetGpuVirtualAddress(), vb->GetSizeInBytes(), sizeof( ExVertexStructGPU ) };
+            const D3D12_INDEX_BUFFER_VIEW  ibv = { ib->GetGpuVirtualAddress(), ib->GetSizeInBytes(), DXGI_FORMAT_R32_UINT };
+            m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
+            m_CmdList->IASetIndexBuffer( &ibv );
 
-        zCTexture* boundTex = nullptr;
-        for ( WorldMeshSectionInfo* section : sections ) {
-            if ( !section ) continue;
-            for ( auto const& [meshKey, mesh] : section->WorldMeshes ) {
-                if ( !mesh || mesh->Indices.empty() ) continue;
-                if ( meshKey.Info && meshKey.Info->MaterialType == MaterialInfo::MT_Water ) continue;
-                zCTexture* tex = meshKey.Material->GetAniTexture();
-                if ( tex != boundTex ) {
-                    D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
-                    if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
-                        if ( MyDirectDrawSurface7* surface = tex->GetSurface() ) {
-                            if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
-                                D3D12Texture* d12 = D3D12Texture::From( gfx );
-                                if ( d12->HasSRV() ) srv = d12->GetSrvGpuHandle();
-                            }
-                        }
-                    }
-                    m_CmdList->SetGraphicsRootDescriptorTable( 1, srv );
-                    boundTex = tex;
+            zCTexture* boundTex = nullptr;
+            for ( WorldMeshSectionInfo* section : sections ) {
+                if ( !section ) continue;
+                for ( auto const& [meshKey, mesh] : section->WorldMeshes ) {
+                    if ( !mesh || mesh->Indices.empty() ) continue;
+                    if ( meshKey.Info && meshKey.Info->MaterialType == MaterialInfo::MT_Water ) continue;
+                    zCTexture* tex = meshKey.Material->GetAniTexture();
+                    if ( tex != boundTex ) { bindDiffuse( tex, 1 ); boundTex = tex; }
+                    m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mesh->Indices.size() ), 1, mesh->BaseIndexLocation, 0, 0 );
                 }
-                m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mesh->Indices.size() ), 1, mesh->BaseIndexLocation, 0, 0 );
+            }
+        }
+
+        // --- Instanced VOBs (same root sig; two streams: packed vertex slot 0 + per-instance world slot 1) ---
+        if ( haveVobs ) {
+            m_CmdList->SetPipelineState( m_ShadowCasterVobPSO.Get() );
+            m_CmdList->SetGraphicsRootSignature( m_WorldRootSig.Get() );
+            m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
+            for ( const FrameVobUpload& up : g_FrameVobUploads ) {
+                MeshVisualInfo* visual = up.visual;
+                if ( !visual ) continue;
+                for ( auto const& [meshKey, meshList] : visual->MeshesByTexture ) {
+                    bindDiffuse( meshKey.Material->GetAniTexture(), 1 );
+                    for ( MeshInfo* mi : meshList ) {
+                        if ( !mi || mi->Indices.empty() || !mi->GetMeshVertexBuffer() || !mi->GetMeshIndexBuffer() ) continue;
+                        D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mi->GetMeshVertexBuffer() );
+                        D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mi->GetMeshIndexBuffer() );
+                        if ( !mvb->GetResource() || !mib->GetResource() ) continue;
+                        const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStructGPU ) };
+                        const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, up.instView };
+                        m_CmdList->IASetVertexBuffers( 0, 2, views );
+                        const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
+                        m_CmdList->IASetIndexBuffer( &ibv );
+                        m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mi->Indices.size() ), up.numInstances, 0, 0, 0 );
+                    }
+                }
+            }
+        }
+
+        // --- Skinned skeletals (root sig: m_SkeletalRootSig; b0 cascade view-proj, b1 instance, b2 bones) ---
+        if ( haveSkel ) {
+            m_CmdList->SetPipelineState( m_ShadowCasterSkeletalPSO.Get() );
+            m_CmdList->SetGraphicsRootSignature( m_SkeletalRootSig.Get() );
+            m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
+            for ( const FrameSkelDraw& d : g_FrameSkelDraws ) {
+                if ( !d.visual ) continue;
+                // Shared per-MODEL texture slots: refresh THIS instance's textures right before reading its
+                // materials (see [[skeletal-texani-shared-slots]]) — required in the shadow pass too (alpha-clip).
+                zCModel* model = static_cast<zCModel*>( d.vobInfo->Vob->GetVisual() );
+                model->UpdateMeshLibTexAniState();
+
+                m_CmdList->SetGraphicsRootConstantBufferView( 1, d.instCb );
+                m_CmdList->SetGraphicsRootConstantBufferView( 2, d.boneCb );
+                for ( auto const& [mat, meshList] : d.visual->SkeletalMeshes ) {
+                    bindDiffuse( mat ? mat->GetAniTexture() : nullptr, 3 );
+                    for ( auto const& mesh : meshList ) {
+                        if ( !mesh || mesh->Indices.empty() || !mesh->MeshVertexBuffer || !mesh->MeshIndexBuffer ) continue;
+                        D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mesh->MeshVertexBuffer.get() );
+                        D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mesh->MeshIndexBuffer.get() );
+                        if ( !mvb->GetResource() || !mib->GetResource() ) continue;
+                        const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExSkelVertexStruct ) };
+                        m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
+                        const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
+                        m_CmdList->IASetIndexBuffer( &ibv );
+                        m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mesh->Indices.size() ), 1, 0, 0, 0 );
+                    }
+                }
+            }
+        }
+
+        // --- Node attachments (weapons/heads) through the VOB caster PSO (packed vertex + single instance) ---
+        if ( haveAttach ) {
+            m_CmdList->SetPipelineState( m_ShadowCasterVobPSO.Get() );
+            m_CmdList->SetGraphicsRootSignature( m_WorldRootSig.Get() );
+            m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
+            for ( const FrameAttachDraw& a : g_FrameAttachDraws ) {
+                if ( !a.mesh || !a.mesh->GetMeshVertexBuffer() || !a.mesh->GetMeshIndexBuffer() ) continue;
+                D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( a.mesh->GetMeshVertexBuffer() );
+                D3D12VertexBuffer* mib = D3D12VertexBuffer::From( a.mesh->GetMeshIndexBuffer() );
+                if ( !mvb->GetResource() || !mib->GetResource() ) continue;
+                bindDiffuse( a.tex, 1 );
+                const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStructGPU ) };
+                const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, a.instView };
+                m_CmdList->IASetVertexBuffers( 0, 2, views );
+                const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
+                m_CmdList->IASetIndexBuffer( &ibv );
+                m_CmdList->DrawIndexedInstanced( static_cast<UINT>( a.mesh->Indices.size() ), 1, 0, 0, 0 );
             }
         }
     }

@@ -262,6 +262,12 @@ private:
     // depth-biased state. Fed the per-cascade light view-proj instead of the camera's.
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_ShadowCasterWorldPSO;
     Microsoft::WRL::ComPtr<ID3DBlob> m_ShadowCasterPsBlob;   // PSShadowClip (void PS, alpha-clip only)
+    // VOB + skeletal casters (P2.9c-2): reuse the VOB/skeletal depth-prepass VSDepth blobs + their void
+    // PSShadowClip, with the same normal-Z/front-cull/bias caster state. Attachments ride the VOB caster PSO.
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_ShadowCasterVobPSO;
+    Microsoft::WRL::ComPtr<ID3DBlob> m_ShadowCasterVobPsBlob;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_ShadowCasterSkeletalPSO;
+    Microsoft::WRL::ComPtr<ID3DBlob> m_ShadowCasterSkeletalPsBlob;
     DirectX::XMFLOAT4X4 m_CascadeViewProj[kShadowCascades] = {};   // light-space view*proj per cascade (this frame)
     bool CreateShadowMap();            // shadow Texture2DArray + per-slice DSVs + array SRV + caster PSO (once, at init)
     void ComputeCascadeMatrices();     // fill m_CascadeViewProj from the sun direction + camera (simple ortho for now)
