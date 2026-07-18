@@ -14,8 +14,11 @@ namespace {
         return static_cast<D3D12GraphicsEngine*>( Engine::GraphicsEngine );
     }
     inline bool IsBC( DXGI_FORMAT f ) {
-        return f == DXGI_FORMAT_BC1_UNORM || f == DXGI_FORMAT_BC2_UNORM || f == DXGI_FORMAT_BC3_UNORM;
+        return f == DXGI_FORMAT_BC1_UNORM || f == DXGI_FORMAT_BC2_UNORM || f == DXGI_FORMAT_BC3_UNORM
+            || f == DXGI_FORMAT_BC5_UNORM || f == DXGI_FORMAT_BC5_SNORM;
     }
+    // 8-byte block formats (BC1); everything else BC is 16-byte (BC2/3/5). Drives the row-pitch/size math below.
+    inline bool IsBC8ByteBlock( DXGI_FORMAT f ) { return f == DXGI_FORMAT_BC1_UNORM; }
     inline bool Is16Bit( DXGI_FORMAT f ) {
         return f == DXGI_FORMAT_B5G6R5_UNORM || f == DXGI_FORMAT_B5G5R5A1_UNORM || f == DXGI_FORMAT_B4G4R4A4_UNORM;
     }
@@ -89,10 +92,14 @@ void D3D12Texture::SetDebugName( const char* debugName )
 /** Minimal DDS parser: enough for Gothic's textures (DXT1/3/5, DX10-extended, 32-bit uncompressed).
     Sets format/size/mips, then creates + uploads. Unknown formats fail gracefully (texture skipped). */
 XRESULT D3D12Texture::InitFromDDS( const uint8_t* bytes, size_t size, const std::string& /*name*/ ) {
-    if ( !bytes || size < 128 ) return XR_FAILED;
+    if ( !bytes || size < 128 ) {
+        return XR_FAILED;
+    }
     auto rd = [&]( size_t off ) -> uint32_t { uint32_t v; memcpy( &v, bytes + off, 4 ); return v; };
 
-    if ( rd( 0 ) != 0x20534444u ) return XR_FAILED; // 'DDS '
+    if ( rd( 0 ) != 0x20534444u ) {
+        return XR_FAILED; // 'DDS '
+    }
 
     const uint32_t height = rd( 12 );
     const uint32_t width  = rd( 16 );
@@ -105,22 +112,33 @@ XRESULT D3D12Texture::InitFromDDS( const uint8_t* bytes, size_t size, const std:
     DXGI_FORMAT fmt = DXGI_FORMAT_UNKNOWN;
     size_t dataOffset = 128;
 
+    constexpr uint32_t dxt1 = MAKEFOURCC('D', 'X', 'T', '1');
+    constexpr uint32_t dxt3 = MAKEFOURCC('D', 'X', 'T', '3');
+    constexpr uint32_t dxt5 = MAKEFOURCC('D', 'X', 'T', '5');
+    constexpr uint32_t ati2 = MAKEFOURCC('A', 'T', 'I', '2');
+    constexpr uint32_t bc5u = MAKEFOURCC('B', 'C', '5', 'U');
+    constexpr uint32_t dx10 = MAKEFOURCC('D', 'X', '1', '0');
     if ( pfFlags & 0x4u /* DDPF_FOURCC */ ) {
         switch ( fourCC ) {
-        case 0x31545844u: fmt = DXGI_FORMAT_BC1_UNORM; break; // 'DXT1'
-        case 0x33545844u: fmt = DXGI_FORMAT_BC2_UNORM; break; // 'DXT3'
-        case 0x35545844u: fmt = DXGI_FORMAT_BC3_UNORM; break; // 'DXT5'
-        case 0x30315844u:                                     // 'DX10'
+        case dxt1: fmt = DXGI_FORMAT_BC1_UNORM; break; // 'DXT1'
+        case dxt3: fmt = DXGI_FORMAT_BC2_UNORM; break; // 'DXT3'
+        case dxt5: fmt = DXGI_FORMAT_BC3_UNORM; break; // 'DXT5'
+        case bc5u:
+        case ati2: fmt = DXGI_FORMAT_BC5_UNORM; break; // 'ATI2' — BC5 2-channel (normal maps, XY + reconstruct Z)
+        case dx10:                                     // 'DX10'
             if ( size < 148 ) return XR_FAILED;
             fmt = static_cast<DXGI_FORMAT>( rd( 128 ) );      // DDS_HEADER_DXT10.dxgiFormat
             dataOffset = 148;
             break;
-        default: return XR_FAILED;
+        default:
+            return XR_FAILED;
         }
     } else {
         const uint32_t rgbBits = rd( 88 ); // DDS_PIXELFORMAT.dwRGBBitCount (file offset 4 + 72 + 12)
         if ( rgbBits == 32 ) fmt = DXGI_FORMAT_B8G8R8A8_UNORM;
-        else return XR_FAILED;
+        else {
+            return XR_FAILED;
+        }
     }
 
     m_Format = fmt;
@@ -137,17 +155,23 @@ XRESULT D3D12Texture::InitFromDDS( const uint8_t* bytes, size_t size, const std:
         consumed += mipSize;
         ++fit;
     }
-    if ( fit == 0 ) return XR_FAILED;
+    if ( fit == 0 ) {
+        return XR_FAILED;
+    }
     m_MipMapCount = fit;
 
-    if ( dataOffset > size ) return XR_FAILED;
+    if ( dataOffset > size ) {
+        return XR_FAILED;
+    }
     return CreateAndUpload( const_cast<uint8_t*>( bytes + dataOffset ) ) ? XR_SUCCESS : XR_FAILED;
 }
 
 bool D3D12Texture::CreateAndUpload( void* data ) {
     D3D12GraphicsEngine* engine = Engine12();
     ID3D12Device* device = engine ? engine->GetD3DDevice() : nullptr;
-    if ( !device || m_Size.x <= 0 || m_Size.y <= 0 || m_Format == DXGI_FORMAT_UNKNOWN ) return false;
+    if ( !device || m_Size.x <= 0 || m_Size.y <= 0 || m_Format == DXGI_FORMAT_UNKNOWN ) {
+        return false;
+    }
 
     D3D12_HEAP_PROPERTIES heapDefault = {};
     heapDefault.Type = D3D12_HEAP_TYPE_DEFAULT;
