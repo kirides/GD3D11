@@ -1946,6 +1946,16 @@ void D3D12GraphicsEngine::OnAddVob(VobInfo* vi) {
     vi->VisualIndex = it->second;
 }
 
+void D3D12GraphicsEngine::OnLoadWorld()
+{
+    g_vobInfoVisualToBucket.clear();
+    g_vobInfoVisualIndexToVisualInfo.clear();
+    g_GeometryPassVobs.Reset();
+    for (auto& v : g_ShadowPassVobs) {
+        v.Reset();
+    }
+}
+
 bool D3D12GraphicsEngine::CreateUploadObjects() {
     ID3D12Device* device = m_Device.GetDevice();
     if ( FAILED( device->CreateCommandAllocator( D3D12_COMMAND_LIST_TYPE_DIRECT,
@@ -3116,8 +3126,8 @@ bool D3D12GraphicsEngine::CreateShadowMap() {
     pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
     pso.RasterizerState.CullMode = D3D12_CULL_MODE_FRONT;   // cast back faces
     pso.RasterizerState.DepthClipEnable = TRUE;
-    pso.RasterizerState.DepthBias = 2000;                   // normal-Z: positive bias pushes casters away from the light
-    pso.RasterizerState.SlopeScaledDepthBias = 2.5f;
+    pso.RasterizerState.DepthBias = 0;                   // normal-Z: positive bias pushes casters away from the light
+    pso.RasterizerState.SlopeScaledDepthBias = 0.0f;
     pso.RasterizerState.DepthBiasClamp = 0.0f;
     pso.BlendState.RenderTarget[0].RenderTargetWriteMask = 0;
     pso.DepthStencilState.DepthEnable = TRUE;

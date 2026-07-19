@@ -119,6 +119,7 @@ public:
     void QueueResourceForRelease( Microsoft::WRL::ComPtr<ID3D12Resource> resource );
     
     void OnAddVob(VobInfo* vi) override;
+    void OnLoadWorld() override;
     
 private:
     void ResizeOutputWindow( INT2 size );  // size the OS window + inform Gothic (zCView) of the mode

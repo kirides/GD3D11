@@ -928,6 +928,7 @@ void GothicAPI::OnLoadWorld( const std::string& levelName, int loadMode ) {
 
         extern MeshManager* s_MeshManager;
         s_MeshManager->DropCaches();
+        Engine::GraphicsEngine->OnLoadWorld();
     }
 
 #ifndef PUBLIC_RELEASE
