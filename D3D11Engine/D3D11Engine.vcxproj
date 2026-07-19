@@ -940,6 +940,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="D3D11DeferredRenderer.h" />
     <ClInclude Include="D3D11ForwardPlusRenderer.h" />
     <ClInclude Include="D3D11TracyDebug.h" />
+    <ClInclude Include="D3D12Engine\D3D12PipelineState.h" />
     <ClInclude Include="DDSArrayLoader.h" />
     <ClInclude Include="DXGIHelpers.h" />
     <ClInclude Include="ISceneRenderer.h" />
@@ -1217,6 +1218,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="D3D11PShader.cpp" />
     <ClCompile Include="D3D11RenderQueue.cpp" />
     <ClCompile Include="D3D11ShaderManager.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12PipelineState.cpp" />
     <ClCompile Include="ShaderRegistry.cpp" />
     <ClCompile Include="D3D12Engine\D3D12Device.cpp">
       <PrecompiledHeaderFile Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">../pch.h</PrecompiledHeaderFile>

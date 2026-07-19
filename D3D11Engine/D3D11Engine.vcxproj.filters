@@ -897,6 +897,9 @@
     <ClInclude Include="vendor\D3D12MemoryAllocator\include\D3D12MemAlloc.h">
       <Filter>Librarys\D3D12MemoryAllocator</Filter>
     </ClInclude>
+    <ClInclude Include="D3D12PipelineState.h">
+      <Filter>Engine\D3D12</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp" />
@@ -1229,6 +1232,9 @@
     </ClCompile>
     <ClCompile Include="vendor\D3D12MemoryAllocator\src\D3D12MemAlloc.cpp">
       <Filter>Librarys\D3D12MemoryAllocator</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D12PipelineState.cpp">
+      <Filter>Engine\D3D12</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
