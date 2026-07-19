@@ -2255,6 +2255,7 @@ void GothicAPI::OnAddVob( zCVob* vob, zCWorld* world ) {
 
             // Add to map
             VobsByVisual[vob->GetVisual()].push_back( vi );
+            Engine::GraphicsEngine->OnAddVob(vi);
 
             // Check for mainworld
             if ( world == oCGame::GetGame()->_zCSession_world ) {

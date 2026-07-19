@@ -158,7 +158,8 @@ public:
     virtual const std::string& GetGraphicsDeviceName() PURE;
 
     /** Draws a screen fade effects */
-    virtual XRESULT DrawScreenFade( void* camera ) { return XR_SUCCESS; };
+    virtual XRESULT DrawScreenFade( void* camera ) { return XR_SUCCESS; }
+    virtual void OnAddVob(VobInfo* vi) { }
 
     /** Draws a vertexarray, used for rendering gothics UI */
     virtual XRESULT DrawVertexArray( ExVertexStruct* vertices, unsigned int numVertices, unsigned int startVertex PURE, unsigned int stride = sizeof( ExVertexStruct ) ) PURE;

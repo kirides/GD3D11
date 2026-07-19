@@ -246,7 +246,7 @@ struct MeshVisualInfo : public BaseVisualInfo {
     //zCProgMeshProto* Visual;
     std::vector<VobInstanceInfo> Instances;
     unsigned int StartInstanceNum;
-
+    
     /** Full mesh of this */
     MeshInfo* FullMesh;
 
@@ -317,7 +317,8 @@ struct VobInfo : public BaseVobInfo {
         ParentBSPNodes{},
         GroundColor{},
         PrevWorldMatrix{},
-        HasValidPrevMatrix{}
+        HasValidPrevMatrix{},
+        VisualIndex(-1)
     {
     }
     VobInfo(VobInfo&& other) = delete;
@@ -348,6 +349,10 @@ struct VobInfo : public BaseVobInfo {
 
     /** BSP-Node this is stored in */
     std::vector<BspInfo*> ParentBSPNodes;
+    
+    // index into the engines respective visual instancing lookup.
+    // Used to implement bucket gather for main geometry as well as shadow cascades.
+    int16_t VisualIndex;
 
     /** Color the underlaying polygon has */
     DWORD GroundColor;

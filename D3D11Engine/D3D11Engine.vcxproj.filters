@@ -900,6 +900,10 @@
     <ClInclude Include="D3D12Engine\D3D12PipelineState.h">
       <Filter>Engine\D3D12</Filter>
     </ClInclude>
+    <ClInclude Include="D3D12Engine\InstancingUtils.h" />
+    <ClInclude Include="D3D12Engine\D3D12RenderQueue.h">
+      <Filter>Engine\D3D12</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp" />
@@ -1234,6 +1238,10 @@
       <Filter>Librarys\D3D12MemoryAllocator</Filter>
     </ClCompile>
     <ClCompile Include="D3D12Engine\D3D12PipelineState.cpp">
+      <Filter>Engine\D3D12</Filter>
+    </ClCompile>
+    <ClCompile Include="D3D12Engine\InstancingUtils.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12RenderQueue.cpp">
       <Filter>Engine\D3D12</Filter>
     </ClCompile>
   </ItemGroup>
