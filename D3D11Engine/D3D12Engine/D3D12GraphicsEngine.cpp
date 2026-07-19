@@ -90,6 +90,8 @@ inline void ResetCpuContextTracker() {
 
 #define DX_ZONE(cmdList, nameStr) DXMarker marker_local_evt_##__LINE__(cmdList, L##nameStr)
 
+struct FrameVobUpload { MeshVisualInfo* visual; D3D12_VERTEX_BUFFER_VIEW instView; UINT numInstances; };
+
 namespace {
     // Swapchain / final-output format. R10G10B10A2 (10-bit) instead of R8: the tonemapped output has much
     // finer gradients (kills banding in sky/fog/soft shadows) at the same 32bpp. Also the format the 2D UI +
@@ -1242,7 +1244,6 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     // instances into the ring ONCE (before the light cull), recording the resulting stream view + count here.
     // The depth prepass (DrawVobDepthPrepass) and the color pass (DrawVobsInstanced) then BOTH draw from these
     // records — no second upload, so the color pass's ring usage is unchanged. Rebuilt every frame.
-    struct FrameVobUpload { MeshVisualInfo* visual; D3D12_VERTEX_BUFFER_VIEW instView; UINT numInstances; };
     std::vector<FrameVobUpload> g_FrameVobUploads;
 
     // Per-frame skeletal shared-upload records (P2.9b-4b). PrepareFrameSkeletals runs the once-per-frame
@@ -3798,7 +3799,6 @@ void D3D12GraphicsEngine::RenderSunShadows() {
     D3D12VertexBuffer* ib = wm ? D3D12VertexBuffer::From( wm->GetMeshIndexBuffer() ) : nullptr;
     const bool haveWorld = vb && ib && vb->GetResource() && ib->GetResource()
                         && ( ib->GetSizeInBytes() / sizeof( uint32_t ) ) > 0;
-    const bool haveVobs   = m_ShadowCasterVobPSO && !g_FrameVobUploads.empty();
     const bool haveSkel   = m_ShadowCasterSkeletalPSO && m_SkeletalRootSig && !g_FrameSkelDraws.empty();
     const bool haveAttach = m_ShadowCasterVobPSO && !g_FrameAttachDraws.empty();
 
@@ -3823,8 +3823,13 @@ void D3D12GraphicsEngine::RenderSunShadows() {
         m_CmdList->SetGraphicsRootDescriptorTable( rootParam, srv );
     };
 
-    D3D12_CPU_DESCRIPTOR_HANDLE dsvBase = m_ShadowDsvHeap->GetCPUDescriptorHandleForHeapStart();
+    static D3D11RenderQueue m_RenderQueues[3] {{}, {}, {}};
 
+    for ( size_t i = 0; i < std::size( m_RenderQueues ); ++i ) {
+        m_RenderQueues[i].Reset();
+    }
+    
+    D3D12_CPU_DESCRIPTOR_HANDLE dsvBase = m_ShadowDsvHeap->GetCPUDescriptorHandleForHeapStart();    
     for ( UINT c = 0; c < kShadowCascades; ++c ) {
         D3D12_CPU_DESCRIPTOR_HANDLE dsv = dsvBase;
         dsv.ptr += static_cast<SIZE_T>( c ) * m_ShadowDsvSize;
@@ -3875,14 +3880,48 @@ void D3D12GraphicsEngine::RenderSunShadows() {
             }
         }
 
+        const auto& rs = Engine::GAPI->GetRendererState().RendererSettings;
+                
+        const float shadowDistance = 8000 + (12000.0f * std::max( 0.1f, rs.WorldShadowRangeScale ));
+
+        RndCullContext ctx;
+        ctx.queue = &m_RenderQueues[c];
+        ctx.frustum = m_CascadeFrustum[c];
+        ctx.cameraPosition = Engine::GAPI->GetCameraPosition();
+        ctx.stage = RenderStage::STAGE_DRAW_SHADOWS;
+        ctx.drawDistances.OutdoorVobs = std::max(20000.0f, shadowDistance);
+        ctx.drawDistances.OutdoorVobsSmall = std::max(20000.0f, shadowDistance);
+        ctx.drawDistances.IndoorVobs = std::max(20000.0f, shadowDistance);
+        ctx.drawDistances.VisualFX = 0.0f;
+        ctx.drawDistancesSq.OutdoorVobs = ctx.drawDistances.OutdoorVobs * ctx.drawDistances.OutdoorVobs;
+        ctx.drawDistancesSq.OutdoorVobsSmall = ctx.drawDistances.OutdoorVobsSmall * ctx.drawDistances.OutdoorVobsSmall;
+        ctx.drawDistancesSq.IndoorVobs = ctx.drawDistances.IndoorVobs * ctx.drawDistances.IndoorVobs;
+        ctx.drawDistancesSq.VisualFX = 0.0f;
+
+        ctx.drawFlags.DrawVOBs = rs.DrawVOBs;
+        ctx.drawFlags.DrawMobs = rs.DrawMobs;
+        ctx.drawFlags.EnableDynamicLighting = rs.EnableDynamicLighting;
+        ctx.drawFlags.EnableOcclusionCulling = false; // shadows do not use the players view frustum for culling, so occlusion culling would be inaccurate and cause popping.
+        ctx.drawFlags.CullVobs = rs.DebugSettings.Culling.CullVobs;
+        ctx.drawFlags.CollectIndoorVobs = false;
+        ctx.drawFlags.CollectMobs = false;
+        ctx.drawFlags.CollectLights = false;
+
+        Engine::GAPI->CollectVisibleVobs( ctx ); // uses rendercontext and does not mutate objects.
+        
+        const auto haveVobs = m_RenderQueues[c].GetVobs().size() > 0;
         // --- Instanced VOBs (same root sig; two streams: packed vertex slot 0 + per-instance world slot 1) ---
         if ( haveVobs ) {
             DX_ZONE(m_CmdList, "Vobs");
             
+            thread_local std::vector<FrameVobUpload> cascadeUploads;
+            cascadeUploads.clear();
+            UploadVobs(m_RenderQueues[c].GetVobs(), cascadeUploads);
+            
             m_CmdList->SetPipelineState( m_ShadowCasterVobPSO.Get() );
             m_CmdList->SetGraphicsRootSignature( m_WorldRootSig.Get() );
             m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
-            for ( const FrameVobUpload& up : g_FrameVobUploads ) {
+            for ( const FrameVobUpload& up : cascadeUploads ) {
                 MeshVisualInfo* visual = up.visual;
                 if ( !visual ) continue;
                 for ( auto const& [meshKey, meshList] : visual->MeshesByTexture ) {
@@ -6306,6 +6345,82 @@ XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
 
     Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles += m_WorldDrawnIndices / 3;
     return XR_SUCCESS;
+}
+
+void D3D12GraphicsEngine::UploadVobs(
+    const std::vector<VobInfo*>& vobs,
+    std::vector<FrameVobUpload>& uploads) {
+    if ( !m_FrameOpen || !m_VobInstanceBuffer[m_FrameIndex] || !m_VobInstanceBufferPtr[m_FrameIndex] )
+        return;
+
+    GothicRendererState& rs = Engine::GAPI->GetRendererState();
+    if ( !rs.RendererSettings.DrawVOBs )
+        return;
+
+    const UINT frame = m_FrameIndex;
+    
+    thread_local std::vector<std::pair<BaseVisualInfo*, VobInstanceInfo>> vobInstanceInfos;
+    vobInstanceInfos.clear();
+    
+    for ( auto& it : vobs ) {
+        if (!it->VisualInfo) continue;
+
+        // process any vobs only visible in this cascade
+        VobInstanceInfo vii = {};
+        vii.world = it->WorldMatrix;
+        vii.prevWorld = it->HasValidPrevMatrix ? it->PrevWorldMatrix : it->WorldMatrix;
+        vii.color = it->GroundColor;
+        vii.windStrenth = 0.0f;
+        vii.canBeAffectedByPlayer = 0;
+
+        zTAnimationMode aniMode = it->Vob->GetVisualAniMode();
+        if ( aniMode != zVISUAL_ANIMODE_NONE ) {
+            vii.canBeAffectedByPlayer = (!it->Vob->GetDynColl() ? 1.0f : 0.0f);
+            GothicAPI::ProcessVobAnimation( it->Vob, aniMode, vii );
+        }
+
+        vobInstanceInfos.emplace_back(it->VisualInfo, vii);
+    }
+    
+    std::ranges::sort(vobInstanceInfos, [](const auto&a, const auto& b)
+    {
+        return a.first < b.first;
+    });
+    
+    thread_local std::vector<VobInstanceInfo> instances;
+    const size_t numInfos = vobInstanceInfos.size();
+    for ( size_t i = 0; i < vobInstanceInfos.size(); ++i ) {
+        const auto visual = vobInstanceInfos[i].first;
+
+        instances.clear();
+        instances.push_back(vobInstanceInfos[i].second);
+        while (i+1 < numInfos && vobInstanceInfos[i+1].first == visual) {
+            instances.push_back(vobInstanceInfos[i+1].second);
+            i++;
+        }
+
+        const UINT numInstances = instances.size();
+        const UINT instBytes = numInstances * sizeof( VobInstanceInfo );
+
+        if ( m_VobInstanceBufferOffset + instBytes > m_VobInstanceBufferCapacity ) {
+            if ( !m_VobInstanceOverflowLogged ) {
+                LogWarn() << "D3D12: VOB instance ring overflow (" << m_VobInstanceBufferCapacity
+                    << " bytes/frame). Some VOBs dropped this frame.";
+                m_VobInstanceOverflowLogged = true;
+            }
+            break;
+        }
+
+        const UINT instOffset = m_VobInstanceBufferOffset;
+        memcpy( m_VobInstanceBufferPtr[frame] + instOffset, instances.data(), instBytes );
+        m_VobInstanceBufferOffset += instBytes;
+
+        FrameVobUpload up;
+        up.visual = static_cast<MeshVisualInfo*>(visual);
+        up.instView = { m_VobInstanceBuffer[frame]->GetGPUVirtualAddress() + instOffset, instBytes, sizeof( VobInstanceInfo ) };
+        up.numInstances = numInstances;
+        uploads.push_back( up );
+    }
 }
 
 void D3D12GraphicsEngine::UploadFrameVobInstances() {

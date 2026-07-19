@@ -7,6 +7,7 @@
 
 class D3D12LineRenderer;
 struct GothicBlendStateInfo;
+struct FrameVobUpload;
 class zCVobLight;
 
 /** Direct3D 12 backend — Phase 1 first-light.
@@ -142,6 +143,7 @@ private:
     bool CreateVobPipeline();         // instanced VOB PSO (reuses the world root sig) + inline shaders
     bool CreateVobInstanceBuffers();  // per-frame dynamic (upload-heap) VOB instance ring buffers
     void UploadFrameVobInstances();   // snapshot visible VOB instances into the ring ONCE (prepass + color share it)
+    void UploadVobs(const std::vector<VobInfo*>& vobs, std::vector<FrameVobUpload>& uploads);
     void DrawVobDepthPrepass();       // lay down instanced VOB depth (alpha-clipped) into the Forward+ prepass
     XRESULT DrawVobsInstanced();      // collect visible VOBs + draw each visual instanced (textured)
     // Set a lit draw's per-material bindless normal/ORM indices (b6 root consts). matRootParam = 10 (world/VOB
