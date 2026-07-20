@@ -217,8 +217,11 @@ struct MaterialInfo {
         float4 Color;
 
         void SetDefault() {
-            SpecularIntensity = 0.2f;
-            SpecularPower = 60.0f;
+            // -- Defaults for NON Normalmapped, NON FX-Mapped materials
+            SpecularIntensity = 0.1f;
+            SpecularPower = 5.0f;
+            // ---
+            
             NormalmapStrength = 1.0f;
             DisplacementFactor = 0.1f;
             Color = 0xFFFFFFFF;
