@@ -38,7 +38,7 @@ void D3D11GraphicsShader::OnReflectShader(ID3DBlob* blob, ID3D11ShaderReflection
     for (size_t i = 0; i< ConstantBuffers.size(); ++i) {
         ConstantBuffers[i] = 0;
     }
-    ConstantBufferIndexBySlot.fill(INVALID_SHADER_CB_SLOT);
+    ConstantBufferIndexBySlot.fill(255);
     ConstantBuffersByName.clear();
     ConstantBuffersByName.reserve(shaderDesc.ConstantBuffers);
 

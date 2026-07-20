@@ -7521,7 +7521,10 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
         if ( ActiveVS &&
             (Engine::GAPI->GetRendererState().RendererSettings.WindQuality > 0 || Engine::GAPI->GetRendererState().RendererSettings.HeroAffectsObjects) ) {
             windBuffer = ActiveVS->GetInputIndex( "WindParams" );
-            ActiveVS->UpdateBuffer(windBuffer, &g_windBuffer, sizeof(g_windBuffer));
+        }
+
+        if ( windBuffer != INVALID_SHADER_CB_SLOT ) {
+            ActiveVS->UpdateBuffer( windBuffer, &g_windBuffer, sizeof( g_windBuffer ) );
         }
 
         auto DIST_DistanceSlot = ActivePS->GetInputIndex( "DIST_Distance" );

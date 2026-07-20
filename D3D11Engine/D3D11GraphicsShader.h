@@ -11,7 +11,7 @@
 typedef size_t ConstantBufferSize;
 typedef size_t ConstantBufferSlot;
 constexpr size_t MAX_SHADER_CB = 6;
-constexpr size_t INVALID_SHADER_CB_SLOT = 255;
+constexpr size_t INVALID_SHADER_CB_SLOT = static_cast<size_t>(static_cast<int32_t>(-1));
 
 class D3D11GraphicsShader 
     : public GraphicsShader
