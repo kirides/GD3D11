@@ -213,11 +213,11 @@ void D3D11OcclusionQuerry::DebugVisualizeNodeMesh( MeshInfo* m, const XMFLOAT4& 
     for ( unsigned int i = 0; i < m->Indices.size(); i += 3 ) {
         XMFLOAT3 tri[3];
 
-        tri[0] = *m->Vertices[m->Indices[i]].Position.toXMFLOAT3();
+        tri[0] = m->Vertices[m->Indices[i]].Position;
 
-        tri[1] = *m->Vertices[m->Indices[i + 1]].Position.toXMFLOAT3();
+        tri[1] = m->Vertices[m->Indices[i + 1]].Position;
 
-        tri[2] = *m->Vertices[m->Indices[i + 2]].Position.toXMFLOAT3();
+        tri[2] = m->Vertices[m->Indices[i + 2]].Position;
 
         Engine::GraphicsEngine->GetLineRenderer()->AddLine( LineVertex( tri[0], color ), LineVertex( tri[1], color ) );
         Engine::GraphicsEngine->GetLineRenderer()->AddLine( LineVertex( tri[0], color ), LineVertex( tri[2], color ) );

@@ -3526,9 +3526,9 @@ float GothicAPI::TraceVisualInfo( const XMFLOAT3& origin, const XMFLOAT3& dir, B
             auto& mesh = it.second[m];
 
             for ( unsigned int i = 0; i < mesh->Indices.size(); i += 3 ) {
-                if ( Toolbox::IntersectTri( *mesh->Vertices[mesh->Indices[i]].Position.toXMFLOAT3(),
-                    *mesh->Vertices[mesh->Indices[i + 1]].Position.toXMFLOAT3(),
-                    *mesh->Vertices[mesh->Indices[i + 2]].Position.toXMFLOAT3(),
+                if ( Toolbox::IntersectTri( mesh->Vertices[mesh->Indices[i]].Position,
+                    mesh->Vertices[mesh->Indices[i + 1]].Position,
+                    mesh->Vertices[mesh->Indices[i + 2]].Position,
                     origin, dir, u, v, t ) ) {
                     if ( t > 0 && t < closest ) {
                         closest = t;
@@ -3574,17 +3574,17 @@ bool GothicAPI::TraceWorldMesh( const XMFLOAT3& origin, const XMFLOAT3& dir, XMF
             float u, v, t;
 
             for ( unsigned int i = 0; i < it->second->Indices.size(); i += 3 ) {
-                if ( Toolbox::IntersectTri( *it->second->Vertices[it->second->Indices[i]].Position.toXMFLOAT3(),
-                    *it->second->Vertices[it->second->Indices[i + 1]].Position.toXMFLOAT3(),
-                    *it->second->Vertices[it->second->Indices[i + 2]].Position.toXMFLOAT3(),
+                if ( Toolbox::IntersectTri( it->second->Vertices[it->second->Indices[i]].Position,
+                    it->second->Vertices[it->second->Indices[i + 1]].Position,
+                    it->second->Vertices[it->second->Indices[i + 2]].Position,
                     origin, dir, u, v, t ) ) {
                     if ( t > 0 && t < closest ) {
                         closest = t;
 
                         if ( hitTriangle ) {
-                            hitTriangle[0] = *it->second->Vertices[it->second->Indices[i]].Position.toXMFLOAT3();
-                            hitTriangle[1] = *it->second->Vertices[it->second->Indices[i + 1]].Position.toXMFLOAT3();
-                            hitTriangle[2] = *it->second->Vertices[it->second->Indices[i + 2]].Position.toXMFLOAT3();
+                            hitTriangle[0] = it->second->Vertices[it->second->Indices[i]].Position;
+                            hitTriangle[1] = it->second->Vertices[it->second->Indices[i + 1]].Position;
+                            hitTriangle[2] = it->second->Vertices[it->second->Indices[i + 2]].Position;
                         }
 
                         if ( hitMesh ) {
@@ -3762,7 +3762,7 @@ float GothicAPI::GetFarZ() {
 XMVECTOR GothicAPI::GetFogColor() {
     zCSkyController_Outdoor* sc = oCGame::GetGame()->_zCSession_world->GetSkyControllerOutdoor();
 
-    XMVECTOR FogColorMod = XMLoadFloat3( RendererState.RendererSettings.FogColorMod.toXMFLOAT3() );
+    XMVECTOR FogColorMod = XMLoadFloat3( &RendererState.RendererSettings.FogColorMod );
 
     // Only give the overridden color out if the flag is set
     if ( !sc || !sc->GetOverrideFlag() )
@@ -5993,7 +5993,7 @@ void GothicAPI::PutCustomPolygonsIntoBspTreeRec( BspInfo* base ) {
                     // Check if one vertex is inside the node // TODO: This will fail for very large triangles!
                     zCVertex** vx = poly->getVertices();
 
-                    if ( Toolbox::PositionInsideBox( *vx[v]->Position.toXMFLOAT3(),
+                    if ( Toolbox::PositionInsideBox( vx[v]->Position,
                         base->OriginalNode->BBox3D.Min,
                         base->OriginalNode->BBox3D.Max ) ) {
                         base->NodePolygons.push_back( poly );

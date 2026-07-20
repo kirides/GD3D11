@@ -310,7 +310,7 @@ XRESULT D3D11PfxRenderer::RenderPostFXComposition(
         cb.HF_HeightFalloff = settings.FogHeightFalloff;
 
         float height = settings.FogHeight;
-        XMVECTOR color = XMLoadFloat3( settings.FogColorMod.toXMFLOAT3() );
+        XMVECTOR color = XMLoadFloat3( &settings.FogColorMod );
 
         float fnear = 15000.0f;
         float ffar = 60000.0f;

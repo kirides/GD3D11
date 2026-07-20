@@ -564,8 +564,8 @@ float XM_CALLCONV EditorLinePrimitive::IntersectPrimitive( FXMVECTOR RayOrigin, 
     // Go through all line segments and intersect them
     for ( i = 0; i < NumVertices; i += 2 ) {
         XMVECTOR vx[2];
-        vx[0] = XMVector3TransformCoord( XMLoadFloat3( Vertices[i].Position.toXMFLOAT3() ), wld );
-        vx[1] = XMVector3TransformCoord( XMLoadFloat3( Vertices[i + 1].Position.toXMFLOAT3() ), wld );
+        vx[0] = XMVector3TransformCoord( XMLoadFloat4( &Vertices[i].Position ), wld );
+        vx[1] = XMVector3TransformCoord( XMLoadFloat4( &Vertices[i + 1].Position ), wld );
 
         float Dist = IntersectLineSegment( RayOrigin, RayDirection, vx[0], vx[1], Epsilon );
         if ( Dist < Shortest || Shortest == -1 ) {
@@ -579,9 +579,9 @@ float XM_CALLCONV EditorLinePrimitive::IntersectPrimitive( FXMVECTOR RayOrigin, 
         Shortest = FLT_MAX;
 
         for ( DWORD i = 0; i < NumSolidVertices; i += 3 ) {
-            FXMVECTOR v0 = XMLoadFloat3( SolidVertices[i + 0].Position.toXMFLOAT3() );
-            FXMVECTOR v1 = XMLoadFloat3( SolidVertices[i + 1].Position.toXMFLOAT3() );
-            FXMVECTOR v2 = XMLoadFloat3( SolidVertices[i + 2].Position.toXMFLOAT3() );
+            FXMVECTOR v0 = XMLoadFloat4( &SolidVertices[i + 0].Position );
+            FXMVECTOR v1 = XMLoadFloat4( &SolidVertices[i + 1].Position );
+            FXMVECTOR v2 = XMLoadFloat4( &SolidVertices[i + 2].Position );
 
             // Check if the pick ray passes through this point
             if ( IntersectTriangle( Origin, Dir, v0, v1, v2, &fDist, &fBary1, &fBary2 ) ) {

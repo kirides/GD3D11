@@ -6132,7 +6132,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
     ocb.OS_AmbientColor = float3( 1, 1, 1 );
     ActivePS->UpdateBuffer("POS_MaterialInfo", &ocb, sizeof(ocb));
 
-    float3 pos; XMStoreFloat3( pos.toXMFLOAT3(), position );
+    float3 pos; XMStoreFloat3( &pos, position );
     INT2 s = WorldConverter::GetSectionOfPos( pos );
 
     DistortionTexture->BindToPixelShader( 0 );
@@ -6860,7 +6860,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
     const XMMATRIX identityMatrix = XMMatrixIdentity();
     ActiveVS->UpdateBuffer("Matrices_PerInstances", &identityMatrix, sizeof(identityMatrix));
 
-    float3 fPosition; XMStoreFloat3( fPosition.toXMFLOAT3(), position );
+    float3 fPosition; XMStoreFloat3( &fPosition, position );
     DistortionTexture->BindToPixelShader( 0 );
 
     BindDynamicCBToPixelShader( ActivePS->GetInputIndex( "DIST_Distance" ), InfiniteRangeCB );
@@ -7237,7 +7237,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
         if ( !Engine::GAPI->GetVegetationBoxes().empty()) {
             const float drawRadius = Engine::GAPI->GetRendererState().RendererSettings.OutdoorSmallVobDrawRadius;
-            const XMFLOAT3 camPos = *fPosition.toXMFLOAT3();
+            const XMFLOAT3 camPos = fPosition;
             
             bool inView = false;
             
@@ -9149,7 +9149,7 @@ void D3D11GraphicsEngine::DrawQuadMarks() {
     for ( auto const& it : quadMarks ) {
         if ( !it.first->GetConnectedVob() ) continue;
 
-        if ( XMVector3Greater(XMVector3LengthSq( camPos - XMLoadFloat3( it.second.Position.toXMFLOAT3() ) ), vVfxRadiusSq) ) {
+        if ( XMVector3Greater(XMVector3LengthSq( camPos - XMLoadFloat3( &it.second.Position ) ), vVfxRadiusSq) ) {
             continue;
         }
 
