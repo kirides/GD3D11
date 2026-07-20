@@ -5685,7 +5685,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
     std::list<SkeletalVobInfo*>* renderedMobs,
     std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache,
     unsigned int casterMask,
-    const std::function<bool(zCVob*)>& ignoreVob,
+    const std::move_only_function<bool(const zCVob*) const>& ignoreVob,
     bool usesCubeGeometryShader ) {
 
     // Setup renderstates
@@ -6035,7 +6035,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                     continue;
                 }
                 
-                if (ignoreVob && ignoreVob(it->Vob)) {
+                if (ignoreVob != nullptr && ignoreVob(it->Vob)) {
                     continue;
                 }
 
@@ -6091,7 +6091,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
     std::list<SkeletalVobInfo*>* renderedMobs,
     std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache,
     unsigned int casterMask,
-    const std::function<bool(zCVob*)>& ignoreVob ) {
+    const std::move_only_function<bool(const zCVob*) const>& ignoreVob ) {
 
     // Setup renderstates
     Engine::GAPI->GetRendererState().RasterizerState.SetDefault();
@@ -6348,7 +6348,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                         continue;
                     }
                 
-                    if (ignoreVob && ignoreVob(it->Vob)) {
+                    if (ignoreVob != nullptr && ignoreVob(it->Vob)) {
                         continue;
                     }
                     rndVob.emplace_back( it );
@@ -6445,7 +6445,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                     continue;
                 }
                 
-                if (ignoreVob && ignoreVob(it->Vob)) {
+                if (ignoreVob != nullptr && ignoreVob(it->Vob)) {
                     continue;
                 }
 
@@ -8494,7 +8494,7 @@ void XM_CALLCONV D3D11GraphicsEngine::RenderShadowCube(
     std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache,
     bool clearDepth,
     unsigned int casterMask,
-    const std::function<bool(zCVob*)>& ignoreVob ) {
+    const std::move_only_function<bool( const zCVob* ) const>& ignoreVob ) {
     
     ShadowMaps->RenderShadowCube( position, range, targetCube, face, debugRTV,
         cullFront, indoor, noNPCs, renderedVobs, renderedMobs, worldMeshCache, clearDepth, casterMask,

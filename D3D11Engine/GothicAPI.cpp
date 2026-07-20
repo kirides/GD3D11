@@ -2531,9 +2531,9 @@ void GothicAPI::UpdateCompressBackBuffer() {
 }
 
 /** Draws a skeletal mesh-vob */
-void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool updateState, const std::function<bool(zCVob*)>& ignoreVob ) {
+void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool updateState, const std::move_only_function<bool(const zCVob*) const>& ignoreVob ) {
 
-    if (ignoreVob && ignoreVob(vi->Vob)){
+    if (ignoreVob != nullptr && ignoreVob(vi->Vob)){
         // Dont draw main mesh if vob is ignored.
         return;
     }
@@ -2646,7 +2646,7 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
             continue; // Happens when you pull your sword for example
 
         if (npc
-            && ignoreVob
+            && ignoreVob != nullptr
             && node->ProtoNode
             && node->ProtoNode->NodeName.Length()) {
             if (auto slot = npc->GetInvSlot(node->ProtoNode->NodeName)) {
@@ -2791,8 +2791,8 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
     RendererState.RendererInfo.FrameDrawnVobs++;
 }
 
-void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distance, bool updateState, const std::function<bool(zCVob*)>& ignoreVob ) {
-    if (ignoreVob && ignoreVob(vi->Vob)){
+void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distance, bool updateState, const std::move_only_function<bool(const zCVob*) const>& ignoreVob ) {
+    if (ignoreVob != nullptr && ignoreVob(vi->Vob)){
         // Dont draw main mesh if vob is ignored.
         return;
     }
@@ -2897,7 +2897,7 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
             continue; // Happens when you pull your sword for example
 
         if (npc
-            && ignoreVob
+            && ignoreVob != nullptr
             && node->ProtoNode
             && node->ProtoNode->NodeName.Length()) {
             if (auto slot = npc->GetInvSlot(node->ProtoNode->NodeName)) {

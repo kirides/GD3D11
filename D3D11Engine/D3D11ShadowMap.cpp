@@ -1626,7 +1626,7 @@ void XM_CALLCONV D3D11ShadowMap::RenderShadowCube(
     std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache,
     bool clearDepth,
     unsigned int casterMask,
-    const std::function<bool(zCVob*)>& ignoreVob ) {
+    const std::move_only_function<bool(const zCVob*) const>& ignoreVob ) {
 
     auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
 

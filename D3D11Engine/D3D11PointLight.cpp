@@ -14,15 +14,15 @@
 
 const float LIGHT_COLORCHANGE_POS_MOD = 0.1f;
 
-static std::unordered_set<zCVob*> vobsToExclude = {};
-static std::function excludeVobsToExclude = []( zCVob* vob )
-{
-    return vobsToExclude.contains(vob);
-};
-
 namespace
 {
-    void CollectVobTreeToExclude(zCVob* vob) {
+    std::unordered_set<const zCVob*> vobsToExclude = {};
+    std::move_only_function<bool(const zCVob*) const> excludeVobsToExclude = []( const zCVob* vob )
+    {
+        return vobsToExclude.contains(vob);
+    };
+    
+    void CollectVobTreeToExclude(const zCVob* vob) {
         while (vob && vobsToExclude.emplace(vob).second) {
             if (auto vfx = vob->As<oCVisualFX>()) {
                 if (auto origin = vfx->GetOrigin()) {
@@ -103,7 +103,7 @@ D3D11PointLight::~D3D11PointLight() {
     ReleaseShadowMap();
 
     for ( auto& [k, mesh] : WorldMeshCache ) {
-        SAFE_DELETE( mesh );
+        SAFE_DELETE( mesh )
     }
 }
 
