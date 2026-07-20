@@ -2927,6 +2927,9 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     bool drawAttachments ) {
     ZoneScoped;
 
+    // Ensure InfiniteRangeCB is bound. Otherwise AlphaText shader will screw up ;)
+    BindDynamicCBToPixelShader( 3, InfiniteRangeCB );
+
     m_LastMaterialInfo = nullptr;
 
     //// Skeletal meshes use bone-driven animation that can change between passes.
@@ -4143,6 +4146,8 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     // the handles are stored and re-bound at the many later draw sites)
     static const float4 defaultInfiniteRange = float4( FLT_MAX, 0, 0, 0 );
     InfiniteRangeCB = AllocateDynamicCB( &defaultInfiniteRange, sizeof( defaultInfiniteRange ) );
+
+    BindDynamicCBToPixelShader( 3, InfiniteRangeCB );
 
     const float4 outdoorSmallRange( rendererState.RendererSettings.OutdoorSmallVobDrawRadius, 0, 0, 0 );
     OutdoorSmallVobsCB = AllocateDynamicCB( &outdoorSmallRange, sizeof( outdoorSmallRange ) );
