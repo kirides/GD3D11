@@ -2395,7 +2395,7 @@ bool D3D12GraphicsEngine::CreateWhiteTexture() {
         D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS( m_DefaultOrmTexture.ReleaseAndGetAddressOf() ) ) ) )
         return false;
     m_DefaultOrmTexture->SetName( L"DefaultOrmTexture(1,0.5,0)" );
-    const uint32_t orm = 0xFF00BBFFu;   // R8G8B8A8 little-endian: R=255(AO) G=187(rough~0.73) B=0(metal) A=255
+    const uint32_t orm = 0xFF00E6FFu;   // R8G8B8A8 little-endian: R=255(AO) G=230(rough~0.90) B=0(metal) A=255
     D3D12_SUBRESOURCE_DATA ormSub = {};
     ormSub.pData = &orm;
     ormSub.RowPitch = 4;
