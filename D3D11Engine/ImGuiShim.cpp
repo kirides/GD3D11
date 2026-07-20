@@ -418,6 +418,16 @@ namespace
             // switch to regular TAA if upsampled
             s.AntiAliasingMode = GothicRendererSettings::AA_TAA;
         }
+
+        // MSAA (Forward+ only) and TAA/FSR are mutually exclusive: both do their own edge/temporal
+        // resolve and combining them adds no value while doubling the resolve complexity.
+        if ( s.MSAASamples > 1 && (s.AntiAliasingMode == GothicRendererSettings::E_AntiAliasingMode::AA_TAA
+            || s.AntiAliasingMode == GothicRendererSettings::E_AntiAliasingMode::AA_FSR) ) {
+            s.AntiAliasingMode = GothicRendererSettings::E_AntiAliasingMode::AA_NONE;
+        }
+        if ( s.RendererMode != GothicRendererSettings::E_RendererMode::RM_ForwardPlus ) {
+            s.MSAASamples = 1;
+        }
     }
 }
 
@@ -519,6 +529,19 @@ void ImGuiShim::RenderSettingsWindow()
                     ImGui::EndCombo();
                 }
                 ImGui::PopID();
+            }
+
+            if ( settings.RendererMode == GothicRendererSettings::RM_ForwardPlus ) {
+                static const std::vector<std::pair<const char*, int>> msaaSamples = {
+                    { "Off", 1 },
+                    { "2x",  2 },
+                    { "4x",  4 },
+                    { "8x",  8 },
+                };
+                if ( ImComboBox( "MSAA", msaaSamples, &settings.MSAASamples ) ) {
+                    ImGui::EndCombo();
+                }
+                ImGui::SetItemTooltip( "Forward+ only: hardware multisample anti-aliasing for opaque geometry. Mutually exclusive with TAA/FSR." );
             }
 
             ImGui::Checkbox( "HDR", &settings.EnableHDR );
@@ -1264,6 +1287,18 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                     }
                     ImGui::SetItemTooltip( "Deferred: GBuffer + tiled deferred lighting.  Forward+: depth prepass + per-pixel lit geometry pass." );
                 }
+                if ( settings.RendererMode == GothicRendererSettings::RM_ForwardPlus ) {
+                    static const std::vector<std::pair<const char*, int>> msaaSamples = {
+                        { "Off", 1 },
+                        { "2x",  2 },
+                        { "4x",  4 },
+                        { "8x",  8 },
+                    };
+                    if ( ImComboBox( "MSAA", msaaSamples, &settings.MSAASamples ) ) {
+                        ImGui::EndCombo();
+                    }
+                    ImGui::SetItemTooltip( "Forward+ only: hardware multisample anti-aliasing for opaque geometry. Falls back to the highest supported level if the requested one isn't available. Mutually exclusive with TAA/FSR." );
+                }
                 if (!FeatureLevel10Compatibility){
                     ImGui::Checkbox("Use MDI", &settings.DebugSettings.FeatureSet.UseMDI );
                     ImGui::SetItemTooltip("Support for MultiDrawInstancedIndirect via Driver Extensions (AMD, Nvidia, Intel).");
@@ -1514,6 +1549,19 @@ void RenderAdvancedColumn4( GothicRendererSettings& settings, GothicAPI* gapi ) 
                 ImGui::EndCombo();
             }
             ImGui::PopID();
+        }
+
+        if ( settings.RendererMode == GothicRendererSettings::RM_ForwardPlus ) {
+            static const std::vector<std::pair<const char*, int>> msaaSamples = {
+                { "Off", 1 },
+                { "2x",  2 },
+                { "4x",  4 },
+                { "8x",  8 },
+            };
+            if ( ImComboBox( "MSAA", msaaSamples, &settings.MSAASamples ) ) {
+                ImGui::EndCombo();
+            }
+            ImGui::SetItemTooltip( "Forward+ only: hardware multisample anti-aliasing for opaque geometry. Mutually exclusive with TAA/FSR." );
         }
 
         ImGui::SeparatorText( "Sharpening" );

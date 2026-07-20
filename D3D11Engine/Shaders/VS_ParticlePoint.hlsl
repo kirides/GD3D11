@@ -39,6 +39,7 @@ struct VS_OUTPUT
     float3 vViewPosition : TEXCOORD5;
 	float4 vCurrClipPos     : TEXCOORD6;
 	float4 vPrevClipPos     : TEXCOORD7;
+	float4 vTangent			: TEXCOORD3;  // zero-initialized via (VS_OUTPUT)0; keeps family signature consistent
     float4 vPosition : SV_POSITION;
 };
 

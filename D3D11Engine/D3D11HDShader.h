@@ -3,7 +3,6 @@
 #include "d3d11.h"
 #include "wrl/client.h"
 
-class D3D11ConstantBuffer;
 class D3D11VertexBuffer;
 
 class D3D11HDShader : public D3D11GraphicsShader {
@@ -28,8 +27,8 @@ public:
 
     void BindResource(StringID name, ID3D11ShaderResourceView* srv) override;
     void BindSampler(StringID name, ID3D11SamplerState* sampler) override;
-    void BindBuffer( StringID name, D3D11ConstantBuffer* buffer) override;
-    void BindBuffer(UINT slot, D3D11ConstantBuffer* buffer) override;
+    void UpdateBuffer( StringID name, const void* data, size_t size) override;
+    void UpdateBuffer(UINT slot, const void* data, size_t size) override;
 
 private:
     Microsoft::WRL::ComPtr<ID3D11HullShader> HullShader;

@@ -8,6 +8,7 @@
 #include "BaseGraphicsEngine.h"
 #include "zCPolygon.h"
 #include "WorldConverter.h"
+#include "VertexPacking.h"
 #include "HookedFunctions.h"
 #include "zCMaterial.h"
 #include "zCTexture.h"
@@ -1736,6 +1737,7 @@ void GothicAPI::GetVisibleDecalList( std::vector<zCVob*>& decals ) {
 /** Called when a material got removed */
 void GothicAPI::OnMaterialDeleted( zCMaterial* mat ) {
     LoadedMaterials.erase( mat );
+    MaterialInfos.erase( mat );
     if ( !mat )
         return;
     for ( auto&& it : SkeletalMeshVisuals ) {
@@ -1970,6 +1972,35 @@ void GothicAPI::DrawMeshInfo_Layered( zCMaterial* mat, MeshInfo* msh ) {
         g->DrawVertexBufferInstanced( msh->GetMeshVertexBuffer(), msh->Vertices.size(), 6 );
     } else {
         g->DrawVertexBufferInstancedIndexed( msh->GetMeshVertexBuffer(), msh->GetMeshIndexBuffer(), msh->Indices.size(), 6 );
+    }
+}
+
+/** DrawMeshInfo for packed (36-byte ExVertexStructGPU) VOB/node-attachment meshes. */
+void GothicAPI::DrawMeshInfoPacked( zCMaterial* mat, MeshInfo* msh ) {
+    if ( mat ) {
+        if ( mat->GetAlphaFunc() == zRND_ALPHA_FUNC_TEST )
+            RendererState.GraphicsState.FF_GSwitches |= GSWITCH_ALPHAREF;
+        else
+            RendererState.GraphicsState.FF_GSwitches &= ~GSWITCH_ALPHAREF;
+    }
+
+    D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    if ( msh->MeshIndexBuffer ) {
+        g->DrawVertexBufferIndexedPacked( msh->GetMeshVertexBuffer(), msh->GetMeshIndexBuffer(), msh->Indices.size() );
+    }
+}
+
+void GothicAPI::DrawMeshInfo_LayeredPacked( zCMaterial* mat, MeshInfo* msh ) {
+    if ( mat ) {
+        if ( mat->GetAlphaFunc() == zRND_ALPHA_FUNC_TEST )
+            RendererState.GraphicsState.FF_GSwitches |= GSWITCH_ALPHAREF;
+        else
+            RendererState.GraphicsState.FF_GSwitches &= ~GSWITCH_ALPHAREF;
+    }
+
+    D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
+    if ( msh->MeshIndexBuffer ) {
+        g->DrawVertexBufferInstancedIndexedPacked( msh->GetMeshVertexBuffer(), msh->GetMeshIndexBuffer(), msh->Indices.size(), 6 );
     }
 }
 
@@ -2600,8 +2631,9 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
         : XMLoadFloat4x4( &world );
     
     gtl::flat_hash_map<int, std::vector<MeshVisualInfo*>>& nodeAttachments = vi->NodeAttachments;
-    auto vsBufMPI = g->GetActiveVS()->GetBuffer( "Matrices_PerInstances" );
-    vsBufMPI.Bind();
+    
+    auto cbPool = g->GetConstantBufferPool();
+    auto vsBufMPI = g->GetActiveVS()->GetInputIndex( "Matrices_PerInstances" );
 
     oCNPC* npc = vi->Vob->As<oCNPC>();
     zCModel* mvis = static_cast<zCModel*>( vi->Vob->GetVisual() );
@@ -2710,7 +2742,7 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
                         // Update constantbuffer
                         instanceInfo.World = finalWorld;
                         XMStoreFloat4x4( &instanceInfo.PrevWorld, prevWorldNode );
-                        vsBufMPI.Update( &instanceInfo );
+                        cbPool->BindVS(vsBufMPI , cbPool->Allocate(&instanceInfo, sizeof(instanceInfo)));
 
                         if ( updateState ) {
                             if ( mvi->LastAniUpdateFrame != now ) {
@@ -2725,7 +2757,7 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
 
                 instanceInfo.World = finalWorld;
                 XMStoreFloat4x4( &instanceInfo.PrevWorld, prevWorldNode );
-                vsBufMPI.Update( &instanceInfo );
+                cbPool->BindVS(vsBufMPI, cbPool->Allocate(&instanceInfo, sizeof(instanceInfo)));
 
                 // Go through all materials registered here
 
@@ -2736,20 +2768,19 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
 
                         // Go through all meshes using that material
                         for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
-                            DrawMeshInfo( itm.first, itm.second[m].get() );
+                            DrawMeshInfoPacked( itm.first, itm.second[m].get() );
                         }
                     }
                 } else {
                     for ( auto const& itm : mvi->Meshes ) {
-                        zCTexture* texture;
-                        if ( itm.first && (texture = itm.first->GetAniTexture()) != nullptr ) {
-                            if ( !g->BindTextureNRFX( texture, (g->GetRenderingStage() == DES_MAIN) ) )
+                        if ( itm.first && (itm.first->GetAniTexture()) != nullptr ) {
+                            if ( !g->BindTextureNRFX( itm.first, (g->GetRenderingStage() == DES_MAIN) ) )
                                 continue;
                         }
 
                         // Go through all meshes using that material
                         for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
-                            DrawMeshInfo( itm.first, itm.second[m].get() );
+                            DrawMeshInfoPacked( itm.first, itm.second[m].get() );
                         }
                     }
                 }
@@ -2849,8 +2880,8 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
     g->SetupVS_ExConstantBuffer();
 
     auto& nodeAttachments = vi->NodeAttachments;
-    auto vsBufMPI = g->GetActiveVS()->GetBuffer( "Matrices_PerInstances" );
-    vsBufMPI.Bind();
+    auto vsBufMPI = g->GetActiveVS()->GetInputIndex( "Matrices_PerInstances" );
+    auto cbPool = g->GetConstantBufferPool();
 
     g->GetWhiteTexture()->BindToPixelShader( 0 );
     void* lastTex = g->GetWhiteTexture()->GetShaderResourceView().Get();
@@ -2952,7 +2983,7 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
                 instanceInfo.World = finalWorld;
                 instanceInfo.PrevWorld = finalWorld;
                 // Update constantbuffer
-                vsBufMPI.Update( &instanceInfo );
+                cbPool->BindVS(vsBufMPI , cbPool->Allocate(&instanceInfo, sizeof(instanceInfo)));
 
                 if ( distance < 1000 && isMMS ) {
                     zCMorphMesh* mm = reinterpret_cast<zCMorphMesh*>( mvi->Visual );
@@ -2991,7 +3022,7 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
 
                     // Go through all meshes using that material
                     for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
-                        DrawMeshInfo_Layered( itm.first, itm.second[m].get() );
+                        DrawMeshInfo_LayeredPacked( itm.first, itm.second[m].get() );
                     }
                 }
             }
@@ -3015,7 +3046,8 @@ void GothicAPI::DrawTransparencyVobs() {
         RendererState.DepthState.SetDirty();
     }
 
-    auto psBufGAI = g->GetShaderManager().GetPShader( PShaderID::PS_Transparency )->GetBuffer( "GhostAlphaInfo" );
+    auto cbPool = g->GetConstantBufferPool();
+    auto psBufGAI = g->GetShaderManager().GetPShader( PShaderID::PS_Transparency )->GetInputIndex( "GhostAlphaInfo" );
 
 
     VS_ExConstantBuffer_PerInstance cbPerInstance;
@@ -3037,28 +3069,30 @@ void GothicAPI::DrawTransparencyVobs() {
             GhostAlphaConstantBuffer gacb;
             gacb.GA_ViewportSize = float2( Engine::GraphicsEngine->GetResolution().x, Engine::GraphicsEngine->GetResolution().y );
             gacb.GA_Alpha = TransVobInfo.alpha;
-            psBufGAI.Update( &gacb ).Bind();
+            cbPool->BindPS(psBufGAI , cbPool->Allocate(&gacb, sizeof(gacb)));
             DrawSkeletalMeshVob( TransVobInfo.skeletalVob, TransVobInfo.distance, false );
         } else if ( TransVobInfo.normalVob ) {
-            g->SetActiveVertexShader( VShaderID::VS_Ex );
+            g->SetActiveVertexShader( VShaderID::VS_ExPacked );  // VOB meshes are packed (36-byte)
             g->SetupVS_ExMeshDrawCall();
             
             TransVobInfo.normalVob->UpdateVobConstantBuffer( cbPerInstance );
-            g->GetActiveVS()->GetBuffer( 1 ).Update(&cbPerInstance, sizeof(cbPerInstance)).Bind();
+            cbPool->BindVS(1 , cbPool->Allocate(&cbPerInstance, sizeof(cbPerInstance)));
 
             // We need to do Z-prepass first
             g->UnbindActivePS();
             g->GetContext()->PSSetShader( nullptr, nullptr, 0 );
 
             for ( auto const& materialMesh : TransVobInfo.normalVob->VisualInfo->Meshes ) {
-                if ( materialMesh.first && materialMesh.first->GetTexture() ) {
-                    if ( materialMesh.first->GetTexture()->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
-                        materialMesh.first->GetTexture()->Bind( 0 );
+                if ( materialMesh.first ) {
+                    if ( zCTexture* aniTex = materialMesh.first->GetAniTexture() ) {
+                        if ( aniTex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                            aniTex->Bind( 0 );
+                        }
                     }
                 }
 
                 for ( auto const& meshInfo : materialMesh.second ) {
-                    g->DrawVertexBufferIndexed(
+                    g->DrawVertexBufferIndexedPacked(
                         meshInfo->GetMeshVertexBuffer(),
                         meshInfo->GetMeshIndexBuffer(),
                         meshInfo->Indices.size() );
@@ -3074,17 +3108,19 @@ void GothicAPI::DrawTransparencyVobs() {
             GhostAlphaConstantBuffer gacb;
             gacb.GA_ViewportSize = float2( Engine::GraphicsEngine->GetResolution().x, Engine::GraphicsEngine->GetResolution().y );
             gacb.GA_Alpha = TransVobInfo.alpha;
-            psBufGAI.Update( &gacb ).Bind();
+            cbPool->BindPS(psBufGAI , cbPool->Allocate(&gacb, sizeof(gacb)));
 
             for ( auto const& materialMesh : TransVobInfo.normalVob->VisualInfo->Meshes ) {
-                if ( materialMesh.first && materialMesh.first->GetTexture() ) {
-                    if ( materialMesh.first->GetTexture()->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
-                        materialMesh.first->GetTexture()->Bind( 0 );
+                if ( materialMesh.first ) {
+                    if ( zCTexture* aniTex = materialMesh.first->GetAniTexture() ) {
+                        if ( aniTex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                            aniTex->Bind( 0 );
+                        }
                     }
                 }
 
                 for ( auto const& meshInfo : materialMesh.second ) {
-                    g->DrawVertexBufferIndexed(
+                    g->DrawVertexBufferIndexedPacked(
                         meshInfo->GetMeshVertexBuffer(),
                         meshInfo->GetMeshIndexBuffer(),
                         meshInfo->Indices.size() );
@@ -3559,8 +3595,8 @@ bool GothicAPI::TraceWorldMesh( const XMFLOAT3& origin, const XMFLOAT3& dir, XMF
                             *hitMaterial = it->first.Material;
                         }
 
-                        if ( hitTextureName && it->first.Material && it->first.Material->GetTexture() )
-                            *hitTextureName = it->first.Material->GetTexture()->GetNameWithoutExt();
+                        if ( hitTextureName && it->first.Material && it->first.Material->GetTextureSingle() )
+                            *hitTextureName = it->first.Material->GetTextureSingle()->GetNameWithoutExt();
                     }
                 }
             }
@@ -4799,8 +4835,8 @@ float GothicAPI::GetNearPlane() {
 zCMaterial* GothicAPI::GetMaterialByTextureName( const std::string& name ) {
     const std::string_view nameView = name;
     for ( auto const& it : LoadedMaterials ) {
-        if ( it->GetTexture() ) {
-            const std::string_view tn = it->GetTexture()->GetNameWithoutExtView();
+        if ( it->GetTextureSingle() ) {
+            const std::string_view tn = it->GetTextureSingle()->GetNameWithoutExtView();
             if ( Toolbox::EqualsIgnoreCase(nameView, tn ) )
                 return it;
         }
@@ -4812,8 +4848,8 @@ zCMaterial* GothicAPI::GetMaterialByTextureName( const std::string& name ) {
 void GothicAPI::GetMaterialListByTextureName( const std::string& name, std::list<zCMaterial*>& list ) {
     const std::string_view nameView = name;
     for ( auto const& it : LoadedMaterials ) {
-        if ( it->GetTexture() ) {
-            const std::string_view tn = it->GetTexture()->GetNameWithoutExtView();
+        if ( it->GetTextureSingle() ) {
+            const std::string_view tn = it->GetTextureSingle()->GetNameWithoutExtView();
             if ( Toolbox::EqualsIgnoreCase(nameView, tn ) )
                 list.push_back( it );
         }
@@ -4861,19 +4897,17 @@ static void FixUpMaterial( MaterialInfo::Buffer& buffer ) {
     }
 }
 
-/** Returns the material info associated with the given material */
-MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCTexture* tex ) {
-    auto it = MaterialInfos.find( tex );
+MaterialInfo* GothicAPI::GetMaterialInfoFrom(void* any, std::string_view materialName) {
+    auto it = MaterialInfos.find( any );
     MaterialInfo* mi;
     if ( it == MaterialInfos.end() ) {
-
         // Make a new one and try to load it
         auto info = std::make_unique<MaterialInfo>();
-        MaterialInfos.emplace(tex, std::move(info));
-        mi = MaterialInfos[tex].get();
-        if ( tex ) {
-            mi->LoadFromFile( tex->GetNameWithoutExtView() );
-            if ( tex->GetNameView() == "NW_MISC_FULLALPHA_01.TGA" ) {
+        MaterialInfos.emplace(any, std::move(info));
+        mi = MaterialInfos[any].get();
+        if ( any ) {
+            mi->LoadFromFile( materialName );
+            if ( materialName.contains("FULLALPHA" )) {
                 mi->MaterialType = MaterialInfo::MT_FullAlpha;
             }
         }
@@ -4881,31 +4915,33 @@ MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCTexture* tex ) {
     } else {
         mi = it->second.get();
     }
-
-
     return mi;
 }
+    
+MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCMaterial* mat ) {
+    const auto name = mat->GetNameView();
+    if (!name.empty() && !name.contains( ':' )) {
+        // colons are mosly used for poly <-> sector <-> texture mapping
+        // such as S:ADANOS013_NW_PATHWAY_04
+        // as such, we should not use the original name, but fall back to the texture
+        return GetMaterialInfoFrom(mat, name);
+    }
 
-MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCTexture* tex, const std::string_view textureName ) {
-        auto it = MaterialInfos.find( tex );
-        MaterialInfo* mi;
-        if ( it == MaterialInfos.end() ) {
-            auto info = std::make_unique<MaterialInfo>();
-            MaterialInfos.emplace( tex, std::move( info ) );
-            mi = MaterialInfos[tex].get();
-            if ( tex ) {
-                mi->LoadFromFile( textureName );
-                if ( textureName == "NW_MISC_FULLALPHA_01" ) {
-                    mi->MaterialType = MaterialInfo::MT_FullAlpha;
-                }
-            }
-            FixUpMaterial( mi->buffer );
-        } else {
-            mi = it->second.get();
-        }
+    // MaterialInfo only from the main texture.
+    auto tex = mat->GetTextureSingle();
+    if ( !tex ) {
+        // unless its un-set...?
+        tex = mat->GetAniTexture();
+    }
 
-
-        return mi;
+    if (tex)
+    {
+        return GetMaterialInfoFrom( mat, tex->GetNameWithoutExtView() );
+    }
+    // maybe its not yet loaded.
+    // store a dummy and maybe retry again on InitValues
+    // shouldn't actually happen, but eh.
+    return GetMaterialInfoFrom( mat, "MAT_DUMMY" ); 
 }
 
 /** Returns the loaded skeletal mesh vobs */
@@ -4925,7 +4961,7 @@ std::vector<VobInfo*>& GothicAPI::GetDynamicallyAddedVobs() {
 /** Returns a texture from the given surface */
 zCTexture* GothicAPI::GetTextureBySurface( MyDirectDrawSurface7* surface ) {
     for ( auto const& it : LoadedMaterials ) {
-        auto const texture = it->GetTexture();
+        auto const texture = it->GetTextureSingle();
         if ( texture && texture->GetSurface() == surface )
             return texture;
     }
@@ -5025,7 +5061,7 @@ void GothicAPI::ApplySuppressedSectionTextures() {
         for ( auto mit = section->WorldMeshes.begin(); mit != section->WorldMeshes.end(); ) {
             bool movedToSuppressed = false;
             if (auto mat = mit->first.Material ) {
-                if ( auto tx = mat->GetTexture()) {
+                if ( auto tx = mat->GetTextureSingle()) {
                     auto txName = tx->GetNameWithoutExtView();
                     for ( unsigned int i = 0; i < it.second.size(); i++ ) {
                         // Is this the texture we are looking for?
@@ -5308,6 +5344,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "Display", "LimitLightIntesity", to_string_locale_independent( s.LimitLightIntesity ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "TiledLighting", to_string_locale_independent( s.EnableTiledLighting ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "RendererMode", to_string_locale_independent( static_cast<int>(s.RendererMode) ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Display", "MSAASamples", to_string_locale_independent( s.MSAASamples ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WindQuality", to_string_locale_independent( s.WindQuality ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WindStrength", to_string_locale_independent( s.GlobalWindStrength ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Display", "WaterWaveAnimation", to_string_locale_independent( s.EnableWaterAnimation ? TRUE : FALSE ).c_str(), ini.c_str() );
@@ -5479,6 +5516,16 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         // Force experimental settings OFF
         s.RendererMode = GothicRendererSettings::E_RendererMode::RM_Deferred;
         // ....
+
+        {
+            // MSAA is only valid for the Forward+ renderer; clamp to the nearest supported power-of-two (1/2/4/8).
+            int msaaSamples = GetPrivateProfileIntA( "Display", "MSAASamples", ds.MSAASamples, ini.c_str() );
+            if ( msaaSamples >= 8 ) msaaSamples = 8;
+            else if ( msaaSamples >= 4 ) msaaSamples = 4;
+            else if ( msaaSamples >= 2 ) msaaSamples = 2;
+            else msaaSamples = 1;
+            s.MSAASamples = msaaSamples;
+        }
 
         s.WindQuality = GetPrivateProfileIntA( "Display", "WindQuality", 0, ini.c_str() );
         s.GlobalWindStrength = GetPrivateProfileFloatA( "Display", "WindStrength", ds.GlobalWindStrength, ini );
@@ -5696,7 +5743,7 @@ void GothicAPI::DrawMorphMesh( zCMorphMesh* msh, std::map<zCMaterial*, std::vect
                 lastTex = texture;
                 if ( isZPrepass ) {
                     texture->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
-                } else if ( !g->BindTextureNRFX( texture, bindShader ) ) {
+                } else if ( !g->BindTextureNRFX( s->Material, bindShader ) ) {
                     continue;
                 }
             }
@@ -5705,7 +5752,7 @@ void GothicAPI::DrawMorphMesh( zCMorphMesh* msh, std::map<zCMaterial*, std::vect
         for ( auto const& it : meshes ) {
             for ( auto& mi : it.second ) {
                 if ( mi->MeshIndex == i ) {
-                    Engine::GraphicsEngine->DrawVertexBufferIndexed( mi->GetMeshVertexBuffer(), mi->GetMeshIndexBuffer(), mi->Indices.size() );
+                    g->DrawVertexBufferIndexedPacked( mi->GetMeshVertexBuffer(), mi->GetMeshIndexBuffer(), mi->Indices.size() );
                     goto Out_Of_Nested_Loop;
                 }
             }
@@ -5750,7 +5797,7 @@ void GothicAPI::DrawMorphMesh_Layered( zCMorphMesh* msh, std::map<zCMaterial*, s
 
             for ( auto& mi : it.second ) {
                 if ( mi->MeshIndex == i ) {
-                    g->DrawVertexBufferInstancedIndexed( mi->GetMeshVertexBuffer(), mi->GetMeshIndexBuffer(), mi->Indices.size(), 6 );
+                    g->DrawVertexBufferInstancedIndexedPacked( mi->GetMeshVertexBuffer(), mi->GetMeshIndexBuffer(), mi->Indices.size(), 6 );
                     goto Out_Of_Nested_Loop;
                 }
             }
@@ -5987,7 +6034,20 @@ void GothicAPI::CreatezCPolygonsForSections() {
 
                 it->first.Material->SetAlphaFunc( zMAT_ALPHA_FUNC_NONE );
 
-                WorldConverter::ConvertExVerticesTozCPolygons( it->second->Vertices, it->second->Indices, it->first.Material, section.SectionPolygons );
+                // WorldMeshInfo no longer carries full per-vertex attributes (Vertices is
+                // position-only, for raycasting); rebuild from the Position+UV0 companion
+                // buffer with a defaulted normal. This path (custom/original-engine zCPolygon
+                // reconstruction) is unused/unsupported in current builds.
+                std::vector<ExVertexStruct> fullVertices( it->second->ShadowVertices.size() );
+                for ( size_t v = 0; v < it->second->ShadowVertices.size(); ++v ) {
+                    fullVertices[v].Position = it->second->ShadowVertices[v].Position;
+                    fullVertices[v].TexCoord = it->second->ShadowVertices[v].TexCoord;
+                    fullVertices[v].Normal = float3( 0.0f, 1.0f, 0.0f );
+                    fullVertices[v].TexCoord2 = float2( 0.0f, 0.0f );
+                    fullVertices[v].Color = 0xFFFFFFFF;
+                    fullVertices[v].Tangent = float4( 1.0f, 0.0f, 0.0f, 1.0f );
+                }
+                WorldConverter::ConvertExVerticesTozCPolygons( fullVertices, it->second->Indices, it->first.Material, section.SectionPolygons );
             }
         }
     }

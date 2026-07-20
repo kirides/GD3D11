@@ -12,6 +12,10 @@ const int GSWITCH_ALPHAREF = 2;
 const int GSWITCH_LIGHING = 4;
 const int GSWITCH_REFLECTIONS = 8;
 const int GSWITCH_LINEAR_DEPTH = 16;
+// Forward+ with hardware MSAA active: alpha-tested pixel shaders sharpen their alpha test into a
+// per-pixel coverage value instead of a hard binary clip, so the MSAA alpha-to-coverage blend mode
+// can dither an anti-aliased cutout edge across subsamples.
+const int GSWITCH_MSAA_ALPHATOCOVERAGE = 32;
 
 enum RenderStage {
     STAGE_DRAW_UNKNOWN = 0,
@@ -736,6 +740,7 @@ struct GothicRendererSettings {
         PartialDynamicShadowUpdates = true;
         EnableTiledLighting = false;
         RendererMode = RM_Deferred;
+        MSAASamples = 1;
         DrawSectionIntersections = true;
 
         EnableGodRays = true;
@@ -946,6 +951,8 @@ struct GothicRendererSettings {
     bool PartialDynamicShadowUpdates;
     bool EnableTiledLighting;
     E_RendererMode RendererMode;
+    /** Hardware MSAA sample count (1/2/4/8). Only applied by the Forward+ renderer; Deferred always stays single-sample. */
+    int MSAASamples;
     bool DrawSectionIntersections;
 
     int MaxNumFaces;

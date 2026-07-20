@@ -52,6 +52,10 @@ struct PS_INPUT
 	float3 vViewPosition	: TEXCOORD5;
 	float4 vCurrClipPos     : TEXCOORD6;  // Current clip position for velocity (from instanced VS)
 	float4 vPrevClipPos     : TEXCOORD7;  // Previous clip position for velocity (from instanced VS)
+	// Precomputed view-space tangent (xyz) + bitangent handedness (w). Appended LAST so existing
+	// interpolator registers stay put. Zero for geometry that doesn't supply one (perturb_normal
+	// then falls back to screen-space derivatives).
+	float4 vTangent			: TEXCOORD3;
 	float4 vPosition		: SV_POSITION;
 };
 
@@ -94,11 +98,11 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
 	ClipDistanceEffect(abs(Input.vViewPosition.z), DIST_DrawDistance, color.r * 2 - 1, 500.0f);
 
 #if ALPHATEST == 1
-	DoAlphaTest(color.a);
+	float alphaCoverage = DoAlphaTestCoverage(color.a);
 #endif
 
 #if NORMALMAPPING == 1
-	float3 nrm = perturb_normal(Input.vNormalVS, Input.vViewPosition, TX_Texture1, Input.vTexcoord, SS_Linear, MI_NormalmapStrength);
+	float3 nrm = perturb_normal(Input.vNormalVS, Input.vViewPosition, Input.vTangent, TX_Texture1, Input.vTexcoord, SS_Linear, MI_NormalmapStrength);
 #else
 	float3 nrm = normalize(Input.vNormalVS);
 #endif
@@ -122,7 +126,7 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
 	// CSM shadow source is toggleable in Forward+: precomputed screen-space mask or direct CSM.
 	float shadow = vertLighting;
 #if SHD_ENABLE
-	float3 wsNormal = normalize(mul(float4(nrm, 0.0f), SQ_InvView).xyz);
+	float3 wsNormal = normalize(mul(float4(nrm, 0.0f), SQ_InvView).xyz); 
 	[branch]
 	if (AC_LightPos.y > 0)
 	{
@@ -169,7 +173,11 @@ FORWARD_PLUS_PS_OUTPUT PSMain( PS_INPUT Input )
 	}
 
 	float focusBrightness = 1.0f + step(1.5f, Input.vDiffuse.w) * 1.0f;
+#if ALPHATEST == 1
+	output.vColor = float4(litPixel * focusBrightness, alphaCoverage);
+#else
 	output.vColor = float4(litPixel * focusBrightness, 1);
+#endif
 	output.vNrm = EncodeNormalGBuffer(nrm);
 	output.vVelocity = CalculateVelocity(Input.vCurrClipPos, Input.vPrevClipPos);
 
@@ -213,7 +221,7 @@ DEFERRED_PS_OUTPUT PSMain( PS_INPUT Input ) : SV_TARGET
 	
 	// Apply normalmapping if wanted
 #if NORMALMAPPING == 1
-	float3 nrm = perturb_normal(Input.vNormalVS, Input.vViewPosition, TX_Texture1, Input.vTexcoord, SS_Linear, MI_NormalmapStrength);
+	float3 nrm = perturb_normal(Input.vNormalVS, Input.vViewPosition, Input.vTangent, TX_Texture1, Input.vTexcoord, SS_Linear, MI_NormalmapStrength);
 #else
 	float3 nrm = normalize(Input.vNormalVS);
 #endif

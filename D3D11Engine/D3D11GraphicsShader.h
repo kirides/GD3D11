@@ -3,56 +3,15 @@
 #include <d3d11.h>
 #include <d3d11shader.h>
 #include <gtl/phmap.hpp>
-#include "D3D11ConstantBuffer.h"
+
+#include "ConstantBufferPool.h"
 #include "Types.h"
 #include "StringID.h"
 
-class D3D11GraphicsShader;
-class D3D11ConstantBuffer;
+typedef size_t ConstantBufferSize;
+typedef size_t ConstantBufferSlot;
 constexpr size_t MAX_SHADER_CB = 6;
-constexpr size_t INVALID_SHADER_CB_SLOT = 255;
-
-struct GraphicsShaderConstantBuffer
-{
-public:
-    GraphicsShaderConstantBuffer()
-        : buffer( nullptr ),
-        slot( -1 ),
-        shader( nullptr )
-    {
-    }
-
-    GraphicsShaderConstantBuffer(
-        D3D11ConstantBuffer* buffer,
-        UINT slot,
-        D3D11GraphicsShader* shader)
-        : buffer(buffer),
-    slot(slot),
-    shader(shader)
-    {}
-
-    GraphicsShaderConstantBuffer& Update(const void* data) { 
-        if ( buffer ) {
-            buffer->UpdateBuffer(data);
-        }
-        return *this; 
-    }
-    
-    GraphicsShaderConstantBuffer& Update(const void* data, UINT size) { 
-        if ( buffer ) {
-            buffer->UpdateBuffer(data, size);
-        }
-        return *this; 
-    }
-    GraphicsShaderConstantBuffer& Bind();
-    GraphicsShaderConstantBuffer& Bind(UINT slot);
-    constexpr D3D11ConstantBuffer* GetRawBuffer() const { return buffer; }
-    constexpr UINT GetSlot() const { return slot; } 
-private:
-    D3D11ConstantBuffer* buffer;
-    D3D11GraphicsShader* shader;
-    UINT slot;
-};
+constexpr size_t INVALID_SHADER_CB_SLOT = static_cast<size_t>(static_cast<int32_t>(-1));
 
 class D3D11GraphicsShader 
     : public GraphicsShader
@@ -63,20 +22,18 @@ public:
     /** Returns the input index for the given semantic name */
     int32_t GetInputIndex( StringID name ) override;
     
-    std::array<std::unique_ptr<D3D11ConstantBuffer>, MAX_SHADER_CB>& GetConstantBuffer() { return ConstantBuffers; }
+    const std::array<ConstantBufferSize, MAX_SHADER_CB>& GetConstantBufferSizes() const { return ConstantBuffers; }
 
     virtual void BindResource(StringID name, ID3D11ShaderResourceView* srv) = 0;
     virtual void BindSampler(StringID name, ID3D11SamplerState* sampler) = 0;
-    virtual void BindBuffer( StringID name, D3D11ConstantBuffer* buffer) = 0;
-    virtual void BindBuffer(UINT slot, D3D11ConstantBuffer* buffer) = 0;
-    virtual GraphicsShaderConstantBuffer GetBuffer(StringID name);
-    virtual GraphicsShaderConstantBuffer GetBuffer(UINT slot);
+    virtual void UpdateBuffer( StringID name, const void* data, size_t size) = 0;
+    virtual void UpdateBuffer( UINT slot, const void* data, size_t size) = 0;
     
     virtual XRESULT Apply() = 0;
 protected:
     gtl::flat_hash_map<StringID, int32_t> InputSemanticToIndex;
-    gtl::flat_hash_map<StringID, std::pair<D3D11ConstantBuffer*, int32_t>> ConstantBuffersByName;
-    std::array<std::unique_ptr<D3D11ConstantBuffer>, MAX_SHADER_CB> ConstantBuffers;
+    gtl::flat_hash_map<StringID, std::pair<ConstantBufferSize, int32_t>> ConstantBuffersByName;
+    std::array<ConstantBufferSize, MAX_SHADER_CB> ConstantBuffers;
     std::array<byte, MAX_SHADER_CB> ConstantBufferIndexBySlot;
 
     virtual HRESULT ReflectShaderResources( ID3DBlob* shaderBlob );

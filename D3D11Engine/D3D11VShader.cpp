@@ -74,12 +74,14 @@ namespace {
         { "INSTANCE_WORLD_MATRIX", 3, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
     };
 
+    // Slot 0 = packed 36-byte ExVertexStructGPU (VOB meshes); slot 1 = per-instance data.
     static const D3D11_INPUT_ELEMENT_DESC layout10[] =
     {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-        { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        { "NORMAL", 0, DXGI_FORMAT_R16G16_SNORM, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        { "TANGENT", 0, DXGI_FORMAT_R10G10B10A2_UNORM, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
         { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 1, DXGI_FORMAT_R32G32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 1, DXGI_FORMAT_R16G16_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
         { "DIFFUSE", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
 
         { "INSTANCE_WORLD_MATRIX", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
@@ -116,6 +118,18 @@ namespace {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
     };
 
+    // Packed 36-byte Ex vertex (ExVertexStructGPU) for the wrapped world mesh. See VS_ExPacked.hlsl
+    // and VertexPacking.h. Normal = octahedral (R16G16_SNORM), Tangent = R10G10B10A2, UV1 = half2.
+    static const D3D11_INPUT_ELEMENT_DESC layoutPackedEx[] =
+    {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        { "NORMAL", 0, DXGI_FORMAT_R16G16_SNORM, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        { "TANGENT", 0, DXGI_FORMAT_R10G10B10A2_UNORM, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 1, DXGI_FORMAT_R16G16_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        { "DIFFUSE", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+    };
+
     static const D3D11_INPUT_ELEMENT_DESC layout11[] =
     {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_INSTANCE_DATA, 1 },
@@ -133,11 +147,12 @@ namespace {
 
     static const D3D11_INPUT_ELEMENT_DESC layout14[] =
     {
-        // Per-vertex data (Slot 0) - ExVertexStruct
+        // Per-vertex data (Slot 0) - packed 36-byte ExVertexStructGPU
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-        { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        { "NORMAL", 0, DXGI_FORMAT_R16G16_SNORM, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        { "TANGENT", 0, DXGI_FORMAT_R10G10B10A2_UNORM, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
         { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 1, DXGI_FORMAT_R32G32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 1, DXGI_FORMAT_R16G16_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
         { "DIFFUSE", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA, 0 },
 
         // Per-instance data (Slot 1) - NodeAttachmentInstanceData
@@ -165,6 +180,7 @@ namespace {
         { VERTEX_INPUT_LAYOUT_14_VS_ExNodeInstanced, {layout14, std::size( layout14 )} },
         { VERTEX_INPUT_LAYOUT_15_VS_DecalInstanced, {layout15, std::size( layout15 )} },
         { VERTEX_INPUT_LAYOUT_POS_ONLY, {layoutPosOnly, std::size( layoutPosOnly )} },
+        { VERTEX_INPUT_LAYOUT_PACKED_EX, {layoutPackedEx, std::size( layoutPackedEx )} },
     };
 }
 
@@ -250,12 +266,14 @@ void D3D11VShader::BindSampler(StringID name, ID3D11SamplerState* sampler) {
         reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->VSSetSamplers( inputIndex, 1, &sampler );
 }
 
-void D3D11VShader::BindBuffer(StringID name, D3D11ConstantBuffer* buffer) {
-    if (auto idx = GetInputIndex(name); idx != -1) {
-        buffer->BindToVertexShader(idx);
+void D3D11VShader::UpdateBuffer(StringID name, const void* data, size_t size) {
+    if (const auto idx = GetInputIndex(name); idx != -1) {
+        const auto pool = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetConstantBufferPool();
+        pool->BindVS(idx, pool->Allocate(data, size));
     }
 }
 
-void D3D11VShader::BindBuffer(UINT slot, D3D11ConstantBuffer* buffer) {
-    buffer->BindToVertexShader(slot);
+void D3D11VShader::UpdateBuffer(UINT slot, const void* data, size_t size) {
+    const auto pool = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetConstantBufferPool();
+    pool->BindVS(slot, pool->Allocate(data, size));
 }

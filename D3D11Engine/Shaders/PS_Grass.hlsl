@@ -11,6 +11,18 @@ cbuffer MI_MaterialInfo : register( b0 )
 	float MI_ParallaxOcclusionStrength;
 }
 
+// Mirrors GrassConstantBuffer (ConstantBufferStructs.h); only G_UseAlphaToCoverage is needed here.
+cbuffer G_GrassConstants : register( b1 )
+{
+	float3 G_NormalVS;
+	float G_Time;
+	float G_WindStrength;
+	float G_HeroAffectStrength;
+	float2 G_Pad1;
+	float3 G_PlayerPosWS;
+	uint G_UseAlphaToCoverage;
+}
+
 
 //--------------------------------------------------------------------------------------
 // Textures and Samplers
@@ -55,15 +67,29 @@ DEFERRED_PS_OUTPUT PSMain( PS_INPUT Input ) : SV_TARGET
 	float4 color = TX_Texture0.Sample(SS_Linear, Input.vTexcoord);
 	
 	color.rgb = lerp(saturate(dot(float3(0.333f, 0.333f, 0.333f), color.rgb) * 2.0f), color.rgb, 0.5f);
-	
-	clip(color.a * 0.7f - 0.5f);
-	
+
+	// aTest > 0 keeps the pixel, matching the original clip(color.a * 0.7f - 0.5f) cutoff.
+	float aTest = color.a * 0.7f - 0.5f;
+	float coverage;
+	if (G_UseAlphaToCoverage != 0)
+	{
+		// Sharpen the test into a per-pixel coverage value via the screen-space derivative so the
+		// MSAA alpha-to-coverage blend mode can dither an anti-aliased cutout edge across subsamples.
+		coverage = saturate(aTest / max(fwidth(aTest), 1e-4f) + 0.5f);
+		clip(coverage - 1e-4f);
+	}
+	else
+	{
+		clip(aTest);
+		coverage = 1.0f;
+	}
+
 	color.rgb *= TX_Ground.SampleLevel(SS_Linear, frac(Input.vWorldPosition.xz / 1000), 5) * 1.1f;
-	
+
 	//color.rgb *= 1 - pow((Input.vPosition.z / 1.3f), 2.0f);
-	
+
 	DEFERRED_PS_OUTPUT output;
-	output.vDiffuse = float4(color.rgb, 1);
+	output.vDiffuse = float4(color.rgb, coverage);
 	
 	output.vNrm = EncodeNormalGBuffer(normalize(Input.vNormalVS));
 	

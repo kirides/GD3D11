@@ -3,6 +3,7 @@
 //--------------------------------------------------------------------------------------
 
 #include "Globals_VS_ExConstants.h"
+#include "VertexPacking.h"
 
 cbuffer Matrices_PerFrame : register( b0 )
 {
@@ -41,7 +42,8 @@ StructuredBuffer<WindMetaDataEntry> WindMetaData;
 struct VS_INPUT
 {
     float3 vPosition    : POSITION;
-    float3 vNormal      : NORMAL;
+    float2 vNormalOct   : NORMAL;    // octahedral-encoded (R16G16_SNORM)
+    float4 vTangent     : TANGENT;   // R10G10B10A2: xyz + handedness (decoded below)
     float2 vTex1        : TEXCOORD0;
     float2 vTex2        : TEXCOORD1;
     float4 vDiffuse     : DIFFUSE;
@@ -61,7 +63,8 @@ struct VS_OUTPUT
     float3 vViewPosition    : TEXCOORD5;
     float4 vCurrClipPos     : TEXCOORD6;  // Current clip position for velocity
     float4 vPrevClipPos     : TEXCOORD7;  // Previous clip position for velocity
-    
+    float4 vTangent         : TEXCOORD3;  // no precomputed tangent -> zero (PS falls back to ddx/ddy)
+
     float4 vPosition        : SV_POSITION;
 };
 
@@ -167,7 +170,10 @@ float3 CalculatePlayerInfluence(
 VS_OUTPUT VSMain( VS_INPUT Input )
 {
     VS_OUTPUT Output;
-            
+
+    float3 vNormal = DecodeOctNormal( Input.vNormalOct );
+    float4 vTangent = DecodeTangent( Input.vTangent );   // xyz = tangent, w = handedness sign
+
     // Base vertex position (local)
     float3 position = Input.vPosition;
 
@@ -223,14 +229,16 @@ VS_OUTPUT VSMain( VS_INPUT Input )
     // 2.0 = focused, 0.0 = not focused. Value >1.0 is impossible from UNORM hardware inputs,
     // so step(1.5) in the PS can distinguish this from other shaders that output alpha=1.0.
     Output.vDiffuse.w = (Input.InstanceWindMetaIndex >> 31u) ? 2.0f : 0.0f;
-    Output.vNormalVS = mul(Input.vNormal, mul((float3x3)Input.InstanceWorldMatrix, (float3x3)frame.M_View));
+    float3x3 worldView = mul((float3x3)Input.InstanceWorldMatrix, (float3x3)frame.M_View);
+    Output.vNormalVS = mul(vNormal, worldView);
     Output.vViewPosition = mul(float4(worldPos, 1.0), frame.M_View);
-    
+
     // Store clip positions for velocity calculation in pixel shader
     // Use UNJITTERED matrices for correct velocity (jitter would cause incorrect motion)
     Output.vCurrClipPos = mul(float4(worldPos, 1.0), frame.M_UnjitteredViewProj);
     Output.vPrevClipPos = mul(float4(prevWorldPos, 1.0), frame.M_PrevViewProj);
-    
+    Output.vTangent = float4( mul(vTangent.xyz, worldView), vTangent.w );
+
     return Output;
 }
 

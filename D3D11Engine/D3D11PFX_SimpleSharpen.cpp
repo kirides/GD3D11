@@ -5,7 +5,6 @@
 #include "D3D11ShaderManager.h"
 #include "D3D11CShader.h"
 #include "D3D11PShader.h"
-#include "D3D11ConstantBuffer.h"
 #include "ConstantBufferStructs.h"
 
 extern bool FeatureLevel10Compatibility;
@@ -41,7 +40,7 @@ XRESULT D3D11PFX_SimpleSharpen::ApplyPixelShader( const Microsoft::WRL::ComPtr<I
     PfxSharpenConstantBuffer gcb;
     gcb.G_TextureSize = destSize;
     gcb.G_SharpenStrength = Engine::GAPI->GetRendererState().RendererSettings.SharpenFactor;
-    sharpenPS->GetBuffer( "PfxSharpenConstantBuffer" ).Update( &gcb ).Bind();
+    sharpenPS->UpdateBuffer("PfxSharpenConstantBuffer", &gcb, sizeof(gcb));
 
     engine->SetViewport( ViewportInfo( 0, 0, destSize.x, destSize.y ) );
 

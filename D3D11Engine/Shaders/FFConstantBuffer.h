@@ -6,6 +6,7 @@ static const int GSWITCH_FOG = 1;
 static const int GSWITCH_ALPHAREF = 2;
 static const int GSWITCH_LIGHING = 4;
 static const int GSWITCH_REFLECTIONS = 8;
+static const int GSWITCH_MSAA_ALPHATOCOVERAGE = 32;
 
 struct TextureStage
 {
@@ -58,6 +59,24 @@ void DoAlphaTest(float alpha)
 {
 	//if(FF_AlphaTestEnabled())
 		clip(alpha - FF_AlphaRef);
+}
+
+// Alpha-tests `alpha` against FF_AlphaRef and returns the alpha to write into the color target.
+// When GSWITCH_MSAA_ALPHATOCOVERAGE is set (Forward+ with hardware MSAA), the test is sharpened
+// into a per-pixel coverage value via the screen-space derivative instead of a hard binary clip,
+// so the MSAA alpha-to-coverage blend mode can dither a properly anti-aliased cutout edge across
+// subsamples. Otherwise behaves like DoAlphaTest and returns 1 (fully opaque, no dithering).
+float DoAlphaTestCoverage(float alpha)
+{
+	if ((FF_GSwitches & GSWITCH_MSAA_ALPHATOCOVERAGE) != 0)
+	{
+		float sharpened = (alpha - FF_AlphaRef) / max(fwidth(alpha), 1e-4f) + 0.5f;
+		sharpened = saturate(sharpened);
+		clip(sharpened - 1e-4f);
+		return sharpened;
+	}
+	clip(alpha - FF_AlphaRef);
+	return 1.0f;
 }
 
 #endif

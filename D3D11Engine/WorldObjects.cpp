@@ -82,7 +82,10 @@ void WorldMeshSectionInfo::SaveSectionMeshToFile( const std::string& name ) {
 /** Creates buffers for this mesh info */
 XRESULT MeshInfo::Create( ExVertexStruct* vertices, unsigned int numVertices, VERTEX_INDEX* indices, unsigned int numIndices ) {
     Vertices.resize( numVertices );
-    memcpy( &Vertices[0], vertices, numVertices * sizeof( ExVertexStruct ) );
+
+    for (size_t i = 0; i < numVertices; ++i) {
+        Vertices[i].Position = vertices[i].Position;
+    }
 
     Indices.resize( numIndices );
     memcpy( &Indices[0], indices, numIndices * sizeof( VERTEX_INDEX ) );

@@ -217,18 +217,25 @@ struct MaterialInfo {
         float4 Color;
 
         void SetDefault() {
-            SpecularIntensity = 0.2f;
-            SpecularPower = 60.0f;
+            // -- Defaults for NON Normalmapped, NON FX-Mapped materials
+            SpecularIntensity = 0.1f;
+            SpecularPower = 5.0f;
+            // ---
+            
             NormalmapStrength = 1.0f;
             DisplacementFactor = 0.1f;
             Color = 0xFFFFFFFF;
         }
+
+        static bool FloatEqualEps(float a, float b, float epsilon = 0.0001f) noexcept{
+            return std::abs(a - b) <= epsilon;
+        }
         
         bool operator==( const Buffer& other ) const noexcept {
-            return SpecularIntensity == other.SpecularIntensity &&
-                SpecularPower == other.SpecularPower &&
-                NormalmapStrength == other.NormalmapStrength &&
-                DisplacementFactor == other.DisplacementFactor &&
+            return FloatEqualEps(SpecularIntensity, other.SpecularIntensity) &&
+                FloatEqualEps(SpecularPower, other.SpecularPower) &&
+                FloatEqualEps(NormalmapStrength, other.NormalmapStrength) &&
+                FloatEqualEps(DisplacementFactor, other.DisplacementFactor) &&
                 Color == other.Color;
         }
     };
@@ -396,6 +403,9 @@ public:
     /** Draws a MeshInfo */
     void DrawMeshInfo( zCMaterial* mat, MeshInfo* msh );
     void DrawMeshInfo_Layered( zCMaterial* mat, MeshInfo* msh );
+    // Packed (36-byte ExVertexStructGPU) variants for VOB/node-attachment meshes.
+    void DrawMeshInfoPacked( zCMaterial* mat, MeshInfo* msh );
+    void DrawMeshInfo_LayeredPacked( zCMaterial* mat, MeshInfo* msh );
 
     /** Draws a zCParticleFX */
     void DrawParticleFX( zCVob* source, zCParticleFX* fx, ParticleFrameData& data );
@@ -685,10 +695,9 @@ public:
 
     /** Reset's the material info that were previously gathered */
     void ResetMaterialInfo();
-
     /** Returns the material info associated with the given material */
-    MaterialInfo* GetMaterialInfoFrom( zCTexture* tex );
-    MaterialInfo* GetMaterialInfoFrom( zCTexture* tex, const std::string_view textureName );
+    MaterialInfo* GetMaterialInfoFrom(void* any, std::string_view materialName);
+    MaterialInfo* GetMaterialInfoFrom(zCMaterial* mat);
 
     /** Returns a texture from the given surface */
     zCTexture* GetTextureBySurface( MyDirectDrawSurface7* surface );
@@ -954,7 +963,7 @@ private:
     std::unordered_map<zCBspBase*, BspInfo> BspLeafVobLists;
 
     /** Map for the material infos */
-    gtl::flat_hash_map<zCTexture*, std::unique_ptr<MaterialInfo>> MaterialInfos;
+    gtl::flat_hash_map<void*, std::unique_ptr<MaterialInfo>> MaterialInfos;
 
     /** Maps visuals to vobs */
     gtl::flat_hash_map<zCVisual*, std::vector<BaseVobInfo*>> VobsByVisual;

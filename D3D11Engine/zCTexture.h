@@ -52,14 +52,14 @@ public:
     }
 
     std::string GetNameWithoutExt() const {
-        std::string n = GetName();
+        std::string_view n = GetNameView();
 
         auto p = n.find_last_of( '.' );
 
         if ( p != std::string::npos )
-            n.resize( p );
+            return std::string(n.data(), p);
 
-        return n;
+        return std::string( n.data(), n.length() );
     }
 
     std::string_view GetNameView() const {
@@ -73,7 +73,7 @@ public:
 
         auto p = n.find_last_of( '.' );
 
-        if ( p != std::string::npos )
+        if ( p != std::string_view::npos )
             return n.substr( 0, p );
 
         return n;
@@ -99,6 +99,39 @@ public:
         return (zTResourceCacheState)(state & GothicMemoryLocations::zCTexture::Mask_CacheState);
     }
 
+    static constexpr int zTEX_MAX_ANIS = 3;
+    
+    // offset into zTEX_MAX_ANIS-count of animation frames
+    int* GetNumAniFrames() {
+        return *reinterpret_cast<int**>(THISPTR_OFFSET(GothicMemoryLocations::zCTexture::Offset_AniFrames));
+    }
+    
+    int* GetActAniFrame() {
+        return *reinterpret_cast<int**>(THISPTR_OFFSET(GothicMemoryLocations::zCTexture::Offset_ActAniFrame));
+    }
+    zCTexture** GetNextAni() {
+        return *reinterpret_cast<zCTexture***>(THISPTR_OFFSET(GothicMemoryLocations::zCTexture::Offset_NextFrame));
+    }
+    
+    zCTexture* GetAniTexture() {
+        const int* numAniFrames = GetNumAniFrames();
+        const int* actAniFrame = GetActAniFrame();
+
+        zCTexture* tex = this;
+        for ( int i = 0; i < zTEX_MAX_ANIS; ++i ) {
+            if (numAniFrames[i] == 0) continue;
+            
+            for (int j = 0; j < actAniFrame[i]; ++j) {
+                const auto nextAni = tex->GetNextAni();
+                if (!nextAni[i]) {
+                    break;
+                }
+                tex = nextAni[i];
+            }
+        }
+        return tex;
+    }
+    
     zTResourceCacheState CacheIn( float priority ) {
         zTResourceCacheState cacheState = GetCacheState();
         if ( cacheState == zRES_CACHED_IN ) {
@@ -116,8 +149,7 @@ public:
 #ifndef PUBLIC_RELEASE
             if ( 1 == 0 ) // Small debugger-only section to get the name of currently cachedin texture
             {
-                std::string name = GetName();
-                LogInfo() << "CacheIn on Texture: " << name;
+                LogInfo() << "CacheIn on Texture: " << GetNameView();
             }
 #endif
             Engine::GAPI->SetBoundTexture( 7, this ); // Index 7 is reserved for cacheIn
@@ -159,4 +191,3 @@ public:
         return reinterpret_cast<zSTRING&(__fastcall*)( const zCTexture* )>( GothicMemoryLocations::zCObject::GetObjectName )( this );
     }
 };
-

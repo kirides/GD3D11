@@ -61,21 +61,22 @@ D3D11Texture* MyDirectDrawSurface7::GetFxMap() {
 
 /** Binds this texture */
 void MyDirectDrawSurface7::BindToSlot( int slot ) {
+    ID3D11ShaderResourceView* srvs[2] = {
+        nullptr, nullptr
+    };
+    
     if ( !IsReady ) {
-        Engine::GraphicsEngine->UnbindTexture( 0 );
+        reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->PSSetShaderResources( slot, 1, srvs );
         return; // Don't bind half-loaded textures!
     }
 
-    if ( EngineTexture ) // Needed sometimes
-        EngineTexture->BindToPixelShader( slot );
-
-    if ( Normalmap ) {
-        Normalmap->BindToPixelShader( slot + 1 );
-        Normalmap->BindToVertexShader( 0 );
-    } else {
-        //EngineTexture->BindToPixelShader(slot + 1);
-        Engine::GraphicsEngine->UnbindTexture( slot + 1 );
+    if ( EngineTexture ) {// Needed sometimes
+        srvs[0] = EngineTexture->GetShaderResourceView().Get();
     }
+    if ( Normalmap ) {
+        srvs[1] = Normalmap->GetShaderResourceView().Get();
+    }
+    reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine)->GetContext()->PSSetShaderResources( slot, 2, srvs );
 }
 
 static bool LoadResource(
@@ -123,11 +124,6 @@ void MyDirectDrawSurface7::LoadAdditionalResources( zCTexture* ownedTexture ) {
             TextureType = ETextureType::TX_LEAF;
         }
 
-        // Set texture name
-        if ( EngineTexture ) {
-            SetDebugName( EngineTexture->GetTextureObject().Get(), "D3D11Texture(\"" + TextureName + "\")->Texture" );
-            SetDebugName( EngineTexture->GetShaderResourceView().Get(), "D3D11Texture(\"" + TextureName + "\")->ShaderResourceView" );
-        }
     }
 
     if ( Normalmap ) {
@@ -136,6 +132,11 @@ void MyDirectDrawSurface7::LoadAdditionalResources( zCTexture* ownedTexture ) {
 
     if ( FxMap ) {
         SAFE_DELETE( FxMap );
+    }
+    // Set texture name
+    if ( EngineTexture ) {
+        SetDebugName( EngineTexture->GetTextureObject().Get(), "D3D11Texture(\"" + TextureName + "\")->Texture" );
+        SetDebugName( EngineTexture->GetShaderResourceView().Get(), "D3D11Texture(\"" + TextureName + "\")->ShaderResourceView" );
     }
 
     if ( TextureName.empty() || Normalmap || FxMap || !Engine::GAPI->GetRendererState().RendererSettings.AllowNormalmaps ) {
@@ -400,12 +401,6 @@ HRESULT MyDirectDrawSurface7::Unlock( LPRECT lpRect ) {
         return S_OK;
     }
 
-    // Textureslot 7 is filled only on load-time. This is used to get the zCTexture from this Surface.
-    if ( Engine::GAPI->GetBoundTexture( 7 ) != nullptr ) {
-        // Comming from LoadResourceData
-        LoadAdditionalResources( Engine::GAPI->GetBoundTexture( 7 ) );
-    }
-
     // If this is a 16-bit surface, we need to convert it to 32-bit first
     int redBits = Toolbox::GetNumberOfBits( OriginalSurfaceDesc.ddpfPixelFormat.dwRBitMask );
     int greenBits = Toolbox::GetNumberOfBits( OriginalSurfaceDesc.ddpfPixelFormat.dwGBitMask );
@@ -418,10 +413,22 @@ HRESULT MyDirectDrawSurface7::Unlock( LPRECT lpRect ) {
     if ( Engine::GAPI->GetMainThreadID() != GetCurrentThreadId() ) {
         EngineTexture->UpdateDataDeferred( LockedData, 0 );
         Engine::GAPI->AddFrameLoadedTexture( this );
+        
+        // Textureslot 7 is filled only on load-time. This is used to get the zCTexture from this Surface.
+        if ( Engine::GAPI->GetBoundTexture( 7 ) != nullptr ) {
+            // Comming from LoadResourceData
+            LoadAdditionalResources( Engine::GAPI->GetBoundTexture( 7 ) );
+        }
     } else {
         EngineTexture->UpdateData( LockedData, 0 );
+        // Textureslot 7 is filled only on load-time. This is used to get the zCTexture from this Surface.
+        if ( Engine::GAPI->GetBoundTexture( 7 ) != nullptr ) {
+            // Comming from LoadResourceData
+            LoadAdditionalResources( Engine::GAPI->GetBoundTexture( 7 ) );
+        }
         SetReady( true ); // No need to load other stuff to get this ready
     }
+
 
     if ( bpp != 24 ) {
         // Clean up if not a movie frame
@@ -571,7 +578,7 @@ HRESULT MyDirectDrawSurface7::SetSurfaceDesc( LPDDSURFACEDESC2 lpDDSurfaceDesc, 
     }
 
     // Create the texture
-    EngineTexture->Init( INT2( lpDDSurfaceDesc->dwWidth, lpDDSurfaceDesc->dwHeight ), format, mipMapCount, nullptr, "DirectDrawSurface7" );
+    EngineTexture->Init( INT2( lpDDSurfaceDesc->dwWidth, lpDDSurfaceDesc->dwHeight ), format, mipMapCount, nullptr, "" );
 
     return S_OK;
 }

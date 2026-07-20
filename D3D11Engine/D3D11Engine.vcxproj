@@ -886,6 +886,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="BaseLineRenderer.h" />
     <ClInclude Include="BaseWidget.h" />
     <ClInclude Include="BasicTimer.h" />
+    <ClInclude Include="ConstantBufferPool.h" />
     <ClInclude Include="D3D11CascadedShadowMapBuffer.h" />
     <ClInclude Include="D3D11FileRelativeInclude.h" />
     <ClInclude Include="D3D11GraphicsShader.h" />
@@ -893,7 +894,6 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="D3D11ShadowAtlas.h" />
     <ClInclude Include="CGameManager.h" />
     <ClInclude Include="D3D11AGS.h" />
-    <ClInclude Include="D3D11ConstantBuffer.h" />
     <ClInclude Include="ConstantBufferStructs.h" />
     <ClInclude Include="D3D11CShader.h" />
     <ClInclude Include="D3D11DXVK.h" />
@@ -939,6 +939,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="D3D11DeferredRenderer.h" />
     <ClInclude Include="D3D11ForwardPlusRenderer.h" />
     <ClInclude Include="D3D11TracyDebug.h" />
+    <ClInclude Include="DDSArrayLoader.h" />
     <ClInclude Include="ISceneRenderer.h" />
     <ClInclude Include="D3D11LegacyDeferredShading.h" />
     <ClInclude Include="D3D11Texture.h" />
@@ -1153,17 +1154,19 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="zTypes.h" />
     <ClInclude Include="zViewTypes.h" />
     <ClInclude Include="D3D11PFX_CAS.h" />
+    <ClInclude Include="vendor\mikktspace.h" />
+    <ClInclude Include="VertexPacking.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="BaseLineRenderer.cpp" />
     <ClCompile Include="BaseWidget.cpp" />
+    <ClCompile Include="ConstantBufferPool.cpp" />
     <ClCompile Include="D3D11CascadedShadowMapBuffer.cpp" />
     <ClCompile Include="D3D11FileRelativeInclude.cpp" />
     <ClCompile Include="D3D11GraphicsShader.cpp" />
     <ClCompile Include="D3D11PFX_ASSAO.cpp" />
     <ClCompile Include="D3D11ShadowAtlas.cpp" />
     <ClCompile Include="D3D11AGS.cpp" />
-    <ClCompile Include="D3D11ConstantBuffer.cpp" />
     <ClCompile Include="D3D11CShader.cpp" />
     <ClCompile Include="D3D11Effect.cpp" />
     <ClCompile Include="D3D11GodRayEffect.cpp" />
@@ -1284,6 +1287,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="include\meshoptimizer\src\quantization.cpp" />
     <ClCompile Include="include\meshoptimizer\src\vcacheoptimizer.cpp" />
     <ClCompile Include="include\meshoptimizer\src\vfetchoptimizer.cpp" />
+    <ClCompile Include="vendor\mikktspace.c" />
     <ClCompile Include="include\tracy\public\TracyClient.cpp" />
     <ClCompile Include="MeshManager.cpp" />
     <ClCompile Include="MeshModifier.cpp" />

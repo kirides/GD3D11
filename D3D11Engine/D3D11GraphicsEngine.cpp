@@ -57,6 +57,7 @@
 #include "D3D11Upscaling.h"
 #include "oCMobInter.h"
 #include "zCParser.h"
+#include "ConstantBufferPool.h"
 
 #ifdef BUILD_SPACER
 #define IS_SPACER_BUILD true
@@ -242,36 +243,6 @@ namespace
         XMStoreFloat( &distanceSq, XMVector3LengthSq( XMLoadFloat3( &center ) - cameraPosition ) );
         return distanceSq;
     }
-}
-
-void ConstantBufferPool::BeginFrame() {
-    m_currentOffset = 0;
-}
-
-ConstantBufferAllocation ConstantBufferPool::Allocate( ID3D11DeviceContext* context, const void* pData, uint32_t sizeInBytes ) {
-    uint32_t alignedSize = (sizeInBytes + 255) & ~255;
-
-    if ( m_currentOffset + alignedSize > m_bufferSize ) {
-        m_currentOffset = 0; // Reset the offset if out of memory
-    }
-    D3D11_MAPPED_SUBRESOURCE mappedResource;
-    if ( SUCCEEDED( context->Map( m_poolBuffer.Get(), 0, m_currentOffset == 0 ? D3D11_MAP_WRITE_DISCARD : D3D11_MAP_WRITE_NO_OVERWRITE, 0, &mappedResource ) ) ) {
-        memcpy( static_cast<uint8_t*>(mappedResource.pData) + m_currentOffset, pData, sizeInBytes );
-        context->Unmap( m_poolBuffer.Get(), 0 );
-    }
-
-    ConstantBufferAllocation alloc;
-    alloc.pBuffer = m_poolBuffer.Get();
-    alloc.offsetInBytes = m_currentOffset;
-    alloc.sizeInBytes = alignedSize;
-
-    // 4. Advance the offset for the next allocation
-    m_currentOffset += alignedSize;
-
-    return alloc;
-}
-
-void ConstantBufferPool::EndFrame( ) {
 }
 
 D3D11GraphicsEngine::D3D11GraphicsEngine() :
@@ -785,12 +756,6 @@ XRESULT D3D11GraphicsEngine::Init() {
     SetDebugName( DynamicInstancingBuffer->GetShaderResourceView().Get(), "DynamicInstancingBuffer->ShaderResourceView" );
     SetDebugName( DynamicInstancingBuffer->GetVertexBuffer().Get(), "DynamicInstancingBuffer->VertexBuffer" );
 
-    NodeAttachmentInstancingBuffer = std::make_unique<D3D11VertexBuffer>();
-    NodeAttachmentInstancingBuffer->Init(
-        nullptr, sizeof( NodeAttachmentInstanceData ) * 1024, D3D11VertexBuffer::B_VERTEXBUFFER,
-        D3D11VertexBuffer::U_DYNAMIC, D3D11VertexBuffer::CA_WRITE );
-    SetDebugName( NodeAttachmentInstancingBuffer->GetVertexBuffer().Get(), "NodeAttachmentInstancingBuffer" );
-
     DecalInstancingBuffer = std::make_unique<D3D11VertexBuffer>();
     DecalInstancingBuffer->Init(
         nullptr, sizeof( XMFLOAT4X4 ) * 1024, D3D11VertexBuffer::B_VERTEXBUFFER,
@@ -853,29 +818,20 @@ XRESULT D3D11GraphicsEngine::Init() {
     uint32_t whitePixel = 0xFFFFFFFF;
     WhiteTexture->Init( {1,1}, D3D11Texture::ETextureFormat::TF_B8G8R8A8, 1, &whitePixel, "FULL_WHITE_ALPHA_OPAQUE.static-memory");
 
+    BlackTexture = std::make_unique<D3D11Texture>();
+    uint32_t blackPixel = 0xFF000000;
+    BlackTexture->Init( { 1,1 }, D3D11Texture::ETextureFormat::TF_B8G8R8A8, 1, & blackPixel, "FULL_BLACK_ALPHA_OPAQUE.static-memory" );
+
     InverseUnitSphereMesh = new GMesh;
     InverseUnitSphereMesh->LoadMesh( "system\\GD3D11\\meshes\\icoSphere.obj" );
 
-    // Create distance-buffers
-    D3D11ConstantBuffer* infiniteRangeConstantBuffer;
-    D3D11ConstantBuffer* outdoorSmallVobsConstantBuffer;
-    D3D11ConstantBuffer* outdoorVobsConstantBuffer;
-    CreateConstantBuffer( &infiniteRangeConstantBuffer, nullptr, sizeof( float4 ) );
-    CreateConstantBuffer( &outdoorSmallVobsConstantBuffer, nullptr, sizeof( float4 ) );
-    CreateConstantBuffer( &outdoorVobsConstantBuffer, nullptr, sizeof( float4 ) );
-    InfiniteRangeConstantBuffer.reset( infiniteRangeConstantBuffer );
-    OutdoorSmallVobsConstantBuffer.reset( outdoorSmallVobsConstantBuffer );
-    OutdoorVobsConstantBuffer.reset(outdoorVobsConstantBuffer);
-
+    // View-distance constant buffers are now allocated per-frame from the dynamic
+    // ring pool (see OnStartWorldRendering); no dedicated ID3D11Buffers needed.
     PerObjectMaterialInfoPooledBuffer = std::make_unique<ConstantBufferPool>();
-    PerObjectMaterialInfoPooledBuffer->Initialize( GetDevice().Get() );
+    PerObjectMaterialInfoPooledBuffer->Initialize( GetDevice().Get(), 4 * 1024 * 1024, "PerObjectMaterialInfoPooledBuffer" );
 
-    // Init inf-buffer now
-    static const float4 infiniteRange( FLT_MAX, 0, 0, 0 );
-    InfiniteRangeConstantBuffer->UpdateBuffer( &infiniteRange );
-    SetDebugName( InfiniteRangeConstantBuffer->Get().Get(), "InfiniteRangeConstantBuffer" );
-    SetDebugName( OutdoorSmallVobsConstantBuffer->Get().Get(), "OutdoorSmallVobsConstantBuffer" );
-    SetDebugName( OutdoorVobsConstantBuffer->Get().Get(), "OutdoorVobsConstantBuffer" );
+    DynamicConstantBufferPool = std::make_unique<ConstantBufferPool>();
+    DynamicConstantBufferPool->Initialize( GetDevice().Get(), 4 * 1024 * 1024, "DynamicConstantBufferPool" );
     // Load reflectioncube
 
     if ( S_OK != CreateDDSTextureFromFile(
@@ -1090,6 +1046,77 @@ int D3D11GraphicsEngine::GetWindowMode() {
     return WINDOW_MODE_WINDOWED;
 }
 
+/** (Re-)creates MSAAColorBuffer/MSAADepthStencilBuffer for the Forward+ renderer, or releases them
+    when MSAA is off / Deferred is active. Validates the requested sample count against the device's
+    actual multisample support for both the depth and HDR back-buffer formats, clamping down (with a
+    log warning) if unsupported. */
+void D3D11GraphicsEngine::RecreateMSAABuffers( INT2 resolution ) {
+    auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+
+    int requestedSamples = settings.MSAASamples;
+    bool wantMSAA = settings.RendererMode == GothicRendererSettings::E_RendererMode::RM_ForwardPlus
+        && requestedSamples > 1;
+
+    if ( !wantMSAA ) {
+        MSAAColorBuffer.reset();
+        MSAADepthStencilBuffer.reset();
+        return;
+    }
+
+    // Pre-filter against CheckMultisampleQualityLevels (query the concrete depth view format,
+    // D32_FLOAT, rather than the typeless resource format, since typeless formats can report
+    // unreliable multisample support on some drivers), then fall through each candidate sample
+    // count and attempt the actual allocation — some drivers report a sample count as supported
+    // via the query but still reject it at texture-creation time, so the real creation result is
+    // the authoritative check.
+    const DXGI_FORMAT colorFormat = GetBackBufferFormat();
+    const DXGI_FORMAT depthFormat = DXGI_FORMAT_R32_TYPELESS;
+    const DXGI_FORMAT depthQueryFormat = DXGI_FORMAT_D32_FLOAT;
+
+    for ( int samples = requestedSamples; samples > 1; samples /= 2 ) {
+        UINT colorQualityLevels = 0;
+        UINT depthQualityLevels = 0;
+        GetDevice()->CheckMultisampleQualityLevels( colorFormat, samples, &colorQualityLevels );
+        GetDevice()->CheckMultisampleQualityLevels( depthQueryFormat, samples, &depthQualityLevels );
+
+        if ( colorQualityLevels == 0 || depthQualityLevels == 0 )
+            continue;
+
+        HRESULT colorResult = S_OK;
+        auto colorBuffer = std::make_unique<RenderToTextureBuffer>(
+            GetDevice().Get(), resolution.x, resolution.y, colorFormat, &colorResult, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN,
+            1, 1, D3D11_BIND_RENDER_TARGET, static_cast<UINT>( samples ), 0 );
+
+        HRESULT depthResult = S_OK;
+        auto depthBuffer = std::make_unique<RenderToDepthStencilBuffer>(
+            GetDevice().Get(), resolution.x, resolution.y, depthFormat, &depthResult,
+            DXGI_FORMAT_D32_FLOAT, DXGI_FORMAT_R32_FLOAT, 1, static_cast<UINT>( samples ), 0 );
+
+        if ( FAILED( colorResult ) || !colorBuffer->GetRenderTargetView()
+            || FAILED( depthResult ) || !depthBuffer->GetDepthStencilView() ) {
+            continue;
+        }
+
+        if ( samples != requestedSamples ) {
+            LogWarn() << "MSAA x" << requestedSamples << " isn't supported by this device/format combination; falling back to x" << samples;
+            settings.MSAASamples = samples;
+        }
+
+        MSAAColorBuffer = std::move( colorBuffer );
+        SetDebugName( MSAAColorBuffer->GetTexture().Get(), "MSAAColorBuffer->TEX" );
+        SetDebugName( MSAAColorBuffer->GetRenderTargetView().Get(), "MSAAColorBuffer->RTV" );
+
+        MSAADepthStencilBuffer = std::move( depthBuffer );
+        return;
+    }
+
+    // Nothing worked, not even 2x — disable MSAA entirely.
+    LogWarn() << "MSAA isn't supported by this device/format combination; disabling it.";
+    settings.MSAASamples = 1;
+    MSAAColorBuffer.reset();
+    MSAADepthStencilBuffer.reset();
+}
+
 XRESULT D3D11GraphicsEngine::RecreateBuffers() {
     INT2 bbres = GetBackbufferResolution();
 
@@ -1136,6 +1163,8 @@ XRESULT D3D11GraphicsEngine::RecreateBuffers() {
     DepthStencilBufferCopy = std::make_unique<RenderToTextureBuffer>(
         GetDevice().Get(), roundedTextureResolution.x, roundedTextureResolution.y, DXGI_FORMAT_R32_TYPELESS, nullptr,
         DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32_FLOAT );
+
+    RecreateMSAABuffers( roundedTextureResolution );
 
     VelocityBuffer = std::make_unique<RenderToTextureBuffer>(
         GetDevice().Get(), roundedTextureResolution.x, roundedTextureResolution.y, DXGI_FORMAT_R16G16_FLOAT );
@@ -1391,84 +1420,157 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
     return XR_SUCCESS;
 }
 
-void D3D11GraphicsEngine::ResetFrameTransientBufferPools() {
-    m_MainWorldIndirectPool.ResetFrame();
-    m_ShadowWorldIndirectPool.ResetFrame();
-    m_MainVobInstancingPool.ResetFrame();
-    m_ShadowVobInstancingPool.ResetFrame();
-    PerObjectMaterialInfoPooledBuffer->BeginFrame();
+void D3D11GraphicsEngine::WaitForTransientPoolFence( Microsoft::WRL::ComPtr<ID3D11Query>& fence, bool& fencePending ) {
+    if ( !fencePending ) {
+        return; // never used yet - nothing the GPU could still be reading
+    }
+
+    BOOL signaled = FALSE;
+    while ( GetContext()->GetData( fence.Get(), &signaled, sizeof( signaled ), 0 ) != S_OK ) {
+        Sleep( 0 ); // yield until the GPU catches up to the frame that last used this slot
+    }
+
+    fencePending = false;
 }
 
-D3D11IndirectBuffer* D3D11GraphicsEngine::AcquireFrameIndirectBuffer( FrameIndirectBufferPool& pool,
+void D3D11GraphicsEngine::BeginFrameTransientBufferPools() {
+    for ( FrameIndirectBufferPool* pool : { &m_MainWorldIndirectPool, &m_ShadowWorldIndirectPool } ) {
+        pool->FrameIndex = (pool->FrameIndex + 1) % kTransientPoolFrameCount;
+        auto& slot = pool->Slots[pool->FrameIndex];
+        WaitForTransientPoolFence( slot.Fence, slot.FencePending );
+        slot.Offset = 0;
+    }
+
+    for ( FrameInstancingBufferPool* pool : { &m_MainVobInstancingPool, &m_ShadowVobInstancingPool,
+        &m_MainNodeAttachmentInstancingPool, &m_ShadowNodeAttachmentInstancingPool } ) {
+        pool->FrameIndex = (pool->FrameIndex + 1) % kTransientPoolFrameCount;
+        auto& slot = pool->Slots[pool->FrameIndex];
+        WaitForTransientPoolFence( slot.Fence, slot.FencePending );
+        slot.Offset = 0;
+    }
+
+    PerObjectMaterialInfoPooledBuffer->BeginFrame();
+    DynamicConstantBufferPool->BeginFrame();
+}
+
+void D3D11GraphicsEngine::EndFrameTransientBufferPools() {
+    D3D11_QUERY_DESC queryDesc = {};
+    queryDesc.Query = D3D11_QUERY_EVENT;
+
+    for ( FrameIndirectBufferPool* pool : { &m_MainWorldIndirectPool, &m_ShadowWorldIndirectPool } ) {
+        auto& slot = pool->Slots[pool->FrameIndex];
+        if ( !slot.Buffer ) {
+            continue; // this slot was never allocated from - nothing to fence
+        }
+        if ( !slot.Fence ) {
+            GetDevice()->CreateQuery( &queryDesc, &slot.Fence );
+        }
+        GetContext()->End( slot.Fence.Get() );
+        slot.FencePending = true;
+    }
+
+    for ( FrameInstancingBufferPool* pool : { &m_MainVobInstancingPool, &m_ShadowVobInstancingPool,
+        &m_MainNodeAttachmentInstancingPool, &m_ShadowNodeAttachmentInstancingPool } ) {
+        auto& slot = pool->Slots[pool->FrameIndex];
+        if ( !slot.Buffer ) {
+            continue;
+        }
+        if ( !slot.Fence ) {
+            GetDevice()->CreateQuery( &queryDesc, &slot.Fence );
+        }
+        GetContext()->End( slot.Fence.Get() );
+        slot.FencePending = true;
+    }
+}
+
+D3D11GraphicsEngine::FrameIndirectAllocation D3D11GraphicsEngine::AcquireFrameIndirectAllocation( FrameIndirectBufferPool& pool,
     const void* initData,
     unsigned int sizeInBytes,
     const char* debugName ) {
     if ( sizeInBytes == 0 ) {
-        return nullptr;
+        return {};
     }
 
-    if ( pool.NextBuffer >= pool.Buffers.size() ) {
-        pool.Buffers.push_back( std::make_unique<D3D11IndirectBuffer>() );
-    }
+    auto& slot = pool.Slots[pool.FrameIndex];
 
-    auto& buffer = pool.Buffers[pool.NextBuffer++];
-    if ( !buffer ) {
-        buffer = std::make_unique<D3D11IndirectBuffer>();
-    }
-
-    const bool needsRecreate = buffer->GetSizeInBytes() < sizeInBytes;
-    if ( needsRecreate ) {
-        if ( buffer->Init( const_cast<void*>(initData), sizeInBytes,
+    // Grow with headroom (1.5x) so a one-off large frame doesn't force a resize every frame after.
+    const uint32_t requiredCapacity = slot.Offset + sizeInBytes;
+    if ( !slot.Buffer || slot.Capacity < requiredCapacity ) {
+        const uint32_t newCapacity = std::max<uint32_t>( requiredCapacity + requiredCapacity / 2, 4 * 1024 * 1024 );
+        auto newBuffer = std::make_unique<D3D11IndirectBuffer>();
+        if ( newBuffer->Init( nullptr, newCapacity,
             D3D11IndirectBuffer::B_INDEXBUFFER,
             D3D11IndirectBuffer::U_DYNAMIC,
             D3D11IndirectBuffer::CA_WRITE,
-            debugName ? debugName : "" ) != XR_SUCCESS ) {
-            return nullptr;
+            (debugName ? debugName : "") + std::to_string(pool.FrameIndex) ) != XR_SUCCESS ) {
+            return {};
         }
 
         if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog ) {
-            LogInfo() << "(Re-)created new frame indirect buffer: " << (debugName ? debugName : "<unnamed>");
+            LogInfo() << "(Re-)created frame indirect ring buffer: " << (debugName ? debugName : "<unnamed>") << pool.FrameIndex
+                << " (" << newCapacity << " bytes)";
         }
-    } else {
-        if ( buffer->UpdateBuffer( const_cast<void*>(initData), sizeInBytes ) != XR_SUCCESS ) {
-            return nullptr;
-        }
+
+        slot.Buffer = std::move( newBuffer );
+        slot.Capacity = newCapacity;
     }
 
-    return buffer.get();
+    void* mappedData;
+    UINT mappedSize;
+    if ( slot.Buffer->Map( D3D11IndirectBuffer::M_WRITE_NO_OVERWRITE, &mappedData, &mappedSize ) != XR_SUCCESS ) {
+        return {};
+    }
+    memcpy( static_cast<uint8_t*>(mappedData) + slot.Offset, initData, sizeInBytes );
+    slot.Buffer->Unmap();
+
+    FrameIndirectAllocation alloc;
+    alloc.Buffer = slot.Buffer.get();
+    alloc.OffsetInBytes = slot.Offset;
+
+    // 4-byte alignment is enough for D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS offsets.
+    slot.Offset = (slot.Offset + sizeInBytes + 3) & ~3u;
+
+    return alloc;
 }
 
-D3D11VertexBuffer* D3D11GraphicsEngine::AcquireFrameInstancingBuffer( FrameInstancingBufferPool& pool,
+D3D11GraphicsEngine::FrameInstancingAllocation D3D11GraphicsEngine::AcquireFrameInstancingAllocation( FrameInstancingBufferPool& pool,
     unsigned int sizeInBytes,
     const char* debugName ) {
     if ( sizeInBytes == 0 ) {
-        return nullptr;
+        return {};
     }
 
-    if ( pool.NextBuffer >= pool.Buffers.size() ) {
-        pool.Buffers.push_back( std::make_unique<D3D11VertexBuffer>() );
-    }
+    auto& slot = pool.Slots[pool.FrameIndex];
 
-    auto& buffer = pool.Buffers[pool.NextBuffer++];
-    if ( !buffer ) {
-        buffer = std::make_unique<D3D11VertexBuffer>();
-    }
-
-    if ( buffer->GetSizeInBytes() < sizeInBytes ) {
-        if ( buffer->Init( nullptr, sizeInBytes,
+    const uint32_t requiredCapacity = slot.Offset + sizeInBytes;
+    if ( !slot.Buffer || slot.Capacity < requiredCapacity ) {
+        const uint32_t newCapacity = std::max<uint32_t>( requiredCapacity + requiredCapacity / 2, 4 * 1024 * 1024 );
+        auto newBuffer = std::make_unique<D3D11VertexBuffer>();
+        if ( newBuffer->Init( nullptr, newCapacity,
             D3D11VertexBuffer::B_VERTEXBUFFER,
             D3D11VertexBuffer::U_DYNAMIC,
             D3D11VertexBuffer::CA_WRITE,
-            debugName ? debugName : "" ) != XR_SUCCESS ) {
-            return nullptr;
+            (debugName ? debugName : "FrameInstancingBuffer") + std::to_string(pool.FrameIndex) ) != XR_SUCCESS ) {
+            return {};
         }
+
         if ( Engine::GAPI->GetRendererState().RendererSettings.EnableDebugLog ) {
-            LogInfo() << "(Re-)created new frame instancing buffer: " << (debugName ? debugName : "FrameInstancingBuffer");
+            LogInfo() << "(Re-)created frame instancing ring buffer: " << (debugName ? debugName : "FrameInstancingBuffer") << pool.FrameIndex
+                << " (" << newCapacity << " bytes)";
         }
-        SetDebugName( buffer->GetVertexBuffer().Get(), debugName ? debugName : "FrameInstancingBuffer" );
+
+        slot.Buffer = std::move( newBuffer );
+        slot.Capacity = newCapacity;
     }
 
-    return buffer.get();
+    FrameInstancingAllocation alloc;
+    alloc.Buffer = slot.Buffer.get();
+    alloc.OffsetInBytes = slot.Offset;
+
+    // Keep sub-allocations 16-byte aligned (VobInstanceInfo is a multiple of 16 bytes).
+    slot.Offset = (slot.Offset + sizeInBytes + 15) & ~15u;
+
+    return alloc;
 }
 static const char* beginFrameEventName = "Frame";
 
@@ -1481,9 +1583,11 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
     WindowModes currentWindowMode = (WindowModes)rendererState.RendererSettings.ChangeWindowPreset;
 
     static int s_oldResolutionScalePercent = rendererState.RendererSettings.ResolutionScalePercent;
-    
+    static int s_oldMSAASamples = rendererState.RendererSettings.MSAASamples;
+    static GothicRendererSettings::E_RendererMode s_oldRendererModeForMSAA = rendererState.RendererSettings.RendererMode;
+
     rendererState.RendererInfo.RenderStage = STAGE_DRAW_UNKNOWN;
-    ResetFrameTransientBufferPools();
+    BeginFrameTransientBufferPools();
 
     DrawMultiIndexedInstancedIndirect = rendererState.RendererSettings.DebugSettings.FeatureSet.UseMDI
         ? ResolvedDrawMultiIndexedInstancedIndirect
@@ -1512,8 +1616,18 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
     } else if ( rendererState.RendererSettings.ResolutionScalePercent != s_oldResolutionScalePercent ) {
         RecreateBuffers();
         s_oldResolutionScalePercent = rendererState.RendererSettings.ResolutionScalePercent;
+    } else if ( rendererState.RendererSettings.MSAASamples != s_oldMSAASamples
+        || rendererState.RendererSettings.RendererMode != s_oldRendererModeForMSAA ) {
+        // MSAA buffers depend on both the sample count and the active renderer (Deferred never gets them)
+        RecreateMSAABuffers( GetResolution() );
+        s_oldMSAASamples = rendererState.RendererSettings.MSAASamples;
+        s_oldRendererModeForMSAA = rendererState.RendererSettings.RendererMode;
     }
-    
+
+    // Lets alpha-tested pixel shaders know whether to sharpen their alpha test into a per-pixel
+    // coverage value (for the MSAA alpha-to-coverage blend mode) instead of a hard binary clip.
+    rendererState.GraphicsState.SetGraphicsSwitch( GSWITCH_MSAA_ALPHATOCOVERAGE, MSAAColorBuffer != nullptr );
+
 #ifdef BUILD_SPACER_NET
     rendererState.RendererSettings.EnableInactiveFpsLock = false;
 #endif //  BUILD_SPACERNET
@@ -1605,9 +1719,10 @@ XRESULT D3D11GraphicsEngine::OnEndFrame() {
 
     RenderedVobs.clear();
     GetPfxRenderer()->OnEndFrame();
-    ResetFrameTransientBufferPools();
     Engine::GAPI->ResetVobFrameStats();
+    EndFrameTransientBufferPools();
     PerObjectMaterialInfoPooledBuffer->EndFrame();
+    DynamicConstantBufferPool->EndFrame();
     FrameMarkEnd( beginFrameEventName );
 
     if ( !Engine::GAPI->GetRendererState().RendererSettings.BinkVideoRunning && !Engine::GAPI->IsInSavingLoadingState() ) {
@@ -1763,7 +1878,7 @@ void RenderVelocity(D3D11GraphicsEngine* engine,
     VelocityDebugConstantBuffer cb = {};
     cb.Amplification = 100;
 
-    ps->GetBuffer( "VelocityDebugCB" ).Update( &cb ).Bind();
+    ps->UpdateBuffer("VelocityDebugCB", &cb, sizeof(cb));
     ps->Apply();
     
     engine->GetPfxRenderer()->CopyTextureToRTV(
@@ -1798,7 +1913,7 @@ XRESULT D3D11GraphicsEngine::Present() {
         gcb.G_Gamma = Engine::GAPI->GetGammaValue();
         gcb.G_Brightness = Engine::GAPI->GetBrightnessValue();
 
-        ActivePS->GetBuffer( "GammaCorrectConstantBuffer" ).Update( &gcb ).Bind();
+        ActivePS->UpdateBuffer("GammaCorrectConstantBuffer", &gcb, sizeof(gcb));
 
         PfxRenderer->CopyTextureToRTV( Backbuffer->GetShaderResView(), BackbufferRTV, {}, true );
         
@@ -1964,6 +2079,26 @@ XRESULT D3D11GraphicsEngine::DrawVertexBufferIndexed( D3D11VertexBuffer* vb,
     return XR_SUCCESS;
 }
 
+// Like DrawVertexBufferIndexed but binds the vertex buffer at the packed 36-byte stride
+// (ExVertexStructGPU). Used for non-instanced VOB draws that moved to VS_ExPacked.
+XRESULT D3D11GraphicsEngine::DrawVertexBufferIndexedPacked( D3D11VertexBuffer* vb,
+    D3D11VertexBuffer* ib,
+    unsigned int numIndices,
+    unsigned int indexOffset ) {
+    if ( vb ) {
+        UINT offset = 0;
+        UINT uStride = sizeof( ExVertexStructGPU );
+        Context->IASetVertexBuffers( 0, 1, vb->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
+        Context->IASetIndexBuffer( ib->GetVertexBuffer().Get(), VERTEX_INDEX_DXGI_FORMAT, 0 );
+    }
+
+    if ( numIndices ) {
+        Context->DrawIndexed( numIndices, indexOffset, 0 );
+        Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles += numIndices / 3;
+    }
+    return XR_SUCCESS;
+}
+
 XRESULT D3D11GraphicsEngine::DrawVertexBufferIndexedUINT(
     D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices,
     unsigned int indexOffset ) {
@@ -1991,6 +2126,13 @@ XRESULT D3D11GraphicsEngine::DrawVertexBufferIndexedUINT(
     }
 
     return XR_SUCCESS;
+}
+
+void D3D11GraphicsEngine::BindWrappedWorldMeshPacked( MeshInfo* wrappedWorldMesh ) {
+    UINT stride = sizeof( ExVertexStructGPU );
+    UINT offset = 0;
+    Context->IASetVertexBuffers( 0, 1, wrappedWorldMesh->GetMeshVertexBuffer()->GetVertexBuffer().GetAddressOf(), &stride, &offset );
+    Context->IASetIndexBuffer( wrappedWorldMesh->GetMeshIndexBuffer()->GetVertexBuffer().Get(), DXGI_FORMAT_R32_UINT, 0 );
 }
 
 XRESULT D3D11GraphicsEngine::DrawDynamicVertexBufferIndexed(std::vector<ExVertexStruct>& vertices,
@@ -2063,6 +2205,26 @@ XRESULT D3D11GraphicsEngine::DrawVertexBufferInstancedIndexed(
     return XR_SUCCESS;
 }
 
+// Like DrawVertexBufferInstancedIndexed but binds slot 0 at the packed 36-byte stride
+// (ExVertexStructGPU). Used for the layered-shadow VOB caster pass (VS_ExLayeredPacked).
+XRESULT D3D11GraphicsEngine::DrawVertexBufferInstancedIndexedPacked(
+    D3D11VertexBuffer* vb, D3D11VertexBuffer* ib,
+    unsigned int numIndices, unsigned int numInstances,
+    unsigned int indexOffset ) {
+    if ( vb ) {
+        UINT offset = 0;
+        UINT uStride = sizeof( ExVertexStructGPU );
+        Context->IASetVertexBuffers( 0, 1, vb->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
+        Context->IASetIndexBuffer( ib->GetVertexBuffer().Get(), VERTEX_INDEX_DXGI_FORMAT, 0 );
+    }
+
+    if ( numIndices ) {
+        Context->DrawIndexedInstanced( numIndices, numInstances, indexOffset, 0, 0 );
+        Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles += numIndices / 3;
+    }
+    return XR_SUCCESS;
+}
+
 XRESULT D3D11GraphicsEngine::DrawVertexBufferInstancedIndexedUINT(
     D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices,
     unsigned int numInstances, unsigned int indexOffset ) {
@@ -2110,7 +2272,7 @@ XRESULT D3D11GraphicsEngine::BindViewportInformation( VShaderID shader,
     auto vs = ShaderManager->GetVShader( shader );
 
     if ( vs ) {
-        vs->GetBuffer( "Viewport" ).Update( Temp2Float2 ).Bind();
+        vs->UpdateBuffer( "Viewport", Temp2Float2, sizeof(float2) * 2 );
     }
 
     return XR_SUCCESS;
@@ -2146,7 +2308,7 @@ XRESULT D3D11GraphicsEngine::DrawScreenFade( void* c ) {
         colorBuffer.GA_Pad.x = cinemaScopeColor.bgra.r * inv255f;
         colorBuffer.GA_Pad.y = cinemaScopeColor.bgra.g * inv255f;
         colorBuffer.GA_Pad.z = cinemaScopeColor.bgra.b * inv255f;
-        ActivePS->GetBuffer( "AlphaBlendInfo" ).Update( &colorBuffer ).Bind();
+        ActivePS->UpdateBuffer("AlphaBlendInfo", &colorBuffer, sizeof(colorBuffer));
 
         UpdateRenderStates();
         GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
@@ -2215,7 +2377,7 @@ XRESULT D3D11GraphicsEngine::DrawScreenFade( void* c ) {
         colorBuffer.GA_Pad.x = screenFadeColor.bgra.r * inv255f;
         colorBuffer.GA_Pad.y = screenFadeColor.bgra.g * inv255f;
         colorBuffer.GA_Pad.z = screenFadeColor.bgra.b * inv255f;
-        ActivePS->GetBuffer( "AlphaBlendInfo" ).Update( &colorBuffer ).Bind();
+        ActivePS->UpdateBuffer("AlphaBlendInfo", &colorBuffer, sizeof(colorBuffer));
 
         PfxRenderer->DrawFullScreenQuad();
     }
@@ -2241,9 +2403,7 @@ XRESULT D3D11GraphicsEngine::DrawVertexArray( ExVertexStruct* vertices,
     // ShaderManager->GetVShader("VS_TransformedEx");
 
     // Bind the FF-Info to the first PS slot
-    ActivePS->GetBuffer( "FFPipelineConstantBuffer" )
-        .Update( &Engine::GAPI->GetRendererState().GraphicsState )
-        .Bind();
+    ActivePS->UpdateBuffer("FFPipelineConstantBuffer", &Engine::GAPI->GetRendererState().GraphicsState, sizeof(Engine::GAPI->GetRendererState().GraphicsState));
 
     SetupVS_ExMeshDrawCall();
 
@@ -2274,9 +2434,7 @@ XRESULT D3D11GraphicsEngine::DrawIndexedVertexArray( ExVertexStruct* vertices,
     auto vShader = ActiveVS;  // ShaderManager->GetVShader("VS_TransformedEx");
 
     // Bind the FF-Info to the first PS slot
-    ActivePS->GetBuffer( "FFPipelineConstantBuffer" )
-        .Update( &Engine::GAPI->GetRendererState().GraphicsState )
-        .Bind();
+    ActivePS->UpdateBuffer("FFPipelineConstantBuffer", &Engine::GAPI->GetRendererState().GraphicsState, sizeof(Engine::GAPI->GetRendererState().GraphicsState));
 
     SetupVS_ExMeshDrawCall();
 
@@ -2311,9 +2469,7 @@ XRESULT D3D11GraphicsEngine::DrawVertexBufferFF( D3D11VertexBuffer* vb,
     SetupVS_ExMeshDrawCall();
 
     // Bind the FF-Info to the first PS slot
-    ActivePS->GetBuffer( "FFPipelineConstantBuffer" )
-        .Update( &Engine::GAPI->GetRendererState().GraphicsState )
-        .Bind();
+    ActivePS->UpdateBuffer("FFPipelineConstantBuffer", &Engine::GAPI->GetRendererState().GraphicsState, sizeof(Engine::GAPI->GetRendererState().GraphicsState));
 
     UINT offset = 0;
     UINT uStride = stride;
@@ -2328,12 +2484,9 @@ XRESULT D3D11GraphicsEngine::DrawVertexBufferFF( D3D11VertexBuffer* vb,
     return XR_SUCCESS;
 }
 
-/** Sets up texture with normalmap and fxmap for rendering */
-bool D3D11GraphicsEngine::BindTextureNRFX( zCTexture* tex, bool bindShader, bool updateMaterialInfo ) {
-    if ( tex->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
-        return false;
-    }
-
+// Need to be able to pass in a texture, otherwise when batch-drawing node attachments, the zCMaterial* AniTexture will be wrong!
+bool D3D11GraphicsEngine::BindTextureNRFX(zCMaterial* mat, zCTexture* tex, bool bindShader, bool updateMaterialInfo)
+{
     ID3D11ShaderResourceView* srvs[3] = {
         tex->GetSurface()->GetEngineTexture()->GetShaderResourceView().Get(),
         nullptr, 
@@ -2347,7 +2500,7 @@ bool D3D11GraphicsEngine::BindTextureNRFX( zCTexture* tex, bool bindShader, bool
 
     MaterialInfo* info = nullptr;
     if ( updateMaterialInfo ) {
-        info = Engine::GAPI->GetMaterialInfoFrom( tex );
+        info = Engine::GAPI->GetMaterialInfoFrom( mat );
     }
 
     // Bind a default normalmap in case the scene is wet and we currently have none
@@ -2356,7 +2509,7 @@ bool D3D11GraphicsEngine::BindTextureNRFX( zCTexture* tex, bool bindShader, bool
         srvs[1] = nrm->GetShaderResourceView().Get();
     } else if ( Engine::GAPI->GetSceneWetness() > 1e-6 ) {
         srvs[1] = DistortionTexture->GetShaderResourceView().Get();
-        if (!info) { info = Engine::GAPI->GetMaterialInfoFrom( tex ); }
+        if (!info) { info = Engine::GAPI->GetMaterialInfoFrom( mat ); }
         if (info) {
             // Value override for non-normalmapped textures in case of rain
             info->buffer.NormalmapStrength = DEFAULT_NOISE_NORMALMAP_STRENGTH;
@@ -2365,10 +2518,13 @@ bool D3D11GraphicsEngine::BindTextureNRFX( zCTexture* tex, bool bindShader, bool
     }
 
     if ( info && GetActivePS() ) {
-        auto allocation = PerObjectMaterialInfoPooledBuffer->Allocate( GetContext().Get(), &info->buffer, sizeof( info->buffer ) );
-        UINT firstConstant = allocation.offsetInBytes / 16;
-        UINT numConstants = allocation.sizeInBytes / 16;
-        GetContext()->PSSetConstantBuffers1( 2, 1, &allocation.pBuffer, &firstConstant, &numConstants );
+        if ( !info->IsSame( m_LastMaterialInfo ) ) {
+            auto allocation = PerObjectMaterialInfoPooledBuffer->Allocate( &info->buffer, sizeof( info->buffer ) );
+            UINT firstConstant = allocation.offsetInBytes / 16;
+            UINT numConstants = allocation.sizeInBytes / 16;
+            GetContext()->PSSetConstantBuffers1( 2, 1, &allocation.pBuffer, &firstConstant, &numConstants );
+            m_LastMaterialInfo = info;
+        }
     }
 
     if ( D3D11Texture* fxmap = tex->GetSurface()->GetFxMap() ) {
@@ -2382,6 +2538,15 @@ bool D3D11GraphicsEngine::BindTextureNRFX( zCTexture* tex, bool bindShader, bool
     return true;
 }
 
+/** Sets up texture with normalmap and fxmap for rendering */
+bool D3D11GraphicsEngine::BindTextureNRFX( zCMaterial* mat, bool bindShader, bool updateMaterialInfo ) {
+    auto tex = mat->GetAniTexture();
+    if ( tex->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
+        return false;
+    }
+    return BindTextureNRFX(mat, tex, bindShader, updateMaterialInfo);
+}
+
 XRESULT  D3D11GraphicsEngine::DrawSkeletalVertexNormals( SkeletalVobInfo* vi,
     const XMFLOAT4X4& world,
     const std::span<XMFLOAT4X4> transforms, float4 color, float fatness ) {
@@ -2391,7 +2556,7 @@ XRESULT  D3D11GraphicsEngine::DrawSkeletalVertexNormals( SkeletalVobInfo* vi,
     SetActiveVertexShader( VShaderID::VS_ExSkeletalVN );
     SetActivePixelShader( PShaderID::PS_Simple );
 
-    InfiniteRangeConstantBuffer->BindToPixelShader( 3 );
+    BindDynamicCBToPixelShader( 3, InfiniteRangeCB );
     
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
@@ -2403,9 +2568,9 @@ XRESULT  D3D11GraphicsEngine::DrawSkeletalVertexNormals( SkeletalVobInfo* vi,
     cb2.PI_ModelColor = color;
     cb2.PI_ModelFatness = fatness;
 
-    auto perInstanceBuf = ActiveVS->GetBuffer( "Matrices_PerInstances" );
-    perInstanceBuf.Update( &cb2 ).Bind();
-    perInstanceBuf.GetRawBuffer()->BindToGeometryShader( 1 );
+    auto perInstanceBuf = ActiveVS->GetInputIndex( "Matrices_PerInstances" );
+    auto boneTransformsSlot = ActiveVS->GetInputIndex( "BoneTransforms" );
+    BindDynamicCBToGeometryShader(perInstanceBuf, AllocateDynamicCB(&cb2));
 
     bool useStructuredBones = !FeatureLevel10Compatibility;
     if ( useStructuredBones ) {
@@ -2419,13 +2584,14 @@ XRESULT  D3D11GraphicsEngine::DrawSkeletalVertexNormals( SkeletalVobInfo* vi,
             VS_ExConstantBuffer_SkeletalBoneRange range = {};
             range.BoneCount = static_cast<unsigned int>(packedCurrent.size());
             range.UseStructuredBones = 1u;
-            ActiveVS->GetBuffer( "BoneTransformRange" ).Update( &range ).Bind();
+            ActiveVS->UpdateBuffer("BoneTransformRange", &range, sizeof(range));
         }
     }
 
     if ( !useStructuredBones ) {
         // Copy bones using legacy cbuffer path.
-        ActiveVS->GetBuffer( "BoneTransforms" ).Update( &transforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( transforms.size(), NUM_MAX_BONES ) ).Bind();
+        BindDynamicCBToGeometryShader(perInstanceBuf, AllocateDynamicCB(&cb2));
+        ActiveVS->UpdateBuffer("BoneTransforms", &transforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( transforms.size(), NUM_MAX_BONES ));
     }
 
     if ( transforms.size() >= NUM_MAX_BONES ) {
@@ -2481,7 +2647,7 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
     // Set PrevWorld for motion vectors (use current world if no previous is available)
     cb2.PrevWorld = vi->HasValidPrevTransforms ? vi->PrevWorldMatrix : world;
 
-    ActiveVS->GetBuffer("Matrices_PerInstances").Update( &cb2 ).Bind();
+    ActiveVS->UpdateBuffer("Matrices_PerInstances", &cb2, sizeof(cb2));
 
     bool useStructuredBones = !FeatureLevel10Compatibility;
     if ( useStructuredBones ) {
@@ -2514,26 +2680,29 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
             VS_ExConstantBuffer_SkeletalBoneRange range = {};
             range.BoneCount = static_cast<unsigned int>(boneCount);
             range.UseStructuredBones = 1u;
-            ActiveVS->GetBuffer( "BoneTransformRange" ).Update( &range ).Bind();
+            ActiveVS->UpdateBuffer("BoneTransformRange", &range, sizeof(range));
         }
     }
 
     if ( !useStructuredBones ) {
         // Copy bones
-        ActiveVS->GetBuffer("BoneTransforms").Update( &transforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( transforms.size(), NUM_MAX_BONES ) ).Bind();
-
+        auto boneTransformsCb = ActiveVS->GetInputIndex( "BoneTransforms" );
+        auto prevBoneTransformsCb = ActiveVS->GetInputIndex( "PrevBoneTransforms" );
+        auto boneTransformAllocation = AllocateDynamicCB(&transforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( transforms.size(), NUM_MAX_BONES ));
+        BindDynamicCBToVertexShader(boneTransformsCb, boneTransformAllocation);
+        
         // Copy previous frame bone transforms for motion vectors (only for main scene rendering, not shadow maps)
         if ( GetRenderingStage() == DES_SHADOWMAP_CUBE ) {
             // Don't bind previous, as we don't use them here yet.
         }
         else if ( GetRenderingStage() != DES_SHADOWMAP ) {
-            const std::span<XMFLOAT4X4> prevTransforms = (vi->HasValidPrevTransforms && !vi->PrevBoneTransforms.empty())
-                ? std::span(vi->PrevBoneTransforms)
-                : transforms;
-
-            ActiveVS->GetBuffer("PrevBoneTransforms").Update( &prevTransforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( prevTransforms.size(), NUM_MAX_BONES ) ).Bind();
+            if (vi->HasValidPrevTransforms && !vi->PrevBoneTransforms.empty()) {
+                BindDynamicCBToVertexShader(prevBoneTransformsCb, AllocateDynamicCB(&vi->PrevBoneTransforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( vi->PrevBoneTransforms.size(), NUM_MAX_BONES )));
+            } else {
+                BindDynamicCBToVertexShader(prevBoneTransformsCb, boneTransformAllocation);
+            }
         } else {
-            ActiveVS->GetBuffer("BoneTransforms").Bind( ActiveVS->GetInputIndex( "PrevBoneTransforms" ) ); // just bind the current bones again
+            BindDynamicCBToVertexShader(prevBoneTransformsCb, boneTransformAllocation);; // just bind the current bones again
         }
     }
 
@@ -2570,9 +2739,8 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh( SkeletalVobInfo* vi,
 
     for ( auto const& itm : dynamic_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->SkeletalMeshes ) {
         if ( zCMaterial* mat = itm.first ) {
-            zCTexture* tex;
-            if ( ActivePS && (tex = mat->GetAniTexture()) != nullptr ) {
-                if ( !BindTextureNRFX( tex, (RenderingStage != DES_GHOST) ) ) {
+            if ( ActivePS && (mat->GetAniTexture()) != nullptr ) {
+                if ( !BindTextureNRFX( mat, (RenderingStage != DES_GHOST) ) ) {
                     continue;
                 }
             }
@@ -2614,7 +2782,7 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh_Layered( SkeletalVobInfo* vi,
     cb2.PrevWorld = world;
     cb2.PI_ModelColor = color;
     cb2.PI_ModelFatness = fatness;
-    ActiveVS->GetBuffer("Matrices_PerInstances").Update( &cb2 ).Bind();
+    ActiveVS->UpdateBuffer("Matrices_PerInstances", &cb2, sizeof(cb2));
 
     bool useStructuredBones = !FeatureLevel10Compatibility;
     if ( useStructuredBones ) {
@@ -2628,13 +2796,13 @@ XRESULT D3D11GraphicsEngine::DrawSkeletalMesh_Layered( SkeletalVobInfo* vi,
             VS_ExConstantBuffer_SkeletalBoneRange range = {};
             range.BoneCount = static_cast<unsigned int>(packedCurrent.size());
             range.UseStructuredBones = 1u;
-            ActiveVS->GetBuffer( "BoneTransformRange" ).Update( &range ).Bind();
+            ActiveVS->UpdateBuffer("BoneTransformRange", &range, sizeof(range));
         }
     }
 
     if ( !useStructuredBones ) {
         // Copy bones
-        ActiveVS->GetBuffer("BoneTransforms").Update( &transforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( transforms.size(), NUM_MAX_BONES ) ).Bind();
+        ActiveVS->UpdateBuffer("BoneTransforms", &transforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( transforms.size(), NUM_MAX_BONES ));
     }
 
     // Note: Slot b3 is used for cbPerCubeRender in VS_ExSkeletalLayered, not PrevBoneTransforms
@@ -2723,9 +2891,10 @@ XRESULT D3D11GraphicsEngine::DrawInstanced(
     D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices,
     D3D11VertexBuffer* instanceData, unsigned int instanceDataStride,
     unsigned int numInstances, unsigned int vertexStride,
-    unsigned int startInstanceNum, unsigned int indexOffset ) {
+    unsigned int startInstanceNum, unsigned int indexOffset,
+    unsigned int instanceDataByteOffset ) {
     // Bind shader and pipeline flags
-    UINT offset[] = { 0, 0 };
+    UINT offset[] = { 0, instanceDataByteOffset };
     UINT uStride[] = { vertexStride, instanceDataStride };
     ID3D11Buffer* buffers[2] = {
         vb->GetVertexBuffer().Get(),
@@ -2757,6 +2926,11 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     bool updateState,
     bool drawAttachments ) {
     ZoneScoped;
+
+    // Ensure InfiniteRangeCB is bound. Otherwise AlphaText shader will screw up ;)
+    BindDynamicCBToPixelShader( 3, InfiniteRangeCB );
+
+    m_LastMaterialInfo = nullptr;
 
     //// Skeletal meshes use bone-driven animation that can change between passes.
     //// Skip them during the depth prepass to avoid depth mismatch in the lit pass.
@@ -2917,10 +3091,10 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 
     Context->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
     
-    auto perInstanceCb = ActiveVS->GetBuffer("Matrices_PerInstances").Bind();
-    auto boneRangeCb = ActiveVS->GetBuffer( "BoneTransformRange" ).Bind();
-    auto boneTransformsCb = GraphicsShaderConstantBuffer();
-    auto prevBoneTransformsCb = GraphicsShaderConstantBuffer();
+    auto perInstanceCb = ActiveVS->GetInputIndex("Matrices_PerInstances");
+    auto boneRangeCb = ActiveVS->GetInputIndex( "BoneTransformRange" );
+    ConstantBufferSlot boneTransformsCb = INVALID_SHADER_CB_SLOT;
+    ConstantBufferSlot prevBoneTransformsCb = INVALID_SHADER_CB_SLOT;
 
     if ( useStructuredBones ) {
         auto& currentBuffer = isMainReuseStage ? SkeletalBoneTransformsBuffer : SkeletalBoneTransformsBufferTransient;
@@ -2938,20 +3112,11 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 
     if ( !useStructuredBones ) {
         // Copy bones using the legacy cbuffer path.
-        boneTransformsCb = ActiveVS->GetBuffer("BoneTransforms").Bind();
-        prevBoneTransformsCb = ActiveVS->GetBuffer("PrevBoneTransforms").Bind();
-
-        // Copy previous frame bone transforms for motion vectors (only for main scene rendering, not shadow maps)
-        if ( GetRenderingStage() == DES_SHADOWMAP_CUBE ) {
-            // Don't bind previous, as we don't use them here yet.
-        }
-        else if ( GetRenderingStage() != DES_SHADOWMAP ) {
-            prevBoneTransformsCb.Bind(); // we actually should have previous bones
-        } else {
-            // must be shadowmap, bind current bones as previous
-            boneTransformsCb.Bind( ActiveVS->GetInputIndex( "PrevBoneTransforms" ) ); // just bind the current bones again
-        }
+        boneTransformsCb = ActiveVS->GetInputIndex("BoneTransforms");
+        prevBoneTransformsCb = ActiveVS->GetInputIndex("PrevBoneTransforms");
     }
+
+    ConstantBufferAllocation defaultMaterialInfoAllocation = {};
 
     const auto now = Engine::GAPI->GetTotalTimeDW();
 
@@ -2980,15 +3145,16 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
     }
 
     // Ensure we have correct Constantbuffer for eventual Alphatest stuff.
-    auto cbFFPipelineConstantBuffer = ShaderManager->GetPShader( Resolved_DiffuseNormalmappedAlphatest )
-        ->GetBuffer( "FFPipelineConstantBuffer" )
-        .Update( &graphicsState )
-        .Bind();
+    auto cbFFPipelineConstantBuffer = ShaderManager->GetPShader( Resolved_DiffuseNormalmappedAlphatest )->GetInputIndex( "FFPipelineConstantBuffer" );
+    
+    ShaderManager->GetPShader( Resolved_DiffuseNormalmappedAlphatest )
+        ->UpdateBuffer("FFPipelineConstantBuffer", &graphicsState, sizeof(graphicsState));
     
     const bool enableShadows = Engine::GAPI->GetRendererState().RendererSettings.EnableShadows;
     const bool isMainPass = RenderingStage == DES_MAIN;
     zCTexture* lastTex = nullptr;
-    auto bindTextureForPass = [&]( zCTexture* tex ) {
+    auto bindTextureForPass = [&]( zCMaterial* mat, zCTexture* tex ) {
+        tex = tex != nullptr ? tex : mat->GetAniTexture();
         if (tex == lastTex) 
             return true;
 
@@ -3013,7 +3179,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             return true;
         } else {
             lastTex = tex;
-            return BindTextureNRFX( tex, isMainPass );
+            return BindTextureNRFX( mat, isMainPass );
         }
     };
 
@@ -3136,7 +3302,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                     cb2.PrevWorld = vi->HasValidPrevTransforms ? vi->PrevWorldMatrix : world;
                     cb2.PI_Pad1.x = getFocusColor(vi->Vob, playerFocusVob);
 
-                    perInstanceCb.Update( &cb2 );
+                    BindDynamicCBToVertexShader(perInstanceCb, AllocateDynamicCB(&cb2));
 
                     if ( useStructuredBones ) {
                         VS_ExConstantBuffer_SkeletalBoneRange range = {};
@@ -3150,20 +3316,22 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                             range.BoneCount = static_cast<unsigned int>(std::min<UINT>( transforms.size(), NUM_MAX_BONES ));
                         }
                         range.UseStructuredBones = 1u;
-                        boneRangeCb.Update( &range );
+                        BindDynamicCBToVertexShader(boneRangeCb, AllocateDynamicCB(&range));
                     } else {
                         // Copy bones
-                        boneTransformsCb.Update( &transforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( transforms.size(), NUM_MAX_BONES ) );
+                        auto boneTransformAllocation = AllocateDynamicCB(&transforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( transforms.size(), NUM_MAX_BONES ));
+                        BindDynamicCBToVertexShader(boneTransformsCb, boneTransformAllocation);
 
                         // Copy previous frame bone transforms for motion vectors (only for main scene rendering, not shadow maps)
                         if ( GetRenderingStage() == DES_SHADOWMAP_CUBE ) {
                             // Don't bind previous, as we don't use them here yet.
                         } else if ( GetRenderingStage() != DES_SHADOWMAP ) {
-                            const std::span<XMFLOAT4X4> prevTransforms = (vi->HasValidPrevTransforms && !vi->PrevBoneTransforms.empty())
-                                ? std::span( vi->PrevBoneTransforms )
-                                : transforms;
-
-                            prevBoneTransformsCb.Update( &prevTransforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( prevTransforms.size(), NUM_MAX_BONES ) );
+                            if (vi->HasValidPrevTransforms && !vi->PrevBoneTransforms.empty())
+                            {
+                                BindDynamicCBToVertexShader(prevBoneTransformsCb, AllocateDynamicCB(&vi->PrevBoneTransforms[0], sizeof( XMFLOAT4X4 ) * std::min<UINT>( vi->PrevBoneTransforms.size(), NUM_MAX_BONES )));
+                            } else {
+                                BindDynamicCBToVertexShader(prevBoneTransformsCb, boneTransformAllocation);
+                            }
                         }
                     }
 
@@ -3182,12 +3350,35 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 
                     for ( auto const& itm : dynamic_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->SkeletalMeshes ) {
                         if ( zCMaterial* mat = itm.first ) {
-                            zCTexture* tex;
-                            if ( wantShader && (tex = mat->GetAniTexture()) != nullptr ) {
-                                if ( !bindTextureForPass( tex ) ) {
-                                    continue;
+                            if ( wantShader ) {
+                                if ( (mat->GetAniTexture()) != nullptr ) {
+                                    if ( !bindTextureForPass( mat, mat->GetAniTexture() ) ) {
+                                        continue;
+                                    }
+                                } else {
+                                    // Workaround missing textures, like for example Gregs hat in original G2 not having a texture assigned.
+                                    ID3D11ShaderResourceView* srvs[3] = {
+                                        BlackTexture->GetShaderResourceView().Get(),
+                                        DistortionTexture->GetShaderResourceView().Get(),
+                                        nullptr,
+                                    };
+                                    Context->PSSetShaderResources(0, std::size(srvs), srvs);
+                                    
+                                    if ( !defaultMaterialInfoAllocation.pBuffer ) {
+                                        MaterialInfo::Buffer d;
+                                        d.SetDefault();
+                                        d.NormalmapStrength = 0.05f;
+                                        d.SpecularIntensity = 0.10f;
+
+                                        defaultMaterialInfoAllocation = PerObjectMaterialInfoPooledBuffer->Allocate( &d, sizeof( d ) );
+                                    }
+                                    UINT firstConstant = defaultMaterialInfoAllocation.offsetInBytes / 16;
+                                    UINT numConstants = defaultMaterialInfoAllocation.sizeInBytes / 16;
+                                    GetContext()->PSSetConstantBuffers1( 2, 1, &defaultMaterialInfoAllocation.pBuffer, &firstConstant, &numConstants );
                                 }
                             }
+                        } else {
+                            continue;
                         }
                         for ( auto& mesh : itm.second ) {
 
@@ -3238,7 +3429,15 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         const bool isMainOrGhost = (GetRenderingStage() == DES_MAIN || GetRenderingStage() == DES_GHOST);
         const bool requiresMorphMeshSameAsMain = (GetRenderingStage() == DES_MAIN || GetRenderingStage() == DES_GHOST || GetRenderingStage() == DES_Z_PRE_PASS);
 
-        // Collect all non-MorphMesh draws and handle MorphMesh/Cube per-draw 
+        // The Z-prepass and the main pass see the exact same set of vobs/attachments in the
+        // same frame, so let the main pass reuse the Z-prepass' instance buffer + batch list
+        // instead of rebuilding and re-uploading it a second time (mirrors the skeletal bone
+        // buffer reuse above).
+        const bool reuseNodeAttachments = isMainStage
+            && m_FrameGeometryCache.nodeAttachmentInstancesUploaded
+            && HasMatchingSkeletalVisOrder( vis, m_FrameGeometryCache.nodeAttachmentVisOrder );
+
+        // Collect all non-MorphMesh draws and handle MorphMesh/Cube per-draw
 
         struct NodeAttachmentDrawItem {
             uint64_t sortKey;
@@ -3266,12 +3465,12 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 
         // For MorphMesh per-draw calls, lazily initialized
         bool perDrawSetupDone = false;
-        GraphicsShaderConstantBuffer perDrawMPI;
+        ConstantBufferSlot perDrawMPI = INVALID_SHADER_CB_SLOT;
 
         auto ensurePerDrawReady = [&]() {
             if ( !perDrawSetupDone ) {
                 ensurePerDrawShaderSetup();
-                perDrawMPI = GetActiveVS()->GetBuffer( "Matrices_PerInstances" ).Bind();
+                perDrawMPI = GetActiveVS()->GetInputIndex( "Matrices_PerInstances" );
 
                 if ( isMainOrGhost ) {
                     SetActivePixelShader( PShaderID::PS_DiffuseAlphaTest );
@@ -3279,7 +3478,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                 }
                 perDrawSetupDone = true;
             }
-            };
+        };
 
         // If cube path, set up per-draw immediately since everything goes through it
         if ( useCubePath ) {
@@ -3376,7 +3575,8 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                         instanceInfo.Scaling = fatness * 0.02f + 1.f;
                         instanceInfo.World = finalWorld;
                         instanceInfo.PrevWorld = finalPrevWorld;
-                        perDrawMPI.Update( &instanceInfo );
+                        
+                        BindDynamicCBToVertexShader(perDrawMPI, AllocateDynamicCB(&instanceInfo));
 
                         if ( distance < 1000 ) {
                             if ( requiresMorphMeshSameAsMain ) {
@@ -3395,18 +3595,18 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                         if ( isShadowPass ) {
                             for ( auto const& itm : mvi->Meshes ) {
                                 for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
-                                    Engine::GAPI->DrawMeshInfo( itm.first, itm.second[m].get() );
+                                    Engine::GAPI->DrawMeshInfoPacked( itm.first, itm.second[m].get() );
                                 }
                             }
                         } else {
                             for ( auto const& itm : mvi->Meshes ) {
-                                zCTexture* texture;
-                                if ( itm.first && (texture = itm.first->GetAniTexture()) != nullptr ) {
-                                    if ( !bindTextureForPass( texture ) )
+                                zCTexture* aniTex;
+                                if ( itm.first && (aniTex = itm.first->GetAniTexture()) != nullptr ) {
+                                    if ( !bindTextureForPass( itm.first, aniTex ) )
                                         continue;
                                 }
                                 for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
-                                    Engine::GAPI->DrawMeshInfo( itm.first, itm.second[m].get() );
+                                    Engine::GAPI->DrawMeshInfoPacked( itm.first, itm.second[m].get() );
                                 }
                             }
                         }
@@ -3421,126 +3621,148 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                         instanceInfo.Scaling = 1.f;
                         instanceInfo.World = finalWorld;
                         instanceInfo.PrevWorld = finalPrevWorld;
-                        perDrawMPI.Update( &instanceInfo );
+                        BindDynamicCBToVertexShader(perDrawMPI, AllocateDynamicCB(&instanceInfo));
 
                         for ( auto const& itm : mvi->Meshes ) {
                             for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
-                                Engine::GAPI->DrawMeshInfo( itm.first, itm.second[m].get() );
+                                Engine::GAPI->DrawMeshInfoPacked( itm.first, itm.second[m].get() );
                             }
                         }
                         continue;
                     }
 
-                    // Non-MMS, non-cube: collect for instanced drawing
-                    NodeAttachmentInstanceData instData;
-                    instData.World = finalWorld;
-                    instData.PrevWorld = finalPrevWorld;
-                    instData.Color = modelColor;
-                    instData.Color.w = getFocusColor( vi->Vob, playerFocusVob );
+                    // Non-MMS, non-cube: collect for instanced drawing.
+                    // Skipped entirely when reusing the Z-prepass' already-built batch list below.
+                    if ( !reuseNodeAttachments ) {
+                        NodeAttachmentInstanceData instData;
+                        instData.World = finalWorld;
+                        instData.PrevWorld = finalPrevWorld;
+                        instData.Color = modelColor;
+                        instData.Color.w = getFocusColor( vi->Vob, playerFocusVob );
 
-                    for ( auto const& itm : mvi->Meshes ) {
-                        zCTexture* texture = nullptr;
-                        FrameGeometryCache::SortKeyBuilder sortKeyBase = { 0 };
-                        if ( itm.first ) {
-                            texture = itm.first->GetAniTexture();
-                            if ( !texture
-                                // don't draw certain textures in the shadow pass, like human teeth, those will never be visible anyway.
-                                || (isShadowPass && (strncmp(texture->__GetName().ToChar(), "HUM_TEETH_V0.TGA", std::size("HUM_TEETH_V0.TGA") - 1) == 0))
-                                || texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
-                                // need to cache in in order to know its alpha/material state
-                                continue;
+                        for ( auto const& itm : mvi->Meshes ) {
+                            zCTexture* texture = nullptr;
+                            FrameGeometryCache::SortKeyBuilder sortKeyBase = { 0 };
+                            if ( itm.first ) {
+                                texture = itm.first->GetAniTexture();
+                                if ( !texture
+                                    // don't draw certain textures in the shadow pass, like human teeth, those will never be visible anyway.
+                                    || (isShadowPass && (strncmp(texture->__GetName().ToChar(), "HUM_TEETH_V0.TGA", std::size("HUM_TEETH_V0.TGA") - 1) == 0))
+                                    || texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
+                                    // need to cache in in order to know its alpha/material state
+                                    continue;
+                                }
+                                if ( texture->HasAlphaChannel() ) {
+                                    sortKeyBase.withAlphaType( 1 );
+                                }
+                                sortKeyBase.withTexture(reinterpret_cast<size_t>(texture));
                             }
-                            if ( texture->HasAlphaChannel() ) {
-                                sortKeyBase.withAlphaType( 1 );
+
+                            for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
+                                FrameGeometryCache::SortKeyBuilder meshSortKey = sortKeyBase;
+                                meshSortKey.withMesh( itm.second[m]->meshId );
+
+                                instancedDrawItems.emplace_back( meshSortKey.sortKey, itm.second[m].get(), texture, itm.first, instData,
+                                    (texture && texture->HasAlphaChannel()) || (itm.first && itm.first->HasAlphaTest())
+                                );
                             }
-                            sortKeyBase.withTexture(reinterpret_cast<size_t>(texture));
-                        }
-
-                        for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
-                            FrameGeometryCache::SortKeyBuilder meshSortKey = sortKeyBase;
-                            meshSortKey.withMesh( itm.second[m]->meshId );
-
-                            instancedDrawItems.emplace_back( meshSortKey.sortKey, itm.second[m].get(), texture, itm.first, instData,
-                                (texture && texture->HasAlphaChannel()) || (itm.first && itm.first->HasAlphaTest())
-                            );
                         }
                     }
                 }
             }
         }
 
-        if ( instancedDrawItems.empty() )
-            return;
+        D3D11VertexBuffer* nodeAttachmentBuffer = nullptr;
+        uint32_t nodeAttachmentBufferOffset = 0;
+        static std::vector<FrameGeometryCache::CachedNodeAttachmentBatch> batches;
+        const std::vector<FrameGeometryCache::CachedNodeAttachmentBatch>* drawBatches = nullptr;
 
-        std::sort( instancedDrawItems.begin(), instancedDrawItems.end(),
-            []( const NodeAttachmentDrawItem& a, const NodeAttachmentDrawItem& b ) {
-                    return a.sortKey < b.sortKey;
-            } );
+        if ( reuseNodeAttachments ) {
+            if ( m_FrameGeometryCache.nodeAttachmentBatches.empty() )
+                return;
 
-        // Ensure instance buffer is large enough
-        const size_t neededBytes = instancedDrawItems.size() * sizeof( NodeAttachmentInstanceData );
-        if ( NodeAttachmentInstancingBuffer->GetSizeInBytes() < neededBytes ) {
-            if ( XR_FAILED == NodeAttachmentInstancingBuffer->Init(
-                nullptr, neededBytes,
-                D3D11VertexBuffer::B_VERTEXBUFFER, D3D11VertexBuffer::U_DYNAMIC, D3D11VertexBuffer::CA_WRITE ) ) {
-                LogError() << "Failed to create instance buffer for node attachments!";
+            nodeAttachmentBuffer = m_FrameGeometryCache.NodeAttachmentInstancingBuffer;
+            nodeAttachmentBufferOffset = m_FrameGeometryCache.NodeAttachmentInstancingBufferOffset;
+            drawBatches = &m_FrameGeometryCache.nodeAttachmentBatches;
+        } else {
+            if ( instancedDrawItems.empty() )
+                return;
+
+            std::sort( instancedDrawItems.begin(), instancedDrawItems.end(),
+                []( const NodeAttachmentDrawItem& a, const NodeAttachmentDrawItem& b ) {
+                        return a.sortKey < b.sortKey;
+                } );
+
+            const unsigned int neededBytes = static_cast<unsigned int>(instancedDrawItems.size() * sizeof( NodeAttachmentInstanceData ));
+            FrameInstancingBufferPool& nodeAttachmentPool = isShadowPass
+                ? m_ShadowNodeAttachmentInstancingPool
+                : m_MainNodeAttachmentInstancingPool;
+            FrameInstancingAllocation nodeAttachmentAlloc = AcquireFrameInstancingAllocation( nodeAttachmentPool, neededBytes,
+                isShadowPass ? "ShadowNodeAttachmentInstancingBuffer" : "MainNodeAttachmentInstancingBuffer" );
+            nodeAttachmentBuffer = nodeAttachmentAlloc.Buffer;
+            if ( !nodeAttachmentBuffer ) {
+                LogError() << "Failed to acquire node attachment instancing buffer.";
                 return;
             }
-            SetDebugName( NodeAttachmentInstancingBuffer->GetVertexBuffer().Get(), "NodeAttachmentInstancingBuffer" );
-        }
+            nodeAttachmentBufferOffset = nodeAttachmentAlloc.OffsetInBytes;
 
-        // Build batch list and upload instance data
-        struct InstanceBatch {
-            MeshInfo* mesh;
-            zCTexture* texture;
-            zCMaterial* material;
-            unsigned int startInstance;
-            unsigned int instanceCount;
-            bool needAlpha;
-        };
+            // Build batch list and upload instance data
+            batches.clear();
 
-        static std::vector<InstanceBatch> batches;
-        batches.clear();
-
-        void* mappedData;
-        UINT mappedSize;
-        if ( XR_SUCCESS != NodeAttachmentInstancingBuffer->Map( D3D11VertexBuffer::M_WRITE_DISCARD,
-            &mappedData, &mappedSize ) ) {
-            LogError() << "Failed to map instance buffer for node attachments!";
-            return;
-        }
-
-        auto* destData = static_cast<NodeAttachmentInstanceData*>(mappedData);
-        unsigned int currentIdx = 0;
-
-        for ( size_t i = 0; i < instancedDrawItems.size(); ) {
-            // Find the end of this batch (same mesh + texture)
-            size_t batchStart = i;
-            auto batchMesh = instancedDrawItems[i].mesh;
-            auto meshId = batchMesh->meshId;
-            zCTexture* batchTex = instancedDrawItems[i].texture;
-            zCMaterial* batchMat = instancedDrawItems[i].material;
-
-            bool needAlpha = false;
-            while ( i < instancedDrawItems.size()
-                    && meshId > 0 // assume meshId 0 means "not batch-able"
-                    && instancedDrawItems[i].mesh->meshId == meshId
-                    && instancedDrawItems[i].texture == batchTex ) {
-                // Some of them have needAlpha false, even though they share the same texture!
-                // thus we now just walk all batch items and assume if one needs alpha, all do.
-                needAlpha |= instancedDrawItems[i].needAlpha;
-                destData[currentIdx] = instancedDrawItems[i].instanceData;
-                ++currentIdx;
-                ++i;
+            void* mappedData;
+            UINT mappedSize;
+            if ( XR_SUCCESS != nodeAttachmentBuffer->Map( D3D11VertexBuffer::M_WRITE_NO_OVERWRITE,
+                &mappedData, &mappedSize ) ) {
+                LogError() << "Failed to map instance buffer for node attachments!";
+                return;
             }
 
-            batches.push_back( { batchMesh, batchTex, batchMat,
-                static_cast<unsigned int>(batchStart),
-                static_cast<unsigned int>(i - batchStart),
-                needAlpha } );
+            auto* destData = reinterpret_cast<NodeAttachmentInstanceData*>(static_cast<byte*>(mappedData) + nodeAttachmentBufferOffset);
+            unsigned int currentIdx = 0;
+
+            for ( size_t i = 0; i < instancedDrawItems.size(); ) {
+                // Find the end of this batch (same mesh + texture)
+                size_t batchStart = i;
+                auto batchMesh = instancedDrawItems[i].mesh;
+                auto meshId = batchMesh->meshId;
+                zCTexture* batchTex = instancedDrawItems[i].texture;
+                zCMaterial* batchMat = instancedDrawItems[i].material;
+
+                bool needAlpha = false;
+                while ( i < instancedDrawItems.size()
+                        && meshId > 0 // assume meshId 0 means "not batch-able"
+                        && instancedDrawItems[i].mesh->meshId == meshId
+                        && instancedDrawItems[i].texture == batchTex ) {
+                    // Some of them have needAlpha false, even though they share the same texture!
+                    // thus we now just walk all batch items and assume if one needs alpha, all do.
+                    needAlpha |= instancedDrawItems[i].needAlpha;
+                    destData[currentIdx] = instancedDrawItems[i].instanceData;
+                    ++currentIdx;
+                    ++i;
+                }
+
+                batches.push_back( { batchMesh, batchTex, batchMat,
+                    static_cast<unsigned int>(batchStart),
+                    static_cast<unsigned int>(i - batchStart),
+                    needAlpha } );
+            }
+
+            nodeAttachmentBuffer->Unmap();
+            drawBatches = &batches;
+
+            if ( isMainReuseStage ) {
+                m_FrameGeometryCache.nodeAttachmentInstancesUploaded = true;
+                m_FrameGeometryCache.nodeAttachmentVisOrder = vis;
+                m_FrameGeometryCache.nodeAttachmentBatches = batches;
+                m_FrameGeometryCache.NodeAttachmentInstancingBuffer = nodeAttachmentBuffer;
+                m_FrameGeometryCache.NodeAttachmentInstancingBufferOffset = nodeAttachmentBufferOffset;
+            }
         }
 
-        NodeAttachmentInstancingBuffer->Unmap();
+        if ( !nodeAttachmentBuffer ) {
+            LogError() << "Missing node attachment instancing buffer.";
+            return;
+        }
 
         // Draw calls
 
@@ -3557,9 +3779,9 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         Context->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
         // Bind instance buffer to slot 1 (persists across batches)
-        UINT instOffset = 0;
+        UINT instOffset = nodeAttachmentBufferOffset;
         UINT instStride = sizeof( NodeAttachmentInstanceData );
-        Context->IASetVertexBuffers( 1, 1, NodeAttachmentInstancingBuffer->GetVertexBuffer().GetAddressOf(), &instStride, &instOffset );
+        Context->IASetVertexBuffers( 1, 1, nodeAttachmentBuffer->GetVertexBuffer().GetAddressOf(), &instStride, &instOffset );
 
         wantShader = true;
 
@@ -3580,8 +3802,6 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         D3D11VertexBuffer* lastVB = nullptr;
         D3D11VertexBuffer* lastIB = nullptr;
 
-        MaterialInfo* lastMaterialInfo = nullptr;
-
         void* lastBatchTex = nullptr;
         auto lastSwitches = graphicsState.FF_GSwitches;
         void* lastPs = nullptr;
@@ -3589,12 +3809,12 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
         // otherwise shadows of streetlamps are not accurate
         const bool needsAlphaTesting = isShadowPass || isZPrepass;
 
-        for ( const auto& batch : batches ) {
-            MeshInfo* mi = batch.mesh;
+        for ( const auto& batch : *drawBatches ) {
+            MeshInfo* mi = batch.Mesh;
 
             MaterialInfo* info = nullptr;
-            if ( batch.texture ) {
-                info = Engine::GAPI->GetMaterialInfoFrom( batch.texture );
+            if ( batch.Material ) {
+                info = Engine::GAPI->GetMaterialInfoFrom( batch.Material );
                 if ( needsAlphaTesting && info->MaterialType == MaterialInfo::MT_FullAlpha ) {
                     continue;
                 }
@@ -3602,14 +3822,14 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 
             // Bind texture for non-shadow passes
             if ( needsAlphaTesting ) {
-                if ( batch.needAlpha ) {
-                    if ( !batch.texture || batch.texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
+                if ( batch.NeedAlpha ) {
+                    if ( !batch.Texture || batch.Texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
                         // can't do alpha without a texture
                         continue;
                     }
-                    if ( lastBatchTex != batch.texture ) {
-                        batch.texture->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
-                        lastBatchTex = batch.texture;
+                    if ( lastBatchTex != batch.Texture ) {
+                        batch.Texture->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
+                        lastBatchTex = batch.Texture;
                     }
                     SetActivePixelShader( PShaderID::PS_DiffuseAlphaTestShadows );
                     if ( ActivePS.get() != lastPs ) {
@@ -3621,32 +3841,31 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                     lastPs = nullptr;
                     GetContext()->PSSetShader( nullptr, nullptr, 0 );
                 }
-            } else if ( wantShader && batch.texture && batch.texture != lastBatchTex ) {
-                if ( !BindTextureNRFX( batch.texture, isMainOrGhost, info != lastMaterialInfo ) ) {
+            } else if ( wantShader && batch.Texture && batch.Texture != lastBatchTex ) {
+                if ( !BindTextureNRFX( batch.Material, batch.Texture, isMainOrGhost, true ) ) {
                     continue;
                 }
-                lastMaterialInfo = info;
-                lastBatchTex = batch.texture;
+                lastBatchTex = batch.Texture;
             }
 
             // Set up alpha test state from material
-            if ( batch.material ) {
-                if ( batch.material->GetAlphaFunc() == zRND_ALPHA_FUNC_TEST )
+            if ( batch.Material ) {
+                if ( batch.Material->GetAlphaFunc() == zRND_ALPHA_FUNC_TEST )
                     graphicsState.FF_GSwitches |= GSWITCH_ALPHAREF;
                 else
                     graphicsState.FF_GSwitches &= ~GSWITCH_ALPHAREF;
 
                 if ( lastSwitches != graphicsState.FF_GSwitches ) {
                     lastSwitches = graphicsState.FF_GSwitches;
-                    cbFFPipelineConstantBuffer.Update( &lastSwitches );
+                    BindDynamicCBToPixelShader(cbFFPipelineConstantBuffer, AllocateDynamicCB(&lastSwitches));
                     UpdateRenderStates();
                 }
             }
 
-            // Bind mesh VB to slot 0 (only when changed)
+            // Bind mesh VB to slot 0 (only when changed) - packed VOB vertex
             if ( mi->GetMeshVertexBuffer() != lastVB ) {
                 UINT vbOffset = 0;
-                UINT vbStride = sizeof( ExVertexStruct );
+                UINT vbStride = sizeof( ExVertexStructGPU );
                 Context->IASetVertexBuffers( 0, 1, mi->MeshVertexBuffer->GetVertexBuffer().GetAddressOf(), &vbStride, &vbOffset );
                 lastVB = mi->GetMeshVertexBuffer();
             }
@@ -3660,16 +3879,16 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             // Draw instanced
             if ( mi->MeshIndexBuffer ) {
                 const unsigned int numIndices = static_cast<unsigned int>(mi->Indices.size());
-                Context->DrawIndexedInstanced( numIndices, batch.instanceCount, 0, 0, batch.startInstance );
+                Context->DrawIndexedInstanced( numIndices, batch.InstanceCount, 0, 0, batch.StartInstance );
 
                 Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
-                    (numIndices / 3) * batch.instanceCount;
+                    (numIndices / 3) * batch.InstanceCount;
             } else {
                 const unsigned int numVertices = static_cast<unsigned int>(mi->Vertices.size());
-                Context->DrawInstanced( numVertices, batch.instanceCount, 0, batch.startInstance );
+                Context->DrawInstanced( numVertices, batch.InstanceCount, 0, batch.StartInstance );
 
                 Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
-                    (numVertices / 3) * batch.instanceCount;
+                    (numVertices / 3) * batch.InstanceCount;
             }
         }
 
@@ -3923,15 +4142,18 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
     GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
     GetContext()->CSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
 
-    // Update view distances
+    // Update view distances (allocate fresh dynamic-ring slots for this frame;
+    // the handles are stored and re-bound at the many later draw sites)
     static const float4 defaultInfiniteRange = float4( FLT_MAX, 0, 0, 0 );
-    InfiniteRangeConstantBuffer->UpdateBuffer( &defaultInfiniteRange );
+    InfiniteRangeCB = AllocateDynamicCB( &defaultInfiniteRange, sizeof( defaultInfiniteRange ) );
+
+    BindDynamicCBToPixelShader( 3, InfiniteRangeCB );
 
     const float4 outdoorSmallRange( rendererState.RendererSettings.OutdoorSmallVobDrawRadius, 0, 0, 0 );
-    OutdoorSmallVobsConstantBuffer->UpdateBuffer( &outdoorSmallRange );
+    OutdoorSmallVobsCB = AllocateDynamicCB( &outdoorSmallRange, sizeof( outdoorSmallRange ) );
 
     const float4 outdoorRange( rendererState.RendererSettings.OutdoorVobDrawRadius, 0, 0, 0 );
-    OutdoorVobsConstantBuffer->UpdateBuffer( &outdoorRange );
+    OutdoorVobsCB = AllocateDynamicCB( &outdoorRange, sizeof( outdoorRange ) );
 
     rendererState.RasterizerState.FrontCounterClockwise = false;
     rendererState.RasterizerState.SetDirty();
@@ -3958,6 +4180,16 @@ XRESULT D3D11GraphicsEngine::OnStartWorldRendering() {
             const float clearColor[4] = { 0.f, 0.f, 0.f, 0.f };
             context->ClearRenderTargetView( HDRBackBuffer->GetRenderTargetView().Get(), clearColor );
             context->ClearRenderTargetView( Backbuffer->GetRenderTargetView().Get(), clearColor );
+
+            // MSAA buffers (Forward+ only) aren't part of the RenderGraph and so aren't covered by
+            // the clears above; without this, subsamples never touched by opaque geometry this frame
+            // (i.e. every edge/silhouette pixel) would keep resolving in stale data from past frames.
+            if ( MSAADepthStencilBuffer ) {
+                context->ClearDepthStencilView( MSAADepthStencilBuffer->GetDepthStencilView().Get(), D3D11_CLEAR_DEPTH, 0, 0 );
+            }
+            if ( MSAAColorBuffer ) {
+                context->ClearRenderTargetView( MSAAColorBuffer->GetRenderTargetView().Get(), clearColor );
+            }
 
             float4 fogColor( rendererState.RendererSettings.AtmosphericScattering
                 ? rendererState.RendererSettings.FogColorMod
@@ -4613,11 +4845,11 @@ void D3D11GraphicsEngine::SetupVS_ExMeshDrawCall() {
     GetContext()->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 }
 
-void D3D11GraphicsEngine::SetupVS_ExConstantBuffer() {
+void D3D11GraphicsEngine::PreparePerFrameConstantBuffer(VS_ExConstantBuffer_PerFrame& cb)
+{
     auto& view = Engine::GAPI->GetRendererState().TransformState.TransformView;
     auto& proj = Engine::GAPI->GetProjectionMatrix();
 
-    VS_ExConstantBuffer_PerFrame cb;
     cb.View = view;
     cb.Projection = proj;
     XMStoreFloat4x4( &cb.ViewProj, XMMatrixMultiply( XMLoadFloat4x4( &proj ), XMLoadFloat4x4( &view ) ) );
@@ -4630,8 +4862,12 @@ void D3D11GraphicsEngine::SetupVS_ExConstantBuffer() {
         // If TAA not active, ViewProj is already unjittered
         cb.UnjitteredViewProj = cb.ViewProj;
     }
+}
 
-    ActiveVS->GetBuffer(0).Update(&cb).Bind();
+void D3D11GraphicsEngine::SetupVS_ExConstantBuffer() {
+    VS_ExConstantBuffer_PerFrame cb;
+    PreparePerFrameConstantBuffer(cb);
+    ActiveVS->UpdateBuffer(0, &cb, sizeof(cb));
 }
 
 void D3D11GraphicsEngine::SetupVS_ExPerInstanceConstantBuffer() {
@@ -4640,7 +4876,7 @@ void D3D11GraphicsEngine::SetupVS_ExPerInstanceConstantBuffer() {
     VS_ExConstantBuffer_PerInstance cb = {};
     cb.World = world;
 
-    ActiveVS->GetBuffer(1).Update(&cb).Bind();
+    ActiveVS->UpdateBuffer(1, &cb, sizeof(cb));
 }
 
 bool SectionRenderlistSortCmp( std::pair<float, WorldMeshSectionInfo*>& a,
@@ -4710,30 +4946,25 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
     Engine::GAPI->ResetWorldTransform();
 
     SetActivePixelShader( PShaderID::PS_Diffuse );
-    SetActiveVertexShader( VShaderID::VS_Ex );
+    // Wrapped world mesh is packed (36 B) — decode with VS_ExPacked.
+    SetActiveVertexShader( VShaderID::VS_ExPacked );
 
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
 
     // Set constant buffer
-    ActivePS->GetBuffer( "FFPipelineConstantBuffer" )
-        .Update( &Engine::GAPI->GetRendererState().GraphicsState )
-        .Bind();
+    ActivePS->UpdateBuffer("FFPipelineConstantBuffer", &Engine::GAPI->GetRendererState().GraphicsState, sizeof(Engine::GAPI->GetRendererState().GraphicsState));
 
     GSky* sky = Engine::GAPI->GetSky();
-    ActivePS->GetBuffer( "Atmosphere" )
-        .Update( &sky->GetAtmosphereCB() )
-        .Bind();
+    ActivePS->UpdateBuffer("Atmosphere", &sky->GetAtmosphereCB(), sizeof(sky->GetAtmosphereCB()));
 
     const XMMATRIX identityMatrix = XMMatrixIdentity();
-    ActiveVS->GetBuffer( "Matrices_PerInstances" ).Update( &identityMatrix ).Bind();
+    ActiveVS->UpdateBuffer("Matrices_PerInstances", &identityMatrix, sizeof(identityMatrix));
 
-    InfiniteRangeConstantBuffer->BindToPixelShader( 3 );
+    BindDynamicCBToPixelShader( 3, InfiniteRangeCB );
 
-    // Bind wrapped mesh vertex buffers
-    DrawVertexBufferIndexedUINT(
-        Engine::GAPI->GetWrappedWorldMesh()->GetMeshVertexBuffer(),
-        Engine::GAPI->GetWrappedWorldMesh()->GetMeshIndexBuffer(), 0, 0 );
+    // Bind wrapped mesh vertex buffers (packed 36-byte stream + 32-bit indices)
+    BindWrappedWorldMeshPacked( Engine::GAPI->GetWrappedWorldMesh() );
 
     int lastAlphaFunc = 0;
 
@@ -4843,9 +5074,7 @@ XRESULT D3D11GraphicsEngine::DrawMeshInfoListAlphablended(
                 }
             }
 
-            ActivePS->GetBuffer( "cbFFData" )
-                .Update( &ffdata )
-                .Bind();
+            ActivePS->UpdateBuffer("cbFFData", &ffdata, sizeof(ffdata));
 
             // TODO: Do we even need/use material-info for transparent meshes?
             /*MaterialInfo* info = meshKey.Info;
@@ -4890,6 +5119,8 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
     ZoneScopedN( "DrawWorldMesh" );
     auto _scopeDrawWorldMesh = RecordGraphicsEvent( GE_NAME( "DrawWorldMesh" ) );
 
+    m_LastMaterialInfo = nullptr;
+
     const bool isZPrepass = RenderingStage == DES_Z_PRE_PASS;
     if ( isZPrepass ) {
         noTextures = true;
@@ -4903,7 +5134,10 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
     Engine::GAPI->ResetWorldTransform();
 
     SetActivePixelShader( PShaderID::PS_Diffuse );
-    SetActiveVertexShader( VShaderID::VS_Ex );
+    // The wrapped world mesh is stored in the packed 36-byte format (ExVertexStructGPU);
+    // VS_ExPacked decodes it. Opaque depth/shadow sub-passes below swap to VS_ExDepth + the
+    // position-only stream and restore VS_ExPacked for the alpha/color submissions.
+    SetActiveVertexShader( VShaderID::VS_ExPacked );
 
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
@@ -4913,27 +5147,19 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
 
     // Set constant buffer
     const XMMATRIX identityMatrix = XMMatrixIdentity();
-    ActiveVS->GetBuffer( "Matrices_PerInstances" )
-        .Update( &identityMatrix )
-        .Bind();
+    ActiveVS->UpdateBuffer("Matrices_PerInstances", &identityMatrix, sizeof(identityMatrix));
     
     auto updatePSBuffers = [this] {
-        ActivePS->GetBuffer( "FFPipelineConstantBuffer" )
-            .Update( &Engine::GAPI->GetRendererState().GraphicsState )
-            .Bind();
+        ActivePS->UpdateBuffer("FFPipelineConstantBuffer", &Engine::GAPI->GetRendererState().GraphicsState, sizeof(Engine::GAPI->GetRendererState().GraphicsState));
 
         GSky* sky = Engine::GAPI->GetSky();
-        ActivePS->GetBuffer( "Atmosphere" )
-            .Update( &sky->GetAtmosphereCB() )
-            .Bind();
+        ActivePS->UpdateBuffer("Atmosphere", &sky->GetAtmosphereCB(), sizeof(sky->GetAtmosphereCB()));
 
-        ActivePS->BindBuffer( "DIST_Distance", InfiniteRangeConstantBuffer.get() );
+        BindDynamicCBToPixelShader( ActivePS->GetInputIndex( "DIST_Distance" ), InfiniteRangeCB );
 
         PsSimpleFFdata ffdata = { };
         ffdata.textureFactor = float4( 1.0f, 1.0f, 1.0f, 1.0f );
-        ActivePS->GetBuffer( "cbFFData" )
-            .Update( &ffdata )
-            .Bind();
+        ActivePS->UpdateBuffer("cbFFData", &ffdata, sizeof(ffdata));
     };
     updatePSBuffers();
 
@@ -4945,7 +5171,7 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
     renderList = m_FrameGeometryCache.visibleSections; // shallow copy of pointers — O(N_sections), not O(BSP)
 
     MeshInfo* meshInfo = Engine::GAPI->GetWrappedWorldMesh();
-    DrawVertexBufferIndexedUINT( meshInfo->GetMeshVertexBuffer(), meshInfo->GetMeshIndexBuffer(), 0, 0 );
+    BindWrappedWorldMeshPacked( meshInfo );
 
     struct WorldMeshKey {
         zCTexture* Texture;
@@ -4985,13 +5211,13 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
         for ( auto const& renderItem : renderList ) {
             for ( auto const& worldMesh : renderItem->WorldMeshes ) {
                 if ( worldMesh.first.Material ) {
-                    zCTexture* aniTex = worldMesh.first.Material->GetTexture();
-                    if ( !aniTex ) continue;
+                    zCTexture* matTex = worldMesh.first.Material->GetTextureSingle();
+                    if ( !matTex ) continue;
 
                     // Check surface type
                     if ( worldMesh.first.Info->MaterialType == MaterialInfo::MT_Water ) {
                         if ( !isZPrepass ) {
-                            FrameWaterSurfaces[aniTex].push_back( worldMesh.second );
+                            FrameWaterSurfaces[matTex].push_back( worldMesh.second );
                         }
                         continue;
                     }
@@ -5022,18 +5248,18 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
                         continue;
                     } else {
 
-                        if ( aniTex->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
+                        if ( matTex->CacheIn( 0.6f ) != zRES_CACHED_IN ) {
                             continue;
                         }
                         int alphaLevel = 0;
-                        if ( worldMesh.first.Texture && worldMesh.first.Texture->HasAlphaChannel() ) {
+                        if ( matTex && matTex->HasAlphaChannel() ) {
                             alphaLevel = 2;
                         } else if ( worldMesh.first.Material && worldMesh.first.Material->HasAlphaTest() ) {
                             alphaLevel = 1;
                         }
 
                         WorldMeshKey key = {
-                            aniTex,
+                            matTex,
                             worldMesh.first.Material,
                             worldMesh.first.Info,
                             alphaLevel,
@@ -5132,13 +5358,12 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
             DrawVertexBufferIndexedUINT( nullptr, nullptr, mesh.second->Indices.size(), mesh.second->BaseIndexLocation );
         }
 
-        // Alpha-tested geometry: restore the full stream + VS_Ex (also restores state for the
-        // color pass / the forward+ prepass early-return below).
+        // Alpha-tested geometry: restore the packed full stream + VS_ExPacked (also restores state
+        // for the color pass / the forward+ prepass early-return below).
         if ( usePositionStream ) {
-            SetActiveVertexShader( VShaderID::VS_Ex );
+            SetActiveVertexShader( VShaderID::VS_ExPacked );
             ActiveVS->Apply();
-            UINT uStride = sizeof( ExVertexStruct );
-            GetContext()->IASetVertexBuffers( 0, 1, meshInfo->MeshVertexBuffer->GetVertexBuffer().GetAddressOf(), &uStride, &vbOffset );
+            BindWrappedWorldMeshPacked( meshInfo );
         }
 
         for ( auto const& mesh : meshList ) {
@@ -5175,9 +5400,8 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
     ActivePS->Apply();
 
     MaterialInfo defInfo = {};
-    auto materialInfoBuffer = ActivePS->GetBuffer( "MI_MaterialInfo" )
-        .Update( &defInfo.buffer, sizeof(defInfo.buffer) )
-        .Bind();
+    auto materialInfoBuffer = ActivePS->GetInputIndex("MI_MaterialInfo");
+    ActivePS->UpdateBuffer(materialInfoBuffer, &defInfo.buffer, sizeof(defInfo.buffer));
 
     // Now draw the actual pixels
     zCTexture* bound = nullptr;
@@ -5188,9 +5412,8 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
         const size_t numMeshes = meshList.size();
         std::vector<UINT> materialInfoCbOffsets( numMeshes );
 
-        ConstantBufferAllocation INVALID_MATERIAL = PerObjectMaterialInfoPooledBuffer->Allocate( GetContext().Get(), &defInfo.buffer, sizeof( defInfo.buffer ) );
+        ConstantBufferAllocation INVALID_MATERIAL = PerObjectMaterialInfoPooledBuffer->Allocate( &defInfo.buffer, sizeof( defInfo.buffer ) );
         ConstantBufferAllocation lastMatCbAllocation = INVALID_MATERIAL;
-        MaterialInfo* lastInfo = nullptr;
 
         const auto sceneIsWet = Engine::GAPI->GetSceneWetness() > 1e-6;
         for ( size_t i = 0; i < numMeshes; i++ ) {
@@ -5237,19 +5460,19 @@ XRESULT D3D11GraphicsEngine::DrawWorldMesh( bool noTextures ) {
 
                 auto materialInfoBufferAllocation = lastMatCbAllocation;
                 if ( info ) {
-                    if ( info->IsSame( lastInfo ) ) {
+                    if ( info->IsSame( m_LastMaterialInfo ) ) {
                         materialInfoBufferAllocation = lastMatCbAllocation;
                     } else {
-                        materialInfoBufferAllocation = PerObjectMaterialInfoPooledBuffer->Allocate( GetContext().Get(), &info->buffer, sizeof( info->buffer ) );
+                        materialInfoBufferAllocation = PerObjectMaterialInfoPooledBuffer->Allocate( &info->buffer, sizeof( info->buffer ) );
                     }
                 }
-                lastInfo = info;
+                m_LastMaterialInfo = info;
 
                 UINT firstConstant = materialInfoBufferAllocation.offsetInBytes / 16;
                 UINT numConstants = materialInfoBufferAllocation.sizeInBytes / 16; // aligned size
 
                 if ( lastMatCbAllocation != materialInfoBufferAllocation ) {
-                    GetContext()->PSSetConstantBuffers1( materialInfoBuffer.GetSlot(), 1, &materialInfoBufferAllocation.pBuffer, &firstConstant, &numConstants );
+                    DynamicConstantBufferPool->BindPS(materialInfoBuffer, materialInfoBufferAllocation);
                     lastMatCbAllocation = materialInfoBufferAllocation;
                 }
                 bound = mesh.first.Texture;
@@ -5296,15 +5519,13 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
     SetupVS_ExConstantBuffer();
 
     float totalTime = Engine::GAPI->GetTotalTime();
-    ActiveVS->GetBuffer( "Matrices_PerInstances" ).Update( &totalTime, 4 ).Bind();
+    ActiveVS->UpdateBuffer("Matrices_PerInstances", &totalTime, sizeof(totalTime));
 
     GetContext()->OMSetRenderTargets( 1, HDRBackBuffer->GetRenderTargetView().GetAddressOf(),
         DepthStencilBuffer->GetDepthStencilView().Get() );
 
-    // Bind wrapped mesh vertex buffers
-    DrawVertexBufferIndexedUINT(
-        Engine::GAPI->GetWrappedWorldMesh()->GetMeshVertexBuffer(),
-        Engine::GAPI->GetWrappedWorldMesh()->GetMeshIndexBuffer(), 0, 0 );
+    // Bind wrapped mesh vertex buffers (packed 36-byte stream; VS_ExWater decodes it)
+    BindWrappedWorldMeshPacked( Engine::GAPI->GetWrappedWorldMesh() );
 
     // Build per-texture batch descriptors and flat indirect draw args
     struct WaterTextureBatch {
@@ -5420,7 +5641,7 @@ void D3D11GraphicsEngine::DrawWaterSurfaces() {
         ricb.RI_Pad2 = 0.0f;
         ricb.RI_View = Engine::GAPI->GetRendererState().TransformState.TransformView; // not transposed, PS takes care of proper mul-order
 
-        ActivePS->GetBuffer( "RefractionInfo" ).Update( &ricb ).Bind();
+        ActivePS->UpdateBuffer("RefractionInfo", &ricb, sizeof(ricb));
 
         // Bind reflection cube
         GetContext()->PSSetShaderResources( 3, 1, ReflectionCube.GetAddressOf() );
@@ -5464,7 +5685,8 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
     std::list<SkeletalVobInfo*>* renderedMobs,
     std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache,
     unsigned int casterMask,
-    const std::function<bool(zCVob*)>& ignoreVob ) {
+    const std::function<bool(zCVob*)>& ignoreVob,
+    bool usesCubeGeometryShader ) {
 
     // Setup renderstates
     Engine::GAPI->GetRendererState().RasterizerState.SetDefault();
@@ -5488,31 +5710,32 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
     }
 
     // Set constant buffer
-    ActivePS->GetBuffer( "FFPipelineConstantBuffer" )
-        .Update( &Engine::GAPI->GetRendererState().GraphicsState )
-        .Bind();
+    ActivePS->UpdateBuffer("FFPipelineConstantBuffer", &Engine::GAPI->GetRendererState().GraphicsState, sizeof(Engine::GAPI->GetRendererState().GraphicsState));
 
     GSky* sky = Engine::GAPI->GetSky();
-    ActivePS->GetBuffer( "Atmosphere" )
-        .Update( &sky->GetAtmosphereCB() )
-        .Bind();
+    ActivePS->UpdateBuffer("Atmosphere", &sky->GetAtmosphereCB(), sizeof(sky->GetAtmosphereCB()));
 
     // Init drawcalls
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
 
-    const XMMATRIX identityMatrix = XMMatrixIdentity();
-    ActiveVS->GetBuffer( "Matrices_PerInstances" ).Update( &identityMatrix ).Bind();
+    constexpr float identityMatrix[16] = {
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f,
+    };
+    ActiveVS->UpdateBuffer("Matrices_PerInstances", &identityMatrix, 16);
 
     // Update and bind buffer of PS
     PerObjectState ocb;
     ocb.OS_AmbientColor = float3( 1, 1, 1 );
-    ActivePS->GetBuffer( "POS_MaterialInfo" ).Update( &ocb ).Bind();
+    ActivePS->UpdateBuffer("POS_MaterialInfo", &ocb, sizeof(ocb));
 
     WhiteTexture->BindToPixelShader( 0 );
     void* lastTex = WhiteTexture.get();
 
-    ActivePS->BindBuffer( "DIST_Distance", InfiniteRangeConstantBuffer.get() );
+    BindDynamicCBToPixelShader( ActivePS->GetInputIndex( "DIST_Distance" ), InfiniteRangeCB );
 
     UpdateRenderStates();
 
@@ -5523,7 +5746,6 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
 
     auto rangeSquared = range * range;
     auto vRangeSquared = XMVectorReplicate(rangeSquared);    
-    auto vsBufMPI = ActiveVS->GetBuffer( "Matrices_PerInstances" );
 
     const bool drawWorldCasters = (casterMask & SHADOW_CASTER_WORLD) != 0;
     const bool drawVobCasters = (casterMask & SHADOW_CASTER_VOBS) != 0;
@@ -5531,8 +5753,6 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
     const bool drawAnimatedCasters = (casterMask & SHADOW_CASTER_ANIMATED) != 0;
 
     if ( drawWorldCasters && Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh ) {
-        vsBufMPI.Update( &identityMatrix ).Bind();
-
         // Only use cache if we haven't already collected the vobs
         // TODO: Collect vobs in a different way than using the drawn sections!
         //		 The current solution won't use the cache at all when there are
@@ -5541,18 +5761,19 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
             for ( auto&& meshInfoByKey = worldMeshCache->begin(); meshInfoByKey != worldMeshCache->end(); ++meshInfoByKey ) {
                 bool isAlpha = false;
                 // Bind texture
-                if ( meshInfoByKey->first.Material && meshInfoByKey->first.Material->GetTexture() ) {
+                if ( meshInfoByKey->first.Material && meshInfoByKey->first.Material->GetTextureSingle() ) {
                     // Check surface type
 
                     if ( meshInfoByKey->first.Info->MaterialType != MaterialInfo::MT_None ) {
                         continue;
                     }
 
-                    if ( meshInfoByKey->first.Material->HasAlphaTest() || meshInfoByKey->first.Material->GetTexture()->HasAlphaChannel() ) {
-                        if ( alphaRef > 0.0f && meshInfoByKey->first.Material->GetTexture()->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
-                            void* engineTex = meshInfoByKey->first.Material->GetTexture()->GetSurface()->GetEngineTexture();
+                    if ( meshInfoByKey->first.Material->HasAlphaTest() || meshInfoByKey->first.Material->GetTextureSingle()->HasAlphaChannel() ) {
+                        zCTexture* aniTex = alphaRef > 0.0f ? meshInfoByKey->first.Material->GetAniTexture() : nullptr;
+                        if ( aniTex && aniTex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                            void* engineTex = aniTex->GetSurface()->GetEngineTexture();
                             if ( lastTex != engineTex ) {
-                                meshInfoByKey->first.Material->GetTexture()->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
+                                aniTex->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
                                 lastTex = engineTex;
                             }
                             ActivePS->Apply();
@@ -5589,6 +5810,10 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
             f.BuildCubemapFace( position, range, 0 );
             std::vector<WorldMeshSectionInfo*> sections = {};
             Engine::GAPI->CollectVisibleSections( sections, &f, true );
+
+            std::vector<WorldMeshInfo*> opaqueMeshes;
+            std::vector<std::pair<zCTexture*, WorldMeshInfo*>> alphaMeshes;
+
             for ( auto* section : sections ) {
                 drawnSections.emplace_back( section );
 
@@ -5597,55 +5822,98 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                     if ( section->FullStaticMesh )
                         Engine::GAPI->DrawMeshInfo( nullptr, section->FullStaticMesh );
                 } else {
-                    for ( auto&& meshInfoByKey = section->WorldMeshes.begin();
-                        meshInfoByKey != section->WorldMeshes.end(); ++meshInfoByKey ) {
+                    for ( auto&& meshInfoByKey : section->WorldMeshes ) {
                         // Check surface type
-                        if ( meshInfoByKey->first.Info->MaterialType != MaterialInfo::MT_None ) {
+                        if ( meshInfoByKey.first.Info->MaterialType != MaterialInfo::MT_None ) {
                             continue;
                         }
 
-                        bool isAlpha = false;
-                        // Bind texture
-                        if ( meshInfoByKey->first.Material && meshInfoByKey->first.Material->GetTexture() ) {
-                            if ( meshInfoByKey->first.Material->HasAlphaTest() || meshInfoByKey->first.Material->GetTexture()->HasAlphaChannel() ) {
-                                if ( alphaRef > 0.0f &&
-                                    meshInfoByKey->first.Material->GetTexture()->CacheIn( 0.6f ) ==
-                                    zRES_CACHED_IN ) {
-                                    void* engineTex = meshInfoByKey->first.Material->GetTexture()->GetSurface()->GetEngineTexture();
-                                    if ( lastTex != engineTex ) {
-                                        meshInfoByKey->first.Material->GetTexture()->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
-                                        lastTex = engineTex;
-                                    }
-                                    ActivePS->Apply();
-                                    isAlpha = true;
-                                } else
-                                    continue;  // Don't render if not loaded
-                            } else {
-                                if ( !linearDepth )  // Only unbind when not rendering linear
-                                    // depth
-                                {
-                                    // Unbind PS
-                                    Context->PSSetShader( nullptr, nullptr, 0 );
-                                } else {
-                                    if ( lastTex != WhiteTexture.get() ) {
-                                        WhiteTexture->BindToPixelShader( 0 );
-                                        lastTex = WhiteTexture.get();
-                                    }
+                        WorldMeshInfo* mesh = meshInfoByKey.second;
+
+                        if ( meshInfoByKey.first.Material && meshInfoByKey.first.Material->GetTextureSingle()
+                            && (meshInfoByKey.first.Material->HasAlphaTest()
+                                || meshInfoByKey.first.Material->GetTextureSingle()->HasAlphaChannel()) ) {
+                            if ( alphaRef > 0.0f ) {
+                                zCTexture* aniTex = meshInfoByKey.first.Material->GetAniTexture();
+                                if ( aniTex && aniTex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                                    alphaMeshes.emplace_back( aniTex, mesh );
                                 }
-                            }
-                        } else if ( linearDepth ) {
-                            if ( lastTex != WhiteTexture.get() ) {
-                                WhiteTexture->BindToPixelShader( 0 );
-                                lastTex = WhiteTexture.get();
-                            }
+                            } // else: texture not loaded yet, skip
+                            continue;
                         }
 
-                        // Draw from wrapped mesh
-                        MeshInfo* mesh = meshInfoByKey->second;
-                        DrawVertexBufferIndexed( mesh->GetMeshVertexBuffer(),
-                            GetShadowAwareIndexBuffer( mesh, isAlpha ),
-                            GetShadowAwareIndexCount( mesh, isAlpha ) );
+                        opaqueMeshes.push_back( mesh );
                     }
+                }
+            }
+
+            // Draw from the wrapped world mesh instead of rebinding each mesh's own buffer.
+            if ( !opaqueMeshes.empty() || !alphaMeshes.empty() ) {
+                MeshInfo* wrappedWorldMesh = Engine::GAPI->GetWrappedWorldMesh();
+                bool swappedVS = false;
+
+                // The wrapped mesh only exists in the packed 36-byte format, so this always needs a
+                // packed-decoding vertex shader - but which one depends on what the caller bound
+                // before calling DrawWorldAround: GS_Cubemap expects VS_ExCube's world-space output
+                // (no SV_Position - the GS reprojects per face), while the plain per-face path (no
+                // GS, a real view/proj already set via the camera replacement) expects VS_Ex's output
+                // (VS computes SV_Position itself). Neither has a position-only fast path here.
+                VShaderID packedWorldMeshVS = usesCubeGeometryShader ? VShaderID::VS_ExCubePacked : VShaderID::VS_ExPacked;
+
+                if ( !opaqueMeshes.empty() ) {
+                    if ( !linearDepth )  // Only unbind when not rendering linear depth
+                    {
+                        // Unbind PS
+                        Context->PSSetShader( nullptr, nullptr, 0 );
+                    } else {
+                        if ( lastTex != WhiteTexture.get() ) {
+                            WhiteTexture->BindToPixelShader( 0 );
+                            lastTex = WhiteTexture.get();
+                        }
+                    }
+
+                    UINT zeroOffset = 0;
+                    SetActiveVertexShader( packedWorldMeshVS );
+                    ActiveVS->Apply();
+                    swappedVS = true;
+                    UINT uStride = sizeof( ExVertexStructGPU );
+                    Context->IASetVertexBuffers( 0, 1, wrappedWorldMesh->MeshVertexBuffer->GetVertexBuffer().GetAddressOf(), &uStride, &zeroOffset );
+
+                    Context->IASetIndexBuffer( wrappedWorldMesh->MeshShadowIndexBuffer->GetVertexBuffer().Get(), DXGI_FORMAT_R32_UINT, 0 );
+
+                    for ( auto* mesh : opaqueMeshes ) {
+                        DrawVertexBufferIndexedUINT( nullptr, nullptr,
+                            GetShadowAwareIndexCount( mesh, false ),
+                            mesh->BaseShadowIndexLocation );
+                    }
+                }
+
+                if ( !alphaMeshes.empty() ) {
+                    std::sort( alphaMeshes.begin(), alphaMeshes.end(),
+                        []( const auto& a, const auto& b ) { return a.first < b.first; } );
+
+                    SetActiveVertexShader( packedWorldMeshVS );
+                    ActiveVS->Apply();
+                    swappedVS = true;
+                    BindWrappedWorldMeshPacked( wrappedWorldMesh );
+                    ActivePS->Apply();
+
+                    for ( const auto& [tex, mesh] : alphaMeshes ) {
+                        void* engineTex = tex->GetSurface()->GetEngineTexture();
+                        if ( lastTex != engineTex ) {
+                            tex->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
+                            lastTex = engineTex;
+                        }
+
+                        DrawVertexBufferIndexedUINT( nullptr, nullptr,
+                            GetShadowAwareIndexCount( mesh, true ),
+                            mesh->BaseIndexLocation );
+                    }
+                }
+
+                if ( swappedVS ) {
+                    SetActiveVertexShader( packedWorldMeshVS );
+                    ActiveVS->Apply();
                 }
             }
         }
@@ -5687,28 +5955,34 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
         D3D11Texture* lastBoundTexture = nullptr;
         std::list<VobInfo*>& rl = renderedVobs != nullptr ? *renderedVobs : rndVob;
         VS_ExConstantBuffer_PerInstance cb;
-        
-        auto buffer = GetActiveVS()->GetBuffer(1).Bind();
+
+        // VOB meshes are packed (36-byte) -> use the packed cube shader for these draws.
+        SetActiveVertexShader( VShaderID::VS_ExCubePacked );
+        ActiveVS->Apply();
+
         for ( auto const& vobInfo : rl ) {
             // Bind per-instance buffer
             vobInfo->UpdateVobConstantBuffer(cb);
-            buffer.Update(&cb, sizeof(cb));
+            
+            BindDynamicCBToVertexShader(1, AllocateDynamicCB(&cb));
 
             // Draw the vob
             for ( auto const& materialMesh : vobInfo->VisualInfo->Meshes ) {
                 bool isAlpha = false;
-                if ( materialMesh.first && materialMesh.first->GetTexture() ) {
-                    if ( materialMesh.first->GetTexture()->CacheIn( 0.6f ) == zRES_CACHED_IN
-                        && (
-                            (materialMesh.first->GetAlphaFunc() != zMAT_ALPHA_FUNC_NONE && materialMesh.first->GetAlphaFunc() != zMAT_ALPHA_FUNC_MAT_DEFAULT)
-                            || materialMesh.first->GetTexture()->HasAlphaChannel())
+                if ( materialMesh.first && materialMesh.first->GetTextureSingle() ) {
+                    if ( (materialMesh.first->GetAlphaFunc() != zMAT_ALPHA_FUNC_NONE && materialMesh.first->GetAlphaFunc() != zMAT_ALPHA_FUNC_MAT_DEFAULT)
+                            || materialMesh.first->GetTextureSingle()->HasAlphaChannel()
                         ) {
-                        isAlpha = true;
-                        if ( lastBoundTexture != materialMesh.first->GetTexture()->GetSurface()->GetEngineTexture() ) {
-                            lastBoundTexture = materialMesh.first->GetTexture()->GetSurface()->GetEngineTexture(); 
-                            lastBoundTexture->BindToPixelShader( 0 );
+                        zCTexture* aniTex = materialMesh.first->GetAniTexture();
+                        if ( aniTex && aniTex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                            isAlpha = true;
+                            if ( lastBoundTexture != aniTex->GetSurface()->GetEngineTexture() ) {
+                                lastBoundTexture = aniTex->GetSurface()->GetEngineTexture();
+                                lastBoundTexture->BindToPixelShader( 0 );
+                            }
                         }
-                    } else {
+                    }
+                    if ( !isAlpha ) {
                         if (lastBoundTexture != WhiteTexture.get()) {
                             WhiteTexture->BindToPixelShader( 0 );
                             lastBoundTexture = WhiteTexture.get();
@@ -5717,7 +5991,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                 }
                 for ( auto const& meshInfo : materialMesh.second ) {
                     const auto mesh = meshInfo.get();
-                    DrawVertexBufferIndexed(
+                    DrawVertexBufferIndexedPacked(
                         meshInfo->GetMeshVertexBuffer(),
                         GetShadowAwareIndexBuffer( mesh, isAlpha ),
                         GetShadowAwareIndexCount( mesh, isAlpha ) );
@@ -5841,33 +6115,29 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
     }
 
     // Set constant buffer
-    ActivePS->GetBuffer( "FFPipelineConstantBuffer" )
-        .Update( &Engine::GAPI->GetRendererState().GraphicsState )
-        .Bind();
+    ActivePS->UpdateBuffer("FFPipelineConstantBuffer", &Engine::GAPI->GetRendererState().GraphicsState, sizeof(Engine::GAPI->GetRendererState().GraphicsState));
 
     GSky* sky = Engine::GAPI->GetSky();
-    ActivePS->GetBuffer( "Atmosphere" )
-        .Update( &sky->GetAtmosphereCB() )
-        .Bind();
+    ActivePS->UpdateBuffer("Atmosphere", &sky->GetAtmosphereCB(), sizeof(sky->GetAtmosphereCB()));
 
     // Init drawcalls
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
 
     const XMMATRIX identityMatrix = XMMatrixIdentity();
-    ActiveVS->GetBuffer( "Matrices_PerInstances" ).Update( &identityMatrix ).Bind();
+    ActiveVS->UpdateBuffer("Matrices_PerInstances", &identityMatrix, sizeof(identityMatrix));
 
     // Update and bind buffer of PS
     PerObjectState ocb;
     ocb.OS_AmbientColor = float3( 1, 1, 1 );
-    ActivePS->GetBuffer( "POS_MaterialInfo" ).Update( &ocb ).Bind();
+    ActivePS->UpdateBuffer("POS_MaterialInfo", &ocb, sizeof(ocb));
 
     float3 pos; XMStoreFloat3( pos.toXMFLOAT3(), position );
     INT2 s = WorldConverter::GetSectionOfPos( pos );
 
     DistortionTexture->BindToPixelShader( 0 );
 
-    ActivePS->BindBuffer( "DIST_Distance", InfiniteRangeConstantBuffer.get() );
+    BindDynamicCBToPixelShader( ActivePS->GetInputIndex( "DIST_Distance" ), InfiniteRangeCB );
 
     UpdateRenderStates();
 
@@ -5889,7 +6159,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
 
     void* lastTex = nullptr;
     if ( drawWorldCasters && Engine::GAPI->GetRendererState().RendererSettings.DrawWorldMesh ) { 
-        ActiveVS->GetBuffer( "Matrices_PerInstances" ).Update( &identityMatrix ).Bind();
+        ActiveVS->UpdateBuffer("Matrices_PerInstances", &identityMatrix, sizeof(identityMatrix));
         auto _ = RecordGraphicsEvent( GE_NAME( "DrawWorldMesh::Layered" ) ); 
         // Only use cache if we haven't already collected the vobs
         // TODO: Collect vobs in a different way than using the drawn sections!
@@ -5899,18 +6169,18 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
             for ( auto&& meshInfoByKey = worldMeshCache->begin(); meshInfoByKey != worldMeshCache->end(); ++meshInfoByKey ) {
                 // Bind texture
                 bool isAlpha = false;
-                if ( meshInfoByKey->first.Material && meshInfoByKey->first.Material->GetTexture() ) {
+                if ( meshInfoByKey->first.Material && meshInfoByKey->first.Material->GetTextureSingle() ) {
                     // Check surface type
 
                     if ( meshInfoByKey->first.Info->MaterialType != MaterialInfo::MT_None ) {
                         continue;
                     }
 
-                    if ( meshInfoByKey->first.Material->HasAlphaTest() || meshInfoByKey->first.Material->GetTexture()->HasAlphaChannel() ) {
-                        if ( alphaRef > 0.0f && meshInfoByKey->first.Material->GetTexture()->CacheIn(
-                            0.6f ) == zRES_CACHED_IN ) {
-                            lastTex = meshInfoByKey->first.Material->GetTexture()->GetSurface()->GetEngineTexture();
-                            meshInfoByKey->first.Material->GetTexture()->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
+                    if ( meshInfoByKey->first.Material->HasAlphaTest() || meshInfoByKey->first.Material->GetTextureSingle()->HasAlphaChannel() ) {
+                        zCTexture* aniTex = alphaRef > 0.0f ? meshInfoByKey->first.Material->GetAniTexture() : nullptr;
+                        if ( aniTex && aniTex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                            lastTex = aniTex->GetSurface()->GetEngineTexture();
+                            aniTex->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
                             ActivePS->Apply();
                             isAlpha = true;
                         } else
@@ -5946,6 +6216,10 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
             f.BuildCubemapFace( position, range, 0 );
             std::vector<WorldMeshSectionInfo*> sections={};
             Engine::GAPI->CollectVisibleSections( sections, &f, true );
+
+            std::vector<WorldMeshInfo*> opaqueMeshes;
+            std::vector<std::pair<zCTexture*, WorldMeshInfo*>> alphaMeshes;
+
             for ( auto section : sections ) {
                 drawnSections.emplace_back( section );
 
@@ -5954,59 +6228,100 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                     if ( section->FullStaticMesh )
                         Engine::GAPI->DrawMeshInfo( nullptr, section->FullStaticMesh );
                 } else {
-                    for ( auto&& meshInfoByKey = section->WorldMeshes.begin();
-                        meshInfoByKey != section->WorldMeshes.end(); ++meshInfoByKey ) {
+                    for ( auto&& meshInfoByKey : section->WorldMeshes ) {
                         // Check surface type
-                        if ( meshInfoByKey->first.Info->MaterialType != MaterialInfo::MT_None ) {
+                        if ( meshInfoByKey.first.Info->MaterialType != MaterialInfo::MT_None ) {
                             continue;
                         }
 
-                        bool isAlpha = false;
-                        // Bind texture
-                        if ( meshInfoByKey->first.Material && meshInfoByKey->first.Material->GetTexture() ) {
-                            if ( meshInfoByKey->first.Material ->HasAlphaTest() || meshInfoByKey->first.Material->GetTexture()->HasAlphaChannel()) {
-                                if ( alphaRef > 0.0f &&
-                                    meshInfoByKey->first.Material->GetTexture()->CacheIn( 0.6f ) ==
-                                    zRES_CACHED_IN ) {
+                        WorldMeshInfo* mesh = meshInfoByKey.second;
 
-                                    lastTex = meshInfoByKey->first.Material->GetTexture()->GetSurface()->GetEngineTexture();
-                                    meshInfoByKey->first.Material->GetTexture()->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
-                                    ActivePS->Apply();
-                                    isAlpha = true;
-                                } else
-                                    continue;  // Don't render if not loaded
-                            } else {
-                                if ( !linearDepth )  // Only unbind when not rendering linear
-                                    // depth
-                                {
-                                    // Unbind PS
-                                    Context->PSSetShader( nullptr, nullptr, 0 );
-                                } else {
-                                    if ( lastTex != WhiteTexture.get() ) {
-                                        WhiteTexture->BindToPixelShader( 0 );
-                                        lastTex = WhiteTexture.get();
-                                    }
+                        if ( meshInfoByKey.first.Material && meshInfoByKey.first.Material->GetTextureSingle()
+                            && (meshInfoByKey.first.Material->HasAlphaTest()
+                                || meshInfoByKey.first.Material->GetTextureSingle()->HasAlphaChannel()) ) {
+                            if ( alphaRef > 0.0f ) {
+                                zCTexture* aniTex = meshInfoByKey.first.Material->GetAniTexture();
+                                if ( aniTex && aniTex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                                    alphaMeshes.emplace_back( aniTex, mesh );
                                 }
-                            }
-                        } else if ( linearDepth ) {
-                            if ( lastTex != WhiteTexture.get() ) {
-                                WhiteTexture->BindToPixelShader( 0 );
-                                lastTex = WhiteTexture.get();
-                            }
+                            } // else: texture not loaded yet, skip
+                            continue;
                         }
 
-                        // Draw from wrapped mesh
-                        MeshInfo* mesh = meshInfoByKey->second;
-                        DrawVertexBufferInstancedIndexed( mesh->GetMeshVertexBuffer(),
-                            GetShadowAwareIndexBuffer( mesh, isAlpha ),
-                            GetShadowAwareIndexCount( mesh, isAlpha ),
-                            6 );
+                        opaqueMeshes.push_back( mesh );
                     }
+                }
+            }
+
+            // Draw from the wrapped world mesh instead of rebinding each mesh's own buffer.
+            if ( !opaqueMeshes.empty() || !alphaMeshes.empty() ) {
+                MeshInfo* wrappedWorldMesh = Engine::GAPI->GetWrappedWorldMesh();
+                bool swappedVS = false;
+
+                if ( !opaqueMeshes.empty() ) {
+                    if ( !linearDepth )  // Only unbind when not rendering linear depth
+                    {
+                        // Unbind PS
+                        Context->PSSetShader( nullptr, nullptr, 0 );
+                    } else {
+                        if ( lastTex != WhiteTexture.get() ) {
+                            WhiteTexture->BindToPixelShader( 0 );
+                            lastTex = WhiteTexture.get();
+                        }
+                    }
+
+                    // The hardware layered-rendering shaders write SV_RenderTargetArrayIndex
+                    // themselves (there's no GS to do it), so - like the GS_Cubemap path - there's
+                    // no position-only fast path here; always decode the packed full stream.
+                    UINT zeroOffset = 0;
+                    SetActiveVertexShader( VShaderID::VS_ExLayeredPacked );
+                    ActiveVS->Apply();
+                    swappedVS = true;
+                    UINT uStride = sizeof( ExVertexStructGPU );
+                    Context->IASetVertexBuffers( 0, 1, wrappedWorldMesh->MeshVertexBuffer->GetVertexBuffer().GetAddressOf(), &uStride, &zeroOffset );
+
+                    Context->IASetIndexBuffer( wrappedWorldMesh->MeshShadowIndexBuffer->GetVertexBuffer().Get(), DXGI_FORMAT_R32_UINT, 0 );
+
+                    for ( auto* mesh : opaqueMeshes ) {
+                        DrawVertexBufferInstancedIndexedUINT( nullptr, nullptr,
+                            GetShadowAwareIndexCount( mesh, false ),
+                            6,
+                            mesh->BaseShadowIndexLocation );
+                    }
+                }
+
+                if ( !alphaMeshes.empty() ) {
+                    std::sort( alphaMeshes.begin(), alphaMeshes.end(),
+                        []( const auto& a, const auto& b ) { return a.first < b.first; } );
+
+                    SetActiveVertexShader( VShaderID::VS_ExLayeredPacked );
+                    ActiveVS->Apply();
+                    swappedVS = true;
+                    BindWrappedWorldMeshPacked( wrappedWorldMesh );
+                    ActivePS->Apply();
+
+                    for ( const auto& [tex, mesh] : alphaMeshes ) {
+                        void* engineTex = tex->GetSurface()->GetEngineTexture();
+                        if ( lastTex != engineTex ) {
+                            tex->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
+                            lastTex = engineTex;
+                        }
+
+                        DrawVertexBufferInstancedIndexedUINT( nullptr, nullptr,
+                            GetShadowAwareIndexCount( mesh, true ),
+                            6,
+                            mesh->BaseIndexLocation );
+                    }
+                }
+
+                if ( swappedVS ) {
+                    SetActiveVertexShader( VShaderID::VS_Ex );
+                    ActiveVS->Apply();
                 }
             }
         }
     }
-    
+
     if ( drawVobCasters && Engine::GAPI->GetRendererState().RendererSettings.DrawVOBs ) {
         // Draw visible vobs here
         std::list<VobInfo*> rndVob;
@@ -6048,29 +6363,34 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
         auto _ = Engine::GraphicsEngine->RecordGraphicsEvent( GE_NAME( "Draw vobs (layered)" ) );
 
         VS_ExConstantBuffer_PerInstance cb;
-        auto buffer = GetActiveVS()->GetBuffer(1).Bind();
+
+        // VOB meshes are packed (36-byte) -> use the packed layered shader for these draws.
+        SetActiveVertexShader( VShaderID::VS_ExLayeredPacked );
+        ActiveVS->Apply();
 
         D3D11Texture* lastBoundTexture = nullptr;
         for ( auto const& vobInfo : rl ) {
             // Bind per-instance buffer
             vobInfo->UpdateVobConstantBuffer(cb);
-            buffer.Update(&cb, sizeof(cb));
+            BindDynamicCBToVertexShader(1, AllocateDynamicCB(&cb));
 
             // Draw the vob1
             for ( auto const& materialMesh : vobInfo->VisualInfo->Meshes ) {
                 bool isAlpha = false;
-                if ( materialMesh.first && materialMesh.first->GetTexture() ) {
-                    if ( materialMesh.first->GetTexture()->CacheIn( 0.6f ) == zRES_CACHED_IN
-                        && (
-                            (materialMesh.first->GetAlphaFunc() != zMAT_ALPHA_FUNC_NONE && materialMesh.first->GetAlphaFunc() != zMAT_ALPHA_FUNC_MAT_DEFAULT)
-                            || materialMesh.first->GetTexture()->HasAlphaChannel())
+                if ( materialMesh.first && materialMesh.first->GetTextureSingle() ) {
+                    if ( (materialMesh.first->GetAlphaFunc() != zMAT_ALPHA_FUNC_NONE && materialMesh.first->GetAlphaFunc() != zMAT_ALPHA_FUNC_MAT_DEFAULT)
+                            || materialMesh.first->GetTextureSingle()->HasAlphaChannel()
                         ) {
-                        isAlpha = true;
-                        if ( lastBoundTexture != materialMesh.first->GetTexture()->GetSurface()->GetEngineTexture() ) {
-                            lastBoundTexture = materialMesh.first->GetTexture()->GetSurface()->GetEngineTexture();
-                            lastBoundTexture->BindToPixelShader( 0 );
+                        zCTexture* aniTex = materialMesh.first->GetAniTexture();
+                        if ( aniTex && aniTex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                            isAlpha = true;
+                            if ( lastBoundTexture != aniTex->GetSurface()->GetEngineTexture() ) {
+                                lastBoundTexture = aniTex->GetSurface()->GetEngineTexture();
+                                lastBoundTexture->BindToPixelShader( 0 );
+                            }
                         }
-                    } else {
+                    }
+                    if ( !isAlpha ) {
                         if ( lastBoundTexture != WhiteTexture.get() ) {
                             WhiteTexture->BindToPixelShader( 0 );
                             lastBoundTexture = WhiteTexture.get();
@@ -6080,7 +6400,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                 for ( auto const& meshInfo : materialMesh.second ) {
                     const auto mesh = meshInfo.get();
 
-                    DrawVertexBufferInstancedIndexed(
+                    DrawVertexBufferInstancedIndexedPacked(
                         meshInfo->GetMeshVertexBuffer(),
                         GetShadowAwareIndexBuffer( mesh, isAlpha ),
                         GetShadowAwareIndexCount( mesh, isAlpha ),
@@ -6228,11 +6548,12 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<W
                     continue;
                 }
 
-                zCTexture* tex = meshPair.first.Material ? meshPair.first.Material->GetTexture() : nullptr;
+                zCTexture* texSingle = meshPair.first.Material ? meshPair.first.Material->GetTextureSingle() : nullptr;
                 unsigned int indexCount = 0;
 
-                if ( tex && tex->HasAlphaChannel() && alphaRef > 0.0f ) {
-                    if ( tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                if ( texSingle && texSingle->HasAlphaChannel() && alphaRef > 0.0f ) {
+                    zCTexture* tex = meshPair.first.Material->GetAniTexture();
+                    if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
                         alphaMeshes.emplace_back( tex, mesh );
                     }
                     indexCount = GetShadowAwareIndexCount( mesh, true );
@@ -6277,23 +6598,28 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<W
             UINT posStride = sizeof( float3 );
             Context->IASetVertexBuffers( 0, 1, wrappedWorldMesh->MeshPositionBuffer->GetVertexBuffer().GetAddressOf(), &posStride, &offset );
         } else {
-            UINT uStride = sizeof( ExVertexStruct );
+            // linearDepth keeps the PS bound and needs full attributes: the wrapped buffer is packed,
+            // so decode it with VS_ExPacked (stride 36).
+            SetActiveVertexShader( VShaderID::VS_ExPacked );
+            ActiveVS->Apply();
+            swappedToDepthVS = true;
+            UINT uStride = sizeof( ExVertexStructGPU );
             Context->IASetVertexBuffers( 0, 1, wrappedWorldMesh->MeshVertexBuffer->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
         }
 
         const size_t requiredSize = opaqueDrawArgs.size() * sizeof( D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS );
-        D3D11IndirectBuffer* shadowIndirectBuffer = AcquireFrameIndirectBuffer( m_ShadowWorldIndirectPool,
+        FrameIndirectAllocation shadowIndirectAlloc = AcquireFrameIndirectAllocation( m_ShadowWorldIndirectPool,
             opaqueDrawArgs.data(),
             static_cast<unsigned int>( requiredSize ),
             "ShadowWorldMeshIndirectArgs" );
 
-        if ( shadowIndirectBuffer ) {
+        if ( shadowIndirectAlloc.Buffer ) {
             Context->IASetIndexBuffer( wrappedWorldMesh->MeshShadowIndexBuffer->GetVertexBuffer().Get(), DXGI_FORMAT_R32_UINT, 0 );
 
             DrawMultiIndexedInstancedIndirect( Context.Get(),
                 static_cast<unsigned int>( opaqueDrawArgs.size() ),
-                shadowIndirectBuffer->GetIndirectBuffer().Get(),
-                0,
+                shadowIndirectAlloc.Buffer->GetIndirectBuffer().Get(),
+                shadowIndirectAlloc.OffsetInBytes,
                 sizeof( D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS ) );
         }
     }
@@ -6304,18 +6630,16 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<W
         std::sort( alphaMeshes.begin(), alphaMeshes.end(),
             []( const auto& a, const auto& b ) { return a.first < b.first; } );
 
-        // Alpha-test needs TexCoord: restore the full stream + VS_Ex (the opaque pass above may
-        // have swapped in the position-only shader).
-        SetActiveVertexShader( VShaderID::VS_Ex );
+        // Alpha-test needs TexCoord: use the packed full stream + VS_ExPacked (the opaque pass above
+        // may have swapped in the position-only shader).
+        SetActiveVertexShader( VShaderID::VS_ExPacked );
         ActiveVS->Apply();
-        swappedToDepthVS = false;
-        UINT uStride = sizeof( ExVertexStruct );
-        Context->IASetVertexBuffers( 0, 1, wrappedWorldMesh->MeshVertexBuffer->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
+        swappedToDepthVS = true;
+        BindWrappedWorldMeshPacked( wrappedWorldMesh );  // packed VB + 32-bit MeshIndexBuffer
 
         ActivePS->Apply();
         zCTexture* lastTex = nullptr;
         Context->PSSetShaderResources( 0, 3, s_nullSRVs );
-        Context->IASetIndexBuffer( wrappedWorldMesh->MeshIndexBuffer->GetVertexBuffer().Get(), DXGI_FORMAT_R32_UINT, 0 );
 
         for ( const auto& [tex, mesh] : alphaMeshes ) {
             if ( tex != lastTex ) {
@@ -6332,7 +6656,8 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh_Indirect( const std::vector<W
         }
     }
 
-    // Restore the full-attribute shader (the opaque-only path may have left VS_ExDepth active).
+    // Restore the neutral VS_Ex for whatever the caller draws next (e.g. VOBs); the world-mesh
+    // submissions may have left VS_ExDepth or VS_ExPacked active.
     if ( swappedToDepthVS ) {
         SetActiveVertexShader( VShaderID::VS_Ex );
         ActiveVS->Apply();
@@ -6373,11 +6698,12 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh( const std::vector<WorldMeshS
                     continue;
                 }
 
-                zCTexture* tex = meshPair.first.Material ? meshPair.first.Material->GetTexture() : nullptr;
+                zCTexture* texSingle = meshPair.first.Material ? meshPair.first.Material->GetTextureSingle() : nullptr;
 
-                if ( tex && tex->HasAlphaChannel() && alphaRef > 0.0f ) {
+                if ( texSingle && texSingle->HasAlphaChannel() && alphaRef > 0.0f ) {
                     // Need alpha testing - cache texture
-                    if ( tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                    zCTexture* tex = meshPair.first.Material->GetAniTexture();
+                    if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
                         alphaMeshes.emplace_back( tex, meshPair.second );
                     }
                 } else {
@@ -6416,7 +6742,12 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh( const std::vector<WorldMeshS
             UINT posStride = sizeof( float3 );
             Context->IASetVertexBuffers( 0, 1, wrappedWorldMesh->MeshPositionBuffer->GetVertexBuffer().GetAddressOf(), &posStride, &offset );
         } else {
-            UINT uStride = sizeof( ExVertexStruct );
+            // linearDepth keeps the PS bound and needs full attributes: the wrapped buffer is packed,
+            // so decode it with VS_ExPacked (stride 36).
+            SetActiveVertexShader( VShaderID::VS_ExPacked );
+            ActiveVS->Apply();
+            swappedToDepthVS = true;
+            UINT uStride = sizeof( ExVertexStructGPU );
             Context->IASetVertexBuffers( 0, 1, wrappedWorldMesh->MeshVertexBuffer->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
         }
 
@@ -6437,19 +6768,17 @@ void D3D11GraphicsEngine::ShadowPass_DrawWorldMesh( const std::vector<WorldMeshS
         std::sort( alphaMeshes.begin(), alphaMeshes.end(),
             []( const auto& a, const auto& b ) { return a.first < b.first; } );
 
-        // Alpha-test needs TexCoord, so use the full interleaved stream + VS_Ex (the opaque pass
+        // Alpha-test needs TexCoord, so use the packed full stream + VS_ExPacked (the opaque pass
         // above may have swapped in the position-only shader).
-        SetActiveVertexShader( VShaderID::VS_Ex );
+        SetActiveVertexShader( VShaderID::VS_ExPacked );
         ActiveVS->Apply();
-        swappedToDepthVS = false;
-        UINT uStride = sizeof( ExVertexStruct );
-        Context->IASetVertexBuffers( 0, 1, wrappedWorldMesh->MeshVertexBuffer->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
+        swappedToDepthVS = true;
+        BindWrappedWorldMeshPacked( wrappedWorldMesh );  // packed VB + 32-bit MeshIndexBuffer
 
         ActivePS->Apply();
         zCTexture* lastTex = nullptr;
 
         Context->PSSetShaderResources( 0, 3, s_nullSRVs );
-        Context->IASetIndexBuffer( wrappedWorldMesh->MeshIndexBuffer->GetVertexBuffer().Get(), DXGI_FORMAT_R32_UINT, 0 );
 
         for ( const auto& [tex, mesh] : alphaMeshes ) {
             if ( tex != lastTex ) {
@@ -6519,28 +6848,22 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
     // Set constant buffer
     renderState.GraphicsState.FF_AlphaRef = 170.0f / 255.0f; // zRnd_D3D uses 0xb0 = 170 as default alpha ref
-    ActivePS->GetBuffer( "FFPipelineConstantBuffer" )
-        .Update( &renderState.GraphicsState )
-        .Bind();
+    ActivePS->UpdateBuffer("FFPipelineConstantBuffer", &renderState.GraphicsState, sizeof(renderState.GraphicsState));
 
     GSky* sky = Engine::GAPI->GetSky();
-    ActivePS->GetBuffer( "Atmosphere" )
-        .Update( &sky->GetAtmosphereCB() )
-        .Bind();
+    ActivePS->UpdateBuffer("Atmosphere", &sky->GetAtmosphereCB(), sizeof(sky->GetAtmosphereCB()));
 
     // Init drawcalls
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
 
     const XMMATRIX identityMatrix = XMMatrixIdentity();
-    auto cbMatrices_PerInstances = ActiveVS->GetBuffer( "Matrices_PerInstances" )
-        .Update( &identityMatrix )
-        .Bind();
+    ActiveVS->UpdateBuffer("Matrices_PerInstances", &identityMatrix, sizeof(identityMatrix));
 
     float3 fPosition; XMStoreFloat3( fPosition.toXMFLOAT3(), position );
     DistortionTexture->BindToPixelShader( 0 );
 
-    ActivePS->BindBuffer( "DIST_Distance", InfiniteRangeConstantBuffer.get() );
+    BindDynamicCBToPixelShader( ActivePS->GetInputIndex( "DIST_Distance" ), InfiniteRangeCB );
 
     UpdateRenderStates();
 
@@ -6566,7 +6889,6 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
     if ( renderState.RendererSettings.DrawWorldMesh ) {
         TracyD3D11ZoneCGX( "Shadows::DrawWorldMesh" );
         auto _1 = RecordGraphicsEvent( GE_NAME( "Shadows::DrawWorldMesh" ) );
-        cbMatrices_PerInstances.Update( &identityMatrix ).Bind();
 
         static thread_local std::vector<WorldMeshSectionInfo*> visibleSections;
         visibleSections.clear();
@@ -6659,11 +6981,15 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         const size_t shadowInstanceCount = vobs.empty() ? 1 : vobs.size();
         const unsigned int shadowInstancingBytes = static_cast<unsigned int>(
             shadowInstanceCount * sizeof( VobInstanceInfo ));
-        D3D11VertexBuffer* shadowInstancingBuffer = AcquireFrameInstancingBuffer(
+        FrameInstancingAllocation shadowInstancingAlloc = AcquireFrameInstancingAllocation(
             m_ShadowVobInstancingPool, shadowInstancingBytes, "ShadowVobInstancingBuffer" );
+        D3D11VertexBuffer* shadowInstancingBuffer = shadowInstancingAlloc.Buffer;
+        int shadowInstancingMapFlag = D3D11VertexBuffer::M_WRITE_NO_OVERWRITE;
         if ( !shadowInstancingBuffer ) {
             LogError() << "Failed to acquire shadow vob instancing buffer.";
             shadowInstancingBuffer = DynamicInstancingBuffer.get();
+            shadowInstancingAlloc.OffsetInBytes = 0;
+            shadowInstancingMapFlag = D3D11VertexBuffer::M_WRITE_DISCARD;
             if ( shadowInstancingBuffer && shadowInstancingBuffer->GetSizeInBytes() < shadowInstancingBytes ) {
                 shadowInstancingBuffer->Init( nullptr, shadowInstancingBytes,
                     D3D11VertexBuffer::B_VERTEXBUFFER,
@@ -6688,12 +7014,12 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
         byte* data;
         UINT size;
-        if ( SUCCEEDED( shadowInstancingBuffer->Map( D3D11VertexBuffer::M_WRITE_DISCARD,
+        if ( shadowInstancingBuffer && SUCCEEDED( shadowInstancingBuffer->Map( shadowInstancingMapFlag,
             reinterpret_cast<void**>(&data), &size ) ) ) {
             UINT loc = 0;
             for ( auto const& staticMeshVisual : activeVisuals ) {
                 staticMeshVisual->StartInstanceNum = loc;
-                memcpy( data + loc * sizeof( VobInstanceInfo ), staticMeshVisual->Instances.data(),
+                memcpy( data + shadowInstancingAlloc.OffsetInBytes + loc * sizeof( VobInstanceInfo ), staticMeshVisual->Instances.data(),
                     sizeof( VobInstanceInfo ) * staticMeshVisual->Instances.size() );
                 loc += staticMeshVisual->Instances.size();
             }
@@ -6708,20 +7034,19 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             Context->PSSetShader( nullptr, nullptr, 0 );
         }
 
-        GraphicsShaderConstantBuffer windBuffer = {};
+        ConstantBufferSlot windBuffer = INVALID_SHADER_CB_SLOT;
         if ( ActiveVS &&
             (renderState.RendererSettings.WindQuality > 0 || renderState.RendererSettings.HeroAffectsObjects) ) {
-            windBuffer = ActiveVS->GetBuffer( "WindParams" );
-            windBuffer.Bind();
+            windBuffer = ActiveVS->GetInputIndex( "WindParams" );
         }
 
         XMFLOAT3 vPlayerPosition = Engine::GAPI->GetPlayerVob() ? Engine::GAPI->GetPlayerVob()->GetPositionWorld() : XMFLOAT3( 0, 0, 0 );
         g_windBuffer.playerPos = float3( vPlayerPosition.x, vPlayerPosition.y, vPlayerPosition.z );
-        if ( windBuffer.GetRawBuffer() ) {
-            windBuffer.Update( &g_windBuffer );
+        if ( windBuffer != INVALID_SHADER_CB_SLOT ) {
+            BindDynamicCBToVertexShader(windBuffer, AllocateDynamicCB(&g_windBuffer));
         }
 
-        UINT dynOffset[] = { 0 };
+        UINT dynOffset[] = { shadowInstancingAlloc.OffsetInBytes };
         UINT dynuStride[] = { sizeof( VobInstanceInfo ) };
 
         ID3D11Buffer* buffers[1] = {
@@ -6777,11 +7102,11 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
         MeshVisualInfo* lastWindVisual = nullptr;
 
         for ( auto const& [staticMeshVisual, meshKey, meshInfo, _] : instancedMeshesToDraw ) {
-            if ( !useWindMetadata && windBuffer.GetRawBuffer() && lastWindVisual != staticMeshVisual ) {
+            if ( !useWindMetadata && windBuffer != INVALID_SHADER_CB_SLOT && lastWindVisual != staticMeshVisual ) {
                 lastWindVisual = staticMeshVisual;
                 g_windBuffer.minHeight = staticMeshVisual->BBox.Min.y;
                 g_windBuffer.maxHeight = staticMeshVisual->BBox.Max.y;
-                windBuffer.Update( &g_windBuffer );
+                BindDynamicCBToVertexShader(windBuffer, AllocateDynamicCB(&g_windBuffer));
             }
 
             zCTexture* tx = meshKey.Material->GetAniTexture();
@@ -6826,7 +7151,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             const auto ib = GetShadowAwareIndexBuffer( mi, isAlpha );
 
             UINT offset[] = { 0 };
-            UINT uStride[] = { sizeof( ExVertexStruct ) };
+            UINT uStride[] = { sizeof( ExVertexStructGPU ) };  // packed VOB vertex
             ID3D11Buffer* buffers[1] = {
                 vb->GetVertexBuffer().Get()
             };
@@ -6941,7 +7266,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
                     GVegetationBox::PrepareRenderShadowPipeline();
 
                     GVegetationBox::PopulateConstantBuffer(view, gcb);
-                    auto cbAllocation = PerObjectMaterialInfoPooledBuffer->Allocate(Context.Get(), &gcb, sizeof(gcb));
+                    auto cbAllocation = PerObjectMaterialInfoPooledBuffer->Allocate(&gcb, sizeof(gcb));
                 
                     UINT firstConstant = cbAllocation.offsetInBytes / 16;
                     UINT numConstants = cbAllocation.sizeInBytes / 16;
@@ -6986,11 +7311,12 @@ void D3D11GraphicsEngine::DrawVegetationGeometryPass(const std::list<GVegetation
                 GVegetationBox::PrepareRenderGeometryPipeline();
 
                 GVegetationBox::PopulateConstantBuffer(view, gcb);
-                auto cbAllocation = PerObjectMaterialInfoPooledBuffer->Allocate(Context.Get(), &gcb, sizeof(gcb));
+                auto cbAllocation = PerObjectMaterialInfoPooledBuffer->Allocate(&gcb, sizeof(gcb));
                 
                 UINT firstConstant = cbAllocation.offsetInBytes / 16;
                 UINT numConstants = cbAllocation.sizeInBytes / 16;
                 GetContext()->VSSetConstantBuffers1( 1, 1, &cbAllocation.pBuffer, &firstConstant, &numConstants );
+                GetContext()->PSSetConstantBuffers1( 1, 1, &cbAllocation.pBuffer, &firstConstant, &numConstants );
             }
 
             vegetationBox->RenderVegetation( );
@@ -7159,26 +7485,23 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
     {
         TracyD3D11ZoneCGX( "DrawVOBsInstanced" );
         auto _scopeDrawVOBsInstanced = RecordGraphicsEvent( GE_NAME( "DrawVOBsInstanced" ) );
+        m_LastMaterialInfo = nullptr;
         SetDefaultStates();
 
         SetActivePixelShader( PShaderID::PS_Diffuse );
         SetActiveVertexShader( VShaderID::VS_ExInstancedObj );
 
         // Set constant buffer
-        ActivePS->GetBuffer( "FFPipelineConstantBuffer" )
-            .Update( &Engine::GAPI->GetRendererState().GraphicsState )
-            .Bind();
+        ActivePS->UpdateBuffer("FFPipelineConstantBuffer", &Engine::GAPI->GetRendererState().GraphicsState, sizeof(Engine::GAPI->GetRendererState().GraphicsState));
 
         if ( GSky* sky = Engine::GAPI->GetSky() ) {
-            ActivePS->GetBuffer( "Atmosphere" )
-                .Update( &sky->GetAtmosphereCB() )
-                .Bind();
+            ActivePS->UpdateBuffer("Atmosphere", &sky->GetAtmosphereCB(), sizeof(sky->GetAtmosphereCB()));
         }
 
         // Use default material info for now
         MaterialInfo defInfo = {};
-        UINT materialInfoSlot = ActivePS->GetBuffer( "MI_MaterialInfo" ).GetSlot();
-        auto defaultMaterialAllocation = PerObjectMaterialInfoPooledBuffer->Allocate( GetContext().Get(), &defInfo.buffer, sizeof( defInfo.buffer ) );
+        UINT materialInfoSlot = ActivePS->GetInputIndex( "MI_MaterialInfo" );
+        auto defaultMaterialAllocation = PerObjectMaterialInfoPooledBuffer->Allocate( &defInfo.buffer, sizeof( defInfo.buffer ) );
         UINT firstConstant = defaultMaterialAllocation.offsetInBytes / 16;
         UINT numConstants = defaultMaterialAllocation.sizeInBytes / 16;
         GetContext()->PSSetConstantBuffers1( materialInfoSlot, 1, &defaultMaterialAllocation.pBuffer, &firstConstant, &numConstants );
@@ -7194,11 +7517,14 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
         SetupVS_ExMeshDrawCall();
         SetupVS_ExConstantBuffer();
 
-        GraphicsShaderConstantBuffer windBuffer = {};
+        ConstantBufferSlot windBuffer = INVALID_SHADER_CB_SLOT;
         if ( ActiveVS &&
             (Engine::GAPI->GetRendererState().RendererSettings.WindQuality > 0 || Engine::GAPI->GetRendererState().RendererSettings.HeroAffectsObjects) ) {
-            windBuffer = ActiveVS->GetBuffer( "WindParams" );
-            windBuffer.Bind();
+            windBuffer = ActiveVS->GetInputIndex( "WindParams" );
+        }
+
+        if ( windBuffer != INVALID_SHADER_CB_SLOT ) {
+            ActiveVS->UpdateBuffer( windBuffer, &g_windBuffer, sizeof( g_windBuffer ) );
         }
 
         auto DIST_DistanceSlot = ActivePS->GetInputIndex( "DIST_Distance" );
@@ -7289,8 +7615,9 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
 
                 const unsigned int requiredBytes = (totalInstances > 0 ? totalInstances : 1u)
                     * static_cast<unsigned int>(sizeof( VobInstanceInfo ));
-                instancingBuffer = AcquireFrameInstancingBuffer( m_MainVobInstancingPool,
+                FrameInstancingAllocation mainInstancingAlloc = AcquireFrameInstancingAllocation( m_MainVobInstancingPool,
                     requiredBytes, "MainVobInstancingBuffer" );
+                instancingBuffer = mainInstancingAlloc.Buffer;
                 if ( !instancingBuffer ) {
                     LogError() << "Failed to acquire main vob instancing buffer.";
                     return XR_FAILED;
@@ -7299,10 +7626,10 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                 byte* data;
                 UINT size;
 
-                if ( SUCCEEDED( instancingBuffer->Map( D3D11VertexBuffer::M_WRITE_DISCARD,
+                if ( SUCCEEDED( instancingBuffer->Map( D3D11VertexBuffer::M_WRITE_NO_OVERWRITE,
                     reinterpret_cast<void**>(&data), &size ) ) ) {
                     for ( auto const& cv : cache.vobVisuals ) {
-                        memcpy( data + cv.StartInstanceNum * sizeof( VobInstanceInfo ),
+                        memcpy( data + mainInstancingAlloc.OffsetInBytes + cv.StartInstanceNum * sizeof( VobInstanceInfo ),
                             cv.Instances.data(),
                             sizeof( VobInstanceInfo ) * cv.Instances.size() );
                     }
@@ -7312,6 +7639,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                 }
 
                 cache.MainVobInstancingBuffer = instancingBuffer;
+                cache.MainVobInstancingBufferOffset = mainInstancingAlloc.OffsetInBytes;
 
                 size_t numMeshesToDraw = 0;
                 for ( auto const& cv : cache.vobVisuals ) {
@@ -7419,25 +7747,22 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
 
             XMFLOAT3 vPlayerPosition = Engine::GAPI->GetPlayerVob() ? Engine::GAPI->GetPlayerVob()->GetPositionWorld() : XMFLOAT3( 0, 0, 0 );
             g_windBuffer.playerPos = float3( vPlayerPosition.x, vPlayerPosition.y, vPlayerPosition.z );
-            if ( windBuffer.GetRawBuffer() ) {
-                windBuffer.Update( &g_windBuffer );
+            if ( windBuffer != INVALID_SHADER_CB_SLOT ) {
+                BindDynamicCBToVertexShader(windBuffer, AllocateDynamicCB(&g_windBuffer));
             }
 
             float cachedSmallVobRadius = -1.0f;
             float cachedVobRadius = -1.0f;
             // Ensure we have correct Constantbuffer for eventual Alphatest stuff.
+            
             ShaderManager->GetPShader( Resolved_DiffuseNormalmappedAlphatest )
-                ->GetBuffer( "FFPipelineConstantBuffer" )
-                .Update( &Engine::GAPI->GetRendererState().GraphicsState )
-                .Bind();
+                ->UpdateBuffer("FFPipelineConstantBuffer", &Engine::GAPI->GetRendererState().GraphicsState, sizeof(Engine::GAPI->GetRendererState().GraphicsState));
 
             if ( isZPrepass ) {
                 // force alpha testing for vobs in prepass.
                 ActivePS = nullptr;
                 Context->PSSetShader( nullptr, nullptr, 0 );
             }
-
-            MaterialInfo* lastMatInfo = nullptr;
 
             zCTexture* lastTex = nullptr;
             ID3D11ShaderResourceView* lastNrmTex = nullptr;
@@ -7481,25 +7806,27 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                         if ( cachedVisual->Visual->MeshSize < renderSettings.SmallVobSize ) {
                             // Only update if it changed
                             if ( std::abs( cachedSmallVobRadius - expectedSmallRadius ) > 0.1f ) {
-                                OutdoorSmallVobsConstantBuffer->UpdateBuffer( float4( expectedSmallRadius, 0, 0, 0 ).toPtr() );
-                                OutdoorSmallVobsConstantBuffer->BindToPixelShader( DIST_DistanceSlot );
+                                const float4 smallRange( expectedSmallRadius, 0, 0, 0 );
+                                OutdoorSmallVobsCB = AllocateDynamicCB( &smallRange, sizeof( smallRange ) );
+                                BindDynamicCBToPixelShader( DIST_DistanceSlot, OutdoorSmallVobsCB );
                                 cachedSmallVobRadius = expectedSmallRadius;
                             }
                         } else {
                             // Only update if it changed
                             if ( std::abs( cachedVobRadius - expectedVobRadius ) > 0.1f ) {
-                                OutdoorVobsConstantBuffer->UpdateBuffer( float4( expectedVobRadius, 0, 0, 0 ).toPtr() );
-                                OutdoorVobsConstantBuffer->BindToPixelShader( DIST_DistanceSlot );
+                                const float4 vobRange( expectedVobRadius, 0, 0, 0 );
+                                OutdoorVobsCB = AllocateDynamicCB( &vobRange, sizeof( vobRange ) );
+                                BindDynamicCBToPixelShader( DIST_DistanceSlot, OutdoorVobsCB );
                                 cachedVobRadius = expectedVobRadius;
                             }
                         }
                     }
 
-                    if ( !useWindMetadata && windBuffer.GetRawBuffer() && lastWindVisual != cachedVisual->Visual ) {
+                    if ( !useWindMetadata && windBuffer != INVALID_SHADER_CB_SLOT && lastWindVisual != cachedVisual->Visual ) {
                         lastWindVisual = cachedVisual->Visual;
                         g_windBuffer.minHeight = cachedVisual->Visual->BBox.Min.y;
                         g_windBuffer.maxHeight = cachedVisual->Visual->BBox.Max.y;
-                        windBuffer.Update( &g_windBuffer );
+                        BindDynamicCBToVertexShader(windBuffer, AllocateDynamicCB(&g_windBuffer));
                     }
 
                     zCTexture* tx = meshKey.Material ? meshKey.Material->GetAniTexture() : nullptr;
@@ -7533,7 +7860,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                             MaterialInfo::Buffer b = {};
 
                             b.Color = meshKey.Material->GetColor();
-                            ShaderManager->GetPShader( PShaderID::PS_DiffuseAlphaTest )->GetBuffer( "MI_MaterialInfo" ).Update( &b ).Bind();
+                            ShaderManager->GetPShader( PShaderID::PS_DiffuseAlphaTest )->UpdateBuffer("MI_MaterialInfo", &b, sizeof(b));
 
                         } else {
                             continue;
@@ -7593,18 +7920,16 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                                     
                                     PsSimpleFFdata ffdata = { };
                                     ffdata.textureFactor = float4( 1.0f, 1.0f, 1.0f, 1.0f );
-                                    ActivePS->GetBuffer( "cbFFData" )
-                                        .Update( &ffdata )
-                                        .Bind();
+                                    ActivePS->UpdateBuffer("cbFFData", &ffdata, sizeof(ffdata));
                                 }
                             }
                         }
-                        if ( info && !info->IsSame( lastMatInfo ) ) {
-                            auto matAllocation = PerObjectMaterialInfoPooledBuffer->Allocate( GetContext().Get(), &info->buffer, sizeof( info->buffer ) );
+                        if ( info && !info->IsSame( m_LastMaterialInfo ) ) {
+                            auto matAllocation = PerObjectMaterialInfoPooledBuffer->Allocate( &info->buffer, sizeof( info->buffer ) );
                             UINT firstConstant = matAllocation.offsetInBytes / 16;
-                            UINT numConstants = matAllocation.sizeInBytes / 16;   
+                            UINT numConstants = matAllocation.sizeInBytes / 16;
                             GetContext()->PSSetConstantBuffers1( materialInfoSlot, 1, &matAllocation.pBuffer, &firstConstant, &numConstants );
-                            lastMatInfo = info;
+                            m_LastMaterialInfo = info;
                         }
                     }
 
@@ -7612,7 +7937,8 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                     DrawInstanced( meshInfo->GetMeshVertexBuffer(), meshInfo->GetMeshIndexBuffer(),
                         meshInfo->Indices.size(), instancingBuffer,
                         sizeof( VobInstanceInfo ), cachedVisual->Instances.size(),
-                        sizeof( ExVertexStruct ), cachedVisual->StartInstanceNum );
+                        sizeof( ExVertexStructGPU ), cachedVisual->StartInstanceNum, 0,
+                        cache.MainVobInstancingBufferOffset );
                 }
             }
             if ( !isZPrepass ) {
@@ -7760,12 +8086,11 @@ XRESULT D3D11GraphicsEngine::DrawFrameAlphaMeshes()
         return XR_FAILED;
     }
 
-    GraphicsShaderConstantBuffer windBuffer = {};
+    ConstantBufferSlot windBuffer = INVALID_SHADER_CB_SLOT;
     if ( ActiveVS &&
         (Engine::GAPI->GetRendererState().RendererSettings.WindQuality > 0 || Engine::GAPI->GetRendererState().RendererSettings.HeroAffectsObjects) ) {
-        windBuffer = ActiveVS->GetBuffer( "WindParams" );
-        windBuffer.Bind();
-        windBuffer.Update( &g_windBuffer );
+        windBuffer = ActiveVS->GetInputIndex( "WindParams" );
+        ActiveVS->UpdateBuffer(windBuffer, &g_windBuffer, sizeof(g_windBuffer));
     }
 
     {
@@ -7824,15 +8149,16 @@ XRESULT D3D11GraphicsEngine::DrawFrameAlphaMeshes()
             g_windBuffer.minHeight = vi->BBox.Min.y;
             g_windBuffer.maxHeight = vi->BBox.Max.y;
 
-            if ( !useWindMetadata && windBuffer.GetRawBuffer() ) {
-                windBuffer.Update( &g_windBuffer );
+            if ( !useWindMetadata && windBuffer != INVALID_SHADER_CB_SLOT ) {
+                BindDynamicCBToVertexShader(windBuffer, AllocateDynamicCB(&g_windBuffer));
             }
 
             // Draw batch
             DrawInstanced( mi->GetMeshVertexBuffer(), mi->GetMeshIndexBuffer(), mi->Indices.size(),
                 instancingBuffer, sizeof( VobInstanceInfo ),
-                instances.size(), sizeof( ExVertexStruct ),
-                alphaMesh.StartInstanceNum );
+                instances.size(), sizeof( ExVertexStructGPU ),
+                alphaMesh.StartInstanceNum, 0,
+                m_FrameGeometryCache.MainVobInstancingBufferOffset );
 
             // Reset visual
             vi->StartNewFrame();
@@ -7878,23 +8204,21 @@ XRESULT D3D11GraphicsEngine::DrawPolyStrips( bool noTextures ) {
     SetupVS_ExConstantBuffer();
 
     // Set constant buffer
-    ActivePS->GetBuffer( "FFPipelineConstantBuffer" )
-        .Update( &Engine::GAPI->GetRendererState().GraphicsState )
-        .Bind();
+    ActivePS->UpdateBuffer("FFPipelineConstantBuffer", &Engine::GAPI->GetRendererState().GraphicsState, sizeof(Engine::GAPI->GetRendererState().GraphicsState));
 
     GSky* sky = Engine::GAPI->GetSky();
-    ActivePS->GetBuffer( "Atmosphere" )
-        .Update( &sky->GetAtmosphereCB() )
-        .Bind();
+    ActivePS->UpdateBuffer("Atmosphere", &sky->GetAtmosphereCB(), sizeof(sky->GetAtmosphereCB()));
 
     // Use default material info for now
     MaterialInfo defInfo{};
-    auto materialInfoBuffer = ActivePS->GetBuffer( "MI_MaterialInfo" )
-        .Update( &defInfo.buffer, sizeof(defInfo.buffer) )
-        .Bind();
+    auto materialInfoBuffer = ActivePS->GetInputIndex("MI_MaterialInfo");
+    ActivePS->UpdateBuffer(materialInfoBuffer, &defInfo.buffer, sizeof(defInfo.buffer));
 
-    auto vsBufMPI = ActiveVS->GetBuffer( "Matrices_PerInstances" );
+    auto vsBufMPI = ActiveVS->GetInputIndex( "Matrices_PerInstances" );
+    const XMMATRIX identityMatrix = XMMatrixIdentity();
+    ActiveVS->UpdateBuffer(vsBufMPI, &identityMatrix, sizeof(identityMatrix) );
 
+    zCMaterial* lastMat = nullptr;
     for ( auto it = polyStripInfos.begin(); it != polyStripInfos.end(); it++ ) {
         zCMaterial* mat = it->second.material;
         zCTexture* tx = it->first;
@@ -7906,8 +8230,6 @@ XRESULT D3D11GraphicsEngine::DrawPolyStrips( bool noTextures ) {
         //Setting world transform matrix/////////////
 
         //vob->GetWorldMatrix(&id);
-        const XMMATRIX identityMatrix = XMMatrixIdentity();
-        vsBufMPI.Update( &identityMatrix ).Bind();
 
         // Check for alphablending on world mesh
         bool blendAdd = mat->GetAlphaFunc() == zMAT_ALPHA_FUNC_ADD;
@@ -7921,9 +8243,7 @@ XRESULT D3D11GraphicsEngine::DrawPolyStrips( bool noTextures ) {
             if ( BindShaderForTexture( tx, false, mat->GetAlphaFunc() ) ) {
                 PsSimpleFFdata ffdata = { };
                 ffdata.textureFactor = float4( 1.0f, 1.0f, 1.0f, 1.0f );
-                ActivePS->GetBuffer( "cbFFData" )
-                    .Update( &ffdata )
-                    .Bind();
+                ActivePS->UpdateBuffer("cbFFData", &ffdata, sizeof(ffdata));
             }
 
             // Get diffuse and normalmap
@@ -7948,8 +8268,11 @@ XRESULT D3D11GraphicsEngine::DrawPolyStrips( bool noTextures ) {
                 UpdateRenderStates();
             }
 
-            MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( tx );
-            materialInfoBuffer.Update( &info->buffer, sizeof( info->buffer ) );
+            if (lastMat != mat) {
+                MaterialInfo* info = Engine::GAPI->GetMaterialInfoFrom( mat );
+                ActivePS->UpdateBuffer(materialInfoBuffer, &info->buffer, sizeof( info->buffer ));
+                lastMat = mat;
+            }
 
         } else {
             //Don't draw if texture is not yet cached (I have no idea how can I preload it in advance)
@@ -8053,15 +8376,11 @@ XRESULT D3D11GraphicsEngine::DrawSky() {
 
     SetActiveVertexShader( VShaderID::VS_ExWS );
 
-    ActivePS->GetBuffer("Atmosphere")
-        .Update(&sky->GetAtmosphereCB())
-        .Bind();
+    ActivePS->UpdateBuffer("Atmosphere", &sky->GetAtmosphereCB(), sizeof(sky->GetAtmosphereCB()));
 
     VS_ExConstantBuffer_PerInstance cbi;
     XMStoreFloat4x4( &cbi.World, world );
-    ActiveVS->GetBuffer("Matrices_PerInstances")
-        .Update(&cbi)
-        .Bind();
+    ActiveVS->UpdateBuffer("Matrices_PerInstances", &cbi, sizeof(cbi));
 
     rendererState.BlendState.SetDefault();
     rendererState.BlendState.BlendEnabled = true;
@@ -8086,7 +8405,9 @@ XRESULT D3D11GraphicsEngine::DrawSky() {
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
     // PS_Atmosphere uses the same VS_ExConstantBuffer_PerFrame for motion vectors
-    ActiveVS->GetBuffer(0).GetRawBuffer()->BindToPixelShader(0);
+    VS_ExConstantBuffer_PerFrame cb;
+    PreparePerFrameConstantBuffer(cb);
+    ActivePS->UpdateBuffer(0, &cb, sizeof(cb));
 
     ID3D11ShaderResourceView* srvs[2]{};
     // Apply sky texture
@@ -8239,17 +8560,17 @@ void D3D11GraphicsEngine::DrawVobSingle( VobInfo* vob, zCCamera& camera ) {
     GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
 
     SetActivePixelShader( PShaderID::PS_Preview_Textured );
-    SetActiveVertexShader( VShaderID::VS_Ex );
+    SetActiveVertexShader( VShaderID::VS_ExPacked );  // VOB meshes are packed (36-byte)
 
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
 
-    ActiveVS->GetBuffer( "Matrices_PerInstances" ).Update( vob->Vob->GetWorldMatrixPtr() ).Bind();
+    ActiveVS->UpdateBuffer( "Matrices_PerInstances", vob->Vob->GetWorldMatrixPtr(), sizeof(XMFLOAT4X4));
         
     for ( auto const& itm : vob->VisualInfo->Meshes ) {
         // Cache & bind texture
         zCTexture* texture;
-        if ( itm.first && ( texture = itm.first->GetTexture() ) != nullptr ) {
+        if ( itm.first && ( texture = itm.first->GetAniTexture() ) != nullptr ) {
             if ( texture->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
                 texture->Bind( 0 );
             } else {
@@ -8259,8 +8580,8 @@ void D3D11GraphicsEngine::DrawVobSingle( VobInfo* vob, zCCamera& camera ) {
             continue;
         }
         for ( auto const& itm2nd : itm.second ) {
-            // Draw instances
-            DrawVertexBufferIndexed(
+            // Draw instances (packed 36-byte VOB vertex)
+            DrawVertexBufferIndexedPacked(
                 itm2nd->GetMeshVertexBuffer(), itm2nd->GetMeshIndexBuffer(),
                 itm2nd->Indices.size() );
         }
@@ -8399,7 +8720,7 @@ void D3D11GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& 
     gcb.G_Gamma = Engine::GAPI->GetGammaValue();
     gcb.G_Brightness = Engine::GAPI->GetBrightnessValue();
 
-    ActivePS->GetBuffer( "GammaCorrectConstantBuffer" ).Update( &gcb ).Bind();
+    ActivePS->UpdateBuffer("GammaCorrectConstantBuffer", &gcb, sizeof(gcb));
 
     HRESULT hr;
     auto rt = std::make_unique<RenderToTextureBuffer>(
@@ -8540,7 +8861,7 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
             continue;
         }
 
-        zCTexture* texture = material->GetTexture();
+        zCTexture* texture = material->GetTextureSingle();
         if ( !texture ) {
             continue;
         }
@@ -8697,9 +9018,8 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
     int lastAlphaFunc = -1;
     zCTexture* lastTex = nullptr;
     float lastGhostAlpha = gacb.GA_Alpha;
-    auto psBufGAI = GetActivePS()->GetBuffer( "GhostAlphaInfo" )
-        .Update( &gacb )
-        .Bind();
+    auto psBufGAI = GetActivePS()->GetInputIndex("GhostAlphaInfo");
+    GetActivePS()->UpdateBuffer(psBufGAI, &gacb, sizeof(gacb));
 
     for ( size_t i = 0; i < instances.size(); ) {
         auto material = instances[i].material;
@@ -8732,7 +9052,7 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
         }
         const unsigned int count = static_cast<unsigned int>(i - start);
 
-        zCTexture* texture = material->GetTexture();
+        zCTexture* texture = material->GetAniTexture();
         int alphaFunc = material->GetAlphaFunc();
         if ( alphaFunc == zMAT_ALPHA_FUNC_MAT_DEFAULT ) {
             alphaFunc = zMAT_ALPHA_FUNC_BLEND;
@@ -8784,7 +9104,7 @@ void D3D11GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals,
             const auto ghostAlpha = (material->GetColor() >> 24) * inv255f;
             if ( lastGhostAlpha != ghostAlpha ) {
                 gacb.GA_Alpha = ghostAlpha;
-                psBufGAI.Update( &gacb );
+                ActivePS->UpdateBuffer(psBufGAI, &gacb, sizeof(gacb));
                 lastGhostAlpha = gacb.GA_Alpha;
             }
         }
@@ -8816,9 +9136,7 @@ void D3D11GraphicsEngine::DrawQuadMarks() {
     Engine::GAPI->GetRendererState().RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_NONE;
     Engine::GAPI->GetRendererState().RasterizerState.SetDirty();
 
-    ActivePS->GetBuffer( "FFPipelineConstantBuffer" )
-        .Update( &Engine::GAPI->GetRendererState().GraphicsState )
-        .Bind();
+    ActivePS->UpdateBuffer("FFPipelineConstantBuffer", &Engine::GAPI->GetRendererState().GraphicsState, sizeof(Engine::GAPI->GetRendererState().GraphicsState));
 
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
@@ -8943,6 +9261,44 @@ void D3D11GraphicsEngine::CopyDepthStencil() {
     GetContext()->CopyResource( DepthStencilBufferCopy->GetTexture().Get(), DepthStencilBuffer->GetTexture().Get() );
 }
 
+/** Resolves MSAADepthStencilBuffer (sample 0) into the single-sample DepthStencilBuffer via a
+    fullscreen pixel shader writing SV_Depth. No-op when MSAA isn't active. */
+void D3D11GraphicsEngine::ResolveMSAADepth() {
+    if ( !MSAADepthStencilBuffer )
+        return;
+
+    auto& context = GetContext();
+
+    ID3D11ShaderResourceView* nullSRV = nullptr;
+    context->PSSetShaderResources( 0, 1, &nullSRV );
+
+    ID3D11RenderTargetView* nullRTV = nullptr;
+    context->OMSetRenderTargets( 1, &nullRTV, DepthStencilBuffer->GetDepthStencilView().Get() );
+
+    auto& depthState = Engine::GAPI->GetRendererState().DepthState;
+    depthState.DepthWriteEnabled = true;
+    depthState.DepthBufferCompareFunc = GothicDepthBufferStateInfo::CF_COMPARISON_ALWAYS;
+    depthState.SetDirty();
+
+    SetActiveVertexShader( VShaderID::VS_PFX );
+    BindActiveVertexShader();
+
+    SetActivePixelShader( PShaderID::PS_ResolveDepthMSAA );
+    BindActivePixelShader();
+
+    UpdateRenderStates();
+
+    context->PSSetShaderResources( 0, 1, MSAADepthStencilBuffer->GetShaderResView().GetAddressOf() );
+
+    PfxRenderer->DrawFullScreenQuad();
+
+    context->PSSetShaderResources( 0, 1, &nullSRV );
+    context->OMSetRenderTargets( 1, &nullRTV, nullptr );
+
+    depthState.SetDefault();
+    depthState.SetDirty();
+}
+
 RGResourceHandle D3D11GraphicsEngine::AddAONormalsFromDepthPass( RenderGraph& graph ) {
     RGResourceHandle normalsHandle = RG_INVALID_HANDLE;
     graph.AddPass( RG_PASS_NAME( "AO Normals From Depth" ), [&]( RGBuilder& builder, RenderPass& pass ) {
@@ -8970,7 +9326,7 @@ RGResourceHandle D3D11GraphicsEngine::AddAONormalsFromDepthPass( RenderGraph& gr
 
             auto cs = GetShaderManager().GetCShader( CShaderID::CS_GenerateNormalsFromDepth );
             cs->Apply();
-            cs->GetBuffer( "AONormalsConstantBuffer" ).Update( &cb ).Bind();
+            cs->UpdateBuffer("AONormalsConstantBuffer", &cb, sizeof(cb));
 
             context->CSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
             ID3D11ShaderResourceView* depthSRV = GetDepthBufferCopy()->GetShaderResView().Get();
@@ -9064,7 +9420,7 @@ void D3D11GraphicsEngine::DrawUnderwaterEffects() {
 
     // Set up water final copy
     SetActivePixelShader( PShaderID::PS_PFX_UnderwaterFinal );
-    ActivePS->GetBuffer( "RefractionInfo" ).Update( &ricb ).Bind();
+    ActivePS->UpdateBuffer("RefractionInfo", &ricb, sizeof(ricb));
 
     DistortionTexture->BindToPixelShader( 2 );
     DepthStencilBufferCopy->BindToPixelShader( GetContext().Get(), 3 );
@@ -9101,7 +9457,7 @@ void D3D11GraphicsEngine::DrawFrameParticleMeshes( std::unordered_map<zCVob*, st
     SetDefaultStates();
 
     SetActivePixelShader( PShaderID::PS_Simple );
-    SetActiveVertexShader( VShaderID::VS_Ex );
+    SetActiveVertexShader( VShaderID::VS_ExPacked );  // particle prog meshes are packed (36-byte)
 
     GothicRendererState& state = Engine::GAPI->GetRendererState();
     state.DepthState.DepthWriteEnabled = false;
@@ -9117,8 +9473,7 @@ void D3D11GraphicsEngine::DrawFrameParticleMeshes( std::unordered_map<zCVob*, st
     int lastBlend = zRND_ALPHA_FUNC_NONE;
     auto vfxRadiusSq = state.RendererSettings.VisualFXDrawRadius * state.RendererSettings.VisualFXDrawRadius;
     auto vVfxRadiusSq = XMVectorReplicate(vfxRadiusSq);
-    auto vsBufMPI = ActiveVS->GetBuffer( "Matrices_PerInstances" );
-    vsBufMPI.Bind();
+    auto vsBufMPI = ActiveVS->GetInputIndex( "Matrices_PerInstances" );
 
     for ( auto const& it : progMeshes ) {
         if ( XMVector3Greater(XMVector3LengthSq( it.first->GetPositionWorldXM() - camPos ), vVfxRadiusSq) ) {
@@ -9170,14 +9525,14 @@ void D3D11GraphicsEngine::DrawFrameParticleMeshes( std::unordered_map<zCVob*, st
             continue;
         }
 
-        vsBufMPI.Update( it.first->GetWorldMatrixPtr() );
+        BindDynamicCBToVertexShader(vsBufMPI, AllocateDynamicCB(it.first->GetWorldMatrixPtr()));
 
         void* lastMeshBuffer = nullptr;
         void* lastIndexBuffer = nullptr;
         for ( auto const& itm : it.second->Meshes ) {
             // Cache & bind texture
             zCTexture* texture;
-            if ( itm.first && (texture = itm.first->GetTexture()) != nullptr ) {
+            if ( itm.first && (texture = itm.first->GetAniTexture()) != nullptr ) {
                 if ( texture->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
                     texture->Bind( 0 );
                 } else {
@@ -9189,8 +9544,8 @@ void D3D11GraphicsEngine::DrawFrameParticleMeshes( std::unordered_map<zCVob*, st
             for ( auto const& itm2nd : itm.second ) {
                 if (itm2nd->GetMeshVertexBuffer() != lastMeshBuffer
                     || itm2nd->GetMeshIndexBuffer() != lastIndexBuffer) {
-                    // Bind them 
-                    DrawVertexBufferIndexed(
+                    // Bind them (packed 36-byte VOB vertex)
+                    DrawVertexBufferIndexedPacked(
                         itm2nd->GetMeshVertexBuffer(), itm2nd->GetMeshIndexBuffer(),
                         0 );
                     lastMeshBuffer = itm2nd->GetMeshVertexBuffer();
@@ -9236,7 +9591,7 @@ void D3D11GraphicsEngine::DrawFrameParticles(
 
     SetActivePixelShader( PShaderID::PS_ParticleDistortion );
     ActivePS->Apply();
-    ActivePS->GetBuffer("RefractionInfo").Update(&ricb).Bind();
+    ActivePS->UpdateBuffer("RefractionInfo", &ricb, sizeof(ricb));
 
     GothicRendererState& state = Engine::GAPI->GetRendererState();
 
@@ -9275,7 +9630,7 @@ void D3D11GraphicsEngine::DrawFrameParticles(
 
     ParticleGSInfoConstantBuffer gcb = {};
     gcb.CameraPosition = Engine::GAPI->GetCameraPosition();
-    ActiveVS->GetBuffer( "ParticleGSInfo" ).Update( &gcb ).Bind();
+    ActiveVS->UpdateBuffer("ParticleGSInfo", &gcb, sizeof(gcb));
 
     // Rendering points only
     Context->IASetPrimitiveTopology( D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP );
@@ -9650,7 +10005,7 @@ void D3D11GraphicsEngine::DrawString( std::string_view str, float x, float y, co
     graphicState.FF_Stages[0].ColorArg2 = FixedFunctionStage::ETextureArg::TA_DIFFUSE;
 
     // Bind the FF-Info to the first PS slot
-    ActivePS->GetBuffer( "FFPipelineConstantBuffer" ).Update( &graphicState ).Bind();
+    ActivePS->UpdateBuffer("FFPipelineConstantBuffer", &graphicState, sizeof(graphicState));
 
     BindActiveVertexShader();
     BindActivePixelShader();

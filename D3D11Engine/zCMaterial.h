@@ -25,6 +25,10 @@ private:
     float AniFPS;
     DWORD FrameCtr;
     int	IsOneShotAni;
+public:
+    void AdvanceAni(zCTexture* texture) {
+        reinterpret_cast<void( __fastcall* )(zCTexAniCtrl*, int, zCTexture* )>( GothicMemoryLocations::zCMaterial::AdvanceAni )( this, 0, texture );
+    }
 };
 
 class zCMaterial {
@@ -80,8 +84,7 @@ public:
         if ( texture ) {
             unsigned char flags = *reinterpret_cast<unsigned char*>(reinterpret_cast<DWORD>(texture) + GothicMemoryLocations::zCTexture::Offset_Flags);
             if ( flags & GothicMemoryLocations::zCTexture::Mask_FlagIsAnimated ) {
-                reinterpret_cast<void( __fastcall* )(zCTexAniCtrl*, int, zCTexture* )>
-                    ( GothicMemoryLocations::zCMaterial::AdvanceAni )( GetTexAniCtrl(), 0, texture );
+                GetTexAniCtrl()->AdvanceAni(texture);
                 return GetCurrentTexture();
             }
         }

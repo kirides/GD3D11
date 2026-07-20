@@ -15,7 +15,6 @@ struct RenderToDepthStencilBuffer;
 struct RenderToTextureBuffer;
 struct VobInfo;
 struct SkeletalVobInfo;
-class D3D11ConstantBuffer;
 class D3D11PointLight : public BaseShadowedPointLight {
 public:
     D3D11PointLight( VobLightInfo* info, bool dynamicLight = false );
@@ -25,7 +24,7 @@ public:
     void InitResources();
 
     /** Draws the surrounding scene into the cubemap */
-    void RenderCubemap( bool forceUpdate, D3D11ConstantBuffer* ViewMatricesCB );
+    void RenderCubemap( bool forceUpdate );
 
     /** Binds the shadowmap to the pixelshader */
     void OnRenderLight();

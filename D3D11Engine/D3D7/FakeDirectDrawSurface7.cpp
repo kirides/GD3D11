@@ -191,8 +191,16 @@ HRESULT FakeDirectDrawSurface7::Unlock( LPRECT lpRect ) {
 
     if ( Engine::GAPI->GetMainThreadID() != GetCurrentThreadId() ) {
         Resource->GetEngineTexture()->UpdateDataDeferred( Data, MipLevel );
+        if ( Engine::GAPI->GetBoundTexture( 7 ) != nullptr ) {
+            // Comming from LoadResourceData
+            Resource->LoadAdditionalResources( Engine::GAPI->GetBoundTexture( 7 ) );
+        }
     } else {
         Resource->GetEngineTexture()->UpdateData( Data, MipLevel );
+        if ( Engine::GAPI->GetBoundTexture( 7 ) != nullptr ) {
+            // Comming from LoadResourceData
+            Resource->LoadAdditionalResources( Engine::GAPI->GetBoundTexture( 7 ) );
+        }
     }
 
     delete [] Data;

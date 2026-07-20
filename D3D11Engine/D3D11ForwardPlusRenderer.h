@@ -3,7 +3,6 @@
 #include <memory>
 
 class D3D11DeferredRenderer;
-class D3D11ConstantBuffer;
 
 class D3D11ForwardPlusRenderer final : public ISceneRenderer {
 public:
@@ -54,6 +53,4 @@ public:
 
 private:
     D3D11DeferredRenderer& m_DeferredFallback;
-    std::unique_ptr<D3D11ConstantBuffer> m_SunCSMConstantBuffer;
-    std::unique_ptr<D3D11ConstantBuffer> m_TileConstantBuffer;
 };

@@ -1,7 +1,6 @@
 #pragma once
 #include "pch.h"
 #include "D3D11VertexBuffer.h"
-#include "D3D11ConstantBuffer.h"
 #include "ConstantBufferStructs.h"
 #include "zTypes.h"
 #include "D3D11Texture.h"
@@ -47,6 +46,9 @@ public:
 
     /** Saves the given prog mesh to an obj-file */
     //static void SaveProgMeshToOBj(
+
+    /** Precomputes MikkTSpace tangents for an indexed ExVertexStruct mesh (fills .Tangent). */
+    static void GenerateTangents( std::vector<ExVertexStruct>& vertices, const std::vector<VERTEX_INDEX>& indices );
 
     /** Extracts a 3DS-Mesh from a zCVisual */
     static void Extract3DSMeshFromVisual( zCProgMeshProto* visual, MeshVisualInfo* meshInfo );

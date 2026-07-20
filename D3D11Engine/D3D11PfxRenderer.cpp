@@ -22,7 +22,6 @@
 #include "D3D11PFX_FSR3.h"
 #include "D3D11PFX_SAO.h"
 #include "D3D11PFX_ASSAO.h"
-#include "D3D11ConstantBuffer.h"
 #include "ConstantBufferStructs.h"
 #include "GothicAPI.h"
 #include "GSky.h"
@@ -355,10 +354,10 @@ XRESULT D3D11PfxRenderer::RenderPostFXComposition(
         cb.HF_FogColorMod = FogColorMod;
         cb.HF_GlobalDensity = Toolbox::lerp( cb.HF_GlobalDensity, settings.RainFogDensity, rain * fogDensityFactorRain );
 
-        compositionPS->GetBuffer( "PFXBuffer" ).Update( &cb ).Bind();
+        compositionPS->UpdateBuffer("PFXBuffer", &cb, sizeof(cb));
 
         GSky* sky = Engine::GAPI->GetSky();
-        compositionPS->GetBuffer( "Atmosphere" ).Update( &sky->GetAtmosphereCB() ).Bind();
+        compositionPS->UpdateBuffer("Atmosphere", &sky->GetAtmosphereCB(), sizeof(sky->GetAtmosphereCB()));
     }
 
     // Set viewport

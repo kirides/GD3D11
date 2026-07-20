@@ -148,7 +148,7 @@ XRESULT GVegetationBox::InitVegetationBox( const XMFLOAT3& min,
 
     if ( restrictByTexture != "" ) {
         zCMaterial* m = Engine::GAPI->GetMaterialByTextureName( restrictByTexture );
-        MeshTexture = m ? m->GetTexture() : nullptr;
+        MeshTexture = m ? m->GetTextureSingle() : nullptr;
     }
     
     std::string_view restrictByTextureView = restrictByTexture;
@@ -178,8 +178,8 @@ XRESULT GVegetationBox::InitVegetationBox( const XMFLOAT3& min,
                     // Restrict by texture
                     if (!restrictByTextureView.empty() &&
                         p[i]->GetMaterial() &&
-                        p[i]->GetMaterial()->GetTexture() &&
-                        p[i]->GetMaterial()->GetTexture()->GetNameWithoutExtView() == restrictByTextureView ) {
+                        p[i]->GetMaterial()->GetTextureSingle() &&
+                        p[i]->GetMaterial()->GetTextureSingle()->GetNameWithoutExtView() == restrictByTextureView ) {
                         polysInside.push_back( tri[0] );
                         polysInside.push_back( tri[1] );
                         polysInside.push_back( tri[2] );
@@ -191,7 +191,7 @@ XRESULT GVegetationBox::InitVegetationBox( const XMFLOAT3& min,
 
                     // Use the texture of the first poly we find
                     if ( !MeshTexture ) {
-                        MeshTexture = p[i]->GetMaterial() ? p[i]->GetMaterial()->GetTexture() : nullptr;
+                        MeshTexture = p[i]->GetMaterial() ? p[i]->GetMaterial()->GetTextureSingle() : nullptr;
                     }
                 }
                 break;
@@ -205,8 +205,8 @@ XRESULT GVegetationBox::InitVegetationBox( const XMFLOAT3& min,
                 // Restrict by texture
                 if (!restrictByTextureView.empty() &&
                     p[i]->GetMaterial() &&
-                    p[i]->GetMaterial()->GetTexture() &&
-                    p[i]->GetMaterial()->GetTexture()->GetNameWithoutExtView() == restrictByTextureView ) {
+                    p[i]->GetMaterial()->GetTextureSingle() &&
+                    p[i]->GetMaterial()->GetTextureSingle()->GetNameWithoutExtView() == restrictByTextureView ) {
                     polysInside.push_back( tri[0] );
                     polysInside.push_back( tri[1] );
                     polysInside.push_back( tri[2] );
@@ -218,7 +218,7 @@ XRESULT GVegetationBox::InitVegetationBox( const XMFLOAT3& min,
 
                 // Use the texture of the first poly we find
                 if ( !MeshTexture ) {
-                    MeshTexture = p[i]->GetMaterial() ? p[i]->GetMaterial()->GetTexture() : nullptr;
+                    MeshTexture = p[i]->GetMaterial() ? p[i]->GetMaterial()->GetTextureSingle() : nullptr;
                 }
                 break;
             }
@@ -366,6 +366,8 @@ void GVegetationBox::PopulateConstantBuffer(FXMMATRIX view, GrassConstantBuffer&
         gcb.G_PlayerPosWS = XMFLOAT3( 0, 0, 0 );
         gcb.G_HeroAffectStrength = 0.0f;
     }
+
+    gcb.G_UseAlphaToCoverage = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine)->GetMSAADepthBuffer() != nullptr ? 1u : 0u;
 }
 
 /** Draws this vegetation box */
@@ -657,7 +659,7 @@ void GVegetationBox::LoadFromFILE( zFILE_VDFS* f, int version ) {
             hitMaterial = it->first;
     }
 
-    MeshTexture = hitMaterial != nullptr ? hitMaterial->GetTexture() : nullptr;
+    MeshTexture = hitMaterial != nullptr ? hitMaterial->GetTextureSingle() : nullptr;
 
     RefitBoundingBox();
 

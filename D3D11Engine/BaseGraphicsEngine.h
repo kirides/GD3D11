@@ -6,7 +6,6 @@
 
 class BaseLineRenderer;
 class BaseShadowedPointLight;
-class D3D11ConstantBuffer;
 class D3D11Texture;
 class D3D11VertexBuffer;
 struct RenderToTextureBuffer;
@@ -117,10 +116,7 @@ public:
     /** Creates a texture object (Not registered inside) */
     virtual XRESULT CreateTexture( D3D11Texture** outTexture ) PURE;
     virtual XRESULT CreateTexture( std::unique_ptr<D3D11Texture>& outTexture ) PURE;
-
-    /** Creates a constantbuffer object (Not registered inside) */
-    virtual XRESULT CreateConstantBuffer( D3D11ConstantBuffer** outCB, void* data, int size ) PURE;
-
+    
     /** Creates a bufferobject for a shadowed point light */
     virtual XRESULT CreateShadowedPointLight( BaseShadowedPointLight** outPL, VobLightInfo* lightInfo, bool dynamic = false ) { return XR_SUCCESS; }
 
@@ -164,7 +160,7 @@ public:
     virtual XRESULT DrawIndexedVertexArray( ExVertexStruct* vertices, unsigned int numVertices, D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int stride = sizeof( ExVertexStruct ) ) { return XR_SUCCESS; };
 
     /** Draws a batch of instanced geometry */
-    virtual XRESULT DrawInstanced( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, D3D11VertexBuffer* instanceData, unsigned int instanceDataStride, unsigned int numInstances, unsigned int vertexStride = sizeof( ExVertexStruct ), unsigned int startInstanceNum = 0, unsigned int indexOffset = 0 ) { return XR_SUCCESS; };
+    virtual XRESULT DrawInstanced( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, D3D11VertexBuffer* instanceData, unsigned int instanceDataStride, unsigned int numInstances, unsigned int vertexStride = sizeof( ExVertexStruct ), unsigned int startInstanceNum = 0, unsigned int indexOffset = 0, unsigned int instanceDataByteOffset = 0 ) { return XR_SUCCESS; };
 
     /** Sets the active pixel shader object */
     virtual XRESULT SetActivePixelShader( PShaderID shader ) { return XR_SUCCESS; };

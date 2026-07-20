@@ -380,10 +380,10 @@ bool D3D11PointLight::WantsUpdate() {
 }
 
 /** Draws the surrounding scene into the cubemap */
-void D3D11PointLight::RenderCubemap( bool forceUpdate, D3D11ConstantBuffer* ViewMatricesCB ) {
+void D3D11PointLight::RenderCubemap( bool forceUpdate ) {
     if ( !IsReady() )
         return;
-    if ( !ViewMatricesCB || (!m_DepthCubemap && !m_TiledDepthTarget) )
+    if ( !m_DepthCubemap && !m_TiledDepthTarget )
         return;
 
     const int shadowMode = GetCurrentShadowMode();
@@ -471,9 +471,10 @@ void D3D11PointLight::RenderCubemap( bool forceUpdate, D3D11ConstantBuffer* View
         XMStoreFloat4x4( &gcb.PCR_ViewProj[i], proj * XMLoadFloat4x4( &CubeMapViewMatrices[i] ) );
     }
 
-    ViewMatricesCB->UpdateBuffer( &gcb );
-    ViewMatricesCB->BindToVertexShader( 3 ); // Layered vertex shader
-    ViewMatricesCB->BindToGeometryShader( 2 ); // Cubemap geometry shader
+    // Allocate the cubemap view-matrices CB from the per-frame dynamic ring pool
+    ConstantBufferAllocation viewMatricesCB = engine->AllocateDynamicCB( &gcb, sizeof( gcb ) );
+    engine->BindDynamicCBToVertexShader( 3, viewMatricesCB ); // Layered vertex shader
+    engine->BindDynamicCBToGeometryShader( 2, viewMatricesCB ); // Cubemap geometry shader
 
     RenderFullCubemap();
 

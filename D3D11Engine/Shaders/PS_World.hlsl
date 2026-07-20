@@ -44,6 +44,9 @@ struct PS_INPUT
 	float3 vNormalVS		: TEXCOORD4;
 	float3 vViewPosition	: TEXCOORD5;
 #if MOTION_VECTORS == 1
+	float4 vTangent			: TEXCOORD3;  // present so the signature matches the VS_Ex family (unused here)
+	// ^-- does not exist in VS_DecalInstanced for example
+
 	float4 vCurrClipPos     : TEXCOORD6;  // Current clip position for velocity
 	float4 vPrevClipPos     : TEXCOORD7;  // Previous clip position for velocity
 #endif

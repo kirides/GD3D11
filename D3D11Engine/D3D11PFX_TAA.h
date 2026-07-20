@@ -1,7 +1,6 @@
 #pragma once
 #include "pch.h"
 #include "D3D11PFX_Effect.h"
-#include "D3D11ConstantBuffer.h"
 
 struct RenderToTextureBuffer;
 
@@ -78,11 +77,6 @@ private:
     // Velocity buffer (screen-space motion vectors)
     std::unique_ptr<RenderToTextureBuffer> m_VelocityBuffer;
     
-    // TAA constant buffer
-    std::unique_ptr<D3D11ConstantBuffer> m_TAAConstantBuffer;
-    
-    // Velocity buffer constant buffer
-    std::unique_ptr<D3D11ConstantBuffer> m_VelocityConstantBuffer;
     
     Microsoft::WRL::ComPtr<ID3D11SamplerState>       m_samplerLinear;
     Microsoft::WRL::ComPtr<ID3D11SamplerState>       m_samplerPoint;

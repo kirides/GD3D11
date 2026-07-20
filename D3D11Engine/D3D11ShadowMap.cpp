@@ -343,7 +343,6 @@ void D3D11ShadowMap::WaitShadowCullingComplete()
 }
 
 void D3D11ShadowMap::Init( Microsoft::WRL::ComPtr<ID3D11Device1>& device, Microsoft::WRL::ComPtr<ID3D11DeviceContext1>& context, int size ) {
-    HRESULT hr;
     m_device = device;
     m_context = context;
 
@@ -360,13 +359,6 @@ void D3D11ShadowMap::Init( Microsoft::WRL::ComPtr<ID3D11Device1>& device, Micros
     for ( int i = 0; i < MAX_CSM_CASCADES; ++i ) {
         m_RenderQueues[i] = std::make_unique<D3D11RenderQueue>( device.Get(), context.Get() );
     }
-
-    D3D11GraphicsEngineBase* engine = reinterpret_cast<D3D11GraphicsEngineBase*>( Engine::GraphicsEngine );
-
-    // Create constantbuffer for the view-matrices
-    D3D11ConstantBuffer* cb = nullptr;
-    LE(engine->CreateConstantBuffer( &cb, nullptr, sizeof( CubemapGSConstantBuffer ) ));
-    m_PointLightCB.reset( cb );
 
     Resize( s );
 
@@ -1062,7 +1054,7 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
 
     // Render the immediate priority lights
     for ( auto const& importantUpdate : importantUpdates ) {
-        static_cast<D3D11PointLight*>(importantUpdate->LightShadowBuffers.get())->RenderCubemap( importantUpdate->UpdateShadows, m_PointLightCB.get() );
+        static_cast<D3D11PointLight*>(importantUpdate->LightShadowBuffers.get())->RenderCubemap( importantUpdate->UpdateShadows );
         importantUpdate->UpdateShadows = false;
     }
 
@@ -1089,7 +1081,7 @@ XRESULT D3D11ShadowMap::DrawPointlightShadows( std::vector<VobLightInfo*>& light
         light->UpdateShadows = false;
 
         // FORCE the render! It waited in line for its turn, it must draw.
-        l->RenderCubemap( force, m_PointLightCB.get() );
+        l->RenderCubemap( force );
         graphicsEngine->DebugPointlight = l;
 
         updatesDone++;
@@ -1487,7 +1479,7 @@ XRESULT D3D11ShadowMap::DrawWorldLights( ID3D11ShaderResourceView* aoMaskSRV )
     graphicsEngine->SetupVS_ExMeshDrawCall();
 
     GSky* sky = Engine::GAPI->GetSky();
-    psAtmo->GetBuffer("Atmosphere").Update(&sky->GetAtmosphereCB()).Bind();
+    psAtmo->UpdateBuffer("Atmosphere", &sky->GetAtmosphereCB(), sizeof(sky->GetAtmosphereCB()));
 
     auto& proj = Engine::GAPI->GetProjectionMatrix();
     DS_ScreenQuadConstantBuffer scb = {};
@@ -1593,7 +1585,7 @@ XRESULT D3D11ShadowMap::DrawWorldLights( ID3D11ShaderResourceView* aoMaskSRV )
             scb.SQ_LightColor = float4( 1, 1, 1, DEFAULT_INDOOR_VOB_AMBIENT.x );
         }
 
-    psAtmo->GetBuffer( "DS_ScreenQuadConstantBuffer" ).Update( &scb ).Bind();
+    psAtmo->UpdateBuffer("DS_ScreenQuadConstantBuffer", &scb, sizeof(scb));
 
     // CSM: Bind the cascade array to a single slot (Texture2DArray)
     BindToPixelShader( m_context.Get(), TX_ShadowmapArray );
@@ -1653,15 +1645,17 @@ void XM_CALLCONV D3D11ShadowMap::RenderShadowCube(
     m_context->RSSetViewports( 1, &vp );
 
     bool useLayeredPath = false;
+    bool usesCubeGeometryShader = false;
     if ( !face.Get() ) {
         if ( Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.FeatureSet.UseLayeredRendering ) {
             useLayeredPath = true;
             face = targetCube.GetDepthStencilView().Get();
 
             // Set layered shader
-            graphicsEngine->SetActiveVertexShader( VShaderID::VS_ExLayered );
+            graphicsEngine->SetActiveVertexShader( VShaderID::VS_ExLayeredPacked );
         } else {
             // Set cubemap shader
+            usesCubeGeometryShader = true;
             graphicsEngine->SetActiveGShader( GShaderID::GS_Cubemap );
             graphicsEngine->GetActiveGS().get()->Apply();
             face = targetCube.GetDepthStencilView().Get();
@@ -1700,7 +1694,7 @@ void XM_CALLCONV D3D11ShadowMap::RenderShadowCube(
             renderedMobs, worldMeshCache, casterMask, ignoreVob );
     } else {
         graphicsEngine->DrawWorldAround( position, range, cullFront, indoor, noNPCs, renderedVobs,
-            renderedMobs, worldMeshCache, casterMask, ignoreVob );
+            renderedMobs, worldMeshCache, casterMask, ignoreVob, usesCubeGeometryShader );
     }
 
     // Restore state

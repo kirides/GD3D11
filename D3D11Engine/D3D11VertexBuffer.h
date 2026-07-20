@@ -38,6 +38,7 @@ public:
         M_WRITE = 2,
         M_READ_WRITE = 3,
         M_WRITE_DISCARD = 4,
+        M_WRITE_NO_OVERWRITE = 5,
     };
 
     /** Layed out for D3D11*/

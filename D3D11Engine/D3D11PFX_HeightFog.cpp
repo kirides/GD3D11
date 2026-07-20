@@ -7,7 +7,6 @@
 #include "D3D11ShaderManager.h"
 #include "D3D11VShader.h"
 #include "D3D11PShader.h"
-#include "D3D11ConstantBuffer.h"
 #include "ConstantBufferStructs.h"
 #include "GothicAPI.h"
 #include "GSky.h"
@@ -106,10 +105,10 @@ XRESULT D3D11PFX_HeightFog::Render( RenderToTextureBuffer* fxbuffer ) {
 	cb.HF_GlobalDensity = Toolbox::lerp( cb.HF_GlobalDensity, Engine::GAPI->GetRendererState().RendererSettings.RainFogDensity, rain * fogDensityFactorRain );
 
 
-	hfPS->GetBuffer( "PFXBuffer" ).Update( &cb ).Bind();
+	hfPS->UpdateBuffer("PFXBuffer", &cb, sizeof(cb));
 
 	GSky* sky = Engine::GAPI->GetSky();
-	hfPS->GetBuffer( "Atmosphere" ).Update( &sky->GetAtmosphereCB() ).Bind();
+	hfPS->UpdateBuffer("Atmosphere", &sky->GetAtmosphereCB(), sizeof(sky->GetAtmosphereCB()));
 
 	engine->GetContext()->OMSetRenderTargets( 1, oldRTV.GetAddressOf(), nullptr );
 

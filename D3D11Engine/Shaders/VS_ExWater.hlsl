@@ -3,6 +3,7 @@
 //--------------------------------------------------------------------------------------
 
 #include "Globals_VS_ExConstants.h"
+#include "VertexPacking.h"
 
 cbuffer Matrices_PerFrame : register( b0 )
 {
@@ -17,10 +18,11 @@ cbuffer Matrices_PerInstances : register( b1 )
 //--------------------------------------------------------------------------------------
 // Input / Output structures
 //--------------------------------------------------------------------------------------
+// Water surfaces are part of the wrapped world mesh, which is stored packed (ExVertexStructGPU).
 struct VS_INPUT
 {
 	float3 vPosition	: POSITION;
-	float3 vNormal		: NORMAL;
+	float2 vNormalOct	: NORMAL;    // octahedral-encoded (R16G16_SNORM)
 	float2 vTex1		: TEXCOORD0;
 	float2 vTex2		: TEXCOORD1;
 	float4 vDiffuse		: DIFFUSE;
@@ -135,7 +137,7 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 	Output.vPosition = mul( float4(positionWorld,1), frame.M_ViewProj);
 	Output.vTexcoord = Input.vTex1 + texAniMap;
 	Output.vDiffuse  = Input.vDiffuse;
-    Output.vNormalWS = Input.vNormal;
+    Output.vNormalWS = DecodeOctNormal( Input.vNormalOct );
 	Output.vWorldPosition = positionWorld;
 	Output.vTexcoord2.x = mul(float4(positionWorld,1), frame.M_View).z;
 	Output.vTexcoord2.y = length(mul(float4(positionWorld,1), frame.M_View));

@@ -324,7 +324,9 @@ struct GrassConstantBuffer {
     float G_HeroAffectStrength;
     float2 G_Pad1;
     float3 G_PlayerPosWS;
-    float G_Pad2;
+    // Forward+ with hardware MSAA active: PS_Grass sharpens its alpha test into a per-pixel
+    // coverage value instead of a hard binary clip, for the MSAA alpha-to-coverage blend mode.
+    uint32_t G_UseAlphaToCoverage;
 };
 
 struct DefaultHullShaderConstantBuffer {

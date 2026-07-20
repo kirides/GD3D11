@@ -3,6 +3,7 @@
 //--------------------------------------------------------------------------------------
 
 #include "Globals_VS_ExConstants.h"
+#include "VertexPacking.h"
 
 cbuffer Matrices_PerFrame : register( b0 )
 {
@@ -21,7 +22,8 @@ cbuffer Matrices_PerInstances : register( b1 )
 struct VS_INPUT
 {
 	float3 vPosition	: POSITION;
-	float3 vNormal		: NORMAL;
+	float2 vNormalOct	: NORMAL;    // octahedral-encoded (R16G16_SNORM)
+	float4 vTangent		: TANGENT;   // R10G10B10A2: xyz + handedness
 	float2 vTex1		: TEXCOORD0;
 	float2 vTex2		: TEXCOORD1;
 	float4 vDiffuse		: DIFFUSE;
@@ -36,6 +38,7 @@ struct VS_OUTPUT
 	float3 vViewPosition	: TEXCOORD5;
 	float4 vCurrClipPos     : TEXCOORD6;  // Current clip position for velocity
 	float4 vPrevClipPos     : TEXCOORD7;  // Previous clip position for velocity
+	float4 vTangent			: TEXCOORD3;  // no precomputed tangent -> zero (PS falls back to ddx/ddy)
 	float4 vPosition		: SV_POSITION;
 };
 
@@ -45,24 +48,29 @@ struct VS_OUTPUT
 VS_OUTPUT VSMain( VS_INPUT Input )
 {
 	VS_OUTPUT Output;
-	
-	float3 localPos = (Input.vPosition + cbInstance.M_Fatness * Input.vNormal) * cbInstance.M_Scaling;
+
+	float3 vNormal = DecodeOctNormal( Input.vNormalOct );
+	float4 vTangent = DecodeTangent( Input.vTangent );   // xyz = tangent, w = handedness sign
+
+	float3 localPos = (Input.vPosition + cbInstance.M_Fatness * vNormal) * cbInstance.M_Scaling;
 	float3 positionWorld = mul(float4(localPos, 1), cbInstance.M_World).xyz;
-	
+
 	//Output.vPosition = float4(Input.vPosition, 1);
 	Output.vPosition = mul( float4(positionWorld,1), frame.M_ViewProj);
 	Output.vTexcoord2 = Input.vTex2;
 	Output.vTexcoord = Input.vTex1;
 	Output.vDiffuse  = cbInstance.M_Color;
-	Output.vNormalVS = mul(Input.vNormal, (float3x3)mul(cbInstance.M_World, frame.M_View));
+	float3x3 worldView = (float3x3)mul(cbInstance.M_World, frame.M_View);
+	Output.vNormalVS = mul(vNormal, worldView);
 	Output.vViewPosition = mul(float4(positionWorld,1), frame.M_View);
 	//Output.vWorldPosition = positionWorld;
-	
+
 	// Motion Vectors - use UNJITTERED matrices for correct velocity
 	Output.vCurrClipPos = mul(float4(positionWorld, 1), frame.M_UnjitteredViewProj);
 	float3 prevPositionWorld = mul(float4(localPos, 1), cbInstance.M_PrevWorld).xyz;
 	Output.vPrevClipPos = mul(float4(prevPositionWorld, 1), frame.M_PrevViewProj);
-	
+	Output.vTangent = float4( mul(vTangent.xyz, worldView), vTangent.w );
+
 	return Output;
 }
 

@@ -36,6 +36,7 @@ struct VS_OUTPUT
 	float3 vViewPosition	: TEXCOORD5;
 	float4 vCurrClipPos     : TEXCOORD6;
 	float4 vPrevClipPos     : TEXCOORD7;
+	float4 vTangent			: TEXCOORD3;   // no precomputed tangent here -> zero (PS falls back to ddx/ddy)
 	float4 vPosition		: SV_POSITION;
 };
 
@@ -56,6 +57,7 @@ VS_OUTPUT VSMain( VS_INPUT Input )
 	Output.vTexcoord = Input.vTex1;
 	Output.vDiffuse  = Input.vDiffuse;
 	Output.vNormalVS = mul(Input.vNormal, (float3x3)mul(cbInstance.M_World, frame.M_View));
+	Output.vTangent = float4(0,0,0,0);   // no precomputed tangent; PS_Diffuse uses ddx/ddy
 	Output.vViewPosition = mul(float4(positionWorld,1), frame.M_View);
 	//Output.vWorldPosition = positionWorld;
 

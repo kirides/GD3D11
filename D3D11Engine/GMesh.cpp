@@ -153,6 +153,14 @@ XRESULT GMesh::LoadCached( const std::string& file ) {
     int Version;
     fread( &Version, sizeof( Version ), 1, f );
 
+    // Reject incompatible caches (e.g. after a vertex-format change) so the caller regenerates.
+    if ( Version != MESH_CACHE_VERSION ) {
+        LogWarn() << "Mesh cache version mismatch (" << Version << " != " << MESH_CACHE_VERSION
+            << "), regenerating: " << file;
+        fclose( f );
+        return XR_FAILED;
+    }
+
     // Read num textures
     int numTextures;
     fread( &numTextures, sizeof( numTextures ), 1, f );
@@ -177,11 +185,17 @@ XRESULT GMesh::LoadCached( const std::string& file ) {
         for ( int i = 0; i < numSubmeshes; i++ ) {
             MeshInfo* mi = new MeshInfo;
 
-            // Read vertices
+            // Read vertices. The cache stores full ExVertexStruct data, but MeshInfo::Vertices
+            // is position-only (used for raycasting/mesh tracing); read into a temporary buffer
+            // and keep only the positions.
             int numVertices;
             fread( &numVertices, sizeof( numVertices ), 1, f );
+            std::vector<ExVertexStruct> fullVertices( numVertices );
+            fread( fullVertices.data(), sizeof( ExVertexStruct ) * numVertices, 1, f );
             mi->Vertices.resize( numVertices );
-            fread( &mi->Vertices[0], sizeof( ExVertexStruct ) * numVertices, 1, f );
+            for ( int v = 0; v < numVertices; ++v ) {
+                mi->Vertices[v].Position = fullVertices[v].Position;
+            }
 
             // Read indices
             int numIndices;
