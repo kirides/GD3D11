@@ -1821,6 +1821,23 @@ float4 PSMainBlend( VS_OUT i ) : SV_TARGET // transparent — the PSO blend stat
         return b;
     }
 
+    bool EnsureCopyCommandObjects( ID3D12Device* device, ComPtr<ID3D12CommandAllocator>& allocator, ComPtr<ID3D12GraphicsCommandList>& cmdList ) {
+        if ( !device ) return false;
+        if ( !allocator ) {
+            if ( FAILED( device->CreateCommandAllocator( D3D12_COMMAND_LIST_TYPE_COPY,
+                IID_PPV_ARGS( allocator.ReleaseAndGetAddressOf() ) ) ) ) {
+                return false;
+            }
+        }
+        if ( !cmdList ) {
+            if ( FAILED( device->CreateCommandList( 0, D3D12_COMMAND_LIST_TYPE_COPY,
+                allocator.Get(), nullptr, IID_PPV_ARGS( cmdList.ReleaseAndGetAddressOf() ) ) ) ) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     gtl::flat_hash_map<BaseVisualInfo*, int16_t> g_vobInfoVisualToBucket;
     std::vector<BaseVisualInfo*> g_vobInfoVisualIndexToVisualInfo;
     RenderView g_GeometryPassVobs;
@@ -1857,6 +1874,10 @@ XRESULT D3D12GraphicsEngine::Init() {
     }
     if ( !CreateUploadObjects() ) {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create upload objects.";
+        return XR_FAILED;
+    }
+    if ( !InitCopyQueue() ) {
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to initialize the copy queue.";
         return XR_FAILED;
     }
     if ( !CreateSrvHeap() ) {
@@ -1986,6 +2007,69 @@ bool D3D12GraphicsEngine::CreateUploadObjects() {
     return m_UploadEvent != nullptr;
 }
 
+bool D3D12GraphicsEngine::InitCopyQueue() {
+    ID3D12Device* device = m_Device.GetDevice();
+    if ( !device ) return false;
+
+    D3D12_COMMAND_QUEUE_DESC queueDesc = {};
+    queueDesc.Type = D3D12_COMMAND_LIST_TYPE_COPY;
+    queueDesc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
+    queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
+
+    if ( FAILED( device->CreateCommandQueue( &queueDesc, IID_PPV_ARGS( m_CopyQueue.ReleaseAndGetAddressOf() ) ) ) )
+        return false;
+
+    if ( FAILED( device->CreateFence( 0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS( m_CopyFence.ReleaseAndGetAddressOf() ) ) ) )
+        return false;
+
+    m_CopyFenceEvent = CreateEvent( nullptr, FALSE, FALSE, nullptr );
+    return m_CopyFenceEvent != nullptr;
+}
+
+void D3D12GraphicsEngine::ReleaseCompletedCopyResources( UINT64 fenceValue ) {
+    while ( !m_PendingCopyReleases.empty() ) {
+        auto& pending = m_PendingCopyReleases.front();
+        if ( pending.FenceValue > fenceValue ) break;
+        m_PendingCopyReleases.erase( m_PendingCopyReleases.begin() );
+    }
+}
+
+void D3D12GraphicsEngine::WaitForCopyFence( UINT64 fenceValue ) {
+    if ( !m_CopyFence || !m_CopyFenceEvent ) return;
+    if ( m_CopyFence->GetCompletedValue() >= fenceValue ) return;
+    m_CopyFence->SetEventOnCompletion( fenceValue, m_CopyFenceEvent );
+    WaitForSingleObject( m_CopyFenceEvent, INFINITE );
+}
+
+void D3D12GraphicsEngine::TransitionTextureToSRVOnDirectQueue( ID3D12Resource* texture ) {
+    if ( !texture || !m_Device.GetDevice() ) return;
+
+    ID3D12Device* device = m_Device.GetDevice();
+    ComPtr<ID3D12CommandAllocator> transitionAllocator;
+    ComPtr<ID3D12GraphicsCommandList> transitionCmdList;
+
+    if ( FAILED( device->CreateCommandAllocator( D3D12_COMMAND_LIST_TYPE_DIRECT,
+        IID_PPV_ARGS( transitionAllocator.ReleaseAndGetAddressOf() ) ) ) )
+        return;
+    if ( FAILED( device->CreateCommandList( 0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+        transitionAllocator.Get(), nullptr, IID_PPV_ARGS( transitionCmdList.ReleaseAndGetAddressOf() ) ) ) )
+        return;
+
+    auto toSRV = TransitionBarrier( texture, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
+    transitionCmdList->ResourceBarrier( 1, &toSRV );
+    if ( FAILED( transitionCmdList->Close() ) ) return;
+
+    ID3D12CommandList* lists[] = { transitionCmdList.Get() };
+    m_Device.GetDirectQueue()->ExecuteCommandLists( 1, lists );
+
+    const UINT64 waitValue = ++m_UploadFenceValue;
+    if ( FAILED( m_Device.GetDirectQueue()->Signal( m_UploadFence.Get(), waitValue ) ) ) return;
+    if ( m_UploadFence && m_UploadEvent ) {
+        m_UploadFence->SetEventOnCompletion( waitValue, m_UploadEvent );
+        WaitForSingleObject( m_UploadEvent, INFINITE );
+    }
+}
+
 bool D3D12GraphicsEngine::UploadTextureSubresources( ID3D12Resource* dst, const D3D12_SUBRESOURCE_DATA* subresources, UINT numSubresources ) {
     if ( !dst || !subresources || numSubresources == 0 ) return false;
     ID3D12Device* device = m_Device.GetDevice();
@@ -1998,7 +2082,6 @@ bool D3D12GraphicsEngine::UploadTextureSubresources( ID3D12Resource* dst, const 
     UINT64 totalBytes = 0;
     device->GetCopyableFootprints( &desc, 0, numSubresources, 0, layouts.data(), numRows.data(), rowSizes.data(), &totalBytes );
 
-    // Upload (staging) buffer sized to hold all subresources' aligned footprints.
     D3D12_RESOURCE_DESC bufDesc = {};
     bufDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
     bufDesc.Width = totalBytes;
@@ -2009,7 +2092,6 @@ bool D3D12GraphicsEngine::UploadTextureSubresources( ID3D12Resource* dst, const 
     bufDesc.SampleDesc.Count = 1;
     bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
-    
     D3D12MA::ALLOCATION_DESC allocDesc = {};
     allocDesc.HeapType = D3D12_HEAP_TYPE_UPLOAD;
     
@@ -2019,7 +2101,7 @@ bool D3D12GraphicsEngine::UploadTextureSubresources( ID3D12Resource* dst, const 
         &allocDesc,
         &bufDesc,
         D3D12_RESOURCE_STATE_GENERIC_READ,
-        nullptr, // Clear value
+        nullptr,
         uploadAllocation.ReleaseAndGetAddressOf(),
         IID_PPV_ARGS( upload.ReleaseAndGetAddressOf() ) ) ) ) {
         return false;
@@ -2041,9 +2123,10 @@ bool D3D12GraphicsEngine::UploadTextureSubresources( ID3D12Resource* dst, const 
     }
     upload->Unmap( 0, nullptr );
 
-    // Record the copies + transition to a shader-readable state.
-    m_UploadAllocator->Reset();
-    m_UploadCmdList->Reset( m_UploadAllocator.Get(), nullptr );
+    ComPtr<ID3D12CommandAllocator> copyAllocator;
+    ComPtr<ID3D12GraphicsCommandList> copyCmdList;
+    if ( !EnsureCopyCommandObjects( device, copyAllocator, copyCmdList ) )
+        return false;
 
     for ( UINT i = 0; i < numSubresources; ++i ) {
         D3D12_TEXTURE_COPY_LOCATION dstLoc = {};
@@ -2056,23 +2139,33 @@ bool D3D12GraphicsEngine::UploadTextureSubresources( ID3D12Resource* dst, const 
         srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
         srcLoc.PlacedFootprint = layouts[i];
 
-        m_UploadCmdList->CopyTextureRegion( &dstLoc, 0, 0, 0, &srcLoc, nullptr );
+        copyCmdList->CopyTextureRegion( &dstLoc, 0, 0, 0, &srcLoc, nullptr );
     }
 
-    auto toSRV = TransitionBarrier( dst, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
-    m_UploadCmdList->ResourceBarrier( 1, &toSRV );
-    m_UploadCmdList->Close();
-
-    ID3D12CommandList* lists[] = { m_UploadCmdList.Get() };
-    m_Device.GetDirectQueue()->ExecuteCommandLists( 1, lists );
-
-    const UINT64 waitValue = ++m_UploadFenceValue;
-    if ( FAILED( m_Device.GetDirectQueue()->Signal( m_UploadFence.Get(), waitValue ) ) )
+    if ( FAILED( copyCmdList->Close() ) )
         return false;
-    if ( m_UploadFence->GetCompletedValue() < waitValue ) {
-        m_UploadFence->SetEventOnCompletion( waitValue, m_UploadEvent );
-        WaitForSingleObject( m_UploadEvent, INFINITE ); // upload buffer stays alive until here
-    }
+
+    std::lock_guard<std::mutex> lock( m_CopyQueueMutex );
+
+    ID3D12CommandList* lists[] = { copyCmdList.Get() };
+    m_CopyQueue->ExecuteCommandLists( 1, lists );
+
+    const UINT64 fenceValue = ++m_CopyFenceValue;
+    if ( FAILED( m_CopyQueue->Signal( m_CopyFence.Get(), fenceValue ) ) )
+        return false;
+
+    // Asynchronous GPU-side queue barrier: Direct Queue waits on GPU for copy execution to finish
+    m_Device.GetDirectQueue()->Wait( m_CopyFence.Get(), fenceValue );
+
+    m_PendingCopyReleases.push_back( PendingCopyRelease {
+        fenceValue,
+        std::move( uploadAllocation ),
+        std::move( upload ),
+        std::move( copyAllocator ),
+        std::move( copyCmdList )
+    } );
+
+    ReleaseCompletedCopyResources( m_CopyFence->GetCompletedValue() );
     return true;
 }
 
@@ -7234,8 +7327,20 @@ bool D3D12GraphicsEngine::AcquireBackBufferRTVs() {
 XRESULT D3D12GraphicsEngine::OnBeginFrame() {
     if ( !m_SwapChainReady ) return XR_SUCCESS;
 
-    m_CmdAllocators[m_FrameIndex]->Reset();
-    m_CmdList->Reset( m_CmdAllocators[m_FrameIndex].Get(), nullptr );
+    
+    {
+        std::lock_guard<std::mutex> lock( m_CopyQueueMutex );
+        ReleaseCompletedCopyResources( m_CopyFence->GetCompletedValue() );
+    }
+    
+    HRESULT hr = m_CmdAllocators[m_FrameIndex]->Reset();
+    if ( FAILED( hr ) ) {
+        WaitForGpuIdle();
+        hr = m_CmdAllocators[m_FrameIndex]->Reset();
+        if ( FAILED( hr ) ) return XR_FAILED;
+    }
+    hr = m_CmdList->Reset( m_CmdAllocators[m_FrameIndex].Get(), nullptr );
+    if ( FAILED( hr ) ) return XR_FAILED;
     ResetCpuContextTracker();
 
     auto toRT = TransitionBarrier( m_BackBuffers[m_FrameIndex].Get(),
@@ -7355,6 +7460,10 @@ static const wchar_t* FindCpuRecordedContext( UINT crashIndex ) {
 }
 
 static void PrintNode( const D3D12_AUTO_BREADCRUMB_NODE1* node ) {
+    if ( !node ) {
+        return;
+    }
+
     std::wstring builder{};
     builder.reserve(1024);
 
@@ -7488,6 +7597,14 @@ void D3D12GraphicsEngine::MoveToNextFrame() {
 
 void D3D12GraphicsEngine::WaitForGpuIdle() {
     if ( !m_Fence || !m_Device.GetDirectQueue() ) return;
+
+    if ( m_CopyFence && m_CopyFenceEvent ) {
+        const UINT64 copyFenceValue = m_CopyFenceValue;
+        if ( copyFenceValue > 0 && m_CopyFence->GetCompletedValue() < copyFenceValue ) {
+            m_CopyFence->SetEventOnCompletion( copyFenceValue, m_CopyFenceEvent );
+            WaitForSingleObject( m_CopyFenceEvent, INFINITE );
+        }
+    }
 
     // Calculate a "one-off" future value beyond all active frames.
     // This avoids colliding with any m_FenceValues currently in flight.

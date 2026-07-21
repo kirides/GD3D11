@@ -185,28 +185,22 @@ bool D3D12Texture::CreateAndUpload( void* data ) {
     td.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
     td.Flags = D3D12_RESOURCE_FLAG_NONE;
 
-    // Recreate case (animated textures call UpdateData every frame): the old resource may still be
-    // referenced by an in-flight (or the currently-recording) command list. Releasing it synchronously
-    // — as ReleaseAndGetAddressOf would — deletes a resource the GPU isn't done with, triggering
-    // OBJECT_DELETED_WHILE_STILL_IN_USE and a device hang. Defer it until its frame's fence has passed.
-    // The SRV slot is kept (CreateSRV reuses it), so only the resource is deferred.
     if ( m_Allocation ) {
-        // Queue both the allocation wrapper and raw resource for frame-deferred release
         engine->QueueAllocationForRelease( m_Allocation );
         m_Allocation.Reset();
         m_Texture.Reset();
     }
     
     D3D12MA::ALLOCATION_DESC allocDesc = {};
-    allocDesc.HeapType = D3D12_HEAP_TYPE_DEFAULT; // Equivalent to your heapDefault properties
+    allocDesc.HeapType = D3D12_HEAP_TYPE_DEFAULT;
 
-    const D3D12_RESOURCE_STATES initState = data ? D3D12_RESOURCE_STATE_COPY_DEST : D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    const D3D12_RESOURCE_STATES initState = D3D12_RESOURCE_STATE_COMMON;
     
     if ( FAILED( allocator->CreateResource(
         &allocDesc,
         &td,
         initState,
-        nullptr, // Clear value
+        nullptr,
         m_Allocation.ReleaseAndGetAddressOf(),
         IID_PPV_ARGS( m_Texture.ReleaseAndGetAddressOf() ) ) ) ) {
         LogWarn() << "D3D12Texture: D3D12MA::CreateResource failed (format " << static_cast<int>( m_Format )
@@ -214,8 +208,6 @@ bool D3D12Texture::CreateAndUpload( void* data ) {
         return false;
     }
 
-    // Name the resource so the D3D12 debug layer identifies it (e.g. in OBJECT_DELETED_WHILE_STILL_IN_USE
-    // reports) as a texture + its source file, instead of 'Unnamed Object'.
     {
         const std::string debugName = "Tex:" + ( m_DebugName.empty() ? std::string( "unnamed" ) : m_DebugName );
         m_Allocation->SetName( std::wstring( debugName.begin(), debugName.end() ).c_str() );
@@ -223,7 +215,6 @@ bool D3D12Texture::CreateAndUpload( void* data ) {
     }
 
     if ( !data ) {
-        // No pixel data yet: the resource is already in PIXEL_SHADER_RESOURCE state, so it's bindable.
         CreateSRV();
         return true;
     }
@@ -237,9 +228,12 @@ bool D3D12Texture::CreateAndUpload( void* data ) {
         subs[i].SlicePitch = GetSizeInBytes( static_cast<int>( i ) );
         offset += GetSizeInBytes( static_cast<int>( i ) );
     }
+
+    // Fully async upload submission
     if ( !engine->UploadTextureSubresources( m_Texture.Get(), subs.data(), m_MipMapCount ) )
         return false;
 
+    // Immediately create SRV; GPU sync is queued on the direct command queue asynchronously
     CreateSRV();
     return true;
 }

@@ -5,6 +5,7 @@
 #include "D3D12Device.h"
 #include <memory>
 #include <unordered_map>
+#include <vector>
 
 struct RenderBucket;
 class D3D12LineRenderer;
@@ -75,10 +76,15 @@ public:
     /** Native device for the D3D12 resource classes (D3D12Texture / D3D12VertexBuffer). */
     ID3D12Device* GetD3DDevice() const { return m_Device.GetDevice(); }
 
-    /** Synchronous upload helper: copies CPU subresource data into a DEFAULT-heap resource that was
-        created in COPY_DEST state, then transitions it to PIXEL_SHADER_RESOURCE. Blocks until the
-        copy completes. Used by D3D12Texture (load-time uploads; the async copy-queue path is later). */
+    /** Asynchronously uploads CPU subresource data into a DEFAULT-heap resource using the dedicated
+        copy queue, then defers the staging allocation lifetime until the copy-queue fence reaches the
+        submitted value. The caller can then issue a direct-queue transition barrier once the copy has
+        completed. */
     bool UploadTextureSubresources( ID3D12Resource* dst, const D3D12_SUBRESOURCE_DATA* subresources, UINT numSubresources );
+    bool InitCopyQueue();
+    UINT64 GetCopyFenceValue() const { return m_CopyFenceValue; }
+    void WaitForCopyFence( UINT64 fenceValue );
+    void TransitionTextureToSRVOnDirectQueue( ID3D12Resource* texture );
 
     /** Gothic's 2D/UI draw entry (menus, fonts, HUD). Uploads the transformed ExVertexStruct verts to
         a per-frame ring, binds the UI PSO + current texture + viewport constants, and draws. */
@@ -212,12 +218,32 @@ private:
     HANDLE m_FenceEvent = nullptr;
     UINT   m_FrameIndex = 0;
 
-    // Synchronous upload path (textures / buffers) — blocks the caller until the copy is done.
-    Microsoft::WRL::ComPtr<ID3D12CommandAllocator>    m_UploadAllocator;
+    // Synchronous upload path (direct queue) used for the transition barrier after async copy-queue uploads.
+    Microsoft::WRL::ComPtr<ID3D12CommandAllocator> m_UploadAllocator;
     Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> m_UploadCmdList;
-    Microsoft::WRL::ComPtr<ID3D12Fence>               m_UploadFence;
+    Microsoft::WRL::ComPtr<ID3D12Fence> m_UploadFence;
     UINT64 m_UploadFenceValue = 0;
     HANDLE m_UploadEvent = nullptr;
+
+    // Copy-queue upload path for textures (asynchronous to the main direct queue).
+    Microsoft::WRL::ComPtr<ID3D12CommandQueue> m_CopyQueue;
+    Microsoft::WRL::ComPtr<ID3D12CommandAllocator> m_CopyAllocator;
+    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> m_CopyCmdList;
+    Microsoft::WRL::ComPtr<ID3D12Fence> m_CopyFence;
+    UINT64 m_CopyFenceValue = 0;
+    HANDLE m_CopyFenceEvent = nullptr;
+
+    struct PendingCopyRelease {
+        UINT64 FenceValue = 0;
+        Microsoft::WRL::ComPtr<D3D12MA::Allocation> UploadAllocation;
+        Microsoft::WRL::ComPtr<ID3D12Resource> UploadResource;
+        Microsoft::WRL::ComPtr<ID3D12CommandAllocator> CopyAllocator;
+        Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> CopyCommandList;
+    };
+    std::vector<PendingCopyRelease> m_PendingCopyReleases;
+    std::mutex m_CopyQueueMutex; // Protects copy queue operations and pending releases
+
+    void ReleaseCompletedCopyResources( UINT64 fenceValue );
 
     HWND  m_OutputWindow = nullptr;
     INT2  m_Resolution = {};
