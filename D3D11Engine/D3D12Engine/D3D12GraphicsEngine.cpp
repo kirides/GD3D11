@@ -1037,8 +1037,8 @@ float4 PSClip( VS_OUT i ) : SV_TARGET
 // validation warning. Only alpha-clips foliage/fence cutouts so their gaps don't cast solid shadows.
 void PSShadowClip( VS_OUT i )
 {
-    clip( tx.Sample( smp, i.uv ).a - 0.5 );
-}
+    Texture2D difTex = ResourceDescriptorHeap[MatDiffuseIndex];
+    clip( difTex.Sample( smp, i.uv ).a - 0.5 );}
 )";
 
     // Forward+ tiled light-culling COMPUTE shader (P2.9b-2). One thread group per 16x16 screen tile; each
@@ -2504,6 +2504,7 @@ ID3D12PipelineState* D3D12GraphicsEngine::GetOrCreateUIPipeline(
     } else {
         pso.DepthStencilState.DepthEnable = FALSE;
         pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+        pso.DSVFormat = DXGI_FORMAT_UNKNOWN;
     }
     pso.DepthStencilState.StencilEnable = FALSE;
     pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
@@ -4005,7 +4006,7 @@ void D3D12GraphicsEngine::RenderSunShadows() {
     // Resolve + bind a material's diffuse to a root descriptor-table slot (white fallback) for the alpha cutout.
     auto bindDiffuse = [&]( zCTexture* tex, UINT rootParam ) {
         D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
-        if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+        if ( tex && tex->GetCacheState() == zRES_CACHED_IN ) {
             if ( MyDirectDrawSurface7* surface = tex->GetSurface() ) {
                 if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
                     D3D12Texture* d12 = D3D12Texture::From( gfx );
@@ -4015,6 +4016,11 @@ void D3D12GraphicsEngine::RenderSunShadows() {
         }
         m_CmdList->SetGraphicsRootDescriptorTable( rootParam, srv );
     };
+    
+    const Frustum& unionShadowFrustum = m_CascadeFrustum[kShadowCascades - 1];
+    static std::vector<WorldMeshSectionInfo*> shadowSections;
+    shadowSections.clear();
+    Engine::GAPI->CollectVisibleSections( shadowSections, &unionShadowFrustum, false );
     
     D3D12_CPU_DESCRIPTOR_HANDLE dsvBase = m_ShadowDsvHeap->GetCPUDescriptorHandleForHeapStart();    
     for ( UINT c = 0; c < kShadowCascades; ++c ) {
@@ -4028,42 +4034,72 @@ void D3D12GraphicsEngine::RenderSunShadows() {
         if ( haveWorld ) {
             DX_ZONE(m_CmdList, "World Mesh");
             
-            static std::vector<WorldMeshSectionInfo*> sections;
-            sections.clear();
-            Engine::GAPI->CollectVisibleSections( sections, &m_CascadeFrustum[c], false );
-            
-            m_CmdList->SetPipelineState( m_ShadowCasterWorldPSO.Get() );
-            m_CmdList->SetGraphicsRootSignature( m_WorldRootSig.Get() );
-            m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
+            WorldDrawCommand* cmds = reinterpret_cast<WorldDrawCommand*>( m_ShadowWorldDrawArgsPtr[c][m_FrameIndex] );
+            UINT drawCount = 0;
 
-            const D3D12_VERTEX_BUFFER_VIEW vbv = { vb->GetGpuVirtualAddress(), vb->GetSizeInBytes(), sizeof( ExVertexStructGPU ) };
-            const D3D12_INDEX_BUFFER_VIEW  ibv = { ib->GetGpuVirtualAddress(), ib->GetSizeInBytes(), DXGI_FORMAT_R32_UINT };
-            m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
-            m_CmdList->IASetIndexBuffer( &ibv );
-
-            zCTexture* boundTex = nullptr;
-            for ( WorldMeshSectionInfo* section : sections ) {
+            for ( WorldMeshSectionInfo* section : shadowSections ) {
                 if ( !section ) continue;
                 for ( auto const& [meshKey, mesh] : section->WorldMeshes ) {
                     if ( !mesh || mesh->Indices.empty() ) continue;
                     if ( meshKey.Info && meshKey.Info->MaterialType != MaterialInfo::MT_None ) continue;
 
-                    // frustum cull meshes inside the large sections. drastically reduces draw calls.
-                    if ( !Engine::GAPI->IsWorldMeshVisibleInFrustum( mesh, m_CascadeFrustum[c] ) ) {
+                    // Frustum cull
+                    if ( !Engine::GAPI->IsWorldMeshVisibleInFrustum( mesh, m_CascadeFrustum[c] ) ) continue;
+
+                    // Skip translucent / blended geometry in shadow maps
+                    if ( (meshKey.Material->GetAlphaFunc() > zMAT_ALPHA_FUNC_NONE &&
+                        meshKey.Material->GetAlphaFunc() != zMAT_ALPHA_FUNC_TEST)
+                        || (meshKey.Material->GetAlphaFunc() == 0 && zColor( meshKey.Material->GetColor() ).bgra.alpha < 255) ) {
                         continue;
                     }
 
-                    // we don't draw alpha stuff into shadowmaps.
-                    if ( (meshKey.Material->GetAlphaFunc() > zMAT_ALPHA_FUNC_NONE &&
-                        meshKey.Material->GetAlphaFunc() != zMAT_ALPHA_FUNC_TEST)
-                            || (meshKey.Material->GetAlphaFunc() == 0 && zColor( meshKey.Material->GetColor() ).bgra.alpha < 255) ) {
-                        continue;
-                    }
-                    
+                    if ( drawCount >= kMaxWorldDrawCommands ) break;
+
+                    // Resolve bindless diffuse index for alpha clipping
                     zCTexture* tex = meshKey.Material->GetAniTexture();
-                    if ( tex != boundTex ) { bindDiffuse( tex, 1 ); boundTex = tex; }
-                    m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mesh->Indices.size() ), 1, mesh->BaseIndexLocation, 0, 0 );
+                    uint32_t diffuseIdx = m_BlackTexture->GetSrvSlot();
+                    if ( tex && tex->GetCacheState() == zRES_CACHED_IN ) {
+                        if ( MyDirectDrawSurface7* s = tex->GetSurface() ) {
+                            if ( GfxTexture* gfx = s->GetEngineTexture() ) {
+                                D3D12Texture* d = D3D12Texture::From( gfx );
+                                if ( d->HasSRV() ) diffuseIdx = d->GetSrvSlot();
+                            }
+                        }
+                    }
+
+                    WorldDrawCommand& cmd = cmds[drawCount++];
+                    cmd.MatNormalIndex = 0xFFFFFFFFu;
+                    cmd.MatOrmIndex    = m_DefaultOrmTexture->GetSrvSlot();
+                    cmd.MatDiffuseIndex = diffuseIdx;
+                    cmd.Draw.IndexCountPerInstance = static_cast<UINT>( mesh->Indices.size() );
+                    cmd.Draw.InstanceCount = 1;
+                    cmd.Draw.StartIndexLocation = mesh->BaseIndexLocation;
+                    cmd.Draw.BaseVertexLocation = 0;
+                    cmd.Draw.StartInstanceLocation = 0;
                 }
+            }
+
+            m_ShadowWorldDrawCount[c] = drawCount;
+
+            // 2. Dispatch Indirect Draw Call if commands exist
+            if ( drawCount > 0 ) {
+                m_CmdList->SetPipelineState( m_ShadowCasterWorldPSO.Get() );
+                m_CmdList->SetGraphicsRootSignature( m_WorldRootSig.Get() );
+                m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
+
+                const D3D12_VERTEX_BUFFER_VIEW vbv = { vb->GetGpuVirtualAddress(), vb->GetSizeInBytes(), sizeof( ExVertexStructGPU ) };
+                const D3D12_INDEX_BUFFER_VIEW  ibv = { ib->GetGpuVirtualAddress(), ib->GetSizeInBytes(), DXGI_FORMAT_R32_UINT };
+                m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
+                m_CmdList->IASetIndexBuffer( &ibv );
+
+                m_CmdList->ExecuteIndirect(
+                    m_WorldIndirectCmdSig.Get(),
+                    drawCount,
+                    m_ShadowWorldDrawArgs[c][m_FrameIndex].Get(),
+                    0,
+                    nullptr,
+                    0
+                );
             }
         }
 
@@ -6204,6 +6240,22 @@ bool D3D12GraphicsEngine::CreateWorldIndirect() {
         if ( FAILED( m_WorldDrawArgs[i]->Map( 0, &noRead, &mapped ) ) ) return false;
         m_WorldDrawArgsPtr[i] = static_cast<uint8_t*>( mapped );
         m_WorldDrawArgsGpu[i] = m_WorldDrawArgs[i]->GetGPUVirtualAddress();
+    }
+    
+    
+    for ( UINT c = 0; c < kShadowCascades; ++c ) {
+        for ( UINT i = 0; i < kBackBufferCount; ++i ) {
+            if ( FAILED( device->CreateCommittedResource( &upload, D3D12_HEAP_FLAG_NONE, &bd,
+                D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS( m_ShadowWorldDrawArgs[c][i].ReleaseAndGetAddressOf() ) ) ) )
+                return false;
+            
+            m_ShadowWorldDrawArgs[c][i]->SetName( L"ShadowWorldDrawArgsRing" );
+            D3D12_RANGE noRead = { 0, 0 };
+            void* mapped = nullptr;
+            if ( FAILED( m_ShadowWorldDrawArgs[c][i]->Map( 0, &noRead, &mapped ) ) ) return false;
+            m_ShadowWorldDrawArgsPtr[c][i] = static_cast<uint8_t*>( mapped );
+            m_ShadowWorldDrawArgsGpu[c][i] = m_ShadowWorldDrawArgs[c][i]->GetGPUVirtualAddress();
+        }
     }
     return true;
 }

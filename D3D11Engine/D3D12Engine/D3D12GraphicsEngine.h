@@ -356,6 +356,12 @@ private:
     DirectX::XMFLOAT4X4 m_CascadeViewProj[kShadowCascades] = {};   // light-space view*proj per cascade (this frame)
     Frustum m_CascadeFrustum[kShadowCascades] = {};   // light-space view*proj per cascade (this frame)
     float m_CascadeTexelWorld[kShadowCascades] = {};   // world units / shadow texel per cascade (for the sampling normal bias)
+    
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_ShadowWorldDrawArgs[kShadowCascades][kBackBufferCount];
+    uint8_t*  m_ShadowWorldDrawArgsPtr[kShadowCascades][kBackBufferCount] = {};
+    D3D12_GPU_VIRTUAL_ADDRESS m_ShadowWorldDrawArgsGpu[kShadowCascades][kBackBufferCount] = {};
+    UINT      m_ShadowWorldDrawCount[kShadowCascades] = {};
+    
     DirectX::XMFLOAT3 m_SunDirWS = { 0.0f, 1.0f, 0.0f };   // normalized world-space dir TOWARD the sun (this frame, smoothed)
     // Temporal light-direction smoothing (P2.9c-3c): the origin-anchored texel-snap grid amplifies tiny per-frame
     // sun-direction drift into a large lateral texel shift for players far from the origin (lever arm) → crawl.
