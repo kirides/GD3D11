@@ -476,7 +476,7 @@ XRESULT D3D11ShadowMap::PrepareRender()
     m_CascadeSplits.insert( m_CascadeSplits.begin(), splits.begin(), splits.end() );
 
     // Get current light direction from atmosphere
-    XMVECTOR currentDir = XMLoadFloat3( Engine::GAPI->GetSky()->GetAtmosphereCB().AC_LightPos.toXMFLOAT3() );
+    XMVECTOR currentDir = XMLoadFloat3( &Engine::GAPI->GetSky()->GetAtmosphereCB().AC_LightPos );
     currentDir = XMVector3Normalize( currentDir );
 
     // *** TEMPORAL SMOOTHING FOR LIGHT DIRECTION ***
@@ -1362,9 +1362,9 @@ DS_ScreenQuadConstantBuffer D3D11ShadowMap::FillSunCSMConstantBuffer() const {
     // shader before depth->world reconstruction so shadows don't crawl/flicker each frame.
     scb.SQ_JitterOffset = float2( proj._13 * 0.5f, -proj._23 * 0.5f );
 
-    XMVECTOR lightDirWorld = XMLoadFloat3( sky->GetAtmosphereCB().AC_LightPos.toXMFLOAT3() );
-    XMStoreFloat3( scb.SQ_LightDirectionWS.toXMFLOAT3(), lightDirWorld );
-    XMStoreFloat3( scb.SQ_LightDirectionVS.toXMFLOAT3(),
+    XMVECTOR lightDirWorld = XMLoadFloat3( &sky->GetAtmosphereCB().AC_LightPos );
+    XMStoreFloat3( &scb.SQ_LightDirectionWS, lightDirWorld );
+    XMStoreFloat3( &scb.SQ_LightDirectionVS,
         XMVector3TransformNormal( lightDirWorld, view ) );
 
     float3 sunColor = settings.SunLightColor;
@@ -1497,9 +1497,9 @@ XRESULT D3D11ShadowMap::DrawWorldLights( ID3D11ShaderResourceView* aoMaskSRV )
     // shader before depth->world reconstruction so shadows don't crawl/flicker each frame.
     scb.SQ_JitterOffset = float2( proj._13 * 0.5f, -proj._23 * 0.5f );
 
-    XMVECTOR lightDirWorld = XMLoadFloat3( sky->GetAtmosphereCB().AC_LightPos.toXMFLOAT3() );
-    XMStoreFloat3( scb.SQ_LightDirectionWS.toXMFLOAT3(), lightDirWorld );
-    XMStoreFloat3( scb.SQ_LightDirectionVS.toXMFLOAT3(),
+    XMVECTOR lightDirWorld = XMLoadFloat3( &sky->GetAtmosphereCB().AC_LightPos );
+    XMStoreFloat3( &scb.SQ_LightDirectionWS, lightDirWorld );
+    XMStoreFloat3( &scb.SQ_LightDirectionVS,
         XMVector3TransformNormal( lightDirWorld, view ) );
 
     float3 sunColor =
@@ -1626,7 +1626,7 @@ void XM_CALLCONV D3D11ShadowMap::RenderShadowCube(
     std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache,
     bool clearDepth,
     unsigned int casterMask,
-    const std::function<bool(zCVob*)>& ignoreVob ) {
+    const std::move_only_function<bool(const zCVob*) const>& ignoreVob ) {
 
     auto graphicsEngine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
 

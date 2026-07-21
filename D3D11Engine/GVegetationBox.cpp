@@ -112,9 +112,9 @@ XRESULT GVegetationBox::InitVegetationBox( MeshInfo* mesh,
     for ( unsigned int i = 0; i < mesh->Indices.size(); i += 3 ) {
         XMFLOAT3 tri[3];
 
-        tri[0] = *mesh->Vertices[mesh->Indices[i]].Position.toXMFLOAT3();
-        tri[1] = *mesh->Vertices[mesh->Indices[i + 1]].Position.toXMFLOAT3();
-        tri[2] = *mesh->Vertices[mesh->Indices[i + 2]].Position.toXMFLOAT3();
+        tri[0] = mesh->Vertices[mesh->Indices[i]].Position;
+        tri[1] = mesh->Vertices[mesh->Indices[i + 1]].Position;
+        tri[2] = mesh->Vertices[mesh->Indices[i + 2]].Position;
 
         trisInside.push_back( tri[0] );
         trisInside.push_back( tri[1] );
@@ -166,15 +166,15 @@ XRESULT GVegetationBox::InitVegetationBox( const XMFLOAT3& min,
         for ( int v = 0; v < 4; v++ ) {
             if ( v == 4 ) {
                 // Check center too
-                XMFLOAT3 tri[] = { *p[i]->getVertices()[0]->Position.toXMFLOAT3(),
-                                        *p[i]->getVertices()[1]->Position.toXMFLOAT3(),
-                                        *p[i]->getVertices()[2]->Position.toXMFLOAT3() };
+                XMFLOAT3 tri[] = { p[i]->getVertices()[0]->Position,
+                                        p[i]->getVertices()[1]->Position,
+                                        p[i]->getVertices()[2]->Position };
 
                 // Get the center
                 XMFLOAT3 center;
                 XMStoreFloat3( &center, (XMLoadFloat3( &tri[0] ) + XMLoadFloat3( &tri[1] ) + XMLoadFloat3( &tri[2] )) / 3.0f );
 
-                if ( PositionInsideBox( *p[i]->getVertices()[v]->Position.toXMFLOAT3() ) ) {
+                if ( PositionInsideBox( p[i]->getVertices()[v]->Position ) ) {
                     // Restrict by texture
                     if (!restrictByTextureView.empty() &&
                         p[i]->GetMaterial() &&
@@ -197,10 +197,10 @@ XRESULT GVegetationBox::InitVegetationBox( const XMFLOAT3& min,
                 break;
             }
 
-            if ( PositionInsideBox( *p[i]->getVertices()[v]->Position.toXMFLOAT3() ) ) {
-                XMFLOAT3 tri[] = { *p[i]->getVertices()[0]->Position.toXMFLOAT3(),
-                                        *p[i]->getVertices()[1]->Position.toXMFLOAT3(),
-                                        *p[i]->getVertices()[2]->Position.toXMFLOAT3() };
+            if ( PositionInsideBox( p[i]->getVertices()[v]->Position ) ) {
+                XMFLOAT3 tri[] = { p[i]->getVertices()[0]->Position,
+                                        p[i]->getVertices()[1]->Position,
+                                        p[i]->getVertices()[2]->Position };
 
                 // Restrict by texture
                 if (!restrictByTextureView.empty() &&

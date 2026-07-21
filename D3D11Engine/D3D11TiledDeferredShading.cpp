@@ -368,7 +368,7 @@ D3D11TiledDeferredShading::CullResult D3D11TiledDeferredShading::CullLights(
 
         // Distance fade
         float dist;
-        XMStoreFloat( &dist, XMVector3Length( XMLoadFloat3( posWorld.toXMFLOAT3() ) - camPos ) );
+        XMStoreFloat( &dist, XMVector3Length( XMLoadFloat3( &posWorld ) - camPos ) );
 
         if ( dist + lightRange < settings.VisualFXDrawRadius ) {
             float fadeEnd = settings.VisualFXDrawRadius;
@@ -386,7 +386,7 @@ D3D11TiledDeferredShading::CullResult D3D11TiledDeferredShading::CullLights(
         if ( lightColor.x <= 0.0f && lightColor.y <= 0.0f && lightColor.z <= 0.0f )
             continue;
 
-        FXMVECTOR posWorldVec = XMLoadFloat3( posWorld.toXMFLOAT3() );
+        FXMVECTOR posWorldVec = XMLoadFloat3( &posWorld );
         XMFLOAT3 posView;
         XMStoreFloat3( &posView, XMVector3TransformCoord( posWorldVec, view ) );
 

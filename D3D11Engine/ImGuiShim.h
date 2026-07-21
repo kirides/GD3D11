@@ -66,6 +66,7 @@ public:
         return WINDOW_MODE_FULLSCREEN_BORDERLESS;
     }
 private:
+    void RenderSettingsWindowModern();
     void RenderSettingsWindow();
     void RenderAdvancedSettingsWindow();
     void RenderAdvancedColumn2(GothicRendererSettings& settings, GothicAPI* gapi);

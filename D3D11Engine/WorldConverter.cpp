@@ -228,7 +228,7 @@ namespace {
     void RepairZeroLengthVertexNormals( std::vector<ExVertexStruct>& vertices, const std::vector<VERTEX_INDEX>& indices ) {
         bool anyZero = false;
         for ( auto const& vx : vertices ) {
-            if ( IsDegenerateNormal( XMLoadFloat3( vx.Normal.toXMFLOAT3() ) ) ) {
+            if ( IsDegenerateNormal( XMLoadFloat3( &vx.Normal ) ) ) {
                 anyZero = true;
                 break;
             }
@@ -239,15 +239,15 @@ namespace {
         std::vector<XMFLOAT3> accum( vertices.size(), XMFLOAT3( 0, 0, 0 ) );
         for ( size_t i = 0; i + 2 < indices.size(); i += 3 ) {
             VERTEX_INDEX i0 = indices[i], i1 = indices[i + 1], i2 = indices[i + 2];
-            XMVECTOR p0 = XMLoadFloat3( vertices[i0].Position.toXMFLOAT3() );
-            XMVECTOR p1 = XMLoadFloat3( vertices[i1].Position.toXMFLOAT3() );
-            XMVECTOR p2 = XMLoadFloat3( vertices[i2].Position.toXMFLOAT3() );
+            XMVECTOR p0 = XMLoadFloat3( &vertices[i0].Position );
+            XMVECTOR p1 = XMLoadFloat3( &vertices[i1].Position );
+            XMVECTOR p2 = XMLoadFloat3( &vertices[i2].Position );
             XMVECTOR faceNormal = XMVector3Cross( p1 - p0, p2 - p0 );
             if ( IsDegenerateNormal( faceNormal ) )
                 continue;
 
             for ( VERTEX_INDEX idx : { i0, i1, i2 } ) {
-                if ( IsDegenerateNormal( XMLoadFloat3( vertices[idx].Normal.toXMFLOAT3() ) ) ) {
+                if ( IsDegenerateNormal( XMLoadFloat3( &vertices[idx].Normal ) ) ) {
                     XMFLOAT3 sum;
                     XMStoreFloat3( &sum, XMLoadFloat3( &accum[idx] ) + faceNormal );
                     accum[idx] = sum;
@@ -256,7 +256,7 @@ namespace {
         }
 
         for ( size_t i = 0; i < vertices.size(); i++ ) {
-            if ( !IsDegenerateNormal( XMLoadFloat3( vertices[i].Normal.toXMFLOAT3() ) ) )
+            if ( !IsDegenerateNormal( XMLoadFloat3( &vertices[i].Normal ) ) )
                 continue;
 
             XMVECTOR n = XMLoadFloat3( &accum[i] );
@@ -290,7 +290,7 @@ void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float ra
     // in this slim format and only expanded to a full ExVertexStruct right before GPU upload.
     std::vector<std::vector<SimpleObjectVertexStruct>> collectedVerts( 1 );
 
-    FXMVECTOR xmPosition = XMLoadFloat3( position.toXMFLOAT3() );
+    FXMVECTOR xmPosition = XMLoadFloat3( &position );
 
 
     XMVECTOR vRange2 = XMVectorReplicate( range );
@@ -333,9 +333,9 @@ void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float ra
                     for ( unsigned int i = 0; i < it.second->Indices.size(); i += 3 ) {
                         // Check if one of them is in range
 
-                        XMVECTOR v0 = XMLoadFloat3( it.second->ShadowVertices[it.second->Indices[i + 0]].Position.toXMFLOAT3() );
-                        XMVECTOR v1 = XMLoadFloat3( it.second->ShadowVertices[it.second->Indices[i + 1]].Position.toXMFLOAT3() );
-                        XMVECTOR v2 = XMLoadFloat3( it.second->ShadowVertices[it.second->Indices[i + 2]].Position.toXMFLOAT3() );
+                        XMVECTOR v0 = XMLoadFloat3( &it.second->ShadowVertices[it.second->Indices[i + 0]].Position );
+                        XMVECTOR v1 = XMLoadFloat3( &it.second->ShadowVertices[it.second->Indices[i + 1]].Position );
+                        XMVECTOR v2 = XMLoadFloat3( &it.second->ShadowVertices[it.second->Indices[i + 2]].Position );
 
                         if ( XMVector3Less( XMVector3LengthSq( XMVectorSubtract( xmPosition, v0 ) ), vRange2 ) ||
                             XMVector3Less( XMVector3LengthSq( XMVectorSubtract( xmPosition, v1 ) ), vRange2 ) ||
@@ -514,7 +514,7 @@ XRESULT WorldConverter::LoadWorldMeshFromFile( const std::string& file, std::map
 
             // Calculate midpoint of this triange to get the section
             XMFLOAT3 avgPos;
-            XMStoreFloat3( &avgPos, XMLoadFloat3( &*v[0]->Position.toXMFLOAT3() ) + XMLoadFloat3( &*v[1]->Position.toXMFLOAT3() ) + XMLoadFloat3( &*v[2]->Position.toXMFLOAT3() ) / 3.0f );
+            XMStoreFloat3( &avgPos, XMLoadFloat3( &v[0]->Position ) + XMLoadFloat3( &v[1]->Position ) + XMLoadFloat3( &v[2]->Position ) / 3.0f );
             INT2 sxy = GetSectionOfPos( avgPos );
 
             WorldMeshSectionInfo& section = (*outSections)[sxy.x][sxy.y];
@@ -766,8 +766,9 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
         }
 
         // Calculate midpoint of this triange to get the section
+        const auto verts = poly->getVertices();
         XMFLOAT3 avgPos;
-        XMStoreFloat3( &avgPos, (XMLoadFloat3( poly->getVertices()[0]->Position.toXMFLOAT3() ) + XMLoadFloat3( poly->getVertices()[1]->Position.toXMFLOAT3() ) + XMLoadFloat3( poly->getVertices()[2]->Position.toXMFLOAT3() )) / 3.0f );
+        XMStoreFloat3( &avgPos, (XMLoadFloat3( &verts[0]->Position ) + XMLoadFloat3( &verts[1]->Position ) + XMLoadFloat3( &verts[2]->Position )) / 3.0f );
  
         INT2 section = GetSectionOfPos( avgPos );
         WorldMeshSectionInfo& sectionInfo = (*outSections)[section.x][section.y];
@@ -824,7 +825,7 @@ HRESULT WorldConverter::ConvertWorldMesh( zCPolygon** polys, unsigned int numPol
             bbmax.z = bbmax.z < vertex->Position.z ? vertex->Position.z : bbmax.z;
 
             if ( poly->GetLightmap() ) {
-                t.TexCoord2 = poly->GetLightmap()->GetLightmapUV( *t.Position.toXMFLOAT3() );
+                t.TexCoord2 = poly->GetLightmap()->GetLightmapUV( t.Position );
                 t.Color = DEFAULT_LIGHTMAP_POLY_COLOR;
             } else if ( indoorLocation ) {
                 t.TexCoord2 = float2( 0.0f, 0.0f );
@@ -1057,9 +1058,9 @@ void WorldConverter::GenerateFullSectionMesh( WorldMeshSectionInfo& section ) {
 
         for ( unsigned int i = 0; i < it.second->Indices.size(); i += 3 ) {
             // Push all triangles
-            pushPosition( *it.second->Vertices[it.second->Indices[i]].Position.toXMFLOAT3() );
-            pushPosition( *it.second->Vertices[it.second->Indices[i + 1]].Position.toXMFLOAT3() );
-            pushPosition( *it.second->Vertices[it.second->Indices[i + 2]].Position.toXMFLOAT3() );
+            pushPosition( it.second->Vertices[it.second->Indices[i]].Position );
+            pushPosition( it.second->Vertices[it.second->Indices[i + 1]].Position );
+            pushPosition( it.second->Vertices[it.second->Indices[i + 2]].Position );
         }
     }
 
@@ -1079,7 +1080,7 @@ void WorldConverter::GenerateFullSectionMesh( WorldMeshSectionInfo& section ) {
 
             for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
                 for ( unsigned int i = 0; i < itm.second[m]->Indices.size(); i++ ) {
-                    XMFLOAT3 position = *itm.second[m]->Vertices[itm.second[m]->Indices[i]].Position.toXMFLOAT3();
+                    XMFLOAT3 position = itm.second[m]->Vertices[itm.second[m]->Indices[i]].Position;
 
                     // Transform everything into world space
                     XMStoreFloat3( &position, XMVector3TransformCoord( XMLoadFloat3( &position ), XMM_world ) );
@@ -1274,7 +1275,7 @@ void WorldConverter::ExtractSkeletalMeshFromVob( zCModel* model, SkeletalMeshVis
                 stream += sizeof( zTWeightEntry );
 
                 //if (s->GetNormalsList() && i < s->GetNormalsList()->NumInArray)
-                //	(*vx.Normal.toMFLOAT3()) += weightEntry.Weight * (*s->GetNormalsList()->Array[i].toXMFLOAT3());
+                //	(*vx.Normal.toMFLOAT3()) += weightEntry.Weight * (*s->GetNormalsList()->Array[i]);
 
                 // Get index and weight
                 if ( n < 4 ) {
@@ -1413,7 +1414,7 @@ void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualIn
         if ( isMMS ) {
             visual = reinterpret_cast<zCMorphMesh*>(node->NodeVisual)->GetMorphMesh();
         }
-        XMFLOAT3* posList = visual->GetPositionList()->Array->toXMFLOAT3();
+        XMFLOAT3* posList = visual->GetPositionList()->Array;
 
         // Calculate transform for this node
         zCModelNodeInst* parent = node->ParentNode;
@@ -1448,7 +1449,7 @@ void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualIn
                 vertices.emplace_back();
 
                 ExVertexStruct& vx = vertices.back();
-                XMStoreFloat3( vx.Position.toXMFLOAT3(), XMVector3TransformCoord( XMLoadFloat3( &posList[wedge.position] ), XMMatrixTranspose( XMLoadFloat4x4( &node->TrafoObjToCam ) ) ) );
+                XMStoreFloat3( &vx.Position, XMVector3TransformCoord( XMLoadFloat3( &posList[wedge.position] ), XMMatrixTranspose( XMLoadFloat4x4( &node->TrafoObjToCam ) ) ) );
                 vx.TexCoord = wedge.texUV;
                 vx.Normal = wedge.normal;
                 vx.Color = 0xFFFFFFFF;
@@ -1711,7 +1712,7 @@ void WorldConverter::UpdateMorphMeshVisual( void* v, MeshVisualInfo* meshInfo ) 
     if ( !morphMesh )
         return;
 
-    XMFLOAT3* posList = morphMesh->GetPositionList()->Array->toXMFLOAT3();
+    float3* posList = morphMesh->GetPositionList()->Array;
     static std::vector<ExVertexStruct> vertices;
     for ( int i = 0; i < morphMesh->GetNumSubmeshes(); i++ ) {
         vertices.clear();
@@ -1751,7 +1752,7 @@ void WorldConverter::Extract3DSMeshFromVisual2( zCProgMeshProto* visual, MeshVis
     XMFLOAT3 bbmin = XMFLOAT3( FLT_MAX, FLT_MAX, FLT_MAX );
     XMFLOAT3 bbmax = XMFLOAT3( -FLT_MAX, -FLT_MAX, -FLT_MAX );
 
-    XMFLOAT3* posList = visual->GetPositionList()->Array->toXMFLOAT3();
+    float3* posList = visual->GetPositionList()->Array;
 
     // Full-attribute vertex data per submesh, kept alive only long enough to assemble the
     // wrapped mesh below (MeshInfo::Vertices itself only keeps positions, for raycasting).
@@ -2001,7 +2002,7 @@ void WorldConverter::GenerateVertexNormals( std::vector<ExVertexStruct>& vertice
     std::vector<XMFLOAT3> normals( vertices.size(), XMFLOAT3( 0, 0, 0 ) );
 
     for ( unsigned int i = 0; i < indices.size(); i += 3 ) {
-        XMFLOAT3 v[3] = { *vertices[indices[i]].Position.toXMFLOAT3(), *vertices[indices[i + 1]].Position.toXMFLOAT3(), *vertices[indices[i + 2]].Position.toXMFLOAT3() };
+        XMFLOAT3 v[3] = { vertices[indices[i]].Position, vertices[indices[i + 1]].Position, vertices[indices[i + 2]].Position };
         FXMVECTOR normal = XMVector3Cross( (XMLoadFloat3( &v[1] ) - XMLoadFloat3( &v[0] )), (XMLoadFloat3( &v[2] ) - XMLoadFloat3( &v[0] )) );
 
         for ( int j = 0; j < 3; ++j ) {
