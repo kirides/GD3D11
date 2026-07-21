@@ -1984,7 +1984,12 @@ bool D3D12GraphicsEngine::CreateAllocators() {
     D3D12MA::ALLOCATOR_DESC allocatorDesc{};
     allocatorDesc.pDevice = m_Device.GetDevice();
     allocatorDesc.pAdapter = m_Device.GetAdapter();
-    allocatorDesc.Flags = D3D12MA::ALLOCATOR_FLAG_NONE;
+    allocatorDesc.Flags = D3D12MA::ALLOCATOR_FLAG_DEFAULT_POOLS_NOT_ZEROED;
+
+    if ( IsDebuggerPresent() || GetModuleHandleA( "renderdoc.dll" ) != NULL ) {
+        allocatorDesc.Flags |= D3D12MA::ALLOCATOR_FLAGS::ALLOCATOR_FLAG_ALWAYS_COMMITTED;
+    }
+
     if (FAILED(D3D12MA::CreateAllocator(&allocatorDesc, m_Allocator.ReleaseAndGetAddressOf()))) {
         return false;
     }
