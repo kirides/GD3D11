@@ -3,6 +3,8 @@
 #include <d3d12.h>
 #include <wrl/client.h>
 
+#include "D3D12MemAlloc.h"
+
 /** D3D12 vertex / index / dynamic buffer.
 
     Backed by a persistently-mapped UPLOAD-heap committed resource (created in GENERIC_READ, the only
@@ -56,6 +58,7 @@ public:
     static D3D12VertexBuffer* From( GfxVertexBuffer* buffer ) { return static_cast<D3D12VertexBuffer*>( buffer ); }
 
 private:
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_Allocation;
     Microsoft::WRL::ComPtr<ID3D12Resource> m_Resource;
     uint8_t*     m_MappedPtr = nullptr;   // persistent map (upload heap)
     unsigned int m_SizeInBytes = 0;

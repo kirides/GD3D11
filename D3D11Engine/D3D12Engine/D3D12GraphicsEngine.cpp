@@ -2032,10 +2032,12 @@ bool D3D12GraphicsEngine::InitCopyQueue() {
 }
 
 void D3D12GraphicsEngine::ReleaseCompletedCopyResources( UINT64 fenceValue ) {
+    // std::lock_guard<std::mutex> lock( m_CopyQueueMutex );
+
     while ( !m_PendingCopyReleases.empty() ) {
         auto& pending = m_PendingCopyReleases.front();
         if ( pending.FenceValue > fenceValue ) break;
-        m_PendingCopyReleases.erase( m_PendingCopyReleases.begin() );
+        m_PendingCopyReleases.pop_front(); // O(1) popped release, zero memory shifts
     }
 }
 
@@ -2049,6 +2051,14 @@ void D3D12GraphicsEngine::WaitForCopyFence( UINT64 fenceValue ) {
 void D3D12GraphicsEngine::TransitionTextureToSRVOnDirectQueue( ID3D12Resource* texture ) {
     if ( !texture || !m_Device.GetDevice() ) return;
 
+    // Use the active frame's existing command list instead of creating temporary allocators & command lists
+    if ( m_FrameOpen && m_CmdList ) {
+        auto toSRV = TransitionBarrier( texture, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
+        m_CmdList->ResourceBarrier( 1, &toSRV );
+        return;
+    }
+
+    // Fallback if called outside frame boundaries: execute asynchronously on direct queue WITHOUT CPU blocking
     ID3D12Device* device = m_Device.GetDevice();
     ComPtr<ID3D12CommandAllocator> transitionAllocator;
     ComPtr<ID3D12GraphicsCommandList> transitionCmdList;
@@ -2069,10 +2079,11 @@ void D3D12GraphicsEngine::TransitionTextureToSRVOnDirectQueue( ID3D12Resource* t
 
     const UINT64 waitValue = ++m_UploadFenceValue;
     if ( FAILED( m_Device.GetDirectQueue()->Signal( m_UploadFence.Get(), waitValue ) ) ) return;
-    if ( m_UploadFence && m_UploadEvent ) {
-        m_UploadFence->SetEventOnCompletion( waitValue, m_UploadEvent );
-        WaitForSingleObject( m_UploadEvent, INFINITE );
-    }
+
+    // OPTIMIZATION: Defer deletion to m_PerFrameCleanupItems via fence value instead of CPU blocking with WaitForSingleObject!
+    QueueCleanupJob( [allocator = transitionAllocator, list = transitionCmdList]() {
+        // Keeps resources alive until current frame fence is reached on GPU
+    } );
 }
 
 bool D3D12GraphicsEngine::UploadTextureSubresources( ID3D12Resource* dst, const D3D12_SUBRESOURCE_DATA* subresources, UINT numSubresources ) {
@@ -2163,6 +2174,79 @@ bool D3D12GraphicsEngine::UploadTextureSubresources( ID3D12Resource* dst, const 
     m_Device.GetDirectQueue()->Wait( m_CopyFence.Get(), fenceValue );
 
     m_PendingCopyReleases.push_back( PendingCopyRelease {
+        fenceValue,
+        std::move( uploadAllocation ),
+        std::move( upload ),
+        std::move( copyAllocator ),
+        std::move( copyCmdList )
+    } );
+
+    ReleaseCompletedCopyResources( m_CopyFence->GetCompletedValue() );
+    return true;
+}
+
+bool D3D12GraphicsEngine::UploadBufferData( ID3D12Resource* dst, const void* srcData, UINT64 sizeInBytes ) {
+    if ( !dst || !srcData || sizeInBytes == 0 ) return false;
+    ID3D12Device* device = m_Device.GetDevice();
+
+    // Create a temporary upload buffer for staging
+    D3D12_RESOURCE_DESC bufDesc = {};
+    bufDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bufDesc.Width = sizeInBytes;
+    bufDesc.Height = 1;
+    bufDesc.DepthOrArraySize = 1;
+    bufDesc.MipLevels = 1;
+    bufDesc.Format = DXGI_FORMAT_UNKNOWN;
+    bufDesc.SampleDesc.Count = 1;
+    bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+    D3D12MA::ALLOCATION_DESC allocDesc = {};
+    allocDesc.HeapType = D3D12_HEAP_TYPE_UPLOAD;
+
+    ComPtr<D3D12MA::Allocation> uploadAllocation;
+    ComPtr<ID3D12Resource> upload;
+    if ( FAILED( m_Allocator->CreateResource(
+        &allocDesc,
+        &bufDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ,
+        nullptr,
+        uploadAllocation.ReleaseAndGetAddressOf(),
+        IID_PPV_ARGS( upload.ReleaseAndGetAddressOf() ) ) ) ) {
+        return false;
+    }
+
+    BYTE* mapped = nullptr;
+    D3D12_RANGE noRead = { 0, 0 };
+    if ( FAILED( upload->Map( 0, &noRead, reinterpret_cast<void**>(&mapped) ) ) )
+        return false;
+    memcpy( mapped, srcData, sizeInBytes );
+    upload->Unmap( 0, nullptr );
+
+    ComPtr<ID3D12CommandAllocator> copyAllocator;
+    ComPtr<ID3D12GraphicsCommandList> copyCmdList;
+    if ( !EnsureCopyCommandObjects( device, copyAllocator, copyCmdList ) )
+        return false;
+
+    copyCmdList->CopyBufferRegion( dst, 0, upload.Get(), 0, sizeInBytes );
+
+    if ( FAILED( copyCmdList->Close() ) )
+        return false;
+
+    // 4. Submit to Copy Queue asynchronously
+    std::lock_guard<std::mutex> lock( m_CopyQueueMutex );
+
+    ID3D12CommandList* lists[] = { copyCmdList.Get() };
+    m_CopyQueue->ExecuteCommandLists( 1, lists );
+
+    const UINT64 fenceValue = ++m_CopyFenceValue;
+    if ( FAILED( m_CopyQueue->Signal( m_CopyFence.Get(), fenceValue ) ) )
+        return false;
+
+    // GPU-side wait on the Direct Queue
+    m_Device.GetDirectQueue()->Wait( m_CopyFence.Get(), fenceValue );
+
+    // Defer staging buffer destruction until GPU finishes copy
+    m_PendingCopyReleases.push_back( PendingCopyRelease{
         fenceValue,
         std::move( uploadAllocation ),
         std::move( upload ),
@@ -6296,18 +6380,17 @@ void D3D12GraphicsEngine::DispatchLightCulling() {
     // The lit geometry passes left the grid/index buffers in PIXEL_SHADER_RESOURCE last frame; transition them
     // back to UNORDERED_ACCESS so the cull CS can write them as root UAVs. Skipped on the first dispatch after
     // (re)creation, when they're already in UAV (see CreateLightCullBuffers / m_LightGridInPixelState).
+    D3D12_RESOURCE_BARRIER batchPre[3] = {};
+    UINT preCount = 0;
+
     if ( m_LightGridInPixelState ) {
-        D3D12_RESOURCE_BARRIER toUav[2] = {};
-        for ( int i = 0; i < 2; ++i ) {
-            toUav[i].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-            toUav[i].Transition.pResource = ( i == 0 ? m_LightGridBuffer : m_LightIndexBuffer ).Get();
-            toUav[i].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-            toUav[i].Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-            toUav[i].Transition.StateAfter  = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-        }
-        m_CmdList->ResourceBarrier( 2, toUav );
+        batchPre[preCount++] = TransitionBarrier( m_LightGridBuffer.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+        batchPre[preCount++] = TransitionBarrier( m_LightIndexBuffer.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
         m_LightGridInPixelState = false;
     }
+
+    batchPre[preCount++] = TransitionBarrier( m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
+    m_CmdList->ResourceBarrier( preCount, batchPre );
 
     // ProjScale = the projection's x/y view->clip scale (diagonal terms; layout-invariant so no transpose
     // worry). ProjA/ProjB = the z-row terms (_33, _43) the CS inverts to turn a reversed-Z depth sample into
@@ -6339,7 +6422,6 @@ void D3D12GraphicsEngine::DispatchLightCulling() {
     depthToSrv.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
     depthToSrv.Transition.StateBefore = D3D12_RESOURCE_STATE_DEPTH_WRITE;
     depthToSrv.Transition.StateAfter  = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-    m_CmdList->ResourceBarrier( 1, &depthToSrv );
 
     m_CmdList->SetPipelineState( m_LightCullPSO.Get() );
     m_CmdList->SetComputeRootSignature( m_LightCullRootSig.Get() );
@@ -6350,23 +6432,13 @@ void D3D12GraphicsEngine::DispatchLightCulling() {
     m_CmdList->SetComputeRootDescriptorTable( 4, GetSrvGpuHandle( m_DepthSrvSlot ) );   // t1 DepthTex (SRV heap already bound)
     m_CmdList->Dispatch( m_NumTilesX, m_NumTilesY, 1 );
 
-    D3D12_RESOURCE_BARRIER depthToWrite = depthToSrv;
-    depthToWrite.Transition.StateBefore = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-    depthToWrite.Transition.StateAfter  = D3D12_RESOURCE_STATE_DEPTH_WRITE;
-    m_CmdList->ResourceBarrier( 1, &depthToWrite );
+    D3D12_RESOURCE_BARRIER batchPost[3] = {
+        TransitionBarrier( m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE ),
+        TransitionBarrier( m_LightGridBuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE ),
+        TransitionBarrier( m_LightIndexBuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE )
+    };
 
-    // Transition both buffers UNORDERED_ACCESS -> PIXEL_SHADER_RESOURCE so the lit world/VOB/skeletal passes
-    // can read them as root SRVs. The transition barrier also orders those reads after these UAV writes (no
-    // separate UAV barrier needed). Reverted at the top of next frame's dispatch.
-    D3D12_RESOURCE_BARRIER toSrv[2] = {};
-    for ( int i = 0; i < 2; ++i ) {
-        toSrv[i].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        toSrv[i].Transition.pResource = ( i == 0 ? m_LightGridBuffer : m_LightIndexBuffer ).Get();
-        toSrv[i].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        toSrv[i].Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-        toSrv[i].Transition.StateAfter  = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-    }
-    m_CmdList->ResourceBarrier( 2, toSrv );
+    m_CmdList->ResourceBarrier( 3, batchPost );
     m_LightGridInPixelState = true;
 }
 

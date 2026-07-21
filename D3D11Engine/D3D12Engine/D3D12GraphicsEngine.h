@@ -1,5 +1,7 @@
 #pragma once
 #include <D3D12MemAlloc.h>
+#include <deque>
+
 #include "../BaseGraphicsEngine.h"
 #include "../Frustum.h"
 #include "D3D12Device.h"
@@ -84,6 +86,7 @@ public:
         submitted value. The caller can then issue a direct-queue transition barrier once the copy has
         completed. */
     bool UploadTextureSubresources( ID3D12Resource* dst, const D3D12_SUBRESOURCE_DATA* subresources, UINT numSubresources );
+    bool UploadBufferData( ID3D12Resource* dst, const void* srcData, UINT64 sizeInBytes );
     bool InitCopyQueue();
     UINT64 GetCopyFenceValue() const { return m_CopyFenceValue; }
     void WaitForCopyFence( UINT64 fenceValue );
@@ -244,7 +247,7 @@ private:
         Microsoft::WRL::ComPtr<ID3D12CommandAllocator> CopyAllocator;
         Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> CopyCommandList;
     };
-    std::vector<PendingCopyRelease> m_PendingCopyReleases;
+    std::deque<PendingCopyRelease> m_PendingCopyReleases;
     std::mutex m_CopyQueueMutex; // Protects copy queue operations and pending releases
 
     void ReleaseCompletedCopyResources( UINT64 fenceValue );

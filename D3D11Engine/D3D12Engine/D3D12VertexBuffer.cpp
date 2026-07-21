@@ -93,21 +93,21 @@ D3D12VertexBuffer::~D3D12VertexBuffer() {
     }
 }
 
-XRESULT D3D12VertexBuffer::Init( void* initData, unsigned int sizeInBytes, EBindFlags /*bindFlags*/,
-    EUsageFlags /*usage*/, ECPUAccessFlags /*cpuAccess*/, const std::string& fileName, unsigned int /*structuredByteSize*/ ) {
+XRESULT D3D12VertexBuffer::Init( void* initData, unsigned int sizeInBytes, EBindFlags bindFlags,
+    EUsageFlags usage, ECPUAccessFlags cpuAccess, const std::string& fileName, unsigned int structuredByteSize ) {
 
     ID3D12Device* device = Engine12() ? Engine12()->GetD3DDevice() : nullptr;
-    if ( !device ) return XR_FAILED;
+    D3D12MA::Allocator* allocator = Engine12() ? Engine12()->GetAllocator() : nullptr;
+    if ( !device || !allocator ) return XR_FAILED;
 
     if ( sizeInBytes == 0 ) {
         LogError() << "VertexBuffer size can't be 0!";
-        sizeInBytes = 1; // still create a valid (tiny) resource so callers/Map() stay well-defined
+        sizeInBytes = 1;
     }
     m_SizeInBytes = sizeInBytes;
 
-    // UPLOAD-heap committed resource: CPU-writable, GPU-readable, created (and kept) in GENERIC_READ.
-    D3D12_HEAP_PROPERTIES heapUpload = {};
-    heapUpload.Type = D3D12_HEAP_TYPE_UPLOAD;
+    // DYNAMIC / WRITE CPU Access buffers remain in UPLOAD heap for fast lockless mapping
+    bool isDynamic = ( usage & U_DYNAMIC ) || ( cpuAccess & CA_WRITE );
 
     D3D12_RESOURCE_DESC bd = {};
     bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
@@ -120,32 +120,42 @@ XRESULT D3D12VertexBuffer::Init( void* initData, unsigned int sizeInBytes, EBind
     bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     bd.Flags = D3D12_RESOURCE_FLAG_NONE;
 
-    if ( FAILED( device->CreateCommittedResource( &heapUpload, D3D12_HEAP_FLAG_NONE, &bd,
-        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS( m_Resource.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12VertexBuffer: CreateCommittedResource failed (" << sizeInBytes << " bytes).";
-        m_SizeInBytes = 0;
-        return XR_FAILED;
+    if ( isDynamic ) {
+        // --- Dynamic path: Persistently Mapped UPLOAD Heap ---
+        D3D12MA::ALLOCATION_DESC allocDesc = {};
+        allocDesc.HeapType = D3D12_HEAP_TYPE_UPLOAD;
+
+        if ( FAILED( allocator->CreateResource( &allocDesc, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+            m_Allocation.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_Resource.ReleaseAndGetAddressOf() ) ) ) ) {
+            return XR_FAILED;
+        }
+
+        D3D12_RANGE noRead = { 0, 0 };
+        void* mapped = nullptr;
+        if ( FAILED( m_Resource->Map( 0, &noRead, &mapped ) ) ) {
+            return XR_FAILED;
+        }
+        m_MappedPtr = static_cast<uint8_t*>( mapped );
+        if ( initData ) memcpy( m_MappedPtr, initData, sizeInBytes );
+    } 
+    else {
+        // --- Static path: Dedicated VRAM (DEFAULT Heap) ---
+        D3D12MA::ALLOCATION_DESC allocDesc = {};
+        allocDesc.HeapType = D3D12_HEAP_TYPE_DEFAULT;
+
+        if ( FAILED( allocator->CreateResource( &allocDesc, &bd, D3D12_RESOURCE_STATE_COMMON, nullptr,
+            m_Allocation.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_Resource.ReleaseAndGetAddressOf() ) ) ) ) {
+            return XR_FAILED;
+        }
+
+        // Upload initial data to VRAM via copy queue
+        if ( initData ) {
+            if ( !Engine12()->UploadBufferData( m_Resource.Get(), initData, sizeInBytes ) ) {
+                return XR_FAILED;
+            }
+        }
     }
 
-    // Persistently map for the resource's lifetime (standard for dynamic upload buffers).
-    D3D12_RANGE noRead = { 0, 0 };
-    void* mapped = nullptr;
-    if ( FAILED( m_Resource->Map( 0, &noRead, &mapped ) ) ) {
-        LogWarn() << "D3D12VertexBuffer: Map failed.";
-        m_Resource.Reset();
-        m_SizeInBytes = 0;
-        return XR_FAILED;
-    }
-    m_MappedPtr = static_cast<uint8_t*>( mapped );
-
-    if ( initData ) {
-        memcpy( m_MappedPtr, initData, sizeInBytes );
-    } else {
-        memset( m_MappedPtr, 0, sizeInBytes );
-    }
-
-    // Name the resource so the D3D12 debug layer identifies it (e.g. in OBJECT_DELETED_WHILE_STILL_IN_USE
-    // reports) as a vertex/index buffer + its source mesh, instead of 'Unnamed Object'.
     const std::string debugName = "VB:" + ( fileName.empty() ? std::string( "unnamed" ) : fileName );
     m_Resource->SetPrivateData( WKPDID_D3DDebugObjectName, static_cast<UINT>( debugName.size() ), debugName.c_str() );
 
