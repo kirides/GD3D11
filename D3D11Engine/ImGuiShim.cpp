@@ -16,6 +16,7 @@
 #include "zFILE_VDFS.h"
 
 #define STB_IMAGE_IMPLEMENTATION
+#include "D3D12Engine/D3D12Texture.h"
 #include "vendor/stb/stb_image.h"
 
 namespace ImGui {
@@ -539,10 +540,17 @@ namespace
     }
 }
 
-static std::vector<std::unique_ptr<D3D11Texture>> s_previewTextures = {};
+static std::vector<std::unique_ptr<GfxTexture>> s_previewTextures = {};
 
-static ImTextureID GetImTextureIdFromGfx( D3D11Texture* tex) {
-    return (ImTextureID)(intptr_t)tex->GetShaderResourceView().Get();
+static ImTextureID GetImTextureIdFromGfx( GfxTexture* tex) {
+    switch (Engine::GraphicsEngine->GetBackendAPI())
+    {
+    case EGraphicsEngineBackend::D3D11:
+        return (ImTextureID)(intptr_t)D3D11Texture::From(tex)->GetShaderResourceView().Get();
+    case EGraphicsEngineBackend::D3D12:
+        return (ImTextureID)(intptr_t)D3D12Texture::From(tex)->GetSrvGpuHandle().ptr;
+    }
+    return ImTextureID{};
 }
 
 static ImTextureID GetOrLoadTexture( int textureId, std::string_view textureName ) {
@@ -573,10 +581,10 @@ static ImTextureID GetOrLoadTexture( int textureId, std::string_view textureName
     if ( image_data == NULL )
         return ImTextureID{};
 
-    D3D11Texture* tex;
+    GfxTexture* tex;
     Engine::GraphicsEngine->CreateTexture( &tex );
 
-    auto r = tex->Init( INT2( image_width, image_height ), D3D11Texture::ETextureFormat::TF_R8G8B8A8, 1, image_data, std::string(textureName.data(), textureName.size()) );
+    auto r = tex->Init( INT2( image_width, image_height ), GfxTexture::ETextureFormat::TF_R8G8B8A8, 1, image_data, std::string(textureName.data(), textureName.size()) );
     stbi_image_free( image_data );
 
     if ( r != XR_SUCCESS ) {
