@@ -8,7 +8,7 @@ public:
     ~D3D11Texture() override;
 
     /** Initializes the texture object */
-    XRESULT Init( INT2 size, ETextureFormat format, UINT mipMapCount = 1, void* data = nullptr, const std::string& fileName = "" ) override;
+    XRESULT Init( INT2 size, ETextureFormat format, UINT mipMapCount = 1, const void* data = nullptr, const std::string& fileName = "" ) override;
 
     /** Initializes the texture from a file */
     XRESULT Init( const std::string& file ) override;

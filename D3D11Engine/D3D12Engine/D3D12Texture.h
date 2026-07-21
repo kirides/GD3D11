@@ -20,7 +20,7 @@ public:
     D3D12Texture() = default;
     ~D3D12Texture() override;
 
-    XRESULT Init( INT2 size, ETextureFormat format, unsigned int mipMapCount = 1, void* data = nullptr, const std::string& fileName = "" ) override;
+    XRESULT Init( INT2 size, ETextureFormat format, unsigned int mipMapCount = 1, const void* data = nullptr, const std::string& fileName = "" ) override;
     XRESULT Init( const std::string& file ) override;
     XRESULT Init( const uint8_t* data, size_t size, const std::string& debugFileName ) override;
 
@@ -60,7 +60,7 @@ public:
 
 private:
     XRESULT InitFromDDS( const uint8_t* bytes, size_t size, const std::string& name );
-    bool CreateAndUpload( void* data );   // committed resource (+ synchronous upload when data != null)
+    bool CreateAndUpload( const void* data );   // committed resource (+ synchronous upload when data != null)
     void CreateSRV();                     // (re)creates the shader-visible SRV for the current resource
 
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_Allocation; // Retains ownership of memory + ID3D12Resource

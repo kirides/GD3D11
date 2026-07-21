@@ -7,6 +7,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "D3D12Texture.h"
+
 struct RenderBucket;
 class D3D12LineRenderer;
 struct GothicBlendStateInfo;
@@ -52,6 +54,7 @@ public:
     XRESULT CreateVertexBuffer( std::unique_ptr<GfxVertexBuffer>& outBuffer ) override;
     XRESULT CreateTexture( GfxTexture** outTexture ) override;
     XRESULT CreateTexture( std::unique_ptr<GfxTexture>& outTexture ) override;
+    XRESULT CreateTexture(std::unique_ptr<D3D12Texture>& outTexture);
 
     XRESULT GetDisplayModeList( std::vector<DisplayModeInfo>* modeList, bool includeSuperSampling = false ) override;
     /** Presents the current backbuffer. Invoked at the end of OnEndFrame. */
@@ -232,6 +235,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Fence> m_CopyFence;
     UINT64 m_CopyFenceValue = 0;
     HANDLE m_CopyFenceEvent = nullptr;
+    bool m_TearingSupported;
 
     struct PendingCopyRelease {
         UINT64 FenceValue = 0;
@@ -271,12 +275,9 @@ private:
     UINT m_UIVertexBufferOffset = 0;                               // reset each OnBeginFrame
     bool m_UIOverflowLogged = false;
 
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_WhiteTexture;         // 1x1 white fallback for untextured draws
-    UINT m_WhiteSrvSlot = UINT_MAX;
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_BlackTexture;         // 1x1 black fallback for untextured draws
-    UINT m_BlackSrvSlot = UINT_MAX;
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_DefaultOrmTexture;    // 1x1 ORM default (AO 1, rough 0.5, metal 0)
-    UINT m_DefaultOrmSrvSlot = UINT_MAX;                           // bindless index bound when a material has no _FX map
+    std::unique_ptr<D3D12Texture> m_WhiteTexture;         // 1x1 white fallback for untextured draws
+    std::unique_ptr<D3D12Texture> m_BlackTexture;         // 1x1 black fallback for untextured draws
+    std::unique_ptr<D3D12Texture> m_DefaultOrmTexture;    // 1x1 ORM default (AO 1, rough 0.5, metal 0)
 
     GfxTexture* m_CurrentTexture = nullptr;                        // diffuse bound for the next 2D draw
     D3D12_VIEWPORT m_CurrentViewport = {};                        // pixel-space viewport (drives transform + RSSetViewports)

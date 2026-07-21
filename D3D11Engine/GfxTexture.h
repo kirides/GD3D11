@@ -32,7 +32,7 @@ public:
     };
 
     /** Initializes the texture object */
-    virtual XRESULT Init( INT2 size, ETextureFormat format, unsigned int mipMapCount = 1, void* data = nullptr, const std::string& fileName = "" ) = 0;
+    virtual XRESULT Init( INT2 size, ETextureFormat format, unsigned int mipMapCount = 1, const void* data = nullptr, const std::string& fileName = "" ) = 0;
 
     /** Initializes the texture from a file / from an in-memory encoded image */
     virtual XRESULT Init( const std::string& file ) = 0;

@@ -2200,7 +2200,14 @@ UINT D3D12GraphicsEngine::AllocateSrvSlot() {
 }
 
 void D3D12GraphicsEngine::FreeSrvSlot( UINT slot ) {
-    if ( slot == UINT_MAX || slot == m_WhiteSrvSlot || slot == m_BlackSrvSlot ) return;
+    if ( slot == UINT_MAX 
+        || slot == m_WhiteTexture->GetSrvSlot() 
+        || slot == m_BlackTexture->GetSrvSlot()
+        || slot == m_DefaultOrmTexture->GetSrvSlot()
+        )
+    {
+        return;
+    }
 
     // Nullify the descriptor to prevent pointing to dead memory
     ID3D12Device* device = m_Device.GetDevice();
@@ -2215,7 +2222,7 @@ void D3D12GraphicsEngine::FreeSrvSlot( UINT slot ) {
     // Bind white texture to free slot.
 
     // Writing a null resource view to this descriptor slot safely clears it
-    device->CreateShaderResourceView( m_WhiteTexture.Get(), &nullDesc, cpuHandle);
+    device->CreateShaderResourceView( m_WhiteTexture->GetResource(), &nullDesc, cpuHandle);
 
     m_FreeSrvSlots.push_back( slot );
 }
@@ -2223,7 +2230,7 @@ void D3D12GraphicsEngine::FreeSrvSlot( UINT slot ) {
 D3D12_CPU_DESCRIPTOR_HANDLE D3D12GraphicsEngine::GetSrvCpuHandle( UINT slot ) const {
     if ( std::ranges::contains( m_FreeSrvSlots, slot ) ) {
         // Ensure invalid slots provide some texture instead of breaking
-        return GetSrvCpuHandle( m_WhiteSrvSlot );
+        return GetSrvCpuHandle( m_BlackTexture->GetSrvSlot() );
     }
 
     D3D12_CPU_DESCRIPTOR_HANDLE h = m_SrvHeap->GetCPUDescriptorHandleForHeapStart();
@@ -2234,11 +2241,11 @@ D3D12_CPU_DESCRIPTOR_HANDLE D3D12GraphicsEngine::GetSrvCpuHandle( UINT slot ) co
 D3D12_GPU_DESCRIPTOR_HANDLE D3D12GraphicsEngine::GetSrvGpuHandle( UINT slot ) const {
     if ( std::ranges::contains( m_FreeSrvSlots, slot ) ) {
         // Ensure invalid slots provide some texture instead of breaking
-        return GetSrvGpuHandle( m_WhiteSrvSlot );
+        return GetSrvGpuHandle( m_BlackTexture->GetSrvSlot() );
     }
 
     D3D12_GPU_DESCRIPTOR_HANDLE h = m_SrvHeap->GetGPUDescriptorHandleForHeapStart();
-    h.ptr += static_cast<UINT64>( slot ) * m_SrvDescriptorSize;
+    h.ptr += static_cast<UINT64>( slot ) * m_SrvDescriptorSize; 
     return h;
 }
 
@@ -2451,77 +2458,24 @@ bool D3D12GraphicsEngine::CreateUIVertexBuffers() {
 }
 
 bool D3D12GraphicsEngine::CreateWhiteTexture() {
-    ID3D12Device* device = m_Device.GetDevice();
-
-    D3D12_HEAP_PROPERTIES heapDefault = {};
-    heapDefault.Type = D3D12_HEAP_TYPE_DEFAULT;
-
-    D3D12_RESOURCE_DESC td = {};
-    td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    td.Width = 1;
-    td.Height = 1;
-    td.DepthOrArraySize = 1;
-    td.MipLevels = 1;
-    td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    td.SampleDesc.Count = 1;
-
-    if ( FAILED( device->CreateCommittedResource( &heapDefault, D3D12_HEAP_FLAG_NONE, &td,
-        D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS( m_WhiteTexture.ReleaseAndGetAddressOf() ) ) ) )
-        return false;
-    m_WhiteTexture->SetName( L"WhiteFallbackTexture" );
-
+    CreateTexture(m_WhiteTexture);
     const uint32_t white = 0xFFFFFFFFu;
-    D3D12_SUBRESOURCE_DATA sub = {};
-    sub.pData = &white;
-    sub.RowPitch = 4;
-    sub.SlicePitch = 4;
-    if ( !UploadTextureSubresources( m_WhiteTexture.Get(), &sub, 1 ) )
+    if (XR_SUCCESS != m_WhiteTexture->Init(INT2(1,1), GfxTexture::ETextureFormat::TF_R8G8B8A8, 1, &white, "WhiteFallbackTexture" )) {
         return false;
-
-    m_WhiteSrvSlot = AllocateSrvSlot();
-    if ( m_WhiteSrvSlot == UINT_MAX ) return false;
-
-    D3D12_SHADER_RESOURCE_VIEW_DESC srvd = {};
-    srvd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    srvd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-    srvd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    srvd.Texture2D.MipLevels = 1;
-    device->CreateShaderResourceView( m_WhiteTexture.Get(), &srvd, GetSrvCpuHandle( m_WhiteSrvSlot ) );
-
-    // Black texture
-    if ( FAILED( device->CreateCommittedResource( &heapDefault, D3D12_HEAP_FLAG_NONE, &td,
-        D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS( m_BlackTexture.ReleaseAndGetAddressOf() ) ) ) )
-        return false;
-    m_BlackTexture->SetName( L"BlackFallbackTexture" );
-
+    }
+    
+    CreateTexture(m_BlackTexture);
     const uint32_t black = 0xFF000000;
-    D3D12_SUBRESOURCE_DATA blackSub = {};
-    blackSub.pData = &black;
-    blackSub.RowPitch = 4;
-    blackSub.SlicePitch = 4;
-    if ( !UploadTextureSubresources( m_BlackTexture.Get(), &blackSub, 1 ) )
+    if (XR_SUCCESS != m_BlackTexture->Init(INT2(1,1), GfxTexture::ETextureFormat::TF_R8G8B8A8, 1, &black, "BlackFallbackTexture" )) {
         return false;
-
-    m_BlackSrvSlot = AllocateSrvSlot();
-    if ( m_BlackSrvSlot == UINT_MAX ) return false;
-    device->CreateShaderResourceView( m_BlackTexture.Get(), &srvd, GetSrvCpuHandle( m_BlackSrvSlot ) );
-
-    // Default ORM (Occlusion-Roughness-Metallic) texture: AO=1.0, Roughness=0.5, Metallic=0.0. Materials without an
-    // _FX.DDS map bind THIS slot bindlessly, so the PBR PS samples ORM branchlessly (no per-material permutation).
-    if ( FAILED( device->CreateCommittedResource( &heapDefault, D3D12_HEAP_FLAG_NONE, &td,
-        D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS( m_DefaultOrmTexture.ReleaseAndGetAddressOf() ) ) ) )
+    }
+    
+    CreateTexture(m_DefaultOrmTexture);
+    const uint32_t orm = 0xFF00E6FFu;
+    if (XR_SUCCESS != m_DefaultOrmTexture->Init(INT2(1,1), GfxTexture::ETextureFormat::TF_R8G8B8A8, 1, &orm, "DefaultOrmTexture(1,0.9,0)" )) {
         return false;
-    m_DefaultOrmTexture->SetName( L"DefaultOrmTexture(1,0.5,0)" );
-    const uint32_t orm = 0xFF00E6FFu;   // R8G8B8A8 little-endian: R=255(AO) G=230(rough~0.90) B=0(metal) A=255
-    D3D12_SUBRESOURCE_DATA ormSub = {};
-    ormSub.pData = &orm;
-    ormSub.RowPitch = 4;
-    ormSub.SlicePitch = 4;
-    if ( !UploadTextureSubresources( m_DefaultOrmTexture.Get(), &ormSub, 1 ) )
-        return false;
-    m_DefaultOrmSrvSlot = AllocateSrvSlot();
-    if ( m_DefaultOrmSrvSlot == UINT_MAX ) return false;
-    device->CreateShaderResourceView( m_DefaultOrmTexture.Get(), &srvd, GetSrvCpuHandle( m_DefaultOrmSrvSlot ) );
+    }
+    
     return true;
 }
 
@@ -3958,7 +3912,7 @@ void D3D12GraphicsEngine::RenderSunShadows() {
     m_CmdList->RSSetScissorRects( 1, &sc );
     m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
-    const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_WhiteSrvSlot );
+    const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_BlackTexture->GetSrvSlot() );
     // Resolve + bind a material's diffuse to a root descriptor-table slot (white fallback) for the alpha cutout.
     auto bindDiffuse = [&]( zCTexture* tex, UINT rootParam ) {
         D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
@@ -4193,7 +4147,7 @@ void D3D12GraphicsEngine::RenderPointShadows() {
     m_CmdList->RSSetScissorRects( 1, &sc );
     m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
-    const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_WhiteSrvSlot );
+    const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_BlackTexture->GetSrvSlot() );
     auto bindDiffuse = [&]( zCTexture* tex, UINT rootParam ) {
         D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
         if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN )
@@ -4943,7 +4897,7 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
     m_CmdList->IASetIndexBuffer( &ibv );
     m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
-    const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_WhiteSrvSlot );
+    const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_BlackTexture->GetSrvSlot() );
     unsigned int drawnIndices = 0;
     for ( auto const& [tex, meshes] : g_FrameWaterSurfaces ) {
         D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
@@ -5171,7 +5125,7 @@ XRESULT D3D12GraphicsEngine::DrawParticleEffects() {
     m_CmdList->RSSetScissorRects( 1, &sc );
     m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP );
 
-    const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_WhiteSrvSlot );
+    const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_BlackTexture->GetSrvSlot() );
     const UINT frame = m_FrameIndex;
     ID3D12PipelineState* lastPso = nullptr;
     unsigned int drawnTris = 0;
@@ -5616,7 +5570,7 @@ void D3D12GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals, bool
     ID3D12PipelineState* lastPso = nullptr;
     if ( lighting ) { m_CmdList->SetPipelineState( m_DecalLitPSO.Get() ); lastPso = m_DecalLitPSO.Get(); }
 
-    const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_WhiteSrvSlot );
+    const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_BlackTexture->GetSrvSlot() );
     zCTexture* lastTex = reinterpret_cast<zCTexture*>(~static_cast<uintptr_t>(0));  // force first bind
     unsigned int drawnTris = 0;
 
@@ -5937,7 +5891,7 @@ XRESULT D3D12GraphicsEngine::DrawVertexArray( ExVertexStruct* vertices, unsigned
     m_CmdList->SetGraphicsRoot32BitConstants( 2, sizeof( GothicGraphicsState ) / 4, &rs.GraphicsState, 0 );
 
     // Diffuse texture (fall back to 1x1 white for untextured colored draws / failed uploads).
-    D3D12_GPU_DESCRIPTOR_HANDLE srv = GetSrvGpuHandle( m_BlackSrvSlot );
+    D3D12_GPU_DESCRIPTOR_HANDLE srv = GetSrvGpuHandle( m_BlackTexture->GetSrvSlot() );
     if ( m_CurrentTexture ) {
         D3D12Texture* t = D3D12Texture::From( m_CurrentTexture );
         if ( t->HasSRV() ) srv = t->GetSrvGpuHandle();
@@ -6225,9 +6179,9 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
             // Resolve this material's bindless SRV heap indices — diffuse (CacheIn triggers load + its normal/ORM
             // side-loads), normal (0xFFFFFFFF = none → PS skips perturb), ORM (1x1 default when the material has no _FX).
             zCTexture* tex = meshKey.Material->GetAniTexture();
-            uint32_t diffuseIdx = m_BlackSrvSlot;
+            uint32_t diffuseIdx = m_BlackTexture->GetSrvSlot();
             uint32_t normalIdx  = 0xFFFFFFFFu;
-            uint32_t ormIdx     = m_DefaultOrmSrvSlot;
+            uint32_t ormIdx     = m_DefaultOrmTexture->GetSrvSlot();
             if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
                 if ( MyDirectDrawSurface7* s = tex->GetSurface() ) {
                     if ( GfxTexture* gfx = s->GetEngineTexture() ) {
@@ -6415,7 +6369,7 @@ void D3D12GraphicsEngine::BindMaterialMaps( zCTexture* tex, UINT matRootParam ) 
     // Set the per-material bindless indices (b6 root consts) the PBR PS reads via ResourceDescriptorHeap[...]:
     // this material's normal + ORM map SRV heap slots (loaded onto the surface by LoadAdditionalResources).
     // No normal map -> 0xFFFFFFFF (PS skips the perturb); no _FX/ORM map -> the 1x1 default ORM slot.
-    UINT idx[2] = { 0xFFFFFFFFu, m_DefaultOrmSrvSlot };
+    UINT idx[2] = { 0xFFFFFFFFu, m_DefaultOrmTexture->GetSrvSlot() };
     if ( tex ) {
         if ( MyDirectDrawSurface7* s = tex->GetSurface() ) {
             if ( GfxTexture* n = s->GetNormalmap() ) {
@@ -6619,7 +6573,7 @@ void D3D12GraphicsEngine::DrawVobDepthPrepass() {
     m_CmdList->RSSetScissorRects( 1, &sc );
     m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
-    const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_WhiteSrvSlot );
+    const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_BlackTexture->GetSrvSlot() );
     for ( const FrameVobUpload& up : g_FrameVobUploads ) {
         MeshVisualInfo* visual = up.visual;
         if ( !visual ) continue;
@@ -6695,7 +6649,7 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
     m_CmdList->RSSetScissorRects( 1, &sc );
     m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
-    const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_BlackSrvSlot );
+    const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_BlackTexture->GetSrvSlot() );
     unsigned int drawnTris = 0;
 
     {
@@ -6921,7 +6875,7 @@ void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
 
     D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
     D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
-    const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_WhiteSrvSlot );
+    const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_BlackTexture->GetSrvSlot() );
 
     // Base skinned meshes (depth only).
     if ( !g_FrameSkelDraws.empty() && m_DepthPrepassSkeletalPSO && m_SkeletalRootSig ) {
@@ -7026,7 +6980,7 @@ void D3D12GraphicsEngine::DrawSkeletalColor() {
     XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
 
     const FogConstants fog = MakeFogConstants();
-    const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_BlackSrvSlot );
+    const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_BlackTexture->GetSrvSlot() );
     D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
     D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
     unsigned int drawnTris = 0;
@@ -7226,9 +7180,20 @@ void D3D12GraphicsEngine::ResizeOutputWindow( INT2 size ) {
 #endif
 }
 
+static bool CheckTearingSupport() {
+    BOOL allowTearing = FALSE;
+    ComPtr<IDXGIFactory5> factory5;
+    if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory5)))) {
+        factory5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &allowTearing, sizeof(allowTearing));
+    }
+    return allowTearing == TRUE;
+}
+
 bool D3D12GraphicsEngine::CreateSwapChain( INT2 size ) {
     m_Resolution = size;
 
+    m_TearingSupported = CheckTearingSupport();
+    
     DXGI_SWAP_CHAIN_DESC1 scd = {};
     scd.Width = static_cast<UINT>( size.x );
     scd.Height = static_cast<UINT>( size.y );
@@ -7237,6 +7202,7 @@ bool D3D12GraphicsEngine::CreateSwapChain( INT2 size ) {
     scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     scd.BufferCount = kBackBufferCount;
     scd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    scd.Flags = m_TearingSupported ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
     scd.Scaling = DXGI_SCALING_STRETCH;
     scd.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
 
@@ -7552,7 +7518,14 @@ XRESULT D3D12GraphicsEngine::Present() {
     m_Device.GetDirectQueue()->ExecuteCommandLists( 1, lists );
 
     const bool vsync = Engine::GAPI->GetRendererState().RendererSettings.EnableVSync;
-    HRESULT hr = m_SwapChain->Present( vsync ? 1 : 0, 0 );
+    const UINT syncInterval = vsync ? 1 : 0;
+
+    UINT presentFlags = 0;
+    if (!vsync && m_TearingSupported) {
+        presentFlags |= DXGI_PRESENT_ALLOW_TEARING;
+    }
+    
+    HRESULT hr = m_SwapChain->Present( syncInterval, presentFlags );
     if ( FAILED( hr ) ) {
         auto r = static_cast<uint32_t>(hr);
         if ( hr == DXGI_ERROR_DEVICE_REMOVED) {
@@ -7708,6 +7681,11 @@ XRESULT D3D12GraphicsEngine::CreateTexture( GfxTexture** outTexture ) {
 }
 
 XRESULT D3D12GraphicsEngine::CreateTexture( std::unique_ptr<GfxTexture>& outTexture ) {
+    outTexture = std::make_unique<D3D12Texture>();
+    return XR_SUCCESS;
+}
+
+XRESULT D3D12GraphicsEngine::CreateTexture( std::unique_ptr<D3D12Texture>& outTexture ) {
     outTexture = std::make_unique<D3D12Texture>();
     return XR_SUCCESS;
 }

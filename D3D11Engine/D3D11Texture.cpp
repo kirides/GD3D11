@@ -46,7 +46,7 @@ D3D11Texture::~D3D11Texture() {
 }
 
 /** Initializes the texture object */
-XRESULT D3D11Texture::Init( INT2 size, ETextureFormat format, UINT mipMapCount, void* data, const std::string& fileName ) {
+XRESULT D3D11Texture::Init( INT2 size, ETextureFormat format, UINT mipMapCount, const void* data, const std::string& fileName ) {
     HRESULT hr;
     D3D11GraphicsEngineBase* engine = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine);
 
@@ -70,7 +70,7 @@ XRESULT D3D11Texture::Init( INT2 size, ETextureFormat format, UINT mipMapCount, 
     std::vector<D3D11_SUBRESOURCE_DATA> initialDataMips;
     if ( data ) {
         initialDataMips.resize( mipMapCount );
-        UINT8* srcBytes = reinterpret_cast<UINT8*>( data );
+        const UINT8* srcBytes = reinterpret_cast<const UINT8*>( data );
         UINT offset = 0;
         for ( UINT i = 0; i < mipMapCount; ++i ) {
             UINT rowPitch = GetRowPitchBytes( i );

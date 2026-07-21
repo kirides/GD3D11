@@ -42,7 +42,7 @@ D3D12Texture::~D3D12Texture()
     m_Texture.Reset();*/
 }
 
-XRESULT D3D12Texture::Init( INT2 size, ETextureFormat format, unsigned int mipMapCount, void* data, const std::string& fileName ) {
+XRESULT D3D12Texture::Init( INT2 size, ETextureFormat format, unsigned int mipMapCount, const void* data, const std::string& fileName ) {
     m_Format = static_cast<DXGI_FORMAT>( format );
     m_Size = size;
     m_MipMapCount = std::max<unsigned int>( 1, mipMapCount );
@@ -166,7 +166,7 @@ XRESULT D3D12Texture::InitFromDDS( const uint8_t* bytes, size_t size, const std:
     return CreateAndUpload( const_cast<uint8_t*>( bytes + dataOffset ) ) ? XR_SUCCESS : XR_FAILED;
 }
 
-bool D3D12Texture::CreateAndUpload( void* data ) {
+bool D3D12Texture::CreateAndUpload( const void* data ) {
     D3D12GraphicsEngine* engine = Engine12();
     ID3D12Device* device = engine ? engine->GetD3DDevice() : nullptr;
     D3D12MA::Allocator* allocator = engine ? engine->GetAllocator() : nullptr;

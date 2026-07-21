@@ -67,13 +67,12 @@ namespace Engine {
                 LogInfo() << "Direct3D 12 is available on this system (GPU: " << deviceDesc << "). Creating the Direct3D 12 backend.";
                 // Init the D3D12 backend up front so a failure (device/swapchain/pipeline) cleanly falls
                 // back to D3D11 instead of leaving a half-initialized engine that crashes at render time.
-                BaseGraphicsEngine* d3d12 = new D3D12GraphicsEngine;
-                if ( d3d12->Init() == XRESULT::XR_SUCCESS ) {
-                    GraphicsEngine = d3d12;
+                GraphicsEngine = new D3D12GraphicsEngine;
+                if ( GraphicsEngine->Init() == XRESULT::XR_SUCCESS ) {
                     initialized = true;
                 } else {
                     LogWarn() << "The Direct3D 12 backend failed to initialize. Falling back to Direct3D 11.";
-                    delete d3d12;
+                    SAFE_DELETE( GraphicsEngine );
                 }
             } else {
                 LogWarn() << "Direct3D 12 was requested but is unavailable: " << reason << ". Using Direct3D 11.";
