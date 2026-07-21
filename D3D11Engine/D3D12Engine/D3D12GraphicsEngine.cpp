@@ -2740,13 +2740,10 @@ bool D3D12GraphicsEngine::CreateSceneColorTarget( INT2 size ) {
     dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
     dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
 
-    D3D12_CLEAR_VALUE clear = {};
-    clear.Format = kSceneColorFormat;   // matches DrawSky's fog-color clear (values set at clear time)
-
     // Born in RENDER_TARGET (the world pass renders straight into it; ResolveSceneToBackBuffer flips it to
     // PIXEL_SHADER_RESOURCE and back next frame). GPU is idle at every call site (init / post-WaitForGpuIdle resize).
     if ( FAILED( device->CreateCommittedResource( &heapDefault, D3D12_HEAP_FLAG_NONE, &dd,
-        D3D12_RESOURCE_STATE_RENDER_TARGET, &clear, IID_PPV_ARGS( m_SceneColor.ReleaseAndGetAddressOf() ) ) ) ) {
+        D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr, IID_PPV_ARGS( m_SceneColor.ReleaseAndGetAddressOf() ) ) ) ) {
         LogWarn() << "D3D12: failed to create the HDR scene-color target (" << size.x << "x" << size.y << ").";
         return false;
     }
