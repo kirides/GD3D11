@@ -246,7 +246,7 @@ protected:
     bool ShowMaterialInfoDialog;
 
     /** Thumbnail texture */
-    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> SelectedImageThumbnail;
+    GfxTexture* SelectedImageThumbnail;
 
     WidgetContainer* Widgets;
 };

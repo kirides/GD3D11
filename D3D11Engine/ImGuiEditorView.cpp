@@ -14,6 +14,7 @@
 #include "zCModel.h"
 #include "WidgetContainer.h"
 #include "WorldConverter.h"
+#include "D3D12Engine/D3D12Texture.h"
 
 static XMFLOAT3 GetCameraPosition() {
     if (oCGame::GetGame() && oCGame::GetGame()->_zCSession_camVob) {
@@ -25,6 +26,22 @@ static XMFLOAT3 GetCameraPosition() {
 static XMVECTOR GetCameraPositionXM() {
     auto position = GetCameraPosition();
     return XMLoadFloat3(&position);
+}
+
+static ImTextureID GetImTextureIdFromGfx( GfxTexture* tex) {
+    switch (Engine::GraphicsEngine->GetBackendAPI())
+    {
+    case EGraphicsEngineBackend::D3D11:
+        return (ImTextureID)(intptr_t)D3D11Texture::From(tex)->GetShaderResourceView().Get();
+    case EGraphicsEngineBackend::D3D12:
+        if (auto d3d12 = D3D12Texture::From(tex)) {
+            if (d3d12->GetSrvSlot() != 0xFFFFFFFFu) {
+                return (ImTextureID)(intptr_t)d3d12->GetSrvGpuHandle().ptr;
+            }
+        }
+        return ImTextureID{};
+    }
+    return ImTextureID{};
 }
 
 ImGuiEditorView::ImGuiEditorView() {
@@ -72,6 +89,7 @@ ImGuiEditorView::ImGuiEditorView() {
     SelectedTexDisplacement = 1.0f;
     SelectedMeshTessAmount = 0.0f;
     SelectedMeshRoundness = 1.0f;
+    SelectedImageThumbnail = nullptr;
 
     MainTabIndex = 0;
     SelectionTabIndex = 0;
@@ -237,8 +255,9 @@ void ImGuiEditorView::RenderSelectionTab() {
 
 void ImGuiEditorView::RenderTextureSelectionPanel() {
     // Thumbnail image
-    if (SelectedImageThumbnail) {
-        ImGui::Image((ImTextureID)SelectedImageThumbnail.Get(), ImVec2(128, 128));
+    if (SelectedImageThumbnail
+        && GetImTextureIdFromGfx(SelectedImageThumbnail)) {
+        ImGui::Image(GetImTextureIdFromGfx(SelectedImageThumbnail), ImVec2(128, 128));
     } else {
         ImGui::Dummy(ImVec2(128, 128));
     }
@@ -804,18 +823,9 @@ void ImGuiEditorView::UpdateSelectionPanel() {
 
         // Update thumbnail
 
-        if (MyDirectDrawSurface7* surface = tx->GetSurface()) {
-            D3D11Texture* engineTex = D3D11Texture::From( surface->GetEngineTexture() );
-            auto& thumb = engineTex->GetThumbnailSRV();
-            if (!thumb.Get()) {
-                XLE(engineTex->CreateThumbnail());
-                SelectedImageThumbnail = nullptr;
-                if (engineTex->GetThumbnailSRV().Get()) {
-                    auto& thumb2 = engineTex->GetThumbnailSRV();
-                    SelectedImageThumbnail = thumb2;
-                }
-            } else {
-                SelectedImageThumbnail = engineTex->GetShaderResourceView();
+        if (MyDirectDrawSurface7* surface = tx->GetSurface(); surface && surface->IsSurfaceReady()) {
+            if (GfxTexture* engineTex = surface->GetEngineTexture()) {
+                SelectedImageThumbnail = engineTex;
             }
         }
 

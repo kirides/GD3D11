@@ -3588,7 +3588,11 @@ bool GothicAPI::TraceWorldMesh( const XMFLOAT3& origin, const XMFLOAT3& dir, XMF
 
 /** Unprojects a pixel-position on the screen */
 void XM_CALLCONV GothicAPI::UnprojectXM(float2 p, XMVECTOR& worldPos, XMVECTOR& worldDir) {
-    
+    if ( !GetSceneCamera() ) {
+        worldPos = XMVectorReplicate( 0.0f );
+        worldDir = worldPos;
+        return;
+    }
     const auto res = Engine::GraphicsEngine->GetBackbufferResolution();
 
     XMMATRIX proj    = XMMatrixTranspose(XMLoadFloat4x4(&RendererState.TransformState.TransformProj));
