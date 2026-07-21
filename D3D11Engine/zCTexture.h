@@ -41,10 +41,12 @@ public:
         if ( auto tex = res->As<zCTexture>() ) {
             // Try load texture by ourselfs.
 
-            if ( tex->LoadTexture(prio) ) {
+            if ( !tex->GetFlags().isTextureTile && tex->LoadTexture(prio) ) {
                 // Either finished synchronously (zRES_CACHED_IN) or was dispatched
                 // to a worker (zRES_LOADING); report whichever state we're now in.
                 return tex->GetCacheState();
+            } else {
+                LogInfo() << "unsupported texture: fallback to engine: " << tex->GetNameView();
             }
         }
         zTResourceCacheState ret = original_zCResourceManager_CacheIn( _this, res, prio );

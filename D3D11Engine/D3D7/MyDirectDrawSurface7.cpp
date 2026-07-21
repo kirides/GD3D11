@@ -1,4 +1,6 @@
 #include "MyDirectDrawSurface7.h"
+
+#include "../D3D11GraphicsEngine.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
 #include "../D3D11GraphicsEngineBase.h"
@@ -46,7 +48,10 @@ MyDirectDrawSurface7::~MyDirectDrawSurface7() {
 
 /** Returns the engine texture of this surface */
 D3D11Texture* MyDirectDrawSurface7::GetEngineTexture() {
-    return EngineTexture.get();
+    if (IsSurfaceReady() && EngineTexture) {
+        return EngineTexture.get();
+    }
+    return reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine)->GetWhiteTexture();
 }
 
 /** Returns the engine texture of this surface */
@@ -70,8 +75,8 @@ void MyDirectDrawSurface7::BindToSlot( int slot ) {
         return; // Don't bind half-loaded textures!
     }
 
-    if ( EngineTexture ) {// Needed sometimes
-        srvs[0] = EngineTexture->GetShaderResourceView().Get();
+    if ( GetEngineTexture() ) {// Needed sometimes
+        srvs[0] = GetEngineTexture()->GetShaderResourceView().Get();
     }
     if ( Normalmap ) {
         srvs[1] = Normalmap->GetShaderResourceView().Get();
