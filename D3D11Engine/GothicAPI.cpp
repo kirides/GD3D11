@@ -6293,7 +6293,6 @@ static void CollectLeafVobs(
                         if ( auto visFx = parent->As<oCVisualFX>() ) {
                             PFXVobLight = true;
                             if (auto origin = visFx->GetOrigin()) {
-                                vi->OriginVob = origin;
                                 // any PFX that stems from an ITEM should be counted as simple light.
                                 PFXVobLight = !origin->As<oCItem>();
                             }                            

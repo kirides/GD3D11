@@ -47,28 +47,28 @@ static void SetupVobsToExclude(const VobLightInfo* LightInfo)
     vobsToExclude.clear();
     
     CollectVobTreeToExclude(LightInfo->Vob);
-    CollectVobTreeToExclude(LightInfo->OriginVob);
+}
+
+static bool GetHasOriginVob( VobLightInfo* info ) {
+    if ( !info->IsPFXVobLight ) {
+        zCVob* vob = info->Vob;
+        while ( auto parent = vob->GetVobParent() ) {
+            if ( auto visFx = parent->As<oCVisualFX>() ) {
+                if ( auto origin = visFx->GetOrigin(); origin && origin->As<oCItem>() ) {
+                    return true;
+                }
+            } else if ( parent->As<oCItem>() ) {
+                return true;
+            }
+            vob = parent;
+        }
+    }
+    return false;
 }
 
 D3D11PointLight::D3D11PointLight( VobLightInfo* info, bool dynamicLight ) {
     LightInfo = info;
     DynamicLight = dynamicLight;
-    
-    if ( !info->IsPFXVobLight ) {
-        zCVob* vob = info->Vob;
-        while (auto parent = vob->GetVobParent()) {
-            if (auto visFx = parent->As<oCVisualFX>()) {
-                if (auto origin = visFx->GetOrigin(); origin && origin->As<oCItem>()) {
-                    info->OriginVob = info->OriginVob ? info->OriginVob : origin;
-                    break;
-                }
-            } else if ( parent->As<oCItem>() ) {
-                info->OriginVob = info->OriginVob ? info->OriginVob : info->Vob;
-                break;
-            }
-            vob = parent;
-        }
-    }
     
     // Ensure this light is actually in the VobLightMap
     // some lights don't seem to be in here!
@@ -263,7 +263,7 @@ void D3D11PointLight::RenderStaticShadowPass( RenderToDepthStencilBuffer& target
         ? SHADOW_CASTER_WORLD // static light? only draw world mesh.
         : SHADOW_CASTER_WORLD | SHADOW_CASTER_VOBS | SHADOW_CASTER_MOBS;
 
-    if (LightInfo->OriginVob) {
+    if ( GetHasOriginVob( LightInfo ) ) {
         SetupVobsToExclude(LightInfo);
         engine->RenderShadowCube( LightInfo->Vob->GetPositionWorldXM(), range, target, nullptr, nullptr, false, LightInfo->IsIndoorVob, false,
             &VobCache, &SkeletalVobCache, wc, clearDepth, staticCasterMask, excludeVobsToExclude );
@@ -279,7 +279,7 @@ void D3D11PointLight::RenderAnimatedShadowPass( RenderToDepthStencilBuffer& targ
     const float range = LightInfo->Vob->GetLightRange();
 
     const unsigned int animatedCasterMask = SHADOW_CASTER_ANIMATED;
-    if (LightInfo->OriginVob) {
+    if ( GetHasOriginVob( LightInfo ) ) {
         SetupVobsToExclude(LightInfo);
         engine->RenderShadowCube( LightInfo->Vob->GetPositionWorldXM(), range, target, nullptr, nullptr, false, LightInfo->IsIndoorVob, false,
             nullptr, nullptr, nullptr, clearDepth, animatedCasterMask, excludeVobsToExclude );
@@ -533,7 +533,7 @@ void D3D11PointLight::RenderFullCubemap() {
             wc = nullptr;
         }
 
-        if (LightInfo->OriginVob) {
+        if ( GetHasOriginVob( LightInfo ) ) {
             SetupVobsToExclude(LightInfo);
 
             engine->RenderShadowCube( LightInfo->Vob->GetPositionWorldXM(), LightInfo->Vob->GetLightRange(), *activeTarget,
