@@ -394,6 +394,15 @@ SamplerComparisonState  shadowCmp : register(s2);
 cbuffer MaterialCB : register(b6) { uint MatNormalIndex; uint MatOrmIndex; uint MatDiffuseIndex; };
 TextureCubeArray        PointShadowCubes : register(t5);   // point-light shadow cubes (P2.10d), R16 linear depth
 
+// De-lights diffuse textures by lifting baked shadows and softening baked highlights
+float3 DelightDiffuse( float3 linearAlbedo )
+{
+    float luminance = dot( linearAlbedo, float3( 0.2126, 0.7152, 0.0722 ) );
+    // Normalize luminance variations caused by baked directional light
+    float delightFactor = 1.0 / max( sqrt( luminance + 1e-4 ), 0.2 );
+    return saturate( linearAlbedo * lerp( 1.0, delightFactor, 0.5 ) );
+}
+
 // Point-light shadow: returns 1 = lit, 0 = occluded. The cube stores the NATURAL hyperbolic z of the caster's
 // 90-deg PerspectiveFovLH(near 15, far range*2). Reconstruct the same z from the fragment: the depth on a cube
 // face is driven by the DOMINANT-AXIS distance (the face's view-space z), so zView = max(|dx|,|dy|,|dz|), then
@@ -653,6 +662,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     Texture2D ormTex = ResourceDescriptorHeap[MatOrmIndex];   // r=AO g=roughness b=metallic (1x1 default when no _FX)
     float3 orm = ormTex.Sample( smp, i.uv ).rgb;
     float3 albedo = SrgbToLinear( t.rgb );    // linearize for PBR (all HDR-buffer values are linear now)
+    albedo = DelightDiffuse( albedo );
     float vertLighting = i.col.g;             // Gothic baked vertex lighting (green channel) as the AO modulator
     float shadow = ComputeSunShadow( i.wpos, N );
     float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r );
@@ -703,6 +713,15 @@ SamplerComparisonState  shadowCmp : register(s2);
 // (the 1x1 default ORM = AO 1 / rough 0.5 / metal 0 when the material has no _FX map), so ORM is sampled branchlessly.
 cbuffer MaterialCB : register(b6) { uint MatNormalIndex; uint MatOrmIndex; };
 TextureCubeArray        PointShadowCubes : register(t5);   // point-light shadow cubes (P2.10d), R16 linear depth
+
+// De-lights diffuse textures by lifting baked shadows and softening baked highlights
+float3 DelightDiffuse( float3 linearAlbedo )
+{
+    float luminance = dot( linearAlbedo, float3( 0.2126, 0.7152, 0.0722 ) );
+    // Normalize luminance variations caused by baked directional light
+    float delightFactor = 1.0 / max( sqrt( luminance + 1e-4 ), 0.2 );
+    return saturate( linearAlbedo * lerp( 1.0, delightFactor, 0.5 ) );
+}
 
 // Point-light shadow: returns 1 = lit, 0 = occluded. The cube stores the NATURAL hyperbolic z of the caster's
 // 90-deg PerspectiveFovLH(near 15, far range*2). Reconstruct the same z from the fragment: the depth on a cube
@@ -961,6 +980,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     Texture2D ormTex = ResourceDescriptorHeap[MatOrmIndex];
     float3 orm = ormTex.Sample( smp, i.uv ).rgb;   // r=AO g=roughness b=metallic
     float3 albedo = SrgbToLinear( t.rgb );
+    albedo = DelightDiffuse( albedo );
     float vertLighting = i.col.g;          // per-instance ground light (green channel) as the AO modulator
     float shadow = ComputeSunShadow( i.wpos, N );
     float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r );
@@ -1332,6 +1352,15 @@ SamplerComparisonState  shadowCmp : register(s2);
 cbuffer MaterialCB : register(b6) { uint MatNormalIndex; uint MatOrmIndex; };
 TextureCubeArray        PointShadowCubes : register(t5);   // point-light shadow cubes (P2.10d), R16 linear depth
 
+// De-lights diffuse textures by lifting baked shadows and softening baked highlights
+float3 DelightDiffuse( float3 linearAlbedo )
+{
+    float luminance = dot( linearAlbedo, float3( 0.2126, 0.7152, 0.0722 ) );
+    // Normalize luminance variations caused by baked directional light
+    float delightFactor = 1.0 / max( sqrt( luminance + 1e-4 ), 0.2 );
+    return saturate( linearAlbedo * lerp( 1.0, delightFactor, 0.5 ) );
+}
+
 // Point-light shadow: returns 1 = lit, 0 = occluded. The cube stores the NATURAL hyperbolic z of the caster's
 // 90-deg PerspectiveFovLH(near 15, far range*2). Reconstruct the same z from the fragment: the depth on a cube
 // face is driven by the DOMINANT-AXIS distance (the face's view-space z), so zView = max(|dx|,|dy|,|dz|), then
@@ -1595,6 +1624,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     Texture2D ormTex = ResourceDescriptorHeap[MatOrmIndex];
     float3 orm = ormTex.Sample( smp, i.uv ).rgb;   // r=AO g=roughness b=metallic
     float3 albedo = SrgbToLinear( t.rgb );
+    albedo = DelightDiffuse( albedo );
     float vertLighting = i.col.g;               // ModelColor green (white=1 for NPCs → no baked AO reduction)
     float shadow = ComputeSunShadow( i.wpos, N );
     float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r );
