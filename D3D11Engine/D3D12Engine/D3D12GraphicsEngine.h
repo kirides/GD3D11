@@ -1,4 +1,5 @@
 #pragma once
+#include <D3D12MemAlloc.h>
 #include "../BaseGraphicsEngine.h"
 #include "../Frustum.h"
 #include "D3D12Device.h"
@@ -104,10 +105,6 @@ public:
     D3D12_CPU_DESCRIPTOR_HANDLE GetSrvCpuHandle( UINT slot ) const;
     D3D12_GPU_DESCRIPTOR_HANDLE GetSrvGpuHandle( UINT slot ) const;
 
-    void UglySyncrhonizationWorkaroundWaitForGpuIdle() {
-        WaitForGpuIdle();
-    }
-
     void QueueSrvResourceForRelease( UINT slot, Microsoft::WRL::ComPtr<ID3D12Resource> resource );
 
     /*
@@ -117,11 +114,15 @@ public:
         backing resource (animated textures) but keeps its descriptor slot.
         */
     void QueueResourceForRelease( Microsoft::WRL::ComPtr<ID3D12Resource> resource );
-    
+    void QueueAllocationForRelease(Microsoft::WRL::ComPtr<D3D12MA::Allocation> value);
+
     void OnAddVob(VobInfo* vi) override;
     void OnLoadWorld() override;
-    
+    D3D12MA::Allocator* GetAllocator() const { return m_Allocator.Get(); }
+
 private:
+    void QueueCleanupJob(std::move_only_function<void()> callback); // cleanup job runs after the calling frames fence value is completed.
+    bool CreateAllocators();
     void ResizeOutputWindow( INT2 size );  // size the OS window + inform Gothic (zCView) of the mode
     bool CreateSwapChain( INT2 size );
     bool CreateFrameResources();      // RTV heap + allocators + command list + fence + event
@@ -492,4 +493,5 @@ private:
     std::unique_ptr<D3D12LineRenderer> m_LineRenderer;
     std::vector<std::move_only_function<void()>> m_PerFrameCleanupItems[kBackBufferCount] = {};
     bool m_PresentPending = false;
+    Microsoft::WRL::ComPtr<D3D12MA::Allocator> m_Allocator;
 };

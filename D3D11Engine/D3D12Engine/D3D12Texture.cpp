@@ -169,12 +169,10 @@ XRESULT D3D12Texture::InitFromDDS( const uint8_t* bytes, size_t size, const std:
 bool D3D12Texture::CreateAndUpload( void* data ) {
     D3D12GraphicsEngine* engine = Engine12();
     ID3D12Device* device = engine ? engine->GetD3DDevice() : nullptr;
-    if ( !device || m_Size.x <= 0 || m_Size.y <= 0 || m_Format == DXGI_FORMAT_UNKNOWN ) {
+    D3D12MA::Allocator* allocator = engine ? engine->GetAllocator() : nullptr;
+    if ( !device || !allocator || m_Size.x <= 0 || m_Size.y <= 0 || m_Format == DXGI_FORMAT_UNKNOWN ) {
         return false;
     }
-
-    D3D12_HEAP_PROPERTIES heapDefault = {};
-    heapDefault.Type = D3D12_HEAP_TYPE_DEFAULT;
 
     D3D12_RESOURCE_DESC td = {};
     td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
@@ -192,15 +190,26 @@ bool D3D12Texture::CreateAndUpload( void* data ) {
     // — as ReleaseAndGetAddressOf would — deletes a resource the GPU isn't done with, triggering
     // OBJECT_DELETED_WHILE_STILL_IN_USE and a device hang. Defer it until its frame's fence has passed.
     // The SRV slot is kept (CreateSRV reuses it), so only the resource is deferred.
-    if ( m_Texture ) {
-        engine->QueueResourceForRelease( m_Texture );
+    if ( m_Allocation ) {
+        // Queue both the allocation wrapper and raw resource for frame-deferred release
+        engine->QueueAllocationForRelease( m_Allocation );
+        m_Allocation.Reset();
         m_Texture.Reset();
     }
+    
+    D3D12MA::ALLOCATION_DESC allocDesc = {};
+    allocDesc.HeapType = D3D12_HEAP_TYPE_DEFAULT; // Equivalent to your heapDefault properties
 
     const D3D12_RESOURCE_STATES initState = data ? D3D12_RESOURCE_STATE_COPY_DEST : D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-    if ( FAILED( device->CreateCommittedResource( &heapDefault, D3D12_HEAP_FLAG_NONE, &td, initState,
-        nullptr, IID_PPV_ARGS( m_Texture.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12Texture: CreateCommittedResource failed (format " << static_cast<int>( m_Format )
+    
+    if ( FAILED( allocator->CreateResource(
+        &allocDesc,
+        &td,
+        initState,
+        nullptr, // Clear value
+        m_Allocation.ReleaseAndGetAddressOf(),
+        IID_PPV_ARGS( m_Texture.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12Texture: D3D12MA::CreateResource failed (format " << static_cast<int>( m_Format )
                   << ", " << m_Size.x << "x" << m_Size.y << ", mips " << m_MipMapCount << ").";
         return false;
     }
@@ -209,6 +218,7 @@ bool D3D12Texture::CreateAndUpload( void* data ) {
     // reports) as a texture + its source file, instead of 'Unnamed Object'.
     {
         const std::string debugName = "Tex:" + ( m_DebugName.empty() ? std::string( "unnamed" ) : m_DebugName );
+        m_Allocation->SetName( std::wstring( debugName.begin(), debugName.end() ).c_str() );
         m_Texture->SetPrivateData( WKPDID_D3DDebugObjectName, static_cast<UINT>( debugName.size() ), debugName.c_str() );
     }
 

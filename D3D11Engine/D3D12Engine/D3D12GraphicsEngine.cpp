@@ -1,5 +1,4 @@
 #include "../pch.h"
-#include <D3D12MemAlloc.h>
 #include "D3D12GraphicsEngine.h"
 #include "D3D12LineRenderer.h"
 #include "D3D12VertexBuffer.h"
@@ -1852,6 +1851,10 @@ XRESULT D3D12GraphicsEngine::Init() {
         LogWarn() << "D3D12GraphicsEngine::Init: device creation failed.";
         return XR_FAILED;
     }
+    if ( !CreateAllocators() ) {
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create allocators.";
+        return XR_FAILED;
+    }
     if ( !CreateUploadObjects() ) {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create upload objects.";
         return XR_FAILED;
@@ -1954,6 +1957,18 @@ void D3D12GraphicsEngine::OnLoadWorld()
     for (auto& v : g_ShadowPassVobs) {
         v.Reset();
     }
+}
+
+bool D3D12GraphicsEngine::CreateAllocators() {
+    D3D12MA::ALLOCATOR_DESC allocatorDesc{};
+    allocatorDesc.pDevice = m_Device.GetDevice();
+    allocatorDesc.pAdapter = m_Device.GetAdapter();
+    allocatorDesc.Flags = D3D12MA::ALLOCATOR_FLAG_NONE;
+    if (FAILED(D3D12MA::CreateAllocator(&allocatorDesc, m_Allocator.ReleaseAndGetAddressOf()))) {
+        return false;
+    }
+    
+    return m_Allocator != nullptr;
 }
 
 bool D3D12GraphicsEngine::CreateUploadObjects() {
@@ -7032,12 +7047,21 @@ XRESULT D3D12GraphicsEngine::SetWindow( HWND hWnd ) {
 
 void D3D12GraphicsEngine::QueueSrvResourceForRelease( UINT slot, Microsoft::WRL::ComPtr<ID3D12Resource> resource )
 {
-    m_PerFrameCleanupItems[m_FrameIndex].emplace_back( [this, slot, resource = std::move(resource)]() {
+    QueueCleanupJob( [this, slot, resource = std::move(resource)]() {
         // Recycle the descriptor slot safely
         this->FreeSrvSlot( slot );
 
         // The ComPtr 'resource' capture naturally dies here, releasing the ID3D12Resource;
     } );
+}
+
+void D3D12GraphicsEngine::QueueCleanupJob( std::move_only_function<void()> callback )
+{
+    if ( callback == nullptr ) return;
+    // No slot to recycle — just hold a reference until this frame index comes back around (after its
+    // fence is waited on in MoveToNextFrame), then drop it. The capture keeps the resource alive until
+    // every command list that could reference it has finished on the GPU.
+    m_PerFrameCleanupItems[m_FrameIndex].emplace_back( std::move(callback) );
 }
 
 void D3D12GraphicsEngine::QueueResourceForRelease( Microsoft::WRL::ComPtr<ID3D12Resource> resource )
@@ -7046,7 +7070,16 @@ void D3D12GraphicsEngine::QueueResourceForRelease( Microsoft::WRL::ComPtr<ID3D12
     // No slot to recycle — just hold a reference until this frame index comes back around (after its
     // fence is waited on in MoveToNextFrame), then drop it. The capture keeps the resource alive until
     // every command list that could reference it has finished on the GPU.
-    m_PerFrameCleanupItems[m_FrameIndex].emplace_back( [resource = std::move(resource)]() {} );
+    QueueCleanupJob( [resource = std::move(resource)]() {} );
+}
+
+void D3D12GraphicsEngine::QueueAllocationForRelease( Microsoft::WRL::ComPtr<D3D12MA::Allocation> value )
+{
+    if ( !value ) return;
+    // No slot to recycle — just hold a reference until this frame index comes back around (after its
+    // fence is waited on in MoveToNextFrame), then drop it. The capture keeps the resource alive until
+    // every command list that could reference it has finished on the GPU.
+    QueueCleanupJob( [resource = std::move(value)]() { } );
 }
 
 /** Sizes the actual OS window to the target resolution and tells Gothic about the mode so its 2D

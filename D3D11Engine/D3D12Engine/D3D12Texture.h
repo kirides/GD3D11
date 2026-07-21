@@ -1,6 +1,7 @@
 #pragma once
 #include <wrl/client.h>
 #include <d3d12.h>
+#include <D3D12MemAlloc.h>
 #include <vector>
 #include "../GfxTexture.h"
 
@@ -62,6 +63,7 @@ private:
     bool CreateAndUpload( void* data );   // committed resource (+ synchronous upload when data != null)
     void CreateSRV();                     // (re)creates the shader-visible SRV for the current resource
 
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_Allocation; // Retains ownership of memory + ID3D12Resource
     Microsoft::WRL::ComPtr<ID3D12Resource> m_Texture;
     DXGI_FORMAT  m_Format = DXGI_FORMAT_UNKNOWN;
     INT2         m_Size = {};
