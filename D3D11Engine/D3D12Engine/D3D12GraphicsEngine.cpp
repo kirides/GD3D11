@@ -1999,8 +1999,6 @@ bool D3D12GraphicsEngine::UploadTextureSubresources( ID3D12Resource* dst, const 
     device->GetCopyableFootprints( &desc, 0, numSubresources, 0, layouts.data(), numRows.data(), rowSizes.data(), &totalBytes );
 
     // Upload (staging) buffer sized to hold all subresources' aligned footprints.
-    D3D12_HEAP_PROPERTIES uploadHeap = {};
-    uploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
     D3D12_RESOURCE_DESC bufDesc = {};
     bufDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
     bufDesc.Width = totalBytes;
@@ -2011,10 +2009,21 @@ bool D3D12GraphicsEngine::UploadTextureSubresources( ID3D12Resource* dst, const 
     bufDesc.SampleDesc.Count = 1;
     bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
+    
+    D3D12MA::ALLOCATION_DESC allocDesc = {};
+    allocDesc.HeapType = D3D12_HEAP_TYPE_UPLOAD;
+    
+    ComPtr<D3D12MA::Allocation> uploadAllocation;
     ComPtr<ID3D12Resource> upload;
-    if ( FAILED( device->CreateCommittedResource( &uploadHeap, D3D12_HEAP_FLAG_NONE, &bufDesc,
-        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS( upload.ReleaseAndGetAddressOf() ) ) ) )
+    if ( FAILED( m_Allocator->CreateResource(
+        &allocDesc,
+        &bufDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ,
+        nullptr, // Clear value
+        uploadAllocation.ReleaseAndGetAddressOf(),
+        IID_PPV_ARGS( upload.ReleaseAndGetAddressOf() ) ) ) ) {
         return false;
+    }
 
     BYTE* mapped = nullptr;
     D3D12_RANGE noRead = { 0, 0 };
