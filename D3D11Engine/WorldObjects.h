@@ -108,7 +108,7 @@ struct MeshInfo {
     std::unique_ptr<D3D11VertexBuffer> MeshPositionBuffer;
     std::unique_ptr<D3D11VertexBuffer> MeshIndexBuffer;
     std::unique_ptr<D3D11VertexBuffer> MeshShadowIndexBuffer;
-    std::vector<BasicVertexStruct> Vertices;
+    std::vector<ExVertexStruct> Vertices;
     std::vector<VERTEX_INDEX> Indices;
     std::vector<VERTEX_INDEX> ShadowIndices;
 
@@ -131,17 +131,6 @@ struct WorldMeshInfo : public MeshInfo {
 
     // Offset in wrapped world mesh
     unsigned int BaseShadowIndexLocation;
-
-    // Raw, non-indexed, full-attribute vertices collected while the world mesh is being built
-    // (see WorldConverter::ConvertWorldMesh). Scratch only: consumed and cleared by
-    // BuildWorldMeshBuffers once the real GPU buffers exist, so it never persists.
-    std::vector<ExVertexStruct> RawVertices;
-
-    // Position+UV0 companion buffer, 1:1 with Indices in the same ordering as MeshVertexBuffer.
-    // Used to rebuild small range-limited shadow-caster meshes for static point lights
-    // (see WorldConverter::WorldMeshCollectPolyRange) long after the initial GPU upload, without
-    // keeping the full 60-byte ExVertexStruct around for every world-mesh vertex.
-    std::vector<SimpleObjectVertexStruct> ShadowVertices;
 };
 
 struct QuadMarkInfo {

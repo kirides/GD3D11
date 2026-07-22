@@ -6034,20 +6034,7 @@ void GothicAPI::CreatezCPolygonsForSections() {
 
                 it->first.Material->SetAlphaFunc( zMAT_ALPHA_FUNC_NONE );
 
-                // WorldMeshInfo no longer carries full per-vertex attributes (Vertices is
-                // position-only, for raycasting); rebuild from the Position+UV0 companion
-                // buffer with a defaulted normal. This path (custom/original-engine zCPolygon
-                // reconstruction) is unused/unsupported in current builds.
-                std::vector<ExVertexStruct> fullVertices( it->second->ShadowVertices.size() );
-                for ( size_t v = 0; v < it->second->ShadowVertices.size(); ++v ) {
-                    fullVertices[v].Position = it->second->ShadowVertices[v].Position;
-                    fullVertices[v].TexCoord = it->second->ShadowVertices[v].TexCoord;
-                    fullVertices[v].Normal = float3( 0.0f, 1.0f, 0.0f );
-                    fullVertices[v].TexCoord2 = float2( 0.0f, 0.0f );
-                    fullVertices[v].Color = 0xFFFFFFFF;
-                    fullVertices[v].Tangent = float4( 1.0f, 0.0f, 0.0f, 1.0f );
-                }
-                WorldConverter::ConvertExVerticesTozCPolygons( fullVertices, it->second->Indices, it->first.Material, section.SectionPolygons );
+                WorldConverter::ConvertExVerticesTozCPolygons( it->second->Vertices, it->second->Indices, it->first.Material, section.SectionPolygons );
             }
         }
     }
