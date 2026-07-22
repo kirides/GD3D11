@@ -2092,28 +2092,6 @@ XRESULT D3D11GraphicsEngine::DrawVertexBufferIndexed( GfxVertexBuffer* vbGfx,
     return XR_SUCCESS;
 }
 
-// Like DrawVertexBufferIndexed but binds the vertex buffer at the packed 36-byte stride
-// (ExVertexStructGPU). Used for non-instanced VOB draws that moved to VS_ExPacked.
-XRESULT D3D11GraphicsEngine::DrawVertexBufferIndexedPacked( GfxVertexBuffer* vbGfx,
-    GfxVertexBuffer* ibGfx,
-    unsigned int numIndices,
-    unsigned int indexOffset ) {
-    D3D11VertexBuffer* vb = D3D11VertexBuffer::From( vbGfx );
-    D3D11VertexBuffer* ib = D3D11VertexBuffer::From( ibGfx );
-    if ( vb ) {
-        UINT offset = 0;
-        UINT uStride = sizeof( ExVertexStructGPU );
-        Context->IASetVertexBuffers( 0, 1, vb->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
-        Context->IASetIndexBuffer( ib->GetVertexBuffer().Get(), VERTEX_INDEX_DXGI_FORMAT, 0 );
-    }
-
-    if ( numIndices ) {
-        Context->DrawIndexed( numIndices, indexOffset, 0 );
-        Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles += numIndices / 3;
-    }
-    return XR_SUCCESS;
-}
-
 XRESULT D3D11GraphicsEngine::DrawVertexBufferIndexedUINT(
     GfxVertexBuffer* vbGfx, GfxVertexBuffer* ibGfx, unsigned int numIndices,
     unsigned int indexOffset ) {
@@ -5875,76 +5853,6 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                     }
                 }
             }
-
-            // Draw from the wrapped world mesh instead of rebinding each mesh's own buffer.
-            if ( !opaqueMeshes.empty() || !alphaMeshes.empty() ) {
-                MeshInfo* wrappedWorldMesh = Engine::GAPI->GetWrappedWorldMesh();
-                bool swappedVS = false;
-
-                // The wrapped mesh only exists in the packed 36-byte format, so this always needs a
-                // packed-decoding vertex shader - but which one depends on what the caller bound
-                // before calling DrawWorldAround: GS_Cubemap expects VS_ExCube's world-space output
-                // (no SV_Position - the GS reprojects per face), while the plain per-face path (no
-                // GS, a real view/proj already set via the camera replacement) expects VS_Ex's output
-                // (VS computes SV_Position itself). Neither has a position-only fast path here.
-                VShaderID packedWorldMeshVS = usesCubeGeometryShader ? VShaderID::VS_ExCubePacked : VShaderID::VS_ExPacked;
-
-                if ( !opaqueMeshes.empty() ) {
-                    if ( !linearDepth )  // Only unbind when not rendering linear depth
-                    {
-                        // Unbind PS
-                        Context->PSSetShader( nullptr, nullptr, 0 );
-                    } else {
-                        if ( lastTex != WhiteTexture.get() ) {
-                            WhiteTexture->BindToPixelShader( 0 );
-                            lastTex = WhiteTexture.get();
-                        }
-                    }
-
-                    UINT zeroOffset = 0;
-                    SetActiveVertexShader( packedWorldMeshVS );
-                    ActiveVS->Apply();
-                    swappedVS = true;
-                    UINT uStride = sizeof( ExVertexStructGPU );
-                    Context->IASetVertexBuffers( 0, 1, D3D11VertexBuffer::From( wrappedWorldMesh->MeshVertexBuffer.get() )->GetVertexBuffer().GetAddressOf(), &uStride, &zeroOffset );
-
-                    Context->IASetIndexBuffer( D3D11VertexBuffer::From( wrappedWorldMesh->MeshShadowIndexBuffer.get() )->GetVertexBuffer().Get(), DXGI_FORMAT_R32_UINT, 0 );
-
-                    for ( auto* mesh : opaqueMeshes ) {
-                        DrawVertexBufferIndexedUINT( nullptr, nullptr,
-                            GetShadowAwareIndexCount( mesh, false ),
-                            mesh->BaseShadowIndexLocation );
-                    }
-                }
-
-                if ( !alphaMeshes.empty() ) {
-                    std::sort( alphaMeshes.begin(), alphaMeshes.end(),
-                        []( const auto& a, const auto& b ) { return a.first < b.first; } );
-
-                    SetActiveVertexShader( packedWorldMeshVS );
-                    ActiveVS->Apply();
-                    swappedVS = true;
-                    BindWrappedWorldMeshPacked( wrappedWorldMesh );
-                    ActivePS->Apply();
-
-                    for ( const auto& [tex, mesh] : alphaMeshes ) {
-                        void* engineTex = tex->GetSurface()->GetEngineTexture();
-                        if ( lastTex != engineTex ) {
-                            tex->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
-                            lastTex = engineTex;
-                        }
-
-                        DrawVertexBufferIndexedUINT( nullptr, nullptr,
-                            GetShadowAwareIndexCount( mesh, true ),
-                            mesh->BaseIndexLocation );
-                    }
-                }
-
-                if ( swappedVS ) {
-                    SetActiveVertexShader( packedWorldMeshVS );
-                    ActiveVS->Apply();
-                }
-            }
         }
     }
 
@@ -6297,73 +6205,6 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                             GetShadowAwareIndexCount( mesh, isAlpha ),
                             6 );
                     }
-                }
-            }
-
-            // Draw from the wrapped world mesh instead of rebinding each mesh's own buffer.
-            if ( !opaqueMeshes.empty() || !alphaMeshes.empty() ) {
-                MeshInfo* wrappedWorldMesh = Engine::GAPI->GetWrappedWorldMesh();
-                bool swappedVS = false;
-
-                if ( !opaqueMeshes.empty() ) {
-                    if ( !linearDepth )  // Only unbind when not rendering linear depth
-                    {
-                        // Unbind PS
-                        Context->PSSetShader( nullptr, nullptr, 0 );
-                    } else {
-                        if ( lastTex != WhiteTexture.get() ) {
-                            WhiteTexture->BindToPixelShader( 0 );
-                            lastTex = WhiteTexture.get();
-                        }
-                    }
-
-                    // The hardware layered-rendering shaders write SV_RenderTargetArrayIndex
-                    // themselves (there's no GS to do it), so - like the GS_Cubemap path - there's
-                    // no position-only fast path here; always decode the packed full stream.
-                    UINT zeroOffset = 0;
-                    SetActiveVertexShader( VShaderID::VS_ExLayeredPacked );
-                    ActiveVS->Apply();
-                    swappedVS = true;
-                    UINT uStride = sizeof( ExVertexStructGPU );
-                    Context->IASetVertexBuffers( 0, 1, D3D11VertexBuffer::From( wrappedWorldMesh->MeshVertexBuffer.get() )->GetVertexBuffer().GetAddressOf(), &uStride, &zeroOffset );
-
-                    Context->IASetIndexBuffer( D3D11VertexBuffer::From( wrappedWorldMesh->MeshShadowIndexBuffer.get() )->GetVertexBuffer().Get(), DXGI_FORMAT_R32_UINT, 0 );
-
-                    for ( auto* mesh : opaqueMeshes ) {
-                        DrawVertexBufferInstancedIndexedUINT( nullptr, nullptr,
-                            GetShadowAwareIndexCount( mesh, false ),
-                            6,
-                            mesh->BaseShadowIndexLocation );
-                    }
-                }
-
-                if ( !alphaMeshes.empty() ) {
-                    std::sort( alphaMeshes.begin(), alphaMeshes.end(),
-                        []( const auto& a, const auto& b ) { return a.first < b.first; } );
-
-                    SetActiveVertexShader( VShaderID::VS_ExLayeredPacked );
-                    ActiveVS->Apply();
-                    swappedVS = true;
-                    BindWrappedWorldMeshPacked( wrappedWorldMesh );
-                    ActivePS->Apply();
-
-                    for ( const auto& [tex, mesh] : alphaMeshes ) {
-                        void* engineTex = tex->GetSurface()->GetEngineTexture();
-                        if ( lastTex != engineTex ) {
-                            tex->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
-                            lastTex = engineTex;
-                        }
-
-                        DrawVertexBufferInstancedIndexedUINT( nullptr, nullptr,
-                            GetShadowAwareIndexCount( mesh, true ),
-                            6,
-                            mesh->BaseIndexLocation );
-                    }
-                }
-
-                if ( swappedVS ) {
-                    SetActiveVertexShader( VShaderID::VS_Ex );
-                    ActiveVS->Apply();
                 }
             }
         }

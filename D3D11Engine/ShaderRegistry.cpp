@@ -336,10 +336,6 @@ void ShaderRegistry::Build() {
         Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExLayered>( "VS_ExLayered.hlsl" )
             .with_layout( VERTEX_INPUT_LAYOUT_1 ) );
 
-        // Packed variant for VOB meshes in the layered shadow pass (36-byte vertex stream).
-        Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExLayeredPacked>( "VS_ExLayeredPacked.hlsl" )
-            .with_layout( VERTEX_INPUT_LAYOUT_PACKED_EX ) );
-
         Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExNodeLayered>( "VS_ExNodeLayered.hlsl" )
             .with_layout( VERTEX_INPUT_LAYOUT_PACKED_EX )  );
 
@@ -355,10 +351,6 @@ void ShaderRegistry::Build() {
 
         Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExCube>( "VS_ExCube.hlsl" )
             .with_layout( VERTEX_INPUT_LAYOUT_1 )  );
-
-        // Packed variant for VOB meshes in the cube shadow pass (36-byte vertex stream).
-        Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExCubePacked>( "VS_ExCubePacked.hlsl" )
-            .with_layout( VERTEX_INPUT_LAYOUT_PACKED_EX )  );
 
         Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExNodeCube>( "VS_ExNodeCube.hlsl" )
             .with_layout( VERTEX_INPUT_LAYOUT_PACKED_EX )  );
