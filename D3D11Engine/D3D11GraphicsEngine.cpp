@@ -2079,26 +2079,6 @@ XRESULT D3D11GraphicsEngine::DrawVertexBufferIndexed( D3D11VertexBuffer* vb,
     return XR_SUCCESS;
 }
 
-// Like DrawVertexBufferIndexed but binds the vertex buffer at the packed 36-byte stride
-// (ExVertexStructGPU). Used for non-instanced VOB draws that moved to VS_ExPacked.
-XRESULT D3D11GraphicsEngine::DrawVertexBufferIndexedPacked( D3D11VertexBuffer* vb,
-    D3D11VertexBuffer* ib,
-    unsigned int numIndices,
-    unsigned int indexOffset ) {
-    if ( vb ) {
-        UINT offset = 0;
-        UINT uStride = sizeof( ExVertexStructGPU );
-        Context->IASetVertexBuffers( 0, 1, vb->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
-        Context->IASetIndexBuffer( ib->GetVertexBuffer().Get(), VERTEX_INDEX_DXGI_FORMAT, 0 );
-    }
-
-    if ( numIndices ) {
-        Context->DrawIndexed( numIndices, indexOffset, 0 );
-        Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles += numIndices / 3;
-    }
-    return XR_SUCCESS;
-}
-
 XRESULT D3D11GraphicsEngine::DrawVertexBufferIndexedUINT(
     D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices,
     unsigned int indexOffset ) {
@@ -2201,26 +2181,6 @@ XRESULT D3D11GraphicsEngine::DrawVertexBufferInstancedIndexed(
 
         Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
             numIndices / 3;
-    }
-    return XR_SUCCESS;
-}
-
-// Like DrawVertexBufferInstancedIndexed but binds slot 0 at the packed 36-byte stride
-// (ExVertexStructGPU). Used for the layered-shadow VOB caster pass (VS_ExLayeredPacked).
-XRESULT D3D11GraphicsEngine::DrawVertexBufferInstancedIndexedPacked(
-    D3D11VertexBuffer* vb, D3D11VertexBuffer* ib,
-    unsigned int numIndices, unsigned int numInstances,
-    unsigned int indexOffset ) {
-    if ( vb ) {
-        UINT offset = 0;
-        UINT uStride = sizeof( ExVertexStructGPU );
-        Context->IASetVertexBuffers( 0, 1, vb->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
-        Context->IASetIndexBuffer( ib->GetVertexBuffer().Get(), VERTEX_INDEX_DXGI_FORMAT, 0 );
-    }
-
-    if ( numIndices ) {
-        Context->DrawIndexedInstanced( numIndices, numInstances, indexOffset, 0, 0 );
-        Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles += numIndices / 3;
     }
     return XR_SUCCESS;
 }
@@ -3595,7 +3555,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                         if ( isShadowPass ) {
                             for ( auto const& itm : mvi->Meshes ) {
                                 for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
-                                    Engine::GAPI->DrawMeshInfoPacked( itm.first, itm.second[m].get() );
+                                    Engine::GAPI->DrawMeshInfo( itm.first, itm.second[m].get() );
                                 }
                             }
                         } else {
@@ -3606,7 +3566,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                                         continue;
                                 }
                                 for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
-                                    Engine::GAPI->DrawMeshInfoPacked( itm.first, itm.second[m].get() );
+                                    Engine::GAPI->DrawMeshInfo( itm.first, itm.second[m].get() );
                                 }
                             }
                         }
@@ -3625,7 +3585,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 
                         for ( auto const& itm : mvi->Meshes ) {
                             for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
-                                Engine::GAPI->DrawMeshInfoPacked( itm.first, itm.second[m].get() );
+                                Engine::GAPI->DrawMeshInfo( itm.first, itm.second[m].get() );
                             }
                         }
                         continue;
@@ -3862,10 +3822,10 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                 }
             }
 
-            // Bind mesh VB to slot 0 (only when changed) - packed VOB vertex
+            // Bind mesh VB to slot 0 (only when changed)
             if ( mi->GetMeshVertexBuffer() != lastVB ) {
                 UINT vbOffset = 0;
-                UINT vbStride = sizeof( ExVertexStructGPU );
+                UINT vbStride = sizeof( ExVertexStruct );
                 Context->IASetVertexBuffers( 0, 1, mi->MeshVertexBuffer->GetVertexBuffer().GetAddressOf(), &vbStride, &vbOffset );
                 lastVB = mi->GetMeshVertexBuffer();
             }
@@ -5685,8 +5645,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
     std::list<SkeletalVobInfo*>* renderedMobs,
     std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache,
     unsigned int casterMask,
-    const std::move_only_function<bool(const zCVob*) const>& ignoreVob,
-    bool usesCubeGeometryShader ) {
+    const std::function<bool(zCVob*)>& ignoreVob ) {
 
     // Setup renderstates
     Engine::GAPI->GetRendererState().RasterizerState.SetDefault();
@@ -5810,10 +5769,6 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
             f.BuildCubemapFace( position, range, 0 );
             std::vector<WorldMeshSectionInfo*> sections = {};
             Engine::GAPI->CollectVisibleSections( sections, &f, true );
-
-            std::vector<WorldMeshInfo*> opaqueMeshes;
-            std::vector<std::pair<zCTexture*, WorldMeshInfo*>> alphaMeshes;
-
             for ( auto* section : sections ) {
                 drawnSections.emplace_back( section );
 
@@ -5822,98 +5777,55 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                     if ( section->FullStaticMesh )
                         Engine::GAPI->DrawMeshInfo( nullptr, section->FullStaticMesh );
                 } else {
-                    for ( auto&& meshInfoByKey : section->WorldMeshes ) {
+                    for ( auto&& meshInfoByKey = section->WorldMeshes.begin();
+                        meshInfoByKey != section->WorldMeshes.end(); ++meshInfoByKey ) {
                         // Check surface type
-                        if ( meshInfoByKey.first.Info->MaterialType != MaterialInfo::MT_None ) {
+                        if ( meshInfoByKey->first.Info->MaterialType != MaterialInfo::MT_None ) {
                             continue;
                         }
 
-                        WorldMeshInfo* mesh = meshInfoByKey.second;
-
-                        if ( meshInfoByKey.first.Material && meshInfoByKey.first.Material->GetTextureSingle()
-                            && (meshInfoByKey.first.Material->HasAlphaTest()
-                                || meshInfoByKey.first.Material->GetTextureSingle()->HasAlphaChannel()) ) {
-                            if ( alphaRef > 0.0f ) {
-                                zCTexture* aniTex = meshInfoByKey.first.Material->GetAniTexture();
-                                if ( aniTex && aniTex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
-                                    alphaMeshes.emplace_back( aniTex, mesh );
+                        bool isAlpha = false;
+                        // Bind texture
+                        if ( meshInfoByKey->first.Material && meshInfoByKey->first.Material->GetTexture() ) {
+                            if ( meshInfoByKey->first.Material->HasAlphaTest() || meshInfoByKey->first.Material->GetTexture()->HasAlphaChannel() ) {
+                                if ( alphaRef > 0.0f &&
+                                    meshInfoByKey->first.Material->GetTexture()->CacheIn( 0.6f ) ==
+                                    zRES_CACHED_IN ) {
+                                    void* engineTex = meshInfoByKey->first.Material->GetTexture()->GetSurface()->GetEngineTexture();
+                                    if ( lastTex != engineTex ) {
+                                        meshInfoByKey->first.Material->GetTexture()->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
+                                        lastTex = engineTex;
+                                    }
+                                    ActivePS->Apply();
+                                    isAlpha = true;
+                                } else
+                                    continue;  // Don't render if not loaded
+                            } else {
+                                if ( !linearDepth )  // Only unbind when not rendering linear
+                                    // depth
+                                {
+                                    // Unbind PS
+                                    Context->PSSetShader( nullptr, nullptr, 0 );
+                                } else {
+                                    if ( lastTex != WhiteTexture.get() ) {
+                                        WhiteTexture->BindToPixelShader( 0 );
+                                        lastTex = WhiteTexture.get();
+                                    }
                                 }
-                            } // else: texture not loaded yet, skip
-                            continue;
+                            }
+                        } else if ( linearDepth ) {
+                            if ( lastTex != WhiteTexture.get() ) {
+                                WhiteTexture->BindToPixelShader( 0 );
+                                lastTex = WhiteTexture.get();
+                            }
                         }
 
-                        opaqueMeshes.push_back( mesh );
+                        // Draw from wrapped mesh
+                        MeshInfo* mesh = meshInfoByKey->second;
+                        DrawVertexBufferIndexed( mesh->GetMeshVertexBuffer(),
+                            GetShadowAwareIndexBuffer( mesh, isAlpha ),
+                            GetShadowAwareIndexCount( mesh, isAlpha ) );
                     }
-                }
-            }
-
-            // Draw from the wrapped world mesh instead of rebinding each mesh's own buffer.
-            if ( !opaqueMeshes.empty() || !alphaMeshes.empty() ) {
-                MeshInfo* wrappedWorldMesh = Engine::GAPI->GetWrappedWorldMesh();
-                bool swappedVS = false;
-
-                // The wrapped mesh only exists in the packed 36-byte format, so this always needs a
-                // packed-decoding vertex shader - but which one depends on what the caller bound
-                // before calling DrawWorldAround: GS_Cubemap expects VS_ExCube's world-space output
-                // (no SV_Position - the GS reprojects per face), while the plain per-face path (no
-                // GS, a real view/proj already set via the camera replacement) expects VS_Ex's output
-                // (VS computes SV_Position itself). Neither has a position-only fast path here.
-                VShaderID packedWorldMeshVS = usesCubeGeometryShader ? VShaderID::VS_ExCubePacked : VShaderID::VS_ExPacked;
-
-                if ( !opaqueMeshes.empty() ) {
-                    if ( !linearDepth )  // Only unbind when not rendering linear depth
-                    {
-                        // Unbind PS
-                        Context->PSSetShader( nullptr, nullptr, 0 );
-                    } else {
-                        if ( lastTex != WhiteTexture.get() ) {
-                            WhiteTexture->BindToPixelShader( 0 );
-                            lastTex = WhiteTexture.get();
-                        }
-                    }
-
-                    UINT zeroOffset = 0;
-                    SetActiveVertexShader( packedWorldMeshVS );
-                    ActiveVS->Apply();
-                    swappedVS = true;
-                    UINT uStride = sizeof( ExVertexStructGPU );
-                    Context->IASetVertexBuffers( 0, 1, wrappedWorldMesh->MeshVertexBuffer->GetVertexBuffer().GetAddressOf(), &uStride, &zeroOffset );
-
-                    Context->IASetIndexBuffer( wrappedWorldMesh->MeshShadowIndexBuffer->GetVertexBuffer().Get(), DXGI_FORMAT_R32_UINT, 0 );
-
-                    for ( auto* mesh : opaqueMeshes ) {
-                        DrawVertexBufferIndexedUINT( nullptr, nullptr,
-                            GetShadowAwareIndexCount( mesh, false ),
-                            mesh->BaseShadowIndexLocation );
-                    }
-                }
-
-                if ( !alphaMeshes.empty() ) {
-                    std::sort( alphaMeshes.begin(), alphaMeshes.end(),
-                        []( const auto& a, const auto& b ) { return a.first < b.first; } );
-
-                    SetActiveVertexShader( packedWorldMeshVS );
-                    ActiveVS->Apply();
-                    swappedVS = true;
-                    BindWrappedWorldMeshPacked( wrappedWorldMesh );
-                    ActivePS->Apply();
-
-                    for ( const auto& [tex, mesh] : alphaMeshes ) {
-                        void* engineTex = tex->GetSurface()->GetEngineTexture();
-                        if ( lastTex != engineTex ) {
-                            tex->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
-                            lastTex = engineTex;
-                        }
-
-                        DrawVertexBufferIndexedUINT( nullptr, nullptr,
-                            GetShadowAwareIndexCount( mesh, true ),
-                            mesh->BaseIndexLocation );
-                    }
-                }
-
-                if ( swappedVS ) {
-                    SetActiveVertexShader( packedWorldMeshVS );
-                    ActiveVS->Apply();
                 }
             }
         }
@@ -5955,11 +5867,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
         D3D11Texture* lastBoundTexture = nullptr;
         std::list<VobInfo*>& rl = renderedVobs != nullptr ? *renderedVobs : rndVob;
         VS_ExConstantBuffer_PerInstance cb;
-
-        // VOB meshes are packed (36-byte) -> use the packed cube shader for these draws.
-        SetActiveVertexShader( VShaderID::VS_ExCubePacked );
-        ActiveVS->Apply();
-
+        
         for ( auto const& vobInfo : rl ) {
             // Bind per-instance buffer
             vobInfo->UpdateVobConstantBuffer(cb);
@@ -5991,7 +5899,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                 }
                 for ( auto const& meshInfo : materialMesh.second ) {
                     const auto mesh = meshInfo.get();
-                    DrawVertexBufferIndexedPacked(
+                    DrawVertexBufferIndexed(
                         meshInfo->GetMeshVertexBuffer(),
                         GetShadowAwareIndexBuffer( mesh, isAlpha ),
                         GetShadowAwareIndexCount( mesh, isAlpha ) );
@@ -6035,7 +5943,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                     continue;
                 }
                 
-                if (ignoreVob != nullptr && ignoreVob(it->Vob)) {
+                if (ignoreVob && ignoreVob(it->Vob)) {
                     continue;
                 }
 
@@ -6091,7 +5999,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
     std::list<SkeletalVobInfo*>* renderedMobs,
     std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache,
     unsigned int casterMask,
-    const std::move_only_function<bool(const zCVob*) const>& ignoreVob ) {
+    const std::function<bool(zCVob*)>& ignoreVob ) {
 
     // Setup renderstates
     Engine::GAPI->GetRendererState().RasterizerState.SetDefault();
@@ -6132,7 +6040,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
     ocb.OS_AmbientColor = float3( 1, 1, 1 );
     ActivePS->UpdateBuffer("POS_MaterialInfo", &ocb, sizeof(ocb));
 
-    float3 pos; XMStoreFloat3( &pos, position );
+    float3 pos; XMStoreFloat3( pos.toXMFLOAT3(), position );
     INT2 s = WorldConverter::GetSectionOfPos( pos );
 
     DistortionTexture->BindToPixelShader( 0 );
@@ -6216,10 +6124,6 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
             f.BuildCubemapFace( position, range, 0 );
             std::vector<WorldMeshSectionInfo*> sections={};
             Engine::GAPI->CollectVisibleSections( sections, &f, true );
-
-            std::vector<WorldMeshInfo*> opaqueMeshes;
-            std::vector<std::pair<zCTexture*, WorldMeshInfo*>> alphaMeshes;
-
             for ( auto section : sections ) {
                 drawnSections.emplace_back( section );
 
@@ -6228,100 +6132,59 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                     if ( section->FullStaticMesh )
                         Engine::GAPI->DrawMeshInfo( nullptr, section->FullStaticMesh );
                 } else {
-                    for ( auto&& meshInfoByKey : section->WorldMeshes ) {
+                    for ( auto&& meshInfoByKey = section->WorldMeshes.begin();
+                        meshInfoByKey != section->WorldMeshes.end(); ++meshInfoByKey ) {
                         // Check surface type
-                        if ( meshInfoByKey.first.Info->MaterialType != MaterialInfo::MT_None ) {
+                        if ( meshInfoByKey->first.Info->MaterialType != MaterialInfo::MT_None ) {
                             continue;
                         }
 
-                        WorldMeshInfo* mesh = meshInfoByKey.second;
+                        bool isAlpha = false;
+                        // Bind texture
+                        if ( meshInfoByKey->first.Material && meshInfoByKey->first.Material->GetTexture() ) {
+                            if ( meshInfoByKey->first.Material ->HasAlphaTest() || meshInfoByKey->first.Material->GetTexture()->HasAlphaChannel()) {
+                                if ( alphaRef > 0.0f &&
+                                    meshInfoByKey->first.Material->GetTexture()->CacheIn( 0.6f ) ==
+                                    zRES_CACHED_IN ) {
 
-                        if ( meshInfoByKey.first.Material && meshInfoByKey.first.Material->GetTextureSingle()
-                            && (meshInfoByKey.first.Material->HasAlphaTest()
-                                || meshInfoByKey.first.Material->GetTextureSingle()->HasAlphaChannel()) ) {
-                            if ( alphaRef > 0.0f ) {
-                                zCTexture* aniTex = meshInfoByKey.first.Material->GetAniTexture();
-                                if ( aniTex && aniTex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
-                                    alphaMeshes.emplace_back( aniTex, mesh );
+                                    lastTex = meshInfoByKey->first.Material->GetTexture()->GetSurface()->GetEngineTexture();
+                                    meshInfoByKey->first.Material->GetTexture()->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
+                                    ActivePS->Apply();
+                                    isAlpha = true;
+                                } else
+                                    continue;  // Don't render if not loaded
+                            } else {
+                                if ( !linearDepth )  // Only unbind when not rendering linear
+                                    // depth
+                                {
+                                    // Unbind PS
+                                    Context->PSSetShader( nullptr, nullptr, 0 );
+                                } else {
+                                    if ( lastTex != WhiteTexture.get() ) {
+                                        WhiteTexture->BindToPixelShader( 0 );
+                                        lastTex = WhiteTexture.get();
+                                    }
                                 }
-                            } // else: texture not loaded yet, skip
-                            continue;
+                            }
+                        } else if ( linearDepth ) {
+                            if ( lastTex != WhiteTexture.get() ) {
+                                WhiteTexture->BindToPixelShader( 0 );
+                                lastTex = WhiteTexture.get();
+                            }
                         }
 
-                        opaqueMeshes.push_back( mesh );
+                        // Draw from wrapped mesh
+                        MeshInfo* mesh = meshInfoByKey->second;
+                        DrawVertexBufferInstancedIndexed( mesh->GetMeshVertexBuffer(),
+                            GetShadowAwareIndexBuffer( mesh, isAlpha ),
+                            GetShadowAwareIndexCount( mesh, isAlpha ),
+                            6 );
                     }
-                }
-            }
-
-            // Draw from the wrapped world mesh instead of rebinding each mesh's own buffer.
-            if ( !opaqueMeshes.empty() || !alphaMeshes.empty() ) {
-                MeshInfo* wrappedWorldMesh = Engine::GAPI->GetWrappedWorldMesh();
-                bool swappedVS = false;
-
-                if ( !opaqueMeshes.empty() ) {
-                    if ( !linearDepth )  // Only unbind when not rendering linear depth
-                    {
-                        // Unbind PS
-                        Context->PSSetShader( nullptr, nullptr, 0 );
-                    } else {
-                        if ( lastTex != WhiteTexture.get() ) {
-                            WhiteTexture->BindToPixelShader( 0 );
-                            lastTex = WhiteTexture.get();
-                        }
-                    }
-
-                    // The hardware layered-rendering shaders write SV_RenderTargetArrayIndex
-                    // themselves (there's no GS to do it), so - like the GS_Cubemap path - there's
-                    // no position-only fast path here; always decode the packed full stream.
-                    UINT zeroOffset = 0;
-                    SetActiveVertexShader( VShaderID::VS_ExLayeredPacked );
-                    ActiveVS->Apply();
-                    swappedVS = true;
-                    UINT uStride = sizeof( ExVertexStructGPU );
-                    Context->IASetVertexBuffers( 0, 1, wrappedWorldMesh->MeshVertexBuffer->GetVertexBuffer().GetAddressOf(), &uStride, &zeroOffset );
-
-                    Context->IASetIndexBuffer( wrappedWorldMesh->MeshShadowIndexBuffer->GetVertexBuffer().Get(), DXGI_FORMAT_R32_UINT, 0 );
-
-                    for ( auto* mesh : opaqueMeshes ) {
-                        DrawVertexBufferInstancedIndexedUINT( nullptr, nullptr,
-                            GetShadowAwareIndexCount( mesh, false ),
-                            6,
-                            mesh->BaseShadowIndexLocation );
-                    }
-                }
-
-                if ( !alphaMeshes.empty() ) {
-                    std::sort( alphaMeshes.begin(), alphaMeshes.end(),
-                        []( const auto& a, const auto& b ) { return a.first < b.first; } );
-
-                    SetActiveVertexShader( VShaderID::VS_ExLayeredPacked );
-                    ActiveVS->Apply();
-                    swappedVS = true;
-                    BindWrappedWorldMeshPacked( wrappedWorldMesh );
-                    ActivePS->Apply();
-
-                    for ( const auto& [tex, mesh] : alphaMeshes ) {
-                        void* engineTex = tex->GetSurface()->GetEngineTexture();
-                        if ( lastTex != engineTex ) {
-                            tex->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
-                            lastTex = engineTex;
-                        }
-
-                        DrawVertexBufferInstancedIndexedUINT( nullptr, nullptr,
-                            GetShadowAwareIndexCount( mesh, true ),
-                            6,
-                            mesh->BaseIndexLocation );
-                    }
-                }
-
-                if ( swappedVS ) {
-                    SetActiveVertexShader( VShaderID::VS_Ex );
-                    ActiveVS->Apply();
                 }
             }
         }
     }
-
+    
     if ( drawVobCasters && Engine::GAPI->GetRendererState().RendererSettings.DrawVOBs ) {
         // Draw visible vobs here
         std::list<VobInfo*> rndVob;
@@ -6348,7 +6211,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                         continue;
                     }
                 
-                    if (ignoreVob != nullptr && ignoreVob(it->Vob)) {
+                    if (ignoreVob && ignoreVob(it->Vob)) {
                         continue;
                     }
                     rndVob.emplace_back( it );
@@ -6363,10 +6226,6 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
         auto _ = Engine::GraphicsEngine->RecordGraphicsEvent( GE_NAME( "Draw vobs (layered)" ) );
 
         VS_ExConstantBuffer_PerInstance cb;
-
-        // VOB meshes are packed (36-byte) -> use the packed layered shader for these draws.
-        SetActiveVertexShader( VShaderID::VS_ExLayeredPacked );
-        ActiveVS->Apply();
 
         D3D11Texture* lastBoundTexture = nullptr;
         for ( auto const& vobInfo : rl ) {
@@ -6400,7 +6259,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                 for ( auto const& meshInfo : materialMesh.second ) {
                     const auto mesh = meshInfo.get();
 
-                    DrawVertexBufferInstancedIndexedPacked(
+                    DrawVertexBufferInstancedIndexed(
                         meshInfo->GetMeshVertexBuffer(),
                         GetShadowAwareIndexBuffer( mesh, isAlpha ),
                         GetShadowAwareIndexCount( mesh, isAlpha ),
@@ -6445,7 +6304,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                     continue;
                 }
                 
-                if (ignoreVob != nullptr && ignoreVob(it->Vob)) {
+                if (ignoreVob && ignoreVob(it->Vob)) {
                     continue;
                 }
 
@@ -6860,7 +6719,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
     const XMMATRIX identityMatrix = XMMatrixIdentity();
     ActiveVS->UpdateBuffer("Matrices_PerInstances", &identityMatrix, sizeof(identityMatrix));
 
-    float3 fPosition; XMStoreFloat3( &fPosition, position );
+    float3 fPosition; XMStoreFloat3( fPosition.toXMFLOAT3(), position );
     DistortionTexture->BindToPixelShader( 0 );
 
     BindDynamicCBToPixelShader( ActivePS->GetInputIndex( "DIST_Distance" ), InfiniteRangeCB );
@@ -7151,7 +7010,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             const auto ib = GetShadowAwareIndexBuffer( mi, isAlpha );
 
             UINT offset[] = { 0 };
-            UINT uStride[] = { sizeof( ExVertexStructGPU ) };  // packed VOB vertex
+            UINT uStride[] = { sizeof( ExVertexStruct ) };
             ID3D11Buffer* buffers[1] = {
                 vb->GetVertexBuffer().Get()
             };
@@ -7237,7 +7096,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
         if ( !Engine::GAPI->GetVegetationBoxes().empty()) {
             const float drawRadius = Engine::GAPI->GetRendererState().RendererSettings.OutdoorSmallVobDrawRadius;
-            const XMFLOAT3 camPos = fPosition;
+            const XMFLOAT3 camPos = *fPosition.toXMFLOAT3();
             
             bool inView = false;
             
@@ -7937,7 +7796,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                     DrawInstanced( meshInfo->GetMeshVertexBuffer(), meshInfo->GetMeshIndexBuffer(),
                         meshInfo->Indices.size(), instancingBuffer,
                         sizeof( VobInstanceInfo ), cachedVisual->Instances.size(),
-                        sizeof( ExVertexStructGPU ), cachedVisual->StartInstanceNum, 0,
+                        sizeof( ExVertexStruct ), cachedVisual->StartInstanceNum, 0,
                         cache.MainVobInstancingBufferOffset );
                 }
             }
@@ -8156,7 +8015,7 @@ XRESULT D3D11GraphicsEngine::DrawFrameAlphaMeshes()
             // Draw batch
             DrawInstanced( mi->GetMeshVertexBuffer(), mi->GetMeshIndexBuffer(), mi->Indices.size(),
                 instancingBuffer, sizeof( VobInstanceInfo ),
-                instances.size(), sizeof( ExVertexStructGPU ),
+                instances.size(), sizeof( ExVertexStruct ),
                 alphaMesh.StartInstanceNum, 0,
                 m_FrameGeometryCache.MainVobInstancingBufferOffset );
 
@@ -8494,7 +8353,7 @@ void XM_CALLCONV D3D11GraphicsEngine::RenderShadowCube(
     std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache,
     bool clearDepth,
     unsigned int casterMask,
-    const std::move_only_function<bool( const zCVob* ) const>& ignoreVob ) {
+    const std::function<bool(zCVob*)>& ignoreVob ) {
     
     ShadowMaps->RenderShadowCube( position, range, targetCube, face, debugRTV,
         cullFront, indoor, noNPCs, renderedVobs, renderedMobs, worldMeshCache, clearDepth, casterMask,
@@ -8560,7 +8419,7 @@ void D3D11GraphicsEngine::DrawVobSingle( VobInfo* vob, zCCamera& camera ) {
     GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
 
     SetActivePixelShader( PShaderID::PS_Preview_Textured );
-    SetActiveVertexShader( VShaderID::VS_ExPacked );  // VOB meshes are packed (36-byte)
+    SetActiveVertexShader( VShaderID::VS_Ex );
 
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
@@ -8580,8 +8439,8 @@ void D3D11GraphicsEngine::DrawVobSingle( VobInfo* vob, zCCamera& camera ) {
             continue;
         }
         for ( auto const& itm2nd : itm.second ) {
-            // Draw instances (packed 36-byte VOB vertex)
-            DrawVertexBufferIndexedPacked(
+            // Draw instances
+            DrawVertexBufferIndexed(
                 itm2nd->GetMeshVertexBuffer(), itm2nd->GetMeshIndexBuffer(),
                 itm2nd->Indices.size() );
         }
@@ -9149,7 +9008,7 @@ void D3D11GraphicsEngine::DrawQuadMarks() {
     for ( auto const& it : quadMarks ) {
         if ( !it.first->GetConnectedVob() ) continue;
 
-        if ( XMVector3Greater(XMVector3LengthSq( camPos - XMLoadFloat3( &it.second.Position ) ), vVfxRadiusSq) ) {
+        if ( XMVector3Greater(XMVector3LengthSq( camPos - XMLoadFloat3( it.second.Position.toXMFLOAT3() ) ), vVfxRadiusSq) ) {
             continue;
         }
 
@@ -9457,7 +9316,7 @@ void D3D11GraphicsEngine::DrawFrameParticleMeshes( std::unordered_map<zCVob*, st
     SetDefaultStates();
 
     SetActivePixelShader( PShaderID::PS_Simple );
-    SetActiveVertexShader( VShaderID::VS_ExPacked );  // particle prog meshes are packed (36-byte)
+    SetActiveVertexShader( VShaderID::VS_Ex );
 
     GothicRendererState& state = Engine::GAPI->GetRendererState();
     state.DepthState.DepthWriteEnabled = false;
@@ -9544,8 +9403,8 @@ void D3D11GraphicsEngine::DrawFrameParticleMeshes( std::unordered_map<zCVob*, st
             for ( auto const& itm2nd : itm.second ) {
                 if (itm2nd->GetMeshVertexBuffer() != lastMeshBuffer
                     || itm2nd->GetMeshIndexBuffer() != lastIndexBuffer) {
-                    // Bind them (packed 36-byte VOB vertex)
-                    DrawVertexBufferIndexedPacked(
+                    // Bind them 
+                    DrawVertexBufferIndexed(
                         itm2nd->GetMeshVertexBuffer(), itm2nd->GetMeshIndexBuffer(),
                         0 );
                     lastMeshBuffer = itm2nd->GetMeshVertexBuffer();

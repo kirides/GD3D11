@@ -14,15 +14,15 @@
 
 const float LIGHT_COLORCHANGE_POS_MOD = 0.1f;
 
+static std::unordered_set<zCVob*> vobsToExclude = {};
+static std::function excludeVobsToExclude = []( zCVob* vob )
+{
+    return vobsToExclude.contains(vob);
+};
+
 namespace
 {
-    std::unordered_set<const zCVob*> vobsToExclude = {};
-    std::move_only_function<bool(const zCVob*) const> excludeVobsToExclude = []( const zCVob* vob )
-    {
-        return vobsToExclude.contains(vob);
-    };
-    
-    void CollectVobTreeToExclude(const zCVob* vob) {
+    void CollectVobTreeToExclude(zCVob* vob) {
         while (vob && vobsToExclude.emplace(vob).second) {
             if (auto vfx = vob->As<oCVisualFX>()) {
                 if (auto origin = vfx->GetOrigin()) {
@@ -47,28 +47,28 @@ static void SetupVobsToExclude(const VobLightInfo* LightInfo)
     vobsToExclude.clear();
     
     CollectVobTreeToExclude(LightInfo->Vob);
-}
-
-static bool GetHasOriginVob( VobLightInfo* info ) {
-    if ( !info->IsPFXVobLight ) {
-        zCVob* vob = info->Vob;
-        while ( auto parent = vob->GetVobParent() ) {
-            if ( auto visFx = parent->As<oCVisualFX>() ) {
-                if ( auto origin = visFx->GetOrigin(); origin && origin->As<oCItem>() ) {
-                    return true;
-                }
-            } else if ( parent->As<oCItem>() ) {
-                return true;
-            }
-            vob = parent;
-        }
-    }
-    return false;
+    CollectVobTreeToExclude(LightInfo->OriginVob);
 }
 
 D3D11PointLight::D3D11PointLight( VobLightInfo* info, bool dynamicLight ) {
     LightInfo = info;
     DynamicLight = dynamicLight;
+    
+    if ( !info->IsPFXVobLight ) {
+        zCVob* vob = info->Vob;
+        while (auto parent = vob->GetVobParent()) {
+            if (auto visFx = parent->As<oCVisualFX>()) {
+                if (auto origin = visFx->GetOrigin(); origin && origin->As<oCItem>()) {
+                    info->OriginVob = info->OriginVob ? info->OriginVob : origin;
+                    break;
+                }
+            } else if ( parent->As<oCItem>() ) {
+                info->OriginVob = info->OriginVob ? info->OriginVob : info->Vob;
+                break;
+            }
+            vob = parent;
+        }
+    }
     
     // Ensure this light is actually in the VobLightMap
     // some lights don't seem to be in here!
@@ -103,7 +103,7 @@ D3D11PointLight::~D3D11PointLight() {
     ReleaseShadowMap();
 
     for ( auto& [k, mesh] : WorldMeshCache ) {
-        SAFE_DELETE( mesh )
+        SAFE_DELETE( mesh );
     }
 }
 
@@ -263,7 +263,7 @@ void D3D11PointLight::RenderStaticShadowPass( RenderToDepthStencilBuffer& target
         ? SHADOW_CASTER_WORLD // static light? only draw world mesh.
         : SHADOW_CASTER_WORLD | SHADOW_CASTER_VOBS | SHADOW_CASTER_MOBS;
 
-    if ( GetHasOriginVob( LightInfo ) ) {
+    if (LightInfo->OriginVob) {
         SetupVobsToExclude(LightInfo);
         engine->RenderShadowCube( LightInfo->Vob->GetPositionWorldXM(), range, target, nullptr, nullptr, false, LightInfo->IsIndoorVob, false,
             &VobCache, &SkeletalVobCache, wc, clearDepth, staticCasterMask, excludeVobsToExclude );
@@ -279,7 +279,7 @@ void D3D11PointLight::RenderAnimatedShadowPass( RenderToDepthStencilBuffer& targ
     const float range = LightInfo->Vob->GetLightRange();
 
     const unsigned int animatedCasterMask = SHADOW_CASTER_ANIMATED;
-    if ( GetHasOriginVob( LightInfo ) ) {
+    if (LightInfo->OriginVob) {
         SetupVobsToExclude(LightInfo);
         engine->RenderShadowCube( LightInfo->Vob->GetPositionWorldXM(), range, target, nullptr, nullptr, false, LightInfo->IsIndoorVob, false,
             nullptr, nullptr, nullptr, clearDepth, animatedCasterMask, excludeVobsToExclude );
@@ -533,7 +533,7 @@ void D3D11PointLight::RenderFullCubemap() {
             wc = nullptr;
         }
 
-        if ( GetHasOriginVob( LightInfo ) ) {
+        if (LightInfo->OriginVob) {
             SetupVobsToExclude(LightInfo);
 
             engine->RenderShadowCube( LightInfo->Vob->GetPositionWorldXM(), LightInfo->Vob->GetLightRange(), *activeTarget,

@@ -3,7 +3,6 @@
 //--------------------------------------------------------------------------------------
 
 #include "Globals_VS_ExConstants.h"
-#include "VertexPacking.h"
 
 cbuffer Matrices_PerFrame : register( b0 )
 {
@@ -28,8 +27,7 @@ struct VS_INPUT
 {
     uint instanceID : SV_InstanceID;
 	float3 vPosition : POSITION;
-	float2 vNormalOct : NORMAL;    // octahedral-encoded (R16G16_SNORM)
-	float4 vTangent : TANGENT;     // R10G10B10A2 (unused here, present for layout match)
+	float3 vNormal : NORMAL;
 	float2 vTex1 : TEXCOORD0;
 	float2 vTex2 : TEXCOORD1;
 	float4 vDiffuse : DIFFUSE;
@@ -52,17 +50,15 @@ struct VS_OUTPUT
 VS_OUTPUT VSMain( VS_INPUT Input )
 {
 	VS_OUTPUT Output;
-
-	float3 vNormal = DecodeOctNormal( Input.vNormalOct );
-
-	float3 positionWorld = mul(float4((Input.vPosition + cbInstance.M_Fatness * vNormal) * cbInstance.M_Scaling, 1), cbInstance.M_World).xyz;
-
+	
+	float3 positionWorld = mul(float4((Input.vPosition + cbInstance.M_Fatness * Input.vNormal) * cbInstance.M_Scaling, 1), cbInstance.M_World).xyz;
+	
     Output.RTIndex = Input.instanceID;
     Output.vPosition = mul(float4(positionWorld, 1), PCR_ViewProj[Input.instanceID]);
 	Output.vTexcoord2 = Input.vTex2;
 	Output.vTexcoord = Input.vTex1;
 	Output.vDiffuse  = cbInstance.M_Color;
-    Output.vNormalVS = mul(vNormal, (float3x3)mul(cbInstance.M_World, PCR_View[Input.instanceID]));
+    Output.vNormalVS = mul(Input.vNormal, (float3x3)mul(cbInstance.M_World, PCR_View[Input.instanceID]));
     Output.vViewPosition = mul(float4(positionWorld, 1), PCR_View[Input.instanceID]);
 	
 	return Output;

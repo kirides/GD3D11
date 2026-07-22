@@ -169,9 +169,9 @@ public:
 
 #ifdef DEBUG_SHOW_COLLISION
             for ( int i = 0; i < numFound; i++ ) {
-                Engine::GraphicsEngine->GetLineRenderer()->AddTriangle( polyList[i]->getVertices()[0]->Position,
-                    polyList[i]->getVertices()[1]->Position,
-                    polyList[i]->getVertices()[2]->Position );
+                Engine::GraphicsEngine->GetLineRenderer()->AddTriangle( *polyList[i]->getVertices()[0]->Position.toXMFLOAT3(),
+                    *polyList[i]->getVertices()[1]->Position.toXMFLOAT3(),
+                    *polyList[i]->getVertices()[2]->Position.toXMFLOAT3() );
             }
 
 

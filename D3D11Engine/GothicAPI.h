@@ -374,9 +374,9 @@ public:
     void DrawWorldMeshNaive();
 
     /** Draws a skeletal mesh-vob */
-    void DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool updateState = true, const std::move_only_function<bool( const zCVob* ) const>& ignoreVob = nullptr );
+    void DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool updateState = true, const std::function<bool(zCVob*)>& ignoreVob = nullptr );
 
-    void DrawSkeletalMeshVob_Layered( SkeletalVobInfo* vi, float distance, bool updateState = true, const std::move_only_function<bool( const zCVob* ) const>& ignoreVob = nullptr );
+    void DrawSkeletalMeshVob_Layered( SkeletalVobInfo* vi, float distance, bool updateState = true, const std::function<bool(zCVob*)>& ignoreVob = nullptr );
 
     void DrawTransparencyVobs();
     void DrawSkeletalVN();
@@ -403,9 +403,6 @@ public:
     /** Draws a MeshInfo */
     void DrawMeshInfo( zCMaterial* mat, MeshInfo* msh );
     void DrawMeshInfo_Layered( zCMaterial* mat, MeshInfo* msh );
-    // Packed (36-byte ExVertexStructGPU) variants for VOB/node-attachment meshes.
-    void DrawMeshInfoPacked( zCMaterial* mat, MeshInfo* msh );
-    void DrawMeshInfo_LayeredPacked( zCMaterial* mat, MeshInfo* msh );
 
     /** Draws a zCParticleFX */
     void DrawParticleFX( zCVob* source, zCParticleFX* fx, ParticleFrameData& data );

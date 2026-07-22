@@ -379,18 +379,9 @@ public:
         }
         return nullptr;
     }
-    
-    template<HasGetStaticClassDef T>
-    const T* As() const {
-        const zCClassDef* classDef = reinterpret_cast<const zCObject*>(this)->_GetClassDef();
-        if ( CheckInheritance( classDef, T::GetStaticClassDef() ) ) {
-            return reinterpret_cast<const T*>(this);
-        }
-        return nullptr;
-    }
 protected:
 
-    bool CheckInheritance( const zCClassDef* def, const zCClassDef* target ) const {
+    bool CheckInheritance( const zCClassDef* def, const zCClassDef* target ) {
         while ( def ) {
             if ( def == target ) {
                 return true;

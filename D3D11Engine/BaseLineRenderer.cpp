@@ -151,7 +151,7 @@ void BaseLineRenderer::AddWireframeMesh( const std::vector<ExVertexStruct>& vert
             if ( world ) {
                 XMStoreFloat3( &vx[v], XMVector3TransformCoord( XMVectorSet( vertices[indices[i + v]].Position.x, vertices[indices[i + v]].Position.y, vertices[indices[i + v]].Position.z, 0.0f ), XMLoadFloat4x4( world ) ) );
             } else
-                vx[v] = vertices[indices[i + v]].Position;
+                vx[v] = *vertices[indices[i + v]].Position.toXMFLOAT3();
         }
 
         AddTriangle( vx[0], vx[1], vx[2], color );

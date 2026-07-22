@@ -135,8 +135,6 @@ public:
     /** Draws a vertexbuffer, non-indexed */
     XRESULT DrawVertexBuffer( D3D11VertexBuffer* vb, unsigned int numVertices, unsigned int stride = sizeof( ExVertexStruct ) ) override;
     XRESULT DrawVertexBufferIndexed( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int indexOffset = 0 ) override;
-    // Non-instanced VOB draw at the packed 36-byte stride (ExVertexStructGPU); pairs with VS_ExPacked.
-    XRESULT DrawVertexBufferIndexedPacked( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int indexOffset = 0 );
     XRESULT DrawVertexBufferIndexedUINT( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int indexOffset ) override;
 
     /** Binds the wrapped world mesh's packed (36-byte / ExVertexStructGPU) vertex buffer + its
@@ -148,8 +146,6 @@ public:
     /** Draws a vertexbuffer, instanced */
     XRESULT DrawVertexBufferInstanced( D3D11VertexBuffer* vb, unsigned int numVertices, unsigned int numInstances, unsigned int stride = sizeof( ExVertexStruct ) );
     XRESULT DrawVertexBufferInstancedIndexed( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int numInstances, unsigned int indexOffset = 0 );
-    // Packed 36-byte (ExVertexStructGPU) variant for the layered-shadow VOB caster pass.
-    XRESULT DrawVertexBufferInstancedIndexedPacked( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int numInstances, unsigned int indexOffset = 0 );
     XRESULT DrawVertexBufferInstancedIndexedUINT( D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices, unsigned int numInstances, unsigned int indexOffset );
 
     /** Draws a vertexbuffer, non-indexed, binding the FF-Pipe values */
@@ -271,8 +267,7 @@ public:
                                       bool noNPCs = false,
                                       std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache = nullptr,
                                       unsigned int casterMask = SHADOW_CASTER_ALL,
-                                      const std::move_only_function<bool(const zCVob*) const>& ignoreVob = nullptr,
-                                      bool usesCubeGeometryShader = false );
+                                      const std::function<bool(zCVob*)>& ignoreVob = nullptr );
     void XM_CALLCONV DrawWorldAround_Layered( FXMVECTOR position,
         float range,
         bool cullFront = true,
@@ -280,7 +275,7 @@ public:
         bool noNPCs = false,
         std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache = nullptr,
         unsigned int casterMask = SHADOW_CASTER_ALL,
-        const std::move_only_function<bool(const zCVob*) const>& ignoreVob = nullptr );
+        const std::function<bool(zCVob*)>& ignoreVob = nullptr );
 
     /** Update morph mesh visual */
     void UpdateMorphMeshVisual();
@@ -313,7 +308,7 @@ public:
         std::list<VobInfo*>* renderedVobs = nullptr, std::list<SkeletalVobInfo*>* renderedMobs = nullptr, std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache = nullptr,
         bool clearDepth = true,
         unsigned int casterMask = SHADOW_CASTER_ALL,
-        const std::move_only_function<bool( const zCVob* ) const>& ignoreVob = nullptr);
+        const std::function<bool(zCVob*)>& ignoreVob = nullptr);
 
     /** Updates the occlusion for the bsp-tree */
     void UpdateOcclusion();

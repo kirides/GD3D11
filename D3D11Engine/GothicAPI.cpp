@@ -8,7 +8,6 @@
 #include "BaseGraphicsEngine.h"
 #include "zCPolygon.h"
 #include "WorldConverter.h"
-#include "VertexPacking.h"
 #include "HookedFunctions.h"
 #include "zCMaterial.h"
 #include "zCTexture.h"
@@ -1975,35 +1974,6 @@ void GothicAPI::DrawMeshInfo_Layered( zCMaterial* mat, MeshInfo* msh ) {
     }
 }
 
-/** DrawMeshInfo for packed (36-byte ExVertexStructGPU) VOB/node-attachment meshes. */
-void GothicAPI::DrawMeshInfoPacked( zCMaterial* mat, MeshInfo* msh ) {
-    if ( mat ) {
-        if ( mat->GetAlphaFunc() == zRND_ALPHA_FUNC_TEST )
-            RendererState.GraphicsState.FF_GSwitches |= GSWITCH_ALPHAREF;
-        else
-            RendererState.GraphicsState.FF_GSwitches &= ~GSWITCH_ALPHAREF;
-    }
-
-    D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
-    if ( msh->MeshIndexBuffer ) {
-        g->DrawVertexBufferIndexedPacked( msh->GetMeshVertexBuffer(), msh->GetMeshIndexBuffer(), msh->Indices.size() );
-    }
-}
-
-void GothicAPI::DrawMeshInfo_LayeredPacked( zCMaterial* mat, MeshInfo* msh ) {
-    if ( mat ) {
-        if ( mat->GetAlphaFunc() == zRND_ALPHA_FUNC_TEST )
-            RendererState.GraphicsState.FF_GSwitches |= GSWITCH_ALPHAREF;
-        else
-            RendererState.GraphicsState.FF_GSwitches &= ~GSWITCH_ALPHAREF;
-    }
-
-    D3D11GraphicsEngine* g = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
-    if ( msh->MeshIndexBuffer ) {
-        g->DrawVertexBufferInstancedIndexedPacked( msh->GetMeshVertexBuffer(), msh->GetMeshIndexBuffer(), msh->Indices.size(), 6 );
-    }
-}
-
 /** Locks the resource CriticalSection */
 void GothicAPI::EnterResourceCriticalSection() {
 
@@ -2531,9 +2501,9 @@ void GothicAPI::UpdateCompressBackBuffer() {
 }
 
 /** Draws a skeletal mesh-vob */
-void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool updateState, const std::move_only_function<bool(const zCVob*) const>& ignoreVob ) {
+void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool updateState, const std::function<bool(zCVob*)>& ignoreVob ) {
 
-    if (ignoreVob != nullptr && ignoreVob(vi->Vob)){
+    if (ignoreVob && ignoreVob(vi->Vob)){
         // Dont draw main mesh if vob is ignored.
         return;
     }
@@ -2646,7 +2616,7 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
             continue; // Happens when you pull your sword for example
 
         if (npc
-            && ignoreVob != nullptr
+            && ignoreVob
             && node->ProtoNode
             && node->ProtoNode->NodeName.Length()) {
             if (auto slot = npc->GetInvSlot(node->ProtoNode->NodeName)) {
@@ -2768,7 +2738,7 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
 
                         // Go through all meshes using that material
                         for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
-                            DrawMeshInfoPacked( itm.first, itm.second[m].get() );
+                            DrawMeshInfo( itm.first, itm.second[m].get() );
                         }
                     }
                 } else {
@@ -2780,7 +2750,7 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
 
                         // Go through all meshes using that material
                         for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
-                            DrawMeshInfoPacked( itm.first, itm.second[m].get() );
+                            DrawMeshInfo( itm.first, itm.second[m].get() );
                         }
                     }
                 }
@@ -2791,8 +2761,8 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
     RendererState.RendererInfo.FrameDrawnVobs++;
 }
 
-void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distance, bool updateState, const std::move_only_function<bool(const zCVob*) const>& ignoreVob ) {
-    if (ignoreVob != nullptr && ignoreVob(vi->Vob)){
+void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distance, bool updateState, const std::function<bool(zCVob*)>& ignoreVob ) {
+    if (ignoreVob && ignoreVob(vi->Vob)){
         // Dont draw main mesh if vob is ignored.
         return;
     }
@@ -2897,7 +2867,7 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
             continue; // Happens when you pull your sword for example
 
         if (npc
-            && ignoreVob != nullptr
+            && ignoreVob
             && node->ProtoNode
             && node->ProtoNode->NodeName.Length()) {
             if (auto slot = npc->GetInvSlot(node->ProtoNode->NodeName)) {
@@ -3022,7 +2992,7 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
 
                     // Go through all meshes using that material
                     for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
-                        DrawMeshInfo_LayeredPacked( itm.first, itm.second[m].get() );
+                        DrawMeshInfo_Layered( itm.first, itm.second[m].get() );
                     }
                 }
             }
@@ -3072,7 +3042,7 @@ void GothicAPI::DrawTransparencyVobs() {
             cbPool->BindPS(psBufGAI , cbPool->Allocate(&gacb, sizeof(gacb)));
             DrawSkeletalMeshVob( TransVobInfo.skeletalVob, TransVobInfo.distance, false );
         } else if ( TransVobInfo.normalVob ) {
-            g->SetActiveVertexShader( VShaderID::VS_ExPacked );  // VOB meshes are packed (36-byte)
+            g->SetActiveVertexShader( VShaderID::VS_Ex );
             g->SetupVS_ExMeshDrawCall();
             
             TransVobInfo.normalVob->UpdateVobConstantBuffer( cbPerInstance );
@@ -3092,7 +3062,7 @@ void GothicAPI::DrawTransparencyVobs() {
                 }
 
                 for ( auto const& meshInfo : materialMesh.second ) {
-                    g->DrawVertexBufferIndexedPacked(
+                    g->DrawVertexBufferIndexed(
                         meshInfo->GetMeshVertexBuffer(),
                         meshInfo->GetMeshIndexBuffer(),
                         meshInfo->Indices.size() );
@@ -3120,7 +3090,7 @@ void GothicAPI::DrawTransparencyVobs() {
                 }
 
                 for ( auto const& meshInfo : materialMesh.second ) {
-                    g->DrawVertexBufferIndexedPacked(
+                    g->DrawVertexBufferIndexed(
                         meshInfo->GetMeshVertexBuffer(),
                         meshInfo->GetMeshIndexBuffer(),
                         meshInfo->Indices.size() );
@@ -3526,9 +3496,9 @@ float GothicAPI::TraceVisualInfo( const XMFLOAT3& origin, const XMFLOAT3& dir, B
             auto& mesh = it.second[m];
 
             for ( unsigned int i = 0; i < mesh->Indices.size(); i += 3 ) {
-                if ( Toolbox::IntersectTri( mesh->Vertices[mesh->Indices[i]].Position,
-                    mesh->Vertices[mesh->Indices[i + 1]].Position,
-                    mesh->Vertices[mesh->Indices[i + 2]].Position,
+                if ( Toolbox::IntersectTri( *mesh->Vertices[mesh->Indices[i]].Position.toXMFLOAT3(),
+                    *mesh->Vertices[mesh->Indices[i + 1]].Position.toXMFLOAT3(),
+                    *mesh->Vertices[mesh->Indices[i + 2]].Position.toXMFLOAT3(),
                     origin, dir, u, v, t ) ) {
                     if ( t > 0 && t < closest ) {
                         closest = t;
@@ -3574,17 +3544,17 @@ bool GothicAPI::TraceWorldMesh( const XMFLOAT3& origin, const XMFLOAT3& dir, XMF
             float u, v, t;
 
             for ( unsigned int i = 0; i < it->second->Indices.size(); i += 3 ) {
-                if ( Toolbox::IntersectTri( it->second->Vertices[it->second->Indices[i]].Position,
-                    it->second->Vertices[it->second->Indices[i + 1]].Position,
-                    it->second->Vertices[it->second->Indices[i + 2]].Position,
+                if ( Toolbox::IntersectTri( *it->second->Vertices[it->second->Indices[i]].Position.toXMFLOAT3(),
+                    *it->second->Vertices[it->second->Indices[i + 1]].Position.toXMFLOAT3(),
+                    *it->second->Vertices[it->second->Indices[i + 2]].Position.toXMFLOAT3(),
                     origin, dir, u, v, t ) ) {
                     if ( t > 0 && t < closest ) {
                         closest = t;
 
                         if ( hitTriangle ) {
-                            hitTriangle[0] = it->second->Vertices[it->second->Indices[i]].Position;
-                            hitTriangle[1] = it->second->Vertices[it->second->Indices[i + 1]].Position;
-                            hitTriangle[2] = it->second->Vertices[it->second->Indices[i + 2]].Position;
+                            hitTriangle[0] = *it->second->Vertices[it->second->Indices[i]].Position.toXMFLOAT3();
+                            hitTriangle[1] = *it->second->Vertices[it->second->Indices[i + 1]].Position.toXMFLOAT3();
+                            hitTriangle[2] = *it->second->Vertices[it->second->Indices[i + 2]].Position.toXMFLOAT3();
                         }
 
                         if ( hitMesh ) {
@@ -3762,7 +3732,7 @@ float GothicAPI::GetFarZ() {
 XMVECTOR GothicAPI::GetFogColor() {
     zCSkyController_Outdoor* sc = oCGame::GetGame()->_zCSession_world->GetSkyControllerOutdoor();
 
-    XMVECTOR FogColorMod = XMLoadFloat3( &RendererState.RendererSettings.FogColorMod );
+    XMVECTOR FogColorMod = XMLoadFloat3( RendererState.RendererSettings.FogColorMod.toXMFLOAT3() );
 
     // Only give the overridden color out if the flag is set
     if ( !sc || !sc->GetOverrideFlag() )
@@ -5752,7 +5722,7 @@ void GothicAPI::DrawMorphMesh( zCMorphMesh* msh, std::map<zCMaterial*, std::vect
         for ( auto const& it : meshes ) {
             for ( auto& mi : it.second ) {
                 if ( mi->MeshIndex == i ) {
-                    g->DrawVertexBufferIndexedPacked( mi->GetMeshVertexBuffer(), mi->GetMeshIndexBuffer(), mi->Indices.size() );
+                    Engine::GraphicsEngine->DrawVertexBufferIndexed( mi->GetMeshVertexBuffer(), mi->GetMeshIndexBuffer(), mi->Indices.size() );
                     goto Out_Of_Nested_Loop;
                 }
             }
@@ -5797,7 +5767,7 @@ void GothicAPI::DrawMorphMesh_Layered( zCMorphMesh* msh, std::map<zCMaterial*, s
 
             for ( auto& mi : it.second ) {
                 if ( mi->MeshIndex == i ) {
-                    g->DrawVertexBufferInstancedIndexedPacked( mi->GetMeshVertexBuffer(), mi->GetMeshIndexBuffer(), mi->Indices.size(), 6 );
+                    g->DrawVertexBufferInstancedIndexed( mi->GetMeshVertexBuffer(), mi->GetMeshIndexBuffer(), mi->Indices.size(), 6 );
                     goto Out_Of_Nested_Loop;
                 }
             }
@@ -5993,7 +5963,7 @@ void GothicAPI::PutCustomPolygonsIntoBspTreeRec( BspInfo* base ) {
                     // Check if one vertex is inside the node // TODO: This will fail for very large triangles!
                     zCVertex** vx = poly->getVertices();
 
-                    if ( Toolbox::PositionInsideBox( vx[v]->Position,
+                    if ( Toolbox::PositionInsideBox( *vx[v]->Position.toXMFLOAT3(),
                         base->OriginalNode->BBox3D.Min,
                         base->OriginalNode->BBox3D.Max ) ) {
                         base->NodePolygons.push_back( poly );
@@ -6034,20 +6004,7 @@ void GothicAPI::CreatezCPolygonsForSections() {
 
                 it->first.Material->SetAlphaFunc( zMAT_ALPHA_FUNC_NONE );
 
-                // WorldMeshInfo no longer carries full per-vertex attributes (Vertices is
-                // position-only, for raycasting); rebuild from the Position+UV0 companion
-                // buffer with a defaulted normal. This path (custom/original-engine zCPolygon
-                // reconstruction) is unused/unsupported in current builds.
-                std::vector<ExVertexStruct> fullVertices( it->second->ShadowVertices.size() );
-                for ( size_t v = 0; v < it->second->ShadowVertices.size(); ++v ) {
-                    fullVertices[v].Position = it->second->ShadowVertices[v].Position;
-                    fullVertices[v].TexCoord = it->second->ShadowVertices[v].TexCoord;
-                    fullVertices[v].Normal = float3( 0.0f, 1.0f, 0.0f );
-                    fullVertices[v].TexCoord2 = float2( 0.0f, 0.0f );
-                    fullVertices[v].Color = 0xFFFFFFFF;
-                    fullVertices[v].Tangent = float4( 1.0f, 0.0f, 0.0f, 1.0f );
-                }
-                WorldConverter::ConvertExVerticesTozCPolygons( fullVertices, it->second->Indices, it->first.Material, section.SectionPolygons );
+                WorldConverter::ConvertExVerticesTozCPolygons( it->second->Vertices, it->second->Indices, it->first.Material, section.SectionPolygons );
             }
         }
     }
@@ -6293,6 +6250,7 @@ static void CollectLeafVobs(
                         if ( auto visFx = parent->As<oCVisualFX>() ) {
                             PFXVobLight = true;
                             if (auto origin = visFx->GetOrigin()) {
+                                vi->OriginVob = origin;
                                 // any PFX that stems from an ITEM should be counted as simple light.
                                 PFXVobLight = !origin->As<oCItem>();
                             }                            

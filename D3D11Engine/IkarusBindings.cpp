@@ -14,8 +14,8 @@ extern "C"
     /** Draws a red cross at the given location in the current frame
         - Position: Pointer to the vector to draw the cross at
         - Size: Size of the cross. (About 25 is the size of a human head) */
-    __declspec(dllexport) void __cdecl GDX_AddPointLocator(const float3* position, float size ) {
-        Engine::GraphicsEngine->GetLineRenderer()->AddPointLocator( *position, size, XMFLOAT4( 1, 0, 0, 1 ) );
+    __declspec(dllexport) void __cdecl GDX_AddPointLocator( float3* position, float size ) {
+        Engine::GraphicsEngine->GetLineRenderer()->AddPointLocator( *position->toXMFLOAT3(), size, XMFLOAT4( 1, 0, 0, 1 ) );
     }
 
     /** Sets the fog-color to use when not in fog-zone */

@@ -124,9 +124,8 @@ XRESULT D3D11ShaderManager::Init() {
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExPacked>( "VS_ExPacked.hlsl" )
         .with_layout( VERTEX_INPUT_LAYOUT_PACKED_EX )  );
 
-    // Node attachments draw the packed 36-byte VOB meshes.
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExNode>( "VS_ExNode.hlsl" )
-        .with_layout( VERTEX_INPUT_LAYOUT_PACKED_EX ) );
+        .with_layout( VERTEX_INPUT_LAYOUT_1 ) );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_Decal>( "VS_Decal.hlsl" )
         .with_layout( VERTEX_INPUT_LAYOUT_1 )  );
@@ -427,12 +426,8 @@ XRESULT D3D11ShaderManager::Init() {
         Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExLayered>( "VS_ExLayered.hlsl" )
             .with_layout( VERTEX_INPUT_LAYOUT_1 ) );
 
-        // Packed variant for VOB meshes in the layered shadow pass (36-byte vertex stream).
-        Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExLayeredPacked>( "VS_ExLayeredPacked.hlsl" )
-            .with_layout( VERTEX_INPUT_LAYOUT_PACKED_EX ) );
-
         Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExNodeLayered>( "VS_ExNodeLayered.hlsl" )
-            .with_layout( VERTEX_INPUT_LAYOUT_PACKED_EX )  );
+            .with_layout( VERTEX_INPUT_LAYOUT_1 )  );
 
         Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExSkeletalLayered>( "VS_ExSkeletalLayered.hlsl" )
             .with_layout( VERTEX_INPUT_LAYOUT_3_VS_ExSkeletal )
@@ -447,12 +442,8 @@ XRESULT D3D11ShaderManager::Init() {
         Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExCube>( "VS_ExCube.hlsl" )
             .with_layout( VERTEX_INPUT_LAYOUT_1 )  );
 
-        // Packed variant for VOB meshes in the cube shadow pass (36-byte vertex stream).
-        Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExCubePacked>( "VS_ExCubePacked.hlsl" )
-            .with_layout( VERTEX_INPUT_LAYOUT_PACKED_EX )  );
-
         Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExNodeCube>( "VS_ExNodeCube.hlsl" )
-            .with_layout( VERTEX_INPUT_LAYOUT_PACKED_EX )  );
+            .with_layout( VERTEX_INPUT_LAYOUT_1 )  );
 
         Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExSkeletalCube>( "VS_ExSkeletalCube.hlsl" )
             .with_layout( VERTEX_INPUT_LAYOUT_3_VS_ExSkeletal )

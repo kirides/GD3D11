@@ -134,7 +134,6 @@ inline HRESULT zVdfsReadFile( const char* str, std::vector<uint8_t> buffer, long
     if ( numRead ) {
         *numRead = actuallyRead;
     }
-    return S_OK;
 }
 
 inline HRESULT LoadTextureArray(

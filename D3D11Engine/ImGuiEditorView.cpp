@@ -669,13 +669,15 @@ void ImGuiEditorView::DoSelection() {
 void ImGuiEditorView::VisualizeMeshInfo(MeshInfo* m, const XMFLOAT4& color, bool showBounds, const XMFLOAT4X4* world) {
     for (unsigned int i = 0; i < m->Indices.size(); i += 3) {
         XMFLOAT3 tri[3];
-        // TexCoord2 is no longer available on MeshInfo::Vertices (position-only, used for
-        // raycasting/mesh tracing), so the showBounds edge-coloring below is neutral.
-        float edge[3] = { 0.0f, 0.0f, 0.0f };
+        float edge[3];
 
-        tri[0] = m->Vertices[m->Indices[i]].Position;
-        tri[1] = m->Vertices[m->Indices[i + 1]].Position;
-        tri[2] = m->Vertices[m->Indices[i + 2]].Position;
+        tri[0] = *m->Vertices[m->Indices[i]].Position.toXMFLOAT3();
+        tri[1] = *m->Vertices[m->Indices[i + 1]].Position.toXMFLOAT3();
+        tri[2] = *m->Vertices[m->Indices[i + 2]].Position.toXMFLOAT3();
+
+        edge[0] = m->Vertices[m->Indices[i]].TexCoord2.x;
+        edge[1] = m->Vertices[m->Indices[i + 1]].TexCoord2.x;
+        edge[2] = m->Vertices[m->Indices[i + 2]].TexCoord2.x;
 
         if (world) {
             XMMATRIX XMV_world = XMLoadFloat4x4(world);

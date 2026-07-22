@@ -3,7 +3,6 @@
 //--------------------------------------------------------------------------------------
 
 #include "Globals_VS_ExConstants.h"
-#include "VertexPacking.h"
 
 cbuffer Matrices_PerFrame : register( b0 )
 {
@@ -22,8 +21,7 @@ cbuffer Matrices_PerInstances : register( b1 )
 struct VS_INPUT
 {
 	float3 vPosition	: POSITION;
-	float2 vNormalOct	: NORMAL;    // octahedral-encoded (R16G16_SNORM)
-	float4 vTangent		: TANGENT;   // R10G10B10A2 (unused here, present for layout match)
+	float3 vNormal		: NORMAL;
 	float2 vTex1		: TEXCOORD0;
 	float2 vTex2		: TEXCOORD1;
 	float4 vDiffuse		: DIFFUSE;
@@ -44,16 +42,14 @@ struct VS_OUTPUT
 VS_OUTPUT VSMain( VS_INPUT Input )
 {
 	VS_OUTPUT Output;
-
-	float3 vNormal = DecodeOctNormal( Input.vNormalOct );
-
-	float3 positionWorld = mul(float4((Input.vPosition + cbInstance.M_Fatness * vNormal) * cbInstance.M_Scaling, 1), cbInstance.M_World).xyz;
-
+	
+	float3 positionWorld = mul(float4((Input.vPosition + cbInstance.M_Fatness * Input.vNormal) * cbInstance.M_Scaling, 1), cbInstance.M_World).xyz;
+	
 	//Output.vPosition = float4(Input.vPosition, 1);
 	Output.vTexcoord2 = Input.vTex2;
 	Output.vTexcoord = Input.vTex1;
 	Output.vDiffuse  = cbInstance.M_Color;
-	Output.vNormalWS = mul(vNormal, (float3x3)cbInstance.M_World);
+	Output.vNormalWS = mul(Input.vNormal, (float3x3)cbInstance.M_World);
 	Output.vWorldPosition = positionWorld;
 
 	return Output;
