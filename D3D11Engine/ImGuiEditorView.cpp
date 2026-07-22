@@ -673,9 +673,9 @@ void ImGuiEditorView::VisualizeMeshInfo(MeshInfo* m, const XMFLOAT4& color, bool
         // raycasting/mesh tracing), so the showBounds edge-coloring below is neutral.
         float edge[3] = { 0.0f, 0.0f, 0.0f };
 
-        tri[0] = m->Vertices[m->Indices[i]].Position;
-        tri[1] = m->Vertices[m->Indices[i + 1]].Position;
-        tri[2] = m->Vertices[m->Indices[i + 2]].Position;
+        tri[0] = *m->Vertices[m->Indices[i]].Position.toXMFLOAT3();
+        tri[1] = *m->Vertices[m->Indices[i + 1]].Position.toXMFLOAT3();
+        tri[2] = *m->Vertices[m->Indices[i + 2]].Position.toXMFLOAT3();
 
         if (world) {
             XMMATRIX XMV_world = XMLoadFloat4x4(world);

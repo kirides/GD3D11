@@ -403,7 +403,7 @@ void MeshModifier::ComputeSmoothNormals( std::vector<ExVertexStruct>& inVertices
         XMFLOAT3 avgNormal;
         XMVECTOR XMV_avgNormal = XMVectorZero();
         for ( ExVertexStruct* vert : vx ) {
-            XMV_avgNormal += XMLoadFloat3( &vert->Normal );
+            XMV_avgNormal += XMLoadFloat3( vert->Normal.toXMFLOAT3() );
         }
         XMV_avgNormal /= static_cast<float>(vx.size());
         XMStoreFloat3( &avgNormal, XMV_avgNormal );

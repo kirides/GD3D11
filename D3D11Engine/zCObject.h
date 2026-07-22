@@ -5,7 +5,7 @@
 class zCObject {
 public:
     // Recreate V-Table
-    virtual	zCClassDef* _GetClassDef() const = 0;
+    virtual	zCClassDef* _GetClassDef() = 0;
     virtual void Archive() = 0;
     virtual void Unarchive() = 0;
     virtual ~zCObject() {}

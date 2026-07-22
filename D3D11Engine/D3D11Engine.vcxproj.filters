@@ -91,9 +91,6 @@
     <Filter Include="Librarys\Tracy">
       <UniqueIdentifier>{7b69a12f-dac5-490c-825b-b1e5382d377c}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Librarys\stb">
-      <UniqueIdentifier>{b0119c3a-7a6b-4406-a285-2a8b05760c74}</UniqueIdentifier>
-    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="pch.h" />
@@ -857,9 +854,6 @@
     <ClInclude Include="vendor\mikktspace.h" />
     <ClInclude Include="VertexPacking.h" />
     <ClInclude Include="DDSArrayLoader.h" />
-    <ClInclude Include="vendor\stb\stb_image.h">
-      <Filter>Librarys\stb</Filter>
-    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp" />

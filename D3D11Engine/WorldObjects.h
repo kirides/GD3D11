@@ -386,7 +386,8 @@ struct VobLightInfo {
         DynamicShadows{},
         UpdateShadows{},
         LastRenderedPosition{},
-        VisibleInFrame{}
+        VisibleInFrame{},
+        OriginVob{}
     {}
 
     VobLightInfo(VobLightInfo&& other) = delete;
@@ -398,6 +399,8 @@ struct VobLightInfo {
 
     /** Vob the data came from */
     zCVobLight* Vob;
+    // In case the light originally is a oCVisualFX, this will be the "origin" vob. Exclude from self shadowing
+    zCVob* OriginVob;
 
     /** Flag to see if this vob was drawn in the current render pass. Used to collect the same vob only once. Cleared immediately. */
     std::atomic<size_t> VisibleInRenderPass;

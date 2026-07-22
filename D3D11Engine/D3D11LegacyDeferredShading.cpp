@@ -94,7 +94,7 @@ XRESULT D3D11LegacyDeferredShading::DrawPointlightLights(
         plcb.PL_Outdoor = light->IsIndoorVob ? 0.0f : 1.0f;
 
         float dist;
-        XMStoreFloat( &dist, XMVector3Length( XMLoadFloat3( &plcb.Pl_PositionWorld ) - Engine::GAPI->GetCameraPositionXM() ) );
+        XMStoreFloat( &dist, XMVector3Length( XMLoadFloat3( plcb.Pl_PositionWorld.toXMFLOAT3() ) - Engine::GAPI->GetCameraPositionXM() ) );
 
         if ( dist + plcb.PL_Range <
             settings.VisualFXDrawRadius ) {
@@ -115,11 +115,11 @@ XRESULT D3D11LegacyDeferredShading::DrawPointlightLights(
         plcb.PL_Color.y *= lightFactor;
         plcb.PL_Color.z *= lightFactor;
 
-        FXMVECTOR Pl_PositionWorld = XMLoadFloat3( &plcb.Pl_PositionWorld );
-        XMStoreFloat3( &plcb.Pl_PositionView,
+        FXMVECTOR Pl_PositionWorld = XMLoadFloat3( plcb.Pl_PositionWorld.toXMFLOAT3() );
+        XMStoreFloat3( plcb.Pl_PositionView.toXMFLOAT3(),
             XMVector3TransformCoord( Pl_PositionWorld, view ) );
 
-        XMStoreFloat3( &plcb.PL_LightScreenPos,
+        XMStoreFloat3( plcb.PL_LightScreenPos.toXMFLOAT3(),
             XMVector3TransformCoord( Pl_PositionWorld, XMLoadFloat4x4( &Engine::GAPI->GetProjectionMatrix() ) ) );
 
         if ( dist < plcb.PL_Range ) {

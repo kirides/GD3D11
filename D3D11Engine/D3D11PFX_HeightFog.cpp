@@ -41,7 +41,7 @@ XRESULT D3D11PFX_HeightFog::Render( RenderToTextureBuffer* fxbuffer ) {
 	cb.HF_HeightFalloff = Engine::GAPI->GetRendererState().RendererSettings.FogHeightFalloff;
 
 	float height = Engine::GAPI->GetRendererState().RendererSettings.FogHeight;
-	XMVECTOR color = XMLoadFloat3( &Engine::GAPI->GetRendererState().RendererSettings.FogColorMod );
+	XMVECTOR color = XMLoadFloat3( Engine::GAPI->GetRendererState().RendererSettings.FogColorMod.toXMFLOAT3() );
 
 	float fnear = 15000.0f;
 	float ffar = 60000.0f;

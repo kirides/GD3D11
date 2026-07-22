@@ -374,9 +374,9 @@ public:
     void DrawWorldMeshNaive();
 
     /** Draws a skeletal mesh-vob */
-    void DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool updateState = true, const std::move_only_function<bool( const zCVob* ) const>& ignoreVob = nullptr );
+    void DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool updateState = true, const std::function<bool(zCVob*)>& ignoreVob = nullptr );
 
-    void DrawSkeletalMeshVob_Layered( SkeletalVobInfo* vi, float distance, bool updateState = true, const std::move_only_function<bool( const zCVob* ) const>& ignoreVob = nullptr );
+    void DrawSkeletalMeshVob_Layered( SkeletalVobInfo* vi, float distance, bool updateState = true, const std::function<bool(zCVob*)>& ignoreVob = nullptr );
 
     void DrawTransparencyVobs();
     void DrawSkeletalVN();
