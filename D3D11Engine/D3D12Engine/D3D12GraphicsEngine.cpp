@@ -556,6 +556,7 @@ float3x3 CotangentFrame( float3 N, float3 p, float2 uv )
 float3 PerturbNormal( float3 N, float3 p, Texture2D nrmTex, float2 uv, SamplerState samp )
 {
     float2 nxy = nrmTex.Sample( samp, uv ).xy * 2.0 - 1.0;
+    nxy.y = -nxy.y;
     float  nz  = sqrt( saturate( 1.0 - dot( nxy, nxy ) ) );   // reconstruct Z (BC5/BC1)
     float3 nrm = normalize( float3( nxy, nz ) );
     return normalize( mul( nrm, CotangentFrame( N, p, uv ) ) );
@@ -807,6 +808,7 @@ float3x3 CotangentFrame( float3 N, float3 p, float2 uv )
 float3 PerturbNormal( float3 N, float3 p, Texture2D nrmTex, float2 uv, SamplerState samp )
 {
     float2 nxy = nrmTex.Sample( samp, uv ).xy * 2.0 - 1.0;
+    nxy.y = -nxy.y;
     float  nz  = sqrt( saturate( 1.0 - dot( nxy, nxy ) ) );
     float3 nrm = normalize( float3( nxy, nz ) );
     return normalize( mul( nrm, CotangentFrame( N, p, uv ) ) );
@@ -1408,6 +1410,7 @@ float3x3 CotangentFrame( float3 N, float3 p, float2 uv )
 float3 PerturbNormal( float3 N, float3 p, Texture2D nrmTex, float2 uv, SamplerState samp )
 {
     float2 nxy = nrmTex.Sample( samp, uv ).xy * 2.0 - 1.0;
+    nxy.y = -nxy.y;
     float  nz  = sqrt( saturate( 1.0 - dot( nxy, nxy ) ) );   // reconstruct Z (BC5/BC1)
     float3 nrm = normalize( float3( nxy, nz ) );
     return normalize( mul( nrm, CotangentFrame( N, p, uv ) ) );
