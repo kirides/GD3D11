@@ -313,7 +313,9 @@ void BaseWidget::CreateArrowCube( XMFLOAT3* Offset, float Extends, const float4&
     // Loop through all vertices and apply the offset and the extends
     FXMVECTOR xmOffset = XMLoadFloat3( Offset );
     for ( i = 0; i < 36; i++ ) {
-        XMStoreFloat3( vx[i].Position.toXMFLOAT3(), (XMLoadFloat3( vx[i].Position.toXMFLOAT3() ) * Extends) + xmOffset );
+        const auto w = vx[i].Position.w;
+        XMStoreFloat4( &vx[i].Position, (XMLoadFloat4( &vx[i].Position ) * Extends) + xmOffset );
+        vx[i].Position.w = w;
     }
 
     Prim->CreateSolidPrimitive( &vx[0], 36 );

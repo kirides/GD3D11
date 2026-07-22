@@ -1094,6 +1094,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="TAAConstantBuffer.h" />
     <ClInclude Include="TexturePool.h" />
     <ClInclude Include="ThreadPool.h" />
+    <ClInclude Include="vendor\stb\stb_image.h" />
     <ClInclude Include="VersionCheck.h" />
     <ClInclude Include="WidgetContainer.h" />
     <ClInclude Include="Widget_TransRot.h" />

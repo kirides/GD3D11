@@ -67,35 +67,19 @@ struct INT4 {
 
 struct float4;
 
-struct float3 {
-    float3( float x, float y, float z ) {
-        this->x = x;
-        this->y = y;
-        this->z = z;
+struct float3 : XMFLOAT3 {
+    float3(const float _x, const float _y, const float _z) : XMFLOAT3(_x, _y, _z) {}
+    float3() : XMFLOAT3(0.0f, 0.0f, 0.0f) {}
+
+    float3( const DWORD& color )
+    : XMFLOAT3(static_cast<float>((color >> 16) & 0xFF) / 255.0f, 
+    static_cast<float>((color >> 8) & 0xFF) / 255.0f,
+    static_cast<float>(color & 0xFF) / 255.0f)
+    {
     }
 
-    float3( const DWORD& color ) {
-        x = ((color >> 16) & 0xFF) / 255.0f;
-        y = ((color >> 8) & 0xFF) / 255.0f;
-        z = (color & 0xFF) / 255.0f;
-    }
+    float3( const XMFLOAT3& v ) : XMFLOAT3(v) {}
 
-    float3( const float4& v ) {
-        const float3* asF3 = reinterpret_cast<const float3*>(&v);
-        x = asF3->x;
-        y = asF3->y;
-        z = asF3->z;
-    }
-
-    float3( const XMFLOAT3& v ) {
-        x = v.x;
-        y = v.y;
-        z = v.z;
-    }
-
-    XMFLOAT3* toXMFLOAT3() const {
-        return reinterpret_cast<XMFLOAT3*>(const_cast<float3*>(this));
-    }
     std::string toString() const {
         return "(" + std::to_string( x ) + ", " + std::to_string( y ) + ", " + std::to_string( z ) + ")";
     }
@@ -130,66 +114,29 @@ struct float3 {
     bool operator==( const float3& b ) const {
         return isLike( b, 0.0001f );
     }
-
-    float3() { x = 0; y = 0; z = 0; }
-
-    float x, y, z;
 };
 
-struct float4 {
-    float4( const DWORD& color ) {
-        x = static_cast<float>((color >> 16) & 0xFF) / 255.0f;
-        y = static_cast<float>((color >> 8) & 0xFF) / 255.0f;
-        z = static_cast<float>(color & 0xFF) / 255.0f;
-        w = static_cast<float>(color >> 24) / 255.0f;
+struct float4 : XMFLOAT4 {
+    float4( const DWORD& color ) : XMFLOAT4(
+    static_cast<float>((color >> 16) & 0xFF) / 255.0f,
+        static_cast<float>((color >> 8) & 0xFF) / 255.0f,
+        static_cast<float>(color & 0xFF) / 255.0f,
+        static_cast<float>(color >> 24) / 255.0f) {
     }
+    float4() : XMFLOAT4(0,0,0,0) { }
 
-    float4( float x, float y, float z, float w ) {
-        this->x = x;
-        this->y = y;
-        this->z = z;
-        this->w = w;
-    }
+    float4(const float x, const float y, const float z, const float w ) : XMFLOAT4(x,y,z,w) { }
 
-    float4( const float3& f ) {
-        this->x = f.x;
-        this->y = f.y;
-        this->z = f.z;
-        this->w = 1.0f;
-    }
+    float4( const float3& f ) : XMFLOAT4(f.x,f.y,f.z,1.0f) { }
 
-    float4( const float3& f, float a ) {
-        this->x = f.x;
-        this->y = f.y;
-        this->z = f.z;
-        this->w = a;
-    }
-    float4( const XMFLOAT3& v ) {
-        x = v.x;
-        y = v.y;
-        z = v.z;
-        w = 1.0f;
-    }
+    float4( const float3& f, float a ) : XMFLOAT4(f.x,f.y,f.z, a) { }
+    
+    float4( const XMFLOAT3& v ) : XMFLOAT4(v.x,v.y,v.z,1.0f) { }
 
-    float4( const XMFLOAT4& v ) {
-        x = v.x;
-        y = v.y;
-        z = v.z;
-        w = v.w;
-    }
+    float4( const XMFLOAT4& v ) : XMFLOAT4(v) {}
 
-    float4() { x = 0; y = 0; z = 0; w = 0; }
-
-    XMFLOAT4* toXMFLOAT4() const {
-        return reinterpret_cast<XMFLOAT4*>(const_cast<float4*>(this));
-    }
-
-    XMFLOAT3* toXMFLOAT3() const {
-        return reinterpret_cast<XMFLOAT3*>(const_cast<float4*>(this));
-    }
-    float* toPtr() const {
-        return reinterpret_cast<float*>(const_cast<float4*>(this));
-    }
+    const float* toPtr() const { return &x; }
+    float* toPtr() { return &x; }
 
     DWORD ToDWORD() const {
         BYTE a = static_cast<BYTE>(w * 255.0f);
@@ -205,8 +152,6 @@ struct float4 {
             && z == b.z
             && w == b.w;
     }
-
-    float x, y, z, w;
 };
 
 struct float2 {
@@ -231,10 +176,6 @@ struct float2 {
     }
 
     float2() { x = 0; y = 0; }
-
-    XMFLOAT2* toXMFLOAT2() const {
-        return reinterpret_cast<XMFLOAT2*>(const_cast<float2*>(this));
-    }
 
     std::string toString() const {
         return "(" + std::to_string( x ) + ", " + std::to_string( y ) + ")";

@@ -5645,7 +5645,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
     std::list<SkeletalVobInfo*>* renderedMobs,
     std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache,
     unsigned int casterMask,
-    const std::function<bool(zCVob*)>& ignoreVob ) {
+    const std::move_only_function<bool(const zCVob*) const>& ignoreVob ) {
 
     // Setup renderstates
     Engine::GAPI->GetRendererState().RasterizerState.SetDefault();
@@ -5943,7 +5943,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                     continue;
                 }
                 
-                if (ignoreVob && ignoreVob(it->Vob)) {
+                if (ignoreVob != nullptr && ignoreVob(it->Vob)) {
                     continue;
                 }
 
@@ -5999,7 +5999,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
     std::list<SkeletalVobInfo*>* renderedMobs,
     std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache,
     unsigned int casterMask,
-    const std::function<bool(zCVob*)>& ignoreVob ) {
+    const std::move_only_function<bool(const zCVob*) const>& ignoreVob ) {
 
     // Setup renderstates
     Engine::GAPI->GetRendererState().RasterizerState.SetDefault();
@@ -6040,7 +6040,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
     ocb.OS_AmbientColor = float3( 1, 1, 1 );
     ActivePS->UpdateBuffer("POS_MaterialInfo", &ocb, sizeof(ocb));
 
-    float3 pos; XMStoreFloat3( pos.toXMFLOAT3(), position );
+    float3 pos; XMStoreFloat3( &pos, position );
     INT2 s = WorldConverter::GetSectionOfPos( pos );
 
     DistortionTexture->BindToPixelShader( 0 );
@@ -6211,7 +6211,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                         continue;
                     }
                 
-                    if (ignoreVob && ignoreVob(it->Vob)) {
+                    if (ignoreVob != nullptr && ignoreVob(it->Vob)) {
                         continue;
                     }
                     rndVob.emplace_back( it );
@@ -6304,7 +6304,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                     continue;
                 }
                 
-                if (ignoreVob && ignoreVob(it->Vob)) {
+                if (ignoreVob != nullptr && ignoreVob(it->Vob)) {
                     continue;
                 }
 
@@ -6719,7 +6719,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
     const XMMATRIX identityMatrix = XMMatrixIdentity();
     ActiveVS->UpdateBuffer("Matrices_PerInstances", &identityMatrix, sizeof(identityMatrix));
 
-    float3 fPosition; XMStoreFloat3( fPosition.toXMFLOAT3(), position );
+    float3 fPosition; XMStoreFloat3( &fPosition, position );
     DistortionTexture->BindToPixelShader( 0 );
 
     BindDynamicCBToPixelShader( ActivePS->GetInputIndex( "DIST_Distance" ), InfiniteRangeCB );
@@ -7096,7 +7096,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
 
         if ( !Engine::GAPI->GetVegetationBoxes().empty()) {
             const float drawRadius = Engine::GAPI->GetRendererState().RendererSettings.OutdoorSmallVobDrawRadius;
-            const XMFLOAT3 camPos = *fPosition.toXMFLOAT3();
+            const XMFLOAT3 camPos = fPosition;
             
             bool inView = false;
             
@@ -8353,7 +8353,7 @@ void XM_CALLCONV D3D11GraphicsEngine::RenderShadowCube(
     std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache,
     bool clearDepth,
     unsigned int casterMask,
-    const std::function<bool(zCVob*)>& ignoreVob ) {
+    const std::move_only_function<bool( const zCVob* ) const>& ignoreVob ) {
     
     ShadowMaps->RenderShadowCube( position, range, targetCube, face, debugRTV,
         cullFront, indoor, noNPCs, renderedVobs, renderedMobs, worldMeshCache, clearDepth, casterMask,
@@ -9008,7 +9008,7 @@ void D3D11GraphicsEngine::DrawQuadMarks() {
     for ( auto const& it : quadMarks ) {
         if ( !it.first->GetConnectedVob() ) continue;
 
-        if ( XMVector3Greater(XMVector3LengthSq( camPos - XMLoadFloat3( it.second.Position.toXMFLOAT3() ) ), vVfxRadiusSq) ) {
+        if ( XMVector3Greater(XMVector3LengthSq( camPos - XMLoadFloat3( &it.second.Position ) ), vVfxRadiusSq) ) {
             continue;
         }
 

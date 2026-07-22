@@ -671,9 +671,9 @@ void ImGuiEditorView::VisualizeMeshInfo(MeshInfo* m, const XMFLOAT4& color, bool
         XMFLOAT3 tri[3];
         float edge[3];
 
-        tri[0] = *m->Vertices[m->Indices[i]].Position.toXMFLOAT3();
-        tri[1] = *m->Vertices[m->Indices[i + 1]].Position.toXMFLOAT3();
-        tri[2] = *m->Vertices[m->Indices[i + 2]].Position.toXMFLOAT3();
+        tri[0] = m->Vertices[m->Indices[i]].Position;
+        tri[1] = m->Vertices[m->Indices[i + 1]].Position;
+        tri[2] = m->Vertices[m->Indices[i + 2]].Position;
 
         edge[0] = m->Vertices[m->Indices[i]].TexCoord2.x;
         edge[1] = m->Vertices[m->Indices[i + 1]].TexCoord2.x;

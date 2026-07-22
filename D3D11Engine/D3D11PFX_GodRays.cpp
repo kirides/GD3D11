@@ -39,7 +39,7 @@ XRESULT D3D11PFX_GodRays::Render(
         return res;
     }
 
-	XMVECTOR xmSunPosition = XMLoadFloat3( Engine::GAPI->GetSky()->GetAtmosphereCB().AC_LightPos.toXMFLOAT3() );
+	XMVECTOR xmSunPosition = XMLoadFloat3( &Engine::GAPI->GetSky()->GetAtmosphereCB().AC_LightPos );
 
 	float outerRadius = Engine::GAPI->GetSky()->GetAtmosphereCB().AC_OuterRadius;
 	xmSunPosition *= outerRadius;
@@ -136,7 +136,7 @@ XRESULT D3D11PFX_GodRays::RenderCS(
 
     engine->SetDefaultStates();
 
-    XMVECTOR xmSunPosition = XMLoadFloat3( Engine::GAPI->GetSky()->GetAtmosphereCB().AC_LightPos.toXMFLOAT3() );
+    XMVECTOR xmSunPosition = XMLoadFloat3( &Engine::GAPI->GetSky()->GetAtmosphereCB().AC_LightPos );
 
     float outerRadius = Engine::GAPI->GetSky()->GetAtmosphereCB().AC_OuterRadius;
     xmSunPosition *= outerRadius;
@@ -264,7 +264,7 @@ XRESULT D3D11PFX_GodRays::RenderToTexture(
     }
 
     // FL10 pixel shader path: mask → zoom → write to pool texture (no additive blit)
-    XMVECTOR xmSunPosition = XMLoadFloat3( Engine::GAPI->GetSky()->GetAtmosphereCB().AC_LightPos.toXMFLOAT3() );
+    XMVECTOR xmSunPosition = XMLoadFloat3( &Engine::GAPI->GetSky()->GetAtmosphereCB().AC_LightPos );
     float outerRadius = Engine::GAPI->GetSky()->GetAtmosphereCB().AC_OuterRadius;
     xmSunPosition *= outerRadius;
     xmSunPosition += Engine::GAPI->GetCameraPositionXM();
@@ -341,7 +341,7 @@ XRESULT D3D11PFX_GodRays::RenderToTextureCS(
     D3D11GraphicsEngine* engine = reinterpret_cast<D3D11GraphicsEngine*>(Engine::GraphicsEngine);
     auto& context = engine->GetContext();
 
-    XMVECTOR xmSunPosition = XMLoadFloat3( Engine::GAPI->GetSky()->GetAtmosphereCB().AC_LightPos.toXMFLOAT3() );
+    XMVECTOR xmSunPosition = XMLoadFloat3( &Engine::GAPI->GetSky()->GetAtmosphereCB().AC_LightPos );
     float outerRadius = Engine::GAPI->GetSky()->GetAtmosphereCB().AC_OuterRadius;
     xmSunPosition *= outerRadius;
     xmSunPosition += Engine::GAPI->GetCameraPositionXM();

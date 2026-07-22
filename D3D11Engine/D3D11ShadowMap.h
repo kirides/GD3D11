@@ -164,7 +164,7 @@ public:
         std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache = nullptr,
         bool clearDepth = true,
         unsigned int casterMask = 0xFFFFFFFFu,
-        const std::function<bool(zCVob*)>& ignoreVob = nullptr );
+        const std::move_only_function<bool(const zCVob*) const>& ignoreVob = nullptr );
 
     inline static struct { float lambda; float bias; } lambdaBiasTable[] {
         /* 0 */ { 0, 0 },
