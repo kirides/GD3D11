@@ -562,9 +562,7 @@ float3 PerturbNormal( float3 N, float3 p, Texture2D nrmTex, float2 uv, SamplerSt
     return normalize( mul( nrm, CotangentFrame( N, p, uv ) ) );
 }
 
-// PBR sun lighting (stage 2 — ports feat/pbr FP_ComputeSunLighting): ambient (sky/GI) + direct Cook-Torrance
-// (diffuse + specular). vertLighting = Gothic's baked vertex-light scalar, used as an AO modulator. roughness/
-// metallic/ao come from the ORM map (or its 1x1 default). ssao still 1 (no SSAO pass yet). shadow = 1 lit / 0 occ.
+// PBR sun lighting (stage 2 — matching DX11 lighting mix and ground/vertex lighting modulation)
 float3 ComputeSunLightingPBR( float3 wpos, float3 N, float3 albedo, float vertLighting, float shadow,
                               float roughness, float metallic, float ao )
 {
@@ -573,12 +571,23 @@ float3 ComputeSunLightingPBR( float3 wpos, float3 N, float3 albedo, float vertLi
     float3 sunCol = SrgbToLinear( SunColor );
     float  sunLum = dot( sunCol, float3( 0.3333, 0.3333, 0.3333 ) );
     const float ssao = 1.0;
-    float sun      = saturate( dot( L, N ) * shadow );
+
+    // Direct sun term N.L
+    float NdotL = saturate( dot( N, L ) );
+    float sun = NdotL * shadow;
+
+    // AO factors driven by Gothic's vertex/ground light
     float shadowAO = lerp( 1.0, vertLighting, ShadowAOStrength ) * ao;
     float worldAO  = lerp( 1.0, vertLighting, WorldAOStrength ) * ao;
+
+    // Directional sky/ambient term: top-facing gets full sky ambient, vertical/undersides darken
+    float skyAmbientDir = saturate( N.y * 0.5 + 0.5 ); // Hemispheric directional ambient factor
+    float3 ambientSun = albedo * AmbientStrength * sunLum * shadowAO * skyAmbientDir * ssao;
+
+    // Direct Sun term
     float sunAtten = sun * worldAO * SunIntensity;
-    float3 directSun  = PBR_DirectLighting( albedo, sunCol, N, V, L, roughness, metallic, sunAtten );
-    float3 ambientSun = albedo * AmbientStrength * sunLum * shadowAO * ssao;   // ambient/sky term
+    float3 directSun = PBR_DirectLighting( albedo, sunCol, N, V, L, roughness, metallic, sunAtten );
+
     return ambientSun + directSun;
 }
 
@@ -814,20 +823,32 @@ float3 PerturbNormal( float3 N, float3 p, Texture2D nrmTex, float2 uv, SamplerSt
     return normalize( mul( nrm, CotangentFrame( N, p, uv ) ) );
 }
 
+// PBR sun lighting (stage 2 — matching DX11 lighting mix and ground/vertex lighting modulation)
 float3 ComputeSunLightingPBR( float3 wpos, float3 N, float3 albedo, float vertLighting, float shadow,
                               float roughness, float metallic, float ao )
 {
     float3 V = normalize( CamPosWS - wpos );
-    float3 L = SunDirWS;
+    float3 L = SunDirWS;                            // dir toward the sun (world space)
     float3 sunCol = SrgbToLinear( SunColor );
     float  sunLum = dot( sunCol, float3( 0.3333, 0.3333, 0.3333 ) );
     const float ssao = 1.0;
-    float sun      = saturate( dot( L, N ) * shadow );
+
+    // Direct sun term N.L
+    float NdotL = saturate( dot( N, L ) );
+    float sun = NdotL * shadow;
+
+    // AO factors driven by Gothic's vertex/ground light
     float shadowAO = lerp( 1.0, vertLighting, ShadowAOStrength ) * ao;
     float worldAO  = lerp( 1.0, vertLighting, WorldAOStrength ) * ao;
+
+    // Directional sky/ambient term: top-facing gets full sky ambient, vertical/undersides darken
+    float skyAmbientDir = saturate( N.y * 0.5 + 0.5 ); // Hemispheric directional ambient factor
+    float3 ambientSun = albedo * AmbientStrength * sunLum * shadowAO * skyAmbientDir * ssao;
+
+    // Direct Sun term
     float sunAtten = sun * worldAO * SunIntensity;
-    float3 directSun  = PBR_DirectLighting( albedo, sunCol, N, V, L, roughness, metallic, sunAtten );
-    float3 ambientSun = albedo * AmbientStrength * sunLum * shadowAO * ssao;
+    float3 directSun = PBR_DirectLighting( albedo, sunCol, N, V, L, roughness, metallic, sunAtten );
+
     return ambientSun + directSun;
 }
 
@@ -1416,9 +1437,7 @@ float3 PerturbNormal( float3 N, float3 p, Texture2D nrmTex, float2 uv, SamplerSt
     return normalize( mul( nrm, CotangentFrame( N, p, uv ) ) );
 }
 
-// PBR sun lighting (stage 2 — ports feat/pbr FP_ComputeSunLighting): ambient (sky/GI) + direct Cook-Torrance
-// (diffuse + specular). vertLighting = Gothic's baked vertex-light scalar, used as an AO modulator. roughness/
-// metallic/ao come from the ORM map (or its 1x1 default). ssao still 1 (no SSAO pass yet). shadow = 1 lit / 0 occ.
+// PBR sun lighting (stage 2 — matching DX11 lighting mix and ground/vertex lighting modulation)
 float3 ComputeSunLightingPBR( float3 wpos, float3 N, float3 albedo, float vertLighting, float shadow,
                               float roughness, float metallic, float ao )
 {
@@ -1427,12 +1446,23 @@ float3 ComputeSunLightingPBR( float3 wpos, float3 N, float3 albedo, float vertLi
     float3 sunCol = SrgbToLinear( SunColor );
     float  sunLum = dot( sunCol, float3( 0.3333, 0.3333, 0.3333 ) );
     const float ssao = 1.0;
-    float sun      = saturate( dot( L, N ) * shadow );
+
+    // Direct sun term N.L
+    float NdotL = saturate( dot( N, L ) );
+    float sun = NdotL * shadow;
+
+    // AO factors driven by Gothic's vertex/ground light
     float shadowAO = lerp( 1.0, vertLighting, ShadowAOStrength ) * ao;
     float worldAO  = lerp( 1.0, vertLighting, WorldAOStrength ) * ao;
+
+    // Directional sky/ambient term: top-facing gets full sky ambient, vertical/undersides darken
+    float skyAmbientDir = saturate( N.y * 0.5 + 0.5 ); // Hemispheric directional ambient factor
+    float3 ambientSun = albedo * AmbientStrength * sunLum * shadowAO * skyAmbientDir * ssao;
+
+    // Direct Sun term
     float sunAtten = sun * worldAO * SunIntensity;
-    float3 directSun  = PBR_DirectLighting( albedo, sunCol, N, V, L, roughness, metallic, sunAtten );
-    float3 ambientSun = albedo * AmbientStrength * sunLum * shadowAO * ssao;   // ambient/sky term
+    float3 directSun = PBR_DirectLighting( albedo, sunCol, N, V, L, roughness, metallic, sunAtten );
+
     return ambientSun + directSun;
 }
 
