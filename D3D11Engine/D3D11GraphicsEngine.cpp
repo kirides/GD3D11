@@ -5685,8 +5685,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
     std::list<SkeletalVobInfo*>* renderedMobs,
     std::vector<std::pair<MeshKey, MeshInfo*>>* worldMeshCache,
     unsigned int casterMask,
-    const std::function<bool(zCVob*)>& ignoreVob,
-    bool usesCubeGeometryShader ) {
+    const std::function<bool(zCVob*)>& ignoreVob ) {
 
     // Setup renderstates
     Engine::GAPI->GetRendererState().RasterizerState.SetDefault();
@@ -5810,10 +5809,6 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
             f.BuildCubemapFace( position, range, 0 );
             std::vector<WorldMeshSectionInfo*> sections = {};
             Engine::GAPI->CollectVisibleSections( sections, &f, true );
-
-            std::vector<WorldMeshInfo*> opaqueMeshes;
-            std::vector<std::pair<zCTexture*, WorldMeshInfo*>> alphaMeshes;
-
             for ( auto* section : sections ) {
                 drawnSections.emplace_back( section );
 
@@ -5822,98 +5817,55 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                     if ( section->FullStaticMesh )
                         Engine::GAPI->DrawMeshInfo( nullptr, section->FullStaticMesh );
                 } else {
-                    for ( auto&& meshInfoByKey : section->WorldMeshes ) {
+                    for ( auto&& meshInfoByKey = section->WorldMeshes.begin();
+                        meshInfoByKey != section->WorldMeshes.end(); ++meshInfoByKey ) {
                         // Check surface type
-                        if ( meshInfoByKey.first.Info->MaterialType != MaterialInfo::MT_None ) {
+                        if ( meshInfoByKey->first.Info->MaterialType != MaterialInfo::MT_None ) {
                             continue;
                         }
 
-                        WorldMeshInfo* mesh = meshInfoByKey.second;
-
-                        if ( meshInfoByKey.first.Material && meshInfoByKey.first.Material->GetTextureSingle()
-                            && (meshInfoByKey.first.Material->HasAlphaTest()
-                                || meshInfoByKey.first.Material->GetTextureSingle()->HasAlphaChannel()) ) {
-                            if ( alphaRef > 0.0f ) {
-                                zCTexture* aniTex = meshInfoByKey.first.Material->GetAniTexture();
-                                if ( aniTex && aniTex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
-                                    alphaMeshes.emplace_back( aniTex, mesh );
+                        bool isAlpha = false;
+                        // Bind texture
+                        if ( meshInfoByKey->first.Material && meshInfoByKey->first.Material->GetTexture() ) {
+                            if ( meshInfoByKey->first.Material->HasAlphaTest() || meshInfoByKey->first.Material->GetTexture()->HasAlphaChannel() ) {
+                                if ( alphaRef > 0.0f &&
+                                    meshInfoByKey->first.Material->GetTexture()->CacheIn( 0.6f ) ==
+                                    zRES_CACHED_IN ) {
+                                    void* engineTex = meshInfoByKey->first.Material->GetTexture()->GetSurface()->GetEngineTexture();
+                                    if ( lastTex != engineTex ) {
+                                        meshInfoByKey->first.Material->GetTexture()->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
+                                        lastTex = engineTex;
+                                    }
+                                    ActivePS->Apply();
+                                    isAlpha = true;
+                                } else
+                                    continue;  // Don't render if not loaded
+                            } else {
+                                if ( !linearDepth )  // Only unbind when not rendering linear
+                                    // depth
+                                {
+                                    // Unbind PS
+                                    Context->PSSetShader( nullptr, nullptr, 0 );
+                                } else {
+                                    if ( lastTex != WhiteTexture.get() ) {
+                                        WhiteTexture->BindToPixelShader( 0 );
+                                        lastTex = WhiteTexture.get();
+                                    }
                                 }
-                            } // else: texture not loaded yet, skip
-                            continue;
+                            }
+                        } else if ( linearDepth ) {
+                            if ( lastTex != WhiteTexture.get() ) {
+                                WhiteTexture->BindToPixelShader( 0 );
+                                lastTex = WhiteTexture.get();
+                            }
                         }
 
-                        opaqueMeshes.push_back( mesh );
+                        // Draw from wrapped mesh
+                        MeshInfo* mesh = meshInfoByKey->second;
+                        DrawVertexBufferIndexed( mesh->GetMeshVertexBuffer(),
+                            GetShadowAwareIndexBuffer( mesh, isAlpha ),
+                            GetShadowAwareIndexCount( mesh, isAlpha ) );
                     }
-                }
-            }
-
-            // Draw from the wrapped world mesh instead of rebinding each mesh's own buffer.
-            if ( !opaqueMeshes.empty() || !alphaMeshes.empty() ) {
-                MeshInfo* wrappedWorldMesh = Engine::GAPI->GetWrappedWorldMesh();
-                bool swappedVS = false;
-
-                // The wrapped mesh only exists in the packed 36-byte format, so this always needs a
-                // packed-decoding vertex shader - but which one depends on what the caller bound
-                // before calling DrawWorldAround: GS_Cubemap expects VS_ExCube's world-space output
-                // (no SV_Position - the GS reprojects per face), while the plain per-face path (no
-                // GS, a real view/proj already set via the camera replacement) expects VS_Ex's output
-                // (VS computes SV_Position itself). Neither has a position-only fast path here.
-                VShaderID packedWorldMeshVS = usesCubeGeometryShader ? VShaderID::VS_ExCubePacked : VShaderID::VS_ExPacked;
-
-                if ( !opaqueMeshes.empty() ) {
-                    if ( !linearDepth )  // Only unbind when not rendering linear depth
-                    {
-                        // Unbind PS
-                        Context->PSSetShader( nullptr, nullptr, 0 );
-                    } else {
-                        if ( lastTex != WhiteTexture.get() ) {
-                            WhiteTexture->BindToPixelShader( 0 );
-                            lastTex = WhiteTexture.get();
-                        }
-                    }
-
-                    UINT zeroOffset = 0;
-                    SetActiveVertexShader( packedWorldMeshVS );
-                    ActiveVS->Apply();
-                    swappedVS = true;
-                    UINT uStride = sizeof( ExVertexStructGPU );
-                    Context->IASetVertexBuffers( 0, 1, wrappedWorldMesh->MeshVertexBuffer->GetVertexBuffer().GetAddressOf(), &uStride, &zeroOffset );
-
-                    Context->IASetIndexBuffer( wrappedWorldMesh->MeshShadowIndexBuffer->GetVertexBuffer().Get(), DXGI_FORMAT_R32_UINT, 0 );
-
-                    for ( auto* mesh : opaqueMeshes ) {
-                        DrawVertexBufferIndexedUINT( nullptr, nullptr,
-                            GetShadowAwareIndexCount( mesh, false ),
-                            mesh->BaseShadowIndexLocation );
-                    }
-                }
-
-                if ( !alphaMeshes.empty() ) {
-                    std::sort( alphaMeshes.begin(), alphaMeshes.end(),
-                        []( const auto& a, const auto& b ) { return a.first < b.first; } );
-
-                    SetActiveVertexShader( packedWorldMeshVS );
-                    ActiveVS->Apply();
-                    swappedVS = true;
-                    BindWrappedWorldMeshPacked( wrappedWorldMesh );
-                    ActivePS->Apply();
-
-                    for ( const auto& [tex, mesh] : alphaMeshes ) {
-                        void* engineTex = tex->GetSurface()->GetEngineTexture();
-                        if ( lastTex != engineTex ) {
-                            tex->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
-                            lastTex = engineTex;
-                        }
-
-                        DrawVertexBufferIndexedUINT( nullptr, nullptr,
-                            GetShadowAwareIndexCount( mesh, true ),
-                            mesh->BaseIndexLocation );
-                    }
-                }
-
-                if ( swappedVS ) {
-                    SetActiveVertexShader( packedWorldMeshVS );
-                    ActiveVS->Apply();
                 }
             }
         }
@@ -6216,10 +6168,6 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
             f.BuildCubemapFace( position, range, 0 );
             std::vector<WorldMeshSectionInfo*> sections={};
             Engine::GAPI->CollectVisibleSections( sections, &f, true );
-
-            std::vector<WorldMeshInfo*> opaqueMeshes;
-            std::vector<std::pair<zCTexture*, WorldMeshInfo*>> alphaMeshes;
-
             for ( auto section : sections ) {
                 drawnSections.emplace_back( section );
 
@@ -6228,100 +6176,59 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                     if ( section->FullStaticMesh )
                         Engine::GAPI->DrawMeshInfo( nullptr, section->FullStaticMesh );
                 } else {
-                    for ( auto&& meshInfoByKey : section->WorldMeshes ) {
+                    for ( auto&& meshInfoByKey = section->WorldMeshes.begin();
+                        meshInfoByKey != section->WorldMeshes.end(); ++meshInfoByKey ) {
                         // Check surface type
-                        if ( meshInfoByKey.first.Info->MaterialType != MaterialInfo::MT_None ) {
+                        if ( meshInfoByKey->first.Info->MaterialType != MaterialInfo::MT_None ) {
                             continue;
                         }
 
-                        WorldMeshInfo* mesh = meshInfoByKey.second;
+                        bool isAlpha = false;
+                        // Bind texture
+                        if ( meshInfoByKey->first.Material && meshInfoByKey->first.Material->GetTexture() ) {
+                            if ( meshInfoByKey->first.Material ->HasAlphaTest() || meshInfoByKey->first.Material->GetTexture()->HasAlphaChannel()) {
+                                if ( alphaRef > 0.0f &&
+                                    meshInfoByKey->first.Material->GetTexture()->CacheIn( 0.6f ) ==
+                                    zRES_CACHED_IN ) {
 
-                        if ( meshInfoByKey.first.Material && meshInfoByKey.first.Material->GetTextureSingle()
-                            && (meshInfoByKey.first.Material->HasAlphaTest()
-                                || meshInfoByKey.first.Material->GetTextureSingle()->HasAlphaChannel()) ) {
-                            if ( alphaRef > 0.0f ) {
-                                zCTexture* aniTex = meshInfoByKey.first.Material->GetAniTexture();
-                                if ( aniTex && aniTex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
-                                    alphaMeshes.emplace_back( aniTex, mesh );
+                                    lastTex = meshInfoByKey->first.Material->GetTexture()->GetSurface()->GetEngineTexture();
+                                    meshInfoByKey->first.Material->GetTexture()->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
+                                    ActivePS->Apply();
+                                    isAlpha = true;
+                                } else
+                                    continue;  // Don't render if not loaded
+                            } else {
+                                if ( !linearDepth )  // Only unbind when not rendering linear
+                                    // depth
+                                {
+                                    // Unbind PS
+                                    Context->PSSetShader( nullptr, nullptr, 0 );
+                                } else {
+                                    if ( lastTex != WhiteTexture.get() ) {
+                                        WhiteTexture->BindToPixelShader( 0 );
+                                        lastTex = WhiteTexture.get();
+                                    }
                                 }
-                            } // else: texture not loaded yet, skip
-                            continue;
+                            }
+                        } else if ( linearDepth ) {
+                            if ( lastTex != WhiteTexture.get() ) {
+                                WhiteTexture->BindToPixelShader( 0 );
+                                lastTex = WhiteTexture.get();
+                            }
                         }
 
-                        opaqueMeshes.push_back( mesh );
+                        // Draw from wrapped mesh
+                        MeshInfo* mesh = meshInfoByKey->second;
+                        DrawVertexBufferInstancedIndexed( mesh->GetMeshVertexBuffer(),
+                            GetShadowAwareIndexBuffer( mesh, isAlpha ),
+                            GetShadowAwareIndexCount( mesh, isAlpha ),
+                            6 );
                     }
-                }
-            }
-
-            // Draw from the wrapped world mesh instead of rebinding each mesh's own buffer.
-            if ( !opaqueMeshes.empty() || !alphaMeshes.empty() ) {
-                MeshInfo* wrappedWorldMesh = Engine::GAPI->GetWrappedWorldMesh();
-                bool swappedVS = false;
-
-                if ( !opaqueMeshes.empty() ) {
-                    if ( !linearDepth )  // Only unbind when not rendering linear depth
-                    {
-                        // Unbind PS
-                        Context->PSSetShader( nullptr, nullptr, 0 );
-                    } else {
-                        if ( lastTex != WhiteTexture.get() ) {
-                            WhiteTexture->BindToPixelShader( 0 );
-                            lastTex = WhiteTexture.get();
-                        }
-                    }
-
-                    // The hardware layered-rendering shaders write SV_RenderTargetArrayIndex
-                    // themselves (there's no GS to do it), so - like the GS_Cubemap path - there's
-                    // no position-only fast path here; always decode the packed full stream.
-                    UINT zeroOffset = 0;
-                    SetActiveVertexShader( VShaderID::VS_ExLayeredPacked );
-                    ActiveVS->Apply();
-                    swappedVS = true;
-                    UINT uStride = sizeof( ExVertexStructGPU );
-                    Context->IASetVertexBuffers( 0, 1, wrappedWorldMesh->MeshVertexBuffer->GetVertexBuffer().GetAddressOf(), &uStride, &zeroOffset );
-
-                    Context->IASetIndexBuffer( wrappedWorldMesh->MeshShadowIndexBuffer->GetVertexBuffer().Get(), DXGI_FORMAT_R32_UINT, 0 );
-
-                    for ( auto* mesh : opaqueMeshes ) {
-                        DrawVertexBufferInstancedIndexedUINT( nullptr, nullptr,
-                            GetShadowAwareIndexCount( mesh, false ),
-                            6,
-                            mesh->BaseShadowIndexLocation );
-                    }
-                }
-
-                if ( !alphaMeshes.empty() ) {
-                    std::sort( alphaMeshes.begin(), alphaMeshes.end(),
-                        []( const auto& a, const auto& b ) { return a.first < b.first; } );
-
-                    SetActiveVertexShader( VShaderID::VS_ExLayeredPacked );
-                    ActiveVS->Apply();
-                    swappedVS = true;
-                    BindWrappedWorldMeshPacked( wrappedWorldMesh );
-                    ActivePS->Apply();
-
-                    for ( const auto& [tex, mesh] : alphaMeshes ) {
-                        void* engineTex = tex->GetSurface()->GetEngineTexture();
-                        if ( lastTex != engineTex ) {
-                            tex->GetSurface()->GetEngineTexture()->BindToPixelShader( 0 );
-                            lastTex = engineTex;
-                        }
-
-                        DrawVertexBufferInstancedIndexedUINT( nullptr, nullptr,
-                            GetShadowAwareIndexCount( mesh, true ),
-                            6,
-                            mesh->BaseIndexLocation );
-                    }
-                }
-
-                if ( swappedVS ) {
-                    SetActiveVertexShader( VShaderID::VS_Ex );
-                    ActiveVS->Apply();
                 }
             }
         }
     }
-
+    
     if ( drawVobCasters && Engine::GAPI->GetRendererState().RendererSettings.DrawVOBs ) {
         // Draw visible vobs here
         std::list<VobInfo*> rndVob;
