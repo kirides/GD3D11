@@ -35,8 +35,6 @@ enum class VShaderID : size_t {
     VS_DecalInstanced,
     VS_ExDepth,
     VS_ExPacked,
-    VS_ExCubePacked,
-    VS_ExLayeredPacked,
     COUNT
 };
 

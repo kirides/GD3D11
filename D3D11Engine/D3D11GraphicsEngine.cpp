@@ -2079,26 +2079,6 @@ XRESULT D3D11GraphicsEngine::DrawVertexBufferIndexed( D3D11VertexBuffer* vb,
     return XR_SUCCESS;
 }
 
-// Like DrawVertexBufferIndexed but binds the vertex buffer at the packed 36-byte stride
-// (ExVertexStructGPU). Used for non-instanced VOB draws that moved to VS_ExPacked.
-XRESULT D3D11GraphicsEngine::DrawVertexBufferIndexedPacked( D3D11VertexBuffer* vb,
-    D3D11VertexBuffer* ib,
-    unsigned int numIndices,
-    unsigned int indexOffset ) {
-    if ( vb ) {
-        UINT offset = 0;
-        UINT uStride = sizeof( ExVertexStructGPU );
-        Context->IASetVertexBuffers( 0, 1, vb->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
-        Context->IASetIndexBuffer( ib->GetVertexBuffer().Get(), VERTEX_INDEX_DXGI_FORMAT, 0 );
-    }
-
-    if ( numIndices ) {
-        Context->DrawIndexed( numIndices, indexOffset, 0 );
-        Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles += numIndices / 3;
-    }
-    return XR_SUCCESS;
-}
-
 XRESULT D3D11GraphicsEngine::DrawVertexBufferIndexedUINT(
     D3D11VertexBuffer* vb, D3D11VertexBuffer* ib, unsigned int numIndices,
     unsigned int indexOffset ) {
@@ -2201,26 +2181,6 @@ XRESULT D3D11GraphicsEngine::DrawVertexBufferInstancedIndexed(
 
         Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles +=
             numIndices / 3;
-    }
-    return XR_SUCCESS;
-}
-
-// Like DrawVertexBufferInstancedIndexed but binds slot 0 at the packed 36-byte stride
-// (ExVertexStructGPU). Used for the layered-shadow VOB caster pass (VS_ExLayeredPacked).
-XRESULT D3D11GraphicsEngine::DrawVertexBufferInstancedIndexedPacked(
-    D3D11VertexBuffer* vb, D3D11VertexBuffer* ib,
-    unsigned int numIndices, unsigned int numInstances,
-    unsigned int indexOffset ) {
-    if ( vb ) {
-        UINT offset = 0;
-        UINT uStride = sizeof( ExVertexStructGPU );
-        Context->IASetVertexBuffers( 0, 1, vb->GetVertexBuffer().GetAddressOf(), &uStride, &offset );
-        Context->IASetIndexBuffer( ib->GetVertexBuffer().Get(), VERTEX_INDEX_DXGI_FORMAT, 0 );
-    }
-
-    if ( numIndices ) {
-        Context->DrawIndexedInstanced( numIndices, numInstances, indexOffset, 0, 0 );
-        Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles += numIndices / 3;
     }
     return XR_SUCCESS;
 }
@@ -3595,7 +3555,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                         if ( isShadowPass ) {
                             for ( auto const& itm : mvi->Meshes ) {
                                 for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
-                                    Engine::GAPI->DrawMeshInfoPacked( itm.first, itm.second[m].get() );
+                                    Engine::GAPI->DrawMeshInfo( itm.first, itm.second[m].get() );
                                 }
                             }
                         } else {
@@ -3606,7 +3566,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                                         continue;
                                 }
                                 for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
-                                    Engine::GAPI->DrawMeshInfoPacked( itm.first, itm.second[m].get() );
+                                    Engine::GAPI->DrawMeshInfo( itm.first, itm.second[m].get() );
                                 }
                             }
                         }
@@ -3625,7 +3585,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
 
                         for ( auto const& itm : mvi->Meshes ) {
                             for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
-                                Engine::GAPI->DrawMeshInfoPacked( itm.first, itm.second[m].get() );
+                                Engine::GAPI->DrawMeshInfo( itm.first, itm.second[m].get() );
                             }
                         }
                         continue;
@@ -3862,10 +3822,10 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                 }
             }
 
-            // Bind mesh VB to slot 0 (only when changed) - packed VOB vertex
+            // Bind mesh VB to slot 0 (only when changed)
             if ( mi->GetMeshVertexBuffer() != lastVB ) {
                 UINT vbOffset = 0;
-                UINT vbStride = sizeof( ExVertexStructGPU );
+                UINT vbStride = sizeof( ExVertexStruct );
                 Context->IASetVertexBuffers( 0, 1, mi->MeshVertexBuffer->GetVertexBuffer().GetAddressOf(), &vbStride, &vbOffset );
                 lastVB = mi->GetMeshVertexBuffer();
             }
@@ -5907,11 +5867,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
         D3D11Texture* lastBoundTexture = nullptr;
         std::list<VobInfo*>& rl = renderedVobs != nullptr ? *renderedVobs : rndVob;
         VS_ExConstantBuffer_PerInstance cb;
-
-        // VOB meshes are packed (36-byte) -> use the packed cube shader for these draws.
-        SetActiveVertexShader( VShaderID::VS_ExCubePacked );
-        ActiveVS->Apply();
-
+        
         for ( auto const& vobInfo : rl ) {
             // Bind per-instance buffer
             vobInfo->UpdateVobConstantBuffer(cb);
@@ -5943,7 +5899,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround(
                 }
                 for ( auto const& meshInfo : materialMesh.second ) {
                     const auto mesh = meshInfo.get();
-                    DrawVertexBufferIndexedPacked(
+                    DrawVertexBufferIndexed(
                         meshInfo->GetMeshVertexBuffer(),
                         GetShadowAwareIndexBuffer( mesh, isAlpha ),
                         GetShadowAwareIndexCount( mesh, isAlpha ) );
@@ -6271,10 +6227,6 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
 
         VS_ExConstantBuffer_PerInstance cb;
 
-        // VOB meshes are packed (36-byte) -> use the packed layered shader for these draws.
-        SetActiveVertexShader( VShaderID::VS_ExLayeredPacked );
-        ActiveVS->Apply();
-
         D3D11Texture* lastBoundTexture = nullptr;
         for ( auto const& vobInfo : rl ) {
             // Bind per-instance buffer
@@ -6307,7 +6259,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAround_Layered(
                 for ( auto const& meshInfo : materialMesh.second ) {
                     const auto mesh = meshInfo.get();
 
-                    DrawVertexBufferInstancedIndexedPacked(
+                    DrawVertexBufferInstancedIndexed(
                         meshInfo->GetMeshVertexBuffer(),
                         GetShadowAwareIndexBuffer( mesh, isAlpha ),
                         GetShadowAwareIndexCount( mesh, isAlpha ),
@@ -7058,7 +7010,7 @@ void XM_CALLCONV D3D11GraphicsEngine::DrawWorldAroundForWorldShadow( FXMVECTOR p
             const auto ib = GetShadowAwareIndexBuffer( mi, isAlpha );
 
             UINT offset[] = { 0 };
-            UINT uStride[] = { sizeof( ExVertexStructGPU ) };  // packed VOB vertex
+            UINT uStride[] = { sizeof( ExVertexStruct ) };
             ID3D11Buffer* buffers[1] = {
                 vb->GetVertexBuffer().Get()
             };
@@ -7844,7 +7796,7 @@ XRESULT D3D11GraphicsEngine::DrawVOBsInstanced() {
                     DrawInstanced( meshInfo->GetMeshVertexBuffer(), meshInfo->GetMeshIndexBuffer(),
                         meshInfo->Indices.size(), instancingBuffer,
                         sizeof( VobInstanceInfo ), cachedVisual->Instances.size(),
-                        sizeof( ExVertexStructGPU ), cachedVisual->StartInstanceNum, 0,
+                        sizeof( ExVertexStruct ), cachedVisual->StartInstanceNum, 0,
                         cache.MainVobInstancingBufferOffset );
                 }
             }
@@ -8063,7 +8015,7 @@ XRESULT D3D11GraphicsEngine::DrawFrameAlphaMeshes()
             // Draw batch
             DrawInstanced( mi->GetMeshVertexBuffer(), mi->GetMeshIndexBuffer(), mi->Indices.size(),
                 instancingBuffer, sizeof( VobInstanceInfo ),
-                instances.size(), sizeof( ExVertexStructGPU ),
+                instances.size(), sizeof( ExVertexStruct ),
                 alphaMesh.StartInstanceNum, 0,
                 m_FrameGeometryCache.MainVobInstancingBufferOffset );
 
@@ -8467,7 +8419,7 @@ void D3D11GraphicsEngine::DrawVobSingle( VobInfo* vob, zCCamera& camera ) {
     GetContext()->PSSetSamplers( 0, 1, DefaultSamplerState.GetAddressOf() );
 
     SetActivePixelShader( PShaderID::PS_Preview_Textured );
-    SetActiveVertexShader( VShaderID::VS_ExPacked );  // VOB meshes are packed (36-byte)
+    SetActiveVertexShader( VShaderID::VS_Ex );
 
     SetupVS_ExMeshDrawCall();
     SetupVS_ExConstantBuffer();
@@ -8487,8 +8439,8 @@ void D3D11GraphicsEngine::DrawVobSingle( VobInfo* vob, zCCamera& camera ) {
             continue;
         }
         for ( auto const& itm2nd : itm.second ) {
-            // Draw instances (packed 36-byte VOB vertex)
-            DrawVertexBufferIndexedPacked(
+            // Draw instances
+            DrawVertexBufferIndexed(
                 itm2nd->GetMeshVertexBuffer(), itm2nd->GetMeshIndexBuffer(),
                 itm2nd->Indices.size() );
         }
@@ -9364,7 +9316,7 @@ void D3D11GraphicsEngine::DrawFrameParticleMeshes( std::unordered_map<zCVob*, st
     SetDefaultStates();
 
     SetActivePixelShader( PShaderID::PS_Simple );
-    SetActiveVertexShader( VShaderID::VS_ExPacked );  // particle prog meshes are packed (36-byte)
+    SetActiveVertexShader( VShaderID::VS_Ex );
 
     GothicRendererState& state = Engine::GAPI->GetRendererState();
     state.DepthState.DepthWriteEnabled = false;
@@ -9451,8 +9403,8 @@ void D3D11GraphicsEngine::DrawFrameParticleMeshes( std::unordered_map<zCVob*, st
             for ( auto const& itm2nd : itm.second ) {
                 if (itm2nd->GetMeshVertexBuffer() != lastMeshBuffer
                     || itm2nd->GetMeshIndexBuffer() != lastIndexBuffer) {
-                    // Bind them (packed 36-byte VOB vertex)
-                    DrawVertexBufferIndexedPacked(
+                    // Bind them 
+                    DrawVertexBufferIndexed(
                         itm2nd->GetMeshVertexBuffer(), itm2nd->GetMeshIndexBuffer(),
                         0 );
                     lastMeshBuffer = itm2nd->GetMeshVertexBuffer();
