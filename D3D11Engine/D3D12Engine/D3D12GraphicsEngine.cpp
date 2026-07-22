@@ -538,26 +538,6 @@ float3 PBR_DirectLighting( float3 baseColor, float3 lightColor, float3 N, float3
     return ( diffuse + specular ) * lightColor * ( NdotL * attenuation );
 }
 
-// Specular-only variant — used for the SUN so we don't double-count Gothic's baked diffuse sun.
-float3 PBR_DirectSpecularOnly( float3 baseColor, float3 lightColor, float3 N, float3 V, float3 L,
-                               float roughness, float metallic, float attenuation )
-{
-    float NdotL = saturate( dot( N, L ) );
-    float NdotV = saturate( dot( N, V ) );
-    if ( NdotL <= 0.0 || NdotV <= 0.0 || attenuation <= 0.0 ) return 0.0;
-    float3 H = normalize( V + L );
-    float NdotH = saturate( dot( N, H ) );
-    float VdotH = saturate( dot( V, H ) );
-    float  cr = PBR_SafeRoughness( roughness * roughness );
-    float  cm = saturate( metallic );
-    float3 F0 = lerp( float3( 0.04, 0.04, 0.04 ), baseColor, cm );
-    float  D = PBR_DistributionGGX( NdotH, cr );
-    float  G = PBR_GeometrySmith( NdotV, NdotL, cr );
-    float3 F = PBR_FresnelSchlick( VdotH, F0 );
-    float3 specular = ( D * G * F ) / max( 4.0 * NdotV * NdotL, 1e-4 );
-    return specular * lightColor * ( NdotL * attenuation );
-}
-
 // Tangent-space normal-map support (ported from feat/pbr Toolbox.h). Z is ALWAYS reconstructed from XY, so BC5
 // (2-channel) and BC1 (we ignore B, recompute it) both decode with one path. `p` = world position for the
 // derivative-based TBN basis. If normal-mapped specular looks mirrored, flip the handedness comparison sign.
@@ -674,17 +654,14 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
 }
 )";
 
-    // Phase-2 instanced VOB shader. Slot 0 = packed vertex (Position@0, TexCoord0@20); slot 1 =
-    // per-instance data (world matrix as 4 rows + instance color) from VobInstanceInfo. Mirrors
-    // VS_ExInstancedObj.hlsl's core: worldPos = mul(pos, InstanceWorldMatrix); clip = mul(worldPos,
-    // ViewProj). PS samples the diffuse, alpha-tests, modulates by the per-instance (ground-light)
-    // color. Wind / player-influence / motion-vectors / normalmap are skipped for first-light.
+    // Phase-2 instanced VOB shader. Slot 0 = ExVertexStruct (Position@0, Normal@12, TexCoord0@24);
+    // slot 1 = per-instance data (world matrix as 4 rows + instance color) from VobInstanceInfo.
     constexpr char kVobShaderSource[] = R"(
 cbuffer WorldCB : register(b0) { float4x4 ViewProj; };   // default column-major packing (see world shader)
 cbuffer FogCB   : register(b1) { float3 FogColor; float FogNear; float3 CamPosWS; float FogFar; };
 cbuffer LightCB : register(b2) { uint LightCount; uint NumTilesX; uint2 _lpad; };
 
-// Forward+ tiled point lights (root-descriptor SRVs + per-tile grid) — see the world shader for the rationale.
+// Forward+ tiled point lights (root-descriptor SRVs + per-tile grid)
 struct GPULight { float3 PositionView; float Range; float4 Color; float3 PositionWorld; int ShadowCubeIndex; };
 struct LightGrid { uint Offset; uint Count; };
 StructuredBuffer<GPULight>  Lights        : register(t1);
@@ -696,7 +673,6 @@ StructuredBuffer<uint>      LightIndexBuf : register(t3);
 Texture2D    tx  : register(t0);
 SamplerState smp : register(s0);
 
-// CSM sun-shadow sampling (P2.9c-4b) — identical to the world shader's block (b3/t4/s2 free here too).
 #define NUM_CSM_CASCADES 3
 cbuffer ShadowCB : register(b3)
 {
@@ -708,39 +684,26 @@ cbuffer ShadowCB : register(b3)
 };
 Texture2DArray          ShadowMap : register(t4);
 SamplerComparisonState  shadowCmp : register(s2);
-// Per-material bindless indices (root consts b6): SM6.6 ResourceDescriptorHeap[...] indices for this material's
-// normal + ORM maps. MatNormalIndex == 0xFFFFFFFF -> no normal map (skip perturb); MatOrmIndex is always valid
-// (the 1x1 default ORM = AO 1 / rough 0.5 / metal 0 when the material has no _FX map), so ORM is sampled branchlessly.
 cbuffer MaterialCB : register(b6) { uint MatNormalIndex; uint MatOrmIndex; };
-TextureCubeArray        PointShadowCubes : register(t5);   // point-light shadow cubes (P2.10d), R16 linear depth
+TextureCubeArray        PointShadowCubes : register(t5);
 
-// De-lights diffuse textures by lifting baked shadows and softening baked highlights
 float3 DelightDiffuse( float3 linearAlbedo )
 {
     float luminance = dot( linearAlbedo, float3( 0.2126, 0.7152, 0.0722 ) );
-    // Normalize luminance variations caused by baked directional light
     float delightFactor = 1.0 / max( sqrt( luminance + 1e-4 ), 0.2 );
     return saturate( linearAlbedo * lerp( 1.0, delightFactor, 0.5 ) );
 }
 
-// Point-light shadow: returns 1 = lit, 0 = occluded. The cube stores the NATURAL hyperbolic z of the caster's
-// 90-deg PerspectiveFovLH(near 15, far range*2). Reconstruct the same z from the fragment: the depth on a cube
-// face is driven by the DOMINANT-AXIS distance (the face's view-space z), so zView = max(|dx|,|dy|,|dz|), then
-// apply the LH projection z-map. Most acne bias is the PSO's hardware slope bias; add a small normal offset +
-// constant. 4-tap rotated-disk PCF softens the edges; a camera-distance fade is applied at the call site.
 float SamplePointShadow( int cubeIndex, float3 wpos, float3 N, float3 lightPos, float range )
 {
-    float3 d  = ( wpos + N * ( range * 0.01 ) ) - lightPos;   // normal-offset bias (world-space, uniform)
+    float3 d  = ( wpos + N * ( range * 0.01 ) ) - lightPos;
     float3 ad = abs( d );
-    float  zView = max( ad.x, max( ad.y, ad.z ) );            // dominant cube-axis depth = the face's view-space z
+    float  zView = max( ad.x, max( ad.y, ad.z ) );
     const float n = 15.0;
     float  f = range * 2.0;
-    float  compareDepth = ( f / ( f - n ) ) * ( 1.0 - n / zView ) - 0.001;   // same LH hyperbolic z the caster wrote
+    float  compareDepth = ( f / ( f - n ) ) * ( 1.0 - n / zView ) - 0.001;
     float3 L = normalize( d );
 
-    // P2.10e polish: 4-tap rotated-disk PCF on a basis perpendicular to L (cube sampling follows the offset dir,
-    // so a small angular offset lands on neighbouring texels). Softens the previously single-tap hard edges. The
-    // offset grows a little with distance so the world-space penumbra stays roughly constant across the range.
     float3 up = abs( L.y ) < 0.99 ? float3( 0, 1, 0 ) : float3( 1, 0, 0 );
     float3 t  = normalize( cross( up, L ) );
     float3 bt = cross( L, t );
@@ -769,9 +732,6 @@ float ComputeSunShadow( float3 wpos, float3 N )
         if ( uv.x > margin && uv.x < 1.0 - margin && uv.y > margin && uv.y < 1.0 - margin &&
              sp.z >= 0.0 && sp.z <= 1.0 )
         {
-            // Wider, cascade-scaled PCF (P2.9c-3c): far cascades cover more world per texel (sub-texel foliage
-            // → temporal "blinking"), so widen the kernel step with the cascade index to spatially average that
-            // flicker into a soft, stable penumbra. 5x5 taps; near cascade stays near-1-texel (crisp).
             float pcfStep = texel * ( 1.0 + float( c ) * 1.5 );
             float sh = 0.0;
             [unroll] for ( int y = -2; y <= 2; ++y )
@@ -783,24 +743,9 @@ float ComputeSunShadow( float3 wpos, float3 N )
     return 1.0;
 }
 
-float3 DecodeOctNormal( float2 e )
-{
-    float3 n = float3( e.xy, 1.0 - abs( e.x ) - abs( e.y ) );
-    float t = saturate( -n.z );
-    n.xy += select(n.xy >= 0., -t, t);
-    return normalize( n );
-}
-
-// --- Cook-Torrance GGX PBR (ported verbatim from the D3D11 feat/pbr branch: Shaders/include/PointLightShadows.h) ---
-// Staged PBR (P3-PBR-1): albedo is sRGB-decoded to LINEAR in the PS; Gothic's baked vertex lighting is kept as the
-// diffuse/ambient base; the SUN adds a specular-only glint and the tiled POINT lights use the full BRDF. Material
-// params are constant defaults for now (no ORM/normal maps yet — that's a later increment with texture-loading infra).
 static const float PBR_PI = 3.14159265;
-static const float MI_Roughness = 0.9;   // default perceptual roughness (Gothic surfaces are mostly rough dielectrics)
-static const float MI_Metallic  = 0.0;   // default metallic (dielectric)
-static const float SunSpecIntensity = 1.0;
 
-float3 SrgbToLinear( float3 c )   // accurate sRGB EOTF — linearize gamma-encoded albedo so lighting is done in linear space
+float3 SrgbToLinear( float3 c )
 {
     return select( c <= 0.04045, c / 12.92, pow( ( c + 0.055 ) / 1.055, 2.4 ) );
 }
@@ -826,31 +771,8 @@ float  PBR_GeometrySmith( float NdotV, float NdotL, float roughness )
 float  PBR_Pow5( float x ) { float x2 = x * x; return x2 * x2 * x; }
 float3 PBR_FresnelSchlick( float cosTheta, float3 F0 ) { return F0 + ( 1.0 - F0 ) * PBR_Pow5( saturate( 1.0 - cosTheta ) ); }
 
-// Full Cook-Torrance (energy-conserving diffuse + specular). attenuation folds in falloff/shadow; NdotL applied here.
 float3 PBR_DirectLighting( float3 baseColor, float3 lightColor, float3 N, float3 V, float3 L,
                            float roughness, float metallic, float attenuation )
-{
-    float NdotL = saturate( dot( N, L ) );
-    float NdotV = saturate( dot( N, V ) );
-    if ( NdotL <= 0.0 || NdotV <= 0.0 || attenuation <= 0.0 ) return 0.0;
-    float3 H = normalize( V + L );
-    float NdotH = saturate( dot( N, H ) );
-    float VdotH = saturate( dot( V, H ) );
-    float  cr = PBR_SafeRoughness( roughness * roughness );   // perceptual->physical (the branch squares here)
-    float  cm = saturate( metallic );
-    float3 F0 = lerp( float3( 0.04, 0.04, 0.04 ), baseColor, cm );
-    float  D = PBR_DistributionGGX( NdotH, cr );
-    float  G = PBR_GeometrySmith( NdotV, NdotL, cr );
-    float3 F = PBR_FresnelSchlick( VdotH, F0 );
-    float3 specular = ( D * G * F ) / max( 4.0 * NdotV * NdotL, 1e-4 );
-    float3 kD = ( 1.0 - F ) * ( 1.0 - cm );
-    float3 diffuse = kD * baseColor / PBR_PI;
-    return ( diffuse + specular ) * lightColor * ( NdotL * attenuation );
-}
-
-// Specular-only variant — used for the SUN so we don't double-count Gothic's baked diffuse sun.
-float3 PBR_DirectSpecularOnly( float3 baseColor, float3 lightColor, float3 N, float3 V, float3 L,
-                               float roughness, float metallic, float attenuation )
 {
     float NdotL = saturate( dot( N, L ) );
     float NdotV = saturate( dot( N, V ) );
@@ -865,12 +787,11 @@ float3 PBR_DirectSpecularOnly( float3 baseColor, float3 lightColor, float3 N, fl
     float  G = PBR_GeometrySmith( NdotV, NdotL, cr );
     float3 F = PBR_FresnelSchlick( VdotH, F0 );
     float3 specular = ( D * G * F ) / max( 4.0 * NdotV * NdotL, 1e-4 );
-    return specular * lightColor * ( NdotL * attenuation );
+    float3 kD = ( 1.0 - F ) * ( 1.0 - cm );
+    float3 diffuse = kD * baseColor / PBR_PI;
+    return ( diffuse + specular ) * lightColor * ( NdotL * attenuation );
 }
 
-// Tangent-space normal-map support (ported from feat/pbr Toolbox.h). Z is ALWAYS reconstructed from XY, so BC5
-// (2-channel) and BC1 (we ignore B, recompute it) both decode with one path. `p` = world position for the
-// derivative-based TBN basis. If normal-mapped specular looks mirrored, flip the handedness comparison sign.
 float3x3 CotangentFrame( float3 N, float3 p, float2 uv )
 {
     float3 dp1 = ddx( p ), dp2 = ddy( p );
@@ -886,19 +807,16 @@ float3x3 CotangentFrame( float3 N, float3 p, float2 uv )
 float3 PerturbNormal( float3 N, float3 p, Texture2D nrmTex, float2 uv, SamplerState samp )
 {
     float2 nxy = nrmTex.Sample( samp, uv ).xy * 2.0 - 1.0;
-    float  nz  = sqrt( saturate( 1.0 - dot( nxy, nxy ) ) );   // reconstruct Z (BC5/BC1)
+    float  nz  = sqrt( saturate( 1.0 - dot( nxy, nxy ) ) );
     float3 nrm = normalize( float3( nxy, nz ) );
     return normalize( mul( nrm, CotangentFrame( N, p, uv ) ) );
 }
 
-// PBR sun lighting (stage 2 — ports feat/pbr FP_ComputeSunLighting): ambient (sky/GI) + direct Cook-Torrance
-// (diffuse + specular). vertLighting = Gothic's baked vertex-light scalar, used as an AO modulator. roughness/
-// metallic/ao come from the ORM map (or its 1x1 default). ssao still 1 (no SSAO pass yet). shadow = 1 lit / 0 occ.
 float3 ComputeSunLightingPBR( float3 wpos, float3 N, float3 albedo, float vertLighting, float shadow,
                               float roughness, float metallic, float ao )
 {
     float3 V = normalize( CamPosWS - wpos );
-    float3 L = SunDirWS;                            // dir toward the sun (world space)
+    float3 L = SunDirWS;
     float3 sunCol = SrgbToLinear( SunColor );
     float  sunLum = dot( sunCol, float3( 0.3333, 0.3333, 0.3333 ) );
     const float ssao = 1.0;
@@ -907,12 +825,10 @@ float3 ComputeSunLightingPBR( float3 wpos, float3 N, float3 albedo, float vertLi
     float worldAO  = lerp( 1.0, vertLighting, WorldAOStrength ) * ao;
     float sunAtten = sun * worldAO * SunIntensity;
     float3 directSun  = PBR_DirectLighting( albedo, sunCol, N, V, L, roughness, metallic, sunAtten );
-    float3 ambientSun = albedo * AmbientStrength * sunLum * shadowAO * ssao;   // ambient/sky term
+    float3 ambientSun = albedo * AmbientStrength * sunLum * shadowAO * ssao;
     return ambientSun + directSun;
 }
 
-// Tiled point lights via the Forward+ grid, now with the full Cook-Torrance BRDF. `albedo` is LINEAR (sRGB-decoded
-// in the PS). Ports D3D11 feat/pbr FP_ComputePointLighting (PLS_ComputePointLightLightingPBR).
 float3 AccumTiledPointLights( float2 svpos, float3 wpos, float3 N, float3 albedo, float roughness, float metallic )
 {
     uint2 tile = uint2( svpos ) / TILE_SIZE;
@@ -929,7 +845,7 @@ float3 AccumTiledPointLights( float2 svpos, float3 wpos, float3 N, float3 albedo
         if ( dist >= L.Range ) continue;
         dir /= dist;
         float nd  = saturate( 1.0 - dist / L.Range );
-        float falloff = nd * ( nd * 0.2 + 0.8 );   // PLS_ComputeRangeFalloff
+        float falloff = nd * ( nd * 0.2 + 0.8 );
         float3 lit = PBR_DirectLighting( albedo, L.Color.rgb, N, V, dir, roughness, metallic, falloff );
         if ( L.ShadowCubeIndex >= 0 )
         {
@@ -946,9 +862,9 @@ float3 AccumTiledPointLights( float2 svpos, float3 wpos, float3 N, float3 albedo
 struct VS_IN
 {
     float3   pos     : POSITION;
-    float2   nrm     : NORMAL;                  // packed object-space normal (R16G16_SNORM @12)
+    float3   nrm     : NORMAL;                  // ExVertexStruct object-space float3 normal (@12)
     float2   uv      : TEXCOORD0;
-    float4x4 iworld  : INSTANCE_WORLD_MATRIX;   // 4 per-instance rows (semantic index 0..3)
+    float4x4 iworld  : INSTANCE_WORLD_MATRIX;
     float4   icolor  : INSTANCE_COLOR;
 };
 struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : TEXCOORD1; float fogDist : TEXCOORD2; float3 wpos : TEXCOORD3; float3 wnrm : TEXCOORD4; };
@@ -961,8 +877,7 @@ VS_OUT VSMain( VS_IN i )
     o.uv  = i.uv;
     o.col = i.icolor;
     o.wpos = worldPos;
-    // Object->world normal (rigid + ~uniform-scale VOB matrices; inverse-transpose not needed for MVP).
-    o.wnrm = mul( DecodeOctNormal( i.nrm ), (float3x3)i.iworld );
+    o.wnrm = mul( i.nrm, (float3x3)i.iworld );
     o.fogDist = length( worldPos - CamPosWS );
     return o;
 }
@@ -978,10 +893,10 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
         N = PerturbNormal( N, i.wpos, nrmTex, i.uv, smp );
     }
     Texture2D ormTex = ResourceDescriptorHeap[MatOrmIndex];
-    float3 orm = ormTex.Sample( smp, i.uv ).rgb;   // r=AO g=roughness b=metallic
+    float3 orm = ormTex.Sample( smp, i.uv ).rgb;
     float3 albedo = SrgbToLinear( t.rgb );
     albedo = DelightDiffuse( albedo );
-    float vertLighting = i.col.g;          // per-instance ground light (green channel) as the AO modulator
+    float vertLighting = i.col.g;
     float shadow = ComputeSunShadow( i.wpos, N );
     float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r );
     rgb += AccumTiledPointLights( i.clip.xy, i.wpos, N, albedo, orm.g, orm.b );
@@ -989,9 +904,6 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     return float4( lerp( rgb, SrgbToLinear( FogColor ), f ), 1.0 );
 }
 
-// --- Depth-prepass variant (P2.9b-4a: adds instanced VOBs to the Forward+ opaque depth prepass) ---
-// Minimal: transform by the instance world matrix and carry uv for the same alpha cutout; write depth only
-// (the PSO masks color). Reads only b0 (ViewProj) + t0/s0 — NOT fog/light CBs — so it needs no BindFrameLights.
 struct VS_DEPTH_IN  { float3 pos : POSITION; float2 uv : TEXCOORD0; float4x4 iworld : INSTANCE_WORLD_MATRIX; };
 struct VS_DEPTH_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; };
 VS_DEPTH_OUT VSDepth( VS_DEPTH_IN i )
@@ -1005,11 +917,9 @@ VS_DEPTH_OUT VSDepth( VS_DEPTH_IN i )
 float4 PSDepthClip( VS_DEPTH_OUT i ) : SV_TARGET
 {
     float4 t = tx.Sample( smp, i.uv );
-    clip( t.a - 0.5 );          // same cutout as PSMain so foliage/fence gaps don't lay down depth
-    return float4( 0, 0, 0, 1 );   // discarded: the PSO's color write mask is 0 (depth-only pass)
+    clip( t.a - 0.5 );
+    return float4( 0, 0, 0, 1 );
 }
-// Shadow caster (P2.9c-2): void PS so the depth-only shadow PSO binds NO render target without a validation
-// warning; only alpha-clips the cutout so foliage/fence gaps don't cast solid shadows.
 void PSShadowClip( VS_DEPTH_OUT i )
 {
     clip( tx.Sample( smp, i.uv ).a - 0.5 );
@@ -1478,26 +1388,6 @@ float3 PBR_DirectLighting( float3 baseColor, float3 lightColor, float3 N, float3
     float3 kD = ( 1.0 - F ) * ( 1.0 - cm );
     float3 diffuse = kD * baseColor / PBR_PI;
     return ( diffuse + specular ) * lightColor * ( NdotL * attenuation );
-}
-
-// Specular-only variant — used for the SUN so we don't double-count Gothic's baked diffuse sun.
-float3 PBR_DirectSpecularOnly( float3 baseColor, float3 lightColor, float3 N, float3 V, float3 L,
-                               float roughness, float metallic, float attenuation )
-{
-    float NdotL = saturate( dot( N, L ) );
-    float NdotV = saturate( dot( N, V ) );
-    if ( NdotL <= 0.0 || NdotV <= 0.0 || attenuation <= 0.0 ) return 0.0;
-    float3 H = normalize( V + L );
-    float NdotH = saturate( dot( N, H ) );
-    float VdotH = saturate( dot( V, H ) );
-    float  cr = PBR_SafeRoughness( roughness * roughness );
-    float  cm = saturate( metallic );
-    float3 F0 = lerp( float3( 0.04, 0.04, 0.04 ), baseColor, cm );
-    float  D = PBR_DistributionGGX( NdotH, cr );
-    float  G = PBR_GeometrySmith( NdotV, NdotL, cr );
-    float3 F = PBR_FresnelSchlick( VdotH, F0 );
-    float3 specular = ( D * G * F ) / max( 4.0 * NdotV * NdotL, 1e-4 );
-    return specular * lightColor * ( NdotL * attenuation );
 }
 
 // Tangent-space normal-map support (ported from feat/pbr Toolbox.h). Z is ALWAYS reconstructed from XY, so BC5
@@ -3200,11 +3090,10 @@ bool D3D12GraphicsEngine::CreateDepthPrepassPipeline() {
         return false;
     }
 
-    // Position (@0) + TexCoord0 (@20) from the packed vertex (slot 0); the 4 instance world-matrix rows (slot 1).
-    // Normal + instance color are dropped — VSDepth doesn't read them.
+    // Position (@0) + TexCoord0 (@24) from ExVertexStruct (stride 60 bytes)
     const D3D12_INPUT_ELEMENT_DESC vobLayout[] = {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         { "INSTANCE_WORLD_MATRIX", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  0, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
         { "INSTANCE_WORLD_MATRIX", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 16, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
         { "INSTANCE_WORLD_MATRIX", 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 32, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
@@ -3336,7 +3225,7 @@ bool D3D12GraphicsEngine::CreateShadowMap() {
             return false;
         const D3D12_INPUT_ELEMENT_DESC vobLayout[] = {
             { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-            { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
             { "INSTANCE_WORLD_MATRIX", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  0, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
             { "INSTANCE_WORLD_MATRIX", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 16, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
             { "INSTANCE_WORLD_MATRIX", 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 32, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
@@ -3656,11 +3545,11 @@ void PSCubeClip( VS_OUT i ) { clip( tx.Sample( smp, i.uv ).a - 0.5 ); }
     {
         const D3D12_INPUT_ELEMENT_DESC vobLayout[] = {
             { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-            { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-            { "INSTANCE_WORLD_MATRIX", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  0, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 6 },
-            { "INSTANCE_WORLD_MATRIX", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 16, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 6 },
-            { "INSTANCE_WORLD_MATRIX", 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 32, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 6 },
-            { "INSTANCE_WORLD_MATRIX", 3, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 48, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 6 },
+            { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "INSTANCE_WORLD_MATRIX", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  0, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+            { "INSTANCE_WORLD_MATRIX", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 16, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+            { "INSTANCE_WORLD_MATRIX", 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 32, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+            { "INSTANCE_WORLD_MATRIX", 3, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 48, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
         };
         pso.pRootSignature = m_PointShadowRootSig.Get();
         pso.VS = { m_PointShadowVobVsBlob->GetBufferPointer(), m_PointShadowVobVsBlob->GetBufferSize() };
@@ -4187,7 +4076,7 @@ void D3D12GraphicsEngine::RenderSunShadows() {
                         D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mi->GetMeshVertexBuffer() );
                         D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mi->GetMeshIndexBuffer() );
                         if ( !mvb->GetResource() || !mib->GetResource() ) continue;
-                        const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStructGPU ) };
+                        const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStruct ) };
                         const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, up.instView };
                         m_CmdList->IASetVertexBuffers( 0, 2, views );
                         const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
@@ -4244,7 +4133,7 @@ void D3D12GraphicsEngine::RenderSunShadows() {
                 D3D12VertexBuffer* mib = D3D12VertexBuffer::From( a.mesh->GetMeshIndexBuffer() );
                 if ( !mvb->GetResource() || !mib->GetResource() ) continue;
                 bindDiffuse( a.tex, 1 );
-                const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStructGPU ) };
+                const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStruct ) };
                 const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, a.instView };
                 m_CmdList->IASetVertexBuffers( 0, 2, views );
                 const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
@@ -4437,7 +4326,7 @@ void D3D12GraphicsEngine::RenderPointShadows() {
                             D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mi->GetMeshVertexBuffer() );
                             D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mi->GetMeshIndexBuffer() );
                             if ( !mvb->GetResource() || !mib->GetResource() ) continue;
-                            const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStructGPU ) };
+                            const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStruct ) };
                             const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, instView };
                             m_CmdList->IASetVertexBuffers( 0, 2, views );
                             const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
@@ -4656,12 +4545,12 @@ bool D3D12GraphicsEngine::CreateVobPipeline() {
             return false;
     }
 
-    // Slot 0 = packed 36-byte ExVertexStructGPU (Position@0, TexCoord0@20); slot 1 = per-instance data
+    // Slot 0 = ExVertexStruct (Position@0, Normal@12, TexCoord0@24); slot 1 = per-instance data
     // read from VobInstanceInfo (stride 144): world matrix rows @0/16/32/48, instance color @128.
     const D3D12_INPUT_ELEMENT_DESC layout[] = {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "NORMAL",   0, DXGI_FORMAT_R16G16_SNORM,    0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },  // octahedral, object-space
-        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         { "INSTANCE_WORLD_MATRIX", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,   0, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
         { "INSTANCE_WORLD_MATRIX", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  16, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
         { "INSTANCE_WORLD_MATRIX", 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  32, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
@@ -6755,7 +6644,7 @@ void D3D12GraphicsEngine::DrawVobDepthPrepass() {
                 D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mi->GetMeshIndexBuffer() );
                 if ( !mvb->GetResource() || !mib->GetResource() ) continue;
 
-                const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStructGPU ) };
+                const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStruct ) };
                 const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, up.instView };
                 m_CmdList->IASetVertexBuffers( 0, 2, views );
 
@@ -6838,7 +6727,7 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
                     D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mi->GetMeshIndexBuffer() );
                     if ( !mvb->GetResource() || !mib->GetResource() ) continue;
 
-                    const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStructGPU ) };
+                    const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStruct ) };
                     const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, up.instView };
                     m_CmdList->IASetVertexBuffers( 0, 2, views );
 
@@ -7107,7 +6996,7 @@ void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
             m_CmdList->SetGraphicsRootDescriptorTable( 1, srv );
             BindMaterialMaps( a.tex, 10 );   // b6 bindless normal/ORM indices (no-op in the depth prepass)
 
-            const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStructGPU ) };
+            const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStruct ) };
             const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, a.instView };
             m_CmdList->IASetVertexBuffers( 0, 2, views );
             const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
@@ -7227,7 +7116,7 @@ void D3D12GraphicsEngine::DrawSkeletalColor() {
             m_CmdList->SetGraphicsRootDescriptorTable( 1, srv );
             BindMaterialMaps( a.tex, 10 );   // b6 bindless normal/ORM indices (no-op in the depth prepass)
 
-            const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStructGPU ) };
+            const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStruct ) };
             const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, a.instView };
             m_CmdList->IASetVertexBuffers( 0, 2, views );
             const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
