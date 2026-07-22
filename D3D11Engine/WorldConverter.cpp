@@ -304,9 +304,9 @@ void WorldConverter::WorldMeshCollectPolyRange( const float3& position, float ra
                     for ( unsigned int i = 0; i < it.second->Indices.size(); i += 3 ) {
                         // Check if one of them is in range
 
-                        XMVECTOR v0 = XMLoadFloat3( &it.second->ShadowVertices[it.second->Indices[i + 0]].Position );
-                        XMVECTOR v1 = XMLoadFloat3( &it.second->ShadowVertices[it.second->Indices[i + 1]].Position );
-                        XMVECTOR v2 = XMLoadFloat3( &it.second->ShadowVertices[it.second->Indices[i + 2]].Position );
+                        XMVECTOR v0 = XMLoadFloat3( &it.second->Vertices[it.second->Indices[i + 0]].Position );
+                        XMVECTOR v1 = XMLoadFloat3( &it.second->Vertices[it.second->Indices[i + 1]].Position );
+                        XMVECTOR v2 = XMLoadFloat3( &it.second->Vertices[it.second->Indices[i + 2]].Position );
 
                         if ( XMVector3Less( XMVector3LengthSq( XMVectorSubtract( xmPosition, v0 ) ), vRange2 ) ||
                             XMVector3Less( XMVector3LengthSq( XMVectorSubtract( xmPosition, v1 ) ), vRange2 ) ||
@@ -995,9 +995,9 @@ void WorldConverter::GenerateFullSectionMesh( WorldMeshSectionInfo& section ) {
 
         for ( unsigned int i = 0; i < it.second->Indices.size(); i += 3 ) {
             // Push all triangles
-            pushPosition( it.second->Vertices[it.second->Indices[i]].Position );
-            pushPosition( it.second->Vertices[it.second->Indices[i + 1]].Position );
-            pushPosition( it.second->Vertices[it.second->Indices[i + 2]].Position );
+            vx.emplace_back( it.second->Vertices[it.second->Indices[i]].Position );
+            vx.emplace_back( it.second->Vertices[it.second->Indices[i + 1]].Position );
+            vx.emplace_back( it.second->Vertices[it.second->Indices[i + 2]].Position );
         }
     }
 
@@ -1017,7 +1017,7 @@ void WorldConverter::GenerateFullSectionMesh( WorldMeshSectionInfo& section ) {
 
             for ( unsigned int m = 0; m < itm.second.size(); m++ ) {
                 for ( unsigned int i = 0; i < itm.second[m]->Indices.size(); i++ ) {
-                    XMFLOAT3 position = itm.second[m]->Vertices[itm.second[m]->Indices[i]].Position;
+                    ExVertexStruct v = itm.second[m]->Vertices[itm.second[m]->Indices[i]];
 
                     // Transform everything into world space
                     XMFLOAT3 Position;
