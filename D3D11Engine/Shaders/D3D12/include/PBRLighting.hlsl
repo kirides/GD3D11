@@ -165,7 +165,7 @@ float3x3 CotangentFrame( float3 N, float3 p, float2 uv )
     float3 dp2perp = cross( dp2, N ), dp1perp = cross( N, dp1 );
     float3 T = dp2perp * duv1.x + dp1perp * duv2.x;
     float3 B = dp2perp * duv1.y + dp1perp * duv2.y;
-    float handedness = ( duv1.x * duv2.y - duv1.y * duv2.x ) < 0.0 ? 1.0 : -1.0;
+    float handedness = ( duv1.x * duv2.y - duv1.y * duv2.x ) > 0.0 ? 1.0 : -1.0;
     T *= handedness;
     float invmax = rsqrt( max( dot( T, T ), dot( B, B ) ) );
     return float3x3( T * invmax, B * invmax, N );
