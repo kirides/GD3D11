@@ -232,6 +232,17 @@ namespace {
     std::vector<FrameSkelDraw>   g_ShadowSkelDraws[kShadowCascadeCount];
     std::vector<FrameAttachDraw> g_ShadowAttachDraws[kShadowCascadeCount];
 
+    // Point-shadow skeletal-caster scratch list — same FULL-registered-vob-list parity fix as the CSM cascades
+    // above, applied to point lights: PrepareFrameSkeletals(..., sphereCenter, sphereRange) sphere-culls
+    // Engine::GAPI->GetSkeletalMeshVobs() against THIS light instead of reusing the player-view-culled
+    // g_FrameSkelDraws (a caster invisible to the player, but inside a torch's range, can still cast a shadow
+    // into it). Cleared and refilled once per light inside RenderPointShadows's dynamic-overlay phase (not a
+    // per-frame-once list like the cascades, since every point light has its own sphere). Node-attachment casters
+    // are intentionally NOT drawn into point-shadow cubes yet (Phase C has no attachment draw path), so
+    // g_PointShadowAttachDraws is populated by PrepareFrameSkeletals (it always fills both) but left unread here.
+    std::vector<FrameSkelDraw>   g_PointShadowSkelDraws;
+    std::vector<FrameAttachDraw> g_PointShadowAttachDraws;
+
     // Per-vob-per-frame upload cache: the pose/instance CB data and node-attachment ring uploads are
     // view-independent (same pose regardless of who's culling), so PrepareFrameSkeletals uploads them ONCE per
     // vob per frame here and every cull pass (main view + each shadow cascade) just appends the cached GPU
@@ -2075,7 +2086,10 @@ void D3D12GraphicsEngine::RenderPointShadows() {
 	const bool haveWorld = vb && ib && vb->GetResource() && ib->GetResource();
 	const bool haveVobs = m_Pipelines.PointShadow.CasterVobPSO && !g_FrameVobUploads.empty()
 		&& m_PointShadowVobInstPtr[m_FrameIndex];
-	const bool haveSkel = m_Pipelines.PointShadow.CasterSkeletalPSO && m_Pipelines.PointShadow.SkeletalRootSig && !g_FrameSkelDraws.empty();
+	// Skeletal casters are now sphere-culled per light against the FULL registered vob list (see the Phase-C
+	// loop below), not the player-view-culled g_FrameSkelDraws, so gate on the registry instead of that list.
+	const bool haveSkel = m_Pipelines.PointShadow.CasterSkeletalPSO && m_Pipelines.PointShadow.SkeletalRootSig
+		&& !Engine::GAPI->GetSkeletalMeshVobs().empty();
 
 	const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(kPointShadowCubeSize), static_cast<float>(kPointShadowCubeSize), 0.0f, 1.0f };
 	const D3D12_RECT     sc = { 0, 0, static_cast<LONG>(kPointShadowCubeSize), static_cast<LONG>(kPointShadowCubeSize) };
@@ -2264,6 +2278,10 @@ void D3D12GraphicsEngine::RenderPointShadows() {
 		m_CmdList->SetPipelineState( m_Pipelines.PointShadow.CasterSkeletalPSO.Get() );
 		m_CmdList->SetGraphicsRootSignature( m_Pipelines.PointShadow.SkeletalRootSig.Get() );
 		static std::vector<const zCVob*> excludeVobs;
+		// Coarse per-vob mesh-size margin for the sphere pre-filter below (PrepareFrameSkeletals doesn't know a
+		// vob's actual mesh extent yet — the exact per-record cull, ps.range + visual->MeshSize*0.5f, still
+		// runs below once the visual is resolved).
+		constexpr float kSkeletalCullPad = 6.0f;
 		for ( const FramePointShadow& ps : g_FramePointShadows ) {
 			if ( ps.slot >= kMaxShadowCubes ) continue;
 			D3D12_CPU_DESCRIPTOR_HANDLE dsv = activeDsvBase;
@@ -2276,7 +2294,16 @@ void D3D12GraphicsEngine::RenderPointShadows() {
 			// BuildPointShadowExcludeList / D3D11's GetHasOriginVob+SetupVobsToExclude.
 			const bool hasExclusions = BuildPointShadowExcludeList( m_PointShadowSlots[ps.slot].owner, excludeVobs );
 
-			for ( const FrameSkelDraw& d : g_FrameSkelDraws ) {
+			// Sphere-cull the FULL registered skeletal-vob list against THIS light (parity with the CSM cascade
+			// fix — a caster invisible to the player, but within a torch's range, can still cast a shadow into
+			// it), reusing g_SkelUploadCache so an NPC already prepared for the main view/a cascade this frame
+			// costs nothing extra here beyond the sphere test + record append. Same O(lights * vobs) CPU cost
+			// D3D11's own per-light DrawWorldAround pays for its animated-shadow pass — cheap distance checks,
+			// not GPU work (the static-aside split already amortizes the expensive part).
+			g_PointShadowSkelDraws.clear();
+			PrepareFrameSkeletals( Engine::GAPI->GetSkeletalMeshVobs(), nullptr, -2, &ps.posWS, ps.range + kSkeletalCullPad );
+
+			for ( const FrameSkelDraw& d : g_PointShadowSkelDraws ) {
 				if ( !d.visual || !d.vobInfo || !d.vobInfo->Vob ) continue;
 				if ( hasExclusions && std::find( excludeVobs.begin(), excludeVobs.end(), d.vobInfo->Vob ) != excludeVobs.end() )
 					continue;
@@ -3975,16 +4002,20 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
     return XR_SUCCESS;
 }
 
-void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& vobs, const Frustum* cullFrustum, int shadowCascade ) {
-    // P2.9b-4b (pre-cull) + shadow-cascade parity: run each candidate skeletal vob's once-per-frame animation
-    // update, upload its instance + bone CBs (base meshes) and its node attachments' VOB-instance data into the
-    // per-frame rings ONCE (cached in g_SkelUploadCache — the pose data is view-independent), and RECORD the
-    // (possibly cached) GPU addresses into the caller's destination list: g_FrameSkelDraws/g_FrameAttachDraws
-    // for the main view (shadowCascade < 0), or g_ShadowSkelDraws[c]/g_ShadowAttachDraws[c] for shadow cascade c
-    // — mirrors D3D11's Shadows::DrawSkeletalMeshes, which culls the FULL registered skeletal-vob list against
-    // the CASCADE frustum rather than reusing the player's view-frustum-culled list (a caster invisible to the
+void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& vobs, const Frustum* cullFrustum, int shadowCascade,
+    const DirectX::XMFLOAT3* sphereCenter, float sphereRange ) {
+    // P2.9b-4b (pre-cull) + shadow-cascade/point-shadow parity: run each candidate skeletal vob's once-per-frame
+    // animation update, upload its instance + bone CBs (base meshes) and its node attachments' VOB-instance data
+    // into the per-frame rings ONCE (cached in g_SkelUploadCache — the pose data is view-independent), and
+    // RECORD the (possibly cached) GPU addresses into the caller's destination list: g_FrameSkelDraws/
+    // g_FrameAttachDraws for the main view (shadowCascade < 0, default), g_ShadowSkelDraws[c]/
+    // g_ShadowAttachDraws[c] for CSM cascade c (shadowCascade >= 0), or g_PointShadowSkelDraws/
+    // g_PointShadowAttachDraws for a point light (shadowCascade == -2) — mirrors D3D11's
+    // Shadows::DrawSkeletalMeshes, which culls the FULL registered skeletal-vob list against the shadow's OWN
+    // frustum/sphere rather than reusing the player's view-frustum-culled list (a caster invisible to the
     // player can still cast a visible shadow). NO draws here — DrawSkeletalDepthPrepass/DrawSkeletalColor read
-    // g_FrameSkelDraws/g_FrameAttachDraws; RenderSunShadows reads g_ShadowSkelDraws[c]/g_ShadowAttachDraws[c].
+    // g_FrameSkelDraws/g_FrameAttachDraws; RenderSunShadows reads g_ShadowSkelDraws[c]/g_ShadowAttachDraws[c];
+    // RenderPointShadows reads g_PointShadowSkelDraws.
     if ( !m_FrameOpen || !m_SkeletalCBBuffer[m_FrameIndex] || !m_SkeletalCBBufferPtr[m_FrameIndex] )
         return;
     GothicRendererState& rs = Engine::GAPI->GetRendererState();
@@ -3992,12 +4023,18 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
         return;
     if ( vobs.empty() ) return;
 
-    std::vector<FrameSkelDraw>&   outSkel   = (shadowCascade >= 0) ? g_ShadowSkelDraws[shadowCascade]   : g_FrameSkelDraws;
-    std::vector<FrameAttachDraw>& outAttach = (shadowCascade >= 0) ? g_ShadowAttachDraws[shadowCascade] : g_FrameAttachDraws;
+    std::vector<FrameSkelDraw>&   outSkel   = (shadowCascade >= 0) ? g_ShadowSkelDraws[shadowCascade]
+                                             : (shadowCascade == -2) ? g_PointShadowSkelDraws : g_FrameSkelDraws;
+    std::vector<FrameAttachDraw>& outAttach = (shadowCascade >= 0) ? g_ShadowAttachDraws[shadowCascade]
+                                             : (shadowCascade == -2) ? g_PointShadowAttachDraws : g_FrameAttachDraws;
 
-    const float radius = rs.RendererSettings.SkeletalMeshDrawRadius;
-    const XMVECTOR camPos = Engine::GAPI->GetCameraPositionXM();
-    const XMVECTOR radiusSq = XMVectorReplicate( radius * radius );
+    // Distance cull: by default around the player camera (SkeletalMeshDrawRadius) — the main-view/CSM case,
+    // where cullFrustum does the real work and this is just a coarse pre-filter. When sphereCenter is given
+    // (point-shadow case), cull around the LIGHT instead — its range IS the relevant radius, the camera isn't.
+    const bool useSphereCull = sphereCenter != nullptr;
+    const XMVECTOR cullOrigin = useSphereCull ? XMLoadFloat3( sphereCenter ) : Engine::GAPI->GetCameraPositionXM();
+    const float cullRadius = useSphereCull ? sphereRange : rs.RendererSettings.SkeletalMeshDrawRadius;
+    const XMVECTOR cullRadiusSq = XMVectorReplicate( cullRadius * cullRadius );
     const UINT frame = m_FrameIndex;
     const auto now = Engine::GAPI->GetTotalTimeDW();
     static std::vector<XMFLOAT4X4> boneCache;
@@ -4009,8 +4046,8 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
         // Ghosts don't cast shadows either (parity with D3D11's Shadows::DrawSkeletalMeshes ghost skip).
         if ( vi->Vob->GetVisualAlpha() && vi->Vob->GetVobTransparency() < 0.7f ) continue;
 
-        if ( XMVector3Greater( XMVector3LengthSq( camPos - vi->Vob->GetPositionWorldXM() ), radiusSq ) )
-            continue;   // out of skeletal-draw range
+        if ( XMVector3Greater( XMVector3LengthSq( cullOrigin - vi->Vob->GetPositionWorldXM() ), cullRadiusSq ) )
+            continue;   // out of skeletal-draw range (player radius, or the light's sphere for point shadows)
 
         // Cull against the caller's frustum — the player's view for the main pass (no filter needed; that list
         // is already pre-culled by the caller) or THIS cascade's frustum for shadows.

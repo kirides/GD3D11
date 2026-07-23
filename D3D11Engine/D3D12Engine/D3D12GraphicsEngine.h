@@ -173,10 +173,15 @@ private:
     // once/frame anim update + upload bone/inst CBs + attachment instances (pre-cull). cullFrustum (if given)
     // rejects vobs whose bbox misses it — used by the shadow cascades to cull against the CASCADE frustum
     // instead of the player's view frustum (a caster invisible to the player can still cast a visible shadow).
-    // shadowCascade >= 0 routes the (filtered) records into that cascade's own list instead of the main-view
-    // g_FrameSkelDraws/g_FrameAttachDraws; the per-vob CB/attachment ring upload itself is still cached once
-    // per frame (see g_SkelUploadCache) regardless of how many cull passes touch that vob.
-    void PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& vobs, const Frustum* cullFrustum = nullptr, int shadowCascade = -1 );
+    // sphereCenter/sphereRange (if given, sphereCenter != nullptr) instead cull by distance from that point —
+    // used by point-light shadows to cull against the LIGHT's sphere instead of the player's camera radius;
+    // cullFrustum and sphereCenter are mutually exclusive per call (cascades pass a frustum, point lights pass
+    // a sphere). shadowCascade >= 0 routes the (filtered) records into that cascade's own list, -2 routes into
+    // the point-shadow scratch list (g_PointShadowSkelDraws/g_PointShadowAttachDraws), else the main-view
+    // g_FrameSkelDraws/g_FrameAttachDraws; the per-vob CB/attachment ring upload itself is still cached once per
+    // frame (see g_SkelUploadCache) regardless of how many cull passes touch that vob.
+    void PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& vobs, const Frustum* cullFrustum = nullptr, int shadowCascade = -1,
+        const DirectX::XMFLOAT3* sphereCenter = nullptr, float sphereRange = 0.0f );
     void DrawSkeletalDepthPrepass();  // lay down skeletal base + node-attachment depth into the Forward+ prepass
     void DrawSkeletalColor();         // draw the collected skeletal base meshes + node attachments (post-cull, lit)
     bool CreateParticleInstanceBuffers(); // per-frame dynamic (upload-heap) particle instance ring
