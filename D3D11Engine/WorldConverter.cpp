@@ -1374,9 +1374,18 @@ void WorldConverter::ExtractProgMeshProtoFromModel( zCModel* model, MeshVisualIn
                 vertices.emplace_back();
 
                 ExVertexStruct& vx = vertices.back();
-                XMStoreFloat3( &vx.Position, XMVector3TransformCoord( XMLoadFloat3( &posList[wedge.position] ), XMMatrixTranspose( XMLoadFloat4x4( &node->TrafoObjToCam ) ) ) );
+                XMMATRIX nodeTrafo = XMMatrixTranspose( XMLoadFloat4x4( &node->TrafoObjToCam ) );
+                XMStoreFloat3( &vx.Position, XMVector3TransformCoord( XMLoadFloat3( &posList[wedge.position] ), nodeTrafo ) );
                 vx.TexCoord = wedge.texUV;
-                vx.Normal = wedge.normal;
+                // The position bakes the node's bind-pose transform in (above); the normal must rotate by the SAME
+                // transform or it stays in the attachment's raw local mesh space while position moves into node/
+                // model space. At draw time both then get the outer per-instance world matrix (PrepareFrameSkeletals'
+                // attWorld = modelWorld * boneCache[n]) applied identically to position and normal — if the normal
+                // never got this node-local rotation, it ends up in the wrong space entirely, so N.L (and thus the
+                // CSM shadow test's occlusion sampling and the direct sun term) come out wrong/near-zero regardless
+                // of the attachment's actual orientation or shadow state, leaving only the flat ambient floor visible
+                // — exactly "same brightness in sun or in shadow".
+                XMStoreFloat3( &vx.Normal, XMVector3Normalize( XMVector3TransformNormal( XMLoadFloat3( &wedge.normal ), nodeTrafo ) ) );
                 vx.Color = 0xFFFFFFFF;
             }
 
