@@ -4228,6 +4228,22 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
 
             const XMMATRIX xmWorld = vi->Vob->GetWorldMatrixXM() * XMMatrixScalingFromVector( model->GetModelScaleXM() );
 
+            // Baked ground/ambient light for this vob (mirrors D3D11's DrawSkeletalMeshVobs non-shadow-branch
+            // modelColor: DEFAULT_LIGHTMAP_POLY_COLOR indoors, else the ground polygon's lightStat at the vob's
+            // position). A hardcoded white here (as this used to be, "first-light" placeholder) makes vertLighting
+            // (i.col.g) == 1 always, which zeroes out ShadowAOStrength/WorldAOStrength's lerp(1.0, vertLighting,
+            // strength) to a no-op regardless of the slider — skeletal meshes/attachments then can't darken
+            // indoors like world/VOB geometry does. Sampled once per vob per frame (one polygon lookup), not
+            // per-vertex.
+            float4 groundLight( 1.0f, 1.0f, 1.0f, 1.0f );
+            if ( vi->Vob->IsIndoorVob() ) {
+                groundLight = DEFAULT_LIGHTMAP_POLY_COLOR_F;
+            } else if ( zCPolygon* groundPoly = vi->Vob->GetGroundPoly() ) {
+                float3 vobPos = vi->Vob->GetPositionWorld();
+                float3 lightStat = groundPoly->GetLightStatAtPos( vobPos );
+                groundLight = float4( lightStat.z / 255.0f, lightStat.y / 255.0f, lightStat.x / 255.0f, 1.0f );
+            }
+
             SkelUploadCache entry;
 
             // Base skinned mesh — skipped entirely for attachment-only MOBs (empty SkeletalMeshes). Mirrors
@@ -4252,7 +4268,7 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
 
                 SkeletalInstanceCB inst = {};
                 XMStoreFloat4x4( &inst.World, xmWorld );
-                inst.ModelColor = XMFLOAT4( 1.0f, 1.0f, 1.0f, 1.0f );   // first-light: white; ground-light color is a later step
+                inst.ModelColor = XMFLOAT4( groundLight.x, groundLight.y, groundLight.z, groundLight.w );
                 inst.Fatness = model->GetModelFatness();
 
                 uint8_t* ringBase = m_SkeletalCBBufferPtr[frame];
@@ -4312,7 +4328,7 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                             }
                             VobInstanceInfo vii = {};
                             vii.world = attWorld;
-                            vii.color = 0xFFFFFFFF;   // first-light: white (baked ground-light tint is a later step)
+                            vii.color = groundLight.ToDWORD();
                             const UINT instOffset = m_VobInstanceBufferOffset;
                             memcpy( m_VobInstanceBufferPtr[frame] + instOffset, &vii, instBytes );
                             m_VobInstanceBufferOffset += instBytes;
