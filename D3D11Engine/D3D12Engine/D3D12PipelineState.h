@@ -78,6 +78,34 @@ public:
         Microsoft::WRL::ComPtr<ID3D12PipelineState> LitPSO;   // opaque/alpha-test, depth-write on
         std::unordered_map<uint32_t, Microsoft::WRL::ComPtr<ID3D12PipelineState>> BlendPipelines; // key = BlendKey
     };
+    // Skinned skeletal meshes (animated NPCs/monsters): own root sig (b0 ViewProj consts, b1 instance CBV,
+    // b2 bone-palette CBV, Forward+ light SRVs, CSM + point-shadow tables, bindless material indices). Lit PSO +
+    // a depth-prepass PSO (color masked off). The depth-prepass VS also drives the CSM skeletal shadow caster
+    // (built in the engine's CreateShadowMap). The per-frame skeletal CB ring (instance + bones) stays in the engine.
+    struct SkeletalPipeline {
+        Microsoft::WRL::ComPtr<ID3D12RootSignature> RootSig;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> PSO;                // lit opaque skinned
+        Microsoft::WRL::ComPtr<ID3DBlob>            VsBlob;
+        Microsoft::WRL::ComPtr<ID3DBlob>            PsBlob;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassPSO;    // depth-only skinned (color write mask 0)
+        Microsoft::WRL::ComPtr<ID3DBlob>            DepthPrepassVsBlob;  // also reused by the CSM skeletal shadow caster
+        Microsoft::WRL::ComPtr<ID3DBlob>            DepthPrepassPsBlob;
+    };
+    // Point-light shadow cubes: two root sigs (world + VOB casters share one; the skeletal caster has its own,
+    // with the 6-face view-proj CBV at b0), four VS/PS blobs, and three single-pass 6-face caster PSOs. The cube
+    // ARRAY textures, per-slot DSV heaps, array SRV, and per-frame face-CB / VOB-instance rings are GPU resources
+    // and stay in the engine.
+    struct PointShadowPipeline {
+        Microsoft::WRL::ComPtr<ID3D12RootSignature> RootSig;          // world + VOB casters (b0 face CBV, t0, s0)
+        Microsoft::WRL::ComPtr<ID3D12RootSignature> SkeletalRootSig;  // skeletal caster (b0 faces, b1 inst, b2 bones)
+        Microsoft::WRL::ComPtr<ID3DBlob>            VsBlob;            // VSCube (world)
+        Microsoft::WRL::ComPtr<ID3DBlob>            VobVsBlob;         // VSCubeVob (step-rate-6 instance stream)
+        Microsoft::WRL::ComPtr<ID3DBlob>            SkelVsBlob;        // VSCubeSkel (matrix-palette skinning)
+        Microsoft::WRL::ComPtr<ID3DBlob>            PsBlob;            // PSCubeClip (void, alpha-clip) — shared
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> CasterWorldPSO;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> CasterVobPSO;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> CasterSkeletalPSO;
+    };
 
     // Stores non-owning device + shader-backend pointers; call once before any Create*().
     bool Init( D3D12Device* device, D3D12ShaderBackend* shaders );
@@ -89,6 +117,8 @@ public:
     bool CreateUI();          // 2D/UI root sig + shaders; warms the default PSO (vertex buffers stay in engine)
     bool CreateParticle();    // particle root sig + shaders; warms the alpha PSO (instance buffers stay in engine)
     bool CreateDecal();       // decal root sig + shaders + fixed lit PSO; warms alpha (quad/instance VBs stay in engine)
+    bool CreateSkeletal();    // skinned root sig + lit + depth-prepass PSOs (skeletal CB ring stays in the engine)
+    bool CreatePointShadow(); // point-shadow root sigs + shaders + 3 caster PSOs (cube textures/DSVs/rings stay in engine)
     bool CreateTonemap();     // fullscreen HDR->swapchain resolve (exposure + ACES)
     bool CreateWater();       // alpha-blended water (own root sig: b0 ViewProj, t0, b1 fog, b2 water)
     bool CreateLightCull();   // Forward+ tiled light-cull compute (global compute root sig)
@@ -99,10 +129,12 @@ public:
     ID3D12PipelineState* GetOrCreateDecalBlendPipeline( const GothicBlendStateInfo& blend );
 
     // --- Storage (one per migrated pass) ---
-    WorldPipeline    World;
-    UIPipeline       UI;
-    ParticlePipeline Particle;
-    DecalPipeline    Decal;
+    WorldPipeline       World;
+    UIPipeline          UI;
+    ParticlePipeline    Particle;
+    DecalPipeline       Decal;
+    SkeletalPipeline    Skeletal;
+    PointShadowPipeline PointShadow;
     GraphicsPipeline Tonemap;
     GraphicsPipeline Water;
     ComputePipeline  LightCull;

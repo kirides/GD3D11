@@ -425,7 +425,7 @@ XRESULT D3D12GraphicsEngine::Init() {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the point-light buffer.";
         return XR_FAILED;
     }
-    if ( !CreateSkeletalPipeline() ) {
+    if ( !m_Pipelines.CreateSkeletal() || !CreateSkeletalConstantBuffers() ) {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the skeletal pipeline.";
         return XR_FAILED;
     }
@@ -436,7 +436,7 @@ XRESULT D3D12GraphicsEngine::Init() {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the sun shadow map.";
         return XR_FAILED;
     }
-    if ( !CreatePointShadowCubes() ) {
+    if ( !m_Pipelines.CreatePointShadow() || !CreatePointShadowResources() ) {
         // Fatal: the lit PSOs sample the cube array (t5) unconditionally once P2.10d lands, so a missing resource
         // would leave that root slot unbound. Failing here cleanly falls back to D3D11 (D3D12 is dev-forced).
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create point-light shadow cubes.";
@@ -1277,8 +1277,8 @@ bool D3D12GraphicsEngine::CreateShadowMap() {
     }
 
     // Skeletal caster PSO (P2.9c-2): reuse the skeletal depth-prepass VSDepth (matrix-palette skinning) +
-    // m_SkeletalRootSig + the skinned input layout, same caster state.
-    if ( m_DepthPrepassSkeletalVsBlob && m_SkeletalRootSig ) {
+    // m_Pipelines.Skeletal.RootSig + the skinned input layout, same caster state.
+    if ( m_Pipelines.Skeletal.DepthPrepassVsBlob && m_Pipelines.Skeletal.RootSig ) {
         if ( !m_ShaderBackend.CompileFromFile( "Skeletal.hlsl", "PSShadowClip", Shadermodel_PS, m_ShadowCasterSkeletalPsBlob.ReleaseAndGetAddressOf() ) )
             return false;
         const D3D12_INPUT_ELEMENT_DESC skelLayout[] = {
@@ -1292,8 +1292,8 @@ bool D3D12GraphicsEngine::CreateShadowMap() {
             { "BONEIDS",  0, DXGI_FORMAT_R8G8B8A8_UINT,      0, 64, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
             { "WEIGHTS",  0, DXGI_FORMAT_R16G16B16A16_FLOAT, 0, 68, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         };
-        pso.pRootSignature = m_SkeletalRootSig.Get();
-        pso.VS = { m_DepthPrepassSkeletalVsBlob->GetBufferPointer(), m_DepthPrepassSkeletalVsBlob->GetBufferSize() };
+        pso.pRootSignature = m_Pipelines.Skeletal.RootSig.Get();
+        pso.VS = { m_Pipelines.Skeletal.DepthPrepassVsBlob->GetBufferPointer(), m_Pipelines.Skeletal.DepthPrepassVsBlob->GetBufferSize() };
         pso.PS = { m_ShadowCasterSkeletalPsBlob->GetBufferPointer(), m_ShadowCasterSkeletalPsBlob->GetBufferSize() };
         pso.InputLayout = { skelLayout, _countof( skelLayout ) };
         if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_ShadowCasterSkeletalPSO.ReleaseAndGetAddressOf() ) ) ) ) {
@@ -1330,67 +1330,14 @@ bool D3D12GraphicsEngine::CreateShadowMap() {
     return true;
 }
 
-bool D3D12GraphicsEngine::CreatePointShadowCubes() {
-    // P2.10a: the shared point-light shadow cube ARRAY + its single-pass instanced world caster PSO. Mirrors
+bool D3D12GraphicsEngine::CreatePointShadowResources() {
+    // P2.10a: the point-light shadow cube ARRAY GPU RESOURCES — the active + static-aside cube textures, their
+    // per-slot 6-slice DSV heaps, the TextureCubeArray SRV, and the per-frame face-matrix CB + VOB-instance rings.
+    // The caster PIPELINES (root sigs, shaders, PSOs) live in m_Pipelines.PointShadow (CreatePointShadow). Mirrors
     // D3D11's Forward+ TextureCubeArray (SHADOW_CUBE_SIZE 128, MAX_SHADOW_CUBEMAPS shared slots, R16 depth,
-    // NORMAL-Z). Nothing renders/samples yet (that's P2.10b/d) — this only builds the resource + pipeline, so
-    // it's compile-safe and inert. Non-fatal at init: on failure the point lights simply stay unshadowed.
+    // NORMAL-Z). Non-fatal at init: on failure the point lights simply stay unshadowed.
     ID3D12Device* device = m_Device.GetDevice();
     if ( !device ) return false;
-
-    // --- Root signature: b0 = the 6 face view-projs as a root CBV (VS); t0 = diffuse SRV table (PS alpha-clip);
-    // static linear sampler s0. (b0 is a CBV not root consts — 6 matrices = 384B exceed the root-const budget.)
-    D3D12_DESCRIPTOR_RANGE srvRange = {};
-    srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    srvRange.NumDescriptors = 1;
-    srvRange.BaseShaderRegister = 0;   // t0
-    srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-    D3D12_ROOT_PARAMETER params[2] = {};
-    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-    params[0].Descriptor.ShaderRegister = 0;   // b0 PCR_ViewProj[6]
-    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[1].DescriptorTable.NumDescriptorRanges = 1;
-    params[1].DescriptorTable.pDescriptorRanges = &srvRange;
-    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_STATIC_SAMPLER_DESC sampler = {};
-    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler.MaxLOD = D3D12_FLOAT32_MAX;
-    sampler.ShaderRegister = 0;   // s0
-    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-    rsDesc.NumParameters = _countof( params );
-    rsDesc.pParameters = params;
-    rsDesc.NumStaticSamplers = 1;
-    rsDesc.pStaticSamplers = &sampler;
-    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
-
-    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
-    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (point shadows)."; return false; }
-    ComPtr<ID3DBlob> rsBlob, rsErr;
-    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-        if ( rsErr ) LogWarn() << "D3D12: point-shadow root sig error: " << static_cast<const char*>( rsErr->GetBufferPointer() );
-        return false;
-    }
-    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
-        IID_PPV_ARGS( m_PointShadowRootSig.ReleaseAndGetAddressOf() ) ) ) )
-        return false;
-
-    // --- Caster shader: single-pass 6-face via instancing. instanceID (0..5) picks the face view-proj AND is
-    // written to SV_RenderTargetArrayIndex to route the primitive to that cube face slice (no geometry shader —
-    // needs VS-stage RT-array-index support, present on the target AMD GPU). World verts are already world-space.
-    if ( !m_ShaderBackend.CompileFromFile( "PointShadow.hlsl", "VSCube", Shadermodel_VS, m_PointShadowVsBlob.ReleaseAndGetAddressOf() ) )
-        return false;
-    if ( !m_ShaderBackend.CompileFromFile( "PointShadow.hlsl", "VSCubeVob", Shadermodel_VS, m_PointShadowVobVsBlob.ReleaseAndGetAddressOf() ) )
-        return false;
-    if ( !m_ShaderBackend.CompileFromFile( "PointShadow.hlsl", "VSCubeSkel", Shadermodel_VS, m_PointShadowSkelVsBlob.ReleaseAndGetAddressOf() ) )
-        return false;
-    if ( !m_ShaderBackend.CompileFromFile( "PointShadow.hlsl", "PSCubeClip", Shadermodel_PS, m_PointShadowPsBlob.ReleaseAndGetAddressOf() ) )
-        return false;
 
     // --- Cube array resource: Texture2DArray with kMaxShadowCubes*6 R16 slices (interpreted as a TextureCubeArray
     // by the SRV). NORMAL-Z depth (clear 1.0, LESS_EQUAL). Born in DEPTH_WRITE (RenderPointShadows flips it to
@@ -1470,122 +1417,6 @@ bool D3D12GraphicsEngine::CreatePointShadowCubes() {
     srv.TextureCubeArray.MipLevels = 1;
     srv.TextureCubeArray.NumCubes = kMaxShadowCubes;
     device->CreateShaderResourceView( m_PointShadowCube.Get(), &srv, GetSrvCpuHandle( m_PointShadowSrvSlot ) );
-
-    // Caster PSO. Single stream: Position + TexCoord0 from the packed 36-byte world vertex. Depth-only (no RTV),
-    // NORMAL-Z LESS_EQUAL, CULL_NONE (D3D11 renders cubes with cullFront=false; bias is applied at sample time).
-    const D3D12_INPUT_ELEMENT_DESC layout[] = {
-        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-    };
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
-    pso.pRootSignature = m_PointShadowRootSig.Get();
-    pso.VS = { m_PointShadowVsBlob->GetBufferPointer(), m_PointShadowVsBlob->GetBufferSize() };
-    pso.PS = { m_PointShadowPsBlob->GetBufferPointer(), m_PointShadowPsBlob->GetBufferSize() };
-    pso.InputLayout = { layout, _countof( layout ) };
-    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    pso.NumRenderTargets = 0;
-    pso.DSVFormat = DXGI_FORMAT_D16_UNORM;
-    pso.SampleDesc.Count = 1;
-    pso.SampleMask = UINT_MAX;
-    pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-    pso.RasterizerState.DepthClipEnable = TRUE;
-    pso.RasterizerState.DepthBias = 100;                 // hardware depth bias (hyperbolic depth) to fight acne
-    pso.RasterizerState.SlopeScaledDepthBias = 2.0f;     // — free with early-Z, unlike an in-shader bias
-    pso.RasterizerState.DepthBiasClamp = 0.0f;
-    pso.BlendState.RenderTarget[0].RenderTargetWriteMask = 0;
-    pso.DepthStencilState.DepthEnable = TRUE;
-    pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
-    pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;   // normal-Z
-    pso.DepthStencilState.StencilEnable = FALSE;
-    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_PointShadowCasterWorldPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (point-shadow world caster).";
-        return false;
-    }
-
-    // --- VOB caster PSO (P2.10e): same root sig (per-instance world rides the vertex stream, not the root) + the
-    // same caster state, but VSCubeVob and a two-stream layout whose instance rows carry InstanceDataStepRate=6 —
-    // so one real instance is fetched for 6 consecutive instanceIDs and each renders to one cube face. The instance
-    // stream is a TIGHT 64-byte world matrix (packed by RenderPointShadows; not the full 144B VobInstanceInfo).
-    {
-        const D3D12_INPUT_ELEMENT_DESC vobLayout[] = {
-            { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-            { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-            { "INSTANCE_WORLD_MATRIX", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  0, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-            { "INSTANCE_WORLD_MATRIX", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 16, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-            { "INSTANCE_WORLD_MATRIX", 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 32, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-            { "INSTANCE_WORLD_MATRIX", 3, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 48, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-        };
-        pso.pRootSignature = m_PointShadowRootSig.Get();
-        pso.VS = { m_PointShadowVobVsBlob->GetBufferPointer(), m_PointShadowVobVsBlob->GetBufferSize() };
-        pso.PS = { m_PointShadowPsBlob->GetBufferPointer(), m_PointShadowPsBlob->GetBufferSize() };
-        pso.InputLayout = { vobLayout, _countof( vobLayout ) };
-        if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_PointShadowCasterVobPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: CreateGraphicsPipelineState failed (point-shadow VOB caster).";
-            return false;
-        }
-    }
-
-    // --- Skeletal caster: needs a dedicated root sig (b0 = 6 face view-projs CBV, b1 = instance, b2 = bones, all
-    // VS; t0 diffuse table + s0 for the alpha cutout). Mirrors the sun path's skeletal binds but with the 6-matrix
-    // face CBV at b0 instead of the single-matrix root const. Reuses the per-frame d.instCb/d.boneCb.
-    {
-        D3D12_DESCRIPTOR_RANGE skelSrvRange = {};
-        skelSrvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-        skelSrvRange.NumDescriptors = 1;
-        skelSrvRange.BaseShaderRegister = 0;   // t0
-        skelSrvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-        D3D12_ROOT_PARAMETER skelParams[4] = {};
-        skelParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-        skelParams[0].Descriptor.ShaderRegister = 0;   // b0 PCR_ViewProj[6]
-        skelParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-        skelParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-        skelParams[1].Descriptor.ShaderRegister = 1;   // b1 instance (M_World/Fatness)
-        skelParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-        skelParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-        skelParams[2].Descriptor.ShaderRegister = 2;   // b2 bones
-        skelParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-        skelParams[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        skelParams[3].DescriptorTable.NumDescriptorRanges = 1;
-        skelParams[3].DescriptorTable.pDescriptorRanges = &skelSrvRange;
-        skelParams[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-        D3D12_ROOT_SIGNATURE_DESC skelDesc = {};
-        skelDesc.NumParameters = _countof( skelParams );
-        skelDesc.pParameters = skelParams;
-        skelDesc.NumStaticSamplers = 1;
-        skelDesc.pStaticSamplers = &sampler;
-        skelDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
-        ComPtr<ID3DBlob> skelBlob, skelErr;
-        if ( FAILED( serialize( &skelDesc, D3D_ROOT_SIGNATURE_VERSION_1, skelBlob.GetAddressOf(), skelErr.GetAddressOf() ) ) ) {
-            if ( skelErr ) LogWarn() << "D3D12: point-shadow skeletal root sig error: " << static_cast<const char*>( skelErr->GetBufferPointer() );
-            return false;
-        }
-        if ( FAILED( device->CreateRootSignature( 0, skelBlob->GetBufferPointer(), skelBlob->GetBufferSize(),
-            IID_PPV_ARGS( m_PointShadowSkeletalRootSig.ReleaseAndGetAddressOf() ) ) ) )
-            return false;
-
-        const D3D12_INPUT_ELEMENT_DESC skelLayout[] = {
-            { "POSITION", 0, DXGI_FORMAT_R16G16B16A16_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-            { "POSITION", 1, DXGI_FORMAT_R16G16B16A16_FLOAT, 0,  8, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-            { "POSITION", 2, DXGI_FORMAT_R16G16B16A16_FLOAT, 0, 16, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-            { "POSITION", 3, DXGI_FORMAT_R16G16B16A16_FLOAT, 0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-            { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-            { "TEXCOORD", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 44, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-            { "TEXCOORD", 1, DXGI_FORMAT_R32G32_FLOAT,       0, 56, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-            { "BONEIDS",  0, DXGI_FORMAT_R8G8B8A8_UINT,      0, 64, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-            { "WEIGHTS",  0, DXGI_FORMAT_R16G16B16A16_FLOAT, 0, 68, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        };
-        pso.pRootSignature = m_PointShadowSkeletalRootSig.Get();
-        pso.VS = { m_PointShadowSkelVsBlob->GetBufferPointer(), m_PointShadowSkelVsBlob->GetBufferSize() };
-        pso.PS = { m_PointShadowPsBlob->GetBufferPointer(), m_PointShadowPsBlob->GetBufferSize() };
-        pso.InputLayout = { skelLayout, _countof( skelLayout ) };
-        if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_PointShadowCasterSkeletalPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: CreateGraphicsPipelineState failed (point-shadow skeletal caster).";
-            return false;
-        }
-    }
 
     // Per-frame ring for the face-matrix CB: one 512-byte (256-aligned; 6 matrices = 384B) slot per shadowed
     // light, so each light's cube draw binds its own root CBV without clobbering earlier same-frame draws.
@@ -1874,7 +1705,7 @@ void D3D12GraphicsEngine::RenderSunShadows() {
     D3D12VertexBuffer* ib = wm ? D3D12VertexBuffer::From( wm->GetMeshIndexBuffer() ) : nullptr;
     const bool haveWorld = vb && ib && vb->GetResource() && ib->GetResource()
                         && ( ib->GetSizeInBytes() / sizeof( uint32_t ) ) > 0;
-    const bool haveSkel   = m_ShadowCasterSkeletalPSO && m_SkeletalRootSig && !g_FrameSkelDraws.empty();
+    const bool haveSkel   = m_ShadowCasterSkeletalPSO && m_Pipelines.Skeletal.RootSig && !g_FrameSkelDraws.empty();
     const bool haveAttach = m_ShadowCasterVobPSO && !g_FrameAttachDraws.empty();
 
     const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_ShadowMapSize ), static_cast<float>( m_ShadowMapSize ), 0.0f, 1.0f };
@@ -2052,12 +1883,12 @@ void D3D12GraphicsEngine::RenderSunShadows() {
             }
         }
 
-        // --- Skinned skeletals (root sig: m_SkeletalRootSig; b0 cascade view-proj, b1 instance, b2 bones) ---
+        // --- Skinned skeletals (root sig: m_Pipelines.Skeletal.RootSig; b0 cascade view-proj, b1 instance, b2 bones) ---
         if ( haveSkel ) {
             DX_ZONE(m_CmdList, "Skeletals");
             
             m_CmdList->SetPipelineState( m_ShadowCasterSkeletalPSO.Get() );
-            m_CmdList->SetGraphicsRootSignature( m_SkeletalRootSig.Get() );
+            m_CmdList->SetGraphicsRootSignature( m_Pipelines.Skeletal.RootSig.Get() );
             m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
             for ( const FrameSkelDraw& d : g_FrameSkelDraws ) {
                 if ( !d.visual ) continue;
@@ -2132,8 +1963,8 @@ void D3D12GraphicsEngine::RenderPointShadows() {
     // So per-frame cost is one depth copy + the few near dynamic draws — the expensive static cull/draw is paid
     // once. Casters are range-culled to each light's sphere (360°, not the camera frustum). NORMAL-Z depth; the
     // active cube round-trips DEPTH_WRITE/COPY_DEST -> PIXEL_SHADER_RESOURCE for the lit pass and back next frame.
-    if ( !m_FrameOpen || !m_PointShadowCube || !m_PointShadowStaticCube || !m_PointShadowCasterWorldPSO
-        || !m_PointShadowDsvHeap || !m_PointShadowStaticDsvHeap || !m_PointShadowRootSig )
+    if ( !m_FrameOpen || !m_PointShadowCube || !m_PointShadowStaticCube || !m_Pipelines.PointShadow.CasterWorldPSO
+        || !m_PointShadowDsvHeap || !m_PointShadowStaticDsvHeap || !m_Pipelines.PointShadow.RootSig )
         return;
     if ( g_FramePointShadows.empty() ) return;
 
@@ -2143,9 +1974,9 @@ void D3D12GraphicsEngine::RenderPointShadows() {
     D3D12VertexBuffer* vb = wm ? D3D12VertexBuffer::From( wm->GetMeshVertexBuffer() ) : nullptr;
     D3D12VertexBuffer* ib = wm ? D3D12VertexBuffer::From( wm->GetMeshIndexBuffer() ) : nullptr;
     const bool haveWorld = vb && ib && vb->GetResource() && ib->GetResource();
-    const bool haveVobs  = m_PointShadowCasterVobPSO && !g_FrameVobUploads.empty()
+    const bool haveVobs  = m_Pipelines.PointShadow.CasterVobPSO && !g_FrameVobUploads.empty()
                         && m_PointShadowVobInstPtr[m_FrameIndex];
-    const bool haveSkel  = m_PointShadowCasterSkeletalPSO && m_PointShadowSkeletalRootSig && !g_FrameSkelDraws.empty();
+    const bool haveSkel  = m_Pipelines.PointShadow.CasterSkeletalPSO && m_Pipelines.PointShadow.SkeletalRootSig && !g_FrameSkelDraws.empty();
 
     const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( kPointShadowCubeSize ), static_cast<float>( kPointShadowCubeSize ), 0.0f, 1.0f };
     const D3D12_RECT     sc = { 0, 0, static_cast<LONG>( kPointShadowCubeSize ), static_cast<LONG>( kPointShadowCubeSize ) };
@@ -2222,8 +2053,8 @@ void D3D12GraphicsEngine::RenderPointShadows() {
             // --- World mesh: range-cull sections (AABB nearest-point), draw all 6 faces in one call. ---
             if ( haveWorld ) {
                 DX_ZONE( m_CmdList, "World Mesh" );
-                m_CmdList->SetPipelineState( m_PointShadowCasterWorldPSO.Get() );
-                m_CmdList->SetGraphicsRootSignature( m_PointShadowRootSig.Get() );
+                m_CmdList->SetPipelineState( m_Pipelines.PointShadow.CasterWorldPSO.Get() );
+                m_CmdList->SetGraphicsRootSignature( m_Pipelines.PointShadow.RootSig.Get() );
                 m_CmdList->SetGraphicsRootConstantBufferView( 0, faceCb( ps.slot ) );
                 const D3D12_VERTEX_BUFFER_VIEW vbv = { vb->GetGpuVirtualAddress(), vb->GetSizeInBytes(), sizeof( ExVertexStructGPU ) };
                 const D3D12_INDEX_BUFFER_VIEW  ibv = { ib->GetGpuVirtualAddress(), ib->GetSizeInBytes(), DXGI_FORMAT_R32_UINT };
@@ -2253,8 +2084,8 @@ void D3D12GraphicsEngine::RenderPointShadows() {
             // ring, draw count*6 (InstanceDataStepRate=6 → 6 faces per real instance). Same root sig as world. ---
             if ( haveVobs ) {
                 DX_ZONE( m_CmdList, "Vobs" );
-                m_CmdList->SetPipelineState( m_PointShadowCasterVobPSO.Get() );
-                m_CmdList->SetGraphicsRootSignature( m_PointShadowRootSig.Get() );
+                m_CmdList->SetPipelineState( m_Pipelines.PointShadow.CasterVobPSO.Get() );
+                m_CmdList->SetGraphicsRootSignature( m_Pipelines.PointShadow.RootSig.Get() );
                 m_CmdList->SetGraphicsRootConstantBufferView( 0, faceCb( ps.slot ) );
                 for ( const FrameVobUpload& up : g_FrameVobUploads ) {
                     MeshVisualInfo* visual = up.visual;
@@ -2331,8 +2162,8 @@ void D3D12GraphicsEngine::RenderPointShadows() {
     // static occluders. Runs every frame for every shadowed light — this is the real-time part of the split.
     if ( haveSkel ) {
         DX_ZONE( m_CmdList, "Dynamic Overlay (skeletals)" );
-        m_CmdList->SetPipelineState( m_PointShadowCasterSkeletalPSO.Get() );
-        m_CmdList->SetGraphicsRootSignature( m_PointShadowSkeletalRootSig.Get() );
+        m_CmdList->SetPipelineState( m_Pipelines.PointShadow.CasterSkeletalPSO.Get() );
+        m_CmdList->SetGraphicsRootSignature( m_Pipelines.PointShadow.SkeletalRootSig.Get() );
         for ( const FramePointShadow& ps : g_FramePointShadows ) {
             if ( ps.slot >= kMaxShadowCubes ) continue;
             D3D12_CPU_DESCRIPTOR_HANDLE dsv = activeDsvBase;
@@ -2618,7 +2449,7 @@ void D3D12GraphicsEngine::BindFrameLights( UINT srvParam, UINT countParam, UINT 
     // tiled light loop MUST call this after setting its root signature, or the loop bound (Count) and grid are
     // UNDEFINED root values and can run billions of iterations → GPU timeout/removal. Root args are cleared on
     // every SetGraphicsRootSignature. The param indices differ per root sig: m_Pipelines.World.RootSig uses (3,4,5,6) —
-    // the default — for the world mesh / instanced VOBs / node attachments; m_SkeletalRootSig uses (5,6,7,8).
+    // the default — for the world mesh / instanced VOBs / node attachments; m_Pipelines.Skeletal.RootSig uses (5,6,7,8).
     m_CmdList->SetGraphicsRootShaderResourceView( srvParam, m_LightBuffer[m_FrameIndex]->GetGPUVirtualAddress() );
     m_CmdList->SetGraphicsRoot32BitConstant( countParam, m_FrameLightCount, 0 );   // LightCount @ b*.x
     m_CmdList->SetGraphicsRoot32BitConstant( countParam, m_NumTilesX, 1 );         // NumTilesX  @ b*.y
@@ -3102,190 +2933,6 @@ void D3D12GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals, bool
     }
 
     rs.RendererInfo.FrameDrawnTriangles += drawnTris;
-}
-
-bool D3D12GraphicsEngine::CreateSkeletalPipeline() {
-    ID3D12Device* device = m_Device.GetDevice();
-
-    // Root signature: b0 = ViewProj (16 root 32-bit constants, VS); b1 = per-instance CBV (VS);
-    // b2 = bone-palette CBV (VS); t0 = diffuse SRV table (PS); static linear-wrap sampler s0 (PS).
-    // b1/b2 are root CBVs (raw GPU VAs into the per-frame skeletal ring) rather than root constants —
-    // the bone palette (up to 96 matrices = 6 KB) far exceeds the 64-DWORD root-constant budget.
-    D3D12_DESCRIPTOR_RANGE srvRange = {};
-    srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    srvRange.NumDescriptors = 1;
-    srvRange.BaseShaderRegister = 0;         // t0
-    srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-    // CSM sampling (P2.9c-4b): shadow-map array SRV at t4 (skeletal PS samples it like world/VOB).
-    D3D12_DESCRIPTOR_RANGE shadowSrvRange = {};
-    shadowSrvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    shadowSrvRange.NumDescriptors = 1;
-    shadowSrvRange.BaseShaderRegister = 4;    // t4
-    shadowSrvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-    // Point-light shadow cube array SRV at t5 (P2.10d).
-    D3D12_DESCRIPTOR_RANGE cubeSrvRange = {};
-    cubeSrvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    cubeSrvRange.NumDescriptors = 1;
-    cubeSrvRange.BaseShaderRegister = 5;      // t5
-    cubeSrvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-    D3D12_ROOT_PARAMETER params[13] = {};
-    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[0].Constants.ShaderRegister = 0;   // b0 ViewProj
-    params[0].Constants.Num32BitValues = 16;
-    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-    params[1].Descriptor.ShaderRegister = 1;  // b1 per-instance
-    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-    params[2].Descriptor.ShaderRegister = 2;  // b2 bone palette
-    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[3].DescriptorTable.NumDescriptorRanges = 1;
-    params[3].DescriptorTable.pDescriptorRanges = &srvRange;
-    params[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[4].Constants.ShaderRegister = 3;   // b3 fog
-    params[4].Constants.Num32BitValues = 8;   // FogConstants (8 DWORDs)
-    params[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;  // VS: CamPosWS; PS: color/near/far
-    // Forward+ point lights (mirrors m_Pipelines.World.RootSig params 3/4/5/6, here at 5..8 — see BindFrameLights). All
-    // MUST be bound at every skeletal draw or the PS light-loop bound/grid is undefined → GPU hang.
-    params[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-    params[5].Descriptor.ShaderRegister = 1;  // t1 light StructuredBuffer (root SRV, no descriptor slot)
-    params[5].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[6].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[6].Constants.ShaderRegister = 4;   // b4 { LightCount, NumTilesX, pad, pad }
-    params[6].Constants.Num32BitValues = 4;
-    params[6].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[7].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-    params[7].Descriptor.ShaderRegister = 2;  // t2 per-tile LightGrid {Offset,Count}
-    params[7].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[8].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-    params[8].Descriptor.ShaderRegister = 3;  // t3 per-tile light-index list
-    params[8].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[9].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-    params[9].Descriptor.ShaderRegister = 5;  // b5 shadow-sampling CB (skeletal's b3/b4 are fog/light count)
-    params[9].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[10].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[10].DescriptorTable.NumDescriptorRanges = 1;
-    params[10].DescriptorTable.pDescriptorRanges = &shadowSrvRange;
-    params[10].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[11].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[11].DescriptorTable.NumDescriptorRanges = 1;
-    params[11].DescriptorTable.pDescriptorRanges = &cubeSrvRange;   // t5 point-shadow cube array
-    params[11].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[12].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[12].Constants.ShaderRegister = 6;   // b6 MaterialCB { MatNormalIndex, MatOrmIndex } — bindless indices
-    params[12].Constants.Num32BitValues = 2;
-    params[12].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_STATIC_SAMPLER_DESC samplers[2] = {};
-    // s0 diffuse: 16x anisotropic (matches D3D11's main texture sampler) — sharpens surfaces at grazing
-    // angles and in the distance, which trilinear alone smears badly.
-    samplers[0].Filter = D3D12_FILTER_ANISOTROPIC;
-    samplers[0].MaxAnisotropy = 16;
-    samplers[0].AddressU = samplers[0].AddressV = samplers[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    samplers[0].MaxLOD = D3D12_FLOAT32_MAX;
-    samplers[0].ShaderRegister = 0;          // s0 diffuse
-    samplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    samplers[1].Filter = D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT;   // s2 PCF (see world root sig)
-    samplers[1].AddressU = samplers[1].AddressV = samplers[1].AddressW = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
-    samplers[1].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
-    samplers[1].ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
-    samplers[1].MaxLOD = D3D12_FLOAT32_MAX;
-    samplers[1].ShaderRegister = 2;          // s2 shadow comparison
-    samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-    rsDesc.NumParameters = _countof( params );
-    rsDesc.pParameters = params;
-    rsDesc.NumStaticSamplers = _countof( samplers );
-    rsDesc.pStaticSamplers = samplers;
-    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
-                 | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;   // SM6.6 bindless normal/ORM
-
-    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
-    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (skeletal)."; return false; }
-
-    ComPtr<ID3DBlob> rsBlob, rsErr;
-    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-        if ( rsErr ) LogWarn() << "D3D12: skeletal root signature serialize error: " << static_cast<const char*>(rsErr->GetBufferPointer());
-        return false;
-    }
-    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
-        IID_PPV_ARGS( m_SkeletalRootSig.ReleaseAndGetAddressOf() ) ) ) )
-        return false;
-
-    if ( !m_ShaderBackend.CompileFromFile( "Skeletal.hlsl", "VSMain", Shadermodel_VS, m_SkeletalVsBlob.ReleaseAndGetAddressOf() ) ) {
-        return false;
-    }
-    if ( !m_ShaderBackend.CompileFromFile( "Skeletal.hlsl", "PSMain", Shadermodel_PS, m_SkeletalPsBlob.ReleaseAndGetAddressOf() ) ) {
-        return false;
-    }
-
-    // Input layout = D3D11's layout3, explicit offsets into the 76-byte ExSkelVertexStruct:
-    //   Position[4]   4x half4  (R16G16B16A16_FLOAT) @0/8/16/24  — vertex baked into each bone's space
-    //   Normal        float3    @32
-    //   BindPoseNormal float3   @44 (TEXCOORD0)
-    //   TexCoord      float2    @56 (TEXCOORD1)
-    //   boneIndices   uint8x4   @64 (BONEIDS)
-    //   weights       half4     @68 (WEIGHTS)
-    const D3D12_INPUT_ELEMENT_DESC layout[] = {
-        { "POSITION", 0, DXGI_FORMAT_R16G16B16A16_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "POSITION", 1, DXGI_FORMAT_R16G16B16A16_FLOAT, 0,  8, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "POSITION", 2, DXGI_FORMAT_R16G16B16A16_FLOAT, 0, 16, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "POSITION", 3, DXGI_FORMAT_R16G16B16A16_FLOAT, 0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, 44, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 1, DXGI_FORMAT_R32G32_FLOAT,       0, 56, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "BONEIDS",  0, DXGI_FORMAT_R8G8B8A8_UINT,      0, 64, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "WEIGHTS",  0, DXGI_FORMAT_R16G16B16A16_FLOAT, 0, 68, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-    };
-
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
-    pso.pRootSignature = m_SkeletalRootSig.Get();
-    pso.VS = { m_SkeletalVsBlob->GetBufferPointer(), m_SkeletalVsBlob->GetBufferSize() };
-    pso.PS = { m_SkeletalPsBlob->GetBufferPointer(), m_SkeletalPsBlob->GetBufferSize() };
-    pso.InputLayout = { layout, _countof( layout ) };
-    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    pso.NumRenderTargets = 1;
-    pso.RTVFormats[0] = kSceneColorFormat;
-    pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
-    pso.SampleDesc.Count = 1;
-    pso.SampleMask = UINT_MAX;
-
-    pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;   // first-light; skinned winding varies
-    pso.RasterizerState.DepthClipEnable = TRUE;
-    pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-    pso.DepthStencilState.DepthEnable = TRUE;
-    pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
-    pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;  // reversed-Z
-    pso.DepthStencilState.StencilEnable = FALSE;
-
-    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_SkeletalPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (skeletal).";
-        return false;
-    }
-
-    // Skeletal depth-prepass PSO (P2.9b-4b): same root sig + skinned input layout + depth state, but VSDepth/
-    // PSDepthClip and color writes masked off. Lays down NPC/monster depth so the light cull bounds tiles to
-    // them (fixing the near-skeletal cutoff). Same layout as the color PSO (VSDepth reads the same VS_IN).
-    if ( !m_ShaderBackend.CompileFromFile( "Skeletal.hlsl", "VSDepth", Shadermodel_VS, m_DepthPrepassSkeletalVsBlob.ReleaseAndGetAddressOf() ) ) {
-        return false;
-    }
-    if ( !m_ShaderBackend.CompileFromFile( "Skeletal.hlsl", "PSDepthClip", Shadermodel_PS, m_DepthPrepassSkeletalPsBlob.ReleaseAndGetAddressOf() ) ) {
-        return false;
-    }
-    pso.VS = { m_DepthPrepassSkeletalVsBlob->GetBufferPointer(), m_DepthPrepassSkeletalVsBlob->GetBufferSize() };
-    pso.PS = { m_DepthPrepassSkeletalPsBlob->GetBufferPointer(), m_DepthPrepassSkeletalPsBlob->GetBufferSize() };
-    pso.BlendState.RenderTarget[0].RenderTargetWriteMask = 0;   // DEPTH ONLY — discard color
-    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_DepthPrepassSkeletalPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (skeletal depth prepass).";
-        return false;
-    }
-    return CreateSkeletalConstantBuffers();
 }
 
 bool D3D12GraphicsEngine::CreateSkeletalConstantBuffers() {
@@ -4353,7 +4000,7 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
 void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
     // P2.9b-4b (pre-cull): lay down skeletal base-mesh + node-attachment depth into the Forward+ opaque prepass
     // so the tiled light cull bounds tiles to NPCs/monsters (fixing the static near-skeletal cutoff). Depth-only;
-    // consumes the shared records. Base meshes via m_DepthPrepassSkeletalPSO (skinned), attachments via
+    // consumes the shared records. Base meshes via m_Pipelines.Skeletal.DepthPrepassPSO (skinned), attachments via
     // m_Pipelines.World.DepthPrepassVobPSO (packed vertex + instance) — both read only b0 + t0/s0, so no BindFrameLights.
     if ( !m_FrameOpen || !m_DepthBuffer ) return;
     if ( g_FrameSkelDraws.empty() && g_FrameAttachDraws.empty() ) return;
@@ -4371,10 +4018,10 @@ void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
     const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_BlackTexture->GetSrvSlot() );
 
     // Base skinned meshes (depth only).
-    if ( !g_FrameSkelDraws.empty() && m_DepthPrepassSkeletalPSO && m_SkeletalRootSig ) {
+    if ( !g_FrameSkelDraws.empty() && m_Pipelines.Skeletal.DepthPrepassPSO && m_Pipelines.Skeletal.RootSig ) {
         DX_ZONE( m_CmdList, "Depth Prepass (skeletal)" );
-        m_CmdList->SetPipelineState( m_DepthPrepassSkeletalPSO.Get() );
-        m_CmdList->SetGraphicsRootSignature( m_SkeletalRootSig.Get() );
+        m_CmdList->SetPipelineState( m_Pipelines.Skeletal.DepthPrepassPSO.Get() );
+        m_CmdList->SetGraphicsRootSignature( m_Pipelines.Skeletal.RootSig.Get() );
         m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
         m_CmdList->RSSetViewports( 1, &vp );
         m_CmdList->RSSetScissorRects( 1, &sc );
@@ -4456,9 +4103,9 @@ void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
 
 void D3D12GraphicsEngine::DrawSkeletalColor() {
     // P2.9b-4b (post-cull): draw the skeletal base meshes + node attachments collected by PrepareFrameSkeletals,
-    // lit through the tile grid. Base via m_SkeletalPSO, attachments via m_Pipelines.World.VobPSO — same PSOs/binds as before the
+    // lit through the tile grid. Base via m_Pipelines.Skeletal.PSO, attachments via m_Pipelines.World.VobPSO — same PSOs/binds as before the
     // 4b split, just consuming the shared records (no re-upload, no re-run of the once/frame animation update).
-    if ( !m_FrameOpen || !m_SkeletalPSO || !m_SkeletalRootSig || !m_DepthBuffer ) return;
+    if ( !m_FrameOpen || !m_Pipelines.Skeletal.PSO || !m_Pipelines.Skeletal.RootSig || !m_DepthBuffer ) return;
     if ( g_FrameSkelDraws.empty() && g_FrameAttachDraws.empty() ) return;
 
     GothicRendererState& rs = Engine::GAPI->GetRendererState();
@@ -4481,8 +4128,8 @@ void D3D12GraphicsEngine::DrawSkeletalColor() {
     // Base skinned meshes (lit).
     if ( !g_FrameSkelDraws.empty() ) {
         DX_ZONE( m_CmdList, "Draw skeletal" );
-        m_CmdList->SetPipelineState( m_SkeletalPSO.Get() );
-        m_CmdList->SetGraphicsRootSignature( m_SkeletalRootSig.Get() );
+        m_CmdList->SetPipelineState( m_Pipelines.Skeletal.PSO.Get() );
+        m_CmdList->SetGraphicsRootSignature( m_Pipelines.Skeletal.RootSig.Get() );
         m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
         m_CmdList->SetGraphicsRoot32BitConstants( 4, 8, &fog, 0 );   // b3 fog
         BindFrameLights( 5, 6, 7, 8 );   // light SRV(t1)+count(b4)+grid(t2)+index(t3) — MUST set all (see BindFrameLights)

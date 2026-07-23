@@ -167,7 +167,8 @@ private:
     void BuildFrameLightBuffer();     // (re)fill this frame's light buffer from the collected visible lights
     void BindFrameLights( UINT srvParam = 3, UINT countParam = 4, UINT gridParam = 5, UINT indexParam = 6 );   // light SRV(t1)+count+grid(t2)+index(t3); (3,4,5,6)=world, (5,6,7,8)=skeletal
     void DrawWaterSurfaces() override; // draw water peeled out of the opaque world pass (scrolled UV, blended)
-    bool CreateSkeletalPipeline();    // skeletal (animated NPC/monster) root sig + inline shaders + PSO
+    // Skeletal (animated NPC/monster) pipeline creation now lives in m_Pipelines.CreateSkeletal (root sig + lit +
+    // depth-prepass PSOs). The per-frame skeletal CB ring stays here:
     bool CreateSkeletalConstantBuffers(); // per-frame dynamic (upload-heap) skeletal CB ring (instance + bones)
     void PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& vobs );   // once/frame anim update + upload bone/inst CBs + attachment instances (pre-cull)
     void DrawSkeletalDepthPrepass();  // lay down skeletal base + node-attachment depth into the Forward+ prepass
@@ -304,13 +305,10 @@ private:
     bool CreateWorldIndirect();                      // command signature + per-frame arg ring (once, at init)
     void BuildWorldDrawCommands();                   // collect visible sections + fill arg ring (once/frame, pre-prepass)
 
-    // Forward+ opaque depth-prepass PSOs/blobs (world + instanced VOB) now live in m_Pipelines.World
-    // (DepthPrepassPSO/VsBlob/PsBlob, DepthPrepassVobPSO/VobVsBlob/VobPsBlob). The shadow-caster and skeletal
-    // PSOs below still reuse those blobs via m_Pipelines.World.DepthPrepass*.
-    // Skeletal depth prepass (P2.9b-4b): depth-only skinned PSO (color write mask 0), reuses m_SkeletalRootSig.
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_DepthPrepassSkeletalPSO;
-    Microsoft::WRL::ComPtr<ID3DBlob> m_DepthPrepassSkeletalVsBlob;
-    Microsoft::WRL::ComPtr<ID3DBlob> m_DepthPrepassSkeletalPsBlob;
+    // Forward+ opaque depth-prepass PSOs/blobs (world + instanced VOB) live in m_Pipelines.World
+    // (DepthPrepassPSO/VsBlob/PsBlob, DepthPrepassVobPSO/VobVsBlob/VobPsBlob). The skeletal depth-prepass PSO
+    // + blobs live in m_Pipelines.Skeletal (DepthPrepassPSO/DepthPrepassVsBlob/DepthPrepassPsBlob). The shadow-
+    // caster PSOs below still reuse those blobs via m_Pipelines.World.DepthPrepass* / m_Pipelines.Skeletal.DepthPrepass*.
 
     // CSM sun shadows (P2.9c). Directional shadow map = a Texture2DArray (one slice per cascade), R32_TYPELESS
     // so each slice serves a D32_FLOAT DSV and the whole array serves one R32_FLOAT SRV for later PCF sampling.
@@ -368,15 +366,9 @@ private:
     UINT m_PointShadowDsvSize = 0;
     UINT m_PointShadowSrvSlot = UINT_MAX;   // R16_UNORM TextureCubeArray SRV (all cubes), for the point-light sampler
     bool m_PointShadowInPixelState = false; // DEPTH_WRITE (caster) <-> PIXEL_SHADER_RESOURCE (lit) round-trip
-    Microsoft::WRL::ComPtr<ID3D12RootSignature> m_PointShadowRootSig;    // b0 = PCR_ViewProj[6] CBV (VS); t0 diffuse (PS); s0
-    Microsoft::WRL::ComPtr<ID3D12RootSignature> m_PointShadowSkeletalRootSig; // b0 faces + b1 instance + b2 bones (VS); t0 (PS); s0
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_PointShadowCasterWorldPSO;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_PointShadowCasterVobPSO;      // VSCubeVob (step-rate-6 instance stream)
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_PointShadowCasterSkeletalPSO; // VSCubeSkel (matrix-palette skinning)
-    Microsoft::WRL::ComPtr<ID3DBlob> m_PointShadowVsBlob;      // VSCube (layered, instanceID→face)
-    Microsoft::WRL::ComPtr<ID3DBlob> m_PointShadowVobVsBlob;   // VSCubeVob (per-instance world + face = iid%6)
-    Microsoft::WRL::ComPtr<ID3DBlob> m_PointShadowSkelVsBlob;  // VSCubeSkel (skinned; face = iid)
-    Microsoft::WRL::ComPtr<ID3DBlob> m_PointShadowPsBlob;      // PSCubeClip (void, alpha-clip)
+    // Point-shadow caster PIPELINES (both root sigs, the four VS/PS blobs, and the three caster PSOs) now live in
+    // m_Pipelines.PointShadow (RootSig/SkeletalRootSig, VsBlob/VobVsBlob/SkelVsBlob/PsBlob, CasterWorldPSO/
+    // CasterVobPSO/CasterSkeletalPSO). The cube textures, DSV heaps, SRV, and per-frame rings below stay here.
     // Per-frame ring of the 6-face view-proj CB, one 512-aligned slot per shadowed light (bound as root CBV b0).
     Microsoft::WRL::ComPtr<ID3D12Resource> m_PointShadowCB[kBackBufferCount];
     uint8_t* m_PointShadowCBMapped[kBackBufferCount] = {};
@@ -413,7 +405,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource>       m_PointShadowStaticCube;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_PointShadowStaticDsvHeap; // one D16 6-slice DSV per slot (mirrors active)
     D3D12_RESOURCE_STATES m_PointShadowStaticState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
-    bool CreatePointShadowCubes();     // both cube arrays + per-slot DSVs + array SRV + caster PSOs + root sigs + CB ring (once, at init)
+    bool CreatePointShadowResources(); // both cube arrays + per-slot DSVs + array SRV + face-CB/VOB-instance rings (once, at init; PSOs in m_Pipelines.CreatePointShadow)
     void RenderPointShadows();         // static pass (dirty slots) -> copy static->active -> dynamic overlay -> PSR
 
     // Forward+ tiled light culling (P2.9b-2): one global compute root sig + PSO; two resolution-sized
@@ -454,13 +446,10 @@ private:
     // peeled out of DrawWorldMesh's opaque loop and drawn here after all opaque geometry.
     // Water pipeline (RootSig/PSO/blobs) now lives in m_Pipelines.Water
 
-    // Skeletal (animated NPC/monster) path — matrix-palette skinning. Own root sig (b0 ViewProj root
-    // consts + b1 per-instance CBV + b2 bone-palette CBV + t0 SRV + s0). Per-frame CB ring holds each
-    // vob's instance CB + bone matrices (root CBVs into it, 256-byte aligned).
-    Microsoft::WRL::ComPtr<ID3D12RootSignature> m_SkeletalRootSig;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_SkeletalPSO;
-    Microsoft::WRL::ComPtr<ID3DBlob> m_SkeletalVsBlob;
-    Microsoft::WRL::ComPtr<ID3DBlob> m_SkeletalPsBlob;
+    // Skeletal (animated NPC/monster) path — matrix-palette skinning. The root sig (b0 ViewProj root consts +
+    // b1 per-instance CBV + b2 bone-palette CBV + t0 SRV + s0), lit + depth-prepass PSOs, and their blobs now
+    // live in m_Pipelines.Skeletal. The per-frame CB ring below holds each vob's instance CB + bone matrices
+    // (root CBVs into it, 256-byte aligned).
     Microsoft::WRL::ComPtr<ID3D12Resource> m_SkeletalCBBuffer[kBackBufferCount]; // persistently-mapped upload ring
     uint8_t* m_SkeletalCBBufferPtr[kBackBufferCount] = {};
     UINT m_SkeletalCBBufferCapacity = 0;
