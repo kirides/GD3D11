@@ -144,6 +144,7 @@ public:
     bool CreateLightCull();   // Forward+ tiled light-cull compute (global compute root sig)
     bool CreatePreview();     // single-VOB inventory-item preview (own root sig: b0 ViewProj, b1 World, t0 diffuse)
     bool CreateBloom();       // prefilter/downsample/upsample compute + additive composite graphics pipeline
+    bool CreateGhost();       // ghost/transparency VOBs (own root sig: b0 ViewProj, b1 World, b2 GhostAlpha, t0 diffuse)
 
     // --- On-demand PSO cache lookups (called from the engine's draw path; create+cache on miss) ---
     // cullMode/frontCCW/rtvIsHdr/forceMaxZ default to the plain 2D/UI case (cull-none, clockwise-front,
@@ -168,6 +169,7 @@ public:
     ComputePipeline  LightCull;
     GraphicsPipeline Preview;
     BloomPipeline    Bloom;
+    GraphicsPipeline Ghost;
 
 private:
     D3D12Device*        m_Device = nullptr;

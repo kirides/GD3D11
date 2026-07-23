@@ -194,6 +194,11 @@ private:
     // transparent pass (per-material blend, depth-read-only, drawn over the finished scene). Mirrors D3D11's
     // two-pass DrawDecalList; preserves the received back-to-front order (painter's algorithm, no batching).
     void DrawDecalList( const std::vector<zCVob*>& decals, bool lighting );
+    // Ghost/transparency VOBs (invisible-potion/fade items — GothicAPI::TransparencyVobs, populated every frame
+    // by CollectVisibleVobs' GetVisualAlpha() branch). Mirrors D3D11's GothicAPI::DrawTransparencyVobs (unlit
+    // diffuse sample, alpha *= per-vob GhostAlpha) but MUST run regardless of feature support: nothing else
+    // drains this list, so skipping the call would leak one entry per ghost vob per frame forever.
+    void DrawGhostVobs();
     bool AcquireBackBufferRTVs();     // (re)fetch swapchain buffers + build their RTVs
     bool ResizeSwapChain( INT2 size );
     void WaitForGpuIdle();            // full CPU/GPU flush (used on resize / teardown)

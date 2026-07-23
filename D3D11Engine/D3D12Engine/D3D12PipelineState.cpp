@@ -351,6 +351,119 @@ bool D3D12PipelineState::CreatePreview() {
     return true;
 }
 
+bool D3D12PipelineState::CreateGhost() {
+    // Ghost/transparency VOBs (GothicAPI::TransparencyVobs — invisible-potion/fade-out items, GetVisualAlpha()):
+    // single-object, non-instanced, alpha-blended draw. Mirrors D3D11's PS_Transparency (unlit: sample diffuse,
+    // alpha *= per-vob GhostAlpha) — reuses Preview.hlsl's VSMain (identical single-object World/ViewProj layout)
+    // plus a new PSGhost entry point, with its own root sig (adds the GhostAlpha root constant Preview lacks).
+    // Simplification vs. D3D11: D3D11 does a same-mesh Z-prepass first so a ghost's own back faces don't double-
+    // blend through its front faces; this single-pass version skips that (rare/minor artifact on chunky ghost
+    // meshes, acceptable for a niche effect) — no depth WRITE either, so multiple overlapping ghosts all show.
+    ID3D12Device* device = m_Device->GetDevice();
+
+    D3D12_DESCRIPTOR_RANGE srvRange = {};
+    srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    srvRange.NumDescriptors = 1;
+    srvRange.BaseShaderRegister = 0;   // t0
+    srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    D3D12_ROOT_PARAMETER params[4] = {};
+    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[0].Constants.ShaderRegister = 0;   // b0 ViewProj
+    params[0].Constants.Num32BitValues = 16;
+    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[1].Constants.ShaderRegister = 1;   // b1 World (per-instance, single draw — no instance buffer needed)
+    params[1].Constants.Num32BitValues = 16;
+    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[2].Constants.ShaderRegister = 2;   // b2 GhostAlpha
+    params[2].Constants.Num32BitValues = 1;
+    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[3].DescriptorTable.NumDescriptorRanges = 1;
+    params[3].DescriptorTable.pDescriptorRanges = &srvRange;
+    params[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    // s0 diffuse: matches Preview's sampler (16x anisotropic wrap).
+    D3D12_STATIC_SAMPLER_DESC sampler = {};
+    sampler.Filter = D3D12_FILTER_ANISOTROPIC;
+    sampler.MaxAnisotropy = 16;
+    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler.MaxLOD = D3D12_FLOAT32_MAX;
+    sampler.ShaderRegister = 0;   // s0
+    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+    rsDesc.NumParameters = _countof( params );
+    rsDesc.pParameters = params;
+    rsDesc.NumStaticSamplers = 1;
+    rsDesc.pStaticSamplers = &sampler;
+    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
+    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (ghost)."; return false; }
+
+    ComPtr<ID3DBlob> rsBlob, rsErr;
+    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
+        if ( rsErr ) LogWarn() << "D3D12: ghost root signature serialize error: " << static_cast<const char*>(rsErr->GetBufferPointer());
+        return false;
+    }
+    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
+        IID_PPV_ARGS( Ghost.RootSig.ReleaseAndGetAddressOf() ) ) ) )
+        return false;
+
+    if ( !m_Shaders->CompileFromFile( "Preview.hlsl", "VSMain", Shadermodel_VS, Ghost.VsBlob.ReleaseAndGetAddressOf() ) ) {
+        return false;
+    }
+    if ( !m_Shaders->CompileFromFile( "Preview.hlsl", "PSGhost", Shadermodel_PS, Ghost.PsBlob.ReleaseAndGetAddressOf() ) ) {
+        return false;
+    }
+
+    // Position (@0) + TexCoord0 (@24) from ExVertexStruct — identical to Preview's layout (same CPU-side mesh format).
+    const D3D12_INPUT_ELEMENT_DESC layout[] = {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    };
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+    pso.pRootSignature = Ghost.RootSig.Get();
+    pso.VS = { Ghost.VsBlob->GetBufferPointer(), Ghost.VsBlob->GetBufferSize() };
+    pso.PS = { Ghost.PsBlob->GetBufferPointer(), Ghost.PsBlob->GetBufferSize() };
+    pso.InputLayout = { layout, _countof( layout ) };
+    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pso.NumRenderTargets = 1;
+    pso.RTVFormats[0] = kSceneColorFormat;   // ghosts draw into the HDR scene color, before the tonemap resolve
+    pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+    pso.SampleDesc.Count = 1;
+    pso.SampleMask = UINT_MAX;
+
+    pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    pso.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;   // matches D3D11's RasterizerState.SetDefault() for ghosts
+    pso.RasterizerState.DepthClipEnable = TRUE;
+
+    D3D12_RENDER_TARGET_BLEND_DESC& rt = pso.BlendState.RenderTarget[0];
+    rt.BlendEnable = TRUE;
+    rt.SrcBlend = D3D12_BLEND_SRC_ALPHA;
+    rt.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+    rt.BlendOp = D3D12_BLEND_OP_ADD;
+    rt.SrcBlendAlpha = D3D12_BLEND_ONE;
+    rt.DestBlendAlpha = D3D12_BLEND_ZERO;
+    rt.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+    pso.DepthStencilState.DepthEnable = TRUE;
+    pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;    // don't occlude other ghosts/opaque geo
+    pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL; // reversed-Z, tested against opaque depth
+    pso.DepthStencilState.StencilEnable = FALSE;
+
+    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( Ghost.PSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (ghost).";
+        return false;
+    }
+    return true;
+}
+
 bool D3D12PipelineState::CreateDepthPrepass() {
     // Forward+ opaque depth prepass (P2.9b-1): a depth-only variant of the world-mesh pass. Reuses
     // World.RootSig (only b0 ViewProj + t0/s0 are referenced by the prepass shaders) and the world's

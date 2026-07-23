@@ -380,6 +380,10 @@ public:
     void DrawTransparencyVobs();
     void DrawSkeletalVN();
 
+    /** Backend-neutral accessor so a non-D3D11 backend can drain TransparencyVobs itself
+        (DrawTransparencyVobs() above is hard-wired to D3D11GraphicsEngine). */
+    std::vector<TransparencyVobInfo>& GetTransparencyVobs() { return TransparencyVobs; }
+
     /** Draws the inventory */
     void DrawInventory( zCWorld* world, zCCamera& camera );
 

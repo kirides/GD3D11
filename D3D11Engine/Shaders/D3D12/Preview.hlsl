@@ -25,3 +25,14 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     clip( t.a - 0.5 );
     return t;
 }
+
+// Ghost/transparency VOBs (D3D12PipelineState::CreateGhost): reuses VSMain's single-object World/ViewProj
+// layout. Mirrors D3D11's PS_Transparency — unlit diffuse sample, alpha multiplied by a per-vob fade factor,
+// no alpha-clip (a fading ghost should smoothly disappear, not pop).
+cbuffer GhostCB : register(b2) { float GhostAlpha; float3 _GhostPad; };
+
+float4 PSGhost( VS_OUT i ) : SV_TARGET
+{
+    float4 t = tx.Sample( smp, i.uv );
+    return float4( t.rgb, t.a * GhostAlpha );
+}

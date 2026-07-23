@@ -546,6 +546,12 @@ XRESULT D3D12GraphicsEngine::Init() {
         // RenderBloom() guards on the PSOs existing and just skips the effect if this failed.
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the bloom pipeline (bloom will be unavailable).";
     }
+    if ( !m_Pipelines.CreateGhost() ) {
+        // Non-fatal: ghost/transparency VOBs are a niche effect (invisible-potion/fade items). DrawGhostVobs()
+        // guards on Ghost.PSO existing and, if this failed, simply drains+discards Engine::GAPI->TransparencyVobs
+        // every frame instead of drawing it — GothicAPI still needs that drain to avoid an unbounded per-frame leak.
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the ghost pipeline (ghost VOBs will be invisible).";
+    }
     LogInfo() << "D3D12GraphicsEngine initialized (device + 2D + world + VOB + skeletal + water + particle + decal + HDR tonemap pipelines up). Swapchain is created once the game window is set.";
     return XR_SUCCESS;
 }
@@ -3459,6 +3465,94 @@ void D3D12GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals, bool
 	rs.RendererInfo.FrameDrawnTriangles += drawnTris;
 }
 
+void D3D12GraphicsEngine::DrawGhostVobs() {
+	// GothicAPI::TransparencyVobs is populated every frame by CollectVisibleVobs' GetVisualAlpha() branch
+	// (invisible-potion/fade-out items) and is otherwise ONLY drained by D3D11's GothicAPI::DrawTransparencyVobs
+	// (hard-wired to D3D11GraphicsEngine — never called on this backend). Without a consumer here the list grows
+	// unbounded, one entry per ghost vob per frame, forever — so this function MUST run every frame regardless
+	// of whether the Ghost PSO exists.
+	auto& transparencyVobs = Engine::GAPI->GetTransparencyVobs();
+	if ( transparencyVobs.empty() ) return;
+
+	if ( !m_FrameOpen || !m_Pipelines.Ghost.PSO || !m_Pipelines.Ghost.RootSig ) {
+		transparencyVobs.clear();   // drop this frame's ghosts rather than leak; drawing is unavailable right now
+		return;
+	}
+
+	// Reversed-Z ViewProj — identical derivation to DrawVobsInstanced/DrawWorldMesh.
+	GothicRendererState& rs = Engine::GAPI->GetRendererState();
+	XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
+	Engine::GAPI->SetViewTransformXM( view );
+	Engine::GAPI->ResetWorldTransform();
+	const XMFLOAT4X4& viewM = rs.TransformState.TransformView;
+	const XMFLOAT4X4& projM = Engine::GAPI->GetProjectionMatrix();
+	XMFLOAT4X4 viewProj;
+	XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
+
+	m_CmdList->SetPipelineState( m_Pipelines.Ghost.PSO.Get() );
+	m_CmdList->SetGraphicsRootSignature( m_Pipelines.Ghost.RootSig.Get() );
+	m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
+
+	D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_Resolution.x), static_cast<float>(m_Resolution.y), 0.0f, 1.0f };
+	D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
+	m_CmdList->RSSetViewports( 1, &vp );
+	m_CmdList->RSSetScissorRects( 1, &sc );
+	m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+
+	const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_BlackTexture->GetSrvSlot() );
+	unsigned int drawnTris = 0;
+
+	// D3D11 draws these back-to-front (painter's algorithm) via a min/max-heap drain; the legacy
+	// CollectVisibleVobs path (used by this backend, GothicAPI.cpp's std::ranges::sort(TransparencyVobs,
+	// CompareGhostDistance)) instead leaves the vector plain-sorted NEAREST-first, so iterate it in reverse.
+	for ( auto it = transparencyVobs.rbegin(); it != transparencyVobs.rend(); ++it ) {
+		const TransparencyVobInfo& info = *it;
+		if ( !info.normalVob || !info.normalVob->VisualInfo ) continue;   // skeletal ghosts: not yet ported (owed-debt)
+
+		VobInfo* vi = info.normalVob;
+		XMFLOAT4X4 world = vi->WorldMatrix;
+		m_CmdList->SetGraphicsRoot32BitConstants( 1, 16, &world, 0 );
+		m_CmdList->SetGraphicsRoot32BitConstants( 2, 1, &info.alpha, 0 );
+
+		MeshVisualInfo* visual = static_cast<MeshVisualInfo*>( vi->VisualInfo );
+		for ( auto const& materialMesh : visual->Meshes ) {
+			D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
+			if ( materialMesh.first ) {
+				if ( zCTexture* aniTex = materialMesh.first->GetAniTexture() ) {
+					if ( aniTex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+						if ( MyDirectDrawSurface7* surface = aniTex->GetSurface() ) {
+							if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
+								D3D12Texture* d12 = D3D12Texture::From( gfx );
+								if ( d12->HasSRV() ) srv = d12->GetSrvGpuHandle();
+							}
+						}
+					}
+				}
+			}
+			m_CmdList->SetGraphicsRootDescriptorTable( 3, srv );
+
+			for ( auto const& meshInfo : materialMesh.second ) {
+				if ( !meshInfo || meshInfo->Indices.empty() || !meshInfo->GetMeshVertexBuffer() || !meshInfo->GetMeshIndexBuffer() )
+					continue;
+				D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( meshInfo->GetMeshVertexBuffer() );
+				D3D12VertexBuffer* mib = D3D12VertexBuffer::From( meshInfo->GetMeshIndexBuffer() );
+				if ( !mvb->GetResource() || !mib->GetResource() ) continue;
+
+				const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStruct ) };
+				m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
+				const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
+				m_CmdList->IASetIndexBuffer( &ibv );
+
+				m_CmdList->DrawIndexedInstanced( static_cast<UINT>(meshInfo->Indices.size()), 1, 0, 0, 0 );
+				drawnTris += static_cast<unsigned int>(meshInfo->Indices.size()) / 3;
+			}
+		}
+	}
+
+	transparencyVobs.clear();
+	rs.RendererInfo.FrameDrawnTriangles += drawnTris;
+}
+
 bool D3D12GraphicsEngine::CreateSkeletalConstantBuffers() {
 	ID3D12Device* device = m_Device.GetDevice();
 	D3D12MA::ALLOCATION_DESC uploadAlloc = {};
@@ -3704,6 +3798,14 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	{
 		DX_ZONE( m_CmdList, "Draw particles" );
 		DrawParticleEffects();
+	}
+
+	// Ghosts (invisible-potion/fade-out items): drawn last of the alpha content, mirrors D3D11's "Draw ghosts"
+	// pass placement (after the transparency waterfall/decals, before post-FX). MUST run every frame even if
+	// EnableBloom/etc. are off — it also drains GothicAPI::TransparencyVobs, which nothing else consumes.
+	{
+		DX_ZONE( m_CmdList, "Draw ghosts" );
+		DrawGhostVobs();
 	}
 
 	// Clear the per-visual instance lists so next frame's CollectVisibleVobs starts fresh (mirrors D3D11).
