@@ -225,8 +225,13 @@ bool D3D12PipelineState::CreateWorld() {
     pso.SampleMask = UINT_MAX;
 
     pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    // Cull NONE for first-light so a wrong winding assumption can't hide the whole world.
-    pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    // CULL_BACK matches D3D11's GothicRasterizerStateInfo::SetDefault() (CM_CULL_BACK), the standard cull
+    // mode for opaque world/VOB/skeletal geometry there. CULL_NONE (as this used to be) draws BOTH faces of
+    // every triangle; for THIN geometry (leaf cards, ice slabs, etc. — often two nearly-coincident surfaces)
+    // that turns a normal single-sided draw into two near-identical depths fighting every frame, which reads
+    // as flicker. D3D11 never disables culling for ordinary world/VOB/skeletal draws — only the dedicated
+    // GVegetationBox grass path (not yet ported to D3D12) opts into CM_CULL_NONE for actual double-sided cards.
+    pso.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
     pso.RasterizerState.DepthClipEnable = TRUE;
 
     pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
@@ -383,7 +388,7 @@ bool D3D12PipelineState::CreateDepthPrepass() {
     pso.SampleMask = UINT_MAX;
 
     pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;   // match the world PSO's winding treatment
+    pso.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;   // match the world/VOB color PSOs' cull mode
     pso.RasterizerState.DepthClipEnable = TRUE;
 
     pso.BlendState.RenderTarget[0].RenderTargetWriteMask = 0;   // DEPTH ONLY — discard color
@@ -467,7 +472,7 @@ bool D3D12PipelineState::CreateVob() {
     pso.SampleMask = UINT_MAX;
 
     pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;   // first-light; VOB winding varies
+    pso.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;   // matches D3D11's CM_CULL_BACK default for VOBs
     pso.RasterizerState.DepthClipEnable = TRUE;
     pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     pso.DepthStencilState.DepthEnable = TRUE;
@@ -1061,7 +1066,7 @@ bool D3D12PipelineState::CreateSkeletal() {
     pso.SampleMask = UINT_MAX;
 
     pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;   // first-light; skinned winding varies
+    pso.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;   // matches D3D11's CM_CULL_BACK default for skinned meshes
     pso.RasterizerState.DepthClipEnable = TRUE;
     pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     pso.DepthStencilState.DepthEnable = TRUE;
