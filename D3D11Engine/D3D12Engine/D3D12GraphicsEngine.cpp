@@ -21,6 +21,7 @@
 #include "../zFont.h"
 #include "../zCCamera.h"
 #include "../oCGame.h"
+#include "../oCVisFX.h"
 #include "../DXGIHelpers.h"
 
 #include <dxcapi.h>
@@ -2009,6 +2010,47 @@ void D3D12GraphicsEngine::RenderSunShadows() {
 	m_CmdList->OMSetRenderTargets( 1, &m_SceneColorRtv, FALSE, m_DepthBuffer ? &mainDsv : nullptr );
 }
 
+bool D3D12GraphicsEngine::BuildPointShadowExcludeList( zCVobLight* lightVob, std::vector<const zCVob*>& excludeOut ) {
+	excludeOut.clear();
+	if ( Engine::GAPI->GetRendererState().RendererSettings.AllowSelfShadowingPointlights ) return false;
+	if ( !lightVob ) return false;
+
+	// PFX-spawned lights (spell effects etc.) aren't excluded — mirrors D3D11 GetHasOriginVob's
+	// `!info->IsPFXVobLight` gate (only carried-item lights get self-shadow exclusion).
+	auto li = Engine::GAPI->VobLightMap.find( lightVob );
+	if ( li != Engine::GAPI->VobLightMap.end() && li->second->IsPFXVobLight ) return false;
+
+	// Only lights attached to a carried item get exclusion (mirrors D3D11 GetHasOriginVob): walk the light
+	// vob's ancestor chain looking for an oCVisualFX whose origin is an oCItem, or an oCItem ancestor directly.
+	bool hasOriginVob = false;
+	for ( const zCVob* vob = lightVob->GetVobParent(); vob; vob = vob->GetVobParent() ) {
+		if ( auto visFx = vob->As<oCVisualFX>() ) {
+			if ( const zCVob* origin = visFx->GetOrigin(); origin && origin->As<oCItem>() ) { hasOriginVob = true; break; }
+		} else if ( vob->As<oCItem>() ) {
+			hasOriginVob = true;
+			break;
+		}
+	}
+	if ( !hasOriginVob ) return false;
+
+	// Collect the light vob's full ancestor chain, also following any oCVisualFX origin sideways (mirrors
+	// D3D11 CollectVobTreeToExclude) — e.g. a torch item's owning NPC ends up excluded from its own light's
+	// shadow cube, which is what prevents the "huge shadow blob from the player's own body" artifact.
+	std::vector<const zCVob*> stack;
+	stack.push_back( lightVob );
+	while ( !stack.empty() ) {
+		const zCVob* vob = stack.back();
+		stack.pop_back();
+		if ( !vob || std::find( excludeOut.begin(), excludeOut.end(), vob ) != excludeOut.end() ) continue;
+		excludeOut.push_back( vob );
+		if ( auto vfx = vob->As<oCVisualFX>() ) {
+			if ( zCVob* origin = vfx->GetOrigin() ) stack.push_back( origin );
+		}
+		if ( zCVob* parent = vob->GetVobParent() ) stack.push_back( parent );
+	}
+	return true;
+}
+
 void D3D12GraphicsEngine::RenderPointShadows() {
 	// P2.10g — static/dynamic split (the D3D11 static-aside model). Per shadowed light, the active cube is built
 	// each frame as (cached static-only depth) + (this frame's dynamic casters overlaid). Three phases:
@@ -2221,6 +2263,7 @@ void D3D12GraphicsEngine::RenderPointShadows() {
 		DX_ZONE( m_CmdList, "Dynamic Overlay (skeletals)" );
 		m_CmdList->SetPipelineState( m_Pipelines.PointShadow.CasterSkeletalPSO.Get() );
 		m_CmdList->SetGraphicsRootSignature( m_Pipelines.PointShadow.SkeletalRootSig.Get() );
+		static std::vector<const zCVob*> excludeVobs;
 		for ( const FramePointShadow& ps : g_FramePointShadows ) {
 			if ( ps.slot >= kMaxShadowCubes ) continue;
 			D3D12_CPU_DESCRIPTOR_HANDLE dsv = activeDsvBase;
@@ -2228,8 +2271,15 @@ void D3D12GraphicsEngine::RenderPointShadows() {
 			m_CmdList->OMSetRenderTargets( 0, nullptr, FALSE, &dsv );   // no clear — keep the copied static depth
 			m_CmdList->SetGraphicsRootConstantBufferView( 0, faceCb( ps.slot ) );
 
+			// Self-shadow exclusion (P2.10 owed-debt item): a light carried by an NPC (e.g. a torch in its hand)
+			// otherwise casts that NPC's own body as a huge shadow blob into its own cube — see
+			// BuildPointShadowExcludeList / D3D11's GetHasOriginVob+SetupVobsToExclude.
+			const bool hasExclusions = BuildPointShadowExcludeList( m_PointShadowSlots[ps.slot].owner, excludeVobs );
+
 			for ( const FrameSkelDraw& d : g_FrameSkelDraws ) {
 				if ( !d.visual || !d.vobInfo || !d.vobInfo->Vob ) continue;
+				if ( hasExclusions && std::find( excludeVobs.begin(), excludeVobs.end(), d.vobInfo->Vob ) != excludeVobs.end() )
+					continue;
 				const XMFLOAT3 pos = d.vobInfo->Vob->GetPositionWorld();
 				const float cullR = ps.range + d.visual->MeshSize * 0.5f;
 				float dx = pos.x - ps.posWS.x, dy = pos.y - ps.posWS.y, dz = pos.z - ps.posWS.z;

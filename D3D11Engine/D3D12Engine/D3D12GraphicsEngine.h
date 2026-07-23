@@ -431,6 +431,13 @@ private:
     D3D12_RESOURCE_STATES m_PointShadowStaticState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
     bool CreatePointShadowResources(); // both cube arrays + per-slot DSVs + array SRV + face-CB/VOB-instance rings (once, at init; PSOs in m_Pipelines.CreatePointShadow)
     void RenderPointShadows();         // static pass (dirty slots) -> copy static->active -> dynamic overlay -> PSR
+    // Self-shadow exclusion for point lights attached to a carried item/NPC — without this, e.g. a torch light
+    // held in an NPC's hand casts a huge shadow blob from that NPC's own body onto itself. Mirrors D3D11's
+    // GetHasOriginVob + SetupVobsToExclude/CollectVobTreeToExclude (D3D11PointLight.cpp). Populates excludeOut
+    // with the light vob's ancestor chain (+ any oCVisualFX origin) and returns true when non-empty; returns
+    // false (excludeOut left empty) when self-shadowing is allowed, the light isn't attached to a carried item,
+    // or it's a PFX-spawned light (those aren't excluded, matching D3D11's GetHasOriginVob gate).
+    bool BuildPointShadowExcludeList( zCVobLight* lightVob, std::vector<const zCVob*>& excludeOut );
 
     // Forward+ tiled light culling (P2.9b-2): one global compute root sig + PSO; two resolution-sized
     // DEFAULT-heap UAV buffers holding the per-tile {Offset,Count} grid and the per-tile light-index slices
