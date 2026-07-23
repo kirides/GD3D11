@@ -1,6 +1,6 @@
 cbuffer WorldCB : register(b0) { float4x4 ViewProj; };   // default column-major packing (see world shader)
 cbuffer FogCB   : register(b1) { float3 FogColor; float FogNear; float3 CamPosWS; float FogFar; };
-cbuffer LightCB : register(b2) { uint LightCount; uint NumTilesX; uint2 _lpad; };
+cbuffer LightCB : register(b2) { uint LightCount; uint NumTilesX; uint LimitLightIntensity; uint _lpad; };
 
 // Forward+ tiled point lights (root-descriptor SRVs + per-tile grid)
 struct GPULight { float3 PositionView; float Range; float4 Color; float3 PositionWorld; int ShadowCubeIndex; };
@@ -191,6 +191,7 @@ float3 AccumTiledPointLights( float2 svpos, float3 wpos, float3 N, float3 albedo
     uint n = min( g.Count, MAX_LIGHTS_PER_TILE );
     float3 V = normalize( CamPosWS - wpos );
     float3 total = 0;
+    float3 maxLit = 0;
     for ( uint k = 0; k < n; k++ )
     {
         GPULight L = Lights[ LightIndexBuf[g.Offset + k] ];
@@ -209,8 +210,9 @@ float3 AccumTiledPointLights( float2 svpos, float3 wpos, float3 N, float3 albedo
             lit *= lerp( sh, 1.0, fade );
         }
         total += lit;
+        maxLit = max( maxLit, lit );
     }
-    return total;
+    return LimitLightIntensity != 0 ? maxLit : total;
 }
 
 struct VS_IN

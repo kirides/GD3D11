@@ -2584,15 +2584,20 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 
 void D3D12GraphicsEngine::BindFrameLights( UINT srvParam, UINT countParam, UINT gridParam, UINT indexParam ) {
 	// Bind the Forward+ tiled point-light root params: srvParam = the light StructuredBuffer as a root SRV
-	// (t1), countParam = LightCB { LightCount, NumTilesX }, gridParam/indexParam = the per-tile grid (t2) and
-	// light-index list (t3) root SRVs produced by DispatchLightCulling. EVERY draw whose bound PSO reads the
-	// tiled light loop MUST call this after setting its root signature, or the loop bound (Count) and grid are
-	// UNDEFINED root values and can run billions of iterations → GPU timeout/removal. Root args are cleared on
-	// every SetGraphicsRootSignature. The param indices differ per root sig: m_Pipelines.World.RootSig uses (3,4,5,6) —
-	// the default — for the world mesh / instanced VOBs / node attachments; m_Pipelines.Skeletal.RootSig uses (5,6,7,8).
+	// (t1), countParam = LightCB { LightCount, NumTilesX, LimitLightIntensity }, gridParam/indexParam = the
+	// per-tile grid (t2) and light-index list (t3) root SRVs produced by DispatchLightCulling. EVERY draw
+	// whose bound PSO reads the tiled light loop MUST call this after setting its root signature, or the loop
+	// bound (Count) and grid are UNDEFINED root values and can run billions of iterations → GPU timeout/
+	// removal. Root args are cleared on every SetGraphicsRootSignature. The param indices differ per root
+	// sig: m_Pipelines.World.RootSig uses (3,4,5,6) — the default — for the world mesh / instanced VOBs /
+	// node attachments; m_Pipelines.Skeletal.RootSig uses (5,6,7,8).
 	m_CmdList->SetGraphicsRootShaderResourceView( srvParam, m_LightBuffer[m_FrameIndex]->GetGPUVirtualAddress() );
 	m_CmdList->SetGraphicsRoot32BitConstant( countParam, m_FrameLightCount, 0 );   // LightCount @ b*.x
 	m_CmdList->SetGraphicsRoot32BitConstant( countParam, m_NumTilesX, 1 );         // NumTilesX  @ b*.y
+	// LimitLightIntensity @ b*.z — mirrors D3D11's ForwardPlusLighting.hlsl MAX-blend mode (swap "sum of
+	// every overlapping point light" for "brightest single light" to avoid overexposure).
+	const UINT limitLightIntensity = Engine::GAPI->GetRendererState().RendererSettings.LimitLightIntesity ? 1u : 0u;
+	m_CmdList->SetGraphicsRoot32BitConstant( countParam, limitLightIntensity, 2 );
 	m_CmdList->SetGraphicsRootShaderResourceView( gridParam, m_LightGridBuffer->GetGPUVirtualAddress() );
 	m_CmdList->SetGraphicsRootShaderResourceView( indexParam, m_LightIndexBuffer->GetGPUVirtualAddress() );
 }

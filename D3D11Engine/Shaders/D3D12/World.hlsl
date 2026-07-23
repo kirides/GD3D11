@@ -2,7 +2,7 @@
 // row-major XMFLOAT4X4 bytes we upload here, so mul(float4(pos,1), ViewProj) is byte-for-byte identical.
 cbuffer WorldCB : register(b0) { float4x4 ViewProj; };
 cbuffer FogCB   : register(b1) { float3 FogColor; float FogNear; float3 CamPosWS; float FogFar; };
-cbuffer LightCB : register(b2) { uint LightCount; uint NumTilesX; uint2 _lpad; };   // Forward+ tiled: light count + tiles/row
+cbuffer LightCB : register(b2) { uint LightCount; uint NumTilesX; uint LimitLightIntensity; uint _lpad; };   // Forward+ tiled: light count + tiles/row
 
 // Per-frame visible point light (torches/campfires/spells). Byte-identical to D3D11 TiledPointLight (48 B);
 // this pass reads PositionWorld/Range/Color — PositionView/ShadowCubeIndex feed the cull/shadow paths.
@@ -249,6 +249,7 @@ float3 AccumTiledPointLights( float2 svpos, float3 wpos, float3 N, float3 albedo
     uint n = min( g.Count, MAX_LIGHTS_PER_TILE );
     float3 V = normalize( CamPosWS - wpos );
     float3 total = 0;
+    float3 maxLit = 0;
     for ( uint k = 0; k < n; k++ )
     {
         GPULight L = Lights[ LightIndexBuf[g.Offset + k] ];
@@ -267,8 +268,12 @@ float3 AccumTiledPointLights( float2 svpos, float3 wpos, float3 N, float3 albedo
             lit *= lerp( sh, 1.0, fade );
         }
         total += lit;
+        maxLit = max( maxLit, lit );
     }
-    return total;
+    // LimitLightIntensity: swap "sum of every light" for "brightest single light" (mirrors D3D11's
+    // ForwardPlusLighting.hlsl / CS_TiledShading.hlsl MAX-blend mode) to avoid overexposure where many
+    // point lights overlap.
+    return LimitLightIntensity != 0 ? maxLit : total;
 }
 
 struct VS_IN  { float3 pos : POSITION; float2 nrm : NORMAL; float2 uv : TEXCOORD0; float4 col : DIFFUSE; };
