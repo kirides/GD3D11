@@ -3359,6 +3359,8 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// the first OnStartWorldRendering after a Present() will be the correct one to draw the world.
 	if ( m_PresentPending ) return XR_SUCCESS;
 
+    Engine::GAPI->SetFarPlane( Engine::GAPI->GetRendererState().RendererSettings.SectionDrawRadius * WORLD_SECTION_SIZE);
+
 	// zCBspNodeRender hook — Gothic's BSP traversal is replaced; we draw the world ourselves.
 	// Order mirrors D3D11's DrawWorldMeshNaive: sky background, world mesh, skeletal (NPCs/monsters),
 	// then instanced static VOBs. The sky is a fog-colored fill so the horizon dissolves into the
@@ -3516,6 +3518,11 @@ XRESULT D3D12GraphicsEngine::DrawSky() {
 	rs.RasterizerState.SetDirty();
 
 	Engine::GAPI->GetLoadedWorldInfo()->MainWorld->GetSkyControllerOutdoor()->RenderSkyPre();
+
+    // Fix FarPlane after engine breaks it.
+    Engine::GAPI->SetFarPlane(
+            Engine::GAPI->GetRendererState().RendererSettings.SectionDrawRadius *
+            WORLD_SECTION_SIZE );
 
 	rs.RendererInfo.RenderStage = oldStage;
 	return XR_SUCCESS;
