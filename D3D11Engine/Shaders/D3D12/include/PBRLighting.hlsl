@@ -62,14 +62,29 @@ float SamplePointShadow( int cubeIndex, float3 wpos, float3 N, float3 lightPos, 
 // Returns 1.0 = fully lit, 0.0 = fully occluded. Picks the first cascade whose footprint contains the point
 // (0 tightest), applies a per-cascade world-space normal bias, and does a PCF tap. Mirrors the D3D11
 // ComputeCascadedShadowValueSoft selection/bounds (GetCascadeUVAndBounds) minus the blue-noise/PCSS machinery.
+//
+// Bias matches D3D11's scheme (Shaders/ShadowSampling.h ComputeCascadedShadowValueSoft + its PS_Diffuse/
+// PS_FP_ShadowMask/PS_DS_AtmosphericScattering call sites): the real bias is the world-space normal offset,
+// SLOPE-SCALED so it's ~0 for a surface facing the sun and only grows at grazing angles — a flat offset (as
+// this used to be) over-biases front-facing ground/wall contacts and detaches the shadow from its caster
+// (peter-panning). The NDC-depth compare bias is a tiny constant (D3D11: 0.000003) only meant to fight
+// self-shadow z-fighting at zero slope — NOT a general-purpose bias. This cascade's ortho depth range
+// (orthoFar-orthoNear, see ComputeCascadeMatrices) commonly spans several thousand world units, so the old
+// 0.0015 constant here was ~500x too large — worth 10+ world units of erroneous depth offset on its own.
 float ComputeSunShadow( float3 wpos, float3 N )
 {
     const float margin = 1.5 / ShadowMapSize;
     const float texel  = 1.0 / ShadowMapSize;
+    const float constantDepthBias = 0.000003;
+
+    float rawNoL = dot( N, SunDirWS );
+    float shadowNoL = saturate( rawNoL );
+    float slopeScale = sqrt( saturate( 1.0 - shadowNoL * shadowNoL ) );
+
     [unroll]
     for ( int c = 0; c < NUM_CSM_CASCADES; ++c )
     {
-        float3 biased = wpos + N * ( CascadeTexelWorld[c] * 1.5 );   // normal bias scaled to this cascade's texel
+        float3 biased = wpos + N * ( slopeScale * CascadeTexelWorld[c] );   // normal bias, slope- and texel-scaled
         float4 sp = mul( float4( biased, 1.0 ), CascadeViewProj[c] );
         float2 uv = sp.xy * float2( 0.5, -0.5 ) + 0.5;
         if ( uv.x > margin && uv.x < 1.0 - margin && uv.y > margin && uv.y < 1.0 - margin &&
@@ -82,7 +97,7 @@ float ComputeSunShadow( float3 wpos, float3 N )
             float sh = 0.0;
             [unroll] for ( int y = -2; y <= 2; ++y )
             [unroll] for ( int x = -2; x <= 2; ++x )
-                sh += ShadowMap.SampleCmpLevelZero( shadowCmp, float3( uv + float2( x, y ) * pcfStep, c ), sp.z - 0.0015 );
+                sh += ShadowMap.SampleCmpLevelZero( shadowCmp, float3( uv + float2( x, y ) * pcfStep, c ), sp.z - constantDepthBias );
             return sh / 25.0;
         }
     }
