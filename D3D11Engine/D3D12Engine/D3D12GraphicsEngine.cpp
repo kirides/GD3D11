@@ -220,7 +220,10 @@ namespace {
     // DrawSkeletalDepthPrepass (pre-cull, depth-only) and DrawSkeletalColor (post-cull, lit) both draw from
     // these — so the animation update is never run twice and nothing is uploaded twice. Rebuilt each frame.
     struct FrameSkelDraw   { SkeletalVobInfo* vobInfo;  SkeletalMeshVisualInfo* visual; D3D12_GPU_VIRTUAL_ADDRESS instCb; D3D12_GPU_VIRTUAL_ADDRESS boneCb; };
-    struct FrameAttachDraw { MeshInfo* mesh; zCTexture* tex; D3D12_VERTEX_BUFFER_VIEW instView; };
+    // owner = the skeletal vob this attachment hangs off of (its NPC/MOB) — needed so point-shadow self-shadow
+    // exclusion (BuildPointShadowExcludeList) can skip a torch-holding NPC's own attachments too, not just its
+    // base mesh; unused (nullptr-safe) by the main-view/CSM consumers, which don't exclude anything.
+    struct FrameAttachDraw { MeshInfo* mesh; zCTexture* tex; D3D12_VERTEX_BUFFER_VIEW instView; const zCVob* owner; };
     std::vector<FrameSkelDraw>   g_FrameSkelDraws;
     std::vector<FrameAttachDraw> g_FrameAttachDraws;
 
@@ -2418,6 +2421,7 @@ void D3D12GraphicsEngine::RenderPointShadows() {
 			// D3D11's own per-light DrawWorldAround pays for its animated-shadow pass — cheap distance checks,
 			// not GPU work (the static-aside split already amortizes the expensive part).
 			g_PointShadowSkelDraws.clear();
+			g_PointShadowAttachDraws.clear();
 			PrepareFrameSkeletals( Engine::GAPI->GetSkeletalMeshVobs(), nullptr, -2, &ps.posWS, ps.range + kSkeletalCullPad );
 
 			for ( const FrameSkelDraw& d : g_PointShadowSkelDraws ) {
@@ -2449,6 +2453,36 @@ void D3D12GraphicsEngine::RenderPointShadows() {
 						m_CmdList->IASetIndexBuffer( &ibv );
 						m_CmdList->DrawIndexedInstanced( static_cast<UINT>(mesh->Indices.size()), 6, 0, 0, 0 );
 					}
+				}
+			}
+
+			// --- Node attachments (weapons/torches/held items) — owed-debt item finally ported: mirrors the CSM
+			// cascade's "Skeletal Nodes" pass (line ~2105 above) but through the point-shadow VOB caster PSO (CBV
+			// per-face view-projs, not root constants) and 6 face instances instead of 1. Runs once per light
+			// (not per skeletal draw) since g_PointShadowAttachDraws already holds every attachment sphere-culled
+			// against THIS light by the PrepareFrameSkeletals call above. Without this, a held torch/weapon never
+			// cast a shadow into its own point-shadow cube even though its owning NPC's body did. Same self-shadow
+			// exclusion as the body (a torch-carrying NPC's own held item shouldn't blob-shadow the light it's
+			// carrying).
+			if ( m_Pipelines.PointShadow.CasterVobPSO && !g_PointShadowAttachDraws.empty() ) {
+				DX_ZONE( m_CmdList, "Skeletal Nodes" );
+				m_CmdList->SetPipelineState( m_Pipelines.PointShadow.CasterVobPSO.Get() );
+				m_CmdList->SetGraphicsRootSignature( m_Pipelines.PointShadow.RootSig.Get() );
+				m_CmdList->SetGraphicsRootConstantBufferView( 0, faceCb( ps.slot ) );
+				for ( const FrameAttachDraw& a : g_PointShadowAttachDraws ) {
+					if ( !a.mesh || !a.mesh->GetMeshVertexBuffer() || !a.mesh->GetMeshIndexBuffer() ) continue;
+					if ( hasExclusions && a.owner && std::find( excludeVobs.begin(), excludeVobs.end(), a.owner ) != excludeVobs.end() )
+						continue;
+					D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( a.mesh->GetMeshVertexBuffer() );
+					D3D12VertexBuffer* mib = D3D12VertexBuffer::From( a.mesh->GetMeshIndexBuffer() );
+					if ( !mvb->GetResource() || !mib->GetResource() ) continue;
+					bindDiffuse( a.tex, 1 );
+					const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStruct ) };
+					const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, a.instView };
+					m_CmdList->IASetVertexBuffers( 0, 2, views );
+					const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
+					m_CmdList->IASetIndexBuffer( &ibv );
+					m_CmdList->DrawIndexedInstanced( static_cast<UINT>(a.mesh->Indices.size()), 6, 0, 0, 0 );
 				}
 			}
 		}
@@ -4371,7 +4405,7 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                             m_VobInstanceBufferOffset += instBytes;
                             const D3D12_VERTEX_BUFFER_VIEW attInstView = {
                                 m_VobInstanceBuffer[frame]->GetGPUVirtualAddress() + instOffset, instBytes, sizeof( VobInstanceInfo ) };
-                            entry.attachments.push_back( { attMesh.get(), attTex, attInstView } );
+                            entry.attachments.push_back( { attMesh.get(), attTex, attInstView, vi->Vob } );
                         }
                     }
                 }
