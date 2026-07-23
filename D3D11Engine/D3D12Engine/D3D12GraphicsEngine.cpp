@@ -1149,7 +1149,8 @@ void D3D12GraphicsEngine::ResolveSceneToBackBuffer() {
 	m_CmdList->SetPipelineState( m_Pipelines.Tonemap.PSO.Get() );
 	m_CmdList->SetGraphicsRootSignature( m_Pipelines.Tonemap.RootSig.Get() );
 	m_CmdList->SetGraphicsRootDescriptorTable( 0, GetSrvGpuHandle( m_SceneColorSrvSlot ) );
-	const float exposure = m_Exposure > 0.0f ? m_Exposure : 1.0f;
+	const float settingsExposure = Engine::GAPI->GetRendererState().RendererSettings.Exposure;
+	const float exposure = settingsExposure > 0.0f ? settingsExposure : 1.0f;
 	m_CmdList->SetGraphicsRoot32BitConstant( 1, *reinterpret_cast<const UINT*>(&exposure), 0 );
 	m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 	m_CmdList->IASetVertexBuffers( 0, 0, nullptr );

@@ -3,6 +3,11 @@ cbuffer FrameCB : register(b0) { float4x4 ViewProj; };   // default column-major
 Texture2D    tx  : register(t0);
 SamplerState smp : register(s0);
 
+float3 SrgbToLinear( float3 c )   // accurate sRGB EOTF — linearize gamma-encoded albedo so lighting is done in linear space
+{
+    return select( c <= 0.04045, c / 12.92, pow( ( c + 0.055 ) / 1.055, 2.4 ) );
+}
+
 struct VS_IN
 {
     float3   pos    : POSITION;
@@ -26,11 +31,11 @@ float4 PSMainLit( VS_OUT i ) : SV_TARGET   // opaque / alpha-test cutout, fully 
 {
     float4 t = tx.Sample( smp, i.uv );
     clip( t.a - 0.5 );
-    return float4( pow( t.rgb, 2.2 ), 1.0 );   // linearize for the linear HDR buffer
+    return float4( SrgbToLinear( t.rgb ), 1.0 );   // linearize for the linear HDR buffer
 }
 
 float4 PSMainBlend( VS_OUT i ) : SV_TARGET // transparent — the PSO blend state picks add/alpha/modulate
 {
     float4 t = tx.Sample( smp, i.uv );
-    return float4( pow( t.rgb, 2.2 ), t.a * i.alpha );   // linearize rgb; alpha unchanged
+    return float4( SrgbToLinear( t.rgb ), t.a * i.alpha );   // linearize rgb; alpha unchanged
 }

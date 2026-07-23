@@ -689,6 +689,7 @@ struct GothicRendererSettings {
         HDRLumWhite = 11.2f;
         HDRMiddleGray = 0.8f;
         BloomThreshold = 0.9f;
+        Exposure = 1.0f;
 
         WireframeVobs = false;
         WireframeWorld = false;
@@ -999,6 +1000,7 @@ struct GothicRendererSettings {
     float TesselationRange;
     float HDRLumWhite;
     float HDRMiddleGray;
+    float Exposure;
     float BloomThreshold;
     float BloomStrength;
     bool EnableBloom;

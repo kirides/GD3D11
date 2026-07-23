@@ -5283,6 +5283,7 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "General", "EnableHDR", to_string_locale_independent( s.EnableHDR ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "HDRToneMap", to_string_locale_independent( s.HDRToneMap ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "EnableBloom", to_string_locale_independent( s.EnableBloom ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "General", "Exposure", float_to_string( s.Exposure, 2 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "BloomThreshold", float_to_string( s.BloomThreshold, 2 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "BloomStrength", float_to_string( s.BloomStrength, 2 ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "General", "BloomKnee", float_to_string( s.BloomKnee, 2 ).c_str(), ini.c_str() );
@@ -5424,6 +5425,7 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.EnableHDR = GetPrivateProfileBoolA( "General", "EnableHDR", ds.EnableHDR, ini );
         s.HDRToneMap = GothicRendererSettings::E_HDRToneMap( GetPrivateProfileIntA( "General", "HDRToneMap", ds.HDRToneMap, ini.c_str() ) );
         s.EnableBloom = GetPrivateProfileBoolA( "General", "EnableBloom", ds.EnableBloom, ini );
+        s.Exposure = GetPrivateProfileFloatA( "General", "Exposure", ds.Exposure, ini );
         s.BloomThreshold = GetPrivateProfileFloatA( "General", "BloomThreshold", ds.BloomThreshold, ini );
         s.BloomStrength = GetPrivateProfileFloatA( "General", "BloomStrength", ds.BloomStrength, ini );
         s.BloomKnee = GetPrivateProfileFloatA( "General", "BloomKnee", ds.BloomKnee, ini );

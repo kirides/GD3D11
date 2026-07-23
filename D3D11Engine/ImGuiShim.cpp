@@ -1439,6 +1439,8 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
 
         ImGui::Checkbox( "HDR", &settings.EnableHDR );
 
+        ImGui::DragFloat( "Exposure", &settings.Exposure, 0.01f, 0.0f, 8.0f, "%.2f" );
+
         static std::vector<std::pair<const char*, int>> hdrToneMapValues = {
             {"ToneMap_jafEq4", 0},
             {"Uncharted2Tonemap", 1},

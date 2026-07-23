@@ -5,6 +5,11 @@ cbuffer WaterCB : register(b2) { float TotalTime; float WaterAlpha; float2 _wpad
 Texture2D    tx  : register(t0);
 SamplerState smp : register(s0);
 
+float3 SrgbToLinear( float3 c )   // accurate sRGB EOTF — linearize gamma-encoded albedo so lighting is done in linear space
+{
+    return select( c <= 0.04045, c / 12.92, pow( ( c + 0.055 ) / 1.055, 2.4 ) );
+}
+
 struct VS_IN  { float3 pos : POSITION; float2 uv : TEXCOORD0; float2 scroll : TEXCOORD1; float4 col : DIFFUSE; };
 struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : TEXCOORD1; float fogDist : TEXCOORD2; };
 
@@ -23,8 +28,8 @@ VS_OUT VSMain( VS_IN i )
 float4 PSMain( VS_OUT i ) : SV_TARGET
 {
     float4 t = tx.Sample( smp, i.uv );
-    float3 rgb = pow( t.rgb, 2.2 ) * i.col.bgr;   // linearize (HDR buffer is linear; ~pow2.2 approximates sRGB)
+    float3 rgb = SrgbToLinear( t.rgb ) * i.col.bgr;   // linearize (HDR buffer is linear)
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
-    rgb = lerp( rgb, pow( FogColor, 2.2 ), f );
+    rgb = lerp( rgb, SrgbToLinear( FogColor ), f );
     return float4( rgb, WaterAlpha );
 }

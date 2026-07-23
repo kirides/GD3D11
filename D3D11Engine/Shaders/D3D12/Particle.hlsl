@@ -4,6 +4,11 @@ cbuffer ParticleCB : register(b1) { float3 CameraPosition; float _ppad; };
 Texture2D    tx  : register(t0);
 SamplerState smp : register(s0);
 
+float3 SrgbToLinear( float3 c )   // accurate sRGB EOTF — linearize gamma-encoded albedo so lighting is done in linear space
+{
+    return select( c <= 0.04045, c / 12.92, pow( ( c + 0.055 ) / 1.055, 2.4 ) );
+}
+
 struct VS_IN {
     uint   vertexID : SV_VertexID;
     float3 pos      : POSITION;
@@ -66,5 +71,5 @@ VS_OUT VSMain( VS_IN i )
 float4 PSMain( VS_OUT i ) : SV_TARGET
 {
     float4 c = tx.Sample( smp, i.uv ) * i.dif;   // color = texture * particle diffuse (blend picks add/alpha/mul)
-    return float4( pow( saturate( c.rgb ), 2.2 ), c.a );   // linearize rgb for the linear HDR buffer (emissive)
+    return float4( SrgbToLinear( saturate( c.rgb ) ), c.a );   // linearize rgb for the linear HDR buffer (emissive)
 }

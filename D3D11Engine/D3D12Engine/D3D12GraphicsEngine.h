@@ -207,8 +207,8 @@ private:
     D3D12_CPU_DESCRIPTOR_HANDLE                  m_SceneColorRtv = {};    // RTV heap slot kBackBufferCount
     UINT m_SceneColorSrvSlot = UINT_MAX;                                  // SRV read by the tonemap resolve
     bool m_SceneColorInPixelState = false;                               // RENDER_TARGET (world) <-> PIXEL_SHADER_RESOURCE (resolve)
-    // Tonemap pipeline (RootSig/PSO/blobs) now lives in m_Pipelines.Tonemap
-    float m_Exposure = 1.0f;                                             // tonemap exposure multiplier (tunable)
+    // Tonemap pipeline (RootSig/PSO/blobs) now lives in m_Pipelines.Tonemap; exposure is read live from
+    // Engine::GAPI->GetRendererState().RendererSettings.Exposure in ResolveSceneToBackBuffer (player-tunable).
 
     Microsoft::WRL::ComPtr<ID3D12Resource>         m_BackBuffers[kBackBufferCount];
     Microsoft::WRL::ComPtr<ID3D12CommandAllocator> m_CmdAllocators[kBackBufferCount];
