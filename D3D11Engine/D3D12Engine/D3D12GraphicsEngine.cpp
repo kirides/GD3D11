@@ -393,7 +393,7 @@ XRESULT D3D12GraphicsEngine::Init() {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to init the pipeline-state module.";
         return XR_FAILED;
     }
-    if ( !CreateUIPipeline() ) {
+    if ( !m_Pipelines.CreateUI() || !CreateUIVertexBuffers() ) {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the 2D/UI pipeline.";
         return XR_FAILED;
     }
@@ -446,11 +446,11 @@ XRESULT D3D12GraphicsEngine::Init() {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the water pipeline.";
         return XR_FAILED;
     }
-    if ( !CreateParticlePipeline() ) {
+    if ( !m_Pipelines.CreateParticle() || !CreateParticleInstanceBuffers() ) {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the particle pipeline.";
         return XR_FAILED;
     }
-    if ( !CreateDecalPipeline() ) {
+    if ( !m_Pipelines.CreateDecal() || !CreateDecalQuadVB() || !CreateDecalInstanceBuffers() ) {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the decal pipeline.";
         return XR_FAILED;
     }
@@ -847,182 +847,7 @@ D3D12_GPU_DESCRIPTOR_HANDLE D3D12GraphicsEngine::GetSrvGpuHandle( UINT slot ) co
     return h;
 }
 
-bool D3D12GraphicsEngine::CreateUIPipeline() {
-    ID3D12Device* device = m_Device.GetDevice();
 
-    // --- Root signature: b0 root constants (viewport), t0 SRV table, static linear-wrap sampler s0 ---
-    D3D12_DESCRIPTOR_RANGE srvRange = {};
-    srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    srvRange.NumDescriptors = 1;
-    srvRange.BaseShaderRegister = 0;         // t0
-    srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-    // FFPipelineConstantBuffer (b1) is fed Gothic's GraphicsState each draw as root constants — the
-    // struct layout matches the HLSL cbuffer 1:1 (same reason D3D11 memcpy's it into the CB).
-    static_assert( sizeof( GothicGraphicsState ) == 144, "FF constant layout must match FFPipelineConstantBuffer" );
-
-    D3D12_ROOT_PARAMETER params[3] = {};
-    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[0].Constants.ShaderRegister = 0;  // b0
-    params[0].Constants.Num32BitValues = 4;  // float2 pos + float2 size
-    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[1].DescriptorTable.NumDescriptorRanges = 1;
-    params[1].DescriptorTable.pDescriptorRanges = &srvRange;
-    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[2].Constants.ShaderRegister = 1;  // b1
-    params[2].Constants.Num32BitValues = sizeof( GothicGraphicsState ) / 4;  // 36 DWORDs
-    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_STATIC_SAMPLER_DESC sampler = {};
-    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler.MaxLOD = D3D12_FLOAT32_MAX;
-    sampler.ShaderRegister = 0;              // s0
-    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-    rsDesc.NumParameters = 3;
-    rsDesc.pParameters = params;
-    rsDesc.NumStaticSamplers = 1;
-    rsDesc.pStaticSamplers = &sampler;
-    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
-
-    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
-    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable."; return false; }
-
-    ComPtr<ID3DBlob> rsBlob, rsErr;
-    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-        if ( rsErr ) LogWarn() << "D3D12: root signature serialize error: " << static_cast<const char*>( rsErr->GetBufferPointer() );
-        return false;
-    }
-    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
-        IID_PPV_ARGS( m_UIRootSig.ReleaseAndGetAddressOf() ) ) ) )
-        return false;
-
-    // --- Compile inline shaders ---
-    if ( !m_ShaderBackend.CompileFromFile( "UI.hlsl", "VSMain", Shadermodel_VS, m_UIVsBlob.ReleaseAndGetAddressOf() ) ) {
-        return false;
-    }
-    if ( !m_ShaderBackend.CompileFromFile( "UI.hlsl", "PSMain", Shadermodel_PS, m_UIPsBlob.ReleaseAndGetAddressOf() ) ) {
-        return false;
-    }
-
-    // PSOs are built per blend state on demand (GetOrCreateUIPipeline). Warm the default (opaque) one so
-    // any Init-time failure surfaces here rather than mid-frame.
-    GothicBlendStateInfo defaultBlend;
-    defaultBlend.SetDefault();
-
-    GothicDepthBufferStateInfo defaultDepth;
-    defaultDepth.SetDefault();
-    if ( !GetOrCreateUIPipeline( defaultBlend, defaultDepth ) ) {
-        LogWarn() << "D3D12: failed to create the default 2D/UI pipeline state.";
-        return false;
-    }
-
-    return CreateUIVertexBuffers();
-}
-
-namespace {
-    // Packs the blend-relevant fields of a Gothic blend state into a stable key for the PSO cache.
-    // Gothic's EBlendFunc/EBlendOp are "laid out for D3D11" and D3D12_BLEND/_OP share those numeric
-    // values, so they slot straight into the packed key (and cast directly into the PSO below).
-    uint32_t BlendKey( const GothicBlendStateInfo& b ) {
-        uint32_t k = 0;
-        k |= (b.BlendEnabled ? 1u : 0u);
-        k |= (b.ColorWritesEnabled ? 1u : 0u) << 1;
-        k |= (b.AlphaToCoverage ? 1u : 0u) << 2;
-        k |= (static_cast<uint32_t>(b.SrcBlend) & 0x1F) << 3;
-        k |= (static_cast<uint32_t>(b.DestBlend) & 0x1F) << 8;
-        k |= (static_cast<uint32_t>(b.BlendOp) & 0x07) << 13;
-        k |= (static_cast<uint32_t>(b.SrcBlendAlpha) & 0x1F) << 16;
-        k |= (static_cast<uint32_t>(b.DestBlendAlpha) & 0x1F) << 21;
-        k |= (static_cast<uint32_t>(b.BlendOpAlpha) & 0x07) << 26;
-        return k;
-    }
-
-    // Packs the depth-relevant fields into a stable key. ECompareFunc is "laid out for D3D11" and
-    // D3D12_COMPARISON_FUNC shares those numeric values, so it casts straight into the PSO below.
-    uint32_t DepthKey( const GothicDepthBufferStateInfo& d ) {
-        uint32_t k = 0;
-        k |= (d.DepthBufferEnabled ? 1u : 0u);
-        k |= (d.DepthWriteEnabled ? 1u : 0u) << 1;
-        k |= (static_cast<uint32_t>(d.DepthBufferCompareFunc) & 0x0F) << 2;
-        return k;
-    }
-}
-
-ID3D12PipelineState* D3D12GraphicsEngine::GetOrCreateUIPipeline(
-    const GothicBlendStateInfo& blend,
-    const GothicDepthBufferStateInfo& depth ) {
-    const uint64_t key = static_cast<uint64_t>(BlendKey( blend )) | (static_cast<uint64_t>(DepthKey( depth )) << 32);
-    auto it = m_UIPipelines.find( key );
-    if ( it != m_UIPipelines.end() ) return it->second.Get();
-
-    // --- Input layout: mirrors layout1 (the ExVertexStruct HUD layout; tangent treated as padding) ---
-    const D3D12_INPUT_ELEMENT_DESC layout[] = {
-        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 1, DXGI_FORMAT_R32G32_FLOAT,    0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "DIFFUSE",  0, DXGI_FORMAT_R8G8B8A8_UNORM,  0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-    };
-
-    // --- PSO: no depth (2D), cull-none, triangle list; blend emulates Gothic's per-draw state ---
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
-    pso.pRootSignature = m_UIRootSig.Get();
-    pso.VS = { m_UIVsBlob->GetBufferPointer(), m_UIVsBlob->GetBufferSize() };
-    pso.PS = { m_UIPsBlob->GetBufferPointer(), m_UIPsBlob->GetBufferSize() };
-    pso.InputLayout = { layout, _countof( layout ) };
-    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    pso.NumRenderTargets = 1;
-    pso.RTVFormats[0] = kBackBufferFormat;   // 2D UI draws straight to the swapchain (after the tonemap resolve)
-    pso.SampleDesc.Count = 1;
-    pso.SampleMask = UINT_MAX;
-
-    pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-    // Depth clip OFF for the 2D path (matches GothicRasterizerStateInfo::SetDefault's D3D11 default). The
-    // pre-transformed UI/glyph verts carry z = camera near+1 (AppendGlyphs), which exceeds the [0,1] clip
-    // range — with clipping enabled the driver discards them ("depth clipped"); disabled, z is just clamped.
-    pso.RasterizerState.DepthClipEnable = FALSE;
-
-    D3D12_RENDER_TARGET_BLEND_DESC& rt = pso.BlendState.RenderTarget[0];
-    rt.BlendEnable = blend.BlendEnabled ? TRUE : FALSE;
-    rt.SrcBlend = static_cast<D3D12_BLEND>(blend.SrcBlend);
-    rt.DestBlend = static_cast<D3D12_BLEND>(blend.DestBlend);
-    rt.BlendOp = static_cast<D3D12_BLEND_OP>(blend.BlendOp);
-    rt.SrcBlendAlpha = static_cast<D3D12_BLEND>(blend.SrcBlendAlpha);
-    rt.DestBlendAlpha = static_cast<D3D12_BLEND>(blend.DestBlendAlpha);
-    rt.BlendOpAlpha = static_cast<D3D12_BLEND_OP>(blend.BlendOpAlpha);
-    rt.RenderTargetWriteMask = blend.ColorWritesEnabled ? D3D12_COLOR_WRITE_ENABLE_ALL : 0;
-    pso.BlendState.AlphaToCoverageEnable = blend.AlphaToCoverage ? TRUE : FALSE;
-
-    // Honor the caller's depth state. A DSV is bound for the whole frame (OnBeginFrame), so DSVFormat must
-    // match it (D32_FLOAT) even when the test is disabled — otherwise the bound-DSV/PSO-format mismatch makes
-    // the driver reject the draw ("depth test failed"). DrawString forces this state off so text never tests.
-    if ( depth.DepthBufferEnabled ) {
-        pso.DepthStencilState.DepthEnable = TRUE;
-        pso.DepthStencilState.DepthWriteMask = depth.DepthWriteEnabled ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO;
-        pso.DepthStencilState.DepthFunc = static_cast<D3D12_COMPARISON_FUNC>(depth.DepthBufferCompareFunc);
-    } else {
-        pso.DepthStencilState.DepthEnable = FALSE;
-        pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
-        pso.DSVFormat = DXGI_FORMAT_UNKNOWN;
-    }
-    pso.DepthStencilState.StencilEnable = FALSE;
-    pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
-
-    ComPtr<ID3D12PipelineState> state;
-    if ( FAILED( m_Device.GetDevice()->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( state.GetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed for UI pipeline key 0x" << std::hex << key << ".";
-        return nullptr;
-    }
-    ID3D12PipelineState* raw = state.Get();
-    m_UIPipelines.emplace( key, std::move( state ) );
-    return raw;
-}
 
 bool D3D12GraphicsEngine::CreateUIVertexBuffers() {
     ID3D12Device* device = m_Device.GetDevice();
@@ -1130,7 +955,7 @@ void D3D12GraphicsEngine::DrawString( std::string_view str, float x, float y, co
 
     rs.BlendState.SetAlphaBlending();
     // Text is drawn over the finished scene (during the world pass the depth buffer holds scene depth); the
-    // glyph quads must never depth-test, so force depth off — GetOrCreateUIPipeline picks the no-test PSO.
+    // glyph quads must never depth-test, so force depth off — m_Pipelines.GetOrCreateUIPipeline picks the no-test PSO.
     rs.DepthState.DepthBufferEnabled = false;
     rs.DepthState.DepthWriteEnabled = false;
     rs.GraphicsState.FF_Stages[0].ColorOp = FixedFunctionStage::EColorOp::CO_MODULATE;
@@ -2869,76 +2694,6 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
     g_FrameWaterSurfaces.clear();
 }
 
-bool D3D12GraphicsEngine::CreateParticlePipeline() {
-    ID3D12Device* device = m_Device.GetDevice();
-
-    // Root signature: b0 = ViewProj (16 root consts, VS), b1 = camera world pos (4 consts, VS), t0 =
-    // diffuse SRV table (PS), static linear-clamp sampler s0 (PS). Particles sample [0,1] UVs, so CLAMP
-    // avoids the billboard edge bleeding into the opposite side of the atlas frame.
-    D3D12_DESCRIPTOR_RANGE srvRange = {};
-    srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    srvRange.NumDescriptors = 1;
-    srvRange.BaseShaderRegister = 0;         // t0
-    srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-    D3D12_ROOT_PARAMETER params[3] = {};
-    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[0].Constants.ShaderRegister = 0;   // b0 ViewProj
-    params[0].Constants.Num32BitValues = 16;
-    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[1].Constants.ShaderRegister = 1;   // b1 camera pos
-    params[1].Constants.Num32BitValues = 4;
-    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[2].DescriptorTable.NumDescriptorRanges = 1;
-    params[2].DescriptorTable.pDescriptorRanges = &srvRange;
-    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_STATIC_SAMPLER_DESC sampler = {};
-    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    sampler.MaxLOD = D3D12_FLOAT32_MAX;
-    sampler.ShaderRegister = 0;              // s0
-    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-    rsDesc.NumParameters = _countof( params );
-    rsDesc.pParameters = params;
-    rsDesc.NumStaticSamplers = 1;
-    rsDesc.pStaticSamplers = &sampler;
-    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
-
-    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
-    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (particles)."; return false; }
-
-    ComPtr<ID3DBlob> rsBlob, rsErr;
-    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-        if ( rsErr ) LogWarn() << "D3D12: particle root signature serialize error: " << static_cast<const char*>(rsErr->GetBufferPointer());
-        return false;
-    }
-    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
-        IID_PPV_ARGS( m_ParticleRootSig.ReleaseAndGetAddressOf() ) ) ) )
-        return false;
-
-    if ( !m_ShaderBackend.CompileFromFile( "Particle.hlsl", "VSMain", Shadermodel_VS, m_ParticleVsBlob.ReleaseAndGetAddressOf() ) ) {
-        return false;
-    }
-    if ( !m_ShaderBackend.CompileFromFile( "Particle.hlsl", "PSMain", Shadermodel_PS, m_ParticlePsBlob.ReleaseAndGetAddressOf() ) ) {
-        return false;
-    }
-
-    // PSOs are built per blend state on demand (GetOrCreateParticlePipeline). Warm the alpha-blend one so
-    // the common case never stalls at first draw.
-    GothicBlendStateInfo defaultBlend;
-    defaultBlend.SetAlphaBlending();
-    if ( !GetOrCreateParticlePipeline( defaultBlend ) ) {
-        LogWarn() << "D3D12: failed to create the default particle pipeline.";
-        return false;
-    }
-
-    return CreateParticleInstanceBuffers();
-}
 
 bool D3D12GraphicsEngine::CreateParticleInstanceBuffers() {
     ID3D12Device* device = m_Device.GetDevice();
@@ -2968,66 +2723,9 @@ bool D3D12GraphicsEngine::CreateParticleInstanceBuffers() {
     return true;
 }
 
-ID3D12PipelineState* D3D12GraphicsEngine::GetOrCreateParticlePipeline( const GothicBlendStateInfo& blend ) {
-    const uint32_t key = BlendKey( blend );
-    auto it = m_ParticlePipelines.find( key );
-    if ( it != m_ParticlePipelines.end() ) return it->second.Get();
-
-    // Fully per-instance layout: one ParticleInstanceInfo (56B) per particle, the VS expands the quad from
-    // SV_VertexID. DIFFUSE is a real float4 here (not a packed DWORD), so R32G32B32A32_FLOAT.
-    const D3D12_INPUT_ELEMENT_DESC layout[] = {
-        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-        { "DIFFUSE",  0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-        { "SIZE",     0, DXGI_FORMAT_R32G32B32_FLOAT,    0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-        { "TYPE",     0, DXGI_FORMAT_R32_UINT,           0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-        { "VELOCITY", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-    };
-
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
-    pso.pRootSignature = m_ParticleRootSig.Get();
-    pso.VS = { m_ParticleVsBlob->GetBufferPointer(), m_ParticleVsBlob->GetBufferSize() };
-    pso.PS = { m_ParticlePsBlob->GetBufferPointer(), m_ParticlePsBlob->GetBufferSize() };
-    pso.InputLayout = { layout, _countof( layout ) };
-    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;   // strips still use the TRIANGLE type
-    pso.NumRenderTargets = 1;
-    pso.RTVFormats[0] = kSceneColorFormat;
-    pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
-    pso.SampleDesc.Count = 1;
-    pso.SampleMask = UINT_MAX;
-
-    pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-    pso.RasterizerState.DepthClipEnable = TRUE;
-
-    D3D12_RENDER_TARGET_BLEND_DESC& rt = pso.BlendState.RenderTarget[0];
-    rt.BlendEnable = blend.BlendEnabled ? TRUE : FALSE;
-    rt.SrcBlend = static_cast<D3D12_BLEND>(blend.SrcBlend);
-    rt.DestBlend = static_cast<D3D12_BLEND>(blend.DestBlend);
-    rt.BlendOp = static_cast<D3D12_BLEND_OP>(blend.BlendOp);
-    rt.SrcBlendAlpha = static_cast<D3D12_BLEND>(blend.SrcBlendAlpha);
-    rt.DestBlendAlpha = static_cast<D3D12_BLEND>(blend.DestBlendAlpha);
-    rt.BlendOpAlpha = static_cast<D3D12_BLEND_OP>(blend.BlendOpAlpha);
-    rt.RenderTargetWriteMask = blend.ColorWritesEnabled ? D3D12_COLOR_WRITE_ENABLE_ALL : 0;
-
-    // Reversed-Z: test GREATER_EQUAL against the opaque scene depth, but DO NOT write — particles are
-    // transparent, must not occlude, and blend painter-style over whatever depth is already there.
-    pso.DepthStencilState.DepthEnable = TRUE;
-    pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
-    pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
-    pso.DepthStencilState.StencilEnable = FALSE;
-
-    ComPtr<ID3D12PipelineState> state;
-    if ( FAILED( m_Device.GetDevice()->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( state.GetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed for particle blend key 0x" << std::hex << key << ".";
-        return nullptr;
-    }
-    ID3D12PipelineState* raw = state.Get();
-    m_ParticlePipelines.emplace( key, std::move( state ) );
-    return raw;
-}
 
 XRESULT D3D12GraphicsEngine::DrawParticleEffects() {
-    if ( !m_FrameOpen || !m_ParticleRootSig || !m_DepthBuffer )
+    if ( !m_FrameOpen || !m_Pipelines.Particle.RootSig || !m_DepthBuffer )
         return XR_SUCCESS;
 
     auto& particles = Engine::GAPI->GetFrameParticles();
@@ -3059,7 +2757,7 @@ XRESULT D3D12GraphicsEngine::DrawParticleEffects() {
     XMStoreFloat3( &camPos, Engine::GAPI->GetCameraPositionXM() );
     const float camConsts[4] = { camPos.x, camPos.y, camPos.z, 0.0f };
 
-    m_CmdList->SetGraphicsRootSignature( m_ParticleRootSig.Get() );
+    m_CmdList->SetGraphicsRootSignature( m_Pipelines.Particle.RootSig.Get() );
     m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
     m_CmdList->SetGraphicsRoot32BitConstants( 1, 4, camConsts, 0 );
 
@@ -3080,11 +2778,11 @@ XRESULT D3D12GraphicsEngine::DrawParticleEffects() {
         // Blend mode for this texture bucket (falls back to alpha blend if somehow unlisted).
         auto infoIt = info.find( tex );
         ID3D12PipelineState* pso = infoIt != info.end()
-            ? GetOrCreateParticlePipeline( infoIt->second.BlendState )
+            ? m_Pipelines.GetOrCreateParticlePipeline( infoIt->second.BlendState )
             : nullptr;
         if ( !pso ) {
             GothicBlendStateInfo alpha; alpha.SetAlphaBlending();
-            pso = GetOrCreateParticlePipeline( alpha );
+            pso = m_Pipelines.GetOrCreateParticlePipeline( alpha );
         }
         if ( !pso ) continue;
         if ( pso != lastPso ) { m_CmdList->SetPipelineState( pso ); lastPso = pso; }
@@ -3127,143 +2825,7 @@ XRESULT D3D12GraphicsEngine::DrawParticleEffects() {
     return XR_SUCCESS;
 }
 
-// The decal input layout is shared by the lit + every transparent PSO: slot 0 = the unit quad
-// (POSITION @0, TEXCOORD0 @12, stride 20), slot 1 = per-instance DecalInstanceInfo (world rows
-// @0/16/32/48, color @64, stride 80).
-static const D3D12_INPUT_ELEMENT_DESC kDecalInputLayout[] = {
-    { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-    { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-    { "INSTANCE_WORLD_MATRIX", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  0, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-    { "INSTANCE_WORLD_MATRIX", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 16, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-    { "INSTANCE_WORLD_MATRIX", 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 32, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-    { "INSTANCE_WORLD_MATRIX", 3, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 48, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-    { "INSTANCE_COLOR",        0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 64, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-};
 
-bool D3D12GraphicsEngine::CreateDecalPipeline() {
-    ID3D12Device* device = m_Device.GetDevice();
-
-    // Root signature: b0 = ViewProj (16 root consts, VS), t0 = diffuse SRV table (PS), static linear-clamp
-    // sampler s0 (PS). CLAMP because a decal is a single [0,1] sprite; wrap would bleed the opposite edge.
-    D3D12_DESCRIPTOR_RANGE srvRange = {};
-    srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    srvRange.NumDescriptors = 1;
-    srvRange.BaseShaderRegister = 0;         // t0
-    srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-    D3D12_ROOT_PARAMETER params[2] = {};
-    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[0].Constants.ShaderRegister = 0;   // b0 ViewProj
-    params[0].Constants.Num32BitValues = 16;
-    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[1].DescriptorTable.NumDescriptorRanges = 1;
-    params[1].DescriptorTable.pDescriptorRanges = &srvRange;
-    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_STATIC_SAMPLER_DESC sampler = {};
-    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    sampler.MaxLOD = D3D12_FLOAT32_MAX;
-    sampler.ShaderRegister = 0;              // s0
-    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-    rsDesc.NumParameters = _countof( params );
-    rsDesc.pParameters = params;
-    rsDesc.NumStaticSamplers = 1;
-    rsDesc.pStaticSamplers = &sampler;
-    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
-
-    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
-    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (decals)."; return false; }
-
-    ComPtr<ID3DBlob> rsBlob, rsErr;
-    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-        if ( rsErr ) LogWarn() << "D3D12: decal root signature serialize error: " << static_cast<const char*>(rsErr->GetBufferPointer());
-        return false;
-    }
-    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
-        IID_PPV_ARGS( m_DecalRootSig.ReleaseAndGetAddressOf() ) ) ) )
-        return false;
-
-    if ( !m_ShaderBackend.CompileFromFile( "Decal.hlsl", "VSMain", Shadermodel_VS, m_DecalVsBlob.ReleaseAndGetAddressOf() ) ) {
-        return false;
-    }
-    if ( !m_ShaderBackend.CompileFromFile( "Decal.hlsl", "PSMainLit", Shadermodel_PS, m_DecalLitPsBlob.ReleaseAndGetAddressOf() ) ) {
-        return false;
-    }
-    if ( !m_ShaderBackend.CompileFromFile( "Decal.hlsl", "PSMainBlend", Shadermodel_PS, m_DecalBlendPsBlob.ReleaseAndGetAddressOf() ) ) {
-        return false;
-    }
-
-    // Shared unit quad (two triangles, corners +/-0.5, UV 0..1) — same 6 verts as D3D11's decal quad, so
-    // the per-decal scale matrix's Y-flip (-DecalSize.y*2) lands the sprite the same way.
-    const DecalQuadVertex quad[6] = {
-        { -0.5f, -0.5f, 0.0f, 0.0f, 0.0f },
-        {  0.5f, -0.5f, 0.0f, 1.0f, 0.0f },
-        { -0.5f,  0.5f, 0.0f, 0.0f, 1.0f },
-        {  0.5f, -0.5f, 0.0f, 1.0f, 0.0f },
-        {  0.5f,  0.5f, 0.0f, 1.0f, 1.0f },
-        { -0.5f,  0.5f, 0.0f, 0.0f, 1.0f },
-    };
-    D3D12_HEAP_PROPERTIES uploadHeap = {};
-    uploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
-    D3D12_RESOURCE_DESC bufDesc = {};
-    bufDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    bufDesc.Width = sizeof( quad );
-    bufDesc.Height = 1;
-    bufDesc.DepthOrArraySize = 1;
-    bufDesc.MipLevels = 1;
-    bufDesc.Format = DXGI_FORMAT_UNKNOWN;
-    bufDesc.SampleDesc.Count = 1;
-    bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    if ( FAILED( device->CreateCommittedResource( &uploadHeap, D3D12_HEAP_FLAG_NONE, &bufDesc,
-        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS( m_DecalQuadVB.ReleaseAndGetAddressOf() ) ) ) )
-        return false;
-    m_DecalQuadVB->SetName( L"DecalQuadVB" );
-    void* mapped = nullptr;
-    D3D12_RANGE noRead = { 0, 0 };
-    if ( FAILED( m_DecalQuadVB->Map( 0, &noRead, &mapped ) ) ) return false;
-    memcpy( mapped, quad, sizeof( quad ) );
-    m_DecalQuadVB->Unmap( 0, nullptr );
-    m_DecalQuadVBV = { m_DecalQuadVB->GetGPUVirtualAddress(), sizeof( quad ), sizeof( DecalQuadVertex ) };
-
-    // Lit / opaque PSO: alpha-test cutout, depth test GREATER_EQUAL + WRITE (draws with the opaque scene).
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
-    pso.pRootSignature = m_DecalRootSig.Get();
-    pso.VS = { m_DecalVsBlob->GetBufferPointer(), m_DecalVsBlob->GetBufferSize() };
-    pso.PS = { m_DecalLitPsBlob->GetBufferPointer(), m_DecalLitPsBlob->GetBufferSize() };
-    pso.InputLayout = { kDecalInputLayout, _countof( kDecalInputLayout ) };
-    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    pso.NumRenderTargets = 1;
-    pso.RTVFormats[0] = kSceneColorFormat;
-    pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
-    pso.SampleDesc.Count = 1;
-    pso.SampleMask = UINT_MAX;
-    pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;   // decals are double-sided
-    pso.RasterizerState.DepthClipEnable = TRUE;
-    pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-    pso.DepthStencilState.DepthEnable = TRUE;
-    pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
-    pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;   // reversed-Z; coplanar decals win ties
-    pso.DepthStencilState.StencilEnable = FALSE;
-    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_DecalLitPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (decal lit).";
-        return false;
-    }
-
-    // Warm the common transparent (alpha) PSO so the first blended decal never stalls.
-    GothicBlendStateInfo defaultBlend;
-    defaultBlend.SetAlphaBlending();
-    if ( !GetOrCreateDecalBlendPipeline( defaultBlend ) ) {
-        LogWarn() << "D3D12: failed to create the default decal blend pipeline.";
-        return false;
-    }
-
-    return CreateDecalInstanceBuffers();
-}
 
 bool D3D12GraphicsEngine::CreateDecalInstanceBuffers() {
     ID3D12Device* device = m_Device.GetDevice();
@@ -3293,55 +2855,47 @@ bool D3D12GraphicsEngine::CreateDecalInstanceBuffers() {
     return true;
 }
 
-ID3D12PipelineState* D3D12GraphicsEngine::GetOrCreateDecalBlendPipeline( const GothicBlendStateInfo& blend ) {
-    const uint32_t key = BlendKey( blend );
-    auto it = m_DecalBlendPipelines.find( key );
-    if ( it != m_DecalBlendPipelines.end() ) return it->second.Get();
+bool D3D12GraphicsEngine::CreateDecalQuadVB() {
+    ID3D12Device* device = m_Device.GetDevice();
 
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
-    pso.pRootSignature = m_DecalRootSig.Get();
-    pso.VS = { m_DecalVsBlob->GetBufferPointer(), m_DecalVsBlob->GetBufferSize() };
-    pso.PS = { m_DecalBlendPsBlob->GetBufferPointer(), m_DecalBlendPsBlob->GetBufferSize() };
-    pso.InputLayout = { kDecalInputLayout, _countof( kDecalInputLayout ) };
-    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    pso.NumRenderTargets = 1;
-    pso.RTVFormats[0] = kSceneColorFormat;
-    pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
-    pso.SampleDesc.Count = 1;
-    pso.SampleMask = UINT_MAX;
-    pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-    pso.RasterizerState.DepthClipEnable = TRUE;
-
-    // Gothic blend enums are laid out for D3D11, whose _BLEND/_OP values equal D3D12's — cast directly.
-    D3D12_RENDER_TARGET_BLEND_DESC& rt = pso.BlendState.RenderTarget[0];
-    rt.BlendEnable = blend.BlendEnabled ? TRUE : FALSE;
-    rt.SrcBlend = static_cast<D3D12_BLEND>(blend.SrcBlend);
-    rt.DestBlend = static_cast<D3D12_BLEND>(blend.DestBlend);
-    rt.BlendOp = static_cast<D3D12_BLEND_OP>(blend.BlendOp);
-    rt.SrcBlendAlpha = static_cast<D3D12_BLEND>(blend.SrcBlendAlpha);
-    rt.DestBlendAlpha = static_cast<D3D12_BLEND>(blend.DestBlendAlpha);
-    rt.BlendOpAlpha = static_cast<D3D12_BLEND_OP>(blend.BlendOpAlpha);
-    rt.RenderTargetWriteMask = blend.ColorWritesEnabled ? D3D12_COLOR_WRITE_ENABLE_ALL : 0;
-
-    // Reversed-Z: test GREATER_EQUAL against the opaque scene, DO NOT write depth (transparent overlay).
-    pso.DepthStencilState.DepthEnable = TRUE;
-    pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
-    pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
-    pso.DepthStencilState.StencilEnable = FALSE;
-
-    ComPtr<ID3D12PipelineState> state;
-    if ( FAILED( m_Device.GetDevice()->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( state.GetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed for decal blend key 0x" << std::hex << key << ".";
-        return nullptr;
-    }
-    ID3D12PipelineState* raw = state.Get();
-    m_DecalBlendPipelines.emplace( key, std::move( state ) );
-    return raw;
+    // Shared unit quad (two triangles, corners +/-0.5, UV 0..1) — same 6 verts as D3D11's decal quad, so
+    // the per-decal scale matrix's Y-flip (-DecalSize.y*2) lands the sprite the same way. GPU resource, so
+    // it stays in the engine; the decal PSOs (in m_Pipelines.Decal) bind kDecalInputLayout to consume it.
+    const DecalQuadVertex quad[6] = {
+        { -0.5f, -0.5f, 0.0f, 0.0f, 0.0f },
+        {  0.5f, -0.5f, 0.0f, 1.0f, 0.0f },
+        { -0.5f,  0.5f, 0.0f, 0.0f, 1.0f },
+        {  0.5f, -0.5f, 0.0f, 1.0f, 0.0f },
+        {  0.5f,  0.5f, 0.0f, 1.0f, 1.0f },
+        { -0.5f,  0.5f, 0.0f, 0.0f, 1.0f },
+    };
+    D3D12_HEAP_PROPERTIES uploadHeap = {};
+    uploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
+    D3D12_RESOURCE_DESC bufDesc = {};
+    bufDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bufDesc.Width = sizeof( quad );
+    bufDesc.Height = 1;
+    bufDesc.DepthOrArraySize = 1;
+    bufDesc.MipLevels = 1;
+    bufDesc.Format = DXGI_FORMAT_UNKNOWN;
+    bufDesc.SampleDesc.Count = 1;
+    bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    if ( FAILED( device->CreateCommittedResource( &uploadHeap, D3D12_HEAP_FLAG_NONE, &bufDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS( m_DecalQuadVB.ReleaseAndGetAddressOf() ) ) ) )
+        return false;
+    m_DecalQuadVB->SetName( L"DecalQuadVB" );
+    void* mapped = nullptr;
+    D3D12_RANGE noRead = { 0, 0 };
+    if ( FAILED( m_DecalQuadVB->Map( 0, &noRead, &mapped ) ) ) return false;
+    memcpy( mapped, quad, sizeof( quad ) );
+    m_DecalQuadVB->Unmap( 0, nullptr );
+    m_DecalQuadVBV = { m_DecalQuadVB->GetGPUVirtualAddress(), sizeof( quad ), sizeof( DecalQuadVertex ) };
+    return true;
 }
 
+
 void D3D12GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals, bool lighting ) {
-    if ( !m_FrameOpen || !m_DecalRootSig || !m_DecalLitPSO || !m_DepthBuffer ) return;
+    if ( !m_FrameOpen || !m_Pipelines.Decal.RootSig || !m_Pipelines.Decal.LitPSO || !m_DepthBuffer ) return;
     if ( decals.empty() ) return;
 
     GothicRendererState& rs = Engine::GAPI->GetRendererState();
@@ -3493,7 +3047,7 @@ void D3D12GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals, bool
     XMFLOAT4X4 viewProj;
     XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
 
-    m_CmdList->SetGraphicsRootSignature( m_DecalRootSig.Get() );
+    m_CmdList->SetGraphicsRootSignature( m_Pipelines.Decal.RootSig.Get() );
     m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
 
     D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_Resolution.x), static_cast<float>(m_Resolution.y), 0.0f, 1.0f };
@@ -3508,7 +3062,7 @@ void D3D12GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals, bool
     m_CmdList->IASetVertexBuffers( 0, 2, views );
 
     ID3D12PipelineState* lastPso = nullptr;
-    if ( lighting ) { m_CmdList->SetPipelineState( m_DecalLitPSO.Get() ); lastPso = m_DecalLitPSO.Get(); }
+    if ( lighting ) { m_CmdList->SetPipelineState( m_Pipelines.Decal.LitPSO.Get() ); lastPso = m_Pipelines.Decal.LitPSO.Get(); }
 
     const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_BlackTexture->GetSrvSlot() );
     zCTexture* lastTex = reinterpret_cast<zCTexture*>(~static_cast<uintptr_t>(0));  // force first bind
@@ -3523,7 +3077,7 @@ void D3D12GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals, bool
             case zMAT_ALPHA_FUNC_MUL2: blend.SetModulate2Blending(); break;
             default:                   blend.SetAlphaBlending();     break;  // BLEND / BLEND_TEST
             }
-            ID3D12PipelineState* pso = GetOrCreateDecalBlendPipeline( blend );
+            ID3D12PipelineState* pso = m_Pipelines.GetOrCreateDecalBlendPipeline( blend );
             if ( !pso ) continue;
             if ( pso != lastPso ) { m_CmdList->SetPipelineState( pso ); lastPso = pso; }
         }
@@ -3776,13 +3330,13 @@ XRESULT D3D12GraphicsEngine::SetViewport( const ViewportInfo& vp ) {
 }
 
 XRESULT D3D12GraphicsEngine::DrawVertexArray( ExVertexStruct* vertices, unsigned int numVertices, unsigned int startVertex, unsigned int stride ) {
-    if ( !m_SwapChainReady || !m_FrameOpen || !m_UIRootSig || numVertices == 0 || !vertices )
+    if ( !m_SwapChainReady || !m_FrameOpen || !m_Pipelines.UI.RootSig || numVertices == 0 || !vertices )
         return XR_SUCCESS;
 
     GothicRendererState& rs = Engine::GAPI->GetRendererState();
 
     // Emulate Gothic's per-draw fixed-function blend mode by selecting the matching PSO.
-    ID3D12PipelineState* pso = GetOrCreateUIPipeline( rs.BlendState, rs.DepthState );
+    ID3D12PipelineState* pso = m_Pipelines.GetOrCreateUIPipeline( rs.BlendState, rs.DepthState );
     if ( !pso ) return XR_SUCCESS;
 
     const UINT frame = m_FrameIndex;
@@ -3801,7 +3355,7 @@ XRESULT D3D12GraphicsEngine::DrawVertexArray( ExVertexStruct* vertices, unsigned
     m_UIVertexBufferOffset += bytes;
 
     m_CmdList->SetPipelineState( pso );
-    m_CmdList->SetGraphicsRootSignature( m_UIRootSig.Get() );
+    m_CmdList->SetGraphicsRootSignature( m_Pipelines.UI.RootSig.Get() );
 
     // The 2D/UI path is inherently full-screen: D3D11 forces a full-backbuffer viewport in OnBeginFrame
     // ("otherwise Gothic can't render its initial menu UI") and its BindViewportInformation reads that

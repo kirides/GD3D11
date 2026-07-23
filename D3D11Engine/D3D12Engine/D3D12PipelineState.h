@@ -1,9 +1,13 @@
 #pragma once
 #include <d3d12.h>
 #include <wrl/client.h>
+#include <unordered_map>
+#include <cstdint>
 #include "D3D12Device.h"
 
 class D3D12ShaderBackend;
+struct GothicBlendStateInfo;
+struct GothicDepthBufferStateInfo;
 
 // Owns the D3D12 backend's pipeline state objects, root signatures, and compiled shader blobs,
 // grouped per render pass. All PSO/root-signature creation lives here (out of the engine monolith);
@@ -47,6 +51,33 @@ public:
         Microsoft::WRL::ComPtr<ID3DBlob>            DepthPrepassVobVsBlob;
         Microsoft::WRL::ComPtr<ID3DBlob>            DepthPrepassVobPsBlob;
     };
+    // 2D UI / HUD family: one root sig (b0 viewport consts, t0 SRV, b1 FF state) + one VS/PS pair.
+    // PSOs are built per (blend,depth) key on demand and cached. Vertex ring buffers stay in the engine.
+    struct UIPipeline {
+        Microsoft::WRL::ComPtr<ID3D12RootSignature> RootSig;
+        Microsoft::WRL::ComPtr<ID3DBlob>            VsBlob;  // compiled once; reused for every blend PSO
+        Microsoft::WRL::ComPtr<ID3DBlob>            PsBlob;
+        std::unordered_map<uint64_t, Microsoft::WRL::ComPtr<ID3D12PipelineState>> Pipelines; // key = Blend | Depth<<32
+    };
+    // Particle (PFX) billboards: one root sig + one VS/PS pair; PSOs built per BlendKey on demand.
+    // Instance ring buffers stay in the engine.
+    struct ParticlePipeline {
+        Microsoft::WRL::ComPtr<ID3D12RootSignature> RootSig;
+        Microsoft::WRL::ComPtr<ID3DBlob>            VsBlob;  // compiled once; reused for every blend PSO
+        Microsoft::WRL::ComPtr<ID3DBlob>            PsBlob;
+        std::unordered_map<uint32_t, Microsoft::WRL::ComPtr<ID3D12PipelineState>> Pipelines; // key = BlendKey
+    };
+    // Decal sprites: own root sig (b0 ViewProj + t0 SRV + s0 clamp). Two pixel shaders — opaque/alpha-test
+    // (fixed LitPSO, depth-write) and transparent (BlendPipelines cache per Gothic blend mode, depth-read-only).
+    // The shared unit-quad VB + instance ring buffers stay in the engine.
+    struct DecalPipeline {
+        Microsoft::WRL::ComPtr<ID3D12RootSignature> RootSig;
+        Microsoft::WRL::ComPtr<ID3DBlob>            VsBlob;
+        Microsoft::WRL::ComPtr<ID3DBlob>            LitPsBlob;
+        Microsoft::WRL::ComPtr<ID3DBlob>            BlendPsBlob;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> LitPSO;   // opaque/alpha-test, depth-write on
+        std::unordered_map<uint32_t, Microsoft::WRL::ComPtr<ID3D12PipelineState>> BlendPipelines; // key = BlendKey
+    };
 
     // Stores non-owning device + shader-backend pointers; call once before any Create*().
     bool Init( D3D12Device* device, D3D12ShaderBackend* shaders );
@@ -55,12 +86,23 @@ public:
     bool CreateWorld();        // shared world root sig + lit world-mesh PSO (must run before the two below)
     bool CreateDepthPrepass(); // depth-only world + instanced-VOB prepass PSOs (needs World.RootSig)
     bool CreateVob();          // lit instanced-VOB PSO (needs World.RootSig); buffers stay in the engine
+    bool CreateUI();          // 2D/UI root sig + shaders; warms the default PSO (vertex buffers stay in engine)
+    bool CreateParticle();    // particle root sig + shaders; warms the alpha PSO (instance buffers stay in engine)
+    bool CreateDecal();       // decal root sig + shaders + fixed lit PSO; warms alpha (quad/instance VBs stay in engine)
     bool CreateTonemap();     // fullscreen HDR->swapchain resolve (exposure + ACES)
     bool CreateWater();       // alpha-blended water (own root sig: b0 ViewProj, t0, b1 fog, b2 water)
     bool CreateLightCull();   // Forward+ tiled light-cull compute (global compute root sig)
 
+    // --- On-demand PSO cache lookups (called from the engine's draw path; create+cache on miss) ---
+    ID3D12PipelineState* GetOrCreateUIPipeline( const GothicBlendStateInfo& blend, const GothicDepthBufferStateInfo& depth );
+    ID3D12PipelineState* GetOrCreateParticlePipeline( const GothicBlendStateInfo& blend );
+    ID3D12PipelineState* GetOrCreateDecalBlendPipeline( const GothicBlendStateInfo& blend );
+
     // --- Storage (one per migrated pass) ---
     WorldPipeline    World;
+    UIPipeline       UI;
+    ParticlePipeline Particle;
+    DecalPipeline    Decal;
     GraphicsPipeline Tonemap;
     GraphicsPipeline Water;
     ComputePipeline  LightCull;

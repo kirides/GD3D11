@@ -142,10 +142,8 @@ private:
     bool CreateFrameResources();      // RTV heap + allocators + command list + fence + event
     bool CreateUploadObjects();       // dedicated allocator + command list + fence for synchronous uploads
     bool CreateSrvHeap();             // shader-visible CBV_SRV_UAV heap for texture SRVs
-    bool CreateUIPipeline();          // root signature + inline shaders (compiled once); PSOs built per blend state
-    // Returns a PSO for the 2D UI shaders matching the given Gothic blend state, creating + caching it on
-    // first use. Emulates Gothic's per-draw fixed-function blend modes (opaque/alpha/additive/modulate/...).
-    ID3D12PipelineState* GetOrCreateUIPipeline( const GothicBlendStateInfo& blend, const GothicDepthBufferStateInfo& depth );
+    // UI/Particle/Decal pipeline creation now lives in m_Pipelines (CreateUI/CreateParticle/CreateDecal); the
+    // GetOrCreate* blend-key PSO caches moved there too. GPU ring buffers + the decal quad VB stay in the engine.
     bool CreateUIVertexBuffers();     // per-frame dynamic (upload-heap) vertex ring buffers
     bool CreateWhiteTexture();        // 1x1 white fallback (untextured colored 2D draws)
     bool CreateDepthBuffer( INT2 size ); // R32_TYPELESS depth target + DSV(D32) + SRV(R32) (reversed-Z world rendering)
@@ -174,17 +172,10 @@ private:
     void PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& vobs );   // once/frame anim update + upload bone/inst CBs + attachment instances (pre-cull)
     void DrawSkeletalDepthPrepass();  // lay down skeletal base + node-attachment depth into the Forward+ prepass
     void DrawSkeletalColor();         // draw the collected skeletal base meshes + node attachments (post-cull, lit)
-    bool CreateParticlePipeline();    // particle (PFX) root sig + inline billboard shaders (PSOs built per blend)
     bool CreateParticleInstanceBuffers(); // per-frame dynamic (upload-heap) particle instance ring
-    // Returns a PSO for the particle shaders matching the given Gothic blend state (alpha/additive/modulate),
-    // creating + caching it on first use. Keyed by BlendKey.
-    ID3D12PipelineState* GetOrCreateParticlePipeline( const GothicBlendStateInfo& blend );
     XRESULT DrawParticleEffects();    // collect visible PFX (backend-neutral) + draw billboards, blended over the scene
-    bool CreateDecalPipeline();       // decal root sig + shared unit-quad VB + inline shaders + lit/blend PSOs
     bool CreateDecalInstanceBuffers(); // per-frame dynamic (upload-heap) decal instance ring
-    // Returns a transparent-decal PSO matching the given Gothic blend state (alpha/additive/modulate), created
-    // + cached on first use. Keyed by BlendKey. The opaque/alpha-test path uses the fixed m_DecalLitPSO instead.
-    ID3D12PipelineState* GetOrCreateDecalBlendPipeline( const GothicBlendStateInfo& blend );
+    bool CreateDecalQuadVB();         // shared unit-quad VB (6 verts) consumed by the m_Pipelines.Decal PSOs
     // Draw the visible decals (blood, arrows, sprites) as instanced camera/surface-aligned quads. lighting=true
     // = the opaque/alpha-test pass (depth-write, drawn with the opaque geometry); lighting=false = the
     // transparent pass (per-material blend, depth-read-only, drawn over the finished scene). Mirrors D3D11's
@@ -266,13 +257,7 @@ private:
     // Owns per-pass root signatures + PSOs + shader blobs (creation extracted from this monolith).
     D3D12PipelineState m_Pipelines;
 
-    Microsoft::WRL::ComPtr<ID3D12RootSignature> m_UIRootSig;
-    Microsoft::WRL::ComPtr<ID3DBlob> m_UIVsBlob;                    // compiled once; reused for every blend PSO
-    Microsoft::WRL::ComPtr<ID3DBlob> m_UIPsBlob;
-    // One PSO per distinct Gothic blend+depth state (opaque/alpha/additive/modulate/... x depth on/off),
-    // built lazily. Key = BlendKey | (DepthKey << 32).
-    std::unordered_map<uint64_t, Microsoft::WRL::ComPtr<ID3D12PipelineState>> m_UIPipelines;
-
+    // The 2D/UI root sig + shaders + blend/depth PSO cache now live in m_Pipelines.UI. The vertex ring stays here.
     Microsoft::WRL::ComPtr<ID3D12Resource> m_UIVertexBuffer[kBackBufferCount]; // persistently-mapped upload ring
     uint8_t* m_UIVertexBufferPtr[kBackBufferCount] = {};
     UINT m_UIVertexBufferCapacity = 0;
@@ -482,13 +467,8 @@ private:
     UINT m_SkeletalCBBufferOffset = 0;                             // reset each OnBeginFrame
     bool m_SkeletalCBOverflowLogged = false;
 
-    // Particle (PFX) path — instanced camera-facing billboards, one instance per live particle. Own root
-    // sig (b0 ViewProj root consts + b1 camera pos + t0 SRV + s0). PSOs are built per Gothic blend mode
-    // (alpha/additive/modulate) and cached by BlendKey. Per-frame instance ring holds ParticleInstanceInfo.
-    Microsoft::WRL::ComPtr<ID3D12RootSignature> m_ParticleRootSig;
-    Microsoft::WRL::ComPtr<ID3DBlob> m_ParticleVsBlob;             // compiled once; reused for every blend PSO
-    Microsoft::WRL::ComPtr<ID3DBlob> m_ParticlePsBlob;
-    std::unordered_map<uint32_t, Microsoft::WRL::ComPtr<ID3D12PipelineState>> m_ParticlePipelines; // key = BlendKey
+    // Particle (PFX) path — instanced camera-facing billboards, one instance per live particle. The root sig,
+    // shaders, and per-BlendKey PSO cache now live in m_Pipelines.Particle. Per-frame instance ring stays here.
     Microsoft::WRL::ComPtr<ID3D12Resource> m_ParticleInstanceBuffer[kBackBufferCount]; // persistently-mapped upload ring
     uint8_t* m_ParticleInstanceBufferPtr[kBackBufferCount] = {};
     UINT m_ParticleInstanceBufferCapacity = 0;
@@ -497,14 +477,8 @@ private:
 
     // Decal path — blood splats, arrows, sprites. Every decal is the same unit quad (m_DecalQuadVB),
     // instanced with a per-decal world matrix (world*offset*scale; ViewProj applies view+proj) + ghost
-    // alpha. Own root sig (b0 ViewProj + t0 SRV + s0 clamp). Two PS: opaque/alpha-test (m_DecalLitPSO,
-    // depth-write) and transparent (m_DecalBlendPipelines, per Gothic blend mode, depth-read-only).
-    Microsoft::WRL::ComPtr<ID3D12RootSignature> m_DecalRootSig;
-    Microsoft::WRL::ComPtr<ID3DBlob> m_DecalVsBlob;
-    Microsoft::WRL::ComPtr<ID3DBlob> m_DecalLitPsBlob;
-    Microsoft::WRL::ComPtr<ID3DBlob> m_DecalBlendPsBlob;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_DecalLitPSO;      // opaque/alpha-test decals, depth-write on
-    std::unordered_map<uint32_t, Microsoft::WRL::ComPtr<ID3D12PipelineState>> m_DecalBlendPipelines; // key = BlendKey
+    // alpha. The root sig, shaders, fixed lit PSO, and per-BlendKey transparent PSO cache now live in
+    // m_Pipelines.Decal. The shared unit-quad VB + per-frame instance ring stay here (GPU resources).
     Microsoft::WRL::ComPtr<ID3D12Resource> m_DecalQuadVB;          // shared unit quad (6 verts), static
     D3D12_VERTEX_BUFFER_VIEW m_DecalQuadVBV = {};
     Microsoft::WRL::ComPtr<ID3D12Resource> m_DecalInstanceBuffer[kBackBufferCount]; // persistently-mapped upload ring
