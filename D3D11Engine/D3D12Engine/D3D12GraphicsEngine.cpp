@@ -391,6 +391,16 @@ namespace {
         return b;
     }
 
+    // UAV barrier: needed between a UAV write and a later read/write of the SAME resource (e.g. the bloom
+    // pyramid's chained compute dispatches) — a transition barrier doesn't apply since the state never changes.
+    D3D12_RESOURCE_BARRIER UavBarrier( ID3D12Resource* res ) {
+        D3D12_RESOURCE_BARRIER b = {};
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+        b.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+        b.UAV.pResource = res;
+        return b;
+    }
+
     bool EnsureCopyCommandObjects( ID3D12Device* device, ComPtr<ID3D12CommandAllocator>& allocator, ComPtr<ID3D12GraphicsCommandList>& cmdList ) {
         if ( !device ) return false;
         if ( !allocator ) {
@@ -529,6 +539,12 @@ XRESULT D3D12GraphicsEngine::Init() {
     if ( !m_Pipelines.CreatePreview() ) {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the inventory-item preview pipeline.";
         return XR_FAILED;
+    }
+    if ( !m_Pipelines.CreateBloom() ) {
+        // Non-fatal: bloom is an opt-in visual enhancement (RendererSettings.EnableBloom, default off), not a
+        // required resource any other PSO samples unconditionally — unlike tonemap/shadow/point-shadow above.
+        // RenderBloom() guards on the PSOs existing and just skips the effect if this failed.
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the bloom pipeline (bloom will be unavailable).";
     }
     LogInfo() << "D3D12GraphicsEngine initialized (device + 2D + world + VOB + skeletal + water + particle + decal + HDR tonemap pipelines up). Swapchain is created once the game window is set.";
     return XR_SUCCESS;
@@ -2549,6 +2565,214 @@ bool D3D12GraphicsEngine::CreateLightCullBuffers( INT2 size ) {
 	return true;
 }
 
+bool D3D12GraphicsEngine::CreateBloomResources( INT2 size ) {
+	// Bloom pyramid (mirrors D3D11PFX_Bloom's mip-chain sizing exactly): mip i is size >> (i+1), stop once the
+	// shorter side drops below kBloomMinMipSize. Recreated on every resize; SRV/UAV heap slots are allocated
+	// ONCE (persist across resizes, like m_SceneColorSrvSlot) and just get their views re-pointed at the fresh
+	// resource. Non-fatal on failure — RenderBloom() checks m_BloomMipCount > 0 before doing anything.
+	m_BloomMipCount = 0;
+	if ( size.x < 4 || size.y < 4 ) return false;
+	ID3D12Device* device = m_Device.GetDevice();
+	if ( !device ) return false;
+
+	int mipCount = 0;
+	for ( int i = 0; i < kBloomMaxMips; ++i ) {
+		int mw = size.x >> (i + 1);
+		int mh = size.y >> (i + 1);
+		if ( mw < kBloomMinMipSize || mh < kBloomMinMipSize ) break;
+		mipCount++;
+	}
+	if ( mipCount < 1 ) return false;
+
+	D3D12MA::ALLOCATION_DESC heapDefault = {};
+	heapDefault.HeapType = D3D12_HEAP_TYPE_DEFAULT;
+
+	auto makeTex = [&]( int w, int h, ComPtr<ID3D12Resource>& out, ComPtr<D3D12MA::Allocation>& outAlloc, const wchar_t* name ) -> bool {
+		D3D12_RESOURCE_DESC dd = {};
+		dd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+		dd.Width = static_cast<UINT64>( w );
+		dd.Height = static_cast<UINT>( h );
+		dd.DepthOrArraySize = 1;
+		dd.MipLevels = 1;
+		dd.Format = kSceneColorFormat;
+		dd.SampleDesc.Count = 1;
+		dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+		dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+		if ( FAILED( m_Allocator->CreateResource( &heapDefault, &dd,
+			D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, outAlloc.ReleaseAndGetAddressOf(),
+			IID_PPV_ARGS( out.ReleaseAndGetAddressOf() ) ) ) ) {
+			LogWarn() << "D3D12: failed to create a bloom pyramid texture (" << w << "x" << h << ").";
+			return false;
+		}
+		out->SetName( name );
+		return true;
+		};
+
+	auto ensureSlot = [&]( UINT& slot ) -> bool {
+		if ( slot == UINT_MAX ) slot = AllocateSrvSlot();
+		return slot != UINT_MAX;
+		};
+
+	D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+	srvDesc.Format = kSceneColorFormat;
+	srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+	srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	srvDesc.Texture2D.MipLevels = 1;
+	D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+	uavDesc.Format = kSceneColorFormat;
+	uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+
+	for ( int i = 0; i < mipCount; ++i ) {
+		const int mw = std::max( 1, size.x >> (i + 1) );
+		const int mh = std::max( 1, size.y >> (i + 1) );
+		m_BloomMipSize[i] = { mw, mh };
+
+		wchar_t nameBuf[32];
+		swprintf_s( nameBuf, L"BloomDown%d", i );
+		if ( !makeTex( mw, mh, m_BloomDown[i], m_BloomDownAlloc[i], nameBuf ) ) return false;
+		if ( !ensureSlot( m_BloomDownSrvSlot[i] ) || !ensureSlot( m_BloomDownUavSlot[i] ) ) return false;
+		device->CreateShaderResourceView( m_BloomDown[i].Get(), &srvDesc, GetSrvCpuHandle( m_BloomDownSrvSlot[i] ) );
+		device->CreateUnorderedAccessView( m_BloomDown[i].Get(), nullptr, &uavDesc, GetSrvCpuHandle( m_BloomDownUavSlot[i] ) );
+
+		if ( i < mipCount - 1 ) {
+			swprintf_s( nameBuf, L"BloomUp%d", i );
+			if ( !makeTex( mw, mh, m_BloomUp[i], m_BloomUpAlloc[i], nameBuf ) ) return false;
+			if ( !ensureSlot( m_BloomUpUavSlot[i] ) || !ensureSlot( m_BloomUpSrvSlot[i] ) ) return false;
+			device->CreateUnorderedAccessView( m_BloomUp[i].Get(), nullptr, &uavDesc, GetSrvCpuHandle( m_BloomUpUavSlot[i] ) );
+
+			// Upsample SRV table for level i needs 2 CONTIGUOUS slots (t0=source, rewritten per-frame in
+			// RenderBloom; t1=down[i], fixed here). Allocate the pair together so bump-allocation guarantees
+			// contiguity, then write t1 (down[i]) now — it never changes until the next resize.
+			if ( m_BloomUpSrvPairSlot[i] == UINT_MAX ) {
+				const UINT base = AllocateSrvSlot();
+				const UINT next = AllocateSrvSlot();
+				if ( base == UINT_MAX || next == UINT_MAX || next != base + 1 ) return false;
+				m_BloomUpSrvPairSlot[i] = base;
+			}
+			device->CreateShaderResourceView( m_BloomDown[i].Get(), &srvDesc, GetSrvCpuHandle( m_BloomUpSrvPairSlot[i] + 1 ) );
+		}
+	}
+
+	m_BloomMipCount = mipCount;
+	return true;
+}
+
+void D3D12GraphicsEngine::RenderBloom() {
+	// Prefilter (bright-pass) -> downsample chain -> upsample chain -> additive composite onto the HDR scene
+	// color. Mirrors D3D11PFX_Bloom::Render pass-for-pass. Called from OnStartWorldRendering right before
+	// ResolveSceneToBackBuffer, while m_SceneColor is still bound as the world pass's render target.
+	auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+	if ( !settings.EnableBloom ) return;
+	if ( m_BloomMipCount < 1 || !m_Pipelines.Bloom.PrefilterPSO || !m_Pipelines.Bloom.DownsamplePSO
+		|| !m_Pipelines.Bloom.UpsamplePSO || !m_Pipelines.Bloom.CompositePSO || !m_SceneColor )
+		return;
+
+	DX_ZONE( m_CmdList, "Bloom" );
+	const int mipCount = m_BloomMipCount;
+
+	struct BloomCB { float texelSizeX, texelSizeY, threshold, knee, intensity, filterRadius, padX, padY; };
+	BloomCB cb = { 0, 0, settings.BloomThreshold, settings.BloomKnee, settings.BloomStrength, settings.BloomRadius, 0, 0 };
+
+	// Scene color is still RENDER_TARGET (bound by BindSceneColorTarget for the world pass) — flip to SRV so
+	// the prefilter compute pass can sample it, then unbind it as an RTV (compute can't run with it bound).
+	if ( !m_SceneColorInPixelState ) {
+		auto toSrv = TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
+		m_CmdList->ResourceBarrier( 1, &toSrv );
+		m_SceneColorInPixelState = true;
+	}
+	m_CmdList->OMSetRenderTargets( 0, nullptr, FALSE, nullptr );
+
+	auto uavBarrier = [&]( ID3D12Resource* res ) {
+		auto b = UavBarrier( res );
+		m_CmdList->ResourceBarrier( 1, &b );
+		};
+
+	// --- Prefilter: scene color -> down[0] ---
+	{
+		m_CmdList->SetPipelineState( m_Pipelines.Bloom.PrefilterPSO.Get() );
+		m_CmdList->SetComputeRootSignature( m_Pipelines.Bloom.DownRootSig.Get() );
+		cb.texelSizeX = 1.0f / m_Resolution.x;
+		cb.texelSizeY = 1.0f / m_Resolution.y;
+		m_CmdList->SetComputeRoot32BitConstants( 0, 8, &cb, 0 );
+		m_CmdList->SetComputeRootDescriptorTable( 1, GetSrvGpuHandle( m_SceneColorSrvSlot ) );
+		m_CmdList->SetComputeRootDescriptorTable( 2, GetSrvGpuHandle( m_BloomDownUavSlot[0] ) );
+		const UINT gx = (m_BloomMipSize[0].x + 7) / 8, gy = (m_BloomMipSize[0].y + 7) / 8;
+		m_CmdList->Dispatch( gx, gy, 1 );
+		uavBarrier( m_BloomDown[0].Get() );
+	}
+
+	// --- Downsample chain: down[i-1] -> down[i] ---
+	m_CmdList->SetPipelineState( m_Pipelines.Bloom.DownsamplePSO.Get() );
+	for ( int i = 1; i < mipCount; ++i ) {
+		cb.texelSizeX = 1.0f / m_BloomMipSize[i - 1].x;
+		cb.texelSizeY = 1.0f / m_BloomMipSize[i - 1].y;
+		m_CmdList->SetComputeRoot32BitConstants( 0, 8, &cb, 0 );
+		m_CmdList->SetComputeRootDescriptorTable( 1, GetSrvGpuHandle( m_BloomDownSrvSlot[i - 1] ) );
+		m_CmdList->SetComputeRootDescriptorTable( 2, GetSrvGpuHandle( m_BloomDownUavSlot[i] ) );
+		const UINT gx = (m_BloomMipSize[i].x + 7) / 8, gy = (m_BloomMipSize[i].y + 7) / 8;
+		m_CmdList->Dispatch( gx, gy, 1 );
+		uavBarrier( m_BloomDown[i].Get() );
+	}
+
+	// --- Upsample chain: current = down[mipCount-1]; for i = mipCount-2..0: up[i] = down[i] + tent(current) ---
+	// Each level's t0 (variable source) is written into the pair slot right before dispatch; t1 (down[i]) was
+	// already written once at creation (CreateBloomResources) and never changes.
+	D3D12_SHADER_RESOURCE_VIEW_DESC upSrcSrvDesc = {};
+	upSrcSrvDesc.Format = kSceneColorFormat;
+	upSrcSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+	upSrcSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	upSrcSrvDesc.Texture2D.MipLevels = 1;
+
+	UINT finalBloomSrvSlot = m_BloomDownSrvSlot[0];
+	if ( mipCount >= 2 ) {
+		m_CmdList->SetPipelineState( m_Pipelines.Bloom.UpsamplePSO.Get() );
+		m_CmdList->SetComputeRootSignature( m_Pipelines.Bloom.UpRootSig.Get() );
+		for ( int i = mipCount - 2; i >= 0; --i ) {
+			const bool firstStep = (i == mipCount - 2);
+			ID3D12Resource* source = firstStep ? m_BloomDown[mipCount - 1].Get() : m_BloomUp[i + 1].Get();
+			m_Device.GetDevice()->CreateShaderResourceView( source, &upSrcSrvDesc, GetSrvCpuHandle( m_BloomUpSrvPairSlot[i] ) );
+
+			const int srcW = firstStep ? m_BloomMipSize[mipCount - 1].x : m_BloomMipSize[i + 1].x;
+			const int srcH = firstStep ? m_BloomMipSize[mipCount - 1].y : m_BloomMipSize[i + 1].y;
+			cb.texelSizeX = 1.0f / srcW;
+			cb.texelSizeY = 1.0f / srcH;
+			m_CmdList->SetComputeRoot32BitConstants( 0, 8, &cb, 0 );
+			m_CmdList->SetComputeRootDescriptorTable( 1, GetSrvGpuHandle( m_BloomUpSrvPairSlot[i] ) );
+			m_CmdList->SetComputeRootDescriptorTable( 2, GetSrvGpuHandle( m_BloomUpUavSlot[i] ) );
+			const UINT gx = (m_BloomMipSize[i].x + 7) / 8, gy = (m_BloomMipSize[i].y + 7) / 8;
+			m_CmdList->Dispatch( gx, gy, 1 );
+			uavBarrier( m_BloomUp[i].Get() );
+
+			// Refresh this level's canonical SRV (read by the i-1 step's t0 above, and by the composite pass
+			// once i reaches 0) — same resource/view every resize, so this is a cheap no-op-content rewrite,
+			// not a new allocation.
+			m_Device.GetDevice()->CreateShaderResourceView( m_BloomUp[i].Get(), &upSrcSrvDesc, GetSrvCpuHandle( m_BloomUpSrvSlot[i] ) );
+		}
+		finalBloomSrvSlot = m_BloomUpSrvSlot[0];
+	}
+
+	// --- Composite: additively blend the (upsampled) bloom onto the HDR scene color ---
+	m_CmdList->SetPipelineState( m_Pipelines.Bloom.CompositePSO.Get() );
+	m_CmdList->SetGraphicsRootSignature( m_Pipelines.Bloom.CompositeRootSig.Get() );
+	m_CmdList->SetGraphicsRootDescriptorTable( 0, GetSrvGpuHandle( finalBloomSrvSlot ) );
+	m_CmdList->SetGraphicsRoot32BitConstant( 1, *reinterpret_cast<const UINT*>( &settings.BloomStrength ), 0 );
+
+	auto toRt = TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET );
+	m_CmdList->ResourceBarrier( 1, &toRt );
+	m_SceneColorInPixelState = false;
+
+	const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_Resolution.x), static_cast<float>(m_Resolution.y), 0.0f, 1.0f };
+	const D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
+	m_CmdList->RSSetViewports( 1, &vp );
+	m_CmdList->RSSetScissorRects( 1, &sc );
+	m_CmdList->OMSetRenderTargets( 1, &m_SceneColorRtv, FALSE, nullptr );
+	m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+	m_CmdList->IASetVertexBuffers( 0, 0, nullptr );
+	m_CmdList->DrawInstanced( 3, 1, 0, 0 );
+
+	m_ColorTargetIsHDR = true;   // just rebound m_SceneColor as RTV above
+}
+
 
 bool D3D12GraphicsEngine::CreateVobInstanceBuffers() {
 	ID3D12Device* device = m_Device.GetDevice();
@@ -3487,6 +3711,10 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	for ( auto const& [visualPtr, visual] : Engine::GAPI->GetStaticMeshVisuals() ) {
 		if ( visual ) visual->Instances.clear();
 	}
+
+	// Bloom (P2.11, opt-in via EnableBloom): must run before the tonemap resolve below, while the scene is still
+	// linear HDR — additively blending a mip pyramid of the scene's own bright pixels back onto itself.
+	RenderBloom();
 
 	// Phase 3 HDR: the 3D scene is complete — tonemap the HDR target into the swapchain and rebind the backbuffer
 	// so Gothic's subsequent 2D UI/HUD draws (and the ImGui overlay in Present) composite on top in LDR.
@@ -4793,6 +5021,7 @@ bool D3D12GraphicsEngine::CreateSwapChain( INT2 size ) {
     if ( !AcquireBackBufferRTVs() ) return false;
     if ( !CreateDepthBuffer( size ) ) return false;
     if ( !CreateSceneColorTarget( size ) ) return false;   // HDR scene RT (RTV heap now exists with the extra slot)
+    CreateBloomResources( size );   // non-fatal: bloom is opt-in (EnableBloom, default off); RenderBloom no-ops if this failed
 
     m_SwapChainReady = true;
 
@@ -5211,7 +5440,9 @@ bool D3D12GraphicsEngine::ResizeSwapChain( INT2 size ) {
     m_FrameIndex = m_SwapChain->GetCurrentBackBufferIndex();
     if ( !AcquireBackBufferRTVs() ) return false;
     if ( !CreateDepthBuffer( size ) ) return false;   // GPU is idle (WaitForGpuIdle above), safe to recreate
-    return CreateSceneColorTarget( size );            // HDR scene RT tracks the new resolution too
+    if ( !CreateSceneColorTarget( size ) ) return false;   // HDR scene RT tracks the new resolution too
+    CreateBloomResources( size );   // non-fatal: see the CreateSwapChain call site
+    return true;
 }
 
 XRESULT D3D12GraphicsEngine::OnResize( INT2 newSize ) {

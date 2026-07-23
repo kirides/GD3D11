@@ -1530,3 +1530,201 @@ bool D3D12PipelineState::CreateLightCull() {
     }
     return true;
 }
+
+bool D3D12PipelineState::CreateBloom() {
+    // Bloom pyramid (P2.11): mirrors D3D11PFX_Bloom's compute pipeline exactly (same HLSL math, ported
+    // verbatim into Shaders/D3D12/CS_Bloom_*.hlsl since D3D12ShaderBackend only looks under shaders/D3D12/).
+    // Prefilter/downsample share one descriptor-table layout (t0 SRV, u0 UAV); upsample needs a second SRV
+    // (t1, the same-size downsampled mip) so it gets its own root sig. Composite is a fullscreen-triangle
+    // graphics pass (additive blend, no depth) mirroring Tonemap's structure. Pyramid TEXTURES stay in the
+    // engine (resolution-dependent, recreated on resize) — this only builds pipeline state.
+    ID3D12Device* device = m_Device->GetDevice();
+    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
+    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (bloom)."; return false; }
+
+    D3D12_STATIC_SAMPLER_DESC sampler = {};
+    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.MaxLOD = D3D12_FLOAT32_MAX;
+    sampler.ShaderRegister = 0;   // s0
+    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    // --- Down root sig (prefilter + downsample): b0 8x32-bit consts, t0 SRV table, u0 UAV table ---
+    {
+        D3D12_DESCRIPTOR_RANGE srvRange = {};
+        srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+        srvRange.NumDescriptors = 1;
+        srvRange.BaseShaderRegister = 0;   // t0
+        srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+        D3D12_DESCRIPTOR_RANGE uavRange = {};
+        uavRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+        uavRange.NumDescriptors = 1;
+        uavRange.BaseShaderRegister = 0;   // u0
+        uavRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+        D3D12_ROOT_PARAMETER params[3] = {};
+        params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        params[0].Constants.ShaderRegister = 0;   // b0 BloomConstantBuffer
+        params[0].Constants.Num32BitValues = 8;
+        params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        params[1].DescriptorTable.NumDescriptorRanges = 1;
+        params[1].DescriptorTable.pDescriptorRanges = &srvRange;
+        params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        params[2].DescriptorTable.NumDescriptorRanges = 1;
+        params[2].DescriptorTable.pDescriptorRanges = &uavRange;
+        params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+        D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+        rsDesc.NumParameters = _countof( params );
+        rsDesc.pParameters = params;
+        rsDesc.NumStaticSamplers = 1;
+        rsDesc.pStaticSamplers = &sampler;
+
+        ComPtr<ID3DBlob> rsBlob, rsErr;
+        if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
+            if ( rsErr ) LogWarn() << "D3D12: bloom-down root sig error: " << static_cast<const char*>(rsErr->GetBufferPointer());
+            return false;
+        }
+        if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
+            IID_PPV_ARGS( Bloom.DownRootSig.ReleaseAndGetAddressOf() ) ) ) )
+            return false;
+    }
+
+    // --- Up root sig (upsample): b0 8x32-bit consts, t0+t1 SRV table (2 contiguous descriptors), u0 UAV table ---
+    {
+        D3D12_DESCRIPTOR_RANGE srvRange = {};
+        srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+        srvRange.NumDescriptors = 2;
+        srvRange.BaseShaderRegister = 0;   // t0, t1
+        srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+        D3D12_DESCRIPTOR_RANGE uavRange = {};
+        uavRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+        uavRange.NumDescriptors = 1;
+        uavRange.BaseShaderRegister = 0;   // u0
+        uavRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+        D3D12_ROOT_PARAMETER params[3] = {};
+        params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        params[0].Constants.ShaderRegister = 0;
+        params[0].Constants.Num32BitValues = 8;
+        params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        params[1].DescriptorTable.NumDescriptorRanges = 1;
+        params[1].DescriptorTable.pDescriptorRanges = &srvRange;
+        params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        params[2].DescriptorTable.NumDescriptorRanges = 1;
+        params[2].DescriptorTable.pDescriptorRanges = &uavRange;
+        params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+        D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+        rsDesc.NumParameters = _countof( params );
+        rsDesc.pParameters = params;
+        rsDesc.NumStaticSamplers = 1;
+        rsDesc.pStaticSamplers = &sampler;
+
+        ComPtr<ID3DBlob> rsBlob, rsErr;
+        if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
+            if ( rsErr ) LogWarn() << "D3D12: bloom-up root sig error: " << static_cast<const char*>(rsErr->GetBufferPointer());
+            return false;
+        }
+        if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
+            IID_PPV_ARGS( Bloom.UpRootSig.ReleaseAndGetAddressOf() ) ) ) )
+            return false;
+    }
+
+    const D3D_SHADER_MACRO prefilterMacro[] = { { "BLOOM_PREFILTER", "1" }, { nullptr, nullptr } };
+    if ( !m_Shaders->CompileFromFile( "CS_Bloom_Downsample.hlsl", "CSMain", Shadermodel_CS, Bloom.PrefilterCsBlob.ReleaseAndGetAddressOf(), prefilterMacro ) )
+        return false;
+    if ( !m_Shaders->CompileFromFile( "CS_Bloom_Downsample.hlsl", "CSMain", Shadermodel_CS, Bloom.DownsampleCsBlob.ReleaseAndGetAddressOf() ) )
+        return false;
+    if ( !m_Shaders->CompileFromFile( "CS_Bloom_Upsample.hlsl", "CSMain", Shadermodel_CS, Bloom.UpsampleCsBlob.ReleaseAndGetAddressOf() ) )
+        return false;
+
+    auto makeComputePSO = [&]( ID3D12RootSignature* rootSig, ID3DBlob* cs, ComPtr<ID3D12PipelineState>& out, const char* name ) {
+        D3D12_COMPUTE_PIPELINE_STATE_DESC pso = {};
+        pso.pRootSignature = rootSig;
+        pso.CS = { cs->GetBufferPointer(), cs->GetBufferSize() };
+        if ( FAILED( device->CreateComputePipelineState( &pso, IID_PPV_ARGS( out.ReleaseAndGetAddressOf() ) ) ) ) {
+            LogWarn() << "D3D12: CreateComputePipelineState failed (bloom " << name << ").";
+            return false;
+        }
+        return true;
+    };
+    if ( !makeComputePSO( Bloom.DownRootSig.Get(), Bloom.PrefilterCsBlob.Get(), Bloom.PrefilterPSO, "prefilter" ) ) return false;
+    if ( !makeComputePSO( Bloom.DownRootSig.Get(), Bloom.DownsampleCsBlob.Get(), Bloom.DownsamplePSO, "downsample" ) ) return false;
+    if ( !makeComputePSO( Bloom.UpRootSig.Get(), Bloom.UpsampleCsBlob.Get(), Bloom.UpsamplePSO, "upsample" ) ) return false;
+
+    // --- Composite (graphics): fullscreen triangle, additive blend, writes into the HDR scene-color target ---
+    {
+        D3D12_DESCRIPTOR_RANGE srvRange = {};
+        srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+        srvRange.NumDescriptors = 1;
+        srvRange.BaseShaderRegister = 0;   // t0
+        srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+        D3D12_ROOT_PARAMETER params[2] = {};
+        params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        params[0].DescriptorTable.NumDescriptorRanges = 1;
+        params[0].DescriptorTable.pDescriptorRanges = &srvRange;
+        params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        params[1].Constants.ShaderRegister = 0;   // b0 { Intensity }
+        params[1].Constants.Num32BitValues = 1;
+        params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+        D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+        rsDesc.NumParameters = _countof( params );
+        rsDesc.pParameters = params;
+        rsDesc.NumStaticSamplers = 1;
+        rsDesc.pStaticSamplers = &sampler;
+        rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+        ComPtr<ID3DBlob> rsBlob, rsErr;
+        if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
+            if ( rsErr ) LogWarn() << "D3D12: bloom-composite root sig error: " << static_cast<const char*>(rsErr->GetBufferPointer());
+            return false;
+        }
+        if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
+            IID_PPV_ARGS( Bloom.CompositeRootSig.ReleaseAndGetAddressOf() ) ) ) )
+            return false;
+
+        if ( !m_Shaders->CompileFromFile( "Bloom_Composite.hlsl", "VSFullscreen", Shadermodel_VS, Bloom.CompositeVsBlob.ReleaseAndGetAddressOf() ) )
+            return false;
+        if ( !m_Shaders->CompileFromFile( "Bloom_Composite.hlsl", "PSComposite", Shadermodel_PS, Bloom.CompositePsBlob.ReleaseAndGetAddressOf() ) )
+            return false;
+
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+        pso.pRootSignature = Bloom.CompositeRootSig.Get();
+        pso.VS = { Bloom.CompositeVsBlob->GetBufferPointer(), Bloom.CompositeVsBlob->GetBufferSize() };
+        pso.PS = { Bloom.CompositePsBlob->GetBufferPointer(), Bloom.CompositePsBlob->GetBufferSize() };
+        pso.InputLayout = { nullptr, 0 };
+        pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        pso.NumRenderTargets = 1;
+        pso.RTVFormats[0] = kSceneColorFormat;   // composites additively onto the HDR scene, before tonemap
+        pso.DSVFormat = DXGI_FORMAT_UNKNOWN;
+        pso.SampleDesc.Count = 1;
+        pso.SampleMask = UINT_MAX;
+        pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+        pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+        pso.RasterizerState.DepthClipEnable = TRUE;
+        // Additive: dst + src*1 (Intensity already baked into the PS output), no destination read needed.
+        pso.BlendState.RenderTarget[0].BlendEnable = TRUE;
+        pso.BlendState.RenderTarget[0].SrcBlend = D3D12_BLEND_ONE;
+        pso.BlendState.RenderTarget[0].DestBlend = D3D12_BLEND_ONE;
+        pso.BlendState.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
+        pso.BlendState.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
+        pso.BlendState.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_ONE;
+        pso.BlendState.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+        pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+        pso.DepthStencilState.DepthEnable = FALSE;
+        pso.DepthStencilState.StencilEnable = FALSE;
+        if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( Bloom.CompositePSO.ReleaseAndGetAddressOf() ) ) ) ) {
+            LogWarn() << "D3D12: CreateGraphicsPipelineState failed (bloom composite).";
+            return false;
+        }
+    }
+    return true;
+}

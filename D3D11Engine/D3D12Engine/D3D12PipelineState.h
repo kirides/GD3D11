@@ -108,6 +108,25 @@ public:
         Microsoft::WRL::ComPtr<ID3D12PipelineState> CasterSkeletalPSO;
     };
 
+    // Bloom pyramid (P2.11): prefilter/downsample share one root sig+PSO pair each (t0 SRV table, u0 UAV table,
+    // b0 8x32-bit BloomConstantBuffer), upsample has its own root sig (t0+t1 SRV table) + PSO. Composite is a
+    // fullscreen-triangle graphics pass (additive blend) that adds the finished mip-0 pyramid onto the HDR scene
+    // color. Pyramid textures (resolution-dependent, recreated on resize) stay in the engine.
+    struct BloomPipeline {
+        Microsoft::WRL::ComPtr<ID3D12RootSignature> DownRootSig;   // prefilter + downsample (shared layout)
+        Microsoft::WRL::ComPtr<ID3D12RootSignature> UpRootSig;
+        Microsoft::WRL::ComPtr<ID3DBlob> PrefilterCsBlob;
+        Microsoft::WRL::ComPtr<ID3DBlob> DownsampleCsBlob;
+        Microsoft::WRL::ComPtr<ID3DBlob> UpsampleCsBlob;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> PrefilterPSO;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> DownsamplePSO;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> UpsamplePSO;
+        Microsoft::WRL::ComPtr<ID3D12RootSignature> CompositeRootSig;
+        Microsoft::WRL::ComPtr<ID3DBlob> CompositeVsBlob;
+        Microsoft::WRL::ComPtr<ID3DBlob> CompositePsBlob;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> CompositePSO;
+    };
+
     // Stores non-owning device + shader-backend pointers; call once before any Create*().
     bool Init( D3D12Device* device, D3D12ShaderBackend* shaders );
 
@@ -124,6 +143,7 @@ public:
     bool CreateWater();       // alpha-blended water (own root sig: b0 ViewProj, t0, b1 fog, b2 water)
     bool CreateLightCull();   // Forward+ tiled light-cull compute (global compute root sig)
     bool CreatePreview();     // single-VOB inventory-item preview (own root sig: b0 ViewProj, b1 World, t0 diffuse)
+    bool CreateBloom();       // prefilter/downsample/upsample compute + additive composite graphics pipeline
 
     // --- On-demand PSO cache lookups (called from the engine's draw path; create+cache on miss) ---
     // cullMode/frontCCW/rtvIsHdr/forceMaxZ default to the plain 2D/UI case (cull-none, clockwise-front,
@@ -147,6 +167,7 @@ public:
     GraphicsPipeline Water;
     ComputePipeline  LightCull;
     GraphicsPipeline Preview;
+    BloomPipeline    Bloom;
 
 private:
     D3D12Device*        m_Device = nullptr;

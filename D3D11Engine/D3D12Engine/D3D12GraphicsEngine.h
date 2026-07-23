@@ -471,6 +471,31 @@ private:
     // it must transition them back to UAV before the next dispatch (false right after (re)creation in UAV).
     bool m_LightGridInPixelState = false;
 
+    // Bloom pyramid (P2.11, mirrors D3D11PFX_Bloom): resolution-dependent chain of progressively half-sized
+    // down[]/up[] textures, recreated on resize. Pipeline state (root sigs/PSOs/blobs) lives in m_Pipelines.Bloom;
+    // these are just the GPU textures + their persistent heap slots. down[i] holds prefilter (i=0) / plain
+    // downsample (i>0) results; up[i] holds the tent-upsampled composite of down[i] + the lower mip. Both chains
+    // stay permanently in UNORDERED_ACCESS between dispatches (all work happens within one frame's command list,
+    // no cross-frame state to track — unlike m_SceneColor, which is also read by the next frame's UI).
+    static constexpr int kBloomMaxMips = 6;
+    static constexpr int kBloomMinMipSize = 8;
+    int m_BloomMipCount = 0;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_BloomDown[kBloomMaxMips];
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_BloomDownAlloc[kBloomMaxMips];
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_BloomUp[kBloomMaxMips];
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_BloomUpAlloc[kBloomMaxMips];
+    INT2 m_BloomMipSize[kBloomMaxMips] = {};
+    UINT m_BloomDownSrvSlot[kBloomMaxMips] = { UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX };   // down[i]'s canonical SRV (downsample-chain reads + upsample t1)
+    UINT m_BloomDownUavSlot[kBloomMaxMips] = { UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX };
+    UINT m_BloomUpUavSlot[kBloomMaxMips] = { UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX };     // up[i] UAV (i = 0..mipCount-2)
+    UINT m_BloomUpSrvSlot[kBloomMaxMips] = { UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX };     // up[i] canonical SRV, written after producing it; read by the next (i-1) upsample step and by the composite pass (i==0)
+    // Per-level upsample SRV table: 2 CONTIGUOUS heap slots (t0=variable source, t1=down[i], fixed at creation).
+    // t0 is rewritten every frame right before its dispatch (the source differs per level — down[last] for the
+    // innermost level, up[i+1] otherwise); t1 is a static copy of down[i]'s SRV, written once at creation.
+    UINT m_BloomUpSrvPairSlot[kBloomMaxMips] = { UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX };  // base slot of the pair for level i; t1 = base+1
+    bool CreateBloomResources( INT2 size );   // (re)builds the pyramid textures + persistent SRV/UAV slots
+    void RenderBloom();                       // prefilter -> downsample chain -> upsample chain -> additive composite
+
     // Instanced static VOBs (reuses the shared world root sig; slot 0 = packed vertex, slot 1 = per-instance
     // data). Lit PSO/blobs now live in m_Pipelines.World (VobPSO/VobVsBlob/VobPsBlob); the buffers stay here.
     Microsoft::WRL::ComPtr<ID3D12Resource> m_VobInstanceBuffer[kBackBufferCount]; // persistently-mapped upload ring
