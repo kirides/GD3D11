@@ -413,6 +413,7 @@ namespace {
 
 D3D12GraphicsEngine::D3D12GraphicsEngine() {
     m_LineRenderer = std::make_unique<D3D12LineRenderer>();
+    m_Resolution = m_NewResolution = Engine::GAPI->GetRendererState().RendererSettings.LoadedResolution;
 }
 
 D3D12GraphicsEngine::~D3D12GraphicsEngine() {
