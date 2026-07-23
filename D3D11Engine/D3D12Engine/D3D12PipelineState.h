@@ -123,6 +123,7 @@ public:
     bool CreateTonemap();     // fullscreen HDR->swapchain resolve (exposure + ACES)
     bool CreateWater();       // alpha-blended water (own root sig: b0 ViewProj, t0, b1 fog, b2 water)
     bool CreateLightCull();   // Forward+ tiled light-cull compute (global compute root sig)
+    bool CreatePreview();     // single-VOB inventory-item preview (own root sig: b0 ViewProj, b1 World, t0 diffuse)
 
     // --- On-demand PSO cache lookups (called from the engine's draw path; create+cache on miss) ---
     // cullMode/frontCCW/rtvIsHdr/forceMaxZ default to the plain 2D/UI case (cull-none, clockwise-front,
@@ -145,6 +146,7 @@ public:
     GraphicsPipeline Tonemap;
     GraphicsPipeline Water;
     ComputePipeline  LightCull;
+    GraphicsPipeline Preview;
 
 private:
     D3D12Device*        m_Device = nullptr;

@@ -132,6 +132,7 @@ public:
 
     void OnAddVob(VobInfo* vi) override;
     void OnLoadWorld() override;
+    void DrawVobSingle( VobInfo* vob, zCCamera& camera ) override;  // inventory item preview (GInventory), drawn straight onto the backbuffer
     D3D12MA::Allocator* GetAllocator() const { return m_Allocator.Get(); }
 
 private:

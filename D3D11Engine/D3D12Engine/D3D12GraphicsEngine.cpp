@@ -503,6 +503,10 @@ XRESULT D3D12GraphicsEngine::Init() {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the tonemap pipeline.";
         return XR_FAILED;
     }
+    if ( !m_Pipelines.CreatePreview() ) {
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the inventory-item preview pipeline.";
+        return XR_FAILED;
+    }
     LogInfo() << "D3D12GraphicsEngine initialized (device + 2D + world + VOB + skeletal + water + particle + decal + HDR tonemap pipelines up). Swapchain is created once the game window is set.";
     return XR_SUCCESS;
 }
@@ -530,6 +534,92 @@ void D3D12GraphicsEngine::OnLoadWorld()
     for (auto& v : g_ShadowPassVobs) {
         v.Reset();
     }
+}
+
+// Inventory item preview (GInventory::DrawVobSingle): called directly from Gothic's own zCWorld::Render
+// hook during the UI phase (thisptr != the main world — an inventory pseudo-world), so it draws straight
+// onto the swapchain backbuffer + its depth buffer instead of going through the Forward+ scene passes.
+// Mirrors D3D11GraphicsEngine::DrawVobSingle: back-face-culled, alpha-clipped, unlit/unfogged, via the
+// dedicated Preview pipeline (own minimal root sig — no Forward+ light/shadow bindings needed).
+void D3D12GraphicsEngine::DrawVobSingle( VobInfo* vob, zCCamera& camera ) {
+    if ( !vob || !vob->VisualInfo || !vob->Vob || !m_FrameOpen
+        || !m_Pipelines.Preview.PSO || !m_Pipelines.Preview.RootSig || !m_DepthBuffer || !m_DsvHeap )
+        return;
+
+    Engine::GAPI->SetViewTransformXM( XMLoadFloat4x4( &camera.GetTransformDX( zCCamera::ETransformType::TT_VIEW ) ) );
+
+    GothicRendererState& rs = Engine::GAPI->GetRendererState();
+    const XMFLOAT4X4& viewM = rs.TransformState.TransformView;
+    const XMFLOAT4X4& projM = Engine::GAPI->GetProjectionMatrix();
+    XMFLOAT4X4 viewProj;
+    XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
+
+    // Important: needs the swapchain-sized depth buffer bound, otherwise the inventory VOB renders without
+    // depth testing and looks very bad (mirrors the D3D11 comment on why it rebinds the DSV for this draw).
+    // Unlike D3D11 (which has a dedicated, always-cleared m_SwapchainDepthStencilBuffer for this), D3D12 reuses
+    // the main scene depth buffer, which by now still holds THIS frame's 3D-world depth values at whatever
+    // screen pixels this inventory slot's viewport happens to cover — comparing against those stale values
+    // would randomly reject preview pixels and let the resolved 3D scene bleed through. Clear the depth back
+    // to reversed-Z far (0.0), scoped to just this viewport's rect, before drawing.
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
+    rtv.ptr += static_cast<SIZE_T>( m_FrameIndex ) * m_RtvDescriptorSize;
+    D3D12_CPU_DESCRIPTOR_HANDLE dsv = m_DsvHeap->GetCPUDescriptorHandleForHeapStart();
+
+    D3D12_VIEWPORT vp = m_CurrentViewport;
+    D3D12_RECT     sc = m_CurrentScissor;
+    const D3D12_RECT clearRect = {
+        static_cast<LONG>( vp.TopLeftX ), static_cast<LONG>( vp.TopLeftY ),
+        static_cast<LONG>( vp.TopLeftX + vp.Width ), static_cast<LONG>( vp.TopLeftY + vp.Height ) };
+    m_CmdList->ClearDepthStencilView( dsv, D3D12_CLEAR_FLAG_DEPTH, 0.0f, 0, 1, &clearRect );
+
+    m_CmdList->OMSetRenderTargets( 1, &rtv, FALSE, &dsv );
+
+    m_CmdList->SetPipelineState( m_Pipelines.Preview.PSO.Get() );
+    m_CmdList->SetGraphicsRootSignature( m_Pipelines.Preview.RootSig.Get() );
+    m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );   // b0 ViewProj
+
+    XMFLOAT4X4 world = *vob->Vob->GetWorldMatrixPtr();
+    m_CmdList->SetGraphicsRoot32BitConstants( 1, 16, &world, 0 );      // b1 World
+
+    m_CmdList->RSSetViewports( 1, &vp );
+    m_CmdList->RSSetScissorRects( 1, &sc );
+    m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+
+    const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_BlackTexture->GetSrvSlot() );
+
+    for ( auto const& [material, meshes] : vob->VisualInfo->Meshes ) {
+        zCTexture* texture = material ? material->GetAniTexture() : nullptr;
+        if ( !texture || texture->CacheIn( 0.6f ) != zRES_CACHED_IN ) continue;
+
+        D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
+        if ( MyDirectDrawSurface7* surface = texture->GetSurface() ) {
+            if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
+                D3D12Texture* d12 = D3D12Texture::From( gfx );
+                if ( d12->HasSRV() ) srv = d12->GetSrvGpuHandle();
+            }
+        }
+        m_CmdList->SetGraphicsRootDescriptorTable( 2, srv );   // t0 diffuse
+
+        for ( auto const& mesh : meshes ) {
+            if ( !mesh || mesh->Indices.empty() || !mesh->GetMeshVertexBuffer() || !mesh->GetMeshIndexBuffer() ) continue;
+            D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mesh->GetMeshVertexBuffer() );
+            D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mesh->GetMeshIndexBuffer() );
+            if ( !mvb->GetResource() || !mib->GetResource() ) continue;
+
+            const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStruct ) };
+            m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
+            // VOB sub-mesh index buffers are 16-bit (VERTEX_INDEX), same as DrawVobsInstanced.
+            const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
+            m_CmdList->IASetIndexBuffer( &ibv );
+
+            m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mesh->Indices.size() ), 1, 0, 0, 0 );
+            rs.RendererInfo.FrameDrawnTriangles += static_cast<unsigned int>( mesh->Indices.size() ) / 3;
+        }
+    }
+
+    // Rebind the backbuffer alone (no depth) — matches D3D11 disabling depth again after this draw so the
+    // following 2D UI draws aren't depth-tested.
+    m_CmdList->OMSetRenderTargets( 1, &rtv, FALSE, nullptr );
 }
 
 bool D3D12GraphicsEngine::CreateAllocators() {
@@ -3350,9 +3440,8 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 
 	m_PresentPending = true;
 
-	// After this point, we hand over to Gothics UI rendering
-
-	// TODO: the inventory rendering code requires DrawVobSingle which is currently not implemented in dx12
+	// After this point, we hand over to Gothics UI rendering (inventory item previews render via
+	// DrawVobSingle, called straight from Gothic's own zCWorld::Render hook during this phase).
 
 	return XR_SUCCESS;
 }

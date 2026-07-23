@@ -244,6 +244,108 @@ bool D3D12PipelineState::CreateWorld() {
     return true;
 }
 
+bool D3D12PipelineState::CreatePreview() {
+    // Single-VOB inventory-item preview (GInventory::DrawVobSingle): drawn straight onto the swapchain
+    // backbuffer + its depth buffer from Gothic's own UI-phase zCWorld::Render hook, not through the
+    // Forward+ scene passes. Mirrors D3D11's VS_Ex + PS_Preview_Textured (RENDERMODE==1: plain textured,
+    // alpha-clip, no lighting/fog) — its own minimal root sig, no Forward+ light/shadow bindings needed.
+    ID3D12Device* device = m_Device->GetDevice();
+
+    D3D12_DESCRIPTOR_RANGE srvRange = {};
+    srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    srvRange.NumDescriptors = 1;
+    srvRange.BaseShaderRegister = 0;   // t0
+    srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    D3D12_ROOT_PARAMETER params[3] = {};
+    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[0].Constants.ShaderRegister = 0;   // b0 ViewProj
+    params[0].Constants.Num32BitValues = 16;
+    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[1].Constants.ShaderRegister = 1;   // b1 World (per-instance, single draw — no instance buffer needed)
+    params[1].Constants.Num32BitValues = 16;
+    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[2].DescriptorTable.NumDescriptorRanges = 1;
+    params[2].DescriptorTable.pDescriptorRanges = &srvRange;
+    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    // s0 diffuse: 16x anisotropic wrap, matches D3D11's DefaultSamplerState used for this draw.
+    D3D12_STATIC_SAMPLER_DESC sampler = {};
+    sampler.Filter = D3D12_FILTER_ANISOTROPIC;
+    sampler.MaxAnisotropy = 16;
+    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler.MaxLOD = D3D12_FLOAT32_MAX;
+    sampler.ShaderRegister = 0;   // s0
+    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+    rsDesc.NumParameters = _countof( params );
+    rsDesc.pParameters = params;
+    rsDesc.NumStaticSamplers = 1;
+    rsDesc.pStaticSamplers = &sampler;
+    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
+    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (preview)."; return false; }
+
+    ComPtr<ID3DBlob> rsBlob, rsErr;
+    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
+        if ( rsErr ) LogWarn() << "D3D12: preview root signature serialize error: " << static_cast<const char*>(rsErr->GetBufferPointer());
+        return false;
+    }
+    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
+        IID_PPV_ARGS( Preview.RootSig.ReleaseAndGetAddressOf() ) ) ) )
+        return false;
+
+    if ( !m_Shaders->CompileFromFile( "Preview.hlsl", "VSMain", Shadermodel_VS, Preview.VsBlob.ReleaseAndGetAddressOf() ) ) {
+        return false;
+    }
+    if ( !m_Shaders->CompileFromFile( "Preview.hlsl", "PSMain", Shadermodel_PS, Preview.PsBlob.ReleaseAndGetAddressOf() ) ) {
+        return false;
+    }
+
+    // MeshInfo (VOB submesh) vertex buffers are laid out as the CPU-side ExVertexStruct (stride 60 bytes,
+    // NOT the packed 36-byte ExVertexStructGPU world format) — Position @0, TexCoord0 @24 (matches Vob.hlsl's
+    // VSDepth/DepthPrepassVobPSO layout above). Normal/TexCoord2/Color/Tangent unused (unlit preview).
+    const D3D12_INPUT_ELEMENT_DESC layout[] = {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    };
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+    pso.pRootSignature = Preview.RootSig.Get();
+    pso.VS = { Preview.VsBlob->GetBufferPointer(), Preview.VsBlob->GetBufferSize() };
+    pso.PS = { Preview.PsBlob->GetBufferPointer(), Preview.PsBlob->GetBufferSize() };
+    pso.InputLayout = { layout, _countof( layout ) };
+    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pso.NumRenderTargets = 1;
+    pso.RTVFormats[0] = kBackBufferFormat;   // drawn directly onto the swapchain backbuffer, not the HDR scene target
+    pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+    pso.SampleDesc.Count = 1;
+    pso.SampleMask = UINT_MAX;
+
+    pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    pso.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;   // matches D3D11's explicit CM_CULL_BACK for this draw
+    pso.RasterizerState.DepthClipEnable = TRUE;
+
+    pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+    // Reversed-Z: test + write against the shared swapchain depth buffer (cleared to 0.0, GREATER_EQUAL) —
+    // matches D3D11's comment that the swapchain-sized depth buffer must be bound or the preview looks wrong.
+    pso.DepthStencilState.DepthEnable = TRUE;
+    pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
+    pso.DepthStencilState.StencilEnable = FALSE;
+
+    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( Preview.PSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (preview).";
+        return false;
+    }
+    return true;
+}
+
 bool D3D12PipelineState::CreateDepthPrepass() {
     // Forward+ opaque depth prepass (P2.9b-1): a depth-only variant of the world-mesh pass. Reuses
     // World.RootSig (only b0 ViewProj + t0/s0 are referenced by the prepass shaders) and the world's
