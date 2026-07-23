@@ -215,7 +215,7 @@ bool D3D12Device::Init() {
 
         ComPtr<ID3D12Debug1> debug1;
         if ( SUCCEEDED( debug.As( &debug1 ) ) ) {
-            debug1->SetEnableGPUBasedValidation( TRUE );
+            debug1->SetEnableGPUBasedValidation( FALSE ); // NOTE: This is REALLY expensive. Only use when actually debugging hard crashes.
         }
 
         // Enable DRED
