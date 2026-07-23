@@ -349,6 +349,7 @@ namespace {
         const auto& gs = Engine::GAPI->GetRendererState().GraphicsState;
         float fogFar = gs.FF_FogFar;
         if ( !( fogFar > 1.0f ) ) fogFar = 40000.0f;   // fallback if the controller reports 0 / invalid
+        fogFar *= Engine::GAPI->GetRendererState().RendererSettings.FogRange;
         fog.FogFar = fogFar;
         fog.FogNear = gs.FF_FogNear > 0.0f ? gs.FF_FogNear : 0.3f * fogFar;
 
