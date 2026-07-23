@@ -2417,8 +2417,6 @@ void D3D12GraphicsEngine::RenderPointShadows() {
 	// static occluders. Runs every frame for every shadowed light — this is the real-time part of the split.
 	if ( haveSkel ) {
 		DX_ZONE( m_CmdList, "Dynamic Overlay (skeletals)" );
-		m_CmdList->SetPipelineState( m_Pipelines.PointShadow.CasterSkeletalPSO.Get() );
-		m_CmdList->SetGraphicsRootSignature( m_Pipelines.PointShadow.SkeletalRootSig.Get() );
 		static std::vector<const zCVob*> excludeVobs;
 		// Coarse per-vob mesh-size margin for the sphere pre-filter below (PrepareFrameSkeletals doesn't know a
 		// vob's actual mesh extent yet — the exact per-record cull, ps.range + visual->MeshSize*0.5f, still
@@ -2426,6 +2424,13 @@ void D3D12GraphicsEngine::RenderPointShadows() {
 		constexpr float kSkeletalCullPad = 6.0f;
 		for ( const FramePointShadow& ps : g_FramePointShadows ) {
 			if ( ps.slot >= kMaxShadowCubes ) continue;
+			// Re-bind every light: the node-attachment block below switches to PointShadow.RootSig (a DIFFERENT,
+			// smaller root signature) for the tail of each light's iteration, so the skeletal root sig/PSO can't
+			// be assumed still bound once we're past the first light — re-set it unconditionally per light instead
+			// of once before the loop (bug: 2nd+ shadowed light's instCb/boneCb/diffuse binds landed on the wrong
+			// root signature's parameter slots — GPU device hang on hardware, caught via D3D12 validation).
+			m_CmdList->SetPipelineState( m_Pipelines.PointShadow.CasterSkeletalPSO.Get() );
+			m_CmdList->SetGraphicsRootSignature( m_Pipelines.PointShadow.SkeletalRootSig.Get() );
 			D3D12_CPU_DESCRIPTOR_HANDLE dsv = activeDsvBase;
 			dsv.ptr += static_cast<SIZE_T>(ps.slot) * m_PointShadowDsvSize;
 			m_CmdList->OMSetRenderTargets( 0, nullptr, FALSE, &dsv );   // no clear — keep the copied static depth
