@@ -90,7 +90,18 @@ namespace {
         std::vector<DisplayModeInfo> modes;
         Engine::GraphicsEngine->GetDisplayModeList( &modes );
         resolutions.clear();
+
+        // Don't offer a resolution bigger than the monitor's current desktop resolution. DXGI's mode list
+        // enumerates every mode the OUTPUT hardware supports, which can include entries above the current
+        // desktop resolution (e.g. the desktop is running scaled/non-native); picking one of those isn't
+        // useful here — the window/swapchain would end up larger than the visible desktop.
+        const int maxWidth = GetSystemMetrics( SM_CXSCREEN );
+        const int maxHeight = GetSystemMetrics( SM_CYSCREEN );
+
         for ( auto it = modes.rbegin(); it != modes.rend(); ++it ) {
+            if ( maxWidth > 0 && maxHeight > 0 && ( (*it).Width > maxWidth || (*it).Height > maxHeight ) )
+                continue;
+
             std::string s = std::to_string( (*it).Width ) + "x" + std::to_string( (*it).Height )
                 // disable Hz display until we implement exclusive fullscreen mode. If we ever do.
                 // + " (" + std::to_string( (*it).refreshRateNumerator / std::max<unsigned int>( 1, (*it).refreshRateDenominator ) ) + " Hz)"

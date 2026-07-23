@@ -4438,6 +4438,7 @@ XRESULT D3D12GraphicsEngine::SetWindow( HWND hWnd ) {
         size = INT2( std::max<int>( 800, rc.right - rc.left ), std::max<int>( 600, rc.bottom - rc.top ) );
     }
 
+    m_NewResolution = size;
     return OnResize( size );
 }
 
@@ -4633,7 +4634,15 @@ bool D3D12GraphicsEngine::AcquireBackBufferRTVs() {
 XRESULT D3D12GraphicsEngine::OnBeginFrame() {
     if ( !m_SwapChainReady ) return XR_SUCCESS;
 
-    
+    // Apply a pending TriggerResize() request here — the command list from the previous frame is already
+    // Closed+Executed+Presented at this point (no open recording to disrupt), so this is the one place in
+    // the frame it's safe to stall the GPU and swap the depth/scene-color/swapchain resources out from under
+    // ourselves. Mirrors D3D11GraphicsEngine::OnBeginFrame's `if (NewResolution != Resolution) OnResize(...)`.
+    if ( m_NewResolution.x > 0 && m_NewResolution.y > 0
+        && ( m_NewResolution.x != m_Resolution.x || m_NewResolution.y != m_Resolution.y ) ) {
+        OnResize( m_NewResolution );
+    }
+
     {
         std::lock_guard<std::mutex> lock( m_CopyQueueMutex );
         ReleaseCompletedCopyResources( m_CopyFence->GetCompletedValue() );
@@ -4962,8 +4971,11 @@ bool D3D12GraphicsEngine::ResizeSwapChain( INT2 size ) {
     WaitForGpuIdle();
     for ( UINT i = 0; i < kBackBufferCount; ++i ) m_BackBuffers[i].Reset();
 
+    // Must pass the SAME flags the swapchain was created with (CreateSwapChainForHwnd's scd.Flags) —
+    // DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING can't be added/removed via ResizeBuffers, only the create call.
+    const UINT swapChainFlags = m_TearingSupported ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
     HRESULT hr = m_SwapChain->ResizeBuffers( kBackBufferCount,
-        static_cast<UINT>( size.x ), static_cast<UINT>( size.y ), kBackBufferFormat, 0 );
+        static_cast<UINT>( size.x ), static_cast<UINT>( size.y ), kBackBufferFormat, swapChainFlags );
     if ( FAILED( hr ) ) {
         LogWarn() << "D3D12 ResizeBuffers failed (0x" << std::hex << hr << ").";
         return false;
@@ -4978,6 +4990,22 @@ bool D3D12GraphicsEngine::ResizeSwapChain( INT2 size ) {
 
 XRESULT D3D12GraphicsEngine::OnResize( INT2 newSize ) {
     if ( newSize.x <= 0 || newSize.y <= 0 ) return XR_SUCCESS;
+
+    // Never exceed the monitor's current desktop resolution, no matter where the size came from (initial
+    // SetWindow() at launch, an in-game TriggerResize(), a stale/forced ini or -zRes commandline value,
+    // etc.) — clamping only the ImGui dropdown's offered list isn't enough, since callers can still reach
+    // OnResize() directly with an oversized value. A window/swapchain bigger than the desktop is at best
+    // wasted GPU memory (DXGI_SCALING_STRETCH silently covers for it) and at worst an off-screen window.
+    const int maxWidth = GetSystemMetrics( SM_CXSCREEN );
+    const int maxHeight = GetSystemMetrics( SM_CYSCREEN );
+    if ( maxWidth > 0 && maxHeight > 0 && ( newSize.x > maxWidth || newSize.y > maxHeight ) ) {
+        LogWarn() << "D3D12GraphicsEngine::OnResize: requested " << newSize.x << "x" << newSize.y
+            << " exceeds the desktop resolution (" << maxWidth << "x" << maxHeight << ") — clamping.";
+        newSize.x = std::min( newSize.x, maxWidth );
+        newSize.y = std::min( newSize.y, maxHeight );
+        m_NewResolution = newSize;   // keep in sync so OnBeginFrame doesn't re-trigger this every frame
+    }
+
     if ( m_SwapChainReady && newSize.x == m_Resolution.x && newSize.y == m_Resolution.y )
         return XR_SUCCESS; // nothing to do
 
@@ -4990,7 +5018,15 @@ XRESULT D3D12GraphicsEngine::OnResize( INT2 newSize ) {
         }
         LogInfo() << "D3D12 swapchain created (" << newSize.x << "x" << newSize.y << ").";
     } else {
-        ResizeSwapChain( newSize );
+        if ( !ResizeSwapChain( newSize ) ) {
+            // Depth/scene-color/light-cull targets may now be a mix of old- and new-resolution (or null, if
+            // resource creation itself failed). Don't retry every frame — leave m_Resolution at whatever
+            // ResizeSwapChain last got to and let the render path's existing null checks (haveDepth, etc.)
+            // keep the frame from touching a mismatched/null DSV until the user tries again.
+            LogWarn() << "D3D12GraphicsEngine::OnResize: ResizeSwapChain failed (" << newSize.x << "x" << newSize.y << ").";
+            m_NewResolution = m_Resolution;
+            return XR_FAILED;
+        }
     }
 
     if ( Engine::ImGuiHandle && Engine::ImGuiHandle->Initiated ) {
@@ -5000,9 +5036,11 @@ XRESULT D3D12GraphicsEngine::OnResize( INT2 newSize ) {
 }
 
 XRESULT D3D12GraphicsEngine::TriggerResize( INT2 resolution ) {
-    m_PerFrameCleanupItems[m_FrameIndex].emplace_back( [this, resolution]() {
-        OnResize( resolution );
-    } );
+    // Just record the request (mirrors D3D11GraphicsEngine::TriggerResize / NewResolution) — applied at the
+    // top of the next OnBeginFrame, never here. This can run mid-frame (e.g. from the ImGui settings window,
+    // while the command list is open and mid-recording), and resizing the swapchain/depth/scene-color targets
+    // right now would touch resources the currently-recording command list still references.
+    m_NewResolution = resolution;
     return XR_SUCCESS;
 }
 
