@@ -170,7 +170,13 @@ private:
     // Skeletal (animated NPC/monster) pipeline creation now lives in m_Pipelines.CreateSkeletal (root sig + lit +
     // depth-prepass PSOs). The per-frame skeletal CB ring stays here:
     bool CreateSkeletalConstantBuffers(); // per-frame dynamic (upload-heap) skeletal CB ring (instance + bones)
-    void PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& vobs );   // once/frame anim update + upload bone/inst CBs + attachment instances (pre-cull)
+    // once/frame anim update + upload bone/inst CBs + attachment instances (pre-cull). cullFrustum (if given)
+    // rejects vobs whose bbox misses it — used by the shadow cascades to cull against the CASCADE frustum
+    // instead of the player's view frustum (a caster invisible to the player can still cast a visible shadow).
+    // shadowCascade >= 0 routes the (filtered) records into that cascade's own list instead of the main-view
+    // g_FrameSkelDraws/g_FrameAttachDraws; the per-vob CB/attachment ring upload itself is still cached once
+    // per frame (see g_SkelUploadCache) regardless of how many cull passes touch that vob.
+    void PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& vobs, const Frustum* cullFrustum = nullptr, int shadowCascade = -1 );
     void DrawSkeletalDepthPrepass();  // lay down skeletal base + node-attachment depth into the Forward+ prepass
     void DrawSkeletalColor();         // draw the collected skeletal base meshes + node attachments (post-cull, lit)
     bool CreateParticleInstanceBuffers(); // per-frame dynamic (upload-heap) particle instance ring

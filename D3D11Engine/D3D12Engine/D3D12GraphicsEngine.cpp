@@ -222,6 +222,27 @@ namespace {
     std::vector<FrameSkelDraw>   g_FrameSkelDraws;
     std::vector<FrameAttachDraw> g_FrameAttachDraws;
 
+    // Per-cascade shadow-caster records (parity with D3D11's Shadows::DrawSkeletalMeshes, which culls the FULL
+    // registered skeletal-vob list against the CASCADE frustum, not the player's view frustum — a caster outside
+    // the player's view can still cast a shadow into it). Filled by PrepareFrameSkeletals(..., cascadeFrustum, c)
+    // right before that cascade is rendered; cleared and rebuilt every frame. Must match
+    // D3D12GraphicsEngine::kShadowCascades (private, so re-stated here — the array size is asserted below).
+    constexpr UINT kShadowCascadeCount = 3;
+    std::vector<FrameSkelDraw>   g_ShadowSkelDraws[kShadowCascadeCount];
+    std::vector<FrameAttachDraw> g_ShadowAttachDraws[kShadowCascadeCount];
+
+    // Per-vob-per-frame upload cache: the pose/instance CB data and node-attachment ring uploads are
+    // view-independent (same pose regardless of who's culling), so PrepareFrameSkeletals uploads them ONCE per
+    // vob per frame here and every cull pass (main view + each shadow cascade) just appends the cached GPU
+    // addresses / attachment records into its own destination list. Cleared each frame alongside g_FrameSkelDraws.
+    struct SkelUploadCache {
+        D3D12_GPU_VIRTUAL_ADDRESS instCb = 0;
+        D3D12_GPU_VIRTUAL_ADDRESS boneCb = 0;
+        bool hasBaseMesh = false;
+        std::vector<FrameAttachDraw> attachments;
+    };
+    gtl::flat_hash_map<SkeletalVobInfo*, SkelUploadCache> g_SkelUploadCache;
+
     // Forward+ MVP light buffer (P2.9a): the whole visible-light list is rebuilt from offset 0 each frame,
     // so the ring is just kBackBufferCount snapshots (no per-draw offset). Cap matches D3D11 MAX_TILED_LIGHTS.
     constexpr UINT kMaxFrameLights = 400;
@@ -1645,12 +1666,17 @@ void D3D12GraphicsEngine::ComputeCascadeMatrices() {
 }
 
 void D3D12GraphicsEngine::RenderSunShadows() {
-	// P2.9c-1/-2: render the opaque casters (world mesh + instanced VOBs + skinned skeletals + node attachments)
-	// into each cascade slice from the sun's POV. Still PRODUCES the shadow map only — nothing samples it yet, so
-	// the frame is visually unchanged; inspect the D32 Texture2DArray in RenderDoc (each slice should show the
-	// scene depth from the sun angle, now including VOB/NPC silhouettes). Stable cascades + the lit-pass PCF
-	// sampling are later increments. Casters reuse the shared per-frame records built before the cull
-	// (g_FrameVobUploads / g_FrameSkelDraws / g_FrameAttachDraws) — no second upload or animation update.
+	// P2.9c-1/-2/-3b: render the opaque casters (world mesh + instanced VOBs + skinned skeletals + node
+	// attachments) into each cascade slice from the sun's POV. Still PRODUCES the shadow map only — nothing
+	// samples it yet, so the frame is visually unchanged; inspect the D32 Texture2DArray in RenderDoc (each slice
+	// should show the scene depth from the sun angle, now including VOB/NPC silhouettes). Stable cascades + the
+	// lit-pass PCF sampling are later increments. World-mesh/VOB casters are culled against the CASCADE frustum
+	// per cascade (shadowSections / ctx.frustum = m_CascadeFrustum[c] below). Skeletal casters are now ALSO culled
+	// per cascade (PrepareFrameSkeletals against the full registered vob list + m_CascadeFrustum[c], not the
+	// player's view frustum) instead of reusing the main view's g_FrameSkelDraws/g_FrameAttachDraws wholesale —
+	// a caster invisible to the player can still cast a visible shadow. Per-vob CB/attachment ring uploads stay
+	// cached once per frame (g_SkelUploadCache) so this adds no redundant upload cost for casters already
+	// prepared for the main view.
 	if ( !m_FrameOpen || !m_ShadowMap || !m_ShadowCasterWorldPSO || !m_ShadowDsvHeap || !m_Pipelines.World.RootSig )
 		return;
 
@@ -1725,8 +1751,8 @@ void D3D12GraphicsEngine::RenderSunShadows() {
 	D3D12VertexBuffer* ib = wm ? D3D12VertexBuffer::From( wm->GetMeshIndexBuffer() ) : nullptr;
 	const bool haveWorld = vb && ib && vb->GetResource() && ib->GetResource()
 		&& (ib->GetSizeInBytes() / sizeof( uint32_t )) > 0;
-	const bool haveSkel = m_ShadowCasterSkeletalPSO && m_Pipelines.Skeletal.RootSig && !g_FrameSkelDraws.empty();
-	const bool haveAttach = m_ShadowCasterVobPSO && !g_FrameAttachDraws.empty();
+	// haveSkel/haveAttach are now computed PER CASCADE below (g_ShadowSkelDraws[c]/g_ShadowAttachDraws[c]),
+	// since the caster set differs per cascade frustum — see the per-cascade PrepareFrameSkeletals call.
 
 	const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_ShadowMapSize), static_cast<float>(m_ShadowMapSize), 0.0f, 1.0f };
 	const D3D12_RECT     sc = { 0, 0, static_cast<LONG>(m_ShadowMapSize), static_cast<LONG>(m_ShadowMapSize) };
@@ -1871,6 +1897,17 @@ void D3D12GraphicsEngine::RenderSunShadows() {
 
 		Engine::GAPI->CollectVisibleVobs( ctx ); // uses rendercontext and does not mutate objects.
 
+		// Skeletal shadow casters (parity with D3D11's Shadows::DrawSkeletalMeshes): cull the FULL registered
+		// skeletal-vob list against THIS cascade's frustum, not the player's view frustum — a caster invisible to
+		// the player can still cast a visible shadow. Per-vob CB/attachment ring uploads are cached once per
+		// frame (see g_SkelUploadCache in PrepareFrameSkeletals), so this costs nothing extra for casters already
+		// prepared for the main view — only the (cheap) frustum test + record-append runs per cascade.
+		g_ShadowSkelDraws[c].clear();
+		g_ShadowAttachDraws[c].clear();
+		PrepareFrameSkeletals( Engine::GAPI->GetSkeletalMeshVobs(), &m_CascadeFrustum[c], static_cast<int>( c ) );
+		const bool haveSkel = m_ShadowCasterSkeletalPSO && m_Pipelines.Skeletal.RootSig && !g_ShadowSkelDraws[c].empty();
+		const bool haveAttach = m_ShadowCasterVobPSO && !g_ShadowAttachDraws[c].empty();
+
 		// --- Instanced VOBs (same root sig; two streams: packed vertex slot 0 + per-instance world slot 1) ---
 		thread_local std::vector<FrameVobUpload> cascadeUploads;
 		cascadeUploads.clear();
@@ -1910,7 +1947,7 @@ void D3D12GraphicsEngine::RenderSunShadows() {
 			m_CmdList->SetPipelineState( m_ShadowCasterSkeletalPSO.Get() );
 			m_CmdList->SetGraphicsRootSignature( m_Pipelines.Skeletal.RootSig.Get() );
 			m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
-			for ( const FrameSkelDraw& d : g_FrameSkelDraws ) {
+			for ( const FrameSkelDraw& d : g_ShadowSkelDraws[c] ) {
 				if ( !d.visual ) continue;
 				// Shared per-MODEL texture slots: refresh THIS instance's textures right before reading its
 				// materials (see [[skeletal-texani-shared-slots]]) — required in the shadow pass too (alpha-clip).
@@ -1943,7 +1980,7 @@ void D3D12GraphicsEngine::RenderSunShadows() {
 			m_CmdList->SetPipelineState( m_ShadowCasterVobPSO.Get() );
 			m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
 			m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
-			for ( const FrameAttachDraw& a : g_FrameAttachDraws ) {
+			for ( const FrameAttachDraw& a : g_ShadowAttachDraws[c] ) {
 				if ( !a.mesh || !a.mesh->GetMeshVertexBuffer() || !a.mesh->GetMeshIndexBuffer() ) continue;
 				D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( a.mesh->GetMeshVertexBuffer() );
 				D3D12VertexBuffer* mib = D3D12VertexBuffer::From( a.mesh->GetMeshIndexBuffer() );
@@ -3131,6 +3168,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// it MUST run exactly once). Both skeletal lists (animated + static mobs) are prepared here up front.
 	UploadFrameVobInstances();
 	g_FrameSkelDraws.clear(); g_FrameAttachDraws.clear();
+	g_SkelUploadCache.clear();   // per-vob CB/attachment upload cache — rebuilt fresh each frame
 	PrepareFrameSkeletals( Engine::GAPI->GetAnimatedSkeletalMeshVobs() );
 	PrepareFrameSkeletals( g_FrameMobs );
 
@@ -3154,18 +3192,24 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// per-material bindless-index resolution + water peel-out. Both the depth prepass and the color pass draw
 	// from it, so the BSP walk happens once (was per-pass) and neither pass issues per-material CPU draw calls.
 	BuildWorldDrawCommands();
-	DrawDepthPrepass();
-	DrawVobDepthPrepass();
-	DrawSkeletalDepthPrepass();
+    {
+        DX_ZONE( m_CmdList, "Depth Prepass" );
+        DrawDepthPrepass();
+	    DrawVobDepthPrepass();
+	    DrawSkeletalDepthPrepass();
+    }
 	// Forward+ tiled light cull: consume this frame's light buffer + the prepass depth to record which point
 	// lights touch each 16x16 screen tile (bounded to real geometry on both the near and far side).
 	DispatchLightCulling();
-	DrawWorldMesh();
-	{
-		DX_ZONE( m_CmdList, "Draw skeletal (color)" );
-		DrawSkeletalColor();   // base meshes + node attachments, lit through the tile grid (both lists)
-	}
-	DrawVobsInstanced();
+    {
+        DX_ZONE( m_CmdList, "Lit Geometry Pass" );
+	    DrawWorldMesh();
+	    {
+		    DX_ZONE( m_CmdList, "Draw skeletal (color)" );
+		    DrawSkeletalColor();   // base meshes + node attachments, lit through the tile grid (both lists)
+	    }
+	    DrawVobsInstanced();
+    }
 
 	// Decals (blood, arrows, sprites): collect the visible, back-to-front-sorted list once, then draw the
 	// opaque/alpha-test ones here (with the opaque scene, depth-write) and the transparent ones after water
@@ -3881,18 +3925,25 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
     return XR_SUCCESS;
 }
 
-void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& vobs ) {
-    // P2.9b-4b (pre-cull): run each visible skeletal vob's once-per-frame animation update, upload its instance +
-    // bone CBs (base meshes) and its node attachments' VOB-instance data into the per-frame rings, and RECORD
-    // the GPU addresses in g_FrameSkelDraws / g_FrameAttachDraws. NO draws here — DrawSkeletalDepthPrepass
-    // (pre-cull, depth) and DrawSkeletalColor (post-cull, lit) both draw from these records, so the animation
-    // update never runs twice and nothing is uploaded twice. Appends (called once per list: animated + mobs).
+void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& vobs, const Frustum* cullFrustum, int shadowCascade ) {
+    // P2.9b-4b (pre-cull) + shadow-cascade parity: run each candidate skeletal vob's once-per-frame animation
+    // update, upload its instance + bone CBs (base meshes) and its node attachments' VOB-instance data into the
+    // per-frame rings ONCE (cached in g_SkelUploadCache — the pose data is view-independent), and RECORD the
+    // (possibly cached) GPU addresses into the caller's destination list: g_FrameSkelDraws/g_FrameAttachDraws
+    // for the main view (shadowCascade < 0), or g_ShadowSkelDraws[c]/g_ShadowAttachDraws[c] for shadow cascade c
+    // — mirrors D3D11's Shadows::DrawSkeletalMeshes, which culls the FULL registered skeletal-vob list against
+    // the CASCADE frustum rather than reusing the player's view-frustum-culled list (a caster invisible to the
+    // player can still cast a visible shadow). NO draws here — DrawSkeletalDepthPrepass/DrawSkeletalColor read
+    // g_FrameSkelDraws/g_FrameAttachDraws; RenderSunShadows reads g_ShadowSkelDraws[c]/g_ShadowAttachDraws[c].
     if ( !m_FrameOpen || !m_SkeletalCBBuffer[m_FrameIndex] || !m_SkeletalCBBufferPtr[m_FrameIndex] )
         return;
     GothicRendererState& rs = Engine::GAPI->GetRendererState();
     if ( !rs.RendererSettings.DrawSkeletalMeshes )
         return;
     if ( vobs.empty() ) return;
+
+    std::vector<FrameSkelDraw>&   outSkel   = (shadowCascade >= 0) ? g_ShadowSkelDraws[shadowCascade]   : g_FrameSkelDraws;
+    std::vector<FrameAttachDraw>& outAttach = (shadowCascade >= 0) ? g_ShadowAttachDraws[shadowCascade] : g_FrameAttachDraws;
 
     const float radius = rs.RendererSettings.SkeletalMeshDrawRadius;
     const XMVECTOR camPos = Engine::GAPI->GetCameraPositionXM();
@@ -3905,12 +3956,19 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
         if ( !vi || !vi->Vob || !vi->VisualInfo ) continue;
         if ( !vi->Vob->GetShowVisual() ) continue;
 
-        SkeletalMeshVisualInfo* visual = static_cast<SkeletalMeshVisualInfo*>( vi->VisualInfo );
-        zCModel* model = static_cast<zCModel*>( vi->Vob->GetVisual() );
-        if ( !model ) continue;
+        // Ghosts don't cast shadows either (parity with D3D11's Shadows::DrawSkeletalMeshes ghost skip).
+        if ( vi->Vob->GetVisualAlpha() && vi->Vob->GetVobTransparency() < 0.7f ) continue;
 
         if ( XMVector3Greater( XMVector3LengthSq( camPos - vi->Vob->GetPositionWorldXM() ), radiusSq ) )
             continue;   // out of skeletal-draw range
+
+        // Cull against the caller's frustum — the player's view for the main pass (no filter needed; that list
+        // is already pre-culled by the caller) or THIS cascade's frustum for shadows.
+        if ( cullFrustum && !cullFrustum->Intersects( vi->Vob->GetBBox() ) ) continue;
+
+        SkeletalMeshVisualInfo* visual = static_cast<SkeletalMeshVisualInfo*>( vi->VisualInfo );
+        zCModel* model = static_cast<zCModel*>( vi->Vob->GetVisual() );
+        if ( !model ) continue;
 
         // Some skeletal vobs arrive with their base mesh not yet extracted (SkeletalMeshes empty but the model
         // does carry soft-skin geometry) — build it lazily. Interactive MOBs whose ONLY renderable content is a
@@ -3926,108 +3984,129 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
         }
         // NOTE: UpdateMeshLibTexAniState is intentionally NOT called here. It mutates the model's SHARED texture
         // slots, so it's only meaningful immediately before drawing a specific instance's meshes (all instances
-        // of a model share the slots). The draw paths (DrawSkeletalDepthPrepass / DrawSkeletalColor) call it
-        // per-record right before reading the materials — which is why FrameSkelDraw carries vobInfo.
+        // of a model share the slots). The draw paths (DrawSkeletalDepthPrepass / DrawSkeletalColor / the shadow
+        // draw loop) call it per-record right before reading the materials — which is why FrameSkelDraw carries
+        // vobInfo.
 
-        // Bone palette (object-space matrices) for the model's current animation pose. Needed for BOTH the base
-        // skinned mesh AND the node-attachment world matrices, so compute it (and xmWorld) before either.
-        boneCache.clear();
-        model->GetBoneTransforms( &boneCache );
-        UINT numBones = static_cast<UINT>( boneCache.size() );
-        if ( numBones == 0 ) continue;
-        if ( numBones > kSkeletalMaxBones ) numBones = kSkeletalMaxBones;
+        // Upload cache: skip straight to the cached GPU addresses / attachment records if this vob was already
+        // prepared by an earlier cull pass this frame (e.g. the main view already prepared an NPC that a shadow
+        // cascade also wants — its pose doesn't change between passes).
+        auto cacheIt = g_SkelUploadCache.find( vi );
+        if ( cacheIt == g_SkelUploadCache.end() ) {
+            // Bone palette (object-space matrices) for the model's current animation pose. Needed for BOTH the
+            // base skinned mesh AND the node-attachment world matrices, so compute it (and xmWorld) before either.
+            boneCache.clear();
+            model->GetBoneTransforms( &boneCache );
+            UINT numBones = static_cast<UINT>( boneCache.size() );
+            if ( numBones == 0 ) continue;
+            if ( numBones > kSkeletalMaxBones ) numBones = kSkeletalMaxBones;
 
-        const XMMATRIX xmWorld = vi->Vob->GetWorldMatrixXM() * XMMatrixScalingFromVector( model->GetModelScaleXM() );
+            const XMMATRIX xmWorld = vi->Vob->GetWorldMatrixXM() * XMMatrixScalingFromVector( model->GetModelScaleXM() );
 
-        // Base skinned mesh — skipped entirely for attachment-only MOBs (empty SkeletalMeshes). Mirrors D3D11
-        // DrawSkeletalMeshVobs, which guards its base pass on !SkeletalMeshes.empty() but always runs attachments.
-        if ( !visual->SkeletalMeshes.empty() ) {
-            // Allocate the per-instance CB + bone CB from the per-frame ring (each 256-byte aligned so it can be
-            // bound as a root CBV). Uploaded ONCE here; the prepass + color pass reuse these two GPU addresses.
-            const UINT instSize = static_cast<UINT>( sizeof( SkeletalInstanceCB ) );
-            const UINT boneSize = numBones * static_cast<UINT>( sizeof( XMFLOAT4X4 ) );
-            const UINT instOff = AlignCB( m_SkeletalCBBufferOffset );
-            const UINT boneOff = AlignCB( instOff + instSize );
-            if ( boneOff + boneSize > m_SkeletalCBBufferCapacity ) {
-                if ( !m_SkeletalCBOverflowLogged ) {
-                    LogWarn() << "D3D12: skeletal CB ring overflow (" << m_SkeletalCBBufferCapacity
-                              << " bytes/frame). Some skeletal meshes dropped this frame.";
-                    m_SkeletalCBOverflowLogged = true;
+            SkelUploadCache entry;
+
+            // Base skinned mesh — skipped entirely for attachment-only MOBs (empty SkeletalMeshes). Mirrors
+            // D3D11 DrawSkeletalMeshVobs, which guards its base pass on !SkeletalMeshes.empty() but always runs
+            // attachments.
+            if ( !visual->SkeletalMeshes.empty() ) {
+                // Allocate the per-instance CB + bone CB from the per-frame ring (each 256-byte aligned so it can
+                // be bound as a root CBV). Uploaded ONCE here; every consumer (prepass/color/shadow cascades)
+                // reuses these two GPU addresses via the cache.
+                const UINT instSize = static_cast<UINT>( sizeof( SkeletalInstanceCB ) );
+                const UINT boneSize = numBones * static_cast<UINT>( sizeof( XMFLOAT4X4 ) );
+                const UINT instOff = AlignCB( m_SkeletalCBBufferOffset );
+                const UINT boneOff = AlignCB( instOff + instSize );
+                if ( boneOff + boneSize > m_SkeletalCBBufferCapacity ) {
+                    if ( !m_SkeletalCBOverflowLogged ) {
+                        LogWarn() << "D3D12: skeletal CB ring overflow (" << m_SkeletalCBBufferCapacity
+                                  << " bytes/frame). Some skeletal meshes dropped this frame.";
+                        m_SkeletalCBOverflowLogged = true;
+                    }
+                    break;
                 }
-                break;
+
+                SkeletalInstanceCB inst = {};
+                XMStoreFloat4x4( &inst.World, xmWorld );
+                inst.ModelColor = XMFLOAT4( 1.0f, 1.0f, 1.0f, 1.0f );   // first-light: white; ground-light color is a later step
+                inst.Fatness = model->GetModelFatness();
+
+                uint8_t* ringBase = m_SkeletalCBBufferPtr[frame];
+                memcpy( ringBase + instOff, &inst, instSize );
+                memcpy( ringBase + boneOff, boneCache.data(), boneSize );
+                m_SkeletalCBBufferOffset = boneOff + boneSize;
+
+                const D3D12_GPU_VIRTUAL_ADDRESS ringGpu = m_SkeletalCBBuffer[frame]->GetGPUVirtualAddress();
+                entry.instCb = ringGpu + instOff;
+                entry.boneCb = ringGpu + boneOff;
+                entry.hasBaseMesh = true;
             }
 
-            SkeletalInstanceCB inst = {};
-            XMStoreFloat4x4( &inst.World, xmWorld );
-            inst.ModelColor = XMFLOAT4( 1.0f, 1.0f, 1.0f, 1.0f );   // first-light: white; ground-light color is a later step
-            inst.Fatness = model->GetModelFatness();
+            // Node attachments (weapons/heads/lamps/held items): world = modelWorld * boneMatrix[node]. Upload
+            // each as a VOB instance into the VOB ring NOW (pre-cull) so it can be depth-prepassed, color-drawn
+            // AND shadow-cast from one snapshot. Lazily convert the node visual on first sight (or if changed).
+            gtl::flat_hash_map<int, std::vector<MeshVisualInfo*>>& nodeAttachments = vi->NodeAttachments;
+            zCArray<zCModelNodeInst*>* nodeList = model->GetNodeList();
+            const int nodeCount = nodeList ? std::min<int>( static_cast<int>( boneCache.size() ), nodeList->NumInArray ) : 0;
+            for ( int n = 0; n < nodeCount; ++n ) {
+                zCModelNodeInst* node = nodeList->Array[n];
+                if ( !node || !node->NodeVisual ) continue;   // no attachment on this node (e.g. sheathed weapon)
 
-            uint8_t* ringBase = m_SkeletalCBBufferPtr[frame];
-            memcpy( ringBase + instOff, &inst, instSize );
-            memcpy( ringBase + boneOff, boneCache.data(), boneSize );
-            m_SkeletalCBBufferOffset = boneOff + boneSize;
-
-            const D3D12_GPU_VIRTUAL_ADDRESS ringGpu = m_SkeletalCBBuffer[frame]->GetGPUVirtualAddress();
-            g_FrameSkelDraws.push_back( { vi, visual, ringGpu + instOff, ringGpu + boneOff } );
-        }
-
-        // Node attachments (weapons/heads/lamps/held items): world = modelWorld * boneMatrix[node]. Upload each
-        // as a VOB instance into the VOB ring NOW (pre-cull) so it can be depth-prepassed AND color-drawn from
-        // one snapshot. Lazily convert the node visual on first sight (or if the node's visual changed).
-        gtl::flat_hash_map<int, std::vector<MeshVisualInfo*>>& nodeAttachments = vi->NodeAttachments;
-        zCArray<zCModelNodeInst*>* nodeList = model->GetNodeList();
-        const int nodeCount = nodeList ? std::min<int>( static_cast<int>( boneCache.size() ), nodeList->NumInArray ) : 0;
-        for ( int n = 0; n < nodeCount; ++n ) {
-            zCModelNodeInst* node = nodeList->Array[n];
-            if ( !node || !node->NodeVisual ) continue;   // no attachment on this node (e.g. sheathed weapon)
-
-            auto it = nodeAttachments.find( n );
-            if ( it == nodeAttachments.end() ) {
-                WorldConverter::ExtractNodeVisual( n, node, nodeAttachments );
-                it = nodeAttachments.find( n );
-            } else if ( !it->second.empty() && it->second[0] && it->second[0]->Visual != node->NodeVisual ) {
-                WorldConverter::ExtractNodeVisual( n, node, nodeAttachments );  // visual changed
-                it = nodeAttachments.find( n );
-            }
-            if ( it == nodeAttachments.end() ) continue;
-
-            XMFLOAT4X4 attWorld;
-            XMStoreFloat4x4( &attWorld, xmWorld * XMLoadFloat4x4( &boneCache[n] ) );
-            for ( MeshVisualInfo* mvi : it->second ) {
-                if ( !mvi ) continue;
-                bool isMMS = strcmp( mvi->Visual->GetFileExtension( 0 ), ".MMS" ) == 0;
-                node->TexAniState.UpdateTexList();
-                if ( isMMS ) {
-                    zCMorphMesh* mm = reinterpret_cast<zCMorphMesh*>(mvi->Visual);
-                    mm->GetTexAniState()->UpdateTexList();
+                auto it = nodeAttachments.find( n );
+                if ( it == nodeAttachments.end() ) {
+                    WorldConverter::ExtractNodeVisual( n, node, nodeAttachments );
+                    it = nodeAttachments.find( n );
+                } else if ( !it->second.empty() && it->second[0] && it->second[0]->Visual != node->NodeVisual ) {
+                    WorldConverter::ExtractNodeVisual( n, node, nodeAttachments );  // visual changed
+                    it = nodeAttachments.find( n );
                 }
-                for ( auto const& [attMat, attMeshes] : mvi->Meshes ) {
-                    zCTexture* attTex = attMat ? attMat->GetAniTexture() : nullptr;
-                    for ( auto const& attMesh : attMeshes ) {
-                        if ( !attMesh || attMesh->Indices.empty() ) continue;
-                        if ( !attMesh->GetMeshVertexBuffer() || !attMesh->GetMeshIndexBuffer() ) continue;
+                if ( it == nodeAttachments.end() ) continue;
 
-                        const UINT instBytes = static_cast<UINT>( sizeof( VobInstanceInfo ) );
-                        if ( m_VobInstanceBufferOffset + instBytes > m_VobInstanceBufferCapacity ) {
-                            if ( !m_VobInstanceOverflowLogged ) {
-                                LogWarn() << "D3D12: VOB instance ring overflow (skeletal attachments dropped this frame).";
-                                m_VobInstanceOverflowLogged = true;
+                XMFLOAT4X4 attWorld;
+                XMStoreFloat4x4( &attWorld, xmWorld * XMLoadFloat4x4( &boneCache[n] ) );
+                for ( MeshVisualInfo* mvi : it->second ) {
+                    if ( !mvi ) continue;
+                    bool isMMS = strcmp( mvi->Visual->GetFileExtension( 0 ), ".MMS" ) == 0;
+                    node->TexAniState.UpdateTexList();
+                    if ( isMMS ) {
+                        zCMorphMesh* mm = reinterpret_cast<zCMorphMesh*>(mvi->Visual);
+                        mm->GetTexAniState()->UpdateTexList();
+                    }
+                    for ( auto const& [attMat, attMeshes] : mvi->Meshes ) {
+                        zCTexture* attTex = attMat ? attMat->GetAniTexture() : nullptr;
+                        for ( auto const& attMesh : attMeshes ) {
+                            if ( !attMesh || attMesh->Indices.empty() ) continue;
+                            if ( !attMesh->GetMeshVertexBuffer() || !attMesh->GetMeshIndexBuffer() ) continue;
+
+                            const UINT instBytes = static_cast<UINT>( sizeof( VobInstanceInfo ) );
+                            if ( m_VobInstanceBufferOffset + instBytes > m_VobInstanceBufferCapacity ) {
+                                if ( !m_VobInstanceOverflowLogged ) {
+                                    LogWarn() << "D3D12: VOB instance ring overflow (skeletal attachments dropped this frame).";
+                                    m_VobInstanceOverflowLogged = true;
+                                }
+                                break;
                             }
-                            break;
+                            VobInstanceInfo vii = {};
+                            vii.world = attWorld;
+                            vii.color = 0xFFFFFFFF;   // first-light: white (baked ground-light tint is a later step)
+                            const UINT instOffset = m_VobInstanceBufferOffset;
+                            memcpy( m_VobInstanceBufferPtr[frame] + instOffset, &vii, instBytes );
+                            m_VobInstanceBufferOffset += instBytes;
+                            const D3D12_VERTEX_BUFFER_VIEW attInstView = {
+                                m_VobInstanceBuffer[frame]->GetGPUVirtualAddress() + instOffset, instBytes, sizeof( VobInstanceInfo ) };
+                            entry.attachments.push_back( { attMesh.get(), attTex, attInstView } );
                         }
-                        VobInstanceInfo vii = {};
-                        vii.world = attWorld;
-                        vii.color = 0xFFFFFFFF;   // first-light: white (baked ground-light tint is a later step)
-                        const UINT instOffset = m_VobInstanceBufferOffset;
-                        memcpy( m_VobInstanceBufferPtr[frame] + instOffset, &vii, instBytes );
-                        m_VobInstanceBufferOffset += instBytes;
-                        const D3D12_VERTEX_BUFFER_VIEW attInstView = {
-                            m_VobInstanceBuffer[frame]->GetGPUVirtualAddress() + instOffset, instBytes, sizeof( VobInstanceInfo ) };
-                        g_FrameAttachDraws.push_back( { attMesh.get(), attTex, attInstView } );
                     }
                 }
             }
+
+            cacheIt = g_SkelUploadCache.emplace( vi, std::move( entry ) ).first;
         }
+
+        const SkelUploadCache& cached = cacheIt->second;
+        if ( cached.hasBaseMesh )
+            outSkel.push_back( { vi, visual, cached.instCb, cached.boneCb } );
+        for ( const FrameAttachDraw& a : cached.attachments )
+            outAttach.push_back( a );
     }
 }
 
