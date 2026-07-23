@@ -334,16 +334,34 @@ namespace {
     };
     static_assert( sizeof( FogConstants ) == 32, "FogConstants must be 8 DWORDs to match the fog root constants" );
 
-    // Builds this frame's fog constants from Gothic's sky state. FogColor = GetFogColor() (0..1, weather /
-    // sky-override correct — the same color used to clear the sky); FogNear/FogFar = GraphicsState.FF_FogNear/
-    // FF_FogFar, the same values D3D11's ComputeFog() uses (set once per frame in GSky.cpp from
-    // sky->GetMasterState()->FogDist, with Gothic's hardcoded 0.3 near factor) — NOT GetFarZ(), which is an
-    // unrelated atmospheric-perspective far plane the height-fog PFX uses for its density falloff and is
-    // typically much smaller than FogDist, which was making the fog ramp in far too aggressively.
+    // The color to clear/fill the sky and per-pixel distance-fog with, mirroring D3D11's background-clear
+    // formula (D3D11GraphicsEngine::OnStartWorldRendering, ~line 4180): GetFogColor() (== FogColorMod, a
+    // fixed user-configurable tint, weather-override aware) is only correct while AtmosphericScattering is
+    // on — that's the color the real scattering shader takes as its base input. With scattering OFF (the FF
+    // sky path), D3D11 instead uses GraphicsState.FF_FogColor, which GSky.cpp refreshes every frame from
+    // Gothic's own zCSkyController_Outdoor::GetMasterState()->FogColor — i.e. it actually tracks time of day/
+    // weather. D3D12 previously called GetFogColor() unconditionally here, so with scattering disabled the
+    // sky/fog stayed pinned to the static FogColorMod tint (default a light lavender-blue) regardless of time
+    // of day — the sky never darkened at night, matching the reported "always looks like fog color" bug.
+    DirectX::XMVECTOR GetSceneFogColorXM() {
+        const auto& rs = Engine::GAPI->GetRendererState();
+        if ( rs.RendererSettings.AtmosphericScattering ) {
+            return Engine::GAPI->GetFogColor();
+        }
+        return DirectX::XMLoadFloat3( &rs.GraphicsState.FF_FogColor );
+    }
+
+    // Builds this frame's fog constants from Gothic's sky state. FogColor = GetSceneFogColorXM() (0..1,
+    // weather / sky-override / AtmosphericScattering-mode correct — the same color used to clear the sky);
+    // FogNear/FogFar = GraphicsState.FF_FogNear/FF_FogFar, the same values D3D11's ComputeFog() uses (set
+    // once per frame in GSky.cpp from sky->GetMasterState()->FogDist, with Gothic's hardcoded 0.3 near
+    // factor) — NOT GetFarZ(), which is an unrelated atmospheric-perspective far plane the height-fog PFX
+    // uses for its density falloff and is typically much smaller than FogDist, which was making the fog
+    // ramp in far too aggressively.
     FogConstants MakeFogConstants() {
         FogConstants fog = {};
         DirectX::XMFLOAT3 fc;
-        DirectX::XMStoreFloat3( &fc, Engine::GAPI->GetFogColor() );
+        DirectX::XMStoreFloat3( &fc, GetSceneFogColorXM() );
         fog.FogColor[0] = fc.x; fog.FogColor[1] = fc.y; fog.FogColor[2] = fc.z;
 
         const auto& gs = Engine::GAPI->GetRendererState().GraphicsState;
@@ -3451,11 +3469,12 @@ XRESULT D3D12GraphicsEngine::DrawSky() {
 	if ( !m_FrameOpen ) return XR_SUCCESS;
 	DX_ZONE( m_CmdList, "Draw sky" );
 
-	// Base fallback fill: Gothic's atmosphere (fog) color. Runs first so a gap in the real sky draw below
-	// (or AtmosphericScattering — not ported to D3D12 yet, see below) still leaves the horizon dissolving
-	// into the geometry's per-pixel distance fog instead of showing the frame's black clear.
+	// Base fallback fill: Gothic's current sky/fog color (see GetSceneFogColorXM — tracks time of day when
+	// AtmosphericScattering is off, matching D3D11's own background-clear formula). Runs first so a gap in
+	// the real sky draw below still leaves the horizon dissolving into the geometry's per-pixel distance fog
+	// instead of showing the frame's black clear.
 	XMFLOAT3 fc;
-	XMStoreFloat3( &fc, Engine::GAPI->GetFogColor() );
+	XMStoreFloat3( &fc, GetSceneFogColorXM() );
 
 	// The HDR scene target is LINEAR (the lit passes sRGB-decode their albedo + linearize FogColor), so the sky
 	// fill must be linear too — otherwise the tonemap (ACES + sRGB-encode) would double-process the sky/fog and it
@@ -3467,11 +3486,16 @@ XRESULT D3D12GraphicsEngine::DrawSky() {
 	Engine::GAPI->GetSky()->RenderSky(); // does not render, but calculates atmosphere data (AC_LightPos etc.)
 
 	GothicRendererState& rs = Engine::GAPI->GetRendererState();
-	if ( rs.RendererSettings.AtmosphericScattering ) {
-		// Atmospheric-scattering sky (PS_Atmosphere/VS_ExWS + the procedural sky-dome mesh) is not ported to
-		// D3D12 yet — the flat fog fill above stands in for it until that lands.
-		return XR_SUCCESS;
-	}
+	// D3D11's real atmospheric-scattering sky dome (PS_Atmosphere/PS_AtmosphereOuter + VS_ExWS, gated on
+	// AtmosphericScattering==true, the project default — see D3D11GraphicsEngine::DrawSky) is NOT ported to
+	// D3D12 yet. This used to `return` here when AtmosphericScattering was true, leaving ONLY the flat,
+	// un-modulated FogColorMod fill above as the entire sky — day or night, since that fill has no time-of-day
+	// term at all. That's what produced the "sky is shining light-blue at night" bug: the fixed-function sky
+	// below (which Gothic itself renders with real per-time-of-day textures/colors, sun, moon and stars) was
+	// being skipped entirely whenever AtmosphericScattering was on, which is the default. Until the real
+	// scattering shader is ported, always fall through to the fixed-function sky instead — it isn't identical
+	// to D3D11's procedural scattering, but it does correctly vary with time of day/weather, unlike the flat
+	// fill, and is a strict improvement over showing a static color regardless of AtmosphericScattering.
 
 	// Fixed-function sky path: hand off to Gothic's own zCSkyController_Outdoor::RenderSkyPre(), same as
 	// D3D11GraphicsEngine::DrawSky. Its D3DFVF_XYZRHW_DIF_T1 draws come back through MyDirect3DDevice7 ->
