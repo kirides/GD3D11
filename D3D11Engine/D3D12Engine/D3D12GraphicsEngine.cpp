@@ -148,7 +148,7 @@ namespace {
     // each tile's frustum. Writes DEPTH ONLY — the PSO sets the color write mask to 0, so the float4 the PS
     // returns is discarded (it exists solely to run the alpha-test clip). The clip cutoff matches the opaque
     // world PS's clip( t.a - 0.5 ) exactly, so cutout foliage/fence gaps do NOT write depth (otherwise the
-    // main pass would see background occluded through the gaps). Reuses m_WorldRootSig: only b0 (ViewProj)
+    // main pass would see background occluded through the gaps). Reuses m_Pipelines.World.RootSig: only b0 (ViewProj)
     // and t0/s0 are referenced — fog/light params are NOT bound (no light loop here, so no hang risk).
 
     // Forward+ tiled light-culling COMPUTE shader (P2.9b-2). One thread group per 16x16 screen tile; each
@@ -401,11 +401,11 @@ XRESULT D3D12GraphicsEngine::Init() {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the white fallback texture.";
         return XR_FAILED;
     }
-    if ( !CreateWorldPipeline() ) {
+    if ( !m_Pipelines.CreateWorld() ) {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the world-mesh pipeline.";
         return XR_FAILED;
     }
-    if ( !CreateDepthPrepassPipeline() ) {
+    if ( !m_Pipelines.CreateDepthPrepass() ) {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the depth prepass pipeline.";
         return XR_FAILED;
     }
@@ -417,7 +417,7 @@ XRESULT D3D12GraphicsEngine::Init() {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the light-culling compute pipeline.";
         return XR_FAILED;
     }
-    if ( !CreateVobPipeline() ) {
+    if ( !m_Pipelines.CreateVob() || !CreateVobInstanceBuffers() ) {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the VOB pipeline.";
         return XR_FAILED;
     }
@@ -1322,268 +1322,15 @@ void D3D12GraphicsEngine::ResolveSceneToBackBuffer() {
     m_CmdList->DrawInstanced( 3, 1, 0, 0 );
 }
 
-bool D3D12GraphicsEngine::CreateWorldPipeline() {
-    ID3D12Device* device = m_Device.GetDevice();
 
-    // Root signature: b0 = ViewProj (16 root 32-bit constants, VS); t0 = diffuse SRV table (PS);
-    // b1 = fog (8 root 32-bit constants, VS reads CamPosWS, PS reads color/near/far); static sampler s0.
-    D3D12_DESCRIPTOR_RANGE srvRange = {};
-    srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    srvRange.NumDescriptors = 1;
-    srvRange.BaseShaderRegister = 0;         // t0
-    srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-    // params[3] = point-light StructuredBuffer as a ROOT SRV at t1 (no descriptor slot consumed — a GPU VA
-    // straight in the root; aligns with the CPU-offload/bindless direction). params[4] = b2 { light count,
-    // NumTilesX }. params[5]/[6] = the Forward+ per-tile grid + index-list root SRVs at t2/t3. All four MUST
-    // be bound (BindFrameLights) by every draw using this root sig with a light-reading PSO (m_WorldPSO/
-    // m_VobPSO), else the count/grid are undefined root values and the shader loops away.
-    // params[7] = shadow-sampling CB (b3) as a ROOT CBV (cascade view-projs are too big for root constants).
-    // params[8] = the CSM shadow-map Texture2DArray SRV (t4) via a one-entry descriptor table off the shared
-    // SRV heap. Both are read only by the lit world PS (PSMain); the depth-prepass/caster PSOs sharing this
-    // root sig don't reference them, so those draws simply leave the slots unbound.
-    D3D12_DESCRIPTOR_RANGE shadowSrvRange = {};
-    shadowSrvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    shadowSrvRange.NumDescriptors = 1;
-    shadowSrvRange.BaseShaderRegister = 4;   // t4
-    shadowSrvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-    // t5 = point-light shadow cube array SRV (P2.10d), sampled by the tiled point-light loop.
-    D3D12_DESCRIPTOR_RANGE cubeSrvRange = {};
-    cubeSrvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    cubeSrvRange.NumDescriptors = 1;
-    cubeSrvRange.BaseShaderRegister = 5;   // t5
-    cubeSrvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-    D3D12_ROOT_PARAMETER params[11] = {};
-    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[0].Constants.ShaderRegister = 0;   // b0
-    params[0].Constants.Num32BitValues = 16;  // float4x4
-    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[1].DescriptorTable.NumDescriptorRanges = 1;
-    params[1].DescriptorTable.pDescriptorRanges = &srvRange;
-    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[2].Constants.ShaderRegister = 1;   // b1 fog
-    params[2].Constants.Num32BitValues = 8;   // FogConstants (8 DWORDs)
-    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;  // VS: CamPosWS; PS: color/near/far
-    params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-    params[3].Descriptor.ShaderRegister = 1;  // t1 light StructuredBuffer
-    params[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[4].Constants.ShaderRegister = 2;   // b2 { LightCount, NumTilesX, pad, pad }
-    params[4].Constants.Num32BitValues = 4;
-    params[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-    params[5].Descriptor.ShaderRegister = 2;  // t2 per-tile LightGrid {Offset,Count}
-    params[5].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[6].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-    params[6].Descriptor.ShaderRegister = 3;  // t3 per-tile light-index list
-    params[6].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[7].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-    params[7].Descriptor.ShaderRegister = 3;  // b3 shadow-sampling CB (cascade view-projs + sun + strength)
-    params[7].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[8].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[8].DescriptorTable.NumDescriptorRanges = 1;
-    params[8].DescriptorTable.pDescriptorRanges = &shadowSrvRange;
-    params[8].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[9].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[9].DescriptorTable.NumDescriptorRanges = 1;
-    params[9].DescriptorTable.pDescriptorRanges = &cubeSrvRange;   // t5 point-shadow cube array
-    params[9].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    // params[10] = per-material bindless indices { normalSrvIndex, ormSrvIndex } as root constants (b6). The PS
-    // reads the normal/ORM maps via ResourceDescriptorHeap[...] (SM6.6 bindless) — no per-material descriptor
-    // tables. normalIndex == 0xFFFFFFFF means "no normal map" (skip the TBN/perturb); ormIndex is always valid
-    // (the default ORM slot when a material has no _FX map), so ORM is sampled branchlessly.
-    params[10].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[10].Constants.ShaderRegister = 6;   // b6 MaterialCB { MatNormalIndex, MatOrmIndex, MatDiffuseIndex }
-    params[10].Constants.Num32BitValues = 3;   // 3rd = bindless diffuse index (world mesh ExecuteIndirect, P2.11)
-    params[10].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_STATIC_SAMPLER_DESC samplers[2] = {};
-    // s0 diffuse: 16x anisotropic (matches D3D11's main texture sampler) — sharpens surfaces at grazing
-    // angles and in the distance, which trilinear alone smears badly.
-    samplers[0].Filter = D3D12_FILTER_ANISOTROPIC;
-    samplers[0].MaxAnisotropy = 16;
-    samplers[0].AddressU = samplers[0].AddressV = samplers[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    samplers[0].MaxLOD = D3D12_FLOAT32_MAX;
-    samplers[0].ShaderRegister = 0;          // s0 diffuse
-    samplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    // s2: PCF comparison sampler for the CSM depth. Normal-Z map (LESS_EQUAL): SampleCmp returns 1 where the
-    // fragment is closer-or-equal to the light than the stored occluder (lit), 0 where behind it (shadowed).
-    // BORDER address + opaque-white border → taps past a cascade's edge read as far (lit), not spurious shadow.
-    samplers[1].Filter = D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT;
-    samplers[1].AddressU = samplers[1].AddressV = samplers[1].AddressW = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
-    samplers[1].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
-    samplers[1].ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
-    samplers[1].MaxLOD = D3D12_FLOAT32_MAX;
-    samplers[1].ShaderRegister = 2;          // s2 shadow comparison
-    samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-    rsDesc.NumParameters = _countof( params );
-    rsDesc.pParameters = params;
-    rsDesc.NumStaticSamplers = _countof( samplers );
-    rsDesc.pStaticSamplers = samplers;
-    // CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED enables SM6.6 ResourceDescriptorHeap[...] bindless sampling of the
-    // per-material normal/ORM maps out of the shared SRV heap (tier-3; present on the target AMD GPU).
-    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
-                 | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
-
-    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
-    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (world)."; return false; }
-
-    ComPtr<ID3DBlob> rsBlob, rsErr;
-    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-        if ( rsErr ) LogWarn() << "D3D12: world root signature serialize error: " << static_cast<const char*>(rsErr->GetBufferPointer());
-        return false;
-    }
-    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
-        IID_PPV_ARGS( m_WorldRootSig.ReleaseAndGetAddressOf() ) ) ) )
-        return false;
-
-    if ( !m_ShaderBackend.CompileFromFile( "World.hlsl", "VSMain", Shadermodel_VS, m_WorldVsBlob.ReleaseAndGetAddressOf() ) ) {
-        return false;
-    }
-    if ( !m_ShaderBackend.CompileFromFile( "World.hlsl", "PSMain", Shadermodel_PS, m_WorldPsBlob.ReleaseAndGetAddressOf() ) ) {
-        return false;
-    }
-
-    // Bind Position/TexCoord0/Color from the packed 36-byte ExVertexStructGPU via explicit offsets;
-    // the packed normal (@12), tangent (@16) and uv2 (@28) are skipped (not read by this PS yet).
-    //   Position float3   @ 0
-    //   [Normal  i16x2    @12]   [Tangent R10G10B10A2 @16]  (skipped)
-    //   TexCoord float2   @20
-    //   [TexCoord2 half2  @28]                              (skipped)
-    //   Color    R8G8B8A8 @32
-    const D3D12_INPUT_ELEMENT_DESC layout[] = {
-        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "NORMAL",   0, DXGI_FORMAT_R16G16_SNORM,    0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },  // octahedral, world-space
-        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "DIFFUSE",  0, DXGI_FORMAT_R8G8B8A8_UNORM,  0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-    };
-
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
-    pso.pRootSignature = m_WorldRootSig.Get();
-    pso.VS = { m_WorldVsBlob->GetBufferPointer(), m_WorldVsBlob->GetBufferSize() };
-    pso.PS = { m_WorldPsBlob->GetBufferPointer(), m_WorldPsBlob->GetBufferSize() };
-    pso.InputLayout = { layout, _countof( layout ) };
-    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    pso.NumRenderTargets = 1;
-    pso.RTVFormats[0] = kSceneColorFormat;
-    pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
-    pso.SampleDesc.Count = 1;
-    pso.SampleMask = UINT_MAX;
-
-    pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    // Cull NONE for first-light so a wrong winding assumption can't hide the whole world.
-    pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-    pso.RasterizerState.DepthClipEnable = TRUE;
-
-    pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-
-    // Reversed-Z: test + write depth, pass on GREATER_EQUAL (matches Gothic's infinite-far projection).
-    pso.DepthStencilState.DepthEnable = TRUE;
-    pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
-    pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
-    pso.DepthStencilState.StencilEnable = FALSE;
-
-    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_WorldPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (world).";
-        return false;
-    }
-    return true;
-}
-
-bool D3D12GraphicsEngine::CreateDepthPrepassPipeline() {
-    // Forward+ opaque depth prepass (P2.9b-1): a depth-only variant of the world-mesh pass. Reuses
-    // m_WorldRootSig (only b0 ViewProj + t0/s0 are referenced by the prepass shaders) and the world's
-    // packed 36-byte vertex, but binds just Position + TexCoord0, writes NO color (write mask 0), and
-    // keeps the exact reversed-Z GREATER_EQUAL depth-write state so the depth it lays down is bit-identical
-    // to what the opaque world pass would write. Must run AFTER CreateWorldPipeline (needs m_WorldRootSig).
-    ID3D12Device* device = m_Device.GetDevice();
-    if ( !m_WorldRootSig ) { LogWarn() << "D3D12: depth prepass needs the world root sig."; return false; }
-
-    if ( !m_ShaderBackend.CompileFromFile( "DepthPrepass.hlsl", "VSWorld", Shadermodel_VS, m_DepthPrepassWorldVsBlob.ReleaseAndGetAddressOf() ) ) {
-        return false;
-    }
-    if ( !m_ShaderBackend.CompileFromFile( "DepthPrepass.hlsl", "PSClip", Shadermodel_PS, m_DepthPrepassPsBlob.ReleaseAndGetAddressOf() ) ) {
-        return false;
-    }
-
-    // Only Position (@0) + TexCoord0 (@20) from the packed 36-byte ExVertexStructGPU (stride comes from the VBV).
-    const D3D12_INPUT_ELEMENT_DESC layout[] = {
-        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-    };
-
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
-    pso.pRootSignature = m_WorldRootSig.Get();
-    pso.VS = { m_DepthPrepassWorldVsBlob->GetBufferPointer(), m_DepthPrepassWorldVsBlob->GetBufferSize() };
-    pso.PS = { m_DepthPrepassPsBlob->GetBufferPointer(), m_DepthPrepassPsBlob->GetBufferSize() };
-    pso.InputLayout = { layout, _countof( layout ) };
-    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    // Keep NumRenderTargets=1 with the HDR scene-color format so the PSO matches the RTV bound during the world
-    // pass (OnStartWorldRendering) — but mask off all color writes so only depth is touched.
-    pso.NumRenderTargets = 1;
-    pso.RTVFormats[0] = kSceneColorFormat;
-    pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
-    pso.SampleDesc.Count = 1;
-    pso.SampleMask = UINT_MAX;
-
-    pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;   // match the world PSO's winding treatment
-    pso.RasterizerState.DepthClipEnable = TRUE;
-
-    pso.BlendState.RenderTarget[0].RenderTargetWriteMask = 0;   // DEPTH ONLY — discard color
-
-    pso.DepthStencilState.DepthEnable = TRUE;
-    pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
-    pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;   // reversed-Z
-    pso.DepthStencilState.StencilEnable = FALSE;
-
-    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_DepthPrepassWorldPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (depth prepass).";
-        return false;
-    }
-
-    // Instanced-VOB depth prepass PSO (P2.9b-4a): same depth-only state, but the VOB two-stream input layout
-    // (packed vertex slot 0 + per-instance world matrix slot 1) and the VOB shader's VSDepth/PSDepthClip.
-    if ( !m_ShaderBackend.CompileFromFile( "Vob.hlsl", "VSDepth", Shadermodel_VS, m_DepthPrepassVobVsBlob.ReleaseAndGetAddressOf() ) ) {
-        return false;
-    }
-    if ( !m_ShaderBackend.CompileFromFile( "Vob.hlsl", "PSDepthClip", Shadermodel_PS, m_DepthPrepassVobPsBlob.ReleaseAndGetAddressOf() ) ) {
-        return false;
-    }
-
-    // Position (@0) + TexCoord0 (@24) from ExVertexStruct (stride 60 bytes)
-    const D3D12_INPUT_ELEMENT_DESC vobLayout[] = {
-        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "INSTANCE_WORLD_MATRIX", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  0, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-        { "INSTANCE_WORLD_MATRIX", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 16, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-        { "INSTANCE_WORLD_MATRIX", 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 32, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-        { "INSTANCE_WORLD_MATRIX", 3, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 48, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-    };
-
-    // pso still carries the depth-only state (color mask 0, GREATER_EQUAL depth-write) — only swap VS/PS/layout.
-    pso.VS = { m_DepthPrepassVobVsBlob->GetBufferPointer(), m_DepthPrepassVobVsBlob->GetBufferSize() };
-    pso.PS = { m_DepthPrepassVobPsBlob->GetBufferPointer(), m_DepthPrepassVobPsBlob->GetBufferSize() };
-    pso.InputLayout = { vobLayout, _countof( vobLayout ) };
-    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_DepthPrepassVobPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB depth prepass).";
-        return false;
-    }
-    return true;
-}
 
 bool D3D12GraphicsEngine::CreateShadowMap() {
     // CSM sun shadow map (P2.9c-1): a Texture2DArray of kShadowCascades D32 slices + a caster PSO. Reuses the
     // depth-prepass world VS (b0 = a view-proj, t0 diffuse for alpha-clip) but with NORMAL-Z (LESS_EQUAL, clear
     // 1.0) state — the directional caster is NOT reversed-Z (mirrors the D3D11 shadow map). Created once at init
-    // (fixed resolution, not swapchain-sized). Needs the depth-prepass shaders + m_WorldRootSig to exist.
+    // (fixed resolution, not swapchain-sized). Needs the depth-prepass shaders + m_Pipelines.World.RootSig to exist.
     ID3D12Device* device = m_Device.GetDevice();
-    if ( !m_WorldRootSig || !m_DepthPrepassWorldVsBlob ) return false;
+    if ( !m_Pipelines.World.RootSig || !m_Pipelines.World.DepthPrepassVsBlob ) return false;
 
     // Resolution from the shared quality setting (same knob D3D11 uses), clamped to a sane range. Bigger = smaller
     // world-units/texel = far less sub-texel foliage flicker + tighter near shadows. DEFAULT-heap (GPU) memory, so
@@ -1655,8 +1402,8 @@ bool D3D12GraphicsEngine::CreateShadowMap() {
         { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
     };
     D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
-    pso.pRootSignature = m_WorldRootSig.Get();
-    pso.VS = { m_DepthPrepassWorldVsBlob->GetBufferPointer(), m_DepthPrepassWorldVsBlob->GetBufferSize() };
+    pso.pRootSignature = m_Pipelines.World.RootSig.Get();
+    pso.VS = { m_Pipelines.World.DepthPrepassVsBlob->GetBufferPointer(), m_Pipelines.World.DepthPrepassVsBlob->GetBufferSize() };
     pso.PS = { m_ShadowCasterPsBlob->GetBufferPointer(), m_ShadowCasterPsBlob->GetBufferSize() };
     pso.InputLayout = { layout, _countof( layout ) };
     pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
@@ -1681,9 +1428,9 @@ bool D3D12GraphicsEngine::CreateShadowMap() {
     }
 
     // VOB caster PSO (P2.9c-2): reuse the VOB depth-prepass VSDepth (two-stream: packed vertex + per-instance
-    // world matrix) + m_WorldRootSig, with the same caster state (front cull, bias, LESS_EQUAL, no RTV). Also
+    // world matrix) + m_Pipelines.World.RootSig, with the same caster state (front cull, bias, LESS_EQUAL, no RTV). Also
     // used for node attachments (weapons/heads) which are packed vertex + instance like ordinary VOBs.
-    if ( m_DepthPrepassVobVsBlob ) {
+    if ( m_Pipelines.World.DepthPrepassVobVsBlob ) {
         if ( !m_ShaderBackend.CompileFromFile( "Vob.hlsl", "PSShadowClip", Shadermodel_PS, m_ShadowCasterVobPsBlob.ReleaseAndGetAddressOf() ) )
             return false;
         const D3D12_INPUT_ELEMENT_DESC vobLayout[] = {
@@ -1694,8 +1441,8 @@ bool D3D12GraphicsEngine::CreateShadowMap() {
             { "INSTANCE_WORLD_MATRIX", 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 32, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
             { "INSTANCE_WORLD_MATRIX", 3, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 48, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
         };
-        pso.pRootSignature = m_WorldRootSig.Get();
-        pso.VS = { m_DepthPrepassVobVsBlob->GetBufferPointer(), m_DepthPrepassVobVsBlob->GetBufferSize() };
+        pso.pRootSignature = m_Pipelines.World.RootSig.Get();
+        pso.VS = { m_Pipelines.World.DepthPrepassVobVsBlob->GetBufferPointer(), m_Pipelines.World.DepthPrepassVobVsBlob->GetBufferSize() };
         pso.PS = { m_ShadowCasterVobPsBlob->GetBufferPointer(), m_ShadowCasterVobPsBlob->GetBufferSize() };
         pso.InputLayout = { vobLayout, _countof( vobLayout ) };
         if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_ShadowCasterVobPSO.ReleaseAndGetAddressOf() ) ) ) ) {
@@ -2228,7 +1975,7 @@ void D3D12GraphicsEngine::RenderSunShadows() {
     // scene depth from the sun angle, now including VOB/NPC silhouettes). Stable cascades + the lit-pass PCF
     // sampling are later increments. Casters reuse the shared per-frame records built before the cull
     // (g_FrameVobUploads / g_FrameSkelDraws / g_FrameAttachDraws) — no second upload or animation update.
-    if ( !m_FrameOpen || !m_ShadowMap || !m_ShadowCasterWorldPSO || !m_ShadowDsvHeap || !m_WorldRootSig )
+    if ( !m_FrameOpen || !m_ShadowMap || !m_ShadowCasterWorldPSO || !m_ShadowDsvHeap || !m_Pipelines.World.RootSig )
         return;
 
     DX_ZONE( m_CmdList, "Sun Shadows (cascades)" );
@@ -2339,7 +2086,7 @@ void D3D12GraphicsEngine::RenderSunShadows() {
         m_CmdList->ClearDepthStencilView( dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr );   // normal-Z far
         if ( !sunUp ) continue;   // still leaves a valid (unshadowed) slice
 
-        // --- World mesh (root sig: m_WorldRootSig; b0 = cascade view-proj; t0 diffuse table @1) ---
+        // --- World mesh (root sig: m_Pipelines.World.RootSig; b0 = cascade view-proj; t0 diffuse table @1) ---
         if ( haveWorld ) {
             DX_ZONE(m_CmdList, "World Mesh");
             
@@ -2393,7 +2140,7 @@ void D3D12GraphicsEngine::RenderSunShadows() {
             // 2. Dispatch Indirect Draw Call if commands exist
             if ( drawCount > 0 ) {
                 m_CmdList->SetPipelineState( m_ShadowCasterWorldPSO.Get() );
-                m_CmdList->SetGraphicsRootSignature( m_WorldRootSig.Get() );
+                m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
                 m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
 
                 const D3D12_VERTEX_BUFFER_VIEW vbv = { vb->GetGpuVirtualAddress(), vb->GetSizeInBytes(), sizeof( ExVertexStructGPU ) };
@@ -2457,7 +2204,7 @@ void D3D12GraphicsEngine::RenderSunShadows() {
             DX_ZONE(m_CmdList, "Vobs");
             
             m_CmdList->SetPipelineState( m_ShadowCasterVobPSO.Get() );
-            m_CmdList->SetGraphicsRootSignature( m_WorldRootSig.Get() );
+            m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
             m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
             for ( const FrameVobUpload& up : cascadeUploads ) {
                 MeshVisualInfo* visual = up.visual;
@@ -2518,7 +2265,7 @@ void D3D12GraphicsEngine::RenderSunShadows() {
             DX_ZONE(m_CmdList, "Skeletal Nodes");
 
             m_CmdList->SetPipelineState( m_ShadowCasterVobPSO.Get() );
-            m_CmdList->SetGraphicsRootSignature( m_WorldRootSig.Get() );
+            m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
             m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
             for ( const FrameAttachDraw& a : g_FrameAttachDraws ) {
                 if ( !a.mesh || !a.mesh->GetMeshVertexBuffer() || !a.mesh->GetMeshIndexBuffer() ) continue;
@@ -2859,57 +2606,6 @@ bool D3D12GraphicsEngine::CreateLightCullBuffers( INT2 size ) {
     return true;
 }
 
-bool D3D12GraphicsEngine::CreateVobPipeline() {
-    ID3D12Device* device = m_Device.GetDevice();
-
-    if ( !m_ShaderBackend.CompileFromFile( "Vob.hlsl", "VSMain", Shadermodel_VS, m_VobVsBlob.ReleaseAndGetAddressOf() ) ) {
-            return false;
-    }
-    if ( !m_ShaderBackend.CompileFromFile( "Vob.hlsl", "PSMain", Shadermodel_PS, m_VobPsBlob.ReleaseAndGetAddressOf() ) ) {
-            return false;
-    }
-
-    // Slot 0 = ExVertexStruct (Position@0, Normal@12, TexCoord0@24); slot 1 = per-instance data
-    // read from VobInstanceInfo (stride 144): world matrix rows @0/16/32/48, instance color @128.
-    const D3D12_INPUT_ELEMENT_DESC layout[] = {
-        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "INSTANCE_WORLD_MATRIX", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,   0, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-        { "INSTANCE_WORLD_MATRIX", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  16, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-        { "INSTANCE_WORLD_MATRIX", 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  32, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-        { "INSTANCE_WORLD_MATRIX", 3, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  48, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-        { "INSTANCE_COLOR",        0, DXGI_FORMAT_R8G8B8A8_UNORM,     1, 128, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
-    };
-
-    // Reuse the world root signature (b0 ViewProj + t0 SRV + static sampler s0 — identical needs).
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
-    pso.pRootSignature = m_WorldRootSig.Get();
-    pso.VS = { m_VobVsBlob->GetBufferPointer(), m_VobVsBlob->GetBufferSize() };
-    pso.PS = { m_VobPsBlob->GetBufferPointer(), m_VobPsBlob->GetBufferSize() };
-    pso.InputLayout = { layout, _countof( layout ) };
-    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    pso.NumRenderTargets = 1;
-    pso.RTVFormats[0] = kSceneColorFormat;
-    pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
-    pso.SampleDesc.Count = 1;
-    pso.SampleMask = UINT_MAX;
-
-    pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;   // first-light; VOB winding varies
-    pso.RasterizerState.DepthClipEnable = TRUE;
-    pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-    pso.DepthStencilState.DepthEnable = TRUE;
-    pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
-    pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;  // reversed-Z
-    pso.DepthStencilState.StencilEnable = FALSE;
-
-    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_VobPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB).";
-        return false;
-    }
-    return CreateVobInstanceBuffers();
-}
 
 bool D3D12GraphicsEngine::CreateVobInstanceBuffers() {
     ID3D12Device* device = m_Device.GetDevice();
@@ -3096,7 +2792,7 @@ void D3D12GraphicsEngine::BindFrameLights( UINT srvParam, UINT countParam, UINT 
     // light-index list (t3) root SRVs produced by DispatchLightCulling. EVERY draw whose bound PSO reads the
     // tiled light loop MUST call this after setting its root signature, or the loop bound (Count) and grid are
     // UNDEFINED root values and can run billions of iterations → GPU timeout/removal. Root args are cleared on
-    // every SetGraphicsRootSignature. The param indices differ per root sig: m_WorldRootSig uses (3,4,5,6) —
+    // every SetGraphicsRootSignature. The param indices differ per root sig: m_Pipelines.World.RootSig uses (3,4,5,6) —
     // the default — for the world mesh / instanced VOBs / node attachments; m_SkeletalRootSig uses (5,6,7,8).
     m_CmdList->SetGraphicsRootShaderResourceView( srvParam, m_LightBuffer[m_FrameIndex]->GetGPUVirtualAddress() );
     m_CmdList->SetGraphicsRoot32BitConstant( countParam, m_FrameLightCount, 0 );   // LightCount @ b*.x
@@ -3899,7 +3595,7 @@ bool D3D12GraphicsEngine::CreateSkeletalPipeline() {
     params[4].Constants.ShaderRegister = 3;   // b3 fog
     params[4].Constants.Num32BitValues = 8;   // FogConstants (8 DWORDs)
     params[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;  // VS: CamPosWS; PS: color/near/far
-    // Forward+ point lights (mirrors m_WorldRootSig params 3/4/5/6, here at 5..8 — see BindFrameLights). All
+    // Forward+ point lights (mirrors m_Pipelines.World.RootSig params 3/4/5/6, here at 5..8 — see BindFrameLights). All
     // MUST be bound at every skeletal draw or the PS light-loop bound/grid is undefined → GPU hang.
     params[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
     params[5].Descriptor.ShaderRegister = 1;  // t1 light StructuredBuffer (root SRV, no descriptor slot)
@@ -4311,12 +4007,12 @@ XRESULT D3D12GraphicsEngine::DrawSky() {
 
 bool D3D12GraphicsEngine::CreateWorldIndirect() {
     // Command signature + per-frame UPLOAD arg ring for the GPU-driven world mesh (P2.11). One command sets the
-    // b6 material bindless indices (3 root constants @ param 10 of m_WorldRootSig) then issues a DrawIndexed. Both
+    // b6 material bindless indices (3 root constants @ param 10 of m_Pipelines.World.RootSig) then issues a DrawIndexed. Both
     // the depth prepass and the color pass ExecuteIndirect over the SAME per-frame buffer (identical opaque draw
     // set — water peeled at build time). The arg buffer is UPLOAD (permanently GENERIC_READ, which INCLUDES
     // INDIRECT_ARGUMENT), rebuilt each frame by BuildWorldDrawCommands — no DEFAULT-heap copy needed.
     ID3D12Device* device = m_Device.GetDevice();
-    if ( !device || !m_WorldRootSig ) return false;
+    if ( !device || !m_Pipelines.World.RootSig ) return false;
 
     D3D12_INDIRECT_ARGUMENT_DESC args[2] = {};
     args[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT;
@@ -4330,7 +4026,7 @@ bool D3D12GraphicsEngine::CreateWorldIndirect() {
     sigDesc.NumArgumentDescs = _countof( args );
     sigDesc.pArgumentDescs = args;
     // A command that sets root constants must carry the root signature its param index refers to.
-    if ( FAILED( device->CreateCommandSignature( &sigDesc, m_WorldRootSig.Get(),
+    if ( FAILED( device->CreateCommandSignature( &sigDesc, m_Pipelines.World.RootSig.Get(),
         IID_PPV_ARGS( m_WorldIndirectCmdSig.ReleaseAndGetAddressOf() ) ) ) ) {
         LogWarn() << "D3D12: failed to create the world indirect command signature.";
         return false;
@@ -4481,7 +4177,7 @@ void D3D12GraphicsEngine::DrawDepthPrepass() {
     // own (unchanged) color passes; they'll be added to the prepass alongside the cull consumer (P2.9b-2),
     // where the VOB instance-ring offset sharing gets designed together with the tile grid. Water is skipped
     // (transparent — it never writes depth, same as the opaque pass peels it out).
-    if ( !m_FrameOpen || !m_DepthPrepassWorldPSO || !m_WorldRootSig || !m_DepthBuffer )
+    if ( !m_FrameOpen || !m_Pipelines.World.DepthPrepassPSO || !m_Pipelines.World.RootSig || !m_DepthBuffer )
         return;
 
     MeshInfo* wm = Engine::GAPI->GetWrappedWorldMesh();
@@ -4504,8 +4200,8 @@ void D3D12GraphicsEngine::DrawDepthPrepass() {
     XMFLOAT4X4 viewProj;
     XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
 
-    m_CmdList->SetPipelineState( m_DepthPrepassWorldPSO.Get() );
-    m_CmdList->SetGraphicsRootSignature( m_WorldRootSig.Get() );
+    m_CmdList->SetPipelineState( m_Pipelines.World.DepthPrepassPSO.Get() );
+    m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
     m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );   // b0 ViewProj (fog/lights not referenced)
 
     D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_Resolution.x), static_cast<float>(m_Resolution.y), 0.0f, 1.0f };
@@ -4629,7 +4325,7 @@ void D3D12GraphicsEngine::BindMaterialMaps( zCTexture* tex, UINT matRootParam ) 
 }
 
 XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
-    if ( !m_FrameOpen || !m_WorldPSO || !m_WorldRootSig || !m_DepthBuffer )
+    if ( !m_FrameOpen || !m_Pipelines.World.PSO || !m_Pipelines.World.RootSig || !m_DepthBuffer )
         return XR_SUCCESS;
 
     MeshInfo* wm = Engine::GAPI->GetWrappedWorldMesh();
@@ -4658,8 +4354,8 @@ XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
 
     const FogConstants fog = MakeFogConstants();
 
-    m_CmdList->SetPipelineState( m_WorldPSO.Get() );
-    m_CmdList->SetGraphicsRootSignature( m_WorldRootSig.Get() );
+    m_CmdList->SetPipelineState( m_Pipelines.World.PSO.Get() );
+    m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
     m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
     m_CmdList->SetGraphicsRoot32BitConstants( 2, 8, &fog, 0 );   // b1 fog
     BindFrameLights();   // param 3 = light SRV (t1), param 4 = light count (b2) — MUST set both or the
@@ -4788,10 +4484,10 @@ void D3D12GraphicsEngine::DrawVobDepthPrepass() {
     // P2.9b-4a: lay down instanced-VOB depth (alpha-clipped) into the Forward+ opaque prepass so the tiled light
     // cull sees VOB surfaces and bounds each tile's near plane to them — fixing the static 16x16 cutoff where a
     // light on an object in front of distant world geometry got dropped (the tile AABB used to sit at the far
-    // world, missing the near VOB). Depth-only via m_DepthPrepassVobPSO; consumes the shared g_FrameVobUploads.
+    // world, missing the near VOB). Depth-only via m_Pipelines.World.DepthPrepassVobPSO; consumes the shared g_FrameVobUploads.
     // Same per-material diffuse bind as the color pass for the alpha cutout. Node attachments (weapons/heads) are
     // NOT here — they upload during the skeletal color pass, after the cull; they'll join once skeletal does.
-    if ( !m_FrameOpen || !m_DepthPrepassVobPSO || !m_WorldRootSig || !m_DepthBuffer )
+    if ( !m_FrameOpen || !m_Pipelines.World.DepthPrepassVobPSO || !m_Pipelines.World.RootSig || !m_DepthBuffer )
         return;
     if ( g_FrameVobUploads.empty() ) return;
 
@@ -4806,8 +4502,8 @@ void D3D12GraphicsEngine::DrawVobDepthPrepass() {
     XMFLOAT4X4 viewProj;
     XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
 
-    m_CmdList->SetPipelineState( m_DepthPrepassVobPSO.Get() );
-    m_CmdList->SetGraphicsRootSignature( m_WorldRootSig.Get() );
+    m_CmdList->SetPipelineState( m_Pipelines.World.DepthPrepassVobPSO.Get() );
+    m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
     m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );   // b0 ViewProj (fog/lights not referenced)
 
     D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_Resolution.x), static_cast<float>(m_Resolution.y), 0.0f, 1.0f };
@@ -4856,7 +4552,7 @@ void D3D12GraphicsEngine::DrawVobDepthPrepass() {
 }
 
 XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
-    if ( !m_FrameOpen || !m_VobPSO || !m_WorldRootSig || !m_DepthBuffer )
+    if ( !m_FrameOpen || !m_Pipelines.World.VobPSO || !m_Pipelines.World.RootSig || !m_DepthBuffer )
         return XR_SUCCESS;
 
     GothicRendererState& rs = Engine::GAPI->GetRendererState();
@@ -4877,8 +4573,8 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
 
     const FogConstants fog = MakeFogConstants();
 
-    m_CmdList->SetPipelineState( m_VobPSO.Get() );
-    m_CmdList->SetGraphicsRootSignature( m_WorldRootSig.Get() );
+    m_CmdList->SetPipelineState( m_Pipelines.World.VobPSO.Get() );
+    m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
     m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
     m_CmdList->SetGraphicsRoot32BitConstants( 2, 8, &fog, 0 );   // b1 fog
     BindFrameLights();   // param 3 = light SRV (t1), param 4 = light count (b2) — see DrawWorldMesh.
@@ -5104,7 +4800,7 @@ void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
     // P2.9b-4b (pre-cull): lay down skeletal base-mesh + node-attachment depth into the Forward+ opaque prepass
     // so the tiled light cull bounds tiles to NPCs/monsters (fixing the static near-skeletal cutoff). Depth-only;
     // consumes the shared records. Base meshes via m_DepthPrepassSkeletalPSO (skinned), attachments via
-    // m_DepthPrepassVobPSO (packed vertex + instance) — both read only b0 + t0/s0, so no BindFrameLights.
+    // m_Pipelines.World.DepthPrepassVobPSO (packed vertex + instance) — both read only b0 + t0/s0, so no BindFrameLights.
     if ( !m_FrameOpen || !m_DepthBuffer ) return;
     if ( g_FrameSkelDraws.empty() && g_FrameAttachDraws.empty() ) return;
 
@@ -5167,10 +4863,10 @@ void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
     }
 
     // Node attachments (depth only) through the VOB depth PSO (packed vertex slot 0 + per-instance world slot 1).
-    if ( !g_FrameAttachDraws.empty() && m_DepthPrepassVobPSO && m_WorldRootSig ) {
+    if ( !g_FrameAttachDraws.empty() && m_Pipelines.World.DepthPrepassVobPSO && m_Pipelines.World.RootSig ) {
         DX_ZONE( m_CmdList, "Depth Prepass (attachments)" );
-        m_CmdList->SetPipelineState( m_DepthPrepassVobPSO.Get() );
-        m_CmdList->SetGraphicsRootSignature( m_WorldRootSig.Get() );
+        m_CmdList->SetPipelineState( m_Pipelines.World.DepthPrepassVobPSO.Get() );
+        m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
         m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
         m_CmdList->RSSetViewports( 1, &vp );
         m_CmdList->RSSetScissorRects( 1, &sc );
@@ -5206,7 +4902,7 @@ void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
 
 void D3D12GraphicsEngine::DrawSkeletalColor() {
     // P2.9b-4b (post-cull): draw the skeletal base meshes + node attachments collected by PrepareFrameSkeletals,
-    // lit through the tile grid. Base via m_SkeletalPSO, attachments via m_VobPSO — same PSOs/binds as before the
+    // lit through the tile grid. Base via m_SkeletalPSO, attachments via m_Pipelines.World.VobPSO — same PSOs/binds as before the
     // 4b split, just consuming the shared records (no re-upload, no re-run of the once/frame animation update).
     if ( !m_FrameOpen || !m_SkeletalPSO || !m_SkeletalRootSig || !m_DepthBuffer ) return;
     if ( g_FrameSkelDraws.empty() && g_FrameAttachDraws.empty() ) return;
@@ -5282,10 +4978,10 @@ void D3D12GraphicsEngine::DrawSkeletalColor() {
 
     // Node attachments (lit) through the VOB pipeline. BindFrameLights() is REQUIRED — the VOB PS reads the
     // light count/grid, so an unbound count would run the loop on garbage → GPU TDR hang.
-    if ( !g_FrameAttachDraws.empty() && m_VobPSO && m_WorldRootSig ) {
+    if ( !g_FrameAttachDraws.empty() && m_Pipelines.World.VobPSO && m_Pipelines.World.RootSig ) {
         DX_ZONE( m_CmdList, "Draw attachments" );
-        m_CmdList->SetPipelineState( m_VobPSO.Get() );
-        m_CmdList->SetGraphicsRootSignature( m_WorldRootSig.Get() );
+        m_CmdList->SetPipelineState( m_Pipelines.World.VobPSO.Get() );
+        m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
         m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
         m_CmdList->SetGraphicsRoot32BitConstants( 2, 8, &fog, 0 );   // b1 fog (VOB root sig)
         BindFrameLights();

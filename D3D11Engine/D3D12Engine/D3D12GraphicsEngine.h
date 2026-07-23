@@ -152,12 +152,11 @@ private:
     bool CreateSceneColorTarget( INT2 size ); // R16F HDR scene-color RT (+RTV +SRV) the 3D passes render into; recreated on resize
     void BindSceneColorTarget();      // transition HDR RT -> RENDER_TARGET (if needed) + bind it (+ depth) as the world-pass RTV
     void ResolveSceneToBackBuffer();  // tonemap the HDR scene into the swapchain backbuffer, then rebind the backbuffer for the 2D UI
-    bool CreateWorldPipeline();       // root sig + inline shaders + PSO for the textured world-mesh pass
-    bool CreateDepthPrepassPipeline(); // Forward+ opaque depth prepass PSO (depth-only world mesh; reuses m_WorldRootSig)
+    // World/DepthPrepass/Vob pipeline creation now lives in m_Pipelines (CreateWorld/CreateDepthPrepass/CreateVob).
     void DrawDepthPrepass();          // lay down opaque world-mesh depth before the lit passes (Forward+ prepass)
     bool CreateLightCullBuffers( INT2 size ); // per-resolution tile grid + index-list UAV buffers (rebuilt on resize)
     void DispatchLightCulling();      // dispatch the tiled light cull (writes the per-tile light grid; not yet consumed)
-    bool CreateVobPipeline();         // instanced VOB PSO (reuses the world root sig) + inline shaders
+    // Vob pipeline creation now lives in m_Pipelines.CreateVob (buffers stay: CreateVobInstanceBuffers).
     bool CreateVobInstanceBuffers();  // per-frame dynamic (upload-heap) VOB instance ring buffers
     void UploadFrameVobInstances();   // snapshot visible VOB instances into the ring ONCE (prepass + color share it)
     bool UploadVobs(const std::vector<RenderBucket>& vobs, std::vector<FrameVobUpload>& uploads);
@@ -294,10 +293,8 @@ private:
     UINT m_DsvDescriptorSize = 0;
     UINT m_DepthSrvSlot = UINT_MAX;   // R32_FLOAT SRV of m_DepthBuffer, read by the light cull for per-tile far-Z tightening
 
-    Microsoft::WRL::ComPtr<ID3D12RootSignature> m_WorldRootSig;     // b0 = ViewProj (16 root constants, VS); t0 SRV; s0
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_WorldPSO;
-    Microsoft::WRL::ComPtr<ID3DBlob> m_WorldVsBlob;
-    Microsoft::WRL::ComPtr<ID3DBlob> m_WorldPsBlob;
+    // World root sig + lit world-mesh PSO/blobs now live in m_Pipelines.World (RootSig/PSO/VsBlob/PsBlob).
+    // That RootSig is the shared anchor bound by the VOB/skeletal/shadow-caster/point-shadow draws too.
 
     // ---- GPU-driven world mesh (P2.11): ExecuteIndirect + bindless diffuse. The per-material draws of BOTH the
     // depth prepass and the color pass are collapsed into ONE ExecuteIndirect each, over a per-frame command
@@ -322,14 +319,9 @@ private:
     bool CreateWorldIndirect();                      // command signature + per-frame arg ring (once, at init)
     void BuildWorldDrawCommands();                   // collect visible sections + fill arg ring (once/frame, pre-prepass)
 
-    // Forward+ opaque depth prepass (P2.9b-1): depth-only world-mesh PSO (color write mask 0), reuses m_WorldRootSig.
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_DepthPrepassWorldPSO;
-    Microsoft::WRL::ComPtr<ID3DBlob> m_DepthPrepassWorldVsBlob;
-    Microsoft::WRL::ComPtr<ID3DBlob> m_DepthPrepassPsBlob;
-    // Instanced-VOB depth prepass (P2.9b-4a): depth-only VOB PSO (color write mask 0), reuses m_WorldRootSig.
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_DepthPrepassVobPSO;
-    Microsoft::WRL::ComPtr<ID3DBlob> m_DepthPrepassVobVsBlob;
-    Microsoft::WRL::ComPtr<ID3DBlob> m_DepthPrepassVobPsBlob;
+    // Forward+ opaque depth-prepass PSOs/blobs (world + instanced VOB) now live in m_Pipelines.World
+    // (DepthPrepassPSO/VsBlob/PsBlob, DepthPrepassVobPSO/VobVsBlob/VobPsBlob). The shadow-caster and skeletal
+    // PSOs below still reuse those blobs via m_Pipelines.World.DepthPrepass*.
     // Skeletal depth prepass (P2.9b-4b): depth-only skinned PSO (color write mask 0), reuses m_SkeletalRootSig.
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_DepthPrepassSkeletalPSO;
     Microsoft::WRL::ComPtr<ID3DBlob> m_DepthPrepassSkeletalVsBlob;
@@ -453,10 +445,8 @@ private:
     // it must transition them back to UAV before the next dispatch (false right after (re)creation in UAV).
     bool m_LightGridInPixelState = false;
 
-    // Instanced static VOBs (reuses m_WorldRootSig; slot 0 = packed vertex, slot 1 = per-instance data).
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_VobPSO;
-    Microsoft::WRL::ComPtr<ID3DBlob> m_VobVsBlob;
-    Microsoft::WRL::ComPtr<ID3DBlob> m_VobPsBlob;
+    // Instanced static VOBs (reuses the shared world root sig; slot 0 = packed vertex, slot 1 = per-instance
+    // data). Lit PSO/blobs now live in m_Pipelines.World (VobPSO/VobVsBlob/VobPsBlob); the buffers stay here.
     Microsoft::WRL::ComPtr<ID3D12Resource> m_VobInstanceBuffer[kBackBufferCount]; // persistently-mapped upload ring
     uint8_t* m_VobInstanceBufferPtr[kBackBufferCount] = {};
     UINT m_VobInstanceBufferCapacity = 0;
