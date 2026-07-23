@@ -495,7 +495,7 @@ bool D3D12GraphicsEngine::CreateAllocators() {
     allocatorDesc.pAdapter = m_Device.GetAdapter();
     allocatorDesc.Flags = D3D12MA::ALLOCATOR_FLAG_DEFAULT_POOLS_NOT_ZEROED;
 
-    if ( IsDebuggerPresent() || GetModuleHandleA( "renderdoc.dll" ) != NULL ) {
+    if ( GetModuleHandleA( "renderdoc.dll" ) != NULL ) {
         allocatorDesc.Flags |= D3D12MA::ALLOCATOR_FLAGS::ALLOCATOR_FLAG_ALWAYS_COMMITTED;
     }
 
