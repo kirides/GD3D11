@@ -441,6 +441,11 @@ bool D3D12PipelineState::CreateUI() {
     if ( !m_Shaders->CompileFromFile( "UI.hlsl", "PSMain", Shadermodel_PS, UI.PsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
+    // Sky pass variant (D3D11 VS_TransformedEx_MAX_Z equivalent) — same VS, z pinned to the reversed-Z far plane.
+    const D3D_SHADER_MACRO maxZDefines[] = { { "FORCE_MAX_Z", "1" }, { nullptr, nullptr } };
+    if ( !m_Shaders->CompileFromFile( "UI.hlsl", "VSMain", Shadermodel_VS, UI.VsBlobMaxZ.ReleaseAndGetAddressOf(), maxZDefines ) ) {
+        return false;
+    }
 
     // PSOs are built per blend state on demand (GetOrCreateUIPipeline). Warm the default (opaque) one so
     // any Init-time failure surfaces here rather than mid-frame.
@@ -458,8 +463,11 @@ bool D3D12PipelineState::CreateUI() {
 
 ID3D12PipelineState* D3D12PipelineState::GetOrCreateUIPipeline(
     const GothicBlendStateInfo& blend,
-    const GothicDepthBufferStateInfo& depth ) {
-    const uint64_t key = static_cast<uint64_t>(BlendKey( blend )) | (static_cast<uint64_t>(DepthKey( depth )) << 32);
+    const GothicDepthBufferStateInfo& depth,
+    D3D12_CULL_MODE cullMode, bool rtvIsHdr, bool forceMaxZ, bool frontCCW ) {
+    const uint64_t key = static_cast<uint64_t>(BlendKey( blend )) | (static_cast<uint64_t>(DepthKey( depth )) << 32)
+        | (static_cast<uint64_t>(cullMode) << 34) | (static_cast<uint64_t>(rtvIsHdr) << 36) | (static_cast<uint64_t>(forceMaxZ) << 37)
+        | (static_cast<uint64_t>(frontCCW) << 38);
     auto it = UI.Pipelines.find( key );
     if ( it != UI.Pipelines.end() ) return it->second.Get();
 
@@ -472,20 +480,24 @@ ID3D12PipelineState* D3D12PipelineState::GetOrCreateUIPipeline(
         { "DIFFUSE",  0, DXGI_FORMAT_R8G8B8A8_UNORM,  0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
     };
 
-    // --- PSO: no depth (2D), cull-none, triangle list; blend emulates Gothic's per-draw state ---
+    // --- PSO: blend emulates Gothic's per-draw state; RTV/cull/VS vary by caller (plain 2D vs sky pass) ---
+    ID3DBlob* vsBlob = forceMaxZ ? UI.VsBlobMaxZ.Get() : UI.VsBlob.Get();
     D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
     pso.pRootSignature = UI.RootSig.Get();
-    pso.VS = { UI.VsBlob->GetBufferPointer(), UI.VsBlob->GetBufferSize() };
+    pso.VS = { vsBlob->GetBufferPointer(), vsBlob->GetBufferSize() };
     pso.PS = { UI.PsBlob->GetBufferPointer(), UI.PsBlob->GetBufferSize() };
     pso.InputLayout = { layout, _countof( layout ) };
     pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     pso.NumRenderTargets = 1;
-    pso.RTVFormats[0] = kBackBufferFormat;   // 2D UI draws straight to the swapchain (after the tonemap resolve)
+    // Plain 2D UI draws straight to the swapchain (after the tonemap resolve); the sky pass (rtvIsHdr) runs
+    // during OnStartWorldRendering with the R16F HDR scene-color target bound.
+    pso.RTVFormats[0] = rtvIsHdr ? kSceneColorFormat : kBackBufferFormat;
     pso.SampleDesc.Count = 1;
     pso.SampleMask = UINT_MAX;
 
     pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    pso.RasterizerState.CullMode = cullMode;
+    pso.RasterizerState.FrontCounterClockwise = frontCCW ? TRUE : FALSE;
     // Depth clip OFF for the 2D path (matches GothicRasterizerStateInfo::SetDefault's D3D11 default). The
     // pre-transformed UI/glyph verts carry z = camera near+1 (AppendGlyphs), which exceeds the [0,1] clip
     // range — with clipping enabled the driver discards them ("depth clipped"); disabled, z is just clamped.

@@ -55,9 +55,10 @@ public:
     // PSOs are built per (blend,depth) key on demand and cached. Vertex ring buffers stay in the engine.
     struct UIPipeline {
         Microsoft::WRL::ComPtr<ID3D12RootSignature> RootSig;
-        Microsoft::WRL::ComPtr<ID3DBlob>            VsBlob;  // compiled once; reused for every blend PSO
+        Microsoft::WRL::ComPtr<ID3DBlob>            VsBlob;      // compiled once; reused for every blend PSO
+        Microsoft::WRL::ComPtr<ID3DBlob>            VsBlobMaxZ;  // FORCE_MAX_Z variant — sky pass (STAGE_DRAW_SKY)
         Microsoft::WRL::ComPtr<ID3DBlob>            PsBlob;
-        std::unordered_map<uint64_t, Microsoft::WRL::ComPtr<ID3D12PipelineState>> Pipelines; // key = Blend | Depth<<32
+        std::unordered_map<uint64_t, Microsoft::WRL::ComPtr<ID3D12PipelineState>> Pipelines; // key = Blend | Depth<<32 | Cull<<34 | RtvIsHdr<<36 | MaxZ<<37
     };
     // Particle (PFX) billboards: one root sig + one VS/PS pair; PSOs built per BlendKey on demand.
     // Instance ring buffers stay in the engine.
@@ -124,7 +125,13 @@ public:
     bool CreateLightCull();   // Forward+ tiled light-cull compute (global compute root sig)
 
     // --- On-demand PSO cache lookups (called from the engine's draw path; create+cache on miss) ---
-    ID3D12PipelineState* GetOrCreateUIPipeline( const GothicBlendStateInfo& blend, const GothicDepthBufferStateInfo& depth );
+    // cullMode/frontCCW/rtvIsHdr/forceMaxZ default to the plain 2D/UI case (cull-none, clockwise-front,
+    // backbuffer RTV, no Z override); the sky pass (DrawSky, STAGE_DRAW_SKY) passes the real rasterizer
+    // cull mode + winding (the D3D7 layer forces FrontCounterClockwise=true for sky FVF draws — Gothic's
+    // sky geometry is wound CCW), the HDR scene-color format, and forceMaxZ=true so the sky VS pins z to
+    // the reversed-Z far plane instead of passing the FF z through.
+    ID3D12PipelineState* GetOrCreateUIPipeline( const GothicBlendStateInfo& blend, const GothicDepthBufferStateInfo& depth,
+        D3D12_CULL_MODE cullMode = D3D12_CULL_MODE_NONE, bool rtvIsHdr = false, bool forceMaxZ = false, bool frontCCW = false );
     ID3D12PipelineState* GetOrCreateParticlePipeline( const GothicBlendStateInfo& blend );
     ID3D12PipelineState* GetOrCreateDecalBlendPipeline( const GothicBlendStateInfo& blend );
 

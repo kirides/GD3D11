@@ -37,8 +37,16 @@ VS_OUT VSMain( VS_IN i ) {
     float2 ndc;
     ndc.x = ((2.0 * (i.pos.x - V_ViewportPos.x)) / V_ViewportSize.x) - 1.0;
     ndc.y = 1.0 - ((2.0 * (i.pos.y - V_ViewportPos.y)) / V_ViewportSize.y);
+    float z = i.pos.z;
+#ifdef FORCE_MAX_Z
+    // Sky pass (D3D11 VS_TransformedEx_MAX_Z equivalent): the game's own pre-transformed sky verts carry
+    // whatever z the fixed-function pipeline baked in, but we want the sky pinned to the far plane so it
+    // never occludes real geometry drawn behind it (reversed-Z: far == 0.0) while still depth-testing
+    // (GREATER_EQUAL) against whatever the world already wrote.
+    z = 0.0;
+#endif
     float actualW = 1.0 / rhw;
-    o.pos = float4(float3(ndc, i.pos.z) * actualW, actualW);
+    o.pos = float4(float3(ndc, z) * actualW, actualW);
     o.uv  = i.t0;
     o.uv2 = i.t1;
     o.dif = i.dif;

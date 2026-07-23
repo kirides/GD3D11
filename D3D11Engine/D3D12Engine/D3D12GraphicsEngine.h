@@ -218,6 +218,10 @@ private:
     D3D12_CPU_DESCRIPTOR_HANDLE                  m_SceneColorRtv = {};    // RTV heap slot kBackBufferCount
     UINT m_SceneColorSrvSlot = UINT_MAX;                                  // SRV read by the tonemap resolve
     bool m_SceneColorInPixelState = false;                               // RENDER_TARGET (world) <-> PIXEL_SHADER_RESOURCE (resolve)
+    // Which RTV format/target DrawVertexArray is currently rendering into — true while the HDR scene-color
+    // target is bound (BindSceneColorTarget, i.e. during OnStartWorldRendering incl. DrawSky), false once
+    // ResolveSceneToBackBuffer/OnBeginFrame bind the swapchain backbuffer for the later 2D UI/HUD draws.
+    bool m_ColorTargetIsHDR = false;
     // Tonemap pipeline (RootSig/PSO/blobs) now lives in m_Pipelines.Tonemap; exposure is read live from
     // Engine::GAPI->GetRendererState().RendererSettings.Exposure in ResolveSceneToBackBuffer (player-tunable).
 

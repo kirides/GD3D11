@@ -15,6 +15,7 @@
 #include "../zCVob.h"
 #include "../zCVobLight.h"
 #include "../zCDecal.h"
+#include "../zCWorld.h"
 #include "../WorldConverter.h"
 #include "../VertexTypes.h"
 #include "../ImGuiShim.h"
@@ -1156,6 +1157,7 @@ void D3D12GraphicsEngine::BindSceneColorTarget() {
 	D3D12_CPU_DESCRIPTOR_HANDLE dsv = {};
 	if ( haveDepth ) dsv = m_DsvHeap->GetCPUDescriptorHandleForHeapStart();
 	m_CmdList->OMSetRenderTargets( 1, &m_SceneColorRtv, FALSE, haveDepth ? &dsv : nullptr );
+	m_ColorTargetIsHDR = true;
 }
 
 void D3D12GraphicsEngine::ResolveSceneToBackBuffer() {
@@ -1174,6 +1176,7 @@ void D3D12GraphicsEngine::ResolveSceneToBackBuffer() {
 	D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
 	rtv.ptr += static_cast<SIZE_T>(m_FrameIndex) * m_RtvDescriptorSize;
 	m_CmdList->OMSetRenderTargets( 1, &rtv, FALSE, nullptr );   // no depth for the fullscreen resolve
+	m_ColorTargetIsHDR = false;
 
 	const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_Resolution.x), static_cast<float>(m_Resolution.y), 0.0f, 1.0f };
 	const D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
@@ -3132,8 +3135,18 @@ XRESULT D3D12GraphicsEngine::DrawVertexArray( ExVertexStruct* vertices, unsigned
 
 	GothicRendererState& rs = Engine::GAPI->GetRendererState();
 
+	// The sky pass (DrawSky -> zCSkyController_Outdoor::RenderSkyPre) feeds its FF draws through this same
+	// path, but needs real backface culling, the HDR scene-color RTV format, and z pinned to the reversed-Z
+	// far plane (D3D11's VS_TransformedEx_MAX_Z) instead of the plain 2D UI defaults.
+	const bool isSkyPass = rs.RendererInfo.RenderStage == STAGE_DRAW_SKY;
+	const D3D12_CULL_MODE cullMode = isSkyPass ? static_cast<D3D12_CULL_MODE>(rs.RasterizerState.CullMode) : D3D12_CULL_MODE_NONE;
+	// MyDirect3DDevice7::DrawPrimitive/DrawPrimitiveVB force FrontCounterClockwise=true for the sky FVFs
+	// (Gothic's sky geometry is wound CCW) — honor whatever the D3D7 layer set rather than hardcoding it,
+	// so this stays correct if a future FF draw path relies on the same state.
+	const bool frontCCW = rs.RasterizerState.FrontCounterClockwise;
+
 	// Emulate Gothic's per-draw fixed-function blend mode by selecting the matching PSO.
-	ID3D12PipelineState* pso = m_Pipelines.GetOrCreateUIPipeline( rs.BlendState, rs.DepthState );
+	ID3D12PipelineState* pso = m_Pipelines.GetOrCreateUIPipeline( rs.BlendState, rs.DepthState, cullMode, m_ColorTargetIsHDR, isSkyPass, frontCCW );
 	if ( !pso ) return XR_SUCCESS;
 
 	const UINT frame = m_FrameIndex;
@@ -3343,11 +3356,10 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 XRESULT D3D12GraphicsEngine::DrawSky() {
 	if ( !m_FrameOpen ) return XR_SUCCESS;
 	DX_ZONE( m_CmdList, "Draw sky" );
-	// Forward-renderer sky MVP: fill the backbuffer with Gothic's atmosphere (fog) color. Runs at the
-	// start of the world pass — after OnBeginFrame's black clear, before any 3D geometry — so wherever
-	// no geometry draws (above the horizon) the sky shows this color, and the geometry shaders' distance
-	// fog fades into the same color so the horizon dissolves seamlessly. Depth (cleared to 0.0 = far in
-	// OnBeginFrame) is left untouched, so geometry still depth-tests / occludes normally.
+
+	// Base fallback fill: Gothic's atmosphere (fog) color. Runs first so a gap in the real sky draw below
+	// (or AtmosphericScattering — not ported to D3D12 yet, see below) still leaves the horizon dissolving
+	// into the geometry's per-pixel distance fog instead of showing the frame's black clear.
 	XMFLOAT3 fc;
 	XMStoreFloat3( &fc, Engine::GAPI->GetFogColor() );
 
@@ -3356,10 +3368,37 @@ XRESULT D3D12GraphicsEngine::DrawSky() {
 	// wouldn't match the geometry's distance-fog fade. sRGB->linear each channel on the CPU before clearing.
 	auto srgbToLinear = []( float c ) { return c <= 0.04045f ? c / 12.92f : std::pow( (c + 0.055f) / 1.055f, 2.4f ); };
 	const float clear[4] = { srgbToLinear( fc.x ), srgbToLinear( fc.y ), srgbToLinear( fc.z ), 1.0f };
-
-	// Clear the HDR scene-color target (bound by BindSceneColorTarget just before this) to the fog color — the
-	// geometry's distance fog fades into the same value so the horizon dissolves; the tonemap resolves it later.
 	m_CmdList->ClearRenderTargetView( m_SceneColorRtv, clear, 0, nullptr );
+
+	Engine::GAPI->GetSky()->RenderSky(); // does not render, but calculates atmosphere data (AC_LightPos etc.)
+
+	GothicRendererState& rs = Engine::GAPI->GetRendererState();
+	if ( rs.RendererSettings.AtmosphericScattering ) {
+		// Atmospheric-scattering sky (PS_Atmosphere/VS_ExWS + the procedural sky-dome mesh) is not ported to
+		// D3D12 yet — the flat fog fill above stands in for it until that lands.
+		return XR_SUCCESS;
+	}
+
+	// Fixed-function sky path: hand off to Gothic's own zCSkyController_Outdoor::RenderSkyPre(), same as
+	// D3D11GraphicsEngine::DrawSky. Its D3DFVF_XYZRHW_DIF_T1 draws come back through MyDirect3DDevice7 ->
+	// DrawPrimitive/DrawPrimitiveVB -> DrawVertexArray/DrawVertexBufferFF (backend-neutral already), which
+	// reads RenderStage == STAGE_DRAW_SKY to pick the HDR RTV format, real backface culling, and the
+	// FORCE_MAX_Z vertex-shader variant that pins the sky to the reversed-Z far plane.
+	const RenderStage oldStage = rs.RendererInfo.RenderStage;
+	rs.RendererInfo.RenderStage = STAGE_DRAW_SKY;
+
+	rs.DepthState.DepthBufferEnabled = true;
+	rs.DepthState.DepthWriteEnabled = false;   // sky never occludes; only shows where nothing else drew
+	rs.DepthState.DepthBufferCompareFunc = GothicDepthBufferStateInfo::CF_COMPARISON_GREATER_EQUAL;
+	rs.DepthState.SetDirty();
+
+	rs.RasterizerState.SetDefault();
+	rs.RasterizerState.CullMode = GothicRasterizerStateInfo::CM_CULL_BACK;
+	rs.RasterizerState.SetDirty();
+
+	Engine::GAPI->GetLoadedWorldInfo()->MainWorld->GetSkyControllerOutdoor()->RenderSkyPre();
+
+	rs.RendererInfo.RenderStage = oldStage;
 	return XR_SUCCESS;
 }
 
@@ -4677,6 +4716,7 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
     if ( haveDepth ) dsv = m_DsvHeap->GetCPUDescriptorHandleForHeapStart();
 
     m_CmdList->OMSetRenderTargets( 1, &rtv, FALSE, haveDepth ? &dsv : nullptr );
+    m_ColorTargetIsHDR = false;
     m_CmdList->ClearRenderTargetView( rtv, m_ClearColor, 0, nullptr );
     if ( haveDepth )  // reversed-Z: clear to 0.0
         m_CmdList->ClearDepthStencilView( dsv, D3D12_CLEAR_FLAG_DEPTH, 0.0f, 0, 0, nullptr );
