@@ -3633,9 +3633,14 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
             }            
 
             // Water is transparent — bucket it by texture for the later alpha-blended pass, skip the opaque command set.
-            if ( meshKey.Info && meshKey.Info->MaterialType == MaterialInfo::MT_Water ) {
-                g_FrameWaterSurfaces[meshKey.Material->GetAniTexture()].push_back( mesh );
-                continue;
+            if ( meshKey.Info) {
+                if ( meshKey.Info->MaterialType == MaterialInfo::MT_Water ) {
+                    g_FrameWaterSurfaces[meshKey.Material->GetAniTexture()].push_back( mesh );
+                    continue;
+                } else if ( meshKey.Info->MaterialType == MaterialInfo::MT_Portal ) {
+                    // don't draw portal meshes
+                    continue;
+                }
             }
             if ( count >= kMaxWorldDrawCommands ) {
                 if ( !m_WorldDrawArgsOverflowLogged ) {
