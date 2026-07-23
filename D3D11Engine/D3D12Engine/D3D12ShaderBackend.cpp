@@ -5,6 +5,7 @@
 #include <fstream>
 #include <iterator>
 #include <vector>
+#include <atomic>
 #include "../Logger.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
@@ -26,6 +27,61 @@ namespace {
         }
         return wstr;
     }
+
+    std::string FromWideString( LPCWSTR wstr ) {
+        if ( !wstr ) return "";
+        int size_needed = WideCharToMultiByte( CP_UTF8, 0, wstr, -1, NULL, 0, NULL, NULL );
+        std::string str( size_needed, 0 );
+        WideCharToMultiByte( CP_UTF8, 0, wstr, -1, &str[0], size_needed, NULL, NULL );
+        if ( !str.empty() && str.back() == '\0' ) {
+            str.pop_back();
+        }
+        return str;
+    }
+
+    // Resolves #include directives inside D3D12 HLSL sources through the same VDFS+physical-fallback
+    // lookup as the top-level shader file (D3D12ShaderBackend::LoadShaderSource), so shared includes like
+    // Shaders/D3D12/include/PBRLighting.hlsl are found whether shaders are loose files or VDFS-packed.
+    class ShaderIncludeHandler : public IDxcIncludeHandler {
+    public:
+        explicit ShaderIncludeHandler( IDxcUtils* utils ) : m_Utils( utils ) {}
+
+        HRESULT STDMETHODCALLTYPE LoadSource( LPCWSTR pFilename, IDxcBlob** ppIncludeSource ) override {
+            std::string filename = FromWideString( pFilename );
+            while ( filename.rfind( "./", 0 ) == 0 || filename.rfind( ".\\", 0 ) == 0 ) {
+                filename.erase( 0, 2 );
+            }
+            std::string source;
+            if ( !D3D12ShaderBackend::LoadShaderSource( filename, source ) ) {
+                return 0x80070002L; // HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND) — signals "not found" to DXC
+            }
+            ComPtr<IDxcBlobEncoding> blob;
+            HRESULT hr = m_Utils->CreateBlob( source.data(), static_cast<UINT32>( source.size() ), DXC_CP_ACP, blob.GetAddressOf() );
+            if ( FAILED( hr ) ) return hr;
+            *ppIncludeSource = blob.Detach();
+            return S_OK;
+        }
+
+        HRESULT STDMETHODCALLTYPE QueryInterface( REFIID riid, void** ppvObject ) override {
+            if ( riid == __uuidof(IDxcIncludeHandler) || riid == __uuidof(IUnknown) ) {
+                *ppvObject = static_cast<IDxcIncludeHandler*>( this );
+                AddRef();
+                return S_OK;
+            }
+            *ppvObject = nullptr;
+            return E_NOINTERFACE;
+        }
+        ULONG STDMETHODCALLTYPE AddRef() override { return static_cast<ULONG>( ++m_RefCount ); }
+        ULONG STDMETHODCALLTYPE Release() override {
+            ULONG r = static_cast<ULONG>( --m_RefCount );
+            if ( r == 0 ) delete this;
+            return r;
+        }
+
+    private:
+        ComPtr<IDxcUtils> m_Utils;
+        std::atomic<LONG> m_RefCount{ 1 };
+    };
 
     // Runtime DXC compilation of an in-memory HLSL source block into a DXIL ID3DBlob (SM6+).
     bool CompileSource(
@@ -96,12 +152,14 @@ namespace {
         }
 
         // 4. Run the DXIL compilation pipeline
+
+        ShaderIncludeHandler handler{ dxcUtils.Get() };
         ComPtr<IDxcResult> compileResult;
         HRESULT hr = compiler->Compile(
             &sourceBuffer,
             arguments.data(),
             static_cast<UINT32>(arguments.size()),
-            nullptr, // Default include handler. Pass a custom IDxcIncludeHandler here if needed.
+            &handler, // Default include handler. Pass a custom IDxcIncludeHandler here if needed.
             IID_PPV_ARGS( compileResult.GetAddressOf() )
         );
 
