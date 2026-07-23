@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "D3D12Texture.h"
+#include "D3D12ShaderBackend.h"
 
 struct RenderBucket;
 class D3D12LineRenderer;
@@ -264,6 +265,9 @@ private:
     UINT m_SrvHeapCapacity = 0;
     UINT m_SrvAllocated = 0;                                        // bump allocator (no free-list yet)
     std::vector<UINT> m_FreeSrvSlots; // Recycled descriptor indices
+
+    // Loads + compiles the backend's HLSL from Shaders\D3D12\*.hlsl at runtime (DXC/SM6.6, zFILE_VDFS).
+    D3D12ShaderBackend m_ShaderBackend;
 
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_UIRootSig;
     Microsoft::WRL::ComPtr<ID3DBlob> m_UIVsBlob;                    // compiled once; reused for every blend PSO

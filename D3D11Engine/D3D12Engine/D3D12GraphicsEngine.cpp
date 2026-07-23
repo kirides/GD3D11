@@ -122,135 +122,7 @@ namespace {
     constexpr const char* Shadermodel_VS = "vs_6_6";
     constexpr const char* Shadermodel_CS = "cs_6_6";
 
-    static std::wstring ToWideString( LPCSTR str ) {
-        if ( !str ) return L"";
-        int size_needed = MultiByteToWideChar( CP_UTF8, 0, str, -1, NULL, 0 );
-        std::wstring wstr( size_needed, 0 );
-        MultiByteToWideChar( CP_UTF8, 0, str, -1, &wstr[0], size_needed );
-        // Trim internal null-terminator sizing artifacts from MultiByteToWideChar
-        if ( !wstr.empty() && wstr.back() == L'\0' ) {
-            wstr.pop_back();
-        }
-        return wstr;
-    }
 
-    bool CompileShaderD3D12(
-    _In_reads_bytes_( SrcDataSize ) LPCVOID pSrcData,
-    _In_ SIZE_T SrcDataSize,
-    _In_opt_ LPCSTR pSourceName,
-    _In_reads_opt_( _Inexpressible_( pDefines->Name != NULL ) ) CONST D3D_SHADER_MACRO* pDefines,
-    _In_opt_ ID3DInclude* pInclude, // Note: Modern DXC uses IDxcIncludeHandler instead of ID3DInclude!
-    _In_opt_ LPCSTR pEntrypoint,
-    _In_ LPCSTR pTarget,
-    _In_ UINT Flags1,
-    _In_ UINT Flags2,
-    _Out_ ID3DBlob** ppCode )
-    {
-        using Microsoft::WRL::ComPtr;
-
-        // 1. Initialize DXC Compiler Instances
-        ComPtr<IDxcCompiler3> compiler;
-        ComPtr<IDxcUtils> dxcUtils;
-
-        if ( FAILED( DxcCreateInstance( CLSID_DxcCompiler, IID_PPV_ARGS( compiler.GetAddressOf() ) ) ) ||
-            FAILED( DxcCreateInstance( CLSID_DxcUtils, IID_PPV_ARGS( dxcUtils.GetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: Failed to create DXC compiler instances. Make sure dxcompiler.dll is loaded.";
-            return false;
-        }
-
-        // 2. Wrap the source memory block into a DXC Buffer
-        DxcBuffer sourceBuffer;
-        sourceBuffer.Ptr = pSrcData;
-        sourceBuffer.Size = SrcDataSize;
-        sourceBuffer.Encoding = DXC_CP_ACP; // Standard ANSI/UTF-8 codepage
-
-        // 3. Build up the DXC CLI argument array
-        std::vector<LPCWSTR> arguments;
-
-        // Source filename (for debug/error tracking symbols)
-        std::wstring wSourceName = ToWideString( pSourceName ? pSourceName : "ShaderSource" );
-        arguments.push_back( wSourceName.c_str() );
-
-        // Entrypoint function name (e.g., -E main)
-        std::wstring wEntrypoint = ToWideString( pEntrypoint ? pEntrypoint : "main" );
-        arguments.push_back( L"-E" );
-        arguments.push_back( wEntrypoint.c_str() );
-
-        // Target Profile / Shader Model (e.g., -T vs_6_0, ps_6_6)
-        std::wstring wTarget = ToWideString( pTarget );
-        arguments.push_back( L"-T" );
-        arguments.push_back( wTarget.c_str() );
-
-        // Handle Debug Configuration Flags
-#ifdef DEBUG_D3D11
-        arguments.push_back( DXC_ARG_DEBUG );                 // -Zi (Enable debug information)
-        arguments.push_back( DXC_ARG_SKIP_OPTIMIZATIONS );    // -Od (Disable optimizations)
-#else
-        arguments.push_back( DXC_ARG_OPTIMIZATION_LEVEL3 );   // -O3 (Maximum optimization for release)
-#endif
-
-        // Translate any legacy macro preprocessors into modern DXC -D parameters
-        std::vector<std::wstring> wDefinesStore;
-        if ( pDefines ) {
-            for ( const D3D_SHADER_MACRO* macro = pDefines; macro->Name != nullptr; ++macro ) {
-                std::wstring defineArg = ToWideString( macro->Name );
-                if ( macro->Definition ) {
-                    defineArg += L"=";
-                    defineArg += ToWideString( macro->Definition );
-                }
-                wDefinesStore.push_back( defineArg );
-            }
-            for ( const auto& wDef : wDefinesStore ) {
-                arguments.push_back( L"-D" );
-                arguments.push_back( wDef.c_str() );
-            }
-        }
-
-        // 4. Run the DXIL compilation pipeline
-        ComPtr<IDxcResult> compileResult;
-        HRESULT hr = compiler->Compile(
-            &sourceBuffer,
-            arguments.data(),
-            static_cast<UINT32>(arguments.size()),
-            nullptr, // Default include handler. Pass a custom IDxcIncludeHandler here if needed.
-            IID_PPV_ARGS( compileResult.GetAddressOf() )
-        );
-
-        if ( FAILED( hr ) ) {
-            LogWarn() << "D3D12: HRESULT compilation failure.";
-            return false;
-        }
-
-        // 5. Inspect and intercept potential compile errors
-        ComPtr<IDxcBlobUtf8> errorBuffer;
-        if ( SUCCEEDED( compileResult->GetOutput( DXC_OUT_ERRORS, IID_PPV_ARGS( errorBuffer.GetAddressOf() ), nullptr ) ) ) {
-            if ( errorBuffer && errorBuffer->GetStringLength() > 0 ) {
-                LogWarn() << "D3D12: DXC Shader Compilation warning/error:\n" << errorBuffer->GetStringPointer();
-            }
-        }
-
-        // Check if the overall operation succeeded or failed
-        HRESULT status;
-        if ( FAILED( compileResult->GetStatus( &status ) ) || FAILED( status ) ) {
-            return false;
-        }
-
-        // 6. Extract the compiled byte code blob and translate it to an ID3DBlob container
-        ComPtr<IDxcBlob> shaderCodeBlob;
-        if ( SUCCEEDED( compileResult->GetOutput( DXC_OUT_OBJECT, IID_PPV_ARGS( shaderCodeBlob.GetAddressOf() ), nullptr ) ) ) {
-            // Since your graphics core architecture expects ID3DBlob interfaces down the stream, 
-            // query the DXC utilities layer to cast/wrap the compiled DXC blob back into standard ID3DBlob memory block!
-            if ( SUCCEEDED( dxcUtils->CreateBlobFromBlob(
-                shaderCodeBlob.Get(),
-                0,
-                static_cast<UINT32>(shaderCodeBlob->GetBufferSize()),
-                reinterpret_cast<IDxcBlob**>(ppCode) ) ) ) {
-                return true;
-            }
-        }
-
-        return false;
-    }
 
     // Inline HLSL for the 2D UI path. VS mirrors VS_TransformedEx (screen-space xyzrhw -> clip space,
     // rhw packed in Normal.x). PS emulates the fixed-function texture-stage pipeline (mirrors
@@ -259,88 +131,6 @@ namespace {
     // modes (opaque/alpha/additive/modulate/...) are handled by selecting a matching PSO, not here.
     // Limitation: only texture0 is bound, so a 2nd stage samples texture0 (menus use 1 stage -> exact;
     // the world's 2-texture lightmap path is a Phase-2 concern).
-    constexpr char kUIShaderSource[] = R"(
-cbuffer Viewport : register(b0) { float2 V_ViewportPos; float2 V_ViewportSize; };
-
-struct TextureStage { int colorop; int colorarg1; int colorarg2; int alphaop; int alphaarg1; int alphaarg2; int2 pad; };
-cbuffer FFPipelineConstantBuffer : register(b1)
-{
-    float  FF_FogWeight;   float3 FF_FogColor;
-    float  FF_FogNear;     float  FF_FogFar;   float FF_zNear; float FF_zFar;
-    float3 FF_AmbientLighting; float FF_Time;
-    float4 FF_TextureFactor;
-    float  FF_AlphaRef;    uint   FF_GSwitches; float2 ggs_Pad3;
-    TextureStage FF_Stages[2];
-};
-
-Texture2D    tx  : register(t0);
-SamplerState smp : register(s0);
-
-#define TA_DIFFUSE 0
-#define TA_CURRENT 1
-#define TA_TEXTURE 2
-#define TA_TFACTOR 3
-#define TOP_DISABLE    1
-#define TOP_SELECTARG1 2
-#define TOP_SELECTARG2 3
-#define TOP_MODULATE   4
-#define TOP_MODULATE2X 5
-#define TOP_MODULATE4X 6
-#define TOP_ADD        7
-#define TOP_SUBTRACT   10
-#define GSWITCH_ALPHAREF 2
-
-struct VS_IN  { float3 pos:POSITION; float3 nrm:NORMAL; float2 t0:TEXCOORD0; float2 t1:TEXCOORD1; float4 dif:DIFFUSE; };
-struct VS_OUT { float4 pos:SV_POSITION; float2 uv:TEXCOORD0; float2 uv2:TEXCOORD1; float4 dif:TEXCOORD2; };
-
-VS_OUT VSMain( VS_IN i ) {
-    VS_OUT o;
-    float rhw = i.nrm.x;                 // rhw stored in Normal.x
-    float2 ndc;
-    ndc.x = ((2.0 * (i.pos.x - V_ViewportPos.x)) / V_ViewportSize.x) - 1.0;
-    ndc.y = 1.0 - ((2.0 * (i.pos.y - V_ViewportPos.y)) / V_ViewportSize.y);
-    float actualW = 1.0 / rhw;
-    o.pos = float4(float3(ndc, i.pos.z) * actualW, actualW);
-    o.uv  = i.t0;
-    o.uv2 = i.t1;
-    o.dif = i.dif;
-    return o;
-}
-
-float4 SelectArg( int arg, float4 current, float4 diffuse, float2 uv ) {
-    switch ( arg ) {
-    case TA_DIFFUSE: return diffuse;
-    case TA_CURRENT: return current;
-    case TA_TEXTURE: return tx.Sample( smp, uv );
-    case TA_TFACTOR: return FF_TextureFactor;
-    }
-    return float4( 0, 1, 0, 0 );
-}
-
-float4 RunStage( int op, int a1, int a2, float4 current, float4 diffuse, float2 uv ) {
-    switch ( op ) {
-    case TOP_DISABLE:    return 0;
-    case TOP_SELECTARG1: return SelectArg( a1, current, diffuse, uv );
-    case TOP_SELECTARG2: return SelectArg( a2, current, diffuse, uv );
-    case TOP_MODULATE:   return SelectArg( a1, current, diffuse, uv ) * SelectArg( a2, current, diffuse, uv );
-    case TOP_MODULATE2X: return SelectArg( a1, current, diffuse, uv ) * SelectArg( a2, current, diffuse, uv ) * 2;
-    case TOP_MODULATE4X: return SelectArg( a1, current, diffuse, uv ) * SelectArg( a2, current, diffuse, uv ) * 4;
-    case TOP_ADD:        return SelectArg( a1, current, diffuse, uv ) + SelectArg( a2, current, diffuse, uv );
-    case TOP_SUBTRACT:   return SelectArg( a1, current, diffuse, uv ) - SelectArg( a2, current, diffuse, uv );
-    }
-    return SelectArg( a1, current, diffuse, uv );   // graceful fallback for unhandled ops
-}
-
-float4 PSMain( VS_OUT i ) : SV_TARGET {
-    float4 diffuse = i.dif.bgra;         // vertex color 0xAARRGGBB read as RGBA -> swizzle back to RGBA
-    float4 color = RunStage( FF_Stages[0].colorop, FF_Stages[0].colorarg1, FF_Stages[0].colorarg2, diffuse, diffuse, i.uv );
-    [branch] if ( FF_Stages[1].colorop != TOP_DISABLE )
-        color = RunStage( FF_Stages[1].colorop, FF_Stages[1].colorarg1, FF_Stages[1].colorarg2, color, diffuse, i.uv2 );
-    [branch] if ( ( FF_GSwitches & GSWITCH_ALPHAREF ) != 0 )
-        clip( color.a - FF_AlphaRef );
-    return color;
-}
-)";
 
     // Phase-2 world shader (textured). The wrapped world mesh is the packed 36-byte ExVertexStructGPU;
     // we bind Position (float3 @0), TexCoord0 (float2 @20) and Color (R8G8B8A8 @32), ignoring the packed
@@ -349,605 +139,9 @@ float4 PSMain( VS_OUT i ) : SV_TARGET {
     // PS samples the diffuse texture, modulates by the baked vertex color (Gothic packs a DWORD read as
     // R8G8B8A8 -> .bgr recovers RGB), and does a fixed alpha-test cutout (foliage/fences). No G-buffer /
     // no deferred lighting yet: the baked vertex color stands in for lighting.
-    constexpr char kWorldShaderSource[] = R"(
-// Default (column-major) matrix packing — matches D3D11's VS_ExPacked, which reads the same
-// row-major XMFLOAT4X4 bytes we upload here, so mul(float4(pos,1), ViewProj) is byte-for-byte identical.
-cbuffer WorldCB : register(b0) { float4x4 ViewProj; };
-cbuffer FogCB   : register(b1) { float3 FogColor; float FogNear; float3 CamPosWS; float FogFar; };
-cbuffer LightCB : register(b2) { uint LightCount; uint NumTilesX; uint2 _lpad; };   // Forward+ tiled: light count + tiles/row
-
-// Per-frame visible point light (torches/campfires/spells). Byte-identical to D3D11 TiledPointLight (48 B);
-// this pass reads PositionWorld/Range/Color — PositionView/ShadowCubeIndex feed the cull/shadow paths.
-// Bound as a ROOT descriptor SRV (no descriptor-table slot). The per-tile grid produced by the light-cull
-// compute (DispatchLightCulling) narrows this loop to only the lights that touch each 16x16 screen tile.
-struct GPULight { float3 PositionView; float Range; float4 Color; float3 PositionWorld; int ShadowCubeIndex; };
-struct LightGrid { uint Offset; uint Count; };
-StructuredBuffer<GPULight>  Lights        : register(t1);   // root SRV — all visible lights, indexed by the grid
-StructuredBuffer<LightGrid> LightGridBuf  : register(t2);   // root SRV — per-tile {Offset,Count}
-StructuredBuffer<uint>      LightIndexBuf : register(t3);   // root SRV — per-tile light-index slices
-#define TILE_SIZE 16u
-#define MAX_LIGHTS_PER_TILE 32u
-
-Texture2D    tx  : register(t0);
-SamplerState smp : register(s0);
-
-// CSM sun-shadow sampling (P2.9c-4a). b3 = the per-frame shadow constants (cascade view-projs + sun dir +
-// darkening strength + per-cascade world texel size); t4 = the D32 cascade array (normal-Z, 1.0 == far);
-// s2 = a LESS_EQUAL PCF comparison sampler. Uploaded row-major, read column-major → mul(pos, CascadeVP[c])
-// matches the caster exactly. Shadow modulates the BAKED vertex lighting (darken sun-facing surfaces the
-// sun can't reach); replacing baked lighting with a full computed sun term (FP_ComputeSunLighting) is later.
-#define NUM_CSM_CASCADES 3
-cbuffer ShadowCB : register(b3)
-{
-    float4x4 CascadeViewProj[NUM_CSM_CASCADES];
-    float3   SunDirWS;          float ShadowMapSize;    // dir TOWARD sun; shadow-map resolution
-    float3   SunColor;          float SunIntensity;     // sun color (sRGB) + strength (0 when sun below horizon)
-    float3   CascadeTexelWorld; float AmbientStrength;  // world units/texel; SQ_ShadowStrength (ambient/sky term)
-    float    ShadowAOStrength;  float WorldAOStrength;  float2 _shpad;   // vertLighting -> AO modulation weights
-};
-Texture2DArray          ShadowMap : register(t4);
-SamplerComparisonState  shadowCmp : register(s2);
-// Per-material bindless indices (root consts b6): SM6.6 ResourceDescriptorHeap[...] indices for this material's
-// diffuse + normal + ORM maps. The world mesh is drawn via ExecuteIndirect (P2.11), which sets these three per
-// draw — so the diffuse is sampled bindless too (no per-draw descriptor table). MatNormalIndex == 0xFFFFFFFF ->
-// no normal map (skip perturb); MatOrmIndex is always valid (1x1 default = AO 1 / rough 0.5 / metal 0).
-cbuffer MaterialCB : register(b6) { uint MatNormalIndex; uint MatOrmIndex; uint MatDiffuseIndex; };
-TextureCubeArray        PointShadowCubes : register(t5);   // point-light shadow cubes (P2.10d), R16 linear depth
-
-// De-lights diffuse textures by lifting baked shadows and softening baked highlights
-float3 DelightDiffuse( float3 linearAlbedo )
-{
-    float luminance = dot( linearAlbedo, float3( 0.2126, 0.7152, 0.0722 ) );
-    // Normalize luminance variations caused by baked directional light
-    float delightFactor = 1.0 / max( sqrt( luminance + 1e-4 ), 0.2 );
-    return saturate( linearAlbedo * lerp( 1.0, delightFactor, 0.5 ) );
-}
-
-// Point-light shadow: returns 1 = lit, 0 = occluded. The cube stores the NATURAL hyperbolic z of the caster's
-// 90-deg PerspectiveFovLH(near 15, far range*2). Reconstruct the same z from the fragment: the depth on a cube
-// face is driven by the DOMINANT-AXIS distance (the face's view-space z), so zView = max(|dx|,|dy|,|dz|), then
-// apply the LH projection z-map. Most acne bias is the PSO's hardware slope bias; add a small normal offset +
-// constant. 4-tap rotated-disk PCF softens the edges; a camera-distance fade is applied at the call site.
-float SamplePointShadow( int cubeIndex, float3 wpos, float3 N, float3 lightPos, float range )
-{
-    float3 d  = ( wpos + N * ( range * 0.01 ) ) - lightPos;   // normal-offset bias (world-space, uniform)
-    float3 ad = abs( d );
-    float  zView = max( ad.x, max( ad.y, ad.z ) );            // dominant cube-axis depth = the face's view-space z
-    const float n = 15.0;
-    float  f = range * 2.0;
-    float  compareDepth = ( f / ( f - n ) ) * ( 1.0 - n / zView ) - 0.001;   // same LH hyperbolic z the caster wrote
-    float3 L = normalize( d );
-
-    // P2.10e polish: 4-tap rotated-disk PCF on a basis perpendicular to L (cube sampling follows the offset dir,
-    // so a small angular offset lands on neighbouring texels). Softens the previously single-tap hard edges. The
-    // offset grows a little with distance so the world-space penumbra stays roughly constant across the range.
-    float3 up = abs( L.y ) < 0.99 ? float3( 0, 1, 0 ) : float3( 1, 0, 0 );
-    float3 t  = normalize( cross( up, L ) );
-    float3 bt = cross( L, t );
-    float  r  = 0.006 + 0.010 * saturate( zView / f );
-    static const float2 kDisk[4] = { float2( 0.7, 0.7 ), float2( -0.7, 0.7 ), float2( 0.7, -0.7 ), float2( -0.7, -0.7 ) };
-    float sh = 0.0;
-    [unroll]
-    for ( int s = 0; s < 4; ++s )
-    {
-        float3 o = normalize( L + ( kDisk[s].x * t + kDisk[s].y * bt ) * r );
-        sh += PointShadowCubes.SampleCmpLevelZero( shadowCmp, float4( o, (float)cubeIndex ), compareDepth );
-    }
-    return sh * 0.25;
-}
-
-// Returns 1.0 = fully lit, 0.0 = fully occluded. Picks the first cascade whose footprint contains the point
-// (0 tightest), applies a per-cascade world-space normal bias, and does a 3x3 PCF tap. Mirrors the D3D11
-// ComputeCascadedShadowValueSoft selection/bounds (GetCascadeUVAndBounds) minus the blue-noise/PCSS machinery.
-float ComputeSunShadow( float3 wpos, float3 N )
-{
-    const float margin = 1.5 / ShadowMapSize;
-    const float texel  = 1.0 / ShadowMapSize;
-    [unroll]
-    for ( int c = 0; c < NUM_CSM_CASCADES; ++c )
-    {
-        float3 biased = wpos + N * ( CascadeTexelWorld[c] * 1.5 );   // normal bias scaled to this cascade's texel
-        float4 sp = mul( float4( biased, 1.0 ), CascadeViewProj[c] );
-        float2 uv = sp.xy * float2( 0.5, -0.5 ) + 0.5;
-        if ( uv.x > margin && uv.x < 1.0 - margin && uv.y > margin && uv.y < 1.0 - margin &&
-             sp.z >= 0.0 && sp.z <= 1.0 )
-        {
-            // Wider, cascade-scaled PCF (P2.9c-3c): far cascades cover more world per texel (sub-texel foliage
-            // → temporal "blinking"), so widen the kernel step with the cascade index to spatially average that
-            // flicker into a soft, stable penumbra. 5x5 taps; near cascade stays near-1-texel (crisp).
-            float pcfStep = texel * ( 1.0 + float( c ) * 1.5 );
-            float sh = 0.0;
-            [unroll] for ( int y = -2; y <= 2; ++y )
-            [unroll] for ( int x = -2; x <= 2; ++x )
-                sh += ShadowMap.SampleCmpLevelZero( shadowCmp, float3( uv + float2( x, y ) * pcfStep, c ), sp.z - 0.0015 );
-            return sh / 25.0;
-        }
-    }
-    return 1.0;   // outside all cascades → treat as lit
-}
-
-// Octahedral normal decode — matches Shaders/VertexPacking.h DecodeOctNormal (the packed 36-byte vertex
-// stores the normal as R16G16_SNORM at offset 12; world-mesh normals are already world-space).
-float3 DecodeOctNormal( float2 e )
-{
-    float3 n = float3( e.xy, 1.0 - abs( e.x ) - abs( e.y ) );
-    float t = saturate( -n.z );
-    n.xy += select(n.xy >= 0., -t, t);
-    return normalize( n );
-}
-
-// Accumulate dynamic point lights at a world-space surface point using the Forward+ tile grid: derive the
-// tile from SV_Position.xy, read its {Offset,Count} slice, and loop ONLY the lights culled into that tile
-// (indices into the global Lights buffer). Lighting math ports D3D11's FP_ComputePointLighting: range cull,
-// N.L, the exact falloff = nd*(nd*0.2+0.8), per-light saturate, additive. The count is clamped to the
-// per-tile capacity so a garbage grid entry can never spin the loop away (that reads as a GPU timeout).
-// --- Cook-Torrance GGX PBR (ported verbatim from the D3D11 feat/pbr branch: Shaders/include/PointLightShadows.h) ---
-// Staged PBR (P3-PBR-1): albedo is sRGB-decoded to LINEAR in the PS; Gothic's baked vertex lighting is kept as the
-// diffuse/ambient base; the SUN adds a specular-only glint and the tiled POINT lights use the full BRDF. Material
-// params are constant defaults for now (no ORM/normal maps yet — that's a later increment with texture-loading infra).
-static const float PBR_PI = 3.14159265;
-static const float MI_Roughness = 0.9;   // default perceptual roughness (Gothic surfaces are mostly rough dielectrics)
-static const float MI_Metallic  = 0.0;   // default metallic (dielectric)
-static const float SunSpecIntensity = 1.0;
-
-float3 SrgbToLinear( float3 c )   // accurate sRGB EOTF — linearize gamma-encoded albedo so lighting is done in linear space
-{
-    return select( c <= 0.04045, c / 12.92, pow( ( c + 0.055 ) / 1.055, 2.4 ) );
-}
-
-float  PBR_SafeRoughness( float r ) { return max( saturate( r ), 0.045 ); }
-float  PBR_DistributionGGX( float NdotH, float roughness )
-{
-    float a = roughness * roughness;
-    float a2 = a * a;
-    float denom = NdotH * NdotH * ( a2 - 1.0 ) + 1.0;
-    return a2 / max( PBR_PI * denom * denom, 1e-4 );
-}
-float  PBR_GeometrySchlickGGX( float NdotX, float roughness )
-{
-    float r = roughness + 1.0;
-    float k = ( r * r ) / 8.0;
-    return NdotX / max( NdotX * ( 1.0 - k ) + k, 1e-4 );
-}
-float  PBR_GeometrySmith( float NdotV, float NdotL, float roughness )
-{
-    return PBR_GeometrySchlickGGX( NdotV, roughness ) * PBR_GeometrySchlickGGX( NdotL, roughness );
-}
-float  PBR_Pow5( float x ) { float x2 = x * x; return x2 * x2 * x; }
-float3 PBR_FresnelSchlick( float cosTheta, float3 F0 ) { return F0 + ( 1.0 - F0 ) * PBR_Pow5( saturate( 1.0 - cosTheta ) ); }
-
-// Full Cook-Torrance (energy-conserving diffuse + specular). attenuation folds in falloff/shadow; NdotL applied here.
-float3 PBR_DirectLighting( float3 baseColor, float3 lightColor, float3 N, float3 V, float3 L,
-                           float roughness, float metallic, float attenuation )
-{
-    float NdotL = saturate( dot( N, L ) );
-    float NdotV = saturate( dot( N, V ) );
-    if ( NdotL <= 0.0 || NdotV <= 0.0 || attenuation <= 0.0 ) return 0.0;
-    float3 H = normalize( V + L );
-    float NdotH = saturate( dot( N, H ) );
-    float VdotH = saturate( dot( V, H ) );
-    float  cr = PBR_SafeRoughness( roughness * roughness );   // perceptual->physical (the branch squares here)
-    float  cm = saturate( metallic );
-    float3 F0 = lerp( float3( 0.04, 0.04, 0.04 ), baseColor, cm );
-    float  D = PBR_DistributionGGX( NdotH, cr );
-    float  G = PBR_GeometrySmith( NdotV, NdotL, cr );
-    float3 F = PBR_FresnelSchlick( VdotH, F0 );
-    float3 specular = ( D * G * F ) / max( 4.0 * NdotV * NdotL, 1e-4 );
-    float3 kD = ( 1.0 - F ) * ( 1.0 - cm );
-    float3 diffuse = kD * baseColor / PBR_PI;
-    return ( diffuse + specular ) * lightColor * ( NdotL * attenuation );
-}
-
-// Tangent-space normal-map support (ported from feat/pbr Toolbox.h). Z is ALWAYS reconstructed from XY, so BC5
-// (2-channel) and BC1 (we ignore B, recompute it) both decode with one path. `p` = world position for the
-// derivative-based TBN basis. If normal-mapped specular looks mirrored, flip the handedness comparison sign.
-float3x3 CotangentFrame( float3 N, float3 p, float2 uv )
-{
-    float3 dp1 = ddx( p ), dp2 = ddy( p );
-    float2 duv1 = ddx( uv ), duv2 = ddy( uv );
-    float3 dp2perp = cross( dp2, N ), dp1perp = cross( N, dp1 );
-    float3 T = dp2perp * duv1.x + dp1perp * duv2.x;
-    float3 B = dp2perp * duv1.y + dp1perp * duv2.y;
-    float handedness = ( duv1.x * duv2.y - duv1.y * duv2.x ) < 0.0 ? 1.0 : -1.0;
-    T *= handedness;
-    float invmax = rsqrt( max( dot( T, T ), dot( B, B ) ) );
-    return float3x3( T * invmax, B * invmax, N );
-}
-float3 PerturbNormal( float3 N, float3 p, Texture2D nrmTex, float2 uv, SamplerState samp )
-{
-    float2 nxy = nrmTex.Sample( samp, uv ).xy * 2.0 - 1.0;
-    nxy.y = -nxy.y;
-    float  nz  = sqrt( saturate( 1.0 - dot( nxy, nxy ) ) );   // reconstruct Z (BC5/BC1)
-    float3 nrm = normalize( float3( nxy, nz ) );
-    return normalize( mul( nrm, CotangentFrame( N, p, uv ) ) );
-}
-
-// PBR sun lighting (stage 2 — matching DX11 lighting mix and ground/vertex lighting modulation)
-float3 ComputeSunLightingPBR( float3 wpos, float3 N, float3 albedo, float vertLighting, float shadow,
-                              float roughness, float metallic, float ao )
-{
-    float3 V = normalize( CamPosWS - wpos );
-    float3 L = SunDirWS;                            // dir toward the sun (world space)
-    float3 sunCol = SrgbToLinear( SunColor );
-    float  sunLum = dot( sunCol, float3( 0.3333, 0.3333, 0.3333 ) );
-    const float ssao = 1.0;
-
-    // Direct sun term N.L
-    float NdotL = saturate( dot( N, L ) );
-    float sun = NdotL * shadow;
-
-    // AO factors driven by Gothic's vertex/ground light
-    float shadowAO = lerp( 1.0, vertLighting, ShadowAOStrength ) * ao;
-    float worldAO  = lerp( 1.0, vertLighting, WorldAOStrength ) * ao;
-
-    // Directional sky/ambient term: top-facing gets full sky ambient, vertical/undersides darken
-    float skyAmbientDir = saturate( N.y * 0.5 + 0.5 ); // Hemispheric directional ambient factor
-    float3 ambientSun = albedo * AmbientStrength * sunLum * shadowAO * skyAmbientDir * ssao;
-
-    // Direct Sun term
-    float sunAtten = sun * worldAO * SunIntensity;
-    float3 directSun = PBR_DirectLighting( albedo, sunCol, N, V, L, roughness, metallic, sunAtten );
-
-    return ambientSun + directSun;
-}
-
-// Tiled point lights via the Forward+ grid, now with the full Cook-Torrance BRDF. `albedo` is LINEAR (sRGB-decoded
-// in the PS). Ports D3D11 feat/pbr FP_ComputePointLighting (PLS_ComputePointLightLightingPBR).
-float3 AccumTiledPointLights( float2 svpos, float3 wpos, float3 N, float3 albedo, float roughness, float metallic )
-{
-    uint2 tile = uint2( svpos ) / TILE_SIZE;
-    uint  tileIndex = tile.y * NumTilesX + tile.x;
-    LightGrid g = LightGridBuf[tileIndex];
-    uint n = min( g.Count, MAX_LIGHTS_PER_TILE );
-    float3 V = normalize( CamPosWS - wpos );
-    float3 total = 0;
-    for ( uint k = 0; k < n; k++ )
-    {
-        GPULight L = Lights[ LightIndexBuf[g.Offset + k] ];
-        float3 dir = L.PositionWorld - wpos;
-        float dist = length( dir );
-        if ( dist >= L.Range ) continue;
-        dir /= dist;
-        float nd  = saturate( 1.0 - dist / L.Range );
-        float falloff = nd * ( nd * 0.2 + 0.8 );   // PLS_ComputeRangeFalloff
-        float3 lit = PBR_DirectLighting( albedo, L.Color.rgb, N, V, dir, roughness, metallic, falloff );
-        if ( L.ShadowCubeIndex >= 0 )
-        {
-            float sh = SamplePointShadow( L.ShadowCubeIndex, wpos, N, L.PositionWorld, L.Range );
-            float camDist = length( L.PositionView );
-            float fade    = saturate( ( camDist - L.Range * 6.0 ) / ( L.Range * 3.0 ) );
-            lit *= lerp( sh, 1.0, fade );
-        }
-        total += lit;
-    }
-    return total;
-}
-
-struct VS_IN  { float3 pos : POSITION; float2 nrm : NORMAL; float2 uv : TEXCOORD0; float4 col : DIFFUSE; };
-struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : TEXCOORD1; float fogDist : TEXCOORD2; float3 wpos : TEXCOORD3; float3 wnrm : TEXCOORD4; };
-
-VS_OUT VSMain( VS_IN i )
-{
-    VS_OUT o;
-    o.clip = mul( float4( i.pos, 1.0 ), ViewProj );
-    o.uv  = i.uv;
-    o.col = i.col;
-    o.wpos = i.pos;                          // world verts are already world-space
-    o.wnrm = DecodeOctNormal( i.nrm );       // already world-space
-    o.fogDist = length( i.pos - CamPosWS );
-    return o;
-}
-
-float4 PSMain( VS_OUT i ) : SV_TARGET
-{
-    Texture2D difTex = ResourceDescriptorHeap[MatDiffuseIndex];   // bindless diffuse (ExecuteIndirect, P2.11)
-    float4 t = difTex.Sample( smp, i.uv );
-    clip( t.a - 0.5 );                        // fixed alpha-test cutout (opaque textures have a==1 -> kept)
-    float3 N = normalize( i.wnrm );
-    if ( MatNormalIndex != 0xffffffff )       // bindless normal map (BC5/BC1, Z reconstructed) if this material has one
-    {
-        Texture2D nrmTex = ResourceDescriptorHeap[MatNormalIndex];
-        N = PerturbNormal( N, i.wpos, nrmTex, i.uv, smp );
-    }
-    Texture2D ormTex = ResourceDescriptorHeap[MatOrmIndex];   // r=AO g=roughness b=metallic (1x1 default when no _FX)
-    float3 orm = ormTex.Sample( smp, i.uv ).rgb;
-    float3 albedo = SrgbToLinear( t.rgb );    // linearize for PBR (all HDR-buffer values are linear now)
-    albedo = DelightDiffuse( albedo );
-    float vertLighting = i.col.g;             // Gothic baked vertex lighting (green channel) as the AO modulator
-    float shadow = ComputeSunShadow( i.wpos, N );
-    float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r );
-    rgb += AccumTiledPointLights( i.clip.xy, i.wpos, N, albedo, orm.g, orm.b );
-    // Linear distance fog toward the (linearized) atmosphere color — keeps the HDR buffer consistently linear.
-    float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
-    rgb = lerp( rgb, SrgbToLinear( FogColor ), f );
-    return float4( rgb, 1.0 );
-}
-)";
 
     // Phase-2 instanced VOB shader. Slot 0 = ExVertexStruct (Position@0, Normal@12, TexCoord0@24);
     // slot 1 = per-instance data (world matrix as 4 rows + instance color) from VobInstanceInfo.
-    constexpr char kVobShaderSource[] = R"(
-cbuffer WorldCB : register(b0) { float4x4 ViewProj; };   // default column-major packing (see world shader)
-cbuffer FogCB   : register(b1) { float3 FogColor; float FogNear; float3 CamPosWS; float FogFar; };
-cbuffer LightCB : register(b2) { uint LightCount; uint NumTilesX; uint2 _lpad; };
-
-// Forward+ tiled point lights (root-descriptor SRVs + per-tile grid)
-struct GPULight { float3 PositionView; float Range; float4 Color; float3 PositionWorld; int ShadowCubeIndex; };
-struct LightGrid { uint Offset; uint Count; };
-StructuredBuffer<GPULight>  Lights        : register(t1);
-StructuredBuffer<LightGrid> LightGridBuf  : register(t2);
-StructuredBuffer<uint>      LightIndexBuf : register(t3);
-#define TILE_SIZE 16u
-#define MAX_LIGHTS_PER_TILE 32u
-
-Texture2D    tx  : register(t0);
-SamplerState smp : register(s0);
-
-#define NUM_CSM_CASCADES 3
-cbuffer ShadowCB : register(b3)
-{
-    float4x4 CascadeViewProj[NUM_CSM_CASCADES];
-    float3   SunDirWS;          float ShadowMapSize;
-    float3   SunColor;          float SunIntensity;
-    float3   CascadeTexelWorld; float AmbientStrength;
-    float    ShadowAOStrength;  float WorldAOStrength;  float2 _shpad;
-};
-Texture2DArray          ShadowMap : register(t4);
-SamplerComparisonState  shadowCmp : register(s2);
-cbuffer MaterialCB : register(b6) { uint MatNormalIndex; uint MatOrmIndex; };
-TextureCubeArray        PointShadowCubes : register(t5);
-
-float3 DelightDiffuse( float3 linearAlbedo )
-{
-    float luminance = dot( linearAlbedo, float3( 0.2126, 0.7152, 0.0722 ) );
-    float delightFactor = 1.0 / max( sqrt( luminance + 1e-4 ), 0.2 );
-    return saturate( linearAlbedo * lerp( 1.0, delightFactor, 0.5 ) );
-}
-
-float SamplePointShadow( int cubeIndex, float3 wpos, float3 N, float3 lightPos, float range )
-{
-    float3 d  = ( wpos + N * ( range * 0.01 ) ) - lightPos;
-    float3 ad = abs( d );
-    float  zView = max( ad.x, max( ad.y, ad.z ) );
-    const float n = 15.0;
-    float  f = range * 2.0;
-    float  compareDepth = ( f / ( f - n ) ) * ( 1.0 - n / zView ) - 0.001;
-    float3 L = normalize( d );
-
-    float3 up = abs( L.y ) < 0.99 ? float3( 0, 1, 0 ) : float3( 1, 0, 0 );
-    float3 t  = normalize( cross( up, L ) );
-    float3 bt = cross( L, t );
-    float  r  = 0.006 + 0.010 * saturate( zView / f );
-    static const float2 kDisk[4] = { float2( 0.7, 0.7 ), float2( -0.7, 0.7 ), float2( 0.7, -0.7 ), float2( -0.7, -0.7 ) };
-    float sh = 0.0;
-    [unroll]
-    for ( int s = 0; s < 4; ++s )
-    {
-        float3 o = normalize( L + ( kDisk[s].x * t + kDisk[s].y * bt ) * r );
-        sh += PointShadowCubes.SampleCmpLevelZero( shadowCmp, float4( o, (float)cubeIndex ), compareDepth );
-    }
-    return sh * 0.25;
-}
-
-float ComputeSunShadow( float3 wpos, float3 N )
-{
-    const float margin = 1.5 / ShadowMapSize;
-    const float texel  = 1.0 / ShadowMapSize;
-    [unroll]
-    for ( int c = 0; c < NUM_CSM_CASCADES; ++c )
-    {
-        float3 biased = wpos + N * ( CascadeTexelWorld[c] * 1.5 );
-        float4 sp = mul( float4( biased, 1.0 ), CascadeViewProj[c] );
-        float2 uv = sp.xy * float2( 0.5, -0.5 ) + 0.5;
-        if ( uv.x > margin && uv.x < 1.0 - margin && uv.y > margin && uv.y < 1.0 - margin &&
-             sp.z >= 0.0 && sp.z <= 1.0 )
-        {
-            float pcfStep = texel * ( 1.0 + float( c ) * 1.5 );
-            float sh = 0.0;
-            [unroll] for ( int y = -2; y <= 2; ++y )
-            [unroll] for ( int x = -2; x <= 2; ++x )
-                sh += ShadowMap.SampleCmpLevelZero( shadowCmp, float3( uv + float2( x, y ) * pcfStep, c ), sp.z - 0.0015 );
-            return sh / 25.0;
-        }
-    }
-    return 1.0;
-}
-
-static const float PBR_PI = 3.14159265;
-
-float3 SrgbToLinear( float3 c )
-{
-    return select( c <= 0.04045, c / 12.92, pow( ( c + 0.055 ) / 1.055, 2.4 ) );
-}
-
-float  PBR_SafeRoughness( float r ) { return max( saturate( r ), 0.045 ); }
-float  PBR_DistributionGGX( float NdotH, float roughness )
-{
-    float a = roughness * roughness;
-    float a2 = a * a;
-    float denom = NdotH * NdotH * ( a2 - 1.0 ) + 1.0;
-    return a2 / max( PBR_PI * denom * denom, 1e-4 );
-}
-float  PBR_GeometrySchlickGGX( float NdotX, float roughness )
-{
-    float r = roughness + 1.0;
-    float k = ( r * r ) / 8.0;
-    return NdotX / max( NdotX * ( 1.0 - k ) + k, 1e-4 );
-}
-float  PBR_GeometrySmith( float NdotV, float NdotL, float roughness )
-{
-    return PBR_GeometrySchlickGGX( NdotV, roughness ) * PBR_GeometrySchlickGGX( NdotL, roughness );
-}
-float  PBR_Pow5( float x ) { float x2 = x * x; return x2 * x2 * x; }
-float3 PBR_FresnelSchlick( float cosTheta, float3 F0 ) { return F0 + ( 1.0 - F0 ) * PBR_Pow5( saturate( 1.0 - cosTheta ) ); }
-
-float3 PBR_DirectLighting( float3 baseColor, float3 lightColor, float3 N, float3 V, float3 L,
-                           float roughness, float metallic, float attenuation )
-{
-    float NdotL = saturate( dot( N, L ) );
-    float NdotV = saturate( dot( N, V ) );
-    if ( NdotL <= 0.0 || NdotV <= 0.0 || attenuation <= 0.0 ) return 0.0;
-    float3 H = normalize( V + L );
-    float NdotH = saturate( dot( N, H ) );
-    float VdotH = saturate( dot( V, H ) );
-    float  cr = PBR_SafeRoughness( roughness * roughness );
-    float  cm = saturate( metallic );
-    float3 F0 = lerp( float3( 0.04, 0.04, 0.04 ), baseColor, cm );
-    float  D = PBR_DistributionGGX( NdotH, cr );
-    float  G = PBR_GeometrySmith( NdotV, NdotL, cr );
-    float3 F = PBR_FresnelSchlick( VdotH, F0 );
-    float3 specular = ( D * G * F ) / max( 4.0 * NdotV * NdotL, 1e-4 );
-    float3 kD = ( 1.0 - F ) * ( 1.0 - cm );
-    float3 diffuse = kD * baseColor / PBR_PI;
-    return ( diffuse + specular ) * lightColor * ( NdotL * attenuation );
-}
-
-float3x3 CotangentFrame( float3 N, float3 p, float2 uv )
-{
-    float3 dp1 = ddx( p ), dp2 = ddy( p );
-    float2 duv1 = ddx( uv ), duv2 = ddy( uv );
-    float3 dp2perp = cross( dp2, N ), dp1perp = cross( N, dp1 );
-    float3 T = dp2perp * duv1.x + dp1perp * duv2.x;
-    float3 B = dp2perp * duv1.y + dp1perp * duv2.y;
-    float handedness = ( duv1.x * duv2.y - duv1.y * duv2.x ) < 0.0 ? 1.0 : -1.0;
-    T *= handedness;
-    float invmax = rsqrt( max( dot( T, T ), dot( B, B ) ) );
-    return float3x3( T * invmax, B * invmax, N );
-}
-float3 PerturbNormal( float3 N, float3 p, Texture2D nrmTex, float2 uv, SamplerState samp )
-{
-    float2 nxy = nrmTex.Sample( samp, uv ).xy * 2.0 - 1.0;
-    nxy.y = -nxy.y;
-    float  nz  = sqrt( saturate( 1.0 - dot( nxy, nxy ) ) );
-    float3 nrm = normalize( float3( nxy, nz ) );
-    return normalize( mul( nrm, CotangentFrame( N, p, uv ) ) );
-}
-
-// PBR sun lighting (stage 2 — matching DX11 lighting mix and ground/vertex lighting modulation)
-float3 ComputeSunLightingPBR( float3 wpos, float3 N, float3 albedo, float vertLighting, float shadow,
-                              float roughness, float metallic, float ao )
-{
-    float3 V = normalize( CamPosWS - wpos );
-    float3 L = SunDirWS;                            // dir toward the sun (world space)
-    float3 sunCol = SrgbToLinear( SunColor );
-    float  sunLum = dot( sunCol, float3( 0.3333, 0.3333, 0.3333 ) );
-    const float ssao = 1.0;
-
-    // Direct sun term N.L
-    float NdotL = saturate( dot( N, L ) );
-    float sun = NdotL * shadow;
-
-    // AO factors driven by Gothic's vertex/ground light
-    float shadowAO = lerp( 1.0, vertLighting, ShadowAOStrength ) * ao;
-    float worldAO  = lerp( 1.0, vertLighting, WorldAOStrength ) * ao;
-
-    // Directional sky/ambient term: top-facing gets full sky ambient, vertical/undersides darken
-    float skyAmbientDir = saturate( N.y * 0.5 + 0.5 ); // Hemispheric directional ambient factor
-    float3 ambientSun = albedo * AmbientStrength * sunLum * shadowAO * skyAmbientDir * ssao;
-
-    // Direct Sun term
-    float sunAtten = sun * worldAO * SunIntensity;
-    float3 directSun = PBR_DirectLighting( albedo, sunCol, N, V, L, roughness, metallic, sunAtten );
-
-    return ambientSun + directSun;
-}
-
-float3 AccumTiledPointLights( float2 svpos, float3 wpos, float3 N, float3 albedo, float roughness, float metallic )
-{
-    uint2 tile = uint2( svpos ) / TILE_SIZE;
-    uint  tileIndex = tile.y * NumTilesX + tile.x;
-    LightGrid g = LightGridBuf[tileIndex];
-    uint n = min( g.Count, MAX_LIGHTS_PER_TILE );
-    float3 V = normalize( CamPosWS - wpos );
-    float3 total = 0;
-    for ( uint k = 0; k < n; k++ )
-    {
-        GPULight L = Lights[ LightIndexBuf[g.Offset + k] ];
-        float3 dir = L.PositionWorld - wpos;
-        float dist = length( dir );
-        if ( dist >= L.Range ) continue;
-        dir /= dist;
-        float nd  = saturate( 1.0 - dist / L.Range );
-        float falloff = nd * ( nd * 0.2 + 0.8 );
-        float3 lit = PBR_DirectLighting( albedo, L.Color.rgb, N, V, dir, roughness, metallic, falloff );
-        if ( L.ShadowCubeIndex >= 0 )
-        {
-            float sh = SamplePointShadow( L.ShadowCubeIndex, wpos, N, L.PositionWorld, L.Range );
-            float camDist = length( L.PositionView );
-            float fade    = saturate( ( camDist - L.Range * 6.0 ) / ( L.Range * 3.0 ) );
-            lit *= lerp( sh, 1.0, fade );
-        }
-        total += lit;
-    }
-    return total;
-}
-
-struct VS_IN
-{
-    float3   pos     : POSITION;
-    float3   nrm     : NORMAL;                  // ExVertexStruct object-space float3 normal (@12)
-    float2   uv      : TEXCOORD0;
-    float4x4 iworld  : INSTANCE_WORLD_MATRIX;
-    float4   icolor  : INSTANCE_COLOR;
-};
-struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : TEXCOORD1; float fogDist : TEXCOORD2; float3 wpos : TEXCOORD3; float3 wnrm : TEXCOORD4; };
-
-VS_OUT VSMain( VS_IN i )
-{
-    VS_OUT o;
-    float3 worldPos = mul( float4( i.pos, 1.0 ), i.iworld ).xyz;
-    o.clip = mul( float4( worldPos, 1.0 ), ViewProj );
-    o.uv  = i.uv;
-    o.col = i.icolor;
-    o.wpos = worldPos;
-    o.wnrm = mul( i.nrm, (float3x3)i.iworld );
-    o.fogDist = length( worldPos - CamPosWS );
-    return o;
-}
-
-float4 PSMain( VS_OUT i ) : SV_TARGET
-{
-    float4 t = tx.Sample( smp, i.uv );
-    clip( t.a - 0.5 );
-    float3 N = normalize( i.wnrm );
-    if ( MatNormalIndex != 0xffffffff )
-    {
-        Texture2D nrmTex = ResourceDescriptorHeap[MatNormalIndex];
-        N = PerturbNormal( N, i.wpos, nrmTex, i.uv, smp );
-    }
-    Texture2D ormTex = ResourceDescriptorHeap[MatOrmIndex];
-    float3 orm = ormTex.Sample( smp, i.uv ).rgb;
-    float3 albedo = SrgbToLinear( t.rgb );
-    albedo = DelightDiffuse( albedo );
-    float vertLighting = i.col.g;
-    float shadow = ComputeSunShadow( i.wpos, N );
-    float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r );
-    rgb += AccumTiledPointLights( i.clip.xy, i.wpos, N, albedo, orm.g, orm.b );
-    float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
-    return float4( lerp( rgb, SrgbToLinear( FogColor ), f ), 1.0 );
-}
-
-struct VS_DEPTH_IN  { float3 pos : POSITION; float2 uv : TEXCOORD0; float4x4 iworld : INSTANCE_WORLD_MATRIX; };
-struct VS_DEPTH_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; };
-VS_DEPTH_OUT VSDepth( VS_DEPTH_IN i )
-{
-    VS_DEPTH_OUT o;
-    float3 worldPos = mul( float4( i.pos, 1.0 ), i.iworld ).xyz;
-    o.clip = mul( float4( worldPos, 1.0 ), ViewProj );
-    o.uv = i.uv;
-    return o;
-}
-float4 PSDepthClip( VS_DEPTH_OUT i ) : SV_TARGET
-{
-    float4 t = tx.Sample( smp, i.uv );
-    clip( t.a - 0.5 );
-    return float4( 0, 0, 0, 1 );
-}
-void PSShadowClip( VS_DEPTH_OUT i )
-{
-    clip( tx.Sample( smp, i.uv ).a - 0.5 );
-}
-)";
 
     // Forward+ opaque DEPTH PREPASS shader (P2.9b-1). Lays down the opaque world-mesh depth before the
     // lit color passes so the later tiled light-culling compute (P2.9b-2) has a per-pixel depth to tighten
@@ -956,43 +150,6 @@ void PSShadowClip( VS_DEPTH_OUT i )
     // world PS's clip( t.a - 0.5 ) exactly, so cutout foliage/fence gaps do NOT write depth (otherwise the
     // main pass would see background occluded through the gaps). Reuses m_WorldRootSig: only b0 (ViewProj)
     // and t0/s0 are referenced — fog/light params are NOT bound (no light loop here, so no hang risk).
-    constexpr char kDepthPrepassShaderSource[] = R"(
-cbuffer WorldCB : register(b0) { float4x4 ViewProj; };   // default column-major packing (see world shader)
-Texture2D    tx  : register(t0);                          // CSM shadow caster (PSShadowClip) still binds diffuse here
-SamplerState smp : register(s0);
-// b6 material indices (ExecuteIndirect, P2.11): the world depth prepass (PSClip) samples its diffuse bindless so
-// it can be driven by ExecuteIndirect like the color pass. Only MatDiffuseIndex (DWORD 2) is read here; the
-// normal/ORM slots share the layout with the world color shader's MaterialCB so ONE command signature drives both.
-cbuffer MaterialCB : register(b6) { uint _matN; uint _matO; uint MatDiffuseIndex; };
-
-// World mesh: single stream, packed 36-byte ExVertexStructGPU. Only Position (@0) + TexCoord0 (@20) are
-// fetched here; the normal/tangent/uv2/color fields are not needed for a depth+alpha-clip pass.
-struct VS_IN  { float3 pos : POSITION; float2 uv : TEXCOORD0; };
-struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; };
-
-VS_OUT VSWorld( VS_IN i )
-{
-    VS_OUT o;
-    o.clip = mul( float4( i.pos, 1.0 ), ViewProj );   // world verts are already world-space (identity world)
-    o.uv   = i.uv;
-    return o;
-}
-
-float4 PSClip( VS_OUT i ) : SV_TARGET
-{
-    Texture2D difTex = ResourceDescriptorHeap[MatDiffuseIndex];   // bindless diffuse (ExecuteIndirect, P2.11)
-    float4 t = difTex.Sample( smp, i.uv );
-    clip( t.a - 0.5 );          // same cutout as the opaque world PS so gaps don't lay down depth
-    return float4( 0, 0, 0, 1 );   // discarded: the PSO's color write mask is 0 (depth-only pass)
-}
-
-// Shadow caster (P2.9c): void PS (no SV_Target) so the depth-only shadow PSO binds NO render target without a
-// validation warning. Only alpha-clips foliage/fence cutouts so their gaps don't cast solid shadows.
-void PSShadowClip( VS_OUT i )
-{
-    Texture2D difTex = ResourceDescriptorHeap[MatDiffuseIndex];
-    clip( difTex.Sample( smp, i.uv ).a - 0.5 );}
-)";
 
     // Forward+ tiled light-culling COMPUTE shader (P2.9b-2). One thread group per 16x16 screen tile; each
     // group builds its tile's view-space AABB from the prepass depth and records which point lights touch it
@@ -1015,125 +172,6 @@ void PSShadowClip( VS_OUT i )
     //      per-frame clear. At 1080p this is ~1 MB (8160 tiles * 32 * 4 B) — negligible, and simpler/safer.
     // PositionView is filled CPU-side in BuildFrameLightBuffer using the same transpose(view) transform the
     // D3D11 CullLights uses, so this shader's view space matches. SM6.6: no ternary (use min()/select()).
-    constexpr char kLightCullShaderSource[] = R"(
-#define TILE_SIZE 16
-#define MAX_LIGHTS_PER_TILE 32
-
-struct TiledPointLight { float3 PositionView; float Range; float4 Color; float3 PositionWorld; int ShadowCubeIndex; };
-struct LightGrid { uint Offset; uint Count; };
-
-StructuredBuffer<TiledPointLight> SB_Lights       : register(t0);
-RWStructuredBuffer<LightGrid>     RW_LightGrid     : register(u0);
-RWStructuredBuffer<uint>          RW_LightIndexList : register(u1);
-Texture2D<float>                  DepthTex          : register(t1);   // prepass depth (reversed-Z); per-tile far-Z
-
-cbuffer CullCB : register(b0) {
-    float2 ProjScale;    // (Proj._11, Proj._22): view->clip x/y scale (diagonal terms, layout-invariant)
-    uint2  ScreenDim;    // render-target pixel size
-    uint   TotalLights;  // valid light count in SB_Lights (<= light buffer capacity)
-    uint   NumTilesX;    // ceil(ScreenDim.x / TILE_SIZE)
-    float2 ProjZ;        // (Proj._33, Proj._43): reversed-Z depth->viewZ  (viewZ = ProjZ.y / (depth - ProjZ.x))
-};
-
-groupshared uint gs_Count;
-groupshared uint gs_Indices[MAX_LIGHTS_PER_TILE];
-groupshared uint gs_MinDepthInt;   // nearest/farthest opaque depth in the tile, as sortable float bits
-groupshared uint gs_MaxDepthInt;
-
-// View-space position of a screen pixel at a given reversed-Z depth. The four packed projection scalars
-// (ProjScale = _11/_22, ProjZ = _33/_43) are exactly the terms D3D11's ScreenToView uses; the z inverse is
-// valid for our reversed-Z infinite-far camera because they are the actual matrix entries. ndc.y flipped.
-float3 ScreenToView( float2 pixel, float depth ) {
-    float2 ndc;
-    ndc.x = pixel.x / (float)ScreenDim.x * 2.0 - 1.0;
-    ndc.y = -(pixel.y / (float)ScreenDim.y * 2.0 - 1.0);
-    float zView = ProjZ.y / ( depth - ProjZ.x );
-    return float3( ndc.x / ProjScale.x * zView, ndc.y / ProjScale.y * zView, zView );
-}
-
-// Closest-point sphere/AABB overlap (view space). Keeps a light iff its sphere touches the box.
-bool SphereInsideAABB( float3 center, float radius, float3 aabbMin, float3 aabbMax ) {
-    float3 closest = clamp( center, aabbMin, aabbMax );
-    float3 delta = closest - center;
-    return dot( delta, delta ) <= radius * radius;
-}
-
-[numthreads( TILE_SIZE, TILE_SIZE, 1 )]
-void CSMain( uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID ) {
-    uint ti = threadID.y * TILE_SIZE + threadID.x;
-    if ( ti == 0 ) { gs_Count = 0; gs_MinDepthInt = 0x7F7FFFFF; gs_MaxDepthInt = 0; }
-    GroupMemoryBarrierWithGroupSync();
-
-    // Per-tile depth bounds from the prepass. Each of the 256 threads owns exactly one tile pixel and folds
-    // its reversed-Z depth into the group min/max (asuint keeps float ordering for depth in [0,1]). Sky /
-    // cleared pixels read 0 and are skipped. This is the D3D11 CS_LightCulling min/max; the AABB it builds is
-    // bounded on BOTH the near and far side by real geometry, so the tile only pulls in lights whose sphere
-    // actually reaches the surfaces in it — the earlier camera-origin cone (near fixed at 1) instead counted
-    // every light between the camera and the geometry, so a wall at 15m still overflowed the 32-light cap.
-    {
-        uint2 px = uint2( groupID.xy ) * TILE_SIZE + threadID.xy;
-        if ( px.x < ScreenDim.x && px.y < ScreenDim.y ) {
-            float d = DepthTex.Load( int3( int2( px ), 0 ) );
-            if ( d > 0.0 ) {   // reversed-Z: 0 == cleared (sky / no opaque geometry)
-                uint di = asuint( d );
-                InterlockedMin( gs_MinDepthInt, di );
-                InterlockedMax( gs_MaxDepthInt, di );
-            }
-        }
-    }
-    GroupMemoryBarrierWithGroupSync();
-
-    // Tile AABB in view space, spanning the near..far corners of the tile's screen rect at the min/max depth.
-    float2 tileMin = float2( groupID.xy ) * TILE_SIZE;
-    float2 tileMax = float2( groupID.xy + uint2( 1, 1 ) ) * TILE_SIZE;
-    float3 aabbMin, aabbMax;
-    if ( gs_MinDepthInt == 0x7F7FFFFF ) {
-        // No world-mesh depth in this tile (sky, or a VOB/NPC the world-only prepass didn't lay down). Fall
-        // back to an all-encompassing box so those tiles stay conservatively lit — DELIBERATELY divergent from
-        // D3D11 (which collapses empty tiles to the near plane), because our prepass is world-mesh only and
-        // collapsing here would unlight characters standing against the sky. (Complete the prepass to remove.)
-        aabbMin = float3( -1e9, -1e9, -1e9 );
-        aabbMax = float3(  1e9,  1e9,  1e9 );
-    } else {
-        float minDepth = asfloat( gs_MinDepthInt );   // reversed-Z: smaller depth == farther
-        float maxDepth = asfloat( gs_MaxDepthInt );
-        float3 c0 = ScreenToView( float2( tileMin.x, tileMin.y ), minDepth );
-        float3 c1 = ScreenToView( float2( tileMax.x, tileMin.y ), minDepth );
-        float3 c2 = ScreenToView( float2( tileMin.x, tileMax.y ), minDepth );
-        float3 c3 = ScreenToView( float2( tileMax.x, tileMax.y ), minDepth );
-        float3 c4 = ScreenToView( float2( tileMin.x, tileMin.y ), maxDepth );
-        float3 c5 = ScreenToView( float2( tileMax.x, tileMin.y ), maxDepth );
-        float3 c6 = ScreenToView( float2( tileMin.x, tileMax.y ), maxDepth );
-        float3 c7 = ScreenToView( float2( tileMax.x, tileMax.y ), maxDepth );
-        aabbMin = min( min( min( c0, c1 ), min( c2, c3 ) ), min( min( c4, c5 ), min( c6, c7 ) ) );
-        aabbMax = max( max( max( c0, c1 ), max( c2, c3 ) ), max( max( c4, c5 ), max( c6, c7 ) ) );
-    }
-
-    // Distribute the light test across the group's threads. Clamp the external count (root constant) to the
-    // buffer capacity so a garbage TotalLights can never spin the loop (lasting D3D12 rule).
-    uint total = min( TotalLights, 4096u );
-    uint numThreads = TILE_SIZE * TILE_SIZE;
-    for ( uint i = ti; i < total; i += numThreads ) {
-        TiledPointLight L = SB_Lights[i];
-        if ( SphereInsideAABB( L.PositionView, L.Range * 1.05, aabbMin, aabbMax ) ) {
-            uint idx;
-            InterlockedAdd( gs_Count, 1, idx );
-            if ( idx < MAX_LIGHTS_PER_TILE ) gs_Indices[idx] = i;
-        }
-    }
-    GroupMemoryBarrierWithGroupSync();
-
-    if ( ti == 0 ) {
-        uint count = min( gs_Count, (uint)MAX_LIGHTS_PER_TILE );
-        uint tileIndex = groupID.y * NumTilesX + groupID.x;
-        uint offset = tileIndex * MAX_LIGHTS_PER_TILE;   // fixed per-tile slice (no global counter)
-        RW_LightGrid[tileIndex].Offset = offset;
-        RW_LightGrid[tileIndex].Count  = count;
-        for ( uint j = 0; j < count; ++j )
-            RW_LightIndexList[offset + j] = gs_Indices[j];
-    }
-}
-)";
 
     // Phase-2 water shader (MVP). Same wrapped-world-mesh vertex as the opaque pass, but the packed
     // TexCoord2 (@28, half2) carries the per-material UV-scroll delta (set in WorldConverter for water
@@ -1141,38 +179,6 @@ void CSMain( uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID ) {
     // samples the scrolled diffuse, applies distance fog, and outputs a constant alpha so the surface
     // blends translucently over the already-drawn opaque scene beneath it. Refraction / reflection /
     // scene-color + depth sampling + Gerstner waves (the full D3D11 PS_Water/VS_ExWater) are out of MVP.
-    constexpr char kWaterShaderSource[] = R"(
-cbuffer WorldCB : register(b0) { float4x4 ViewProj; };   // default column-major packing (see world shader)
-cbuffer FogCB   : register(b1) { float3 FogColor; float FogNear; float3 CamPosWS; float FogFar; };
-cbuffer WaterCB : register(b2) { float TotalTime; float WaterAlpha; float2 _wpad; };
-
-Texture2D    tx  : register(t0);
-SamplerState smp : register(s0);
-
-struct VS_IN  { float3 pos : POSITION; float2 uv : TEXCOORD0; float2 scroll : TEXCOORD1; float4 col : DIFFUSE; };
-struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : TEXCOORD1; float fogDist : TEXCOORD2; };
-
-VS_OUT VSMain( VS_IN i )
-{
-    VS_OUT o;
-    o.clip = mul( float4( i.pos, 1.0 ), ViewProj );
-    float2 ani = i.scroll * TotalTime;   // scroll delta (TexCoord2) * total time (ms), like VS_ExWater
-    ani -= floor( ani );                 // wrap to [0,1) so the float stays precise over long sessions
-    o.uv = i.uv + ani;
-    o.col = i.col;
-    o.fogDist = length( i.pos - CamPosWS );
-    return o;
-}
-
-float4 PSMain( VS_OUT i ) : SV_TARGET
-{
-    float4 t = tx.Sample( smp, i.uv );
-    float3 rgb = pow( t.rgb, 2.2 ) * i.col.bgr;   // linearize (HDR buffer is linear; ~pow2.2 approximates sRGB)
-    float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
-    rgb = lerp( rgb, pow( FogColor, 2.2 ), f );
-    return float4( rgb, WaterAlpha );
-}
-)";
 
     // Water surfaces peeled out of the opaque world pass (DrawWorldMesh) and drawn later, alpha-blended,
     // by DrawWaterSurfaces. Both run on the same thread within one frame (OnStartWorldRendering), so a
@@ -1247,350 +253,6 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     // prev-frame bones). b0 = ViewProj (root consts), b1 = per-instance (world + color + fatness), b2 =
     // bone-matrix palette (<=96). Default column-major packing: matrices are uploaded as row-major
     // XMFLOAT4X4 and read the same way the D3D11 skeletal VS does, so mul() is byte-for-byte identical.
-    constexpr char kSkeletalShaderSource[] = R"(
-cbuffer FrameCB    : register(b0) { float4x4 ViewProj; };
-cbuffer InstanceCB : register(b1) { float4x4 M_World; float4 ModelColor; float Fatness; float3 _pad; };
-cbuffer BonesCB    : register(b2) { float4x4 Bones[96]; };
-cbuffer FogCB      : register(b3) { float3 FogColor; float FogNear; float3 CamPosWS; float FogFar; };
-cbuffer LightCB    : register(b4) { uint LightCount; uint NumTilesX; uint2 _lpad; };   // Forward+ tiled: light count + tiles/row
-
-// Forward+ tiled point lights (root-descriptor SRVs + per-tile grid) — see the world shader for the rationale.
-struct GPULight { float3 PositionView; float Range; float4 Color; float3 PositionWorld; int ShadowCubeIndex; };
-struct LightGrid { uint Offset; uint Count; };
-StructuredBuffer<GPULight>  Lights        : register(t1);
-StructuredBuffer<LightGrid> LightGridBuf  : register(t2);
-StructuredBuffer<uint>      LightIndexBuf : register(t3);
-#define TILE_SIZE 16u
-#define MAX_LIGHTS_PER_TILE 32u
-
-Texture2D    tx  : register(t0);
-SamplerState smp : register(s0);
-
-// CSM sun-shadow sampling (P2.9c-4b). Skeletal already uses b3 (fog) + b4 (light count), so the shadow CB
-// lands at b5 here (world/VOB use b3); t4/s2 are free. Same select+PCF math as the world/VOB block.
-#define NUM_CSM_CASCADES 3
-cbuffer ShadowCB : register(b5)
-{
-    float4x4 CascadeViewProj[NUM_CSM_CASCADES];
-    float3   SunDirWS;          float ShadowMapSize;
-    float3   SunColor;          float SunIntensity;
-    float3   CascadeTexelWorld; float AmbientStrength;
-    float    ShadowAOStrength;  float WorldAOStrength;  float2 _shpad;
-};
-Texture2DArray          ShadowMap : register(t4);
-SamplerComparisonState  shadowCmp : register(s2);
-// Per-material bindless indices (root consts b6): SM6.6 ResourceDescriptorHeap[...] indices for this material's
-// normal + ORM maps. MatNormalIndex == 0xFFFFFFFF -> no normal map (skip perturb); MatOrmIndex is always valid
-// (the 1x1 default ORM = AO 1 / rough 0.5 / metal 0 when the material has no _FX map), so ORM is sampled branchlessly.
-cbuffer MaterialCB : register(b6) { uint MatNormalIndex; uint MatOrmIndex; };
-TextureCubeArray        PointShadowCubes : register(t5);   // point-light shadow cubes (P2.10d), R16 linear depth
-
-// De-lights diffuse textures by lifting baked shadows and softening baked highlights
-float3 DelightDiffuse( float3 linearAlbedo )
-{
-    float luminance = dot( linearAlbedo, float3( 0.2126, 0.7152, 0.0722 ) );
-    // Normalize luminance variations caused by baked directional light
-    float delightFactor = 1.0 / max( sqrt( luminance + 1e-4 ), 0.2 );
-    return saturate( linearAlbedo * lerp( 1.0, delightFactor, 0.5 ) );
-}
-
-// Point-light shadow: returns 1 = lit, 0 = occluded. The cube stores the NATURAL hyperbolic z of the caster's
-// 90-deg PerspectiveFovLH(near 15, far range*2). Reconstruct the same z from the fragment: the depth on a cube
-// face is driven by the DOMINANT-AXIS distance (the face's view-space z), so zView = max(|dx|,|dy|,|dz|), then
-// apply the LH projection z-map. Most acne bias is the PSO's hardware slope bias; add a small normal offset +
-// constant. 4-tap rotated-disk PCF softens the edges; a camera-distance fade is applied at the call site.
-float SamplePointShadow( int cubeIndex, float3 wpos, float3 N, float3 lightPos, float range )
-{
-    float3 d  = ( wpos + N * ( range * 0.01 ) ) - lightPos;   // normal-offset bias (world-space, uniform)
-    float3 ad = abs( d );
-    float  zView = max( ad.x, max( ad.y, ad.z ) );            // dominant cube-axis depth = the face's view-space z
-    const float n = 15.0;
-    float  f = range * 2.0;
-    float  compareDepth = ( f / ( f - n ) ) * ( 1.0 - n / zView ) - 0.001;   // same LH hyperbolic z the caster wrote
-    float3 L = normalize( d );
-
-    // P2.10e polish: 4-tap rotated-disk PCF on a basis perpendicular to L (cube sampling follows the offset dir,
-    // so a small angular offset lands on neighbouring texels). Softens the previously single-tap hard edges. The
-    // offset grows a little with distance so the world-space penumbra stays roughly constant across the range.
-    float3 up = abs( L.y ) < 0.99 ? float3( 0, 1, 0 ) : float3( 1, 0, 0 );
-    float3 t  = normalize( cross( up, L ) );
-    float3 bt = cross( L, t );
-    float  r  = 0.006 + 0.010 * saturate( zView / f );
-    static const float2 kDisk[4] = { float2( 0.7, 0.7 ), float2( -0.7, 0.7 ), float2( 0.7, -0.7 ), float2( -0.7, -0.7 ) };
-    float sh = 0.0;
-    [unroll]
-    for ( int s = 0; s < 4; ++s )
-    {
-        float3 o = normalize( L + ( kDisk[s].x * t + kDisk[s].y * bt ) * r );
-        sh += PointShadowCubes.SampleCmpLevelZero( shadowCmp, float4( o, (float)cubeIndex ), compareDepth );
-    }
-    return sh * 0.25;
-}
-
-float ComputeSunShadow( float3 wpos, float3 N )
-{
-    const float margin = 1.5 / ShadowMapSize;
-    const float texel  = 1.0 / ShadowMapSize;
-    [unroll]
-    for ( int c = 0; c < NUM_CSM_CASCADES; ++c )
-    {
-        float3 biased = wpos + N * ( CascadeTexelWorld[c] * 1.5 );
-        float4 sp = mul( float4( biased, 1.0 ), CascadeViewProj[c] );
-        float2 uv = sp.xy * float2( 0.5, -0.5 ) + 0.5;
-        if ( uv.x > margin && uv.x < 1.0 - margin && uv.y > margin && uv.y < 1.0 - margin &&
-             sp.z >= 0.0 && sp.z <= 1.0 )
-        {
-            // Wider, cascade-scaled PCF (P2.9c-3c): far cascades cover more world per texel (sub-texel foliage
-            // → temporal "blinking"), so widen the kernel step with the cascade index to spatially average that
-            // flicker into a soft, stable penumbra. 5x5 taps; near cascade stays near-1-texel (crisp).
-            float pcfStep = texel * ( 1.0 + float( c ) * 1.5 );
-            float sh = 0.0;
-            [unroll] for ( int y = -2; y <= 2; ++y )
-            [unroll] for ( int x = -2; x <= 2; ++x )
-                sh += ShadowMap.SampleCmpLevelZero( shadowCmp, float3( uv + float2( x, y ) * pcfStep, c ), sp.z - 0.0015 );
-            return sh / 25.0;
-        }
-    }
-    return 1.0;
-}
-
-// Accumulate dynamic point lights via the Forward+ tile grid (identical math to the world/VOB shaders:
-// range cull, N.L, falloff = nd*(nd*0.2+0.8), per-light saturate, additive; specular/shadows are later).
-// --- Cook-Torrance GGX PBR (ported verbatim from the D3D11 feat/pbr branch: Shaders/include/PointLightShadows.h) ---
-// Staged PBR (P3-PBR-1): albedo is sRGB-decoded to LINEAR in the PS; Gothic's baked vertex lighting is kept as the
-// diffuse/ambient base; the SUN adds a specular-only glint and the tiled POINT lights use the full BRDF. Material
-// params are constant defaults for now (no ORM/normal maps yet — that's a later increment with texture-loading infra).
-static const float PBR_PI = 3.14159265;
-static const float MI_Roughness = 0.9;   // default perceptual roughness (Gothic surfaces are mostly rough dielectrics)
-static const float MI_Metallic  = 0.0;   // default metallic (dielectric)
-static const float SunSpecIntensity = 1.0;
-
-float3 SrgbToLinear( float3 c )   // accurate sRGB EOTF — linearize gamma-encoded albedo so lighting is done in linear space
-{
-    return select( c <= 0.04045, c / 12.92, pow( ( c + 0.055 ) / 1.055, 2.4 ) );
-}
-
-float  PBR_SafeRoughness( float r ) { return max( saturate( r ), 0.045 ); }
-float  PBR_DistributionGGX( float NdotH, float roughness )
-{
-    float a = roughness * roughness;
-    float a2 = a * a;
-    float denom = NdotH * NdotH * ( a2 - 1.0 ) + 1.0;
-    return a2 / max( PBR_PI * denom * denom, 1e-4 );
-}
-float  PBR_GeometrySchlickGGX( float NdotX, float roughness )
-{
-    float r = roughness + 1.0;
-    float k = ( r * r ) / 8.0;
-    return NdotX / max( NdotX * ( 1.0 - k ) + k, 1e-4 );
-}
-float  PBR_GeometrySmith( float NdotV, float NdotL, float roughness )
-{
-    return PBR_GeometrySchlickGGX( NdotV, roughness ) * PBR_GeometrySchlickGGX( NdotL, roughness );
-}
-float  PBR_Pow5( float x ) { float x2 = x * x; return x2 * x2 * x; }
-float3 PBR_FresnelSchlick( float cosTheta, float3 F0 ) { return F0 + ( 1.0 - F0 ) * PBR_Pow5( saturate( 1.0 - cosTheta ) ); }
-
-// Full Cook-Torrance (energy-conserving diffuse + specular). attenuation folds in falloff/shadow; NdotL applied here.
-float3 PBR_DirectLighting( float3 baseColor, float3 lightColor, float3 N, float3 V, float3 L,
-                           float roughness, float metallic, float attenuation )
-{
-    float NdotL = saturate( dot( N, L ) );
-    float NdotV = saturate( dot( N, V ) );
-    if ( NdotL <= 0.0 || NdotV <= 0.0 || attenuation <= 0.0 ) return 0.0;
-    float3 H = normalize( V + L );
-    float NdotH = saturate( dot( N, H ) );
-    float VdotH = saturate( dot( V, H ) );
-    float  cr = PBR_SafeRoughness( roughness * roughness );   // perceptual->physical (the branch squares here)
-    float  cm = saturate( metallic );
-    float3 F0 = lerp( float3( 0.04, 0.04, 0.04 ), baseColor, cm );
-    float  D = PBR_DistributionGGX( NdotH, cr );
-    float  G = PBR_GeometrySmith( NdotV, NdotL, cr );
-    float3 F = PBR_FresnelSchlick( VdotH, F0 );
-    float3 specular = ( D * G * F ) / max( 4.0 * NdotV * NdotL, 1e-4 );
-    float3 kD = ( 1.0 - F ) * ( 1.0 - cm );
-    float3 diffuse = kD * baseColor / PBR_PI;
-    return ( diffuse + specular ) * lightColor * ( NdotL * attenuation );
-}
-
-// Tangent-space normal-map support (ported from feat/pbr Toolbox.h). Z is ALWAYS reconstructed from XY, so BC5
-// (2-channel) and BC1 (we ignore B, recompute it) both decode with one path. `p` = world position for the
-// derivative-based TBN basis. If normal-mapped specular looks mirrored, flip the handedness comparison sign.
-float3x3 CotangentFrame( float3 N, float3 p, float2 uv )
-{
-    float3 dp1 = ddx( p ), dp2 = ddy( p );
-    float2 duv1 = ddx( uv ), duv2 = ddy( uv );
-    float3 dp2perp = cross( dp2, N ), dp1perp = cross( N, dp1 );
-    float3 T = dp2perp * duv1.x + dp1perp * duv2.x;
-    float3 B = dp2perp * duv1.y + dp1perp * duv2.y;
-    float handedness = ( duv1.x * duv2.y - duv1.y * duv2.x ) < 0.0 ? 1.0 : -1.0;
-    T *= handedness;
-    float invmax = rsqrt( max( dot( T, T ), dot( B, B ) ) );
-    return float3x3( T * invmax, B * invmax, N );
-}
-float3 PerturbNormal( float3 N, float3 p, Texture2D nrmTex, float2 uv, SamplerState samp )
-{
-    float2 nxy = nrmTex.Sample( samp, uv ).xy * 2.0 - 1.0;
-    nxy.y = -nxy.y;
-    float  nz  = sqrt( saturate( 1.0 - dot( nxy, nxy ) ) );   // reconstruct Z (BC5/BC1)
-    float3 nrm = normalize( float3( nxy, nz ) );
-    return normalize( mul( nrm, CotangentFrame( N, p, uv ) ) );
-}
-
-// PBR sun lighting (stage 2 — matching DX11 lighting mix and ground/vertex lighting modulation)
-float3 ComputeSunLightingPBR( float3 wpos, float3 N, float3 albedo, float vertLighting, float shadow,
-                              float roughness, float metallic, float ao )
-{
-    float3 V = normalize( CamPosWS - wpos );
-    float3 L = SunDirWS;                            // dir toward the sun (world space)
-    float3 sunCol = SrgbToLinear( SunColor );
-    float  sunLum = dot( sunCol, float3( 0.3333, 0.3333, 0.3333 ) );
-    const float ssao = 1.0;
-
-    // Direct sun term N.L
-    float NdotL = saturate( dot( N, L ) );
-    float sun = NdotL * shadow;
-
-    // AO factors driven by Gothic's vertex/ground light
-    float shadowAO = lerp( 1.0, vertLighting, ShadowAOStrength ) * ao;
-    float worldAO  = lerp( 1.0, vertLighting, WorldAOStrength ) * ao;
-
-    // Directional sky/ambient term: top-facing gets full sky ambient, vertical/undersides darken
-    float skyAmbientDir = saturate( N.y * 0.5 + 0.5 ); // Hemispheric directional ambient factor
-    float3 ambientSun = albedo * AmbientStrength * sunLum * shadowAO * skyAmbientDir * ssao;
-
-    // Direct Sun term
-    float sunAtten = sun * worldAO * SunIntensity;
-    float3 directSun = PBR_DirectLighting( albedo, sunCol, N, V, L, roughness, metallic, sunAtten );
-
-    return ambientSun + directSun;
-}
-
-// Tiled point lights via the Forward+ grid, now with the full Cook-Torrance BRDF. `albedo` is LINEAR (sRGB-decoded
-// in the PS). Ports D3D11 feat/pbr FP_ComputePointLighting (PLS_ComputePointLightLightingPBR).
-float3 AccumTiledPointLights( float2 svpos, float3 wpos, float3 N, float3 albedo, float roughness, float metallic )
-{
-    uint2 tile = uint2( svpos ) / TILE_SIZE;
-    uint  tileIndex = tile.y * NumTilesX + tile.x;
-    LightGrid g = LightGridBuf[tileIndex];
-    uint n = min( g.Count, MAX_LIGHTS_PER_TILE );
-    float3 V = normalize( CamPosWS - wpos );
-    float3 total = 0;
-    for ( uint k = 0; k < n; k++ )
-    {
-        GPULight L = Lights[ LightIndexBuf[g.Offset + k] ];
-        float3 dir = L.PositionWorld - wpos;
-        float dist = length( dir );
-        if ( dist >= L.Range ) continue;
-        dir /= dist;
-        float nd  = saturate( 1.0 - dist / L.Range );
-        float falloff = nd * ( nd * 0.2 + 0.8 );   // PLS_ComputeRangeFalloff
-        float3 lit = PBR_DirectLighting( albedo, L.Color.rgb, N, V, dir, roughness, metallic, falloff );
-        if ( L.ShadowCubeIndex >= 0 )
-        {
-            float sh = SamplePointShadow( L.ShadowCubeIndex, wpos, N, L.PositionWorld, L.Range );
-            float camDist = length( L.PositionView );
-            float fade    = saturate( ( camDist - L.Range * 6.0 ) / ( L.Range * 3.0 ) );
-            lit *= lerp( sh, 1.0, fade );
-        }
-        total += lit;
-    }
-    return total;
-}
-
-struct VS_IN
-{
-    float4 pos[4]         : POSITION;    // 4 per-bone-space positions (half4)
-    float3 normal         : NORMAL;
-    float3 bindPoseNormal : TEXCOORD0;   // unused (view-space normal is a later step)
-    float2 uv             : TEXCOORD1;
-    uint4  boneIndices    : BONEIDS;
-    float4 weights        : WEIGHTS;
-};
-struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : TEXCOORD1; float fogDist : TEXCOORD2; float3 wpos : TEXCOORD3; float3 wnrm : TEXCOORD4; };
-
-VS_OUT VSMain( VS_IN i )
-{
-    float3 skinnedPos    = float3( 0, 0, 0 );
-    float3 skinnedNormal = float3( 0, 0, 0 );
-    [unroll]
-    for ( int b = 0; b < 4; ++b )
-    {
-        float4x4 bone = Bones[i.boneIndices[b]];
-        float    w    = i.weights[b];
-        skinnedPos    += w * mul( float4( i.pos[b].xyz, 1.0 ), bone ).xyz;
-        skinnedNormal += w * mul( i.normal, (float3x3)bone );
-    }
-    float3 worldPos = mul( float4( skinnedPos + Fatness * skinnedNormal, 1.0 ), M_World ).xyz;
-
-    VS_OUT o;
-    o.clip = mul( float4( worldPos, 1.0 ), ViewProj );
-    o.uv  = i.uv;
-    o.col = ModelColor;
-    o.wpos = worldPos;
-    // skinnedNormal is in model space (bone-rotated); rotate into world by M_World (rigid + ~uniform scale).
-    o.wnrm = mul( skinnedNormal, (float3x3)M_World );
-    o.fogDist = length( worldPos - CamPosWS );
-    return o;
-}
-
-float4 PSMain( VS_OUT i ) : SV_TARGET
-{
-    float4 t = tx.Sample( smp, i.uv );
-    clip( t.a - 0.5 );
-    float3 N = normalize( i.wnrm );
-    if ( MatNormalIndex != 0xffffffff )
-    {
-        Texture2D nrmTex = ResourceDescriptorHeap[MatNormalIndex];
-        N = PerturbNormal( N, i.wpos, nrmTex, i.uv, smp );
-    }
-    Texture2D ormTex = ResourceDescriptorHeap[MatOrmIndex];
-    float3 orm = ormTex.Sample( smp, i.uv ).rgb;   // r=AO g=roughness b=metallic
-    float3 albedo = SrgbToLinear( t.rgb );
-    albedo = DelightDiffuse( albedo );
-    float vertLighting = i.col.g;               // ModelColor green (white=1 for NPCs → no baked AO reduction)
-    float shadow = ComputeSunShadow( i.wpos, N );
-    float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r );
-    rgb += AccumTiledPointLights( i.clip.xy, i.wpos, N, albedo, orm.g, orm.b );   // dynamic point lights on top (PBR)
-    float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
-    return float4( lerp( rgb, SrgbToLinear( FogColor ), f ), 1.0 );
-}
-
-// --- Depth-prepass variant (P2.9b-4b: adds skinned NPC/monster meshes to the Forward+ opaque depth prepass) ---
-// Same matrix-palette skinning as VSMain (so the depth matches the color pass bit-for-bit) but outputs only
-// clip + uv; reads b0/b1/b2 + t0/s0, NOT fog/light CBs — so it needs no BindFrameLights (no light-loop hang).
-struct VS_DEPTH_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; };
-VS_DEPTH_OUT VSDepth( VS_IN i )
-{
-    float3 skinnedPos    = float3( 0, 0, 0 );
-    float3 skinnedNormal = float3( 0, 0, 0 );
-    [unroll]
-    for ( int b = 0; b < 4; ++b )
-    {
-        float4x4 bone = Bones[i.boneIndices[b]];
-        float    w    = i.weights[b];
-        skinnedPos    += w * mul( float4( i.pos[b].xyz, 1.0 ), bone ).xyz;
-        skinnedNormal += w * mul( i.normal, (float3x3)bone );
-    }
-    float3 worldPos = mul( float4( skinnedPos + Fatness * skinnedNormal, 1.0 ), M_World ).xyz;
-    VS_DEPTH_OUT o;
-    o.clip = mul( float4( worldPos, 1.0 ), ViewProj );
-    o.uv = i.uv;
-    return o;
-}
-float4 PSDepthClip( VS_DEPTH_OUT i ) : SV_TARGET
-{
-    float4 t = tx.Sample( smp, i.uv );
-    clip( t.a - 0.5 );          // same cutout as PSMain so alpha edges don't lay down depth
-    return float4( 0, 0, 0, 1 );   // discarded: the PSO's color write mask is 0 (depth-only pass)
-}
-// Shadow caster (P2.9c-2): void PS so the depth-only shadow PSO binds NO render target without a validation
-// warning; only alpha-clips the cutout so alpha edges don't cast solid shadows.
-void PSShadowClip( VS_DEPTH_OUT i )
-{
-    clip( tx.Sample( smp, i.uv ).a - 0.5 );
-}
-)";
 
     // Phase-2 particle (PFX) shader — instanced camera-facing billboards. One instance per live particle
     // (ParticleInstanceInfo, 56B, all PER_INSTANCE); the VS expands a 4-vertex triangle strip from
@@ -1598,78 +260,6 @@ void PSShadowClip( VS_DEPTH_OUT i )
     // the alignment: >=10 => quad-poly (half size); the low digit selects camera / y-locked / plane /
     // velocity-aligned. DIFFUSE is a full float4 here (unlike the packed DWORD paths) so no swizzle. b0 =
     // ViewProj (root consts, default column-major packing, same as the world shader); b1 = camera world pos.
-    constexpr char kParticleShaderSource[] = R"(
-cbuffer FrameCB    : register(b0) { float4x4 ViewProj; };
-cbuffer ParticleCB : register(b1) { float3 CameraPosition; float _ppad; };
-
-Texture2D    tx  : register(t0);
-SamplerState smp : register(s0);
-
-struct VS_IN {
-    uint   vertexID : SV_VertexID;
-    float3 pos      : POSITION;
-    float4 dif      : DIFFUSE;
-    float3 size     : SIZE;
-    uint   type     : TYPE;
-    float3 vel      : VELOCITY;
-};
-struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 dif : TEXCOORD1; };
-
-static const float tu[4] = { 0.0, 1.0, 0.0, 1.0 };
-static const float tv[4] = { 1.0, 1.0, 0.0, 0.0 };
-static const float vr[4] = { -1.0,  1.0, -1.0, 1.0 };
-static const float vu[4] = { -1.0, -1.0,  1.0, 1.0 };
-
-VS_OUT VSMain( VS_IN i )
-{
-    float3 planeNormal = normalize( -( i.pos - CameraPosition ) );
-    float3 position = i.pos;
-    float3 upVector;
-    float3 rightVector;
-
-    int visIsQuadPoly = int( step( 10.0, float( i.type ) ) );
-    int visOrientation = int( i.type ) - ( 10 * visIsQuadPoly );
-    float sizeScale = ( 0.5 * float( visIsQuadPoly ) ) + 0.5;
-
-    if ( visOrientation == 2 ) {
-        rightVector = i.size;
-        upVector = i.vel;
-    } else if ( visOrientation == 3 ) {
-        float3 velY = normalize( i.vel );
-        float3 velX = normalize( cross( planeNormal, velY ) );
-        rightVector = velX * i.size.x * sizeScale;
-        upVector = velY * i.size.y * sizeScale;
-    } else if ( visOrientation == 1 ) {
-        float3 velY = normalize( i.vel );
-        float3 velX = normalize( cross( planeNormal, velY ) );
-        velY = normalize( cross( planeNormal, velX ) );
-        rightVector = velX * i.size.x * sizeScale;
-        upVector = velY * i.size.y * sizeScale;
-    } else {
-        upVector = float3( 0.0, 1.0, 0.0 );
-        rightVector = normalize( cross( planeNormal, upVector ) );
-        upVector = normalize( cross( planeNormal, rightVector ) );
-        rightVector = rightVector * i.size.x * sizeScale;
-        upVector = upVector * i.size.y * sizeScale;
-        position += float3( i.size.x * 0.5, -i.size.y * 0.5, 0.0 ) * float( 1 - visIsQuadPoly );
-    }
-
-    position += rightVector * vr[i.vertexID];
-    position += upVector * vu[i.vertexID];
-
-    VS_OUT o;
-    o.clip = mul( float4( position, 1.0 ), ViewProj );
-    o.uv   = float2( tu[i.vertexID], tv[i.vertexID] );
-    o.dif  = float4( i.dif.rgb, pow( i.dif.a, 2.2 ) );   // gamma the alpha, like VS_ParticlePoint
-    return o;
-}
-
-float4 PSMain( VS_OUT i ) : SV_TARGET
-{
-    float4 c = tx.Sample( smp, i.uv ) * i.dif;   // color = texture * particle diffuse (blend picks add/alpha/mul)
-    return float4( pow( saturate( c.rgb ), 2.2 ), c.a );   // linearize rgb for the linear HDR buffer (emissive)
-}
-)";
 
     // Per-decal instance data (per-instance vertex stream, slot 1). World = world*offset*scale (view NOT
     // baked in — unlike D3D11, the D3D12 decal VS applies the standard ViewProj, so the CPU only needs the
@@ -1688,44 +278,6 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     // world matrix + DecalOffset/DecalSize + camera-alignment, exactly like D3D11's DrawDecalList), then
     // transformed by the standard ViewProj. Two pixel shaders: PSMainLit (opaque/alpha-test cutout — blood,
     // arrows) and PSMainBlend (texture * material alpha; the PSO blend state does add/alpha/modulate).
-    constexpr char kDecalShaderSource[] = R"(
-cbuffer FrameCB : register(b0) { float4x4 ViewProj; };   // default column-major packing (see world shader)
-
-Texture2D    tx  : register(t0);
-SamplerState smp : register(s0);
-
-struct VS_IN
-{
-    float3   pos    : POSITION;
-    float2   uv     : TEXCOORD0;
-    float4x4 iworld : INSTANCE_WORLD_MATRIX;   // per-instance model matrix (world*offset*scale)
-    float4   icolor : INSTANCE_COLOR;          // .a = ghost alpha, .rgb unused
-};
-struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float alpha : TEXCOORD1; };
-
-VS_OUT VSMain( VS_IN i )
-{
-    VS_OUT o;
-    float3 worldPos = mul( float4( i.pos, 1.0 ), i.iworld ).xyz;
-    o.clip  = mul( float4( worldPos, 1.0 ), ViewProj );
-    o.uv    = i.uv;
-    o.alpha = i.icolor.a;
-    return o;
-}
-
-float4 PSMainLit( VS_OUT i ) : SV_TARGET   // opaque / alpha-test cutout, fully opaque output
-{
-    float4 t = tx.Sample( smp, i.uv );
-    clip( t.a - 0.5 );
-    return float4( pow( t.rgb, 2.2 ), 1.0 );   // linearize for the linear HDR buffer
-}
-
-float4 PSMainBlend( VS_OUT i ) : SV_TARGET // transparent — the PSO blend state picks add/alpha/modulate
-{
-    float4 t = tx.Sample( smp, i.uv );
-    return float4( pow( t.rgb, 2.2 ), t.a * i.alpha );   // linearize rgb; alpha unchanged
-}
-)";
 
     // Round a ring offset up so the next allocation starts on a 256-byte boundary (D3D12 requires root
     // CBV addresses to be 256-byte aligned).
@@ -2346,14 +898,10 @@ bool D3D12GraphicsEngine::CreateUIPipeline() {
         return false;
 
     // --- Compile inline shaders ---
-    UINT compileFlags = 0;
-    ComPtr<ID3DBlob> err;
-    if ( !CompileShaderD3D12( kUIShaderSource, sizeof( kUIShaderSource ) - 1, "UIShader", nullptr, nullptr,
-        "VSMain", Shadermodel_VS, compileFlags, 0, m_UIVsBlob.ReleaseAndGetAddressOf() ) ) {
+    if ( !m_ShaderBackend.CompileFromFile( "UI.hlsl", "VSMain", Shadermodel_VS, m_UIVsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
-    if ( !CompileShaderD3D12( kUIShaderSource, sizeof( kUIShaderSource ) - 1, "UIShader", nullptr, nullptr,
-        "PSMain", Shadermodel_PS, compileFlags, 0, m_UIPsBlob.ReleaseAndGetAddressOf() ) ) {
+    if ( !m_ShaderBackend.CompileFromFile( "UI.hlsl", "PSMain", Shadermodel_PS, m_UIPsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
 
@@ -2769,45 +1317,9 @@ bool D3D12GraphicsEngine::CreateTonemapPipeline() {
         IID_PPV_ARGS( m_TonemapRootSig.ReleaseAndGetAddressOf() ) ) ) )
         return false;
 
-    constexpr char kTonemapShaderSource[] = R"(
-cbuffer TonemapCB : register(b0) { float Exposure; };
-Texture2D    SceneHDR : register(t0);
-SamplerState smp      : register(s0);
-
-struct VS_OUT { float4 pos : SV_POSITION; float2 uv : TEXCOORD0; };
-VS_OUT VSFullscreen( uint vid : SV_VertexID )
-{
-    VS_OUT o;
-    o.uv  = float2( ( vid << 1 ) & 2, vid & 2 );          // (0,0)(2,0)(0,2) covering the screen with one triangle
-    o.pos = float4( o.uv * float2( 2, -2 ) + float2( -1, 1 ), 0, 1 );
-    return o;
-}
-
-// Narkowicz ACES filmic fit: compresses linear HDR into [0,1] with a filmic highlight rolloff, so bright sun +
-// stacked additive point lights keep their color/detail instead of clipping to flat white.
-float3 ACESFilm( float3 x )
-{
-    const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
-    return saturate( ( x * ( a * x + b ) ) / ( x * ( c * x + d ) + e ) );
-}
-// The scene HDR buffer is LINEAR (albedo is sRGB-decoded in the lit passes). Re-encode to sRGB/gamma on the way to
-// the UNORM swapchain (which stores plain gamma-encoded values, same space as the 2D UI that composites on top).
-float3 LinearToSrgb( float3 c )
-{
-    return select( c <= 0.0031308, c * 12.92, 1.055 * pow( c, 1.0 / 2.4 ) - 0.055 );
-}
-float4 PSTonemap( VS_OUT i ) : SV_TARGET
-{
-    float3 hdr = SceneHDR.Sample( smp, i.uv ).rgb * Exposure;
-    return float4( LinearToSrgb( ACESFilm( hdr ) ), 1.0 );
-}
-)";
-    UINT compileFlags = 0;
-    if ( !CompileShaderD3D12( kTonemapShaderSource, sizeof( kTonemapShaderSource ) - 1, "Tonemap",
-        nullptr, nullptr, "VSFullscreen", Shadermodel_VS, compileFlags, 0, m_TonemapVsBlob.ReleaseAndGetAddressOf() ) )
+    if ( !m_ShaderBackend.CompileFromFile( "Tonemap.hlsl", "VSFullscreen", Shadermodel_VS, m_TonemapVsBlob.ReleaseAndGetAddressOf() ) )
         return false;
-    if ( !CompileShaderD3D12( kTonemapShaderSource, sizeof( kTonemapShaderSource ) - 1, "Tonemap",
-        nullptr, nullptr, "PSTonemap", Shadermodel_PS, compileFlags, 0, m_TonemapPsBlob.ReleaseAndGetAddressOf() ) )
+    if ( !m_ShaderBackend.CompileFromFile( "Tonemap.hlsl", "PSTonemap", Shadermodel_PS, m_TonemapPsBlob.ReleaseAndGetAddressOf() ) )
         return false;
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
@@ -3001,13 +1513,10 @@ bool D3D12GraphicsEngine::CreateWorldPipeline() {
         IID_PPV_ARGS( m_WorldRootSig.ReleaseAndGetAddressOf() ) ) ) )
         return false;
 
-    UINT compileFlags = 0;
-    if ( !CompileShaderD3D12( kWorldShaderSource, sizeof( kWorldShaderSource ) - 1, "WorldShader", nullptr, nullptr,
-        "VSMain", Shadermodel_VS, compileFlags, 0, m_WorldVsBlob.ReleaseAndGetAddressOf() ) ) {
+    if ( !m_ShaderBackend.CompileFromFile( "World.hlsl", "VSMain", Shadermodel_VS, m_WorldVsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
-    if ( !CompileShaderD3D12( kWorldShaderSource, sizeof( kWorldShaderSource ) - 1, "WorldShader", nullptr, nullptr,
-        "PSMain", Shadermodel_PS, compileFlags, 0, m_WorldPsBlob.ReleaseAndGetAddressOf() ) ) {
+    if ( !m_ShaderBackend.CompileFromFile( "World.hlsl", "PSMain", Shadermodel_PS, m_WorldPsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
 
@@ -3066,13 +1575,10 @@ bool D3D12GraphicsEngine::CreateDepthPrepassPipeline() {
     ID3D12Device* device = m_Device.GetDevice();
     if ( !m_WorldRootSig ) { LogWarn() << "D3D12: depth prepass needs the world root sig."; return false; }
 
-    UINT compileFlags = 0;
-    if ( !CompileShaderD3D12( kDepthPrepassShaderSource, sizeof( kDepthPrepassShaderSource ) - 1, "DepthPrepass",
-        nullptr, nullptr, "VSWorld", Shadermodel_VS, compileFlags, 0, m_DepthPrepassWorldVsBlob.ReleaseAndGetAddressOf() ) ) {
+    if ( !m_ShaderBackend.CompileFromFile( "DepthPrepass.hlsl", "VSWorld", Shadermodel_VS, m_DepthPrepassWorldVsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
-    if ( !CompileShaderD3D12( kDepthPrepassShaderSource, sizeof( kDepthPrepassShaderSource ) - 1, "DepthPrepass",
-        nullptr, nullptr, "PSClip", Shadermodel_PS, compileFlags, 0, m_DepthPrepassPsBlob.ReleaseAndGetAddressOf() ) ) {
+    if ( !m_ShaderBackend.CompileFromFile( "DepthPrepass.hlsl", "PSClip", Shadermodel_PS, m_DepthPrepassPsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
 
@@ -3114,12 +1620,10 @@ bool D3D12GraphicsEngine::CreateDepthPrepassPipeline() {
 
     // Instanced-VOB depth prepass PSO (P2.9b-4a): same depth-only state, but the VOB two-stream input layout
     // (packed vertex slot 0 + per-instance world matrix slot 1) and the VOB shader's VSDepth/PSDepthClip.
-    if ( !CompileShaderD3D12( kVobShaderSource, sizeof( kVobShaderSource ) - 1, "VobShader",
-        nullptr, nullptr, "VSDepth", Shadermodel_VS, compileFlags, 0, m_DepthPrepassVobVsBlob.ReleaseAndGetAddressOf() ) ) {
+    if ( !m_ShaderBackend.CompileFromFile( "Vob.hlsl", "VSDepth", Shadermodel_VS, m_DepthPrepassVobVsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
-    if ( !CompileShaderD3D12( kVobShaderSource, sizeof( kVobShaderSource ) - 1, "VobShader",
-        nullptr, nullptr, "PSDepthClip", Shadermodel_PS, compileFlags, 0, m_DepthPrepassVobPsBlob.ReleaseAndGetAddressOf() ) ) {
+    if ( !m_ShaderBackend.CompileFromFile( "Vob.hlsl", "PSDepthClip", Shadermodel_PS, m_DepthPrepassVobPsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
 
@@ -3214,9 +1718,7 @@ bool D3D12GraphicsEngine::CreateShadowMap() {
 
     // Caster PSO. Void PS (PSShadowClip) so no RTV is needed; front-face cull + slope-scaled depth bias fight
     // shadow acne (front-culling casts back faces, standard for opaque shadow maps).
-    UINT compileFlags = 0;
-    if ( !CompileShaderD3D12( kDepthPrepassShaderSource, sizeof( kDepthPrepassShaderSource ) - 1, "DepthPrepass",
-        nullptr, nullptr, "PSShadowClip", Shadermodel_PS, compileFlags, 0, m_ShadowCasterPsBlob.ReleaseAndGetAddressOf() ) )
+    if ( !m_ShaderBackend.CompileFromFile( "DepthPrepass.hlsl", "PSShadowClip", Shadermodel_PS, m_ShadowCasterPsBlob.ReleaseAndGetAddressOf() ) )
         return false;
 
     const D3D12_INPUT_ELEMENT_DESC layout[] = {
@@ -3253,8 +1755,7 @@ bool D3D12GraphicsEngine::CreateShadowMap() {
     // world matrix) + m_WorldRootSig, with the same caster state (front cull, bias, LESS_EQUAL, no RTV). Also
     // used for node attachments (weapons/heads) which are packed vertex + instance like ordinary VOBs.
     if ( m_DepthPrepassVobVsBlob ) {
-        if ( !CompileShaderD3D12( kVobShaderSource, sizeof( kVobShaderSource ) - 1, "VobShader",
-            nullptr, nullptr, "PSShadowClip", Shadermodel_PS, compileFlags, 0, m_ShadowCasterVobPsBlob.ReleaseAndGetAddressOf() ) )
+        if ( !m_ShaderBackend.CompileFromFile( "Vob.hlsl", "PSShadowClip", Shadermodel_PS, m_ShadowCasterVobPsBlob.ReleaseAndGetAddressOf() ) )
             return false;
         const D3D12_INPUT_ELEMENT_DESC vobLayout[] = {
             { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
@@ -3277,8 +1778,7 @@ bool D3D12GraphicsEngine::CreateShadowMap() {
     // Skeletal caster PSO (P2.9c-2): reuse the skeletal depth-prepass VSDepth (matrix-palette skinning) +
     // m_SkeletalRootSig + the skinned input layout, same caster state.
     if ( m_DepthPrepassSkeletalVsBlob && m_SkeletalRootSig ) {
-        if ( !CompileShaderD3D12( kSkeletalShaderSource, sizeof( kSkeletalShaderSource ) - 1, "SkeletalShader",
-            nullptr, nullptr, "PSShadowClip", Shadermodel_PS, compileFlags, 0, m_ShadowCasterSkeletalPsBlob.ReleaseAndGetAddressOf() ) )
+        if ( !m_ShaderBackend.CompileFromFile( "Skeletal.hlsl", "PSShadowClip", Shadermodel_PS, m_ShadowCasterSkeletalPsBlob.ReleaseAndGetAddressOf() ) )
             return false;
         const D3D12_INPUT_ELEMENT_DESC skelLayout[] = {
             { "POSITION", 0, DXGI_FORMAT_R16G16B16A16_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
@@ -3382,82 +1882,13 @@ bool D3D12GraphicsEngine::CreatePointShadowCubes() {
     // --- Caster shader: single-pass 6-face via instancing. instanceID (0..5) picks the face view-proj AND is
     // written to SV_RenderTargetArrayIndex to route the primitive to that cube face slice (no geometry shader —
     // needs VS-stage RT-array-index support, present on the target AMD GPU). World verts are already world-space.
-    constexpr char kPointShadowShaderSource[] = R"(
-cbuffer CubeCB : register(b0) { float4x4 PCR_ViewProj[6]; };   // per-light face view-projs (90-deg perspective, near 15, far range*2)
-// Skeletal-only CBs (b1/b2). Unreferenced by VSCube/VSCubeVob, so they're stripped from those shaders — the
-// world/VOB caster PSOs' root sig only declares b0/t0/s0. They match the main skeletal InstanceCB/BonesCB so
-// the cube caster can bind the SAME per-frame instance/bone CBs (d.instCb/d.boneCb) the sun/color passes use.
-cbuffer SkelInstanceCB : register(b1) { float4x4 M_World; float4 ModelColor; float Fatness; float3 _spad; };
-cbuffer SkelBonesCB    : register(b2) { float4x4 Bones[96]; };
-Texture2D    tx  : register(t0);
-SamplerState smp : register(s0);
-struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; uint rt : SV_RenderTargetArrayIndex; };
-
-// World caster: one draw = 6 instances, instanceID selects the face view-proj AND the target cube slice.
-struct VS_IN  { float3 pos : POSITION; float2 uv : TEXCOORD0; uint iid : SV_InstanceID; };
-VS_OUT VSCube( VS_IN i )
-{
-    VS_OUT o;
-    o.clip = mul( float4( i.pos, 1.0 ), PCR_ViewProj[i.iid] );   // 90-deg perspective from the light, per face
-    o.uv   = i.uv;
-    o.rt   = i.iid;   // face 0..5 → cube slice (relative to the bound slot's 6-slice DSV)
-    return o;
-}
-
-// VOB caster: instanceID spans (numInstances * 6). The per-instance world stream uses InstanceDataStepRate=6, so
-// each real instance is fetched for 6 consecutive instanceIDs; face = iid % 6 picks the face view-proj + slice.
-struct VSVOB_IN { float3 pos : POSITION; float2 uv : TEXCOORD0; float4x4 iworld : INSTANCE_WORLD_MATRIX; uint iid : SV_InstanceID; };
-VS_OUT VSCubeVob( VSVOB_IN i )
-{
-    VS_OUT o;
-    uint   face = i.iid % 6u;
-    float3 wp   = mul( float4( i.pos, 1.0 ), i.iworld ).xyz;
-    o.clip = mul( float4( wp, 1.0 ), PCR_ViewProj[face] );
-    o.uv   = i.uv;
-    o.rt   = face;
-    return o;
-}
-
-// Skeletal caster: 6 instances → face = iid. Matrix-palette skin (matches the main/sun VSDepth incl. Fatness) so
-// the cast depth is bit-consistent with the color pass, then project through the face's 90-deg view-proj.
-struct VSSKEL_IN { float4 pos[4] : POSITION; float3 normal : NORMAL; float3 bindPoseNormal : TEXCOORD0; float2 uv : TEXCOORD1; uint4 boneIndices : BONEIDS; float4 weights : WEIGHTS; uint iid : SV_InstanceID; };
-VS_OUT VSCubeSkel( VSSKEL_IN i )
-{
-    float3 sp = float3( 0, 0, 0 );
-    float3 sn = float3( 0, 0, 0 );
-    [unroll]
-    for ( int b = 0; b < 4; ++b )
-    {
-        float4x4 bone = Bones[i.boneIndices[b]];
-        float    w    = i.weights[b];
-        sp += w * mul( float4( i.pos[b].xyz, 1.0 ), bone ).xyz;
-        sn += w * mul( i.normal, (float3x3)bone );
-    }
-    float3 wp = mul( float4( sp + Fatness * sn, 1.0 ), M_World ).xyz;
-    VS_OUT o;
-    o.clip = mul( float4( wp, 1.0 ), PCR_ViewProj[i.iid] );
-    o.uv   = i.uv;
-    o.rt   = i.iid;
-    return o;
-}
-
-// Depth-only (void PS, no SV_Depth) so the caster keeps early-Z / Hi-Z rejection and the PSO's hardware slope-
-// scaled depth bias — the stored depth is the NATURAL hyperbolic z of the 90-deg perspective, which the sampler
-// reconstructs from the dominant-axis distance (more efficient than writing linear SV_Depth). Alpha-clip cutouts.
-void PSCubeClip( VS_OUT i ) { clip( tx.Sample( smp, i.uv ).a - 0.5 ); }
-)";
-    UINT compileFlags = 0;
-    if ( !CompileShaderD3D12( kPointShadowShaderSource, sizeof( kPointShadowShaderSource ) - 1, "PointShadow",
-        nullptr, nullptr, "VSCube", Shadermodel_VS, compileFlags, 0, m_PointShadowVsBlob.ReleaseAndGetAddressOf() ) )
+    if ( !m_ShaderBackend.CompileFromFile( "PointShadow.hlsl", "VSCube", Shadermodel_VS, m_PointShadowVsBlob.ReleaseAndGetAddressOf() ) )
         return false;
-    if ( !CompileShaderD3D12( kPointShadowShaderSource, sizeof( kPointShadowShaderSource ) - 1, "PointShadow",
-        nullptr, nullptr, "VSCubeVob", Shadermodel_VS, compileFlags, 0, m_PointShadowVobVsBlob.ReleaseAndGetAddressOf() ) )
+    if ( !m_ShaderBackend.CompileFromFile( "PointShadow.hlsl", "VSCubeVob", Shadermodel_VS, m_PointShadowVobVsBlob.ReleaseAndGetAddressOf() ) )
         return false;
-    if ( !CompileShaderD3D12( kPointShadowShaderSource, sizeof( kPointShadowShaderSource ) - 1, "PointShadow",
-        nullptr, nullptr, "VSCubeSkel", Shadermodel_VS, compileFlags, 0, m_PointShadowSkelVsBlob.ReleaseAndGetAddressOf() ) )
+    if ( !m_ShaderBackend.CompileFromFile( "PointShadow.hlsl", "VSCubeSkel", Shadermodel_VS, m_PointShadowSkelVsBlob.ReleaseAndGetAddressOf() ) )
         return false;
-    if ( !CompileShaderD3D12( kPointShadowShaderSource, sizeof( kPointShadowShaderSource ) - 1, "PointShadow",
-        nullptr, nullptr, "PSCubeClip", Shadermodel_PS, compileFlags, 0, m_PointShadowPsBlob.ReleaseAndGetAddressOf() ) )
+    if ( !m_ShaderBackend.CompileFromFile( "PointShadow.hlsl", "PSCubeClip", Shadermodel_PS, m_PointShadowPsBlob.ReleaseAndGetAddressOf() ) )
         return false;
 
     // --- Cube array resource: Texture2DArray with kMaxShadowCubes*6 R16 slices (interpreted as a TextureCubeArray
@@ -4503,9 +2934,7 @@ bool D3D12GraphicsEngine::CreateLightCullPipeline() {
         IID_PPV_ARGS( m_LightCullRootSig.ReleaseAndGetAddressOf() ) ) ) )
         return false;
 
-    UINT compileFlags = 0;
-    if ( !CompileShaderD3D12( kLightCullShaderSource, sizeof( kLightCullShaderSource ) - 1, "LightCull",
-        nullptr, nullptr, "CSMain", Shadermodel_CS, compileFlags, 0, m_LightCullCsBlob.ReleaseAndGetAddressOf() ) ) {
+    if ( !m_ShaderBackend.CompileFromFile( "LightCull.hlsl", "CSMain", Shadermodel_CS, m_LightCullCsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
 
@@ -4568,13 +2997,10 @@ bool D3D12GraphicsEngine::CreateLightCullBuffers( INT2 size ) {
 bool D3D12GraphicsEngine::CreateVobPipeline() {
     ID3D12Device* device = m_Device.GetDevice();
 
-    UINT compileFlags = 0;
-    if ( !CompileShaderD3D12( kVobShaderSource, sizeof( kVobShaderSource ) - 1, "VobShader", nullptr, nullptr,
-        "VSMain", Shadermodel_VS, compileFlags, 0, m_VobVsBlob.ReleaseAndGetAddressOf() ) ) {
+    if ( !m_ShaderBackend.CompileFromFile( "Vob.hlsl", "VSMain", Shadermodel_VS, m_VobVsBlob.ReleaseAndGetAddressOf() ) ) {
             return false;
     }
-    if ( !CompileShaderD3D12( kVobShaderSource, sizeof( kVobShaderSource ) - 1, "VobShader", nullptr, nullptr,
-        "PSMain", Shadermodel_PS, compileFlags, 0, m_VobPsBlob.ReleaseAndGetAddressOf() ) ) {
+    if ( !m_ShaderBackend.CompileFromFile( "Vob.hlsl", "PSMain", Shadermodel_PS, m_VobPsBlob.ReleaseAndGetAddressOf() ) ) {
             return false;
     }
 
@@ -4869,13 +3295,10 @@ bool D3D12GraphicsEngine::CreateWaterPipeline() {
         IID_PPV_ARGS( m_WaterRootSig.ReleaseAndGetAddressOf() ) ) ) )
         return false;
 
-    UINT compileFlags = 0;
-    if ( !CompileShaderD3D12( kWaterShaderSource, sizeof( kWaterShaderSource ) - 1, "WaterShader", nullptr, nullptr,
-        "VSMain", Shadermodel_VS, compileFlags, 0, m_WaterVsBlob.ReleaseAndGetAddressOf() ) ) {
+    if ( !m_ShaderBackend.CompileFromFile( "Water.hlsl", "VSMain", Shadermodel_VS, m_WaterVsBlob.ReleaseAndGetAddressOf() ) ) {
             return false;
     }
-    if ( !CompileShaderD3D12( kWaterShaderSource, sizeof( kWaterShaderSource ) - 1, "WaterShader", nullptr, nullptr,
-        "PSMain", Shadermodel_PS, compileFlags, 0, m_WaterPsBlob.ReleaseAndGetAddressOf() ) ) {
+    if ( !m_ShaderBackend.CompileFromFile( "Water.hlsl", "PSMain", Shadermodel_PS, m_WaterPsBlob.ReleaseAndGetAddressOf() ) ) {
             return false;
     }
 
@@ -5048,13 +3471,10 @@ bool D3D12GraphicsEngine::CreateParticlePipeline() {
         IID_PPV_ARGS( m_ParticleRootSig.ReleaseAndGetAddressOf() ) ) ) )
         return false;
 
-    UINT compileFlags = 0;
-    if ( !CompileShaderD3D12( kParticleShaderSource, sizeof( kParticleShaderSource ) - 1, "ParticleShader", nullptr, nullptr,
-        "VSMain", Shadermodel_VS, compileFlags, 0, m_ParticleVsBlob.ReleaseAndGetAddressOf() ) ) {
+    if ( !m_ShaderBackend.CompileFromFile( "Particle.hlsl", "VSMain", Shadermodel_VS, m_ParticleVsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
-    if ( !CompileShaderD3D12( kParticleShaderSource, sizeof( kParticleShaderSource ) - 1, "ParticleShader", nullptr, nullptr,
-        "PSMain", Shadermodel_PS, compileFlags, 0, m_ParticlePsBlob.ReleaseAndGetAddressOf() ) ) {
+    if ( !m_ShaderBackend.CompileFromFile( "Particle.hlsl", "PSMain", Shadermodel_PS, m_ParticlePsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
 
@@ -5317,17 +3737,13 @@ bool D3D12GraphicsEngine::CreateDecalPipeline() {
         IID_PPV_ARGS( m_DecalRootSig.ReleaseAndGetAddressOf() ) ) ) )
         return false;
 
-    UINT compileFlags = 0;
-    if ( !CompileShaderD3D12( kDecalShaderSource, sizeof( kDecalShaderSource ) - 1, "DecalShader", nullptr, nullptr,
-        "VSMain", Shadermodel_VS, compileFlags, 0, m_DecalVsBlob.ReleaseAndGetAddressOf() ) ) {
+    if ( !m_ShaderBackend.CompileFromFile( "Decal.hlsl", "VSMain", Shadermodel_VS, m_DecalVsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
-    if ( !CompileShaderD3D12( kDecalShaderSource, sizeof( kDecalShaderSource ) - 1, "DecalShader", nullptr, nullptr,
-        "PSMainLit", Shadermodel_PS, compileFlags, 0, m_DecalLitPsBlob.ReleaseAndGetAddressOf() ) ) {
+    if ( !m_ShaderBackend.CompileFromFile( "Decal.hlsl", "PSMainLit", Shadermodel_PS, m_DecalLitPsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
-    if ( !CompileShaderD3D12( kDecalShaderSource, sizeof( kDecalShaderSource ) - 1, "DecalShader", nullptr, nullptr,
-        "PSMainBlend", Shadermodel_PS, compileFlags, 0, m_DecalBlendPsBlob.ReleaseAndGetAddressOf() ) ) {
+    if ( !m_ShaderBackend.CompileFromFile( "Decal.hlsl", "PSMainBlend", Shadermodel_PS, m_DecalBlendPsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
 
@@ -5797,13 +4213,10 @@ bool D3D12GraphicsEngine::CreateSkeletalPipeline() {
         IID_PPV_ARGS( m_SkeletalRootSig.ReleaseAndGetAddressOf() ) ) ) )
         return false;
 
-    UINT compileFlags = 0;
-    if ( !CompileShaderD3D12( kSkeletalShaderSource, sizeof( kSkeletalShaderSource ) - 1, "SkeletalShader", nullptr, nullptr,
-        "VSMain", Shadermodel_VS, compileFlags, 0, m_SkeletalVsBlob.ReleaseAndGetAddressOf() ) ) {
+    if ( !m_ShaderBackend.CompileFromFile( "Skeletal.hlsl", "VSMain", Shadermodel_VS, m_SkeletalVsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
-    if ( !CompileShaderD3D12( kSkeletalShaderSource, sizeof( kSkeletalShaderSource ) - 1, "SkeletalShader", nullptr, nullptr,
-        "PSMain", Shadermodel_PS, compileFlags, 0, m_SkeletalPsBlob.ReleaseAndGetAddressOf() ) ) {
+    if ( !m_ShaderBackend.CompileFromFile( "Skeletal.hlsl", "PSMain", Shadermodel_PS, m_SkeletalPsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
 
@@ -5855,12 +4268,10 @@ bool D3D12GraphicsEngine::CreateSkeletalPipeline() {
     // Skeletal depth-prepass PSO (P2.9b-4b): same root sig + skinned input layout + depth state, but VSDepth/
     // PSDepthClip and color writes masked off. Lays down NPC/monster depth so the light cull bounds tiles to
     // them (fixing the near-skeletal cutoff). Same layout as the color PSO (VSDepth reads the same VS_IN).
-    if ( !CompileShaderD3D12( kSkeletalShaderSource, sizeof( kSkeletalShaderSource ) - 1, "SkeletalShader",
-        nullptr, nullptr, "VSDepth", Shadermodel_VS, compileFlags, 0, m_DepthPrepassSkeletalVsBlob.ReleaseAndGetAddressOf() ) ) {
+    if ( !m_ShaderBackend.CompileFromFile( "Skeletal.hlsl", "VSDepth", Shadermodel_VS, m_DepthPrepassSkeletalVsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
-    if ( !CompileShaderD3D12( kSkeletalShaderSource, sizeof( kSkeletalShaderSource ) - 1, "SkeletalShader",
-        nullptr, nullptr, "PSDepthClip", Shadermodel_PS, compileFlags, 0, m_DepthPrepassSkeletalPsBlob.ReleaseAndGetAddressOf() ) ) {
+    if ( !m_ShaderBackend.CompileFromFile( "Skeletal.hlsl", "PSDepthClip", Shadermodel_PS, m_DepthPrepassSkeletalPsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
     pso.VS = { m_DepthPrepassSkeletalVsBlob->GetBufferPointer(), m_DepthPrepassSkeletalVsBlob->GetBufferSize() };

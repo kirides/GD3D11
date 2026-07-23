@@ -941,6 +941,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="D3D11ForwardPlusRenderer.h" />
     <ClInclude Include="D3D11TracyDebug.h" />
     <ClInclude Include="D3D12Engine\D3D12PipelineState.h" />
+    <ClInclude Include="D3D12Engine\D3D12ShaderBackend.h" />
     <ClInclude Include="D3D12Engine\D3D12RenderQueue.h" />
     <ClInclude Include="D3D12Engine\InstancingUtils.h" />
     <ClInclude Include="DDSArrayLoader.h" />
@@ -1221,6 +1222,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="D3D11RenderQueue.cpp" />
     <ClCompile Include="D3D11ShaderManager.cpp" />
     <ClCompile Include="D3D12Engine\D3D12PipelineState.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12ShaderBackend.cpp" />
     <ClCompile Include="D3D12Engine\D3D12RenderQueue.cpp" />
     <ClCompile Include="D3D12Engine\InstancingUtils.cpp" />
     <ClCompile Include="ShaderRegistry.cpp" />
