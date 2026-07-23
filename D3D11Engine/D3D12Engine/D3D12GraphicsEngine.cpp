@@ -335,18 +335,22 @@ namespace {
     static_assert( sizeof( FogConstants ) == 32, "FogConstants must be 8 DWORDs to match the fog root constants" );
 
     // Builds this frame's fog constants from Gothic's sky state. FogColor = GetFogColor() (0..1, weather /
-    // sky-override correct — the same color used to clear the sky); FogFar = the sky controller's far-Z,
-    // FogNear = 0.3*FarZ (mirrors Gothic's own 0.3 factor). Safe only in-game (world loaded).
+    // sky-override correct — the same color used to clear the sky); FogNear/FogFar = GraphicsState.FF_FogNear/
+    // FF_FogFar, the same values D3D11's ComputeFog() uses (set once per frame in GSky.cpp from
+    // sky->GetMasterState()->FogDist, with Gothic's hardcoded 0.3 near factor) — NOT GetFarZ(), which is an
+    // unrelated atmospheric-perspective far plane the height-fog PFX uses for its density falloff and is
+    // typically much smaller than FogDist, which was making the fog ramp in far too aggressively.
     FogConstants MakeFogConstants() {
         FogConstants fog = {};
         DirectX::XMFLOAT3 fc;
         DirectX::XMStoreFloat3( &fc, Engine::GAPI->GetFogColor() );
         fog.FogColor[0] = fc.x; fog.FogColor[1] = fc.y; fog.FogColor[2] = fc.z;
 
-        float farZ = Engine::GAPI->GetFarZ();
-        if ( !( farZ > 1.0f ) ) farZ = 40000.0f;   // fallback if the controller reports 0 / invalid
-        fog.FogFar = farZ;
-        fog.FogNear = 0.3f * farZ;
+        const auto& gs = Engine::GAPI->GetRendererState().GraphicsState;
+        float fogFar = gs.FF_FogFar;
+        if ( !( fogFar > 1.0f ) ) fogFar = 40000.0f;   // fallback if the controller reports 0 / invalid
+        fog.FogFar = fogFar;
+        fog.FogNear = gs.FF_FogNear > 0.0f ? gs.FF_FogNear : 0.3f * fogFar;
 
         DirectX::XMFLOAT3 cp;
         DirectX::XMStoreFloat3( &cp, Engine::GAPI->GetCameraPositionXM() );
