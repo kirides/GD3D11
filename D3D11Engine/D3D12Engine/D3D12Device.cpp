@@ -213,6 +213,11 @@ bool D3D12Device::Init() {
             LogInfo() << "D3D12 debug layer enabled.";
         }
 
+        ComPtr<ID3D12Debug1> debug1;
+        if ( SUCCEEDED( debug.As( &debug1 ) ) ) {
+            debug1->SetEnableGPUBasedValidation( TRUE );
+        }
+
         // Enable DRED
         ComPtr<ID3D12DeviceRemovedExtendedDataSettings1> pDredSettings;
         if ( getDebug && SUCCEEDED( getDebug( IID_PPV_ARGS( pDredSettings.ReleaseAndGetAddressOf() ) ) ) ) {
