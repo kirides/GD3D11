@@ -197,9 +197,13 @@ float3 ComputeSunLightingPBR( float3 wpos, float3 N, float3 albedo, float vertLi
     float shadowAO = lerp( 1.0, vertLighting, ShadowAOStrength ) * ao;
     float worldAO  = lerp( 1.0, vertLighting, WorldAOStrength ) * ao;
 
-    // Directional sky/ambient term: top-facing gets full sky ambient, vertical/undersides darken
-    float skyAmbientDir = saturate( N.y * 0.5 + 0.5 ); // Hemispheric directional ambient factor
-    float3 ambientSun = albedo * AmbientStrength * sunLum * shadowAO * skyAmbientDir * ssao;
+    // Flat ambient floor — matches D3D11's reference formula (PS_DS_AtmosphericScattering.hlsl litPixel),
+    // which has no surface-normal/up-direction term at all. A prior hemispheric "skyAmbientDir" factor here
+    // (saturate(N.y*0.5+0.5)) zeroed this term for downward-facing normals and halved it for sideways ones —
+    // fine outdoors where a wall really does see less sky, but it also blacked out cave ceilings/walls and
+    // tree-canopy undersides (which face sideways/down and have no line of sight to the sun or a nearby point
+    // light) down to literal (0,0,0), where D3D11 keeps a flat ambient floor regardless of facing.
+    float3 ambientSun = albedo * AmbientStrength * sunLum * shadowAO * ssao;
 
     // Direct Sun term
     float sunAtten = sun * worldAO * SunIntensity;
