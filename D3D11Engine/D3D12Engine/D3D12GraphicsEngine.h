@@ -189,6 +189,13 @@ private:
 
     D3D12Device m_Device;
 
+    // D3D12 Memory Allocator (GPUOpen). Declared here — right after m_Device — deliberately: members are
+    // destroyed in reverse declaration order, so keeping this near the top guarantees the allocator outlives
+    // every D3D12MA::Allocation member below it (an Allocation frees back into the allocator on release, so
+    // releasing one after the allocator is gone is a use-after-free). All persistent resources route their
+    // creation through m_Allocator->CreateResource and hold a parallel ...Alloc member alongside the resource.
+    Microsoft::WRL::ComPtr<D3D12MA::Allocator> m_Allocator;
+
     Microsoft::WRL::ComPtr<IDXGISwapChain3>        m_SwapChain;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap>   m_RtvHeap;   // kBackBufferCount swapchain RTVs + 1 HDR scene-color RTV
     UINT m_RtvDescriptorSize = 0;
@@ -196,6 +203,7 @@ private:
     // HDR scene-color pipeline (Phase 3): the 3D world passes render into m_SceneColor (R16F, values >1 allowed —
     // sun + additive point lights no longer clip), then ResolveSceneToBackBuffer tonemaps it into the swapchain.
     Microsoft::WRL::ComPtr<ID3D12Resource>       m_SceneColor;           // R16G16B16A16_FLOAT, resolution-sized
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation>  m_SceneColorAlloc;       // backing D3D12MA allocation (recreated on resize)
     D3D12_CPU_DESCRIPTOR_HANDLE                  m_SceneColorRtv = {};    // RTV heap slot kBackBufferCount
     UINT m_SceneColorSrvSlot = UINT_MAX;                                  // SRV read by the tonemap resolve
     bool m_SceneColorInPixelState = false;                               // RENDER_TARGET (world) <-> PIXEL_SHADER_RESOURCE (resolve)
@@ -260,6 +268,7 @@ private:
 
     // The 2D/UI root sig + shaders + blend/depth PSO cache now live in m_Pipelines.UI. The vertex ring stays here.
     Microsoft::WRL::ComPtr<ID3D12Resource> m_UIVertexBuffer[kBackBufferCount]; // persistently-mapped upload ring
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_UIVertexBufferAlloc[kBackBufferCount];
     uint8_t* m_UIVertexBufferPtr[kBackBufferCount] = {};
     UINT m_UIVertexBufferCapacity = 0;
     UINT m_UIVertexBufferOffset = 0;                               // reset each OnBeginFrame
@@ -276,6 +285,7 @@ private:
     // --- 3D world mesh path (Phase 2 first-light: flat-shaded, depth-tested, no G-buffer) ---
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_DsvHeap;         // single DSV
     Microsoft::WRL::ComPtr<ID3D12Resource>       m_DepthBuffer;     // R32_TYPELESS (DSV D32_FLOAT / SRV R32_FLOAT), reversed-Z
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation>  m_DepthBufferAlloc; // backing D3D12MA allocation (recreated on resize)
     UINT m_DsvDescriptorSize = 0;
     UINT m_DepthSrvSlot = UINT_MAX;   // R32_FLOAT SRV of m_DepthBuffer, read by the light cull for per-tile far-Z tightening
 
@@ -297,6 +307,7 @@ private:
     static constexpr UINT kMaxWorldDrawCommands = 16384;
     Microsoft::WRL::ComPtr<ID3D12CommandSignature> m_WorldIndirectCmdSig;   // b6(3 consts)@param10 + DrawIndexed
     Microsoft::WRL::ComPtr<ID3D12Resource> m_WorldDrawArgs[kBackBufferCount]; // persistently-mapped UPLOAD ring
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_WorldDrawArgsAlloc[kBackBufferCount];
     uint8_t* m_WorldDrawArgsPtr[kBackBufferCount] = {};
     D3D12_GPU_VIRTUAL_ADDRESS m_WorldDrawArgsGpu[kBackBufferCount] = {};
     UINT m_WorldDrawCount = 0;                       // commands built this frame (shared by both world passes)
@@ -316,6 +327,7 @@ private:
     static constexpr UINT kShadowCascades = 3;
     UINT m_ShadowMapSize = 2048;   // per-cascade slice resolution; read from RendererSettings.ShadowMapSize at init (clamp 1024..4096)
     Microsoft::WRL::ComPtr<ID3D12Resource>       m_ShadowMap;        // Texture2DArray(R32_TYPELESS), kShadowCascades slices
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation>  m_ShadowMapAlloc;   // backing D3D12MA allocation
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_ShadowDsvHeap;    // one D32 DSV per cascade slice
     UINT m_ShadowDsvSize = 0;
     UINT m_ShadowSrvSlot = UINT_MAX;    // R32_FLOAT Texture2DArray SRV (all cascades), for the lit-pass sampler (later increment)
@@ -335,6 +347,7 @@ private:
     float m_CascadeTexelWorld[kShadowCascades] = {};   // world units / shadow texel per cascade (for the sampling normal bias)
     
     Microsoft::WRL::ComPtr<ID3D12Resource> m_ShadowWorldDrawArgs[kShadowCascades][kBackBufferCount];
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_ShadowWorldDrawArgsAlloc[kShadowCascades][kBackBufferCount];
     uint8_t*  m_ShadowWorldDrawArgsPtr[kShadowCascades][kBackBufferCount] = {};
     D3D12_GPU_VIRTUAL_ADDRESS m_ShadowWorldDrawArgsGpu[kShadowCascades][kBackBufferCount] = {};
     UINT      m_ShadowWorldDrawCount[kShadowCascades] = {};
@@ -348,6 +361,7 @@ private:
     // Per-frame-in-flight shadow-sampling constant buffer (b3 in the lit passes): the cascade view-projs +
     // sun dir + strength + texel sizes, uploaded once per frame in RenderSunShadows and bound by DrawWorldMesh.
     Microsoft::WRL::ComPtr<ID3D12Resource> m_ShadowCB[kBackBufferCount];
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_ShadowCBAlloc[kBackBufferCount];
     uint8_t* m_ShadowCBMapped[kBackBufferCount] = {};
     D3D12_GPU_VIRTUAL_ADDRESS m_ShadowCBGpu[kBackBufferCount] = {};
     bool CreateShadowMap();            // shadow Texture2DArray + per-slice DSVs + array SRV + caster PSOs + CB ring (once, at init)
@@ -362,6 +376,7 @@ private:
     static constexpr UINT kPointShadowCubeSize = 128;
     static constexpr UINT kMaxShadowCubes      = 32;    // tunable up to D3D11's 128; each = 6 slices @128^2 R16 (~6MB@32)
     Microsoft::WRL::ComPtr<ID3D12Resource>       m_PointShadowCube;      // Texture2DArray(R16_TYPELESS), kMaxShadowCubes*6 slices
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation>  m_PointShadowCubeAlloc;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_PointShadowDsvHeap;   // one D16 Texture2DArray DSV (6 slices) per cube slot
     UINT m_PointShadowDsvSize = 0;
     UINT m_PointShadowSrvSlot = UINT_MAX;   // R16_UNORM TextureCubeArray SRV (all cubes), for the point-light sampler
@@ -371,12 +386,14 @@ private:
     // CasterVobPSO/CasterSkeletalPSO). The cube textures, DSV heaps, SRV, and per-frame rings below stay here.
     // Per-frame ring of the 6-face view-proj CB, one 512-aligned slot per shadowed light (bound as root CBV b0).
     Microsoft::WRL::ComPtr<ID3D12Resource> m_PointShadowCB[kBackBufferCount];
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_PointShadowCBAlloc[kBackBufferCount];
     uint8_t* m_PointShadowCBMapped[kBackBufferCount] = {};
     D3D12_GPU_VIRTUAL_ADDRESS m_PointShadowCBGpu[kBackBufferCount] = {};
     // Per-frame TIGHT (64-byte world matrix) VOB-instance ring for the point-shadow VOB caster: only the instances
     // range-culled into a shadowed light's sphere get packed here, so cube draws stay proportional to near casters.
     static constexpr UINT kPointShadowMaxVobInstances = 8192;
     Microsoft::WRL::ComPtr<ID3D12Resource> m_PointShadowVobInst[kBackBufferCount];
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_PointShadowVobInstAlloc[kBackBufferCount];
     uint8_t* m_PointShadowVobInstPtr[kBackBufferCount] = {};
     D3D12_GPU_VIRTUAL_ADDRESS m_PointShadowVobInstGpu[kBackBufferCount] = {};
     UINT m_PointShadowVobInstCapacity = 0;         // bytes
@@ -403,6 +420,7 @@ private:
     // its content is CopyResource'd into the active cube each frame. m_PointShadowStaticState tracks its resource
     // state across frames (DEPTH_WRITE when rendering static, COPY_SOURCE while feeding the per-frame copy).
     Microsoft::WRL::ComPtr<ID3D12Resource>       m_PointShadowStaticCube;
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation>  m_PointShadowStaticCubeAlloc;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_PointShadowStaticDsvHeap; // one D16 6-slice DSV per slot (mirrors active)
     D3D12_RESOURCE_STATES m_PointShadowStaticState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
     bool CreatePointShadowResources(); // both cube arrays + per-slot DSVs + array SRV + face-CB/VOB-instance rings (once, at init; PSOs in m_Pipelines.CreatePointShadow)
@@ -414,7 +432,9 @@ private:
     // grid dimensions for the current resolution.
     // Light-cull pipeline (RootSig/PSO/blob) now lives in m_Pipelines.LightCull
     Microsoft::WRL::ComPtr<ID3D12Resource> m_LightGridBuffer;    // RWStructuredBuffer<LightGrid> (numTiles * 8 B)
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_LightGridBufferAlloc;  // recreated on resize
     Microsoft::WRL::ComPtr<ID3D12Resource> m_LightIndexBuffer;   // RWStructuredBuffer<uint>  (numTiles * 32 * 4 B)
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_LightIndexBufferAlloc; // recreated on resize
     UINT m_NumTilesX = 0;
     UINT m_NumTilesY = 0;
     // Grid/index buffers round-trip UNORDERED_ACCESS (cull CS writes) -> PIXEL_SHADER_RESOURCE (lit PS reads)
@@ -425,6 +445,7 @@ private:
     // Instanced static VOBs (reuses the shared world root sig; slot 0 = packed vertex, slot 1 = per-instance
     // data). Lit PSO/blobs now live in m_Pipelines.World (VobPSO/VobVsBlob/VobPsBlob); the buffers stay here.
     Microsoft::WRL::ComPtr<ID3D12Resource> m_VobInstanceBuffer[kBackBufferCount]; // persistently-mapped upload ring
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_VobInstanceBufferAlloc[kBackBufferCount];
     uint8_t* m_VobInstanceBufferPtr[kBackBufferCount] = {};
     UINT m_VobInstanceBufferCapacity = 0;
     UINT m_VobInstanceBufferOffset = 0;                            // reset each OnBeginFrame
@@ -435,6 +456,7 @@ private:
     // bound as a root SRV (t1) to the world/VOB pixel shaders, which loop it per pixel (N.L + attenuation)
     // on top of the baked vertex lighting. Root SRV => no descriptor-heap slot consumed.
     Microsoft::WRL::ComPtr<ID3D12Resource> m_LightBuffer[kBackBufferCount]; // persistently-mapped UPLOAD, GPULight[]
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_LightBufferAlloc[kBackBufferCount];
     uint8_t* m_LightBufferPtr[kBackBufferCount] = {};
     UINT m_LightBufferCapacity = 0;                               // max lights per frame
     UINT m_FrameLightCount = 0;                                   // lights written this frame
@@ -451,6 +473,7 @@ private:
     // live in m_Pipelines.Skeletal. The per-frame CB ring below holds each vob's instance CB + bone matrices
     // (root CBVs into it, 256-byte aligned).
     Microsoft::WRL::ComPtr<ID3D12Resource> m_SkeletalCBBuffer[kBackBufferCount]; // persistently-mapped upload ring
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_SkeletalCBBufferAlloc[kBackBufferCount];
     uint8_t* m_SkeletalCBBufferPtr[kBackBufferCount] = {};
     UINT m_SkeletalCBBufferCapacity = 0;
     UINT m_SkeletalCBBufferOffset = 0;                             // reset each OnBeginFrame
@@ -459,6 +482,7 @@ private:
     // Particle (PFX) path — instanced camera-facing billboards, one instance per live particle. The root sig,
     // shaders, and per-BlendKey PSO cache now live in m_Pipelines.Particle. Per-frame instance ring stays here.
     Microsoft::WRL::ComPtr<ID3D12Resource> m_ParticleInstanceBuffer[kBackBufferCount]; // persistently-mapped upload ring
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_ParticleInstanceBufferAlloc[kBackBufferCount];
     uint8_t* m_ParticleInstanceBufferPtr[kBackBufferCount] = {};
     UINT m_ParticleInstanceBufferCapacity = 0;
     UINT m_ParticleInstanceBufferOffset = 0;                       // reset each OnBeginFrame
@@ -469,8 +493,10 @@ private:
     // alpha. The root sig, shaders, fixed lit PSO, and per-BlendKey transparent PSO cache now live in
     // m_Pipelines.Decal. The shared unit-quad VB + per-frame instance ring stay here (GPU resources).
     Microsoft::WRL::ComPtr<ID3D12Resource> m_DecalQuadVB;          // shared unit quad (6 verts), static
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_DecalQuadVBAlloc;
     D3D12_VERTEX_BUFFER_VIEW m_DecalQuadVBV = {};
     Microsoft::WRL::ComPtr<ID3D12Resource> m_DecalInstanceBuffer[kBackBufferCount]; // persistently-mapped upload ring
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_DecalInstanceBufferAlloc[kBackBufferCount];
     uint8_t* m_DecalInstanceBufferPtr[kBackBufferCount] = {};
     UINT m_DecalInstanceBufferCapacity = 0;
     UINT m_DecalInstanceBufferOffset = 0;                          // reset each OnBeginFrame
@@ -479,5 +505,4 @@ private:
     std::unique_ptr<D3D12LineRenderer> m_LineRenderer;
     std::vector<std::move_only_function<void()>> m_PerFrameCleanupItems[kBackBufferCount] = {};
     bool m_PresentPending = false;
-    Microsoft::WRL::ComPtr<D3D12MA::Allocator> m_Allocator;
 };

@@ -850,9 +850,8 @@ D3D12_GPU_DESCRIPTOR_HANDLE D3D12GraphicsEngine::GetSrvGpuHandle( UINT slot ) co
 
 
 bool D3D12GraphicsEngine::CreateUIVertexBuffers() {
-    ID3D12Device* device = m_Device.GetDevice();
-    D3D12_HEAP_PROPERTIES uploadHeap = {};
-    uploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
+    D3D12MA::ALLOCATION_DESC allocDesc = {};
+    allocDesc.HeapType = D3D12_HEAP_TYPE_UPLOAD;
 
     D3D12_RESOURCE_DESC bufDesc = {};
     bufDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
@@ -865,8 +864,9 @@ bool D3D12GraphicsEngine::CreateUIVertexBuffers() {
     bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
     for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-        if ( FAILED( device->CreateCommittedResource( &uploadHeap, D3D12_HEAP_FLAG_NONE, &bufDesc,
-            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS( m_UIVertexBuffer[i].ReleaseAndGetAddressOf() ) ) ) )
+        if ( FAILED( m_Allocator->CreateResource( &allocDesc, &bufDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_UIVertexBufferAlloc[i].ReleaseAndGetAddressOf(),
+            IID_PPV_ARGS( m_UIVertexBuffer[i].ReleaseAndGetAddressOf() ) ) ) )
             return false;
         m_UIVertexBuffer[i]->SetName( i == 0 ? L"UIVertexRing0" : L"UIVertexRing1" );
         D3D12_RANGE noRead = { 0, 0 };
@@ -994,8 +994,8 @@ bool D3D12GraphicsEngine::CreateDepthBuffer( INT2 size ) {
         m_DsvDescriptorSize = device->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_DSV );
     }
 
-    D3D12_HEAP_PROPERTIES heapDefault = {};
-    heapDefault.Type = D3D12_HEAP_TYPE_DEFAULT;
+    D3D12MA::ALLOCATION_DESC allocDesc = {};
+    allocDesc.HeapType = D3D12_HEAP_TYPE_DEFAULT;
 
     D3D12_RESOURCE_DESC dd = {};
     dd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
@@ -1015,8 +1015,9 @@ bool D3D12GraphicsEngine::CreateDepthBuffer( INT2 size ) {
 
     // Born in DEPTH_WRITE. Now also SRV-readable: DispatchLightCulling brackets a NON_PIXEL_SHADER_RESOURCE
     // read of it (per-tile far-Z) and transitions back to DEPTH_WRITE, so it is DEPTH_WRITE at every other point.
-    if ( FAILED( device->CreateCommittedResource( &heapDefault, D3D12_HEAP_FLAG_NONE, &dd,
-        D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear, IID_PPV_ARGS( m_DepthBuffer.ReleaseAndGetAddressOf() ) ) ) ) {
+    if ( FAILED( m_Allocator->CreateResource( &allocDesc, &dd,
+        D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear, m_DepthBufferAlloc.ReleaseAndGetAddressOf(),
+        IID_PPV_ARGS( m_DepthBuffer.ReleaseAndGetAddressOf() ) ) ) ) {
         LogWarn() << "D3D12: failed to create the depth buffer (" << size.x << "x" << size.y << ").";
         return false;
     }
@@ -1056,8 +1057,8 @@ bool D3D12GraphicsEngine::CreateSceneColorTarget( INT2 size ) {
     ID3D12Device* device = m_Device.GetDevice();
     if ( !device || !m_RtvHeap ) return false;
 
-    D3D12_HEAP_PROPERTIES heapDefault = {};
-    heapDefault.Type = D3D12_HEAP_TYPE_DEFAULT;
+    D3D12MA::ALLOCATION_DESC allocDesc = {};
+    allocDesc.HeapType = D3D12_HEAP_TYPE_DEFAULT;
 
     D3D12_RESOURCE_DESC dd = {};
     dd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
@@ -1072,8 +1073,9 @@ bool D3D12GraphicsEngine::CreateSceneColorTarget( INT2 size ) {
 
     // Born in RENDER_TARGET (the world pass renders straight into it; ResolveSceneToBackBuffer flips it to
     // PIXEL_SHADER_RESOURCE and back next frame). GPU is idle at every call site (init / post-WaitForGpuIdle resize).
-    if ( FAILED( device->CreateCommittedResource( &heapDefault, D3D12_HEAP_FLAG_NONE, &dd,
-        D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr, IID_PPV_ARGS( m_SceneColor.ReleaseAndGetAddressOf() ) ) ) ) {
+    if ( FAILED( m_Allocator->CreateResource( &allocDesc, &dd,
+        D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr, m_SceneColorAlloc.ReleaseAndGetAddressOf(),
+        IID_PPV_ARGS( m_SceneColor.ReleaseAndGetAddressOf() ) ) ) ) {
         LogWarn() << "D3D12: failed to create the HDR scene-color target (" << size.x << "x" << size.y << ").";
         return false;
     }
@@ -1163,8 +1165,8 @@ bool D3D12GraphicsEngine::CreateShadowMap() {
     int desired = Engine::GAPI->GetRendererState().RendererSettings.ShadowMapSize;
     m_ShadowMapSize = static_cast<UINT>( std::min( std::max( desired, 1024 ), 4096 ) );
 
-    D3D12_HEAP_PROPERTIES heapDefault = {};
-    heapDefault.Type = D3D12_HEAP_TYPE_DEFAULT;
+    D3D12MA::ALLOCATION_DESC allocDesc = {};
+    allocDesc.HeapType = D3D12_HEAP_TYPE_DEFAULT;
 
     D3D12_RESOURCE_DESC dd = {};
     dd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
@@ -1182,8 +1184,9 @@ bool D3D12GraphicsEngine::CreateShadowMap() {
     clear.DepthStencil.Depth = 1.0f;        // normal-Z: 1.0 == far (NOT reversed-Z)
 
     // Born in DEPTH_WRITE; each frame RenderSunShadows writes then transitions to PIXEL_SHADER_RESOURCE and back.
-    if ( FAILED( device->CreateCommittedResource( &heapDefault, D3D12_HEAP_FLAG_NONE, &dd,
-        D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear, IID_PPV_ARGS( m_ShadowMap.ReleaseAndGetAddressOf() ) ) ) )
+    if ( FAILED( m_Allocator->CreateResource( &allocDesc, &dd,
+        D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear, m_ShadowMapAlloc.ReleaseAndGetAddressOf(),
+        IID_PPV_ARGS( m_ShadowMap.ReleaseAndGetAddressOf() ) ) ) )
         return false;
     m_ShadowMap->SetName( L"SunShadowMap(D32 array)" );
     m_ShadowInPixelState = false;
@@ -1305,8 +1308,9 @@ bool D3D12GraphicsEngine::CreateShadowMap() {
     // Per-frame-in-flight shadow-sampling CB (b3 in the lit passes): cascade view-projs + sun dir + strength +
     // texel sizes. Small + written once per frame, so a persistently-mapped UPLOAD buffer per frame context
     // (no ring offset needed — one struct per frame). Filled in RenderSunShadows, bound by the lit draws.
-    D3D12_HEAP_PROPERTIES uploadHeap = {};
-    uploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
+    D3D12MA::ALLOCATION_DESC uploadAlloc= {};
+    uploadAlloc.HeapType = D3D12_HEAP_TYPE_UPLOAD;
+
     D3D12_RESOURCE_DESC cbDesc = {};
     cbDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
     cbDesc.Width = 256;   // one 256-aligned CB (cascade matrices + sun data fit well under 256B)
@@ -1317,8 +1321,9 @@ bool D3D12GraphicsEngine::CreateShadowMap() {
     cbDesc.SampleDesc.Count = 1;
     cbDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-        if ( FAILED( device->CreateCommittedResource( &uploadHeap, D3D12_HEAP_FLAG_NONE, &cbDesc,
-            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS( m_ShadowCB[i].ReleaseAndGetAddressOf() ) ) ) )
+        if ( FAILED( m_Allocator->CreateResource( &uploadAlloc, &cbDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_ShadowCBAlloc[i].ReleaseAndGetAddressOf(),
+            IID_PPV_ARGS( m_ShadowCB[i].ReleaseAndGetAddressOf() ) ) ) )
             return false;
         m_ShadowCB[i]->SetName( L"ShadowSamplingCB" );
         D3D12_RANGE noRead = { 0, 0 };
@@ -1342,8 +1347,9 @@ bool D3D12GraphicsEngine::CreatePointShadowResources() {
     // --- Cube array resource: Texture2DArray with kMaxShadowCubes*6 R16 slices (interpreted as a TextureCubeArray
     // by the SRV). NORMAL-Z depth (clear 1.0, LESS_EQUAL). Born in DEPTH_WRITE (RenderPointShadows flips it to
     // PIXEL_SHADER_RESOURCE for the lit pass and back next frame).
-    D3D12_HEAP_PROPERTIES heapDefault = {};
-    heapDefault.Type = D3D12_HEAP_TYPE_DEFAULT;
+    D3D12MA::ALLOCATION_DESC defaultAlloc = {};
+    defaultAlloc.HeapType = D3D12_HEAP_TYPE_DEFAULT;
+
     D3D12_RESOURCE_DESC dd = {};
     dd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
     dd.Width  = kPointShadowCubeSize;
@@ -1357,8 +1363,9 @@ bool D3D12GraphicsEngine::CreatePointShadowResources() {
     D3D12_CLEAR_VALUE clear = {};
     clear.Format = DXGI_FORMAT_D16_UNORM;
     clear.DepthStencil.Depth = 1.0f;
-    if ( FAILED( device->CreateCommittedResource( &heapDefault, D3D12_HEAP_FLAG_NONE, &dd,
-        D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear, IID_PPV_ARGS( m_PointShadowCube.ReleaseAndGetAddressOf() ) ) ) )
+    if ( FAILED( m_Allocator->CreateResource( &defaultAlloc, &dd,
+        D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear, m_PointShadowCubeAlloc.ReleaseAndGetAddressOf(),
+        IID_PPV_ARGS( m_PointShadowCube.ReleaseAndGetAddressOf() ) ) ) )
         return false;
     m_PointShadowCube->SetName( L"PointShadowCubeArray(D16)" );
     m_PointShadowInPixelState = false;
@@ -1385,8 +1392,9 @@ bool D3D12GraphicsEngine::CreatePointShadowResources() {
     // --- Static-aside cube (P2.10g): a SECOND identical cube array holding static-caster depth only. Same desc
     // (so CopyResource into the active cube is legal), born in DEPTH_WRITE, with its own per-slot 6-slice DSV heap.
     // No SRV — it's never sampled; its depth is copied into the active cube each frame before the dynamic overlay.
-    if ( FAILED( device->CreateCommittedResource( &heapDefault, D3D12_HEAP_FLAG_NONE, &dd,
-        D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear, IID_PPV_ARGS( m_PointShadowStaticCube.ReleaseAndGetAddressOf() ) ) ) )
+    if ( FAILED( m_Allocator->CreateResource( &defaultAlloc, &dd,
+        D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear, m_PointShadowStaticCubeAlloc.ReleaseAndGetAddressOf(),
+        IID_PPV_ARGS( m_PointShadowStaticCube.ReleaseAndGetAddressOf() ) ) ) )
         return false;
     m_PointShadowStaticCube->SetName( L"PointShadowStaticCubeArray(D16)" );
     m_PointShadowStaticState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
@@ -1420,8 +1428,9 @@ bool D3D12GraphicsEngine::CreatePointShadowResources() {
 
     // Per-frame ring for the face-matrix CB: one 512-byte (256-aligned; 6 matrices = 384B) slot per shadowed
     // light, so each light's cube draw binds its own root CBV without clobbering earlier same-frame draws.
-    D3D12_HEAP_PROPERTIES uploadHeap = {};
-    uploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
+    D3D12MA::ALLOCATION_DESC uploadAlloc = {};
+    uploadAlloc.HeapType = D3D12_HEAP_TYPE_UPLOAD;
+
     D3D12_RESOURCE_DESC cbDesc = {};
     cbDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
     cbDesc.Width  = static_cast<UINT64>( kMaxShadowCubes ) * 512;
@@ -1432,8 +1441,9 @@ bool D3D12GraphicsEngine::CreatePointShadowResources() {
     cbDesc.SampleDesc.Count = 1;
     cbDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-        if ( FAILED( device->CreateCommittedResource( &uploadHeap, D3D12_HEAP_FLAG_NONE, &cbDesc,
-            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS( m_PointShadowCB[i].ReleaseAndGetAddressOf() ) ) ) )
+        if ( FAILED( m_Allocator->CreateResource( &uploadAlloc, &cbDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_PointShadowCBAlloc[i].ReleaseAndGetAddressOf(),
+            IID_PPV_ARGS( m_PointShadowCB[i].ReleaseAndGetAddressOf() ) ) ) )
             return false;
         m_PointShadowCB[i]->SetName( L"PointShadowFaceCB" );
         D3D12_RANGE noRead = { 0, 0 };
@@ -1459,10 +1469,12 @@ bool D3D12GraphicsEngine::CreatePointShadowResources() {
     viDesc.SampleDesc.Count = 1;
     viDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-        if ( FAILED( device->CreateCommittedResource( &uploadHeap, D3D12_HEAP_FLAG_NONE, &viDesc,
-            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS( m_PointShadowVobInst[i].ReleaseAndGetAddressOf() ) ) ) )
+        if ( FAILED( m_Allocator->CreateResource( &uploadAlloc, &viDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_PointShadowVobInstAlloc[i].ReleaseAndGetAddressOf(),
+            IID_PPV_ARGS( m_PointShadowVobInst[i].ReleaseAndGetAddressOf() ) ) ) )
             return false;
         m_PointShadowVobInst[i]->SetName( L"PointShadowVobInstRing" );
+        m_PointShadowVobInstAlloc[i]->SetName( L"AllocPointShadowVobInstRing" );
         D3D12_RANGE noRead = { 0, 0 };
         void* mapped = nullptr;
         if ( FAILED( m_PointShadowVobInst[i]->Map( 0, &noRead, &mapped ) ) ) return false;
@@ -2232,10 +2244,10 @@ bool D3D12GraphicsEngine::CreateLightCullBuffers( INT2 size ) {
     const UINT numTiles = m_NumTilesX * m_NumTilesY;
     if ( numTiles == 0 ) return false;
 
-    D3D12_HEAP_PROPERTIES heapDefault = {};
-    heapDefault.Type = D3D12_HEAP_TYPE_DEFAULT;
+    D3D12MA::ALLOCATION_DESC heapDefault = {};
+    heapDefault.HeapType = D3D12_HEAP_TYPE_DEFAULT;
 
-    auto makeUavBuffer = [&]( UINT64 bytes, const wchar_t* name, ComPtr<ID3D12Resource>& out ) -> bool {
+    auto makeUavBuffer = [&]( UINT64 bytes, const wchar_t* name, ComPtr<ID3D12Resource>& out, ComPtr<D3D12MA::Allocation>& outAlloc ) -> bool {
         D3D12_RESOURCE_DESC bd = {};
         bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
         bd.Width = bytes;
@@ -2245,18 +2257,20 @@ bool D3D12GraphicsEngine::CreateLightCullBuffers( INT2 size ) {
         bd.SampleDesc.Count = 1;
         bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
         bd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-        if ( FAILED( device->CreateCommittedResource( &heapDefault, D3D12_HEAP_FLAG_NONE, &bd,
-            D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS( out.ReleaseAndGetAddressOf() ) ) ) ) {
+        if ( FAILED( m_Allocator->CreateResource( &heapDefault, &bd,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, outAlloc.ReleaseAndGetAddressOf(),
+            IID_PPV_ARGS( out.ReleaseAndGetAddressOf() ) ) ) ) {
             LogWarn() << "D3D12: failed to create a light-cull UAV buffer.";
             return false;
         }
         out->SetName( name );
+        outAlloc->SetName( name );
         return true;
     };
 
-    if ( !makeUavBuffer( static_cast<UINT64>( numTiles ) * 2u * sizeof( uint32_t ), L"LightGrid", m_LightGridBuffer ) )
+    if ( !makeUavBuffer( static_cast<UINT64>( numTiles ) * 2u * sizeof( uint32_t ), L"LightGrid", m_LightGridBuffer, m_LightGridBufferAlloc ) )
         return false;
-    if ( !makeUavBuffer( static_cast<UINT64>( numTiles ) * kMaxLightsPerTile * sizeof( uint32_t ), L"LightIndexList", m_LightIndexBuffer ) )
+    if ( !makeUavBuffer( static_cast<UINT64>( numTiles ) * kMaxLightsPerTile * sizeof( uint32_t ), L"LightIndexList", m_LightIndexBuffer, m_LightIndexBufferAlloc ) )
         return false;
     m_LightGridInPixelState = false;   // freshly created in UNORDERED_ACCESS (see DispatchLightCulling round-trip)
     return true;
@@ -2265,8 +2279,8 @@ bool D3D12GraphicsEngine::CreateLightCullBuffers( INT2 size ) {
 
 bool D3D12GraphicsEngine::CreateVobInstanceBuffers() {
     ID3D12Device* device = m_Device.GetDevice();
-    D3D12_HEAP_PROPERTIES uploadHeap = {};
-    uploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
+    D3D12MA::ALLOCATION_DESC uploadHeap = {};
+    uploadHeap.HeapType = D3D12_HEAP_TYPE_UPLOAD;
 
     D3D12_RESOURCE_DESC bufDesc = {};
     bufDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
@@ -2279,10 +2293,12 @@ bool D3D12GraphicsEngine::CreateVobInstanceBuffers() {
     bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
     for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-        if ( FAILED( device->CreateCommittedResource( &uploadHeap, D3D12_HEAP_FLAG_NONE, &bufDesc,
-            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS( m_VobInstanceBuffer[i].ReleaseAndGetAddressOf() ) ) ) )
+        if ( FAILED( m_Allocator->CreateResource( &uploadHeap, &bufDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_VobInstanceBufferAlloc[i].ReleaseAndGetAddressOf(),
+            IID_PPV_ARGS( m_VobInstanceBuffer[i].ReleaseAndGetAddressOf() ) ) ) )
             return false;
         m_VobInstanceBuffer[i]->SetName( i == 0 ? L"VobInstanceRing0" : L"VobInstanceRing1" );
+        m_VobInstanceBufferAlloc[i]->SetName( i == 0 ? L"AllocVobInstanceRing0" : L"AllocVobInstanceRing1" );
         D3D12_RANGE noRead = { 0, 0 };
         if ( FAILED( m_VobInstanceBuffer[i]->Map( 0, &noRead, reinterpret_cast<void**>( &m_VobInstanceBufferPtr[i] ) ) ) )
             return false;
@@ -2296,8 +2312,8 @@ bool D3D12GraphicsEngine::CreateLightBuffer() {
     // rewritten from offset 0 each frame, so these are plain persistently-mapped UPLOAD snapshots, bound
     // as a root SRV. Sized kMaxFrameLights * sizeof(GPULight).
     ID3D12Device* device = m_Device.GetDevice();
-    D3D12_HEAP_PROPERTIES uploadHeap = {};
-    uploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
+    D3D12MA::ALLOCATION_DESC uploadHeap = {};
+    uploadHeap.HeapType = D3D12_HEAP_TYPE_UPLOAD;
 
     D3D12_RESOURCE_DESC bufDesc = {};
     bufDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
@@ -2310,10 +2326,12 @@ bool D3D12GraphicsEngine::CreateLightBuffer() {
     bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
     for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-        if ( FAILED( device->CreateCommittedResource( &uploadHeap, D3D12_HEAP_FLAG_NONE, &bufDesc,
-            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS( m_LightBuffer[i].ReleaseAndGetAddressOf() ) ) ) )
+        if ( FAILED( m_Allocator->CreateResource( &uploadHeap, &bufDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_LightBufferAlloc[i].ReleaseAndGetAddressOf(),
+            IID_PPV_ARGS( m_LightBuffer[i].ReleaseAndGetAddressOf() ) ) ) )
             return false;
         m_LightBuffer[i]->SetName( i == 0 ? L"PointLightBuffer0" : L"PointLightBuffer1" );
+        m_LightBufferAlloc[i]->SetName( i == 0 ? L"AllocPointLightBuffer0" : L"AllocPointLightBuffer1" );
         D3D12_RANGE noRead = { 0, 0 };
         if ( FAILED( m_LightBuffer[i]->Map( 0, &noRead, reinterpret_cast<void**>( &m_LightBufferPtr[i] ) ) ) )
             return false;
@@ -2528,8 +2546,8 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
 
 bool D3D12GraphicsEngine::CreateParticleInstanceBuffers() {
     ID3D12Device* device = m_Device.GetDevice();
-    D3D12_HEAP_PROPERTIES uploadHeap = {};
-    uploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
+    D3D12MA::ALLOCATION_DESC uploadHeap = {};
+    uploadHeap.HeapType = D3D12_HEAP_TYPE_UPLOAD;
 
     D3D12_RESOURCE_DESC bufDesc = {};
     bufDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
@@ -2542,8 +2560,9 @@ bool D3D12GraphicsEngine::CreateParticleInstanceBuffers() {
     bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
     for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-        if ( FAILED( device->CreateCommittedResource( &uploadHeap, D3D12_HEAP_FLAG_NONE, &bufDesc,
-            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS( m_ParticleInstanceBuffer[i].ReleaseAndGetAddressOf() ) ) ) )
+        if ( FAILED( m_Allocator->CreateResource( &uploadHeap, &bufDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_ParticleInstanceBufferAlloc[i].ReleaseAndGetAddressOf(),
+            IID_PPV_ARGS( m_ParticleInstanceBuffer[i].ReleaseAndGetAddressOf() ) ) ) )
             return false;
         m_ParticleInstanceBuffer[i]->SetName( i == 0 ? L"ParticleInstanceRing0" : L"ParticleInstanceRing1" );
         D3D12_RANGE noRead = { 0, 0 };
@@ -2660,8 +2679,8 @@ XRESULT D3D12GraphicsEngine::DrawParticleEffects() {
 
 bool D3D12GraphicsEngine::CreateDecalInstanceBuffers() {
     ID3D12Device* device = m_Device.GetDevice();
-    D3D12_HEAP_PROPERTIES uploadHeap = {};
-    uploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
+    D3D12MA::ALLOCATION_DESC uploadHeap = {};
+    uploadHeap.HeapType = D3D12_HEAP_TYPE_UPLOAD;
 
     D3D12_RESOURCE_DESC bufDesc = {};
     bufDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
@@ -2674,8 +2693,9 @@ bool D3D12GraphicsEngine::CreateDecalInstanceBuffers() {
     bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
     for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-        if ( FAILED( device->CreateCommittedResource( &uploadHeap, D3D12_HEAP_FLAG_NONE, &bufDesc,
-            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS( m_DecalInstanceBuffer[i].ReleaseAndGetAddressOf() ) ) ) )
+        if ( FAILED( m_Allocator->CreateResource( &uploadHeap, &bufDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_DecalInstanceBufferAlloc[i].ReleaseAndGetAddressOf(),
+            IID_PPV_ARGS( m_DecalInstanceBuffer[i].ReleaseAndGetAddressOf() ) ) ) )
             return false;
         m_DecalInstanceBuffer[i]->SetName( i == 0 ? L"DecalInstanceRing0" : L"DecalInstanceRing1" );
         D3D12_RANGE noRead = { 0, 0 };
@@ -2700,8 +2720,9 @@ bool D3D12GraphicsEngine::CreateDecalQuadVB() {
         {  0.5f,  0.5f, 0.0f, 1.0f, 1.0f },
         { -0.5f,  0.5f, 0.0f, 0.0f, 1.0f },
     };
-    D3D12_HEAP_PROPERTIES uploadHeap = {};
-    uploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
+    D3D12MA::ALLOCATION_DESC uploadAlloc = {};
+    uploadAlloc.HeapType = D3D12_HEAP_TYPE_UPLOAD;
+
     D3D12_RESOURCE_DESC bufDesc = {};
     bufDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
     bufDesc.Width = sizeof( quad );
@@ -2711,8 +2732,9 @@ bool D3D12GraphicsEngine::CreateDecalQuadVB() {
     bufDesc.Format = DXGI_FORMAT_UNKNOWN;
     bufDesc.SampleDesc.Count = 1;
     bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    if ( FAILED( device->CreateCommittedResource( &uploadHeap, D3D12_HEAP_FLAG_NONE, &bufDesc,
-        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS( m_DecalQuadVB.ReleaseAndGetAddressOf() ) ) ) )
+    if ( FAILED( m_Allocator->CreateResource( &uploadAlloc, &bufDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_DecalQuadVBAlloc.ReleaseAndGetAddressOf(),
+        IID_PPV_ARGS( m_DecalQuadVB.ReleaseAndGetAddressOf() ) ) ) )
         return false;
     m_DecalQuadVB->SetName( L"DecalQuadVB" );
     void* mapped = nullptr;
@@ -2937,8 +2959,8 @@ void D3D12GraphicsEngine::DrawDecalList( const std::vector<zCVob*>& decals, bool
 
 bool D3D12GraphicsEngine::CreateSkeletalConstantBuffers() {
     ID3D12Device* device = m_Device.GetDevice();
-    D3D12_HEAP_PROPERTIES uploadHeap = {};
-    uploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
+    D3D12MA::ALLOCATION_DESC uploadAlloc = {};
+    uploadAlloc.HeapType = D3D12_HEAP_TYPE_UPLOAD;
 
     D3D12_RESOURCE_DESC bufDesc = {};
     bufDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
@@ -2951,8 +2973,9 @@ bool D3D12GraphicsEngine::CreateSkeletalConstantBuffers() {
     bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
     for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-        if ( FAILED( device->CreateCommittedResource( &uploadHeap, D3D12_HEAP_FLAG_NONE, &bufDesc,
-            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS( m_SkeletalCBBuffer[i].ReleaseAndGetAddressOf() ) ) ) )
+        if ( FAILED( m_Allocator->CreateResource( &uploadAlloc, &bufDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_SkeletalCBBufferAlloc[i].ReleaseAndGetAddressOf(),
+            IID_PPV_ARGS( m_SkeletalCBBuffer[i].ReleaseAndGetAddressOf() ) ) ) )
             return false;
         m_SkeletalCBBuffer[i]->SetName( i == 0 ? L"SkeletalCBRing0" : L"SkeletalCBRing1" );
         D3D12_RANGE noRead = { 0, 0 };
@@ -3233,8 +3256,9 @@ bool D3D12GraphicsEngine::CreateWorldIndirect() {
         return false;
     }
 
-    D3D12_HEAP_PROPERTIES upload = {};
-    upload.Type = D3D12_HEAP_TYPE_UPLOAD;
+    D3D12MA::ALLOCATION_DESC upload = {};
+    upload.HeapType = D3D12_HEAP_TYPE_UPLOAD;
+
     D3D12_RESOURCE_DESC bd = {};
     bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
     bd.Width = static_cast<UINT64>( kMaxWorldDrawCommands ) * sizeof( WorldDrawCommand );
@@ -3242,8 +3266,9 @@ bool D3D12GraphicsEngine::CreateWorldIndirect() {
     bd.Format = DXGI_FORMAT_UNKNOWN; bd.SampleDesc.Count = 1;
     bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-        if ( FAILED( device->CreateCommittedResource( &upload, D3D12_HEAP_FLAG_NONE, &bd,
-            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS( m_WorldDrawArgs[i].ReleaseAndGetAddressOf() ) ) ) )
+        if ( FAILED( m_Allocator->CreateResource( &upload, &bd,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_WorldDrawArgsAlloc[i].ReleaseAndGetAddressOf(),
+            IID_PPV_ARGS( m_WorldDrawArgs[i].ReleaseAndGetAddressOf() ) ) ) )
             return false;
         m_WorldDrawArgs[i]->SetName( L"WorldDrawArgsRing" );
         D3D12_RANGE noRead = { 0, 0 };
@@ -3256,8 +3281,9 @@ bool D3D12GraphicsEngine::CreateWorldIndirect() {
     
     for ( UINT c = 0; c < kShadowCascades; ++c ) {
         for ( UINT i = 0; i < kBackBufferCount; ++i ) {
-            if ( FAILED( device->CreateCommittedResource( &upload, D3D12_HEAP_FLAG_NONE, &bd,
-                D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS( m_ShadowWorldDrawArgs[c][i].ReleaseAndGetAddressOf() ) ) ) )
+            if ( FAILED( m_Allocator->CreateResource( &upload, &bd,
+                D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, m_ShadowWorldDrawArgsAlloc[c][i].ReleaseAndGetAddressOf(),
+                IID_PPV_ARGS( m_ShadowWorldDrawArgs[c][i].ReleaseAndGetAddressOf() ) ) ) )
                 return false;
             
             m_ShadowWorldDrawArgs[c][i]->SetName( L"ShadowWorldDrawArgsRing" );
