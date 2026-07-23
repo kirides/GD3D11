@@ -389,6 +389,10 @@ XRESULT D3D12GraphicsEngine::Init() {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create SRV heap.";
         return XR_FAILED;
     }
+    if ( !m_Pipelines.Init( &m_Device, &m_ShaderBackend ) ) {
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to init the pipeline-state module.";
+        return XR_FAILED;
+    }
     if ( !CreateUIPipeline() ) {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the 2D/UI pipeline.";
         return XR_FAILED;
@@ -409,7 +413,7 @@ XRESULT D3D12GraphicsEngine::Init() {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the world ExecuteIndirect resources.";
         return XR_FAILED;
     }
-    if ( !CreateLightCullPipeline() ) {
+    if ( !m_Pipelines.CreateLightCull() ) {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the light-culling compute pipeline.";
         return XR_FAILED;
     }
@@ -438,7 +442,7 @@ XRESULT D3D12GraphicsEngine::Init() {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create point-light shadow cubes.";
         return XR_FAILED;
     }
-    if ( !CreateWaterPipeline() ) {
+    if ( !m_Pipelines.CreateWater() ) {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the water pipeline.";
         return XR_FAILED;
     }
@@ -450,7 +454,7 @@ XRESULT D3D12GraphicsEngine::Init() {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the decal pipeline.";
         return XR_FAILED;
     }
-    if ( !CreateTonemapPipeline() ) {
+    if ( !m_Pipelines.CreateTonemap() ) {
         // Fatal: the 3D scene PSOs now target the HDR scene-color RT (kSceneColorFormat), so without the tonemap
         // resolve nothing reaches the swapchain. Failing here cleanly falls back to D3D11 (D3D12 is dev-forced).
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the tonemap pipeline.";
@@ -1270,81 +1274,6 @@ bool D3D12GraphicsEngine::CreateSceneColorTarget( INT2 size ) {
     return true;
 }
 
-bool D3D12GraphicsEngine::CreateTonemapPipeline() {
-    // Fullscreen HDR->swapchain resolve (Phase 3). Exposure * scene HDR -> ACES filmic curve -> R10G10B10A2. Runs
-    // once per world frame after all 3D. No vertex buffer (SV_VertexID fullscreen triangle), no depth. Created once.
-    ID3D12Device* device = m_Device.GetDevice();
-    if ( !device ) return false;
-
-    D3D12_DESCRIPTOR_RANGE srvRange = {};
-    srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    srvRange.NumDescriptors = 1;
-    srvRange.BaseShaderRegister = 0;   // t0 scene HDR
-    srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-    D3D12_ROOT_PARAMETER params[2] = {};
-    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[0].DescriptorTable.NumDescriptorRanges = 1;
-    params[0].DescriptorTable.pDescriptorRanges = &srvRange;
-    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[1].Constants.ShaderRegister = 0;   // b0 { Exposure }
-    params[1].Constants.Num32BitValues = 1;
-    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_STATIC_SAMPLER_DESC sampler = {};
-    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    sampler.MaxLOD = D3D12_FLOAT32_MAX;
-    sampler.ShaderRegister = 0;   // s0
-    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-    rsDesc.NumParameters = _countof( params );
-    rsDesc.pParameters = params;
-    rsDesc.NumStaticSamplers = 1;
-    rsDesc.pStaticSamplers = &sampler;
-    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
-
-    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
-    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (tonemap)."; return false; }
-    ComPtr<ID3DBlob> rsBlob, rsErr;
-    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-        if ( rsErr ) LogWarn() << "D3D12: tonemap root sig error: " << static_cast<const char*>( rsErr->GetBufferPointer() );
-        return false;
-    }
-    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
-        IID_PPV_ARGS( m_TonemapRootSig.ReleaseAndGetAddressOf() ) ) ) )
-        return false;
-
-    if ( !m_ShaderBackend.CompileFromFile( "Tonemap.hlsl", "VSFullscreen", Shadermodel_VS, m_TonemapVsBlob.ReleaseAndGetAddressOf() ) )
-        return false;
-    if ( !m_ShaderBackend.CompileFromFile( "Tonemap.hlsl", "PSTonemap", Shadermodel_PS, m_TonemapPsBlob.ReleaseAndGetAddressOf() ) )
-        return false;
-
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
-    pso.pRootSignature = m_TonemapRootSig.Get();
-    pso.VS = { m_TonemapVsBlob->GetBufferPointer(), m_TonemapVsBlob->GetBufferSize() };
-    pso.PS = { m_TonemapPsBlob->GetBufferPointer(), m_TonemapPsBlob->GetBufferSize() };
-    pso.InputLayout = { nullptr, 0 };
-    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    pso.NumRenderTargets = 1;
-    pso.RTVFormats[0] = kBackBufferFormat;   // resolves to the swapchain
-    pso.DSVFormat = DXGI_FORMAT_UNKNOWN;
-    pso.SampleDesc.Count = 1;
-    pso.SampleMask = UINT_MAX;
-    pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-    pso.RasterizerState.DepthClipEnable = TRUE;
-    pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-    pso.DepthStencilState.DepthEnable = FALSE;
-    pso.DepthStencilState.StencilEnable = FALSE;
-    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_TonemapPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (tonemap).";
-        return false;
-    }
-    return true;
-}
 
 void D3D12GraphicsEngine::BindSceneColorTarget() {
     // Make the HDR scene-color target the world pass's render target (+ keep the shared depth buffer). Transitions
@@ -1365,7 +1294,7 @@ void D3D12GraphicsEngine::BindSceneColorTarget() {
 void D3D12GraphicsEngine::ResolveSceneToBackBuffer() {
     // Tonemap the finished HDR scene into the swapchain backbuffer, then leave the backbuffer bound so the 2D UI
     // (drawn after OnStartWorldRendering) composites on top in LDR. If HDR is unavailable, no-op (nothing to show).
-    if ( !m_SceneColor || !m_TonemapPSO || !m_TonemapRootSig || !m_CmdList ) return;
+    if ( !m_SceneColor || !m_Pipelines.Tonemap.PSO || !m_Pipelines.Tonemap.RootSig || !m_CmdList ) return;
     DX_ZONE( m_CmdList, "Tonemap resolve (HDR->swapchain)" );
 
     if ( !m_SceneColorInPixelState ) {
@@ -1383,8 +1312,8 @@ void D3D12GraphicsEngine::ResolveSceneToBackBuffer() {
     const D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
     m_CmdList->RSSetViewports( 1, &vp );
     m_CmdList->RSSetScissorRects( 1, &sc );
-    m_CmdList->SetPipelineState( m_TonemapPSO.Get() );
-    m_CmdList->SetGraphicsRootSignature( m_TonemapRootSig.Get() );
+    m_CmdList->SetPipelineState( m_Pipelines.Tonemap.PSO.Get() );
+    m_CmdList->SetGraphicsRootSignature( m_Pipelines.Tonemap.RootSig.Get() );
     m_CmdList->SetGraphicsRootDescriptorTable( 0, GetSrvGpuHandle( m_SceneColorSrvSlot ) );
     const float exposure = m_Exposure > 0.0f ? m_Exposure : 1.0f;
     m_CmdList->SetGraphicsRoot32BitConstant( 1, *reinterpret_cast<const UINT*>( &exposure ), 0 );
@@ -2883,70 +2812,6 @@ void D3D12GraphicsEngine::RenderPointShadows() {
     m_CmdList->OMSetRenderTargets( 1, &m_SceneColorRtv, FALSE, m_DepthBuffer ? &mainDsv : nullptr );
 }
 
-bool D3D12GraphicsEngine::CreateLightCullPipeline() {
-    // Forward+ tiled light-culling compute pipeline (P2.9b-2). One GLOBAL compute root signature + PSO,
-    // created once. b0 = cull constants (8 root 32-bit values); t0 = the point-light StructuredBuffer as a
-    // root SRV (same UPLOAD buffer the world PS reads); u0/u1 = the light grid / index-list DEFAULT-heap UAVs
-    // as root UAVs (RWStructuredBuffers are valid as root UAVs; stride comes from the HLSL declaration). t1 =
-    // the depth buffer SRV, which (being a Texture2D) can't be a root SRV, so it rides a one-entry descriptor
-    // table off the shared SRV heap — used to tighten each tile's far-Z bound (P2.9b-3 flicker fix).
-    ID3D12Device* device = m_Device.GetDevice();
-
-    D3D12_DESCRIPTOR_RANGE depthRange = {};
-    depthRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    depthRange.NumDescriptors = 1;
-    depthRange.BaseShaderRegister = 1;        // t1 DepthTex
-    depthRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-    D3D12_ROOT_PARAMETER params[5] = {};
-    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[0].Constants.ShaderRegister = 0;   // b0 CullCB
-    params[0].Constants.Num32BitValues = 8;   // ProjScale(2) + ScreenDim(2) + TotalLights + NumTilesX + ProjA + ProjB
-    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-    params[1].Descriptor.ShaderRegister = 0;  // t0 SB_Lights
-    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-    params[2].Descriptor.ShaderRegister = 0;  // u0 RW_LightGrid
-    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-    params[3].Descriptor.ShaderRegister = 1;  // u1 RW_LightIndexList
-    params[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    params[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[4].DescriptorTable.NumDescriptorRanges = 1;
-    params[4].DescriptorTable.pDescriptorRanges = &depthRange;   // t1 DepthTex (SRV heap)
-    params[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-    rsDesc.NumParameters = _countof( params );
-    rsDesc.pParameters = params;
-    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;   // compute: no IA input layout
-
-    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
-    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (light cull)."; return false; }
-
-    ComPtr<ID3DBlob> rsBlob, rsErr;
-    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-        if ( rsErr ) LogWarn() << "D3D12: light-cull root signature serialize error: " << static_cast<const char*>(rsErr->GetBufferPointer());
-        return false;
-    }
-    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
-        IID_PPV_ARGS( m_LightCullRootSig.ReleaseAndGetAddressOf() ) ) ) )
-        return false;
-
-    if ( !m_ShaderBackend.CompileFromFile( "LightCull.hlsl", "CSMain", Shadermodel_CS, m_LightCullCsBlob.ReleaseAndGetAddressOf() ) ) {
-        return false;
-    }
-
-    D3D12_COMPUTE_PIPELINE_STATE_DESC pso = {};
-    pso.pRootSignature = m_LightCullRootSig.Get();
-    pso.CS = { m_LightCullCsBlob->GetBufferPointer(), m_LightCullCsBlob->GetBufferSize() };
-    if ( FAILED( device->CreateComputePipelineState( &pso, IID_PPV_ARGS( m_LightCullPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateComputePipelineState failed (light cull).";
-        return false;
-    }
-    return true;
-}
 
 bool D3D12GraphicsEngine::CreateLightCullBuffers( INT2 size ) {
     // Per-resolution Forward+ tile grid storage (P2.9b-2). Recreated on resize alongside the depth buffer.
@@ -3240,120 +3105,9 @@ void D3D12GraphicsEngine::BindFrameLights( UINT srvParam, UINT countParam, UINT 
     m_CmdList->SetGraphicsRootShaderResourceView( indexParam, m_LightIndexBuffer->GetGPUVirtualAddress() );
 }
 
-bool D3D12GraphicsEngine::CreateWaterPipeline() {
-    ID3D12Device* device = m_Device.GetDevice();
-
-    // Root signature = the world layout + one extra param: b0 ViewProj (16 consts, VS), t0 diffuse SRV
-    // (PS), b1 fog (8 consts, ALL), b2 water { time, alpha } (4 consts, ALL — VS reads time, PS alpha).
-    D3D12_DESCRIPTOR_RANGE srvRange = {};
-    srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    srvRange.NumDescriptors = 1;
-    srvRange.BaseShaderRegister = 0;         // t0
-    srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-    D3D12_ROOT_PARAMETER params[4] = {};
-    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[0].Constants.ShaderRegister = 0;   // b0 ViewProj
-    params[0].Constants.Num32BitValues = 16;
-    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[1].DescriptorTable.NumDescriptorRanges = 1;
-    params[1].DescriptorTable.pDescriptorRanges = &srvRange;
-    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[2].Constants.ShaderRegister = 1;   // b1 fog
-    params[2].Constants.Num32BitValues = 8;
-    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[3].Constants.ShaderRegister = 2;   // b2 water { time, alpha }
-    params[3].Constants.Num32BitValues = 4;
-    params[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-    D3D12_STATIC_SAMPLER_DESC sampler = {};
-    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler.MaxLOD = D3D12_FLOAT32_MAX;
-    sampler.ShaderRegister = 0;              // s0
-    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-    rsDesc.NumParameters = _countof( params );
-    rsDesc.pParameters = params;
-    rsDesc.NumStaticSamplers = 1;
-    rsDesc.pStaticSamplers = &sampler;
-    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
-
-    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
-    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (water)."; return false; }
-
-    ComPtr<ID3DBlob> rsBlob, rsErr;
-    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-        if ( rsErr ) LogWarn() << "D3D12: water root signature serialize error: " << static_cast<const char*>(rsErr->GetBufferPointer());
-        return false;
-    }
-    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
-        IID_PPV_ARGS( m_WaterRootSig.ReleaseAndGetAddressOf() ) ) ) )
-        return false;
-
-    if ( !m_ShaderBackend.CompileFromFile( "Water.hlsl", "VSMain", Shadermodel_VS, m_WaterVsBlob.ReleaseAndGetAddressOf() ) ) {
-            return false;
-    }
-    if ( !m_ShaderBackend.CompileFromFile( "Water.hlsl", "PSMain", Shadermodel_PS, m_WaterPsBlob.ReleaseAndGetAddressOf() ) ) {
-            return false;
-    }
-
-    // Same packed 36-byte ExVertexStructGPU as the world mesh; here TexCoord2 (@28, half2) is the water
-    // UV-scroll delta (bound as TEXCOORD1), and DIFFUSE (@32) is the baked vertex tint.
-    const D3D12_INPUT_ELEMENT_DESC layout[] = {
-        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 1, DXGI_FORMAT_R16G16_FLOAT,    0, 28, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "DIFFUSE",  0, DXGI_FORMAT_R8G8B8A8_UNORM,  0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-    };
-
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
-    pso.pRootSignature = m_WaterRootSig.Get();
-    pso.VS = { m_WaterVsBlob->GetBufferPointer(), m_WaterVsBlob->GetBufferSize() };
-    pso.PS = { m_WaterPsBlob->GetBufferPointer(), m_WaterPsBlob->GetBufferSize() };
-    pso.InputLayout = { layout, _countof( layout ) };
-    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    pso.NumRenderTargets = 1;
-    pso.RTVFormats[0] = kSceneColorFormat;
-    pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
-    pso.SampleDesc.Count = 1;
-    pso.SampleMask = UINT_MAX;
-
-    pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-    pso.RasterizerState.DepthClipEnable = TRUE;
-
-    // Straight alpha blend over the opaque scene: src.rgb*a + dst.rgb*(1-a); keep dst alpha.
-    D3D12_RENDER_TARGET_BLEND_DESC& rt = pso.BlendState.RenderTarget[0];
-    rt.BlendEnable = TRUE;
-    rt.SrcBlend = D3D12_BLEND_SRC_ALPHA;
-    rt.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
-    rt.BlendOp = D3D12_BLEND_OP_ADD;
-    rt.SrcBlendAlpha = D3D12_BLEND_ONE;
-    rt.DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
-    rt.BlendOpAlpha = D3D12_BLEND_OP_ADD;
-    rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-
-    // Reversed-Z: test GREATER_EQUAL, but DO NOT write depth — transparent water must not occlude, and
-    // overlapping water blends painter-style over whatever opaque depth is already there.
-    pso.DepthStencilState.DepthEnable = TRUE;
-    pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
-    pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
-    pso.DepthStencilState.StencilEnable = FALSE;
-
-    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_WaterPSO.ReleaseAndGetAddressOf() ) ) ) ) {
-        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (water).";
-        return false;
-    }
-    return true;
-}
 
 void D3D12GraphicsEngine::DrawWaterSurfaces() {
-    if ( !m_FrameOpen || !m_WaterPSO || !m_WaterRootSig || !m_DepthBuffer || g_FrameWaterSurfaces.empty() )
+    if ( !m_FrameOpen || !m_Pipelines.Water.PSO || !m_Pipelines.Water.RootSig || !m_DepthBuffer || g_FrameWaterSurfaces.empty() )
         return;
 
     DX_ZONE( m_CmdList, "DrawWaterSurfaces" );
@@ -3377,8 +3131,8 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
     // b2: { totalTime (ms, drives UV scroll), water alpha (translucency), pad, pad }.
     const float water[4] = { Engine::GAPI->GetTotalTime(), 0.7f, 0.0f, 0.0f };
 
-    m_CmdList->SetPipelineState( m_WaterPSO.Get() );
-    m_CmdList->SetGraphicsRootSignature( m_WaterRootSig.Get() );
+    m_CmdList->SetPipelineState( m_Pipelines.Water.PSO.Get() );
+    m_CmdList->SetGraphicsRootSignature( m_Pipelines.Water.RootSig.Get() );
     m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
     m_CmdList->SetGraphicsRoot32BitConstants( 2, 8, &fog, 0 );
     m_CmdList->SetGraphicsRoot32BitConstants( 3, 4, water, 0 );
@@ -4782,7 +4536,7 @@ void D3D12GraphicsEngine::DispatchLightCulling() {
     // should be non-zero where torches/spells are on screen, zero for empty sky). The lit pixel shaders read
     // this grid instead of looping all lights. The cull reads the prepass depth (transitioned to a compute SRV
     // and back below) to clamp each tile's FAR-Z to real geometry — see the shader header for why far-only.
-    if ( !m_FrameOpen || !m_LightCullPSO || !m_LightCullRootSig || !m_LightGridBuffer || !m_LightIndexBuffer )
+    if ( !m_FrameOpen || !m_Pipelines.LightCull.PSO || !m_Pipelines.LightCull.RootSig || !m_LightGridBuffer || !m_LightIndexBuffer )
         return;
     if ( !m_LightBuffer[m_FrameIndex] || m_NumTilesX == 0 || m_NumTilesY == 0 )
         return;
@@ -4835,8 +4589,8 @@ void D3D12GraphicsEngine::DispatchLightCulling() {
     depthToSrv.Transition.StateBefore = D3D12_RESOURCE_STATE_DEPTH_WRITE;
     depthToSrv.Transition.StateAfter  = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
 
-    m_CmdList->SetPipelineState( m_LightCullPSO.Get() );
-    m_CmdList->SetComputeRootSignature( m_LightCullRootSig.Get() );
+    m_CmdList->SetPipelineState( m_Pipelines.LightCull.PSO.Get() );
+    m_CmdList->SetComputeRootSignature( m_Pipelines.LightCull.RootSig.Get() );
     m_CmdList->SetComputeRoot32BitConstants( 0, 8, &cb, 0 );
     m_CmdList->SetComputeRootShaderResourceView( 1, m_LightBuffer[m_FrameIndex]->GetGPUVirtualAddress() );
     m_CmdList->SetComputeRootUnorderedAccessView( 2, m_LightGridBuffer->GetGPUVirtualAddress() );

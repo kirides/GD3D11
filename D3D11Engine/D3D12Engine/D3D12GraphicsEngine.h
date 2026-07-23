@@ -11,6 +11,7 @@
 
 #include "D3D12Texture.h"
 #include "D3D12ShaderBackend.h"
+#include "D3D12PipelineState.h"
 
 struct RenderBucket;
 class D3D12LineRenderer;
@@ -149,13 +150,11 @@ private:
     bool CreateWhiteTexture();        // 1x1 white fallback (untextured colored 2D draws)
     bool CreateDepthBuffer( INT2 size ); // R32_TYPELESS depth target + DSV(D32) + SRV(R32) (reversed-Z world rendering)
     bool CreateSceneColorTarget( INT2 size ); // R16F HDR scene-color RT (+RTV +SRV) the 3D passes render into; recreated on resize
-    bool CreateTonemapPipeline();     // fullscreen HDR->swapchain resolve (exposure + ACES); created once at init
     void BindSceneColorTarget();      // transition HDR RT -> RENDER_TARGET (if needed) + bind it (+ depth) as the world-pass RTV
     void ResolveSceneToBackBuffer();  // tonemap the HDR scene into the swapchain backbuffer, then rebind the backbuffer for the 2D UI
     bool CreateWorldPipeline();       // root sig + inline shaders + PSO for the textured world-mesh pass
     bool CreateDepthPrepassPipeline(); // Forward+ opaque depth prepass PSO (depth-only world mesh; reuses m_WorldRootSig)
     void DrawDepthPrepass();          // lay down opaque world-mesh depth before the lit passes (Forward+ prepass)
-    bool CreateLightCullPipeline();   // Forward+ tiled light-cull compute root sig + PSO (one global compute root sig)
     bool CreateLightCullBuffers( INT2 size ); // per-resolution tile grid + index-list UAV buffers (rebuilt on resize)
     void DispatchLightCulling();      // dispatch the tiled light cull (writes the per-tile light grid; not yet consumed)
     bool CreateVobPipeline();         // instanced VOB PSO (reuses the world root sig) + inline shaders
@@ -170,7 +169,6 @@ private:
     bool CreateLightBuffer();         // per-frame point-light structured buffers (Forward+ MVP: brute-force)
     void BuildFrameLightBuffer();     // (re)fill this frame's light buffer from the collected visible lights
     void BindFrameLights( UINT srvParam = 3, UINT countParam = 4, UINT gridParam = 5, UINT indexParam = 6 );   // light SRV(t1)+count+grid(t2)+index(t3); (3,4,5,6)=world, (5,6,7,8)=skeletal
-    bool CreateWaterPipeline();       // alpha-blended water PSO + own root sig (adds b2 time) + inline shaders
     void DrawWaterSurfaces() override; // draw water peeled out of the opaque world pass (scrolled UV, blended)
     bool CreateSkeletalPipeline();    // skeletal (animated NPC/monster) root sig + inline shaders + PSO
     bool CreateSkeletalConstantBuffers(); // per-frame dynamic (upload-heap) skeletal CB ring (instance + bones)
@@ -210,10 +208,7 @@ private:
     D3D12_CPU_DESCRIPTOR_HANDLE                  m_SceneColorRtv = {};    // RTV heap slot kBackBufferCount
     UINT m_SceneColorSrvSlot = UINT_MAX;                                  // SRV read by the tonemap resolve
     bool m_SceneColorInPixelState = false;                               // RENDER_TARGET (world) <-> PIXEL_SHADER_RESOURCE (resolve)
-    Microsoft::WRL::ComPtr<ID3D12RootSignature>  m_TonemapRootSig;       // t0 scene SRV table + b0 exposure root const + s0
-    Microsoft::WRL::ComPtr<ID3D12PipelineState>  m_TonemapPSO;
-    Microsoft::WRL::ComPtr<ID3DBlob>             m_TonemapVsBlob;        // fullscreen-triangle VS (SV_VertexID)
-    Microsoft::WRL::ComPtr<ID3DBlob>             m_TonemapPsBlob;        // exposure + ACES filmic -> swapchain
+    // Tonemap pipeline (RootSig/PSO/blobs) now lives in m_Pipelines.Tonemap
     float m_Exposure = 1.0f;                                             // tonemap exposure multiplier (tunable)
 
     Microsoft::WRL::ComPtr<ID3D12Resource>         m_BackBuffers[kBackBufferCount];
@@ -268,6 +263,9 @@ private:
 
     // Loads + compiles the backend's HLSL from Shaders\D3D12\*.hlsl at runtime (DXC/SM6.6, zFILE_VDFS).
     D3D12ShaderBackend m_ShaderBackend;
+
+    // Owns per-pass root signatures + PSOs + shader blobs (creation extracted from this monolith).
+    D3D12PipelineState m_Pipelines;
 
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_UIRootSig;
     Microsoft::WRL::ComPtr<ID3DBlob> m_UIVsBlob;                    // compiled once; reused for every blend PSO
@@ -445,9 +443,7 @@ private:
     // DEFAULT-heap UAV buffers holding the per-tile {Offset,Count} grid and the per-tile light-index slices
     // (fixed 32/tile, no global counter). All live permanently in UNORDERED_ACCESS. m_NumTilesX/Y = tile
     // grid dimensions for the current resolution.
-    Microsoft::WRL::ComPtr<ID3D12RootSignature> m_LightCullRootSig;  // b0 consts; t0 lights SRV; u0 grid; u1 index list
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_LightCullPSO;
-    Microsoft::WRL::ComPtr<ID3DBlob> m_LightCullCsBlob;
+    // Light-cull pipeline (RootSig/PSO/blob) now lives in m_Pipelines.LightCull
     Microsoft::WRL::ComPtr<ID3D12Resource> m_LightGridBuffer;    // RWStructuredBuffer<LightGrid> (numTiles * 8 B)
     Microsoft::WRL::ComPtr<ID3D12Resource> m_LightIndexBuffer;   // RWStructuredBuffer<uint>  (numTiles * 32 * 4 B)
     UINT m_NumTilesX = 0;
@@ -481,10 +477,7 @@ private:
     // scrolls the UV by time; PS uses alpha for the blend). Alpha-blended PSO: depth-test ON, write OFF.
     // Water geometry lives in the SAME wrapped world VB/IB (36-byte packed vertex, R32 indices); it is
     // peeled out of DrawWorldMesh's opaque loop and drawn here after all opaque geometry.
-    Microsoft::WRL::ComPtr<ID3D12RootSignature> m_WaterRootSig;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_WaterPSO;
-    Microsoft::WRL::ComPtr<ID3DBlob> m_WaterVsBlob;
-    Microsoft::WRL::ComPtr<ID3DBlob> m_WaterPsBlob;
+    // Water pipeline (RootSig/PSO/blobs) now lives in m_Pipelines.Water
 
     // Skeletal (animated NPC/monster) path — matrix-palette skinning. Own root sig (b0 ViewProj root
     // consts + b1 per-instance CBV + b2 bone-palette CBV + t0 SRV + s0). Per-frame CB ring holds each
