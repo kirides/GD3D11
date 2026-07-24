@@ -391,16 +391,6 @@ namespace {
         return b;
     }
 
-    // UAV barrier: needed between a UAV write and a later read/write of the SAME resource (e.g. the bloom
-    // pyramid's chained compute dispatches) — a transition barrier doesn't apply since the state never changes.
-    D3D12_RESOURCE_BARRIER UavBarrier( ID3D12Resource* res ) {
-        D3D12_RESOURCE_BARRIER b = {};
-        b.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-        b.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-        b.UAV.pResource = res;
-        return b;
-    }
-
     bool EnsureCopyCommandObjects( ID3D12Device* device, ComPtr<ID3D12CommandAllocator>& allocator, ComPtr<ID3D12GraphicsCommandList>& cmdList ) {
         if ( !device ) return false;
         if ( !allocator ) {
@@ -2652,15 +2642,18 @@ bool D3D12GraphicsEngine::CreateBloomResources( INT2 size ) {
 			device->CreateUnorderedAccessView( m_BloomUp[i].Get(), nullptr, &uavDesc, GetSrvCpuHandle( m_BloomUpUavSlot[i] ) );
 
 			// Upsample SRV table for level i needs 2 CONTIGUOUS slots (t0=source, rewritten per-frame in
-			// RenderBloom; t1=down[i], fixed here). Allocate the pair together so bump-allocation guarantees
-			// contiguity, then write t1 (down[i]) now — it never changes until the next resize.
-			if ( m_BloomUpSrvPairSlot[i] == UINT_MAX ) {
-				const UINT base = AllocateSrvSlot();
-				const UINT next = AllocateSrvSlot();
-				if ( base == UINT_MAX || next == UINT_MAX || next != base + 1 ) return false;
-				m_BloomUpSrvPairSlot[i] = base;
+			// RenderBloom; t1=down[i], fixed here). One pair PER IN-FLIGHT FRAME (see the header comment on
+			// m_BloomUpSrvPairSlot) — allocate each frame's pair together so bump-allocation guarantees
+			// contiguity, then write that copy's t1 (down[i]) now — it never changes until the next resize.
+			for ( UINT frame = 0; frame < kBackBufferCount; ++frame ) {
+				if ( m_BloomUpSrvPairSlot[frame][i] == UINT_MAX ) {
+					const UINT base = AllocateSrvSlot();
+					const UINT next = AllocateSrvSlot();
+					if ( base == UINT_MAX || next == UINT_MAX || next != base + 1 ) return false;
+					m_BloomUpSrvPairSlot[frame][i] = base;
+				}
+				device->CreateShaderResourceView( m_BloomDown[i].Get(), &srvDesc, GetSrvCpuHandle( m_BloomUpSrvPairSlot[frame][i] + 1 ) );
 			}
-			device->CreateShaderResourceView( m_BloomDown[i].Get(), &srvDesc, GetSrvCpuHandle( m_BloomUpSrvPairSlot[i] + 1 ) );
 		}
 	}
 
@@ -2684,17 +2677,28 @@ void D3D12GraphicsEngine::RenderBloom() {
 	struct BloomCB { float texelSizeX, texelSizeY, threshold, knee, intensity, filterRadius, padX, padY; };
 	BloomCB cb = { 0, 0, settings.BloomThreshold, settings.BloomKnee, settings.BloomStrength, settings.BloomRadius, 0, 0 };
 
-	// Scene color is still RENDER_TARGET (bound by BindSceneColorTarget for the world pass) — flip to SRV so
-	// the prefilter compute pass can sample it, then unbind it as an RTV (compute can't run with it bound).
+	// Scene color is still RENDER_TARGET (bound by BindSceneColorTarget for the world pass) — flip it to a
+	// shader-resource state so the prefilter can sample it, then unbind it as an RTV (compute can't run with it
+	// bound). The prefilter is a COMPUTE shader, so this must be NON_PIXEL_SHADER_RESOURCE, not
+	// PIXEL_SHADER_RESOURCE — reading a resource through an SRV while it is in the wrong state returns garbage on
+	// real hardware (this, plus the bloom-mip UAV-vs-SRV state bug below, was the flickering-black-screen cause).
 	if ( !m_SceneColorInPixelState ) {
-		auto toSrv = TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
+		auto toSrv = TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
 		m_CmdList->ResourceBarrier( 1, &toSrv );
 		m_SceneColorInPixelState = true;
 	}
 	m_CmdList->OMSetRenderTargets( 0, nullptr, FALSE, nullptr );
 
-	auto uavBarrier = [&]( ID3D12Resource* res ) {
-		auto b = UavBarrier( res );
+	// A compute pass writes each bloom mip through a UAV; the next pass reads it through an SRV. That REQUIRES a
+	// real state transition (UNORDERED_ACCESS -> shader-resource), NOT just a UAV barrier — a UAV barrier only
+	// orders UAV<->UAV access and performs no cache flush / decompress, so the SRV read of a still-UAV-state
+	// texture is undefined. Combined NON_PIXEL|PIXEL so both the compute chain (t0/t1) and the graphics composite
+	// can read it. The bloom mips start each frame in UNORDERED_ACCESS (created that way, and reset back at the
+	// end of this function) so "before" is always UNORDERED_ACCESS here.
+	constexpr D3D12_RESOURCE_STATES kBloomRead =
+		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+	auto toBloomRead = [&]( ID3D12Resource* res ) {
+		auto b = TransitionBarrier( res, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, kBloomRead );
 		m_CmdList->ResourceBarrier( 1, &b );
 		};
 
@@ -2709,7 +2713,7 @@ void D3D12GraphicsEngine::RenderBloom() {
 		m_CmdList->SetComputeRootDescriptorTable( 2, GetSrvGpuHandle( m_BloomDownUavSlot[0] ) );
 		const UINT gx = (m_BloomMipSize[0].x + 7) / 8, gy = (m_BloomMipSize[0].y + 7) / 8;
 		m_CmdList->Dispatch( gx, gy, 1 );
-		uavBarrier( m_BloomDown[0].Get() );
+		toBloomRead( m_BloomDown[0].Get() );
 	}
 
 	// --- Downsample chain: down[i-1] -> down[i] ---
@@ -2722,7 +2726,7 @@ void D3D12GraphicsEngine::RenderBloom() {
 		m_CmdList->SetComputeRootDescriptorTable( 2, GetSrvGpuHandle( m_BloomDownUavSlot[i] ) );
 		const UINT gx = (m_BloomMipSize[i].x + 7) / 8, gy = (m_BloomMipSize[i].y + 7) / 8;
 		m_CmdList->Dispatch( gx, gy, 1 );
-		uavBarrier( m_BloomDown[i].Get() );
+		toBloomRead( m_BloomDown[i].Get() );
 	}
 
 	// --- Upsample chain: current = down[mipCount-1]; for i = mipCount-2..0: up[i] = down[i] + tent(current) ---
@@ -2741,18 +2745,22 @@ void D3D12GraphicsEngine::RenderBloom() {
 		for ( int i = mipCount - 2; i >= 0; --i ) {
 			const bool firstStep = (i == mipCount - 2);
 			ID3D12Resource* source = firstStep ? m_BloomDown[mipCount - 1].Get() : m_BloomUp[i + 1].Get();
-			m_Device.GetDevice()->CreateShaderResourceView( source, &upSrcSrvDesc, GetSrvCpuHandle( m_BloomUpSrvPairSlot[i] ) );
+			// Double-buffered by m_FrameIndex: this CPU-side descriptor write must never land in the same heap
+			// slot a still-in-flight PRIOR frame's GPU dispatch is reading (see the header comment on
+			// m_BloomUpSrvPairSlot) — that race was the actual cause of the flickering black regions in bloom.
+			const UINT pairSlot = m_BloomUpSrvPairSlot[m_FrameIndex][i];
+			m_Device.GetDevice()->CreateShaderResourceView( source, &upSrcSrvDesc, GetSrvCpuHandle( pairSlot ) );
 
 			const int srcW = firstStep ? m_BloomMipSize[mipCount - 1].x : m_BloomMipSize[i + 1].x;
 			const int srcH = firstStep ? m_BloomMipSize[mipCount - 1].y : m_BloomMipSize[i + 1].y;
 			cb.texelSizeX = 1.0f / srcW;
 			cb.texelSizeY = 1.0f / srcH;
 			m_CmdList->SetComputeRoot32BitConstants( 0, 8, &cb, 0 );
-			m_CmdList->SetComputeRootDescriptorTable( 1, GetSrvGpuHandle( m_BloomUpSrvPairSlot[i] ) );
+			m_CmdList->SetComputeRootDescriptorTable( 1, GetSrvGpuHandle( pairSlot ) );
 			m_CmdList->SetComputeRootDescriptorTable( 2, GetSrvGpuHandle( m_BloomUpUavSlot[i] ) );
 			const UINT gx = (m_BloomMipSize[i].x + 7) / 8, gy = (m_BloomMipSize[i].y + 7) / 8;
 			m_CmdList->Dispatch( gx, gy, 1 );
-			uavBarrier( m_BloomUp[i].Get() );
+			toBloomRead( m_BloomUp[i].Get() );
 
 			// Refresh this level's canonical SRV (read by the i-1 step's t0 above, and by the composite pass
 			// once i reaches 0) — same resource/view every resize, so this is a cheap no-op-content rewrite,
@@ -2768,7 +2776,7 @@ void D3D12GraphicsEngine::RenderBloom() {
 	m_CmdList->SetGraphicsRootDescriptorTable( 0, GetSrvGpuHandle( finalBloomSrvSlot ) );
 	m_CmdList->SetGraphicsRoot32BitConstant( 1, *reinterpret_cast<const UINT*>( &settings.BloomStrength ), 0 );
 
-	auto toRt = TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET );
+	auto toRt = TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET );
 	m_CmdList->ResourceBarrier( 1, &toRt );
 	m_SceneColorInPixelState = false;
 
@@ -2780,6 +2788,19 @@ void D3D12GraphicsEngine::RenderBloom() {
 	m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 	m_CmdList->IASetVertexBuffers( 0, 0, nullptr );
 	m_CmdList->DrawInstanced( 3, 1, 0, 0 );
+
+	// Return every written bloom mip to UNORDERED_ACCESS so next frame's compute passes can write them again and
+	// so the "before" state is deterministic at the top of the next RenderBloom (the toBloomRead transitions
+	// above all assume UNORDERED_ACCESS). Done AFTER the composite, which still reads the final mip as an SRV.
+	{
+		D3D12_RESOURCE_BARRIER resets[2 * kBloomMaxMips];
+		UINT n = 0;
+		for ( int i = 0; i < mipCount; ++i )
+			resets[n++] = TransitionBarrier( m_BloomDown[i].Get(), kBloomRead, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+		for ( int i = 0; i < mipCount - 1; ++i )
+			resets[n++] = TransitionBarrier( m_BloomUp[i].Get(), kBloomRead, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+		if ( n ) m_CmdList->ResourceBarrier( n, resets );
+	}
 
 	m_ColorTargetIsHDR = true;   // just rebound m_SceneColor as RTV above
 }

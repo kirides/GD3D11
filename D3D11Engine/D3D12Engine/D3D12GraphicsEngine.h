@@ -481,7 +481,12 @@ private:
     // these are just the GPU textures + their persistent heap slots. down[i] holds prefilter (i=0) / plain
     // downsample (i>0) results; up[i] holds the tent-upsampled composite of down[i] + the lower mip. Both chains
     // stay permanently in UNORDERED_ACCESS between dispatches (all work happens within one frame's command list,
-    // no cross-frame state to track — unlike m_SceneColor, which is also read by the next frame's UI).
+    // no cross-frame RESOURCE-STATE to track — unlike m_SceneColor, which is also read by the next frame's UI).
+    // The descriptor HEAP CONTENT for the upsample pass's variable "t0" slot is a different story (see below):
+    // that one genuinely needs double-buffering, because CPU descriptor-heap writes are not synchronized to GPU
+    // instruction execution — with kBackBufferCount=2 the CPU can be recording/submitting frame N's Bloom pass
+    // (overwriting the shared heap slot) before the GPU has actually executed frame N-1's identical dispatch that
+    // reads the SAME slot, corrupting frame N-1's sample with frame N's (wrong-resolution/wrong-resource) source.
     static constexpr int kBloomMaxMips = 6;
     static constexpr int kBloomMinMipSize = 8;
     int m_BloomMipCount = 0;
@@ -497,7 +502,11 @@ private:
     // Per-level upsample SRV table: 2 CONTIGUOUS heap slots (t0=variable source, t1=down[i], fixed at creation).
     // t0 is rewritten every frame right before its dispatch (the source differs per level — down[last] for the
     // innermost level, up[i+1] otherwise); t1 is a static copy of down[i]'s SRV, written once at creation.
-    UINT m_BloomUpSrvPairSlot[kBloomMaxMips] = { UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX };  // base slot of the pair for level i; t1 = base+1
+    // Indexed [m_FrameIndex][level] — double-buffered so frame N's t0 rewrite can never race frame N-1's
+    // still-in-flight GPU read of the same slot (see the comment block above this section).
+    UINT m_BloomUpSrvPairSlot[kBackBufferCount][kBloomMaxMips] = {
+        { UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX },
+        { UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX } };  // base slot of the pair; t1 = base+1
     bool CreateBloomResources( INT2 size );   // (re)builds the pyramid textures + persistent SRV/UAV slots
     void RenderBloom();                       // prefilter -> downsample chain -> upsample chain -> additive composite
 
