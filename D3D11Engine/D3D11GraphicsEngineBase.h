@@ -35,7 +35,7 @@ public:
     XRESULT Init() override PURE;
 
     /** Called when the game created its window */
-    XRESULT SetWindow( HWND hWnd ) override;
+    XRESULT SetWindow( HWND hWnd ) override PURE;
 
     /** Called on window resize/resolution change */
     XRESULT OnResize( INT2 newSize ) override PURE;
@@ -122,7 +122,6 @@ public:
 
     void ResetPresentPending() { PresentPending = false; }
 
-    auto GetOutputWindow() const -> auto { return OutputWindow; }
     ID3D11SamplerState* GetDefaultSamplerState() const { return DefaultSamplerState.Get(); }
 
     std::unique_ptr<GraphicsEventRecord> RecordGraphicsEvent( GraphicsEventName region ) override {
@@ -162,9 +161,6 @@ protected:
 
     /** States */
     Microsoft::WRL::ComPtr<ID3D11SamplerState> DefaultSamplerState;
-
-    /** Output-window (Gothics main window)*/
-    HWND OutputWindow;
 
     /** Total resolution we are rendering at */
     INT2 Resolution;

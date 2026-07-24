@@ -447,10 +447,9 @@ int WINAPI hooked_WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR l
 
 [[noreturn]] void badAllocationHandler()
 {
-    D3D11GraphicsEngine* engine = AsD3D11Engine(Engine::GraphicsEngine);
     while ( ShowCursor( true ) < 0 );
-    if ( engine ) {
-        if ( HWND outputWindow = engine->GetOutputWindow() ) {
+    if ( Engine::GraphicsEngine ) {
+        if ( HWND outputWindow = Engine::GraphicsEngine->GetOutputWindow() ) {
             ShowWindow( outputWindow, SW_HIDE );
         }
     }

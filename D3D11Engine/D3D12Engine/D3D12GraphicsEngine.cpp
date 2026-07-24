@@ -5048,7 +5048,7 @@ void D3D12GraphicsEngine::DrawSkeletalColor() {
 
 XRESULT D3D12GraphicsEngine::SetWindow( HWND hWnd ) {
     LogInfo() << "D3D12: Creating swapchain";
-    m_OutputWindow = hWnd;
+    CommonSetWindow( hWnd ); // stores m_OutputWindow, force-activates, clips cursor, hides mouse cursor
 
     // Use the configured target resolution (NOT the current client rect — Gothic creates its window
     // tiny, so GetClientRect here would size the swapchain to a few pixels). Mirrors the D3D11 path,
@@ -5113,26 +5113,17 @@ void D3D12GraphicsEngine::ResizeOutputWindow( INT2 size ) {
 
     if ( borderless ) {
         // Fullscreen-borderless: strip the frame and cover the desktop.
-        LONG style = GetWindowLong( m_OutputWindow, GWL_STYLE );
-        style &= ~( WS_CAPTION | WS_THICKFRAME );
-        SetWindowLong( m_OutputWindow, GWL_STYLE, style );
-        LONG exStyle = GetWindowLong( m_OutputWindow, GWL_EXSTYLE );
-        exStyle &= ~( WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE | WS_EX_CLIENTEDGE | WS_EX_STATICEDGE );
-        SetWindowLong( m_OutputWindow, GWL_EXSTYLE, exStyle );
-        SetWindowPos( m_OutputWindow, nullptr, 0, 0, desktopRect.right, desktopRect.bottom, SWP_SHOWWINDOW | SWP_FRAMECHANGED );
+        ApplyWindowStyle( WindowModes::WINDOW_MODE_FULLSCREEN_BORDERLESS, RECT{ 0, 0, desktopRect.right, desktopRect.bottom } );
     } else {
         // Windowed: fixed-size window whose CLIENT area equals the target resolution.
         LONG style = ( WS_OVERLAPPEDWINDOW | WS_VISIBLE ) & ~( WS_MAXIMIZEBOX | WS_THICKFRAME );
-        SetWindowLong( m_OutputWindow, GWL_STYLE, style );
-        SetWindowLong( m_OutputWindow, GWL_EXSTYLE, WS_EX_APPWINDOW );
-
         RECT wr = { 0, 0, size.x, size.y };
         AdjustWindowRectEx( &wr, style, FALSE, WS_EX_APPWINDOW );
 
         RECT cur = {};
         int x = 0, y = 0;
         if ( GetWindowRect( m_OutputWindow, &cur ) ) { x = cur.left; y = cur.top; }
-        SetWindowPos( m_OutputWindow, nullptr, x, y, wr.right - wr.left, wr.bottom - wr.top, SWP_SHOWWINDOW | SWP_FRAMECHANGED );
+        ApplyWindowStyle( WindowModes::WINDOW_MODE_WINDOWED, RECT{ x, y, x + (wr.right - wr.left), y + (wr.bottom - wr.top) } );
     }
 
     zCView::SetWindowMode( size.x, size.y, 32 );
@@ -5922,15 +5913,15 @@ XRESULT D3D12GraphicsEngine::CreateTexture( std::unique_ptr<D3D12Texture>& outTe
     return XR_SUCCESS;
 }
 
-XRESULT D3D12GraphicsEngine::GetDisplayModeList( std::vector<DisplayModeInfo>* modeList, bool /*includeSuperSampling*/ ) {
+XRESULT D3D12GraphicsEngine::GetDisplayModeList( std::vector<DisplayModeInfo>* modeList, bool includeSuperSampling ) {
     if ( !modeList ) return XR_SUCCESS;
 
     modeList->clear();
-    if ( XR_SUCCESS != DXGI_GetDisplayModeList( m_Device.GetDevice()->GetAdapterLuid(), m_OutputWindow, modeList) ) {
-        modeList->clear();
-        modeList->push_back( DisplayModeInfo( std::max<int>( 1, m_Resolution.x ), std::max<int>( 1, m_Resolution.y ), 60, 1 ) );
+    if ( XR_SUCCESS != DXGI_GetDisplayModeList( m_Device.GetDevice()->GetAdapterLuid(), m_OutputWindow, &m_CachedDisplayModes ) ) {
+        m_CachedDisplayModes.clear();
+        m_CachedDisplayModes.push_back( DisplayModeInfo( std::max<int>( 1, m_Resolution.x ), std::max<int>( 1, m_Resolution.y ), 60, 1 ) );
     }
-    return XR_SUCCESS;
+    return AppendCachedDisplayModes( modeList, includeSuperSampling );
 }
 
 BaseLineRenderer* D3D12GraphicsEngine::GetLineRenderer() {

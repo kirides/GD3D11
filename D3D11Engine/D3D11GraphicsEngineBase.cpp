@@ -16,7 +16,6 @@
 #endif
 
 D3D11GraphicsEngineBase::D3D11GraphicsEngineBase() {
-    OutputWindow = HWND( 0 );
     PresentPending = false;
 
     // Match the resolution with the current desktop resolution
@@ -41,16 +40,6 @@ void D3D11GraphicsEngineBase::BindSurfaceTextures( int slot, GfxTexture* diffuse
         srvs[1] = D3D11Texture::From( normalmap )->GetShaderResourceView().Get();
     }
     GetContext()->PSSetShaderResources( slot, numTextures, srvs );
-}
-
-/** Called when the game created its window */
-XRESULT D3D11GraphicsEngineBase::SetWindow( HWND hWnd ) {
-    LogInfo() << "Creating swapchain";
-    OutputWindow = hWnd;
-
-    OnResize( Resolution );
-
-    return XR_SUCCESS;
 }
 
 /** Called to set the current viewport */

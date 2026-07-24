@@ -270,7 +270,6 @@ D3D11GraphicsEngine::D3D11GraphicsEngine() :
     m_lowlatency(false),
     m_HDR(false),
     m_previousFpsLimit(0),
-    m_isWindowActive(false),
     m_FrameNeedsJitter(false)
 {
     Effects = std::make_unique<D3D11Effect>();
@@ -923,58 +922,11 @@ void D3D11GraphicsEngine::SelectActiveRenderer() {
     }
 }
 
-namespace {
-    BOOL CALLBACK EnumWindowsKillSplashProc( HWND hwnd, LPARAM lParam ) {
-        // Verify the window belongs to the current process
-        DWORD windowPid;
-        GetWindowThreadProcessId( hwnd, &windowPid );
-
-        if ( windowPid != GetCurrentProcessId() ) {
-            return TRUE; // continue
-        }
-
-        char windowTitle[256];
-        // Get the window text
-        if ( GetWindowTextA( hwnd, windowTitle, sizeof( windowTitle ) ) ) {
-            // Check if the title matches "Union Splash"
-            if ( std::string( windowTitle ) == "Union Splash" ) {
-                std::cout << "Found 'Union Splash'. Closing window handle..." << std::endl;
-
-                // PostMessage is safer than SendMessage as it doesn't block
-                PostMessage( hwnd, WM_CLOSE, 0, 0 );
-
-                // Return FALSE to stop enumerating once found
-                return FALSE;
-            }
-        }
-        return TRUE; // Continue searching
-    }
-}
-
 /** Called when the game created its window */
 XRESULT D3D11GraphicsEngine::SetWindow( HWND hWnd ) {
-    if ( !OutputWindow ) {
+    if ( !m_OutputWindow ) {
         LogInfo() << "Creating swapchain";
-        OutputWindow = hWnd;
-
-        // Force activate the window on startup
-        {
-            EnumWindows( EnumWindowsKillSplashProc, 0 );
-
-            HWND hCurWnd = GetForegroundWindow();
-            DWORD dwMyID = GetCurrentThreadId();
-            DWORD dwCurID = GetWindowThreadProcessId( hCurWnd, NULL );
-            m_isWindowActive = true;
-
-            ShowWindow( hWnd, SW_RESTORE );
-            AttachThreadInput( dwCurID, dwMyID, TRUE );
-            SetWindowPos( hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_SHOWWINDOW );
-            SetWindowPos( hWnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_SHOWWINDOW );
-            SetForegroundWindow( hWnd );
-            AttachThreadInput( dwCurID, dwMyID, FALSE );
-            SetFocus( hWnd );
-            SetActiveWindow( hWnd );
-        }
+        CommonSetWindow( hWnd );
 
         const INT2 res = Resolution;
 
@@ -986,15 +938,6 @@ XRESULT D3D11GraphicsEngine::SetWindow( HWND hWnd ) {
         res.y = r.bottom;
 #endif
         if ( res.x != 0 && res.y != 0 ) OnResize( res );
-
-#ifndef BUILD_SPACER_NET
-
-        // We need to update clip cursor here because we hook the window too late to receive proper window message
-        UpdateClipCursor( hWnd );
-
-        // Force hide mouse cursor
-        while ( ShowCursor( false ) >= 0 );
-#endif
     }
 
     return XR_SUCCESS;
@@ -1012,27 +955,6 @@ void D3D11GraphicsEngine::OnResetBackBuffer() {
 /** Get BackBuffer Format */
 DXGI_FORMAT D3D11GraphicsEngine::GetBackBufferFormat() {
     return Engine::GAPI->GetRendererState().RendererSettings.CompressBackBuffer ? DXGI_FORMAT_R11G11B10_FLOAT : DXGI_FORMAT_R16G16B16A16_FLOAT;
-}
-
-void ApplyWindowStyle(HWND window, WindowModes windowMode) {
-    if (windowMode == WindowModes::WINDOW_MODE_WINDOWED) {
-        // Standard window styles for a Win32 window in windowed mode
-        LONG style = WS_OVERLAPPEDWINDOW | WS_VISIBLE;
-        style &= ~(WS_MAXIMIZEBOX | WS_THICKFRAME); // no maximize and no resizing
-        SetWindowLong(window, GWL_STYLE, style);
-
-        LONG exStyle = WS_EX_APPWINDOW;
-        SetWindowLong(window, GWL_EXSTYLE, exStyle);
-    } else {
-        // Remove frame border for fullscreen modes
-        LONG style = GetWindowLong(window, GWL_STYLE);
-        style &= ~(WS_CAPTION | WS_THICKFRAME);
-        SetWindowLong(window, GWL_STYLE, style);
-
-        LONG exStyle = GetWindowLong(window, GWL_EXSTYLE);
-        exStyle &= ~(WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE | WS_EX_CLIENTEDGE | WS_EX_STATICEDGE);
-        SetWindowLong(window, GWL_EXSTYLE, exStyle);
-    }
 }
 
 /** Get Window Mode */
@@ -1223,7 +1145,7 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
         return XR_SUCCESS;  // Don't resize if we don't have to
 
     Resolution = newSize;
-    NewResolution = newSize;
+    m_NewResolution = newSize;
 
     INT2 bbres = GetBackbufferResolution();
 
@@ -1256,26 +1178,25 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
 
         RECT desktopRect;
         GetClientRect( GetDesktopWindow(), &desktopRect );
-        SetWindowPos( OutputWindow, nullptr, 0, 0, desktopRect.right, desktopRect.bottom, SWP_SHOWWINDOW );
+        SetWindowPos( m_OutputWindow, nullptr, 0, 0, desktopRect.right, desktopRect.bottom, SWP_SHOWWINDOW );
     } else if ( Engine::GAPI->GetRendererState().RendererSettings.StretchWindow ) {
         RECT desktopRect;
         GetClientRect( GetDesktopWindow(), &desktopRect );
-        ApplyWindowStyle(OutputWindow, WindowModes::WINDOW_MODE_FULLSCREEN_BORDERLESS);
-        SetWindowPos( OutputWindow, nullptr, 0, 0, desktopRect.right, desktopRect.bottom, 
-                      SWP_SHOWWINDOW | SWP_FRAMECHANGED );
+        ApplyWindowStyle( WindowModes::WINDOW_MODE_FULLSCREEN_BORDERLESS, RECT{ 0, 0, desktopRect.right, desktopRect.bottom } );
     } else {
         RECT desktopRect;
         GetClientRect( GetDesktopWindow(), &desktopRect );
 
         auto isFullScreenWindow = bbres.x == desktopRect.right && bbres.y == desktopRect.bottom;
-        ApplyWindowStyle(OutputWindow, isFullScreenWindow ? WindowModes::WINDOW_MODE_FULLSCREEN_BORDERLESS : WindowModes::WINDOW_MODE_WINDOWED);
-        
+
         RECT rect;
-        if ( GetWindowRect( OutputWindow, &rect ) && !isFullScreenWindow ) {
-            SetWindowPos( OutputWindow, nullptr, rect.left, rect.top, bbres.x, bbres.y, SWP_SHOWWINDOW | SWP_FRAMECHANGED );
+        RECT targetRect;
+        if ( GetWindowRect( m_OutputWindow, &rect ) && !isFullScreenWindow ) {
+            targetRect = RECT{ rect.left, rect.top, rect.left + bbres.x, rect.top + bbres.y };
         } else {
-            SetWindowPos( OutputWindow, nullptr, 0, 0, bbres.x, bbres.y, SWP_SHOWWINDOW | SWP_FRAMECHANGED );
+            targetRect = RECT{ 0, 0, bbres.x, bbres.y };
         }
+        ApplyWindowStyle( isFullScreenWindow ? WindowModes::WINDOW_MODE_FULLSCREEN_BORDERLESS : WindowModes::WINDOW_MODE_WINDOWED, targetRect );
     }
 #endif
 
@@ -1300,7 +1221,11 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
 
         m_swapchainflip = Engine::GAPI->GetRendererState().RendererSettings.DisplayFlip;
         if ( m_swapchainflip ) {
-            ApplyWindowStyle(OutputWindow, WindowModes::WINDOW_MODE_FULLSCREEN_BORDERLESS);
+            // Re-assert borderless style bits only — keep the window's current position/size,
+            // which was already established by the resize logic above in this same call.
+            RECT currentRect = {};
+            GetWindowRect( m_OutputWindow, &currentRect );
+            ApplyWindowStyle( WindowModes::WINDOW_MODE_FULLSCREEN_BORDERLESS, currentRect );
         }
 
         DXGI_SWAP_CHAIN_DESC1 scd = {};
@@ -1359,14 +1284,14 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
         scd.Height = bbres.y;
         scd.Width = bbres.x;
 
-        hr = DXGIFactory2->CreateSwapChainForHwnd( GetDevice().Get(), OutputWindow, &scd, nullptr, nullptr, SwapChain.GetAddressOf() );
+        hr = DXGIFactory2->CreateSwapChainForHwnd( GetDevice().Get(), m_OutputWindow, &scd, nullptr, nullptr, SwapChain.GetAddressOf() );
         if ( FAILED( hr ) ) {
             LogError() << "Failed to create Swapchain! Program will now exit! HR: " << std::hex << hr;
             exit( 0 );
         }
 
         if ( m_swapchainflip ) {
-            LE( DXGIFactory2->MakeWindowAssociation( OutputWindow, DXGI_MWA_NO_WINDOW_CHANGES ) );
+            LE( DXGIFactory2->MakeWindowAssociation( m_OutputWindow, DXGI_MWA_NO_WINDOW_CHANGES ) );
         } else {
             // Perform fullscreen transition
             // According to microsoft guide it is the best practice
@@ -1389,7 +1314,7 @@ XRESULT D3D11GraphicsEngine::OnResize( INT2 newSize ) {
         // Need to init AntTweakBar now that we have a working swapchain
         // XLE( Engine::AntTweakBar->Init() );
 
-        Engine::ImGuiHandle->Init( OutputWindow, GetDevice(), GetContext() );
+        Engine::ImGuiHandle->Init( m_OutputWindow, GetDevice(), GetContext() );
 
         wrl::ComPtr<IDXGISwapChain2> swapChain2;
         if ( m_lowlatency && SUCCEEDED( SwapChain.As( &swapChain2 ) ) ) {
@@ -1603,8 +1528,8 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
         ? ResolvedDrawMultiIndexedInstancedIndirect
         : Stub_DrawMultiIndexedInstancedIndirect;
 
-    if (NewResolution != Resolution) {
-        OnResize(NewResolution);
+    if (m_NewResolution != Resolution) {
+        OnResize(m_NewResolution);
     } else if ( currentWindowMode && lastWindowMode != currentWindowMode) {
         // only allow changing to display-flip modes, prevent change from flip to exclusive and vice versa
         if ( rendererState.RendererSettings.DisplayFlip && currentWindowMode == WindowModes::WINDOW_MODE_FULLSCREEN_EXCLUSIVE ) {
@@ -1642,7 +1567,7 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
     rendererState.RendererSettings.EnableInactiveFpsLock = false;
 #endif //  BUILD_SPACERNET
 
-    if ( !m_isWindowActive && rendererState.RendererSettings.EnableInactiveFpsLock ) {
+    if ( !m_IsWindowActive && rendererState.RendererSettings.EnableInactiveFpsLock ) {
         m_FrameLimiter->SetLimit( 20 );
         m_FrameLimiter->Start();
     } else {
@@ -1657,8 +1582,8 @@ XRESULT D3D11GraphicsEngine::OnBeginFrame() {
     SteamOverlay::Update();
 #ifdef BUILD_1_12F
     // Some shitty workaround for weird hidden window bug that happen on d3d11 renderer
-    if ( !(GetWindowLongA( OutputWindow, GWL_STYLE ) & WS_VISIBLE) ) {
-        ShowWindow( OutputWindow, SW_SHOW );
+    if ( !(GetWindowLongA( m_OutputWindow, GWL_STYLE ) & WS_VISIBLE) ) {
+        ShowWindow( m_OutputWindow, SW_SHOW );
     }
 #endif
 
@@ -1762,8 +1687,8 @@ XRESULT D3D11GraphicsEngine::FetchDisplayModeList() {
     // if it for some reason fails get resolutions through WinApi
     __try {
         XRESULT result = FetchDisplayModeListDXGI();
-        if ( result == XR_FAILED || CachedDisplayModes.size() <= 1 ) {
-            CachedDisplayModes.clear();
+        if ( result == XR_FAILED || m_CachedDisplayModes.size() <= 1 ) {
+            m_CachedDisplayModes.clear();
             result = FetchDisplayModeListWindows();
         }
         return result;
@@ -1775,7 +1700,7 @@ XRESULT D3D11GraphicsEngine::FetchDisplayModeList() {
 
 XRESULT D3D11GraphicsEngine::FetchDisplayModeListDXGI() {
     if ( !DXGIAdapter2 ) {
-        CachedDisplayModes.emplace_back( Resolution.x, Resolution.y );
+        m_CachedDisplayModes.emplace_back( Resolution.x, Resolution.y );
         return XR_FAILED;
     }
 
@@ -1785,21 +1710,21 @@ XRESULT D3D11GraphicsEngine::FetchDisplayModeListDXGI() {
     DXGIAdapter2->EnumOutputs( 0, output11.GetAddressOf() );
     HRESULT hr = output11.As( &output );
     if ( !output.Get() || FAILED( hr ) ) {
-        CachedDisplayModes.emplace_back( Resolution.x, Resolution.y );
+        m_CachedDisplayModes.emplace_back( Resolution.x, Resolution.y );
         return XR_FAILED;
     }
 
     UINT numModes = 0;
     hr = output->GetDisplayModeList1( DXGI_FORMAT_ENGINE_SWAPCHAIN , 0, &numModes, nullptr );
     if ( FAILED( hr ) || numModes == 0 ) {
-        CachedDisplayModes.emplace_back( Resolution.x, Resolution.y );
+        m_CachedDisplayModes.emplace_back( Resolution.x, Resolution.y );
         return XR_FAILED;
     }
 
     std::unique_ptr<DXGI_MODE_DESC1[]> displayModes = std::make_unique<DXGI_MODE_DESC1[]>( numModes );
     hr = output->GetDisplayModeList1( DXGI_FORMAT_ENGINE_SWAPCHAIN , 0, &numModes, displayModes.get() );
     if ( FAILED( hr ) ) {
-        CachedDisplayModes.emplace_back( Resolution.x, Resolution.y );
+        m_CachedDisplayModes.emplace_back( Resolution.x, Resolution.y );
         return XR_FAILED;
     }
 
@@ -1810,7 +1735,7 @@ XRESULT D3D11GraphicsEngine::FetchDisplayModeListDXGI() {
         currentRefreshRate = devMode.dmDisplayFrequency;
     }
 
-    CachedDisplayModes.reserve( numModes );
+    m_CachedDisplayModes.reserve( numModes );
     for ( UINT i = 0; i < numModes; i++ ) 	{
         DXGI_MODE_DESC1& displayMode = displayModes[i];
         if ( static_cast<UINT>(Resolution.x) == displayMode.Width && static_cast<UINT>(Resolution.y) == displayMode.Height ) {
@@ -1823,14 +1748,14 @@ XRESULT D3D11GraphicsEngine::FetchDisplayModeListDXGI() {
 
         if ( displayMode.Width >= 800 && displayMode.Height >= 600 ) {
             DisplayModeInfo info( static_cast<int>(displayMode.Width), static_cast<int>(displayMode.Height) );
-            auto it = std::find_if( CachedDisplayModes.begin(), CachedDisplayModes.end(),
+            auto it = std::find_if( m_CachedDisplayModes.begin(), m_CachedDisplayModes.end(),
                 [&info]( DisplayModeInfo& a ) { return (a.Width == info.Width && a.Height == info.Height); } );
-            if ( it == CachedDisplayModes.end() ) {
-                CachedDisplayModes.push_back( info );
+            if ( it == m_CachedDisplayModes.end() ) {
+                m_CachedDisplayModes.push_back( info );
             }
         }
     }
-    CachedDisplayModes.shrink_to_fit();
+    m_CachedDisplayModes.shrink_to_fit();
     return XR_SUCCESS;
 }
 
@@ -1847,10 +1772,10 @@ XRESULT D3D11GraphicsEngine::FetchDisplayModeListWindows() {
 
         if ( devmode.dmPelsWidth >= 800 && devmode.dmPelsHeight >= 600 ) {
             DisplayModeInfo info( static_cast<int>(devmode.dmPelsWidth), static_cast<int>(devmode.dmPelsHeight) );
-            auto it = std::find_if( CachedDisplayModes.begin(), CachedDisplayModes.end(),
+            auto it = std::find_if( m_CachedDisplayModes.begin(), m_CachedDisplayModes.end(),
                 [&info]( DisplayModeInfo& a ) { return (a.Width == info.Width && a.Height == info.Height); } );
-            if ( it == CachedDisplayModes.end() ) {
-                CachedDisplayModes.push_back( info );
+            if ( it == m_CachedDisplayModes.end() ) {
+                m_CachedDisplayModes.push_back( info );
             }
         }
     }
@@ -1861,22 +1786,7 @@ XRESULT D3D11GraphicsEngine::FetchDisplayModeListWindows() {
 XRESULT
 D3D11GraphicsEngine::GetDisplayModeList( std::vector<DisplayModeInfo>* modeList,
     bool includeSuperSampling ) {
-    modeList->reserve( CachedDisplayModes.size() );
-    for ( DisplayModeInfo& mode : CachedDisplayModes ) {
-        modeList->push_back( mode );
-    }
-    if ( includeSuperSampling ) {
-        // Put supersampling resolutions in, up to just below 8k
-        int i = 2;
-        DisplayModeInfo ssBase = modeList->back();
-        while ( ssBase.Width * i < 8192 && ssBase.Height * i < 8192 ) {
-            DisplayModeInfo info( static_cast<int>(ssBase.Width * i), static_cast<int>(ssBase.Height * i) );
-            modeList->push_back( info );
-            ++i;
-        }
-    }
-
-    return XR_SUCCESS;
+    return AppendCachedDisplayModes( modeList, includeSuperSampling );
 }
 
 void RenderVelocity(D3D11GraphicsEngine* engine,
@@ -8466,70 +8376,6 @@ void D3D11GraphicsEngine::DrawVobSingle( VobInfo* vob, zCCamera& camera ) {
     GetContext()->PSSetSamplers( 0, 1, ClampSamplerState.GetAddressOf() );
 }
 
-/** Update focus window state */
-void D3D11GraphicsEngine::UpdateFocus( HWND hWnd, bool focus_state )
-{
-    bool has_focus = (GetForegroundWindow() == hWnd);
-    if ( m_isWindowActive == has_focus || has_focus != focus_state ) {
-        return;
-    }
-
-    m_isWindowActive = has_focus;
-    UpdateClipCursor( hWnd );
-}
-
-/** Update clipping cursor onto window */
-void D3D11GraphicsEngine::UpdateClipCursor( HWND hWnd )
-{
-#ifndef BUILD_SPACER_NET
-    RECT rect;
-    static RECT last_clipped_rect;
-
-    // People use open settings window to navigate to other screens
-    if ( m_isWindowActive && !HasSettingsWindow() ) {
-        GetClientRect( hWnd, &rect );
-        ClientToScreen( hWnd, reinterpret_cast<LPPOINT>(&rect) + 0 );
-        ClientToScreen( hWnd, reinterpret_cast<LPPOINT>(&rect) + 1 );
-        if ( ClipCursor( &rect ) ) {
-            last_clipped_rect = rect;
-        }
-    } else {
-        if ( GetClipCursor( &rect ) && memcmp( &rect, &last_clipped_rect, sizeof( RECT ) ) == 0 ) {
-            ClipCursor( nullptr );
-            ZeroMemory( &last_clipped_rect, sizeof( RECT ) );
-        }
-    }
-#endif
-}
-
-/** Message-Callback for the main window */
-LRESULT D3D11GraphicsEngine::OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam,
-    LPARAM lParam ) {
-    switch ( msg ) {
-        case WM_NCACTIVATE: UpdateFocus( hWnd, !!wParam ); break;
-        case WM_ACTIVATE: UpdateFocus( hWnd, !!LOWORD( wParam ) ); break;
-        case WM_SETFOCUS: UpdateFocus( hWnd, true ); break;
-        case WM_KILLFOCUS:
-        case WM_ENTERIDLE: UpdateFocus( hWnd, false ); break;
-        case WM_WINDOWPOSCHANGED: UpdateClipCursor( hWnd ); break;
-    }
-    return 0;
-}
-
-/** Handles an UI-Event */
-void D3D11GraphicsEngine::OnUIEvent( EUIEvent uiEvent ) {
-    D3D11GraphicsEngineBase::OnUIEvent(uiEvent);
-
-    // TODO: also implement UpdateClipCursor for Dx12.
-    if ( uiEvent == UI_OpenSettings ) {
-        UpdateClipCursor( OutputWindow );
-    } else if ( uiEvent == UI_ToggleAdvancedSettings ) {
-        UpdateClipCursor( OutputWindow );
-    } else if ( uiEvent == UI_ClosedSettings ) {
-        UpdateClipCursor( OutputWindow );
-    }
-}
-
 /** Returns the data of the backbuffer */
 void D3D11GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& buffersize, int& pixelsize ) {
     if ( thumbnail ) {
@@ -9256,12 +9102,6 @@ void D3D11GraphicsEngine::DrawUnderwaterEffects() {
 
     PfxRenderer->BlurTexture( HDRBackBuffer.get(), false, 0.10f, UNDERWATER_COLOR_MOD,
         PShaderID::PS_PFX_UnderwaterFinal );
-}
-
-/** Returns the settings window availability */
-bool D3D11GraphicsEngine::HasSettingsWindow()
-{
-    return ( Engine::ImGuiHandle && Engine::ImGuiHandle->GetIsActive() );
 }
 
 void D3D11GraphicsEngine::EnsureTempVertexBufferSize( std::unique_ptr<D3D11VertexBuffer>& buffer, UINT size ) {

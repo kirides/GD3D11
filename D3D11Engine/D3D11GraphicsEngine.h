@@ -97,7 +97,7 @@ public:
     XRESULT OnBeginFrame() override;
 
     XRESULT TriggerResize( INT2 resolution ) override {
-        NewResolution = resolution;
+        m_NewResolution = resolution;
         return XR_SUCCESS;
     }
 
@@ -321,23 +321,11 @@ public:
     /** Returns the current rendering stage */
     D3D11ENGINE_RENDER_STAGE GetRenderingStage() override;
 
-    /** Update focus window state */
-    void UpdateFocus( HWND hWnd, bool focus_state );
-
-    /** Update clipping cursor onto window */
-    void UpdateClipCursor( HWND hWnd );
-
-    /** Message-Callback for the main window */
-    LRESULT OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam ) override;
-    
     /** Reloads shaders */
     XRESULT ReloadShaders( ShaderCategory categories = ShaderCategory::All) override;
 
     /** Draws the given mesh infos as water */
     void DrawWaterSurfaces() override;
-
-    /** Handles an UI-Event */
-    void OnUIEvent( EUIEvent uiEvent ) override;
 
     /** Draws the given list of decals */
     void DrawDecalList( const std::vector<zCVob*>& decals, bool lighting );
@@ -370,9 +358,6 @@ public:
         the render graph creates the two targets and calls this directly (not via the base interface). */
     void DrawFrameParticles(std::map<zCTexture*, std::vector<ParticleInstanceInfo>>& particles, std::map<zCTexture*, ParticleRenderInfo>& info, RenderToTextureBuffer
                             * bufferParticleColor, RenderToTextureBuffer* bufferParticleDistortion);
-
-    /** Returns the settings window availability */
-    bool HasSettingsWindow();
 
     /** Returns a dummy cube-rendertarget used for pointlight shadowmaps */
     RenderToTextureBuffer* GetDummyCubeRT() const { return ShadowMaps ? ShadowMaps->GetDummyCubeRT() : nullptr; }
@@ -767,8 +752,7 @@ private:
     std::unique_ptr<D3D11VertexBuffer> TempMorphedMeshBigVertexBuffer;
     std::unique_ptr<D3D11VertexBuffer> TempHUDVertexBuffer;
 
-    /** Cached display modes */
-    std::vector<DisplayModeInfo> CachedDisplayModes;
+    /** Cached refresh rate for the current exclusive-fullscreen mode (D3D11-only concept). */
     DXGI_RATIONAL CachedRefreshRate;
 
     /** Low latency object handle */
@@ -782,14 +766,11 @@ private:
     bool m_lowlatency;
     bool m_HDR;
     int m_previousFpsLimit;
-    bool m_isWindowActive;
     bool m_FrameNeedsJitter;
     float unionCurrentCustomFontMultiplier;
 
     std::unique_ptr<RenderToTextureBuffer> VelocityBuffer;
     XMFLOAT4X4 m_PrevViewProjMatrix;
-    
-    INT2 NewResolution;
 
     void CreateAndBindDefaultSampler();
 };

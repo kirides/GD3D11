@@ -285,14 +285,13 @@ private:
 
     void ReleaseCompletedCopyResources( UINT64 fenceValue );
 
-    HWND  m_OutputWindow = nullptr;
     INT2  m_Resolution = {};
-    // Requested resolution (TriggerResize just stores it here, mirrors D3D11GraphicsEngine::NewResolution).
-    // Applied at the very start of the NEXT OnBeginFrame — never mid-frame — so the resize always runs while
-    // the command list is closed/idle (no open recording to disrupt), instead of the old per-frame-cleanup-ring
-    // deferral which could stall for an unbounded number of frames waiting for m_FrameIndex to cycle back to
+    // Requested resolution (TriggerResize just stores it here — m_NewResolution itself lives on
+    // BaseGraphicsEngine, shared with D3D11's identical deferral). Applied at the very start of the
+    // NEXT OnBeginFrame — never mid-frame — so the resize always runs while the command list is
+    // closed/idle (no open recording to disrupt), instead of the old per-frame-cleanup-ring deferral
+    // which could stall for an unbounded number of frames waiting for m_FrameIndex to cycle back to
     // the slot the request landed in, and would leave stale null DSV/UAV bindings in the meantime.
-    INT2  m_NewResolution = {};
     bool  m_SwapChainReady = false;
     bool  m_FrameOpen = false;        // true between OnBeginFrame and OnEndFrame
     float m_ClearColor[4] = { 0.0f, 0.0f, 0.0f, 1.0f }; // black — the 2D UI draws over it

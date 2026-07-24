@@ -264,9 +264,6 @@ public:
     /** Draws a VOB (used for inventory) */
     virtual void DrawVobSingle( VobInfo* vob, zCCamera& camera ) {};
 
-    /** Message-Callback for the main window */
-    virtual LRESULT OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam ) { return 0; }
-
     /** Called when a vob was removed from the world */
     virtual XRESULT OnVobRemovedFromWorld( zCVob* vob ) { return XR_SUCCESS; }
 
@@ -283,8 +280,64 @@ public:
     virtual void DrawFrameParticleMeshes( std::unordered_map<zCVob*, std::unique_ptr<MeshVisualInfo>>& progMeshes ) {}
 
     virtual void DrawString( std::string_view str, float x, float y, const zFont* font, zColor& fontColor ) {};
-    
+
     virtual XRESULT UpdateRenderStates() { return XR_SUCCESS; };
 
     virtual std::unique_ptr<GraphicsEventRecord> RecordGraphicsEvent( GraphicsEventName region ) { return std::make_unique<GraphicsEventRecord>(); }
+
+    // --- Window management shared by every backend (owns the OS window handle + common OS-level
+    //     policy: startup activation, style/mode switching, focus/cursor-clip, display-mode caching). ---
+
+    /** The game's main window, once known (null until SetWindow() has been called). */
+    HWND GetOutputWindow() const { return m_OutputWindow; }
+
+    /** Whether the game window currently has OS focus. */
+    bool IsWindowActive() const { return m_IsWindowActive; }
+
+    /** Whether the mod's own ImGui settings/editor window is currently open — used to avoid
+        clipping the cursor to the game window while the player is meant to be interacting
+        with the settings UI on another part of the screen. */
+    bool HasSettingsWindow() const;
+
+    /** Common SetWindow() bring-up, called once per process by each backend's own SetWindow()
+        override (before that override sizes and calls OnResize() itself — sizing sources differ
+        too much between backends to fold in here). Stores hWnd, force-activates the window
+        (foreground/focus dance + closes a stray "Union Splash" window if present), and — outside
+        BUILD_SPACER_NET — clips the cursor to the window and force-hides it. No-op if the output
+        window is already known or hWnd is null. */
+    void CommonSetWindow( HWND hWnd );
+
+    /** Applies WS_ / WS_EX_ style bits for windowed vs. borderless/fullscreen-ish modes against
+        the output window, then SetWindowPos to windowRect. Binary on
+        windowMode == WINDOW_MODE_WINDOWED vs. anything else (matches both backends' existing
+        style logic); callers compute windowRect themselves since the two backends size it
+        slightly differently today. */
+    void ApplyWindowStyle( WindowModes windowMode, RECT windowRect, UINT swpFlags = SWP_SHOWWINDOW | SWP_FRAMECHANGED );
+
+    /** Focus tracking + cursor-clip. UpdateFocus is idempotent — it re-checks GetForegroundWindow()
+        itself and only acts on a genuine transition — and calls UpdateClipCursor() when the state
+        actually flips. UpdateClipCursor claims ClipCursor() to the window's client rect while the
+        window is active and no settings window is open, and releases it otherwise (only releasing
+        a clip this engine itself claimed, tracked via a remembered rect). */
+    void UpdateFocus( bool focusState );
+    void UpdateClipCursor();
+
+    /** Default window-message handling: routes WM_NCACTIVATE/WM_ACTIVATE/WM_SETFOCUS/
+        WM_KILLFOCUS/WM_ENTERIDLE to UpdateFocus() and WM_WINDOWPOSCHANGED to UpdateClipCursor().
+        Backends needing extra messages should call BaseGraphicsEngine::OnWindowMessage(...) from
+        their override rather than reimplementing focus/clip handling. */
+    virtual LRESULT OnWindowMessage( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam );
+
+    /** Copies the cached display-mode list into *modeList, optionally appending supersample
+        resolutions (integer multiples of the highest cached mode, up to just under 8192) when
+        includeSuperSampling is set. Backends populate m_CachedDisplayModes with their own
+        enumeration (the concrete DXGI/Windows APIs used differ enough to stay backend-specific),
+        then call this from their GetDisplayModeList() override. */
+    XRESULT AppendCachedDisplayModes( std::vector<DisplayModeInfo>* modeList, bool includeSuperSampling ) const;
+
+protected:
+    HWND m_OutputWindow = nullptr;
+    bool m_IsWindowActive = false;
+    INT2 m_NewResolution = {};
+    std::vector<DisplayModeInfo> m_CachedDisplayModes;
 };
