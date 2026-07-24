@@ -137,7 +137,7 @@ XRESULT D3D12VertexBuffer::Init( void* initData, unsigned int sizeInBytes, EBind
     const std::string debugName = "VB:" + ( fileName.empty() ? std::string( "unnamed" ) : fileName );
 
     if ( isDynamic ) {
-        bool useGpuUpload = allocator->IsGPUUploadHeapSupported();
+        bool useGpuUpload = false && allocator->IsGPUUploadHeapSupported();
 
         // --- Dynamic path: Persistently Mapped UPLOAD Heap, one copy per frame-in-flight ---
         for ( UINT i = 0; i < m_NumCopies; ++i ) {

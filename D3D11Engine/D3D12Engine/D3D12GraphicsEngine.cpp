@@ -706,7 +706,9 @@ bool D3D12GraphicsEngine::CreateAllocators() {
         return false;
     }
 	if ( m_Allocator->IsGPUUploadHeapSupported() ) {
-		DefaultUploadHeapType = D3D12_HEAP_TYPE_GPU_UPLOAD;
+	    // Holy hell, D3D12_HEAP_TYPE_GPU_UPLOAD is fucking expensive ?? Do not use if doing many updates! this completely tanks FPS
+	    // for example for dynamic verticies, this causes 99% usage in FixedFunction vertex updates
+		// DefaultUploadHeapType = D3D12_HEAP_TYPE_GPU_UPLOAD;
 	}
     
     return m_Allocator != nullptr;
