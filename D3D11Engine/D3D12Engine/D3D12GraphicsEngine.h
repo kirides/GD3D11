@@ -1,6 +1,8 @@
 #pragma once
 #include <D3D12MemAlloc.h>
+#include <atomic>
 #include <deque>
+#include <mutex>
 
 #include "../BaseGraphicsEngine.h"
 #include "../Frustum.h"
@@ -157,6 +159,8 @@ public:
 
 private:
     void QueueCleanupJob(std::move_only_function<void()> callback); // cleanup job runs after the calling frames fence value is completed.
+    D3D12_CPU_DESCRIPTOR_HANDLE GetSrvCpuHandleLocked( UINT slot ) const; // caller holds m_SrvHeapMutex
+    D3D12_GPU_DESCRIPTOR_HANDLE GetSrvGpuHandleLocked( UINT slot ) const; // caller holds m_SrvHeapMutex
     bool CreateAllocators();
     void ResizeOutputWindow( INT2 size );  // size the OS window + inform Gothic (zCView) of the mode
     bool CreateSwapChain( INT2 size );
@@ -272,7 +276,14 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Fence> m_Fence;
     UINT64 m_FenceValues[kBackBufferCount] = {};
     HANDLE m_FenceEvent = nullptr;
-    UINT   m_FrameIndex = 0;
+    UINT   m_FrameIndex = 0;   // render-thread-only; every use above indexes per-frame GPU rings
+
+    // Mirror of m_FrameIndex, updated (relaxed store) at its every write site. QueueCleanupJob is the
+    // ONE place a resource-loading worker thread (once MT texture loading is enabled) needs the current
+    // frame slot, so it reads this atomic instead of the plain m_FrameIndex the render thread owns —
+    // avoids a torn/UB read of a non-atomic cross-thread variable without touching the hot render path
+    // (m_FrameIndex itself stays a plain UINT; ~50 render-thread-only reads elsewhere are unaffected).
+    std::atomic<UINT> m_CleanupFrameIndex{ 0 };
 
     // Synchronous upload path (direct queue) used for the transition barrier after async copy-queue uploads.
     Microsoft::WRL::ComPtr<ID3D12CommandAllocator> m_UploadAllocator;
@@ -356,6 +367,15 @@ private:
     UINT m_SrvHeapCapacity = 0;
     UINT m_SrvAllocated = 0;                                        // bump allocator (no free-list yet)
     std::vector<UINT> m_FreeSrvSlots; // Recycled descriptor indices
+
+    // Guards m_SrvAllocated + m_FreeSrvSlots. AllocateSrvSlot() is called from D3D12Texture::CreateSRV,
+    // which (once MT texture loading is re-enabled) can run on a Gothic resource-manager worker thread
+    // concurrently with the render thread reading slots every draw via GetSrvCpuHandle/GetSrvGpuHandle,
+    // and with FreeSrvSlot() running from a per-frame cleanup callback. Held only across the vector/
+    // counter bookkeeping (+ the single CreateShaderResourceView "clear" write in FreeSrvSlot, which
+    // targets a private CPU-visible descriptor slot the render thread's own draws don't write to) — an
+    // uncontended lock here is a few tens of ns, negligible next to a draw call.
+    mutable std::mutex m_SrvHeapMutex;
 
     // Loads + compiles the backend's HLSL from Shaders\D3D12\*.hlsl at runtime (DXC/SM6.6, zFILE_VDFS).
     D3D12ShaderBackend m_ShaderBackend;
@@ -653,5 +673,11 @@ private:
 
     std::unique_ptr<D3D12LineRenderer> m_LineRenderer;
     std::vector<std::move_only_function<void()>> m_PerFrameCleanupItems[kBackBufferCount] = {};
+    // Guards m_PerFrameCleanupItems: QueueCleanupJob's emplace_back can run on a Gothic resource-manager
+    // worker thread (D3D12Texture create/destroy queuing an SRV-slot/allocation release), concurrently
+    // with the render thread draining+clearing a slot in MoveToNextFrame or the destructor's forced
+    // cleanup. Callbacks are moved out and run AFTER releasing the lock (see MoveToNextFrame/destructor)
+    // so an arbitrary callback body never executes while this mutex is held.
+    std::mutex m_CleanupMutex;
     bool m_PresentPending = false;
 };

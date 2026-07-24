@@ -1030,6 +1030,8 @@ bool D3D12GraphicsEngine::CreateSrvHeap() {
 }
 
 UINT D3D12GraphicsEngine::AllocateSrvSlot() {
+	std::lock_guard<std::mutex> lock( m_SrvHeapMutex );
+
 	// Try to reuse a freed slot first
 	if ( !m_FreeSrvSlots.empty() ) {
 		UINT slot = m_FreeSrvSlots.back();
@@ -1054,9 +1056,12 @@ void D3D12GraphicsEngine::FreeSrvSlot( UINT slot ) {
 		return;
 	}
 
-	// Nullify the descriptor to prevent pointing to dead memory
 	ID3D12Device* device = m_Device.GetDevice();
-	D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = GetSrvCpuHandle( slot );
+
+	std::lock_guard<std::mutex> lock( m_SrvHeapMutex );
+
+	// Nullify the descriptor to prevent pointing to dead memory
+	D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = GetSrvCpuHandleLocked( slot );
 
 	D3D12_SHADER_RESOURCE_VIEW_DESC nullDesc = {};
 	nullDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -1072,10 +1077,11 @@ void D3D12GraphicsEngine::FreeSrvSlot( UINT slot ) {
 	m_FreeSrvSlots.push_back( slot );
 }
 
-D3D12_CPU_DESCRIPTOR_HANDLE D3D12GraphicsEngine::GetSrvCpuHandle( UINT slot ) const {
+D3D12_CPU_DESCRIPTOR_HANDLE D3D12GraphicsEngine::GetSrvCpuHandleLocked( UINT slot ) const {
+	// Caller holds m_SrvHeapMutex.
 	if ( std::ranges::contains( m_FreeSrvSlots, slot ) ) {
 		// Ensure invalid slots provide some texture instead of breaking
-		return GetSrvCpuHandle( m_BlackTexture->GetSrvSlot() );
+		return GetSrvCpuHandleLocked( m_BlackTexture->GetSrvSlot() );
 	}
 
 	D3D12_CPU_DESCRIPTOR_HANDLE h = m_SrvHeap->GetCPUDescriptorHandleForHeapStart();
@@ -1083,15 +1089,26 @@ D3D12_CPU_DESCRIPTOR_HANDLE D3D12GraphicsEngine::GetSrvCpuHandle( UINT slot ) co
 	return h;
 }
 
-D3D12_GPU_DESCRIPTOR_HANDLE D3D12GraphicsEngine::GetSrvGpuHandle( UINT slot ) const {
+D3D12_GPU_DESCRIPTOR_HANDLE D3D12GraphicsEngine::GetSrvGpuHandleLocked( UINT slot ) const {
+	// Caller holds m_SrvHeapMutex.
 	if ( std::ranges::contains( m_FreeSrvSlots, slot ) ) {
 		// Ensure invalid slots provide some texture instead of breaking
-		return GetSrvGpuHandle( m_BlackTexture->GetSrvSlot() );
+		return GetSrvGpuHandleLocked( m_BlackTexture->GetSrvSlot() );
 	}
 
 	D3D12_GPU_DESCRIPTOR_HANDLE h = m_SrvHeap->GetGPUDescriptorHandleForHeapStart();
 	h.ptr += static_cast<UINT64>(slot) * m_SrvDescriptorSize;
 	return h;
+}
+
+D3D12_CPU_DESCRIPTOR_HANDLE D3D12GraphicsEngine::GetSrvCpuHandle( UINT slot ) const {
+	std::lock_guard<std::mutex> lock( m_SrvHeapMutex );
+	return GetSrvCpuHandleLocked( slot );
+}
+
+D3D12_GPU_DESCRIPTOR_HANDLE D3D12GraphicsEngine::GetSrvGpuHandle( UINT slot ) const {
+	std::lock_guard<std::mutex> lock( m_SrvHeapMutex );
+	return GetSrvGpuHandleLocked( slot );
 }
 
 
@@ -3808,7 +3825,13 @@ XRESULT D3D12GraphicsEngine::DrawVertexArray( ExVertexStruct* vertices, unsigned
 	D3D12_GPU_DESCRIPTOR_HANDLE srv = GetSrvGpuHandle( m_BlackTexture->GetSrvSlot() );
 	if ( m_CurrentTexture ) {
 		D3D12Texture* t = D3D12Texture::From( m_CurrentTexture );
-		if ( t->HasSRV() ) srv = t->GetSrvGpuHandle();
+		if ( t->HasSRV() ) {
+            srv = t->GetSrvGpuHandle();
+        } else {
+            srv = GetSrvGpuHandle( m_BlackTexture->GetSrvSlot() );
+        }
+    } else 	{
+	    srv = GetSrvGpuHandle( m_BlackTexture->GetSrvSlot() );
 	}
 	m_CmdList->SetGraphicsRootDescriptorTable( 1, srv );
 
@@ -5267,7 +5290,11 @@ void D3D12GraphicsEngine::QueueCleanupJob( std::move_only_function<void()> callb
     // No slot to recycle — just hold a reference until this frame index comes back around (after its
     // fence is waited on in MoveToNextFrame), then drop it. The capture keeps the resource alive until
     // every command list that could reference it has finished on the GPU.
-    m_PerFrameCleanupItems[m_FrameIndex].emplace_back( std::move(callback) );
+    // m_CleanupFrameIndex (not m_FrameIndex) — safe to read from a resource-loading worker thread; see
+    // its declaration comment.
+    const UINT frameIndex = m_CleanupFrameIndex.load( std::memory_order_relaxed );
+    std::lock_guard<std::mutex> lock( m_CleanupMutex );
+    m_PerFrameCleanupItems[frameIndex].emplace_back( std::move(callback) );
 }
 
 void D3D12GraphicsEngine::QueueResourceForRelease( Microsoft::WRL::ComPtr<ID3D12Resource> resource )
@@ -5363,6 +5390,7 @@ bool D3D12GraphicsEngine::CreateSwapChain( INT2 size ) {
         return false;
     }
     m_FrameIndex = m_SwapChain->GetCurrentBackBufferIndex();
+    m_CleanupFrameIndex.store( m_FrameIndex, std::memory_order_relaxed );
 
     if ( !CreateFrameResources() ) return false;
     if ( !AcquireBackBufferRTVs() ) return false;
@@ -5448,7 +5476,18 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
         std::lock_guard<std::mutex> lock( m_CopyQueueMutex );
         ReleaseCompletedCopyResources( m_CopyFence->GetCompletedValue() );
     }
-    
+
+    // Finalize any textures a Gothic resource-manager worker thread finished loading since last frame
+    // (MyDirectDrawSurface7::Unlock's worker-thread branch calls UpdateDataDeferred + AddFrameLoadedTexture,
+    // but leaves MyDirectDrawSurface7::IsReady false until this runs) — mirrors
+    // D3D11GraphicsEngine::OnBeginFrame's identical block. D3D12Texture doesn't use the D3D11-only
+    // staging-texture/mip-map deferral lists (GetStagingTextures/GetMipMapGeneration stay empty for this
+    // backend — its uploads already go through the thread-safe copy-queue batcher), so only the
+    // ready-flag handshake is needed here.
+    Engine::GAPI->EnterResourceCriticalSection();
+    Engine::GAPI->SetFrameProcessedTexturesReady();
+    Engine::GAPI->LeaveResourceCriticalSection();
+
     HRESULT hr = m_CmdAllocators[m_FrameIndex]->Reset();
     if ( FAILED( hr ) ) {
         WaitForGpuIdle();
@@ -5712,6 +5751,7 @@ void D3D12GraphicsEngine::MoveToNextFrame() {
     m_Device.GetDirectQueue()->Signal( m_Fence.Get(), currentFenceValue );
 
     m_FrameIndex = m_SwapChain->GetCurrentBackBufferIndex();
+    m_CleanupFrameIndex.store( m_FrameIndex, std::memory_order_relaxed );
 
     if ( m_Fence->GetCompletedValue() < m_FenceValues[m_FrameIndex] ) {
         m_Fence->SetEventOnCompletion( m_FenceValues[m_FrameIndex], m_FenceEvent );
@@ -5719,11 +5759,18 @@ void D3D12GraphicsEngine::MoveToNextFrame() {
     }
     m_FenceValues[m_FrameIndex] = currentFenceValue + 1;
 
-    // Clean up all resources slated for deletion from its last pass.
-    for ( auto& cleanupCallback : m_PerFrameCleanupItems[m_FrameIndex] ) {
+    // Clean up all resources slated for deletion from its last pass. Swap the slot's jobs out under the
+    // lock, then run them unlocked — a job (e.g. QueueSrvResourceForRelease's) can itself lock other
+    // mutexes (m_SrvHeapMutex), and a worker thread may be concurrently emplace_back-ing into a
+    // different slot via QueueCleanupJob.
+    std::vector<std::move_only_function<void()>> jobs;
+    {
+        std::lock_guard<std::mutex> lock( m_CleanupMutex );
+        jobs.swap( m_PerFrameCleanupItems[m_FrameIndex] );
+    }
+    for ( auto& cleanupCallback : jobs ) {
         cleanupCallback(); // Calls FreeSrvSlot() and drops the captured ComPtrs
     }
-    m_PerFrameCleanupItems[m_FrameIndex].clear(); // Empty the list for the new frame
 }
 
 void D3D12GraphicsEngine::WaitForGpuIdle() {
@@ -6029,6 +6076,7 @@ bool D3D12GraphicsEngine::ResizeSwapChain( INT2 size ) {
 
     m_Resolution = size;
     m_FrameIndex = m_SwapChain->GetCurrentBackBufferIndex();
+    m_CleanupFrameIndex.store( m_FrameIndex, std::memory_order_relaxed );
     if ( !AcquireBackBufferRTVs() ) return false;
     if ( !CreateDepthBuffer( size ) ) return false;   // GPU is idle (WaitForGpuIdle above), safe to recreate
     if ( !CreateSceneColorTarget( size ) ) return false;   // HDR scene RT tracks the new resolution too
