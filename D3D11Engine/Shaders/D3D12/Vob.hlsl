@@ -134,3 +134,42 @@ void PSShadowClip( VS_DEPTH_OUT i )
 {
     clip( tx.Sample( smp, i.uv ).a - 0.5 );
 }
+
+// --- Node-attachment variant (weapons/heads/lamps, and morph meshes attached to a bone node) ---
+// Node attachments never sway in the wind, so they reuse VS_IN/VS_DEPTH_IN's INSTANCE_WINDFLUENCE slot to instead
+// carry {Fatness, Scaling} — mirrors D3D11's VS_ExNode.hlsl (VS_ExConstantBuffer_PerInstanceNode::Fatness/Scaling),
+// which every node attachment (not just morph meshes) needs: a NON-morph attachment gets Fatness=0/Scaling=1 (a
+// no-op, matching how it renders today), but an MMS morph-mesh attachment (facial morphs, bow/crossbow draw
+// meshes) gets a real inflate-along-normal + rescale so it fits the model's Fatness slider the same way D3D11
+// does — omitting it left morph attachments mismatched in size against the (Fatness-affected) skeletal body,
+// which reads as the attachment poking through / clipping against the head. VSDepthAttach needs the vertex
+// NORMAL for the inflate, unlike the plain VOB depth prepass, so it takes the fuller VS_IN (not VS_DEPTH_IN).
+float3 ApplyAttachFatness( float3 pos, float3 nrm, float2 fatnessScaling )
+{
+    return ( pos + fatnessScaling.x * nrm ) * fatnessScaling.y;
+}
+
+VS_OUT VSMainAttach( VS_IN i )
+{
+    VS_OUT o;
+    float3 localPos = ApplyAttachFatness( i.pos, i.nrm, i.iwind );
+
+    float3 worldPos = mul( float4( localPos, 1.0 ), i.iworld ).xyz;
+    o.clip = mul( float4( worldPos, 1.0 ), ViewProj );
+    o.uv  = i.uv;
+    o.col = i.icolor;
+    o.wpos = worldPos;
+    o.wnrm = mul( i.nrm, (float3x3)i.iworld );
+    o.fogDist = length( worldPos - CamPosWS );
+    return o;
+}
+
+VS_DEPTH_OUT VSDepthAttach( VS_IN i )
+{
+    VS_DEPTH_OUT o;
+    float3 localPos = ApplyAttachFatness( i.pos, i.nrm, i.iwind );
+    float3 worldPos = mul( float4( localPos, 1.0 ), i.iworld ).xyz;
+    o.clip = mul( float4( worldPos, 1.0 ), ViewProj );
+    o.uv = i.uv;
+    return o;
+}

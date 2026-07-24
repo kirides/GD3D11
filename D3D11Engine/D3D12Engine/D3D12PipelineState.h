@@ -50,6 +50,13 @@ public:
         Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassVobPSO;
         Microsoft::WRL::ComPtr<ID3DBlob>            DepthPrepassVobVsBlob;
         Microsoft::WRL::ComPtr<ID3DBlob>            DepthPrepassVobPsBlob;
+        // Node-attachment variant (Fatness/Scaling instead of wind — see Vob.hlsl's VSMainAttach/VSDepthAttach).
+        // Reuses RootSig + VobPsBlob/DepthPrepassVobPsBlob (PSMain/PSDepthClip are unchanged); only the VS + input
+        // layout (needs NORMAL for the fatness inflate, unlike the leaner wind-only VOB depth-prepass layout) differ.
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> VobAttachPSO;
+        Microsoft::WRL::ComPtr<ID3DBlob>            VobAttachVsBlob;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassVobAttachPSO;
+        Microsoft::WRL::ComPtr<ID3DBlob>            DepthPrepassVobAttachVsBlob;
     };
     // 2D UI / HUD family: one root sig (b0 viewport consts, t0 SRV, b1 FF state) + one VS/PS pair.
     // PSOs are built per (blend,depth) key on demand and cached. Vertex ring buffers stay in the engine.

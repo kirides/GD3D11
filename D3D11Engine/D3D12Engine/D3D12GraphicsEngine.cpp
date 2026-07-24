@@ -1504,6 +1504,32 @@ bool D3D12GraphicsEngine::CreateShadowMap() {
 		}
 	}
 
+	// Node-attachment CSM caster variant (VSDepthAttach: Fatness/Scaling inflate-along-normal instead of wind —
+	// see Vob.hlsl and World.VobAttachPSO/DepthPrepassVobAttachPSO). Needs NORMAL in the layout, unlike the
+	// plain VOB caster above, so it reuses World.DepthPrepassVobAttachVsBlob (already compiled with that
+	// layout in CreateWorld) rather than DepthPrepassVobVsBlob. Reuses PSShadowClip unchanged.
+	if ( m_Pipelines.World.DepthPrepassVobAttachVsBlob && m_ShadowCasterVobPsBlob ) {
+		const D3D12_INPUT_ELEMENT_DESC vobAttachLayout[] = {
+			{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+			{ "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+			{ "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+			{ "INSTANCE_WORLD_MATRIX", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  0, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+			{ "INSTANCE_WORLD_MATRIX", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 16, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+			{ "INSTANCE_WORLD_MATRIX", 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 32, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+			{ "INSTANCE_WORLD_MATRIX", 3, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 48, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+			{ "INSTANCE_COLOR",        0, DXGI_FORMAT_R8G8B8A8_UNORM,     1, 128, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+			{ "INSTANCE_WINDFLUENCE",  0, DXGI_FORMAT_R32G32_FLOAT,       1, 132, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+		};
+		pso.pRootSignature = m_Pipelines.World.RootSig.Get();
+		pso.VS = { m_Pipelines.World.DepthPrepassVobAttachVsBlob->GetBufferPointer(), m_Pipelines.World.DepthPrepassVobAttachVsBlob->GetBufferSize() };
+		pso.PS = { m_ShadowCasterVobPsBlob->GetBufferPointer(), m_ShadowCasterVobPsBlob->GetBufferSize() };
+		pso.InputLayout = { vobAttachLayout, _countof( vobAttachLayout ) };
+		if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_ShadowCasterVobAttachPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+			LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB attachment shadow caster).";
+			return false;
+		}
+	}
+
 	// Skeletal caster PSO (P2.9c-2): reuse the skeletal depth-prepass VSDepth (matrix-palette skinning) +
 	// m_Pipelines.Skeletal.RootSig + the skinned input layout, same caster state.
 	if ( m_Pipelines.Skeletal.DepthPrepassVsBlob && m_Pipelines.Skeletal.RootSig ) {
@@ -2181,7 +2207,9 @@ void D3D12GraphicsEngine::RenderSunShadows() {
 		if ( haveAttach ) {
 			DX_ZONE( m_CmdList, "Skeletal Nodes" );
 
-			m_CmdList->SetPipelineState( m_ShadowCasterVobPSO.Get() );
+			// Attachment variant (Fatness/Scaling instead of wind, needs NORMAL) — must match the depth prepass/
+			// color pass PSO choice for the same reason the wind fix required it (bit-identical transform).
+			m_CmdList->SetPipelineState( m_ShadowCasterVobAttachPSO.Get() );
 			m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
 			m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
 			for ( const FrameAttachDraw& a : g_ShadowAttachDraws[c] ) {
@@ -4775,11 +4803,6 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
         if ( visual->SkeletalMeshes.empty() && model->GetMeshSoftSkinList()->NumInArray > 0 )
             WorldConverter::ExtractSkeletalMeshFromVob( model, visual );
 
-        model->SetDistanceToCamera( 500 );
-        if ( vi->LastAniUpdateFrame != now ) {
-            vi->LastAniUpdateFrame = now;
-            model->UpdateAttachedVobs();   // once/frame — this is why the pass can't just re-run in a prepass
-        }
         // NOTE: UpdateMeshLibTexAniState is intentionally NOT called here. It mutates the model's SHARED texture
         // slots, so it's only meaningful immediately before drawing a specific instance's meshes (all instances
         // of a model share the slots). The draw paths (DrawSkeletalDepthPrepass / DrawSkeletalColor / the shadow
@@ -4791,6 +4814,14 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
         // cascade also wants — its pose doesn't change between passes).
         auto cacheIt = g_SkelUploadCache.find( vi );
         if ( cacheIt == g_SkelUploadCache.end() ) {
+            model->SetDistanceToCamera( 500 );
+            if ( vi->LastAniUpdateFrame != now ) {
+                vi->LastAniUpdateFrame = now;
+                model->UpdateAttachedVobs();   // once/frame — this is why the pass can't just re-run in a prepass
+            }
+            
+            model->UpdateMeshLibTexAniState();
+
             // Bone palette (object-space matrices) for the model's current animation pose. Needed for BOTH the
             // base skinned mesh AND the node-attachment world matrices, so compute it (and xmWorld) before either.
             boneCache.clear();
@@ -4880,6 +4911,16 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                 for ( MeshVisualInfo* mvi : it->second ) {
                     if ( !mvi ) continue;
                     bool isMMS = strcmp( mvi->Visual->GetFileExtension( 0 ), ".MMS" ) == 0;
+                    // Fatness/Scaling inflate-along-normal (mirrors D3D11's VS_ExConstantBuffer_PerInstanceNode,
+                    // VS_ExNode.hlsl: localPos = (pos + Fatness*normal) * Scaling). Only MMS morph-mesh attachments
+                    // get a non-trivial value in D3D11 — a plain weapon/lamp/head attachment is Fatness=0/Scaling=1,
+                    // a no-op — so ordinary attachments are unaffected by this addition; only MMS ones (facial
+                    // morphs, bow/crossbow draw meshes) now size/inflate correctly against the model's Fatness
+                    // slider instead of always rendering at their raw rest-mesh size. Reuses the VobInstanceInfo
+                    // wind fields (@132/@136) since node attachments never sway in the wind — see Vob.hlsl's
+                    // VSMainAttach/VSDepthAttach, which reinterpret them as {Fatness, Scaling}.
+                    const float attFatness = isMMS ? std::max<float>( 0.f, model->GetModelFatness() * 0.35f ) : 0.f;
+                    const float attScaling = isMMS ? ( model->GetModelFatness() * 0.02f + 1.f ) : 1.f;
                     node->TexAniState.UpdateTexList();
                     if ( isMMS ) {
                         // Facial morph meshes (heads) and bow/crossbow draw-animation meshes: deformation is done
@@ -4907,6 +4948,8 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                             VobInstanceInfo vii = {};
                             vii.world = attWorld;
                             vii.color = groundLight.ToDWORD();
+                            vii.windStrenth = attFatness;             // reinterpreted as Fatness — see VSMainAttach
+                            vii.canBeAffectedByPlayer = attScaling;   // reinterpreted as Scaling — see VSMainAttach
                             const UINT instOffset = m_VobInstanceBufferOffset;
                             memcpy( m_VobInstanceBufferPtr[frame] + instOffset, &vii, instBytes );
                             m_VobInstanceBufferOffset += instBytes;
@@ -4995,10 +5038,12 @@ void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
         }
     }
 
-    // Node attachments (depth only) through the VOB depth PSO (packed vertex slot 0 + per-instance world slot 1).
-    if ( !g_FrameAttachDraws.empty() && m_Pipelines.World.DepthPrepassVobPSO && m_Pipelines.World.RootSig ) {
+    // Node attachments (depth only) through the VOB attachment depth PSO (Fatness/Scaling variant — see
+    // Vob.hlsl's VSDepthAttach; must match DrawSkeletalColor's attachment PSO choice or the prepass depth
+    // won't reflect the same inflate/scale as the color pass, the same class of bug the wind fix addressed).
+    if ( !g_FrameAttachDraws.empty() && m_Pipelines.World.DepthPrepassVobAttachPSO && m_Pipelines.World.RootSig ) {
         DX_ZONE( m_CmdList, "Depth Prepass (attachments)" );
-        m_CmdList->SetPipelineState( m_Pipelines.World.DepthPrepassVobPSO.Get() );
+        m_CmdList->SetPipelineState( m_Pipelines.World.DepthPrepassVobAttachPSO.Get() );
         m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
         m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
         m_CmdList->RSSetViewports( 1, &vp );
@@ -5109,11 +5154,13 @@ void D3D12GraphicsEngine::DrawSkeletalColor() {
         }
     }
 
-    // Node attachments (lit) through the VOB pipeline. BindFrameLights() is REQUIRED — the VOB PS reads the
-    // light count/grid, so an unbound count would run the loop on garbage → GPU TDR hang.
-    if ( !g_FrameAttachDraws.empty() && m_Pipelines.World.VobPSO && m_Pipelines.World.RootSig ) {
+    // Node attachments (lit) through the VOB attachment PSO (Fatness/Scaling variant — see Vob.hlsl's
+    // VSMainAttach; non-morph attachments get Fatness=0/Scaling=1, a no-op, so this is a drop-in replacement
+    // for the plain VobPSO). BindFrameLights() is REQUIRED — the VOB PS reads the light count/grid, so an
+    // unbound count would run the loop on garbage → GPU TDR hang.
+    if ( !g_FrameAttachDraws.empty() && m_Pipelines.World.VobAttachPSO && m_Pipelines.World.RootSig ) {
         DX_ZONE( m_CmdList, "Draw attachments" );
-        m_CmdList->SetPipelineState( m_Pipelines.World.VobPSO.Get() );
+        m_CmdList->SetPipelineState( m_Pipelines.World.VobAttachPSO.Get() );
         m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
         m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
         m_CmdList->SetGraphicsRoot32BitConstants( 2, 8, &fog, 0 );   // b1 fog (VOB root sig)

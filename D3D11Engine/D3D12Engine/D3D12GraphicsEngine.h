@@ -396,6 +396,9 @@ private:
     // PSShadowClip, with the same normal-Z/front-cull/bias caster state. Attachments ride the VOB caster PSO.
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_ShadowCasterVobPSO;
     Microsoft::WRL::ComPtr<ID3DBlob> m_ShadowCasterVobPsBlob;
+    // Node-attachment CSM caster variant (VSDepthAttach: Fatness/Scaling instead of wind — see Vob.hlsl and
+    // World.VobAttachPSO/DepthPrepassVobAttachPSO). Reuses m_ShadowCasterVobPsBlob (PSShadowClip unchanged).
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_ShadowCasterVobAttachPSO;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_ShadowCasterSkeletalPSO;
     Microsoft::WRL::ComPtr<ID3DBlob> m_ShadowCasterSkeletalPsBlob;
     DirectX::XMFLOAT4X4 m_CascadeViewProj[kShadowCascades] = {};   // light-space view*proj per cascade (this frame)

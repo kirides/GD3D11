@@ -657,6 +657,32 @@ bool D3D12PipelineState::CreateDepthPrepass() {
         LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB depth prepass).";
         return false;
     }
+
+    // Node-attachment depth-prepass variant (VSDepthAttach: Fatness/Scaling inflate-along-normal instead of
+    // wind — see Vob.hlsl). Needs NORMAL in the layout (the plain VOB depth prepass doesn't read it at all),
+    // so this is its own input layout, not a reuse of vobLayout above. Reuses PSDepthClip (DepthPrepassVobPsBlob)
+    // unchanged — alpha-cutout doesn't depend on the fatness inflate.
+    if ( !m_Shaders->CompileFromFile( "Vob.hlsl", "VSDepthAttach", Shadermodel_VS, World.DepthPrepassVobAttachVsBlob.ReleaseAndGetAddressOf() ) ) {
+        return false;
+    }
+    const D3D12_INPUT_ELEMENT_DESC vobAttachLayout[] = {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "INSTANCE_WORLD_MATRIX", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  0, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "INSTANCE_WORLD_MATRIX", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 16, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "INSTANCE_WORLD_MATRIX", 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 32, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "INSTANCE_WORLD_MATRIX", 3, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 48, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "INSTANCE_COLOR",        0, DXGI_FORMAT_R8G8B8A8_UNORM,     1, 128, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "INSTANCE_WINDFLUENCE",  0, DXGI_FORMAT_R32G32_FLOAT,       1, 132, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+    };
+    pso.VS = { World.DepthPrepassVobAttachVsBlob->GetBufferPointer(), World.DepthPrepassVobAttachVsBlob->GetBufferSize() };
+    pso.PS = { World.DepthPrepassVobPsBlob->GetBufferPointer(), World.DepthPrepassVobPsBlob->GetBufferSize() };
+    pso.InputLayout = { vobAttachLayout, _countof( vobAttachLayout ) };
+    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( World.DepthPrepassVobAttachPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB attachment depth prepass).";
+        return false;
+    }
     return true;
 }
 
@@ -711,6 +737,17 @@ bool D3D12PipelineState::CreateVob() {
 
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( World.VobPSO.ReleaseAndGetAddressOf() ) ) ) ) {
         LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB).";
+        return false;
+    }
+
+    // Node-attachment color variant (VSMainAttach: Fatness/Scaling instead of wind — see Vob.hlsl). Reuses this
+    // same input `layout` (already has NORMAL, needed for the fatness-along-normal inflate) and PSMain unchanged.
+    if ( !m_Shaders->CompileFromFile( "Vob.hlsl", "VSMainAttach", Shadermodel_VS, World.VobAttachVsBlob.ReleaseAndGetAddressOf() ) ) {
+        return false;
+    }
+    pso.VS = { World.VobAttachVsBlob->GetBufferPointer(), World.VobAttachVsBlob->GetBufferSize() };
+    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( World.VobAttachPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB attachment).";
         return false;
     }
     return true;
