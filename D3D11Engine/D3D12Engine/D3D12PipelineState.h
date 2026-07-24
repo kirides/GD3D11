@@ -163,6 +163,10 @@ public:
     bool CreatePreview();     // single-VOB inventory-item preview (own root sig: b0 ViewProj, b1 World, t0 diffuse)
     bool CreateBloom();       // prefilter/downsample/upsample compute + additive composite graphics pipeline
     bool CreateGhost();       // ghost/transparency VOBs (own root sig: b0 ViewProj, b1 World, b2 GhostAlpha, t0 diffuse)
+    bool CreateGhostSkeletal(); // skeletal ghost VOBs (invisible NPCs): own root sig (b0 ViewProj, b1 inst CBV,
+                                // b2 bone-palette CBV, b7 GhostAlpha, t0 diffuse); reuses Skeletal.hlsl's VSDepth
+    bool CreateGrass();       // GVegetationBox instanced grass cards (own root sig: b0 ViewProj, t0/t1 grass+ground
+                              // textures, b1 GrassCB, b2 fog, Forward+ lights, b4 shadow CB, t5 CSM shadow map)
     bool CreateVideo();       // Bink YUV video playback (own root sig: b0 viewport consts, t0-t2 YUV planes)
 
     // --- On-demand PSO cache lookups (called from the engine's draw path; create+cache on miss) ---
@@ -191,6 +195,8 @@ public:
     GraphicsPipeline Preview;
     BloomPipeline    Bloom;
     GraphicsPipeline Ghost;
+    GraphicsPipeline GhostSkeletal;
+    GraphicsPipeline Grass;
     VideoPipeline    Video;
 
 private:

@@ -223,6 +223,7 @@ private:
     // diffuse sample, alpha *= per-vob GhostAlpha) but MUST run regardless of feature support: nothing else
     // drains this list, so skipping the call would leak one entry per ghost vob per frame forever.
     void DrawGhostVobs();
+    void DrawVegetation();    // GVegetationBox instanced grass cards (own PSO — see D3D12PipelineState::CreateGrass)
     // Bink cutscene YUV quad (zBinkPlayer.cpp) — DrawVertexArray's PS_Video special case. Same pre-transformed
     // vertex ring as the FF/UI path, but binds m_VideoTextures[0..2] through Video.RootSig/PSO instead.
     XRESULT DrawVideoVertexArray( ExVertexStruct* vertices, unsigned int numVertices, unsigned int startVertex, unsigned int stride );

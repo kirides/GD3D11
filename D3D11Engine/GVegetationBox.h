@@ -92,6 +92,15 @@ public:
 
     /** Returns the current density of this volume */
     float GetDensity();
+
+    /** Backend-neutral accessors for a backend that draws vegetation itself instead of going through the
+     * D3D11-only PrepareRenderGeometryPipeline/RenderVegetation state-machine path below (D3D12's DrawVegetation). */
+    GMeshSimple* GetVegetationMesh() const { return VegetationMesh; }
+    GfxTexture* GetVegetationTexture() const { return VegetationTexture; }
+    zCTexture* GetMeshTexture() const { return MeshTexture; }
+    GfxVertexBuffer* GetInstancingBuffer() const { return InstancingBuffer.get(); }
+    size_t GetSpotCount() const { return VegetationSpots.size(); }
+
     static void PrepareRenderGeometryPipeline();
     static void ResetRenderGeometryPipeline();
     static void PrepareRenderShadowPipeline();

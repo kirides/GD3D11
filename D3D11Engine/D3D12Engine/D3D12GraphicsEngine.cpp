@@ -25,6 +25,9 @@
 #include "../oCVisFX.h"
 #include "../DXGIHelpers.h"
 #include "../WindAnimation.h"
+#include "../GVegetationBox.h"
+#include "../GMeshSimple.h"
+#include "../Toolbox.h"
 
 #include <dxcapi.h>
 
@@ -540,6 +543,16 @@ XRESULT D3D12GraphicsEngine::Init() {
         // guards on Ghost.PSO existing and, if this failed, simply drains+discards Engine::GAPI->TransparencyVobs
         // every frame instead of drawing it — GothicAPI still needs that drain to avoid an unbounded per-frame leak.
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the ghost pipeline (ghost VOBs will be invisible).";
+    }
+    if ( !m_Pipelines.CreateGhostSkeletal() ) {
+        // Non-fatal: skeletal ghosts (invisible/fading NPCs) are rarer still. DrawGhostVobs() guards on
+        // GhostSkeletal.PSO existing and just skips those entries (still drained, no leak) if this failed.
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the skeletal ghost pipeline (invisible NPCs will not render).";
+    }
+    if ( !m_Pipelines.CreateGrass() ) {
+        // Non-fatal: vegetation boxes are an optional decoration layer. DrawVegetation() guards on
+        // Grass.PSO existing and just skips the pass (grass simply doesn't render) if this failed.
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the grass pipeline (vegetation boxes will not render).";
     }
     if ( !m_Pipelines.CreateVideo() ) {
         // Non-fatal: Bink cutscene playback (zBinkPlayer.cpp) is a niche path. DrawVertexArray's PS_Video branch
@@ -3885,7 +3898,7 @@ void D3D12GraphicsEngine::DrawGhostVobs() {
 	auto& transparencyVobs = Engine::GAPI->GetTransparencyVobs();
 	if ( transparencyVobs.empty() ) return;
 
-	if ( !m_FrameOpen || !m_Pipelines.Ghost.PSO || !m_Pipelines.Ghost.RootSig ) {
+	if ( !m_FrameOpen || ( !m_Pipelines.Ghost.PSO && !m_Pipelines.GhostSkeletal.PSO ) ) {
 		transparencyVobs.clear();   // drop this frame's ghosts rather than leak; drawing is unavailable right now
 		return;
 	}
@@ -3900,10 +3913,6 @@ void D3D12GraphicsEngine::DrawGhostVobs() {
 	XMFLOAT4X4 viewProj;
 	XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
 
-	m_CmdList->SetPipelineState( m_Pipelines.Ghost.PSO.Get() );
-	m_CmdList->SetGraphicsRootSignature( m_Pipelines.Ghost.RootSig.Get() );
-	m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
-
 	D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_Resolution.x), static_cast<float>(m_Resolution.y), 0.0f, 1.0f };
 	D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
 	m_CmdList->RSSetViewports( 1, &vp );
@@ -3912,15 +3921,108 @@ void D3D12GraphicsEngine::DrawGhostVobs() {
 
 	const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_BlackTexture->GetSrvSlot() );
 	unsigned int drawnTris = 0;
+	const UINT frame = m_FrameIndex;
+	const auto now = Engine::GAPI->GetTotalTimeDW();
+	static std::vector<XMFLOAT4X4> ghostBoneCache;
 
 	// D3D11 draws these back-to-front (painter's algorithm) via a min/max-heap drain; the legacy
 	// CollectVisibleVobs path (used by this backend, GothicAPI.cpp's std::ranges::sort(TransparencyVobs,
 	// CompareGhostDistance)) instead leaves the vector plain-sorted NEAREST-first, so iterate it in reverse.
 	for ( auto it = transparencyVobs.rbegin(); it != transparencyVobs.rend(); ++it ) {
 		const TransparencyVobInfo& info = *it;
-		if ( !info.normalVob || !info.normalVob->VisualInfo ) continue;   // skeletal ghosts: not yet ported (owed-debt)
+
+		// Skeletal ghosts (invisible/fading NPCs) — mirrors D3D11's DrawTransparencyVobs skeletalVob branch, minus
+		// its same-mesh Z-prepass (same simplification the non-skeletal ghost path already made). Bone transforms
+		// are computed here directly rather than via PrepareFrameSkeletals/g_SkelUploadCache: that pass explicitly
+		// excludes ghost vobs (they never enter the normal skinned-color draw), so there is no cached pose to reuse.
+		if ( info.skeletalVob ) {
+			SkeletalVobInfo* skel = info.skeletalVob;
+			if ( !skel->Vob || !skel->VisualInfo ) continue;
+			if ( !m_Pipelines.GhostSkeletal.PSO || !m_Pipelines.GhostSkeletal.RootSig ) continue;   // pipeline unavailable (logged at Init)
+			if ( !m_SkeletalCBBuffer[frame] || !m_SkeletalCBBufferPtr[frame] ) continue;
+
+			zCModel* model = static_cast<zCModel*>( skel->Vob->GetVisual() );
+			if ( !model ) continue;
+			SkeletalMeshVisualInfo* visual = static_cast<SkeletalMeshVisualInfo*>( skel->VisualInfo );
+			if ( visual->SkeletalMeshes.empty() ) continue;   // node-attachment-only ghosts: not handled (rare, owed-debt)
+
+			if ( skel->LastAniUpdateFrame != now ) {
+				skel->LastAniUpdateFrame = now;
+				model->UpdateAttachedVobs();
+			}
+			model->UpdateMeshLibTexAniState();
+
+			ghostBoneCache.clear();
+			model->GetBoneTransforms( &ghostBoneCache );
+			UINT numBones = static_cast<UINT>( ghostBoneCache.size() );
+			if ( numBones == 0 ) continue;
+			if ( numBones > kSkeletalMaxBones ) numBones = kSkeletalMaxBones;
+
+			const XMMATRIX xmWorld = skel->Vob->GetWorldMatrixXM() * XMMatrixScalingFromVector( model->GetModelScaleXM() );
+			SkeletalInstanceCB inst = {};
+			XMStoreFloat4x4( &inst.World, xmWorld );
+			inst.ModelColor = XMFLOAT4( 1, 1, 1, 1 );   // unused by VSDepth/PSGhost (unlit) — kept for struct-layout parity
+			inst.Fatness = model->GetModelFatness();
+
+			const UINT instSize = static_cast<UINT>( sizeof( SkeletalInstanceCB ) );
+			const UINT boneSize = numBones * static_cast<UINT>( sizeof( XMFLOAT4X4 ) );
+			const UINT instOff = AlignCB( m_SkeletalCBBufferOffset );
+			const UINT boneOff = AlignCB( instOff + instSize );
+			if ( boneOff + boneSize > m_SkeletalCBBufferCapacity ) {
+				if ( !m_SkeletalCBOverflowLogged ) {
+					LogWarn() << "D3D12: skeletal CB ring overflow (" << m_SkeletalCBBufferCapacity
+						<< " bytes/frame). Some skeletal meshes (including ghosts) dropped this frame.";
+					m_SkeletalCBOverflowLogged = true;
+				}
+				continue;
+			}
+			uint8_t* ringBase = m_SkeletalCBBufferPtr[frame];
+			memcpy( ringBase + instOff, &inst, instSize );
+			memcpy( ringBase + boneOff, ghostBoneCache.data(), boneSize );
+			m_SkeletalCBBufferOffset = boneOff + boneSize;
+			const D3D12_GPU_VIRTUAL_ADDRESS ringGpu = m_SkeletalCBBuffer[frame]->GetGPUVirtualAddress();
+
+			m_CmdList->SetPipelineState( m_Pipelines.GhostSkeletal.PSO.Get() );
+			m_CmdList->SetGraphicsRootSignature( m_Pipelines.GhostSkeletal.RootSig.Get() );
+			m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
+			m_CmdList->SetGraphicsRootConstantBufferView( 1, ringGpu + instOff );
+			m_CmdList->SetGraphicsRootConstantBufferView( 2, ringGpu + boneOff );
+			m_CmdList->SetGraphicsRoot32BitConstants( 3, 1, &info.alpha, 0 );
+
+			for ( auto const& [mat, meshList] : visual->SkeletalMeshes ) {
+				D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
+				zCTexture* tex = mat ? mat->GetAniTexture() : nullptr;
+				if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+					if ( MyDirectDrawSurface7* surface = tex->GetSurface() ) {
+						if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
+							D3D12Texture* d12 = D3D12Texture::From( gfx );
+							if ( d12->HasSRV() ) srv = d12->GetSrvGpuHandle();
+						}
+					}
+				}
+				m_CmdList->SetGraphicsRootDescriptorTable( 4, srv );
+				for ( auto const& mesh : meshList ) {
+					if ( !mesh || mesh->Indices.empty() || !mesh->MeshVertexBuffer || !mesh->MeshIndexBuffer ) continue;
+					D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mesh->MeshVertexBuffer.get() );
+					D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mesh->MeshIndexBuffer.get() );
+					if ( !mvb->GetResource() || !mib->GetResource() ) continue;
+					const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExSkelVertexStruct ) };
+					m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
+					const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
+					m_CmdList->IASetIndexBuffer( &ibv );
+					m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mesh->Indices.size() ), 1, 0, 0, 0 );
+					drawnTris += static_cast<unsigned int>( mesh->Indices.size() ) / 3;
+				}
+			}
+			continue;
+		}
+
+		if ( !info.normalVob || !info.normalVob->VisualInfo || !m_Pipelines.Ghost.PSO || !m_Pipelines.Ghost.RootSig ) continue;
 
 		VobInfo* vi = info.normalVob;
+		m_CmdList->SetPipelineState( m_Pipelines.Ghost.PSO.Get() );
+		m_CmdList->SetGraphicsRootSignature( m_Pipelines.Ghost.RootSig.Get() );
+		m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
 		XMFLOAT4X4 world = vi->WorldMatrix;
 		m_CmdList->SetGraphicsRoot32BitConstants( 1, 16, &world, 0 );
 		m_CmdList->SetGraphicsRoot32BitConstants( 2, 1, &info.alpha, 0 );
@@ -3961,6 +4063,134 @@ void D3D12GraphicsEngine::DrawGhostVobs() {
 	}
 
 	transparencyVobs.clear();
+	rs.RendererInfo.FrameDrawnTriangles += drawnTris;
+}
+
+void D3D12GraphicsEngine::DrawVegetation() {
+	// GVegetationBox instanced grass cards (P2.12). Bypasses GVegetationBox's own D3D11-only
+	// PrepareRenderGeometryPipeline()/RenderVegetation() (a SetActiveVertexShader/SetupVS_Ex* state-machine
+	// path with no D3D12 equivalent) — this backend reads the box's data (spot count, instancing buffer,
+	// mesh, textures, bounding box) through the plain getters added alongside this feature and draws it
+	// directly with its own PSO. Mirrors D3D11's DrawVegetationGeometryPass: distance + frustum cull per box,
+	// (re)bind pipeline state once per frame the first time a box is actually in view, draw each visible box.
+	if ( !m_FrameOpen || !m_Pipelines.Grass.PSO || !m_Pipelines.Grass.RootSig || !m_DepthBuffer ) return;
+	const auto& vegetationBoxes = Engine::GAPI->GetVegetationBoxes();
+	if ( vegetationBoxes.empty() ) return;
+
+	DX_ZONE( m_CmdList, "Draw vegetation" );
+
+	XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
+	Engine::GAPI->SetViewTransformXM( view );
+	Engine::GAPI->ResetWorldTransform();
+	const XMFLOAT4X4& viewM = Engine::GAPI->GetRendererState().TransformState.TransformView;
+	const XMFLOAT4X4& projM = Engine::GAPI->GetProjectionMatrix();
+	XMFLOAT4X4 viewProj;
+	XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
+
+	// Same frustum construction as BuildWorldDrawCommands — the player's real camera, not the cascade/light
+	// frustums used elsewhere in this file.
+	Frustum playerFrustum = Frustum::AlwaysContainingFrustum();
+	if ( auto cam = (zCCamera*)oCGame::GetGame()->_zCSession_camera ) {
+		const auto& camView = cam->trafoView;
+		const auto& camProj = cam->trafoProjection;
+		playerFrustum.BuildPerspective( XMMatrixTranspose( XMLoadFloat4x4( &camView ) ), XMLoadFloat4x4( &camProj ) );
+	}
+
+	const XMFLOAT3 camPos = Engine::GAPI->GetCameraPosition();
+	auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+	const float drawRadius = settings.OutdoorSmallVobDrawRadius;
+	const FogConstants fog = MakeFogConstants();
+
+	// Mirrors GVegetationBox::PopulateConstantBuffer, minus G_NormalVS (see Vegetation.hlsl) — 8 32-bit values
+	// to match GrassCB's HLSL layout exactly (root constants map by DWORD offset).
+	struct GrassCBData { float Time; float WindStrength; float HeroAffectStrength; float _pad0; XMFLOAT3 PlayerPosWS; float _pad1; };
+	static_assert( sizeof( GrassCBData ) == 32, "GrassCBData must be 8 DWORDs to match Vegetation.hlsl's GrassCB" );
+	GrassCBData gcb = {};
+	gcb.Time = Engine::GAPI->GetTimeSeconds();
+	gcb.WindStrength = settings.WindQuality > 0 ? settings.GlobalWindStrength : 0.0f;
+	if ( settings.HeroAffectsObjects ) {
+		gcb.PlayerPosWS = Engine::GAPI->GetPlayerVob() ? Engine::GAPI->GetPlayerVob()->GetPositionWorld() : XMFLOAT3( 0, 0, 0 );
+		gcb.HeroAffectStrength = 1.0f;
+	} else {
+		gcb.PlayerPosWS = XMFLOAT3( 0, 0, 0 );
+		gcb.HeroAffectStrength = 0.0f;
+	}
+
+	const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_BlackTexture->GetSrvSlot() );
+	const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
+	const D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
+
+	bool bound = false;
+	unsigned int drawnTris = 0;
+	GothicRendererState& rs = Engine::GAPI->GetRendererState();
+
+	for ( GVegetationBox* box : vegetationBoxes ) {
+		if ( !box || box->GetSpotCount() == 0 ) continue;
+
+		XMFLOAT3 bbMin, bbMax;
+		box->GetBoundingBox( &bbMin, &bbMax );
+
+		if ( Toolbox::ComputePointAABBDistance( camPos, bbMin, bbMax ) > drawRadius ) continue;
+		if ( !playerFrustum.Intersects( zTBBox3D{ bbMin, bbMax } ) ) continue;
+
+		GMeshSimple* mesh = box->GetVegetationMesh();
+		GfxVertexBuffer* instBuf = box->GetInstancingBuffer();
+		if ( !mesh || !instBuf ) continue;
+		D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mesh->GetVertexBuffer() );
+		D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mesh->GetIndexBuffer() );
+		D3D12VertexBuffer* mib_inst = D3D12VertexBuffer::From( instBuf );
+		if ( !mvb || !mib || !mib_inst || !mvb->GetResource() || !mib->GetResource() || !mib_inst->GetResource() ) continue;
+
+		if ( !bound ) {
+			bound = true;
+			m_CmdList->SetPipelineState( m_Pipelines.Grass.PSO.Get() );
+			m_CmdList->SetGraphicsRootSignature( m_Pipelines.Grass.RootSig.Get() );
+			m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
+			m_CmdList->SetGraphicsRoot32BitConstants( 3, 8, &gcb, 0 );
+			m_CmdList->SetGraphicsRoot32BitConstants( 4, 8, &fog, 0 );
+			BindFrameLights( 5, 6, 7, 8 );
+			m_CmdList->SetGraphicsRootConstantBufferView( 9, m_ShadowCBGpu[m_FrameIndex] );
+			m_CmdList->SetGraphicsRootDescriptorTable( 10, GetSrvGpuHandle( m_ShadowSrvSlot ) );
+			m_CmdList->SetGraphicsRootDescriptorTable( 11, GetSrvGpuHandle( m_PointShadowSrvSlot ) );
+			m_CmdList->RSSetViewports( 1, &vp );
+			m_CmdList->RSSetScissorRects( 1, &sc );
+			m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+		}
+
+		D3D12_GPU_DESCRIPTOR_HANDLE grassSrv = whiteSrv;
+		if ( GfxTexture* grassTex = box->GetVegetationTexture() ) {
+			D3D12Texture* d12 = D3D12Texture::From( grassTex );
+			if ( d12 && d12->HasSRV() ) grassSrv = d12->GetSrvGpuHandle();
+		}
+		m_CmdList->SetGraphicsRootDescriptorTable( 1, grassSrv );
+
+		D3D12_GPU_DESCRIPTOR_HANDLE groundSrv = whiteSrv;
+		if ( zCTexture* groundTex = box->GetMeshTexture() ) {
+			if ( groundTex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+				if ( MyDirectDrawSurface7* surface = groundTex->GetSurface() ) {
+					if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
+						D3D12Texture* d12 = D3D12Texture::From( gfx );
+						if ( d12 && d12->HasSRV() ) groundSrv = d12->GetSrvGpuHandle();
+					}
+				}
+			} else {
+				continue;   // ground texture not cached in yet — matches D3D11's RenderVegetation early-out
+			}
+		}
+		m_CmdList->SetGraphicsRootDescriptorTable( 2, groundSrv );
+
+		const UINT numIndices = mesh->GetNumIndices();
+		const UINT numInstances = static_cast<UINT>( box->GetSpotCount() );
+		const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( SimpleObjectVertexStruct ) };
+		const D3D12_VERTEX_BUFFER_VIEW instVbv = { mib_inst->GetGpuVirtualAddress(), mib_inst->GetSizeInBytes(), sizeof( XMFLOAT4X4 ) };
+		const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, instVbv };
+		m_CmdList->IASetVertexBuffers( 0, 2, views );
+		const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
+		m_CmdList->IASetIndexBuffer( &ibv );
+		m_CmdList->DrawIndexedInstanced( numIndices, numInstances, 0, 0, 0 );
+		drawnTris += ( numIndices / 3 ) * numInstances;
+	}
+
 	rs.RendererInfo.FrameDrawnTriangles += drawnTris;
 }
 
@@ -4258,6 +4488,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 		    DrawSkeletalColor();   // base meshes + node attachments, lit through the tile grid (both lists)
 	    }
 	    DrawVobsInstanced();
+	    DrawVegetation();
     }
 
 	// Decals (blood, arrows, sprites): collect the visible, back-to-front-sorted list once, then draw the
