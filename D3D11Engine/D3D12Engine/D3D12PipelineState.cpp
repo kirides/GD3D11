@@ -103,7 +103,7 @@ bool D3D12PipelineState::CreateWorld() {
     cubeSrvRange.BaseShaderRegister = 5;   // t5
     cubeSrvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-    D3D12_ROOT_PARAMETER params[11] = {};
+    D3D12_ROOT_PARAMETER params[12] = {};
     params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     params[0].Constants.ShaderRegister = 0;   // b0
     params[0].Constants.Num32BitValues = 16;  // float4x4
@@ -148,6 +148,13 @@ bool D3D12PipelineState::CreateWorld() {
     params[10].Constants.ShaderRegister = 6;   // b6 MaterialCB { MatNormalIndex, MatOrmIndex, MatDiffuseIndex }
     params[10].Constants.Num32BitValues = 3;   // 3rd = bindless diffuse index (world mesh ExecuteIndirect, P2.11)
     params[10].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    // params[11] = wind sway CB (b4, VS only) — read by Vob.hlsl's VSMain (flags/foliage sway + hero-affects-
+    // bushes push); World.hlsl/Skeletal.hlsl don't declare b4 so they simply never read it. Only DrawVobsInstanced
+    // needs to actually bind this root param before its draws; other users of this root sig leave it unbound.
+    params[11].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[11].Constants.ShaderRegister = 4;   // b4 WindCB (VS_ExConstantBuffer_Wind, 48 bytes)
+    params[11].Constants.Num32BitValues = 12;
+    params[11].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
 
     D3D12_STATIC_SAMPLER_DESC samplers[2] = {};
     // s0 diffuse: 16x anisotropic (matches D3D11's main texture sampler) — sharpens surfaces at grazing
@@ -662,7 +669,8 @@ bool D3D12PipelineState::CreateVob() {
     }
 
     // Slot 0 = ExVertexStruct (Position@0, Normal@12, TexCoord0@24); slot 1 = per-instance data
-    // read from VobInstanceInfo (stride 144): world matrix rows @0/16/32/48, instance color @128.
+    // read from VobInstanceInfo (stride 144): world matrix rows @0/16/32/48, instance color @128,
+    // {windStrenth, canBeAffectedByPlayer} @132 (see Vob.hlsl's wind sway — VSMain only, not the depth prepass).
     const D3D12_INPUT_ELEMENT_DESC layout[] = {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
@@ -672,6 +680,7 @@ bool D3D12PipelineState::CreateVob() {
         { "INSTANCE_WORLD_MATRIX", 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  32, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
         { "INSTANCE_WORLD_MATRIX", 3, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  48, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
         { "INSTANCE_COLOR",        0, DXGI_FORMAT_R8G8B8A8_UNORM,     1, 128, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "INSTANCE_WINDFLUENCE",  0, DXGI_FORMAT_R32G32_FLOAT,       1, 132, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
     };
 
     // Reuse the world root signature (b0 ViewProj + t0 SRV + static sampler s0 — identical needs).

@@ -432,6 +432,9 @@
     <ClInclude Include="WorldObjects.h">
       <Filter>Engine\GAPI</Filter>
     </ClInclude>
+    <ClInclude Include="WindAnimation.h">
+      <Filter>Engine\GAPI</Filter>
+    </ClInclude>
     <ClInclude Include="ThreadPool.h">
       <Filter>Tools</Filter>
     </ClInclude>
@@ -1062,6 +1065,9 @@
       <Filter>Engine\D2D\Views\Editor</Filter>
     </ClCompile>
     <ClCompile Include="WorldObjects.cpp">
+      <Filter>Engine\GAPI</Filter>
+    </ClCompile>
+    <ClCompile Include="WindAnimation.cpp">
       <Filter>Engine\GAPI</Filter>
     </ClCompile>
     <ClCompile Include="GMeshSimple.cpp" />

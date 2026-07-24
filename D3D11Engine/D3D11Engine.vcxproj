@@ -1114,6 +1114,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClInclude Include="WidgetContainer.h" />
     <ClInclude Include="Widget_TransRot.h" />
     <ClInclude Include="win32ClipboardWrapper.h" />
+    <ClInclude Include="WindAnimation.h" />
     <ClInclude Include="WorldObjects.h" />
     <ClInclude Include="zAllocator.h" />
     <ClInclude Include="zCArray.h" />
@@ -1436,6 +1437,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="WidgetContainer.cpp" />
     <ClCompile Include="Widget_TransRot.cpp" />
     <ClCompile Include="win32ClipboardWrapper.cpp" />
+    <ClCompile Include="WindAnimation.cpp" />
     <ClCompile Include="WorldConverter.cpp" />
     <ClCompile Include="WorldObjects.cpp" />
     <ClCompile Include="zBinkPlayer.cpp" />

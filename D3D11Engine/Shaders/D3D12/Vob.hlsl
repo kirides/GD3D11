@@ -1,8 +1,18 @@
 cbuffer WorldCB : register(b0) { float4x4 ViewProj; };   // default column-major packing (see world shader)
 cbuffer FogCB   : register(b1) { float3 FogColor; float FogNear; float3 CamPosWS; float FogFar; };
 cbuffer LightCB : register(b2) { uint LightCount; uint NumTilesX; uint LimitLightIntensity; uint _lpad; };
+// Wind sway for instanced VOBs (flags/foliage). Mirrors D3D11's WindParams cbuffer (VS_ExInstancedObj.hlsl);
+// minHeight/maxHeight are the flat (non-WIND_META_SRV) per-visual bounding-box fallback, refreshed per visual
+// by DrawVobsInstanced before each visual's draw calls (see WindMinHeight/WindMaxHeight below).
+cbuffer WindCB : register(b4)
+{
+    float3 WindDir;        float WindGlobalTime;
+    float  WindMinHeight;  float WindMaxHeight;   float2 _windPad0;
+    float3 WindPlayerPos;  float _windPad1;
+};
 
 #include "include/ForwardPlusTypes.hlsl"
+#include "include/Wind.hlsl"
 
 // Forward+ tiled point lights (root-descriptor SRVs + per-tile grid)
 StructuredBuffer<GPULight>  Lights        : register(t1);
@@ -31,18 +41,35 @@ TextureCubeArray        PointShadowCubes : register(t5);
 
 struct VS_IN
 {
-    float3   pos     : POSITION;
-    float3   nrm     : NORMAL;                  // ExVertexStruct object-space float3 normal (@12)
-    float2   uv      : TEXCOORD0;
-    float4x4 iworld  : INSTANCE_WORLD_MATRIX;
-    float4   icolor  : INSTANCE_COLOR;
+    float3   pos      : POSITION;
+    float3   nrm      : NORMAL;                  // ExVertexStruct object-space float3 normal (@12)
+    float2   uv       : TEXCOORD0;
+    float4x4 iworld   : INSTANCE_WORLD_MATRIX;
+    float4   icolor   : INSTANCE_COLOR;
+    // VobInstanceInfo::{windStrenth, canBeAffectedByPlayer} (@132/@136) — 0 for non-wind-flagged vobs, so the
+    // branches below are no-ops for ordinary instances (matches D3D11's per-instance InstanceWind.x/y > 0 gate).
+    float2   iwind    : INSTANCE_WINDFLUENCE;
 };
 struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : TEXCOORD1; float fogDist : TEXCOORD2; float3 wpos : TEXCOORD3; float3 wnrm : TEXCOORD4; };
 
 VS_OUT VSMain( VS_IN i )
 {
     VS_OUT o;
-    float3 worldPos = mul( float4( i.pos, 1.0 ), i.iworld ).xyz;
+    float3 localPos = i.pos;
+
+    // "Hero moves the bushes": push away from the player, height-masked + distance-falloff.
+    if ( i.iwind.y > 0 )
+        localPos += ApplyHeroInfluence( WindPlayerPos, localPos, WindMinHeight, WindMaxHeight, i.iworld );
+
+    // Tree/flag/leaf sway.
+    if ( i.iwind.x > 0 )
+    {
+        float heightRange = max( WindMaxHeight - WindMinHeight, 0.001 );
+        float heightNorm  = saturate( ( i.pos.y - WindMinHeight ) / heightRange );
+        localPos += ApplyTreeWind( i.pos, normalize( WindDir ), heightNorm, WindGlobalTime, i.iworld, WindMaxHeight, i.iwind.x );
+    }
+
+    float3 worldPos = mul( float4( localPos, 1.0 ), i.iworld ).xyz;
     o.clip = mul( float4( worldPos, 1.0 ), ViewProj );
     o.uv  = i.uv;
     o.col = i.icolor;

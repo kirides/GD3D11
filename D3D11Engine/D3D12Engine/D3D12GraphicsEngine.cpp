@@ -24,6 +24,7 @@
 #include "../oCGame.h"
 #include "../oCVisFX.h"
 #include "../DXGIHelpers.h"
+#include "../WindAnimation.h"
 
 #include <dxcapi.h>
 
@@ -4620,6 +4621,14 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
     const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_BlackTexture->GetSrvSlot() );
     unsigned int drawnTris = 0;
 
+    // Wind sway (b4, VS): windDir/globalTime were advanced once this frame in OnBeginFrame; playerPos and the
+    // per-visual bounding-box min/maxHeight fallback (no WindMetaData SRV yet) are refreshed here, mirroring
+    // D3D11's per-draw g_windBuffer.playerPos/minHeight/maxHeight fill (D3D11GraphicsEngine.cpp ~7938).
+    static_assert( sizeof( VS_ExConstantBuffer_Wind ) == 48, "WindCB (b4) layout must match Vob.hlsl's WindCB" );
+    if ( zCVob* player = Engine::GAPI->GetPlayerVob() ) {
+        m_WindBuffer.playerPos = player->GetPositionWorld();
+    }
+
     {
         DX_ZONE( m_CmdList, "Draw Vobs" );
         // Instances were snapshotted into the ring once by UploadFrameVobInstances (before the cull); draw from
@@ -4628,6 +4637,10 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
             MeshVisualInfo* visual = up.visual;
             if ( !visual ) continue;
             const UINT numInstances = up.numInstances;
+
+            m_WindBuffer.minHeight = visual->BBox.Min.y;
+            m_WindBuffer.maxHeight = visual->BBox.Max.y;
+            m_CmdList->SetGraphicsRoot32BitConstants( 11, 12, &m_WindBuffer, 0 );
 
             for ( auto const& [meshKey, meshList] : visual->MeshesByTexture ) {
                 zCTexture* tex = meshKey.Material->GetAniTexture();
@@ -4844,8 +4857,13 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                     bool isMMS = strcmp( mvi->Visual->GetFileExtension( 0 ), ".MMS" ) == 0;
                     node->TexAniState.UpdateTexList();
                     if ( isMMS ) {
-                        zCMorphMesh* mm = reinterpret_cast<zCMorphMesh*>(mvi->Visual);
-                        mm->GetTexAniState()->UpdateTexList();
+                        // Facial morph meshes (heads) and bow/crossbow draw-animation meshes: deformation is done
+                        // entirely by the original engine (zCMorphMesh::AdvanceAnis/CalcVertexPositions, opaque
+                        // calls into Gothic's own compiled code) and re-uploaded into this MeshInfo's dynamic
+                        // vertex buffer by UpdateMorphMeshVisual — backend-neutral (only touches GfxVertexBuffer::
+                        // UpdateBuffer), so this is a straight reuse of the D3D11 path, not a reimplementation. Its
+                        // own LastAniUpdateFrame guard already limits this to once per animation frame.
+                        WorldConverter::UpdateMorphMeshVisual( mvi->Visual, mvi );
                     }
                     for ( auto const& [attMat, attMeshes] : mvi->Meshes ) {
                         zCTexture* attTex = attMat ? attMat->GetAniTexture() : nullptr;
@@ -5374,6 +5392,8 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
     m_DecalInstanceBufferOffset = 0;
     m_DecalInstanceOverflowLogged = false;
     m_LightOverflowLogged = false;   // light buffer is rebuilt from 0 each frame in BuildFrameLightBuffer
+    if ( !Engine::GAPI->IsGamePaused() )
+        UpdateWindAnimation( m_WindBuffer );   // advances windDir/globalTime; DrawVobsInstanced fills min/maxHeight/playerPos
     m_CurrentTexture = nullptr;
     m_CurrentViewport = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
     m_CurrentScissor = { 0, 0, m_Resolution.x, m_Resolution.y };

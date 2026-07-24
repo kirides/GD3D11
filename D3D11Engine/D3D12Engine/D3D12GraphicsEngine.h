@@ -548,6 +548,12 @@ private:
     UINT m_VobInstanceBufferOffset = 0;                            // reset each OnBeginFrame
     bool m_VobInstanceOverflowLogged = false;
 
+    // Wind sway (flags/foliage) global state — windDir/globalTime advanced once per frame in OnBeginFrame via
+    // the shared UpdateWindAnimation() (WindAnimation.h, also used by D3D11GraphicsEngine::ApplyWindProps);
+    // minHeight/maxHeight/playerPos are refreshed per-visual/per-frame right before each bind (no WindMetaData
+    // structured buffer yet — flat bounding-box fallback only, matching D3D11's non-WIND_META_SRV path).
+    VS_ExConstantBuffer_Wind m_WindBuffer = {};
+
     // --- Forward+ dynamic point lights (P2.9a: per-frame brute-force light buffer, no tiling yet) ---
     // StructuredBuffer of the frame's visible point lights, rebuilt each frame from CollectVisibleVobs and
     // bound as a root SRV (t1) to the world/VOB pixel shaders, which loop it per pixel (N.L + attenuation)
