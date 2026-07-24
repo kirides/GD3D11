@@ -137,13 +137,24 @@ XRESULT D3D12VertexBuffer::Init( void* initData, unsigned int sizeInBytes, EBind
     const std::string debugName = "VB:" + ( fileName.empty() ? std::string( "unnamed" ) : fileName );
 
     if ( isDynamic ) {
+        bool useGpuUpload = allocator->IsGPUUploadHeapSupported();
+
         // --- Dynamic path: Persistently Mapped UPLOAD Heap, one copy per frame-in-flight ---
         for ( UINT i = 0; i < m_NumCopies; ++i ) {
             D3D12MA::ALLOCATION_DESC allocDesc = {};
-            allocDesc.HeapType = D3D12_HEAP_TYPE_UPLOAD;
+            allocDesc.HeapType = useGpuUpload ? D3D12_HEAP_TYPE_GPU_UPLOAD : D3D12_HEAP_TYPE_UPLOAD;
 
-            if ( FAILED( allocator->CreateResource( &allocDesc, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-                m_Copies[i].Allocation.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_Copies[i].Resource.ReleaseAndGetAddressOf() ) ) ) ) {
+            HRESULT hr = allocator->CreateResource( &allocDesc, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                m_Copies[i].Allocation.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_Copies[i].Resource.ReleaseAndGetAddressOf() ) );
+
+            if ( FAILED( hr ) && useGpuUpload ) {
+                // graceful non-GPU_UPLOAD path
+                allocDesc.HeapType = D3D12_HEAP_TYPE_UPLOAD;
+                hr = allocator->CreateResource( &allocDesc, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                    m_Copies[i].Allocation.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_Copies[i].Resource.ReleaseAndGetAddressOf() ) );
+            }
+
+            if ( FAILED( hr ) ) {
                 return XR_FAILED;
             }
 
