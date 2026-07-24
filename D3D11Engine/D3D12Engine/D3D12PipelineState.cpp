@@ -1549,7 +1549,9 @@ bool D3D12PipelineState::CreatePointShadow() {
 
 bool D3D12PipelineState::CreateTonemap() {
     // Fullscreen HDR->swapchain resolve (Phase 3). Dynamic exposure (Exposure * MiddleGray / AdaptedLum) *
-    // scene HDR -> ACES filmic curve -> R10G10B10A2. Runs once per world frame after all 3D. No vertex buffer
+    // scene HDR -> a user-selectable tonemap curve (RendererSettings.HDRToneMap, same 6 operators as D3D11's
+    // ImGui combo — Tonemap.hlsl branches on it at runtime, no PSO variants needed) -> R10G10B10A2. Runs once
+    // per world frame after all 3D. No vertex buffer
     // (SV_VertexID fullscreen triangle), no depth. Created once. AdaptedLum (t1) is a root SRV (not a table —
     // it's a raw StructuredBuffer), fed every frame by CS_LumReduce/CS_LumAdapt in RenderLuminanceAdapt(); the
     // PS reads it UNCONDITIONALLY, so m_LumAdaptedBuffer's creation is a fatal Init failure, same as this PSO.
@@ -1568,8 +1570,8 @@ bool D3D12PipelineState::CreateTonemap() {
     params[0].DescriptorTable.pDescriptorRanges = &srvRange;
     params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[1].Constants.ShaderRegister = 0;   // b0 { Exposure, unused pad — Tonemap.hlsl hardcodes its ACES middle-gray target }
-    params[1].Constants.Num32BitValues = 2;
+    params[1].Constants.ShaderRegister = 0;   // b0 { Exposure, LumWhite, ToneMapMode, pad }
+    params[1].Constants.Num32BitValues = 4;
     params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
     params[2].Descriptor.ShaderRegister = 1;   // t1 AdaptedLum

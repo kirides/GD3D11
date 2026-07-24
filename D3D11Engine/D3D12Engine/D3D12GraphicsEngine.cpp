@@ -1417,10 +1417,15 @@ void D3D12GraphicsEngine::ResolveSceneToBackBuffer() {
 	m_CmdList->SetGraphicsRootSignature( m_Pipelines.Tonemap.RootSig.Get() );
 	m_CmdList->SetGraphicsRootDescriptorTable( 0, GetSrvGpuHandle( m_SceneColorSrvSlot ) );
 	auto& tonemapSettings = Engine::GAPI->GetRendererState().RendererSettings;
-	// param[1].y is unused padding — Tonemap.hlsl hardcodes its ACES middle-gray target (kMiddleGray = 0.18);
-	// RendererSettings.HDRMiddleGray (0.8) is tuned for D3D11's own tonemap curves and does NOT apply here.
-	const float exposureConsts[2] = { tonemapSettings.Exposure > 0.0f ? tonemapSettings.Exposure : 1.0f, 0.0f };
-	m_CmdList->SetGraphicsRoot32BitConstants( 1, 2, exposureConsts, 0 );
+	// { Exposure, LumWhite, ToneMapMode, pad }. MiddleGray is NOT sent — Tonemap.hlsl hardcodes its ACES-tuned
+	// 0.18 target; RendererSettings.HDRMiddleGray (0.8) is calibrated for D3D11's own tonemap curves.
+	struct { float Exposure; float LumWhite; UINT ToneMapMode; float _pad; } tonemapConsts = {
+		tonemapSettings.Exposure > 0.0f ? tonemapSettings.Exposure : 1.0f,
+		tonemapSettings.HDRLumWhite,
+		static_cast<UINT>( tonemapSettings.HDRToneMap ),
+		0.0f
+	};
+	m_CmdList->SetGraphicsRoot32BitConstants( 1, 4, &tonemapConsts, 0 );
 	m_CmdList->SetGraphicsRootShaderResourceView( 2, m_LumAdaptedBuffer->GetGPUVirtualAddress() );
 	m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 	m_CmdList->IASetVertexBuffers( 0, 0, nullptr );
