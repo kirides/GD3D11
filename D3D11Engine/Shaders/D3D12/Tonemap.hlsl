@@ -1,6 +1,15 @@
-cbuffer TonemapCB : register(b0) { float Exposure; };
+cbuffer TonemapCB : register(b0) { float Exposure; float _pad; };
 Texture2D    SceneHDR : register(t0);
 SamplerState smp      : register(s0);
+// Dynamic exposure (CS_LumReduce/CS_LumAdapt): [0] = this frame's temporally-adapted average scene luminance.
+// Mirrors D3D11's `vColor *= HDR_MiddleGray / fLumAvg` exposure adjustment, EXCEPT the "middle gray" target is
+// the classic photographic 0.18 (below), not RendererSettings.HDRMiddleGray (0.8) — that setting is tuned for
+// D3D11's own compressed tonemap curves (ToneMap_jafEq4/Uncharted2/etc.), which expect a much brighter target
+// than the ACES filmic fit used here. Reusing 0.8 overexposed the whole scene by ~4.4x (0.8/0.18) before the
+// user even touched the manual Exposure slider. Exposure stays a user-tunable multiplier layered on top
+// (RendererSettings.Exposure, default 1.0).
+static const float kMiddleGray = 0.18;
+StructuredBuffer<float> AdaptedLum : register(t1);
 
 struct VS_OUT { float4 pos : SV_POSITION; float2 uv : TEXCOORD0; };
 VS_OUT VSFullscreen( uint vid : SV_VertexID )
@@ -26,6 +35,10 @@ float3 LinearToSrgb( float3 c )
 }
 float4 PSTonemap( VS_OUT i ) : SV_TARGET
 {
-    float3 hdr = SceneHDR.Sample( smp, i.uv ).rgb * Exposure;
+    // clamp guards the rare frame where CS_LumAdapt hasn't run yet (partial-sum buffer alloc failure on a
+    // resize) and the buffer still holds its D3D12MA DEFAULT_POOLS_NOT_ZEROED creation-time content.
+    float lum = clamp( AdaptedLum[0], 0.05, 32.0 );
+    float exposureFactor = Exposure * kMiddleGray / ( lum + 0.001 );
+    float3 hdr = SceneHDR.Sample( smp, i.uv ).rgb * exposureFactor;
     return float4( LinearToSrgb( ACESFilm( hdr ) ), 1.0 );
 }

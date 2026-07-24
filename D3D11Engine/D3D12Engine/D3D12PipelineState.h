@@ -156,7 +156,8 @@ public:
     bool CreateDecal();       // decal root sig + shaders + fixed lit PSO; warms alpha (quad/instance VBs stay in engine)
     bool CreateSkeletal();    // skinned root sig + lit + depth-prepass PSOs (skeletal CB ring stays in the engine)
     bool CreatePointShadow(); // point-shadow root sigs + shaders + 3 caster PSOs (cube textures/DSVs/rings stay in engine)
-    bool CreateTonemap();     // fullscreen HDR->swapchain resolve (exposure + ACES)
+    bool CreateTonemap();     // fullscreen HDR->swapchain resolve (dynamic exposure + ACES)
+    bool CreateLumAdapt();    // two-pass GPU luminance reduction + temporal adaptation (feeds Tonemap's exposure)
     bool CreateWater();       // alpha-blended water (own root sig: b0 ViewProj, t0, b1 fog, b2 water)
     bool CreateLightCull();   // Forward+ tiled light-cull compute (global compute root sig)
     bool CreatePreview();     // single-VOB inventory-item preview (own root sig: b0 ViewProj, b1 World, t0 diffuse)
@@ -185,6 +186,8 @@ public:
     GraphicsPipeline Tonemap;
     GraphicsPipeline Water;
     ComputePipeline  LightCull;
+    ComputePipeline  LumReduce;   // dynamic exposure, level 1: scene color -> per-group partial luminance sums
+    ComputePipeline  LumAdapt;    // dynamic exposure, level 2: reduce partials + temporal-adapt -> Tonemap's exposure
     GraphicsPipeline Preview;
     BloomPipeline    Bloom;
     GraphicsPipeline Ghost;

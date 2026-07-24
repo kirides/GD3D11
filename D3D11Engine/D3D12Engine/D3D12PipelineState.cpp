@@ -1548,8 +1548,11 @@ bool D3D12PipelineState::CreatePointShadow() {
 }
 
 bool D3D12PipelineState::CreateTonemap() {
-    // Fullscreen HDR->swapchain resolve (Phase 3). Exposure * scene HDR -> ACES filmic curve -> R10G10B10A2. Runs
-    // once per world frame after all 3D. No vertex buffer (SV_VertexID fullscreen triangle), no depth. Created once.
+    // Fullscreen HDR->swapchain resolve (Phase 3). Dynamic exposure (Exposure * MiddleGray / AdaptedLum) *
+    // scene HDR -> ACES filmic curve -> R10G10B10A2. Runs once per world frame after all 3D. No vertex buffer
+    // (SV_VertexID fullscreen triangle), no depth. Created once. AdaptedLum (t1) is a root SRV (not a table —
+    // it's a raw StructuredBuffer), fed every frame by CS_LumReduce/CS_LumAdapt in RenderLuminanceAdapt(); the
+    // PS reads it UNCONDITIONALLY, so m_LumAdaptedBuffer's creation is a fatal Init failure, same as this PSO.
     ID3D12Device* device = m_Device->GetDevice();
     if ( !device ) return false;
 
@@ -1559,15 +1562,18 @@ bool D3D12PipelineState::CreateTonemap() {
     srvRange.BaseShaderRegister = 0;   // t0 scene HDR
     srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-    D3D12_ROOT_PARAMETER params[2] = {};
+    D3D12_ROOT_PARAMETER params[3] = {};
     params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     params[0].DescriptorTable.NumDescriptorRanges = 1;
     params[0].DescriptorTable.pDescriptorRanges = &srvRange;
     params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[1].Constants.ShaderRegister = 0;   // b0 { Exposure }
-    params[1].Constants.Num32BitValues = 1;
+    params[1].Constants.ShaderRegister = 0;   // b0 { Exposure, unused pad — Tonemap.hlsl hardcodes its ACES middle-gray target }
+    params[1].Constants.Num32BitValues = 2;
     params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+    params[2].Descriptor.ShaderRegister = 1;   // t1 AdaptedLum
+    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_STATIC_SAMPLER_DESC sampler = {};
     sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
@@ -1619,6 +1625,107 @@ bool D3D12PipelineState::CreateTonemap() {
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( Tonemap.PSO.ReleaseAndGetAddressOf() ) ) ) ) {
         LogWarn() << "D3D12: CreateGraphicsPipelineState failed (tonemap).";
         return false;
+    }
+    return true;
+}
+
+bool D3D12PipelineState::CreateLumAdapt() {
+    // Dynamic exposure: two independent compute pipelines. LumReduce (t0 scene-color descriptor table, u0
+    // PartialSums root UAV) writes one {sum,count} per 16x16 group; LumAdapt (t0 PartialSums root SRV, u0
+    // AdaptedLum root UAV) finishes the reduction and temporally adapts it. Both buffers are raw
+    // StructuredBuffers, so — mirroring CreateLightCull's SB_Lights/RW_LightGrid pattern — they ride root
+    // descriptors, not descriptor-table heap slots; only the scene-color Texture2D needs a table (it's not a
+    // buffer, so it can't be a root SRV).
+    ID3D12Device* device = m_Device->GetDevice();
+    if ( !device ) return false;
+    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
+    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (lum-adapt)."; return false; }
+
+    // --- LumReduce root sig: b0 4x32-bit consts, t0 SRV table (scene color), u0 UAV root descriptor ---
+    {
+        D3D12_DESCRIPTOR_RANGE srvRange = {};
+        srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+        srvRange.NumDescriptors = 1;
+        srvRange.BaseShaderRegister = 0;   // t0 SceneHDR
+        srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+        D3D12_ROOT_PARAMETER params[3] = {};
+        params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        params[0].Constants.ShaderRegister = 0;   // b0 LumReduceCB
+        params[0].Constants.Num32BitValues = 4;
+        params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        params[1].DescriptorTable.NumDescriptorRanges = 1;
+        params[1].DescriptorTable.pDescriptorRanges = &srvRange;
+        params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+        params[2].Descriptor.ShaderRegister = 0;   // u0 PartialSums
+        params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+        D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+        rsDesc.NumParameters = _countof( params );
+        rsDesc.pParameters = params;
+        rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
+
+        ComPtr<ID3DBlob> rsBlob, rsErr;
+        if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
+            if ( rsErr ) LogWarn() << "D3D12: lum-reduce root sig error: " << static_cast<const char*>(rsErr->GetBufferPointer());
+            return false;
+        }
+        if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
+            IID_PPV_ARGS( LumReduce.RootSig.ReleaseAndGetAddressOf() ) ) ) )
+            return false;
+    }
+    if ( !m_Shaders->CompileFromFile( "CS_LumReduce.hlsl", "CSMain", Shadermodel_CS, LumReduce.CsBlob.ReleaseAndGetAddressOf() ) )
+        return false;
+    {
+        D3D12_COMPUTE_PIPELINE_STATE_DESC pso = {};
+        pso.pRootSignature = LumReduce.RootSig.Get();
+        pso.CS = { LumReduce.CsBlob->GetBufferPointer(), LumReduce.CsBlob->GetBufferSize() };
+        if ( FAILED( device->CreateComputePipelineState( &pso, IID_PPV_ARGS( LumReduce.PSO.ReleaseAndGetAddressOf() ) ) ) ) {
+            LogWarn() << "D3D12: CreateComputePipelineState failed (lum-reduce).";
+            return false;
+        }
+    }
+
+    // --- LumAdapt root sig: b0 4x32-bit consts, t0 SRV root descriptor (PartialSums), u0 UAV root descriptor ---
+    {
+        D3D12_ROOT_PARAMETER params[3] = {};
+        params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        params[0].Constants.ShaderRegister = 0;   // b0 LumAdaptCB
+        params[0].Constants.Num32BitValues = 4;
+        params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+        params[1].Descriptor.ShaderRegister = 0;   // t0 PartialSums
+        params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+        params[2].Descriptor.ShaderRegister = 0;   // u0 AdaptedLum
+        params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+        D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+        rsDesc.NumParameters = _countof( params );
+        rsDesc.pParameters = params;
+        rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
+
+        ComPtr<ID3DBlob> rsBlob, rsErr;
+        if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
+            if ( rsErr ) LogWarn() << "D3D12: lum-adapt root sig error: " << static_cast<const char*>(rsErr->GetBufferPointer());
+            return false;
+        }
+        if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
+            IID_PPV_ARGS( LumAdapt.RootSig.ReleaseAndGetAddressOf() ) ) ) )
+            return false;
+    }
+    if ( !m_Shaders->CompileFromFile( "CS_LumAdapt.hlsl", "CSMain", Shadermodel_CS, LumAdapt.CsBlob.ReleaseAndGetAddressOf() ) )
+        return false;
+    {
+        D3D12_COMPUTE_PIPELINE_STATE_DESC pso = {};
+        pso.pRootSignature = LumAdapt.RootSig.Get();
+        pso.CS = { LumAdapt.CsBlob->GetBufferPointer(), LumAdapt.CsBlob->GetBufferSize() };
+        if ( FAILED( device->CreateComputePipelineState( &pso, IID_PPV_ARGS( LumAdapt.PSO.ReleaseAndGetAddressOf() ) ) ) ) {
+            LogWarn() << "D3D12: CreateComputePipelineState failed (lum-adapt).";
+            return false;
+        }
     }
     return true;
 }

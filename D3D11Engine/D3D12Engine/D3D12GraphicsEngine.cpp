@@ -515,6 +515,12 @@ XRESULT D3D12GraphicsEngine::Init() {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the tonemap pipeline.";
         return XR_FAILED;
     }
+    if ( !m_Pipelines.CreateLumAdapt() || !CreateLumAdaptedBuffer() ) {
+        // Fatal: Tonemap.hlsl's PS now reads m_LumAdaptedBuffer (t1) unconditionally every frame — a missing
+        // buffer would leave that root SRV unbound. Same reasoning as the tonemap PSO itself just above.
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the dynamic-exposure (auto-exposure) pipeline.";
+        return XR_FAILED;
+    }
     if ( !m_Pipelines.CreatePreview() ) {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the inventory-item preview pipeline.";
         return XR_FAILED;
@@ -1410,9 +1416,12 @@ void D3D12GraphicsEngine::ResolveSceneToBackBuffer() {
 	m_CmdList->SetPipelineState( m_Pipelines.Tonemap.PSO.Get() );
 	m_CmdList->SetGraphicsRootSignature( m_Pipelines.Tonemap.RootSig.Get() );
 	m_CmdList->SetGraphicsRootDescriptorTable( 0, GetSrvGpuHandle( m_SceneColorSrvSlot ) );
-	const float settingsExposure = Engine::GAPI->GetRendererState().RendererSettings.Exposure;
-	const float exposure = settingsExposure > 0.0f ? settingsExposure : 1.0f;
-	m_CmdList->SetGraphicsRoot32BitConstant( 1, *reinterpret_cast<const UINT*>(&exposure), 0 );
+	auto& tonemapSettings = Engine::GAPI->GetRendererState().RendererSettings;
+	// param[1].y is unused padding — Tonemap.hlsl hardcodes its ACES middle-gray target (kMiddleGray = 0.18);
+	// RendererSettings.HDRMiddleGray (0.8) is tuned for D3D11's own tonemap curves and does NOT apply here.
+	const float exposureConsts[2] = { tonemapSettings.Exposure > 0.0f ? tonemapSettings.Exposure : 1.0f, 0.0f };
+	m_CmdList->SetGraphicsRoot32BitConstants( 1, 2, exposureConsts, 0 );
+	m_CmdList->SetGraphicsRootShaderResourceView( 2, m_LumAdaptedBuffer->GetGPUVirtualAddress() );
 	m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 	m_CmdList->IASetVertexBuffers( 0, 0, nullptr );
 	m_CmdList->DrawInstanced( 3, 1, 0, 0 );
@@ -2463,8 +2472,10 @@ void D3D12GraphicsEngine::RenderPointShadows() {
 			}
 
 			// --- Instanced VOBs (static decoration): range-cull instances, pack 64B world matrices into the tight
-			// ring, draw count*6 (InstanceDataStepRate=6 → 6 faces per real instance). Same root sig as world. ---
-			if ( haveVobs ) {
+			// ring, draw count*6 (InstanceDataStepRate=6 → 6 faces per real instance). Same root sig as world.
+			// Skipped for isStatic() lights — mirrors D3D11's RenderStaticShadowPass staticCasterMask, which
+			// restricts a static light's (cached) cube to world-mesh-only casters, no VOBs/MOBS. ---
+			if ( haveVobs && !m_PointShadowSlots[ps.slot].isStatic ) {
 				DX_ZONE( m_CmdList, "Vobs" );
 				m_CmdList->SetPipelineState( m_Pipelines.PointShadow.CasterVobPSO.Get() );
 				m_CmdList->SetGraphicsRootSignature( m_Pipelines.PointShadow.RootSig.Get() );
@@ -2551,6 +2562,10 @@ void D3D12GraphicsEngine::RenderPointShadows() {
 		constexpr float kSkeletalCullPad = 6.0f;
 		for ( const FramePointShadow& ps : g_FramePointShadows ) {
 			if ( ps.slot >= kMaxShadowCubes ) continue;
+			// isStatic() lights never get the dynamic overlay — mirrors D3D11's GetCurrentShadowMode, which forces
+			// a static light down to PLS_STATIC_ONLY regardless of the global EnablePointlightShadows setting, so
+			// it never runs RenderAnimatedShadowPass. Its active cube stays exactly the copied static-aside depth.
+			if ( m_PointShadowSlots[ps.slot].isStatic ) continue;
 			// Re-bind every light: the node-attachment block below switches to PointShadow.RootSig (a DIFFERENT,
 			// smaller root signature) for the tail of each light's iteration, so the skeletal root sig/PSO can't
 			// be assumed still bound once we're past the first light — re-set it unconditionally per light instead
@@ -2940,6 +2955,140 @@ void D3D12GraphicsEngine::RenderBloom() {
 	}
 
 	m_ColorTargetIsHDR = true;   // just rebound m_SceneColor as RTV above
+}
+
+bool D3D12GraphicsEngine::CreateLumAdaptedBuffer() {
+	// One-time, fixed-size persistent buffer (dynamic exposure): holds the temporally-adapted average scene
+	// luminance CS_LumAdapt writes every frame and Tonemap's PS reads unconditionally. DEFAULT heap (UAV
+	// requires it); the buffer's initial content is never read as history — CS_LumAdapt's FirstFrame flag
+	// makes the very first dispatch snap directly to that frame's luminance instead of blending against it.
+	D3D12MA::ALLOCATION_DESC heapDefault = {};
+	heapDefault.HeapType = D3D12_HEAP_TYPE_DEFAULT;
+
+	D3D12_RESOURCE_DESC bd = {};
+	bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+	bd.Width = sizeof( float );
+	bd.Height = 1;
+	bd.DepthOrArraySize = 1;
+	bd.MipLevels = 1;
+	bd.SampleDesc.Count = 1;
+	bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+	bd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+	// Created directly in the SRV-read state (not UNORDERED_ACCESS): if CreateLumPartialBuffer ever fails on a
+	// resize (RenderLuminanceAdapt then bails at its guard every frame, never touching this buffer), Tonemap's
+	// root SRV read must still see a valid state — PIXEL_SHADER_RESOURCE is exactly that, and is otherwise the
+	// state RenderLuminanceAdapt itself always leaves the buffer in at the end of a successful frame.
+	if ( FAILED( m_Allocator->CreateResource( &heapDefault, &bd,
+		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, nullptr, m_LumAdaptedBufferAlloc.ReleaseAndGetAddressOf(),
+		IID_PPV_ARGS( m_LumAdaptedBuffer.ReleaseAndGetAddressOf() ) ) ) ) {
+		LogWarn() << "D3D12: failed to create the dynamic-exposure adapted-luminance buffer.";
+		return false;
+	}
+	m_LumAdaptedBuffer->SetName( L"AdaptedLuminance" );
+	m_LumAdaptedBufferAlloc->SetName( L"AllocAdaptedLuminance" );
+	m_LumAdaptedBufferState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+	m_LumAdaptInitialized = false;
+	return true;
+}
+
+bool D3D12GraphicsEngine::CreateLumPartialBuffer( INT2 size ) {
+	// Resolution-dependent (recreated on resize, like the bloom pyramid): one {sum,count} float2 per 16x16
+	// reduce-pass thread group. Always fully written by CS_LumReduce and fully consumed by CS_LumAdapt within
+	// the same frame, so — unlike m_LumAdaptedBuffer — it needs no persistent cross-frame value.
+	if ( size.x <= 0 || size.y <= 0 ) return false;
+	m_LumGroupsX = (static_cast<UINT>(size.x) + 15) / 16;
+	m_LumGroupsY = (static_cast<UINT>(size.y) + 15) / 16;
+	const UINT numGroups = m_LumGroupsX * m_LumGroupsY;
+	if ( numGroups == 0 ) return false;
+
+	D3D12MA::ALLOCATION_DESC heapDefault = {};
+	heapDefault.HeapType = D3D12_HEAP_TYPE_DEFAULT;
+
+	D3D12_RESOURCE_DESC bd = {};
+	bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+	bd.Width = static_cast<UINT64>(numGroups) * (sizeof( float ) * 2);   // float2 {sum, count}
+	bd.Height = 1;
+	bd.DepthOrArraySize = 1;
+	bd.MipLevels = 1;
+	bd.SampleDesc.Count = 1;
+	bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+	bd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+	if ( FAILED( m_Allocator->CreateResource( &heapDefault, &bd,
+		D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, m_LumPartialBufferAlloc.ReleaseAndGetAddressOf(),
+		IID_PPV_ARGS( m_LumPartialBuffer.ReleaseAndGetAddressOf() ) ) ) ) {
+		LogWarn() << "D3D12: failed to create the dynamic-exposure partial-sum buffer (" << size.x << "x" << size.y << ").";
+		m_LumPartialCapacity = 0;
+		return false;
+	}
+	m_LumPartialBuffer->SetName( L"LumPartialSums" );
+	m_LumPartialBufferAlloc->SetName( L"AllocLumPartialSums" );
+	m_LumPartialCapacity = numGroups;
+	return true;
+}
+
+void D3D12GraphicsEngine::RenderLuminanceAdapt() {
+	// Dynamic exposure (auto-exposure): reduces the finished HDR scene color (post-bloom) to one average
+	// luminance, temporally adapts it toward last frame's value (CS_LumReduce -> CS_LumAdapt), and leaves the
+	// result in m_LumAdaptedBuffer for Tonemap's PS to read. Called after RenderBloom(), before
+	// ResolveSceneToBackBuffer(): scene color is RENDER_TARGET on entry (RenderBloom's composite left it bound
+	// that way) and must be RENDER_TARGET again on exit (ResolveSceneToBackBuffer's own transition assumes that).
+	if ( !m_FrameOpen || !m_Pipelines.LumReduce.PSO || !m_Pipelines.LumReduce.RootSig
+		|| !m_Pipelines.LumAdapt.PSO || !m_Pipelines.LumAdapt.RootSig
+		|| !m_SceneColor || !m_LumAdaptedBuffer || !m_LumPartialBuffer
+		|| m_LumGroupsX == 0 || m_LumGroupsY == 0 )
+		return;
+
+	DX_ZONE( m_CmdList, "Dynamic Exposure (luminance reduce+adapt)" );
+
+	if ( !m_SceneColorInPixelState ) {
+		auto toSrv = TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
+		m_CmdList->ResourceBarrier( 1, &toSrv );
+		m_SceneColorInPixelState = true;
+	}
+	m_CmdList->OMSetRenderTargets( 0, nullptr, FALSE, nullptr );
+
+	auto toUav = TransitionBarrier( m_LumAdaptedBuffer.Get(), m_LumAdaptedBufferState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+	m_CmdList->ResourceBarrier( 1, &toUav );
+	m_LumAdaptedBufferState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+
+	// --- Level 1: reduce scene color -> per-group partial sums ---
+	struct LumReduceCB { UINT Width, Height, NumGroupsX, _pad; };
+	LumReduceCB reduceCb = { static_cast<UINT>(m_Resolution.x), static_cast<UINT>(m_Resolution.y), m_LumGroupsX, 0 };
+	m_CmdList->SetPipelineState( m_Pipelines.LumReduce.PSO.Get() );
+	m_CmdList->SetComputeRootSignature( m_Pipelines.LumReduce.RootSig.Get() );
+	m_CmdList->SetComputeRoot32BitConstants( 0, 4, &reduceCb, 0 );
+	m_CmdList->SetComputeRootDescriptorTable( 1, GetSrvGpuHandle( m_SceneColorSrvSlot ) );
+	m_CmdList->SetComputeRootUnorderedAccessView( 2, m_LumPartialBuffer->GetGPUVirtualAddress() );
+	m_CmdList->Dispatch( m_LumGroupsX, m_LumGroupsY, 1 );
+
+	// Scene color is done being read (compute) this pass; hand it back to RENDER_TARGET for ResolveSceneToBackBuffer.
+	auto toRt = TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET );
+	m_CmdList->ResourceBarrier( 1, &toRt );
+	m_SceneColorInPixelState = false;
+
+	// PartialSums: UAV write (above) -> SRV read (below) needs a real state transition, not just a UAV barrier.
+	auto partialToSrv = TransitionBarrier( m_LumPartialBuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
+	m_CmdList->ResourceBarrier( 1, &partialToSrv );
+
+	// --- Level 2: reduce partial sums -> one temporally-adapted luminance value ---
+	struct LumAdaptCB { UINT NumPartials; float DeltaTime; UINT FirstFrame; float _pad; };
+	LumAdaptCB adaptCb = { m_LumGroupsX * m_LumGroupsY, Engine::GAPI->GetDeltaTime(), m_LumAdaptInitialized ? 0u : 1u, 0.0f };
+	m_CmdList->SetPipelineState( m_Pipelines.LumAdapt.PSO.Get() );
+	m_CmdList->SetComputeRootSignature( m_Pipelines.LumAdapt.RootSig.Get() );
+	m_CmdList->SetComputeRoot32BitConstants( 0, 4, &adaptCb, 0 );
+	m_CmdList->SetComputeRootShaderResourceView( 1, m_LumPartialBuffer->GetGPUVirtualAddress() );
+	m_CmdList->SetComputeRootUnorderedAccessView( 2, m_LumAdaptedBuffer->GetGPUVirtualAddress() );
+	m_CmdList->Dispatch( 1, 1, 1 );
+	m_LumAdaptInitialized = true;
+
+	// Reset PartialSums to UNORDERED_ACCESS for next frame's reduce write; AdaptedLum to a PS-readable state for
+	// Tonemap (both ResolveSceneToBackBuffer and the thumbnail/screenshot re-tonemap read it later this frame).
+	D3D12_RESOURCE_BARRIER post[2] = {
+		TransitionBarrier( m_LumPartialBuffer.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS ),
+		TransitionBarrier( m_LumAdaptedBuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE ),
+	};
+	m_CmdList->ResourceBarrier( 2, post );
+	m_LumAdaptedBufferState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 }
 
 
@@ -4055,6 +4204,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// Bloom (P2.11, opt-in via EnableBloom): must run before the tonemap resolve below, while the scene is still
 	// linear HDR — additively blending a mip pyramid of the scene's own bright pixels back onto itself.
 	RenderBloom();
+	RenderLuminanceAdapt();
 
 	// Phase 3 HDR: the 3D scene is complete — tonemap the HDR target into the swapchain and rebind the backbuffer
 	// so Gothic's subsequent 2D UI/HUD draws (and the ImGui overlay in Present) composite on top in LDR.
@@ -5399,6 +5549,12 @@ bool D3D12GraphicsEngine::CreateSwapChain( INT2 size ) {
     if ( !CreateDepthBuffer( size ) ) return false;
     if ( !CreateSceneColorTarget( size ) ) return false;   // HDR scene RT (RTV heap now exists with the extra slot)
     CreateBloomResources( size );   // non-fatal: bloom is opt-in (EnableBloom, default off); RenderBloom no-ops if this failed
+    if ( !CreateLumPartialBuffer( size ) ) {
+        // Non-fatal: RenderLuminanceAdapt() guards on m_LumPartialBuffer and just skips this frame's luminance
+        // update if missing — m_LumAdaptedBuffer (created once in Init) keeps its last valid value, so Tonemap
+        // is never left reading an unwritten buffer.
+        LogWarn() << "D3D12GraphicsEngine::CreateSwapChain: failed to create the dynamic-exposure partial-sum buffer.";
+    }
 
     m_SwapChainReady = true;
 
@@ -5978,9 +6134,10 @@ void D3D12GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& 
     m_CmdList->SetPipelineState( m_Pipelines.Tonemap.PSO.Get() );
     m_CmdList->SetGraphicsRootSignature( m_Pipelines.Tonemap.RootSig.Get() );
     m_CmdList->SetGraphicsRootDescriptorTable( 0, GetSrvGpuHandle( m_SceneColorSrvSlot ) );
-    const float settingsExposure = Engine::GAPI->GetRendererState().RendererSettings.Exposure;
-    const float exposure = settingsExposure > 0.0f ? settingsExposure : 1.0f;
-    m_CmdList->SetGraphicsRoot32BitConstant( 1, *reinterpret_cast<const UINT*>(&exposure), 0 );
+    auto& tonemapSettings = Engine::GAPI->GetRendererState().RendererSettings;
+    const float exposureConsts[2] = { tonemapSettings.Exposure > 0.0f ? tonemapSettings.Exposure : 1.0f, tonemapSettings.HDRMiddleGray };
+    m_CmdList->SetGraphicsRoot32BitConstants( 1, 2, exposureConsts, 0 );
+    m_CmdList->SetGraphicsRootShaderResourceView( 2, m_LumAdaptedBuffer->GetGPUVirtualAddress() );
     m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
     m_CmdList->IASetVertexBuffers( 0, 0, nullptr );
     m_CmdList->DrawInstanced( 3, 1, 0, 0 );
@@ -6083,6 +6240,9 @@ bool D3D12GraphicsEngine::ResizeSwapChain( INT2 size ) {
     if ( !CreateDepthBuffer( size ) ) return false;   // GPU is idle (WaitForGpuIdle above), safe to recreate
     if ( !CreateSceneColorTarget( size ) ) return false;   // HDR scene RT tracks the new resolution too
     CreateBloomResources( size );   // non-fatal: see the CreateSwapChain call site
+    if ( !CreateLumPartialBuffer( size ) ) {
+        LogWarn() << "D3D12GraphicsEngine::OnResize: failed to create the dynamic-exposure partial-sum buffer.";
+    }
     return true;
 }
 

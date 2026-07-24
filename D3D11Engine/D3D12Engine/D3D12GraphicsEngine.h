@@ -534,7 +534,10 @@ private:
         zCVobLight*       owner = nullptr;   // light identity owning this slot (nullptr = free)
         DirectX::XMFLOAT3 pos = {};          // last static-rendered light position (move detection)
         float             range = 0.0f;      // last static-rendered range (range-change detection)
-        bool              isStatic = false;  // Vob->IsStatic() (informational; moving lights re-render static each frame)
+        bool              isStatic = false;  // Vob->IsStatic(): gates RenderPointShadows — static lights get a
+                                              // world-mesh-only static-aside cache (no VOB casters) and never
+                                              // receive the per-frame skeletal dynamic overlay (mirrors D3D11's
+                                              // GetCurrentShadowMode forcing PLS_STATIC_ONLY for static lights).
         bool              staticValid = false; // static-aside slot holds valid static-only depth (else must re-render static)
     };
     PointShadowSlot m_PointShadowSlots[kMaxShadowCubes];
@@ -604,6 +607,29 @@ private:
         { UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX, UINT_MAX } };  // base slot of the pair; t1 = base+1
     bool CreateBloomResources( INT2 size );   // (re)builds the pyramid textures + persistent SRV/UAV slots
     void RenderBloom();                       // prefilter -> downsample chain -> upsample chain -> additive composite
+
+    // Dynamic exposure / auto-exposure: a two-pass GPU luminance reduction of the finished HDR scene color,
+    // temporally adapted (Pattanaik's technique) toward last frame's value, feeding Tonemap's exposure divisor
+    // (mirrors D3D11's D3D11PFX_HDR ping-pong PS_PFX_LumConvert/LumAdapt, but reduces on compute instead of a
+    // mip chain). All buffers are root SRV/UAV (StructuredBuffers, no descriptor-heap slots needed).
+    // m_LumPartialBuffer is resolution-dependent (recreated on resize like the bloom pyramid): CS_LumReduce
+    // writes one {sum,count} per 16x16 thread group, CS_LumAdapt reads + fully consumes it every frame, so it
+    // needs no persistent cross-frame state (always UNORDERED_ACCESS at the top of RenderLuminanceAdapt).
+    // m_LumAdaptedBuffer is a FIXED single-float buffer created ONCE at Init and never resized — the sole
+    // cross-frame GPU state, holding last frame's adapted luminance for CS_LumAdapt to blend against; Tonemap's
+    // PSO reads it unconditionally every frame, so its creation is a fatal Init failure like the tonemap PSO
+    // itself, not an opt-in effect like bloom.
+    UINT m_LumGroupsX = 0, m_LumGroupsY = 0;      // reduce-pass dispatch dims for the current resolution
+    UINT m_LumPartialCapacity = 0;                // groups the current m_LumPartialBuffer can hold
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_LumPartialBuffer;
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation>  m_LumPartialBufferAlloc;
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_LumAdaptedBuffer;       // RWStructuredBuffer<float>[1], persistent
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation>  m_LumAdaptedBufferAlloc;
+    D3D12_RESOURCE_STATES m_LumAdaptedBufferState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    bool m_LumAdaptInitialized = false;   // false until the first successful adapt dispatch (snap instead of blend)
+    bool CreateLumPartialBuffer( INT2 size );   // (re)builds the resolution-dependent per-group partial-sum buffer
+    bool CreateLumAdaptedBuffer();               // one-time: the persistent single-float adapted-luminance buffer
+    void RenderLuminanceAdapt();                 // dispatch reduce -> adapt; called before ResolveSceneToBackBuffer
 
     // Instanced static VOBs (reuses the shared world root sig; slot 0 = packed vertex, slot 1 = per-instance
     // data). Lit PSO/blobs now live in m_Pipelines.World (VobPSO/VobVsBlob/VobPsBlob); the buffers stay here.
