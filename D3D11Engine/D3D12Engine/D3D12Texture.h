@@ -31,7 +31,10 @@ public:
     unsigned int GetSizeInBytes( int mip ) override;
     bool Is16BitTexture() override;
 
-    XRESULT BindToPixelShader( int /*slot*/ ) override { return XR_SUCCESS; }
+    /** Only meaningful for zBinkPlayer's PS_Video draw (slots 0/1/2 = Y/U/V plane); D3D12 has no generic
+        per-shader texture-slot binding like D3D11 (see D3D12GraphicsEngine::SetVideoTextureSlot). Slots
+        outside that range are silently ignored — nothing else in the D3D12 backend consumes this path. */
+    XRESULT BindToPixelShader( int slot ) override;
     XRESULT BindToVertexShader( int /*slot*/ ) override { return XR_SUCCESS; }
     XRESULT BindToDomainShader( int /*slot*/ ) override { return XR_SUCCESS; }
 

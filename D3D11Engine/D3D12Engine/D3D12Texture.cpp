@@ -24,6 +24,12 @@ namespace {
     }
 }
 
+XRESULT D3D12Texture::BindToPixelShader( int slot )
+{
+    Engine12()->SetVideoTextureSlot( slot, this );
+    return XR_SUCCESS;
+}
+
 D3D12Texture::~D3D12Texture()
 {
     D3D12GraphicsEngine* engine = Engine12();

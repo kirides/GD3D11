@@ -542,6 +542,11 @@ XRESULT D3D12GraphicsEngine::Init() {
         // every frame instead of drawing it — GothicAPI still needs that drain to avoid an unbounded per-frame leak.
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the ghost pipeline (ghost VOBs will be invisible).";
     }
+    if ( !m_Pipelines.CreateVideo() ) {
+        // Non-fatal: Bink cutscene playback (zBinkPlayer.cpp) is a niche path. DrawVertexArray's PS_Video branch
+        // guards on Video.PSO existing and falls back to the normal FF/UI draw (a black/untextured quad) if not.
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the video (Bink) pipeline (cutscenes will not render).";
+    }
     LogInfo() << "D3D12GraphicsEngine initialized (device + 2D + world + VOB + skeletal + water + particle + decal + HDR tonemap pipelines up). Swapchain is created once the game window is set.";
     return XR_SUCCESS;
 }
@@ -3666,6 +3671,11 @@ XRESULT D3D12GraphicsEngine::DrawVertexArray( ExVertexStruct* vertices, unsigned
 	if ( !m_SwapChainReady || !m_FrameOpen || !m_Pipelines.UI.RootSig || numVertices == 0 || !vertices )
 		return XR_SUCCESS;
 
+	// zBinkPlayer (cutscene playback) feeds its YUV quad through this same draw entry, but needs the
+	// dedicated 3-texture YUV->RGB pipeline instead of the FF texture-stage emulation below.
+	if ( m_ActivePixelShader == PShaderID::PS_Video && m_Pipelines.Video.PSO )
+		return DrawVideoVertexArray( vertices, numVertices, startVertex, stride );
+
 	GothicRendererState& rs = Engine::GAPI->GetRendererState();
 
 	// The sky pass (DrawSky -> zCSkyController_Outdoor::RenderSkyPre) feeds its FF draws through this same
@@ -3729,6 +3739,63 @@ XRESULT D3D12GraphicsEngine::DrawVertexArray( ExVertexStruct* vertices, unsigned
 		if ( t->HasSRV() ) srv = t->GetSrvGpuHandle();
 	}
 	m_CmdList->SetGraphicsRootDescriptorTable( 1, srv );
+
+	m_CmdList->RSSetViewports( 1, &vp );
+	m_CmdList->RSSetScissorRects( 1, &sc );
+	m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+
+	D3D12_VERTEX_BUFFER_VIEW vbv = { gpuVA, bytes, stride };
+	m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
+	m_CmdList->DrawInstanced( numVertices, 1, startVertex, 0 );
+
+	Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles += numVertices / 3;
+	return XR_SUCCESS;
+}
+
+XRESULT D3D12GraphicsEngine::DrawVideoVertexArray( ExVertexStruct* vertices, unsigned int numVertices, unsigned int startVertex, unsigned int stride ) {
+	// All three planes must be uploaded (zBinkPlayer always binds Y/U/V together before drawing); if any
+	// is missing, skip rather than sampling garbage/unbound descriptors.
+	D3D12Texture* planeY = m_VideoTextures[0] ? D3D12Texture::From( m_VideoTextures[0] ) : nullptr;
+	D3D12Texture* planeU = m_VideoTextures[1] ? D3D12Texture::From( m_VideoTextures[1] ) : nullptr;
+	D3D12Texture* planeV = m_VideoTextures[2] ? D3D12Texture::From( m_VideoTextures[2] ) : nullptr;
+	if ( !planeY || !planeU || !planeV || !planeY->HasSRV() || !planeU->HasSRV() || !planeV->HasSRV() )
+		return XR_SUCCESS;
+
+	const UINT frame = m_FrameIndex;
+	const UINT bytes = stride * numVertices;
+	if ( m_UIVertexBufferOffset + bytes > m_UIVertexBufferCapacity ) {
+		if ( !m_UIOverflowLogged ) {
+			LogWarn() << "D3D12: 2D vertex ring overflow (" << m_UIVertexBufferCapacity
+				<< " bytes/frame). Some UI geometry dropped this frame.";
+			m_UIOverflowLogged = true;
+		}
+		return XR_SUCCESS;
+	}
+
+	memcpy( m_UIVertexBufferPtr[frame] + m_UIVertexBufferOffset, vertices, bytes );
+	const D3D12_GPU_VIRTUAL_ADDRESS gpuVA = m_UIVertexBuffer[frame]->GetGPUVirtualAddress() + m_UIVertexBufferOffset;
+	m_UIVertexBufferOffset += bytes;
+
+	m_CmdList->SetPipelineState( m_Pipelines.Video.PSO.Get() );
+	m_CmdList->SetGraphicsRootSignature( m_Pipelines.Video.RootSig.Get() );
+
+	// Same degenerate-viewport fallback as the FF/UI path above (Gothic can leave a tiny D3D7 viewport set).
+	D3D12_VIEWPORT vp = m_CurrentViewport;
+	D3D12_RECT     sc = m_CurrentScissor;
+	if ( vp.Width < 2.0f || vp.Height < 2.0f ) {
+		vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
+		sc = { 0, 0, m_Resolution.x, m_Resolution.y };
+	}
+
+	const float scale = std::max<float>( 0.001f, Engine::GAPI->GetRendererState().RendererSettings.GothicUIScale );
+	const float vpConsts[4] = {
+		vp.TopLeftX / scale, vp.TopLeftY / scale,
+		vp.Width / scale,    vp.Height / scale };
+	m_CmdList->SetGraphicsRoot32BitConstants( 0, 4, vpConsts, 0 );
+
+	m_CmdList->SetGraphicsRootDescriptorTable( 1, planeY->GetSrvGpuHandle() );
+	m_CmdList->SetGraphicsRootDescriptorTable( 2, planeU->GetSrvGpuHandle() );
+	m_CmdList->SetGraphicsRootDescriptorTable( 3, planeV->GetSrvGpuHandle() );
 
 	m_CmdList->RSSetViewports( 1, &vp );
 	m_CmdList->RSSetScissorRects( 1, &sc );

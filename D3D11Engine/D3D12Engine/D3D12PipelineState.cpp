@@ -464,6 +464,109 @@ bool D3D12PipelineState::CreateGhost() {
     return true;
 }
 
+bool D3D12PipelineState::CreateVideo() {
+    // Bink cutscene playback (zBinkPlayer.cpp): a single pre-transformed (XYZRHW) fullscreen-ish quad,
+    // sampling three R8 planes (Y/U/V) and converting to RGB in the PS. Mirrors D3D11's VS_TransformedEx +
+    // PS_Video. No blend/depth variants — zBinkPlayer always disables alpha blend/z-write/z-test/culling/fog
+    // itself via the D3D7 zRenderer state before drawing, same as the opaque default below.
+    ID3D12Device* device = m_Device->GetDevice();
+
+    // Three SEPARATE single-descriptor tables (not one 3-wide range): the Y/U/V planes are independent
+    // GfxTextures, each with its own persistent slot in the engine's SRV heap allocated at texture-Init
+    // time — they are not contiguous, so a single multi-descriptor range/table wouldn't be valid here.
+    D3D12_DESCRIPTOR_RANGE srvRanges[3] = {};
+    for ( UINT i = 0; i < 3; ++i ) {
+        srvRanges[i].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+        srvRanges[i].NumDescriptors = 1;
+        srvRanges[i].BaseShaderRegister = i;   // t0 Y, t1 U, t2 V
+        srvRanges[i].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+    }
+
+    D3D12_ROOT_PARAMETER params[4] = {};
+    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[0].Constants.ShaderRegister = 0;  // b0 viewport (float2 pos + float2 size)
+    params[0].Constants.Num32BitValues = 4;
+    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    for ( UINT i = 0; i < 3; ++i ) {
+        params[1 + i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        params[1 + i].DescriptorTable.NumDescriptorRanges = 1;
+        params[1 + i].DescriptorTable.pDescriptorRanges = &srvRanges[i];
+        params[1 + i].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    }
+
+    D3D12_STATIC_SAMPLER_DESC sampler = {};
+    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.MaxLOD = D3D12_FLOAT32_MAX;
+    sampler.ShaderRegister = 0;  // s0
+    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+    rsDesc.NumParameters = _countof( params );
+    rsDesc.pParameters = params;
+    rsDesc.NumStaticSamplers = 1;
+    rsDesc.pStaticSamplers = &sampler;
+    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
+    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (video)."; return false; }
+
+    ComPtr<ID3DBlob> rsBlob, rsErr;
+    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
+        if ( rsErr ) LogWarn() << "D3D12: video root signature serialize error: " << static_cast<const char*>(rsErr->GetBufferPointer());
+        return false;
+    }
+    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
+        IID_PPV_ARGS( Video.RootSig.ReleaseAndGetAddressOf() ) ) ) )
+        return false;
+
+    if ( !m_Shaders->CompileFromFile( "Video.hlsl", "VSMain", Shadermodel_VS, Video.VsBlob.ReleaseAndGetAddressOf() ) ) {
+        return false;
+    }
+    if ( !m_Shaders->CompileFromFile( "Video.hlsl", "PSMain", Shadermodel_PS, Video.PsBlob.ReleaseAndGetAddressOf() ) ) {
+        return false;
+    }
+
+    // Same ExVertexStruct HUD layout as the 2D/UI pipeline (rhw packed into Normal.x).
+    const D3D12_INPUT_ELEMENT_DESC layout[] = {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 1, DXGI_FORMAT_R32G32_FLOAT,    0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "DIFFUSE",  0, DXGI_FORMAT_R8G8B8A8_UNORM,  0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    };
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+    pso.pRootSignature = Video.RootSig.Get();
+    pso.VS = { Video.VsBlob->GetBufferPointer(), Video.VsBlob->GetBufferSize() };
+    pso.PS = { Video.PsBlob->GetBufferPointer(), Video.PsBlob->GetBufferSize() };
+    pso.InputLayout = { layout, _countof( layout ) };
+    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pso.NumRenderTargets = 1;
+    pso.RTVFormats[0] = kBackBufferFormat;   // drawn straight onto the swapchain backbuffer, like the 2D/UI path
+    pso.SampleDesc.Count = 1;
+    pso.SampleMask = UINT_MAX;
+
+    pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;    // zBinkPlayer disables culling before drawing
+    pso.RasterizerState.DepthClipEnable = FALSE;
+
+    pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+    // No depth test/write, no DSV bound — zBinkPlayer sets the D3D7 z-compare to "always pass"/z-write off
+    // before drawing, and the frame is otherwise a plain 2D overlay (matches the 2D/UI depth-disabled path).
+    pso.DepthStencilState.DepthEnable = FALSE;
+    pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+    pso.DepthStencilState.StencilEnable = FALSE;
+    pso.DSVFormat = DXGI_FORMAT_UNKNOWN;
+
+    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( Video.PSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (video).";
+        return false;
+    }
+    return true;
+}
+
 bool D3D12PipelineState::CreateDepthPrepass() {
     // Forward+ opaque depth prepass (P2.9b-1): a depth-only variant of the world-mesh pass. Reuses
     // World.RootSig (only b0 ViewProj + t0/s0 are referenced by the prepass shaders) and the world's

@@ -108,6 +108,16 @@ public:
         Microsoft::WRL::ComPtr<ID3D12PipelineState> CasterSkeletalPSO;
     };
 
+    // Bink video playback (zBinkPlayer): own root sig (b0 viewport consts, t0-t2 YUV planes SRV table, static
+    // linear sampler). Single fixed PSO — no blend/depth variants needed (zBinkPlayer always draws an opaque,
+    // non-depth-tested fullscreen-ish quad; see D3D12GraphicsEngine::DrawVertexArray's PS_Video branch).
+    struct VideoPipeline {
+        Microsoft::WRL::ComPtr<ID3D12RootSignature> RootSig;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> PSO;
+        Microsoft::WRL::ComPtr<ID3DBlob>            VsBlob;
+        Microsoft::WRL::ComPtr<ID3DBlob>            PsBlob;
+    };
+
     // Bloom pyramid (P2.11): prefilter/downsample share one root sig+PSO pair each (t0 SRV table, u0 UAV table,
     // b0 8x32-bit BloomConstantBuffer), upsample has its own root sig (t0+t1 SRV table) + PSO. Composite is a
     // fullscreen-triangle graphics pass (additive blend) that adds the finished mip-0 pyramid onto the HDR scene
@@ -145,6 +155,7 @@ public:
     bool CreatePreview();     // single-VOB inventory-item preview (own root sig: b0 ViewProj, b1 World, t0 diffuse)
     bool CreateBloom();       // prefilter/downsample/upsample compute + additive composite graphics pipeline
     bool CreateGhost();       // ghost/transparency VOBs (own root sig: b0 ViewProj, b1 World, b2 GhostAlpha, t0 diffuse)
+    bool CreateVideo();       // Bink YUV video playback (own root sig: b0 viewport consts, t0-t2 YUV planes)
 
     // --- On-demand PSO cache lookups (called from the engine's draw path; create+cache on miss) ---
     // cullMode/frontCCW/rtvIsHdr/forceMaxZ default to the plain 2D/UI case (cull-none, clockwise-front,
@@ -170,6 +181,7 @@ public:
     GraphicsPipeline Preview;
     BloomPipeline    Bloom;
     GraphicsPipeline Ghost;
+    VideoPipeline    Video;
 
 private:
     D3D12Device*        m_Device = nullptr;

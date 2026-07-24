@@ -105,6 +105,14 @@ public:
     /** Records the currently-bound diffuse texture for the next 2D draw (SetTexture -> BindToSlot). */
     void BindSurfaceTextures( int slot, GfxTexture* diffuse, GfxTexture* normalmap, unsigned int numTextures = 2 ) override;
 
+    /** Tracks the active pixel shader ID set by the D3D7 FF layer / zBinkPlayer. D3D12 has no generic
+        per-shader dispatch (unlike D3D11) — this is only consulted by DrawVertexArray to special-case
+        PS_Video (Bink YUV playback); every other value keeps the normal FF/UI draw path. */
+    XRESULT SetActivePixelShader( PShaderID shader ) override { m_ActivePixelShader = shader; return XR_SUCCESS; }
+
+    /** Records a Y/U/V plane texture for the next PS_Video draw (zBinkPlayer's GfxTexture::BindToPixelShader(0/1/2)). */
+    void SetVideoTextureSlot( int slot, GfxTexture* texture ) { if ( slot >= 0 && slot < 3 ) m_VideoTextures[slot] = texture; }
+
     /** Custom-font text (menu strings, subtitles). Builds glyph quads over the font atlas and routes
         them through the validated 2D/UI path (VS_TransformedEx + FF-stage PS + alpha blend). */
     void DrawString( std::string_view str, float x, float y, const zFont* font, zColor& fontColor ) override;
@@ -205,6 +213,9 @@ private:
     // diffuse sample, alpha *= per-vob GhostAlpha) but MUST run regardless of feature support: nothing else
     // drains this list, so skipping the call would leak one entry per ghost vob per frame forever.
     void DrawGhostVobs();
+    // Bink cutscene YUV quad (zBinkPlayer.cpp) — DrawVertexArray's PS_Video special case. Same pre-transformed
+    // vertex ring as the FF/UI path, but binds m_VideoTextures[0..2] through Video.RootSig/PSO instead.
+    XRESULT DrawVideoVertexArray( ExVertexStruct* vertices, unsigned int numVertices, unsigned int startVertex, unsigned int stride );
     bool AcquireBackBufferRTVs();     // (re)fetch swapchain buffers + build their RTVs
     bool ResizeSwapChain( INT2 size );
     void WaitForGpuIdle();            // full CPU/GPU flush (used on resize / teardown)
@@ -322,6 +333,8 @@ private:
     std::unique_ptr<D3D12Texture> m_DefaultOrmTexture;    // 1x1 ORM default (AO 1, rough 0.5, metal 0)
 
     GfxTexture* m_CurrentTexture = nullptr;                        // diffuse bound for the next 2D draw
+    PShaderID m_ActivePixelShader = PShaderID::PS_FixedFunctionPipe; // see SetActivePixelShader
+    GfxTexture* m_VideoTextures[3] = {};                           // Y/U/V planes bound for the next PS_Video draw
     D3D12_VIEWPORT m_CurrentViewport = {};                        // pixel-space viewport (drives transform + RSSetViewports)
     D3D12_RECT     m_CurrentScissor = {};
 
