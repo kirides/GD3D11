@@ -39,6 +39,28 @@ TextureCubeArray        PointShadowCubes : register(t5);
 // CotangentFrame, ComputeSunLightingPBR and AccumTiledPointLights are shared with World.hlsl/Skeletal.hlsl.
 #include "include/PBRLighting.hlsl"
 
+// Shared by VSMain and VSDepth so the depth prepass writes EXACTLY the bit-for-bit same swayed position as the
+// color pass — any divergence here would make the reversed-Z GREATER_EQUAL depth test discard swaying geometry
+// the color pass draws in front of where the (unswayed) prepass depth said it should be.
+float3 ApplyVobWind( float3 pos, float2 iwind, float4x4 iworld )
+{
+    float3 localPos = pos;
+
+    // "Hero moves the bushes": push away from the player, height-masked + distance-falloff.
+    if ( iwind.y > 0 )
+        localPos += ApplyHeroInfluence( WindPlayerPos, localPos, WindMinHeight, WindMaxHeight, iworld );
+
+    // Tree/flag/leaf sway.
+    if ( iwind.x > 0 )
+    {
+        float heightRange = max( WindMaxHeight - WindMinHeight, 0.001 );
+        float heightNorm  = saturate( ( pos.y - WindMinHeight ) / heightRange );
+        localPos += ApplyTreeWind( pos, normalize( WindDir ), heightNorm, WindGlobalTime, iworld, WindMaxHeight, iwind.x );
+    }
+
+    return localPos;
+}
+
 struct VS_IN
 {
     float3   pos      : POSITION;
@@ -55,19 +77,7 @@ struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : T
 VS_OUT VSMain( VS_IN i )
 {
     VS_OUT o;
-    float3 localPos = i.pos;
-
-    // "Hero moves the bushes": push away from the player, height-masked + distance-falloff.
-    if ( i.iwind.y > 0 )
-        localPos += ApplyHeroInfluence( WindPlayerPos, localPos, WindMinHeight, WindMaxHeight, i.iworld );
-
-    // Tree/flag/leaf sway.
-    if ( i.iwind.x > 0 )
-    {
-        float heightRange = max( WindMaxHeight - WindMinHeight, 0.001 );
-        float heightNorm  = saturate( ( i.pos.y - WindMinHeight ) / heightRange );
-        localPos += ApplyTreeWind( i.pos, normalize( WindDir ), heightNorm, WindGlobalTime, i.iworld, WindMaxHeight, i.iwind.x );
-    }
+    float3 localPos = ApplyVobWind( i.pos, i.iwind, i.iworld );
 
     float3 worldPos = mul( float4( localPos, 1.0 ), i.iworld ).xyz;
     o.clip = mul( float4( worldPos, 1.0 ), ViewProj );
@@ -101,12 +111,15 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     return float4( lerp( rgb, SrgbToLinear( FogColor ), f ), 1.0 );
 }
 
-struct VS_DEPTH_IN  { float3 pos : POSITION; float2 uv : TEXCOORD0; float4x4 iworld : INSTANCE_WORLD_MATRIX; };
+// Same per-instance wind fields as VS_IN (see ApplyVobWind) — the depth prepass must sway identically to VSMain,
+// or the color pass's swayed fragments fail the GREATER_EQUAL depth test against an unswayed prepass depth.
+struct VS_DEPTH_IN  { float3 pos : POSITION; float2 uv : TEXCOORD0; float4x4 iworld : INSTANCE_WORLD_MATRIX; float2 iwind : INSTANCE_WINDFLUENCE; };
 struct VS_DEPTH_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; };
 VS_DEPTH_OUT VSDepth( VS_DEPTH_IN i )
 {
     VS_DEPTH_OUT o;
-    float3 worldPos = mul( float4( i.pos, 1.0 ), i.iworld ).xyz;
+    float3 localPos = ApplyVobWind( i.pos, i.iwind, i.iworld );
+    float3 worldPos = mul( float4( localPos, 1.0 ), i.iworld ).xyz;
     o.clip = mul( float4( worldPos, 1.0 ), ViewProj );
     o.uv = i.uv;
     return o;

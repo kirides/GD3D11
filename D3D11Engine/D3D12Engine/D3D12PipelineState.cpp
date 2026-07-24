@@ -635,7 +635,10 @@ bool D3D12PipelineState::CreateDepthPrepass() {
         return false;
     }
 
-    // Position (@0) + TexCoord0 (@24) from ExVertexStruct (stride 60 bytes)
+    // Position (@0) + TexCoord0 (@24) from ExVertexStruct (stride 60 bytes). VSDepth now applies the same wind
+    // sway as VSMain (ApplyVobWind, Vob.hlsl) so the prepass depth matches the color pass exactly for swaying
+    // VOBs — it unconditionally reads INSTANCE_WINDFLUENCE, so every PSO built from this VS blob needs the
+    // element (node attachments/non-wind VOBs just carry zeroes there, a no-op per ApplyVobWind's iwind>0 gate).
     const D3D12_INPUT_ELEMENT_DESC vobLayout[] = {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
@@ -643,6 +646,7 @@ bool D3D12PipelineState::CreateDepthPrepass() {
         { "INSTANCE_WORLD_MATRIX", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 16, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
         { "INSTANCE_WORLD_MATRIX", 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 32, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
         { "INSTANCE_WORLD_MATRIX", 3, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 48, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+        { "INSTANCE_WINDFLUENCE",  0, DXGI_FORMAT_R32G32_FLOAT,       1, 132, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
     };
 
     // pso still carries the depth-only state (color mask 0, GREATER_EQUAL depth-write) — only swap VS/PS/layout.

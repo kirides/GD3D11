@@ -1481,6 +1481,10 @@ bool D3D12GraphicsEngine::CreateShadowMap() {
 	if ( m_Pipelines.World.DepthPrepassVobVsBlob ) {
 		if ( !m_ShaderBackend.CompileFromFile( "Vob.hlsl", "PSShadowClip", Shadermodel_PS, m_ShadowCasterVobPsBlob.ReleaseAndGetAddressOf() ) )
 			return false;
+		// Same VSDepth blob as the opaque depth prepass — it now unconditionally reads INSTANCE_WINDFLUENCE
+		// (Vob.hlsl's ApplyVobWind), so this layout needs the element too (node attachments carry zeroes there,
+		// a no-op; genuinely wind-flagged VOB casters need it for their shadow silhouette to sway like their lit
+		// geometry — see the WindCB bind at the "Vobs" caster draw site below).
 		const D3D12_INPUT_ELEMENT_DESC vobLayout[] = {
 			{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
 			{ "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
@@ -1488,6 +1492,7 @@ bool D3D12GraphicsEngine::CreateShadowMap() {
 			{ "INSTANCE_WORLD_MATRIX", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 16, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
 			{ "INSTANCE_WORLD_MATRIX", 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 32, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
 			{ "INSTANCE_WORLD_MATRIX", 3, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 48, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+			{ "INSTANCE_WINDFLUENCE",  0, DXGI_FORMAT_R32G32_FLOAT,       1, 132, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
 		};
 		pso.pRootSignature = m_Pipelines.World.RootSig.Get();
 		pso.VS = { m_Pipelines.World.DepthPrepassVobVsBlob->GetBufferPointer(), m_Pipelines.World.DepthPrepassVobVsBlob->GetBufferSize() };
@@ -2113,6 +2118,14 @@ void D3D12GraphicsEngine::RenderSunShadows() {
 			for ( const FrameVobUpload& up : cascadeUploads ) {
 				MeshVisualInfo* visual = up.visual;
 				if ( !visual ) continue;
+				// Wind sway (b4, VS): a genuinely wind-flagged VOB casting a shadow must sway its caster
+				// silhouette the same as its lit geometry — VSDepth (shared with the opaque prepass) reads
+				// this unconditionally when INSTANCE_WINDFLUENCE.x/y > 0, so an unbound/stale root value here
+				// would read garbage for exactly those casters. windDir/globalTime/playerPos were refreshed
+				// once in OnStartWorldRendering.
+				m_WindBuffer.minHeight = visual->BBox.Min.y;
+				m_WindBuffer.maxHeight = visual->BBox.Max.y;
+				m_CmdList->SetGraphicsRoot32BitConstants( 11, 12, &m_WindBuffer, 0 );
 				for ( auto const& [meshKey, meshList] : visual->MeshesByTexture ) {
 					bindDiffuse( meshKey.Material->GetAniTexture(), 1 );
 					for ( MeshInfo* mi : meshList ) {
@@ -3870,6 +3883,13 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	PrepareFrameSkeletals( Engine::GAPI->GetAnimatedSkeletalMeshVobs() );
 	PrepareFrameSkeletals( g_FrameMobs );
 
+	// Refresh the wind CB's player position ONCE here (before shadows/prepass/color all run this frame) — windDir/
+	// globalTime were already advanced once in OnBeginFrame; minHeight/maxHeight are refreshed per-visual right
+	// before each pass's VOB draws (DrawVobDepthPrepass / RenderSunShadows / DrawVobsInstanced).
+	if ( zCVob* player = Engine::GAPI->GetPlayerVob() ) {
+		m_WindBuffer.playerPos = player->GetPositionWorld();
+	}
+
 	// Phase 3 HDR: redirect the whole 3D scene into the R16F scene-color target (OnBeginFrame bound the
 	// swapchain for 2D-only/menu frames; here we switch to HDR so lighting can exceed 1.0). Depth is shared.
 	BindSceneColorTarget();
@@ -4548,6 +4568,13 @@ void D3D12GraphicsEngine::DrawVobDepthPrepass() {
         if ( !visual ) continue;
         const UINT numInstances = up.numInstances;
 
+        // Wind sway (b4, VS): must match the color pass's ApplyVobWind exactly (VSDepth/VSMain share the
+        // function) or the reversed-Z GREATER_EQUAL depth test discards swaying geometry — see the Vob.hlsl
+        // comment on ApplyVobWind. windDir/globalTime/playerPos were refreshed once in OnStartWorldRendering.
+        m_WindBuffer.minHeight = visual->BBox.Min.y;
+        m_WindBuffer.maxHeight = visual->BBox.Max.y;
+        m_CmdList->SetGraphicsRoot32BitConstants( 11, 12, &m_WindBuffer, 0 );
+
         for ( auto const& [meshKey, meshList] : visual->MeshesByTexture ) {
             zCTexture* tex = meshKey.Material->GetAniTexture();
             D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
@@ -4621,13 +4648,11 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
     const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_BlackTexture->GetSrvSlot() );
     unsigned int drawnTris = 0;
 
-    // Wind sway (b4, VS): windDir/globalTime were advanced once this frame in OnBeginFrame; playerPos and the
-    // per-visual bounding-box min/maxHeight fallback (no WindMetaData SRV yet) are refreshed here, mirroring
-    // D3D11's per-draw g_windBuffer.playerPos/minHeight/maxHeight fill (D3D11GraphicsEngine.cpp ~7938).
+    // Wind sway (b4, VS): windDir/globalTime/playerPos were already refreshed once this frame in
+    // OnStartWorldRendering; only the per-visual bounding-box min/maxHeight fallback (no WindMetaData SRV yet)
+    // is refreshed here, mirroring D3D11's per-draw g_windBuffer.minHeight/maxHeight fill (D3D11GraphicsEngine.cpp
+    // ~7938).
     static_assert( sizeof( VS_ExConstantBuffer_Wind ) == 48, "WindCB (b4) layout must match Vob.hlsl's WindCB" );
-    if ( zCVob* player = Engine::GAPI->GetPlayerVob() ) {
-        m_WindBuffer.playerPos = player->GetPositionWorld();
-    }
 
     {
         DX_ZONE( m_CmdList, "Draw Vobs" );
