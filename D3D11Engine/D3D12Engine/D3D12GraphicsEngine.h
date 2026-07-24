@@ -83,6 +83,12 @@ public:
     /** Native device for the D3D12 resource classes (D3D12Texture / D3D12VertexBuffer). */
     ID3D12Device* GetD3DDevice() const { return m_Device.GetDevice(); }
 
+    /** Current frame-in-flight index (0..kBackBufferCount-1), stable for the whole frame. Used by
+        D3D12VertexBuffer to pick which of its per-frame copies to write/bind for a dynamic (GPU-bound,
+        CPU-updated-every-frame) buffer, so a frame N update can never race frame N-1's still-in-flight
+        GPU reads of the same conceptual buffer (see D3D12VertexBuffer's dynamic-buffer ring). */
+    UINT GetFrameIndex() const { return m_FrameIndex; }
+
     /** Asynchronously uploads CPU subresource data into a DEFAULT-heap resource using the dedicated
         copy queue, then defers the staging allocation lifetime until the copy-queue fence reaches the
         submitted value. The caller can then issue a direct-queue transition barrier once the copy has
