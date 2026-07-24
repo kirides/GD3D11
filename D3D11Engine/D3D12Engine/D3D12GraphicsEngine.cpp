@@ -43,6 +43,11 @@ using Microsoft::WRL::ComPtr;
 
 static D3D12_HEAP_TYPE DefaultUploadHeapType = D3D12_HEAP_TYPE_UPLOAD;
 
+// Mid-burst flush threshold for the batched copy uploader: caps how much staging (UPLOAD-heap VA —
+// scarce in the 32-bit process) a no-Present world-load burst can accumulate before we submit the
+// open batch and let its staging buffers recycle. Sized so typical per-frame streaming never trips it.
+static constexpr UINT64 kCopyBatchFlushThresholdBytes = 32ull * 1024 * 1024;
+
 static bool GetSkipDefaultHeapCopyAfterUpload() {
 	return DefaultUploadHeapType == D3D12_HEAP_TYPE_GPU_UPLOAD;
 }
@@ -390,23 +395,6 @@ namespace {
         b.Transition.StateAfter = after;
         b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         return b;
-    }
-
-    bool EnsureCopyCommandObjects( ID3D12Device* device, ComPtr<ID3D12CommandAllocator>& allocator, ComPtr<ID3D12GraphicsCommandList>& cmdList ) {
-        if ( !device ) return false;
-        if ( !allocator ) {
-            if ( FAILED( device->CreateCommandAllocator( D3D12_COMMAND_LIST_TYPE_COPY,
-                IID_PPV_ARGS( allocator.ReleaseAndGetAddressOf() ) ) ) ) {
-                return false;
-            }
-        }
-        if ( !cmdList ) {
-            if ( FAILED( device->CreateCommandList( 0, D3D12_COMMAND_LIST_TYPE_COPY,
-                allocator.Get(), nullptr, IID_PPV_ARGS( cmdList.ReleaseAndGetAddressOf() ) ) ) ) {
-                return false;
-            }
-        }
-        return true;
     }
 
     gtl::flat_hash_map<BaseVisualInfo*, int16_t> g_vobInfoVisualToBucket;
@@ -759,11 +747,17 @@ bool D3D12GraphicsEngine::InitCopyQueue() {
 }
 
 void D3D12GraphicsEngine::ReleaseCompletedCopyResources( UINT64 fenceValue ) {
-    // std::lock_guard<std::mutex> lock( m_CopyQueueMutex );
-
+    // Caller holds m_CopyQueueMutex. Pending batches are pushed in ascending fence order, so the front
+    // is always the oldest — stop at the first not-yet-completed batch.
     while ( !m_PendingCopyReleases.empty() ) {
         auto& pending = m_PendingCopyReleases.front();
         if ( pending.FenceValue > fenceValue ) break;
+        // Staging buffers are done being read: drop them, but recycle the command allocator+list for
+        // reuse by the next batch (their copies have completed, so Reset is now legal).
+        if ( pending.CopyAllocator && pending.CopyCommandList ) {
+            m_FreeCopyCmdObjects.push_back( CopyCmdObjects{
+                std::move( pending.CopyAllocator ), std::move( pending.CopyCommandList ) } );
+        }
         m_PendingCopyReleases.pop_front(); // O(1) popped release, zero memory shifts
     }
 }
@@ -866,9 +860,10 @@ bool D3D12GraphicsEngine::UploadTextureSubresources( ID3D12Resource* dst, const 
 	}
 	upload->Unmap( 0, nullptr );
 
-	ComPtr<ID3D12CommandAllocator> copyAllocator;
-	ComPtr<ID3D12GraphicsCommandList> copyCmdList;
-	if ( !EnsureCopyCommandObjects( device, copyAllocator, copyCmdList ) )
+	// Record the copy into the shared, batched copy command list (submitted once at flush). The lock
+	// serializes recording into the single list and guards the batch bookkeeping — see the header note.
+	std::lock_guard<std::mutex> lock( m_CopyQueueMutex );
+	if ( !BeginCopyBatch() )
 		return false;
 
 	for ( UINT i = 0; i < numSubresources; ++i ) {
@@ -882,31 +877,18 @@ bool D3D12GraphicsEngine::UploadTextureSubresources( ID3D12Resource* dst, const 
 		srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
 		srcLoc.PlacedFootprint = layouts[i];
 
-		copyCmdList->CopyTextureRegion( &dstLoc, 0, 0, 0, &srcLoc, nullptr );
+		m_CopyBatchList->CopyTextureRegion( &dstLoc, 0, 0, 0, &srcLoc, nullptr );
 	}
 
-	if ( FAILED( copyCmdList->Close() ) )
-		return false;
+	// Keep the staging buffer alive until the batch's copies complete (moved to the pending list at flush).
+	m_CopyBatchUploadAllocs.push_back( std::move( uploadAllocation ) );
+	m_CopyBatchUploadResources.push_back( std::move( upload ) );
+	m_CopyBatchBytes += totalBytes;
 
-	std::lock_guard<std::mutex> lock( m_CopyQueueMutex );
-
-	ID3D12CommandList* lists[] = { copyCmdList.Get() };
-	m_CopyQueue->ExecuteCommandLists( 1, lists );
-
-	const UINT64 fenceValue = ++m_CopyFenceValue;
-	if ( FAILED( m_CopyQueue->Signal( m_CopyFence.Get(), fenceValue ) ) )
-		return false;
-
-	// Asynchronous GPU-side queue barrier: Direct Queue waits on GPU for copy execution to finish
-	m_Device.GetDirectQueue()->Wait( m_CopyFence.Get(), fenceValue );
-
-	m_PendingCopyReleases.push_back( PendingCopyRelease{
-		fenceValue,
-		std::move( uploadAllocation ),
-		std::move( upload ),
-		std::move( copyAllocator ),
-		std::move( copyCmdList )
-	} );
+	// Bound VA/memory growth during a long world-load burst that never Presents: flush mid-burst once
+	// the accumulated staging crosses the threshold. Still one submit per threshold-worth, not per texture.
+	if ( m_CopyBatchBytes >= kCopyBatchFlushThresholdBytes )
+		FlushTextureUploadsLocked();
 
 	ReleaseCompletedCopyResources( m_CopyFence->GetCompletedValue() );
 	return true;
@@ -914,7 +896,6 @@ bool D3D12GraphicsEngine::UploadTextureSubresources( ID3D12Resource* dst, const 
 
 bool D3D12GraphicsEngine::UploadBufferData( ID3D12Resource* dst, const void* srcData, UINT64 sizeInBytes ) {
 	if ( !dst || !srcData || sizeInBytes == 0 ) return false;
-	ID3D12Device* device = m_Device.GetDevice();
 
 	// Create a temporary upload buffer for staging
 	D3D12_RESOURCE_DESC bufDesc = {};
@@ -949,40 +930,89 @@ bool D3D12GraphicsEngine::UploadBufferData( ID3D12Resource* dst, const void* src
 	memcpy( mapped, srcData, sizeInBytes );
 	upload->Unmap( 0, nullptr );
 
-	ComPtr<ID3D12CommandAllocator> copyAllocator;
-	ComPtr<ID3D12GraphicsCommandList> copyCmdList;
-	if ( !EnsureCopyCommandObjects( device, copyAllocator, copyCmdList ) )
-		return false;
-
-	copyCmdList->CopyBufferRegion( dst, 0, upload.Get(), 0, sizeInBytes );
-
-	if ( FAILED( copyCmdList->Close() ) )
-		return false;
-
-	// 4. Submit to Copy Queue asynchronously
+	// Record into the shared batched copy list (submitted once at flush) — same rationale as
+	// UploadTextureSubresources: no per-call CreateCommandList / ExecuteCommandLists / cross-queue Wait.
 	std::lock_guard<std::mutex> lock( m_CopyQueueMutex );
-
-	ID3D12CommandList* lists[] = { copyCmdList.Get() };
-	m_CopyQueue->ExecuteCommandLists( 1, lists );
-
-	const UINT64 fenceValue = ++m_CopyFenceValue;
-	if ( FAILED( m_CopyQueue->Signal( m_CopyFence.Get(), fenceValue ) ) )
+	if ( !BeginCopyBatch() )
 		return false;
 
-	// GPU-side wait on the Direct Queue
-	m_Device.GetDirectQueue()->Wait( m_CopyFence.Get(), fenceValue );
+	m_CopyBatchList->CopyBufferRegion( dst, 0, upload.Get(), 0, sizeInBytes );
 
-	// Defer staging buffer destruction until GPU finishes copy
-	m_PendingCopyReleases.push_back( PendingCopyRelease{
-		fenceValue,
-		std::move( uploadAllocation ),
-		std::move( upload ),
-		std::move( copyAllocator ),
-		std::move( copyCmdList )
-	} );
+	m_CopyBatchUploadAllocs.push_back( std::move( uploadAllocation ) );
+	m_CopyBatchUploadResources.push_back( std::move( upload ) );
+	m_CopyBatchBytes += sizeInBytes;
+
+	if ( m_CopyBatchBytes >= kCopyBatchFlushThresholdBytes )
+		FlushTextureUploadsLocked();
 
 	ReleaseCompletedCopyResources( m_CopyFence->GetCompletedValue() );
 	return true;
+}
+
+bool D3D12GraphicsEngine::BeginCopyBatch() {
+	if ( m_CopyBatchOpen ) return true;
+	ID3D12Device* device = m_Device.GetDevice();
+	if ( !device ) return false;
+
+	// Recycle a completed (allocator,list) pair if one is available, else create one.
+	if ( !m_FreeCopyCmdObjects.empty() ) {
+		m_CopyBatchAllocator = std::move( m_FreeCopyCmdObjects.back().Allocator );
+		m_CopyBatchList = std::move( m_FreeCopyCmdObjects.back().List );
+		m_FreeCopyCmdObjects.pop_back();
+		if ( FAILED( m_CopyBatchAllocator->Reset() ) ) return false;         // safe: its copies completed (fence-gated recycle)
+		if ( FAILED( m_CopyBatchList->Reset( m_CopyBatchAllocator.Get(), nullptr ) ) ) return false;
+	} else {
+		if ( FAILED( device->CreateCommandAllocator( D3D12_COMMAND_LIST_TYPE_COPY,
+			IID_PPV_ARGS( m_CopyBatchAllocator.ReleaseAndGetAddressOf() ) ) ) )
+			return false;
+		if ( FAILED( device->CreateCommandList( 0, D3D12_COMMAND_LIST_TYPE_COPY,
+			m_CopyBatchAllocator.Get(), nullptr, IID_PPV_ARGS( m_CopyBatchList.ReleaseAndGetAddressOf() ) ) ) )
+			return false;
+		// CreateCommandList returns the list already open for recording.
+	}
+	m_CopyBatchOpen = true;
+	m_CopyBatchBytes = 0;
+	return true;
+}
+
+void D3D12GraphicsEngine::FlushTextureUploadsLocked() {
+	if ( !m_CopyBatchOpen ) return;
+	m_CopyBatchOpen = false;
+
+	if ( FAILED( m_CopyBatchList->Close() ) ) {
+		// Drop the batch; its staging buffers free with the ComPtr vectors, cmd objects are discarded.
+		m_CopyBatchUploadAllocs.clear();
+		m_CopyBatchUploadResources.clear();
+		m_CopyBatchBytes = 0;
+		return;
+	}
+
+	ID3D12CommandList* lists[] = { m_CopyBatchList.Get() };
+	m_CopyQueue->ExecuteCommandLists( 1, lists );
+
+	const UINT64 fenceValue = ++m_CopyFenceValue;
+	m_CopyQueue->Signal( m_CopyFence.Get(), fenceValue );
+
+	// ONE cross-queue GPU wait for the whole batch: the direct (render) queue won't sample any of
+	// these textures until the batch's copies complete. Replaces the old per-texture render stall.
+	m_Device.GetDirectQueue()->Wait( m_CopyFence.Get(), fenceValue );
+
+	PendingCopyRelease pending;
+	pending.FenceValue = fenceValue;
+	pending.UploadAllocations = std::move( m_CopyBatchUploadAllocs );
+	pending.UploadResources = std::move( m_CopyBatchUploadResources );
+	pending.CopyAllocator = std::move( m_CopyBatchAllocator );
+	pending.CopyCommandList = std::move( m_CopyBatchList );
+	m_PendingCopyReleases.push_back( std::move( pending ) );
+
+	m_CopyBatchUploadAllocs.clear();
+	m_CopyBatchUploadResources.clear();
+	m_CopyBatchBytes = 0;
+}
+
+void D3D12GraphicsEngine::FlushTextureUploads() {
+	std::lock_guard<std::mutex> lock( m_CopyQueueMutex );
+	FlushTextureUploadsLocked();
 }
 
 bool D3D12GraphicsEngine::CreateSrvHeap() {
@@ -5635,6 +5665,11 @@ XRESULT D3D12GraphicsEngine::Present() {
         D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT );
     m_CmdList->ResourceBarrier( 1, &toPresent );
 
+    // Submit any batched texture/buffer uploads accumulated this frame and insert the single
+    // copy->direct cross-queue wait BEFORE the frame's graphics execute, so everything sampled below
+    // is ready. Cheap no-op when nothing was cached in.
+    FlushTextureUploads();
+
     if ( FAILED( m_CmdList->Close() ) ) return XR_FAILED;
 
     ID3D12CommandList* lists[] = { m_CmdList.Get() };
@@ -5694,6 +5729,10 @@ void D3D12GraphicsEngine::MoveToNextFrame() {
 void D3D12GraphicsEngine::WaitForGpuIdle() {
     if ( !m_Fence || !m_Device.GetDirectQueue() ) return;
 
+    // Submit any still-open upload batch first, so its copies are actually queued before we wait on
+    // the copy fence below (an un-flushed batch has recorded copies that were never signaled).
+    FlushTextureUploads();
+
     if ( m_CopyFence && m_CopyFenceEvent ) {
         const UINT64 copyFenceValue = m_CopyFenceValue;
         if ( copyFenceValue > 0 && m_CopyFence->GetCompletedValue() < copyFenceValue ) {
@@ -5744,6 +5783,11 @@ void D3D12GraphicsEngine::FlushCommandListSync() {
     // advance) — it exists solely for GetBackbufferData, which must synchronously read pixels back mid-
     // frame (Gothic's savegame-thumbnail Lock() fires before this frame's own Present).
     if ( !m_CmdList || !m_Fence || !m_Device.GetDirectQueue() ) return;
+
+    // Ensure any batched uploads recorded before this mid-frame sync are submitted + waited-on, so the
+    // pixels read back here reflect textures cached in this frame.
+    FlushTextureUploads();
+
     if ( FAILED( m_CmdList->Close() ) ) return;
 
     ID3D12CommandList* lists[] = { m_CmdList.Get() };

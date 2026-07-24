@@ -290,17 +290,54 @@ private:
     HANDLE m_CopyFenceEvent = nullptr;
     bool m_TearingSupported;
 
+    // --- Batched copy-queue uploader ---
+    // A CacheIn burst can load dozens-hundreds of textures in a single frame. Doing a
+    // CreateCommandList + ExecuteCommandLists + Signal + cross-queue Wait *per texture* (the old
+    // path) was the cause of the massive CacheIn stutter / black frames: hundreds of the most
+    // expensive D3D12 API calls on the game thread, plus a render-queue stall gated on the whole
+    // copy burst draining. D3D11 shows none of this because its driver memcpies into managed staging
+    // and folds the GPU copy into the normal command stream. To mirror that, all uploads in a burst
+    // now record CopyTextureRegion/CopyBufferRegion into ONE open copy command list and submit ONCE
+    // — at frame end (Present), on GPU-idle, or when the accumulated upload bytes cross a threshold
+    // (bounds VA use during no-Present world-load bursts). Command allocator+list objects are
+    // recycled by fence, so steady-state streaming creates ~0 new command lists.
+    Microsoft::WRL::ComPtr<ID3D12CommandAllocator>    m_CopyBatchAllocator;
+    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> m_CopyBatchList;
+    bool   m_CopyBatchOpen = false;   // m_CopyBatchList is Reset+recording with >=1 queued copy
+    UINT64 m_CopyBatchBytes = 0;      // upload bytes accumulated in the currently open batch
+    std::vector<Microsoft::WRL::ComPtr<D3D12MA::Allocation>> m_CopyBatchUploadAllocs;     // kept alive until flush
+    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>>      m_CopyBatchUploadResources;  // "
+
     struct PendingCopyRelease {
         UINT64 FenceValue = 0;
-        Microsoft::WRL::ComPtr<D3D12MA::Allocation> UploadAllocation;
-        Microsoft::WRL::ComPtr<ID3D12Resource> UploadResource;
+        std::vector<Microsoft::WRL::ComPtr<D3D12MA::Allocation>> UploadAllocations;
+        std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>>      UploadResources;
         Microsoft::WRL::ComPtr<ID3D12CommandAllocator> CopyAllocator;
         Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> CopyCommandList;
     };
     std::deque<PendingCopyRelease> m_PendingCopyReleases;
-    std::mutex m_CopyQueueMutex; // Protects copy queue operations and pending releases
+
+    // Free-list of (allocator,list) pairs whose copies have completed on the GPU — recycled by
+    // BeginCopyBatch instead of re-creating command objects each burst.
+    struct CopyCmdObjects {
+        Microsoft::WRL::ComPtr<ID3D12CommandAllocator>    Allocator;
+        Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> List;
+    };
+    std::vector<CopyCmdObjects> m_FreeCopyCmdObjects;
+
+    std::mutex m_CopyQueueMutex; // Protects the open batch, the copy queue submit, and the pending/free lists
 
     void ReleaseCompletedCopyResources( UINT64 fenceValue );
+    bool BeginCopyBatch();            // ensures m_CopyBatchList is open (recycles or creates cmd objects). Caller holds m_CopyQueueMutex.
+    void FlushTextureUploadsLocked(); // submits the open batch (1 Execute+Signal+Wait). Caller holds m_CopyQueueMutex.
+
+public:
+    /** Submits any pending batched texture/buffer uploads to the copy queue and inserts the single
+        cross-queue wait on the direct queue. Called before the frame's graphics execute (Present),
+        before a mid-frame sync (thumbnail readback), and before GPU-idle. Cheap no-op when nothing
+        is queued. */
+    void FlushTextureUploads();
+private:
 
     INT2  m_Resolution = {};
     // Requested resolution (TriggerResize just stores it here — m_NewResolution itself lives on
