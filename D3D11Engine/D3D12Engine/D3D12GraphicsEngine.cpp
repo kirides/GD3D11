@@ -2383,7 +2383,7 @@ void D3D12GraphicsEngine::RenderPointShadows() {
 					UINT count = 0;
 					bool overflow = false;
 					for ( const VobInstanceInfo& inst : visual->Instances ) {
-						float dx = inst.world._41 - ps.posWS.x, dy = inst.world._42 - ps.posWS.y, dz = inst.world._43 - ps.posWS.z;
+						float dx = inst.world._14 - ps.posWS.x, dy = inst.world._24 - ps.posWS.y, dz = inst.world._34 - ps.posWS.z;
 						if ( dx * dx + dy * dy + dz * dz >= cullRSq ) continue;
 						if ( m_PointShadowVobInstOffset + sizeof( XMFLOAT4X4 ) > m_PointShadowVobInstCapacity ) {
 							if ( !m_PointShadowVobInstOverflowLogged ) {

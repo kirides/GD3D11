@@ -2254,10 +2254,6 @@ void GothicAPI::OnAddVob( zCVob* vob, zCWorld* world ) {
             vi->Vob = vob;
             vi->VisualInfo = StaticMeshVisuals[pm];
 
-            // Add to map
-            VobsByVisual[vob->GetVisual()].push_back( vi );
-            Engine::GraphicsEngine->OnAddVob(vi);
-
             // Check for mainworld
             if ( world == oCGame::GetGame()->_zCSession_world ) {
                 VobMap[vob] = vi;
@@ -2274,6 +2270,11 @@ void GothicAPI::OnAddVob( zCVob* vob, zCWorld* world ) {
                 // Must be inventory
                 Inventory->OnAddVob( vi, world );
             }
+            
+            // Add to map
+            VobsByVisual[vob->GetVisual()].push_back( vi );
+            Engine::GraphicsEngine->OnAddVob(vi);
+
             break;
         } else if ( ext == ".MDS" || ext == ".ASC" ) {
             // Some mods use MDS/ASC models for inventory
