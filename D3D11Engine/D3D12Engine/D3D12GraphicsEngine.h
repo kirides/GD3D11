@@ -496,7 +496,7 @@ private:
     // faces via SV_RenderTargetArrayIndex, no geometry shader — needs VPAndRTArrayIndexFromAnyShaderFeeding
     // Rasterizer, present on the target AMD GPU). Sampled in the tiled point-light loop when ShadowCubeIndex>=0.
     static constexpr UINT kPointShadowCubeSize = 128;
-    static constexpr UINT kMaxShadowCubes      = 32;    // tunable up to D3D11's 128; each = 6 slices @128^2 R16 (~6MB@32)
+    static constexpr UINT kMaxShadowCubes      = 128;   // matches D3D11's persisted-light ceiling; each = 6 slices @128^2 R16 (~6MB@32 -> ~24MB@128)
     Microsoft::WRL::ComPtr<ID3D12Resource>       m_PointShadowCube;      // Texture2DArray(R16_TYPELESS), kMaxShadowCubes*6 slices
     Microsoft::WRL::ComPtr<D3D12MA::Allocation>  m_PointShadowCubeAlloc;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_PointShadowDsvHeap;   // one D16 Texture2DArray DSV (6 slices) per cube slot
@@ -539,6 +539,7 @@ private:
                                               // receive the per-frame skeletal dynamic overlay (mirrors D3D11's
                                               // GetCurrentShadowMode forcing PLS_STATIC_ONLY for static lights).
         bool              staticValid = false; // static-aside slot holds valid static-only depth (else must re-render static)
+        UINT32            dynamicStaleFrames = 0; // frames since this slot's skeletal dynamic overlay last ran (round-robin, P2.10h)
     };
     PointShadowSlot m_PointShadowSlots[kMaxShadowCubes];
     // Static-aside cube (P2.10g): second persistent cube array, static-caster depth only. No SRV (never sampled);
