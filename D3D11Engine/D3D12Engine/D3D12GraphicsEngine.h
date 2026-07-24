@@ -131,6 +131,7 @@ public:
     void QueueAllocationForRelease(Microsoft::WRL::ComPtr<D3D12MA::Allocation> value);
 
     void OnAddVob(VobInfo* vi) override;
+    XRESULT OnVobRemovedFromWorld( zCVob* vob ) override;
     void OnLoadWorld() override;
     void DrawVobSingle( VobInfo* vob, zCCamera& camera ) override;  // inventory item preview (GInventory), drawn straight onto the backbuffer
     D3D12MA::Allocator* GetAllocator() const { return m_Allocator.Get(); }

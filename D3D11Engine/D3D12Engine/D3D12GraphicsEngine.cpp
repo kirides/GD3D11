@@ -559,6 +559,47 @@ void D3D12GraphicsEngine::OnAddVob(VobInfo* vi) {
         }
     }
     vi->VisualIndex = it->second;
+
+    // A VOB added after a nearby point light already cached its static-aside shadow cube would otherwise cast no
+    // point-light shadow: the static cube is only re-rendered when the light is fresh / moved / resized (the
+    // renderStatic gate in BuildFramePointShadows), not when world geometry around it changes. Walk the active
+    // shadow slots and invalidate any whose light range the new VOB reaches, forcing a one-time static re-render
+    // next frame (staticValid=false → renderStatic). Slots are empty during world load (owner==nullptr) so this is
+    // a no-op then; the margin mirrors the static-VOB gather's cull (ps.range + visual->MeshSize * 0.5f).
+    if ( vi->Vob && vi->VisualInfo ) {
+        const XMFLOAT3 p = vi->Vob->GetPositionWorld();
+        const float extent = vi->VisualInfo->MeshSize * 0.5f;
+        for ( PointShadowSlot& ss : m_PointShadowSlots ) {
+            if ( !ss.owner || !ss.staticValid ) continue;
+            const float r = ss.range + extent;
+            const float dx = p.x - ss.pos.x, dy = p.y - ss.pos.y, dz = p.z - ss.pos.z;
+            if ( dx * dx + dy * dy + dz * dz < r * r )
+                ss.staticValid = false;   // re-render this slot's static-aside next frame to include the new VOB
+        }
+    }
+}
+
+XRESULT D3D12GraphicsEngine::OnVobRemovedFromWorld( zCVob* vob ) {
+    // Symmetric to OnAddVob's static-cube invalidation: a VOB removed from the world must stop casting into any
+    // point light's cached static-aside shadow cube. D3D11 keys this off each light's per-vob VobCache
+    // (D3D11PointLight::OnVobRemovedFromWorld); D3D12 keeps no per-slot vob list, so test the removed vob's world
+    // AABB against each active slot's light sphere (the same closest-point AABB test the static world-section cull
+    // uses) and force a one-time static re-render (staticValid=false) for any slot it intersects. Over-invalidation
+    // is harmless (one extra static pass); under-invalidation would leave the removed vob's shadow frozen in the
+    // cache. Slots are empty during world load (owner==nullptr) so this is a no-op then.
+    if ( vob ) {
+        const zTBBox3D& bb = vob->GetBBox();
+        for ( PointShadowSlot& ss : m_PointShadowSlots ) {
+            if ( !ss.owner || !ss.staticValid ) continue;
+            const float cx = std::min( std::max( ss.pos.x, bb.Min.x ), bb.Max.x );
+            const float cy = std::min( std::max( ss.pos.y, bb.Min.y ), bb.Max.y );
+            const float cz = std::min( std::max( ss.pos.z, bb.Min.z ), bb.Max.z );
+            const float dx = ss.pos.x - cx, dy = ss.pos.y - cy, dz = ss.pos.z - cz;
+            if ( dx * dx + dy * dy + dz * dz < ss.range * ss.range )
+                ss.staticValid = false;   // removed vob was within this light's static coverage → re-cache
+        }
+    }
+    return XR_SUCCESS;
 }
 
 void D3D12GraphicsEngine::OnLoadWorld()
