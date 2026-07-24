@@ -136,6 +136,11 @@ public:
     void DrawVobSingle( VobInfo* vob, zCCamera& camera ) override;  // inventory item preview (GInventory), drawn straight onto the backbuffer
     D3D12MA::Allocator* GetAllocator() const { return m_Allocator.Get(); }
 
+    /** Savegame-thumbnail / screenshot readback (MyDirectDrawSurface7::Lock's DDLOCK_READONLY hack).
+        Re-tonemaps the just-rendered HDR scene into a CPU-readable 32bpp BGRA8 buffer at either 256x256
+        (thumbnail) or full resolution. Caller owns *data (new[]'d) and must delete[] it. */
+    void GetBackbufferData( bool thumbnail, byte** data, INT2& buffersize, int& pixelsize ) override;
+
 private:
     void QueueCleanupJob(std::move_only_function<void()> callback); // cleanup job runs after the calling frames fence value is completed.
     bool CreateAllocators();
@@ -204,6 +209,17 @@ private:
     bool ResizeSwapChain( INT2 size );
     void WaitForGpuIdle();            // full CPU/GPU flush (used on resize / teardown)
     void MoveToNextFrame();           // signal current frame's fence, advance, wait for next allocator
+
+    // Mid-frame synchronous flush for GetBackbufferData: closes + executes the currently-recorded m_CmdList
+    // and blocks until the GPU has consumed it, then Resets the same allocator/list so recording can
+    // continue for the rest of the frame. Unlike Present()/MoveToNextFrame() this does NOT transition the
+    // backbuffer to PRESENT and does NOT advance m_FrameIndex — callers must restore whatever RTV/viewport/
+    // heap state subsequent draws expect (see RestoreFrameRenderTarget).
+    void FlushCommandListSync();
+    // Rebinds the swapchain backbuffer (+ depth) as the active render target with the full-resolution
+    // viewport/scissor and shader-visible SRV heap — mirrors the tail of OnBeginFrame. Used after
+    // FlushCommandListSync() leaves the command list freshly Reset with nothing bound.
+    void RestoreFrameRenderTarget();
 
     D3D12Device m_Device;
 

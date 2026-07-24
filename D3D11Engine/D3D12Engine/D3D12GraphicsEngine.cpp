@@ -5587,6 +5587,234 @@ void D3D12GraphicsEngine::WaitForGpuIdle() {
     }
 }
 
+void D3D12GraphicsEngine::FlushCommandListSync() {
+    // Closes + submits whatever is currently recorded in m_CmdList and blocks until the GPU has consumed
+    // it, then Resets the SAME per-frame allocator/list so recording can continue. This is NOT the normal
+    // once-per-frame Close/Execute in Present() (no PRESENT transition, no MoveToNextFrame/frame-index
+    // advance) — it exists solely for GetBackbufferData, which must synchronously read pixels back mid-
+    // frame (Gothic's savegame-thumbnail Lock() fires before this frame's own Present).
+    if ( !m_CmdList || !m_Fence || !m_Device.GetDirectQueue() ) return;
+    if ( FAILED( m_CmdList->Close() ) ) return;
+
+    ID3D12CommandList* lists[] = { m_CmdList.Get() };
+    m_Device.GetDirectQueue()->ExecuteCommandLists( 1, lists );
+
+    const UINT64 waitValue = ++m_FenceValues[m_FrameIndex];
+    if ( SUCCEEDED( m_Device.GetDirectQueue()->Signal( m_Fence.Get(), waitValue ) ) ) {
+        if ( m_Fence->GetCompletedValue() < waitValue ) {
+            m_Fence->SetEventOnCompletion( waitValue, m_FenceEvent );
+            WaitForSingleObject( m_FenceEvent, INFINITE );
+        }
+    }
+
+    m_CmdAllocators[m_FrameIndex]->Reset();
+    m_CmdList->Reset( m_CmdAllocators[m_FrameIndex].Get(), nullptr );
+}
+
+void D3D12GraphicsEngine::RestoreFrameRenderTarget() {
+    // Mirrors the RTV/viewport/heap portion of OnBeginFrame's tail (NOT the per-frame ring-offset resets —
+    // those must stay untouched, this runs mid-frame after rings may already have been consumed).
+    if ( !m_CmdList || !m_RtvHeap ) return;
+
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
+    rtv.ptr += static_cast<SIZE_T>( m_FrameIndex ) * m_RtvDescriptorSize;
+
+    const bool haveDepth = m_DepthBuffer && m_DsvHeap;
+    D3D12_CPU_DESCRIPTOR_HANDLE dsv = {};
+    if ( haveDepth ) dsv = m_DsvHeap->GetCPUDescriptorHandleForHeapStart();
+
+    m_CmdList->OMSetRenderTargets( 1, &rtv, FALSE, haveDepth ? &dsv : nullptr );
+    m_ColorTargetIsHDR = false;
+
+    if ( m_SrvHeap ) {
+        ID3D12DescriptorHeap* heaps[] = { m_SrvHeap.Get() };
+        m_CmdList->SetDescriptorHeaps( 1, heaps );
+    }
+
+    const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
+    const D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
+    m_CmdList->RSSetViewports( 1, &vp );
+    m_CmdList->RSSetScissorRects( 1, &sc );
+    m_CurrentViewport = vp;
+    m_CurrentScissor = sc;
+    m_CurrentTexture = nullptr;
+}
+
+/** Unpacks one R10G10B10A2_UNORM texel (the swapchain/tonemap-target format) into BGRA8 — the 32bpp
+    layout MyDirectDrawSurface7::Lock's DDLOCK_READONLY path hands to Gothic (masks 0x00FF0000/0x0000FF00/
+    0x000000FF for R/G/B, alpha unused). 10->8 bit is a rounded scale; plenty for a save thumbnail. */
+static void UnpackR10G10B10A2ToBGRA8( uint32_t packed, byte* dstBGRA ) {
+    const uint32_t r10 = packed & 0x3FFu;
+    const uint32_t g10 = (packed >> 10) & 0x3FFu;
+    const uint32_t b10 = (packed >> 20) & 0x3FFu;
+    dstBGRA[0] = static_cast<byte>( (b10 * 255u + 511u) / 1023u );
+    dstBGRA[1] = static_cast<byte>( (g10 * 255u + 511u) / 1023u );
+    dstBGRA[2] = static_cast<byte>( (r10 * 255u + 511u) / 1023u );
+    dstBGRA[3] = 255;
+}
+
+/** Returns the data of the backbuffer (savegame thumbnail / screenshot). See D3D11GraphicsEngine's
+    counterpart for the calling convention: MyDirectDrawSurface7::Lock calls OnStartWorldRendering() right
+    before this to force a fresh world render, then reads *data as a top-down 32bpp BGRA8 buffer. */
+void D3D12GraphicsEngine::GetBackbufferData( bool thumbnail, byte** data, INT2& buffersize, int& pixelsize ) {
+    *data = nullptr;
+    pixelsize = 4;
+    buffersize = thumbnail ? INT2( 256, 256 ) : m_Resolution;
+
+    if ( !m_CmdList || !m_SwapChainReady || !m_SceneColor || !m_Pipelines.Tonemap.PSO || !m_Pipelines.Tonemap.RootSig ) {
+        LogInfo() << (thumbnail ? "Thumbnail failed. D3D12 backend not ready" : "GetBackbufferData failed. D3D12 backend not ready");
+        return;
+    }
+
+    ID3D12Device* device = m_Device.GetDevice();
+
+    // The world + tonemap-resolve commands recorded by the OnStartWorldRendering() call the caller just
+    // made are still sitting unexecuted in m_CmdList — nothing has actually landed on the GPU yet. Flush
+    // + block (D3D12 has no immediate-context Flush() like D3D11's GetContext()->Flush()), then keep
+    // recording afterwards so the rest of this frame's 2D UI + Present continue on the same list.
+    FlushCommandListSync();
+
+    // Re-tonemap the (now GPU-resident) HDR scene into a fresh render target sized to what the caller
+    // asked for. We deliberately do NOT copy the real swapchain backbuffer: it's DXGI_FORMAT_R10G10B10A2_
+    // UNORM (kBackBufferFormat) which the Tonemap PSO is baked for, but Gothic's Lock() consumer expects a
+    // simple 32bpp BGRA8 buffer, and a thumbnail additionally needs downscaling to 256x256 — both are
+    // exactly what one more tonemap draw at a smaller viewport gives us for free (mirrors D3D11's
+    // GetBackbufferData drawing HDRBackBuffer through PS_PFX_GammaCorrectInv into a differently-sized RT).
+    D3D12MA::ALLOCATION_DESC allocDesc = {};
+    allocDesc.HeapType = D3D12_HEAP_TYPE_DEFAULT;
+
+    D3D12_RESOURCE_DESC td = {};
+    td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    td.Width = static_cast<UINT64>( buffersize.x );
+    td.Height = static_cast<UINT>( buffersize.y );
+    td.DepthOrArraySize = 1;
+    td.MipLevels = 1;
+    td.Format = kBackBufferFormat;
+    td.SampleDesc.Count = 1;
+    td.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    td.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+
+    D3D12_CLEAR_VALUE clearValue = {};
+    clearValue.Format = kBackBufferFormat;
+
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> captureAlloc;
+    Microsoft::WRL::ComPtr<ID3D12Resource> captureTex;
+    if ( FAILED( m_Allocator->CreateResource( &allocDesc, &td, D3D12_RESOURCE_STATE_RENDER_TARGET,
+        &clearValue, captureAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( captureTex.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogInfo() << (thumbnail ? "Thumbnail failed. Capture texture could not be created" : "GetBackbufferData failed. Capture texture could not be created");
+        RestoreFrameRenderTarget();
+        return;
+    }
+    captureTex->SetName( L"BackbufferCapture" );
+
+    D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
+    rtvHeapDesc.NumDescriptors = 1;
+    rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> captureRtvHeap;
+    if ( FAILED( device->CreateDescriptorHeap( &rtvHeapDesc, IID_PPV_ARGS( captureRtvHeap.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogInfo() << (thumbnail ? "Thumbnail failed. RTV heap could not be created" : "GetBackbufferData failed. RTV heap could not be created");
+        RestoreFrameRenderTarget();
+        return;
+    }
+    D3D12_CPU_DESCRIPTOR_HANDLE captureRtv = captureRtvHeap->GetCPUDescriptorHandleForHeapStart();
+    device->CreateRenderTargetView( captureTex.Get(), nullptr, captureRtv );
+
+    // m_SceneColor was left in PIXEL_SHADER_RESOURCE state by OnStartWorldRendering's ResolveSceneToBackBuffer
+    // call (now genuinely true on the GPU after the flush above) — safe to sample without re-transitioning.
+    m_CmdList->OMSetRenderTargets( 1, &captureRtv, FALSE, nullptr );
+    const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( buffersize.x ), static_cast<float>( buffersize.y ), 0.0f, 1.0f };
+    const D3D12_RECT     sc = { 0, 0, buffersize.x, buffersize.y };
+    m_CmdList->RSSetViewports( 1, &vp );
+    m_CmdList->RSSetScissorRects( 1, &sc );
+
+    if ( m_SrvHeap ) {
+        ID3D12DescriptorHeap* heaps[] = { m_SrvHeap.Get() };
+        m_CmdList->SetDescriptorHeaps( 1, heaps );
+    }
+
+    m_CmdList->SetPipelineState( m_Pipelines.Tonemap.PSO.Get() );
+    m_CmdList->SetGraphicsRootSignature( m_Pipelines.Tonemap.RootSig.Get() );
+    m_CmdList->SetGraphicsRootDescriptorTable( 0, GetSrvGpuHandle( m_SceneColorSrvSlot ) );
+    const float settingsExposure = Engine::GAPI->GetRendererState().RendererSettings.Exposure;
+    const float exposure = settingsExposure > 0.0f ? settingsExposure : 1.0f;
+    m_CmdList->SetGraphicsRoot32BitConstant( 1, *reinterpret_cast<const UINT*>(&exposure), 0 );
+    m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+    m_CmdList->IASetVertexBuffers( 0, 0, nullptr );
+    m_CmdList->DrawInstanced( 3, 1, 0, 0 );
+
+    auto toCopySrc = TransitionBarrier( captureTex.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE );
+    m_CmdList->ResourceBarrier( 1, &toCopySrc );
+
+    D3D12_RESOURCE_DESC capDesc = captureTex->GetDesc();
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint = {};
+    UINT numRows = 0; UINT64 rowSizeBytes = 0, totalBytes = 0;
+    device->GetCopyableFootprints( &capDesc, 0, 1, 0, &footprint, &numRows, &rowSizeBytes, &totalBytes );
+
+    D3D12MA::ALLOCATION_DESC rbAllocDesc = {};
+    rbAllocDesc.HeapType = D3D12_HEAP_TYPE_READBACK;
+
+    D3D12_RESOURCE_DESC rbDesc = {};
+    rbDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    rbDesc.Width = totalBytes;
+    rbDesc.Height = 1;
+    rbDesc.DepthOrArraySize = 1;
+    rbDesc.MipLevels = 1;
+    rbDesc.Format = DXGI_FORMAT_UNKNOWN;
+    rbDesc.SampleDesc.Count = 1;
+    rbDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> readbackAlloc;
+    Microsoft::WRL::ComPtr<ID3D12Resource> readback;
+    if ( FAILED( m_Allocator->CreateResource( &rbAllocDesc, &rbDesc, D3D12_RESOURCE_STATE_COPY_DEST,
+        nullptr, readbackAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( readback.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogInfo() << (thumbnail ? "Thumbnail failed. Readback buffer could not be created" : "GetBackbufferData failed. Readback buffer could not be created");
+        RestoreFrameRenderTarget();
+        return;
+    }
+
+    D3D12_TEXTURE_COPY_LOCATION dstLoc = {};
+    dstLoc.pResource = readback.Get();
+    dstLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    dstLoc.PlacedFootprint = footprint;
+
+    D3D12_TEXTURE_COPY_LOCATION srcLoc = {};
+    srcLoc.pResource = captureTex.Get();
+    srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    srcLoc.SubresourceIndex = 0;
+
+    m_CmdList->CopyTextureRegion( &dstLoc, 0, 0, 0, &srcLoc, nullptr );
+
+    // Block until the copy has actually landed in the readback buffer before we Map it.
+    FlushCommandListSync();
+
+    byte* d = new byte[ static_cast<size_t>( buffersize.x ) * static_cast<size_t>( buffersize.y ) * 4 ];
+    D3D12_RANGE readRange = { 0, static_cast<SIZE_T>( totalBytes ) };
+    void* mapped = nullptr;
+    if ( SUCCEEDED( readback->Map( 0, &readRange, &mapped ) ) ) {
+        const uint8_t* srcRow = reinterpret_cast<const uint8_t*>( mapped );
+        byte* dstRow = d;
+        for ( int row = 0; row < buffersize.y; ++row ) {
+            const uint32_t* srcPixels = reinterpret_cast<const uint32_t*>( srcRow );
+            byte* dstPixels = dstRow;
+            for ( int col = 0; col < buffersize.x; ++col ) {
+                UnpackR10G10B10A2ToBGRA8( srcPixels[col], dstPixels );
+                dstPixels += 4;
+            }
+            srcRow += footprint.Footprint.RowPitch;
+            dstRow += static_cast<size_t>( buffersize.x ) * 4;
+        }
+        readback->Unmap( 0, nullptr );
+    } else {
+        LogInfo() << (thumbnail ? "Thumbnail failed" : "GetBackbufferData failed");
+    }
+
+    *data = d;
+
+    // The flushes above Reset the command list without leaving anything bound — rebind the swapchain
+    // backbuffer so Gothic's subsequent 2D UI draws (and Present's ImGui pass) land correctly.
+    RestoreFrameRenderTarget();
+}
+
 bool D3D12GraphicsEngine::ResizeSwapChain( INT2 size ) {
     if ( !m_SwapChainReady ) return false;
     if ( size.x <= 0 || size.y <= 0 ) return false;
