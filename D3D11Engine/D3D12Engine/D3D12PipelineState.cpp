@@ -2264,6 +2264,174 @@ bool D3D12PipelineState::CreateLightCull() {
     return true;
 }
 
+bool D3D12PipelineState::CreateAdvanceRain() {
+    // Rain/snow particle advance compute (D3D12 rain parity, step 1). Same shape as CreateLightCull:
+    // b0 = AdvanceRainConstantBuffer as 16 root 32-bit values (3+1 + 3+1 + 1+3 + 1+3 floats), t0 = the
+    // immutable per-particle StructuredBuffer as a root SRV, u0 = the dynamic {position,velocity}
+    // StructuredBuffer as a root UAV — both plain/structured buffers, so neither needs a descriptor-heap
+    // slot (only Texture2D-shaped resources need the heap-table path CreateLightCull's t1 depth SRV uses).
+    ID3D12Device* device = m_Device->GetDevice();
+    if ( !device ) return false;
+
+    D3D12_ROOT_PARAMETER params[3] = {};
+    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[0].Constants.ShaderRegister = 0;   // b0 AdvanceRainCB
+    params[0].Constants.Num32BitValues = 16;
+    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+    params[1].Descriptor.ShaderRegister = 0;  // t0 StaticData
+    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+    params[2].Descriptor.ShaderRegister = 0;  // u0 DynamicData
+    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+    rsDesc.NumParameters = _countof( params );
+    rsDesc.pParameters = params;
+    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;   // compute: no IA input layout
+
+    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
+    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (advance rain)."; return false; }
+
+    ComPtr<ID3DBlob> rsBlob, rsErr;
+    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
+        if ( rsErr ) LogWarn() << "D3D12: advance-rain root signature serialize error: " << static_cast<const char*>(rsErr->GetBufferPointer());
+        return false;
+    }
+    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
+        IID_PPV_ARGS( AdvanceRain.RootSig.ReleaseAndGetAddressOf() ) ) ) )
+        return false;
+
+    if ( !m_Shaders->CompileFromFile( "AdvanceRain.hlsl", "CSMain", Shadermodel_CS, AdvanceRain.CsBlob.ReleaseAndGetAddressOf() ) ) {
+        return false;
+    }
+
+    D3D12_COMPUTE_PIPELINE_STATE_DESC pso = {};
+    pso.pRootSignature = AdvanceRain.RootSig.Get();
+    pso.CS = { AdvanceRain.CsBlob->GetBufferPointer(), AdvanceRain.CsBlob->GetBufferSize() };
+    if ( FAILED( device->CreateComputePipelineState( &pso, IID_PPV_ARGS( AdvanceRain.PSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateComputePipelineState failed (advance rain).";
+        return false;
+    }
+    return true;
+}
+
+bool D3D12PipelineState::CreateRainDraw() {
+    // Rain/snow billboard draw. No input-assembler layout at all — the VS reads both particle buffers
+    // as StructuredBuffers via root SRV, indexed by SV_InstanceID (see Shaders/D3D12/Rain.hlsl), so the
+    // root sig omits ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT (mirrors the compute root sigs' shape, just with
+    // VS/PS stages instead of CS). CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED is set because the PS reads the
+    // active rain/snow Texture2DArray bindlessly (ResourceDescriptorHeap[TexArrayIndex]) rather than via
+    // a descriptor table — the array choice is a per-draw root const, not a shader permutation.
+    ID3D12Device* device = m_Device->GetDevice();
+    if ( !device ) return false;
+
+    D3D12_STATIC_SAMPLER_DESC samplers[2] = {};
+    samplers[0].Filter = D3D12_FILTER_ANISOTROPIC;
+    samplers[0].AddressU = samplers[0].AddressV = samplers[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    samplers[0].MaxAnisotropy = 4;
+    samplers[0].MaxLOD = D3D12_FLOAT32_MAX;
+    samplers[0].ShaderRegister = 0;   // s0 rain/snow texture array
+    samplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    // s1: rain shadowmap comparison sampler — matches D3D11's m_RainDropShadowSamplerState (WRAP, LESS_EQUAL).
+    samplers[1].Filter = D3D12_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR;
+    samplers[1].AddressU = samplers[1].AddressV = samplers[1].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    samplers[1].ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+    samplers[1].MaxLOD = D3D12_FLOAT32_MAX;
+    samplers[1].ShaderRegister = 1;   // s1
+    samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+
+    D3D12_ROOT_PARAMETER params[6] = {};
+    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[0].Constants.ShaderRegister = 0;   // b0 ViewProjCB
+    params[0].Constants.Num32BitValues = 16;
+    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[1].Constants.ShaderRegister = 1;   // b1 RainInfoCB — read by both VS (billboard construction) and PS (rainResponse eye/light vectors)
+    params[1].Constants.Num32BitValues = 10;
+    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+    params[2].Descriptor.ShaderRegister = 0;  // t0 DynamicData
+    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+    params[3].Descriptor.ShaderRegister = 1;  // t1 StaticData
+    params[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    params[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[4].Constants.ShaderRegister = 2;   // b2 RainTexCB
+    params[4].Constants.Num32BitValues = 2;
+    params[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    params[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[5].Constants.ShaderRegister = 3;   // b3 RainShadowCB — VS-only (IsWet is called from the VS)
+    params[5].Constants.Num32BitValues = 17;  // 16 (float4x4) + 1 (heap slot index)
+    params[5].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+
+    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+    rsDesc.NumParameters = _countof( params );
+    rsDesc.pParameters = params;
+    rsDesc.NumStaticSamplers = _countof( samplers );
+    rsDesc.pStaticSamplers = samplers;
+    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
+
+    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
+    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (rain draw)."; return false; }
+
+    ComPtr<ID3DBlob> rsBlob, rsErr;
+    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
+        if ( rsErr ) LogWarn() << "D3D12: rain-draw root signature serialize error: " << static_cast<const char*>(rsErr->GetBufferPointer());
+        return false;
+    }
+    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
+        IID_PPV_ARGS( RainDraw.RootSig.ReleaseAndGetAddressOf() ) ) ) )
+        return false;
+
+    if ( !m_Shaders->CompileFromFile( "Rain.hlsl", "VSMain", Shadermodel_VS, RainDraw.VsBlob.ReleaseAndGetAddressOf() ) ) {
+        return false;
+    }
+    if ( !m_Shaders->CompileFromFile( "Rain.hlsl", "PSMain", Shadermodel_PS, RainDraw.PsBlob.ReleaseAndGetAddressOf() ) ) {
+        return false;
+    }
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+    pso.pRootSignature = RainDraw.RootSig.Get();
+    pso.VS = { RainDraw.VsBlob->GetBufferPointer(), RainDraw.VsBlob->GetBufferSize() };
+    pso.PS = { RainDraw.PsBlob->GetBufferPointer(), RainDraw.PsBlob->GetBufferSize() };
+    pso.InputLayout = { nullptr, 0 };   // no IA — VS pulls everything from root SRVs by SV_VertexID/InstanceID
+    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;   // strips still use the TRIANGLE type
+    pso.NumRenderTargets = 1;
+    pso.RTVFormats[0] = kSceneColorFormat;
+    pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+    pso.SampleDesc.Count = 1;
+    pso.SampleMask = UINT_MAX;
+
+    pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    pso.RasterizerState.DepthClipEnable = TRUE;
+
+    // Alpha blend, matching D3D11's rain state block (SetAlphaBlending + DepthWriteEnabled=false).
+    D3D12_RENDER_TARGET_BLEND_DESC& rt = pso.BlendState.RenderTarget[0];
+    rt.BlendEnable = TRUE;
+    rt.SrcBlend = D3D12_BLEND_SRC_ALPHA;
+    rt.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+    rt.BlendOp = D3D12_BLEND_OP_ADD;
+    rt.SrcBlendAlpha = D3D12_BLEND_ONE;
+    rt.DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+    rt.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+    // Reversed-Z: test GREATER_EQUAL against the opaque scene depth, no write — rain is transparent and
+    // must not occlude, same reasoning as the particle PSOs.
+    pso.DepthStencilState.DepthEnable = TRUE;
+    pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+    pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
+    pso.DepthStencilState.StencilEnable = FALSE;
+
+    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( RainDraw.PSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (rain draw).";
+        return false;
+    }
+    return true;
+}
+
 bool D3D12PipelineState::CreateBloom() {
     // Bloom pyramid (P2.11): mirrors D3D11PFX_Bloom's compute pipeline exactly (same HLSL math, ported
     // verbatim into Shaders/D3D12/CS_Bloom_*.hlsl since D3D12ShaderBackend only looks under shaders/D3D12/).

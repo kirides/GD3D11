@@ -217,6 +217,14 @@ XRESULT D3D12GraphicsEngine::Init() {
         // leaves the AO mask at white (no occlusion) if this failed.
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the SSAO pipeline (screen-space AO will be unavailable).";
     }
+    if ( !m_Pipelines.CreateAdvanceRain() ) {
+        // Non-fatal: rain/snow is an opt-in weather effect (RendererSettings.EnableRain). AdvanceRain() guards
+        // on the PSO existing and just skips advancing/drawing particles if this failed.
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the rain-advance compute pipeline (rain/snow particles will be unavailable).";
+    }
+    if ( !m_Pipelines.CreateRainDraw() ) {
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the rain-draw pipeline (rain/snow particles will be unavailable).";
+    }
     LogInfo() << "D3D12GraphicsEngine initialized (device + 2D + world + VOB + skeletal + water + particle + decal + HDR tonemap pipelines up). Swapchain is created once the game window is set.";
     return XR_SUCCESS;
 }

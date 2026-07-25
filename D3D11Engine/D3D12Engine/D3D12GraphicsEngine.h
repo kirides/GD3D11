@@ -720,6 +720,72 @@ private:
     bool CreateAOResources( INT2 size );      // (re)builds m_AOMask/m_AOBlurTemp + persistent SRV/UAV slots
     void RenderSSAO();                        // main estimate -> separable blur; no-ops (mask stays white) if disabled/unavailable
 
+    // Rain/snow particles (D3D12 rain parity, step 1: buffers + CS advance only — no draw yet). Mirrors
+    // D3D11Effect's RainBufferStatic/RainBufferDrawFrom, but as plain StructuredBuffers bound via ROOT
+    // SRV/UAV (see D3D12PipelineState::AdvanceRain) instead of D3D11's VBV+SRV dual-bind — the CS only
+    // ever reads/writes them as StructuredBuffers, so neither needs a descriptor-heap slot at this stage.
+    // Rebuilt whenever RainRadiusRange/RainHeightRange/RainNumParticles change, mirroring D3D11Effect::
+    // DrawRain_CS's dirty-check (D3D11Effect.cpp:314-316).
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_RainBufferStatic;   // StructuredBuffer<RainParticleStatic>, UPLOAD heap, written once
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_RainBufferStaticAlloc;
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_RainBufferDynamic;  // RWStructuredBuffer<RainParticleDynamic>, DEFAULT heap
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_RainBufferDynamicAlloc;
+    UINT  m_RainParticleCount = 0;       // particle count backing the CURRENT buffers (128-aligned, like D3D11's alignedCount)
+    float m_RainLastRadius = -1.0f;
+    float m_RainLastHeight = -1.0f;
+    UINT  m_RainLastNumParticles = 0;
+    bool  m_RainBuffersReady = false;
+    // m_RainBufferDynamic is created in COMMON (so its one-time initial-data CopyBufferRegion via
+    // UploadBufferData can target it — buffers implicitly promote COMMON->COPY_DEST for a copy) and must
+    // flip to UNORDERED_ACCESS exactly once before its first CS write; tracks that pending transition.
+    bool  m_RainDynamicNeedsInitialBarrier = false;
+    // m_RainBufferDynamic round-trips UNORDERED_ACCESS (AdvanceRain's CS writes it) -> NON_PIXEL_SHADER_
+    // RESOURCE (DrawRainParticles' VS reads it as a root SRV) each frame, mirroring m_LightGridInPixelState.
+    // true right after DrawRainParticles leaves it in the read state; AdvanceRain flips it back before
+    // its next dispatch.
+    bool  m_RainDynamicInReadState = false;
+    bool CreateRainBuffers( UINT numParticles );   // (re)builds the static/dynamic particle buffers
+    void AdvanceRain();                             // dispatches the CS advance pass; no-op if disabled/unavailable
+    void DrawRainParticles();                       // billboard draw; no-op if disabled/unavailable
+
+    // Rain/snow texture arrays (D3D12 rain parity, step 3): 370-slice raindrop / 256-slice snowflake
+    // R8 Texture2DArrays, loaded once and sampled bindlessly (ResourceDescriptorHeap) by Shaders/D3D12/
+    // Rain.hlsl's PS. Parsed via the shared DDSArrayLoader.h ParseTextureArrayDDS (device-agnostic CPU
+    // parse — D3D11's D3D11Effect::LoadRainResources uses the same parser for its own D3D11 arrays).
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_RainTextureArray;
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_RainTextureArrayAlloc;
+    UINT m_RainTextureArraySrvSlot = UINT_MAX;
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_SnowTextureArray;
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_SnowTextureArrayAlloc;
+    UINT m_SnowTextureArraySrvSlot = UINT_MAX;
+    bool m_RainTexturesLoaded = false;
+    // One-time (or on-demand retry) load of both arrays; non-fatal on failure — DrawRainParticles guards
+    // on m_RainTexturesLoaded and stays on the step-2 flat-white placeholder if this never succeeds.
+    bool LoadRainTextures();
+    bool LoadRainTextureArray( const char* prefix, int count, Microsoft::WRL::ComPtr<ID3D12Resource>& outTex,
+        Microsoft::WRL::ComPtr<D3D12MA::Allocation>& outAlloc, UINT& outSrvSlot );
+
+    // Rain shadowmap (D3D12 rain parity, step 4): a single-slice normal-Z depth map rendered from an
+    // orthographic camera looking along the (inverted) rain-velocity direction, world-mesh casters only
+    // (VOB/grass rain self-shadowing not covered by this increment — see D3D12Rain.cpp). Lets Rain.hlsl's
+    // VS zero out indoor/roofed raindrops (real IsWet), mirroring D3D11Effect::DrawRainShadowmap. Reuses
+    // m_ShadowCasterWorldPSO/m_Pipelines.World.RootSig (per-draw root consts, no ExecuteIndirect needed —
+    // see the comment in RenderRainShadowmap for why that's safe).
+    static constexpr UINT kRainShadowMapSize = 2048;
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_RainShadowMap;
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_RainShadowMapAlloc;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_RainShadowDsvHeap;
+    D3D12_CPU_DESCRIPTOR_HANDLE m_RainShadowDsv = {};
+    UINT m_RainShadowSrvSlot = UINT_MAX;
+    bool m_RainShadowResourcesReady = false;
+    // Round-trips DEPTH_WRITE (RenderRainShadowmap writes it) -> NON_PIXEL_SHADER_RESOURCE (DrawRainParticles'
+    // VS reads it that same frame via ResourceDescriptorHeap) each frame, mirroring m_ShadowInPixelState.
+    bool m_RainShadowInReadState = false;
+    XMFLOAT4X4 m_RainShadowViewProj = {};   // this frame's combined rain-shadow view*proj (see CB layout note)
+    Frustum m_RainShadowFrustum;
+    bool CreateRainShadowResources();   // one-time (or on-demand retry) DSV/SRV + resource creation
+    void RenderRainShadowmap();          // computes the rain-light camera + draws world-mesh casters
+
     // Dynamic exposure / auto-exposure: a two-pass GPU luminance reduction of the finished HDR scene color,
     // temporally adapted (Pattanaik's technique) toward last frame's value, feeding Tonemap's exposure divisor
     // (mirrors D3D11's D3D11PFX_HDR ping-pong PS_PFX_LumConvert/LumAdapt, but reduces on compute instead of a

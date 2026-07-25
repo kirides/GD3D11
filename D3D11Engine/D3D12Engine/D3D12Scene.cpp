@@ -3129,6 +3129,14 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// Runs before the lit passes that sample it; leaves the backbuffer RT/DSV rebound. Visually a no-op until the
 	// point-light loop samples the cubes (P2.10d).
 	RenderPointShadows();
+	// Rain shadowmap (D3D12 rain parity): world-mesh-only depth cast from an orthographic camera along
+	// the rain-velocity direction, so DrawRainParticles' VS can zero out indoor/roofed raindrops. Leaves
+	// the backbuffer RT/DSV rebound after (like the two shadow passes above).
+	RenderRainShadowmap();
+	// Rain/snow particle advance: ping-pongs the GPU particle buffer in place. Independent of the geometry
+	// passes below (only touches its own buffer); DrawRainParticles (later, alongside the PFX particles)
+	// reads the result.
+	AdvanceRain();
 	// Forward+ opaque depth prepass — lays down ALL opaque depth before the lit passes so the tiled light cull
 	// bounds each tile to real geometry: world mesh, then instanced VOBs, then skeletal (NPCs/monsters) + node
 	// attachments. Visually a no-op (the color passes re-pass on GREATER_EQUAL and rewrite the same depth).
@@ -3193,6 +3201,13 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	{
 		DX_ZONE( m_CmdList, "Draw particles" );
 		DrawParticleEffects();
+	}
+
+	// Rain/snow (D3D12 rain parity, step 2): unlit placeholder billboards, always "wet" — see
+	// DrawRainParticles. Same late-transparency slot D3D11 draws rain in.
+	{
+		DX_ZONE( m_CmdList, "Draw rain" );
+		DrawRainParticles();
 	}
 
 	// Ghosts (invisible-potion/fade-out items): drawn last of the alpha content, mirrors D3D11's "Draw ghosts"
