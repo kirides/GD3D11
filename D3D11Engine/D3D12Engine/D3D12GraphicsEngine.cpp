@@ -1846,6 +1846,17 @@ XRESULT D3D12GraphicsEngine::Clear( const float4& /*color*/ ) {
 }
 
 
+XRESULT D3D12GraphicsEngine::ReloadShaders( ShaderCategory /*categories*/ ) {
+    // D3D11 recompiles in place here. On D3D12 the settings macros are baked into the DXIL blobs the PSOs
+    // were built from, and those PSOs are held both by D3D12PipelineState and by the engine-owned
+    // shadow-caster / on-demand blend caches — rebuilding them safely needs a GPU flush plus a coordinated
+    // teardown that doesn't exist yet. Say so instead of pretending the toggle took effect.
+    LogInfo() << "D3D12: shader settings changed - restart the game for them to take effect "
+                 "(live shader reload is not implemented on the D3D12 backend yet).";
+    return XR_SUCCESS;
+}
+
+
 XRESULT D3D12GraphicsEngine::CreateVertexBuffer( std::unique_ptr<GfxVertexBuffer>& outBuffer ) {
     outBuffer = std::make_unique<D3D12VertexBuffer>();
     return XR_SUCCESS;

@@ -57,6 +57,12 @@ public:
     XRESULT SetViewport( const ViewportInfo& viewportInfo ) override;
     XRESULT Clear( const float4& color ) override;
 
+    /** Settings-driven shader reload. D3D12 bakes its configuration macros (see
+        D3D12ShaderBackend::AppendGlobalMacros) into every PSO at Init(), and PSOs are referenced by the
+        engine-owned shadow-caster pipelines too, so live rebuilding isn't wired yet — this logs that a
+        restart is needed instead of silently doing nothing like the BaseGraphicsEngine default would. */
+    XRESULT ReloadShaders( ShaderCategory categories = ShaderCategory::All ) override;
+
     XRESULT CreateVertexBuffer( std::unique_ptr<GfxVertexBuffer>& outBuffer ) override;
     XRESULT CreateTexture( GfxTexture** outTexture ) override;
     XRESULT CreateTexture( std::unique_ptr<GfxTexture>& outTexture ) override;

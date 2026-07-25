@@ -6,6 +6,7 @@
 #include <iterator>
 #include <vector>
 #include <atomic>
+#include <algorithm>
 #include "../Logger.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
@@ -269,10 +270,33 @@ bool D3D12ShaderBackend::LoadShaderSource( const std::string& fileName, std::str
     return false;
 }
 
+void D3D12ShaderBackend::AppendGlobalMacros( std::vector<D3D_SHADER_MACRO>& list ) {
+    const auto& s = Engine::GAPI->GetRendererState().RendererSettings;
+
+    // Mirrors the D3D11 ShaderRegistry's normalmappingConfigurationBuilder so a normal map decodes the
+    // same way on both backends. AllowNormalmaps: 0 = off (the D3D7 layer never loads a normalmap then,
+    // so shaders just see "no normal map"), 1 = OpenGL (Y+), 2 = DirectX (Y-) — clamped into [1,2] here
+    // because the shader macro only encodes the *convention*, never the on/off state.
+    static const char* const sNums[] = { "0", "1", "2" };
+    list.push_back( { "NORMAL_MAP_RESTORE_Z", s.CompressedNormalsSupport ? "1" : "0" } );
+    list.push_back( { "NORMAL_MAP_MODE", sNums[std::clamp<int>( s.AllowNormalmaps, 1, 2 )] } );
+}
+
 bool D3D12ShaderBackend::CompileFromFile( const std::string& fileName, const char* entryPoint,
     const char* target, ID3DBlob** ppCode, const D3D_SHADER_MACRO* defines ) {
     std::string source;
     if ( !LoadShaderSource( fileName, source ) )
         return false;
-    return CompileSource( source.data(), source.size(), fileName.c_str(), defines, entryPoint, target, ppCode );
+
+    // Every D3D12 shader is compiled with the backend-wide configuration macros appended after the
+    // caller's own defines, so per-pass call sites don't each have to remember to pass them.
+    std::vector<D3D_SHADER_MACRO> macros;
+    if ( defines ) {
+        for ( const D3D_SHADER_MACRO* m = defines; m->Name != nullptr; ++m )
+            macros.push_back( *m );
+    }
+    AppendGlobalMacros( macros );
+    macros.push_back( { nullptr, nullptr } );
+
+    return CompileSource( source.data(), source.size(), fileName.c_str(), macros.data(), entryPoint, target, ppCode );
 }

@@ -1,6 +1,7 @@
 #pragma once
 #include <d3dcommon.h>   // ID3DBlob, D3D_SHADER_MACRO
 #include <string>
+#include <vector>
 
 // Loads and compiles the D3D12 backend's HLSL shaders from disk (Shaders\D3D12\*.hlsl, shipped to
 // system\GD3D11\shaders\D3D12\). Sources are read via zFILE_VDFS (with a physical filesystem fallback
@@ -16,4 +17,10 @@ public:
 
     // Reads raw HLSL text for a shader file: zFILE_VDFS first, physical fallback second.
     static bool LoadShaderSource( const std::string& fileName, std::string& outSource );
+
+    // Appends the backend-wide configuration macros (currently the normal-map convention pair,
+    // mirroring D3D11's ShaderRegistry normalmappingConfigurationBuilder) that CompileFromFile adds to
+    // every compile. The Definition pointers are static literals, so the vector may outlive this call.
+    // NOT null-terminated — the caller adds the {nullptr,nullptr} sentinel.
+    static void AppendGlobalMacros( std::vector<D3D_SHADER_MACRO>& list );
 };

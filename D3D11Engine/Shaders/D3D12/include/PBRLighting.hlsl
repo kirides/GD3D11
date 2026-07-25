@@ -155,9 +155,26 @@ float3 PBR_DirectLighting( float3 baseColor, float3 lightColor, float3 N, float3
     return ( diffuse + specular ) * lightColor * ( NdotL * attenuation );
 }
 
-// Tangent-space normal-map support (ported from feat/pbr Toolbox.h). Z is ALWAYS reconstructed from XY, so BC5
-// (2-channel) and BC1 (we ignore B, recompute it) both decode with one path. `p` = world position for the
-// derivative-based TBN basis. If normal-mapped specular looks mirrored, flip the handedness comparison sign.
+// Tangent-space normal-map support (ported from feat/pbr Toolbox.h). Both conventions below are the D3D11
+// path's (Shaders/Toolbox.h) verbatim — D3D12ShaderBackend injects the same two -D macros the D3D11
+// ShaderRegistry's normalmappingConfigurationBuilder does, so a normal map decodes identically on both
+// backends. Do not hardcode either of them here.
+#ifndef NORMAL_MAP_MODE
+// 1 = OpenGL (Y+)
+// 2 = DirectX (Y-)
+#define NORMAL_MAP_MODE 1
+#endif
+
+#ifndef NORMAL_MAP_RESTORE_Z
+// NORMAL_MAP_RESTORE_Z reconstructs B from RG, which is what makes BC5 (2-channel) normal maps usable.
+// 0 = sample the stored XYZ (three-channel maps only).
+#define NORMAL_MAP_RESTORE_Z 1
+#endif
+
+// `p` = world position for the derivative-based TBN basis.
+// The handedness comparison must stay identical to Toolbox.h's cotangent_frame — it is the calibrated
+// convention bias of this pipeline, not a free choice. If normal-mapped specular looks mirrored, flip it
+// in BOTH files at once so the two backends never drift apart.
 float3x3 CotangentFrame( float3 N, float3 p, float2 uv )
 {
     float3 dp1 = ddx( p ), dp2 = ddy( p );
@@ -165,19 +182,32 @@ float3x3 CotangentFrame( float3 N, float3 p, float2 uv )
     float3 dp2perp = cross( dp2, N ), dp1perp = cross( N, dp1 );
     float3 T = dp2perp * duv1.x + dp1perp * duv2.x;
     float3 B = dp2perp * duv1.y + dp1perp * duv2.y;
-    float handedness = ( duv1.x * duv2.y - duv1.y * duv2.x ) > 0.0 ? 1.0 : -1.0;
+    float handedness = ( duv1.x * duv2.y - duv1.y * duv2.x ) < 0.0 ? 1.0 : -1.0;
     T *= handedness;
     float invmax = rsqrt( max( dot( T, T ), dot( B, B ) ) );
     return float3x3( T * invmax, B * invmax, N );
 }
 // strength scales the unpacked XY before Z is reconstructed — 1.0 is a full-strength normalmap; a lower value
 // (e.g. the wet-ground distortion fallback in World.hlsl) flattens the perturb toward the base normal N.
+// Mirrors Toolbox.h's perturb_normal_restore_z / perturb_normal_rgb (strength == normalmapDepth there).
 float3 PerturbNormal( float3 N, float3 p, Texture2D nrmTex, float2 uv, SamplerState samp, float strength = 1.0 )
 {
-    float2 nxy = (nrmTex.Sample( samp, uv ).xy * 2.0 - 1.0) * strength;
-    nxy.y = -nxy.y;
+#if NORMAL_MAP_RESTORE_Z == 1
+    float2 nxy = nrmTex.Sample( samp, uv ).xy * 2.0 - 1.0;
+  #if NORMAL_MAP_MODE == 2
+    nxy.y = -nxy.y;   // flip G channel for DirectX-convention normal maps
+  #endif
+    nxy *= strength;
     float  nz  = sqrt( saturate( 1.0 - dot( nxy, nxy ) ) );   // reconstruct Z (BC5/BC1)
     float3 nrm = normalize( float3( nxy, nz ) );
+#else
+    float3 nrm = nrmTex.Sample( samp, uv ).xyz * 2.0 - 1.0;
+  #if NORMAL_MAP_MODE == 2
+    nrm.y = -nrm.y;
+  #endif
+    nrm.xy *= strength;
+    nrm = normalize( nrm );
+#endif
     return normalize( mul( nrm, CotangentFrame( N, p, uv ) ) );
 }
 
