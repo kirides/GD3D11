@@ -2854,3 +2854,146 @@ bool D3D12PipelineState::CreateAO() {
     }
     return true;
 }
+
+bool D3D12PipelineState::CreateFog() {
+    // Height fog + god rays (plan item #5) — mirrors D3D11's PostFX composition (D3D11PfxRenderer::
+    // RenderPostFXComposition + D3D11PFX_GodRays::RenderToTextureCS). Non-fatal on failure:
+    // RenderFogAndGodRays() guards on every PSO below.
+    ID3D12Device* device = m_Device->GetDevice();
+    if ( !device ) return false;
+
+    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
+    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (Fog)."; return false; }
+
+    auto makeRootSig = [&]( const D3D12_ROOT_SIGNATURE_DESC& desc, ID3D12RootSignature** out, const char* name ) -> bool {
+        ComPtr<ID3DBlob> rsBlob, rsErr;
+        if ( FAILED( serialize( &desc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
+            if ( rsErr ) LogWarn() << "D3D12: Fog " << name << " root sig error: " << static_cast<const char*>(rsErr->GetBufferPointer());
+            return false;
+        }
+        return SUCCEEDED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(), IID_PPV_ARGS( out ) ) );
+        };
+
+    // --- God-ray compute root sig (shared by CSMask + CSZoom) ---
+    // b0: 12 root constants. CSMask reads the first 4 (3 heap indices + pad), CSZoom all 12 (blur params +
+    // 2 heap indices) — two cbuffers declared at b0 in the same file, only the one an entry point references
+    // survives into that PSO (same pattern as SSAO.hlsl's SSAOCB/BlurCB). Everything else is bindless.
+    {
+        D3D12_STATIC_SAMPLER_DESC sampler = {};
+        sampler.Filter = D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT;
+        sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        sampler.MaxLOD = D3D12_FLOAT32_MAX;
+        sampler.ShaderRegister = 0;   // s0 SS_LinearClamp
+        sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+        D3D12_ROOT_PARAMETER param = {};
+        param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        param.Constants.ShaderRegister = 0;   // b0
+        param.Constants.Num32BitValues = 12;
+        param.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+        D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+        rsDesc.NumParameters = 1;
+        rsDesc.pParameters = &param;
+        rsDesc.NumStaticSamplers = 1;
+        rsDesc.pStaticSamplers = &sampler;
+        rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;   // SM6.6 ResourceDescriptorHeap
+
+        if ( !makeRootSig( rsDesc, Fog.GodRayRootSig.ReleaseAndGetAddressOf(), "god-ray" ) ) return false;
+    }
+
+    // --- Composition graphics root sig: b0 height-fog CBV, b1 atmosphere CBV, b2 4 root consts ---
+    {
+        D3D12_STATIC_SAMPLER_DESC samplers[2] = {};
+        samplers[0].Filter = D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT;   // s0: god-ray upscale (quarter -> full res)
+        samplers[0].AddressU = samplers[0].AddressV = samplers[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        samplers[0].MaxLOD = D3D12_FLOAT32_MAX;
+        samplers[0].ShaderRegister = 0;
+        samplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        samplers[1].Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;          // s1: depth (1:1, never filtered)
+        samplers[1].AddressU = samplers[1].AddressV = samplers[1].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        samplers[1].MaxLOD = D3D12_FLOAT32_MAX;
+        samplers[1].ShaderRegister = 1;
+        samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+        D3D12_ROOT_PARAMETER params[3] = {};
+        params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+        params[0].Descriptor.ShaderRegister = 0;   // b0 PFXBuffer (HeightfogConstantBuffer)
+        params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+        params[1].Descriptor.ShaderRegister = 1;   // b1 Atmosphere (AtmosphereConstantBuffer)
+        params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        params[2].Constants.ShaderRegister = 2;   // b2 FogCompositeCB { depthIdx, godRaysIdx, flags, pad }
+        params[2].Constants.Num32BitValues = 4;
+        params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+        D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+        rsDesc.NumParameters = _countof( params );
+        rsDesc.pParameters = params;
+        rsDesc.NumStaticSamplers = _countof( samplers );
+        rsDesc.pStaticSamplers = samplers;
+        rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
+
+        if ( !makeRootSig( rsDesc, Fog.CompositeRootSig.ReleaseAndGetAddressOf(), "composition" ) ) return false;
+    }
+
+    if ( !m_Shaders->CompileFromFile( "GodRays.hlsl", "CSMask", Shadermodel_CS, Fog.MaskCsBlob.ReleaseAndGetAddressOf() )
+        || !m_Shaders->CompileFromFile( "GodRays.hlsl", "CSZoom", Shadermodel_CS, Fog.ZoomCsBlob.ReleaseAndGetAddressOf() )
+        || !m_Shaders->CompileFromFile( "HeightFog.hlsl", "VSFullscreen", Shadermodel_VS, Fog.CompositeVsBlob.ReleaseAndGetAddressOf() )
+        || !m_Shaders->CompileFromFile( "HeightFog.hlsl", "PSComposite", Shadermodel_PS, Fog.CompositePsBlob.ReleaseAndGetAddressOf() ) )
+        return false;
+
+    D3D12_COMPUTE_PIPELINE_STATE_DESC maskPso = {};
+    maskPso.pRootSignature = Fog.GodRayRootSig.Get();
+    maskPso.CS = { Fog.MaskCsBlob->GetBufferPointer(), Fog.MaskCsBlob->GetBufferSize() };
+    if ( FAILED( device->CreateComputePipelineState( &maskPso, IID_PPV_ARGS( Fog.MaskPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateComputePipelineState failed (god-ray mask).";
+        return false;
+    }
+    D3D12_COMPUTE_PIPELINE_STATE_DESC zoomPso = {};
+    zoomPso.pRootSignature = Fog.GodRayRootSig.Get();
+    zoomPso.CS = { Fog.ZoomCsBlob->GetBufferPointer(), Fog.ZoomCsBlob->GetBufferSize() };
+    if ( FAILED( device->CreateComputePipelineState( &zoomPso, IID_PPV_ARGS( Fog.ZoomPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateComputePipelineState failed (god-ray zoom).";
+        return false;
+    }
+
+    // Composition: fullscreen triangle (no IA), no depth, PREMULTIPLIED-alpha blend onto the HDR scene color.
+    // src = (fogColor*fogAlpha + godRays, fogAlpha), so ONE / INV_SRC_ALPHA reproduces D3D11's
+    // `lerp(dst, fog.rgb, fog.a) + godrays` without ever reading the destination. Alpha is masked out of the
+    // write so the scene target's alpha channel stays exactly as the geometry passes left it.
+    {
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+        pso.pRootSignature = Fog.CompositeRootSig.Get();
+        pso.VS = { Fog.CompositeVsBlob->GetBufferPointer(), Fog.CompositeVsBlob->GetBufferSize() };
+        pso.PS = { Fog.CompositePsBlob->GetBufferPointer(), Fog.CompositePsBlob->GetBufferSize() };
+        pso.InputLayout = { nullptr, 0 };
+        pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        pso.NumRenderTargets = 1;
+        pso.RTVFormats[0] = kSceneColorFormat;
+        pso.DSVFormat = DXGI_FORMAT_UNKNOWN;
+        pso.SampleDesc.Count = 1;
+        pso.SampleMask = UINT_MAX;
+        pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+        pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+        pso.RasterizerState.DepthClipEnable = TRUE;
+        pso.DepthStencilState.DepthEnable = FALSE;
+        pso.DepthStencilState.StencilEnable = FALSE;
+        auto& rt = pso.BlendState.RenderTarget[0];
+        rt.BlendEnable = TRUE;
+        rt.SrcBlend = D3D12_BLEND_ONE;
+        rt.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+        rt.BlendOp = D3D12_BLEND_OP_ADD;
+        rt.SrcBlendAlpha = D3D12_BLEND_ONE;
+        rt.DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+        rt.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+        rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_RED | D3D12_COLOR_WRITE_ENABLE_GREEN | D3D12_COLOR_WRITE_ENABLE_BLUE;
+        if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( Fog.CompositePSO.ReleaseAndGetAddressOf() ) ) ) ) {
+            LogWarn() << "D3D12: CreateGraphicsPipelineState failed (fog composition).";
+            return false;
+        }
+    }
+
+    return true;
+}

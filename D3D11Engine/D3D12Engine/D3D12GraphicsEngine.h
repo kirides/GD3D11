@@ -729,6 +729,40 @@ private:
     bool CreateAOResources( INT2 size );      // (re)builds m_AOMask/m_AOBlurTemp + persistent SRV/UAV slots
     void RenderSSAO();                        // main estimate -> separable blur; no-ops (mask stays white) if disabled/unavailable
 
+    // ---- Height fog + god rays (plan item #5) — D3D12 port of D3D11's PostFX composition pass. -------------
+    // Two quarter-resolution HDR textures carry the god-ray chain (mask -> radial blur), mirroring D3D11's
+    // GetTempBufferDS4() pool textures; both rest in UNORDERED_ACCESS between frames like the bloom mips.
+    // The composition itself needs no scene-color copy: it blends premultiplied straight onto m_SceneColor
+    // (see Shaders/D3D12/HeightFog.hlsl's header for why that's equivalent to D3D11's copy-and-lerp).
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_GodRayMask;        // quarter-res, sky-only pixels of the scene
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_GodRayMaskAlloc;
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_GodRayZoom;        // quarter-res, radially blurred rays
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_GodRayZoomAlloc;
+    UINT m_GodRayMaskSrvSlot = UINT_MAX;
+    UINT m_GodRayMaskUavSlot = UINT_MAX;
+    UINT m_GodRayZoomSrvSlot = UINT_MAX;
+    UINT m_GodRayZoomUavSlot = UINT_MAX;
+    INT2 m_GodRaySize = { 0, 0 };             // quarter of the scene resolution (rounded up, min 1)
+    bool m_FogResourcesReady = false;
+    // Per-frame-in-flight constant buffer for the composition pass: 512 B split into two 256-B-aligned
+    // blocks — [0,256) the HeightfogConstantBuffer (b0), [256,512) the AtmosphereConstantBuffer (b1). Both
+    // are filled once per frame in RenderFogAndGodRays from the exact same GAPI/GSky values D3D11 uses.
+    static constexpr UINT kFogAtmosphereCbOffset = 256;
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_FogCB[kBackBufferCount];
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_FogCBAlloc[kBackBufferCount];
+    uint8_t* m_FogCBMapped[kBackBufferCount] = {};
+    D3D12_GPU_VIRTUAL_ADDRESS m_FogCBGpu[kBackBufferCount] = {};
+    // True for frames where the height-fog composition actually runs. The lit geometry shaders' cheap linear
+    // distance fog (MakeFogConstants) is D3D12's stand-in for this pass and MUST be suppressed while it runs,
+    // or the scene is fogged twice — D3D11's world/VOB/skeletal shaders apply no distance fog at all (their
+    // PS_World.hlsl includes FFFog.h but never calls ComputeFog; only the fixed-function 2D/UI emulation does).
+    // Evaluated once per frame at the top of OnStartWorldRendering, before any geometry pass reads it.
+    bool m_HeightFogActive = false;
+    bool EvaluateHeightFogActive() const;     // DrawFog && outdoor && resources/PSOs present
+    bool CreateFogResources( INT2 size );     // (re)builds the quarter-res god-ray textures + their SRV/UAV slots
+    bool CreateFogConstantBuffers();          // one-time: the per-frame-in-flight composition CB ring
+    void RenderFogAndGodRays();               // god-ray mask+zoom compute, then the fullscreen composition blend
+
     // Rain/snow particles (D3D12 rain parity, step 1: buffers + CS advance only — no draw yet). Mirrors
     // D3D11Effect's RainBufferStatic/RainBufferDrawFrom, but as plain StructuredBuffers bound via ROOT
     // SRV/UAV (see D3D12PipelineState::AdvanceRain) instead of D3D11's VBV+SRV dual-bind — the CS only

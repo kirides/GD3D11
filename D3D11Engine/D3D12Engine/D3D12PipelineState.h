@@ -186,6 +186,24 @@ public:
         Microsoft::WRL::ComPtr<ID3D12PipelineState> NeighborPSO;  // pass 3: color+blend -> swapchain (kBackBufferFormat)
     };
 
+    // Height fog + god rays (plan item #5) — the D3D12 port of D3D11's PostFX composition pass. Two
+    // quarter-res compute passes build the god-ray texture (Shaders/D3D12/GodRays.hlsl CSMask/CSZoom, sharing
+    // one bindless compute root sig: b0 12 root consts + one static linear-clamp sampler), then a single
+    // fullscreen premultiplied-alpha graphics pass (Shaders/D3D12/HeightFog.hlsl) blends the fog and adds the
+    // rays straight onto m_SceneColor — no scene-color copy, unlike D3D11 (see the shader's file header).
+    // The quarter-res textures live in the engine (resolution-dependent), like the bloom/AO pyramids.
+    struct FogPipeline {
+        Microsoft::WRL::ComPtr<ID3D12RootSignature> GodRayRootSig;   // shared by both compute passes
+        Microsoft::WRL::ComPtr<ID3DBlob>            MaskCsBlob;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> MaskPSO;         // scene color + depth -> mask
+        Microsoft::WRL::ComPtr<ID3DBlob>            ZoomCsBlob;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> ZoomPSO;         // mask -> radially blurred rays
+        Microsoft::WRL::ComPtr<ID3D12RootSignature> CompositeRootSig;
+        Microsoft::WRL::ComPtr<ID3DBlob>            CompositeVsBlob;
+        Microsoft::WRL::ComPtr<ID3DBlob>            CompositePsBlob;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> CompositePSO;    // fog (alpha) + rays (additive) -> scene color
+    };
+
     // Stores non-owning device + shader-backend pointers; call once before any Create*().
     bool Init( D3D12Device* device, D3D12ShaderBackend* shaders );
 
@@ -212,6 +230,7 @@ public:
     bool CreateVideo();       // Bink YUV video playback (own root sig: b0 viewport consts, t0-t2 YUV planes)
     bool CreateSmaa();        // SMAA 3-pass AA (bindless root sig + edge/blend/neighborhood PSOs); textures stay in engine
     bool CreateAO();          // simple SSAO: main estimate + separable blur compute pipelines; textures stay in engine
+    bool CreateFog();         // height fog + god rays: 2 god-ray compute PSOs + the fullscreen composition PSO
     bool CreateAdvanceRain(); // rain/snow particle advance compute (b0 32-bit consts, t0 static SRV, u0 dynamic UAV)
     bool CreateRainDraw();    // rain/snow billboard draw (b0 ViewProj, b1 particle info, t0/t1 root SRVs, no IA)
 
@@ -246,6 +265,7 @@ public:
     VideoPipeline    Video;
     SmaaPipeline     Smaa;
     AOPipeline       AO;
+    FogPipeline      Fog;           // height fog + god rays (Shaders/D3D12/HeightFog.hlsl + GodRays.hlsl)
     ComputePipeline  AdvanceRain;   // rain/snow particle advance (Shaders/D3D12/AdvanceRain.hlsl)
     GraphicsPipeline RainDraw;      // rain/snow billboard draw (Shaders/D3D12/Rain.hlsl)
 

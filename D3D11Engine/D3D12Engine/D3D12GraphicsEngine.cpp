@@ -218,6 +218,15 @@ XRESULT D3D12GraphicsEngine::Init() {
         // leaves the AO mask at white (no occlusion) if this failed.
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the SSAO pipeline (screen-space AO will be unavailable).";
     }
+    if ( !m_Pipelines.CreateFog() ) {
+        // Non-fatal: the height-fog/god-ray composition is opt-in (RendererSettings.DrawFog / EnableGodRays)
+        // and outdoor-only. RenderFogAndGodRays() guards on the PSOs; EvaluateHeightFogActive() additionally
+        // keeps the geometry shaders' cheap linear distance fog switched ON when this failed, so a broken
+        // composition pipeline degrades to the pre-existing D3D12 fog instead of no fog at all.
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the height-fog/god-ray pipeline (falling back to the shaders' linear distance fog).";
+    } else if ( !CreateFogConstantBuffers() ) {
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the height-fog constant buffers (falling back to the shaders' linear distance fog).";
+    }
     if ( !m_Pipelines.CreateAdvanceRain() ) {
         // Non-fatal: rain/snow is an opt-in weather effect (RendererSettings.EnableRain). AdvanceRain() guards
         // on the PSO existing and just skips advancing/drawing particles if this failed.
@@ -1043,6 +1052,7 @@ bool D3D12GraphicsEngine::CreateSwapChain( INT2 size ) {
     CreateBloomResources( size );   // non-fatal: bloom is opt-in (EnableBloom, default off); RenderBloom no-ops if this failed
     CreateSmaaResources( size );     // non-fatal: SMAA is opt-in (AntiAliasingMode == AA_SMAA); RenderSMAA no-ops if this failed
     CreateAOResources( size );       // non-fatal: SSAO is opt-in (AoMode != AO_NONE); RenderSSAO no-ops if this failed
+    CreateFogResources( size );      // non-fatal: height fog/god rays are opt-in; RenderFogAndGodRays no-ops if this failed
     if ( !CreateLumPartialBuffer( size ) ) {
         // Non-fatal: RenderLuminanceAdapt() guards on m_LumPartialBuffer and just skips this frame's luminance
         // update if missing — m_LumAdaptedBuffer (created once in Init) keeps its last valid value, so Tonemap
@@ -1765,6 +1775,7 @@ bool D3D12GraphicsEngine::ResizeSwapChain( INT2 size ) {
     CreateBloomResources( size );   // non-fatal: see the CreateSwapChain call site
     CreateSmaaResources( size );     // non-fatal: see the CreateSwapChain call site
     CreateAOResources( size );       // non-fatal: see the CreateSwapChain call site
+    CreateFogResources( size );      // non-fatal: see the CreateSwapChain call site
     if ( !CreateLumPartialBuffer( size ) ) {
         LogWarn() << "D3D12GraphicsEngine::OnResize: failed to create the dynamic-exposure partial-sum buffer.";
     }

@@ -303,11 +303,30 @@ namespace {
     // factor) — NOT GetFarZ(), which is an unrelated atmospheric-perspective far plane the height-fog PFX
     // uses for its density falloff and is typically much smaller than FogDist, which was making the fog
     // ramp in far too aggressively.
+    // Mirror of D3D12GraphicsEngine::m_HeightFogActive, refreshed from it once per frame at the top of
+    // OnStartWorldRendering — MakeFogConstants is a free function and can't reach the member. When the
+    // post-pass height fog runs (RenderFogAndGodRays), this cheap linear fog must NOT also be applied or the
+    // scene ends up fogged twice; D3D11's lit shaders never apply distance fog, the composition pass is the
+    // only fog there is.
+    bool g_HeightFogActive = false;
+
     FogConstants MakeFogConstants() {
         FogConstants fog = {};
         DirectX::XMFLOAT3 fc;
         DirectX::XMStoreFloat3( &fc, GetSceneFogColorXM() );
         fog.FogColor[0] = fc.x; fog.FogColor[1] = fc.y; fog.FogColor[2] = fc.z;
+
+        if ( g_HeightFogActive ) {
+            // Push the ramp past any reachable view distance instead of adding a shader permutation: the PS
+            // lerp weight saturate((d - near)/(far - near)) is then 0 everywhere, i.e. no fog, and the height
+            // fog composition owns the look. (Never near == far — that would divide by zero.)
+            fog.FogNear = 1.0e9f;
+            fog.FogFar = 2.0e9f;
+            DirectX::XMFLOAT3 camPos;
+            DirectX::XMStoreFloat3( &camPos, Engine::GAPI->GetCameraPositionXM() );
+            fog.CamPos[0] = camPos.x; fog.CamPos[1] = camPos.y; fog.CamPos[2] = camPos.z;
+            return fog;
+        }
 
         const auto& gs = Engine::GAPI->GetRendererState().GraphicsState;
         float fogFar = gs.FF_FogFar;
@@ -3093,6 +3112,13 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 
     Engine::GAPI->SetFarPlane( Engine::GAPI->GetRendererState().RendererSettings.SectionDrawRadius * WORLD_SECTION_SIZE);
 
+	// Decide ONCE, before anything draws, whether this frame's post-pass height fog runs (RenderFogAndGodRays,
+	// near the bottom of this function). Every lit geometry pass reads the result via MakeFogConstants to
+	// suppress its own cheap linear distance fog — that fog is D3D12's stand-in for this pass, and running
+	// both would fog the scene twice (D3D11's world/VOB/skeletal shaders apply no distance fog at all).
+	m_HeightFogActive = EvaluateHeightFogActive();
+	g_HeightFogActive = m_HeightFogActive;
+
 	// zCBspNodeRender hook — Gothic's BSP traversal is replaced; we draw the world ourselves.
 	// Order mirrors D3D11's DrawWorldMeshNaive: sky background, world mesh, skeletal (NPCs/monsters),
 	// then instanced static VOBs. The sky is a fog-colored fill so the horizon dissolves into the
@@ -3234,6 +3260,11 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	for ( auto const& [visualPtr, visual] : Engine::GAPI->GetStaticMeshVisuals() ) {
 		if ( visual ) visual->Instances.clear();
 	}
+
+	// Height fog + god rays (parity item #5): the last thing to touch the scene before the post-FX chain, same
+	// slot D3D11's PostFX composition occupies (after the ghosts/particle passes, before bloom+tonemap). Both
+	// halves are outdoor-only and individually gated (DrawFog / EnableGodRays); no-ops otherwise.
+	RenderFogAndGodRays();
 
 	// Bloom (P2.11, opt-in via EnableBloom): must run before the tonemap resolve below, while the scene is still
 	// linear HDR — additively blending a mip pyramid of the scene's own bright pixels back onto itself.
