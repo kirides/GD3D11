@@ -183,13 +183,18 @@ void D3D12GraphicsEngine::RenderSSAO() {
         m_CmdList->Dispatch( gx, gy, 1 );
     }
 
-    // Leave m_AOMask readable for the lit geometry passes' bindless fetch; depth back to DEPTH_WRITE.
+    // Leave m_AOMask readable for the lit geometry passes' bindless fetch; depth back to DEPTH_WRITE; and
+    // restore m_AOBlurTemp to its rest state (UNORDERED_ACCESS) — it was left in NON_PIXEL_SHADER_RESOURCE
+    // by the blur-pass-1 barrier above (scratch buffer, no cross-frame reader) and, without this, the NEXT
+    // frame's blur-pass-1 barrier would assert an UNORDERED_ACCESS "before" state that doesn't match reality
+    // (GPU validation: "RESOURCE_BARRIER_BEFORE_AFTER_MISMATCH" on AOBlurTemp).
     {
-        D3D12_RESOURCE_BARRIER b[2] = {
+        D3D12_RESOURCE_BARRIER b[3] = {
             TransitionBarrier( m_AOMask.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE ),
             TransitionBarrier( m_DepthBuffer.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE ),
+            TransitionBarrier( m_AOBlurTemp.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS ),
         };
-        m_CmdList->ResourceBarrier( 2, b );
+        m_CmdList->ResourceBarrier( 3, b );
     }
 
     m_AOMaskInPixelState = true;
