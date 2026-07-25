@@ -35,7 +35,7 @@ void ShaderRegistry::Build() {
 
     // Node attachments draw the packed 36-byte VOB meshes.
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_ExNode>( "VS_ExNode.hlsl" )
-        .with_layout( VERTEX_INPUT_LAYOUT_PACKED_EX ) );
+        .with_layout( VERTEX_INPUT_LAYOUT_1 ) );
 
     Shaders.push_back( ShaderInfo::make<VShaderID::VS_Decal>( "VS_Decal.hlsl" )
         .with_layout( VERTEX_INPUT_LAYOUT_1 )  );

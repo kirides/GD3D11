@@ -3478,12 +3478,7 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
                         if ( distance < 1000 ) {
                             if ( requiresMorphMeshSameAsMain ) {
                                 zCMorphMesh* mm = reinterpret_cast<zCMorphMesh*>( mvi->Visual );
-                                if ( updateState ) {
-                                    if ( mvi->LastAniUpdateFrame != now ) {
-                                        WorldConverter::UpdateMorphMeshVisual( mm, mvi );
-                                        mvi->LastAniUpdateFrame = now;
-                                    }
-                                }
+                                WorldConverter::UpdateMorphMeshVisual( mm, mvi );
                                 Engine::GAPI->DrawMorphMesh( mm, mvi->Meshes );
                                 continue;
                             }
