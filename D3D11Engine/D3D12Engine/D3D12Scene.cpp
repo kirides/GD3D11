@@ -290,10 +290,38 @@ namespace {
     // of day — the sky never darkened at night, matching the reported "always looks like fog color" bug.
     DirectX::XMVECTOR GetSceneFogColorXM() {
         const auto& rs = Engine::GAPI->GetRendererState();
-        if ( rs.RendererSettings.AtmosphericScattering ) {
-            return Engine::GAPI->GetFogColor();
+        XMFLOAT3 fogColorBase = rs.RendererSettings.AtmosphericScattering
+            ? rs.RendererSettings.FogColorMod
+            : rs.GraphicsState.FF_FogColor;
+
+        if ( !rs.RendererSettings.DrawFog ) {
+            return XMLoadFloat3( &rs.GraphicsState.FF_FogColor );
         }
-        return DirectX::XMLoadFloat3( &rs.GraphicsState.FF_FogColor );
+
+        zCSkyController_Outdoor* sc = oCGame::GetGame()->_zCSession_world->GetSkyControllerOutdoor();
+
+        XMVECTOR FogColorMod = XMLoadFloat3( &fogColorBase );
+
+        // Only give the overridden color out if the flag is set
+        if ( !sc || !sc->GetOverrideFlag() )
+
+            return FogColorMod;
+
+        const XMFLOAT3 overrideColor = sc->GetOverrideColor();
+        XMVECTOR color = XMLoadFloat3( &overrideColor );
+
+        // Clamp to length of 0.5f. Gothic does it at an intensity of 120 / 255.
+        float len;
+        XMStoreFloat( &len, XMVector3Length( color ) );
+        if ( len > 0.5f ) {
+            color = XMVector3Normalize( color ) * 0.5f;
+            len = 0.5f;
+        }
+
+        // Mix these, so the fog won't get black at transitions
+        color = XMVectorLerpV( FogColorMod, color, XMVectorSet( len * 2.0f, len * 2.0f, len * 2.0f, 0 ) );
+
+        return color;
     }
 
     // Builds this frame's fog constants from Gothic's sky state. FogColor = GetSceneFogColorXM() (0..1,
