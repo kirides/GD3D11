@@ -5,23 +5,9 @@
 #include <algorithm>
 #include "Logger.h"
 #include "zFILE_VDFS.h"
-
-// Define MAKEFOURCC if not already defined by Windows/DirectX headers
-#ifndef MAKEFOURCC
-#define MAKEFOURCC(ch0, ch1, ch2, ch3) \
-    ((uint32_t)(uint8_t)(ch0) | ((uint32_t)(uint8_t)(ch1) << 8) | \
-    ((uint32_t)(uint8_t)(ch2) << 16) | ((uint32_t)(uint8_t)(ch3) << 24 ))
-#endif
+#include "DDSFormat.h"   // shared DDS constants + format decoding / pitch math (DDS:: namespace)
 
 namespace {
-
-    constexpr uint32_t DDS_MAGIC = 0x20534444; // "DDS "
-
-    // FourCC codes
-    constexpr uint32_t FOURCC_DX10 = MAKEFOURCC( 'D', 'X', '1', '0' );
-    constexpr uint32_t FOURCC_ATI1 = MAKEFOURCC( 'A', 'T', 'I', '1' );
-    constexpr uint32_t FOURCC_BC4U = MAKEFOURCC( 'B', 'C', '4', 'U' );
-    constexpr uint32_t FOURCC_BC4S = MAKEFOURCC( 'B', 'C', '4', 'S' );
 
     struct DDS_PIXELFORMAT {
         uint32_t size;
@@ -59,70 +45,25 @@ namespace {
         uint32_t miscFlags2;
     };
 
-    // Simple helper to calculate DDS memory pitch size and block-aligned dimensions.
+    // Block-aware DDS surface size, delegating to the shared format tables (handles BC1..BC7 + every
+    // common uncompressed format, no silent 32-bit fallback for unknowns).
     inline void GetSurfaceInfo( uint32_t width, uint32_t height, DXGI_FORMAT format,
                                uint32_t& outNumBytes, uint32_t& outRowBytes )
     {
-        bool bc = false;
-        uint32_t bpe = 0; // Bytes Per Element
-
-        switch ( format ) {
-        case DXGI_FORMAT_BC4_UNORM:
-        case DXGI_FORMAT_BC4_SNORM:
-            bc = true;
-            bpe = 8;
-            break;
-        case DXGI_FORMAT_BC1_UNORM:
-        case DXGI_FORMAT_BC1_UNORM_SRGB:
-            bc = true;
-            bpe = 8;
-            break;
-        case DXGI_FORMAT_BC2_UNORM:
-        case DXGI_FORMAT_BC2_UNORM_SRGB:
-        case DXGI_FORMAT_BC3_UNORM:
-        case DXGI_FORMAT_BC3_UNORM_SRGB:
-        case DXGI_FORMAT_BC5_UNORM:
-        case DXGI_FORMAT_BC5_SNORM:
-        case DXGI_FORMAT_BC6H_UF16:
-        case DXGI_FORMAT_BC6H_SF16:
-        case DXGI_FORMAT_BC7_UNORM:
-        case DXGI_FORMAT_BC7_UNORM_SRGB:
-            bc = true;
-            bpe = 16;
-            break;
-        case DXGI_FORMAT_R8_UNORM:
-        case DXGI_FORMAT_R8_UINT:
-        case DXGI_FORMAT_R8_SNORM:
-        case DXGI_FORMAT_R8_SINT:
-            bpe = 1;
-            break;
-        default:
-            // Default fallback (e.g. RGBA 32-bit targets)
-            bpe = 4;
-            break;
-        }
-
-        if ( bc ) {
-            uint32_t numBlocksWide = (width > 0) ? std::max<uint32_t>( 1, (width + 3) / 4 ) : 0;
-            uint32_t numBlocksHigh = (height > 0) ? std::max<uint32_t>( 1, (height + 3) / 4 ) : 0;
-            outRowBytes = numBlocksWide * bpe;
-            outNumBytes = outRowBytes * numBlocksHigh;
-        } else {
-            outRowBytes = (width * bpe + 7) / 8; // Bit-to-byte alignment
-            outNumBytes = outRowBytes * height;
-        }
+        outRowBytes = DDS::RowPitch( format, width );
+        outNumBytes = DDS::SurfaceBytes( format, width, height );
     }
 }
 
-typedef HRESULT( *VirtualFileReader )(const char* path, std::vector<uint8_t> buffer, long* numRead);
+typedef HRESULT( *VirtualFileReader )(const char* path, std::vector<uint8_t>& buffer, long* numRead);
 
-inline HRESULT zVdfsReadFile( const char* str, std::vector<uint8_t> buffer, long* numRead ) {
+inline HRESULT zVdfsReadFile( const char* str, std::vector<uint8_t>& buffer, long* numRead ) {
     auto file = zFILE_VDFS::Create( str );
     if ( !file->Exists() ) {
         LogError() << "File does not exist: " << str;
         return E_FAIL;
     }
-    if ( file->Open( false ) != 0 ) {
+    if ( file->Open( false ) != zERRORS::zERROR_NONE ) {
         LogError() << "Failed to open filepath: " << str;
         return E_FAIL;
     }
@@ -177,13 +118,13 @@ inline HRESULT LoadTextureArray(
         const size_t rawSize = fileBuffers[i].size();
 
         if ( rawSize < (sizeof( uint32_t ) + sizeof( DDS_HEADER )) ) {
-            LogError() << "DDS data too small at index: " << i;
+            LogError() << "DDS data too small at index: " << i << " was: " << rawSize << ", expected: " << (sizeof( uint32_t ) + sizeof( DDS_HEADER )) << " prefix was: " << sTexturePrefix;
             return E_FAIL;
         }
 
         // Validate DDS Magic Header Number
         uint32_t magicNumber = *reinterpret_cast<const uint32_t*>( rawData );
-        if ( magicNumber != DDS_MAGIC ) {
+        if ( magicNumber != DDS::Magic ) {
             LogError() << "Invalid DDS magic number at index: " << i;
             return E_FAIL;
         }
@@ -194,15 +135,13 @@ inline HRESULT LoadTextureArray(
             return E_FAIL;
         }
 
-        // Detect Format
+        // Detect format (shared decoder: BC1..BC7, DX10-extended, and uncompressed formats via masks).
         DXGI_FORMAT parsedFormat = DXGI_FORMAT_UNKNOWN;
         size_t offset = sizeof( uint32_t ) + sizeof( DDS_HEADER );
 
-        if ( header->ddspf.flags & 0x4 ) { // DDPF_FOURCC
-            uint32_t fourCC = header->ddspf.fourCC;
-
-            if ( fourCC == FOURCC_DX10 ) {
-                // If it is a DX10 container, parse the secondary header to get the exact DXGI_FORMAT
+        if ( header->ddspf.flags & DDS::FlagFourCC ) {
+            if ( header->ddspf.fourCC == DDS::Dx10 ) {
+                // DX10 container: the secondary header carries the exact DXGI_FORMAT.
                 if ( rawSize < (offset + sizeof( DDS_HEADER_DXT10 )) ) {
                     LogError() << "DDS file missing DXT10 extended header at index: " << i;
                     return E_FAIL;
@@ -210,19 +149,18 @@ inline HRESULT LoadTextureArray(
                 const auto* headerDX10 = reinterpret_cast<const DDS_HEADER_DXT10*>( rawData + offset );
                 parsedFormat = static_cast<DXGI_FORMAT>( headerDX10->dxgiFormat );
                 offset += sizeof( DDS_HEADER_DXT10 );
-            } else if ( fourCC == FOURCC_ATI1 || fourCC == FOURCC_BC4U ) {
-                parsedFormat = DXGI_FORMAT_BC4_UNORM;
-            } else if ( fourCC == FOURCC_BC4S ) {
-                parsedFormat = DXGI_FORMAT_BC4_SNORM;
+            } else {
+                parsedFormat = DDS::FromFourCC( header->ddspf.fourCC );
             }
-        } else if ( header->ddspf.flags & 0x20000 ) { // DDPF_LUMINANCE / Single channel
-            if ( header->ddspf.rgbBitCount == 8 ) {
-                parsedFormat = DXGI_FORMAT_R8_UNORM;
-            }
+        } else {
+            parsedFormat = DDS::FromPixelFormat( header->ddspf.flags, header->ddspf.rgbBitCount,
+                header->ddspf.rBitMask, header->ddspf.gBitMask, header->ddspf.bBitMask, header->ddspf.aBitMask );
         }
 
-        if ( parsedFormat == DXGI_FORMAT_UNKNOWN ) {
-            LogError() << "Unsupported format (only BC4_UNORM, BC4_SNORM, and R8_UNORM supported) at index: " << i;
+        // Reject anything the size math can't describe (neither a known BC format nor a known bpp).
+        if ( DDS::BCBlockBytes( parsedFormat ) == 0 && DDS::BitsPerPixel( parsedFormat ) == 0 ) {
+            LogError() << "Unsupported DDS format (fourCC=" << header->ddspf.fourCC << " flags=" << header->ddspf.flags
+                       << " -> DXGI " << static_cast<int>( parsedFormat ) << ") at index: " << i;
             return E_FAIL;
         }
 

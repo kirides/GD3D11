@@ -170,7 +170,7 @@ void MyDirectDrawSurface7::LoadAdditionalResources( zCTexture* ownedTexture ) {
         }
     
         currentResource.clear();
-        currentResource.append(systemWorkPath).append(gameName).append("\\").append(textureName);
+        currentResource.append(systemWorkPath).append("Normalmaps_").append(gameName).append("\\").append(textureName);
         LoadResource(currentResource, textureName, storage, texture);
     }
 
