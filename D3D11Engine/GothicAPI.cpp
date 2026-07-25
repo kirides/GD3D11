@@ -4307,7 +4307,7 @@ void GothicAPI::QueryWorldSectionBVH( const Frustum& frustum,
         nodeStack.pop_back();
 
         const WorldSectionBVHNode& node = WorldSectionBVHNodes[nodeIndex];
-        if ( frustum.Contains( node.Bounds ) == DirectX::ContainmentType::DISJOINT ) {
+        if ( !frustum.Intersects( node.Bounds ) ) {
             continue;
         }
 
@@ -4371,7 +4371,7 @@ void GothicAPI::CollectVisibleSections( std::vector<WorldMeshSectionInfo*>& sect
             if ( !queryFrustum->IsValid() ) {
                 return true;
             }
-            return queryFrustum->Contains( section.BoundingBox ) != DirectX::ContainmentType::DISJOINT;
+            return queryFrustum->Intersects( section.BoundingBox );
         }
 
         return GetCameraBBox3DInFrustum( section.BoundingBox, EGothicCullFlags::CullSidesNear ) != ZTCAM_CLIPTYPE_OUT;

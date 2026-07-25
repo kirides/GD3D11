@@ -31,10 +31,13 @@ cbuffer ShadowCB : register(b3)
 Texture2DArray          ShadowMap : register(t4);
 SamplerComparisonState  shadowCmp : register(s2);
 // Per-material bindless indices (root consts b6): SM6.6 ResourceDescriptorHeap[...] indices for this material's
-// diffuse + normal + ORM maps. The world mesh is drawn via ExecuteIndirect (P2.11), which sets these three per
+// diffuse + normal + ORM maps. The world mesh is drawn via ExecuteIndirect (P2.11), which sets these four per
 // draw — so the diffuse is sampled bindless too (no per-draw descriptor table). MatNormalIndex == 0xFFFFFFFF ->
 // no normal map (skip perturb); MatOrmIndex is always valid (1x1 default = AO 1 / rough 0.5 / metal 0).
-cbuffer MaterialCB : register(b6) { uint MatNormalIndex; uint MatOrmIndex; uint MatDiffuseIndex; };
+// MatNormalStrength scales the normal-map perturb: 1.0 for a real material normalmap, or the weak
+// DEFAULT_NOISE_NORMALMAP_STRENGTH (0.10) when it's raining and MatNormalIndex is instead the rain-distortion
+// texture standing in for a missing normalmap (wet-ground look, mirrors D3D11GraphicsEngine::BindTextureNRFX).
+cbuffer MaterialCB : register(b6) { uint MatNormalIndex; uint MatOrmIndex; uint MatDiffuseIndex; float MatNormalStrength; };
 TextureCubeArray        PointShadowCubes : register(t5);   // point-light shadow cubes (P2.10d), R16 linear depth
 // Simple-SSAO mask (bindless, set once per frame — see D3D12GraphicsEngine::RenderSSAO/m_ActiveAOMaskSrvSlot).
 // Points at the white 1x1 texture (mask = no occlusion) when SSAO is disabled/unavailable.
@@ -81,7 +84,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     if ( MatNormalIndex != 0xffffffff )       // bindless normal map (BC5/BC1, Z reconstructed) if this material has one
     {
         Texture2D nrmTex = ResourceDescriptorHeap[MatNormalIndex];
-        N = PerturbNormal( N, i.wpos, nrmTex, i.uv, smp );
+        N = PerturbNormal( N, i.wpos, nrmTex, i.uv, smp, MatNormalStrength );
     }
     Texture2D ormTex = ResourceDescriptorHeap[MatOrmIndex];   // r=AO g=roughness b=metallic (1x1 default when no _FX)
     float3 orm = ormTex.Sample( smp, i.uv ).rgb;

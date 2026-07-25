@@ -395,6 +395,8 @@ private:
     std::unique_ptr<D3D12Texture> m_WhiteTexture;         // 1x1 white fallback for untextured draws
     std::unique_ptr<D3D12Texture> m_BlackTexture;         // 1x1 black fallback for untextured draws
     std::unique_ptr<D3D12Texture> m_DefaultOrmTexture;    // 1x1 ORM default (AO 1, rough 0.5, metal 0)
+    std::unique_ptr<D3D12Texture> m_DistortionTexture;    // distortion2.dds — wet-ground normal fallback (see LoadDistortionTexture)
+    bool LoadDistortionTexture();                         // one-time, non-fatal load (mirrors LoadSmaaTextures)
 
     GfxTexture* m_CurrentTexture = nullptr;                        // diffuse bound for the next 2D draw
     PShaderID m_ActivePixelShader = PShaderID::PS_FixedFunctionPipe; // see SetActivePixelShader
@@ -418,14 +420,16 @@ private:
     // b6 { normal, orm, diffuse } bindless indices (root consts @ param 10) + DrawIndexedArguments. This removes
     // the thousands of per-draw SetGraphicsRootDescriptorTable + DrawIndexedInstanced calls (the ~70%-of-pass CPU
     // cost) and the duplicate BSP walk. The UPLOAD arg ring stays in GENERIC_READ (which includes INDIRECT_ARGUMENT).
-    struct WorldDrawCommand {                       // 8 DWORDs = 32 bytes; MUST match the command signature layout
+    struct WorldDrawCommand {                       // 9 DWORDs = 36 bytes; MUST match the command signature layout
         uint32_t MatNormalIndex;
         uint32_t MatOrmIndex;
         uint32_t MatDiffuseIndex;
+        float    MatNormalStrength;                 // 1.0 for a real normalmap; DEFAULT_NOISE_NORMALMAP_STRENGTH (0.10)
+                                                      // when MatNormalIndex is the rain-distortion fallback (see BuildWorldDrawCommands)
         D3D12_DRAW_INDEXED_ARGUMENTS Draw;          // IndexCountPerInstance, InstanceCount, Start*, BaseVertex, StartInstance
     };
     static constexpr UINT kMaxWorldDrawCommands = 16384;
-    Microsoft::WRL::ComPtr<ID3D12CommandSignature> m_WorldIndirectCmdSig;   // b6(3 consts)@param10 + DrawIndexed
+    Microsoft::WRL::ComPtr<ID3D12CommandSignature> m_WorldIndirectCmdSig;   // b6(4 consts)@param10 + DrawIndexed
     Microsoft::WRL::ComPtr<ID3D12Resource> m_WorldDrawArgs[kBackBufferCount]; // persistently-mapped UPLOAD ring
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_WorldDrawArgsAlloc[kBackBufferCount];
     uint8_t* m_WorldDrawArgsPtr[kBackBufferCount] = {};

@@ -145,8 +145,9 @@ bool D3D12PipelineState::CreateWorld() {
     // tables. normalIndex == 0xFFFFFFFF means "no normal map" (skip the TBN/perturb); ormIndex is always valid
     // (the default ORM slot when a material has no _FX map), so ORM is sampled branchlessly.
     params[10].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[10].Constants.ShaderRegister = 6;   // b6 MaterialCB { MatNormalIndex, MatOrmIndex, MatDiffuseIndex }
-    params[10].Constants.Num32BitValues = 3;   // 3rd = bindless diffuse index (world mesh ExecuteIndirect, P2.11)
+    params[10].Constants.ShaderRegister = 6;   // b6 MaterialCB { MatNormalIndex, MatOrmIndex, MatDiffuseIndex, MatNormalStrength }
+    params[10].Constants.Num32BitValues = 4;   // 3rd = bindless diffuse index; 4th = normal-perturb strength (World.hlsl's wet-ground
+                                                // path only — Vob.hlsl/Skeletal.hlsl's own MaterialCB declarations just don't read it)
     params[10].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     // params[11] = wind sway CB (b4, VS only) — read by Vob.hlsl's VSMain (flags/foliage sway + hero-affects-
     // bushes push); World.hlsl/Skeletal.hlsl don't declare b4 so they simply never read it. Only DrawVobsInstanced

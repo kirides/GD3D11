@@ -9,6 +9,7 @@
 #include "../Engine.h"
 #include "../GothicAPI.h"
 #include "../WorldObjects.h"
+#include "../WorldConverter.h"
 #include "../oCGame.h"
 #include "../zCSkyController_Outdoor.h"
 #include "../DDSArrayLoader.h"
@@ -481,50 +482,69 @@ void D3D12GraphicsEngine::RenderRainShadowmap() {
     m_CmdList->ClearDepthStencilView( m_RainShadowDsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr );
 
     // --- Camera: orthographic, looking along the (inverted) rain-velocity direction — mirrors
-    // D3D11Effect::DrawRainShadowmap's math exactly (D3D11Effect.cpp:515-537). ---
-    XMVECTOR camPos = Engine::GAPI->GetCameraPositionXM();
-    XMVECTOR rainVel = XMLoadFloat3( &state.RendererSettings.RainGlobalVelocity );
-    if ( XMVectorGetX( XMVector3LengthSq( rainVel ) ) < 0.0001f ) rainVel = XMVectorSet( 0.0f, -1.0f, 0.0f, 0.0f );
-    XMVECTOR dir = XMVector3Normalize( rainVel * -1.0f );
-
-    XMVECTOR p = camPos + dir * 6000.0f;
-    XMVECTOR lookAt = p - dir;
-    XMVECTOR forward = XMVector3Normalize( lookAt - p );
-    XMVECTOR up = XMVectorSet( 0.0f, 1.0f, 0.0f, 0.0f );
-    if ( fabsf( XMVectorGetX( XMVector3Dot( forward, up ) ) ) > 0.95f ) up = XMVectorSet( 1.0f, 0.0f, 0.0f, 0.0f );
-
-    XMMATRIX view = XMMatrixLookAtLH( p, lookAt, up );
     const float scaleFactor = Toolbox::GetRecommendedWorldShadowRangeScaleForSize( static_cast<int>(kRainShadowMapSize) );
     const float span = static_cast<float>(kRainShadowMapSize) * scaleFactor;
-    XMMATRIX proj = XMMatrixOrthographicLH( span, span, 1.0f, 20000.0f );
 
-    m_RainShadowFrustum.BuildOrthographic( view, span, span, 1.0f, 20000.0f );
+    XMVECTOR rainVel = XMLoadFloat3( &state.RendererSettings.RainGlobalVelocity );
+    if ( XMVectorGetX( XMVector3LengthSq( rainVel ) ) < 0.0001f ) rainVel = XMVectorSet( 0.0f, -1.0f, 0.0f, 0.0f );
+
+    XMVECTOR camPos = Engine::GAPI->GetCameraPositionXM();
+
+    XMVECTOR forward = XMVector3Normalize( rainVel ); // Light forward direction
+
+    // 2. Compute Right and Up vectors
+    XMVECTOR up = XMVectorSet( 0.0f, 1.0f, 0.0f, 0.0f );
+    if ( fabsf( XMVectorGetX( XMVector3Dot( forward, up ) ) ) > 0.95f )
+        up = XMVectorSet( 1.0f, 0.0f, 0.0f, 0.0f );
+
+    XMVECTOR right = XMVector3Normalize( XMVector3Cross( up, forward ) );
+    up = XMVector3Cross( forward, right );
+
+    // Pull the eye back along -forward by halfRange (same idea as ComputeCascadeMatrices' pullBack,
+    // D3D12Scene.cpp:1088-1089) so the [0, 2*halfRange] depth range brackets halfRange ABOVE camPos
+    // (catching roofs overhead) through halfRange BELOW it (catching terrain) — placing the eye AT
+    // camPos with NearZ=1 clipped everything above the player (roofs) out of the depth map entirely,
+    // leaving those texels at the cleared far-depth ("no occluder"), so rain fell through roofs.
+    const float halfRange = 4000.0f; // 4000 units above, 4000 units below
+    XMVECTOR eyePos = XMVectorSubtract( camPos, XMVectorScale( forward, halfRange ) );
+
+    // 3. Construct the Light's World Matrix (Inverse View) directly!
+    XMMATRIX lightWorldMatrix;
+    lightWorldMatrix.r[0] = right;
+    lightWorldMatrix.r[1] = up;
+    lightWorldMatrix.r[2] = forward;
+    lightWorldMatrix.r[3] = eyePos;
+    lightWorldMatrix.r[0] = XMVectorSetW( lightWorldMatrix.r[0], 0.0f );
+    lightWorldMatrix.r[1] = XMVectorSetW( lightWorldMatrix.r[1], 0.0f );
+    lightWorldMatrix.r[2] = XMVectorSetW( lightWorldMatrix.r[2], 0.0f );
+    lightWorldMatrix.r[3] = XMVectorSetW( lightWorldMatrix.r[3], 1.0f );
+
+    XMMATRIX view = XMMatrixInverse( nullptr, lightWorldMatrix );
+    XMMATRIX proj = XMMatrixOrthographicLH( span, span, 1.0f, halfRange * 2.0f );
+
+    m_RainShadowFrustum.BuildOrthographic( view, span, span, 1.0f, halfRange * 2.0f, 0, 0, 0 );
+
     if ( !m_RainShadowFrustum.IsValid() ) {
-        // Degenerate camera basis (rare custom rain direction) — retry with a different fallback up-vector,
-        // matching D3D11's retry; if still invalid, leave the map cleared (unshadowed = "all wet") rather
-        // than casting with an invalid frustum.
-        XMMATRIX viewFallback = XMMatrixLookAtLH( p, lookAt, XMVectorSet( 0.0f, 0.0f, 1.0f, 0.0f ) );
-        m_RainShadowFrustum.BuildOrthographic( viewFallback, span, span, 1.0f, 20000.0f );
-        if ( m_RainShadowFrustum.IsValid() ) {
-            view = viewFallback;
-        } else {
-            auto toRead = TransitionBarrier( m_RainShadowMap.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
-            m_CmdList->ResourceBarrier( 1, &toRead );
-            m_RainShadowInReadState = true;
-            // Re-bind the HDR scene-color RT (+ shared depth) — mirrors RenderSunShadows/RenderPointShadows'
-            // end-of-pass rebind. Without this the rain-shadow DSV stays the "currently bound" render target
-            // as far as the API is concerned, and the very next Draw call (anywhere) fails GPU validation
-            // ("resource state ... invalid for use as depth-read") once this pass transitions it away from
-            // DEPTH_WRITE.
-            D3D12_CPU_DESCRIPTOR_HANDLE mainDsv = m_DsvHeap->GetCPUDescriptorHandleForHeapStart();
-            m_CmdList->OMSetRenderTargets( 1, &m_SceneColorRtv, FALSE, m_DepthBuffer ? &mainDsv : nullptr );
-            return;
-        }
+        auto toRead = TransitionBarrier( m_RainShadowMap.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
+        m_CmdList->ResourceBarrier( 1, &toRead );
+        m_RainShadowInReadState = true;
+        // Re-bind the HDR scene-color RT (+ shared depth) — mirrors RenderSunShadows/RenderPointShadows'
+        // end-of-pass rebind. Without this the rain-shadow DSV stays the "currently bound" render target
+        // as far as the API is concerned, and the very next Draw call (anywhere) fails GPU validation
+        // ("resource state ... invalid for use as depth-read") once this pass transitions it away from
+        // DEPTH_WRITE.
+        D3D12_CPU_DESCRIPTOR_HANDLE mainDsv = m_DsvHeap->GetCPUDescriptorHandleForHeapStart();
+        m_CmdList->OMSetRenderTargets( 1, &m_SceneColorRtv, FALSE, m_DepthBuffer ? &mainDsv : nullptr );
+        return;
     }
 
-    // Matches the established (proj, view) construction order this codebase's row-major-stored/column-
-    // major-read HLSL convention requires (see DrawRainParticles' ViewProj comment).
-    XMStoreFloat4x4( &m_RainShadowViewProj, XMMatrixMultiply( proj, view ) );
+    // Matches ComputeCascadeMatrices' CascadeViewProj construction EXACTLY (D3D12Scene.cpp) — both feed the
+    // SAME shader (DepthPrepassVsBlob / m_Pipelines.World.RootSig's b0, "default column-major packing", plain
+    // mul(pos, ViewProj)) and Rain.hlsl's mul(wsPos, RainShadowViewProj) sampling, which need the identical
+    // convention: transpose(view*proj), NOT the (proj,view)-without-transpose this used before. That mismatch
+    // (missing transpose + swapped multiply order) produced a degenerate/garbage clip transform — visible as a
+    // thin wedge radiating from a point instead of a proper top-down depth map of the terrain.
+    XMStoreFloat4x4( &m_RainShadowViewProj, XMMatrixTranspose( XMMatrixMultiply( view, proj ) ) );
 
     MeshInfo* wm = Engine::GAPI->GetWrappedWorldMesh();
     D3D12VertexBuffer* vb = wm ? D3D12VertexBuffer::From( wm->GetMeshVertexBuffer() ) : nullptr;
@@ -541,7 +561,17 @@ void D3D12GraphicsEngine::RenderRainShadowmap() {
     if ( haveWorld ) {
         static std::vector<WorldMeshSectionInfo*> rainShadowSections;
         rainShadowSections.clear();
+
+        // culling currently broken with BVH but only for rain shadow map ???
+        auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+        const auto oldUseWorldSectionBVH = settings.DebugSettings.FeatureSet.UseWorldSectionBVH;
+        settings.DebugSettings.FeatureSet.UseWorldSectionBVH = false;
         Engine::GAPI->CollectVisibleSections( rainShadowSections, &m_RainShadowFrustum, false );
+        settings.DebugSettings.FeatureSet.UseWorldSectionBVH = oldUseWorldSectionBVH;
+
+        if ( rainShadowSections.empty() ) {
+            auto _ = "wtf";
+        }
 
         m_CmdList->SetPipelineState( m_ShadowCasterWorldPSO.Get() );
         m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
@@ -557,7 +587,7 @@ void D3D12GraphicsEngine::RenderRainShadowmap() {
             for ( auto const& [meshKey, mesh] : section->WorldMeshes ) {
                 if ( !mesh || mesh->Indices.empty() ) continue;
                 if ( meshKey.Info && meshKey.Info->MaterialType != MaterialInfo::MT_None ) continue;
-                if ( !Engine::GAPI->IsWorldMeshVisibleInFrustum( mesh, m_RainShadowFrustum ) ) continue;
+               // if ( !Engine::GAPI->IsWorldMeshVisibleInFrustum( mesh, m_RainShadowFrustum ) ) continue;
 
                 // Skip translucent/blended geometry, matching the CSM caster loop.
                 if ( (meshKey.Material->GetAlphaFunc() > zMAT_ALPHA_FUNC_NONE &&

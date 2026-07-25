@@ -3323,11 +3323,11 @@ bool D3D12GraphicsEngine::CreateWorldIndirect() {
 	args[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT;
 	args[0].Constant.RootParameterIndex = 10;                 // b6 MaterialCB (world root sig)
 	args[0].Constant.DestOffsetIn32BitValues = 0;
-	args[0].Constant.Num32BitValuesToSet = 3;                 // normal, orm, diffuse
+	args[0].Constant.Num32BitValuesToSet = 4;                 // normal, orm, diffuse, normal-perturb strength
 	args[1].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
 
 	D3D12_COMMAND_SIGNATURE_DESC sigDesc = {};
-	sigDesc.ByteStride = sizeof( WorldDrawCommand );          // 32 B; MUST match the struct + shader layout
+	sigDesc.ByteStride = sizeof( WorldDrawCommand );          // 36 B; MUST match the struct + shader layout
 	sigDesc.NumArgumentDescs = _countof( args );
 	sigDesc.pArgumentDescs = args;
 	// A command that sets root constants must carry the root signature its param index refers to.
@@ -3378,6 +3378,12 @@ bool D3D12GraphicsEngine::CreateWorldIndirect() {
     return true;
 }
 
+
+namespace {
+    // Matches D3D11GraphicsEngine::DEFAULT_NOISE_NORMALMAP_STRENGTH — the weak perturb strength used when the
+    // rain-distortion texture stands in for a missing normalmap (see BuildWorldDrawCommands' wet-ground fallback).
+    constexpr float kWetDistortionNormalStrength = 0.10f;
+}
 
 void D3D12GraphicsEngine::BuildWorldDrawCommands() {
     // Build this frame's world-mesh ExecuteIndirect command set ONCE (P2.11): frustum-collect the visible sections,
@@ -3447,6 +3453,7 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
             uint32_t diffuseIdx = m_BlackTexture->GetSrvSlot();
             uint32_t normalIdx  = 0xFFFFFFFFu;
             uint32_t ormIdx     = m_DefaultOrmTexture->GetSrvSlot();
+            float normalStrength = 1.0f;
             if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
                 if ( MyDirectDrawSurface7* s = tex->GetSurface() ) {
                     if ( GfxTexture* gfx = s->GetEngineTexture() ) {
@@ -3463,11 +3470,20 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
                     }
                 }
             }
+            // Wet-ground fallback (mirrors D3D11GraphicsEngine::BindTextureNRFX): a material with no normalmap
+            // still gets a wet/specular look while it's raining, by perturbing with the same distortion noise
+            // texture the D3D11 backend uses, at a much weaker strength than a real normalmap.
+            if ( normalIdx == 0xFFFFFFFFu && m_DistortionTexture && m_DistortionTexture->HasSRV()
+                && Engine::GAPI->GetSceneWetness() > 1e-6f ) {
+                normalIdx = m_DistortionTexture->GetSrvSlot();
+                normalStrength = kWetDistortionNormalStrength;
+            }
 
             WorldDrawCommand& c = cmds[count];
-            c.MatNormalIndex  = normalIdx;
-            c.MatOrmIndex     = ormIdx;
-            c.MatDiffuseIndex = diffuseIdx;
+            c.MatNormalIndex     = normalIdx;
+            c.MatOrmIndex        = ormIdx;
+            c.MatDiffuseIndex    = diffuseIdx;
+            c.MatNormalStrength  = normalStrength;
             c.Draw.IndexCountPerInstance = static_cast<UINT>( mesh->Indices.size() );
             c.Draw.InstanceCount = 1;
             c.Draw.StartIndexLocation = mesh->BaseIndexLocation;

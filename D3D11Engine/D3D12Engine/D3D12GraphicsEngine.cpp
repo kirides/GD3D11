@@ -100,6 +100,7 @@ XRESULT D3D12GraphicsEngine::Init() {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the white fallback texture.";
         return XR_FAILED;
     }
+    LoadDistortionTexture();   // non-fatal: wet ground just skips the no-normalmap fallback if this is missing
     if ( !m_Pipelines.CreateWorld() ) {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the world-mesh pipeline.";
         return XR_FAILED;
@@ -688,6 +689,21 @@ bool D3D12GraphicsEngine::CreateWhiteTexture() {
 		return false;
 	}
 
+	return true;
+}
+
+
+bool D3D12GraphicsEngine::LoadDistortionTexture() {
+	// Same file D3D11GraphicsEngine::DistortionTexture loads (D3D11GraphicsEngine.cpp:819). Used by
+	// BuildWorldDrawCommands as a wet-ground normalmap stand-in for materials that have none while it's
+	// raining — non-fatal: that fallback just stays unavailable (dry-normal-less look) if this fails.
+	m_DistortionTexture = std::make_unique<D3D12Texture>();
+	const std::string path = Engine::GAPI->GetStartDirectory() + "\\system\\GD3D11\\textures\\distortion2.dds";
+	if ( m_DistortionTexture->Init( path ) != XR_SUCCESS || !m_DistortionTexture->HasSRV() ) {
+		LogWarn() << "D3D12: rain-distortion texture not found/loadable (" << path << ") — wet-ground fallback for non-normalmapped materials disabled.";
+		m_DistortionTexture.reset();
+		return false;
+	}
 	return true;
 }
 
