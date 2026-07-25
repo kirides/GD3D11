@@ -152,6 +152,24 @@ public:
         Microsoft::WRL::ComPtr<ID3D12PipelineState> CompositePSO;
     };
 
+    // SMAA anti-aliasing (runtime toggle, RendererSettings.AntiAliasingMode == AA_SMAA). One bindless root
+    // sig (b0 root consts { RT_METRICS + 5 SRV heap indices }, static linear+point clamp samplers,
+    // CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED) shared by all three fullscreen passes. Edge/Blend PSOs target an
+    // R8G8B8A8 intermediate; the final Neighborhood PSO targets the swapchain (kBackBufferFormat). Area/search
+    // LUTs and the resolution-dependent color/edges/blend textures are GPU resources and live in the engine.
+    struct SmaaPipeline {
+        Microsoft::WRL::ComPtr<ID3D12RootSignature> RootSig;
+        Microsoft::WRL::ComPtr<ID3DBlob>            EdgeVsBlob;
+        Microsoft::WRL::ComPtr<ID3DBlob>            EdgePsBlob;
+        Microsoft::WRL::ComPtr<ID3DBlob>            BlendVsBlob;
+        Microsoft::WRL::ComPtr<ID3DBlob>            BlendPsBlob;
+        Microsoft::WRL::ComPtr<ID3DBlob>            NeighborVsBlob;
+        Microsoft::WRL::ComPtr<ID3DBlob>            NeighborPsBlob;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> EdgePSO;      // pass 1: color -> edges (R8G8B8A8)
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> BlendPSO;     // pass 2: edges+LUTs -> blend weights (R8G8B8A8)
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> NeighborPSO;  // pass 3: color+blend -> swapchain (kBackBufferFormat)
+    };
+
     // Stores non-owning device + shader-backend pointers; call once before any Create*().
     bool Init( D3D12Device* device, D3D12ShaderBackend* shaders );
 
@@ -176,6 +194,7 @@ public:
     bool CreateGrass();       // GVegetationBox instanced grass cards (own root sig: b0 ViewProj, t0/t1 grass+ground
                               // textures, b1 GrassCB, b2 fog, Forward+ lights, b4 shadow CB, t5 CSM shadow map)
     bool CreateVideo();       // Bink YUV video playback (own root sig: b0 viewport consts, t0-t2 YUV planes)
+    bool CreateSmaa();        // SMAA 3-pass AA (bindless root sig + edge/blend/neighborhood PSOs); textures stay in engine
 
     // --- On-demand PSO cache lookups (called from the engine's draw path; create+cache on miss) ---
     // cullMode/frontCCW/rtvIsHdr/forceMaxZ default to the plain 2D/UI case (cull-none, clockwise-front,
@@ -206,6 +225,7 @@ public:
     GraphicsPipeline GhostSkeletal;
     GraphicsPipeline Grass;
     VideoPipeline    Video;
+    SmaaPipeline     Smaa;
 
 private:
     D3D12Device*        m_Device = nullptr;

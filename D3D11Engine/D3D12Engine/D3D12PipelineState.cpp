@@ -2415,3 +2415,99 @@ bool D3D12PipelineState::CreateBloom() {
     }
     return true;
 }
+
+
+bool D3D12PipelineState::CreateSmaa() {
+    // SMAA (Subpixel Morphological Anti-Aliasing) — runtime toggle (RendererSettings.AntiAliasingMode ==
+    // AA_SMAA). Mirrors the D3D11 3-pass structure (D3D11SMAA::Render): edge detection, blend-weight
+    // calculation, neighborhood blending. All three passes share one bindless root signature; the pixel
+    // shaders fetch color/edges/blend/area/search from the shader-visible heap by index (root consts), so no
+    // per-pass descriptor tables are needed. Non-fatal on failure — RenderSMAA() guards on the PSOs existing.
+    ID3D12Device* device = m_Device->GetDevice();
+    if ( !device ) return false;
+
+    // b0: 9 root constants { float4 RT_METRICS; uint Color/Edges/Blend/Area/Search index }.
+    D3D12_ROOT_PARAMETER param = {};
+    param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    param.Constants.ShaderRegister = 0;   // b0 cbSMAA
+    param.Constants.Num32BitValues = 9;
+    param.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;   // RT_METRICS is read by both the VS and PS
+
+    // s0 linear-clamp, s1 point-clamp (matches D3D11SMAA::Init's two sampler states).
+    D3D12_STATIC_SAMPLER_DESC samplers[2] = {};
+    samplers[0].Filter = D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT;
+    samplers[0].AddressU = samplers[0].AddressV = samplers[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    samplers[0].MaxLOD = D3D12_FLOAT32_MAX;
+    samplers[0].ShaderRegister = 0;   // s0 LinearSampler
+    samplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    samplers[1].Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
+    samplers[1].AddressU = samplers[1].AddressV = samplers[1].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    samplers[1].MaxLOD = D3D12_FLOAT32_MAX;
+    samplers[1].ShaderRegister = 1;   // s1 PointSampler
+    samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+    rsDesc.NumParameters = 1;
+    rsDesc.pParameters = &param;
+    rsDesc.NumStaticSamplers = _countof( samplers );
+    rsDesc.pStaticSamplers = samplers;
+    // DIRECTLY_INDEXED enables SM6.6 ResourceDescriptorHeap[...] bindless fetch of the SMAA textures.
+    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+                 | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
+
+    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
+    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (SMAA)."; return false; }
+    ComPtr<ID3DBlob> rsBlob, rsErr;
+    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
+        if ( rsErr ) LogWarn() << "D3D12: SMAA root sig error: " << static_cast<const char*>( rsErr->GetBufferPointer() );
+        return false;
+    }
+    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
+        IID_PPV_ARGS( Smaa.RootSig.ReleaseAndGetAddressOf() ) ) ) )
+        return false;
+
+    if ( !m_Shaders->CompileFromFile( "SMAA.hlsl", "EdgeDetectionVS", Shadermodel_VS, Smaa.EdgeVsBlob.ReleaseAndGetAddressOf() )
+        || !m_Shaders->CompileFromFile( "SMAA.hlsl", "LumaEdgeDetectionPS", Shadermodel_PS, Smaa.EdgePsBlob.ReleaseAndGetAddressOf() )
+        || !m_Shaders->CompileFromFile( "SMAA.hlsl", "BlendingWeightCalculationVS", Shadermodel_VS, Smaa.BlendVsBlob.ReleaseAndGetAddressOf() )
+        || !m_Shaders->CompileFromFile( "SMAA.hlsl", "BlendingWeightCalculationPS", Shadermodel_PS, Smaa.BlendPsBlob.ReleaseAndGetAddressOf() )
+        || !m_Shaders->CompileFromFile( "SMAA.hlsl", "NeighborhoodBlendingVS", Shadermodel_VS, Smaa.NeighborVsBlob.ReleaseAndGetAddressOf() )
+        || !m_Shaders->CompileFromFile( "SMAA.hlsl", "NeighborhoodBlendingPS", Shadermodel_PS, Smaa.NeighborPsBlob.ReleaseAndGetAddressOf() ) )
+        return false;
+
+    // Shared PSO skeleton: fullscreen triangle (no VB / input layout), no depth, no blend (each pass fully
+    // overwrites its target). Only VS/PS and the RTV format differ per pass.
+    auto makePso = [&]( ID3DBlob* vs, ID3DBlob* ps, DXGI_FORMAT rtv, ID3D12PipelineState** out, const char* name ) -> bool {
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+        pso.pRootSignature = Smaa.RootSig.Get();
+        pso.VS = { vs->GetBufferPointer(), vs->GetBufferSize() };
+        pso.PS = { ps->GetBufferPointer(), ps->GetBufferSize() };
+        pso.InputLayout = { nullptr, 0 };
+        pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        pso.NumRenderTargets = 1;
+        pso.RTVFormats[0] = rtv;
+        pso.DSVFormat = DXGI_FORMAT_UNKNOWN;
+        pso.SampleDesc.Count = 1;
+        pso.SampleMask = UINT_MAX;
+        pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+        pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+        pso.RasterizerState.DepthClipEnable = TRUE;
+        pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+        pso.DepthStencilState.DepthEnable = FALSE;
+        pso.DepthStencilState.StencilEnable = FALSE;
+        if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( out ) ) ) ) {
+            LogWarn() << "D3D12: CreateGraphicsPipelineState failed (SMAA " << name << ").";
+            return false;
+        }
+        return true;
+        };
+
+    // Edge + blend passes render to the R8G8B8A8 intermediates; the final neighborhood pass writes the swapchain.
+    if ( !makePso( Smaa.EdgeVsBlob.Get(), Smaa.EdgePsBlob.Get(), DXGI_FORMAT_R8G8B8A8_UNORM, Smaa.EdgePSO.ReleaseAndGetAddressOf(), "edge" ) )
+        return false;
+    if ( !makePso( Smaa.BlendVsBlob.Get(), Smaa.BlendPsBlob.Get(), DXGI_FORMAT_R8G8B8A8_UNORM, Smaa.BlendPSO.ReleaseAndGetAddressOf(), "blend" ) )
+        return false;
+    if ( !makePso( Smaa.NeighborVsBlob.Get(), Smaa.NeighborPsBlob.Get(), kBackBufferFormat, Smaa.NeighborPSO.ReleaseAndGetAddressOf(), "neighbor" ) )
+        return false;
+
+    return true;
+}

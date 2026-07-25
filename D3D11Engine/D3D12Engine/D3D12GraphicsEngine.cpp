@@ -205,6 +205,13 @@ XRESULT D3D12GraphicsEngine::Init() {
         // guards on Video.PSO existing and falls back to the normal FF/UI draw (a black/untextured quad) if not.
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the video (Bink) pipeline (cutscenes will not render).";
     }
+    if ( !m_Pipelines.CreateSmaa() ) {
+        // Non-fatal: SMAA is an opt-in AA mode (RendererSettings.AntiAliasingMode == AA_SMAA). RenderSMAA()
+        // guards on the PSOs existing and just skips the effect (no AA) if this failed.
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the SMAA pipeline (SMAA anti-aliasing will be unavailable).";
+    } else {
+        LoadSmaaTextures();   // non-fatal; RenderSMAA also guards on the LUTs being present
+    }
     LogInfo() << "D3D12GraphicsEngine initialized (device + 2D + world + VOB + skeletal + water + particle + decal + HDR tonemap pipelines up). Swapchain is created once the game window is set.";
     return XR_SUCCESS;
 }
@@ -1005,6 +1012,7 @@ bool D3D12GraphicsEngine::CreateSwapChain( INT2 size ) {
     if ( !CreateDepthBuffer( size ) ) return false;
     if ( !CreateSceneColorTarget( size ) ) return false;   // HDR scene RT (RTV heap now exists with the extra slot)
     CreateBloomResources( size );   // non-fatal: bloom is opt-in (EnableBloom, default off); RenderBloom no-ops if this failed
+    CreateSmaaResources( size );     // non-fatal: SMAA is opt-in (AntiAliasingMode == AA_SMAA); RenderSMAA no-ops if this failed
     if ( !CreateLumPartialBuffer( size ) ) {
         // Non-fatal: RenderLuminanceAdapt() guards on m_LumPartialBuffer and just skips this frame's luminance
         // update if missing — m_LumAdaptedBuffer (created once in Init) keeps its last valid value, so Tonemap
@@ -1027,9 +1035,10 @@ bool D3D12GraphicsEngine::CreateSwapChain( INT2 size ) {
 bool D3D12GraphicsEngine::CreateFrameResources() {
     ID3D12Device* device = m_Device.GetDevice();
 
-    // RTV descriptor heap: one per backbuffer + 1 for the HDR scene-color target (slot kBackBufferCount).
+    // RTV descriptor heap: one per backbuffer + 1 for the HDR scene-color target (slot kBackBufferCount) +
+    // 2 for the SMAA edge/blend intermediates (slots kBackBufferCount+1 / +2).
     D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
-    rtvHeapDesc.NumDescriptors = kBackBufferCount + 1;
+    rtvHeapDesc.NumDescriptors = kBackBufferCount + 3;
     rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
     rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
     if ( FAILED( device->CreateDescriptorHeap( &rtvHeapDesc, IID_PPV_ARGS( m_RtvHeap.ReleaseAndGetAddressOf() ) ) ) )
@@ -1713,6 +1722,7 @@ bool D3D12GraphicsEngine::ResizeSwapChain( INT2 size ) {
     if ( !CreateDepthBuffer( size ) ) return false;   // GPU is idle (WaitForGpuIdle above), safe to recreate
     if ( !CreateSceneColorTarget( size ) ) return false;   // HDR scene RT tracks the new resolution too
     CreateBloomResources( size );   // non-fatal: see the CreateSwapChain call site
+    CreateSmaaResources( size );     // non-fatal: see the CreateSwapChain call site
     if ( !CreateLumPartialBuffer( size ) ) {
         LogWarn() << "D3D12GraphicsEngine::OnResize: failed to create the dynamic-exposure partial-sum buffer.";
     }

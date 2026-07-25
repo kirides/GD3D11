@@ -650,6 +650,35 @@ private:
     bool CreateBloomResources( INT2 size );   // (re)builds the pyramid textures + persistent SRV/UAV slots
     void RenderBloom();                       // prefilter -> downsample chain -> upsample chain -> additive composite
 
+    // SMAA anti-aliasing (runtime toggle: RendererSettings.AntiAliasingMode == AA_SMAA). Mirrors the D3D11
+    // 3-pass post-FX (D3D11SMAA::Render): run on the tonemapped LDR swapchain image right after
+    // ResolveSceneToBackBuffer, before Gothic's 2D UI/HUD composites on top (so the HUD stays crisp).
+    //   1. Edge detection      color        -> m_SmaaEdges
+    //   2. Blend-weight calc    edges+LUTs   -> m_SmaaBlend
+    //   3. Neighborhood blend   color+blend  -> swapchain
+    // m_SmaaColor holds a copy of the tonemapped LDR image (the swapchain can't be both the SMAA color SRV and
+    // the pass-3 RTV at once), so the effect costs one extra full-res copy per frame while enabled. The area/
+    // search LUTs are precomputed static textures loaded once; edges/blend/color are resolution-dependent
+    // (recreated on resize like the bloom pyramid). All are bound bindlessly (SRV heap index -> b0 root const).
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_SmaaColor;         // LDR copy of the tonemapped swapchain (kBackBufferFormat)
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_SmaaColorAlloc;
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_SmaaEdges;         // pass-1 output (R8G8B8A8)
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_SmaaEdgesAlloc;
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_SmaaBlend;         // pass-2 output (R8G8B8A8)
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_SmaaBlendAlloc;
+    UINT m_SmaaColorSrvSlot = UINT_MAX;
+    UINT m_SmaaEdgesSrvSlot = UINT_MAX;
+    UINT m_SmaaBlendSrvSlot = UINT_MAX;
+    D3D12_CPU_DESCRIPTOR_HANDLE m_SmaaEdgesRtv = {};                 // RTV heap slot kBackBufferCount+1
+    D3D12_CPU_DESCRIPTOR_HANDLE m_SmaaBlendRtv = {};                 // RTV heap slot kBackBufferCount+2
+    std::unique_ptr<D3D12Texture> m_SmaaAreaTex;                     // precomputed area LUT (160x560 R8G8), loaded once
+    std::unique_ptr<D3D12Texture> m_SmaaSearchTex;                   // precomputed search LUT (66x33 R8), loaded once
+    bool m_SmaaTexturesLoaded = false;
+    bool m_SmaaResourcesReady = false;                              // color/edges/blend created for the current resolution
+    bool LoadSmaaTextures();                  // one-time: load the area + search LUTs from system\GD3D11\Textures
+    bool CreateSmaaResources( INT2 size );    // (re)builds the resolution-dependent color/edges/blend textures + views
+    void RenderSMAA();                        // 3-pass SMAA on the swapchain LDR image (guards on the toggle + resources)
+
     // Dynamic exposure / auto-exposure: a two-pass GPU luminance reduction of the finished HDR scene color,
     // temporally adapted (Pattanaik's technique) toward last frame's value, feeding Tonemap's exposure divisor
     // (mirrors D3D11's D3D11PFX_HDR ping-pong PS_PFX_LumConvert/LumAdapt, but reduces on compute instead of a

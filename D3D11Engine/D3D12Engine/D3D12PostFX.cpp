@@ -46,6 +46,13 @@
 using Microsoft::WRL::ComPtr;
 #include "D3D12EngineCommon.h"
 
+namespace {
+    // Swapchain/backbuffer format — duplicated per-TU (internal linkage, no ODR concern), kept in sync with
+    // the copies in D3D12GraphicsEngine.cpp / D3D12PipelineState.cpp. SMAA's color copy + neighborhood pass
+    // target this format.
+    constexpr DXGI_FORMAT kBackBufferFormat = DXGI_FORMAT_R10G10B10A2_UNORM;
+}
+
 
 bool D3D12GraphicsEngine::CreateBloomResources( INT2 size ) {
 	// Bloom pyramid (mirrors D3D11PFX_Bloom's mip-chain sizing exactly): mip i is size >> (i+1), stop once the
@@ -422,4 +429,207 @@ void D3D12GraphicsEngine::RenderLuminanceAdapt() {
 	};
 	m_CmdList->ResourceBarrier( 2, post );
 	m_LumAdaptedBufferState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+}
+
+
+bool D3D12GraphicsEngine::LoadSmaaTextures() {
+	// One-time load of the two precomputed SMAA LUTs through the shared D3D12Texture DDS loader (which now
+	// resolves the area LUT's 32-bit RGBA and the search LUT's 8-bit luminance correctly from their channel
+	// masks — no bespoke parsing needed). The area LUT lands as R8G8B8A8 and the search LUT as R8; the SMAA
+	// shader samples areaTex.rg / searchTex.r, so both work as-is. Non-fatal: RenderSMAA guards on both being
+	// present, so a missing/unreadable file just leaves SMAA unavailable (the game still renders, no AA).
+	if ( m_SmaaTexturesLoaded ) return m_SmaaAreaTex && m_SmaaAreaTex->HasSRV() && m_SmaaSearchTex && m_SmaaSearchTex->HasSRV();
+	m_SmaaTexturesLoaded = true;   // attempt once; don't retry every resize even on failure
+
+	const std::string base = Engine::GAPI->GetStartDirectory() + "\\system\\GD3D11\\Textures\\";
+
+	m_SmaaAreaTex = std::make_unique<D3D12Texture>();
+	if ( m_SmaaAreaTex->Init( base + "SMAA_AreaTexDX10.dds" ) != XR_SUCCESS || !m_SmaaAreaTex->HasSRV() ) {
+		LogWarn() << "D3D12: SMAA area LUT not found/loadable (" << base << "SMAA_AreaTexDX10.dds) — SMAA disabled.";
+		m_SmaaAreaTex.reset();
+		return false;
+	}
+
+	m_SmaaSearchTex = std::make_unique<D3D12Texture>();
+	if ( m_SmaaSearchTex->Init( base + "SMAA_SearchTex.dds" ) != XR_SUCCESS || !m_SmaaSearchTex->HasSRV() ) {
+		LogWarn() << "D3D12: SMAA search LUT not found/loadable (" << base << "SMAA_SearchTex.dds) — SMAA disabled.";
+		m_SmaaAreaTex.reset();
+		m_SmaaSearchTex.reset();
+		return false;
+	}
+
+	LogInfo() << "D3D12: SMAA LUTs loaded (area " << m_SmaaAreaTex->GetSize().x << "x" << m_SmaaAreaTex->GetSize().y
+		<< ", search " << m_SmaaSearchTex->GetSize().x << "x" << m_SmaaSearchTex->GetSize().y << ").";
+	return true;
+}
+
+
+bool D3D12GraphicsEngine::CreateSmaaResources( INT2 size ) {
+	// (Re)builds the resolution-dependent SMAA render targets: m_SmaaColor (LDR copy of the tonemapped
+	// swapchain), m_SmaaEdges, m_SmaaBlend. SRV heap slots + RTV heap slots are allocated ONCE and just
+	// re-pointed at the fresh resources on resize (like the bloom pyramid / m_SceneColor). Non-fatal — RenderSMAA
+	// guards on m_SmaaResourcesReady. Each resource is created in its RenderSMAA resting state (see RenderSMAA).
+	m_SmaaResourcesReady = false;
+	if ( size.x < 4 || size.y < 4 ) return false;
+	ID3D12Device* device = m_Device.GetDevice();
+	if ( !device || !m_RtvHeap ) return false;
+
+	D3D12MA::ALLOCATION_DESC heapDefault = {};
+	heapDefault.HeapType = D3D12_HEAP_TYPE_DEFAULT;
+
+	auto makeTex = [&]( DXGI_FORMAT fmt, D3D12_RESOURCE_FLAGS flags, D3D12_RESOURCE_STATES initState,
+		ComPtr<ID3D12Resource>& out, ComPtr<D3D12MA::Allocation>& outAlloc, const wchar_t* name ) -> bool {
+		D3D12_RESOURCE_DESC dd = {};
+		dd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+		dd.Width = static_cast<UINT64>( size.x );
+		dd.Height = static_cast<UINT>( size.y );
+		dd.DepthOrArraySize = 1;
+		dd.MipLevels = 1;
+		dd.Format = fmt;
+		dd.SampleDesc.Count = 1;
+		dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+		dd.Flags = flags;
+		if ( FAILED( m_Allocator->CreateResource( &heapDefault, &dd, initState, nullptr,
+			outAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( out.ReleaseAndGetAddressOf() ) ) ) ) {
+			LogWarn() << "D3D12: failed to create an SMAA render target.";
+			return false;
+		}
+		out->SetName( name );
+		return true;
+		};
+
+	auto ensureSlot = [&]( UINT& slot ) -> bool {
+		if ( slot == UINT_MAX ) slot = AllocateSrvSlot();
+		return slot != UINT_MAX;
+		};
+
+	// Resting states mirror what RenderSMAA expects at entry (and restores at exit):
+	//   color = COPY_DEST (receives the swapchain copy), edges/blend = RENDER_TARGET.
+	if ( !makeTex( kBackBufferFormat, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST,
+		m_SmaaColor, m_SmaaColorAlloc, L"SmaaColor" ) ) return false;
+	if ( !makeTex( DXGI_FORMAT_R8G8B8A8_UNORM, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, D3D12_RESOURCE_STATE_RENDER_TARGET,
+		m_SmaaEdges, m_SmaaEdgesAlloc, L"SmaaEdges" ) ) return false;
+	if ( !makeTex( DXGI_FORMAT_R8G8B8A8_UNORM, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, D3D12_RESOURCE_STATE_RENDER_TARGET,
+		m_SmaaBlend, m_SmaaBlendAlloc, L"SmaaBlend" ) ) return false;
+
+	if ( !ensureSlot( m_SmaaColorSrvSlot ) || !ensureSlot( m_SmaaEdgesSrvSlot ) || !ensureSlot( m_SmaaBlendSrvSlot ) )
+		return false;
+
+	D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+	srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+	srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	srv.Texture2D.MipLevels = 1;
+	srv.Format = kBackBufferFormat;
+	device->CreateShaderResourceView( m_SmaaColor.Get(), &srv, GetSrvCpuHandle( m_SmaaColorSrvSlot ) );
+	srv.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	device->CreateShaderResourceView( m_SmaaEdges.Get(), &srv, GetSrvCpuHandle( m_SmaaEdgesSrvSlot ) );
+	device->CreateShaderResourceView( m_SmaaBlend.Get(), &srv, GetSrvCpuHandle( m_SmaaBlendSrvSlot ) );
+
+	// RTVs for edges/blend at fixed RTV-heap slots kBackBufferCount+1 / +2 (slot kBackBufferCount is m_SceneColor).
+	D3D12_RENDER_TARGET_VIEW_DESC rtvDesc = {};
+	rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+	rtvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	m_SmaaEdgesRtv = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
+	m_SmaaEdgesRtv.ptr += static_cast<SIZE_T>( kBackBufferCount + 1 ) * m_RtvDescriptorSize;
+	device->CreateRenderTargetView( m_SmaaEdges.Get(), &rtvDesc, m_SmaaEdgesRtv );
+	m_SmaaBlendRtv = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
+	m_SmaaBlendRtv.ptr += static_cast<SIZE_T>( kBackBufferCount + 2 ) * m_RtvDescriptorSize;
+	device->CreateRenderTargetView( m_SmaaBlend.Get(), &rtvDesc, m_SmaaBlendRtv );
+
+	m_SmaaResourcesReady = true;
+	return true;
+}
+
+
+void D3D12GraphicsEngine::RenderSMAA() {
+	// 3-pass SMAA on the tonemapped LDR swapchain image (mirrors D3D11SMAA::Render). Called from
+	// OnStartWorldRendering right after ResolveSceneToBackBuffer, while the swapchain backbuffer is bound as the
+	// RENDER_TARGET and holds the tonemapped frame — before Gothic's 2D UI/HUD draws on top (so the HUD stays
+	// crisp). Runtime toggle: only runs when AntiAliasingMode == AA_SMAA and every resource/PSO is present.
+	auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+	if ( settings.AntiAliasingMode != GothicRendererSettings::AA_SMAA ) return;
+	if ( !m_CmdList || !m_SwapChainReady || !m_SmaaResourcesReady
+		|| !m_SmaaAreaTex || !m_SmaaAreaTex->HasSRV() || !m_SmaaSearchTex || !m_SmaaSearchTex->HasSRV()
+		|| !m_Pipelines.Smaa.RootSig || !m_Pipelines.Smaa.EdgePSO || !m_Pipelines.Smaa.BlendPSO || !m_Pipelines.Smaa.NeighborPSO )
+		return;
+
+	DX_ZONE( m_CmdList, "SMAA" );
+
+	ID3D12Resource* backBuffer = m_BackBuffers[m_FrameIndex].Get();
+	D3D12_CPU_DESCRIPTOR_HANDLE backRtv = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
+	backRtv.ptr += static_cast<SIZE_T>( m_FrameIndex ) * m_RtvDescriptorSize;
+
+	// --- Copy the tonemapped swapchain image into m_SmaaColor (the SMAA color input). ---
+	// Swapchain: RENDER_TARGET -> COPY_SOURCE; m_SmaaColor rests in COPY_DEST.
+	{
+		auto b = TransitionBarrier( backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE );
+		m_CmdList->ResourceBarrier( 1, &b );
+	}
+	m_CmdList->CopyResource( m_SmaaColor.Get(), backBuffer );
+	{
+		D3D12_RESOURCE_BARRIER b[2] = {
+			TransitionBarrier( m_SmaaColor.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE ),
+			TransitionBarrier( backBuffer, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET ),
+		};
+		m_CmdList->ResourceBarrier( 2, b );
+	}
+
+	// Common state for all three fullscreen-triangle passes.
+	const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
+	const D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
+	m_CmdList->RSSetViewports( 1, &vp );
+	m_CmdList->RSSetScissorRects( 1, &sc );
+	m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+	m_CmdList->IASetVertexBuffers( 0, 0, nullptr );
+	m_CmdList->SetGraphicsRootSignature( m_Pipelines.Smaa.RootSig.Get() );
+
+	// Root constants b0: float4 RT_METRICS (1/w,1/h,w,h) + 5 bindless SRV heap indices.
+	struct SmaaConsts {
+		float RTMetrics[4];
+		UINT ColorIdx, EdgesIdx, BlendIdx, AreaIdx, SearchIdx;
+	} consts = {
+		{ 1.0f / m_Resolution.x, 1.0f / m_Resolution.y, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ) },
+		m_SmaaColorSrvSlot, m_SmaaEdgesSrvSlot, m_SmaaBlendSrvSlot,
+		m_SmaaAreaTex->GetSrvSlot(), m_SmaaSearchTex->GetSrvSlot()
+	};
+	const float clearZero[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+
+	// --- Pass 1: edge detection (color -> edges). edges rests in RENDER_TARGET. ---
+	m_CmdList->SetPipelineState( m_Pipelines.Smaa.EdgePSO.Get() );
+	m_CmdList->SetGraphicsRoot32BitConstants( 0, 9, &consts, 0 );
+	m_CmdList->OMSetRenderTargets( 1, &m_SmaaEdgesRtv, FALSE, nullptr );
+	m_CmdList->ClearRenderTargetView( m_SmaaEdgesRtv, clearZero, 0, nullptr );
+	m_CmdList->DrawInstanced( 3, 1, 0, 0 );
+	{
+		auto b = TransitionBarrier( m_SmaaEdges.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
+		m_CmdList->ResourceBarrier( 1, &b );
+	}
+
+	// --- Pass 2: blend-weight calculation (edges + area + search -> blend). blend rests in RENDER_TARGET. ---
+	m_CmdList->SetPipelineState( m_Pipelines.Smaa.BlendPSO.Get() );
+	m_CmdList->SetGraphicsRoot32BitConstants( 0, 9, &consts, 0 );
+	m_CmdList->OMSetRenderTargets( 1, &m_SmaaBlendRtv, FALSE, nullptr );
+	m_CmdList->ClearRenderTargetView( m_SmaaBlendRtv, clearZero, 0, nullptr );
+	m_CmdList->DrawInstanced( 3, 1, 0, 0 );
+	{
+		auto b = TransitionBarrier( m_SmaaBlend.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
+		m_CmdList->ResourceBarrier( 1, &b );
+	}
+
+	// --- Pass 3: neighborhood blending (color + blend -> swapchain). ---
+	m_CmdList->SetPipelineState( m_Pipelines.Smaa.NeighborPSO.Get() );
+	m_CmdList->SetGraphicsRoot32BitConstants( 0, 9, &consts, 0 );
+	m_CmdList->OMSetRenderTargets( 1, &backRtv, FALSE, nullptr );
+	m_CmdList->DrawInstanced( 3, 1, 0, 0 );
+
+	// Restore resting states for next frame: color -> COPY_DEST, edges/blend -> RENDER_TARGET. Swapchain stays
+	// RENDER_TARGET (bound above), ready for Gothic's 2D UI/HUD to composite on top.
+	{
+		D3D12_RESOURCE_BARRIER b[3] = {
+			TransitionBarrier( m_SmaaColor.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST ),
+			TransitionBarrier( m_SmaaEdges.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET ),
+			TransitionBarrier( m_SmaaBlend.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET ),
+		};
+		m_CmdList->ResourceBarrier( 3, b );
+	}
 }

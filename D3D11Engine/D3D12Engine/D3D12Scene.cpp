@@ -3043,6 +3043,11 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// so Gothic's subsequent 2D UI/HUD draws (and the ImGui overlay in Present) composite on top in LDR.
 	ResolveSceneToBackBuffer();
 
+	// SMAA anti-aliasing (opt-in, RendererSettings.AntiAliasingMode == AA_SMAA): runs on the tonemapped LDR
+	// swapchain image, before Gothic's 2D UI/HUD composites on top so the HUD stays crisp. No-ops if disabled
+	// or resources unavailable. Mirrors D3D11's SMAA placement (post-tonemap, pre-sharpen/UI).
+	RenderSMAA();
+
 	// Do any remaining dx12 stuff BEFORE setting PresentPending
 
 	m_PresentPending = true;

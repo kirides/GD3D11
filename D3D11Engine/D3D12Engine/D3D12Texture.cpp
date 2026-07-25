@@ -4,8 +4,11 @@
 #include "../Engine.h"
 #include "../Toolbox.h"
 #include "../zFILE_VDFS.h"
+#include "../DDSFormat.h"
 
 #include <fstream>
+#include <algorithm>
+#include <cstdint>
 
 using Microsoft::WRL::ComPtr;
 
@@ -13,12 +16,11 @@ namespace {
     inline D3D12GraphicsEngine* Engine12() {
         return static_cast<D3D12GraphicsEngine*>( Engine::GraphicsEngine );
     }
-    inline bool IsBC( DXGI_FORMAT f ) {
-        return f == DXGI_FORMAT_BC1_UNORM || f == DXGI_FORMAT_BC2_UNORM || f == DXGI_FORMAT_BC3_UNORM
-            || f == DXGI_FORMAT_BC5_UNORM || f == DXGI_FORMAT_BC5_SNORM;
-    }
-    // 8-byte block formats (BC1); everything else BC is 16-byte (BC2/3/5). Drives the row-pitch/size math below.
-    inline bool IsBC8ByteBlock( DXGI_FORMAT f ) { return f == DXGI_FORMAT_BC1_UNORM; }
+
+    // The three legacy packed 16-bit formats Gothic's DDraw surface wrapper treats specially (see
+    // D3D12Texture::Is16BitTexture, consumed by MyDirectDrawSurface7's lock sizing). NOT a general
+    // "is 2-byte pixel" test — R8G8 / R16 are also 16 bpp but must not be flagged here. (Format decoding
+    // and the pitch/size math live in the shared DDSFormat.h — see the DDS:: namespace.)
     inline bool Is16Bit( DXGI_FORMAT f ) {
         return f == DXGI_FORMAT_B5G6R5_UNORM || f == DXGI_FORMAT_B5G5R5A1_UNORM || f == DXGI_FORMAT_B4G4R4A4_UNORM;
     }
@@ -95,15 +97,18 @@ void D3D12Texture::SetDebugName( const char* debugName )
     }
 }
 
-/** Minimal DDS parser: enough for Gothic's textures (DXT1/3/5, DX10-extended, 32-bit uncompressed).
-    Sets format/size/mips, then creates + uploads. Unknown formats fail gracefully (texture skipped). */
+/** DDS parser covering the common resource types: BC1..BC7 (via FOURCC or the DX10-extended header),
+    the legacy float/16-bit FOURCC D3DFMT codes, DX10-extended arbitrary DXGI formats, and uncompressed
+    8/16/32-bit surfaces resolved from their channel masks (RGBA/BGRA/BGRX, 10:10:10:2, 5:6:5, 5:5:5:1,
+    4:4:4:4, R8G8, R8/L8, A8, R16, R16G16, R32F). Sets format/size/mips, then creates + uploads. Formats
+    with no direct DXGI equivalent (e.g. 24-bit RGB) fail gracefully — the texture is skipped and logged. */
 XRESULT D3D12Texture::InitFromDDS( const uint8_t* bytes, size_t size, const std::string& /*name*/ ) {
     if ( !bytes || size < 128 ) {
         return XR_FAILED;
     }
     auto rd = [&]( size_t off ) -> uint32_t { uint32_t v; memcpy( &v, bytes + off, 4 ); return v; };
 
-    if ( rd( 0 ) != 0x20534444u ) {
+    if ( rd( 0 ) != DDS::Magic ) {
         return XR_FAILED; // 'DDS '
     }
 
@@ -112,39 +117,30 @@ XRESULT D3D12Texture::InitFromDDS( const uint8_t* bytes, size_t size, const std:
     uint32_t mips = rd( 28 );
     if ( mips == 0 ) mips = 1;
 
-    const uint32_t pfFlags = rd( 80 ); // DDS_PIXELFORMAT.dwFlags  (file offset 4 + 72 + 4)
-    const uint32_t fourCC  = rd( 84 ); // DDS_PIXELFORMAT.dwFourCC (file offset 4 + 72 + 8)
+    const uint32_t pfFlags = rd( 80 ); // DDS_PIXELFORMAT.dwFlags       (file offset 4 + 72 + 4)
+    const uint32_t fourCC  = rd( 84 ); // DDS_PIXELFORMAT.dwFourCC      (file offset 4 + 72 + 8)
 
     DXGI_FORMAT fmt = DXGI_FORMAT_UNKNOWN;
     size_t dataOffset = 128;
 
-    constexpr uint32_t dxt1 = MAKEFOURCC('D', 'X', 'T', '1');
-    constexpr uint32_t dxt3 = MAKEFOURCC('D', 'X', 'T', '3');
-    constexpr uint32_t dxt5 = MAKEFOURCC('D', 'X', 'T', '5');
-    constexpr uint32_t ati2 = MAKEFOURCC('A', 'T', 'I', '2');
-    constexpr uint32_t bc5u = MAKEFOURCC('B', 'C', '5', 'U');
-    constexpr uint32_t dx10 = MAKEFOURCC('D', 'X', '1', '0');
-    if ( pfFlags & 0x4u /* DDPF_FOURCC */ ) {
-        switch ( fourCC ) {
-        case dxt1: fmt = DXGI_FORMAT_BC1_UNORM; break; // 'DXT1'
-        case dxt3: fmt = DXGI_FORMAT_BC2_UNORM; break; // 'DXT3'
-        case dxt5: fmt = DXGI_FORMAT_BC3_UNORM; break; // 'DXT5'
-        case bc5u:
-        case ati2: fmt = DXGI_FORMAT_BC5_UNORM; break; // 'ATI2' — BC5 2-channel (normal maps, XY + reconstruct Z)
-        case dx10:                                     // 'DX10'
+    if ( pfFlags & DDS::FlagFourCC ) {
+        if ( fourCC == DDS::Dx10 ) {
             if ( size < 148 ) return XR_FAILED;
-            fmt = static_cast<DXGI_FORMAT>( rd( 128 ) );      // DDS_HEADER_DXT10.dxgiFormat
+            fmt = static_cast<DXGI_FORMAT>( rd( 128 ) );   // DDS_HEADER_DXT10.dxgiFormat
             dataOffset = 148;
-            break;
-        default:
-            return XR_FAILED;
+        } else {
+            fmt = DDS::FromFourCC( fourCC );               // BC1..BC5 + legacy float/wide D3DFMT codes
         }
     } else {
-        const uint32_t rgbBits = rd( 88 ); // DDS_PIXELFORMAT.dwRGBBitCount (file offset 4 + 72 + 12)
-        if ( rgbBits == 32 ) fmt = DXGI_FORMAT_B8G8R8A8_UNORM;
-        else {
-            return XR_FAILED;
-        }
+        // Uncompressed: resolve the DXGI format from the pixel-format flags + channel masks.
+        fmt = DDS::FromPixelFormat( pfFlags, rd( 88 ), rd( 92 ), rd( 96 ), rd( 100 ), rd( 104 ) );
+    }
+
+    // Reject anything the size math can't describe (neither a known BC format nor a known bpp).
+    if ( DDS::BCBlockBytes( fmt ) == 0 && DDS::BitsPerPixel( fmt ) == 0 ) {
+        LogWarn() << "D3D12Texture: unsupported DDS format (fourCC=" << fourCC << " flags=" << pfFlags
+                  << " bpp=" << rd( 88 ) << " -> DXGI " << static_cast<int>( fmt ) << ") — texture skipped.";
+        return XR_FAILED;
     }
 
     m_Format = fmt;
@@ -295,20 +291,13 @@ XRESULT D3D12Texture::UpdateDataDeferred( void* data, int mip ) {
 }
 
 unsigned int D3D12Texture::GetRowPitchBytes( int mip ) {
-    const int px = m_Size.x >> mip;
-    if ( m_Format == DXGI_FORMAT_R8_UNORM ) return px;
-    if ( Is16Bit( m_Format ) ) return px * 2;
-    if ( IsBC( m_Format ) ) return Toolbox::GetDDSRowPitchSize( px, m_Format == DXGI_FORMAT_BC1_UNORM );
-    return px * 4; // B8G8R8A8 and friends
+    return DDS::RowPitch( m_Format, static_cast<uint32_t>( std::max( 1, m_Size.x >> mip ) ) );
 }
 
 unsigned int D3D12Texture::GetSizeInBytes( int mip ) {
-    const int px = m_Size.x >> mip;
-    const int py = m_Size.y >> mip;
-    if ( m_Format == DXGI_FORMAT_R8_UNORM ) return px * py;
-    if ( Is16Bit( m_Format ) ) return px * py * 2;
-    if ( IsBC( m_Format ) ) return Toolbox::GetDDSStorageRequirements( px, py, m_Format == DXGI_FORMAT_BC1_UNORM );
-    return px * py * 4;
+    return DDS::SurfaceBytes( m_Format,
+        static_cast<uint32_t>( std::max( 1, m_Size.x >> mip ) ),
+        static_cast<uint32_t>( std::max( 1, m_Size.y >> mip ) ) );
 }
 
 bool D3D12Texture::Is16BitTexture() {
