@@ -171,10 +171,10 @@ float3 PBR_DirectLighting( float3 baseColor, float3 lightColor, float3 N, float3
 #define NORMAL_MAP_RESTORE_Z 1
 #endif
 
-// `p` = world position for the derivative-based TBN basis.
-// The handedness comparison must stay identical to Toolbox.h's cotangent_frame — it is the calibrated
-// convention bias of this pipeline, not a free choice. If normal-mapped specular looks mirrored, flip it
-// in BOTH files at once so the two backends never drift apart.
+// `p` = the surface position the derivatives are taken of. Byte-for-byte the same function as Toolbox.h's
+// cotangent_frame, and it MUST be called the same way: D3D11 passes -position (see PerturbNormal below).
+// The handedness comparison is the calibrated convention bias of this pipeline, not a free choice — if
+// normal-mapped specular looks mirrored, flip it in BOTH files at once so the backends never drift apart.
 float3x3 CotangentFrame( float3 N, float3 p, float2 uv )
 {
     float3 dp1 = ddx( p ), dp2 = ddy( p );
@@ -190,6 +190,15 @@ float3x3 CotangentFrame( float3 N, float3 p, float2 uv )
 // strength scales the unpacked XY before Z is reconstructed — 1.0 is a full-strength normalmap; a lower value
 // (e.g. the wet-ground distortion fallback in World.hlsl) flattens the perturb toward the base normal N.
 // Mirrors Toolbox.h's perturb_normal_restore_z / perturb_normal_rgb (strength == normalmapDepth there).
+//
+// `p` is the WORLD position here, where D3D11's equivalent parameter (confusingly named `V`) is the VIEW
+// position — PS_Diffuse.hlsl passes Input.vViewPosition, not a view *direction*. The space difference is
+// harmless: p_world = R*p_view + camPos, so ddx/ddy differ only by the camera rotation R, N is rotated by
+// the same R, and cross products commute with a proper rotation — the frame just comes out world-space,
+// which is what the callers want. The SIGN is not harmless: D3D11 calls cotangent_frame( N, -V ), and
+// negating p negates dp1/dp2 and therefore BOTH T and B, which is a 180-degree spin of the tangent frame
+// about N (equivalent to negating nrm.xy). NORMAL_MAP_MODE flips only y and the handedness factor flips
+// only T, so no combination of those two can stand in for this — pass -p, exactly like D3D11 does.
 float3 PerturbNormal( float3 N, float3 p, Texture2D nrmTex, float2 uv, SamplerState samp, float strength = 1.0 )
 {
 #if NORMAL_MAP_RESTORE_Z == 1
@@ -208,7 +217,7 @@ float3 PerturbNormal( float3 N, float3 p, Texture2D nrmTex, float2 uv, SamplerSt
     nrm.xy *= strength;
     nrm = normalize( nrm );
 #endif
-    return normalize( mul( nrm, CotangentFrame( N, p, uv ) ) );
+    return normalize( mul( nrm, CotangentFrame( N, -p, uv ) ) );
 }
 
 // PBR sun lighting (matches DX11 lighting mix and ground/vertex lighting modulation)
