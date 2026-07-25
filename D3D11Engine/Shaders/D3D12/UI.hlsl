@@ -77,6 +77,13 @@ float4 RunStage( int op, int a1, int a2, float4 current, float4 diffuse, float2 
     return SelectArg( a1, current, diffuse, uv );   // graceful fallback for unhandled ops
 }
 
+#ifdef LINEARIZE_OUTPUT
+float3 SrgbToLinear( float3 c )   // accurate sRGB EOTF — linearize gamma-encoded FF output for the linear HDR buffer
+{
+    return select( c <= 0.04045, c / 12.92, pow( ( c + 0.055 ) / 1.055, 2.4 ) );
+}
+#endif
+
 float4 PSMain( VS_OUT i ) : SV_TARGET {
     float4 diffuse = i.dif.bgra;         // vertex color 0xAARRGGBB read as RGBA -> swizzle back to RGBA
     float4 color = RunStage( FF_Stages[0].colorop, FF_Stages[0].colorarg1, FF_Stages[0].colorarg2, diffuse, diffuse, i.uv );
@@ -84,5 +91,12 @@ float4 PSMain( VS_OUT i ) : SV_TARGET {
         color = RunStage( FF_Stages[1].colorop, FF_Stages[1].colorarg1, FF_Stages[1].colorarg2, color, diffuse, i.uv2 );
     [branch] if ( ( FF_GSwitches & GSWITCH_ALPHAREF ) != 0 )
         clip( color.a - FF_AlphaRef );
+#ifdef LINEARIZE_OUTPUT
+    // This pass (sky pass, STAGE_DRAW_SKY) writes into the linear HDR scene-color target, but the FF stages
+    // above (texture samples, vertex colors, TFactor) are all sRGB-encoded, same as every other lit shader's
+    // albedo. Without this, the tonemap's own LinearToSrgb re-encodes already-gamma-encoded values, blowing
+    // the sky out far brighter than D3D11's SRGB-backbuffer path (which never re-encodes).
+    color.rgb = SrgbToLinear( saturate( color.rgb ) );
+#endif
     return color;
 }

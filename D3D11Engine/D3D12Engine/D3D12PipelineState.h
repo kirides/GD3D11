@@ -73,6 +73,7 @@ public:
         Microsoft::WRL::ComPtr<ID3DBlob>            VsBlob;      // compiled once; reused for every blend PSO
         Microsoft::WRL::ComPtr<ID3DBlob>            VsBlobMaxZ;  // FORCE_MAX_Z variant — sky pass (STAGE_DRAW_SKY)
         Microsoft::WRL::ComPtr<ID3DBlob>            PsBlob;
+        Microsoft::WRL::ComPtr<ID3DBlob>            PsBlobHdr;   // LINEARIZE_OUTPUT variant — sky pass writes into the linear HDR scene target
         std::unordered_map<uint64_t, Microsoft::WRL::ComPtr<ID3D12PipelineState>> Pipelines; // key = Blend | Depth<<32 | Cull<<34 | RtvIsHdr<<36 | MaxZ<<37
     };
     // Particle (PFX) billboards: one root sig + one VS/PS pair; PSOs built per BlendKey on demand.

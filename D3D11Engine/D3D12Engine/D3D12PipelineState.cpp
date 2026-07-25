@@ -1128,6 +1128,12 @@ bool D3D12PipelineState::CreateUI() {
     if ( !m_Shaders->CompileFromFile( "UI.hlsl", "VSMain", Shadermodel_VS, UI.VsBlobMaxZ.ReleaseAndGetAddressOf(), maxZDefines ) ) {
         return false;
     }
+    // Sky pass PS variant: linearize the sRGB-encoded FF output before it lands in the linear HDR scene
+    // target (plain 2D UI writes straight to the swapchain post-tonemap and must NOT linearize).
+    const D3D_SHADER_MACRO linearizeDefines[] = { { "LINEARIZE_OUTPUT", "1" }, { nullptr, nullptr } };
+    if ( !m_Shaders->CompileFromFile( "UI.hlsl", "PSMain", Shadermodel_PS, UI.PsBlobHdr.ReleaseAndGetAddressOf(), linearizeDefines ) ) {
+        return false;
+    }
 
     // PSOs are built per blend state on demand (GetOrCreateUIPipeline). Warm the default (opaque) one so
     // any Init-time failure surfaces here rather than mid-frame.
@@ -1164,10 +1170,13 @@ ID3D12PipelineState* D3D12PipelineState::GetOrCreateUIPipeline(
 
     // --- PSO: blend emulates Gothic's per-draw state; RTV/cull/VS vary by caller (plain 2D vs sky pass) ---
     ID3DBlob* vsBlob = forceMaxZ ? UI.VsBlobMaxZ.Get() : UI.VsBlob.Get();
+    // The HDR scene-color target holds linear values; the plain-2D swapchain target is already tonemapped/
+    // sRGB. Only the former needs the FF output's sRGB encoding undone (see UI.hlsl's LINEARIZE_OUTPUT).
+    ID3DBlob* psBlob = rtvIsHdr ? UI.PsBlobHdr.Get() : UI.PsBlob.Get();
     D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
     pso.pRootSignature = UI.RootSig.Get();
     pso.VS = { vsBlob->GetBufferPointer(), vsBlob->GetBufferSize() };
-    pso.PS = { UI.PsBlob->GetBufferPointer(), UI.PsBlob->GetBufferSize() };
+    pso.PS = { psBlob->GetBufferPointer(), psBlob->GetBufferSize() };
     pso.InputLayout = { layout, _countof( layout ) };
     pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     pso.NumRenderTargets = 1;
