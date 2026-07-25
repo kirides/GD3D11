@@ -488,27 +488,33 @@ void D3D12GraphicsEngine::DrawVobSingle( VobInfo* vob, zCCamera& camera ) {
 
 
 
-bool D3D12GraphicsEngine::CreateShadowMap() {
-	// CSM sun shadow map (P2.9c-1): a Texture2DArray of kShadowCascades D32 slices + a caster PSO. Reuses the
-	// depth-prepass world VS (b0 = a view-proj, t0 diffuse for alpha-clip) but with NORMAL-Z (LESS_EQUAL, clear
-	// 1.0) state — the directional caster is NOT reversed-Z (mirrors the D3D11 shadow map). Created once at init
-	// (fixed resolution, not swapchain-sized). Needs the depth-prepass shaders + m_Pipelines.World.RootSig to exist.
-	ID3D12Device* device = m_Device.GetDevice();
-	if ( !m_Pipelines.World.RootSig || !m_Pipelines.World.DepthPrepassVsBlob ) return false;
+// Shared with D3D11 (ImGuiShim.cpp / D3D11ShadowMap.cpp): only these five power-of-two steps are offered/valid.
+// 8192 is the hard ceiling for both backends — a single 16384 D32 cascade slice is ~1GB, not worth the VRAM.
+UINT D3D12GraphicsEngine::ClampShadowMapSize( int desired ) {
+	static constexpr int steps[] = { 512, 1024, 2048, 4096, 8192 };
+	int clamped = std::clamp( desired, steps[0], steps[_countof( steps ) - 1] );
+	int nearest = steps[0];
+	int bestDist = std::abs( clamped - nearest );
+	for ( int s : steps ) {
+		int dist = std::abs( clamped - s );
+		if ( dist < bestDist ) { bestDist = dist; nearest = s; }
+	}
+	return static_cast<UINT>(nearest);
+}
 
-	// Resolution from the shared quality setting (same knob D3D11 uses), clamped to a sane range. Bigger = smaller
-	// world-units/texel = far less sub-texel foliage flicker + tighter near shadows. DEFAULT-heap (GPU) memory, so
-	// 4096 (~192MB across 3 D32 slices) barely touches the 32-bit CPU address space.
-	int desired = Engine::GAPI->GetRendererState().RendererSettings.ShadowMapSize;
-	m_ShadowMapSize = static_cast<UINT>(std::min( std::max( desired, 1024 ), 4096 ));
+bool D3D12GraphicsEngine::CreateShadowMapTextureAndViews( UINT size ) {
+	// Builds/rebuilds just the sized GPU state: the resource + its per-cascade DSVs + the array SRV. Called once
+	// from CreateShadowMap (after the DSV heap + SRV slot are allocated) and again from ResizeShadowMap whenever
+	// the resolution setting changes — the heap/slot themselves don't depend on resolution, so they're untouched.
+	ID3D12Device* device = m_Device.GetDevice();
 
 	D3D12MA::ALLOCATION_DESC allocDesc = {};
 	allocDesc.HeapType = D3D12_HEAP_TYPE_DEFAULT;
 
 	D3D12_RESOURCE_DESC dd = {};
 	dd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-	dd.Width = m_ShadowMapSize;
-	dd.Height = m_ShadowMapSize;
+	dd.Width = size;
+	dd.Height = size;
 	dd.DepthOrArraySize = static_cast<UINT16>(kShadowCascades);
 	dd.MipLevels = 1;
 	dd.Format = DXGI_FORMAT_R32_TYPELESS;   // D32 DSV per slice + one R32_FLOAT array SRV for the lit-pass sampler
@@ -521,6 +527,8 @@ bool D3D12GraphicsEngine::CreateShadowMap() {
 	clear.DepthStencil.Depth = 1.0f;        // normal-Z: 1.0 == far (NOT reversed-Z)
 
 	// Born in DEPTH_WRITE; each frame RenderSunShadows writes then transitions to PIXEL_SHADER_RESOURCE and back.
+	m_ShadowMapAlloc.Reset();
+	m_ShadowMap.Reset();
 	if ( FAILED( m_Allocator->CreateResource( &allocDesc, &dd,
 		D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear, m_ShadowMapAlloc.ReleaseAndGetAddressOf(),
 		IID_PPV_ARGS( m_ShadowMap.ReleaseAndGetAddressOf() ) ) ) )
@@ -528,13 +536,6 @@ bool D3D12GraphicsEngine::CreateShadowMap() {
 	m_ShadowMap->SetName( L"SunShadowMap(D32 array)" );
 	m_ShadowInPixelState = false;
 
-	// DSV heap: one D32 DSV per cascade slice.
-	D3D12_DESCRIPTOR_HEAP_DESC dsvHeapDesc = {};
-	dsvHeapDesc.NumDescriptors = kShadowCascades;
-	dsvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
-	if ( FAILED( device->CreateDescriptorHeap( &dsvHeapDesc, IID_PPV_ARGS( m_ShadowDsvHeap.ReleaseAndGetAddressOf() ) ) ) )
-		return false;
-	m_ShadowDsvSize = device->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_DSV );
 	D3D12_CPU_DESCRIPTOR_HANDLE dsvH = m_ShadowDsvHeap->GetCPUDescriptorHandleForHeapStart();
 	for ( UINT c = 0; c < kShadowCascades; ++c ) {
 		D3D12_DEPTH_STENCIL_VIEW_DESC dsv = {};
@@ -546,9 +547,6 @@ bool D3D12GraphicsEngine::CreateShadowMap() {
 		dsvH.ptr += m_ShadowDsvSize;
 	}
 
-	// Array SRV (R32_FLOAT) covering all cascades — bound by the lit passes in a later increment.
-	m_ShadowSrvSlot = AllocateSrvSlot();
-	if ( m_ShadowSrvSlot == UINT_MAX ) return false;
 	D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
 	srv.Format = DXGI_FORMAT_R32_FLOAT;
 	srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
@@ -556,6 +554,53 @@ bool D3D12GraphicsEngine::CreateShadowMap() {
 	srv.Texture2DArray.MipLevels = 1;
 	srv.Texture2DArray.ArraySize = kShadowCascades;
 	device->CreateShaderResourceView( m_ShadowMap.Get(), &srv, GetSrvCpuHandle( m_ShadowSrvSlot ) );
+
+	return true;
+}
+
+bool D3D12GraphicsEngine::ResizeShadowMap( UINT newSize ) {
+	if ( newSize == m_ShadowMapSize || !m_ShadowDsvHeap || m_ShadowSrvSlot == UINT_MAX ) return false;
+
+	// The old resource may still be read by in-flight command lists (lit passes sampling last frame's shadow
+	// map), so stall the whole GPU before freeing it — this only happens on a settings change, never per-frame.
+	WaitForGpuIdle();
+
+	m_ShadowMapSize = newSize;
+	if ( !CreateShadowMapTextureAndViews( m_ShadowMapSize ) ) return false;
+
+	LogInfo() << "D3D12: shadow map resized to " << m_ShadowMapSize << "x" << m_ShadowMapSize;
+	return true;
+}
+
+bool D3D12GraphicsEngine::CreateShadowMap() {
+	// CSM sun shadow map (P2.9c-1): a Texture2DArray of kShadowCascades D32 slices + a caster PSO. Reuses the
+	// depth-prepass world VS (b0 = a view-proj, t0 diffuse for alpha-clip) but with NORMAL-Z (LESS_EQUAL, clear
+	// 1.0) state — the directional caster is NOT reversed-Z (mirrors the D3D11 shadow map). Created once at init
+	// (fixed resolution, not swapchain-sized). Needs the depth-prepass shaders + m_Pipelines.World.RootSig to exist.
+	ID3D12Device* device = m_Device.GetDevice();
+	if ( !m_Pipelines.World.RootSig || !m_Pipelines.World.DepthPrepassVsBlob ) return false;
+
+	// Resolution from the shared quality setting (same knob D3D11 uses), clamped to a sane range. Bigger = smaller
+	// world-units/texel = far less sub-texel foliage flicker + tighter near shadows. DEFAULT-heap (GPU) memory, so
+	// 8192 (~768MB across 3 D32 slices) barely touches the 32-bit CPU address space — it's all GPU-side.
+	int desired = Engine::GAPI->GetRendererState().RendererSettings.ShadowMapSize;
+	m_ShadowMapSize = ClampShadowMapSize( desired );
+
+	// DSV heap: one D32 DSV per cascade slice. Descriptor COUNT never changes with resolution, so this heap is
+	// allocated once here and reused as-is by ResizeShadowMap (only the underlying resource + its views change).
+	D3D12_DESCRIPTOR_HEAP_DESC dsvHeapDesc = {};
+	dsvHeapDesc.NumDescriptors = kShadowCascades;
+	dsvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+	if ( FAILED( device->CreateDescriptorHeap( &dsvHeapDesc, IID_PPV_ARGS( m_ShadowDsvHeap.ReleaseAndGetAddressOf() ) ) ) )
+		return false;
+	m_ShadowDsvSize = device->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_DSV );
+
+	// Array SRV (R32_FLOAT) covering all cascades — bound by the lit passes. The slot itself is permanent (bindless
+	// index baked into shaders/CBs elsewhere); ResizeShadowMap just re-points it at the new resource.
+	m_ShadowSrvSlot = AllocateSrvSlot();
+	if ( m_ShadowSrvSlot == UINT_MAX ) return false;
+
+	if ( !CreateShadowMapTextureAndViews( m_ShadowMapSize ) ) return false;
 
 	// Caster PSO. Void PS (PSShadowClip) so no RTV is needed; front-face cull + slope-scaled depth bias fight
 	// shadow acne (front-culling casts back faces, standard for opaque shadow maps).
@@ -935,17 +980,27 @@ void D3D12GraphicsEngine::ComputeCascadeMatrices() {
 
 	float3 lp = Engine::GAPI->GetSky()->GetAtmosphereCB().AC_LightPos;
 	XMVECTOR rawToSun = XMVector3Normalize( XMVectorSet( lp.x, lp.y, lp.z, 0.0f ) );
-	// Temporal smoothing (P2.9c-3c): lerp toward the live sun dir so the origin-anchored snap grid rotates
-	// gradually instead of jittering per frame (the lever arm from origin to a distant player turns tiny
-	// sun drift into visible texel crawl). alpha small = strong smoothing; the day cycle is minutes-long so
-	// a ~1s time constant lags imperceptibly while killing per-frame jitter.
+	// Temporal smoothing (P2.9c-3c), now driven by the same user-facing knobs D3D11 exposes
+	// (settings.SmoothShadowCameraUpdate / SmoothShadowFrequency — see D3D11ShadowMap::CalculateTemporalInterpolatedPosition,
+	// which this mirrors): ON lerps toward the live sun dir by a frequency-derived blend factor and then quantizes
+	// the direction to discrete 1/frequency steps, so the origin-anchored snap grid rotates in locked steps instead
+	// of jittering every frame (the lever arm from origin to a distant player turns tiny sun drift into visible
+	// texel crawl — this is what fixes it, not just cosmetic smoothing). OFF tracks the live direction exactly
+	// (real-time), trading that texel crawl for a shadow that never lags the sun.
 	XMVECTOR toSun;
+	const auto& shadowDirSettings = Engine::GAPI->GetRendererState().RendererSettings;
 	if ( !m_SunDirInitialized ) {
 		toSun = rawToSun;
 		m_SunDirInitialized = true;
+	} else if ( shadowDirSettings.SmoothShadowCameraUpdate ) {
+		const float frequency = std::max( 1.0f, shadowDirSettings.SmoothShadowFrequency );
+		const float blendFactor = std::clamp( frequency / 10000.0f, 0.001f, 0.5f );
+		XMVECTOR blended = XMVector3Normalize( XMVectorLerp( XMLoadFloat3( &m_SmoothedSunDir ), rawToSun, blendFactor ) );
+		XMVECTOR scale = XMVectorReplicate( frequency );
+		XMVECTOR quantized = XMVectorRound( XMVectorMultiply( blended, scale ) );
+		toSun = XMVector3Normalize( XMVectorDivide( quantized, scale ) );
 	} else {
-		constexpr float alpha = 0.03f;
-		toSun = XMVector3Normalize( XMVectorLerp( XMLoadFloat3( &m_SmoothedSunDir ), rawToSun, alpha ) );
+		toSun = rawToSun;
 	}
 	XMStoreFloat3( &m_SmoothedSunDir, toSun );
 	XMStoreFloat3( &m_SunDirWS, toSun );   // world-space dir TOWARD the sun (for the lit-pass N.L term)

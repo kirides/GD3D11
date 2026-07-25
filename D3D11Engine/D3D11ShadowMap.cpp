@@ -418,8 +418,9 @@ XRESULT D3D11ShadowMap::PrepareRender()
     // Check if shadowmap resources need to be recreated due to setting changes
     {
         auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
-        const int maxSize = FeatureLevel10Compatibility ? 8192 : 16384;
-        const int desiredSize = std::min<int>( std::max<int>( settings.ShadowMapSize, 512 ), maxSize );
+        // Resolutions are restricted to {512,1024,2048,4096,8192} (see the ImGui combos in ImGuiShim.cpp) — 8192
+        // is the hard ceiling for both feature levels now, so there's no FeatureLevel10Compatibility distinction.
+        const int desiredSize = std::min<int>( std::max<int>( settings.ShadowMapSize, 512 ), 8192 );
         const int desiredCascades = std::clamp( settings.NumShadowCascades, 1, MAX_CSM_CASCADES );
 
         if ( GetSizeX() != desiredSize

@@ -1128,7 +1128,7 @@ XRESULT D3D11GraphicsEngine::RecreateBuffers() {
     SetDebugName( Backbuffer->GetShaderResView().Get(), "Backbuffer->SRV" );
     SetDebugName( Backbuffer->GetRenderTargetView().Get(), "Backbuffer->RTV" );
 
-    int s = std::min<int>( std::max<int>( Engine::GAPI->GetRendererState().RendererSettings.ShadowMapSize, 512 ), (FeatureLevel10Compatibility ? 8192 : 16384) );
+    int s = std::min<int>( std::max<int>( Engine::GAPI->GetRendererState().RendererSettings.ShadowMapSize, 512 ), 8192 );
     if ( !ShadowMaps ) {
         ShadowMaps = std::make_unique<D3D11ShadowMap>();
         ShadowMaps->Init( Device, Context, s );

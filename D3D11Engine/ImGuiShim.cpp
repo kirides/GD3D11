@@ -1178,24 +1178,15 @@ void ImGuiShim::RenderSettingsWindow()
 
             ImText( "Shadow Quality", buttonWidth ); ImGui::SameLine();
 
-            const static std::vector<std::pair<const char*, int>> shadowMapSizesMax = {
-                {"very low", 512},
-                {"low", 1024},
-                {"medium", 2048},
-                {"high", 4096},
-                {"very high", 8192},
-                {"ultra high", 16384},
-            };
-            const static std::vector<std::pair<const char*, int>> shadowMapSizesDxFeature10 = {
+            // Resolutions are restricted to these five power-of-two steps — 8192 is the hard ceiling on both
+            // backends/feature levels (a 16384 cascade slice is ~1GB, not worth the VRAM for a shadow map).
+            const static std::vector<std::pair<const char*, int>> shadowMapSizes = {
                 {"very low", 512},
                 {"low", 1024},
                 {"medium", 2048},
                 {"high", 4096},
                 {"very high", 8192},
             };
-            const std::vector<std::pair<const char*, int>>& shadowMapSizes = FeatureLevel10Compatibility
-                ? shadowMapSizesDxFeature10
-                : shadowMapSizesMax;
 
             if ( ImComboBoxC( "##ShadowQuality", shadowMapSizes, &settings.ShadowMapSize, [&shadersToReload]{
                 shadersToReload |= ShaderCategory::LightsAndShadows;
@@ -1512,25 +1503,15 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
         ImGui::Checkbox( "AtmosphericScattering", &settings.AtmosphericScattering );
         ImGui::Checkbox( "SkeletalVertexNormals", &settings.ShowSkeletalVertexNormals );
 
-        static std::vector<std::pair<const char*, int>> shadowMapSizesMax = {
+        // Resolutions are restricted to these five power-of-two steps — 8192 is the hard ceiling on both
+        // backends/feature levels (a 16384 cascade slice is ~1GB, not worth the VRAM for a shadow map).
+        static std::vector<std::pair<const char*, int>> shadowMapSizes = {
           {"512", 512},
           {"1024", 1024},
           {"2048", 2048},
           {"4096", 4096},
           {"8192", 8192},
-          {"16384", 16384},
         };
-        static std::vector<std::pair<const char*, int>> shadowMapSizesDxFeature10 = {
-         {"512", 512},
-         {"1024", 1024},
-         {"2048", 2048},
-         {"4096", 4096},
-         {"8192", 8192},
-        };
-        std::vector<std::pair<const char*, int>>& shadowMapSizes = shadowMapSizesMax;
-        if ( FeatureLevel10Compatibility ) {
-            shadowMapSizes = shadowMapSizesDxFeature10;
-        }
 
         ImGui::Checkbox( "Enable Shadows", &settings.EnableShadows );
         ImGui::BeginDisabled( !settings.EnableShadows );

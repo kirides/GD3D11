@@ -1104,6 +1104,17 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
         OnResize( m_NewResolution );
     }
 
+    // Same spot, same reasoning, for the shadow-map quality setting (mirrors D3D11ShadowMap::PrepareRender's
+    // per-frame settings check). Clamp+snap here too so the ImGui slider/ini can't leave an in-between size.
+    if ( m_ShadowDsvHeap ) {
+        auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+        const UINT desiredShadowSize = ClampShadowMapSize( settings.ShadowMapSize );
+        if ( desiredShadowSize != m_ShadowMapSize ) {
+            ResizeShadowMap( desiredShadowSize );
+        }
+        settings.ShadowMapSize = static_cast<int>( m_ShadowMapSize );
+    }
+
     {
         std::lock_guard<std::mutex> lock( m_CopyQueueMutex );
         ReleaseCompletedCopyResources( m_CopyFence->GetCompletedValue() );

@@ -480,7 +480,8 @@ private:
     // so each slice serves a D32_FLOAT DSV and the whole array serves one R32_FLOAT SRV for later PCF sampling.
     // NORMAL-Z here (clear 1.0, LESS_EQUAL) — NOT reversed-Z like the main camera (mirrors the D3D11 caster).
     static constexpr UINT kShadowCascades = 3;
-    UINT m_ShadowMapSize = 2048;   // per-cascade slice resolution; read from RendererSettings.ShadowMapSize at init (clamp 1024..4096)
+    UINT m_ShadowMapSize = 2048;   // per-cascade slice resolution; mirrors RendererSettings.ShadowMapSize (clamped 512..8192,
+                                    // power-of-two steps only), re-checked every frame in OnBeginFrame and resized live via ResizeShadowMap
     Microsoft::WRL::ComPtr<ID3D12Resource>       m_ShadowMap;        // Texture2DArray(R32_TYPELESS), kShadowCascades slices
     Microsoft::WRL::ComPtr<D3D12MA::Allocation>  m_ShadowMapAlloc;   // backing D3D12MA allocation
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_ShadowDsvHeap;    // one D32 DSV per cascade slice
@@ -535,6 +536,9 @@ private:
     uint8_t* m_ShadowCBMapped[kBackBufferCount] = {};
     D3D12_GPU_VIRTUAL_ADDRESS m_ShadowCBGpu[kBackBufferCount] = {};
     bool CreateShadowMap();            // shadow Texture2DArray + per-slice DSVs + array SRV + caster PSOs + CB ring (once, at init)
+    bool CreateShadowMapTextureAndViews( UINT size );   // (re)creates just the sized resource + its DSVs/SRV; shared by CreateShadowMap and ResizeShadowMap
+    bool ResizeShadowMap( UINT newSize );               // live resolution change: WaitForGpuIdle then recreate the texture in place (DSV heap + SRV slot are reused)
+    static UINT ClampShadowMapSize( int desired );       // snap to the shared {512,1024,2048,4096,8192} step set (matches D3D11's ImGui combo)
     void ComputeCascadeMatrices();     // fill m_CascadeViewProj/m_CascadeTexelWorld/m_SunDirWS from the sun + camera (simple ortho for now)
     void RenderSunShadows();           // render the opaque casters into each cascade slice from the sun's POV + upload the sampling CB
 
