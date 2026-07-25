@@ -108,11 +108,23 @@ void CSMain( uint3 DTid : SV_DispatchThreadID )
 
         float invDist = rsqrt( dist2 );
         float NdotD = max( dot( viewNormal, delta * invDist ) - Bias, 0.0 );
-        float falloff = 1.0 - dist2 / radiusSq;
+        // Squared falloff (vs. linear) concentrates weight on close-range samples, so open/flat surfaces
+        // (where occluders sit near the radius edge) stay near-unoccluded instead of picking up a uniform
+        // wash — only genuine contact/crease geometry (close occluders) contributes strongly.
+        float falloffLin = saturate( 1.0 - dist2 / radiusSq );
+        float falloff = falloffLin * falloffLin;
         occlusion += NdotD * falloff;
     }
 
-    occlusion /= numSamples;
+    occlusion = saturate( occlusion / numSamples );
+    // Quadratic contact boost: adds occlusion^2 on top of the raw average. This is monotonically
+    // non-decreasing (never darkens a pixel below the plain-average result the old formula produced),
+    // but the added term grows fastest where raw occlusion is already high — real contact/crease
+    // geometry — while barely nudging the small values typical of open/flat surfaces. (A smoothstep
+    // curve was tried here first but it also *suppresses* every value below the 0.5 midpoint, i.e.
+    // nearly every pixel pre-Intensity-scaling, which read as "SAO does almost nothing" — this additive
+    // form avoids that failure mode by construction.)
+    occlusion = occlusion + occlusion * occlusion;
     OutputAO[DTid.xy] = saturate( 1.0 - occlusion * Intensity );
 }
 
