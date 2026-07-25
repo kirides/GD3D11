@@ -2172,7 +2172,13 @@ bool D3D12PipelineState::CreateWater() {
     pso.SampleMask = UINT_MAX;
 
     pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    // Back-face culling, matching D3D11: DrawWaterSurfaces calls SetDefaultStates(), and the rasterizer
+    // default is CM_CULL_BACK (GothicRasterizerStateInfo::SetDefault) — same cull the opaque world pass uses,
+    // and water lives in the same wrapped world mesh with the same winding. This was CULL_NONE, which drew
+    // both sides of every water polygon: harmless-looking while water never wrote depth (the extra layer just
+    // blended twice), but once the Z-prepass below writes depth the duplicate/back-facing layers fight with
+    // the front ones and read as flickering stacked water textures.
+    pso.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
     pso.RasterizerState.DepthClipEnable = TRUE;
 
     // Straight alpha blend over the opaque scene: src.rgb*a + dst.rgb*(1-a); keep dst alpha.
@@ -2195,6 +2201,29 @@ bool D3D12PipelineState::CreateWater() {
 
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( Water.PSO.ReleaseAndGetAddressOf() ) ) ) ) {
         LogWarn() << "D3D12: CreateGraphicsPipelineState failed (water).";
+        return false;
+    }
+
+    // Water depth-only prepass PSO (mirrors D3D11's DrawWaterSurfaces Z-prepass). Everything about the color
+    // PSO above is kept — same root sig, same input layout, and critically the **same VS blob** — so the depth
+    // it lays down is bit-identical to what the color pass rasterizes (see Water.hlsl's PSDepth comment: a
+    // separate position-only VS is only algebraically equal and ULP disagreements show up as z-fighting on
+    // Gothic's coplanar water surfaces). Only the PS (writes nothing), the color write mask and the depth-write
+    // mask differ. Cull mode is inherited from the color PSO, so the depth silhouette is exactly the shape that
+    // later blends on top.
+    if ( !m_Shaders->CompileFromFile( "Water.hlsl", "PSDepth", Shadermodel_PS, Water.DepthPrepassPsBlob.ReleaseAndGetAddressOf() ) ) {
+        return false;
+    }
+
+    pso.PS = { Water.DepthPrepassPsBlob->GetBufferPointer(), Water.DepthPrepassPsBlob->GetBufferSize() };
+    // Keep NumRenderTargets=1/kSceneColorFormat (the scene-color RTV stays bound through this pass, same as
+    // the world/VOB depth prepass) but mask off every color write, and drop the blend the color pass needs.
+    pso.BlendState.RenderTarget[0] = {};
+    pso.BlendState.RenderTarget[0].RenderTargetWriteMask = 0;   // DEPTH ONLY
+    pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+
+    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( Water.DepthPrepassPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (water depth prepass).";
         return false;
     }
     return true;

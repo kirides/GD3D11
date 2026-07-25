@@ -2304,7 +2304,6 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
 	// b2: { totalTime (ms, drives UV scroll), water alpha (translucency), pad, pad }.
 	const float water[4] = { Engine::GAPI->GetTotalTime(), 0.7f, 0.0f, 0.0f };
 
-	m_CmdList->SetPipelineState( m_Pipelines.Water.PSO.Get() );
 	m_CmdList->SetGraphicsRootSignature( m_Pipelines.Water.RootSig.Get() );
 	m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
 	m_CmdList->SetGraphicsRoot32BitConstants( 2, 8, &fog, 0 );
@@ -2322,6 +2321,30 @@ void D3D12GraphicsEngine::DrawWaterSurfaces() {
 	m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
 	const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_BlackTexture->GetSrvSlot() );
+	// Bind a dummy diffuse for the whole call: the depth prepass' PS reads nothing, but root parameter 1 must
+	// still be initialized before any draw on this root signature. The color loop below rebinds it per texture.
+	m_CmdList->SetGraphicsRootDescriptorTable( 1, whiteSrv );
+
+	// === Z-Prepass === (mirrors D3D11's DrawWaterSurfaces::ZPrepass)
+	// The color pass below is depth-read-only, so without this the main depth buffer would still hold the
+	// geometry BEHIND the water (or the reversed-Z far plane over open ocean) at every water pixel. Everything
+	// downstream that reconstructs a world position from depth — height fog and the god-ray mask
+	// (RenderFogAndGodRays) — would then fog the sea floor / sky rather than the water surface, which is why
+	// the fog visibly breaks at the ocean without this pass. Same VB/IB/root constants; only the PSO differs
+	// (color writes masked, depth-write on).
+	if ( m_Pipelines.Water.DepthPrepassPSO ) {
+		DX_ZONE( m_CmdList, "Water Z-Prepass" );
+		m_CmdList->SetPipelineState( m_Pipelines.Water.DepthPrepassPSO.Get() );
+		for ( auto const& [tex, meshes] : g_FrameWaterSurfaces ) {
+			for ( MeshInfo* mesh : meshes ) {
+				if ( !mesh || mesh->Indices.empty() ) continue;
+				m_CmdList->DrawIndexedInstanced( static_cast<UINT>(mesh->Indices.size()), 1,
+					mesh->BaseIndexLocation, 0, 0 );
+			}
+		}
+	}
+
+	m_CmdList->SetPipelineState( m_Pipelines.Water.PSO.Get() );
 	unsigned int drawnIndices = 0;
 	for ( auto const& [tex, meshes] : g_FrameWaterSurfaces ) {
 		D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;

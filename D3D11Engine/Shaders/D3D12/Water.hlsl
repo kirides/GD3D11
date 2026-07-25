@@ -25,6 +25,25 @@ VS_OUT VSMain( VS_IN i )
     return o;
 }
 
+// --- Depth-only prepass (mirrors D3D11's "DrawWaterSurfaces::ZPrepass": same VS transform, null PS,
+// color writes masked off, depth-write ON). Water is drawn depth-read-only in the color pass, so without
+// this the main depth buffer keeps the OPAQUE geometry behind the water surface (or the far plane over
+// open ocean) — and every later pass that reconstructs world position from depth (height fog, god rays)
+// then fogs the sea floor / sky instead of the water surface. Also makes overlapping water surfaces blend
+// once instead of stacking, since the color pass's GREATER_EQUAL test now only passes on the nearest layer.
+// No alpha clip here (unlike the world/VOB prepass): water translucency comes from the WaterAlpha uniform,
+// not from the diffuse texture's alpha, so clipping on it would punch holes into the depth.
+//
+// The prepass PSO reuses **VSMain verbatim** (like D3D11 reuses VS_ExWater for its Z-prepass) rather than a
+// leaner position-only VS. That is deliberate and load-bearing: a separate VS is only *algebraically* equal,
+// and DXC/the driver may emit a different instruction sequence for the same matrix multiply, so the two
+// passes can disagree by an ULP. Gothic's water is full of coplanar/near-coplanar overlapping surfaces (two
+// water materials meeting, double-sided quads), and a 1-ULP disagreement there makes the color pass'
+// GREATER_EQUAL test reject the layer the prepass accepted on some pixels but not others — i.e. exactly the
+// z-fighting/shimmering patchwork of stacked water textures. Same VS => bit-identical depth => coplanar
+// layers all compare EQUAL and blend, stable. Only the PS below is swapped out.
+void PSDepth( float4 clip : SV_POSITION ) {}   // subset of VS_OUT's signature; writes nothing
+
 float4 PSMain( VS_OUT i ) : SV_TARGET
 {
     float4 t = tx.Sample( smp, i.uv );

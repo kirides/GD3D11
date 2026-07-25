@@ -66,6 +66,18 @@ public:
         Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassVobIndirectPSO;
         Microsoft::WRL::ComPtr<ID3DBlob>            DepthPrepassVobIndirectPsBlob; // PSDepthClipBindless
     };
+    // Water (transparent world surfaces): own root sig, the alpha-blended color PSO, plus a depth-only
+    // prepass PSO (same root sig + VB/IB, lean position-only layout) that lays the water surface down in
+    // the main depth buffer before the blended pass — mirrors D3D11's water Z-prepass, which the depth-
+    // reading post passes (height fog, god rays) depend on.
+    struct WaterPipeline {
+        Microsoft::WRL::ComPtr<ID3D12RootSignature> RootSig;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> PSO;
+        Microsoft::WRL::ComPtr<ID3DBlob>            VsBlob;
+        Microsoft::WRL::ComPtr<ID3DBlob>            PsBlob;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassPSO;      // reuses VsBlob — see CreateWater()
+        Microsoft::WRL::ComPtr<ID3DBlob>            DepthPrepassPsBlob;   // PSDepth (writes nothing)
+    };
     // 2D UI / HUD family: one root sig (b0 viewport consts, t0 SRV, b1 FF state) + one VS/PS pair.
     // PSOs are built per (blend,depth) key on demand and cached. Vertex ring buffers stay in the engine.
     struct UIPipeline {
@@ -253,7 +265,7 @@ public:
     SkeletalPipeline    Skeletal;
     PointShadowPipeline PointShadow;
     GraphicsPipeline Tonemap;
-    GraphicsPipeline Water;
+    WaterPipeline    Water;
     ComputePipeline  LightCull;
     ComputePipeline  LumReduce;   // dynamic exposure, level 1: scene color -> per-group partial luminance sums
     ComputePipeline  LumAdapt;    // dynamic exposure, level 2: reduce partials + temporal-adapt -> Tonemap's exposure
