@@ -1,0 +1,425 @@
+// D3D12GraphicsEngine — post-FX: bloom pyramid + luminance auto-exposure.
+#include "../pch.h"
+#include "D3D12GraphicsEngine.h"
+#include "D3D12LineRenderer.h"
+#include "D3D12VertexBuffer.h"
+#include "D3D12Texture.h"
+#include "../Engine.h"
+#include "../GothicAPI.h"
+#include "../WorldObjects.h"
+#include "../zCMorphMesh.h"
+#include "../zCTexture.h"
+#include "../D3D7/MyDirectDrawSurface7.h"
+#include "../zCView.h"
+#include "../zCModel.h"
+#include "../zCMaterial.h"
+#include "../zCVob.h"
+#include "../zCVobLight.h"
+#include "../zCDecal.h"
+#include "../zCWorld.h"
+#include "../WorldConverter.h"
+#include "../VertexTypes.h"
+#include "../ImGuiShim.h"
+#include "../zFont.h"
+#include "../zCCamera.h"
+#include "../oCGame.h"
+#include "../oCVisFX.h"
+#include "../DXGIHelpers.h"
+#include "../WindAnimation.h"
+#include "../GVegetationBox.h"
+#include "../GMeshSimple.h"
+#include "../Toolbox.h"
+
+#include <dxcapi.h>
+
+#include "D3D12RenderQueue.h"
+#include "InstancingUtils.h"
+
+// imgui_impl_dx12 calls CreateDXGIFactory1 directly (for tearing detection). dxgi.dll is present on
+// every Windows 7+ and the D3D11 fallback swapchain already needs it at runtime, so a load-time link
+// here is safe — it does NOT reintroduce the D3D12 soft-dependency that lets old systems fall back.
+#pragma comment(lib, "dxgi.lib")
+
+// TODO: Replace dependency with runtime dynamic load of dxcompiler.dll (like D3D12CreateDevice) to avoid shipping it on systems that don't support D3D12.
+#pragma comment(lib, "dxcompiler.lib")
+
+using Microsoft::WRL::ComPtr;
+#include "D3D12EngineCommon.h"
+
+
+bool D3D12GraphicsEngine::CreateBloomResources( INT2 size ) {
+	// Bloom pyramid (mirrors D3D11PFX_Bloom's mip-chain sizing exactly): mip i is size >> (i+1), stop once the
+	// shorter side drops below kBloomMinMipSize. Recreated on every resize; SRV/UAV heap slots are allocated
+	// ONCE (persist across resizes, like m_SceneColorSrvSlot) and just get their views re-pointed at the fresh
+	// resource. Non-fatal on failure — RenderBloom() checks m_BloomMipCount > 0 before doing anything.
+	m_BloomMipCount = 0;
+	if ( size.x < 4 || size.y < 4 ) return false;
+	ID3D12Device* device = m_Device.GetDevice();
+	if ( !device ) return false;
+
+	int mipCount = 0;
+	for ( int i = 0; i < kBloomMaxMips; ++i ) {
+		int mw = size.x >> (i + 1);
+		int mh = size.y >> (i + 1);
+		if ( mw < kBloomMinMipSize || mh < kBloomMinMipSize ) break;
+		mipCount++;
+	}
+	if ( mipCount < 1 ) return false;
+
+	D3D12MA::ALLOCATION_DESC heapDefault = {};
+	heapDefault.HeapType = D3D12_HEAP_TYPE_DEFAULT;
+
+	auto makeTex = [&]( int w, int h, ComPtr<ID3D12Resource>& out, ComPtr<D3D12MA::Allocation>& outAlloc, const wchar_t* name ) -> bool {
+		D3D12_RESOURCE_DESC dd = {};
+		dd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+		dd.Width = static_cast<UINT64>( w );
+		dd.Height = static_cast<UINT>( h );
+		dd.DepthOrArraySize = 1;
+		dd.MipLevels = 1;
+		dd.Format = kSceneColorFormat;
+		dd.SampleDesc.Count = 1;
+		dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+		dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+		if ( FAILED( m_Allocator->CreateResource( &heapDefault, &dd,
+			D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, outAlloc.ReleaseAndGetAddressOf(),
+			IID_PPV_ARGS( out.ReleaseAndGetAddressOf() ) ) ) ) {
+			LogWarn() << "D3D12: failed to create a bloom pyramid texture (" << w << "x" << h << ").";
+			return false;
+		}
+		out->SetName( name );
+		return true;
+		};
+
+	auto ensureSlot = [&]( UINT& slot ) -> bool {
+		if ( slot == UINT_MAX ) slot = AllocateSrvSlot();
+		return slot != UINT_MAX;
+		};
+
+	D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+	srvDesc.Format = kSceneColorFormat;
+	srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+	srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	srvDesc.Texture2D.MipLevels = 1;
+	D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+	uavDesc.Format = kSceneColorFormat;
+	uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+
+	for ( int i = 0; i < mipCount; ++i ) {
+		const int mw = std::max( 1, size.x >> (i + 1) );
+		const int mh = std::max( 1, size.y >> (i + 1) );
+		m_BloomMipSize[i] = { mw, mh };
+
+		wchar_t nameBuf[32];
+		swprintf_s( nameBuf, L"BloomDown%d", i );
+		if ( !makeTex( mw, mh, m_BloomDown[i], m_BloomDownAlloc[i], nameBuf ) ) return false;
+		if ( !ensureSlot( m_BloomDownSrvSlot[i] ) || !ensureSlot( m_BloomDownUavSlot[i] ) ) return false;
+		device->CreateShaderResourceView( m_BloomDown[i].Get(), &srvDesc, GetSrvCpuHandle( m_BloomDownSrvSlot[i] ) );
+		device->CreateUnorderedAccessView( m_BloomDown[i].Get(), nullptr, &uavDesc, GetSrvCpuHandle( m_BloomDownUavSlot[i] ) );
+
+		if ( i < mipCount - 1 ) {
+			swprintf_s( nameBuf, L"BloomUp%d", i );
+			if ( !makeTex( mw, mh, m_BloomUp[i], m_BloomUpAlloc[i], nameBuf ) ) return false;
+			if ( !ensureSlot( m_BloomUpUavSlot[i] ) || !ensureSlot( m_BloomUpSrvSlot[i] ) ) return false;
+			device->CreateUnorderedAccessView( m_BloomUp[i].Get(), nullptr, &uavDesc, GetSrvCpuHandle( m_BloomUpUavSlot[i] ) );
+
+			// Upsample SRV table for level i needs 2 CONTIGUOUS slots (t0=source, rewritten per-frame in
+			// RenderBloom; t1=down[i], fixed here). One pair PER IN-FLIGHT FRAME (see the header comment on
+			// m_BloomUpSrvPairSlot) — allocate each frame's pair together so bump-allocation guarantees
+			// contiguity, then write that copy's t1 (down[i]) now — it never changes until the next resize.
+			for ( UINT frame = 0; frame < kBackBufferCount; ++frame ) {
+				if ( m_BloomUpSrvPairSlot[frame][i] == UINT_MAX ) {
+					const UINT base = AllocateSrvSlot();
+					const UINT next = AllocateSrvSlot();
+					if ( base == UINT_MAX || next == UINT_MAX || next != base + 1 ) return false;
+					m_BloomUpSrvPairSlot[frame][i] = base;
+				}
+				device->CreateShaderResourceView( m_BloomDown[i].Get(), &srvDesc, GetSrvCpuHandle( m_BloomUpSrvPairSlot[frame][i] + 1 ) );
+			}
+		}
+	}
+
+	m_BloomMipCount = mipCount;
+	return true;
+}
+
+
+void D3D12GraphicsEngine::RenderBloom() {
+	// Prefilter (bright-pass) -> downsample chain -> upsample chain -> additive composite onto the HDR scene
+	// color. Mirrors D3D11PFX_Bloom::Render pass-for-pass. Called from OnStartWorldRendering right before
+	// ResolveSceneToBackBuffer, while m_SceneColor is still bound as the world pass's render target.
+	auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+	if ( !settings.EnableBloom ) return;
+	if ( m_BloomMipCount < 1 || !m_Pipelines.Bloom.PrefilterPSO || !m_Pipelines.Bloom.DownsamplePSO
+		|| !m_Pipelines.Bloom.UpsamplePSO || !m_Pipelines.Bloom.CompositePSO || !m_SceneColor )
+		return;
+
+	DX_ZONE( m_CmdList, "Bloom" );
+	const int mipCount = m_BloomMipCount;
+
+	struct BloomCB { float texelSizeX, texelSizeY, threshold, knee, intensity, filterRadius, padX, padY; };
+	BloomCB cb = { 0, 0, settings.BloomThreshold, settings.BloomKnee, settings.BloomStrength, settings.BloomRadius, 0, 0 };
+
+	// Scene color is still RENDER_TARGET (bound by BindSceneColorTarget for the world pass) — flip it to a
+	// shader-resource state so the prefilter can sample it, then unbind it as an RTV (compute can't run with it
+	// bound). The prefilter is a COMPUTE shader, so this must be NON_PIXEL_SHADER_RESOURCE, not
+	// PIXEL_SHADER_RESOURCE — reading a resource through an SRV while it is in the wrong state returns garbage on
+	// real hardware (this, plus the bloom-mip UAV-vs-SRV state bug below, was the flickering-black-screen cause).
+	if ( !m_SceneColorInPixelState ) {
+		auto toSrv = TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
+		m_CmdList->ResourceBarrier( 1, &toSrv );
+		m_SceneColorInPixelState = true;
+	}
+	m_CmdList->OMSetRenderTargets( 0, nullptr, FALSE, nullptr );
+
+	// A compute pass writes each bloom mip through a UAV; the next pass reads it through an SRV. That REQUIRES a
+	// real state transition (UNORDERED_ACCESS -> shader-resource), NOT just a UAV barrier — a UAV barrier only
+	// orders UAV<->UAV access and performs no cache flush / decompress, so the SRV read of a still-UAV-state
+	// texture is undefined. Combined NON_PIXEL|PIXEL so both the compute chain (t0/t1) and the graphics composite
+	// can read it. The bloom mips start each frame in UNORDERED_ACCESS (created that way, and reset back at the
+	// end of this function) so "before" is always UNORDERED_ACCESS here.
+	constexpr D3D12_RESOURCE_STATES kBloomRead =
+		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+	auto toBloomRead = [&]( ID3D12Resource* res ) {
+		auto b = TransitionBarrier( res, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, kBloomRead );
+		m_CmdList->ResourceBarrier( 1, &b );
+		};
+
+	// --- Prefilter: scene color -> down[0] ---
+	{
+		m_CmdList->SetPipelineState( m_Pipelines.Bloom.PrefilterPSO.Get() );
+		m_CmdList->SetComputeRootSignature( m_Pipelines.Bloom.DownRootSig.Get() );
+		cb.texelSizeX = 1.0f / m_Resolution.x;
+		cb.texelSizeY = 1.0f / m_Resolution.y;
+		m_CmdList->SetComputeRoot32BitConstants( 0, 8, &cb, 0 );
+		m_CmdList->SetComputeRootDescriptorTable( 1, GetSrvGpuHandle( m_SceneColorSrvSlot ) );
+		m_CmdList->SetComputeRootDescriptorTable( 2, GetSrvGpuHandle( m_BloomDownUavSlot[0] ) );
+		const UINT gx = (m_BloomMipSize[0].x + 7) / 8, gy = (m_BloomMipSize[0].y + 7) / 8;
+		m_CmdList->Dispatch( gx, gy, 1 );
+		toBloomRead( m_BloomDown[0].Get() );
+	}
+
+	// --- Downsample chain: down[i-1] -> down[i] ---
+	m_CmdList->SetPipelineState( m_Pipelines.Bloom.DownsamplePSO.Get() );
+	for ( int i = 1; i < mipCount; ++i ) {
+		cb.texelSizeX = 1.0f / m_BloomMipSize[i - 1].x;
+		cb.texelSizeY = 1.0f / m_BloomMipSize[i - 1].y;
+		m_CmdList->SetComputeRoot32BitConstants( 0, 8, &cb, 0 );
+		m_CmdList->SetComputeRootDescriptorTable( 1, GetSrvGpuHandle( m_BloomDownSrvSlot[i - 1] ) );
+		m_CmdList->SetComputeRootDescriptorTable( 2, GetSrvGpuHandle( m_BloomDownUavSlot[i] ) );
+		const UINT gx = (m_BloomMipSize[i].x + 7) / 8, gy = (m_BloomMipSize[i].y + 7) / 8;
+		m_CmdList->Dispatch( gx, gy, 1 );
+		toBloomRead( m_BloomDown[i].Get() );
+	}
+
+	// --- Upsample chain: current = down[mipCount-1]; for i = mipCount-2..0: up[i] = down[i] + tent(current) ---
+	// Each level's t0 (variable source) is written into the pair slot right before dispatch; t1 (down[i]) was
+	// already written once at creation (CreateBloomResources) and never changes.
+	D3D12_SHADER_RESOURCE_VIEW_DESC upSrcSrvDesc = {};
+	upSrcSrvDesc.Format = kSceneColorFormat;
+	upSrcSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+	upSrcSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	upSrcSrvDesc.Texture2D.MipLevels = 1;
+
+	UINT finalBloomSrvSlot = m_BloomDownSrvSlot[0];
+	if ( mipCount >= 2 ) {
+		m_CmdList->SetPipelineState( m_Pipelines.Bloom.UpsamplePSO.Get() );
+		m_CmdList->SetComputeRootSignature( m_Pipelines.Bloom.UpRootSig.Get() );
+		for ( int i = mipCount - 2; i >= 0; --i ) {
+			const bool firstStep = (i == mipCount - 2);
+			ID3D12Resource* source = firstStep ? m_BloomDown[mipCount - 1].Get() : m_BloomUp[i + 1].Get();
+			// Double-buffered by m_FrameIndex: this CPU-side descriptor write must never land in the same heap
+			// slot a still-in-flight PRIOR frame's GPU dispatch is reading (see the header comment on
+			// m_BloomUpSrvPairSlot) — that race was the actual cause of the flickering black regions in bloom.
+			const UINT pairSlot = m_BloomUpSrvPairSlot[m_FrameIndex][i];
+			m_Device.GetDevice()->CreateShaderResourceView( source, &upSrcSrvDesc, GetSrvCpuHandle( pairSlot ) );
+
+			const int srcW = firstStep ? m_BloomMipSize[mipCount - 1].x : m_BloomMipSize[i + 1].x;
+			const int srcH = firstStep ? m_BloomMipSize[mipCount - 1].y : m_BloomMipSize[i + 1].y;
+			cb.texelSizeX = 1.0f / srcW;
+			cb.texelSizeY = 1.0f / srcH;
+			m_CmdList->SetComputeRoot32BitConstants( 0, 8, &cb, 0 );
+			m_CmdList->SetComputeRootDescriptorTable( 1, GetSrvGpuHandle( pairSlot ) );
+			m_CmdList->SetComputeRootDescriptorTable( 2, GetSrvGpuHandle( m_BloomUpUavSlot[i] ) );
+			const UINT gx = (m_BloomMipSize[i].x + 7) / 8, gy = (m_BloomMipSize[i].y + 7) / 8;
+			m_CmdList->Dispatch( gx, gy, 1 );
+			toBloomRead( m_BloomUp[i].Get() );
+
+			// Refresh this level's canonical SRV (read by the i-1 step's t0 above, and by the composite pass
+			// once i reaches 0) — same resource/view every resize, so this is a cheap no-op-content rewrite,
+			// not a new allocation.
+			m_Device.GetDevice()->CreateShaderResourceView( m_BloomUp[i].Get(), &upSrcSrvDesc, GetSrvCpuHandle( m_BloomUpSrvSlot[i] ) );
+		}
+		finalBloomSrvSlot = m_BloomUpSrvSlot[0];
+	}
+
+	// --- Composite: additively blend the (upsampled) bloom onto the HDR scene color ---
+	m_CmdList->SetPipelineState( m_Pipelines.Bloom.CompositePSO.Get() );
+	m_CmdList->SetGraphicsRootSignature( m_Pipelines.Bloom.CompositeRootSig.Get() );
+	m_CmdList->SetGraphicsRootDescriptorTable( 0, GetSrvGpuHandle( finalBloomSrvSlot ) );
+	m_CmdList->SetGraphicsRoot32BitConstant( 1, *reinterpret_cast<const UINT*>( &settings.BloomStrength ), 0 );
+
+	auto toRt = TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET );
+	m_CmdList->ResourceBarrier( 1, &toRt );
+	m_SceneColorInPixelState = false;
+
+	const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_Resolution.x), static_cast<float>(m_Resolution.y), 0.0f, 1.0f };
+	const D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
+	m_CmdList->RSSetViewports( 1, &vp );
+	m_CmdList->RSSetScissorRects( 1, &sc );
+	m_CmdList->OMSetRenderTargets( 1, &m_SceneColorRtv, FALSE, nullptr );
+	m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+	m_CmdList->IASetVertexBuffers( 0, 0, nullptr );
+	m_CmdList->DrawInstanced( 3, 1, 0, 0 );
+
+	// Return every written bloom mip to UNORDERED_ACCESS so next frame's compute passes can write them again and
+	// so the "before" state is deterministic at the top of the next RenderBloom (the toBloomRead transitions
+	// above all assume UNORDERED_ACCESS). Done AFTER the composite, which still reads the final mip as an SRV.
+	{
+		D3D12_RESOURCE_BARRIER resets[2 * kBloomMaxMips];
+		UINT n = 0;
+		for ( int i = 0; i < mipCount; ++i )
+			resets[n++] = TransitionBarrier( m_BloomDown[i].Get(), kBloomRead, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+		for ( int i = 0; i < mipCount - 1; ++i )
+			resets[n++] = TransitionBarrier( m_BloomUp[i].Get(), kBloomRead, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+		if ( n ) m_CmdList->ResourceBarrier( n, resets );
+	}
+
+	m_ColorTargetIsHDR = true;   // just rebound m_SceneColor as RTV above
+}
+
+
+bool D3D12GraphicsEngine::CreateLumAdaptedBuffer() {
+	// One-time, fixed-size persistent buffer (dynamic exposure): holds the temporally-adapted average scene
+	// luminance CS_LumAdapt writes every frame and Tonemap's PS reads unconditionally. DEFAULT heap (UAV
+	// requires it); the buffer's initial content is never read as history — CS_LumAdapt's FirstFrame flag
+	// makes the very first dispatch snap directly to that frame's luminance instead of blending against it.
+	D3D12MA::ALLOCATION_DESC heapDefault = {};
+	heapDefault.HeapType = D3D12_HEAP_TYPE_DEFAULT;
+
+	D3D12_RESOURCE_DESC bd = {};
+	bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+	bd.Width = sizeof( float );
+	bd.Height = 1;
+	bd.DepthOrArraySize = 1;
+	bd.MipLevels = 1;
+	bd.SampleDesc.Count = 1;
+	bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+	bd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+	// Created directly in the SRV-read state (not UNORDERED_ACCESS): if CreateLumPartialBuffer ever fails on a
+	// resize (RenderLuminanceAdapt then bails at its guard every frame, never touching this buffer), Tonemap's
+	// root SRV read must still see a valid state — PIXEL_SHADER_RESOURCE is exactly that, and is otherwise the
+	// state RenderLuminanceAdapt itself always leaves the buffer in at the end of a successful frame.
+	if ( FAILED( m_Allocator->CreateResource( &heapDefault, &bd,
+		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, nullptr, m_LumAdaptedBufferAlloc.ReleaseAndGetAddressOf(),
+		IID_PPV_ARGS( m_LumAdaptedBuffer.ReleaseAndGetAddressOf() ) ) ) ) {
+		LogWarn() << "D3D12: failed to create the dynamic-exposure adapted-luminance buffer.";
+		return false;
+	}
+	m_LumAdaptedBuffer->SetName( L"AdaptedLuminance" );
+	m_LumAdaptedBufferAlloc->SetName( L"AllocAdaptedLuminance" );
+	m_LumAdaptedBufferState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+	m_LumAdaptInitialized = false;
+	return true;
+}
+
+
+bool D3D12GraphicsEngine::CreateLumPartialBuffer( INT2 size ) {
+	// Resolution-dependent (recreated on resize, like the bloom pyramid): one {sum,count} float2 per 16x16
+	// reduce-pass thread group. Always fully written by CS_LumReduce and fully consumed by CS_LumAdapt within
+	// the same frame, so — unlike m_LumAdaptedBuffer — it needs no persistent cross-frame value.
+	if ( size.x <= 0 || size.y <= 0 ) return false;
+	m_LumGroupsX = (static_cast<UINT>(size.x) + 15) / 16;
+	m_LumGroupsY = (static_cast<UINT>(size.y) + 15) / 16;
+	const UINT numGroups = m_LumGroupsX * m_LumGroupsY;
+	if ( numGroups == 0 ) return false;
+
+	D3D12MA::ALLOCATION_DESC heapDefault = {};
+	heapDefault.HeapType = D3D12_HEAP_TYPE_DEFAULT;
+
+	D3D12_RESOURCE_DESC bd = {};
+	bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+	bd.Width = static_cast<UINT64>(numGroups) * (sizeof( float ) * 2);   // float2 {sum, count}
+	bd.Height = 1;
+	bd.DepthOrArraySize = 1;
+	bd.MipLevels = 1;
+	bd.SampleDesc.Count = 1;
+	bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+	bd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+	if ( FAILED( m_Allocator->CreateResource( &heapDefault, &bd,
+		D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, m_LumPartialBufferAlloc.ReleaseAndGetAddressOf(),
+		IID_PPV_ARGS( m_LumPartialBuffer.ReleaseAndGetAddressOf() ) ) ) ) {
+		LogWarn() << "D3D12: failed to create the dynamic-exposure partial-sum buffer (" << size.x << "x" << size.y << ").";
+		m_LumPartialCapacity = 0;
+		return false;
+	}
+	m_LumPartialBuffer->SetName( L"LumPartialSums" );
+	m_LumPartialBufferAlloc->SetName( L"AllocLumPartialSums" );
+	m_LumPartialCapacity = numGroups;
+	return true;
+}
+
+
+void D3D12GraphicsEngine::RenderLuminanceAdapt() {
+	// Dynamic exposure (auto-exposure): reduces the finished HDR scene color (post-bloom) to one average
+	// luminance, temporally adapts it toward last frame's value (CS_LumReduce -> CS_LumAdapt), and leaves the
+	// result in m_LumAdaptedBuffer for Tonemap's PS to read. Called after RenderBloom(), before
+	// ResolveSceneToBackBuffer(): scene color is RENDER_TARGET on entry (RenderBloom's composite left it bound
+	// that way) and must be RENDER_TARGET again on exit (ResolveSceneToBackBuffer's own transition assumes that).
+	if ( !m_FrameOpen || !m_Pipelines.LumReduce.PSO || !m_Pipelines.LumReduce.RootSig
+		|| !m_Pipelines.LumAdapt.PSO || !m_Pipelines.LumAdapt.RootSig
+		|| !m_SceneColor || !m_LumAdaptedBuffer || !m_LumPartialBuffer
+		|| m_LumGroupsX == 0 || m_LumGroupsY == 0 )
+		return;
+
+	DX_ZONE( m_CmdList, "Dynamic Exposure (luminance reduce+adapt)" );
+
+	if ( !m_SceneColorInPixelState ) {
+		auto toSrv = TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
+		m_CmdList->ResourceBarrier( 1, &toSrv );
+		m_SceneColorInPixelState = true;
+	}
+	m_CmdList->OMSetRenderTargets( 0, nullptr, FALSE, nullptr );
+
+	auto toUav = TransitionBarrier( m_LumAdaptedBuffer.Get(), m_LumAdaptedBufferState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS );
+	m_CmdList->ResourceBarrier( 1, &toUav );
+	m_LumAdaptedBufferState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+
+	// --- Level 1: reduce scene color -> per-group partial sums ---
+	struct LumReduceCB { UINT Width, Height, NumGroupsX, _pad; };
+	LumReduceCB reduceCb = { static_cast<UINT>(m_Resolution.x), static_cast<UINT>(m_Resolution.y), m_LumGroupsX, 0 };
+	m_CmdList->SetPipelineState( m_Pipelines.LumReduce.PSO.Get() );
+	m_CmdList->SetComputeRootSignature( m_Pipelines.LumReduce.RootSig.Get() );
+	m_CmdList->SetComputeRoot32BitConstants( 0, 4, &reduceCb, 0 );
+	m_CmdList->SetComputeRootDescriptorTable( 1, GetSrvGpuHandle( m_SceneColorSrvSlot ) );
+	m_CmdList->SetComputeRootUnorderedAccessView( 2, m_LumPartialBuffer->GetGPUVirtualAddress() );
+	m_CmdList->Dispatch( m_LumGroupsX, m_LumGroupsY, 1 );
+
+	// Scene color is done being read (compute) this pass; hand it back to RENDER_TARGET for ResolveSceneToBackBuffer.
+	auto toRt = TransitionBarrier( m_SceneColor.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET );
+	m_CmdList->ResourceBarrier( 1, &toRt );
+	m_SceneColorInPixelState = false;
+
+	// PartialSums: UAV write (above) -> SRV read (below) needs a real state transition, not just a UAV barrier.
+	auto partialToSrv = TransitionBarrier( m_LumPartialBuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
+	m_CmdList->ResourceBarrier( 1, &partialToSrv );
+
+	// --- Level 2: reduce partial sums -> one temporally-adapted luminance value ---
+	struct LumAdaptCB { UINT NumPartials; float DeltaTime; UINT FirstFrame; float _pad; };
+	LumAdaptCB adaptCb = { m_LumGroupsX * m_LumGroupsY, Engine::GAPI->GetDeltaTime(), m_LumAdaptInitialized ? 0u : 1u, 0.0f };
+	m_CmdList->SetPipelineState( m_Pipelines.LumAdapt.PSO.Get() );
+	m_CmdList->SetComputeRootSignature( m_Pipelines.LumAdapt.RootSig.Get() );
+	m_CmdList->SetComputeRoot32BitConstants( 0, 4, &adaptCb, 0 );
+	m_CmdList->SetComputeRootShaderResourceView( 1, m_LumPartialBuffer->GetGPUVirtualAddress() );
+	m_CmdList->SetComputeRootUnorderedAccessView( 2, m_LumAdaptedBuffer->GetGPUVirtualAddress() );
+	m_CmdList->Dispatch( 1, 1, 1 );
+	m_LumAdaptInitialized = true;
+
+	// Reset PartialSums to UNORDERED_ACCESS for next frame's reduce write; AdaptedLum to a PS-readable state for
+	// Tonemap (both ResolveSceneToBackBuffer and the thumbnail/screenshot re-tonemap read it later this frame).
+	D3D12_RESOURCE_BARRIER post[2] = {
+		TransitionBarrier( m_LumPartialBuffer.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS ),
+		TransitionBarrier( m_LumAdaptedBuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE ),
+	};
+	m_CmdList->ResourceBarrier( 2, post );
+	m_LumAdaptedBufferState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+}
