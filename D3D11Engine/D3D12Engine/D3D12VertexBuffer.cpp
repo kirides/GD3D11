@@ -93,11 +93,18 @@ D3D12VertexBuffer::~D3D12VertexBuffer() {
             c.Resource->Unmap( 0, nullptr );
             c.MappedPtr = nullptr;
         }
-        if ( c.Resource ) {
+        if ( c.Resource || c.Allocation ) {
             if ( D3D12GraphicsEngine* engine = Engine12() ) {
+                // The D3D12MA::Allocation must be deferred TOGETHER with the resource: releasing it is what
+                // hands the suballocated heap block back to the allocator. Dropping it here while the
+                // ID3D12Resource still lives in the cleanup queue lets the very next placed buffer be created
+                // on top of a still-alive resource -> HEAP_ADDRESS_RANGE_INTERSECTS_MULTIPLE_BUFFERS on
+                // IASetVertexBuffers, and (worse) live GPU memory of an in-flight draw reused for new data.
                 engine->QueueResourceForRelease( std::move( c.Resource ) );
+                engine->QueueAllocationForRelease( std::move( c.Allocation ) );
             }
             c.Resource.Reset();
+            c.Allocation.Reset();
         }
     }
 }

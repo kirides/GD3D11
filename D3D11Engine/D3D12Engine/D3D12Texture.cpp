@@ -43,6 +43,14 @@ D3D12Texture::~D3D12Texture()
         engine->QueueSrvResourceForRelease( m_SrvSlot, m_Texture );
     }
 
+    // Defer the backing D3D12MA allocation alongside the resource — releasing it here would return the
+    // heap block to the allocator while the deferred ID3D12Resource is still alive (and possibly still
+    // read by an in-flight frame), so the next placed resource lands on top of it.
+    if ( m_Allocation ) {
+        engine->QueueAllocationForRelease( std::move( m_Allocation ) );
+        m_Allocation.Reset();
+    }
+
     m_Texture.Reset();
 
     /*engine->QueueSrvResourceForRelease( m_SrvSlot, m_Texture );
