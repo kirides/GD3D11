@@ -103,8 +103,45 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     albedo = DelightDiffuse( albedo );
     float shadow = ComputeSunShadow( i.wpos, N );
     // orm: AO=1 (g_full), roughness=0.9 (matte), metallic=0 — grass has no ORM map, so a diffuse-leaning default.
-    float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, 1.0, shadow, 0.9, 0.0, 1.0 );
+    // No screen-space AO: RenderSSAO() computes the mask from the depth PREPASS, which grass never joins (it
+    // draws last, in the lit color pass) — at grass's screen pixels the mask reflects whatever's BEHIND the
+    // blade (terrain or sky), not the blade itself, so it was reading as spurious heavy occlusion for anything
+    // but close-up grass. Revert to unoccluded until grass gets a real depth-prepass pass.
+    float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, 1.0, shadow, 0.9, 0.0, 1.0, 1.0 );
     rgb += AccumTiledPointLights( i.clip.xy, i.wpos, N, albedo, 0.9, 0.0 );
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
     return float4( lerp( rgb, SrgbToLinear( FogColor ), f ), 1.0 );
+}
+
+// --- Depth-only shadow-caster variant (D3D12GraphicsEngine::CreateGrassShadowCaster/RenderSunShadows) ---
+// Same wind sway as VSMain (see the header comment there) so the shadow silhouette doesn't lag the swaying
+// blades — mirrors D3D11's VS_GrassInstancedShadow.hlsl. Reuses VS_IN/Grass.RootSig (b0 = the cascade's
+// view-proj instead of the camera's, b1 = the same GrassCB).
+struct VS_DEPTH_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; };
+
+VS_DEPTH_OUT VSDepth( VS_IN i )
+{
+    VS_DEPTH_OUT o;
+    float3 wpos = mul( float4( i.pos, 1.0 ), i.iworld ).xyz;
+
+    float wind = sin( i.pos.z * 0.001f ) * 0.5f + 0.5f;
+    wind += sin( i.pos.x * 0.001f ) * 0.5f + 0.5f;
+    wind += 0.2f;
+
+    wpos.xz += sin( G_Time + wind ) * 2.0f * i.pos.y * G_WindStrength;
+    wpos.xz += sin( G_Time * 3.0f + wind ) * 1.55f * i.pos.y * G_WindStrength;
+    wpos.xz += sin( G_Time * 5.0f + wind ) * 1.2f * i.pos.y * G_WindStrength;
+
+    if ( G_HeroAffectStrength > 0 )
+        wpos.xz += GrassHeroAffectOffsetXZ( wpos, i.pos.y );
+
+    o.clip = mul( float4( wpos, 1.0 ), ViewProj );
+    o.uv = i.uv;
+    return o;
+}
+
+void PSShadowClip( VS_DEPTH_OUT i )
+{
+    // Matches PSMain's cutout threshold (0.7 blade-alpha scale before the 0.5 clip).
+    clip( tx.Sample( smp, i.uv ).a * 0.7f - 0.5f );
 }

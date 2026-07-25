@@ -36,6 +36,12 @@ SamplerComparisonState  shadowCmp : register(s2);
 // no normal map (skip perturb); MatOrmIndex is always valid (1x1 default = AO 1 / rough 0.5 / metal 0).
 cbuffer MaterialCB : register(b6) { uint MatNormalIndex; uint MatOrmIndex; uint MatDiffuseIndex; };
 TextureCubeArray        PointShadowCubes : register(t5);   // point-light shadow cubes (P2.10d), R16 linear depth
+// Simple-SSAO mask (bindless, set once per frame — see D3D12GraphicsEngine::RenderSSAO/m_ActiveAOMaskSrvSlot).
+// Points at the white 1x1 texture (mask = no occlusion) when SSAO is disabled/unavailable.
+cbuffer AOCB : register(b7) { uint AoMaskIndex; };
+// Point-clamp for the AO mask: MUST be Sample-based (normalized UV, CLAMP addressing), not Load — Load() with
+// raw pixel coords returns 0 out-of-bounds, which the 1x1 "AO disabled" fallback always is at screen res.
+SamplerState smpAoClamp : register(s1);
 
 // Octahedral normal decode — matches Shaders/VertexPacking.h DecodeOctNormal (the packed 36-byte vertex
 // stores the normal as R16G16_SNORM at offset 12; world-mesh normals are already world-space).
@@ -83,7 +89,10 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     albedo = DelightDiffuse( albedo );
     float vertLighting = i.col.g;             // Gothic baked vertex lighting (green channel) as the AO modulator
     float shadow = ComputeSunShadow( i.wpos, N );
-    float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r );
+    Texture2D aoTex = ResourceDescriptorHeap[AoMaskIndex];
+    uint aoW, aoH; aoTex.GetDimensions( aoW, aoH );
+    float ssao = aoTex.SampleLevel( smpAoClamp, i.clip.xy / float2( aoW, aoH ), 0 ).r;
+    float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r, ssao );
     rgb += AccumTiledPointLights( i.clip.xy, i.wpos, N, albedo, orm.g, orm.b );
     // Linear distance fog toward the (linearized) atmosphere color — keeps the HDR buffer consistently linear.
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );

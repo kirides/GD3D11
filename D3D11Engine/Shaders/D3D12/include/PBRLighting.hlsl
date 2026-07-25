@@ -181,13 +181,12 @@ float3 PerturbNormal( float3 N, float3 p, Texture2D nrmTex, float2 uv, SamplerSt
 
 // PBR sun lighting (matches DX11 lighting mix and ground/vertex lighting modulation)
 float3 ComputeSunLightingPBR( float3 wpos, float3 N, float3 albedo, float vertLighting, float shadow,
-                              float roughness, float metallic, float ao )
+                              float roughness, float metallic, float ao, float ssao )
 {
     float3 V = normalize( CamPosWS - wpos );
     float3 L = SunDirWS;                            // dir toward the sun (world space)
     float3 sunCol = SrgbToLinear( SunColor );
     float  sunLum = dot( sunCol, float3( 0.3333, 0.3333, 0.3333 ) );
-    const float ssao = 1.0;
 
     // Direct sun term N.L
     float NdotL = saturate( dot( N, L ) );

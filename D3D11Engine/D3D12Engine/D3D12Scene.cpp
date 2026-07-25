@@ -717,6 +717,63 @@ bool D3D12GraphicsEngine::CreateShadowMap() {
 }
 
 
+bool D3D12GraphicsEngine::CreateGrassShadowCaster() {
+	// GVegetationBox grass CSM caster: reuses Grass.RootSig (b0 cascade view-proj VS, b1 GrassCB for the same
+	// wind sway VSMain applies — so the shadow silhouette doesn't lag the swaying blades, mirrors D3D11's
+	// VS_GrassInstancedShadow.hlsl; t0 grass texture for the alpha-clip) with a new depth-only VS/PS pair
+	// (VSDepth/PSShadowClip in Vegetation.hlsl). Called from Init() AFTER m_Pipelines.CreateGrass() (needs
+	// Grass.RootSig to exist) — unlike the world/VOB/skeletal casters built inside CreateShadowMap(), this one
+	// doesn't touch any shadow-map GPU resource, just the DXGI_FORMAT_D32_FLOAT DSV format constant, so the
+	// Init() ordering (CreateShadowMap runs before CreateGrass) doesn't matter here. Non-fatal: DrawVegetation's
+	// shadow contribution is simply skipped (grass casts no shadow) if this fails.
+	if ( !m_Pipelines.Grass.RootSig ) return false;
+
+	if ( !m_ShaderBackend.CompileFromFile( "Vegetation.hlsl", "VSDepth", Shadermodel_VS, m_ShadowCasterGrassVsBlob.ReleaseAndGetAddressOf() ) )
+		return false;
+	if ( !m_ShaderBackend.CompileFromFile( "Vegetation.hlsl", "PSShadowClip", Shadermodel_PS, m_ShadowCasterGrassPsBlob.ReleaseAndGetAddressOf() ) )
+		return false;
+
+	// Slot 0 = SimpleObjectVertexStruct (Position@0, TexCoord@12); slot 1 = per-instance world matrix — identical
+	// layout to Grass.PSO's (see CreateGrass), VSDepth just skips the lighting-only fields the color VS reads.
+	const D3D12_INPUT_ELEMENT_DESC layout[] = {
+		{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT,    0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+		{ "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,       0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+		{ "INSTANCE_WORLD_MATRIX", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,  0, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+		{ "INSTANCE_WORLD_MATRIX", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 16, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+		{ "INSTANCE_WORLD_MATRIX", 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 32, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+		{ "INSTANCE_WORLD_MATRIX", 3, DXGI_FORMAT_R32G32B32A32_FLOAT, 1, 48, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
+	};
+
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+	pso.pRootSignature = m_Pipelines.Grass.RootSig.Get();
+	pso.VS = { m_ShadowCasterGrassVsBlob->GetBufferPointer(), m_ShadowCasterGrassVsBlob->GetBufferSize() };
+	pso.PS = { m_ShadowCasterGrassPsBlob->GetBufferPointer(), m_ShadowCasterGrassPsBlob->GetBufferSize() };
+	pso.InputLayout = { layout, _countof( layout ) };
+	pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+	pso.NumRenderTargets = 0;   // depth-only shadow pass (no color target bound)
+	pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+	pso.SampleDesc.Count = 1;
+	pso.SampleMask = UINT_MAX;
+	pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+	// CULL_NONE (not FRONT like the opaque/VOB/skeletal casters above): grass cards are thin double-sided
+	// planes — matches Grass.PSO's own culling (see CreateGrass), so both faces still cast into the map.
+	pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+	pso.RasterizerState.DepthClipEnable = TRUE;
+	pso.BlendState.RenderTarget[0].RenderTargetWriteMask = 0;
+	pso.DepthStencilState.DepthEnable = TRUE;
+	pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+	pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;   // normal-Z, matches the other casters
+	pso.DepthStencilState.StencilEnable = FALSE;
+
+	ID3D12Device* device = m_Device.GetDevice();
+	if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_ShadowCasterGrassPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+		LogWarn() << "D3D12: CreateGraphicsPipelineState failed (grass shadow caster).";
+		return false;
+	}
+	return true;
+}
+
+
 bool D3D12GraphicsEngine::CreatePointShadowResources() {
 	// P2.10a: the point-light shadow cube ARRAY GPU RESOURCES — the active + static-aside cube textures, their
 	// per-slot 6-slice DSV heaps, the TextureCubeArray SRV, and the per-frame face-matrix CB + VOB-instance rings.
@@ -1339,6 +1396,70 @@ void D3D12GraphicsEngine::RenderSunShadows() {
 				const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
 				m_CmdList->IASetIndexBuffer( &ibv );
 				m_CmdList->DrawIndexedInstanced( static_cast<UINT>(a.mesh->Indices.size()), 1, 0, 0, 0 );
+			}
+		}
+
+		// --- GVegetationBox grass (own root sig: b0 cascade view-proj, b1 GrassCB for the same wind sway
+		// VSMain applies, t0 grass texture for the alpha-clip) — CULL_NONE caster, see CreateGrassShadowCaster.
+		// Mirrors D3D11's GVegetationBox::RenderVegetationShadow: cull each box against THIS cascade's frustum
+		// (not the player's view frustum, like the VOB/skeletal casters above) and draw its instances directly.
+		if ( m_ShadowCasterGrassPSO && m_Pipelines.Grass.RootSig ) {
+			const auto& vegetationBoxes = Engine::GAPI->GetVegetationBoxes();
+			if ( !vegetationBoxes.empty() ) {
+				DX_ZONE( m_CmdList, "Grass" );
+
+				// Mirrors GVegetationBox::PopulateConstantBuffer (see DrawVegetation) — only the fields VSDepth's
+				// wind sway reads (Time/WindStrength/HeroAffectStrength/PlayerPosWS) matter for the caster.
+				struct GrassCBData { float Time; float WindStrength; float HeroAffectStrength; float _pad0; XMFLOAT3 PlayerPosWS; float _pad1; };
+				GrassCBData gcb = {};
+				gcb.Time = Engine::GAPI->GetTimeSeconds();
+				gcb.WindStrength = rs.WindQuality > 0 ? rs.GlobalWindStrength : 0.0f;
+				if ( rs.HeroAffectsObjects ) {
+					gcb.PlayerPosWS = Engine::GAPI->GetPlayerVob() ? Engine::GAPI->GetPlayerVob()->GetPositionWorld() : XMFLOAT3( 0, 0, 0 );
+					gcb.HeroAffectStrength = 1.0f;
+				}
+
+				bool grassBound = false;
+				for ( GVegetationBox* box : vegetationBoxes ) {
+					if ( !box || box->GetSpotCount() == 0 ) continue;
+
+					XMFLOAT3 bbMin, bbMax;
+					box->GetBoundingBox( &bbMin, &bbMax );
+					if ( !m_CascadeFrustum[c].Intersects( zTBBox3D{ bbMin, bbMax } ) ) continue;
+
+					GMeshSimple* mesh = box->GetVegetationMesh();
+					GfxVertexBuffer* instBuf = box->GetInstancingBuffer();
+					if ( !mesh || !instBuf ) continue;
+					D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mesh->GetVertexBuffer() );
+					D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mesh->GetIndexBuffer() );
+					D3D12VertexBuffer* mib_inst = D3D12VertexBuffer::From( instBuf );
+					if ( !mvb || !mib || !mib_inst || !mvb->GetResource() || !mib->GetResource() || !mib_inst->GetResource() ) continue;
+
+					if ( !grassBound ) {
+						grassBound = true;
+						m_CmdList->SetPipelineState( m_ShadowCasterGrassPSO.Get() );
+						m_CmdList->SetGraphicsRootSignature( m_Pipelines.Grass.RootSig.Get() );
+						m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
+						m_CmdList->SetGraphicsRoot32BitConstants( 3, 8, &gcb, 0 );   // b1 GrassCB (wind sway)
+					}
+
+					D3D12_GPU_DESCRIPTOR_HANDLE grassSrv = whiteSrv;
+					if ( GfxTexture* grassTex = box->GetVegetationTexture() ) {
+						D3D12Texture* d12 = D3D12Texture::From( grassTex );
+						if ( d12 && d12->HasSRV() ) grassSrv = d12->GetSrvGpuHandle();
+					}
+					m_CmdList->SetGraphicsRootDescriptorTable( 1, grassSrv );
+
+					const UINT numIndices = mesh->GetNumIndices();
+					const UINT numInstances = static_cast<UINT>( box->GetSpotCount() );
+					const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( SimpleObjectVertexStruct ) };
+					const D3D12_VERTEX_BUFFER_VIEW instVbv = { mib_inst->GetGpuVirtualAddress(), mib_inst->GetSizeInBytes(), sizeof( XMFLOAT4X4 ) };
+					const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, instVbv };
+					m_CmdList->IASetVertexBuffers( 0, 2, views );
+					const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
+					m_CmdList->IASetIndexBuffer( &ibv );
+					m_CmdList->DrawIndexedInstanced( numIndices, numInstances, 0, 0, 0 );
+				}
 			}
 		}
 	}
@@ -2978,6 +3099,10 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// Forward+ tiled light cull: consume this frame's light buffer + the prepass depth to record which point
 	// lights touch each 16x16 screen tile (bounded to real geometry on both the near and far side).
 	DispatchLightCulling();
+	// Simple screen-space AO (plan item #4): reconstructs normals from the prepass depth (no GBuffer normals
+	// pre-lighting in Forward+) and writes the blurred AO mask the lit passes below sample bindlessly via
+	// m_ActiveAOMaskSrvSlot. No-op (mask stays white) when AoMode == AO_NONE or resources are unavailable.
+	RenderSSAO();
     {
         DX_ZONE( m_CmdList, "Lit Geometry Pass" );
 	    DrawWorldMesh();
@@ -3640,6 +3765,7 @@ XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
     m_CmdList->SetGraphicsRootConstantBufferView( 7, m_ShadowCBGpu[m_FrameIndex] );
     m_CmdList->SetGraphicsRootDescriptorTable( 8, GetSrvGpuHandle( m_ShadowSrvSlot ) );
     m_CmdList->SetGraphicsRootDescriptorTable( 9, GetSrvGpuHandle( m_PointShadowSrvSlot ) );   // t5 point-shadow cubes
+    m_CmdList->SetGraphicsRoot32BitConstants( 12, 1, &m_ActiveAOMaskSrvSlot, 0 );   // b7 AOCB (simple SSAO mask)
 
     D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_Resolution.x), static_cast<float>(m_Resolution.y), 0.0f, 1.0f };
     D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
@@ -3839,6 +3965,7 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
     // Frame-global wind (b4): dir/time/playerPos bound once; each indirect command overwrites only min/maxHeight
     // (b4[4..5]) per visual. Must be bound before ExecuteIndirect (VSMain reads b4 for the sway).
     m_CmdList->SetGraphicsRoot32BitConstants( 11, 12, &m_WindBuffer, 0 );
+    m_CmdList->SetGraphicsRoot32BitConstants( 12, 1, &m_ActiveAOMaskSrvSlot, 0 );   // b7 AOCB (simple SSAO mask)
 
     D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_Resolution.x), static_cast<float>(m_Resolution.y), 0.0f, 1.0f };
     D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
@@ -4242,6 +4369,7 @@ void D3D12GraphicsEngine::DrawSkeletalColor() {
         m_CmdList->SetGraphicsRootConstantBufferView( 9, m_ShadowCBGpu[m_FrameIndex] );        // b5 shadow CB
         m_CmdList->SetGraphicsRootDescriptorTable( 10, GetSrvGpuHandle( m_ShadowSrvSlot ) );   // t4 shadow map
         m_CmdList->SetGraphicsRootDescriptorTable( 11, GetSrvGpuHandle( m_PointShadowSrvSlot ) ); // t5 point-shadow cubes
+        m_CmdList->SetGraphicsRoot32BitConstants( 13, 1, &m_ActiveAOMaskSrvSlot, 0 );   // b8 AOCB (simple SSAO mask)
         m_CmdList->RSSetViewports( 1, &vp );
         m_CmdList->RSSetScissorRects( 1, &sc );
         m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
@@ -4297,6 +4425,7 @@ void D3D12GraphicsEngine::DrawSkeletalColor() {
         m_CmdList->SetGraphicsRootConstantBufferView( 7, m_ShadowCBGpu[m_FrameIndex] );        // b3 shadow CB
         m_CmdList->SetGraphicsRootDescriptorTable( 8, GetSrvGpuHandle( m_ShadowSrvSlot ) );    // t4 shadow map
         m_CmdList->SetGraphicsRootDescriptorTable( 9, GetSrvGpuHandle( m_PointShadowSrvSlot ) ); // t5 point-shadow cubes
+        m_CmdList->SetGraphicsRoot32BitConstants( 12, 1, &m_ActiveAOMaskSrvSlot, 0 );   // b7 AOCB (simple SSAO mask)
         m_CmdList->RSSetViewports( 1, &vp );
         m_CmdList->RSSetScissorRects( 1, &sc );
         m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );

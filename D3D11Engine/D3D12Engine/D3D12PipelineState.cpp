@@ -103,7 +103,7 @@ bool D3D12PipelineState::CreateWorld() {
     cubeSrvRange.BaseShaderRegister = 5;   // t5
     cubeSrvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-    D3D12_ROOT_PARAMETER params[12] = {};
+    D3D12_ROOT_PARAMETER params[13] = {};
     params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     params[0].Constants.ShaderRegister = 0;   // b0
     params[0].Constants.Num32BitValues = 16;  // float4x4
@@ -155,8 +155,16 @@ bool D3D12PipelineState::CreateWorld() {
     params[11].Constants.ShaderRegister = 4;   // b4 WindCB (VS_ExConstantBuffer_Wind, 48 bytes)
     params[11].Constants.Num32BitValues = 12;
     params[11].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    // params[12] = simple-SSAO mask bindless SRV-heap index (b7 AOCB, PS only), set ONCE per frame (not per
+    // draw/ExecuteIndirect command) by DrawWorldMesh/DrawVobsInstanced/DrawSkeletalColor's attachment pass —
+    // World.hlsl/Vob.hlsl's PSMain(Bindless) read it via ResourceDescriptorHeap[AoMaskIndex]. Points at the
+    // white texture's SRV slot when SSAO is disabled/unavailable (mask = no occlusion, matches D3D11's default).
+    params[12].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[12].Constants.ShaderRegister = 7;   // b7 AOCB { AoMaskIndex }
+    params[12].Constants.Num32BitValues = 1;
+    params[12].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
-    D3D12_STATIC_SAMPLER_DESC samplers[2] = {};
+    D3D12_STATIC_SAMPLER_DESC samplers[3] = {};
     // s0 diffuse: 16x anisotropic (matches D3D11's main texture sampler) — sharpens surfaces at grazing
     // angles and in the distance, which trilinear alone smears badly.
     samplers[0].Filter = D3D12_FILTER_ANISOTROPIC;
@@ -175,6 +183,16 @@ bool D3D12PipelineState::CreateWorld() {
     samplers[1].MaxLOD = D3D12_FLOAT32_MAX;
     samplers[1].ShaderRegister = 2;          // s2 shadow comparison
     samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    // s1: point-clamp for the simple-SSAO mask fetch (World/Vob PSMain). MUST be Sample/SampleLevel with CLAMP
+    // addressing, not Load — Load() with out-of-range integer texel coords (the 1x1 white "AO disabled"
+    // fallback read at full-res screen coords) returns 0 per the HLSL spec, not the texel's actual value, which
+    // was silently zeroing the ambient term (darker with AO "disabled" than with it on — the opposite of what
+    // should happen). CLAMP addressing sidesteps this for both the 1x1 fallback and the real full-res mask.
+    samplers[2].Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
+    samplers[2].AddressU = samplers[2].AddressV = samplers[2].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    samplers[2].MaxLOD = D3D12_FLOAT32_MAX;
+    samplers[2].ShaderRegister = 1;           // s1 AO mask point-clamp
+    samplers[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
     rsDesc.NumParameters = _countof( params );
@@ -667,6 +685,11 @@ bool D3D12PipelineState::CreateGrass() {
     params[11].DescriptorTable.NumDescriptorRanges = 1;
     params[11].DescriptorTable.pDescriptorRanges = &cubeSrvRange;
     params[11].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    // No screen-space AO param here (reverted): RenderSSAO()'s mask is computed from the depth PREPASS, which
+    // grass never joins (it draws last, in the lit color pass) — at grass's screen pixels the mask reflected
+    // whatever's behind the blade (terrain/sky), not the blade itself, reading as spurious heavy occlusion.
+    // Vegetation.hlsl's PSMain passes a literal 1.0 for ssao instead. Grass DOES still cast CSM shadows
+    // (m_ShadowCasterGrassPSO, CreateGrassShadowCaster) — that's independent of this root sig.
 
     D3D12_STATIC_SAMPLER_DESC samplers[2] = {};
     samplers[0].Filter = D3D12_FILTER_ANISOTROPIC;
@@ -1524,7 +1547,7 @@ bool D3D12PipelineState::CreateSkeletal() {
     cubeSrvRange.BaseShaderRegister = 5;      // t5
     cubeSrvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-    D3D12_ROOT_PARAMETER params[13] = {};
+    D3D12_ROOT_PARAMETER params[14] = {};
     params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     params[0].Constants.ShaderRegister = 0;   // b0 ViewProj
     params[0].Constants.Num32BitValues = 16;
@@ -1573,8 +1596,15 @@ bool D3D12PipelineState::CreateSkeletal() {
     params[12].Constants.ShaderRegister = 6;   // b6 MaterialCB { MatNormalIndex, MatOrmIndex } — bindless indices
     params[12].Constants.Num32BitValues = 2;
     params[12].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    // params[13] = simple-SSAO mask bindless SRV-heap index (b8 AOCB — b7 is GhostCB, used only by the separate
+    // GhostSkeletal root sig/PSO, not this one). Set once per frame by DrawSkeletalColor before the base-mesh
+    // draws; Skeletal.hlsl's PSMain reads it via ResourceDescriptorHeap[AoMaskIndex].
+    params[13].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[13].Constants.ShaderRegister = 8;   // b8 AOCB { AoMaskIndex }
+    params[13].Constants.Num32BitValues = 1;
+    params[13].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
-    D3D12_STATIC_SAMPLER_DESC samplers[2] = {};
+    D3D12_STATIC_SAMPLER_DESC samplers[3] = {};
     // s0 diffuse: 16x anisotropic (matches D3D11's main texture sampler) — sharpens surfaces at grazing
     // angles and in the distance, which trilinear alone smears badly.
     samplers[0].Filter = D3D12_FILTER_ANISOTROPIC;
@@ -1590,6 +1620,13 @@ bool D3D12PipelineState::CreateSkeletal() {
     samplers[1].MaxLOD = D3D12_FLOAT32_MAX;
     samplers[1].ShaderRegister = 2;          // s2 shadow comparison
     samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    // s1: point-clamp for the simple-SSAO mask fetch — see World.RootSig's identical s1 for why Load() (raw
+    // texel coords) is wrong for the 1x1 "AO disabled" fallback and CLAMP-addressed Sample must be used instead.
+    samplers[2].Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
+    samplers[2].AddressU = samplers[2].AddressV = samplers[2].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    samplers[2].MaxLOD = D3D12_FLOAT32_MAX;
+    samplers[2].ShaderRegister = 1;           // s1 AO mask point-clamp
+    samplers[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
     rsDesc.NumParameters = _countof( params );
@@ -2518,5 +2555,133 @@ bool D3D12PipelineState::CreateSmaa() {
     if ( !makePso( Smaa.NeighborVsBlob.Get(), Smaa.NeighborPsBlob.Get(), kBackBufferFormat, Smaa.NeighborPSO.ReleaseAndGetAddressOf(), "neighbor" ) )
         return false;
 
+    return true;
+}
+
+bool D3D12PipelineState::CreateAO() {
+    // Simple screen-space AO (plan item #4, "SAO"). Two compute root sigs sharing one shape (b0 32-bit
+    // consts, one SRV descriptor table, one UAV descriptor table): the main pass (Shaders/D3D12/SSAO.hlsl
+    // CSMain) reads only the depth SRV; the blur pass (CSBlur, run horizontal then vertical) additionally
+    // reads the AO estimate, so its SRV table is 2-wide. Non-fatal — RenderSSAO() guards on both PSOs.
+    ID3D12Device* device = m_Device->GetDevice();
+    if ( !device ) return false;
+
+    // s0: point-clamp — depth/AO are sampled at the source pixel grid; no filtering wanted across depth
+    // discontinuities (bilinear would blend unrelated surfaces' AO/depth together at edges).
+    D3D12_STATIC_SAMPLER_DESC sampler = {};
+    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
+    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.MaxLOD = D3D12_FLOAT32_MAX;
+    sampler.ShaderRegister = 0;   // s0
+    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
+    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (AO)."; return false; }
+
+    // --- Main pass root sig: b0 12x32-bit SSAOCB, t0 depth SRV table, u0 AO-output UAV table ---
+    {
+        D3D12_DESCRIPTOR_RANGE srvRange = {};
+        srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+        srvRange.NumDescriptors = 1;
+        srvRange.BaseShaderRegister = 0;   // t0 DepthTex
+        srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+        D3D12_DESCRIPTOR_RANGE uavRange = {};
+        uavRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+        uavRange.NumDescriptors = 1;
+        uavRange.BaseShaderRegister = 0;   // u0 OutputAO
+        uavRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+        D3D12_ROOT_PARAMETER params[3] = {};
+        params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        params[0].Constants.ShaderRegister = 0;   // b0 SSAOCB
+        params[0].Constants.Num32BitValues = 12;
+        params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        params[1].DescriptorTable.NumDescriptorRanges = 1;
+        params[1].DescriptorTable.pDescriptorRanges = &srvRange;
+        params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        params[2].DescriptorTable.NumDescriptorRanges = 1;
+        params[2].DescriptorTable.pDescriptorRanges = &uavRange;
+        params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+        D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+        rsDesc.NumParameters = _countof( params );
+        rsDesc.pParameters = params;
+        rsDesc.NumStaticSamplers = 1;
+        rsDesc.pStaticSamplers = &sampler;
+
+        ComPtr<ID3DBlob> rsBlob, rsErr;
+        if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
+            if ( rsErr ) LogWarn() << "D3D12: AO main root sig error: " << static_cast<const char*>(rsErr->GetBufferPointer());
+            return false;
+        }
+        if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
+            IID_PPV_ARGS( AO.MainRootSig.ReleaseAndGetAddressOf() ) ) ) )
+            return false;
+    }
+
+    // --- Blur pass root sig: b0 8x32-bit BlurCB, t0+t1 SRV table (AO input + depth), u0 UAV table ---
+    {
+        D3D12_DESCRIPTOR_RANGE srvRange = {};
+        srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+        srvRange.NumDescriptors = 2;
+        srvRange.BaseShaderRegister = 0;   // t0 BlurAOTex, t1 BlurDepthTex
+        srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+        D3D12_DESCRIPTOR_RANGE uavRange = {};
+        uavRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+        uavRange.NumDescriptors = 1;
+        uavRange.BaseShaderRegister = 0;   // u0 OutputAO
+        uavRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+        D3D12_ROOT_PARAMETER params[3] = {};
+        params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        params[0].Constants.ShaderRegister = 0;   // b0 BlurCB
+        params[0].Constants.Num32BitValues = 8;
+        params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        params[1].DescriptorTable.NumDescriptorRanges = 1;
+        params[1].DescriptorTable.pDescriptorRanges = &srvRange;
+        params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        params[2].DescriptorTable.NumDescriptorRanges = 1;
+        params[2].DescriptorTable.pDescriptorRanges = &uavRange;
+        params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+        D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+        rsDesc.NumParameters = _countof( params );
+        rsDesc.pParameters = params;
+        rsDesc.NumStaticSamplers = 1;
+        rsDesc.pStaticSamplers = &sampler;
+
+        ComPtr<ID3DBlob> rsBlob, rsErr;
+        if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
+            if ( rsErr ) LogWarn() << "D3D12: AO blur root sig error: " << static_cast<const char*>(rsErr->GetBufferPointer());
+            return false;
+        }
+        if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
+            IID_PPV_ARGS( AO.BlurRootSig.ReleaseAndGetAddressOf() ) ) ) )
+            return false;
+    }
+
+    if ( !m_Shaders->CompileFromFile( "SSAO.hlsl", "CSMain", Shadermodel_CS, AO.MainCsBlob.ReleaseAndGetAddressOf() ) )
+        return false;
+    if ( !m_Shaders->CompileFromFile( "SSAO.hlsl", "CSBlur", Shadermodel_CS, AO.BlurCsBlob.ReleaseAndGetAddressOf() ) )
+        return false;
+
+    D3D12_COMPUTE_PIPELINE_STATE_DESC mainPso = {};
+    mainPso.pRootSignature = AO.MainRootSig.Get();
+    mainPso.CS = { AO.MainCsBlob->GetBufferPointer(), AO.MainCsBlob->GetBufferSize() };
+    if ( FAILED( device->CreateComputePipelineState( &mainPso, IID_PPV_ARGS( AO.MainPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateComputePipelineState failed (AO main).";
+        return false;
+    }
+    D3D12_COMPUTE_PIPELINE_STATE_DESC blurPso = {};
+    blurPso.pRootSignature = AO.BlurRootSig.Get();
+    blurPso.CS = { AO.BlurCsBlob->GetBufferPointer(), AO.BlurCsBlob->GetBufferSize() };
+    if ( FAILED( device->CreateComputePipelineState( &blurPso, IID_PPV_ARGS( AO.BlurPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateComputePipelineState failed (AO blur).";
+        return false;
+    }
     return true;
 }

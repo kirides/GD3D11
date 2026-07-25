@@ -38,6 +38,10 @@ SamplerComparisonState  shadowCmp : register(s2);
 // (PSMain/PSDepthClip/PSShadowClip, used by node attachments) simply never reads the 3rd field.
 cbuffer MaterialCB : register(b6) { uint MatNormalIndex; uint MatOrmIndex; uint MatDiffuseIndex; };
 TextureCubeArray        PointShadowCubes : register(t5);
+// Simple-SSAO mask (bindless, set once per frame — see D3D12GraphicsEngine::RenderSSAO/m_ActiveAOMaskSrvSlot).
+cbuffer AOCB : register(b7) { uint AoMaskIndex; };
+// Point-clamp for the AO mask — see World.hlsl's identical declaration for why Sample (not Load) is required.
+SamplerState smpAoClamp : register(s1);
 
 // DelightDiffuse, SamplePointShadow, ComputeSunShadow, the Cook-Torrance PBR helpers, PerturbNormal/
 // CotangentFrame, ComputeSunLightingPBR and AccumTiledPointLights are shared with World.hlsl/Skeletal.hlsl.
@@ -109,7 +113,10 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     albedo = DelightDiffuse( albedo );
     float vertLighting = i.col.g;
     float shadow = ComputeSunShadow( i.wpos, N );
-    float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r );
+    Texture2D aoTex = ResourceDescriptorHeap[AoMaskIndex];
+    uint aoW, aoH; aoTex.GetDimensions( aoW, aoH );
+    float ssao = aoTex.SampleLevel( smpAoClamp, i.clip.xy / float2( aoW, aoH ), 0 ).r;
+    float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r, ssao );
     rgb += AccumTiledPointLights( i.clip.xy, i.wpos, N, albedo, orm.g, orm.b );
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
     return float4( lerp( rgb, SrgbToLinear( FogColor ), f ), 1.0 );
@@ -200,7 +207,10 @@ float4 PSMainBindless( VS_OUT i ) : SV_TARGET
     albedo = DelightDiffuse( albedo );
     float vertLighting = i.col.g;
     float shadow = ComputeSunShadow( i.wpos, N );
-    float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r );
+    Texture2D aoTex = ResourceDescriptorHeap[AoMaskIndex];
+    uint aoW, aoH; aoTex.GetDimensions( aoW, aoH );
+    float ssao = aoTex.SampleLevel( smpAoClamp, i.clip.xy / float2( aoW, aoH ), 0 ).r;
+    float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r, ssao );
     rgb += AccumTiledPointLights( i.clip.xy, i.wpos, N, albedo, orm.g, orm.b );
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
     return float4( lerp( rgb, SrgbToLinear( FogColor ), f ), 1.0 );

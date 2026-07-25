@@ -194,6 +194,10 @@ XRESULT D3D12GraphicsEngine::Init() {
         // Non-fatal: vegetation boxes are an optional decoration layer. DrawVegetation() guards on
         // Grass.PSO existing and just skips the pass (grass simply doesn't render) if this failed.
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the grass pipeline (vegetation boxes will not render).";
+    } else if ( !CreateGrassShadowCaster() ) {
+        // Non-fatal: RenderSunShadows() guards on m_ShadowCasterGrassPSO and just skips grass's shadow
+        // contribution (it still renders lit, just casts no shadow) if this failed.
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the grass shadow-caster pipeline (grass will not cast shadows).";
     }
     if ( !m_Pipelines.CreateVideo() ) {
         // Non-fatal: Bink cutscene playback (zBinkPlayer.cpp) is a niche path. DrawVertexArray's PS_Video branch
@@ -206,6 +210,12 @@ XRESULT D3D12GraphicsEngine::Init() {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the SMAA pipeline (SMAA anti-aliasing will be unavailable).";
     } else {
         LoadSmaaTextures();   // non-fatal; RenderSMAA also guards on the LUTs being present
+    }
+    if ( !m_Pipelines.CreateAO() ) {
+        // Non-fatal: SSAO is an opt-in visual enhancement (RendererSettings.AoMode, defaults to a real AO mode
+        // but nothing else depends on it unconditionally). RenderSSAO() guards on the PSOs existing and just
+        // leaves the AO mask at white (no occlusion) if this failed.
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the SSAO pipeline (screen-space AO will be unavailable).";
     }
     LogInfo() << "D3D12GraphicsEngine initialized (device + 2D + world + VOB + skeletal + water + particle + decal + HDR tonemap pipelines up). Swapchain is created once the game window is set.";
     return XR_SUCCESS;
@@ -1008,6 +1018,7 @@ bool D3D12GraphicsEngine::CreateSwapChain( INT2 size ) {
     if ( !CreateSceneColorTarget( size ) ) return false;   // HDR scene RT (RTV heap now exists with the extra slot)
     CreateBloomResources( size );   // non-fatal: bloom is opt-in (EnableBloom, default off); RenderBloom no-ops if this failed
     CreateSmaaResources( size );     // non-fatal: SMAA is opt-in (AntiAliasingMode == AA_SMAA); RenderSMAA no-ops if this failed
+    CreateAOResources( size );       // non-fatal: SSAO is opt-in (AoMode != AO_NONE); RenderSSAO no-ops if this failed
     if ( !CreateLumPartialBuffer( size ) ) {
         // Non-fatal: RenderLuminanceAdapt() guards on m_LumPartialBuffer and just skips this frame's luminance
         // update if missing — m_LumAdaptedBuffer (created once in Init) keeps its last valid value, so Tonemap
@@ -1718,6 +1729,7 @@ bool D3D12GraphicsEngine::ResizeSwapChain( INT2 size ) {
     if ( !CreateSceneColorTarget( size ) ) return false;   // HDR scene RT tracks the new resolution too
     CreateBloomResources( size );   // non-fatal: see the CreateSwapChain call site
     CreateSmaaResources( size );     // non-fatal: see the CreateSwapChain call site
+    CreateAOResources( size );       // non-fatal: see the CreateSwapChain call site
     if ( !CreateLumPartialBuffer( size ) ) {
         LogWarn() << "D3D12GraphicsEngine::OnResize: failed to create the dynamic-exposure partial-sum buffer.";
     }

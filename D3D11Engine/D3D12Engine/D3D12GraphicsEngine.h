@@ -500,6 +500,13 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_ShadowCasterVobAttachPSO;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_ShadowCasterSkeletalPSO;
     Microsoft::WRL::ComPtr<ID3DBlob> m_ShadowCasterSkeletalPsBlob;
+    // Grass caster (built by CreateGrassShadowCaster, called from Init() AFTER m_Pipelines.CreateGrass() —
+    // reuses Grass.RootSig, so it can't be built inside CreateShadowMap() like the three above). CULL_NONE
+    // (not front-cull): grass cards are thin double-sided planes, matching Grass.PSO's own culling.
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_ShadowCasterGrassPSO;
+    Microsoft::WRL::ComPtr<ID3DBlob> m_ShadowCasterGrassVsBlob;   // VSDepth (Vegetation.hlsl)
+    Microsoft::WRL::ComPtr<ID3DBlob> m_ShadowCasterGrassPsBlob;   // PSShadowClip (Vegetation.hlsl)
+    bool CreateGrassShadowCaster();
     DirectX::XMFLOAT4X4 m_CascadeViewProj[kShadowCascades] = {};   // light-space view*proj per cascade (this frame)
     Frustum m_CascadeFrustum[kShadowCascades] = {};   // light-space view*proj per cascade (this frame)
     float m_CascadeTexelWorld[kShadowCascades] = {};   // world units / shadow texel per cascade (for the sampling normal bias)
@@ -678,6 +685,36 @@ private:
     bool LoadSmaaTextures();                  // one-time: load the area + search LUTs from system\GD3D11\Textures
     bool CreateSmaaResources( INT2 size );    // (re)builds the resolution-dependent color/edges/blend textures + views
     void RenderSMAA();                        // 3-pass SMAA on the swapchain LDR image (guards on the toggle + resources)
+
+    // Simple screen-space AO (plan item #4, "SAO"): resolution-dependent R8_UNORM textures (m_AOMask holds the
+    // final blurred result; m_AOBlurTemp is the horizontal-blur scratch target), recreated on resize like the
+    // bloom pyramid. RenderSSAO dispatches main-estimate -> blurH -> blurV (Shaders/D3D12/SSAO.hlsl) and leaves
+    // m_AOMask in PIXEL_SHADER_RESOURCE for the lit geometry passes (World/Vob/Skeletal PS) to sample bindlessly.
+    // m_ActiveAOMaskSrvSlot is refreshed every frame by RenderSSAO: the AO mask's slot when SSAO ran, else the
+    // white texture's slot (mask = no occlusion) — mirrors D3D11's white-clear "AO disabled" default.
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_AOMask;
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_AOMaskAlloc;
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_AOBlurTemp;
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_AOBlurTempAlloc;
+    UINT m_AOMaskSrvSlot = UINT_MAX;    // bindless index the lit PS reads (final blurred result)
+    UINT m_AOMaskUavSlot = UINT_MAX;    // main-pass output + blur-pass-2 output
+    UINT m_AOBlurTempUavSlot = UINT_MAX; // blur-pass-1 output
+    // The blur passes' SRV descriptor TABLE needs its 2 entries (AO input, depth) heap-contiguous — m_DepthSrvSlot
+    // lives elsewhere in the heap, so each direction gets its own 2-slot pair with a private copy of the depth
+    // view. Written ONCE per (re)creation (CreateAOResources, after CreateDepthBuffer) — unlike the bloom
+    // pyramid's per-frame-rewritten pair slots, nothing here changes frame-to-frame, so no double-buffering race.
+    UINT m_AOBlurHPairSlot = UINT_MAX;  // [0]=AOMask SRV (raw estimate), [1]=Depth SRV
+    UINT m_AOBlurVPairSlot = UINT_MAX;  // [0]=AOBlurTemp SRV, [1]=Depth SRV
+    UINT m_ActiveAOMaskSrvSlot = UINT_MAX;   // this frame's bindless AO index for World/Vob/Skeletal PS (b7/b8 AOCB)
+    bool m_AOResourcesReady = false;
+    // m_AOMask rests in UNORDERED_ACCESS between RenderSSAO runs (its creation state) except right after a
+    // successful run, which leaves it PIXEL_SHADER_RESOURCE for the lit passes' bindless read — tracks that so
+    // the NEXT run knows whether it must flip it back to UNORDERED_ACCESS before the main pass writes it (mirrors
+    // m_SceneColorInPixelState/m_LightGridInPixelState). Toggling AO off skips RenderSSAO entirely, so without
+    // this the resource would still show PIXEL_SHADER_RESOURCE if AO is re-enabled a frame later.
+    bool m_AOMaskInPixelState = false;
+    bool CreateAOResources( INT2 size );      // (re)builds m_AOMask/m_AOBlurTemp + persistent SRV/UAV slots
+    void RenderSSAO();                        // main estimate -> separable blur; no-ops (mask stays white) if disabled/unavailable
 
     // Dynamic exposure / auto-exposure: a two-pass GPU luminance reduction of the finished HDR scene color,
     // temporally adapted (Pattanaik's technique) toward last frame's value, feeding Tonemap's exposure divisor

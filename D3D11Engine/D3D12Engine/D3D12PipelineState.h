@@ -153,6 +153,21 @@ public:
         Microsoft::WRL::ComPtr<ID3D12PipelineState> CompositePSO;
     };
 
+    // Simple screen-space AO (SSAO/"SAO" — plan item #4). Forward+ has no GBuffer normals, so the main pass
+    // reconstructs view-space normals from neighbouring depth samples (Shaders/D3D12/SSAO.hlsl CSMain); a
+    // depth-aware separable blur (CSBlur, run horizontal then vertical) denoises the raw estimate. Both passes
+    // share one root-sig SHAPE (b0 32-bit consts, one SRV descriptor table, one UAV descriptor table) but differ
+    // in table width (main: 1 SRV; blur: 2 SRVs), so each gets its own root signature. Resolution-dependent
+    // textures (m_AOMask/m_AOBlurTemp) and their heap slots stay in the engine, like the bloom pyramid.
+    struct AOPipeline {
+        Microsoft::WRL::ComPtr<ID3D12RootSignature> MainRootSig;
+        Microsoft::WRL::ComPtr<ID3DBlob>            MainCsBlob;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> MainPSO;
+        Microsoft::WRL::ComPtr<ID3D12RootSignature> BlurRootSig;
+        Microsoft::WRL::ComPtr<ID3DBlob>            BlurCsBlob;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> BlurPSO;
+    };
+
     // SMAA anti-aliasing (runtime toggle, RendererSettings.AntiAliasingMode == AA_SMAA). One bindless root
     // sig (b0 root consts { RT_METRICS + 5 SRV heap indices }, static linear+point clamp samplers,
     // CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED) shared by all three fullscreen passes. Edge/Blend PSOs target an
@@ -196,6 +211,7 @@ public:
                               // textures, b1 GrassCB, b2 fog, Forward+ lights, b4 shadow CB, t5 CSM shadow map)
     bool CreateVideo();       // Bink YUV video playback (own root sig: b0 viewport consts, t0-t2 YUV planes)
     bool CreateSmaa();        // SMAA 3-pass AA (bindless root sig + edge/blend/neighborhood PSOs); textures stay in engine
+    bool CreateAO();          // simple SSAO: main estimate + separable blur compute pipelines; textures stay in engine
 
     // --- On-demand PSO cache lookups (called from the engine's draw path; create+cache on miss) ---
     // cullMode/frontCCW/rtvIsHdr/forceMaxZ default to the plain 2D/UI case (cull-none, clockwise-front,
@@ -227,6 +243,7 @@ public:
     GraphicsPipeline Grass;
     VideoPipeline    Video;
     SmaaPipeline     Smaa;
+    AOPipeline       AO;
 
 private:
     D3D12Device*        m_Device = nullptr;
