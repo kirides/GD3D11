@@ -34,7 +34,15 @@ inline thread_local UINT g_CurrentRecordingOpIndex = 0;
 
 struct DXMarker {
     DXMarker( const Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList>& commandList, const wchar_t* text ) :
-        c( commandList.Get() )
+        DXMarker( commandList.Get(), text )
+    {
+    }
+
+    // Raw-pointer overload: the MT shadow-cascade recorder (RenderSunShadows / RecordShadowCascade) is handed a
+    // bare ID3D12GraphicsCommandList* so the same body can record into m_CmdList or into a per-cascade list.
+    // The breadcrumb ring this writes is thread_local, so concurrent recorders don't collide.
+    DXMarker( ID3D12GraphicsCommandList* commandList, const wchar_t* text ) :
+        c( commandList )
     {
         if ( c && text ) {
             // Track exactly what string context we are assigning to the CURRENT command slot

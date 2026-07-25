@@ -200,6 +200,11 @@ XRESULT D3D12GraphicsEngine::Init() {
         // contribution (it still renders lit, just casts no shadow) if this failed.
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the grass shadow-caster pipeline (grass will not cast shadows).";
     }
+    if ( !CreateCascadeCommandLists() ) {
+        // Non-fatal: RenderSunShadows() checks m_CascadeCmdListsReady and falls back to recording all cascades
+        // serially into m_CmdList (exactly what it did before plan item #7) — slower, identical output.
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the per-cascade command lists (shadow cascades will be recorded single-threaded).";
+    }
     if ( !m_Pipelines.CreateVideo() ) {
         // Non-fatal: Bink cutscene playback (zBinkPlayer.cpp) is a niche path. DrawVertexArray's PS_Video branch
         // guards on Video.PSO existing and falls back to the normal FF/UI draw (a black/untextured quad) if not.
@@ -1537,6 +1542,69 @@ void D3D12GraphicsEngine::FlushCommandListSync() {
 
     m_CmdAllocators[m_FrameIndex]->Reset();
     m_CmdList->Reset( m_CmdAllocators[m_FrameIndex].Get(), nullptr );
+}
+
+
+bool D3D12GraphicsEngine::CreateCascadeCommandLists() {
+    // Allocator + list pair per (cascade x frame-in-flight) for the MT shadow-cascade recording path. Two hard
+    // D3D12 rules drive the 2D array: an allocator can back only ONE currently-recording list (so cascades that
+    // record concurrently need one each), and it may not be Reset while the GPU still consumes a list recorded
+    // from it (so each frame-in-flight needs its own). Total = kShadowCascades * kBackBufferCount allocators,
+    // which is a handful of small VA reservations — acceptable even under the 32-bit budget.
+    ID3D12Device* device = m_Device.GetDevice();
+    if ( !device ) return false;
+
+    for ( UINT c = 0; c < kShadowCascades; ++c ) {
+        for ( UINT i = 0; i < kBackBufferCount; ++i ) {
+            if ( FAILED( device->CreateCommandAllocator( D3D12_COMMAND_LIST_TYPE_DIRECT,
+                IID_PPV_ARGS( m_CascadeCmdAllocators[c][i].ReleaseAndGetAddressOf() ) ) ) ) {
+                LogWarn() << "D3D12: failed to create a shadow-cascade command allocator — MT cascade recording disabled.";
+                return false;
+            }
+            if ( FAILED( device->CreateCommandList( 0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+                m_CascadeCmdAllocators[c][i].Get(), nullptr,
+                IID_PPV_ARGS( m_CascadeCmdLists[c][i].ReleaseAndGetAddressOf() ) ) ) ) {
+                LogWarn() << "D3D12: failed to create a shadow-cascade command list — MT cascade recording disabled.";
+                return false;
+            }
+            // CreateCommandList returns the list already open; close it so RenderSunShadows' Reset is symmetric.
+            m_CascadeCmdLists[c][i]->Close();
+        }
+    }
+    m_CascadeCmdListsReady = true;
+    return true;
+}
+
+
+void D3D12GraphicsEngine::SubmitRecordedCommandsAndReopen() {
+    // Closes + submits m_CmdList and immediately reopens it on the SAME frame allocator. Unlike
+    // FlushCommandListSync there is NO fence wait and NO allocator Reset: resetting the allocator would pull
+    // the memory out from under the list we just submitted, and waiting would defeat the point. Recording new
+    // commands into an allocator whose previously-closed list is still in flight is explicitly legal — only one
+    // list at a time may RECORD from it.
+    //
+    // Everything the command list itself carries as state (descriptor heaps, render targets, viewport, PSO,
+    // root signature) is lost across Reset; the caller is responsible for re-establishing what it needs. The
+    // shader-visible SRV heap is re-bound here because literally every subsequent pass needs it.
+    if ( !m_CmdList || !m_Device.GetDirectQueue() ) return;
+
+    // Present() normally inserts the frame's single copy->direct cross-queue wait immediately before the one
+    // graphics execute. Submitting graphics work EARLIER than that would let it sample textures whose copy-queue
+    // upload hasn't landed, so flush here too (a no-op when nothing was cached in since the last flush) — the
+    // wait then precedes both this batch and the cascade lists that follow it.
+    FlushTextureUploads();
+
+    if ( FAILED( m_CmdList->Close() ) ) return;
+    ID3D12CommandList* lists[] = { m_CmdList.Get() };
+    m_Device.GetDirectQueue()->ExecuteCommandLists( 1, lists );
+
+    if ( FAILED( m_CmdList->Reset( m_CmdAllocators[m_FrameIndex].Get(), nullptr ) ) ) return;
+    ResetCpuContextTracker();
+
+    if ( m_SrvHeap ) {
+        ID3D12DescriptorHeap* heaps[] = { m_SrvHeap.Get() };
+        m_CmdList->SetDescriptorHeaps( 1, heaps );
+    }
 }
 
 

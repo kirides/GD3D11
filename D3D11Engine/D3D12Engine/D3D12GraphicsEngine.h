@@ -216,8 +216,14 @@ private:
     // `dist < 1000` split into drawAsMorphMesh/drawRegular, plus DrawSkeletalMeshVobs' `distance < 1000`
     // morph branch). Morphing costs a CPU vertex re-upload per animation frame, so this bounds crowd cost.
     static constexpr float kMorphMeshMaxDistance = 1000.0f;
+    // cascadeCount > 1 (only valid with shadowCascade >= 0) switches to the MULTI-cascade mode: cullFrustum is
+    // read as an ARRAY of cascadeCount frusta (i.e. &m_CascadeFrustum[0]) and each prepared vob is appended to
+    // every cascade list whose frustum it intersects. One pass over the registered skeletal-vob list instead of
+    // kShadowCascades passes — and, more importantly, it keeps every Gothic-touching part of the skeletal
+    // preparation (animation update, morph meshes, texani, bone palette, ring uploads) on the main thread while
+    // the cascades themselves are culled/recorded concurrently.
     void PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& vobs, const Frustum* cullFrustum = nullptr, int shadowCascade = -1,
-        const DirectX::XMFLOAT3* sphereCenter = nullptr, float sphereRange = 0.0f );
+        const DirectX::XMFLOAT3* sphereCenter = nullptr, float sphereRange = 0.0f, UINT cascadeCount = 1 );
     void DrawSkeletalDepthPrepass();  // lay down skeletal base + node-attachment depth into the Forward+ prepass
     void DrawSkeletalColor();         // draw the collected skeletal base meshes + node attachments (post-cull, lit)
     bool CreateParticleInstanceBuffers(); // per-frame dynamic (upload-heap) particle instance ring
@@ -537,6 +543,30 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> m_ShadowVobDrawArgs[kShadowCascades][kBackBufferCount];
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_ShadowVobDrawArgsAlloc[kShadowCascades][kBackBufferCount];
     uint8_t* m_ShadowVobDrawArgsPtr[kShadowCascades][kBackBufferCount] = {};
+    UINT     m_ShadowVobDrawCount[kShadowCascades] = {};   // filled by RenderSunShadows' serial build phase, consumed by RecordShadowCascade
+
+    // ---- Multi-threaded cascade culling + command recording (plan item #7) ----
+    // One command allocator AND one command list per (cascade x frame-in-flight). An allocator may never back
+    // two concurrently-recording lists, nor be reset while the GPU still consumes a list recorded from it — so
+    // the pair is indexed by both the cascade (= the recording thread) and the frame index. Created once in
+    // Init(); if creation fails m_CascadeCmdListsReady stays false and RenderSunShadows silently keeps using
+    // the single-threaded path on m_CmdList (degrade, don't lose shadows).
+    Microsoft::WRL::ComPtr<ID3D12CommandAllocator>    m_CascadeCmdAllocators[kShadowCascades][kBackBufferCount];
+    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> m_CascadeCmdLists[kShadowCascades][kBackBufferCount];
+    bool m_CascadeCmdListsReady = false;
+    bool m_CascadeRecordFailureLogged = false;   // one warning per session, not per frame
+    bool CreateCascadeCommandLists();
+    // Closes + submits whatever is currently recorded in m_CmdList and immediately reopens it on the SAME
+    // frame allocator (no allocator Reset, no GPU wait) so a batch of independently-recorded lists can be
+    // slotted into the queue at this exact point in the frame. Used by RenderSunShadows' MT path.
+    void SubmitRecordedCommandsAndReopen();
+    // Per-cascade phases of RenderSunShadows, split so the same bodies serve both the serial and the MT driver.
+    // CullShadowCascade touches ONLY per-cascade state and read-only engine data (safe on a pool thread);
+    // RecordShadowCascade issues D3D12 calls into the list it is given and reads only data resolved earlier on
+    // the main thread (also pool-thread safe). Everything that mutates Gothic state or a shared upload ring
+    // happens between them, serially, in RenderSunShadows itself.
+    void CullShadowCascade( UINT cascade );
+    void RecordShadowCascade( UINT cascade, ID3D12GraphicsCommandList* cmdList, bool sunUp );
 
     DirectX::XMFLOAT3 m_SunDirWS = { 0.0f, 1.0f, 0.0f };   // normalized world-space dir TOWARD the sun (this frame, smoothed)
     // Temporal light-direction smoothing (P2.9c-3c): the origin-anchored texel-snap grid amplifies tiny per-frame
@@ -556,6 +586,10 @@ private:
     static UINT ClampShadowMapSize( int desired );       // snap to the shared {512,1024,2048,4096,8192} step set (matches D3D11's ImGui combo)
     void ComputeCascadeMatrices();     // fill m_CascadeViewProj/m_CascadeTexelWorld/m_SunDirWS from the sun + camera (simple ortho for now)
     void RenderSunShadows();           // render the opaque casters into each cascade slice from the sun's POV + upload the sampling CB
+    // Diffuse-SRV resolution for the shadow / alpha-cutout paths: the material's cached-in engine texture, or
+    // the 1x1 black fallback. Uses GetCacheState (NOT CacheIn) so it stays a pure read — no Gothic texture load
+    // is triggered from a pass that only needs an alpha cutout, which also makes it callable off the main thread.
+    D3D12_GPU_DESCRIPTOR_HANDLE ResolveShadowDiffuseSrv( zCTexture* tex ) const;
 
     // ---- Point-light shadow cubes (P2.10) — mirrors D3D11's shared TextureCubeArray Forward+ path. Up to
     // kMaxShadowCubes shadowed point lights, each a 6-face 128^2 cube slot in one array. NORMAL-Z (clear 1.0,
