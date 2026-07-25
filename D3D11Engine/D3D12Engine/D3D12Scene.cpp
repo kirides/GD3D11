@@ -739,7 +739,10 @@ bool D3D12GraphicsEngine::CreateShadowMap() {
 
 	D3D12_RESOURCE_DESC cbDesc = {};
 	cbDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-	cbDesc.Width = 256;   // one 256-aligned CB (cascade matrices + sun data fit well under 256B)
+	// 512, not 256: the first 256B hold the cascade matrices + sun data (RenderSunShadows), the tail holds
+	// the scene-wetness block (UploadWetnessConstants — written later in the frame, after the rain shadow
+	// pass has its camera). Two disjoint byte ranges of the same CB, so neither write clobbers the other.
+	cbDesc.Width = 512;
 	cbDesc.Height = 1;
 	cbDesc.DepthOrArraySize = 1;
 	cbDesc.MipLevels = 1;
@@ -1175,6 +1178,9 @@ void D3D12GraphicsEngine::RenderSunShadows() {
 			XMFLOAT3   CascadeTexelWorld; float AmbientStrength;
 			float ShadowAOStrength; float WorldAOStrength; float _pad0; float _pad1;
 		} cb;
+		// The scene-wetness tail is written at kWetnessCbOffset by UploadWetnessConstants; this head must end
+		// exactly there or the two writes overlap (or leave a hole the HLSL ShadowCB doesn't expect).
+		static_assert( sizeof( cb ) == kWetnessCbOffset, "ShadowCB head size must match the HLSL layout" );
 		const auto& set = Engine::GAPI->GetRendererState().RendererSettings;
 		for ( UINT c = 0; c < kShadowCascades; ++c ) cb.CascadeViewProj[c] = m_CascadeViewProj[c];
 		cb.SunDirWS = m_SunDirWS;
@@ -3133,6 +3139,11 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// the rain-velocity direction, so DrawRainParticles' VS can zero out indoor/roofed raindrops. Leaves
 	// the backbuffer RT/DSV rebound after (like the two shadow passes above).
 	RenderRainShadowmap();
+	// Scene wetness ("wet ground"): publish this frame's rain camera + wetness/time constants into the tail
+	// of the shared shadow CB so the lit World/Vob/Skeletal pixel shaders can darken, ripple and gloss up
+	// the surfaces the rain actually reaches. Unconditional (it also has to publish the "not wet" state) and
+	// necessarily AFTER RenderRainShadowmap, which is what computes m_RainShadowViewProj.
+	UploadWetnessConstants();
 	// Rain/snow particle advance: ping-pongs the GPU particle buffer in place. Independent of the geometry
 	// passes below (only touches its own buffer); DrawRainParticles (later, alongside the PFX particles)
 	// reads the result.

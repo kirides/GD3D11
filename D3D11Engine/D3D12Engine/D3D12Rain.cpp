@@ -390,6 +390,35 @@ bool D3D12GraphicsEngine::LoadRainTextures() {
     return m_RainTexturesLoaded;
 }
 
+void D3D12GraphicsEngine::UploadWetnessConstants() {
+    // Fills the scene-wetness tail of the shared shadow CB (see kWetnessCbOffset). MUST be called every
+    // frame, unconditionally, and AFTER RenderRainShadowmap — the lit World/Vob/Skeletal PS read these
+    // constants out of the same CB they already bind for the cascades, so a frame that skipped the write
+    // would sample last frame's rain camera against this frame's geometry.
+    if ( !m_ShadowCBMapped[m_FrameIndex] ) return;
+
+    WetnessCBData cb = {};
+    cb.RainViewProj = m_RainShadowViewProj;
+    // GetSceneWetness() is the SUSTAINED wetness (it decays over several seconds after the rain stops, see
+    // GothicAPI::GetSceneWetness), while GetRainFXWeight() is "is it raining right now" — the ripple
+    // animation and the sheen strength ride the latter, the darkening/roughness the former. Same split as
+    // D3D11's AC_SceneWettness / AC_RainFXWeight.
+    cb.SceneWetness  = Engine::GAPI->GetSceneWetness();
+    cb.RainFxWeight  = Engine::GAPI->GetRainFXWeight();
+    cb.RainTime      = Engine::GAPI->GetTimeSeconds();   // same clock D3D11 feeds AC_Time (GSky.cpp)
+    cb.RainShadowMapSize = static_cast<float>( kRainShadowMapSize );
+
+    // 0xFFFFFFFF on either index disables the effect in the shader. The rain map needs both its resources
+    // AND a computed camera; the distortion texture is an optional asset (distortion2.dds).
+    const bool haveRainMap = m_RainShadowResourcesReady && m_RainShadowViewProjValid
+        && m_RainShadowSrvSlot != UINT_MAX;
+    cb.RainShadowIndex = haveRainMap ? m_RainShadowSrvSlot : 0xFFFFFFFFu;
+    cb.DistortionIndex = ( m_DistortionTexture && m_DistortionTexture->HasSRV() )
+        ? m_DistortionTexture->GetSrvSlot() : 0xFFFFFFFFu;
+
+    memcpy( m_ShadowCBMapped[m_FrameIndex] + kWetnessCbOffset, &cb, sizeof( cb ) );
+}
+
 bool D3D12GraphicsEngine::CreateRainShadowResources() {
     if ( m_RainShadowResourcesReady ) return true;
     ID3D12Device* device = m_Device.GetDevice();
@@ -471,9 +500,9 @@ void D3D12GraphicsEngine::RenderRainShadowmap() {
 
     DX_ZONE( m_CmdList, "RainShadowmap" );
 
-    // Return the map to DEPTH_WRITE if last frame's rain draw left it in NON_PIXEL_SHADER_RESOURCE.
+    // Return the map to DEPTH_WRITE if last frame's readers left it in ALL_SHADER_RESOURCE.
     if ( m_RainShadowInReadState ) {
-        auto toDepth = TransitionBarrier( m_RainShadowMap.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE );
+        auto toDepth = TransitionBarrier( m_RainShadowMap.Get(), D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE );
         m_CmdList->ResourceBarrier( 1, &toDepth );
         m_RainShadowInReadState = false;
     }
@@ -525,7 +554,7 @@ void D3D12GraphicsEngine::RenderRainShadowmap() {
     m_RainShadowFrustum.BuildOrthographic( view, span, span, 1.0f, halfRange * 2.0f, 0, 0, 0 );
 
     if ( !m_RainShadowFrustum.IsValid() ) {
-        auto toRead = TransitionBarrier( m_RainShadowMap.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
+        auto toRead = TransitionBarrier( m_RainShadowMap.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE );
         m_CmdList->ResourceBarrier( 1, &toRead );
         m_RainShadowInReadState = true;
         // Re-bind the HDR scene-color RT (+ shared depth) — mirrors RenderSunShadows/RenderPointShadows'
@@ -545,6 +574,7 @@ void D3D12GraphicsEngine::RenderRainShadowmap() {
     // (missing transpose + swapped multiply order) produced a degenerate/garbage clip transform — visible as a
     // thin wedge radiating from a point instead of a proper top-down depth map of the terrain.
     XMStoreFloat4x4( &m_RainShadowViewProj, XMMatrixTranspose( XMMatrixMultiply( view, proj ) ) );
+    m_RainShadowViewProjValid = true;   // the wetness lookup may now project into this map
 
     MeshInfo* wm = Engine::GAPI->GetWrappedWorldMesh();
     D3D12VertexBuffer* vb = wm ? D3D12VertexBuffer::From( wm->GetMeshVertexBuffer() ) : nullptr;
@@ -615,7 +645,7 @@ void D3D12GraphicsEngine::RenderRainShadowmap() {
         }
     }
 
-    auto toRead = TransitionBarrier( m_RainShadowMap.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
+    auto toRead = TransitionBarrier( m_RainShadowMap.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE );
     m_CmdList->ResourceBarrier( 1, &toRead );
     m_RainShadowInReadState = true;
 

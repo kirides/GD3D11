@@ -23,6 +23,11 @@ cbuffer ShadowCB : register(b5)
     float3   SunColor;          float SunIntensity;
     float3   CascadeTexelWorld; float AmbientStrength;
     float    ShadowAOStrength;  float WorldAOStrength;  float2 _shpad;
+    // Scene-wetness (rain) tail — see World.hlsl for the layout notes; must stay identical in all three
+    // lit shaders and in the CPU-side WetnessCBData.
+    float4x4 RainViewProj;
+    float    SceneWetness;      float RainFxWeight;     float RainTime;   uint RainShadowIndex;
+    uint     DistortionIndex;   float RainShadowMapSize; float2 _wetpad;
 };
 Texture2DArray          ShadowMap : register(t4);
 SamplerComparisonState  shadowCmp : register(s2);
@@ -40,6 +45,9 @@ SamplerState smpAoClamp : register(s1);
 // DelightDiffuse, SamplePointShadow, ComputeSunShadow, the Cook-Torrance PBR helpers, PerturbNormal/
 // CotangentFrame, ComputeSunLightingPBR and AccumTiledPointLights are shared with World.hlsl/Vob.hlsl.
 #include "include/PBRLighting.hlsl"
+// Wet-ground / scene-wetness (rain) — see World.hlsl. NPCs/monsters get wet in D3D11 too (its deferred
+// wetness pass covers every opaque G-buffer pixel), so the skinned pass applies it as well.
+#include "include/Wetness.hlsl"
 
 struct VS_IN
 {
@@ -93,11 +101,17 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     albedo = DelightDiffuse( albedo );
     float vertLighting = i.col.g;               // ModelColor green (white=1 for NPCs → no baked AO reduction)
     float shadow = ComputeSunShadow( i.wpos, N );
+    // Scene wetness (rain) — see World.hlsl's PSMain for why this runs after the cascade lookup.
+    float3 V = normalize( CamPosWS - i.wpos );
+    float wetSheen;
+    float wetness = ApplySceneWetness( i.wpos, V, N, albedo, orm.g, wetSheen );
     Texture2D aoTex = ResourceDescriptorHeap[AoMaskIndex];
     uint aoW, aoH; aoTex.GetDimensions( aoW, aoH );
     float ssao = aoTex.SampleLevel( smpAoClamp, i.clip.xy / float2( aoW, aoH ), 0 ).r;
     float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r, ssao );
+    rgb *= lerp( 1.0, 0.8, wetness );
     rgb += AccumTiledPointLights( i.clip.xy, i.wpos, N, albedo, orm.g, orm.b );   // dynamic point lights on top (PBR)
+    rgb += wetSheen * ( 1.0 + shadow ) * SrgbToLinear( SunColor ) * SunIntensity;
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
     return float4( lerp( rgb, SrgbToLinear( FogColor ), f ), 1.0 );
 }

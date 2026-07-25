@@ -27,6 +27,13 @@ cbuffer ShadowCB : register(b3)
     float3   SunColor;          float SunIntensity;     // sun color (sRGB) + strength (0 when sun below horizon)
     float3   CascadeTexelWorld; float AmbientStrength;  // world units/texel; SQ_ShadowStrength (ambient/sky term)
     float    ShadowAOStrength;  float WorldAOStrength;  float2 _shpad;   // vertLighting -> AO modulation weights
+    // --- Scene wetness (rain) tail, uploaded separately by UploadWetnessConstants after the rain shadow
+    // pass has computed this frame's rain camera. Keep in sync with Vob.hlsl/Skeletal.hlsl and the
+    // WetnessCBData struct on the CPU side. RainShadowIndex/DistortionIndex are 0xFFFFFFFF when the rain
+    // shadowmap / distortion2.dds isn't available, which disables the effect entirely.
+    float4x4 RainViewProj;
+    float    SceneWetness;      float RainFxWeight;     float RainTime;   uint RainShadowIndex;
+    uint     DistortionIndex;   float RainShadowMapSize; float2 _wetpad;
 };
 Texture2DArray          ShadowMap : register(t4);
 SamplerComparisonState  shadowCmp : register(s2);
@@ -59,6 +66,9 @@ float3 DecodeOctNormal( float2 e )
 // DelightDiffuse, SamplePointShadow, ComputeSunShadow, the Cook-Torrance PBR helpers, PerturbNormal/
 // CotangentFrame, ComputeSunLightingPBR and AccumTiledPointLights are shared with Vob.hlsl/Skeletal.hlsl.
 #include "include/PBRLighting.hlsl"
+// Wet-ground / scene-wetness (rain): tri-planar ripple normals, desaturate+darken, glossier roughness and
+// the additive wet sheen. Needs the ShadowCB wetness tail above plus `smp`/`shadowCmp`.
+#include "include/Wetness.hlsl"
 
 struct VS_IN  { float3 pos : POSITION; float2 nrm : NORMAL; float2 uv : TEXCOORD0; float4 col : DIFFUSE; };
 struct VS_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : TEXCOORD1; float fogDist : TEXCOORD2; float3 wpos : TEXCOORD3; float3 wnrm : TEXCOORD4; };
@@ -92,11 +102,19 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     albedo = DelightDiffuse( albedo );
     float vertLighting = i.col.g;             // Gothic baked vertex lighting (green channel) as the AO modulator
     float shadow = ComputeSunShadow( i.wpos, N );
+    // Scene wetness (rain). Deliberately AFTER the cascade lookup: D3D11 also samples the sun shadow with
+    // the undeformed normal and only then runs ApplySceneWettness. Perturbs N/albedo/roughness in place.
+    float3 V = normalize( CamPosWS - i.wpos );
+    float wetSheen;
+    float wetness = ApplySceneWetness( i.wpos, V, N, albedo, orm.g, wetSheen );
     Texture2D aoTex = ResourceDescriptorHeap[AoMaskIndex];
     uint aoW, aoH; aoTex.GetDimensions( aoW, aoH );
     float ssao = aoTex.SampleLevel( smpAoClamp, i.clip.xy / float2( aoW, aoH ), 0 ).r;
     float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r, ssao );
+    rgb *= lerp( 1.0, 0.8, wetness );   // D3D11 dims the SUN light color 20% where the surface is wet
     rgb += AccumTiledPointLights( i.clip.xy, i.wpos, N, albedo, orm.g, orm.b );
+    // Additive wet sheen (D3D11's specWet, boosted where the sun actually reaches: specWet += specWet * shadow).
+    rgb += wetSheen * ( 1.0 + shadow ) * SrgbToLinear( SunColor ) * SunIntensity;
     // Linear distance fog toward the (linearized) atmosphere color — keeps the HDR buffer consistently linear.
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
     rgb = lerp( rgb, SrgbToLinear( FogColor ), f );

@@ -782,13 +782,30 @@ private:
     D3D12_CPU_DESCRIPTOR_HANDLE m_RainShadowDsv = {};
     UINT m_RainShadowSrvSlot = UINT_MAX;
     bool m_RainShadowResourcesReady = false;
-    // Round-trips DEPTH_WRITE (RenderRainShadowmap writes it) -> NON_PIXEL_SHADER_RESOURCE (DrawRainParticles'
-    // VS reads it that same frame via ResourceDescriptorHeap) each frame, mirroring m_ShadowInPixelState.
+    // Round-trips DEPTH_WRITE (RenderRainShadowmap writes it) -> ALL_SHADER_RESOURCE each frame, mirroring
+    // m_ShadowInPixelState. ALL_ (not NON_PIXEL_) because two stages read it the same frame: DrawRainParticles'
+    // VS (via ResourceDescriptorHeap) and the lit World/Vob/Skeletal PS wetness lookup.
     bool m_RainShadowInReadState = false;
     XMFLOAT4X4 m_RainShadowViewProj = {};   // this frame's combined rain-shadow view*proj (see CB layout note)
+    // False until RenderRainShadowmap has actually produced a camera. Sampling the wetness with the
+    // zero-initialized matrix above would divide by w == 0 and feed NaN UVs into the PCF loop.
+    bool m_RainShadowViewProjValid = false;
     Frustum m_RainShadowFrustum;
     bool CreateRainShadowResources();   // one-time (or on-demand retry) DSV/SRV + resource creation
     void RenderRainShadowmap();          // computes the rain-light camera + draws world-mesh casters
+
+    // Scene wetness ("wet ground"): the port of D3D11's deferred ApplySceneWettness into the Forward+ lit
+    // pixel shaders (Shaders/D3D12/include/Wetness.hlsl). All of its inputs ride in the TAIL of the shared
+    // per-frame shadow CB (m_ShadowCB), starting at kWetnessCbOffset — RenderSunShadows owns bytes
+    // [0, kWetnessCbOffset) and this owns [kWetnessCbOffset, ...). It must run AFTER RenderRainShadowmap
+    // (which computes m_RainShadowViewProj for this frame) but before any lit draw binds the CB.
+    static constexpr UINT kWetnessCbOffset = 256;
+    struct WetnessCBData {
+        XMFLOAT4X4 RainViewProj;
+        float SceneWetness; float RainFxWeight; float RainTime; UINT RainShadowIndex;
+        UINT  DistortionIndex; float RainShadowMapSize; float _pad0; float _pad1;
+    };
+    void UploadWetnessConstants();
 
     // Dynamic exposure / auto-exposure: a two-pass GPU luminance reduction of the finished HDR scene color,
     // temporally adapted (Pattanaik's technique) toward last frame's value, feeding Tonemap's exposure divisor
