@@ -6150,9 +6150,27 @@ float GothicAPI::GetRainFXWeight() {
     return std::max( myRainFxWeight, gRainFxWeight );
 }
 
+/** Returns true if gothic's current outdoor weather is snow */
+bool GothicAPI::IsSnowingWeather() {
+    if ( oCGame* ogame = oCGame::GetGame() ) {
+        if ( zCWorld* world = ogame->_zCSession_world ) {
+            if ( zCSkyController_Outdoor* skyController = world->GetSkyControllerOutdoor() ) {
+                return skyController->GetWeatherType() == zTWeather::zTWEATHER_SNOW;
+            }
+        }
+    }
+    return false;
+}
+
 /** Returns the wetness of the scene. Lasts longer than RainFXWeight */
 float GothicAPI::GetSceneWetness() {
-    float rain = GetRainFXWeight();
+    // Snow drives the same particle-fx weight as rain (see GetRainFXWeight), but snow must not wet the
+    // ground - no darkening, no ripples, no wet specular. Only our own manual override still counts here,
+    // so the wetness slider keeps working while it snows. Note this decays through the branch below
+    // instead of returning early, so wetness fades out normally when the weather switches to snow.
+    float rain = IsSnowingWeather()
+        ? RendererState.RendererSettings.RainSceneWettness
+        : GetRainFXWeight();
     static DWORD s_rainStopTime = Toolbox::timeSinceStartMs();
 
     if ( rain >= SceneWetness ) {

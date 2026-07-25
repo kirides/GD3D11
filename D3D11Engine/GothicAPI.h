@@ -766,7 +766,10 @@ public:
     /** Returns the current weight of the rain-fx. The bigger value of ours and gothics is returned. */
     float GetRainFXWeight();
 
-    /** Returns the wetness of the scene. Lasts longer than RainFXWeight */
+    /** Returns true if gothic's current outdoor weather is snow */
+    bool IsSnowingWeather();
+
+    /** Returns the wetness of the scene. Lasts longer than RainFXWeight. Always 0 while it snows. */
     float GetSceneWetness();
 
     /** Saves the users settings from the menu */
