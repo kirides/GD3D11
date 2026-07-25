@@ -205,6 +205,11 @@ private:
     // the point-shadow scratch list (g_PointShadowSkelDraws/g_PointShadowAttachDraws), else the main-view
     // g_FrameSkelDraws/g_FrameAttachDraws; the per-vob CB/attachment ring upload itself is still cached once per
     // frame (see g_SkelUploadCache) regardless of how many cull passes touch that vob.
+    // Beyond this camera distance an .MMS node attachment (facial morph head, bow/crossbow draw mesh) stops
+    // morphing and renders as its undeformed rest mesh — the literal D3D11 threshold (GothicAPI.cpp's
+    // `dist < 1000` split into drawAsMorphMesh/drawRegular, plus DrawSkeletalMeshVobs' `distance < 1000`
+    // morph branch). Morphing costs a CPU vertex re-upload per animation frame, so this bounds crowd cost.
+    static constexpr float kMorphMeshMaxDistance = 1000.0f;
     void PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& vobs, const Frustum* cullFrustum = nullptr, int shadowCascade = -1,
         const DirectX::XMFLOAT3* sphereCenter = nullptr, float sphereRange = 0.0f );
     void DrawSkeletalDepthPrepass();  // lay down skeletal base + node-attachment depth into the Forward+ prepass

@@ -3952,9 +3952,21 @@ void D3D12GraphicsEngine::UploadFrameVobInstances() {
     if ( !rs.RendererSettings.DrawVOBs )
         return;
 
+    // Animated static VOBs: a static-VOB visual built from an .MMS carries its zCMorphMesh in MorphMeshVisual
+    // (see GothicAPI::OnAddVob) and its MeshInfo vertex buffers are U_DYNAMIC|CA_WRITE for exactly this
+    // (WorldConverter::Extract3DSMeshFromVisual2) — so re-uploading the morphed vertices per frame lands in
+    // D3D12VertexBuffer's per-frame-in-flight ring copy and can't race an in-flight GPU read. Mirrors D3D11's
+    // UpdateMorphMeshVisuals(activeVisuals) call in DrawVOBsInstanced, gated on the same AnimateStaticVobs
+    // setting and run at the same point in the frame (while snapshotting the visible visuals, before any draw).
+    // Only visible visuals are touched, since the loop below already skips visuals with no instances.
+    const bool animateStaticVobs = rs.RendererSettings.AnimateStaticVobs;
+
     const UINT frame = m_FrameIndex;
     for ( auto const& [visualPtr, visual] : Engine::GAPI->GetStaticMeshVisuals() ) {
         if ( !visual || visual->Instances.empty() ) continue;
+
+        if ( animateStaticVobs && visual->MorphMeshVisual )
+            WorldConverter::UpdateMorphMeshVisual( visual->MorphMeshVisual, visual );
 
         const UINT numInstances = static_cast<UINT>( visual->Instances.size() );
         const UINT instBytes = numInstances * static_cast<UINT>( sizeof( VobInstanceInfo ) );
@@ -4125,6 +4137,10 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
     const XMVECTOR cullOrigin = useSphereCull ? XMLoadFloat3( sphereCenter ) : Engine::GAPI->GetCameraPositionXM();
     const float cullRadius = useSphereCull ? sphereRange : rs.RendererSettings.SkeletalMeshDrawRadius;
     const XMVECTOR cullRadiusSq = XMVectorReplicate( cullRadius * cullRadius );
+    // The morph-mesh gate below needs the distance to the PLAYER CAMERA specifically, which is NOT cullOrigin
+    // (that's the light's position in the point-shadow case). Mirrors GothicAPI::DrawWorldMeshNaive, which
+    // measures against the camera and only routes vobs closer than kMorphMeshMaxDistance through the morph path.
+    const XMVECTOR camPosXm = Engine::GAPI->GetCameraPositionXM();
     const UINT frame = m_FrameIndex;
     const auto now = Engine::GAPI->GetTotalTimeDW();
     static std::vector<XMFLOAT4X4> boneCache;
@@ -4165,6 +4181,13 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
         // cascade also wants — its pose doesn't change between passes).
         auto cacheIt = g_SkelUploadCache.find( vi );
         if ( cacheIt == g_SkelUploadCache.end() ) {
+            // Camera distance for the MMS morph-mesh gate on this vob's attachments (see the loop below). Measured
+            // once per vob here, inside the cache-miss branch, so whichever pass prepares the vob first this frame
+            // decides — the value is view-independent (always the player camera), like the pose data itself.
+            float camDist;
+            XMStoreFloat( &camDist, XMVector3Length( vi->Vob->GetPositionWorldXM() - camPosXm ) );
+            const bool inMorphMeshRange = camDist < kMorphMeshMaxDistance;
+
             model->SetDistanceToCamera( 500 );
             if ( vi->LastAniUpdateFrame != now ) {
                 vi->LastAniUpdateFrame = now;
@@ -4261,19 +4284,33 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                 XMStoreFloat4x4( &attWorld, xmWorld * XMLoadFloat4x4( &boneCache[n] ) );
                 for ( MeshVisualInfo* mvi : it->second ) {
                     if ( !mvi ) continue;
-                    bool isMMS = strcmp( mvi->Visual->GetFileExtension( 0 ), ".MMS" ) == 0;
+                    const bool isMMS = strcmp( mvi->Visual->GetFileExtension( 0 ), ".MMS" ) == 0;
+                    // MMS attachments only MORPH within kMorphMeshMaxDistance of the camera — beyond that they
+                    // render as their undeformed rest mesh. This mirrors D3D11 exactly: GothicAPI::
+                    // DrawWorldMeshNaive splits the skeletal vobs into a `drawAsMorphMesh` list (dist < 1000, has
+                    // an MMS attachment) drawn with distance=500 and a `drawRegular` list drawn with FLT_MAX, and
+                    // DrawSkeletalMeshVobs' morph branch is gated on `isMMS && distance < 1000` — so far-away MMS
+                    // attachments fall through to its plain instanced attachment path, which carries no
+                    // Fatness/Scaling at all. Morphing is CPU-side (Gothic's own zCMorphMesh::AdvanceAnis +
+                    // CalcVertexPositions, then a full vertex-buffer re-upload per animation frame), so this gate
+                    // is a real per-frame CPU/bandwidth saving on crowds, not just a visual nicety.
+                    const bool morphActive = isMMS && inMorphMeshRange;
                     // Fatness/Scaling inflate-along-normal (mirrors D3D11's VS_ExConstantBuffer_PerInstanceNode,
-                    // VS_ExNode.hlsl: localPos = (pos + Fatness*normal) * Scaling). Only MMS morph-mesh attachments
-                    // get a non-trivial value in D3D11 — a plain weapon/lamp/head attachment is Fatness=0/Scaling=1,
-                    // a no-op — so ordinary attachments are unaffected by this addition; only MMS ones (facial
-                    // morphs, bow/crossbow draw meshes) now size/inflate correctly against the model's Fatness
-                    // slider instead of always rendering at their raw rest-mesh size. Reuses the VobInstanceInfo
-                    // wind fields (@132/@136) since node attachments never sway in the wind — see Vob.hlsl's
+                    // VS_ExNode.hlsl: localPos = (pos + Fatness*normal) * Scaling). Only actively-morphing MMS
+                    // attachments get a non-trivial value in D3D11 — a plain weapon/lamp/head attachment (and a
+                    // beyond-range MMS one) is Fatness=0/Scaling=1, a no-op. Reuses the VobInstanceInfo wind
+                    // fields (@132/@136) since node attachments never sway in the wind — see Vob.hlsl's
                     // VSMainAttach/VSDepthAttach, which reinterpret them as {Fatness, Scaling}.
-                    const float attFatness = isMMS ? std::max<float>( 0.f, model->GetModelFatness() * 0.35f ) : 0.f;
-                    const float attScaling = isMMS ? ( model->GetModelFatness() * 0.02f + 1.f ) : 1.f;
+                    const float attFatness = morphActive ? std::max<float>( 0.f, model->GetModelFatness() * 0.35f ) : 0.f;
+                    const float attScaling = morphActive ? ( model->GetModelFatness() * 0.02f + 1.f ) : 1.f;
                     node->TexAniState.UpdateTexList();
-                    if ( isMMS ) {
+                    if ( isMMS && !morphActive ) {
+                        // Out of morph range: D3D11 still advances the morph mesh's TEXTURE animation for every
+                        // MMS attachment regardless of distance (DrawSkeletalMeshVobs' `if (updateState)` block
+                        // runs before its distance-gated morph branch), it just doesn't deform the geometry.
+                        // UpdateMorphMeshVisual does this same UpdateTexList call itself, hence the else-branch.
+                        reinterpret_cast<zCMorphMesh*>( mvi->Visual )->GetTexAniState()->UpdateTexList();
+                    } else if ( morphActive ) {
                         // Facial morph meshes (heads) and bow/crossbow draw-animation meshes: deformation is done
                         // entirely by the original engine (zCMorphMesh::AdvanceAnis/CalcVertexPositions, opaque
                         // calls into Gothic's own compiled code) and re-uploaded into this MeshInfo's dynamic
