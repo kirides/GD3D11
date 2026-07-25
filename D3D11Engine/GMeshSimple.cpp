@@ -15,6 +15,7 @@ using namespace Assimp;
 GMeshSimple::GMeshSimple() {
     VertexBuffer = nullptr;
     IndexBuffer = nullptr;
+    LocalHeight = 0.0f;
 }
 
 GMeshSimple::~GMeshSimple() {
@@ -55,6 +56,7 @@ XRESULT GMeshSimple::LoadMesh( const std::string& file ) {
             }
 
             vertices[n].Position = float3( s->mMeshes[i]->mVertices[n].x, s->mMeshes[i]->mVertices[n].y, s->mMeshes[i]->mVertices[n].z );
+            LocalHeight = std::max( LocalHeight, vertices[n].Position.y );
         }
 
         for ( unsigned int n = 0; n < s->mMeshes[i]->mNumFaces; n++ ) {

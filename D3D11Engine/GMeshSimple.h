@@ -22,10 +22,16 @@ public:
     GfxVertexBuffer* GetIndexBuffer() const { return IndexBuffer.get(); }
     unsigned int GetNumIndices() const { return NumIndices; }
 
+    /** Highest local-space Y of the loaded mesh. Instances scale it uniformly, so LocalHeight * instanceScale
+     * is the world-space height of one placed copy — D3D12's grass path needs it to sample the sun shadow at
+     * the blade tip instead of per-pixel (see Shaders/D3D12/Vegetation.hlsl). */
+    float GetLocalHeight() const { return LocalHeight; }
+
 private:
     std::unique_ptr<GfxVertexBuffer> VertexBuffer;
     std::unique_ptr<GfxVertexBuffer> IndexBuffer;
     unsigned int NumVertices;
     unsigned int NumIndices;
+    float LocalHeight;
 };
 
