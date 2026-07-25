@@ -32,7 +32,11 @@ cbuffer ShadowCB : register(b3)
 };
 Texture2DArray          ShadowMap : register(t4);
 SamplerComparisonState  shadowCmp : register(s2);
-cbuffer MaterialCB : register(b6) { uint MatNormalIndex; uint MatOrmIndex; };
+// MatDiffuseIndex (3rd field) is read only by the *Bindless PS variants below — the ExecuteIndirect VOB path
+// (P2.12) sets the diffuse SRV heap slot as a root constant instead of a per-draw t0 descriptor table, so the
+// whole instanced-VOB pass (color/depth/shadow) submits as one ExecuteIndirect. The classic t0-table PS
+// (PSMain/PSDepthClip/PSShadowClip, used by node attachments) simply never reads the 3rd field.
+cbuffer MaterialCB : register(b6) { uint MatNormalIndex; uint MatOrmIndex; uint MatDiffuseIndex; };
 TextureCubeArray        PointShadowCubes : register(t5);
 
 // DelightDiffuse, SamplePointShadow, ComputeSunShadow, the Cook-Torrance PBR helpers, PerturbNormal/
@@ -172,4 +176,45 @@ VS_DEPTH_OUT VSDepthAttach( VS_IN i )
     o.clip = mul( float4( worldPos, 1.0 ), ViewProj );
     o.uv = i.uv;
     return o;
+}
+
+// --- Bindless-diffuse PS variants (ExecuteIndirect VOB path, P2.12) ---
+// Identical to PSMain/PSDepthClip/PSShadowClip except the diffuse texture comes from the SRV heap by index
+// (b6 MatDiffuseIndex) instead of the t0 descriptor table — ExecuteIndirect can set root constants but not
+// descriptor tables, so the whole instanced-VOB pass (each visual/material/mesh a command) collapses into a
+// single indirect submit. Only the instanced-VOB PSOs use these; node-attachment PSOs keep the t0 variants.
+float4 PSMainBindless( VS_OUT i ) : SV_TARGET
+{
+    Texture2D difTex = ResourceDescriptorHeap[MatDiffuseIndex];
+    float4 t = difTex.Sample( smp, i.uv );
+    clip( t.a - 0.5 );
+    float3 N = normalize( i.wnrm );
+    if ( MatNormalIndex != 0xffffffff )
+    {
+        Texture2D nrmTex = ResourceDescriptorHeap[MatNormalIndex];
+        N = PerturbNormal( N, i.wpos, nrmTex, i.uv, smp );
+    }
+    Texture2D ormTex = ResourceDescriptorHeap[MatOrmIndex];
+    float3 orm = ormTex.Sample( smp, i.uv ).rgb;
+    float3 albedo = SrgbToLinear( t.rgb );
+    albedo = DelightDiffuse( albedo );
+    float vertLighting = i.col.g;
+    float shadow = ComputeSunShadow( i.wpos, N );
+    float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r );
+    rgb += AccumTiledPointLights( i.clip.xy, i.wpos, N, albedo, orm.g, orm.b );
+    float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
+    return float4( lerp( rgb, SrgbToLinear( FogColor ), f ), 1.0 );
+}
+
+float4 PSDepthClipBindless( VS_DEPTH_OUT i ) : SV_TARGET
+{
+    Texture2D difTex = ResourceDescriptorHeap[MatDiffuseIndex];
+    clip( difTex.Sample( smp, i.uv ).a - 0.5 );
+    return float4( 0, 0, 0, 1 );
+}
+
+void PSShadowClipBindless( VS_DEPTH_OUT i )
+{
+    Texture2D difTex = ResourceDescriptorHeap[MatDiffuseIndex];
+    clip( difTex.Sample( smp, i.uv ).a - 0.5 );
 }

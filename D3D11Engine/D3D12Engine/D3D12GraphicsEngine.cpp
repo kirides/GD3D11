@@ -125,6 +125,10 @@ XRESULT D3D12GraphicsEngine::Init() {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the VOB pipeline.";
         return XR_FAILED;
     }
+    if ( !CreateVobIndirect() ) {
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the VOB ExecuteIndirect resources.";
+        return XR_FAILED;
+    }
     if ( !CreateLightBuffer() ) {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the point-light buffer.";
         return XR_FAILED;

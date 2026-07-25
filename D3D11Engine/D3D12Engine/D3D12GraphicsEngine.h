@@ -436,6 +436,41 @@ private:
     bool CreateWorldIndirect();                      // command signature + per-frame arg ring (once, at init)
     void BuildWorldDrawCommands();                   // collect visible sections + fill arg ring (once/frame, pre-prepass)
 
+    // ---- GPU-driven instanced VOBs (P2.12): ExecuteIndirect + bindless diffuse. Unlike the world mesh (one
+    // shared VB/IB, so a command only carries material indices + DrawIndexed), every VOB visual/mesh has its OWN
+    // vertex/index buffer and its own per-instance stream — so each command ALSO sets the two vertex-buffer views
+    // (packed mesh @slot0, per-instance @slot1) + the index-buffer view before drawing. Diffuse goes bindless
+    // (b6.MatDiffuseIndex root const) so no per-draw descriptor table is needed. Wind min/max height (per-visual)
+    // rides as a 2-const partial write into b4 @ offset 4; the frame-global wind fields (dir/time/playerPos) are
+    // set once before the ExecuteIndirect. Built ONCE per frame (BuildVobDrawCommands) and consumed by BOTH the
+    // depth prepass and the color pass; the CSM cascades build their own per-cascade command set. Arg-member order
+    // MUST match the command signature's pArgumentDescs order below (VBV0, VBV1, IBV, b6 consts, b4 consts, draw).
+    struct VobDrawCommand {                          // 88 bytes; UINT64 members force 8-byte align, 88 % 8 == 0
+        D3D12_VERTEX_BUFFER_VIEW MeshVBV;            // @0  packed ExVertexStruct stream (slot 0)
+        D3D12_VERTEX_BUFFER_VIEW InstVBV;            // @16 per-instance VobInstanceInfo stream (slot 1)
+        D3D12_INDEX_BUFFER_VIEW  IBV;                // @32 R16_UINT sub-mesh indices
+        uint32_t MatNormalIndex;                     // @48 b6.x  (0xFFFFFFFF = no normal map)
+        uint32_t MatOrmIndex;                        // @52 b6.y  (default ORM slot when no _FX)
+        uint32_t MatDiffuseIndex;                    // @56 b6.z  bindless diffuse (alpha clip + albedo)
+        float    WindMinHeight;                      // @60 b4[4] per-visual bbox.min.y
+        float    WindMaxHeight;                      // @64 b4[5] per-visual bbox.max.y
+        D3D12_DRAW_INDEXED_ARGUMENTS Draw;           // @68 (20 bytes)
+    };
+    static constexpr UINT kMaxVobDrawCommands = 8192;   // visible visuals x materials x sub-meshes; overflow logs + drops
+    Microsoft::WRL::ComPtr<ID3D12CommandSignature> m_VobIndirectCmdSig;   // VBVx2 + IBV + b6(3) + b4[4..5](2) + DrawIndexed
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_VobDrawArgs[kBackBufferCount];   // main-view (prepass+color share it)
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_VobDrawArgsAlloc[kBackBufferCount];
+    uint8_t* m_VobDrawArgsPtr[kBackBufferCount] = {};
+    UINT m_VobDrawCount = 0;                          // commands built this frame (shared by both main-view VOB passes)
+    unsigned int m_VobDrawnTriangles = 0;            // triangles in this frame's main-view VOB command set (stats)
+    bool m_VobDrawArgsOverflowLogged = false;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_ShadowCasterVobIndirectPSO;   // VSDepth + PSShadowClipBindless
+    // Per-cascade VOB arg rings (m_ShadowVobDrawArgs*) live in the CSM section below (kShadowCascades not yet declared here).
+    bool CreateVobIndirect();                         // command signature + per-frame arg rings + shadow-caster PSO (once, at init)
+    // Fill an arg buffer from the given VOB uploads; returns command count. resolveMaps=false leaves normal/orm at
+    // defaults (depth/shadow passes only alpha-clip on diffuse), true resolves the full PBR material set (color pass).
+    UINT BuildVobDrawCommands( const std::vector<FrameVobUpload>& uploads, uint8_t* argPtr, bool resolveMaps );
+
     // Forward+ opaque depth-prepass PSOs/blobs (world + instanced VOB) live in m_Pipelines.World
     // (DepthPrepassPSO/VsBlob/PsBlob, DepthPrepassVobPSO/VobVsBlob/VobPsBlob). The skeletal depth-prepass PSO
     // + blobs live in m_Pipelines.Skeletal (DepthPrepassPSO/DepthPrepassVsBlob/DepthPrepassPsBlob). The shadow-
@@ -474,7 +509,12 @@ private:
     uint8_t*  m_ShadowWorldDrawArgsPtr[kShadowCascades][kBackBufferCount] = {};
     D3D12_GPU_VIRTUAL_ADDRESS m_ShadowWorldDrawArgsGpu[kShadowCascades][kBackBufferCount] = {};
     UINT      m_ShadowWorldDrawCount[kShadowCascades] = {};
-    
+    // Per-cascade instanced-VOB ExecuteIndirect arg rings (P2.12) — the VOB analogue of m_ShadowWorldDrawArgs.
+    // Command sig/PSO are m_VobIndirectCmdSig / m_ShadowCasterVobIndirectPSO (declared above the CSM section).
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_ShadowVobDrawArgs[kShadowCascades][kBackBufferCount];
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_ShadowVobDrawArgsAlloc[kShadowCascades][kBackBufferCount];
+    uint8_t* m_ShadowVobDrawArgsPtr[kShadowCascades][kBackBufferCount] = {};
+
     DirectX::XMFLOAT3 m_SunDirWS = { 0.0f, 1.0f, 0.0f };   // normalized world-space dir TOWARD the sun (this frame, smoothed)
     // Temporal light-direction smoothing (P2.9c-3c): the origin-anchored texel-snap grid amplifies tiny per-frame
     // sun-direction drift into a large lateral texel shift for players far from the origin (lever arm) → crawl.

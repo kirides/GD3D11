@@ -963,6 +963,20 @@ bool D3D12PipelineState::CreateDepthPrepass() {
         LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB attachment depth prepass).";
         return false;
     }
+
+    // Bindless-diffuse VOB depth-prepass PSO (ExecuteIndirect, P2.12): same VSDepth blob + wind-only vobLayout +
+    // depth-only state as DepthPrepassVobPSO, only the PS swapped to PSDepthClipBindless (diffuse alpha-clip from
+    // the SRV heap by b6.MatDiffuseIndex). Consumed by the one ExecuteIndirect the VOB depth prepass now issues.
+    if ( !m_Shaders->CompileFromFile( "Vob.hlsl", "PSDepthClipBindless", Shadermodel_PS, World.DepthPrepassVobIndirectPsBlob.ReleaseAndGetAddressOf() ) ) {
+        return false;
+    }
+    pso.VS = { World.DepthPrepassVobVsBlob->GetBufferPointer(), World.DepthPrepassVobVsBlob->GetBufferSize() };
+    pso.PS = { World.DepthPrepassVobIndirectPsBlob->GetBufferPointer(), World.DepthPrepassVobIndirectPsBlob->GetBufferSize() };
+    pso.InputLayout = { vobLayout, _countof( vobLayout ) };
+    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( World.DepthPrepassVobIndirectPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB depth prepass, indirect).";
+        return false;
+    }
     return true;
 }
 
@@ -1028,6 +1042,21 @@ bool D3D12PipelineState::CreateVob() {
     pso.VS = { World.VobAttachVsBlob->GetBufferPointer(), World.VobAttachVsBlob->GetBufferSize() };
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( World.VobAttachPSO.ReleaseAndGetAddressOf() ) ) ) ) {
         LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB attachment).";
+        return false;
+    }
+
+    // Bindless-diffuse instanced-VOB color PSO (ExecuteIndirect, P2.12): identical to VobPSO (VSMain + the
+    // wind-carrying `layout` + lit reversed-Z state) except the PS is PSMainBindless (diffuse sampled from the
+    // SRV heap by b6.MatDiffuseIndex instead of the t0 table). Lets the whole instanced-VOB color pass submit as
+    // one ExecuteIndirect. Restore pso.VS/PS/layout to the plain VOB set first (the attach block moved pso.VS).
+    if ( !m_Shaders->CompileFromFile( "Vob.hlsl", "PSMainBindless", Shadermodel_PS, World.VobIndirectPsBlob.ReleaseAndGetAddressOf() ) ) {
+        return false;
+    }
+    pso.VS = { World.VobVsBlob->GetBufferPointer(), World.VobVsBlob->GetBufferSize() };
+    pso.PS = { World.VobIndirectPsBlob->GetBufferPointer(), World.VobIndirectPsBlob->GetBufferSize() };
+    pso.InputLayout = { layout, _countof( layout ) };
+    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( World.VobIndirectPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB, indirect).";
         return false;
     }
     return true;

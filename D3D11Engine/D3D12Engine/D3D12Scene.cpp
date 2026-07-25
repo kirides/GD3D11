@@ -624,6 +624,19 @@ bool D3D12GraphicsEngine::CreateShadowMap() {
 			LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB shadow caster).";
 			return false;
 		}
+
+		// Bindless-diffuse VOB shadow-caster PSO (ExecuteIndirect, P2.12): same VSDepth + wind-only vobLayout +
+		// caster state as m_ShadowCasterVobPSO, only the void PS swapped to PSShadowClipBindless (diffuse alpha-clip
+		// from the SRV heap). Lets each CSM cascade's instanced-VOB casters submit as one ExecuteIndirect. The blob
+		// is local (needed only until PSO creation); the attach block below resets pso.VS/PS/layout for itself.
+		ComPtr<ID3DBlob> vobIndirectShadowPs;
+		if ( !m_ShaderBackend.CompileFromFile( "Vob.hlsl", "PSShadowClipBindless", Shadermodel_PS, vobIndirectShadowPs.ReleaseAndGetAddressOf() ) )
+			return false;
+		pso.PS = { vobIndirectShadowPs->GetBufferPointer(), vobIndirectShadowPs->GetBufferSize() };
+		if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_ShadowCasterVobIndirectPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+			LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB shadow caster, indirect).";
+			return false;
+		}
 	}
 
 	// Node-attachment CSM caster variant (VSDepthAttach: Fatness/Scaling inflate-along-normal instead of wind —
@@ -1260,38 +1273,20 @@ void D3D12GraphicsEngine::RenderSunShadows() {
 		cascadeUploads.clear();
 
 		const auto haveVobs = UploadVobs( g_ShadowPassVobs[c].buckets, cascadeUploads );
-		if ( haveVobs ) {
-			DX_ZONE( m_CmdList, "Vobs" );
-
-			m_CmdList->SetPipelineState( m_ShadowCasterVobPSO.Get() );
-			m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
-			m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
-			for ( const FrameVobUpload& up : cascadeUploads ) {
-				MeshVisualInfo* visual = up.visual;
-				if ( !visual ) continue;
-				// Wind sway (b4, VS): a genuinely wind-flagged VOB casting a shadow must sway its caster
-				// silhouette the same as its lit geometry — VSDepth (shared with the opaque prepass) reads
-				// this unconditionally when INSTANCE_WINDFLUENCE.x/y > 0, so an unbound/stale root value here
-				// would read garbage for exactly those casters. windDir/globalTime/playerPos were refreshed
-				// once in OnStartWorldRendering.
-				m_WindBuffer.minHeight = visual->BBox.Min.y;
-				m_WindBuffer.maxHeight = visual->BBox.Max.y;
-				m_CmdList->SetGraphicsRoot32BitConstants( 11, 12, &m_WindBuffer, 0 );
-				for ( auto const& [meshKey, meshList] : visual->MeshesByTexture ) {
-					bindDiffuse( meshKey.Material->GetAniTexture(), 1 );
-					for ( MeshInfo* mi : meshList ) {
-						if ( !mi || mi->Indices.empty() || !mi->GetMeshVertexBuffer() || !mi->GetMeshIndexBuffer() ) continue;
-						D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mi->GetMeshVertexBuffer() );
-						D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mi->GetMeshIndexBuffer() );
-						if ( !mvb->GetResource() || !mib->GetResource() ) continue;
-						const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStruct ) };
-						const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, up.instView };
-						m_CmdList->IASetVertexBuffers( 0, 2, views );
-						const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
-						m_CmdList->IASetIndexBuffer( &ibv );
-						m_CmdList->DrawIndexedInstanced( static_cast<UINT>(mi->Indices.size()), up.numInstances, 0, 0, 0 );
-					}
-				}
+		// GPU-driven VOB casters (P2.12): build this cascade's command set from the uploads (diffuse-only material
+		// resolution — the void PSShadowClipBindless just alpha-clips), then submit as ONE ExecuteIndirect. Same
+		// command signature/PSO family as the main-view VOB pass; the per-command b4 min/max makes wind-flagged
+		// casters sway their silhouette identically to their lit geometry (VSDepth reads b4 unconditionally).
+		if ( haveVobs && m_ShadowCasterVobIndirectPSO && m_VobIndirectCmdSig && m_ShadowVobDrawArgsPtr[c][m_FrameIndex] ) {
+			const UINT vobCmdCount = BuildVobDrawCommands( cascadeUploads, m_ShadowVobDrawArgsPtr[c][m_FrameIndex], false );
+			if ( vobCmdCount > 0 ) {
+				DX_ZONE( m_CmdList, "Vobs" );
+				m_CmdList->SetPipelineState( m_ShadowCasterVobIndirectPSO.Get() );
+				m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
+				m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
+				m_CmdList->SetGraphicsRoot32BitConstants( 11, 12, &m_WindBuffer, 0 );   // b4 frame-global wind baseline
+				m_CmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), vobCmdCount,
+					m_ShadowVobDrawArgs[c][m_FrameIndex].Get(), 0, nullptr, 0 );
 			}
 		}
 
@@ -2970,6 +2965,15 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// per-material bindless-index resolution + water peel-out. Both the depth prepass and the color pass draw
 	// from it, so the BSP walk happens once (was per-pass) and neither pass issues per-material CPU draw calls.
 	BuildWorldDrawCommands();
+	// Build the instanced-VOB ExecuteIndirect command set ONCE (P2.12) from the shared g_FrameVobUploads snapshot,
+	// resolving each material's full PBR bindless indices (diffuse+normal+ORM) — the depth prepass ignores the extra
+	// two, so both the prepass and the color pass ExecuteIndirect over this same buffer (the per-material CacheIn +
+	// vertex/index binds happen once/frame instead of per-pass, and neither pass issues per-mesh CPU draw calls).
+	if ( Engine::GAPI->GetRendererState().RendererSettings.DrawVOBs && m_VobDrawArgsPtr[m_FrameIndex] ) {
+		m_VobDrawCount = BuildVobDrawCommands( g_FrameVobUploads, m_VobDrawArgsPtr[m_FrameIndex], true );
+	} else {
+		m_VobDrawCount = 0;
+	}
     {
         DX_ZONE( m_CmdList, "Depth Prepass" );
         DrawDepthPrepass();
@@ -3279,6 +3283,158 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
         }
     }
     m_WorldDrawCount = count;
+}
+
+
+bool D3D12GraphicsEngine::CreateVobIndirect() {
+    // Command signature + per-frame UPLOAD arg rings for the GPU-driven instanced VOBs (P2.12). Unlike the world
+    // mesh's signature (material consts + DrawIndexed over one shared VB/IB), each VOB command ALSO sets its own
+    // two vertex-buffer views (packed mesh @slot0, per-instance @slot1) + index-buffer view — VOB visuals don't
+    // share a buffer. Arg order MUST match VobDrawCommand's member layout. The rings stay UPLOAD/GENERIC_READ
+    // (which includes INDIRECT_ARGUMENT), rebuilt each frame by BuildVobDrawCommands — no DEFAULT-heap copy.
+    ID3D12Device* device = m_Device.GetDevice();
+    if ( !device || !m_Pipelines.World.RootSig ) return false;
+
+    // The GPU reads each command as tightly-packed native argument structs in pArgumentDescs order; the two VBVs +
+    // IBV lead so their UINT64 GPUVAs stay 8-aligned. 88 is a multiple of 8 → the next command's VBV is aligned too.
+    static_assert( sizeof( VobDrawCommand ) == 88, "VobDrawCommand must match the command signature arg layout (88 B)" );
+    static_assert( offsetof( VobDrawCommand, MatNormalIndex ) == 48, "VobDrawCommand b6 consts must follow the 3 buffer views" );
+    static_assert( offsetof( VobDrawCommand, Draw ) == 68, "VobDrawCommand draw args must be last" );
+
+    D3D12_INDIRECT_ARGUMENT_DESC args[6] = {};
+    args[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_VERTEX_BUFFER_VIEW;
+    args[0].VertexBuffer.Slot = 0;                            // packed ExVertexStruct
+    args[1].Type = D3D12_INDIRECT_ARGUMENT_TYPE_VERTEX_BUFFER_VIEW;
+    args[1].VertexBuffer.Slot = 1;                            // per-instance VobInstanceInfo
+    args[2].Type = D3D12_INDIRECT_ARGUMENT_TYPE_INDEX_BUFFER_VIEW;
+    args[3].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT;
+    args[3].Constant.RootParameterIndex = 10;                 // b6 MaterialCB { normal, orm, diffuse }
+    args[3].Constant.DestOffsetIn32BitValues = 0;
+    args[3].Constant.Num32BitValuesToSet = 3;
+    args[4].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT;
+    args[4].Constant.RootParameterIndex = 11;                 // b4 WindCB: overwrite only minHeight/maxHeight (@4,5)
+    args[4].Constant.DestOffsetIn32BitValues = 4;
+    args[4].Constant.Num32BitValuesToSet = 2;
+    args[5].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
+
+    D3D12_COMMAND_SIGNATURE_DESC sigDesc = {};
+    sigDesc.ByteStride = sizeof( VobDrawCommand );            // 88 B; MUST match the struct + arg layout
+    sigDesc.NumArgumentDescs = _countof( args );
+    sigDesc.pArgumentDescs = args;
+    // Commands set root constants (b6/b4), so the signature must carry the root signature those param indices refer to.
+    if ( FAILED( device->CreateCommandSignature( &sigDesc, m_Pipelines.World.RootSig.Get(),
+        IID_PPV_ARGS( m_VobIndirectCmdSig.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: failed to create the VOB indirect command signature.";
+        return false;
+    }
+
+    D3D12MA::ALLOCATION_DESC upload = {};
+    upload.HeapType = DefaultUploadHeapType;
+
+    D3D12_RESOURCE_DESC bd = {};
+    bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bd.Width = static_cast<UINT64>( kMaxVobDrawCommands ) * sizeof( VobDrawCommand );
+    bd.Height = 1; bd.DepthOrArraySize = 1; bd.MipLevels = 1;
+    bd.Format = DXGI_FORMAT_UNKNOWN; bd.SampleDesc.Count = 1;
+    bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+    auto makeRing = [&]( Microsoft::WRL::ComPtr<ID3D12Resource>& res, Microsoft::WRL::ComPtr<D3D12MA::Allocation>& alloc, uint8_t*& ptr, const wchar_t* name ) -> bool {
+        if ( FAILED( m_Allocator->CreateResource( &upload, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+            alloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( res.ReleaseAndGetAddressOf() ) ) ) )
+            return false;
+        res->SetName( name );
+        D3D12_RANGE noRead = { 0, 0 };
+        void* mapped = nullptr;
+        if ( FAILED( res->Map( 0, &noRead, &mapped ) ) ) return false;
+        ptr = static_cast<uint8_t*>( mapped );
+        return true;
+        };
+
+    for ( UINT i = 0; i < kBackBufferCount; ++i )
+        if ( !makeRing( m_VobDrawArgs[i], m_VobDrawArgsAlloc[i], m_VobDrawArgsPtr[i], L"VobDrawArgsRing" ) )
+            return false;
+    for ( UINT c = 0; c < kShadowCascades; ++c )
+        for ( UINT i = 0; i < kBackBufferCount; ++i )
+            if ( !makeRing( m_ShadowVobDrawArgs[c][i], m_ShadowVobDrawArgsAlloc[c][i], m_ShadowVobDrawArgsPtr[c][i], L"ShadowVobDrawArgsRing" ) )
+                return false;
+    return true;
+}
+
+
+UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload>& uploads, uint8_t* argPtr, bool resolveMaps ) {
+    // Fill an arg buffer with one command per (visual x material x sub-mesh): resolve the material's bindless
+    // indices (diffuse always; normal/ORM only when resolveMaps — the depth/shadow passes just alpha-clip on
+    // diffuse), pack the mesh + instance VB views + IB view, the per-visual wind min/max, and DrawIndexedInstanced.
+    // Same CacheIn/From resolution the per-draw path did — but done ONCE per built buffer instead of per pass.
+    if ( !argPtr ) return 0;
+    VobDrawCommand* cmds = reinterpret_cast<VobDrawCommand*>( argPtr );
+    UINT count = 0;
+    const uint32_t whiteSlot   = m_BlackTexture->GetSrvSlot();
+    const uint32_t defaultOrm  = m_DefaultOrmTexture->GetSrvSlot();
+    // Attribute the triangle stat to the main-view build only (resolveMaps): the shadow cascades build the same
+    // geometry and would double-count. Reset here; the color pass adds it to FrameDrawnTriangles once.
+    if ( resolveMaps ) m_VobDrawnTriangles = 0;
+
+    for ( const FrameVobUpload& up : uploads ) {
+        MeshVisualInfo* visual = up.visual;
+        if ( !visual ) continue;
+        const float minH = visual->BBox.Min.y;
+        const float maxH = visual->BBox.Max.y;
+
+        for ( auto const& [meshKey, meshList] : visual->MeshesByTexture ) {
+            zCTexture* tex = meshKey.Material->GetAniTexture();
+            uint32_t diffuseIdx = whiteSlot;
+            uint32_t normalIdx  = 0xFFFFFFFFu;
+            uint32_t ormIdx     = defaultOrm;
+            if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+                if ( MyDirectDrawSurface7* s = tex->GetSurface() ) {
+                    if ( GfxTexture* gfx = s->GetEngineTexture() ) {
+                        D3D12Texture* d = D3D12Texture::From( gfx );
+                        if ( d->HasSRV() ) diffuseIdx = d->GetSrvSlot();
+                    }
+                    if ( resolveMaps ) {
+                        if ( GfxTexture* n = s->GetNormalmap() ) { D3D12Texture* d = D3D12Texture::From( n ); if ( d->HasSRV() ) normalIdx = d->GetSrvSlot(); }
+                        if ( GfxTexture* o = s->GetFxMap() )     { D3D12Texture* d = D3D12Texture::From( o ); if ( d->HasSRV() ) ormIdx    = d->GetSrvSlot(); }
+                    }
+                }
+            }
+
+            for ( MeshInfo* mi : meshList ) {
+                if ( !mi || mi->Indices.empty() || !mi->GetMeshVertexBuffer() || !mi->GetMeshIndexBuffer() )
+                    continue;
+                D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mi->GetMeshVertexBuffer() );
+                D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mi->GetMeshIndexBuffer() );
+                if ( !mvb->GetResource() || !mib->GetResource() ) continue;
+
+                if ( count >= kMaxVobDrawCommands ) {
+                    if ( !m_VobDrawArgsOverflowLogged ) {
+                        LogWarn() << "D3D12: VOB draw-command ring overflow (" << kMaxVobDrawCommands
+                            << " draws/frame); some VOBs dropped this frame.";
+                        m_VobDrawArgsOverflowLogged = true;
+                    }
+                    return count;
+                }
+
+                VobDrawCommand& c = cmds[count++];
+                c.MeshVBV = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStruct ) };
+                c.InstVBV = up.instView;
+                c.IBV     = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
+                c.MatNormalIndex  = normalIdx;
+                c.MatOrmIndex     = ormIdx;
+                c.MatDiffuseIndex = diffuseIdx;
+                c.WindMinHeight   = minH;
+                c.WindMaxHeight   = maxH;
+                c.Draw.IndexCountPerInstance = static_cast<UINT>( mi->Indices.size() );
+                c.Draw.InstanceCount         = up.numInstances;
+                c.Draw.StartIndexLocation    = 0;
+                c.Draw.BaseVertexLocation    = 0;
+                c.Draw.StartInstanceLocation = 0;
+                if ( resolveMaps )
+                    m_VobDrawnTriangles += (static_cast<unsigned int>( mi->Indices.size() ) / 3) * up.numInstances;
+            }
+        }
+    }
+    return count;
 }
 
 
@@ -3609,9 +3765,10 @@ void D3D12GraphicsEngine::DrawVobDepthPrepass() {
     // world, missing the near VOB). Depth-only via m_Pipelines.World.DepthPrepassVobPSO; consumes the shared g_FrameVobUploads.
     // Same per-material diffuse bind as the color pass for the alpha cutout. Node attachments (weapons/heads) are
     // NOT here — they upload during the skeletal color pass, after the cull; they'll join once skeletal does.
-    if ( !m_FrameOpen || !m_Pipelines.World.DepthPrepassVobPSO || !m_Pipelines.World.RootSig || !m_DepthBuffer )
+    if ( !m_FrameOpen || !m_Pipelines.World.DepthPrepassVobIndirectPSO || !m_Pipelines.World.RootSig
+        || !m_VobIndirectCmdSig || !m_DepthBuffer )
         return;
-    if ( g_FrameVobUploads.empty() ) return;
+    if ( m_VobDrawCount == 0 || !m_VobDrawArgs[m_FrameIndex] ) return;
 
     DX_ZONE( m_CmdList, "Depth Prepass (vobs)" );
 
@@ -3624,9 +3781,12 @@ void D3D12GraphicsEngine::DrawVobDepthPrepass() {
     XMFLOAT4X4 viewProj;
     XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
 
-    m_CmdList->SetPipelineState( m_Pipelines.World.DepthPrepassVobPSO.Get() );
+    m_CmdList->SetPipelineState( m_Pipelines.World.DepthPrepassVobIndirectPSO.Get() );
     m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
     m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );   // b0 ViewProj (fog/lights not referenced)
+    // Frame-global wind (b4): dir/time/playerPos set once here; each command overwrites only minHeight/maxHeight
+    // (b4[4..5]) per visual. VSDepth reads b4 unconditionally, so this baseline MUST be bound before ExecuteIndirect.
+    m_CmdList->SetGraphicsRoot32BitConstants( 11, 12, &m_WindBuffer, 0 );
 
     D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_Resolution.x), static_cast<float>(m_Resolution.y), 0.0f, 1.0f };
     D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
@@ -3634,63 +3794,28 @@ void D3D12GraphicsEngine::DrawVobDepthPrepass() {
     m_CmdList->RSSetScissorRects( 1, &sc );
     m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
-    const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_BlackTexture->GetSrvSlot() );
-    for ( const FrameVobUpload& up : g_FrameVobUploads ) {
-        MeshVisualInfo* visual = up.visual;
-        if ( !visual ) continue;
-        const UINT numInstances = up.numInstances;
-
-        // Wind sway (b4, VS): must match the color pass's ApplyVobWind exactly (VSDepth/VSMain share the
-        // function) or the reversed-Z GREATER_EQUAL depth test discards swaying geometry — see the Vob.hlsl
-        // comment on ApplyVobWind. windDir/globalTime/playerPos were refreshed once in OnStartWorldRendering.
-        m_WindBuffer.minHeight = visual->BBox.Min.y;
-        m_WindBuffer.maxHeight = visual->BBox.Max.y;
-        m_CmdList->SetGraphicsRoot32BitConstants( 11, 12, &m_WindBuffer, 0 );
-
-        for ( auto const& [meshKey, meshList] : visual->MeshesByTexture ) {
-            zCTexture* tex = meshKey.Material->GetAniTexture();
-            D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
-            if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
-                if ( MyDirectDrawSurface7* surface = tex->GetSurface() ) {
-                    if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
-                        D3D12Texture* d12 = D3D12Texture::From( gfx );
-                        if ( d12->HasSRV() ) srv = d12->GetSrvGpuHandle();
-                    }
-                }
-            }
-            m_CmdList->SetGraphicsRootDescriptorTable( 1, srv );
-
-            for ( MeshInfo* mi : meshList ) {
-                if ( !mi || mi->Indices.empty() || !mi->GetMeshVertexBuffer() || !mi->GetMeshIndexBuffer() )
-                    continue;
-                D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mi->GetMeshVertexBuffer() );
-                D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mi->GetMeshIndexBuffer() );
-                if ( !mvb->GetResource() || !mib->GetResource() ) continue;
-
-                const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStruct ) };
-                const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, up.instView };
-                m_CmdList->IASetVertexBuffers( 0, 2, views );
-
-                const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
-                m_CmdList->IASetIndexBuffer( &ibv );
-
-                m_CmdList->DrawIndexedInstanced( static_cast<UINT>(mi->Indices.size()), numInstances, 0, 0, 0 );
-            }
-        }
-    }
+    // One GPU-driven submit over the shared command set BuildVobDrawCommands filled (same set the color pass draws).
+    // Each command sets its mesh/instance VBVs + IBV + b6 diffuse (PSDepthClipBindless alpha-clips) + b4 min/max
+    // wind, then DrawIndexedInstanced — replacing the per-mesh IASetVertexBuffers/table/draw the CPU path issued.
+    m_CmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), m_VobDrawCount, m_VobDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
 }
 
 
 XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
-    if ( !m_FrameOpen || !m_Pipelines.World.VobPSO || !m_Pipelines.World.RootSig || !m_DepthBuffer )
+    if ( !m_FrameOpen || !m_Pipelines.World.VobIndirectPSO || !m_Pipelines.World.RootSig
+        || !m_VobIndirectCmdSig || !m_DepthBuffer )
         return XR_SUCCESS;
 
     GothicRendererState& rs = Engine::GAPI->GetRendererState();
     if ( !rs.RendererSettings.DrawVOBs )
         return XR_SUCCESS;
+    if ( m_VobDrawCount == 0 || !m_VobDrawArgs[m_FrameIndex] )
+        return XR_SUCCESS;
 
     // Visible VOBs/lights/mobs were already collected once in OnStartWorldRendering (g_FrameVobs/Lights/Mobs);
-    // this pass just consumes them (each visual's Instances list was filled by that collection).
+    // BuildVobDrawCommands (called in OnStartWorldRendering, shared with the depth prepass) already resolved every
+    // material's bindless indices + packed the mesh/instance/index views into m_VobDrawArgs — this pass just binds
+    // the frame-constant root args and issues ONE ExecuteIndirect.
 
     // Reversed-Z ViewProj (recomputed; identical derivation to DrawWorldMesh).
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
@@ -3703,7 +3828,7 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
 
     const FogConstants fog = MakeFogConstants();
 
-    m_CmdList->SetPipelineState( m_Pipelines.World.VobPSO.Get() );
+    m_CmdList->SetPipelineState( m_Pipelines.World.VobIndirectPSO.Get() );
     m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
     m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
     m_CmdList->SetGraphicsRoot32BitConstants( 2, 8, &fog, 0 );   // b1 fog
@@ -3711,6 +3836,9 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
     m_CmdList->SetGraphicsRootConstantBufferView( 7, m_ShadowCBGpu[m_FrameIndex] );          // b3 shadow CB
     m_CmdList->SetGraphicsRootDescriptorTable( 8, GetSrvGpuHandle( m_ShadowSrvSlot ) );      // t4 shadow map
     m_CmdList->SetGraphicsRootDescriptorTable( 9, GetSrvGpuHandle( m_PointShadowSrvSlot ) ); // t5 point-shadow cubes
+    // Frame-global wind (b4): dir/time/playerPos bound once; each indirect command overwrites only min/maxHeight
+    // (b4[4..5]) per visual. Must be bound before ExecuteIndirect (VSMain reads b4 for the sway).
+    m_CmdList->SetGraphicsRoot32BitConstants( 11, 12, &m_WindBuffer, 0 );
 
     D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_Resolution.x), static_cast<float>(m_Resolution.y), 0.0f, 1.0f };
     D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
@@ -3718,62 +3846,15 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
     m_CmdList->RSSetScissorRects( 1, &sc );
     m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
-    const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_BlackTexture->GetSrvSlot() );
-    unsigned int drawnTris = 0;
-
-    // Wind sway (b4, VS): windDir/globalTime/playerPos were already refreshed once this frame in
-    // OnStartWorldRendering; only the per-visual bounding-box min/maxHeight fallback (no WindMetaData SRV yet)
-    // is refreshed here, mirroring D3D11's per-draw g_windBuffer.minHeight/maxHeight fill (D3D11GraphicsEngine.cpp
-    // ~7938).
     static_assert( sizeof( VS_ExConstantBuffer_Wind ) == 48, "WindCB (b4) layout must match Vob.hlsl's WindCB" );
 
     {
         DX_ZONE( m_CmdList, "Draw Vobs" );
-        // Instances were snapshotted into the ring once by UploadFrameVobInstances (before the cull); draw from
-        // those shared records so the color pass adds no second upload (its ring usage is unchanged).
-        for ( const FrameVobUpload& up : g_FrameVobUploads ) {
-            MeshVisualInfo* visual = up.visual;
-            if ( !visual ) continue;
-            const UINT numInstances = up.numInstances;
-
-            m_WindBuffer.minHeight = visual->BBox.Min.y;
-            m_WindBuffer.maxHeight = visual->BBox.Max.y;
-            m_CmdList->SetGraphicsRoot32BitConstants( 11, 12, &m_WindBuffer, 0 );
-
-            for ( auto const& [meshKey, meshList] : visual->MeshesByTexture ) {
-                zCTexture* tex = meshKey.Material->GetAniTexture();
-                D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
-                if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
-                    if ( MyDirectDrawSurface7* surface = tex->GetSurface() ) {
-                        if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
-                            D3D12Texture* d12 = D3D12Texture::From( gfx );
-                            if ( d12->HasSRV() ) srv = d12->GetSrvGpuHandle();
-                        }
-                    }
-                }
-                m_CmdList->SetGraphicsRootDescriptorTable( 1, srv );
-                BindMaterialMaps( tex, 10 );   // b6 bindless normal/ORM indices for this material
-
-                for ( MeshInfo* mi : meshList ) {
-                    if ( !mi || mi->Indices.empty() || !mi->GetMeshVertexBuffer() || !mi->GetMeshIndexBuffer() )
-                        continue;
-                    D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mi->GetMeshVertexBuffer() );
-                    D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mi->GetMeshIndexBuffer() );
-                    if ( !mvb->GetResource() || !mib->GetResource() ) continue;
-
-                    const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStruct ) };
-                    const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, up.instView };
-                    m_CmdList->IASetVertexBuffers( 0, 2, views );
-
-                    // VOB sub-mesh index buffers are 16-bit (VERTEX_INDEX), unlike the 32-bit wrapped world mesh.
-                    const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
-                    m_CmdList->IASetIndexBuffer( &ibv );
-
-                    m_CmdList->DrawIndexedInstanced( static_cast<UINT>(mi->Indices.size()), numInstances, 0, 0, 0 );
-                    drawnTris += (static_cast<unsigned int>(mi->Indices.size()) / 3) * numInstances;
-                }
-            }
-        }
+        // One GPU-driven submit over the command set BuildVobDrawCommands filled: each command sets its mesh/
+        // instance VBVs + IBV, b6 { normal, orm, diffuse } bindless indices (PSMainBindless samples all three),
+        // b4 per-visual min/max wind, then DrawIndexedInstanced. Replaces the per-mesh table/BindMaterialMaps/
+        // IASetVertexBuffers/DrawIndexedInstanced calls that dominated this CPU-bound pass.
+        m_CmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), m_VobDrawCount, m_VobDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
     }
 
     // Static skeletal MOBs (g_FrameMobs) are now prepared up front (PrepareFrameSkeletals) and drawn by
@@ -3782,7 +3863,7 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
     // NOTE: the per-visual Instances lists are cleared once at the end of OnStartWorldRendering (not here),
     // so they still get reset even when DrawVOBs is off and this pass early-outs above.
 
-    rs.RendererInfo.FrameDrawnTriangles += drawnTris;
+    rs.RendererInfo.FrameDrawnTriangles += m_VobDrawnTriangles;
     return XR_SUCCESS;
 }
 

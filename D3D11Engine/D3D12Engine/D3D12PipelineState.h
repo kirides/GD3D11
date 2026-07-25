@@ -57,6 +57,14 @@ public:
         Microsoft::WRL::ComPtr<ID3DBlob>            VobAttachVsBlob;
         Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassVobAttachPSO;
         Microsoft::WRL::ComPtr<ID3DBlob>            DepthPrepassVobAttachVsBlob;
+        // Bindless-diffuse instanced-VOB variants (ExecuteIndirect, P2.12). Same VS blobs + input layouts as
+        // VobPSO/DepthPrepassVobPSO, but the PS reads the diffuse texture from the SRV heap by index (b6
+        // MatDiffuseIndex) so the whole instanced-VOB color/depth pass submits as ONE ExecuteIndirect (a
+        // descriptor-table diffuse bind can't ride an indirect command). Node attachments keep the t0 PSOs above.
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> VobIndirectPSO;
+        Microsoft::WRL::ComPtr<ID3DBlob>            VobIndirectPsBlob;         // PSMainBindless
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassVobIndirectPSO;
+        Microsoft::WRL::ComPtr<ID3DBlob>            DepthPrepassVobIndirectPsBlob; // PSDepthClipBindless
     };
     // 2D UI / HUD family: one root sig (b0 viewport consts, t0 SRV, b1 FF state) + one VS/PS pair.
     // PSOs are built per (blend,depth) key on demand and cached. Vertex ring buffers stay in the engine.
