@@ -16,6 +16,44 @@ using Microsoft::WRL::ComPtr;
 namespace {
     const char* kShaderDirRel = "\\system\\GD3D11\\shaders\\D3D12\\";
 
+    // Well-known DXC class IDs (same values as dxcapi.h's CLSID_DxcCompiler / CLSID_DxcUtils), kept as
+    // our own locals so this TU never needs dxcompiler.lib linked just to provide the GUIDs' storage —
+    // everything DXC-related is resolved dynamically via LoadLibrary/GetProcAddress below.
+    const GUID kClsidDxcCompiler = { 0x73e22d93, 0xe6ce, 0x47f3, { 0xb5, 0xbf, 0xf0, 0x66, 0x4f, 0x39, 0xc1, 0xb0 } };
+    const GUID kClsidDxcUtils    = { 0x6245d6af, 0x66e0, 0x48fd, { 0x80, 0xb4, 0x4d, 0x27, 0x17, 0x96, 0x74, 0x8c } };
+
+    typedef HRESULT( __stdcall* PFN_DXC_CREATE_INSTANCE )( REFCLSID rclsid, REFIID riid, LPVOID* ppv );
+
+    // Resolves DxcCreateInstance from dxcompiler.dll at runtime instead of linking dxcompiler.lib, so
+    // the DLL is a soft dependency like d3d12.dll/dxgi.dll (see D3D12Device.cpp) rather than a hard one
+    // shipped on systems that never touch D3D12. dxil.dll is probed too: dxcompiler.dll loads it
+    // internally to sign/validate DXIL, and without it compiled shaders only load in developer mode —
+    // better to fall back cleanly here than fail obscurely at first Compile().
+    PFN_DXC_CREATE_INSTANCE ResolveDxcCreateInstance() {
+        static PFN_DXC_CREATE_INSTANCE s_pfn = nullptr;
+        static bool s_attempted = false;
+        if ( s_attempted ) return s_pfn;
+        s_attempted = true;
+
+        if ( !LoadLibraryA( "dxil.dll" ) ) {
+            LogWarn() << "D3D12: dxil.dll not found; DXIL shaders would fail validation outside "
+                          "developer mode. D3D12 shader compilation is unavailable.";
+            return nullptr;
+        }
+
+        HMODULE hDxCompiler = LoadLibraryA( "dxcompiler.dll" );
+        if ( !hDxCompiler ) {
+            LogWarn() << "D3D12: dxcompiler.dll not found. D3D12 shader compilation is unavailable.";
+            return nullptr;
+        }
+
+        s_pfn = reinterpret_cast<PFN_DXC_CREATE_INSTANCE>( GetProcAddress( hDxCompiler, "DxcCreateInstance" ) );
+        if ( !s_pfn ) {
+            LogWarn() << "D3D12: dxcompiler.dll is missing the DxcCreateInstance export. D3D12 shader compilation is unavailable.";
+        }
+        return s_pfn;
+    }
+
     std::wstring ToWideString( LPCSTR str ) {
         if ( !str ) return L"";
         int size_needed = MultiByteToWideChar( CP_UTF8, 0, str, -1, NULL, 0 );
@@ -93,13 +131,18 @@ namespace {
         LPCSTR pTarget,
         ID3DBlob** ppCode )
     {
-        // 1. Initialize DXC Compiler Instances
+        // 1. Resolve dxcompiler.dll/dxil.dll dynamically and initialize the DXC compiler instances
+        PFN_DXC_CREATE_INSTANCE dxcCreateInstance = ResolveDxcCreateInstance();
+        if ( !dxcCreateInstance ) {
+            return false; // already logged by ResolveDxcCreateInstance
+        }
+
         ComPtr<IDxcCompiler3> compiler;
         ComPtr<IDxcUtils> dxcUtils;
 
-        if ( FAILED( DxcCreateInstance( CLSID_DxcCompiler, IID_PPV_ARGS( compiler.GetAddressOf() ) ) ) ||
-            FAILED( DxcCreateInstance( CLSID_DxcUtils, IID_PPV_ARGS( dxcUtils.GetAddressOf() ) ) ) ) {
-            LogWarn() << "D3D12: Failed to create DXC compiler instances. Make sure dxcompiler.dll is loaded.";
+        if ( FAILED( dxcCreateInstance( kClsidDxcCompiler, IID_PPV_ARGS( compiler.GetAddressOf() ) ) ) ||
+            FAILED( dxcCreateInstance( kClsidDxcUtils, IID_PPV_ARGS( dxcUtils.GetAddressOf() ) ) ) ) {
+            LogWarn() << "D3D12: Failed to create DXC compiler instances.";
             return false;
         }
 

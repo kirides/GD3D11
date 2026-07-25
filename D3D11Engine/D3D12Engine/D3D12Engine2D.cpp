@@ -30,8 +30,6 @@
 #include "../GMeshSimple.h"
 #include "../Toolbox.h"
 
-#include <dxcapi.h>
-
 #include "D3D12RenderQueue.h"
 #include "InstancingUtils.h"
 
@@ -39,9 +37,6 @@
 // every Windows 7+ and the D3D11 fallback swapchain already needs it at runtime, so a load-time link
 // here is safe — it does NOT reintroduce the D3D12 soft-dependency that lets old systems fall back.
 #pragma comment(lib, "dxgi.lib")
-
-// TODO: Replace dependency with runtime dynamic load of dxcompiler.dll (like D3D12CreateDevice) to avoid shipping it on systems that don't support D3D12.
-#pragma comment(lib, "dxcompiler.lib")
 
 using Microsoft::WRL::ComPtr;
 #include "D3D12EngineCommon.h"
