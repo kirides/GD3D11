@@ -1436,6 +1436,42 @@ XRESULT D3D12GraphicsEngine::Present() {
 }
 
 
+bool D3D12GraphicsEngine::WaitOnFrameFence( UINT64 value, const char* site ) {
+    if ( !m_Fence || !m_FenceEvent ) return false;
+    if ( m_Fence->GetCompletedValue() >= value ) return true;
+    if ( FAILED( m_Fence->SetEventOnCompletion( value, m_FenceEvent ) ) ) return false;
+
+    // The registration stays armed across a timed-out wait, so re-waiting on the same event is legal and
+    // loses no wakeup. See the header for why this must never be an INFINITE wait.
+    for ( UINT round = 1; ; ++round ) {
+        if ( WaitForSingleObject( m_FenceEvent, kFenceWaitTimeoutMs ) == WAIT_OBJECT_0 )
+            return true;
+
+        const HRESULT removedReason = m_Device.GetDevice()
+            ? m_Device.GetDevice()->GetDeviceRemovedReason() : E_FAIL;
+
+        UINT64 copyPending = 0, copyDone = 0;
+        {
+            std::lock_guard<std::mutex> lock( m_CopyQueueMutex );
+            copyPending = m_CopyFenceValue;
+            copyDone = m_CopyFence ? m_CopyFence->GetCompletedValue() : 0;
+        }
+
+        LogWarn() << "D3D12: " << site << " has been waiting " << ( round * kFenceWaitTimeoutMs ) / 1000
+            << "s for frame fence " << value << " (completed " << m_Fence->GetCompletedValue()
+            << "). Copy fence: " << copyDone << "/" << copyPending
+            << ( copyDone < copyPending ? " (direct queue is blocked on the copy queue)" : "" )
+            << ". Device removed reason: 0x" << std::hex << static_cast<uint32_t>( removedReason ) << std::dec << ".";
+
+        if ( FAILED( removedReason ) ) {
+            // The fence can no longer advance — waiting more only extends the freeze.
+            LogWarn() << "D3D12: giving up on frame fence " << value << " — the device is gone.";
+            return false;
+        }
+    }
+}
+
+
 void D3D12GraphicsEngine::MoveToNextFrame() {
     const UINT64 currentFenceValue = m_FenceValues[m_FrameIndex];
     m_Device.GetDirectQueue()->Signal( m_Fence.Get(), currentFenceValue );
@@ -1443,10 +1479,7 @@ void D3D12GraphicsEngine::MoveToNextFrame() {
     m_FrameIndex = m_SwapChain->GetCurrentBackBufferIndex();
     m_CleanupFrameIndex.store( m_FrameIndex, std::memory_order_relaxed );
 
-    if ( m_Fence->GetCompletedValue() < m_FenceValues[m_FrameIndex] ) {
-        m_Fence->SetEventOnCompletion( m_FenceValues[m_FrameIndex], m_FenceEvent );
-        WaitForSingleObject( m_FenceEvent, INFINITE );
-    }
+    WaitOnFrameFence( m_FenceValues[m_FrameIndex], "MoveToNextFrame" );
     m_FenceValues[m_FrameIndex] = currentFenceValue + 1;
 
     // Clean up all resources slated for deletion from its last pass. Swap the slot's jobs out under the
@@ -1534,10 +1567,7 @@ void D3D12GraphicsEngine::FlushCommandListSync() {
 
     const UINT64 waitValue = ++m_FenceValues[m_FrameIndex];
     if ( SUCCEEDED( m_Device.GetDirectQueue()->Signal( m_Fence.Get(), waitValue ) ) ) {
-        if ( m_Fence->GetCompletedValue() < waitValue ) {
-            m_Fence->SetEventOnCompletion( waitValue, m_FenceEvent );
-            WaitForSingleObject( m_FenceEvent, INFINITE );
-        }
+        WaitOnFrameFence( waitValue, "FlushCommandListSync" );
     }
 
     m_CmdAllocators[m_FrameIndex]->Reset();

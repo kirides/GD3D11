@@ -249,6 +249,15 @@ private:
     void WaitForGpuIdle();            // full CPU/GPU flush (used on resize / teardown)
     void MoveToNextFrame();           // signal current frame's fence, advance, wait for next allocator
 
+    /** CPU-blocks on m_Fence reaching `value`, but bounded + diagnosed instead of WaitForSingleObject(INFINITE).
+        A direct-queue Signal that never *executes* (the queue is stuck on the copy-fence cross-queue Wait, or
+        the frame's command list faulted) is not recoverable by TDR — the game just freezes with no log at all.
+        Every kFenceWaitTimeoutMs of no progress this logs the site, the target/completed fence values, the copy
+        fence's state (the only blocking primitive on our direct queue) and the device-removed reason, then keeps
+        waiting. Returns false if it gave up because the device is gone. */
+    bool WaitOnFrameFence( UINT64 value, const char* site );
+    static constexpr DWORD kFenceWaitTimeoutMs = 2000;
+
     // Mid-frame synchronous flush for GetBackbufferData: closes + executes the currently-recorded m_CmdList
     // and blocks until the GPU has consumed it, then Resets the same allocator/list so recording can
     // continue for the rest of the frame. Unlike Present()/MoveToNextFrame() this does NOT transition the
