@@ -15,6 +15,7 @@ public:
         DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCOptionReadInt, hooked_zOptionReadInt  );
         DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCOptionReadBool, hooked_zOptionReadBool  );
         DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCOptionReadDWORD, hooked_zOptionReadDWORD  );
+        DetourAttachTyped( &HookedFunctions::OriginalFunctions.original_zCOptionReadReal, hooked_zOptionReadReal  );
     }
 
     /** Returns true if the given string is in the commandline of the game */
@@ -126,7 +127,8 @@ public:
             if ( engine ) {
                 return std::max(engine->GetResolution().x, def);
             }
-        } else if ( _stricmp( var, "zVidResFullscreenY" ) == 0 ) {
+        } else if ( _stricmp( var, "zVidResFullscreenY" ) == 0 )
+        {
             if ( engine ) {
                 return std::max(engine->GetResolution().y, def);
             }
@@ -169,6 +171,24 @@ public:
         return HookedFunctions::OriginalFunctions.original_zCOptionReadDWORD( thisptr, section, var, def );
     }
 
+    static float __fastcall hooked_zOptionReadReal(void* thisptr, void* unknwn, zSTRING const& section, char const* var, float def)
+    {
+        if ( _stricmp( var, "texDetailIndex" ) == 0 ) {
+            // Adjust the detail values so that the engine doesnt constantly throw away texture caches when closing menus
+            const int texSize = Engine::GAPI->GetRendererState().RendererSettings.textureMaxSize;
+            if (texSize >= 16384) return 1.0f;
+            // in theory there is also 1024 and 2048, but engine doesn't seem to honor them when closing the menu
+            // so this "fix" here only works for certain texture quality settings
+            if (texSize >= 512) return 0.75f;
+            if (texSize >= 256) return 0.55f;
+            if (texSize >= 128) return 0.55f;
+            if (texSize >= 64) return 0.15f;
+            return 0.10f;
+        }
+        
+        return HookedFunctions::OriginalFunctions.original_zCOptionReadReal(thisptr, section, var, def);
+    }
+    
     static long __fastcall hooked_zOptionReadInt( void* thisptr, void* unknwn, zSTRING const& section, char const* var, int def ) {
         int i = Do_hooked_zOptionReadInt( thisptr, section, var, def );
 

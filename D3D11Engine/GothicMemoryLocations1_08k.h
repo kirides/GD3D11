@@ -118,6 +118,7 @@ struct GothicMemoryLocations {
         static const unsigned int ReadInt = 0x0045CDB0;
         static const unsigned int ReadBool = 0x0045CB80;
         static const unsigned int ReadDWORD = 0x0045CEA0;
+        static const unsigned int ReadReal = 0x0045cf90;
         static const unsigned int WriteString = 0x0045C9F0;
         static const unsigned int Offset_CommandLine = 0x284;
     };

@@ -58,6 +58,7 @@ typedef void( __thiscall* zCRnd_D3D_DrawPolySimple )(void*, zCTexture*, void*, i
 typedef int( __thiscall* zCOptionReadInt )(void*, zSTRING const&, char const*, int);
 typedef int( __thiscall* zCOptionReadBool )(void*, zSTRING const&, char const*, int);
 typedef unsigned long( __thiscall* zCOptionReadDWORD )(void*, zSTRING const&, char const*, unsigned long);
+typedef float( __thiscall* zCOptionReadReal )(void*, zSTRING const&, char const*, float);
 typedef void( __thiscall* zCViewBlitText )(void*);
 typedef void( __thiscall* zCViewPrint )(void*, int, int, const zSTRING&);
 typedef int( __thiscall* CGameManagerExitGame )(void*);
@@ -107,6 +108,10 @@ inline LONG DetourAttachTyped( TOriginal* originalFunction, THook hookFunction )
     static_assert( sizeof( TOriginal ) == sizeof( PVOID ), "Unexpected original function pointer size" );
     static_assert( sizeof( THook ) == sizeof( PVOID ), "Unexpected hook function pointer size" );
 
+    if (!originalFunction || !*originalFunction) {
+        return ERROR_INVALID_PARAMETER;
+    } 
+    
     PVOID* ppOriginal = reinterpret_cast<PVOID*>(originalFunction);
 
     // 2. Cast the hook function safely.
@@ -158,6 +163,7 @@ struct HookedFunctionInfo {
     zCOptionReadInt original_zCOptionReadInt = reinterpret_cast<zCOptionReadInt>(GothicMemoryLocations::zCOption::ReadInt);
     zCOptionReadBool original_zCOptionReadBool = reinterpret_cast<zCOptionReadBool>(GothicMemoryLocations::zCOption::ReadBool);
     zCOptionReadDWORD original_zCOptionReadDWORD = reinterpret_cast<zCOptionReadDWORD>(GothicMemoryLocations::zCOption::ReadDWORD);
+    zCOptionReadReal original_zCOptionReadReal = reinterpret_cast<zCOptionReadReal>(GothicMemoryLocations::zCOption::ReadReal);
 #if defined(BUILD_GOTHIC_1_CLASSIC) || defined(BUILD_GOTHIC_2_6_fix)
     zCViewBlitText original_zCViewBlit = reinterpret_cast<zCViewBlitText>(GothicMemoryLocations::zCView::Blit);
     zCViewBlitText original_zCViewBlitText = reinterpret_cast<zCViewBlitText>(GothicMemoryLocations::zCView::BlitText);
