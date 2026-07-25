@@ -441,22 +441,12 @@ XRESULT D3D11Effect::LoadRainResources()
 {
     D3D11GraphicsEngineBase* e = reinterpret_cast<D3D11GraphicsEngineBase*>(Engine::GraphicsEngine);
 
-    std::string path;
-    path.resize( MAX_PATH );
-    path.resize(GetModuleFileNameA( nullptr, path.data(), path.size()-1 ));
-
-    std::filesystem::path basePath = std::filesystem::path( path ).parent_path() / "GD3D11" / "Textures";
-    
     if ( !RainTextureArray.Get() ) {
         HRESULT hr = S_OK;
         // Load textures...
         LogInfo() << "Loading rain-drop textures";
         ZoneScopedN( "LoadRainTextures" );
-        LE( LoadTextureArray( e->GetDevice().Get(), R"(\_work\Data\Textures\GD3D11\Raindrops\cv0_vPositive_)", 370, &RainTextureArray, &RainTextureArraySRV ) );
-        if (!SUCCEEDED(hr)) {
-            // try old file paths
-            LE( LoadTextureArray( e->GetDevice().Get(), R"(\System\GD3D11\Textures\Raindrops\cv0_vPositive_)", 370, &RainTextureArray, &RainTextureArraySRV ) );
-        }
+        LE( LoadTextureArray( e->GetDevice().Get(), R"(\System\GD3D11\Textures\Raindrops\cv0_vPositive_)", 370, &RainTextureArray, &RainTextureArraySRV ) );
     }
 
     if ( !SnowTextureArray.Get() ) {
@@ -464,10 +454,7 @@ XRESULT D3D11Effect::LoadRainResources()
         // Load textures...
         LogInfo() << "Loading snow flake textures";
         ZoneScopedN( "LoadSnowTextures" );
-        LE( LoadTextureArray( e->GetDevice().Get(), R"(\_work\Data\Textures\GD3D11\Snowflakes\Snow_)", 256, &SnowTextureArray, &SnowTextureArraySRV ) );
-        if (!SUCCEEDED(hr)) {
-            LE( LoadTextureArray( e->GetDevice().Get(), R"(\System\GD3D11\Textures\Snowflakes\Snow_)", 256, &SnowTextureArray, &SnowTextureArraySRV ) );
-        }
+        LE( LoadTextureArray( e->GetDevice().Get(), R"(\System\GD3D11\Textures\Snowflakes\Snow_)", 256, &SnowTextureArray, &SnowTextureArraySRV ) );
     }
 
     if ( !RainShadowmap.get() ) {
