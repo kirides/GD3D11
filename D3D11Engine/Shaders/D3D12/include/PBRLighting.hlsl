@@ -59,9 +59,48 @@ float SamplePointShadow( int cubeIndex, float3 wpos, float3 N, float3 lightPos, 
     return sh * 0.25;
 }
 
+// PCF footprint, expressed as a WORLD radius rather than a texel count. The kernel used to step
+// texel * (1 + c*1.5), i.e. the filtered area grew ~4x per cascade split (~1.8 -> 12 -> 94 world units at a
+// 2048^2 map with the default splits). On sub-texel, densely self-occluding geometry — grass above all — the
+// far cascades then averaged a footprint that is essentially 100% blade-covered and collapsed into a solid,
+// shapeless "everything is shadowed" mask, with a razor-sharp step at every split. Targeting a fixed world
+// radius keeps the blur physically comparable across cascades; the clamp keeps every tap at least one texel
+// apart (no sparse, aliasing kernel in the near cascade) and at most two (near shadows stay crisp).
+static const float kPcfWorldRadius = 12.0;   // world units, half-width of the 5x5 kernel
+static const float kPcfMinTexels   = 1.0;
+static const float kPcfMaxTexels   = 2.0;
+
+// Fraction of a cascade's footprint (per edge) used to cross-fade into the next cascade. Without it the
+// cascade switch is a hard discontinuity — invisible on large flat surfaces, glaring on grass, where the two
+// cascades disagree about how self-shadowed a blade is. D3D11 blends the same way (ShadowSampling.h's
+// GetCascadeUVAndBounds blendFactor -> `shadow = lerp(shadow, shadowNext, blendFactor)`).
+static const float kCascadeBlendBand = 0.12;
+
+float SampleCascadePCF( int c, float2 uv, float depth )
+{
+    const float texel = 1.0 / ShadowMapSize;
+    // World extent this cascade covers = texels * world-units-per-texel. The kernel reaches 2 taps out per
+    // axis, so the step that yields a kPcfWorldRadius half-width is radius / (2 * cascadeWorld) in UV.
+    float cascadeWorld = max( CascadeTexelWorld[c] * ShadowMapSize, 1e-4 );
+    float pcfStep = clamp( kPcfWorldRadius / ( 2.0 * cascadeWorld ),
+                           kPcfMinTexels * texel, kPcfMaxTexels * texel );
+
+    float sh = 0.0;
+    [unroll] for ( int y = -2; y <= 2; ++y )
+    [unroll] for ( int x = -2; x <= 2; ++x )
+        sh += ShadowMap.SampleCmpLevelZero( shadowCmp, float3( uv + float2( x, y ) * pcfStep, c ), depth );
+    return sh / 25.0;
+}
+
 // Returns 1.0 = fully lit, 0.0 = fully occluded. Picks the first cascade whose footprint contains the point
 // (0 tightest), applies a per-cascade world-space normal bias, and does a PCF tap. Mirrors the D3D11
 // ComputeCascadedShadowValueSoft selection/bounds (GetCascadeUVAndBounds) minus the blue-noise/PCSS machinery.
+//
+// `N` is the BIAS normal and does not have to be the shading normal: what it is for is pushing the lookup off
+// the caster, so it must describe the real surface. Vegetation.hlsl deliberately passes the card's geometric
+// normal here while shading with an up-bent one — feeding the faked world-up normal in would drive slopeScale
+// (and therefore the whole bias) to ~0 on near-edge-on blades, which is what made grass self-shadow itself
+// into a flat black mask.
 //
 // Bias matches D3D11's scheme (Shaders/ShadowSampling.h ComputeCascadedShadowValueSoft + its PS_Diffuse/
 // PS_FP_ShadowMask/PS_DS_AtmosphericScattering call sites): the real bias is the world-space normal offset,
@@ -73,8 +112,7 @@ float SamplePointShadow( int cubeIndex, float3 wpos, float3 N, float3 lightPos, 
 // 0.0015 constant here was ~500x too large — worth 10+ world units of erroneous depth offset on its own.
 float ComputeSunShadow( float3 wpos, float3 N )
 {
-    const float margin = 1.5 / ShadowMapSize;
-    const float texel  = 1.0 / ShadowMapSize;
+    const float margin = 1.5 / ShadowMapSize;   // (the kernel step now lives in SampleCascadePCF)
     const float constantDepthBias = 0.000003;
 
     float rawNoL = dot( N, SunDirWS );
@@ -90,15 +128,37 @@ float ComputeSunShadow( float3 wpos, float3 N )
         if ( uv.x > margin && uv.x < 1.0 - margin && uv.y > margin && uv.y < 1.0 - margin &&
              sp.z >= 0.0 && sp.z <= 1.0 )
         {
-            // Wider, cascade-scaled PCF (P2.9c-3c): far cascades cover more world per texel (sub-texel foliage
-            // → temporal "blinking"), so widen the kernel step with the cascade index to spatially average that
-            // flicker into a soft, stable penumbra. 5x5 taps; near cascade stays near-1-texel (crisp).
-            float pcfStep = texel * ( 1.0 + float( c ) * 1.5 );
-            float sh = 0.0;
-            [unroll] for ( int y = -2; y <= 2; ++y )
-            [unroll] for ( int x = -2; x <= 2; ++x )
-                sh += ShadowMap.SampleCmpLevelZero( shadowCmp, float3( uv + float2( x, y ) * pcfStep, c ), sp.z - constantDepthBias );
-            return sh / 25.0;
+            float sh = SampleCascadePCF( c, uv, sp.z - constantDepthBias );
+
+            // Cross-fade out of this cascade near its footprint edge. `edge` is the distance to the nearest
+            // border in UV (0 at the border, 0.5 dead centre), so blend ramps 0 -> 1 across the outer band.
+            float2 toBorder = min( uv, 1.0 - uv );
+            float  edge = min( toBorder.x, toBorder.y );
+            float  blend = saturate( 1.0 - edge / kCascadeBlendBand );
+
+            if ( blend > 0.0 )
+            {
+                if ( c + 1 < NUM_CSM_CASCADES )
+                {
+                    // Re-project into the next (coarser) cascade with ITS bias and blend in, when it covers
+                    // this point. Cheap: only the ~12% of pixels sitting in a band pay the second 5x5 tap.
+                    const int n = min( c + 1, NUM_CSM_CASCADES - 1 );
+                    float3 biasedNext = wpos + N * ( slopeScale * CascadeTexelWorld[n] );
+                    float4 spNext = mul( float4( biasedNext, 1.0 ), CascadeViewProj[n] );
+                    float2 uvNext = spNext.xy * float2( 0.5, -0.5 ) + 0.5;
+                    if ( uvNext.x > margin && uvNext.x < 1.0 - margin &&
+                         uvNext.y > margin && uvNext.y < 1.0 - margin &&
+                         spNext.z >= 0.0 && spNext.z <= 1.0 )
+                        sh = lerp( sh, SampleCascadePCF( n, uvNext, spNext.z - constantDepthBias ), blend );
+                }
+                else
+                {
+                    // Last cascade: nothing coarser to fall into, and the loop's fallthrough is "lit" — so
+                    // fade to lit here too instead of ending the shadow range on a hard edge.
+                    sh = lerp( sh, 1.0, blend );
+                }
+            }
+            return sh;
         }
     }
     return 1.0;   // outside all cascades → treat as lit

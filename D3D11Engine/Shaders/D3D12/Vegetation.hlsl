@@ -115,10 +115,30 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     // Ground tint: darken/color the blade toward the texture of the world material underneath it.
     color.rgb *= txGround.SampleLevel( smp, frac( i.wpos.xz / 1000 ), 5 ).rgb * 1.1f;
 
-    const float3 N = float3( 0, 1, 0 );   // fixed up-ish normal; grass blades carry no real per-pixel normal
+    // Geometric normal of the actual grass card, from screen-space derivatives of the (wind-swayed) world
+    // position. The mesh carries none — GMeshSimple stores SimpleObjectVertexStruct { Position, TexCoord } and
+    // drops assimp's normals — and D3D11 fakes a world-up one too (GVegetationBox::PopulateConstantBuffer's
+    // G_NormalVS), so derivatives are the only real per-pixel orientation available without changing the vertex
+    // format on both backends. Cards are flat quads, so this is exact and constant per triangle; they are drawn
+    // CULL_NONE, hence the orient-toward-camera flip. Degenerate fallback for a card seen exactly edge-on.
+    float3 ngRaw = cross( ddx( i.wpos ), ddy( i.wpos ) );
+    float  ngLen = length( ngRaw );
+    float3 Ngeo  = ngLen > 1e-6f ? ngRaw / ngLen : float3( 0, 1, 0 );
+    if ( dot( Ngeo, CamPosWS - i.wpos ) < 0.0f ) Ngeo = -Ngeo;
+
+    // Shading normal: the true card normal is near-HORIZONTAL, so lighting straight off it turns a grass field
+    // into flat cardboard cutouts that go black under a high sun — which is exactly why this was a hardcoded
+    // world-up. Bend most of the way back toward up: the soft rounded-field look survives, but blades now
+    // respond to their own (randomly Y-rotated) orientation instead of every blade being lit identically.
+    const float3 N = normalize( lerp( Ngeo, float3( 0, 1, 0 ), 0.7f ) );
+
     float3 albedo = SrgbToLinear( color.rgb );
     albedo = DelightDiffuse( albedo );
-    float shadow = ComputeSunShadow( i.wpos, N );
+    // Bias off the GEOMETRIC normal, not the shading one: ComputeSunShadow's normal offset is slope-scaled by
+    // sqrt(1 - dot(N,SunDir)^2), and feeding it the up-bent normal under a high sun drove that to ~0 — the
+    // blades then self-shadowed into a uniform black mask (no shadow shape, just "fully occluded"), stepping
+    // hard at every cascade split. Ngeo is near-edge-on to the sun, so the bias gets its full magnitude here.
+    float shadow = ComputeSunShadow( i.wpos, Ngeo );
     // orm: AO=1 (g_full), roughness=0.9 (matte), metallic=0 — grass has no ORM map, so a diffuse-leaning default.
     // Screen-space AO applies here now: the mask is built from the PREVIOUS frame's COMPLETE depth (which the
     // grass DID write, in the lit color pass), not from the depth prepass grass never joins. So the mask at a
