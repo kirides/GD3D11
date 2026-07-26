@@ -2103,8 +2103,15 @@ bool D3D12PipelineState::CreateLumAdapt() {
 bool D3D12PipelineState::CreateWater() {
     ID3D12Device* device = m_Device->GetDevice();
 
-    // Root signature = the world layout + one extra param: b0 ViewProj (16 consts, VS), t0 diffuse SRV
-    // (PS), b1 fog (8 consts, ALL), b2 water { time, alpha } (4 consts, ALL — VS reads time, PS alpha).
+    // Root signature: b0 ViewProj (16 consts, VS), t0 diffuse SRV table (PS — rebound per texture batch),
+    // b2 the water/refraction CB (root CBV; VS reads the scroll time + view matrix, PS reads everything
+    // else), b1 the atmosphere CB (root CBV, PS — ApplyAtmosphericScatteringGround).
+    //
+    // The refraction/reflection inputs (scene copy, depth copy, distortion, reflection cube) are NOT in the
+    // table: they are fetched bindlessly out of the shared SRV heap by index from the water CB, hence the
+    // CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED flag. That keeps this root signature at 4 params while the D3D11
+    // equivalent needs five fixed t-slots, and avoids having to build a heap-contiguous descriptor run for
+    // resources that live in unrelated slots.
     D3D12_DESCRIPTOR_RANGE srvRange = {};
     srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
     srvRange.NumDescriptors = 1;
@@ -2120,28 +2127,33 @@ bool D3D12PipelineState::CreateWater() {
     params[1].DescriptorTable.NumDescriptorRanges = 1;
     params[1].DescriptorTable.pDescriptorRanges = &srvRange;
     params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[2].Constants.ShaderRegister = 1;   // b1 fog
-    params[2].Constants.Num32BitValues = 8;
+    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    params[2].Descriptor.ShaderRegister = 2;  // b2 WaterCB (projection/view/params/bindless indices)
     params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[3].Constants.ShaderRegister = 2;   // b2 water { time, alpha }
-    params[3].Constants.Num32BitValues = 4;
-    params[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    params[3].Descriptor.ShaderRegister = 1;  // b1 AtmosphereConstantBuffer
+    params[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
-    D3D12_STATIC_SAMPLER_DESC sampler = {};
-    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler.MaxLOD = D3D12_FLOAT32_MAX;
-    sampler.ShaderRegister = 0;              // s0
-    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    D3D12_STATIC_SAMPLER_DESC samplers[2] = {};
+    samplers[0].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    samplers[0].AddressU = samplers[0].AddressV = samplers[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    samplers[0].MaxLOD = D3D12_FLOAT32_MAX;
+    samplers[0].ShaderRegister = 0;          // s0 — diffuse + the world-space distortion lookups
+    samplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    // s1: screen-space fetches (scene copy / depth copy). CLAMP, not WRAP — a distorted UV that walks a
+    // texel past the viewport edge must repeat the border pixel, not wrap around to the opposite side of
+    // the screen (which shows up as a bright seam along the water's screen-edge silhouette).
+    samplers[1] = samplers[0];
+    samplers[1].AddressU = samplers[1].AddressV = samplers[1].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    samplers[1].ShaderRegister = 1;          // s1
 
     D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
     rsDesc.NumParameters = _countof( params );
     rsDesc.pParameters = params;
-    rsDesc.NumStaticSamplers = 1;
-    rsDesc.pStaticSamplers = &sampler;
-    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+    rsDesc.NumStaticSamplers = _countof( samplers );
+    rsDesc.pStaticSamplers = samplers;
+    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+        | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
 
     PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
     if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (water)."; return false; }
@@ -2163,9 +2175,11 @@ bool D3D12PipelineState::CreateWater() {
     }
 
     // Same packed 36-byte ExVertexStructGPU as the world mesh; here TexCoord2 (@28, half2) is the water
-    // UV-scroll delta (bound as TEXCOORD1), and DIFFUSE (@32) is the baked vertex tint.
+    // UV-scroll delta (bound as TEXCOORD1), and DIFFUSE (@32) is the baked vertex tint. NORMAL (@12,
+    // octahedral) feeds the PS's waterfall test — near-vertical water surfaces suppress their reflection.
     const D3D12_INPUT_ELEMENT_DESC layout[] = {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "NORMAL",   0, DXGI_FORMAT_R16G16_SNORM,    0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },  // octahedral, world-space
         { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         { "TEXCOORD", 1, DXGI_FORMAT_R16G16_FLOAT,    0, 28, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         { "DIFFUSE",  0, DXGI_FORMAT_R8G8B8A8_UNORM,  0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
@@ -2193,15 +2207,14 @@ bool D3D12PipelineState::CreateWater() {
     pso.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
     pso.RasterizerState.DepthClipEnable = TRUE;
 
-    // Straight alpha blend over the opaque scene: src.rgb*a + dst.rgb*(1-a); keep dst alpha.
+    // NO blending — this is an OPAQUE draw, matching D3D11: DrawWaterSurfaces calls SetDefaultStates() and
+    // GothicBlendStateInfo::SetDefault() leaves BlendEnabled = false. The water's see-through appearance is
+    // composited inside the pixel shader from a copy of the finished scene (refraction), not by the blender.
+    // The old SRC_ALPHA/INV_SRC_ALPHA blend with a constant 0.7 alpha is exactly what made D3D12 water read
+    // as a solid tinted sheet: a flat texture lerped over the scene can't darken with depth, refract, or
+    // reflect.
     D3D12_RENDER_TARGET_BLEND_DESC& rt = pso.BlendState.RenderTarget[0];
-    rt.BlendEnable = TRUE;
-    rt.SrcBlend = D3D12_BLEND_SRC_ALPHA;
-    rt.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
-    rt.BlendOp = D3D12_BLEND_OP_ADD;
-    rt.SrcBlendAlpha = D3D12_BLEND_ONE;
-    rt.DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
-    rt.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    rt.BlendEnable = FALSE;
     rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
 
     // Reversed-Z: test GREATER_EQUAL, but DO NOT write depth — transparent water must not occlude, and
@@ -2229,7 +2242,7 @@ bool D3D12PipelineState::CreateWater() {
 
     pso.PS = { Water.DepthPrepassPsBlob->GetBufferPointer(), Water.DepthPrepassPsBlob->GetBufferSize() };
     // Keep NumRenderTargets=1/kSceneColorFormat (the scene-color RTV stays bound through this pass, same as
-    // the world/VOB depth prepass) but mask off every color write, and drop the blend the color pass needs.
+    // the world/VOB depth prepass) but mask off every color write.
     pso.BlendState.RenderTarget[0] = {};
     pso.BlendState.RenderTarget[0].RenderTargetWriteMask = 0;   // DEPTH ONLY
     pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;

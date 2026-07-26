@@ -936,6 +936,45 @@ private:
     bool CreateFogConstantBuffers();          // one-time: the per-frame-in-flight composition CB ring
     void RenderFogAndGodRays();               // god-ray mask+zoom compute, then the fullscreen composition blend
 
+    // ---- Water refraction / reflection (D3D12Water.cpp) — port of D3D11's DrawWaterSurfaces + PS_Water ----
+    // Water is drawn OPAQUE and does its own see-through compositing from copies of the finished opaque
+    // scene, exactly like D3D11 (which CopyTextureToRTVs the HDR backbuffer into PfxRenderer's temp buffer
+    // and CopyDepthStencil()s the depth before the water Z-prepass). Both copies must be taken BEFORE the
+    // water Z-prepass writes the surface's own depth, or the refraction would read water-vs-water.
+    //
+    // Allocated lazily on the first frame a world actually renders water (~24 MB of 32-bit VA at 1080p,
+    // which menus, indoor worlds and water-free maps should not pay) and released on resize, where the GPU
+    // is already idle; EnsureWaterCopyResources() then rebuilds them at the new size on the next water frame.
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_WaterSceneCopy;      // pre-water HDR scene (kSceneColorFormat)
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_WaterSceneCopyAlloc;
+    UINT m_WaterSceneCopySrvSlot = UINT_MAX;
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_WaterDepthCopy;      // pre-water depth (R32_TYPELESS -> R32_FLOAT SRV)
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_WaterDepthCopyAlloc;
+    UINT m_WaterDepthCopySrvSlot = UINT_MAX;
+    INT2 m_WaterCopySize = { 0, 0 };          // resolution the two copies were built for (0,0 = not allocated)
+
+    // reflect_cube.dds as a real TextureCube — the static sky/environment reflection D3D11 binds at t3, and
+    // the fallback whenever an SSR ray misses or leaves the screen. D3D12Texture is Texture2D-only, so this
+    // is loaded by a small dedicated 6-face DDS parser in D3D12Water.cpp rather than through it.
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_ReflectionCube;
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_ReflectionCubeAlloc;
+    UINT m_ReflectionCubeSrvSlot = UINT_MAX;   // UINT_MAX => shader skips the cube (SSR/refraction only)
+
+    // Per-frame-in-flight water CB: 512 B split into two 256-B-aligned blocks — [0,256) the WaterCB the
+    // shader declares at b2, [256,512) the AtmosphereConstantBuffer at b1. Water runs long BEFORE
+    // RenderFogAndGodRays, so it cannot share m_FogCB's atmosphere block (that one is only filled when the
+    // height-fog composition actually runs, later in the frame).
+    static constexpr UINT kWaterAtmosphereCbOffset = 256;
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_WaterCB[kBackBufferCount];
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_WaterCBAlloc[kBackBufferCount];
+    uint8_t* m_WaterCBMapped[kBackBufferCount] = {};
+    D3D12_GPU_VIRTUAL_ADDRESS m_WaterCBGpu[kBackBufferCount] = {};
+
+    bool LoadReflectionCube();                // one-time, non-fatal (mirrors LoadDistortionTexture)
+    bool CreateWaterConstantBuffers();        // one-time: the per-frame-in-flight water/atmosphere CB ring
+    bool EnsureWaterCopyResources();          // lazy (re)build of the scene+depth copies at m_Resolution
+    void ReleaseWaterCopyResources();         // called on resize (GPU idle) so the next water frame rebuilds
+
     // Rain/snow particles (D3D12 rain parity, step 1: buffers + CS advance only — no draw yet). Mirrors
     // D3D11Effect's RainBufferStatic/RainBufferDrawFrom, but as plain StructuredBuffers bound via ROOT
     // SRV/UAV (see D3D12PipelineState::AdvanceRain) instead of D3D11's VBV+SRV dual-bind — the CS only

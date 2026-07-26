@@ -985,6 +985,9 @@
     <ClCompile Include="D3D12Engine\D3D12Fog.cpp">
       <Filter>Engine\D3D12</Filter>
     </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12Water.cpp">
+      <Filter>Engine\D3D12</Filter>
+    </ClCompile>
     <ClCompile Include="D3D12Engine\D3D12LineRenderer.cpp">
       <Filter>Engine\D3D12</Filter>
     </ClCompile>

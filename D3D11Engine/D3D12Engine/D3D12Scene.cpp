@@ -132,17 +132,8 @@ namespace {
     // PositionView is filled CPU-side in BuildFrameLightBuffer using the same transpose(view) transform the
     // D3D11 CullLights uses, so this shader's view space matches. SM6.6: no ternary (use min()/select()).
 
-    // Phase-2 water shader (MVP). Same wrapped-world-mesh vertex as the opaque pass, but the packed
-    // TexCoord2 (@28, half2) carries the per-material UV-scroll delta (set in WorldConverter for water
-    // materials); the VS scrolls the diffuse UV by (delta * totalTime) exactly like VS_ExWater. The PS
-    // samples the scrolled diffuse, applies distance fog, and outputs a constant alpha so the surface
-    // blends translucently over the already-drawn opaque scene beneath it. Refraction / reflection /
-    // scene-color + depth sampling + Gerstner waves (the full D3D11 PS_Water/VS_ExWater) are out of MVP.
-
-    // Water surfaces peeled out of the opaque world pass (DrawWorldMesh) and drawn later, alpha-blended,
-    // by DrawWaterSurfaces. Both run on the same thread within one frame (OnStartWorldRendering), so a
-    // file-scope scratch map is safe — grouped by texture to minimize SRV binds. Cleared each frame.
-    std::unordered_map<zCTexture*, std::vector<MeshInfo*>> g_FrameWaterSurfaces;
+    // Water: the surfaces peeled out of the opaque world pass live in g_FrameWaterSurfaces (declared in
+    // D3D12EngineCommon.h, defined in D3D12Water.cpp, which owns the whole pass).
 
     // Per-frame visible-vob/light/mob collection, hoisted out of DrawVobsInstanced so ALL geometry passes
     // (world, VOBs, skeletal) light against the same set. CollectVisibleVobs has side effects (fills each
@@ -2552,98 +2543,6 @@ void D3D12GraphicsEngine::BindFrameLights( UINT srvParam, UINT countParam, UINT 
 	m_CmdList->SetGraphicsRoot32BitConstant( countParam, limitLightIntensity, 2 );
 	m_CmdList->SetGraphicsRootShaderResourceView( gridParam, m_LightGridBuffer->GetGPUVirtualAddress() );
 	m_CmdList->SetGraphicsRootShaderResourceView( indexParam, m_LightIndexBuffer->GetGPUVirtualAddress() );
-}
-
-
-
-void D3D12GraphicsEngine::DrawWaterSurfaces() {
-	if ( !m_FrameOpen || !m_Pipelines.Water.PSO || !m_Pipelines.Water.RootSig || !m_DepthBuffer || g_FrameWaterSurfaces.empty() )
-		return;
-
-	DX_ZONE( m_CmdList, "DrawWaterSurfaces" );
-
-	MeshInfo* wm = Engine::GAPI->GetWrappedWorldMesh();
-	if ( !wm || !wm->GetMeshVertexBuffer() || !wm->GetMeshIndexBuffer() ) { g_FrameWaterSurfaces.clear(); return; }
-	D3D12VertexBuffer* vb = D3D12VertexBuffer::From( wm->GetMeshVertexBuffer() );
-	D3D12VertexBuffer* ib = D3D12VertexBuffer::From( wm->GetMeshIndexBuffer() );
-	if ( !vb->GetResource() || !ib->GetResource() ) { g_FrameWaterSurfaces.clear(); return; }
-
-	// ViewProj — identical derivation to DrawWorldMesh (water verts are already world-space).
-	XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
-	Engine::GAPI->SetViewTransformXM( view );
-	Engine::GAPI->ResetWorldTransform();
-	const XMFLOAT4X4& viewM = Engine::GAPI->GetRendererState().TransformState.TransformView;
-	const XMFLOAT4X4& projM = Engine::GAPI->GetProjectionMatrix();
-	XMFLOAT4X4 viewProj;
-	XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
-
-	const FogConstants fog = MakeFogConstants();
-	// b2: { totalTime (ms, drives UV scroll), water alpha (translucency), pad, pad }.
-	const float water[4] = { Engine::GAPI->GetTotalTime(), 0.7f, 0.0f, 0.0f };
-
-	m_CmdList->SetGraphicsRootSignature( m_Pipelines.Water.RootSig.Get() );
-	m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
-	m_CmdList->SetGraphicsRoot32BitConstants( 2, 8, &fog, 0 );
-	m_CmdList->SetGraphicsRoot32BitConstants( 3, 4, water, 0 );
-
-	D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_Resolution.x), static_cast<float>(m_Resolution.y), 0.0f, 1.0f };
-	D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
-	m_CmdList->RSSetViewports( 1, &vp );
-	m_CmdList->RSSetScissorRects( 1, &sc );
-
-	D3D12_VERTEX_BUFFER_VIEW vbv = { vb->GetGpuVirtualAddress(), vb->GetSizeInBytes(), sizeof( ExVertexStructGPU ) };
-	D3D12_INDEX_BUFFER_VIEW  ibv = { ib->GetGpuVirtualAddress(), ib->GetSizeInBytes(), DXGI_FORMAT_R32_UINT };
-	m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
-	m_CmdList->IASetIndexBuffer( &ibv );
-	m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
-
-	const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_BlackTexture->GetSrvSlot() );
-	// Bind a dummy diffuse for the whole call: the depth prepass' PS reads nothing, but root parameter 1 must
-	// still be initialized before any draw on this root signature. The color loop below rebinds it per texture.
-	m_CmdList->SetGraphicsRootDescriptorTable( 1, whiteSrv );
-
-	// === Z-Prepass === (mirrors D3D11's DrawWaterSurfaces::ZPrepass)
-	// The color pass below is depth-read-only, so without this the main depth buffer would still hold the
-	// geometry BEHIND the water (or the reversed-Z far plane over open ocean) at every water pixel. Everything
-	// downstream that reconstructs a world position from depth — height fog and the god-ray mask
-	// (RenderFogAndGodRays) — would then fog the sea floor / sky rather than the water surface, which is why
-	// the fog visibly breaks at the ocean without this pass. Same VB/IB/root constants; only the PSO differs
-	// (color writes masked, depth-write on).
-	if ( m_Pipelines.Water.DepthPrepassPSO ) {
-		DX_ZONE( m_CmdList, "Water Z-Prepass" );
-		m_CmdList->SetPipelineState( m_Pipelines.Water.DepthPrepassPSO.Get() );
-		for ( auto const& [tex, meshes] : g_FrameWaterSurfaces ) {
-			for ( MeshInfo* mesh : meshes ) {
-				if ( !mesh || mesh->Indices.empty() ) continue;
-				m_CmdList->DrawIndexedInstanced( static_cast<UINT>(mesh->Indices.size()), 1,
-					mesh->BaseIndexLocation, 0, 0 );
-			}
-		}
-	}
-
-	m_CmdList->SetPipelineState( m_Pipelines.Water.PSO.Get() );
-	unsigned int drawnIndices = 0;
-	for ( auto const& [tex, meshes] : g_FrameWaterSurfaces ) {
-		D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
-		if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
-			if ( MyDirectDrawSurface7* surface = tex->GetSurface() ) {
-				if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
-					D3D12Texture* d12 = D3D12Texture::From( gfx );
-					if ( d12->HasSRV() ) srv = d12->GetSrvGpuHandle();
-				}
-			}
-		}
-		m_CmdList->SetGraphicsRootDescriptorTable( 1, srv );
-		for ( MeshInfo* mesh : meshes ) {
-			if ( !mesh || mesh->Indices.empty() ) continue;
-			m_CmdList->DrawIndexedInstanced( static_cast<UINT>(mesh->Indices.size()), 1,
-				mesh->BaseIndexLocation, 0, 0 );
-			drawnIndices += static_cast<unsigned int>(mesh->Indices.size());
-		}
-	}
-
-	Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles += drawnIndices / 3;
-	g_FrameWaterSurfaces.clear();
 }
 
 

@@ -158,6 +158,13 @@ XRESULT D3D12GraphicsEngine::Init() {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the water pipeline.";
         return XR_FAILED;
     }
+    if ( !CreateWaterConstantBuffers() ) {
+        // Fatal-ish for water only: DrawWaterSurfaces skips its color pass without the CB (the Z-prepass
+        // still runs so height fog stays correct), leaving water surfaces unshaded. Not worth failing the
+        // whole backend over — but it should never happen, so log it loudly.
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the water constant buffers (water will not be shaded).";
+    }
+    LoadReflectionCube();   // non-fatal: water then reflects only on-screen geometry via SSR
     if ( !m_Pipelines.CreateParticle() || !CreateParticleInstanceBuffers() ) {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the particle pipeline.";
         return XR_FAILED;
@@ -1072,6 +1079,7 @@ bool D3D12GraphicsEngine::CreateSwapChain( INT2 size ) {
     CreateAOResources( size );       // non-fatal: SSAO is opt-in (AoMode != AO_NONE); RenderSSAO no-ops if this failed
     CreateHiZResources( size );      // non-fatal: without it the GPU VOB cull runs frustum-only (no occlusion)
     CreateFogResources( size );      // non-fatal: height fog/god rays are opt-in; RenderFogAndGodRays no-ops if this failed
+    ReleaseWaterCopyResources();     // lazily rebuilt at the new size by the next frame that renders water
     if ( !CreateLumPartialBuffer( size ) ) {
         // Non-fatal: RenderLuminanceAdapt() guards on m_LumPartialBuffer and just skips this frame's luminance
         // update if missing — m_LumAdaptedBuffer (created once in Init) keeps its last valid value, so Tonemap
@@ -1891,6 +1899,7 @@ bool D3D12GraphicsEngine::ResizeSwapChain( INT2 size ) {
     CreateAOResources( size );       // non-fatal: see the CreateSwapChain call site
     CreateHiZResources( size );      // non-fatal: see the CreateSwapChain call site
     CreateFogResources( size );      // non-fatal: see the CreateSwapChain call site
+    ReleaseWaterCopyResources();     // GPU is idle here; the next water frame rebuilds them at the new size
     if ( !CreateLumPartialBuffer( size ) ) {
         LogWarn() << "D3D12GraphicsEngine::OnResize: failed to create the dynamic-exposure partial-sum buffer.";
     }

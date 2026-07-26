@@ -5,8 +5,19 @@
 // This header is D3D12-backend-private — do not include it outside D3D12Engine/.
 #include <array>
 #include <cstdint>
+#include <unordered_map>
+#include <vector>
 #include <d3d12.h>
 #include <wrl/client.h>
+
+class zCTexture;
+struct MeshInfo;
+
+// Water surfaces peeled out of the opaque world pass (BuildWorldDrawCommands, D3D12Scene.cpp) and drawn
+// later by DrawWaterSurfaces (D3D12Water.cpp), grouped by texture to minimize SRV binds. Both run on the
+// same thread within one frame (OnStartWorldRendering), so a single file-scope scratch map is safe; it is
+// filled at build time and cleared by the water pass. Defined in D3D12Water.cpp.
+extern std::unordered_map<zCTexture*, std::vector<MeshInfo*>> g_FrameWaterSurfaces;
 
 // Upload-heap type used by every persistently-mapped ring / staging allocation. A single knob (kept
 // as an inline variable so all split TUs see the same value); the GPU_UPLOAD path is future work.
