@@ -853,7 +853,37 @@ private:
     // m_SceneColorInPixelState/m_LightGridInPixelState). Toggling AO off skips RenderSSAO entirely, so without
     // this the resource would still show PIXEL_SHADER_RESOURCE if AO is re-enabled a frame later.
     bool m_AOMaskInPixelState = false;
-    bool CreateAOResources( INT2 size );      // (re)builds m_AOMask/m_AOBlurTemp + persistent SRV/UAV slots
+    // --- Previous-frame depth (the AO source) --------------------------------------------------------------
+    // SSAO no longer runs off THIS frame's depth prepass: the prepass only covers world + instanced VOBs +
+    // skeletal, so everything drawn later in the color pass (grass/foliage, decals, water) was invisible to
+    // the AO and, worse, its screen pixels sampled the mask of whatever sat BEHIND it. Instead we snapshot
+    // the COMPLETE depth buffer at the end of world rendering (CopyDepthForAO, after every depth-writing pass)
+    // and run the whole AO chain off that copy on the next frame. The mask is therefore one frame stale and
+    // lives in the PREVIOUS frame's screen space, so the lit pixel shaders reproject into it per-pixel:
+    // world position -> m_PrevDepthViewProj -> UV (see Shaders/D3D12/include/ScreenSpaceAO.hlsl). That is exact
+    // for static geometry (not a camera-motion approximation) and only lags on moving objects.
+    // Side benefits: the AO chain never touches m_DepthBuffer, so RenderSSAO needs no depth barriers at all and
+    // no longer serialises against the prepass.
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_PrevDepth;        // full copy of last frame's D32 depth (R32_TYPELESS)
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_PrevDepthAlloc;
+    UINT m_PrevDepthSrvSlot = UINT_MAX;   // R32_FLOAT SRV: SSAO's t0 AND the lit PS's bindless disocclusion test
+    // Rest state is the combined shader-read state: the AO compute dispatches read it non-pixel, the lit pixel
+    // shaders read it pixel-side, and CopyDepthForAO flips it to COPY_DEST and straight back once per frame.
+    static constexpr D3D12_RESOURCE_STATES kPrevDepthReadState =
+        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    bool m_PrevDepthValid = false;        // false until the first CopyDepthForAO of a world (reset on resize/world load)
+    XMFLOAT4X4 m_PrevDepthViewProj = {};  // the camera that produced m_PrevDepth — the reprojection matrix
+    XMFLOAT4X4 m_PrevDepthProj = {};      // ...and its projection, for the AO pass's depth -> view-position math
+    // Reprojection tail of the shared shadow CB, written every frame by UploadAoReprojConstants (the third
+    // disjoint byte range of m_ShadowCB, after the RenderSunShadows head and the UploadWetnessConstants block).
+    static constexpr UINT kAoReprojCbOffset = 352;
+    struct AoReprojCBData {
+        XMFLOAT4X4 PrevViewProj;
+        UINT  PrevDepthIndex;   float PrevProjZX;   float PrevProjZY;   float ReprojValid;
+    };
+    void UploadAoReprojConstants();           // publishes m_PrevDepth* into the shadow CB for the lit PS
+    void CopyDepthForAO();                    // end-of-world-render snapshot of the complete depth buffer
+    bool CreateAOResources( INT2 size );      // (re)builds m_AOMask/m_AOBlurTemp/m_PrevDepth + persistent SRV/UAV slots
     void RenderSSAO();                        // main estimate -> separable blur; no-ops (mask stays white) if disabled/unavailable
 
     // ---- Height fog + god rays (plan item #5) — D3D12 port of D3D11's PostFX composition pass. -------------

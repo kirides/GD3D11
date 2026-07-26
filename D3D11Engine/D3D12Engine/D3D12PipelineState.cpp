@@ -641,7 +641,7 @@ bool D3D12PipelineState::CreateGrass() {
     cubeSrvRange.BaseShaderRegister = 6;   // t6 point-shadow cube array (PBRLighting.hlsl requires this symbol)
     cubeSrvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-    D3D12_ROOT_PARAMETER params[12] = {};
+    D3D12_ROOT_PARAMETER params[13] = {};
     params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     params[0].Constants.ShaderRegister = 0;   // b0 ViewProj
     params[0].Constants.Num32BitValues = 16;
@@ -686,13 +686,16 @@ bool D3D12PipelineState::CreateGrass() {
     params[11].DescriptorTable.NumDescriptorRanges = 1;
     params[11].DescriptorTable.pDescriptorRanges = &cubeSrvRange;
     params[11].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    // No screen-space AO param here (reverted): RenderSSAO()'s mask is computed from the depth PREPASS, which
-    // grass never joins (it draws last, in the lit color pass) — at grass's screen pixels the mask reflected
-    // whatever's behind the blade (terrain/sky), not the blade itself, reading as spurious heavy occlusion.
-    // Vegetation.hlsl's PSMain passes a literal 1.0 for ssao instead. Grass DOES still cast CSM shadows
-    // (m_ShadowCasterGrassPSO, CreateGrassShadowCaster) — that's independent of this root sig.
+    // params[12] = simple-SSAO mask bindless SRV-heap index (b5 AOCB, PS only), set once per frame by
+    // DrawVegetation. Grass gets real AO now that RenderSSAO builds the mask from the PREVIOUS frame's COMPLETE
+    // depth rather than the depth prepass grass never joins — see Vegetation.hlsl's PSMain. The grass shadow
+    // CASTER (m_ShadowCasterGrassPSO, CreateGrassShadowCaster) shares this root sig but reads none of this.
+    params[12].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[12].Constants.ShaderRegister = 5;   // b5 AOCB { AoMaskIndex }
+    params[12].Constants.Num32BitValues = 1;
+    params[12].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
-    D3D12_STATIC_SAMPLER_DESC samplers[2] = {};
+    D3D12_STATIC_SAMPLER_DESC samplers[3] = {};
     samplers[0].Filter = D3D12_FILTER_ANISOTROPIC;
     samplers[0].MaxAnisotropy = 16;
     samplers[0].AddressU = samplers[0].AddressV = samplers[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
@@ -706,13 +709,22 @@ bool D3D12PipelineState::CreateGrass() {
     samplers[1].MaxLOD = D3D12_FLOAT32_MAX;
     samplers[1].ShaderRegister = 2;          // s2 shadow comparison
     samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    // s1: point-clamp for the AO mask + the reprojection depth fetch — identical to World/Vob/Skeletal's s1.
+    samplers[2].Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
+    samplers[2].AddressU = samplers[2].AddressV = samplers[2].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    samplers[2].MaxLOD = D3D12_FLOAT32_MAX;
+    samplers[2].ShaderRegister = 1;          // s1 AO mask point-clamp
+    samplers[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
     rsDesc.NumParameters = _countof( params );
     rsDesc.pParameters = params;
     rsDesc.NumStaticSamplers = _countof( samplers );
     rsDesc.pStaticSamplers = samplers;
-    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+    // CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED: the PS reaches the AO mask and the previous-frame depth through
+    // SM6.6 ResourceDescriptorHeap[...] (see ScreenSpaceAO.hlsl), same as the World/Vob/Skeletal sigs.
+    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+                 | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
 
     PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
     if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (grass)."; return false; }

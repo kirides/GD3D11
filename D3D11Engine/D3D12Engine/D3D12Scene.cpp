@@ -500,6 +500,10 @@ void D3D12GraphicsEngine::OnLoadWorld()
     for (auto& v : g_ShadowPassVobs) {
         v.Reset();
     }
+    // The AO depth snapshot still holds the OLD world seen through the old camera — reprojecting the new
+    // world's geometry into it would produce garbage occlusion for one frame. RenderSSAO falls back to the
+    // white "no occlusion" mask until CopyDepthForAO refills it at the end of the first frame here.
+    m_PrevDepthValid = false;
 }
 
 
@@ -3309,6 +3313,7 @@ void D3D12GraphicsEngine::DrawVegetation() {
 			m_CmdList->SetGraphicsRootConstantBufferView( 9, m_ShadowCBGpu[m_FrameIndex] );
 			m_CmdList->SetGraphicsRootDescriptorTable( 10, GetSrvGpuHandle( m_ShadowSrvSlot ) );
 			m_CmdList->SetGraphicsRootDescriptorTable( 11, GetSrvGpuHandle( m_PointShadowSrvSlot ) );
+			m_CmdList->SetGraphicsRoot32BitConstants( 12, 1, &m_ActiveAOMaskSrvSlot, 0 );   // b5 AOCB (simple SSAO mask)
 			m_CmdList->RSSetViewports( 1, &vp );
 			m_CmdList->RSSetScissorRects( 1, &sc );
 			m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
@@ -3562,6 +3567,11 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	for ( auto const& [visualPtr, visual] : Engine::GAPI->GetStaticMeshVisuals() ) {
 		if ( visual ) visual->Instances.clear();
 	}
+
+	// Snapshot the now-COMPLETE depth buffer for the next frame's SSAO (see D3D12AO.cpp). Deliberately here:
+	// every depth-writing pass (world, VOBs, skeletal, grass, decals, water, particles) has run, and
+	// RenderFogAndGodRays below is the first thing that moves the depth buffer out of DEPTH_WRITE.
+	CopyDepthForAO();
 
 	// Height fog + god rays (parity item #5): the last thing to touch the scene before the post-FX chain, same
 	// slot D3D11's PostFX composition occupies (after the ghosts/particle passes, before bloom+tonemap). Both

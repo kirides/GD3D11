@@ -32,12 +32,29 @@ cbuffer ShadowCB : register(b4)
     float3   SunColor;          float SunIntensity;
     float3   CascadeTexelWorld; float AmbientStrength;
     float    ShadowAOStrength;  float WorldAOStrength;  float2 _shpad;
+    // Scene-wetness (rain) block. Grass applies no wetness (no Wetness.hlsl include here), but the fields must
+    // be declared so the AO tail below lands at the byte offset UploadAoReprojConstants writes it to — this CB
+    // is the same 512-byte resource World/Vob/Skeletal bind, three disjoint writers into one layout.
+    float4x4 RainViewProj;
+    float    SceneWetness;      float RainFxWeight;     float RainTime;   uint RainShadowIndex;
+    uint     DistortionIndex;   float RainShadowMapSize; float2 _wetpad;
+    // Screen-space AO reprojection tail — see World.hlsl for the layout notes; must stay identical in all
+    // lit shaders and in the CPU-side AoReprojCBData.
+    float4x4 AoPrevViewProj;
+    uint     AoPrevDepthIndex;  float AoPrevProjZX;      float AoPrevProjZY;  float AoReprojValid;
 };
 Texture2DArray          ShadowMap : register(t5);
 SamplerComparisonState  shadowCmp : register(s2);
 // PBRLighting.hlsl's AccumTiledPointLights hard-requires this symbol to exist (it samples it for any nearby
 // light that has a shadow cube) even though grass otherwise gets no dedicated point-shadow support here.
 TextureCubeArray        PointShadowCubes : register(t6);
+// Simple-SSAO mask (bindless, set once per frame — see D3D12GraphicsEngine::RenderSSAO/m_ActiveAOMaskSrvSlot).
+// b5: b0..b4 above are all spoken for on this root sig.
+cbuffer AOCB : register(b5) { uint AoMaskIndex; };
+// Point-clamp for the AO mask + the reprojection depth fetch — see World.hlsl for why Sample, not Load.
+SamplerState smpAoClamp : register(s1);
+// SampleScreenSpaceAO — needs AOCB/smpAoClamp + the ShadowCB reprojection tail declared above.
+#include "include/ScreenSpaceAO.hlsl"
 
 // DelightDiffuse, ComputeSunShadow, ComputeSunLightingPBR and AccumTiledPointLights are shared with
 // World.hlsl/Vob.hlsl/Skeletal.hlsl. PerturbNormal/CotangentFrame go unused since grass has no normal map.
@@ -103,11 +120,12 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     albedo = DelightDiffuse( albedo );
     float shadow = ComputeSunShadow( i.wpos, N );
     // orm: AO=1 (g_full), roughness=0.9 (matte), metallic=0 — grass has no ORM map, so a diffuse-leaning default.
-    // No screen-space AO: RenderSSAO() computes the mask from the depth PREPASS, which grass never joins (it
-    // draws last, in the lit color pass) — at grass's screen pixels the mask reflects whatever's BEHIND the
-    // blade (terrain or sky), not the blade itself, so it was reading as spurious heavy occlusion for anything
-    // but close-up grass. Revert to unoccluded until grass gets a real depth-prepass pass.
-    float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, 1.0, shadow, 0.9, 0.0, 1.0, 1.0 );
+    // Screen-space AO applies here now: the mask is built from the PREVIOUS frame's COMPLETE depth (which the
+    // grass DID write, in the lit color pass), not from the depth prepass grass never joins. So the mask at a
+    // blade's reprojected position describes the blade itself and its neighbours, not the terrain behind it —
+    // the reason this used to pass a literal 1.0.
+    float ssao = SampleScreenSpaceAO( i.wpos );
+    float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, 1.0, shadow, 0.9, 0.0, 1.0, ssao );
     rgb += AccumTiledPointLights( i.clip.xy, i.wpos, N, albedo, 0.9, 0.0 );
     float f = saturate( ( i.fogDist - FogNear ) / max( 1.0, FogFar - FogNear ) );
     return float4( lerp( rgb, SrgbToLinear( FogColor ), f ), 1.0 );

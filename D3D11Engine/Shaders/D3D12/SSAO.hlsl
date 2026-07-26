@@ -1,3 +1,7 @@
+// Input is the PREVIOUS frame's COMPLETE depth buffer (D3D12GraphicsEngine::CopyDepthForAO), not this frame's
+// depth prepass — that is what puts grass/foliage, decals and water into the occluder set. The one-frame
+// staleness is undone per-pixel in the lit shaders (include/ScreenSpaceAO.hlsl reprojects through the camera
+// that produced this depth), so everything below still works in a single consistent view space.
 // Forward+ has no GBuffer normals before lighting (see PBRLighting.hlsl), so this reconstructs a view-space
 // normal from neighbouring depth samples (D3D11's CS_PFX_SAO SAO_RECONSTRUCT_NORMALS fallback) — same
 // Alchemy-AO/SAO spiral-sample formula as D3D11's CS_PFX_SAO.hlsl, self-contained (no shared D3D11 headers;
@@ -18,7 +22,7 @@ cbuffer SSAOCB : register( b0 )
 };
 
 SamplerState    SS_Point : register( s0 );
-Texture2D<float> DepthTex : register( t0 );   // prepass depth (reversed-Z)
+Texture2D<float> DepthTex : register( t0 );   // previous frame's complete depth (reversed-Z)
 RWTexture2D<float> OutputAO : register( u0 );
 
 float3 ViewPosFromDepth( float2 uv, float depth )

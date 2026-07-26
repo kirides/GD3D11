@@ -34,6 +34,10 @@ cbuffer ShadowCB : register(b3)
     float4x4 RainViewProj;
     float    SceneWetness;      float RainFxWeight;     float RainTime;   uint RainShadowIndex;
     uint     DistortionIndex;   float RainShadowMapSize; float2 _wetpad;
+    // Screen-space AO reprojection tail — see World.hlsl for the layout notes; must stay identical in all
+    // three lit shaders and in the CPU-side AoReprojCBData.
+    float4x4 AoPrevViewProj;
+    uint     AoPrevDepthIndex;  float AoPrevProjZX;      float AoPrevProjZY;  float AoReprojValid;
 };
 Texture2DArray          ShadowMap : register(t4);
 SamplerComparisonState  shadowCmp : register(s2);
@@ -47,6 +51,8 @@ TextureCubeArray        PointShadowCubes : register(t5);
 cbuffer AOCB : register(b7) { uint AoMaskIndex; };
 // Point-clamp for the AO mask — see World.hlsl's identical declaration for why Sample (not Load) is required.
 SamplerState smpAoClamp : register(s1);
+// SampleScreenSpaceAO — see World.hlsl; needs AOCB/smpAoClamp + the ShadowCB reprojection tail declared above.
+#include "include/ScreenSpaceAO.hlsl"
 
 // DelightDiffuse, SamplePointShadow, ComputeSunShadow, the Cook-Torrance PBR helpers, PerturbNormal/
 // CotangentFrame, ComputeSunLightingPBR and AccumTiledPointLights are shared with World.hlsl/Skeletal.hlsl.
@@ -124,9 +130,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     float3 V = normalize( CamPosWS - i.wpos );
     float wetSheen;
     float wetness = ApplySceneWetness( i.wpos, V, N, albedo, orm.g, wetSheen );
-    Texture2D aoTex = ResourceDescriptorHeap[AoMaskIndex];
-    uint aoW, aoH; aoTex.GetDimensions( aoW, aoH );
-    float ssao = aoTex.SampleLevel( smpAoClamp, i.clip.xy / float2( aoW, aoH ), 0 ).r;
+    float ssao = SampleScreenSpaceAO( i.wpos );
     float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r, ssao );
     rgb *= lerp( 1.0, 0.8, wetness );
     rgb += AccumTiledPointLights( i.clip.xy, i.wpos, N, albedo, orm.g, orm.b );
@@ -224,9 +228,7 @@ float4 PSMainBindless( VS_OUT i ) : SV_TARGET
     float3 V = normalize( CamPosWS - i.wpos );
     float wetSheen;
     float wetness = ApplySceneWetness( i.wpos, V, N, albedo, orm.g, wetSheen );
-    Texture2D aoTex = ResourceDescriptorHeap[AoMaskIndex];
-    uint aoW, aoH; aoTex.GetDimensions( aoW, aoH );
-    float ssao = aoTex.SampleLevel( smpAoClamp, i.clip.xy / float2( aoW, aoH ), 0 ).r;
+    float ssao = SampleScreenSpaceAO( i.wpos );
     float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r, ssao );
     rgb *= lerp( 1.0, 0.8, wetness );
     rgb += AccumTiledPointLights( i.clip.xy, i.wpos, N, albedo, orm.g, orm.b );

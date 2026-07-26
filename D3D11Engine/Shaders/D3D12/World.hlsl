@@ -34,6 +34,11 @@ cbuffer ShadowCB : register(b3)
     float4x4 RainViewProj;
     float    SceneWetness;      float RainFxWeight;     float RainTime;   uint RainShadowIndex;
     uint     DistortionIndex;   float RainShadowMapSize; float2 _wetpad;
+    // --- Screen-space AO reprojection tail, uploaded by UploadAoReprojConstants (kAoReprojCbOffset). The AO
+    // mask is computed from the PREVIOUS frame's complete depth, so it is sampled through the camera that
+    // produced it — see include/ScreenSpaceAO.hlsl. Keep in sync with Vob.hlsl/Skeletal.hlsl + AoReprojCBData.
+    float4x4 AoPrevViewProj;
+    uint     AoPrevDepthIndex;  float AoPrevProjZX;      float AoPrevProjZY;  float AoReprojValid;
 };
 Texture2DArray          ShadowMap : register(t4);
 SamplerComparisonState  shadowCmp : register(s2);
@@ -52,6 +57,9 @@ cbuffer AOCB : register(b7) { uint AoMaskIndex; };
 // Point-clamp for the AO mask: MUST be Sample-based (normalized UV, CLAMP addressing), not Load — Load() with
 // raw pixel coords returns 0 out-of-bounds, which the 1x1 "AO disabled" fallback always is at screen res.
 SamplerState smpAoClamp : register(s1);
+// SampleScreenSpaceAO — reprojects a world position into the previous-frame AO mask. Needs AOCB/smpAoClamp
+// and the ShadowCB reprojection tail above, hence the include lands here.
+#include "include/ScreenSpaceAO.hlsl"
 
 // Octahedral normal decode — matches Shaders/VertexPacking.h DecodeOctNormal (the packed 36-byte vertex
 // stores the normal as R16G16_SNORM at offset 12; world-mesh normals are already world-space).
@@ -107,9 +115,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     float3 V = normalize( CamPosWS - i.wpos );
     float wetSheen;
     float wetness = ApplySceneWetness( i.wpos, V, N, albedo, orm.g, wetSheen );
-    Texture2D aoTex = ResourceDescriptorHeap[AoMaskIndex];
-    uint aoW, aoH; aoTex.GetDimensions( aoW, aoH );
-    float ssao = aoTex.SampleLevel( smpAoClamp, i.clip.xy / float2( aoW, aoH ), 0 ).r;
+    float ssao = SampleScreenSpaceAO( i.wpos );
     float3 rgb = ComputeSunLightingPBR( i.wpos, N, albedo, vertLighting, shadow, orm.g, orm.b, orm.r, ssao );
     rgb *= lerp( 1.0, 0.8, wetness );   // D3D11 dims the SUN light color 20% where the surface is wet
     rgb += AccumTiledPointLights( i.clip.xy, i.wpos, N, albedo, orm.g, orm.b );
