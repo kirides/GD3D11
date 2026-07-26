@@ -174,6 +174,8 @@ namespace {
 #ifdef DEBUG_D3D11
         arguments.push_back( DXC_ARG_DEBUG );                 // -Zi (Enable debug information)
         arguments.push_back( DXC_ARG_SKIP_OPTIMIZATIONS );    // -Od (Disable optimizations)
+        arguments.push_back( L"-Qembed_debug");
+        arguments.push_back( L"-Qsource_in_debug_module");
 #else
         arguments.push_back( DXC_ARG_OPTIMIZATION_LEVEL3 );   // -O3 (Maximum optimization for release)
 #endif
