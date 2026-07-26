@@ -1130,8 +1130,25 @@ void D3D12GraphicsEngine::ComputeCascadeMatrices() {
 
 	// Practical split scheme (blend of uniform + logarithmic), from shadowNear..shadowFar in world units.
 	const float shadowNear = 15.0f;
-	const float shadowFar = 20000.0f;
-	const float lambda = 0.85f;
+	const float shadowFar = 8000 + (12000.0f * std::max( 0.1f, shadowDirSettings.WorldShadowRangeScale ));
+
+	float lambda = 0.90f;
+    switch ( m_ShadowMapSize ) {
+    case 512:
+        lambda = 0.95f;
+        break;
+    case 1024:
+        lambda = 0.93f;
+        break;
+    case 4096:
+        lambda = 0.88f;
+        break;
+    case 8192:
+        lambda = 0.82f;
+        break;
+    }
+    Engine::GAPI->GetRendererState().RendererSettings.DebugSettings.ShadowCascades.Lambda = lambda;
+
 	float splits[kShadowCascades + 1];
 	splits[0] = shadowNear;
 	splits[kShadowCascades] = shadowFar;
@@ -3332,7 +3349,7 @@ void D3D12GraphicsEngine::DrawVegetation() {
 				if ( MyDirectDrawSurface7* surface = groundTex->GetSurface() ) {
 					if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
 						D3D12Texture* d12 = D3D12Texture::From( gfx );
-						if ( d12 && d12->HasSRV() ) groundSrv = d12->GetSrvGpuHandle();
+						if ( d12 && d12->HasSRV() ) groundSrv = d12->GetSrvGpuHandle(); 
 					}
 				}
 			} else {
