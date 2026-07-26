@@ -546,7 +546,12 @@ void ImGuiEditorView::DoVegetationPlacement() {
 
             bool textureMismatch = VegRestrictByTexture && TracedTexture != VegBrushTexture;
 
-            if (VegetationCoversPosition(hit) || textureMismatch) {
+            // Only refuse to paint where there really is grass close to the cursor. Scaling the range
+            // with the brush keeps a stroke from stacking boxes on top of each other, while a smaller
+            // brush can still be used to patch up holes inside an existing box.
+            const float coverRange = (maxAABB.x - minAABB.x) * 0.25f;
+
+            if (VegetationCoversPosition(hit, coverRange) || textureMismatch) {
                 // Already covered or wrong texture - show red, don't paint here
                 brushColor = XMFLOAT4(1, 0, 0, 1);
             } else {
@@ -582,39 +587,45 @@ void ImGuiEditorView::DoSelection() {
     XMFLOAT3 wDir; XMStoreFloat3(&wDir, Engine::GAPI->UnprojectCursorXM());
     XMFLOAT3 hitVob(FLT_MAX, FLT_MAX, FLT_MAX), hitSkel(FLT_MAX, FLT_MAX, FLT_MAX), hitWorld(FLT_MAX, FLT_MAX, FLT_MAX);
     XMFLOAT3 hitTri[3];
-    MeshInfo* hitMesh;
+    MeshInfo* hitMesh = nullptr;
     zCMaterial* hitMaterial = nullptr, *hitMaterialVob = nullptr;
     TracedTexture = "";
 
     TracedSkeletalVobInfo = nullptr;
     TracedVobInfo = nullptr;
     TracedMaterial = nullptr;
+    TracedVegetationBox = nullptr;
 
-    // Trace mesh-less vegetationboxes
-    TracedVegetationBox = TraceVegetationBoxes(GetCameraPosition(), wDir);
-    if (TracedVegetationBox) {
-        TracedVegetationBox->VisualizeGrass(XMFLOAT4(1, 1, 1, 1));
-        return;
-    }
+    // Trace mesh-less vegetationboxes. This tests the grass instances themselves, so an empty spot
+    // between two boxes lets the click through to whatever is behind it.
+    float lenVeg = FLT_MAX;
+    GVegetationBox* tVegBox = TraceVegetationBoxes(GetCameraPosition(), wDir, &lenVeg);
 
     // Trace vobs
     VobInfo* tVob = Engine::GAPI->TraceStaticMeshVobsBB(GetCameraPosition(), wDir, hitVob, &hitMaterialVob);
     SkeletalVobInfo* tSkelVob = Engine::GAPI->TraceSkeletalMeshVobsBB(GetCameraPosition(), wDir, hitSkel);
 
     // Trace the worldmesh from the cursor
-    if (!Engine::GAPI->TraceWorldMesh(GetCameraPosition(), wDir, hitWorld, &TracedTexture, hitTri, &hitMesh, &hitMaterial)) {
-        return;
-    }
+    bool hasWorldHit = Engine::GAPI->TraceWorldMesh(GetCameraPosition(), wDir, hitWorld, &TracedTexture, hitTri, &hitMesh, &hitMaterial);
 
     float lenVob;
     XMStoreFloat(&lenVob, XMVector3Length(GetCameraPositionXM() - XMLoadFloat3(&hitVob)));
     float lenSkel;
     XMStoreFloat(&lenSkel, XMVector3Length(GetCameraPositionXM() - XMLoadFloat3(&hitSkel)));
-    float lenWorld;
-    XMStoreFloat(&lenWorld, XMVector3Length(GetCameraPositionXM() - XMLoadFloat3(&hitWorld)));
+    float lenWorld = FLT_MAX;
+    if (hasWorldHit)
+        XMStoreFloat(&lenWorld, XMVector3Length(GetCameraPositionXM() - XMLoadFloat3(&hitWorld)));
+
+    // Check vegetation hit. Only wins when the grass is actually the nearest thing under the cursor,
+    // so it can't steal the selection from a mesh standing in front of it.
+    if (tVegBox && lenVeg < lenVob && lenVeg < lenSkel && lenVeg < lenWorld) {
+        TracedVegetationBox = tVegBox;
+        TracedVegetationBox->VisualizeGrass(XMFLOAT4(1, 1, 1, 1));
+        return;
+    }
 
     // Check world hit
-    if (lenWorld < lenVob && lenWorld < lenSkel) {
+    if (hasWorldHit && lenWorld < lenVob && lenWorld < lenSkel) {
         TracedPosition = hitWorld;
 
         if (SelectTrianglesOnly) {
@@ -970,9 +981,11 @@ bool ImGuiEditorView::IsMouseInsideEditorWindow() {
     return io.WantCaptureMouse;
 }
 
-bool ImGuiEditorView::VegetationCoversPosition(const XMFLOAT3& p) {
+bool ImGuiEditorView::VegetationCoversPosition(const XMFLOAT3& p, float range) {
     for (GVegetationBox* vegetationBox : Engine::GAPI->GetVegetationBoxes()) {
-        if (vegetationBox->PositionInsideBox(p))
+        // Ask for actual grass instances instead of the bounding-box, otherwise painting into a hole
+        // inside (or between) existing boxes is impossible - their AABBs cover the hole as well.
+        if (vegetationBox->HasVegetationNear(p, range))
             return true;
     }
 
@@ -1197,7 +1210,7 @@ void ImGuiEditorView::OnDelete() {
     SelectionTabIndex = 0; // Texture tab
 }
 
-GVegetationBox* ImGuiEditorView::TraceVegetationBoxes(const XMFLOAT3& wPos, const XMFLOAT3& wDir) {
+GVegetationBox* ImGuiEditorView::TraceVegetationBoxes(const XMFLOAT3& wPos, const XMFLOAT3& wDir, float* distance) {
     float nearest = FLT_MAX;
     GVegetationBox* b = nullptr;
 
@@ -1205,17 +1218,19 @@ GVegetationBox* ImGuiEditorView::TraceVegetationBoxes(const XMFLOAT3& wPos, cons
         if (vegetationBox->GetWorldMeshPart())
             continue; // Only take the usual boxes
 
-        XMFLOAT3 bbMin, bbMax;
-        vegetationBox->GetBoundingBox(&bbMin, &bbMax);
-
+        // Test the grass instances themselves, not the bounding-box. A refitted box can span a large
+        // empty area and would otherwise steal every click that passes through the gap.
         float t;
-        if (Toolbox::IntersectBox(bbMin, bbMax, wPos, wDir, t)) {
+        if (vegetationBox->TraceVegetationSpots(wPos, wDir, t)) {
             if (t < nearest) {
                 b = vegetationBox;
                 nearest = t;
             }
         }
     }
+
+    if (distance)
+        *distance = nearest;
 
     return b;
 }

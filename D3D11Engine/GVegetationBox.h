@@ -47,6 +47,13 @@ public:
     /** Returns true if the given position is inside the box */
     bool PositionInsideBox( const XMFLOAT3& p );
 
+    /** Does a ray-test against the actual grass instances, using the bounding-box only as a broadphase.
+     *  Returns the ray-parameter of the nearest hit instance. */
+    bool TraceVegetationSpots( const XMFLOAT3& wPos, const XMFLOAT3& wDir, float& t );
+
+    /** Returns true if there is an actual grass instance within (horizontal) range of the given position */
+    bool HasVegetationNear( const XMFLOAT3& p, float range );
+
     /** Sets bounding box rendering */
     void SetRenderBoundingBox( bool value );
 
