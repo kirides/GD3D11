@@ -549,7 +549,7 @@ void ImGuiEditorView::DoVegetationPlacement() {
             // Only refuse to paint where there really is grass close to the cursor. Scaling the range
             // with the brush keeps a stroke from stacking boxes on top of each other, while a smaller
             // brush can still be used to patch up holes inside an existing box.
-            const float coverRange = (maxAABB.x - minAABB.x) * 0.25f;
+            const float coverRange = (maxAABB.x - minAABB.x) * 0.10f;
 
             if (VegetationCoversPosition(hit, coverRange) || textureMismatch) {
                 // Already covered or wrong texture - show red, don't paint here
