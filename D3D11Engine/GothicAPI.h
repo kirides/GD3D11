@@ -61,6 +61,12 @@ struct RndCullContext {
         bool EnableDynamicLighting;
         bool EnableOcclusionCulling;
         bool CullVobs;
+        // GPU-driven culling (D3D12): collect static VOBs with the DISTANCE test only and let the backend
+        // frustum/occlusion-cull them on the GPU instead (D3D12Cull.cpp). Suppresses both the per-VOB
+        // frustum test and the BSP-node frustum rejection that would drop whole subtrees behind the camera.
+        // LIGHTS and skeletal MOBs keep their frustum tests either way — the light buffer is capped and the
+        // per-draw skeletal path has no GPU cull yet. Defaults false: D3D11 never sets it.
+        bool SkipVobFrustumCull;
         bool CollectIndoorVobs;
         bool CollectMobs;
         bool CollectLights;
@@ -625,7 +631,10 @@ public:
         std::vector<VobLightInfo*>& lights,
         std::vector<SkeletalVobInfo*>& mobs,
         EGothicCullFlags cullFlags = EGothicCullFlags::CullAll,
-        EBspTreeCollectFlags collectFlags = EBspTreeCollectFlags::COLLECT_ALL_MUTATE);
+        EBspTreeCollectFlags collectFlags = EBspTreeCollectFlags::COLLECT_ALL_MUTATE,
+        // true => distance-only static-VOB collection; the caller frustum/occlusion-culls them itself
+        // (D3D12's GPU cull). See RndCullContext::drawFlags.SkipVobFrustumCull.
+        bool skipVobFrustumCull = false );
 
     void CollectVisibleVobs( const RndCullContext& ctx );
 

@@ -125,6 +125,14 @@ XRESULT D3D12GraphicsEngine::Init() {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the VOB ExecuteIndirect resources.";
         return XR_FAILED;
     }
+    if ( !m_Pipelines.CreateCull() || !CreateVobCullResources() ) {
+        // Non-fatal: GPU VOB culling is an optimization, not a resource anything samples unconditionally.
+        // EvaluateGpuVobCulling() returns false when any of this is missing, which leaves the CPU per-VOB
+        // frustum cull in charge (RndCullContext::drawFlags.SkipVobFrustumCull stays clear) — the exact
+        // behavior the backend had before. Must run AFTER CreateVobInstanceBuffers (it sizes the compacted
+        // instance buffer from m_VobInstanceBufferCapacity) and after CreateVobIndirect.
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the GPU VOB-culling resources (falling back to CPU frustum culling).";
+    }
     if ( !CreateLightBuffer() ) {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the point-light buffer.";
         return XR_FAILED;
@@ -1057,6 +1065,7 @@ bool D3D12GraphicsEngine::CreateSwapChain( INT2 size ) {
     CreateBloomResources( size );   // non-fatal: bloom is opt-in (EnableBloom, default off); RenderBloom no-ops if this failed
     CreateSmaaResources( size );     // non-fatal: SMAA is opt-in (AntiAliasingMode == AA_SMAA); RenderSMAA no-ops if this failed
     CreateAOResources( size );       // non-fatal: SSAO is opt-in (AoMode != AO_NONE); RenderSSAO no-ops if this failed
+    CreateHiZResources( size );      // non-fatal: without it the GPU VOB cull runs frustum-only (no occlusion)
     CreateFogResources( size );      // non-fatal: height fog/god rays are opt-in; RenderFogAndGodRays no-ops if this failed
     if ( !CreateLumPartialBuffer( size ) ) {
         // Non-fatal: RenderLuminanceAdapt() guards on m_LumPartialBuffer and just skips this frame's luminance
@@ -1873,6 +1882,7 @@ bool D3D12GraphicsEngine::ResizeSwapChain( INT2 size ) {
     CreateBloomResources( size );   // non-fatal: see the CreateSwapChain call site
     CreateSmaaResources( size );     // non-fatal: see the CreateSwapChain call site
     CreateAOResources( size );       // non-fatal: see the CreateSwapChain call site
+    CreateHiZResources( size );      // non-fatal: see the CreateSwapChain call site
     CreateFogResources( size );      // non-fatal: see the CreateSwapChain call site
     if ( !CreateLumPartialBuffer( size ) ) {
         LogWarn() << "D3D12GraphicsEngine::OnResize: failed to create the dynamic-exposure partial-sum buffer.";

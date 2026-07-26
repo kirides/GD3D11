@@ -3026,3 +3026,115 @@ bool D3D12PipelineState::CreateFog() {
 
     return true;
 }
+
+
+bool D3D12PipelineState::CreateCull() {
+    // GPU-driven VOB culling (Shaders/D3D12/HiZ.hlsl + Shaders/D3D12/VobCull.hlsl). Non-fatal on failure:
+    // BuildHiZ()/CullVobsGPU() guard on every PSO below and the engine falls back to the CPU frustum cull
+    // (RendererSettings.GpuVobCulling is evaluated together with these — see EvaluateGpuVobCulling()).
+    ID3D12Device* device = m_Device->GetDevice();
+    if ( !device ) return false;
+
+    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
+    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (cull)."; return false; }
+
+    auto makeRootSig = [&]( const D3D12_ROOT_SIGNATURE_DESC& desc, ID3D12RootSignature** out, const char* name ) -> bool {
+        ComPtr<ID3DBlob> rsBlob, rsErr;
+        if ( FAILED( serialize( &desc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
+            if ( rsErr ) LogWarn() << "D3D12: cull " << name << " root sig error: " << static_cast<const char*>(rsErr->GetBufferPointer());
+            return false;
+        }
+        return SUCCEEDED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(), IID_PPV_ARGS( out ) ) );
+        };
+
+    auto makeComputePSO = [&]( const char* file, const char* entry, ID3D12RootSignature* rs,
+        ID3DBlob** blob, ID3D12PipelineState** pso ) -> bool {
+        if ( !m_Shaders->CompileFromFile( file, entry, Shadermodel_CS, blob ) ) return false;
+        D3D12_COMPUTE_PIPELINE_STATE_DESC desc = {};
+        desc.pRootSignature = rs;
+        desc.CS = { (*blob)->GetBufferPointer(), (*blob)->GetBufferSize() };
+        if ( FAILED( device->CreateComputePipelineState( &desc, IID_PPV_ARGS( pso ) ) ) ) {
+            LogWarn() << "D3D12: CreateComputePipelineState failed (" << entry << ").";
+            return false;
+        }
+        return true;
+        };
+
+    // --- Hi-Z build root sig: b0 4 root consts (src/dst heap indices), fully bindless, no tables ---
+    {
+        D3D12_ROOT_PARAMETER param = {};
+        param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        param.Constants.ShaderRegister = 0;   // b0 HiZCopyCB / HiZReduceCB
+        param.Constants.Num32BitValues = 4;
+        param.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+        D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+        rsDesc.NumParameters = 1;
+        rsDesc.pParameters = &param;
+        rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;   // SM6.6 ResourceDescriptorHeap
+
+        if ( !makeRootSig( rsDesc, Cull.HiZRootSig.ReleaseAndGetAddressOf(), "Hi-Z" ) ) return false;
+    }
+    if ( !makeComputePSO( "HiZ.hlsl", "CSCopyDepth", Cull.HiZRootSig.Get(),
+        Cull.HiZCopyCsBlob.ReleaseAndGetAddressOf(), Cull.HiZCopyPSO.ReleaseAndGetAddressOf() ) ) return false;
+    if ( !makeComputePSO( "HiZ.hlsl", "CSReduce", Cull.HiZRootSig.Get(),
+        Cull.HiZReduceCsBlob.ReleaseAndGetAddressOf(), Cull.HiZReducePSO.ReleaseAndGetAddressOf() ) ) return false;
+
+    // --- VOB cull root sig: b0 24 consts (ViewProj + Hi-Z params), t0/t1 root SRVs, u0/u1 root UAVs ---
+    // The visual records + instance streams are plain structured buffers, so they ride as root descriptors
+    // (no heap slots). Only the Hi-Z pyramid is a texture and it comes in bindlessly by heap index.
+    {
+        D3D12_ROOT_PARAMETER params[5] = {};
+        params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        params[0].Constants.ShaderRegister = 0;   // b0 VobCullCB
+        params[0].Constants.Num32BitValues = 24;  // float4x4 ViewProj + 8 uints
+        params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+        params[1].Descriptor.ShaderRegister = 0;  // t0 Visuals
+        params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+        params[2].Descriptor.ShaderRegister = 1;  // t1 InInstances
+        params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+        params[3].Descriptor.ShaderRegister = 0;  // u0 OutInstances (compacted)
+        params[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        params[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+        params[4].Descriptor.ShaderRegister = 1;  // u1 VisibleCounts
+        params[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+        D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+        rsDesc.NumParameters = _countof( params );
+        rsDesc.pParameters = params;
+        rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
+
+        if ( !makeRootSig( rsDesc, Cull.VobCullRootSig.ReleaseAndGetAddressOf(), "VOB cull" ) ) return false;
+    }
+    if ( !makeComputePSO( "VobCull.hlsl", "CSCull", Cull.VobCullRootSig.Get(),
+        Cull.VobCullCsBlob.ReleaseAndGetAddressOf(), Cull.VobCullPSO.ReleaseAndGetAddressOf() ) ) return false;
+
+    // --- Indirect-arg patch root sig: b0 4 consts (count/stride/offsets), t0 counts SRV, u0 raw arg UAV ---
+    {
+        D3D12_ROOT_PARAMETER params[3] = {};
+        params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        params[0].Constants.ShaderRegister = 0;   // b0 VobPatchCB
+        params[0].Constants.Num32BitValues = 4;
+        params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+        params[1].Descriptor.ShaderRegister = 0;  // t0 PatchCounts
+        params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+        params[2].Descriptor.ShaderRegister = 0;  // u0 PatchArgs (RWByteAddressBuffer)
+        params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+        D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+        rsDesc.NumParameters = _countof( params );
+        rsDesc.pParameters = params;
+        rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
+
+        if ( !makeRootSig( rsDesc, Cull.PatchRootSig.ReleaseAndGetAddressOf(), "arg patch" ) ) return false;
+    }
+    if ( !makeComputePSO( "VobCull.hlsl", "CSPatchArgs", Cull.PatchRootSig.Get(),
+        Cull.PatchCsBlob.ReleaseAndGetAddressOf(), Cull.PatchPSO.ReleaseAndGetAddressOf() ) ) return false;
+
+    return true;
+}

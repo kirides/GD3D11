@@ -216,6 +216,29 @@ public:
         Microsoft::WRL::ComPtr<ID3D12PipelineState> CompositePSO;    // fog (alpha) + rays (additive) -> scene color
     };
 
+    // GPU-driven instanced-VOB culling. The CPU-side collection only distance-culls (see
+    // RndCullContext::drawFlags.SkipVobFrustumCull); these four compute passes do the rest on the GPU:
+    // Shaders/D3D12/HiZ.hlsl builds a min-reduced (conservative, reversed-Z) depth pyramid from the
+    // WORLD-MESH depth prepass, then Shaders/D3D12/VobCull.hlsl frustum+occlusion-tests every instance,
+    // compacts the survivors, and rewrites DrawIndexedInstanced::InstanceCount in the ExecuteIndirect
+    // argument buffer. Resolution-dependent Hi-Z textures + the cull buffers live in the engine.
+    struct CullPipeline {
+        // Hi-Z build: one bindless root sig (b0 = 4 root consts, no tables), two entry points.
+        Microsoft::WRL::ComPtr<ID3D12RootSignature> HiZRootSig;
+        Microsoft::WRL::ComPtr<ID3DBlob>            HiZCopyCsBlob;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> HiZCopyPSO;      // full-res depth -> mip 0 (half res)
+        Microsoft::WRL::ComPtr<ID3DBlob>            HiZReduceCsBlob;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> HiZReducePSO;    // mip N-1 -> mip N
+        // Cull + compact: b0 24 root consts (ViewProj + Hi-Z params), t0/t1 root SRVs, u0/u1 root UAVs.
+        Microsoft::WRL::ComPtr<ID3D12RootSignature> VobCullRootSig;
+        Microsoft::WRL::ComPtr<ID3DBlob>            VobCullCsBlob;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> VobCullPSO;
+        // Indirect-arg patch: b0 4 root consts, t0 root SRV (per-visual counts), u0 root UAV (arg buffer).
+        Microsoft::WRL::ComPtr<ID3D12RootSignature> PatchRootSig;
+        Microsoft::WRL::ComPtr<ID3DBlob>            PatchCsBlob;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> PatchPSO;
+    };
+
     // Stores non-owning device + shader-backend pointers; call once before any Create*().
     bool Init( D3D12Device* device, D3D12ShaderBackend* shaders );
 
@@ -245,6 +268,7 @@ public:
     bool CreateFog();         // height fog + god rays: 2 god-ray compute PSOs + the fullscreen composition PSO
     bool CreateAdvanceRain(); // rain/snow particle advance compute (b0 32-bit consts, t0 static SRV, u0 dynamic UAV)
     bool CreateRainDraw();    // rain/snow billboard draw (b0 ViewProj, b1 particle info, t0/t1 root SRVs, no IA)
+    bool CreateCull();        // Hi-Z build + GPU VOB cull/compact + indirect-arg patch compute pipelines
 
     // --- On-demand PSO cache lookups (called from the engine's draw path; create+cache on miss) ---
     // cullMode/frontCCW/rtvIsHdr/forceMaxZ default to the plain 2D/UI case (cull-none, clockwise-front,
@@ -280,6 +304,7 @@ public:
     FogPipeline      Fog;           // height fog + god rays (Shaders/D3D12/HeightFog.hlsl + GodRays.hlsl)
     ComputePipeline  AdvanceRain;   // rain/snow particle advance (Shaders/D3D12/AdvanceRain.hlsl)
     GraphicsPipeline RainDraw;      // rain/snow billboard draw (Shaders/D3D12/Rain.hlsl)
+    CullPipeline     Cull;          // Hi-Z build + GPU VOB cull (Shaders/D3D12/HiZ.hlsl + VobCull.hlsl)
 
 private:
     D3D12Device*        m_Device = nullptr;

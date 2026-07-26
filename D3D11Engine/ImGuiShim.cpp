@@ -1671,7 +1671,18 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
                 ImGui::SetItemTooltip("Slope-scaled depth bias for the shadow caster pass. Higher removes shadow acne/stepping on thin geometry; too high detaches contact shadows (peter-panning)");
                 ImGui::EndTabItem();
             }
-            
+
+            if (ImGui::BeginTabItem("Culling", nullptr, ImGuiTabItemFlags_::ImGuiTabItemFlags_NoReorder)) {
+                ImGui::TextUnformatted("GPU-driven VOB culling (D3D12 only)");
+                ImGui::Checkbox("GPU VOB culling", &settings.GpuVobCulling );
+                ImGui::SetItemTooltip("Collect static VOBs distance-only on the CPU and frustum-cull them in a compute shader instead. Off = the classic CPU per-VOB frustum test");
+                ImGui::BeginDisabled( !settings.GpuVobCulling );
+                ImGui::Checkbox("GPU occlusion culling", &settings.GpuVobOcclusionCulling );
+                ImGui::SetItemTooltip("Additionally reject VOB instances hidden behind the world mesh, using a Hi-Z pyramid built from the world depth prepass");
+                ImGui::EndDisabled();
+                ImGui::EndTabItem();
+            }
+
             if (ImGui::BeginTabItem("Culling", nullptr, ImGuiTabItemFlags_::ImGuiTabItemFlags_NoReorder)) {
                 ImGui::Checkbox("BSP Nodes", &settings.DebugSettings.Culling.CullBspSections );
                 ImGui::Checkbox("Vobs", &settings.DebugSettings.Culling.CullVobs );

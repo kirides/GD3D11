@@ -737,6 +737,8 @@ struct GothicRendererSettings {
 
         EnableShadows = true;
         ThreadedShadowCulling = false;
+        GpuVobCulling = true;
+        GpuVobOcclusionCulling = true;
         EnableVSync = true;
         DoZPrepass = false;
         SortRenderQueue = false;
@@ -941,6 +943,13 @@ struct GothicRendererSettings {
     E_ShadowFilterMode ShadowFilterMode;
     bool EnableShadows;
     bool ThreadedShadowCulling;
+    // GPU-driven static-VOB culling (D3D12 only; D3D11 ignores both). GpuVobCulling replaces the CPU per-VOB
+    // frustum test with a distance-only collection plus a compute frustum cull that compacts the instance
+    // stream and rewrites the ExecuteIndirect instance counts. GpuVobOcclusionCulling additionally rejects
+    // instances hidden behind the world mesh, using a Hi-Z pyramid built from the world depth prepass — split
+    // out as its own toggle because it is the part that can wrongly hide geometry.
+    bool GpuVobCulling;
+    bool GpuVobOcclusionCulling;
     int ShadowCascadePCFLimit;
     E_ShadowFrustumCulling ShadowFrustumCullingMode;
     bool DrawShadowGeometry;

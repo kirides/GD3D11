@@ -4003,7 +4003,8 @@ void GothicAPI::CollectVisibleVobs(
     std::vector<VobLightInfo*>& lights, 
     std::vector<SkeletalVobInfo*>& mobs, 
     EGothicCullFlags cullFlags,
-    EBspTreeCollectFlags collectFlags ) {
+    EBspTreeCollectFlags collectFlags,
+    bool skipVobFrustumCull ) {
     ZoneScopedN( "GothicAPI::CollectVisibleVobsLegacy" );
     zCBspTree* tree = LoadedWorldInfo->BspTree;
 
@@ -4053,6 +4054,7 @@ void GothicAPI::CollectVisibleVobs(
     ctx.drawFlags.EnableDynamicLighting = RendererState.RendererSettings.EnableDynamicLighting;
     ctx.drawFlags.EnableOcclusionCulling = RendererState.RendererSettings.EnableOcclusionCulling;
     ctx.drawFlags.CullVobs = RendererState.RendererSettings.DebugSettings.Culling.CullVobs;
+    ctx.drawFlags.SkipVobFrustumCull = skipVobFrustumCull;
     ctx.drawFlags.CollectIndoorVobs = true;
     ctx.drawFlags.CollectMobs = true;
     ctx.drawFlags.CollectLights = true;
@@ -4575,7 +4577,8 @@ static void CVVH_AddNotDrawnVobToList(
         BspTreeVobVisitor* visitor
     ) {
     const auto camPos = XMLoadFloat3( &ctx.cameraPosition );
-    const bool cullingEnabled = ctx.drawFlags.CullVobs;
+    // SkipVobFrustumCull: the backend culls these on the GPU (D3D12), so collect distance-only.
+    const bool cullingEnabled = ctx.drawFlags.CullVobs && !ctx.drawFlags.SkipVobFrustumCull;
 
     for ( auto const& it : source ) {
         if ( !visitor->Visit( it ) ) continue;
@@ -5394,6 +5397,8 @@ XRESULT GothicAPI::SaveMenuSettings( const std::string& file ) {
     WritePrivateProfileStringA( "FontRendering", "Enable", to_string_locale_independent( s.EnableCustomFontRendering ? TRUE : FALSE ).c_str(), ini.c_str() );
 
     WritePrivateProfileStringA( "Debug", "ThreadedShadowCulling", to_string_locale_independent( s.ThreadedShadowCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Debug", "GpuVobCulling", to_string_locale_independent( s.GpuVobCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
+    WritePrivateProfileStringA( "Debug", "GpuVobOcclusionCulling", to_string_locale_independent( s.GpuVobOcclusionCulling ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Debug", "UseShadowAtlas", to_string_locale_independent( s.DebugSettings.FeatureSet.UseShadowAtlas ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Debug", "UseScreenSpaceShadowMask", to_string_locale_independent( s.DebugSettings.FeatureSet.UseScreenSpaceShadowMask ? TRUE : FALSE ).c_str(), ini.c_str() );
     WritePrivateProfileStringA( "Debug", "GenerateAONormalsFromDepth", to_string_locale_independent( s.DebugSettings.FeatureSet.GenerateAONormalsFromDepth ? TRUE : FALSE ).c_str(), ini.c_str() );
@@ -5573,6 +5578,8 @@ XRESULT GothicAPI::LoadMenuSettings( const std::string& file ) {
         s.EnableCustomFontRendering = GetPrivateProfileBoolA( "FontRendering", "Enable", ds.EnableCustomFontRendering, ini );
 
         s.ThreadedShadowCulling = GetPrivateProfileBoolA( "Debug", "ThreadedShadowCulling", ds.ThreadedShadowCulling, ini );
+        s.GpuVobCulling = GetPrivateProfileBoolA( "Debug", "GpuVobCulling", ds.GpuVobCulling, ini );
+        s.GpuVobOcclusionCulling = GetPrivateProfileBoolA( "Debug", "GpuVobOcclusionCulling", ds.GpuVobOcclusionCulling, ini );
         s.DebugSettings.FeatureSet.UseShadowAtlas = GetPrivateProfileBoolA( "Debug", "UseShadowAtlas", ds.DebugSettings.FeatureSet.UseShadowAtlas, ini );
         s.DebugSettings.FeatureSet.UseScreenSpaceShadowMask = GetPrivateProfileBoolA( "Debug", "UseScreenSpaceShadowMask", ds.DebugSettings.FeatureSet.UseScreenSpaceShadowMask, ini );
         s.DebugSettings.FeatureSet.GenerateAONormalsFromDepth = GetPrivateProfileBoolA( "Debug", "GenerateAONormalsFromDepth", ds.DebugSettings.FeatureSet.GenerateAONormalsFromDepth, ini );
@@ -6340,6 +6347,9 @@ static void CollectVisibleVobsHelper( BspInfo* base,
     const XMFLOAT3 camPos = ctx.cameraPosition;
     const XMVECTOR cameraPosition = XMLoadFloat3( &camPos );
     const bool enableOcclusionCulling = ctx.drawFlags.EnableOcclusionCulling;
+    // See the identical note in CollectVisibleVobsWithLeafCache: with GPU culling the frustum may not reject
+    // nodes. Forcing INTERSECTS (never CONTAINS) keeps CollectLeafVobs' per-light sphere test alive.
+    const bool skipVobFrustumCull = ctx.drawFlags.SkipVobFrustumCull;
     while ( base->OriginalNode ) {
         // Check for occlusion-culling
         if ( enableOcclusionCulling && !base->OcclusionInfo.VisibleLastFrame ) {
@@ -6354,7 +6364,9 @@ static void CollectVisibleVobsHelper( BspInfo* base,
         float dist = Toolbox::ComputePointAABBDistance( camPos, base->OriginalNode->BBox3D.Min, base->OriginalNode->BBox3D.Max );
         ContainmentType clipResult = inheritedContainment;
         if ( dist < vobOutdoorDist ) {
-            if ( !enableOcclusionCulling ) {
+            if ( skipVobFrustumCull ) {
+                clipResult = ContainmentType::INTERSECTS;
+            } else if ( !enableOcclusionCulling ) {
                 if ( clipResult != ContainmentType::CONTAINS ) {
                     clipResult = ctx.frustum.Contains( Frustum::BBoxFromzTBBox3D( nodeBox ) );
                 }
@@ -6469,6 +6481,10 @@ static void CollectVisibleVobsWithLeafCache(
     const float* pMaxZ = cache.MaxZ.data();
 
     const bool enableOcclusionCulling = ctx.drawFlags.EnableOcclusionCulling;
+    // SkipVobFrustumCull (D3D12 GPU culling): leaves must NOT be rejected by the frustum any more — the whole
+    // point is to hand the backend every in-range static VOB. Only the distance term below survives. Lights and
+    // skeletal MOBs inside those leaves keep their own per-object frustum tests in CollectLeafVobs.
+    const bool skipVobFrustumCull = ctx.drawFlags.SkipVobFrustumCull;
     const uint32_t padded = (cache.Count + 7u) & ~7u;
 
     for ( uint32_t i = 0; i < padded; i += 8 ) {
@@ -6488,7 +6504,7 @@ static void CollectVisibleVobsWithLeafCache(
         // blendv_ps(a, b, mask): MSB=0 -> a, MSB=1 (negative) -> b
         // So blendv(MinX, MaxX, pNX): pNX>=0 (MSB=0) -> MinX (min along positive normal), pNX<0 (MSB=1) -> MaxX.
         __m256 vOutside = vZero;
-        for ( int p = 0; p < 6; ++p ) {
+        for ( int p = 0; p < 6 && !skipVobFrustumCull; ++p ) {
             const __m256 vPX = _mm256_blendv_ps( vMinX, vMaxX, pNX[p] );
             const __m256 vPY = _mm256_blendv_ps( vMinY, vMaxY, pNY[p] );
             const __m256 vPZ = _mm256_blendv_ps( vMinZ, vMaxZ, pNZ[p] );
@@ -6608,7 +6624,9 @@ void GothicAPI::CollectVisibleVobs( const RndCullContext& ctx ) {
     const float vobOutdoorSmallDist = ctx.drawDistances.OutdoorVobsSmall;
     const float vobSmallSize = RendererState.RendererSettings.SmallVobSize;
     bool collectIndoor = ctx.stage != RenderStage::STAGE_DRAW_SHADOWS;
-    auto cullingEnabled = RendererState.RendererSettings.DebugSettings.Culling.CullVobs;
+    // SkipVobFrustumCull (D3D12 GPU culling): distance-only, like CVVH_AddNotDrawnVobToList above.
+    auto cullingEnabled = RendererState.RendererSettings.DebugSettings.Culling.CullVobs
+        && !ctx.drawFlags.SkipVobFrustumCull;
 
     // Add visible dynamically added vobs
     if ( RendererState.RendererSettings.DrawVOBs ) {

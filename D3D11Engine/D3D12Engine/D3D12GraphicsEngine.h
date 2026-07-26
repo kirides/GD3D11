@@ -475,7 +475,7 @@ private:
     // set once before the ExecuteIndirect. Built ONCE per frame (BuildVobDrawCommands) and consumed by BOTH the
     // depth prepass and the color pass; the CSM cascades build their own per-cascade command set. Arg-member order
     // MUST match the command signature's pArgumentDescs order below (VBV0, VBV1, IBV, b6 consts, b4 consts, draw).
-    struct VobDrawCommand {                          // 88 bytes; UINT64 members force 8-byte align, 88 % 8 == 0
+    struct VobDrawCommand {                          // 96 bytes; UINT64 members force 8-byte align, 96 % 8 == 0
         D3D12_VERTEX_BUFFER_VIEW MeshVBV;            // @0  packed ExVertexStruct stream (slot 0)
         D3D12_VERTEX_BUFFER_VIEW InstVBV;            // @16 per-instance VobInstanceInfo stream (slot 1)
         D3D12_INDEX_BUFFER_VIEW  IBV;                // @32 R16_UINT sub-mesh indices
@@ -485,8 +485,18 @@ private:
         float    WindMinHeight;                      // @60 b4[4] per-visual bbox.min.y
         float    WindMaxHeight;                      // @64 b4[5] per-visual bbox.max.y
         D3D12_DRAW_INDEXED_ARGUMENTS Draw;           // @68 (20 bytes)
+        // --- Past the end of the command signature's arguments. ExecuteIndirect reads the args packed from
+        // offset 0 and only requires ByteStride to COVER them, so trailing fields are free per-command payload
+        // for our own compute passes. VisualIndex tells CSPatchArgs which per-visual surviving-instance count
+        // to write into Draw.InstanceCount; 0xFFFFFFFF = "leave the CPU's count alone" (not GPU-culled).
+        uint32_t VisualIndex;                        // @88
+        uint32_t _cmdPad;                            // @92 keeps the stride 8-aligned for the next command's VBVs
     };
-    static constexpr UINT kMaxVobDrawCommands = 8192;   // visible visuals x materials x sub-meshes; overflow logs + drops
+    // Separate caps: the main view now collects distance-only (360 degrees, GPU-culled) so it needs headroom,
+    // while the CSM cascades still CPU-cull against their own frustum and keep the original budget — a shared
+    // bump would multiply across 3 cascades x kBackBufferCount rings and cost real 32-bit address space.
+    static constexpr UINT kMaxVobDrawCommands       = 16384;  // main view: visuals x materials x sub-meshes
+    static constexpr UINT kMaxShadowVobDrawCommands = 8192;   // per shadow cascade; overflow logs + drops
     Microsoft::WRL::ComPtr<ID3D12CommandSignature> m_VobIndirectCmdSig;   // VBVx2 + IBV + b6(3) + b4[4..5](2) + DrawIndexed
     Microsoft::WRL::ComPtr<ID3D12Resource> m_VobDrawArgs[kBackBufferCount];   // main-view (prepass+color share it)
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_VobDrawArgsAlloc[kBackBufferCount];
@@ -499,7 +509,75 @@ private:
     bool CreateVobIndirect();                         // command signature + per-frame arg rings + shadow-caster PSO (once, at init)
     // Fill an arg buffer from the given VOB uploads; returns command count. resolveMaps=false leaves normal/orm at
     // defaults (depth/shadow passes only alpha-clip on diffuse), true resolves the full PBR material set (color pass).
-    UINT BuildVobDrawCommands( const std::vector<FrameVobUpload>& uploads, uint8_t* argPtr, bool resolveMaps );
+    // culled=true points each command's instance stream at the GPU-compacted output buffer and stamps
+    // VisualIndex so CSPatchArgs can overwrite the instance count (main view only — the cascades CPU-cull).
+    UINT BuildVobDrawCommands( const std::vector<FrameVobUpload>& uploads, uint8_t* argPtr, bool resolveMaps,
+        UINT maxCommands, bool culled = false );
+
+    // ---- GPU-driven VOB culling (Hi-Z occlusion + frustum, replaces the CPU per-VOB frustum test) ----
+    // Pipeline, per frame:
+    //   1. CollectVisibleVobs runs DISTANCE-ONLY (RndCullContext::drawFlags.SkipVobFrustumCull), so every
+    //      in-range static VOB lands in the instance ring — including everything behind the camera.
+    //   2. UploadFrameVobInstances additionally emits one VobCullVisual record per visual (local bbox +
+    //      where its instances live in the ring).
+    //   3. BuildVobDrawCommands fills the UPLOAD staging arg ring as before, but with InstVBV pointing at
+    //      m_VobCulledInstances and VisualIndex stamped per command.
+    //   4. DrawDepthPrepass lays down the WORLD MESH depth; BuildHiZ() min-reduces it into m_HiZ.
+    //   5. CullVobsGPU() copies the staged args into a DEFAULT buffer, runs CSCull (frustum + Hi-Z, compacting
+    //      survivors into m_VobCulledInstances) then CSPatchArgs (rewrites Draw.InstanceCount), and leaves the
+    //      arg buffer in INDIRECT_ARGUMENT for both VOB passes.
+    // Nothing here is required: EvaluateGpuVobCulling() turns the whole thing off (and the CPU frustum cull
+    // back on) if a PSO/resource is missing or RendererSettings.GpuVobCulling is unticked.
+    static constexpr UINT kMaxHiZMips = 14;         // 2^14 covers any mip-0 up to 16384 px
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_HiZ;        // R32_FLOAT mip chain, min-reduced reversed-Z depth
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_HiZAlloc;
+    UINT m_HiZWidth = 0, m_HiZHeight = 0;           // mip-0 dims = HALF the render resolution
+    UINT m_HiZMipCount = 0;
+    UINT m_HiZSrvSlot = UINT_MAX;                   // full-mip-chain SRV, Load()ed per level by the cull CS
+    UINT m_HiZMipUavSlot[kMaxHiZMips] = {};         // one UAV per level for the build passes
+    bool m_HiZSlotsAllocated = false;               // slots are taken once and re-pointed on every resize
+    bool m_HiZReady = false;
+    bool m_HiZInSrvState = false;                   // built (UAV) <-> read by the cull CS (NON_PIXEL_SHADER_RESOURCE)
+    bool CreateHiZResources( INT2 size );         // (re)builds m_HiZ + its SRV/per-mip UAV slots (resize-driven)
+    void BuildHiZ();                                // depth -> mip 0 -> full chain; leaves m_HiZ readable
+
+    // One record per visible VISUAL, consumed by VobCull.hlsl's CSCull (must match its VobCullVisual).
+    struct VobCullVisual {
+        DirectX::XMFLOAT3 BBoxMin;   // LOCAL-space visual bbox (MeshVisualInfo::BBox), shared by all instances
+        UINT              InstanceBase;
+        DirectX::XMFLOAT3 BBoxMax;
+        UINT              InstanceCount;
+    };
+    static constexpr UINT kMaxCullVisuals = 16384;
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_VobCullVisuals[kBackBufferCount];   // persistently-mapped UPLOAD
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_VobCullVisualsAlloc[kBackBufferCount];
+    uint8_t* m_VobCullVisualsPtr[kBackBufferCount] = {};
+    UINT m_VobCullVisualCount = 0;                  // records written this frame
+    bool m_VobCullVisualOverflowLogged = false;
+    // Single-instance GPU-side buffers: the direct queue is in-order, so frame N's draws are consumed before
+    // frame N+1's cull writes — no per-frame-in-flight copies needed (and none of the 32-bit VA cost).
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_VobCulledInstances;   // DEFAULT UAV, mirrors the instance ring layout
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_VobCulledInstancesAlloc;
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_VobVisibleCounts;     // DEFAULT UAV, uint[kMaxCullVisuals]
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_VobVisibleCountsAlloc;
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_VobDrawArgsGpu;       // DEFAULT, the patched ExecuteIndirect args
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_VobDrawArgsGpuAlloc;
+    bool m_VobCullReady = false;
+    // Rest-state trackers (same pattern as m_LightGridInPixelState/m_AOMaskInPixelState): the draw passes leave
+    // these in their read states, so CullVobsGPU flips them back at its top rather than after the draws.
+    bool m_VobCulledInstancesInVertexState = false;
+    bool m_VobVisibleCountsInSrvState = false;
+    bool m_VobDrawArgsGpuInIndirectState = false;
+    // Decided ONCE at the top of OnStartWorldRendering, before anything collects or builds: every stage below
+    // (the distance-only collect, the cull-record emit, which instance buffer the commands point at, which arg
+    // buffer the two VOB passes execute) has to agree, and some of them run long before the cull dispatch.
+    bool m_GpuVobCullActive = false;
+    bool CreateVobCullResources();                  // cull-record rings + the three DEFAULT GPU buffers (once, at init)
+    bool EvaluateGpuVobCulling() const;             // settings + PSO/resource availability
+    void CullVobsGPU();                             // CSCull + CSPatchArgs; call after DrawDepthPrepass/BuildHiZ
+    // The buffer both VOB passes ExecuteIndirect from: the GPU-patched DEFAULT copy when culling, else the
+    // per-frame CPU-written UPLOAD ring.
+    ID3D12Resource* GetVobDrawArgsBuffer() const;
 
     // Forward+ opaque depth-prepass PSOs/blobs (world + instanced VOB) live in m_Pipelines.World
     // (DepthPrepassPSO/VsBlob/PsBlob, DepthPrepassVobPSO/VobVsBlob/VobPsBlob). The skeletal depth-prepass PSO
