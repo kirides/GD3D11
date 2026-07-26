@@ -248,6 +248,11 @@ XRESULT D3D12GraphicsEngine::Init() {
     if ( !m_Pipelines.CreateRainDraw() ) {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the rain-draw pipeline (rain/snow particles will be unavailable).";
     }
+    if ( !m_Pipelines.CreateLines() || !CreateLineVertexBuffers() ) {
+        // Non-fatal: debug/editor lines are a diagnostic overlay. DrawLines() guards on the PSOs + ring
+        // existing; D3D12LineRenderer still drains its caches every frame either way (no unbounded growth).
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the debug-line pipeline (debug lines will not render).";
+    }
     LogInfo() << "D3D12GraphicsEngine initialized (device + 2D + world + VOB + skeletal + water + particle + decal + HDR tonemap pipelines up). Swapchain is created once the game window is set.";
     return XR_SUCCESS;
 }
@@ -1215,6 +1220,8 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
     // Reset the per-frame 2D vertex ring + VOB instance ring + default the viewport to the full backbuffer.
     m_UIVertexBufferOffset = 0;
     m_UIOverflowLogged = false;
+    m_LineVertexBufferOffset = 0;
+    m_LineOverflowLogged = false;
     m_VobInstanceBufferOffset = 0;
     m_VobInstanceOverflowLogged = false;
     m_SkeletalCBBufferOffset = 0;

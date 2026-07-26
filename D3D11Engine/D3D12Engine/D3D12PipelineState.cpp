@@ -3150,3 +3150,103 @@ bool D3D12PipelineState::CreateCull() {
 
     return true;
 }
+
+
+bool D3D12PipelineState::CreateLines() {
+    // Debug/editor line lists (D3D12LineRenderer) — port of D3D11's PS_Lines + VS_Lines / VS_Lines_XYZRHW.
+    // Drawn after the tonemap resolve, straight onto the swapchain backbuffer, so the vertex colors land
+    // in the final LDR image unmodified (no HDR scene target, no tonemap, no fog).
+    ID3D12Device* device = m_Device->GetDevice();
+
+    // b0 ViewProj (world-space VS) + b1 viewport pos/size (screen-space VS). One root signature for both
+    // PSOs; the draw path sets BOTH parameters every time so neither is ever left stale.
+    D3D12_ROOT_PARAMETER params[2] = {};
+    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[0].Constants.ShaderRegister = 0;   // b0 ViewProj
+    params[0].Constants.Num32BitValues = 16;
+    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[1].Constants.ShaderRegister = 1;   // b1 { ViewportPos, ViewportSize } (+ padding to a float4x2)
+    params[1].Constants.Num32BitValues = 8;
+    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+
+    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+    rsDesc.NumParameters = _countof( params );
+    rsDesc.pParameters = params;
+    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
+    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (lines)."; return false; }
+
+    ComPtr<ID3DBlob> rsBlob, rsErr;
+    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
+        if ( rsErr ) LogWarn() << "D3D12: line root signature serialize error: " << static_cast<const char*>(rsErr->GetBufferPointer());
+        return false;
+    }
+    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
+        IID_PPV_ARGS( Lines.RootSig.ReleaseAndGetAddressOf() ) ) ) )
+        return false;
+
+    if ( !m_Shaders->CompileFromFile( "Lines.hlsl", "VSMain", Shadermodel_VS, Lines.VsBlob.ReleaseAndGetAddressOf() ) )
+        return false;
+    if ( !m_Shaders->CompileFromFile( "Lines.hlsl", "VSScreen", Shadermodel_VS, Lines.ScreenVsBlob.ReleaseAndGetAddressOf() ) )
+        return false;
+    if ( !m_Shaders->CompileFromFile( "Lines.hlsl", "PSMain", Shadermodel_PS, Lines.PsBlob.ReleaseAndGetAddressOf() ) )
+        return false;
+
+    // BaseLineRenderer's LineVertex: float4 Position @0, float4 Color @16 (32 bytes, #pragma pack(1)).
+    const D3D12_INPUT_ELEMENT_DESC layout[] = {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 16, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    };
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+    pso.pRootSignature = Lines.RootSig.Get();
+    pso.VS = { Lines.VsBlob->GetBufferPointer(), Lines.VsBlob->GetBufferSize() };
+    pso.PS = { Lines.PsBlob->GetBufferPointer(), Lines.PsBlob->GetBufferSize() };
+    pso.InputLayout = { layout, _countof( layout ) };
+    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
+    pso.NumRenderTargets = 1;
+    pso.RTVFormats[0] = kBackBufferFormat;   // drawn onto the tonemapped swapchain, not the HDR scene target
+    pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+    pso.SampleDesc.Count = 1;
+    pso.SampleMask = UINT_MAX;
+
+    pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;   // lines have no facing
+    pso.RasterizerState.DepthClipEnable = TRUE;
+
+    // Alpha blending — D3D11's line flush forces BlendState.SetAlphaBlending() for both lists.
+    D3D12_RENDER_TARGET_BLEND_DESC& rt = pso.BlendState.RenderTarget[0];
+    rt.BlendEnable = TRUE;
+    rt.SrcBlend = D3D12_BLEND_SRC_ALPHA;
+    rt.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+    rt.BlendOp = D3D12_BLEND_OP_ADD;
+    rt.SrcBlendAlpha = D3D12_BLEND_ONE;
+    rt.DestBlendAlpha = D3D12_BLEND_ZERO;
+    rt.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+    // Depth-tested against the finished scene depth (reversed-Z), but never written: the lines are a debug
+    // overlay composited after the scene resolve, and nothing samples depth afterwards this frame.
+    pso.DepthStencilState.DepthEnable = TRUE;
+    pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+    pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
+    pso.DepthStencilState.StencilEnable = FALSE;
+
+    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( Lines.WorldPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (world-space lines).";
+        return false;
+    }
+
+    // Screen-space variant: pre-transformed xyzrhw vertices, no depth target at all (D3D11 doesn't bind one
+    // for VS_Lines_XYZRHW either — these are 2D overlays from zCRndD3D's hooked DrawLine/DrawLineZ).
+    pso.VS = { Lines.ScreenVsBlob->GetBufferPointer(), Lines.ScreenVsBlob->GetBufferSize() };
+    pso.DSVFormat = DXGI_FORMAT_UNKNOWN;
+    pso.DepthStencilState.DepthEnable = FALSE;
+    if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( Lines.ScreenPSO.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateGraphicsPipelineState failed (screen-space lines).";
+        return false;
+    }
+    return true;
+}

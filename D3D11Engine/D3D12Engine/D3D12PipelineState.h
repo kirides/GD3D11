@@ -239,6 +239,20 @@ public:
         Microsoft::WRL::ComPtr<ID3D12PipelineState> PatchPSO;
     };
 
+    // Debug/editor lines (D3D12LineRenderer): one root sig (b0 ViewProj, b1 viewport) + one VS/PS set,
+    // two PSOs. WorldPSO is the depth-tested world-space list (reversed-Z, GREATER_EQUAL, no depth write);
+    // ScreenPSO is the pre-transformed xyzrhw list with depth off. Both are LINE topology, alpha-blended,
+    // and target the swapchain backbuffer (they run after the tonemap resolve). The per-frame vertex ring
+    // is a GPU resource and stays in the engine.
+    struct LinePipeline {
+        Microsoft::WRL::ComPtr<ID3D12RootSignature> RootSig;
+        Microsoft::WRL::ComPtr<ID3DBlob>            VsBlob;        // VSMain   (world space)
+        Microsoft::WRL::ComPtr<ID3DBlob>            ScreenVsBlob;  // VSScreen (xyzrhw)
+        Microsoft::WRL::ComPtr<ID3DBlob>            PsBlob;        // PSMain   (pass-through vertex color)
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> WorldPSO;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> ScreenPSO;
+    };
+
     // Stores non-owning device + shader-backend pointers; call once before any Create*().
     bool Init( D3D12Device* device, D3D12ShaderBackend* shaders );
 
@@ -269,6 +283,7 @@ public:
     bool CreateAdvanceRain(); // rain/snow particle advance compute (b0 32-bit consts, t0 static SRV, u0 dynamic UAV)
     bool CreateRainDraw();    // rain/snow billboard draw (b0 ViewProj, b1 particle info, t0/t1 root SRVs, no IA)
     bool CreateCull();        // Hi-Z build + GPU VOB cull/compact + indirect-arg patch compute pipelines
+    bool CreateLines();       // debug/editor line lists (world-space depth-tested + screen-space xyzrhw)
 
     // --- On-demand PSO cache lookups (called from the engine's draw path; create+cache on miss) ---
     // cullMode/frontCCW/rtvIsHdr/forceMaxZ default to the plain 2D/UI case (cull-none, clockwise-front,
@@ -305,6 +320,7 @@ public:
     ComputePipeline  AdvanceRain;   // rain/snow particle advance (Shaders/D3D12/AdvanceRain.hlsl)
     GraphicsPipeline RainDraw;      // rain/snow billboard draw (Shaders/D3D12/Rain.hlsl)
     CullPipeline     Cull;          // Hi-Z build + GPU VOB cull (Shaders/D3D12/HiZ.hlsl + VobCull.hlsl)
+    LinePipeline     Lines;         // debug/editor line lists (Shaders/D3D12/Lines.hlsl)
 
 private:
     D3D12Device*        m_Device = nullptr;

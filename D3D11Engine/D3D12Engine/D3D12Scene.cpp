@@ -3592,6 +3592,15 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// or resources unavailable. Mirrors D3D11's SMAA placement (post-tonemap, pre-sharpen/UI).
 	RenderSMAA();
 
+	// Debug/editor lines last, on the finished LDR image — same slot as D3D11's "Draw Debug Lines" render-graph
+	// pass (after post-FX, before Gothic's 2D UI composites on top). Both calls also CLEAR their cache, so this
+	// is what keeps the line lists from growing unbounded across frames.
+	{
+		DX_ZONE( m_CmdList, "Draw debug lines" );
+		m_LineRenderer->Flush();
+		m_LineRenderer->FlushScreenSpace();
+	}
+
 	// Do any remaining dx12 stuff BEFORE setting PresentPending
 
 	m_PresentPending = true;

@@ -86,6 +86,12 @@ public:
     XRESULT DrawSky() override;
 
     BaseLineRenderer* GetLineRenderer() override;
+
+    /** Draws one of D3D12LineRenderer's cached line lists (see D3D12LineRenderer.cpp). Public only because
+        the line renderer reaches the engine through Engine::GraphicsEngine, not an owning back-pointer.
+        screenSpace=false -> world-space, ViewProj-transformed, depth-tested against the finished scene;
+        screenSpace=true  -> pre-transformed xyzrhw 2D overlay, no depth. */
+    void DrawLines( const std::vector<struct LineVertex>& lines, bool screenSpace );
     const std::string& GetGraphicsDeviceName() override { return m_Device.GetDeviceDescription(); }
 
     /** Native device for the D3D12 resource classes (D3D12Texture / D3D12VertexBuffer). */
@@ -176,6 +182,7 @@ private:
     // UI/Particle/Decal pipeline creation now lives in m_Pipelines (CreateUI/CreateParticle/CreateDecal); the
     // GetOrCreate* blend-key PSO caches moved there too. GPU ring buffers + the decal quad VB stay in the engine.
     bool CreateUIVertexBuffers();     // per-frame dynamic (upload-heap) vertex ring buffers
+    bool CreateLineVertexBuffers();   // per-frame dynamic (upload-heap) debug-line vertex ring buffers
     bool CreateWhiteTexture();        // 1x1 white fallback (untextured colored 2D draws)
     bool CreateDepthBuffer( INT2 size ); // R32_TYPELESS depth target + DSV(D32) + SRV(R32) (reversed-Z world rendering)
     bool CreateSceneColorTarget( INT2 size ); // R16F HDR scene-color RT (+RTV +SRV) the 3D passes render into; recreated on resize
@@ -417,6 +424,15 @@ private:
     UINT m_UIVertexBufferCapacity = 0;
     UINT m_UIVertexBufferOffset = 0;                               // reset each OnBeginFrame
     bool m_UIOverflowLogged = false;
+
+    // Debug/editor line ring (D3D12LineRenderer). Same persistently-mapped per-frame upload ring pattern as
+    // the UI vertex ring above; the line PSOs/root sig live in m_Pipelines.Lines.
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_LineVertexBuffer[kBackBufferCount];
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_LineVertexBufferAlloc[kBackBufferCount];
+    uint8_t* m_LineVertexBufferPtr[kBackBufferCount] = {};
+    UINT m_LineVertexBufferCapacity = 0;
+    UINT m_LineVertexBufferOffset = 0;                             // reset each OnBeginFrame
+    bool m_LineOverflowLogged = false;
 
     std::unique_ptr<D3D12Texture> m_WhiteTexture;         // 1x1 white fallback for untextured draws
     std::unique_ptr<D3D12Texture> m_BlackTexture;         // 1x1 black fallback for untextured draws
