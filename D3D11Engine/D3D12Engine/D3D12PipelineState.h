@@ -277,11 +277,21 @@ public:
     // DepthFillPSO is the color-masked depth-only re-draw D3D11 issues after the blended list so the
     // depth-reading post passes (height fog, god rays) see these surfaces.
     struct WorldTransparencyPipeline {
+        // Which D3D11 pixel shader this draw stands in for. D3D11 picks these in BindShaderForTexture off
+        // the material TYPE, then runs all three through the same DrawMeshInfoListAlphablended body.
+        enum class EKind : uint32_t {
+            Simple = 0,   // PS_Simple_FF     — blended world surfaces (ice, glass); reads the FF texture factor
+            Foam   = 1,   // PS_WaterfallFoam — MT_WaterfallFoam; own day/night tint, ignores the texture factor
+            Portal = 2,   // PS_PortalDiffuse — MT_Portal (G1 forest portals); distance fade, needs a VIEW-space VS
+        };
         Microsoft::WRL::ComPtr<ID3D12RootSignature> RootSig;
-        Microsoft::WRL::ComPtr<ID3DBlob>            VsBlob;   // VSTransparent — shared by every PSO below
-        Microsoft::WRL::ComPtr<ID3DBlob>            PsBlob;   // PSTransparent
+        Microsoft::WRL::ComPtr<ID3DBlob>            VsBlob;         // VSTransparent — Simple + Foam + the depth fill
+        Microsoft::WRL::ComPtr<ID3DBlob>            PortalVsBlob;   // VSTransparentPortal (also outputs view-space pos)
+        Microsoft::WRL::ComPtr<ID3DBlob>            PsBlob;         // PSTransparent
+        Microsoft::WRL::ComPtr<ID3DBlob>            FoamPsBlob;     // PSTransparentFoam
+        Microsoft::WRL::ComPtr<ID3DBlob>            PortalPsBlob;   // PSTransparentPortal
         Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthFillPSO;
-        std::unordered_map<uint32_t, Microsoft::WRL::ComPtr<ID3D12PipelineState>> BlendPipelines; // key = BlendKey | depthWrite<<31
+        std::unordered_map<uint32_t, Microsoft::WRL::ComPtr<ID3D12PipelineState>> BlendPipelines; // key = BlendKey | kind<<29 | depthWrite<<31
     };
 
     // Stores non-owning device + shader-backend pointers; call once before any Create*().
@@ -330,7 +340,8 @@ public:
     ID3D12PipelineState* GetOrCreateDecalBlendPipeline( const GothicBlendStateInfo& blend );
     // Alpha-blended world mesh. depthWrite mirrors D3D11's state machine: the list starts from
     // SetDefaultStates() (depth-write ON, blending off) and every alpha-func change turns depth-write off.
-    ID3D12PipelineState* GetOrCreateWorldTransparencyPipeline( const GothicBlendStateInfo& blend, bool depthWrite );
+    ID3D12PipelineState* GetOrCreateWorldTransparencyPipeline( const GothicBlendStateInfo& blend, bool depthWrite,
+        WorldTransparencyPipeline::EKind kind = WorldTransparencyPipeline::EKind::Simple );
 
     // --- Storage (one per migrated pass) ---
     WorldPipeline       World;

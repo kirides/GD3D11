@@ -282,25 +282,31 @@ bool D3D12PipelineState::CreateWorldTransparency() {
     // carries. It gets its OWN small root sig rather than a 14th World.RootSig parameter, which keeps that
     // signature's root-DWORD budget (56 of 64 used) and its two ExecuteIndirect command signatures untouched.
     //   b0 = ViewProj (16 consts, VS) — same value DrawWorldMesh uploads
-    //   b5 = TextureFactor (4 consts, PS) — the per-material FF tint (material color / env-map strength)
+    //   b5 = TransparencyCB (8 consts, PS) — the per-material FF tint + the sun height (AC_LightPos.y) the
+    //        portal/foam variants darken by; passing that one scalar avoids binding the whole Atmosphere CB
     //   b6 = MaterialCB (4 consts, PS) — reuses World.hlsl's declaration; only MatDiffuseIndex is read
+    //   b4 = TransparencyViewCB (16 consts, VS) — world->view, read ONLY by VSTransparentPortal
     // Register numbers match World.hlsl's existing file-scope cbuffers, so the shared VS_IN / includes there
-    // need no renumbering for these two extra entry points.
+    // need no renumbering for these extra entry points.
     ID3D12Device* device = m_Device->GetDevice();
 
-    D3D12_ROOT_PARAMETER params[3] = {};
+    D3D12_ROOT_PARAMETER params[4] = {};
     params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     params[0].Constants.ShaderRegister = 0;   // b0 ViewProj
     params[0].Constants.Num32BitValues = 16;
     params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
     params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[1].Constants.ShaderRegister = 5;   // b5 TransparencyCB { float4 TextureFactor }
-    params[1].Constants.Num32BitValues = 4;
+    params[1].Constants.ShaderRegister = 5;   // b5 TransparencyCB { float4 TextureFactor; float SunHeight; float3 pad }
+    params[1].Constants.Num32BitValues = 8;
     params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     params[2].Constants.ShaderRegister = 6;   // b6 MaterialCB { normal, orm, diffuse, normalStrength }
     params[2].Constants.Num32BitValues = 4;
     params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[3].Constants.ShaderRegister = 4;   // b4 TransparencyViewCB { float4x4 View } — portal VS only
+    params[3].Constants.Num32BitValues = 16;
+    params[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
 
     // s0 diffuse: same 16x anisotropic wrap sampler the opaque world pass uses.
     D3D12_STATIC_SAMPLER_DESC sampler = {};
@@ -339,6 +345,19 @@ bool D3D12PipelineState::CreateWorldTransparency() {
     if ( !m_Shaders->CompileFromFile( "World.hlsl", "PSTransparent", Shadermodel_PS, WorldTransparency.PsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
+    // MT_WaterfallFoam + MT_Portal variants (D3D11's PS_WaterfallFoam / PS_PortalDiffuse). Non-fatal: the
+    // pass falls back to the plain PS_Simple_FF-equivalent for a kind whose blob is missing, which is what
+    // those surfaces got before they were peeled out at all.
+    if ( !m_Shaders->CompileFromFile( "World.hlsl", "PSTransparentFoam", Shadermodel_PS, WorldTransparency.FoamPsBlob.ReleaseAndGetAddressOf() ) ) {
+        LogWarn() << "D3D12: PSTransparentFoam failed to compile — waterfall foam falls back to the plain transparent shader.";
+        WorldTransparency.FoamPsBlob.Reset();
+    }
+    if ( !m_Shaders->CompileFromFile( "World.hlsl", "VSTransparentPortal", Shadermodel_VS, WorldTransparency.PortalVsBlob.ReleaseAndGetAddressOf() )
+      || !m_Shaders->CompileFromFile( "World.hlsl", "PSTransparentPortal", Shadermodel_PS, WorldTransparency.PortalPsBlob.ReleaseAndGetAddressOf() ) ) {
+        LogWarn() << "D3D12: the portal transparency shaders failed to compile — G1 forest portals will not be drawn.";
+        WorldTransparency.PortalVsBlob.Reset();
+        WorldTransparency.PortalPsBlob.Reset();
+    }
 
     // Warm the two states every transparent world frame needs: plain alpha blending (by far the most common
     // Gothic alpha func on these materials) and the depth-fill re-draw.
@@ -360,12 +379,25 @@ bool D3D12PipelineState::CreateWorldTransparency() {
     return true;
 }
 
-ID3D12PipelineState* D3D12PipelineState::GetOrCreateWorldTransparencyPipeline( const GothicBlendStateInfo& blend, bool depthWrite ) {
-    // BlendKey occupies bits 0..28, so the depth-write flag rides the top bit.
-    const uint32_t key = BlendKey( blend ) | (depthWrite ? (1u << 31) : 0u);
+ID3D12PipelineState* D3D12PipelineState::GetOrCreateWorldTransparencyPipeline( const GothicBlendStateInfo& blend, bool depthWrite,
+    WorldTransparencyPipeline::EKind kind ) {
+    // BlendKey occupies bits 0..28, so the material kind takes 29..30 and the depth-write flag the top bit.
+    const uint32_t key = BlendKey( blend ) | (static_cast<uint32_t>(kind) << 29) | (depthWrite ? (1u << 31) : 0u);
     auto it = WorldTransparency.BlendPipelines.find( key );
     if ( it != WorldTransparency.BlendPipelines.end() ) return it->second.Get();
     if ( !WorldTransparency.RootSig || !WorldTransparency.VsBlob || !WorldTransparency.PsBlob ) return nullptr;
+
+    // Per-kind shader selection; a kind whose blobs failed to compile degrades to the plain variant rather
+    // than dropping the geometry (the portal caller checks the blobs itself and skips instead).
+    ID3DBlob* vs = WorldTransparency.VsBlob.Get();
+    ID3DBlob* ps = WorldTransparency.PsBlob.Get();
+    if ( kind == WorldTransparencyPipeline::EKind::Foam && WorldTransparency.FoamPsBlob ) {
+        ps = WorldTransparency.FoamPsBlob.Get();
+    } else if ( kind == WorldTransparencyPipeline::EKind::Portal
+        && WorldTransparency.PortalVsBlob && WorldTransparency.PortalPsBlob ) {
+        vs = WorldTransparency.PortalVsBlob.Get();
+        ps = WorldTransparency.PortalPsBlob.Get();
+    }
 
     // Same packed 36-byte world vertex the opaque pass consumes; VSTransparent just doesn't read NORMAL.
     // (Kept as a superset of what the VS declares so the color and depth-fill PSOs are byte-identical apart
@@ -379,8 +411,8 @@ ID3D12PipelineState* D3D12PipelineState::GetOrCreateWorldTransparencyPipeline( c
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
     pso.pRootSignature = WorldTransparency.RootSig.Get();
-    pso.VS = { WorldTransparency.VsBlob->GetBufferPointer(), WorldTransparency.VsBlob->GetBufferSize() };
-    pso.PS = { WorldTransparency.PsBlob->GetBufferPointer(), WorldTransparency.PsBlob->GetBufferSize() };
+    pso.VS = { vs->GetBufferPointer(), vs->GetBufferSize() };
+    pso.PS = { ps->GetBufferPointer(), ps->GetBufferSize() };
     pso.InputLayout = { layout, _countof( layout ) };
     pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     pso.NumRenderTargets = 1;

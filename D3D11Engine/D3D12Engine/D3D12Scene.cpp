@@ -3705,6 +3705,8 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
     m_WorldDrawnIndices = 0;
     g_FrameWaterSurfaces.clear();
     g_FrameWorldTransparency.clear();
+    g_FrameWorldTransparencyPortal.clear();
+    g_FrameWorldTransparencyFoam.clear();
     if ( !m_FrameOpen || !m_WorldIndirectCmdSig || !m_WorldDrawArgsPtr[m_FrameIndex] ) return;
 
     MeshInfo* wm = Engine::GAPI->GetWrappedWorldMesh();
@@ -3743,13 +3745,30 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
                 continue;
             }            
 
-            // Water is transparent — bucket it by texture for the later alpha-blended pass, skip the opaque command set.
+            // Sort key for every transparency bucket below: distance to the mesh's own bbox center, falling
+            // back to the section's (ComputeWorldMeshDistanceSqFromCamera in D3D11GraphicsEngine.cpp).
+            auto transparencyDistanceSq = [&]() -> float {
+                const zTBBox3D* bounds = mesh->HasBoundingBox ? &mesh->BoundingBox : &section->BoundingBox;
+                const XMFLOAT3 center( ( bounds->Min.x + bounds->Max.x ) * 0.5f,
+                                       ( bounds->Min.y + bounds->Max.y ) * 0.5f,
+                                       ( bounds->Min.z + bounds->Max.z ) * 0.5f );
+                float distanceSq = 0.0f;
+                XMStoreFloat( &distanceSq, XMVector3LengthSq( XMLoadFloat3( &center ) - transparencyCamPos ) );
+                return distanceSq;
+            };
+
+            // Water is transparent — bucket it by texture for the later alpha-blended pass, skip the opaque
+            // command set. Forest portals and waterfall foam get their own sorted lists for the same reason,
+            // each drawn with its own pixel shader (D3D11: FrameTransparencyMeshesPortal / ...Waterfall).
             if ( meshKey.Info) {
                 if ( meshKey.Info->MaterialType == MaterialInfo::MT_Water ) {
                     g_FrameWaterSurfaces[meshKey.Material->GetAniTexture()].push_back( mesh );
                     continue;
                 } else if ( meshKey.Info->MaterialType == MaterialInfo::MT_Portal ) {
-                    // don't draw portal meshes
+                    g_FrameWorldTransparencyPortal.push_back( { meshKey.Material, mesh, transparencyDistanceSq() } );
+                    continue;
+                } else if ( meshKey.Info->MaterialType == MaterialInfo::MT_WaterfallFoam ) {
+                    g_FrameWorldTransparencyFoam.push_back( { meshKey.Material, mesh, transparencyDistanceSq() } );
                     continue;
                 }
             }
@@ -3761,15 +3780,7 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
             // DrawWorldTransparencyMeshes (D3D12Transparency.cpp). Peeled from the DEPTH PREPASS too (both
             // passes share this command set) — same as D3D11, whose prepass `isSkipped` filter drops them.
             if ( IsWorldMeshAlphaBlended( meshKey.Material ) ) {
-                // Sort key: distance to the mesh's own bbox center, falling back to the section's
-                // (ComputeWorldMeshDistanceSqFromCamera in D3D11GraphicsEngine.cpp).
-                const zTBBox3D* bounds = mesh->HasBoundingBox ? &mesh->BoundingBox : &section->BoundingBox;
-                const XMFLOAT3 center( ( bounds->Min.x + bounds->Max.x ) * 0.5f,
-                                       ( bounds->Min.y + bounds->Max.y ) * 0.5f,
-                                       ( bounds->Min.z + bounds->Max.z ) * 0.5f );
-                float distanceSq = 0.0f;
-                XMStoreFloat( &distanceSq, XMVector3LengthSq( XMLoadFloat3( &center ) - transparencyCamPos ) );
-                g_FrameWorldTransparency.push_back( { meshKey.Material, mesh, distanceSq } );
+                g_FrameWorldTransparency.push_back( { meshKey.Material, mesh, transparencyDistanceSq() } );
                 continue;
             }
             if ( count >= kMaxWorldDrawCommands ) {

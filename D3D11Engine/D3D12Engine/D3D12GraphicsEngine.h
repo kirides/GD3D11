@@ -486,9 +486,13 @@ private:
     // DrawMeshInfoListAlphablended. BuildWorldDrawCommands peels these out of the opaque command set into
     // g_FrameWorldTransparency (D3D12EngineCommon.h) and sorts them back-to-front; the pass draws them with
     // the material's own blend mode after the opaque scene + water, then re-lays their depth for the fog.
+    // MT_Portal (G1 forest portals) and MT_WaterfallFoam are peeled by material TYPE into their own lists
+    // and drawn as extra sub-passes with their own pixel shaders — same three-list split D3D11 has.
     static bool IsWorldMeshAlphaBlended( zCMaterial* mat );   // "does this material belong in that list?"
     void SortWorldTransparencyMeshes();                       // painter's order (far -> near), once per frame
-    void DrawWorldTransparencyMeshes();                       // the pass itself (drains the list)
+    void DrawWorldTransparencyMeshes();                       // the pass itself (drains all three lists)
+    void DrawWorldTransparencyList( std::vector<struct WorldTransparencyMesh>& list,
+        D3D12PipelineState::WorldTransparencyPipeline::EKind kind, bool depthFill );   // one sub-pass
 
     // ---- GPU-driven instanced VOBs (P2.12): ExecuteIndirect + bindless diffuse. Unlike the world mesh (one
     // shared VB/IB, so a command only carries material indices + DrawIndexed), every VOB visual/mesh has its OWN

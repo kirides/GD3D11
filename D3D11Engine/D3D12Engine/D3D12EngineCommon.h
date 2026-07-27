@@ -30,6 +30,10 @@ struct WorldTransparencyMesh {
     float       DistanceSq;   // camera -> mesh/section bbox center; sorted DESCENDING (far first)
 };
 extern std::vector<WorldTransparencyMesh> g_FrameWorldTransparency;
+// The two material types D3D11 collects by TYPE rather than by alpha func, each drawn as its own sorted
+// sub-pass with its own pixel shader (D3D11: FrameTransparencyMeshesPortal / FrameTransparencyMeshesWaterfall).
+extern std::vector<WorldTransparencyMesh> g_FrameWorldTransparencyPortal;   // MT_Portal (gated on DrawG1ForestPortals)
+extern std::vector<WorldTransparencyMesh> g_FrameWorldTransparencyFoam;     // MT_WaterfallFoam
 
 // Upload-heap type used by every persistently-mapped ring / staging allocation. A single knob (kept
 // as an inline variable so all split TUs see the same value); the GPU_UPLOAD path is future work.

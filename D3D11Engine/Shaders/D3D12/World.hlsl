@@ -146,7 +146,14 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
 // per-material tint the CPU computes: the material color when its alpha < 255 (that IS the ice/glass
 // translucency), or the env-map strength ramped by sun height for env-mapped materials.
 // =====================================================================================================
-cbuffer TransparencyCB : register(b5) { float4 TextureFactor; };
+// SunHeight is Gothic's AC_LightPos.y (sun height above the horizon), which the portal/waterfall-foam
+// variants below need for their day/night darkening. It is passed as a scalar root constant rather than
+// pulling in the whole Atmosphere CB the D3D11 shaders include, since that is all either one reads.
+cbuffer TransparencyCB : register(b5) { float4 TextureFactor; float SunHeight; float3 _tpad; };
+// World->view, VS only, used ONLY by VSTransparentPortal (see below). World.hlsl declares nothing else at
+// b4 — the shared World.RootSig's b4 (wind) is never read by this file, and an unused declaration emits no
+// binding, so this cannot collide with the opaque world/VOB PSOs.
+cbuffer TransparencyViewCB : register(b4) { float4x4 TransparencyView; };
 
 struct VST_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : TEXCOORD1; };
 
@@ -175,4 +182,72 @@ float4 PSTransparent( VST_OUT i ) : SV_TARGET
     // The scene target is linear HDR on D3D12, so the sampled sRGB texel has to be linearized like every
     // other albedo read; the alpha rides through untouched for the blend.
     return float4( SrgbToLinear( c.rgb ), c.a );
+}
+
+// --- MT_WaterfallFoam (D3D11: PS_WaterfallFoam.hlsl) -------------------------------------------------
+// Foam sheets over waterfalls. Neither the vertex color nor the FF texture factor is read (D3D11's shader
+// samples the texture and applies its own day/night tint, nothing else) — ported line for line.
+float4 PSTransparentFoam( VST_OUT i ) : SV_TARGET
+{
+    Texture2D difTex = ResourceDescriptorHeap[MatDiffuseIndex];
+    float4 colour = difTex.Sample( smp, i.uv );
+
+    // darken / lighten foam based on the day / night cycle
+    float colourRGB = clamp( SunHeight + 0.2, 0.1, 0.6 );
+    if ( SunHeight <= 0.08 ) {
+        colour *= float4( colourRGB, colourRGB, colourRGB + 0.1, 0.80 );   // add blue tint at night
+    } else {
+        colour *= float4( colourRGB, colourRGB, colourRGB, 0.80 );
+    }
+    return float4( SrgbToLinear( colour.rgb ), colour.a );
+}
+
+// --- MT_Portal (D3D11: PS_PortalDiffuse.hlsl, VS_Ex.hlsl's vViewPosition) ----------------------------
+// Gothic 1's forest portals: a texture sheet that fades in with distance and darkens with the sun. Gated
+// on RendererSettings.DrawG1ForestPortals, same as D3D11. Needs the VIEW-space position, so it gets its
+// own VS; everything else in the pass shares VSTransparent.
+struct VSTP_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float3 vpos : TEXCOORD1; };
+
+VSTP_OUT VSTransparentPortal( VS_IN i )
+{
+    VSTP_OUT o;
+    o.clip = mul( float4( i.pos, 1.0 ), ViewProj );
+    o.uv = i.uv;
+    // D3D11's VS_Ex sets vViewPosition = mul(float4(positionWorld,1), M_View); world verts are already
+    // world-space here, so this is the same value.
+    o.vpos = mul( float4( i.pos, 1.0 ), TransparencyView ).xyz;
+    return o;
+}
+
+float4 PSTransparentPortal( VSTP_OUT i ) : SV_TARGET
+{
+    // Ported verbatim from PS_PortalDiffuse, INCLUDING its dimensional oddity: D3D11 writes
+    // `distance(Input.vViewPosition, Input.vPosition)`, where vPosition is SV_POSITION — i.e. it measures
+    // a view-space position against a PIXEL coordinate (HLSL silently truncates the float4 to float3).
+    // That is what produces the fade the game actually ships, so it is reproduced rather than "fixed";
+    // the explicit float3() below is only there because DXC warns on the implicit truncation.
+    // (clip.z differs from D3D11's by the reversed-Z flip, but it is a 0..1 term inside a magnitude of
+    // thousands — far below the fade's 1000-unit ramp.)
+    float distFromCamera = distance( i.vpos, float3( i.clip.xy, i.clip.z ) );
+
+    // correct issue with transparency of forest portals for certain camera angles
+    if ( i.vpos.x > 0 ) { distFromCamera = distFromCamera + ( i.vpos.x * clamp( i.vpos.x / 9000, 0, 1 ) ); }
+
+    // start / end distances for fading
+    float startFade = 6500.0;
+    float completeFade = 5500.0;
+
+    // how much to fade the object by
+    float percentageFade = clamp( ( distFromCamera - completeFade ) / ( startFade - completeFade ), 0, 1 );
+
+    // darken the portals depending on where the sun is in the sky
+    float darknessFactor = 4.0;
+    if ( SunHeight <= 0.05 ) { darknessFactor += ( 1 - SunHeight ) * 6; }
+    else                     { darknessFactor = 7.5 - ( 1 + SunHeight ) * 3; }
+
+    // sample the texture we want to fade out and apply relevant darkness factor for day / night cycle
+    Texture2D difTex = ResourceDescriptorHeap[MatDiffuseIndex];
+    float4 color = difTex.Sample( smp, i.uv ) / darknessFactor;
+
+    return float4( SrgbToLinear( color.rgb ), percentageFade );
 }
