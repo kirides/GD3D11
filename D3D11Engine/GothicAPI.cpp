@@ -2360,13 +2360,13 @@ SkeletalMeshVisualInfo* GothicAPI::LoadzCModelData( zCModel* model ) {
 }
 
 SkeletalMeshVisualInfo* GothicAPI::LoadzCModelData( oCNPC* npc ) {
-    if ( auto model = static_cast<zCModel*>(npc->GetVisual())) {
-        auto visName = model->GetVisualName();
-        std::string str( visName.data(), visName.size() );
-        if ( str.empty() ) { // Happens when the model has no skeletal-mesh
-            zSTRING mds = model->GetModelName();
-            str.append(mds.ToView());
-        }
+    zCModel* model = static_cast<zCModel*>(npc->GetVisual());
+
+    auto visName = model->GetVisualName();
+    std::string str( visName.data(), visName.size() );
+    if ( str.empty() ) { // Happens when the model has no skeletal-mesh
+        zSTRING mds = model->GetModelName();
+        str.append( mds.ToView() );
     }
 
     SkeletalMeshVisualInfo* mi = SkeletalMeshNpcs[npc];
@@ -2375,7 +2375,12 @@ SkeletalMeshVisualInfo* GothicAPI::LoadzCModelData( oCNPC* npc ) {
         SkeletalMeshNpcs[npc] = mi;
     }
 
-    zCModel* model = static_cast<zCModel*>(npc->GetVisual());
+    // oCNPCEnable/oCNPCInitModel re-trigger OnAddVob far more often than the NPC's
+    // actual visual (body/armor) changes, so skip the CPU extraction + GPU buffer
+    // rebuild entirely when the visual name hasn't changed since last time.
+    if ( mi->VisualName == str && !mi->Meshes.empty() )
+        return mi;
+
     mi->Visual = model;
 
     // Update a visual information
