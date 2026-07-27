@@ -722,6 +722,8 @@ struct GothicRendererSettings {
         ShadowSoftness = 1.0f; // 1.0 = default softness, higher = softer shadows
         PCSSLightSize = 0.140f; // Shadow-UV light radius used by PCSS blocker search
 
+        SkyIblIntensity = 1.0f; // D3D12 only: scales the sky image-based indirect light (0 = flat ambient only)
+
         BloomStrength = 1.0f;
         EnableBloom = false;
         BloomKnee = 0.5f;
@@ -1024,6 +1026,9 @@ struct GothicRendererSettings {
     float WorldAOStrength;
     float ShadowSoftness;
     float PCSSLightSize;
+    // D3D12 only (the D3D11 backend has no PBR path): scale on the sky-IBL indirect term that replaced the
+    // flat ambient floor in Shaders/D3D12/include/PBRLighting.hlsl. 0 falls back to that flat term entirely.
+    float SkyIblIntensity;
 
     float GodRayDecay;
     float GodRayWeight;

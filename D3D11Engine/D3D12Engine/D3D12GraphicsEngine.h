@@ -902,6 +902,66 @@ private:
     bool CreateAOResources( INT2 size );      // (re)builds m_AOMask/m_AOBlurTemp/m_PrevDepth + persistent SRV/UAV slots
     void RenderSSAO();                        // main estimate -> separable blur; no-ops (mask stays white) if disabled/unavailable
 
+    // ---- Sky image-based lighting (indirect light for the Forward+ PBR shaders) -----------------------------
+    // Replaces the flat greyscale ambient floor in PBRLighting.hlsl's ComputeSunLightingPBR
+    // (`albedo * AmbientStrength * sunLum`), which gave metals NO indirect specular at all — at metallic=1 the
+    // Cook-Torrance kD is 0, so armour/weapons/ore went black outside direct light — and made roughness
+    // irrelevant to ambient. Two cubes, built by three compute passes (Shaders/D3D12/SkyIbl.hlsl):
+    //   m_SkyEnvCube    128^2 RGBA16F, kSkyEnvMips mips. Mip 0 = the analytic sky radiance; mips 1..N are its
+    //                   GGX prefilter, mip m == roughness m/(N-1) (the split-sum specular chain).
+    //   m_SkyIrradCube  16^2 RGBA16F, 1 mip. Cosine-convolved irradiance (the diffuse term).
+    // Both are tiny by design — ~1.05 MB and ~12 KB of VA, which is what makes this affordable in a 32-bit
+    // process (a placed grid of localized probes would not be, and is deliberately left to a later stage).
+    // The source is ANALYTIC, not a scene capture: D3D12 draws Gothic's fixed-function skydome (DrawSky — the
+    // atmospheric-scattering path is D3D11-only), so a gradient built from Gothic's own zCSkyState master
+    // colours is both cheaper and a closer match to what is actually on screen than a scattering model.
+    static constexpr UINT kSkyEnvSize = 128;   // mip-0 face resolution of the specular cube
+    static constexpr UINT kSkyEnvMips = 6;     // 128,64,32,16,8,4 -> roughness 0.0 .. 1.0
+    static constexpr UINT kSkyIrradSize = 16;  // irradiance is very low frequency; 16^2 is plenty
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_SkyEnvCube;
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_SkyEnvCubeAlloc;
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_SkyIrradCube;
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_SkyIrradCubeAlloc;
+    UINT m_SkyEnvSrvSlot = UINT_MAX;               // full-chain TextureCube SRV — the bindless index the lit PS samples
+    UINT m_SkyEnvMip0SrvSlot = UINT_MAX;           // mip-0-ONLY TextureCube SRV — the prefilter/irradiance source.
+                                                   // Must be mip-0-only: the prefilter writes mips 1..N as a UAV in the
+                                                   // same dispatch, so the full-chain view would put one resource in two
+                                                   // states at once. RenderSkyIBL splits the barrier per subresource.
+    UINT m_SkyEnvUavSlot[kSkyEnvMips] = {};        // one Texture2DArray(6-slice) UAV per mip; filled with UINT_MAX in Create
+    UINT m_SkyIrradSrvSlot = UINT_MAX;             // bindless index the lit PS samples for the diffuse term
+    UINT m_SkyIrradUavSlot = UINT_MAX;
+    bool m_SkyIblResourcesReady = false;
+    bool m_SkyIblValid = false;                    // false until the first successful build of a world (reset on world load)
+    // The cubes are rebuilt only when the sky state actually moved (time of day / weather / sun), not every
+    // frame — the whole chain is ~100k texels of analytic evaluation plus a 2k-texel hemisphere march, which is
+    // cheap but pointless to repeat while the player stands still. m_SkyLastParams is the last-built state.
+    struct SkyIblParams {
+        XMFLOAT3 Zenith = {}; XMFLOAT3 Horizon = {}; XMFLOAT3 Ground = {};
+        XMFLOAT3 SunDir = {}; XMFLOAT3 SunColor = {}; float SunIntensity = 0.0f;
+        bool Indoor = false;
+    };
+    SkyIblParams m_SkyLastParams;
+    bool m_SkyEnvInReadState = false;              // tracks the rest state of m_SkyEnvCube (see RenderSkyIBL's barriers)
+    // Sky-IBL tail of the shared shadow CB — the FOURTH disjoint byte range of m_ShadowCB, after the
+    // RenderSunShadows head [0,256), UploadWetnessConstants [256,352) and UploadAoReprojConstants [352,432).
+    // Riding the CB the lit shaders already bind is what keeps this feature free of root-signature churn:
+    // World/Vob/Skeletal/Vegetation all declare ShadowCB at their own register and just gained four fields.
+    static constexpr UINT kSkyIblCbOffset = 432;
+    struct SkyIblCBData {
+        UINT  IrradianceIndex;   // 0xFFFFFFFF -> the lit shaders use the old flat ambient instead
+        UINT  SpecularIndex;
+        float SpecularMips;      // == kSkyEnvMips, so the PS can map roughness -> mip
+        // The COMPLETE ambient scale for the IBL path, premultiplied on the CPU:
+        //   SkyIblIntensity (user knob) * kSkyIblNormalize (radiance unit conversion) * ShadowStrength.
+        // ShadowStrength enters UNHALVED — unlike AmbientStrength, which RenderSunShadows halves at night.
+        // The IBL branch in ComputeSunLightingPBR therefore multiplies by this and nothing else; only the flat
+        // fallback branch still uses AmbientStrength. See UploadSkyIblConstants for the reasoning.
+        float Intensity;
+    };
+    void UploadSkyIblConstants();             // publishes the cube indices into the shadow CB for the lit PS
+    bool CreateSkyIblResources();             // one-time: builds both cubes + their persistent SRV/UAV slots
+    void RenderSkyIBL();                      // rebuilds the cubes when the sky state moved; no-ops otherwise
+
     // ---- Height fog + god rays (plan item #5) — D3D12 port of D3D11's PostFX composition pass. -------------
     // Two quarter-resolution HDR textures carry the god-ray chain (mask -> radial blur), mirroring D3D11's
     // GetTempBufferDS4() pool textures; both rest in UNORDERED_ACCESS between frames like the bloom mips.

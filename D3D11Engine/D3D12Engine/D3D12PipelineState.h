@@ -180,6 +180,22 @@ public:
         Microsoft::WRL::ComPtr<ID3D12PipelineState> BlurPSO;
     };
 
+    // Sky image-based lighting — the indirect-light source for the Forward+ PBR shaders (Shaders/D3D12/
+    // SkyIbl.hlsl). Two root sigs: the radiance pass writes mip 0 from constants only (b0 20 root consts,
+    // u0 UAV table); the prefilter and irradiance passes share one shape (b1 4 root consts, t0 mip-0 SRV
+    // table, u0 UAV table) since both read the same source cube and write one face slice. The cubes and
+    // their heap slots live in the engine (D3D12SkyIbl.cpp), like the bloom/AO pyramids.
+    struct SkyIblPipeline {
+        Microsoft::WRL::ComPtr<ID3D12RootSignature> RadianceRootSig;
+        Microsoft::WRL::ComPtr<ID3DBlob>            RadianceCsBlob;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> RadiancePSO;     // analytic sky -> env cube mip 0
+        Microsoft::WRL::ComPtr<ID3D12RootSignature> FilterRootSig;   // shared by both passes below
+        Microsoft::WRL::ComPtr<ID3DBlob>            PrefilterCsBlob;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> PrefilterPSO;    // GGX importance sample -> env cube mips 1..N
+        Microsoft::WRL::ComPtr<ID3DBlob>            IrradianceCsBlob;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> IrradiancePSO;   // cosine convolve -> irradiance cube
+    };
+
     // SMAA anti-aliasing (runtime toggle, RendererSettings.AntiAliasingMode == AA_SMAA). One bindless root
     // sig (b0 root consts { RT_METRICS + 5 SRV heap indices }, static linear+point clamp samplers,
     // CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED) shared by all three fullscreen passes. Edge/Blend PSOs target an
@@ -279,6 +295,7 @@ public:
     bool CreateVideo();       // Bink YUV video playback (own root sig: b0 viewport consts, t0-t2 YUV planes)
     bool CreateSmaa();        // SMAA 3-pass AA (bindless root sig + edge/blend/neighborhood PSOs); textures stay in engine
     bool CreateAO();          // simple SSAO: main estimate + separable blur compute pipelines; textures stay in engine
+    bool CreateSkyIbl();      // sky IBL: analytic radiance + GGX prefilter + irradiance compute pipelines; cubes stay in engine
     bool CreateFog();         // height fog + god rays: 2 god-ray compute PSOs + the fullscreen composition PSO
     bool CreateAdvanceRain(); // rain/snow particle advance compute (b0 32-bit consts, t0 static SRV, u0 dynamic UAV)
     bool CreateRainDraw();    // rain/snow billboard draw (b0 ViewProj, b1 particle info, t0/t1 root SRVs, no IA)
@@ -316,7 +333,8 @@ public:
     VideoPipeline    Video;
     SmaaPipeline     Smaa;
     AOPipeline       AO;
-    FogPipeline      Fog;           // height fog + god rays (Shaders/D3D12/HeightFog.hlsl + GodRays.hlsl)
+    SkyIblPipeline   SkyIbl;        // sky image-based lighting (Shaders/D3D12/SkyIbl.hlsl)
+    FogPipeline      Fog;        // height fog + god rays (Shaders/D3D12/HeightFog.hlsl + GodRays.hlsl)
     ComputePipeline  AdvanceRain;   // rain/snow particle advance (Shaders/D3D12/AdvanceRain.hlsl)
     GraphicsPipeline RainDraw;      // rain/snow billboard draw (Shaders/D3D12/Rain.hlsl)
     CullPipeline     Cull;          // Hi-Z build + GPU VOB cull (Shaders/D3D12/HiZ.hlsl + VobCull.hlsl)

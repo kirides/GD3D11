@@ -32,6 +32,14 @@ cbuffer ShadowCB : register(b5)
     // three lit shaders and in the CPU-side AoReprojCBData.
     float4x4 AoPrevViewProj;
     uint     AoPrevDepthIndex;  float AoPrevProjZX;      float AoPrevProjZY;  float AoReprojValid;
+    // --- Sky IBL tail, uploaded by UploadSkyIblConstants (kSkyIblCbOffset = 432). The bindless indices of the
+    // sky irradiance + prefiltered-specular cubes built by Shaders/D3D12/SkyIbl.hlsl. Both are 0xFFFFFFFF when
+    // the IBL is unavailable or switched off, which makes EvaluateSkyIBL fall back to the flat ambient term.
+    // Keep in sync across World/Vob/Skeletal/Vegetation.hlsl and the SkyIblCBData struct on the CPU side.
+    // NOTE: SkyIblIntensity is the COMPLETE ambient scale for the IBL path (user knob x radiance
+    // normalization x an UNHALVED ShadowStrength), premultiplied by UploadSkyIblConstants. The IBL branch
+    // must not also apply AmbientStrength — that one still belongs to the flat fallback branch only.
+    uint     SkyIrradianceIndex; uint  SkySpecularIndex;  float SkySpecularMips; float SkyIblIntensity;
 };
 Texture2DArray          ShadowMap : register(t4);
 SamplerComparisonState  shadowCmp : register(s2);

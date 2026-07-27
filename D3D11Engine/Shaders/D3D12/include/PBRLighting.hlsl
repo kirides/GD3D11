@@ -236,6 +236,63 @@ float3 PBR_DirectLighting( float3 baseColor, float3 lightColor, float3 N, float3
     return ( diffuse + specular ) * lightColor * ( NdotL * attenuation );
 }
 
+// --- Sky image-based lighting (indirect diffuse + specular) -----------------------------------------------
+// Consumes the two cubes built by Shaders/D3D12/SkyIbl.hlsl, whose bindless indices arrive in the ShadowCB
+// sky tail (SkyIrradianceIndex / SkySpecularIndex / SkySpecularMips / SkyIblIntensity — see the CB declaration
+// in the including shader). Replaces the flat greyscale ambient that used to be the ENTIRE indirect term:
+// that had no specular at all, so metals (where the Cook-Torrance kD is 0) went black outside direct light,
+// and roughness had no influence on ambient whatsoever.
+
+// Karis' analytic environment BRDF ("Mobile" approximation from the UE4 course notes). Stands in for the
+// split-sum DFG lookup table, which saves shipping and binding a LUT texture; the error is well under the
+// precision this scene needs. Returns the (scale, bias) applied to F0.
+float2 EnvBRDFApprox( float NdotV, float roughness )
+{
+    const float4 c0 = float4( -1.0, -0.0275, -0.572, 0.022 );
+    const float4 c1 = float4( 1.0, 0.0425, 1.04, -0.04 );
+    float4 r = roughness * c0 + c1;
+    float a004 = min( r.x * r.x, exp2( -9.28 * NdotV ) ) * r.x + r.y;
+    return float2( -1.04, 1.04 ) * a004 + r.zw;
+}
+
+// Specular occlusion (Lagarde, "Moving Frostbite to PBR"). Applying the diffuse AO term directly to indirect
+// specular is wrong — it over-occludes glossy surfaces, whose reflection lobe is far narrower than the
+// hemisphere the AO was integrated over. This widens the effective occlusion as roughness grows.
+float ComputeSpecularOcclusion( float NdotV, float ao, float roughness )
+{
+    return saturate( pow( abs( NdotV + ao ), exp2( -16.0 * roughness - 1.0 ) ) - 1.0 + ao );
+}
+
+// Returns the full indirect term (diffuse + specular). `ao` is the combined diffuse occlusion
+// (vertex-light AO * material AO * SSAO); the caller has already folded those together.
+float3 EvaluateSkyIBL( float3 N, float3 V, float3 albedo, float roughness, float metallic, float ao )
+{
+    TextureCube irrTex  = ResourceDescriptorHeap[SkyIrradianceIndex];
+    TextureCube specTex = ResourceDescriptorHeap[SkySpecularIndex];
+
+    float  NdotV = saturate( dot( N, V ) );
+    float3 R = reflect( -V, N );
+    float  cm = saturate( metallic );
+    float  cr = saturate( roughness );
+    float3 F0 = lerp( float3( 0.04, 0.04, 0.04 ), albedo, cm );
+
+    // Diffuse: irradiance * albedo, with the metal/Fresnel energy removed exactly as the direct term does.
+    float3 kD = ( 1.0 - F0 ) * ( 1.0 - cm );
+    float3 irradiance = irrTex.SampleLevel( smp, N, 0 ).rgb;
+    float3 diffuse = irradiance * albedo * kD * ao;
+
+    // Specular: split-sum. Perceptual roughness maps to mip via sqrt so the sharp end of the chain gets the
+    // resolution it needs (a linear map spends too many mips on the mirror-like range nothing in Gothic uses).
+    float  mip = sqrt( cr ) * ( SkySpecularMips - 1.0 );
+    float3 prefiltered = specTex.SampleLevel( smp, R, mip ).rgb;
+    float2 ab = EnvBRDFApprox( NdotV, cr );
+    float3 specular = prefiltered * ( F0 * ab.x + ab.y ) * ComputeSpecularOcclusion( NdotV, ao, cr );
+
+    // SkyIblIntensity is NOT the raw user knob — UploadSkyIblConstants premultiplies it with the ambient
+    // strength and the radiance normalization, so this one factor is the complete ambient scale.
+    return ( diffuse + specular ) * SkyIblIntensity;
+}
+
 // Tangent-space normal-map support (ported from feat/pbr Toolbox.h). Both conventions below are the D3D11
 // path's (Shaders/Toolbox.h) verbatim — D3D12ShaderBackend injects the same two -D macros the D3D11
 // ShaderRegistry's normalmappingConfigurationBuilder does, so a normal map decodes identically on both
@@ -318,13 +375,26 @@ float3 ComputeSunLightingPBR( float3 wpos, float3 N, float3 albedo, float vertLi
     float shadowAO = lerp( 1.0, vertLighting, ShadowAOStrength ) * ao;
     float worldAO  = lerp( 1.0, vertLighting, WorldAOStrength ) * ao;
 
-    // Flat ambient floor — matches D3D11's reference formula (PS_DS_AtmosphericScattering.hlsl litPixel),
-    // which has no surface-normal/up-direction term at all. A prior hemispheric "skyAmbientDir" factor here
-    // (saturate(N.y*0.5+0.5)) zeroed this term for downward-facing normals and halved it for sideways ones —
-    // fine outdoors where a wall really does see less sky, but it also blacked out cave ceilings/walls and
-    // tree-canopy undersides (which face sideways/down and have no line of sight to the sun or a nearby point
-    // light) down to literal (0,0,0), where D3D11 keeps a flat ambient floor regardless of facing.
-    float3 ambientSun = albedo * AmbientStrength * sunLum * shadowAO * ssao;
+    // Indirect (ambient) term.
+    //
+    // The sky-IBL path is the real one: irradiance for diffuse, a prefiltered GGX chain for specular, so metals
+    // and roughness finally respond to ambient at all. It deliberately does NOT apply AmbientStrength: its
+    // whole scale (ShadowStrength, unhalved at night, x the radiance normalization x the SkyIblIntensity user
+    // knob) arrives premultiplied in SkyIblIntensity from UploadSkyIblConstants — see the comment there for
+    // why the night halving baked into AmbientStrength must not reach this branch.
+    //
+    // The `else` branch is the historic flat ambient floor — matched to D3D11's reference formula
+    // (PS_DS_AtmosphericScattering.hlsl litPixel), which has no surface-normal/up-direction term at all. It is
+    // still the fallback for indoor worlds, a failed/disabled IBL, and SkyIblIntensity == 0. Note that a prior
+    // attempt to add directionality HERE — a hemispheric saturate(N.y*0.5+0.5) factor — had to be reverted: it
+    // zeroed the term for downward-facing normals and halved it for sideways ones, blacking out cave
+    // ceilings/walls and tree-canopy undersides to literal (0,0,0). The IBL above is the correct fix for that,
+    // because its below-horizon hemisphere carries a real ground-bounce colour for those normals to catch.
+    float3 ambientSun;
+    if ( SkySpecularIndex != 0xFFFFFFFFu )
+        ambientSun = EvaluateSkyIBL( N, V, albedo, roughness, metallic, shadowAO * ssao );
+    else
+        ambientSun = albedo * AmbientStrength * sunLum * shadowAO * ssao;
 
     // Direct Sun term
     float sunAtten = sun * worldAO * SunIntensity;

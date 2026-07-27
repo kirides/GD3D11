@@ -2909,6 +2909,119 @@ bool D3D12PipelineState::CreateAO() {
     return true;
 }
 
+bool D3D12PipelineState::CreateSkyIbl() {
+    // Sky image-based lighting (Shaders/D3D12/SkyIbl.hlsl) — the indirect-light source that replaces the flat
+    // greyscale ambient in PBRLighting.hlsl's ComputeSunLightingPBR. Non-fatal: RenderSkyIBL() guards on every
+    // PSO below, and the lit shaders fall back to the old flat ambient whenever the cube indices are invalid.
+    ID3D12Device* device = m_Device->GetDevice();
+    if ( !device ) return false;
+
+    // s0: linear WRAP is wrong for cube faces (it would bleed across the seam); CLAMP is what cube sampling
+    // wants, and the hardware handles the cross-face filtering itself.
+    D3D12_STATIC_SAMPLER_DESC sampler = {};
+    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.MaxLOD = D3D12_FLOAT32_MAX;
+    sampler.ShaderRegister = 0;   // s0
+    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
+    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (SkyIbl)."; return false; }
+
+    D3D12_DESCRIPTOR_RANGE uavRange = {};
+    uavRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+    uavRange.NumDescriptors = 1;
+    uavRange.BaseShaderRegister = 0;   // u0 OutputCube
+    uavRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    // --- Radiance root sig: b0 20x32-bit SkyRadianceCB, u0 UAV table (no SRV — it is purely analytic) ---
+    {
+        D3D12_ROOT_PARAMETER params[2] = {};
+        params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        params[0].Constants.ShaderRegister = 0;   // b0 SkyRadianceCB
+        params[0].Constants.Num32BitValues = 20;
+        params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        params[1].DescriptorTable.NumDescriptorRanges = 1;
+        params[1].DescriptorTable.pDescriptorRanges = &uavRange;
+        params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+        D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+        rsDesc.NumParameters = _countof( params );
+        rsDesc.pParameters = params;
+
+        ComPtr<ID3DBlob> rsBlob, rsErr;
+        if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
+            if ( rsErr ) LogWarn() << "D3D12: SkyIbl radiance root sig error: " << static_cast<const char*>(rsErr->GetBufferPointer());
+            return false;
+        }
+        if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
+            IID_PPV_ARGS( SkyIbl.RadianceRootSig.ReleaseAndGetAddressOf() ) ) ) )
+            return false;
+    }
+
+    // --- Filter root sig (prefilter + irradiance): b1 4x32-bit PrefilterCB, t0 mip-0 SRV table, u0 UAV table ---
+    {
+        D3D12_DESCRIPTOR_RANGE srvRange = {};
+        srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+        srvRange.NumDescriptors = 1;
+        srvRange.BaseShaderRegister = 0;   // t0 TX_SkySource (mip-0-only cube view)
+        srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+        D3D12_ROOT_PARAMETER params[3] = {};
+        params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        params[0].Constants.ShaderRegister = 1;   // b1 PrefilterCB
+        params[0].Constants.Num32BitValues = 4;
+        params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        params[1].DescriptorTable.NumDescriptorRanges = 1;
+        params[1].DescriptorTable.pDescriptorRanges = &srvRange;
+        params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        params[2].DescriptorTable.NumDescriptorRanges = 1;
+        params[2].DescriptorTable.pDescriptorRanges = &uavRange;
+        params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+        D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+        rsDesc.NumParameters = _countof( params );
+        rsDesc.pParameters = params;
+        rsDesc.NumStaticSamplers = 1;
+        rsDesc.pStaticSamplers = &sampler;
+
+        ComPtr<ID3DBlob> rsBlob, rsErr;
+        if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
+            if ( rsErr ) LogWarn() << "D3D12: SkyIbl filter root sig error: " << static_cast<const char*>(rsErr->GetBufferPointer());
+            return false;
+        }
+        if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
+            IID_PPV_ARGS( SkyIbl.FilterRootSig.ReleaseAndGetAddressOf() ) ) ) )
+            return false;
+    }
+
+    if ( !m_Shaders->CompileFromFile( "SkyIbl.hlsl", "CSSkyRadiance", Shadermodel_CS, SkyIbl.RadianceCsBlob.ReleaseAndGetAddressOf() ) )
+        return false;
+    if ( !m_Shaders->CompileFromFile( "SkyIbl.hlsl", "CSPrefilter", Shadermodel_CS, SkyIbl.PrefilterCsBlob.ReleaseAndGetAddressOf() ) )
+        return false;
+    if ( !m_Shaders->CompileFromFile( "SkyIbl.hlsl", "CSIrradiance", Shadermodel_CS, SkyIbl.IrradianceCsBlob.ReleaseAndGetAddressOf() ) )
+        return false;
+
+    struct { ID3D12RootSignature* rs; ID3DBlob* cs; ID3D12PipelineState** pso; const char* name; } psos[] = {
+        { SkyIbl.RadianceRootSig.Get(), SkyIbl.RadianceCsBlob.Get(),   SkyIbl.RadiancePSO.ReleaseAndGetAddressOf(),   "SkyIbl radiance" },
+        { SkyIbl.FilterRootSig.Get(),   SkyIbl.PrefilterCsBlob.Get(),  SkyIbl.PrefilterPSO.ReleaseAndGetAddressOf(),  "SkyIbl prefilter" },
+        { SkyIbl.FilterRootSig.Get(),   SkyIbl.IrradianceCsBlob.Get(), SkyIbl.IrradiancePSO.ReleaseAndGetAddressOf(), "SkyIbl irradiance" },
+    };
+    for ( const auto& p : psos ) {
+        D3D12_COMPUTE_PIPELINE_STATE_DESC pd = {};
+        pd.pRootSignature = p.rs;
+        pd.CS = { p.cs->GetBufferPointer(), p.cs->GetBufferSize() };
+        if ( FAILED( device->CreateComputePipelineState( &pd, IID_PPV_ARGS( p.pso ) ) ) ) {
+            LogWarn() << "D3D12: CreateComputePipelineState failed (" << p.name << ").";
+            return false;
+        }
+    }
+    return true;
+}
+
 bool D3D12PipelineState::CreateFog() {
     // Height fog + god rays (plan item #5) — mirrors D3D11's PostFX composition (D3D11PfxRenderer::
     // RenderPostFXComposition + D3D11PFX_GodRays::RenderToTextureCS). Non-fatal on failure:

@@ -238,6 +238,13 @@ XRESULT D3D12GraphicsEngine::Init() {
         // leaves the AO mask at white (no occlusion) if this failed.
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the SSAO pipeline (screen-space AO will be unavailable).";
     }
+    if ( !m_Pipelines.CreateSkyIbl() ) {
+        // Non-fatal: the lit shaders test the sky-IBL cube indices for 0xFFFFFFFF and fall back to the flat
+        // ambient term they used before this existed, so a failure here costs indirect specular, not lighting.
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the sky-IBL pipeline (falling back to flat ambient).";
+    } else if ( !CreateSkyIblResources() ) {
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the sky-IBL cubemaps (falling back to flat ambient).";
+    }
     if ( !m_Pipelines.CreateFog() ) {
         // Non-fatal: the height-fog/god-ray composition is opt-in (RendererSettings.DrawFog / EnableGodRays)
         // and outdoor-only. RenderFogAndGodRays() guards on the PSOs; EvaluateHeightFogActive() additionally
@@ -718,7 +725,7 @@ bool D3D12GraphicsEngine::CreateWhiteTexture() {
 	}
 
 	CreateTexture( m_DefaultOrmTexture );
-	const uint32_t orm = 0xFF00D9FFu;
+	const uint32_t orm = 0xFF00E6FFu;
 	if ( XR_SUCCESS != m_DefaultOrmTexture->Init( INT2( 1, 1 ), GfxTexture::ETextureFormat::TF_R8G8B8A8, 1, &orm, "DefaultOrmTexture(1,0.9,0)" ) ) {
 		return false;
 	}

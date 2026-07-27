@@ -3426,6 +3426,11 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// pre-lighting in Forward+) and writes the blurred AO mask the lit passes below sample bindlessly via
 	// m_ActiveAOMaskSrvSlot. No-op (mask stays white) when AoMode == AO_NONE or resources are unavailable.
 	RenderSSAO();
+	// Sky image-based lighting: rebuilds the indirect-light cubes (specular chain + irradiance) when Gothic's
+	// sky state has moved, and publishes their bindless indices into the shadow CB the lit passes bind. Must
+	// run after RenderSunShadows (it reads m_SunDirWS) and before the lit passes below. No-op on an unchanged
+	// sky; the shaders fall back to the old flat ambient whenever the indices are the 0xFFFFFFFF sentinel.
+	RenderSkyIBL();
     {
         DX_ZONE( m_CmdList, "Lit Geometry Pass" );
 	    DrawWorldMesh();
