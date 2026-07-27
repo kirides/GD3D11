@@ -62,6 +62,11 @@ namespace {
     // Purely a unit conversion — retune only if the sky-colour sources below change.
     constexpr float kSkyIblNormalize = 3.0f;
 
+    // Fraction of Gothic's polyColor taken as the terrain's average ALBEDO for the ground-bounce term. polyColor
+    // is near-white by day (it is an ambient TINT, not a reflectance), and real ground — grass, dirt, rock — sits
+    // around 0.2-0.35. Applied in LINEAR space, unlike the pre-decode 0.35 this replaces.
+    constexpr float kGroundAlbedo = 0.35f;
+
     // Moonlight floor, in LINEAR radiance, scaled by RendererSettings.SkyIblNightFloor (which IS the green
     // channel; R and B follow this fixed blue-weighted ratio so the floor reads as moonlight rather than as a
     // grey underexposure). Applied per-channel as a max, so it is inert during the day and only lifts the night
@@ -236,39 +241,9 @@ void D3D12GraphicsEngine::RenderSkyIBL() {
     if ( oCGame::GetGame() && oCGame::GetGame()->_zCSession_world )
         sc = oCGame::GetGame()->_zCSession_world->GetSkyControllerOutdoor();
 
-    XMFLOAT3 horizon = fogColor;
-    XMFLOAT3 zenith = XMFLOAT3( fogColor.x * 0.55f, fogColor.y * 0.75f, fogColor.z * 1.0f );  // blue-shifted fallback
-    XMFLOAT3 ground = Scale3( fogColor, 0.35f );
-    if ( zCSkyState* ms = sc ? sc->GetMasterState() : nullptr ) {
-        // zCSkyState colours are 0..255. Field roles are confirmed against ZenGin's own zCSkyState presets:
-        //   domeColor1 = UPPER dome (zenith)   — e.g. (55,55,155) at night, (255,255,255) at dawn.
-        //   domeColor0 = LOWER dome (horizon)  — every preset ends with `domeColor0 = fogColor`, so fogColor
-        //                                        and domeColor0 are the same value and either may be read.
-        //   polyColor  = the tint Gothic applies to WORLD POLYGONS — its own ambient-light colour, and much
-        //                brighter than the sky it sits under at night (40,60,210). Used, scaled down, as the
-        //                below-horizon bounce: it is the closest thing Gothic has to an average terrain albedo.
-        horizon = Scale3( ms->FogColor, 1.0f / 255.0f );
-        zenith = Scale3( ms->DomeColor1, 1.0f / 255.0f );
-        ground = Scale3( ms->PolyColor, 1.0f / 255.0f * 0.35f );
-        // Guard, not an expected path: no stock preset leaves domeColor1 black (the darkest is the night
-        // (55,55,155)), but a mod's sky definition could, and a zero upper hemisphere would darken every
-        // up-facing surface in the world.
-        if ( zenith.x + zenith.y + zenith.z < 0.01f )
-            zenith = XMFLOAT3( horizon.x * 0.55f, horizon.y * 0.75f, horizon.z );
-    }
-
-    // Linearize, then floor at moonlight. The floor is applied AFTER the sRGB decode because it is specified in
-    // linear radiance (see kNightFloorTint) — flooring the gamma-encoded value would lift daytime colours too.
-    const float nightFloor = ( std::max )( set.SkyIblNightFloor, 0.0f );
-    const XMFLOAT3 floorCol = Scale3( kNightFloorTint, nightFloor );
-    p.Horizon = MaxFloor3( SrgbToLinear3( horizon ), floorCol );
-    p.Zenith = MaxFloor3( SrgbToLinear3( zenith ), floorCol );
-    // The ground bounce stays below the sky it is bouncing: a floor as bright as the horizon's would make
-    // downward-facing normals read as lit from underneath on a dark night.
-    p.Ground = MaxFloor3( SrgbToLinear3( ground ), Scale3( floorCol, 0.5f ) );
-
     // Sun: the same values RenderSunShadows feeds the direct term, so the IBL's sun lobe and the direct
-    // highlight agree about where the sun is and how bright it is.
+    // highlight agree about where the sun is and how bright it is. Resolved BEFORE the sky colours because the
+    // ground bounce below is a function of the sun.
     const float3 lp = Engine::GAPI->GetSky()->GetAtmosphereCB().AC_LightPos;
     const bool sunUp = ( lp.y > 0.0f );
     const float rain = Engine::GAPI->GetRainFXWeight();
@@ -278,6 +253,72 @@ void D3D12GraphicsEngine::RenderSkyIBL() {
     p.SunDir = m_SunDirWS;
     p.SunColor = SrgbToLinear3( XMFLOAT3( set.SunLightColor.x, set.SunLightColor.y, set.SunLightColor.z ) );
     p.SunIntensity = sunUp ? sunStrength : 0.0f;
+
+    // Gamma-encoded 0..1 sources. NOTHING is scaled here: every tint/fraction below is applied AFTER the sRGB
+    // decode, because a factor applied to a gamma-encoded value lands as roughly its 2.2nd power in linear light
+    // (a "35% bounce" written pre-decode is really a 10% one — that was the original cause of the near-black
+    // downward-facing surfaces this path produced in bright daylight).
+    XMFLOAT3 horizonSrgb = fogColor;
+    XMFLOAT3 groundSrgb = fogColor;
+    XMFLOAT3 zenithSrgb = fogColor;
+    bool haveZenith = false;
+    if ( zCSkyState* ms = sc ? sc->GetMasterState() : nullptr ) {
+        // zCSkyState colours are 0..255. Field roles are confirmed against ZenGin's own zCSkyState presets:
+        //   domeColor1 = UPPER dome (zenith)   — e.g. (55,55,155) at night, (255,255,255) at dawn.
+        //   domeColor0 = LOWER dome (horizon)  — every preset ends with `domeColor0 = fogColor`, so fogColor
+        //                                        and domeColor0 are the same value and either may be read.
+        //   polyColor  = the tint Gothic applies to WORLD POLYGONS — its own ambient-light colour, and the
+        //                closest thing the game data has to an average terrain ALBEDO (which is how it is used
+        //                below: as a reflectance, not as a radiance).
+        horizonSrgb = Scale3( ms->FogColor, 1.0f / 255.0f );
+        zenithSrgb = Scale3( ms->DomeColor1, 1.0f / 255.0f );
+        groundSrgb = Scale3( ms->PolyColor, 1.0f / 255.0f );
+        // Guard, not an expected path: no stock preset leaves domeColor1 black (the darkest is the night
+        // (55,55,155)), but a mod's sky definition could, and a zero upper hemisphere would darken every
+        // up-facing surface in the world.
+        haveZenith = ( zenithSrgb.x + zenithSrgb.y + zenithSrgb.z >= 0.01f );
+    }
+
+    const XMFLOAT3 horizonLin = SrgbToLinear3( horizonSrgb );
+    const XMFLOAT3 zenithLin = haveZenith
+        ? SrgbToLinear3( zenithSrgb )
+        : XMFLOAT3( horizonLin.x * 0.55f, horizonLin.y * 0.75f, horizonLin.z );   // blue-shifted fallback
+
+    // --- Ground bounce ------------------------------------------------------------------------------------
+    // The below-horizon hemisphere is what every downward- and sideways-facing normal integrates: cave
+    // ceilings, the underside of a rock overhang, and — the visible one — the drooping leaf cards of a tree
+    // canopy, whose geometric normals point down and sideways far more often than up.
+    //
+    // Deriving it from polyColor ALONE (as this used to) is wrong by construction: polyColor is a reflectance,
+    // so treating it as radiance means the ground bounce never brightens when the sun comes up. At noon the
+    // terrain is the second-brightest thing in the scene, yet the probe's lower hemisphere stayed at a dim
+    // fraction of an ambient tint, and any surface facing it went nearly black under a blazing sky.
+    //
+    // So bounce it properly: albedo x the irradiance actually landing on the terrain. Sky irradiance is
+    // pi * (the mean sky radiance over the ground's upward hemisphere), and the sun contributes
+    // sunColor * intensity * N.L for a horizontal N (i.e. the sun's height). Dividing that sum by pi converts
+    // the Lambertian exitance back to the RADIANCE units this cube stores.
+    const XMFLOAT3 skyMeanLin = Scale3( XMFLOAT3( horizonLin.x + zenithLin.x,
+                                                  horizonLin.y + zenithLin.y,
+                                                  horizonLin.z + zenithLin.z ), 0.5f );
+    const float sunOnGround = p.SunIntensity * std::clamp( p.SunDir.y, 0.0f, 1.0f ) * ( 1.0f / 3.14159265f );
+    const XMFLOAT3 groundAlbedo = Scale3( SrgbToLinear3( groundSrgb ), kGroundAlbedo );
+    const XMFLOAT3 groundLin = XMFLOAT3(
+        groundAlbedo.x * ( skyMeanLin.x + p.SunColor.x * sunOnGround ),
+        groundAlbedo.y * ( skyMeanLin.y + p.SunColor.y * sunOnGround ),
+        groundAlbedo.z * ( skyMeanLin.z + p.SunColor.z * sunOnGround ) );
+
+    // Floor at moonlight. The floor is specified in linear radiance (see kNightFloorTint), which is why it is
+    // applied here rather than to the gamma-encoded sources — flooring those would lift daytime colours too.
+    const float nightFloor = ( std::max )( set.SkyIblNightFloor, 0.0f );
+    const XMFLOAT3 floorCol = Scale3( kNightFloorTint, nightFloor );
+    p.Horizon = MaxFloor3( horizonLin, floorCol );
+    p.Zenith = MaxFloor3( zenithLin, floorCol );
+    // The ground bounce stays below the sky it is bouncing: a floor as bright as the horizon's would make
+    // downward-facing normals read as lit from underneath on a dark night. It carries the whole night-time
+    // lower hemisphere on its own, because the product above collapses to ~0 once the sun sets (a dim sky
+    // bouncing off a dim albedo is doubly dim — correct physically, useless for a game Gothic never lit that way).
+    p.Ground = MaxFloor3( groundLin, Scale3( floorCol, 0.5f ) );
 
     // --- Dirty check --------------------------------------------------------------------------------------
     // Colours move continuously through Gothic's day cycle, so an exact compare would rebuild every frame. The
