@@ -134,3 +134,45 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
     rgb = lerp( rgb, SrgbToLinear( FogColor ), f );
     return float4( rgb, 1.0 );
 }
+
+// =====================================================================================================
+// Alpha-blended world mesh (ice, glass, magic barriers) — the port of D3D11's DrawMeshInfoListAlphablended.
+//
+// These surfaces are deliberately NOT lit, on either backend: D3D11 routes any material whose alpha func is
+// BLEND/ADD to PS_Simple_FF (see D3D11ForwardPlusRenderer/D3D11DeferredRenderer::BindShaderForTexture — the
+// Forward+ renderer explicitly bounces them to the deferred fallback shaders), which is just
+//     color = texture * vertexDiffuse * FF textureFactor
+// with the blend mode coming from the material's alpha func and depth-write off. `TextureFactor` is the
+// per-material tint the CPU computes: the material color when its alpha < 255 (that IS the ice/glass
+// translucency), or the env-map strength ramped by sun height for env-mapped materials.
+// =====================================================================================================
+cbuffer TransparencyCB : register(b5) { float4 TextureFactor; };
+
+struct VST_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; float4 col : TEXCOORD1; };
+
+// Shares VS_IN + the world input layout with VSMain; NORMAL is simply not read. This ONE blob feeds both
+// the blended color PSO and the depth-fill PSO that follows it — same rule as the water Z-prepass: a
+// depth-read-only color pass must share the VS *blob* with the pass that wrote that depth, or the two
+// disagree by an ULP on coplanar surfaces and shimmer.
+VST_OUT VSTransparent( VS_IN i )
+{
+    VST_OUT o;
+    o.clip = mul( float4( i.pos, 1.0 ), ViewProj );
+    o.uv = i.uv;
+    o.col = i.col;
+    return o;
+}
+
+float4 PSTransparent( VST_OUT i ) : SV_TARGET
+{
+    Texture2D difTex = ResourceDescriptorHeap[MatDiffuseIndex];
+    float4 c = difTex.Sample( smp, i.uv );
+    // Gothic's vertex color is a BGRA DWORD read through an R8G8B8A8 view — recover RGBA (CLAUDE.md).
+    // (D3D11's PS_Simple multiplies it unswizzled, i.e. with R/B transposed; that is a latent bug there,
+    // not something to reproduce.)
+    c *= i.col.bgra;
+    c *= TextureFactor;
+    // The scene target is linear HDR on D3D12, so the sampled sRGB texel has to be linearized like every
+    // other albedo read; the alpha rides through untouched for the blend.
+    return float4( SrgbToLinear( c.rgb ), c.a );
+}

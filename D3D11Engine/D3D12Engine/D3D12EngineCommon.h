@@ -19,6 +19,18 @@ struct MeshInfo;
 // filled at build time and cleared by the water pass. Defined in D3D12Water.cpp.
 extern std::unordered_map<zCTexture*, std::vector<MeshInfo*>> g_FrameWaterSurfaces;
 
+// Alpha-blended world-mesh surfaces (ice, glass, magic barriers) peeled out of the opaque world pass by
+// BuildWorldDrawCommands (D3D12Scene.cpp) and drawn back-to-front by DrawWorldTransparencyMeshes
+// (D3D12Transparency.cpp), which also owns the definition. Mirrors D3D11's FrameTransparencyMeshes.
+// Same single-threaded per-frame lifetime as g_FrameWaterSurfaces above.
+class zCMaterial;
+struct WorldTransparencyMesh {
+    zCMaterial* Material;
+    MeshInfo*   Mesh;
+    float       DistanceSq;   // camera -> mesh/section bbox center; sorted DESCENDING (far first)
+};
+extern std::vector<WorldTransparencyMesh> g_FrameWorldTransparency;
+
 // Upload-heap type used by every persistently-mapped ring / staging allocation. A single knob (kept
 // as an inline variable so all split TUs see the same value); the GPU_UPLOAD path is future work.
 inline D3D12_HEAP_TYPE DefaultUploadHeapType = D3D12_HEAP_TYPE_UPLOAD;

@@ -113,6 +113,13 @@ XRESULT D3D12GraphicsEngine::Init() {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the world ExecuteIndirect resources.";
         return XR_FAILED;
     }
+    if ( !m_Pipelines.CreateWorldTransparency() ) {
+        // Non-fatal: DrawWorldTransparencyMeshes early-outs on a missing root sig, which leaves the peeled
+        // alpha-blended world surfaces (ice/glass) simply undrawn — the same as before this pass existed,
+        // minus their opaque stand-in. Everything else keeps rendering.
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the alpha-blended world-mesh pipeline "
+                     "(ice/glass surfaces will not be drawn).";
+    }
     if ( !m_Pipelines.CreateLightCull() ) {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the light-culling compute pipeline.";
         return XR_FAILED;

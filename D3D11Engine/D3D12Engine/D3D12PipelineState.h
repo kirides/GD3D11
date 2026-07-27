@@ -269,6 +269,21 @@ public:
         Microsoft::WRL::ComPtr<ID3D12PipelineState> ScreenPSO;
     };
 
+    // Alpha-blended world-mesh surfaces (ice, glass, magic barriers) peeled out of the opaque world pass —
+    // the port of D3D11's DrawMeshInfoListAlphablended. Own (small) root sig so the shared World.RootSig's
+    // root-DWORD budget and its ExecuteIndirect command signatures stay untouched: b0 ViewProj, b5 the
+    // per-material FF texture factor, b6 the bindless material indices (only MatDiffuseIndex is read).
+    // One VS/PS pair; the blend PSOs are built per Gothic blend mode on demand (like Decal/Particle), and
+    // DepthFillPSO is the color-masked depth-only re-draw D3D11 issues after the blended list so the
+    // depth-reading post passes (height fog, god rays) see these surfaces.
+    struct WorldTransparencyPipeline {
+        Microsoft::WRL::ComPtr<ID3D12RootSignature> RootSig;
+        Microsoft::WRL::ComPtr<ID3DBlob>            VsBlob;   // VSTransparent — shared by every PSO below
+        Microsoft::WRL::ComPtr<ID3DBlob>            PsBlob;   // PSTransparent
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthFillPSO;
+        std::unordered_map<uint32_t, Microsoft::WRL::ComPtr<ID3D12PipelineState>> BlendPipelines; // key = BlendKey | depthWrite<<31
+    };
+
     // Stores non-owning device + shader-backend pointers; call once before any Create*().
     bool Init( D3D12Device* device, D3D12ShaderBackend* shaders );
 
@@ -301,6 +316,7 @@ public:
     bool CreateRainDraw();    // rain/snow billboard draw (b0 ViewProj, b1 particle info, t0/t1 root SRVs, no IA)
     bool CreateCull();        // Hi-Z build + GPU VOB cull/compact + indirect-arg patch compute pipelines
     bool CreateLines();       // debug/editor line lists (world-space depth-tested + screen-space xyzrhw)
+    bool CreateWorldTransparency(); // alpha-blended world-mesh surfaces (own root sig; warms the alpha + depth-fill PSOs)
 
     // --- On-demand PSO cache lookups (called from the engine's draw path; create+cache on miss) ---
     // cullMode/frontCCW/rtvIsHdr/forceMaxZ default to the plain 2D/UI case (cull-none, clockwise-front,
@@ -312,6 +328,9 @@ public:
         D3D12_CULL_MODE cullMode = D3D12_CULL_MODE_NONE, bool rtvIsHdr = false, bool forceMaxZ = false, bool frontCCW = false );
     ID3D12PipelineState* GetOrCreateParticlePipeline( const GothicBlendStateInfo& blend );
     ID3D12PipelineState* GetOrCreateDecalBlendPipeline( const GothicBlendStateInfo& blend );
+    // Alpha-blended world mesh. depthWrite mirrors D3D11's state machine: the list starts from
+    // SetDefaultStates() (depth-write ON, blending off) and every alpha-func change turns depth-write off.
+    ID3D12PipelineState* GetOrCreateWorldTransparencyPipeline( const GothicBlendStateInfo& blend, bool depthWrite );
 
     // --- Storage (one per migrated pass) ---
     WorldPipeline       World;
@@ -339,6 +358,7 @@ public:
     GraphicsPipeline RainDraw;      // rain/snow billboard draw (Shaders/D3D12/Rain.hlsl)
     CullPipeline     Cull;          // Hi-Z build + GPU VOB cull (Shaders/D3D12/HiZ.hlsl + VobCull.hlsl)
     LinePipeline     Lines;         // debug/editor line lists (Shaders/D3D12/Lines.hlsl)
+    WorldTransparencyPipeline WorldTransparency;  // alpha-blended world surfaces (Shaders/D3D12/World.hlsl VSTransparent/PSTransparent)
 
 private:
     D3D12Device*        m_Device = nullptr;

@@ -3456,6 +3456,12 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// Water: alpha-blended over the finished opaque scene (world + NPCs + VOBs + opaque decals).
 	DrawWaterSurfaces();
 
+	// Alpha-blended world-mesh surfaces (ice, glass, magic barriers) peeled out of the opaque command set by
+	// BuildWorldDrawCommands: blended back-to-front over the finished scene, then re-laid into depth so the
+	// height fog/god rays see them. Same slot D3D11 draws FrameTransparencyMeshes in (right after water,
+	// before the transparent decals). See D3D12Transparency.cpp.
+	DrawWorldTransparencyMeshes();
+
 	{
 		DX_ZONE( m_CmdList, "Draw decals (transparent)" );
 		DrawDecalList( decals, false );
@@ -3698,6 +3704,7 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
     m_WorldDrawCount = 0;
     m_WorldDrawnIndices = 0;
     g_FrameWaterSurfaces.clear();
+    g_FrameWorldTransparency.clear();
     if ( !m_FrameOpen || !m_WorldIndirectCmdSig || !m_WorldDrawArgsPtr[m_FrameIndex] ) return;
 
     MeshInfo* wm = Engine::GAPI->GetWrappedWorldMesh();
@@ -3713,6 +3720,9 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
 
     WorldDrawCommand* cmds = reinterpret_cast<WorldDrawCommand*>( m_WorldDrawArgsPtr[m_FrameIndex] );
     UINT count = 0;
+
+    // Camera position for the alpha-blended peel's painter-order sort key (see the branch below).
+    const XMVECTOR transparencyCamPos = Engine::GAPI->GetCameraPositionXM();
     
     Frustum playerFrustum = Frustum::AlwaysContainingFrustum();
     if ( auto cam = (zCCamera*)oCGame::GetGame()->_zCSession_camera ) {
@@ -3742,6 +3752,25 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
                     // don't draw portal meshes
                     continue;
                 }
+            }
+
+            // Alpha-blended materials (ice, glass, magic barriers) are peeled out of the opaque set the same
+            // way water is — they need the material's own blend mode, back-to-front order and no depth write,
+            // which one ExecuteIndirect over the opaque PSO cannot express. Mirrors D3D11's DrawWorldMesh
+            // "Check for alphablending" branch feeding FrameTransparencyMeshes; drawn by
+            // DrawWorldTransparencyMeshes (D3D12Transparency.cpp). Peeled from the DEPTH PREPASS too (both
+            // passes share this command set) — same as D3D11, whose prepass `isSkipped` filter drops them.
+            if ( IsWorldMeshAlphaBlended( meshKey.Material ) ) {
+                // Sort key: distance to the mesh's own bbox center, falling back to the section's
+                // (ComputeWorldMeshDistanceSqFromCamera in D3D11GraphicsEngine.cpp).
+                const zTBBox3D* bounds = mesh->HasBoundingBox ? &mesh->BoundingBox : &section->BoundingBox;
+                const XMFLOAT3 center( ( bounds->Min.x + bounds->Max.x ) * 0.5f,
+                                       ( bounds->Min.y + bounds->Max.y ) * 0.5f,
+                                       ( bounds->Min.z + bounds->Max.z ) * 0.5f );
+                float distanceSq = 0.0f;
+                XMStoreFloat( &distanceSq, XMVector3LengthSq( XMLoadFloat3( &center ) - transparencyCamPos ) );
+                g_FrameWorldTransparency.push_back( { meshKey.Material, mesh, distanceSq } );
+                continue;
             }
             if ( count >= kMaxWorldDrawCommands ) {
                 if ( !m_WorldDrawArgsOverflowLogged ) {
@@ -3799,6 +3828,8 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
         }
     }
     m_WorldDrawCount = count;
+    // Painter's order for the peeled alpha-blended surfaces (far -> near), once per frame.
+    SortWorldTransparencyMeshes();
 }
 
 

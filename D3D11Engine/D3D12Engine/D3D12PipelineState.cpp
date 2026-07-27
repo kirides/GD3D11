@@ -275,6 +275,152 @@ bool D3D12PipelineState::CreateWorld() {
     return true;
 }
 
+bool D3D12PipelineState::CreateWorldTransparency() {
+    // Alpha-blended world-mesh surfaces (ice, glass, magic barriers) — port of D3D11's
+    // DrawMeshInfoListAlphablended. These are NOT lit on either backend (D3D11 routes BLEND/ADD materials to
+    // PS_Simple_FF), so this pipeline needs none of the Forward+ light/shadow/AO bindings the World root sig
+    // carries. It gets its OWN small root sig rather than a 14th World.RootSig parameter, which keeps that
+    // signature's root-DWORD budget (56 of 64 used) and its two ExecuteIndirect command signatures untouched.
+    //   b0 = ViewProj (16 consts, VS) — same value DrawWorldMesh uploads
+    //   b5 = TextureFactor (4 consts, PS) — the per-material FF tint (material color / env-map strength)
+    //   b6 = MaterialCB (4 consts, PS) — reuses World.hlsl's declaration; only MatDiffuseIndex is read
+    // Register numbers match World.hlsl's existing file-scope cbuffers, so the shared VS_IN / includes there
+    // need no renumbering for these two extra entry points.
+    ID3D12Device* device = m_Device->GetDevice();
+
+    D3D12_ROOT_PARAMETER params[3] = {};
+    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[0].Constants.ShaderRegister = 0;   // b0 ViewProj
+    params[0].Constants.Num32BitValues = 16;
+    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[1].Constants.ShaderRegister = 5;   // b5 TransparencyCB { float4 TextureFactor }
+    params[1].Constants.Num32BitValues = 4;
+    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[2].Constants.ShaderRegister = 6;   // b6 MaterialCB { normal, orm, diffuse, normalStrength }
+    params[2].Constants.Num32BitValues = 4;
+    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    // s0 diffuse: same 16x anisotropic wrap sampler the opaque world pass uses.
+    D3D12_STATIC_SAMPLER_DESC sampler = {};
+    sampler.Filter = D3D12_FILTER_ANISOTROPIC;
+    sampler.MaxAnisotropy = 16;
+    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler.MaxLOD = D3D12_FLOAT32_MAX;
+    sampler.ShaderRegister = 0;   // s0
+    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+    rsDesc.NumParameters = _countof( params );
+    rsDesc.pParameters = params;
+    rsDesc.NumStaticSamplers = 1;
+    rsDesc.pStaticSamplers = &sampler;
+    // The diffuse texture is fetched bindlessly (ResourceDescriptorHeap[MatDiffuseIndex]), like the opaque
+    // world pass — no per-material descriptor table.
+    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+                 | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
+
+    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
+    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (world transparency)."; return false; }
+
+    ComPtr<ID3DBlob> rsBlob, rsErr;
+    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
+        if ( rsErr ) LogWarn() << "D3D12: world transparency root signature serialize error: " << static_cast<const char*>(rsErr->GetBufferPointer());
+        return false;
+    }
+    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
+        IID_PPV_ARGS( WorldTransparency.RootSig.ReleaseAndGetAddressOf() ) ) ) )
+        return false;
+
+    if ( !m_Shaders->CompileFromFile( "World.hlsl", "VSTransparent", Shadermodel_VS, WorldTransparency.VsBlob.ReleaseAndGetAddressOf() ) ) {
+        return false;
+    }
+    if ( !m_Shaders->CompileFromFile( "World.hlsl", "PSTransparent", Shadermodel_PS, WorldTransparency.PsBlob.ReleaseAndGetAddressOf() ) ) {
+        return false;
+    }
+
+    // Warm the two states every transparent world frame needs: plain alpha blending (by far the most common
+    // Gothic alpha func on these materials) and the depth-fill re-draw.
+    GothicBlendStateInfo alpha;
+    alpha.SetAlphaBlending();
+    if ( !GetOrCreateWorldTransparencyPipeline( alpha, false ) ) {
+        LogWarn() << "D3D12: failed to create the default world-transparency blend pipeline.";
+        return false;
+    }
+
+    GothicBlendStateInfo depthOnly;
+    depthOnly.SetDefault();
+    depthOnly.ColorWritesEnabled = false;   // D3D11's second loop: color writes off, depth-write back on
+    WorldTransparency.DepthFillPSO = GetOrCreateWorldTransparencyPipeline( depthOnly, true );
+    if ( !WorldTransparency.DepthFillPSO ) {
+        LogWarn() << "D3D12: failed to create the world-transparency depth-fill pipeline.";
+        return false;
+    }
+    return true;
+}
+
+ID3D12PipelineState* D3D12PipelineState::GetOrCreateWorldTransparencyPipeline( const GothicBlendStateInfo& blend, bool depthWrite ) {
+    // BlendKey occupies bits 0..28, so the depth-write flag rides the top bit.
+    const uint32_t key = BlendKey( blend ) | (depthWrite ? (1u << 31) : 0u);
+    auto it = WorldTransparency.BlendPipelines.find( key );
+    if ( it != WorldTransparency.BlendPipelines.end() ) return it->second.Get();
+    if ( !WorldTransparency.RootSig || !WorldTransparency.VsBlob || !WorldTransparency.PsBlob ) return nullptr;
+
+    // Same packed 36-byte world vertex the opaque pass consumes; VSTransparent just doesn't read NORMAL.
+    // (Kept as a superset of what the VS declares so the color and depth-fill PSOs are byte-identical apart
+    // from blend/depth state — see the water Z-prepass lesson about ULP-divergent depth.)
+    const D3D12_INPUT_ELEMENT_DESC layout[] = {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "NORMAL",   0, DXGI_FORMAT_R16G16_SNORM,    0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "DIFFUSE",  0, DXGI_FORMAT_R8G8B8A8_UNORM,  0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    };
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+    pso.pRootSignature = WorldTransparency.RootSig.Get();
+    pso.VS = { WorldTransparency.VsBlob->GetBufferPointer(), WorldTransparency.VsBlob->GetBufferSize() };
+    pso.PS = { WorldTransparency.PsBlob->GetBufferPointer(), WorldTransparency.PsBlob->GetBufferSize() };
+    pso.InputLayout = { layout, _countof( layout ) };
+    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pso.NumRenderTargets = 1;
+    pso.RTVFormats[0] = kSceneColorFormat;
+    pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+    pso.SampleDesc.Count = 1;
+    pso.SampleMask = UINT_MAX;
+    pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    // CULL_BACK: D3D11's pass explicitly forces CM_CULL_BACK before DrawMeshInfoListAlphablended.
+    pso.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
+    pso.RasterizerState.DepthClipEnable = TRUE;
+
+    // Gothic blend enums are laid out for D3D11, whose _BLEND/_OP values equal D3D12's — cast directly.
+    D3D12_RENDER_TARGET_BLEND_DESC& rt = pso.BlendState.RenderTarget[0];
+    rt.BlendEnable = blend.BlendEnabled ? TRUE : FALSE;
+    rt.SrcBlend = static_cast<D3D12_BLEND>(blend.SrcBlend);
+    rt.DestBlend = static_cast<D3D12_BLEND>(blend.DestBlend);
+    rt.BlendOp = static_cast<D3D12_BLEND_OP>(blend.BlendOp);
+    rt.SrcBlendAlpha = static_cast<D3D12_BLEND>(blend.SrcBlendAlpha);
+    rt.DestBlendAlpha = static_cast<D3D12_BLEND>(blend.DestBlendAlpha);
+    rt.BlendOpAlpha = static_cast<D3D12_BLEND_OP>(blend.BlendOpAlpha);
+    rt.RenderTargetWriteMask = blend.ColorWritesEnabled ? D3D12_COLOR_WRITE_ENABLE_ALL : 0;
+
+    // Reversed-Z, tested against the finished opaque scene. Depth-write follows D3D11's state machine:
+    // on until the first alpha-func switch turns it off, then on again for the trailing depth-fill loop.
+    pso.DepthStencilState.DepthEnable = TRUE;
+    pso.DepthStencilState.DepthWriteMask = depthWrite ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO;
+    pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
+    pso.DepthStencilState.StencilEnable = FALSE;
+
+    ComPtr<ID3D12PipelineState> state;
+    if ( FAILED( m_Device->GetDevice()->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( state.GetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateGraphicsPipelineState failed for world-transparency key 0x" << std::hex << key << ".";
+        return nullptr;
+    }
+    ID3D12PipelineState* raw = state.Get();
+    WorldTransparency.BlendPipelines.emplace( key, std::move( state ) );
+    return raw;
+}
+
 bool D3D12PipelineState::CreatePreview() {
     // Single-VOB inventory-item preview (GInventory::DrawVobSingle): drawn straight onto the swapchain
     // backbuffer + its depth buffer from Gothic's own UI-phase zCWorld::Render hook, not through the

@@ -482,6 +482,14 @@ private:
     bool CreateWorldIndirect();                      // command signature + per-frame arg ring (once, at init)
     void BuildWorldDrawCommands();                   // collect visible sections + fill arg ring (once/frame, pre-prepass)
 
+    // ---- Alpha-blended world-mesh surfaces (D3D12Transparency.cpp) — port of D3D11's
+    // DrawMeshInfoListAlphablended. BuildWorldDrawCommands peels these out of the opaque command set into
+    // g_FrameWorldTransparency (D3D12EngineCommon.h) and sorts them back-to-front; the pass draws them with
+    // the material's own blend mode after the opaque scene + water, then re-lays their depth for the fog.
+    static bool IsWorldMeshAlphaBlended( zCMaterial* mat );   // "does this material belong in that list?"
+    void SortWorldTransparencyMeshes();                       // painter's order (far -> near), once per frame
+    void DrawWorldTransparencyMeshes();                       // the pass itself (drains the list)
+
     // ---- GPU-driven instanced VOBs (P2.12): ExecuteIndirect + bindless diffuse. Unlike the world mesh (one
     // shared VB/IB, so a command only carries material indices + DrawIndexed), every VOB visual/mesh has its OWN
     // vertex/index buffer and its own per-instance stream — so each command ALSO sets the two vertex-buffer views
