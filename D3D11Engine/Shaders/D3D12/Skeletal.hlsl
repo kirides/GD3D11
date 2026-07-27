@@ -37,7 +37,8 @@ Texture2DArray          ShadowMap : register(t4);
 SamplerComparisonState  shadowCmp : register(s2);
 // Per-material bindless indices (root consts b6): SM6.6 ResourceDescriptorHeap[...] indices for this material's
 // normal + ORM maps. MatNormalIndex == 0xFFFFFFFF -> no normal map (skip perturb); MatOrmIndex is always valid
-// (the 1x1 default ORM = AO 1 / rough 0.5 / metal 0 when the material has no _FX map), so ORM is sampled branchlessly.
+// (the 1x1 default ORM = AO 1 / rough 0.5 / metal 0 when the material has no _FX map); its top 2 bits pack the
+// FxMap's channel layout for SampleOrm() to decode (see PBRLighting.hlsl).
 cbuffer MaterialCB : register(b6) { uint MatNormalIndex; uint MatOrmIndex; };
 TextureCubeArray        PointShadowCubes : register(t5);   // point-light shadow cubes (P2.10d), R16 linear depth
 // Simple-SSAO mask (bindless, set once per frame — see D3D12GraphicsEngine::RenderSSAO/m_ActiveAOMaskSrvSlot).
@@ -101,8 +102,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
         Texture2D nrmTex = ResourceDescriptorHeap[MatNormalIndex];
         N = PerturbNormal( N, i.wpos, nrmTex, i.uv, smp );
     }
-    Texture2D ormTex = ResourceDescriptorHeap[MatOrmIndex];
-    float3 orm = ormTex.Sample( smp, i.uv ).rgb;   // r=AO g=roughness b=metallic
+    float3 orm = SampleOrm( MatOrmIndex, i.uv );   // AO/Roughness/Metallic, decoded per the material's FxMap layout
     float3 albedo = SrgbToLinear( t.rgb );
     albedo = DelightDiffuse( albedo );
     float vertLighting = i.col.g;               // ModelColor green (white=1 for NPCs → no baked AO reduction)

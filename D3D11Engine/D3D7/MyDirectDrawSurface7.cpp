@@ -146,8 +146,7 @@ void MyDirectDrawSurface7::LoadAdditionalResources( zCTexture* ownedTexture ) {
     const auto& gameName = Engine::GAPI->GetGameName();
     
     const std::pair<const char*, GfxTexture** const> resourcesToLoad[] = {
-        {"_NORMAL.DDS", &nrmmapTexture},
-        {"_FX.DDS", &fxMapTexture},
+        {"_NORMAL.DDS", &nrmmapTexture}
     };
 
     for (const auto [suffix, texture] : resourcesToLoad) {
@@ -164,9 +163,49 @@ void MyDirectDrawSurface7::LoadAdditionalResources( zCTexture* ownedTexture ) {
         currentResource.append(systemWorkPath).append("Normalmaps_").append(gameName).append("\\").append(textureName);
         LoadResource(currentResource, textureName, storage, texture);
     }
-
+    
     Normalmap = nrmmapTexture;
+
+    EAdditionalMaterial loadedMat = EAdditionalMaterial::None;
+    
+    auto loader = [this, &textureName, &currentResource, &gameName](const auto& matResourcesToLoad, auto& storage, auto& loadedMat)
+    {
+        for (const auto [suffix, texture, type] : matResourcesToLoad) {
+            textureName.clear();
+            textureName.append(TextureName).append(suffix);
+
+            currentResource.clear();
+            currentResource.append(vdfsWorkPath).append(textureName);
+            if (LoadResource(currentResource, textureName, storage, texture)) {
+                loadedMat = type;
+                break;
+            }
+    
+            currentResource.clear();
+            currentResource.append(systemWorkPath).append("Normalmaps_").append(gameName).append("\\").append(textureName);
+            if (LoadResource(currentResource, textureName, storage, texture)) {
+                loadedMat = type;
+                break;
+            }
+        }
+    };
+    
+    if (Engine::GraphicsEngine->GetBackendAPI() == EGraphicsEngineBackend::D3D12) {
+        std::tuple<const char*, GfxTexture** const, EAdditionalMaterial> matResourcesToLoad[] = {
+            {"_ORM.DDS", &fxMapTexture, EAdditionalMaterial::ORM},
+            {"_OR.DDS", &fxMapTexture, EAdditionalMaterial::AoRoughness},
+            {"_R.DDS", &fxMapTexture, EAdditionalMaterial::Roughness},
+        };
+        loader(matResourcesToLoad, storage, loadedMat);
+    } else {
+        std::tuple<const char*, GfxTexture** const, EAdditionalMaterial> matResourcesToLoad[] = {
+            {"_FX.DDS", &fxMapTexture, EAdditionalMaterial::Specular},
+        };
+        loader(matResourcesToLoad, storage, loadedMat);
+    }
+    
     FxMap = fxMapTexture;
+    AvailableMaterials = loadedMat;
 }
 
 HRESULT MyDirectDrawSurface7::QueryInterface( REFIID riid, LPVOID* ppvObj ) {

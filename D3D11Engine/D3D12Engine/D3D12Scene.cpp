@@ -3662,6 +3662,27 @@ namespace {
     // Matches D3D11GraphicsEngine::DEFAULT_NOISE_NORMALMAP_STRENGTH — the weak perturb strength used when the
     // rain-distortion texture stands in for a missing normalmap (see BuildWorldDrawCommands' wet-ground fallback).
     constexpr float kWetDistortionNormalStrength = 0.10f;
+
+    // The bindless ORM SRV index (MatOrmIndex, b6) has room to spare — the SRV heap is sized for tens of
+    // thousands of descriptors (doctrine: ~64k), far under the 30 bits reserved here. The top 2 bits piggyback
+    // the FxMap's channel layout (MyDirectDrawSurface7::AvailableMaterials) so the PS knows which channels of
+    // the single bound texture are meaningful, instead of always assuming a full _ORM.DDS (R=AO,G=Rough,B=Metal).
+    // Mirrored by SampleOrm() in Shaders/D3D12/include/PBRLighting.hlsl — keep the two in sync.
+    constexpr uint32_t kOrmFormatShift = 30;
+    constexpr uint32_t kOrmIndexMask   = 0x3FFFFFFFu;   // 1 billion+ slots — nowhere near the real heap size
+
+    // Packs an SRV heap slot with the FxMap's channel layout for the D3D12 PS to unpack (see kOrmFormatShift).
+    // EAdditionalMaterial::None/Specular (no _FX loaded, or the legacy D3D11-only _FX.dds) fall through to format
+    // 0 (ORM) — correct because m_DefaultOrmTexture is itself laid out as full AO/Rough/Metal in that case.
+    uint32_t EncodeOrmSlot( uint32_t srvSlot, EAdditionalMaterial availableMat ) {
+        uint32_t fmt = 0;   // ORM: r=AO g=Roughness b=Metallic (also the default-texture / no-_FX case)
+        switch ( availableMat ) {
+            case EAdditionalMaterial::AoRoughness: fmt = 1; break;   // _OR.DDS:    r=AO g=Roughness, metal defaults to 0
+            case EAdditionalMaterial::Roughness:   fmt = 2; break;   // _R.DDS:     r=Roughness only, AO defaults to 1, metal to 0
+            default: break;
+        }
+        return ( fmt << kOrmFormatShift ) | ( srvSlot & kOrmIndexMask );
+    }
 }
 
 void D3D12GraphicsEngine::BuildWorldDrawCommands() {
@@ -3745,7 +3766,7 @@ void D3D12GraphicsEngine::BuildWorldDrawCommands() {
                     }
                     if ( GfxTexture* o = s->GetFxMap() ) {
                         D3D12Texture* d = D3D12Texture::From( o );
-                        if ( d->HasSRV() ) ormIdx = d->GetSrvSlot();
+                        if ( d->HasSRV() ) ormIdx = EncodeOrmSlot( d->GetSrvSlot(), s->GetAvailableMaterials() );
                     }
                 }
             }
@@ -3890,7 +3911,7 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
                     }
                     if ( resolveMaps ) {
                         if ( GfxTexture* n = s->GetNormalmap() ) { D3D12Texture* d = D3D12Texture::From( n ); if ( d->HasSRV() ) normalIdx = d->GetSrvSlot(); }
-                        if ( GfxTexture* o = s->GetFxMap() )     { D3D12Texture* d = D3D12Texture::From( o ); if ( d->HasSRV() ) ormIdx    = d->GetSrvSlot(); }
+                        if ( GfxTexture* o = s->GetFxMap() )     { D3D12Texture* d = D3D12Texture::From( o ); if ( d->HasSRV() ) ormIdx    = EncodeOrmSlot( d->GetSrvSlot(), s->GetAvailableMaterials() ); }
                     }
                 }
             }
@@ -4091,7 +4112,7 @@ void D3D12GraphicsEngine::BindMaterialMaps( zCTexture* tex, UINT matRootParam ) 
             }
             if ( GfxTexture* o = s->GetFxMap() ) {
                 D3D12Texture* d = D3D12Texture::From( o );
-                if ( d->HasSRV() ) idx[1] = d->GetSrvSlot();
+                if ( d->HasSRV() ) idx[1] = EncodeOrmSlot( d->GetSrvSlot(), s->GetAvailableMaterials() );
             }
         }
     }

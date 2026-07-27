@@ -13,6 +13,15 @@ enum ETextureType {
     TX_WOOD,
 };
 
+enum EAdditionalMaterial
+{
+    None,
+    Specular = 1, // legacy _fx.dds
+    ORM = 2, // full _orm.dds = AO, Roughness, Metallic
+    Roughness = 3, // single _rough.dds, single channel,  R = roughness
+    AoRoughness = 4, // full _or.dds: R = AO, G: Roughness
+};
+
 class zCTexture;
 class GfxTexture;
 class MyDirectDrawSurface7 : public IDirectDrawSurface7 {
@@ -104,7 +113,9 @@ public:
     bool IsMovieSurface() const { return LockedData != nullptr; }
 
     /** Returns the type of this texture */
-    ETextureType GetTextureType() const { return TextureType; };
+    ETextureType GetTextureType() const { return TextureType; }
+    
+    EAdditionalMaterial GetAvailableMaterials() const { return AvailableMaterials; };
 private:
 
     /** Faked attached surfaces for the mipmaps */
@@ -134,4 +145,6 @@ private:
 
     /** zCTexture this is associated with */
     zCTexture* GothicTexture;
+    
+    EAdditionalMaterial AvailableMaterials;
 };

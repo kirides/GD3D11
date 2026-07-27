@@ -45,7 +45,8 @@ SamplerComparisonState  shadowCmp : register(s2);
 // Per-material bindless indices (root consts b6): SM6.6 ResourceDescriptorHeap[...] indices for this material's
 // diffuse + normal + ORM maps. The world mesh is drawn via ExecuteIndirect (P2.11), which sets these four per
 // draw — so the diffuse is sampled bindless too (no per-draw descriptor table). MatNormalIndex == 0xFFFFFFFF ->
-// no normal map (skip perturb); MatOrmIndex is always valid (1x1 default = AO 1 / rough 0.5 / metal 0).
+// no normal map (skip perturb); MatOrmIndex is always valid (1x1 default = AO 1 / rough 0.5 / metal 0) and its
+// top 2 bits pack the FxMap's channel layout for SampleOrm() to decode (see PBRLighting.hlsl).
 // MatNormalStrength scales the normal-map perturb: 1.0 for a real material normalmap, or the weak
 // DEFAULT_NOISE_NORMALMAP_STRENGTH (0.10) when it's raining and MatNormalIndex is instead the rain-distortion
 // texture standing in for a missing normalmap (wet-ground look, mirrors D3D11GraphicsEngine::BindTextureNRFX).
@@ -104,8 +105,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
         Texture2D nrmTex = ResourceDescriptorHeap[MatNormalIndex];
         N = PerturbNormal( N, i.wpos, nrmTex, i.uv, smp, MatNormalStrength );
     }
-    Texture2D ormTex = ResourceDescriptorHeap[MatOrmIndex];   // r=AO g=roughness b=metallic (1x1 default when no _FX)
-    float3 orm = ormTex.Sample( smp, i.uv ).rgb;
+    float3 orm = SampleOrm( MatOrmIndex, i.uv );   // AO/Roughness/Metallic, decoded per the material's FxMap layout
     float3 albedo = SrgbToLinear( t.rgb );    // linearize for PBR (all HDR-buffer values are linear now)
     albedo = DelightDiffuse( albedo );
     float vertLighting = i.col.g;             // Gothic baked vertex lighting (green channel) as the AO modulator

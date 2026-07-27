@@ -164,6 +164,27 @@ float ComputeSunShadow( float3 wpos, float3 N )
     return 1.0;   // outside all cascades → treat as lit
 }
 
+// The bindless ORM SRV index (MatOrmIndex, b6) packs the FxMap's channel layout into its top 2 bits — see
+// D3D12GraphicsEngine.cpp's EncodeOrmSlot (mirrors MyDirectDrawSurface7::AvailableMaterials). This lets one
+// bound texture stand in for whatever _ORM/_OR/_R map the material actually shipped, instead of every material
+// paying for a full 3-channel _ORM.DDS. Keep the two in sync.
+static const uint ORM_INDEX_MASK  = 0x3FFFFFFFu;
+static const uint ORM_FORMAT_SHIFT = 30;
+
+// Returns {AO, Roughness, Metallic}, decoded per the packed format:
+//   0 = ORM       (_ORM.DDS, or the 1x1 default when the material has no FxMap): r=AO g=Roughness b=Metallic
+//   1 = AoRoughness (_OR.DDS): r=AO g=Roughness, Metallic defaults to 0
+//   2 = Roughness   (_R.DDS):  r=Roughness only, AO defaults to 1, Metallic to 0
+float3 SampleOrm( uint packedOrmIndex, float2 uv )
+{
+    Texture2D ormTex = ResourceDescriptorHeap[packedOrmIndex & ORM_INDEX_MASK];
+    float4 s = ormTex.Sample( smp, uv );
+    uint fmt = packedOrmIndex >> ORM_FORMAT_SHIFT;
+    if ( fmt == 1 ) return float3( s.r, s.g, 0.0 );
+    if ( fmt == 2 ) return float3( 1.0, s.r, 0.0 );
+    return s.rgb;
+}
+
 // --- Cook-Torrance GGX PBR (ported verbatim from the D3D11 feat/pbr branch: Shaders/include/PointLightShadows.h) ---
 static const float PBR_PI = 3.14159265;
 

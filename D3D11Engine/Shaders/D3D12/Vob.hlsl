@@ -120,8 +120,7 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
         Texture2D nrmTex = ResourceDescriptorHeap[MatNormalIndex];
         N = PerturbNormal( N, i.wpos, nrmTex, i.uv, smp );
     }
-    Texture2D ormTex = ResourceDescriptorHeap[MatOrmIndex];
-    float3 orm = ormTex.Sample( smp, i.uv ).rgb;
+    float3 orm = SampleOrm( MatOrmIndex, i.uv );
     float3 albedo = SrgbToLinear( t.rgb );
     albedo = DelightDiffuse( albedo );
     float vertLighting = i.col.g;
@@ -218,8 +217,7 @@ float4 PSMainBindless( VS_OUT i ) : SV_TARGET
         Texture2D nrmTex = ResourceDescriptorHeap[MatNormalIndex];
         N = PerturbNormal( N, i.wpos, nrmTex, i.uv, smp );
     }
-    Texture2D ormTex = ResourceDescriptorHeap[MatOrmIndex];
-    float3 orm = ormTex.Sample( smp, i.uv ).rgb;
+    float3 orm = SampleOrm( MatOrmIndex, i.uv );
     float3 albedo = SrgbToLinear( t.rgb );
     albedo = DelightDiffuse( albedo );
     float vertLighting = i.col.g;
