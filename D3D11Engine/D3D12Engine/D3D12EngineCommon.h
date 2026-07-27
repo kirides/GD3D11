@@ -66,7 +66,7 @@ struct DXMarker {
     {
     }
 
-    // Raw-pointer overload: the MT shadow-cascade recorder (RenderSunShadows / RecordShadowCascade) is handed a
+    // Raw-pointer overload: the MT shadow-cascade recorder (PrepareSunShadows / RecordShadowCascade) is handed a
     // bare ID3D12GraphicsCommandList* so the same body can record into m_CmdList or into a per-cascade list.
     // The breadcrumb ring this writes is thread_local, so concurrent recorders don't collide.
     DXMarker( ID3D12GraphicsCommandList* commandList, const wchar_t* text ) :

@@ -1533,7 +1533,7 @@ bool D3D12PipelineState::CreatePointShadow() {
     // --- VOB caster PSO (P2.10e): same root sig (per-instance world rides the vertex stream, not the root) + the
     // same caster state, but VSCubeVob and a two-stream layout whose instance rows carry InstanceDataStepRate=6 —
     // so one real instance is fetched for 6 consecutive instanceIDs and each renders to one cube face. The instance
-    // stream is a TIGHT 64-byte world matrix (packed by RenderPointShadows; not the full 144B VobInstanceInfo).
+    // stream is a TIGHT 64-byte world matrix (packed by PreparePointShadows; not the full 144B VobInstanceInfo).
     {
         const D3D12_INPUT_ELEMENT_DESC vobLayout[] = {
             { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },

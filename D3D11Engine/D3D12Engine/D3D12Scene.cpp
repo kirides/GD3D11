@@ -144,7 +144,7 @@ namespace {
 
     // Point-light shadow selection (P2.10b/c): the shadowed lights chosen this frame (closest-in-range, capped
     // at kMaxShadowCubes) — filled by BuildFrameLightBuffer (which also writes ShadowCubeIndex into the GPU light
-    // struct), consumed by RenderPointShadows to render each light's 6 cube faces.
+    // struct), consumed by PreparePointShadows to render each light's 6 cube faces.
     // Static/dynamic split (P2.10g): every winner gets its active cube = (static-aside copy) + dynamic overlay
     // each frame. renderStatic=true → also re-render the STATIC casters into the static-aside slot first (only
     // when the slot is fresh / the light moved / range changed); otherwise the cached static depth is reused.
@@ -194,7 +194,7 @@ namespace {
     // above, applied to point lights: PrepareFrameSkeletals(..., sphereCenter, sphereRange) sphere-culls
     // Engine::GAPI->GetSkeletalMeshVobs() against THIS light instead of reusing the player-view-culled
     // g_FrameSkelDraws (a caster invisible to the player, but inside a torch's range, can still cast a shadow
-    // into it). Cleared and refilled once per light inside RenderPointShadows's dynamic-overlay phase (not a
+    // into it). Cleared and refilled once per light inside PreparePointShadows's dynamic-overlay phase (not a
     // per-frame-once list like the cascades, since every point light has its own sphere). Node-attachment casters
     // are intentionally NOT drawn into point-shadow cubes yet (Phase C has no attachment draw path), so
     // g_PointShadowAttachDraws is populated by PrepareFrameSkeletals (it always fills both) but left unread here.
@@ -240,6 +240,12 @@ namespace {
     // Per-cascade grass caster boxes surviving that cascade's frustum. Culled in CullShadowCascade so
     // RecordShadowCascade does nothing but issue draws.
     std::vector<GVegetationBox*> g_ShadowGrassBoxes[kShadowCascadeCount];
+
+    // Futures for the in-flight per-cascade CullShadowCascade jobs. Launched by PrepareSunShadows (early in the
+    // frame, right before DrawSky) and joined by WaitShadowCullingComplete at the very end of the frame's
+    // CPU-side work — everything in between overlaps them. Kept file-static so the header needs no <future>;
+    // cleared rather than reconstructed so the vector keeps its capacity.
+    std::vector<std::future<void>> g_ShadowCullJobs;
 
     // Grass caster wind constants (b1 GrassCB), filled once per frame on the main thread — only the fields
     // Vegetation.hlsl's VSDepth wind sway reads matter for a shadow caster. Mirrors
@@ -625,7 +631,7 @@ bool D3D12GraphicsEngine::CreateShadowMapTextureAndViews( UINT size ) {
 	clear.Format = DXGI_FORMAT_D32_FLOAT;
 	clear.DepthStencil.Depth = 1.0f;        // normal-Z: 1.0 == far (NOT reversed-Z)
 
-	// Born in DEPTH_WRITE; each frame RenderSunShadows writes then transitions to PIXEL_SHADER_RESOURCE and back.
+	// Born in DEPTH_WRITE; each frame PrepareSunShadows writes then transitions to PIXEL_SHADER_RESOURCE and back.
 	m_ShadowMapAlloc.Reset();
 	m_ShadowMap.Reset();
 	if ( FAILED( m_Allocator->CreateResource( &allocDesc, &dd,
@@ -832,13 +838,13 @@ bool D3D12GraphicsEngine::CreateShadowMap() {
 
 	// Per-frame-in-flight shadow-sampling CB (b3 in the lit passes): cascade view-projs + sun dir + strength +
 	// texel sizes. Small + written once per frame, so a persistently-mapped UPLOAD buffer per frame context
-	// (no ring offset needed — one struct per frame). Filled in RenderSunShadows, bound by the lit draws.
+	// (no ring offset needed — one struct per frame). Filled in PrepareSunShadows, bound by the lit draws.
 	D3D12MA::ALLOCATION_DESC uploadAlloc = {};
 	uploadAlloc.HeapType = DefaultUploadHeapType;
 
 	D3D12_RESOURCE_DESC cbDesc = {};
 	cbDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-	// 512, not 256: the first 256B hold the cascade matrices + sun data (RenderSunShadows), the tail holds
+	// 512, not 256: the first 256B hold the cascade matrices + sun data (PrepareSunShadows), the tail holds
 	// the scene-wetness block (UploadWetnessConstants — written later in the frame, after the rain shadow
 	// pass has its camera). Two disjoint byte ranges of the same CB, so neither write clobbers the other.
 	cbDesc.Width = 512;
@@ -931,7 +937,7 @@ bool D3D12GraphicsEngine::CreatePointShadowResources() {
 	if ( !device ) return false;
 
 	// --- Cube array resource: Texture2DArray with kMaxShadowCubes*6 R16 slices (interpreted as a TextureCubeArray
-	// by the SRV). NORMAL-Z depth (clear 1.0, LESS_EQUAL). Born in DEPTH_WRITE (RenderPointShadows flips it to
+	// by the SRV). NORMAL-Z depth (clear 1.0, LESS_EQUAL). Born in DEPTH_WRITE (PreparePointShadows flips it to
 	// PIXEL_SHADER_RESOURCE for the lit pass and back next frame).
 	D3D12MA::ALLOCATION_DESC defaultAlloc = {};
 	defaultAlloc.HeapType = D3D12_HEAP_TYPE_DEFAULT;
@@ -1039,10 +1045,10 @@ bool D3D12GraphicsEngine::CreatePointShadowResources() {
 		m_PointShadowCBGpu[i] = m_PointShadowCB[i]->GetGPUVirtualAddress();
 	}
 
-	// Per-frame TIGHT VOB-instance ring for the point-shadow VOB caster (P2.10e). RenderPointShadows range-culls
+	// Per-frame TIGHT VOB-instance ring for the point-shadow VOB caster (P2.10e). PreparePointShadows range-culls
 	// each visible VOB's instances against every shadowed light and packs the in-range ones' 64-byte world matrix
 	// here (only the near casters, not the whole visible set) — so the cube pass draws proportional to actual
-	// nearby geometry. Persistently mapped UPLOAD; offset reset at the top of RenderPointShadows; drop+log on
+	// nearby geometry. Persistently mapped UPLOAD; offset reset at the top of PreparePointShadows; drop+log on
 	// overflow (never reallocates — see the 32-bit per-frame-allocation rule).
 	m_PointShadowVobInstCapacity = static_cast<UINT>(kPointShadowMaxVobInstances) * sizeof( XMFLOAT4X4 );
 	D3D12_RESOURCE_DESC viDesc = {};
@@ -1251,7 +1257,8 @@ void D3D12GraphicsEngine::ComputeCascadeMatrices() {
 }
 
 
-void D3D12GraphicsEngine::RenderSunShadows() {
+void D3D12GraphicsEngine::PrepareSunShadows() {
+    ZoneScoped;
 	// P2.9c-1/-2/-3b: render the opaque casters (world mesh + instanced VOBs + skinned skeletals + node
 	// attachments) into each cascade slice from the sun's POV. Still PRODUCES the shadow map only — nothing
 	// samples it yet, so the frame is visually unchanged; inspect the D32 Texture2DArray in RenderDoc (each slice
@@ -1265,16 +1272,22 @@ void D3D12GraphicsEngine::RenderSunShadows() {
 	// prepared for the main view.
 	//
 	// Plan item #7 (MT cascades) split this into four phases so the two expensive per-cascade jobs — the BSP/vob
-	// cull and the command recording — can run concurrently, one pool task per cascade:
-	//   A) main thread: cascade matrices, the sampling CB, and everything IDENTICAL across cascades (the world-mesh
-	//      caster set with its resolved bindless materials, the grass wind CB).
+	// cull and the command recording — can run concurrently, one pool task per cascade. THIS function is phases
+	// A and B only; B is launched, not awaited, and the rest of the frame runs on top of it:
+	//   A) main thread, here: cascade matrices, the sampling CB, and everything IDENTICAL across cascades (the
+	//      world-mesh caster set with its resolved bindless materials, the grass wind CB).
 	//   B) per cascade, CONCURRENT (CullShadowCascade): frustum tests + CollectVisibleVobs + grass box cull.
-	//   C) main thread: the steps that mutate Gothic state or a SHARED upload ring — the per-cascade VOB instance
-	//      upload + indirect-arg build, and ONE multi-cascade skeletal preparation pass.
+	//      LAUNCHED here on Engine::WorkerThreadPool; joined by WaitShadowCullingComplete at the bottom of the
+	//      frame. Same shape as D3D11ShadowMap::PrepareRender + DrawWorldShadow's WaitShadowCullingComplete.
+	//   C) main thread (FinishSunShadowPrepare, just before the lit pass): the steps that mutate Gothic state or
+	//      a SHARED upload ring — the per-cascade VOB instance upload + indirect-arg build, and ONE multi-cascade
+	//      skeletal preparation pass.
 	//   D) per cascade, CONCURRENT (RecordShadowCascade): the actual draws, into one command list per cascade.
-	// The whole MT path is gated on RendererSettings.ThreadedShadowCulling (shared with D3D11ShadowMap's own
-	// cascade fan-out) and on the per-cascade command lists existing, so it degrades to the original serial
-	// driver — same output, same order — whenever either is unavailable.
+	// The MT paths are gated on RendererSettings.ThreadedShadowCulling (shared with D3D11ShadowMap's own cascade
+	// fan-out) — plus, for D, the per-slot command lists existing — so everything degrades to the original serial
+	// driver, same output and same order, whenever either is unavailable.
+	m_ShadowPassReady = false;
+	m_ShadowCullingPending = false;
 	if ( !m_FrameOpen || !m_ShadowMap || !m_ShadowCasterWorldPSO || !m_ShadowDsvHeap || !m_Pipelines.World.RootSig )
 		return;
 
@@ -1295,6 +1308,7 @@ void D3D12GraphicsEngine::RenderSunShadows() {
 	// Sun below the horizon → clear each slice to far (1.0 = unshadowed) and skip ALL casting.
 	const float3 lp = Engine::GAPI->GetSky()->GetAtmosphereCB().AC_LightPos;
 	const bool sunUp = (lp.y > 0.0f);
+	m_ShadowSunUp = sunUp;   // RecordShadowCascade may run on a pool thread, so it can't re-read the sky itself
 
 	// Upload this frame's shadow-sampling CB (b3 for the lit passes): cascade view-projs + sun dir + darkening
 	// strength + per-cascade texel size. Layout MUST match the HLSL ShadowCB (row-major matrices, HLSL packing).
@@ -1410,18 +1424,9 @@ void D3D12GraphicsEngine::RenderSunShadows() {
 		g_ShadowGrassCB.HeroAffectStrength = 1.0f;
 	}
 
-	// MT path requires the per-cascade allocator/list pairs AND the shared ThreadedShadowCulling toggle (the same
-	// switch D3D11ShadowMap uses for its own cascade fan-out, so the maintainer can A/B both backends from the
-	// one ImGui checkbox / ini key). Any of those missing → the original single-threaded driver below.
-	// (Also requires sunUp: with the sun down there is nothing to cull or draw, only three DSV clears, which are
-	// cheaper to record inline than to fan out and resubmit m_CmdList for.)
-	const bool threadedCascades = sunUp
-		&& m_CascadeCmdListsReady
-		&& rsA.ThreadedShadowCulling
-		&& Engine::RenderingThreadPool != nullptr;
-
 	if ( !sunUp ) {
-		// Nothing casts; each cascade still gets its slice cleared to far (= unshadowed) in Phase D.
+		// Nothing casts; each cascade still gets its slice cleared to far (= unshadowed) at record time. No cull
+		// jobs are launched, so FinishSunShadowPrepare has nothing to wait for and skips Phase C outright.
 		for ( UINT c = 0; c < kShadowCascades; ++c ) {
 			m_ShadowWorldDrawCount[c] = 0;
 			m_ShadowVobDrawCount[c] = 0;
@@ -1429,113 +1434,304 @@ void D3D12GraphicsEngine::RenderSunShadows() {
 			g_ShadowSkelDraws[c].clear();
 			g_ShadowAttachDraws[c].clear();
 		}
+		m_ShadowPassReady = true;
+		return;
+	}
+
+	// --- Phase B: per-cascade culling — LAUNCHED HERE, JOINED IN FinishSunShadowPrepare -------------------
+	// Mirrors D3D11ShadowMap: PrepareRender() enqueues one CollectVisibleVobs job per cascade on the WORKER
+	// pool and returns immediately; WaitShadowCullingComplete() is called at the top of DrawWorldShadow(), i.e.
+	// right before the cascades are actually drawn. So the BSP walks overlap everything the main thread does in
+	// between — here that is DrawSky, the point-cube/rain prepares, the indirect-arg builds and the whole depth
+	// prepass / GPU cull / light cull / SSAO recording block.
+	//
+	// The worker pool (not RenderingThreadPool) on purpose, again matching D3D11: the render pool is what
+	// BeginShadowRecording fans the command recording onto, and the two must not queue behind each other.
+	//
+	// Running this concurrently with the main thread's own Gothic work is exactly what the D3D11 backend has
+	// always done (its PrepareRender fires before DrawWorldMeshNaive, which walks and animates the main view),
+	// so the same safety argument applies: CollectVisibleVobs is re-entrant for the SHADOW config —
+	// BspTreeVobVisitor is thread_local and dedupes through a per-visitor atomic bit on
+	// VobInfo::VisibleInRenderPass, and CollectLights=false keeps it off the one mutating branch.
+	const bool threadedCull = rsA.ThreadedShadowCulling && Engine::WorkerThreadPool != nullptr;
+
+	g_ShadowCullJobs.clear();
+	if ( threadedCull ) {
+		for ( UINT c = 0; c < kShadowCascades; ++c ) {
+			g_ShadowCullJobs.push_back( Engine::WorkerThreadPool->enqueue(
+				[]( const std::stop_token& token, D3D12GraphicsEngine* self, UINT cascade ) {
+					if ( token.stop_requested() ) return;
+					ZoneScopedN( "Cull shadow cascade" );
+					self->CullShadowCascade( cascade );
+				}, this, c ).future );
+		}
+		m_ShadowCullingPending = true;
 	} else {
-		// --- Phase B: per-cascade culling, concurrent when enabled ---------------------------------------
-		if ( threadedCascades ) {
+		for ( UINT c = 0; c < kShadowCascades; ++c )
+			CullShadowCascade( c );
+	}
+	m_ShadowPassReady = true;
+}
+
+
+void D3D12GraphicsEngine::WaitShadowCullingComplete() {
+	// The single join point for the per-cascade culls (mirrors D3D11ShadowMap::WaitShadowCullingComplete).
+	// Called from FinishSunShadowPrepare, which the frame runs immediately before the lit geometry pass.
+	if ( !m_ShadowCullingPending ) return;
+	ZoneScopedN( "WaitShadowCullingComplete" );
+	for ( auto& j : g_ShadowCullJobs ) if ( j.valid() ) j.get();
+	g_ShadowCullJobs.clear();
+	m_ShadowCullingPending = false;
+}
+
+
+void D3D12GraphicsEngine::FinishSunShadowPrepare() {
+	// Phase C: everything that mutates Gothic state or writes a SHARED upload ring, and therefore cannot be part
+	// of the concurrent cull. Deliberately deferred to here (just before the cascades are recorded and drawn)
+	// rather than run right after launching the cull — that is what lets the cull overlap the entire prepass.
+	WaitShadowCullingComplete();
+	// Sun down, or PrepareSunShadows bailed at its guards: nothing was culled and the per-cascade lists were
+	// already emptied (or were never valid this frame).
+	if ( !m_ShadowPassReady || !m_ShadowSunUp ) return;
+
+	ZoneScopedN( "Finish sun shadow prepare" );
+
+	// The VOB instance ring and the indirect-arg build both bump m_VobInstanceBufferOffset / call
+	// zCTexture::CacheIn, so they stay serial; they are cheap next to the BSP walk Phase B just parallelized.
+	static std::vector<FrameVobUpload> cascadeUploads;
+	for ( UINT c = 0; c < kShadowCascades; ++c ) {
+		m_ShadowVobDrawCount[c] = 0;
+		cascadeUploads.clear();
+		if ( !UploadVobs( g_ShadowPassVobs[c].buckets, cascadeUploads ) ) continue;
+		// GPU-driven VOB casters (P2.12): build this cascade's command set from the uploads (diffuse-only
+		// material resolution — the void PSShadowClipBindless just alpha-clips), submitted as ONE
+		// ExecuteIndirect by RecordShadowCascade. Same command signature/PSO family as the main-view VOB pass;
+		// the per-command b4 min/max makes wind-flagged casters sway their silhouette identically to their lit
+		// geometry (VSDepth reads b4 unconditionally).
+		if ( !m_ShadowCasterVobIndirectPSO || !m_VobIndirectCmdSig || !m_ShadowVobDrawArgsPtr[c][m_FrameIndex] )
+			continue;
+		// culled=false: the cascades CPU-cull against their own frustum (a caster invisible to the player can
+		// still cast into view), so they draw the uncompacted ring with the CPU's instance counts.
+		m_ShadowVobDrawCount[c] = BuildVobDrawCommands( cascadeUploads, m_ShadowVobDrawArgsPtr[c][m_FrameIndex], false,
+			kMaxShadowVobDrawCommands, false );
+	}
+
+	// Skeletal shadow casters (parity with D3D11's Shadows::DrawSkeletalMeshes): cull the FULL registered
+	// skeletal-vob list against the cascade frusta, not the player's view frustum — a caster invisible to the
+	// player can still cast a visible shadow. ONE multi-cascade pass (cascadeCount = kShadowCascades) instead of
+	// one pass per cascade: the per-vob upload was already cached across passes (g_SkelUploadCache), but the list
+	// walk, the distance cull and the Gothic animation/texani/morph work were not. It also has to be a single
+	// MAIN-THREAD pass — all of that mutates Gothic state and the skeletal CB / VOB instance rings.
+	for ( UINT c = 0; c < kShadowCascades; ++c ) { g_ShadowSkelDraws[c].clear(); g_ShadowAttachDraws[c].clear(); }
+	PrepareFrameSkeletals( Engine::GAPI->GetSkeletalMeshVobs(), &m_CascadeFrustum[0], 0, nullptr, 0.0f, kShadowCascades );
+}
+
+
+namespace {
+	// Futures for the in-flight shadow recorders, live only between BeginShadowRecording and FinishShadowPasses.
+	// Kept file-static (not a member) so D3D12GraphicsEngine.h doesn't have to pull in <future>; cleared rather
+	// than reconstructed each frame so the vector keeps its capacity.
+	std::vector<std::future<void>> g_ShadowRecordJobs;
+}
+
+
+ID3D12GraphicsCommandList* D3D12GraphicsEngine::BeginShadowList( UINT slot ) {
+	// Resets one deferred-shadow (slot x frame-in-flight) allocator/list pair for recording, and returns the
+	// open list (nullptr on failure — the caller then leaves that slot unrecorded and FinishShadowPasses
+	// re-issues the pass inline). Safe without a GPU wait: this pair was last used kBackBufferCount frames ago
+	// and Present() already fenced on that frame.
+	ID3D12CommandAllocator*    alloc = m_ShadowCmdAllocators[slot][m_FrameIndex].Get();
+	ID3D12GraphicsCommandList* cl    = m_ShadowCmdLists[slot][m_FrameIndex].Get();
+	if ( !alloc || !cl ) return nullptr;
+	if ( FAILED( alloc->Reset() ) ) return nullptr;
+	if ( FAILED( cl->Reset( alloc, nullptr ) ) ) return nullptr;
+	ResetCpuContextTracker();   // per-thread breadcrumb ring — see D3D12EngineCommon.h
+	return cl;
+}
+
+
+void D3D12GraphicsEngine::PrepareShadowPasses() {
+	// MAIN THREAD ONLY: every Gothic read/mutation the point-cube and rain-shadow passes need — the range/sphere
+	// culls, zCTexture::CacheIn, zCModel animation + texani state, the shared upload rings — resolved into
+	// records that reference nothing but D3D12 handles, so RecordPointShadows/RecordRainShadowmap can run on the
+	// pool. Runs AFTER PrepareSunShadows launched the cascade culls, so all of this overlaps them.
+	//
+	// The CSM cascades are deliberately not here: their prepare is split around the concurrent cull
+	// (PrepareSunShadows launches it, FinishSunShadowPrepare joins it and does the dependent build).
+	if ( !m_FrameOpen ) return;
+	ZoneScopedN( "Prepare shadow passes" );
+
+	PreparePointShadows();
+	PrepareRainShadowmap();
+}
+
+
+void D3D12GraphicsEngine::BeginShadowRecording() {
+	// Step 2. The three shadow passes write resources that NOTHING between here and the lit geometry passes
+	// reads, so their command recording has no business sitting on the main thread's critical path: fan it out
+	// and return immediately. The caller then records the depth prepass, the GPU VOB cull, the tiled light cull
+	// and SSAO into m_CmdList while the pool records shadows into its own lists.
+	//
+	// Queue ordering: the finished lists must land BETWEEN what is already recorded this frame (OnBeginFrame's
+	// clears, DrawSky, AdvanceRain, the indirect-arg builds) and everything recorded after this point. So
+	// close+submit m_CmdList here and reopen it on the SAME frame allocator; FinishShadowPasses then executes
+	// the shadow lists while the reopened list is still open and unsubmitted, which gives the GPU
+	// [part A][cascades][point cubes][rain map][part B] even though the CPU recorded part B first.
+	m_ShadowRecordingPending = false;
+	m_ShadowThreadedRecord = false;
+	for ( bool& r : m_ShadowListRecorded ) r = false;
+	if ( !m_FrameOpen ) return;
+	if ( !m_ShadowPassReady && !m_PointShadowPassReady && !m_RainShadowPassReady ) return;
+
+	// Gated on the same ThreadedShadowCulling toggle the cascade cull uses (one ImGui checkbox / ini key for
+	// both backends) plus the per-slot command lists actually existing.
+	const bool threadedRecord = m_ShadowCmdListsReady
+		&& Engine::GAPI->GetRendererState().RendererSettings.ThreadedShadowCulling
+		&& Engine::RenderingThreadPool != nullptr;
+
+	m_ShadowThreadedRecord = threadedRecord;
+	if ( !threadedRecord ) {
+		// Degrade to the original single-threaded driver: record inline, right here. Same output, same queue
+		// order — just no overlap with the prepass. (The cascades still record in FinishShadowPasses, since
+		// their caster data does not exist until the concurrent cull is joined there.)
+		RecordPointShadows( m_CmdList.Get() );
+		RecordRainShadowmap( m_CmdList.Get() );
+		// Those passes leave no render target bound (their DSVs have just left DEPTH_WRITE) and the depth
+		// prepass the caller records next does not bind its own — re-establish the scene-color RT + depth.
+		BindSceneColorTarget();
+		return;
+	}
+
+	SubmitRecordedCommandsAndReopen();
+	// The reopen Resets m_CmdList, which drops its render targets/viewport along with everything else.
+	BindSceneColorTarget();
+
+	// NOTE: only the point-cube and rain passes are fanned out here. The CSM cascades cannot be recorded yet —
+	// their per-cascade caster sets are still being culled on the worker pool, and the Phase-C build that turns
+	// those cull results into instance uploads + indirect args has to run on the main thread first. They are
+	// recorded in FinishShadowPasses, right after that join.
+	g_ShadowRecordJobs.clear();
+	if ( m_PointShadowPassReady ) {
+		g_ShadowRecordJobs.push_back( Engine::RenderingThreadPool->enqueue(
+			[]( const std::stop_token& token, D3D12GraphicsEngine* self ) {
+				if ( token.stop_requested() ) return;
+				ZoneScopedN( "Record point shadows" );
+				ID3D12GraphicsCommandList* cl = self->BeginShadowList( kPointShadowListIndex );
+				if ( !cl ) return;
+				self->RecordPointShadows( cl );
+				self->m_ShadowListRecorded[kPointShadowListIndex] = SUCCEEDED( cl->Close() );
+			}, this ).future );
+	}
+	if ( m_RainShadowPassReady ) {
+		g_ShadowRecordJobs.push_back( Engine::RenderingThreadPool->enqueue(
+			[]( const std::stop_token& token, D3D12GraphicsEngine* self ) {
+				if ( token.stop_requested() ) return;
+				ZoneScopedN( "Record rain shadowmap" );
+				ID3D12GraphicsCommandList* cl = self->BeginShadowList( kRainShadowListIndex );
+				if ( !cl ) return;
+				self->RecordRainShadowmap( cl );
+				self->m_ShadowListRecorded[kRainShadowListIndex] = SUCCEEDED( cl->Close() );
+			}, this ).future );
+	}
+	m_ShadowRecordingPending = !g_ShadowRecordJobs.empty();
+}
+
+
+void D3D12GraphicsEngine::FinishShadowPasses() {
+	// Step 3, run immediately before the lit geometry pass. Three things happen here, in order:
+	//   1. Join the concurrent cascade culls and do the serial Phase-C build that depends on them
+	//      (FinishSunShadowPrepare). This is the "wait as late as possible" point — the culls have had DrawSky,
+	//      the point/rain prepares, the indirect-arg builds and the whole prepass/cull/SSAO recording block to
+	//      run in.
+	//   2. Record the cascades (now that their data exists) and join the point/rain recorders launched back in
+	//      BeginShadowRecording.
+	//   3. Execute every finished list. m_CmdList part B (prepass, culls, SSAO) is still OPEN and unsubmitted,
+	//      so the GPU order stays [part A][shadows][part B] even though the CPU recorded part B first.
+	// Anything that failed to record is re-issued inline rather than dropped: skipping a pass would desync its
+	// cross-frame resource-state tracking (m_PointShadowInPixelState, m_RainShadowInReadState).
+	if ( !m_FrameOpen ) return;
+
+	// --- 1. the late join + the build that depends on it ---
+	FinishSunShadowPrepare();
+
+	// --- 2a. cascade recording. Unlike the point/rain passes this cannot overlap the prepass (the data did not
+	// exist until a moment ago), but it is pure draw emission from pre-resolved records — a fraction of the cull
+	// it displaced off the critical path. Fanned out across the cascades when threading is on.
+	if ( m_ShadowPassReady ) {
+		if ( m_ShadowThreadedRecord ) {
 			std::array<std::future<void>, kShadowCascades> jobs;
 			for ( UINT c = 0; c < kShadowCascades; ++c ) {
 				jobs[c] = Engine::RenderingThreadPool->enqueue(
-					[]( const std::stop_token& token, D3D12GraphicsEngine* self, UINT cascade ) {
+					[]( const std::stop_token& token, D3D12GraphicsEngine* self, UINT cascade, bool sunUp ) {
 						if ( token.stop_requested() ) return;
-						ZoneScopedN( "Cull shadow cascade" );
-						self->CullShadowCascade( cascade );
-					}, this, c ).future;
+						ZoneScopedN( "Record shadow cascade" );
+						ID3D12GraphicsCommandList* cl = self->BeginShadowList( cascade );
+						if ( !cl ) return;
+						self->RecordShadowCascade( cascade, cl, sunUp );
+						// Only a successfully closed list may be executed; a failed Close leaves it unusable.
+						self->m_ShadowListRecorded[cascade] = SUCCEEDED( cl->Close() );
+					}, this, c, m_ShadowSunUp ).future;
 			}
-			for ( auto& j : jobs ) if ( j.valid() ) j.get();
+			{
+				ZoneScopedN( "Join shadow cascade recording" );
+				for ( auto& j : jobs ) if ( j.valid() ) j.get();
+			}
+			m_ShadowRecordingPending = true;   // there is now at least one own-list batch to execute below
 		} else {
 			for ( UINT c = 0; c < kShadowCascades; ++c )
-				CullShadowCascade( c );
+				RecordShadowCascade( c, m_CmdList.Get(), m_ShadowSunUp );
 		}
-
-		// --- Phase C (main thread): everything that mutates Gothic state or writes a SHARED upload ring ---
-		// The VOB instance ring and the indirect-arg build both bump m_VobInstanceBufferOffset / call
-		// zCTexture::CacheIn, so they stay serial; they are cheap next to the BSP walk Phase B just parallelized.
-		static std::vector<FrameVobUpload> cascadeUploads;
-		for ( UINT c = 0; c < kShadowCascades; ++c ) {
-			m_ShadowVobDrawCount[c] = 0;
-			cascadeUploads.clear();
-			if ( !UploadVobs( g_ShadowPassVobs[c].buckets, cascadeUploads ) ) continue;
-			// GPU-driven VOB casters (P2.12): build this cascade's command set from the uploads (diffuse-only
-			// material resolution — the void PSShadowClipBindless just alpha-clips), submitted as ONE
-			// ExecuteIndirect in Phase D. Same command signature/PSO family as the main-view VOB pass; the
-			// per-command b4 min/max makes wind-flagged casters sway their silhouette identically to their lit
-			// geometry (VSDepth reads b4 unconditionally).
-			if ( !m_ShadowCasterVobIndirectPSO || !m_VobIndirectCmdSig || !m_ShadowVobDrawArgsPtr[c][m_FrameIndex] )
-				continue;
-			// culled=false: the cascades CPU-cull against their own frustum (a caster invisible to the player can
-			// still cast into view), so they draw the uncompacted ring with the CPU's instance counts.
-			m_ShadowVobDrawCount[c] = BuildVobDrawCommands( cascadeUploads, m_ShadowVobDrawArgsPtr[c][m_FrameIndex], false,
-				kMaxShadowVobDrawCommands, false );
-		}
-
-		// Skeletal shadow casters (parity with D3D11's Shadows::DrawSkeletalMeshes): cull the FULL registered
-		// skeletal-vob list against the cascade frusta, not the player's view frustum — a caster invisible to the
-		// player can still cast a visible shadow. ONE multi-cascade pass now (cascadeCount = kShadowCascades)
-		// instead of one pass per cascade: the per-vob upload was already cached across passes (g_SkelUploadCache),
-		// but the list walk, the distance cull and the Gothic animation/texani/morph work were not. It also has to
-		// be a single MAIN-THREAD pass — all of that mutates Gothic state and the skeletal CB / VOB instance rings.
-		for ( UINT c = 0; c < kShadowCascades; ++c ) { g_ShadowSkelDraws[c].clear(); g_ShadowAttachDraws[c].clear(); }
-		PrepareFrameSkeletals( Engine::GAPI->GetSkeletalMeshVobs(), &m_CascadeFrustum[0], 0, nullptr, 0.0f, kShadowCascades );
 	}
 
-	// --- Phase D: command recording ---------------------------------------------------------------------
-	if ( threadedCascades ) {
-		// The cascade lists have to land on the direct queue BETWEEN what is already recorded into m_CmdList this
-		// frame (OnBeginFrame's clears, DrawSky) and everything recorded after this call (the lit passes that
-		// sample the finished map), so close+submit m_CmdList here and reopen it on the same frame allocator.
-		// Queue order ends up [m_CmdList part A][cascade 0..N-1][m_CmdList part B], so the transition back to
-		// PIXEL_SHADER_RESOURCE at the bottom of this function still executes after every slice is written.
-		SubmitRecordedCommandsAndReopen();
-
-		std::array<std::future<void>, kShadowCascades> jobs;
-		std::array<bool, kShadowCascades> recorded = {};
-		for ( UINT c = 0; c < kShadowCascades; ++c ) {
-			jobs[c] = Engine::RenderingThreadPool->enqueue(
-				[]( const std::stop_token& token, D3D12GraphicsEngine* self, UINT cascade, bool up, bool* okOut ) {
-					if ( token.stop_requested() ) return;
-					ZoneScopedN( "Record shadow cascade" );
-					ID3D12CommandAllocator* alloc = self->m_CascadeCmdAllocators[cascade][self->m_FrameIndex].Get();
-					ID3D12GraphicsCommandList* cl = self->m_CascadeCmdLists[cascade][self->m_FrameIndex].Get();
-					if ( !alloc || !cl ) return;
-					// Safe without a GPU wait: this (cascade, frame-in-flight) pair was last used
-					// kBackBufferCount frames ago and Present() already fenced on that frame.
-					if ( FAILED( alloc->Reset() ) ) return;
-					if ( FAILED( cl->Reset( alloc, nullptr ) ) ) return;
-					ResetCpuContextTracker();   // per-thread breadcrumb ring — see D3D12EngineCommon.h
-					self->RecordShadowCascade( cascade, cl, up );
-					// Only a successfully closed list may be executed; a failed Close leaves it unusable.
-					*okOut = SUCCEEDED( cl->Close() );
-				}, this, c, sunUp, &recorded[c] ).future;
+	// --- 2b/3. join the point/rain recorders and execute everything that landed in its own list ---
+	if ( m_ShadowRecordingPending ) {
+		{
+			ZoneScopedN( "Join shadow recording" );
+			for ( auto& j : g_ShadowRecordJobs ) if ( j.valid() ) j.get();
 		}
-		for ( auto& j : jobs ) if ( j.valid() ) j.get();
+		g_ShadowRecordJobs.clear();
+		m_ShadowRecordingPending = false;
 
-		ID3D12CommandList* lists[kShadowCascades] = {};
+		ID3D12CommandList* lists[kShadowRecordSlots] = {};
 		UINT numLists = 0;
-		for ( UINT c = 0; c < kShadowCascades; ++c )
-			if ( recorded[c] ) lists[numLists++] = m_CascadeCmdLists[c][m_FrameIndex].Get();
+		for ( UINT s = 0; s < kShadowRecordSlots; ++s )
+			if ( m_ShadowListRecorded[s] ) lists[numLists++] = m_ShadowCmdLists[s][m_FrameIndex].Get();
 		if ( numLists > 0 )
 			m_Device.GetDirectQueue()->ExecuteCommandLists( numLists, lists );
-		if ( numLists != kShadowCascades && !m_CascadeRecordFailureLogged ) {
-			m_CascadeRecordFailureLogged = true;   // log once, not once per frame
-			LogWarn() << "D3D12: " << (kShadowCascades - numLists)
-				<< " shadow cascade(s) failed to record — those cascades keep last frame's depth.";
+
+		bool anyFailed = false;
+		if ( m_ShadowPassReady ) {
+			for ( UINT c = 0; c < kShadowCascades; ++c )
+				if ( !m_ShadowListRecorded[c] ) { RecordShadowCascade( c, m_CmdList.Get(), m_ShadowSunUp ); anyFailed = true; }
 		}
-	} else {
-		for ( UINT c = 0; c < kShadowCascades; ++c )
-			RecordShadowCascade( c, m_CmdList.Get(), sunUp );
+		if ( m_PointShadowPassReady && !m_ShadowListRecorded[kPointShadowListIndex] ) {
+			RecordPointShadows( m_CmdList.Get() );
+			anyFailed = true;
+		}
+		if ( m_RainShadowPassReady && !m_ShadowListRecorded[kRainShadowListIndex] ) {
+			RecordRainShadowmap( m_CmdList.Get() );
+			anyFailed = true;
+		}
+		if ( anyFailed && !m_ShadowRecordFailureLogged ) {
+			m_ShadowRecordFailureLogged = true;   // log once, not once per frame
+			LogWarn() << "D3D12: a shadow pass failed to record into its own command list — re-issued inline "
+				<< "on the main command list (slower, but correct).";
+		}
 	}
 
-	// Hand the whole array to PIXEL_SHADER_RESOURCE for the lit-pass PCF sampling; reverted at the top of next
-	// frame's shadow pass. Also re-binds the main RT/DSV so subsequent passes draw to the scene-color target.
-	auto toSrv = TransitionBarrier( m_ShadowMap.Get(),
-		D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
-	m_CmdList->ResourceBarrier( 1, &toSrv );
-	m_ShadowInPixelState = true;
+	// Hand the cascade array to PIXEL_SHADER_RESOURCE for the lit-pass PCF sampling; reverted at the top of next
+	// frame's PrepareSunShadows. (The point-shadow cube and the rain map do their own transition inside their
+	// own pass, which is self-contained in one list.)
+	if ( m_ShadowMap && !m_ShadowInPixelState ) {
+		auto toSrv = TransitionBarrier( m_ShadowMap.Get(),
+			D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
+		m_CmdList->ResourceBarrier( 1, &toSrv );
+		m_ShadowInPixelState = true;
+	}
 
 	// Restore the HDR scene-color RT (+ shared depth) for the lit passes that follow — the world pass renders
 	// into the HDR target, not the swapchain (Phase 3); the tonemap resolve composites it at the end of the frame.
-	D3D12_CPU_DESCRIPTOR_HANDLE mainDsv = m_DsvHeap->GetCPUDescriptorHandleForHeapStart();
-	m_CmdList->OMSetRenderTargets( 1, &m_SceneColorRtv, FALSE, m_DepthBuffer ? &mainDsv : nullptr );
+	BindSceneColorTarget();
 }
 
 
@@ -1874,7 +2070,48 @@ bool D3D12GraphicsEngine::BuildPointShadowExcludeList( zCVobLight* lightVob, std
 }
 
 
-void D3D12GraphicsEngine::RenderPointShadows() {
+namespace {
+	// ---- Point-shadow cube draw records (deferred recording) --------------------------------------------
+	// RecordPointShadows may run on a POOL THREAD, so everything the old inline pass did while recording that
+	// touched Gothic — zCTexture::CacheIn, zCModel::UpdateMeshLibTexAniState, PrepareFrameSkeletals, the
+	// world-section walk, the shared VOB-instance ring writes — is hoisted into PreparePointShadows and
+	// flattened into these records, which reference nothing but D3D12 handles. One shape serves all four
+	// caster kinds (static world mesh, static VOBs, dynamic skeletals, dynamic node attachments); the recorder
+	// filters redundant binds exactly like the inline loops used to.
+	struct PointShadowDraw {
+		D3D12VertexBuffer*          vb = nullptr;
+		D3D12VertexBuffer*          ib = nullptr;
+		UINT                        stride = 0;
+		DXGI_FORMAT                 ibFormat = DXGI_FORMAT_R16_UINT;
+		UINT                        indexCount = 0;
+		UINT                        startIndex = 0;
+		UINT                        instanceCount = 0;   // always a multiple of 6 — one instance per cube face
+		D3D12_GPU_DESCRIPTOR_HANDLE srv = {};
+		D3D12_VERTEX_BUFFER_VIEW    instView = {};       // 2nd stream (VOBs/attachments); SizeInBytes 0 => single stream
+		D3D12_GPU_VIRTUAL_ADDRESS   instCb = 0;          // skeletal b1
+		D3D12_GPU_VIRTUAL_ADDRESS   boneCb = 0;          // skeletal b2
+	};
+	// Per shadowed light: its cube slot, its 6-face view-proj CB, and the [begin,end) spans it owns in each
+	// of the four draw lists below.
+	struct PointShadowLightRecord {
+		UINT slot = 0;
+		D3D12_GPU_VIRTUAL_ADDRESS faceCb = 0;
+		UINT staticWorldBegin = 0, staticWorldEnd = 0;
+		UINT staticVobBegin = 0,   staticVobEnd = 0;
+		UINT dynSkelBegin = 0,     dynSkelEnd = 0;
+		UINT dynAttachBegin = 0,   dynAttachEnd = 0;
+		bool renderStatic = false;   // (re)render the static-aside cube for this slot
+	};
+	std::vector<PointShadowDraw>        g_PsStaticWorldDraws;
+	std::vector<PointShadowDraw>        g_PsStaticVobDraws;
+	std::vector<PointShadowDraw>        g_PsDynSkelDraws;
+	std::vector<PointShadowDraw>        g_PsDynAttachDraws;
+	std::vector<PointShadowLightRecord> g_PsLights;   // only slots TOUCHED this frame (static and/or dynamic)
+	bool g_PsAnyStatic = false;   // at least one slot re-renders its static-aside cube this frame
+}
+
+
+void D3D12GraphicsEngine::PreparePointShadows() {
 	// P2.10g — static/dynamic split (the D3D11 static-aside model). Per shadowed light, the active cube is built
 	// each frame as (cached static-only depth) + (this frame's dynamic casters overlaid). Three phases:
 	//   A) STATIC pass — for slots whose light is fresh / moved / resized (renderStatic), (re)render the STATIC
@@ -1885,13 +2122,30 @@ void D3D12GraphicsEngine::RenderPointShadows() {
 	// So per-frame cost is one depth copy + the few near dynamic draws — the expensive static cull/draw is paid
 	// once. Casters are range-culled to each light's sphere (360°, not the camera frustum). NORMAL-Z depth; the
 	// active cube round-trips DEPTH_WRITE/COPY_DEST -> PIXEL_SHADER_RESOURCE for the lit pass and back next frame.
+	//
+	// THIS half only RESOLVES, on the main thread: the sphere culls, the Gothic texture/animation state, the
+	// face-CB and VOB-instance ring writes. RecordPointShadows issues the resulting draws — off the main thread
+	// while it records the depth prepass/SSAO, which is what keeps the ~0.5 ms of cube copies + binds off the
+	// critical path (see PrepareShadowPasses / BeginShadowRecording).
+	m_PointShadowPassReady = false;
+	g_PsLights.clear();
+	g_PsStaticWorldDraws.clear();
+	g_PsStaticVobDraws.clear();
+	g_PsDynSkelDraws.clear();
+	g_PsDynAttachDraws.clear();
+	g_PsAnyStatic = false;
+
 	if ( !m_FrameOpen || !m_PointShadowCube || !m_PointShadowStaticCube || !m_Pipelines.PointShadow.CasterWorldPSO
 		|| !m_PointShadowDsvHeap || !m_PointShadowStaticDsvHeap || !m_Pipelines.PointShadow.RootSig )
 		return;
 	if ( g_FramePointShadows.empty() ) return;
 
-	DX_ZONE( m_CmdList, "Point Shadows (cubes)" );
-	TracyD3D12ZoneCGX( m_CmdList.Get(), "Point Shadows (cubes)" );
+	ZoneScopedN( "Prepare point shadows" );
+
+	// Past the guards the pass WILL run, even if the round-robin schedule leaves every slot untouched below
+	// (g_PsLights empty): Phase D still has to hand the active cube to the lit pass, which is the state the old
+	// inline pass left it in too. Phases A-C simply have nothing to do in that case.
+	m_PointShadowPassReady = true;
 
 	MeshInfo* wm = Engine::GAPI->GetWrappedWorldMesh();
 	D3D12VertexBuffer* vb = wm ? D3D12VertexBuffer::From( wm->GetMeshVertexBuffer() ) : nullptr;
@@ -1899,27 +2153,22 @@ void D3D12GraphicsEngine::RenderPointShadows() {
 	const bool haveWorld = vb && ib && vb->GetResource() && ib->GetResource();
 	const bool haveVobs = m_Pipelines.PointShadow.CasterVobPSO && !g_FrameVobUploads.empty()
 		&& m_PointShadowVobInstPtr[m_FrameIndex];
-	// Skeletal casters are now sphere-culled per light against the FULL registered vob list (see the Phase-C
-	// loop below), not the player-view-culled g_FrameSkelDraws, so gate on the registry instead of that list.
+	// Skeletal casters are sphere-culled per light against the FULL registered vob list (see the Phase-C loop
+	// below), not the player-view-culled g_FrameSkelDraws, so gate on the registry instead of that list.
 	const bool haveSkel = m_Pipelines.PointShadow.CasterSkeletalPSO && m_Pipelines.PointShadow.SkeletalRootSig
 		&& !Engine::GAPI->GetSkeletalMeshVobs().empty();
 
-	const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(kPointShadowCubeSize), static_cast<float>(kPointShadowCubeSize), 0.0f, 1.0f };
-	const D3D12_RECT     sc = { 0, 0, static_cast<LONG>(kPointShadowCubeSize), static_cast<LONG>(kPointShadowCubeSize) };
-	m_CmdList->RSSetViewports( 1, &vp );
-	m_CmdList->RSSetScissorRects( 1, &sc );
-	m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
-
 	const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_BlackTexture->GetSrvSlot() );
-	auto bindDiffuse = [&]( zCTexture* tex, UINT rootParam ) {
-		D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
+	// The one Gothic mutation the recorder can't do for itself: CacheIn kicks off the texture load. Resolved
+	// here, stored as a plain descriptor handle in the record.
+	auto resolveDiffuse = [&]( zCTexture* tex ) -> D3D12_GPU_DESCRIPTOR_HANDLE {
 		if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN )
 			if ( MyDirectDrawSurface7* surface = tex->GetSurface() )
 				if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
 					D3D12Texture* d12 = D3D12Texture::From( gfx );
-					if ( d12->HasSRV() ) srv = d12->GetSrvGpuHandle();
+					if ( d12->HasSRV() ) return d12->GetSrvGpuHandle();
 				}
-		m_CmdList->SetGraphicsRootDescriptorTable( rootParam, srv );
+		return whiteSrv;
 		};
 
 	// Standard D3D cube face order: +X, -X, +Y, -Y, +Z, -Z, with the canonical per-face up vectors.
@@ -1930,8 +2179,6 @@ void D3D12GraphicsEngine::RenderPointShadows() {
 		{ { { 0, 1, 0, 0 } } }, { { { 0, 1, 0, 0 } } }, { { { 0, 0, -1, 0 } } },
 		{ { { 0, 0, 1, 0 } } }, { { { 0, 1, 0, 0 } } }, { { { 0, 1, 0, 0 } } } };
 
-	const D3D12_CPU_DESCRIPTOR_HANDLE activeDsvBase = m_PointShadowDsvHeap->GetCPUDescriptorHandleForHeapStart();
-	const D3D12_CPU_DESCRIPTOR_HANDLE staticDsvBase = m_PointShadowStaticDsvHeap->GetCPUDescriptorHandleForHeapStart();
 	auto& worldSections = Engine::GAPI->GetWorldSections();
 
 	// Precompute each winner's 6 face view-projs into its per-frame CB slot (transpose(view*proj) — same
@@ -1948,47 +2195,43 @@ void D3D12GraphicsEngine::RenderPointShadows() {
 	}
 	auto faceCb = [&]( UINT slot ) { return m_PointShadowCBGpu[m_FrameIndex] + static_cast<UINT64>( slot ) * 512; };
 
-	// ============================ Phase A — STATIC pass (into the static-aside cube) ============================
-	bool anyStatic = false;
-	for ( const FramePointShadow& ps : g_FramePointShadows ) if ( ps.renderStatic && ps.slot < kMaxShadowCubes ) { anyStatic = true; break; }
+	// Reset the tight VOB-instance ring — only static-VOB gathers use it (the dynamic pass has no VOBs).
+	m_PointShadowVobInstOffset = 0;
+	uint8_t* const viBase = m_PointShadowVobInstPtr[m_FrameIndex];
+	const D3D12_GPU_VIRTUAL_ADDRESS viGpu = haveVobs ? m_PointShadowVobInstGpu[m_FrameIndex] : 0;
 
-	if ( anyStatic ) {
-		DX_ZONE( m_CmdList, "Static Pass" );
-		TracyD3D12ZoneCGX( m_CmdList.Get(), "Static Pass" );
-		if ( m_PointShadowStaticState != D3D12_RESOURCE_STATE_DEPTH_WRITE ) {
-			auto b = TransitionBarrier( m_PointShadowStaticCube.Get(), m_PointShadowStaticState, D3D12_RESOURCE_STATE_DEPTH_WRITE );
-			m_CmdList->ResourceBarrier( 1, &b );
-			m_PointShadowStaticState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
-		}
+	static std::vector<const zCVob*> excludeVobs;
+	// Coarse per-vob mesh-size margin for the sphere pre-filter below (PrepareFrameSkeletals doesn't know a
+	// vob's actual mesh extent yet — the exact per-record cull, ps.range + visual->MeshSize*0.5f, still runs
+	// once the visual is resolved).
+	constexpr float kSkeletalCullPad = 6.0f;
 
-		// Reset the tight VOB-instance ring — only static-VOB gathers use it now (dynamic pass has no VOBs).
-		m_PointShadowVobInstOffset = 0;
-		uint8_t* const viBase = m_PointShadowVobInstPtr[m_FrameIndex];
-		const D3D12_GPU_VIRTUAL_ADDRESS viGpu = m_PointShadowVobInstGpu[m_FrameIndex];
+	for ( const FramePointShadow& ps : g_FramePointShadows ) {
+		if ( ps.slot >= kMaxShadowCubes ) continue;
+		// Only the slots being (re)drawn THIS frame (static change and/or scheduled dynamic overlay, see the
+		// round-robin scheduling in BuildFrameLightBuffer) get their active cube refreshed from static-aside. A
+		// far light skipped this frame keeps EXACTLY what was last composited into its active cube — including
+		// its last dynamic overlay — instead of being stomped back to pure static every frame and losing it.
+		if ( !ps.renderStatic && !ps.renderDynamic ) continue;
 
-		for ( const FramePointShadow& ps : g_FramePointShadows ) {
-			if ( ps.slot >= kMaxShadowCubes || !ps.renderStatic ) continue;
+		PointShadowLightRecord rec;
+		rec.slot = ps.slot;
+		rec.faceCb = faceCb( ps.slot );
+		rec.renderStatic = ps.renderStatic;
+
+		const float rangeSq = ps.range * ps.range;
+
+		// ==================== Phase A resolve — STATIC casters (world mesh + instanced VOBs) ====================
+		rec.staticWorldBegin = rec.staticWorldEnd = static_cast<UINT>( g_PsStaticWorldDraws.size() );
+		rec.staticVobBegin   = rec.staticVobEnd   = static_cast<UINT>( g_PsStaticVobDraws.size() );
+		if ( ps.renderStatic ) {
+			g_PsAnyStatic = true;
 			m_PointShadowSlots[ps.slot].staticValid = true;   // static-aside now holds this slot's static depth
 
-			D3D12_CPU_DESCRIPTOR_HANDLE dsv = staticDsvBase;
-			dsv.ptr += static_cast<SIZE_T>(ps.slot) * m_PointShadowDsvSize;
-			m_CmdList->OMSetRenderTargets( 0, nullptr, FALSE, &dsv );
-			m_CmdList->ClearDepthStencilView( dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr );
-
-			const float rangeSq = ps.range * ps.range;
-
-			// --- World mesh: range-cull sections (AABB nearest-point), draw all 6 faces in one call. ---
+			// --- World mesh: range-cull sections (AABB nearest-point), all 6 faces in one draw. ---
 			if ( haveWorld ) {
-				DX_ZONE( m_CmdList, "World Mesh" );
-				TracyD3D12ZoneCGX( m_CmdList.Get(), "World Mesh" );
-				m_CmdList->SetPipelineState( m_Pipelines.PointShadow.CasterWorldPSO.Get() );
-				m_CmdList->SetGraphicsRootSignature( m_Pipelines.PointShadow.RootSig.Get() );
-				m_CmdList->SetGraphicsRootConstantBufferView( 0, faceCb( ps.slot ) );
-				const D3D12_VERTEX_BUFFER_VIEW vbv = { vb->GetGpuVirtualAddress(), vb->GetSizeInBytes(), sizeof( ExVertexStructGPU ) };
-				const D3D12_INDEX_BUFFER_VIEW  ibv = { ib->GetGpuVirtualAddress(), ib->GetSizeInBytes(), DXGI_FORMAT_R32_UINT };
-				m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
-				m_CmdList->IASetIndexBuffer( &ibv );
 				zCTexture* boundTex = nullptr;
+				D3D12_GPU_DESCRIPTOR_HANDLE boundSrv = whiteSrv;
 				for ( auto& [sx, col] : worldSections ) {
 					for ( auto& [sy, section] : col ) {
 						const zTBBox3D& bb = section.BoundingBox;
@@ -2001,23 +2244,28 @@ void D3D12GraphicsEngine::RenderPointShadows() {
 							if ( !mesh || mesh->Indices.empty() ) continue;
 							if ( meshKey.Info && meshKey.Info->MaterialType == MaterialInfo::MT_Water ) continue;
 							zCTexture* tex = meshKey.Material->GetAniTexture();
-							if ( tex != boundTex ) { bindDiffuse( tex, 1 ); boundTex = tex; }
-							m_CmdList->DrawIndexedInstanced( static_cast<UINT>(mesh->Indices.size()), 6, mesh->BaseIndexLocation, 0, 0 );
+							if ( tex != boundTex ) { boundSrv = resolveDiffuse( tex ); boundTex = tex; }
+
+							PointShadowDraw d;
+							d.vb = vb; d.ib = ib;
+							d.stride = sizeof( ExVertexStructGPU );
+							d.ibFormat = DXGI_FORMAT_R32_UINT;
+							d.indexCount = static_cast<UINT>( mesh->Indices.size() );
+							d.startIndex = mesh->BaseIndexLocation;
+							d.instanceCount = 6;
+							d.srv = boundSrv;
+							g_PsStaticWorldDraws.push_back( d );
 						}
 					}
 				}
 			}
+			rec.staticWorldEnd = static_cast<UINT>( g_PsStaticWorldDraws.size() );
 
-			// --- Instanced VOBs (static decoration): range-cull instances, pack 64B world matrices into the tight
-			// ring, draw count*6 (InstanceDataStepRate=6 → 6 faces per real instance). Same root sig as world.
-			// Skipped for isStatic() lights — mirrors D3D11's RenderStaticShadowPass staticCasterMask, which
-			// restricts a static light's (cached) cube to world-mesh-only casters, no VOBs/MOBS. ---
+			// --- Instanced VOBs (static decoration): range-cull instances, pack 64B world matrices into the
+			// tight ring, draw count*6 (InstanceDataStepRate=6 -> 6 faces per real instance). Skipped for
+			// isStatic() lights — mirrors D3D11's RenderStaticShadowPass staticCasterMask, which restricts a
+			// static light's (cached) cube to world-mesh-only casters, no VOBs/MOBS. ---
 			if ( haveVobs && !m_PointShadowSlots[ps.slot].isStatic ) {
-				DX_ZONE( m_CmdList, "Vobs" );
-				TracyD3D12ZoneCGX( m_CmdList.Get(), "Vobs" );
-				m_CmdList->SetPipelineState( m_Pipelines.PointShadow.CasterVobPSO.Get() );
-				m_CmdList->SetGraphicsRootSignature( m_Pipelines.PointShadow.RootSig.Get() );
-				m_CmdList->SetGraphicsRootConstantBufferView( 0, faceCb( ps.slot ) );
 				for ( const FrameVobUpload& up : g_FrameVobUploads ) {
 					MeshVisualInfo* visual = up.visual;
 					if ( !visual || visual->Instances.empty() ) continue;
@@ -2047,103 +2295,38 @@ void D3D12GraphicsEngine::RenderPointShadows() {
 
 					const D3D12_VERTEX_BUFFER_VIEW instView = { viGpu + gatherStart, count * static_cast<UINT>(sizeof( XMFLOAT4X4 )), static_cast<UINT>(sizeof( XMFLOAT4X4 )) };
 					for ( auto const& [meshKey, meshList] : visual->MeshesByTexture ) {
-						bindDiffuse( meshKey.Material->GetAniTexture(), 1 );
+						const D3D12_GPU_DESCRIPTOR_HANDLE srv = resolveDiffuse( meshKey.Material->GetAniTexture() );
 						for ( MeshInfo* mi : meshList ) {
 							if ( !mi || mi->Indices.empty() || !mi->GetMeshVertexBuffer() || !mi->GetMeshIndexBuffer() ) continue;
 							D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mi->GetMeshVertexBuffer() );
 							D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mi->GetMeshIndexBuffer() );
 							if ( !mvb->GetResource() || !mib->GetResource() ) continue;
-							const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStruct ) };
-							const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, instView };
-							m_CmdList->IASetVertexBuffers( 0, 2, views );
-							const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
-							m_CmdList->IASetIndexBuffer( &ibv );
-							m_CmdList->DrawIndexedInstanced( static_cast<UINT>(mi->Indices.size()), count * 6, 0, 0, 0 );
+
+							PointShadowDraw d;
+							d.vb = mvb; d.ib = mib;
+							d.stride = sizeof( ExVertexStruct );
+							d.indexCount = static_cast<UINT>( mi->Indices.size() );
+							d.instanceCount = count * 6;
+							d.srv = srv;
+							d.instView = instView;
+							g_PsStaticVobDraws.push_back( d );
 						}
 					}
 					if ( overflow ) break;
 				}
 			}
+			rec.staticVobEnd = static_cast<UINT>( g_PsStaticVobDraws.size() );
 		}
-	}
 
-	// ============================ Phase B — COPY static-aside -> active cube (per-slot, touched only) ============================
-	// Only the slots being (re)drawn THIS frame (static change and/or scheduled dynamic overlay, see the
-	// round-robin scheduling in BuildFrameLightBuffer) get their active cube refreshed from static-aside. A far
-	// light skipped this frame keeps EXACTLY what was last composited into its active cube — including its last
-	// dynamic overlay — instead of being stomped back to pure static every frame and losing it. Copies are
-	// per-slot (6 face subresources) rather than one whole-array CopyResource so skipped slots cost nothing.
-	{
-		DX_ZONE( m_CmdList, "Copy Static->Active" );
-		TracyD3D12ZoneCGX( m_CmdList.Get(), "Copy Static->Active" );
-		bool anyTouched = false;
-		for ( const FramePointShadow& ps : g_FramePointShadows )
-			if ( ps.slot < kMaxShadowCubes && ( ps.renderStatic || ps.renderDynamic ) ) { anyTouched = true; break; }
-
-		if ( anyTouched ) {
-			D3D12_RESOURCE_BARRIER pre[2];
-			UINT n = 0;
-			if ( m_PointShadowStaticState != D3D12_RESOURCE_STATE_COPY_SOURCE ) {
-				pre[n++] = TransitionBarrier( m_PointShadowStaticCube.Get(), m_PointShadowStaticState, D3D12_RESOURCE_STATE_COPY_SOURCE );
-				m_PointShadowStaticState = D3D12_RESOURCE_STATE_COPY_SOURCE;
-			}
-			const D3D12_RESOURCE_STATES activeCur = m_PointShadowInPixelState
-				? D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_DEPTH_WRITE;
-			pre[n++] = TransitionBarrier( m_PointShadowCube.Get(), activeCur, D3D12_RESOURCE_STATE_COPY_DEST );
-			m_CmdList->ResourceBarrier( n, pre );
-
-			for ( const FramePointShadow& ps : g_FramePointShadows ) {
-				if ( ps.slot >= kMaxShadowCubes || !( ps.renderStatic || ps.renderDynamic ) ) continue;
-				for ( UINT face = 0; face < 6; ++face ) {
-					const UINT sub = ps.slot * 6 + face;
-					D3D12_TEXTURE_COPY_LOCATION dstLoc = { m_PointShadowCube.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX };
-					dstLoc.SubresourceIndex = sub;
-					D3D12_TEXTURE_COPY_LOCATION srcLoc = { m_PointShadowStaticCube.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX };
-					srcLoc.SubresourceIndex = sub;
-					m_CmdList->CopyTextureRegion( &dstLoc, 0, 0, 0, &srcLoc, nullptr );
-				}
-			}
-
-			auto toDepth = TransitionBarrier( m_PointShadowCube.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_DEPTH_WRITE );
-			m_CmdList->ResourceBarrier( 1, &toDepth );
-			m_PointShadowInPixelState = false;   // active cube now in DEPTH_WRITE for the dynamic overlay
-		}
-	}
-
-	// ============================ Phase C — DYNAMIC overlay (skeletal NPCs into active cube) ============================
-	// Rendered over the copied static depth (LESS_EQUAL, NO clear) so moving casters composite with the cached
-	// static occluders. Runs every frame for every shadowed light — this is the real-time part of the split.
-	if ( haveSkel ) {
-		DX_ZONE( m_CmdList, "Dynamic Overlay (skeletals)" );
-		TracyD3D12ZoneCGX( m_CmdList.Get(), "Dynamic Overlay (skeletals)" );
-		static std::vector<const zCVob*> excludeVobs;
-		// Coarse per-vob mesh-size margin for the sphere pre-filter below (PrepareFrameSkeletals doesn't know a
-		// vob's actual mesh extent yet — the exact per-record cull, ps.range + visual->MeshSize*0.5f, still
-		// runs below once the visual is resolved).
-		constexpr float kSkeletalCullPad = 6.0f;
-		for ( const FramePointShadow& ps : g_FramePointShadows ) {
-			if ( ps.slot >= kMaxShadowCubes ) continue;
-			// isStatic() lights never get the dynamic overlay — mirrors D3D11's GetCurrentShadowMode, which forces
-			// a static light down to PLS_STATIC_ONLY regardless of the global EnablePointlightShadows setting, so
-			// it never runs RenderAnimatedShadowPass. Its active cube stays exactly the copied static-aside depth.
-			if ( m_PointShadowSlots[ps.slot].isStatic ) continue;
-			// Round-robin gate (P2.10h): far/less-important dynamic lights only get the skeletal overlay on their
-			// scheduled frame (see BuildFrameLightBuffer) — skipped frames just keep this frame's copied static
-			// depth, so a moving caster's shadow lags a few frames behind instead of costing a full sphere-cull
-			// every frame for every one of the now much larger (128) persisted-light set.
-			if ( !ps.renderDynamic ) continue;
-			// Re-bind every light: the node-attachment block below switches to PointShadow.RootSig (a DIFFERENT,
-			// smaller root signature) for the tail of each light's iteration, so the skeletal root sig/PSO can't
-			// be assumed still bound once we're past the first light — re-set it unconditionally per light instead
-			// of once before the loop (bug: 2nd+ shadowed light's instCb/boneCb/diffuse binds landed on the wrong
-			// root signature's parameter slots — GPU device hang on hardware, caught via D3D12 validation).
-			m_CmdList->SetPipelineState( m_Pipelines.PointShadow.CasterSkeletalPSO.Get() );
-			m_CmdList->SetGraphicsRootSignature( m_Pipelines.PointShadow.SkeletalRootSig.Get() );
-			D3D12_CPU_DESCRIPTOR_HANDLE dsv = activeDsvBase;
-			dsv.ptr += static_cast<SIZE_T>(ps.slot) * m_PointShadowDsvSize;
-			m_CmdList->OMSetRenderTargets( 0, nullptr, FALSE, &dsv );   // no clear — keep the copied static depth
-			m_CmdList->SetGraphicsRootConstantBufferView( 0, faceCb( ps.slot ) );
-
+		// ==================== Phase C resolve — DYNAMIC casters (skeletal NPCs + their attachments) ============
+		rec.dynSkelBegin   = rec.dynSkelEnd   = static_cast<UINT>( g_PsDynSkelDraws.size() );
+		rec.dynAttachBegin = rec.dynAttachEnd = static_cast<UINT>( g_PsDynAttachDraws.size() );
+		// isStatic() lights never get the dynamic overlay — mirrors D3D11's GetCurrentShadowMode, which forces a
+		// static light down to PLS_STATIC_ONLY regardless of the global EnablePointlightShadows setting, so it
+		// never runs RenderAnimatedShadowPass. Its active cube stays exactly the copied static-aside depth.
+		// The round-robin gate (P2.10h) is ps.renderDynamic: far/less-important dynamic lights only get the
+		// skeletal overlay on their scheduled frame (see BuildFrameLightBuffer).
+		if ( haveSkel && ps.renderDynamic && !m_PointShadowSlots[ps.slot].isStatic ) {
 			// Self-shadow exclusion (P2.10 owed-debt item): a light carried by an NPC (e.g. a torch in its hand)
 			// otherwise casts that NPC's own body as a huge shadow blob into its own cube — see
 			// BuildPointShadowExcludeList / D3D11's GetHasOriginVob+SetupVobsToExclude.
@@ -2159,52 +2342,48 @@ void D3D12GraphicsEngine::RenderPointShadows() {
 			g_PointShadowAttachDraws.clear();
 			PrepareFrameSkeletals( Engine::GAPI->GetSkeletalMeshVobs(), nullptr, -2, &ps.posWS, ps.range + kSkeletalCullPad );
 
-			for ( const FrameSkelDraw& d : g_PointShadowSkelDraws ) {
-				if ( !d.visual || !d.vobInfo || !d.vobInfo->Vob ) continue;
-				if ( hasExclusions && std::find( excludeVobs.begin(), excludeVobs.end(), d.vobInfo->Vob ) != excludeVobs.end() )
+			for ( const FrameSkelDraw& sd : g_PointShadowSkelDraws ) {
+				if ( !sd.visual || !sd.vobInfo || !sd.vobInfo->Vob ) continue;
+				if ( hasExclusions && std::find( excludeVobs.begin(), excludeVobs.end(), sd.vobInfo->Vob ) != excludeVobs.end() )
 					continue;
-				const XMFLOAT3 pos = d.vobInfo->Vob->GetPositionWorld();
-				const float cullR = ps.range + d.visual->MeshSize * 0.5f;
+				const XMFLOAT3 pos = sd.vobInfo->Vob->GetPositionWorld();
+				const float cullR = ps.range + sd.visual->MeshSize * 0.5f;
 				float dx = pos.x - ps.posWS.x, dy = pos.y - ps.posWS.y, dz = pos.z - ps.posWS.z;
 				if ( dx * dx + dy * dy + dz * dz >= cullR * cullR ) continue;
 
 				// Shared per-MODEL texture slots: refresh THIS instance's textures right before reading its
-				// materials (see [[skeletal-texani-shared-slots]]) — required in the cube alpha-clip pass too.
-				zCModel* model = static_cast<zCModel*>(d.vobInfo->Vob->GetVisual());
+				// materials (see [[skeletal-texani-shared-slots]]) — required in the cube alpha-clip pass too,
+				// and the reason the per-material SRVs have to be snapshotted here and not at record time.
+				zCModel* model = static_cast<zCModel*>(sd.vobInfo->Vob->GetVisual());
 				model->UpdateMeshLibTexAniState();
 
-				m_CmdList->SetGraphicsRootConstantBufferView( 1, d.instCb );
-				m_CmdList->SetGraphicsRootConstantBufferView( 2, d.boneCb );
-				for ( auto const& [mat, meshList] : d.visual->SkeletalMeshes ) {
-					bindDiffuse( mat ? mat->GetAniTexture() : nullptr, 3 );
+				for ( auto const& [mat, meshList] : sd.visual->SkeletalMeshes ) {
+					const D3D12_GPU_DESCRIPTOR_HANDLE srv = resolveDiffuse( mat ? mat->GetAniTexture() : nullptr );
 					for ( auto const& mesh : meshList ) {
 						if ( !mesh || mesh->Indices.empty() || !mesh->MeshVertexBuffer || !mesh->MeshIndexBuffer ) continue;
 						D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mesh->MeshVertexBuffer.get() );
 						D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mesh->MeshIndexBuffer.get() );
 						if ( !mvb->GetResource() || !mib->GetResource() ) continue;
-						const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExSkelVertexStruct ) };
-						m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
-						const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
-						m_CmdList->IASetIndexBuffer( &ibv );
-						m_CmdList->DrawIndexedInstanced( static_cast<UINT>(mesh->Indices.size()), 6, 0, 0, 0 );
+
+						PointShadowDraw d;
+						d.vb = mvb; d.ib = mib;
+						d.stride = sizeof( ExSkelVertexStruct );
+						d.indexCount = static_cast<UINT>( mesh->Indices.size() );
+						d.instanceCount = 6;
+						d.srv = srv;
+						d.instCb = sd.instCb;
+						d.boneCb = sd.boneCb;
+						g_PsDynSkelDraws.push_back( d );
 					}
 				}
 			}
 
-			// --- Node attachments (weapons/torches/held items) — owed-debt item finally ported: mirrors the CSM
-			// cascade's "Skeletal Nodes" pass (line ~2105 above) but through the point-shadow VOB caster PSO (CBV
-			// per-face view-projs, not root constants) and 6 face instances instead of 1. Runs once per light
-			// (not per skeletal draw) since g_PointShadowAttachDraws already holds every attachment sphere-culled
-			// against THIS light by the PrepareFrameSkeletals call above. Without this, a held torch/weapon never
-			// cast a shadow into its own point-shadow cube even though its owning NPC's body did. Same self-shadow
-			// exclusion as the body (a torch-carrying NPC's own held item shouldn't blob-shadow the light it's
-			// carrying).
-			if ( m_Pipelines.PointShadow.CasterVobPSO && !g_PointShadowAttachDraws.empty() ) {
-				DX_ZONE( m_CmdList, "Skeletal Nodes" );
-				TracyD3D12ZoneCGX( m_CmdList.Get(), "Skeletal Nodes" );
-				m_CmdList->SetPipelineState( m_Pipelines.PointShadow.CasterVobPSO.Get() );
-				m_CmdList->SetGraphicsRootSignature( m_Pipelines.PointShadow.RootSig.Get() );
-				m_CmdList->SetGraphicsRootConstantBufferView( 0, faceCb( ps.slot ) );
+			// --- Node attachments (weapons/torches/held items): mirrors the CSM cascade's "Skeletal Nodes" pass
+			// but through the point-shadow VOB caster PSO (CBV per-face view-projs, not root constants) and 6
+			// face instances. g_PointShadowAttachDraws already holds every attachment sphere-culled against THIS
+			// light by the PrepareFrameSkeletals call above. Same self-shadow exclusion as the body (a
+			// torch-carrying NPC's own held item shouldn't blob-shadow the light it's carrying). ---
+			if ( m_Pipelines.PointShadow.CasterVobPSO ) {
 				for ( const FrameAttachDraw& a : g_PointShadowAttachDraws ) {
 					if ( !a.mesh || !a.mesh->GetMeshVertexBuffer() || !a.mesh->GetMeshIndexBuffer() ) continue;
 					if ( hasExclusions && a.owner && std::find( excludeVobs.begin(), excludeVobs.end(), a.owner ) != excludeVobs.end() )
@@ -2212,33 +2391,232 @@ void D3D12GraphicsEngine::RenderPointShadows() {
 					D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( a.mesh->GetMeshVertexBuffer() );
 					D3D12VertexBuffer* mib = D3D12VertexBuffer::From( a.mesh->GetMeshIndexBuffer() );
 					if ( !mvb->GetResource() || !mib->GetResource() ) continue;
-					bindDiffuse( a.tex, 1 );
-					const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStruct ) };
-					const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, a.instView };
-					m_CmdList->IASetVertexBuffers( 0, 2, views );
-					const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
-					m_CmdList->IASetIndexBuffer( &ibv );
-					m_CmdList->DrawIndexedInstanced( static_cast<UINT>(a.mesh->Indices.size()), 6, 0, 0, 0 );
+
+					PointShadowDraw d;
+					d.vb = mvb; d.ib = mib;
+					d.stride = sizeof( ExVertexStruct );
+					d.indexCount = static_cast<UINT>( a.mesh->Indices.size() );
+					d.instanceCount = 6;
+					d.srv = resolveDiffuse( a.tex );
+					d.instView = a.instView;
+					g_PsDynAttachDraws.push_back( d );
+				}
+			}
+			rec.dynSkelEnd   = static_cast<UINT>( g_PsDynSkelDraws.size() );
+			rec.dynAttachEnd = static_cast<UINT>( g_PsDynAttachDraws.size() );
+		}
+
+		g_PsLights.push_back( rec );
+	}
+}
+
+
+void D3D12GraphicsEngine::RecordPointShadows( ID3D12GraphicsCommandList* cmdList ) {
+	// The pure-D3D12 half of the point-shadow pass: no Gothic access whatsoever, so it is safe on a pool thread.
+	// Phases mirror PreparePointShadows' comment: A) static casters into the static-aside cube, B) copy
+	// static-aside -> active per touched slot, C) dynamic (skeletal + attachment) overlay onto the copied depth,
+	// D) hand the active cube to the lit pass as a PIXEL_SHADER_RESOURCE.
+	if ( !cmdList || !m_PointShadowPassReady ) return;
+
+	// A freshly-Reset pool list carries no descriptor heap. On m_CmdList (serial fallback) the same heap is
+	// already bound, so this is a no-op — hence unconditional rather than branched on the caller.
+	if ( m_SrvHeap ) {
+		ID3D12DescriptorHeap* heaps[] = { m_SrvHeap.Get() };
+		cmdList->SetDescriptorHeaps( 1, heaps );
+	}
+
+	DX_ZONE( cmdList, "Point Shadows (cubes)" );
+	TracyD3D12ZoneCGX( cmdList, "Point Shadows (cubes)" );
+
+	const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(kPointShadowCubeSize), static_cast<float>(kPointShadowCubeSize), 0.0f, 1.0f };
+	const D3D12_RECT     sc = { 0, 0, static_cast<LONG>(kPointShadowCubeSize), static_cast<LONG>(kPointShadowCubeSize) };
+	cmdList->RSSetViewports( 1, &vp );
+	cmdList->RSSetScissorRects( 1, &sc );
+	cmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+
+	const D3D12_CPU_DESCRIPTOR_HANDLE activeDsvBase = m_PointShadowDsvHeap->GetCPUDescriptorHandleForHeapStart();
+	const D3D12_CPU_DESCRIPTOR_HANDLE staticDsvBase = m_PointShadowStaticDsvHeap->GetCPUDescriptorHandleForHeapStart();
+
+	// Redundant-bind filter. The records come out of PreparePointShadows in section/material/mesh order, so
+	// consecutive draws routinely share a vertex/index buffer, an SRV or a skeletal CB pair — exactly the
+	// dedupe the old inline loops did with their `boundTex` / hoisted IASetVertexBuffers. Reset whenever the
+	// root signature changes (descriptor tables and root CBVs don't survive that).
+	D3D12VertexBuffer* lastVb = nullptr;
+	D3D12VertexBuffer* lastIb = nullptr;
+	SIZE_T lastSrv = 0;
+	D3D12_GPU_VIRTUAL_ADDRESS lastInstCb = 0, lastBoneCb = 0, lastInstVbAddr = 0;
+	UINT lastInstVbSize = 0;
+	auto resetBindCache = [&]() {
+		lastVb = nullptr; lastIb = nullptr; lastSrv = 0;
+		lastInstCb = 0; lastBoneCb = 0; lastInstVbAddr = 0; lastInstVbSize = 0;
+		};
+	auto emitGeometry = [&]( const PointShadowDraw& d ) {
+		const bool twoStreams = d.instView.SizeInBytes != 0;
+		if ( d.vb != lastVb || d.ib != lastIb
+			|| (twoStreams && (d.instView.BufferLocation != lastInstVbAddr || d.instView.SizeInBytes != lastInstVbSize)) ) {
+			const D3D12_VERTEX_BUFFER_VIEW vbv = { d.vb->GetGpuVirtualAddress(), d.vb->GetSizeInBytes(), d.stride };
+			if ( twoStreams ) {
+				const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, d.instView };
+				cmdList->IASetVertexBuffers( 0, 2, views );
+				lastInstVbAddr = d.instView.BufferLocation;
+				lastInstVbSize = d.instView.SizeInBytes;
+			} else {
+				cmdList->IASetVertexBuffers( 0, 1, &vbv );
+				lastInstVbAddr = 0; lastInstVbSize = 0;
+			}
+			const D3D12_INDEX_BUFFER_VIEW ibv = { d.ib->GetGpuVirtualAddress(), d.ib->GetSizeInBytes(), d.ibFormat };
+			cmdList->IASetIndexBuffer( &ibv );
+			lastVb = d.vb; lastIb = d.ib;
+		}
+		cmdList->DrawIndexedInstanced( d.indexCount, d.instanceCount, d.startIndex, 0, 0 );
+		};
+
+	// ============================ Phase A — STATIC pass (into the static-aside cube) ============================
+	if ( g_PsAnyStatic ) {
+		DX_ZONE( cmdList, "Static Pass" );
+		TracyD3D12ZoneCGX( cmdList, "Static Pass" );
+		if ( m_PointShadowStaticState != D3D12_RESOURCE_STATE_DEPTH_WRITE ) {
+			auto b = TransitionBarrier( m_PointShadowStaticCube.Get(), m_PointShadowStaticState, D3D12_RESOURCE_STATE_DEPTH_WRITE );
+			cmdList->ResourceBarrier( 1, &b );
+			m_PointShadowStaticState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+		}
+
+		for ( const PointShadowLightRecord& L : g_PsLights ) {
+			if ( !L.renderStatic ) continue;
+
+			D3D12_CPU_DESCRIPTOR_HANDLE dsv = staticDsvBase;
+			dsv.ptr += static_cast<SIZE_T>(L.slot) * m_PointShadowDsvSize;
+			cmdList->OMSetRenderTargets( 0, nullptr, FALSE, &dsv );
+			cmdList->ClearDepthStencilView( dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr );
+
+			if ( L.staticWorldEnd > L.staticWorldBegin ) {
+				DX_ZONE( cmdList, "World Mesh" );
+				TracyD3D12ZoneCGX( cmdList, "World Mesh" );
+				cmdList->SetPipelineState( m_Pipelines.PointShadow.CasterWorldPSO.Get() );
+				cmdList->SetGraphicsRootSignature( m_Pipelines.PointShadow.RootSig.Get() );
+				cmdList->SetGraphicsRootConstantBufferView( 0, L.faceCb );
+				resetBindCache();
+				for ( UINT i = L.staticWorldBegin; i < L.staticWorldEnd; ++i ) {
+					const PointShadowDraw& d = g_PsStaticWorldDraws[i];
+					if ( d.srv.ptr != lastSrv ) { cmdList->SetGraphicsRootDescriptorTable( 1, d.srv ); lastSrv = d.srv.ptr; }
+					emitGeometry( d );
+				}
+			}
+
+			if ( L.staticVobEnd > L.staticVobBegin ) {
+				DX_ZONE( cmdList, "Vobs" );
+				TracyD3D12ZoneCGX( cmdList, "Vobs" );
+				cmdList->SetPipelineState( m_Pipelines.PointShadow.CasterVobPSO.Get() );
+				cmdList->SetGraphicsRootSignature( m_Pipelines.PointShadow.RootSig.Get() );
+				cmdList->SetGraphicsRootConstantBufferView( 0, L.faceCb );
+				resetBindCache();
+				for ( UINT i = L.staticVobBegin; i < L.staticVobEnd; ++i ) {
+					const PointShadowDraw& d = g_PsStaticVobDraws[i];
+					if ( d.srv.ptr != lastSrv ) { cmdList->SetGraphicsRootDescriptorTable( 1, d.srv ); lastSrv = d.srv.ptr; }
+					emitGeometry( d );
 				}
 			}
 		}
 	}
 
-	// ============================ Phase D — active cube -> PIXEL_SHADER_RESOURCE for the lit pass ============================
-	// Conditional on m_PointShadowInPixelState: if Phase B found nothing to touch this frame (no static change,
-	// no slot due for its dynamic round-robin turn), the active cube was left exactly as Phase D put it last
-	// frame — already PIXEL_SHADER_RESOURCE — and re-issuing this transition would barrier from the wrong state.
+	// ============================ Phase B — COPY static-aside -> active cube (per-slot, touched only) ============
+	// g_PsLights only holds slots touched this frame, so every entry needs the copy — and when it is empty there
+	// is nothing to refresh at all (every light kept exactly what was last composited into its active cube,
+	// including its last dynamic overlay). Copies are per-slot (6 face subresources) rather than one whole-array
+	// CopyResource so skipped slots cost nothing.
+	if ( !g_PsLights.empty() ) {
+		DX_ZONE( cmdList, "Copy Static->Active" );
+		TracyD3D12ZoneCGX( cmdList, "Copy Static->Active" );
+
+		D3D12_RESOURCE_BARRIER pre[2];
+		UINT n = 0;
+		if ( m_PointShadowStaticState != D3D12_RESOURCE_STATE_COPY_SOURCE ) {
+			pre[n++] = TransitionBarrier( m_PointShadowStaticCube.Get(), m_PointShadowStaticState, D3D12_RESOURCE_STATE_COPY_SOURCE );
+			m_PointShadowStaticState = D3D12_RESOURCE_STATE_COPY_SOURCE;
+		}
+		const D3D12_RESOURCE_STATES activeCur = m_PointShadowInPixelState
+			? D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_DEPTH_WRITE;
+		pre[n++] = TransitionBarrier( m_PointShadowCube.Get(), activeCur, D3D12_RESOURCE_STATE_COPY_DEST );
+		cmdList->ResourceBarrier( n, pre );
+
+	    ZoneTextStatic("num_lights");
+	    ZoneValue(g_PsLights.size());
+		for ( const PointShadowLightRecord& L : g_PsLights ) {
+			for ( UINT face = 0; face < 6; ++face ) {
+				const UINT sub = L.slot * 6 + face;
+				D3D12_TEXTURE_COPY_LOCATION dstLoc = { m_PointShadowCube.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX };
+				dstLoc.SubresourceIndex = sub;
+				D3D12_TEXTURE_COPY_LOCATION srcLoc = { m_PointShadowStaticCube.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX };
+				srcLoc.SubresourceIndex = sub;
+				cmdList->CopyTextureRegion( &dstLoc, 0, 0, 0, &srcLoc, nullptr );
+			}
+		}
+
+		auto toDepth = TransitionBarrier( m_PointShadowCube.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_DEPTH_WRITE );
+		cmdList->ResourceBarrier( 1, &toDepth );
+		m_PointShadowInPixelState = false;   // active cube now in DEPTH_WRITE for the dynamic overlay
+	}
+
+	// ============================ Phase C — DYNAMIC overlay (skeletal NPCs into active cube) ====================
+	// Rendered over the copied static depth (LESS_EQUAL, NO clear) so moving casters composite with the cached
+	// static occluders. This is the real-time part of the split.
+	{
+		DX_ZONE( cmdList, "Dynamic Overlay (skeletals)" );
+		TracyD3D12ZoneCGX( cmdList, "Dynamic Overlay (skeletals)" );
+		for ( const PointShadowLightRecord& L : g_PsLights ) {
+			const bool haveSkelDraws   = L.dynSkelEnd > L.dynSkelBegin;
+			const bool haveAttachDraws = L.dynAttachEnd > L.dynAttachBegin;
+			if ( !haveSkelDraws && !haveAttachDraws ) continue;
+
+			D3D12_CPU_DESCRIPTOR_HANDLE dsv = activeDsvBase;
+			dsv.ptr += static_cast<SIZE_T>(L.slot) * m_PointShadowDsvSize;
+			cmdList->OMSetRenderTargets( 0, nullptr, FALSE, &dsv );   // no clear — keep the copied static depth
+
+			if ( haveSkelDraws ) {
+				// Re-bind per light: the attachment block below switches to PointShadow.RootSig (a DIFFERENT,
+				// smaller root signature), so the skeletal root sig/PSO can't be assumed still bound once we're
+				// past the first light (bug: 2nd+ shadowed light's instCb/boneCb/diffuse binds landed on the
+				// wrong root signature's parameter slots — GPU device hang, caught via D3D12 validation).
+				cmdList->SetPipelineState( m_Pipelines.PointShadow.CasterSkeletalPSO.Get() );
+				cmdList->SetGraphicsRootSignature( m_Pipelines.PointShadow.SkeletalRootSig.Get() );
+				cmdList->SetGraphicsRootConstantBufferView( 0, L.faceCb );
+				resetBindCache();
+				for ( UINT i = L.dynSkelBegin; i < L.dynSkelEnd; ++i ) {
+					const PointShadowDraw& d = g_PsDynSkelDraws[i];
+					if ( d.instCb != lastInstCb ) { cmdList->SetGraphicsRootConstantBufferView( 1, d.instCb ); lastInstCb = d.instCb; }
+					if ( d.boneCb != lastBoneCb ) { cmdList->SetGraphicsRootConstantBufferView( 2, d.boneCb ); lastBoneCb = d.boneCb; }
+					if ( d.srv.ptr != lastSrv )   { cmdList->SetGraphicsRootDescriptorTable( 3, d.srv ); lastSrv = d.srv.ptr; }
+					emitGeometry( d );
+				}
+			}
+
+			if ( haveAttachDraws ) {
+				DX_ZONE( cmdList, "Skeletal Nodes" );
+				TracyD3D12ZoneCGX( cmdList, "Skeletal Nodes" );
+				cmdList->SetPipelineState( m_Pipelines.PointShadow.CasterVobPSO.Get() );
+				cmdList->SetGraphicsRootSignature( m_Pipelines.PointShadow.RootSig.Get() );
+				cmdList->SetGraphicsRootConstantBufferView( 0, L.faceCb );
+				resetBindCache();
+				for ( UINT i = L.dynAttachBegin; i < L.dynAttachEnd; ++i ) {
+					const PointShadowDraw& d = g_PsDynAttachDraws[i];
+					if ( d.srv.ptr != lastSrv ) { cmdList->SetGraphicsRootDescriptorTable( 1, d.srv ); lastSrv = d.srv.ptr; }
+					emitGeometry( d );
+				}
+			}
+		}
+	}
+
+	// ============================ Phase D — active cube -> PIXEL_SHADER_RESOURCE for the lit pass ================
 	if ( !m_PointShadowInPixelState ) {
 		auto toSrv = TransitionBarrier( m_PointShadowCube.Get(),
 			D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
-		m_CmdList->ResourceBarrier( 1, &toSrv );
+		cmdList->ResourceBarrier( 1, &toSrv );
 		m_PointShadowInPixelState = true;
 	}
-
-	// Restore the HDR scene-color RT (+ shared depth) for the lit passes that follow — the world pass renders
-	// into the HDR target, not the swapchain (Phase 3); the tonemap resolve composites it at the end of the frame.
-	D3D12_CPU_DESCRIPTOR_HANDLE mainDsv = m_DsvHeap->GetCPUDescriptorHandleForHeapStart();
-	m_CmdList->OMSetRenderTargets( 1, &m_SceneColorRtv, FALSE, m_DepthBuffer ? &mainDsv : nullptr );
+	// Leave nothing bound: the cube DSVs this list used have just left DEPTH_WRITE, and a DSV that is still the
+	// command list's "current" render target when that happens trips GPU validation on the next draw. The
+	// caller (BeginShadowRecording / FinishShadowPasses) re-establishes the scene-color RT for the lit passes.
+	cmdList->OMSetRenderTargets( 0, nullptr, FALSE, nullptr );
 }
 
 
@@ -2478,7 +2856,7 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 				|| std::fabs( np.z - ss.pos.z ) > moveEps;
 			bool rangeChanged = std::fabs( L.Range - ss.range ) > 1.0f;
 			// Static-aside is re-rendered only when fresh / the light moved / range changed; otherwise reused.
-			// The DYNAMIC (skeletal) overlay + the static->active copy run every frame regardless (see RenderPointShadows).
+			// The DYNAMIC (skeletal) overlay + the static->active copy run every frame regardless (see PreparePointShadows).
 			bool renderStatic = !ss.staticValid || moved || rangeChanged;
 
 			L.ShadowCubeIndex = static_cast<int32_t>(slot);
@@ -2523,7 +2901,7 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 		}
 
 		// A slot whose STATIC base is (re)rendered this frame must also refresh its dynamic overlay, round-robin
-		// turn or not: RenderPointShadows' Phase B only copies static-aside -> active for slots it's about to
+		// turn or not: PreparePointShadows' Phase B only copies static-aside -> active for slots it's about to
 		// touch (see there), and the previous active cube's dynamic content was composited against the OLD
 		// static depth — invalid once the static geometry/position changes. Not forcing this would either ghost
 		// stale skeletal shadows onto a new depth base, or (since Phase B still must copy the new static in)
@@ -3372,7 +3750,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 
 	// Refresh the wind CB's player position ONCE here (before shadows/prepass/color all run this frame) — windDir/
 	// globalTime were already advanced once in OnBeginFrame; minHeight/maxHeight are refreshed per-visual right
-	// before each pass's VOB draws (DrawVobDepthPrepass / RenderSunShadows / DrawVobsInstanced).
+	// before each pass's VOB draws (DrawVobDepthPrepass / PrepareSunShadows / DrawVobsInstanced).
 	if ( zCVob* player = Engine::GAPI->GetPlayerVob() ) {
 		m_WindBuffer.playerPos = player->GetPositionWorld();
 	}
@@ -3381,23 +3759,24 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// swapchain for 2D-only/menu frames; here we switch to HDR so lighting can exceed 1.0). Depth is shared.
 	BindSceneColorTarget();
 
+	// CSM cascades (P2.9c): compute this frame's cascade matrices + sampling CB and LAUNCH the per-cascade
+	// caster culls on the worker pool. This returns immediately — the BSP walks run concurrently with everything
+	// below, all the way down to FinishShadowPasses, which joins them right before the lit geometry pass. Same
+	// split D3D11ShadowMap uses (PrepareRender enqueues, DrawWorldShadow's WaitShadowCullingComplete joins).
+	PrepareSunShadows();
+
 	DrawSky();
-	// CSM sun shadows (P2.9c): render the opaque casters into the cascade shadow map from the sun's POV. Runs
-	// before the main geometry; rebinds the backbuffer RT/DSV when done. Nothing samples the map yet (later
-	// increment), so this is visually a no-op — inspect the shadow Texture2DArray in RenderDoc.
-	RenderSunShadows();
-	// Point-light shadow cubes (P2.10): render each selected shadowed light's 6 faces into the shared cube array.
-	// Runs before the lit passes that sample it; leaves the backbuffer RT/DSV rebound. Visually a no-op until the
-	// point-light loop samples the cubes (P2.10d).
-	RenderPointShadows();
-	// Rain shadowmap (D3D12 rain parity): world-mesh-only depth cast from an orthographic camera along
-	// the rain-velocity direction, so DrawRainParticles' VS can zero out indoor/roofed raindrops. Leaves
-	// the backbuffer RT/DSV rebound after (like the two shadow passes above).
-	RenderRainShadowmap();
+	// The other two shadow passes resolve their Gothic-side state here, on the main thread, WITHOUT recording any
+	// draws: the point-light shadow cubes (P2.10 — each selected light's 6 faces into the shared cube array) and
+	// the rain shadowmap (world-mesh-only depth along the rain-velocity direction, so DrawRainParticles' VS can
+	// zero out indoor/roofed raindrops). Both overlap the cascade culls launched above; BeginShadowRecording then
+	// fans their command recording out to the pool so it also overlaps the depth prepass / GPU cull / light cull
+	// / SSAO the main thread records next.
+	PrepareShadowPasses();
 	// Scene wetness ("wet ground"): publish this frame's rain camera + wetness/time constants into the tail
 	// of the shared shadow CB so the lit World/Vob/Skeletal pixel shaders can darken, ripple and gloss up
 	// the surfaces the rain actually reaches. Unconditional (it also has to publish the "not wet" state) and
-	// necessarily AFTER RenderRainShadowmap, which is what computes m_RainShadowViewProj.
+	// necessarily AFTER PrepareRainShadowmap, which is what computes m_RainShadowViewProj.
 	UploadWetnessConstants();
 	// Rain/snow particle advance: ping-pongs the GPU particle buffer in place. Independent of the geometry
 	// passes below (only touches its own buffer); DrawRainParticles (later, alongside the PFX particles)
@@ -3420,6 +3799,10 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	} else {
 		m_VobDrawCount = 0;
 	}
+	// Everything the shadow passes need is resolved and every indirect-arg buffer for this frame is written, so
+	// hand the shadow recording to the pool and carry on: the prepass/cull/SSAO block below is recorded on the
+	// main thread WHILE the cascades, the point-light cubes and the rain map record into their own lists.
+	BeginShadowRecording();
     {
         DX_ZONE( m_CmdList, "Depth Prepass" );
         TracyD3D12ZoneCGX( m_CmdList.Get(), "Depth Prepass" );
@@ -3445,9 +3828,13 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	RenderSSAO();
 	// Sky image-based lighting: rebuilds the indirect-light cubes (specular chain + irradiance) when Gothic's
 	// sky state has moved, and publishes their bindless indices into the shadow CB the lit passes bind. Must
-	// run after RenderSunShadows (it reads m_SunDirWS) and before the lit passes below. No-op on an unchanged
+	// run after PrepareSunShadows (it reads m_SunDirWS) and before the lit passes below. No-op on an unchanged
 	// sky; the shaders fall back to the old flat ambient whenever the indices are the 0xFFFFFFFF sentinel.
 	RenderSkyIBL();
+	// Join the shadow recorders and slot their lists into the queue ahead of everything recorded above — the lit
+	// passes below are the first thing this frame that samples the cascade map / point-shadow cubes. Also
+	// re-establishes the scene-color RT + depth for them.
+	FinishShadowPasses();
     {
         DX_ZONE( m_CmdList, "Lit Geometry Pass" );
         TracyD3D12ZoneCGX( m_CmdList.Get(), "Lit Geometry Pass" );
@@ -4225,7 +4612,7 @@ void D3D12GraphicsEngine::BindWorldFrameRootState( const XMFLOAT4X4& viewProj ) 
     BindFrameLights();   // param 3 = light SRV (t1), param 4 = light count (b2) — MUST set both or the
                          // shader's light loop reads a garbage count and runs away (GPU TDR hang).
     // CSM sampling: param 7 = shadow CB (b3), param 8 = shadow-map array SRV (t4). The map was left in
-    // PIXEL_SHADER_RESOURCE by RenderSunShadows; the PS samples it to darken sun-occluded surfaces.
+    // PIXEL_SHADER_RESOURCE by PrepareSunShadows; the PS samples it to darken sun-occluded surfaces.
     m_CmdList->SetGraphicsRootConstantBufferView( 7, m_ShadowCBGpu[m_FrameIndex] );
     m_CmdList->SetGraphicsRootDescriptorTable( 8, GetSrvGpuHandle( m_ShadowSrvSlot ) );
     m_CmdList->SetGraphicsRootDescriptorTable( 9, GetSrvGpuHandle( m_PointShadowSrvSlot ) );   // t5 point-shadow cubes
@@ -4570,8 +4957,8 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
     // Shadows::DrawSkeletalMeshes, which culls the FULL registered skeletal-vob list against the shadow's OWN
     // frustum/sphere rather than reusing the player's view-frustum-culled list (a caster invisible to the
     // player can still cast a visible shadow). NO draws here — DrawSkeletalDepthPrepass/DrawSkeletalColor read
-    // g_FrameSkelDraws/g_FrameAttachDraws; RenderSunShadows reads g_ShadowSkelDraws[c]/g_ShadowAttachDraws[c];
-    // RenderPointShadows reads g_PointShadowSkelDraws.
+    // g_FrameSkelDraws/g_FrameAttachDraws; PrepareSunShadows reads g_ShadowSkelDraws[c]/g_ShadowAttachDraws[c];
+    // PreparePointShadows reads g_PointShadowSkelDraws.
     if ( !m_FrameOpen || !m_SkeletalCBBuffer[m_FrameIndex] || !m_SkeletalCBBufferPtr[m_FrameIndex] )
         return;
     GothicRendererState& rs = Engine::GAPI->GetRendererState();

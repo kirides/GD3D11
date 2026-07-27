@@ -7,3 +7,5 @@ inline TracyD3D12Ctx s_tracyD3D12Ctx = nullptr;
 
 #define TracyD3D12CollectHere() TracyD3D12Collect( s_tracyD3D12Ctx )
 #define TracyD3D12BeginFrame() TracyD3D12NewFrame( s_tracyD3D12Ctx )
+
+#define ZoneTextStatic(text) ZoneText(text, std::size(text))

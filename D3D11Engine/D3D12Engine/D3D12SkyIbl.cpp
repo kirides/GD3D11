@@ -195,7 +195,7 @@ void D3D12GraphicsEngine::UploadSkyIblConstants() {
     // Intensity carries the COMPLETE ambient scale for the IBL path — the shader multiplies by this alone and
     // does NOT also apply AmbientStrength (that stays exclusive to the flat fallback branch). Two reasons:
     //
-    //  * ShadowStrength is used UNHALVED here. RenderSunShadows publishes AmbientStrength as
+    //  * ShadowStrength is used UNHALVED here. PrepareSunShadows publishes AmbientStrength as
     //    `sunUp ? ShadowStrength : ShadowStrength * 0.5` — that halving exists to darken a flat, time-of-day-
     //    independent constant at night. The sky radiance driving the IBL already collapses on its own after
     //    dusk, so applying the halving too double-counts the darkness and is what drove nights to black.
@@ -207,7 +207,7 @@ void D3D12GraphicsEngine::UploadSkyIblConstants() {
 }
 
 void D3D12GraphicsEngine::RenderSkyIBL() {
-    // Called from OnStartWorldRendering after RenderSunShadows (which computes m_SunDirWS) and before the lit
+    // Called from OnStartWorldRendering after PrepareSunShadows (which computes m_SunDirWS) and before the lit
     // geometry passes read the cubes. Rebuilds only when the sky state actually moved — the chain is ~100k
     // texels of analytic evaluation plus a ~1963-sample hemisphere march per irradiance texel, cheap in
     // absolute terms but pointless to repeat while the player stands still and the clock barely ticks.
@@ -226,7 +226,7 @@ void D3D12GraphicsEngine::RenderSkyIBL() {
     SkyIblParams p;
 
     // Indoor worlds see no sky. Suppressing the IBL there keeps the existing indoor lighting balance intact
-    // (D3D12Scene.cpp's RenderSunShadows already gives interiors a neutral sun + non-zero flat ambient) and
+    // (D3D12Scene.cpp's PrepareSunShadows already gives interiors a neutral sun + non-zero flat ambient) and
     // avoids reflecting an outdoor gradient onto cave walls.
     if ( auto* wi = Engine::GAPI->GetLoadedWorldInfo() )
         if ( wi->BspTree )
@@ -241,7 +241,7 @@ void D3D12GraphicsEngine::RenderSkyIBL() {
     if ( oCGame::GetGame() && oCGame::GetGame()->_zCSession_world )
         sc = oCGame::GetGame()->_zCSession_world->GetSkyControllerOutdoor();
 
-    // Sun: the same values RenderSunShadows feeds the direct term, so the IBL's sun lobe and the direct
+    // Sun: the same values PrepareSunShadows feeds the direct term, so the IBL's sun lobe and the direct
     // highlight agree about where the sun is and how bright it is. Resolved BEFORE the sky colours because the
     // ground bounce below is a function of the sun.
     const float3 lp = Engine::GAPI->GetSky()->GetAtmosphereCB().AC_LightPos;
@@ -363,7 +363,7 @@ void D3D12GraphicsEngine::RenderSkyIBL() {
     rcb.GroundBlend = 0.6f;
     // Indoors the sky contributes nothing; build a black cube rather than skipping the passes, so the shaders
     // do not have to distinguish "no IBL" from "IBL that happens to be dark" and the indoor flat ambient in
-    // RenderSunShadows stays the only interior ambient (unchanged behaviour).
+    // PrepareSunShadows stays the only interior ambient (unchanged behaviour).
     rcb.SkyIntensity = p.Indoor ? 0.0f : 1.0f;
     rcb.FaceSize = static_cast<float>( kSkyEnvSize );
     static_assert( sizeof( SkyRadianceCB ) == 20 * sizeof( float ), "SkyRadianceCB must match the 20 root constants" );

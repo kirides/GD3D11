@@ -219,14 +219,14 @@ XRESULT D3D12GraphicsEngine::Init() {
         // Grass.PSO existing and just skips the pass (grass simply doesn't render) if this failed.
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the grass pipeline (vegetation boxes will not render).";
     } else if ( !CreateGrassShadowCaster() ) {
-        // Non-fatal: RenderSunShadows() guards on m_ShadowCasterGrassPSO and just skips grass's shadow
+        // Non-fatal: PrepareSunShadows() guards on m_ShadowCasterGrassPSO and just skips grass's shadow
         // contribution (it still renders lit, just casts no shadow) if this failed.
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the grass shadow-caster pipeline (grass will not cast shadows).";
     }
-    if ( !CreateCascadeCommandLists() ) {
-        // Non-fatal: RenderSunShadows() checks m_CascadeCmdListsReady and falls back to recording all cascades
-        // serially into m_CmdList (exactly what it did before plan item #7) — slower, identical output.
-        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the per-cascade command lists (shadow cascades will be recorded single-threaded).";
+    if ( !CreateShadowRecordCommandLists() ) {
+        // Non-fatal: BeginShadowRecording() checks m_ShadowCmdListsReady and falls back to recording every shadow
+        // pass serially into m_CmdList (exactly what it did before) — slower, identical output.
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the shadow command lists (shadow passes will be recorded single-threaded).";
     }
     if ( !m_Pipelines.CreateVideo() ) {
         // Non-fatal: Bink cutscene playback (zBinkPlayer.cpp) is a niche path. DrawVertexArray's PS_Video branch
@@ -1629,33 +1629,34 @@ void D3D12GraphicsEngine::FlushCommandListSync() {
 }
 
 
-bool D3D12GraphicsEngine::CreateCascadeCommandLists() {
-    // Allocator + list pair per (cascade x frame-in-flight) for the MT shadow-cascade recording path. Two hard
-    // D3D12 rules drive the 2D array: an allocator can back only ONE currently-recording list (so cascades that
+bool D3D12GraphicsEngine::CreateShadowRecordCommandLists() {
+    // Allocator + list pair per (recording slot x frame-in-flight) for the deferred shadow-recording path. Two
+    // hard D3D12 rules drive the 2D array: an allocator can back only ONE currently-recording list (so slots that
     // record concurrently need one each), and it may not be Reset while the GPU still consumes a list recorded
-    // from it (so each frame-in-flight needs its own). Total = kShadowCascades * kBackBufferCount allocators,
-    // which is a handful of small VA reservations — acceptable even under the 32-bit budget.
+    // from it (so each frame-in-flight needs its own). Total = kShadowRecordSlots * kBackBufferCount allocators
+    // (the CSM cascades plus the point-cube and rain-shadowmap passes), which is a handful of small VA
+    // reservations — acceptable even under the 32-bit budget.
     ID3D12Device* device = m_Device.GetDevice();
     if ( !device ) return false;
 
-    for ( UINT c = 0; c < kShadowCascades; ++c ) {
+    for ( UINT c = 0; c < kShadowRecordSlots; ++c ) {
         for ( UINT i = 0; i < kBackBufferCount; ++i ) {
             if ( FAILED( device->CreateCommandAllocator( D3D12_COMMAND_LIST_TYPE_DIRECT,
-                IID_PPV_ARGS( m_CascadeCmdAllocators[c][i].ReleaseAndGetAddressOf() ) ) ) ) {
-                LogWarn() << "D3D12: failed to create a shadow-cascade command allocator — MT cascade recording disabled.";
+                IID_PPV_ARGS( m_ShadowCmdAllocators[c][i].ReleaseAndGetAddressOf() ) ) ) ) {
+                LogWarn() << "D3D12: failed to create a shadow command allocator — deferred shadow recording disabled.";
                 return false;
             }
             if ( FAILED( device->CreateCommandList( 0, D3D12_COMMAND_LIST_TYPE_DIRECT,
-                m_CascadeCmdAllocators[c][i].Get(), nullptr,
-                IID_PPV_ARGS( m_CascadeCmdLists[c][i].ReleaseAndGetAddressOf() ) ) ) ) {
-                LogWarn() << "D3D12: failed to create a shadow-cascade command list — MT cascade recording disabled.";
+                m_ShadowCmdAllocators[c][i].Get(), nullptr,
+                IID_PPV_ARGS( m_ShadowCmdLists[c][i].ReleaseAndGetAddressOf() ) ) ) ) {
+                LogWarn() << "D3D12: failed to create a shadow command list — deferred shadow recording disabled.";
                 return false;
             }
-            // CreateCommandList returns the list already open; close it so RenderSunShadows' Reset is symmetric.
-            m_CascadeCmdLists[c][i]->Close();
+            // CreateCommandList returns the list already open; close it so BeginShadowRecording's Reset is symmetric.
+            m_ShadowCmdLists[c][i]->Close();
         }
     }
-    m_CascadeCmdListsReady = true;
+    m_ShadowCmdListsReady = true;
     return true;
 }
 

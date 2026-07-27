@@ -392,7 +392,7 @@ bool D3D12GraphicsEngine::LoadRainTextures() {
 
 void D3D12GraphicsEngine::UploadWetnessConstants() {
     // Fills the scene-wetness tail of the shared shadow CB (see kWetnessCbOffset). MUST be called every
-    // frame, unconditionally, and AFTER RenderRainShadowmap — the lit World/Vob/Skeletal PS read these
+    // frame, unconditionally, and AFTER PrepareRainShadowmap — the lit World/Vob/Skeletal PS read these
     // constants out of the same CB they already bind for the cascades, so a frame that skipped the write
     // would sample last frame's rain camera against this frame's geometry.
     if ( !m_ShadowCBMapped[m_FrameIndex] ) return;
@@ -484,13 +484,36 @@ bool D3D12GraphicsEngine::CreateRainShadowResources() {
     return true;
 }
 
-void D3D12GraphicsEngine::RenderRainShadowmap() {
+namespace {
+    // Rain-shadow world-mesh caster records. PrepareRainShadowmap resolves them on the main thread (BSP walk +
+    // zCMaterial reads + bindless SRV slots); RecordRainShadowmap issues them, possibly on a pool thread, so a
+    // record may reference nothing but plain indices and the two shared world buffers below.
+    struct RainShadowDraw {
+        UINT indexCount = 0;
+        UINT startIndex = 0;
+        UINT NormalIdx = 0xFFFFFFFFu, OrmIdx = 0, DiffuseIdx = 0;   // b6 MaterialCB (PSShadowClip reads Diffuse)
+    };
+    std::vector<RainShadowDraw> g_RainShadowDraws;
+    D3D12VertexBuffer* g_RainShadowVb = nullptr;
+    D3D12VertexBuffer* g_RainShadowIb = nullptr;
+}
+
+
+void D3D12GraphicsEngine::PrepareRainShadowmap() {
     // World-mesh-only rain shadowmap (see the header comment for the VOB/grass scope cut). Reuses
     // m_ShadowCasterWorldPSO/m_Pipelines.World.RootSig with PER-DRAW (non-indirect) binds — the shared
     // root sig's b6 MaterialCB (params[10] in CreateWorld) is a plain root-constants parameter, so
     // ExecuteIndirect is purely an optimization the main CSM/color passes use, not a requirement; a
     // single low-frequency pass like this one is fine issuing one SetGraphicsRoot32BitConstants +
     // DrawIndexedInstanced per mesh, same as the pre-P2.11 per-draw pattern.
+    //
+    // This half computes the rain-light camera and resolves the visible casters on the MAIN THREAD;
+    // RecordRainShadowmap issues the draws (see PrepareShadowPasses / BeginShadowRecording).
+    m_RainShadowPassReady = false;
+    g_RainShadowDraws.clear();
+    g_RainShadowVb = nullptr;
+    g_RainShadowIb = nullptr;
+
     if ( !m_FrameOpen || !m_ShadowCasterWorldPSO || !m_Pipelines.World.RootSig || !m_BlackTexture || !m_DefaultOrmTexture )
         return;
 
@@ -498,17 +521,11 @@ void D3D12GraphicsEngine::RenderRainShadowmap() {
     if ( Engine::GAPI->GetRainFXWeight() <= 0.0f ) return;   // matches D3D11's actual gate — see AdvanceRain's comment on RendererSettings.EnableRain
     if ( !CreateRainShadowResources() ) return;
 
-    DX_ZONE( m_CmdList, "RainShadowmap" );
+    ZoneScopedN( "Prepare rain shadowmap" );
 
-    // Return the map to DEPTH_WRITE if last frame's readers left it in ALL_SHADER_RESOURCE.
-    if ( m_RainShadowInReadState ) {
-        auto toDepth = TransitionBarrier( m_RainShadowMap.Get(), D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE );
-        m_CmdList->ResourceBarrier( 1, &toDepth );
-        m_RainShadowInReadState = false;
-    }
-
-    m_CmdList->OMSetRenderTargets( 0, nullptr, FALSE, &m_RainShadowDsv );
-    m_CmdList->ClearDepthStencilView( m_RainShadowDsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr );
+    // From here the map WILL be cleared and handed to the readers, even if nothing casts — so the pass is
+    // "ready" regardless of whether the caster list below ends up empty.
+    m_RainShadowPassReady = true;
 
     // --- Camera: orthographic, looking along the (inverted) rain-velocity direction — mirrors
     const float scaleFactor = Toolbox::GetRecommendedWorldShadowRangeScaleForSize( static_cast<int>(kRainShadowMapSize) );
@@ -553,19 +570,9 @@ void D3D12GraphicsEngine::RenderRainShadowmap() {
 
     m_RainShadowFrustum.BuildOrthographic( view, span, span, 1.0f, halfRange * 2.0f, 0, 0, 0 );
 
-    if ( !m_RainShadowFrustum.IsValid() ) {
-        auto toRead = TransitionBarrier( m_RainShadowMap.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE );
-        m_CmdList->ResourceBarrier( 1, &toRead );
-        m_RainShadowInReadState = true;
-        // Re-bind the HDR scene-color RT (+ shared depth) — mirrors RenderSunShadows/RenderPointShadows'
-        // end-of-pass rebind. Without this the rain-shadow DSV stays the "currently bound" render target
-        // as far as the API is concerned, and the very next Draw call (anywhere) fails GPU validation
-        // ("resource state ... invalid for use as depth-read") once this pass transitions it away from
-        // DEPTH_WRITE.
-        D3D12_CPU_DESCRIPTOR_HANDLE mainDsv = m_DsvHeap->GetCPUDescriptorHandleForHeapStart();
-        m_CmdList->OMSetRenderTargets( 1, &m_SceneColorRtv, FALSE, m_DepthBuffer ? &mainDsv : nullptr );
-        return;
-    }
+    // Degenerate camera: the map still gets cleared + handed over (an all-far depth map reads as "no
+    // occluder"), it just has no casters in it.
+    if ( !m_RainShadowFrustum.IsValid() ) return;
 
     // Matches ComputeCascadeMatrices' CascadeViewProj construction EXACTLY (D3D12Scene.cpp) — both feed the
     // SAME shader (DepthPrepassVsBlob / m_Pipelines.World.RootSig's b0, "default column-major packing", plain
@@ -581,79 +588,108 @@ void D3D12GraphicsEngine::RenderRainShadowmap() {
     D3D12VertexBuffer* ib = wm ? D3D12VertexBuffer::From( wm->GetMeshIndexBuffer() ) : nullptr;
     const bool haveWorld = vb && ib && vb->GetResource() && ib->GetResource()
         && (ib->GetSizeInBytes() / sizeof( uint32_t )) > 0;
+    if ( !haveWorld ) return;
 
-    const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(kRainShadowMapSize), static_cast<float>(kRainShadowMapSize), 0.0f, 1.0f };
-    const D3D12_RECT     sc = { 0, 0, static_cast<LONG>(kRainShadowMapSize), static_cast<LONG>(kRainShadowMapSize) };
-    m_CmdList->RSSetViewports( 1, &vp );
-    m_CmdList->RSSetScissorRects( 1, &sc );
-    m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+    static std::vector<WorldMeshSectionInfo*> rainShadowSections;
+    rainShadowSections.clear();
 
-    if ( haveWorld ) {
-        static std::vector<WorldMeshSectionInfo*> rainShadowSections;
-        rainShadowSections.clear();
+    // culling currently broken with BVH but only for rain shadow map ???
+    auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+    const auto oldUseWorldSectionBVH = settings.DebugSettings.FeatureSet.UseWorldSectionBVH;
+    settings.DebugSettings.FeatureSet.UseWorldSectionBVH = false;
+    Engine::GAPI->CollectVisibleSections( rainShadowSections, &m_RainShadowFrustum, false );
+    settings.DebugSettings.FeatureSet.UseWorldSectionBVH = oldUseWorldSectionBVH;
 
-        // culling currently broken with BVH but only for rain shadow map ???
-        auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
-        const auto oldUseWorldSectionBVH = settings.DebugSettings.FeatureSet.UseWorldSectionBVH;
-        settings.DebugSettings.FeatureSet.UseWorldSectionBVH = false;
-        Engine::GAPI->CollectVisibleSections( rainShadowSections, &m_RainShadowFrustum, false );
-        settings.DebugSettings.FeatureSet.UseWorldSectionBVH = oldUseWorldSectionBVH;
+    g_RainShadowVb = vb;
+    g_RainShadowIb = ib;
 
-        if ( rainShadowSections.empty() ) {
-            auto _ = "wtf";
-        }
+    for ( WorldMeshSectionInfo* section : rainShadowSections ) {
+        if ( !section ) continue;
+        for ( auto const& [meshKey, mesh] : section->WorldMeshes ) {
+            if ( !mesh || mesh->Indices.empty() ) continue;
+            if ( meshKey.Info && meshKey.Info->MaterialType != MaterialInfo::MT_None ) continue;
 
-        m_CmdList->SetPipelineState( m_ShadowCasterWorldPSO.Get() );
-        m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
-        m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_RainShadowViewProj, 0 );
+            // Skip translucent/blended geometry, matching the CSM caster loop.
+            if ( (meshKey.Material->GetAlphaFunc() > zMAT_ALPHA_FUNC_NONE &&
+                meshKey.Material->GetAlphaFunc() != zMAT_ALPHA_FUNC_TEST)
+                || (meshKey.Material->GetAlphaFunc() == 0 && zColor( meshKey.Material->GetColor() ).bgra.alpha < 255) ) {
+                continue;
+            }
 
-        const D3D12_VERTEX_BUFFER_VIEW vbv = { vb->GetGpuVirtualAddress(), vb->GetSizeInBytes(), sizeof( ExVertexStructGPU ) };
-        const D3D12_INDEX_BUFFER_VIEW  ibv = { ib->GetGpuVirtualAddress(), ib->GetSizeInBytes(), DXGI_FORMAT_R32_UINT };
-        m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
-        m_CmdList->IASetIndexBuffer( &ibv );
-
-        for ( WorldMeshSectionInfo* section : rainShadowSections ) {
-            if ( !section ) continue;
-            for ( auto const& [meshKey, mesh] : section->WorldMeshes ) {
-                if ( !mesh || mesh->Indices.empty() ) continue;
-                if ( meshKey.Info && meshKey.Info->MaterialType != MaterialInfo::MT_None ) continue;
-               // if ( !Engine::GAPI->IsWorldMeshVisibleInFrustum( mesh, m_RainShadowFrustum ) ) continue;
-
-                // Skip translucent/blended geometry, matching the CSM caster loop.
-                if ( (meshKey.Material->GetAlphaFunc() > zMAT_ALPHA_FUNC_NONE &&
-                    meshKey.Material->GetAlphaFunc() != zMAT_ALPHA_FUNC_TEST)
-                    || (meshKey.Material->GetAlphaFunc() == 0 && zColor( meshKey.Material->GetColor() ).bgra.alpha < 255) ) {
-                    continue;
-                }
-
-                uint32_t diffuseIdx = m_BlackTexture->GetSrvSlot();
-                if ( zCTexture* tex = meshKey.Material->GetAniTexture() ) {
-                    if ( tex->GetCacheState() == zRES_CACHED_IN ) {
-                        if ( MyDirectDrawSurface7* s = tex->GetSurface() ) {
-                            if ( GfxTexture* gfx = s->GetEngineTexture() ) {
-                                D3D12Texture* d = D3D12Texture::From( gfx );
-                                if ( d->HasSRV() ) diffuseIdx = d->GetSrvSlot();
-                            }
+            uint32_t diffuseIdx = m_BlackTexture->GetSrvSlot();
+            if ( zCTexture* tex = meshKey.Material->GetAniTexture() ) {
+                if ( tex->GetCacheState() == zRES_CACHED_IN ) {
+                    if ( MyDirectDrawSurface7* s = tex->GetSurface() ) {
+                        if ( GfxTexture* gfx = s->GetEngineTexture() ) {
+                            D3D12Texture* d = D3D12Texture::From( gfx );
+                            if ( d->HasSRV() ) diffuseIdx = d->GetSrvSlot();
                         }
                     }
                 }
-
-                struct { UINT NormalIdx, OrmIdx, DiffuseIdx; } matCb = { 0xFFFFFFFFu, m_DefaultOrmTexture->GetSrvSlot(), diffuseIdx };
-                m_CmdList->SetGraphicsRoot32BitConstants( 10, 3, &matCb, 0 );
-                m_CmdList->DrawIndexedInstanced( static_cast<UINT>(mesh->Indices.size()), 1, mesh->BaseIndexLocation, 0, 0 );
             }
+
+            RainShadowDraw d;
+            d.indexCount = static_cast<UINT>( mesh->Indices.size() );
+            d.startIndex = mesh->BaseIndexLocation;
+            d.NormalIdx = 0xFFFFFFFFu;
+            d.OrmIdx = m_DefaultOrmTexture->GetSrvSlot();
+            d.DiffuseIdx = diffuseIdx;
+            g_RainShadowDraws.push_back( d );
+        }
+    }
+}
+
+
+void D3D12GraphicsEngine::RecordRainShadowmap( ID3D12GraphicsCommandList* cmdList ) {
+    // The pure-D3D12 half: no Gothic access, so it is safe on a pool thread.
+    if ( !cmdList || !m_RainShadowPassReady ) return;
+
+    // A freshly-Reset pool list carries no descriptor heap; on m_CmdList this is a redundant no-op.
+    if ( m_SrvHeap ) {
+        ID3D12DescriptorHeap* heaps[] = { m_SrvHeap.Get() };
+        cmdList->SetDescriptorHeaps( 1, heaps );
+    }
+
+    DX_ZONE( cmdList, "RainShadowmap" );
+    TracyD3D12ZoneCGX( cmdList, "RainShadowmap" );
+
+    // Return the map to DEPTH_WRITE if last frame's readers left it in ALL_SHADER_RESOURCE.
+    if ( m_RainShadowInReadState ) {
+        auto toDepth = TransitionBarrier( m_RainShadowMap.Get(), D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE );
+        cmdList->ResourceBarrier( 1, &toDepth );
+        m_RainShadowInReadState = false;
+    }
+
+    cmdList->OMSetRenderTargets( 0, nullptr, FALSE, &m_RainShadowDsv );
+    cmdList->ClearDepthStencilView( m_RainShadowDsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr );
+
+    if ( !g_RainShadowDraws.empty() && g_RainShadowVb && g_RainShadowIb ) {
+        const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(kRainShadowMapSize), static_cast<float>(kRainShadowMapSize), 0.0f, 1.0f };
+        const D3D12_RECT     sc = { 0, 0, static_cast<LONG>(kRainShadowMapSize), static_cast<LONG>(kRainShadowMapSize) };
+        cmdList->RSSetViewports( 1, &vp );
+        cmdList->RSSetScissorRects( 1, &sc );
+        cmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+
+        cmdList->SetPipelineState( m_ShadowCasterWorldPSO.Get() );
+        cmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
+        cmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_RainShadowViewProj, 0 );
+
+        const D3D12_VERTEX_BUFFER_VIEW vbv = { g_RainShadowVb->GetGpuVirtualAddress(), g_RainShadowVb->GetSizeInBytes(), sizeof( ExVertexStructGPU ) };
+        const D3D12_INDEX_BUFFER_VIEW  ibv = { g_RainShadowIb->GetGpuVirtualAddress(), g_RainShadowIb->GetSizeInBytes(), DXGI_FORMAT_R32_UINT };
+        cmdList->IASetVertexBuffers( 0, 1, &vbv );
+        cmdList->IASetIndexBuffer( &ibv );
+
+        for ( const RainShadowDraw& d : g_RainShadowDraws ) {
+            cmdList->SetGraphicsRoot32BitConstants( 10, 3, &d.NormalIdx, 0 );
+            cmdList->DrawIndexedInstanced( d.indexCount, 1, d.startIndex, 0, 0 );
         }
     }
 
+    // Unbind before the transition: a DSV that is still the command list's "current" render target when its
+    // resource leaves DEPTH_WRITE fails GPU validation on the next draw ("resource state ... invalid for use as
+    // depth-read/depth-write"). The caller re-establishes the scene-color RT for the lit passes.
+    cmdList->OMSetRenderTargets( 0, nullptr, FALSE, nullptr );
     auto toRead = TransitionBarrier( m_RainShadowMap.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE );
-    m_CmdList->ResourceBarrier( 1, &toRead );
+    cmdList->ResourceBarrier( 1, &toRead );
     m_RainShadowInReadState = true;
-
-    // Re-bind the HDR scene-color RT (+ shared depth) — mirrors RenderSunShadows/RenderPointShadows' end-
-    // of-pass rebind. Without this the rain-shadow DSV stays the "currently bound" render target as far as
-    // the command list is concerned, and the next Draw call anywhere in the frame fails GPU validation
-    // ("resource state ... invalid for use as depth-read/depth-write") once this pass moves the resource
-    // out of DEPTH_WRITE.
-    D3D12_CPU_DESCRIPTOR_HANDLE mainDsv = m_DsvHeap->GetCPUDescriptorHandleForHeapStart();
-    m_CmdList->OMSetRenderTargets( 1, &m_SceneColorRtv, FALSE, m_DepthBuffer ? &mainDsv : nullptr );
 }
