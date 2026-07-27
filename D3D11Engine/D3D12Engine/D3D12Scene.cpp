@@ -152,7 +152,11 @@ namespace {
     // this winner — always true for the closest kAlwaysDynamicCount winners, round-robined (a few per frame,
     // oldest-serviced-first) for the rest, so a large persisted-light count doesn't multiply the CPU cost of
     // sphere-culling the full skeletal-vob list against every single shadowed light every frame.
-    struct FramePointShadow { DirectX::XMFLOAT3 posWS; float range; UINT slot; bool renderStatic; bool renderDynamic; };
+    // overlayEligible: whether this light can EVER receive a dynamic overlay (not a static light, and the global
+    // PointlightShadows setting is >= PLS_UPDATE_DYNAMIC). Ineligible lights skip the static-aside cube entirely —
+    // their static casters are rendered straight into the active cube and never copied, because nothing will
+    // overwrite that depth. This is what makes PLS_STATIC_ONLY (the shipped default) cost zero copies per frame.
+    struct FramePointShadow { DirectX::XMFLOAT3 posWS; float range; UINT slot; bool renderStatic; bool renderDynamic; bool overlayEligible; };
     std::vector<FramePointShadow> g_FramePointShadows;
 
     // Per-frame VOB instance-ring snapshot (P2.9b-4a). UploadFrameVobInstances memcpys each visible visual's
@@ -937,8 +941,11 @@ bool D3D12GraphicsEngine::CreatePointShadowResources() {
 	if ( !device ) return false;
 
 	// --- Cube array resource: Texture2DArray with kMaxShadowCubes*6 R16 slices (interpreted as a TextureCubeArray
-	// by the SRV). NORMAL-Z depth (clear 1.0, LESS_EQUAL). Born in DEPTH_WRITE (PreparePointShadows flips it to
-	// PIXEL_SHADER_RESOURCE for the lit pass and back next frame).
+	// by the SRV). NORMAL-Z depth (clear 1.0, LESS_EQUAL). Born in PIXEL_SHADER_RESOURCE — the RESTING state every
+	// slot returns to at the end of RecordPointShadows' Phase D. Since barriers on this resource are per-slot now
+	// (see m_PointShadowActiveSlotState), slots the pass never touches are never transitioned at all, so the
+	// created state has to be the one the lit pass can sample; born in DEPTH_WRITE, an untouched slot would stay
+	// unsampleable forever instead of being swept up by a whole-resource transition.
 	D3D12MA::ALLOCATION_DESC defaultAlloc = {};
 	defaultAlloc.HeapType = D3D12_HEAP_TYPE_DEFAULT;
 
@@ -956,11 +963,11 @@ bool D3D12GraphicsEngine::CreatePointShadowResources() {
 	clear.Format = DXGI_FORMAT_D16_UNORM;
 	clear.DepthStencil.Depth = 1.0f;
 	if ( FAILED( m_Allocator->CreateResource( &defaultAlloc, &dd,
-		D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear, m_PointShadowCubeAlloc.ReleaseAndGetAddressOf(),
+		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clear, m_PointShadowCubeAlloc.ReleaseAndGetAddressOf(),
 		IID_PPV_ARGS( m_PointShadowCube.ReleaseAndGetAddressOf() ) ) ) )
 		return false;
 	m_PointShadowCube->SetName( L"PointShadowCubeArray(D16)" );
-	m_PointShadowInPixelState = false;
+	for ( D3D12_RESOURCE_STATES& s : m_PointShadowActiveSlotState ) s = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 
 	// One DSV per cube slot: a 6-slice Texture2DArray view (FirstArraySlice = slot*6). SV_RenderTargetArrayIndex
 	// 0..5 from the VS then selects the face within the bound slot.
@@ -989,7 +996,7 @@ bool D3D12GraphicsEngine::CreatePointShadowResources() {
 		IID_PPV_ARGS( m_PointShadowStaticCube.ReleaseAndGetAddressOf() ) ) ) )
 		return false;
 	m_PointShadowStaticCube->SetName( L"PointShadowStaticCubeArray(D16)" );
-	m_PointShadowStaticState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+	for ( D3D12_RESOURCE_STATES& s : m_PointShadowStaticSlotState ) s = D3D12_RESOURCE_STATE_DEPTH_WRITE;
 
 	D3D12_DESCRIPTOR_HEAP_DESC staticDsvHeapDesc = {};
 	staticDsvHeapDesc.NumDescriptors = kMaxShadowCubes;
@@ -1648,7 +1655,7 @@ void D3D12GraphicsEngine::FinishShadowPasses() {
 	//   3. Execute every finished list. m_CmdList part B (prepass, culls, SSAO) is still OPEN and unsubmitted,
 	//      so the GPU order stays [part A][shadows][part B] even though the CPU recorded part B first.
 	// Anything that failed to record is re-issued inline rather than dropped: skipping a pass would desync its
-	// cross-frame resource-state tracking (m_PointShadowInPixelState, m_RainShadowInReadState).
+	// cross-frame resource-state tracking (m_PointShadowActiveSlotState, m_RainShadowInReadState).
 	if ( !m_FrameOpen ) return;
 
 	// --- 1. the late join + the build that depends on it ---
@@ -2100,14 +2107,22 @@ namespace {
 		UINT staticVobBegin = 0,   staticVobEnd = 0;
 		UINT dynSkelBegin = 0,     dynSkelEnd = 0;
 		UINT dynAttachBegin = 0,   dynAttachEnd = 0;
-		bool renderStatic = false;   // (re)render the static-aside cube for this slot
+		bool renderStatic = false;   // (re)render this slot's static casters this frame
+		bool useAside = false;       // static target: true = the static-aside cube (then copied into active every
+		                             // frame, because a dynamic overlay may overwrite it); false = render straight
+		                             // into the ACTIVE cube and never copy (this slot can't receive an overlay).
 	};
 	std::vector<PointShadowDraw>        g_PsStaticWorldDraws;
 	std::vector<PointShadowDraw>        g_PsStaticVobDraws;
 	std::vector<PointShadowDraw>        g_PsDynSkelDraws;
 	std::vector<PointShadowDraw>        g_PsDynAttachDraws;
 	std::vector<PointShadowLightRecord> g_PsLights;   // only slots TOUCHED this frame (static and/or dynamic)
-	bool g_PsAnyStatic = false;   // at least one slot re-renders its static-aside cube this frame
+	bool g_PsAnyStatic = false;   // >=1 slot re-renders its static casters this frame (into either cube — see useAside)
+	bool g_PsAnyCopy   = false;   // >=1 slot needs the static-aside -> active copy this frame
+	// Barrier scratch for RecordPointShadows' per-slot (6-subresource) transitions. Reused across frames — the
+	// point-shadow pass is single-consumer (one recorder list) and the project's standing rule is no per-frame
+	// (re)allocations on the frame path.
+	std::vector<D3D12_RESOURCE_BARRIER> g_PsBarriers;
 }
 
 
@@ -2115,13 +2130,22 @@ void D3D12GraphicsEngine::PreparePointShadows() {
 	// P2.10g — static/dynamic split (the D3D11 static-aside model). Per shadowed light, the active cube is built
 	// each frame as (cached static-only depth) + (this frame's dynamic casters overlaid). Three phases:
 	//   A) STATIC pass — for slots whose light is fresh / moved / resized (renderStatic), (re)render the STATIC
-	//      casters (world mesh + instanced VOBs) into the static-aside cube slot. Amortized: usually a no-op.
-	//   B) COPY — CopyResource the whole static-aside cube into the active cube (cheap ~6MB depth copy).
+	//      casters (world mesh + instanced VOBs). Amortized: usually a no-op.
+	//   B) COPY — per touched slot, copy its 6 static-aside faces into the active cube (192 KB/slot).
 	//   C) DYNAMIC overlay — render the moving casters (skeletal NPCs) into the active cube over the copied
 	//      static depth (LESS_EQUAL, no clear), every frame for every shadowed light.
-	// So per-frame cost is one depth copy + the few near dynamic draws — the expensive static cull/draw is paid
-	// once. Casters are range-culled to each light's sphere (360°, not the camera frustum). NORMAL-Z depth; the
-	// active cube round-trips DEPTH_WRITE/COPY_DEST -> PIXEL_SHADER_RESOURCE for the lit pass and back next frame.
+	// So per-frame cost is a few per-slot depth copies + the few near dynamic draws — the expensive static
+	// cull/draw is paid once. Casters are range-culled to each light's sphere (360°, not the camera frustum).
+	//
+	// The aside cube exists for ONE reason: phase C overwrites the active cube destructively, so a clean static
+	// base has to be re-laid under it every frame. A light that can never receive an overlay (a static light, or
+	// ANY light when PointlightShadows is PLS_STATIC_ONLY) therefore skips the aside entirely — phase A renders
+	// its static casters straight into the ACTIVE cube and phase B never touches it. Its active cube keeps that
+	// depth across frames exactly like the aside used to. `overlayEligible` (from BuildFrameLightBuffer) is the
+	// routing switch, and PointShadowSlot::usesAside remembers it so a mid-session settings change re-renders
+	// into the other cube instead of sampling stale depth.
+	// NORMAL-Z depth; a touched slot's 6 subresources round-trip PIXEL_SHADER_RESOURCE -> DEPTH_WRITE/COPY_DEST
+	// and back within the pass. Untouched slots are never transitioned (see m_PointShadowActiveSlotState).
 	//
 	// THIS half only RESOLVES, on the main thread: the sphere culls, the Gothic texture/animation state, the
 	// face-CB and VOB-instance ring writes. RecordPointShadows issues the resulting draws — off the main thread
@@ -2134,6 +2158,7 @@ void D3D12GraphicsEngine::PreparePointShadows() {
 	g_PsDynSkelDraws.clear();
 	g_PsDynAttachDraws.clear();
 	g_PsAnyStatic = false;
+	g_PsAnyCopy = false;
 
 	if ( !m_FrameOpen || !m_PointShadowCube || !m_PointShadowStaticCube || !m_Pipelines.PointShadow.CasterWorldPSO
 		|| !m_PointShadowDsvHeap || !m_PointShadowStaticDsvHeap || !m_Pipelines.PointShadow.RootSig )
@@ -2218,6 +2243,12 @@ void D3D12GraphicsEngine::PreparePointShadows() {
 		rec.slot = ps.slot;
 		rec.faceCb = faceCb( ps.slot );
 		rec.renderStatic = ps.renderStatic;
+		rec.useAside = ps.overlayEligible;
+		// An eligible slot's active cube is rebuilt from the aside every frame (see the header comment): the copy
+		// is what wipes the PREVIOUS frame's overlay, so it has to run even on a frame whose overlay resolves to
+		// zero draws — otherwise a departed NPC's shadow would stay frozen in the cube until something else
+		// touched the slot. Ineligible slots never copy at all.
+		if ( ps.overlayEligible ) g_PsAnyCopy = true;
 
 		const float rangeSq = ps.range * ps.range;
 
@@ -2226,7 +2257,10 @@ void D3D12GraphicsEngine::PreparePointShadows() {
 		rec.staticVobBegin   = rec.staticVobEnd   = static_cast<UINT>( g_PsStaticVobDraws.size() );
 		if ( ps.renderStatic ) {
 			g_PsAnyStatic = true;
-			m_PointShadowSlots[ps.slot].staticValid = true;   // static-aside now holds this slot's static depth
+			// The slot's CURRENT static target now holds its static depth (aside cube if eligible, else the active
+			// cube itself). usesAside is stamped alongside so BuildFrameLightBuffer can spot a routing flip.
+			m_PointShadowSlots[ps.slot].staticValid = true;
+			m_PointShadowSlots[ps.slot].usesAside = ps.overlayEligible;
 
 			// --- World mesh: range-cull sections (AABB nearest-point), all 6 faces in one draw. ---
 			if ( haveWorld ) {
@@ -2321,12 +2355,13 @@ void D3D12GraphicsEngine::PreparePointShadows() {
 		// ==================== Phase C resolve — DYNAMIC casters (skeletal NPCs + their attachments) ============
 		rec.dynSkelBegin   = rec.dynSkelEnd   = static_cast<UINT>( g_PsDynSkelDraws.size() );
 		rec.dynAttachBegin = rec.dynAttachEnd = static_cast<UINT>( g_PsDynAttachDraws.size() );
-		// isStatic() lights never get the dynamic overlay — mirrors D3D11's GetCurrentShadowMode, which forces a
-		// static light down to PLS_STATIC_ONLY regardless of the global EnablePointlightShadows setting, so it
-		// never runs RenderAnimatedShadowPass. Its active cube stays exactly the copied static-aside depth.
+		// ps.overlayEligible folds in both reasons a slot never gets the overlay: an isStatic() light (mirrors
+		// D3D11's GetCurrentShadowMode, which forces a static light down to PLS_STATIC_ONLY regardless of the
+		// global setting, so it never runs RenderAnimatedShadowPass), and a global PointlightShadows setting below
+		// PLS_UPDATE_DYNAMIC. Such a slot's active cube is exactly its static depth, rendered in place.
 		// The round-robin gate (P2.10h) is ps.renderDynamic: far/less-important dynamic lights only get the
 		// skeletal overlay on their scheduled frame (see BuildFrameLightBuffer).
-		if ( haveSkel && ps.renderDynamic && !m_PointShadowSlots[ps.slot].isStatic ) {
+		if ( haveSkel && ps.renderDynamic && ps.overlayEligible ) {
 			// Self-shadow exclusion (P2.10 owed-debt item): a light carried by an NPC (e.g. a torch in its hand)
 			// otherwise casts that NPC's own body as a huge shadow blob into its own cube — see
 			// BuildPointShadowExcludeList / D3D11's GetHasOriginVob+SetupVobsToExclude.
@@ -2413,9 +2448,10 @@ void D3D12GraphicsEngine::PreparePointShadows() {
 
 void D3D12GraphicsEngine::RecordPointShadows( ID3D12GraphicsCommandList* cmdList ) {
 	// The pure-D3D12 half of the point-shadow pass: no Gothic access whatsoever, so it is safe on a pool thread.
-	// Phases mirror PreparePointShadows' comment: A) static casters into the static-aside cube, B) copy
-	// static-aside -> active per touched slot, C) dynamic (skeletal + attachment) overlay onto the copied depth,
-	// D) hand the active cube to the lit pass as a PIXEL_SHADER_RESOURCE.
+	// Phases mirror PreparePointShadows' comment: A) static casters into the static-aside cube (or, for slots that
+	// can't receive an overlay, straight into the active cube), B) copy static-aside -> active per aside slot,
+	// C) dynamic (skeletal + attachment) overlay onto the copied depth, D) hand the touched slots back to the lit
+	// pass as PIXEL_SHADER_RESOURCE.
 	if ( !cmdList || !m_PointShadowPassReady ) return;
 
 	// A freshly-Reset pool list carries no descriptor heap. On m_CmdList (serial fallback) the same heap is
@@ -2436,6 +2472,33 @@ void D3D12GraphicsEngine::RecordPointShadows( ID3D12GraphicsCommandList* cmdList
 
 	const D3D12_CPU_DESCRIPTOR_HANDLE activeDsvBase = m_PointShadowDsvHeap->GetCPUDescriptorHandleForHeapStart();
 	const D3D12_CPU_DESCRIPTOR_HANDLE staticDsvBase = m_PointShadowStaticDsvHeap->GetCPUDescriptorHandleForHeapStart();
+
+	// ---- Per-slot (6-subresource) barriers. Never transition these two cubes with ALL_SUBRESOURCES: at
+	// kMaxShadowCubes=128 that names 768 slices / 24 MB, and leaving DEPTH_WRITE for a non-depth state makes the
+	// driver decompress + resummarize depth metadata for every slice named — a fixed ~0.6 ms whether the frame
+	// copied 5 slots or 100, which is what used to dominate this pass. Scoped to the 6 faces of each slot actually
+	// touched, the cost tracks the work. Transitions are batched into g_PsBarriers and issued in one call per phase
+	// so the GPU pays one pipeline flush per phase rather than one per slot.
+	auto pushSlot = [&]( ID3D12Resource* res, D3D12_RESOURCE_STATES* slotStates, UINT slot, D3D12_RESOURCE_STATES after ) {
+		if ( slotStates[slot] == after ) return;   // already there — no redundant barrier
+		D3D12_RESOURCE_BARRIER b = {};
+		b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		b.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+		b.Transition.pResource = res;
+		b.Transition.StateBefore = slotStates[slot];
+		b.Transition.StateAfter = after;
+		for ( UINT face = 0; face < 6; ++face ) {
+			b.Transition.Subresource = slot * 6 + face;
+			g_PsBarriers.push_back( b );
+		}
+		slotStates[slot] = after;
+		};
+	auto flushBarriers = [&]() {
+		if ( g_PsBarriers.empty() ) return;
+		cmdList->ResourceBarrier( static_cast<UINT>( g_PsBarriers.size() ), g_PsBarriers.data() );
+		g_PsBarriers.clear();
+		};
+	g_PsBarriers.clear();
 
 	// Redundant-bind filter. The records come out of PreparePointShadows in section/material/mesh order, so
 	// consecutive draws routinely share a vertex/index buffer, an SRV or a skeletal CB pair — exactly the
@@ -2471,20 +2534,24 @@ void D3D12GraphicsEngine::RecordPointShadows( ID3D12GraphicsCommandList* cmdList
 		cmdList->DrawIndexedInstanced( d.indexCount, d.instanceCount, d.startIndex, 0, 0 );
 		};
 
-	// ============================ Phase A — STATIC pass (into the static-aside cube) ============================
+	// ============================ Phase A — STATIC pass ==========================================================
+	// Target per slot: the static-aside cube when the slot can receive a dynamic overlay (phase B will re-lay this
+	// depth into active every frame), otherwise the ACTIVE cube directly — no aside, no copy, ever (see
+	// PreparePointShadows' header comment on `overlayEligible`).
 	if ( g_PsAnyStatic ) {
 		DX_ZONE( cmdList, "Static Pass" );
 		TracyD3D12ZoneCGX( cmdList, "Static Pass" );
-		if ( m_PointShadowStaticState != D3D12_RESOURCE_STATE_DEPTH_WRITE ) {
-			auto b = TransitionBarrier( m_PointShadowStaticCube.Get(), m_PointShadowStaticState, D3D12_RESOURCE_STATE_DEPTH_WRITE );
-			cmdList->ResourceBarrier( 1, &b );
-			m_PointShadowStaticState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+		for ( const PointShadowLightRecord& L : g_PsLights ) {
+			if ( !L.renderStatic ) continue;
+			if ( L.useAside ) pushSlot( m_PointShadowStaticCube.Get(), m_PointShadowStaticSlotState, L.slot, D3D12_RESOURCE_STATE_DEPTH_WRITE );
+			else              pushSlot( m_PointShadowCube.Get(),       m_PointShadowActiveSlotState, L.slot, D3D12_RESOURCE_STATE_DEPTH_WRITE );
 		}
+		flushBarriers();
 
 		for ( const PointShadowLightRecord& L : g_PsLights ) {
 			if ( !L.renderStatic ) continue;
 
-			D3D12_CPU_DESCRIPTOR_HANDLE dsv = staticDsvBase;
+			D3D12_CPU_DESCRIPTOR_HANDLE dsv = L.useAside ? staticDsvBase : activeDsvBase;
 			dsv.ptr += static_cast<SIZE_T>(L.slot) * m_PointShadowDsvSize;
 			cmdList->OMSetRenderTargets( 0, nullptr, FALSE, &dsv );
 			cmdList->ClearDepthStencilView( dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr );
@@ -2519,29 +2586,29 @@ void D3D12GraphicsEngine::RecordPointShadows( ID3D12GraphicsCommandList* cmdList
 		}
 	}
 
-	// ============================ Phase B — COPY static-aside -> active cube (per-slot, touched only) ============
-	// g_PsLights only holds slots touched this frame, so every entry needs the copy — and when it is empty there
-	// is nothing to refresh at all (every light kept exactly what was last composited into its active cube,
-	// including its last dynamic overlay). Copies are per-slot (6 face subresources) rather than one whole-array
-	// CopyResource so skipped slots cost nothing.
-	if ( !g_PsLights.empty() ) {
+	// ============================ Phase B — COPY static-aside -> active cube (per-slot, aside slots only) ========
+	// Only slots routed through the aside (overlay-eligible) need this: their active cube is about to be, or was
+	// last frame, overwritten by the dynamic overlay, so the clean static base has to be re-laid underneath. Slots
+	// rendered direct-to-active in phase A already hold exactly the right depth and are skipped entirely — which
+	// is why PLS_STATIC_ONLY and static lights now cost zero copies and zero barriers here.
+	// Both the copies and the barriers around them are per-slot; skipped slots cost literally nothing.
+	if ( g_PsAnyCopy ) {
 		DX_ZONE( cmdList, "Copy Static->Active" );
 		TracyD3D12ZoneCGX( cmdList, "Copy Static->Active" );
 
-		D3D12_RESOURCE_BARRIER pre[2];
-		UINT n = 0;
-		if ( m_PointShadowStaticState != D3D12_RESOURCE_STATE_COPY_SOURCE ) {
-			pre[n++] = TransitionBarrier( m_PointShadowStaticCube.Get(), m_PointShadowStaticState, D3D12_RESOURCE_STATE_COPY_SOURCE );
-			m_PointShadowStaticState = D3D12_RESOURCE_STATE_COPY_SOURCE;
-		}
-		const D3D12_RESOURCE_STATES activeCur = m_PointShadowInPixelState
-			? D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_DEPTH_WRITE;
-		pre[n++] = TransitionBarrier( m_PointShadowCube.Get(), activeCur, D3D12_RESOURCE_STATE_COPY_DEST );
-		cmdList->ResourceBarrier( n, pre );
-
-	    ZoneTextStatic("num_lights");
-	    ZoneValue(g_PsLights.size());
+		UINT copied = 0;
 		for ( const PointShadowLightRecord& L : g_PsLights ) {
+			if ( !L.useAside ) continue;
+			pushSlot( m_PointShadowStaticCube.Get(), m_PointShadowStaticSlotState, L.slot, D3D12_RESOURCE_STATE_COPY_SOURCE );
+			pushSlot( m_PointShadowCube.Get(),       m_PointShadowActiveSlotState, L.slot, D3D12_RESOURCE_STATE_COPY_DEST );
+			++copied;
+		}
+		flushBarriers();
+
+		ZoneTextStatic( "slots_copied" );
+		ZoneValue( copied );
+		for ( const PointShadowLightRecord& L : g_PsLights ) {
+			if ( !L.useAside ) continue;
 			for ( UINT face = 0; face < 6; ++face ) {
 				const UINT sub = L.slot * 6 + face;
 				D3D12_TEXTURE_COPY_LOCATION dstLoc = { m_PointShadowCube.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX };
@@ -2552,9 +2619,9 @@ void D3D12GraphicsEngine::RecordPointShadows( ID3D12GraphicsCommandList* cmdList
 			}
 		}
 
-		auto toDepth = TransitionBarrier( m_PointShadowCube.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_DEPTH_WRITE );
-		cmdList->ResourceBarrier( 1, &toDepth );
-		m_PointShadowInPixelState = false;   // active cube now in DEPTH_WRITE for the dynamic overlay
+		for ( const PointShadowLightRecord& L : g_PsLights )
+			if ( L.useAside ) pushSlot( m_PointShadowCube.Get(), m_PointShadowActiveSlotState, L.slot, D3D12_RESOURCE_STATE_DEPTH_WRITE );
+		flushBarriers();
 	}
 
 	// ============================ Phase C — DYNAMIC overlay (skeletal NPCs into active cube) ====================
@@ -2563,6 +2630,13 @@ void D3D12GraphicsEngine::RecordPointShadows( ID3D12GraphicsCommandList* cmdList
 	{
 		DX_ZONE( cmdList, "Dynamic Overlay (skeletals)" );
 		TracyD3D12ZoneCGX( cmdList, "Dynamic Overlay (skeletals)" );
+		// Phase B already left every aside slot in DEPTH_WRITE, and only aside slots can carry overlay draws — so
+		// this is a no-op batch in practice. Kept explicit so the phase doesn't silently depend on B's routing.
+		for ( const PointShadowLightRecord& L : g_PsLights )
+			if ( L.dynSkelEnd > L.dynSkelBegin || L.dynAttachEnd > L.dynAttachBegin )
+				pushSlot( m_PointShadowCube.Get(), m_PointShadowActiveSlotState, L.slot, D3D12_RESOURCE_STATE_DEPTH_WRITE );
+		flushBarriers();
+
 		for ( const PointShadowLightRecord& L : g_PsLights ) {
 			const bool haveSkelDraws   = L.dynSkelEnd > L.dynSkelBegin;
 			const bool haveAttachDraws = L.dynAttachEnd > L.dynAttachBegin;
@@ -2606,13 +2680,14 @@ void D3D12GraphicsEngine::RecordPointShadows( ID3D12GraphicsCommandList* cmdList
 		}
 	}
 
-	// ============================ Phase D — active cube -> PIXEL_SHADER_RESOURCE for the lit pass ================
-	if ( !m_PointShadowInPixelState ) {
-		auto toSrv = TransitionBarrier( m_PointShadowCube.Get(),
-			D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
-		cmdList->ResourceBarrier( 1, &toSrv );
-		m_PointShadowInPixelState = true;
-	}
+	// ============================ Phase D — touched slots -> PIXEL_SHADER_RESOURCE for the lit pass ==============
+	// PIXEL_SHADER_RESOURCE is the active cube's RESTING state (it is created that way), so only the slots this
+	// pass pulled out of it need returning — untouched slots, including winners the round-robin skipped, are
+	// already sampleable and are never named in a barrier. Slots in g_PsLights that ended up doing no work at all
+	// never left PSR either, and pushSlot drops those as redundant.
+	for ( const PointShadowLightRecord& L : g_PsLights )
+		pushSlot( m_PointShadowCube.Get(), m_PointShadowActiveSlotState, L.slot, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
+	flushBarriers();
 	// Leave nothing bound: the cube DSVs this list used have just left DEPTH_WRITE, and a DSV that is still the
 	// command list's "current" render target when that happens trips GPU validation on the next draw. The
 	// caller (BeginShadowRecording / FinishShadowPasses) re-establishes the scene-color RT for the lit passes.
@@ -2795,8 +2870,26 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 	// its cached cube (render=false) instead of re-culling + re-rendering all world/VOB/skeletal casters each
 	// frame. Dynamic (moving) lights, newly-assigned slots, and moved/range-changed lights render (render=true).
 	// Mirrors D3D11 DrawPointlightShadows' distance/range gating (it keys off the player; camera is close enough).
+	//
+	// The global PointlightShadows setting (ini [Shadows] PointlightShadows / the ImGui combo) gates the whole
+	// thing — D3D12 previously ignored it entirely and always ran the full PLS_UPDATE_DYNAMIC path, so "Off" still
+	// paid for cube rendering and "Static" still paid for the per-frame skeletal overlay:
+	//   PLS_DISABLED       — no winners at all; every ShadowCubeIndex stays -1 and the pass never arms.
+	//   PLS_STATIC_ONLY    — winners get their static cube (rendered direct-to-active, no aside/copy) but never a
+	//                        dynamic overlay.
+	//   PLS_UPDATE_DYNAMIC — overlay for the near winners + a round-robin budget for the rest.
+	//   PLS_FULL           — overlay for every winner, every frame (no round-robin).
+	const GothicRendererSettings::EPointLightShadowMode shadowMode =
+		Engine::GAPI->GetRendererState().RendererSettings.EnablePointlightShadows;
 	g_FramePointShadows.clear();
-	if ( m_PointShadowCube && count > 0 ) {
+	if ( shadowMode == GothicRendererSettings::PLS_DISABLED ) {
+		// Release every slot so re-enabling mid-session re-renders from scratch instead of sampling depth that has
+		// been stale for however long the setting was off. Slot resource states are indexed by slot, not by owner,
+		// and every touched slot is returned to PIXEL_SHADER_RESOURCE before the frame ends, so dropping ownership
+		// here cannot desync the barrier tracking.
+		for ( PointShadowSlot& ss : m_PointShadowSlots )
+			if ( ss.owner ) ss = PointShadowSlot{};
+	} else if ( m_PointShadowCube && count > 0 ) {
 		const XMVECTOR camPos = Engine::GAPI->GetCameraPositionXM();
 		struct Cand { UINT dstIdx; zCVobLight* vob; float distSq; float sortKey; bool isStatic; };
 		static std::vector<Cand> cands;
@@ -2848,6 +2941,14 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 			PointShadowSlot& ss = m_PointShadowSlots[slot];
 			ss.isStatic = c.isStatic;
 
+			// Can this slot EVER receive the skeletal overlay? Static lights never do (D3D11's GetCurrentShadowMode
+			// forces them to PLS_STATIC_ONLY), and neither does anything below PLS_UPDATE_DYNAMIC. This decides
+			// which cube the static pass renders into — aside (copied every frame) vs. the active cube directly.
+			// A flip (the setting changed, or a light's IsStatic did) means the slot's static depth is sitting in
+			// the OTHER cube, so it has to be re-rendered into the new target.
+			const bool overlayEligible = !c.isStatic && shadowMode >= GothicRendererSettings::PLS_UPDATE_DYNAMIC;
+			if ( ss.usesAside != overlayEligible ) ss.staticValid = false;
+
 			GPULight& L = dst[c.dstIdx];
 			const XMFLOAT3& np = L.PositionWorld;
 			const float moveEps = 0.5f;   // Gothic world units; below this the light hasn't meaningfully moved
@@ -2855,61 +2956,75 @@ void D3D12GraphicsEngine::BuildFrameLightBuffer() {
 				|| std::fabs( np.y - ss.pos.y ) > moveEps
 				|| std::fabs( np.z - ss.pos.z ) > moveEps;
 			bool rangeChanged = std::fabs( L.Range - ss.range ) > 1.0f;
-			// Static-aside is re-rendered only when fresh / the light moved / range changed; otherwise reused.
-			// The DYNAMIC (skeletal) overlay + the static->active copy run every frame regardless (see PreparePointShadows).
+			// The static cube is re-rendered only when fresh / the light moved / range changed / the routing
+			// flipped; otherwise reused. For overlay-eligible slots the DYNAMIC overlay + the static->active copy
+			// still run every frame regardless (see PreparePointShadows).
 			bool renderStatic = !ss.staticValid || moved || rangeChanged;
 
 			L.ShadowCubeIndex = static_cast<int32_t>(slot);
-			g_FramePointShadows.push_back( { np, L.Range, static_cast<UINT>(slot), renderStatic, false } );
+			g_FramePointShadows.push_back( { np, L.Range, static_cast<UINT>(slot), renderStatic, false, overlayEligible } );
 			if ( renderStatic ) { ss.pos = np; ss.range = L.Range; }   // staticValid stamped once actually drawn
 		}
 
-		// Round-robin the per-frame skeletal DYNAMIC overlay across non-static winners (P2.10h). With
+		// Round-robin the per-frame skeletal DYNAMIC overlay across overlay-eligible winners (P2.10h). With
 		// kMaxShadowCubes now persisting many more lights, running the full sphere-cull-against-registered-
 		// skeletal-vobs pass for every single winner every frame would multiply CPU cost with light count.
 		// The nearest kAlwaysDynamicCount winners (where a moving caster's shadow lag would be most visible)
 		// always get it; the rest take turns via a stale-frames counter so every dynamic light's overlay still
-		// refreshes periodically instead of never. Static-aside geometry shadows (walls, VOBs) are unaffected —
-		// those persist via the static cache regardless of whether the dynamic overlay runs this frame.
-		constexpr UINT kAlwaysDynamicCount = 8;   // NPCs barely move frame-to-frame; only the player (camera) moves a lot,
-		// and it won't be this close to more than a handful of lights at once, nor perceive the lag on distant ones.
-		constexpr UINT kDynamicRoundRobinBudget = 6;
+		// refreshes periodically instead of never. Static geometry shadows (walls, VOBs) are unaffected — those
+		// persist via the static cache regardless of whether the dynamic overlay runs this frame.
+		// Skipped wholesale below PLS_UPDATE_DYNAMIC (nothing is eligible), and un-budgeted at PLS_FULL.
+		if ( shadowMode >= GothicRendererSettings::PLS_UPDATE_DYNAMIC ) {
+			constexpr UINT kAlwaysDynamicCount = 8;   // NPCs barely move frame-to-frame; only the player (camera) moves a lot,
+			// and it won't be this close to more than a handful of lights at once, nor perceive the lag on distant ones.
+			constexpr UINT kDynamicRoundRobinBudget = 6;
 
-		std::vector<FramePointShadow*> nonStatic;
-		nonStatic.reserve( g_FramePointShadows.size() );
-		for ( FramePointShadow& ps : g_FramePointShadows ) if ( !m_PointShadowSlots[ps.slot].isStatic ) nonStatic.push_back( &ps );
-		std::sort( nonStatic.begin(), nonStatic.end(), [&]( const FramePointShadow* a, const FramePointShadow* b ) {
-			XMVECTOR da = XMVectorSubtract( XMLoadFloat3( &a->posWS ), camPos );
-			XMVECTOR db = XMVectorSubtract( XMLoadFloat3( &b->posWS ), camPos );
-			return XMVectorGetX( XMVector3LengthSq( da ) ) < XMVectorGetX( XMVector3LengthSq( db ) );
-		} );
+			static std::vector<FramePointShadow*> eligible;   // frame path: keep the capacity, don't realloc per frame
+			eligible.clear();
+			for ( FramePointShadow& ps : g_FramePointShadows ) if ( ps.overlayEligible ) eligible.push_back( &ps );
 
-		const size_t closeCount = std::min<size_t>( kAlwaysDynamicCount, nonStatic.size() );
-		for ( size_t idx = 0; idx < closeCount; ++idx ) {
-			nonStatic[idx]->renderDynamic = true;
-			m_PointShadowSlots[nonStatic[idx]->slot].dynamicStaleFrames = 0;
-		}
-		for ( size_t idx = closeCount; idx < nonStatic.size(); ++idx ) ++m_PointShadowSlots[nonStatic[idx]->slot].dynamicStaleFrames;
+			if ( shadowMode >= GothicRendererSettings::PLS_FULL ) {
+				// "Very expensive. Don't use unless you encounter visual bugs." — every eligible winner overlays
+				// every frame, no distance ranking and no budget.
+				for ( FramePointShadow* ps : eligible ) {
+					ps->renderDynamic = true;
+					m_PointShadowSlots[ps->slot].dynamicStaleFrames = 0;
+				}
+			} else {
+				std::sort( eligible.begin(), eligible.end(), [&]( const FramePointShadow* a, const FramePointShadow* b ) {
+					XMVECTOR da = XMVectorSubtract( XMLoadFloat3( &a->posWS ), camPos );
+					XMVECTOR db = XMVectorSubtract( XMLoadFloat3( &b->posWS ), camPos );
+					return XMVectorGetX( XMVector3LengthSq( da ) ) < XMVectorGetX( XMVector3LengthSq( db ) );
+				} );
 
-		// Among the "far" set, service the most-stale slots first, up to this frame's round-robin budget.
-		std::sort( nonStatic.begin() + closeCount, nonStatic.end(), [&]( const FramePointShadow* a, const FramePointShadow* b ) {
-			return m_PointShadowSlots[a->slot].dynamicStaleFrames > m_PointShadowSlots[b->slot].dynamicStaleFrames;
-		} );
-		for ( size_t idx = closeCount, serviced = 0; idx < nonStatic.size() && serviced < kDynamicRoundRobinBudget; ++idx, ++serviced ) {
-			nonStatic[idx]->renderDynamic = true;
-			m_PointShadowSlots[nonStatic[idx]->slot].dynamicStaleFrames = 0;
-		}
+				const size_t closeCount = std::min<size_t>( kAlwaysDynamicCount, eligible.size() );
+				for ( size_t idx = 0; idx < closeCount; ++idx ) {
+					eligible[idx]->renderDynamic = true;
+					m_PointShadowSlots[eligible[idx]->slot].dynamicStaleFrames = 0;
+				}
+				for ( size_t idx = closeCount; idx < eligible.size(); ++idx ) ++m_PointShadowSlots[eligible[idx]->slot].dynamicStaleFrames;
 
-		// A slot whose STATIC base is (re)rendered this frame must also refresh its dynamic overlay, round-robin
-		// turn or not: PreparePointShadows' Phase B only copies static-aside -> active for slots it's about to
-		// touch (see there), and the previous active cube's dynamic content was composited against the OLD
-		// static depth — invalid once the static geometry/position changes. Not forcing this would either ghost
-		// stale skeletal shadows onto a new depth base, or (since Phase B still must copy the new static in)
-		// silently drop the overlay for a light that's actually due for a refresh.
-		for ( FramePointShadow& ps : g_FramePointShadows ) {
-			if ( ps.renderStatic && !ps.renderDynamic ) {
-				ps.renderDynamic = true;
-				m_PointShadowSlots[ps.slot].dynamicStaleFrames = 0;
+				// Among the "far" set, service the most-stale slots first, up to this frame's round-robin budget.
+				std::sort( eligible.begin() + closeCount, eligible.end(), [&]( const FramePointShadow* a, const FramePointShadow* b ) {
+					return m_PointShadowSlots[a->slot].dynamicStaleFrames > m_PointShadowSlots[b->slot].dynamicStaleFrames;
+				} );
+				for ( size_t idx = closeCount, serviced = 0; idx < eligible.size() && serviced < kDynamicRoundRobinBudget; ++idx, ++serviced ) {
+					eligible[idx]->renderDynamic = true;
+					m_PointShadowSlots[eligible[idx]->slot].dynamicStaleFrames = 0;
+				}
+			}
+
+			// An ELIGIBLE slot whose STATIC base is (re)rendered this frame must also refresh its dynamic overlay,
+			// round-robin turn or not: the previous active cube's dynamic content was composited against the OLD
+			// static depth — invalid once the static geometry/position changes. Not forcing this would either ghost
+			// stale skeletal shadows onto a new depth base, or (since Phase B still copies the new static in)
+			// silently drop the overlay for a light that's actually due for a refresh. Ineligible slots have no
+			// overlay to reconcile — their static render lands straight in the active cube and stands alone.
+			for ( FramePointShadow& ps : g_FramePointShadows ) {
+				if ( ps.overlayEligible && ps.renderStatic && !ps.renderDynamic ) {
+					ps.renderDynamic = true;
+					m_PointShadowSlots[ps.slot].dynamicStaleFrames = 0;
+				}
 			}
 		}
 	}

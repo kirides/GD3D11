@@ -791,7 +791,16 @@ private:
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_PointShadowDsvHeap;   // one D16 Texture2DArray DSV (6 slices) per cube slot
     UINT m_PointShadowDsvSize = 0;
     UINT m_PointShadowSrvSlot = UINT_MAX;   // R16_UNORM TextureCubeArray SRV (all cubes), for the point-light sampler
-    bool m_PointShadowInPixelState = false; // DEPTH_WRITE (caster) <-> PIXEL_SHADER_RESOURCE (lit) round-trip
+    // PER-SLOT resource state for both cube arrays (6 subresources per slot move together — a slot's DSV views
+    // exactly its 6 faces). These MUST stay per-slot rather than one whole-resource state: an ALL_SUBRESOURCES
+    // transition out of DEPTH_WRITE makes the driver decompress/resummarize depth metadata for every one of the
+    // kMaxShadowCubes*6 = 768 slices (24 MB) whether the frame touched 5 slots or 128 — a ~0.6 ms FIXED cost that
+    // dwarfed the 192 KB/slot copies it was guarding and did not scale down with the light count. Scoping each
+    // barrier to the 6 subresources actually being copied makes the cost proportional to the work done.
+    // Consequence: EVERY barrier on these two resources must be per-subresource. A single ALL_SUBRESOURCES
+    // transition asserts all 768 slices share one state, which they no longer do.
+    D3D12_RESOURCE_STATES m_PointShadowActiveSlotState[kMaxShadowCubes] = {};   // active cube; PIXEL_SHADER_RESOURCE at rest
+    D3D12_RESOURCE_STATES m_PointShadowStaticSlotState[kMaxShadowCubes] = {};   // static-aside cube; DEPTH_WRITE at rest
     // Point-shadow caster PIPELINES (both root sigs, the four VS/PS blobs, and the three caster PSOs) now live in
     // m_Pipelines.PointShadow (RootSig/SkeletalRootSig, VsBlob/VobVsBlob/SkelVsBlob/PsBlob, CasterWorldPSO/
     // CasterVobPSO/CasterSkeletalPSO). The cube textures, DSV heaps, SRV, and per-frame rings below stay here.
@@ -815,9 +824,12 @@ private:
     // of shadowed lights update their MOVING casters every frame without re-rendering static geometry. Two
     // persistent cube arrays: m_PointShadowStaticCube holds ONLY static-caster depth (world mesh + instanced
     // VOBs), rendered per slot at most once (on slot assign / light move / range change). m_PointShadowCube is
-    // the ACTIVE cube the lit pass samples: each frame it is CopyResource'd from the static cube, then the
-    // DYNAMIC casters (skeletal NPCs) are overlaid (depth LESS_EQUAL, no clear). So the per-frame cost is one
-    // whole-array depth copy + the handful of near dynamic draws — the expensive static cull/draw is amortized.
+    // the ACTIVE cube the lit pass samples: each frame the slots that can receive a dynamic overlay are copied
+    // from the static cube (6 subresources, 192 KB), then the DYNAMIC casters (skeletal NPCs) are overlaid (depth
+    // LESS_EQUAL, no clear). So the per-frame cost is a few per-slot depth copies + the handful of near dynamic
+    // draws — the expensive static cull/draw is amortized. Slots that can NEVER receive an overlay (static lights,
+    // or every light when PointlightShadows is PLS_STATIC_ONLY) skip the aside cube and the copy entirely: their
+    // static casters are rendered straight into the active cube, which then just persists (usesAside below).
     // Slots are owned by light Vob identity and kept stable across frames (not reassigned by proximity).
     struct PointShadowSlot {
         zCVobLight*       owner = nullptr;   // light identity owning this slot (nullptr = free)
@@ -827,17 +839,23 @@ private:
                                               // world-mesh-only static-aside cache (no VOB casters) and never
                                               // receive the per-frame skeletal dynamic overlay (mirrors D3D11's
                                               // GetCurrentShadowMode forcing PLS_STATIC_ONLY for static lights).
-        bool              staticValid = false; // static-aside slot holds valid static-only depth (else must re-render static)
+        bool              staticValid = false; // the slot's CURRENT static target (aside if usesAside, else the active
+                                              // cube itself) holds valid static-only depth; false => must re-render static
+        bool              usesAside = false;  // last frame's routing for this slot: true = static goes to the aside cube
+                                              // and is copied into active each frame (the slot can receive a dynamic
+                                              // overlay); false = static is rendered DIRECTLY into the active cube and
+                                              // never copied (no overlay possible — static light, or PLS_STATIC_ONLY).
+                                              // A change here invalidates staticValid: the depth lives in the other cube.
         UINT32            dynamicStaleFrames = 0; // frames since this slot's skeletal dynamic overlay last ran (round-robin, P2.10h)
     };
     PointShadowSlot m_PointShadowSlots[kMaxShadowCubes];
     // Static-aside cube (P2.10g): second persistent cube array, static-caster depth only. No SRV (never sampled);
-    // its content is CopyResource'd into the active cube each frame. m_PointShadowStaticState tracks its resource
-    // state across frames (DEPTH_WRITE when rendering static, COPY_SOURCE while feeding the per-frame copy).
+    // the slots routed through it are copied into the active cube each frame. Only slots that can receive a dynamic
+    // overlay live here at all — see PointShadowSlot::usesAside. Its per-slot resource state (DEPTH_WRITE while
+    // rendering static, COPY_SOURCE while feeding a copy) is m_PointShadowStaticSlotState.
     Microsoft::WRL::ComPtr<ID3D12Resource>       m_PointShadowStaticCube;
     Microsoft::WRL::ComPtr<D3D12MA::Allocation>  m_PointShadowStaticCubeAlloc;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_PointShadowStaticDsvHeap; // one D16 6-slice DSV per slot (mirrors active)
-    D3D12_RESOURCE_STATES m_PointShadowStaticState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
     bool CreatePointShadowResources(); // both cube arrays + per-slot DSVs + array SRV + face-CB/VOB-instance rings (once, at init; PSOs in m_Pipelines.CreatePointShadow)
     // Point-shadow cubes, split for deferred recording: PreparePointShadows does every Gothic-touching step
     // (section/instance range culls, CacheIn, PrepareFrameSkeletals, UpdateMeshLibTexAniState, the face-CB and
