@@ -62,12 +62,22 @@ namespace {
     // Purely a unit conversion — retune only if the sky-colour sources below change.
     constexpr float kSkyIblNormalize = 3.0f;
 
-    // Moonlight floor, in LINEAR radiance. Gothic's night sky colours go very nearly black, and the IBL is a
-    // faithful multiplier of them, so without a floor a clear night resolves to literally no indirect light —
-    // which the old flat ambient never exposed because it was a sun-coloured constant. Applied as a per-channel
-    // max, so it is inert during the day (daytime radiance is ~20x this) and only catches the night trough.
-    // Blue-weighted because moonlight is: it reads as night rather than as a grey underexposure.
-    constexpr XMFLOAT3 kNightFloor = { 0.008f, 0.011f, 0.020f };
+    // Moonlight floor, in LINEAR radiance, scaled by RendererSettings.SkyIblNightFloor (which IS the green
+    // channel; R and B follow this fixed blue-weighted ratio so the floor reads as moonlight rather than as a
+    // grey underexposure). Applied per-channel as a max, so it is inert during the day and only lifts the night
+    // trough.
+    //
+    // Why a floor is needed at all — from ZenGin's own zCSkyState presets:
+    //   PresetNight1/2: fogColor (5,5,20)      -> ~0.002 linear. The horizon band is effectively black.
+    //                   domeColor1 (55,55,155) -> ~(0.038, 0.038, 0.328) linear. Strongly blue, but only BLUE.
+    //                   polyColor (40,60,210)  -> ~(0.021, 0.045, 0.645) linear.
+    // So a faithful IBL gives night a reasonable BLUE channel and almost no red/green: correct as radiance,
+    // but it reads as near-black in luminance (0.2126R + 0.7152G carry most of the perceived brightness, and
+    // both are ~0.03). Gothic's night was never physically lit — the old flat ambient was a deliberate
+    // sun-coloured fill, and D3D11's atmospheric scattering hardcodes the same idea
+    // (AtmosphericScattering.h:138, nightColor = (0.2,0.2,0.4) * NIGHT_BRIGHTNESS = (0.4,0.4,0.8)). This floor
+    // is that fill, expressed in the IBL's units.
+    constexpr XMFLOAT3 kNightFloorTint = { 0.86f, 1.0f, 1.43f };   // relative; x SkyIblNightFloor
     XMFLOAT3 MaxFloor3( const XMFLOAT3& c, const XMFLOAT3& floorCol ) {
         return XMFLOAT3( ( std::max )( c.x, floorCol.x ), ( std::max )( c.y, floorCol.y ), ( std::max )( c.z, floorCol.z ) );
     }
@@ -230,25 +240,32 @@ void D3D12GraphicsEngine::RenderSkyIBL() {
     XMFLOAT3 zenith = XMFLOAT3( fogColor.x * 0.55f, fogColor.y * 0.75f, fogColor.z * 1.0f );  // blue-shifted fallback
     XMFLOAT3 ground = Scale3( fogColor, 0.35f );
     if ( zCSkyState* ms = sc ? sc->GetMasterState() : nullptr ) {
-        // zCSkyState colours are 0..255. DomeColor1 is the upper dome (zenith), FogColor the horizon band, and
-        // PolyColor the tint Gothic applies to world polygons — a serviceable stand-in for average terrain
-        // albedo, which is what the below-horizon bounce hemisphere should be.
+        // zCSkyState colours are 0..255. Field roles are confirmed against ZenGin's own zCSkyState presets:
+        //   domeColor1 = UPPER dome (zenith)   — e.g. (55,55,155) at night, (255,255,255) at dawn.
+        //   domeColor0 = LOWER dome (horizon)  — every preset ends with `domeColor0 = fogColor`, so fogColor
+        //                                        and domeColor0 are the same value and either may be read.
+        //   polyColor  = the tint Gothic applies to WORLD POLYGONS — its own ambient-light colour, and much
+        //                brighter than the sky it sits under at night (40,60,210). Used, scaled down, as the
+        //                below-horizon bounce: it is the closest thing Gothic has to an average terrain albedo.
         horizon = Scale3( ms->FogColor, 1.0f / 255.0f );
         zenith = Scale3( ms->DomeColor1, 1.0f / 255.0f );
         ground = Scale3( ms->PolyColor, 1.0f / 255.0f * 0.35f );
-        // Gothic leaves DomeColor1 black in some weather states / at night; fall back rather than build a cube
-        // whose upper hemisphere is zero (which would darken every up-facing surface in the world).
+        // Guard, not an expected path: no stock preset leaves domeColor1 black (the darkest is the night
+        // (55,55,155)), but a mod's sky definition could, and a zero upper hemisphere would darken every
+        // up-facing surface in the world.
         if ( zenith.x + zenith.y + zenith.z < 0.01f )
             zenith = XMFLOAT3( horizon.x * 0.55f, horizon.y * 0.75f, horizon.z );
     }
 
     // Linearize, then floor at moonlight. The floor is applied AFTER the sRGB decode because it is specified in
-    // linear radiance (see kNightFloor) — flooring the gamma-encoded value would lift daytime colours too.
-    p.Horizon = MaxFloor3( SrgbToLinear3( horizon ), kNightFloor );
-    p.Zenith = MaxFloor3( SrgbToLinear3( zenith ), kNightFloor );
+    // linear radiance (see kNightFloorTint) — flooring the gamma-encoded value would lift daytime colours too.
+    const float nightFloor = ( std::max )( set.SkyIblNightFloor, 0.0f );
+    const XMFLOAT3 floorCol = Scale3( kNightFloorTint, nightFloor );
+    p.Horizon = MaxFloor3( SrgbToLinear3( horizon ), floorCol );
+    p.Zenith = MaxFloor3( SrgbToLinear3( zenith ), floorCol );
     // The ground bounce stays below the sky it is bouncing: a floor as bright as the horizon's would make
     // downward-facing normals read as lit from underneath on a dark night.
-    p.Ground = MaxFloor3( SrgbToLinear3( ground ), Scale3( kNightFloor, 0.5f ) );
+    p.Ground = MaxFloor3( SrgbToLinear3( ground ), Scale3( floorCol, 0.5f ) );
 
     // Sun: the same values RenderSunShadows feeds the direct term, so the IBL's sun lobe and the direct
     // highlight agree about where the sun is and how bright it is.

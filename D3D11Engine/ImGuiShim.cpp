@@ -1590,6 +1590,23 @@ void ImGuiShim::RenderAdvancedColumn2( GothicRendererSettings& settings, GothicA
             ImGui::DragFloat( "WorldAOStrength", &settings.WorldAOStrength, 0.01f, -5.0f, 2.0f, "%.2f" );
             ImGui::EndDisabled();
         }
+
+        // Sky image-based lighting — the D3D12 indirect-light term. Deliberately OUTSIDE the shadow block's
+        // BeginDisabled/EndDisabled: it is ambient lighting and stays live with shadows switched off. Sits here
+        // rather than under Atmosphere because both knobs act on the same term ShadowStrength scales.
+        ImGui::SeparatorText( "Sky Lighting (D3D12)##AdvancedSkyIbl" );
+        ImGui::DragFloat( "SkyIblIntensity", &settings.SkyIblIntensity, 0.02f, 0.0f, 5.0f, "%.2f" );
+        ImGui::SetItemTooltip( "D3D12 only. Scales the sky image-based indirect light (diffuse irradiance +\n"
+            "prefiltered specular) that replaced the flat ambient term. Multiplies with\n"
+            "ShadowStrength; 1.0 is neutral. 0 disables the IBL and falls back to the flat\n"
+            "ambient, which has no indirect specular at all (metals go black off-sun)." );
+        ImGui::DragFloat( "SkyIblNightFloor", &settings.SkyIblNightFloor, 0.005f, 0.0f, 0.5f, "%.3f" );
+        ImGui::SetItemTooltip( "D3D12 only. Minimum night sky radiance for the IBL, in linear units.\n"
+            "Gothic's night is not physically lit - zCSkyState's night fogColor is (5,5,20),\n"
+            "so a faithful sky IBL leaves nights nearly black. This is the deliberate fill\n"
+            "(D3D11's atmospheric scattering hardcodes the same idea). 0 disables the floor.\n"
+            "Blue-weighted, so it reads as moonlight rather than grey underexposure." );
+
         ImGui::Separator();
 
         ImGui::Checkbox( "WireframeWorld", &settings.WireframeWorld );

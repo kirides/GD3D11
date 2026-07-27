@@ -723,6 +723,7 @@ struct GothicRendererSettings {
         PCSSLightSize = 0.140f; // Shadow-UV light radius used by PCSS blocker search
 
         SkyIblIntensity = 1.0f; // D3D12 only: scales the sky image-based indirect light (0 = flat ambient only)
+        SkyIblNightFloor = 0.14f; // D3D12 only: minimum night sky radiance for the IBL (see D3D12SkyIbl.cpp)
 
         BloomStrength = 1.0f;
         EnableBloom = false;
@@ -1029,6 +1030,12 @@ struct GothicRendererSettings {
     // D3D12 only (the D3D11 backend has no PBR path): scale on the sky-IBL indirect term that replaced the
     // flat ambient floor in Shaders/D3D12/include/PBRLighting.hlsl. 0 falls back to that flat term entirely.
     float SkyIblIntensity;
+    // D3D12 only: minimum LINEAR sky radiance (green channel; R/B follow a fixed blue-weighted ratio) used as a
+    // night floor for the sky IBL. Gothic's night is not physically lit — zCSkyState's night fogColor is
+    // (5,5,20), i.e. ~0.002 linear — so a faithful IBL leaves horizontal/downward normals with nothing. This is
+    // the deliberate non-physical fill that Gothic itself applies; D3D11's atmospheric scattering hardcodes the
+    // equivalent (AtmosphericScattering.h: nightColor = (0.2,0.2,0.4) * NIGHT_BRIGHTNESS). 0 disables the floor.
+    float SkyIblNightFloor;
 
     float GodRayDecay;
     float GodRayWeight;
