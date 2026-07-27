@@ -1,4 +1,4 @@
-// D3D12GraphicsEngine — post-FX: bloom pyramid + luminance auto-exposure.
+// D3D12GraphicsEngine — post-FX: bloom pyramid, luminance auto-exposure, SMAA, sharpen.
 #include "../pch.h"
 #include "D3D12GraphicsEngine.h"
 #include "D3D12LineRenderer.h"
@@ -32,6 +32,16 @@
 
 #include "D3D12RenderQueue.h"
 #include "InstancingUtils.h"
+
+// CAS constant setup (ffxCasSetup) for RenderSharpen — the same CPU-side call D3D11PFX_CAS::Apply makes.
+// ConstantBufferStructs.h (pulled in above) already includes ffx_core.h with FFX_CPU defined.
+//
+// ffx_cas.h declares one function WITHOUT FFX_STATIC (ffxCasSupportScaling), so including it in a second
+// translation unit collides at link time with D3D11PFX_CAS.obj. Rename that one symbol for this TU rather
+// than hand-copying ffxCasSetup's math — the constant packing stays shared verbatim with the D3D11 path.
+#define ffxCasSupportScaling ffxCasSupportScaling_D3D12
+#include "../Shaders/FidelityFX/cas/ffx_cas.h"
+#undef ffxCasSupportScaling
 
 // imgui_impl_dx12 calls CreateDXGIFactory1 directly (for tearing detection). dxgi.dll is present on
 // every Windows 7+ and the D3D11 fallback swapchain already needs it at runtime, so a load-time link
@@ -459,8 +469,54 @@ bool D3D12GraphicsEngine::LoadSmaaTextures() {
 }
 
 
+bool D3D12GraphicsEngine::CreateLdrCopyResource( INT2 size ) {
+	// (Re)builds the shared LDR scratch copy of the tonemapped swapchain image — the read side of every
+	// post-tonemap pass that also writes the swapchain (SMAA's color input, the sharpen source). One texture
+	// serves both because they run in sequence, never concurrently. The SRV heap slot is allocated ONCE and
+	// re-pointed at the fresh resource on resize (like the bloom pyramid / m_SceneColor). Non-fatal — both
+	// consumers guard on m_LdrCopyReady. Created in its resting state, COPY_DEST.
+	m_LdrCopyReady = false;
+	if ( size.x < 4 || size.y < 4 ) return false;
+	ID3D12Device* device = m_Device.GetDevice();
+	if ( !device ) return false;
+
+	D3D12MA::ALLOCATION_DESC heapDefault = {};
+	heapDefault.HeapType = D3D12_HEAP_TYPE_DEFAULT;
+
+	D3D12_RESOURCE_DESC dd = {};
+	dd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+	dd.Width = static_cast<UINT64>( size.x );
+	dd.Height = static_cast<UINT>( size.y );
+	dd.DepthOrArraySize = 1;
+	dd.MipLevels = 1;
+	dd.Format = kBackBufferFormat;
+	dd.SampleDesc.Count = 1;
+	dd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+	dd.Flags = D3D12_RESOURCE_FLAG_NONE;
+	if ( FAILED( m_Allocator->CreateResource( &heapDefault, &dd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+		m_LdrCopyAlloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( m_LdrCopy.ReleaseAndGetAddressOf() ) ) ) ) {
+		LogWarn() << "D3D12: failed to create the LDR post-FX scratch copy (SMAA/sharpen will be unavailable).";
+		return false;
+	}
+	m_LdrCopy->SetName( L"LdrPostFxCopy" );
+
+	if ( m_LdrCopySrvSlot == UINT_MAX ) m_LdrCopySrvSlot = AllocateSrvSlot();
+	if ( m_LdrCopySrvSlot == UINT_MAX ) return false;
+
+	D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+	srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+	srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	srv.Texture2D.MipLevels = 1;
+	srv.Format = kBackBufferFormat;
+	device->CreateShaderResourceView( m_LdrCopy.Get(), &srv, GetSrvCpuHandle( m_LdrCopySrvSlot ) );
+
+	m_LdrCopyReady = true;
+	return true;
+}
+
+
 bool D3D12GraphicsEngine::CreateSmaaResources( INT2 size ) {
-	// (Re)builds the resolution-dependent SMAA render targets: m_SmaaColor (LDR copy of the tonemapped
+	// (Re)builds the resolution-dependent SMAA render targets: m_LdrCopy (LDR copy of the tonemapped
 	// swapchain), m_SmaaEdges, m_SmaaBlend. SRV heap slots + RTV heap slots are allocated ONCE and just
 	// re-pointed at the fresh resources on resize (like the bloom pyramid / m_SceneColor). Non-fatal — RenderSMAA
 	// guards on m_SmaaResourcesReady. Each resource is created in its RenderSMAA resting state (see RenderSMAA).
@@ -498,24 +554,21 @@ bool D3D12GraphicsEngine::CreateSmaaResources( INT2 size ) {
 		return slot != UINT_MAX;
 		};
 
-	// Resting states mirror what RenderSMAA expects at entry (and restores at exit):
-	//   color = COPY_DEST (receives the swapchain copy), edges/blend = RENDER_TARGET.
-	if ( !makeTex( kBackBufferFormat, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST,
-		m_SmaaColor, m_SmaaColorAlloc, L"SmaaColor" ) ) return false;
+	// Resting states mirror what RenderSMAA expects at entry (and restores at exit): edges/blend =
+	// RENDER_TARGET. The color input (m_LdrCopy, resting in COPY_DEST) is shared with the sharpen pass and is
+	// built separately by CreateLdrCopyResource, so a failure here can't cost sharpening its source.
 	if ( !makeTex( DXGI_FORMAT_R8G8B8A8_UNORM, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, D3D12_RESOURCE_STATE_RENDER_TARGET,
 		m_SmaaEdges, m_SmaaEdgesAlloc, L"SmaaEdges" ) ) return false;
 	if ( !makeTex( DXGI_FORMAT_R8G8B8A8_UNORM, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, D3D12_RESOURCE_STATE_RENDER_TARGET,
 		m_SmaaBlend, m_SmaaBlendAlloc, L"SmaaBlend" ) ) return false;
 
-	if ( !ensureSlot( m_SmaaColorSrvSlot ) || !ensureSlot( m_SmaaEdgesSrvSlot ) || !ensureSlot( m_SmaaBlendSrvSlot ) )
+	if ( !ensureSlot( m_SmaaEdgesSrvSlot ) || !ensureSlot( m_SmaaBlendSrvSlot ) )
 		return false;
 
 	D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
 	srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
 	srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 	srv.Texture2D.MipLevels = 1;
-	srv.Format = kBackBufferFormat;
-	device->CreateShaderResourceView( m_SmaaColor.Get(), &srv, GetSrvCpuHandle( m_SmaaColorSrvSlot ) );
 	srv.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
 	device->CreateShaderResourceView( m_SmaaEdges.Get(), &srv, GetSrvCpuHandle( m_SmaaEdgesSrvSlot ) );
 	device->CreateShaderResourceView( m_SmaaBlend.Get(), &srv, GetSrvCpuHandle( m_SmaaBlendSrvSlot ) );
@@ -543,7 +596,7 @@ void D3D12GraphicsEngine::RenderSMAA() {
 	// crisp). Runtime toggle: only runs when AntiAliasingMode == AA_SMAA and every resource/PSO is present.
 	auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
 	if ( settings.AntiAliasingMode != GothicRendererSettings::AA_SMAA ) return;
-	if ( !m_CmdList || !m_SwapChainReady || !m_SmaaResourcesReady
+	if ( !m_CmdList || !m_SwapChainReady || !m_SmaaResourcesReady || !m_LdrCopyReady
 		|| !m_SmaaAreaTex || !m_SmaaAreaTex->HasSRV() || !m_SmaaSearchTex || !m_SmaaSearchTex->HasSRV()
 		|| !m_Pipelines.Smaa.RootSig || !m_Pipelines.Smaa.EdgePSO || !m_Pipelines.Smaa.BlendPSO || !m_Pipelines.Smaa.NeighborPSO )
 		return;
@@ -554,16 +607,16 @@ void D3D12GraphicsEngine::RenderSMAA() {
 	D3D12_CPU_DESCRIPTOR_HANDLE backRtv = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
 	backRtv.ptr += static_cast<SIZE_T>( m_FrameIndex ) * m_RtvDescriptorSize;
 
-	// --- Copy the tonemapped swapchain image into m_SmaaColor (the SMAA color input). ---
-	// Swapchain: RENDER_TARGET -> COPY_SOURCE; m_SmaaColor rests in COPY_DEST.
+	// --- Copy the tonemapped swapchain image into m_LdrCopy (the SMAA color input). ---
+	// Swapchain: RENDER_TARGET -> COPY_SOURCE; m_LdrCopy rests in COPY_DEST.
 	{
 		auto b = TransitionBarrier( backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE );
 		m_CmdList->ResourceBarrier( 1, &b );
 	}
-	m_CmdList->CopyResource( m_SmaaColor.Get(), backBuffer );
+	m_CmdList->CopyResource( m_LdrCopy.Get(), backBuffer );
 	{
 		D3D12_RESOURCE_BARRIER b[2] = {
-			TransitionBarrier( m_SmaaColor.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE ),
+			TransitionBarrier( m_LdrCopy.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE ),
 			TransitionBarrier( backBuffer, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET ),
 		};
 		m_CmdList->ResourceBarrier( 2, b );
@@ -584,7 +637,7 @@ void D3D12GraphicsEngine::RenderSMAA() {
 		UINT ColorIdx, EdgesIdx, BlendIdx, AreaIdx, SearchIdx;
 	} consts = {
 		{ 1.0f / m_Resolution.x, 1.0f / m_Resolution.y, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ) },
-		m_SmaaColorSrvSlot, m_SmaaEdgesSrvSlot, m_SmaaBlendSrvSlot,
+		m_LdrCopySrvSlot, m_SmaaEdgesSrvSlot, m_SmaaBlendSrvSlot,
 		m_SmaaAreaTex->GetSrvSlot(), m_SmaaSearchTex->GetSrvSlot()
 	};
 	const float clearZero[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
@@ -621,10 +674,90 @@ void D3D12GraphicsEngine::RenderSMAA() {
 	// RENDER_TARGET (bound above), ready for Gothic's 2D UI/HUD to composite on top.
 	{
 		D3D12_RESOURCE_BARRIER b[3] = {
-			TransitionBarrier( m_SmaaColor.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST ),
+			TransitionBarrier( m_LdrCopy.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST ),
 			TransitionBarrier( m_SmaaEdges.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET ),
 			TransitionBarrier( m_SmaaBlend.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET ),
 		};
 		m_CmdList->ResourceBarrier( 3, b );
+	}
+}
+
+
+void D3D12GraphicsEngine::RenderSharpen() {
+	// Post-tonemap sharpening of the LDR swapchain image — port of D3D11's "Sharpen" render-graph pass
+	// (D3D11GraphicsEngine.cpp, right after the HDR->backbuffer resolve). Called from OnStartWorldRendering
+	// after RenderSMAA (so SMAA's smoothing happens first, D3D11's order) and before Gothic's 2D UI/HUD draws,
+	// so the HUD is never sharpened. Two modes, both shipped by D3D11 and driven by the same shared settings:
+	//   SHARPEN_SIMPLE — unsharp mask (D3D11PfxRenderer::RenderSimpleSharpen)
+	//   SHARPEN_CAS    — AMD FidelityFX CAS (D3D11PFX_CAS::Apply); the DEFAULT mode on both backends
+	// D3D11 skips this entirely while an FSR upscaler is active (FSR does its own RCAS sharpening); D3D12 has
+	// no upscaler yet, so there is nothing to skip for.
+	auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
+	if ( settings.SharpeningMode == GothicRendererSettings::SHARPEN_NONE || settings.SharpenFactor <= 0.0f ) return;
+	if ( !m_CmdList || !m_SwapChainReady || !m_LdrCopyReady || !m_Pipelines.Sharpen.RootSig ) return;
+
+	ID3D12PipelineState* pso = ( settings.SharpeningMode == GothicRendererSettings::SHARPEN_CAS )
+		? m_Pipelines.Sharpen.CasPSO.Get()
+		: m_Pipelines.Sharpen.SimplePSO.Get();
+	if ( !pso ) return;
+
+	DX_ZONE( m_CmdList, "Sharpen" );
+
+	ID3D12Resource* backBuffer = m_BackBuffers[m_FrameIndex].Get();
+	D3D12_CPU_DESCRIPTOR_HANDLE backRtv = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
+	backRtv.ptr += static_cast<SIZE_T>( m_FrameIndex ) * m_RtvDescriptorSize;
+
+	// A texture can't be its own SRV and RTV, so sharpen a copy of the swapchain back onto the swapchain.
+	// Same shape as D3D11 (both of its modes copy into the pfx temp buffer first). m_LdrCopy rests in COPY_DEST.
+	{
+		auto b = TransitionBarrier( backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE );
+		m_CmdList->ResourceBarrier( 1, &b );
+	}
+	m_CmdList->CopyResource( m_LdrCopy.Get(), backBuffer );
+	{
+		D3D12_RESOURCE_BARRIER b[2] = {
+			TransitionBarrier( m_LdrCopy.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE ),
+			TransitionBarrier( backBuffer, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET ),
+		};
+		m_CmdList->ResourceBarrier( 2, b );
+	}
+
+	// b0: { uint4 CasConst0; uint4 CasConst1; uint SrcIndex; float SharpenStrength; float2 TextureSize }.
+	// The CAS constants come from ffxCasSetup with input == output size (sharpening-only mode), exactly as
+	// D3D11PFX_CAS::Apply calls it; SharpenFactor is clamped to [0,1] there too (D3D11PFX_CAS::SetSharpness).
+	struct SharpenConsts {
+		FfxUInt32x4 CasConst0;
+		FfxUInt32x4 CasConst1;
+		UINT  SrcIndex;
+		float SharpenStrength;
+		float TextureSize[2];
+	} consts = {};
+	ffxCasSetup( consts.CasConst0, consts.CasConst1,
+		std::clamp( settings.SharpenFactor, 0.0f, 1.0f ),
+		static_cast<FfxFloat32>( m_Resolution.x ), static_cast<FfxFloat32>( m_Resolution.y ),
+		static_cast<FfxFloat32>( m_Resolution.x ), static_cast<FfxFloat32>( m_Resolution.y ) );
+	consts.SrcIndex = m_LdrCopySrvSlot;
+	consts.SharpenStrength = settings.SharpenFactor;
+	consts.TextureSize[0] = static_cast<float>( m_Resolution.x );
+	consts.TextureSize[1] = static_cast<float>( m_Resolution.y );
+	static_assert( sizeof( SharpenConsts ) == 12 * sizeof( UINT ), "SharpenCB must match the 12 root constants in CreateSharpen" );
+
+	const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
+	const D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
+	m_CmdList->RSSetViewports( 1, &vp );
+	m_CmdList->RSSetScissorRects( 1, &sc );
+	m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+	m_CmdList->IASetVertexBuffers( 0, 0, nullptr );
+	m_CmdList->SetGraphicsRootSignature( m_Pipelines.Sharpen.RootSig.Get() );
+	m_CmdList->SetPipelineState( pso );
+	m_CmdList->SetGraphicsRoot32BitConstants( 0, 12, &consts, 0 );
+	m_CmdList->OMSetRenderTargets( 1, &backRtv, FALSE, nullptr );
+	m_CmdList->DrawInstanced( 3, 1, 0, 0 );
+
+	// Back to the resting state so the next user of the scratch copy (next frame's SMAA/sharpen) finds it in
+	// COPY_DEST. The swapchain stays RENDER_TARGET for Gothic's 2D UI/HUD.
+	{
+		auto b = TransitionBarrier( m_LdrCopy.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST );
+		m_CmdList->ResourceBarrier( 1, &b );
 	}
 }

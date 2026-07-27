@@ -248,6 +248,25 @@ private:
     // drains this list, so skipping the call would leak one entry per ghost vob per frame forever.
     void DrawGhostVobs();
     void DrawVegetation();    // GVegetationBox instanced grass cards (own PSO — see D3D12PipelineState::CreateGrass)
+
+    // Binds every frame-constant root argument of World.RootSig (b0 ViewProj, b1 fog, the Forward+ light
+    // SRV/count, the CSM CB + array, the point-shadow cubes, the SSAO mask index). Shared by the lit world
+    // mesh and the lit quad marks — anything drawing through World.RootSig after another root signature was
+    // bound must call this first.
+    void BindWorldFrameRootState( const DirectX::XMFLOAT4X4& viewProj );
+
+    // Gothic FX geometry — quad marks and poly strips (D3D12Fx.cpp). Quad marks are LIT (they reuse
+    // World.hlsl's PSMain through World.RootSig); the MUL/MUL2 marks and the poly strips are unlit through
+    // the small Fx.hlsl pipeline, matching which shader each D3D11 pass binds.
+    bool CreateFxVertexBuffers();     // per-frame dynamic (upload-heap) vertex ring for the poly-strip geometry
+    // zCQuadMark decals (blood splatter, spell ground marks). Split in two exactly like D3D11: the opaque /
+    // additive / alpha-blended marks draw with the opaque decals (depth-write on), while MUL/MUL2 marks are
+    // deferred to DrawMQuadMarks and drawn with the transparent decals (depth-write off).
+    void DrawQuadMarks();
+    void DrawMQuadMarks();
+    // Weapon/spell trails + lightning flashes (zCPolyStrip). Recomputes the strip/flash meshes first, exactly
+    // like D3D11's "Draw PolyStrips" pass, then draws one dynamic-ring batch per texture.
+    XRESULT DrawPolyStrips( bool noTextures = false ) override;
     // Bink cutscene YUV quad (zBinkPlayer.cpp) — DrawVertexArray's PS_Video special case. Same pre-transformed
     // vertex ring as the FF/UI path, but binds m_VideoTextures[0..2] through Video.RootSig/PSO instead.
     XRESULT DrawVideoVertexArray( ExVertexStruct* vertices, unsigned int numVertices, unsigned int startVertex, unsigned int stride );
@@ -433,6 +452,16 @@ private:
     UINT m_LineVertexBufferCapacity = 0;
     UINT m_LineVertexBufferOffset = 0;                             // reset each OnBeginFrame
     bool m_LineOverflowLogged = false;
+
+    // Poly-strip vertex ring (D3D12Fx.cpp). Same persistently-mapped per-frame upload ring pattern; the strip
+    // geometry is rebuilt on the CPU every frame (GothicAPI::CalcPolyStripMeshes), so it can't live in a
+    // static VB the way quad marks do. D3D11 instead grows one shared TempPolysVertexBuffer on demand.
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_FxVertexBuffer[kBackBufferCount];
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_FxVertexBufferAlloc[kBackBufferCount];
+    uint8_t* m_FxVertexBufferPtr[kBackBufferCount] = {};
+    UINT m_FxVertexBufferCapacity = 0;
+    UINT m_FxVertexBufferOffset = 0;                               // reset each OnBeginFrame
+    bool m_FxOverflowLogged = false;
 
     std::unique_ptr<D3D12Texture> m_WhiteTexture;         // 1x1 white fallback for untextured draws
     std::unique_ptr<D3D12Texture> m_BlackTexture;         // 1x1 black fallback for untextured draws
@@ -831,17 +860,15 @@ private:
     //   1. Edge detection      color        -> m_SmaaEdges
     //   2. Blend-weight calc    edges+LUTs   -> m_SmaaBlend
     //   3. Neighborhood blend   color+blend  -> swapchain
-    // m_SmaaColor holds a copy of the tonemapped LDR image (the swapchain can't be both the SMAA color SRV and
-    // the pass-3 RTV at once), so the effect costs one extra full-res copy per frame while enabled. The area/
-    // search LUTs are precomputed static textures loaded once; edges/blend/color are resolution-dependent
-    // (recreated on resize like the bloom pyramid). All are bound bindlessly (SRV heap index -> b0 root const).
-    Microsoft::WRL::ComPtr<ID3D12Resource>      m_SmaaColor;         // LDR copy of the tonemapped swapchain (kBackBufferFormat)
-    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_SmaaColorAlloc;
+    // m_LdrCopy (below) holds the copy of the tonemapped LDR image the color pass reads (the swapchain can't be
+    // both the SMAA color SRV and the pass-3 RTV at once), so the effect costs one extra full-res copy per frame
+    // while enabled. The area/search LUTs are precomputed static textures loaded once; edges/blend are
+    // resolution-dependent (recreated on resize like the bloom pyramid). All are bound bindlessly (SRV heap
+    // index -> b0 root const).
     Microsoft::WRL::ComPtr<ID3D12Resource>      m_SmaaEdges;         // pass-1 output (R8G8B8A8)
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_SmaaEdgesAlloc;
     Microsoft::WRL::ComPtr<ID3D12Resource>      m_SmaaBlend;         // pass-2 output (R8G8B8A8)
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_SmaaBlendAlloc;
-    UINT m_SmaaColorSrvSlot = UINT_MAX;
     UINT m_SmaaEdgesSrvSlot = UINT_MAX;
     UINT m_SmaaBlendSrvSlot = UINT_MAX;
     D3D12_CPU_DESCRIPTOR_HANDLE m_SmaaEdgesRtv = {};                 // RTV heap slot kBackBufferCount+1
@@ -849,10 +876,26 @@ private:
     std::unique_ptr<D3D12Texture> m_SmaaAreaTex;                     // precomputed area LUT (160x560 R8G8), loaded once
     std::unique_ptr<D3D12Texture> m_SmaaSearchTex;                   // precomputed search LUT (66x33 R8), loaded once
     bool m_SmaaTexturesLoaded = false;
-    bool m_SmaaResourcesReady = false;                              // color/edges/blend created for the current resolution
+    bool m_SmaaResourcesReady = false;                              // edges/blend created for the current resolution
     bool LoadSmaaTextures();                  // one-time: load the area + search LUTs from system\GD3D11\Textures
-    bool CreateSmaaResources( INT2 size );    // (re)builds the resolution-dependent color/edges/blend textures + views
+    bool CreateSmaaResources( INT2 size );    // (re)builds the resolution-dependent edges/blend textures + views
     void RenderSMAA();                        // 3-pass SMAA on the swapchain LDR image (guards on the toggle + resources)
+
+    // Shared scratch copy of the tonemapped LDR swapchain image, used by every post-tonemap pass that has to
+    // read the frame while writing it back (SMAA's color input, the sharpen source). Only one such pass reads
+    // it at a time — they run in sequence at the end of OnStartWorldRendering — so one full-res kBackBufferFormat
+    // texture serves both, which matters more than usual on 32-bit (see CLAUDE.md). Resolution-dependent
+    // (recreated on resize); rests in COPY_DEST, and every user must leave it that way.
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_LdrCopy;
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_LdrCopyAlloc;
+    UINT m_LdrCopySrvSlot = UINT_MAX;
+    bool m_LdrCopyReady = false;
+    bool CreateLdrCopyResource( INT2 size );  // (re)builds the LDR scratch copy + its SRV
+
+    // Post-tonemap sharpening (RendererSettings.SharpeningMode / SharpenFactor — SHARPEN_CAS by default, same
+    // as D3D11). Runs on the tonemapped LDR swapchain right after RenderSMAA, before Gothic's 2D UI/HUD
+    // composites on top, mirroring D3D11's "Sharpen" render-graph pass placement.
+    void RenderSharpen();                     // guards on the mode/strength, m_LdrCopyReady and the mode's PSO
 
     // Simple screen-space AO (plan item #4, "SAO"): resolution-dependent R8_UNORM textures (m_AOMask holds the
     // final blurred result; m_AOBlurTemp is the horizontal-blur scratch target), recreated on resize like the

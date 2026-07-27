@@ -3453,6 +3453,10 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 		DrawDecalList( decals, true );
 	}
 
+	// Quad marks (blood splatter, spell ground marks) — D3D11's "Draw ParticleFX #1" pass calls DrawQuadMarks
+	// immediately after the lit DrawDecalList, same slot. MUL/MUL2 marks are deferred to DrawMQuadMarks below.
+	DrawQuadMarks();
+
 	// Water: alpha-blended over the finished opaque scene (world + NPCs + VOBs + opaque decals).
 	DrawWaterSurfaces();
 
@@ -3467,6 +3471,10 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 		DrawDecalList( decals, false );
 	}
 
+	// The modulate-blended quad marks DrawQuadMarks deferred — D3D11's "Draw ParticleFX #2" pass draws them
+	// right after the unlit decals, for the same reason (MUL/MUL2 must land on the finished scene).
+	DrawMQuadMarks();
+
 	// Particles last: billboarded PFX (fire, smoke, magic, dust) blended over everything, depth-tested
 	// against the opaque scene but not writing depth. Mirrors D3D11's late DrawParticlesSimple pass.
 	{
@@ -3480,6 +3488,11 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 		DX_ZONE( m_CmdList, "Draw rain" );
 		DrawRainParticles();
 	}
+
+	// Weapon/spell trails + lightning flashes. D3D11 draws its "Draw PolyStrips" pass right after the
+	// particle pass and before the debug lines; on D3D12 the rain billboards sit in between, which is
+	// immaterial (both are late alpha content that doesn't write depth).
+	DrawPolyStrips();
 
 	// Ghosts (invisible-potion/fade-out items): drawn last of the alpha content, mirrors D3D11's "Draw ghosts"
 	// pass placement (after the transparency waterfall/decals, before post-FX). MUST run every frame even if
@@ -3518,6 +3531,10 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// swapchain image, before Gothic's 2D UI/HUD composites on top so the HUD stays crisp. No-ops if disabled
 	// or resources unavailable. Mirrors D3D11's SMAA placement (post-tonemap, pre-sharpen/UI).
 	RenderSMAA();
+
+	// Post-tonemap sharpening (SHARPEN_CAS by default — this one is ON for a stock config, unlike SMAA).
+	// D3D11's "Sharpen" pass sits in the same place: after AA, on the LDR backbuffer, before the 2D UI.
+	RenderSharpen();
 
 	// Debug/editor lines last, on the finished LDR image — same slot as D3D11's "Draw Debug Lines" render-graph
 	// pass (after post-FX, before Gothic's 2D UI composites on top). Both calls also CLEAR their cache, so this
@@ -4167,6 +4184,27 @@ void D3D12GraphicsEngine::BindMaterialMaps( zCTexture* tex, UINT matRootParam ) 
 }
 
 
+void D3D12GraphicsEngine::BindWorldFrameRootState( const XMFLOAT4X4& viewProj ) {
+    // Every frame-constant root argument of World.RootSig, in one place: the lit world mesh, the lit
+    // instanced VOBs and the lit quad marks (D3D12Fx.cpp) all need the identical set, and any pass that
+    // binds a different root signature in between (water, decals, FX) has to re-establish all of it.
+    // The caller sets its own PSO, per-material b6 constants and geometry.
+    const FogConstants fog = MakeFogConstants();
+
+    m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
+    m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
+    m_CmdList->SetGraphicsRoot32BitConstants( 2, 8, &fog, 0 );   // b1 fog
+    BindFrameLights();   // param 3 = light SRV (t1), param 4 = light count (b2) — MUST set both or the
+                         // shader's light loop reads a garbage count and runs away (GPU TDR hang).
+    // CSM sampling: param 7 = shadow CB (b3), param 8 = shadow-map array SRV (t4). The map was left in
+    // PIXEL_SHADER_RESOURCE by RenderSunShadows; the PS samples it to darken sun-occluded surfaces.
+    m_CmdList->SetGraphicsRootConstantBufferView( 7, m_ShadowCBGpu[m_FrameIndex] );
+    m_CmdList->SetGraphicsRootDescriptorTable( 8, GetSrvGpuHandle( m_ShadowSrvSlot ) );
+    m_CmdList->SetGraphicsRootDescriptorTable( 9, GetSrvGpuHandle( m_PointShadowSrvSlot ) );   // t5 point-shadow cubes
+    m_CmdList->SetGraphicsRoot32BitConstants( 12, 1, &m_ActiveAOMaskSrvSlot, 0 );   // b7 AOCB (simple SSAO mask)
+}
+
+
 XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
     if ( !m_FrameOpen || !m_Pipelines.World.PSO || !m_Pipelines.World.RootSig || !m_DepthBuffer )
         return XR_SUCCESS;
@@ -4195,20 +4233,8 @@ XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
     XMFLOAT4X4 viewProj;
     XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
 
-    const FogConstants fog = MakeFogConstants();
-
     m_CmdList->SetPipelineState( m_Pipelines.World.PSO.Get() );
-    m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
-    m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
-    m_CmdList->SetGraphicsRoot32BitConstants( 2, 8, &fog, 0 );   // b1 fog
-    BindFrameLights();   // param 3 = light SRV (t1), param 4 = light count (b2) — MUST set both or the
-                         // shader's light loop reads a garbage count and runs away (GPU TDR hang).
-    // CSM sampling: param 7 = shadow CB (b3), param 8 = shadow-map array SRV (t4). The map was left in
-    // PIXEL_SHADER_RESOURCE by RenderSunShadows; the PS samples it to darken sun-occluded surfaces.
-    m_CmdList->SetGraphicsRootConstantBufferView( 7, m_ShadowCBGpu[m_FrameIndex] );
-    m_CmdList->SetGraphicsRootDescriptorTable( 8, GetSrvGpuHandle( m_ShadowSrvSlot ) );
-    m_CmdList->SetGraphicsRootDescriptorTable( 9, GetSrvGpuHandle( m_PointShadowSrvSlot ) );   // t5 point-shadow cubes
-    m_CmdList->SetGraphicsRoot32BitConstants( 12, 1, &m_ActiveAOMaskSrvSlot, 0 );   // b7 AOCB (simple SSAO mask)
+    BindWorldFrameRootState( viewProj );
 
     D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_Resolution.x), static_cast<float>(m_Resolution.y), 0.0f, 1.0f };
     D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };

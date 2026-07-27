@@ -239,6 +239,11 @@ XRESULT D3D12GraphicsEngine::Init() {
     } else {
         LoadSmaaTextures();   // non-fatal; RenderSMAA also guards on the LUTs being present
     }
+    if ( !m_Pipelines.CreateSharpen() ) {
+        // Non-fatal: RenderSharpen() guards on the PSO for the selected mode and just leaves the frame
+        // unsharpened. Note this one IS on by default (RendererSettings.SharpeningMode == SHARPEN_CAS).
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the sharpen pipeline (the image will not be sharpened).";
+    }
     if ( !m_Pipelines.CreateAO() ) {
         // Non-fatal: SSAO is an opt-in visual enhancement (RendererSettings.AoMode, defaults to a real AO mode
         // but nothing else depends on it unconditionally). RenderSSAO() guards on the PSOs existing and just
@@ -273,6 +278,11 @@ XRESULT D3D12GraphicsEngine::Init() {
         // Non-fatal: debug/editor lines are a diagnostic overlay. DrawLines() guards on the PSOs + ring
         // existing; D3D12LineRenderer still drains its caches every frame either way (no unbounded growth).
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the debug-line pipeline (debug lines will not render).";
+    }
+    if ( !m_Pipelines.CreateFx() || !CreateFxVertexBuffers() ) {
+        // Non-fatal: the three FX passes guard on the root sig / ring existing. Without them blood splatter,
+        // spell ground marks and weapon/spell trails simply don't draw — the same as before they were ported.
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the FX pipeline (quad marks and poly strips will not render).";
     }
     LogInfo() << "D3D12GraphicsEngine initialized (device + 2D + world + VOB + skeletal + water + particle + decal + HDR tonemap pipelines up). Swapchain is created once the game window is set.";
     return XR_SUCCESS;
@@ -1089,6 +1099,7 @@ bool D3D12GraphicsEngine::CreateSwapChain( INT2 size ) {
     if ( !CreateDepthBuffer( size ) ) return false;
     if ( !CreateSceneColorTarget( size ) ) return false;   // HDR scene RT (RTV heap now exists with the extra slot)
     CreateBloomResources( size );   // non-fatal: bloom is opt-in (EnableBloom, default off); RenderBloom no-ops if this failed
+    CreateLdrCopyResource( size );   // non-fatal: shared LDR scratch for SMAA/sharpen; both no-op without it
     CreateSmaaResources( size );     // non-fatal: SMAA is opt-in (AntiAliasingMode == AA_SMAA); RenderSMAA no-ops if this failed
     CreateAOResources( size );       // non-fatal: SSAO is opt-in (AoMode != AO_NONE); RenderSSAO no-ops if this failed
     CreateHiZResources( size );      // non-fatal: without it the GPU VOB cull runs frustum-only (no occlusion)
@@ -1244,6 +1255,8 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
     m_UIOverflowLogged = false;
     m_LineVertexBufferOffset = 0;
     m_LineOverflowLogged = false;
+    m_FxVertexBufferOffset = 0;
+    m_FxOverflowLogged = false;
     m_VobInstanceBufferOffset = 0;
     m_VobInstanceOverflowLogged = false;
     m_SkeletalCBBufferOffset = 0;
@@ -1909,6 +1922,7 @@ bool D3D12GraphicsEngine::ResizeSwapChain( INT2 size ) {
     if ( !CreateDepthBuffer( size ) ) return false;   // GPU is idle (WaitForGpuIdle above), safe to recreate
     if ( !CreateSceneColorTarget( size ) ) return false;   // HDR scene RT tracks the new resolution too
     CreateBloomResources( size );   // non-fatal: see the CreateSwapChain call site
+    CreateLdrCopyResource( size );   // non-fatal: see the CreateSwapChain call site
     CreateSmaaResources( size );     // non-fatal: see the CreateSwapChain call site
     CreateAOResources( size );       // non-fatal: see the CreateSwapChain call site
     CreateHiZResources( size );      // non-fatal: see the CreateSwapChain call site

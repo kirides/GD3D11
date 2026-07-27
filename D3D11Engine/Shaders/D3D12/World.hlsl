@@ -102,6 +102,45 @@ VS_OUT VSMain( VS_IN i )
     return o;
 }
 
+// Quad marks (zCQuadMark — blood splatter, spell ground marks). Same lit path as the world mesh: this VS only
+// differs in its INPUT, so PSMain below is reused verbatim (which is what gets quad marks the identical
+// SrgbToLinear -> DelightDiffuse albedo treatment, CSM shadows, tiled point lights, SSAO, wetness and sky IBL).
+// D3D11's equivalent is DrawQuadMarks binding VS_Ex + PS_World.
+//
+// Two input differences from VSMain: the geometry is the CPU-side ExVertexStruct (stride 60, full-precision
+// float3 normal at offset 12, not the packed 36-byte world vertex), and the vertices are in the mark's
+// connected-vob LOCAL space, so a per-mark world matrix has to be applied here.
+//
+// That matrix rides in b4 — the wind CB slot of the shared World root signature, which this file never reads
+// (only Vob.hlsl's VSMain does) and which is already VS-visible with room for 12 DWORDs. A cbuffer that an
+// entry point doesn't reference emits no binding, so declaring it here cannot disturb VSMain/VSTransparent or
+// the ExecuteIndirect command signatures anchored to this root sig. Only 3 of the 4 matrix rows fit, hence the
+// explicit dot form below instead of a mul(): with the codebase's verbatim row-major upload read column-major
+// (see Preview.hlsl), `mul(float4(pos,1), World).x` IS `dot(float4(pos,1), row0)` — translation sits at
+// _14/_24/_34 because Gothic's vob matrices are column-vector form. The 4th row is (0,0,0,1) for a rigid
+// transform and contributes nothing to xyz.
+cbuffer QuadMarkCB : register(b4) { float4 QmWorldRow0; float4 QmWorldRow1; float4 QmWorldRow2; };
+
+struct VS_IN_QUADMARK { float3 pos : POSITION; float3 nrm : NORMAL; float2 uv : TEXCOORD0; float4 col : DIFFUSE; };
+
+VS_OUT VSQuadMark( VS_IN_QUADMARK i )
+{
+    VS_OUT o;
+    const float4 lpos = float4( i.pos, 1.0 );
+    const float3 wpos = float3( dot( lpos, QmWorldRow0 ), dot( lpos, QmWorldRow1 ), dot( lpos, QmWorldRow2 ) );
+    // Normal: the same basis without the translation column. Quad-mark matrices are rigid (rotation +
+    // translation), so no inverse-transpose is needed; PSMain normalizes again after the perturb anyway.
+    const float3 wnrm = float3( dot( i.nrm, QmWorldRow0.xyz ), dot( i.nrm, QmWorldRow1.xyz ), dot( i.nrm, QmWorldRow2.xyz ) );
+
+    o.clip = mul( float4( wpos, 1.0 ), ViewProj );
+    o.uv  = i.uv;
+    o.col = i.col;
+    o.wpos = wpos;
+    o.wnrm = normalize( wnrm );
+    o.fogDist = length( wpos - CamPosWS );
+    return o;
+}
+
 float4 PSMain( VS_OUT i ) : SV_TARGET
 {
     Texture2D difTex = ResourceDescriptorHeap[MatDiffuseIndex];   // bindless diffuse (ExecuteIndirect, P2.11)

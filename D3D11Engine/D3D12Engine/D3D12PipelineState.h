@@ -65,6 +65,11 @@ public:
         Microsoft::WRL::ComPtr<ID3DBlob>            VobIndirectPsBlob;         // PSMainBindless
         Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassVobIndirectPSO;
         Microsoft::WRL::ComPtr<ID3DBlob>            DepthPrepassVobIndirectPsBlob; // PSDepthClipBindless
+        // Lit quad marks (zCQuadMark). Reuses RootSig AND PsBlob (World.hlsl PSMain) — only the VS and the
+        // input layout differ (unpacked ExVertexStruct, CPU-transformed to world space; see VSQuadMark).
+        // Blend-keyed like the FX cache because the marks carry Gothic's per-material alpha funcs.
+        Microsoft::WRL::ComPtr<ID3DBlob>            QuadMarkVsBlob;
+        std::unordered_map<uint32_t, Microsoft::WRL::ComPtr<ID3D12PipelineState>> QuadMarkPipelines;
     };
     // Water (transparent world surfaces): own root sig, the alpha-blended color PSO, plus a depth-only
     // prepass PSO (same root sig + VB/IB, lean position-only layout) that lays the water surface down in
@@ -214,6 +219,31 @@ public:
         Microsoft::WRL::ComPtr<ID3D12PipelineState> NeighborPSO;  // pass 3: color+blend -> swapchain (kBackBufferFormat)
     };
 
+    // Gothic FX geometry — quad marks (zCQuadMark) and poly strips (weapon/spell trails, lightning). Both are
+    // CPU-built ExVertexStruct triangle lists drawn unlit with a per-draw blend mode, so they share one root
+    // signature (b0 ViewProj, b1 World, b2 bindless diffuse + alpha-test flag, static aniso-wrap s0,
+    // CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED) and one blend-keyed PSO cache — same pattern as the decal/particle/
+    // world-transparency caches. See Shaders/D3D12/Fx.hlsl and D3D12Fx.cpp.
+    struct FxPipeline {
+        Microsoft::WRL::ComPtr<ID3D12RootSignature> RootSig;
+        Microsoft::WRL::ComPtr<ID3DBlob>            VsBlob;
+        Microsoft::WRL::ComPtr<ID3DBlob>            PsBlob;
+        std::unordered_map<uint32_t, Microsoft::WRL::ComPtr<ID3D12PipelineState>> BlendPipelines;
+    };
+
+    // Post-tonemap sharpening (RendererSettings.SharpeningMode; SHARPEN_CAS is the shipped default on both
+    // backends). One bindless root sig (b0 root consts { CAS const0/const1, source SRV heap index, strength,
+    // resolution }, static linear-clamp sampler, CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED) shared by both modes;
+    // both are fullscreen-triangle passes writing the swapchain (kBackBufferFormat) from the LDR copy.
+    struct SharpenPipeline {
+        Microsoft::WRL::ComPtr<ID3D12RootSignature> RootSig;
+        Microsoft::WRL::ComPtr<ID3DBlob>            VsBlob;
+        Microsoft::WRL::ComPtr<ID3DBlob>            SimplePsBlob;
+        Microsoft::WRL::ComPtr<ID3DBlob>            CasPsBlob;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> SimplePSO;   // SHARPEN_SIMPLE (unsharp mask)
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> CasPSO;      // SHARPEN_CAS (FidelityFX CAS)
+    };
+
     // Height fog + god rays (plan item #5) — the D3D12 port of D3D11's PostFX composition pass. Two
     // quarter-res compute passes build the god-ray texture (Shaders/D3D12/GodRays.hlsl CSMask/CSZoom, sharing
     // one bindless compute root sig: b0 12 root consts + one static linear-clamp sampler), then a single
@@ -319,6 +349,12 @@ public:
                               // textures, b1 GrassCB, b2 fog, Forward+ lights, b4 shadow CB, t5 CSM shadow map)
     bool CreateVideo();       // Bink YUV video playback (own root sig: b0 viewport consts, t0-t2 YUV planes)
     bool CreateSmaa();        // SMAA 3-pass AA (bindless root sig + edge/blend/neighborhood PSOs); textures stay in engine
+    bool CreateSharpen();     // post-tonemap sharpen (bindless root sig + simple/CAS PSOs); LDR copy stays in engine
+    bool CreateFx();          // MUL quad marks + poly strips (own unlit root sig; warms the default blend PSO)
+    // Lit quad marks: World.RootSig + World.hlsl VSQuadMark/PSMain, blend-keyed like the FX cache above.
+    ID3D12PipelineState* GetOrCreateQuadMarkPipeline( const GothicBlendStateInfo& blend, bool depthWrite );
+    // Blend-keyed PSO cache for the FX pass. depthWrite rides the key's top bit (BlendKey uses bits 0..28).
+    ID3D12PipelineState* GetOrCreateFxPipeline( const GothicBlendStateInfo& blend, bool depthWrite );
     bool CreateAO();          // simple SSAO: main estimate + separable blur compute pipelines; textures stay in engine
     bool CreateSkyIbl();      // sky IBL: analytic radiance + GGX prefilter + irradiance compute pipelines; cubes stay in engine
     bool CreateFog();         // height fog + god rays: 2 god-ray compute PSOs + the fullscreen composition PSO
@@ -362,6 +398,8 @@ public:
     GraphicsPipeline Grass;
     VideoPipeline    Video;
     SmaaPipeline     Smaa;
+    SharpenPipeline  Sharpen;       // post-tonemap sharpening (Shaders/D3D12/Sharpen.hlsl)
+    FxPipeline       Fx;            // quad marks + poly strips (Shaders/D3D12/Fx.hlsl)
     AOPipeline       AO;
     SkyIblPipeline   SkyIbl;        // sky image-based lighting (Shaders/D3D12/SkyIbl.hlsl)
     FogPipeline      Fog;        // height fog + god rays (Shaders/D3D12/HeightFog.hlsl + GodRays.hlsl)

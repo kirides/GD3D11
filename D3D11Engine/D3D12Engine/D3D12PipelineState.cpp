@@ -223,6 +223,12 @@ bool D3D12PipelineState::CreateWorld() {
     if ( !m_Shaders->CompileFromFile( "World.hlsl", "PSMain", Shadermodel_PS, World.PsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
+    // Lit quad marks (D3D12Fx.cpp). Non-fatal: DrawQuadMarks falls back to the unlit Fx pipeline if this
+    // blob is missing, so a shader edit that breaks it costs the lighting, not the blood splats.
+    if ( !m_Shaders->CompileFromFile( "World.hlsl", "VSQuadMark", Shadermodel_VS, World.QuadMarkVsBlob.ReleaseAndGetAddressOf() ) ) {
+        LogWarn() << "D3D12: World.hlsl VSQuadMark failed to compile — quad marks will draw unlit.";
+        World.QuadMarkVsBlob.Reset();
+    }
 
     // Bind Position/TexCoord0/Color from the packed 36-byte ExVertexStructGPU via explicit offsets;
     // the packed normal (@12), tangent (@16) and uv2 (@28) are skipped (not read by this PS yet).
@@ -2955,6 +2961,275 @@ bool D3D12PipelineState::CreateSmaa() {
         return false;
     if ( !makePso( Smaa.NeighborVsBlob.Get(), Smaa.NeighborPsBlob.Get(), kBackBufferFormat, Smaa.NeighborPSO.ReleaseAndGetAddressOf(), "neighbor" ) )
         return false;
+
+    return true;
+}
+
+ID3D12PipelineState* D3D12PipelineState::GetOrCreateQuadMarkPipeline( const GothicBlendStateInfo& blend, bool depthWrite ) {
+    // Lit quad marks: World.RootSig + World.hlsl's VSQuadMark/PSMain. Reusing the world PIXEL shader verbatim
+    // is the whole point — it is what gives the marks the same SrgbToLinear -> DelightDiffuse albedo handling,
+    // CSM shadows, tiled point lights, SSAO, wetness and sky IBL the world mesh gets, with no duplicated
+    // lighting code to drift. Only the VS + input layout differ (see VSQuadMark), plus the blend/depth state,
+    // which is Gothic's per-material alpha func, hence the same blend-keyed cache shape the FX pass uses.
+    const uint32_t key = BlendKey( blend ) | (depthWrite ? (1u << 31) : 0u);
+    auto it = World.QuadMarkPipelines.find( key );
+    if ( it != World.QuadMarkPipelines.end() ) return it->second.Get();
+    if ( !World.RootSig || !World.QuadMarkVsBlob || !World.PsBlob ) return nullptr;
+
+    // CPU-side ExVertexStruct (stride 60): Position @0, full-precision float3 Normal @12, TexCoord0 @24,
+    // Color @40. Unlike the world mesh's packed 36-byte vertex, nothing here is quantized — quad marks are
+    // built per-mark on the CPU (WorldConverter::UpdateQuadMarkInfo) and never go through the packer.
+    const D3D12_INPUT_ELEMENT_DESC layout[] = {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "DIFFUSE",  0, DXGI_FORMAT_R8G8B8A8_UNORM,  0, 40, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    };
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+    pso.pRootSignature = World.RootSig.Get();
+    pso.VS = { World.QuadMarkVsBlob->GetBufferPointer(), World.QuadMarkVsBlob->GetBufferSize() };
+    pso.PS = { World.PsBlob->GetBufferPointer(), World.PsBlob->GetBufferSize() };
+    pso.InputLayout = { layout, _countof( layout ) };
+    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pso.NumRenderTargets = 1;
+    pso.RTVFormats[0] = kSceneColorFormat;
+    pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+    pso.SampleDesc.Count = 1;
+    pso.SampleMask = UINT_MAX;
+    pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;   // D3D11's DrawQuadMarks forces CM_CULL_NONE
+    pso.RasterizerState.DepthClipEnable = TRUE;
+    // Marks lie flat ON the surface they were projected onto, so they z-fight it without a bias. The world
+    // mesh writes that depth in the prepass; a small slope-scaled pull toward the camera (reversed-Z: POSITIVE
+    // depth bias moves toward the near plane) keeps them on top without visibly detaching them.
+    pso.RasterizerState.DepthBias = 200;
+    pso.RasterizerState.SlopeScaledDepthBias = 1.0f;
+
+    D3D12_RENDER_TARGET_BLEND_DESC& rt = pso.BlendState.RenderTarget[0];
+    rt.BlendEnable = blend.BlendEnabled ? TRUE : FALSE;
+    rt.SrcBlend = static_cast<D3D12_BLEND>(blend.SrcBlend);
+    rt.DestBlend = static_cast<D3D12_BLEND>(blend.DestBlend);
+    rt.BlendOp = static_cast<D3D12_BLEND_OP>(blend.BlendOp);
+    rt.SrcBlendAlpha = static_cast<D3D12_BLEND>(blend.SrcBlendAlpha);
+    rt.DestBlendAlpha = static_cast<D3D12_BLEND>(blend.DestBlendAlpha);
+    rt.BlendOpAlpha = static_cast<D3D12_BLEND_OP>(blend.BlendOpAlpha);
+    rt.RenderTargetWriteMask = blend.ColorWritesEnabled ? D3D12_COLOR_WRITE_ENABLE_ALL : 0;
+
+    pso.DepthStencilState.DepthEnable = TRUE;
+    pso.DepthStencilState.DepthWriteMask = depthWrite ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO;
+    pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;   // reversed-Z
+    pso.DepthStencilState.StencilEnable = FALSE;
+
+    ComPtr<ID3D12PipelineState> state;
+    if ( FAILED( m_Device->GetDevice()->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( state.GetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateGraphicsPipelineState failed for lit quad-mark key 0x" << std::hex << key << ".";
+        return nullptr;
+    }
+    ID3D12PipelineState* raw = state.Get();
+    World.QuadMarkPipelines.emplace( key, std::move( state ) );
+    return raw;
+}
+
+bool D3D12PipelineState::CreateFx() {
+    // Quad marks (zCQuadMark) + poly strips (weapon/spell trails, lightning flashes) — see D3D12Fx.cpp.
+    // Both feed CPU-built ExVertexStruct triangle lists through one unlit shader with a per-draw blend mode,
+    // so one root signature and one blend-keyed PSO cache serve both. Non-fatal — the draw paths guard on
+    // the root sig existing.
+    ID3D12Device* device = m_Device->GetDevice();
+    if ( !device ) return false;
+
+    D3D12_ROOT_PARAMETER params[3] = {};
+    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[0].Constants.ShaderRegister = 0;   // b0 ViewProj
+    params[0].Constants.Num32BitValues = 16;
+    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[1].Constants.ShaderRegister = 1;   // b1 World (identity for poly strips, per-mark for quad marks)
+    params[1].Constants.Num32BitValues = 16;
+    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[2].Constants.ShaderRegister = 2;   // b2 { bindless diffuse index, alpha-test flag }
+    params[2].Constants.Num32BitValues = 4;
+    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    // s0: same 16x aniso wrap the world/VOB passes use for diffuse maps.
+    D3D12_STATIC_SAMPLER_DESC sampler = {};
+    sampler.Filter = D3D12_FILTER_ANISOTROPIC;
+    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    sampler.MaxAnisotropy = 16;
+    sampler.MaxLOD = D3D12_FLOAT32_MAX;
+    sampler.ShaderRegister = 0;   // s0
+    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+    rsDesc.NumParameters = _countof( params );
+    rsDesc.pParameters = params;
+    rsDesc.NumStaticSamplers = 1;
+    rsDesc.pStaticSamplers = &sampler;
+    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+                 | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
+
+    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
+    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (FX)."; return false; }
+    ComPtr<ID3DBlob> rsBlob, rsErr;
+    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
+        if ( rsErr ) LogWarn() << "D3D12: FX root sig error: " << static_cast<const char*>( rsErr->GetBufferPointer() );
+        return false;
+    }
+    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
+        IID_PPV_ARGS( Fx.RootSig.ReleaseAndGetAddressOf() ) ) ) )
+        return false;
+
+    if ( !m_Shaders->CompileFromFile( "Fx.hlsl", "VSMain", Shadermodel_VS, Fx.VsBlob.ReleaseAndGetAddressOf() )
+        || !m_Shaders->CompileFromFile( "Fx.hlsl", "PSMain", Shadermodel_PS, Fx.PsBlob.ReleaseAndGetAddressOf() ) )
+        return false;
+
+    // Warm the state both passes start from (D3D11's SetDefaultStates: no blending, depth-write on).
+    GothicBlendStateInfo defaultBlend;
+    defaultBlend.SetDefault();
+    if ( !GetOrCreateFxPipeline( defaultBlend, true ) ) {
+        LogWarn() << "D3D12: failed to create the default FX pipeline.";
+        return false;
+    }
+    return true;
+}
+
+ID3D12PipelineState* D3D12PipelineState::GetOrCreateFxPipeline( const GothicBlendStateInfo& blend, bool depthWrite ) {
+    const uint32_t key = BlendKey( blend ) | (depthWrite ? (1u << 31) : 0u);
+    auto it = Fx.BlendPipelines.find( key );
+    if ( it != Fx.BlendPipelines.end() ) return it->second.Get();
+    if ( !Fx.RootSig || !Fx.VsBlob || !Fx.PsBlob ) return nullptr;
+
+    // CPU-side ExVertexStruct (stride 60): Position @0, TexCoord0 @24, Color @40. Normal/TexCoord2/Tangent
+    // are unread by this unlit shader and left out of the layout.
+    const D3D12_INPUT_ELEMENT_DESC layout[] = {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "DIFFUSE",  0, DXGI_FORMAT_R8G8B8A8_UNORM,  0, 40, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    };
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+    pso.pRootSignature = Fx.RootSig.Get();
+    pso.VS = { Fx.VsBlob->GetBufferPointer(), Fx.VsBlob->GetBufferSize() };
+    pso.PS = { Fx.PsBlob->GetBufferPointer(), Fx.PsBlob->GetBufferSize() };
+    pso.InputLayout = { layout, _countof( layout ) };
+    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pso.NumRenderTargets = 1;
+    pso.RTVFormats[0] = kSceneColorFormat;   // both passes run inside world rendering, on the HDR scene target
+    pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+    pso.SampleDesc.Count = 1;
+    pso.SampleMask = UINT_MAX;
+    pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    // CULL_NONE: both D3D11 passes explicitly force CM_CULL_NONE (quad marks lie flat on arbitrary geometry,
+    // poly strips are camera-facing double-sided ribbons).
+    pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    pso.RasterizerState.DepthClipEnable = TRUE;
+
+    // Gothic blend enums are laid out for D3D11, whose _BLEND/_OP values equal D3D12's — cast directly.
+    D3D12_RENDER_TARGET_BLEND_DESC& rt = pso.BlendState.RenderTarget[0];
+    rt.BlendEnable = blend.BlendEnabled ? TRUE : FALSE;
+    rt.SrcBlend = static_cast<D3D12_BLEND>(blend.SrcBlend);
+    rt.DestBlend = static_cast<D3D12_BLEND>(blend.DestBlend);
+    rt.BlendOp = static_cast<D3D12_BLEND_OP>(blend.BlendOp);
+    rt.SrcBlendAlpha = static_cast<D3D12_BLEND>(blend.SrcBlendAlpha);
+    rt.DestBlendAlpha = static_cast<D3D12_BLEND>(blend.DestBlendAlpha);
+    rt.BlendOpAlpha = static_cast<D3D12_BLEND_OP>(blend.BlendOpAlpha);
+    rt.RenderTargetWriteMask = blend.ColorWritesEnabled ? D3D12_COLOR_WRITE_ENABLE_ALL : 0;
+
+    pso.DepthStencilState.DepthEnable = TRUE;
+    pso.DepthStencilState.DepthWriteMask = depthWrite ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO;
+    pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;   // reversed-Z
+    pso.DepthStencilState.StencilEnable = FALSE;
+
+    ComPtr<ID3D12PipelineState> state;
+    if ( FAILED( m_Device->GetDevice()->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( state.GetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: CreateGraphicsPipelineState failed for FX key 0x" << std::hex << key << ".";
+        return nullptr;
+    }
+    ID3D12PipelineState* raw = state.Get();
+    Fx.BlendPipelines.emplace( key, std::move( state ) );
+    return raw;
+}
+
+bool D3D12PipelineState::CreateSharpen() {
+    // Post-tonemap sharpening — port of D3D11's two SHARPEN_* modes (D3D11PFX_CAS::Apply and
+    // D3D11PfxRenderer::RenderSimpleSharpen). Both modes are fullscreen-triangle passes reading the LDR copy
+    // of the swapchain bindlessly and writing the swapchain, so they share one root signature and differ only
+    // in the pixel shader. Non-fatal on failure — RenderSharpen() guards on the PSO for the selected mode.
+    ID3D12Device* device = m_Device->GetDevice();
+    if ( !device ) return false;
+
+    // b0: 12 root constants { uint4 CasConst0; uint4 CasConst1; uint SrcIndex; float SharpenStrength;
+    // float2 TextureSize }. CAS reads only the first 9, the simple mode only the last 4 — one layout keeps
+    // the two PSOs on the same root signature (no rebind between modes; only one ever runs per frame).
+    D3D12_ROOT_PARAMETER param = {};
+    param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    param.Constants.ShaderRegister = 0;   // b0 SharpenCB
+    param.Constants.Num32BitValues = 12;
+    param.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    // s0 linear-clamp: the simple mode's 3x3 box blur samples off-pixel-center UVs and must repeat the border
+    // at the screen edge rather than wrap. CAS uses Load() and ignores the sampler entirely.
+    D3D12_STATIC_SAMPLER_DESC sampler = {};
+    sampler.Filter = D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT;
+    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.MaxLOD = D3D12_FLOAT32_MAX;
+    sampler.ShaderRegister = 0;   // s0 smpLinearClamp
+    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+    rsDesc.NumParameters = 1;
+    rsDesc.pParameters = &param;
+    rsDesc.NumStaticSamplers = 1;
+    rsDesc.pStaticSamplers = &sampler;
+    // DIRECTLY_INDEXED enables the SM6.6 ResourceDescriptorHeap[SrcIndex] fetch of the LDR copy.
+    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+                 | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
+
+    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
+    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (Sharpen)."; return false; }
+    ComPtr<ID3DBlob> rsBlob, rsErr;
+    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
+        if ( rsErr ) LogWarn() << "D3D12: Sharpen root sig error: " << static_cast<const char*>( rsErr->GetBufferPointer() );
+        return false;
+    }
+    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
+        IID_PPV_ARGS( Sharpen.RootSig.ReleaseAndGetAddressOf() ) ) ) )
+        return false;
+
+    if ( !m_Shaders->CompileFromFile( "Sharpen.hlsl", "VSFullscreen", Shadermodel_VS, Sharpen.VsBlob.ReleaseAndGetAddressOf() )
+        || !m_Shaders->CompileFromFile( "Sharpen.hlsl", "PSSimple", Shadermodel_PS, Sharpen.SimplePsBlob.ReleaseAndGetAddressOf() )
+        || !m_Shaders->CompileFromFile( "Sharpen.hlsl", "PSCas", Shadermodel_PS, Sharpen.CasPsBlob.ReleaseAndGetAddressOf() ) )
+        return false;
+
+    auto makePso = [&]( ID3DBlob* ps, ID3D12PipelineState** out, const char* name ) -> bool {
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+        pso.pRootSignature = Sharpen.RootSig.Get();
+        pso.VS = { Sharpen.VsBlob->GetBufferPointer(), Sharpen.VsBlob->GetBufferSize() };
+        pso.PS = { ps->GetBufferPointer(), ps->GetBufferSize() };
+        pso.InputLayout = { nullptr, 0 };
+        pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        pso.NumRenderTargets = 1;
+        pso.RTVFormats[0] = kBackBufferFormat;
+        pso.DSVFormat = DXGI_FORMAT_UNKNOWN;
+        pso.SampleDesc.Count = 1;
+        pso.SampleMask = UINT_MAX;
+        pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+        pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+        pso.RasterizerState.DepthClipEnable = TRUE;
+        pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+        pso.DepthStencilState.DepthEnable = FALSE;
+        pso.DepthStencilState.StencilEnable = FALSE;
+        if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( out ) ) ) ) {
+            LogWarn() << "D3D12: CreateGraphicsPipelineState failed (Sharpen " << name << ").";
+            return false;
+        }
+        return true;
+        };
+
+    if ( !makePso( Sharpen.SimplePsBlob.Get(), Sharpen.SimplePSO.ReleaseAndGetAddressOf(), "simple" ) ) return false;
+    if ( !makePso( Sharpen.CasPsBlob.Get(), Sharpen.CasPSO.ReleaseAndGetAddressOf(), "cas" ) ) return false;
 
     return true;
 }
