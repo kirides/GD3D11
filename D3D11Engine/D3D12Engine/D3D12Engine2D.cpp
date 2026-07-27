@@ -334,19 +334,25 @@ XRESULT D3D12GraphicsEngine::DrawVertexBufferFF( GfxVertexBuffer* vb, unsigned i
 	if ( stride != sizeof( Gothic_XYZRHW_DIF_T1_Vertex ) )
 		return XR_SUCCESS; // unknown FF-VB format — nothing else is emitted through this path
 
+    // TODO: Actually create a new input layout and VS as copying from GPU memory is incredibly slow and shows as such in performance profiling
+    
 	const uint8_t* base = static_cast<const uint8_t*>(D3D12VertexBuffer::From( vb )->GetMappedData());
 	if ( !base ) return XR_SUCCESS;
-
-	const Gothic_XYZRHW_DIF_T1_Vertex* src =
-		reinterpret_cast<const Gothic_XYZRHW_DIF_T1_Vertex*>(base + static_cast<size_t>(startVertex) * stride);
-
+    
+    static std::vector<Gothic_XYZRHW_DIF_T1_Vertex> staging;
+    staging.resize( numVertices );
+    // read GPU data once from memory instead of in a loop
+    memcpy( staging.data(), base + size_t( startVertex ) * stride,
+            size_t( numVertices ) * sizeof( Gothic_XYZRHW_DIF_T1_Vertex ) );
+    
 	static std::vector<ExVertexStruct> exv; // reused; the render path is single-threaded (matches DrawPrimitive)
 	exv.resize( numVertices );
 	for ( unsigned int i = 0; i < numVertices; ++i ) {
-		exv[i].Position = src[i].xyz;
-		exv[i].Normal.x = src[i].rhw;
-		exv[i].TexCoord = src[i].texCoord;
-		exv[i].Color = src[i].color;
+		exv[i].Position = staging[i].xyz;
+		exv[i].Normal.x = staging[i].rhw;
+		exv[i].TexCoord = staging[i].texCoord;
+		exv[i].Color = staging[i].color;
+	    exv[i].Tangent = {};
 	}
 
 	return DrawVertexArray( exv.data(), numVertices, 0, sizeof( ExVertexStruct ) );
