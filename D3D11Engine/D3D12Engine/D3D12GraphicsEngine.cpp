@@ -1297,10 +1297,10 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
 
 XRESULT D3D12GraphicsEngine::OnEndFrame() {
     if ( !m_SwapChainReady || !m_FrameOpen ) return XR_SUCCESS;
+    TracyD3D12CollectHere();
     Present();
     m_FrameOpen = false;
     m_PresentPending = false;
-    TracyD3D12CollectHere();
     return XR_SUCCESS;
 }
 

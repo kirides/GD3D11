@@ -1891,6 +1891,7 @@ void D3D12GraphicsEngine::RenderPointShadows() {
 	if ( g_FramePointShadows.empty() ) return;
 
 	DX_ZONE( m_CmdList, "Point Shadows (cubes)" );
+	TracyD3D12ZoneCGX( m_CmdList.Get(), "Point Shadows (cubes)" );
 
 	MeshInfo* wm = Engine::GAPI->GetWrappedWorldMesh();
 	D3D12VertexBuffer* vb = wm ? D3D12VertexBuffer::From( wm->GetMeshVertexBuffer() ) : nullptr;
@@ -1953,6 +1954,7 @@ void D3D12GraphicsEngine::RenderPointShadows() {
 
 	if ( anyStatic ) {
 		DX_ZONE( m_CmdList, "Static Pass" );
+		TracyD3D12ZoneCGX( m_CmdList.Get(), "Static Pass" );
 		if ( m_PointShadowStaticState != D3D12_RESOURCE_STATE_DEPTH_WRITE ) {
 			auto b = TransitionBarrier( m_PointShadowStaticCube.Get(), m_PointShadowStaticState, D3D12_RESOURCE_STATE_DEPTH_WRITE );
 			m_CmdList->ResourceBarrier( 1, &b );
@@ -1978,6 +1980,7 @@ void D3D12GraphicsEngine::RenderPointShadows() {
 			// --- World mesh: range-cull sections (AABB nearest-point), draw all 6 faces in one call. ---
 			if ( haveWorld ) {
 				DX_ZONE( m_CmdList, "World Mesh" );
+				TracyD3D12ZoneCGX( m_CmdList.Get(), "World Mesh" );
 				m_CmdList->SetPipelineState( m_Pipelines.PointShadow.CasterWorldPSO.Get() );
 				m_CmdList->SetGraphicsRootSignature( m_Pipelines.PointShadow.RootSig.Get() );
 				m_CmdList->SetGraphicsRootConstantBufferView( 0, faceCb( ps.slot ) );
@@ -2011,6 +2014,7 @@ void D3D12GraphicsEngine::RenderPointShadows() {
 			// restricts a static light's (cached) cube to world-mesh-only casters, no VOBs/MOBS. ---
 			if ( haveVobs && !m_PointShadowSlots[ps.slot].isStatic ) {
 				DX_ZONE( m_CmdList, "Vobs" );
+				TracyD3D12ZoneCGX( m_CmdList.Get(), "Vobs" );
 				m_CmdList->SetPipelineState( m_Pipelines.PointShadow.CasterVobPSO.Get() );
 				m_CmdList->SetGraphicsRootSignature( m_Pipelines.PointShadow.RootSig.Get() );
 				m_CmdList->SetGraphicsRootConstantBufferView( 0, faceCb( ps.slot ) );
@@ -2071,6 +2075,7 @@ void D3D12GraphicsEngine::RenderPointShadows() {
 	// per-slot (6 face subresources) rather than one whole-array CopyResource so skipped slots cost nothing.
 	{
 		DX_ZONE( m_CmdList, "Copy Static->Active" );
+		TracyD3D12ZoneCGX( m_CmdList.Get(), "Copy Static->Active" );
 		bool anyTouched = false;
 		for ( const FramePointShadow& ps : g_FramePointShadows )
 			if ( ps.slot < kMaxShadowCubes && ( ps.renderStatic || ps.renderDynamic ) ) { anyTouched = true; break; }
@@ -2110,6 +2115,7 @@ void D3D12GraphicsEngine::RenderPointShadows() {
 	// static occluders. Runs every frame for every shadowed light — this is the real-time part of the split.
 	if ( haveSkel ) {
 		DX_ZONE( m_CmdList, "Dynamic Overlay (skeletals)" );
+		TracyD3D12ZoneCGX( m_CmdList.Get(), "Dynamic Overlay (skeletals)" );
 		static std::vector<const zCVob*> excludeVobs;
 		// Coarse per-vob mesh-size margin for the sphere pre-filter below (PrepareFrameSkeletals doesn't know a
 		// vob's actual mesh extent yet — the exact per-record cull, ps.range + visual->MeshSize*0.5f, still
@@ -2195,6 +2201,7 @@ void D3D12GraphicsEngine::RenderPointShadows() {
 			// carrying).
 			if ( m_Pipelines.PointShadow.CasterVobPSO && !g_PointShadowAttachDraws.empty() ) {
 				DX_ZONE( m_CmdList, "Skeletal Nodes" );
+				TracyD3D12ZoneCGX( m_CmdList.Get(), "Skeletal Nodes" );
 				m_CmdList->SetPipelineState( m_Pipelines.PointShadow.CasterVobPSO.Get() );
 				m_CmdList->SetGraphicsRootSignature( m_Pipelines.PointShadow.RootSig.Get() );
 				m_CmdList->SetGraphicsRootConstantBufferView( 0, faceCb( ps.slot ) );
@@ -3161,6 +3168,7 @@ void D3D12GraphicsEngine::DrawVegetation() {
 	if ( vegetationBoxes.empty() ) return;
 
 	DX_ZONE( m_CmdList, "Draw vegetation" );
+	TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw vegetation" );
 
 	XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
 	Engine::GAPI->SetViewTransformXM( view );
@@ -3316,6 +3324,8 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// the first OnStartWorldRendering after a Present() will be the correct one to draw the world.
 	if ( m_PresentPending ) return XR_SUCCESS;
 
+    TracyD3D12ZoneCGX(m_CmdList.Get(), "OnStartWorldRendering");
+    
     Engine::GAPI->SetFarPlane( Engine::GAPI->GetRendererState().RendererSettings.SectionDrawRadius * WORLD_SECTION_SIZE);
 
 	// Decide ONCE, before anything draws, whether this frame's post-pass height fog runs (RenderFogAndGodRays,
@@ -3412,6 +3422,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	}
     {
         DX_ZONE( m_CmdList, "Depth Prepass" );
+        TracyD3D12ZoneCGX( m_CmdList.Get(), "Depth Prepass" );
         DrawDepthPrepass();
 		// GPU VOB culling (D3D12Cull.cpp) sits between the WORLD-MESH depth prepass and the VOB one, which is the
 		// only spot where the depth buffer holds world geometry and nothing else: BuildHiZ min-reduces it into the
@@ -3439,9 +3450,11 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	RenderSkyIBL();
     {
         DX_ZONE( m_CmdList, "Lit Geometry Pass" );
+        TracyD3D12ZoneCGX( m_CmdList.Get(), "Lit Geometry Pass" );
 	    DrawWorldMesh();
 	    {
 		    DX_ZONE( m_CmdList, "Draw skeletal (color)" );
+		    TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw skeletal (color)" );
 		    DrawSkeletalColor();   // base meshes + node attachments, lit through the tile grid (both lists)
 	    }
 	    DrawVobsInstanced();
@@ -3456,6 +3469,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	Engine::GAPI->GetVisibleDecalList( decals );
 	{
 		DX_ZONE( m_CmdList, "Draw decals (opaque)" );
+		TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw decals (opaque)" );
 		DrawDecalList( decals, true );
 	}
 
@@ -3474,6 +3488,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 
 	{
 		DX_ZONE( m_CmdList, "Draw decals (transparent)" );
+		TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw decals (transparent)" );
 		DrawDecalList( decals, false );
 	}
 
@@ -3485,6 +3500,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// against the opaque scene but not writing depth. Mirrors D3D11's late DrawParticlesSimple pass.
 	{
 		DX_ZONE( m_CmdList, "Draw particles" );
+		TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw particles" );
 		DrawParticleEffects();
 	}
 
@@ -3492,6 +3508,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// DrawRainParticles. Same late-transparency slot D3D11 draws rain in.
 	{
 		DX_ZONE( m_CmdList, "Draw rain" );
+		TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw rain" );
 		DrawRainParticles();
 	}
 
@@ -3505,6 +3522,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// EnableBloom/etc. are off — it also drains GothicAPI::TransparencyVobs, which nothing else consumes.
 	{
 		DX_ZONE( m_CmdList, "Draw ghosts" );
+		TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw ghosts" );
 		DrawGhostVobs();
 	}
 
@@ -3547,6 +3565,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	// is what keeps the line lists from growing unbounded across frames.
 	{
 		DX_ZONE( m_CmdList, "Draw debug lines" );
+		TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw debug lines" );
 		m_LineRenderer->Flush();
 		m_LineRenderer->FlushScreenSpace();
 	}
@@ -3565,6 +3584,7 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 XRESULT D3D12GraphicsEngine::DrawSky() {
 	if ( !m_FrameOpen ) return XR_SUCCESS;
 	DX_ZONE( m_CmdList, "Draw sky" );
+	TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw sky" );
 
 	// Base fallback fill: Gothic's current sky/fog color (see GetSceneFogColorXM — tracks time of day when
 	// AtmosphericScattering is off, matching D3D11's own background-clear formula). Runs first so a gap in
@@ -4053,6 +4073,7 @@ void D3D12GraphicsEngine::DrawDepthPrepass() {
     if ( ib->GetSizeInBytes() / sizeof( uint32_t ) == 0 ) return;
 
     DX_ZONE( m_CmdList, "Depth Prepass (world)" );
+    TracyD3D12ZoneCGX( m_CmdList.Get(), "Depth Prepass (world)" );
 
     // ViewProj — identical derivation to DrawWorldMesh so the prepass depth matches the opaque pass exactly.
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
@@ -4102,6 +4123,7 @@ void D3D12GraphicsEngine::DispatchLightCulling() {
         return;
 
     DX_ZONE( m_CmdList, "Light Culling (compute)" );
+    TracyD3D12ZoneCGX( m_CmdList.Get(), "Light Culling (compute)" );
 
     // The lit geometry passes left the grid/index buffers in PIXEL_SHADER_RESOURCE last frame; transition them
     // back to UNORDERED_ACCESS so the cull CS can write them as root UAVs. Skipped on the first dispatch after
@@ -4228,6 +4250,7 @@ XRESULT D3D12GraphicsEngine::DrawWorldMesh( bool /*noTextures*/ ) {
     if ( numIndices == 0 ) return XR_SUCCESS;
 
     DX_ZONE( m_CmdList, "Draw World Mesh" );
+    TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw World Mesh" );
 
     // Camera matrices — replicate the D3D11 DrawWorldMesh setup exactly so ViewProj is byte-identical:
     // world verts are already world-space (identity world), transform is proj*view (reversed-Z).
@@ -4432,6 +4455,7 @@ void D3D12GraphicsEngine::DrawVobDepthPrepass() {
     if ( m_VobDrawCount == 0 || !drawArgs ) return;
 
     DX_ZONE( m_CmdList, "Depth Prepass (vobs)" );
+    TracyD3D12ZoneCGX( m_CmdList.Get(), "Depth Prepass (vobs)" );
 
     // ViewProj — identical derivation to DrawVobsInstanced so the prepass depth matches the color pass exactly.
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
@@ -4515,6 +4539,7 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
 
     {
         DX_ZONE( m_CmdList, "Draw Vobs" );
+        TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw Vobs" );
         // One GPU-driven submit over the command set BuildVobDrawCommands filled: each command sets its mesh/
         // instance VBVs + IBV, b6 { normal, orm, diffuse } bindless indices (PSMainBindless samples all three),
         // b4 per-visual min/max wind, then DrawIndexedInstanced. Replaces the per-mesh table/BindMaterialMaps/
@@ -4862,6 +4887,7 @@ void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
     // Base skinned meshes (depth only).
     if ( !g_FrameSkelDraws.empty() && m_Pipelines.Skeletal.DepthPrepassPSO && m_Pipelines.Skeletal.RootSig ) {
         DX_ZONE( m_CmdList, "Depth Prepass (skeletal)" );
+        TracyD3D12ZoneCGX( m_CmdList.Get(), "Depth Prepass (skeletal)" );
         m_CmdList->SetPipelineState( m_Pipelines.Skeletal.DepthPrepassPSO.Get() );
         m_CmdList->SetGraphicsRootSignature( m_Pipelines.Skeletal.RootSig.Get() );
         m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
@@ -4910,6 +4936,7 @@ void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
     // won't reflect the same inflate/scale as the color pass, the same class of bug the wind fix addressed).
     if ( !g_FrameAttachDraws.empty() && m_Pipelines.World.DepthPrepassVobAttachPSO && m_Pipelines.World.RootSig ) {
         DX_ZONE( m_CmdList, "Depth Prepass (attachments)" );
+        TracyD3D12ZoneCGX( m_CmdList.Get(), "Depth Prepass (attachments)" );
         m_CmdList->SetPipelineState( m_Pipelines.World.DepthPrepassVobAttachPSO.Get() );
         m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
         m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
@@ -4973,6 +5000,7 @@ void D3D12GraphicsEngine::DrawSkeletalColor() {
     // Base skinned meshes (lit).
     if ( !g_FrameSkelDraws.empty() ) {
         DX_ZONE( m_CmdList, "Draw skeletal" );
+        TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw skeletal" );
         m_CmdList->SetPipelineState( m_Pipelines.Skeletal.PSO.Get() );
         m_CmdList->SetGraphicsRootSignature( m_Pipelines.Skeletal.RootSig.Get() );
         m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
@@ -5029,6 +5057,7 @@ void D3D12GraphicsEngine::DrawSkeletalColor() {
     // unbound count would run the loop on garbage → GPU TDR hang.
     if ( !g_FrameAttachDraws.empty() && m_Pipelines.World.VobAttachPSO && m_Pipelines.World.RootSig ) {
         DX_ZONE( m_CmdList, "Draw attachments" );
+        TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw attachments" );
         m_CmdList->SetPipelineState( m_Pipelines.World.VobAttachPSO.Get() );
         m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
         m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
