@@ -2906,7 +2906,8 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             }
 
             zCModel* model = static_cast<zCModel*>(vi->Vob->GetVisual());
-            if ( !model || !vi->VisualInfo || !vi->Vob->GetShowVisual() ) {
+            if ( !model || !vi->VisualInfo || !vi->Vob->GetShowVisual()
+                || !static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->Ready.load() ) {
                 continue;
             }
             vi->UpdateState();
@@ -3133,6 +3134,8 @@ void D3D11GraphicsEngine::DrawSkeletalMeshVobs(
             model->SetIsVisible( true );
             if ( !vi->VisualInfo )
                 continue; // Gothic fortunately sets this to 0 when it throws the model out of the cache
+            if ( !static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->Ready.load() )
+                continue; // Still being built on a worker thread - don't touch its mesh data yet
             if ( !vi->Vob->GetShowVisual() )
                 continue;
 

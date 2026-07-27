@@ -4529,6 +4529,8 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
         zCModel* model = static_cast<zCModel*>( vi->Vob->GetVisual() );
         if ( !model ) continue;
 
+        if ( !visual->Ready.load() ) continue;   // still being built on a worker thread (GothicAPI::LoadzCModelData)
+
         // Some skeletal vobs arrive with their base mesh not yet extracted (SkeletalMeshes empty but the model
         // does carry soft-skin geometry) — build it lazily. Interactive MOBs whose ONLY renderable content is a
         // node attachment (a lamp post's lamp, some doors) legitimately stay empty and fall through to the

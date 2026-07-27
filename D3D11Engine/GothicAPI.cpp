@@ -861,6 +861,10 @@ void GothicAPI::ResetVobs() {
     SkeletalMeshVisuals.clear();
     SkeletalMeshNpcs.clear();
 
+    // clearAndFlush() above already waited for every background LoadzCModelData(...) job to
+    // finish, so it's safe to drop the (now stale) handles without waiting on them again.
+    PendingSkeletalLoads.clear();
+
     // Delete static mesh vobs
     for ( auto const& it : VobMap ) {
         delete it.second;
@@ -1739,10 +1743,14 @@ void GothicAPI::OnMaterialDeleted( zCMaterial* mat ) {
     if ( !mat )
         return;
     for ( auto&& it : SkeletalMeshVisuals ) {
+        // Skip entries a background LoadzCModelData(...) job is still filling in - mutating
+        // Meshes/SkeletalMeshes here would race with the worker thread writing to the same maps.
+        if ( !it.second->Ready.load() ) continue;
         it.second->Meshes.erase(mat);
         it.second->SkeletalMeshes.erase(mat);
     }
     for ( auto&& it : SkeletalMeshNpcs ) {
+        if ( !it.second->Ready.load() ) continue;
         it.second->Meshes.erase(mat);
         it.second->SkeletalMeshes.erase(mat);
     }
@@ -1885,6 +1893,10 @@ void GothicAPI::OnVisualDeleted( zCVisual* visual ) {
                         }
                     }
 
+                    // The model is about to be freed by Gothic once this function returns - make sure no
+                    // background extraction job (GothicAPI::LoadzCModelData) is still reading from it.
+                    WaitForPendingSkeletalLoad( it->second );
+
                     delete SkeletalMeshVisuals[str];
                     SkeletalMeshVisuals.erase( str );
                 }
@@ -1901,6 +1913,10 @@ void GothicAPI::OnVisualDeleted( zCVisual* visual ) {
                             vobInfo->VisualInfo = nullptr;
                         }
                     }
+
+                    // The model is about to be freed by Gothic once this function returns - make sure no
+                    // background extraction job (GothicAPI::LoadzCModelData) is still reading from it.
+                    WaitForPendingSkeletalLoad( it->second );
 
                     delete SkeletalMeshNpcs[npc];
                     SkeletalMeshNpcs.erase( npc );
@@ -2337,6 +2353,25 @@ void GothicAPI::OnAddVob( zCVob* vob, zCWorld* world ) {
     }
 }
 
+/** Blocks until a background LoadzCModelData(...) extraction job for this visual (if any) has
+ *  finished, then forgets about it. Must be called before deleting a SkeletalMeshVisualInfo or
+ *  destroying the zCModel/oCNPC it was built from - the job reads directly from that model. */
+void GothicAPI::WaitForPendingSkeletalLoad( SkeletalMeshVisualInfo* mi ) {
+    if ( !mi )
+        return;
+
+    auto it = PendingSkeletalLoads.find( mi );
+    if ( it == PendingSkeletalLoads.end() )
+        return;
+
+    TaskHandle<void> handle = std::move( it->second );
+    PendingSkeletalLoads.erase( it );
+
+    handle.cancel(); // Lets the job bail out immediately if it hasn't started running yet (see below)
+    if ( handle.future.valid() )
+        handle.future.wait();
+}
+
 /** Loads the data out of a zCModel */
 SkeletalMeshVisualInfo* GothicAPI::LoadzCModelData( zCModel* model ) {
     auto visName = model->GetVisualName();
@@ -2347,15 +2382,33 @@ SkeletalMeshVisualInfo* GothicAPI::LoadzCModelData( zCModel* model ) {
     }
 
     SkeletalMeshVisualInfo* mi = SkeletalMeshVisuals[str];
-    if ( !mi || mi->Meshes.empty() ) {
-        // Load the new visual
-        if ( !mi ) mi = new SkeletalMeshVisualInfo;
-
-        WorldConverter::ExtractSkeletalMeshFromVob( model, mi );
-        mi->Visual = model;
-
+    if ( !mi ) {
+        mi = new SkeletalMeshVisualInfo;
         SkeletalMeshVisuals[str] = mi;
     }
+
+    if ( !mi->Ready.load() )
+        return mi; // A background job is already filling this visual in - don't kick off another one
+
+    if ( !mi->Meshes.empty() )
+        return mi; // Already loaded
+
+    // Extraction (CPU vertex/weight unpacking + GPU buffer creation) is the expensive part of a
+    // vob popping into range, so run it on a worker thread instead of stalling the main thread.
+    // GothicAPI::OnVisualDeleted() blocks on PendingSkeletalLoads before freeing this model/mi,
+    // and Ready gates every draw/update site so nobody touches Meshes/SkeletalMeshes early.
+    mi->Ready = false;
+    PendingSkeletalLoads[mi] = Engine::WorkerThreadPool->enqueue( [model, mi]( const std::stop_token& token ) {
+        if ( token.stop_requested() ) {
+            // Cancelled before a worker picked it up (WaitForPendingSkeletalLoad) - the model
+            // it would read from may already be gone, so don't touch it.
+            mi->Ready.store( true );
+            return;
+        }
+        WorldConverter::ExtractSkeletalMeshFromVob( model, mi );
+        mi->Visual = model;
+        mi->Ready.store( true );
+    } );
     return mi;
 }
 
@@ -2375,17 +2428,29 @@ SkeletalMeshVisualInfo* GothicAPI::LoadzCModelData( oCNPC* npc ) {
         SkeletalMeshNpcs[npc] = mi;
     }
 
+    if ( !mi->Ready.load() )
+        return mi; // A background job is already filling this NPC's visual in - don't kick off another one
+
     // oCNPCEnable/oCNPCInitModel re-trigger OnAddVob far more often than the NPC's
     // actual visual (body/armor) changes, so skip the CPU extraction + GPU buffer
     // rebuild entirely when the visual name hasn't changed since last time.
     if ( mi->VisualName == str && !mi->Meshes.empty() )
         return mi;
 
-    mi->Visual = model;
-
-    // Update a visual information
-    mi->ClearMeshes();
-    WorldConverter::ExtractSkeletalMeshFromVob( model, mi );
+    // See LoadzCModelData(zCModel*) above for why this runs on a worker thread.
+    mi->Ready = false;
+    PendingSkeletalLoads[mi] = Engine::WorkerThreadPool->enqueue( [model, mi]( const std::stop_token& token ) {
+        if ( token.stop_requested() ) {
+            // Cancelled before a worker picked it up (WaitForPendingSkeletalLoad) - the model
+            // it would read from may already be gone, so don't touch it.
+            mi->Ready.store( true );
+            return;
+        }
+        mi->ClearMeshes();
+        WorldConverter::ExtractSkeletalMeshFromVob( model, mi );
+        mi->Visual = model;
+        mi->Ready.store( true );
+    } );
     return mi;
 }
 
@@ -2414,7 +2479,7 @@ int GothicAPI::GetLowestLODNumPolys_SkeletalMesh( zCModel* model ) {
         }
     }
 
-    if ( skeletalMesh ) {
+    if ( skeletalMesh && skeletalMesh->Ready.load() ) {
         for ( auto const& itm : skeletalMesh->SkeletalMeshes ) {
             for ( auto& mesh : itm.second ) {
                 numPolys += static_cast<int>(mesh->Indices.size() / 3);
@@ -2452,7 +2517,7 @@ float3* GothicAPI::GetLowestLODPoly_SkeletalMesh( zCModel* model, const int poly
         }
     }
 
-    if ( skeletalMesh ) {
+    if ( skeletalMesh && skeletalMesh->Ready.load() ) {
         static std::vector<XMFLOAT4X4> transforms;
         for ( auto const& itm : skeletalMesh->SkeletalMeshes ) {
             for ( auto& mesh : itm.second ) {
@@ -2531,10 +2596,13 @@ void GothicAPI::DrawSkeletalMeshVob( SkeletalVobInfo* vi, float distance, bool u
     if ( !model || !vi->VisualInfo )
         return; // Gothic fortunately sets this to 0 when it throws the model out of the cache
 
+    if ( !static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->Ready.load() )
+        return; // Still being built on a worker thread - don't touch its mesh data yet
+
     model->SetIsVisible( true );
     if ( !vi->Vob->GetShowVisual() )
         return;
-    
+
     const auto now = Engine::GAPI->GetTotalTimeDW();
 
     if ( updateState ) {
@@ -2790,6 +2858,9 @@ void GothicAPI::DrawSkeletalMeshVob_Layered( SkeletalVobInfo * vi, float distanc
 
     if ( !model || !vi->VisualInfo )
         return; // Gothic fortunately sets this to 0 when it throws the model out of the cache
+
+    if ( !static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->Ready.load() )
+        return; // Still being built on a worker thread - don't touch its mesh data yet
 
     model->SetIsVisible( true );
     if ( !vi->Vob->GetShowVisual() )
@@ -3134,7 +3205,7 @@ void GothicAPI::DrawSkeletalVN() {
 
         zCModel* model = static_cast<zCModel*>(vi->Vob->GetVisual());
 
-        if ( model && vi->VisualInfo ) {
+        if ( model && vi->VisualInfo && static_cast<SkeletalMeshVisualInfo*>(vi->VisualInfo)->Ready.load() ) {
             XMMATRIX scale = XMMatrixScalingFromVector( model->GetModelScaleXM() );
 
             XMMATRIX xmWorld = vi->Vob->GetWorldMatrixXM() * scale;

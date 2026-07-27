@@ -1184,7 +1184,9 @@ struct GothicRendererInfo {
     int WorldMeshDrawCalls;
 
     unsigned int VOBVerticesDataSize;
-    unsigned int SkeletalVerticesDataSize;
+    // Skeletal meshes can be extracted (and their SkeletalMeshInfo destroyed) from background
+    // worker threads (see GothicAPI::LoadzCModelData), so this counter needs to be atomic.
+    std::atomic<unsigned int> SkeletalVerticesDataSize;
     RenderStage RenderStage;
     
     bool IsRenderStageDx11() const {

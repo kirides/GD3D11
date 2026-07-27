@@ -10,6 +10,7 @@
 #include "zTypes.h"
 #include "RenderQueue.h"
 #include "ShaderIDs.h"
+#include "ThreadPool.h"
 
 static const char* MENU_SETTINGS_FILE = "system\\GD3D11\\UserSettings.ini";
 const float INDOOR_LIGHT_DISTANCE_SCALE_FACTOR = 0.5f;
@@ -958,6 +959,16 @@ private:
     /** Map for skeletal mesh visuals */
     gtl::flat_hash_map<std::string, SkeletalMeshVisualInfo*> SkeletalMeshVisuals;
     gtl::flat_hash_map<oCNPC*, SkeletalMeshVisualInfo*> SkeletalMeshNpcs;
+
+    /** In-flight background extraction jobs, keyed by the SkeletalMeshVisualInfo they populate.
+     *  Must be cancelled+waited-on before that SkeletalMeshVisualInfo (or the zCModel/oCNPC it
+     *  reads from) is destroyed - see WaitForPendingSkeletalLoad(). */
+    gtl::flat_hash_map<SkeletalMeshVisualInfo*, TaskHandle<void>> PendingSkeletalLoads;
+
+    /** Blocks until a background LoadzCModelData(...) extraction job for this visual (if any)
+     *  has finished, then removes it from PendingSkeletalLoads. Must be called before deleting
+     *  a SkeletalMeshVisualInfo or destroying the zCModel/oCNPC it was built from. */
+    void WaitForPendingSkeletalLoad( SkeletalMeshVisualInfo* mi );
 
     /** Set of all vobs we registered by now */
     gtl::flat_hash_set<zCVob*> RegisteredVobs;
