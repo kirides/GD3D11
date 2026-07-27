@@ -1292,6 +1292,7 @@
     <ClCompile Include="D3D12Engine\D3D12RenderQueue.cpp">
       <Filter>Engine\D3D12</Filter>
     </ClCompile>
+    <ClCompile Include="D3D12Engine\D3D12SkyIbl.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="ddraw.def">
