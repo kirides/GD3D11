@@ -4378,7 +4378,7 @@ bool GothicAPI::IsWorldMeshVisibleInFrustum( const WorldMeshInfo* mesh, const Fr
         return true;
     }
 
-    return frustum.Contains( mesh->BoundingBox ) != DirectX::ContainmentType::DISJOINT;
+    return frustum.Intersects( mesh->BoundingBox );
 }
 
 void GothicAPI::QueryWorldSectionBVH( const Frustum& frustum,
