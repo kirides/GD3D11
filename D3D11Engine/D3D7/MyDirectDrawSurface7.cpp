@@ -194,7 +194,7 @@ void MyDirectDrawSurface7::LoadAdditionalResources( zCTexture* ownedTexture ) {
         std::tuple<const char*, GfxTexture** const, EAdditionalMaterial> matResourcesToLoad[] = {
             {"_ORM.DDS", &fxMapTexture, EAdditionalMaterial::ORM},
             {"_OR.DDS", &fxMapTexture, EAdditionalMaterial::AoRoughness},
-            {"_R.DDS", &fxMapTexture, EAdditionalMaterial::Roughness},
+            {"_ROUGH.DDS", &fxMapTexture, EAdditionalMaterial::Roughness},
         };
         loader(matResourcesToLoad, storage, loadedMat);
     } else {
