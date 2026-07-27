@@ -31,6 +31,7 @@
 #include "../Toolbox.h"
 
 #include "D3D12RenderQueue.h"
+#include "D3D12TracyDebug.h"
 #include "InstancingUtils.h"
 
 // imgui_impl_dx12 calls CreateDXGIFactory1 directly (for tearing detection). dxgi.dll is present on
@@ -1180,6 +1181,7 @@ bool D3D12GraphicsEngine::AcquireBackBufferRTVs() {
 
 XRESULT D3D12GraphicsEngine::OnBeginFrame() {
     if ( !m_SwapChainReady ) return XR_SUCCESS;
+    TracyD3D12BeginFrame();
 
     // Apply a pending TriggerResize() request here — the command list from the previous frame is already
     // Closed+Executed+Presented at this point (no open recording to disrupt), so this is the one place in
@@ -1298,6 +1300,7 @@ XRESULT D3D12GraphicsEngine::OnEndFrame() {
     Present();
     m_FrameOpen = false;
     m_PresentPending = false;
+    TracyD3D12CollectHere();
     return XR_SUCCESS;
 }
 

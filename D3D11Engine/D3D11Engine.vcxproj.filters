@@ -913,6 +913,9 @@
     <ClInclude Include="D3D12Engine\D3D12RenderQueue.h">
       <Filter>Engine\D3D12</Filter>
     </ClInclude>
+    <ClInclude Include="D3D12Engine\D3D12TracyDebug.h">
+      <Filter>Engine\D3D12</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp" />

@@ -1,5 +1,6 @@
 #include "../pch.h"
 #include "D3D12Device.h"
+#include "D3D12TracyDebug.h"
 
 #include <map>
 
@@ -196,7 +197,6 @@ bool D3D12Device::IsAvailable( std::string* outDescription, std::string* outReas
 }
 
 bool D3D12Device::Init() {
-
     PFN_D3D12_CREATE_DEVICE createDevice = LoadD3D12CreateDevice();
     if ( !createDevice ) {
         LogWarn() << "D3D12Device::Init: d3d12.dll / D3D12CreateDevice unavailable.";
@@ -267,5 +267,6 @@ bool D3D12Device::Init() {
         return false;
     }
 
+    s_tracyD3D12Ctx = TracyD3D12Context( m_Device.Get(), m_DirectQueue.Get() );
     return true;
 }

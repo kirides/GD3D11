@@ -9,6 +9,7 @@
 #include <vector>
 #include <d3d12.h>
 #include <wrl/client.h>
+#include "D3D12TracyDebug.h"
 
 class zCTexture;
 struct MeshInfo;

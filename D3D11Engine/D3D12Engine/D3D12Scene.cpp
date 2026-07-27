@@ -1669,6 +1669,7 @@ void D3D12GraphicsEngine::RecordShadowCascade( UINT cascade, ID3D12GraphicsComma
 	}
 
 	DX_ZONE( cmdList, "Sun Shadow Cascade" );
+	TracyD3D12ZoneCGX( cmdList, "Sun Shadow Cascade" );
 
 	cmdList->OMSetRenderTargets( 0, nullptr, FALSE, &dsv );   // DSV stays bound across the PSO switches below
 	cmdList->ClearDepthStencilView( dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr );   // normal-Z far
@@ -1692,6 +1693,7 @@ void D3D12GraphicsEngine::RecordShadowCascade( UINT cascade, ID3D12GraphicsComma
 	// --- World mesh (root sig: m_Pipelines.World.RootSig; b0 = cascade view-proj; b6 bindless material) ---
 	if ( m_ShadowWorldDrawCount[c] > 0 && vb && ib && m_ShadowWorldDrawArgs[c][m_FrameIndex] ) {
 		DX_ZONE( cmdList, "World Mesh" );
+		TracyD3D12ZoneCGX( cmdList, "World Mesh" );
 
 		cmdList->SetPipelineState( m_ShadowCasterWorldPSO.Get() );
 		cmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
@@ -1710,6 +1712,7 @@ void D3D12GraphicsEngine::RecordShadowCascade( UINT cascade, ID3D12GraphicsComma
 	if ( m_ShadowVobDrawCount[c] > 0 && m_ShadowCasterVobIndirectPSO && m_VobIndirectCmdSig
 		&& m_ShadowVobDrawArgs[c][m_FrameIndex] ) {
 		DX_ZONE( cmdList, "Vobs" );
+		TracyD3D12ZoneCGX( cmdList, "Vobs" );
 		cmdList->SetPipelineState( m_ShadowCasterVobIndirectPSO.Get() );
 		cmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
 		cmdList->SetGraphicsRoot32BitConstants( 0, 16, &m_CascadeViewProj[c], 0 );
@@ -1721,6 +1724,7 @@ void D3D12GraphicsEngine::RecordShadowCascade( UINT cascade, ID3D12GraphicsComma
 	// --- Skinned skeletals (root sig: m_Pipelines.Skeletal.RootSig; b0 cascade view-proj, b1 instance, b2 bones) ---
 	if ( m_ShadowCasterSkeletalPSO && m_Pipelines.Skeletal.RootSig && !g_ShadowSkelDraws[c].empty() ) {
 		DX_ZONE( cmdList, "Skeletals" );
+		TracyD3D12ZoneCGX( cmdList, "Skeletals" );
 
 		cmdList->SetPipelineState( m_ShadowCasterSkeletalPSO.Get() );
 		cmdList->SetGraphicsRootSignature( m_Pipelines.Skeletal.RootSig.Get() );
@@ -1760,6 +1764,7 @@ void D3D12GraphicsEngine::RecordShadowCascade( UINT cascade, ID3D12GraphicsComma
 	// --- Node attachments (weapons/heads) through the VOB caster PSO (packed vertex + single instance) ---
 	if ( m_ShadowCasterVobAttachPSO && m_Pipelines.World.RootSig && !g_ShadowAttachDraws[c].empty() ) {
 		DX_ZONE( cmdList, "Skeletal Nodes" );
+		TracyD3D12ZoneCGX( cmdList, "Skeletal Nodes" );
 
 		// Attachment variant (Fatness/Scaling instead of wind, needs NORMAL) — must match the depth prepass/
 		// color pass PSO choice for the same reason the wind fix required it (bit-identical transform).
@@ -1786,6 +1791,7 @@ void D3D12GraphicsEngine::RecordShadowCascade( UINT cascade, ID3D12GraphicsComma
 	// were culled against this cascade's frustum in CullShadowCascade; the CB was filled in Phase A. ---
 	if ( !g_ShadowGrassBoxes[c].empty() && m_ShadowCasterGrassPSO && m_Pipelines.Grass.RootSig ) {
 		DX_ZONE( cmdList, "Grass" );
+		TracyD3D12ZoneCGX( cmdList, "Grass" );
 
 		bool grassBound = false;
 		for ( GVegetationBox* box : g_ShadowGrassBoxes[c] ) {

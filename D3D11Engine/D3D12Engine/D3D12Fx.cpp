@@ -128,7 +128,7 @@ void D3D12GraphicsEngine::DrawQuadMarks() {
     if ( quadMarks.empty() ) return;
     if ( !m_FrameOpen || !m_Pipelines.World.RootSig || !m_DepthBuffer ) return;
 
-    DX_ZONE( m_CmdList, "Draw quad marks" );
+    DX_ZONE( m_CmdList.Get(), "Draw quad marks" );
 
     // LIT pass: World.RootSig + World.hlsl's VSQuadMark/PSMain, i.e. the exact same lighting the world mesh
     // gets — sRGB->linear albedo, DelightDiffuse, CSM shadows, tiled point lights, SSAO, wetness, sky IBL.
@@ -241,6 +241,7 @@ void D3D12GraphicsEngine::DrawMQuadMarks() {
     if ( !m_FrameOpen || !m_Pipelines.Fx.RootSig ) { g_MulQuadMarks.clear(); return; }
 
     DX_ZONE( m_CmdList, "Draw quad marks (modulate)" );
+    TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw quad marks (modulate)" );
 
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
     Engine::GAPI->SetViewTransformXM( view );
@@ -329,6 +330,7 @@ XRESULT D3D12GraphicsEngine::DrawPolyStrips( bool noTextures ) {
     if ( !m_FrameOpen || !m_Pipelines.Fx.RootSig || !m_FxVertexBuffer[m_FrameIndex] ) return XR_SUCCESS;
 
     DX_ZONE( m_CmdList, "Draw poly strips" );
+    TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw poly strips" );
 
     // Strip vertices are already in world space (GothicAPI builds them that way), so the world matrix is
     // identity — D3D11 uploads an identity Matrices_PerInstances for exactly this reason.
