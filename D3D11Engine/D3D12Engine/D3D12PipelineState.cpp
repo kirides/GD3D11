@@ -1021,12 +1021,24 @@ bool D3D12PipelineState::CreateUI() {
     if ( !m_Shaders->CompileFromFile( "UI.hlsl", "PSMain", Shadermodel_PS, UI.PsBlobHdr.ReleaseAndGetAddressOf(), linearizeDefines ) ) {
         return false;
     }
+    // D3D7 FF vertex-buffer variants (DrawVertexBufferFF): same VS, but the IA feeds Gothic's native
+    // 28-byte Gothic_XYZRHW_DIF_T1_Vertex. The sky dome goes through this path too, hence the MAX_Z pair.
+    const D3D_SHADER_MACRO ffDefines[] = { { "FF_VB_LAYOUT", "1" }, { nullptr, nullptr } };
+    if ( !m_Shaders->CompileFromFile( "UI.hlsl", "VSMain", Shadermodel_VS, UI.VsBlobFF.ReleaseAndGetAddressOf(), ffDefines ) ) {
+        return false;
+    }
+    const D3D_SHADER_MACRO ffMaxZDefines[] = { { "FF_VB_LAYOUT", "1" }, { "FORCE_MAX_Z", "1" }, { nullptr, nullptr } };
+    if ( !m_Shaders->CompileFromFile( "UI.hlsl", "VSMain", Shadermodel_VS, UI.VsBlobFFMaxZ.ReleaseAndGetAddressOf(), ffMaxZDefines ) ) {
+        return false;
+    }
 
     rs.ValidateShaders( {
         { UI.VsBlob.Get(),     "UI.hlsl:VSMain",                D3D12_SHADER_VISIBILITY_VERTEX },
         { UI.PsBlob.Get(),     "UI.hlsl:PSMain",                D3D12_SHADER_VISIBILITY_PIXEL  },
         { UI.VsBlobMaxZ.Get(), "UI.hlsl:VSMain[FORCE_MAX_Z]",   D3D12_SHADER_VISIBILITY_VERTEX },
         { UI.PsBlobHdr.Get(),  "UI.hlsl:PSMain[LINEARIZE_OUTPUT]", D3D12_SHADER_VISIBILITY_PIXEL },
+        { UI.VsBlobFF.Get(),     "UI.hlsl:VSMain[FF_VB_LAYOUT]",              D3D12_SHADER_VISIBILITY_VERTEX },
+        { UI.VsBlobFFMaxZ.Get(), "UI.hlsl:VSMain[FF_VB_LAYOUT,FORCE_MAX_Z]",  D3D12_SHADER_VISIBILITY_VERTEX },
     } );
 
     // PSOs are built per blend state on demand (GetOrCreateUIPipeline). Warm the default (opaque) one so
@@ -1046,10 +1058,10 @@ bool D3D12PipelineState::CreateUI() {
 ID3D12PipelineState* D3D12PipelineState::GetOrCreateUIPipeline(
     const GothicBlendStateInfo& blend,
     const GothicDepthBufferStateInfo& depth,
-    D3D12_CULL_MODE cullMode, bool rtvIsHdr, bool forceMaxZ, bool frontCCW ) {
+    D3D12_CULL_MODE cullMode, bool rtvIsHdr, bool forceMaxZ, bool frontCCW, bool ffVbLayout ) {
     const uint64_t key = static_cast<uint64_t>(BlendKey( blend )) | (static_cast<uint64_t>(DepthKey( depth )) << 32)
         | (static_cast<uint64_t>(cullMode) << 34) | (static_cast<uint64_t>(rtvIsHdr) << 36) | (static_cast<uint64_t>(forceMaxZ) << 37)
-        | (static_cast<uint64_t>(frontCCW) << 38);
+        | (static_cast<uint64_t>(frontCCW) << 38) | (static_cast<uint64_t>(ffVbLayout) << 39);
     auto it = UI.Pipelines.find( key );
     if ( it != UI.Pipelines.end() ) return it->second.Get();
 
@@ -1061,9 +1073,17 @@ ID3D12PipelineState* D3D12PipelineState::GetOrCreateUIPipeline(
         { "TEXCOORD", 1, DXGI_FORMAT_R32G32_FLOAT,    0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         { "DIFFUSE",  0, DXGI_FORMAT_R8G8B8A8_UNORM,  0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
     };
+    // --- FF input layout: Gothic's native 28-byte Gothic_XYZRHW_DIF_T1_Vertex, mirrors D3D11's layout7.
+    // xyz+rhw are read as one float4 POSITION, so the D3D7 vertex buffer binds without any conversion.
+    const D3D12_INPUT_ELEMENT_DESC ffLayout[] = {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "DIFFUSE",  0, DXGI_FORMAT_R8G8B8A8_UNORM,     0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,       0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    };
 
     // --- PSO: blend emulates Gothic's per-draw state; RTV/cull/VS vary by caller (plain 2D vs sky pass) ---
-    ID3DBlob* vsBlob = forceMaxZ ? UI.VsBlobMaxZ.Get() : UI.VsBlob.Get();
+    ID3DBlob* vsBlob = ffVbLayout ? ( forceMaxZ ? UI.VsBlobFFMaxZ.Get() : UI.VsBlobFF.Get() )
+                                  : ( forceMaxZ ? UI.VsBlobMaxZ.Get()   : UI.VsBlob.Get() );
     // The HDR scene-color target holds linear values; the plain-2D swapchain target is already tonemapped/
     // sRGB. Only the former needs the FF output's sRGB encoding undone (see UI.hlsl's LINEARIZE_OUTPUT).
     ID3DBlob* psBlob = rtvIsHdr ? UI.PsBlobHdr.Get() : UI.PsBlob.Get();
@@ -1071,7 +1091,8 @@ ID3D12PipelineState* D3D12PipelineState::GetOrCreateUIPipeline(
     pso.pRootSignature = UI.RootSig.Get();
     pso.VS = { vsBlob->GetBufferPointer(), vsBlob->GetBufferSize() };
     pso.PS = { psBlob->GetBufferPointer(), psBlob->GetBufferSize() };
-    pso.InputLayout = { layout, _countof( layout ) };
+    pso.InputLayout = ffVbLayout ? D3D12_INPUT_LAYOUT_DESC{ ffLayout, _countof( ffLayout ) }
+                                 : D3D12_INPUT_LAYOUT_DESC{ layout, _countof( layout ) };
     pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     pso.NumRenderTargets = 1;
     // Plain 2D UI draws straight to the swapchain (after the tonemap resolve); the sky pass (rtvIsHdr) runs

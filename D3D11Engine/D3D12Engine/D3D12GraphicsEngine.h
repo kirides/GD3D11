@@ -119,7 +119,9 @@ public:
     XRESULT DrawVertexArray( ExVertexStruct* vertices, unsigned int numVertices, unsigned int startVertex = 0, unsigned int stride = sizeof( ExVertexStruct ) ) override;
 
     /** Gothic's D3D7 fixed-function vertex-buffer draw (DrawPrimitiveVB — sky dome, some HUD strips).
-        Snapshots the cached Gothic_XYZRHW_DIF_T1_Vertex data and reuses the 2D/UI DrawVertexArray path. */
+        Binds the game's Gothic_XYZRHW_DIF_T1_Vertex buffer straight off the IA using the FF_VB_LAYOUT
+        UI pipeline variant (no readback/conversion), falling back to a ring snapshot only when the
+        current frame's copy of the ring-buffered D3D7 buffer is stale. */
     XRESULT DrawVertexBufferFF( GfxVertexBuffer* vb, unsigned int numVertices, unsigned int startVertex, unsigned int stride = sizeof( ExVertexStruct ) ) override;
 
     /** Records the currently-bound diffuse texture for the next 2D draw (SetTexture -> BindToSlot). */
@@ -270,6 +272,11 @@ private:
     // Bink cutscene YUV quad (zBinkPlayer.cpp) — DrawVertexArray's PS_Video special case. Same pre-transformed
     // vertex ring as the FF/UI path, but binds m_VideoTextures[0..2] through Video.RootSig/PSO instead.
     XRESULT DrawVideoVertexArray( ExVertexStruct* vertices, unsigned int numVertices, unsigned int startVertex, unsigned int stride );
+    // Copies vertex bytes into the current frame's 2D/UI upload ring; false (logged once) when it overflows.
+    bool AllocateUIVertices( const void* vertices, unsigned int bytes, D3D12_GPU_VIRTUAL_ADDRESS& outGpuVA );
+    // Shared tail of DrawVertexArray/DrawVertexBufferFF: UI PSO for Gothic's tracked FF state + binds + draw.
+    // ffVbLayout picks the native Gothic_XYZRHW_DIF_T1_Vertex layout/VS over the ExVertexStruct one.
+    XRESULT SubmitUIDraw( const D3D12_VERTEX_BUFFER_VIEW& vbv, unsigned int numVertices, unsigned int startVertex, bool ffVbLayout );
     bool AcquireBackBufferRTVs();     // (re)fetch swapchain buffers + build their RTVs
     bool ResizeSwapChain( INT2 size );
     void WaitForGpuIdle();            // full CPU/GPU flush (used on resize / teardown)

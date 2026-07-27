@@ -28,12 +28,26 @@ SamplerState smp : register(s0);
 #define TOP_SUBTRACT   10
 #define GSWITCH_ALPHAREF 2
 
+#ifdef FF_VB_LAYOUT
+// Gothic's D3D7 fixed-function vertex buffers (DrawPrimitiveVB — sky dome, some HUD strips) are bound
+// straight off the IA in their native 28-byte GOTHIC_FVF_XYZRHW_DIF_T1 form, so nothing has to read the
+// verts back over the (uncached, write-combined) upload mapping to convert them. Mirrors D3D11's
+// VS_XYZRHW_DIF_T1 / layout7: rhw rides in POSITION.w and there is only one texcoord.
+struct VS_IN  { float4 pos:POSITION; float4 dif:DIFFUSE; float2 t0:TEXCOORD0; };
+#else
 struct VS_IN  { float3 pos:POSITION; float3 nrm:NORMAL; float2 t0:TEXCOORD0; float2 t1:TEXCOORD1; float4 dif:DIFFUSE; };
+#endif
 struct VS_OUT { float4 pos:SV_POSITION; float2 uv:TEXCOORD0; float2 uv2:TEXCOORD1; float4 dif:TEXCOORD2; };
 
 VS_OUT VSMain( VS_IN i ) {
     VS_OUT o;
+#ifdef FF_VB_LAYOUT
+    float rhw = i.pos.w;
+    float2 uv2 = i.t0;                   // VS_XYZRHW_DIF_T1 duplicates texcoord0 into texcoord1
+#else
     float rhw = i.nrm.x;                 // rhw stored in Normal.x
+    float2 uv2 = i.t1;
+#endif
     float2 ndc;
     ndc.x = ((2.0 * (i.pos.x - V_ViewportPos.x)) / V_ViewportSize.x) - 1.0;
     ndc.y = 1.0 - ((2.0 * (i.pos.y - V_ViewportPos.y)) / V_ViewportSize.y);
@@ -48,7 +62,7 @@ VS_OUT VSMain( VS_IN i ) {
     float actualW = 1.0 / rhw;
     o.pos = float4(float3(ndc, z) * actualW, actualW);
     o.uv  = i.t0;
-    o.uv2 = i.t1;
+    o.uv2 = uv2;
     o.dif = i.dif;
     return o;
 }

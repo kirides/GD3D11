@@ -196,6 +196,9 @@ XRESULT D3D12VertexBuffer::Init( void* initData, unsigned int sizeInBytes, EBind
         m_Copies[0].Resource->SetPrivateData( WKPDID_D3DDebugObjectName, static_cast<UINT>( debugName.size() ), debugName.c_str() );
     }
 
+    // initData was replicated into every copy above, so whichever slot is current already holds it.
+    if ( initData ) m_LastWriteSlot = CurrentSlot();
+
     return XR_SUCCESS;
 }
 
@@ -204,6 +207,7 @@ XRESULT D3D12VertexBuffer::UpdateBuffer( void* data, unsigned int size ) {
     if ( !cur.MappedPtr || !data ) return XR_FAILED;
     if ( size == 0 || size > m_SizeInBytes ) size = m_SizeInBytes;
     memcpy( cur.MappedPtr, data, size );
+    m_LastWriteSlot = CurrentSlot();
     return XR_SUCCESS;
 }
 
@@ -218,6 +222,9 @@ XRESULT D3D12VertexBuffer::Map( int /*flags*/, void** dataPtr, unsigned int* siz
     }
     if ( dataPtr ) *dataPtr = cur.MappedPtr;
     if ( size ) *size = m_SizeInBytes;
+    // Every Map() here is a write-map (the upload heap is write-only) — treat it as the current copy
+    // becoming the freshest one, so DrawVertexBufferFF can bind it straight off the IA.
+    m_LastWriteSlot = CurrentSlot();
     return XR_SUCCESS;
 }
 

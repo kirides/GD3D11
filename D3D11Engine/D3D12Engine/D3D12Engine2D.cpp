@@ -182,6 +182,43 @@ XRESULT D3D12GraphicsEngine::DrawVertexArray( ExVertexStruct* vertices, unsigned
 	if ( m_ActivePixelShader == PShaderID::PS_Video && m_Pipelines.Video.PSO )
 		return DrawVideoVertexArray( vertices, numVertices, startVertex, stride );
 
+	const UINT bytes = stride * numVertices;
+	D3D12_GPU_VIRTUAL_ADDRESS gpuVA = 0;
+	if ( !AllocateUIVertices( vertices, bytes, gpuVA ) )
+		return XR_SUCCESS;
+
+	const D3D12_VERTEX_BUFFER_VIEW vbv = { gpuVA, bytes, stride };
+	return SubmitUIDraw( vbv, numVertices, startVertex, false );
+}
+
+
+/** Copies `bytes` of vertex data into the current frame's 2D/UI upload ring and hands back the GPU address
+    to bind. Returns false (and logs once) when the per-frame ring is exhausted — the draw is then dropped
+    rather than triggering a mid-frame reallocation. */
+bool D3D12GraphicsEngine::AllocateUIVertices( const void* vertices, unsigned int bytes, D3D12_GPU_VIRTUAL_ADDRESS& outGpuVA ) {
+	if ( m_UIVertexBufferOffset + bytes > m_UIVertexBufferCapacity ) {
+		if ( !m_UIOverflowLogged ) {
+			LogWarn() << "D3D12: 2D vertex ring overflow (" << m_UIVertexBufferCapacity
+				<< " bytes/frame). Some UI geometry dropped this frame.";
+			m_UIOverflowLogged = true;
+		}
+		return false;
+	}
+
+	const UINT frame = m_FrameIndex;
+	memcpy( m_UIVertexBufferPtr[frame] + m_UIVertexBufferOffset, vertices, bytes );
+	outGpuVA = m_UIVertexBuffer[frame]->GetGPUVirtualAddress() + m_UIVertexBufferOffset;
+	m_UIVertexBufferOffset += bytes;
+	return true;
+}
+
+
+/** Shared tail of every 2D/FF draw: picks the UI PSO matching Gothic's tracked fixed-function state, binds
+    the root signature, viewport + FF constants and the diffuse texture, then emits the draw for the given
+    vertex-buffer view. `ffVbLayout` selects the native Gothic_XYZRHW_DIF_T1_Vertex input layout + VS
+    (DrawVertexBufferFF's direct-IA path) instead of the ExVertexStruct one. */
+XRESULT D3D12GraphicsEngine::SubmitUIDraw( const D3D12_VERTEX_BUFFER_VIEW& vbv, unsigned int numVertices,
+	unsigned int startVertex, bool ffVbLayout ) {
 	GothicRendererState& rs = Engine::GAPI->GetRendererState();
 
 	// The sky pass (DrawSky -> zCSkyController_Outdoor::RenderSkyPre) feeds its FF draws through this same
@@ -195,23 +232,9 @@ XRESULT D3D12GraphicsEngine::DrawVertexArray( ExVertexStruct* vertices, unsigned
 	const bool frontCCW = rs.RasterizerState.FrontCounterClockwise;
 
 	// Emulate Gothic's per-draw fixed-function blend mode by selecting the matching PSO.
-	ID3D12PipelineState* pso = m_Pipelines.GetOrCreateUIPipeline( rs.BlendState, rs.DepthState, cullMode, m_ColorTargetIsHDR, isSkyPass, frontCCW );
+	ID3D12PipelineState* pso = m_Pipelines.GetOrCreateUIPipeline( rs.BlendState, rs.DepthState, cullMode,
+		m_ColorTargetIsHDR, isSkyPass, frontCCW, ffVbLayout );
 	if ( !pso ) return XR_SUCCESS;
-
-	const UINT frame = m_FrameIndex;
-	const UINT bytes = stride * numVertices;
-	if ( m_UIVertexBufferOffset + bytes > m_UIVertexBufferCapacity ) {
-		if ( !m_UIOverflowLogged ) {
-			LogWarn() << "D3D12: 2D vertex ring overflow (" << m_UIVertexBufferCapacity
-				<< " bytes/frame). Some UI geometry dropped this frame.";
-			m_UIOverflowLogged = true;
-		}
-		return XR_SUCCESS;
-	}
-
-	memcpy( m_UIVertexBufferPtr[frame] + m_UIVertexBufferOffset, vertices, bytes );
-	const D3D12_GPU_VIRTUAL_ADDRESS gpuVA = m_UIVertexBuffer[frame]->GetGPUVirtualAddress() + m_UIVertexBufferOffset;
-	m_UIVertexBufferOffset += bytes;
 
 	m_CmdList->SetPipelineState( pso );
 	m_CmdList->SetGraphicsRootSignature( m_Pipelines.UI.RootSig.Get() );
@@ -256,11 +279,10 @@ XRESULT D3D12GraphicsEngine::DrawVertexArray( ExVertexStruct* vertices, unsigned
 	m_CmdList->RSSetScissorRects( 1, &sc );
 	m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
 
-	D3D12_VERTEX_BUFFER_VIEW vbv = { gpuVA, bytes, stride };
 	m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
 	m_CmdList->DrawInstanced( numVertices, 1, startVertex, 0 );
 
-	Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles += numVertices / 3;
+	rs.RendererInfo.FrameDrawnTriangles += numVertices / 3;
 	return XR_SUCCESS;
 }
 
@@ -324,36 +346,41 @@ XRESULT D3D12GraphicsEngine::DrawVideoVertexArray( ExVertexStruct* vertices, uns
 
 
 XRESULT D3D12GraphicsEngine::DrawVertexBufferFF( GfxVertexBuffer* vb, unsigned int numVertices, unsigned int startVertex, unsigned int stride ) {
-	if ( !vb || numVertices == 0 ) return XR_SUCCESS;
+	if ( !m_SwapChainReady || !m_FrameOpen || !m_Pipelines.UI.RootSig || !vb || numVertices == 0 )
+		return XR_SUCCESS;
 
 	// The D3D7 fixed-function vertex-buffer path (MyDirect3DDevice7::DrawPrimitiveVB) only ever feeds
-	// Gothic_XYZRHW_DIF_T1_Vertex (28 bytes) — the sky dome + a few HUD strips. Rather than a second
-	// input layout + VS variant, snapshot the CPU-side verts (the buffer is a persistently-mapped
-	// upload resource, never GPU-bound here), convert to ExVertexStruct, and reuse the validated 2D/UI
-	// draw path — exactly what DrawPrimitive does for the immediate (non-VB) case.
+	// Gothic_XYZRHW_DIF_T1_Vertex (28 bytes) — the sky dome + a few HUD strips.
 	if ( stride != sizeof( Gothic_XYZRHW_DIF_T1_Vertex ) )
 		return XR_SUCCESS; // unknown FF-VB format — nothing else is emitted through this path
 
-    // TODO: Actually create a new input layout and VS as copying from GPU memory is incredibly slow and shows as such in performance profiling
-    
-	const uint8_t* base = static_cast<const uint8_t*>(D3D12VertexBuffer::From( vb )->GetMappedData());
-	if ( !base ) return XR_SUCCESS;
-    
-    static std::vector<Gothic_XYZRHW_DIF_T1_Vertex> staging;
-    staging.resize( numVertices );
-    // read GPU data once from memory instead of in a loop
-    memcpy( staging.data(), base + size_t( startVertex ) * stride,
-            size_t( numVertices ) * sizeof( Gothic_XYZRHW_DIF_T1_Vertex ) );
-    
-	static std::vector<ExVertexStruct> exv; // reused; the render path is single-threaded (matches DrawPrimitive)
-	exv.resize( numVertices );
-	for ( unsigned int i = 0; i < numVertices; ++i ) {
-		exv[i].Position = staging[i].xyz;
-		exv[i].Normal.x = staging[i].rhw;
-		exv[i].TexCoord = staging[i].texCoord;
-		exv[i].Color = staging[i].color;
-	    exv[i].Tangent = {};
+	D3D12VertexBuffer* buffer = D3D12VertexBuffer::From( vb );
+	const size_t byteOffset = size_t( startVertex ) * stride;
+	const UINT   bytes = numVertices * stride;
+	if ( byteOffset + bytes > buffer->GetSizeInBytes() )
+		return XR_SUCCESS;
+
+	// Fast path: bind Gothic's own upload-heap buffer straight off the IA using the FF_VB_LAYOUT PSO (native
+	// 28-byte layout + VS, mirroring D3D11's layout7 / VS_XYZRHW_DIF_T1). That dedicated layout exists purely
+	// to avoid what this used to do — read the verts back through the persistently-mapped upload resource and
+	// convert them to ExVertexStruct. Reads from write-combined memory are slow enough to show up in profiles.
+	// Only valid when the copy the current frame binds is the one Gothic last wrote (it Lock()s the buffer
+	// every frame it draws from it); the frame fence then guarantees no in-flight frame still reads that copy.
+	if ( buffer->HasFreshCurrentCopy() ) {
+		const D3D12_VERTEX_BUFFER_VIEW vbv = { buffer->GetGpuVirtualAddress() + byteOffset, bytes, stride };
+		return SubmitUIDraw( vbv, numVertices, 0, true );
 	}
 
-	return DrawVertexArray( exv.data(), numVertices, 0, sizeof( ExVertexStruct ) );
+	// Fallback: Gothic didn't re-lock the buffer this frame, so the copy bound to the current frame slot is
+	// stale. Snapshot the last-written copy into the per-frame ring instead. Still a straight memcpy in the
+	// native FF format (no per-vertex conversion), and it reuses the same PSO/input layout as the fast path.
+	const uint8_t* src = static_cast<const uint8_t*>(buffer->GetFreshMappedData());
+	if ( !src ) return XR_SUCCESS;   // never written — nothing but garbage to draw
+
+	D3D12_GPU_VIRTUAL_ADDRESS gpuVA = 0;
+	if ( !AllocateUIVertices( src + byteOffset, bytes, gpuVA ) )
+		return XR_SUCCESS;
+
+	const D3D12_VERTEX_BUFFER_VIEW vbv = { gpuVA, bytes, stride };
+	return SubmitUIDraw( vbv, numVertices, 0, true );
 }

@@ -92,9 +92,13 @@ public:
         Microsoft::WRL::ComPtr<ID3D12RootSignature> RootSig;
         Microsoft::WRL::ComPtr<ID3DBlob>            VsBlob;      // compiled once; reused for every blend PSO
         Microsoft::WRL::ComPtr<ID3DBlob>            VsBlobMaxZ;  // FORCE_MAX_Z variant — sky pass (STAGE_DRAW_SKY)
+        // FF_VB_LAYOUT variants: consume Gothic's native 28-byte Gothic_XYZRHW_DIF_T1_Vertex directly off the
+        // IA (DrawVertexBufferFF), so the D3D7 FF vertex buffer never has to be read back and converted.
+        Microsoft::WRL::ComPtr<ID3DBlob>            VsBlobFF;
+        Microsoft::WRL::ComPtr<ID3DBlob>            VsBlobFFMaxZ;
         Microsoft::WRL::ComPtr<ID3DBlob>            PsBlob;
         Microsoft::WRL::ComPtr<ID3DBlob>            PsBlobHdr;   // LINEARIZE_OUTPUT variant — sky pass writes into the linear HDR scene target
-        std::unordered_map<uint64_t, Microsoft::WRL::ComPtr<ID3D12PipelineState>> Pipelines; // key = Blend | Depth<<32 | Cull<<34 | RtvIsHdr<<36 | MaxZ<<37
+        std::unordered_map<uint64_t, Microsoft::WRL::ComPtr<ID3D12PipelineState>> Pipelines; // key = Blend | Depth<<32 | Cull<<34 | RtvIsHdr<<36 | MaxZ<<37 | FrontCCW<<38 | FFLayout<<39
     };
     // Particle (PFX) billboards: one root sig + one VS/PS pair; PSOs built per BlendKey on demand.
     // Instance ring buffers stay in the engine.
@@ -372,9 +376,12 @@ public:
     // backbuffer RTV, no Z override); the sky pass (DrawSky, STAGE_DRAW_SKY) passes the real rasterizer
     // cull mode + winding (the D3D7 layer forces FrontCounterClockwise=true for sky FVF draws — Gothic's
     // sky geometry is wound CCW), the HDR scene-color format, and forceMaxZ=true so the sky VS pins z to
-    // the reversed-Z far plane instead of passing the FF z through.
+    // the reversed-Z far plane instead of passing the FF z through. ffVbLayout picks the FF_VB_LAYOUT VS +
+    // the native 28-byte Gothic_XYZRHW_DIF_T1_Vertex input layout (DrawVertexBufferFF's direct-IA path)
+    // instead of the ExVertexStruct one.
     ID3D12PipelineState* GetOrCreateUIPipeline( const GothicBlendStateInfo& blend, const GothicDepthBufferStateInfo& depth,
-        D3D12_CULL_MODE cullMode = D3D12_CULL_MODE_NONE, bool rtvIsHdr = false, bool forceMaxZ = false, bool frontCCW = false );
+        D3D12_CULL_MODE cullMode = D3D12_CULL_MODE_NONE, bool rtvIsHdr = false, bool forceMaxZ = false, bool frontCCW = false,
+        bool ffVbLayout = false );
     ID3D12PipelineState* GetOrCreateParticlePipeline( const GothicBlendStateInfo& blend );
     ID3D12PipelineState* GetOrCreateDecalBlendPipeline( const GothicBlendStateInfo& blend );
     // Alpha-blended world mesh. depthWrite mirrors D3D11's state machine: the list starts from

@@ -70,12 +70,25 @@ public:
         lifetime; used by DrawVertexBufferFF to snapshot dynamic D3D7 verts into the frame ring. */
     const void* GetMappedData() const { return Current().MappedPtr; }
 
+    /** --- Freshness bookkeeping for the direct-IA fast path (DrawVertexBufferFF) ---
+
+        A dynamic buffer is ring-buffered, so the copy the CURRENT frame would bind only holds the data
+        Gothic wrote if Gothic actually re-Lock()ed the buffer this frame. Map()/UpdateBuffer() record
+        which copy last took a CPU write; when that is the current frame's copy, a draw can bind it
+        straight off the IA (zero copies) instead of reading it back over the uncached, write-combined
+        upload mapping. Otherwise the caller must fall back to snapshotting GetFreshMappedData(). */
+    bool HasFreshCurrentCopy() const { return m_LastWriteSlot != kNoSlot && m_LastWriteSlot == CurrentSlot(); }
+
+    /** CPU pointer to the most recently written copy, or nullptr if the buffer was never written. */
+    const void* GetFreshMappedData() const { return m_LastWriteSlot == kNoSlot ? nullptr : m_Copies[m_LastWriteSlot].MappedPtr; }
+
     /** Backend downcast from the neutral base. Safe by construction: the only concrete
         GfxVertexBuffer implementation is D3D12VertexBuffer while the D3D12 backend is active. */
     static D3D12VertexBuffer* From( GfxVertexBuffer* buffer ) { return static_cast<D3D12VertexBuffer*>( buffer ); }
 
 private:
     static constexpr UINT kMaxCopies = 3;   // == D3D12GraphicsEngine::kBackBufferCount (checked at Init)
+    static constexpr UINT kNoSlot = 0xFFFFFFFFu;   // "no copy has ever been written"
 
     struct Copy {
         Microsoft::WRL::ComPtr<D3D12MA::Allocation> Allocation;
@@ -84,9 +97,11 @@ private:
     };
     Copy m_Copies[kMaxCopies];
     UINT m_NumCopies = 1;      // 1 for static/CPU-only-dynamic buffers, kBackBufferCount for GPU-bound dynamic ones
+    UINT m_LastWriteSlot = kNoSlot;   // copy that last took a CPU write — see HasFreshCurrentCopy()
     unsigned int m_SizeInBytes = 0;
 
-    const Copy& Current() const { return m_Copies[m_NumCopies > 1 ? CurrentFrameSlot() : 0]; }
-    Copy& Current() { return m_Copies[m_NumCopies > 1 ? CurrentFrameSlot() : 0]; }
+    UINT CurrentSlot() const { return m_NumCopies > 1 ? CurrentFrameSlot() : 0; }
+    const Copy& Current() const { return m_Copies[CurrentSlot()]; }
+    Copy& Current() { return m_Copies[CurrentSlot()]; }
     static UINT CurrentFrameSlot();
 };
