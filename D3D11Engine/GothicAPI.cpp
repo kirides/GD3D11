@@ -2387,8 +2387,14 @@ SkeletalMeshVisualInfo* GothicAPI::LoadzCModelData( zCModel* model ) {
         SkeletalMeshVisuals[str] = mi;
     }
 
-    if ( !mi->Ready.load() )
-        return mi; // A background job is already filling this visual in - don't kick off another one
+    if ( !mi->Ready.load() ) {
+        auto pendingLoad = PendingSkeletalLoads.find( mi );
+        if ( pendingLoad != PendingSkeletalLoads.end() ) {
+            if ( pendingLoad->second.future.valid() ) {
+                pendingLoad->second.future.wait();
+            }
+        }
+    }
 
     if ( !mi->Meshes.empty() )
         return mi; // Already loaded
@@ -2428,14 +2434,17 @@ SkeletalMeshVisualInfo* GothicAPI::LoadzCModelData( oCNPC* npc ) {
         SkeletalMeshNpcs[npc] = mi;
     }
 
-    if ( !mi->Ready.load() )
-        return mi; // A background job is already filling this NPC's visual in - don't kick off another one
+    if ( !mi->Ready.load() ) {
+        auto pendingLoad = PendingSkeletalLoads.find( mi );
+        if ( pendingLoad != PendingSkeletalLoads.end() ) {
+            if ( pendingLoad->second.future.valid() ) {
+                pendingLoad->second.future.wait();
+            }
+        }
+    }
 
-    // oCNPCEnable/oCNPCInitModel re-trigger OnAddVob far more often than the NPC's
-    // actual visual (body/armor) changes, so skip the CPU extraction + GPU buffer
-    // rebuild entirely when the visual name hasn't changed since last time.
-    if ( mi->VisualName == str && !mi->Meshes.empty() )
-        return mi;
+    // can't cache the meshes and VisualName as it otherwise
+    // won't properly fire for changing armors. for whatever reason...
 
     // See LoadzCModelData(zCModel*) above for why this runs on a worker thread.
     mi->Ready = false;
