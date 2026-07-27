@@ -1869,10 +1869,11 @@ void GothicAPI::OnVisualDeleted( zCVisual* visual ) {
 
             zCModel* zmodel = static_cast<zCModel*>(visual);
             if ( zmodel->GetMainPrototypeReferences() <= 1 ) { // Check if it is the last reference in prototype so that we can delete this visual
-                std::string str = zmodel->GetVisualName();
+                auto visName = zmodel->GetVisualName();
+                std::string str( visName.data(), visName.size() );
                 if ( str.empty() ) { // Happens when the model has no skeletal-mesh
                     zSTRING mds = zmodel->GetModelName();
-                    str = mds.ToChar();
+                    str.append( mds.ToView() );
                 }
 
                 auto it = SkeletalMeshVisuals.find( str );
@@ -2338,11 +2339,11 @@ void GothicAPI::OnAddVob( zCVob* vob, zCWorld* world ) {
 
 /** Loads the data out of a zCModel */
 SkeletalMeshVisualInfo* GothicAPI::LoadzCModelData( zCModel* model ) {
-    std::string str = model->GetVisualName();
+    auto visName = model->GetVisualName();
+    std::string str(visName.data(), visName.size());
     if ( str.empty() ) { // Happens when the model has no skeletal-mesh
         zSTRING mds = model->GetModelName();
-        str = mds.ToChar();
-        mds.Delete();
+        str.append( mds.ToView() );
     }
 
     SkeletalMeshVisualInfo* mi = SkeletalMeshVisuals[str];
@@ -2359,6 +2360,15 @@ SkeletalMeshVisualInfo* GothicAPI::LoadzCModelData( zCModel* model ) {
 }
 
 SkeletalMeshVisualInfo* GothicAPI::LoadzCModelData( oCNPC* npc ) {
+    if ( auto model = static_cast<zCModel*>(npc->GetVisual())) {
+        auto visName = model->GetVisualName();
+        std::string str( visName.data(), visName.size() );
+        if ( str.empty() ) { // Happens when the model has no skeletal-mesh
+            zSTRING mds = model->GetModelName();
+            str.append(mds.ToView());
+        }
+    }
+
     SkeletalMeshVisualInfo* mi = SkeletalMeshNpcs[npc];
     if ( !mi ) {
         mi = new SkeletalMeshVisualInfo;
@@ -2386,11 +2396,11 @@ int GothicAPI::GetLowestLODNumPolys_SkeletalMesh( zCModel* model ) {
             skeletalMesh = it->second;
         }
     } else {
-        std::string str = model->GetVisualName();
+        auto visName = model->GetVisualName();
+        std::string str( visName.data(), visName.size() );
         if ( str.empty() ) { // Happens when the model has no skeletal-mesh
             zSTRING mds = model->GetModelName();
-            str = mds.ToChar();
-            mds.Delete();
+            str.append( mds.ToView() );
         }
 
         auto it = SkeletalMeshVisuals.find( str );
@@ -2424,11 +2434,11 @@ float3* GothicAPI::GetLowestLODPoly_SkeletalMesh( zCModel* model, const int poly
             skeletalMesh = it->second;
         }
     } else {
-        std::string str = model->GetVisualName();
+        auto visName = model->GetVisualName();
+        std::string str( visName.data(), visName.size() );
         if ( str.empty() ) { // Happens when the model has no skeletal-mesh
             zSTRING mds = model->GetModelName();
-            str = mds.ToChar();
-            mds.Delete();
+            str.append( mds.ToView() );
         }
 
         auto it = SkeletalMeshVisuals.find( str );

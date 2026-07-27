@@ -62,7 +62,7 @@ typedef float( __thiscall* zCOptionReadReal )(void*, zSTRING const&, char const*
 typedef void( __thiscall* zCViewBlitText )(void*);
 typedef void( __thiscall* zCViewPrint )(void*, int, int, const zSTRING&);
 typedef int( __thiscall* CGameManagerExitGame )(void*);
-typedef const zSTRING* (__thiscall* zCVisualGetFileExtension)(void*, int);
+typedef const zSTRING* (__thiscall* zCVisualGetFileExtension)(const void*, int);
 typedef void( __thiscall* zCWorldDisposeVobs )(void*, zCTree<zCVob>*);
 typedef void( __thiscall* oCSpawnManagerSpawnNpc )(void*, oCNPC*, const XMFLOAT3&, float);
 typedef int( __thiscall* oCSpawnManagerCheckRemoveNpc )(void*, oCNPC*);
