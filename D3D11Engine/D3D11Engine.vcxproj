@@ -1225,6 +1225,7 @@ copy "$(OutDir)$(TargetName).pdb" "$(G1_SYSTEM_PATH)\ddraw.pdb"</Command>
     <ClCompile Include="D3D11RenderQueue.cpp" />
     <ClCompile Include="D3D11ShaderManager.cpp" />
     <ClCompile Include="D3D12Engine\D3D12PipelineState.cpp" />
+    <ClCompile Include="D3D12Engine\D3D12RootLayout.cpp" />
     <ClCompile Include="D3D12Engine\D3D12ShaderBackend.cpp" />
     <ClCompile Include="D3D12Engine\D3D12RenderQueue.cpp" />
     <ClCompile Include="D3D12Engine\InstancingUtils.cpp" />

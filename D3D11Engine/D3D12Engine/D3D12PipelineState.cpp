@@ -16,14 +16,6 @@ namespace {
     constexpr const char* Shadermodel_VS = "vs_6_6";
     constexpr const char* Shadermodel_CS = "cs_6_6";
 
-    // D3D12SerializeRootSignature is exported from the already-loaded d3d12.dll (we don't link d3d12.lib).
-    typedef HRESULT( WINAPI* PFN_SERIALIZE_ROOT_SIG )( const D3D12_ROOT_SIGNATURE_DESC*, D3D_ROOT_SIGNATURE_VERSION, ID3DBlob**, ID3DBlob** );
-    PFN_SERIALIZE_ROOT_SIG LoadSerializeRootSignature() {
-        HMODULE d3d12 = LoadLibraryA( "d3d12.dll" );
-        if ( !d3d12 ) return nullptr;
-        return reinterpret_cast<PFN_SERIALIZE_ROOT_SIG>( GetProcAddress( d3d12, "D3D12SerializeRootSignature" ) );
-    }
-
     // Packs the blend-relevant fields of a Gothic blend state into a stable key for the PSO cache.
     // Gothic's EBlendFunc/EBlendOp are "laid out for D3D11" and D3D12_BLEND/_OP share those numeric
     // values, so they slot straight into the packed key (and cast directly into the PSO below).
@@ -71,151 +63,85 @@ bool D3D12PipelineState::Init( D3D12Device* device, D3D12ShaderBackend* shaders 
     return m_Device != nullptr && m_Shaders != nullptr;
 }
 
+D3D12RootLayout& D3D12PipelineState::Layout( const char* name ) {
+    D3D12RootLayout& layout = m_Layouts[name];
+    layout.Reset( name );
+    return layout;
+}
+
+D3D12RootLayout* D3D12PipelineState::GetLayout( const char* name ) {
+    auto it = m_Layouts.find( name );
+    return ( it == m_Layouts.end() ) ? nullptr : &it->second;
+}
+
 bool D3D12PipelineState::CreateWorld() {
     ID3D12Device* device = m_Device->GetDevice();
 
     // Root signature: b0 = ViewProj (16 root 32-bit constants, VS); t0 = diffuse SRV table (PS);
     // b1 = fog (8 root 32-bit constants, VS reads CamPosWS, PS reads color/near/far); static sampler s0.
-    D3D12_DESCRIPTOR_RANGE srvRange = {};
-    srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    srvRange.NumDescriptors = 1;
-    srvRange.BaseShaderRegister = 0;         // t0
-    srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+    D3D12RootLayout& rs = Layout( "World" );
+    rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_VERTEX );                 // 0: b0 ViewProj (float4x4)
+    rs.AddTable( D3D12RootLayout::SRVRange( 0 ), D3D12_SHADER_VISIBILITY_PIXEL );  // 1: t0 diffuse
+    rs.AddConstants( 1, 8, D3D12_SHADER_VISIBILITY_ALL );                     // 2: b1 fog — VS: CamPosWS; PS: color/near/far
 
-    // params[3] = point-light StructuredBuffer as a ROOT SRV at t1 (no descriptor slot consumed — a GPU VA
-    // straight in the root; aligns with the CPU-offload/bindless direction). params[4] = b2 { light count,
-    // NumTilesX }. params[5]/[6] = the Forward+ per-tile grid + index-list root SRVs at t2/t3. All four MUST
+    // 3 = point-light StructuredBuffer as a ROOT SRV at t1 (no descriptor slot consumed — a GPU VA
+    // straight in the root; aligns with the CPU-offload/bindless direction). 4 = b2 { light count,
+    // NumTilesX }. 5/6 = the Forward+ per-tile grid + index-list root SRVs at t2/t3. All four MUST
     // be bound (BindFrameLights) by every draw using this root sig with a light-reading PSO (World.PSO/
     // World.VobPSO), else the count/grid are undefined root values and the shader loops away.
-    // params[7] = shadow-sampling CB (b3) as a ROOT CBV (cascade view-projs are too big for root constants).
-    // params[8] = the CSM shadow-map Texture2DArray SRV (t4) via a one-entry descriptor table off the shared
-    // SRV heap. Both are read only by the lit world PS (PSMain); the depth-prepass/caster PSOs sharing this
-    // root sig don't reference them, so those draws simply leave the slots unbound.
-    D3D12_DESCRIPTOR_RANGE shadowSrvRange = {};
-    shadowSrvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    shadowSrvRange.NumDescriptors = 1;
-    shadowSrvRange.BaseShaderRegister = 4;   // t4
-    shadowSrvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-    // t5 = point-light shadow cube array SRV (P2.10d), sampled by the tiled point-light loop.
-    D3D12_DESCRIPTOR_RANGE cubeSrvRange = {};
-    cubeSrvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    cubeSrvRange.NumDescriptors = 1;
-    cubeSrvRange.BaseShaderRegister = 5;   // t5
-    cubeSrvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+    rs.AddSRV( 1, D3D12_SHADER_VISIBILITY_PIXEL );        // 3: t1 light StructuredBuffer
+    rs.AddConstants( 2, 4, D3D12_SHADER_VISIBILITY_PIXEL );  // 4: b2 { LightCount, NumTilesX, pad, pad }
+    rs.AddSRV( 2, D3D12_SHADER_VISIBILITY_PIXEL );        // 5: t2 per-tile LightGrid {Offset,Count}
+    rs.AddSRV( 3, D3D12_SHADER_VISIBILITY_PIXEL );        // 6: t3 per-tile light-index list
 
-    D3D12_ROOT_PARAMETER params[13] = {};
-    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[0].Constants.ShaderRegister = 0;   // b0
-    params[0].Constants.Num32BitValues = 16;  // float4x4
-    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[1].DescriptorTable.NumDescriptorRanges = 1;
-    params[1].DescriptorTable.pDescriptorRanges = &srvRange;
-    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[2].Constants.ShaderRegister = 1;   // b1 fog
-    params[2].Constants.Num32BitValues = 8;   // FogConstants (8 DWORDs)
-    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;  // VS: CamPosWS; PS: color/near/far
-    params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-    params[3].Descriptor.ShaderRegister = 1;  // t1 light StructuredBuffer
-    params[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[4].Constants.ShaderRegister = 2;   // b2 { LightCount, NumTilesX, pad, pad }
-    params[4].Constants.Num32BitValues = 4;
-    params[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-    params[5].Descriptor.ShaderRegister = 2;  // t2 per-tile LightGrid {Offset,Count}
-    params[5].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[6].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-    params[6].Descriptor.ShaderRegister = 3;  // t3 per-tile light-index list
-    params[6].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[7].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-    params[7].Descriptor.ShaderRegister = 3;  // b3 shadow-sampling CB (cascade view-projs + sun + strength)
-    params[7].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[8].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[8].DescriptorTable.NumDescriptorRanges = 1;
-    params[8].DescriptorTable.pDescriptorRanges = &shadowSrvRange;
-    params[8].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[9].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[9].DescriptorTable.NumDescriptorRanges = 1;
-    params[9].DescriptorTable.pDescriptorRanges = &cubeSrvRange;   // t5 point-shadow cube array
-    params[9].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    // params[10] = per-material bindless indices { normalSrvIndex, ormSrvIndex } as root constants (b6). The PS
+    // 7 = shadow-sampling CB (b3) as a ROOT CBV (cascade view-projs are too big for root constants).
+    // 8 = the CSM shadow-map Texture2DArray SRV (t4) via a one-entry descriptor table off the shared
+    // SRV heap. Both are read only by the lit world PS (PSMain); the depth-prepass/caster PSOs sharing
+    // this root sig don't reference them, so those draws simply leave the slots unbound.
+    // 9 = t5 point-light shadow cube array SRV (P2.10d), sampled by the tiled point-light loop.
+    rs.AddCBV( 3, D3D12_SHADER_VISIBILITY_PIXEL );        // 7: b3 shadow CB (cascade view-projs + sun + strength)
+    rs.AddTable( D3D12RootLayout::SRVRange( 4 ), D3D12_SHADER_VISIBILITY_PIXEL );  // 8: t4 CSM array
+    rs.AddTable( D3D12RootLayout::SRVRange( 5 ), D3D12_SHADER_VISIBILITY_PIXEL );  // 9: t5 point-shadow cube array
+
+    // 10 = per-material bindless indices { normalSrvIndex, ormSrvIndex } as root constants (b6). The PS
     // reads the normal/ORM maps via ResourceDescriptorHeap[...] (SM6.6 bindless) — no per-material descriptor
     // tables. normalIndex == 0xFFFFFFFF means "no normal map" (skip the TBN/perturb); ormIndex is always valid
-    // (the default ORM slot when a material has no _FX map), so ORM is sampled branchlessly.
-    params[10].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[10].Constants.ShaderRegister = 6;   // b6 MaterialCB { MatNormalIndex, MatOrmIndex, MatDiffuseIndex, MatNormalStrength }
-    params[10].Constants.Num32BitValues = 4;   // 3rd = bindless diffuse index; 4th = normal-perturb strength (World.hlsl's wet-ground
-                                                // path only — Vob.hlsl/Skeletal.hlsl's own MaterialCB declarations just don't read it)
-    params[10].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    // params[11] = wind sway CB (b4, VS only) — read by Vob.hlsl's VSMain (flags/foliage sway + hero-affects-
-    // bushes push); World.hlsl/Skeletal.hlsl don't declare b4 so they simply never read it. Only DrawVobsInstanced
-    // needs to actually bind this root param before its draws; other users of this root sig leave it unbound.
-    params[11].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[11].Constants.ShaderRegister = 4;   // b4 WindCB (VS_ExConstantBuffer_Wind, 48 bytes)
-    params[11].Constants.Num32BitValues = 12;
-    params[11].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    // params[12] = simple-SSAO mask bindless SRV-heap index (b7 AOCB, PS only), set ONCE per frame (not per
+    // (the default ORM slot when a material has no _FX map), so ORM is sampled branchlessly. The 3rd value is
+    // the bindless diffuse index; the 4th the normal-perturb strength (World.hlsl's wet-ground path only —
+    // Vob.hlsl/Skeletal.hlsl's own MaterialCB declarations just don't read it).
+    rs.AddConstants( 6, 4, D3D12_SHADER_VISIBILITY_PIXEL );  // 10: b6 MaterialCB
+
+    // 11 = wind sway CB (b4, VS only) — read by Vob.hlsl's VSMain (flags/foliage sway + hero-affects-
+    // bushes push); World.hlsl/Skeletal.hlsl don't declare b4 so they simply never read it. Only
+    // DrawVobsInstanced needs to bind it before its draws; other users of this root sig leave it unbound.
+    rs.AddConstants( 4, 12, D3D12_SHADER_VISIBILITY_VERTEX );  // 11: b4 WindCB (VS_ExConstantBuffer_Wind, 48 bytes)
+
+    // 12 = simple-SSAO mask bindless SRV-heap index (b7 AOCB, PS only), set ONCE per frame (not per
     // draw/ExecuteIndirect command) by DrawWorldMesh/DrawVobsInstanced/DrawSkeletalColor's attachment pass —
     // World.hlsl/Vob.hlsl's PSMain(Bindless) read it via ResourceDescriptorHeap[AoMaskIndex]. Points at the
     // white texture's SRV slot when SSAO is disabled/unavailable (mask = no occlusion, matches D3D11's default).
-    params[12].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[12].Constants.ShaderRegister = 7;   // b7 AOCB { AoMaskIndex }
-    params[12].Constants.Num32BitValues = 1;
-    params[12].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    rs.AddConstants( 7, 1, D3D12_SHADER_VISIBILITY_PIXEL );    // 12: b7 AOCB { AoMaskIndex }
 
-    D3D12_STATIC_SAMPLER_DESC samplers[3] = {};
     // s0 diffuse: 16x anisotropic (matches D3D11's main texture sampler) — sharpens surfaces at grazing
     // angles and in the distance, which trilinear alone smears badly.
-    samplers[0].Filter = D3D12_FILTER_ANISOTROPIC;
-    samplers[0].MaxAnisotropy = 16;
-    samplers[0].AddressU = samplers[0].AddressV = samplers[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    samplers[0].MaxLOD = D3D12_FLOAT32_MAX;
-    samplers[0].ShaderRegister = 0;          // s0 diffuse
-    samplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    rs.AddStaticSampler( D3D12RootLayout::SamplerAniso( 0, D3D12_SHADER_VISIBILITY_PIXEL ) );
     // s2: PCF comparison sampler for the CSM depth. Normal-Z map (LESS_EQUAL): SampleCmp returns 1 where the
     // fragment is closer-or-equal to the light than the stored occluder (lit), 0 where behind it (shadowed).
     // BORDER address + opaque-white border → taps past a cascade's edge read as far (lit), not spurious shadow.
-    samplers[1].Filter = D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT;
-    samplers[1].AddressU = samplers[1].AddressV = samplers[1].AddressW = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
-    samplers[1].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
-    samplers[1].ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
-    samplers[1].MaxLOD = D3D12_FLOAT32_MAX;
-    samplers[1].ShaderRegister = 2;          // s2 shadow comparison
-    samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    rs.AddStaticSampler( D3D12RootLayout::SamplerComparison( 2, D3D12_SHADER_VISIBILITY_PIXEL ) );
     // s1: point-clamp for the simple-SSAO mask fetch (World/Vob PSMain). MUST be Sample/SampleLevel with CLAMP
     // addressing, not Load — Load() with out-of-range integer texel coords (the 1x1 white "AO disabled"
     // fallback read at full-res screen coords) returns 0 per the HLSL spec, not the texel's actual value, which
     // was silently zeroing the ambient term (darker with AO "disabled" than with it on — the opposite of what
     // should happen). CLAMP addressing sidesteps this for both the 1x1 fallback and the real full-res mask.
-    samplers[2].Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
-    samplers[2].AddressU = samplers[2].AddressV = samplers[2].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    samplers[2].MaxLOD = D3D12_FLOAT32_MAX;
-    samplers[2].ShaderRegister = 1;           // s1 AO mask point-clamp
-    samplers[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    rs.AddStaticSampler( D3D12RootLayout::SamplerPoint( 1, D3D12_SHADER_VISIBILITY_PIXEL ) );
 
-    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-    rsDesc.NumParameters = _countof( params );
-    rsDesc.pParameters = params;
-    rsDesc.NumStaticSamplers = _countof( samplers );
-    rsDesc.pStaticSamplers = samplers;
     // CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED enables SM6.6 ResourceDescriptorHeap[...] bindless sampling of the
     // per-material normal/ORM maps out of the shared SRV heap (tier-3; present on the target AMD GPU).
-    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
-                 | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
-
-    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
-    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (world)."; return false; }
-
-    ComPtr<ID3DBlob> rsBlob, rsErr;
-    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-        if ( rsErr ) LogWarn() << "D3D12: world root signature serialize error: " << static_cast<const char*>(rsErr->GetBufferPointer());
+    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+                          | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )
         return false;
-    }
-    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
-        IID_PPV_ARGS( World.RootSig.ReleaseAndGetAddressOf() ) ) ) )
-        return false;
+    World.RootSig = rs.RootSig();
 
     if ( !m_Shaders->CompileFromFile( "World.hlsl", "VSMain", Shadermodel_VS, World.VsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
@@ -229,6 +155,12 @@ bool D3D12PipelineState::CreateWorld() {
         LogWarn() << "D3D12: World.hlsl VSQuadMark failed to compile — quad marks will draw unlit.";
         World.QuadMarkVsBlob.Reset();
     }
+
+    rs.ValidateShaders( {
+        { World.VsBlob.Get(),        "World.hlsl:VSMain",     D3D12_SHADER_VISIBILITY_VERTEX },
+        { World.PsBlob.Get(),        "World.hlsl:PSMain",     D3D12_SHADER_VISIBILITY_PIXEL  },
+        { World.QuadMarkVsBlob.Get(),"World.hlsl:VSQuadMark", D3D12_SHADER_VISIBILITY_VERTEX },
+    } );
 
     // Bind Position/TexCoord0/Color from the packed 36-byte ExVertexStructGPU via explicit offsets;
     // the packed normal (@12), tangent (@16) and uv2 (@28) are skipped (not read by this PS yet).
@@ -296,54 +228,23 @@ bool D3D12PipelineState::CreateWorldTransparency() {
     // need no renumbering for these extra entry points.
     ID3D12Device* device = m_Device->GetDevice();
 
-    D3D12_ROOT_PARAMETER params[4] = {};
-    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[0].Constants.ShaderRegister = 0;   // b0 ViewProj
-    params[0].Constants.Num32BitValues = 16;
-    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[1].Constants.ShaderRegister = 5;   // b5 TransparencyCB { float4 TextureFactor; float SunHeight; float3 pad }
-    params[1].Constants.Num32BitValues = 8;
-    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[2].Constants.ShaderRegister = 6;   // b6 MaterialCB { normal, orm, diffuse, normalStrength }
-    params[2].Constants.Num32BitValues = 4;
-    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[3].Constants.ShaderRegister = 4;   // b4 TransparencyViewCB { float4x4 View } — portal VS only
-    params[3].Constants.Num32BitValues = 16;
-    params[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    D3D12RootLayout& rs = Layout( "WorldTransparency" );
+    rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_VERTEX );  // 0: b0 ViewProj
+    // 1: b5 TransparencyCB { float4 TextureFactor; float SunHeight; float3 pad }
+    rs.AddConstants( 5, 8, D3D12_SHADER_VISIBILITY_PIXEL );
+    rs.AddConstants( 6, 4, D3D12_SHADER_VISIBILITY_PIXEL );    // 2: b6 MaterialCB { normal, orm, diffuse, normalStrength }
+    // 3: b4 TransparencyViewCB { float4x4 View } — portal VS only
+    rs.AddConstants( 4, 16, D3D12_SHADER_VISIBILITY_VERTEX );
 
     // s0 diffuse: same 16x anisotropic wrap sampler the opaque world pass uses.
-    D3D12_STATIC_SAMPLER_DESC sampler = {};
-    sampler.Filter = D3D12_FILTER_ANISOTROPIC;
-    sampler.MaxAnisotropy = 16;
-    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler.MaxLOD = D3D12_FLOAT32_MAX;
-    sampler.ShaderRegister = 0;   // s0
-    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    rs.AddStaticSampler( D3D12RootLayout::SamplerAniso( 0, D3D12_SHADER_VISIBILITY_PIXEL ) );
 
-    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-    rsDesc.NumParameters = _countof( params );
-    rsDesc.pParameters = params;
-    rsDesc.NumStaticSamplers = 1;
-    rsDesc.pStaticSamplers = &sampler;
     // The diffuse texture is fetched bindlessly (ResourceDescriptorHeap[MatDiffuseIndex]), like the opaque
     // world pass — no per-material descriptor table.
-    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
-                 | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
-
-    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
-    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (world transparency)."; return false; }
-
-    ComPtr<ID3DBlob> rsBlob, rsErr;
-    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-        if ( rsErr ) LogWarn() << "D3D12: world transparency root signature serialize error: " << static_cast<const char*>(rsErr->GetBufferPointer());
+    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+                          | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )
         return false;
-    }
-    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
-        IID_PPV_ARGS( WorldTransparency.RootSig.ReleaseAndGetAddressOf() ) ) ) )
-        return false;
+    WorldTransparency.RootSig = rs.RootSig();
 
     if ( !m_Shaders->CompileFromFile( "World.hlsl", "VSTransparent", Shadermodel_VS, WorldTransparency.VsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
@@ -364,6 +265,14 @@ bool D3D12PipelineState::CreateWorldTransparency() {
         WorldTransparency.PortalVsBlob.Reset();
         WorldTransparency.PortalPsBlob.Reset();
     }
+
+    rs.ValidateShaders( {
+        { WorldTransparency.VsBlob.Get(),       "World.hlsl:VSTransparent",       D3D12_SHADER_VISIBILITY_VERTEX },
+        { WorldTransparency.PsBlob.Get(),       "World.hlsl:PSTransparent",       D3D12_SHADER_VISIBILITY_PIXEL  },
+        { WorldTransparency.FoamPsBlob.Get(),   "World.hlsl:PSTransparentFoam",   D3D12_SHADER_VISIBILITY_PIXEL  },
+        { WorldTransparency.PortalVsBlob.Get(), "World.hlsl:VSTransparentPortal", D3D12_SHADER_VISIBILITY_VERTEX },
+        { WorldTransparency.PortalPsBlob.Get(), "World.hlsl:PSTransparentPortal", D3D12_SHADER_VISIBILITY_PIXEL  },
+    } );
 
     // Warm the two states every transparent world frame needs: plain alpha blending (by far the most common
     // Gothic alpha func on these materials) and the depth-fill re-draw.
@@ -466,53 +375,17 @@ bool D3D12PipelineState::CreatePreview() {
     // alpha-clip, no lighting/fog) — its own minimal root sig, no Forward+ light/shadow bindings needed.
     ID3D12Device* device = m_Device->GetDevice();
 
-    D3D12_DESCRIPTOR_RANGE srvRange = {};
-    srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    srvRange.NumDescriptors = 1;
-    srvRange.BaseShaderRegister = 0;   // t0
-    srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-    D3D12_ROOT_PARAMETER params[3] = {};
-    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[0].Constants.ShaderRegister = 0;   // b0 ViewProj
-    params[0].Constants.Num32BitValues = 16;
-    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[1].Constants.ShaderRegister = 1;   // b1 World (per-instance, single draw — no instance buffer needed)
-    params[1].Constants.Num32BitValues = 16;
-    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[2].DescriptorTable.NumDescriptorRanges = 1;
-    params[2].DescriptorTable.pDescriptorRanges = &srvRange;
-    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
+    D3D12RootLayout& rs = Layout( "Preview" );
+    rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_VERTEX );  // 0: b0 ViewProj
+    // 1: b1 World (per-instance, single draw — no instance buffer needed)
+    rs.AddConstants( 1, 16, D3D12_SHADER_VISIBILITY_VERTEX );
+    rs.AddTable( D3D12RootLayout::SRVRange( 0 ), D3D12_SHADER_VISIBILITY_PIXEL );   // 2: t0 diffuse
     // s0 diffuse: 16x anisotropic wrap, matches D3D11's DefaultSamplerState used for this draw.
-    D3D12_STATIC_SAMPLER_DESC sampler = {};
-    sampler.Filter = D3D12_FILTER_ANISOTROPIC;
-    sampler.MaxAnisotropy = 16;
-    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler.MaxLOD = D3D12_FLOAT32_MAX;
-    sampler.ShaderRegister = 0;   // s0
-    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    rs.AddStaticSampler( D3D12RootLayout::SamplerAniso( 0, D3D12_SHADER_VISIBILITY_PIXEL ) );
 
-    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-    rsDesc.NumParameters = _countof( params );
-    rsDesc.pParameters = params;
-    rsDesc.NumStaticSamplers = 1;
-    rsDesc.pStaticSamplers = &sampler;
-    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
-
-    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
-    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (preview)."; return false; }
-
-    ComPtr<ID3DBlob> rsBlob, rsErr;
-    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-        if ( rsErr ) LogWarn() << "D3D12: preview root signature serialize error: " << static_cast<const char*>(rsErr->GetBufferPointer());
+    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT ) )
         return false;
-    }
-    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
-        IID_PPV_ARGS( Preview.RootSig.ReleaseAndGetAddressOf() ) ) ) )
-        return false;
+    Preview.RootSig = rs.RootSig();
 
     if ( !m_Shaders->CompileFromFile( "Preview.hlsl", "VSMain", Shadermodel_VS, Preview.VsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
@@ -520,6 +393,11 @@ bool D3D12PipelineState::CreatePreview() {
     if ( !m_Shaders->CompileFromFile( "Preview.hlsl", "PSMain", Shadermodel_PS, Preview.PsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
+
+    rs.ValidateShaders( {
+        { Preview.VsBlob.Get(), "Preview.hlsl:VSMain", D3D12_SHADER_VISIBILITY_VERTEX },
+        { Preview.PsBlob.Get(), "Preview.hlsl:PSMain", D3D12_SHADER_VISIBILITY_PIXEL  },
+    } );
 
     // MeshInfo (VOB submesh) vertex buffers are laid out as the CPU-side ExVertexStruct (stride 60 bytes,
     // NOT the packed 36-byte ExVertexStructGPU world format) — Position @0, TexCoord0 @24 (matches Vob.hlsl's
@@ -571,57 +449,18 @@ bool D3D12PipelineState::CreateGhost() {
     // meshes, acceptable for a niche effect) — no depth WRITE either, so multiple overlapping ghosts all show.
     ID3D12Device* device = m_Device->GetDevice();
 
-    D3D12_DESCRIPTOR_RANGE srvRange = {};
-    srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    srvRange.NumDescriptors = 1;
-    srvRange.BaseShaderRegister = 0;   // t0
-    srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-    D3D12_ROOT_PARAMETER params[4] = {};
-    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[0].Constants.ShaderRegister = 0;   // b0 ViewProj
-    params[0].Constants.Num32BitValues = 16;
-    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[1].Constants.ShaderRegister = 1;   // b1 World (per-instance, single draw — no instance buffer needed)
-    params[1].Constants.Num32BitValues = 16;
-    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[2].Constants.ShaderRegister = 2;   // b2 GhostAlpha
-    params[2].Constants.Num32BitValues = 1;
-    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[3].DescriptorTable.NumDescriptorRanges = 1;
-    params[3].DescriptorTable.pDescriptorRanges = &srvRange;
-    params[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
+    D3D12RootLayout& rs = Layout( "Ghost" );
+    rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_VERTEX );  // 0: b0 ViewProj
+    // 1: b1 World (per-instance, single draw — no instance buffer needed)
+    rs.AddConstants( 1, 16, D3D12_SHADER_VISIBILITY_VERTEX );
+    rs.AddConstants( 2, 1, D3D12_SHADER_VISIBILITY_PIXEL );    // 2: b2 GhostAlpha
+    rs.AddTable( D3D12RootLayout::SRVRange( 0 ), D3D12_SHADER_VISIBILITY_PIXEL );  // 3: t0 diffuse
     // s0 diffuse: matches Preview's sampler (16x anisotropic wrap).
-    D3D12_STATIC_SAMPLER_DESC sampler = {};
-    sampler.Filter = D3D12_FILTER_ANISOTROPIC;
-    sampler.MaxAnisotropy = 16;
-    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler.MaxLOD = D3D12_FLOAT32_MAX;
-    sampler.ShaderRegister = 0;   // s0
-    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    rs.AddStaticSampler( D3D12RootLayout::SamplerAniso( 0, D3D12_SHADER_VISIBILITY_PIXEL ) );
 
-    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-    rsDesc.NumParameters = _countof( params );
-    rsDesc.pParameters = params;
-    rsDesc.NumStaticSamplers = 1;
-    rsDesc.pStaticSamplers = &sampler;
-    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
-
-    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
-    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (ghost)."; return false; }
-
-    ComPtr<ID3DBlob> rsBlob, rsErr;
-    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-        if ( rsErr ) LogWarn() << "D3D12: ghost root signature serialize error: " << static_cast<const char*>(rsErr->GetBufferPointer());
+    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT ) )
         return false;
-    }
-    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
-        IID_PPV_ARGS( Ghost.RootSig.ReleaseAndGetAddressOf() ) ) ) )
-        return false;
+    Ghost.RootSig = rs.RootSig();
 
     if ( !m_Shaders->CompileFromFile( "Preview.hlsl", "VSMain", Shadermodel_VS, Ghost.VsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
@@ -629,6 +468,11 @@ bool D3D12PipelineState::CreateGhost() {
     if ( !m_Shaders->CompileFromFile( "Preview.hlsl", "PSGhost", Shadermodel_PS, Ghost.PsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
+
+    rs.ValidateShaders( {
+        { Ghost.VsBlob.Get(), "Preview.hlsl:VSMain",  D3D12_SHADER_VISIBILITY_VERTEX },
+        { Ghost.PsBlob.Get(), "Preview.hlsl:PSGhost", D3D12_SHADER_VISIBILITY_PIXEL  },
+    } );
 
     // Position (@0) + TexCoord0 (@24) from ExVertexStruct — identical to Preview's layout (same CPU-side mesh format).
     const D3D12_INPUT_ELEMENT_DESC layout[] = {
@@ -684,58 +528,18 @@ bool D3D12PipelineState::CreateGhostSkeletal() {
     // Ghost's simplification — rare/minor artifact on chunky ghost meshes, acceptable for a niche effect).
     ID3D12Device* device = m_Device->GetDevice();
 
-    D3D12_DESCRIPTOR_RANGE srvRange = {};
-    srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    srvRange.NumDescriptors = 1;
-    srvRange.BaseShaderRegister = 0;   // t0
-    srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+    D3D12RootLayout& rs = Layout( "GhostSkeletal" );
+    rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_VERTEX );  // 0: b0 ViewProj
+    rs.AddCBV( 1, D3D12_SHADER_VISIBILITY_VERTEX );            // 1: b1 per-instance (World/ModelColor/Fatness)
+    rs.AddCBV( 2, D3D12_SHADER_VISIBILITY_VERTEX );            // 2: b2 bone palette
+    // 3: b7 GhostAlpha (Skeletal.hlsl's b0..b6 are all spoken for)
+    rs.AddConstants( 7, 1, D3D12_SHADER_VISIBILITY_PIXEL );
+    rs.AddTable( D3D12RootLayout::SRVRange( 0 ), D3D12_SHADER_VISIBILITY_PIXEL );  // 4: t0 diffuse
+    rs.AddStaticSampler( D3D12RootLayout::SamplerAniso( 0, D3D12_SHADER_VISIBILITY_PIXEL ) );
 
-    D3D12_ROOT_PARAMETER params[5] = {};
-    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[0].Constants.ShaderRegister = 0;   // b0 ViewProj
-    params[0].Constants.Num32BitValues = 16;
-    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-    params[1].Descriptor.ShaderRegister = 1;  // b1 per-instance (World/ModelColor/Fatness)
-    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-    params[2].Descriptor.ShaderRegister = 2;  // b2 bone palette
-    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[3].Constants.ShaderRegister = 7;   // b7 GhostAlpha (Skeletal.hlsl's b0..b6 are all spoken for)
-    params[3].Constants.Num32BitValues = 1;
-    params[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[4].DescriptorTable.NumDescriptorRanges = 1;
-    params[4].DescriptorTable.pDescriptorRanges = &srvRange;
-    params[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_STATIC_SAMPLER_DESC sampler = {};
-    sampler.Filter = D3D12_FILTER_ANISOTROPIC;
-    sampler.MaxAnisotropy = 16;
-    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler.MaxLOD = D3D12_FLOAT32_MAX;
-    sampler.ShaderRegister = 0;   // s0
-    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-    rsDesc.NumParameters = _countof( params );
-    rsDesc.pParameters = params;
-    rsDesc.NumStaticSamplers = 1;
-    rsDesc.pStaticSamplers = &sampler;
-    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
-
-    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
-    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (ghost skeletal)."; return false; }
-
-    ComPtr<ID3DBlob> rsBlob, rsErr;
-    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-        if ( rsErr ) LogWarn() << "D3D12: ghost skeletal root signature serialize error: " << static_cast<const char*>(rsErr->GetBufferPointer());
+    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT ) )
         return false;
-    }
-    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
-        IID_PPV_ARGS( GhostSkeletal.RootSig.ReleaseAndGetAddressOf() ) ) ) )
-        return false;
+    GhostSkeletal.RootSig = rs.RootSig();
 
     if ( !m_Shaders->CompileFromFile( "Skeletal.hlsl", "VSDepth", Shadermodel_VS, GhostSkeletal.VsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
@@ -743,6 +547,11 @@ bool D3D12PipelineState::CreateGhostSkeletal() {
     if ( !m_Shaders->CompileFromFile( "Skeletal.hlsl", "PSGhost", Shadermodel_PS, GhostSkeletal.PsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
+
+    rs.ValidateShaders( {
+        { GhostSkeletal.VsBlob.Get(), "Skeletal.hlsl:VSDepth", D3D12_SHADER_VISIBILITY_VERTEX },
+        { GhostSkeletal.PsBlob.Get(), "Skeletal.hlsl:PSGhost", D3D12_SHADER_VISIBILITY_PIXEL  },
+    } );
 
     // Same skinned-vertex layout as Skeletal.RootSig's PSOs — VSDepth (VS_IN) needs BONEIDS/WEIGHTS too.
     const D3D12_INPUT_ELEMENT_DESC layout[] = {
@@ -804,123 +613,41 @@ bool D3D12PipelineState::CreateGrass() {
     // symbol to be declared and bound, even though grass rarely sits in a torch's small shadow radius).
     ID3D12Device* device = m_Device->GetDevice();
 
-    D3D12_DESCRIPTOR_RANGE grassSrvRange = {};
-    grassSrvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    grassSrvRange.NumDescriptors = 1;
-    grassSrvRange.BaseShaderRegister = 0;   // t0 grass blade texture
-    grassSrvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-    D3D12_DESCRIPTOR_RANGE groundSrvRange = {};
-    groundSrvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    groundSrvRange.NumDescriptors = 1;
-    groundSrvRange.BaseShaderRegister = 1;   // t1 ground/undercoat texture
-    groundSrvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-    D3D12_DESCRIPTOR_RANGE shadowSrvRange = {};
-    shadowSrvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    shadowSrvRange.NumDescriptors = 1;
-    shadowSrvRange.BaseShaderRegister = 5;   // t5 CSM shadow-map array
-    shadowSrvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-    D3D12_DESCRIPTOR_RANGE cubeSrvRange = {};
-    cubeSrvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    cubeSrvRange.NumDescriptors = 1;
-    cubeSrvRange.BaseShaderRegister = 6;   // t6 point-shadow cube array (PBRLighting.hlsl requires this symbol)
-    cubeSrvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-    D3D12_ROOT_PARAMETER params[13] = {};
-    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[0].Constants.ShaderRegister = 0;   // b0 ViewProj
-    params[0].Constants.Num32BitValues = 16;
-    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[1].DescriptorTable.NumDescriptorRanges = 1;
-    params[1].DescriptorTable.pDescriptorRanges = &grassSrvRange;
-    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[2].DescriptorTable.NumDescriptorRanges = 1;
-    params[2].DescriptorTable.pDescriptorRanges = &groundSrvRange;
-    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[3].Constants.ShaderRegister = 1;   // b1 GrassCB { Time, WindStrength, HeroAffectStrength, pad, PlayerPosWS, pad }
-    params[3].Constants.Num32BitValues = 8;
-    params[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;   // VS: all of it; PS: none currently, but cheap to keep visible
-    params[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[4].Constants.ShaderRegister = 2;   // b2 fog
-    params[4].Constants.Num32BitValues = 8;
-    params[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;   // VS: CamPosWS; PS: color/near/far
-    params[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-    params[5].Descriptor.ShaderRegister = 2;  // t2 light StructuredBuffer (root SRV)
-    params[5].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[6].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[6].Constants.ShaderRegister = 3;   // b3 { LightCount, NumTilesX, LimitLightIntensity, pad }
-    params[6].Constants.Num32BitValues = 4;
-    params[6].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[7].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-    params[7].Descriptor.ShaderRegister = 3;  // t3 per-tile LightGrid
-    params[7].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[8].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-    params[8].Descriptor.ShaderRegister = 4;  // t4 per-tile light-index list
-    params[8].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[9].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-    params[9].Descriptor.ShaderRegister = 4;  // b4 shadow-sampling CB (root CBV)
-    params[9].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[10].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[10].DescriptorTable.NumDescriptorRanges = 1;
-    params[10].DescriptorTable.pDescriptorRanges = &shadowSrvRange;
-    params[10].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[11].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[11].DescriptorTable.NumDescriptorRanges = 1;
-    params[11].DescriptorTable.pDescriptorRanges = &cubeSrvRange;
-    params[11].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    // params[12] = simple-SSAO mask bindless SRV-heap index (b5 AOCB, PS only), set once per frame by
+    D3D12RootLayout& rs = Layout( "Grass" );
+    rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_VERTEX );  // 0: b0 ViewProj
+    rs.AddTable( D3D12RootLayout::SRVRange( 0 ), D3D12_SHADER_VISIBILITY_PIXEL );  // 1: t0 grass blade texture
+    rs.AddTable( D3D12RootLayout::SRVRange( 1 ), D3D12_SHADER_VISIBILITY_PIXEL );  // 2: t1 ground/undercoat texture
+    // 3: b1 GrassCB { Time, WindStrength, HeroAffectStrength, pad, PlayerPosWS, pad }
+    // VS: all of it; PS: none currently, but cheap to keep visible.
+    rs.AddConstants( 1, 8, D3D12_SHADER_VISIBILITY_ALL );
+    rs.AddConstants( 2, 8, D3D12_SHADER_VISIBILITY_ALL );      // 4: b2 fog — VS: CamPosWS; PS: color/near/far
+    rs.AddSRV( 2, D3D12_SHADER_VISIBILITY_PIXEL );             // 5: t2 light StructuredBuffer (root SRV)
+    // 6: b3 { LightCount, NumTilesX, LimitLightIntensity, pad }
+    rs.AddConstants( 3, 4, D3D12_SHADER_VISIBILITY_PIXEL );
+    rs.AddSRV( 3, D3D12_SHADER_VISIBILITY_PIXEL );             // 7: t3 per-tile LightGrid
+    rs.AddSRV( 4, D3D12_SHADER_VISIBILITY_PIXEL );             // 8: t4 per-tile light-index list
+    rs.AddCBV( 4, D3D12_SHADER_VISIBILITY_PIXEL );             // 9: b4 shadow-sampling CB (root CBV)
+    rs.AddTable( D3D12RootLayout::SRVRange( 5 ), D3D12_SHADER_VISIBILITY_PIXEL );  // 10: t5 CSM shadow-map array
+    // 11: t6 point-shadow cube array (PBRLighting.hlsl requires this symbol)
+    rs.AddTable( D3D12RootLayout::SRVRange( 6 ), D3D12_SHADER_VISIBILITY_PIXEL );
+    // 12 = simple-SSAO mask bindless SRV-heap index (b5 AOCB, PS only), set once per frame by
     // DrawVegetation. Grass gets real AO now that RenderSSAO builds the mask from the PREVIOUS frame's COMPLETE
     // depth rather than the depth prepass grass never joins — see Vegetation.hlsl's PSMain. The grass shadow
     // CASTER (m_ShadowCasterGrassPSO, CreateGrassShadowCaster) shares this root sig but reads none of this.
-    params[12].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[12].Constants.ShaderRegister = 5;   // b5 AOCB { AoMaskIndex }
-    params[12].Constants.Num32BitValues = 1;
-    params[12].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    rs.AddConstants( 5, 1, D3D12_SHADER_VISIBILITY_PIXEL );    // 12: b5 AOCB { AoMaskIndex }
 
-    D3D12_STATIC_SAMPLER_DESC samplers[3] = {};
-    samplers[0].Filter = D3D12_FILTER_ANISOTROPIC;
-    samplers[0].MaxAnisotropy = 16;
-    samplers[0].AddressU = samplers[0].AddressV = samplers[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    samplers[0].MaxLOD = D3D12_FLOAT32_MAX;
-    samplers[0].ShaderRegister = 0;          // s0 diffuse
-    samplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    samplers[1].Filter = D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT;   // s2 PCF, matches World/Vob/Skeletal
-    samplers[1].AddressU = samplers[1].AddressV = samplers[1].AddressW = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
-    samplers[1].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
-    samplers[1].ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
-    samplers[1].MaxLOD = D3D12_FLOAT32_MAX;
-    samplers[1].ShaderRegister = 2;          // s2 shadow comparison
-    samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    rs.AddStaticSampler( D3D12RootLayout::SamplerAniso( 0, D3D12_SHADER_VISIBILITY_PIXEL ) );      // s0 diffuse
+    // s2 PCF, matches World/Vob/Skeletal.
+    rs.AddStaticSampler( D3D12RootLayout::SamplerComparison( 2, D3D12_SHADER_VISIBILITY_PIXEL ) );
     // s1: point-clamp for the AO mask + the reprojection depth fetch — identical to World/Vob/Skeletal's s1.
-    samplers[2].Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
-    samplers[2].AddressU = samplers[2].AddressV = samplers[2].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    samplers[2].MaxLOD = D3D12_FLOAT32_MAX;
-    samplers[2].ShaderRegister = 1;          // s1 AO mask point-clamp
-    samplers[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    rs.AddStaticSampler( D3D12RootLayout::SamplerPoint( 1, D3D12_SHADER_VISIBILITY_PIXEL ) );
 
-    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-    rsDesc.NumParameters = _countof( params );
-    rsDesc.pParameters = params;
-    rsDesc.NumStaticSamplers = _countof( samplers );
-    rsDesc.pStaticSamplers = samplers;
     // CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED: the PS reaches the AO mask and the previous-frame depth through
     // SM6.6 ResourceDescriptorHeap[...] (see ScreenSpaceAO.hlsl), same as the World/Vob/Skeletal sigs.
-    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
-                 | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
-
-    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
-    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (grass)."; return false; }
-
-    ComPtr<ID3DBlob> rsBlob, rsErr;
-    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-        if ( rsErr ) LogWarn() << "D3D12: grass root signature serialize error: " << static_cast<const char*>(rsErr->GetBufferPointer());
+    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+                          | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )
         return false;
-    }
-    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
-        IID_PPV_ARGS( Grass.RootSig.ReleaseAndGetAddressOf() ) ) ) )
-        return false;
+    Grass.RootSig = rs.RootSig();
 
     if ( !m_Shaders->CompileFromFile( "Vegetation.hlsl", "VSMain", Shadermodel_VS, Grass.VsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
@@ -928,6 +655,11 @@ bool D3D12PipelineState::CreateGrass() {
     if ( !m_Shaders->CompileFromFile( "Vegetation.hlsl", "PSMain", Shadermodel_PS, Grass.PsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
+
+    rs.ValidateShaders( {
+        { Grass.VsBlob.Get(), "Vegetation.hlsl:VSMain", D3D12_SHADER_VISIBILITY_VERTEX },
+        { Grass.PsBlob.Get(), "Vegetation.hlsl:PSMain", D3D12_SHADER_VISIBILITY_PIXEL  },
+    } );
 
     // Slot 0 = SimpleObjectVertexStruct (Position@0, TexCoord@12, stride 20); slot 1 = per-instance world matrix
     // (GVegetationBox::VegetationSpots, stride 64, already transposed on upload).
@@ -981,51 +713,15 @@ bool D3D12PipelineState::CreateVideo() {
     // Three SEPARATE single-descriptor tables (not one 3-wide range): the Y/U/V planes are independent
     // GfxTextures, each with its own persistent slot in the engine's SRV heap allocated at texture-Init
     // time — they are not contiguous, so a single multi-descriptor range/table wouldn't be valid here.
-    D3D12_DESCRIPTOR_RANGE srvRanges[3] = {};
-    for ( UINT i = 0; i < 3; ++i ) {
-        srvRanges[i].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-        srvRanges[i].NumDescriptors = 1;
-        srvRanges[i].BaseShaderRegister = i;   // t0 Y, t1 U, t2 V
-        srvRanges[i].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-    }
+    D3D12RootLayout& rs = Layout( "Video" );
+    rs.AddConstants( 0, 4, D3D12_SHADER_VISIBILITY_VERTEX );   // 0: b0 viewport (float2 pos + float2 size)
+    for ( UINT i = 0; i < 3; ++i )                             // 1..3: t0 Y, t1 U, t2 V
+        rs.AddTable( D3D12RootLayout::SRVRange( i ), D3D12_SHADER_VISIBILITY_PIXEL );
+    rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_PIXEL ) );   // s0
 
-    D3D12_ROOT_PARAMETER params[4] = {};
-    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[0].Constants.ShaderRegister = 0;  // b0 viewport (float2 pos + float2 size)
-    params[0].Constants.Num32BitValues = 4;
-    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    for ( UINT i = 0; i < 3; ++i ) {
-        params[1 + i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        params[1 + i].DescriptorTable.NumDescriptorRanges = 1;
-        params[1 + i].DescriptorTable.pDescriptorRanges = &srvRanges[i];
-        params[1 + i].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    }
-
-    D3D12_STATIC_SAMPLER_DESC sampler = {};
-    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    sampler.MaxLOD = D3D12_FLOAT32_MAX;
-    sampler.ShaderRegister = 0;  // s0
-    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-    rsDesc.NumParameters = _countof( params );
-    rsDesc.pParameters = params;
-    rsDesc.NumStaticSamplers = 1;
-    rsDesc.pStaticSamplers = &sampler;
-    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
-
-    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
-    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (video)."; return false; }
-
-    ComPtr<ID3DBlob> rsBlob, rsErr;
-    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-        if ( rsErr ) LogWarn() << "D3D12: video root signature serialize error: " << static_cast<const char*>(rsErr->GetBufferPointer());
+    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT ) )
         return false;
-    }
-    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
-        IID_PPV_ARGS( Video.RootSig.ReleaseAndGetAddressOf() ) ) ) )
-        return false;
+    Video.RootSig = rs.RootSig();
 
     if ( !m_Shaders->CompileFromFile( "Video.hlsl", "VSMain", Shadermodel_VS, Video.VsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
@@ -1033,6 +729,11 @@ bool D3D12PipelineState::CreateVideo() {
     if ( !m_Shaders->CompileFromFile( "Video.hlsl", "PSMain", Shadermodel_PS, Video.PsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
+
+    rs.ValidateShaders( {
+        { Video.VsBlob.Get(), "Video.hlsl:VSMain", D3D12_SHADER_VISIBILITY_VERTEX },
+        { Video.PsBlob.Get(), "Video.hlsl:PSMain", D3D12_SHADER_VISIBILITY_PIXEL  },
+    } );
 
     // Same ExVertexStruct HUD layout as the 2D/UI pipeline (rhw packed into Normal.x).
     const D3D12_INPUT_ELEMENT_DESC layout[] = {
@@ -1286,55 +987,21 @@ bool D3D12PipelineState::CreateUI() {
     ID3D12Device* device = m_Device->GetDevice();
 
     // --- Root signature: b0 root constants (viewport), t0 SRV table, static linear-wrap sampler s0 ---
-    D3D12_DESCRIPTOR_RANGE srvRange = {};
-    srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    srvRange.NumDescriptors = 1;
-    srvRange.BaseShaderRegister = 0;         // t0
-    srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
     // FFPipelineConstantBuffer (b1) is fed Gothic's GraphicsState each draw as root constants — the
     // struct layout matches the HLSL cbuffer 1:1 (same reason D3D11 memcpy's it into the CB).
     static_assert( sizeof( GothicGraphicsState ) == 144, "FF constant layout must match FFPipelineConstantBuffer" );
 
-    D3D12_ROOT_PARAMETER params[3] = {};
-    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[0].Constants.ShaderRegister = 0;  // b0
-    params[0].Constants.Num32BitValues = 4;  // float2 pos + float2 size
-    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[1].DescriptorTable.NumDescriptorRanges = 1;
-    params[1].DescriptorTable.pDescriptorRanges = &srvRange;
-    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[2].Constants.ShaderRegister = 1;  // b1
-    params[2].Constants.Num32BitValues = sizeof( GothicGraphicsState ) / 4;  // 36 DWORDs
-    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    D3D12RootLayout& rs = Layout( "UI" );
+    rs.AddConstants( 0, 4, D3D12_SHADER_VISIBILITY_VERTEX );   // 0: b0 float2 pos + float2 size
+    rs.AddTable( D3D12RootLayout::SRVRange( 0 ), D3D12_SHADER_VISIBILITY_PIXEL );   // 1: t0
+    // 2: b1 FF state (36 DWORDs)
+    rs.AddConstants( 1, sizeof( GothicGraphicsState ) / 4, D3D12_SHADER_VISIBILITY_PIXEL );
+    rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_PIXEL,
+        D3D12_TEXTURE_ADDRESS_MODE_WRAP ) );   // s0
 
-    D3D12_STATIC_SAMPLER_DESC sampler = {};
-    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler.MaxLOD = D3D12_FLOAT32_MAX;
-    sampler.ShaderRegister = 0;              // s0
-    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-    rsDesc.NumParameters = 3;
-    rsDesc.pParameters = params;
-    rsDesc.NumStaticSamplers = 1;
-    rsDesc.pStaticSamplers = &sampler;
-    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
-
-    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
-    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable."; return false; }
-
-    ComPtr<ID3DBlob> rsBlob, rsErr;
-    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-        if ( rsErr ) LogWarn() << "D3D12: root signature serialize error: " << static_cast<const char*>( rsErr->GetBufferPointer() );
+    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT ) )
         return false;
-    }
-    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
-        IID_PPV_ARGS( UI.RootSig.ReleaseAndGetAddressOf() ) ) ) )
-        return false;
+    UI.RootSig = rs.RootSig();
 
     // --- Compile shaders ---
     if ( !m_Shaders->CompileFromFile( "UI.hlsl", "VSMain", Shadermodel_VS, UI.VsBlob.ReleaseAndGetAddressOf() ) ) {
@@ -1354,6 +1021,13 @@ bool D3D12PipelineState::CreateUI() {
     if ( !m_Shaders->CompileFromFile( "UI.hlsl", "PSMain", Shadermodel_PS, UI.PsBlobHdr.ReleaseAndGetAddressOf(), linearizeDefines ) ) {
         return false;
     }
+
+    rs.ValidateShaders( {
+        { UI.VsBlob.Get(),     "UI.hlsl:VSMain",                D3D12_SHADER_VISIBILITY_VERTEX },
+        { UI.PsBlob.Get(),     "UI.hlsl:PSMain",                D3D12_SHADER_VISIBILITY_PIXEL  },
+        { UI.VsBlobMaxZ.Get(), "UI.hlsl:VSMain[FORCE_MAX_Z]",   D3D12_SHADER_VISIBILITY_VERTEX },
+        { UI.PsBlobHdr.Get(),  "UI.hlsl:PSMain[LINEARIZE_OUTPUT]", D3D12_SHADER_VISIBILITY_PIXEL },
+    } );
 
     // PSOs are built per blend state on demand (GetOrCreateUIPipeline). Warm the default (opaque) one so
     // any Init-time failure surfaces here rather than mid-frame.
@@ -1456,51 +1130,15 @@ bool D3D12PipelineState::CreateParticle() {
     // Root signature: b0 = ViewProj (16 root consts, VS), b1 = camera world pos (4 consts, VS), t0 =
     // diffuse SRV table (PS), static linear-clamp sampler s0 (PS). Particles sample [0,1] UVs, so CLAMP
     // avoids the billboard edge bleeding into the opposite side of the atlas frame.
-    D3D12_DESCRIPTOR_RANGE srvRange = {};
-    srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    srvRange.NumDescriptors = 1;
-    srvRange.BaseShaderRegister = 0;         // t0
-    srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+    D3D12RootLayout& rs = Layout( "Particle" );
+    rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_VERTEX );  // 0: b0 ViewProj
+    rs.AddConstants( 1, 4, D3D12_SHADER_VISIBILITY_VERTEX );   // 1: b1 camera pos
+    rs.AddTable( D3D12RootLayout::SRVRange( 0 ), D3D12_SHADER_VISIBILITY_PIXEL );  // 2: t0 diffuse
+    rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_PIXEL ) );  // s0
 
-    D3D12_ROOT_PARAMETER params[3] = {};
-    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[0].Constants.ShaderRegister = 0;   // b0 ViewProj
-    params[0].Constants.Num32BitValues = 16;
-    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[1].Constants.ShaderRegister = 1;   // b1 camera pos
-    params[1].Constants.Num32BitValues = 4;
-    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[2].DescriptorTable.NumDescriptorRanges = 1;
-    params[2].DescriptorTable.pDescriptorRanges = &srvRange;
-    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_STATIC_SAMPLER_DESC sampler = {};
-    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    sampler.MaxLOD = D3D12_FLOAT32_MAX;
-    sampler.ShaderRegister = 0;              // s0
-    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-    rsDesc.NumParameters = _countof( params );
-    rsDesc.pParameters = params;
-    rsDesc.NumStaticSamplers = 1;
-    rsDesc.pStaticSamplers = &sampler;
-    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
-
-    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
-    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (particles)."; return false; }
-
-    ComPtr<ID3DBlob> rsBlob, rsErr;
-    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-        if ( rsErr ) LogWarn() << "D3D12: particle root signature serialize error: " << static_cast<const char*>(rsErr->GetBufferPointer());
+    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT ) )
         return false;
-    }
-    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
-        IID_PPV_ARGS( Particle.RootSig.ReleaseAndGetAddressOf() ) ) ) )
-        return false;
+    Particle.RootSig = rs.RootSig();
 
     if ( !m_Shaders->CompileFromFile( "Particle.hlsl", "VSMain", Shadermodel_VS, Particle.VsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
@@ -1508,6 +1146,11 @@ bool D3D12PipelineState::CreateParticle() {
     if ( !m_Shaders->CompileFromFile( "Particle.hlsl", "PSMain", Shadermodel_PS, Particle.PsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
+
+    rs.ValidateShaders( {
+        { Particle.VsBlob.Get(), "Particle.hlsl:VSMain", D3D12_SHADER_VISIBILITY_VERTEX },
+        { Particle.PsBlob.Get(), "Particle.hlsl:PSMain", D3D12_SHADER_VISIBILITY_PIXEL  },
+    } );
 
     // PSOs are built per blend state on demand (GetOrCreateParticlePipeline). Warm the alpha-blend one so
     // the common case never stalls at first draw.
@@ -1583,47 +1226,14 @@ bool D3D12PipelineState::CreateDecal() {
 
     // Root signature: b0 = ViewProj (16 root consts, VS), t0 = diffuse SRV table (PS), static linear-clamp
     // sampler s0 (PS). CLAMP because a decal is a single [0,1] sprite; wrap would bleed the opposite edge.
-    D3D12_DESCRIPTOR_RANGE srvRange = {};
-    srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    srvRange.NumDescriptors = 1;
-    srvRange.BaseShaderRegister = 0;         // t0
-    srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+    D3D12RootLayout& rs = Layout( "Decal" );
+    rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_VERTEX );  // 0: b0 ViewProj
+    rs.AddTable( D3D12RootLayout::SRVRange( 0 ), D3D12_SHADER_VISIBILITY_PIXEL );  // 1: t0 diffuse
+    rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_PIXEL ) );  // s0
 
-    D3D12_ROOT_PARAMETER params[2] = {};
-    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[0].Constants.ShaderRegister = 0;   // b0 ViewProj
-    params[0].Constants.Num32BitValues = 16;
-    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[1].DescriptorTable.NumDescriptorRanges = 1;
-    params[1].DescriptorTable.pDescriptorRanges = &srvRange;
-    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_STATIC_SAMPLER_DESC sampler = {};
-    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    sampler.MaxLOD = D3D12_FLOAT32_MAX;
-    sampler.ShaderRegister = 0;              // s0
-    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-    rsDesc.NumParameters = _countof( params );
-    rsDesc.pParameters = params;
-    rsDesc.NumStaticSamplers = 1;
-    rsDesc.pStaticSamplers = &sampler;
-    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
-
-    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
-    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (decals)."; return false; }
-
-    ComPtr<ID3DBlob> rsBlob, rsErr;
-    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-        if ( rsErr ) LogWarn() << "D3D12: decal root signature serialize error: " << static_cast<const char*>(rsErr->GetBufferPointer());
+    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT ) )
         return false;
-    }
-    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
-        IID_PPV_ARGS( Decal.RootSig.ReleaseAndGetAddressOf() ) ) ) )
-        return false;
+    Decal.RootSig = rs.RootSig();
 
     if ( !m_Shaders->CompileFromFile( "Decal.hlsl", "VSMain", Shadermodel_VS, Decal.VsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
@@ -1634,6 +1244,12 @@ bool D3D12PipelineState::CreateDecal() {
     if ( !m_Shaders->CompileFromFile( "Decal.hlsl", "PSMainBlend", Shadermodel_PS, Decal.BlendPsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
+
+    rs.ValidateShaders( {
+        { Decal.VsBlob.Get(),      "Decal.hlsl:VSMain",      D3D12_SHADER_VISIBILITY_VERTEX },
+        { Decal.LitPsBlob.Get(),   "Decal.hlsl:PSMainLit",   D3D12_SHADER_VISIBILITY_PIXEL  },
+        { Decal.BlendPsBlob.Get(), "Decal.hlsl:PSMainBlend", D3D12_SHADER_VISIBILITY_PIXEL  },
+    } );
 
     // Lit / opaque PSO: alpha-test cutout, depth test GREATER_EQUAL + WRITE (draws with the opaque scene).
     // The shared unit-quad VB + instance ring buffers are created by the engine (GPU resources).
@@ -1725,125 +1341,45 @@ bool D3D12PipelineState::CreateSkeletal() {
     // b2 = bone-palette CBV (VS); t0 = diffuse SRV table (PS); static linear-wrap sampler s0 (PS).
     // b1/b2 are root CBVs (raw GPU VAs into the per-frame skeletal ring) rather than root constants —
     // the bone palette (up to 96 matrices = 6 KB) far exceeds the 64-DWORD root-constant budget.
-    D3D12_DESCRIPTOR_RANGE srvRange = {};
-    srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    srvRange.NumDescriptors = 1;
-    srvRange.BaseShaderRegister = 0;         // t0
-    srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-    // CSM sampling (P2.9c-4b): shadow-map array SRV at t4 (skeletal PS samples it like world/VOB).
-    D3D12_DESCRIPTOR_RANGE shadowSrvRange = {};
-    shadowSrvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    shadowSrvRange.NumDescriptors = 1;
-    shadowSrvRange.BaseShaderRegister = 4;    // t4
-    shadowSrvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-    // Point-light shadow cube array SRV at t5 (P2.10d).
-    D3D12_DESCRIPTOR_RANGE cubeSrvRange = {};
-    cubeSrvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    cubeSrvRange.NumDescriptors = 1;
-    cubeSrvRange.BaseShaderRegister = 5;      // t5
-    cubeSrvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-    D3D12_ROOT_PARAMETER params[14] = {};
-    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[0].Constants.ShaderRegister = 0;   // b0 ViewProj
-    params[0].Constants.Num32BitValues = 16;
-    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-    params[1].Descriptor.ShaderRegister = 1;  // b1 per-instance
-    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-    params[2].Descriptor.ShaderRegister = 2;  // b2 bone palette
-    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[3].DescriptorTable.NumDescriptorRanges = 1;
-    params[3].DescriptorTable.pDescriptorRanges = &srvRange;
-    params[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[4].Constants.ShaderRegister = 3;   // b3 fog
-    params[4].Constants.Num32BitValues = 8;   // FogConstants (8 DWORDs)
-    params[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;  // VS: CamPosWS; PS: color/near/far
+    D3D12RootLayout& rs = Layout( "Skeletal" );
+    rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_VERTEX );  // 0: b0 ViewProj
+    rs.AddCBV( 1, D3D12_SHADER_VISIBILITY_VERTEX );            // 1: b1 per-instance
+    rs.AddCBV( 2, D3D12_SHADER_VISIBILITY_VERTEX );            // 2: b2 bone palette
+    rs.AddTable( D3D12RootLayout::SRVRange( 0 ), D3D12_SHADER_VISIBILITY_PIXEL );  // 3: t0 diffuse
+    // 4: b3 fog — FogConstants (8 DWORDs); VS: CamPosWS; PS: color/near/far
+    rs.AddConstants( 3, 8, D3D12_SHADER_VISIBILITY_ALL );
     // Forward+ point lights (mirrors World.RootSig params 3/4/5/6, here at 5..8 — see BindFrameLights). All
     // MUST be bound at every skeletal draw or the PS light-loop bound/grid is undefined → GPU hang.
-    params[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-    params[5].Descriptor.ShaderRegister = 1;  // t1 light StructuredBuffer (root SRV, no descriptor slot)
-    params[5].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[6].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[6].Constants.ShaderRegister = 4;   // b4 { LightCount, NumTilesX, pad, pad }
-    params[6].Constants.Num32BitValues = 4;
-    params[6].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[7].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-    params[7].Descriptor.ShaderRegister = 2;  // t2 per-tile LightGrid {Offset,Count}
-    params[7].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[8].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-    params[8].Descriptor.ShaderRegister = 3;  // t3 per-tile light-index list
-    params[8].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[9].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-    params[9].Descriptor.ShaderRegister = 5;  // b5 shadow-sampling CB (skeletal's b3/b4 are fog/light count)
-    params[9].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[10].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[10].DescriptorTable.NumDescriptorRanges = 1;
-    params[10].DescriptorTable.pDescriptorRanges = &shadowSrvRange;
-    params[10].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[11].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[11].DescriptorTable.NumDescriptorRanges = 1;
-    params[11].DescriptorTable.pDescriptorRanges = &cubeSrvRange;   // t5 point-shadow cube array
-    params[11].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[12].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[12].Constants.ShaderRegister = 6;   // b6 MaterialCB { MatNormalIndex, MatOrmIndex } — bindless indices
-    params[12].Constants.Num32BitValues = 2;
-    params[12].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    // params[13] = simple-SSAO mask bindless SRV-heap index (b8 AOCB — b7 is GhostCB, used only by the separate
+    rs.AddSRV( 1, D3D12_SHADER_VISIBILITY_PIXEL );             // 5: t1 light StructuredBuffer (root SRV)
+    rs.AddConstants( 4, 4, D3D12_SHADER_VISIBILITY_PIXEL );    // 6: b4 { LightCount, NumTilesX, pad, pad }
+    rs.AddSRV( 2, D3D12_SHADER_VISIBILITY_PIXEL );             // 7: t2 per-tile LightGrid {Offset,Count}
+    rs.AddSRV( 3, D3D12_SHADER_VISIBILITY_PIXEL );             // 8: t3 per-tile light-index list
+    // 9: b5 shadow-sampling CB (skeletal's b3/b4 are fog/light count)
+    rs.AddCBV( 5, D3D12_SHADER_VISIBILITY_PIXEL );
+    // CSM sampling (P2.9c-4b): shadow-map array SRV at t4 (skeletal PS samples it like world/VOB);
+    // point-light shadow cube array SRV at t5 (P2.10d).
+    rs.AddTable( D3D12RootLayout::SRVRange( 4 ), D3D12_SHADER_VISIBILITY_PIXEL );  // 10: t4 CSM array
+    rs.AddTable( D3D12RootLayout::SRVRange( 5 ), D3D12_SHADER_VISIBILITY_PIXEL );  // 11: t5 point-shadow cube array
+    // 12: b6 MaterialCB { MatNormalIndex, MatOrmIndex } — bindless indices
+    rs.AddConstants( 6, 2, D3D12_SHADER_VISIBILITY_PIXEL );
+    // 13 = simple-SSAO mask bindless SRV-heap index (b8 AOCB — b7 is GhostCB, used only by the separate
     // GhostSkeletal root sig/PSO, not this one). Set once per frame by DrawSkeletalColor before the base-mesh
     // draws; Skeletal.hlsl's PSMain reads it via ResourceDescriptorHeap[AoMaskIndex].
-    params[13].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[13].Constants.ShaderRegister = 8;   // b8 AOCB { AoMaskIndex }
-    params[13].Constants.Num32BitValues = 1;
-    params[13].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    rs.AddConstants( 8, 1, D3D12_SHADER_VISIBILITY_PIXEL );    // 13: b8 AOCB { AoMaskIndex }
 
-    D3D12_STATIC_SAMPLER_DESC samplers[3] = {};
     // s0 diffuse: 16x anisotropic (matches D3D11's main texture sampler) — sharpens surfaces at grazing
     // angles and in the distance, which trilinear alone smears badly.
-    samplers[0].Filter = D3D12_FILTER_ANISOTROPIC;
-    samplers[0].MaxAnisotropy = 16;
-    samplers[0].AddressU = samplers[0].AddressV = samplers[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    samplers[0].MaxLOD = D3D12_FLOAT32_MAX;
-    samplers[0].ShaderRegister = 0;          // s0 diffuse
-    samplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    samplers[1].Filter = D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT;   // s2 PCF (see world root sig)
-    samplers[1].AddressU = samplers[1].AddressV = samplers[1].AddressW = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
-    samplers[1].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
-    samplers[1].ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
-    samplers[1].MaxLOD = D3D12_FLOAT32_MAX;
-    samplers[1].ShaderRegister = 2;          // s2 shadow comparison
-    samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    rs.AddStaticSampler( D3D12RootLayout::SamplerAniso( 0, D3D12_SHADER_VISIBILITY_PIXEL ) );
+    // s2 PCF (see world root sig).
+    rs.AddStaticSampler( D3D12RootLayout::SamplerComparison( 2, D3D12_SHADER_VISIBILITY_PIXEL ) );
     // s1: point-clamp for the simple-SSAO mask fetch — see World.RootSig's identical s1 for why Load() (raw
     // texel coords) is wrong for the 1x1 "AO disabled" fallback and CLAMP-addressed Sample must be used instead.
-    samplers[2].Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
-    samplers[2].AddressU = samplers[2].AddressV = samplers[2].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    samplers[2].MaxLOD = D3D12_FLOAT32_MAX;
-    samplers[2].ShaderRegister = 1;           // s1 AO mask point-clamp
-    samplers[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    rs.AddStaticSampler( D3D12RootLayout::SamplerPoint( 1, D3D12_SHADER_VISIBILITY_PIXEL ) );
 
-    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-    rsDesc.NumParameters = _countof( params );
-    rsDesc.pParameters = params;
-    rsDesc.NumStaticSamplers = _countof( samplers );
-    rsDesc.pStaticSamplers = samplers;
-    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
-                 | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;   // SM6.6 bindless normal/ORM
-
-    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
-    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (skeletal)."; return false; }
-
-    ComPtr<ID3DBlob> rsBlob, rsErr;
-    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-        if ( rsErr ) LogWarn() << "D3D12: skeletal root signature serialize error: " << static_cast<const char*>(rsErr->GetBufferPointer());
+    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+                          | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )   // SM6.6 bindless normal/ORM
         return false;
-    }
-    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
-        IID_PPV_ARGS( Skeletal.RootSig.ReleaseAndGetAddressOf() ) ) ) )
-        return false;
+    Skeletal.RootSig = rs.RootSig();
 
     if ( !m_Shaders->CompileFromFile( "Skeletal.hlsl", "VSMain", Shadermodel_VS, Skeletal.VsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
@@ -1906,6 +1442,14 @@ bool D3D12PipelineState::CreateSkeletal() {
     if ( !m_Shaders->CompileFromFile( "Skeletal.hlsl", "PSDepthClip", Shadermodel_PS, Skeletal.DepthPrepassPsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
+
+    rs.ValidateShaders( {
+        { Skeletal.VsBlob.Get(),             "Skeletal.hlsl:VSMain",      D3D12_SHADER_VISIBILITY_VERTEX },
+        { Skeletal.PsBlob.Get(),             "Skeletal.hlsl:PSMain",      D3D12_SHADER_VISIBILITY_PIXEL  },
+        { Skeletal.DepthPrepassVsBlob.Get(), "Skeletal.hlsl:VSDepth",     D3D12_SHADER_VISIBILITY_VERTEX },
+        { Skeletal.DepthPrepassPsBlob.Get(), "Skeletal.hlsl:PSDepthClip", D3D12_SHADER_VISIBILITY_PIXEL  },
+    } );
+
     pso.VS = { Skeletal.DepthPrepassVsBlob->GetBufferPointer(), Skeletal.DepthPrepassVsBlob->GetBufferSize() };
     pso.PS = { Skeletal.DepthPrepassPsBlob->GetBufferPointer(), Skeletal.DepthPrepassPsBlob->GetBufferSize() };
     pso.BlendState.RenderTarget[0].RenderTargetWriteMask = 0;   // DEPTH ONLY — discard color
@@ -1926,45 +1470,15 @@ bool D3D12PipelineState::CreatePointShadow() {
 
     // --- Root signature: b0 = the 6 face view-projs as a root CBV (VS); t0 = diffuse SRV table (PS alpha-clip);
     // static linear sampler s0. (b0 is a CBV not root consts — 6 matrices = 384B exceed the root-const budget.)
-    D3D12_DESCRIPTOR_RANGE srvRange = {};
-    srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    srvRange.NumDescriptors = 1;
-    srvRange.BaseShaderRegister = 0;   // t0
-    srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+    D3D12RootLayout& rs = Layout( "PointShadow" );
+    rs.AddCBV( 0, D3D12_SHADER_VISIBILITY_VERTEX );   // 0: b0 PCR_ViewProj[6]
+    rs.AddTable( D3D12RootLayout::SRVRange( 0 ), D3D12_SHADER_VISIBILITY_PIXEL );   // 1: t0 diffuse
+    rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_PIXEL,
+        D3D12_TEXTURE_ADDRESS_MODE_WRAP ) );   // s0
 
-    D3D12_ROOT_PARAMETER params[2] = {};
-    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-    params[0].Descriptor.ShaderRegister = 0;   // b0 PCR_ViewProj[6]
-    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[1].DescriptorTable.NumDescriptorRanges = 1;
-    params[1].DescriptorTable.pDescriptorRanges = &srvRange;
-    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_STATIC_SAMPLER_DESC sampler = {};
-    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler.MaxLOD = D3D12_FLOAT32_MAX;
-    sampler.ShaderRegister = 0;   // s0
-    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-    rsDesc.NumParameters = _countof( params );
-    rsDesc.pParameters = params;
-    rsDesc.NumStaticSamplers = 1;
-    rsDesc.pStaticSamplers = &sampler;
-    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
-
-    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
-    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (point shadows)."; return false; }
-    ComPtr<ID3DBlob> rsBlob, rsErr;
-    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-        if ( rsErr ) LogWarn() << "D3D12: point-shadow root sig error: " << static_cast<const char*>( rsErr->GetBufferPointer() );
+    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT ) )
         return false;
-    }
-    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
-        IID_PPV_ARGS( PointShadow.RootSig.ReleaseAndGetAddressOf() ) ) ) )
-        return false;
+    PointShadow.RootSig = rs.RootSig();
 
     // --- Caster shader: single-pass 6-face via instancing. instanceID (0..5) picks the face view-proj AND is
     // written to SV_RenderTargetArrayIndex to route the primitive to that cube face slice (no geometry shader —
@@ -1977,6 +1491,12 @@ bool D3D12PipelineState::CreatePointShadow() {
         return false;
     if ( !m_Shaders->CompileFromFile( "PointShadow.hlsl", "PSCubeClip", Shadermodel_PS, PointShadow.PsBlob.ReleaseAndGetAddressOf() ) )
         return false;
+
+    rs.ValidateShaders( {
+        { PointShadow.VsBlob.Get(),    "PointShadow.hlsl:VSCube",     D3D12_SHADER_VISIBILITY_VERTEX },
+        { PointShadow.VobVsBlob.Get(), "PointShadow.hlsl:VSCubeVob",  D3D12_SHADER_VISIBILITY_VERTEX },
+        { PointShadow.PsBlob.Get(),    "PointShadow.hlsl:PSCubeClip", D3D12_SHADER_VISIBILITY_PIXEL  },
+    } );
 
     // Caster PSO. Single stream: Position + TexCoord0 from the packed 36-byte world vertex. Depth-only (no RTV),
     // NORMAL-Z LESS_EQUAL, CULL_NONE (D3D11 renders cubes with cullFront=false; bias is applied at sample time).
@@ -2040,41 +1560,22 @@ bool D3D12PipelineState::CreatePointShadow() {
     // VS; t0 diffuse table + s0 for the alpha cutout). Mirrors the sun path's skeletal binds but with the 6-matrix
     // face CBV at b0 instead of the single-matrix root const. Reuses the per-frame d.instCb/d.boneCb.
     {
-        D3D12_DESCRIPTOR_RANGE skelSrvRange = {};
-        skelSrvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-        skelSrvRange.NumDescriptors = 1;
-        skelSrvRange.BaseShaderRegister = 0;   // t0
-        skelSrvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+        D3D12RootLayout& skelRs = Layout( "PointShadowSkeletal" );
+        skelRs.AddCBV( 0, D3D12_SHADER_VISIBILITY_VERTEX );   // 0: b0 PCR_ViewProj[6]
+        skelRs.AddCBV( 1, D3D12_SHADER_VISIBILITY_VERTEX );   // 1: b1 instance (M_World/Fatness)
+        skelRs.AddCBV( 2, D3D12_SHADER_VISIBILITY_VERTEX );   // 2: b2 bones
+        skelRs.AddTable( D3D12RootLayout::SRVRange( 0 ), D3D12_SHADER_VISIBILITY_PIXEL );   // 3: t0 diffuse
+        skelRs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_PIXEL,
+            D3D12_TEXTURE_ADDRESS_MODE_WRAP ) );   // s0 — same as the world/VOB caster sig above
 
-        D3D12_ROOT_PARAMETER skelParams[4] = {};
-        skelParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-        skelParams[0].Descriptor.ShaderRegister = 0;   // b0 PCR_ViewProj[6]
-        skelParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-        skelParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-        skelParams[1].Descriptor.ShaderRegister = 1;   // b1 instance (M_World/Fatness)
-        skelParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-        skelParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-        skelParams[2].Descriptor.ShaderRegister = 2;   // b2 bones
-        skelParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-        skelParams[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        skelParams[3].DescriptorTable.NumDescriptorRanges = 1;
-        skelParams[3].DescriptorTable.pDescriptorRanges = &skelSrvRange;
-        skelParams[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        if ( !skelRs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT ) )
+            return false;
+        PointShadow.SkeletalRootSig = skelRs.RootSig();
 
-        D3D12_ROOT_SIGNATURE_DESC skelDesc = {};
-        skelDesc.NumParameters = _countof( skelParams );
-        skelDesc.pParameters = skelParams;
-        skelDesc.NumStaticSamplers = 1;
-        skelDesc.pStaticSamplers = &sampler;
-        skelDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
-        ComPtr<ID3DBlob> skelBlob, skelErr;
-        if ( FAILED( serialize( &skelDesc, D3D_ROOT_SIGNATURE_VERSION_1, skelBlob.GetAddressOf(), skelErr.GetAddressOf() ) ) ) {
-            if ( skelErr ) LogWarn() << "D3D12: point-shadow skeletal root sig error: " << static_cast<const char*>( skelErr->GetBufferPointer() );
-            return false;
-        }
-        if ( FAILED( device->CreateRootSignature( 0, skelBlob->GetBufferPointer(), skelBlob->GetBufferSize(),
-            IID_PPV_ARGS( PointShadow.SkeletalRootSig.ReleaseAndGetAddressOf() ) ) ) )
-            return false;
+        skelRs.ValidateShaders( {
+            { PointShadow.SkelVsBlob.Get(), "PointShadow.hlsl:VSCubeSkel", D3D12_SHADER_VISIBILITY_VERTEX },
+            { PointShadow.PsBlob.Get(),     "PointShadow.hlsl:PSCubeClip", D3D12_SHADER_VISIBILITY_PIXEL  },
+        } );
 
         const D3D12_INPUT_ELEMENT_DESC skelLayout[] = {
             { "POSITION", 0, DXGI_FORMAT_R16G16B16A16_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
@@ -2110,54 +1611,26 @@ bool D3D12PipelineState::CreateTonemap() {
     ID3D12Device* device = m_Device->GetDevice();
     if ( !device ) return false;
 
-    D3D12_DESCRIPTOR_RANGE srvRange = {};
-    srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    srvRange.NumDescriptors = 1;
-    srvRange.BaseShaderRegister = 0;   // t0 scene HDR
-    srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+    D3D12RootLayout& rs = Layout( "Tonemap" );
+    rs.AddTable( D3D12RootLayout::SRVRange( 0 ), D3D12_SHADER_VISIBILITY_PIXEL );   // 0: t0 scene HDR
+    // 1: b0 { Exposure, LumWhite, ToneMapMode, pad }
+    rs.AddConstants( 0, 4, D3D12_SHADER_VISIBILITY_PIXEL );
+    rs.AddSRV( 1, D3D12_SHADER_VISIBILITY_PIXEL );   // 2: t1 AdaptedLum
+    rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_PIXEL ) );   // s0
 
-    D3D12_ROOT_PARAMETER params[3] = {};
-    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[0].DescriptorTable.NumDescriptorRanges = 1;
-    params[0].DescriptorTable.pDescriptorRanges = &srvRange;
-    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[1].Constants.ShaderRegister = 0;   // b0 { Exposure, LumWhite, ToneMapMode, pad }
-    params[1].Constants.Num32BitValues = 4;
-    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-    params[2].Descriptor.ShaderRegister = 1;   // t1 AdaptedLum
-    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_STATIC_SAMPLER_DESC sampler = {};
-    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    sampler.MaxLOD = D3D12_FLOAT32_MAX;
-    sampler.ShaderRegister = 0;   // s0
-    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-    rsDesc.NumParameters = _countof( params );
-    rsDesc.pParameters = params;
-    rsDesc.NumStaticSamplers = 1;
-    rsDesc.pStaticSamplers = &sampler;
-    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
-
-    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
-    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (tonemap)."; return false; }
-    ComPtr<ID3DBlob> rsBlob, rsErr;
-    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-        if ( rsErr ) LogWarn() << "D3D12: tonemap root sig error: " << static_cast<const char*>( rsErr->GetBufferPointer() );
+    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT ) )
         return false;
-    }
-    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
-        IID_PPV_ARGS( Tonemap.RootSig.ReleaseAndGetAddressOf() ) ) ) )
-        return false;
+    Tonemap.RootSig = rs.RootSig();
 
     if ( !m_Shaders->CompileFromFile( "Tonemap.hlsl", "VSFullscreen", Shadermodel_VS, Tonemap.VsBlob.ReleaseAndGetAddressOf() ) )
         return false;
     if ( !m_Shaders->CompileFromFile( "Tonemap.hlsl", "PSTonemap", Shadermodel_PS, Tonemap.PsBlob.ReleaseAndGetAddressOf() ) )
         return false;
+
+    rs.ValidateShaders( {
+        { Tonemap.VsBlob.Get(), "Tonemap.hlsl:VSFullscreen", D3D12_SHADER_VISIBILITY_VERTEX },
+        { Tonemap.PsBlob.Get(), "Tonemap.hlsl:PSTonemap",    D3D12_SHADER_VISIBILITY_PIXEL  },
+    } );
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
     pso.pRootSignature = Tonemap.RootSig.Get();
@@ -2192,46 +1665,19 @@ bool D3D12PipelineState::CreateLumAdapt() {
     // buffer, so it can't be a root SRV).
     ID3D12Device* device = m_Device->GetDevice();
     if ( !device ) return false;
-    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
-    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (lum-adapt)."; return false; }
 
     // --- LumReduce root sig: b0 4x32-bit consts, t0 SRV table (scene color), u0 UAV root descriptor ---
-    {
-        D3D12_DESCRIPTOR_RANGE srvRange = {};
-        srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-        srvRange.NumDescriptors = 1;
-        srvRange.BaseShaderRegister = 0;   // t0 SceneHDR
-        srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+    D3D12RootLayout& reduceRs = Layout( "LumReduce" );
+    reduceRs.AddConstants( 0, 4, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 LumReduceCB
+    reduceRs.AddTable( D3D12RootLayout::SRVRange( 0 ), D3D12_SHADER_VISIBILITY_ALL );   // 1: t0 SceneHDR
+    reduceRs.AddUAV( 0, D3D12_SHADER_VISIBILITY_ALL );            // 2: u0 PartialSums
+    if ( !reduceRs.Build( device ) )
+        return false;
+    LumReduce.RootSig = reduceRs.RootSig();
 
-        D3D12_ROOT_PARAMETER params[3] = {};
-        params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-        params[0].Constants.ShaderRegister = 0;   // b0 LumReduceCB
-        params[0].Constants.Num32BitValues = 4;
-        params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-        params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        params[1].DescriptorTable.NumDescriptorRanges = 1;
-        params[1].DescriptorTable.pDescriptorRanges = &srvRange;
-        params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-        params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-        params[2].Descriptor.ShaderRegister = 0;   // u0 PartialSums
-        params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-        D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-        rsDesc.NumParameters = _countof( params );
-        rsDesc.pParameters = params;
-        rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
-
-        ComPtr<ID3DBlob> rsBlob, rsErr;
-        if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-            if ( rsErr ) LogWarn() << "D3D12: lum-reduce root sig error: " << static_cast<const char*>(rsErr->GetBufferPointer());
-            return false;
-        }
-        if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
-            IID_PPV_ARGS( LumReduce.RootSig.ReleaseAndGetAddressOf() ) ) ) )
-            return false;
-    }
     if ( !m_Shaders->CompileFromFile( "CS_LumReduce.hlsl", "CSMain", Shadermodel_CS, LumReduce.CsBlob.ReleaseAndGetAddressOf() ) )
         return false;
+    reduceRs.ValidateShaders( { { LumReduce.CsBlob.Get(), "CS_LumReduce.hlsl:CSMain", D3D12_SHADER_VISIBILITY_ALL } } );
     {
         D3D12_COMPUTE_PIPELINE_STATE_DESC pso = {};
         pso.pRootSignature = LumReduce.RootSig.Get();
@@ -2243,35 +1689,17 @@ bool D3D12PipelineState::CreateLumAdapt() {
     }
 
     // --- LumAdapt root sig: b0 4x32-bit consts, t0 SRV root descriptor (PartialSums), u0 UAV root descriptor ---
-    {
-        D3D12_ROOT_PARAMETER params[3] = {};
-        params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-        params[0].Constants.ShaderRegister = 0;   // b0 LumAdaptCB
-        params[0].Constants.Num32BitValues = 4;
-        params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-        params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-        params[1].Descriptor.ShaderRegister = 0;   // t0 PartialSums
-        params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-        params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-        params[2].Descriptor.ShaderRegister = 0;   // u0 AdaptedLum
-        params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    D3D12RootLayout& adaptRs = Layout( "LumAdapt" );
+    adaptRs.AddConstants( 0, 4, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 LumAdaptCB
+    adaptRs.AddSRV( 0, D3D12_SHADER_VISIBILITY_ALL );            // 1: t0 PartialSums
+    adaptRs.AddUAV( 0, D3D12_SHADER_VISIBILITY_ALL );            // 2: u0 AdaptedLum
+    if ( !adaptRs.Build( device ) )
+        return false;
+    LumAdapt.RootSig = adaptRs.RootSig();
 
-        D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-        rsDesc.NumParameters = _countof( params );
-        rsDesc.pParameters = params;
-        rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
-
-        ComPtr<ID3DBlob> rsBlob, rsErr;
-        if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-            if ( rsErr ) LogWarn() << "D3D12: lum-adapt root sig error: " << static_cast<const char*>(rsErr->GetBufferPointer());
-            return false;
-        }
-        if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
-            IID_PPV_ARGS( LumAdapt.RootSig.ReleaseAndGetAddressOf() ) ) ) )
-            return false;
-    }
     if ( !m_Shaders->CompileFromFile( "CS_LumAdapt.hlsl", "CSMain", Shadermodel_CS, LumAdapt.CsBlob.ReleaseAndGetAddressOf() ) )
         return false;
+    adaptRs.ValidateShaders( { { LumAdapt.CsBlob.Get(), "CS_LumAdapt.hlsl:CSMain", D3D12_SHADER_VISIBILITY_ALL } } );
     {
         D3D12_COMPUTE_PIPELINE_STATE_DESC pso = {};
         pso.pRootSignature = LumAdapt.RootSig.Get();
@@ -2296,60 +1724,25 @@ bool D3D12PipelineState::CreateWater() {
     // CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED flag. That keeps this root signature at 4 params while the D3D11
     // equivalent needs five fixed t-slots, and avoids having to build a heap-contiguous descriptor run for
     // resources that live in unrelated slots.
-    D3D12_DESCRIPTOR_RANGE srvRange = {};
-    srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    srvRange.NumDescriptors = 1;
-    srvRange.BaseShaderRegister = 0;         // t0
-    srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+    D3D12RootLayout& rs = Layout( "Water" );
+    rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_VERTEX );   // 0: b0 ViewProj
+    rs.AddTable( D3D12RootLayout::SRVRange( 0 ), D3D12_SHADER_VISIBILITY_PIXEL );   // 1: t0 diffuse
+    // 2: b2 WaterCB (projection/view/params/bindless indices)
+    rs.AddCBV( 2, D3D12_SHADER_VISIBILITY_ALL );
+    rs.AddCBV( 1, D3D12_SHADER_VISIBILITY_PIXEL );              // 3: b1 AtmosphereConstantBuffer
 
-    D3D12_ROOT_PARAMETER params[4] = {};
-    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[0].Constants.ShaderRegister = 0;   // b0 ViewProj
-    params[0].Constants.Num32BitValues = 16;
-    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[1].DescriptorTable.NumDescriptorRanges = 1;
-    params[1].DescriptorTable.pDescriptorRanges = &srvRange;
-    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-    params[2].Descriptor.ShaderRegister = 2;  // b2 WaterCB (projection/view/params/bindless indices)
-    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-    params[3].Descriptor.ShaderRegister = 1;  // b1 AtmosphereConstantBuffer
-    params[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_STATIC_SAMPLER_DESC samplers[2] = {};
-    samplers[0].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    samplers[0].AddressU = samplers[0].AddressV = samplers[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    samplers[0].MaxLOD = D3D12_FLOAT32_MAX;
-    samplers[0].ShaderRegister = 0;          // s0 — diffuse + the world-space distortion lookups
-    samplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    // s0 — diffuse + the world-space distortion lookups.
+    rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_PIXEL,
+        D3D12_TEXTURE_ADDRESS_MODE_WRAP ) );
     // s1: screen-space fetches (scene copy / depth copy). CLAMP, not WRAP — a distorted UV that walks a
     // texel past the viewport edge must repeat the border pixel, not wrap around to the opposite side of
     // the screen (which shows up as a bright seam along the water's screen-edge silhouette).
-    samplers[1] = samplers[0];
-    samplers[1].AddressU = samplers[1].AddressV = samplers[1].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    samplers[1].ShaderRegister = 1;          // s1
+    rs.AddStaticSampler( D3D12RootLayout::SamplerLinear( 1, D3D12_SHADER_VISIBILITY_PIXEL ) );
 
-    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-    rsDesc.NumParameters = _countof( params );
-    rsDesc.pParameters = params;
-    rsDesc.NumStaticSamplers = _countof( samplers );
-    rsDesc.pStaticSamplers = samplers;
-    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
-        | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
-
-    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
-    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (water)."; return false; }
-
-    ComPtr<ID3DBlob> rsBlob, rsErr;
-    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-        if ( rsErr ) LogWarn() << "D3D12: water root signature serialize error: " << static_cast<const char*>(rsErr->GetBufferPointer());
+    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+                          | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )
         return false;
-    }
-    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
-        IID_PPV_ARGS( Water.RootSig.ReleaseAndGetAddressOf() ) ) ) )
-        return false;
+    Water.RootSig = rs.RootSig();
 
     if ( !m_Shaders->CompileFromFile( "Water.hlsl", "VSMain", Shadermodel_VS, Water.VsBlob.ReleaseAndGetAddressOf() ) ) {
             return false;
@@ -2357,6 +1750,11 @@ bool D3D12PipelineState::CreateWater() {
     if ( !m_Shaders->CompileFromFile( "Water.hlsl", "PSMain", Shadermodel_PS, Water.PsBlob.ReleaseAndGetAddressOf() ) ) {
             return false;
     }
+
+    rs.ValidateShaders( {
+        { Water.VsBlob.Get(), "Water.hlsl:VSMain", D3D12_SHADER_VISIBILITY_VERTEX },
+        { Water.PsBlob.Get(), "Water.hlsl:PSMain", D3D12_SHADER_VISIBILITY_PIXEL  },
+    } );
 
     // Same packed 36-byte ExVertexStructGPU as the world mesh; here TexCoord2 (@28, half2) is the water
     // UV-scroll delta (bound as TEXCOORD1), and DIFFUSE (@32) is the baked vertex tint. NORMAL (@12,
@@ -2447,51 +1845,23 @@ bool D3D12PipelineState::CreateLightCull() {
     // table off the shared SRV heap — used to tighten each tile's far-Z bound (P2.9b-3 flicker fix).
     ID3D12Device* device = m_Device->GetDevice();
 
-    D3D12_DESCRIPTOR_RANGE depthRange = {};
-    depthRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    depthRange.NumDescriptors = 1;
-    depthRange.BaseShaderRegister = 1;        // t1 DepthTex
-    depthRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+    D3D12RootLayout& rs = Layout( "LightCull" );
+    // 0: b0 CullCB — ProjScale(2) + ScreenDim(2) + TotalLights + NumTilesX + ProjA + ProjB
+    rs.AddConstants( 0, 8, D3D12_SHADER_VISIBILITY_ALL );
+    rs.AddSRV( 0, D3D12_SHADER_VISIBILITY_ALL );   // 1: t0 SB_Lights
+    rs.AddUAV( 0, D3D12_SHADER_VISIBILITY_ALL );   // 2: u0 RW_LightGrid
+    rs.AddUAV( 1, D3D12_SHADER_VISIBILITY_ALL );   // 3: u1 RW_LightIndexList
+    rs.AddTable( D3D12RootLayout::SRVRange( 1 ), D3D12_SHADER_VISIBILITY_ALL );   // 4: t1 DepthTex (SRV heap)
 
-    D3D12_ROOT_PARAMETER params[5] = {};
-    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[0].Constants.ShaderRegister = 0;   // b0 CullCB
-    params[0].Constants.Num32BitValues = 8;   // ProjScale(2) + ScreenDim(2) + TotalLights + NumTilesX + ProjA + ProjB
-    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-    params[1].Descriptor.ShaderRegister = 0;  // t0 SB_Lights
-    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-    params[2].Descriptor.ShaderRegister = 0;  // u0 RW_LightGrid
-    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-    params[3].Descriptor.ShaderRegister = 1;  // u1 RW_LightIndexList
-    params[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    params[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    params[4].DescriptorTable.NumDescriptorRanges = 1;
-    params[4].DescriptorTable.pDescriptorRanges = &depthRange;   // t1 DepthTex (SRV heap)
-    params[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-    rsDesc.NumParameters = _countof( params );
-    rsDesc.pParameters = params;
-    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;   // compute: no IA input layout
-
-    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
-    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (light cull)."; return false; }
-
-    ComPtr<ID3DBlob> rsBlob, rsErr;
-    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-        if ( rsErr ) LogWarn() << "D3D12: light-cull root signature serialize error: " << static_cast<const char*>(rsErr->GetBufferPointer());
+    if ( !rs.Build( device ) )   // compute: no IA input layout
         return false;
-    }
-    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
-        IID_PPV_ARGS( LightCull.RootSig.ReleaseAndGetAddressOf() ) ) ) )
-        return false;
+    LightCull.RootSig = rs.RootSig();
 
     if ( !m_Shaders->CompileFromFile( "LightCull.hlsl", "CSMain", Shadermodel_CS, LightCull.CsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
+
+    rs.ValidateShaders( { { LightCull.CsBlob.Get(), "LightCull.hlsl:CSMain", D3D12_SHADER_VISIBILITY_ALL } } );
 
     D3D12_COMPUTE_PIPELINE_STATE_DESC pso = {};
     pso.pRootSignature = LightCull.RootSig.Get();
@@ -2512,38 +1882,20 @@ bool D3D12PipelineState::CreateAdvanceRain() {
     ID3D12Device* device = m_Device->GetDevice();
     if ( !device ) return false;
 
-    D3D12_ROOT_PARAMETER params[3] = {};
-    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[0].Constants.ShaderRegister = 0;   // b0 AdvanceRainCB
-    params[0].Constants.Num32BitValues = 16;
-    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-    params[1].Descriptor.ShaderRegister = 0;  // t0 StaticData
-    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-    params[2].Descriptor.ShaderRegister = 0;  // u0 DynamicData
-    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    D3D12RootLayout& rs = Layout( "AdvanceRain" );
+    rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 AdvanceRainCB
+    rs.AddSRV( 0, D3D12_SHADER_VISIBILITY_ALL );             // 1: t0 StaticData
+    rs.AddUAV( 0, D3D12_SHADER_VISIBILITY_ALL );             // 2: u0 DynamicData
 
-    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-    rsDesc.NumParameters = _countof( params );
-    rsDesc.pParameters = params;
-    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;   // compute: no IA input layout
-
-    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
-    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (advance rain)."; return false; }
-
-    ComPtr<ID3DBlob> rsBlob, rsErr;
-    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-        if ( rsErr ) LogWarn() << "D3D12: advance-rain root signature serialize error: " << static_cast<const char*>(rsErr->GetBufferPointer());
+    if ( !rs.Build( device ) )   // compute: no IA input layout
         return false;
-    }
-    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
-        IID_PPV_ARGS( AdvanceRain.RootSig.ReleaseAndGetAddressOf() ) ) ) )
-        return false;
+    AdvanceRain.RootSig = rs.RootSig();
 
     if ( !m_Shaders->CompileFromFile( "AdvanceRain.hlsl", "CSMain", Shadermodel_CS, AdvanceRain.CsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
+
+    rs.ValidateShaders( { { AdvanceRain.CsBlob.Get(), "AdvanceRain.hlsl:CSMain", D3D12_SHADER_VISIBILITY_ALL } } );
 
     D3D12_COMPUTE_PIPELINE_STATE_DESC pso = {};
     pso.pRootSignature = AdvanceRain.RootSig.Get();
@@ -2565,63 +1917,27 @@ bool D3D12PipelineState::CreateRainDraw() {
     ID3D12Device* device = m_Device->GetDevice();
     if ( !device ) return false;
 
-    D3D12_STATIC_SAMPLER_DESC samplers[2] = {};
-    samplers[0].Filter = D3D12_FILTER_ANISOTROPIC;
-    samplers[0].AddressU = samplers[0].AddressV = samplers[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    samplers[0].MaxAnisotropy = 4;
-    samplers[0].MaxLOD = D3D12_FLOAT32_MAX;
-    samplers[0].ShaderRegister = 0;   // s0 rain/snow texture array
-    samplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    D3D12RootLayout& rs = Layout( "RainDraw" );
+    rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_VERTEX );   // 0: b0 ViewProjCB
+    // 1: b1 RainInfoCB — read by both VS (billboard construction) and PS (rainResponse eye/light vectors)
+    rs.AddConstants( 1, 10, D3D12_SHADER_VISIBILITY_ALL );
+    rs.AddSRV( 0, D3D12_SHADER_VISIBILITY_VERTEX );             // 2: t0 DynamicData
+    rs.AddSRV( 1, D3D12_SHADER_VISIBILITY_VERTEX );             // 3: t1 StaticData
+    rs.AddConstants( 2, 2, D3D12_SHADER_VISIBILITY_PIXEL );     // 4: b2 RainTexCB
+    // 5: b3 RainShadowCB — VS-only (IsWet is called from the VS); 16 (float4x4) + 1 (heap slot index)
+    rs.AddConstants( 3, 17, D3D12_SHADER_VISIBILITY_VERTEX );
+
+    rs.AddStaticSampler( D3D12RootLayout::SamplerAniso( 0, D3D12_SHADER_VISIBILITY_PIXEL, 4 ) );   // s0 rain/snow texture array
     // s1: rain shadowmap comparison sampler — matches D3D11's m_RainDropShadowSamplerState (WRAP, LESS_EQUAL).
-    samplers[1].Filter = D3D12_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR;
-    samplers[1].AddressU = samplers[1].AddressV = samplers[1].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    samplers[1].ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
-    samplers[1].MaxLOD = D3D12_FLOAT32_MAX;
-    samplers[1].ShaderRegister = 1;   // s1
-    samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    D3D12_STATIC_SAMPLER_DESC rainShadowSampler =
+        D3D12RootLayout::SamplerComparison( 1, D3D12_SHADER_VISIBILITY_VERTEX );
+    rainShadowSampler.Filter = D3D12_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR;
+    rainShadowSampler.AddressU = rainShadowSampler.AddressV = rainShadowSampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    rs.AddStaticSampler( rainShadowSampler );
 
-    D3D12_ROOT_PARAMETER params[6] = {};
-    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[0].Constants.ShaderRegister = 0;   // b0 ViewProjCB
-    params[0].Constants.Num32BitValues = 16;
-    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[1].Constants.ShaderRegister = 1;   // b1 RainInfoCB — read by both VS (billboard construction) and PS (rainResponse eye/light vectors)
-    params[1].Constants.Num32BitValues = 10;
-    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-    params[2].Descriptor.ShaderRegister = 0;  // t0 DynamicData
-    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-    params[3].Descriptor.ShaderRegister = 1;  // t1 StaticData
-    params[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    params[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[4].Constants.ShaderRegister = 2;   // b2 RainTexCB
-    params[4].Constants.Num32BitValues = 2;
-    params[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    params[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[5].Constants.ShaderRegister = 3;   // b3 RainShadowCB — VS-only (IsWet is called from the VS)
-    params[5].Constants.Num32BitValues = 17;  // 16 (float4x4) + 1 (heap slot index)
-    params[5].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-
-    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-    rsDesc.NumParameters = _countof( params );
-    rsDesc.pParameters = params;
-    rsDesc.NumStaticSamplers = _countof( samplers );
-    rsDesc.pStaticSamplers = samplers;
-    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
-
-    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
-    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (rain draw)."; return false; }
-
-    ComPtr<ID3DBlob> rsBlob, rsErr;
-    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-        if ( rsErr ) LogWarn() << "D3D12: rain-draw root signature serialize error: " << static_cast<const char*>(rsErr->GetBufferPointer());
+    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )
         return false;
-    }
-    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
-        IID_PPV_ARGS( RainDraw.RootSig.ReleaseAndGetAddressOf() ) ) ) )
-        return false;
+    RainDraw.RootSig = rs.RootSig();
 
     if ( !m_Shaders->CompileFromFile( "Rain.hlsl", "VSMain", Shadermodel_VS, RainDraw.VsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
@@ -2629,6 +1945,11 @@ bool D3D12PipelineState::CreateRainDraw() {
     if ( !m_Shaders->CompileFromFile( "Rain.hlsl", "PSMain", Shadermodel_PS, RainDraw.PsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
+
+    rs.ValidateShaders( {
+        { RainDraw.VsBlob.Get(), "Rain.hlsl:VSMain", D3D12_SHADER_VISIBILITY_VERTEX },
+        { RainDraw.PsBlob.Get(), "Rain.hlsl:PSMain", D3D12_SHADER_VISIBILITY_PIXEL  },
+    } );
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
     pso.pRootSignature = RainDraw.RootSig.Get();
@@ -2679,101 +2000,30 @@ bool D3D12PipelineState::CreateBloom() {
     // graphics pass (additive blend, no depth) mirroring Tonemap's structure. Pyramid TEXTURES stay in the
     // engine (resolution-dependent, recreated on resize) — this only builds pipeline state.
     ID3D12Device* device = m_Device->GetDevice();
-    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
-    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (bloom)."; return false; }
 
-    D3D12_STATIC_SAMPLER_DESC sampler = {};
-    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    sampler.MaxLOD = D3D12_FLOAT32_MAX;
-    sampler.ShaderRegister = 0;   // s0
-    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    // s0, shared by all three compute passes + the composite.
+    const D3D12_STATIC_SAMPLER_DESC sampler =
+        D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_ALL );
 
     // --- Down root sig (prefilter + downsample): b0 8x32-bit consts, t0 SRV table, u0 UAV table ---
-    {
-        D3D12_DESCRIPTOR_RANGE srvRange = {};
-        srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-        srvRange.NumDescriptors = 1;
-        srvRange.BaseShaderRegister = 0;   // t0
-        srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-        D3D12_DESCRIPTOR_RANGE uavRange = {};
-        uavRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
-        uavRange.NumDescriptors = 1;
-        uavRange.BaseShaderRegister = 0;   // u0
-        uavRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-        D3D12_ROOT_PARAMETER params[3] = {};
-        params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-        params[0].Constants.ShaderRegister = 0;   // b0 BloomConstantBuffer
-        params[0].Constants.Num32BitValues = 8;
-        params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-        params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        params[1].DescriptorTable.NumDescriptorRanges = 1;
-        params[1].DescriptorTable.pDescriptorRanges = &srvRange;
-        params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-        params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        params[2].DescriptorTable.NumDescriptorRanges = 1;
-        params[2].DescriptorTable.pDescriptorRanges = &uavRange;
-        params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-        D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-        rsDesc.NumParameters = _countof( params );
-        rsDesc.pParameters = params;
-        rsDesc.NumStaticSamplers = 1;
-        rsDesc.pStaticSamplers = &sampler;
-
-        ComPtr<ID3DBlob> rsBlob, rsErr;
-        if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-            if ( rsErr ) LogWarn() << "D3D12: bloom-down root sig error: " << static_cast<const char*>(rsErr->GetBufferPointer());
-            return false;
-        }
-        if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
-            IID_PPV_ARGS( Bloom.DownRootSig.ReleaseAndGetAddressOf() ) ) ) )
-            return false;
-    }
+    D3D12RootLayout& downRs = Layout( "BloomDown" );
+    downRs.AddConstants( 0, 8, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 BloomConstantBuffer
+    downRs.AddTable( D3D12RootLayout::SRVRange( 0 ), D3D12_SHADER_VISIBILITY_ALL );   // 1: t0
+    downRs.AddTable( D3D12RootLayout::UAVRange( 0 ), D3D12_SHADER_VISIBILITY_ALL );   // 2: u0
+    downRs.AddStaticSampler( sampler );
+    if ( !downRs.Build( device ) )
+        return false;
+    Bloom.DownRootSig = downRs.RootSig();
 
     // --- Up root sig (upsample): b0 8x32-bit consts, t0+t1 SRV table (2 contiguous descriptors), u0 UAV table ---
-    {
-        D3D12_DESCRIPTOR_RANGE srvRange = {};
-        srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-        srvRange.NumDescriptors = 2;
-        srvRange.BaseShaderRegister = 0;   // t0, t1
-        srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-        D3D12_DESCRIPTOR_RANGE uavRange = {};
-        uavRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
-        uavRange.NumDescriptors = 1;
-        uavRange.BaseShaderRegister = 0;   // u0
-        uavRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-        D3D12_ROOT_PARAMETER params[3] = {};
-        params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-        params[0].Constants.ShaderRegister = 0;
-        params[0].Constants.Num32BitValues = 8;
-        params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-        params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        params[1].DescriptorTable.NumDescriptorRanges = 1;
-        params[1].DescriptorTable.pDescriptorRanges = &srvRange;
-        params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-        params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        params[2].DescriptorTable.NumDescriptorRanges = 1;
-        params[2].DescriptorTable.pDescriptorRanges = &uavRange;
-        params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-        D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-        rsDesc.NumParameters = _countof( params );
-        rsDesc.pParameters = params;
-        rsDesc.NumStaticSamplers = 1;
-        rsDesc.pStaticSamplers = &sampler;
-
-        ComPtr<ID3DBlob> rsBlob, rsErr;
-        if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-            if ( rsErr ) LogWarn() << "D3D12: bloom-up root sig error: " << static_cast<const char*>(rsErr->GetBufferPointer());
-            return false;
-        }
-        if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
-            IID_PPV_ARGS( Bloom.UpRootSig.ReleaseAndGetAddressOf() ) ) ) )
-            return false;
-    }
+    D3D12RootLayout& upRs = Layout( "BloomUp" );
+    upRs.AddConstants( 0, 8, D3D12_SHADER_VISIBILITY_ALL );     // 0: b0 BloomConstantBuffer
+    upRs.AddTable( D3D12RootLayout::SRVRange( 0, 2 ), D3D12_SHADER_VISIBILITY_ALL );  // 1: t0, t1
+    upRs.AddTable( D3D12RootLayout::UAVRange( 0 ), D3D12_SHADER_VISIBILITY_ALL );     // 2: u0
+    upRs.AddStaticSampler( sampler );
+    if ( !upRs.Build( device ) )
+        return false;
+    Bloom.UpRootSig = upRs.RootSig();
 
     const D3D_SHADER_MACRO prefilterMacro[] = { { "BLOOM_PREFILTER", "1" }, { nullptr, nullptr } };
     if ( !m_Shaders->CompileFromFile( "CS_Bloom_Downsample.hlsl", "CSMain", Shadermodel_CS, Bloom.PrefilterCsBlob.ReleaseAndGetAddressOf(), prefilterMacro ) )
@@ -2782,6 +2032,12 @@ bool D3D12PipelineState::CreateBloom() {
         return false;
     if ( !m_Shaders->CompileFromFile( "CS_Bloom_Upsample.hlsl", "CSMain", Shadermodel_CS, Bloom.UpsampleCsBlob.ReleaseAndGetAddressOf() ) )
         return false;
+
+    downRs.ValidateShaders( {
+        { Bloom.PrefilterCsBlob.Get(),  "CS_Bloom_Downsample.hlsl:CSMain[BLOOM_PREFILTER]", D3D12_SHADER_VISIBILITY_ALL },
+        { Bloom.DownsampleCsBlob.Get(), "CS_Bloom_Downsample.hlsl:CSMain",                  D3D12_SHADER_VISIBILITY_ALL },
+    } );
+    upRs.ValidateShaders( { { Bloom.UpsampleCsBlob.Get(), "CS_Bloom_Upsample.hlsl:CSMain", D3D12_SHADER_VISIBILITY_ALL } } );
 
     auto makeComputePSO = [&]( ID3D12RootSignature* rootSig, ID3DBlob* cs, ComPtr<ID3D12PipelineState>& out, const char* name ) {
         D3D12_COMPUTE_PIPELINE_STATE_DESC pso = {};
@@ -2799,42 +2055,23 @@ bool D3D12PipelineState::CreateBloom() {
 
     // --- Composite (graphics): fullscreen triangle, additive blend, writes into the HDR scene-color target ---
     {
-        D3D12_DESCRIPTOR_RANGE srvRange = {};
-        srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-        srvRange.NumDescriptors = 1;
-        srvRange.BaseShaderRegister = 0;   // t0
-        srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-        D3D12_ROOT_PARAMETER params[2] = {};
-        params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        params[0].DescriptorTable.NumDescriptorRanges = 1;
-        params[0].DescriptorTable.pDescriptorRanges = &srvRange;
-        params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-        params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-        params[1].Constants.ShaderRegister = 0;   // b0 { Intensity }
-        params[1].Constants.Num32BitValues = 1;
-        params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-        D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-        rsDesc.NumParameters = _countof( params );
-        rsDesc.pParameters = params;
-        rsDesc.NumStaticSamplers = 1;
-        rsDesc.pStaticSamplers = &sampler;
-        rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
-
-        ComPtr<ID3DBlob> rsBlob, rsErr;
-        if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-            if ( rsErr ) LogWarn() << "D3D12: bloom-composite root sig error: " << static_cast<const char*>(rsErr->GetBufferPointer());
+        D3D12RootLayout& compositeRs = Layout( "BloomComposite" );
+        compositeRs.AddTable( D3D12RootLayout::SRVRange( 0 ), D3D12_SHADER_VISIBILITY_PIXEL );   // 0: t0
+        compositeRs.AddConstants( 0, 1, D3D12_SHADER_VISIBILITY_PIXEL );   // 1: b0 { Intensity }
+        compositeRs.AddStaticSampler( sampler );
+        if ( !compositeRs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT ) )
             return false;
-        }
-        if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
-            IID_PPV_ARGS( Bloom.CompositeRootSig.ReleaseAndGetAddressOf() ) ) ) )
-            return false;
+        Bloom.CompositeRootSig = compositeRs.RootSig();
 
         if ( !m_Shaders->CompileFromFile( "Bloom_Composite.hlsl", "VSFullscreen", Shadermodel_VS, Bloom.CompositeVsBlob.ReleaseAndGetAddressOf() ) )
             return false;
         if ( !m_Shaders->CompileFromFile( "Bloom_Composite.hlsl", "PSComposite", Shadermodel_PS, Bloom.CompositePsBlob.ReleaseAndGetAddressOf() ) )
             return false;
+
+        compositeRs.ValidateShaders( {
+            { Bloom.CompositeVsBlob.Get(), "Bloom_Composite.hlsl:VSFullscreen", D3D12_SHADER_VISIBILITY_VERTEX },
+            { Bloom.CompositePsBlob.Get(), "Bloom_Composite.hlsl:PSComposite",  D3D12_SHADER_VISIBILITY_PIXEL  },
+        } );
 
         D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
         pso.pRootSignature = Bloom.CompositeRootSig.Get();
@@ -2879,45 +2116,21 @@ bool D3D12PipelineState::CreateSmaa() {
     ID3D12Device* device = m_Device->GetDevice();
     if ( !device ) return false;
 
-    // b0: 9 root constants { float4 RT_METRICS; uint Color/Edges/Blend/Area/Search index }.
-    D3D12_ROOT_PARAMETER param = {};
-    param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    param.Constants.ShaderRegister = 0;   // b0 cbSMAA
-    param.Constants.Num32BitValues = 9;
-    param.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;   // RT_METRICS is read by both the VS and PS
-
+    D3D12RootLayout& rs = Layout( "SMAA" );
+    // 0: b0 cbSMAA — 9 root constants { float4 RT_METRICS; uint Color/Edges/Blend/Area/Search index }.
+    // ALL because RT_METRICS is read by both the VS and PS.
+    rs.AddConstants( 0, 9, D3D12_SHADER_VISIBILITY_ALL );
     // s0 linear-clamp, s1 point-clamp (matches D3D11SMAA::Init's two sampler states).
-    D3D12_STATIC_SAMPLER_DESC samplers[2] = {};
-    samplers[0].Filter = D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT;
-    samplers[0].AddressU = samplers[0].AddressV = samplers[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    samplers[0].MaxLOD = D3D12_FLOAT32_MAX;
-    samplers[0].ShaderRegister = 0;   // s0 LinearSampler
-    samplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    samplers[1].Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
-    samplers[1].AddressU = samplers[1].AddressV = samplers[1].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    samplers[1].MaxLOD = D3D12_FLOAT32_MAX;
-    samplers[1].ShaderRegister = 1;   // s1 PointSampler
-    samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    D3D12_STATIC_SAMPLER_DESC linearClamp = D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_PIXEL );
+    linearClamp.Filter = D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT;
+    rs.AddStaticSampler( linearClamp );
+    rs.AddStaticSampler( D3D12RootLayout::SamplerPoint( 1, D3D12_SHADER_VISIBILITY_PIXEL ) );
 
-    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-    rsDesc.NumParameters = 1;
-    rsDesc.pParameters = &param;
-    rsDesc.NumStaticSamplers = _countof( samplers );
-    rsDesc.pStaticSamplers = samplers;
     // DIRECTLY_INDEXED enables SM6.6 ResourceDescriptorHeap[...] bindless fetch of the SMAA textures.
-    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
-                 | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
-
-    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
-    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (SMAA)."; return false; }
-    ComPtr<ID3DBlob> rsBlob, rsErr;
-    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-        if ( rsErr ) LogWarn() << "D3D12: SMAA root sig error: " << static_cast<const char*>( rsErr->GetBufferPointer() );
+    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+                          | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )
         return false;
-    }
-    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
-        IID_PPV_ARGS( Smaa.RootSig.ReleaseAndGetAddressOf() ) ) ) )
-        return false;
+    Smaa.RootSig = rs.RootSig();
 
     if ( !m_Shaders->CompileFromFile( "SMAA.hlsl", "EdgeDetectionVS", Shadermodel_VS, Smaa.EdgeVsBlob.ReleaseAndGetAddressOf() )
         || !m_Shaders->CompileFromFile( "SMAA.hlsl", "LumaEdgeDetectionPS", Shadermodel_PS, Smaa.EdgePsBlob.ReleaseAndGetAddressOf() )
@@ -2926,6 +2139,15 @@ bool D3D12PipelineState::CreateSmaa() {
         || !m_Shaders->CompileFromFile( "SMAA.hlsl", "NeighborhoodBlendingVS", Shadermodel_VS, Smaa.NeighborVsBlob.ReleaseAndGetAddressOf() )
         || !m_Shaders->CompileFromFile( "SMAA.hlsl", "NeighborhoodBlendingPS", Shadermodel_PS, Smaa.NeighborPsBlob.ReleaseAndGetAddressOf() ) )
         return false;
+
+    rs.ValidateShaders( {
+        { Smaa.EdgeVsBlob.Get(),     "SMAA.hlsl:EdgeDetectionVS",             D3D12_SHADER_VISIBILITY_VERTEX },
+        { Smaa.EdgePsBlob.Get(),     "SMAA.hlsl:LumaEdgeDetectionPS",         D3D12_SHADER_VISIBILITY_PIXEL  },
+        { Smaa.BlendVsBlob.Get(),    "SMAA.hlsl:BlendingWeightCalculationVS", D3D12_SHADER_VISIBILITY_VERTEX },
+        { Smaa.BlendPsBlob.Get(),    "SMAA.hlsl:BlendingWeightCalculationPS", D3D12_SHADER_VISIBILITY_PIXEL  },
+        { Smaa.NeighborVsBlob.Get(), "SMAA.hlsl:NeighborhoodBlendingVS",      D3D12_SHADER_VISIBILITY_VERTEX },
+        { Smaa.NeighborPsBlob.Get(), "SMAA.hlsl:NeighborhoodBlendingPS",      D3D12_SHADER_VISIBILITY_PIXEL  },
+    } );
 
     // Shared PSO skeleton: fullscreen triangle (no VB / input layout), no depth, no blend (each pass fully
     // overwrites its target). Only VS/PS and the RTV format differ per pass.
@@ -3041,49 +2263,28 @@ bool D3D12PipelineState::CreateFx() {
 
     D3D12_ROOT_PARAMETER params[3] = {};
     params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[0].Constants.ShaderRegister = 0;   // b0 ViewProj
-    params[0].Constants.Num32BitValues = 16;
-    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[1].Constants.ShaderRegister = 1;   // b1 World (identity for poly strips, per-mark for quad marks)
-    params[1].Constants.Num32BitValues = 16;
-    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[2].Constants.ShaderRegister = 2;   // b2 { bindless diffuse index, alpha-test flag }
-    params[2].Constants.Num32BitValues = 4;
-    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
+    D3D12RootLayout& rs = Layout( "Fx" );
+    rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_VERTEX );   // 0: b0 ViewProj
+    // 1: b1 World (identity for poly strips, per-mark for quad marks)
+    rs.AddConstants( 1, 16, D3D12_SHADER_VISIBILITY_VERTEX );
+    // 2: b2 { bindless diffuse index, alpha-test flag }
+    rs.AddConstants( 2, 4, D3D12_SHADER_VISIBILITY_PIXEL );
     // s0: same 16x aniso wrap the world/VOB passes use for diffuse maps.
-    D3D12_STATIC_SAMPLER_DESC sampler = {};
-    sampler.Filter = D3D12_FILTER_ANISOTROPIC;
-    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    sampler.MaxAnisotropy = 16;
-    sampler.MaxLOD = D3D12_FLOAT32_MAX;
-    sampler.ShaderRegister = 0;   // s0
-    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    rs.AddStaticSampler( D3D12RootLayout::SamplerAniso( 0, D3D12_SHADER_VISIBILITY_PIXEL ) );
 
-    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-    rsDesc.NumParameters = _countof( params );
-    rsDesc.pParameters = params;
-    rsDesc.NumStaticSamplers = 1;
-    rsDesc.pStaticSamplers = &sampler;
-    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
-                 | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
-
-    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
-    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (FX)."; return false; }
-    ComPtr<ID3DBlob> rsBlob, rsErr;
-    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-        if ( rsErr ) LogWarn() << "D3D12: FX root sig error: " << static_cast<const char*>( rsErr->GetBufferPointer() );
+    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+                          | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )
         return false;
-    }
-    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
-        IID_PPV_ARGS( Fx.RootSig.ReleaseAndGetAddressOf() ) ) ) )
-        return false;
+    Fx.RootSig = rs.RootSig();
 
     if ( !m_Shaders->CompileFromFile( "Fx.hlsl", "VSMain", Shadermodel_VS, Fx.VsBlob.ReleaseAndGetAddressOf() )
         || !m_Shaders->CompileFromFile( "Fx.hlsl", "PSMain", Shadermodel_PS, Fx.PsBlob.ReleaseAndGetAddressOf() ) )
         return false;
+
+    rs.ValidateShaders( {
+        { Fx.VsBlob.Get(), "Fx.hlsl:VSMain", D3D12_SHADER_VISIBILITY_VERTEX },
+        { Fx.PsBlob.Get(), "Fx.hlsl:PSMain", D3D12_SHADER_VISIBILITY_PIXEL  },
+    } );
 
     // Warm the state both passes start from (D3D11's SetDefaultStates: no blending, depth-write on).
     GothicBlendStateInfo defaultBlend;
@@ -3160,48 +2361,34 @@ bool D3D12PipelineState::CreateSharpen() {
     ID3D12Device* device = m_Device->GetDevice();
     if ( !device ) return false;
 
-    // b0: 12 root constants { uint4 CasConst0; uint4 CasConst1; uint SrcIndex; float SharpenStrength;
-    // float2 TextureSize }. CAS reads only the first 9, the simple mode only the last 4 — one layout keeps
-    // the two PSOs on the same root signature (no rebind between modes; only one ever runs per frame).
-    D3D12_ROOT_PARAMETER param = {};
-    param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    param.Constants.ShaderRegister = 0;   // b0 SharpenCB
-    param.Constants.Num32BitValues = 12;
-    param.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
+    D3D12RootLayout& rs = Layout( "Sharpen" );
+    // 0: b0 SharpenCB — 12 root constants { uint4 CasConst0; uint4 CasConst1; uint SrcIndex;
+    // float SharpenStrength; float2 TextureSize }. CAS reads only the first 9, the simple mode only the
+    // last 4 — one layout keeps the two PSOs on the same root signature (no rebind between modes; only
+    // one ever runs per frame).
+    rs.AddConstants( 0, 12, D3D12_SHADER_VISIBILITY_PIXEL );
     // s0 linear-clamp: the simple mode's 3x3 box blur samples off-pixel-center UVs and must repeat the border
     // at the screen edge rather than wrap. CAS uses Load() and ignores the sampler entirely.
-    D3D12_STATIC_SAMPLER_DESC sampler = {};
-    sampler.Filter = D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT;
-    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    sampler.MaxLOD = D3D12_FLOAT32_MAX;
-    sampler.ShaderRegister = 0;   // s0 smpLinearClamp
-    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    D3D12_STATIC_SAMPLER_DESC linearClamp = D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_PIXEL );
+    linearClamp.Filter = D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT;
+    rs.AddStaticSampler( linearClamp );
 
-    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-    rsDesc.NumParameters = 1;
-    rsDesc.pParameters = &param;
-    rsDesc.NumStaticSamplers = 1;
-    rsDesc.pStaticSamplers = &sampler;
     // DIRECTLY_INDEXED enables the SM6.6 ResourceDescriptorHeap[SrcIndex] fetch of the LDR copy.
-    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
-                 | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
-
-    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
-    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (Sharpen)."; return false; }
-    ComPtr<ID3DBlob> rsBlob, rsErr;
-    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-        if ( rsErr ) LogWarn() << "D3D12: Sharpen root sig error: " << static_cast<const char*>( rsErr->GetBufferPointer() );
+    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+                          | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )
         return false;
-    }
-    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
-        IID_PPV_ARGS( Sharpen.RootSig.ReleaseAndGetAddressOf() ) ) ) )
-        return false;
+    Sharpen.RootSig = rs.RootSig();
 
     if ( !m_Shaders->CompileFromFile( "Sharpen.hlsl", "VSFullscreen", Shadermodel_VS, Sharpen.VsBlob.ReleaseAndGetAddressOf() )
         || !m_Shaders->CompileFromFile( "Sharpen.hlsl", "PSSimple", Shadermodel_PS, Sharpen.SimplePsBlob.ReleaseAndGetAddressOf() )
         || !m_Shaders->CompileFromFile( "Sharpen.hlsl", "PSCas", Shadermodel_PS, Sharpen.CasPsBlob.ReleaseAndGetAddressOf() ) )
         return false;
+
+    rs.ValidateShaders( {
+        { Sharpen.VsBlob.Get(),       "Sharpen.hlsl:VSFullscreen", D3D12_SHADER_VISIBILITY_VERTEX },
+        { Sharpen.SimplePsBlob.Get(), "Sharpen.hlsl:PSSimple",     D3D12_SHADER_VISIBILITY_PIXEL  },
+        { Sharpen.CasPsBlob.Get(),    "Sharpen.hlsl:PSCas",        D3D12_SHADER_VISIBILITY_PIXEL  },
+    } );
 
     auto makePso = [&]( ID3DBlob* ps, ID3D12PipelineState** out, const char* name ) -> bool {
         D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
@@ -3244,106 +2431,37 @@ bool D3D12PipelineState::CreateAO() {
 
     // s0: point-clamp — depth/AO are sampled at the source pixel grid; no filtering wanted across depth
     // discontinuities (bilinear would blend unrelated surfaces' AO/depth together at edges).
-    D3D12_STATIC_SAMPLER_DESC sampler = {};
-    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
-    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    sampler.MaxLOD = D3D12_FLOAT32_MAX;
-    sampler.ShaderRegister = 0;   // s0
-    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
-    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (AO)."; return false; }
+    const D3D12_STATIC_SAMPLER_DESC sampler =
+        D3D12RootLayout::SamplerPoint( 0, D3D12_SHADER_VISIBILITY_ALL );
 
     // --- Main pass root sig: b0 12x32-bit SSAOCB, t0 depth SRV table, u0 AO-output UAV table ---
-    {
-        D3D12_DESCRIPTOR_RANGE srvRange = {};
-        srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-        srvRange.NumDescriptors = 1;
-        srvRange.BaseShaderRegister = 0;   // t0 DepthTex
-        srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-        D3D12_DESCRIPTOR_RANGE uavRange = {};
-        uavRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
-        uavRange.NumDescriptors = 1;
-        uavRange.BaseShaderRegister = 0;   // u0 OutputAO
-        uavRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-        D3D12_ROOT_PARAMETER params[3] = {};
-        params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-        params[0].Constants.ShaderRegister = 0;   // b0 SSAOCB
-        params[0].Constants.Num32BitValues = 12;
-        params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-        params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        params[1].DescriptorTable.NumDescriptorRanges = 1;
-        params[1].DescriptorTable.pDescriptorRanges = &srvRange;
-        params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-        params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        params[2].DescriptorTable.NumDescriptorRanges = 1;
-        params[2].DescriptorTable.pDescriptorRanges = &uavRange;
-        params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-        D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-        rsDesc.NumParameters = _countof( params );
-        rsDesc.pParameters = params;
-        rsDesc.NumStaticSamplers = 1;
-        rsDesc.pStaticSamplers = &sampler;
-
-        ComPtr<ID3DBlob> rsBlob, rsErr;
-        if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-            if ( rsErr ) LogWarn() << "D3D12: AO main root sig error: " << static_cast<const char*>(rsErr->GetBufferPointer());
-            return false;
-        }
-        if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
-            IID_PPV_ARGS( AO.MainRootSig.ReleaseAndGetAddressOf() ) ) ) )
-            return false;
-    }
+    D3D12RootLayout& mainRs = Layout( "AOMain" );
+    mainRs.AddConstants( 0, 12, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 SSAOCB
+    mainRs.AddTable( D3D12RootLayout::SRVRange( 0 ), D3D12_SHADER_VISIBILITY_ALL );   // 1: t0 DepthTex
+    mainRs.AddTable( D3D12RootLayout::UAVRange( 0 ), D3D12_SHADER_VISIBILITY_ALL );   // 2: u0 OutputAO
+    mainRs.AddStaticSampler( sampler );
+    if ( !mainRs.Build( device ) )
+        return false;
+    AO.MainRootSig = mainRs.RootSig();
 
     // --- Blur pass root sig: b0 8x32-bit BlurCB, t0+t1 SRV table (AO input + depth), u0 UAV table ---
-    {
-        D3D12_DESCRIPTOR_RANGE srvRange = {};
-        srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-        srvRange.NumDescriptors = 2;
-        srvRange.BaseShaderRegister = 0;   // t0 BlurAOTex, t1 BlurDepthTex
-        srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-        D3D12_DESCRIPTOR_RANGE uavRange = {};
-        uavRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
-        uavRange.NumDescriptors = 1;
-        uavRange.BaseShaderRegister = 0;   // u0 OutputAO
-        uavRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-        D3D12_ROOT_PARAMETER params[3] = {};
-        params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-        params[0].Constants.ShaderRegister = 0;   // b0 BlurCB
-        params[0].Constants.Num32BitValues = 8;
-        params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-        params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        params[1].DescriptorTable.NumDescriptorRanges = 1;
-        params[1].DescriptorTable.pDescriptorRanges = &srvRange;
-        params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-        params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        params[2].DescriptorTable.NumDescriptorRanges = 1;
-        params[2].DescriptorTable.pDescriptorRanges = &uavRange;
-        params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-        D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-        rsDesc.NumParameters = _countof( params );
-        rsDesc.pParameters = params;
-        rsDesc.NumStaticSamplers = 1;
-        rsDesc.pStaticSamplers = &sampler;
-
-        ComPtr<ID3DBlob> rsBlob, rsErr;
-        if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-            if ( rsErr ) LogWarn() << "D3D12: AO blur root sig error: " << static_cast<const char*>(rsErr->GetBufferPointer());
-            return false;
-        }
-        if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
-            IID_PPV_ARGS( AO.BlurRootSig.ReleaseAndGetAddressOf() ) ) ) )
-            return false;
-    }
+    D3D12RootLayout& blurRs = Layout( "AOBlur" );
+    blurRs.AddConstants( 0, 8, D3D12_SHADER_VISIBILITY_ALL );    // 0: b0 BlurCB
+    // 1: t0 BlurAOTex, t1 BlurDepthTex
+    blurRs.AddTable( D3D12RootLayout::SRVRange( 0, 2 ), D3D12_SHADER_VISIBILITY_ALL );
+    blurRs.AddTable( D3D12RootLayout::UAVRange( 0 ), D3D12_SHADER_VISIBILITY_ALL );   // 2: u0 OutputAO
+    blurRs.AddStaticSampler( sampler );
+    if ( !blurRs.Build( device ) )
+        return false;
+    AO.BlurRootSig = blurRs.RootSig();
 
     if ( !m_Shaders->CompileFromFile( "SSAO.hlsl", "CSMain", Shadermodel_CS, AO.MainCsBlob.ReleaseAndGetAddressOf() ) )
         return false;
     if ( !m_Shaders->CompileFromFile( "SSAO.hlsl", "CSBlur", Shadermodel_CS, AO.BlurCsBlob.ReleaseAndGetAddressOf() ) )
         return false;
+
+    mainRs.ValidateShaders( { { AO.MainCsBlob.Get(), "SSAO.hlsl:CSMain", D3D12_SHADER_VISIBILITY_ALL } } );
+    blurRs.ValidateShaders( { { AO.BlurCsBlob.Get(), "SSAO.hlsl:CSBlur", D3D12_SHADER_VISIBILITY_ALL } } );
 
     D3D12_COMPUTE_PIPELINE_STATE_DESC mainPso = {};
     mainPso.pRootSignature = AO.MainRootSig.Get();
@@ -3371,85 +2489,27 @@ bool D3D12PipelineState::CreateSkyIbl() {
 
     // s0: linear WRAP is wrong for cube faces (it would bleed across the seam); CLAMP is what cube sampling
     // wants, and the hardware handles the cross-face filtering itself.
-    D3D12_STATIC_SAMPLER_DESC sampler = {};
-    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    sampler.MaxLOD = D3D12_FLOAT32_MAX;
-    sampler.ShaderRegister = 0;   // s0
-    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
-    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (SkyIbl)."; return false; }
-
-    D3D12_DESCRIPTOR_RANGE uavRange = {};
-    uavRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
-    uavRange.NumDescriptors = 1;
-    uavRange.BaseShaderRegister = 0;   // u0 OutputCube
-    uavRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+    const D3D12_STATIC_SAMPLER_DESC sampler =
+        D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_ALL );
 
     // --- Radiance root sig: b0 20x32-bit SkyRadianceCB, u0 UAV table (no SRV — it is purely analytic) ---
-    {
-        D3D12_ROOT_PARAMETER params[2] = {};
-        params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-        params[0].Constants.ShaderRegister = 0;   // b0 SkyRadianceCB
-        params[0].Constants.Num32BitValues = 20;
-        params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-        params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        params[1].DescriptorTable.NumDescriptorRanges = 1;
-        params[1].DescriptorTable.pDescriptorRanges = &uavRange;
-        params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-        D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-        rsDesc.NumParameters = _countof( params );
-        rsDesc.pParameters = params;
-
-        ComPtr<ID3DBlob> rsBlob, rsErr;
-        if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-            if ( rsErr ) LogWarn() << "D3D12: SkyIbl radiance root sig error: " << static_cast<const char*>(rsErr->GetBufferPointer());
-            return false;
-        }
-        if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
-            IID_PPV_ARGS( SkyIbl.RadianceRootSig.ReleaseAndGetAddressOf() ) ) ) )
-            return false;
-    }
+    D3D12RootLayout& radianceRs = Layout( "SkyIblRadiance" );
+    radianceRs.AddConstants( 0, 20, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 SkyRadianceCB
+    radianceRs.AddTable( D3D12RootLayout::UAVRange( 0 ), D3D12_SHADER_VISIBILITY_ALL );   // 1: u0 OutputCube
+    if ( !radianceRs.Build( device ) )
+        return false;
+    SkyIbl.RadianceRootSig = radianceRs.RootSig();
 
     // --- Filter root sig (prefilter + irradiance): b1 4x32-bit PrefilterCB, t0 mip-0 SRV table, u0 UAV table ---
-    {
-        D3D12_DESCRIPTOR_RANGE srvRange = {};
-        srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-        srvRange.NumDescriptors = 1;
-        srvRange.BaseShaderRegister = 0;   // t0 TX_SkySource (mip-0-only cube view)
-        srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-        D3D12_ROOT_PARAMETER params[3] = {};
-        params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-        params[0].Constants.ShaderRegister = 1;   // b1 PrefilterCB
-        params[0].Constants.Num32BitValues = 4;
-        params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-        params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        params[1].DescriptorTable.NumDescriptorRanges = 1;
-        params[1].DescriptorTable.pDescriptorRanges = &srvRange;
-        params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-        params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        params[2].DescriptorTable.NumDescriptorRanges = 1;
-        params[2].DescriptorTable.pDescriptorRanges = &uavRange;
-        params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-        D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-        rsDesc.NumParameters = _countof( params );
-        rsDesc.pParameters = params;
-        rsDesc.NumStaticSamplers = 1;
-        rsDesc.pStaticSamplers = &sampler;
-
-        ComPtr<ID3DBlob> rsBlob, rsErr;
-        if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-            if ( rsErr ) LogWarn() << "D3D12: SkyIbl filter root sig error: " << static_cast<const char*>(rsErr->GetBufferPointer());
-            return false;
-        }
-        if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
-            IID_PPV_ARGS( SkyIbl.FilterRootSig.ReleaseAndGetAddressOf() ) ) ) )
-            return false;
-    }
+    D3D12RootLayout& filterRs = Layout( "SkyIblFilter" );
+    filterRs.AddConstants( 1, 4, D3D12_SHADER_VISIBILITY_ALL );      // 0: b1 PrefilterCB
+    // 1: t0 TX_SkySource (mip-0-only cube view)
+    filterRs.AddTable( D3D12RootLayout::SRVRange( 0 ), D3D12_SHADER_VISIBILITY_ALL );
+    filterRs.AddTable( D3D12RootLayout::UAVRange( 0 ), D3D12_SHADER_VISIBILITY_ALL );     // 2: u0 OutputCube
+    filterRs.AddStaticSampler( sampler );
+    if ( !filterRs.Build( device ) )
+        return false;
+    SkyIbl.FilterRootSig = filterRs.RootSig();
 
     if ( !m_Shaders->CompileFromFile( "SkyIbl.hlsl", "CSSkyRadiance", Shadermodel_CS, SkyIbl.RadianceCsBlob.ReleaseAndGetAddressOf() ) )
         return false;
@@ -3457,6 +2517,12 @@ bool D3D12PipelineState::CreateSkyIbl() {
         return false;
     if ( !m_Shaders->CompileFromFile( "SkyIbl.hlsl", "CSIrradiance", Shadermodel_CS, SkyIbl.IrradianceCsBlob.ReleaseAndGetAddressOf() ) )
         return false;
+
+    radianceRs.ValidateShaders( { { SkyIbl.RadianceCsBlob.Get(), "SkyIbl.hlsl:CSSkyRadiance", D3D12_SHADER_VISIBILITY_ALL } } );
+    filterRs.ValidateShaders( {
+        { SkyIbl.PrefilterCsBlob.Get(),  "SkyIbl.hlsl:CSPrefilter",  D3D12_SHADER_VISIBILITY_ALL },
+        { SkyIbl.IrradianceCsBlob.Get(), "SkyIbl.hlsl:CSIrradiance", D3D12_SHADER_VISIBILITY_ALL },
+    } );
 
     struct { ID3D12RootSignature* rs; ID3DBlob* cs; ID3D12PipelineState** pso; const char* name; } psos[] = {
         { SkyIbl.RadianceRootSig.Get(), SkyIbl.RadianceCsBlob.Get(),   SkyIbl.RadiancePSO.ReleaseAndGetAddressOf(),   "SkyIbl radiance" },
@@ -3482,87 +2548,48 @@ bool D3D12PipelineState::CreateFog() {
     ID3D12Device* device = m_Device->GetDevice();
     if ( !device ) return false;
 
-    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
-    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (Fog)."; return false; }
-
-    auto makeRootSig = [&]( const D3D12_ROOT_SIGNATURE_DESC& desc, ID3D12RootSignature** out, const char* name ) -> bool {
-        ComPtr<ID3DBlob> rsBlob, rsErr;
-        if ( FAILED( serialize( &desc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-            if ( rsErr ) LogWarn() << "D3D12: Fog " << name << " root sig error: " << static_cast<const char*>(rsErr->GetBufferPointer());
-            return false;
-        }
-        return SUCCEEDED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(), IID_PPV_ARGS( out ) ) );
-        };
-
     // --- God-ray compute root sig (shared by CSMask + CSZoom) ---
     // b0: 12 root constants. CSMask reads the first 4 (3 heap indices + pad), CSZoom all 12 (blur params +
     // 2 heap indices) — two cbuffers declared at b0 in the same file, only the one an entry point references
     // survives into that PSO (same pattern as SSAO.hlsl's SSAOCB/BlurCB). Everything else is bindless.
-    {
-        D3D12_STATIC_SAMPLER_DESC sampler = {};
-        sampler.Filter = D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT;
-        sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-        sampler.MaxLOD = D3D12_FLOAT32_MAX;
-        sampler.ShaderRegister = 0;   // s0 SS_LinearClamp
-        sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-        D3D12_ROOT_PARAMETER param = {};
-        param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-        param.Constants.ShaderRegister = 0;   // b0
-        param.Constants.Num32BitValues = 12;
-        param.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-        D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-        rsDesc.NumParameters = 1;
-        rsDesc.pParameters = &param;
-        rsDesc.NumStaticSamplers = 1;
-        rsDesc.pStaticSamplers = &sampler;
-        rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;   // SM6.6 ResourceDescriptorHeap
-
-        if ( !makeRootSig( rsDesc, Fog.GodRayRootSig.ReleaseAndGetAddressOf(), "god-ray" ) ) return false;
-    }
+    D3D12RootLayout& godRayRs = Layout( "FogGodRay" );
+    godRayRs.AddConstants( 0, 12, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0
+    D3D12_STATIC_SAMPLER_DESC godRaySampler = D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_ALL );
+    godRaySampler.Filter = D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT;   // s0 SS_LinearClamp
+    godRayRs.AddStaticSampler( godRaySampler );
+    if ( !godRayRs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )   // SM6.6 ResourceDescriptorHeap
+        return false;
+    Fog.GodRayRootSig = godRayRs.RootSig();
 
     // --- Composition graphics root sig: b0 height-fog CBV, b1 atmosphere CBV, b2 4 root consts ---
-    {
-        D3D12_STATIC_SAMPLER_DESC samplers[2] = {};
-        samplers[0].Filter = D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT;   // s0: god-ray upscale (quarter -> full res)
-        samplers[0].AddressU = samplers[0].AddressV = samplers[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-        samplers[0].MaxLOD = D3D12_FLOAT32_MAX;
-        samplers[0].ShaderRegister = 0;
-        samplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-        samplers[1].Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;          // s1: depth (1:1, never filtered)
-        samplers[1].AddressU = samplers[1].AddressV = samplers[1].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-        samplers[1].MaxLOD = D3D12_FLOAT32_MAX;
-        samplers[1].ShaderRegister = 1;
-        samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-        D3D12_ROOT_PARAMETER params[3] = {};
-        params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-        params[0].Descriptor.ShaderRegister = 0;   // b0 PFXBuffer (HeightfogConstantBuffer)
-        params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-        params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-        params[1].Descriptor.ShaderRegister = 1;   // b1 Atmosphere (AtmosphereConstantBuffer)
-        params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-        params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-        params[2].Constants.ShaderRegister = 2;   // b2 FogCompositeCB { depthIdx, godRaysIdx, flags, pad }
-        params[2].Constants.Num32BitValues = 4;
-        params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-        D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-        rsDesc.NumParameters = _countof( params );
-        rsDesc.pParameters = params;
-        rsDesc.NumStaticSamplers = _countof( samplers );
-        rsDesc.pStaticSamplers = samplers;
-        rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
-
-        if ( !makeRootSig( rsDesc, Fog.CompositeRootSig.ReleaseAndGetAddressOf(), "composition" ) ) return false;
-    }
+    D3D12RootLayout& compositeRs = Layout( "FogComposite" );
+    compositeRs.AddCBV( 0, D3D12_SHADER_VISIBILITY_PIXEL );   // 0: b0 PFXBuffer (HeightfogConstantBuffer)
+    compositeRs.AddCBV( 1, D3D12_SHADER_VISIBILITY_PIXEL );   // 1: b1 Atmosphere (AtmosphereConstantBuffer)
+    // 2: b2 FogCompositeCB { depthIdx, godRaysIdx, flags, pad }
+    compositeRs.AddConstants( 2, 4, D3D12_SHADER_VISIBILITY_PIXEL );
+    // s0: god-ray upscale (quarter -> full res); s1: depth (1:1, never filtered).
+    D3D12_STATIC_SAMPLER_DESC upscaleSampler = D3D12RootLayout::SamplerLinear( 0, D3D12_SHADER_VISIBILITY_PIXEL );
+    upscaleSampler.Filter = D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT;
+    compositeRs.AddStaticSampler( upscaleSampler );
+    compositeRs.AddStaticSampler( D3D12RootLayout::SamplerPoint( 1, D3D12_SHADER_VISIBILITY_PIXEL ) );
+    if ( !compositeRs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )
+        return false;
+    Fog.CompositeRootSig = compositeRs.RootSig();
 
     if ( !m_Shaders->CompileFromFile( "GodRays.hlsl", "CSMask", Shadermodel_CS, Fog.MaskCsBlob.ReleaseAndGetAddressOf() )
         || !m_Shaders->CompileFromFile( "GodRays.hlsl", "CSZoom", Shadermodel_CS, Fog.ZoomCsBlob.ReleaseAndGetAddressOf() )
         || !m_Shaders->CompileFromFile( "HeightFog.hlsl", "VSFullscreen", Shadermodel_VS, Fog.CompositeVsBlob.ReleaseAndGetAddressOf() )
         || !m_Shaders->CompileFromFile( "HeightFog.hlsl", "PSComposite", Shadermodel_PS, Fog.CompositePsBlob.ReleaseAndGetAddressOf() ) )
         return false;
+
+    godRayRs.ValidateShaders( {
+        { Fog.MaskCsBlob.Get(), "GodRays.hlsl:CSMask", D3D12_SHADER_VISIBILITY_ALL },
+        { Fog.ZoomCsBlob.Get(), "GodRays.hlsl:CSZoom", D3D12_SHADER_VISIBILITY_ALL },
+    } );
+    compositeRs.ValidateShaders( {
+        { Fog.CompositeVsBlob.Get(), "HeightFog.hlsl:VSFullscreen", D3D12_SHADER_VISIBILITY_VERTEX },
+        { Fog.CompositePsBlob.Get(), "HeightFog.hlsl:PSComposite",  D3D12_SHADER_VISIBILITY_PIXEL  },
+    } );
 
     D3D12_COMPUTE_PIPELINE_STATE_DESC maskPso = {};
     maskPso.pRootSignature = Fog.GodRayRootSig.Get();
@@ -3626,23 +2653,12 @@ bool D3D12PipelineState::CreateCull() {
     ID3D12Device* device = m_Device->GetDevice();
     if ( !device ) return false;
 
-    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
-    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (cull)."; return false; }
-
-    auto makeRootSig = [&]( const D3D12_ROOT_SIGNATURE_DESC& desc, ID3D12RootSignature** out, const char* name ) -> bool {
-        ComPtr<ID3DBlob> rsBlob, rsErr;
-        if ( FAILED( serialize( &desc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-            if ( rsErr ) LogWarn() << "D3D12: cull " << name << " root sig error: " << static_cast<const char*>(rsErr->GetBufferPointer());
-            return false;
-        }
-        return SUCCEEDED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(), IID_PPV_ARGS( out ) ) );
-        };
-
-    auto makeComputePSO = [&]( const char* file, const char* entry, ID3D12RootSignature* rs,
+    auto makeComputePSO = [&]( const char* file, const char* entry, const D3D12RootLayout& rs,
         ID3DBlob** blob, ID3D12PipelineState** pso ) -> bool {
         if ( !m_Shaders->CompileFromFile( file, entry, Shadermodel_CS, blob ) ) return false;
+        rs.ValidateShaders( { { *blob, entry, D3D12_SHADER_VISIBILITY_ALL } } );
         D3D12_COMPUTE_PIPELINE_STATE_DESC desc = {};
-        desc.pRootSignature = rs;
+        desc.pRootSignature = rs.Get();
         desc.CS = { (*blob)->GetBufferPointer(), (*blob)->GetBufferSize() };
         if ( FAILED( device->CreateComputePipelineState( &desc, IID_PPV_ARGS( pso ) ) ) ) {
             LogWarn() << "D3D12: CreateComputePipelineState failed (" << entry << ").";
@@ -3652,79 +2668,43 @@ bool D3D12PipelineState::CreateCull() {
         };
 
     // --- Hi-Z build root sig: b0 4 root consts (src/dst heap indices), fully bindless, no tables ---
-    {
-        D3D12_ROOT_PARAMETER param = {};
-        param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-        param.Constants.ShaderRegister = 0;   // b0 HiZCopyCB / HiZReduceCB
-        param.Constants.Num32BitValues = 4;
-        param.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    D3D12RootLayout& hiZRs = Layout( "CullHiZ" );
+    hiZRs.AddConstants( 0, 4, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 HiZCopyCB / HiZReduceCB
+    if ( !hiZRs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )   // SM6.6 ResourceDescriptorHeap
+        return false;
+    Cull.HiZRootSig = hiZRs.RootSig();
 
-        D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-        rsDesc.NumParameters = 1;
-        rsDesc.pParameters = &param;
-        rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;   // SM6.6 ResourceDescriptorHeap
-
-        if ( !makeRootSig( rsDesc, Cull.HiZRootSig.ReleaseAndGetAddressOf(), "Hi-Z" ) ) return false;
-    }
-    if ( !makeComputePSO( "HiZ.hlsl", "CSCopyDepth", Cull.HiZRootSig.Get(),
+    if ( !makeComputePSO( "HiZ.hlsl", "CSCopyDepth", hiZRs,
         Cull.HiZCopyCsBlob.ReleaseAndGetAddressOf(), Cull.HiZCopyPSO.ReleaseAndGetAddressOf() ) ) return false;
-    if ( !makeComputePSO( "HiZ.hlsl", "CSReduce", Cull.HiZRootSig.Get(),
+    if ( !makeComputePSO( "HiZ.hlsl", "CSReduce", hiZRs,
         Cull.HiZReduceCsBlob.ReleaseAndGetAddressOf(), Cull.HiZReducePSO.ReleaseAndGetAddressOf() ) ) return false;
 
     // --- VOB cull root sig: b0 24 consts (ViewProj + Hi-Z params), t0/t1 root SRVs, u0/u1 root UAVs ---
     // The visual records + instance streams are plain structured buffers, so they ride as root descriptors
     // (no heap slots). Only the Hi-Z pyramid is a texture and it comes in bindlessly by heap index.
-    {
-        D3D12_ROOT_PARAMETER params[5] = {};
-        params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-        params[0].Constants.ShaderRegister = 0;   // b0 VobCullCB
-        params[0].Constants.Num32BitValues = 24;  // float4x4 ViewProj + 8 uints
-        params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-        params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-        params[1].Descriptor.ShaderRegister = 0;  // t0 Visuals
-        params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-        params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-        params[2].Descriptor.ShaderRegister = 1;  // t1 InInstances
-        params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-        params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-        params[3].Descriptor.ShaderRegister = 0;  // u0 OutInstances (compacted)
-        params[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-        params[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-        params[4].Descriptor.ShaderRegister = 1;  // u1 VisibleCounts
-        params[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    D3D12RootLayout& vobCullRs = Layout( "CullVob" );
+    vobCullRs.AddConstants( 0, 24, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 VobCullCB — float4x4 ViewProj + 8 uints
+    vobCullRs.AddSRV( 0, D3D12_SHADER_VISIBILITY_ALL );             // 1: t0 Visuals
+    vobCullRs.AddSRV( 1, D3D12_SHADER_VISIBILITY_ALL );             // 2: t1 InInstances
+    vobCullRs.AddUAV( 0, D3D12_SHADER_VISIBILITY_ALL );             // 3: u0 OutInstances (compacted)
+    vobCullRs.AddUAV( 1, D3D12_SHADER_VISIBILITY_ALL );             // 4: u1 VisibleCounts
+    if ( !vobCullRs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )
+        return false;
+    Cull.VobCullRootSig = vobCullRs.RootSig();
 
-        D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-        rsDesc.NumParameters = _countof( params );
-        rsDesc.pParameters = params;
-        rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
-
-        if ( !makeRootSig( rsDesc, Cull.VobCullRootSig.ReleaseAndGetAddressOf(), "VOB cull" ) ) return false;
-    }
-    if ( !makeComputePSO( "VobCull.hlsl", "CSCull", Cull.VobCullRootSig.Get(),
+    if ( !makeComputePSO( "VobCull.hlsl", "CSCull", vobCullRs,
         Cull.VobCullCsBlob.ReleaseAndGetAddressOf(), Cull.VobCullPSO.ReleaseAndGetAddressOf() ) ) return false;
 
     // --- Indirect-arg patch root sig: b0 4 consts (count/stride/offsets), t0 counts SRV, u0 raw arg UAV ---
-    {
-        D3D12_ROOT_PARAMETER params[3] = {};
-        params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-        params[0].Constants.ShaderRegister = 0;   // b0 VobPatchCB
-        params[0].Constants.Num32BitValues = 4;
-        params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-        params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-        params[1].Descriptor.ShaderRegister = 0;  // t0 PatchCounts
-        params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-        params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-        params[2].Descriptor.ShaderRegister = 0;  // u0 PatchArgs (RWByteAddressBuffer)
-        params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    D3D12RootLayout& patchRs = Layout( "CullPatch" );
+    patchRs.AddConstants( 0, 4, D3D12_SHADER_VISIBILITY_ALL );   // 0: b0 VobPatchCB
+    patchRs.AddSRV( 0, D3D12_SHADER_VISIBILITY_ALL );            // 1: t0 PatchCounts
+    patchRs.AddUAV( 0, D3D12_SHADER_VISIBILITY_ALL );            // 2: u0 PatchArgs (RWByteAddressBuffer)
+    if ( !patchRs.Build( device ) )
+        return false;
+    Cull.PatchRootSig = patchRs.RootSig();
 
-        D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-        rsDesc.NumParameters = _countof( params );
-        rsDesc.pParameters = params;
-        rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
-
-        if ( !makeRootSig( rsDesc, Cull.PatchRootSig.ReleaseAndGetAddressOf(), "arg patch" ) ) return false;
-    }
-    if ( !makeComputePSO( "VobCull.hlsl", "CSPatchArgs", Cull.PatchRootSig.Get(),
+    if ( !makeComputePSO( "VobCull.hlsl", "CSPatchArgs", patchRs,
         Cull.PatchCsBlob.ReleaseAndGetAddressOf(), Cull.PatchPSO.ReleaseAndGetAddressOf() ) ) return false;
 
     return true;
@@ -3739,32 +2719,14 @@ bool D3D12PipelineState::CreateLines() {
 
     // b0 ViewProj (world-space VS) + b1 viewport pos/size (screen-space VS). One root signature for both
     // PSOs; the draw path sets BOTH parameters every time so neither is ever left stale.
-    D3D12_ROOT_PARAMETER params[2] = {};
-    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[0].Constants.ShaderRegister = 0;   // b0 ViewProj
-    params[0].Constants.Num32BitValues = 16;
-    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
-    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    params[1].Constants.ShaderRegister = 1;   // b1 { ViewportPos, ViewportSize } (+ padding to a float4x2)
-    params[1].Constants.Num32BitValues = 8;
-    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+    D3D12RootLayout& rs = Layout( "Lines" );
+    rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_VERTEX );   // 0: b0 ViewProj
+    // 1: b1 { ViewportPos, ViewportSize } (+ padding to a float4x2)
+    rs.AddConstants( 1, 8, D3D12_SHADER_VISIBILITY_VERTEX );
 
-    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-    rsDesc.NumParameters = _countof( params );
-    rsDesc.pParameters = params;
-    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
-
-    PFN_SERIALIZE_ROOT_SIG serialize = LoadSerializeRootSignature();
-    if ( !serialize ) { LogWarn() << "D3D12: D3D12SerializeRootSignature unavailable (lines)."; return false; }
-
-    ComPtr<ID3DBlob> rsBlob, rsErr;
-    if ( FAILED( serialize( &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, rsBlob.GetAddressOf(), rsErr.GetAddressOf() ) ) ) {
-        if ( rsErr ) LogWarn() << "D3D12: line root signature serialize error: " << static_cast<const char*>(rsErr->GetBufferPointer());
+    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT ) )
         return false;
-    }
-    if ( FAILED( device->CreateRootSignature( 0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
-        IID_PPV_ARGS( Lines.RootSig.ReleaseAndGetAddressOf() ) ) ) )
-        return false;
+    Lines.RootSig = rs.RootSig();
 
     if ( !m_Shaders->CompileFromFile( "Lines.hlsl", "VSMain", Shadermodel_VS, Lines.VsBlob.ReleaseAndGetAddressOf() ) )
         return false;
@@ -3772,6 +2734,12 @@ bool D3D12PipelineState::CreateLines() {
         return false;
     if ( !m_Shaders->CompileFromFile( "Lines.hlsl", "PSMain", Shadermodel_PS, Lines.PsBlob.ReleaseAndGetAddressOf() ) )
         return false;
+
+    rs.ValidateShaders( {
+        { Lines.VsBlob.Get(),       "Lines.hlsl:VSMain",   D3D12_SHADER_VISIBILITY_VERTEX },
+        { Lines.ScreenVsBlob.Get(), "Lines.hlsl:VSScreen", D3D12_SHADER_VISIBILITY_VERTEX },
+        { Lines.PsBlob.Get(),       "Lines.hlsl:PSMain",   D3D12_SHADER_VISIBILITY_PIXEL  },
+    } );
 
     // BaseLineRenderer's LineVertex: float4 Position @0, float4 Color @16 (32 bytes, #pragma pack(1)).
     const D3D12_INPUT_ELEMENT_DESC layout[] = {

@@ -1,6 +1,7 @@
 #include "../pch.h"
 #include "D3D12ShaderBackend.h"
 #include <dxcapi.h>
+#include <d3d12shader.h>
 #include <wrl/client.h>
 #include <fstream>
 #include <iterator>
@@ -282,6 +283,26 @@ void D3D12ShaderBackend::AppendGlobalMacros( std::vector<D3D_SHADER_MACRO>& list
     static const char* const sNums[] = { "0", "1", "2" };
     list.push_back( { "NORMAL_MAP_RESTORE_Z", s.CompressedNormalsSupport ? "1" : "0" } );
     list.push_back( { "NORMAL_MAP_MODE", sNums[std::clamp<int>( s.AllowNormalmaps, 1, 2 )] } );
+}
+
+bool D3D12ShaderBackend::Reflect( ID3DBlob* code, ID3D12ShaderReflection** ppReflection ) {
+    if ( !code || !ppReflection ) return false;
+    *ppReflection = nullptr;
+
+    PFN_DXC_CREATE_INSTANCE dxcCreateInstance = ResolveDxcCreateInstance();
+    if ( !dxcCreateInstance ) return false;   // already logged by ResolveDxcCreateInstance
+
+    ComPtr<IDxcUtils> dxcUtils;
+    if ( FAILED( dxcCreateInstance( kClsidDxcUtils, IID_PPV_ARGS( dxcUtils.GetAddressOf() ) ) ) )
+        return false;
+
+    // CreateReflection reads the reflection part straight out of the DXIL container. CompileSource
+    // never passes -Qstrip_reflect, so that part is present in every blob CompileFromFile hands back.
+    DxcBuffer container;
+    container.Ptr = code->GetBufferPointer();
+    container.Size = code->GetBufferSize();
+    container.Encoding = DXC_CP_ACP;
+    return SUCCEEDED( dxcUtils->CreateReflection( &container, IID_PPV_ARGS( ppReflection ) ) );
 }
 
 bool D3D12ShaderBackend::CompileFromFile( const std::string& fileName, const char* entryPoint,

@@ -2,8 +2,11 @@
 #include <d3d12.h>
 #include <wrl/client.h>
 #include <unordered_map>
+#include <map>
+#include <string>
 #include <cstdint>
 #include "D3D12Device.h"
+#include "D3D12RootLayout.h"
 
 class D3D12ShaderBackend;
 struct GothicBlendStateInfo;
@@ -410,6 +413,19 @@ public:
     WorldTransparencyPipeline WorldTransparency;  // alpha-blended world surfaces (Shaders/D3D12/World.hlsl VSTransparent/PSTransparent)
 
 private:
+    // Returns the retained root layout registered under `name`, cleared and ready to declare into.
+    // Keyed by name (rather than appended) so re-running a Create*() — a shader hot-reload, say —
+    // reuses its slot instead of accumulating layouts. std::map keeps references stable, which
+    // matters because Create*() holds the reference across the whole function.
+    D3D12RootLayout& Layout( const char* name );
+    // Looks up an already-declared layout WITHOUT clearing it, for the Create*()s that build PSOs
+    // against a root signature another pass owns (the World family: CreateVob/CreateDepthPrepass
+    // share World.RootSig). Returns nullptr if the owning Create*() hasn't run.
+    D3D12RootLayout* GetLayout( const char* name );
+
     D3D12Device*        m_Device = nullptr;
     D3D12ShaderBackend* m_Shaders = nullptr;
+    // Retained root-signature declarations, one per root sig. Kept past Build() so
+    // D3D12RootLayout::ValidateShaders can check each pass's shaders against what it declared.
+    std::map<std::string, D3D12RootLayout> m_Layouts;
 };

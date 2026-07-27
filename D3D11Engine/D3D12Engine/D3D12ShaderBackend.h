@@ -3,6 +3,8 @@
 #include <string>
 #include <vector>
 
+struct ID3D12ShaderReflection;   // <d3d12shader.h>; only the reflection entry point below needs it
+
 // Loads and compiles the D3D12 backend's HLSL shaders from disk (Shaders\D3D12\*.hlsl, shipped to
 // system\GD3D11\shaders\D3D12\). Sources are read via zFILE_VDFS (with a physical filesystem fallback
 // for dev/hot-reload) and compiled to DXIL at runtime with the DXC COM API (SM6.6). This keeps the
@@ -17,6 +19,12 @@ public:
 
     // Reads raw HLSL text for a shader file: zFILE_VDFS first, physical fallback second.
     static bool LoadShaderSource( const std::string& fileName, std::string& outSource );
+
+    // Creates a DXC reflection interface over a DXIL container produced by CompileFromFile, so the
+    // shader's actual resource bindings can be checked against the C++ root signature
+    // (D3D12RootLayout::ValidateShaders). Returns false — quietly, this is a diagnostic path — if
+    // dxcompiler.dll is unavailable or the container carries no reflection part.
+    static bool Reflect( ID3DBlob* code, struct ID3D12ShaderReflection** ppReflection );
 
     // Appends the backend-wide configuration macros (currently the normal-map convention pair,
     // mirroring D3D11's ShaderRegistry normalmappingConfigurationBuilder) that CompileFromFile adds to
