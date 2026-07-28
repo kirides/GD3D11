@@ -240,8 +240,13 @@ private:
     // kShadowCascades passes — and, more importantly, it keeps every Gothic-touching part of the skeletal
     // preparation (animation update, morph meshes, texani, bone palette, ring uploads) on the main thread while
     // the cascades themselves are culled/recorded concurrently.
+    // collectGhosts: reroute ghost vobs (GetVisualAlpha()) into GothicAPI::TransparencyVobs instead of dropping
+    // them, so DrawGhostVobs draws them later. ONLY the main-view animated-skeletal call passes true — it is the
+    // D3D12 stand-in for the reroute D3D11 does in GothicAPI::DrawWorldMeshNaive (:1394), which this backend
+    // never calls. Shadow callers must leave it false: ghosts cast no shadows on either backend.
     void PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& vobs, const Frustum* cullFrustum = nullptr, int shadowCascade = -1,
-        const DirectX::XMFLOAT3* sphereCenter = nullptr, float sphereRange = 0.0f, UINT cascadeCount = 1 );
+        const DirectX::XMFLOAT3* sphereCenter = nullptr, float sphereRange = 0.0f, UINT cascadeCount = 1,
+        bool collectGhosts = false );
     void DrawSkeletalDepthPrepass();  // lay down skeletal base + node-attachment depth into the Forward+ prepass
     void DrawSkeletalColor();         // draw the collected skeletal base meshes + node attachments (post-cull, lit)
     bool CreateParticleInstanceBuffers(); // per-frame dynamic (upload-heap) particle instance ring

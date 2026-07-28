@@ -36,6 +36,7 @@
 
 #include <array>
 #include <future>
+#include <algorithm>   // std::ranges::sort — DrawGhostVobs' back-to-front ordering
 
 // imgui_impl_dx12 calls CreateDXGIFactory1 directly (for tearing detection). dxgi.dll is present on
 // every Windows 7+ and the D3D11 fallback swapchain already needs it at runtime, so a load-time link
@@ -1367,6 +1368,14 @@ void D3D12GraphicsEngine::DrawGhostVobs() {
 	// D3D11 draws these back-to-front (painter's algorithm) via a min/max-heap drain; the legacy
 	// CollectVisibleVobs path (used by this backend, GothicAPI.cpp's std::ranges::sort(TransparencyVobs,
 	// CompareGhostDistance)) instead leaves the vector plain-sorted NEAREST-first, so iterate it in reverse.
+	//
+	// That sort only covers the STATIC ghosts CollectVisibleVobs pushed; PrepareFrameSkeletals appends the
+	// skeletal ghosts afterwards, leaving an unsorted tail. Re-sort here (nearest-first, matching
+	// GothicAPI's CompareGhostDistance) so the reverse walk below is a correct far-to-near order across both
+	// sources — otherwise overlapping ghosts blend in collection order rather than depth order.
+	std::ranges::sort( transparencyVobs,
+		[]( const TransparencyVobInfo& a, const TransparencyVobInfo& b ) { return a.distance < b.distance; } );
+
 	for ( auto it = transparencyVobs.rbegin(); it != transparencyVobs.rend(); ++it ) {
 		const TransparencyVobInfo& info = *it;
 
@@ -1377,13 +1386,17 @@ void D3D12GraphicsEngine::DrawGhostVobs() {
 		if ( info.skeletalVob ) {
 			SkeletalVobInfo* skel = info.skeletalVob;
 			if ( !skel->Vob || !skel->VisualInfo ) continue;
-			if ( !m_Pipelines.GhostSkeletal.PSO || !m_Pipelines.GhostSkeletal.RootSig ) continue;   // pipeline unavailable (logged at Init)
-			if ( !m_SkeletalCBBuffer[frame] || !m_SkeletalCBBufferPtr[frame] ) continue;
+			// NOTE: the GhostSkeletal pipeline / skeletal CB-ring guards deliberately live further down, around
+			// the base-mesh block only — a missing skinned pipeline must not also cost the ghost its node
+			// attachments, which draw through the separate m_Pipelines.Ghost.
 
 			zCModel* model = static_cast<zCModel*>( skel->Vob->GetVisual() );
 			if ( !model ) continue;
 			SkeletalMeshVisualInfo* visual = static_cast<SkeletalMeshVisualInfo*>( skel->VisualInfo );
-			if ( visual->SkeletalMeshes.empty() ) continue;   // node-attachment-only ghosts: not handled (rare, owed-debt)
+			// An empty SkeletalMeshes list is NOT a reason to skip: attachment-only ghosts (and every NPC's
+			// head, which is a .MMS node attachment rather than part of the soft-skin body) still have geometry
+			// to draw below. Mirrors D3D11's DrawSkeletalMeshVobs, which guards only its BASE pass on
+			// !SkeletalMeshes.empty() and always runs the attachment pass.
 
 			if ( skel->LastAniUpdateFrame != now ) {
 				skel->LastAniUpdateFrame = now;
@@ -1398,6 +1411,12 @@ void D3D12GraphicsEngine::DrawGhostVobs() {
 			if ( numBones > kSkeletalMaxBones ) numBones = kSkeletalMaxBones;
 
 			const XMMATRIX xmWorld = skel->Vob->GetWorldMatrixXM() * XMMatrixScalingFromVector( model->GetModelScaleXM() );
+
+			// --- Base skinned mesh (the body). Skipped for attachment-only ghosts; the node attachments below
+			// run either way. Needs the GhostSkeletal pipeline + the skeletal CB ring, neither of which the
+			// attachment pass uses, so both guards live here rather than at the top of the branch.
+			if ( !visual->SkeletalMeshes.empty() && m_Pipelines.GhostSkeletal.PSO && m_Pipelines.GhostSkeletal.RootSig
+				&& m_SkeletalCBBuffer[frame] && m_SkeletalCBBufferPtr[frame] ) {
 			SkeletalInstanceCB inst = {};
 			XMStoreFloat4x4( &inst.World, xmWorld );
 			inst.ModelColor = XMFLOAT4( 1, 1, 1, 1 );   // unused by VSDepth/PSGhost (unlit) — kept for struct-layout parity
@@ -1451,6 +1470,101 @@ void D3D12GraphicsEngine::DrawGhostVobs() {
 					m_CmdList->IASetIndexBuffer( &ibv );
 					m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mesh->Indices.size() ), 1, 0, 0, 0 );
 					drawnTris += static_cast<unsigned int>( mesh->Indices.size() ) / 3;
+				}
+			}
+			}   // end base skinned mesh
+
+			// --- Node attachments (HEADS, weapons, held items, lamps). An NPC's head is a .MMS node attachment,
+			// not part of the soft-skin body, so without this a ghost NPC renders headless and unarmed.
+			//
+			// Drawn through the NON-skeletal m_Pipelines.Ghost, which fits exactly: attachments are RIGID
+			// ExVertexStruct meshes (POSITION@0 + TEXCOORD@24 — its input layout) whose world matrix is
+			// modelWorld * boneMatrix[node], and that pipeline takes World as a b1 root constant. So no new PSO,
+			// no new shader and no VOB instance-ring traffic — unlike the lit path (DrawSkeletalColor), which
+			// must use the instanced VobAttach PSO because it batches. Ghosts are a handful of objects; a root
+			// constant per attachment is cheaper than a ring allocation.
+			//
+			// Fatness/Scaling (the VobAttach PSO's morph inflate) are deliberately NOT applied: Preview.hlsl's
+			// VSMain has no such input, and D3D11's ghost path goes through DrawSkeletalMeshVob the same way.
+			if ( m_Pipelines.Ghost.PSO && m_Pipelines.Ghost.RootSig ) {
+				zCArray<zCModelNodeInst*>* nodeList = model->GetNodeList();
+				const int nodeCount = nodeList
+					? std::min<int>( static_cast<int>( ghostBoneCache.size() ), nodeList->NumInArray ) : 0;
+				bool ghostPipelineBound = false;
+
+				for ( int n = 0; n < nodeCount; ++n ) {
+					zCModelNodeInst* node = nodeList->Array[n];
+					if ( !node || !node->NodeVisual ) continue;   // nothing attached to this node
+
+					// Ghosts never pass through PrepareFrameSkeletals' attachment block (they are rerouted out
+					// of it), so this is the ONLY place that kicks their extraction — without it a permanently
+					// ghosted NPC would never get its attachments built at all. Same async contract as the lit
+					// path: the attachment simply isn't drawn until the worker lands, gated by Ready below.
+					auto it = skel->NodeAttachments.find( n );
+					if ( it == skel->NodeAttachments.end() ) {
+						WorldConverter::ExtractNodeVisualAsync( n, node, skel->NodeAttachments );
+						it = skel->NodeAttachments.find( n );
+					} else if ( !it->second.empty() && it->second[0]
+						&& it->second[0]->Ready.load( std::memory_order_acquire )
+						&& it->second[0]->Visual != node->NodeVisual ) {
+						WorldConverter::ExtractNodeVisualAsync( n, node, skel->NodeAttachments );  // visual changed
+						it = skel->NodeAttachments.find( n );
+					}
+					if ( it == skel->NodeAttachments.end() ) continue;
+
+					XMFLOAT4X4 attWorld;
+					XMStoreFloat4x4( &attWorld, xmWorld * XMLoadFloat4x4( &ghostBoneCache[n] ) );
+
+					for ( MeshVisualInfo* mvi : it->second ) {
+						if ( !mvi ) continue;
+						// Still being extracted on a worker — Meshes is being written right now, don't race it.
+						if ( !mvi->Ready.load( std::memory_order_acquire ) || !mvi->Visual ) continue;
+
+						// Texture animation + facial/bow morphing, same calls the lit attachment path makes.
+						// A ghost NPC's head is exactly this case, so skipping it would freeze its face.
+						node->TexAniState.UpdateTexList();
+						if ( strcmp( mvi->Visual->GetFileExtension( 0 ), ".MMS" ) == 0 )
+							WorldConverter::UpdateMorphMeshVisual( mvi->Visual, mvi );
+
+						if ( !ghostPipelineBound ) {
+							m_CmdList->SetPipelineState( m_Pipelines.Ghost.PSO.Get() );
+							m_CmdList->SetGraphicsRootSignature( m_Pipelines.Ghost.RootSig.Get() );
+							m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
+							m_CmdList->SetGraphicsRoot32BitConstants( 2, 1, &info.alpha, 0 );
+							ghostPipelineBound = true;
+						}
+						m_CmdList->SetGraphicsRoot32BitConstants( 1, 16, &attWorld, 0 );
+
+						for ( auto const& [attMat, attMeshes] : mvi->Meshes ) {
+							D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
+							zCTexture* attTex = attMat ? attMat->GetAniTexture() : nullptr;
+							if ( attTex && attTex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+								if ( MyDirectDrawSurface7* surface = attTex->GetSurface() ) {
+									if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
+										D3D12Texture* d12 = D3D12Texture::From( gfx );
+										if ( d12->HasSRV() ) srv = d12->GetSrvGpuHandle();
+									}
+								}
+							}
+							m_CmdList->SetGraphicsRootDescriptorTable( 3, srv );
+
+							for ( auto const& attMesh : attMeshes ) {
+								if ( !attMesh || attMesh->Indices.empty() ) continue;
+								if ( !attMesh->GetMeshVertexBuffer() || !attMesh->GetMeshIndexBuffer() ) continue;
+								D3D12VertexBuffer* avb = D3D12VertexBuffer::From( attMesh->GetMeshVertexBuffer() );
+								D3D12VertexBuffer* aib = D3D12VertexBuffer::From( attMesh->GetMeshIndexBuffer() );
+								if ( !avb->GetResource() || !aib->GetResource() ) continue;
+								const D3D12_VERTEX_BUFFER_VIEW vbv = {
+									avb->GetGpuVirtualAddress(), avb->GetSizeInBytes(), sizeof( ExVertexStruct ) };
+								m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
+								const D3D12_INDEX_BUFFER_VIEW ibv = {
+									aib->GetGpuVirtualAddress(), aib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
+								m_CmdList->IASetIndexBuffer( &ibv );
+								m_CmdList->DrawIndexedInstanced( static_cast<UINT>( attMesh->Indices.size() ), 1, 0, 0, 0 );
+								drawnTris += static_cast<unsigned int>( attMesh->Indices.size() ) / 3;
+							}
+						}
+					}
 				}
 			}
 			continue;
@@ -1717,7 +1831,10 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	g_FrameSkelDraws.clear(); g_FrameAttachDraws.clear();
 	g_SkelUploadCache.clear();   // per-vob CB/attachment upload cache — rebuilt fresh each frame
 	g_SkelMatSrvCount = 0;       // ...and its parallel per-material diffuse-handle snapshots (capacity retained)
-	PrepareFrameSkeletals( Engine::GAPI->GetAnimatedSkeletalMeshVobs() );
+	// collectGhosts=true ONLY here: this is the list D3D11's GothicAPI::DrawWorldMeshNaive walks, and the
+	// reroute of ghost NPCs into TransparencyVobs is that function's job. Static MOBs (g_FrameMobs) keep the
+	// plain drop — D3D11 does not reroute them either.
+	PrepareFrameSkeletals( Engine::GAPI->GetAnimatedSkeletalMeshVobs(), nullptr, -1, nullptr, 0.0f, 1, true );
 	PrepareFrameSkeletals( g_FrameMobs );
 
 	// Refresh the wind CB's player position ONCE here (before shadows/prepass/color all run this frame) — windDir/
@@ -2902,7 +3019,7 @@ XRESULT D3D12GraphicsEngine::DrawVobsInstanced() {
 
 
 void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& vobs, const Frustum* cullFrustum, int shadowCascade,
-    const DirectX::XMFLOAT3* sphereCenter, float sphereRange, UINT cascadeCount ) {
+    const DirectX::XMFLOAT3* sphereCenter, float sphereRange, UINT cascadeCount, bool collectGhosts ) {
     // P2.9b-4b (pre-cull) + shadow-cascade/point-shadow parity: run each candidate skeletal vob's once-per-frame
     // animation update, upload its instance + bone CBs (base meshes) and its node attachments' VOB-instance data
     // into the per-frame rings ONCE (cached in g_SkelUploadCache — the pose data is view-independent), and
@@ -2951,8 +3068,19 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
         if ( !vi || !vi->Vob || !vi->VisualInfo ) continue;
         if ( !vi->Vob->GetShowVisual() ) continue;
 
-        // Ghosts don't cast shadows either (parity with D3D11's Shadows::DrawSkeletalMeshes ghost skip).
-        if ( vi->Vob->GetVisualAlpha() && vi->Vob->GetVobTransparency() < 0.7f ) continue;
+        // Ghost vobs (invisible-potion NPCs, fading spawns, spirits) never join the regular skinned draw on
+        // either backend. What happens to them instead depends on the caller:
+        //   - shadow callers (collectGhosts == false): dropped outright. D3D11 skips them the same way in
+        //     Shadows::DrawSkeletalMeshes (D3D11GraphicsEngine.cpp:5909/6275/7004) — ghosts cast no shadows.
+        //   - the main view (collectGhosts == true): rerouted into GothicAPI::TransparencyVobs below, so
+        //     DrawGhostVobs draws them unlit+blended later in the frame. Handled after the cull/extract work
+        //     rather than here, because the ghost pass needs a culled vob with its geometry actually built.
+        // NOTE the deliberately different conditions: D3D11's shadow skips test
+        // `GetVisualAlpha() && GetVobTransparency() < 0.7f`, but its main-view reroute
+        // (GothicAPI::DrawWorldMeshNaive:1394) tests `GetVisualAlpha()` ALONE. A ghost at transparency >= 0.7
+        // therefore draws as a ghost AND casts a normal shadow. Faithful, not an oversight.
+        const bool isGhost = vi->Vob->GetVisualAlpha();
+        if ( isGhost && !collectGhosts && vi->Vob->GetVobTransparency() < 0.7f ) continue;
 
         if ( XMVector3Greater( XMVector3LengthSq( cullOrigin - vi->Vob->GetPositionWorldXM() ), cullRadiusSq ) )
             continue;   // out of skeletal-draw range (player radius, or the light's sphere for point shadows)
@@ -2984,6 +3112,32 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
         // attachment loop below — they must NOT be skipped (this was the "MOBs don't render" bug).
         if ( visual->SkeletalMeshes.empty() && model->GetMeshSoftSkinList()->NumInArray > 0 )
             WorldConverter::ExtractSkeletalMeshFromVob( model, visual );
+
+        // Main-view ghost reroute (see the isGhost note above). This is the D3D12 equivalent of the branch
+        // GothicAPI::DrawWorldMeshNaive (:1394) takes on D3D11 — that function is the D3D11 collection path and
+        // is never called on this backend, so nothing else has ever pushed a SKELETAL entry into
+        // TransparencyVobs here. Static ghost VOBs already arrive via CVVH_AddNotDrawnVobToList
+        // (GothicAPI.cpp:4698/6771, the `normalVob` branch), which is why DrawGhostVobs' skeletal half existed
+        // but was unreachable: ghost NPCs simply rendered as nothing.
+        //
+        // Placed AFTER the distance/frustum cull and the lazy ExtractSkeletalMeshFromVob above (D3D11 pushes
+        // slightly earlier, before the mesh work) so the ghost pass receives a culled vob whose geometry is
+        // actually built — DrawGhostVobs skips entries with an empty SkeletalMeshes list.
+        if ( isGhost ) {
+            if ( collectGhosts ) {
+                // Gothic lerps its animations only when this is set and below ~2000. The regular path below
+                // hardcodes 500; ghosts get the real camera distance, which is what D3D11 passes (:1389).
+                float camDist;
+                XMStoreFloat( &camDist, XMVector3Length( vi->Vob->GetPositionWorldXM() - camPosXm ) );
+                model->SetDistanceToCamera( camDist );
+                model->UpdateAttachedVobs();
+                vi->LastAniUpdateFrame = now;   // DrawGhostVobs re-runs UpdateAttachedVobs only if this is stale
+
+                Engine::GAPI->GetTransparencyVobs().emplace_back(
+                    camDist, vi->Vob->GetVobTransparency(), vi, nullptr );
+            }
+            continue;   // never joins the regular skinned draw, whether or not it was collected
+        }
 
         // NOTE: UpdateMeshLibTexAniState is intentionally NOT called here. It mutates the model's SHARED texture
         // slots, so it's only meaningful immediately before drawing a specific instance's meshes (all instances

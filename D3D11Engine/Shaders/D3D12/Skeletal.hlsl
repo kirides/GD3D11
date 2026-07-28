@@ -166,12 +166,15 @@ void PSShadowClip( VS_DEPTH_OUT i )
 // Ghost/transparency skeletal VOBs (D3D12PipelineState::CreateGhostSkeletal): invisible-potion/fade NPCs.
 // Reuses VSDepth's matrix-palette skinning (identical pose to the color/prepass/shadow draws) — unlit diffuse
 // sample, alpha multiplied by a per-vob fade factor, no alpha-clip (a fading ghost should smoothly disappear,
-// not pop). Mirrors D3D11's PS_TransparencySkel / the non-skeletal PSGhost in Preview.hlsl (same conventions:
-// no SRGB linearize, raw t.rgb — kept consistent with the already-shipped non-skeletal ghost path).
+// not pop). Mirrors D3D11's PS_TransparencySkel / the non-skeletal PSGhost in Preview.hlsl — including its
+// sRGB linearize, which both ghost shaders need and neither originally had (see the note in PSGhost).
 cbuffer GhostCB : register(b7) { float GhostAlpha; float3 _GhostPad; }
 
 float4 PSGhost( VS_DEPTH_OUT i ) : SV_TARGET
 {
     float4 t = tx.Sample( smp, i.uv );
-    return float4( t.rgb, t.a * GhostAlpha );
+    // Linearize — m_SceneColor is a LINEAR HDR target on D3D12 (SrgbToLinear comes from PBRLighting.hlsl,
+    // included above). D3D11's PS_TransparencySkel returns the raw texel because its HDR buffer is
+    // gamma-space; porting that verbatim is what made ghosts read far too bright.
+    return float4( SrgbToLinear( t.rgb ), t.a * GhostAlpha );
 }

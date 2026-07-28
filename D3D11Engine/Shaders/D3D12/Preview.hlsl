@@ -31,8 +31,19 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
 // no alpha-clip (a fading ghost should smoothly disappear, not pop).
 cbuffer GhostCB : register(b2) { float GhostAlpha; float3 _GhostPad; };
 
+// Verbatim copy of include/PBRLighting.hlsl's helper (that header pulls in the whole Forward+ lighting
+// stack, which this standalone shader has no root signature for). NOTE the `select` — a vector ternary is
+// a hard error under SM6.
+float3 SrgbToLinear( float3 c )   // accurate sRGB EOTF
+{
+    return select( c <= 0.04045, c / 12.92, pow( ( c + 0.055 ) / 1.055, 2.4 ) );
+}
+
 float4 PSGhost( VS_OUT i ) : SV_TARGET
 {
     float4 t = tx.Sample( smp, i.uv );
-    return float4( t.rgb, t.a * GhostAlpha );
+    // Linearize: this blends into m_SceneColor, which is a LINEAR HDR target on D3D12. D3D11's PS_Transparency
+    // returns the raw texel because its HDR buffer is gamma-space (PS_PFX_HDR pow(...,2.2)s at the end), so a
+    // verbatim port reads far too bright here — the same reason Decal/Fx/Particle/World/Vob all linearize.
+    return float4( SrgbToLinear( t.rgb ), t.a * GhostAlpha );
 }
