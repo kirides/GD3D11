@@ -253,6 +253,9 @@ private:
         bool collectGhosts = false );
     void DrawSkeletalDepthPrepass();  // lay down skeletal base + node-attachment depth into the Forward+ prepass
     void DrawSkeletalColor();         // draw the collected skeletal base meshes + node attachments (post-cull, lit)
+    // Turn this frame's g_FrameSkelDraws/g_FrameAttachDraws into the two main-view ExecuteIndirect argument
+    // buffers both skeletal passes submit (T9). See CreateSkeletalIndirect / SkeletalDrawCommand below.
+    void BuildSkeletalDrawCommands();
     bool CreateParticleInstanceBuffers(); // per-frame dynamic (upload-heap) particle instance ring
     XRESULT DrawParticleEffects();    // collect visible PFX (backend-neutral) + draw billboards, blended over the scene
     bool CreateDecalInstanceBuffers(); // per-frame dynamic (upload-heap) decal instance ring
@@ -628,6 +631,49 @@ private:
     // VisualIndex so CSPatchArgs can overwrite the instance count (main view only — the cascades CPU-cull).
     UINT BuildVobDrawCommands( const std::vector<FrameVobUpload>& uploads, uint8_t* argPtr, bool resolveMaps,
         UINT maxCommands, bool culled = false );
+
+    // ---- GPU-driven skeletal meshes + node attachments (T9): ExecuteIndirect + bindless materials ----------
+    // The prerequisite was the bindless-skeletal / bindless-attachment work: neither Skeletal.RootSig nor the
+    // attachment PSOs bind a t0 descriptor table any more, and ExecuteIndirect can set root constants and root
+    // DESCRIPTORS but never a descriptor table. With that gone, both skeletal passes collapse the same way the
+    // world/VOB ones did (P2.11/P2.12): the per-mesh CPU work (UpdateMeshLibTexAniState, CacheIn, the b6
+    // material push, IASetVertexBuffers/IASetIndexBuffer, DrawIndexedInstanced) happens ONCE per frame in
+    // BuildSkeletalDrawCommands, and the depth prepass + the lit color pass each become one submit over the
+    // very same argument buffer (the prepass' clip-only PS simply ignores the normal/ORM constants).
+    //
+    // Base meshes need their own signature because each command also has to rebind the per-vob root CBVs (b1
+    // instance, b2 bone palette — root descriptors, so legal indirect arguments) that the shared skinning VS
+    // reads. Node attachments do NOT: they already draw through World.RootSig with exactly the VBVx2 + IBV +
+    // b6 shape m_VobIndirectCmdSig describes, so they reuse that signature and VobDrawCommand verbatim (their
+    // VSMainAttach/VSDepthAttach never read the b4 wind min/max the signature also writes — the instance
+    // stream's wind fields are reinterpreted as Fatness/Scaling instead — so those two floats go out as 0).
+    struct SkeletalDrawCommand {                     // 80 bytes; UINT64 members force 8-byte align, 80 % 8 == 0
+        D3D12_GPU_VIRTUAL_ADDRESS InstCB;            // @0  root param 1 -> b1 InstanceCB (world/color/fatness)
+        D3D12_GPU_VIRTUAL_ADDRESS BoneCB;            // @8  root param 2 -> b2 BonesCB (bone palette)
+        D3D12_VERTEX_BUFFER_VIEW  MeshVBV;           // @16 ExSkelVertexStruct stream (slot 0)
+        D3D12_INDEX_BUFFER_VIEW   IBV;               // @32 R16_UINT sub-mesh indices
+        uint32_t MatNormalIndex;                     // @48 b6.x  (0xFFFFFFFF = no normal map)
+        uint32_t MatOrmIndex;                        // @52 b6.y  (default ORM slot when no _FX)
+        uint32_t MatDiffuseIndex;                    // @56 b6.z  bindless diffuse (alpha clip + albedo)
+        D3D12_DRAW_INDEXED_ARGUMENTS Draw;           // @60 (20 bytes)
+    };
+    // Both are per-frame-in-flight UPLOAD rings, so keep the caps tight — the 32-bit address space is the
+    // binding constraint, not the command count. A crowd of NPCs is ~100 vobs x a handful of materials x
+    // sub-meshes; overflow logs once and drops the tail (same contract as the VOB/world rings).
+    static constexpr UINT kMaxSkeletalDrawCommands = 4096;   // base skinned meshes (visual x material x sub-mesh)
+    static constexpr UINT kMaxAttachDrawCommands   = 4096;   // node attachments (weapons/heads/held items)
+    Microsoft::WRL::ComPtr<ID3D12CommandSignature> m_SkeletalIndirectCmdSig;  // CBV(b1) + CBV(b2) + VBV + IBV + b6(3) + DrawIndexed
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_SkeletalDrawArgs[kBackBufferCount];
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_SkeletalDrawArgsAlloc[kBackBufferCount];
+    uint8_t* m_SkeletalDrawArgsPtr[kBackBufferCount] = {};
+    UINT m_SkeletalDrawCount = 0;                    // commands built this frame (prepass + color share them)
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_AttachDrawArgs[kBackBufferCount];
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_AttachDrawArgsAlloc[kBackBufferCount];
+    uint8_t* m_AttachDrawArgsPtr[kBackBufferCount] = {};
+    UINT m_AttachDrawCount = 0;                      // VobDrawCommands built this frame (prepass + color share them)
+    unsigned int m_SkeletalDrawnTriangles = 0;       // triangles in this frame's skeletal+attachment command set (stats)
+    bool m_SkeletalDrawArgsOverflowLogged = false;
+    bool CreateSkeletalIndirect();                   // command signature + both per-frame arg rings (once, at init)
 
     // ---- GPU-driven VOB culling (Hi-Z occlusion + frustum, replaces the CPU per-VOB frustum test) ----
     // Pipeline, per frame:

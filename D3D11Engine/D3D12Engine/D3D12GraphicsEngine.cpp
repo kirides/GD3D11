@@ -138,6 +138,13 @@ XRESULT D3D12GraphicsEngine::Init() {
         LogWarn() << "D3D12GraphicsEngine::Init: failed to create the skeletal pipeline.";
         return XR_FAILED;
     }
+    if ( !CreateSkeletalIndirect() ) {
+        // Fatal: both skeletal passes submit exclusively through these (T9), so a missing signature/ring would
+        // silently drop every NPC/monster and every node attachment. Must run after CreateSkeletal (it needs
+        // Skeletal.RootSig) and after CreateVobIndirect (the attachment rings ride the VOB command signature).
+        LogWarn() << "D3D12GraphicsEngine::Init: failed to create the skeletal ExecuteIndirect resources.";
+        return XR_FAILED;
+    }
     if ( !CreateShadowConstantBuffer() || !m_ShadowMap.Init() ) {
         // Fatal: the lit world PSO samples the shadow map (t4) + CB (b3) unconditionally, so a missing map would
         // leave those root slots unbound. Failing here cleanly falls back to D3D11 (D3D12 is dev-forced/opt-in).

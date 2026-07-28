@@ -1906,6 +1906,13 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	} else {
 		m_VobDrawCount = 0;
 	}
+	// Build the skeletal + node-attachment ExecuteIndirect command sets ONCE (T9) from g_FrameSkelDraws/
+	// g_FrameAttachDraws, resolving each material's full bindless index set — the depth prepass ignores the
+	// extra two, so both skeletal passes submit over these same two buffers. MUST stay ahead of
+	// BeginShadowRecording: this is the last Gothic-touching skeletal work (UpdateMeshLibTexAniState mutates
+	// the model's SHARED texani slots, zCTexture::CacheIn touches the resource manager) and the cascade
+	// recorders below run on pool threads that must never see either mid-flight.
+	BuildSkeletalDrawCommands();
 	// Everything the shadow passes need is resolved and every indirect-arg buffer for this frame is written, so
 	// hand the shadow recording to the pool and carry on: the prepass/cull/SSAO block below is recorded on the
 	// main thread WHILE the cascades, the point-light cubes and the rain map record into their own lists.
@@ -2525,6 +2532,201 @@ UINT D3D12GraphicsEngine::BuildVobDrawCommands( const std::vector<FrameVobUpload
         }
     }
     return count;
+}
+
+
+bool D3D12GraphicsEngine::CreateSkeletalIndirect() {
+    // T9: command signature + per-frame UPLOAD arg rings for the GPU-driven skeletal base meshes, plus the
+    // (signature-less) arg rings for the node attachments, which submit through the existing VOB signature.
+    // Must run AFTER CreateVobIndirect — the attachment rings are sized on VobDrawCommand and the attachment
+    // passes reuse m_VobIndirectCmdSig itself.
+    ID3D12Device* device = m_Device.GetDevice();
+    if ( !device || !m_Pipelines.Skeletal.RootSig || !m_Pipelines.World.RootSig ) return false;
+
+    // The GPU reads each command as tightly-packed native argument structs in pArgumentDescs order. The two root
+    // CBVs are bare 8-byte GPU VAs and lead, so everything after them (both buffer views) stays 8-aligned; 80 is a
+    // multiple of 8 so the next command's InstCB is aligned too. Unlike VobDrawCommand there is no trailing
+    // payload here — nothing GPU-side patches skeletal commands (no GPU cull for NPCs yet).
+    static_assert( sizeof( SkeletalDrawCommand ) == 80, "SkeletalDrawCommand must match the command signature arg layout (80 B stride)" );
+    static_assert( offsetof( SkeletalDrawCommand, MeshVBV ) == 16, "SkeletalDrawCommand VBV must follow the two root CBVs" );
+    static_assert( offsetof( SkeletalDrawCommand, MatNormalIndex ) == 48, "SkeletalDrawCommand b6 consts must follow the buffer views" );
+    static_assert( offsetof( SkeletalDrawCommand, Draw ) == 60, "SkeletalDrawCommand draw args must be last" );
+
+    D3D12_INDIRECT_ARGUMENT_DESC args[6] = {};
+    args[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT_BUFFER_VIEW;
+    args[0].ConstantBufferView.RootParameterIndex = 1;         // b1 per-instance CB (root CBV, VS)
+    args[1].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT_BUFFER_VIEW;
+    args[1].ConstantBufferView.RootParameterIndex = 2;         // b2 bone palette CB (root CBV, VS)
+    args[2].Type = D3D12_INDIRECT_ARGUMENT_TYPE_VERTEX_BUFFER_VIEW;
+    args[2].VertexBuffer.Slot = 0;                             // ExSkelVertexStruct (skinned, no instance stream)
+    args[3].Type = D3D12_INDIRECT_ARGUMENT_TYPE_INDEX_BUFFER_VIEW;
+    args[4].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT;
+    args[4].Constant.RootParameterIndex = 11;                  // b6 MaterialCB { normal, orm, diffuse }
+    args[4].Constant.DestOffsetIn32BitValues = 0;
+    args[4].Constant.Num32BitValuesToSet = 3;
+    args[5].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
+
+    D3D12_COMMAND_SIGNATURE_DESC sigDesc = {};
+    sigDesc.ByteStride = sizeof( SkeletalDrawCommand );        // 80 B; MUST match the struct + arg layout
+    sigDesc.NumArgumentDescs = _countof( args );
+    sigDesc.pArgumentDescs = args;
+    // Commands set root descriptors (b1/b2) and root constants (b6), so the signature must carry the root
+    // signature those parameter indices refer to.
+    if ( FAILED( device->CreateCommandSignature( &sigDesc, m_Pipelines.Skeletal.RootSig.Get(),
+        IID_PPV_ARGS( m_SkeletalIndirectCmdSig.ReleaseAndGetAddressOf() ) ) ) ) {
+        LogWarn() << "D3D12: failed to create the skeletal indirect command signature.";
+        return false;
+    }
+
+    D3D12MA::ALLOCATION_DESC upload = {};
+    upload.HeapType = DefaultUploadHeapType;
+
+    D3D12_RESOURCE_DESC bd = {};
+    bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bd.Height = 1; bd.DepthOrArraySize = 1; bd.MipLevels = 1;
+    bd.Format = DXGI_FORMAT_UNKNOWN; bd.SampleDesc.Count = 1;
+    bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+    auto makeRing = [&]( UINT64 bytes, Microsoft::WRL::ComPtr<ID3D12Resource>& res, Microsoft::WRL::ComPtr<D3D12MA::Allocation>& alloc, uint8_t*& ptr, const wchar_t* name ) -> bool {
+        bd.Width = bytes;
+        if ( FAILED( m_Allocator->CreateResource( &upload, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+            alloc.ReleaseAndGetAddressOf(), IID_PPV_ARGS( res.ReleaseAndGetAddressOf() ) ) ) )
+            return false;
+        res->SetName( name );
+        D3D12_RANGE noRead = { 0, 0 };
+        void* mapped = nullptr;
+        if ( FAILED( res->Map( 0, &noRead, &mapped ) ) ) return false;
+        ptr = static_cast<uint8_t*>( mapped );
+        return true;
+        };
+
+    for ( UINT i = 0; i < kBackBufferCount; ++i ) {
+        if ( !makeRing( static_cast<UINT64>( kMaxSkeletalDrawCommands ) * sizeof( SkeletalDrawCommand ),
+            m_SkeletalDrawArgs[i], m_SkeletalDrawArgsAlloc[i], m_SkeletalDrawArgsPtr[i], L"SkeletalDrawArgsRing" ) )
+            return false;
+        if ( !makeRing( static_cast<UINT64>( kMaxAttachDrawCommands ) * sizeof( VobDrawCommand ),
+            m_AttachDrawArgs[i], m_AttachDrawArgsAlloc[i], m_AttachDrawArgsPtr[i], L"AttachDrawArgsRing" ) )
+            return false;
+    }
+    return true;
+}
+
+
+void D3D12GraphicsEngine::BuildSkeletalDrawCommands() {
+    // T9: fold the whole per-mesh CPU draw path of BOTH skeletal passes into one build. Per base-mesh record:
+    // run the instance's texani update ONCE (it mutates the model's SHARED texture slots, so it has to happen
+    // while we read that instance's materials — see [[skeletal-texani-shared-slots]]), resolve the material's
+    // bindless normal/ORM/diffuse indices, and emit one command per sub-mesh carrying the two root CBVs, the
+    // skinned VB, the IB and DrawIndexed. Node attachments do the same into a VobDrawCommand buffer.
+    //
+    // Runs on the main thread from OnStartWorldRendering BEFORE BeginShadowRecording — every Gothic-touching
+    // call here (UpdateMeshLibTexAniState, zCTexture::CacheIn) must be finished before the cascade recorders
+    // start reading Gothic state on pool threads. That is also why the passes themselves are now pure GPU
+    // submits: they used to do this work after the fan-out.
+    m_SkeletalDrawCount = 0;
+    m_AttachDrawCount = 0;
+    m_SkeletalDrawnTriangles = 0;
+    if ( !m_FrameOpen ) return;
+    const UINT frame = m_FrameIndex;
+
+    auto logOverflow = [this]( const char* what, UINT cap ) {
+        if ( !m_SkeletalDrawArgsOverflowLogged ) {
+            LogWarn() << "D3D12: skeletal " << what << " draw-command ring overflow (" << cap
+                << " draws/frame); some skeletal geometry dropped this frame.";
+            m_SkeletalDrawArgsOverflowLogged = true;
+        }
+        };
+
+    // --- Base skinned meshes ---------------------------------------------------------------------------
+    if ( !g_FrameSkelDraws.empty() && m_SkeletalDrawArgsPtr[frame] ) {
+        SkeletalDrawCommand* cmds = reinterpret_cast<SkeletalDrawCommand*>( m_SkeletalDrawArgsPtr[frame] );
+        UINT count = 0;
+        for ( const FrameSkelDraw& d : g_FrameSkelDraws ) {
+            if ( !d.visual || !d.vobInfo || !d.vobInfo->Vob ) continue;
+            zCModel* model = static_cast<zCModel*>( d.vobInfo->Vob->GetVisual() );
+            if ( !model ) continue;
+            // before reading the materials we NEED to TexAni, the models share the same textures, causing
+            // incorrect textures if not done correctly.
+            model->UpdateMeshLibTexAniState();
+
+            for ( auto const& [mat, meshList] : d.visual->SkeletalMeshes ) {
+                zCTexture* tex = mat ? mat->GetAniTexture() : nullptr;
+                // b6 { normal, ORM, DIFFUSE } — fully bindless, no descriptor table on this root sig. The
+                // depth-prepass PS reads only the diffuse index (alpha clip) and ignores the other two, so one
+                // resolved material set serves both passes.
+                UINT mats[3];
+                ResolveMaterialMapSlots( tex, mats );
+                mats[2] = ResolveDiffuseSlotCacheIn( tex );
+
+                for ( auto const& mesh : meshList ) {
+                    if ( !mesh || mesh->Indices.empty() || !mesh->MeshVertexBuffer || !mesh->MeshIndexBuffer )
+                        continue;
+                    D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mesh->MeshVertexBuffer.get() );
+                    D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mesh->MeshIndexBuffer.get() );
+                    if ( !mvb->GetResource() || !mib->GetResource() ) continue;
+                    if ( count >= kMaxSkeletalDrawCommands ) { logOverflow( "base-mesh", kMaxSkeletalDrawCommands ); break; }
+
+                    SkeletalDrawCommand& c = cmds[count++];
+                    c.InstCB  = d.instCb;
+                    c.BoneCB  = d.boneCb;
+                    c.MeshVBV = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExSkelVertexStruct ) };
+                    c.IBV     = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
+                    c.MatNormalIndex  = mats[0];
+                    c.MatOrmIndex     = mats[1];
+                    c.MatDiffuseIndex = mats[2];
+                    c.Draw.IndexCountPerInstance = static_cast<UINT>( mesh->Indices.size() );
+                    c.Draw.InstanceCount         = 1;
+                    c.Draw.StartIndexLocation    = 0;
+                    c.Draw.BaseVertexLocation    = 0;
+                    c.Draw.StartInstanceLocation = 0;
+                    m_SkeletalDrawnTriangles += static_cast<unsigned int>( mesh->Indices.size() ) / 3;
+                }
+                if ( count >= kMaxSkeletalDrawCommands ) break;
+            }
+            if ( count >= kMaxSkeletalDrawCommands ) break;
+        }
+        m_SkeletalDrawCount = count;
+    }
+
+    // --- Node attachments (weapons/heads/held items) ----------------------------------------------------
+    // Same VobDrawCommand/m_VobIndirectCmdSig the instanced VOBs use — an attachment IS a one-instance VOB
+    // draw, down to the packed ExVertexStruct + VobInstanceInfo stream. WindMinHeight/MaxHeight go out as 0:
+    // VSMainAttach/VSDepthAttach never read b4 (the instance stream's wind fields carry Fatness/Scaling here).
+    if ( !g_FrameAttachDraws.empty() && m_AttachDrawArgsPtr[frame] ) {
+        VobDrawCommand* cmds = reinterpret_cast<VobDrawCommand*>( m_AttachDrawArgsPtr[frame] );
+        UINT count = 0;
+        for ( const FrameAttachDraw& a : g_FrameAttachDraws ) {
+            if ( !a.mesh || a.mesh->Indices.empty() || !a.mesh->GetMeshVertexBuffer() || !a.mesh->GetMeshIndexBuffer() )
+                continue;
+            D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( a.mesh->GetMeshVertexBuffer() );
+            D3D12VertexBuffer* mib = D3D12VertexBuffer::From( a.mesh->GetMeshIndexBuffer() );
+            if ( !mvb->GetResource() || !mib->GetResource() ) continue;
+            if ( count >= kMaxAttachDrawCommands ) { logOverflow( "attachment", kMaxAttachDrawCommands ); break; }
+
+            UINT mats[3];
+            ResolveMaterialMapSlots( a.tex, mats );
+            mats[2] = ResolveDiffuseSlotCacheIn( a.tex );
+
+            VobDrawCommand& c = cmds[count++];
+            c.MeshVBV = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStruct ) };
+            c.InstVBV = a.instView;
+            c.IBV     = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
+            c.MatNormalIndex  = mats[0];
+            c.MatOrmIndex     = mats[1];
+            c.MatDiffuseIndex = mats[2];
+            c.WindMinHeight   = 0.0f;
+            c.WindMaxHeight   = 0.0f;
+            c.Draw.IndexCountPerInstance = static_cast<UINT>( a.mesh->Indices.size() );
+            c.Draw.InstanceCount         = 1;
+            c.Draw.StartIndexLocation    = 0;
+            c.Draw.BaseVertexLocation    = 0;
+            c.Draw.StartInstanceLocation = 0;
+            c.VisualIndex = 0xFFFFFFFFu;   // never GPU-culled: "leave the CPU's instance count alone"
+            c._cmdPad     = 0;
+            m_SkeletalDrawnTriangles += static_cast<unsigned int>( a.mesh->Indices.size() ) / 3;
+        }
+        m_AttachDrawCount = count;
+    }
 }
 
 
@@ -3419,7 +3621,7 @@ void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
     // consumes the shared records. Base meshes via m_Pipelines.Skeletal.DepthPrepassPSO (skinned), attachments via
     // m_Pipelines.World.DepthPrepassVobPSO (packed vertex + instance) — both read only b0 + t0/s0, so no BindFrameLights.
     if ( !m_FrameOpen || !m_DepthBuffer ) return;
-    if ( g_FrameSkelDraws.empty() && g_FrameAttachDraws.empty() ) return;
+    if ( m_SkeletalDrawCount == 0 && m_AttachDrawCount == 0 ) return;
 
     XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
     Engine::GAPI->SetViewTransformXM( view );
@@ -3432,8 +3634,11 @@ void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
     D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
     D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
 
-    // Base skinned meshes (depth only).
-    if ( !g_FrameSkelDraws.empty() && m_Pipelines.Skeletal.DepthPrepassPSO && m_Pipelines.Skeletal.RootSig ) {
+    // Base skinned meshes (depth only) — one ExecuteIndirect over the command set BuildSkeletalDrawCommands
+    // filled (the same set the color pass draws; PSDepthClip only reads b6's diffuse index for the alpha
+    // cutout and ignores the normal/ORM constants each command also carries).
+    if ( m_SkeletalDrawCount > 0 && m_SkeletalIndirectCmdSig && m_SkeletalDrawArgs[m_FrameIndex]
+        && m_Pipelines.Skeletal.DepthPrepassPSO && m_Pipelines.Skeletal.RootSig ) {
         DX_ZONE( m_CmdList, "Depth Prepass (skeletal)" );
         TracyD3D12ZoneCGX( m_CmdList.Get(), "Depth Prepass (skeletal)" );
         m_CmdList->SetPipelineState( m_Pipelines.Skeletal.DepthPrepassPSO.Get() );
@@ -3442,66 +3647,30 @@ void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
         m_CmdList->RSSetViewports( 1, &vp );
         m_CmdList->RSSetScissorRects( 1, &sc );
         m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
-
-        for ( const FrameSkelDraw& d : g_FrameSkelDraws ) {
-            if ( !d.visual ) continue;
-            zCModel* model = static_cast<zCModel*>(d.vobInfo->Vob->GetVisual());
-            model->UpdateMeshLibTexAniState(); // before drawing we NEED to TexAni, the models share the same textures, causing incorrect textures if not done correctly.
-
-            m_CmdList->SetGraphicsRootConstantBufferView( 1, d.instCb );
-            m_CmdList->SetGraphicsRootConstantBufferView( 2, d.boneCb );
-            for ( auto const& [mat, meshList] : d.visual->SkeletalMeshes ) {
-                zCTexture* tex = mat ? mat->GetAniTexture() : nullptr;
-                // b6 { normal, ORM, DIFFUSE } — fully bindless, no descriptor table on this root sig.
-                // PSDepthClip alpha-clips off the diffuse index, so this one IS load-bearing in the prepass.
-                BindMaterialMaps( tex, 11, ResolveDiffuseSlotCacheIn( tex ) );
-                for ( auto const& mesh : meshList ) {
-                    if ( !mesh || mesh->Indices.empty() || !mesh->MeshVertexBuffer || !mesh->MeshIndexBuffer )
-                        continue;
-                    D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mesh->MeshVertexBuffer.get() );
-                    D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mesh->MeshIndexBuffer.get() );
-                    if ( !mvb->GetResource() || !mib->GetResource() ) continue;
-                    const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExSkelVertexStruct ) };
-                    m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
-                    const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
-                    m_CmdList->IASetIndexBuffer( &ibv );
-                    m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mesh->Indices.size() ), 1, 0, 0, 0 );
-                }
-            }
-        }
+        // Each command sets its own b1 instance CBV + b2 bone CBV + skinned VBV + IBV + b6 material consts,
+        // then DrawIndexed — replacing the per-vob root-CBV sets and per-mesh IA binds the CPU path issued.
+        m_CmdList->ExecuteIndirect( m_SkeletalIndirectCmdSig.Get(), m_SkeletalDrawCount,
+            m_SkeletalDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
     }
 
     // Node attachments (depth only) through the VOB attachment depth PSO (Fatness/Scaling variant — see
     // Vob.hlsl's VSDepthAttach; must match DrawSkeletalColor's attachment PSO choice or the prepass depth
     // won't reflect the same inflate/scale as the color pass, the same class of bug the wind fix addressed).
-    if ( !g_FrameAttachDraws.empty() && m_Pipelines.World.DepthPrepassVobAttachPSO && m_Pipelines.World.RootSig ) {
+    if ( m_AttachDrawCount > 0 && m_VobIndirectCmdSig && m_AttachDrawArgs[m_FrameIndex]
+        && m_Pipelines.World.DepthPrepassVobAttachPSO && m_Pipelines.World.RootSig ) {
         DX_ZONE( m_CmdList, "Depth Prepass (attachments)" );
         TracyD3D12ZoneCGX( m_CmdList.Get(), "Depth Prepass (attachments)" );
         m_CmdList->SetPipelineState( m_Pipelines.World.DepthPrepassVobAttachPSO.Get() );
         m_CmdList->SetGraphicsRootSignature( m_Pipelines.World.RootSig.Get() );
         m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
+        // The shared VOB signature also writes b4[4..5]; VSDepthAttach never reads b4, but bind the frame-global
+        // wind baseline anyway so the parameter is never left undefined for a later pass on this root sig.
+        m_CmdList->SetGraphicsRoot32BitConstants( 11, 12, &m_WindBuffer, 0 );
         m_CmdList->RSSetViewports( 1, &vp );
         m_CmdList->RSSetScissorRects( 1, &sc );
         m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
-
-        for ( const FrameAttachDraw& a : g_FrameAttachDraws ) {
-            if ( !a.mesh || !a.mesh->GetMeshVertexBuffer() || !a.mesh->GetMeshIndexBuffer() ) continue;
-            D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( a.mesh->GetMeshVertexBuffer() );
-            D3D12VertexBuffer* mib = D3D12VertexBuffer::From( a.mesh->GetMeshIndexBuffer() );
-            if ( !mvb->GetResource() || !mib->GetResource() ) continue;
-
-            // Bindless diffuse: push ONLY b6 constant index 2 (MatDiffuseIndex) — PSDepthClipBindless reads
-            // nothing else from the MaterialCB, so the normal/ORM resolve the color pass needs is skipped here.
-            const UINT diffuseSlot = ResolveDiffuseSlotCacheIn( a.tex );
-            m_CmdList->SetGraphicsRoot32BitConstant( 10, diffuseSlot, 2 );
-
-            const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStruct ) };
-            const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, a.instView };
-            m_CmdList->IASetVertexBuffers( 0, 2, views );
-            const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
-            m_CmdList->IASetIndexBuffer( &ibv );
-            m_CmdList->DrawIndexedInstanced( static_cast<UINT>( a.mesh->Indices.size() ), 1, 0, 0, 0 );
-        }
+        m_CmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), m_AttachDrawCount,
+            m_AttachDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
     }
 }
 
@@ -3511,7 +3680,7 @@ void D3D12GraphicsEngine::DrawSkeletalColor() {
     // lit through the tile grid. Base via m_Pipelines.Skeletal.PSO, attachments via m_Pipelines.World.VobPSO — same PSOs/binds as before the
     // 4b split, just consuming the shared records (no re-upload, no re-run of the once/frame animation update).
     if ( !m_FrameOpen || !m_Pipelines.Skeletal.PSO || !m_Pipelines.Skeletal.RootSig || !m_DepthBuffer ) return;
-    if ( g_FrameSkelDraws.empty() && g_FrameAttachDraws.empty() ) return;
+    if ( m_SkeletalDrawCount == 0 && m_AttachDrawCount == 0 ) return;
 
     GothicRendererState& rs = Engine::GAPI->GetRendererState();
 
@@ -3527,10 +3696,9 @@ void D3D12GraphicsEngine::DrawSkeletalColor() {
     const FogConstants fog = MakeFogConstants();
     D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
     D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
-    unsigned int drawnTris = 0;
 
-    // Base skinned meshes (lit).
-    if ( !g_FrameSkelDraws.empty() ) {
+    // Base skinned meshes (lit) — one ExecuteIndirect over the shared command set (see the prepass).
+    if ( m_SkeletalDrawCount > 0 && m_SkeletalIndirectCmdSig && m_SkeletalDrawArgs[m_FrameIndex] ) {
         DX_ZONE( m_CmdList, "Draw skeletal" );
         TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw skeletal" );
         m_CmdList->SetPipelineState( m_Pipelines.Skeletal.PSO.Get() );
@@ -3545,39 +3713,16 @@ void D3D12GraphicsEngine::DrawSkeletalColor() {
         m_CmdList->RSSetViewports( 1, &vp );
         m_CmdList->RSSetScissorRects( 1, &sc );
         m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
-
-        for ( const FrameSkelDraw& d : g_FrameSkelDraws ) {
-            if ( !d.visual ) continue;
-            zCModel* model = static_cast<zCModel*>(d.vobInfo->Vob->GetVisual());
-            model->UpdateMeshLibTexAniState(); // before drawing we NEED to TexAni, the models share the same textures, causing incorrect textures if not done correctly.
-
-            m_CmdList->SetGraphicsRootConstantBufferView( 1, d.instCb );
-            m_CmdList->SetGraphicsRootConstantBufferView( 2, d.boneCb );
-            for ( auto const& [mat, meshList] : d.visual->SkeletalMeshes ) {
-                zCTexture* tex = mat ? mat->GetAniTexture() : nullptr;
-                BindMaterialMaps( tex, 11, ResolveDiffuseSlotCacheIn( tex ) );   // b6 { normal, ORM, diffuse }
-                for ( auto const& mesh : meshList ) {
-                    if ( !mesh || mesh->Indices.empty() || !mesh->MeshVertexBuffer || !mesh->MeshIndexBuffer )
-                        continue;
-                    D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mesh->MeshVertexBuffer.get() );
-                    D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mesh->MeshIndexBuffer.get() );
-                    if ( !mvb->GetResource() || !mib->GetResource() ) continue;
-                    const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExSkelVertexStruct ) };
-                    m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
-                    const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
-                    m_CmdList->IASetIndexBuffer( &ibv );
-                    m_CmdList->DrawIndexedInstanced( static_cast<UINT>( mesh->Indices.size() ), 1, 0, 0, 0 );
-                    drawnTris += static_cast<unsigned int>( mesh->Indices.size() ) / 3;
-                }
-            }
-        }
+        m_CmdList->ExecuteIndirect( m_SkeletalIndirectCmdSig.Get(), m_SkeletalDrawCount,
+            m_SkeletalDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
     }
 
     // Node attachments (lit) through the VOB attachment PSO (Fatness/Scaling variant — see Vob.hlsl's
     // VSMainAttach; non-morph attachments get Fatness=0/Scaling=1, a no-op, so this is a drop-in replacement
     // for the plain VobPSO). BindFrameLights() is REQUIRED — the VOB PS reads the light count/grid, so an
     // unbound count would run the loop on garbage → GPU TDR hang.
-    if ( !g_FrameAttachDraws.empty() && m_Pipelines.World.VobAttachPSO && m_Pipelines.World.RootSig ) {
+    if ( m_AttachDrawCount > 0 && m_VobIndirectCmdSig && m_AttachDrawArgs[m_FrameIndex]
+        && m_Pipelines.World.VobAttachPSO && m_Pipelines.World.RootSig ) {
         DX_ZONE( m_CmdList, "Draw attachments" );
         TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw attachments" );
         m_CmdList->SetPipelineState( m_Pipelines.World.VobAttachPSO.Get() );
@@ -3589,30 +3734,18 @@ void D3D12GraphicsEngine::DrawSkeletalColor() {
         m_CmdList->SetGraphicsRootDescriptorTable( 8, GetSrvGpuHandle( m_ShadowMap.GetSrvSlot() ) );    // t4 shadow map
         m_CmdList->SetGraphicsRootDescriptorTable( 9, GetSrvGpuHandle( m_PointShadows.GetSrvSlot() ) ); // t5 point-shadow cubes
         m_CmdList->SetGraphicsRoot32BitConstants( 12, 1, &m_ActiveAOMaskSrvSlot, 0 );   // b7 AOCB (simple SSAO mask)
+        // Frame-global wind baseline for the shared VOB signature's b4[4..5] partial writes — see the prepass.
+        m_CmdList->SetGraphicsRoot32BitConstants( 11, 12, &m_WindBuffer, 0 );
         m_CmdList->RSSetViewports( 1, &vp );
         m_CmdList->RSSetScissorRects( 1, &sc );
         m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
-
-        for ( const FrameAttachDraw& a : g_FrameAttachDraws ) {
-            if ( !a.mesh || !a.mesh->GetMeshVertexBuffer() || !a.mesh->GetMeshIndexBuffer() ) continue;
-            D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( a.mesh->GetMeshVertexBuffer() );
-            D3D12VertexBuffer* mib = D3D12VertexBuffer::From( a.mesh->GetMeshIndexBuffer() );
-            if ( !mvb->GetResource() || !mib->GetResource() ) continue;
-
-            // Fully bindless material: b6 { normal, ORM, diffuse } root constants, no t0 descriptor table —
-            // same three-constant push DrawSkeletalColor's base meshes use (PSMainBindless reads the identical
-            // MaterialCB layout).
-            BindMaterialMaps( a.tex, 10, ResolveDiffuseSlotCacheIn( a.tex ) );
-
-            const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStruct ) };
-            const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, a.instView };
-            m_CmdList->IASetVertexBuffers( 0, 2, views );
-            const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
-            m_CmdList->IASetIndexBuffer( &ibv );
-            m_CmdList->DrawIndexedInstanced( static_cast<UINT>( a.mesh->Indices.size() ), 1, 0, 0, 0 );
-            drawnTris += static_cast<unsigned int>( a.mesh->Indices.size() ) / 3;
-        }
+        // Each command sets its own mesh/instance VBVs + IBV + b6 { normal, ORM, diffuse } bindless material
+        // constants, then DrawIndexed — PSMainBindless reads the identical MaterialCB layout the base meshes use.
+        m_CmdList->ExecuteIndirect( m_VobIndirectCmdSig.Get(), m_AttachDrawCount,
+            m_AttachDrawArgs[m_FrameIndex].Get(), 0, nullptr, 0 );
     }
 
-    rs.RendererInfo.FrameDrawnTriangles += drawnTris;
+    // Counted once at build time (BuildSkeletalDrawCommands) rather than per draw — the commands are submitted
+    // wholesale now, so there is no per-mesh CPU site left to accumulate from.
+    rs.RendererInfo.FrameDrawnTriangles += m_SkeletalDrawnTriangles;
 }
