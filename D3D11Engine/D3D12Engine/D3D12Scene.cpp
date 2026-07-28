@@ -689,6 +689,12 @@ void D3D12GraphicsEngine::FinishShadowPasses() {
 	// their own pass, which is self-contained in one list.)
 	m_ShadowMap.TransitionToReadState( m_CmdList.Get() );
 
+	// Every shadow list for this frame is now recorded and submitted (or was re-issued inline above), so the
+	// point-shadow static cubes this frame (re)rendered have actually reached the GPU — only now may their slots
+	// be marked cached. Deliberately after the early-out above: a frame that never got here must NOT validate a
+	// static render it never issued, or that light loses its static shadow permanently (see CommitStaticCache).
+	m_PointShadows.CommitStaticCache();
+
 	// Restore the HDR scene-color RT (+ shared depth) for the lit passes that follow — the world pass renders
 	// into the HDR target, not the swapchain (Phase 3); the tonemap resolve composites it at the end of the frame.
 	BindSceneColorTarget();

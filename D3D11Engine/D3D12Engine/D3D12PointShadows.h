@@ -62,6 +62,17 @@ public:
     void Prepare();
     void Record( ID3D12GraphicsCommandList* cmdList );
 
+    // Commits the static-cube cache stamps Prepare() resolved this frame. MUST be called only once the pass is
+    // known to have been recorded AND submitted (end of FinishShadowPasses) — never from Prepare().
+    // `staticValid` means "the slot's static target physically holds this light's static depth"; stamping it at
+    // resolve time made it mean "we intended to draw it", and any frame that resolved a static (re)render but
+    // never issued it — the pass bailing on !m_FrameOpen, a list that failed to record and re-issue — left the
+    // slot marked cached while its target held nothing but the Phase-A clear. Depth 1.0 sampled LESS_EQUAL is
+    // "nothing occludes", so the light silently lost its static shadow FOREVER (nothing re-renders a slot that
+    // believes it is cached). Aside-routed slots showed it worst: Phase B re-lays that empty base under the
+    // dynamic overlay every single frame, so their static never came back at all.
+    void CommitStaticCache();
+
     // Static-cube cache invalidation on world changes. The static depth is only re-rendered when the light is
     // fresh / moved / resized — not when geometry around it changes — so a VOB appearing or disappearing inside
     // a cached slot's light sphere must force a one-time static re-render next frame. Over-invalidation is
@@ -148,8 +159,27 @@ private:
                                              // never copied (no overlay possible — static light, or PLS_STATIC_ONLY).
                                              // A change here invalidates staticValid: the depth lives in the other cube.
         UINT32            dynamicStaleFrames = 0; // frames since this slot's skeletal dynamic overlay last ran (round-robin, P2.10h)
+        UINT32            missingFrames = 0;   // consecutive frames this slot's owner was NOT a winner; 0 while it is.
+                                             // A slot is NOT released the moment its light drops out of the winner
+                                             // set (the light buffer is frustum-culled upstream, so merely turning
+                                             // away drops it): its cached static depth is still perfectly good and
+                                             // is exactly what should be reused when the light comes back. Slots
+                                             // are given up only under pressure (a new winner needs one — the
+                                             // longest-absent goes first) or after kSlotRetentionFrames, so a
+                                             // static re-cull happens on FIRST acquisition, on invalidation, or
+                                             // after actually losing the slot — not on every frustum blink.
     };
+    // Absent-owner retention cap. Also bounds how long a released-but-remembered zCVobLight* can linger: `owner`
+    // is only ever compared for identity while absent (never dereferenced — BuildExcludeList only ever sees a
+    // current winner), but a vob freed and its address reused would otherwise inherit the slot's stale cache.
+    static constexpr UINT32 kSlotRetentionFrames = 600;   // ~10 s at 60 fps
     Slot m_Slots[kMaxCubes];
+
+    // Slots whose static target was (re)rendered by THIS frame's records, pending the CommitStaticCache() that
+    // turns them into cache hits. Kept out of Slot so an uncommitted frame simply leaves staticValid false and
+    // the slot retries next frame. Capacity is retained across frames (frame-path allocation rule).
+    struct PendingStatic { UINT slot; bool aside; };
+    std::vector<PendingStatic> m_PendingStatic;
 
     // The shadowed lights chosen this frame — filled by SelectShadowedLights, consumed by Prepare().
     // renderStatic: also (re)render the STATIC casters into this slot's static target (fresh slot / light moved

@@ -287,7 +287,9 @@ void D3D12PointShadows::SelectShadowedLights( GPULight* dst, UINT count, const s
 			if ( ss.owner ) ss = Slot{};
 		return;
 	}
-	if ( !m_Cube || count == 0 ) return;
+	// NOT gated on count>0: with zero visible lights every slot's owner is absent, and the retention/eviction
+	// bookkeeping below still has to tick for them.
+	if ( !m_Cube ) return;
 
 	const XMVECTOR camPos = Engine::GAPI->GetCameraPositionXM();
 	struct Cand { UINT dstIdx; zCVobLight* vob; float distSq; float sortKey; bool isStatic; };
@@ -316,13 +318,19 @@ void D3D12PointShadows::SelectShadowedLights( GPULight* dst, UINT count, const s
 	std::sort( cands.begin(), cands.end(), []( const Cand& a, const Cand& b ) { return a.sortKey < b.sortKey; } );
 	if ( cands.size() > kMaxCubes ) cands.resize( kMaxCubes );
 
-	// Release slots whose owner is no longer a winner (frees them + invalidates their cached content).
+	// Age slots whose owner is not a winner this frame — but do NOT release them. The light buffer these
+	// candidates come from is frustum-culled upstream (CollectVisibleVobs), so a light drops out merely because
+	// the camera turned away; its cached static depth is still valid and is exactly what should be reused the
+	// moment it comes back. Releasing on absence made every frustum blink a fresh occupant, i.e. a full static
+	// re-cull + re-render of the world sections and VOB instances around that light. Slots are surrendered only
+	// under real pressure (below) or once the absence outlives kSlotRetentionFrames.
 	for ( UINT s = 0; s < kMaxCubes; ++s ) {
-		zCVobLight* o = m_Slots[s].owner;
-		if ( !o ) continue;
+		Slot& ss = m_Slots[s];
+		if ( !ss.owner ) continue;
 		bool stillWinner = false;
-		for ( const Cand& c : cands ) if ( c.vob == o ) { stillWinner = true; break; }
-		if ( !stillWinner ) m_Slots[s] = Slot{};
+		for ( const Cand& c : cands ) if ( c.vob == ss.owner ) { stillWinner = true; break; }
+		if ( stillWinner ) { ss.missingFrames = 0; continue; }
+		if ( ++ss.missingFrames > kSlotRetentionFrames ) ss = Slot{};
 	}
 
 	// Assign each winner a stable slot (keep its existing one, else grab a free one) and decide render vs cache.
@@ -333,9 +341,17 @@ void D3D12PointShadows::SelectShadowedLights( GPULight* dst, UINT count, const s
 		if ( slot < 0 ) {
 			for ( UINT s = 0; s < kMaxCubes; ++s )
 				if ( !m_Slots[s].owner ) { slot = static_cast<int>( s ); break; }
-			if ( slot < 0 ) continue;   // no free slot (can't happen: winners <= kMaxCubes)
+			if ( slot < 0 ) {
+				// Every slot is spoken for. Retained-but-absent owners are the ones to give up, longest-absent
+				// first — an absent light's cache is worth keeping, but not at the cost of a light on screen now.
+				UINT32 worst = 0;
+				for ( UINT s = 0; s < kMaxCubes; ++s )
+					if ( m_Slots[s].missingFrames > worst ) { worst = m_Slots[s].missingFrames; slot = static_cast<int>( s ); }
+				if ( slot < 0 ) continue;   // all kMaxCubes slots are held by present winners — this light goes unshadowed
+			}
+			m_Slots[slot] = Slot{};
 			m_Slots[slot].owner = c.vob;
-			m_Slots[slot].staticValid = false;   // fresh occupant → must render static
+			m_Slots[slot].staticValid = false;   // fresh occupant → must render static (the slot changed hands)
 		}
 		Slot& ss = m_Slots[slot];
 		ss.isStatic = c.isStatic;
@@ -476,6 +492,10 @@ void D3D12PointShadows::Prepare() {
 	// records the depth prepass/SSAO, which is what keeps the ~0.5 ms of cube copies + binds off the critical
 	// path (see the engine's PrepareShadowPasses / BeginShadowRecording).
 	m_PassReady = false;
+	// Dropped unconditionally, ahead of every guard below: an uncommitted stamp from last frame means that
+	// frame's static render never made it to the GPU, so the slot must stay uncached and retry — never inherit
+	// a commit from a later frame's pass.
+	m_PendingStatic.clear();
 	g_PsLights.clear();
 	g_PsStaticWorldDraws.clear();
 	g_PsStaticVobDraws.clear();
@@ -556,18 +576,28 @@ void D3D12PointShadows::Prepare() {
 	// once the visual is resolved).
 	constexpr float kSkeletalCullPad = 6.0f;
 
+	// Is a static (re)render ATTEMPTABLE at all this frame? Only if the caster source it needs actually exists.
+	// With the world mesh missing (world load / stream-in) Phase A would clear the slot's static target, draw
+	// nothing into it, and — before the stamp moved to CommitStaticCache — cache that empty result forever, which
+	// is a shadow that never comes back. Deferring costs the light its static shadow for a frame instead.
+	// NOTE this is deliberately NOT "did the gather produce draws": a resolve that legitimately finds no casters
+	// in range is a real, cacheable answer, and re-culling it every frame is exactly what the cache exists to
+	// avoid. Loop-invariant, so it is decided once here rather than per light.
+	const bool staticResolvable = haveWorld && !worldSections.empty();
+
 	for ( const FrameLight& ps : m_FrameLights ) {
 		if ( ps.slot >= kMaxCubes ) continue;
 		// Only the slots being (re)drawn THIS frame (static change and/or scheduled dynamic overlay, see the
 		// round-robin scheduling in SelectShadowedLights) get their active cube refreshed from static-aside. A
 		// far light skipped this frame keeps EXACTLY what was last composited into its active cube — including
 		// its last dynamic overlay — instead of being stomped back to pure static every frame and losing it.
-		if ( !ps.renderStatic && !ps.renderDynamic ) continue;
+		// A static render deferred for being unresolvable (see staticResolvable) counts as nothing to do here.
+		if ( !(ps.renderStatic && staticResolvable) && !ps.renderDynamic ) continue;
 
 		PointShadowLightRecord rec;
 		rec.slot = ps.slot;
 		rec.faceCb = faceCb( ps.slot );
-		rec.renderStatic = ps.renderStatic;
+		rec.renderStatic = ps.renderStatic && staticResolvable;
 		rec.useAside = ps.overlayEligible;
 		// An eligible slot's active cube is rebuilt from the aside every frame (see the header comment): the copy
 		// is what wipes the PREVIOUS frame's overlay, so it has to run even on a frame whose overlay resolves to
@@ -580,12 +610,12 @@ void D3D12PointShadows::Prepare() {
 		// ==================== Phase A resolve — STATIC casters (world mesh + instanced VOBs) ====================
 		rec.staticWorldBegin = rec.staticWorldEnd = static_cast<UINT>( g_PsStaticWorldDraws.size() );
 		rec.staticVobBegin   = rec.staticVobEnd   = static_cast<UINT>( g_PsStaticVobDraws.size() );
-		if ( ps.renderStatic ) {
+		if ( rec.renderStatic ) {
 			g_PsAnyStatic = true;
-			// The slot's CURRENT static target now holds its static depth (aside cube if eligible, else the active
-			// cube itself). usesAside is stamped alongside so SelectShadowedLights can spot a routing flip.
-			m_Slots[ps.slot].staticValid = true;
-			m_Slots[ps.slot].usesAside = ps.overlayEligible;
+			// The slot's CURRENT static target (aside cube if eligible, else the active cube itself) is about to
+			// be cleared and redrawn — but it does not HOLD that depth until the pass has actually been recorded
+			// and submitted, so the cache stamp is queued for CommitStaticCache instead of applied here.
+			m_PendingStatic.push_back( { ps.slot, ps.overlayEligible } );
 
 			// --- World mesh: range-cull sections (AABB nearest-point), all 6 faces in one draw. ---
 			if ( haveWorld ) {
@@ -768,6 +798,22 @@ void D3D12PointShadows::Prepare() {
 
 		g_PsLights.push_back( rec );
 	}
+}
+
+
+void D3D12PointShadows::CommitStaticCache() {
+	// Called once the frame's point-shadow list is known to be recorded AND submitted (end of FinishShadowPasses),
+	// which is the first moment "this slot's static target holds its static depth" is actually true. A frame that
+	// bailed before that simply never calls this: m_PendingStatic is dropped at the top of the next Prepare(), the
+	// slot stays uncached, and the static render is re-attempted. See the header for what stamping this early cost.
+	for ( const PendingStatic& p : m_PendingStatic ) {
+		if ( p.slot >= kMaxCubes ) continue;
+		Slot& ss = m_Slots[p.slot];
+		if ( !ss.owner ) continue;   // slot released between Prepare() and here — nothing to validate
+		ss.staticValid = true;
+		ss.usesAside = p.aside;   // routing this depth was rendered with; a later flip re-invalidates (SelectShadowedLights)
+	}
+	m_PendingStatic.clear();
 }
 
 
