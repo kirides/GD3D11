@@ -713,12 +713,8 @@ void D3D12GraphicsEngine::PrepareRainShadowmap() {
     static std::vector<WorldMeshSectionInfo*> rainShadowSections;
     rainShadowSections.clear();
 
-    // culling currently broken with BVH but only for rain shadow map ???
     auto& settings = Engine::GAPI->GetRendererState().RendererSettings;
-    const auto oldUseWorldSectionBVH = settings.DebugSettings.FeatureSet.UseWorldSectionBVH;
-    settings.DebugSettings.FeatureSet.UseWorldSectionBVH = false;
     Engine::GAPI->CollectVisibleSections( rainShadowSections, &m_RainShadowFrustum, false );
-    settings.DebugSettings.FeatureSet.UseWorldSectionBVH = oldUseWorldSectionBVH;
 
     g_RainShadowVb = vb;
     g_RainShadowIb = ib;
