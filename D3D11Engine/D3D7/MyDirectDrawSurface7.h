@@ -97,8 +97,18 @@ public:
     /** Returns the fx-map for this surface */
     GfxTexture* GetFxMap();
 
-    /** Loads additional resources if possible */
+    /** Loads additional resources if possible.
+        Probing for which replacement files exist happens synchronously; the actual read + decode +
+        GPU upload is handed to a worker thread, because doing it inline cost up to 20ms on the game
+        thread whenever a batch of textures cached in (world load, cache invalidation, teleport, or
+        just turning around onto unseen NPCs/VOBs). Until the job lands, GetNormalmap()/GetFxMap()
+        return nullptr and the material renders with its diffuse only — the same thing that happens
+        for a texture that has no replacement at all. */
     void LoadAdditionalResources( zCTexture* ownedTexture );
+
+    /** Joins an in-flight async additional-resource load for this surface. Must be called before
+        anything reads or frees Normalmap/FxMap non-atomically. */
+    void WaitForPendingAdditionalResources();
 
     /** Returns the name of this surface */
     const std::string& GetTextureName();
@@ -114,8 +124,8 @@ public:
 
     /** Returns the type of this texture */
     ETextureType GetTextureType() const { return TextureType; }
-    
-    EAdditionalMaterial GetAvailableMaterials() const { return AvailableMaterials; };
+
+    EAdditionalMaterial GetAvailableMaterials() const { return AvailableMaterials.load( std::memory_order_acquire ); };
 private:
 
     /** Faked attached surfaces for the mipmaps */
@@ -136,15 +146,17 @@ private:
     std::string TextureName;
     ETextureType TextureType;
 
-    /** Additional maps */
-    GfxTexture* Normalmap;
-    GfxTexture* FxMap;
+    /** Additional maps. Atomic because they are published by the worker thread that loads them while
+        the render thread is already binding this surface — every reader goes through
+        GetNormalmap()/GetFxMap(), so a plain acquire load there covers all of them. */
+    std::atomic<GfxTexture*> Normalmap;
+    std::atomic<GfxTexture*> FxMap;
 
     /** Locktype */
     DWORD LockType;
 
     /** zCTexture this is associated with */
     zCTexture* GothicTexture;
-    
-    EAdditionalMaterial AvailableMaterials;
+
+    std::atomic<EAdditionalMaterial> AvailableMaterials;
 };
