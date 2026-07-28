@@ -12,6 +12,97 @@
 
 const std::string LEAF_SUBSTR[] = { "Treetop", "Bush", "Leaf" };
 
+/** Reads an already-resolved replacement file and builds the GPU texture from it. Defined below. */
+static bool LoadResource( const std::string& path, const std::string& name, std::vector<uint8_t>& storage, GfxTexture** ppTexture );
+
+/** One decoded replacement texture, shared by every surface that resolved to the same file.
+
+    Without this, the same '<tex>_NORMAL.DDS' was read, decoded and uploaded once per Unlock of every
+    mip level of its diffuse texture (Gothic unlocks the whole chain through FakeDirectDrawSurface7,
+    which forwards to the owning surface) — each load throwing the previous one away, and each one
+    blocking on the previous worker job through WaitForPendingAdditionalResources. */
+struct SharedAdditionalTexture {
+    /** Cache key: the resolved VDFS path this was loaded from. */
+    std::string Path;
+
+    /** Owned. Null while not yet loaded, and stays null if the load failed — Loaded still flips, so a
+        broken file isn't retried by every surface that references it. */
+    GfxTexture* Texture = nullptr;
+
+    /** Guards Texture/Loaded. Held across the read+decode+upload, so a second worker asking for the
+        same file waits for the first instead of duplicating the work. */
+    std::mutex LoadMutex;
+    bool Loaded = false;
+
+    ~SharedAdditionalTexture();
+
+    /** Loads on first call, no-ops afterwards. Returns the (possibly null) texture. */
+    GfxTexture* EnsureLoaded( const std::string& name, std::vector<uint8_t>& storage );
+};
+
+namespace {
+    /** Path-keyed cache of the decoded replacement textures. Weak on purpose: an entry lives exactly
+        as long as some surface still references it, so a texture that Gothic caches out gives its
+        normal/ORM maps back instead of pinning them for the rest of the session — this is a 32-bit
+        process and replacement packs are large. */
+    std::mutex s_AdditionalTextureCacheMutex;
+    std::unordered_map<std::string, std::weak_ptr<SharedAdditionalTexture>> s_AdditionalTextureCache;
+
+    /** Returns the shared entry for 'path', creating (but not loading) it if this is the first user. */
+    std::shared_ptr<SharedAdditionalTexture> AcquireAdditionalTexture( const std::string& path ) {
+        std::scoped_lock lock( s_AdditionalTextureCacheMutex );
+        std::weak_ptr<SharedAdditionalTexture>& slot = s_AdditionalTextureCache[path];
+        if ( std::shared_ptr<SharedAdditionalTexture> existing = slot.lock() ) {
+            return existing;
+        }
+
+        auto entry = std::make_shared<SharedAdditionalTexture>();
+        entry->Path = path;
+        slot = entry;
+        return entry;
+    }
+
+    /** True if this entry has nothing left to do (a null entry means "no such replacement file"). */
+    bool IsAdditionalTextureResolved( const std::shared_ptr<SharedAdditionalTexture>& entry ) {
+        if ( !entry ) return true;
+        std::scoped_lock lock( entry->LoadMutex );
+        return entry->Loaded;
+    }
+
+    /** Texture of an already-resolved entry. Only valid after IsAdditionalTextureResolved(). */
+    GfxTexture* PeekAdditionalTexture( const std::shared_ptr<SharedAdditionalTexture>& entry ) {
+        if ( !entry ) return nullptr;
+        std::scoped_lock lock( entry->LoadMutex );
+        return entry->Texture;
+    }
+}
+
+SharedAdditionalTexture::~SharedAdditionalTexture() {
+    {
+        std::scoped_lock lock( s_AdditionalTextureCacheMutex );
+        // Only drop our own slot: a surface may already have raced in and put a fresh entry for the
+        // same path there, in which case that one is still alive and must be left alone.
+        if ( auto it = s_AdditionalTextureCache.find( Path );
+             it != s_AdditionalTextureCache.end() && it->second.expired() ) {
+            s_AdditionalTextureCache.erase( it );
+        }
+    }
+
+    // May run on a worker thread (last reference dropped by a finishing load job). Both backends'
+    // texture destructors are safe there: D3D11 just releases COM objects, D3D12 pushes the resource
+    // and its SRV slot onto the mutex-guarded deferred-cleanup queue.
+    delete Texture;
+}
+
+GfxTexture* SharedAdditionalTexture::EnsureLoaded( const std::string& name, std::vector<uint8_t>& storage ) {
+    std::scoped_lock lock( LoadMutex );
+    if ( !Loaded ) {
+        Loaded = true;
+        LoadResource( Path, name, storage, &Texture ); // leaves Texture null on failure
+    }
+    return Texture;
+}
+
 MyDirectDrawSurface7::MyDirectDrawSurface7() {
     refCount = 1;
     EngineTexture = nullptr;
@@ -22,6 +113,7 @@ MyDirectDrawSurface7::MyDirectDrawSurface7() {
     IsReady = false;
     TextureType = ETextureType::TX_UNDEF;
     AvailableMaterials = EAdditionalMaterial::None;
+    AdditionalResourcesResolved = false;
     LockType = 0;
 
     // Check for test-bind mode to figure out what zCTexture-Object we are associated with
@@ -49,8 +141,13 @@ MyDirectDrawSurface7::~MyDirectDrawSurface7() {
     delete[] LockedData;
 
     delete EngineTexture;
-    delete Normalmap.load( std::memory_order_acquire );
-    delete FxMap.load( std::memory_order_acquire );
+
+    // The maps themselves belong to the shared cache — dropping our share is all that's needed, and
+    // only deletes them if no other surface still uses the same replacement file.
+    Normalmap.store( nullptr, std::memory_order_release );
+    FxMap.store( nullptr, std::memory_order_release );
+    NormalmapRef.reset();
+    FxMapRef.reset();
 }
 
 /** Returns the engine texture of this surface */
@@ -175,6 +272,15 @@ void MyDirectDrawSurface7::WaitForPendingAdditionalResources() {
 
 /** Loads additional resources if possible */
 void MyDirectDrawSurface7::LoadAdditionalResources( zCTexture* ownedTexture ) {
+    // Gothic unlocks every mip level of a texture and each of them ends up here (the mip surfaces are
+    // views onto this one). Everything below — the VDFS probes, the cache lookups, the worker job —
+    // is keyed off TextureName, which is latched from the first zCTexture this surface is associated
+    // with and never changes afterwards, so every repeat call would redo identical work. A re-cached
+    // texture gets a brand new surface, so nothing needs this to be re-resolvable.
+    if ( AdditionalResourcesResolved ) {
+        return;
+    }
+
     // A worker may still be loading this surface's maps from an earlier call (the texture got
     // re-cached). It owns Normalmap/FxMap until it publishes them, so join it before touching either.
     WaitForPendingAdditionalResources();
@@ -190,13 +296,13 @@ void MyDirectDrawSurface7::LoadAdditionalResources( zCTexture* ownedTexture ) {
 
     }
 
-    if ( GfxTexture* previous = Normalmap.exchange( nullptr, std::memory_order_acq_rel ) ) {
-        delete previous;
-    }
-    if ( GfxTexture* previous = FxMap.exchange( nullptr, std::memory_order_acq_rel ) ) {
-        delete previous;
-    }
+    Normalmap.store( nullptr, std::memory_order_release );
+    FxMap.store( nullptr, std::memory_order_release );
     AvailableMaterials.store( EAdditionalMaterial::None, std::memory_order_release );
+    NormalmapRef.reset();
+    FxMapRef.reset();
+
+    AdditionalResourcesResolved = true;
 
     // Set texture name
     if ( EngineTexture ) {
@@ -247,16 +353,31 @@ void MyDirectDrawSurface7::LoadAdditionalResources( zCTexture* ownedTexture ) {
         return; // No replacements for this texture — nothing to hand off.
     }
 
+    // --- Claim the shared cache entries ---
+    // Refcounting happens here, on the calling thread, so the entries can't be destroyed underneath a
+    // worker that is still decoding into them. Whether they are already loaded decides if a job is
+    // needed at all.
+    NormalmapRef = normalPath.empty() ? nullptr : AcquireAdditionalTexture( normalPath );
+    FxMapRef = materialPath.empty() ? nullptr : AcquireAdditionalTexture( materialPath );
+
+    // Another surface already loaded these files (or this texture was cached back in while another
+    // surface still held them). Publish straight away — no file IO, no upload, no job.
+    if ( IsAdditionalTextureResolved( NormalmapRef ) && IsAdditionalTextureResolved( FxMapRef ) ) {
+        GfxTexture* fx = PeekAdditionalTexture( FxMapRef );
+        Normalmap.store( PeekAdditionalTexture( NormalmapRef ), std::memory_order_release );
+        AvailableMaterials.store( fx ? materialType : EAdditionalMaterial::None, std::memory_order_release );
+        FxMap.store( fx, std::memory_order_release );
+        return;
+    }
+
     // --- Read + decode + upload on a worker ---
     // This is the part that cost up to 20ms per cache-in burst on the game thread. Until it lands the
     // surface simply renders without its extra maps, which is the same state it is in for any texture
     // that has no replacement files.
     if ( !Engine::WorkerThreadPool ) {
         std::vector<uint8_t> storage;
-        GfxTexture* nrm = nullptr;
-        GfxTexture* fx = nullptr;
-        if ( !normalPath.empty() ) LoadResource( normalPath, TextureName + "_NORMAL.DDS", storage, &nrm );
-        if ( !materialPath.empty() ) LoadResource( materialPath, TextureName + materialSuffix, storage, &fx );
+        GfxTexture* nrm = NormalmapRef ? NormalmapRef->EnsureLoaded( TextureName + "_NORMAL.DDS", storage ) : nullptr;
+        GfxTexture* fx = FxMapRef ? FxMapRef->EnsureLoaded( TextureName + materialSuffix, storage ) : nullptr;
         Normalmap.store( nrm, std::memory_order_release );
         AvailableMaterials.store( fx ? materialType : EAdditionalMaterial::None, std::memory_order_release );
         FxMap.store( fx, std::memory_order_release );
@@ -264,7 +385,7 @@ void MyDirectDrawSurface7::LoadAdditionalResources( zCTexture* ownedTexture ) {
     }
 
     auto task = Engine::WorkerThreadPool->enqueue(
-        [this, normalPath, materialPath, materialType, materialSuffix, name = TextureName]( const std::stop_token& token ) {
+        [this, nrmRef = NormalmapRef, fxRef = FxMapRef, materialType, materialSuffix, name = TextureName]( const std::stop_token& token ) {
             if ( token.stop_requested() ) {
                 // Cancelled before a worker picked it up (world change / pool flush). Leave the maps
                 // null; the surface renders diffuse-only until the texture is cached in again.
@@ -272,15 +393,11 @@ void MyDirectDrawSurface7::LoadAdditionalResources( zCTexture* ownedTexture ) {
             }
 
             std::vector<uint8_t> storage;
-            GfxTexture* nrm = nullptr;
-            GfxTexture* fx = nullptr;
 
-            if ( !normalPath.empty() ) {
-                LoadResource( normalPath, name + "_NORMAL.DDS", storage, &nrm );
-            }
-            if ( !materialPath.empty() ) {
-                LoadResource( materialPath, name + materialSuffix, storage, &fx );
-            }
+            // EnsureLoaded does the work at most once per file across the whole process; a second
+            // worker that wants the same file waits here instead of decoding it a second time.
+            GfxTexture* nrm = nrmRef ? nrmRef->EnsureLoaded( name + "_NORMAL.DDS", storage ) : nullptr;
+            GfxTexture* fx = fxRef ? fxRef->EnsureLoaded( name + materialSuffix, storage ) : nullptr;
 
             // Publish. AvailableMaterials must be visible before FxMap, because every reader gates on
             // GetFxMap() being non-null and then trusts GetAvailableMaterials() to say what its

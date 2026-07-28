@@ -24,6 +24,11 @@ enum EAdditionalMaterial
 
 class zCTexture;
 class GfxTexture;
+
+/** One decoded replacement texture (normalmap / ORM / specular), shared by every surface whose
+    material resolved to the same file. Defined in MyDirectDrawSurface7.cpp. */
+struct SharedAdditionalTexture;
+
 class MyDirectDrawSurface7 : public IDirectDrawSurface7 {
 public:
     MyDirectDrawSurface7();
@@ -103,7 +108,13 @@ public:
         thread whenever a batch of textures cached in (world load, cache invalidation, teleport, or
         just turning around onto unseen NPCs/VOBs). Until the job lands, GetNormalmap()/GetFxMap()
         return nullptr and the material renders with its diffuse only — the same thing that happens
-        for a texture that has no replacement at all. */
+        for a texture that has no replacement at all.
+
+        Called once per Unlock of *every* mip level (Gothic uploads the whole chain through
+        FakeDirectDrawSurface7, which forwards to this surface), so repeat calls for a zCTexture that
+        was already resolved return immediately. The decoded textures themselves live in a global
+        path-keyed, refcounted cache, so a file is read and uploaded exactly once no matter how many
+        surfaces resolve to it. */
     void LoadAdditionalResources( zCTexture* ownedTexture );
 
     /** Joins an in-flight async additional-resource load for this surface. Must be called before
@@ -148,9 +159,21 @@ private:
 
     /** Additional maps. Atomic because they are published by the worker thread that loads them while
         the render thread is already binding this surface — every reader goes through
-        GetNormalmap()/GetFxMap(), so a plain acquire load there covers all of them. */
+        GetNormalmap()/GetFxMap(), so a plain acquire load there covers all of them. These are
+        borrowed views into the cache entries below, which own the textures. */
     std::atomic<GfxTexture*> Normalmap;
     std::atomic<GfxTexture*> FxMap;
+
+    /** Keeps this surface's share of the cached replacement textures alive. Only ever touched by the
+        thread that calls LoadAdditionalResources (and by the destructor, after joining the loader),
+        never by the render thread — that one reads the atomics above. */
+    std::shared_ptr<SharedAdditionalTexture> NormalmapRef;
+    std::shared_ptr<SharedAdditionalTexture> FxMapRef;
+
+    /** True once the replacement files for GothicTexture have been probed for. Guards against the
+        mip-chain storm: Gothic unlocks every mip level of a texture, and each one forwards to
+        LoadAdditionalResources on this surface. */
+    bool AdditionalResourcesResolved;
 
     /** Locktype */
     DWORD LockType;
