@@ -360,8 +360,10 @@ public:
     bool CreateFx();          // MUL quad marks + poly strips (own unlit root sig; warms the default blend PSO)
     // Lit quad marks: World.RootSig + World.hlsl VSQuadMark/PSMain, blend-keyed like the FX cache above.
     ID3D12PipelineState* GetOrCreateQuadMarkPipeline( const GothicBlendStateInfo& blend, bool depthWrite );
-    // Blend-keyed PSO cache for the FX pass. depthWrite rides the key's top bit (BlendKey uses bits 0..28).
-    ID3D12PipelineState* GetOrCreateFxPipeline( const GothicBlendStateInfo& blend, bool depthWrite );
+    // Blend-keyed PSO cache for the FX pass. depthWrite rides the key's top bit and cullBack the one below
+    // it (BlendKey uses bits 0..28). cullBack is false for the flat/ribbon FX geometry (quad marks, poly
+    // strips) and true for particle prog-meshes, which are closed 3D meshes D3D11 draws with SetDefaultStates.
+    ID3D12PipelineState* GetOrCreateFxPipeline( const GothicBlendStateInfo& blend, bool depthWrite, bool cullBack = false );
     bool CreateAO();          // simple SSAO: main estimate + separable blur compute pipelines; textures stay in engine
     bool CreateSkyIbl();      // sky IBL: analytic radiance + GGX prefilter + irradiance compute pipelines; cubes stay in engine
     bool CreateFog();         // height fog + god rays: 2 god-ray compute PSOs + the fullscreen composition PSO

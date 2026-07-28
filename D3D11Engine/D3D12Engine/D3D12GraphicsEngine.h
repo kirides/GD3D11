@@ -280,6 +280,9 @@ private:
     // deferred to DrawMQuadMarks and drawn with the transparent decals (depth-write off).
     void DrawQuadMarks();
     void DrawMQuadMarks();
+    // Mesh-shaped particle effects (zCParticleFX emitters with visShpType 5, e.g. swarms of solid debris).
+    // Called back from GothicAPI::DrawParticlesSimple, i.e. from inside DrawParticleEffects.
+    void DrawFrameParticleMeshes( std::unordered_map<zCVob*, std::unique_ptr<MeshVisualInfo>>& progMeshes ) override;
     // Weapon/spell trails + lightning flashes (zCPolyStrip). Recomputes the strip/flash meshes first, exactly
     // like D3D11's "Draw PolyStrips" pass, then draws one dynamic-ring batch per texture.
     XRESULT DrawPolyStrips( bool noTextures = false ) override;

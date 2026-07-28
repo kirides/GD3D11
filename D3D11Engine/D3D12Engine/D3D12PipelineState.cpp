@@ -2317,8 +2317,8 @@ bool D3D12PipelineState::CreateFx() {
     return true;
 }
 
-ID3D12PipelineState* D3D12PipelineState::GetOrCreateFxPipeline( const GothicBlendStateInfo& blend, bool depthWrite ) {
-    const uint32_t key = BlendKey( blend ) | (depthWrite ? (1u << 31) : 0u);
+ID3D12PipelineState* D3D12PipelineState::GetOrCreateFxPipeline( const GothicBlendStateInfo& blend, bool depthWrite, bool cullBack ) {
+    const uint32_t key = BlendKey( blend ) | (depthWrite ? (1u << 31) : 0u) | (cullBack ? (1u << 30) : 0u);
     auto it = Fx.BlendPipelines.find( key );
     if ( it != Fx.BlendPipelines.end() ) return it->second.Get();
     if ( !Fx.RootSig || !Fx.VsBlob || !Fx.PsBlob ) return nullptr;
@@ -2343,9 +2343,11 @@ ID3D12PipelineState* D3D12PipelineState::GetOrCreateFxPipeline( const GothicBlen
     pso.SampleDesc.Count = 1;
     pso.SampleMask = UINT_MAX;
     pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    // CULL_NONE: both D3D11 passes explicitly force CM_CULL_NONE (quad marks lie flat on arbitrary geometry,
-    // poly strips are camera-facing double-sided ribbons).
-    pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    // CULL_NONE: both quad-mark and poly-strip passes explicitly force CM_CULL_NONE (quad marks lie flat on
+    // arbitrary geometry, poly strips are camera-facing double-sided ribbons). Particle prog-meshes instead
+    // keep SetDefaultStates' CM_CULL_BACK — they are closed meshes, and drawing both faces would double the
+    // contribution of every additively-blended one.
+    pso.RasterizerState.CullMode = cullBack ? D3D12_CULL_MODE_BACK : D3D12_CULL_MODE_NONE;
     pso.RasterizerState.DepthClipEnable = TRUE;
 
     // Gothic blend enums are laid out for D3D11, whose _BLEND/_OP values equal D3D12's — cast directly.

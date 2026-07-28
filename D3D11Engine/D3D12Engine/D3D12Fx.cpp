@@ -6,6 +6,7 @@
 //   * D3D11GraphicsEngine::DrawQuadMarks   (:8741) — zCQuadMark geometry, opaque/add/blend modes
 //   * D3D11GraphicsEngine::DrawMQuadMarks  (:8817) — the MUL/MUL2 marks the first pass defers
 //   * D3D11GraphicsEngine::DrawPolyStrips  (:7912) — zCPolyStrip trails + lightning flashes
+//   * D3D11GraphicsEngine::DrawFrameParticleMeshes (:9066) — mesh-shaped particle effects (visShpType 5)
 //
 // All three are CPU-built ExVertexStruct triangle lists drawn unlit with a per-material blend mode, so they
 // share one root signature, one shader (Shaders/D3D12/Fx.hlsl) and one blend-keyed PSO cache
@@ -35,6 +36,7 @@
 #include "../zCPolygon.h"
 #include "../zCMesh.h"
 #include "../zCQuadMark.h"
+#include "../zCParticleFX.h"
 #include "../zCVob.h"
 #include "../D3D7/MyDirectDrawSurface7.h"
 
@@ -418,4 +420,124 @@ XRESULT D3D12GraphicsEngine::DrawPolyStrips( bool noTextures ) {
 
     Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles += drawnVertices / 3;
     return XR_SUCCESS;
+}
+
+
+void D3D12GraphicsEngine::DrawFrameParticleMeshes( std::unordered_map<zCVob*, std::unique_ptr<MeshVisualInfo>>& progMeshes ) {
+    // Port of D3D11GraphicsEngine::DrawFrameParticleMeshes (:9066) — the mesh-shaped particle effects, i.e.
+    // emitters whose visShpType is 5 (a prog-mesh visual) instead of the usual billboard quad. GothicAPI
+    // calls this from inside DrawParticlesSimple, so it runs in the middle of DrawParticleEffects, before
+    // that pass binds its own root signature — nothing here has to be restored.
+    //
+    // Same shape as the poly-strip pass: ExVertexStruct geometry drawn unlit (D3D11 binds PS_Simple) with a
+    // per-emitter blend mode and depth-write off. The one difference is the geometry source — these are the
+    // visual's own static, INDEXED sub-meshes, so they bind directly out of MeshInfo instead of streaming
+    // through the FX vertex ring.
+    if ( progMeshes.empty() ) return;
+    if ( !m_FrameOpen || !m_Pipelines.Fx.RootSig || !m_DepthBuffer ) return;
+
+    DX_ZONE( m_CmdList, "Draw particle meshes" );
+    TracyD3D12ZoneCGX( m_CmdList.Get(), "Draw particle meshes" );
+
+    XMMATRIX view = Engine::GAPI->GetViewMatrixXM();
+    Engine::GAPI->SetViewTransformXM( view );
+    Engine::GAPI->ResetWorldTransform();
+    const XMFLOAT4X4& viewM = Engine::GAPI->GetRendererState().TransformState.TransformView;
+    const XMFLOAT4X4& projM = Engine::GAPI->GetProjectionMatrix();
+    XMFLOAT4X4 viewProj;
+    XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
+
+    m_CmdList->SetGraphicsRootSignature( m_Pipelines.Fx.RootSig.Get() );
+    m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
+    m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
+
+    const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
+    const D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
+    m_CmdList->RSSetViewports( 1, &vp );
+    m_CmdList->RSSetScissorRects( 1, &sc );
+
+    // D3D11's starting state: SetDefaultStates() (no blending, CM_CULL_BACK) with depth-write explicitly
+    // turned off for the whole pass, then one blend switch per CHANGE of the emitter's render type. lastBlend
+    // starts at NONE, which is what SetDefaultStates already gives, so a run of unblended emitters costs no
+    // PSO switch at all.
+    GothicBlendStateInfo blend;
+    blend.SetDefault();
+    ID3D12PipelineState* pso = m_Pipelines.GetOrCreateFxPipeline( blend, false, true );
+    if ( !pso ) return;
+    m_CmdList->SetPipelineState( pso );
+    int lastBlend = zRND_ALPHA_FUNC_NONE;
+
+    const float vfxRadius = Engine::GAPI->GetRendererState().RendererSettings.VisualFXDrawRadius;
+    const XMVECTOR vVfxRadiusSq = XMVectorReplicate( vfxRadius * vfxRadius );
+    const XMVECTOR camPos = Engine::GAPI->GetCameraPositionXM();
+
+    unsigned int drawnIndices = 0;
+    for ( auto const& it : progMeshes ) {
+        if ( XMVector3Greater( XMVector3LengthSq( it.first->GetPositionWorldXM() - camPos ), vVfxRadiusSq ) )
+            continue;
+
+        zCParticleFX* particle = reinterpret_cast<zCParticleFX*>( it.first->GetVisual() );
+        if ( !particle ) continue;
+        zCParticleEmitter* emitter = particle->GetEmitter();
+        if ( !emitter ) continue;
+
+        // visShpType 5 is the mesh shape; everything else is a billboard already handled by DrawParticleFX.
+        // renderType 0 means the emitter draws nothing at all.
+        const int renderType = emitter->GetVisShpRender();
+        if ( !renderType || emitter->GetVisShpType() != 5 )
+            continue;
+
+        int currentBlend = zRND_ALPHA_FUNC_NONE;
+        if ( renderType == 2 )      currentBlend = zRND_ALPHA_FUNC_ADD;
+        else if ( renderType == 3 ) currentBlend = zRND_ALPHA_FUNC_MUL;
+        else if ( renderType == 4 ) currentBlend = zRND_ALPHA_FUNC_BLEND;
+
+        if ( lastBlend != currentBlend ) {
+            switch ( currentBlend ) {
+            case zRND_ALPHA_FUNC_ADD:   blend.SetAdditiveBlending(); break;
+            case zRND_ALPHA_FUNC_MUL:   blend.SetModulateBlending(); break;
+            case zRND_ALPHA_FUNC_BLEND: blend.SetAlphaBlending();    break;
+            default:                    blend.SetDefault();          break;
+            }
+            lastBlend = currentBlend;
+            ID3D12PipelineState* next = m_Pipelines.GetOrCreateFxPipeline( blend, false, true );
+            if ( !next ) continue;
+            m_CmdList->SetPipelineState( next );
+        }
+
+        // b1: the emitter vob's world matrix, verbatim — D3D11 uploads the very same pointer as its
+        // Matrices_PerInstances CB. Column-vector form (translation at _14/_24/_34), which is what
+        // Fx.hlsl's `mul( float4( pos, 1 ), World )` expects.
+        const XMFLOAT4X4 world = *it.first->GetWorldMatrixPtr();
+        m_CmdList->SetGraphicsRoot32BitConstants( 1, 16, &world, 0 );
+
+        for ( auto const& mat : it.second->Meshes ) {
+            const UINT diffuseSlot = ResolveDiffuseSlot( mat.first );
+            if ( diffuseSlot == UINT_MAX ) continue;   // D3D11 skips the material until it is cached in
+
+            // PS_Simple semantics: modulate by the vertex color, no alpha test.
+            const FxMaterialConsts matCb = { diffuseSlot, kFxVertexColor, 0.0f, 0.0f };
+            m_CmdList->SetGraphicsRoot32BitConstants( 2, 4, &matCb, 0 );
+
+            for ( auto const& mesh : mat.second ) {
+                if ( !mesh || mesh->Indices.empty() || !mesh->GetMeshVertexBuffer() || !mesh->GetMeshIndexBuffer() )
+                    continue;
+                D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mesh->GetMeshVertexBuffer() );
+                D3D12VertexBuffer* mib = D3D12VertexBuffer::From( mesh->GetMeshIndexBuffer() );
+                if ( !mvb->GetResource() || !mib->GetResource() ) continue;
+
+                const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStruct ) };
+                m_CmdList->IASetVertexBuffers( 0, 1, &vbv );
+                // Prog-mesh sub-mesh index buffers are 16-bit (VERTEX_INDEX), same as the VOB/attachment paths.
+                const D3D12_INDEX_BUFFER_VIEW ibv = { mib->GetGpuVirtualAddress(), mib->GetSizeInBytes(), DXGI_FORMAT_R16_UINT };
+                m_CmdList->IASetIndexBuffer( &ibv );
+
+                const UINT numIndices = static_cast<UINT>( mesh->Indices.size() );
+                m_CmdList->DrawIndexedInstanced( numIndices, 1, 0, 0, 0 );
+                drawnIndices += numIndices;
+            }
+        }
+    }
+
+    Engine::GAPI->GetRendererState().RendererInfo.FrameDrawnTriangles += drawnIndices / 3;
 }

@@ -959,8 +959,9 @@ XRESULT D3D12GraphicsEngine::DrawParticleEffects() {
 	info.clear();
 
 	// Collect this frame's visible particle effects (backend-neutral). Fills FrameParticles (instances
-	// bucketed by texture) + FrameParticleInfo (blend mode per texture). The mesh-PFX sub-call inside
-	// (DrawFrameParticleMeshes) is a no-op on D3D12 — mesh-shaped effects are a later step.
+	// bucketed by texture) + FrameParticleInfo (blend mode per texture). It also calls back into
+	// DrawFrameParticleMeshes (D3D12Fx.cpp) for the mesh-shaped emitters, which draw right there —
+	// before this pass binds the Particle root signature below, so no state has to be restored.
 	Engine::GAPI->DrawParticlesSimple();
 	if ( particles.empty() ) return XR_SUCCESS;
 
