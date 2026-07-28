@@ -53,15 +53,16 @@ struct FrameSkelDraw {
 // owner = the skeletal vob this attachment hangs off of (its NPC/MOB) — needed so point-shadow self-shadow
 // exclusion (D3D12PointShadows::BuildExcludeList) can skip a torch-holding NPC's own attachments too, not
 // just its base mesh; unused (nullptr-safe) by the main-view/CSM consumers, which don't exclude anything.
-// srv = the same main-thread-resolved diffuse handle as FrameSkelDraw::matSrvIndex, for the same reason —
-// the main-view prepass/color paths still resolve `tex` themselves (they CacheIn, which the shadow paths
-// deliberately don't), so both fields stay live.
+// srvSlot = the same main-thread-resolved diffuse SRV HEAP SLOT as FrameSkelDraw::matSrvIndex, for the same
+// reason — the attachment passes are fully bindless (b6 MaterialCB, no t0 table), so what the recorder needs
+// is the heap index, not a table handle. The main-view prepass/color paths still resolve `tex` themselves
+// (they CacheIn, which the shadow paths deliberately don't), so both fields stay live.
 struct FrameAttachDraw {
     MeshInfo*                   mesh;
     zCTexture*                  tex;
     D3D12_VERTEX_BUFFER_VIEW    instView;
     const zCVob*                owner;
-    D3D12_GPU_DESCRIPTOR_HANDLE srv;
+    UINT                        srvSlot;
 };
 
 // Per-frame GPU point light — byte-identical to D3D11 TiledPointLight (48 B). Filled by

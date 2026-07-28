@@ -223,6 +223,8 @@ bool D3D12ShadowMap::Init() {
 	// VOB caster PSO (P2.9c-2): reuse the VOB depth-prepass VSDepth (two-stream: packed vertex + per-instance
 	// world matrix) + m_Pipelines.World.RootSig, with the same caster state (front cull, bias, LESS_EQUAL, no RTV). Also
 	// used for node attachments (weapons/heads) which are packed vertex + instance like ordinary VOBs.
+	// vobIndirectShadowPs is declared out here so the node-attachment block below can reuse the bindless PS.
+	ComPtr<ID3DBlob> vobIndirectShadowPs;
 	if ( m_E->m_Pipelines.World.DepthPrepassVobVsBlob ) {
 		if ( !m_E->m_ShaderBackend.CompileFromFile( "Vob.hlsl", "PSShadowClip", Shadermodel_PS, m_CasterVobPsBlob.ReleaseAndGetAddressOf() ) )
 			return false;
@@ -250,9 +252,8 @@ bool D3D12ShadowMap::Init() {
 
 		// Bindless-diffuse VOB shadow-caster PSO (ExecuteIndirect, P2.12): same VSDepth + wind-only vobLayout +
 		// caster state as m_CasterVobPSO, only the void PS swapped to PSShadowClipBindless (diffuse alpha-clip
-		// from the SRV heap). Lets each CSM cascade's instanced-VOB casters submit as one ExecuteIndirect. The blob
-		// is local (needed only until PSO creation); the attach block below resets pso.VS/PS/layout for itself.
-		ComPtr<ID3DBlob> vobIndirectShadowPs;
+		// from the SRV heap). Lets each CSM cascade's instanced-VOB casters submit as one ExecuteIndirect. The
+		// attach block below reuses this same blob and resets pso.VS/PS/layout for itself.
 		if ( !m_E->m_ShaderBackend.CompileFromFile( "Vob.hlsl", "PSShadowClipBindless", Shadermodel_PS, vobIndirectShadowPs.ReleaseAndGetAddressOf() ) )
 			return false;
 		pso.PS = { vobIndirectShadowPs->GetBufferPointer(), vobIndirectShadowPs->GetBufferSize() };
@@ -265,8 +266,10 @@ bool D3D12ShadowMap::Init() {
 	// Node-attachment CSM caster variant (VSDepthAttach: Fatness/Scaling inflate-along-normal instead of wind —
 	// see Vob.hlsl and World.VobAttachPSO/DepthPrepassVobAttachPSO). Needs NORMAL in the layout, unlike the
 	// plain VOB caster above, so it reuses World.DepthPrepassVobAttachVsBlob (already compiled with that
-	// layout in CreateWorld) rather than DepthPrepassVobVsBlob. Reuses PSShadowClip unchanged.
-	if ( m_E->m_Pipelines.World.DepthPrepassVobAttachVsBlob && m_CasterVobPsBlob ) {
+	// layout in CreateWorld) rather than DepthPrepassVobVsBlob. Reuses PSShadowClipBindless — attachments are
+	// fully bindless now (b6.MatDiffuseIndex, pushed per draw from FrameAttachDraw::srvSlot), so this pass
+	// binds no t0 descriptor table at all.
+	if ( m_E->m_Pipelines.World.DepthPrepassVobAttachVsBlob && vobIndirectShadowPs ) {
 		const D3D12_INPUT_ELEMENT_DESC vobAttachLayout[] = {
 			{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
 			{ "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
@@ -280,7 +283,7 @@ bool D3D12ShadowMap::Init() {
 		};
 		pso.pRootSignature = m_E->m_Pipelines.World.RootSig.Get();
 		pso.VS = { m_E->m_Pipelines.World.DepthPrepassVobAttachVsBlob->GetBufferPointer(), m_E->m_Pipelines.World.DepthPrepassVobAttachVsBlob->GetBufferSize() };
-		pso.PS = { m_CasterVobPsBlob->GetBufferPointer(), m_CasterVobPsBlob->GetBufferSize() };
+		pso.PS = { vobIndirectShadowPs->GetBufferPointer(), vobIndirectShadowPs->GetBufferSize() };
 		pso.InputLayout = { vobAttachLayout, _countof( vobAttachLayout ) };
 		if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( m_CasterVobAttachPSO.ReleaseAndGetAddressOf() ) ) ) ) {
 			LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB attachment shadow caster).";
@@ -1099,7 +1102,10 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, ID3D12GraphicsCommandList* cmd
 			D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( a.mesh->GetMeshVertexBuffer() );
 			D3D12VertexBuffer* mib = D3D12VertexBuffer::From( a.mesh->GetMeshIndexBuffer() );
 			if ( !mvb->GetResource() || !mib->GetResource() ) continue;
-			cmdList->SetGraphicsRootDescriptorTable( 1, a.srv );   // resolved on the main thread, see FrameAttachDraw
+			// Bindless diffuse: push ONLY b6 constant index 2 (MatDiffuseIndex) — PSShadowClipBindless reads
+			// nothing else out of the MaterialCB. The slot was resolved on the main thread (see FrameAttachDraw),
+			// so this recorder never touches Gothic texture state.
+			cmdList->SetGraphicsRoot32BitConstant( 10, a.srvSlot, 2 );
 			const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStruct ) };
 			const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, a.instView };
 			cmdList->IASetVertexBuffers( 0, 2, views );

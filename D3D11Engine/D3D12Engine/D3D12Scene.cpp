@@ -704,22 +704,11 @@ void D3D12GraphicsEngine::FinishShadowPasses() {
 }
 
 
-D3D12_GPU_DESCRIPTOR_HANDLE D3D12GraphicsEngine::ResolveShadowDiffuseSrv( zCTexture* tex ) const {
-	if ( tex && tex->GetCacheState() == zRES_CACHED_IN ) {
-		if ( MyDirectDrawSurface7* surface = tex->GetSurface() ) {
-			if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
-				D3D12Texture* d12 = D3D12Texture::From( gfx );
-				if ( d12->HasSRV() ) return d12->GetSrvGpuHandle();
-			}
-		}
-	}
-	return GetSrvGpuHandle( m_BlackTexture->GetSrvSlot() );
-}
-
-
 UINT D3D12GraphicsEngine::ResolveShadowDiffuseSlot( zCTexture* tex ) const {
-	// Bindless twin of ResolveShadowDiffuseSrv — same "already cached in, never CacheIn from here" contract
-	// (see [[skeletal-texani-shared-slots]]), returning the SRV heap index the skeletal b6 MaterialCB wants.
+	// "Already cached in, never CacheIn from here" contract (see [[skeletal-texani-shared-slots]]) — a shadow
+	// caster must not pull textures in — returning the SRV heap index the bindless b6 MaterialCB wants. Used by
+	// every shadow-recorded skeletal mesh and node attachment; a pool thread can read the result safely because
+	// the resolve itself always happens on the main thread in PrepareFrameSkeletals.
 	if ( tex && tex->GetCacheState() == zRES_CACHED_IN ) {
 		if ( MyDirectDrawSurface7* surface = tex->GetSurface() ) {
 			if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
@@ -3390,11 +3379,12 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                             m_VobInstanceBufferOffset += instBytes;
                             const D3D12_VERTEX_BUFFER_VIEW attInstView = {
                                 m_VobInstanceBuffer[frame]->GetGPUVirtualAddress() + instOffset, instBytes, sizeof( VobInstanceInfo ) };
-                            // srv resolved HERE (main thread) so the MT shadow-cascade recorder never has to read
-                            // Gothic texture state; the main-view prepass/color paths still use attTex directly
-                            // because they CacheIn, which a shadow-only alpha cutout deliberately must not do.
+                            // Diffuse SRV heap slot resolved HERE (main thread) so the MT shadow-cascade recorder
+                            // never has to read Gothic texture state; the main-view prepass/color paths still use
+                            // attTex directly because they CacheIn, which a shadow-only alpha cutout deliberately
+                            // must not do.
                             entry.attachments.push_back( { attMesh.get(), attTex, attInstView, vi->Vob,
-                                ResolveShadowDiffuseSrv( attTex ) } );
+                                ResolveShadowDiffuseSlot( attTex ) } );
                         }
                     }
                 }
@@ -3441,7 +3431,6 @@ void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
 
     D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
     D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
-    const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_BlackTexture->GetSrvSlot() );
 
     // Base skinned meshes (depth only).
     if ( !g_FrameSkelDraws.empty() && m_Pipelines.Skeletal.DepthPrepassPSO && m_Pipelines.Skeletal.RootSig ) {
@@ -3501,17 +3490,10 @@ void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
             D3D12VertexBuffer* mib = D3D12VertexBuffer::From( a.mesh->GetMeshIndexBuffer() );
             if ( !mvb->GetResource() || !mib->GetResource() ) continue;
 
-            D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
-            if ( a.tex && a.tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
-                if ( MyDirectDrawSurface7* surface = a.tex->GetSurface() ) {
-                    if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
-                        D3D12Texture* d12 = D3D12Texture::From( gfx );
-                        if ( d12->HasSRV() ) srv = d12->GetSrvGpuHandle();
-                    }
-                }
-            }
-            m_CmdList->SetGraphicsRootDescriptorTable( 1, srv );
-            BindMaterialMaps( a.tex, 10 );   // b6 bindless normal/ORM indices (no-op in the depth prepass)
+            // Bindless diffuse: push ONLY b6 constant index 2 (MatDiffuseIndex) — PSDepthClipBindless reads
+            // nothing else from the MaterialCB, so the normal/ORM resolve the color pass needs is skipped here.
+            const UINT diffuseSlot = ResolveDiffuseSlotCacheIn( a.tex );
+            m_CmdList->SetGraphicsRoot32BitConstant( 10, diffuseSlot, 2 );
 
             const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStruct ) };
             const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, a.instView };
@@ -3543,7 +3525,6 @@ void D3D12GraphicsEngine::DrawSkeletalColor() {
     XMStoreFloat4x4( &viewProj, XMMatrixMultiply( XMLoadFloat4x4( &projM ), XMLoadFloat4x4( &viewM ) ) );
 
     const FogConstants fog = MakeFogConstants();
-    const D3D12_GPU_DESCRIPTOR_HANDLE whiteSrv = GetSrvGpuHandle( m_BlackTexture->GetSrvSlot() );
     D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>( m_Resolution.x ), static_cast<float>( m_Resolution.y ), 0.0f, 1.0f };
     D3D12_RECT     sc = { 0, 0, m_Resolution.x, m_Resolution.y };
     unsigned int drawnTris = 0;
@@ -3618,17 +3599,10 @@ void D3D12GraphicsEngine::DrawSkeletalColor() {
             D3D12VertexBuffer* mib = D3D12VertexBuffer::From( a.mesh->GetMeshIndexBuffer() );
             if ( !mvb->GetResource() || !mib->GetResource() ) continue;
 
-            D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
-            if ( a.tex && a.tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
-                if ( MyDirectDrawSurface7* surface = a.tex->GetSurface() ) {
-                    if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
-                        D3D12Texture* d12 = D3D12Texture::From( gfx );
-                        if ( d12->HasSRV() ) srv = d12->GetSrvGpuHandle();
-                    }
-                }
-            }
-            m_CmdList->SetGraphicsRootDescriptorTable( 1, srv );
-            BindMaterialMaps( a.tex, 10 );   // b6 bindless normal/ORM indices (no-op in the depth prepass)
+            // Fully bindless material: b6 { normal, ORM, diffuse } root constants, no t0 descriptor table —
+            // same three-constant push DrawSkeletalColor's base meshes use (PSMainBindless reads the identical
+            // MaterialCB layout).
+            BindMaterialMaps( a.tex, 10, ResolveDiffuseSlotCacheIn( a.tex ) );
 
             const D3D12_VERTEX_BUFFER_VIEW vbv = { mvb->GetGpuVirtualAddress(), mvb->GetSizeInBytes(), sizeof( ExVertexStruct ) };
             const D3D12_VERTEX_BUFFER_VIEW views[2] = { vbv, a.instView };

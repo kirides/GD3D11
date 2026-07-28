@@ -863,10 +863,18 @@ bool D3D12PipelineState::CreateDepthPrepass() {
         return false;
     }
 
+    // Bindless-diffuse VOB depth-prepass PS (PSDepthClipBindless): the diffuse alpha-clip texture comes from the
+    // SRV heap by b6.MatDiffuseIndex instead of the t0 table. Compiled here (before the attachment PSO) because
+    // BOTH the ExecuteIndirect VOB prepass PSO below and the node-attachment prepass PSO use it.
+    if ( !m_Shaders->CompileFromFile( "Vob.hlsl", "PSDepthClipBindless", Shadermodel_PS, World.DepthPrepassVobIndirectPsBlob.ReleaseAndGetAddressOf() ) ) {
+        return false;
+    }
+
     // Node-attachment depth-prepass variant (VSDepthAttach: Fatness/Scaling inflate-along-normal instead of
     // wind — see Vob.hlsl). Needs NORMAL in the layout (the plain VOB depth prepass doesn't read it at all),
-    // so this is its own input layout, not a reuse of vobLayout above. Reuses PSDepthClip (DepthPrepassVobPsBlob)
-    // unchanged — alpha-cutout doesn't depend on the fatness inflate.
+    // so this is its own input layout, not a reuse of vobLayout above. Bindless like every other attachment
+    // pass (PSDepthClipBindless) — the alpha cutout reads b6.MatDiffuseIndex, so no t0 descriptor table is
+    // bound for attachments anywhere.
     if ( !m_Shaders->CompileFromFile( "Vob.hlsl", "VSDepthAttach", Shadermodel_VS, World.DepthPrepassVobAttachVsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
@@ -882,7 +890,7 @@ bool D3D12PipelineState::CreateDepthPrepass() {
         { "INSTANCE_WINDFLUENCE",  0, DXGI_FORMAT_R32G32_FLOAT,       1, 132, D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
     };
     pso.VS = { World.DepthPrepassVobAttachVsBlob->GetBufferPointer(), World.DepthPrepassVobAttachVsBlob->GetBufferSize() };
-    pso.PS = { World.DepthPrepassVobPsBlob->GetBufferPointer(), World.DepthPrepassVobPsBlob->GetBufferSize() };
+    pso.PS = { World.DepthPrepassVobIndirectPsBlob->GetBufferPointer(), World.DepthPrepassVobIndirectPsBlob->GetBufferSize() };
     pso.InputLayout = { vobAttachLayout, _countof( vobAttachLayout ) };
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( World.DepthPrepassVobAttachPSO.ReleaseAndGetAddressOf() ) ) ) ) {
         LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB attachment depth prepass).";
@@ -890,11 +898,8 @@ bool D3D12PipelineState::CreateDepthPrepass() {
     }
 
     // Bindless-diffuse VOB depth-prepass PSO (ExecuteIndirect, P2.12): same VSDepth blob + wind-only vobLayout +
-    // depth-only state as DepthPrepassVobPSO, only the PS swapped to PSDepthClipBindless (diffuse alpha-clip from
-    // the SRV heap by b6.MatDiffuseIndex). Consumed by the one ExecuteIndirect the VOB depth prepass now issues.
-    if ( !m_Shaders->CompileFromFile( "Vob.hlsl", "PSDepthClipBindless", Shadermodel_PS, World.DepthPrepassVobIndirectPsBlob.ReleaseAndGetAddressOf() ) ) {
-        return false;
-    }
+    // depth-only state as DepthPrepassVobPSO, only the PS swapped to PSDepthClipBindless (compiled above, shared
+    // with the attachment prepass PSO). Consumed by the one ExecuteIndirect the VOB depth prepass now issues.
     pso.VS = { World.DepthPrepassVobVsBlob->GetBufferPointer(), World.DepthPrepassVobVsBlob->GetBufferSize() };
     pso.PS = { World.DepthPrepassVobIndirectPsBlob->GetBufferPointer(), World.DepthPrepassVobIndirectPsBlob->GetBufferSize() };
     pso.InputLayout = { vobLayout, _countof( vobLayout ) };
@@ -959,24 +964,29 @@ bool D3D12PipelineState::CreateVob() {
         return false;
     }
 
+    // Bindless-diffuse VOB pixel shader (PSMainBindless): diffuse sampled from the SRV heap by
+    // b6.MatDiffuseIndex instead of the t0 table. Shared by the ExecuteIndirect VOB color PSO below and by the
+    // node-attachment color PSO — compiled before both.
+    if ( !m_Shaders->CompileFromFile( "Vob.hlsl", "PSMainBindless", Shadermodel_PS, World.VobIndirectPsBlob.ReleaseAndGetAddressOf() ) ) {
+        return false;
+    }
+
     // Node-attachment color variant (VSMainAttach: Fatness/Scaling instead of wind — see Vob.hlsl). Reuses this
-    // same input `layout` (already has NORMAL, needed for the fatness-along-normal inflate) and PSMain unchanged.
+    // same input `layout` (already has NORMAL, needed for the fatness-along-normal inflate); PS is the bindless
+    // variant so node attachments need no t0 descriptor table (see DrawSkeletalColor's attachment pass).
     if ( !m_Shaders->CompileFromFile( "Vob.hlsl", "VSMainAttach", Shadermodel_VS, World.VobAttachVsBlob.ReleaseAndGetAddressOf() ) ) {
         return false;
     }
     pso.VS = { World.VobAttachVsBlob->GetBufferPointer(), World.VobAttachVsBlob->GetBufferSize() };
+    pso.PS = { World.VobIndirectPsBlob->GetBufferPointer(), World.VobIndirectPsBlob->GetBufferSize() };
     if ( FAILED( device->CreateGraphicsPipelineState( &pso, IID_PPV_ARGS( World.VobAttachPSO.ReleaseAndGetAddressOf() ) ) ) ) {
         LogWarn() << "D3D12: CreateGraphicsPipelineState failed (VOB attachment).";
         return false;
     }
 
     // Bindless-diffuse instanced-VOB color PSO (ExecuteIndirect, P2.12): identical to VobPSO (VSMain + the
-    // wind-carrying `layout` + lit reversed-Z state) except the PS is PSMainBindless (diffuse sampled from the
-    // SRV heap by b6.MatDiffuseIndex instead of the t0 table). Lets the whole instanced-VOB color pass submit as
-    // one ExecuteIndirect. Restore pso.VS/PS/layout to the plain VOB set first (the attach block moved pso.VS).
-    if ( !m_Shaders->CompileFromFile( "Vob.hlsl", "PSMainBindless", Shadermodel_PS, World.VobIndirectPsBlob.ReleaseAndGetAddressOf() ) ) {
-        return false;
-    }
+    // wind-carrying `layout` + lit reversed-Z state) except for that same PSMainBindless PS. Lets the whole
+    // instanced-VOB color pass submit as one ExecuteIndirect. Restore pso.VS (the attach block moved it).
     pso.VS = { World.VobVsBlob->GetBufferPointer(), World.VobVsBlob->GetBufferSize() };
     pso.PS = { World.VobIndirectPsBlob->GetBufferPointer(), World.VobIndirectPsBlob->GetBufferSize() };
     pso.InputLayout = { layout, _countof( layout ) };

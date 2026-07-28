@@ -758,12 +758,11 @@ private:
     uint8_t* m_ShadowCBMapped[kBackBufferCount] = {};
     D3D12_GPU_VIRTUAL_ADDRESS m_ShadowCBGpu[kBackBufferCount] = {};
     bool CreateShadowConstantBuffer();   // the shared per-frame shadow CB ring (once, at init)
-    // Diffuse-SRV resolution for the shadow / alpha-cutout paths: the material's cached-in engine texture, or
-    // the 1x1 black fallback. Uses GetCacheState (NOT CacheIn) so it stays a pure read — no Gothic texture load
-    // is triggered from a pass that only needs an alpha cutout, which also makes it callable off the main thread.
-    D3D12_GPU_DESCRIPTOR_HANDLE ResolveShadowDiffuseSrv( zCTexture* tex ) const;
-    // Bindless SRV-heap-slot resolvers for the (fully bindless) skeletal passes. ...Slot keeps the shadow
-    // paths' "never CacheIn off the main thread" contract; ...CacheIn is the main-view variant.
+    // Bindless SRV-heap-slot resolvers for the (fully bindless) skeletal + node-attachment passes: the
+    // material's cached-in engine texture's heap slot, or the 1x1 black fallback. ...Slot uses GetCacheState
+    // (NOT CacheIn) so it stays a pure read — no Gothic texture load is triggered from a pass that only needs
+    // an alpha cutout, which also keeps the shadow paths' "never CacheIn off the main thread" contract;
+    // ...CacheIn is the main-view variant.
     UINT ResolveShadowDiffuseSlot( zCTexture* tex ) const;
     UINT ResolveDiffuseSlotCacheIn( zCTexture* tex );
 
