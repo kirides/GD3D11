@@ -73,7 +73,7 @@ private:
     unsigned int m_MipMapCount = 1;
     uint16_t     m_ID = 0;
     std::string  m_DebugName;             // source file / debug label; applied to every (re)created resource
-    std::vector<uint8_t> m_Staging;       // multi-mip UpdateData accumulation
+    // (multi-mip UpdateData accumulates into a pooled per-thread scratch, not a member — see D3D12Texture.cpp)
 
     unsigned int m_SrvSlot = 0xFFFFFFFFu;                 // persistent slot in the engine's SRV heap (UINT_MAX = none)
     D3D12_GPU_DESCRIPTOR_HANDLE m_SrvGpu = {};            // cached GPU handle for that slot

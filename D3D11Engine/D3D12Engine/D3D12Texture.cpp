@@ -24,6 +24,29 @@ namespace {
     inline bool Is16Bit( DXGI_FORMAT f ) {
         return f == DXGI_FORMAT_B5G6R5_UNORM || f == DXGI_FORMAT_B5G5R5A1_UNORM || f == DXGI_FORMAT_B4G4R4A4_UNORM;
     }
+
+    /** Scratch buffer for the multi-mip UpdateData accumulation, pooled per thread.
+
+        Gothic hands a texture's mips over one after another, synchronously, on the thread that is
+        loading it (see FakeDirectDrawSurface7::Unlock) — so a single buffer per thread is enough, and
+        keeping it thread_local means no lock and no cross-thread sharing on the async load path
+        (UpdateDataDeferred forwards straight to UpdateData here, unlike D3D11). Owner is what the
+        chain currently belongs to, purely to catch a violation of that ordering invariant.
+
+        This must NOT be a per-texture member: that retains a full system-memory copy of every
+        texture's mip chain for the texture's entire lifetime, growing with resolution — the D3D12/D3D11
+        system-memory discrepancy this replaced. D3D11's equivalent is the file-scope `stagingBuffer`
+        in D3D11Texture.cpp. */
+    struct MipScratch {
+        std::vector<uint8_t> Data;
+        const void* Owner = nullptr;
+    };
+    thread_local MipScratch t_MipScratch;
+
+    // Reuse the scratch allocation below this size, release it above. Sized to comfortably cover a
+    // 4096² BC3 chain (~22 MB, the practical ceiling for HD texture packs) so the common case never
+    // re-allocates, while an 8k/16k outlier doesn't permanently park ~90-350 MB of VA on the thread.
+    constexpr size_t kMipScratchRetainBytes = 24ull * 1024 * 1024;
 }
 
 XRESULT D3D12Texture::BindToPixelShader( int slot )
@@ -276,18 +299,41 @@ XRESULT D3D12Texture::UpdateData( void* data, int mip ) {
         return CreateAndUpload( data ) ? XR_SUCCESS : XR_FAILED;
     }
 
-    // Multi-mip: accumulate the concatenated chain, build the texture once the last mip arrives.
+    // Multi-mip: accumulate the concatenated chain in the per-thread scratch, build the texture once
+    // the last mip arrives.
+    MipScratch& scratch = t_MipScratch;
+
     if ( mip == 0 ) {
         size_t total = 0;
         for ( unsigned int i = 0; i < m_MipMapCount; ++i ) total += GetSizeInBytes( static_cast<int>( i ) );
-        m_Staging.resize( total );
+        scratch.Data.resize( total );   // reuses the existing capacity; only grows for a bigger texture
+        scratch.Owner = this;
+    } else if ( scratch.Owner != this ) {
+        // The chain was interrupted by another texture on this thread (see the invariant above). The
+        // earlier mips are gone and the buffer is sized for the other texture, so continuing would
+        // both corrupt this texture and risk writing past the end — drop it instead.
+        LogWarn() << "D3D12Texture: interleaved mip upload for '"
+                  << ( m_DebugName.empty() ? std::string( "unnamed" ) : m_DebugName )
+                  << "' (mip " << mip << ") — texture skipped.";
+        return XR_FAILED;
     }
+
     size_t off = 0;
     for ( int i = 0; i < mip; ++i ) off += GetSizeInBytes( i );
-    memcpy( m_Staging.data() + off, data, GetSizeInBytes( mip ) );
+    memcpy( scratch.Data.data() + off, data, GetSizeInBytes( mip ) );
 
     if ( mip + 1 == static_cast<int>( m_MipMapCount ) ) {
-        return CreateAndUpload( m_Staging.data() ) ? XR_SUCCESS : XR_FAILED;
+        const bool ok = CreateAndUpload( scratch.Data.data() );
+        scratch.Owner = nullptr;
+
+        // UploadTextureSubresources has already memcpy'd the chain into the upload heap, so nothing
+        // reads the scratch again. Keep the allocation for the next texture on this thread, but hand
+        // the outliers back: an 8k/16k chain is 90-350 MB, and parking that on a loader thread for the
+        // rest of the process is exactly the kind of reservation the 32-bit address space can't afford.
+        if ( scratch.Data.capacity() > kMipScratchRetainBytes ) {
+            std::vector<uint8_t>().swap( scratch.Data );
+        }
+        return ok ? XR_SUCCESS : XR_FAILED;
     }
     return XR_SUCCESS;
 }
