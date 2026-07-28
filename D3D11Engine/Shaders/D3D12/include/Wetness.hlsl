@@ -26,10 +26,17 @@
 static const float WET_WEIGHT_BIAS = -0.55;
 static const float WET_WEIGHT_MUL  = 0.7;
 
-// Returns 1 where rain reaches this world position, 0 where world-mesh geometry above it blocks the
-// rain. The rain shadowmap is a single ORTHOGRAPHIC normal-Z slice cast along the rain velocity
-// (RenderRainShadowmap), so this mirrors D3D11's rain call into ComputeShadowValueDirect: bias 0.0001,
-// softnessScale 2.5, 4x4 PCF. Read bindlessly, like Rain.hlsl's IsWet().
+// Returns 1 where rain reaches this world position, 0 where geometry above it blocks the rain. The rain
+// shadowmap is a single ORTHOGRAPHIC normal-Z slice cast along the rain velocity (RenderRainShadowmap),
+// so this mirrors D3D11's rain call into ComputeShadowValueDirect: bias 0.0001, softnessScale 2.5,
+// 4x4 PCF. Read bindlessly, like Rain.hlsl's IsWet().
+//
+// OUTSIDE the rain camera the answer is 1 (EXPOSED), not 0. The map only covers a slab around the
+// player, so "outside" means "no occluder information", and the overwhelmingly common case out there is
+// open sky — defaulting to "sheltered" instead drew a hard dry ring at the map border, very visible as
+// clean-lit ground whenever the player looked down a hill or across a valley (the far terrain leaves the
+// slab both laterally and in depth). This also matches what D3D11 does: ComputeShadowValueDirect
+// initialises shadow=1 and only samples inside [0,1] UVs.
 float SampleRainReach( float3 wpos )
 {
     Texture2D rainMap = ResourceDescriptorHeap[RainShadowIndex];
@@ -38,7 +45,7 @@ float SampleRainReach( float3 wpos )
     clip.xyz /= clip.w;                                       // no-op for the ortho cast; kept for parity with IsWet()
     float2 uv = clip.xy * float2( 0.5, -0.5 ) + 0.5;
     if ( any( uv < 0.0 ) || any( uv > 1.0 ) || clip.z < 0.0 || clip.z > 1.0 )
-        return 0.0;                                           // outside the rain camera → treat as sheltered
+        return 1.0;                                           // outside the rain camera → assume open sky
 
     const float texStep = 2.5 / max( RainShadowMapSize, 1.0 );   // softnessScale 2.5, in texels
     const float bias = 0.0001;

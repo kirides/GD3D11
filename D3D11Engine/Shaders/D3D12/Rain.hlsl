@@ -8,8 +8,9 @@
 // no such fallback, so the extra machinery isn't needed.
 //
 // The VS also samples the rain shadowmap (IsWet(), a real port of D3D11's VS_ParticlePointShaded.hlsl
-// function of the same name) to zero out indoor/roofed raindrops — a single-slice, world-mesh-only,
-// normal-Z depth map rendered by D3D12GraphicsEngine::RenderRainShadowmap, read bindlessly here
+// function of the same name) to zero out indoor/roofed raindrops — a single-slice, normal-Z depth map of
+// the world mesh plus the instanced VOBs (so tree canopies and wagons shelter what is under them too),
+// rendered by D3D12GraphicsEngine::RecordRainShadowmap and read bindlessly here
 // (ResourceDescriptorHeap[RainShadowSrvIndex]) with a static comparison sampler.
 //
 // The PS ports D3D11's rainResponse() unchanged (same g_rainfactors table + view/light-relative texture

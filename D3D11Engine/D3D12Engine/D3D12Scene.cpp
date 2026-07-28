@@ -357,10 +357,11 @@ void D3D12GraphicsEngine::OnAddVob(VobInfo* vi) {
         it->second = static_cast<int16_t>(g_vobInfoVisualIndexToVisualInfo.size());
         g_vobInfoVisualIndexToVisualInfo.push_back(it->first);
         g_GeometryPassVobs.buckets.push_back({});
-        
+
         for (auto& v : m_ShadowMap.PassVobs) {
             v.buckets.push_back({});
         }
+        m_RainShadowVobs.buckets.push_back({});
     }
     vi->VisualIndex = it->second;
 
@@ -396,6 +397,7 @@ void D3D12GraphicsEngine::OnLoadWorld()
     for (auto& v : m_ShadowMap.PassVobs) {
         v.Reset();
     }
+    m_RainShadowVobs.Reset();
     // The AO depth snapshot still holds the OLD world seen through the old camera — reprojecting the new
     // world's geometry into it would produce garbage occlusion for one frame. RenderSSAO falls back to the
     // white "no occlusion" mask until CopyDepthForAO refills it at the end of the first frame here.
@@ -1857,8 +1859,9 @@ XRESULT D3D12GraphicsEngine::OnStartWorldRendering() {
 	DrawSky();
 	// The other two shadow passes resolve their Gothic-side state here, on the main thread, WITHOUT recording any
 	// draws: the point-light shadow cubes (P2.10 — each selected light's 6 faces into the shared cube array) and
-	// the rain shadowmap (world-mesh-only depth along the rain-velocity direction, so DrawRainParticles' VS can
-	// zero out indoor/roofed raindrops). Both overlap the cascade culls launched above; BeginShadowRecording then
+	// the rain shadowmap (world-mesh + instanced-VOB depth along the rain-velocity direction, so DrawRainParticles'
+	// VS can zero out raindrops under roofs and tree canopies, and the lit passes can stop wetting the ground
+	// under them). Both overlap the cascade culls launched above; BeginShadowRecording then
 	// fans their command recording out to the pool so it also overlaps the depth prepass / GPU cull / light cull
 	// / SSAO the main thread records next.
 	PrepareShadowPasses();
@@ -2419,9 +2422,10 @@ bool D3D12GraphicsEngine::CreateVobIndirect() {
     for ( UINT i = 0; i < kBackBufferCount; ++i )
         if ( !makeRing( kMaxVobDrawCommands, m_VobDrawArgs[i], m_VobDrawArgsAlloc[i], m_VobDrawArgsPtr[i], L"VobDrawArgsRing" ) )
             return false;
-    // The CSM cascades submit through the same signature; their (smaller-capped) per-cascade rings are owned
-    // by the shadow module.
-    return m_ShadowMap.CreateVobArgRings( sizeof( VobDrawCommand ) );
+    // The CSM cascades and the rain shadowmap submit through the same signature; their (smaller-capped) rings
+    // are owned by the shadow module / the rain pass respectively.
+    if ( !m_ShadowMap.CreateVobArgRings( sizeof( VobDrawCommand ) ) ) return false;
+    return CreateRainVobArgRings( sizeof( VobDrawCommand ) );
 }
 
 

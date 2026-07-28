@@ -84,8 +84,10 @@ public:
     const DirectX::XMFLOAT3& GetSunDirWS() const { return m_SunDirWS; }
     const Frustum* CascadeFrusta() const { return m_CascadeFrustum; }
     // The rain shadowmap (D3D12Rain.cpp) renders its own single-slice depth map with the same normal-Z
-    // caster state, so it reuses this PSO rather than duplicating it.
+    // caster state, so it reuses these PSOs rather than duplicating them — the VOB one likewise submits
+    // through the engine's shared VOB command signature, so the two passes are byte-compatible.
     ID3D12PipelineState* GetWorldCasterPSO() const { return m_CasterWorldPSO.Get(); }
+    ID3D12PipelineState* GetVobIndirectCasterPSO() const { return m_CasterVobIndirectPSO.Get(); }
 
     // ---- Per-cascade caster records, filled by the engine's shared collectors ----
     // The skeletal/attachment records are written by D3D12GraphicsEngine::PrepareFrameSkeletals (multi-cascade

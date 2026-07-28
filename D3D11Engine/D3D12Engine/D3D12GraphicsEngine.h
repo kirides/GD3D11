@@ -1089,12 +1089,25 @@ private:
         Microsoft::WRL::ComPtr<D3D12MA::Allocation>& outAlloc, UINT& outSrvSlot );
 
     // Rain shadowmap (D3D12 rain parity, step 4): a single-slice normal-Z depth map rendered from an
-    // orthographic camera looking along the (inverted) rain-velocity direction, world-mesh casters only
-    // (VOB/grass rain self-shadowing not covered by this increment — see D3D12Rain.cpp). Lets Rain.hlsl's
-    // VS zero out indoor/roofed raindrops (real IsWet), mirroring D3D11Effect::DrawRainShadowmap. Reuses
-    // D3D12ShadowMap::GetWorldCasterPSO()/m_Pipelines.World.RootSig (per-draw root consts, no ExecuteIndirect needed —
-    // see the comment in PrepareRainShadowmap for why that's safe).
+    // orthographic camera looking along the (inverted) rain-velocity direction. Casters are the world mesh
+    // (per-draw root consts through D3D12ShadowMap::GetWorldCasterPSO()/m_Pipelines.World.RootSig — see the
+    // comment in PrepareRainShadowmap for why non-indirect is fine there) plus the instanced VOBs, which go
+    // through the shared VOB command signature as ONE ExecuteIndirect, exactly like a CSM cascade. That is
+    // what makes alpha-tested tree canopies, wagons, roofs and market stalls shelter the ground and the
+    // raindrops under them. Grass is deliberately NOT a caster: vegetation cards are thin, dense and
+    // ground-level, so they would only self-shadow the terrain they stand on.
     static constexpr UINT kRainShadowMapSize = 2048;
+    // World-space edge length of the orthographic rain camera, i.e. the map covers ±kRainShadowWorldSpan/2
+    // around the player: 49152 units = ~±245 m, at 24 world units (~24 cm) per texel. Sized by COVERAGE, not
+    // by the CSM's texel-density rule — outside the map the wetness lookup has to assume open sky, so a
+    // border inside view distance shows up as a hard dry line on distant ground. 24 cm/texel still resolves a
+    // wagon or a tree crown to a few dozen texels, which is all a rain occluder needs.
+    static constexpr float kRainShadowWorldSpan = 49152.0f;
+    // Asymmetric depth slab, D3D11Effect::DrawRainShadowmap's numbers: eye pulled kRainShadowUpRange ABOVE
+    // the camera (so roofs overhead are captured), far plane at kRainShadowDepth (so ~14000 units of valley
+    // BELOW the camera stay inside the map when the player stands on a hill).
+    static constexpr float kRainShadowUpRange = 6000.0f;
+    static constexpr float kRainShadowDepth = 20000.0f;
     Microsoft::WRL::ComPtr<ID3D12Resource>      m_RainShadowMap;
     Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_RainShadowMapAlloc;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_RainShadowDsvHeap;
@@ -1110,11 +1123,28 @@ private:
     // zero-initialized matrix above would divide by w == 0 and feed NaN UVs into the PCF loop.
     bool m_RainShadowViewProjValid = false;
     Frustum m_RainShadowFrustum;
+    // Instanced-VOB rain casters. Same shape as a CSM cascade's VOB casters (D3D12ShadowMap's
+    // m_VobDrawArgs/m_VobDrawCount): CollectVisibleVobs against the rain frustum fills m_RainShadowVobs,
+    // UploadVobs + BuildVobDrawCommands turn it into one ExecuteIndirect through m_VobIndirectCmdSig, and
+    // the bindless alpha-clip caster PSO (PSShadowClipBindless) is what makes tree canopies shelter what is
+    // under them instead of casting a solid quad. Own (smaller-capped) ring rather than sharing the
+    // main-view one: this pass is built at a different point in the frame and must not disturb it.
+    static constexpr UINT kMaxRainVobDrawCommands = 8192;
+    Microsoft::WRL::ComPtr<ID3D12Resource>      m_RainVobDrawArgs[kBackBufferCount];
+    Microsoft::WRL::ComPtr<D3D12MA::Allocation> m_RainVobDrawArgsAlloc[kBackBufferCount];
+    uint8_t* m_RainVobDrawArgsPtr[kBackBufferCount] = {};
+    UINT     m_RainVobDrawCount = 0;   // built by PrepareRainShadowmap, consumed by RecordRainShadowmap
+    // Bucket-per-visual collection target; grown by OnAddVob and reset by OnLoadWorld alongside the
+    // main-view / per-cascade views, since the bucket index IS the visual index.
+    RenderView m_RainShadowVobs;
     bool CreateRainShadowResources();   // one-time (or on-demand retry) DSV/SRV + resource creation
+    bool CreateRainVobArgRings( UINT commandStride );   // called from CreateVobIndirect, next to the cascade rings
     // Split for deferred recording like the other two shadow passes: PrepareRainShadowmap computes the rain-light
-    // camera and resolves the visible world-mesh casters (BSP walk + bindless material indices) on the main
-    // thread; RecordRainShadowmap issues the resulting depth-only draws into whichever list it is handed.
+    // camera and resolves the visible world-mesh + VOB casters (BSP walks, bindless material indices, instance
+    // ring upload) on the main thread; RecordRainShadowmap issues the resulting depth-only draws into whichever
+    // list it is handed.
     void PrepareRainShadowmap();
+    void CollectRainShadowVobs();   // the VOB half of PrepareRainShadowmap (cull -> instance upload -> arg build)
     void RecordRainShadowmap( ID3D12GraphicsCommandList* cmdList );
 
     // Scene wetness ("wet ground"): the port of D3D11's deferred ApplySceneWettness into the Forward+ lit
