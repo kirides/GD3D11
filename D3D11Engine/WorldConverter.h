@@ -68,6 +68,23 @@ public:
     /** Extracts a node-visual */
     static void ExtractNodeVisual( int index, zCModelNodeInst* node, gtl::flat_hash_map<int, std::vector<MeshVisualInfo*>>& attachments );
 
+    /** Same as ExtractNodeVisual, but hands the expensive part (vertex unpacking, meshoptimizer, and above
+        all the D3D12MA/D3D11 buffer creation, which costs ~0.1ms per buffer on the main thread) to a
+        worker thread. Inserts a not-yet-Ready MeshVisualInfo into 'attachments' immediately; callers must
+        skip drawing any attachment whose MeshVisualInfo::Ready is still false, which typically means the
+        attachment pops in a frame or two after the NPC does instead of hitching the frame it spawns on.
+        Falls back to the synchronous path for .MDS/.ASC node visuals - ExtractProgMeshProtoFromModel
+        writes back into ZENGIN state (UpdateAttachedVobs/UpdateMeshLibTexAniState/node->TrafoObjToCam),
+        which must not run while the game thread animates the same model. */
+    static void ExtractNodeVisualAsync( int index, zCModelNodeInst* node, gtl::flat_hash_map<int, std::vector<MeshVisualInfo*>>& attachments );
+
+    /** Blocks until any in-flight ExtractNodeVisualAsync job reading from 'visual' has finished. Must be
+        called before ZENGIN frees a visual (GothicAPI::OnVisualDeleted). */
+    static void WaitForPendingNodeVisuals( zCVisual* visual );
+
+    /** Blocks until every in-flight ExtractNodeVisualAsync job has finished. */
+    static void WaitForAllPendingNodeVisuals();
+
     /** Updates a quadmark info */
     static void UpdateQuadMarkInfo( QuadMarkInfo* info, zCQuadMark* mark, const float3& position );
 

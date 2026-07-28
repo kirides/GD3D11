@@ -379,10 +379,32 @@ private:
     std::vector<Microsoft::WRL::ComPtr<D3D12MA::Allocation>> m_CopyBatchUploadAllocs;     // kept alive until flush
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>>      m_CopyBatchUploadResources;  // "
 
+    // --- Pooled staging memory for buffer uploads ---
+    // Creating a throwaway UPLOAD resource per upload cost one D3D12MA::CreateResource each (~0.1ms
+    // measured), which *doubled* the allocator cost of every static vertex/index buffer: a mesh costs
+    // VB + IB + shadow-IB, so a weapon/head attachment popping in fired ~10 CreateResource calls where
+    // 5 were pure staging overhead. Small copies now bump-allocate out of persistently-mapped chunks
+    // that are recycled by fence, so steady-state streaming creates zero upload resources. Uploads
+    // larger than a chunk still fall back to a dedicated resource.
+    struct StagingChunk {
+        Microsoft::WRL::ComPtr<D3D12MA::Allocation> Allocation;
+        Microsoft::WRL::ComPtr<ID3D12Resource>      Resource;
+        uint8_t* MappedPtr = nullptr;   // persistently mapped; never unmapped until teardown
+        UINT64   Capacity = 0;
+        UINT64   Offset = 0;            // bump pointer; reset when the chunk returns to the free list
+    };
+    static constexpr UINT64 kStagingChunkSize = 4ull * 1024 * 1024;
+    static constexpr size_t kMaxStagingChunks = 8;   // hard cap on 32-bit VA held by the pool (32 MB)
+
+    std::vector<StagingChunk> m_FreeStagingChunks;      // idle, GPU is done reading them
+    std::vector<StagingChunk> m_CopyBatchStagingChunks; // in use by the currently open batch
+    size_t m_LiveStagingChunks = 0;                     // free + in-batch + pending; only ever grows to the cap
+
     struct PendingCopyRelease {
         UINT64 FenceValue = 0;
         std::vector<Microsoft::WRL::ComPtr<D3D12MA::Allocation>> UploadAllocations;
         std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>>      UploadResources;
+        std::vector<StagingChunk> StagingChunks;   // returned to m_FreeStagingChunks, not freed
         Microsoft::WRL::ComPtr<ID3D12CommandAllocator> CopyAllocator;
         Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> CopyCommandList;
     };
@@ -401,6 +423,14 @@ private:
     void ReleaseCompletedCopyResources( UINT64 fenceValue );
     bool BeginCopyBatch();            // ensures m_CopyBatchList is open (recycles or creates cmd objects). Caller holds m_CopyQueueMutex.
     void FlushTextureUploadsLocked(); // submits the open batch (1 Execute+Signal+Wait). Caller holds m_CopyQueueMutex.
+
+    /** Bump-allocates 'size' bytes of persistently-mapped UPLOAD space charged to the currently open
+        copy batch. Returns false when the request is bigger than a chunk or the pool is at its cap —
+        the caller then falls back to a dedicated upload resource. Caller holds m_CopyQueueMutex and has
+        already opened the batch. ('alignment' exists so the texture path can ask for the 512-byte
+        D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT its placed footprints require.) */
+    bool AcquireStagingSpaceLocked( UINT64 size, UINT64 alignment,
+        ID3D12Resource** outResource, UINT64* outOffset, uint8_t** outCpuPtr );
 
 public:
     /** Submits any pending batched texture/buffer uploads to the copy queue and inserts the single

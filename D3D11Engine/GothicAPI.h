@@ -11,6 +11,7 @@
 #include "RenderQueue.h"
 #include "ShaderIDs.h"
 #include "ThreadPool.h"
+#include <shared_mutex>
 
 static const char* MENU_SETTINGS_FILE = "system\\GD3D11\\UserSettings.ini";
 const float INDOOR_LIGHT_DISTANCE_SCALE_FACTOR = 0.5f;
@@ -989,8 +990,12 @@ private:
     /** Map of VobInfo-Lists for zCBspLeafs */
     std::unordered_map<zCBspBase*, BspInfo> BspLeafVobLists;
 
-    /** Map for the material infos */
+    /** Map for the material infos.
+        Guarded because mesh extraction runs on worker threads (WorldConverter::ExtractNodeVisualAsync,
+        GothicAPI::LoadzCModelData) and resolves MaterialInfos while the main thread keeps looking them
+        up per draw. Values are unique_ptr so returned pointers stay valid across a rehash. */
     gtl::flat_hash_map<void*, std::unique_ptr<MaterialInfo>> MaterialInfos;
+    std::shared_mutex MaterialInfosMutex;
 
     /** Maps visuals to vobs */
     gtl::flat_hash_map<zCVisual*, std::vector<BaseVobInfo*>> VobsByVisual;

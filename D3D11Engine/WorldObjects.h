@@ -20,6 +20,13 @@ struct zCModelNodeInst;
 struct BspInfo;
 class zCQuadMark;
 struct MaterialInfo;
+struct MeshVisualInfo;
+
+/** Blocks until a background node-visual extraction targeting this MeshVisualInfo has finished.
+    Defined in WorldConverter.cpp - declared here so MeshVisualInfo's destructor can never free a
+    mesh a worker thread is still filling in. No-op for the (vast majority of) synchronously
+    extracted visuals. */
+void WaitForPendingNodeVisualExtraction( MeshVisualInfo* meshInfo );
 
 struct ParticleRenderInfo {
     GothicBlendStateInfo BlendState;
@@ -227,6 +234,11 @@ struct MeshVisualInfo : public BaseVisualInfo {
 
     ~MeshVisualInfo() override
     {
+        // Node attachments may be extracted on a worker thread (WorldConverter::ExtractNodeVisualAsync).
+        // Never free the target out from under a running job.
+        if ( !Ready.load( std::memory_order_acquire ) ) {
+            WaitForPendingNodeVisualExtraction( this );
+        }
         if ( MorphMeshVisual ) {
             zCObject_Release( MorphMeshVisual );
         }
@@ -257,6 +269,12 @@ struct MeshVisualInfo : public BaseVisualInfo {
     /** Flag wether some mesh inside needs alpha testing, to allow sorting for shader usage */
     bool NeedsAlphaTesting;
     size_t LastAniUpdateFrame;
+
+    /** False while a worker thread is still filling Meshes/MeshesByTexture/FullMesh in
+        (WorldConverter::ExtractNodeVisualAsync). Draw/update sites must skip this visual entirely until
+        it flips to true - reading the containers before that races the extraction. Synchronously
+        extracted visuals (every other path) leave it at true. */
+    std::atomic<bool> Ready{ true };
 };
 
 /** Holds the converted mesh of a VOB */

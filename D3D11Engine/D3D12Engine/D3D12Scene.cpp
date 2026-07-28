@@ -5260,12 +5260,22 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                 zCModelNodeInst* node = nodeList->Array[n];
                 if ( !node || !node->NodeVisual ) continue;   // no attachment on this node (e.g. sheathed weapon)
 
+                // Extraction runs on a worker thread: unpacking the wedge lists and — dominating it —
+                // creating this attachment's vertex/index/shadow-index buffers costs ~0.1ms per
+                // D3D12MA::CreateResource, and an NPC walking into view brings several of them at once
+                // (weapon + head morph mesh + held items). Doing that inline hitched the frame the NPC
+                // spawned on, which is exactly what a player walking into town or a dense forest hits.
+                // The attachment simply isn't drawn until the job lands (a frame or two later); the
+                // Ready gate below is what enforces that. Note the visual-changed comparison is itself
+                // gated on Ready, because the worker writes MeshVisualInfo::Visual as it finishes.
                 auto it = nodeAttachments.find( n );
                 if ( it == nodeAttachments.end() ) {
-                    WorldConverter::ExtractNodeVisual( n, node, nodeAttachments );
+                    WorldConverter::ExtractNodeVisualAsync( n, node, nodeAttachments );
                     it = nodeAttachments.find( n );
-                } else if ( !it->second.empty() && it->second[0] && it->second[0]->Visual != node->NodeVisual ) {
-                    WorldConverter::ExtractNodeVisual( n, node, nodeAttachments );  // visual changed
+                } else if ( !it->second.empty() && it->second[0]
+                    && it->second[0]->Ready.load( std::memory_order_acquire )
+                    && it->second[0]->Visual != node->NodeVisual ) {
+                    WorldConverter::ExtractNodeVisualAsync( n, node, nodeAttachments );  // visual changed
                     it = nodeAttachments.find( n );
                 }
                 if ( it == nodeAttachments.end() ) continue;
@@ -5274,6 +5284,9 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
                 XMStoreFloat4x4( &attWorld, xmWorld * XMLoadFloat4x4( &boneCache[n] ) );
                 for ( MeshVisualInfo* mvi : it->second ) {
                     if ( !mvi ) continue;
+                    // Still being extracted on a worker thread — Meshes/MeshesByTexture are being written
+                    // to right now, so skip this attachment entirely for this frame rather than race them.
+                    if ( !mvi->Ready.load( std::memory_order_acquire ) || !mvi->Visual ) continue;
                     const bool isMMS = strcmp( mvi->Visual->GetFileExtension( 0 ), ".MMS" ) == 0;
                     // MMS attachments only MORPH within kMorphMeshMaxDistance of the camera — beyond that they
                     // render as their undeformed rest mesh. This mirrors D3D11 exactly: GothicAPI::

@@ -1739,7 +1739,10 @@ void GothicAPI::GetVisibleDecalList( std::vector<zCVob*>& decals ) {
 /** Called when a material got removed */
 void GothicAPI::OnMaterialDeleted( zCMaterial* mat ) {
     LoadedMaterials.erase( mat );
-    MaterialInfos.erase( mat );
+    {
+        std::unique_lock lock( MaterialInfosMutex );
+        MaterialInfos.erase( mat );
+    }
     if ( !mat )
         return;
     for ( auto&& it : SkeletalMeshVisuals ) {
@@ -1812,6 +1815,10 @@ void GothicAPI::OnVobMoved( zCVob* vob ) {
 
 /** Called when a visual got removed */
 void GothicAPI::OnVisualDeleted( zCVisual* visual ) {
+    // Gothic frees this visual once we return - make sure no background node-attachment extraction
+    // (WorldConverter::ExtractNodeVisualAsync) is still reading from it.
+    WorldConverter::WaitForPendingNodeVisuals( visual );
+
     std::vector<std::string> extv;
 
     zCClassDef* classDef = reinterpret_cast<zCObject*>(visual)->_GetClassDef();
@@ -4982,6 +4989,7 @@ void GothicAPI::DrawSkyGothicOriginal() {
 
 /** Reset's the material info that were previously gathered */
 void GothicAPI::ResetMaterialInfo() {
+    std::unique_lock lock( MaterialInfosMutex );
     MaterialInfos.clear();
 }
 
@@ -4993,24 +5001,30 @@ static void FixUpMaterial( MaterialInfo::Buffer& buffer ) {
 }
 
 MaterialInfo* GothicAPI::GetMaterialInfoFrom(void* any, std::string_view materialName) {
-    auto it = MaterialInfos.find( any );
-    MaterialInfo* mi;
-    if ( it == MaterialInfos.end() ) {
-        // Make a new one and try to load it
-        auto info = std::make_unique<MaterialInfo>();
-        MaterialInfos.emplace(any, std::move(info));
-        mi = MaterialInfos[any].get();
-        if ( any ) {
-            mi->LoadFromFile( materialName );
-            if ( materialName.contains("FULLALPHA" )) {
-                mi->MaterialType = MaterialInfo::MT_FullAlpha;
-            }
+    // Hot path: shared lock, no allocation. Worker threads (mesh extraction) hit this concurrently with
+    // the main thread's per-draw lookups, and a miss on either side rehashes the map.
+    {
+        std::shared_lock lock( MaterialInfosMutex );
+        auto it = MaterialInfos.find( any );
+        if ( it != MaterialInfos.end() ) {
+            return it->second.get();
         }
-        FixUpMaterial( mi->buffer );
-    } else {
-        mi = it->second.get();
     }
-    return mi;
+
+    // Miss. Build the entry outside the lock - LoadFromFile does file IO, which we don't want to hold
+    // every other thread's lookups up for. Two threads racing on the same material both build one and
+    // the loser's copy is simply dropped by try_emplace.
+    auto info = std::make_unique<MaterialInfo>();
+    if ( any ) {
+        info->LoadFromFile( materialName );
+        if ( materialName.contains( "FULLALPHA" ) ) {
+            info->MaterialType = MaterialInfo::MT_FullAlpha;
+        }
+    }
+    FixUpMaterial( info->buffer );
+
+    std::unique_lock lock( MaterialInfosMutex );
+    return MaterialInfos.try_emplace( any, std::move( info ) ).first->second.get();
 }
     
 MaterialInfo* GothicAPI::GetMaterialInfoFrom( zCMaterial* mat ) {

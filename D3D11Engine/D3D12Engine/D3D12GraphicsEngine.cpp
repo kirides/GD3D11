@@ -6,33 +6,15 @@
 #include "D3D12Texture.h"
 #include "../Engine.h"
 #include "../GothicAPI.h"
-#include "../WorldObjects.h"
-#include "../zCMorphMesh.h"
-#include "../zCTexture.h"
-#include "../D3D7/MyDirectDrawSurface7.h"
 #include "../zCView.h"
-#include "../zCModel.h"
-#include "../zCMaterial.h"
-#include "../zCVob.h"
-#include "../zCVobLight.h"
-#include "../zCDecal.h"
 #include "../zCWorld.h"
-#include "../WorldConverter.h"
-#include "../VertexTypes.h"
 #include "../ImGuiShim.h"
-#include "../zFont.h"
-#include "../zCCamera.h"
 #include "../oCGame.h"
-#include "../oCVisFX.h"
 #include "../DXGIHelpers.h"
 #include "../WindAnimation.h"
-#include "../GVegetationBox.h"
 #include "../GMeshSimple.h"
-#include "../Toolbox.h"
 
-#include "D3D12RenderQueue.h"
 #include "D3D12TracyDebug.h"
-#include "InstancingUtils.h"
 
 // imgui_impl_dx12 calls CreateDXGIFactory1 directly (for tearing detection). dxgi.dll is present on
 // every Windows 7+ and the D3D11 fallback swapchain already needs it at runtime, so a load-time link
@@ -355,11 +337,17 @@ void D3D12GraphicsEngine::ReleaseCompletedCopyResources( UINT64 fenceValue ) {
     while ( !m_PendingCopyReleases.empty() ) {
         auto& pending = m_PendingCopyReleases.front();
         if ( pending.FenceValue > fenceValue ) break;
-        // Staging buffers are done being read: drop them, but recycle the command allocator+list for
-        // reuse by the next batch (their copies have completed, so Reset is now legal).
+        // Staging buffers are done being read: drop the one-off ones, but recycle the command
+        // allocator+list for reuse by the next batch (their copies have completed, so Reset is now
+        // legal) — and likewise hand the pooled staging chunks back instead of freeing them, which is
+        // what keeps steady-state uploads at zero CreateResource calls.
         if ( pending.CopyAllocator && pending.CopyCommandList ) {
             m_FreeCopyCmdObjects.push_back( CopyCmdObjects{
                 std::move( pending.CopyAllocator ), std::move( pending.CopyCommandList ) } );
+        }
+        for ( auto& chunk : pending.StagingChunks ) {
+            chunk.Offset = 0;
+            m_FreeStagingChunks.push_back( std::move( chunk ) );
         }
         m_PendingCopyReleases.pop_front(); // O(1) popped release, zero memory shifts
     }
@@ -468,7 +456,7 @@ bool D3D12GraphicsEngine::UploadTextureSubresources( ID3D12Resource* dst, const 
 
 	// Record the copy into the shared, batched copy command list (submitted once at flush). The lock
 	// serializes recording into the single list and guards the batch bookkeeping — see the header note.
-	std::lock_guard<std::mutex> lock( m_CopyQueueMutex );
+    std::scoped_lock lock( m_CopyQueueMutex );
 	if ( !BeginCopyBatch() )
 		return false;
 
@@ -501,10 +489,111 @@ bool D3D12GraphicsEngine::UploadTextureSubresources( ID3D12Resource* dst, const 
 }
 
 
+bool D3D12GraphicsEngine::AcquireStagingSpaceLocked( UINT64 size, UINT64 alignment,
+	ID3D12Resource** outResource, UINT64* outOffset, uint8_t** outCpuPtr ) {
+	// Caller holds m_CopyQueueMutex.
+	if ( size > kStagingChunkSize ) return false;   // too big to pool — dedicated resource instead
+	if ( alignment == 0 ) alignment = 1;
+
+	auto tryFit = [&]( StagingChunk& chunk ) {
+		const UINT64 aligned = ( chunk.Offset + alignment - 1 ) & ~( alignment - 1 );
+		if ( aligned + size > chunk.Capacity ) return false;
+		*outResource = chunk.Resource.Get();
+		*outOffset = aligned;
+		*outCpuPtr = chunk.MappedPtr + aligned;
+		chunk.Offset = aligned + size;
+		return true;
+	};
+
+	// Chunks already charged to this batch. Walking back-to-front finds the most recently used one
+	// first; the list is capped at kMaxStagingChunks so this stays trivial.
+	for ( auto it = m_CopyBatchStagingChunks.rbegin(); it != m_CopyBatchStagingChunks.rend(); ++it ) {
+		if ( tryFit( *it ) ) return true;
+	}
+
+	// Take an idle chunk (its copies have completed — see ReleaseCompletedCopyResources).
+	if ( !m_FreeStagingChunks.empty() ) {
+		StagingChunk chunk = std::move( m_FreeStagingChunks.back() );
+		m_FreeStagingChunks.pop_back();
+		chunk.Offset = 0;
+		m_CopyBatchStagingChunks.push_back( std::move( chunk ) );
+		return tryFit( m_CopyBatchStagingChunks.back() );
+	}
+
+	// Grow the pool, up to the VA cap. This is the only CreateResource on the pooled path and it
+	// happens a handful of times for the whole process lifetime.
+	if ( m_LiveStagingChunks >= kMaxStagingChunks ) return false;
+
+	D3D12_RESOURCE_DESC bufDesc = {};
+	bufDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+	bufDesc.Width = kStagingChunkSize;
+	bufDesc.Height = 1;
+	bufDesc.DepthOrArraySize = 1;
+	bufDesc.MipLevels = 1;
+	bufDesc.Format = DXGI_FORMAT_UNKNOWN;
+	bufDesc.SampleDesc.Count = 1;
+	bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+	D3D12MA::ALLOCATION_DESC allocDesc = {};
+	allocDesc.HeapType = DefaultUploadHeapType;
+
+	StagingChunk chunk;
+	if ( FAILED( m_Allocator->CreateResource( &allocDesc, &bufDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+		chunk.Allocation.ReleaseAndGetAddressOf(), IID_PPV_ARGS( chunk.Resource.ReleaseAndGetAddressOf() ) ) ) ) {
+		return false;
+	}
+
+	D3D12_RANGE noRead = { 0, 0 };
+	void* mapped = nullptr;
+	if ( FAILED( chunk.Resource->Map( 0, &noRead, &mapped ) ) ) {
+		return false;
+	}
+	chunk.MappedPtr = static_cast<uint8_t*>( mapped );
+	chunk.Capacity = kStagingChunkSize;
+	chunk.Offset = 0;
+	chunk.Resource->SetPrivateData( WKPDID_D3DDebugObjectName, 13, "StagingChunk" );
+
+	++m_LiveStagingChunks;
+	m_CopyBatchStagingChunks.push_back( std::move( chunk ) );
+	return tryFit( m_CopyBatchStagingChunks.back() );
+}
+
+
 bool D3D12GraphicsEngine::UploadBufferData( ID3D12Resource* dst, const void* srcData, UINT64 sizeInBytes ) {
 	if ( !dst || !srcData || sizeInBytes == 0 ) return false;
 
-	// Create a temporary upload buffer for staging
+	// Record into the shared batched copy list (submitted once at flush) — same rationale as
+	// UploadTextureSubresources: no per-call CreateCommandList / ExecuteCommandLists / cross-queue Wait.
+	// Fast path: suballocate from the persistently-mapped staging pool. The memcpy runs under the lock
+	// because the space belongs to the shared pool, but a pooled upload is a mesh's VB/IB — small, and
+	// far cheaper than the CreateResource it replaces.
+	{
+		std::unique_lock<std::mutex> lock( m_CopyQueueMutex );
+		if ( !BeginCopyBatch() )
+			return false;
+
+		ID3D12Resource* stagingResource = nullptr;
+		UINT64 stagingOffset = 0;
+		uint8_t* stagingCpu = nullptr;
+
+		// 16-byte alignment: CopyBufferRegion imposes none, this is purely so the memcpy lands aligned.
+		if ( AcquireStagingSpaceLocked( sizeInBytes, 16, &stagingResource, &stagingOffset, &stagingCpu ) ) {
+			memcpy( stagingCpu, srcData, sizeInBytes );
+			m_CopyBatchList->CopyBufferRegion( dst, 0, stagingResource, stagingOffset, sizeInBytes );
+
+			m_CopyBatchBytes += sizeInBytes;
+			if ( m_CopyBatchBytes >= kCopyBatchFlushThresholdBytes )
+				FlushTextureUploadsLocked();
+
+			ReleaseCompletedCopyResources( m_CopyFence->GetCompletedValue() );
+			return true;
+		}
+	}
+
+	// Pool can't serve it: the upload is bigger than a chunk (world mesh, large wrapped mesh) or the
+	// pool is at its VA cap. Dedicated staging resource, freed once the batch's fence completes. Built
+	// with the lock RELEASED — this is exactly the big-allocation/big-memcpy case, and blocking every
+	// other uploader on it is what the batching was introduced to avoid.
 	D3D12_RESOURCE_DESC bufDesc = {};
 	bufDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
 	bufDesc.Width = sizeInBytes;
@@ -537,10 +626,8 @@ bool D3D12GraphicsEngine::UploadBufferData( ID3D12Resource* dst, const void* src
 	memcpy( mapped, srcData, sizeInBytes );
 	upload->Unmap( 0, nullptr );
 
-	// Record into the shared batched copy list (submitted once at flush) — same rationale as
-	// UploadTextureSubresources: no per-call CreateCommandList / ExecuteCommandLists / cross-queue Wait.
 	std::lock_guard<std::mutex> lock( m_CopyQueueMutex );
-	if ( !BeginCopyBatch() )
+	if ( !BeginCopyBatch() )   // may be a different batch than the one probed above; harmless
 		return false;
 
 	m_CopyBatchList->CopyBufferRegion( dst, 0, upload.Get(), 0, sizeInBytes );
@@ -590,8 +677,14 @@ void D3D12GraphicsEngine::FlushTextureUploadsLocked() {
 
 	if ( FAILED( m_CopyBatchList->Close() ) ) {
 		// Drop the batch; its staging buffers free with the ComPtr vectors, cmd objects are discarded.
+		// The batch was never submitted, so no GPU is reading the pooled chunks — reuse them right away.
 		m_CopyBatchUploadAllocs.clear();
 		m_CopyBatchUploadResources.clear();
+		for ( auto& chunk : m_CopyBatchStagingChunks ) {
+			chunk.Offset = 0;
+			m_FreeStagingChunks.push_back( std::move( chunk ) );
+		}
+		m_CopyBatchStagingChunks.clear();
 		m_CopyBatchBytes = 0;
 		return;
 	}
@@ -610,12 +703,14 @@ void D3D12GraphicsEngine::FlushTextureUploadsLocked() {
 	pending.FenceValue = fenceValue;
 	pending.UploadAllocations = std::move( m_CopyBatchUploadAllocs );
 	pending.UploadResources = std::move( m_CopyBatchUploadResources );
+	pending.StagingChunks = std::move( m_CopyBatchStagingChunks );
 	pending.CopyAllocator = std::move( m_CopyBatchAllocator );
 	pending.CopyCommandList = std::move( m_CopyBatchList );
 	m_PendingCopyReleases.push_back( std::move( pending ) );
 
 	m_CopyBatchUploadAllocs.clear();
 	m_CopyBatchUploadResources.clear();
+	m_CopyBatchStagingChunks.clear();
 	m_CopyBatchBytes = 0;
 }
 
@@ -1181,7 +1276,8 @@ bool D3D12GraphicsEngine::AcquireBackBufferRTVs() {
 
 XRESULT D3D12GraphicsEngine::OnBeginFrame() {
     if ( !m_SwapChainReady ) return XR_SUCCESS;
-    TracyD3D12BeginFrame();
+    FrameMark;
+    TracyD3D12BeginFrame
 
     // Apply a pending TriggerResize() request here — the command list from the previous frame is already
     // Closed+Executed+Presented at this point (no open recording to disrupt), so this is the one place in
@@ -1297,10 +1393,11 @@ XRESULT D3D12GraphicsEngine::OnBeginFrame() {
 
 XRESULT D3D12GraphicsEngine::OnEndFrame() {
     if ( !m_SwapChainReady || !m_FrameOpen ) return XR_SUCCESS;
-    TracyD3D12CollectHere();
     Present();
     m_FrameOpen = false;
     m_PresentPending = false;
+    TracyD3D12CollectHere
+
     return XR_SUCCESS;
 }
 

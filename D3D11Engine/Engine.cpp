@@ -14,12 +14,6 @@
 
 namespace Engine {
 
-    /** Refresh worker threadpool */
-    void RefreshWorkerThreadpool() {
-        delete WorkerThreadPool;
-        WorkerThreadPool = new ThreadPool(L"GD3D11-Worker");
-    }
-
     /** Reads the requested graphics backend before the full settings load runs.
         INI: [Display] GraphicsAPI=D3D11|D3D12 (absent -> D3D11). CLI: -GD3D12 / -GD3D11 override. */
     static GothicRendererSettings::E_GraphicsAPI ReadRequestedGraphicsAPI() {
