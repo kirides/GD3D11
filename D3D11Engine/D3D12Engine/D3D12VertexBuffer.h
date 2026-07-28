@@ -1,6 +1,7 @@
 #pragma once
 #include "../GfxVertexBuffer.h"
 #include <d3d12.h>
+#include <vector>
 #include <wrl/client.h>
 
 #include "D3D12MemAlloc.h"
@@ -77,10 +78,19 @@ public:
         which copy last took a CPU write; when that is the current frame's copy, a draw can bind it
         straight off the IA (zero copies) instead of reading it back over the uncached, write-combined
         upload mapping. Otherwise the caller must fall back to snapshotting GetFreshMappedData(). */
-    bool HasFreshCurrentCopy() const { return m_LastWriteSlot != kNoSlot && m_LastWriteSlot == CurrentSlot(); }
+    bool HasFreshCurrentCopy() const { return !m_ShadowActive && m_LastWriteSlot != kNoSlot && m_LastWriteSlot == CurrentSlot(); }
 
-    /** CPU pointer to the most recently written copy, or nullptr if the buffer was never written. */
-    const void* GetFreshMappedData() const { return m_LastWriteSlot == kNoSlot ? nullptr : m_Copies[m_LastWriteSlot].MappedPtr; }
+    /** CPU pointer to the most recently written copy, or nullptr if the buffer was never written.
+        Returns the CPU shadow instead once Map() had to redirect Gothic's writes there (see Map). */
+    const void* GetFreshMappedData() const {
+        if ( m_ShadowActive ) return m_Shadow.data();
+        return m_LastWriteSlot == kNoSlot ? nullptr : m_Copies[m_LastWriteSlot].MappedPtr;
+    }
+
+    /** Called by DrawVertexBufferFF right after it bound the live copy straight off the IA: from here on
+        a draw recorded THIS frame reads these bytes, so the next Lock() of the same copy must not write
+        over them — Map() redirects it to the CPU shadow instead. See the comment in Map(). */
+    void NotifyBoundDirect() { m_DirectBoundSlot = CurrentSlot(); }
 
     /** Backend downcast from the neutral base. Safe by construction: the only concrete
         GfxVertexBuffer implementation is D3D12VertexBuffer while the D3D12 backend is active. */
@@ -99,6 +109,12 @@ private:
     UINT m_NumCopies = 1;      // 1 for static/CPU-only-dynamic buffers, kBackBufferCount for GPU-bound dynamic ones
     UINT m_LastWriteSlot = kNoSlot;   // copy that last took a CPU write — see HasFreshCurrentCopy()
     unsigned int m_SizeInBytes = 0;
+
+    // Multi-Lock-per-frame protection for the direct-IA path (see Map()). m_DirectBoundSlot is the copy a
+    // draw of the CURRENT frame reads off the IA; while Map() sees it as current it hands out m_Shadow.
+    UINT m_DirectBoundSlot = kNoSlot;
+    std::vector<uint8_t> m_Shadow;
+    bool m_ShadowActive = false;
 
     UINT CurrentSlot() const { return m_NumCopies > 1 ? CurrentFrameSlot() : 0; }
     const Copy& Current() const { return m_Copies[CurrentSlot()]; }

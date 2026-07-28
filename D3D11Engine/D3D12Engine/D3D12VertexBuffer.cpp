@@ -214,6 +214,29 @@ XRESULT D3D12VertexBuffer::UpdateBuffer( void* data, unsigned int size ) {
 XRESULT D3D12VertexBuffer::Map( int /*flags*/, void** dataPtr, unsigned int* size ) {
     // Upload heap is persistently mapped, so every map flag (incl. WRITE_DISCARD) resolves to the
     // same pointer (the current frame-slot's copy — see Current()).
+    //
+    // That is exactly where a D3D7 Lock( WRITE_DISCARD ) and a persistent D3D12 mapping part ways.
+    // Gothic legitimately Lock()s -> writes -> DrawPrimitiveVB()s the SAME buffer several times per
+    // frame (the sky's layers are drawn batch by batch out of one shared FF vertex buffer, and a rainy
+    // overcast sky has more batches than a clear one). On D3D11 every DISCARD map hands back a fresh
+    // region, so each recorded draw keeps its own vertices. Here the second write lands on top of the
+    // bytes the FIRST draw was recorded to read — every draw of the frame then renders the LAST batch's
+    // geometry, i.e. sky polygons stamped out in the wrong place with the wrong layer's texture/blend
+    // state (hard-edged bright wedges over the sky).
+    //
+    // So: once DrawVertexBufferFF has bound this copy straight off the IA (NotifyBoundDirect), further
+    // Map()s of that same copy are handed a CPU shadow instead, and the draw snapshots the shadow into
+    // the per-frame ring — the same fallback a stale buffer already takes. The zero-copy fast path is
+    // untouched for the common lock-once-per-frame case, and the flag clears itself as soon as the
+    // frame slot rotates.
+    if ( m_DirectBoundSlot == CurrentSlot() ) {
+        if ( m_Shadow.size() < m_SizeInBytes ) m_Shadow.resize( m_SizeInBytes );
+        m_ShadowActive = true;
+        if ( dataPtr ) *dataPtr = m_Shadow.data();
+        if ( size ) *size = m_SizeInBytes;
+        return XR_SUCCESS;
+    }
+
     Copy& cur = Current();
     if ( !cur.MappedPtr ) {
         if ( dataPtr ) *dataPtr = nullptr;
@@ -225,6 +248,8 @@ XRESULT D3D12VertexBuffer::Map( int /*flags*/, void** dataPtr, unsigned int* siz
     // Every Map() here is a write-map (the upload heap is write-only) — treat it as the current copy
     // becoming the freshest one, so DrawVertexBufferFF can bind it straight off the IA.
     m_LastWriteSlot = CurrentSlot();
+    m_DirectBoundSlot = kNoSlot;
+    m_ShadowActive = false;
     return XR_SUCCESS;
 }
 

@@ -366,13 +366,18 @@ XRESULT D3D12GraphicsEngine::DrawVertexBufferFF( GfxVertexBuffer* vb, unsigned i
 	// convert them to ExVertexStruct. Reads from write-combined memory are slow enough to show up in profiles.
 	// Only valid when the copy the current frame binds is the one Gothic last wrote (it Lock()s the buffer
 	// every frame it draws from it); the frame fence then guarantees no in-flight frame still reads that copy.
+	// NotifyBoundDirect tells the buffer these exact bytes are now referenced by a recorded draw, so a LATER
+	// Lock() in the same frame (Gothic locks + draws the shared FF buffer once per sky batch) gets redirected
+	// to a CPU shadow instead of overwriting them — see D3D12VertexBuffer::Map.
 	if ( buffer->HasFreshCurrentCopy() ) {
 		const D3D12_VERTEX_BUFFER_VIEW vbv = { buffer->GetGpuVirtualAddress() + byteOffset, bytes, stride };
+		buffer->NotifyBoundDirect();
 		return SubmitUIDraw( vbv, numVertices, 0, true );
 	}
 
-	// Fallback: Gothic didn't re-lock the buffer this frame, so the copy bound to the current frame slot is
-	// stale. Snapshot the last-written copy into the per-frame ring instead. Still a straight memcpy in the
+	// Fallback: Gothic didn't re-lock the buffer this frame (or it re-locked one this frame's draws already
+	// read, so the write went to the CPU shadow), so the copy bound to the current frame slot is not the one
+	// to draw. Snapshot the last-written bytes into the per-frame ring instead. Still a straight memcpy in the
 	// native FF format (no per-vertex conversion), and it reuses the same PSO/input layout as the fast path.
 	const uint8_t* src = static_cast<const uint8_t*>(buffer->GetFreshMappedData());
 	if ( !src ) return XR_SUCCESS;   // never written — nothing but garbage to draw
