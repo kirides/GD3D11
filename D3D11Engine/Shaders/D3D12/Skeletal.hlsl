@@ -11,7 +11,9 @@ StructuredBuffer<GPULight>  Lights        : register(t1);
 StructuredBuffer<LightGrid> LightGridBuf  : register(t2);
 StructuredBuffer<uint>      LightIndexBuf : register(t3);
 
-Texture2D    tx  : register(t0);
+// No t0 diffuse texture: EVERY entry point in this file (lit, depth-prepass, shadow-clip and ghost) fetches its
+// diffuse bindlessly from MaterialCB.MatDiffuseIndex, so neither Skeletal.RootSig nor GhostSkeletal.RootSig
+// carries an SRV descriptor table — see the note on MaterialCB below.
 SamplerState smp : register(s0);
 
 // CSM sun-shadow sampling (P2.9c-4b). Skeletal already uses b3 (fog) + b4 (light count), so the shadow CB
@@ -44,10 +46,19 @@ cbuffer ShadowCB : register(b5)
 Texture2DArray          ShadowMap : register(t4);
 SamplerComparisonState  shadowCmp : register(s2);
 // Per-material bindless indices (root consts b6): SM6.6 ResourceDescriptorHeap[...] indices for this material's
-// normal + ORM maps. MatNormalIndex == 0xFFFFFFFF -> no normal map (skip perturb); MatOrmIndex is always valid
-// (the 1x1 default ORM = AO 1 / rough 0.5 / metal 0 when the material has no _FX map); its top 2 bits pack the
-// FxMap's channel layout for SampleOrm() to decode (see PBRLighting.hlsl).
-cbuffer MaterialCB : register(b6) { uint MatNormalIndex; uint MatOrmIndex; };
+// normal + ORM + DIFFUSE maps. MatNormalIndex == 0xFFFFFFFF -> no normal map (skip perturb); MatOrmIndex is
+// always valid (the 1x1 default ORM = AO 1 / rough 0.5 / metal 0 when the material has no _FX map); its top 2
+// bits pack the FxMap's channel layout for SampleOrm() to decode (see PBRLighting.hlsl). MatDiffuseIndex is
+// always valid too (the 1x1 black texture when the material's texture isn't cached in yet), and replaces what
+// used to be a per-material descriptor-table bind — same layout the world/VOB ExecuteIndirect commands push.
+cbuffer MaterialCB : register(b6) { uint MatNormalIndex; uint MatOrmIndex; uint MatDiffuseIndex; };
+// The diffuse for every non-ghost entry point. One helper so the color/prepass/shadow-clip variants can never
+// drift apart on which slot or sampler they read.
+float4 SampleSkelDiffuse( float2 uv )
+{
+    Texture2D difTex = ResourceDescriptorHeap[MatDiffuseIndex];
+    return difTex.Sample( smp, uv );
+}
 TextureCubeArray        PointShadowCubes : register(t5);   // point-light shadow cubes (P2.10d), R16 linear depth
 // Simple-SSAO mask (bindless, set once per frame — see D3D12GraphicsEngine::RenderSSAO/m_ActiveAOMaskSrvSlot).
 // b8, not b7: b7 is GhostCB below, read only by the separate GhostSkeletal root sig/PSO (PSGhost), not PSMain.
@@ -102,7 +113,7 @@ VS_OUT VSMain( VS_IN i )
 
 float4 PSMain( VS_OUT i ) : SV_TARGET
 {
-    float4 t = tx.Sample( smp, i.uv );
+    float4 t = SampleSkelDiffuse( i.uv );
     clip( t.a - 0.5 );
     float3 N = normalize( i.wnrm );
     if ( MatNormalIndex != 0xffffffff )
@@ -130,7 +141,8 @@ float4 PSMain( VS_OUT i ) : SV_TARGET
 
 // --- Depth-prepass variant (P2.9b-4b: adds skinned NPC/monster meshes to the Forward+ opaque depth prepass) ---
 // Same matrix-palette skinning as VSMain (so the depth matches the color pass bit-for-bit) but outputs only
-// clip + uv; reads b0/b1/b2 + t0/s0, NOT fog/light CBs — so it needs no BindFrameLights (no light-loop hang).
+// clip + uv; reads b0/b1/b2 (+ b6's diffuse index in the PS), NOT fog/light CBs — so it needs no
+// BindFrameLights (no light-loop hang).
 struct VS_DEPTH_OUT { float4 clip : SV_POSITION; float2 uv : TEXCOORD0; };
 VS_DEPTH_OUT VSDepth( VS_IN i )
 {
@@ -152,7 +164,7 @@ VS_DEPTH_OUT VSDepth( VS_IN i )
 }
 float4 PSDepthClip( VS_DEPTH_OUT i ) : SV_TARGET
 {
-    float4 t = tx.Sample( smp, i.uv );
+    float4 t = SampleSkelDiffuse( i.uv );
     clip( t.a - 0.5 );          // same cutout as PSMain so alpha edges don't lay down depth
     return float4( 0, 0, 0, 1 );   // discarded: the PSO's color write mask is 0 (depth-only pass)
 }
@@ -160,7 +172,7 @@ float4 PSDepthClip( VS_DEPTH_OUT i ) : SV_TARGET
 // warning; only alpha-clips the cutout so alpha edges don't cast solid shadows.
 void PSShadowClip( VS_DEPTH_OUT i )
 {
-    clip( tx.Sample( smp, i.uv ).a - 0.5 );
+    clip( SampleSkelDiffuse( i.uv ).a - 0.5 );
 }
 
 // Ghost/transparency skeletal VOBs (D3D12PipelineState::CreateGhostSkeletal): invisible-potion/fade NPCs.
@@ -172,7 +184,7 @@ cbuffer GhostCB : register(b7) { float GhostAlpha; float3 _GhostPad; }
 
 float4 PSGhost( VS_DEPTH_OUT i ) : SV_TARGET
 {
-    float4 t = tx.Sample( smp, i.uv );
+    float4 t = SampleSkelDiffuse( i.uv );
     // Linearize — m_SceneColor is a LINEAR HDR target on D3D12 (SrgbToLinear comes from PBRLighting.hlsl,
     // included above). D3D11's PS_TransparencySkel returns the raw texel because its HDR buffer is
     // gamma-space; porting that verbatim is what made ghosts read far too bright.

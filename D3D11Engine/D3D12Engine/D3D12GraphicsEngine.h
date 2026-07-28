@@ -212,9 +212,13 @@ private:
     // Set a lit draw's per-material bindless normal/ORM indices (b6 root consts). matRootParam = 10 (world/VOB
     // root sig) or 12 (skeletal). Call once per material change, right after binding its diffuse SRV.
     void BindMaterialMaps( class zCTexture* tex, UINT matRootParam );
+    // Bindless variant: same b6 block plus the diffuse SRV heap slot as the third constant. Used by the
+    // skeletal passes, whose root signature carries no diffuse descriptor table.
+    void BindMaterialMaps( class zCTexture* tex, UINT matRootParam, UINT diffuseSlot );
+    void ResolveMaterialMapSlots( class zCTexture* tex, UINT* outNormalOrm ) const;
     bool CreateLightBuffer();         // per-frame point-light structured buffers (Forward+ MVP: brute-force)
     void BuildFrameLightBuffer();     // (re)fill this frame's light buffer from the collected visible lights
-    void BindFrameLights( UINT srvParam = 3, UINT countParam = 4, UINT gridParam = 5, UINT indexParam = 6 );   // light SRV(t1)+count+grid(t2)+index(t3); (3,4,5,6)=world, (5,6,7,8)=skeletal
+    void BindFrameLights( UINT srvParam = 3, UINT countParam = 4, UINT gridParam = 5, UINT indexParam = 6 );   // light SRV(t1)+count+grid(t2)+index(t3); (3,4,5,6)=world, (4,5,6,7)=skeletal, (5,6,7,8)=grass
     void DrawWaterSurfaces() override; // draw water peeled out of the opaque world pass (scrolled UV, blended)
     // Skeletal (animated NPC/monster) pipeline creation now lives in m_Pipelines.CreateSkeletal (root sig + lit +
     // depth-prepass PSOs). The per-frame skeletal CB ring stays here:
@@ -758,6 +762,10 @@ private:
     // the 1x1 black fallback. Uses GetCacheState (NOT CacheIn) so it stays a pure read — no Gothic texture load
     // is triggered from a pass that only needs an alpha cutout, which also makes it callable off the main thread.
     D3D12_GPU_DESCRIPTOR_HANDLE ResolveShadowDiffuseSrv( zCTexture* tex ) const;
+    // Bindless SRV-heap-slot resolvers for the (fully bindless) skeletal passes. ...Slot keeps the shadow
+    // paths' "never CacheIn off the main thread" contract; ...CacheIn is the main-view variant.
+    UINT ResolveShadowDiffuseSlot( zCTexture* tex ) const;
+    UINT ResolveDiffuseSlotCacheIn( zCTexture* tex );
 
 
     // Forward+ tiled light culling (P2.9b-2): one global compute root sig + PSO; two resolution-sized

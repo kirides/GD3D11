@@ -999,6 +999,7 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, ID3D12GraphicsCommandList* cmd
 	// Resolved once: GetSrvGpuHandle takes m_SrvHeapMutex and linear-scans the free-slot list, and all three
 	// cascade recorders would otherwise hit it per material.
 	const D3D12_GPU_DESCRIPTOR_HANDLE blackSrv = m_E->GetSrvGpuHandle( m_E->m_BlackTexture->GetSrvSlot() );
+	const UINT blackSlot = m_E->m_BlackTexture->GetSrvSlot();   // bindless fallback for the skeletal casters
 
 	const D3D12_VIEWPORT vp = { 0.0f, 0.0f, static_cast<float>(m_MapSize), static_cast<float>(m_MapSize), 0.0f, 1.0f };
 	const D3D12_RECT     sc = { 0, 0, static_cast<LONG>(m_MapSize), static_cast<LONG>(m_MapSize) };
@@ -1055,17 +1056,19 @@ void D3D12ShadowMap::RecordCascade( UINT cascade, ID3D12GraphicsCommandList* cmd
 			// snapshotted on the main thread right after ITS UpdateMeshLibTexAniState (see
 			// [[skeletal-texani-shared-slots]] and g_SkelMatSrvs) — calling it here would both be wrong for a
 			// second instance of the same model and unsafe from a pool thread.
-			const std::vector<D3D12_GPU_DESCRIPTOR_HANDLE>* matSrvs =
+			const std::vector<UINT>* matSrvs =
 				(d.matSrvIndex < g_SkelMatSrvCount) ? &g_SkelMatSrvs[d.matSrvIndex] : nullptr;
 
 			cmdList->SetGraphicsRootConstantBufferView( 1, d.instCb );
 			cmdList->SetGraphicsRootConstantBufferView( 2, d.boneCb );
 			size_t matIdx = 0;
 			for ( auto const& [mat, meshList] : d.visual->SkeletalMeshes ) {
-				const D3D12_GPU_DESCRIPTOR_HANDLE srv = (matSrvs && matIdx < matSrvs->size())
-					? (*matSrvs)[matIdx] : blackSrv;
+				const UINT diffuseSlot = (matSrvs && matIdx < matSrvs->size())
+					? (*matSrvs)[matIdx] : blackSlot;
 				++matIdx;
-				cmdList->SetGraphicsRootDescriptorTable( 3, srv );
+				// PSShadowClip reads only MatDiffuseIndex, the THIRD constant of the b6 MaterialCB (param 11) —
+				// push just that one at offset 2 rather than resolving normal/ORM maps the caster never samples.
+				cmdList->SetGraphicsRoot32BitConstant( 11, diffuseSlot, 2 );
 				for ( auto const& mesh : meshList ) {
 					if ( !mesh || mesh->Indices.empty() || !mesh->MeshVertexBuffer || !mesh->MeshIndexBuffer ) continue;
 					D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mesh->MeshVertexBuffer.get() );

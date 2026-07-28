@@ -38,7 +38,7 @@ struct FrameVobUpload {
     uint32_t cullVisualIndex;
 };
 
-// matSrvIndex indexes g_SkelMatSrvs (below): the per-material diffuse descriptor handles for this vob's
+// matSrvIndex indexes g_SkelMatSrvs (below): the per-material diffuse SRV heap slots for this vob's
 // visual->SkeletalMeshes, snapshotted on the main thread while the model's shared texani slots were still
 // set for THIS instance. A pool-thread recorder (the MT cascades) must use it instead of calling
 // UpdateMeshLibTexAniState + GetAniTexture itself (Gothic's texani state is per-MODEL shared, not thread-safe).
@@ -80,10 +80,12 @@ static_assert( sizeof( GPULight ) == 48, "GPULight must match D3D11 TiledPointLi
 // pass AND the point-shadow static-VOB gather all draw from it. Defined in D3D12Scene.cpp.
 extern std::vector<FrameVobUpload> g_FrameVobUploads;
 
-// Per-vob snapshot of the diffuse descriptor handle for each entry of visual->SkeletalMeshes, in that map's
-// iteration order — see FrameSkelDraw::matSrvIndex. Only the live prefix [0, g_SkelMatSrvCount) is valid each
-// frame. Defined in D3D12Scene.cpp (PrepareFrameSkeletals owns it); read by the CSM cascade recorder.
-extern std::vector<std::vector<D3D12_GPU_DESCRIPTOR_HANDLE>> g_SkelMatSrvs;
+// Per-vob snapshot of the diffuse SRV heap SLOT for each entry of visual->SkeletalMeshes, in that map's
+// iteration order — see FrameSkelDraw::matSrvIndex. Slots, not descriptor handles: the skeletal root signature
+// has no diffuse table any more, the shaders index ResourceDescriptorHeap[] with these. Only the live prefix
+// [0, g_SkelMatSrvCount) is valid each frame. Defined in D3D12Scene.cpp (PrepareFrameSkeletals owns it);
+// read by the CSM cascade recorder.
+extern std::vector<std::vector<UINT>> g_SkelMatSrvs;
 extern size_t g_SkelMatSrvCount;
 
 // Water surfaces peeled out of the opaque world pass (BuildWorldDrawCommands, D3D12Scene.cpp) and drawn

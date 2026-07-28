@@ -52,14 +52,14 @@ using Microsoft::WRL::ComPtr;
 // and records the resulting stream view + count here. The depth prepass (DrawVobDepthPrepass), the color pass
 // (DrawVobsInstanced) and the point-shadow static-VOB gather all draw from these — no second upload.
 std::vector<FrameVobUpload> g_FrameVobUploads;
-// Per-vob snapshot of the diffuse descriptor handle for each entry of visual->SkeletalMeshes, in that map's
+// Per-vob snapshot of the diffuse SRV HEAP SLOT for each entry of visual->SkeletalMeshes, in that map's
 // (stable, unmutated-within-a-frame) iteration order. Taken by PrepareFrameSkeletals on the main thread
 // immediately after that vob's UpdateMeshLibTexAniState(), which is the only moment the shared per-MODEL texture
 // slots actually describe this instance. Grown monotonically and reused: only the live prefix
 // [0, g_SkelMatSrvCount) is valid each frame and the inner vectors keep their capacity, so this settles into
 // zero per-frame allocations. Indexed (never pointed into) by FrameSkelDraw::matSrvIndex so a rehash of
 // g_SkelUploadCache or a growth of this vector can't dangle a record.
-std::vector<std::vector<D3D12_GPU_DESCRIPTOR_HANDLE>> g_SkelMatSrvs;
+std::vector<std::vector<UINT>> g_SkelMatSrvs;
 size_t g_SkelMatSrvCount = 0;
 
 namespace {
@@ -717,6 +717,37 @@ D3D12_GPU_DESCRIPTOR_HANDLE D3D12GraphicsEngine::ResolveShadowDiffuseSrv( zCText
 }
 
 
+UINT D3D12GraphicsEngine::ResolveShadowDiffuseSlot( zCTexture* tex ) const {
+	// Bindless twin of ResolveShadowDiffuseSrv — same "already cached in, never CacheIn from here" contract
+	// (see [[skeletal-texani-shared-slots]]), returning the SRV heap index the skeletal b6 MaterialCB wants.
+	if ( tex && tex->GetCacheState() == zRES_CACHED_IN ) {
+		if ( MyDirectDrawSurface7* surface = tex->GetSurface() ) {
+			if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
+				D3D12Texture* d12 = D3D12Texture::From( gfx );
+				if ( d12->HasSRV() ) return d12->GetSrvSlot();
+			}
+		}
+	}
+	return m_BlackTexture->GetSrvSlot();
+}
+
+
+UINT D3D12GraphicsEngine::ResolveDiffuseSlotCacheIn( zCTexture* tex ) {
+	// The main-view variant: caches the texture in (the shadow paths deliberately don't) and returns its SRV
+	// heap slot, falling back to the 1x1 black texture — the same fallback the old per-material descriptor-table
+	// binds used, so an uncached material still draws exactly as before.
+	if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
+		if ( MyDirectDrawSurface7* surface = tex->GetSurface() ) {
+			if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
+				D3D12Texture* d12 = D3D12Texture::From( gfx );
+				if ( d12->HasSRV() ) return d12->GetSrvSlot();
+			}
+		}
+	}
+	return m_BlackTexture->GetSrvSlot();
+}
+
+
 bool D3D12GraphicsEngine::CreateLightCullBuffers( INT2 size ) {
 	// Per-resolution Forward+ tile grid storage (P2.9b-2). Recreated on resize alongside the depth buffer.
 	// RW_LightGrid: one {Offset,Count} (8 B) per 16x16 tile. RW_LightIndexList: a fixed MAX_LIGHTS_PER_TILE
@@ -899,7 +930,7 @@ void D3D12GraphicsEngine::BindFrameLights( UINT srvParam, UINT countParam, UINT 
 	// bound (Count) and grid are UNDEFINED root values and can run billions of iterations → GPU timeout/
 	// removal. Root args are cleared on every SetGraphicsRootSignature. The param indices differ per root
 	// sig: m_Pipelines.World.RootSig uses (3,4,5,6) — the default — for the world mesh / instanced VOBs /
-	// node attachments; m_Pipelines.Skeletal.RootSig uses (5,6,7,8).
+	// node attachments; m_Pipelines.Skeletal.RootSig uses (4,5,6,7); m_Pipelines.Grass.RootSig uses (5,6,7,8).
 	m_CmdList->SetGraphicsRootShaderResourceView( srvParam, m_LightBuffer[m_FrameIndex]->GetGPUVirtualAddress() );
 	m_CmdList->SetGraphicsRoot32BitConstant( countParam, m_FrameLightCount, 0 );   // LightCount @ b*.x
 	m_CmdList->SetGraphicsRoot32BitConstant( countParam, m_NumTilesX, 1 );         // NumTilesX  @ b*.y
@@ -1451,17 +1482,11 @@ void D3D12GraphicsEngine::DrawGhostVobs() {
 			m_CmdList->SetGraphicsRoot32BitConstants( 3, 1, &info.alpha, 0 );
 
 			for ( auto const& [mat, meshList] : visual->SkeletalMeshes ) {
-				D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
 				zCTexture* tex = mat ? mat->GetAniTexture() : nullptr;
-				if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
-					if ( MyDirectDrawSurface7* surface = tex->GetSurface() ) {
-						if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
-							D3D12Texture* d12 = D3D12Texture::From( gfx );
-							if ( d12->HasSRV() ) srv = d12->GetSrvGpuHandle();
-						}
-					}
-				}
-				m_CmdList->SetGraphicsRootDescriptorTable( 4, srv );
+				// b6 { normal, ORM, diffuse } — same bindless material block as the lit skeletal passes; PSGhost
+				// reads only the diffuse index, but sharing the block keeps every skeletal entry point on one
+				// SampleSkelDiffuse and off descriptor tables entirely.
+				BindMaterialMaps( tex, 4, ResolveDiffuseSlotCacheIn( tex ) );
 				for ( auto const& mesh : meshList ) {
 					if ( !mesh || mesh->Indices.empty() || !mesh->MeshVertexBuffer || !mesh->MeshIndexBuffer ) continue;
 					D3D12VertexBuffer* mvb = D3D12VertexBuffer::From( mesh->MeshVertexBuffer.get() );
@@ -2660,20 +2685,39 @@ void D3D12GraphicsEngine::BindMaterialMaps( zCTexture* tex, UINT matRootParam ) 
     // Set the per-material bindless indices (b6 root consts) the PBR PS reads via ResourceDescriptorHeap[...]:
     // this material's normal + ORM map SRV heap slots (loaded onto the surface by LoadAdditionalResources).
     // No normal map -> 0xFFFFFFFF (PS skips the perturb); no _FX/ORM map -> the 1x1 default ORM slot.
-    UINT idx[2] = { 0xFFFFFFFFu, m_DefaultOrmTexture->GetSrvSlot() };
+    UINT idx[2];
+    ResolveMaterialMapSlots( tex, idx );
+    m_CmdList->SetGraphicsRoot32BitConstants( matRootParam, 2, idx, 0 );
+}
+
+
+void D3D12GraphicsEngine::BindMaterialMaps( zCTexture* tex, UINT matRootParam, UINT diffuseSlot ) {
+    // Fully-bindless variant: the same normal/ORM indices plus the DIFFUSE heap slot as the third b6 constant.
+    // Used by every pass on Skeletal.RootSig (which has no SRV table at all) — one 3-DWORD root-constant push
+    // per material instead of a descriptor-table bind. The b6 layout matches World.RootSig's, so the world/VOB
+    // bindless PS variants read the identical struct.
+    UINT idx[3];
+    ResolveMaterialMapSlots( tex, idx );
+    idx[2] = diffuseSlot;
+    m_CmdList->SetGraphicsRoot32BitConstants( matRootParam, 3, idx, 0 );
+}
+
+
+void D3D12GraphicsEngine::ResolveMaterialMapSlots( zCTexture* tex, UINT* outNormalOrm ) const {
+    outNormalOrm[0] = 0xFFFFFFFFu;
+    outNormalOrm[1] = m_DefaultOrmTexture->GetSrvSlot();
     if ( tex ) {
         if ( MyDirectDrawSurface7* s = tex->GetSurface() ) {
             if ( GfxTexture* n = s->GetNormalmap() ) {
                 D3D12Texture* d = D3D12Texture::From( n );
-                if ( d->HasSRV() ) idx[0] = d->GetSrvSlot();
+                if ( d->HasSRV() ) outNormalOrm[0] = d->GetSrvSlot();
             }
             if ( GfxTexture* o = s->GetFxMap() ) {
                 D3D12Texture* d = D3D12Texture::From( o );
-                if ( d->HasSRV() ) idx[1] = EncodeOrmSlot( d->GetSrvSlot(), s->GetAvailableMaterials() );
+                if ( d->HasSRV() ) outNormalOrm[1] = EncodeOrmSlot( d->GetSrvSlot(), s->GetAvailableMaterials() );
             }
         }
     }
-    m_CmdList->SetGraphicsRoot32BitConstants( matRootParam, 2, idx, 0 );
 }
 
 
@@ -3171,7 +3215,7 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
             
             model->UpdateMeshLibTexAniState();
 
-            // Snapshot THIS instance's per-material alpha-clip diffuse handles while the model's shared texani
+            // Snapshot THIS instance's per-material alpha-clip diffuse SRV slots while the model's shared texani
             // slots still describe it (see [[skeletal-texani-shared-slots]]) — the shadow-cascade recorder can't
             // re-run UpdateMeshLibTexAniState from a pool thread, so it indexes this instead. Same order as
             // visual->SkeletalMeshes iterates, which is stable for the rest of the frame (the map isn't mutated
@@ -3181,10 +3225,10 @@ void D3D12GraphicsEngine::PrepareFrameSkeletals( std::vector<SkeletalVobInfo*>& 
             if ( g_SkelMatSrvCount >= g_SkelMatSrvs.size() )
                 g_SkelMatSrvs.emplace_back();
             {
-                std::vector<D3D12_GPU_DESCRIPTOR_HANDLE>& matSrvs = g_SkelMatSrvs[g_SkelMatSrvCount];
+                std::vector<UINT>& matSrvs = g_SkelMatSrvs[g_SkelMatSrvCount];
                 matSrvs.clear();
                 for ( auto const& [mat, meshList] : visual->SkeletalMeshes )
-                    matSrvs.push_back( ResolveShadowDiffuseSrv( mat ? mat->GetAniTexture() : nullptr ) );
+                    matSrvs.push_back( ResolveShadowDiffuseSlot( mat ? mat->GetAniTexture() : nullptr ) );
                 entry.matSrvIndex = static_cast<uint32_t>( g_SkelMatSrvCount++ );
             }
 
@@ -3418,18 +3462,10 @@ void D3D12GraphicsEngine::DrawSkeletalDepthPrepass() {
             m_CmdList->SetGraphicsRootConstantBufferView( 1, d.instCb );
             m_CmdList->SetGraphicsRootConstantBufferView( 2, d.boneCb );
             for ( auto const& [mat, meshList] : d.visual->SkeletalMeshes ) {
-                D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
                 zCTexture* tex = mat ? mat->GetAniTexture() : nullptr;
-                if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
-                    if ( MyDirectDrawSurface7* surface = tex->GetSurface() ) {
-                        if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
-                            D3D12Texture* d12 = D3D12Texture::From( gfx );
-                            if ( d12->HasSRV() ) srv = d12->GetSrvGpuHandle();
-                        }
-                    }
-                }
-                m_CmdList->SetGraphicsRootDescriptorTable( 3, srv );
-                BindMaterialMaps( tex, 12 );   // b6 bindless normal/ORM indices (no-op in the depth prepass)
+                // b6 { normal, ORM, DIFFUSE } — fully bindless, no descriptor table on this root sig.
+                // PSDepthClip alpha-clips off the diffuse index, so this one IS load-bearing in the prepass.
+                BindMaterialMaps( tex, 11, ResolveDiffuseSlotCacheIn( tex ) );
                 for ( auto const& mesh : meshList ) {
                     if ( !mesh || mesh->Indices.empty() || !mesh->MeshVertexBuffer || !mesh->MeshIndexBuffer )
                         continue;
@@ -3519,12 +3555,12 @@ void D3D12GraphicsEngine::DrawSkeletalColor() {
         m_CmdList->SetPipelineState( m_Pipelines.Skeletal.PSO.Get() );
         m_CmdList->SetGraphicsRootSignature( m_Pipelines.Skeletal.RootSig.Get() );
         m_CmdList->SetGraphicsRoot32BitConstants( 0, 16, &viewProj, 0 );
-        m_CmdList->SetGraphicsRoot32BitConstants( 4, 8, &fog, 0 );   // b3 fog
-        BindFrameLights( 5, 6, 7, 8 );   // light SRV(t1)+count(b4)+grid(t2)+index(t3) — MUST set all (see BindFrameLights)
-        m_CmdList->SetGraphicsRootConstantBufferView( 9, m_ShadowCBGpu[m_FrameIndex] );        // b5 shadow CB
-        m_CmdList->SetGraphicsRootDescriptorTable( 10, GetSrvGpuHandle( m_ShadowMap.GetSrvSlot() ) );   // t4 shadow map
-        m_CmdList->SetGraphicsRootDescriptorTable( 11, GetSrvGpuHandle( m_PointShadows.GetSrvSlot() ) ); // t5 point-shadow cubes
-        m_CmdList->SetGraphicsRoot32BitConstants( 13, 1, &m_ActiveAOMaskSrvSlot, 0 );   // b8 AOCB (simple SSAO mask)
+        m_CmdList->SetGraphicsRoot32BitConstants( 3, 8, &fog, 0 );   // b3 fog
+        BindFrameLights( 4, 5, 6, 7 );   // light SRV(t1)+count(b4)+grid(t2)+index(t3) — MUST set all (see BindFrameLights)
+        m_CmdList->SetGraphicsRootConstantBufferView( 8, m_ShadowCBGpu[m_FrameIndex] );        // b5 shadow CB
+        m_CmdList->SetGraphicsRootDescriptorTable( 9, GetSrvGpuHandle( m_ShadowMap.GetSrvSlot() ) );    // t4 shadow map
+        m_CmdList->SetGraphicsRootDescriptorTable( 10, GetSrvGpuHandle( m_PointShadows.GetSrvSlot() ) ); // t5 point-shadow cubes
+        m_CmdList->SetGraphicsRoot32BitConstants( 12, 1, &m_ActiveAOMaskSrvSlot, 0 );   // b8 AOCB (simple SSAO mask)
         m_CmdList->RSSetViewports( 1, &vp );
         m_CmdList->RSSetScissorRects( 1, &sc );
         m_CmdList->IASetPrimitiveTopology( D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST );
@@ -3537,18 +3573,8 @@ void D3D12GraphicsEngine::DrawSkeletalColor() {
             m_CmdList->SetGraphicsRootConstantBufferView( 1, d.instCb );
             m_CmdList->SetGraphicsRootConstantBufferView( 2, d.boneCb );
             for ( auto const& [mat, meshList] : d.visual->SkeletalMeshes ) {
-                D3D12_GPU_DESCRIPTOR_HANDLE srv = whiteSrv;
                 zCTexture* tex = mat ? mat->GetAniTexture() : nullptr;
-                if ( tex && tex->CacheIn( 0.6f ) == zRES_CACHED_IN ) {
-                    if ( MyDirectDrawSurface7* surface = tex->GetSurface() ) {
-                        if ( GfxTexture* gfx = surface->GetEngineTexture() ) {
-                            D3D12Texture* d12 = D3D12Texture::From( gfx );
-                            if ( d12->HasSRV() ) srv = d12->GetSrvGpuHandle();
-                        }
-                    }
-                }
-                m_CmdList->SetGraphicsRootDescriptorTable( 3, srv );
-                BindMaterialMaps( tex, 12 );   // b6 bindless normal/ORM indices (no-op in the depth prepass)
+                BindMaterialMaps( tex, 11, ResolveDiffuseSlotCacheIn( tex ) );   // b6 { normal, ORM, diffuse }
                 for ( auto const& mesh : meshList ) {
                     if ( !mesh || mesh->Indices.empty() || !mesh->MeshVertexBuffer || !mesh->MeshIndexBuffer )
                         continue;

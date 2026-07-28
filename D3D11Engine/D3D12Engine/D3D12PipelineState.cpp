@@ -534,10 +534,14 @@ bool D3D12PipelineState::CreateGhostSkeletal() {
     rs.AddCBV( 2, D3D12_SHADER_VISIBILITY_VERTEX );            // 2: b2 bone palette
     // 3: b7 GhostAlpha (Skeletal.hlsl's b0..b6 are all spoken for)
     rs.AddConstants( 7, 1, D3D12_SHADER_VISIBILITY_PIXEL );
-    rs.AddTable( D3D12RootLayout::SRVRange( 0 ), D3D12_SHADER_VISIBILITY_PIXEL );  // 4: t0 diffuse
+    // 4: b6 MaterialCB { normal, ORM, DIFFUSE } — the same bindless material block Skeletal.RootSig uses, so
+    // PSGhost shares SampleSkelDiffuse with the lit/prepass/shadow entry points and no skeletal pass needs a
+    // diffuse descriptor table any more. PSGhost only reads the diffuse index; the other two ride along.
+    rs.AddConstants( 6, 3, D3D12_SHADER_VISIBILITY_PIXEL );
     rs.AddStaticSampler( D3D12RootLayout::SamplerAniso( 0, D3D12_SHADER_VISIBILITY_PIXEL ) );
 
-    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT ) )
+    if ( !rs.Build( device, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+                          | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED ) )   // SM6.6 bindless diffuse
         return false;
     GhostSkeletal.RootSig = rs.RootSig();
 
@@ -1359,34 +1363,39 @@ bool D3D12PipelineState::CreateSkeletal() {
     ID3D12Device* device = m_Device->GetDevice();
 
     // Root signature: b0 = ViewProj (16 root 32-bit constants, VS); b1 = per-instance CBV (VS);
-    // b2 = bone-palette CBV (VS); t0 = diffuse SRV table (PS); static linear-wrap sampler s0 (PS).
+    // b2 = bone-palette CBV (VS); static linear-wrap sampler s0 (PS).
     // b1/b2 are root CBVs (raw GPU VAs into the per-frame skeletal ring) rather than root constants —
     // the bone palette (up to 96 matrices = 6 KB) far exceeds the 64-DWORD root-constant budget.
+    // NOTE: there is deliberately NO diffuse SRV table here any more. Skeletal.hlsl fetches diffuse, normal
+    // and ORM bindlessly out of the b6 MaterialCB indices (param 11), the same way the world/VOB
+    // ExecuteIndirect paths do, so a per-material bind is three root constants instead of a descriptor-table
+    // set. The ghost/transparency skeletal PSO keeps its own root sig (and its own t0 table) — see
+    // CreateGhostSkeletal.
     D3D12RootLayout& rs = Layout( "Skeletal" );
     rs.AddConstants( 0, 16, D3D12_SHADER_VISIBILITY_VERTEX );  // 0: b0 ViewProj
     rs.AddCBV( 1, D3D12_SHADER_VISIBILITY_VERTEX );            // 1: b1 per-instance
     rs.AddCBV( 2, D3D12_SHADER_VISIBILITY_VERTEX );            // 2: b2 bone palette
-    rs.AddTable( D3D12RootLayout::SRVRange( 0 ), D3D12_SHADER_VISIBILITY_PIXEL );  // 3: t0 diffuse
-    // 4: b3 fog — FogConstants (8 DWORDs); VS: CamPosWS; PS: color/near/far
+    // 3: b3 fog — FogConstants (8 DWORDs); VS: CamPosWS; PS: color/near/far
     rs.AddConstants( 3, 8, D3D12_SHADER_VISIBILITY_ALL );
-    // Forward+ point lights (mirrors World.RootSig params 3/4/5/6, here at 5..8 — see BindFrameLights). All
+    // Forward+ point lights (mirrors World.RootSig params 3/4/5/6, here at 4..7 — see BindFrameLights). All
     // MUST be bound at every skeletal draw or the PS light-loop bound/grid is undefined → GPU hang.
-    rs.AddSRV( 1, D3D12_SHADER_VISIBILITY_PIXEL );             // 5: t1 light StructuredBuffer (root SRV)
-    rs.AddConstants( 4, 4, D3D12_SHADER_VISIBILITY_PIXEL );    // 6: b4 { LightCount, NumTilesX, pad, pad }
-    rs.AddSRV( 2, D3D12_SHADER_VISIBILITY_PIXEL );             // 7: t2 per-tile LightGrid {Offset,Count}
-    rs.AddSRV( 3, D3D12_SHADER_VISIBILITY_PIXEL );             // 8: t3 per-tile light-index list
-    // 9: b5 shadow-sampling CB (skeletal's b3/b4 are fog/light count)
+    rs.AddSRV( 1, D3D12_SHADER_VISIBILITY_PIXEL );             // 4: t1 light StructuredBuffer (root SRV)
+    rs.AddConstants( 4, 4, D3D12_SHADER_VISIBILITY_PIXEL );    // 5: b4 { LightCount, NumTilesX, pad, pad }
+    rs.AddSRV( 2, D3D12_SHADER_VISIBILITY_PIXEL );             // 6: t2 per-tile LightGrid {Offset,Count}
+    rs.AddSRV( 3, D3D12_SHADER_VISIBILITY_PIXEL );             // 7: t3 per-tile light-index list
+    // 8: b5 shadow-sampling CB (skeletal's b3/b4 are fog/light count)
     rs.AddCBV( 5, D3D12_SHADER_VISIBILITY_PIXEL );
     // CSM sampling (P2.9c-4b): shadow-map array SRV at t4 (skeletal PS samples it like world/VOB);
     // point-light shadow cube array SRV at t5 (P2.10d).
-    rs.AddTable( D3D12RootLayout::SRVRange( 4 ), D3D12_SHADER_VISIBILITY_PIXEL );  // 10: t4 CSM array
-    rs.AddTable( D3D12RootLayout::SRVRange( 5 ), D3D12_SHADER_VISIBILITY_PIXEL );  // 11: t5 point-shadow cube array
-    // 12: b6 MaterialCB { MatNormalIndex, MatOrmIndex } — bindless indices
-    rs.AddConstants( 6, 2, D3D12_SHADER_VISIBILITY_PIXEL );
-    // 13 = simple-SSAO mask bindless SRV-heap index (b8 AOCB — b7 is GhostCB, used only by the separate
+    rs.AddTable( D3D12RootLayout::SRVRange( 4 ), D3D12_SHADER_VISIBILITY_PIXEL );  // 9: t4 CSM array
+    rs.AddTable( D3D12RootLayout::SRVRange( 5 ), D3D12_SHADER_VISIBILITY_PIXEL );  // 10: t5 point-shadow cube array
+    // 11: b6 MaterialCB { MatNormalIndex, MatOrmIndex, MatDiffuseIndex } — bindless indices. The diffuse index
+    // is the third constant, matching World.RootSig's b6 layout so BindMaterialMaps serves both.
+    rs.AddConstants( 6, 3, D3D12_SHADER_VISIBILITY_PIXEL );
+    // 12 = simple-SSAO mask bindless SRV-heap index (b8 AOCB — b7 is GhostCB, used only by the separate
     // GhostSkeletal root sig/PSO, not this one). Set once per frame by DrawSkeletalColor before the base-mesh
     // draws; Skeletal.hlsl's PSMain reads it via ResourceDescriptorHeap[AoMaskIndex].
-    rs.AddConstants( 8, 1, D3D12_SHADER_VISIBILITY_PIXEL );    // 13: b8 AOCB { AoMaskIndex }
+    rs.AddConstants( 8, 1, D3D12_SHADER_VISIBILITY_PIXEL );    // 12: b8 AOCB { AoMaskIndex }
 
     // s0 diffuse: 16x anisotropic (matches D3D11's main texture sampler) — sharpens surfaces at grazing
     // angles and in the distance, which trilinear alone smears badly.
